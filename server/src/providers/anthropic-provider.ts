@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { ChatMessage } from "../sessions/types.js";
+import { normalizeProviderError } from "./provider-error.js";
 import type { Provider, ProviderEvent, ProviderTool, StreamChatRequest } from "./provider.js";
 
 export interface AnthropicProviderOptions {
@@ -24,53 +25,59 @@ export class AnthropicProvider implements Provider {
   }
 
   async *streamChat(request: StreamChatRequest): AsyncIterable<ProviderEvent> {
-    const stream = this.client.messages.stream(
-      {
-        model: request.model,
-        max_tokens: this.maxTokens,
-        thinking: { type: "adaptive", display: "summarized" },
-        output_config: { effort: "high" },
-        system: request.system,
-        messages: toAnthropicMessages(request.messages),
-        tools: request.tools.map(toAnthropicTool),
-      },
-      { signal: request.signal },
-    );
+    let streamStarted = false;
+    try {
+      const stream = this.client.messages.stream(
+        {
+          model: request.model,
+          max_tokens: this.maxTokens,
+          thinking: { type: "adaptive", display: "summarized" },
+          output_config: { effort: "high" },
+          system: request.system,
+          messages: toAnthropicMessages(request.messages),
+          tools: request.tools.map(toAnthropicTool),
+        },
+        { signal: request.signal },
+      );
 
-    for await (const event of stream) {
-      if (event.type !== "content_block_delta") continue;
-      if (event.delta.type === "text_delta") {
-        yield { type: "text_delta", text: event.delta.text };
-      } else if (event.delta.type === "thinking_delta") {
-        yield { type: "thinking_delta", text: event.delta.thinking };
+      for await (const event of stream) {
+        streamStarted = true;
+        if (event.type !== "content_block_delta") continue;
+        if (event.delta.type === "text_delta") {
+          yield { type: "text_delta", text: event.delta.text };
+        } else if (event.delta.type === "thinking_delta") {
+          yield { type: "thinking_delta", text: event.delta.thinking };
+        }
       }
-    }
 
-    const message = await stream.finalMessage();
-    for (const block of message.content) {
-      if (block.type === "thinking") {
-        yield {
-          type: "thinking_end",
-          text: block.thinking,
-          signature: block.signature,
-        };
-      } else if (block.type === "tool_use") {
-        yield {
-          type: "tool_call",
-          id: block.id,
-          name: block.name,
-          input: asObject(block.input),
-        };
+      const message = await stream.finalMessage();
+      for (const block of message.content) {
+        if (block.type === "thinking") {
+          yield {
+            type: "thinking_end",
+            text: block.thinking,
+            signature: block.signature,
+          };
+        } else if (block.type === "tool_use") {
+          yield {
+            type: "tool_call",
+            id: block.id,
+            name: block.name,
+            input: asObject(block.input),
+          };
+        }
       }
+      yield {
+        type: "usage",
+        inputTokens: message.usage.input_tokens,
+        outputTokens: message.usage.output_tokens,
+        cacheRead: message.usage.cache_read_input_tokens ?? 0,
+        cacheWrite: message.usage.cache_creation_input_tokens ?? 0,
+      };
+      yield { type: "done", stopReason: mapStopReason(message.stop_reason) };
+    } catch (error) {
+      throw normalizeProviderError(error, streamStarted);
     }
-    yield {
-      type: "usage",
-      inputTokens: message.usage.input_tokens,
-      outputTokens: message.usage.output_tokens,
-      cacheRead: message.usage.cache_read_input_tokens ?? 0,
-      cacheWrite: message.usage.cache_creation_input_tokens ?? 0,
-    };
-    yield { type: "done", stopReason: mapStopReason(message.stop_reason) };
   }
 }
 
