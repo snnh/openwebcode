@@ -12,6 +12,7 @@ export function loadConfig(env = process.env) {
         host: env.OWC_HOST ?? "127.0.0.1",
         port: positiveInteger(env.OWC_PORT, 3210),
         corePath: env.OWC_CORE_PATH ?? "../build/Debug/owc-exec.exe",
+        dataDir: env.OWC_DATA_DIR ?? "../.openwebcode",
         coreRequestTimeoutMs: positiveInteger(env.OWC_CORE_REQUEST_TIMEOUT_MS, 130_000),
     };
 }
