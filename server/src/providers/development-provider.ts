@@ -18,6 +18,12 @@ export class DevelopmentProvider implements Provider {
     }
 
     const text = last?.content.find((block) => block.type === "text");
+    const artifact = text?.type === "text" ? parseArtifact(text.text) : undefined;
+    if (artifact) {
+      yield { type: "tool_call", id: `dev-artifact-${request.messages.length}`, name: "read_artifact", input: artifact };
+      yield { type: "done", stopReason: "tool_use" };
+      return;
+    }
     const command = text?.type === "text" ? parseCommand(text.text) : undefined;
     if (!command) {
       yield { type: "text_delta", text: "Development provider is ready. Prefix a message with `run: ` to execute a command." };
@@ -33,6 +39,12 @@ export class DevelopmentProvider implements Provider {
     };
     yield { type: "done", stopReason: "tool_use" };
   }
+}
+
+function parseArtifact(text: string): Record<string, unknown> | undefined {
+  const match = /^read-artifact:\s*(artifact-[0-9a-f-]{36})\s+(\d+)\s+(\d+)$/i.exec(text.trim());
+  if (!match) return undefined;
+  return { artifactId: match[1], offset: Number(match[2]), limit: Number(match[3]) };
 }
 
 function parseCommand(text: string): string | undefined {
