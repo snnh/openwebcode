@@ -8,16 +8,19 @@ export interface AnthropicProviderOptions {
   apiKey?: string;
   baseURL?: string;
   maxTokens?: number;
+  promptCaching?: boolean;
 }
 
 export class AnthropicProvider implements Provider {
   readonly name: string;
   private readonly client: Anthropic;
   private readonly maxTokens: number;
+  private readonly promptCaching: boolean;
 
   constructor(options: AnthropicProviderOptions = {}) {
     this.name = options.name ?? "anthropic";
     this.maxTokens = options.maxTokens ?? 64_000;
+    this.promptCaching = options.promptCaching ?? true;
     this.client = new Anthropic({
       ...(options.apiKey ? { apiKey: options.apiKey } : {}),
       ...(options.baseURL ? { baseURL: options.baseURL } : {}),
@@ -36,6 +39,7 @@ export class AnthropicProvider implements Provider {
           system: request.system,
           messages: toAnthropicMessages(request.messages),
           tools: request.tools.map(toAnthropicTool),
+          ...(this.promptCaching ? { cache_control: { type: "ephemeral" as const } } : {}),
         },
         { signal: request.signal },
       );

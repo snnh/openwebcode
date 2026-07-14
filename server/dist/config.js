@@ -7,6 +7,15 @@ function positiveInteger(value, fallback) {
     }
     return parsed;
 }
+function booleanWithDefault(value, fallback) {
+    if (value === undefined)
+        return fallback;
+    if (value === "true" || value === "1")
+        return true;
+    if (value === "false" || value === "0")
+        return false;
+    throw new Error(`Expected a boolean, received ${value}`);
+}
 export function loadConfig(env = process.env) {
     return {
         host: env.OWC_HOST ?? "127.0.0.1",
@@ -19,6 +28,7 @@ export function loadConfig(env = process.env) {
                 anthropic: {
                     ...(env.ANTHROPIC_API_KEY ? { apiKey: env.ANTHROPIC_API_KEY } : {}),
                     ...(env.ANTHROPIC_BASE_URL ? { baseURL: env.ANTHROPIC_BASE_URL } : {}),
+                    promptCaching: booleanWithDefault(env.ANTHROPIC_PROMPT_CACHING, true),
                 },
             }
             : {}),

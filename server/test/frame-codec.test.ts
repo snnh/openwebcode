@@ -22,4 +22,12 @@ describe("FrameDecoder", () => {
     decoder.push(Buffer.from("Content-Length: 2\r\nContent-Length: 2\r\n\r\n{}"));
     expect(errors[0]?.message).toContain("Duplicate");
   });
+
+  it("rejects a complete oversized header", () => {
+    const decoder = new FrameDecoder();
+    const errors: Error[] = [];
+    decoder.on("error", (error) => errors.push(error));
+    decoder.push(Buffer.from(`X-Fill: ${"x".repeat(8192)}\r\nContent-Length: 2\r\n\r\n{}`));
+    expect(errors[0]?.message).toContain("header exceeds");
+  });
 });

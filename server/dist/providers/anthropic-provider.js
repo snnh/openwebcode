@@ -4,9 +4,11 @@ export class AnthropicProvider {
     name;
     client;
     maxTokens;
+    promptCaching;
     constructor(options = {}) {
         this.name = options.name ?? "anthropic";
         this.maxTokens = options.maxTokens ?? 64_000;
+        this.promptCaching = options.promptCaching ?? true;
         this.client = new Anthropic({
             ...(options.apiKey ? { apiKey: options.apiKey } : {}),
             ...(options.baseURL ? { baseURL: options.baseURL } : {}),
@@ -23,6 +25,7 @@ export class AnthropicProvider {
                 system: request.system,
                 messages: toAnthropicMessages(request.messages),
                 tools: request.tools.map(toAnthropicTool),
+                ...(this.promptCaching ? { cache_control: { type: "ephemeral" } } : {}),
             }, { signal: request.signal });
             for await (const event of stream) {
                 streamStarted = true;

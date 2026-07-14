@@ -70,6 +70,7 @@ export class ContextManager {
     }
     async recordUsage(usage) {
         const ledger = await this.load();
+        ledger.usage.inputTokens += usage.inputTokens;
         ledger.usage.outputTokens += usage.outputTokens;
         ledger.usage.cacheRead += usage.cacheRead;
         ledger.usage.cacheWrite += usage.cacheWrite;
