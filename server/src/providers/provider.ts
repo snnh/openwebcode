@@ -17,6 +17,7 @@ export interface StreamChatRequest {
 export type ProviderEvent =
   | { type: "text_delta"; text: string }
   | { type: "thinking_delta"; text: string }
+  | { type: "thinking_end"; text: string; signature?: string }
   | { type: "tool_call"; id: string; name: string; input: Record<string, unknown> }
   | {
       type: "usage";

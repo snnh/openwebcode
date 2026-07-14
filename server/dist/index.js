@@ -5,7 +5,9 @@ import { buildServer } from "./app.js";
 import { loadConfig } from "./config.js";
 import { CoreClient } from "./core-client.js";
 import { EventBus } from "./events/event-bus.js";
+import { AnthropicProvider } from "./providers/anthropic-provider.js";
 import { DevelopmentProvider } from "./providers/development-provider.js";
+import { OpenAICompatibleProvider } from "./providers/openai-compatible-provider.js";
 import { ProviderRegistry } from "./providers/provider.js";
 import { SessionStore } from "./sessions/session-store.js";
 const config = loadConfig();
@@ -18,12 +20,16 @@ const sessions = new SessionStore(path.join(dataDir, "sessions"));
 const providers = new ProviderRegistry();
 const events = new EventBus();
 providers.register(new DevelopmentProvider());
+if (config.anthropic)
+    providers.register(new AnthropicProvider(config.anthropic));
+if (config.openai)
+    providers.register(new OpenAICompatibleProvider(config.openai));
 const agent = new AgentRunner(sessions, providers, core, events);
 core.on("diagnostic", (text) => process.stderr.write(`[owc-exec] ${text}`));
 core.on("error", (error) => console.error("Core error:", error));
 await sessions.initialize();
 await core.start();
-const app = await buildServer({ core, sessions, agent, events });
+const app = await buildServer({ core, sessions, agent, events, providers });
 async function shutdown() {
     await app.close();
     await core.stop();

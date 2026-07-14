@@ -5,6 +5,13 @@ export interface TextContent {
   text: string;
 }
 
+export interface ThinkingContent {
+  type: "thinking";
+  text: string;
+  signature?: string;
+  provider: string;
+}
+
 export interface ToolCallContent {
   type: "tool_call";
   id: string;
@@ -19,7 +26,7 @@ export interface ToolResultContent {
   isError: boolean;
 }
 
-export type MessageContent = TextContent | ToolCallContent | ToolResultContent;
+export type MessageContent = TextContent | ThinkingContent | ToolCallContent | ToolResultContent;
 
 export interface ChatMessage {
   id: string;

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { CoreClient, CoreEvent } from "../core-client.js";
 import type { EventBus } from "../events/event-bus.js";
+import { ContextManager } from "../context/context-manager.js";
 import type { ProviderRegistry, ProviderTool } from "../providers/provider.js";
 import type { MessageContent } from "../sessions/types.js";
 import type { SessionStore } from "../sessions/session-store.js";
@@ -65,6 +66,8 @@ export class AgentRunner {
         controller.signal.throwIfAborted();
         const session = await this.sessions.get(sessionId);
         if (!session) throw new Error("Session not found");
+        const context = new ContextManager(this.sessions.contextRoot(sessionId));
+        const view = await context.buildView(session.messages);
         const provider = this.providers.get(session.provider);
         if (!provider) throw new Error(`Provider ${session.provider} is not configured`);
 
@@ -73,7 +76,7 @@ export class AgentRunner {
         for await (const event of provider.streamChat({
           model: session.model,
           system: `You are OpenWebCode. The workspace is ${session.cwd}.`,
-          messages: session.messages,
+          messages: view.messages,
           tools: [BASH_TOOL],
           signal: controller.signal,
         })) {
@@ -82,9 +85,17 @@ export class AgentRunner {
             this.events.publish({ source: "agent", type: "message.delta", sessionId, payload: { text: event.text } });
           } else if (event.type === "thinking_delta") {
             this.events.publish({ source: "agent", type: "message.thinking_delta", sessionId, payload: { text: event.text } });
+          } else if (event.type === "thinking_end") {
+            assistantContent.push({
+              type: "thinking",
+              text: event.text,
+              ...(event.signature ? { signature: event.signature } : {}),
+              provider: provider.name,
+            });
           } else if (event.type === "tool_call") {
             assistantContent.push({ type: "tool_call", id: event.id, name: event.name, input: event.input });
           } else if (event.type === "usage") {
+            await context.recordUsage(event);
             this.events.publish({ source: "agent", type: "context.usage", sessionId, payload: event });
           } else {
             stopReason = event.stopReason;
@@ -100,6 +111,12 @@ export class AgentRunner {
         for (const call of toolCalls) {
           const result = await this.executeTool(sessionId, call.name, call.id, call.input, controller.signal);
           await this.sessions.appendMessage(sessionId, "tool", [result]);
+        }
+        await context.advanceRound();
+        const afterTools = await this.sessions.get(sessionId);
+        if (afterTools) {
+          await context.evict(afterTools.messages);
+          this.events.publish({ source: "agent", type: "context.evicted", sessionId, payload: (await context.load()).entries });
         }
         this.state(sessionId, "thinking");
       }
