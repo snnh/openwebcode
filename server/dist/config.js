@@ -1,0 +1,17 @@
+function positiveInteger(value, fallback) {
+    if (value === undefined)
+        return fallback;
+    const parsed = Number(value);
+    if (!Number.isSafeInteger(parsed) || parsed < 1) {
+        throw new Error(`Expected a positive integer, received ${value}`);
+    }
+    return parsed;
+}
+export function loadConfig(env = process.env) {
+    return {
+        host: env.OWC_HOST ?? "127.0.0.1",
+        port: positiveInteger(env.OWC_PORT, 3210),
+        corePath: env.OWC_CORE_PATH ?? "../build/Debug/owc-exec.exe",
+        coreRequestTimeoutMs: positiveInteger(env.OWC_CORE_REQUEST_TIMEOUT_MS, 130_000),
+    };
+}
