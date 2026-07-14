@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, rm, writeFile, appendFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, writeFile, appendFile } from "node:fs/promises";
 import path from "node:path";
 export class SessionStore {
     root;
@@ -76,6 +76,9 @@ export class SessionStore {
         await this.writeMeta(meta);
         return message;
     }
+    contextRoot(id) {
+        return this.sessionPath(id);
+    }
     async delete(id) {
         try {
             await rm(this.sessionPath(id), { recursive: true, force: false });
@@ -102,7 +105,10 @@ export class SessionStore {
         return JSON.parse(await readFile(this.metaPath(id), "utf8"));
     }
     async writeMeta(meta) {
-        await writeFile(this.metaPath(meta.id), `${JSON.stringify(meta, null, 2)}\n`, "utf8");
+        const target = this.metaPath(meta.id);
+        const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
+        await writeFile(temporary, `${JSON.stringify(meta, null, 2)}\n`, "utf8");
+        await rename(temporary, target);
     }
 }
 function isMissing(error) {

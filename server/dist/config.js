@@ -14,5 +14,21 @@ export function loadConfig(env = process.env) {
         corePath: env.OWC_CORE_PATH ?? "../build/Debug/owc-exec.exe",
         dataDir: env.OWC_DATA_DIR ?? "../.openwebcode",
         coreRequestTimeoutMs: positiveInteger(env.OWC_CORE_REQUEST_TIMEOUT_MS, 130_000),
+        ...(env.ANTHROPIC_API_KEY || env.ANTHROPIC_BASE_URL
+            ? {
+                anthropic: {
+                    ...(env.ANTHROPIC_API_KEY ? { apiKey: env.ANTHROPIC_API_KEY } : {}),
+                    ...(env.ANTHROPIC_BASE_URL ? { baseURL: env.ANTHROPIC_BASE_URL } : {}),
+                },
+            }
+            : {}),
+        ...(env.OPENAI_BASE_URL
+            ? {
+                openai: {
+                    baseURL: env.OPENAI_BASE_URL,
+                    ...(env.OPENAI_API_KEY ? { apiKey: env.OPENAI_API_KEY } : {}),
+                },
+            }
+            : {}),
     };
 }

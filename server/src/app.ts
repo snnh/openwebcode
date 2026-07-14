@@ -2,7 +2,9 @@ import Fastify, { type FastifyInstance } from "fastify";
 import websocket from "@fastify/websocket";
 import type { AgentRunner } from "./agent/agent-runner.js";
 import { CoreRpcError, type CoreClient, type ExecRequest } from "./core-client.js";
+import { ContextManager } from "./context/context-manager.js";
 import type { AppEvent, EventBus } from "./events/event-bus.js";
+import type { ProviderRegistry } from "./providers/provider.js";
 import type { SessionStore } from "./sessions/session-store.js";
 
 interface CreateSessionBody {
@@ -21,10 +23,11 @@ export interface ServerDependencies {
   sessions: SessionStore;
   agent: AgentRunner;
   events: EventBus;
+  providers: ProviderRegistry;
 }
 
 export async function buildServer(dependencies: ServerDependencies): Promise<FastifyInstance> {
-  const { core, sessions, agent, events } = dependencies;
+  const { core, sessions, agent, events, providers } = dependencies;
   const app = Fastify({ logger: true, bodyLimit: 1024 * 1024 });
   await app.register(websocket);
   const clients = new Set<{ send(data: string): void; readyState: number }>();
@@ -38,13 +41,18 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
 
   app.get("/api/health", async () => ({ status: "ok" }));
   app.get("/api/core", async () => core.ping());
+  app.get("/api/providers", async () => providers.list());
   app.post<{ Body: ExecRequest }>("/api/exec", async (request) => core.run(request.body));
 
   app.post<{ Body: CreateSessionBody }>("/api/sessions", async (request, reply) => {
     if (!request.body || typeof request.body.cwd !== "string" || !request.body.cwd) {
       return reply.code(400).send({ error: "cwd must be a non-empty string" });
     }
-    const session = await sessions.create(request.body);
+    const provider = request.body.provider ?? "development";
+    if (!providers.get(provider)) {
+      return reply.code(400).send({ error: `Provider ${provider} is not configured` });
+    }
+    const session = await sessions.create({ ...request.body, provider });
     events.publish({ source: "session", type: "session.created", sessionId: session.id, payload: session });
     return reply.code(201).send(session);
   });
@@ -55,6 +63,31 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     const session = await sessions.get(request.params.id);
     if (!session) return reply.code(404).send({ error: "Session not found" });
     return session;
+  });
+
+  app.get<{ Params: { id: string } }>("/api/sessions/:id/context", async (request, reply) => {
+    const session = await sessions.get(request.params.id);
+    if (!session) return reply.code(404).send({ error: "Session not found" });
+    const manager = new ContextManager(sessions.contextRoot(request.params.id));
+    return manager.buildView(session.messages);
+  });
+
+  app.post<{ Params: { id: string }; Body: { messageId: string } }>("/api/sessions/:id/context/restore", async (request, reply) => {
+    if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
+    if (agent.isRunning(request.params.id)) {
+      return reply.code(409).send({ error: "Session is running; restore context when it is idle" });
+    }
+    if (!request.body || typeof request.body.messageId !== "string" || !request.body.messageId) {
+      return reply.code(400).send({ error: "messageId must be a non-empty string" });
+    }
+    const manager = new ContextManager(sessions.contextRoot(request.params.id));
+    try {
+      const ledger = await manager.restore(request.body.messageId);
+      events.publish({ source: "session", type: "context.restored", sessionId: request.params.id, payload: { messageId: request.body.messageId } });
+      return ledger;
+    } catch (error) {
+      return reply.code(409).send({ error: error instanceof Error ? error.message : String(error) });
+    }
   });
 
   app.delete<{ Params: { id: string } }>("/api/sessions/:id", async (request, reply) => {
