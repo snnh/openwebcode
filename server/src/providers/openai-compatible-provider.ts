@@ -1,4 +1,5 @@
 import type { ChatMessage } from "../sessions/types.js";
+import { classifyHttpError, normalizeProviderError, parseRetryAfter } from "./provider-error.js";
 import type { Provider, ProviderEvent, StreamChatRequest } from "./provider.js";
 
 export interface OpenAICompatibleProviderOptions {
@@ -27,7 +28,9 @@ export class OpenAICompatibleProvider implements Provider {
   }
 
   async *streamChat(request: StreamChatRequest): AsyncIterable<ProviderEvent> {
-    const response = await this.fetch(`${this.options.baseURL.replace(/\/$/, "")}/chat/completions`, {
+    let response: Response;
+    try {
+      response = await this.fetch(`${this.options.baseURL.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -48,41 +51,54 @@ export class OpenAICompatibleProvider implements Provider {
           },
         })),
       }),
-      signal: request.signal,
-    });
+        signal: request.signal,
+      });
+    } catch (error) {
+      throw normalizeProviderError(error);
+    }
     if (!response.ok || !response.body) {
       const detail = await response.text();
-      throw new Error(`OpenAI-compatible provider returned ${response.status}: ${detail}`);
+      throw classifyHttpError(
+        response.status,
+        `OpenAI-compatible provider returned ${response.status}: ${detail}`,
+        parseRetryAfter(response.headers.get("retry-after")),
+      );
     }
 
     const tools = new Map<number, ToolAccumulator>();
     let stopReason: string | null = null;
-    for await (const data of readSseData(response.body)) {
-      if (data === "[DONE]") break;
-      const chunk = JSON.parse(data) as OpenAIChunk;
-      if (chunk.usage) {
-        yield {
-          type: "usage",
-          inputTokens: chunk.usage.prompt_tokens,
-          outputTokens: chunk.usage.completion_tokens,
-          cacheRead: chunk.usage.prompt_tokens_details?.cached_tokens ?? 0,
-          cacheWrite: 0,
-        };
-      }
-      for (const choice of chunk.choices ?? []) {
-        stopReason = choice.finish_reason ?? stopReason;
-        if (choice.delta.content) yield { type: "text_delta", text: choice.delta.content };
-        if (choice.delta.reasoning_content) {
-          yield { type: "thinking_delta", text: choice.delta.reasoning_content };
+    let streamStarted = false;
+    try {
+      for await (const data of readSseData(response.body)) {
+        streamStarted = true;
+        if (data === "[DONE]") break;
+        const chunk = JSON.parse(data) as OpenAIChunk;
+        if (chunk.usage) {
+          yield {
+            type: "usage",
+            inputTokens: chunk.usage.prompt_tokens,
+            outputTokens: chunk.usage.completion_tokens,
+            cacheRead: chunk.usage.prompt_tokens_details?.cached_tokens ?? 0,
+            cacheWrite: 0,
+          };
         }
-        for (const call of choice.delta.tool_calls ?? []) {
-          const current = tools.get(call.index) ?? { id: "", name: "", arguments: "" };
-          if (call.id) current.id = call.id;
-          if (call.function?.name) current.name += call.function.name;
-          if (call.function?.arguments) current.arguments += call.function.arguments;
-          tools.set(call.index, current);
+        for (const choice of chunk.choices ?? []) {
+          stopReason = choice.finish_reason ?? stopReason;
+          if (choice.delta.content) yield { type: "text_delta", text: choice.delta.content };
+          if (choice.delta.reasoning_content) {
+            yield { type: "thinking_delta", text: choice.delta.reasoning_content };
+          }
+          for (const call of choice.delta.tool_calls ?? []) {
+            const current = tools.get(call.index) ?? { id: "", name: "", arguments: "" };
+            if (call.id) current.id = call.id;
+            if (call.function?.name) current.name += call.function.name;
+            if (call.function?.arguments) current.arguments += call.function.arguments;
+            tools.set(call.index, current);
+          }
         }
       }
+    } catch (error) {
+      throw normalizeProviderError(error, streamStarted);
     }
 
     for (const call of [...tools.entries()].sort(([a], [b]) => a - b).map(([, call]) => call)) {
