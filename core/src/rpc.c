@@ -71,27 +71,33 @@ static char *base64_encode(const unsigned char *data, size_t length) {
 
 static char *id_json(const owc_json *id) {
     char number[64],*copy;
-    if(!id) { copy=(char *)malloc(5); if(copy) (void)strcpy(copy,"null"); return copy; }
+    if(!id || id->type==OWC_JSON_NULL) { copy=(char *)malloc(5); if(copy) (void)strcpy(copy,"null"); return copy; }
     if(id->type==OWC_JSON_STRING) return owc_json_escape_string(id->value.string);
     if(id->type==OWC_JSON_NUMBER) { (void)snprintf(number,sizeof(number),"%.17g",id->value.number); copy=(char *)malloc(strlen(number)+1); if(copy) (void)strcpy(copy,number); return copy; }
     return NULL;
 }
 
 static int reply_error(owc_rpc *rpc, const owc_json *id, int code, const char *message) {
-    char *id_text=id_json(id),*escaped=owc_json_escape_string(message); int ok=0;
+    char *id_text,*escaped; int ok=0;
+    if(rpc->suppress_responses) return 1;
+    id_text=id_json(id); escaped=owc_json_escape_string(message);
     if(id_text && escaped) ok=write_format(rpc,"{\"jsonrpc\":\"2.0\",\"id\":%s,\"error\":{\"code\":%d,\"message\":%s}}",id_text,code,escaped);
     free(id_text); free(escaped); return ok;
 }
 
 static int reply_result(owc_rpc *rpc, const owc_json *id, const char *result) {
-    char *id_text=id_json(id); int ok=0;
+    char *id_text; int ok=0;
+    if(rpc->suppress_responses) return 1;
+    id_text=id_json(id);
     if(id_text) ok=write_format(rpc,"{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":%s}",id_text,result);
     free(id_text); return ok;
 }
 
 typedef struct { owc_rpc *rpc; const char *exec_id; } output_context;
 static void output_notification(void *user_data,const char *stream,const unsigned char *data,size_t length,unsigned sequence) {
-    output_context *context=(output_context *)user_data; char *encoded=base64_encode(data,length),*id=owc_json_escape_string(context->exec_id);
+    output_context *context=(output_context *)user_data; char *encoded,*id;
+    if(context->rpc->suppress_responses) return;
+    encoded=base64_encode(data,length); id=owc_json_escape_string(context->exec_id);
     if(encoded && id) (void)write_format(context->rpc,"{\"jsonrpc\":\"2.0\",\"method\":\"exec.output\",\"params\":{\"execId\":%s,\"stream\":\"%s\",\"data\":\"%s\",\"seq\":%u}}",id,stream,encoded,sequence);
     free(encoded); free(id);
 }
@@ -119,11 +125,10 @@ static int handle_exec_run(owc_rpc *rpc,const owc_json *id,const owc_json *param
     if(!owc_exec_run(&request,&result)) return reply_error(rpc,id,-32000,"failed to start or monitor command");
     if(result.timed_out) return reply_error(rpc,id,-32001,"command timed out");
     {
-        char *id_text=id_json(id); int ok;
-        if(!id_text) return 0;
-        ok=write_format(rpc,"{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"exitCode\":%d,\"durationMs\":%lld,\"truncated\":%s}}",
-            id_text,result.exit_code,result.duration_ms,result.truncated?"true":"false");
-        free(id_text); return ok;
+        char result_text[256];
+        (void)snprintf(result_text,sizeof(result_text),"{\"exitCode\":%d,\"durationMs\":%lld,\"truncated\":%s}",
+            result.exit_code,result.duration_ms,result.truncated?"true":"false");
+        return reply_result(rpc,id,result_text);
     }
 }
 
@@ -133,7 +138,9 @@ int owc_rpc_dispatch(owc_rpc *rpc, const char *body, size_t length) {
     (void)error_at;
     if(!root) return reply_error(rpc,NULL,-32700,"parse error");
     id=owc_json_object_get(root,"id"); version=owc_json_get_string(owc_json_object_get(root,"jsonrpc")); method=owc_json_get_string(owc_json_object_get(root,"method")); params=owc_json_object_get(root,"params");
-    if(!version || strcmp(version,"2.0")!=0 || !method || (id && id->type!=OWC_JSON_STRING && id->type!=OWC_JSON_NUMBER)) { int ok=reply_error(rpc,id,-32600,"invalid request"); owc_json_free(root); return ok; }
+    rpc->suppress_responses=0;
+    if(!version || strcmp(version,"2.0")!=0 || !method || (id && id->type!=OWC_JSON_NULL && id->type!=OWC_JSON_STRING && id->type!=OWC_JSON_NUMBER)) { int ok=reply_error(rpc,id,-32600,"invalid request"); owc_json_free(root); return ok; }
+    rpc->suppress_responses=id==NULL;
     if(strcmp(method,"core.ping")==0) {
 #ifdef _WIN32
         const char *platform="windows";
@@ -145,5 +152,5 @@ int owc_rpc_dispatch(owc_rpc *rpc, const char *body, size_t length) {
     } else if(strcmp(method,"core.shutdown")==0) { (void)reply_result(rpc,id,"{\"ok\":true}"); rpc->shutting_down=1; }
     else if(strcmp(method,"exec.run")==0) (void)handle_exec_run(rpc,id,params);
     else (void)reply_error(rpc,id,-32601,"method not found");
-    owc_json_free(root); return 1;
+    rpc->suppress_responses=0; owc_json_free(root); return 1;
 }
