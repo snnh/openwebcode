@@ -12,6 +12,7 @@ export interface ContextPolicy {
   interval: number;
   pinExemptRounds: number;
   restoreBudget: number;
+  maxSessionTokens?: number;
 }
 
 export interface LedgerEntry {
@@ -89,9 +90,26 @@ export class ContextManager {
     return { messages: view, ledger };
   }
 
+  async budgetStatus(): Promise<{ limit?: number; used: number; paused: boolean }> {
+    const ledger = await this.load();
+    const used = ledger.usage.inputTokens + ledger.usage.outputTokens;
+    const limit = ledger.policy.maxSessionTokens;
+    return { ...(limit === undefined ? {} : { limit }), used, paused: limit !== undefined && used >= limit };
+  }
+
+  async setTokenBudget(maxSessionTokens: number | undefined): Promise<ContextLedger> {
+    const ledger = await this.load();
+    if (maxSessionTokens !== undefined && (!Number.isSafeInteger(maxSessionTokens) || maxSessionTokens < 1)) {
+      throw new Error("maxSessionTokens must be a positive integer");
+    }
+    if (maxSessionTokens === undefined) delete ledger.policy.maxSessionTokens;
+    else ledger.policy.maxSessionTokens = maxSessionTokens;
+    await this.save(ledger);
+    return ledger;
+  }
+
   async recordUsage(usage: { inputTokens: number; outputTokens: number; cacheRead: number; cacheWrite: number }): Promise<ContextLedger> {
     const ledger = await this.load();
-    ledger.usage.inputTokens += usage.inputTokens;
     ledger.usage.outputTokens += usage.outputTokens;
     ledger.usage.cacheRead += usage.cacheRead;
     ledger.usage.cacheWrite += usage.cacheWrite;

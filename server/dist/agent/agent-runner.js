@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { ContextManager } from "../context/context-manager.js";
 import { boundToolResult } from "../context/tool-result-budget.js";
 import { estimateTokens, getModelProfile } from "../context/model-profile.js";
+import { collectProviderTurn } from "../providers/retry.js";
 const BASH_TOOL = {
     name: "bash",
     description: "Execute a shell command in the session workspace. Call this when command-line execution is required.",
@@ -34,6 +35,7 @@ export class AgentRunner {
     events;
     maxTurns;
     running = new Map();
+    repeatedCalls = new Map();
     constructor(sessions, providers, core, events, maxTurns = 50) {
         this.sessions = sessions;
         this.providers = providers;
@@ -72,6 +74,12 @@ export class AgentRunner {
                 if (!session)
                     throw new Error("Session not found");
                 const context = new ContextManager(this.sessions.contextRoot(sessionId));
+                const budget = await context.budgetStatus();
+                if (budget.paused) {
+                    this.state(sessionId, "budget_paused");
+                    this.events.publish({ source: "agent", type: "agent.budget_paused", sessionId, payload: budget });
+                    return;
+                }
                 const view = await context.buildView(session.messages);
                 const profile = getModelProfile(session.model);
                 const estimatedTokens = estimateTokens(JSON.stringify(view.messages));
@@ -81,15 +89,26 @@ export class AgentRunner {
                 const provider = this.providers.get(session.provider);
                 if (!provider)
                     throw new Error(`Provider ${session.provider} is not configured`);
-                const assistantContent = [];
-                let stopReason;
-                for await (const event of provider.streamChat({
+                const turn = await collectProviderTurn(provider, {
                     model: session.model,
                     system: `You are OpenWebCode. The workspace is ${session.cwd}.`,
                     messages: view.messages,
                     tools: TOOLS,
                     signal: controller.signal,
-                })) {
+                }, {
+                    onRetry: ({ attemptId, attempt, delayMs, error }) => {
+                        this.events.publish({
+                            source: "agent",
+                            type: "provider.retry",
+                            sessionId,
+                            payload: { attemptId, attempt, delayMs, kind: error.kind, message: error.message },
+                        });
+                    },
+                });
+                this.events.publish({ source: "agent", type: "message.attempt", sessionId, payload: { attemptId: turn.attemptId } });
+                const assistantContent = [];
+                let stopReason;
+                for (const event of turn.events) {
                     if (event.type === "text_delta") {
                         assistantContent.push({ type: "text", text: event.text });
                         this.events.publish({ source: "agent", type: "message.delta", sessionId, payload: { text: event.text } });
@@ -125,6 +144,13 @@ export class AgentRunner {
                 if (toolCalls.length === 0)
                     throw new Error("Provider stopped for tool use without a tool call");
                 for (const call of toolCalls) {
+                    const repeated = this.recordToolCall(sessionId, call.name, call.input);
+                    if (repeated >= 3) {
+                        const content = `Tool call blocked: ${call.name} was requested with identical arguments ${repeated} consecutive times.`;
+                        this.events.publish({ source: "agent", type: "tool.repeated", sessionId, payload: { name: call.name, input: call.input, count: repeated } });
+                        await this.sessions.appendMessage(sessionId, "tool", [{ type: "tool_result", toolCallId: call.id, content, isError: true }]);
+                        continue;
+                    }
                     const result = await this.executeTool(sessionId, call.name, call.id, call.input, controller.signal);
                     await this.sessions.appendMessage(sessionId, "tool", [result]);
                 }
@@ -139,12 +165,23 @@ export class AgentRunner {
             throw new Error(`Agent exceeded ${this.maxTurns} turns`);
         }
         catch (error) {
+            if (controller.signal.aborted) {
+                this.events.publish({
+                    source: "agent",
+                    type: "agent.aborted",
+                    sessionId,
+                    payload: { message: "Agent run aborted" },
+                });
+                this.state(sessionId, "aborted");
+                throw error;
+            }
             const message = error instanceof Error ? error.message : String(error);
             this.events.publish({ source: "agent", type: "agent.error", sessionId, payload: { message } });
             throw error;
         }
         finally {
             this.running.delete(sessionId);
+            this.repeatedCalls.delete(sessionId);
             this.state(sessionId, "idle");
         }
     }
@@ -199,6 +236,8 @@ export class AgentRunner {
             return { type: "tool_result", toolCallId, content, isError: false };
         }
         catch (error) {
+            if (signal.aborted)
+                throw error;
             const content = error instanceof Error ? error.message : String(error);
             this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
             return { type: "tool_result", toolCallId, content, isError: true };
@@ -207,8 +246,26 @@ export class AgentRunner {
             this.executions.delete(execId);
         }
     }
+    recordToolCall(sessionId, name, input) {
+        const signature = `${name}:${stableStringify(input)}`;
+        const previous = this.repeatedCalls.get(sessionId);
+        const count = previous?.signature === signature ? previous.count + 1 : 1;
+        this.repeatedCalls.set(sessionId, { signature, count });
+        return count;
+    }
     executions = new Map();
     state(sessionId, state) {
         this.events.publish({ source: "agent", type: "agent.state", sessionId, payload: { state } });
     }
+}
+function stableStringify(value) {
+    if (Array.isArray(value))
+        return `[${value.map(stableStringify).join(",")}]`;
+    if (value && typeof value === "object") {
+        return `{${Object.entries(value)
+            .sort(([left], [right]) => left.localeCompare(right))
+            .map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`)
+            .join(",")}}`;
+    }
+    return JSON.stringify(value);
 }

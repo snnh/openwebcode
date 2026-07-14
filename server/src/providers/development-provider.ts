@@ -21,12 +21,14 @@ export class DevelopmentProvider implements Provider {
     const artifact = text?.type === "text" ? parseArtifact(text.text) : undefined;
     if (artifact) {
       yield { type: "tool_call", id: `dev-artifact-${request.messages.length}`, name: "read_artifact", input: artifact };
+      yield { type: "usage", inputTokens: 1, outputTokens: 1, cacheRead: 0, cacheWrite: 0 };
       yield { type: "done", stopReason: "tool_use" };
       return;
     }
     const command = text?.type === "text" ? parseCommand(text.text) : undefined;
     if (!command) {
       yield { type: "text_delta", text: "Development provider is ready. Prefix a message with `run: ` to execute a command." };
+      yield { type: "usage", inputTokens: 1, outputTokens: 1, cacheRead: 0, cacheWrite: 0 };
       yield { type: "done", stopReason: "end_turn" };
       return;
     }
@@ -37,6 +39,7 @@ export class DevelopmentProvider implements Provider {
       name: "bash",
       input: { cmd: command },
     };
+    yield { type: "usage", inputTokens: 1, outputTokens: 1, cacheRead: 0, cacheWrite: 0 };
     yield { type: "done", stopReason: "tool_use" };
   }
 }

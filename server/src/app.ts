@@ -72,6 +72,20 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     return manager.buildView(session.messages);
   });
 
+  app.put<{ Params: { id: string }; Body: { maxSessionTokens?: number | null } }>("/api/sessions/:id/context/budget", async (request, reply) => {
+    if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
+    if (agent.isRunning(request.params.id)) {
+      return reply.code(409).send({ error: "Session is running; update its budget when it is idle" });
+    }
+    const value = request.body?.maxSessionTokens;
+    if (value !== null && value !== undefined && (!Number.isSafeInteger(value) || value < 1)) {
+      return reply.code(400).send({ error: "maxSessionTokens must be a positive integer or null" });
+    }
+    const manager = new ContextManager(sessions.contextRoot(request.params.id));
+    const ledger = await manager.setTokenBudget(value ?? undefined);
+    events.publish({ source: "session", type: "context.budget_updated", sessionId: request.params.id, payload: await manager.budgetStatus() });
+    return ledger;
+  });
   app.post<{ Params: { id: string }; Body: { messageId: string } }>("/api/sessions/:id/context/restore", async (request, reply) => {
     if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
     if (agent.isRunning(request.params.id)) {
@@ -107,6 +121,10 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
       if (agent.isRunning(request.params.id)) {
         return reply.code(409).send({ error: "Session agent is already running" });
+      }
+      const budget = await new ContextManager(sessions.contextRoot(request.params.id)).budgetStatus();
+      if (budget.paused) {
+        return reply.code(409).send({ error: "Session token budget is exhausted", budget });
       }
       void agent.run(request.params.id, request.body.content).catch(() => undefined);
       return reply.code(202).send({ accepted: true });
