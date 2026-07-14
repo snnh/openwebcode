@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import type { CoreClient, CoreEvent } from "../core-client.js";
 import type { EventBus } from "../events/event-bus.js";
 import { ContextManager } from "../context/context-manager.js";
+import { boundToolResult } from "../context/tool-result-budget.js";
+import { estimateTokens, getModelProfile } from "../context/model-profile.js";
 import type { ProviderRegistry, ProviderTool } from "../providers/provider.js";
 import type { MessageContent } from "../sessions/types.js";
 import type { SessionStore } from "../sessions/session-store.js";
@@ -21,6 +23,23 @@ const BASH_TOOL: ProviderTool = {
     additionalProperties: false,
   },
 };
+
+const READ_ARTIFACT_TOOL: ProviderTool = {
+  name: "read_artifact",
+  description: "Read a bounded slice of a tool-output artifact when an evicted or truncated result points to an artifact ID.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      artifactId: { type: "string" },
+      offset: { type: "integer" },
+      limit: { type: "integer" },
+    },
+    required: ["artifactId", "offset", "limit"],
+    additionalProperties: false,
+  },
+};
+
+const TOOLS = [BASH_TOOL, READ_ARTIFACT_TOOL];
 
 export class AgentRunner {
   private readonly running = new Map<string, AbortController>();
@@ -68,6 +87,11 @@ export class AgentRunner {
         if (!session) throw new Error("Session not found");
         const context = new ContextManager(this.sessions.contextRoot(sessionId));
         const view = await context.buildView(session.messages);
+        const profile = getModelProfile(session.model);
+        const estimatedTokens = estimateTokens(JSON.stringify(view.messages));
+        const workingBudget = Math.max(1, profile.contextWindow - profile.maxOutput);
+        const utilization = estimatedTokens / workingBudget;
+        this.events.publish({ source: "agent", type: "context.watermark", sessionId, payload: { estimatedTokens, contextWindow: profile.contextWindow, maxOutput: profile.maxOutput, workingBudget, utilization, warning: utilization >= 0.85 ? "force_compact" : utilization >= 0.7 ? "compact_recommended" : undefined } });
         const provider = this.providers.get(session.provider);
         if (!provider) throw new Error(`Provider ${session.provider} is not configured`);
 
@@ -77,7 +101,7 @@ export class AgentRunner {
           model: session.model,
           system: `You are OpenWebCode. The workspace is ${session.cwd}.`,
           messages: view.messages,
-          tools: [BASH_TOOL],
+          tools: TOOLS,
           signal: controller.signal,
         })) {
           if (event.type === "text_delta") {
@@ -149,6 +173,21 @@ export class AgentRunner {
     input: Record<string, unknown>,
     signal: AbortSignal,
   ): Promise<MessageContent & { type: "tool_result" }> {
+    if (name === "read_artifact") {
+      try {
+        const session = await this.sessions.get(sessionId);
+        if (!session) throw new Error("Session not found");
+        const manager = new ContextManager(this.sessions.contextRoot(sessionId));
+        const content = await manager.readArtifact(
+          String(input.artifactId),
+          Number(input.offset),
+          Number(input.limit),
+        );
+        return { type: "tool_result", toolCallId, content, isError: false };
+      } catch (error) {
+        return { type: "tool_result", toolCallId, content: error instanceof Error ? error.message : String(error), isError: true };
+      }
+    }
     if (name !== "bash" || typeof input.cmd !== "string" || !input.cmd) {
       return { type: "tool_result", toolCallId, content: `Unsupported or invalid tool call: ${name}`, isError: true };
     }
@@ -168,8 +207,10 @@ export class AgentRunner {
           stream: chunk.stream,
           data: Buffer.from(chunk.data, "base64").toString("utf8"),
         }));
-      const content = JSON.stringify({ ...result, output });
-      this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result } });
+      const rawContent = JSON.stringify({ ...result, output });
+      const bounded = await boundToolResult(this.sessions.contextRoot(sessionId), name, rawContent);
+      const content = bounded.content;
+      this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result, truncated: bounded.truncated, ...(bounded.artifactId ? { artifactId: bounded.artifactId } : {}) } });
       return { type: "tool_result", toolCallId, content, isError: false };
     } catch (error) {
       const content = error instanceof Error ? error.message : String(error);

@@ -95,6 +95,23 @@ export class ContextManager {
         await this.save(ledger);
         return ledger;
     }
+    async readArtifact(artifactId, offset, limit) {
+        if (!/^artifact-[0-9a-f-]{36}$/.test(artifactId))
+            throw new Error("Invalid artifact ID");
+        if (!Number.isSafeInteger(offset) || offset < 0)
+            throw new Error("offset must be a non-negative integer");
+        if (!Number.isSafeInteger(limit) || limit < 1 || limit > 64_000)
+            throw new Error("limit must be between 1 and 64000");
+        try {
+            const content = await readFile(path.join(this.sessionRoot, "artifacts", `${artifactId}.txt`), "utf8");
+            return content.slice(offset, offset + limit);
+        }
+        catch (error) {
+            if (isMissing(error))
+                throw new Error("Artifact not found");
+            throw error;
+        }
+    }
     async restore(messageId) {
         const ledger = await this.load();
         const entry = ledger.entries.find((candidate) => candidate.messageId === messageId);
