@@ -28,6 +28,7 @@ export class FrameDecoder extends EventEmitter {
       if (this.buffer.length > 8192) this.fail(new Error("RPC header exceeds 8 KiB"));
       return false;
     }
+    if (separator > 8192) return this.fail(new Error("RPC header exceeds 8 KiB"));
 
     const headerText = this.buffer.subarray(0, separator).toString("ascii");
     const lines = headerText.split("\r\n");

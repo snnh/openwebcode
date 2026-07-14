@@ -20,6 +20,7 @@ export class StdioTransport extends StreamTransport {
         this.process = process;
         process.stdout.on("data", (chunk) => this.receive(chunk));
         process.stderr.on("data", (chunk) => this.emit("diagnostic", chunk.toString("utf8")));
+        process.stdin.on("error", (error) => this.emit("error", error));
         process.on("error", (error) => this.emit("error", error));
         process.on("exit", (code, signal) => this.emit("close", { code, signal }));
     }

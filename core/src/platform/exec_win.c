@@ -33,16 +33,20 @@ static void drain_pipe(HANDLE pipe, const char *stream, const owc_exec_request *
 
 int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *result) {
     SECURITY_ATTRIBUTES security={sizeof(security),NULL,TRUE};
-    HANDLE out_read=NULL,out_write=NULL,err_read=NULL,err_write=NULL,job=NULL;
-    PROCESS_INFORMATION process={0}; STARTUPINFOW startup={0};
+    HANDLE out_read=NULL,out_write=NULL,err_read=NULL,err_write=NULL,input=NULL,job=NULL;
+    HANDLE inherited[3];
+    PROCESS_INFORMATION process={0}; STARTUPINFOEXW startup={0};
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits={0};
+    LPPROC_THREAD_ATTRIBUTE_LIST attributes=NULL;
+    SIZE_T attribute_size=0;
     wchar_t *cwd=NULL,*command=NULL; char *full_command=NULL;
     ULONGLONG started=GetTickCount64(); size_t forwarded=0; unsigned sequence=0;
     DWORD wait_result,exit_code=1; int ok=0;
 
     if(!CreatePipe(&out_read,&out_write,&security,0) || !CreatePipe(&err_read,&err_write,&security,0)) goto cleanup;
-    (void)SetHandleInformation(out_read,HANDLE_FLAG_INHERIT,0);
-    (void)SetHandleInformation(err_read,HANDLE_FLAG_INHERIT,0);
+    if(!SetHandleInformation(out_read,HANDLE_FLAG_INHERIT,0) || !SetHandleInformation(err_read,HANDLE_FLAG_INHERIT,0)) goto cleanup;
+    input=CreateFileW(L"NUL",GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE,&security,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,NULL);
+    if(input==INVALID_HANDLE_VALUE) { input=NULL; goto cleanup; }
     cwd=utf8_to_wide(request->cwd);
     {
         int command_length=snprintf(NULL,0,"cmd.exe /d /s /c \"%s\"",request->command);
@@ -54,16 +58,22 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
     if(!cwd) goto cleanup;
     command=utf8_to_wide(full_command); if(!command) goto cleanup;
 
-    startup.cb=sizeof(startup); startup.dwFlags=STARTF_USESTDHANDLES;
-    startup.hStdOutput=out_write; startup.hStdError=err_write; startup.hStdInput=GetStdHandle(STD_INPUT_HANDLE);
-    if(!CreateProcessW(NULL,command,NULL,NULL,TRUE,CREATE_NO_WINDOW|CREATE_SUSPENDED,NULL,cwd,&startup,&process)) goto cleanup;
-    job=CreateJobObjectW(NULL,NULL);
-    if(job) {
-        limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        if(!SetInformationJobObject(job,JobObjectExtendedLimitInformation,&limits,sizeof(limits)) || !AssignProcessToJobObject(job,process.hProcess)) { CloseHandle(job); job=NULL; }
-    }
+    startup.StartupInfo.cb=sizeof(startup); startup.StartupInfo.dwFlags=STARTF_USESTDHANDLES;
+    startup.StartupInfo.hStdOutput=out_write; startup.StartupInfo.hStdError=err_write; startup.StartupInfo.hStdInput=input;
+    inherited[0]=out_write; inherited[1]=err_write; inherited[2]=input;
+    (void)InitializeProcThreadAttributeList(NULL,1,0,&attribute_size);
+    if(!attribute_size) goto cleanup;
+    attributes=(LPPROC_THREAD_ATTRIBUTE_LIST)malloc(attribute_size); if(!attributes) goto cleanup;
+    if(!InitializeProcThreadAttributeList(attributes,1,0,&attribute_size)) goto cleanup;
+    startup.lpAttributeList=attributes;
+    if(!UpdateProcThreadAttribute(attributes,0,PROC_THREAD_ATTRIBUTE_HANDLE_LIST,inherited,sizeof(inherited),NULL,NULL)) goto cleanup;
+
+    if(!CreateProcessW(NULL,command,NULL,NULL,TRUE,CREATE_NO_WINDOW|CREATE_SUSPENDED|EXTENDED_STARTUPINFO_PRESENT,NULL,cwd,&startup.StartupInfo,&process)) goto cleanup;
+    job=CreateJobObjectW(NULL,NULL); if(!job) goto cleanup;
+    limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if(!SetInformationJobObject(job,JobObjectExtendedLimitInformation,&limits,sizeof(limits)) || !AssignProcessToJobObject(job,process.hProcess)) goto cleanup;
     if(ResumeThread(process.hThread)==(DWORD)-1) goto cleanup;
-    CloseHandle(out_write); out_write=NULL; CloseHandle(err_write); err_write=NULL;
+    CloseHandle(out_write); out_write=NULL; CloseHandle(err_write); err_write=NULL; CloseHandle(input); input=NULL;
 
     for(;;) {
         drain_pipe(out_read,"stdout",request,result,&forwarded,&sequence);
@@ -72,7 +82,7 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
         if(wait_result==WAIT_OBJECT_0) break;
         if(wait_result==WAIT_FAILED) goto cleanup;
         if(GetTickCount64()-started>=(ULONGLONG)request->timeout_ms) {
-            if(job) (void)TerminateJobObject(job,1); else (void)TerminateProcess(process.hProcess,1);
+            (void)TerminateJobObject(job,1);
             result->timed_out=1; (void)WaitForSingleObject(process.hProcess,2000); break;
         }
     }
@@ -90,6 +100,7 @@ cleanup:
     }
     if(process.hThread) CloseHandle(process.hThread); if(process.hProcess) CloseHandle(process.hProcess);
     if(job) CloseHandle(job); if(out_read) CloseHandle(out_read); if(out_write) CloseHandle(out_write);
-    if(err_read) CloseHandle(err_read); if(err_write) CloseHandle(err_write);
+    if(err_read) CloseHandle(err_read); if(err_write) CloseHandle(err_write); if(input) CloseHandle(input);
+    if(attributes) DeleteProcThreadAttributeList(attributes); free(attributes);
     free(cwd); free(command); free(full_command); return ok;
 }

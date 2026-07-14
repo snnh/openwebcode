@@ -6,7 +6,7 @@
 
 #define OWC_RPC_MAX_MESSAGE (16u * 1024u * 1024u)
 
-typedef struct { FILE *input; FILE *output; int shutting_down; } owc_rpc;
+typedef struct { FILE *input; FILE *output; int shutting_down; int suppress_responses; } owc_rpc;
 
 int owc_rpc_read(owc_rpc *rpc, char **body, size_t *length);
 int owc_rpc_write(owc_rpc *rpc, const char *body, size_t length);

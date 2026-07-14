@@ -50,6 +50,18 @@ def main():
         assert response["result"]["version"] == "0.1.0"
         assert response["result"]["sandboxCapability"] == "advisory"
 
+        request(proc, None, "core.ping")
+        response, notes = collect_until_response(proc, None)
+        assert not notes
+        assert response["id"] is None
+        assert response["result"]["version"] == "0.1.0"
+
+        send(proc, {"jsonrpc": "2.0", "method": "core.ping", "params": {}})
+        request(proc, "after-notification", "core.ping")
+        response, notes = collect_until_response(proc, "after-notification")
+        assert not notes
+        assert response["result"]["version"] == "0.1.0"
+
         request(proc, 2, "missing.method")
         response, _ = collect_until_response(proc, 2)
         assert response["error"]["code"] == -32601

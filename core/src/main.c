@@ -9,7 +9,7 @@
 #endif
 
 int main(void) {
-    owc_rpc rpc={stdin,stdout,0};
+    owc_rpc rpc={stdin,stdout,0,0};
 #ifdef _WIN32
     if(_setmode(_fileno(stdin),_O_BINARY)==-1 || _setmode(_fileno(stdout),_O_BINARY)==-1) return 1;
 #endif

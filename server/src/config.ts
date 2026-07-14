@@ -4,7 +4,7 @@ export interface ServerConfig {
   corePath: string;
   dataDir: string;
   coreRequestTimeoutMs: number;
-  anthropic?: { apiKey?: string; baseURL?: string };
+  anthropic?: { apiKey?: string; baseURL?: string; promptCaching?: boolean };
   openai?: { apiKey?: string; baseURL: string };
 }
 
@@ -15,6 +15,13 @@ function positiveInteger(value: string | undefined, fallback: number): number {
     throw new Error(`Expected a positive integer, received ${value}`);
   }
   return parsed;
+}
+
+function booleanWithDefault(value: string | undefined, fallback: boolean): boolean {
+  if (value === undefined) return fallback;
+  if (value === "true" || value === "1") return true;
+  if (value === "false" || value === "0") return false;
+  throw new Error(`Expected a boolean, received ${value}`);
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
@@ -29,6 +36,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
           anthropic: {
             ...(env.ANTHROPIC_API_KEY ? { apiKey: env.ANTHROPIC_API_KEY } : {}),
             ...(env.ANTHROPIC_BASE_URL ? { baseURL: env.ANTHROPIC_BASE_URL } : {}),
+            promptCaching: booleanWithDefault(env.ANTHROPIC_PROMPT_CACHING, true),
           },
         }
       : {}),
