@@ -1,0 +1,130 @@
+'use strict'
+
+const { test } = require('node:test')
+const fjs = require('..')
+
+const Ajv = require('ajv').default
+const Validator = require('../lib/validator')
+const Serializer = require('../lib/serializer')
+
+function build (opts) {
+  return fjs({
+    title: 'default string',
+    type: 'object',
+    properties: {
+      firstName: {
+        type: 'string'
+      }
+    },
+    required: ['firstName']
+  }, opts)
+}
+
+test('activate debug mode', t => {
+  t.plan(5)
+  const debugMode = build({ mode: 'debug' })
+
+  t.assert.ok(typeof debugMode === 'object')
+  t.assert.ok(debugMode.ajv instanceof Ajv)
+  t.assert.ok(debugMode.validator instanceof Validator)
+  t.assert.ok(debugMode.serializer instanceof Serializer)
+  t.assert.ok(typeof debugMode.code === 'string')
+})
+
+test('to string auto-consistent', t => {
+  t.plan(6)
+  const debugMode = build({ mode: 'debug' })
+
+  t.assert.ok(typeof debugMode === 'object')
+  t.assert.ok(typeof debugMode.code === 'string')
+  t.assert.ok(debugMode.ajv instanceof Ajv)
+  t.assert.ok(debugMode.serializer instanceof Serializer)
+  t.assert.ok(debugMode.validator instanceof Validator)
+
+  const compiled = fjs.restore(debugMode)
+  const tobe = JSON.stringify({ firstName: 'Foo' })
+  t.assert.equal(compiled({ firstName: 'Foo', surname: 'bar' }), tobe, 'surname evicted')
+})
+
+test('to string auto-consistent with ajv', t => {
+  t.plan(6)
+
+  const debugMode = fjs({
+    title: 'object with multiple types field',
+    type: 'object',
+    properties: {
+      str: {
+        anyOf: [{
+          type: 'string'
+        }, {
+          type: 'boolean'
+        }]
+      }
+    }
+  }, { mode: 'debug' })
+
+  t.assert.ok(typeof debugMode === 'object')
+  t.assert.ok(typeof debugMode.code === 'string')
+  t.assert.ok(debugMode.ajv instanceof Ajv)
+  t.assert.ok(debugMode.validator instanceof Validator)
+  t.assert.ok(debugMode.serializer instanceof Serializer)
+
+  const compiled = fjs.restore(debugMode)
+  const tobe = JSON.stringify({ str: 'Foo' })
+  t.assert.equal(compiled({ str: 'Foo', void: 'me' }), tobe)
+})
+
+test('to string auto-consistent with ajv-formats', t => {
+  t.plan(3)
+
+  const debugMode = fjs({
+    title: 'object with multiple types field and format keyword',
+    type: 'object',
+    properties: {
+      str: {
+        anyOf: [{
+          type: 'string',
+          format: 'email'
+        }, {
+          type: 'boolean'
+        }]
+      }
+    }
+  }, { mode: 'debug' })
+
+  t.assert.ok(typeof debugMode === 'object')
+
+  const compiled = fjs.restore(debugMode)
+  const tobe = JSON.stringify({ str: 'foo@bar.com' })
+  t.assert.equal(compiled({ str: 'foo@bar.com' }), tobe)
+  t.assert.throws(() => compiled({ str: 'foo' }))
+})
+
+test('debug should restore the same serializer instance', t => {
+  t.plan(1)
+
+  const debugMode = fjs({ type: 'integer' }, { mode: 'debug', rounding: 'ceil' })
+  const compiled = fjs.restore(debugMode)
+  t.assert.equal(compiled(3.95), 4)
+})
+
+test('Serializer restoreFromState', t => {
+  t.plan(1)
+
+  const Serializer = require('../lib/serializer')
+  const serializer = new Serializer()
+  const state = serializer.getState()
+  const restored = Serializer.restoreFromState(state)
+  t.assert.ok(restored instanceof Serializer)
+})
+
+test('Validator restoreFromState', t => {
+  t.plan(1)
+
+  const Validator = require('../lib/validator')
+  const validator = new Validator()
+  validator.addSchema({ type: 'string' }, 'test')
+  const state = validator.getState()
+  const restored = Validator.restoreFromState(state)
+  t.assert.ok(restored instanceof Validator)
+})
