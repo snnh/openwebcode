@@ -4,6 +4,8 @@ export interface ServerConfig {
   corePath: string;
   dataDir: string;
   coreRequestTimeoutMs: number;
+  anthropic?: { apiKey?: string; baseURL?: string };
+  openai?: { apiKey?: string; baseURL: string };
 }
 
 function positiveInteger(value: string | undefined, fallback: number): number {
@@ -22,5 +24,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     corePath: env.OWC_CORE_PATH ?? "../build/Debug/owc-exec.exe",
     dataDir: env.OWC_DATA_DIR ?? "../.openwebcode",
     coreRequestTimeoutMs: positiveInteger(env.OWC_CORE_REQUEST_TIMEOUT_MS, 130_000),
+    ...(env.ANTHROPIC_API_KEY || env.ANTHROPIC_BASE_URL
+      ? {
+          anthropic: {
+            ...(env.ANTHROPIC_API_KEY ? { apiKey: env.ANTHROPIC_API_KEY } : {}),
+            ...(env.ANTHROPIC_BASE_URL ? { baseURL: env.ANTHROPIC_BASE_URL } : {}),
+          },
+        }
+      : {}),
+    ...(env.OPENAI_BASE_URL
+      ? {
+          openai: {
+            baseURL: env.OPENAI_BASE_URL,
+            ...(env.OPENAI_API_KEY ? { apiKey: env.OPENAI_API_KEY } : {}),
+          },
+        }
+      : {}),
   };
 }
