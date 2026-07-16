@@ -38,6 +38,8 @@ const FILE_TOOLS = [
     { name: "grep", description: "Recursively search UTF-8 workspace files for literal text.", inputSchema: { type: "object", properties: { path: { type: "string" }, pattern: { type: "string" } }, required: ["path", "pattern"], additionalProperties: false } },
 ];
 const TOOLS = [BASH_TOOL, ...FILE_TOOLS, READ_ARTIFACT_TOOL];
+const MAX_STEERING_ITEMS = 16;
+const MAX_STEERING_LENGTH = 8_000;
 export class AgentRunner {
     sessions;
     providers;
@@ -48,6 +50,7 @@ export class AgentRunner {
     defaultLanguage;
     maxTurns;
     running = new Map();
+    steering = new Map();
     repeatedCalls = new Map();
     permissions;
     constructor(sessions, providers, core, events, pricing, exchangeRates, defaultLanguage = "zh-CN", maxTurns = 50) {
@@ -198,8 +201,14 @@ export class AgentRunner {
                 if (assistantContent.length > 0) {
                     await this.sessions.appendMessage(sessionId, "assistant", assistantContent);
                 }
-                if (stopReason !== "tool_use")
+                if (stopReason !== "tool_use") {
+                    if (this.steering.get(sessionId)?.length) {
+                        await this.applySteering(sessionId);
+                        this.state(sessionId, "thinking");
+                        continue;
+                    }
                     return;
+                }
                 const toolCalls = assistantContent.filter((block) => block.type === "tool_call");
                 if (toolCalls.length === 0)
                     throw new Error("Provider stopped for tool use without a tool call");
@@ -225,6 +234,8 @@ export class AgentRunner {
                     await context.evict(afterTools.messages);
                     this.events.publish({ source: "agent", type: "context.evicted", sessionId, payload: (await context.load()).entries });
                 }
+                if (this.steering.get(sessionId)?.length)
+                    await this.applySteering(sessionId);
                 this.state(sessionId, "thinking");
             }
             throw new Error(`Agent exceeded ${this.maxTurns} turns`);
@@ -247,6 +258,7 @@ export class AgentRunner {
         finally {
             this.running.delete(sessionId);
             this.repeatedCalls.delete(sessionId);
+            this.steering.delete(sessionId);
             this.state(sessionId, "idle");
         }
     }
@@ -281,6 +293,55 @@ export class AgentRunner {
     }
     isRunning(sessionId) {
         return this.running.has(sessionId);
+    }
+    enqueueSteering(sessionId, content) {
+        if (!this.running.has(sessionId))
+            throw new Error("Session agent is not running");
+        if (content.length > MAX_STEERING_LENGTH)
+            throw new Error(`Steering message exceeds ${MAX_STEERING_LENGTH} characters`);
+        const queue = this.steering.get(sessionId) ?? [];
+        if (queue.length >= MAX_STEERING_ITEMS)
+            throw new Error("Steering queue is full");
+        const item = { id: randomUUID(), content, createdAt: new Date().toISOString() };
+        queue.push(item);
+        this.steering.set(sessionId, queue);
+        this.events.publish({ source: "agent", type: "steering.queued", sessionId, payload: { ...item, position: queue.length } });
+        return { id: item.id, position: queue.length };
+    }
+    listSteering(sessionId) {
+        return [...(this.steering.get(sessionId) ?? [])];
+    }
+    removeSteering(sessionId, id) {
+        const queue = this.steering.get(sessionId);
+        if (!queue)
+            return false;
+        const index = queue.findIndex((item) => item.id === id);
+        if (index < 0)
+            return false;
+        const [item] = queue.splice(index, 1);
+        if (!queue.length)
+            this.steering.delete(sessionId);
+        this.events.publish({ source: "agent", type: "steering.removed", sessionId, payload: { id: item.id } });
+        return true;
+    }
+    async applySteering(sessionId) {
+        const queue = this.steering.get(sessionId);
+        if (!queue?.length)
+            return;
+        const remaining = [];
+        for (const item of queue) {
+            try {
+                await this.sessions.appendMessage(sessionId, "user", [{ type: "text", text: item.content }]);
+                this.events.publish({ source: "agent", type: "steering.applied", sessionId, payload: item });
+            }
+            catch {
+                remaining.push(item);
+            }
+        }
+        if (remaining.length)
+            this.steering.set(sessionId, remaining);
+        else
+            this.steering.delete(sessionId);
     }
     async authorizeTool(sessionId, tool, input, signal) {
         const session = await this.sessions.get(sessionId);
