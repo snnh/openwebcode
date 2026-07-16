@@ -11,11 +11,13 @@ export class SessionStore {
     }
     async create(input) {
         const now = new Date().toISOString();
+        const resolvedCwd = path.resolve(input.cwd);
         const meta = {
             id: randomUUID(),
-            cwd: path.resolve(input.cwd),
+            cwd: resolvedCwd,
             provider: input.provider ?? "development",
             model: input.model ?? "deterministic-tool-loop",
+            sandbox: { enabled: true, readRoots: [resolvedCwd], writeRoots: [resolvedCwd], denyPaths: [path.join(resolvedCwd, ".env")], network: "allow" },
             title: input.title ?? "New session",
             createdAt: now,
             updatedAt: now,
@@ -75,6 +77,45 @@ export class SessionStore {
         }
         await this.writeMeta(meta);
         return message;
+    }
+    async updateConfig(id, update) {
+        const meta = await this.readMeta(id);
+        meta.provider = update.provider;
+        meta.model = update.model;
+        if (update.thinking === undefined)
+            delete meta.thinking;
+        else
+            meta.thinking = update.thinking;
+        if (update.effort === undefined)
+            delete meta.effort;
+        else
+            meta.effort = update.effort;
+        meta.updatedAt = new Date().toISOString();
+        await this.writeMeta(meta);
+        return meta;
+    }
+    async truncateMessages(id, count) {
+        if (!Number.isSafeInteger(count) || count < 0)
+            throw new Error("Message count must be a non-negative integer");
+        const detail = await this.get(id);
+        if (!detail)
+            throw new Error("Session not found");
+        const messages = detail.messages.slice(0, count);
+        await writeFile(this.messagesPath(id), messages.map((message) => JSON.stringify(message)).join("\n") + (messages.length ? "\n" : ""), "utf8");
+        const meta = await this.readMeta(id);
+        meta.updatedAt = new Date().toISOString();
+        await this.writeMeta(meta);
+    }
+    async updatePermissions(id, permissionMode, permissionRules) {
+        const meta = await this.readMeta(id);
+        if (permissionMode === undefined)
+            delete meta.permissionMode;
+        else
+            meta.permissionMode = permissionMode;
+        meta.permissionRules = permissionRules.map((rule) => ({ ...rule }));
+        meta.updatedAt = new Date().toISOString();
+        await this.writeMeta(meta);
+        return meta;
     }
     contextRoot(id) {
         return this.sessionPath(id);

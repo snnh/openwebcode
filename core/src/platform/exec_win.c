@@ -1,4 +1,5 @@
 #include "exec_platform.h"
+#include "sandbox.h"
 
 #include <windows.h>
 #include <stdio.h>
@@ -31,6 +32,23 @@ static void drain_pipe(HANDLE pipe, const char *stream, const owc_exec_request *
     }
 }
 
+static int select_shell(wchar_t *path, size_t count, int prefer_powershell,
+                        int *powershell) {
+    DWORD length;
+    if (prefer_powershell) {
+        length = SearchPathW(NULL, L"pwsh.exe", NULL, (DWORD)count, path, NULL);
+        if (length > 0 && length < count) {
+            *powershell = 1;
+            return 1;
+        }
+    }
+    length = GetSystemDirectoryW(path, (UINT)count);
+    if (!length || length >= count - 8) return 0;
+    if (wcscat_s(path, count, L"\\cmd.exe") != 0) return 0;
+    *powershell = 0;
+    return 1;
+}
+
 int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *result) {
     SECURITY_ATTRIBUTES security={sizeof(security),NULL,TRUE};
     HANDLE out_read=NULL,out_write=NULL,err_read=NULL,err_write=NULL,input=NULL,job=NULL;
@@ -39,9 +57,11 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits={0};
     LPPROC_THREAD_ATTRIBUTE_LIST attributes=NULL;
     SIZE_T attribute_size=0;
-    wchar_t *cwd=NULL,*command=NULL; char *full_command=NULL;
+    wchar_t *cwd=NULL,*command=NULL; wchar_t shell_path[MAX_PATH]; char *full_command=NULL;
+    owc_sandbox *sandbox=NULL; owc_sandbox_options sandbox_options={0};
+    const char *write_roots[1];
     ULONGLONG started=GetTickCount64(); size_t forwarded=0; unsigned sequence=0;
-    DWORD wait_result,exit_code=1; int ok=0;
+    DWORD wait_result,exit_code=1; int ok=0,powershell=0;
 
     if(!CreatePipe(&out_read,&out_write,&security,0) || !CreatePipe(&err_read,&err_write,&security,0)) goto cleanup;
     if(!SetHandleInformation(out_read,HANDLE_FLAG_INHERIT,0) || !SetHandleInformation(err_read,HANDLE_FLAG_INHERIT,0)) goto cleanup;
@@ -49,11 +69,15 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
     if(input==INVALID_HANDLE_VALUE) { input=NULL; goto cleanup; }
     cwd=utf8_to_wide(request->cwd);
     {
-        int command_length=snprintf(NULL,0,"cmd.exe /d /s /c \"%s\"",request->command);
+        int command_length;
+        const char *arguments;
+        if(!select_shell(shell_path,ARRAYSIZE(shell_path),!request->sandbox_enabled,&powershell)) goto cleanup;
+        arguments=powershell?"-NoLogo -NoProfile -NonInteractive -Command":"/d /s /c";
+        command_length=snprintf(NULL,0,"\"%ls\" %s \"%s\"",shell_path,arguments,request->command);
         if(command_length<0) goto cleanup;
         full_command=(char *)malloc((size_t)command_length+1);
         if(!full_command) goto cleanup;
-        (void)snprintf(full_command,(size_t)command_length+1,"cmd.exe /d /s /c \"%s\"",request->command);
+        (void)snprintf(full_command,(size_t)command_length+1,"\"%ls\" %s \"%s\"",shell_path,arguments,request->command);
     }
     if(!cwd) goto cleanup;
     command=utf8_to_wide(full_command); if(!command) goto cleanup;
@@ -61,14 +85,28 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
     startup.StartupInfo.cb=sizeof(startup); startup.StartupInfo.dwFlags=STARTF_USESTDHANDLES;
     startup.StartupInfo.hStdOutput=out_write; startup.StartupInfo.hStdError=err_write; startup.StartupInfo.hStdInput=input;
     inherited[0]=out_write; inherited[1]=err_write; inherited[2]=input;
-    (void)InitializeProcThreadAttributeList(NULL,1,0,&attribute_size);
+    sandbox_options.session_id=request->session_id; sandbox_options.allow_network=request->allow_network;
+    write_roots[0]=request->cwd; sandbox_options.write_roots=write_roots; sandbox_options.write_root_count=1;
+    if(request->sandbox_enabled) sandbox=owc_sandbox_create(&sandbox_options,result->sandbox_reason,sizeof(result->sandbox_reason));
+    result->sandbox_status=sandbox?(int)owc_sandbox_get_status(sandbox):(int)OWC_SANDBOX_ADVISORY;
+    (void)InitializeProcThreadAttributeList(NULL,sandbox?2:1,0,&attribute_size);
     if(!attribute_size) goto cleanup;
     attributes=(LPPROC_THREAD_ATTRIBUTE_LIST)malloc(attribute_size); if(!attributes) goto cleanup;
-    if(!InitializeProcThreadAttributeList(attributes,1,0,&attribute_size)) goto cleanup;
+    if(!InitializeProcThreadAttributeList(attributes,sandbox?2:1,0,&attribute_size)) goto cleanup;
     startup.lpAttributeList=attributes;
     if(!UpdateProcThreadAttribute(attributes,0,PROC_THREAD_ATTRIBUTE_HANDLE_LIST,inherited,sizeof(inherited),NULL,NULL)) goto cleanup;
+    if(sandbox&&!owc_sandbox_add_process_attribute(sandbox,attributes,result->sandbox_reason,sizeof(result->sandbox_reason))){result->sandbox_status=(int)OWC_SANDBOX_PARTIAL;goto cleanup;}
 
-    if(!CreateProcessW(NULL,command,NULL,NULL,TRUE,CREATE_NO_WINDOW|CREATE_SUSPENDED|EXTENDED_STARTUPINFO_PRESENT,NULL,cwd,&startup.StartupInfo,&process)) goto cleanup;
+    if(!CreateProcessW(shell_path,command,NULL,NULL,TRUE,CREATE_NO_WINDOW|CREATE_SUSPENDED|EXTENDED_STARTUPINFO_PRESENT,NULL,cwd,&startup.StartupInfo,&process)) {
+        DWORD appcontainer_error=GetLastError();
+        if(!sandbox) goto cleanup;
+        owc_sandbox_destroy(sandbox);sandbox=NULL;result->sandbox_status=(int)OWC_SANDBOX_PARTIAL;
+        (void)snprintf(result->sandbox_reason,sizeof(result->sandbox_reason),"AppContainer process creation failed (%lu); using Job Object compatibility mode",(unsigned long)appcontainer_error);
+        DeleteProcThreadAttributeList(attributes);free(attributes);attributes=NULL;attribute_size=0;free(command);command=utf8_to_wide(full_command);if(!command)goto cleanup;
+        (void)InitializeProcThreadAttributeList(NULL,1,0,&attribute_size);if(!attribute_size)goto cleanup;attributes=(LPPROC_THREAD_ATTRIBUTE_LIST)malloc(attribute_size);if(!attributes)goto cleanup;if(!InitializeProcThreadAttributeList(attributes,1,0,&attribute_size))goto cleanup;startup.lpAttributeList=attributes;if(!UpdateProcThreadAttribute(attributes,0,PROC_THREAD_ATTRIBUTE_HANDLE_LIST,inherited,sizeof(inherited),NULL,NULL))goto cleanup;
+        if(!CreateProcessW(NULL,command,NULL,NULL,TRUE,CREATE_NO_WINDOW|CREATE_SUSPENDED|EXTENDED_STARTUPINFO_PRESENT,NULL,cwd,&startup.StartupInfo,&process))goto cleanup;
+    }
+    if(sandbox)result->sandbox_status=(int)owc_sandbox_get_status(sandbox);
     job=CreateJobObjectW(NULL,NULL); if(!job) goto cleanup;
     limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
     if(!SetInformationJobObject(job,JobObjectExtendedLimitInformation,&limits,sizeof(limits)) || !AssignProcessToJobObject(job,process.hProcess)) goto cleanup;
@@ -102,5 +140,6 @@ cleanup:
     if(job) CloseHandle(job); if(out_read) CloseHandle(out_read); if(out_write) CloseHandle(out_write);
     if(err_read) CloseHandle(err_read); if(err_write) CloseHandle(err_write); if(input) CloseHandle(input);
     if(attributes) DeleteProcThreadAttributeList(attributes); free(attributes);
+    owc_sandbox_destroy(sandbox);
     free(cwd); free(command); free(full_command); return ok;
 }

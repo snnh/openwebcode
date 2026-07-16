@@ -70,6 +70,14 @@ export class CoreClient extends EventEmitter {
     run(request) {
         return this.call("exec.run", request, (request.timeoutMs ?? 120_000) + 10_000);
     }
+    configureSession(request) { return this.call("session.configure", request); }
+    cleanupSession(sessionId) { return this.call("session.cleanup", { sessionId }); }
+    readFile(request) { return this.call("fs.read", request); }
+    writeFile(request) { return this.call("fs.write", request); }
+    editFile(request) { return this.call("fs.edit", request); }
+    listFiles(request) { return this.call("fs.list", request); }
+    globFiles(request) { return this.call("fs.glob", request); }
+    grepFiles(request) { return this.call("fs.grep", request); }
     async spawnAndHandshake(generation) {
         const executable = this.resolveCorePath();
         const child = spawn(executable, [], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });

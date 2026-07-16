@@ -20,11 +20,23 @@ describe("CoreClient", () => {
     const info = await client.start();
     expect(info.platform).toBe("windows");
 
+    const cwd = path.resolve(here, "../..");
+    await client.configureSession({
+      sessionId: "test-session",
+      cwd,
+      sandbox: {
+        enabled: false,
+        readRoots: [cwd],
+        writeRoots: [cwd],
+        denyPaths: [],
+        network: "allow",
+      },
+    });
     const result = await client.run({
       sessionId: "test-session",
       execId: "test-exec",
-      cmd: "echo node-core-ok&& echo node-core-error 1>&2&& exit /b 7",
-      cwd: path.resolve(here, "../.."),
+      cmd: "Write-Output node-core-ok; [Console]::Error.WriteLine('node-core-error'); exit 7",
+      cwd,
       timeoutMs: 5_000,
     });
     expect(result.exitCode).toBe(7);
