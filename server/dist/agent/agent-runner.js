@@ -40,6 +40,14 @@ const FILE_TOOLS = [
 const TOOLS = [BASH_TOOL, ...FILE_TOOLS, READ_ARTIFACT_TOOL];
 const MAX_STEERING_ITEMS = 16;
 const MAX_STEERING_LENGTH = 8_000;
+export class SteeringError extends Error {
+    code;
+    constructor(message, code) {
+        super(message);
+        this.code = code;
+        this.name = "SteeringError";
+    }
+}
 export class AgentRunner {
     sessions;
     providers;
@@ -258,7 +266,9 @@ export class AgentRunner {
         finally {
             this.running.delete(sessionId);
             this.repeatedCalls.delete(sessionId);
-            this.steering.delete(sessionId);
+            // abort 路径保留未应用的 steering 队列，供用户编辑/重发；正常结束才清理
+            if (!controller.signal.aborted)
+                this.steering.delete(sessionId);
             this.state(sessionId, "idle");
         }
     }
@@ -296,12 +306,12 @@ export class AgentRunner {
     }
     enqueueSteering(sessionId, content) {
         if (!this.running.has(sessionId))
-            throw new Error("Session agent is not running");
+            throw new SteeringError("Session agent is not running", "not_running");
         if (content.length > MAX_STEERING_LENGTH)
-            throw new Error(`Steering message exceeds ${MAX_STEERING_LENGTH} characters`);
+            throw new SteeringError(`Steering message exceeds ${MAX_STEERING_LENGTH} characters`, "too_long");
         const queue = this.steering.get(sessionId) ?? [];
         if (queue.length >= MAX_STEERING_ITEMS)
-            throw new Error("Steering queue is full");
+            throw new SteeringError("Steering queue is full", "full");
         const item = { id: randomUUID(), content, createdAt: new Date().toISOString() };
         queue.push(item);
         this.steering.set(sessionId, queue);

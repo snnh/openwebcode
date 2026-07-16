@@ -19,7 +19,8 @@ export function App(): ReactElement {
   const [pendingPermissions, setPendingPermissions] = useState<Array<{ requestId: string; tool: string; input: Record<string, unknown> }>>([]);
   const [notice, setNotice] = useState<string>();
   const sessionEventSeq = useRef<Record<string, number>>({});
-  const activeSeq = currentId ? (sessionEventSeq.current[currentId] ?? 0) : 0;
+  const globalSeq = useRef(0);
+  const activeSeq = Math.max(currentId ? (sessionEventSeq.current[currentId] ?? 0) : 0, globalSeq.current);
   const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: api.sessions });
   const detail = useQuery({ queryKey: queryKeys.detail(currentId ?? ""), queryFn: () => api.session(currentId!), enabled: Boolean(currentId) });
   const models = useQuery({ queryKey: ["models"], queryFn: api.models });
@@ -41,10 +42,13 @@ export function App(): ReactElement {
       socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/events?${query}`);
       socket.onmessage = (message) => {
         const event = JSON.parse(message.data) as AppEvent;
+        // connected/resync 等无 seq 帧不算真实事件，跳过水位推进
+        if (typeof event.seq === "number" && event.seq > globalSeq.current) globalSeq.current = event.seq;
         if (event.sessionId && event.seq > (sessionEventSeq.current[event.sessionId] ?? 0)) {
           sessionEventSeq.current = { ...sessionEventSeq.current, [event.sessionId]: event.seq };
         }
         if (event.type === "resync.required") {
+          if (typeof event.seq === "number" && event.seq > globalSeq.current) globalSeq.current = event.seq;
           queryClient.invalidateQueries({ queryKey: queryKeys.detail(currentId ?? "") });
           queryClient.invalidateQueries({ queryKey: ["context", currentId] });
           queryClient.invalidateQueries({ queryKey: ["checkpoints", currentId] });
