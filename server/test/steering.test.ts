@@ -90,4 +90,64 @@ describe("AgentRunner steering", () => {
     expect((await sessions.get(session.id))?.messages.some((message) =>
       message.content.some((block) => block.type === "text" && block.text === "remove me"))).toBe(false);
   });
+
+  it("preserves the unapplied steering queue when the run is aborted", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-steering-abort-"));
+    roots.push(root);
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const session = await sessions.create({ cwd: root, provider: "steering", model: "claude-opus-4-8" });
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    let entered!: () => void;
+    const firstEntered = new Promise<void>((resolve) => { entered = resolve; });
+    const provider: Provider = {
+      name: "steering",
+      async *streamChat(request) {
+        entered();
+        // 模拟真实 provider 响应 abort：在信号触发前一直挂起
+        await new Promise<void>((resolve) => {
+          request.signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        if (request.signal.aborted) throw request.signal.reason instanceof Error ? request.signal.reason : new Error("aborted");
+        yield { type: "done", stopReason: "end_turn" };
+      },
+    };
+    const providers = new ProviderRegistry(); providers.register(provider);
+    const core = { on() { return core; }, async configureSession() { return { sandboxCapability: "advisory" }; } } as unknown as CoreClient;
+    const runner = new AgentRunner(sessions, providers, core, new EventBus(), pricing);
+
+    const running = runner.run(session.id, "initial task");
+    await firstEntered;
+    runner.enqueueSteering(session.id, "saved for retry");
+    expect(runner.abort(session.id)).toBe(true);
+    await expect(running).rejects.toBeTruthy();
+    // abort 保留未应用 steering，用户可在 idle 后重新入队/编辑
+    expect(runner.listSteering(session.id).map((item) => item.content)).toEqual(["saved for retry"]);
+  });
+
+  it("rejects an over-long steering message with a too_long error", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-steering-long-"));
+    roots.push(root);
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const session = await sessions.create({ cwd: root, provider: "steering", model: "claude-opus-4-8" });
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    let entered!: () => void;
+    const firstEntered = new Promise<void>((resolve) => { entered = resolve; });
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => { finish = resolve; });
+    const provider: Provider = { name: "steering", async *streamChat() { entered(); await gate; yield { type: "done", stopReason: "end_turn" }; } };
+    const providers = new ProviderRegistry(); providers.register(provider);
+    const core = { on() { return core; }, async configureSession() { return { sandboxCapability: "advisory" }; } } as unknown as CoreClient;
+    const runner = new AgentRunner(sessions, providers, core, new EventBus(), pricing);
+
+    const running = runner.run(session.id, "initial task");
+    await firstEntered;
+    const oversized = "x".repeat(8_001);
+    expect(() => runner.enqueueSteering(session.id, oversized)).toThrow(/exceeds/);
+    finish();
+    await running;
+  });
 });

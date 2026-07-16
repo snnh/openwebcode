@@ -4,6 +4,7 @@ import websocket from "@fastify/websocket";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import type { AgentRunner } from "./agent/agent-runner.js";
+import { SteeringError } from "./agent/agent-runner.js";
 import { CoreRpcError, type CoreClient, type ExecRequest } from "./core-client.js";
 import { ContextManager, type BudgetUpdate } from "./context/context-manager.js";
 import { getModelProfile, listModelProfiles, type Currency, type EffortLevel, type ModelPricing, type ThinkingMode } from "./context/model-profile.js";
@@ -71,6 +72,15 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     await app.register(fastifyStatic, { root: dependencies.webDist, prefix: "/" });
   }
   const clients = new Set<{ send(data: string): void; readonly readyState: number; sessionId?: string }>();
+  // 已向 core 配置过 sandbox 的会话，避免文件浏览每次重配与 agent 运行竞态
+  const configuredSessions = new Set<string>();
+  const defaultSandbox = (cwd: string) => ({
+    enabled: true,
+    readRoots: [cwd],
+    writeRoots: [cwd],
+    denyPaths: [path.join(cwd, ".env")],
+    network: "allow" as const,
+  });
 
   events.on("event", (event: AppEvent) => {
     const serialized = JSON.stringify(event);
@@ -216,14 +226,21 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   app.get<{ Params: { id: string }; Querystring: { path?: string } }>("/api/sessions/:id/files", async (request, reply) => {
     const session = await sessions.get(request.params.id);
     if (!session) return reply.code(404).send({ error: "Session not found" });
-    await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? { enabled: true, readRoots: [session.cwd], writeRoots: [session.cwd], denyPaths: [], network: "allow" } });
+    // 仅在 idle 且尚未配置时配置一次；运行中复用 agent 已配置的状态，避免竞态
+    if (!agent.isRunning(session.id) && !configuredSessions.has(session.id)) {
+      await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? defaultSandbox(session.cwd) });
+      configuredSessions.add(session.id);
+    }
     return core.listFiles({ sessionId: request.params.id, path: request.query.path || "." });
   });
   app.get<{ Params: { id: string }; Querystring: { path?: string } }>("/api/sessions/:id/files/content", async (request, reply) => {
     const session = await sessions.get(request.params.id);
     if (!session) return reply.code(404).send({ error: "Session not found" });
     if (!request.query.path) return reply.code(400).send({ error: "path is required" });
-    await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? { enabled: true, readRoots: [session.cwd], writeRoots: [session.cwd], denyPaths: [], network: "allow" } });
+    if (!agent.isRunning(session.id) && !configuredSessions.has(session.id)) {
+      await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? defaultSandbox(session.cwd) });
+      configuredSessions.add(session.id);
+    }
     return core.readFile({ sessionId: request.params.id, path: request.query.path });
   });
   app.get<{ Params: { id: string; checkpointId: string } }>("/api/sessions/:id/checkpoints/:checkpointId/diff", async (request, reply) => {
@@ -274,7 +291,10 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
           const queued = agent.enqueueSteering(request.params.id, request.body.content);
           return reply.code(202).send({ accepted: true, queued: true, ...queued });
         } catch (error) {
-          return reply.code(error instanceof Error && error.message.includes("full") ? 429 : 409).send({ error: error instanceof Error ? error.message : String(error) });
+          const code = error instanceof SteeringError
+            ? (error.code === "full" ? 429 : error.code === "too_long" ? 413 : 409)
+            : 409;
+          return reply.code(code).send({ error: error instanceof Error ? error.message : String(error) });
         }
       }
       const budget = await new ContextManager(sessions.contextRoot(request.params.id)).budgetStatus();

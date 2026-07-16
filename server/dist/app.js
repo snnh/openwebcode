@@ -2,6 +2,8 @@ import Fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
 import { existsSync } from "node:fs";
+import path from "node:path";
+import { SteeringError } from "./agent/agent-runner.js";
 import { CoreRpcError } from "./core-client.js";
 import { ContextManager } from "./context/context-manager.js";
 import { getModelProfile, listModelProfiles } from "./context/model-profile.js";
@@ -27,6 +29,15 @@ export async function buildServer(dependencies) {
         await app.register(fastifyStatic, { root: dependencies.webDist, prefix: "/" });
     }
     const clients = new Set();
+    // 已向 core 配置过 sandbox 的会话，避免文件浏览每次重配与 agent 运行竞态
+    const configuredSessions = new Set();
+    const defaultSandbox = (cwd) => ({
+        enabled: true,
+        readRoots: [cwd],
+        writeRoots: [cwd],
+        denyPaths: [path.join(cwd, ".env")],
+        network: "allow",
+    });
     events.on("event", (event) => {
         const serialized = JSON.stringify(event);
         for (const client of clients) {
@@ -179,7 +190,11 @@ export async function buildServer(dependencies) {
         const session = await sessions.get(request.params.id);
         if (!session)
             return reply.code(404).send({ error: "Session not found" });
-        await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? { enabled: true, readRoots: [session.cwd], writeRoots: [session.cwd], denyPaths: [], network: "allow" } });
+        // 仅在 idle 且尚未配置时配置一次；运行中复用 agent 已配置的状态，避免竞态
+        if (!agent.isRunning(session.id) && !configuredSessions.has(session.id)) {
+            await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? defaultSandbox(session.cwd) });
+            configuredSessions.add(session.id);
+        }
         return core.listFiles({ sessionId: request.params.id, path: request.query.path || "." });
     });
     app.get("/api/sessions/:id/files/content", async (request, reply) => {
@@ -188,7 +203,10 @@ export async function buildServer(dependencies) {
             return reply.code(404).send({ error: "Session not found" });
         if (!request.query.path)
             return reply.code(400).send({ error: "path is required" });
-        await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? { enabled: true, readRoots: [session.cwd], writeRoots: [session.cwd], denyPaths: [], network: "allow" } });
+        if (!agent.isRunning(session.id) && !configuredSessions.has(session.id)) {
+            await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? defaultSandbox(session.cwd) });
+            configuredSessions.add(session.id);
+        }
         return core.readFile({ sessionId: request.params.id, path: request.query.path });
     });
     app.get("/api/sessions/:id/checkpoints/:checkpointId/diff", async (request, reply) => {
@@ -256,7 +274,10 @@ export async function buildServer(dependencies) {
                 return reply.code(202).send({ accepted: true, queued: true, ...queued });
             }
             catch (error) {
-                return reply.code(error instanceof Error && error.message.includes("full") ? 429 : 409).send({ error: error instanceof Error ? error.message : String(error) });
+                const code = error instanceof SteeringError
+                    ? (error.code === "full" ? 429 : error.code === "too_long" ? 413 : 409)
+                    : 409;
+                return reply.code(code).send({ error: error instanceof Error ? error.message : String(error) });
             }
         }
         const budget = await new ContextManager(sessions.contextRoot(request.params.id)).budgetStatus();
