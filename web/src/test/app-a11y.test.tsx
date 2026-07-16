@@ -1,9 +1,9 @@
 import * as axeCore from "axe-core";
 import { render } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
-import type { Checkpoint, ContextView, ModelProfile, Session, SessionDetail } from "../lib/contracts";
+import type { Checkpoint, ContextView, ModelProfile, SessionDetail } from "../lib/contracts";
 
 // 固定的会话/上下文/模型数据，避免依赖网络
 function mockSession(overrides: Partial<SessionDetail> = {}): SessionDetail {
@@ -75,11 +75,35 @@ function renderApp(): ReturnType<typeof render> {
 }
 
 describe("App accessibility", () => {
+  // App 的 useEffect 会创建真实 WebSocket；jsdom 下会连接失败并触发 onclose → 重连定时器，
+  // 可能在组件卸载后才触发，泄漏到后续测试。这里用一个空壳 WebSocket 替换，避免真实连接与重连。
+  let originalWebSocket: typeof WebSocket;
   beforeEach(() => {
+    originalWebSocket = globalThis.WebSocket;
+    class StubWebSocket {
+      static CONNECTING = 0;
+      static OPEN = 1;
+      static CLOSING = 2;
+      static CLOSED = 3;
+      readyState = 0;
+      onopen: ((ev: Event) => void) | null = null;
+      onmessage: ((ev: MessageEvent) => void) | null = null;
+      onclose: ((ev: CloseEvent) => void) | null = null;
+      onerror: ((ev: Event) => void) | null = null;
+      close(): void { this.readyState = 3; }
+      send(): void { /* no-op */ }
+      addEventListener(): void { /* no-op */ }
+      removeEventListener(): void { /* no-op */ }
+    }
+    vi.stubGlobal("WebSocket", StubWebSocket);
     // jsdom 不实现 matchMedia；App 未直接使用，但 React 生态测试偶有依赖
     if (!window.matchMedia) {
       window.matchMedia = ((query: string) => ({ matches: false, media: query, onchange: null, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {}, dispatchEvent() { return false; } })) as unknown as typeof window.matchMedia;
     }
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    globalThis.WebSocket = originalWebSocket;
   });
 
   it("empty state has no axe violations", async () => {
