@@ -1,11 +1,16 @@
 import { randomUUID } from "node:crypto";
 import type { CoreClient, CoreEvent } from "../core-client.js";
 import type { EventBus } from "../events/event-bus.js";
-import { ContextManager } from "../context/context-manager.js";
+import { ContextManager, selectCacheBreakpoints } from "../context/context-manager.js";
 import { boundToolResult } from "../context/tool-result-budget.js";
 import { estimateTokens, getModelProfile } from "../context/model-profile.js";
+import { calculateUsageCost } from "../cost/cost-calculator.js";
+import type { ExchangeRateService } from "../cost/exchange-rate.js";
+import type { PricingCatalog } from "../cost/pricing-catalog.js";
 import type { ProviderRegistry, ProviderTool } from "../providers/provider.js";
 import { collectProviderTurn } from "../providers/retry.js";
+import { PermissionCoordinator, permissionRule, type PermissionDecision } from "./permission-coordinator.js";
+import { GitShadowSnapshots } from "../snapshots/git-shadow.js";
 import type { MessageContent } from "../sessions/types.js";
 import type { SessionStore } from "../sessions/session-store.js";
 
@@ -40,19 +45,32 @@ const READ_ARTIFACT_TOOL: ProviderTool = {
   },
 };
 
-const TOOLS = [BASH_TOOL, READ_ARTIFACT_TOOL];
+const FILE_TOOLS: ProviderTool[] = [
+  { name: "read_file", description: "Read UTF-8 lines from a workspace file.", inputSchema: { type: "object", properties: { path: { type: "string" }, offset: { type: "integer" }, limit: { type: "integer" } }, required: ["path"], additionalProperties: false } },
+  { name: "write_file", description: "Atomically write a UTF-8 workspace file.", inputSchema: { type: "object", properties: { path: { type: "string" }, content: { type: "string" }, createDirs: { type: "boolean" } }, required: ["path", "content"], additionalProperties: false } },
+  { name: "edit_file", description: "Replace exact text in a UTF-8 workspace file.", inputSchema: { type: "object", properties: { path: { type: "string" }, oldText: { type: "string" }, newText: { type: "string" }, replaceAll: { type: "boolean" } }, required: ["path", "oldText", "newText"], additionalProperties: false } },
+  { name: "glob", description: "Recursively match workspace paths using * and ? wildcards.", inputSchema: { type: "object", properties: { path: { type: "string" }, pattern: { type: "string" } }, required: ["path", "pattern"], additionalProperties: false } },
+  { name: "grep", description: "Recursively search UTF-8 workspace files for literal text.", inputSchema: { type: "object", properties: { path: { type: "string" }, pattern: { type: "string" } }, required: ["path", "pattern"], additionalProperties: false } },
+];
+
+const TOOLS = [BASH_TOOL, ...FILE_TOOLS, READ_ARTIFACT_TOOL];
 
 export class AgentRunner {
   private readonly running = new Map<string, AbortController>();
   private readonly repeatedCalls = new Map<string, { signature: string; count: number }>();
+  private readonly permissions: PermissionCoordinator;
 
   constructor(
     private readonly sessions: SessionStore,
     private readonly providers: ProviderRegistry,
     private readonly core: CoreClient,
     private readonly events: EventBus,
+    private readonly pricing: PricingCatalog,
+    private readonly exchangeRates?: ExchangeRateService,
+    private readonly defaultLanguage = "zh-CN",
     private readonly maxTurns = 50,
   ) {
+    this.permissions = new PermissionCoordinator(events);
     core.on("event", (event: CoreEvent) => {
       const payload = event.payload as
         | { execId?: string; stream?: string; data?: string; seq?: number }
@@ -81,6 +99,13 @@ export class AgentRunner {
     const controller = new AbortController();
     this.running.set(sessionId, controller);
     try {
+      const configuredSession = await this.sessions.get(sessionId);
+      if (!configuredSession) throw new Error("Session not found");
+      await this.core.configureSession({ sessionId, cwd: configuredSession.cwd, sandbox: configuredSession.sandbox ?? { enabled: true, readRoots: [configuredSession.cwd], writeRoots: [configuredSession.cwd], denyPaths: [], network: "allow" } });
+      const checkpointContext = new ContextManager(this.sessions.contextRoot(sessionId));
+      const checkpoint = await new GitShadowSnapshots(this.sessions.contextRoot(sessionId), configuredSession.cwd)
+        .create(text.slice(0, 80) || "User message", configuredSession.messages.length, await checkpointContext.load());
+      this.events.publish({ source: "session", type: "checkpoint.created", sessionId, payload: checkpoint });
       await this.sessions.appendMessage(sessionId, "user", [{ type: "text", text }]);
       this.state(sessionId, "thinking");
       for (let turn = 0; turn < this.maxTurns; turn++) {
@@ -95,6 +120,8 @@ export class AgentRunner {
           return;
         }
         const view = await context.buildView(session.messages);
+        const cacheBreakpoints = selectCacheBreakpoints(view.messages, view.ledger);
+        await context.recordCacheBreakpoints(cacheBreakpoints);
         const profile = getModelProfile(session.model);
         const estimatedTokens = estimateTokens(JSON.stringify(view.messages));
         const workingBudget = Math.max(1, profile.contextWindow - profile.maxOutput);
@@ -107,8 +134,11 @@ export class AgentRunner {
           provider,
           {
             model: session.model,
-            system: `You are OpenWebCode. The workspace is ${session.cwd}.`,
+            ...(session.thinking ? { thinking: session.thinking } : {}),
+            ...(session.effort ? { effort: session.effort } : {}),
+            system: `You are OpenWebCode. The workspace is ${session.cwd}. Respond in ${this.defaultLanguage} unless the user explicitly requests another language.`,
             messages: view.messages,
+            cacheBreakpoints,
             tools: TOOLS,
             signal: controller.signal,
           },
@@ -142,8 +172,37 @@ export class AgentRunner {
           } else if (event.type === "tool_call") {
             assistantContent.push({ type: "tool_call", id: event.id, name: event.name, input: event.input });
           } else if (event.type === "usage") {
-            await context.recordUsage(event);
-            this.events.publish({ source: "agent", type: "context.usage", sessionId, payload: event });
+            const usageCost = calculateUsageCost(event, this.pricing.get(session.provider, session.model), this.exchangeRates?.current());
+            const recordedCost = {
+              priced: usageCost.priced,
+              ...(usageCost.source ? { source: { currency: usageCost.source.currency, microUnits: usageCost.source.microUnits.toString() } } : {}),
+              ...(usageCost.usd ? { usdMicroUnits: usageCost.usd.microUnits.toString() } : {}),
+              ...(usageCost.cny ? { cnyMicroUnits: usageCost.cny.microUnits.toString() } : {}),
+              ...(usageCost.exchangeRate ? {
+                exchangeRate: {
+                  rate: usageCost.exchangeRate.rate.toString(),
+                  source: usageCost.exchangeRate.source,
+                  effectiveDate: usageCost.exchangeRate.effectiveDate,
+                  fetchedAt: usageCost.exchangeRate.fetchedAt,
+                },
+              } : {}),
+            };
+            const ledger = await context.recordUsage(event, recordedCost);
+            this.events.publish({
+              source: "agent",
+              type: "context.usage",
+              sessionId,
+              payload: {
+                ...event,
+                cost: {
+                  priced: usageCost.priced,
+                  ...(usageCost.source ? { source: { currency: usageCost.source.currency, amount: usageCost.source.amount } } : {}),
+                  ...(usageCost.usd ? { usd: usageCost.usd.amount } : {}),
+                  ...(usageCost.cny ? { cny: usageCost.cny.amount } : {}),
+                },
+                sessionCost: ledger.cost,
+              },
+            });
           } else {
             stopReason = event.stopReason;
           }
@@ -161,6 +220,11 @@ export class AgentRunner {
             const content = `Tool call blocked: ${call.name} was requested with identical arguments ${repeated} consecutive times.`;
             this.events.publish({ source: "agent", type: "tool.repeated", sessionId, payload: { name: call.name, input: call.input, count: repeated } });
             await this.sessions.appendMessage(sessionId, "tool", [{ type: "tool_result", toolCallId: call.id, content, isError: true }]);
+            continue;
+          }
+          const permission = await this.authorizeTool(sessionId, call.name, call.input, controller.signal);
+          if (!permission.allowed) {
+            await this.sessions.appendMessage(sessionId, "tool", [{ type: "tool_result", toolCallId: call.id, content: permission.reason ?? "Tool permission denied", isError: true }]);
             continue;
           }
           const result = await this.executeTool(sessionId, call.name, call.id, call.input, controller.signal);
@@ -196,15 +260,47 @@ export class AgentRunner {
     }
   }
 
+  async respondPermission(sessionId: string, requestId: string, decision: PermissionDecision, reason?: string): Promise<boolean> {
+    const response = this.permissions.respond(sessionId, requestId, decision, reason);
+    if (!response) return false;
+    try {
+      if (response.persist) {
+        const session = await this.sessions.get(sessionId);
+        if (!session) throw new Error("Session not found");
+        const rule = permissionRule(response.tool, response.input);
+        const rules = [...(session.permissionRules ?? []).filter((item) => item.tool !== rule.tool || item.argumentPrefix !== rule.argumentPrefix), rule];
+        await this.sessions.updatePermissions(sessionId, session.permissionMode ?? "ask", rules);
+      }
+      response.complete();
+      return true;
+    } catch (error) {
+      response.complete(false, "Failed to persist permission rule");
+      throw error;
+    }
+  }
+
   abort(sessionId: string): boolean {
     const controller = this.running.get(sessionId);
     if (!controller) return false;
     controller.abort();
+    this.permissions.cancelSession(sessionId);
     return true;
   }
 
   isRunning(sessionId: string): boolean {
     return this.running.has(sessionId);
+  }
+
+  private async authorizeTool(sessionId: string, tool: string, input: Record<string, unknown>, signal: AbortSignal): Promise<{ allowed: boolean; reason?: string }> {
+    const session = await this.sessions.get(sessionId);
+    if (!session) return { allowed: false, reason: "Session not found" };
+    const mode = session.permissionMode ?? "ask";
+    const rules = session.permissionRules ?? [];
+    if (!this.permissions.needsApproval(mode, rules, tool, input)) return { allowed: true };
+    this.state(sessionId, "waiting_permission");
+    const result = await this.permissions.request(sessionId, tool, input, signal);
+    this.state(sessionId, "tool_running");
+    return { allowed: result.allowed, ...(result.reason ? { reason: result.reason } : {}) };
   }
 
   private async executeTool(
@@ -227,6 +323,29 @@ export class AgentRunner {
         return { type: "tool_result", toolCallId, content, isError: false };
       } catch (error) {
         return { type: "tool_result", toolCallId, content: error instanceof Error ? error.message : String(error), isError: true };
+      }
+    }
+    if (FILE_TOOLS.some((tool) => tool.name === name)) {
+      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+      this.state(sessionId, "tool_running");
+      try {
+        const session = await this.sessions.get(sessionId);
+        if (!session) throw new Error("Session not found");
+        const path = typeof input.path === "string" ? input.path : "";
+        if (!path) throw new Error(`${name} requires a non-empty path`);
+        let value: unknown;
+        if (name === "read_file") value = await this.core.readFile({ sessionId, path, ...(input.offset === undefined ? {} : { offset: Number(input.offset) }), ...(input.limit === undefined ? {} : { limit: Number(input.limit) }) });
+        else if (name === "write_file") value = await this.core.writeFile({ sessionId, path, content: String(input.content ?? ""), ...(input.createDirs === undefined ? {} : { createDirs: Boolean(input.createDirs) }) });
+        else if (name === "edit_file") value = await this.core.editFile({ sessionId, path, oldText: String(input.oldText ?? ""), newText: String(input.newText ?? ""), ...(input.replaceAll === undefined ? {} : { replaceAll: Boolean(input.replaceAll) }) });
+        else if (name === "glob") value = await this.core.globFiles({ sessionId, path, pattern: String(input.pattern ?? "") });
+        else value = await this.core.grepFiles({ sessionId, path, pattern: String(input.pattern ?? "") });
+        const bounded = await boundToolResult(this.sessions.contextRoot(sessionId), name, JSON.stringify(value));
+        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: value, truncated: bounded.truncated, ...(bounded.artifactId ? { artifactId: bounded.artifactId } : {}) } });
+        return { type: "tool_result", toolCallId, content: bounded.content, isError: false };
+      } catch (error) {
+        const content = error instanceof Error ? error.message : String(error);
+        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
+        return { type: "tool_result", toolCallId, content, isError: true };
       }
     }
     if (name !== "bash" || typeof input.cmd !== "string" || !input.cmd) {

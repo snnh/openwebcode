@@ -35,11 +35,26 @@ export interface ChatMessage {
   createdAt: string;
 }
 
+export type PermissionMode = "ask" | "acceptEdits" | "yolo";
+export interface PermissionRule { tool: string; argumentPrefix?: string }
+export interface SandboxPolicy {
+  enabled: boolean;
+  readRoots: string[];
+  writeRoots: string[];
+  denyPaths: string[];
+  network: "allow" | "deny";
+}
+
 export interface SessionMeta {
   id: string;
   cwd: string;
   provider: string;
   model: string;
+  thinking?: "adaptive" | "enabled" | "disabled";
+  effort?: "low" | "medium" | "high" | "xhigh" | "max";
+  permissionMode?: PermissionMode;
+  permissionRules?: PermissionRule[];
+  sandbox?: SandboxPolicy;
   title: string;
   createdAt: string;
   updatedAt: string;

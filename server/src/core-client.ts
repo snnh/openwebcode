@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import type { SandboxPolicy } from "./sessions/types.js";
 import { StdioTransport, type RpcTransport } from "./rpc/transport.js";
 
 interface RpcErrorBody {
@@ -35,6 +36,16 @@ export interface ExecResult {
   durationMs: number;
   truncated: boolean;
 }
+
+export interface FsPathRequest { sessionId: string; path: string }
+export interface FsReadRequest extends FsPathRequest { offset?: number; limit?: number }
+export interface FsWriteRequest extends FsPathRequest { content: string; createDirs?: boolean }
+export interface FsEditRequest extends FsPathRequest { oldText: string; newText: string; replaceAll?: boolean }
+export interface FsSearchRequest extends FsPathRequest { pattern: string }
+export interface FsReadResult { content: string; totalLines: number; encoding: "utf-8"; truncated: boolean }
+export interface FsListResult { entries: Array<{ name: string; type: "file" | "directory" | "other"; size: number }>; truncated: boolean }
+export interface FsGlobResult { paths: string[]; truncated: boolean }
+export interface FsGrepResult { matches: Array<{ path: string; line: number; text: string }>; truncated: boolean }
 
 export interface CoreEvent {
   source: "core";
@@ -115,6 +126,15 @@ export class CoreClient extends EventEmitter {
   run(request: ExecRequest): Promise<ExecResult> {
     return this.call<ExecResult>("exec.run", request, (request.timeoutMs ?? 120_000) + 10_000);
   }
+
+  configureSession(request: { sessionId: string; cwd: string; sandbox: SandboxPolicy }): Promise<{ sandboxCapability: string }> { return this.call("session.configure", request); }
+  cleanupSession(sessionId: string): Promise<{ ok: true }> { return this.call("session.cleanup", { sessionId }); }
+  readFile(request: FsReadRequest): Promise<FsReadResult> { return this.call("fs.read", request); }
+  writeFile(request: FsWriteRequest): Promise<{ ok: true }> { return this.call("fs.write", request); }
+  editFile(request: FsEditRequest): Promise<{ matches: number }> { return this.call("fs.edit", request); }
+  listFiles(request: FsPathRequest): Promise<FsListResult> { return this.call("fs.list", request); }
+  globFiles(request: FsSearchRequest): Promise<FsGlobResult> { return this.call("fs.glob", request); }
+  grepFiles(request: FsSearchRequest): Promise<FsGrepResult> { return this.call("fs.grep", request); }
 
   private async spawnAndHandshake(generation: number): Promise<CoreInfo> {
     const executable = this.resolveCorePath();

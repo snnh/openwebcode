@@ -1,10 +1,13 @@
 #include "exec_platform.h"
+#include "sandbox.h"
 
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -32,12 +35,14 @@ static void reap_child(pid_t child, int *status) {
 }
 
 int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *result) {
-    int out_pipe[2] = {-1, -1}, err_pipe[2] = {-1, -1};
+    int out_pipe[2] = {-1, -1}, err_pipe[2] = {-1, -1}, sandbox_pipe[2] = {-1, -1};
     int status = 0, running = 1, ok = 0, saved_error = 0;
     pid_t child = -1;
     long long started = now_ms();
     size_t forwarded = 0;
     unsigned sequence = 0;
+    owc_sandbox_result sandbox;
+    memset(&sandbox,0,sizeof(sandbox));
 
     if (started < 0) {
         result->system_error = (unsigned long)errno;
@@ -47,11 +52,12 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
         result->system_error = (unsigned long)errno;
         return 0;
     }
-    if (!make_pipe(err_pipe)) {
+    if (!make_pipe(err_pipe) || !make_pipe(sandbox_pipe)) {
         result->system_error = (unsigned long)errno;
-        close_fd(&out_pipe[0]); close_fd(&out_pipe[1]);
+        close_fd(&out_pipe[0]); close_fd(&out_pipe[1]); close_fd(&err_pipe[0]); close_fd(&err_pipe[1]); close_fd(&sandbox_pipe[0]); close_fd(&sandbox_pipe[1]);
         return 0;
     }
+    if(fcntl(sandbox_pipe[1],F_SETFD,FD_CLOEXEC)<0){result->system_error=(unsigned long)errno;close_fd(&out_pipe[0]);close_fd(&out_pipe[1]);close_fd(&err_pipe[0]);close_fd(&err_pipe[1]);close_fd(&sandbox_pipe[0]);close_fd(&sandbox_pipe[1]);return 0;}
     child = fork();
     if (child < 0) {
         result->system_error = (unsigned long)errno;
@@ -60,16 +66,18 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
     }
     if (child == 0) {
         (void)setpgid(0, 0);
-        close(out_pipe[0]); close(err_pipe[0]);
+        close(out_pipe[0]); close(err_pipe[0]); close(sandbox_pipe[0]);
         if (dup2(out_pipe[1], STDOUT_FILENO) < 0 || dup2(err_pipe[1], STDERR_FILENO) < 0) _exit(126);
         close(out_pipe[1]); close(err_pipe[1]);
         if (chdir(request->cwd) != 0) _exit(126);
+        if(request->sandbox_enabled){if(!owc_landlock_apply(request->cwd,request->allow_network,&sandbox)){(void)write(sandbox_pipe[1],&sandbox,sizeof(sandbox));}else (void)write(sandbox_pipe[1],&sandbox,sizeof(sandbox));}
+        else{sandbox.status=OWC_SANDBOX_ADVISORY;(void)snprintf(sandbox.reason,sizeof(sandbox.reason),"sandbox disabled by session policy");(void)write(sandbox_pipe[1],&sandbox,sizeof(sandbox));}
         execl("/bin/sh", "sh", "-c", request->command, (char *)NULL);
         _exit(127);
     }
 
     (void)setpgid(child, child);
-    close_fd(&out_pipe[1]); close_fd(&err_pipe[1]);
+    close_fd(&out_pipe[1]); close_fd(&err_pipe[1]); close_fd(&sandbox_pipe[1]);
     if (fcntl(out_pipe[0], F_SETFL, fcntl(out_pipe[0], F_GETFL) | O_NONBLOCK) < 0 ||
         fcntl(err_pipe[0], F_SETFL, fcntl(err_pipe[0], F_GETFL) | O_NONBLOCK) < 0) {
         saved_error = errno;
@@ -122,6 +130,7 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
             else if (waited < 0 && errno != EINTR) { saved_error=errno; goto cleanup; }
         }
     }
+    {ssize_t received;do{received=read(sandbox_pipe[0],&sandbox,sizeof(sandbox));}while(received<0&&errno==EINTR);if(received==(ssize_t)sizeof(sandbox)){result->sandbox_status=(int)sandbox.status;(void)snprintf(result->sandbox_reason,sizeof(result->sandbox_reason),"%s",sandbox.reason);}else{result->sandbox_status=(int)OWC_SANDBOX_ADVISORY;(void)snprintf(result->sandbox_reason,sizeof(result->sandbox_reason),"child did not report sandbox status");}}
     result->duration_ms=now_ms()-started;
     if (WIFEXITED(status)) result->exit_code=WEXITSTATUS(status);
     else if (WIFSIGNALED(status)) result->exit_code=128+WTERMSIG(status);
@@ -133,6 +142,6 @@ cleanup:
         if (running) reap_child(child, &status);
         result->system_error=(unsigned long)(saved_error ? saved_error : EIO);
     }
-    close_fd(&out_pipe[0]); close_fd(&out_pipe[1]); close_fd(&err_pipe[0]); close_fd(&err_pipe[1]);
+    close_fd(&out_pipe[0]); close_fd(&out_pipe[1]); close_fd(&err_pipe[0]); close_fd(&err_pipe[1]); close_fd(&sandbox_pipe[0]); close_fd(&sandbox_pipe[1]);
     return ok;
 }

@@ -1,3 +1,4 @@
+import type { EffortLevel, ThinkingMode } from "../context/model-profile.js";
 import type { ChatMessage } from "../sessions/types.js";
 
 export interface ProviderTool {
@@ -8,8 +9,11 @@ export interface ProviderTool {
 
 export interface StreamChatRequest {
   model: string;
+  thinking?: ThinkingMode;
+  effort?: EffortLevel;
   system: string;
   messages: ChatMessage[];
+  cacheBreakpoints?: string[];
   tools: ProviderTool[];
   signal: AbortSignal;
 }

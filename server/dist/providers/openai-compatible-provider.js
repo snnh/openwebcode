@@ -24,6 +24,7 @@ export class OpenAICompatibleProvider {
                     stream: true,
                     stream_options: { include_usage: true },
                     max_tokens: this.maxTokens,
+                    ...(this.options.reasoningEffort !== false && request.effort ? { reasoning_effort: request.effort } : {}),
                     messages: toOpenAIMessages(request.system, request.messages),
                     tools: request.tools.map((tool) => ({
                         type: "function",
@@ -54,11 +55,15 @@ export class OpenAICompatibleProvider {
                     break;
                 const chunk = JSON.parse(data);
                 if (chunk.usage) {
+                    const cachedTokens = chunk.usage.prompt_tokens_details?.cached_tokens ?? 0;
+                    if (!Number.isSafeInteger(cachedTokens) || cachedTokens < 0 || cachedTokens > chunk.usage.prompt_tokens) {
+                        throw new Error("OpenAI-compatible provider returned invalid cached token usage");
+                    }
                     yield {
                         type: "usage",
-                        inputTokens: chunk.usage.prompt_tokens,
+                        inputTokens: chunk.usage.prompt_tokens - cachedTokens,
                         outputTokens: chunk.usage.completion_tokens,
-                        cacheRead: chunk.usage.prompt_tokens_details?.cached_tokens ?? 0,
+                        cacheRead: cachedTokens,
                         cacheWrite: 0,
                     };
                 }

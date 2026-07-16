@@ -34,10 +34,10 @@ export class AnthropicProvider implements Provider {
         {
           model: request.model,
           max_tokens: this.maxTokens,
-          thinking: { type: "adaptive", display: "summarized" },
-          output_config: { effort: "high" },
+          ...(anthropicThinking(request, this.maxTokens) ? { thinking: anthropicThinking(request, this.maxTokens)! } : {}),
+          ...(request.effort ? { output_config: { effort: request.effort } } : {}),
           system: request.system,
-          messages: toAnthropicMessages(request.messages),
+          messages: toAnthropicMessages(request.messages, new Set(request.cacheBreakpoints ?? [])),
           tools: request.tools.map(toAnthropicTool),
           ...(this.promptCaching ? { cache_control: { type: "ephemeral" as const } } : {}),
         },
@@ -85,10 +85,18 @@ export class AnthropicProvider implements Provider {
   }
 }
 
-function toAnthropicMessages(messages: ChatMessage[]): Anthropic.MessageParam[] {
+function anthropicThinking(request: StreamChatRequest, maxTokens: number): Anthropic.ThinkingConfigParam | undefined {
+  if (!request.thinking || request.thinking === "disabled") return undefined;
+  if (request.thinking === "adaptive") return { type: "adaptive", display: "summarized" };
+  if (maxTokens < 2) throw new Error("Enabled thinking requires maxTokens of at least 2");
+  return { type: "enabled", budget_tokens: Math.min(16_000, maxTokens - 1) };
+}
+
+function toAnthropicMessages(messages: ChatMessage[], breakpoints: ReadonlySet<string>): Anthropic.MessageParam[] {
   return messages.map((message): Anthropic.MessageParam => {
+    let result: Anthropic.MessageParam;
     if (message.role === "tool") {
-      return {
+      result = {
         role: "user",
         content: message.content
           .filter((block) => block.type === "tool_result")
@@ -99,25 +107,30 @@ function toAnthropicMessages(messages: ChatMessage[]): Anthropic.MessageParam[] 
             is_error: block.isError,
           })),
       };
-    }
-    if (message.role === "user") {
-      return {
+    } else if (message.role === "user") {
+      result = {
         role: "user",
         content: message.content
           .filter((block) => block.type === "text")
           .map((block) => ({ type: "text" as const, text: block.text })),
       };
-    }
-    const content: Anthropic.ContentBlockParam[] = [];
-    for (const block of message.content) {
-      if (block.type === "text") content.push({ type: "text", text: block.text });
-      else if (block.type === "tool_call") {
-        content.push({ type: "tool_use", id: block.id, name: block.name, input: block.input });
-      } else if (block.type === "thinking" && block.provider === "anthropic" && block.signature) {
-        content.push({ type: "thinking", thinking: block.text, signature: block.signature });
+    } else {
+      const content: Anthropic.ContentBlockParam[] = [];
+      for (const block of message.content) {
+        if (block.type === "text") content.push({ type: "text", text: block.text });
+        else if (block.type === "tool_call") {
+          content.push({ type: "tool_use", id: block.id, name: block.name, input: block.input });
+        } else if (block.type === "thinking" && block.provider === "anthropic" && block.signature) {
+          content.push({ type: "thinking", thinking: block.text, signature: block.signature });
+        }
       }
+      result = { role: "assistant", content };
     }
-    return { role: "assistant", content };
+    if (breakpoints.has(message.id) && Array.isArray(result.content) && result.content.length > 0) {
+      const last = result.content.length - 1;
+      result.content[last] = { ...result.content[last], cache_control: { type: "ephemeral" } } as typeof result.content[number];
+    }
+    return result;
   });
 }
 

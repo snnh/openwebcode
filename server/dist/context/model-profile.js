@@ -1,9 +1,65 @@
 const PROFILES = {
-    "claude-opus-4-8": { id: "claude-opus-4-8", contextWindow: 1_000_000, maxOutput: 128_000 },
-    "claude-sonnet-5": { id: "claude-sonnet-5", contextWindow: 1_000_000, maxOutput: 128_000 },
-    "claude-haiku-4-5": { id: "claude-haiku-4-5", contextWindow: 200_000, maxOutput: 64_000 },
+    "claude-opus-4-8": {
+        id: "claude-opus-4-8",
+        provider: "anthropic",
+        contextWindow: 1_000_000,
+        maxOutput: 128_000,
+        capabilities: {
+            modalities: ["text", "image"],
+            thinking: ["adaptive", "disabled"],
+            effort: ["low", "medium", "high", "xhigh", "max"],
+            tools: true,
+        },
+    },
+    "claude-sonnet-5": {
+        id: "claude-sonnet-5",
+        provider: "anthropic",
+        contextWindow: 1_000_000,
+        maxOutput: 128_000,
+        capabilities: {
+            modalities: ["text", "image"],
+            thinking: ["adaptive", "disabled"],
+            effort: ["low", "medium", "high", "xhigh", "max"],
+            tools: true,
+        },
+    },
+    "claude-haiku-4-5": {
+        id: "claude-haiku-4-5",
+        provider: "anthropic",
+        contextWindow: 200_000,
+        maxOutput: 64_000,
+        capabilities: {
+            modalities: ["text", "image"],
+            thinking: ["enabled", "disabled"],
+            effort: [],
+            tools: true,
+        },
+    },
 };
-const FALLBACK = { id: "unknown", contextWindow: 200_000, maxOutput: 16_000 };
+const FALLBACK_CAPABILITIES = {
+    modalities: ["text"],
+    thinking: [],
+    effort: [],
+    tools: false,
+};
+const FALLBACK = {
+    id: "unknown",
+    provider: "unknown",
+    contextWindow: 200_000,
+    maxOutput: 16_000,
+    capabilities: FALLBACK_CAPABILITIES,
+};
+export function listModelProfiles() {
+    return Object.values(PROFILES).map((profile) => ({
+        ...profile,
+        capabilities: {
+            ...profile.capabilities,
+            modalities: [...profile.capabilities.modalities],
+            thinking: [...profile.capabilities.thinking],
+            effort: [...profile.capabilities.effort],
+        },
+    }));
+}
 export function getModelProfile(model) {
     return PROFILES[model] ?? { ...FALLBACK, id: model };
 }

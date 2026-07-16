@@ -11,17 +11,19 @@ const DEFAULT_POLICY = {
 };
 export class ContextManager {
     sessionRoot;
+    static operations = new Map();
     constructor(sessionRoot) {
         this.sessionRoot = sessionRoot;
     }
     async load() {
         try {
-            return JSON.parse(await readFile(path.join(this.sessionRoot, "ledger.json"), "utf8"));
+            const ledger = JSON.parse(await readFile(path.join(this.sessionRoot, "ledger.json"), "utf8"));
+            return normalizeLedger(ledger);
         }
         catch (error) {
             if (!isMissing(error))
                 throw error;
-            return { version: 1, round: 0, policy: { ...DEFAULT_POLICY }, entries: [], usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0 } };
+            return normalizeLedger({});
         }
     }
     async save(ledger) {
@@ -52,66 +54,143 @@ export class ContextManager {
     }
     async budgetStatus() {
         const ledger = await this.load();
-        const used = ledger.usage.inputTokens + ledger.usage.outputTokens;
-        const limit = ledger.policy.maxSessionTokens;
-        return { ...(limit === undefined ? {} : { limit }), used, paused: limit !== undefined && used >= limit };
+        const tokenUsed = ledger.usage.inputTokens + ledger.usage.outputTokens;
+        const tokenLimit = ledger.policy.maxSessionTokens;
+        const tokenPaused = tokenLimit !== undefined && tokenUsed >= tokenLimit;
+        const costLimit = ledger.policy.maxSessionCost;
+        const usedMicroUnits = costLimit?.currency === "CNY" ? ledger.cost.cnyMicroUnits : ledger.cost.usdMicroUnits;
+        const unavailableTokens = costLimit?.currency === "CNY" ? ledger.cost.unavailableCnyTokens : ledger.cost.unavailableUsdTokens;
+        const costUnavailable = costLimit !== undefined &&
+            (ledger.cost.unpricedTokens > 0 || unavailableTokens > 0);
+        const costPaused = costLimit !== undefined && (costUnavailable || BigInt(usedMicroUnits) >= BigInt(costLimit.microUnits));
+        return {
+            token: { ...(tokenLimit === undefined ? {} : { limit: tokenLimit }), used: tokenUsed, paused: tokenPaused },
+            cost: {
+                ...(costLimit === undefined ? {} : { limit: { ...costLimit } }),
+                usedMicroUnits,
+                paused: costPaused,
+                ...(costPaused ? { reason: costUnavailable ? "cost_unavailable" : "cost_exhausted" } : {}),
+            },
+            paused: tokenPaused || costPaused,
+        };
+    }
+    async updateBudget(update) {
+        return this.serial(async () => {
+            const ledger = await this.load();
+            if ("maxSessionTokens" in update) {
+                const value = update.maxSessionTokens;
+                if (value !== undefined && (!Number.isSafeInteger(value) || value < 1)) {
+                    throw new Error("maxSessionTokens must be a positive integer");
+                }
+                if (value === undefined)
+                    delete ledger.policy.maxSessionTokens;
+                else
+                    ledger.policy.maxSessionTokens = value;
+            }
+            if ("maxSessionCost" in update) {
+                const value = update.maxSessionCost;
+                if (value !== undefined &&
+                    (!/^[1-9]\d*$/.test(value.microUnits) || !["USD", "CNY"].includes(value.currency))) {
+                    throw new Error("maxSessionCost must contain a positive integer microUnits and USD or CNY currency");
+                }
+                if (value === undefined)
+                    delete ledger.policy.maxSessionCost;
+                else
+                    ledger.policy.maxSessionCost = { ...value };
+            }
+            await this.save(ledger);
+            return ledger;
+        });
+    }
+    async setBudget(maxSessionTokens, maxSessionCost) {
+        return this.updateBudget({ maxSessionTokens, maxSessionCost });
     }
     async setTokenBudget(maxSessionTokens) {
-        const ledger = await this.load();
-        if (maxSessionTokens !== undefined && (!Number.isSafeInteger(maxSessionTokens) || maxSessionTokens < 1)) {
-            throw new Error("maxSessionTokens must be a positive integer");
-        }
-        if (maxSessionTokens === undefined)
-            delete ledger.policy.maxSessionTokens;
-        else
-            ledger.policy.maxSessionTokens = maxSessionTokens;
-        await this.save(ledger);
-        return ledger;
+        return this.updateBudget({ maxSessionTokens });
     }
-    async recordUsage(usage) {
-        const ledger = await this.load();
-        ledger.usage.inputTokens += usage.inputTokens;
-        ledger.usage.outputTokens += usage.outputTokens;
-        ledger.usage.cacheRead += usage.cacheRead;
-        ledger.usage.cacheWrite += usage.cacheWrite;
-        await this.save(ledger);
-        return ledger;
+    async recordUsage(usage, cost) {
+        return this.serial(async () => {
+            const ledger = await this.load();
+            ledger.usage.inputTokens += usage.inputTokens;
+            ledger.usage.outputTokens += usage.outputTokens;
+            ledger.usage.cacheRead += usage.cacheRead;
+            ledger.usage.cacheWrite += usage.cacheWrite;
+            if (cost) {
+                const billedTokens = usage.inputTokens + usage.outputTokens + usage.cacheRead + usage.cacheWrite;
+                if (!cost.priced) {
+                    ledger.cost.unpricedTokens += billedTokens;
+                }
+                else {
+                    if (!cost.usdMicroUnits)
+                        ledger.cost.unavailableUsdTokens += billedTokens;
+                    if (!cost.cnyMicroUnits)
+                        ledger.cost.unavailableCnyTokens += billedTokens;
+                }
+                if (cost.usdMicroUnits)
+                    ledger.cost.usdMicroUnits = addIntegers(ledger.cost.usdMicroUnits, cost.usdMicroUnits);
+                if (cost.cnyMicroUnits)
+                    ledger.cost.cnyMicroUnits = addIntegers(ledger.cost.cnyMicroUnits, cost.cnyMicroUnits);
+                if (cost.exchangeRate)
+                    ledger.cost.lastExchangeRate = { ...cost.exchangeRate };
+            }
+            await this.save(ledger);
+            return ledger;
+        });
+    }
+    async replaceLedger(value) {
+        return this.serial(async () => {
+            const ledger = normalizeLedger(value && typeof value === "object" ? value : {});
+            await this.save(ledger);
+            return ledger;
+        });
+    }
+    async recordCacheBreakpoints(messageIds) {
+        return this.serial(async () => {
+            const ledger = await this.load();
+            ledger.cacheBreakpoints = [...new Set(messageIds)].slice(-3);
+            await this.save(ledger);
+            return ledger;
+        });
     }
     async advanceRound() {
-        const ledger = await this.load();
-        ledger.round += 1;
-        await this.save(ledger);
-        return ledger;
+        return this.serial(async () => {
+            const ledger = await this.load();
+            ledger.round += 1;
+            await this.save(ledger);
+            return ledger;
+        });
     }
     async evict(messages) {
-        const ledger = await this.load();
-        const toolMessages = messages.filter((message) => message.role === "tool");
-        if (!ledger.policy.enabled || ledger.policy.strategy === "off")
-            return ledger;
-        const eligible = ledger.policy.strategy === "lag"
-            ? toolMessages.slice(0, Math.max(0, toolMessages.length - ledger.policy.lag))
-            : ledger.policy.strategy === "interval" && ledger.round % Math.max(1, ledger.policy.interval) === 0
+        return this.serial(async () => {
+            const ledger = await this.load();
+            const toolMessages = messages.filter((message) => message.role === "tool");
+            if (!ledger.policy.enabled || ledger.policy.strategy === "off")
+                return ledger;
+            const eligible = ledger.policy.strategy === "lag"
                 ? toolMessages.slice(0, Math.max(0, toolMessages.length - ledger.policy.lag))
-                : [];
-        for (const message of eligible) {
-            const existing = ledger.entries.find((entry) => entry.messageId === message.id);
-            if (existing) {
-                if (existing.pinnedUntilRound >= ledger.round)
+                : ledger.policy.strategy === "interval" && ledger.round % Math.max(1, ledger.policy.interval) === 0
+                    ? toolMessages.slice(0, Math.max(0, toolMessages.length - ledger.policy.lag))
+                    : [];
+            for (const message of eligible) {
+                const existing = ledger.entries.find((entry) => entry.messageId === message.id);
+                if (existing) {
+                    if (existing.pinnedUntilRound >= ledger.round)
+                        continue;
+                    existing.state = "evicted";
+                    delete existing.restoredAt;
                     continue;
-                existing.state = "evicted";
-                delete existing.restoredAt;
-                continue;
+                }
+                const result = message.content.find((block) => block.type === "tool_result");
+                if (!result || result.type !== "tool_result")
+                    continue;
+                const artifactId = `artifact-${randomUUID()}`;
+                await mkdir(path.join(this.sessionRoot, "artifacts"), { recursive: true });
+                await writeFile(path.join(this.sessionRoot, "artifacts", `${artifactId}.txt`), result.content, "utf8");
+                ledger.entries.push({ messageId: message.id, kind: "tool_result", artifactId, state: "evicted", createdRound: ledger.round, pinnedUntilRound: 0 });
             }
-            const result = message.content.find((block) => block.type === "tool_result");
-            if (!result || result.type !== "tool_result")
-                continue;
-            const artifactId = `artifact-${randomUUID()}`;
-            await mkdir(path.join(this.sessionRoot, "artifacts"), { recursive: true });
-            await writeFile(path.join(this.sessionRoot, "artifacts", `${artifactId}.txt`), result.content, "utf8");
-            ledger.entries.push({ messageId: message.id, kind: "tool_result", artifactId, state: "evicted", createdRound: ledger.round, pinnedUntilRound: 0 });
-        }
-        await this.save(ledger);
-        return ledger;
+            await this.save(ledger);
+            return ledger;
+        });
     }
     async readArtifact(artifactId, offset, limit) {
         if (!/^artifact-[0-9a-f-]{36}$/.test(artifactId))
@@ -130,17 +209,93 @@ export class ContextManager {
             throw error;
         }
     }
-    async restore(messageId) {
-        const ledger = await this.load();
-        const entry = ledger.entries.find((candidate) => candidate.messageId === messageId);
-        if (!entry)
-            throw new Error("No evicted tool result for message");
-        entry.state = "restored";
-        entry.restoredAt = new Date().toISOString();
-        entry.pinnedUntilRound = ledger.round + ledger.policy.pinExemptRounds;
-        await this.save(ledger);
-        return ledger;
+    serial(operation) {
+        const previous = ContextManager.operations.get(this.sessionRoot) ?? Promise.resolve();
+        const result = previous.then(operation, operation);
+        const settled = result.then(() => undefined, () => undefined);
+        ContextManager.operations.set(this.sessionRoot, settled);
+        void settled.finally(() => {
+            if (ContextManager.operations.get(this.sessionRoot) === settled) {
+                ContextManager.operations.delete(this.sessionRoot);
+            }
+        });
+        return result;
     }
+    async restore(messageId) {
+        return this.serial(async () => {
+            const ledger = await this.load();
+            const entry = ledger.entries.find((candidate) => candidate.messageId === messageId);
+            if (!entry)
+                throw new Error("No evicted tool result for message");
+            entry.state = "restored";
+            entry.restoredAt = new Date().toISOString();
+            entry.pinnedUntilRound = ledger.round + ledger.policy.pinExemptRounds;
+            await this.save(ledger);
+            return ledger;
+        });
+    }
+}
+function normalizePolicy(value) {
+    const policy = { ...DEFAULT_POLICY, ...(value ?? {}) };
+    const cost = value?.maxSessionCost;
+    if (cost && (cost.currency === "USD" || cost.currency === "CNY") && /^[1-9]\d*$/.test(cost.microUnits)) {
+        policy.maxSessionCost = { ...cost };
+    }
+    else {
+        delete policy.maxSessionCost;
+    }
+    if (policy.maxSessionTokens !== undefined && (!Number.isSafeInteger(policy.maxSessionTokens) || policy.maxSessionTokens < 1)) {
+        delete policy.maxSessionTokens;
+    }
+    return policy;
+}
+function normalizeLedger(value) {
+    const usage = value.usage;
+    const cost = value.cost;
+    return {
+        version: 1,
+        round: Number.isSafeInteger(value.round) && (value.round ?? -1) >= 0 ? value.round : 0,
+        policy: normalizePolicy(value.policy),
+        entries: Array.isArray(value.entries) ? value.entries : [],
+        usage: {
+            inputTokens: safeTokenCount(usage?.inputTokens),
+            outputTokens: safeTokenCount(usage?.outputTokens),
+            cacheRead: safeTokenCount(usage?.cacheRead),
+            cacheWrite: safeTokenCount(usage?.cacheWrite),
+        },
+        cost: {
+            usdMicroUnits: integerString(cost?.usdMicroUnits),
+            cnyMicroUnits: integerString(cost?.cnyMicroUnits),
+            unpricedTokens: safeTokenCount(cost?.unpricedTokens),
+            unavailableUsdTokens: safeTokenCount(cost?.unavailableUsdTokens),
+            unavailableCnyTokens: safeTokenCount(cost?.unavailableCnyTokens),
+            ...(cost?.lastExchangeRate ? { lastExchangeRate: { ...cost.lastExchangeRate } } : {}),
+        },
+        cacheBreakpoints: Array.isArray(value.cacheBreakpoints)
+            ? value.cacheBreakpoints.filter((item) => typeof item === "string").slice(-3)
+            : [],
+    };
+}
+export function selectCacheBreakpoints(messages, ledger) {
+    const selected = [];
+    const lastEvicted = [...ledger.entries].reverse().find((entry) => entry.state === "evicted");
+    if (lastEvicted)
+        selected.push(lastEvicted.messageId);
+    const users = messages.filter((message) => message.role === "user");
+    if (users.length >= 2)
+        selected.push(users[users.length - 2].id);
+    return [...new Set(selected)].slice(-3);
+}
+function safeTokenCount(value) {
+    return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : 0;
+}
+function integerString(value) {
+    return typeof value === "string" && /^\d+$/.test(value) ? value : "0";
+}
+function addIntegers(left, right) {
+    if (!/^\d+$/.test(right))
+        throw new Error("Cost must be a non-negative integer string");
+    return (BigInt(left) + BigInt(right)).toString();
 }
 function isMissing(error) {
     return error instanceof Error && "code" in error && error.code === "ENOENT";

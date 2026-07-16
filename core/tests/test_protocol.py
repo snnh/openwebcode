@@ -2,6 +2,7 @@
 import base64
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -48,7 +49,8 @@ def main():
         response, notes = collect_until_response(proc, "ping-中文")
         assert not notes
         assert response["result"]["version"] == "0.1.0"
-        assert response["result"]["sandboxCapability"] == "advisory"
+        assert response["result"]["sandboxCapability"] in {"advisory", "partial", "enforced"}
+        assert response["result"]["sandboxReason"]
 
         request(proc, None, "core.ping")
         response, notes = collect_until_response(proc, None)
@@ -66,12 +68,19 @@ def main():
         response, _ = collect_until_response(proc, 2)
         assert response["error"]["code"] == -32601
 
-        if os.name == "nt":
+        if os.name == "nt" and shutil.which("pwsh"):
+            command = "Write-Output hello; [Console]::Error.WriteLine('error'); exit 7"
+            slow = "Start-Sleep -Seconds 5"
+        elif os.name == "nt":
             command = "echo hello&& echo error 1>&2&& exit /b 7"
             slow = "ping -n 6 127.0.0.1 >nul"
         else:
             command = "printf hello; printf error >&2; exit 7"
             slow = "sleep 5"
+
+        request(proc, 21, "session.configure", {"sessionId": "s1", "cwd": os.getcwd(), "sandbox": {"enabled": False, "denyPaths": [], "network": "allow"}})
+        response, _ = collect_until_response(proc, 21)
+        assert response["result"]["sandboxCapability"] in {"advisory", "partial", "enforced"}
 
         request(proc, 3, "exec.run", {"sessionId": "s1", "execId": "e1", "cmd": command, "cwd": os.getcwd(), "timeoutMs": 5000})
         response, notes = collect_until_response(proc, 3)
