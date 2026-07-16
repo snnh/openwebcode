@@ -1,5 +1,8 @@
 import Fastify, { type FastifyInstance } from "fastify";
+import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import type { AgentRunner } from "./agent/agent-runner.js";
 import { CoreRpcError, type CoreClient, type ExecRequest } from "./core-client.js";
 import { ContextManager, type BudgetUpdate } from "./context/context-manager.js";
@@ -45,6 +48,7 @@ export interface ServerDependencies {
   pricing: PricingCatalog;
   defaultCurrency?: Currency;
   defaultLanguage?: string;
+  webDist?: string;
 }
 
 function serializePricing(pricing: ModelPricing): Record<string, string> {
@@ -63,12 +67,15 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   const defaultLanguage = dependencies.defaultLanguage ?? "zh-CN";
   const app = Fastify({ logger: true, bodyLimit: 1024 * 1024 });
   await app.register(websocket);
-  const clients = new Set<{ send(data: string): void; readyState: number }>();
+  if (dependencies.webDist && existsSync(dependencies.webDist)) {
+    await app.register(fastifyStatic, { root: dependencies.webDist, prefix: "/" });
+  }
+  const clients = new Set<{ send(data: string): void; readonly readyState: number; sessionId?: string }>();
 
   events.on("event", (event: AppEvent) => {
     const serialized = JSON.stringify(event);
     for (const client of clients) {
-      if (client.readyState === 1) client.send(serialized);
+      if (client.readyState === 1 && (!client.sessionId || !event.sessionId || client.sessionId === event.sessionId)) client.send(serialized);
     }
   });
 
@@ -206,6 +213,24 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     }
   });
 
+  app.get<{ Params: { id: string }; Querystring: { path?: string } }>("/api/sessions/:id/files", async (request, reply) => {
+    const session = await sessions.get(request.params.id);
+    if (!session) return reply.code(404).send({ error: "Session not found" });
+    await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? { enabled: true, readRoots: [session.cwd], writeRoots: [session.cwd], denyPaths: [], network: "allow" } });
+    return core.listFiles({ sessionId: request.params.id, path: request.query.path || "." });
+  });
+  app.get<{ Params: { id: string }; Querystring: { path?: string } }>("/api/sessions/:id/files/content", async (request, reply) => {
+    const session = await sessions.get(request.params.id);
+    if (!session) return reply.code(404).send({ error: "Session not found" });
+    if (!request.query.path) return reply.code(400).send({ error: "path is required" });
+    await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? { enabled: true, readRoots: [session.cwd], writeRoots: [session.cwd], denyPaths: [], network: "allow" } });
+    return core.readFile({ sessionId: request.params.id, path: request.query.path });
+  });
+  app.get<{ Params: { id: string; checkpointId: string } }>("/api/sessions/:id/checkpoints/:checkpointId/diff", async (request, reply) => {
+    const session = await sessions.get(request.params.id); if (!session) return reply.code(404).send({ error: "Session not found" });
+    return { diff: await new GitShadowSnapshots(sessions.contextRoot(session.id), session.cwd).diff(request.params.checkpointId) };
+  });
+
   app.get<{ Params: { id: string } }>("/api/sessions/:id/checkpoints", async (request, reply) => {
     const session = await sessions.get(request.params.id); if (!session) return reply.code(404).send({ error: "Session not found" });
     return new GitShadowSnapshots(sessions.contextRoot(session.id), session.cwd).list();
@@ -245,7 +270,12 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       }
       if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
       if (agent.isRunning(request.params.id)) {
-        return reply.code(409).send({ error: "Session agent is already running" });
+        try {
+          const queued = agent.enqueueSteering(request.params.id, request.body.content);
+          return reply.code(202).send({ accepted: true, queued: true, ...queued });
+        } catch (error) {
+          return reply.code(error instanceof Error && error.message.includes("full") ? 429 : 409).send({ error: error instanceof Error ? error.message : String(error) });
+        }
       }
       const budget = await new ContextManager(sessions.contextRoot(request.params.id)).budgetStatus();
       if (budget.paused) {
@@ -269,15 +299,46 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     return { accepted: true };
   });
 
+  app.get<{ Params: { id: string } }>("/api/sessions/:id/steering", async (request, reply) => {
+    if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
+    return agent.listSteering(request.params.id);
+  });
+  app.delete<{ Params: { id: string; steeringId: string } }>("/api/sessions/:id/steering/:steeringId", async (request, reply) => {
+    if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
+    if (!agent.removeSteering(request.params.id, request.params.steeringId)) return reply.code(404).send({ error: "Steering item not found" });
+    return reply.code(204).send();
+  });
+
   app.post<{ Params: { id: string } }>("/api/sessions/:id/abort", async (request, reply) => {
     if (!agent.abort(request.params.id)) return reply.code(409).send({ error: "Session is not running" });
     return reply.code(202).send({ accepted: true });
   });
 
-  app.get("/api/events", { websocket: true }, (socket) => {
-    clients.add(socket);
-    socket.send(JSON.stringify({ source: "server", type: "connected", payload: null }));
-    socket.on("close", () => clients.delete(socket));
+  app.get<{ Querystring: { after?: string; sessionId?: string } }>("/api/events", { websocket: true }, (socket, request) => {
+    const parsedAfter = Number(request.query.after ?? 0);
+    const after = Number.isSafeInteger(parsedAfter) && parsedAfter >= 0 ? parsedAfter : 0;
+    const sessionId = request.query.sessionId;
+    const replay = events.replay(after, sessionId);
+    if (replay.requiresResync) {
+      socket.send(JSON.stringify({
+        source: "server",
+        type: "resync.required",
+        seq: replay.latestSeq,
+        createdAt: new Date().toISOString(),
+        ...(sessionId ? { sessionId } : {}),
+        payload: { after, latestSeq: replay.latestSeq },
+      }));
+    } else {
+      for (const event of replay.events) socket.send(JSON.stringify(event));
+    }
+    const client = {
+      get readyState(): number { return socket.readyState; },
+      send: (data: string) => socket.send(data),
+      ...(sessionId ? { sessionId } : {}),
+    };
+    clients.add(client);
+    socket.send(JSON.stringify({ source: "server", type: "connected", seq: replay.latestSeq, createdAt: new Date().toISOString(), payload: { latestSeq: replay.latestSeq } }));
+    socket.on("close", () => clients.delete(client));
   });
 
   app.setErrorHandler((error, _request, reply) => {
@@ -285,6 +346,8 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     let code = 500;
     if (normalized instanceof CoreRpcError) {
       if (normalized.code === -32602 || normalized.code === -32600) code = 400;
+      else if (normalized.code === -32003) code = 404;
+      else if (normalized.code === -32002) code = 403;
       else if (normalized.code === -32001) code = 504;
       else code = 502;
     } else if (normalized.message === "Invalid session ID") {

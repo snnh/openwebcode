@@ -47,6 +47,7 @@ const app = await buildServer({
     events,
     providers,
     pricing,
+    webDist: path.resolve(moduleDirectory, "../../web/dist"),
     defaultCurrency: config.defaultCurrency,
     defaultLanguage: config.defaultLanguage,
 });

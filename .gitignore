@@ -58,3 +58,5 @@ docs/
 build/
 .claude/
 server/node_modules/
+web/node_modules/
+web/dist/
