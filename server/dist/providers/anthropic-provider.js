@@ -20,10 +20,10 @@ export class AnthropicProvider {
             const stream = this.client.messages.stream({
                 model: request.model,
                 max_tokens: this.maxTokens,
-                thinking: { type: "adaptive", display: "summarized" },
-                output_config: { effort: "high" },
+                ...(anthropicThinking(request, this.maxTokens) ? { thinking: anthropicThinking(request, this.maxTokens) } : {}),
+                ...(request.effort ? { output_config: { effort: request.effort } } : {}),
                 system: request.system,
-                messages: toAnthropicMessages(request.messages),
+                messages: toAnthropicMessages(request.messages, new Set(request.cacheBreakpoints ?? [])),
                 tools: request.tools.map(toAnthropicTool),
                 ...(this.promptCaching ? { cache_control: { type: "ephemeral" } } : {}),
             }, { signal: request.signal });
@@ -70,10 +70,20 @@ export class AnthropicProvider {
         }
     }
 }
-function toAnthropicMessages(messages) {
+function anthropicThinking(request, maxTokens) {
+    if (!request.thinking || request.thinking === "disabled")
+        return undefined;
+    if (request.thinking === "adaptive")
+        return { type: "adaptive", display: "summarized" };
+    if (maxTokens < 2)
+        throw new Error("Enabled thinking requires maxTokens of at least 2");
+    return { type: "enabled", budget_tokens: Math.min(16_000, maxTokens - 1) };
+}
+function toAnthropicMessages(messages, breakpoints) {
     return messages.map((message) => {
+        let result;
         if (message.role === "tool") {
-            return {
+            result = {
                 role: "user",
                 content: message.content
                     .filter((block) => block.type === "tool_result")
@@ -85,26 +95,33 @@ function toAnthropicMessages(messages) {
                 })),
             };
         }
-        if (message.role === "user") {
-            return {
+        else if (message.role === "user") {
+            result = {
                 role: "user",
                 content: message.content
                     .filter((block) => block.type === "text")
                     .map((block) => ({ type: "text", text: block.text })),
             };
         }
-        const content = [];
-        for (const block of message.content) {
-            if (block.type === "text")
-                content.push({ type: "text", text: block.text });
-            else if (block.type === "tool_call") {
-                content.push({ type: "tool_use", id: block.id, name: block.name, input: block.input });
+        else {
+            const content = [];
+            for (const block of message.content) {
+                if (block.type === "text")
+                    content.push({ type: "text", text: block.text });
+                else if (block.type === "tool_call") {
+                    content.push({ type: "tool_use", id: block.id, name: block.name, input: block.input });
+                }
+                else if (block.type === "thinking" && block.provider === "anthropic" && block.signature) {
+                    content.push({ type: "thinking", thinking: block.text, signature: block.signature });
+                }
             }
-            else if (block.type === "thinking" && block.provider === "anthropic" && block.signature) {
-                content.push({ type: "thinking", thinking: block.text, signature: block.signature });
-            }
+            result = { role: "assistant", content };
         }
-        return { role: "assistant", content };
+        if (breakpoints.has(message.id) && Array.isArray(result.content) && result.content.length > 0) {
+            const last = result.content.length - 1;
+            result.content[last] = { ...result.content[last], cache_control: { type: "ephemeral" } };
+        }
+        return result;
     });
 }
 function toAnthropicTool(tool) {

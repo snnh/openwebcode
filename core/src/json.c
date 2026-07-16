@@ -67,7 +67,7 @@ static char *parse_string(parser *p) {
                 p->cursor+=2;
                 if(!parse_hex_quad(p,&low) || low<0xdc00 || low>0xdfff) { fail(p); break; }
                 code=0x10000u+((code-0xd800u)<<10)+(low-0xdc00u);
-            } else if(code>=0xdc00 && code<=0xdfff) { fail(p); break; }
+            } else if(code==0 || (code>=0xdc00 && code<=0xdfff)) { fail(p); break; }
             if (!push_utf8(&b, code)) break;
         } else { fail(p); break; }
     }
@@ -152,7 +152,8 @@ static owc_json *parse_value(parser *p, int depth) {
 owc_json *owc_json_parse(const char *text, size_t length, const char **error_at) {
     parser p = {text, text + length, NULL}; owc_json *value = parse_value(&p, 0); skip_ws(&p);
     if (value && p.cursor != p.end) { owc_json_free(value); value = NULL; fail(&p); }
-    if (error_at) *error_at = p.error; return value;
+    if (error_at) *error_at = p.error;
+    return value;
 }
 
 void owc_json_free(owc_json *value) {
@@ -164,7 +165,11 @@ void owc_json_free(owc_json *value) {
 
 const owc_json *owc_json_object_get(const owc_json *object, const char *key) {
     size_t i; if (!object || object->type != OWC_JSON_OBJECT) return NULL;
-    for (i=0;i<object->value.children.count;i++) if (object->value.children.items[i]->key && strcmp(object->value.children.items[i]->key,key)==0) return object->value.children.items[i]; return NULL;
+    for (i=0;i<object->value.children.count;i++) {
+        if (object->value.children.items[i]->key && strcmp(object->value.children.items[i]->key,key)==0)
+            return object->value.children.items[i];
+    }
+    return NULL;
 }
 const char *owc_json_get_string(const owc_json *value) { return value && value->type == OWC_JSON_STRING ? value->value.string : NULL; }
 int owc_json_get_int(const owc_json *value, int fallback) { return value && value->type == OWC_JSON_NUMBER ? (int)value->value.number : fallback; }
@@ -181,8 +186,10 @@ char *owc_json_escape_string(const char *value) {
         else if (*p == '\r') { if (!buffer_push(&b,'\\') || !buffer_push(&b,'r')) goto oom; }
         else if (*p == '\t') { if (!buffer_push(&b,'\\') || !buffer_push(&b,'t')) goto oom; }
         else if (*p < 0x20) { int i; (void)snprintf(escaped,sizeof(escaped),"\\u%04x",*p); for(i=0;i<6;i++) if(!buffer_push(&b,escaped[i])) goto oom; }
-        else if (!buffer_push(&b,(char)*p)) goto oom; p++;
+        else if (!buffer_push(&b,(char)*p)) goto oom;
+        p++;
     }
-    if (!buffer_push(&b,'"')) goto oom; return b.data;
+    if (!buffer_push(&b,'"')) goto oom;
+    return b.data;
 oom: free(b.data); return NULL;
 }

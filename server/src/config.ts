@@ -4,6 +4,13 @@ export interface ServerConfig {
   corePath: string;
   dataDir: string;
   coreRequestTimeoutMs: number;
+  defaultLanguage: string;
+  defaultCurrency: "USD" | "CNY";
+  exchangeRate: {
+    url?: string;
+    timeoutMs: number;
+    fixedUsdCnyRate?: string;
+  };
   anthropic?: { apiKey?: string; baseURL?: string; promptCaching?: boolean };
   openai?: { apiKey?: string; baseURL: string };
 }
@@ -24,6 +31,13 @@ function booleanWithDefault(value: string | undefined, fallback: boolean): boole
   throw new Error(`Expected a boolean, received ${value}`);
 }
 
+function currency(value: string | undefined): "USD" | "CNY" {
+  const normalized = (value ?? "CNY").toUpperCase();
+  if (normalized === "RMB") return "CNY";
+  if (normalized === "USD" || normalized === "CNY") return normalized;
+  throw new Error(`Expected USD, CNY, or RMB, received ${value}`);
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   return {
     host: env.OWC_HOST ?? "127.0.0.1",
@@ -31,6 +45,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     corePath: env.OWC_CORE_PATH ?? "../build/Debug/owc-exec.exe",
     dataDir: env.OWC_DATA_DIR ?? "../.openwebcode",
     coreRequestTimeoutMs: positiveInteger(env.OWC_CORE_REQUEST_TIMEOUT_MS, 130_000),
+    defaultLanguage: env.OWC_DEFAULT_LANGUAGE ?? "zh-CN",
+    defaultCurrency: currency(env.OWC_DEFAULT_CURRENCY),
+    exchangeRate: {
+      ...(env.OWC_EXCHANGE_RATE_URL ? { url: env.OWC_EXCHANGE_RATE_URL } : {}),
+      timeoutMs: positiveInteger(env.OWC_EXCHANGE_RATE_TIMEOUT_MS, 5_000),
+      ...(env.OWC_USD_CNY_RATE ? { fixedUsdCnyRate: env.OWC_USD_CNY_RATE } : {}),
+    },
     ...(env.ANTHROPIC_API_KEY || env.ANTHROPIC_BASE_URL
       ? {
           anthropic: {
