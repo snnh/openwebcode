@@ -111,9 +111,11 @@ describe.skipIf(!coreAvailable)("stage 4 web E2E", () => {
     const sessionId = created.json<{ id: string }>().id;
 
     const idle = waitForEvent(events, sessionId, "agent.state", (e) => (e.payload as { state?: string }).state === "idle");
+    // 先订阅 permission.request 再 inject，避免错过事件导致挂起（与 stage3-e2e 一致）
+    const permissionEvent = waitForEvent(events, sessionId, "permission.request");
     const accepted = await app.inject({ method: "POST", url: `/api/sessions/${sessionId}/messages`, payload: { content: "write: result.txt hello-stage4" } });
     expect(accepted.statusCode).toBe(202);
-    const req = requestId(await waitForEvent(events, sessionId, "permission.request"));
+    const req = requestId(await permissionEvent);
     expect((await app.inject({ method: "POST", url: `/api/sessions/${sessionId}/permissions/respond`, payload: { requestId: req, decision: "allow" } })).statusCode).toBe(200);
     await idle;
 
@@ -191,25 +193,33 @@ describe.skipIf(!coreAvailable)("stage 4 web E2E", () => {
     const session = (await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: root, provider: "anthropic", model: "claude-opus-4-8" } })).json<{ id: string }>();
 
     const firstIdle = waitForEvent(events, session.id, "agent.state", (e) => (e.payload as { state?: string }).state === "idle");
+    const firstPerm = waitForEvent(events, session.id, "permission.request");
     await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "write: keep.txt kept" } });
-    const firstReq = requestId(await waitForEvent(events, session.id, "permission.request"));
+    const firstReq = requestId(await firstPerm);
     await app.inject({ method: "POST", url: `/api/sessions/${session.id}/permissions/respond`, payload: { requestId: firstReq, decision: "allow" } });
     await firstIdle;
+    expect(existsSync(path.join(root, "keep.txt"))).toBe(true);
 
-    const checkpoints = (await app.inject({ method: "GET", url: `/api/sessions/${session.id}/checkpoints` })).json<Array<{ id: string; messageCount: number }>>();
-    const before = checkpoints[0]!;
+    // 手动建立"keep.txt 已写入"检查点，用于后续选择性回滚断言。
+    // agent.run 开头的自动检查点创建于首条用户消息之前（messageCount=0），无区分度。
+    const manual = (await app.inject({ method: "POST", url: `/api/sessions/${session.id}/checkpoints`, payload: { label: "after-keep" } })).json<{ id: string; messageCount: number }>();
+    expect(manual.messageCount).toBeGreaterThan(0);
     const secondIdle = waitForEvent(events, session.id, "agent.state", (e) => (e.payload as { state?: string }).state === "idle");
+    const secondPerm = waitForEvent(events, session.id, "permission.request");
     await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "write: gone.txt temporary" } });
-    const secondReq = requestId(await waitForEvent(events, session.id, "permission.request"));
+    const secondReq = requestId(await secondPerm);
     await app.inject({ method: "POST", url: `/api/sessions/${session.id}/permissions/respond`, payload: { requestId: secondReq, decision: "allow" } });
     await secondIdle;
     expect(existsSync(path.join(root, "gone.txt"))).toBe(true);
 
-    const restored = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/checkpoints/${before.id}/restore`, payload: { confirm: true } });
+    const restored = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/checkpoints/${manual.id}/restore`, payload: { confirm: true } });
     expect(restored.statusCode).toBe(200);
+    // 选择性回滚：第二段的 gone.txt 被消除
     expect(existsSync(path.join(root, "gone.txt"))).toBe(false);
+    // keep.txt 仍存在，证明仅回滚到手动检查点之后的状态
+    expect(existsSync(path.join(root, "keep.txt"))).toBe(true);
     const detail = await harness.sessions.get(session.id);
-    expect(detail?.messages).toHaveLength(before.messageCount);
+    expect(detail?.messages).toHaveLength(manual.messageCount);
   }, 30_000);
 });
 
