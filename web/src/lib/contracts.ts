@@ -140,3 +140,26 @@ export interface SettingsGroup {
 export interface SettingsView {
   groups: SettingsGroup[];
 }
+
+export interface ReportMetrics {
+  runs: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheRead: number;
+  cacheWrite: number;
+  usdMicroUnits: string;
+  cnyMicroUnits: string;
+  unpricedTokens: number;
+}
+
+export type ProviderBreakdown = ReportMetrics & { provider: string; model: string };
+
+export interface CostReport {
+  generatedAt: string;
+  from?: string;
+  to?: string;
+  totals: ReportMetrics;
+  days: Array<ReportMetrics & { date: string; providers: ProviderBreakdown[] }>;
+  sessions: Array<ReportMetrics & { sessionId: string; title?: string; providers: ProviderBreakdown[] }>;
+  preferences: { currency: "USD" | "CNY" };
+}

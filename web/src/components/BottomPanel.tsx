@@ -2,17 +2,19 @@ import { useEffect, useState, type MouseEvent as ReactMouseEvent, type ReactElem
 import type { SessionDetail } from "../lib/contracts";
 import { Icon, type IconName } from "./Icon";
 import { ContextPanel } from "./panels/ContextPanel";
+import { CostPanel } from "./panels/CostPanel";
 import { FilesPanel } from "./panels/FilesPanel";
 import { SandboxPanel } from "./panels/SandboxPanel";
 import { TimelinePanel } from "./panels/TimelinePanel";
 
-export type PanelTab = "files" | "context" | "timeline" | "sandbox";
+export type PanelTab = "files" | "context" | "timeline" | "sandbox" | "cost";
 
 const TAB_META: Record<PanelTab, { label: string; icon: IconName }> = {
   files: { label: "文件", icon: "folder" },
   context: { label: "上下文", icon: "layers" },
   timeline: { label: "时间线", icon: "history" },
   sandbox: { label: "沙盒", icon: "shield" },
+  cost: { label: "成本", icon: "chart" },
 };
 
 const MIN_HEIGHT = 140;
@@ -114,6 +116,7 @@ export function BottomPanel({ sessionId, session, running, onNotice }: {
           {tab === "context" && <ContextPanel sessionId={sessionId} session={session} running={running} onNotice={onNotice} />}
           {tab === "timeline" && <TimelinePanel sessionId={sessionId} running={running} onNotice={onNotice} />}
           {tab === "sandbox" && <SandboxPanel session={session} />}
+          {tab === "cost" && <CostPanel />}
         </div>
       )}
     </section>
