@@ -793,6 +793,24 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .settings-field .settings-note { margin: 0; }
 .settings-field input:disabled, .settings-field select:disabled { opacity: 0.65; cursor: not-allowed; }
 
+/* 模型目录 */
+.catalog-actions { margin: 6px 0; }
+.catalog-table { margin-top: 6px; }
+.badge-source-builtin { background: var(--panel-2); color: var(--text-2); }
+.badge-source-api { background: var(--accent-soft); color: var(--accent); }
+.badge-source-manual { background: var(--ok-bg); color: var(--ok); }
+.catalog-form { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; align-items: center; }
+.catalog-form input {
+  flex: 1 1 160px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: var(--bg);
+  color: var(--text);
+  padding: 6px 9px;
+  font-size: 12px;
+}
+.catalog-form input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
 /* 图标对齐 */
 .sandbox-badge { display: inline-flex; align-items: center; gap: 5px; }
 .copy-btn { display: inline-flex; align-items: center; gap: 4px; }
