@@ -57,11 +57,12 @@ export class AgentRunner {
     exchangeRates;
     defaultLanguage;
     maxTurns;
+    getProfile;
     running = new Map();
     steering = new Map();
     repeatedCalls = new Map();
     permissions;
-    constructor(sessions, providers, core, events, pricing, exchangeRates, defaultLanguage = "zh-CN", maxTurns = 50) {
+    constructor(sessions, providers, core, events, pricing, exchangeRates, defaultLanguage = "zh-CN", maxTurns = 50, getProfile = getModelProfile) {
         this.sessions = sessions;
         this.providers = providers;
         this.core = core;
@@ -70,6 +71,7 @@ export class AgentRunner {
         this.exchangeRates = exchangeRates;
         this.defaultLanguage = defaultLanguage;
         this.maxTurns = maxTurns;
+        this.getProfile = getProfile;
         this.permissions = new PermissionCoordinator(events);
         core.on("event", (event) => {
             const payload = event.payload;
@@ -123,7 +125,7 @@ export class AgentRunner {
                 const view = await context.buildView(session.messages);
                 const cacheBreakpoints = selectCacheBreakpoints(view.messages, view.ledger);
                 await context.recordCacheBreakpoints(cacheBreakpoints);
-                const profile = getModelProfile(session.model);
+                const profile = this.getProfile(session.model);
                 const estimatedTokens = estimateTokens(JSON.stringify(view.messages));
                 const workingBudget = Math.max(1, profile.contextWindow - profile.maxOutput);
                 const utilization = estimatedTokens / workingBudget;

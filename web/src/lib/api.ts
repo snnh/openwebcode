@@ -48,6 +48,10 @@ export const api = {
     request<{ diff: string }>(`/api/sessions/${id}/checkpoints/${checkpointId}/diff`),
   providers: () => request<string[]>("/api/providers"),
   models: () => request<ModelProfile[]>("/api/models"),
+  refreshModels: () => request<{ added: number; total: number; errors: string[] }>("/api/models/refresh", { method: "POST" }),
+  saveModel: (id: string, body: { provider?: string; displayName?: string; contextWindow?: number; maxOutput?: number }) =>
+    request<ModelProfile>(`/api/models/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(body) }),
+  deleteModel: (id: string) => request<void>(`/api/models/${encodeURIComponent(id)}`, { method: "DELETE" }),
   modelPricing: () => request<PricingDocument>("/api/model-pricing"),
   saveModelPricing: (document: PricingDocument) =>
     request<PricingDocument>("/api/model-pricing", { method: "PUT", body: JSON.stringify(document) }),

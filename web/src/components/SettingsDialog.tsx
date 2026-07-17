@@ -134,7 +134,7 @@ function DefaultsSection({ defaults, setDefaults, providers, models }: {
           onChange={(event) => setDefaults({ ...defaults, model: event.target.value || undefined })}
         >
           <option value="">不预设</option>
-          {availableModels.map((item) => <option key={item.id} value={item.id}>{item.displayName}</option>)}
+          {availableModels.map((item) => <option key={item.id} value={item.id}>{item.displayName ?? item.id}</option>)}
         </select>
       </label>
       <label>
@@ -337,6 +337,123 @@ function ServerSettingsSection(): ReactElement {
   );
 }
 
+const SOURCE_LABEL: Record<string, string> = { builtin: "内置", api: "API", manual: "手动" };
+
+function ModelCatalogSection(): ReactElement {
+  const queryClient = useQueryClient();
+  const models = useQuery({ queryKey: ["models"], queryFn: api.models });
+  const [notice, setNotice] = useState<string>();
+  const [error, setError] = useState<string>();
+  const [busy, setBusy] = useState(false);
+  const [form, setForm] = useState({ id: "", provider: "", contextWindow: "" });
+
+  const invalidate = (): void => void queryClient.invalidateQueries({ queryKey: ["models"] });
+
+  const refresh = (): void => {
+    setBusy(true);
+    setNotice(undefined);
+    setError(undefined);
+    api.refreshModels()
+      .then((report) => {
+        invalidate();
+        const base = `新增 ${report.added} 个 · API 目录共 ${report.total} 个`;
+        if (report.errors.length > 0) setError(`${base}；部分失败：${report.errors.join("；")}`);
+        else setNotice(base);
+      })
+      .catch((refreshError: unknown) => setError(refreshError instanceof Error ? refreshError.message : "刷新失败"))
+      .finally(() => setBusy(false));
+  };
+
+  const addManual = (): void => {
+    const id = form.id.trim();
+    if (!id) {
+      setError("模型 id 不能为空");
+      return;
+    }
+    const contextWindow = form.contextWindow.trim() ? Number(form.contextWindow) : undefined;
+    if (contextWindow !== undefined && (!Number.isSafeInteger(contextWindow) || contextWindow < 1)) {
+      setError("上下文窗口必须是正整数");
+      return;
+    }
+    setBusy(true);
+    setError(undefined);
+    api.saveModel(id, { ...(form.provider.trim() ? { provider: form.provider.trim() } : {}), ...(contextWindow ? { contextWindow } : {}) })
+      .then(() => {
+        setForm({ id: "", provider: "", contextWindow: "" });
+        setNotice(`已保存手动模型 ${id}`);
+        invalidate();
+      })
+      .catch((saveError: unknown) => setError(saveError instanceof Error ? saveError.message : "保存失败"))
+      .finally(() => setBusy(false));
+  };
+
+  const removeManual = (id: string): void => {
+    setBusy(true);
+    setError(undefined);
+    api.deleteModel(id)
+      .then(() => {
+        setNotice(`已删除 ${id}`);
+        invalidate();
+      })
+      .catch((removeError: unknown) => setError(removeError instanceof Error ? removeError.message : "删除失败"))
+      .finally(() => setBusy(false));
+  };
+
+  if (models.isPending) return <p className="panel-empty">加载中…</p>;
+  if (models.isError || !models.data) return <p className="panel-empty">无法加载模型目录。</p>;
+
+  return (
+    <>
+      <p className="settings-note">从已配置凭据的 provider 拉取模型列表；未知模型按内置元数据库保守成档。手动条目永不被刷新覆盖。</p>
+      <div className="dialog-actions catalog-actions">
+        <button className="btn small" disabled={busy} onClick={refresh}>{busy ? "处理中…" : "刷新模型目录"}</button>
+      </div>
+      {notice && <p className="settings-note">{notice}</p>}
+      {error && <p className="settings-error">{error}</p>}
+      <table className="pricing-table catalog-table">
+        <thead>
+          <tr><th>模型</th><th>Provider</th><th>来源</th><th>上下文</th><th></th></tr>
+        </thead>
+        <tbody>
+          {models.data.map((model) => (
+            <tr key={model.id}>
+              <td className="mono">{model.displayName ?? model.id}</td>
+              <td>{model.provider}</td>
+              <td><span className={`badge badge-source-${model.source ?? "builtin"}`}>{SOURCE_LABEL[model.source ?? "builtin"]}</span></td>
+              <td className="mono">{model.contextWindow.toLocaleString()}</td>
+              <td>{model.source === "manual" && <button className="badge badge-action" disabled={busy} onClick={() => removeManual(model.id)}>删除</button>}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="catalog-form">
+        <input
+          value={form.id}
+          placeholder="模型 id（如 gpt-4o）"
+          onChange={(event) => setForm((prev) => ({ ...prev, id: event.target.value }))}
+          aria-label="模型 id"
+          spellCheck={false}
+        />
+        <input
+          value={form.provider}
+          placeholder="provider（新模型必填）"
+          onChange={(event) => setForm((prev) => ({ ...prev, provider: event.target.value }))}
+          aria-label="provider"
+          spellCheck={false}
+        />
+        <input
+          value={form.contextWindow}
+          placeholder="上下文窗口（可选）"
+          onChange={(event) => setForm((prev) => ({ ...prev, contextWindow: event.target.value }))}
+          aria-label="上下文窗口"
+          inputMode="numeric"
+        />
+        <button className="btn small" disabled={busy} onClick={addManual}>添加手动模型</button>
+      </div>
+    </>
+  );
+}
+
 export function SettingsDialog({ open, preference, setPreference, sendKey, setSendKey, defaults, setDefaults, providers, models, onResetLayout, onClose }: {
   open: boolean;
   preference: ThemePreference;
@@ -409,6 +526,10 @@ export function SettingsDialog({ open, preference, setPreference, sendKey, setSe
         <section>
           <h3>服务设置</h3>
           <ServerSettingsSection />
+        </section>
+        <section>
+          <h3>模型目录</h3>
+          <ModelCatalogSection />
         </section>
         <section>
           <h3>布局</h3>

@@ -52,6 +52,7 @@ export function App(): ReactElement {
   // 草稿按会话保留，切换会话不丢
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [stream, setStream] = useState<Record<string, string>>({});
+  const [thinkingStream, setThinkingStream] = useState<Record<string, string>>({});
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
   const [agentStates, setAgentStates] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<string>();
@@ -98,17 +99,24 @@ export function App(): ReactElement {
           const state = (event.payload as { state?: string }).state;
           if (state) setAgentStates((prev) => ({ ...prev, [event.sessionId!]: state }));
         }
-        // server.settings_updated 无 sessionId，必须在按会话过滤之前处理
+        // server.settings_updated / models.updated 无 sessionId，必须在按会话过滤之前处理
         if (event.type === "server.settings_updated") {
           queryClient.invalidateQueries({ queryKey: ["providers"] });
           queryClient.invalidateQueries({ queryKey: ["settings"] });
           queryClient.invalidateQueries({ queryKey: ["health"] });
           if (currentId) queryClient.invalidateQueries({ queryKey: ["context", currentId] });
         }
+        if (event.type === "models.updated") {
+          queryClient.invalidateQueries({ queryKey: ["models"] });
+        }
         if (!event.sessionId || event.sessionId !== currentId) return;
         if (event.type === "message.delta") {
           const text = (event.payload as { text?: string }).text ?? "";
           setStream((value) => ({ ...value, [event.sessionId!]: `${value[event.sessionId!] ?? ""}${text}` }));
+        }
+        if (event.type === "message.thinking_delta") {
+          const text = (event.payload as { text?: string }).text ?? "";
+          setThinkingStream((value) => ({ ...value, [event.sessionId!]: `${value[event.sessionId!] ?? ""}${text}` }));
         }
         if (event.type === "permission.request") {
           const req = event.payload as PermissionRequest;
@@ -128,6 +136,7 @@ export function App(): ReactElement {
           queryClient.invalidateQueries({ queryKey: ["permissions", event.sessionId] });
           if (event.type === "agent.state" && (event.payload as { state?: string }).state === "idle") {
             setStream((value) => ({ ...value, [event.sessionId!]: "" }));
+            setThinkingStream((value) => ({ ...value, [event.sessionId!]: "" }));
           }
         }
       };
@@ -256,6 +265,7 @@ export function App(): ReactElement {
             <ExecutionTrack
               session={current}
               streamText={stream[current.id] ?? ""}
+              thinkingText={thinkingStream[current.id] ?? ""}
               permissions={mergedPermissions}
               onPermissionDone={(requestId) => {
                 setPendingPermissions((prev) => prev.filter((item) => item.requestId !== requestId));
