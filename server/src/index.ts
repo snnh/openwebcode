@@ -12,6 +12,8 @@ import { DevelopmentProvider } from "./providers/development-provider.js";
 import { ProviderRegistry } from "./providers/provider.js";
 import { SessionStore } from "./sessions/session-store.js";
 import { SettingsService } from "./settings-service.js";
+import { SkillRegistry } from "./skills.js";
+import { McpManager } from "./mcp/manager.js";
 import { StorageGC } from "./storage-gc.js";
 import { UsageLog } from "./usage-log.js";
 
@@ -47,7 +49,9 @@ const models = await ModelRegistry.load({
   onUpdated: () => events.publish({ source: "server", type: "models.updated", payload: {} }),
 });
 const usageLog = new UsageLog(dataDir);
-const agent = new AgentRunner(sessions, providers, core, events, pricing, exchangeRates, config.defaultLanguage, 50, (model) => models.get(model), usageLog);
+const skills = new SkillRegistry(path.join(dataDir, "skills"));
+const mcp = new McpManager(dataDir);
+const agent = new AgentRunner(sessions, providers, core, events, pricing, exchangeRates, config.defaultLanguage, 50, (model) => models.get(model), usageLog, skills, mcp);
 const gc = new StorageGC(path.join(dataDir, "sessions"), config.gcMaxBytes);
 settings.bind({ providers, core, agent, events, models, gc });
 settings.reconcileProviders();
@@ -78,6 +82,7 @@ const app = await buildServer({
   settings,
   models,
   usageLog,
+  skills,
   getPreferences: () => {
     const effective = settings.effective();
     return { currency: effective.defaultCurrency, language: effective.defaultLanguage };
@@ -87,6 +92,7 @@ const app = await buildServer({
 async function shutdown(): Promise<void> {
   clearInterval(gcTimer);
   exchangeRates.close();
+  await mcp.close();
   await app.close();
   await core.stop();
 }

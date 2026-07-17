@@ -17,7 +17,7 @@ import { SettingsDialog } from "./components/SettingsDialog";
 import { SteeringQueue } from "./components/SteeringQueue";
 import { Toast } from "./components/Toast";
 
-const queryKeys = { sessions: ["sessions"] as const, detail: (id: string) => ["session", id] as const };
+const queryKeys = { sessions: ["sessions"] as const, detail: (id: string) => ["session", id] as const, skills: (id: string) => ["skills", id] as const };
 
 function readStoredSetting(key: string): string | undefined {
   try {
@@ -66,6 +66,7 @@ export function App(): ReactElement {
   const providers = useQuery({ queryKey: ["providers"], queryFn: api.providers });
   const steering = useQuery({ queryKey: ["steering", currentId], queryFn: () => api.steering(currentId!), enabled: Boolean(currentId) });
   const contextView = useQuery({ queryKey: ["context", currentId], queryFn: () => api.context(currentId!), enabled: Boolean(currentId) });
+  const skills = useQuery({ queryKey: queryKeys.skills(currentId ?? ""), queryFn: () => api.skills(currentId!), enabled: Boolean(currentId) });
   // 待确认权限以服务端为准（刷新后可恢复），WS 事件只作即时补充
   const serverPermissions = useQuery({ queryKey: ["permissions", currentId], queryFn: () => api.pendingPermissions(currentId!), enabled: Boolean(currentId) });
 
@@ -108,6 +109,10 @@ export function App(): ReactElement {
         }
         if (event.type === "models.updated") {
           queryClient.invalidateQueries({ queryKey: ["models"] });
+        }
+        // MCP server 连接失败降级：该 server 工具未注入，给出告警
+        if (event.type === "mcp.degraded" && event.sessionId === currentId) {
+          setNotice((event.payload as { message?: string }).message ?? "MCP server 降级");
         }
         if (!event.sessionId || event.sessionId !== currentId) return;
         if (event.type === "message.delta") {
@@ -301,6 +306,7 @@ export function App(): ReactElement {
               }}
               running={running || send.isPending}
               sendKey={sendKey}
+              skills={skills.data?.skills ?? []}
             />
           </>
         ) : (

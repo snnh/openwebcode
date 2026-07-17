@@ -13,6 +13,8 @@ import { PermissionCoordinator, permissionRule, type PermissionDecision } from "
 import { GitShadowSnapshots } from "../snapshots/git-shadow.js";
 import type { MessageContent } from "../sessions/types.js";
 import type { SessionStore } from "../sessions/session-store.js";
+import { parseSkillCommand, type SkillRegistry } from "../skills.js";
+import type { McpManager } from "../mcp/manager.js";
 import type { UsageLog } from "../usage-log.js";
 
 interface ExecutionContext {
@@ -54,7 +56,18 @@ const FILE_TOOLS: ProviderTool[] = [
   { name: "grep", description: "Recursively search UTF-8 workspace files for literal text.", inputSchema: { type: "object", properties: { path: { type: "string" }, pattern: { type: "string" } }, required: ["path", "pattern"], additionalProperties: false } },
 ];
 
-const TOOLS = [BASH_TOOL, ...FILE_TOOLS, READ_ARTIFACT_TOOL];
+const LOAD_SKILL_TOOL: ProviderTool = {
+  name: "load_skill",
+  description: "Load the full text of a skill listed in the system prompt skill catalog.",
+  inputSchema: {
+    type: "object",
+    properties: { name: { type: "string" } },
+    required: ["name"],
+    additionalProperties: false,
+  },
+};
+
+const TOOLS = [BASH_TOOL, ...FILE_TOOLS, READ_ARTIFACT_TOOL, LOAD_SKILL_TOOL];
 
 interface SteeringItem {
   id: string;
@@ -76,6 +89,7 @@ export class AgentRunner {
   private readonly running = new Map<string, AbortController>();
   private readonly steering = new Map<string, SteeringItem[]>();
   private readonly repeatedCalls = new Map<string, { signature: string; count: number }>();
+  private readonly mcpWarningSignatures = new Map<string, string>();
   private readonly permissions: PermissionCoordinator;
 
   constructor(
@@ -89,6 +103,8 @@ export class AgentRunner {
     private readonly maxTurns = 50,
     private readonly getProfile: (model: string) => ModelProfile = getModelProfile,
     private readonly usageLog?: UsageLog,
+    private readonly skills?: SkillRegistry,
+    private readonly mcp?: McpManager,
   ) {
     this.permissions = new PermissionCoordinator(events);
     core.on("event", (event: CoreEvent) => {
@@ -125,12 +141,14 @@ export class AgentRunner {
     try {
       const configuredSession = await this.sessions.get(sessionId);
       if (!configuredSession) throw new Error("Session not found");
+      // 输入框 /技能名 手动触发：展开为技能全文 + 用户补充（检查点标题仍用原文）
+      const effectiveText = await this.expandSkillCommand(configuredSession.cwd, text);
       await this.core.configureSession({ sessionId, cwd: configuredSession.cwd, sandbox: configuredSession.sandbox ?? { enabled: true, readRoots: [configuredSession.cwd], writeRoots: [configuredSession.cwd], denyPaths: [], network: "allow" } });
       const checkpointContext = new ContextManager(this.sessions.contextRoot(sessionId));
       const checkpoint = await new GitShadowSnapshots(this.sessions.contextRoot(sessionId), configuredSession.cwd)
         .create(text.slice(0, 80) || "User message", configuredSession.messages.length, await checkpointContext.load());
       this.events.publish({ source: "session", type: "checkpoint.created", sessionId, payload: checkpoint });
-      await this.sessions.appendMessage(sessionId, "user", [{ type: "text", text }]);
+      await this.sessions.appendMessage(sessionId, "user", [{ type: "text", text: effectiveText }]);
       this.state(sessionId, "thinking");
       for (let turn = 0; turn < this.maxTurns; turn++) {
         controller.signal.throwIfAborted();
@@ -154,16 +172,36 @@ export class AgentRunner {
         const provider = this.providers.get(session.provider);
         if (!provider) throw new Error(`Provider ${session.provider} is not configured`);
 
+        // 技能目录注入系统提示：每轮现扫，保证新增技能即时可见
+        const skillCatalog = this.skills ? await this.skills.listFor(session.cwd) : [];
+        const skillSection = skillCatalog.length > 0
+          ? `\n\nAvailable skills (load full text with the load_skill tool when relevant; the user can also trigger one with /name):\n${skillCatalog.map((skill) => `- ${skill.name}: ${skill.description}`).join("\n")}`
+          : "";
+
+        // MCP 工具：失败 server 降级为告警（同一组告警每轮只播一次）
+        const mcpBinding = this.mcp ? await this.mcp.toolsFor(session.cwd) : { tools: [], warnings: [] as string[] };
+        if (mcpBinding.warnings.length > 0) {
+          const signature = mcpBinding.warnings.join("\n");
+          if (this.mcpWarningSignatures.get(sessionId) !== signature) {
+            this.mcpWarningSignatures.set(sessionId, signature);
+            for (const message of mcpBinding.warnings) {
+              this.events.publish({ source: "agent", type: "mcp.degraded", sessionId, payload: { message } });
+            }
+          }
+        } else {
+          this.mcpWarningSignatures.delete(sessionId);
+        }
+
         const turn = await collectProviderTurn(
           provider,
           {
             model: session.model,
             ...(session.thinking ? { thinking: session.thinking } : {}),
             ...(session.effort ? { effort: session.effort } : {}),
-            system: `You are OpenWebCode. The workspace is ${session.cwd}. Respond in ${this.defaultLanguage} unless the user explicitly requests another language.`,
+            system: `You are OpenWebCode. The workspace is ${session.cwd}. Respond in ${this.defaultLanguage} unless the user explicitly requests another language.${skillSection}`,
             messages: view.messages,
             cacheBreakpoints,
-            tools: TOOLS,
+            tools: [...TOOLS, ...mcpBinding.tools],
             signal: controller.signal,
           },
           {
@@ -400,6 +438,16 @@ export class AgentRunner {
     return { allowed: result.allowed, ...(result.reason ? { reason: result.reason } : {}) };
   }
 
+  private async expandSkillCommand(cwd: string, text: string): Promise<string> {
+    if (!this.skills) return text;
+    const command = parseSkillCommand(text);
+    if (!command) return text;
+    const skill = await this.skills.find(cwd, command.name);
+    if (!skill) return text;
+    const request = command.rest !== "" ? command.rest : "Follow the skill instructions above.";
+    return `[Skill "${skill.name}" — full text]\n${skill.body}\n\n[User request]\n${request}`;
+  }
+
   private async executeTool(
     sessionId: string,
     name: string,
@@ -407,6 +455,48 @@ export class AgentRunner {
     input: Record<string, unknown>,
     signal: AbortSignal,
   ): Promise<MessageContent & { type: "tool_result" }> {
+    if (name.startsWith("mcp__")) {
+      if (!this.mcp) {
+        return { type: "tool_result", toolCallId, content: "MCP is not enabled on this server", isError: true };
+      }
+      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+      this.state(sessionId, "tool_running");
+      try {
+        const session = await this.sessions.get(sessionId);
+        if (!session) throw new Error("Session not found");
+        const result = await this.mcp.callTool(session.cwd, name, input);
+        const bounded = await boundToolResult(this.sessions.contextRoot(sessionId), name, result.content);
+        this.events.publish({
+          source: "agent",
+          type: "tool.end",
+          sessionId,
+          payload: { toolCallId, result: { content: bounded.content }, truncated: bounded.truncated, isError: result.isError, ...(bounded.artifactId ? { artifactId: bounded.artifactId } : {}) },
+        });
+        return { type: "tool_result", toolCallId, content: bounded.content, isError: result.isError };
+      } catch (error) {
+        const content = error instanceof Error ? error.message : String(error);
+        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
+        return { type: "tool_result", toolCallId, content, isError: true };
+      }
+    }
+    if (name === "load_skill") {
+      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+      this.state(sessionId, "tool_running");
+      try {
+        const session = await this.sessions.get(sessionId);
+        if (!session) throw new Error("Session not found");
+        const skillName = String(input.name ?? "");
+        const skill = this.skills ? await this.skills.find(session.cwd, skillName) : undefined;
+        if (!skill) throw new Error(`Unknown skill: ${skillName || "(empty)"}`);
+        const bounded = await boundToolResult(this.sessions.contextRoot(sessionId), name, skill.body);
+        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: { name: skill.name, source: skill.source }, truncated: bounded.truncated, ...(bounded.artifactId ? { artifactId: bounded.artifactId } : {}) } });
+        return { type: "tool_result", toolCallId, content: bounded.content, isError: false };
+      } catch (error) {
+        const content = error instanceof Error ? error.message : String(error);
+        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
+        return { type: "tool_result", toolCallId, content, isError: true };
+      }
+    }
     if (name === "read_artifact") {
       try {
         const session = await this.sessions.get(sessionId);

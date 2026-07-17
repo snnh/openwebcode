@@ -141,6 +141,13 @@ export interface SettingsView {
   groups: SettingsGroup[];
 }
 
+export interface SkillInfo {
+  name: string;
+  description: string;
+  source: "global" | "project";
+  path?: string;
+}
+
 export interface ReportMetrics {
   runs: number;
   inputTokens: number;

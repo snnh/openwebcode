@@ -1,4 +1,4 @@
-import type { Checkpoint, ContextView, CostReport, FileEntry, ModelProfile, PendingPermission, PricingDocument, Session, SessionDetail, SettingsView, SettingValue } from "./contracts";
+import type { Checkpoint, ContextView, CostReport, FileEntry, ModelProfile, PendingPermission, PricingDocument, Session, SessionDetail, SettingsView, SettingValue, SkillInfo } from "./contracts";
 
 export class ApiError extends Error {
   constructor(readonly status: number, message: string) {
@@ -72,6 +72,8 @@ export const api = {
     return response.json() as Promise<Session>;
   },
   settings: () => request<SettingsView>("/api/settings"),
+  skills: (id: string) => request<{ skills: SkillInfo[] }>(`/api/sessions/${id}/skills`),
+  globalSkills: () => request<{ skills: SkillInfo[] }>("/api/skills"),
   costReport: (range: { from?: string; to?: string }) => {
     const params = new URLSearchParams();
     if (range.from) params.set("from", range.from);
