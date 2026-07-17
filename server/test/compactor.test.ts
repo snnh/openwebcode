@@ -156,10 +156,10 @@ describe("85% watermark forced compaction", () => {
     const tinyWindow = () => ({ contextWindow: 100, maxOutput: 10, capabilities: { thinking: ["disabled"], effort: [] } }) as never;
     const runner = new AgentRunner(sessions, providers, core, events, pricing, undefined, "zh-CN", 50, tinyWindow, undefined, undefined, undefined, compactor);
     const session = await sessions.create({ cwd: root, provider: "anthropic", model: "tiny" });
-    await sessions.appendMessage(session.id, "user", [{ type: "text", text: "很早的消息，占位占位占位占位" }]);
-    await sessions.appendMessage(session.id, "assistant", [{ type: "text", text: "很早的回复，占位占位占位占位" }]);
+    await sessions.appendMessage(session.id, "user", [{ type: "text", text: "很早的消息，".repeat(30) }]);
+    await sessions.appendMessage(session.id, "assistant", [{ type: "text", text: "很早的回复，".repeat(30) }]);
 
-    await runner.run(session.id, "新的问题，也占一些 token 让水位超过 85%");
+    await runner.run(session.id, "新的问题，".repeat(30));
 
     const compactedEvents = published.filter((event) => event.type === "context.compacted");
     expect(compactedEvents).toHaveLength(1);

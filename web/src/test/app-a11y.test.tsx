@@ -28,8 +28,8 @@ function mockSession(overrides: Partial<SessionDetail> = {}): SessionDetail {
 }
 
 const models: ModelProfile[] = [
-  { id: "claude-opus-4-8", provider: "anthropic", displayName: "Claude Opus 4.8", contextWindow: 1_000_000, maxOutput: 128_000, capabilities: { thinking: ["adaptive", "disabled"], effort: ["low", "high", "xhigh"] } },
-  { id: "claude-haiku-4-5", provider: "anthropic", displayName: "Claude Haiku 4.5", contextWindow: 200_000, maxOutput: 128_000, capabilities: { thinking: ["disabled"], effort: ["low", "medium"] } },
+  { id: "claude-opus-4-8", provider: "anthropic", displayName: "Claude Opus 4.8", contextWindow: 1_000_000, maxOutput: 128_000, capabilities: { thinking: ["adaptive", "disabled"], effort: ["low", "high", "xhigh"], modalities: ["text", "image"] } },
+  { id: "claude-haiku-4-5", provider: "anthropic", displayName: "Claude Haiku 4.5", contextWindow: 200_000, maxOutput: 128_000, capabilities: { thinking: ["disabled"], effort: ["low", "medium"], modalities: ["text", "image"] } },
 ];
 
 const context: ContextView = {

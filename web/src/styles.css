@@ -509,6 +509,28 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 }
 .steering-hint { color: var(--amber); font-weight: 600; }
 .composer-input { display: flex; gap: 10px; align-items: flex-end; position: relative; }
+.composer-hint { margin-top: 6px; color: var(--text-3); font-size: 11px; }
+.attachment-strip { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.attachment { position: relative; display: inline-flex; }
+.attachment img { width: 56px; height: 56px; object-fit: cover; border-radius: var(--radius-s); border: 1px solid var(--border); }
+.attachment-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+}
+.attachment-remove:hover { color: var(--danger); border-color: var(--danger-border); }
+.message-image { max-width: 320px; max-height: 240px; border-radius: var(--radius-s); border: 1px solid var(--border); display: block; margin: 4px 0; }
 .skill-popup {
   position: absolute;
   left: 0;

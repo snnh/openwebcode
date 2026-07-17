@@ -150,12 +150,20 @@ function toOpenAIMessages(system: string, messages: ChatMessage[]): Array<Record
   const result: Array<Record<string, unknown>> = [{ role: "system", content: system }];
   for (const message of messages) {
     if (message.role === "user") {
+      const images = message.content.filter((block) => block.type === "image");
+      const text = message.content
+        .filter((block) => block.type === "text")
+        .map((block) => block.text)
+        .join("");
+      // 无图时维持纯字符串 content（兼容只认字符串的端点）；有图时走 parts 数组
       result.push({
         role: "user",
-        content: message.content
-          .filter((block) => block.type === "text")
-          .map((block) => block.text)
-          .join(""),
+        content: images.length === 0
+          ? text
+          : [
+              ...images.map((block) => ({ type: "image_url", image_url: { url: `data:${block.mediaType};base64,${block.data}` } })),
+              { type: "text", text },
+            ],
       });
     } else if (message.role === "assistant") {
       const toolCalls = message.content

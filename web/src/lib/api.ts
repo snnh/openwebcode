@@ -26,8 +26,8 @@ export const api = {
   createSession: (body: { cwd: string; provider: string; model: string; title?: string }) =>
     request<Session>("/api/sessions", { method: "POST", body: JSON.stringify(body) }),
   deleteSession: (id: string) => request<void>(`/api/sessions/${id}`, { method: "DELETE" }),
-  sendMessage: (id: string, content: string) =>
-    request<{ accepted: boolean; queued?: boolean; position?: number }>(`/api/sessions/${id}/messages`, { method: "POST", body: JSON.stringify({ content }) }),
+  sendMessage: (id: string, content: string, images?: Array<{ mediaType: string; data: string }>) =>
+    request<{ accepted: boolean; queued?: boolean; position?: number; compacted?: boolean }>(`/api/sessions/${id}/messages`, { method: "POST", body: JSON.stringify({ content, ...(images?.length ? { images } : {}) }) }),
   abort: (id: string) => request<{ accepted: boolean }>(`/api/sessions/${id}/abort`, { method: "POST" }),
   respondPermission: (id: string, body: { requestId: string; decision: "allow" | "allow_always" | "deny"; reason?: string }) =>
     request<{ accepted: boolean }>(`/api/sessions/${id}/permissions/respond`, { method: "POST", body: JSON.stringify(body) }),

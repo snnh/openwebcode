@@ -111,8 +111,17 @@ function toAnthropicMessages(messages: ChatMessage[], breakpoints: ReadonlySet<s
       result = {
         role: "user",
         content: message.content
-          .filter((block) => block.type === "text")
-          .map((block) => ({ type: "text" as const, text: block.text })),
+          .filter((block) => block.type === "text" || block.type === "image")
+          .map((block): Anthropic.ContentBlockParam => block.type === "text"
+            ? { type: "text" as const, text: block.text }
+            : {
+                type: "image" as const,
+                source: {
+                  type: "base64" as const,
+                  media_type: block.mediaType as "image/png" | "image/jpeg" | "image/gif" | "image/webp",
+                  data: block.data,
+                },
+              }),
       };
     } else {
       const content: Anthropic.ContentBlockParam[] = [];
