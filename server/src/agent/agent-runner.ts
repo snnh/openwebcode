@@ -84,7 +84,7 @@ export class AgentRunner {
     private readonly events: EventBus,
     private readonly pricing: PricingCatalog,
     private readonly exchangeRates?: ExchangeRateService,
-    private readonly defaultLanguage = "zh-CN",
+    private defaultLanguage = "zh-CN",
     private readonly maxTurns = 50,
   ) {
     this.permissions = new PermissionCoordinator(events);
@@ -109,6 +109,10 @@ export class AgentRunner {
         payload: event.payload,
       });
     });
+  }
+
+  setDefaultLanguage(language: string): void {
+    this.defaultLanguage = language;
   }
 
   async run(sessionId: string, text: string): Promise<void> {
@@ -285,6 +289,10 @@ export class AgentRunner {
       if (!controller.signal.aborted) this.steering.delete(sessionId);
       this.state(sessionId, "idle");
     }
+  }
+
+  listPendingPermissions(sessionId: string): Array<{ requestId: string; tool: string; input: Record<string, unknown> }> {
+    return this.permissions.listPending(sessionId);
   }
 
   async respondPermission(sessionId: string, requestId: string, decision: PermissionDecision, reason?: string): Promise<boolean> {

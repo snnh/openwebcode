@@ -1,33 +1,72 @@
 import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
-import ReactMarkdown from "react-markdown";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, ApiError } from "./lib/api";
-import type { AppEvent, ChatMessage, ModelProfile, Session, SessionDetail } from "./lib/contracts";
+import { api } from "./lib/api";
+import type { AppEvent } from "./lib/contracts";
+import { formatCurrency } from "./lib/format";
+import { loadSendKey, loadSessionDefaults, saveSendKey, saveSessionDefaults, type SendKey, type SessionDefaults } from "./lib/prefs";
+import { useTheme } from "./theme";
+import { BottomPanel } from "./components/BottomPanel";
+import { Composer } from "./components/Composer";
+import { EmptyState } from "./components/EmptyState";
+import { ExecutionTrack } from "./components/ExecutionTrack";
+import { isBusyState, JobHeader } from "./components/JobHeader";
+import { NewSessionDialog, type NewSessionValues } from "./components/NewSessionDialog";
+import type { PermissionRequest } from "./components/PermissionCard";
+import { clampRailWidth, SessionRail } from "./components/SessionRail";
+import { SettingsDialog } from "./components/SettingsDialog";
+import { SteeringQueue } from "./components/SteeringQueue";
+import { Toast } from "./components/Toast";
 
 const queryKeys = { sessions: ["sessions"] as const, detail: (id: string) => ["session", id] as const };
 
-function formatCurrency(microUnits: string, currency: string): string {
-  return new Intl.NumberFormat("zh-CN", { style: "currency", currency: currency === "CNY" ? "CNY" : "USD" }).format(Number(BigInt(microUnits)) / 1_000_000);
+function readStoredSetting(key: string): string | undefined {
+  try {
+    return window.localStorage.getItem(key) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function storeSetting(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // 持久化失败不影响使用
+  }
 }
 
 export function App(): ReactElement {
   const queryClient = useQueryClient();
+  const { theme, preference, setPreference, toggleTheme } = useTheme();
   const [currentId, setCurrentId] = useState<string>();
-  const [panel, setPanel] = useState<"files" | "context" | "timeline" | "sandbox">("files");
-  const [draft, setDraft] = useState("");
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [railWidth, setRailWidth] = useState(() => clampRailWidth(Number(readStoredSetting("owc-rail-width")) || 250));
+  const [railCollapsed, setRailCollapsed] = useState(() => readStoredSetting("owc-rail-collapsed") === "1");
+  const [sendKey, setSendKeyState] = useState<SendKey>(loadSendKey);
+  const [sessionDefaults, setSessionDefaultsState] = useState<SessionDefaults>(loadSessionDefaults);
+  useEffect(() => storeSetting("owc-rail-width", String(railWidth)), [railWidth]);
+  useEffect(() => storeSetting("owc-rail-collapsed", railCollapsed ? "1" : "0"), [railCollapsed]);
+  const setSendKey = (value: SendKey): void => { setSendKeyState(value); saveSendKey(value); };
+  const setSessionDefaults = (value: SessionDefaults): void => { setSessionDefaultsState(value); saveSessionDefaults(value); };
+  // 草稿按会话保留，切换会话不丢
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [stream, setStream] = useState<Record<string, string>>({});
-  const [pendingPermissions, setPendingPermissions] = useState<Array<{ requestId: string; tool: string; input: Record<string, unknown> }>>([]);
+  const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
+  const [agentStates, setAgentStates] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<string>();
   const sessionEventSeq = useRef<Record<string, number>>({});
   const globalSeq = useRef(0);
   const activeSeq = Math.max(currentId ? (sessionEventSeq.current[currentId] ?? 0) : 0, globalSeq.current);
+
   const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: api.sessions });
   const detail = useQuery({ queryKey: queryKeys.detail(currentId ?? ""), queryFn: () => api.session(currentId!), enabled: Boolean(currentId) });
   const models = useQuery({ queryKey: ["models"], queryFn: api.models });
   const providers = useQuery({ queryKey: ["providers"], queryFn: api.providers });
-  const context = useQuery({ queryKey: ["context", currentId], queryFn: () => api.context(currentId!), enabled: Boolean(currentId) });
-  const checkpoints = useQuery({ queryKey: ["checkpoints", currentId], queryFn: () => api.checkpoints(currentId!), enabled: Boolean(currentId) });
   const steering = useQuery({ queryKey: ["steering", currentId], queryFn: () => api.steering(currentId!), enabled: Boolean(currentId) });
+  const contextView = useQuery({ queryKey: ["context", currentId], queryFn: () => api.context(currentId!), enabled: Boolean(currentId) });
+  // 待确认权限以服务端为准（刷新后可恢复），WS 事件只作即时补充
+  const serverPermissions = useQuery({ queryKey: ["permissions", currentId], queryFn: () => api.pendingPermissions(currentId!), enabled: Boolean(currentId) });
 
   useEffect(() => {
     if (!currentId && sessions.data?.[0]) setCurrentId(sessions.data[0].id);
@@ -54,23 +93,42 @@ export function App(): ReactElement {
           queryClient.invalidateQueries({ queryKey: ["checkpoints", currentId] });
           return;
         }
+        // agent.state 跨会话跟踪：驱动侧栏运行标记与头部状态徽章
+        if (event.type === "agent.state" && event.sessionId) {
+          const state = (event.payload as { state?: string }).state;
+          if (state) setAgentStates((prev) => ({ ...prev, [event.sessionId!]: state }));
+        }
+        // server.settings_updated 无 sessionId，必须在按会话过滤之前处理
+        if (event.type === "server.settings_updated") {
+          queryClient.invalidateQueries({ queryKey: ["providers"] });
+          queryClient.invalidateQueries({ queryKey: ["settings"] });
+          queryClient.invalidateQueries({ queryKey: ["health"] });
+          if (currentId) queryClient.invalidateQueries({ queryKey: ["context", currentId] });
+        }
         if (!event.sessionId || event.sessionId !== currentId) return;
         if (event.type === "message.delta") {
           const text = (event.payload as { text?: string }).text ?? "";
           setStream((value) => ({ ...value, [event.sessionId!]: `${value[event.sessionId!] ?? ""}${text}` }));
         }
         if (event.type === "permission.request") {
-          const req = event.payload as { requestId: string; tool: string; input: Record<string, unknown> };
+          const req = event.payload as PermissionRequest;
           setPendingPermissions((prev) => [...prev.filter((item) => item.requestId !== req.requestId), req]);
+          queryClient.invalidateQueries({ queryKey: ["permissions", event.sessionId] });
         }
         if (["steering.queued", "steering.applied", "steering.removed"].includes(event.type)) {
           queryClient.invalidateQueries({ queryKey: ["steering", event.sessionId] });
         }
-        if (["agent.state", "tool.end", "checkpoint.created", "checkpoint.restored", "context.usage"].includes(event.type)) {
+        if ([
+          "agent.state", "tool.end", "checkpoint.created", "checkpoint.restored", "context.usage",
+          "context.budget_updated", "context.restored", "session.config_updated",
+        ].includes(event.type)) {
           queryClient.invalidateQueries({ queryKey: queryKeys.detail(event.sessionId) });
           queryClient.invalidateQueries({ queryKey: ["context", event.sessionId] });
           queryClient.invalidateQueries({ queryKey: ["checkpoints", event.sessionId] });
-          if (event.type === "agent.state" && (event.payload as { state?: string }).state === "idle") setStream((value) => ({ ...value, [event.sessionId!]: "" }));
+          queryClient.invalidateQueries({ queryKey: ["permissions", event.sessionId] });
+          if (event.type === "agent.state" && (event.payload as { state?: string }).state === "idle") {
+            setStream((value) => ({ ...value, [event.sessionId!]: "" }));
+          }
         }
       };
       socket.onclose = () => {
@@ -82,7 +140,37 @@ export function App(): ReactElement {
   }, [currentId, queryClient]);
 
   const current = detail.data;
-  const running = Boolean(stream[currentId ?? ""]);
+  const currentState = currentId ? agentStates[currentId] : undefined;
+  const running = Boolean(stream[currentId ?? ""]) || isBusyState(currentState);
+  const runningIds = useMemo(
+    () => new Set(Object.entries(agentStates).filter(([, state]) => isBusyState(state)).map(([id]) => id)),
+    [agentStates],
+  );
+  // 切换会话后丢弃上一会话的 WS 即时权限卡，改由服务端列表播种
+  useEffect(() => setPendingPermissions([]), [currentId]);
+  const mergedPermissions = useMemo(() => {
+    const server = serverPermissions.data ?? [];
+    const local = pendingPermissions.filter((item) => !server.some((entry) => entry.requestId === item.requestId));
+    return [...server, ...local];
+  }, [serverPermissions.data, pendingPermissions]);
+
+  const draft = currentId ? (drafts[currentId] ?? "") : "";
+  const setDraft = (value: string): void => {
+    if (currentId) setDrafts((prev) => ({ ...prev, [currentId]: value }));
+  };
+
+  const costSummary = useMemo(() => {
+    const ledger = contextView.data?.ledger;
+    if (!ledger || !contextView.data) return undefined;
+    const currency = contextView.data.preferences.currency;
+    return {
+      tokens: ledger.usage.inputTokens + ledger.usage.outputTokens,
+      costLabel: formatCurrency(currency === "CNY" ? ledger.cost.cnyMicroUnits : ledger.cost.usdMicroUnits, currency),
+      tokenBudget: ledger.policy?.maxSessionTokens,
+      paused: currentState === "budget_paused",
+    };
+  }, [contextView.data, currentState]);
+
   const send = useMutation({
     mutationFn: async () => {
       if (!currentId || !draft.trim()) return;
@@ -95,60 +183,131 @@ export function App(): ReactElement {
     },
     onError: (error) => setNotice(error instanceof Error ? error.message : "发送失败"),
   });
+
   const create = useMutation({
-    mutationFn: () => {
-      const cwd = window.prompt("输入工作目录（绝对路径）");
-      if (!cwd?.trim()) throw new Error("必须提供工作目录");
-      return api.createSession({ cwd: cwd.trim(), provider: providers.data?.[0]?.name ?? "development", model: models.data?.[0]?.id ?? "claude-opus-4-8", title: "新作业" });
+    mutationFn: (values: NewSessionValues) => api.createSession(values),
+    onSuccess: (session, values) => {
+      setDialogOpen(false);
+      setCurrentId(session.id);
+      queryClient.invalidateQueries({ queryKey: queryKeys.sessions });
+      // 权限模式不在创建接口内，创建后单独应用
+      if (values.permissionMode && values.permissionMode !== "ask") {
+        api.updateSession(session.id, { permissionMode: values.permissionMode })
+          .then(() => queryClient.invalidateQueries({ queryKey: queryKeys.detail(session.id) }))
+          .catch((error: unknown) => setNotice(error instanceof Error ? error.message : "权限模式应用失败"));
+      }
     },
-    onSuccess: (session) => { setCurrentId(session.id); queryClient.invalidateQueries({ queryKey: queryKeys.sessions }); },
     onError: (error) => setNotice(error instanceof Error ? error.message : "创建会话失败"),
   });
+
+  const removeSession = (id: string): void => {
+    const target = sessions.data?.find((session) => session.id === id);
+    if (!window.confirm(`删除会话「${target?.title ?? id}」？该操作不可撤销。`)) return;
+    api.deleteSession(id)
+      .then(() => {
+        if (currentId === id) setCurrentId(sessions.data?.find((session) => session.id !== id)?.id);
+        queryClient.invalidateQueries({ queryKey: queryKeys.sessions });
+      })
+      .catch((error: unknown) => setNotice(error instanceof Error ? error.message : "删除会话失败"));
+  };
+
   const model = useMemo(() => models.data?.find((item) => item.id === current?.model), [models.data, current?.model]);
 
-  return <main className="console-shell">
-    <aside className="session-rail" aria-label="会话">
-      <header><span className="mark">OWC</span><button className="icon-button" onClick={() => create.mutate()} aria-label="新建会话">＋</button></header>
-      <div className="rail-label">作业 / SESSIONS</div>
-      <nav>{sessions.data?.map((session) => <button key={session.id} className={`session-link ${session.id === currentId ? "active" : ""}`} onClick={() => setCurrentId(session.id)}><span className="session-dot"/><span><b>{session.title}</b><small>{session.provider} · {session.model}</small></span></button>)}</nav>
-      <footer><span className="status-dot"/> 本地执行器在线</footer>
-    </aside>
-    <section className="workbench">
-      {current ? <>
-        <header className="job-header"><div><div className="eyebrow">WORKSPACE / {current.cwd}</div><h1>{current.title}</h1></div><div className="header-badges"><span className={`sandbox ${current.sandbox?.enabled ? "enforced" : "advisory"}`}>🛡 {current.sandbox?.enabled ? "SANDBOX" : "SANDBOX OFF"}</span><button className="abort" onClick={() => api.abort(current.id).catch((error: unknown) => setNotice(error instanceof Error ? error.message : "无法中断"))}>中断</button></div></header>
-        <div className="execution-track">
-          {current.messages.map((message) => <MessageCard key={message.id} message={message}/>) }
-          {stream[current.id] && <article className="message assistant live"><span className="track-node"/><div className="message-meta">OPENWEBCODE · 正在输出</div><ReactMarkdown>{stream[current.id]}</ReactMarkdown><span className="cursor"/></article>}
-          {pendingPermissions.map((perm) => <PermissionCard key={perm.requestId} permission={perm} sessionId={current.id} onDone={() => setPendingPermissions((prev) => prev.filter((item) => item.requestId !== perm.requestId))} />)}
-        </div>
-        {steering.data && steering.data.length > 0 && <div className="steering-queue"><b>Steering 队列</b>{steering.data.map((item, index) => <div key={item.id}><span>{index + 1}</span><p>{item.content}</p><button onClick={() => api.removeSteering(current.id, item.id).then(() => steering.refetch())}>撤销</button></div>)}</div>}
-        <Composer current={current} model={model} models={models.data ?? []} draft={draft} setDraft={setDraft} onSend={() => send.mutate()} onConfig={(body) => {
-          api.updateSession(current.id, body)
-            .then(() => queryClient.invalidateQueries({ queryKey: queryKeys.detail(current.id) }))
-            .catch((error: unknown) => setNotice(error instanceof Error ? error.message : "配置失败"));
-        }} running={running || send.isPending}/>
-      </> : <EmptyState />}
-    </section>
-    <Inspector id={currentId} current={current} panel={panel} setPanel={setPanel} context={context.data} checkpoints={checkpoints.data} onNotice={setNotice}/>
-    {notice && <div className="toast" role="status">{notice}<button onClick={() => setNotice(undefined)}>×</button></div>}
-  </main>;
-}
+  const resetLayout = (): void => {
+    for (const key of ["owc-rail-width", "owc-rail-collapsed", "owc-panel-tab", "owc-panel-open", "owc-panel-height"]) {
+      try {
+        window.localStorage.removeItem(key);
+      } catch {
+        // 忽略
+      }
+    }
+    window.location.reload();
+  };
 
-function MessageCard({ message }: { message: ChatMessage }): ReactElement {
-  return <article className={`message ${message.role}`}><span className="track-node"/><div className="message-meta">{message.role === "user" ? "你" : message.role === "assistant" ? "OPENWEBCODE" : "工具结果"} · {new Date(message.createdAt).toLocaleTimeString()}</div>{message.content.map((block, index) => {
-    if (block.type === "text") return <ReactMarkdown key={index}>{block.text ?? ""}</ReactMarkdown>;
-    if (block.type === "thinking") return <details key={index} className="thinking"><summary>思考过程</summary><pre>{block.text}</pre></details>;
-    if (block.type === "tool_call") return <ToolCard key={index} name={block.name ?? "tool"} input={block.input}/>;
-    return <ToolResult key={index} content={block.content ?? ""} error={Boolean(block.isError)}/>;
-  })}</article>;
+  return (
+    <main
+      className="console-shell"
+      style={{ gridTemplateColumns: railCollapsed ? "56px minmax(0, 1fr)" : `${railWidth}px minmax(0, 1fr)` }}
+    >
+      <SessionRail
+        sessions={sessions.data}
+        currentId={currentId}
+        runningIds={runningIds}
+        theme={theme}
+        collapsed={railCollapsed}
+        width={railWidth}
+        onSelect={setCurrentId}
+        onCreate={() => setDialogOpen(true)}
+        onDelete={removeSession}
+        onToggleTheme={toggleTheme}
+        onToggleCollapsed={() => setRailCollapsed((value) => !value)}
+        onOpenSettings={() => setSettingsOpen(true)}
+        onResize={setRailWidth}
+      />
+      <section className="workbench">
+        {current ? (
+          <>
+            <JobHeader
+              session={current}
+              agentState={currentState}
+              costSummary={costSummary}
+              onAbort={() => api.abort(current.id).catch((error: unknown) => setNotice(error instanceof Error ? error.message : "无法中断"))}
+            />
+            <ExecutionTrack
+              session={current}
+              streamText={stream[current.id] ?? ""}
+              permissions={mergedPermissions}
+              onPermissionDone={(requestId) => {
+                setPendingPermissions((prev) => prev.filter((item) => item.requestId !== requestId));
+                queryClient.invalidateQueries({ queryKey: ["permissions", current.id] });
+              }}
+            />
+            {steering.data && steering.data.length > 0 && (
+              <SteeringQueue items={steering.data} onRemove={(itemId) => api.removeSteering(current.id, itemId).then(() => steering.refetch())} />
+            )}
+            <Composer
+              current={current}
+              model={model}
+              models={models.data ?? []}
+              draft={draft}
+              setDraft={setDraft}
+              onSend={() => send.mutate()}
+              onConfig={(body) => {
+                api.updateSession(current.id, body)
+                  .then(() => queryClient.invalidateQueries({ queryKey: queryKeys.detail(current.id) }))
+                  .catch((error: unknown) => setNotice(error instanceof Error ? error.message : "配置失败"));
+              }}
+              running={running || send.isPending}
+              sendKey={sendKey}
+            />
+          </>
+        ) : (
+          <EmptyState sessions={sessions.data ?? []} onSelect={setCurrentId} onCreate={() => setDialogOpen(true)} />
+        )}
+        <BottomPanel sessionId={currentId} session={current} running={running} onNotice={setNotice} />
+      </section>
+      <NewSessionDialog
+        open={dialogOpen}
+        providers={providers.data ?? []}
+        models={models.data ?? []}
+        defaults={sessionDefaults}
+        onClose={() => setDialogOpen(false)}
+        onCreate={(values) => create.mutate(values)}
+      />
+      <SettingsDialog
+        open={settingsOpen}
+        preference={preference}
+        setPreference={setPreference}
+        sendKey={sendKey}
+        setSendKey={setSendKey}
+        defaults={sessionDefaults}
+        setDefaults={setSessionDefaults}
+        providers={providers.data ?? []}
+        models={models.data ?? []}
+        onResetLayout={resetLayout}
+        onClose={() => setSettingsOpen(false)}
+      />
+      {notice && <Toast message={notice} onDismiss={() => setNotice(undefined)} />}
+    </main>
+  );
 }
-function ToolCard({ name, input }: { name: string; input?: Record<string, unknown> }): ReactElement { return <section className="tool-card"><div><span>工具</span><b>{name}</b></div><pre>{JSON.stringify(input, null, 2)}</pre></section>; }
-function ToolResult({ content, error }: { content: string; error: boolean }): ReactElement { return <section className={`tool-result ${error ? "error" : ""}`}><span>{error ? "执行失败" : "执行结果"}</span><pre>{content}</pre></section>; }
-function PermissionCard({ permission, sessionId, onDone }: { permission: { requestId: string; tool: string; input: Record<string, unknown> }; sessionId: string; onDone(): void }): ReactElement {
-  const [reason, setReason] = useState(""); const decide = (decision: "allow" | "allow_always" | "deny") => api.respondPermission(sessionId, { requestId: permission.requestId, decision, ...(reason ? { reason } : {}) }).then(onDone);
-  return <article className="permission-card"><span className="track-node"/><div className="message-meta">需要你的确认</div><h2>允许 {permission.tool} 吗？</h2><pre>{JSON.stringify(permission.input, null, 2)}</pre><input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="拒绝理由（可选）"/><div><button onClick={() => decide("allow")}>允许一次</button><button onClick={() => decide("allow_always")}>总是允许</button><button className="deny" onClick={() => decide("deny")}>拒绝</button></div></article>;
-}
-function Composer({ current, model, models, draft, setDraft, onSend, onConfig, running }: { current: SessionDetail; model?: ModelProfile; models: ModelProfile[]; draft: string; setDraft(value: string): void; onSend(): void; onConfig(body: Record<string, unknown>): void; running: boolean }): ReactElement { return <footer className="composer"><div className="config-row"><label>模型<select value={current.model} disabled={running} onChange={(event) => onConfig({ model: event.target.value })}>{models.filter((item) => item.provider === current.provider).map((item) => <option key={item.id} value={item.id}>{item.displayName}</option>)}</select></label><label>思考<select value={current.thinking ?? "disabled"} disabled={running} onChange={(event) => onConfig({ thinking: event.target.value === "disabled" ? null : event.target.value })}>{(model?.capabilities.thinking ?? ["disabled"]).map((item) => <option key={item} value={item}>{item}</option>)}</select></label><label>权限<select value={current.permissionMode ?? "ask"} disabled={running} onChange={(event) => onConfig({ permissionMode: event.target.value })}><option value="ask">每次确认</option><option value="acceptEdits">接受编辑</option><option value="yolo">YOLO</option></select></label>{running && <span className="steering-hint">下一条消息将加入 Steering</span>}</div><textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); onSend(); } }} placeholder={running ? "向正在执行的作业补充指令…" : "描述要完成的编码任务…"}/><button className="send" disabled={!draft.trim()} onClick={onSend}>{running ? "加入 Steering ↗" : "发送任务 ↗"}</button></footer>; }
-const joinPath = (base: string, name: string): string => base === "." ? name : `${base}/${name}`;
-function Inspector({ id, current, panel, setPanel, context, checkpoints, onNotice }: { id?: string; current?: Session; panel: string; setPanel(value: "files" | "context" | "timeline" | "sandbox"): void; context?: import("./lib/contracts").ContextView; checkpoints?: import("./lib/contracts").Checkpoint[]; onNotice(value: string): void }): ReactElement { const [directory, setDirectory] = useState("."); const [selectedFile, setSelectedFile] = useState<string>(); const [selectedCheckpoint, setSelectedCheckpoint] = useState<string>(); const navigate = (dir: string): void => { setSelectedFile(undefined); setDirectory(dir); }; const files = useQuery({ queryKey: ["files", id, directory], queryFn: () => api.listFiles(id!, directory), enabled: Boolean(id) }); const preview = useQuery({ queryKey: ["file", id, selectedFile], queryFn: () => api.readFile(id!, selectedFile!), enabled: Boolean(id && selectedFile) }); const checkpointDiff = useQuery({ queryKey: ["checkpoint-diff", id, selectedCheckpoint], queryFn: () => api.checkpointDiff(id!, selectedCheckpoint!), enabled: Boolean(id && selectedCheckpoint) }); return <aside className="inspector"><div className="tabs">{(["files", "context", "timeline", "sandbox"] as const).map((item) => <button className={panel === item ? "active" : ""} onClick={() => setPanel(item)} key={item}>{({ files: "文件", context: "上下文", timeline: "时间线", sandbox: "沙盒" })[item]}</button>)}</div>{panel === "files" && <div className="inspector-body"><h2>工作区</h2><div className="path-bar"><button disabled={directory === "."} onClick={() => navigate(directory.includes("/") ? directory.slice(0, directory.lastIndexOf("/")) : ".")}>←</button><span>{directory}</span></div>{files.data?.entries.map((entry) => <button className="file-row" key={entry.name} onClick={() => entry.type === "directory" ? navigate(joinPath(directory, entry.name)) : setSelectedFile(joinPath(directory, entry.name))}><span>{entry.type === "directory" ? "□" : "—"}</span>{entry.name}<small>{entry.size}</small></button>) ?? <p>选择会话以加载文件。</p>}{selectedFile && <section className="file-preview"><header>{selectedFile}<button onClick={() => setSelectedFile(undefined)}>×</button></header>{preview.isError ? <p>{preview.error instanceof ApiError && /UTF-8/i.test(preview.error.message) ? "该文件非 UTF-8 文本（可能为二进制），无法预览。" : preview.error instanceof ApiError ? preview.error.message : "无法读取该文件。"}</p> : <pre>{preview.data?.content ?? "加载中…"}{preview.data?.truncated ? "\n…（已截断）" : ""}</pre>}</section>}</div>}{panel === "context" && <div className="inspector-body"><h2>上下文水位</h2>{context ? <><div className="usage-bar"><i style={{ width: `${Math.min(100, (context.ledger.usage.inputTokens + context.ledger.usage.outputTokens) / 1000)}%` }}/></div><p>{context.ledger.usage.inputTokens + context.ledger.usage.outputTokens} tokens</p><dl><dt>缓存读</dt><dd>{context.ledger.usage.cacheRead}</dd><dt>人民币</dt><dd>{formatCurrency(context.ledger.cost.cnyMicroUnits, "CNY")}</dd><dt>美元</dt><dd>{formatCurrency(context.ledger.cost.usdMicroUnits, "USD")}</dd></dl></> : <p>暂无用量。</p>}</div>}{panel === "timeline" && <div className="inspector-body"><h2>检查点</h2>{checkpoints?.map((checkpoint) => <div className="checkpoint" key={checkpoint.id}><button className="checkpoint-label" onClick={() => setSelectedCheckpoint(checkpoint.id)}>{checkpoint.label}</button><small>{new Date(checkpoint.createdAt).toLocaleString()}</small><div><button onClick={() => { if (confirm(`完整回滚到「${checkpoint.label}」？文件和对话将同步恢复。`)) api.restoreCheckpoint(id!, checkpoint.id).then(() => onNotice("已完整恢复检查点")).catch((error: unknown) => onNotice(error instanceof Error ? error.message : "回滚失败")); }}>完整回滚</button><button onClick={() => { if (confirm(`仅恢复「${checkpoint.label}」的文件？对话不会截断。`)) api.restoreCheckpoint(id!, checkpoint.id, true).then(() => onNotice("已仅恢复文件")).catch((error: unknown) => onNotice(error instanceof Error ? error.message : "回滚失败")); }}>仅文件</button></div>{selectedCheckpoint === checkpoint.id && <pre className="checkpoint-diff">{checkpointDiff.data?.diff ?? "加载 diff…"}</pre>}</div>) ?? <p>暂无检查点。</p>}</div>}{panel === "sandbox" && <div className="inspector-body"><h2>策略</h2>{current?.sandbox ? <dl><dt>状态</dt><dd>{current.sandbox.enabled ? "已启用" : "已关闭"}</dd><dt>网络</dt><dd>{current.sandbox.network}</dd><dt>写入根</dt><dd>{current.sandbox.writeRoots.join("\n")}</dd><dt>拒绝路径</dt><dd>{current.sandbox.denyPaths.join("\n") || "—"}</dd></dl> : <p>未配置策略。</p>}</div>}</aside>; }
-function EmptyState(): ReactElement { return <section className="empty-state"><span>OWC / 01</span><h1>开始一项<br/>可回滚的编码作业。</h1><p>从左侧创建会话，选择一个工作目录后，OpenWebCode 会在执行轨道上记录每一次决策。</p></section>; }

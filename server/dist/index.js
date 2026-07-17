@@ -7,16 +7,22 @@ import { CoreClient } from "./core-client.js";
 import { ExchangeRateService, HttpExchangeRateProvider } from "./cost/exchange-rate.js";
 import { PricingCatalog } from "./cost/pricing-catalog.js";
 import { EventBus } from "./events/event-bus.js";
-import { AnthropicProvider } from "./providers/anthropic-provider.js";
 import { DevelopmentProvider } from "./providers/development-provider.js";
-import { OpenAICompatibleProvider } from "./providers/openai-compatible-provider.js";
 import { ProviderRegistry } from "./providers/provider.js";
 import { SessionStore } from "./sessions/session-store.js";
-const config = loadConfig();
+import { SettingsService } from "./settings-service.js";
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
-const dataDir = path.isAbsolute(config.dataDir)
-    ? config.dataDir
-    : path.resolve(moduleDirectory, "..", config.dataDir);
+const resolveFromServer = (value) => (path.isAbsolute(value) ? value : path.resolve(moduleDirectory, "..", value));
+// settings 文件固定放在 env/默认数据目录下；dataDir 的文件覆盖重启后对业务数据生效，
+// 但不改变 settings 文件自身的位置（否则重启后会丢失配置入口）。
+const envConfig = loadConfig();
+const bootDataDir = resolveFromServer(envConfig.dataDir);
+const settings = await SettingsService.load({
+    env: process.env,
+    filePath: path.join(bootDataDir, "server-settings.json"),
+});
+const config = settings.effective();
+const dataDir = resolveFromServer(config.dataDir);
 const core = new CoreClient(config.corePath, config.coreRequestTimeoutMs);
 const sessions = new SessionStore(path.join(dataDir, "sessions"));
 const providers = new ProviderRegistry();
@@ -29,11 +35,9 @@ const exchangeRates = new ExchangeRateService({
     ...(config.exchangeRate.fixedUsdCnyRate ? { fixedUsdCnyRate: config.exchangeRate.fixedUsdCnyRate } : {}),
 });
 providers.register(new DevelopmentProvider());
-if (config.anthropic)
-    providers.register(new AnthropicProvider(config.anthropic));
-if (config.openai)
-    providers.register(new OpenAICompatibleProvider(config.openai));
 const agent = new AgentRunner(sessions, providers, core, events, pricing, exchangeRates, config.defaultLanguage);
+settings.bind({ providers, core, agent, events });
+settings.reconcileProviders();
 core.on("diagnostic", (text) => process.stderr.write(`[owc-exec] ${text}`));
 core.on("error", (error) => console.error("Core error:", error));
 await sessions.initialize();
@@ -50,6 +54,11 @@ const app = await buildServer({
     webDist: path.resolve(moduleDirectory, "../../web/dist"),
     defaultCurrency: config.defaultCurrency,
     defaultLanguage: config.defaultLanguage,
+    settings,
+    getPreferences: () => {
+        const effective = settings.effective();
+        return { currency: effective.defaultCurrency, language: effective.defaultLanguage };
+    },
 });
 async function shutdown() {
     exchangeRates.close();
