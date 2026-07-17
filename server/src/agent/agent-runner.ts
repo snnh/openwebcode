@@ -13,6 +13,7 @@ import { PermissionCoordinator, permissionRule, type PermissionDecision } from "
 import { GitShadowSnapshots } from "../snapshots/git-shadow.js";
 import type { MessageContent } from "../sessions/types.js";
 import type { SessionStore } from "../sessions/session-store.js";
+import type { UsageLog } from "../usage-log.js";
 
 interface ExecutionContext {
   sessionId: string;
@@ -87,6 +88,7 @@ export class AgentRunner {
     private defaultLanguage = "zh-CN",
     private readonly maxTurns = 50,
     private readonly getProfile: (model: string) => ModelProfile = getModelProfile,
+    private readonly usageLog?: UsageLog,
   ) {
     this.permissions = new PermissionCoordinator(events);
     core.on("event", (event: CoreEvent) => {
@@ -210,6 +212,22 @@ export class AgentRunner {
               } : {}),
             };
             const ledger = await context.recordUsage(event, recordedCost);
+            // 全局用量日志（成本报表数据源）：失败只记 stderr，不阻断会话
+            void this.usageLog?.record({
+              at: new Date().toISOString(),
+              sessionId,
+              provider: session.provider,
+              model: session.model,
+              inputTokens: event.inputTokens,
+              outputTokens: event.outputTokens,
+              cacheRead: event.cacheRead,
+              cacheWrite: event.cacheWrite,
+              priced: usageCost.priced,
+              ...(usageCost.usd ? { usdMicroUnits: usageCost.usd.microUnits.toString() } : {}),
+              ...(usageCost.cny ? { cnyMicroUnits: usageCost.cny.microUnits.toString() } : {}),
+            }).catch((error: unknown) => {
+              process.stderr.write(`[usage-log] 写入失败：${error instanceof Error ? error.message : String(error)}\n`);
+            });
             this.events.publish({
               source: "agent",
               type: "context.usage",

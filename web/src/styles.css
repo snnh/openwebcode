@@ -735,6 +735,22 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .pricing-table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
 .pricing-table th, .pricing-table td { border: 1px solid var(--border); padding: 5px 8px; text-align: left; }
 .pricing-table th { color: var(--text-2); font-weight: 600; background: var(--panel-2); }
+.cost-toolbar { display: flex; gap: 8px; margin-bottom: 12px; }
+.cost-cards { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 6px; }
+.cost-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: var(--panel-2);
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 130px;
+}
+.cost-card-label { color: var(--text-3); font-size: 11px; }
+.cost-card b { font-size: 13px; font-weight: 650; font-family: var(--font-mono); }
+.cost-table { margin-bottom: 8px; }
+.cost-table td { font-family: var(--font-mono); }
 .pricing-editor {
   width: 100%;
   min-height: 240px;

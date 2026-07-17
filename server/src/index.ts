@@ -13,6 +13,7 @@ import { ProviderRegistry } from "./providers/provider.js";
 import { SessionStore } from "./sessions/session-store.js";
 import { SettingsService } from "./settings-service.js";
 import { StorageGC } from "./storage-gc.js";
+import { UsageLog } from "./usage-log.js";
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const resolveFromServer = (value: string) => (path.isAbsolute(value) ? value : path.resolve(moduleDirectory, "..", value));
@@ -45,7 +46,8 @@ const models = await ModelRegistry.load({
   manualPath: path.join(dataDir, "models.manual.json"),
   onUpdated: () => events.publish({ source: "server", type: "models.updated", payload: {} }),
 });
-const agent = new AgentRunner(sessions, providers, core, events, pricing, exchangeRates, config.defaultLanguage, 50, (model) => models.get(model));
+const usageLog = new UsageLog(dataDir);
+const agent = new AgentRunner(sessions, providers, core, events, pricing, exchangeRates, config.defaultLanguage, 50, (model) => models.get(model), usageLog);
 const gc = new StorageGC(path.join(dataDir, "sessions"), config.gcMaxBytes);
 settings.bind({ providers, core, agent, events, models, gc });
 settings.reconcileProviders();
@@ -75,6 +77,7 @@ const app = await buildServer({
   defaultLanguage: config.defaultLanguage,
   settings,
   models,
+  usageLog,
   getPreferences: () => {
     const effective = settings.effective();
     return { currency: effective.defaultCurrency, language: effective.defaultLanguage };

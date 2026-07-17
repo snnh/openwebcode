@@ -209,6 +209,26 @@ export async function buildServer(dependencies) {
             throw error;
         }
     });
+    app.get("/api/reports/cost", async (request, reply) => {
+        if (!dependencies.usageLog)
+            return reply.code(404).send({ error: "Usage log not enabled" });
+        const { from, to } = request.query;
+        const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+        if ((from !== undefined && !datePattern.test(from)) || (to !== undefined && !datePattern.test(to))) {
+            return reply.code(400).send({ error: "from/to 必须是 YYYY-MM-DD" });
+        }
+        const report = await dependencies.usageLog.report({
+            ...(from !== undefined ? { from } : {}),
+            ...(to !== undefined ? { to } : {}),
+        });
+        // 会话可能已删除：title 查不到时缺省，前端回退为短 id
+        const titles = new Map((await sessions.list()).map((item) => [item.id, item.title]));
+        return {
+            ...report,
+            sessions: report.sessions.map((row) => ({ ...row, title: titles.get(row.sessionId) })),
+            preferences: { currency: getPreferences().currency },
+        };
+    });
     app.put("/api/sessions/:id/config", async (request, reply) => {
         const session = await sessions.get(request.params.id);
         if (!session)

@@ -58,11 +58,12 @@ export class AgentRunner {
     defaultLanguage;
     maxTurns;
     getProfile;
+    usageLog;
     running = new Map();
     steering = new Map();
     repeatedCalls = new Map();
     permissions;
-    constructor(sessions, providers, core, events, pricing, exchangeRates, defaultLanguage = "zh-CN", maxTurns = 50, getProfile = getModelProfile) {
+    constructor(sessions, providers, core, events, pricing, exchangeRates, defaultLanguage = "zh-CN", maxTurns = 50, getProfile = getModelProfile, usageLog) {
         this.sessions = sessions;
         this.providers = providers;
         this.core = core;
@@ -72,6 +73,7 @@ export class AgentRunner {
         this.defaultLanguage = defaultLanguage;
         this.maxTurns = maxTurns;
         this.getProfile = getProfile;
+        this.usageLog = usageLog;
         this.permissions = new PermissionCoordinator(events);
         core.on("event", (event) => {
             const payload = event.payload;
@@ -191,6 +193,22 @@ export class AgentRunner {
                             } : {}),
                         };
                         const ledger = await context.recordUsage(event, recordedCost);
+                        // 全局用量日志（成本报表数据源）：失败只记 stderr，不阻断会话
+                        void this.usageLog?.record({
+                            at: new Date().toISOString(),
+                            sessionId,
+                            provider: session.provider,
+                            model: session.model,
+                            inputTokens: event.inputTokens,
+                            outputTokens: event.outputTokens,
+                            cacheRead: event.cacheRead,
+                            cacheWrite: event.cacheWrite,
+                            priced: usageCost.priced,
+                            ...(usageCost.usd ? { usdMicroUnits: usageCost.usd.microUnits.toString() } : {}),
+                            ...(usageCost.cny ? { cnyMicroUnits: usageCost.cny.microUnits.toString() } : {}),
+                        }).catch((error) => {
+                            process.stderr.write(`[usage-log] 写入失败：${error instanceof Error ? error.message : String(error)}\n`);
+                        });
                         this.events.publish({
                             source: "agent",
                             type: "context.usage",
