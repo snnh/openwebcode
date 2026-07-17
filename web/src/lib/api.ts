@@ -1,4 +1,4 @@
-import type { Checkpoint, ContextView, FileEntry, ModelProfile, PendingPermission, PricingDocument, Session, SessionDetail, SettingsView, SettingValue } from "./contracts";
+import type { Checkpoint, ContextView, CostReport, FileEntry, ModelProfile, PendingPermission, PricingDocument, Session, SessionDetail, SettingsView, SettingValue } from "./contracts";
 
 export class ApiError extends Error {
   constructor(readonly status: number, message: string) {
@@ -72,6 +72,13 @@ export const api = {
     return response.json() as Promise<Session>;
   },
   settings: () => request<SettingsView>("/api/settings"),
+  costReport: (range: { from?: string; to?: string }) => {
+    const params = new URLSearchParams();
+    if (range.from) params.set("from", range.from);
+    if (range.to) params.set("to", range.to);
+    const query = params.toString();
+    return request<CostReport>(`/api/reports/cost${query ? `?${query}` : ""}`);
+  },
   saveSettings: (overrides: Record<string, SettingValue | null>) =>
     request<SettingsView>("/api/settings", { method: "PUT", body: JSON.stringify({ overrides }) }),
 };

@@ -28,6 +28,13 @@ const PATHS = {
       <path d="M12 3v12" />
     </>
   ),
+  chart: (
+    <>
+      <path d="M12 20v-10" />
+      <path d="M18 20V4" />
+      <path d="M6 20v-4" />
+    </>
+  ),
   sun: (
     <>
       <circle cx="12" cy="12" r="4" />
