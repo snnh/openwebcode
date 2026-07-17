@@ -20,6 +20,7 @@ import { SessionTransferError } from "./sessions/session-transfer.js";
 import type { PermissionMode } from "./sessions/types.js";
 import type { SessionStore } from "./sessions/session-store.js";
 import { SettingsValidationError, type SettingsService } from "./settings-service.js";
+import type { SkillRegistry } from "./skills.js";
 import type { UsageLog } from "./usage-log.js";
 
 interface CreateSessionBody {
@@ -58,6 +59,7 @@ export interface ServerDependencies {
   settings?: SettingsService;
   models?: ModelRegistry;
   usageLog?: UsageLog;
+  skills?: SkillRegistry;
   getPreferences?: () => { currency: Currency; language: string };
   webDist?: string;
 }
@@ -254,6 +256,18 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       if (error instanceof SessionTransferError) return reply.code(400).send({ error: error.message });
       throw error;
     }
+  });
+
+  app.get("/api/skills", async () => {
+    const skills = dependencies.skills ? await dependencies.skills.listFor(undefined) : [];
+    return { skills: skills.map(({ name, description, source, path: filePath }) => ({ name, description, source, path: filePath })) };
+  });
+
+  app.get<{ Params: { id: string } }>("/api/sessions/:id/skills", async (request, reply) => {
+    const session = await sessions.get(request.params.id);
+    if (!session) return reply.code(404).send({ error: "Session not found" });
+    const skills = dependencies.skills ? await dependencies.skills.listFor(session.cwd) : [];
+    return { skills: skills.map(({ name, description, source }) => ({ name, description, source })) };
   });
 
   app.get<{ Querystring: { from?: string; to?: string } }>("/api/reports/cost", async (request, reply) => {

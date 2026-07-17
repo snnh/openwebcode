@@ -6,7 +6,7 @@ export class PermissionCoordinator {
         this.events = events;
     }
     needsApproval(mode, rules, tool, input) {
-        if (["read_file", "glob", "grep", "read_artifact"].includes(tool))
+        if (["read_file", "glob", "grep", "read_artifact", "load_skill"].includes(tool))
             return false;
         if (mode === "yolo")
             return false;

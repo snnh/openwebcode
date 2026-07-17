@@ -1,9 +1,9 @@
-import { useEffect, useRef, type ReactElement } from "react";
-import type { ModelProfile, SessionDetail } from "../lib/contracts";
+import { useEffect, useRef, useState, type ReactElement } from "react";
+import type { ModelProfile, SessionDetail, SkillInfo } from "../lib/contracts";
 import type { SendKey } from "../lib/prefs";
 import { Icon } from "./Icon";
 
-export function Composer({ current, model, models, draft, setDraft, onSend, onConfig, running, sendKey }: {
+export function Composer({ current, model, models, draft, setDraft, onSend, onConfig, running, sendKey, skills }: {
   current: SessionDetail;
   model?: ModelProfile;
   models: ModelProfile[];
@@ -13,8 +13,11 @@ export function Composer({ current, model, models, draft, setDraft, onSend, onCo
   onConfig(body: Record<string, unknown>): void;
   running: boolean;
   sendKey: SendKey;
+  skills: SkillInfo[];
 }): ReactElement {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [dismissed, setDismissed] = useState(false);
+  const [active, setActive] = useState(0);
   // 随内容自动增高，上限由 CSS max-height 控制
   useEffect(() => {
     const element = textareaRef.current;
@@ -23,6 +26,22 @@ export function Composer({ current, model, models, draft, setDraft, onSend, onCo
       element.style.height = `${element.scrollHeight}px`;
     }
   }, [draft]);
+
+  // 输入 /前缀 时呼出技能补全；Esc 暂时关闭，内容变化后重新打开
+  const command = draft.match(/^\/([\w-]*)$/);
+  const suggestions = command && !dismissed
+    ? skills.filter((skill) => skill.name.toLowerCase().startsWith(command[1]!.toLowerCase()))
+    : [];
+  const popupOpen = suggestions.length > 0;
+  useEffect(() => {
+    setDismissed(false);
+    setActive(0);
+  }, [draft]);
+
+  const pick = (skill: SkillInfo): void => {
+    setDraft(`/${skill.name} `);
+    textareaRef.current?.focus();
+  };
 
   const thinkingModes = model?.capabilities.thinking ?? ["disabled"];
   const efforts = model?.capabilities.effort ?? [];
@@ -78,12 +97,56 @@ export function Composer({ current, model, models, draft, setDraft, onSend, onCo
         {running && <span className="steering-hint">运行中 · 发送将进入 Steering 队列</span>}
       </div>
       <div className="composer-input">
+        {popupOpen && (
+          <ul className="skill-popup" role="listbox" aria-label="技能建议">
+            {suggestions.map((skill, index) => (
+              <li key={skill.name}>
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={index === active}
+                  className={index === active ? "active" : ""}
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    pick(skill);
+                  }}
+                >
+                  <span className="skill-name">/{skill.name}</span>
+                  <span className="skill-desc">{skill.description}</span>
+                  <span className="skill-source">{skill.source === "project" ? "项目" : "全局"}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
         <textarea
           ref={textareaRef}
           rows={2}
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
+            if (popupOpen) {
+              if (event.key === "ArrowDown") {
+                event.preventDefault();
+                setActive((value) => (value + 1) % suggestions.length);
+                return;
+              }
+              if (event.key === "ArrowUp") {
+                event.preventDefault();
+                setActive((value) => (value - 1 + suggestions.length) % suggestions.length);
+                return;
+              }
+              if (event.key === "Tab" || event.key === "Enter") {
+                event.preventDefault();
+                pick(suggestions[Math.min(active, suggestions.length - 1)]!);
+                return;
+              }
+              if (event.key === "Escape") {
+                event.preventDefault();
+                setDismissed(true);
+                return;
+              }
+            }
             // 输入法组合中的 Enter 不触发发送；发送键可在设置中切换
             if (event.nativeEvent.isComposing || event.key !== "Enter") return;
             const shouldSend = sendKey === "enter"

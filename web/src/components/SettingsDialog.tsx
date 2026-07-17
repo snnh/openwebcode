@@ -454,6 +454,38 @@ function ModelCatalogSection(): ReactElement {
   );
 }
 
+function SkillsSection(): ReactElement {
+  const skills = useQuery({ queryKey: ["global-skills"], queryFn: api.globalSkills });
+  if (skills.isPending) return <p className="panel-empty">加载中…</p>;
+  if (skills.isError) return <p className="panel-empty">无法加载技能清单。</p>;
+  return (
+    <>
+      <p className="settings-note">
+        全局技能放在数据目录 skills/&lt;名称&gt;/SKILL.md，项目技能放在 &lt;工作目录&gt;/.owc/skills/ 下；
+        对话中输入 / 可呼出技能补全，模型也可经 load_skill 工具按需加载。
+      </p>
+      {skills.data.skills.length === 0 ? (
+        <p className="panel-empty">还没有全局技能。</p>
+      ) : (
+        <table className="pricing-table catalog-table">
+          <thead>
+            <tr><th>名称</th><th>描述</th><th>路径</th></tr>
+          </thead>
+          <tbody>
+            {skills.data.skills.map((skill) => (
+              <tr key={skill.name}>
+                <td className="mono">/{skill.name}</td>
+                <td>{skill.description}</td>
+                <td className="mono">{skill.path}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </>
+  );
+}
+
 export function SettingsDialog({ open, preference, setPreference, sendKey, setSendKey, defaults, setDefaults, providers, models, onResetLayout, onClose }: {
   open: boolean;
   preference: ThemePreference;
@@ -530,6 +562,10 @@ export function SettingsDialog({ open, preference, setPreference, sendKey, setSe
         <section>
           <h3>模型目录</h3>
           <ModelCatalogSection />
+        </section>
+        <section>
+          <h3>技能</h3>
+          <SkillsSection />
         </section>
         <section>
           <h3>布局</h3>
