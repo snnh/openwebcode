@@ -209,6 +209,17 @@ export async function buildServer(dependencies) {
             throw error;
         }
     });
+    app.get("/api/skills", async () => {
+        const skills = dependencies.skills ? await dependencies.skills.listFor(undefined) : [];
+        return { skills: skills.map(({ name, description, source, path: filePath }) => ({ name, description, source, path: filePath })) };
+    });
+    app.get("/api/sessions/:id/skills", async (request, reply) => {
+        const session = await sessions.get(request.params.id);
+        if (!session)
+            return reply.code(404).send({ error: "Session not found" });
+        const skills = dependencies.skills ? await dependencies.skills.listFor(session.cwd) : [];
+        return { skills: skills.map(({ name, description, source }) => ({ name, description, source })) };
+    });
     app.get("/api/reports/cost", async (request, reply) => {
         if (!dependencies.usageLog)
             return reply.code(404).send({ error: "Usage log not enabled" });
