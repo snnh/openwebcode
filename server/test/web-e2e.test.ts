@@ -116,8 +116,13 @@ describe.skipIf(!coreAvailable)("stage 4 web E2E", () => {
     const accepted = await app.inject({ method: "POST", url: `/api/sessions/${sessionId}/messages`, payload: { content: "write: result.txt hello-stage4" } });
     expect(accepted.statusCode).toBe(202);
     const req = requestId(await permissionEvent);
+    // 待确认权限可通过 REST 恢复（前端刷新后重新播种权限卡）
+    const pending = (await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/permissions` })).json<Array<{ requestId: string; tool: string }>>();
+    expect(pending.map((item) => item.requestId)).toContain(req);
+    expect(pending.find((item) => item.requestId === req)?.tool).toBe("write_file");
     expect((await app.inject({ method: "POST", url: `/api/sessions/${sessionId}/permissions/respond`, payload: { requestId: req, decision: "allow" } })).statusCode).toBe(200);
     await idle;
+    expect((await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/permissions` })).json<unknown[]>()).toHaveLength(0);
 
     expect(await readFile(path.join(root, "result.txt"), "utf8")).toBe("hello-stage4");
     const context = (await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/context` })).json<{

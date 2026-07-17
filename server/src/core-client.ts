@@ -81,9 +81,13 @@ export class CoreClient extends EventEmitter {
 
   constructor(
     private readonly corePath: string,
-    private readonly requestTimeoutMs = 130_000,
+    private requestTimeoutMs = 130_000,
   ) {
     super();
+  }
+
+  setRequestTimeoutMs(timeoutMs: number): void {
+    this.requestTimeoutMs = timeoutMs;
   }
 
   start(): Promise<CoreInfo> {

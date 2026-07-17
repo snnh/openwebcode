@@ -45,6 +45,10 @@ export class ProviderRegistry {
     this.providers.set(provider.name, provider);
   }
 
+  unregister(name: string): void {
+    this.providers.delete(name);
+  }
+
   get(name: string): Provider | undefined {
     return this.providers.get(name);
   }

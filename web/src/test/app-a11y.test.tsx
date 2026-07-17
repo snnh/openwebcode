@@ -57,8 +57,9 @@ function installFetchMock(overrides: Partial<SessionDetail> = {}): void {
     if (url.includes("/api/sessions/s1/files/content")) return json({ content: "文件内容预览", encoding: "utf-8", truncated: false });
     if (url.includes("/api/sessions/s1/files")) return json({ entries: [{ name: "src", type: "directory", size: 0 }, { name: "README.md", type: "file", size: 12 }], truncated: false });
     if (url.endsWith("/api/models")) return json(models);
-    if (url.endsWith("/api/providers")) return json([{ name: "anthropic" }]);
+    if (url.endsWith("/api/providers")) return json(["anthropic"]);
     if (url.includes("/api/sessions/s1/steering")) return json([]);
+    if (url.includes("/api/sessions/s1/permissions")) return json([]);
     if (url.match(/\/api\/sessions\/s1$/)) return json(session);
     return json({ error: "not mocked" }, 404);
   });

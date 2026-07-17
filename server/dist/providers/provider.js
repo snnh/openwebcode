@@ -5,6 +5,9 @@ export class ProviderRegistry {
             throw new Error(`Provider ${provider.name} is already registered`);
         this.providers.set(provider.name, provider);
     }
+    unregister(name) {
+        this.providers.delete(name);
+    }
     get(name) {
         return this.providers.get(name);
     }

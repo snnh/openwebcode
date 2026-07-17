@@ -29,6 +29,9 @@ export class CoreClient extends EventEmitter {
         this.corePath = corePath;
         this.requestTimeoutMs = requestTimeoutMs;
     }
+    setRequestTimeoutMs(timeoutMs) {
+        this.requestTimeoutMs = timeoutMs;
+    }
     start() {
         if (this.startPromise)
             return this.startPromise;
