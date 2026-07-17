@@ -1,4 +1,4 @@
-import { useState, type MouseEvent as ReactMouseEvent, type ReactElement } from "react";
+import { useRef, useState, type MouseEvent as ReactMouseEvent, type ReactElement } from "react";
 import type { Session } from "../lib/contracts";
 import type { Theme } from "../theme";
 import { Icon } from "./Icon";
@@ -7,7 +7,7 @@ export const RAIL_MIN_WIDTH = 200;
 export const RAIL_MAX_WIDTH = 380;
 export const clampRailWidth = (value: number): number => Math.min(RAIL_MAX_WIDTH, Math.max(RAIL_MIN_WIDTH, value));
 
-export function SessionRail({ sessions, currentId, runningIds, theme, collapsed, width, onSelect, onCreate, onDelete, onToggleTheme, onToggleCollapsed, onOpenSettings, onResize }: {
+export function SessionRail({ sessions, currentId, runningIds, theme, collapsed, width, onSelect, onCreate, onDelete, onImport, onToggleTheme, onToggleCollapsed, onOpenSettings, onResize }: {
   sessions?: Session[];
   currentId?: string;
   runningIds: Set<string>;
@@ -17,12 +17,14 @@ export function SessionRail({ sessions, currentId, runningIds, theme, collapsed,
   onSelect(id: string): void;
   onCreate(): void;
   onDelete(id: string): void;
+  onImport(file: File): void;
   onToggleTheme(): void;
   onToggleCollapsed(): void;
   onOpenSettings(): void;
   onResize(width: number): void;
 }): ReactElement {
   const [filter, setFilter] = useState("");
+  const fileInput = useRef<HTMLInputElement>(null);
   const keyword = filter.trim().toLowerCase();
   const filtered = sessions?.filter((session) =>
     !keyword || `${session.title} ${session.provider} ${session.model}`.toLowerCase().includes(keyword));
@@ -56,6 +58,18 @@ export function SessionRail({ sessions, currentId, runningIds, theme, collapsed,
       )}
       <header>
         {!collapsed && <span className="brand">Open<b>WebCode</b></span>}
+        <input
+          ref={fileInput}
+          type="file"
+          accept=".jsonl,.ndjson,.txt,application/x-ndjson"
+          hidden
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) onImport(file);
+            event.target.value = "";
+          }}
+        />
+        <button className="icon-btn" onClick={() => fileInput.current?.click()} aria-label="导入会话" title="导入会话（JSONL）"><Icon name="upload" size={15} /></button>
         <button className="icon-btn" onClick={onCreate} aria-label="新建会话" title="新建会话"><Icon name="plus" size={16} /></button>
       </header>
       {!collapsed && (

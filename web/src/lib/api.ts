@@ -59,6 +59,18 @@ export const api = {
   readFile: (id: string, path: string) => request<{ content: string; encoding: string; truncated: boolean }>(`/api/sessions/${id}/files/content?path=${encodeURIComponent(path)}`),
   steering: (id: string) => request<Array<{ id: string; content: string; createdAt: string }>>(`/api/sessions/${id}/steering`),
   removeSteering: (id: string, itemId: string) => request<void>(`/api/sessions/${id}/steering/${itemId}`, { method: "DELETE" }),
+  importSession: async (jsonl: string): Promise<Session> => {
+    const response = await fetch("/api/sessions/import", {
+      method: "POST",
+      headers: { "content-type": "application/x-ndjson" },
+      body: jsonl,
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({ error: response.statusText })) as { error?: string };
+      throw new ApiError(response.status, body.error ?? response.statusText);
+    }
+    return response.json() as Promise<Session>;
+  },
   settings: () => request<SettingsView>("/api/settings"),
   saveSettings: (overrides: Record<string, SettingValue | null>) =>
     request<SettingsView>("/api/settings", { method: "PUT", body: JSON.stringify({ overrides }) }),

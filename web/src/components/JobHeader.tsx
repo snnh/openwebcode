@@ -57,6 +57,15 @@ export function JobHeader({ session, agentState, costSummary, onAbort }: {
           <Icon name="shield" size={11} />
           {session.sandbox?.enabled ? "沙盒已启用" : "沙盒关闭"}
         </span>
+        <a
+          className="icon-btn"
+          href={`/api/sessions/${session.id}/export`}
+          download
+          aria-label="导出会话"
+          title="导出会话（JSONL，不含账本与 artifacts）"
+        >
+          <Icon name="download" size={14} />
+        </a>
         {busy && (
           <button className="btn danger-outline" onClick={onAbort}>中断</button>
         )}

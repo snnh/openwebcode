@@ -220,6 +220,17 @@ export function App(): ReactElement {
       .catch((error: unknown) => setNotice(error instanceof Error ? error.message : "删除会话失败"));
   };
 
+  const importSession = (file: File): void => {
+    file.text()
+      .then((text) => api.importSession(text))
+      .then((session) => {
+        setNotice(`已导入会话「${session.title}」`);
+        setCurrentId(session.id);
+        queryClient.invalidateQueries({ queryKey: queryKeys.sessions });
+      })
+      .catch((error: unknown) => setNotice(error instanceof Error ? error.message : "导入失败"));
+  };
+
   const model = useMemo(() => models.data?.find((item) => item.id === current?.model), [models.data, current?.model]);
 
   const resetLayout = (): void => {
@@ -248,6 +259,7 @@ export function App(): ReactElement {
         onSelect={setCurrentId}
         onCreate={() => setDialogOpen(true)}
         onDelete={removeSession}
+        onImport={importSession}
         onToggleTheme={toggleTheme}
         onToggleCollapsed={() => setRailCollapsed((value) => !value)}
         onOpenSettings={() => setSettingsOpen(true)}

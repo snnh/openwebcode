@@ -16,6 +16,7 @@ import { parseDecimalToScaled } from "./cost/exchange-rate.js";
 import type { AppEvent, EventBus } from "./events/event-bus.js";
 import type { ProviderRegistry } from "./providers/provider.js";
 import { GitShadowSnapshots } from "./snapshots/git-shadow.js";
+import { SessionTransferError } from "./sessions/session-transfer.js";
 import type { PermissionMode } from "./sessions/types.js";
 import type { SessionStore } from "./sessions/session-store.js";
 import { SettingsValidationError, type SettingsService } from "./settings-service.js";
@@ -75,6 +76,8 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   const defaultLanguage = dependencies.defaultLanguage ?? "zh-CN";
   const getPreferences = dependencies.getPreferences ?? (() => ({ currency: defaultCurrency, language: defaultLanguage }));
   const app = Fastify({ logger: true, bodyLimit: 1024 * 1024 });
+  // 会话导入走 ndjson/纯文本原文，不经 JSON 解析
+  app.addContentTypeParser(["application/x-ndjson", "text/plain"], { parseAs: "string" }, (_request, body, done) => done(null, body));
   await app.register(websocket);
   if (dependencies.webDist && existsSync(dependencies.webDist)) {
     await app.register(fastifyStatic, { root: dependencies.webDist, prefix: "/" });
@@ -226,6 +229,29 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     const session = await sessions.get(request.params.id);
     if (!session) return reply.code(404).send({ error: "Session not found" });
     return session;
+  });
+
+  app.get<{ Params: { id: string } }>("/api/sessions/:id/export", async (request, reply) => {
+    const jsonl = await sessions.exportJsonl(request.params.id);
+    if (jsonl === undefined) return reply.code(404).send({ error: "Session not found" });
+    return reply
+      .header("content-type", "application/x-ndjson; charset=utf-8")
+      .header("content-disposition", `attachment; filename="session-${request.params.id}.jsonl"`)
+      .send(jsonl);
+  });
+
+  app.post("/api/sessions/import", { bodyLimit: 50 * 1024 * 1024 }, async (request, reply) => {
+    if (typeof request.body !== "string" || request.body.trim() === "") {
+      return reply.code(400).send({ error: "JSONL body is required" });
+    }
+    try {
+      const meta = await sessions.importJsonl(request.body);
+      events.publish({ source: "session", type: "session.created", sessionId: meta.id, payload: meta });
+      return reply.code(201).send(meta);
+    } catch (error) {
+      if (error instanceof SessionTransferError) return reply.code(400).send({ error: error.message });
+      throw error;
+    }
   });
 
   app.put<{ Params: { id: string }; Body: SessionConfigBody }>("/api/sessions/:id/config", async (request, reply) => {

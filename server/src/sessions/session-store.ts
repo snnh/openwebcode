@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rename, rm, writeFile, appendFile } from "node:fs/promises";
 import path from "node:path";
+import { parseSessionImport, serializeSession } from "./session-transfer.js";
 import type { ChatMessage, MessageContent, MessageRole, SessionDetail, SessionMeta } from "./types.js";
 
 export interface CreateSessionInput {
@@ -138,6 +139,39 @@ export class SessionStore {
       if (isMissing(error)) return false;
       throw error;
     }
+  }
+
+  /** 导出为 JSONL：首行 meta，其后每行一条消息；ledger/artifacts 不含在内（上下文按消息重建）。 */
+  async exportJsonl(id: string): Promise<string | undefined> {
+    const detail = await this.get(id);
+    if (!detail) return undefined;
+    const { messages, ...meta } = detail;
+    return serializeSession(meta as SessionMeta, messages);
+  }
+
+  /** 导入 JSONL：原 id 未被占用则沿用（迁移恢复），否则分配新 id。 */
+  async importJsonl(text: string): Promise<SessionMeta> {
+    const parsed = parseSessionImport(text);
+    let id = parsed.meta.id ?? randomUUID();
+    try {
+      await mkdir(this.sessionPath(id), { recursive: false });
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "EEXIST") {
+        id = randomUUID();
+        await mkdir(this.sessionPath(id), { recursive: false });
+      } else {
+        throw error;
+      }
+    }
+    const { id: _ignored, ...restMeta } = parsed.meta;
+    const meta: SessionMeta = { ...restMeta, id };
+    await this.writeMeta(meta);
+    await writeFile(
+      this.messagesPath(id),
+      parsed.messages.map((message) => JSON.stringify(message)).join("\n") + (parsed.messages.length ? "\n" : ""),
+      "utf8",
+    );
+    return meta;
   }
 
   private sessionPath(id: string): string {

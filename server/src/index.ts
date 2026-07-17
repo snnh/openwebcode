@@ -12,6 +12,7 @@ import { DevelopmentProvider } from "./providers/development-provider.js";
 import { ProviderRegistry } from "./providers/provider.js";
 import { SessionStore } from "./sessions/session-store.js";
 import { SettingsService } from "./settings-service.js";
+import { StorageGC } from "./storage-gc.js";
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const resolveFromServer = (value: string) => (path.isAbsolute(value) ? value : path.resolve(moduleDirectory, "..", value));
@@ -45,7 +46,8 @@ const models = await ModelRegistry.load({
   onUpdated: () => events.publish({ source: "server", type: "models.updated", payload: {} }),
 });
 const agent = new AgentRunner(sessions, providers, core, events, pricing, exchangeRates, config.defaultLanguage, 50, (model) => models.get(model));
-settings.bind({ providers, core, agent, events, models });
+const gc = new StorageGC(path.join(dataDir, "sessions"), config.gcMaxBytes);
+settings.bind({ providers, core, agent, events, models, gc });
 settings.reconcileProviders();
 
 core.on("diagnostic", (text: string) => process.stderr.write(`[owc-exec] ${text}`));
@@ -55,6 +57,12 @@ await sessions.initialize();
 await pricing.initialize();
 await exchangeRates.initialize();
 await core.start();
+// 存储 GC：启动时一次 + 每小时周期清理（失败仅记日志）
+void gc.collect().catch((error: unknown) => console.error("Storage GC failed:", error));
+const gcTimer = setInterval(() => {
+  void gc.collect().catch((error: unknown) => console.error("Storage GC failed:", error));
+}, 3_600_000);
+gcTimer.unref();
 const app = await buildServer({
   core,
   sessions,
@@ -74,6 +82,7 @@ const app = await buildServer({
 });
 
 async function shutdown(): Promise<void> {
+  clearInterval(gcTimer);
   exchangeRates.close();
   await app.close();
   await core.stop();
