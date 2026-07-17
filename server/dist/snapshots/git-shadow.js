@@ -1,9 +1,11 @@
 import { spawn } from "node:child_process";
 import { lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { isCheckpoint } from "./backend.js";
 export class GitShadowSnapshots {
     sessionRoot;
     workspace;
+    name = "git-shadow";
     gitDir;
     metadataPath;
     excludes = [".git", "node_modules", ".owc", ".openwebcode"];
@@ -67,21 +69,15 @@ export class GitShadowSnapshots {
     async restore(id) {
         validateId(id);
         await this.initialize();
-        const checkpoint = (await this.list()).find((item) => item.id === id);
-        if (!checkpoint)
+        if (!(await this.list()).some((item) => item.id === id))
             throw new Error("Checkpoint not found");
         await this.git(["checkout", "-f", id, "--", "."]);
         await this.git(["clean", "-fdx", ...this.excludes.flatMap((item) => ["-e", `${item}/`])], false);
-        return checkpoint;
     }
     async delete(id) {
         validateId(id);
         const checkpoints = await this.list();
-        const remaining = checkpoints.filter((item) => item.id !== id);
-        if (remaining.length === checkpoints.length)
-            return false;
-        await this.save(remaining);
-        return true;
+        await this.save(checkpoints.filter((item) => item.id !== id));
     }
     async cleanup() { await rm(this.gitDir, { recursive: true, force: true }); }
     async scanWorkspace() {
@@ -130,9 +126,3 @@ export class GitShadowSnapshots {
 }
 function validateId(id) { if (!/^[0-9a-f]{40,64}$/.test(id))
     throw new Error("Invalid checkpoint ID"); }
-function isCheckpoint(value) {
-    if (!value || typeof value !== "object")
-        return false;
-    const item = value;
-    return typeof item.id === "string" && typeof item.label === "string" && typeof item.createdAt === "string" && Number.isSafeInteger(item.messageCount) && Number(item.messageCount) >= 0;
-}

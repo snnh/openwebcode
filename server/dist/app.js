@@ -10,7 +10,7 @@ import { getModelProfile, listModelProfiles } from "./context/model-profile.js";
 import { lookupModelMetadata } from "./context/model-metadata.js";
 import { PricingValidationError } from "./cost/pricing-catalog.js";
 import { parseDecimalToScaled } from "./cost/exchange-rate.js";
-import { GitShadowSnapshots } from "./snapshots/git-shadow.js";
+import { getSnapshotBackend } from "./snapshots/index.js";
 import { SessionTransferError } from "./sessions/session-transfer.js";
 import { SettingsValidationError } from "./settings-service.js";
 function serializePricing(pricing) {
@@ -361,13 +361,20 @@ export async function buildServer(dependencies) {
         const session = await sessions.get(request.params.id);
         if (!session)
             return reply.code(404).send({ error: "Session not found" });
-        return { diff: await new GitShadowSnapshots(sessions.contextRoot(session.id), session.cwd).diff(request.params.checkpointId) };
+        const backend = await getSnapshotBackend(sessions, session);
+        return { diff: await backend.diff(request.params.checkpointId) };
+    });
+    app.get("/api/sessions/:id/snapshot-capability", async (request, reply) => {
+        const session = await sessions.get(request.params.id);
+        if (!session)
+            return reply.code(404).send({ error: "Session not found" });
+        return (await getSnapshotBackend(sessions, session)).capability();
     });
     app.get("/api/sessions/:id/checkpoints", async (request, reply) => {
         const session = await sessions.get(request.params.id);
         if (!session)
             return reply.code(404).send({ error: "Session not found" });
-        return new GitShadowSnapshots(sessions.contextRoot(session.id), session.cwd).list();
+        return (await getSnapshotBackend(sessions, session)).list();
     });
     app.post("/api/sessions/:id/checkpoints", async (request, reply) => {
         const session = await sessions.get(request.params.id);
@@ -379,7 +386,8 @@ export async function buildServer(dependencies) {
         if (typeof label !== "string" || !label.trim())
             return reply.code(400).send({ error: "label must be a non-empty string" });
         const ledger = await new ContextManager(sessions.contextRoot(session.id)).load();
-        const checkpoint = await new GitShadowSnapshots(sessions.contextRoot(session.id), session.cwd).create(label, session.messages.length, ledger);
+        const backend = await getSnapshotBackend(sessions, session);
+        const checkpoint = await backend.create(label, session.messages.length, ledger);
         events.publish({ source: "session", type: "checkpoint.created", sessionId: session.id, payload: checkpoint });
         return reply.code(201).send(checkpoint);
     });
@@ -391,13 +399,28 @@ export async function buildServer(dependencies) {
             return reply.code(409).send({ error: "Session is running" });
         if (request.body?.confirm !== true)
             return reply.code(400).send({ error: "confirm must be true" });
-        const checkpoint = await new GitShadowSnapshots(sessions.contextRoot(session.id), session.cwd).restore(request.params.checkpointId);
+        const backend = await getSnapshotBackend(sessions, session);
+        const checkpoint = (await backend.list()).find((item) => item.id === request.params.checkpointId);
+        if (!checkpoint)
+            return reply.code(404).send({ error: "Checkpoint not found" });
+        await backend.restore(checkpoint.id);
         if (!request.body?.filesOnly) {
             await sessions.truncateMessages(session.id, checkpoint.messageCount);
             await new ContextManager(sessions.contextRoot(session.id)).replaceLedger(checkpoint.ledger);
         }
         events.publish({ source: "session", type: "checkpoint.restored", sessionId: session.id, payload: { id: checkpoint.id, filesOnly: request.body?.filesOnly === true } });
         return checkpoint;
+    });
+    app.delete("/api/sessions/:id/checkpoints/:checkpointId", async (request, reply) => {
+        const session = await sessions.get(request.params.id);
+        if (!session)
+            return reply.code(404).send({ error: "Session not found" });
+        if (agent.isRunning(session.id))
+            return reply.code(409).send({ error: "Session is running" });
+        const backend = await getSnapshotBackend(sessions, session);
+        await backend.delete(request.params.checkpointId);
+        events.publish({ source: "session", type: "checkpoint.deleted", sessionId: session.id, payload: { id: request.params.checkpointId } });
+        return reply.code(204).send();
     });
     app.delete("/api/sessions/:id", async (request, reply) => {
         if (agent.isRunning(request.params.id)) {

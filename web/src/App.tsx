@@ -148,7 +148,7 @@ export function App(): ReactElement {
           queryClient.invalidateQueries({ queryKey: ["steering", event.sessionId] });
         }
         if ([
-          "agent.state", "tool.end", "checkpoint.created", "checkpoint.restored", "context.usage",
+          "agent.state", "tool.end", "checkpoint.created", "checkpoint.restored", "checkpoint.deleted", "context.usage",
           "context.budget_updated", "context.restored", "session.config_updated",
         ].includes(event.type)) {
           queryClient.invalidateQueries({ queryKey: queryKeys.detail(event.sessionId) });

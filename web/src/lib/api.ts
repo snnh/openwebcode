@@ -1,4 +1,4 @@
-import type { Checkpoint, ContextView, CostReport, FileEntry, ModelProfile, PendingPermission, PricingDocument, Session, SessionDetail, SettingsView, SettingValue, SkillInfo } from "./contracts";
+import type { Checkpoint, ContextView, CostReport, FileEntry, ModelProfile, PendingPermission, PricingDocument, Session, SessionDetail, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo } from "./contracts";
 
 export class ApiError extends Error {
   constructor(readonly status: number, message: string) {
@@ -40,8 +40,11 @@ export const api = {
   restoreContext: (id: string, messageId: string) =>
     request<void>(`/api/sessions/${id}/context/restore`, { method: "POST", body: JSON.stringify({ messageId }) }),
   checkpoints: (id: string) => request<Checkpoint[]>(`/api/sessions/${id}/checkpoints`),
+  snapshotCapability: (id: string) => request<SnapshotCapabilityInfo>(`/api/sessions/${id}/snapshot-capability`),
   createCheckpoint: (id: string, label?: string) =>
     request<Checkpoint>(`/api/sessions/${id}/checkpoints`, { method: "POST", body: JSON.stringify({ label }) }),
+  deleteCheckpoint: (id: string, checkpointId: string) =>
+    request<void>(`/api/sessions/${id}/checkpoints/${checkpointId}`, { method: "DELETE" }),
   restoreCheckpoint: (id: string, checkpointId: string, filesOnly = false) =>
     request<Checkpoint>(`/api/sessions/${id}/checkpoints/${checkpointId}/restore`, { method: "POST", body: JSON.stringify({ confirm: true, filesOnly }) }),
   checkpointDiff: (id: string, checkpointId: string) =>

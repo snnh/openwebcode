@@ -750,6 +750,8 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .checkpoint-label:hover { color: var(--accent); }
 .checkpoint small { display: block; color: var(--text-3); font-size: 11px; margin: 3px 0 7px; }
 .checkpoint-actions { display: flex; gap: 6px; margin-bottom: 6px; }
+.backend-badge-row { margin: -6px 0 10px; }
+.backend-badge { background: var(--accent-soft); color: var(--accent); }
 
 /* ================= 对话框 ================= */
 .session-dialog {

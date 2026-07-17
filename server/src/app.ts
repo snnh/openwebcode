@@ -15,7 +15,7 @@ import { PricingValidationError, type PricingCatalog, type PricingDocument } fro
 import { parseDecimalToScaled } from "./cost/exchange-rate.js";
 import type { AppEvent, EventBus } from "./events/event-bus.js";
 import type { ProviderRegistry } from "./providers/provider.js";
-import { GitShadowSnapshots } from "./snapshots/git-shadow.js";
+import { getSnapshotBackend } from "./snapshots/index.js";
 import { SessionTransferError } from "./sessions/session-transfer.js";
 import type { PermissionMode } from "./sessions/types.js";
 import type { SessionStore } from "./sessions/session-store.js";
@@ -400,28 +400,46 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   });
   app.get<{ Params: { id: string; checkpointId: string } }>("/api/sessions/:id/checkpoints/:checkpointId/diff", async (request, reply) => {
     const session = await sessions.get(request.params.id); if (!session) return reply.code(404).send({ error: "Session not found" });
-    return { diff: await new GitShadowSnapshots(sessions.contextRoot(session.id), session.cwd).diff(request.params.checkpointId) };
+    const backend = await getSnapshotBackend(sessions, session);
+    return { diff: await backend.diff(request.params.checkpointId) };
+  });
+
+  app.get<{ Params: { id: string } }>("/api/sessions/:id/snapshot-capability", async (request, reply) => {
+    const session = await sessions.get(request.params.id); if (!session) return reply.code(404).send({ error: "Session not found" });
+    return (await getSnapshotBackend(sessions, session)).capability();
   });
 
   app.get<{ Params: { id: string } }>("/api/sessions/:id/checkpoints", async (request, reply) => {
     const session = await sessions.get(request.params.id); if (!session) return reply.code(404).send({ error: "Session not found" });
-    return new GitShadowSnapshots(sessions.contextRoot(session.id), session.cwd).list();
+    return (await getSnapshotBackend(sessions, session)).list();
   });
   app.post<{ Params: { id: string }; Body: { label?: string } }>("/api/sessions/:id/checkpoints", async (request, reply) => {
     const session = await sessions.get(request.params.id); if (!session) return reply.code(404).send({ error: "Session not found" });
     if (agent.isRunning(session.id)) return reply.code(409).send({ error: "Session is running" });
     const label = request.body?.label ?? "Manual checkpoint"; if (typeof label !== "string" || !label.trim()) return reply.code(400).send({ error: "label must be a non-empty string" });
     const ledger = await new ContextManager(sessions.contextRoot(session.id)).load();
-    const checkpoint = await new GitShadowSnapshots(sessions.contextRoot(session.id), session.cwd).create(label, session.messages.length, ledger);
+    const backend = await getSnapshotBackend(sessions, session);
+    const checkpoint = await backend.create(label, session.messages.length, ledger);
     events.publish({ source: "session", type: "checkpoint.created", sessionId: session.id, payload: checkpoint }); return reply.code(201).send(checkpoint);
   });
   app.post<{ Params: { id: string; checkpointId: string }; Body: { confirm?: boolean; filesOnly?: boolean } }>("/api/sessions/:id/checkpoints/:checkpointId/restore", async (request, reply) => {
     const session = await sessions.get(request.params.id); if (!session) return reply.code(404).send({ error: "Session not found" });
     if (agent.isRunning(session.id)) return reply.code(409).send({ error: "Session is running" });
     if (request.body?.confirm !== true) return reply.code(400).send({ error: "confirm must be true" });
-    const checkpoint = await new GitShadowSnapshots(sessions.contextRoot(session.id), session.cwd).restore(request.params.checkpointId);
+    const backend = await getSnapshotBackend(sessions, session);
+    const checkpoint = (await backend.list()).find((item) => item.id === request.params.checkpointId);
+    if (!checkpoint) return reply.code(404).send({ error: "Checkpoint not found" });
+    await backend.restore(checkpoint.id);
     if (!request.body?.filesOnly) { await sessions.truncateMessages(session.id, checkpoint.messageCount); await new ContextManager(sessions.contextRoot(session.id)).replaceLedger(checkpoint.ledger); }
     events.publish({ source: "session", type: "checkpoint.restored", sessionId: session.id, payload: { id: checkpoint.id, filesOnly: request.body?.filesOnly === true } }); return checkpoint;
+  });
+  app.delete<{ Params: { id: string; checkpointId: string } }>("/api/sessions/:id/checkpoints/:checkpointId", async (request, reply) => {
+    const session = await sessions.get(request.params.id); if (!session) return reply.code(404).send({ error: "Session not found" });
+    if (agent.isRunning(session.id)) return reply.code(409).send({ error: "Session is running" });
+    const backend = await getSnapshotBackend(sessions, session);
+    await backend.delete(request.params.checkpointId);
+    events.publish({ source: "session", type: "checkpoint.deleted", sessionId: session.id, payload: { id: request.params.checkpointId } });
+    return reply.code(204).send();
   });
 
   app.delete<{ Params: { id: string } }>("/api/sessions/:id", async (request, reply) => {

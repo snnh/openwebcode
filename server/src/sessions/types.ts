@@ -62,6 +62,8 @@ export interface SessionMeta {
   permissionMode?: PermissionMode;
   permissionRules?: PermissionRule[];
   sandbox?: SandboxPolicy;
+  /** 探测到的快照后端名（zfs 附带数据集："zfs:<dataset>"），由 snapshots/index.ts 落盘 */
+  snapshotBackend?: string;
   title: string;
   createdAt: string;
   updatedAt: string;

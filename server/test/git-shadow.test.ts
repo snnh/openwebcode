@@ -28,9 +28,10 @@ describe("GitShadowSnapshots", () => {
     await writeFile(path.join(workspace, "new.cache"), "ignored", "utf8");
     await writeFile(path.join(workspace, "saved.cache"), "changed", "utf8");
     expect(await snapshots.diff(checkpoint.id)).toContain("a.txt");
-    const restored = await snapshots.restore(checkpoint.id);
+    await snapshots.restore(checkpoint.id);
+    const restored = (await snapshots.list()).find((item) => item.id === checkpoint.id);
 
-    expect(restored.ledger).toEqual({ round: 1 });
+    expect(restored?.ledger).toEqual({ round: 1 });
     expect(await readFile(path.join(workspace, "a.txt"), "utf8")).toBe("one");
     expect(await readFile(path.join(workspace, "untracked.txt"), "utf8")).toBe("keep");
     expect(await readFile(path.join(workspace, "saved.cache"), "utf8")).toBe("saved");

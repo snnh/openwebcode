@@ -94,6 +94,13 @@ export interface Checkpoint {
   messageCount: number;
 }
 
+export interface SnapshotCapabilityInfo {
+  backend: string;
+  costHint: "instant" | "linear";
+  requiresAdmin: boolean;
+  detail?: string;
+}
+
 export interface PricingEntry {
   provider: string;
   model: string;
