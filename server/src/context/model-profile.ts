@@ -1,3 +1,5 @@
+import type { ChatMessage } from "../sessions/types.js";
+
 export type Currency = "USD" | "CNY";
 export type ModelModality = "text" | "image";
 export type ThinkingMode = "adaptive" | "enabled" | "disabled";
@@ -98,4 +100,21 @@ export function getModelProfile(model: string): ModelProfile {
 
 export function estimateTokens(value: string): number {
   return Math.max(1, Math.ceil(value.length / 4));
+}
+
+/** 图片按固定定额计入水位估算（典型 ~1.2k tokens/张），而非 base64 长度。 */
+export const IMAGE_TOKEN_ESTIMATE = 1200;
+
+export function estimateMessageTokens(messages: ChatMessage[]): number {
+  let total = 0;
+  for (const message of messages) {
+    for (const block of message.content) {
+      if (block.type === "image") total += IMAGE_TOKEN_ESTIMATE;
+      else if (block.type === "tool_call") total += estimateTokens(JSON.stringify(block.input)) + 8;
+      else if (block.type === "tool_result") total += estimateTokens(block.content);
+      else if (block.type === "text" || block.type === "thinking") total += estimateTokens(block.text);
+    }
+    total += 4;
+  }
+  return Math.max(1, total);
 }

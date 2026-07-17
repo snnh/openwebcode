@@ -142,6 +142,7 @@ export class ContextManager {
         content: [{ type: "text", text: `[Earlier context compacted (${compacted.mode})]\n${renderCompaction(compacted)}` }],
       });
     }
+    enforceImageBudget(view);
     return { messages: view, ledger };
   }
 
@@ -364,6 +365,29 @@ function renderCompaction(record: CompactionRecord): string {
     "",
     record.summary,
   ].join("\n");
+}
+
+/** 图像独立预算（§7.3②）：视图中至多保留最新 MAX_IMAGES 张且不超 MAX_IMAGE_BYTES，更早的替换为占位文本。 */
+const MAX_IMAGES = 4;
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+
+function enforceImageBudget(view: ChatMessage[]): void {
+  let count = 0;
+  let bytes = 0;
+  for (let m = view.length - 1; m >= 0; m -= 1) {
+    const content = view[m]!.content;
+    for (let b = content.length - 1; b >= 0; b -= 1) {
+      const block = content[b]!;
+      if (block.type !== "image") continue;
+      const size = Math.ceil(block.data.length * 3 / 4);
+      if (count < MAX_IMAGES && bytes + size <= MAX_IMAGE_BYTES) {
+        count += 1;
+        bytes += size;
+      } else {
+        content[b] = { type: "text", text: `[image omitted from LLM context: ${block.mediaType}, ${Math.round(size / 1024)}KB]` };
+      }
+    }
+  }
 }
 
 function normalizeLedger(value: Partial<ContextLedger>): ContextLedger {

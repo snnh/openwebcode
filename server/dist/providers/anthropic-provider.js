@@ -99,8 +99,17 @@ function toAnthropicMessages(messages, breakpoints) {
             result = {
                 role: "user",
                 content: message.content
-                    .filter((block) => block.type === "text")
-                    .map((block) => ({ type: "text", text: block.text })),
+                    .filter((block) => block.type === "text" || block.type === "image")
+                    .map((block) => block.type === "text"
+                    ? { type: "text", text: block.text }
+                    : {
+                        type: "image",
+                        source: {
+                            type: "base64",
+                            media_type: block.mediaType,
+                            data: block.data,
+                        },
+                    }),
             };
         }
         else {

@@ -74,6 +74,8 @@ function ContentBlock({ block }: { block: MessageContent }): ReactElement | null
       return <ToolCallCard name={block.name ?? "tool"} input={block.input} />;
     case "tool_result":
       return <ToolResultCard content={block.content ?? ""} error={Boolean(block.isError)} />;
+    case "image":
+      return <img className="message-image" src={`data:${block.mediaType ?? "image/png"};base64,${block.data ?? ""}`} alt="用户上传的图片" />;
     default:
       return null;
   }
