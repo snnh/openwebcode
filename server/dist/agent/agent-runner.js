@@ -89,6 +89,9 @@ export class AgentRunner {
             });
         });
     }
+    setDefaultLanguage(language) {
+        this.defaultLanguage = language;
+    }
     async run(sessionId, text) {
         if (this.running.has(sessionId))
             throw new Error("Session agent is already running");
@@ -271,6 +274,9 @@ export class AgentRunner {
                 this.steering.delete(sessionId);
             this.state(sessionId, "idle");
         }
+    }
+    listPendingPermissions(sessionId) {
+        return this.permissions.listPending(sessionId);
     }
     async respondPermission(sessionId, requestId, decision, reason) {
         const response = this.permissions.respond(sessionId, requestId, decision, reason);

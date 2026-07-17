@@ -10,6 +10,7 @@ import { getModelProfile, listModelProfiles } from "./context/model-profile.js";
 import { PricingValidationError } from "./cost/pricing-catalog.js";
 import { parseDecimalToScaled } from "./cost/exchange-rate.js";
 import { GitShadowSnapshots } from "./snapshots/git-shadow.js";
+import { SettingsValidationError } from "./settings-service.js";
 function serializePricing(pricing) {
     return {
         currency: pricing.currency,
@@ -23,6 +24,7 @@ export async function buildServer(dependencies) {
     const { core, sessions, agent, events, providers, pricing } = dependencies;
     const defaultCurrency = dependencies.defaultCurrency ?? "CNY";
     const defaultLanguage = dependencies.defaultLanguage ?? "zh-CN";
+    const getPreferences = dependencies.getPreferences ?? (() => ({ currency: defaultCurrency, language: defaultLanguage }));
     const app = Fastify({ logger: true, bodyLimit: 1024 * 1024 });
     await app.register(websocket);
     if (dependencies.webDist && existsSync(dependencies.webDist)) {
@@ -74,6 +76,21 @@ export async function buildServer(dependencies) {
         }
     });
     app.post("/api/exec", async (request) => core.run(request.body));
+    if (dependencies.settings) {
+        const settings = dependencies.settings;
+        app.get("/api/settings", async () => settings.view());
+        app.put("/api/settings", async (request, reply) => {
+            try {
+                return await settings.update(request.body?.overrides ?? {});
+            }
+            catch (error) {
+                if (error instanceof SettingsValidationError)
+                    return reply.code(400).send({ error: error.message });
+                request.log.error(error, "Failed to persist server settings");
+                return reply.code(500).send({ error: "Failed to persist server settings" });
+            }
+        });
+    }
     app.post("/api/sessions", async (request, reply) => {
         if (!request.body || typeof request.body.cwd !== "string" || !request.body.cwd) {
             return reply.code(400).send({ error: "cwd must be a non-empty string" });
@@ -128,7 +145,8 @@ export async function buildServer(dependencies) {
             return reply.code(404).send({ error: "Session not found" });
         const manager = new ContextManager(sessions.contextRoot(request.params.id));
         const view = await manager.buildView(session.messages);
-        return { ...view, preferences: { language: defaultLanguage, currency: defaultCurrency, currencyLabel: defaultCurrency === "CNY" ? "RMB" : "USD" } };
+        const prefs = getPreferences();
+        return { ...view, preferences: { language: prefs.language, currency: prefs.currency, currencyLabel: prefs.currency === "CNY" ? "RMB" : "USD" } };
     });
     app.put("/api/sessions/:id/context/budget", async (request, reply) => {
         if (!(await sessions.get(request.params.id)))
@@ -143,7 +161,7 @@ export async function buildServer(dependencies) {
         let costValue;
         const requestedCost = request.body?.maxSessionCost;
         if (requestedCost !== null && requestedCost !== undefined) {
-            const requestedCurrency = requestedCost.currency === "RMB" ? "CNY" : requestedCost.currency ?? defaultCurrency;
+            const requestedCurrency = requestedCost.currency === "RMB" ? "CNY" : requestedCost.currency ?? getPreferences().currency;
             if (!requestedCost || typeof requestedCost.amount !== "string" || !["USD", "CNY"].includes(requestedCurrency)) {
                 return reply.code(400).send({ error: "maxSessionCost must contain amount string and optional USD, CNY, or RMB currency, or null" });
             }
@@ -289,6 +307,12 @@ export async function buildServer(dependencies) {
         }
         void agent.run(request.params.id, request.body.content).catch(() => undefined);
         return reply.code(202).send({ accepted: true });
+    });
+    app.get("/api/sessions/:id/permissions", async (request, reply) => {
+        if (!(await sessions.get(request.params.id)))
+            return reply.code(404).send({ error: "Session not found" });
+        // 待确认权限走 REST 可恢复：刷新或重连后 WS 补发可能已越过 permission.request 事件
+        return agent.listPendingPermissions(request.params.id);
     });
     app.post("/api/sessions/:id/permissions/respond", async (request, reply) => {
         if (!(await sessions.get(request.params.id)))

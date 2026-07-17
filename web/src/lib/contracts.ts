@@ -44,6 +44,12 @@ export interface SessionDetail extends Session {
   messages: ChatMessage[];
 }
 
+export interface PendingPermission {
+  requestId: string;
+  tool: string;
+  input: Record<string, unknown>;
+}
+
 export interface AppEvent {
   source: "server" | "core" | "agent" | "session";
   type: string;
@@ -58,6 +64,7 @@ export interface ContextView {
     usage: { inputTokens: number; outputTokens: number; cacheRead: number; cacheWrite: number };
     cost: { usdMicroUnits: string; cnyMicroUnits: string; unpricedTokens: number };
     entries: Array<{ messageId: string; state: "full" | "evicted" | "restored"; artifactId: string }>;
+    policy?: { maxSessionTokens?: number; maxSessionCost?: { currency: "USD" | "CNY"; microUnits: string } };
   };
   preferences: { language: string; currency: "USD" | "CNY"; currencyLabel: string };
 }
@@ -82,8 +89,53 @@ export interface Checkpoint {
   messageCount: number;
 }
 
+export interface PricingEntry {
+  provider: string;
+  model: string;
+  currency: string;
+  input?: string;
+  output?: string;
+  cacheRead?: string;
+  cacheWrite?: string;
+  [key: string]: unknown;
+}
+
+export interface PricingDocument {
+  version: 1;
+  updatedAt: string;
+  entries: PricingEntry[];
+}
+
 export interface FileEntry {
   name: string;
   type: "file" | "directory" | "other";
   size: number;
+}
+
+export type SettingFieldType = "text" | "secret" | "number" | "boolean" | "select";
+export type SettingValue = string | number | boolean;
+
+export interface SettingsField {
+  key: string;
+  label: string;
+  type: SettingFieldType;
+  options?: string[];
+  value: SettingValue | null;
+  hasValue: boolean;
+  masked?: string;
+  source: "default" | "env" | "file";
+  editable: boolean;
+  restartRequired: boolean;
+  nullable: boolean;
+  description?: string;
+}
+
+export interface SettingsGroup {
+  id: string;
+  label: string;
+  fields: SettingsField[];
+}
+
+export interface SettingsView {
+  groups: SettingsGroup[];
 }

@@ -39,6 +39,14 @@ export class PermissionCoordinator {
     });
   }
 
+  listPending(sessionId: string): Array<{ requestId: string; tool: string; input: Record<string, unknown> }> {
+    const result: Array<{ requestId: string; tool: string; input: Record<string, unknown> }> = [];
+    for (const [requestId, pending] of this.pending) {
+      if (pending.sessionId === sessionId) result.push({ requestId, tool: pending.tool, input: pending.input });
+    }
+    return result;
+  }
+
   respond(sessionId: string, requestId: string, decision: PermissionDecision, reason?: string): { tool: string; input: Record<string, unknown>; persist: boolean; complete(allowed?: boolean, failureReason?: string): void } | undefined {
     const pending = this.pending.get(requestId);
     if (!pending || pending.sessionId !== sessionId) return undefined;

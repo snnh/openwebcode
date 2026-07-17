@@ -27,6 +27,14 @@ export class PermissionCoordinator {
             this.events.publish({ source: "agent", type: "permission.request", sessionId, payload: { requestId, tool, input } });
         });
     }
+    listPending(sessionId) {
+        const result = [];
+        for (const [requestId, pending] of this.pending) {
+            if (pending.sessionId === sessionId)
+                result.push({ requestId, tool: pending.tool, input: pending.input });
+        }
+        return result;
+    }
     respond(sessionId, requestId, decision, reason) {
         const pending = this.pending.get(requestId);
         if (!pending || pending.sessionId !== sessionId)

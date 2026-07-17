@@ -5,6 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#17202A" />
     <title>OpenWebCode · 执行控制台</title>
+    <script>
+      // 首帧前应用主题，避免闪烁；与 src/theme.ts 的 STORAGE_KEY 保持一致
+      try {
+        var t = localStorage.getItem("owc-theme");
+        if (t !== "light" && t !== "dark") t = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.dataset.theme = t;
+      } catch (e) { /* 忽略，默认浅色 */ }
+    </script>
   </head>
   <body>
     <div id="root"></div>
