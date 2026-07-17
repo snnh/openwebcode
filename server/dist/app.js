@@ -410,12 +410,49 @@ export async function buildServer(dependencies) {
             return reply.code(404).send({ error: "Session not found" });
         return reply.code(204).send();
     });
+    // 上下文压缩（§7.4）：/compact（overview）、/compact tools（toolcalls），以及协议 REST 路由
+    const runCompact = async (sessionId, mode) => {
+        const result = await dependencies.compactor.compact(sessionId, mode);
+        if (result.changed) {
+            events.publish({ source: "agent", type: "context.compacted", sessionId, payload: { mode: result.mode, uptoIndex: result.uptoIndex ?? 0, forced: false } });
+        }
+        return result;
+    };
+    app.post("/api/sessions/:id/compact", async (request, reply) => {
+        if (!dependencies.compactor)
+            return reply.code(503).send({ error: "Compactor not enabled" });
+        if (!(await sessions.get(request.params.id)))
+            return reply.code(404).send({ error: "Session not found" });
+        if (agent.isRunning(request.params.id))
+            return reply.code(409).send({ error: "Session is running" });
+        const mode = request.body?.mode === "toolcalls" ? "toolcalls" : "overview";
+        try {
+            return await runCompact(request.params.id, mode);
+        }
+        catch (error) {
+            return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+        }
+    });
     app.post("/api/sessions/:id/messages", async (request, reply) => {
         if (!request.body || typeof request.body.content !== "string" || !request.body.content) {
             return reply.code(400).send({ error: "content must be a non-empty string" });
         }
         if (!(await sessions.get(request.params.id)))
             return reply.code(404).send({ error: "Session not found" });
+        const compactCommand = request.body.content.match(/^\/compact(?:\s+(tools?|toolcalls))?\s*$/i);
+        if (compactCommand) {
+            if (!dependencies.compactor)
+                return reply.code(503).send({ error: "压缩器未启用" });
+            if (agent.isRunning(request.params.id))
+                return reply.code(409).send({ error: "会话运行中，请先等待完成或中断后再压缩" });
+            try {
+                const result = await runCompact(request.params.id, compactCommand[1] ? "toolcalls" : "overview");
+                return reply.code(200).send({ accepted: true, compacted: result.changed, result });
+            }
+            catch (error) {
+                return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+            }
+        }
         if (agent.isRunning(request.params.id)) {
             try {
                 const queued = agent.enqueueSteering(request.params.id, request.body.content);

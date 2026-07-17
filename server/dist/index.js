@@ -14,6 +14,8 @@ import { SessionStore } from "./sessions/session-store.js";
 import { SettingsService } from "./settings-service.js";
 import { SkillRegistry } from "./skills.js";
 import { McpManager } from "./mcp/manager.js";
+import { Provider2Client } from "./provider2.js";
+import { Compactor } from "./context/compactor.js";
 import { StorageGC } from "./storage-gc.js";
 import { UsageLog } from "./usage-log.js";
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -48,9 +50,11 @@ const models = await ModelRegistry.load({
 const usageLog = new UsageLog(dataDir);
 const skills = new SkillRegistry(path.join(dataDir, "skills"));
 const mcp = new McpManager(dataDir);
-const agent = new AgentRunner(sessions, providers, core, events, pricing, exchangeRates, config.defaultLanguage, 50, (model) => models.get(model), usageLog, skills, mcp);
+const provider2 = new Provider2Client(config.provider2);
+const compactor = new Compactor(sessions, provider2, { usageLog, pricing, exchangeRates });
+const agent = new AgentRunner(sessions, providers, core, events, pricing, exchangeRates, config.defaultLanguage, 50, (model) => models.get(model), usageLog, skills, mcp, compactor);
 const gc = new StorageGC(path.join(dataDir, "sessions"), config.gcMaxBytes);
-settings.bind({ providers, core, agent, events, models, gc });
+settings.bind({ providers, core, agent, events, models, gc, provider2 });
 settings.reconcileProviders();
 core.on("diagnostic", (text) => process.stderr.write(`[owc-exec] ${text}`));
 core.on("error", (error) => console.error("Core error:", error));
@@ -78,6 +82,7 @@ const app = await buildServer({
     models,
     usageLog,
     skills,
+    compactor,
     getPreferences: () => {
         const effective = settings.effective();
         return { currency: effective.defaultCurrency, language: effective.defaultLanguage };

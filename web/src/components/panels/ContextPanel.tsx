@@ -159,6 +159,25 @@ export function ContextPanel({ sessionId, session, running, onNotice }: {
         )}
       </dl>
       <BudgetSection sessionId={sessionId} running={running} onNotice={onNotice} />
+      {context.data.ledger.compacted && (
+        <>
+          <h2>压缩</h2>
+          <dl>
+            <dt>模式</dt>
+            <dd>{{ toolcalls: "工具调用压缩", overview: "概览压缩", truncated: "规则截断" }[context.data.ledger.compacted.mode]}</dd>
+            <dt>范围</dt>
+            <dd>前 {context.data.ledger.compacted.uptoIndex} 条消息</dd>
+            <dt>时间</dt>
+            <dd>{new Date(context.data.ledger.compacted.createdAt).toLocaleString()}</dd>
+            {context.data.ledger.compacted.instructions.length > 0 && (
+              <>
+                <dt>用户明确指令（累积）</dt>
+                <dd>{context.data.ledger.compacted.instructions.map((item) => `· ${item}`).join("\n")}</dd>
+              </>
+            )}
+          </dl>
+        </>
+      )}
       <h2>上下文条目</h2>
       {entries.length === 0 && <p className="panel-empty">暂无条目。</p>}
       {entries.map((entry) => (

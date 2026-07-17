@@ -56,5 +56,14 @@ export function loadConfig(env = process.env) {
                 },
             }
             : {}),
+        ...(env.OWC_PROVIDER2_BASE_URL && env.OWC_PROVIDER2_MODEL
+            ? {
+                provider2: {
+                    baseURL: env.OWC_PROVIDER2_BASE_URL,
+                    model: env.OWC_PROVIDER2_MODEL,
+                    ...(env.OWC_PROVIDER2_API_KEY ? { apiKey: env.OWC_PROVIDER2_API_KEY } : {}),
+                },
+            }
+            : {}),
     };
 }

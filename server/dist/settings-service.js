@@ -10,6 +10,7 @@ export class SettingsValidationError extends Error {
 }
 const GROUPS = [
     { id: "models", label: "模型接入" },
+    { id: "provider2", label: "上下文压缩" },
     { id: "general", label: "语言与货币" },
     { id: "executor", label: "执行器" },
     { id: "service", label: "服务" },
@@ -70,6 +71,10 @@ const FIELDS = [
     { key: "anthropicPromptCaching", group: "models", label: "Anthropic Prompt Caching", type: "boolean", env: "ANTHROPIC_PROMPT_CACHING", defaultValue: true, restartRequired: false, fromEnv: envBoolean },
     { key: "openaiBaseURL", group: "models", label: "OpenAI 兼容 Base URL", type: "text", env: "OPENAI_BASE_URL", defaultValue: null, restartRequired: false, validate: requireHttpUrl, description: "填写后启用 OpenAI 兼容接入" },
     { key: "openaiApiKey", group: "models", label: "OpenAI API Key", type: "secret", env: "OPENAI_API_KEY", defaultValue: null, restartRequired: false },
+    // 上下文压缩 provider2（热生效）：快速廉价的 OpenAI 兼容端点，用于 compact/85% 水位强制压缩
+    { key: "provider2BaseURL", group: "provider2", label: "provider2 Base URL", type: "text", env: "OWC_PROVIDER2_BASE_URL", defaultValue: null, restartRequired: false, validate: requireHttpUrl, description: "OpenAI 兼容端点；与模型名同时填写后启用" },
+    { key: "provider2ApiKey", group: "provider2", label: "provider2 API Key", type: "secret", env: "OWC_PROVIDER2_API_KEY", defaultValue: null, restartRequired: false },
+    { key: "provider2Model", group: "provider2", label: "provider2 模型", type: "text", env: "OWC_PROVIDER2_MODEL", defaultValue: null, restartRequired: false, description: "如 deepseek-chat / claude-haiku-4-5" },
     // 通用（热生效）
     { key: "defaultLanguage", group: "general", label: "默认语言", type: "select", env: "OWC_DEFAULT_LANGUAGE", defaultValue: "zh-CN", restartRequired: false, options: LANGUAGE_OPTIONS },
     { key: "defaultCurrency", group: "general", label: "默认货币", type: "select", env: "OWC_DEFAULT_CURRENCY", defaultValue: "CNY", restartRequired: false, options: ["USD", "CNY"], fromEnv: envCurrency },
@@ -158,6 +163,9 @@ export class SettingsService {
         const openaiApiKey = value("openaiApiKey");
         const exchangeRateUrl = value("exchangeRateUrl");
         const fixedUsdCnyRate = value("fixedUsdCnyRate");
+        const provider2BaseURL = value("provider2BaseURL");
+        const provider2ApiKey = value("provider2ApiKey");
+        const provider2Model = value("provider2Model");
         return {
             host: value("host"),
             port: value("port"),
@@ -186,6 +194,16 @@ export class SettingsService {
                     openai: {
                         baseURL: openaiBaseURL,
                         ...(typeof openaiApiKey === "string" ? { apiKey: openaiApiKey } : {}),
+                    },
+                }
+                : {}),
+            // provider2 需要 baseURL 与 model 同时配置才生效；apiKey 可空（本地端点）
+            ...(typeof provider2BaseURL === "string" && typeof provider2Model === "string"
+                ? {
+                    provider2: {
+                        baseURL: provider2BaseURL,
+                        model: provider2Model,
+                        ...(typeof provider2ApiKey === "string" ? { apiKey: provider2ApiKey } : {}),
                     },
                 }
                 : {}),
@@ -307,6 +325,9 @@ export class SettingsService {
             this.deps.agent.setDefaultLanguage(this.effective().defaultLanguage);
         if (changed.includes("coreRequestTimeoutMs"))
             this.deps.core.setRequestTimeoutMs(this.effective().coreRequestTimeoutMs);
+        if (changed.some((key) => key.startsWith("provider2")) && this.deps.provider2) {
+            this.deps.provider2.setConfig(this.effective().provider2);
+        }
         if (changed.includes("gcMaxBytes") && this.deps.gc) {
             const gc = this.deps.gc;
             gc.setMaxBytes(this.effective().gcMaxBytes);

@@ -65,6 +65,7 @@ export interface ContextView {
     cost: { usdMicroUnits: string; cnyMicroUnits: string; unpricedTokens: number };
     entries: Array<{ messageId: string; state: "full" | "evicted" | "restored"; artifactId: string }>;
     policy?: { maxSessionTokens?: number; maxSessionCost?: { currency: "USD" | "CNY"; microUnits: string } };
+    compacted?: { uptoIndex: number; mode: "toolcalls" | "overview" | "truncated"; summary: string; instructions: string[]; createdAt: string };
   };
   preferences: { language: string; currency: "USD" | "CNY"; currencyLabel: string };
 }

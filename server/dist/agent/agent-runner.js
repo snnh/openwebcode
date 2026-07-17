@@ -72,12 +72,13 @@ export class AgentRunner {
     usageLog;
     skills;
     mcp;
+    compactor;
     running = new Map();
     steering = new Map();
     repeatedCalls = new Map();
     mcpWarningSignatures = new Map();
     permissions;
-    constructor(sessions, providers, core, events, pricing, exchangeRates, defaultLanguage = "zh-CN", maxTurns = 50, getProfile = getModelProfile, usageLog, skills, mcp) {
+    constructor(sessions, providers, core, events, pricing, exchangeRates, defaultLanguage = "zh-CN", maxTurns = 50, getProfile = getModelProfile, usageLog, skills, mcp, compactor) {
         this.sessions = sessions;
         this.providers = providers;
         this.core = core;
@@ -90,6 +91,7 @@ export class AgentRunner {
         this.usageLog = usageLog;
         this.skills = skills;
         this.mcp = mcp;
+        this.compactor = compactor;
         this.permissions = new PermissionCoordinator(events);
         core.on("event", (event) => {
             const payload = event.payload;
@@ -130,6 +132,8 @@ export class AgentRunner {
             this.events.publish({ source: "session", type: "checkpoint.created", sessionId, payload: checkpoint });
             await this.sessions.appendMessage(sessionId, "user", [{ type: "text", text: effectiveText }]);
             this.state(sessionId, "thinking");
+            // 85% 水位强制概览压缩（§7.3 处理链⑤）：每次运行只触发一次
+            let forceCompacted = false;
             for (let turn = 0; turn < this.maxTurns; turn++) {
                 controller.signal.throwIfAborted();
                 const session = await this.sessions.get(sessionId);
@@ -150,6 +154,21 @@ export class AgentRunner {
                 const workingBudget = Math.max(1, profile.contextWindow - profile.maxOutput);
                 const utilization = estimatedTokens / workingBudget;
                 this.events.publish({ source: "agent", type: "context.watermark", sessionId, payload: { estimatedTokens, contextWindow: profile.contextWindow, maxOutput: profile.maxOutput, workingBudget, utilization, warning: utilization >= 0.85 ? "force_compact" : utilization >= 0.7 ? "compact_recommended" : undefined } });
+                // 85% 水位强制概览压缩：压缩成功后重建视图（消耗一个 turn 防止死循环）
+                if (utilization >= 0.85 && this.compactor && !forceCompacted) {
+                    forceCompacted = true;
+                    try {
+                        const compacted = await this.compactor.compact(sessionId, "overview", { forced: true });
+                        if (compacted.changed) {
+                            this.events.publish({ source: "agent", type: "context.compacted", sessionId, payload: { mode: compacted.mode, uptoIndex: compacted.uptoIndex ?? 0, forced: true } });
+                            continue;
+                        }
+                    }
+                    catch (error) {
+                        // 压缩失败不阻断运行：记录后按未压缩视图继续
+                        this.events.publish({ source: "agent", type: "context.compact_failed", sessionId, payload: { message: error instanceof Error ? error.message : String(error) } });
+                    }
+                }
                 const provider = this.providers.get(session.provider);
                 if (!provider)
                     throw new Error(`Provider ${session.provider} is not configured`);
