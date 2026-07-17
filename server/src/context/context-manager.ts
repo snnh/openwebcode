@@ -49,6 +49,15 @@ export interface LedgerEntry {
   restoredAt?: string;
 }
 
+/** 压缩记录：messages[0..uptoIndex) 由 summary 取代注入视图；instructions 为用户明确指令跨段累积。 */
+export interface CompactionRecord {
+  uptoIndex: number;
+  mode: "toolcalls" | "overview" | "truncated";
+  summary: string;
+  instructions: string[];
+  createdAt: string;
+}
+
 export interface ContextLedger {
   version: 1;
   round: number;
@@ -62,6 +71,7 @@ export interface ContextLedger {
   };
   cost: CostLedger;
   cacheBreakpoints: string[];
+  compacted?: CompactionRecord;
 }
 
 export interface BudgetUpdate {
@@ -108,7 +118,10 @@ export class ContextManager {
 
   async buildView(messages: ChatMessage[]): Promise<ContextView> {
     const ledger = await this.load();
-    const view = messages.map((message) => ({ ...message, content: message.content.map((block) => ({ ...block })) }));
+    const compacted = ledger.compacted;
+    // 压缩前缀：uptoIndex 之前的消息由摘要取代（回滚经 git shadow 同步回退账本，这里只需 clamp）
+    const uptoIndex = compacted ? Math.min(compacted.uptoIndex, messages.length) : 0;
+    const view = messages.slice(uptoIndex).map((message) => ({ ...message, content: message.content.map((block) => ({ ...block })) }));
     const byMessage = new Map(ledger.entries.map((entry) => [entry.messageId, entry]));
     for (const message of view) {
       const entry = byMessage.get(message.id);
@@ -119,6 +132,14 @@ export class ContextManager {
           ...block,
           content: `[tool result evicted; artifact:${entry.artifactId}; use the UI restore action to reinsert full text]`,
         };
+      });
+    }
+    if (compacted) {
+      view.unshift({
+        id: `compaction:${compacted.createdAt}`,
+        role: "user",
+        createdAt: compacted.createdAt,
+        content: [{ type: "text", text: `[Earlier context compacted (${compacted.mode})]\n${renderCompaction(compacted)}` }],
       });
     }
     return { messages: view, ledger };
@@ -324,6 +345,27 @@ function normalizePolicy(value: ContextPolicy | undefined): ContextPolicy {
   return policy;
 }
 
+function isCompaction(value: unknown): value is CompactionRecord {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Partial<CompactionRecord>;
+  return Number.isSafeInteger(record.uptoIndex) && (record.uptoIndex ?? -1) >= 0 &&
+    typeof record.mode === "string" && ["toolcalls", "overview", "truncated"].includes(record.mode) &&
+    typeof record.summary === "string" &&
+    Array.isArray(record.instructions) &&
+    typeof record.createdAt === "string";
+}
+
+/** 注入视图的压缩文本：用户明确指令累积置顶（§7.4 overview 契约）。 */
+function renderCompaction(record: CompactionRecord): string {
+  if (record.instructions.length === 0) return record.summary;
+  return [
+    "用户明确指令（跨段累积，务必继续遵守）：",
+    ...record.instructions.map((item) => `- ${item}`),
+    "",
+    record.summary,
+  ].join("\n");
+}
+
 function normalizeLedger(value: Partial<ContextLedger>): ContextLedger {
   const usage = value.usage;
   const cost = value.cost;
@@ -349,6 +391,9 @@ function normalizeLedger(value: Partial<ContextLedger>): ContextLedger {
     cacheBreakpoints: Array.isArray(value.cacheBreakpoints)
       ? value.cacheBreakpoints.filter((item): item is string => typeof item === "string").slice(-3)
       : [],
+    ...(isCompaction(value.compacted)
+      ? { compacted: { ...value.compacted, instructions: value.compacted.instructions.filter((item): item is string => typeof item === "string") } }
+      : {}),
   };
 }
 

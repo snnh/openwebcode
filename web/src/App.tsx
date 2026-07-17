@@ -114,6 +114,16 @@ export function App(): ReactElement {
         if (event.type === "mcp.degraded" && event.sessionId === currentId) {
           setNotice((event.payload as { message?: string }).message ?? "MCP server 降级");
         }
+        // 上下文压缩（手动/85% 强制）：刷新上下文面板并提示
+        if (event.type === "context.compacted" && event.sessionId === currentId) {
+          const payload = event.payload as { mode?: string; forced?: boolean };
+          const modeLabel = payload.mode === "overview" ? "概览" : payload.mode === "toolcalls" ? "工具调用" : "规则截断";
+          setNotice(`已压缩上下文（${payload.forced ? "85% 水位强制 · " : ""}${modeLabel}）`);
+          queryClient.invalidateQueries({ queryKey: ["context", currentId] });
+        }
+        if (event.type === "context.compact_failed" && event.sessionId === currentId) {
+          setNotice(`上下文压缩失败：${(event.payload as { message?: string }).message ?? "未知错误"}`);
+        }
         if (!event.sessionId || event.sessionId !== currentId) return;
         if (event.type === "message.delta") {
           const text = (event.payload as { text?: string }).text ?? "";

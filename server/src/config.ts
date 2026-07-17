@@ -14,6 +14,7 @@ export interface ServerConfig {
   };
   anthropic?: { apiKey?: string; baseURL?: string; promptCaching?: boolean };
   openai?: { apiKey?: string; baseURL: string };
+  provider2?: { baseURL: string; apiKey?: string; model: string };
 }
 
 function positiveInteger(value: string | undefined, fallback: number): number {
@@ -68,6 +69,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
           openai: {
             baseURL: env.OPENAI_BASE_URL,
             ...(env.OPENAI_API_KEY ? { apiKey: env.OPENAI_API_KEY } : {}),
+          },
+        }
+      : {}),
+    ...(env.OWC_PROVIDER2_BASE_URL && env.OWC_PROVIDER2_MODEL
+      ? {
+          provider2: {
+            baseURL: env.OWC_PROVIDER2_BASE_URL,
+            model: env.OWC_PROVIDER2_MODEL,
+            ...(env.OWC_PROVIDER2_API_KEY ? { apiKey: env.OWC_PROVIDER2_API_KEY } : {}),
           },
         }
       : {}),
