@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { ContextManager, selectCacheBreakpoints } from "../context/context-manager.js";
 import { boundToolResult } from "../context/tool-result-budget.js";
-import { estimateTokens, getModelProfile } from "../context/model-profile.js";
+import { estimateMessageTokens, getModelProfile } from "../context/model-profile.js";
 import { calculateUsageCost } from "../cost/cost-calculator.js";
 import { collectProviderTurn } from "../providers/retry.js";
 import { PermissionCoordinator, permissionRule } from "./permission-coordinator.js";
@@ -114,7 +114,7 @@ export class AgentRunner {
     setDefaultLanguage(language) {
         this.defaultLanguage = language;
     }
-    async run(sessionId, text) {
+    async run(sessionId, text, options) {
         if (this.running.has(sessionId))
             throw new Error("Session agent is already running");
         const controller = new AbortController();
@@ -130,7 +130,10 @@ export class AgentRunner {
             const checkpoint = await new GitShadowSnapshots(this.sessions.contextRoot(sessionId), configuredSession.cwd)
                 .create(text.slice(0, 80) || "User message", configuredSession.messages.length, await checkpointContext.load());
             this.events.publish({ source: "session", type: "checkpoint.created", sessionId, payload: checkpoint });
-            await this.sessions.appendMessage(sessionId, "user", [{ type: "text", text: effectiveText }]);
+            await this.sessions.appendMessage(sessionId, "user", [
+                ...(options?.images ?? []).map((image) => ({ type: "image", mediaType: image.mediaType, data: image.data })),
+                { type: "text", text: effectiveText },
+            ]);
             this.state(sessionId, "thinking");
             // 85% 水位强制概览压缩（§7.3 处理链⑤）：每次运行只触发一次
             let forceCompacted = false;
@@ -150,7 +153,7 @@ export class AgentRunner {
                 const cacheBreakpoints = selectCacheBreakpoints(view.messages, view.ledger);
                 await context.recordCacheBreakpoints(cacheBreakpoints);
                 const profile = this.getProfile(session.model);
-                const estimatedTokens = estimateTokens(JSON.stringify(view.messages));
+                const estimatedTokens = estimateMessageTokens(view.messages);
                 const workingBudget = Math.max(1, profile.contextWindow - profile.maxOutput);
                 const utilization = estimatedTokens / workingBudget;
                 this.events.publish({ source: "agent", type: "context.watermark", sessionId, payload: { estimatedTokens, contextWindow: profile.contextWindow, maxOutput: profile.maxOutput, workingBudget, utilization, warning: utilization >= 0.85 ? "force_compact" : utilization >= 0.7 ? "compact_recommended" : undefined } });

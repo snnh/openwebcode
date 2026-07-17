@@ -26,7 +26,14 @@ export interface ToolResultContent {
   isError: boolean;
 }
 
-export type MessageContent = TextContent | ThinkingContent | ToolCallContent | ToolResultContent;
+/** 用户消息中的图片块（base64 内联，mediaType 限 image/png|jpeg|webp|gif）。 */
+export interface ImageContent {
+  type: "image";
+  mediaType: string;
+  data: string;
+}
+
+export type MessageContent = TextContent | ThinkingContent | ToolCallContent | ToolResultContent | ImageContent;
 
 export interface ChatMessage {
   id: string;

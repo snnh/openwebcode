@@ -2,7 +2,7 @@ export type PermissionMode = "ask" | "acceptEdits" | "yolo";
 export type SandboxCapability = "advisory" | "partial" | "enforced";
 
 export interface MessageContent {
-  type: "text" | "thinking" | "tool_call" | "tool_result";
+  type: "text" | "thinking" | "tool_call" | "tool_result" | "image";
   text?: string;
   provider?: string;
   id?: string;
@@ -11,6 +11,8 @@ export interface MessageContent {
   toolCallId?: string;
   content?: string;
   isError?: boolean;
+  mediaType?: string;
+  data?: string;
 }
 
 export interface ChatMessage {
@@ -80,6 +82,7 @@ export interface ModelProfile {
   capabilities: {
     thinking: Array<"adaptive" | "enabled" | "disabled">;
     effort: Array<"low" | "medium" | "high" | "xhigh" | "max">;
+    modalities: string[];
   };
   pricing?: { currency: string; input: string; output: string; cacheRead: string; cacheWrite: string };
 }

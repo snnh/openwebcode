@@ -7,6 +7,7 @@ import { loadSendKey, loadSessionDefaults, saveSendKey, saveSessionDefaults, typ
 import { useTheme } from "./theme";
 import { BottomPanel } from "./components/BottomPanel";
 import { Composer } from "./components/Composer";
+import type { PendingImage } from "./components/Composer";
 import { EmptyState } from "./components/EmptyState";
 import { ExecutionTrack } from "./components/ExecutionTrack";
 import { isBusyState, JobHeader } from "./components/JobHeader";
@@ -51,6 +52,8 @@ export function App(): ReactElement {
   const setSessionDefaults = (value: SessionDefaults): void => { setSessionDefaultsState(value); saveSessionDefaults(value); };
   // 草稿按会话保留，切换会话不丢
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  // 待发送的图片附件（仅当前会话；发送成功或切换会话后清空）
+  const [attachments, setAttachments] = useState<PendingImage[]>([]);
   const [stream, setStream] = useState<Record<string, string>>({});
   const [thinkingStream, setThinkingStream] = useState<Record<string, string>>({});
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
@@ -73,6 +76,9 @@ export function App(): ReactElement {
   useEffect(() => {
     if (!currentId && sessions.data?.[0]) setCurrentId(sessions.data[0].id);
   }, [currentId, sessions.data]);
+
+  // 切换会话时清空未发送的图片附件
+  useEffect(() => setAttachments([]), [currentId]);
 
   useEffect(() => {
     let retry = 0;
@@ -198,10 +204,11 @@ export function App(): ReactElement {
   const send = useMutation({
     mutationFn: async () => {
       if (!currentId || !draft.trim()) return;
-      return api.sendMessage(currentId, draft.trim());
+      return api.sendMessage(currentId, draft.trim(), attachments);
     },
     onSuccess: (result) => {
       setDraft("");
+      setAttachments([]);
       if (result?.queued) setNotice(`已加入 Steering 队列（第 ${result.position} 项）`);
       queryClient.invalidateQueries({ queryKey: queryKeys.detail(currentId ?? "") });
     },
@@ -247,6 +254,8 @@ export function App(): ReactElement {
   };
 
   const model = useMemo(() => models.data?.find((item) => item.id === current?.model), [models.data, current?.model]);
+  // 模型档案缺 modalities 字段时按不支持图片处理（服务端仍会二次校验）
+  const supportsImages = model?.capabilities.modalities?.includes("image") ?? false;
 
   const resetLayout = (): void => {
     for (const key of ["owc-rail-width", "owc-rail-collapsed", "owc-panel-tab", "owc-panel-open", "owc-panel-height"]) {
@@ -317,6 +326,10 @@ export function App(): ReactElement {
               running={running || send.isPending}
               sendKey={sendKey}
               skills={skills.data?.skills ?? []}
+              attachments={attachments}
+              setAttachments={setAttachments}
+              supportsImages={supportsImages}
+              onNotice={setNotice}
             />
           </>
         ) : (

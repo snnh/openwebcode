@@ -418,6 +418,17 @@ export async function buildServer(dependencies) {
         }
         return result;
     };
+    const IMAGE_MEDIA_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+    const MAX_IMAGES_PER_MESSAGE = 4;
+    const MAX_IMAGE_BASE64 = 7_000_000; // base64 字符数，约等于 5MB 原始字节
+    const isValidImage = (image) => {
+        if (!image || typeof image !== "object")
+            return false;
+        const record = image;
+        return typeof record.mediaType === "string" && IMAGE_MEDIA_TYPES.has(record.mediaType) &&
+            typeof record.data === "string" && record.data.length > 0 && record.data.length <= MAX_IMAGE_BASE64 &&
+            /^[A-Za-z0-9+/=]+$/.test(record.data);
+    };
     app.post("/api/sessions/:id/compact", async (request, reply) => {
         if (!dependencies.compactor)
             return reply.code(503).send({ error: "Compactor not enabled" });
@@ -433,12 +444,28 @@ export async function buildServer(dependencies) {
             return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
         }
     });
-    app.post("/api/sessions/:id/messages", async (request, reply) => {
+    app.post("/api/sessions/:id/messages", { bodyLimit: 30 * 1024 * 1024 }, async (request, reply) => {
         if (!request.body || typeof request.body.content !== "string" || !request.body.content) {
             return reply.code(400).send({ error: "content must be a non-empty string" });
         }
-        if (!(await sessions.get(request.params.id)))
+        const session = await sessions.get(request.params.id);
+        if (!session)
             return reply.code(404).send({ error: "Session not found" });
+        const images = request.body.images;
+        if (images !== undefined) {
+            if (!Array.isArray(images) || images.length > MAX_IMAGES_PER_MESSAGE || images.some((image) => !isValidImage(image))) {
+                return reply.code(400).send({ error: `images 需为至多 ${MAX_IMAGES_PER_MESSAGE} 张 png/jpeg/webp/gif（base64），每张不超过 5MB` });
+            }
+            if (images.length > 0) {
+                const profile = dependencies.models?.get(session.model) ?? getModelProfile(session.model);
+                if (!profile.capabilities.modalities.includes("image")) {
+                    return reply.code(400).send({ error: `模型 ${session.model} 不支持图片输入` });
+                }
+                if (agent.isRunning(request.params.id)) {
+                    return reply.code(409).send({ error: "会话运行中，带图消息请等待完成或中断后再发送" });
+                }
+            }
+        }
         const compactCommand = request.body.content.match(/^\/compact(?:\s+(tools?|toolcalls))?\s*$/i);
         if (compactCommand) {
             if (!dependencies.compactor)
@@ -472,7 +499,7 @@ export async function buildServer(dependencies) {
                 budget,
             });
         }
-        void agent.run(request.params.id, request.body.content).catch(() => undefined);
+        void agent.run(request.params.id, request.body.content, { ...(images?.length ? { images } : {}) }).catch(() => undefined);
         return reply.code(202).send({ accepted: true });
     });
     app.get("/api/sessions/:id/permissions", async (request, reply) => {

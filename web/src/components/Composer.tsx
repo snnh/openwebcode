@@ -1,9 +1,19 @@
-import { useEffect, useRef, useState, type ReactElement } from "react";
+import { useEffect, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent as ReactDragEvent, type ReactElement } from "react";
 import type { ModelProfile, SessionDetail, SkillInfo } from "../lib/contracts";
 import type { SendKey } from "../lib/prefs";
 import { Icon } from "./Icon";
 
-export function Composer({ current, model, models, draft, setDraft, onSend, onConfig, running, sendKey, skills }: {
+export interface PendingImage {
+  mediaType: string;
+  data: string;
+  previewUrl: string;
+}
+
+const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const MAX_ATTACHMENTS = 4;
+
+export function Composer({ current, model, models, draft, setDraft, onSend, onConfig, running, sendKey, skills, attachments, setAttachments, supportsImages, onNotice }: {
   current: SessionDetail;
   model?: ModelProfile;
   models: ModelProfile[];
@@ -14,6 +24,10 @@ export function Composer({ current, model, models, draft, setDraft, onSend, onCo
   running: boolean;
   sendKey: SendKey;
   skills: SkillInfo[];
+  attachments: PendingImage[];
+  setAttachments(value: PendingImage[] | ((prev: PendingImage[]) => PendingImage[])): void;
+  supportsImages: boolean;
+  onNotice(message: string): void;
 }): ReactElement {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [dismissed, setDismissed] = useState(false);
@@ -43,11 +57,74 @@ export function Composer({ current, model, models, draft, setDraft, onSend, onCo
     textareaRef.current?.focus();
   };
 
+  const addFiles = (files: File[]): void => {
+    const images = files.filter((file) => file.type.startsWith("image/"));
+    if (images.length === 0) return;
+    if (!supportsImages) {
+      onNotice("当前模型不支持图片输入");
+      return;
+    }
+    const room = MAX_ATTACHMENTS - attachments.length;
+    if (room <= 0) {
+      onNotice(`最多附带 ${MAX_ATTACHMENTS} 张图片`);
+      return;
+    }
+    for (const file of images.slice(0, room)) {
+      if (!IMAGE_TYPES.has(file.type)) {
+        onNotice(`仅支持 png/jpeg/webp/gif 图片（${file.type || "未知类型"}）`);
+        continue;
+      }
+      if (file.size > MAX_IMAGE_BYTES) {
+        onNotice(`图片「${file.name || "剪贴板图片"}」超过 5MB 限制`);
+        continue;
+      }
+      const mediaType = file.type;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const url = String(reader.result);
+        const data = url.slice(url.indexOf(",") + 1);
+        setAttachments((prev) => (prev.length >= MAX_ATTACHMENTS ? prev : [...prev, { mediaType, data, previewUrl: url }]));
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const onPaste = (event: ReactClipboardEvent): void => {
+    const files = [...(event.clipboardData?.files ?? [])];
+    if (files.some((file) => file.type.startsWith("image/"))) {
+      event.preventDefault();
+      addFiles(files);
+    }
+  };
+
+  const onDrop = (event: ReactDragEvent): void => {
+    if ([...(event.dataTransfer?.files ?? [])].some((file) => file.type.startsWith("image/"))) {
+      event.preventDefault();
+      addFiles([...event.dataTransfer.files]);
+    }
+  };
+
   const thinkingModes = model?.capabilities.thinking ?? ["disabled"];
   const efforts = model?.capabilities.effort ?? [];
 
   return (
-    <footer className="composer">
+    <footer className="composer" onDrop={onDrop} onDragOver={(event) => event.preventDefault()}>
+      {attachments.length > 0 && (
+        <div className="attachment-strip" aria-label="图片附件">
+          {attachments.map((image, index) => (
+            <span className="attachment" key={`${index}-${image.data.length}`}>
+              <img src={image.previewUrl} alt={`附件 ${index + 1}`} />
+              <button
+                className="attachment-remove"
+                aria-label={`移除附件 ${index + 1}`}
+                onClick={() => setAttachments((prev) => prev.filter((_, item) => item !== index))}
+              >
+                <Icon name="x" size={10} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
       <div className="config-row">
         <label>
           模型
@@ -124,6 +201,7 @@ export function Composer({ current, model, models, draft, setDraft, onSend, onCo
           rows={2}
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
+          onPaste={onPaste}
           onKeyDown={(event) => {
             if (popupOpen) {
               if (event.key === "ArrowDown") {
@@ -166,6 +244,7 @@ export function Composer({ current, model, models, draft, setDraft, onSend, onCo
           {running ? "加入队列" : "发送"}
         </button>
       </div>
+      {supportsImages && <div className="composer-hint">支持粘贴/拖拽图片（≤4 张，每张 ≤5MB）</div>}
     </footer>
   );
 }
