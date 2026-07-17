@@ -16,6 +16,11 @@ export function TimelinePanel({ sessionId, running, onNotice }: {
     queryFn: () => api.checkpoints(sessionId!),
     enabled: Boolean(sessionId),
   });
+  const capability = useQuery({
+    queryKey: ["snapshot-capability", sessionId],
+    queryFn: () => api.snapshotCapability(sessionId!),
+    enabled: Boolean(sessionId),
+  });
   const diff = useQuery({
     queryKey: ["checkpoint-diff", sessionId, selectedCheckpoint],
     queryFn: () => api.checkpointDiff(sessionId!, selectedCheckpoint!),
@@ -46,6 +51,14 @@ export function TimelinePanel({ sessionId, running, onNotice }: {
           <Icon name="plus" size={12} /> 新建
         </button>
       </div>
+      {capability.data && (
+        <p className="backend-badge-row">
+          <span className="badge backend-badge" title={capability.data.detail ?? capability.data.backend}>
+            {capability.data.backend} · {capability.data.costHint === "instant" ? "即时 CoW" : "线性拷贝"}
+            {capability.data.requiresAdmin ? " · 需管理员" : ""}
+          </span>
+        </p>
+      )}
       {checkpoints.isPending && <p className="panel-empty">加载中…</p>}
       {checkpoints.data && checkpoints.data.length === 0 && <p className="panel-empty">暂无检查点。</p>}
       {checkpoints.data?.map((checkpoint) => (
@@ -83,6 +96,24 @@ export function TimelinePanel({ sessionId, running, onNotice }: {
               }}
             >
               仅文件
+            </button>
+            <button
+              className="btn small danger-outline"
+              disabled={running}
+              title="删除该检查点"
+              onClick={() => {
+                if (window.confirm(`删除检查点「${checkpoint.label}」？快照数据将一并移除。`)) {
+                  api.deleteCheckpoint(sessionId, checkpoint.id)
+                    .then(() => {
+                      setSelectedCheckpoint((value) => (value === checkpoint.id ? undefined : value));
+                      refresh();
+                      onNotice("已删除检查点");
+                    })
+                    .catch((error: unknown) => onNotice(error instanceof Error ? error.message : "删除检查点失败"));
+                }
+              }}
+            >
+              <Icon name="trash" size={12} />
             </button>
           </div>
           {selectedCheckpoint === checkpoint.id && (

@@ -127,6 +127,15 @@ export class SessionStore {
     return meta;
   }
 
+  /** 记录探测到的快照后端名（zfs 附带数据集："zfs:<dataset>"）。 */
+  async updateSnapshotBackend(id: string, backend: string): Promise<SessionMeta> {
+    const meta = await this.readMeta(id);
+    meta.snapshotBackend = backend;
+    meta.updatedAt = new Date().toISOString();
+    await this.writeMeta(meta);
+    return meta;
+  }
+
   contextRoot(id: string): string {
     return this.sessionPath(id);
   }
