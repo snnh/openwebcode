@@ -5,7 +5,7 @@ import { estimateMessageTokens, getModelProfile } from "../context/model-profile
 import { calculateUsageCost } from "../cost/cost-calculator.js";
 import { collectProviderTurn } from "../providers/retry.js";
 import { PermissionCoordinator, permissionRule } from "./permission-coordinator.js";
-import { GitShadowSnapshots } from "../snapshots/git-shadow.js";
+import { getSnapshotBackend } from "../snapshots/index.js";
 import { parseSkillCommand } from "../skills.js";
 const BASH_TOOL = {
     name: "bash",
@@ -127,7 +127,7 @@ export class AgentRunner {
             const effectiveText = await this.expandSkillCommand(configuredSession.cwd, text);
             await this.core.configureSession({ sessionId, cwd: configuredSession.cwd, sandbox: configuredSession.sandbox ?? { enabled: true, readRoots: [configuredSession.cwd], writeRoots: [configuredSession.cwd], denyPaths: [], network: "allow" } });
             const checkpointContext = new ContextManager(this.sessions.contextRoot(sessionId));
-            const checkpoint = await new GitShadowSnapshots(this.sessions.contextRoot(sessionId), configuredSession.cwd)
+            const checkpoint = await (await getSnapshotBackend(this.sessions, configuredSession))
                 .create(text.slice(0, 80) || "User message", configuredSession.messages.length, await checkpointContext.load());
             this.events.publish({ source: "session", type: "checkpoint.created", sessionId, payload: checkpoint });
             await this.sessions.appendMessage(sessionId, "user", [

@@ -1,16 +1,12 @@
 import { spawn } from "node:child_process";
 import { lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { isCheckpoint, type Checkpoint, type SnapshotBackend } from "./backend.js";
 
-export interface Checkpoint {
-  id: string;
-  label: string;
-  createdAt: string;
-  messageCount: number;
-  ledger?: unknown;
-}
+export type { Checkpoint } from "./backend.js";
 
-export class GitShadowSnapshots {
+export class GitShadowSnapshots implements SnapshotBackend {
+  readonly name = "git-shadow";
   private readonly gitDir: string;
   private readonly metadataPath: string;
   private excludes = [".git", "node_modules", ".owc", ".openwebcode"];
@@ -68,23 +64,18 @@ export class GitShadowSnapshots {
     return this.git(["diff", "--stat", id]);
   }
 
-  async restore(id: string): Promise<Checkpoint> {
+  async restore(id: string): Promise<void> {
     validateId(id);
     await this.initialize();
-    const checkpoint = (await this.list()).find((item) => item.id === id);
-    if (!checkpoint) throw new Error("Checkpoint not found");
+    if (!(await this.list()).some((item) => item.id === id)) throw new Error("Checkpoint not found");
     await this.git(["checkout", "-f", id, "--", "."]);
     await this.git(["clean", "-fdx", ...this.excludes.flatMap((item) => ["-e", `${item}/`])], false);
-    return checkpoint;
   }
 
-  async delete(id: string): Promise<boolean> {
+  async delete(id: string): Promise<void> {
     validateId(id);
     const checkpoints = await this.list();
-    const remaining = checkpoints.filter((item) => item.id !== id);
-    if (remaining.length === checkpoints.length) return false;
-    await this.save(remaining);
-    return true;
+    await this.save(checkpoints.filter((item) => item.id !== id));
   }
 
   async cleanup(): Promise<void> { await rm(this.gitDir, { recursive: true, force: true }); }
@@ -130,8 +121,3 @@ export class GitShadowSnapshots {
 }
 
 function validateId(id: string): void { if (!/^[0-9a-f]{40,64}$/.test(id)) throw new Error("Invalid checkpoint ID"); }
-function isCheckpoint(value: unknown): value is Checkpoint {
-  if (!value || typeof value !== "object") return false;
-  const item = value as Partial<Checkpoint>;
-  return typeof item.id === "string" && typeof item.label === "string" && typeof item.createdAt === "string" && Number.isSafeInteger(item.messageCount) && Number(item.messageCount) >= 0;
-}
