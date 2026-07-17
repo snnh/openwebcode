@@ -35,7 +35,10 @@ export class ContextManager {
     }
     async buildView(messages) {
         const ledger = await this.load();
-        const view = messages.map((message) => ({ ...message, content: message.content.map((block) => ({ ...block })) }));
+        const compacted = ledger.compacted;
+        // 压缩前缀：uptoIndex 之前的消息由摘要取代（回滚经 git shadow 同步回退账本，这里只需 clamp）
+        const uptoIndex = compacted ? Math.min(compacted.uptoIndex, messages.length) : 0;
+        const view = messages.slice(uptoIndex).map((message) => ({ ...message, content: message.content.map((block) => ({ ...block })) }));
         const byMessage = new Map(ledger.entries.map((entry) => [entry.messageId, entry]));
         for (const message of view) {
             const entry = byMessage.get(message.id);
@@ -48,6 +51,14 @@ export class ContextManager {
                     ...block,
                     content: `[tool result evicted; artifact:${entry.artifactId}; use the UI restore action to reinsert full text]`,
                 };
+            });
+        }
+        if (compacted) {
+            view.unshift({
+                id: `compaction:${compacted.createdAt}`,
+                role: "user",
+                createdAt: compacted.createdAt,
+                content: [{ type: "text", text: `[Earlier context compacted (${compacted.mode})]\n${renderCompaction(compacted)}` }],
             });
         }
         return { messages: view, ledger };
@@ -249,6 +260,27 @@ function normalizePolicy(value) {
     }
     return policy;
 }
+function isCompaction(value) {
+    if (!value || typeof value !== "object")
+        return false;
+    const record = value;
+    return Number.isSafeInteger(record.uptoIndex) && (record.uptoIndex ?? -1) >= 0 &&
+        typeof record.mode === "string" && ["toolcalls", "overview", "truncated"].includes(record.mode) &&
+        typeof record.summary === "string" &&
+        Array.isArray(record.instructions) &&
+        typeof record.createdAt === "string";
+}
+/** 注入视图的压缩文本：用户明确指令累积置顶（§7.4 overview 契约）。 */
+function renderCompaction(record) {
+    if (record.instructions.length === 0)
+        return record.summary;
+    return [
+        "用户明确指令（跨段累积，务必继续遵守）：",
+        ...record.instructions.map((item) => `- ${item}`),
+        "",
+        record.summary,
+    ].join("\n");
+}
 function normalizeLedger(value) {
     const usage = value.usage;
     const cost = value.cost;
@@ -274,6 +306,9 @@ function normalizeLedger(value) {
         cacheBreakpoints: Array.isArray(value.cacheBreakpoints)
             ? value.cacheBreakpoints.filter((item) => typeof item === "string").slice(-3)
             : [],
+        ...(isCompaction(value.compacted)
+            ? { compacted: { ...value.compacted, instructions: value.compacted.instructions.filter((item) => typeof item === "string") } }
+            : {}),
     };
 }
 export function selectCacheBreakpoints(messages, ledger) {
