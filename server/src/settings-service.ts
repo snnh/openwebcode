@@ -7,6 +7,7 @@ import type { EventBus } from "./events/event-bus.js";
 import { AnthropicProvider } from "./providers/anthropic-provider.js";
 import { OpenAICompatibleProvider } from "./providers/openai-compatible-provider.js";
 import type { ProviderRegistry } from "./providers/provider.js";
+import type { ModelRegistry } from "./context/model-registry.js";
 
 export class SettingsValidationError extends Error {
   constructor(message: string) {
@@ -63,6 +64,7 @@ interface RuntimeDependencies {
   core: CoreClient;
   agent: AgentRunner;
   events: EventBus;
+  models?: ModelRegistry;
 }
 
 const GROUPS = [
@@ -341,7 +343,20 @@ export class SettingsService {
 
   private hotApply(changed: string[]): void {
     if (!this.deps) return;
-    if (changed.some((key) => PROVIDER_KEYS.has(key))) this.reconcileProviders();
+    if (changed.some((key) => PROVIDER_KEYS.has(key))) {
+      this.reconcileProviders();
+      // 凭据变更后后台刷新模型目录；无凭据（如刚清除）时不刷新，失败仅记日志
+      const config = this.effective();
+      if (this.deps.models && (config.anthropic?.apiKey ?? config.openai?.baseURL)) {
+        const models = this.deps.models;
+        void models
+          .refresh({ ...(config.anthropic ? { anthropic: config.anthropic } : {}), ...(config.openai ? { openai: config.openai } : {}) })
+          .then((report) => {
+            if (report.errors.length > 0) process.stderr.write(`[settings] 模型目录刷新部分失败：${report.errors.join("; ")}\n`);
+          })
+          .catch((error: unknown) => process.stderr.write(`[settings] 模型目录刷新失败：${error instanceof Error ? error.message : String(error)}\n`));
+      }
+    }
     if (changed.includes("defaultLanguage")) this.deps.agent.setDefaultLanguage(this.effective().defaultLanguage);
     if (changed.includes("coreRequestTimeoutMs")) this.deps.core.setRequestTimeoutMs(this.effective().coreRequestTimeoutMs);
     // defaultCurrency 无需主动推送：app 路由经 getPreferences 每次实时读取

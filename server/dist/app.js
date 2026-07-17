@@ -7,6 +7,7 @@ import { SteeringError } from "./agent/agent-runner.js";
 import { CoreRpcError } from "./core-client.js";
 import { ContextManager } from "./context/context-manager.js";
 import { getModelProfile, listModelProfiles } from "./context/model-profile.js";
+import { lookupModelMetadata } from "./context/model-metadata.js";
 import { PricingValidationError } from "./cost/pricing-catalog.js";
 import { parseDecimalToScaled } from "./cost/exchange-rate.js";
 import { GitShadowSnapshots } from "./snapshots/git-shadow.js";
@@ -50,12 +51,83 @@ export async function buildServer(dependencies) {
     app.get("/api/health", async () => ({ status: "ok" }));
     app.get("/api/core", async () => core.ping());
     app.get("/api/providers", async () => providers.list());
-    app.get("/api/models", async () => listModelProfiles().map((profile) => ({
+    // 模型目录：registry（api/manual/builtin 三向合并）缺省时回退静态档案
+    const catalog = () => dependencies.models?.list() ?? listModelProfiles().map((profile) => ({ ...profile, source: "builtin" }));
+    const profileOf = (model) => dependencies.models?.get(model) ?? getModelProfile(model);
+    app.get("/api/models", async () => catalog().map((profile) => ({
         ...profile,
         ...(pricing.get(profile.provider, profile.id) ? {
             pricing: serializePricing(pricing.get(profile.provider, profile.id)),
         } : {}),
     })));
+    app.post("/api/models/refresh", async (request, reply) => {
+        const models = dependencies.models;
+        if (!models)
+            return reply.code(501).send({ error: "Model registry is not configured" });
+        const config = dependencies.settings?.effective() ?? {};
+        return models.refresh({ ...(config.anthropic ? { anthropic: config.anthropic } : {}), ...(config.openai ? { openai: config.openai } : {}) });
+    });
+    app.put("/api/models/:id", async (request, reply) => {
+        const models = dependencies.models;
+        if (!models)
+            return reply.code(501).send({ error: "Model registry is not configured" });
+        const id = request.params.id;
+        const body = request.body ?? {};
+        if (body.provider !== undefined && (typeof body.provider !== "string" || !body.provider)) {
+            return reply.code(400).send({ error: "provider must be a non-empty string" });
+        }
+        if (body.displayName !== undefined && typeof body.displayName !== "string") {
+            return reply.code(400).send({ error: "displayName must be a string" });
+        }
+        if (body.capabilities !== undefined) {
+            const value = body.capabilities;
+            const valid = Boolean(value) && typeof value === "object"
+                && Array.isArray(value.modalities) && Array.isArray(value.thinking) && Array.isArray(value.effort)
+                && typeof value.tools === "boolean";
+            if (!valid)
+                return reply.code(400).send({ error: "capabilities must include modalities/thinking/effort arrays and a tools boolean" });
+        }
+        for (const key of ["contextWindow", "maxOutput"]) {
+            if (body[key] !== undefined && (!Number.isSafeInteger(body[key]) || body[key] < 1)) {
+                return reply.code(400).send({ error: `${key} must be a positive integer` });
+            }
+        }
+        // 已知模型沿用现有档案为底，未知模型经元数据库成档（保守默认）
+        const known = models.list().find((entry) => entry.id === id);
+        if (!known && body.provider === undefined) {
+            return reply.code(400).send({ error: "provider is required for a new model" });
+        }
+        const metadata = lookupModelMetadata(id);
+        const base = known ?? {
+            id,
+            provider: "manual",
+            source: "api",
+            contextWindow: metadata.contextWindow,
+            maxOutput: metadata.maxOutput,
+            capabilities: metadata.capabilities,
+        };
+        const displayName = body.displayName ?? base.displayName;
+        const model = {
+            ...base,
+            provider: body.provider ?? base.provider,
+            source: "manual",
+            ...(displayName ? { displayName } : {}),
+            contextWindow: body.contextWindow ?? base.contextWindow,
+            maxOutput: body.maxOutput ?? base.maxOutput,
+            capabilities: body.capabilities ?? base.capabilities,
+        };
+        await models.upsertManual(model);
+        return model;
+    });
+    app.delete("/api/models/:id", async (request, reply) => {
+        const models = dependencies.models;
+        if (!models)
+            return reply.code(501).send({ error: "Model registry is not configured" });
+        if (!models.isManual(request.params.id))
+            return reply.code(409).send({ error: "Only manual models can be deleted" });
+        await models.removeManual(request.params.id);
+        return reply.code(204).send();
+    });
     app.get("/api/model-pricing", async () => pricing.list());
     app.put("/api/model-pricing", async (request, reply) => {
         try {
@@ -122,7 +194,7 @@ export async function buildServer(dependencies) {
             return reply.code(400).send({ error: `Provider ${provider} is not configured` });
         if (typeof model !== "string" || !model)
             return reply.code(400).send({ error: "model must be a non-empty string" });
-        const profile = getModelProfile(model);
+        const profile = profileOf(model);
         const thinking = request.body && "thinking" in request.body ? request.body.thinking ?? undefined : session.thinking;
         const effort = request.body && "effort" in request.body ? request.body.effort ?? undefined : session.effort;
         if (thinking !== undefined && !profile.capabilities.thinking.includes(thinking)) {

@@ -72,7 +72,8 @@ export interface ContextView {
 export interface ModelProfile {
   id: string;
   provider: string;
-  displayName: string;
+  displayName?: string;
+  source?: "builtin" | "api" | "manual";
   contextWindow: number;
   maxOutput: number;
   capabilities: {

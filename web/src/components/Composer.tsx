@@ -37,7 +37,7 @@ export function Composer({ current, model, models, draft, setDraft, onSend, onCo
               const available = models.filter((item) => item.provider === current.provider);
               // 当前 provider 无模型档案（如 development）时至少显示当前模型，避免空 select
               const options = available.length > 0 ? available : [{ id: current.model, displayName: current.model } as ModelProfile];
-              return options.map((item) => <option key={item.id} value={item.id}>{item.displayName}</option>);
+              return options.map((item) => <option key={item.id} value={item.id}>{item.displayName ?? item.id}</option>);
             })()}
           </select>
         </label>

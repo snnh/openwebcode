@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { AgentRunner } from "./agent/agent-runner.js";
 import { buildServer } from "./app.js";
 import { loadConfig } from "./config.js";
+import { ModelRegistry } from "./context/model-registry.js";
 import { CoreClient } from "./core-client.js";
 import { ExchangeRateService, HttpExchangeRateProvider } from "./cost/exchange-rate.js";
 import { PricingCatalog } from "./cost/pricing-catalog.js";
@@ -35,8 +36,13 @@ const exchangeRates = new ExchangeRateService({
     ...(config.exchangeRate.fixedUsdCnyRate ? { fixedUsdCnyRate: config.exchangeRate.fixedUsdCnyRate } : {}),
 });
 providers.register(new DevelopmentProvider());
-const agent = new AgentRunner(sessions, providers, core, events, pricing, exchangeRates, config.defaultLanguage);
-settings.bind({ providers, core, agent, events });
+const models = await ModelRegistry.load({
+    snapshotPath: path.join(dataDir, "models.json"),
+    manualPath: path.join(dataDir, "models.manual.json"),
+    onUpdated: () => events.publish({ source: "server", type: "models.updated", payload: {} }),
+});
+const agent = new AgentRunner(sessions, providers, core, events, pricing, exchangeRates, config.defaultLanguage, 50, (model) => models.get(model));
+settings.bind({ providers, core, agent, events, models });
 settings.reconcileProviders();
 core.on("diagnostic", (text) => process.stderr.write(`[owc-exec] ${text}`));
 core.on("error", (error) => console.error("Core error:", error));
@@ -55,6 +61,7 @@ const app = await buildServer({
     defaultCurrency: config.defaultCurrency,
     defaultLanguage: config.defaultLanguage,
     settings,
+    models,
     getPreferences: () => {
         const effective = settings.effective();
         return { currency: effective.defaultCurrency, language: effective.defaultLanguage };

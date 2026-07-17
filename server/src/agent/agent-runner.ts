@@ -3,7 +3,7 @@ import type { CoreClient, CoreEvent } from "../core-client.js";
 import type { EventBus } from "../events/event-bus.js";
 import { ContextManager, selectCacheBreakpoints } from "../context/context-manager.js";
 import { boundToolResult } from "../context/tool-result-budget.js";
-import { estimateTokens, getModelProfile } from "../context/model-profile.js";
+import { estimateTokens, getModelProfile, type ModelProfile } from "../context/model-profile.js";
 import { calculateUsageCost } from "../cost/cost-calculator.js";
 import type { ExchangeRateService } from "../cost/exchange-rate.js";
 import type { PricingCatalog } from "../cost/pricing-catalog.js";
@@ -86,6 +86,7 @@ export class AgentRunner {
     private readonly exchangeRates?: ExchangeRateService,
     private defaultLanguage = "zh-CN",
     private readonly maxTurns = 50,
+    private readonly getProfile: (model: string) => ModelProfile = getModelProfile,
   ) {
     this.permissions = new PermissionCoordinator(events);
     core.on("event", (event: CoreEvent) => {
@@ -143,7 +144,7 @@ export class AgentRunner {
         const view = await context.buildView(session.messages);
         const cacheBreakpoints = selectCacheBreakpoints(view.messages, view.ledger);
         await context.recordCacheBreakpoints(cacheBreakpoints);
-        const profile = getModelProfile(session.model);
+        const profile = this.getProfile(session.model);
         const estimatedTokens = estimateTokens(JSON.stringify(view.messages));
         const workingBudget = Math.max(1, profile.contextWindow - profile.maxOutput);
         const utilization = estimatedTokens / workingBudget;

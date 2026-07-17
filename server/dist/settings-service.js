@@ -286,8 +286,21 @@ export class SettingsService {
     hotApply(changed) {
         if (!this.deps)
             return;
-        if (changed.some((key) => PROVIDER_KEYS.has(key)))
+        if (changed.some((key) => PROVIDER_KEYS.has(key))) {
             this.reconcileProviders();
+            // 凭据变更后后台刷新模型目录；无凭据（如刚清除）时不刷新，失败仅记日志
+            const config = this.effective();
+            if (this.deps.models && (config.anthropic?.apiKey ?? config.openai?.baseURL)) {
+                const models = this.deps.models;
+                void models
+                    .refresh({ ...(config.anthropic ? { anthropic: config.anthropic } : {}), ...(config.openai ? { openai: config.openai } : {}) })
+                    .then((report) => {
+                    if (report.errors.length > 0)
+                        process.stderr.write(`[settings] 模型目录刷新部分失败：${report.errors.join("; ")}\n`);
+                })
+                    .catch((error) => process.stderr.write(`[settings] 模型目录刷新失败：${error instanceof Error ? error.message : String(error)}\n`));
+            }
+        }
         if (changed.includes("defaultLanguage"))
             this.deps.agent.setDefaultLanguage(this.effective().defaultLanguage);
         if (changed.includes("coreRequestTimeoutMs"))
