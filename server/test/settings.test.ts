@@ -53,7 +53,7 @@ describe("server settings API", () => {
       const view = response.json<SettingsView>();
       expect(view.groups.map((group) => group.id)).toEqual(["models", "general", "executor", "service", "exchangeRate"]);
       const fields = view.groups.flatMap((group) => group.fields);
-      expect(fields).toHaveLength(15);
+      expect(fields).toHaveLength(16);
       for (const item of fields) {
         expect(item.source).toBe("default");
         expect(item.editable).toBe(true);

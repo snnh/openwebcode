@@ -4,6 +4,7 @@ export interface ServerConfig {
   corePath: string;
   dataDir: string;
   coreRequestTimeoutMs: number;
+  gcMaxBytes: number;
   defaultLanguage: string;
   defaultCurrency: "USD" | "CNY";
   exchangeRate: {
@@ -45,6 +46,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     corePath: env.OWC_CORE_PATH ?? "../build/Debug/owc-exec.exe",
     dataDir: env.OWC_DATA_DIR ?? "../.openwebcode",
     coreRequestTimeoutMs: positiveInteger(env.OWC_CORE_REQUEST_TIMEOUT_MS, 130_000),
+    gcMaxBytes: positiveInteger(env.OWC_GC_MAX_BYTES, 2_147_483_648),
     defaultLanguage: env.OWC_DEFAULT_LANGUAGE ?? "zh-CN",
     defaultCurrency: currency(env.OWC_DEFAULT_CURRENCY),
     exchangeRate: {

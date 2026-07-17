@@ -76,6 +76,7 @@ const FIELDS = [
     // 执行器
     { key: "corePath", group: "executor", label: "执行器路径", type: "text", env: "OWC_CORE_PATH", defaultValue: "../build/Debug/owc-exec.exe", restartRequired: true, validate: requireNonEmpty },
     { key: "coreRequestTimeoutMs", group: "executor", label: "执行器请求超时 (ms)", type: "number", env: "OWC_CORE_REQUEST_TIMEOUT_MS", defaultValue: 130_000, restartRequired: false, fromEnv: envNumber },
+    { key: "gcMaxBytes", group: "service", label: "存储上限 (字节)", type: "number", env: "OWC_GC_MAX_BYTES", defaultValue: 2_147_483_648, restartRequired: false, fromEnv: envNumber, description: "会话 artifacts 全局 LRU 上限，超出后从最旧开始清理" },
     // 服务（重启生效）
     { key: "host", group: "service", label: "监听地址", type: "text", env: "OWC_HOST", defaultValue: "127.0.0.1", restartRequired: true, validate: requireNonEmpty },
     { key: "port", group: "service", label: "监听端口", type: "number", env: "OWC_PORT", defaultValue: 3210, restartRequired: true, fromEnv: envNumber, validate: requirePort },
@@ -163,6 +164,7 @@ export class SettingsService {
             corePath: value("corePath"),
             dataDir: value("dataDir"),
             coreRequestTimeoutMs: value("coreRequestTimeoutMs"),
+            gcMaxBytes: value("gcMaxBytes"),
             defaultLanguage: value("defaultLanguage"),
             defaultCurrency: value("defaultCurrency"),
             exchangeRate: {
@@ -305,6 +307,11 @@ export class SettingsService {
             this.deps.agent.setDefaultLanguage(this.effective().defaultLanguage);
         if (changed.includes("coreRequestTimeoutMs"))
             this.deps.core.setRequestTimeoutMs(this.effective().coreRequestTimeoutMs);
+        if (changed.includes("gcMaxBytes") && this.deps.gc) {
+            const gc = this.deps.gc;
+            gc.setMaxBytes(this.effective().gcMaxBytes);
+            void gc.collect().catch((error) => process.stderr.write(`[settings] 存储 GC 失败：${error instanceof Error ? error.message : String(error)}\n`));
+        }
         // defaultCurrency 无需主动推送：app 路由经 getPreferences 每次实时读取
     }
     validateValue(field, value) {
