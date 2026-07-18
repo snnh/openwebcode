@@ -44,6 +44,14 @@ export interface ChatMessage {
 
 export type PermissionMode = "ask" | "acceptEdits" | "yolo";
 export interface PermissionRule { tool: string; argumentPrefix?: string }
+/** 托管工作区元数据：会话项目目录活在稀疏镜像盘（VHDX/qcow2）挂载点上 */
+export interface ManagedWorkspaceMeta {
+  mode: "managed";
+  backend: "vhdx" | "qcow2";
+  originCwd: string;
+  image: string;
+  mountPoint: string;
+}
 /** 下发给 core 的 sandbox.mode（wsb 不下发，由 VM 充当边界） */
 export type SandboxBackendMode = "appcontainer" | "jobobject" | "off";
 /** 用户可选的沙盒模式；undefined = appcontainer（现状默认） */
@@ -73,6 +81,8 @@ export interface SessionMeta {
   setupScript?: string;
   /** 探测到的快照后端名（zfs 附带数据集："zfs:<dataset>"），由 snapshots/index.ts 落盘 */
   snapshotBackend?: string;
+  /** 托管工作区：cwd 指向稀疏镜像盘挂载点，originCwd 为创建时的复制来源（plan §6.4） */
+  workspace?: ManagedWorkspaceMeta;
   title: string;
   createdAt: string;
   updatedAt: string;

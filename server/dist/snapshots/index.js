@@ -1,5 +1,7 @@
+import path from "node:path";
 import { BtrfsBackend } from "./btrfs.js";
 import { GitShadowSnapshots } from "./git-shadow.js";
+import { ManagedDiskBackend, managedWorkspacePaths } from "./managed-disk.js";
 import { createExecFileRunner, probeSnapshotBackend } from "./probe.js";
 import { RefsBackend } from "./refs.js";
 import { ZfsBackend } from "./zfs.js";
@@ -31,6 +33,14 @@ function constructByName(stored, sessionRoot, workspace, runner) {
         case "btrfs": return new BtrfsBackend(workspace, runner);
         case "zfs": return argument ? new ZfsBackend(sessionRoot, workspace, argument, runner) : undefined;
         case "refs": return new RefsBackend(sessionRoot, workspace, runner);
+        // 托管工作区（vhdx-chain/qcow2-chain）：创建时预设，免探测；路径按 sessions store 布局推导
+        // （sessionRoot = <dataDir>/sessions/<id>，挂载点即会话 cwd）
+        case "vhdx-chain":
+        case "qcow2-chain": {
+            const dataDir = path.dirname(path.dirname(sessionRoot));
+            const { workspaceRoot } = managedWorkspacePaths(dataDir, path.basename(sessionRoot));
+            return new ManagedDiskBackend({ kind: name === "vhdx-chain" ? "vhdx" : "qcow2", workspaceRoot, mountPoint: workspace, runner });
+        }
         default: return undefined;
     }
 }

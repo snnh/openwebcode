@@ -16,6 +16,7 @@ import { SessionStore } from "./sessions/session-store.js";
 import { SettingsService } from "./settings-service.js";
 import { SkillRegistry } from "./skills.js";
 import { McpManager } from "./mcp/manager.js";
+import { ManagedWorkspaceManager } from "./snapshots/managed-disk.js";
 import { Provider2Client } from "./provider2.js";
 import { Compactor } from "./context/compactor.js";
 import { StorageGC } from "./storage-gc.js";
@@ -62,7 +63,9 @@ const mcp = new McpManager(dataDir);
 const provider2 = new Provider2Client(config.provider2);
 const compactor = new Compactor(sessions, provider2, { usageLog, pricing, exchangeRates });
 const agent = new AgentRunner(sessions, providers, core, events, pricing, exchangeRates, config.defaultLanguage, 50, (model) => models.get(model), usageLog, skills, mcp, compactor, dataDir);
-const gc = new StorageGC(path.join(dataDir, "sessions"), config.gcMaxBytes);
+// 托管工作区（plan §6.4）：镜像/挂载点位于 dataDir 下；孤儿挂载清理挂在 GC 启动扫描上
+const managed = new ManagedWorkspaceManager({ dataDir });
+const gc = new StorageGC(path.join(dataDir, "sessions"), config.gcMaxBytes, () => managed.sweepOrphans());
 settings.bind({ providers, core, agent, events, models, gc, provider2 });
 settings.reconcileProviders();
 core.on("diagnostic", (text) => process.stderr.write(`[owc-exec] ${text}`));
@@ -71,8 +74,8 @@ await sessions.initialize();
 await pricing.initialize();
 await exchangeRates.initialize();
 await core.start();
-// 存储 GC：启动时一次 + 每小时周期清理（失败仅记日志）
-void gc.collect().catch((error) => console.error("Storage GC failed:", error));
+// 存储 GC：启动时一次（含托管挂载孤儿清理）+ 每小时周期清理（失败仅记日志）
+void gc.startup().catch((error) => console.error("Storage GC failed:", error));
 const gcTimer = setInterval(() => {
     void gc.collect().catch((error) => console.error("Storage GC failed:", error));
 }, 3_600_000);
@@ -84,6 +87,7 @@ const app = await buildServer({
     events,
     providers,
     pricing,
+    managed,
     webDist: path.resolve(moduleDirectory, "../../web/dist"),
     defaultCurrency: config.defaultCurrency,
     defaultLanguage: config.defaultLanguage,

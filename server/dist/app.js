@@ -2,6 +2,8 @@ import Fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
 import { existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { stat } from "node:fs/promises";
 import path from "node:path";
 import { SteeringError } from "./agent/agent-runner.js";
 import { CoreRpcError } from "./core-client.js";
@@ -69,6 +71,12 @@ export async function buildServer(dependencies) {
     app.get("/api/health", async () => ({ status: "ok" }));
     app.get("/api/core", async () => core.ping());
     app.get("/api/sandbox/capabilities", async () => ({ appcontainer: true, jobobject: true, off: true, wsb: detectWsb() }));
+    app.get("/api/managed-workspace/capability", async (_request, reply) => {
+        const managed = dependencies.managed;
+        if (!managed)
+            return reply.code(501).send({ error: "Managed workspace is not configured" });
+        return managed.capability();
+    });
     app.get("/api/providers", async () => providers.list());
     // 模型目录：registry（api/manual/builtin 三向合并）缺省时回退静态档案
     const catalog = () => dependencies.models?.list() ?? listModelProfiles().map((profile) => ({ ...profile, source: "builtin" }));
@@ -182,6 +190,54 @@ export async function buildServer(dependencies) {
             }
         });
     }
+    /** 托管工作区创建：能力检测 → 预分配 id 建盘挂载复制 → 落 meta（cwd=挂载点、snapshotBackend 预设）；失败清理半成品 */
+    const createManagedSession = async (body, provider, reply) => {
+        const managed = dependencies.managed;
+        if (!managed)
+            return reply.code(501).send({ error: "Managed workspace is not configured" });
+        const capability = await managed.capability();
+        const candidate = capability.backends.find((item) => item.available);
+        if (!candidate) {
+            const reasons = capability.backends.map((item) => item.detail).filter(Boolean).join("；");
+            return reply.code(400).send({ error: `托管工作区不可用${reasons ? `：${reasons}` : "（当前平台不支持）"}` });
+        }
+        // 源目录必须存在（要复制进镜像）；直接模式不校验 cwd 的行为保持不变
+        const origin = await stat(body.cwd).catch(() => undefined);
+        if (!origin?.isDirectory())
+            return reply.code(400).send({ error: `源目录不存在或不是目录：${body.cwd}` });
+        const sessionId = randomUUID();
+        let provisioned;
+        try {
+            provisioned = await managed.provision({ sessionId, originCwd: body.cwd, backend: candidate.backend });
+        }
+        catch (error) {
+            return reply.code(500).send({ error: error instanceof Error ? error.message : String(error) });
+        }
+        const workspace = {
+            mode: "managed",
+            backend: provisioned.backend,
+            originCwd: path.resolve(body.cwd),
+            image: provisioned.image,
+            mountPoint: provisioned.mountPoint,
+        };
+        try {
+            const { workspaceMode: _ignored, ...rest } = body;
+            const session = await sessions.create({
+                ...rest,
+                provider,
+                id: sessionId,
+                cwd: provisioned.mountPoint,
+                workspace,
+                snapshotBackend: `${provisioned.backend}-chain`,
+            });
+            events.publish({ source: "session", type: "session.created", sessionId: session.id, payload: session });
+            return reply.code(201).send(session);
+        }
+        catch (error) {
+            await managed.teardown({ id: sessionId, workspace }).catch(() => undefined);
+            throw error;
+        }
+    };
     app.post("/api/sessions", async (request, reply) => {
         if (!request.body || typeof request.body.cwd !== "string" || !request.body.cwd) {
             return reply.code(400).send({ error: "cwd must be a non-empty string" });
@@ -196,6 +252,11 @@ export async function buildServer(dependencies) {
         if (request.body.setupScript !== undefined && typeof request.body.setupScript !== "string") {
             return reply.code(400).send({ error: "setupScript must be a string" });
         }
+        if (request.body.workspaceMode !== undefined && request.body.workspaceMode !== "managed") {
+            return reply.code(400).send({ error: 'workspaceMode must be "managed"' });
+        }
+        if (request.body.workspaceMode === "managed")
+            return createManagedSession(request.body, provider, reply);
         const session = await sessions.create({ ...request.body, provider });
         events.publish({ source: "session", type: "session.created", sessionId: session.id, payload: session });
         return reply.code(201).send(session);
@@ -460,11 +521,16 @@ export async function buildServer(dependencies) {
         if (agent.isRunning(request.params.id)) {
             return reply.code(409).send({ error: "Session is running; abort it before deletion" });
         }
-        if (!(await sessions.get(request.params.id)))
+        const detail = await sessions.get(request.params.id);
+        if (!detail)
             return reply.code(404).send({ error: "Session not found" });
         await core.cleanupSession(request.params.id).catch(() => undefined);
         // 释放会话持有的沙盒 core（WSB 虚拟机蒸发）；裸 CoreClient 无 release，为 no-op
         await core.release?.(request.params.id).catch(() => undefined);
+        // 托管工作区：先卸载镜像盘再删目录（失败仅记日志，残留挂载由启动孤儿扫描兜底）
+        if (detail.workspace?.mode === "managed" && dependencies.managed) {
+            await dependencies.managed.teardown(detail).catch((error) => request.log.error(error, "Managed workspace teardown failed"));
+        }
         if (!(await sessions.delete(request.params.id)))
             return reply.code(404).send({ error: "Session not found" });
         return reply.code(204).send();

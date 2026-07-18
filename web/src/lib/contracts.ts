@@ -9,6 +9,12 @@ export interface SandboxCapabilities {
   wsb: { available: boolean; reason?: string };
 }
 
+/** 托管工作区平台能力（GET /api/managed-workspace/capability） */
+export interface ManagedWorkspaceCapability {
+  platform: string;
+  backends: Array<{ backend: "vhdx" | "qcow2"; available: boolean; requiresAdmin: boolean; detail?: string }>;
+}
+
 export interface MessageContent {
   type: "text" | "thinking" | "tool_call" | "tool_result" | "image";
   text?: string;

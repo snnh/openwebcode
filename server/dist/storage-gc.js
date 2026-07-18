@@ -7,9 +7,13 @@ import path from "node:path";
  */
 export class StorageGC {
     sessionsRoot;
+    startupSweep;
     maxBytes;
-    constructor(sessionsRoot, maxBytes) {
+    constructor(sessionsRoot, maxBytes, 
+    /** 启动时一次性的附加扫描（托管工作区孤儿挂载清理），周期 collect 不调用 */
+    startupSweep) {
         this.sessionsRoot = sessionsRoot;
+        this.startupSweep = startupSweep;
         this.maxBytes = maxBytes;
     }
     setMaxBytes(value) {
@@ -17,6 +21,12 @@ export class StorageGC {
     }
     get limit() {
         return this.maxBytes;
+    }
+    /** 启动扫描：先跑一次性附加清理（孤儿挂载），再做常规 artifacts GC。 */
+    async startup() {
+        if (this.startupSweep)
+            await this.startupSweep().catch(() => undefined);
+        return this.collect();
     }
     async collect() {
         const files = await this.scan();

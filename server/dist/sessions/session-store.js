@@ -14,7 +14,7 @@ export class SessionStore {
         const now = new Date().toISOString();
         const resolvedCwd = path.resolve(input.cwd);
         const meta = {
-            id: randomUUID(),
+            id: input.id ?? randomUUID(),
             cwd: resolvedCwd,
             provider: input.provider ?? "development",
             model: input.model ?? "deterministic-tool-loop",
@@ -22,6 +22,8 @@ export class SessionStore {
             title: input.title ?? "New session",
             createdAt: now,
             updatedAt: now,
+            ...(input.workspace ? { workspace: input.workspace } : {}),
+            ...(input.snapshotBackend ? { snapshotBackend: input.snapshotBackend } : {}),
         };
         // appcontainer 为默认不落盘；setupScript 仅非空时保留
         if (input.sandboxMode && input.sandboxMode !== "appcontainer")
