@@ -23,7 +23,12 @@ interface ArtifactFile {
 export class StorageGC {
   private maxBytes: number;
 
-  constructor(private readonly sessionsRoot: string, maxBytes: number) {
+  constructor(
+    private readonly sessionsRoot: string,
+    maxBytes: number,
+    /** 启动时一次性的附加扫描（托管工作区孤儿挂载清理），周期 collect 不调用 */
+    private readonly startupSweep?: () => Promise<void>,
+  ) {
     this.maxBytes = maxBytes;
   }
 
@@ -33,6 +38,12 @@ export class StorageGC {
 
   get limit(): number {
     return this.maxBytes;
+  }
+
+  /** 启动扫描：先跑一次性附加清理（孤儿挂载），再做常规 artifacts GC。 */
+  async startup(): Promise<GcReport> {
+    if (this.startupSweep) await this.startupSweep().catch(() => undefined);
+    return this.collect();
   }
 
   async collect(): Promise<GcReport> {

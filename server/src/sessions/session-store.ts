@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rename, rm, writeFile, appendFile } from "node:fs/promises";
 import path from "node:path";
 import { parseSessionImport, serializeSession } from "./session-transfer.js";
-import type { ChatMessage, MessageContent, MessageRole, SandboxMode, SessionDetail, SessionMeta } from "./types.js";
+import type { ChatMessage, ManagedWorkspaceMeta, MessageContent, MessageRole, SandboxMode, SessionDetail, SessionMeta } from "./types.js";
 
 export interface CreateSessionInput {
   cwd: string;
@@ -11,6 +11,11 @@ export interface CreateSessionInput {
   title?: string;
   sandboxMode?: SandboxMode;
   setupScript?: string;
+  /** 托管工作区：调用方预分配 id（镜像/挂载路径按 id 推导，必须先于 create 准备） */
+  id?: string;
+  workspace?: ManagedWorkspaceMeta;
+  /** 托管工作区预设快照后端名（vhdx-chain/qcow2-chain），跳过探测 */
+  snapshotBackend?: string;
 }
 
 export class SessionStore {
@@ -24,7 +29,7 @@ export class SessionStore {
     const now = new Date().toISOString();
     const resolvedCwd = path.resolve(input.cwd);
     const meta: SessionMeta = {
-      id: randomUUID(),
+      id: input.id ?? randomUUID(),
       cwd: resolvedCwd,
       provider: input.provider ?? "development",
       model: input.model ?? "deterministic-tool-loop",
@@ -32,6 +37,8 @@ export class SessionStore {
       title: input.title ?? "New session",
       createdAt: now,
       updatedAt: now,
+      ...(input.workspace ? { workspace: input.workspace } : {}),
+      ...(input.snapshotBackend ? { snapshotBackend: input.snapshotBackend } : {}),
     };
     // appcontainer 为默认不落盘；setupScript 仅非空时保留
     if (input.sandboxMode && input.sandboxMode !== "appcontainer") meta.sandboxMode = input.sandboxMode;

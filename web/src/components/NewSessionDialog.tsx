@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import { api } from "../lib/api";
-import type { ModelProfile, PermissionMode, SandboxCapabilities, SandboxMode } from "../lib/contracts";
+import type { ManagedWorkspaceCapability, ModelProfile, PermissionMode, SandboxCapabilities, SandboxMode } from "../lib/contracts";
 import type { SessionDefaults } from "../lib/prefs";
 
 export interface NewSessionValues {
@@ -11,6 +11,7 @@ export interface NewSessionValues {
   permissionMode?: PermissionMode;
   sandboxMode?: SandboxMode;
   setupScript?: string;
+  workspaceMode?: "managed";
 }
 
 const SANDBOX_MODE_LABELS: Record<SandboxMode, string> = {
@@ -37,6 +38,8 @@ export function NewSessionDialog({ open, providers, models, defaults, onClose, o
   const [sandboxMode, setSandboxMode] = useState<SandboxMode>("appcontainer");
   const [setupScript, setSetupScript] = useState("");
   const [sandboxCaps, setSandboxCaps] = useState<SandboxCapabilities | undefined>();
+  const [workspaceMode, setWorkspaceMode] = useState<"direct" | "managed">("direct");
+  const [managedCaps, setManagedCaps] = useState<ManagedWorkspaceCapability | undefined>();
 
   const availableModels = models.filter((item) => item.provider === provider);
   // provider 无模型档案（如 development）时提供占位项，服务端对未知模型有 fallback profile
@@ -76,12 +79,15 @@ export function NewSessionDialog({ open, providers, models, defaults, onClose, o
     if (!open && dialog.open) dialog.close();
   }, [open]);
 
-  // 打开时拉取沙盒能力（WSB 不可用则禁用对应选项）；失败按 wsb 不可用处理
+  // 打开时并行拉取沙盒能力（WSB 不可用则禁用对应选项）与托管工作区能力；失败按不可用处理
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     api.sandboxCapabilities()
       .then((caps) => { if (!cancelled) setSandboxCaps(caps); })
+      .catch(() => undefined);
+    api.managedWorkspaceCapability()
+      .then((caps) => { if (!cancelled) setManagedCaps(caps); })
       .catch(() => undefined);
     return () => { cancelled = true; };
   }, [open]);
@@ -89,6 +95,10 @@ export function NewSessionDialog({ open, providers, models, defaults, onClose, o
   if (!open) return null;
 
   const fallbackTitle = cwd.trim().split(/[\\/]/).filter(Boolean).pop() ?? "";
+  const managedAvailable = managedCaps?.backends.some((item) => item.available) ?? false;
+  const managedUnavailableReason = managedCaps === undefined
+    ? "能力检测中…"
+    : managedCaps.backends.map((item) => item.detail).filter(Boolean).join("；") || "当前平台不支持托管工作区";
 
   return (
     <dialog
@@ -113,12 +123,30 @@ export function NewSessionDialog({ open, providers, models, defaults, onClose, o
             // appcontainer 是缺省，不必显式提交；setupScript 仅 wsb 有意义
             ...(sandboxMode !== "appcontainer" ? { sandboxMode } : {}),
             ...(sandboxMode === "wsb" && setupScript.trim() ? { setupScript: setupScript.trim() } : {}),
+            ...(workspaceMode === "managed" ? { workspaceMode } : {}),
           });
         }}
       >
         <h2>新建会话</h2>
         <label>
-          工作目录
+          工作区模式
+          <select value={workspaceMode} onChange={(event) => setWorkspaceMode(event.target.value as "direct" | "managed")}>
+            <option value="direct">直接（默认）</option>
+            <option value="managed" disabled={!managedAvailable} title={managedAvailable ? undefined : managedUnavailableReason}>
+              托管工作区（镜像盘隔离）
+            </option>
+          </select>
+        </label>
+        {managedCaps && !managedAvailable && (
+          <p className="dialog-hint">托管工作区不可用：{managedUnavailableReason}</p>
+        )}
+        {workspaceMode === "managed" && (
+          <p className="dialog-hint">
+            将创建 20GB 稀疏镜像盘并挂载到数据根 mnt/ 目录，源目录内容（排除 node_modules 等）会复制进去；需要管理员（Hyper-V）或 root（qemu-nbd）权限。
+          </p>
+        )}
+        <label>
+          {workspaceMode === "managed" ? "源目录（将复制进托管工作区）" : "工作目录"}
           <input
             value={cwd}
             onChange={(event) => setCwd(event.target.value)}
