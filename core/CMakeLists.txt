@@ -68,3 +68,42 @@ if(BUILD_TESTING)
 endif()
 
 install(TARGETS owc-exec RUNTIME DESTINATION bin)
+
+# ---------------------------------------------------------------------------
+# 分发打包（CPack）
+#
+# 职责划分：CPack 只组装安装包骨架（owc-exec 本体 + 下方 stage 整树收编），
+# 不负责构建/收集 server、web 与 Node 运行时。发布流水线
+# （.github/workflows/release.yml）在调用 cpack 之前，先把完整运行时布局
+# staging 到 ${CMAKE_BINARY_DIR}/stage/，契约如下：
+#   stage/bin/owc-exec(.exe)     core 可执行文件
+#   stage/bin/owc.cmd            Windows 启动脚本（由 packaging/owc.cmd 转 CRLF 生成）
+#   stage/server/dist/           服务端编译产物（入口 dist/index.js）
+#   stage/server/package.json    "type": "module" 声明，dist ESM 运行必需
+#   stage/server/node_modules/   生产依赖（npm prune --omit=dev 之后）
+#   stage/server/assets/         运行时资产（refs-clone.ps1 等）
+#   stage/web/dist/              前端静态资源（server 解析 server/dist/../../web/dist 托管）
+#   stage/node/                  Node 20 运行时（Windows: node.exe；Linux: bin/node）
+# 本地开发 configure 时 stage/ 通常不存在：install(DIRECTORY ... OPTIONAL)
+# 静默跳过，此时包内只有 owc-exec。
+# ---------------------------------------------------------------------------
+install(DIRECTORY "${CMAKE_BINARY_DIR}/stage/" DESTINATION . OPTIONAL)
+
+set(CPACK_PACKAGE_NAME "openwebcode")
+set(CPACK_PACKAGE_VENDOR "OpenWebCode")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "OpenWebCode: web-based agentic coding environment")
+# 版本默认 0.1.0；CI 用 -DCPACK_PACKAGE_VERSION=x.y.z 注入 tag 版本
+set(CPACK_PACKAGE_VERSION "0.1.0" CACHE STRING "Package version (x.y.z)")
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/../LICENSE")
+set(CPACK_PACKAGE_INSTALL_DIRECTORY "openwebcode")
+if(WIN32)
+    set(CPACK_GENERATOR "WIX")
+    # 产物名固定为 openwebcode-<version>-windows-x64.msi（Linux tar.gz 由 CI 直接 tar，不经 CPack）
+    set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION}-windows-x64")
+else()
+    set(CPACK_GENERATOR "TGZ")
+endif()
+# 固定 UpgradeCode，跨版本升级识别为同一产品；不要再改
+set(CPACK_WIX_UPGRADE_GUID "7F3A2C1E-9B4D-4E6F-A1C8-2D5B7E9F0C3A")
+
+include(CPack)
