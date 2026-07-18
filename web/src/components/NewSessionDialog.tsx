@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactElement } from "react";
-import type { ModelProfile, PermissionMode } from "../lib/contracts";
+import { api } from "../lib/api";
+import type { ModelProfile, PermissionMode, SandboxCapabilities, SandboxMode } from "../lib/contracts";
 import type { SessionDefaults } from "../lib/prefs";
 
 export interface NewSessionValues {
@@ -8,7 +9,16 @@ export interface NewSessionValues {
   provider: string;
   model: string;
   permissionMode?: PermissionMode;
+  sandboxMode?: SandboxMode;
+  setupScript?: string;
 }
+
+const SANDBOX_MODE_LABELS: Record<SandboxMode, string> = {
+  appcontainer: "应用容器（AppContainer，默认）",
+  wsb: "Windows Sandbox（不可信代码）",
+  jobobject: "兼容模式（Job Object）",
+  off: "关闭沙盒",
+};
 
 export function NewSessionDialog({ open, providers, models, defaults, onClose, onCreate }: {
   open: boolean;
@@ -24,6 +34,9 @@ export function NewSessionDialog({ open, providers, models, defaults, onClose, o
   const [provider, setProvider] = useState("");
   const [model, setModel] = useState("");
   const [permissionMode, setPermissionMode] = useState<PermissionMode>("ask");
+  const [sandboxMode, setSandboxMode] = useState<SandboxMode>("appcontainer");
+  const [setupScript, setSetupScript] = useState("");
+  const [sandboxCaps, setSandboxCaps] = useState<SandboxCapabilities | undefined>();
 
   const availableModels = models.filter((item) => item.provider === provider);
   // provider 无模型档案（如 development）时提供占位项，服务端对未知模型有 fallback profile
@@ -63,6 +76,16 @@ export function NewSessionDialog({ open, providers, models, defaults, onClose, o
     if (!open && dialog.open) dialog.close();
   }, [open]);
 
+  // 打开时拉取沙盒能力（WSB 不可用则禁用对应选项）；失败按 wsb 不可用处理
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    api.sandboxCapabilities()
+      .then((caps) => { if (!cancelled) setSandboxCaps(caps); })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [open]);
+
   if (!open) return null;
 
   const fallbackTitle = cwd.trim().split(/[\\/]/).filter(Boolean).pop() ?? "";
@@ -81,7 +104,16 @@ export function NewSessionDialog({ open, providers, models, defaults, onClose, o
         onSubmit={(event) => {
           event.preventDefault();
           if (!cwd.trim() || !model) return;
-          onCreate({ cwd: cwd.trim(), title: title.trim() || fallbackTitle || "新会话", provider, model, permissionMode });
+          onCreate({
+            cwd: cwd.trim(),
+            title: title.trim() || fallbackTitle || "新会话",
+            provider,
+            model,
+            permissionMode,
+            // appcontainer 是缺省，不必显式提交；setupScript 仅 wsb 有意义
+            ...(sandboxMode !== "appcontainer" ? { sandboxMode } : {}),
+            ...(sandboxMode === "wsb" && setupScript.trim() ? { setupScript: setupScript.trim() } : {}),
+          });
         }}
       >
         <h2>新建会话</h2>
@@ -123,6 +155,29 @@ export function NewSessionDialog({ open, providers, models, defaults, onClose, o
             <option value="yolo">YOLO</option>
           </select>
         </label>
+        <label>
+          沙盒模式
+          <select value={sandboxMode} onChange={(event) => setSandboxMode(event.target.value as SandboxMode)}>
+            {(Object.keys(SANDBOX_MODE_LABELS) as SandboxMode[]).map((mode) => (
+              <option key={mode} value={mode} disabled={mode === "wsb" && sandboxCaps !== undefined && !sandboxCaps.wsb.available}>
+                {SANDBOX_MODE_LABELS[mode]}
+              </option>
+            ))}
+          </select>
+        </label>
+        {sandboxCaps && !sandboxCaps.wsb.available && (
+          <p className="dialog-hint">Windows Sandbox 不可用：{sandboxCaps.wsb.reason ?? "未启用可选功能"}</p>
+        )}
+        {sandboxMode === "wsb" && (
+          <label>
+            初始化脚本（可选）
+            <input
+              value={setupScript}
+              onChange={(event) => setSetupScript(event.target.value)}
+              placeholder="沙盒启动后、agent 启动前执行的命令"
+            />
+          </label>
+        )}
         <div className="dialog-actions">
           <button type="button" className="btn" onClick={onClose}>取消</button>
           <button type="submit" className="btn primary" disabled={!cwd.trim() || !model}>创建</button>

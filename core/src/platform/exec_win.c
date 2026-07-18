@@ -87,8 +87,15 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
     inherited[0]=out_write; inherited[1]=err_write; inherited[2]=input;
     sandbox_options.session_id=request->session_id; sandbox_options.allow_network=request->allow_network;
     write_roots[0]=request->cwd; sandbox_options.write_roots=write_roots; sandbox_options.write_root_count=1;
-    if(request->sandbox_enabled) sandbox=owc_sandbox_create(&sandbox_options,result->sandbox_reason,sizeof(result->sandbox_reason));
-    result->sandbox_status=sandbox?(int)owc_sandbox_get_status(sandbox):(int)OWC_SANDBOX_ADVISORY;
+    if(request->sandbox_enabled && request->sandbox_mode==(int)OWC_SANDBOX_MODE_JOBOBJECT) {
+        /* Session explicitly asked for compatibility mode: skip the AppContainer
+           profile and process attribute, keep only the Job Object below. */
+        result->sandbox_status=(int)OWC_SANDBOX_PARTIAL;
+        (void)snprintf(result->sandbox_reason,sizeof(result->sandbox_reason),"Job Object compatibility mode requested by session policy");
+    } else {
+        if(request->sandbox_enabled) sandbox=owc_sandbox_create(&sandbox_options,result->sandbox_reason,sizeof(result->sandbox_reason));
+        result->sandbox_status=sandbox?(int)owc_sandbox_get_status(sandbox):(int)OWC_SANDBOX_ADVISORY;
+    }
     (void)InitializeProcThreadAttributeList(NULL,sandbox?2:1,0,&attribute_size);
     if(!attribute_size) goto cleanup;
     attributes=(LPPROC_THREAD_ATTRIBUTE_LIST)malloc(attribute_size); if(!attributes) goto cleanup;
