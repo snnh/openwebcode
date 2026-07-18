@@ -1,4 +1,6 @@
+import path from "node:path";
 import { calculateUsageCost } from "../cost/cost-calculator.js";
+import { appendMemory, parseSedimentSections } from "../memory.js";
 import { ContextManager } from "./context-manager.js";
 const TOOLCALLS_SYSTEM = `你是上下文压缩器。把对话中的工具调用逐条压缩为一行语义占位符。
 格式：- [工具] 名称(关键参数) → 结果要点（退出码/关键数字/错误原因）
@@ -146,6 +148,19 @@ export class Compactor {
         }
         ledger.compacted = { uptoIndex, mode: finalMode, summary, instructions, createdAt: new Date().toISOString() };
         await context.save(ledger);
+        // 长期记忆沉淀（§7.5）：overview 摘要的「关键发现/未决事项」落进项目 memory.md。
+        // 单点落在此：85% 强制压缩（agent-runner）、REST 与 /compact 命令（app.ts runCompact）
+        // 全部经 Compactor.compact；去重交给 appendMemory，失败只告警不影响压缩结果
+        if (mode === "overview") {
+            try {
+                const facts = parseSedimentSections(summary);
+                if (facts.length > 0)
+                    await appendMemory(path.join(session.cwd, ".owc", "memory.md"), facts);
+            }
+            catch (error) {
+                process.stderr.write(`[memory] 沉淀失败：${error instanceof Error ? error.message : String(error)}\n`);
+            }
+        }
         return { changed: true, mode: finalMode, uptoIndex, summary };
     }
     /** provider2 用量进全局报表（provider="provider2" 分项；定价目录无此模型则计为未定价）。 */

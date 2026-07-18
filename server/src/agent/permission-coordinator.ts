@@ -19,7 +19,9 @@ export class PermissionCoordinator {
   constructor(private readonly events: EventBus) {}
 
   needsApproval(mode: PermissionMode, rules: PermissionRule[], tool: string, input: Record<string, unknown>): boolean {
-    if (["read_file", "glob", "grep", "read_artifact", "load_skill", "spawn_task"].includes(tool)) return false;
+    // 只读工具 + remember 自动放行：remember 是 agent 写自身长期记忆（低风险），
+    // 写入路径固定为 <cwd>/.owc/memory.md 或 <dataDir>/memory.md，不接受任意路径
+    if (["read_file", "glob", "grep", "read_artifact", "load_skill", "spawn_task", "remember"].includes(tool)) return false;
     if (mode === "yolo") return false;
     if (mode === "acceptEdits" && ["write_file", "edit_file"].includes(tool)) return false;
     return !rules.some((rule) => matchesRule(rule, tool, input));

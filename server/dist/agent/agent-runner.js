@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { ContextManager, selectCacheBreakpoints } from "../context/context-manager.js";
 import { boundToolResult } from "../context/tool-result-budget.js";
 import { estimateMessageTokens, getModelProfile } from "../context/model-profile.js";
@@ -8,6 +10,7 @@ import { PermissionCoordinator, permissionRule } from "./permission-coordinator.
 import { runSubAgent, SUB_AGENT_TOOL_NAMES } from "./sub-agent.js";
 import { getSnapshotBackend } from "../snapshots/index.js";
 import { parseSkillCommand } from "../skills.js";
+import { appendMemory, readGlobalMemory, readProjectMemory } from "../memory.js";
 const BASH_TOOL = {
     name: "bash",
     description: "Execute a shell command in the session workspace. Call this when command-line execution is required.",
@@ -68,9 +71,26 @@ const SPAWN_TASK_TOOL = {
         additionalProperties: false,
     },
 };
-const TOOLS = [BASH_TOOL, ...FILE_TOOLS, READ_ARTIFACT_TOOL, LOAD_SKILL_TOOL, SPAWN_TASK_TOOL];
+const REMEMBER_TOOL = {
+    name: "remember",
+    description: "Save a durable fact to long-term memory; remembered facts are injected into the system prompt on every turn. " +
+        "Scope \"project\" (default) writes the workspace .owc/memory.md; scope \"global\" writes the server data-root memory.md shared by all sessions. " +
+        "Use it for stable user preferences, project conventions, and key decisions worth keeping across compactions and sessions.",
+    inputSchema: {
+        type: "object",
+        properties: {
+            fact: { type: "string", description: "The fact to remember, stored as a single bullet." },
+            scope: { type: "string", enum: ["project", "global"], description: "Where to store the fact; defaults to project." },
+        },
+        required: ["fact"],
+        additionalProperties: false,
+    },
+};
+const TOOLS = [BASH_TOOL, ...FILE_TOOLS, READ_ARTIFACT_TOOL, LOAD_SKILL_TOOL, SPAWN_TASK_TOOL, REMEMBER_TOOL];
 const MAX_STEERING_ITEMS = 16;
 const MAX_STEERING_LENGTH = 8_000;
+/** 系统提示中单个记忆/约定小节的字符上限 */
+const MEMORY_SECTION_LIMIT = 8_000;
 export class SteeringError extends Error {
     code;
     constructor(message, code) {
@@ -93,12 +113,13 @@ export class AgentRunner {
     skills;
     mcp;
     compactor;
+    dataDir;
     running = new Map();
     steering = new Map();
     repeatedCalls = new Map();
     mcpWarningSignatures = new Map();
     permissions;
-    constructor(sessions, providers, core, events, pricing, exchangeRates, defaultLanguage = "zh-CN", maxTurns = 50, getProfile = getModelProfile, usageLog, skills, mcp, compactor) {
+    constructor(sessions, providers, core, events, pricing, exchangeRates, defaultLanguage = "zh-CN", maxTurns = 50, getProfile = getModelProfile, usageLog, skills, mcp, compactor, dataDir) {
         this.sessions = sessions;
         this.providers = providers;
         this.core = core;
@@ -112,6 +133,7 @@ export class AgentRunner {
         this.skills = skills;
         this.mcp = mcp;
         this.compactor = compactor;
+        this.dataDir = dataDir;
         this.permissions = new PermissionCoordinator(events);
         core.on("event", (event) => {
             const payload = event.payload;
@@ -214,11 +236,13 @@ export class AgentRunner {
                 else {
                     this.mcpWarningSignatures.delete(sessionId);
                 }
+                // 长期记忆注入（§2.3/§7.5）：CLAUDE.md/AGENTS.md + 项目/全局 memory.md，每轮现读
+                const memorySection = await this.buildMemorySection(session.cwd);
                 const turn = await collectProviderTurn(provider, {
                     model: session.model,
                     ...(session.thinking ? { thinking: session.thinking } : {}),
                     ...(session.effort ? { effort: session.effort } : {}),
-                    system: `You are OpenWebCode. The workspace is ${session.cwd}. Respond in ${this.defaultLanguage} unless the user explicitly requests another language.${skillSection}`,
+                    system: `You are OpenWebCode. The workspace is ${session.cwd}. Respond in ${this.defaultLanguage} unless the user explicitly requests another language.${skillSection}${memorySection}`,
                     messages: view.messages,
                     cacheBreakpoints,
                     tools: [...TOOLS, ...mcpBinding.tools],
@@ -437,6 +461,35 @@ export class AgentRunner {
         const request = command.rest !== "" ? command.rest : "Follow the skill instructions above.";
         return `[Skill "${skill.name}" — full text]\n${skill.body}\n\n[User request]\n${request}`;
     }
+    /**
+     * 长期记忆/项目约定注入（§2.3/§7.5）：host fs 直读 CLAUDE.md、AGENTS.md、
+     * 项目 .owc/memory.md 与全局 <dataDir>/memory.md；每节独立标题、上限 8000 字符，
+     * 读失败一律按不存在处理，绝不 throw 阻断 agent 循环。
+     */
+    async buildMemorySection(cwd) {
+        const sections = [];
+        const add = (title, body) => {
+            const trimmed = body.trim();
+            if (trimmed === "")
+                return;
+            const text = trimmed.length > MEMORY_SECTION_LIMIT ? `${trimmed.slice(0, MEMORY_SECTION_LIMIT)}…(truncated)` : trimmed;
+            sections.push(`## ${title}\n${text}`);
+        };
+        for (const name of ["CLAUDE.md", "AGENTS.md"]) {
+            let body = "";
+            try {
+                body = await readFile(path.join(cwd, name), "utf8");
+            }
+            catch {
+                // 不存在或不可读：跳过该节
+            }
+            add(name, body);
+        }
+        add("Project memory (.owc/memory.md)", await readProjectMemory(cwd));
+        if (this.dataDir)
+            add("Global memory", await readGlobalMemory(this.dataDir));
+        return sections.length === 0 ? "" : `\n\n${sections.join("\n\n")}`;
+    }
     async executeTool(sessionId, name, toolCallId, input, signal) {
         if (name.startsWith("mcp__")) {
             if (!this.mcp) {
@@ -521,6 +574,36 @@ export class AgentRunner {
                     payload: { toolCallId, result: { conclusion: result.conclusion, turns: result.turns, toolsUsed: result.toolsUsed } },
                 });
                 return { type: "tool_result", toolCallId, content: result.conclusion, isError: false };
+            }
+            catch (error) {
+                const content = error instanceof Error ? error.message : String(error);
+                this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
+                return { type: "tool_result", toolCallId, content, isError: true };
+            }
+        }
+        if (name === "remember") {
+            this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+            this.state(sessionId, "tool_running");
+            try {
+                const session = await this.sessions.get(sessionId);
+                if (!session)
+                    throw new Error("Session not found");
+                const fact = String(input.fact ?? "").trim();
+                if (!fact)
+                    throw new Error("remember requires a non-empty fact");
+                // 写入路径固定两处，不接受任意路径；dataDir 未注入时全局记忆不可用
+                const scope = input.scope === "global" ? "global" : "project";
+                const target = scope === "global"
+                    ? (this.dataDir ? path.join(this.dataDir, "memory.md") : undefined)
+                    : path.join(session.cwd, ".owc", "memory.md");
+                if (!target)
+                    throw new Error("Global memory is not available: server data directory is not configured");
+                const { appended } = await appendMemory(target, [fact]);
+                const content = appended > 0
+                    ? `Remembered in ${scope} memory (${target}): ${appended} fact(s) appended.`
+                    : `Fact already present in ${scope} memory (${target}); nothing appended.`;
+                this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: { scope, path: target, appended } } });
+                return { type: "tool_result", toolCallId, content, isError: false };
             }
             catch (error) {
                 const content = error instanceof Error ? error.message : String(error);

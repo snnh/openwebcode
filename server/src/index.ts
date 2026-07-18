@@ -64,7 +64,7 @@ const skills = new SkillRegistry(path.join(dataDir, "skills"));
 const mcp = new McpManager(dataDir);
 const provider2 = new Provider2Client(config.provider2);
 const compactor = new Compactor(sessions, provider2, { usageLog, pricing, exchangeRates });
-const agent = new AgentRunner(sessions, providers, core, events, pricing, exchangeRates, config.defaultLanguage, 50, (model) => models.get(model), usageLog, skills, mcp, compactor);
+const agent = new AgentRunner(sessions, providers, core, events, pricing, exchangeRates, config.defaultLanguage, 50, (model) => models.get(model), usageLog, skills, mcp, compactor, dataDir);
 const gc = new StorageGC(path.join(dataDir, "sessions"), config.gcMaxBytes);
 settings.bind({ providers, core, agent, events, models, gc, provider2 });
 settings.reconcileProviders();

@@ -1,6 +1,8 @@
+import path from "node:path";
 import type { ExchangeRateService } from "../cost/exchange-rate.js";
 import { calculateUsageCost } from "../cost/cost-calculator.js";
 import type { PricingCatalog } from "../cost/pricing-catalog.js";
+import { appendMemory, parseSedimentSections } from "../memory.js";
 import type { Provider2Client } from "../provider2.js";
 import type { ChatMessage, MessageContent } from "../sessions/types.js";
 import type { SessionStore } from "../sessions/session-store.js";
@@ -153,6 +155,17 @@ export class Compactor {
     }
     ledger.compacted = { uptoIndex, mode: finalMode, summary, instructions, createdAt: new Date().toISOString() };
     await context.save(ledger);
+    // 长期记忆沉淀（§7.5）：overview 摘要的「关键发现/未决事项」落进项目 memory.md。
+    // 单点落在此：85% 强制压缩（agent-runner）、REST 与 /compact 命令（app.ts runCompact）
+    // 全部经 Compactor.compact；去重交给 appendMemory，失败只告警不影响压缩结果
+    if (mode === "overview") {
+      try {
+        const facts = parseSedimentSections(summary);
+        if (facts.length > 0) await appendMemory(path.join(session.cwd, ".owc", "memory.md"), facts);
+      } catch (error) {
+        process.stderr.write(`[memory] 沉淀失败：${error instanceof Error ? error.message : String(error)}\n`);
+      }
+    }
     return { changed: true, mode: finalMode, uptoIndex, summary };
   }
 
