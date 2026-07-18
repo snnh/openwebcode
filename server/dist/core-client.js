@@ -14,6 +14,7 @@ export class CoreRpcError extends Error {
 export class CoreClient extends EventEmitter {
     corePath;
     requestTimeoutMs;
+    connectionFactory;
     transport;
     child;
     pending = new Map();
@@ -24,10 +25,13 @@ export class CoreClient extends EventEmitter {
     startPromise;
     generation = 0;
     failedGeneration = 0;
-    constructor(corePath, requestTimeoutMs = 130_000) {
+    constructor(corePath, requestTimeoutMs = 130_000, 
+    /** 注入外部连接（WSB 回连 TCP）时跳过 spawn 与失败自动重启 */
+    connectionFactory) {
         super();
         this.corePath = corePath;
         this.requestTimeoutMs = requestTimeoutMs;
+        this.connectionFactory = connectionFactory;
     }
     setRequestTimeoutMs(timeoutMs) {
         this.requestTimeoutMs = timeoutMs;
@@ -82,10 +86,9 @@ export class CoreClient extends EventEmitter {
     globFiles(request) { return this.call("fs.glob", request); }
     grepFiles(request) { return this.call("fs.grep", request); }
     async spawnAndHandshake(generation) {
-        const executable = this.resolveCorePath();
-        const child = spawn(executable, [], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
-        const transport = new StdioTransport(child);
-        this.child = child;
+        const connection = this.connectionFactory ? await this.connectionFactory() : this.spawnStdio();
+        const transport = connection.transport;
+        this.child = connection.child;
         this.transport = transport;
         transport.on("message", (message) => this.onMessage(generation, message));
         transport.on("diagnostic", (text) => this.emit("diagnostic", text));
@@ -97,6 +100,11 @@ export class CoreClient extends EventEmitter {
         this.restartCount = 0;
         this.emitEvent("core.ready", info);
         return info;
+    }
+    spawnStdio() {
+        const executable = this.resolveCorePath();
+        const child = spawn(executable, [], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+        return { transport: new StdioTransport(child), child };
     }
     resolveCorePath() {
         if (path.isAbsolute(this.corePath))
@@ -175,7 +183,7 @@ export class CoreClient extends EventEmitter {
         if (child && child.exitCode === null)
             child.kill();
         this.emitEvent("core.exit", details ?? { message: error.message });
-        if (this.stopping || !restart || this.restartCount >= 3)
+        if (this.stopping || !restart || this.restartCount >= 3 || this.connectionFactory)
             return;
         const delay = 250 * 2 ** this.restartCount++;
         this.restartTimer = setTimeout(() => {

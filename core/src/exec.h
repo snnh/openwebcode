@@ -13,6 +13,7 @@ typedef struct {
     const char *session_id;
     int sandbox_enabled;
     int allow_network;
+    int sandbox_mode; /* owc_sandbox_mode; only meaningful when sandbox_enabled */
     int timeout_ms;
     size_t output_limit;
     owc_exec_output_fn on_output;

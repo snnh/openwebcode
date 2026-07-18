@@ -10,6 +10,8 @@ import { PricingCatalog } from "./cost/pricing-catalog.js";
 import { EventBus } from "./events/event-bus.js";
 import { DevelopmentProvider } from "./providers/development-provider.js";
 import { ProviderRegistry } from "./providers/provider.js";
+import { CoreRouter } from "./sandbox/core-router.js";
+import { WsbManager } from "./sandbox/wsb.js";
 import { SessionStore } from "./sessions/session-store.js";
 import { SettingsService } from "./settings-service.js";
 import { SkillRegistry } from "./skills.js";
@@ -30,8 +32,15 @@ const settings = await SettingsService.load({
 });
 const config = settings.effective();
 const dataDir = resolveFromServer(config.dataDir);
-const core = new CoreClient(config.corePath, config.coreRequestTimeoutMs);
+// 共享宿主机 core；sandboxMode=="wsb" 的会话由 CoreRouter 路由到 WSB 沙盒内的 core
+const sharedCore = new CoreClient(config.corePath, config.coreRequestTimeoutMs);
 const sessions = new SessionStore(path.join(dataDir, "sessions"));
+const wsbManager = new WsbManager({
+    corePath: resolveFromServer(config.corePath),
+    sessionRootFor: (sessionId) => sessions.contextRoot(sessionId),
+    requestTimeoutMs: config.coreRequestTimeoutMs,
+});
+const core = new CoreRouter(sharedCore, sessions, wsbManager);
 const providers = new ProviderRegistry();
 const events = new EventBus();
 const pricing = new PricingCatalog(path.join(dataDir, "model-pricing.json"));

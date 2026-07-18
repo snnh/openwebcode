@@ -13,6 +13,16 @@ typedef enum {
     OWC_SANDBOX_ENFORCED = 2
 } owc_sandbox_status;
 
+/* Sandbox backend requested via session.configure sandbox.mode.
+   APPCONTAINER is the default; JOBOBJECT forces the Job Object compatibility
+   path on Windows; OFF disables enforcement (same as sandbox.enabled=false).
+   POSIX treats OFF like disabled and ignores the other two (landlock as-is). */
+typedef enum {
+    OWC_SANDBOX_MODE_APPCONTAINER = 0,
+    OWC_SANDBOX_MODE_JOBOBJECT = 1,
+    OWC_SANDBOX_MODE_OFF = 2
+} owc_sandbox_mode;
+
 typedef struct {
     owc_sandbox_status status;
     int abi;

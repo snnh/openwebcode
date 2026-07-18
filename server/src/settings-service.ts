@@ -2,7 +2,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { AgentRunner } from "./agent/agent-runner.js";
 import type { ServerConfig } from "./config.js";
-import type { CoreClient } from "./core-client.js";
+import type { CoreClientLike } from "./core-client.js";
 import type { EventBus } from "./events/event-bus.js";
 import { AnthropicProvider } from "./providers/anthropic-provider.js";
 import { OpenAICompatibleProvider } from "./providers/openai-compatible-provider.js";
@@ -63,7 +63,7 @@ interface FieldSpec {
 
 interface RuntimeDependencies {
   providers: ProviderRegistry;
-  core: CoreClient;
+  core: CoreClientLike;
   agent: AgentRunner;
   events: EventBus;
   models?: ModelRegistry;

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { CoreClient, CoreEvent } from "../core-client.js";
+import type { CoreClientLike, CoreEvent } from "../core-client.js";
 import type { EventBus } from "../events/event-bus.js";
 import { ContextManager, selectCacheBreakpoints } from "../context/context-manager.js";
 import type { Compactor } from "../context/compactor.js";
@@ -96,7 +96,7 @@ export class AgentRunner {
   constructor(
     private readonly sessions: SessionStore,
     private readonly providers: ProviderRegistry,
-    private readonly core: CoreClient,
+    private readonly core: CoreClientLike,
     private readonly events: EventBus,
     private readonly pricing: PricingCatalog,
     private readonly exchangeRates?: ExchangeRateService,
