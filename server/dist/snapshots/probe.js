@@ -9,13 +9,13 @@ import { ZfsBackend } from "./zfs.js";
 export function createExecFileRunner() {
     return {
         run: (cmd, args, options) => new Promise((resolve) => {
-            execFile(cmd, args, { timeout: options?.timeoutMs ?? 10_000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => {
+            execFile(cmd, args, { timeout: options?.timeoutMs ?? 10_000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
                 if (!error) {
-                    resolve({ stdout: String(stdout), code: 0 });
+                    resolve({ stdout: String(stdout), code: 0, ...(stderr ? { stderr: String(stderr) } : {}) });
                     return;
                 }
                 const code = error.code;
-                resolve({ stdout: String(stdout ?? ""), code: typeof code === "number" ? code : 1 });
+                resolve({ stdout: String(stdout ?? ""), code: typeof code === "number" ? code : 1, ...(stderr ? { stderr: String(stderr) } : {}) });
             });
         }),
     };

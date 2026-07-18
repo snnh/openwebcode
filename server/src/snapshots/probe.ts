@@ -8,20 +8,20 @@ import { RefsBackend, refsScriptPath } from "./refs.js";
 import { ZfsBackend } from "./zfs.js";
 
 export interface CommandRunner {
-  run(cmd: string, args: string[], options?: { timeoutMs?: number }): Promise<{ stdout: string; code: number }>;
+  run(cmd: string, args: string[], options?: { timeoutMs?: number }): Promise<{ stdout: string; code: number; stderr?: string }>;
 }
 
 /** 默认 runner：execFile 包装；非零退出/超时/命令不存在都归一为 code，不 throw。 */
 export function createExecFileRunner(): CommandRunner {
   return {
     run: (cmd, args, options) => new Promise((resolve) => {
-      execFile(cmd, args, { timeout: options?.timeoutMs ?? 10_000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => {
+      execFile(cmd, args, { timeout: options?.timeoutMs ?? 10_000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
         if (!error) {
-          resolve({ stdout: String(stdout), code: 0 });
+          resolve({ stdout: String(stdout), code: 0, ...(stderr ? { stderr: String(stderr) } : {}) });
           return;
         }
         const code = (error as NodeJS.ErrnoException).code;
-        resolve({ stdout: String(stdout ?? ""), code: typeof code === "number" ? code : 1 });
+        resolve({ stdout: String(stdout ?? ""), code: typeof code === "number" ? code : 1, ...(stderr ? { stderr: String(stderr) } : {}) });
       });
     }),
   };
