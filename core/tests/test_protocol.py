@@ -95,6 +95,67 @@ def main():
         assert response["error"]["code"] == -32001
         assert time.monotonic() - started < 4
 
+        # jobobject 兼容模式：默认 Job Object 限制在回复中如实上报
+        request(proc, 30, "session.configure", {"sessionId": "s2", "cwd": os.getcwd(), "sandbox": {"enabled": True, "mode": "jobobject"}})
+        response, _ = collect_until_response(proc, 30)
+        assert response["result"]["sandboxCapability"] == "partial"
+        detail = response["result"]["sandboxDetail"]
+        assert "4096" in detail and "64" in detail
+
+        # 显式覆盖 jobMemoryMB / jobMaxProcesses
+        request(proc, 31, "session.configure", {"sessionId": "s2", "cwd": os.getcwd(), "sandbox": {"enabled": True, "mode": "jobobject", "jobMemoryMB": 2048, "jobMaxProcesses": 32}})
+        response, _ = collect_until_response(proc, 31)
+        detail = response["result"]["sandboxDetail"]
+        assert "2048" in detail and "32" in detail
+
+        # 非法值：0、超上限、非数字一律拒绝
+        for bad_id, field, value in [
+            (32, "jobMemoryMB", 0), (33, "jobMemoryMB", 1048577), (34, "jobMemoryMB", "2048"),
+            (35, "jobMaxProcesses", 0), (36, "jobMaxProcesses", 4097), (37, "jobMaxProcesses", "64"),
+        ]:
+            request(proc, bad_id, "session.configure", {"sessionId": "s2", "cwd": os.getcwd(), "sandbox": {"enabled": True, "mode": "jobobject", field: value}})
+            response, _ = collect_until_response(proc, bad_id)
+            assert "error" in response, (field, value, response)
+
+        # 上限边界值合法
+        request(proc, 38, "session.configure", {"sessionId": "s2", "cwd": os.getcwd(), "sandbox": {"enabled": True, "mode": "jobobject", "jobMemoryMB": 1048576, "jobMaxProcesses": 4096}})
+        response, _ = collect_until_response(proc, 38)
+        assert response["result"]["sandboxCapability"] == "partial"
+
+        # jobobject 模式下 exec.run 正常工作（sandbox 启用时 shell 固定为 cmd.exe）
+        job_command = "echo hello&& exit /b 7" if os.name == "nt" else "printf hello; exit 7"
+        request(proc, 39, "exec.run", {"sessionId": "s2", "execId": "e3", "cmd": job_command, "cwd": os.getcwd(), "timeoutMs": 5000})
+        response, _ = collect_until_response(proc, 39)
+        assert response["result"]["exitCode"] == 7
+        if os.name == "nt":
+            assert response["result"]["sandboxCapability"] == "partial"
+
+        if os.name == "nt":
+            # 进程树收编：start /b 拉起的孙进程落在同一 Job 内；超时走
+            # TerminateJobObject 终止整树，孙进程的 survived 标记永不落盘
+            started_marker = os.path.join(os.getcwd(), "job_tree_started.txt")
+            survived_marker = os.path.join(os.getcwd(), "job_tree_survived.txt")
+            grandchild = os.path.join(os.getcwd(), "job_tree_grandchild.cmd")
+            for marker in (started_marker, survived_marker):
+                if os.path.exists(marker):
+                    os.remove(marker)
+            with open(grandchild, "w", newline="") as script:
+                # ping 而非 timeout：Git usr/bin 在 PATH 时 timeout 会命中 GNU 版本
+                script.write("@echo off\r\necho started> job_tree_started.txt\r\nping -n 4 127.0.0.1 >nul\r\necho survived> job_tree_survived.txt\r\n")
+            request(proc, 40, "exec.run", {"sessionId": "s2", "execId": "e4", "cmd": "start /b cmd /c job_tree_grandchild.cmd & ping -n 30 127.0.0.1 >nul", "cwd": os.getcwd(), "timeoutMs": 2000})
+            response, _ = collect_until_response(proc, 40)
+            assert response["error"]["code"] == -32001
+            deadline = time.monotonic() + 5
+            while not os.path.exists(started_marker) and time.monotonic() < deadline:
+                time.sleep(0.1)
+            assert os.path.exists(started_marker)
+            # 孙进程若无 Job 约束会在启动后约 3 秒写出 survived（此刻绝对时间已足够）
+            time.sleep(3)
+            assert not os.path.exists(survived_marker)
+            for marker in (grandchild, started_marker, survived_marker):
+                if os.path.exists(marker):
+                    os.remove(marker)
+
         request(proc, 5, "core.shutdown")
         response, _ = collect_until_response(proc, 5)
         assert response["result"]["ok"] is True

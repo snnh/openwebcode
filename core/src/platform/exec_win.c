@@ -116,6 +116,15 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
     if(sandbox)result->sandbox_status=(int)owc_sandbox_get_status(sandbox);
     job=CreateJobObjectW(NULL,NULL); if(!job) goto cleanup;
     limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if(request->sandbox_enabled) {
+        /* Consistent protection in both sandboxed modes (AppContainer and the Job
+           Object compatibility path): AppContainer isolation composes with Job
+           Object limits, and the job is already assigned unconditionally above.
+           When the sandbox is disabled the job stays a cleanup-only handle. */
+        limits.BasicLimitInformation.LimitFlags|=JOB_OBJECT_LIMIT_JOB_MEMORY|JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+        limits.JobMemoryLimit=(SIZE_T)(request->job_memory_mb?request->job_memory_mb:OWC_JOB_DEFAULT_MEMORY_MB)*1024*1024;
+        limits.BasicLimitInformation.ActiveProcessLimit=(DWORD)(request->job_max_processes?request->job_max_processes:OWC_JOB_DEFAULT_MAX_PROCESSES);
+    }
     if(!SetInformationJobObject(job,JobObjectExtendedLimitInformation,&limits,sizeof(limits)) || !AssignProcessToJobObject(job,process.hProcess)) goto cleanup;
     if(ResumeThread(process.hThread)==(DWORD)-1) goto cleanup;
     CloseHandle(out_write); out_write=NULL; CloseHandle(err_write); err_write=NULL; CloseHandle(input); input=NULL;
