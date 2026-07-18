@@ -56,6 +56,11 @@ export interface ManagedWorkspaceMeta {
 export type SandboxBackendMode = "appcontainer" | "jobobject" | "off";
 /** 用户可选的沙盒模式；undefined = appcontainer（现状默认） */
 export type SandboxMode = "appcontainer" | "wsb" | "jobobject" | "off";
+/** 全局 Job Object 资源限制（仅 Windows；字段缺省时 core 用内置默认值 4096 MB / 64 进程） */
+export interface JobObjectLimits {
+  memoryMB?: number;
+  maxProcesses?: number;
+}
 export interface SandboxPolicy {
   enabled: boolean;
   readRoots: string[];
@@ -63,6 +68,9 @@ export interface SandboxPolicy {
   denyPaths: string[];
   network: "allow" | "deny";
   mode?: SandboxBackendMode;
+  /** 可选 Job Object 覆盖（正整数，上限 1048576 MB / 4096 进程）；不下发时 core 用默认值 */
+  jobMemoryMB?: number;
+  jobMaxProcesses?: number;
 }
 
 export interface SessionMeta {

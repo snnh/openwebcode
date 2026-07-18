@@ -41,7 +41,7 @@ const wsbManager = new WsbManager({
     sessionRootFor: (sessionId) => sessions.contextRoot(sessionId),
     requestTimeoutMs: config.coreRequestTimeoutMs,
 });
-const core = new CoreRouter(sharedCore, sessions, wsbManager);
+const core = new CoreRouter(sharedCore, sessions, wsbManager, config.sandbox?.jobObject);
 const providers = new ProviderRegistry();
 const events = new EventBus();
 const pricing = new PricingCatalog(path.join(dataDir, "model-pricing.json"));
