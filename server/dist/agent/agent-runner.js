@@ -5,6 +5,7 @@ import { estimateMessageTokens, getModelProfile } from "../context/model-profile
 import { calculateUsageCost } from "../cost/cost-calculator.js";
 import { collectProviderTurn } from "../providers/retry.js";
 import { PermissionCoordinator, permissionRule } from "./permission-coordinator.js";
+import { runSubAgent, SUB_AGENT_TOOL_NAMES } from "./sub-agent.js";
 import { getSnapshotBackend } from "../snapshots/index.js";
 import { parseSkillCommand } from "../skills.js";
 const BASH_TOOL = {
@@ -48,7 +49,26 @@ const LOAD_SKILL_TOOL = {
         additionalProperties: false,
     },
 };
-const TOOLS = [BASH_TOOL, ...FILE_TOOLS, READ_ARTIFACT_TOOL, LOAD_SKILL_TOOL];
+const SPAWN_TASK_TOOL = {
+    name: "spawn_task",
+    description: "Launch a read-only sub-agent with an isolated context to explore or research a task. " +
+        "The sub-agent does not share this session's context; only its final conclusion (at most 2000 characters) is returned. " +
+        "It can only use the read-only tools read_file, glob, grep and read_artifact.",
+    inputSchema: {
+        type: "object",
+        properties: {
+            prompt: { type: "string", description: "Self-contained task description for the sub-agent." },
+            tools: {
+                type: "array",
+                items: { type: "string", enum: [...SUB_AGENT_TOOL_NAMES] },
+                description: "Subset of read_file/glob/grep/read_artifact the sub-agent may use; defaults to all four.",
+            },
+        },
+        required: ["prompt"],
+        additionalProperties: false,
+    },
+};
+const TOOLS = [BASH_TOOL, ...FILE_TOOLS, READ_ARTIFACT_TOOL, LOAD_SKILL_TOOL, SPAWN_TASK_TOOL];
 const MAX_STEERING_ITEMS = 16;
 const MAX_STEERING_LENGTH = 8_000;
 export class SteeringError extends Error {
@@ -236,53 +256,7 @@ export class AgentRunner {
                         assistantContent.push({ type: "tool_call", id: event.id, name: event.name, input: event.input });
                     }
                     else if (event.type === "usage") {
-                        const usageCost = calculateUsageCost(event, this.pricing.get(session.provider, session.model), this.exchangeRates?.current());
-                        const recordedCost = {
-                            priced: usageCost.priced,
-                            ...(usageCost.source ? { source: { currency: usageCost.source.currency, microUnits: usageCost.source.microUnits.toString() } } : {}),
-                            ...(usageCost.usd ? { usdMicroUnits: usageCost.usd.microUnits.toString() } : {}),
-                            ...(usageCost.cny ? { cnyMicroUnits: usageCost.cny.microUnits.toString() } : {}),
-                            ...(usageCost.exchangeRate ? {
-                                exchangeRate: {
-                                    rate: usageCost.exchangeRate.rate.toString(),
-                                    source: usageCost.exchangeRate.source,
-                                    effectiveDate: usageCost.exchangeRate.effectiveDate,
-                                    fetchedAt: usageCost.exchangeRate.fetchedAt,
-                                },
-                            } : {}),
-                        };
-                        const ledger = await context.recordUsage(event, recordedCost);
-                        // 全局用量日志（成本报表数据源）：失败只记 stderr，不阻断会话
-                        void this.usageLog?.record({
-                            at: new Date().toISOString(),
-                            sessionId,
-                            provider: session.provider,
-                            model: session.model,
-                            inputTokens: event.inputTokens,
-                            outputTokens: event.outputTokens,
-                            cacheRead: event.cacheRead,
-                            cacheWrite: event.cacheWrite,
-                            priced: usageCost.priced,
-                            ...(usageCost.usd ? { usdMicroUnits: usageCost.usd.microUnits.toString() } : {}),
-                            ...(usageCost.cny ? { cnyMicroUnits: usageCost.cny.microUnits.toString() } : {}),
-                        }).catch((error) => {
-                            process.stderr.write(`[usage-log] 写入失败：${error instanceof Error ? error.message : String(error)}\n`);
-                        });
-                        this.events.publish({
-                            source: "agent",
-                            type: "context.usage",
-                            sessionId,
-                            payload: {
-                                ...event,
-                                cost: {
-                                    priced: usageCost.priced,
-                                    ...(usageCost.source ? { source: { currency: usageCost.source.currency, amount: usageCost.source.amount } } : {}),
-                                    ...(usageCost.usd ? { usd: usageCost.usd.amount } : {}),
-                                    ...(usageCost.cny ? { cny: usageCost.cny.amount } : {}),
-                                },
-                                sessionCost: ledger.cost,
-                            },
-                        });
+                        await this.recordUsageEvent(sessionId, context, session.provider, session.model, event);
                     }
                     else {
                         stopReason = event.stopReason;
@@ -511,6 +485,49 @@ export class AgentRunner {
                 return { type: "tool_result", toolCallId, content, isError: true };
             }
         }
+        if (name === "spawn_task") {
+            this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+            this.state(sessionId, "tool_running");
+            try {
+                const session = await this.sessions.get(sessionId);
+                if (!session)
+                    throw new Error("Session not found");
+                const provider = this.providers.get(session.provider);
+                if (!provider)
+                    throw new Error(`Provider ${session.provider} is not configured`);
+                const prompt = String(input.prompt ?? "");
+                if (!prompt)
+                    throw new Error("spawn_task requires a non-empty prompt");
+                const toolNames = Array.isArray(input.tools) ? input.tools.map((item) => String(item)) : [...SUB_AGENT_TOOL_NAMES];
+                // 子代理期间不发布 message.delta/thinking_delta，避免污染主聊天流；
+                // 子代理 token 经 onUsage 复用主循环记账路径，计入会话成本
+                const subUsageContext = new ContextManager(this.sessions.contextRoot(sessionId));
+                const result = await runSubAgent({
+                    provider,
+                    model: session.model,
+                    prompt,
+                    toolNames,
+                    core: this.core,
+                    sessionId,
+                    cwd: session.cwd,
+                    contextRoot: this.sessions.contextRoot(sessionId),
+                    signal,
+                    onUsage: (usage) => this.recordUsageEvent(sessionId, subUsageContext, session.provider, session.model, usage),
+                });
+                this.events.publish({
+                    source: "agent",
+                    type: "tool.end",
+                    sessionId,
+                    payload: { toolCallId, result: { conclusion: result.conclusion, turns: result.turns, toolsUsed: result.toolsUsed } },
+                });
+                return { type: "tool_result", toolCallId, content: result.conclusion, isError: false };
+            }
+            catch (error) {
+                const content = error instanceof Error ? error.message : String(error);
+                this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
+                return { type: "tool_result", toolCallId, content, isError: true };
+            }
+        }
         if (name === "read_artifact") {
             try {
                 const session = await this.sessions.get(sessionId);
@@ -591,6 +608,56 @@ export class AgentRunner {
         finally {
             this.executions.delete(execId);
         }
+    }
+    // 用量记账：主循环与 spawn_task 子代理共用同一 ledger/用量日志/事件路径
+    async recordUsageEvent(sessionId, context, providerName, model, event) {
+        const usageCost = calculateUsageCost(event, this.pricing.get(providerName, model), this.exchangeRates?.current());
+        const recordedCost = {
+            priced: usageCost.priced,
+            ...(usageCost.source ? { source: { currency: usageCost.source.currency, microUnits: usageCost.source.microUnits.toString() } } : {}),
+            ...(usageCost.usd ? { usdMicroUnits: usageCost.usd.microUnits.toString() } : {}),
+            ...(usageCost.cny ? { cnyMicroUnits: usageCost.cny.microUnits.toString() } : {}),
+            ...(usageCost.exchangeRate ? {
+                exchangeRate: {
+                    rate: usageCost.exchangeRate.rate.toString(),
+                    source: usageCost.exchangeRate.source,
+                    effectiveDate: usageCost.exchangeRate.effectiveDate,
+                    fetchedAt: usageCost.exchangeRate.fetchedAt,
+                },
+            } : {}),
+        };
+        const ledger = await context.recordUsage(event, recordedCost);
+        // 全局用量日志（成本报表数据源）：失败只记 stderr，不阻断会话
+        void this.usageLog?.record({
+            at: new Date().toISOString(),
+            sessionId,
+            provider: providerName,
+            model,
+            inputTokens: event.inputTokens,
+            outputTokens: event.outputTokens,
+            cacheRead: event.cacheRead,
+            cacheWrite: event.cacheWrite,
+            priced: usageCost.priced,
+            ...(usageCost.usd ? { usdMicroUnits: usageCost.usd.microUnits.toString() } : {}),
+            ...(usageCost.cny ? { cnyMicroUnits: usageCost.cny.microUnits.toString() } : {}),
+        }).catch((error) => {
+            process.stderr.write(`[usage-log] 写入失败：${error instanceof Error ? error.message : String(error)}\n`);
+        });
+        this.events.publish({
+            source: "agent",
+            type: "context.usage",
+            sessionId,
+            payload: {
+                ...event,
+                cost: {
+                    priced: usageCost.priced,
+                    ...(usageCost.source ? { source: { currency: usageCost.source.currency, amount: usageCost.source.amount } } : {}),
+                    ...(usageCost.usd ? { usd: usageCost.usd.amount } : {}),
+                    ...(usageCost.cny ? { cny: usageCost.cny.amount } : {}),
+                },
+                sessionCost: ledger.cost,
+            },
+        });
     }
     recordToolCall(sessionId, name, input) {
         const signature = `${name}:${stableStringify(input)}`;
