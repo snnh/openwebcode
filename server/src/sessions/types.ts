@@ -44,12 +44,17 @@ export interface ChatMessage {
 
 export type PermissionMode = "ask" | "acceptEdits" | "yolo";
 export interface PermissionRule { tool: string; argumentPrefix?: string }
+/** 下发给 core 的 sandbox.mode（wsb 不下发，由 VM 充当边界） */
+export type SandboxBackendMode = "appcontainer" | "jobobject" | "off";
+/** 用户可选的沙盒模式；undefined = appcontainer（现状默认） */
+export type SandboxMode = "appcontainer" | "wsb" | "jobobject" | "off";
 export interface SandboxPolicy {
   enabled: boolean;
   readRoots: string[];
   writeRoots: string[];
   denyPaths: string[];
   network: "allow" | "deny";
+  mode?: SandboxBackendMode;
 }
 
 export interface SessionMeta {
@@ -62,6 +67,10 @@ export interface SessionMeta {
   permissionMode?: PermissionMode;
   permissionRules?: PermissionRule[];
   sandbox?: SandboxPolicy;
+  /** 用户选择的沙盒模式；undefined = appcontainer（现状默认） */
+  sandboxMode?: SandboxMode;
+  /** WSB 会话初始化脚本，内联进 .wsb LogonCommand，先于 owc-exec 执行 */
+  setupScript?: string;
   /** 探测到的快照后端名（zfs 附带数据集："zfs:<dataset>"），由 snapshots/index.ts 落盘 */
   snapshotBackend?: string;
   title: string;

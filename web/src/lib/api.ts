@@ -1,4 +1,4 @@
-import type { Checkpoint, ContextView, CostReport, FileEntry, ModelProfile, PendingPermission, PricingDocument, Session, SessionDetail, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo } from "./contracts";
+import type { Checkpoint, ContextView, CostReport, FileEntry, ModelProfile, PendingPermission, PricingDocument, SandboxCapabilities, SandboxMode, Session, SessionDetail, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo } from "./contracts";
 
 export class ApiError extends Error {
   constructor(readonly status: number, message: string) {
@@ -23,8 +23,9 @@ export const api = {
   sessions: () => request<Session[]>("/api/sessions"),
   health: () => request<{ status: string }>("/api/health"),
   session: (id: string) => request<SessionDetail>(`/api/sessions/${id}`),
-  createSession: (body: { cwd: string; provider: string; model: string; title?: string }) =>
+  createSession: (body: { cwd: string; provider: string; model: string; title?: string; sandboxMode?: SandboxMode; setupScript?: string }) =>
     request<Session>("/api/sessions", { method: "POST", body: JSON.stringify(body) }),
+  sandboxCapabilities: () => request<SandboxCapabilities>("/api/sandbox/capabilities"),
   deleteSession: (id: string) => request<void>(`/api/sessions/${id}`, { method: "DELETE" }),
   sendMessage: (id: string, content: string, images?: Array<{ mediaType: string; data: string }>) =>
     request<{ accepted: boolean; queued?: boolean; position?: number; compacted?: boolean }>(`/api/sessions/${id}/messages`, { method: "POST", body: JSON.stringify({ content, ...(images?.length ? { images } : {}) }) }),

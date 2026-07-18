@@ -23,6 +23,11 @@ export class SessionStore {
             createdAt: now,
             updatedAt: now,
         };
+        // appcontainer 为默认不落盘；setupScript 仅非空时保留
+        if (input.sandboxMode && input.sandboxMode !== "appcontainer")
+            meta.sandboxMode = input.sandboxMode;
+        if (input.setupScript?.trim())
+            meta.setupScript = input.setupScript;
         await mkdir(this.sessionPath(meta.id), { recursive: false });
         await this.writeMeta(meta);
         await writeFile(this.messagesPath(meta.id), "", { encoding: "utf8", flag: "wx" });
@@ -114,6 +119,21 @@ export class SessionStore {
         else
             meta.permissionMode = permissionMode;
         meta.permissionRules = permissionRules.map((rule) => ({ ...rule }));
+        meta.updatedAt = new Date().toISOString();
+        await this.writeMeta(meta);
+        return meta;
+    }
+    /** 更新沙盒模式；appcontainer/空 setupScript 视为缺省（从 meta 删除） */
+    async updateSandboxMode(id, sandboxMode, setupScript) {
+        const meta = await this.readMeta(id);
+        if (!sandboxMode || sandboxMode === "appcontainer")
+            delete meta.sandboxMode;
+        else
+            meta.sandboxMode = sandboxMode;
+        if (!setupScript?.trim())
+            delete meta.setupScript;
+        else
+            meta.setupScript = setupScript;
         meta.updatedAt = new Date().toISOString();
         await this.writeMeta(meta);
         return meta;

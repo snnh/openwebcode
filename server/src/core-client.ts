@@ -53,6 +53,34 @@ export interface CoreEvent {
   payload: unknown;
 }
 
+/** 外部建立的 core 连接（如 WSB 内 owc-exec --connect 回连的 TCP socket）。 */
+export interface CoreConnection {
+  transport: RpcTransport;
+  child?: ChildProcessWithoutNullStreams;
+}
+
+/**
+ * server 内部消费的 core 客户端公共面（CoreRouter 与 CoreClient 同构实现）。
+ * release 仅 CoreRouter 提供：释放按会话持有的沙盒 core（如 WSB 虚拟机）。
+ */
+export interface CoreClientLike {
+  start(): Promise<CoreInfo>;
+  stop(): Promise<void>;
+  ping(): Promise<CoreInfo>;
+  run(request: ExecRequest): Promise<ExecResult>;
+  configureSession(request: { sessionId: string; cwd: string; sandbox: SandboxPolicy }): Promise<{ sandboxCapability: string }>;
+  cleanupSession(sessionId: string): Promise<{ ok: true }>;
+  readFile(request: FsReadRequest): Promise<FsReadResult>;
+  writeFile(request: FsWriteRequest): Promise<{ ok: true }>;
+  editFile(request: FsEditRequest): Promise<{ matches: number }>;
+  listFiles(request: FsPathRequest): Promise<FsListResult>;
+  globFiles(request: FsSearchRequest): Promise<FsGlobResult>;
+  grepFiles(request: FsSearchRequest): Promise<FsGrepResult>;
+  setRequestTimeoutMs(timeoutMs: number): void;
+  on(eventName: string, listener: (...args: any[]) => void): unknown;
+  release?(sessionId: string): Promise<void>;
+}
+
 interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
@@ -82,6 +110,8 @@ export class CoreClient extends EventEmitter {
   constructor(
     private readonly corePath: string,
     private requestTimeoutMs = 130_000,
+    /** 注入外部连接（WSB 回连 TCP）时跳过 spawn 与失败自动重启 */
+    private readonly connectionFactory?: () => Promise<CoreConnection>,
   ) {
     super();
   }
@@ -141,10 +171,9 @@ export class CoreClient extends EventEmitter {
   grepFiles(request: FsSearchRequest): Promise<FsGrepResult> { return this.call("fs.grep", request); }
 
   private async spawnAndHandshake(generation: number): Promise<CoreInfo> {
-    const executable = this.resolveCorePath();
-    const child = spawn(executable, [], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
-    const transport = new StdioTransport(child);
-    this.child = child;
+    const connection = this.connectionFactory ? await this.connectionFactory() : this.spawnStdio();
+    const transport = connection.transport;
+    this.child = connection.child;
     this.transport = transport;
     transport.on("message", (message) => this.onMessage(generation, message));
     transport.on("diagnostic", (text) => this.emit("diagnostic", text));
@@ -155,6 +184,12 @@ export class CoreClient extends EventEmitter {
     this.restartCount = 0;
     this.emitEvent("core.ready", info);
     return info;
+  }
+
+  private spawnStdio(): CoreConnection {
+    const executable = this.resolveCorePath();
+    const child = spawn(executable, [], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    return { transport: new StdioTransport(child), child };
   }
 
   private resolveCorePath(): string {
@@ -227,7 +262,7 @@ export class CoreClient extends EventEmitter {
     }
     if (child && child.exitCode === null) child.kill();
     this.emitEvent("core.exit", details ?? { message: error.message });
-    if (this.stopping || !restart || this.restartCount >= 3) return;
+    if (this.stopping || !restart || this.restartCount >= 3 || this.connectionFactory) return;
     const delay = 250 * 2 ** this.restartCount++;
     this.restartTimer = setTimeout(() => {
       this.restartTimer = undefined;

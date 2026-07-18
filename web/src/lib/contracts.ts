@@ -1,5 +1,13 @@
 export type PermissionMode = "ask" | "acceptEdits" | "yolo";
 export type SandboxCapability = "advisory" | "partial" | "enforced";
+export type SandboxMode = "appcontainer" | "wsb" | "jobobject" | "off";
+
+export interface SandboxCapabilities {
+  appcontainer: boolean;
+  jobobject: boolean;
+  off: boolean;
+  wsb: { available: boolean; reason?: string };
+}
 
 export interface MessageContent {
   type: "text" | "thinking" | "tool_call" | "tool_result" | "image";
@@ -30,6 +38,8 @@ export interface Session {
   thinking?: "adaptive" | "enabled" | "disabled";
   effort?: "low" | "medium" | "high" | "xhigh" | "max";
   permissionMode?: PermissionMode;
+  sandboxMode?: SandboxMode;
+  setupScript?: string;
   sandbox?: {
     enabled: boolean;
     readRoots: string[];

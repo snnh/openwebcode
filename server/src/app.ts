@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import type { AgentRunner } from "./agent/agent-runner.js";
 import { SteeringError } from "./agent/agent-runner.js";
-import { CoreRpcError, type CoreClient, type ExecRequest } from "./core-client.js";
+import { CoreRpcError, type CoreClientLike, type ExecRequest } from "./core-client.js";
 import { ContextManager, type BudgetUpdate } from "./context/context-manager.js";
 import type { ServerConfig } from "./config.js";
 import { getModelProfile, listModelProfiles, type Currency, type EffortLevel, type ModelPricing, type ModelProfile, type ThinkingMode } from "./context/model-profile.js";
@@ -15,9 +15,10 @@ import { PricingValidationError, type PricingCatalog, type PricingDocument } fro
 import { parseDecimalToScaled } from "./cost/exchange-rate.js";
 import type { AppEvent, EventBus } from "./events/event-bus.js";
 import type { ProviderRegistry } from "./providers/provider.js";
+import { detectWsb } from "./sandbox/wsb.js";
 import { getSnapshotBackend } from "./snapshots/index.js";
 import { SessionTransferError } from "./sessions/session-transfer.js";
-import type { PermissionMode } from "./sessions/types.js";
+import type { PermissionMode, SandboxMode } from "./sessions/types.js";
 import type { SessionStore } from "./sessions/session-store.js";
 import { SettingsValidationError, type SettingsService } from "./settings-service.js";
 import type { SkillRegistry } from "./skills.js";
@@ -29,6 +30,8 @@ interface CreateSessionBody {
   provider?: string;
   model?: string;
   title?: string;
+  sandboxMode?: SandboxMode;
+  setupScript?: string;
 }
 
 interface MessageBody {
@@ -42,6 +45,8 @@ interface SessionConfigBody {
   thinking?: ThinkingMode | null;
   effort?: EffortLevel | null;
   permissionMode?: PermissionMode;
+  sandboxMode?: SandboxMode;
+  setupScript?: string;
 }
 
 interface BudgetBody {
@@ -50,7 +55,7 @@ interface BudgetBody {
 }
 
 export interface ServerDependencies {
-  core: CoreClient;
+  core: CoreClientLike;
   sessions: SessionStore;
   agent: AgentRunner;
   events: EventBus;
@@ -99,6 +104,17 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     denyPaths: [path.join(cwd, ".env")],
     network: "allow" as const,
   });
+  const SANDBOX_MODES: readonly string[] = ["appcontainer", "wsb", "jobobject", "off"];
+  /** 返回错误文案；合法或缺省返回 undefined。wsb 需本机 capability 可用 */
+  const validateSandboxMode = (value: unknown): string | undefined => {
+    if (value === undefined) return undefined;
+    if (typeof value !== "string" || !SANDBOX_MODES.includes(value)) return "sandboxMode must be appcontainer, wsb, jobobject, or off";
+    if (value === "wsb") {
+      const wsb = detectWsb();
+      if (!wsb.available) return `sandboxMode wsb 不可用：${wsb.reason ?? "Windows Sandbox 不可用"}`;
+    }
+    return undefined;
+  };
 
   events.on("event", (event: AppEvent) => {
     const serialized = JSON.stringify(event);
@@ -109,6 +125,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
 
   app.get("/api/health", async () => ({ status: "ok" }));
   app.get("/api/core", async () => core.ping());
+  app.get("/api/sandbox/capabilities", async () => ({ appcontainer: true, jobobject: true, off: true, wsb: detectWsb() }));
   app.get("/api/providers", async () => providers.list());
   // 模型目录：registry（api/manual/builtin 三向合并）缺省时回退静态档案
   const catalog = (): Array<ModelProfile | CatalogModel> =>
@@ -225,6 +242,11 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     if (!providers.get(provider)) {
       return reply.code(400).send({ error: `Provider ${provider} is not configured` });
     }
+    const sandboxModeError = validateSandboxMode(request.body.sandboxMode);
+    if (sandboxModeError) return reply.code(400).send({ error: sandboxModeError });
+    if (request.body.setupScript !== undefined && typeof request.body.setupScript !== "string") {
+      return reply.code(400).send({ error: "setupScript must be a string" });
+    }
     const session = await sessions.create({ ...request.body, provider });
     events.publish({ source: "session", type: "session.created", sessionId: session.id, payload: session });
     return reply.code(201).send(session);
@@ -312,8 +334,19 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     }
     const permissionMode = request.body?.permissionMode ?? session.permissionMode ?? "ask";
     if (!["ask", "acceptEdits", "yolo"].includes(permissionMode)) return reply.code(400).send({ error: "permissionMode must be ask, acceptEdits, or yolo" });
+    const touchesSandbox = Boolean(request.body && ("sandboxMode" in request.body || "setupScript" in request.body));
+    if (touchesSandbox) {
+      const sandboxModeError = validateSandboxMode(request.body?.sandboxMode);
+      if (sandboxModeError) return reply.code(400).send({ error: sandboxModeError });
+      if (request.body?.setupScript !== undefined && typeof request.body.setupScript !== "string") {
+        return reply.code(400).send({ error: "setupScript must be a string" });
+      }
+    }
     await sessions.updateConfig(request.params.id, { provider, model, ...(thinking ? { thinking } : {}), ...(effort ? { effort } : {}) });
-    const updated = await sessions.updatePermissions(request.params.id, permissionMode, session.permissionRules ?? []);
+    let updated = await sessions.updatePermissions(request.params.id, permissionMode, session.permissionRules ?? []);
+    if (touchesSandbox) {
+      updated = await sessions.updateSandboxMode(request.params.id, request.body?.sandboxMode, request.body?.setupScript);
+    }
     events.publish({ source: "session", type: "session.config_updated", sessionId: session.id, payload: updated });
     return updated;
   });
@@ -448,6 +481,8 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     }
     if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
     await core.cleanupSession(request.params.id).catch(() => undefined);
+    // 释放会话持有的沙盒 core（WSB 虚拟机蒸发）；裸 CoreClient 无 release，为 no-op
+    await core.release?.(request.params.id).catch(() => undefined);
     if (!(await sessions.delete(request.params.id))) return reply.code(404).send({ error: "Session not found" });
     return reply.code(204).send();
   });
