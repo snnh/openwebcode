@@ -19,7 +19,7 @@ export class PermissionCoordinator {
   constructor(private readonly events: EventBus) {}
 
   needsApproval(mode: PermissionMode, rules: PermissionRule[], tool: string, input: Record<string, unknown>): boolean {
-    if (["read_file", "glob", "grep", "read_artifact", "load_skill"].includes(tool)) return false;
+    if (["read_file", "glob", "grep", "read_artifact", "load_skill", "spawn_task"].includes(tool)) return false;
     if (mode === "yolo") return false;
     if (mode === "acceptEdits" && ["write_file", "edit_file"].includes(tool)) return false;
     return !rules.some((rule) => matchesRule(rule, tool, input));

@@ -1,0 +1,252 @@
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { AgentRunner } from "../src/agent/agent-runner.js";
+import { runSubAgent, SUB_AGENT_CONCLUSION_LIMIT, type SubAgentOptions } from "../src/agent/sub-agent.js";
+import type { CoreClientLike } from "../src/core-client.js";
+import { ContextManager } from "../src/context/context-manager.js";
+import { PricingCatalog } from "../src/cost/pricing-catalog.js";
+import { EventBus, type AppEvent } from "../src/events/event-bus.js";
+import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
+import { SessionStore } from "../src/sessions/session-store.js";
+
+const roots: string[] = [];
+afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
+
+async function tempRoot(): Promise<string> {
+  const root = await mkdtemp(path.join(os.tmpdir(), "owc-spawn-task-"));
+  roots.push(root);
+  return root;
+}
+
+function createFakeCore(handlers: {
+  readFile?: (request: { sessionId: string; path: string }) => Promise<unknown>;
+  globFiles?: (request: { sessionId: string; path: string; pattern: string }) => Promise<unknown>;
+  grepFiles?: (request: { sessionId: string; path: string; pattern: string }) => Promise<unknown>;
+}): CoreClientLike {
+  const core = {
+    on() { return core; },
+    async configureSession() { return { sandboxCapability: "advisory" }; },
+    async readFile(request: { sessionId: string; path: string }) {
+      if (!handlers.readFile) throw new Error("readFile not expected");
+      return handlers.readFile(request);
+    },
+    async globFiles(request: { sessionId: string; path: string; pattern: string }) {
+      if (!handlers.globFiles) throw new Error("globFiles not expected");
+      return handlers.globFiles(request);
+    },
+    async grepFiles(request: { sessionId: string; path: string; pattern: string }) {
+      if (!handlers.grepFiles) throw new Error("grepFiles not expected");
+      return handlers.grepFiles(request);
+    },
+  };
+  return core as unknown as CoreClientLike;
+}
+
+function subAgentOptions(provider: Provider, core: CoreClientLike, contextRoot: string, overrides?: Partial<SubAgentOptions>): SubAgentOptions {
+  return {
+    provider,
+    model: "test-model",
+    prompt: "调查代码结构",
+    toolNames: ["read_file", "glob", "grep", "read_artifact"],
+    core,
+    sessionId: "sub-test",
+    cwd: contextRoot,
+    contextRoot,
+    signal: new AbortController().signal,
+    ...overrides,
+  };
+}
+
+describe("spawn_task via AgentRunner", () => {
+  it("exposes spawn_task and returns the sub-agent conclusion as the tool result", async () => {
+    const root = await tempRoot();
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const session = await sessions.create({ cwd: root, provider: "fake", model: "test-model" });
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const events = new EventBus();
+    const captured: AppEvent[] = [];
+    events.on("event", (event: AppEvent) => captured.push(event));
+
+    let readFileCalls = 0;
+    const core = createFakeCore({
+      async readFile(request) {
+        readFileCalls += 1;
+        return { path: request.path, content: "文件内容" };
+      },
+    });
+
+    const requests: StreamChatRequest[] = [];
+    let mainTurn = 0;
+    const provider: Provider = {
+      name: "fake",
+      async *streamChat(request) {
+        requests.push(request);
+        if (request.system.includes("exploration sub-agent")) {
+          const last = request.messages[request.messages.length - 1];
+          if (last?.role === "user") {
+            yield { type: "tool_call", id: "sub-read-1", name: "read_file", input: { path: "src/a.ts" } };
+            yield { type: "done", stopReason: "tool_use" };
+          } else {
+            yield { type: "usage", inputTokens: 120, outputTokens: 30, cacheRead: 0, cacheWrite: 0 };
+            yield { type: "text_delta", text: "结论：一切正常" };
+            yield { type: "done", stopReason: "end_turn" };
+          }
+          return;
+        }
+        if (mainTurn++ === 0) {
+          yield { type: "tool_call", id: "spawn-1", name: "spawn_task", input: { prompt: "调查代码结构" } };
+          yield { type: "done", stopReason: "tool_use" };
+        } else {
+          yield { type: "text_delta", text: "完成" };
+          yield { type: "done", stopReason: "end_turn" };
+        }
+      },
+    };
+    const providers = new ProviderRegistry();
+    providers.register(provider);
+    const runner = new AgentRunner(sessions, providers, core, events, pricing);
+
+    await runner.run(session.id, "先调查再回答");
+
+    // spawn_task 出现在主循环 TOOLS；子代理请求里只有四件只读工具（不可再 spawn_task）
+    expect(requests[0]?.tools.map((tool) => tool.name)).toContain("spawn_task");
+    const subRequest = requests.find((request) => request.system.includes("exploration sub-agent"));
+    expect(subRequest?.tools.map((tool) => tool.name).sort()).toEqual(["glob", "grep", "read_artifact", "read_file"]);
+
+    expect(readFileCalls).toBe(1);
+    const detail = await sessions.get(session.id);
+    const toolResult = detail?.messages
+      .filter((message) => message.role === "tool")
+      .flatMap((message) => message.content)
+      .find((block) => block.type === "tool_result" && block.toolCallId === "spawn-1");
+    expect(toolResult).toMatchObject({ type: "tool_result", content: "结论：一切正常", isError: false });
+
+    const toolEnd = captured.find((event) =>
+      event.type === "tool.end" && (event.payload as { toolCallId?: string }).toolCallId === "spawn-1");
+    expect(toolEnd).toBeDefined();
+    expect((toolEnd!.payload as { result?: { conclusion?: string; turns?: number; toolsUsed?: string[] } }).result)
+      .toEqual({ conclusion: "结论：一切正常", turns: 2, toolsUsed: ["read_file"] });
+
+    // 子代理文本不进入主聊天流
+    expect(captured.some((event) =>
+      event.type === "message.delta" && (event.payload as { text?: string }).text === "结论：一切正常")).toBe(false);
+
+    // 子代理 token 经 onUsage 复用主循环记账路径（context.usage 事件 + 会话 ledger）
+    expect(captured.some((event) =>
+      event.type === "context.usage" && (event.payload as { inputTokens?: number }).inputTokens === 120)).toBe(true);
+    const ledger = await new ContextManager(sessions.contextRoot(session.id)).load();
+    expect(ledger.usage.inputTokens).toBe(120);
+    expect(ledger.usage.outputTokens).toBe(30);
+  });
+});
+
+describe("runSubAgent", () => {
+  it("truncates a conclusion longer than 2000 characters", async () => {
+    const root = await tempRoot();
+    const provider: Provider = {
+      name: "fake",
+      async *streamChat() {
+        yield { type: "text_delta", text: "长".repeat(2_500) };
+        yield { type: "done", stopReason: "end_turn" };
+      },
+    };
+    const result = await runSubAgent(subAgentOptions(provider, createFakeCore({}), root));
+    expect(result.conclusion.endsWith("…(truncated)")).toBe(true);
+    expect(result.conclusion.length).toBe(SUB_AGENT_CONCLUSION_LIMIT + "…(truncated)".length);
+    expect(result.turns).toBe(1);
+  });
+
+  it("rejects tools narrowed out by the tools option and keeps going", async () => {
+    const root = await tempRoot();
+    let readFileCalls = 0;
+    const core = createFakeCore({
+      async readFile() {
+        readFileCalls += 1;
+        return { content: "不应被读到" };
+      },
+    });
+    const requests: StreamChatRequest[] = [];
+    const provider: Provider = {
+      name: "fake",
+      async *streamChat(request) {
+        requests.push({ ...request, messages: [...request.messages] });
+        if (requests.length === 1) {
+          yield { type: "tool_call", id: "bad-1", name: "read_file", input: { path: "a.ts" } };
+          yield { type: "done", stopReason: "tool_use" };
+        } else {
+          yield { type: "text_delta", text: "部分结论" };
+          yield { type: "done", stopReason: "end_turn" };
+        }
+      },
+    };
+    const result = await runSubAgent(subAgentOptions(provider, core, root, { toolNames: ["glob"] }));
+
+    expect(readFileCalls).toBe(0);
+    // 第二轮请求里应带着 read_file 被拒绝的错误 tool_result
+    const second = requests[1];
+    const lastMessage = second?.messages[second.messages.length - 1];
+    expect(lastMessage?.role).toBe("tool");
+    const toolResult = lastMessage?.content.find((block) => block.type === "tool_result");
+    expect(toolResult).toMatchObject({ isError: true });
+    expect((toolResult as { content: string }).content).toContain("not available");
+    // 子代理请求里不出现被收窄掉的工具
+    expect(second?.tools.map((tool) => tool.name)).toEqual(["glob"]);
+    expect(result.conclusion).toBe("部分结论");
+    expect(result.toolsUsed).toEqual([]);
+  });
+
+  it("wraps up with a max-turns note when the turn budget is exhausted", async () => {
+    const root = await tempRoot();
+    const core = createFakeCore({
+      async globFiles() { return { matches: [] }; },
+    });
+    let calls = 0;
+    const provider: Provider = {
+      name: "fake",
+      async *streamChat() {
+        calls += 1;
+        yield { type: "text_delta", text: `第${calls}轮发现` };
+        yield { type: "tool_call", id: `glob-${calls}`, name: "glob", input: { path: ".", pattern: "*.ts" } };
+        yield { type: "done", stopReason: "tool_use" };
+      },
+    };
+    const result = await runSubAgent(subAgentOptions(provider, core, root, { maxTurns: 2 }));
+    expect(calls).toBe(2);
+    expect(result.turns).toBe(2);
+    expect(result.conclusion).toContain("第2轮发现");
+    expect(result.conclusion).toContain("reached max turns (2)");
+    expect(result.toolsUsed).toEqual(["glob"]);
+  });
+
+  it("writes a transcript with prompt and conclusion under subagents/", async () => {
+    const root = await tempRoot();
+    const provider: Provider = {
+      name: "fake",
+      async *streamChat() {
+        yield { type: "text_delta", text: "最终结论" };
+        yield { type: "done", stopReason: "end_turn" };
+      },
+    };
+    const result = await runSubAgent(subAgentOptions(provider, createFakeCore({}), root, { prompt: "转录测试任务" }));
+
+    const dir = path.join(root, "subagents");
+    const files = await readdir(dir);
+    expect(files).toHaveLength(1);
+    const transcript = JSON.parse(await readFile(path.join(dir, files[0]!), "utf8")) as {
+      id: string;
+      prompt: string;
+      conclusion: string;
+      turns: number;
+      toolsUsed: string[];
+      messages: unknown[];
+    };
+    expect(transcript.prompt).toBe("转录测试任务");
+    expect(transcript.conclusion).toBe(result.conclusion);
+    expect(transcript.turns).toBe(1);
+    expect(transcript.messages.length).toBeGreaterThanOrEqual(2);
+  });
+});
