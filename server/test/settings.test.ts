@@ -53,7 +53,7 @@ describe("server settings API", () => {
       const view = response.json<SettingsView>();
       expect(view.groups.map((group) => group.id)).toEqual(["models", "provider2", "general", "executor", "service", "exchangeRate"]);
       const fields = view.groups.flatMap((group) => group.fields);
-      expect(fields).toHaveLength(19);
+      expect(fields).toHaveLength(21);
       for (const item of fields) {
         expect(item.source).toBe("default");
         expect(item.editable).toBe(true);
@@ -211,6 +211,8 @@ describe("server settings API", () => {
         { defaultCurrency: "EUR" },
         { coreRequestTimeoutMs: -5 },
         { exchangeRateUrl: "ftp://example.com" },
+        { jobObjectMemoryMB: 1_048_577 },
+        { jobObjectMaxProcesses: 4097 },
         { unknownKey: 1 },
       ]) {
         const response = await setup.app.inject({ method: "PUT", url: "/api/settings", payload: { overrides } });
@@ -222,5 +224,19 @@ describe("server settings API", () => {
     } finally {
       await setup.app.close();
     }
+  });
+
+  it("exposes env-provided jobObject limits in the effective config and omits them by default", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-jobobject-"));
+    roots.push(root);
+    const configured = await SettingsService.load({
+      env: { OWC_JOB_MEMORY_MB: "2048", OWC_JOB_MAX_PROCESSES: "32" },
+      filePath: path.join(root, "server-settings.json"),
+    });
+    expect(configured.effective().sandbox?.jobObject).toEqual({ memoryMB: 2048, maxProcesses: 32 });
+    const partial = await SettingsService.load({ env: { OWC_JOB_MAX_PROCESSES: "16" }, filePath: path.join(root, "server-settings.json") });
+    expect(partial.effective().sandbox?.jobObject).toEqual({ maxProcesses: 16 });
+    const unset = await SettingsService.load({ env: {}, filePath: path.join(root, "server-settings.json") });
+    expect(unset.effective().sandbox).toBeUndefined();
   });
 });

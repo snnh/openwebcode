@@ -113,18 +113,27 @@ static int parse_timeout(const owc_json *value, int *timeout_ms) {
     *timeout_ms=(int)number; return 1;
 }
 
-static int session_exec_policy(const char *id,const char *cwd,int *enabled,int *allow_network,int *mode);
+static int parse_job_limit(const owc_json *value, unsigned long maximum, unsigned long *result) {
+    double number;
+    if(value->type!=OWC_JSON_NUMBER) return 0;
+    number=value->value.number;
+    if(number<1 || number>(double)maximum || number!=(double)(unsigned long)number) return 0;
+    *result=(unsigned long)number; return 1;
+}
+
+static int session_exec_policy(const char *id,const char *cwd,int *enabled,int *allow_network,int *mode,unsigned long *job_memory_mb,unsigned long *job_max_processes);
 
 static int handle_exec_run(owc_rpc *rpc,const owc_json *id,const owc_json *params) {
     const char *command=owc_json_get_string(owc_json_object_get(params,"cmd"));
     const char *cwd=owc_json_get_string(owc_json_object_get(params,"cwd"));
     const char *exec_id=owc_json_get_string(owc_json_object_get(params,"execId"));
     const char *session_id=owc_json_get_string(owc_json_object_get(params,"sessionId"));
-    owc_exec_request request; owc_exec_result result; output_context context; int sandbox_enabled,allow_network,sandbox_mode;
+    owc_exec_request request; owc_exec_result result; output_context context; int sandbox_enabled,allow_network,sandbox_mode; unsigned long job_memory_mb,job_max_processes;
     if(!params || params->type!=OWC_JSON_OBJECT || !command || !cwd || !exec_id || !session_id || !command[0] || !cwd[0] || !exec_id[0] || !session_id[0]) return reply_error(rpc,id,-32602,"exec.run requires non-empty string sessionId, execId, cmd, and cwd");
     memset(&request,0,sizeof(request)); context.rpc=rpc; context.exec_id=exec_id;
-    if(!session_exec_policy(session_id,cwd,&sandbox_enabled,&allow_network,&sandbox_mode))return reply_error(rpc,id,-32002,"session cwd is not configured");
+    if(!session_exec_policy(session_id,cwd,&sandbox_enabled,&allow_network,&sandbox_mode,&job_memory_mb,&job_max_processes))return reply_error(rpc,id,-32002,"session cwd is not configured");
     request.command=command; request.cwd=cwd; request.session_id=session_id;request.sandbox_enabled=sandbox_enabled;request.allow_network=allow_network;request.sandbox_mode=sandbox_mode;
+    request.job_memory_mb=job_memory_mb; request.job_max_processes=job_max_processes;
     if(!parse_timeout(owc_json_object_get(params,"timeoutMs"),&request.timeout_ms)) return reply_error(rpc,id,-32602,"timeoutMs must be a positive integer");
     request.output_limit=10u*1024u*1024u; request.on_output=output_notification; request.user_data=&context;
     if(!owc_exec_run(&request,&result)) return reply_error(rpc,id,-32000,"failed to start or monitor command");
@@ -137,7 +146,7 @@ static int handle_exec_run(owc_rpc *rpc,const owc_json *id,const owc_json *param
     }
 }
 
-typedef struct { char *session_id; char *cwd; char *deny_paths[16]; size_t deny_count; int sandbox_enabled; int allow_network; int sandbox_mode; } session_config;
+typedef struct { char *session_id; char *cwd; char *deny_paths[16]; size_t deny_count; int sandbox_enabled; int allow_network; int sandbox_mode; unsigned long job_memory_mb; unsigned long job_max_processes; } session_config;
 static session_config sessions[64];
 static size_t session_count=0;
 static char *copy_text(const char *value){size_t n=strlen(value)+1;char *copy=(char*)malloc(n);if(copy)memcpy(copy,value,n);return copy;}
@@ -148,7 +157,7 @@ static int policy_path_equal(const char *left,const char *right){while(*left&&*r
  if(a=='\\')a='/';if(b=='\\')b='/';a=(char)tolower((unsigned char)a);b=(char)tolower((unsigned char)b);
 #endif
  if(a!=b)return 0;}return *left=='\0'&&*right=='\0';}
-static int session_exec_policy(const char *id,const char *cwd,int *enabled,int *allow_network,int *mode){session_config *session=session_find(id);if(!session||!policy_path_equal(session->cwd,cwd))return 0;*enabled=session->sandbox_enabled;*allow_network=session->allow_network;*mode=session->sandbox_mode;return 1;}
+static int session_exec_policy(const char *id,const char *cwd,int *enabled,int *allow_network,int *mode,unsigned long *job_memory_mb,unsigned long *job_max_processes){session_config *session=session_find(id);if(!session||!policy_path_equal(session->cwd,cwd))return 0;*enabled=session->sandbox_enabled;*allow_network=session->allow_network;*mode=session->sandbox_mode;*job_memory_mb=session->job_memory_mb;*job_max_processes=session->job_max_processes;return 1;}
 static int policy_path_within(const char *path,const char *root){while(*path&&*root){char a=*path++,b=*root++;
 #ifdef _WIN32
  if(a=='\\')a='/';if(b=='\\')b='/';a=(char)tolower((unsigned char)a);b=(char)tolower((unsigned char)b);
@@ -157,16 +166,16 @@ static int policy_path_within(const char *path,const char *root){while(*path&&*r
 static int session_denied(const char *id,const char *path){session_config *session=session_find(id);size_t i,n;char *joined;if(!session)return 1;n=strlen(session->cwd)+strlen(path)+2;joined=(char*)malloc(n);if(!joined)return 1;(void)snprintf(joined,n,"%s/%s",session->cwd,path);for(i=0;i<session->deny_count;i++)if(policy_path_within(path,session->deny_paths[i])||policy_path_within(joined,session->deny_paths[i])){free(joined);return 1;}free(joined);return 0;}
 static int configure_session(const char *id,const char *cwd){size_t i;char *root=copy_text(cwd);if(!root)return 0;for(i=0;i<session_count;i++)if(!strcmp(sessions[i].session_id,id)){free(sessions[i].cwd);sessions[i].cwd=root;return 1;}if(session_count>=sizeof(sessions)/sizeof(sessions[0])){free(root);return 0;}memset(&sessions[session_count],0,sizeof(sessions[0]));sessions[session_count].session_id=copy_text(id);if(!sessions[session_count].session_id){free(root);return 0;}sessions[session_count].cwd=root;session_count++;return 1;}
 static void clear_denies(session_config *session){size_t i;for(i=0;i<session->deny_count;i++)free(session->deny_paths[i]);session->deny_count=0;}
-static int configure_policy(const char *id,const owc_json *sandbox){session_config *session=session_find(id);const owc_json *denies,*enabled,*network,*mode;size_t i;if(!session)return 0;clear_denies(session);session->sandbox_enabled=1;session->allow_network=1;session->sandbox_mode=(int)OWC_SANDBOX_MODE_APPCONTAINER;if(!sandbox)return 1;if(sandbox->type!=OWC_JSON_OBJECT)return 0;enabled=owc_json_object_get(sandbox,"enabled");network=owc_json_object_get(sandbox,"network");mode=owc_json_object_get(sandbox,"mode");if(enabled){if(enabled->type!=OWC_JSON_BOOL)return 0;session->sandbox_enabled=enabled->value.boolean;}if(network){const char *value=owc_json_get_string(network);if(!value||(strcmp(value,"allow")&&strcmp(value,"deny")))return 0;session->allow_network=!strcmp(value,"allow");}if(mode){const char *value=owc_json_get_string(mode);if(!value)return 0;if(!strcmp(value,"appcontainer"))session->sandbox_mode=(int)OWC_SANDBOX_MODE_APPCONTAINER;else if(!strcmp(value,"jobobject"))session->sandbox_mode=(int)OWC_SANDBOX_MODE_JOBOBJECT;else if(!strcmp(value,"off"))session->sandbox_mode=(int)OWC_SANDBOX_MODE_OFF;else return 0;if(session->sandbox_mode==(int)OWC_SANDBOX_MODE_OFF)session->sandbox_enabled=0;}denies=owc_json_object_get(sandbox,"denyPaths");if(!denies)return 1;if(denies->type!=OWC_JSON_ARRAY||denies->value.children.count>16)return 0;for(i=0;i<denies->value.children.count;i++){const char *value=owc_json_get_string(denies->value.children.items[i]);if(!value)return 0;session->deny_paths[session->deny_count]=copy_text(value);if(!session->deny_paths[session->deny_count])return 0;session->deny_count++;}return 1;}
+static int configure_policy(const char *id,const owc_json *sandbox){session_config *session=session_find(id);const owc_json *denies,*enabled,*network,*mode,*job_memory,*job_processes;size_t i;if(!session)return 0;clear_denies(session);session->sandbox_enabled=1;session->allow_network=1;session->sandbox_mode=(int)OWC_SANDBOX_MODE_APPCONTAINER;session->job_memory_mb=OWC_JOB_DEFAULT_MEMORY_MB;session->job_max_processes=OWC_JOB_DEFAULT_MAX_PROCESSES;if(!sandbox)return 1;if(sandbox->type!=OWC_JSON_OBJECT)return 0;enabled=owc_json_object_get(sandbox,"enabled");network=owc_json_object_get(sandbox,"network");mode=owc_json_object_get(sandbox,"mode");if(enabled){if(enabled->type!=OWC_JSON_BOOL)return 0;session->sandbox_enabled=enabled->value.boolean;}if(network){const char *value=owc_json_get_string(network);if(!value||(strcmp(value,"allow")&&strcmp(value,"deny")))return 0;session->allow_network=!strcmp(value,"allow");}if(mode){const char *value=owc_json_get_string(mode);if(!value)return 0;if(!strcmp(value,"appcontainer"))session->sandbox_mode=(int)OWC_SANDBOX_MODE_APPCONTAINER;else if(!strcmp(value,"jobobject"))session->sandbox_mode=(int)OWC_SANDBOX_MODE_JOBOBJECT;else if(!strcmp(value,"off"))session->sandbox_mode=(int)OWC_SANDBOX_MODE_OFF;else return 0;if(session->sandbox_mode==(int)OWC_SANDBOX_MODE_OFF)session->sandbox_enabled=0;}job_memory=owc_json_object_get(sandbox,"jobMemoryMB");if(job_memory&&!parse_job_limit(job_memory,1048576ul,&session->job_memory_mb))return 0;job_processes=owc_json_object_get(sandbox,"jobMaxProcesses");if(job_processes&&!parse_job_limit(job_processes,4096ul,&session->job_max_processes))return 0;denies=owc_json_object_get(sandbox,"denyPaths");if(!denies)return 1;if(denies->type!=OWC_JSON_ARRAY||denies->value.children.count>16)return 0;for(i=0;i<denies->value.children.count;i++){const char *value=owc_json_get_string(denies->value.children.items[i]);if(!value)return 0;session->deny_paths[session->deny_count]=copy_text(value);if(!session->deny_paths[session->deny_count])return 0;session->deny_count++;}return 1;}
 static int cleanup_session(const char *id){size_t i;for(i=0;i<session_count;i++)if(!strcmp(sessions[i].session_id,id)){clear_denies(&sessions[i]);free(sessions[i].session_id);free(sessions[i].cwd);sessions[i]=sessions[session_count-1];session_count--;return 1;}return 0;}
 
-static int reply_session_capability(owc_rpc *rpc,const owc_json *id,const char *sid){session_config *session=session_find(sid);char reason[192],result[512];char *escaped;owc_sandbox_status status;if(!session)return reply_error(rpc,id,-32000,"session was not configured");if(!session->sandbox_enabled){status=OWC_SANDBOX_ADVISORY;(void)snprintf(reason,sizeof(reason),"sandbox disabled by session policy");}else if(session->sandbox_mode==(int)OWC_SANDBOX_MODE_JOBOBJECT){status=OWC_SANDBOX_PARTIAL;(void)snprintf(reason,sizeof(reason),"Job Object compatibility mode requested by session policy");}else{
+static int reply_session_capability(owc_rpc *rpc,const owc_json *id,const char *sid){session_config *session=session_find(sid);char reason[192],detail[192],result[640];char *escaped,*escaped_detail=NULL;owc_sandbox_status status;int ok;if(!session)return reply_error(rpc,id,-32000,"session was not configured");detail[0]='\0';if(!session->sandbox_enabled){status=OWC_SANDBOX_ADVISORY;(void)snprintf(reason,sizeof(reason),"sandbox disabled by session policy");}else if(session->sandbox_mode==(int)OWC_SANDBOX_MODE_JOBOBJECT){status=OWC_SANDBOX_PARTIAL;(void)snprintf(reason,sizeof(reason),"Job Object compatibility mode requested by session policy");(void)snprintf(detail,sizeof(detail),"Job Object limits active processes to %lu and committed memory to %lu MB; no filesystem or network isolation (requires AppContainer)",session->job_max_processes,session->job_memory_mb);}else{
 #ifdef _WIN32
  status=owc_sandbox_probe(reason,sizeof(reason));
 #else
  owc_sandbox_result probe;owc_landlock_probe(session->allow_network,&probe);status=probe.status;(void)snprintf(reason,sizeof(reason),"%s",probe.reason);
 #endif
-}escaped=owc_json_escape_string(reason);if(!escaped)return reply_error(rpc,id,-32000,"failed to encode sandbox capability");(void)snprintf(result,sizeof(result),"{\"sandboxCapability\":\"%s\",\"sandboxReason\":%s}",owc_sandbox_status_name(status),escaped);free(escaped);return reply_result(rpc,id,result);}
+}escaped=owc_json_escape_string(reason);if(escaped&&detail[0])escaped_detail=owc_json_escape_string(detail);if(!escaped||(detail[0]&&!escaped_detail)){free(escaped);free(escaped_detail);return reply_error(rpc,id,-32000,"failed to encode sandbox capability");}if(escaped_detail)(void)snprintf(result,sizeof(result),"{\"sandboxCapability\":\"%s\",\"sandboxReason\":%s,\"sandboxDetail\":%s}",owc_sandbox_status_name(status),escaped,escaped_detail);else(void)snprintf(result,sizeof(result),"{\"sandboxCapability\":\"%s\",\"sandboxReason\":%s}",owc_sandbox_status_name(status),escaped);free(escaped);free(escaped_detail);ok=reply_result(rpc,id,result);return ok;}
 
 static int fs_code(owc_fs_error e) { if(e==OWC_FS_INVALID_ARGUMENT||e==OWC_FS_INVALID_UTF8||e==OWC_FS_NO_MATCH||e==OWC_FS_MULTIPLE_MATCHES)return -32602;if(e==OWC_FS_OUTSIDE_ROOT||e==OWC_FS_PERMISSION_DENIED)return -32002;if(e==OWC_FS_NOT_FOUND)return -32003;return -32000; }
 static int allowed_keys(const owc_json *p,const char *const *keys,size_t count) { size_t i,j;if(!p||p->type!=OWC_JSON_OBJECT)return 0;for(i=0;i<p->value.children.count;i++){const char*k=p->value.children.items[i]->key;for(j=0;j<count;j++)if(!strcmp(k,keys[j]))break;if(j==count)return 0;}return 1; }

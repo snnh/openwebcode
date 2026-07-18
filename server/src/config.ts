@@ -12,6 +12,10 @@ export interface ServerConfig {
     timeoutMs: number;
     fixedUsdCnyRate?: string;
   };
+  /** 全局 Job Object 资源限制覆盖（仅 Windows）；缺省不下发，core 用内置默认值 */
+  sandbox?: {
+    jobObject?: { memoryMB?: number; maxProcesses?: number };
+  };
   anthropic?: { apiKey?: string; baseURL?: string; promptCaching?: boolean };
   openai?: { apiKey?: string; baseURL: string };
   provider2?: { baseURL: string; apiKey?: string; model: string };
@@ -22,6 +26,16 @@ function positiveInteger(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 1) {
     throw new Error(`Expected a positive integer, received ${value}`);
+  }
+  return parsed;
+}
+
+/** 可选的正整数环境变量，带上限（与 core 侧 session.configure 校验一致）；未设置返回 undefined */
+function boundedInteger(value: string | undefined, maximum: number): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = positiveInteger(value, 1);
+  if (parsed > maximum) {
+    throw new Error(`Expected an integer <= ${maximum}, received ${value}`);
   }
   return parsed;
 }
@@ -41,6 +55,8 @@ function currency(value: string | undefined): "USD" | "CNY" {
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
+  const jobMemoryMB = boundedInteger(env.OWC_JOB_MEMORY_MB, 1_048_576);
+  const jobMaxProcesses = boundedInteger(env.OWC_JOB_MAX_PROCESSES, 4096);
   return {
     host: env.OWC_HOST ?? "127.0.0.1",
     port: positiveInteger(env.OWC_PORT, 3210),
@@ -55,6 +71,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       timeoutMs: positiveInteger(env.OWC_EXCHANGE_RATE_TIMEOUT_MS, 5_000),
       ...(env.OWC_USD_CNY_RATE ? { fixedUsdCnyRate: env.OWC_USD_CNY_RATE } : {}),
     },
+    ...(jobMemoryMB !== undefined || jobMaxProcesses !== undefined
+      ? {
+          sandbox: {
+            jobObject: {
+              ...(jobMemoryMB !== undefined ? { memoryMB: jobMemoryMB } : {}),
+              ...(jobMaxProcesses !== undefined ? { maxProcesses: jobMaxProcesses } : {}),
+            },
+          },
+        }
+      : {}),
     ...(env.ANTHROPIC_API_KEY || env.ANTHROPIC_BASE_URL
       ? {
           anthropic: {

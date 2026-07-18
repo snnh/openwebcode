@@ -45,6 +45,16 @@ function requirePort(value) {
         throw new SettingsValidationError("端口必须是 1-65535 的整数");
     }
 }
+function requireJobMemoryMB(value) {
+    if (typeof value !== "number" || value < 1 || value > 1_048_576) {
+        throw new SettingsValidationError("Job 内存上限需为 1–1048576 MB (1 TB)");
+    }
+}
+function requireJobMaxProcesses(value) {
+    if (typeof value !== "number" || value < 1 || value > 4096) {
+        throw new SettingsValidationError("Job 进程数上限需为 1–4096");
+    }
+}
 function envNumber(raw) {
     const parsed = Number(raw);
     return Number.isSafeInteger(parsed) && parsed >= 1 ? parsed : undefined;
@@ -81,6 +91,9 @@ const FIELDS = [
     // 执行器
     { key: "corePath", group: "executor", label: "执行器路径", type: "text", env: "OWC_CORE_PATH", defaultValue: "../build/Debug/owc-exec.exe", restartRequired: true, validate: requireNonEmpty },
     { key: "coreRequestTimeoutMs", group: "executor", label: "执行器请求超时 (ms)", type: "number", env: "OWC_CORE_REQUEST_TIMEOUT_MS", defaultValue: 130_000, restartRequired: false, fromEnv: envNumber },
+    // Job Object 资源限制（仅 Windows，重启生效）：注入 CoreRouter 全局下发，留空由 core 用默认值
+    { key: "jobObjectMemoryMB", group: "executor", label: "Job 内存上限 (MB)", type: "number", env: "OWC_JOB_MEMORY_MB", defaultValue: null, restartRequired: true, fromEnv: envNumber, validate: requireJobMemoryMB, description: "Job Object 提交内存上限，缺省 4096" },
+    { key: "jobObjectMaxProcesses", group: "executor", label: "Job 进程数上限", type: "number", env: "OWC_JOB_MAX_PROCESSES", defaultValue: null, restartRequired: true, fromEnv: envNumber, validate: requireJobMaxProcesses, description: "Job Object 活跃进程上限，缺省 64" },
     { key: "gcMaxBytes", group: "service", label: "存储上限 (字节)", type: "number", env: "OWC_GC_MAX_BYTES", defaultValue: 2_147_483_648, restartRequired: false, fromEnv: envNumber, description: "会话 artifacts 全局 LRU 上限，超出后从最旧开始清理" },
     // 服务（重启生效）
     { key: "host", group: "service", label: "监听地址", type: "text", env: "OWC_HOST", defaultValue: "127.0.0.1", restartRequired: true, validate: requireNonEmpty },
@@ -166,6 +179,8 @@ export class SettingsService {
         const provider2BaseURL = value("provider2BaseURL");
         const provider2ApiKey = value("provider2ApiKey");
         const provider2Model = value("provider2Model");
+        const jobObjectMemoryMB = value("jobObjectMemoryMB");
+        const jobObjectMaxProcesses = value("jobObjectMaxProcesses");
         return {
             host: value("host"),
             port: value("port"),
@@ -180,6 +195,16 @@ export class SettingsService {
                 timeoutMs: value("exchangeRateTimeoutMs"),
                 ...(typeof fixedUsdCnyRate === "string" ? { fixedUsdCnyRate } : {}),
             },
+            ...(typeof jobObjectMemoryMB === "number" || typeof jobObjectMaxProcesses === "number"
+                ? {
+                    sandbox: {
+                        jobObject: {
+                            ...(typeof jobObjectMemoryMB === "number" ? { memoryMB: jobObjectMemoryMB } : {}),
+                            ...(typeof jobObjectMaxProcesses === "number" ? { maxProcesses: jobObjectMaxProcesses } : {}),
+                        },
+                    },
+                }
+                : {}),
             ...(typeof anthropicApiKey === "string" || typeof anthropicBaseURL === "string"
                 ? {
                     anthropic: {

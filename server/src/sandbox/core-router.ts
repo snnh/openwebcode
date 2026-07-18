@@ -15,7 +15,7 @@ import type {
   FsWriteRequest,
 } from "../core-client.js";
 import type { SessionStore } from "../sessions/session-store.js";
-import type { SandboxPolicy, SessionMeta } from "../sessions/types.js";
+import type { JobObjectLimits, SandboxPolicy, SessionMeta } from "../sessions/types.js";
 import { WSB_WORKSPACE_MOUNT, type WsbManager } from "./wsb.js";
 
 /**
@@ -49,6 +49,8 @@ export class CoreRouter extends EventEmitter {
     private readonly shared: CoreClientLike,
     private readonly sessions: Pick<SessionStore, "get">,
     private readonly wsb: WsbManager,
+    /** 全局 Job Object 资源限制覆盖（仅 Windows）；缺省不下发，core 用内置默认值 */
+    private readonly jobObject?: JobObjectLimits,
   ) {
     super();
     for (const event of ["event", "diagnostic", "error"]) {
@@ -61,12 +63,16 @@ export class CoreRouter extends EventEmitter {
     };
   }
 
-  /** sandboxMode → 下发给 core 的策略：wsb/off 由 VM/关闭充当边界；jobobject 下发兼容模式 */
-  static policyFor(meta: SessionMeta | undefined, sandbox: SandboxPolicy): SandboxPolicy {
+  /** sandboxMode → 下发给 core 的策略：wsb/off 由 VM/关闭充当边界；jobobject 下发兼容模式；jobObject 限制仅随启用路径下发 */
+  static policyFor(meta: SessionMeta | undefined, sandbox: SandboxPolicy, jobObject?: JobObjectLimits): SandboxPolicy {
     const mode = meta?.sandboxMode;
     if (mode === "wsb" || mode === "off") return { ...sandbox, enabled: false };
-    if (mode === "jobobject") return { ...sandbox, mode: "jobobject" };
-    return sandbox;
+    const limits = {
+      ...(jobObject?.memoryMB !== undefined ? { jobMemoryMB: jobObject.memoryMB } : {}),
+      ...(jobObject?.maxProcesses !== undefined ? { jobMaxProcesses: jobObject.maxProcesses } : {}),
+    };
+    if (mode === "jobobject") return { ...sandbox, ...limits, mode: "jobobject" };
+    return { ...sandbox, ...limits };
   }
 
   private async metaFor(sessionId: string): Promise<SessionMeta | undefined> {
@@ -104,7 +110,7 @@ export class CoreRouter extends EventEmitter {
   async configureSession(request: { sessionId: string; cwd: string; sandbox: SandboxPolicy }): Promise<{ sandboxCapability: string }> {
     const { client, meta } = await this.clientFor(request.sessionId);
     const cwd = meta?.sandboxMode === "wsb" && meta.cwd ? toSandboxPath(request.cwd, meta.cwd) : request.cwd;
-    return client.configureSession({ ...request, cwd, sandbox: CoreRouter.policyFor(meta, request.sandbox) });
+    return client.configureSession({ ...request, cwd, sandbox: CoreRouter.policyFor(meta, request.sandbox, this.jobObject) });
   }
 
   async cleanupSession(sessionId: string): Promise<{ ok: true }> {

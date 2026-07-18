@@ -31,11 +31,15 @@ export class CoreRouter extends EventEmitter {
     shared;
     sessions;
     wsb;
-    constructor(shared, sessions, wsb) {
+    jobObject;
+    constructor(shared, sessions, wsb, 
+    /** 全局 Job Object 资源限制覆盖（仅 Windows）；缺省不下发，core 用内置默认值 */
+    jobObject) {
         super();
         this.shared = shared;
         this.sessions = sessions;
         this.wsb = wsb;
+        this.jobObject = jobObject;
         for (const event of ["event", "diagnostic", "error"]) {
             shared.on(event, (...args) => this.emit(event, ...args));
         }
@@ -45,14 +49,18 @@ export class CoreRouter extends EventEmitter {
             }
         };
     }
-    /** sandboxMode → 下发给 core 的策略：wsb/off 由 VM/关闭充当边界；jobobject 下发兼容模式 */
-    static policyFor(meta, sandbox) {
+    /** sandboxMode → 下发给 core 的策略：wsb/off 由 VM/关闭充当边界；jobobject 下发兼容模式；jobObject 限制仅随启用路径下发 */
+    static policyFor(meta, sandbox, jobObject) {
         const mode = meta?.sandboxMode;
         if (mode === "wsb" || mode === "off")
             return { ...sandbox, enabled: false };
+        const limits = {
+            ...(jobObject?.memoryMB !== undefined ? { jobMemoryMB: jobObject.memoryMB } : {}),
+            ...(jobObject?.maxProcesses !== undefined ? { jobMaxProcesses: jobObject.maxProcesses } : {}),
+        };
         if (mode === "jobobject")
-            return { ...sandbox, mode: "jobobject" };
-        return sandbox;
+            return { ...sandbox, ...limits, mode: "jobobject" };
+        return { ...sandbox, ...limits };
     }
     async metaFor(sessionId) {
         return this.sessions.get(sessionId).catch(() => undefined);
@@ -83,7 +91,7 @@ export class CoreRouter extends EventEmitter {
     async configureSession(request) {
         const { client, meta } = await this.clientFor(request.sessionId);
         const cwd = meta?.sandboxMode === "wsb" && meta.cwd ? toSandboxPath(request.cwd, meta.cwd) : request.cwd;
-        return client.configureSession({ ...request, cwd, sandbox: CoreRouter.policyFor(meta, request.sandbox) });
+        return client.configureSession({ ...request, cwd, sandbox: CoreRouter.policyFor(meta, request.sandbox, this.jobObject) });
     }
     async cleanupSession(sessionId) {
         const meta = await this.metaFor(sessionId);

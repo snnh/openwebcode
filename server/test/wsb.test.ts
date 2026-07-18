@@ -48,7 +48,7 @@ const policy: SandboxPolicy = {
   network: "allow",
 };
 
-function makeRouter(metas: Map<string, SessionMeta>) {
+function makeRouter(metas: Map<string, SessionMeta>, jobObject?: { memoryMB?: number; maxProcesses?: number }) {
   const shared = fakeClient();
   const wsbClient = fakeClient();
   const wsb = {
@@ -60,7 +60,7 @@ function makeRouter(metas: Map<string, SessionMeta>) {
   };
   const sessions = { get: async (id: string) => metas.get(id) };
   // CoreRouter 只用到 acquire/peek/release/releaseAll 与 onClientCreated 赋值
-  const router = new CoreRouter(shared, sessions, wsb as never);
+  const router = new CoreRouter(shared, sessions, wsb as never, jobObject);
   return { router, shared, wsbClient, wsb };
 }
 
@@ -153,6 +153,29 @@ describe("CoreRouter", () => {
     const { router, shared } = makeRouter(metas);
     await router.configureSession({ sessionId: "s1", cwd: "D:\\work", sandbox: policy });
     expect(shared.configureSession).toHaveBeenCalledWith({ sessionId: "s1", cwd: "D:\\work", sandbox: { ...policy, mode: "jobobject" } });
+  });
+
+  it("merges configured global jobObject limits into the jobobject policy", async () => {
+    const metas = new Map([["s1", makeMeta("s1", "jobobject")]]);
+    const { router, shared } = makeRouter(metas, { memoryMB: 2048, maxProcesses: 32 });
+    await router.configureSession({ sessionId: "s1", cwd: "D:\\work", sandbox: policy });
+    expect(shared.configureSession).toHaveBeenCalledWith({ sessionId: "s1", cwd: "D:\\work", sandbox: { ...policy, mode: "jobobject", jobMemoryMB: 2048, jobMaxProcesses: 32 } });
+  });
+
+  it("omits jobObject fields when no global limits are configured", async () => {
+    const metas = new Map([["s1", makeMeta("s1", "jobobject")]]);
+    const { router, shared } = makeRouter(metas);
+    await router.configureSession({ sessionId: "s1", cwd: "D:\\work", sandbox: policy });
+    const sent = shared.configureSession.mock.calls[0]?.[0]?.sandbox as Record<string, unknown>;
+    expect("jobMemoryMB" in sent).toBe(false);
+    expect("jobMaxProcesses" in sent).toBe(false);
+  });
+
+  it("applies global jobObject limits to appcontainer sessions as well (core enforces them in both modes)", async () => {
+    const metas = new Map([["s1", makeMeta("s1")]]);
+    const { router, shared } = makeRouter(metas, { maxProcesses: 16 });
+    await router.configureSession({ sessionId: "s1", cwd: "D:\\work", sandbox: policy });
+    expect(shared.configureSession).toHaveBeenCalledWith({ sessionId: "s1", cwd: "D:\\work", sandbox: { ...policy, jobMaxProcesses: 16 } });
   });
 
   it("cleanupSession on wsb sessions never boots a VM and skips the shared client", async () => {

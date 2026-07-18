@@ -7,6 +7,11 @@ typedef void (*owc_exec_output_fn)(void *user_data, const char *stream,
                                    const unsigned char *data, size_t length,
                                    unsigned sequence);
 
+/* Job Object resource limit defaults (Windows; applied whenever the sandbox is
+   enabled, for both the AppContainer and the Job Object compatibility modes). */
+#define OWC_JOB_DEFAULT_MEMORY_MB 4096ul
+#define OWC_JOB_DEFAULT_MAX_PROCESSES 64ul
+
 typedef struct {
     const char *command;
     const char *cwd;
@@ -14,6 +19,8 @@ typedef struct {
     int sandbox_enabled;
     int allow_network;
     int sandbox_mode; /* owc_sandbox_mode; only meaningful when sandbox_enabled */
+    unsigned long job_memory_mb;     /* job-wide committed memory limit; 0 = default */
+    unsigned long job_max_processes; /* active process limit; 0 = default */
     int timeout_ms;
     size_t output_limit;
     owc_exec_output_fn on_output;
