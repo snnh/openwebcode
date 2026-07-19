@@ -153,6 +153,8 @@ describe("POST /api/sessions/:id/shell - yolo 执行", () => {
       // isRunning 全程 false（shell 不进 agent run 循环）
       expect(isRunningSnapshots.length).toBeGreaterThan(0);
       expect(isRunningSnapshots.every((v) => v === false)).toBe(true);
+      // 等 runShell 收尾（finally 清 shells）再退出，避免 afterEach 清理与异步落盘竞态（Windows ENOTEMPTY）
+      await vi.waitFor(() => expect(harness.agent.isShellPending(harness.session.id)).toBe(false), { timeout: 5_000 });
     } finally {
       await harness.app.close();
     }
@@ -176,6 +178,7 @@ describe("POST /api/sessions/:id/shell - yolo 执行", () => {
       expect(toolResult.type).toBe("tool_result");
       expect(toolResult.isError).toBe(true);
       expect(toolResult.content).toContain("exit code 127");
+      await vi.waitFor(() => expect(harness.agent.isShellPending(harness.session.id)).toBe(false), { timeout: 5_000 });
     } finally {
       await harness.app.close();
     }
@@ -221,8 +224,8 @@ describe("POST /api/sessions/:id/shell - 权限挂起（ask 模式）", () => {
       const toolResult = detail?.messages.find((m) => m.role === "tool")?.content[0] as { type: string; isError?: boolean };
       expect(toolResult.type).toBe("tool_result");
       expect(toolResult.isError).toBe(false);
-      // shell 完成后 isShellPending 归零
-      expect(harness.agent.isShellPending(harness.session.id)).toBe(false);
+      // shell 完成后 isShellPending 归零（finally 清 shells 晚于 appendMessage 可被观察到，轮询等待避免竞态）
+      await vi.waitFor(() => expect(harness.agent.isShellPending(harness.session.id)).toBe(false), { timeout: 5_000 });
     } finally {
       await harness.app.close();
     }
@@ -261,8 +264,8 @@ describe("POST /api/sessions/:id/shell - 权限挂起（ask 模式）", () => {
       expect(toolResult.type).toBe("tool_result");
       expect(toolResult.isError).toBe(true);
       expect(toolResult.content).toContain("user declined");
-      // isShellPending 归零
-      expect(harness.agent.isShellPending(harness.session.id)).toBe(false);
+      // isShellPending 归零（finally 清 shells 晚于 appendMessage 可被观察到，轮询等待避免竞态）
+      await vi.waitFor(() => expect(harness.agent.isShellPending(harness.session.id)).toBe(false), { timeout: 5_000 });
     } finally {
       await harness.app.close();
     }
@@ -310,6 +313,7 @@ describe("POST /api/sessions/:id/shell - 权限挂起（ask 模式）", () => {
       harness.core.release({ exitCode: 0, durationMs: 1, truncated: false });
       // 等第二轮 tool_result 落盘完再退出，避免 afterEach 清理与异步落盘竞态（Windows ENOTEMPTY）
       await waitForToolMessage(harness.sessions, harness.session.id, 5_000, 2);
+      await vi.waitFor(() => expect(harness.agent.isShellPending(harness.session.id)).toBe(false), { timeout: 5_000 });
     } finally {
       await harness.app.close();
     }
@@ -388,6 +392,9 @@ describe("POST /api/sessions/:id/shell - 路由校验", () => {
       expect(res.json<{ error: string }>().error).toContain("shell");
       // 释放让测试干净退出
       harness.core.release({ exitCode: 0, durationMs: 1, truncated: false });
+      // 等 tool_result 落盘 + runShell 收尾再退出，避免 afterEach 清理与异步落盘竞态（Windows ENOTEMPTY）
+      await waitForToolMessage(harness.sessions, harness.session.id);
+      await vi.waitFor(() => expect(harness.agent.isShellPending(harness.session.id)).toBe(false), { timeout: 5_000 });
     } finally {
       await harness.app.close();
     }
@@ -422,6 +429,9 @@ describe("POST /api/sessions/:id/shell - 路由校验", () => {
         url: `/api/sessions/${harness.session.id}/permissions/respond`,
         payload: { requestId: req.requestId, decision: "deny" },
       });
+      // 等 tool_result 落盘 + runShell 收尾再退出，避免 afterEach 清理与异步落盘竞态（Windows ENOTEMPTY）
+      await waitForToolMessage(harness.sessions, harness.session.id);
+      await vi.waitFor(() => expect(harness.agent.isShellPending(harness.session.id)).toBe(false), { timeout: 5_000 });
     } finally {
       await harness.app.close();
     }
