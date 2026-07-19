@@ -28,6 +28,9 @@ export interface SubAgentOptions {
   prompt: string;
   /** 请求放行的工具名；实际生效为 ∩ SUB_AGENT_TOOL_NAMES。 */
   toolNames: string[];
+  systemExtra?: string;
+  modelOverride?: string;
+  agent?: string;
   core: CoreClientLike;
   sessionId: string;
   cwd: string;
@@ -53,7 +56,7 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
     "You run in an isolated context and cannot see the parent conversation. " +
     "You may only use the read-only tools provided; you cannot modify files or run commands. " +
     "Investigate the task, then reply with one concise conclusion in the user's language (default 中文). " +
-    "Do not ask questions; make reasonable assumptions.";
+    `Do not ask questions; make reasonable assumptions.${options.systemExtra ? `\n\n${options.systemExtra}` : ""}`;
 
   const taskId = randomUUID();
   const startedAt = new Date().toISOString();
@@ -67,7 +70,7 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
     for (let turn = 0; turn < maxTurns; turn++) {
       options.signal.throwIfAborted();
       const result = await collectProviderTurn(options.provider, {
-        model: options.model,
+        model: options.modelOverride ?? options.model,
         system,
         messages,
         tools,
@@ -122,7 +125,7 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
       await mkdir(path.join(options.contextRoot, "subagents"), { recursive: true });
       await writeFile(
         path.join(options.contextRoot, "subagents", `${taskId}.json`),
-        `${JSON.stringify({ id: taskId, prompt: options.prompt, startedAt, turns, toolsUsed, conclusion, messages }, null, 2)}\n`,
+        `${JSON.stringify({ id: taskId, prompt: options.prompt, ...(options.agent ? { agent: options.agent } : {}), startedAt, turns, toolsUsed, conclusion, messages }, null, 2)}\n`,
         "utf8",
       );
     } catch (error) {
