@@ -223,17 +223,30 @@ export function App(): ReactElement {
   const send = useMutation({
     mutationFn: async () => {
       if (!currentId || !draft.trim()) return;
-      const pathAttachments = toAttachments(extractAttachmentPaths(draft.trim()));
-      return api.sendMessage(currentId, draft.trim(), attachments, pathAttachments.length ? pathAttachments : undefined);
+      const text = draft.trim();
+      // `!` 前缀走 shell 快捷路由：不进 agent run，权限挂起时后端 409 由 onError 提示
+      if (text.startsWith("!")) return api.runShell(currentId, text.slice(1).trim());
+      const pathAttachments = toAttachments(extractAttachmentPaths(text));
+      return api.sendMessage(currentId, text, attachments, pathAttachments.length ? pathAttachments : undefined);
     },
     onSuccess: (result) => {
       setDraft("");
       setAttachments([]);
-      if (result?.queued) setNotice(`已加入 Steering 队列（第 ${result.position} 项）`);
+      const queued = result as { queued?: boolean; position?: number } | undefined;
+      if (queued?.queued) setNotice(`已加入 Steering 队列（第 ${queued.position} 项）`);
       queryClient.invalidateQueries({ queryKey: queryKeys.detail(currentId ?? "") });
     },
     onError: (error) => setNotice(error instanceof Error ? error.message : "发送失败"),
   });
+
+  // shell 结果卡「发给 agent」：把 `!cmd` 与输出摘要作为普通用户消息送入 agent run
+  const sendShellToAgent = (cmd: string, output: string): void => {
+    if (!currentId) return;
+    const summary = output.length > 2000 ? `${output.slice(0, 2000)}\n…（输出已截断）` : output;
+    api.sendMessage(currentId, `刚才执行的 shell 命令：\n${cmd}\n\n输出：\n${summary}`)
+      .then(() => queryClient.invalidateQueries({ queryKey: queryKeys.detail(currentId) }))
+      .catch((error: unknown) => setNotice(error instanceof Error ? error.message : "发送失败"));
+  };
 
   const create = useMutation({
     mutationFn: (values: NewSessionValues) => api.createSession(values),
@@ -335,6 +348,7 @@ export function App(): ReactElement {
               streamText={stream[current.id] ?? ""}
               thinkingText={thinkingStream[current.id] ?? ""}
               permissions={mergedPermissions}
+              onSendToAgent={sendShellToAgent}
               onPermissionDone={(requestId) => {
                 setPendingPermissions((prev) => prev.filter((item) => item.requestId !== requestId));
                 queryClient.invalidateQueries({ queryKey: ["permissions", current.id] });
