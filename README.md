@@ -125,6 +125,8 @@ cd web && npm ci && npm run build && npm test
 - **用户文档**（随 git 同步）：
   - [`help/usage.md`](./help/usage.md) — 使用帮助：启动、输入框快捷、运行中操作、自定义扩展点模板（子代理/斜杠命令/Hooks）
   - [`help/faq.md`](./help/faq.md) — 常见问题：模型接入、权限与沙盒、上下文管理、快照回滚、CLI 集成、故障排查
+- **开发者文档**（随 git 同步）：
+  - [`help/development.md`](./help/development.md) — 编译与二次开发：仓库布局、三件套构建、本地开发循环、测试约定、二次开发切入点、CI 与发布
 - **开发文档**（`docs/`，本地不随 git 同步）：架构总览、RPC 协议规范、实施阶段与交接记录
 - `packaging/README.md` — 分发布局、安装脚本与 CI 发布流水线
 
