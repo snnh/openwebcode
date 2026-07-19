@@ -7,8 +7,10 @@ typedef void (*owc_exec_output_fn)(void *user_data, const char *stream,
                                    const unsigned char *data, size_t length,
                                    unsigned sequence);
 
-/* Job Object resource limit defaults (Windows; applied whenever the sandbox is
-   enabled, for both the AppContainer and the Job Object compatibility modes). */
+/* Job Object resource limit defaults (Windows; applied only when the sandbox is
+   enabled and no AppContainer profile is active - explicit jobobject mode,
+   AppContainer creation fallback, or advisory - i.e. where the Job Object is
+   the only enforcement). */
 #define OWC_JOB_DEFAULT_MEMORY_MB 4096ul
 #define OWC_JOB_DEFAULT_MAX_PROCESSES 64ul
 
