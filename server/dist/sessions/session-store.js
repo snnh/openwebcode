@@ -30,6 +30,8 @@ export class SessionStore {
             meta.sandboxMode = input.sandboxMode;
         if (input.setupScript?.trim())
             meta.setupScript = input.setupScript;
+        if (input.agentMode === "plan")
+            meta.agentMode = "plan";
         await mkdir(this.sessionPath(meta.id), { recursive: false });
         await this.writeMeta(meta);
         await writeFile(this.messagesPath(meta.id), "", { encoding: "utf8", flag: "wx" });
@@ -98,6 +100,10 @@ export class SessionStore {
             delete meta.effort;
         else
             meta.effort = update.effort;
+        if (update.agentMode === undefined || update.agentMode === "build")
+            delete meta.agentMode;
+        else
+            meta.agentMode = update.agentMode;
         meta.updatedAt = new Date().toISOString();
         await this.writeMeta(meta);
         return meta;

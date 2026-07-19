@@ -80,6 +80,7 @@ export interface SessionMeta {
   model: string;
   thinking?: "adaptive" | "enabled" | "disabled";
   effort?: "low" | "medium" | "high" | "xhigh" | "max";
+  agentMode?: "plan" | "build";
   permissionMode?: PermissionMode;
   permissionRules?: PermissionRule[];
   sandbox?: SandboxPolicy;

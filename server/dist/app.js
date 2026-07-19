@@ -249,6 +249,9 @@ export async function buildServer(dependencies) {
         const sandboxModeError = validateSandboxMode(request.body.sandboxMode);
         if (sandboxModeError)
             return reply.code(400).send({ error: sandboxModeError });
+        if (request.body.agentMode !== undefined && !["plan", "build"].includes(request.body.agentMode)) {
+            return reply.code(400).send({ error: 'agentMode must be "plan" or "build"' });
+        }
         if (request.body.setupScript !== undefined && typeof request.body.setupScript !== "string") {
             return reply.code(400).send({ error: "setupScript must be a string" });
         }
@@ -344,6 +347,10 @@ export async function buildServer(dependencies) {
         if (effort !== undefined && !profile.capabilities.effort.includes(effort)) {
             return reply.code(400).send({ error: `Model ${model} does not support effort ${effort}` });
         }
+        const agentMode = request.body && "agentMode" in request.body ? request.body.agentMode ?? undefined : session.agentMode;
+        if (agentMode !== undefined && !["plan", "build"].includes(agentMode)) {
+            return reply.code(400).send({ error: 'agentMode must be "plan" or "build"' });
+        }
         const permissionMode = request.body?.permissionMode ?? session.permissionMode ?? "ask";
         if (!["ask", "acceptEdits", "yolo"].includes(permissionMode))
             return reply.code(400).send({ error: "permissionMode must be ask, acceptEdits, or yolo" });
@@ -356,7 +363,7 @@ export async function buildServer(dependencies) {
                 return reply.code(400).send({ error: "setupScript must be a string" });
             }
         }
-        await sessions.updateConfig(request.params.id, { provider, model, ...(thinking ? { thinking } : {}), ...(effort ? { effort } : {}) });
+        await sessions.updateConfig(request.params.id, { provider, model, ...(thinking ? { thinking } : {}), ...(effort ? { effort } : {}), ...(agentMode ? { agentMode } : {}) });
         let updated = await sessions.updatePermissions(request.params.id, permissionMode, session.permissionRules ?? []);
         if (touchesSandbox) {
             updated = await sessions.updateSandboxMode(request.params.id, request.body?.sandboxMode, request.body?.setupScript);
