@@ -60,7 +60,8 @@ cd openwebcode
 
 ## 文档
 
-- `docs/plan.md` — 架构总览、协议、沙盒/快照/上下文设计、实施阶段与当前状态
-- `docs/protocol.md` — C ↔ Node JSON-RPC 协议规范
+- **用户文档**（随 git 同步）：
+  - [`help/usage.md`](./help/usage.md) — 使用帮助：启动、输入框快捷、运行中操作、配置文件位置、自定义扩展点（子代理/斜杠命令/Hooks）
+  - [`help/faq.md`](./help/faq.md) — 常见问题：模型接入、权限与沙盒、上下文管理、快照回滚、CLI 集成、故障排查
+- **开发文档**（`docs/`，本地不随 git 同步）：`docs/plan.md` — 架构总览、协议、沙盒/快照/上下文设计、实施阶段与当前状态；`docs/protocol.md` — C ↔ Node JSON-RPC 协议规范；`docs/stage7-handoff.md` — 当前版本交付清单与未真机验证项
 - `packaging/README.md` — 分发布局、安装脚本与 CI 发布流水线
-- `docs/stage7-handoff.md` — 当前版本交付清单、验证状态与未真机验证项（历史：`docs/stage6-handoff.md`）
