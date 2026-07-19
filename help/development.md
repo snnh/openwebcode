@@ -206,6 +206,7 @@ cd server && npm run dev
 - **机制在核心，策略在扩展**：核心安全网（85% 水位、当前轮保护、账本一致性、沙盒路径校验）不可被绕过；扩展点（Skills/Commands/Hooks/自定义子代理/MCP）只加策略不绕机制。
 - **权限与沙盒正交**：yolo 跳权限确认但不解除沙盒；`--no-sandbox` 才完全解除（不推荐）。
 - **Hooks 安全级别等同 yolo**：`.owc/hooks.json` 里的 command 由 server 直接 spawn，不经沙盒与权限链。
+- **界面取向：WebUI 为主，CLI 为辅，不引入 TUI**。所有交互界面只做在 `web/`（React + Vite 浏览器端）；`owc run` CLI 定位是非交互的自动化入口（`--json` NDJSON 事件流、CI/脚本集成），不做交互式终端界面。**禁止引入任何 TUI 方案**（ncurses / bubbletea / ratatui / blessed 等）——这是产品边界，不是技术取舍。新增「界面/交互」类需求时，默认落到 WebUI，只在脚本自动化场景才动 CLI。
 
 ## CI
 
