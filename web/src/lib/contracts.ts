@@ -1,3 +1,9 @@
+export interface TodoItem {
+  content: string;
+  status: "pending" | "in_progress" | "done";
+  activeForm?: string;
+}
+
 export type PermissionMode = "ask" | "acceptEdits" | "yolo";
 export type SandboxCapability = "advisory" | "partial" | "enforced";
 export type SandboxMode = "appcontainer" | "wsb" | "jobobject" | "off";
