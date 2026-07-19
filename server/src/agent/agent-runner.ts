@@ -23,6 +23,7 @@ import { renderCommand, type CommandRegistry } from "../commands.js";
 import type { McpManager } from "../mcp/manager.js";
 import { appendMemory, readGlobalMemory, readProjectMemory } from "../memory.js";
 import type { UsageLog } from "../usage-log.js";
+import { webFetch, type SearchProvider } from "../web-tools.js";
 
 interface ExecutionContext {
   sessionId: string;
@@ -144,7 +145,24 @@ const REMEMBER_TOOL: ProviderTool = {
   },
 };
 
-const TOOLS = [BASH_TOOL, ...FILE_TOOLS, READ_ARTIFACT_TOOL, LOAD_SKILL_TOOL, SPAWN_TASK_TOOL, TODO_WRITE_TOOL, REMEMBER_TOOL];
+const WEB_FETCH_TOOL: ProviderTool = {
+  name: "web_fetch",
+  description: "Fetch a public http/https URL and return bounded readable text.",
+  inputSchema: { type: "object", properties: { url: { type: "string" } }, required: ["url"], additionalProperties: false },
+};
+
+const WEB_SEARCH_TOOL: ProviderTool = {
+  name: "web_search",
+  description: "Search the web using the configured search provider.",
+  inputSchema: {
+    type: "object",
+    properties: { query: { type: "string" }, limit: { type: "integer", minimum: 1, maximum: 10 } },
+    required: ["query"],
+    additionalProperties: false,
+  },
+};
+
+const TOOLS = [BASH_TOOL, ...FILE_TOOLS, READ_ARTIFACT_TOOL, LOAD_SKILL_TOOL, SPAWN_TASK_TOOL, TODO_WRITE_TOOL, REMEMBER_TOOL, WEB_FETCH_TOOL];
 
 interface SteeringItem {
   id: string;
@@ -189,6 +207,8 @@ export class AgentRunner {
     private readonly dataDir?: string,
     private readonly agents?: AgentRegistry,
     private readonly commands?: CommandRegistry,
+    private readonly search?: SearchProvider,
+    private readonly fetchImpl?: typeof fetch,
   ) {
     this.permissions = new PermissionCoordinator(events);
     core.on("event", (event: CoreEvent) => {
@@ -314,7 +334,7 @@ export class AgentRunner {
             system: `You are OpenWebCode. The workspace is ${session.cwd}. Respond in ${this.defaultLanguage} unless the user explicitly requests another language.${skillSection}${agentSection}${memorySection}`,
             messages: view.messages,
             cacheBreakpoints,
-            tools: [...TOOLS, ...mcpBinding.tools],
+            tools: [...TOOLS, ...(this.search ? [WEB_SEARCH_TOOL] : []), ...mcpBinding.tools],
             signal: controller.signal,
           },
           {
@@ -575,6 +595,33 @@ export class AgentRunner {
           payload: { toolCallId, result: { content: bounded.content }, truncated: bounded.truncated, isError: result.isError, ...(bounded.artifactId ? { artifactId: bounded.artifactId } : {}) },
         });
         return { type: "tool_result", toolCallId, content: bounded.content, isError: result.isError };
+      } catch (error) {
+        const content = error instanceof Error ? error.message : String(error);
+        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
+        return { type: "tool_result", toolCallId, content, isError: true };
+      }
+    }
+    if (name === "web_fetch" || name === "web_search") {
+      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+      this.state(sessionId, "tool_running");
+      try {
+        signal.throwIfAborted();
+        let value: unknown;
+        if (name === "web_fetch") {
+          const url = typeof input.url === "string" ? input.url.trim() : "";
+          if (!url) throw new Error("web_fetch requires a non-empty url");
+          value = await webFetch(url, { ...(this.fetchImpl ? { fetchImpl: this.fetchImpl } : {}), signal });
+        } else {
+          if (!this.search) throw new Error("Web search is not configured");
+          const query = typeof input.query === "string" ? input.query.trim() : "";
+          if (!query) throw new Error("web_search requires a non-empty query");
+          const requested = input.limit === undefined ? 5 : Number(input.limit);
+          if (!Number.isInteger(requested) || requested < 1) throw new Error("web_search limit must be a positive integer");
+          value = await this.search.search(query, Math.min(requested, 10));
+        }
+        const bounded = await boundToolResult(this.sessions.contextRoot(sessionId), name, JSON.stringify(value));
+        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: value, truncated: bounded.truncated, ...(bounded.artifactId ? { artifactId: bounded.artifactId } : {}) } });
+        return { type: "tool_result", toolCallId, content: bounded.content, isError: false };
       } catch (error) {
         const content = error instanceof Error ? error.message : String(error);
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });

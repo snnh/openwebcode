@@ -87,5 +87,14 @@ export function loadConfig(env = process.env) {
                 },
             }
             : {}),
+        ...(env.OWC_SEARCH_PROVIDER === "brave" || env.OWC_SEARCH_PROVIDER === "custom"
+            ? {
+                search: {
+                    provider: env.OWC_SEARCH_PROVIDER,
+                    ...(env.OWC_SEARCH_API_KEY ? { apiKey: env.OWC_SEARCH_API_KEY } : {}),
+                    ...(env.OWC_SEARCH_BASE_URL ? { baseURL: env.OWC_SEARCH_BASE_URL } : {}),
+                },
+            }
+            : {}),
     };
 }

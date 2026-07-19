@@ -51,9 +51,9 @@ describe("server settings API", () => {
       const response = await setup.app.inject({ method: "GET", url: "/api/settings" });
       expect(response.statusCode).toBe(200);
       const view = response.json<SettingsView>();
-      expect(view.groups.map((group) => group.id)).toEqual(["models", "provider2", "general", "executor", "service", "exchangeRate"]);
+      expect(view.groups.map((group) => group.id)).toEqual(["models", "provider2", "search", "general", "executor", "service", "exchangeRate"]);
       const fields = view.groups.flatMap((group) => group.fields);
-      expect(fields).toHaveLength(21);
+      expect(fields).toHaveLength(24);
       for (const item of fields) {
         expect(item.source).toBe("default");
         expect(item.editable).toBe(true);
