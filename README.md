@@ -48,6 +48,8 @@ cd openwebcode
 4. 输入框支持 `/技能名`、`/自定义命令`、`/compact`（概览压缩）、`/compact tools`（规则压缩）、`/clear`（清视图留历史）；`@` 引用文件、`!` 执行 shell；agent 运行中可追加 steering 消息或中断；
 5. 右侧面板：文件树、上下文用量、时间线（检查点回滚）、沙盒状态；顶部可切权限模式、模型与 Plan/Build 模式。
 
+> **会话生命周期**：关闭浏览器标签页 **不会**停止正在运行的 agent——服务器端继续执行，结果照常落盘。重新打开 UI 选回该会话，断线期间的事件会自动补拉回来。要主动停下运行中的作业，用顶部的「中断」按钮（或 `POST /api/sessions/:id/abort`）；关掉 server 进程才会收尾全部会话与后台任务。注意：断线期间发起的权限请求会一直挂起等你回来 respond，**无超时**。
+
 ## 从源码构建
 
 - core：`cmake -S core -B build && cmake --build build`（测试：`ctest --test-dir build`）
