@@ -23,7 +23,7 @@ export async function runSubAgent(options) {
         "You run in an isolated context and cannot see the parent conversation. " +
         "You may only use the read-only tools provided; you cannot modify files or run commands. " +
         "Investigate the task, then reply with one concise conclusion in the user's language (default 中文). " +
-        "Do not ask questions; make reasonable assumptions.";
+        `Do not ask questions; make reasonable assumptions.${options.systemExtra ? `\n\n${options.systemExtra}` : ""}`;
     const taskId = randomUUID();
     const startedAt = new Date().toISOString();
     const messages = [subMessage("user", [{ type: "text", text: options.prompt }])];
@@ -36,7 +36,7 @@ export async function runSubAgent(options) {
         for (let turn = 0; turn < maxTurns; turn++) {
             options.signal.throwIfAborted();
             const result = await collectProviderTurn(options.provider, {
-                model: options.model,
+                model: options.modelOverride ?? options.model,
                 system,
                 messages,
                 tools,
@@ -96,7 +96,7 @@ export async function runSubAgent(options) {
         // 转录存档：失败只 warn，不影响结论返回
         try {
             await mkdir(path.join(options.contextRoot, "subagents"), { recursive: true });
-            await writeFile(path.join(options.contextRoot, "subagents", `${taskId}.json`), `${JSON.stringify({ id: taskId, prompt: options.prompt, startedAt, turns, toolsUsed, conclusion, messages }, null, 2)}\n`, "utf8");
+            await writeFile(path.join(options.contextRoot, "subagents", `${taskId}.json`), `${JSON.stringify({ id: taskId, prompt: options.prompt, ...(options.agent ? { agent: options.agent } : {}), startedAt, turns, toolsUsed, conclusion, messages }, null, 2)}\n`, "utf8");
         }
         catch (error) {
             process.stderr.write(`[sub-agent] 转录写入失败：${error instanceof Error ? error.message : String(error)}\n`);
