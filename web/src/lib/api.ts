@@ -33,6 +33,8 @@ export const api = {
   completePath: (id: string, q: string) =>
     request<CompletePathResponse>(`/api/sessions/${id}/complete-path?q=${encodeURIComponent(q)}`),
   abort: (id: string) => request<{ accepted: boolean }>(`/api/sessions/${id}/abort`, { method: "POST" }),
+  runShell: (id: string, cmd: string) =>
+    request<{ accepted: boolean }>(`/api/sessions/${id}/shell`, { method: "POST", body: JSON.stringify({ cmd }) }),
   respondPermission: (id: string, body: { requestId: string; decision: "allow" | "allow_always" | "deny"; reason?: string }) =>
     request<{ accepted: boolean }>(`/api/sessions/${id}/permissions/respond`, { method: "POST", body: JSON.stringify(body) }),
   pendingPermissions: (id: string) => request<PendingPermission[]>(`/api/sessions/${id}/permissions`),

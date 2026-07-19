@@ -387,7 +387,7 @@ export function Composer({ current, model, models, draft, setDraft, onSend, onCo
         />
         <button className="btn primary send" disabled={!draft.trim()} onClick={onSend}>
           <Icon name="send" size={13} />
-          {running ? "加入队列" : "发送"}
+          {draft.trimStart().startsWith("!") ? "运行" : running ? "加入队列" : "发送"}
         </button>
       </div>
       {mentionedPaths.length > 0 && (
