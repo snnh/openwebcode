@@ -591,6 +591,16 @@ export async function buildServer(dependencies) {
                 }
             }
         }
+        const clearCommand = request.body.content.match(/^\/clear\s*$/i);
+        if (clearCommand) {
+            if (agent.isRunning(request.params.id))
+                return reply.code(409).send({ error: "会话运行中，请先等待完成或中断后再清空上下文" });
+            const uptoIndex = session.messages.length;
+            const ledger = await new ContextManager(sessions.contextRoot(request.params.id)).markCleared(uptoIndex);
+            const at = ledger.cleared.at;
+            events.publish({ source: "agent", type: "context.cleared", sessionId: request.params.id, payload: { uptoIndex, at } });
+            return reply.code(200).send({ accepted: true, cleared: true, uptoIndex, at });
+        }
         const compactCommand = request.body.content.match(/^\/compact(?:\s+(tools?|toolcalls))?\s*$/i);
         if (compactCommand) {
             if (!dependencies.compactor)

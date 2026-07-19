@@ -54,6 +54,19 @@ describe("extractInstructions", () => {
 });
 
 describe("Compactor", () => {
+  it("does not summarize messages hidden by a newer clear boundary", async () => {
+    const root = await tempDir();
+    const store = new SessionStore(path.join(root, "sessions"));
+    await store.initialize();
+    const id = await sessionWithMessages(store, 10);
+    await new ContextManager(store.contextRoot(id)).markCleared(5);
+    const calls: Array<{ system: string; prompt: string }> = [];
+    const compactor = new Compactor(store, fakeProvider2("目标：\n- 新上下文", calls), {}, 2);
+    await compactor.compact(id, "overview");
+    expect(calls[0]!.prompt).not.toContain("消息 1\n");
+    expect(calls[0]!.prompt).toContain("消息 6");
+  });
+
   it("overview compacts the prefix and pins accumulated instructions in the view", async () => {
     const root = await tempDir();
     const store = new SessionStore(path.join(root, "sessions"));

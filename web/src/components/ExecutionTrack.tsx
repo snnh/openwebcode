@@ -1,12 +1,13 @@
-import { useEffect, useRef, useState, type ReactElement } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactElement } from "react";
 import type { SessionDetail } from "../lib/contracts";
 import { Icon } from "./Icon";
 import { Markdown } from "./Markdown";
 import { MessageCard } from "./MessageCard";
 import { PermissionCard, type PermissionRequest } from "./PermissionCard";
 
-export function ExecutionTrack({ session, streamText, thinkingText, permissions, onPermissionDone }: {
+export function ExecutionTrack({ session, cleared, streamText, thinkingText, permissions, onPermissionDone }: {
   session: SessionDetail;
+  cleared?: { uptoIndex: number; at: string };
   streamText: string;
   thinkingText?: string;
   permissions: PermissionRequest[];
@@ -44,7 +45,17 @@ export function ExecutionTrack({ session, streamText, thinkingText, permissions,
         {session.messages.length === 0 && !streamText && (
           <p className="track-empty">还没有消息。在下方描述要完成的任务，开始第一项作业。</p>
         )}
-        {session.messages.map((message) => <MessageCard key={message.id} message={message} />)}
+        {session.messages.map((message, index) => (
+          <Fragment key={message.id}>
+            {cleared && Math.min(cleared.uptoIndex, session.messages.length) === index && (
+              <div className="context-cleared-divider" role="separator">上下文已清空（历史保留）</div>
+            )}
+            <MessageCard message={message} />
+          </Fragment>
+        ))}
+        {cleared && Math.min(cleared.uptoIndex, session.messages.length) === session.messages.length && (
+          <div className="context-cleared-divider" role="separator">上下文已清空（历史保留）</div>
+        )}
         {(streamText || thinkingText) && (
           <article className="message assistant live">
             <span className="track-node" aria-hidden />

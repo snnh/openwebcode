@@ -316,6 +316,16 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   background: var(--border);
 }
 .track-empty { color: var(--text-3); font-size: 13px; padding-left: 30px; }
+.context-cleared-divider {
+  position: relative;
+  max-width: 960px;
+  margin: 2px 0 22px 30px;
+  color: var(--text-3);
+  font-size: 12px;
+  text-align: center;
+  border-top: 1px dashed var(--border);
+  padding-top: 7px;
+}
 .message, .permission-card { position: relative; max-width: 960px; margin: 0 0 22px; padding-left: 30px; }
 .track-node {
   position: absolute;
