@@ -2,13 +2,22 @@ name: core
 
 on:
   push:
-    paths: ["core/**", "docs/protocol.md", ".github/workflows/core.yml"]
+    paths:
+      - "core/**"
+      - ".github/workflows/core.yml"
   pull_request:
-    paths: ["core/**", "docs/protocol.md", ".github/workflows/core.yml"]
+    paths:
+      - "core/**"
+      - ".github/workflows/core.yml"
+
+concurrency:
+  group: core-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   linux:
     strategy:
+      fail-fast: false
       matrix:
         compiler: [gcc, clang]
     runs-on: ubuntu-latest

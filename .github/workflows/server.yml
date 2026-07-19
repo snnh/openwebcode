@@ -1,0 +1,56 @@
+name: server
+
+on:
+  push:
+    paths:
+      - "server/**"
+      - "core/**"
+      - ".github/workflows/server.yml"
+  pull_request:
+    paths:
+      - "server/**"
+      - "core/**"
+      - ".github/workflows/server.yml"
+
+concurrency:
+  group: server-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - name: Build core (Debug)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cmake -S core -B build -A x64
+            cmake --build build --config Debug --parallel
+          else
+            cmake -S core -B build -DCMAKE_BUILD_TYPE=Debug
+            cmake --build build --parallel
+          fi
+      - name: Install
+        run: npm ci
+        working-directory: server
+      - name: Build
+        run: npm run build
+        working-directory: server
+      - name: Test
+        run: npm test
+        working-directory: server
+        env:
+          # 让依赖真实 owc-exec 的测例（core-client / core-tcp / stage3-e2e / web-e2e）
+          # 直接定位到上一步构建出的 Debug 二进制；缺失的仍由 skipIf 跳过
+          OWC_CORE_PATH: ${{ runner.workspace }}/openwebcode/build/${{ runner.os == 'Windows' && 'Debug/owc-exec.exe' || 'owc-exec' }}

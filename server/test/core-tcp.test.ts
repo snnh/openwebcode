@@ -8,7 +8,10 @@ import { CoreClient } from "../src/core-client.js";
 import { TcpTransport } from "../src/rpc/transport.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const corePath = path.resolve(here, "../../build/Debug/owc-exec.exe");
+const corePath = process.env.OWC_CORE_PATH ?? path.resolve(
+  here,
+  process.platform === "win32" ? "../../build/Debug/owc-exec.exe" : "../../build/owc-exec",
+);
 const coreExists = existsSync(corePath);
 const itIfCore = coreExists ? it : it.skip;
 
@@ -25,7 +28,7 @@ afterEach(async () => {
   server = undefined;
 });
 
-describe("owc-exec --connect TCP loopback", () => {
+describe.skipIf(!existsSync(corePath))("owc-exec --connect TCP loopback", () => {
   itIfCore("handshakes core.ping over the connect-back socket", async () => {
     server = createServer();
     await new Promise<void>((resolve, reject) => {
@@ -40,7 +43,7 @@ describe("owc-exec --connect TCP loopback", () => {
     // 复用 CoreClient 的外部连接注入：传输为回连 TCP socket，完成真实握手
     client = new CoreClient(corePath, 10_000, () => Promise.resolve({ transport: new TcpTransport(socket) }));
     const info = await client.start();
-    expect(info.platform).toBe("windows");
+    expect(["windows", "linux", "darwin"]).toContain(info.platform);
     expect(info.sandboxCapability).toBeTruthy();
     await client.stop();
     client = undefined;

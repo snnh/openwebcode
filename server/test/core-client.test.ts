@@ -1,10 +1,14 @@
 import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { CoreClient, type CoreEvent } from "../src/core-client.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const corePath = path.resolve(here, "../../build/Debug/owc-exec.exe");
+const corePath = process.env.OWC_CORE_PATH ?? path.resolve(
+  here,
+  process.platform === "win32" ? "../../build/Debug/owc-exec.exe" : "../../build/owc-exec",
+);
 let client: CoreClient | undefined;
 
 afterEach(async () => {
@@ -12,13 +16,13 @@ afterEach(async () => {
   client = undefined;
 });
 
-describe("CoreClient", () => {
+describe.skipIf(!existsSync(corePath))("CoreClient", () => {
   it("handshakes and executes through the real core", async () => {
     client = new CoreClient(corePath);
     const events: CoreEvent[] = [];
     client.on("event", (event) => events.push(event));
     const info = await client.start();
-    expect(info.platform).toBe("windows");
+    expect(["windows", "linux", "darwin"]).toContain(info.platform);
 
     const cwd = path.resolve(here, "../..");
     await client.configureSession({
@@ -35,7 +39,9 @@ describe("CoreClient", () => {
     const result = await client.run({
       sessionId: "test-session",
       execId: "test-exec",
-      cmd: "Write-Output node-core-ok; [Console]::Error.WriteLine('node-core-error'); exit 7",
+      cmd: process.platform === "win32"
+        ? "Write-Output node-core-ok; [Console]::Error.WriteLine('node-core-error'); exit 7"
+        : "printf 'node-core-ok\\n'; printf 'node-core-error\\n' >&2; exit 7",
       cwd,
       timeoutMs: 5_000,
     });
