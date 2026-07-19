@@ -286,6 +286,20 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .state-badge.state-error { background: var(--danger-bg); color: var(--danger); }
 
 /* ================= 执行轨道 ================= */
+.todo-panel {
+  margin: 14px clamp(20px, 4vw, 64px) 0;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text-2);
+  font-size: 13px;
+}
+.todo-panel summary { cursor: pointer; color: var(--text-1); font-weight: 650; }
+.todo-panel ul { margin: 9px 0 2px; padding: 0; list-style: none; display: grid; gap: 6px; }
+.todo-panel li { display: flex; gap: 8px; align-items: baseline; }
+.todo-panel li[data-status="done"] { color: var(--text-3); text-decoration: line-through; }
+.todo-panel li[data-status="in_progress"] span { color: var(--accent); }
 .execution-track-wrap { position: relative; min-height: 0; display: grid; }
 .execution-track {
   overflow-y: auto;

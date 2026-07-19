@@ -643,6 +643,11 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     },
   );
 
+  app.get<{ Params: { id: string } }>("/api/sessions/:id/todos", async (request, reply) => {
+    if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
+    return agent.listTodos(request.params.id);
+  });
+
   app.get<{ Params: { id: string } }>("/api/sessions/:id/permissions", async (request, reply) => {
     if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
     // 待确认权限走 REST 可恢复：刷新或重连后 WS 补发可能已越过 permission.request 事件

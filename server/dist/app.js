@@ -627,6 +627,11 @@ export async function buildServer(dependencies) {
         void agent.run(request.params.id, request.body.content, { ...(images?.length ? { images } : {}) }).catch(() => undefined);
         return reply.code(202).send({ accepted: true });
     });
+    app.get("/api/sessions/:id/todos", async (request, reply) => {
+        if (!(await sessions.get(request.params.id)))
+            return reply.code(404).send({ error: "Session not found" });
+        return agent.listTodos(request.params.id);
+    });
     app.get("/api/sessions/:id/permissions", async (request, reply) => {
         if (!(await sessions.get(request.params.id)))
             return reply.code(404).send({ error: "Session not found" });
