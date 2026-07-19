@@ -96,6 +96,10 @@ if [ -x "\$OWC_HOME/node/bin/node" ]; then
 else
     OWC_NODE=node
 fi
+# owc run ... 走 headless CLI；不带 run 则启动 server
+if [ "\${1:-}" = "run" ]; then
+    exec "\$OWC_NODE" "\$OWC_HOME/server/dist/cli.js" "\$@"
+fi
 exec "\$OWC_NODE" "\$OWC_HOME/server/dist/index.js" "\$@"
 EOF
 chmod +x "$PREFIX/bin/owc"
