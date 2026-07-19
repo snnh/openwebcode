@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -300,5 +301,30 @@ describe("overview compaction sediment", () => {
     const second = await compactor.compact(session.id, "overview");
     expect(second.changed).toBe(true);
     expect(await readFile(memoryFile, "utf8")).toBe("# Memory\n- 压缩入口共有三处\n- 全局记忆 UI 未做\n");
+  });
+
+  it("skips sediment when overview falls back to truncated (provider2 unconfigured)", async () => {
+    const root = await tempRoot();
+    const cwd = path.join(root, "ws");
+    await mkdir(cwd, { recursive: true });
+    const store = new SessionStore(path.join(root, "sessions"));
+    await store.initialize();
+    const session = await store.create({ cwd, provider: "development", title: "降级样例" });
+    // 用户消息含「关键发现」字样：规则摘要会带进正文，finalMode 守卫必须挡住误沉淀
+    for (let index = 0; index < 15; index += 1) {
+      await store.appendMessage(session.id, "user", [{ type: "text", text: `消息 ${index + 1} 关键发现： - 不该沉淀` }]);
+    }
+    const unconfigured = {
+      configured: false,
+      model: "",
+      setConfig() { /* noop */ },
+      async complete() { throw new Error("provider2 not configured"); },
+    } as unknown as Provider2Client;
+    const compactor = new Compactor(store, unconfigured, {}, 10);
+
+    const result = await compactor.compact(session.id, "overview", { forced: true });
+    expect(result.changed).toBe(true);
+    expect(result.mode).toBe("truncated");
+    expect(existsSync(path.join(cwd, ".owc", "memory.md"))).toBe(false);
   });
 });
