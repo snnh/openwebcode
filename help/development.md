@@ -102,7 +102,8 @@ web/dist 不入库——由 server 静态托管（server 解析 `server/dist/../
 ```sh
 # 终端 1：core
 cmake -S core -B build && cmake --build build
-OWC_CORE_PATH=./build/owc-exec node server/dist/index.js
+OWC_CORE_PATH=./build/owc-exec node server/dist/index.js        # Linux
+# Windows: set OWC_CORE_PATH=build\Debug\owc-exec.exe && node server/dist/index.js
 
 # 终端 2：server（热重启）
 cd server && npm run dev
