@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
+import { buildServer } from "../src/app.js";
 import type { CoreClientLike } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
@@ -54,5 +55,32 @@ describe("todo_write", () => {
     const toolResult = detail?.messages.flatMap((message) => message.content).find((block) => block.type === "tool_result" && block.toolCallId === "todo-1");
     expect(toolResult).toMatchObject({ isError: true });
     expect(result.observed.filter((event) => event.type === "todos.updated").map((event) => event.payload)).toEqual([{ items: [] }]);
+  });
+});
+
+// A3 验收补：REST 路由 GET /api/sessions/:id/todos 行为（含 404）
+describe("GET /api/sessions/:id/todos", () => {
+  it("返回当前快照（与 agent.listTodos 一致）；404 on missing session", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-todos-rest-")); roots.push(root);
+    const sessions = new SessionStore(path.join(root, "sessions")); await sessions.initialize();
+    const session = await sessions.create({ cwd: root, provider: "development", model: "deterministic-tool-loop" });
+    const pricing = new PricingCatalog(path.join(root, "pricing.json")); await pricing.initialize();
+    const events = new EventBus();
+    const providers = new ProviderRegistry();
+    providers.register({ name: "development", async *streamChat() { yield { type: "done", stopReason: "end_turn" }; } });
+    const core = { on() { return core; }, async configureSession() { return { sandboxCapability: "advisory" }; } } as unknown as CoreClientLike;
+    const agent = new AgentRunner(sessions, providers, core, events, pricing);
+    const app = await buildServer({ core, sessions, agent, events, providers, pricing });
+    try {
+      // 空 -> []
+      const empty = await app.inject({ method: "GET", url: `/api/sessions/${session.id}/todos` });
+      expect(empty.statusCode, empty.body).toBe(200);
+      expect(empty.json()).toEqual([]);
+      // 会话不存在 -> 404
+      const missing = await app.inject({ method: "GET", url: `/api/sessions/00000000-0000-0000-0000-000000000000/todos` });
+      expect(missing.statusCode).toBe(404);
+    } finally {
+      await app.close();
+    }
   });
 });
