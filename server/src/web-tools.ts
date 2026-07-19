@@ -35,7 +35,11 @@ function blockedIpv6(hostname: string): boolean {
   const normalized = hostname.replace(/^\[|\]$/g, "").toLowerCase();
   if (normalized === "::1") return true;
   const first = normalized.split(":", 1)[0] ?? "";
-  return first.length > 0 && (Number.parseInt(first, 16) & 0xfe00) === 0xfc00;
+  if (!first) return false;
+  const firstNum = Number.parseInt(first, 16);
+  if (Number.isNaN(firstNum)) return false;
+  // fc00::/7 唯一本地（fc00–fdff），fe80::/10 链路本地（fe80–febf）——均为内网，防 SSRF
+  return (firstNum & 0xfe00) === 0xfc00 || (firstNum & 0xffc0) === 0xfe80;
 }
 
 export function assertSafeWebUrl(value: string): URL {
