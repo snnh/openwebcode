@@ -9,6 +9,7 @@ export interface CreateSessionInput {
   provider?: string;
   model?: string;
   title?: string;
+  agentMode?: "plan" | "build";
   sandboxMode?: SandboxMode;
   setupScript?: string;
   /** 托管工作区：调用方预分配 id（镜像/挂载路径按 id 推导，必须先于 create 准备） */
@@ -43,6 +44,7 @@ export class SessionStore {
     // appcontainer 为默认不落盘；setupScript 仅非空时保留
     if (input.sandboxMode && input.sandboxMode !== "appcontainer") meta.sandboxMode = input.sandboxMode;
     if (input.setupScript?.trim()) meta.setupScript = input.setupScript;
+    if (input.agentMode === "plan") meta.agentMode = "plan";
     await mkdir(this.sessionPath(meta.id), { recursive: false });
     await this.writeMeta(meta);
     await writeFile(this.messagesPath(meta.id), "", { encoding: "utf8", flag: "wx" });
@@ -105,7 +107,7 @@ export class SessionStore {
     return message;
   }
 
-  async updateConfig(id: string, update: Pick<SessionMeta, "provider" | "model"> & Partial<Pick<SessionMeta, "thinking" | "effort">>): Promise<SessionMeta> {
+  async updateConfig(id: string, update: Pick<SessionMeta, "provider" | "model"> & Partial<Pick<SessionMeta, "thinking" | "effort" | "agentMode">>): Promise<SessionMeta> {
     const meta = await this.readMeta(id);
     meta.provider = update.provider;
     meta.model = update.model;
@@ -113,6 +115,8 @@ export class SessionStore {
     else meta.thinking = update.thinking;
     if (update.effort === undefined) delete meta.effort;
     else meta.effort = update.effort;
+    if (update.agentMode === undefined || update.agentMode === "build") delete meta.agentMode;
+    else meta.agentMode = update.agentMode;
     meta.updatedAt = new Date().toISOString();
     await this.writeMeta(meta);
     return meta;
