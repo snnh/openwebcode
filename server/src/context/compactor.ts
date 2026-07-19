@@ -157,8 +157,10 @@ export class Compactor {
     await context.save(ledger);
     // 长期记忆沉淀（§7.5）：overview 摘要的「关键发现/未决事项」落进项目 memory.md。
     // 单点落在此：85% 强制压缩（agent-runner）、REST 与 /compact 命令（app.ts runCompact）
-    // 全部经 Compactor.compact；去重交给 appendMemory，失败只告警不影响压缩结果
-    if (mode === "overview") {
+    // 全部经 Compactor.compact；去重交给 appendMemory，失败只告警不影响压缩结果。
+    // 注意按 finalMode 判断：provider2 缺失降级 truncated 时规则摘要不含结构化小节，
+    // 若按请求 mode 判断会把工具参数里的「关键发现」字样误收进记忆
+    if (finalMode === "overview") {
       try {
         const facts = parseSedimentSections(summary);
         if (facts.length > 0) await appendMemory(path.join(session.cwd, ".owc", "memory.md"), facts);
