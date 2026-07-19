@@ -8,6 +8,8 @@ export const TOOL_RESULT_BUDGETS: Record<string, number> = {
   read_file: 16_000,
   grep: 4_000,
   glob: 4_000,
+  web_fetch: 8_000,
+  web_search: 4_000,
 };
 
 export interface BoundedToolResult {

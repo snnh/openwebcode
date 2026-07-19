@@ -74,6 +74,7 @@ interface RuntimeDependencies {
 const GROUPS = [
   { id: "models", label: "模型接入" },
   { id: "provider2", label: "上下文压缩" },
+  { id: "search", label: "网络搜索" },
   { id: "general", label: "语言与货币" },
   { id: "executor", label: "执行器" },
   { id: "service", label: "服务" },
@@ -153,6 +154,10 @@ const FIELDS: FieldSpec[] = [
   { key: "provider2BaseURL", group: "provider2", label: "provider2 Base URL", type: "text", env: "OWC_PROVIDER2_BASE_URL", defaultValue: null, restartRequired: false, validate: requireHttpUrl, description: "OpenAI 兼容端点；与模型名同时填写后启用" },
   { key: "provider2ApiKey", group: "provider2", label: "provider2 API Key", type: "secret", env: "OWC_PROVIDER2_API_KEY", defaultValue: null, restartRequired: false },
   { key: "provider2Model", group: "provider2", label: "provider2 模型", type: "text", env: "OWC_PROVIDER2_MODEL", defaultValue: null, restartRequired: false, description: "如 deepseek-chat / claude-haiku-4-5" },
+  // 网络搜索（重启生效）
+  { key: "searchProvider", group: "search", label: "搜索 Provider", type: "select", env: "OWC_SEARCH_PROVIDER", defaultValue: null, restartRequired: true, options: ["brave", "custom"] },
+  { key: "searchApiKey", group: "search", label: "搜索 API Key", type: "secret", env: "OWC_SEARCH_API_KEY", defaultValue: null, restartRequired: true },
+  { key: "searchBaseURL", group: "search", label: "搜索 Base URL", type: "text", env: "OWC_SEARCH_BASE_URL", defaultValue: null, restartRequired: true, validate: requireHttpUrl, description: "custom provider 的 HTTP 端点" },
   // 通用（热生效）
   { key: "defaultLanguage", group: "general", label: "默认语言", type: "select", env: "OWC_DEFAULT_LANGUAGE", defaultValue: "zh-CN", restartRequired: false, options: LANGUAGE_OPTIONS },
   { key: "defaultCurrency", group: "general", label: "默认货币", type: "select", env: "OWC_DEFAULT_CURRENCY", defaultValue: "CNY", restartRequired: false, options: ["USD", "CNY"], fromEnv: envCurrency },
@@ -246,6 +251,9 @@ export class SettingsService {
     const provider2BaseURL = value("provider2BaseURL");
     const provider2ApiKey = value("provider2ApiKey");
     const provider2Model = value("provider2Model");
+    const searchProvider = value("searchProvider");
+    const searchApiKey = value("searchApiKey");
+    const searchBaseURL = value("searchBaseURL");
     const jobObjectMemoryMB = value("jobObjectMemoryMB");
     const jobObjectMaxProcesses = value("jobObjectMaxProcesses");
     return {
@@ -296,6 +304,15 @@ export class SettingsService {
               baseURL: provider2BaseURL,
               model: provider2Model,
               ...(typeof provider2ApiKey === "string" ? { apiKey: provider2ApiKey } : {}),
+            },
+          }
+        : {}),
+      ...((searchProvider === "brave" || searchProvider === "custom")
+        ? {
+            search: {
+              provider: searchProvider,
+              ...(typeof searchApiKey === "string" ? { apiKey: searchApiKey } : {}),
+              ...(typeof searchBaseURL === "string" ? { baseURL: searchBaseURL } : {}),
             },
           }
         : {}),

@@ -7,6 +7,8 @@ export const TOOL_RESULT_BUDGETS = {
     read_file: 16_000,
     grep: 4_000,
     glob: 4_000,
+    web_fetch: 8_000,
+    web_search: 4_000,
 };
 export async function boundToolResult(sessionRoot, toolName, content) {
     const budget = TOOL_RESULT_BUDGETS[toolName] ?? 8_000;

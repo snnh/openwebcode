@@ -1,0 +1,185 @@
+import { isIP } from "node:net";
+const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_MAX_BYTES = 2 * 1024 * 1024;
+const MAX_REDIRECTS = 10;
+function blockedIpv4(hostname) {
+    const octets = hostname.split(".").map(Number);
+    if (octets.length !== 4 || octets.some((value) => !Number.isInteger(value) || value < 0 || value > 255))
+        return false;
+    const [a, b] = octets;
+    return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) ||
+        (a === 192 && b === 168) || (a === 169 && b === 254);
+}
+function blockedIpv6(hostname) {
+    const normalized = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    if (normalized === "::1")
+        return true;
+    const first = normalized.split(":", 1)[0] ?? "";
+    return first.length > 0 && (Number.parseInt(first, 16) & 0xfe00) === 0xfc00;
+}
+export function assertSafeWebUrl(value) {
+    let url;
+    try {
+        url = new URL(value);
+    }
+    catch {
+        throw new Error(`Invalid URL: ${value}`);
+    }
+    if (url.protocol !== "http:" && url.protocol !== "https:")
+        throw new Error("Only http and https URLs are supported");
+    const hostname = url.hostname.replace(/^\[|\]$/g, "").toLowerCase().replace(/\.$/, "");
+    if (hostname === "localhost" || hostname.endsWith(".localhost"))
+        throw new Error("Local network URLs are not allowed");
+    const kind = isIP(hostname);
+    if ((kind === 4 && blockedIpv4(hostname)) || (kind === 6 && blockedIpv6(hostname))) {
+        throw new Error("Local or private network URLs are not allowed");
+    }
+    return url;
+}
+function decodeEntities(value) {
+    const named = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
+    return value.replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi, (match, entity) => {
+        if (entity[0] !== "#")
+            return named[entity.toLowerCase()] ?? match;
+        const hex = entity[1]?.toLowerCase() === "x";
+        const codePoint = Number.parseInt(entity.slice(hex ? 2 : 1), hex ? 16 : 10);
+        try {
+            return String.fromCodePoint(codePoint);
+        }
+        catch {
+            return match;
+        }
+    });
+}
+export function htmlToText(html) {
+    return decodeEntities(html
+        .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, " ")
+        .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, " ")
+        .replace(/<(?:br|\/p|\/div|\/li|\/h[1-6])\s*>/gi, "\n")
+        .replace(/<[^>]+>/g, " "))
+        .replace(/[ \t]+/g, " ")
+        .replace(/\s*\n\s*/g, "\n")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+}
+async function readLimited(response, maxBytes) {
+    if (!response.body)
+        return "";
+    const reader = response.body.getReader();
+    const chunks = [];
+    let size = 0;
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done)
+                break;
+            size += value.byteLength;
+            if (size > maxBytes) {
+                await reader.cancel();
+                throw new Error(`Response exceeds ${maxBytes} byte limit`);
+            }
+            chunks.push(value);
+        }
+    }
+    finally {
+        reader.releaseLock();
+    }
+    const body = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+        body.set(chunk, offset);
+        offset += chunk.byteLength;
+    }
+    return new TextDecoder().decode(body);
+}
+function supportedContentType(value) {
+    const type = value.split(";", 1)[0].trim().toLowerCase();
+    return type.startsWith("text/") || type === "application/json" || type.endsWith("+json") || type === "application/xml" || type.endsWith("+xml");
+}
+export async function webFetch(value, options = {}) {
+    const requested = assertSafeWebUrl(value);
+    const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+    const timeout = AbortSignal.timeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
+    let current = requested;
+    for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
+        current = assertSafeWebUrl(current.href);
+        const response = await fetchImpl(current, { redirect: "manual", signal });
+        if (response.status >= 300 && response.status < 400) {
+            const location = response.headers.get("location");
+            if (!location)
+                throw new Error(`Redirect ${response.status} has no Location header`);
+            if (redirects === MAX_REDIRECTS)
+                throw new Error("Too many redirects");
+            current = assertSafeWebUrl(new URL(location, current).href);
+            continue;
+        }
+        if (!response.ok)
+            throw new Error(`HTTP ${response.status} ${response.statusText}`.trim());
+        const contentType = response.headers.get("content-type") ?? "";
+        if (!supportedContentType(contentType))
+            throw new Error(`Unsupported content type: ${contentType || "unknown"}`);
+        const raw = await readLimited(response, options.maxBytes ?? DEFAULT_MAX_BYTES);
+        return {
+            url: requested.href,
+            finalUrl: current.href,
+            contentType,
+            text: contentType.toLowerCase().startsWith("text/html") ? htmlToText(raw) : raw,
+        };
+    }
+    throw new Error("Too many redirects");
+}
+function normalizeResults(value, limit) {
+    const root = value;
+    const items = root?.web?.results ?? root?.results ?? [];
+    if (!Array.isArray(items))
+        return [];
+    return items.slice(0, limit).flatMap((item) => {
+        if (!item || typeof item !== "object")
+            return [];
+        const entry = item;
+        const title = typeof entry.title === "string" ? entry.title : "";
+        const url = typeof entry.url === "string" ? entry.url : "";
+        const snippet = typeof entry.description === "string" ? entry.description : typeof entry.snippet === "string" ? entry.snippet : "";
+        return title && url ? [{ title, url, snippet }] : [];
+    });
+}
+class HttpSearchProvider {
+    name;
+    baseURL;
+    apiKey;
+    fetchImpl;
+    constructor(name, baseURL, apiKey, fetchImpl) {
+        this.name = name;
+        this.baseURL = baseURL;
+        this.apiKey = apiKey;
+        this.fetchImpl = fetchImpl;
+    }
+    async search(query, limit) {
+        const url = new URL(this.baseURL);
+        url.searchParams.set("q", query);
+        url.searchParams.set("count", String(limit));
+        const headers = this.apiKey
+            ? (this.name === "brave" ? { "X-Subscription-Token": this.apiKey } : { Authorization: `Bearer ${this.apiKey}` })
+            : undefined;
+        const response = await this.fetchImpl(url, {
+            ...(headers ? { headers } : {}),
+            signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+        });
+        if (!response.ok)
+            throw new Error(`Search provider returned HTTP ${response.status}`);
+        return normalizeResults(await response.json(), limit);
+    }
+}
+export function createSearchProvider(config, fetchImpl = globalThis.fetch) {
+    if (!config)
+        return undefined;
+    if (config.provider === "brave") {
+        if (!config.apiKey)
+            return undefined;
+        return new HttpSearchProvider("brave", "https://api.search.brave.com/res/v1/web/search", config.apiKey, fetchImpl);
+    }
+    if (!config.baseURL)
+        return undefined;
+    return new HttpSearchProvider("custom", config.baseURL, config.apiKey, fetchImpl);
+}

@@ -23,6 +23,7 @@ import { Provider2Client } from "./provider2.js";
 import { Compactor } from "./context/compactor.js";
 import { StorageGC } from "./storage-gc.js";
 import { UsageLog } from "./usage-log.js";
+import { createSearchProvider } from "./web-tools.js";
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const resolveFromServer = (value: string) => (path.isAbsolute(value) ? value : path.resolve(moduleDirectory, "..", value));
@@ -69,7 +70,8 @@ const commands = new CommandRegistry(path.join(dataDir, "commands"));
 const mcp = new McpManager(dataDir);
 const provider2 = new Provider2Client(config.provider2);
 const compactor = new Compactor(sessions, provider2, { usageLog, pricing, exchangeRates });
-const agent = new AgentRunner(sessions, providers, core, events, pricing, exchangeRates, config.defaultLanguage, 50, (model) => models.get(model), usageLog, skills, mcp, compactor, dataDir, agents, commands);
+const search = createSearchProvider(config.search);
+const agent = new AgentRunner(sessions, providers, core, events, pricing, exchangeRates, config.defaultLanguage, 50, (model) => models.get(model), usageLog, skills, mcp, compactor, dataDir, agents, commands, search);
 // 托管工作区（plan §6.4）：镜像/挂载点位于 dataDir 下；孤儿挂载清理挂在 GC 启动扫描上
 const managed = new ManagedWorkspaceManager({ dataDir });
 const gc = new StorageGC(path.join(dataDir, "sessions"), config.gcMaxBytes, () => managed.sweepOrphans());

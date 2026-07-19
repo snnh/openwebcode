@@ -76,12 +76,25 @@ export class PermissionCoordinator {
 export function permissionRule(tool: string, input: Record<string, unknown>): PermissionRule {
   if (tool === "bash" && typeof input.cmd === "string") return { tool, argumentPrefix: input.cmd };
   if (["write_file", "edit_file"].includes(tool) && typeof input.path === "string") return { tool, argumentPrefix: input.path };
+  if (tool === "web_fetch" && typeof input.url === "string") {
+    try {
+      const url = new URL(input.url);
+      if (url.protocol === "http:" || url.protocol === "https:") return { tool, argumentPrefix: url.origin };
+    } catch {
+      // 非法 URL 不得退化为整个工具永久放行
+    }
+    return { tool, argumentPrefix: "invalid:" };
+  }
   return { tool };
 }
 
 function matchesRule(rule: PermissionRule, tool: string, input: Record<string, unknown>): boolean {
   if (rule.tool !== tool) return false;
   if (rule.argumentPrefix === undefined) return true;
+  if (tool === "web_fetch") {
+    if (typeof input.url !== "string") return false;
+    try { return new URL(input.url).origin === rule.argumentPrefix; } catch { return false; }
+  }
   const value = tool === "bash" ? input.cmd : input.path;
   if (typeof value !== "string") return false;
   if (tool === "bash") return value === rule.argumentPrefix;
