@@ -8,6 +8,7 @@ import path from "node:path";
 import { SteeringError } from "./agent/agent-runner.js";
 import { CoreRpcError } from "./core-client.js";
 import { ContextManager } from "./context/context-manager.js";
+import { renderSessionHtml } from "./export-html.js";
 import { boundToolResult } from "./context/tool-result-budget.js";
 import { getModelProfile, listModelProfiles } from "./context/model-profile.js";
 import { lookupModelMetadata } from "./context/model-metadata.js";
@@ -286,6 +287,15 @@ export async function buildServer(dependencies) {
             .header("content-type", "application/x-ndjson; charset=utf-8")
             .header("content-disposition", `attachment; filename="session-${request.params.id}.jsonl"`)
             .send(jsonl);
+    });
+    app.get("/api/sessions/:id/export.html", async (request, reply) => {
+        const detail = await sessions.get(request.params.id);
+        if (!detail)
+            return reply.code(404).send({ error: "Session not found" });
+        return reply
+            .type("text/html; charset=utf-8")
+            .header("content-disposition", `attachment; filename="session-${request.params.id}.html"`)
+            .send(renderSessionHtml(detail));
     });
     app.post("/api/sessions/import", { bodyLimit: 50 * 1024 * 1024 }, async (request, reply) => {
         if (typeof request.body !== "string" || request.body.trim() === "") {

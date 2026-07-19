@@ -11,6 +11,7 @@ import type { BackgroundTaskRegistry } from "./agent/background-tasks.js";
 import type { HookRunner } from "./hooks.js";
 import { CoreRpcError, type CoreClientLike, type ExecRequest } from "./core-client.js";
 import { ContextManager, type BudgetUpdate } from "./context/context-manager.js";
+import { renderSessionHtml } from "./export-html.js";
 import { boundToolResult } from "./context/tool-result-budget.js";
 import type { ServerConfig } from "./config.js";
 import { getModelProfile, listModelProfiles, type Currency, type EffortLevel, type ModelPricing, type ModelProfile, type ThinkingMode } from "./context/model-profile.js";
@@ -344,6 +345,15 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       .header("content-type", "application/x-ndjson; charset=utf-8")
       .header("content-disposition", `attachment; filename="session-${request.params.id}.jsonl"`)
       .send(jsonl);
+  });
+
+  app.get<{ Params: { id: string } }>("/api/sessions/:id/export.html", async (request, reply) => {
+    const detail = await sessions.get(request.params.id);
+    if (!detail) return reply.code(404).send({ error: "Session not found" });
+    return reply
+      .type("text/html; charset=utf-8")
+      .header("content-disposition", `attachment; filename="session-${request.params.id}.html"`)
+      .send(renderSessionHtml(detail));
   });
 
   app.post("/api/sessions/import", { bodyLimit: 50 * 1024 * 1024 }, async (request, reply) => {
