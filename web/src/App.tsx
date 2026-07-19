@@ -123,6 +123,11 @@ export function App(): ReactElement {
           setNotice((event.payload as { message?: string }).message ?? "MCP server 降级");
         }
         // 上下文压缩（手动/85% 强制）：刷新上下文面板并提示
+        if (event.type === "context.cleared" && event.sessionId && event.sessionId === currentId) {
+          setNotice("上下文已清空（历史保留）");
+          queryClient.invalidateQueries({ queryKey: queryKeys.detail(event.sessionId) });
+          queryClient.invalidateQueries({ queryKey: ["context", event.sessionId] });
+        }
         if (event.type === "context.compacted" && event.sessionId === currentId) {
           const payload = event.payload as { mode?: string; forced?: boolean };
           const modeLabel = payload.mode === "overview" ? "概览" : payload.mode === "toolcalls" ? "工具调用" : "规则截断";
@@ -316,6 +321,7 @@ export function App(): ReactElement {
             )}
             <ExecutionTrack
               session={current}
+              {...(contextView.data?.ledger.cleared ? { cleared: contextView.data.ledger.cleared } : {})}
               streamText={stream[current.id] ?? ""}
               thinkingText={thinkingStream[current.id] ?? ""}
               permissions={mergedPermissions}

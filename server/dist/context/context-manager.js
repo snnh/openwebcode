@@ -36,8 +36,10 @@ export class ContextManager {
     async buildView(messages) {
         const ledger = await this.load();
         const compacted = ledger.compacted;
-        // 压缩前缀：uptoIndex 之前的消息由摘要取代（回滚经 git shadow 同步回退账本，这里只需 clamp）
-        const uptoIndex = compacted ? Math.min(compacted.uptoIndex, messages.length) : 0;
+        const compactedIndex = compacted ? Math.min(compacted.uptoIndex, messages.length) : 0;
+        const clearedIndex = ledger.cleared ? Math.min(ledger.cleared.uptoIndex, messages.length) : 0;
+        // 压缩和清空都裁剪消息前缀；较新的边界获胜。clear 覆盖压缩时不得重新注入旧摘要。
+        const uptoIndex = Math.max(compactedIndex, clearedIndex);
         const view = messages.slice(uptoIndex).map((message) => ({ ...message, content: message.content.map((block) => ({ ...block })) }));
         const byMessage = new Map(ledger.entries.map((entry) => [entry.messageId, entry]));
         for (const message of view) {
@@ -53,7 +55,7 @@ export class ContextManager {
                 };
             });
         }
-        if (compacted) {
+        if (compacted && (!ledger.cleared || compactedIndex > clearedIndex)) {
             view.unshift({
                 id: `compaction:${compacted.createdAt}`,
                 role: "user",
@@ -147,6 +149,21 @@ export class ContextManager {
             }
             await this.save(ledger);
             return ledger;
+        });
+    }
+    async updateLedger(update) {
+        return this.serial(async () => {
+            const ledger = await this.load();
+            update(ledger);
+            await this.save(ledger);
+            return ledger;
+        });
+    }
+    async markCleared(uptoIndex) {
+        if (!Number.isSafeInteger(uptoIndex) || uptoIndex < 0)
+            throw new Error("Clear index must be a non-negative integer");
+        return this.updateLedger((ledger) => {
+            ledger.cleared = { uptoIndex, at: new Date().toISOString() };
         });
     }
     async replaceLedger(value) {
@@ -332,6 +349,9 @@ function normalizeLedger(value) {
             : [],
         ...(isCompaction(value.compacted)
             ? { compacted: { ...value.compacted, instructions: value.compacted.instructions.filter((item) => typeof item === "string") } }
+            : {}),
+        ...(value.cleared && Number.isSafeInteger(value.cleared.uptoIndex) && value.cleared.uptoIndex >= 0 && typeof value.cleared.at === "string" && Number.isFinite(Date.parse(value.cleared.at))
+            ? { cleared: { uptoIndex: value.cleared.uptoIndex, at: value.cleared.at } }
             : {}),
     };
 }

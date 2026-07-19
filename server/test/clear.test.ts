@@ -1,0 +1,137 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { AgentRunner } from "../src/agent/agent-runner.js";
+import { buildServer } from "../src/app.js";
+import { ContextManager } from "../src/context/context-manager.js";
+import type { CoreClient } from "../src/core-client.js";
+import { PricingCatalog } from "../src/cost/pricing-catalog.js";
+import { EventBus, type AppEvent } from "../src/events/event-bus.js";
+import { ProviderRegistry } from "../src/providers/provider.js";
+import { SessionStore } from "../src/sessions/session-store.js";
+import type { ChatMessage } from "../src/sessions/types.js";
+
+const roots: string[] = [];
+afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
+
+async function manager(): Promise<ContextManager> {
+  const root = await mkdtemp(path.join(os.tmpdir(), "owc-clear-"));
+  roots.push(root);
+  return new ContextManager(root);
+}
+
+function messages(count: number): ChatMessage[] {
+  return Array.from({ length: count }, (_, index) => ({
+    id: `m${index}`,
+    role: index % 2 === 0 ? "user" : "assistant",
+    createdAt: new Date(index * 1000).toISOString(),
+    content: [{ type: "text", text: `message ${index}` }],
+  }));
+}
+
+describe("ContextManager clear boundary", () => {
+  it("keeps history but excludes the cleared prefix from the model view", async () => {
+    const context = await manager();
+    const history = messages(4);
+    const ledger = await context.markCleared(3);
+    expect(ledger.cleared).toMatchObject({ uptoIndex: 3 });
+    expect((await context.buildView(history)).messages.map((message) => message.id)).toEqual(["m3"]);
+    expect(history).toHaveLength(4);
+  });
+
+  it("uses the later compact or clear boundary without leaking an older summary", async () => {
+    const context = await manager();
+    const base = await context.load();
+    await context.replaceLedger({ ...base, compacted: { uptoIndex: 2, mode: "overview", summary: "old secret", instructions: [], createdAt: new Date().toISOString() }, cleared: { uptoIndex: 4, at: new Date().toISOString() } });
+    const clearedView = await context.buildView(messages(6));
+    expect(clearedView.messages.map((message) => message.id)).toEqual(["m4", "m5"]);
+    expect(JSON.stringify(clearedView.messages)).not.toContain("old secret");
+
+    await context.replaceLedger({ ...base, compacted: { uptoIndex: 5, mode: "overview", summary: "new summary", instructions: [], createdAt: new Date().toISOString() }, cleared: { uptoIndex: 3, at: new Date().toISOString() } });
+    const compactedView = await context.buildView(messages(6));
+    expect(compactedView.messages[0]?.id).toMatch(/^compaction:/);
+    expect(compactedView.messages.at(-1)?.id).toBe("m5");
+  });
+
+  it("normalizes malformed clear records and replaceLedger restores an earlier boundary", async () => {
+    const context = await manager();
+    const original = await context.load();
+    await context.replaceLedger({ ...original, cleared: { uptoIndex: -1, at: 3 } });
+    expect((await context.load()).cleared).toBeUndefined();
+    await context.markCleared(3);
+    expect((await context.load()).cleared?.uptoIndex).toBe(3);
+    await context.replaceLedger(original);
+    expect((await context.load()).cleared).toBeUndefined();
+    expect((await context.buildView(messages(3))).messages).toHaveLength(3);
+  });
+});
+
+describe("/clear checkpoint restore", () => {
+  it("restoring a checkpoint taken before /clear rewinds the clear boundary", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-clear-restore-")); roots.push(root);
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "owc-clear-ws-")); roots.push(workspace);
+    const sessions = new SessionStore(path.join(root, "sessions")); await sessions.initialize();
+    const pricing = new PricingCatalog(path.join(root, "pricing.json")); await pricing.initialize();
+    const providers = new ProviderRegistry();
+    const events = new EventBus(); const observed: AppEvent[] = [];
+    events.on("event", (event: AppEvent) => observed.push(event));
+    const core = { on() { return core; } } as unknown as CoreClient;
+    const agent = new AgentRunner(sessions, providers, core, events, pricing);
+    const app = await buildServer({ core, sessions, agent, events, providers, pricing });
+    try {
+      const session = await sessions.create({ cwd: workspace, title: "Clear restore" });
+      await sessions.appendMessage(session.id, "user", [{ type: "text", text: "old question" }]);
+      await sessions.appendMessage(session.id, "assistant", [{ type: "text", text: "old answer" }]);
+      const checkpoint = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/checkpoints`, payload: { label: "pre-clear" } });
+      expect(checkpoint.statusCode).toBe(201);
+      const checkpointId = checkpoint.json<{ id: string }>().id;
+
+      const cleared = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "/clear" } });
+      expect(cleared.statusCode).toBe(200);
+      const history = (await sessions.get(session.id))!.messages;
+      expect((await new ContextManager(sessions.contextRoot(session.id)).buildView(history)).messages).toEqual([]);
+
+      const restored = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/checkpoints/${checkpointId}/restore`, payload: { confirm: true } });
+      expect(restored.statusCode, restored.body).toBe(200);
+      const ledger = await new ContextManager(sessions.contextRoot(session.id)).load();
+      expect(ledger.cleared).toBeUndefined();
+      const view = await new ContextManager(sessions.contextRoot(session.id)).buildView(history);
+      expect(view.messages.map((message) => message.id)).toEqual(history.map((message) => message.id));
+      expect(observed.some((event) => event.type === "checkpoint.restored")).toBe(true);
+    } finally {
+      await app.close();
+    }
+  }, 30_000);
+});
+
+describe("/clear composer command", () => {
+  it("marks the current message boundary without changing history or starting the agent", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-clear-http-")); roots.push(root);
+    const sessions = new SessionStore(path.join(root, "sessions")); await sessions.initialize();
+    const pricing = new PricingCatalog(path.join(root, "pricing.json")); await pricing.initialize();
+    const providers = new ProviderRegistry();
+    const events = new EventBus(); const observed: AppEvent[] = [];
+    events.on("event", (event: AppEvent) => observed.push(event));
+    const core = { on() { return core; } } as unknown as CoreClient;
+    const agent = new AgentRunner(sessions, providers, core, events, pricing);
+    const app = await buildServer({ core, sessions, agent, events, providers, pricing });
+    try {
+      const session = await sessions.create({ cwd: root, title: "Clear route" });
+      await sessions.appendMessage(session.id, "user", [{ type: "text", text: "keep me" }]);
+      const before = (await sessions.get(session.id))!.messages;
+      const response = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "/clear" } });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ accepted: true, cleared: true, uptoIndex: 1 });
+      expect((await sessions.get(session.id))!.messages).toEqual(before);
+      expect(agent.isRunning(session.id)).toBe(false);
+      expect(observed.find((event) => event.type === "context.cleared")?.payload).toMatchObject({ uptoIndex: 1 });
+      expect((await new ContextManager(sessions.contextRoot(session.id)).buildView(before)).messages).toEqual([]);
+      vi.spyOn(agent, "isRunning").mockReturnValue(true);
+      const running = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "/clear" } });
+      expect(running.statusCode).toBe(409);
+    } finally {
+      await app.close();
+    }
+  });
+});

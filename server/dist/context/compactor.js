@@ -110,7 +110,9 @@ export class Compactor {
             throw new Error("Session not found");
         const context = new ContextManager(this.sessions.contextRoot(sessionId));
         const ledger = await context.load();
-        const previousUpto = Math.min(ledger.compacted?.uptoIndex ?? 0, session.messages.length);
+        const compactedUpto = Math.min(ledger.compacted?.uptoIndex ?? 0, session.messages.length);
+        const clearedUpto = Math.min(ledger.cleared?.uptoIndex ?? 0, session.messages.length);
+        const previousUpto = Math.max(compactedUpto, clearedUpto);
         const uptoIndex = Math.max(previousUpto, session.messages.length - this.keepTail);
         if (uptoIndex <= previousUpto) {
             return { changed: false, mode, reason: `没有新的可压缩区段（保留最近 ${this.keepTail} 条消息）` };
@@ -119,7 +121,7 @@ export class Compactor {
         const forced = options.forced === true;
         let finalMode = mode;
         let summary;
-        let instructions = ledger.compacted?.instructions ?? [];
+        let instructions = !ledger.cleared || compactedUpto > clearedUpto ? (ledger.compacted?.instructions ?? []) : [];
         if (this.provider2.configured) {
             const transcript = renderSpan(span);
             const completion = await this.provider2.complete({
@@ -141,13 +143,14 @@ export class Compactor {
             summary = ruleBasedToolcalls(span);
             finalMode = mode === "overview" ? "truncated" : "toolcalls";
         }
-        // 85% 强制时 pin 失效（安全优先，§7.3-W）
-        if (forced) {
-            for (const entry of ledger.entries)
-                entry.pinnedUntilRound = 0;
-        }
-        ledger.compacted = { uptoIndex, mode: finalMode, summary, instructions, createdAt: new Date().toISOString() };
-        await context.save(ledger);
+        await context.updateLedger((current) => {
+            // 85% 强制时 pin 失效（安全优先，§7.3-W）
+            if (forced) {
+                for (const entry of current.entries)
+                    entry.pinnedUntilRound = 0;
+            }
+            current.compacted = { uptoIndex, mode: finalMode, summary, instructions, createdAt: new Date().toISOString() };
+        });
         // 长期记忆沉淀（§7.5）：overview 摘要的「关键发现/未决事项」落进项目 memory.md。
         // 单点落在此：85% 强制压缩（agent-runner）、REST 与 /compact 命令（app.ts runCompact）
         // 全部经 Compactor.compact；去重交给 appendMemory，失败只告警不影响压缩结果。

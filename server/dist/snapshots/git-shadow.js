@@ -71,7 +71,11 @@ export class GitShadowSnapshots {
         await this.initialize();
         if (!(await this.list()).some((item) => item.id === id))
             throw new Error("Checkpoint not found");
-        await this.git(["checkout", "-f", id, "--", "."]);
+        // 空树检查点（空工作区快照，--allow-empty 提交）：checkout 的 pathspec 匹配不到任何文件会报错，
+        // 此时跳过 checkout，仅靠 clean 把工作区回滚到空状态。
+        const tree = await this.git(["ls-tree", "-r", "--name-only", id]);
+        if (tree.trim())
+            await this.git(["checkout", "-f", id, "--", "."]);
         await this.git(["clean", "-fdx", ...this.excludes.flatMap((item) => ["-e", `${item}/`])], false);
     }
     async delete(id) {
