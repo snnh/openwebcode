@@ -70,7 +70,7 @@ cd openwebcode
 
 **权限**：ask / acceptEdits / yolo 三级，「总是允许」生成持久规则。「总是允许」与 yolo 都不解除沙盒——两个机制正交。
 
-**沙盒**（默认开启）：Windows AppContainer（Job Object 兼容兜底）/ WSB（不可信代码）/ Linux Landlock。能力探测如实上报（enforced/partial/advisory），不谎报。越界访问自动转升级请求卡片。
+**沙盒**（默认开启）：Windows AppContainer（Job Object 兼容兜底）/ WSB（不可信代码）/ Linux Landlock。能力探测如实上报（enforced/partial/advisory），不谎报。
 
 **快照回滚**：每轮用户消息前自动检查点；后端自动探测 Btrfs/ZFS/ReFS，兜底 git 影子仓库；可选「托管工作区」（项目活在 VHDX/qcow2 镜像盘上，差分链快照毫秒级、可分支）。
 
@@ -134,3 +134,7 @@ cd web && npm ci && npm run build && npm test
 
 - **Windows**：「设置 → 应用」卸载，用户数据默认保留（可选全删 `~/.openwebcode/`）
 - **Linux**：`rm -rf ~/.local/lib/openwebcode ~/.local/bin/owc`，用户数据保留
+
+## 特别感谢
+1. 感谢glm-5.2，kimi-k3，本项目由上述模型辅助开发
+2. 感谢一些不愿透露姓名的群友提供的灵感

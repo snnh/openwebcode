@@ -10,7 +10,7 @@
 
 ### Q: 端口 3000 被占用怎么办？
 
-`owc --port 4000`（或任意空闲端口）。其他 CLI 参数 `owc --help`。
+设置环境变量 `OWC_PORT=4000` 后启动 `owc`（launcher 脚本默认 3000，server 自身兜底 3210）。
 
 ### Q: 支持 Windows / Linux / macOS 吗？
 
@@ -32,7 +32,7 @@ Anthropic（Claude）与 OpenAI 兼容协议（DeepSeek/Qwen/Ollama/GLM 等皆�
 
 ### Q: 模型列表是空的 / 刷新不出来？
 
-- 检查 baseUrl 与 apiKey 是否正确（设置页有「测试连通性」按钮）
+- 检查 baseUrl 与 apiKey 是否正确
 - 部分 provider（如 Ollama 本地）不实现 `/v1/models`，可直接手填模型 id（如 `qwen2.5-coder:14b`），上下文窗口/定价等元数据可后补
 - 拉取失败不阻塞使用，保守默认 + UI 提示完善
 
@@ -60,11 +60,11 @@ Anthropic 显式 `cache_control` 断点（系统提示词后、驱逐边界后�
 
 ### Q: yolo 了还会被沙盒拦吗？
 
-会。yolo 只跳过权限确认，沙盒（AppContainer/Landlock）照常约束文件读写与网络。要完全解除沙盒需显式 `--no-sandbox`（不推荐）。
+会。yolo 只跳过权限确认，沙盒（AppContainer/Landlock）照常约束文件读写与网络。要完全解除沙盒需在会话创建时将沙盒模式设为 `off`（不推荐）。
 
 ### Q: agent 要写沙盒外的路径怎么办？
 
-沙盒拒绝（EACCES）→ 结果回填 LLM → LLM 调 `request_sandbox_access(path, mode, reason)` → 弹沙盒升级卡片：本次允许 / 永久加入 / 拒绝。
+沙盒拒绝（EACCES）→ 错误结果回填 LLM → LLM 看到拒绝后通常会换个路径或告知用户。如果需要放宽沙盒范围，在会话设置里切换沙盒模式（如 `off`）或调整工作目录。
 
 ### Q: 跑不可信代码怎么配置？
 
@@ -84,7 +84,7 @@ Windows：会话创建选 `WSB` 沙盒模式——一会话一 VM，关闭即蒸
 
 ### Q: 驱逐掉的内容还能找回来吗？
 
-能。工具卡片上的「回写到上下文」按钮（或 `POST /context/restore`）把 artifact 全文恢复到 LLM 视图，自动 pin 豁免驱逐 5 轮。前端渲染始终用全量历史，不受驱逐影响。
+能。右侧「上下文用量」面板的条目列表中，已逐出条目旁有「恢复」按钮（或 `POST /api/sessions/:id/context/restore`），把 artifact 全文恢复到 LLM 视图。前端渲染始终用全量历史，不受驱逐影响。
 
 ### Q: `/clear` 会丢历史吗？
 
@@ -98,11 +98,11 @@ provider2 是快速廉价的辅助模型，做压缩/标题生成/翻译等旁�
 
 ### Q: 检查点什么时候自动打？
 
-每轮用户消息前自动打一个（label=消息摘要）。yolo 下可配每写工具前都打。手动打点：LLM 调 `checkpoint(label)`，或时间线面板「创建检查点」。
+每轮用户消息前自动打一个（label=消息摘要前 80 字符）。手动打点：时间线面板「新建」按钮（或 `POST /api/sessions/:id/checkpoints`）。
 
 ### Q: 回滚会丢会话历史吗？
 
-默认丢——文件 + 会话历史同步截断到对应消息。勾选「仅回滚文件」可保留历史。账本随检查点一并回退。
+默认丢——文件 + 会话历史同步截断到对应消息。点「仅文件」按钮可只恢复文件、保留对话历史。账本随检查点一并回退。
 
 ### Q: 托管工作区是什么？什么时候用？
 
@@ -138,7 +138,7 @@ owc run "跑测试并修复失败的用例" --cwd . --yolo --json | tee events.n
 
 - `--yolo`：权限请求自动 allow（CI 不能交互）
 - `--json`：NDJSON 事件流，便于解析
-- 退出码：`0` 完成 / `1` agent 错误 / `2` 权限拒绝（即便 `--yolo` 也可能因规则 deny）
+- 退出码：`0` 完成 / `1` agent 错误 / `2` 权限拒绝（非 `--yolo` 时遇到权限请求即退出）
 
 ### Q: `owc run` 会创建新会话吗？
 
@@ -154,7 +154,7 @@ owc run "跑测试并修复失败的用例" --cwd . --yolo --json | tee events.n
 
 - 确认 `owc` 进程在跑（`ps aux | grep owc` 或任务管理器）
 - 确认端口未被占用、未被防火墙拦
-- 默认监听 `127.0.0.1`，远程访问需 `--host 0.0.0.0` **且** 强制 `--token`（安全要求）
+- 默认监听 `127.0.0.1`；远程访问需设置 `OWC_HOST=0.0.0.0`（注意：当前无内置鉴权，仅建议在可信内网使用）
 
 ### Q: WebSocket 断线重连后事件丢失？
 
@@ -166,7 +166,7 @@ core-client 自动重启（指数退避，≤3 次），重启后广播 error �
 
 ### Q: 沙盒导致某些命令失败？
 
-AppContainer 下 git 凭据管理器、部分 GUI 程序、需要特殊权限的工具可能异常。会话头部沙盒徽标点开看策略，`request_sandbox_access` 升级，或切到 `Job Object` 兼容兜底模式。
+AppContainer 下 git 凭据管理器、部分 GUI 程序、需要特殊权限的工具可能异常。会话头部沙盒徽标点开看策略，或切到 `Job Object` 兼容兜底模式（会话设置中切换沙盒模式）。
 
 ### Q: 后台任务在 Linux 上 kill 后子进程还在？
 
