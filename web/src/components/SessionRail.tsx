@@ -94,6 +94,14 @@ export function SessionRail({ sessions, currentId, runningIds, theme, collapsed,
               </button>
               {runningIds.has(session.id) && <span className="running-dot" role="status" aria-label="运行中" title="运行中" />}
               <button
+                className="session-export"
+                aria-label={`导出分享页 ${session.title}`}
+                title="导出分享页（HTML）"
+                onClick={() => window.open(`/api/sessions/${session.id}/export.html`, "_blank")}
+              >
+                <Icon name="download" size={13} />
+              </button>
+              <button
                 className="session-delete"
                 aria-label={`删除会话 ${session.title}`}
                 title="删除会话"

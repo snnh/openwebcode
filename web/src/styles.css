@@ -150,7 +150,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   flex: 1;
   min-width: 0;
   text-align: left;
-  padding: 9px 26px 9px 12px;
+  padding: 9px 52px 9px 12px;
   border-radius: var(--radius);
   display: flex;
   flex-direction: column;
@@ -175,7 +175,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 }
 .running-dot {
   position: absolute;
-  right: 30px;
+  right: 56px;
   width: 7px;
   height: 7px;
   border-radius: 50%;
@@ -194,6 +194,18 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 }
 .session-item:hover .session-delete, .session-delete:focus-visible { opacity: 1; }
 .session-delete:hover { color: var(--danger); background: var(--danger-bg); }
+.session-export {
+  position: absolute;
+  right: 30px;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-s);
+  color: var(--text-3);
+  font-size: 14px;
+  opacity: 0;
+}
+.session-item:hover .session-export, .session-export:focus-visible { opacity: 1; }
+.session-export:hover { color: var(--accent); background: var(--accent-soft); }
 .rail-search-wrap { position: relative; display: block; margin: 0 12px 8px; color: var(--text-3); }
 .rail-search-wrap svg { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); pointer-events: none; }
 .rail-search {
@@ -1067,6 +1079,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .panel-fold { display: inline-flex; align-items: center; }
 .scroll-bottom { display: inline-flex; align-items: center; gap: 6px; }
 .session-delete { display: inline-flex; align-items: center; justify-content: center; }
+.session-export { display: inline-flex; align-items: center; justify-content: center; }
 .tree-arrow { display: inline-flex; align-items: center; }
 .tool-icon { display: inline-flex; align-items: center; }
 .send { display: inline-flex; align-items: center; gap: 6px; }
