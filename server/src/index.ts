@@ -16,6 +16,7 @@ import { SessionStore } from "./sessions/session-store.js";
 import { SettingsService } from "./settings-service.js";
 import { SkillRegistry } from "./skills.js";
 import { AgentRegistry } from "./agents.js";
+import { CommandRegistry } from "./commands.js";
 import { McpManager } from "./mcp/manager.js";
 import { ManagedWorkspaceManager } from "./snapshots/managed-disk.js";
 import { Provider2Client } from "./provider2.js";
@@ -64,10 +65,11 @@ const models = await ModelRegistry.load({
 const usageLog = new UsageLog(dataDir);
 const skills = new SkillRegistry(path.join(dataDir, "skills"));
 const agents = new AgentRegistry(path.join(dataDir, "agents"));
+const commands = new CommandRegistry(path.join(dataDir, "commands"));
 const mcp = new McpManager(dataDir);
 const provider2 = new Provider2Client(config.provider2);
 const compactor = new Compactor(sessions, provider2, { usageLog, pricing, exchangeRates });
-const agent = new AgentRunner(sessions, providers, core, events, pricing, exchangeRates, config.defaultLanguage, 50, (model) => models.get(model), usageLog, skills, mcp, compactor, dataDir, agents);
+const agent = new AgentRunner(sessions, providers, core, events, pricing, exchangeRates, config.defaultLanguage, 50, (model) => models.get(model), usageLog, skills, mcp, compactor, dataDir, agents, commands);
 // 托管工作区（plan §6.4）：镜像/挂载点位于 dataDir 下；孤儿挂载清理挂在 GC 启动扫描上
 const managed = new ManagedWorkspaceManager({ dataDir });
 const gc = new StorageGC(path.join(dataDir, "sessions"), config.gcMaxBytes, () => managed.sweepOrphans());
