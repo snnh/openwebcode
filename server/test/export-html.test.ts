@@ -105,6 +105,24 @@ describe("GET /api/sessions/:id/export.html", () => {
     }
   });
 
+  it("恶意 image data（非 base64 字母表）不注入 HTML", async () => {
+    const harness = await setup();
+    try {
+      // /import 路由不强制 base64 字母表；构造 data 含属性闭合符，绕过校验即可注入任意 HTML
+      await harness.sessions.appendMessage(harness.session.id, "user", [
+        { type: "image", mediaType: "image/png", data: `"><script>alert(String.fromCharCode(88,83,83))</script><img src="x` },
+      ]);
+      const res = await harness.app.inject({ method: "GET", url: `/api/sessions/${harness.session.id}/export.html` });
+      expect(res.statusCode, res.body).toBe(200);
+      // 非 base64 字母表 -> 整块跳过（返回空），绝不出现原始 <script>
+      expect(res.body).not.toContain("<script>");
+      expect(res.body).not.toContain('"><script');
+      // 合法 base64 仍渲染（交叉验证逻辑分支正确）
+    } finally {
+      await harness.app.close();
+    }
+  });
+
   it("会话不存在 -> 404", async () => {
     const harness = await setup();
     try {

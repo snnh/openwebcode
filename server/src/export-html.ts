@@ -77,9 +77,13 @@ function renderBlock(block: MessageContent): string {
       return `<div class="tool-call"><span class="tool-name">${escapeHtml(block.name)}</span><pre><code>${escapeHtml(JSON.stringify(block.input, null, 2))}</code></pre></div>`;
     case "tool_result":
       return `<details class="tool-result${block.isError ? " error" : ""}"><summary>工具结果${block.isError ? "（错误）" : ""}</summary><pre><code>${escapeHtml(block.content)}</code></pre></details>`;
-    case "image":
-      // base64 仅含 [A-Za-z0-9+/=]，无需再转义
+    case "image": {
+      // data 来自 messages.jsonl，而 /import 路由不强制 base64 字母表——
+      // 非 base64 字符（如 "><script>）可闭合属性注入任意 HTML。严格校验字母表，不匹配则跳过。
+      const isBase64 = typeof block.data === "string" && /^[A-Za-z0-9+/=]*$/.test(block.data);
+      if (!isBase64) return "";
       return `<img class="msg-image" src="data:${escapeHtml(block.mediaType)};base64,${block.data}" alt="图片">`;
+    }
   }
 }
 
