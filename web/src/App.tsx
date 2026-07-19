@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./lib/api";
+import { extractAttachmentPaths, toAttachments } from "./lib/attachments";
 import type { AppEvent, BackgroundTaskInfo, TodoItem } from "./lib/contracts";
 import { formatCurrency } from "./lib/format";
 import { loadSendKey, loadSessionDefaults, saveSendKey, saveSessionDefaults, type SendKey, type SessionDefaults } from "./lib/prefs";
@@ -222,7 +223,8 @@ export function App(): ReactElement {
   const send = useMutation({
     mutationFn: async () => {
       if (!currentId || !draft.trim()) return;
-      return api.sendMessage(currentId, draft.trim(), attachments);
+      const pathAttachments = toAttachments(extractAttachmentPaths(draft.trim()));
+      return api.sendMessage(currentId, draft.trim(), attachments, pathAttachments.length ? pathAttachments : undefined);
     },
     onSuccess: (result) => {
       setDraft("");

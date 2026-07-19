@@ -1,5 +1,7 @@
-import { useEffect, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent as ReactDragEvent, type ReactElement } from "react";
+import { useCallback, useEffect, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactElement } from "react";
 import type { ModelProfile, SessionDetail, SkillInfo } from "../lib/contracts";
+import { api } from "../lib/api";
+import { extractAttachmentPaths } from "../lib/attachments";
 import type { SendKey } from "../lib/prefs";
 import { Icon } from "./Icon";
 
@@ -51,6 +53,86 @@ export function Composer({ current, model, models, draft, setDraft, onSend, onCo
     setDismissed(false);
     setActive(0);
   }, [draft]);
+
+  // @文件引用补全：检测光标前 `@<partial>`，防抖 200ms 调 complete-path REST
+  const [mentionPartial, setMentionPartial] = useState<string | null>(null);
+  const [mentionMatches, setMentionMatches] = useState<Array<{ path: string }>>([]);
+  const [mentionActive, setMentionActive] = useState(0);
+  const [mentionDismissed, setMentionDismissed] = useState(false);
+  // Esc 关闭后，draft 内容变化才重新打开（避免方向键移动光标反复触发）
+  useEffect(() => { setMentionDismissed(false); }, [draft]);
+
+  const updateMentionFromValue = useCallback((value: string, cursor: number, dismissed: boolean) => {
+    if (dismissed) { setMentionPartial(null); return; }
+    const before = value.slice(0, cursor);
+    const match = before.match(/@([^\s@]*)$/);
+    if (!match) { setMentionPartial(null); return; }
+    const atIdx = before.length - match[0].length;
+    // @ 必须在空白或行首之后（避免匹配 a@b 邮箱形态）
+    if (atIdx > 0) {
+      const prev = before[atIdx - 1];
+      if (prev && !/\s/.test(prev)) { setMentionPartial(null); return; }
+    }
+    setMentionPartial(match[1]);
+    setMentionActive(0);
+  }, []);
+
+  // 防抖调 complete-path；partial 为空（仅 @ 无字符）不调 API
+  useEffect(() => {
+    if (mentionPartial === null || mentionPartial === "") {
+      setMentionMatches([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      api.completePath(current.id, mentionPartial)
+        .then((res) => { if (!cancelled) setMentionMatches(res.matches.slice(0, 20)); })
+        .catch(() => { if (!cancelled) setMentionMatches([]); });
+    }, 200);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [mentionPartial, current.id]);
+
+  const mentionOpen = !mentionDismissed && mentionPartial !== null && mentionPartial !== "" && mentionMatches.length > 0;
+
+  const insertMention = useCallback((filePath: string): void => {
+    const el = textareaRef.current;
+    const cursor = el?.selectionStart ?? draft.length;
+    const before = draft.slice(0, cursor);
+    const after = draft.slice(cursor);
+    const match = before.match(/@([^\s@]*)$/);
+    if (!match) return;
+    const startIdx = before.length - match[0].length;
+    const replacement = `@${filePath} `;
+    const next = draft.slice(0, startIdx) + replacement + after;
+    setDraft(next);
+    setMentionPartial(null);
+    setMentionMatches([]);
+    setMentionDismissed(false);
+    requestAnimationFrame(() => {
+      const node = textareaRef.current;
+      if (node) {
+        const pos = startIdx + replacement.length;
+        node.selectionStart = pos;
+        node.selectionEnd = pos;
+        node.focus();
+      }
+    });
+  }, [draft, setDraft]);
+
+  const removeMention = (filePath: string): void => {
+    const token = `@${filePath}`;
+    const idx = draft.indexOf(token);
+    if (idx < 0) return;
+    let end = idx + token.length;
+    if (draft[end] === " ") end += 1;
+    setDraft(draft.slice(0, idx) + draft.slice(end));
+  };
+
+  const mentionedPaths = extractAttachmentPaths(draft);
+
+  const syncMention = (node: HTMLTextAreaElement): void => {
+    updateMentionFromValue(node.value, node.selectionStart ?? node.value.length, mentionDismissed);
+  };
 
   const pick = (skill: SkillInfo): void => {
     setDraft(`/${skill.name} `);
@@ -207,13 +289,66 @@ export function Composer({ current, model, models, draft, setDraft, onSend, onCo
             ))}
           </ul>
         )}
+        {mentionOpen && (
+          <ul id="mention-listbox" className="mention-popup" role="listbox" aria-label="文件引用建议">
+            {mentionMatches.map((item, index) => (
+              <li key={item.path}>
+                <button
+                  type="button"
+                  role="option"
+                  id={`mention-option-${index}`}
+                  aria-selected={index === mentionActive}
+                  className={index === mentionActive ? "active" : ""}
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    insertMention(item.path);
+                  }}
+                >
+                  <Icon name="file" size={11} />
+                  <span className="mention-path">{item.path}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
         <textarea
           ref={textareaRef}
           rows={2}
           value={draft}
-          onChange={(event) => setDraft(event.target.value)}
+          aria-label="消息输入框；输入 @ 可引用工作区文件"
+          onChange={(event) => {
+            setDraft(event.target.value);
+            syncMention(event.target);
+          }}
+          onSelect={(event) => syncMention(event.currentTarget)}
+          onClick={(event) => syncMention(event.currentTarget)}
+          onKeyUp={(event) => syncMention(event.currentTarget)}
           onPaste={onPaste}
-          onKeyDown={(event) => {
+          onKeyDown={(event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+            if (mentionOpen) {
+              const count = mentionMatches.length;
+              if (event.key === "ArrowDown") {
+                event.preventDefault();
+                setMentionActive((value) => (value + 1) % count);
+                return;
+              }
+              if (event.key === "ArrowUp") {
+                event.preventDefault();
+                setMentionActive((value) => (value - 1 + count) % count);
+                return;
+              }
+              if (event.key === "Tab" || event.key === "Enter") {
+                event.preventDefault();
+                insertMention(mentionMatches[Math.min(mentionActive, count - 1)]!.path);
+                return;
+              }
+              if (event.key === "Escape") {
+                event.preventDefault();
+                setMentionDismissed(true);
+                setMentionPartial(null);
+                return;
+              }
+            }
             if (popupOpen) {
               if (event.key === "ArrowDown") {
                 event.preventDefault();
@@ -248,14 +383,32 @@ export function Composer({ current, model, models, draft, setDraft, onSend, onCo
           }}
           placeholder={running
             ? "向正在执行的作业补充指令…"
-            : sendKey === "enter" ? "描述要完成的编码任务…（Enter 发送，Shift+Enter 换行）" : "描述要完成的编码任务…（Ctrl+Enter 发送）"}
+            : sendKey === "enter" ? "描述要完成的编码任务…（Enter 发送，Shift+Enter 换行，@ 引用文件）" : "描述要完成的编码任务…（Ctrl+Enter 发送，@ 引用文件）"}
         />
         <button className="btn primary send" disabled={!draft.trim()} onClick={onSend}>
           <Icon name="send" size={13} />
           {running ? "加入队列" : "发送"}
         </button>
       </div>
-      {supportsImages && <div className="composer-hint">支持粘贴/拖拽图片（≤4 张，每张 ≤5MB）</div>}
+      {mentionedPaths.length > 0 && (
+        <div className="mention-strip" aria-label="文件引用">
+          {mentionedPaths.map((filePath) => (
+            <span className="mention-chip" key={filePath}>
+              <Icon name="file" size={10} />
+              <span className="mention-chip-path">@{filePath}</span>
+              <button
+                type="button"
+                className="mention-remove"
+                aria-label={`移除引用 @${filePath}`}
+                onClick={() => removeMention(filePath)}
+              >
+                <Icon name="x" size={10} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      {supportsImages && <div className="composer-hint">支持粘贴/拖拽图片（≤4 张，每张 ≤5MB）；输入 @ 引用工作区文件</div>}
     </footer>
   );
 }

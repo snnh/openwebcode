@@ -1,4 +1,4 @@
-import type { BackgroundTaskInfo, Checkpoint, ContextView, CostReport, FileEntry, ManagedWorkspaceCapability, ModelProfile, PendingPermission, PricingDocument, SandboxCapabilities, SandboxMode, Session, SessionDetail, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo, TodoItem } from "./contracts";
+import type { BackgroundTaskInfo, Checkpoint, CompletePathResponse, ContextView, CostReport, FileEntry, ManagedWorkspaceCapability, MessageAttachment, ModelProfile, PendingPermission, PricingDocument, SandboxCapabilities, SandboxMode, Session, SessionDetail, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo, TodoItem } from "./contracts";
 
 export class ApiError extends Error {
   constructor(readonly status: number, message: string) {
@@ -28,8 +28,10 @@ export const api = {
   sandboxCapabilities: () => request<SandboxCapabilities>("/api/sandbox/capabilities"),
   managedWorkspaceCapability: () => request<ManagedWorkspaceCapability>("/api/managed-workspace/capability"),
   deleteSession: (id: string) => request<void>(`/api/sessions/${id}`, { method: "DELETE" }),
-  sendMessage: (id: string, content: string, images?: Array<{ mediaType: string; data: string }>) =>
-    request<{ accepted: boolean; queued?: boolean; position?: number; compacted?: boolean }>(`/api/sessions/${id}/messages`, { method: "POST", body: JSON.stringify({ content, ...(images?.length ? { images } : {}) }) }),
+  sendMessage: (id: string, content: string, images?: Array<{ mediaType: string; data: string }>, attachments?: MessageAttachment[]) =>
+    request<{ accepted: boolean; queued?: boolean; position?: number; compacted?: boolean }>(`/api/sessions/${id}/messages`, { method: "POST", body: JSON.stringify({ content, ...(images?.length ? { images } : {}), ...(attachments?.length ? { attachments } : {}) }) }),
+  completePath: (id: string, q: string) =>
+    request<CompletePathResponse>(`/api/sessions/${id}/complete-path?q=${encodeURIComponent(q)}`),
   abort: (id: string) => request<{ accepted: boolean }>(`/api/sessions/${id}/abort`, { method: "POST" }),
   respondPermission: (id: string, body: { requestId: string; decision: "allow" | "allow_always" | "deny"; reason?: string }) =>
     request<{ accepted: boolean }>(`/api/sessions/${id}/permissions/respond`, { method: "POST", body: JSON.stringify(body) }),
