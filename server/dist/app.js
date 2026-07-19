@@ -231,6 +231,9 @@ export async function buildServer(dependencies) {
                 snapshotBackend: `${provisioned.backend}-chain`,
             });
             events.publish({ source: "session", type: "session.created", sessionId: session.id, payload: session });
+            // SessionStart 钩子：仅通知不阻断
+            if (dependencies.hooks)
+                await dependencies.hooks.run("SessionStart", { sessionId: session.id, cwd: session.cwd });
             return reply.code(201).send(session);
         }
         catch (error) {
@@ -262,6 +265,9 @@ export async function buildServer(dependencies) {
             return createManagedSession(request.body, provider, reply);
         const session = await sessions.create({ ...request.body, provider });
         events.publish({ source: "session", type: "session.created", sessionId: session.id, payload: session });
+        // SessionStart 钩子：仅通知不阻断
+        if (dependencies.hooks)
+            await dependencies.hooks.run("SessionStart", { sessionId: session.id, cwd: session.cwd });
         return reply.code(201).send(session);
     });
     app.get("/api/sessions", async () => sessions.list());

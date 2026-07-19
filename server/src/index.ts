@@ -9,6 +9,7 @@ import { CoreClient } from "./core-client.js";
 import { ExchangeRateService, HttpExchangeRateProvider } from "./cost/exchange-rate.js";
 import { PricingCatalog } from "./cost/pricing-catalog.js";
 import { EventBus } from "./events/event-bus.js";
+import { HookRunner } from "./hooks.js";
 import { DevelopmentProvider } from "./providers/development-provider.js";
 import { ProviderRegistry } from "./providers/provider.js";
 import { CoreRouter } from "./sandbox/core-router.js";
@@ -81,7 +82,9 @@ const backgroundTasks = new BackgroundTaskRegistry(
   },
   (info) => events.publish({ source: "agent", type: "task.finished", sessionId: info.sessionId, payload: info }),
 );
-const agent = new AgentRunner(sessions, providers, core, events, pricing, exchangeRates, config.defaultLanguage, 50, (model) => models.get(model), usageLog, skills, mcp, compactor, dataDir, agents, commands, search, undefined, backgroundTasks);
+// Hooks（可信配置，等同 yolo 级别）：全局 <dataDir>/hooks.json，项目 <cwd>/.owc/hooks.json 现读覆盖
+const hooks = new HookRunner(path.join(dataDir, "hooks.json"), events);
+const agent = new AgentRunner(sessions, providers, core, events, pricing, exchangeRates, config.defaultLanguage, 50, (model) => models.get(model), usageLog, skills, mcp, compactor, dataDir, agents, commands, search, undefined, backgroundTasks, hooks);
 // 托管工作区（plan §6.4）：镜像/挂载点位于 dataDir 下；孤儿挂载清理挂在 GC 启动扫描上
 const managed = new ManagedWorkspaceManager({ dataDir });
 const gc = new StorageGC(path.join(dataDir, "sessions"), config.gcMaxBytes, () => managed.sweepOrphans());

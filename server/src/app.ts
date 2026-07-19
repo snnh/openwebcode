@@ -8,6 +8,7 @@ import path from "node:path";
 import type { AgentRunner } from "./agent/agent-runner.js";
 import { SteeringError } from "./agent/agent-runner.js";
 import type { BackgroundTaskRegistry } from "./agent/background-tasks.js";
+import type { HookRunner } from "./hooks.js";
 import { CoreRpcError, type CoreClientLike, type ExecRequest } from "./core-client.js";
 import { ContextManager, type BudgetUpdate } from "./context/context-manager.js";
 import type { ServerConfig } from "./config.js";
@@ -81,6 +82,7 @@ export interface ServerDependencies {
   getPreferences?: () => { currency: Currency; language: string };
   webDist?: string;
   backgroundTasks?: BackgroundTaskRegistry;
+  hooks?: HookRunner;
 }
 
 function serializePricing(pricing: ModelPricing): Record<string, string> {
@@ -288,6 +290,8 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
         snapshotBackend: `${provisioned.backend}-chain`,
       });
       events.publish({ source: "session", type: "session.created", sessionId: session.id, payload: session });
+      // SessionStart 钩子：仅通知不阻断
+      if (dependencies.hooks) await dependencies.hooks.run("SessionStart", { sessionId: session.id, cwd: session.cwd });
       return reply.code(201).send(session);
     } catch (error) {
       await managed.teardown({ id: sessionId, workspace }).catch(() => undefined);
@@ -317,6 +321,8 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     if (request.body.workspaceMode === "managed") return createManagedSession(request.body, provider, reply);
     const session = await sessions.create({ ...request.body, provider });
     events.publish({ source: "session", type: "session.created", sessionId: session.id, payload: session });
+    // SessionStart 钩子：仅通知不阻断
+    if (dependencies.hooks) await dependencies.hooks.run("SessionStart", { sessionId: session.id, cwd: session.cwd });
     return reply.code(201).send(session);
   });
 

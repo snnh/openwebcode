@@ -191,13 +191,14 @@ export class AgentRunner {
     search;
     fetchImpl;
     backgroundTasks;
+    hooks;
     running = new Map();
     steering = new Map();
     repeatedCalls = new Map();
     mcpWarningSignatures = new Map();
     todos = new Map();
     permissions;
-    constructor(sessions, providers, core, events, pricing, exchangeRates, defaultLanguage = "zh-CN", maxTurns = 50, getProfile = getModelProfile, usageLog, skills, mcp, compactor, dataDir, agents, commands, search, fetchImpl, backgroundTasks) {
+    constructor(sessions, providers, core, events, pricing, exchangeRates, defaultLanguage = "zh-CN", maxTurns = 50, getProfile = getModelProfile, usageLog, skills, mcp, compactor, dataDir, agents, commands, search, fetchImpl, backgroundTasks, hooks) {
         this.sessions = sessions;
         this.providers = providers;
         this.core = core;
@@ -217,6 +218,7 @@ export class AgentRunner {
         this.search = search;
         this.fetchImpl = fetchImpl;
         this.backgroundTasks = backgroundTasks;
+        this.hooks = hooks;
         this.permissions = new PermissionCoordinator(events);
         core.on("event", (event) => {
             const payload = event.payload;
@@ -250,6 +252,9 @@ export class AgentRunner {
                 throw new Error("Session not found");
             // 输入框 /技能名 手动触发：展开为技能全文 + 用户补充（检查点标题仍用原文）
             const effectiveText = await this.expandSkillCommand(configuredSession.cwd, text);
+            // UserPromptSubmit 钩子：仅通知不阻断（否决语义为 PreToolUse 专属）
+            if (this.hooks)
+                await this.hooks.run("UserPromptSubmit", { sessionId, cwd: configuredSession.cwd, prompt: effectiveText.slice(0, 2000) });
             await this.core.configureSession({ sessionId, cwd: configuredSession.cwd, sandbox: configuredSession.sandbox ?? { enabled: true, readRoots: [configuredSession.cwd], writeRoots: [configuredSession.cwd], denyPaths: [], network: "allow" } });
             const checkpointContext = new ContextManager(this.sessions.contextRoot(sessionId));
             const checkpoint = await (await getSnapshotBackend(this.sessions, configuredSession))
@@ -388,6 +393,9 @@ export class AgentRunner {
                         this.state(sessionId, "thinking");
                         continue;
                     }
+                    // Stop 钩子：run 正常结束时通知（abort/error 路径不触发）
+                    if (this.hooks)
+                        await this.hooks.run("Stop", { sessionId, cwd: session.cwd });
                     return;
                 }
                 const toolCalls = assistantContent.filter((block) => block.type === "tool_call");
@@ -406,8 +414,21 @@ export class AgentRunner {
                         await this.sessions.appendMessage(sessionId, "tool", [{ type: "tool_result", toolCallId: call.id, content: permission.reason ?? "Tool permission denied", isError: true }]);
                         continue;
                     }
+                    // PreToolUse 钩子：exit 2 否决 → 工具不执行，stderr 回填 LLM
+                    if (this.hooks) {
+                        const outcome = await this.hooks.run("PreToolUse", { sessionId, cwd: session.cwd, tool: call.name, input: call.input });
+                        if (outcome.blocked) {
+                            await this.sessions.appendMessage(sessionId, "tool", [{ type: "tool_result", toolCallId: call.id, content: outcome.reason ?? "Blocked by hook", isError: true }]);
+                            continue;
+                        }
+                    }
                     const result = await this.executeTool(sessionId, call.name, call.id, call.input, controller.signal);
                     await this.sessions.appendMessage(sessionId, "tool", [result]);
+                    // PostToolUse 钩子：仅写类工具成功后触发（format-on-write 等），不阻断
+                    if (this.hooks && !result.isError && ["write_file", "edit_file", "bash"].includes(call.name)) {
+                        const summary = result.content.slice(0, 300);
+                        await this.hooks.run("PostToolUse", { sessionId, cwd: session.cwd, tool: call.name, input: call.input, result: { summary } });
+                    }
                 }
                 await context.advanceRound();
                 const afterTools = await this.sessions.get(sessionId);
