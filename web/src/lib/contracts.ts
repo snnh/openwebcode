@@ -218,3 +218,13 @@ export interface BackgroundTaskInfo {
   output?: string;
   truncated?: boolean;
 }
+
+/** @文件引用：消息发送时附带的工作区文件路径，server 在 appendMessage 前读取并注入为前置 text 块 */
+export interface MessageAttachment {
+  path: string;
+}
+
+/** GET /api/sessions/:id/complete-path 响应：core.globFiles（模式 *q*）截断至 20 条 */
+export interface CompletePathResponse {
+  matches: Array<{ path: string }>;
+}

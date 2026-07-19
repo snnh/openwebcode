@@ -8,6 +8,7 @@ import path from "node:path";
 import { SteeringError } from "./agent/agent-runner.js";
 import { CoreRpcError } from "./core-client.js";
 import { ContextManager } from "./context/context-manager.js";
+import { boundToolResult } from "./context/tool-result-budget.js";
 import { getModelProfile, listModelProfiles } from "./context/model-profile.js";
 import { lookupModelMetadata } from "./context/model-metadata.js";
 import { PricingValidationError } from "./cost/pricing-catalog.js";
@@ -465,6 +466,22 @@ export async function buildServer(dependencies) {
         }
         return core.readFile({ sessionId: request.params.id, path: request.query.path });
     });
+    // @文件引用补全：core.globFiles（模式 *q*），≤20 条；只读免审批（与 /files 同处配置沙盒）
+    app.get("/api/sessions/:id/complete-path", async (request, reply) => {
+        const session = await sessions.get(request.params.id);
+        if (!session)
+            return reply.code(404).send({ error: "Session not found" });
+        const q = (request.query.q ?? "").trim();
+        if (!q)
+            return { matches: [] };
+        if (!agent.isRunning(session.id) && !configuredSessions.has(session.id)) {
+            await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? defaultSandbox(session.cwd) });
+            configuredSessions.add(session.id);
+        }
+        const result = await core.globFiles({ sessionId: request.params.id, path: session.cwd, pattern: `*${q}*` });
+        const matches = (result.paths ?? []).slice(0, 20).map((matchPath) => ({ path: matchPath }));
+        return { matches };
+    });
     app.get("/api/sessions/:id/checkpoints/:checkpointId/diff", async (request, reply) => {
         const session = await sessions.get(request.params.id);
         if (!session)
@@ -579,6 +596,7 @@ export async function buildServer(dependencies) {
     const IMAGE_MEDIA_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
     const MAX_IMAGES_PER_MESSAGE = 4;
     const MAX_IMAGE_BASE64 = 7_000_000; // base64 字符数，约等于 5MB 原始字节
+    const MAX_ATTACHMENTS_PER_MESSAGE = 10;
     const isValidImage = (image) => {
         if (!image || typeof image !== "object")
             return false;
@@ -624,6 +642,17 @@ export async function buildServer(dependencies) {
                 }
             }
         }
+        // @文件引用：基础结构验证 + 运行中拒绝（与 images 同等对待，避免附件被 steering 路径吞掉）
+        const attachments = request.body.attachments;
+        if (attachments !== undefined) {
+            if (!Array.isArray(attachments) || attachments.length > MAX_ATTACHMENTS_PER_MESSAGE ||
+                attachments.some((item) => !item || typeof item.path !== "string" || !item.path.trim())) {
+                return reply.code(400).send({ error: `attachments 需为至多 ${MAX_ATTACHMENTS_PER_MESSAGE} 个 { path: string }` });
+            }
+            if (attachments.length > 0 && agent.isRunning(request.params.id)) {
+                return reply.code(409).send({ error: "会话运行中，带附件消息请等待完成或中断后再发送" });
+            }
+        }
         const clearCommand = request.body.content.match(/^\/clear\s*$/i);
         if (clearCommand) {
             if (agent.isRunning(request.params.id))
@@ -667,7 +696,32 @@ export async function buildServer(dependencies) {
                 budget,
             });
         }
-        void agent.run(request.params.id, request.body.content, { ...(images?.length ? { images } : {}) }).catch(() => undefined);
+        // @文件引用：appendMessage 前对每个 path 调 core.readFile（受沙盒），过 boundToolResult（大文件截断 + artifact）；
+        // 越界/不可读降级为错误块而非抛错炸掉整个请求；组装为前置 text 块 `[Attachment <path>]\n<内容>`
+        let attachmentBlocks = [];
+        if (attachments && attachments.length > 0) {
+            if (!agent.isRunning(session.id) && !configuredSessions.has(session.id)) {
+                await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? defaultSandbox(session.cwd) });
+                configuredSessions.add(session.id);
+            }
+            const contextRoot = sessions.contextRoot(request.params.id);
+            for (const item of attachments) {
+                const attachmentPath = item.path.trim();
+                try {
+                    const result = await core.readFile({ sessionId: request.params.id, path: attachmentPath });
+                    const bounded = await boundToolResult(contextRoot, "read_file", result.content);
+                    attachmentBlocks.push({ text: `[Attachment ${attachmentPath}]\n${bounded.content}` });
+                }
+                catch (error) {
+                    const reason = error instanceof Error ? error.message : String(error);
+                    attachmentBlocks.push({ text: `[Attachment ${attachmentPath}]\n错误：路径越界或不可读（${reason}）` });
+                }
+            }
+        }
+        void agent.run(request.params.id, request.body.content, {
+            ...(images?.length ? { images } : {}),
+            ...(attachmentBlocks.length ? { attachments: attachmentBlocks } : {}),
+        }).catch(() => undefined);
         return reply.code(202).send({ accepted: true });
     });
     app.get("/api/sessions/:id/todos", async (request, reply) => {
