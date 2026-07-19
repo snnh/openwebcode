@@ -37,6 +37,7 @@ const context: ContextView = {
     usage: { inputTokens: 1200, outputTokens: 80, cacheRead: 200, cacheWrite: 40 },
     cost: { usdMicroUnits: "6100", cnyMicroUnits: "44300", unpricedTokens: 0 },
     entries: [{ messageId: "m1", state: "full", artifactId: "artifact-0" }],
+    cleared: { uptoIndex: 2, at: "2026-07-17T00:00:02.000Z" },
   },
   preferences: { language: "zh-CN", currency: "CNY", currencyLabel: "￥" },
 };
@@ -118,8 +119,9 @@ describe("App accessibility", () => {
   it("active session workspace has no axe violations", async () => {
     installFetchMock();
     const { container, findAllByText } = renderApp();
-    // 等待会话加载，确保执行轨道与检查器渲染
+    // 等待会话加载，确保执行轨道、清空边界与检查器渲染
     await findAllByText(/无障碍测试作业/);
+    expect(await findAllByText("上下文已清空（历史保留）")).toHaveLength(1);
     const results = await axeCore.run(container);
     expect(results.violations).toEqual([]);
   });

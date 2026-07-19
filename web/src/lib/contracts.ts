@@ -90,6 +90,7 @@ export interface ContextView {
     entries: Array<{ messageId: string; state: "full" | "evicted" | "restored"; artifactId: string }>;
     policy?: { maxSessionTokens?: number; maxSessionCost?: { currency: "USD" | "CNY"; microUnits: string } };
     compacted?: { uptoIndex: number; mode: "toolcalls" | "overview" | "truncated"; summary: string; instructions: string[]; createdAt: string };
+    cleared?: { uptoIndex: number; at: string };
   };
   preferences: { language: string; currency: "USD" | "CNY"; currencyLabel: string };
 }

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -8,11 +8,24 @@ const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
 
 describe("GitShadowSnapshots", () => {
+  it("restores an empty-tree checkpoint by clearing the workspace", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-shadow-empty-")); roots.push(root);
+    const workspace = path.join(root, "workspace");
+    const session = path.join(root, "session");
+    await mkdir(workspace);
+    const snapshots = new GitShadowSnapshots(session, workspace);
+    const checkpoint = await snapshots.create("empty baseline", 0, { round: 0 });
+
+    await writeFile(path.join(workspace, "later.txt"), "added after the checkpoint", "utf8");
+    await snapshots.restore(checkpoint.id);
+    await expect(readFile(path.join(workspace, "later.txt"), "utf8")).rejects.toThrow();
+  });
+
   it("captures tracked and untracked files outside the workspace and restores them", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "owc-shadow-")); roots.push(root);
     const workspace = path.join(root, "workspace");
     const session = path.join(root, "session");
-    await import("node:fs/promises").then(({ mkdir }) => mkdir(workspace));
+    await mkdir(workspace);
     await writeFile(path.join(workspace, "a.txt"), "one", "utf8");
     await writeFile(path.join(workspace, "untracked.txt"), "keep", "utf8");
     await writeFile(path.join(workspace, ".gitignore"), "*.cache\n", "utf8");
