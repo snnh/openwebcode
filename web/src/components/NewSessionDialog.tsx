@@ -8,6 +8,7 @@ export interface NewSessionValues {
   title?: string;
   provider: string;
   model: string;
+  agentMode?: "plan" | "build";
   permissionMode?: PermissionMode;
   sandboxMode?: SandboxMode;
   setupScript?: string;
@@ -39,6 +40,7 @@ export function NewSessionDialog({ open, providers, models, defaults, onClose, o
   const [setupScript, setSetupScript] = useState("");
   const [sandboxCaps, setSandboxCaps] = useState<SandboxCapabilities | undefined>();
   const [workspaceMode, setWorkspaceMode] = useState<"direct" | "managed">("direct");
+  const [agentMode, setAgentMode] = useState<"plan" | "build">("build");
   const [managedCaps, setManagedCaps] = useState<ManagedWorkspaceCapability | undefined>();
 
   const availableModels = models.filter((item) => item.provider === provider);
@@ -119,6 +121,7 @@ export function NewSessionDialog({ open, providers, models, defaults, onClose, o
             title: title.trim() || fallbackTitle || "新会话",
             provider,
             model,
+            agentMode,
             permissionMode,
             // appcontainer 是缺省，不必显式提交；setupScript 仅 wsb 有意义
             ...(sandboxMode !== "appcontainer" ? { sandboxMode } : {}),
@@ -173,6 +176,13 @@ export function NewSessionDialog({ open, providers, models, defaults, onClose, o
           模型
           <select value={model} onChange={(event) => setModel(event.target.value)}>
             {dialogModels.map((item) => <option key={item.id} value={item.id}>{item.displayName ?? item.id}</option>)}
+          </select>
+        </label>
+        <label>
+          模式
+          <select value={agentMode} onChange={(event) => setAgentMode(event.target.value as "plan" | "build")}>
+            <option value="build">构建模式（Build）</option>
+            <option value="plan">计划模式（Plan）</option>
           </select>
         </label>
         <label>

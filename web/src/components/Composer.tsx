@@ -127,6 +127,17 @@ export function Composer({ current, model, models, draft, setDraft, onSend, onCo
       )}
       <div className="config-row">
         <label>
+          模式
+          <select
+            value={current.agentMode ?? "build"}
+            disabled={running}
+            onChange={(event) => onConfig({ agentMode: event.target.value === "build" ? null : "plan" })}
+          >
+            <option value="build">构建模式（Build）</option>
+            <option value="plan">计划模式（Plan）</option>
+          </select>
+        </label>
+        <label>
           模型
           <select value={current.model} disabled={running} onChange={(event) => onConfig({ model: event.target.value })}>
             {(() => {

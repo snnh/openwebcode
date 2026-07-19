@@ -23,7 +23,7 @@ export const api = {
   sessions: () => request<Session[]>("/api/sessions"),
   health: () => request<{ status: string }>("/api/health"),
   session: (id: string) => request<SessionDetail>(`/api/sessions/${id}`),
-  createSession: (body: { cwd: string; provider: string; model: string; title?: string; sandboxMode?: SandboxMode; setupScript?: string; workspaceMode?: "managed" }) =>
+  createSession: (body: { cwd: string; provider: string; model: string; title?: string; agentMode?: "plan" | "build"; sandboxMode?: SandboxMode; setupScript?: string; workspaceMode?: "managed" }) =>
     request<Session>("/api/sessions", { method: "POST", body: JSON.stringify(body) }),
   sandboxCapabilities: () => request<SandboxCapabilities>("/api/sandbox/capabilities"),
   managedWorkspaceCapability: () => request<ManagedWorkspaceCapability>("/api/managed-workspace/capability"),

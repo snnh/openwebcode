@@ -300,7 +300,7 @@ export class AgentRunner {
                     model: session.model,
                     ...(session.thinking ? { thinking: session.thinking } : {}),
                     ...(session.effort ? { effort: session.effort } : {}),
-                    system: `You are OpenWebCode. The workspace is ${session.cwd}. Respond in ${this.defaultLanguage} unless the user explicitly requests another language.${skillSection}${agentSection}${memorySection}`,
+                    system: `You are OpenWebCode. The workspace is ${session.cwd}. Respond in ${this.defaultLanguage} unless the user explicitly requests another language.${skillSection}${agentSection}${memorySection}${session.agentMode === "plan" ? "\n\nYou are in PLAN mode (read-only). Investigate with read-only tools, then output a step-by-step implementation plan and ask the user to switch to build mode to execute it." : ""}`,
                     messages: view.messages,
                     cacheBreakpoints,
                     tools: [...TOOLS, ...(this.search ? [WEB_SEARCH_TOOL] : []), ...mcpBinding.tools],
@@ -503,6 +503,14 @@ export class AgentRunner {
         const session = await this.sessions.get(sessionId);
         if (!session)
             return { allowed: false, reason: "Session not found" };
+        // Plan 模式门禁：只读工具放行，其余一律拦截
+        const PLAN_READONLY = new Set(["read_file", "glob", "grep", "read_artifact", "load_skill", "spawn_task", "todo_write", "web_fetch", "web_search"]);
+        if (session.agentMode === "plan") {
+            if (tool.startsWith("mcp__"))
+                return { allowed: false, reason: `Plan 模式为只读：MCP 工具 ${tool} 被拦截（无法判定读写）。请输出实施计划并请用户切换到 build 模式执行。` };
+            if (!PLAN_READONLY.has(tool))
+                return { allowed: false, reason: `Plan 模式为只读：${tool} 被拦截。请输出实施计划并请用户切换到 build 模式执行。` };
+        }
         const mode = session.permissionMode ?? "ask";
         const rules = session.permissionRules ?? [];
         if (!this.permissions.needsApproval(mode, rules, tool, input))

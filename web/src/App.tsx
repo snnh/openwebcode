@@ -122,12 +122,13 @@ export function App(): ReactElement {
         if (event.type === "mcp.degraded" && event.sessionId === currentId) {
           setNotice((event.payload as { message?: string }).message ?? "MCP server 降级");
         }
-        // 上下文压缩（手动/85% 强制）：刷新上下文面板并提示
+        // 上下文清空（/clear 命令）：刷新会话详情与上下文面板并提示
         if (event.type === "context.cleared" && event.sessionId && event.sessionId === currentId) {
           setNotice("上下文已清空（历史保留）");
           queryClient.invalidateQueries({ queryKey: queryKeys.detail(event.sessionId) });
           queryClient.invalidateQueries({ queryKey: ["context", event.sessionId] });
         }
+        // 上下文压缩（手动/85% 强制）：刷新上下文面板并提示
         if (event.type === "context.compacted" && event.sessionId === currentId) {
           const payload = event.payload as { mode?: string; forced?: boolean };
           const modeLabel = payload.mode === "overview" ? "概览" : payload.mode === "toolcalls" ? "工具调用" : "规则截断";
