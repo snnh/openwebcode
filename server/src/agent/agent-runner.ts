@@ -19,6 +19,7 @@ import type { MessageContent } from "../sessions/types.js";
 import type { SessionStore } from "../sessions/session-store.js";
 import { parseSkillCommand, type SkillRegistry } from "../skills.js";
 import type { AgentRegistry } from "../agents.js";
+import { renderCommand, type CommandRegistry } from "../commands.js";
 import type { McpManager } from "../mcp/manager.js";
 import { appendMemory, readGlobalMemory, readProjectMemory } from "../memory.js";
 import type { UsageLog } from "../usage-log.js";
@@ -155,6 +156,7 @@ export class AgentRunner {
     private readonly compactor?: Compactor,
     private readonly dataDir?: string,
     private readonly agents?: AgentRegistry,
+    private readonly commands?: CommandRegistry,
   ) {
     this.permissions = new PermissionCoordinator(events);
     core.on("event", (event: CoreEvent) => {
@@ -472,12 +474,14 @@ export class AgentRunner {
   }
 
   private async expandSkillCommand(cwd: string, text: string): Promise<string> {
+    const parsed = parseSkillCommand(text);
+    if (!parsed) return text;
+    const custom = this.commands ? await this.commands.find(cwd, parsed.name) : undefined;
+    if (custom) return renderCommand(custom.body, parsed.rest);
     if (!this.skills) return text;
-    const command = parseSkillCommand(text);
-    if (!command) return text;
-    const skill = await this.skills.find(cwd, command.name);
+    const skill = await this.skills.find(cwd, parsed.name);
     if (!skill) return text;
-    const request = command.rest !== "" ? command.rest : "Follow the skill instructions above.";
+    const request = parsed.rest !== "" ? parsed.rest : "Follow the skill instructions above.";
     return `[Skill "${skill.name}" — full text]\n${skill.body}\n\n[User request]\n${request}`;
   }
 

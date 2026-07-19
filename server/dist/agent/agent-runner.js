@@ -10,6 +10,7 @@ import { PermissionCoordinator, permissionRule } from "./permission-coordinator.
 import { runSubAgent, SUB_AGENT_TOOL_NAMES } from "./sub-agent.js";
 import { getSnapshotBackend } from "../snapshots/index.js";
 import { parseSkillCommand } from "../skills.js";
+import { renderCommand } from "../commands.js";
 import { appendMemory, readGlobalMemory, readProjectMemory } from "../memory.js";
 const BASH_TOOL = {
     name: "bash",
@@ -116,12 +117,13 @@ export class AgentRunner {
     compactor;
     dataDir;
     agents;
+    commands;
     running = new Map();
     steering = new Map();
     repeatedCalls = new Map();
     mcpWarningSignatures = new Map();
     permissions;
-    constructor(sessions, providers, core, events, pricing, exchangeRates, defaultLanguage = "zh-CN", maxTurns = 50, getProfile = getModelProfile, usageLog, skills, mcp, compactor, dataDir, agents) {
+    constructor(sessions, providers, core, events, pricing, exchangeRates, defaultLanguage = "zh-CN", maxTurns = 50, getProfile = getModelProfile, usageLog, skills, mcp, compactor, dataDir, agents, commands) {
         this.sessions = sessions;
         this.providers = providers;
         this.core = core;
@@ -137,6 +139,7 @@ export class AgentRunner {
         this.compactor = compactor;
         this.dataDir = dataDir;
         this.agents = agents;
+        this.commands = commands;
         this.permissions = new PermissionCoordinator(events);
         core.on("event", (event) => {
             const payload = event.payload;
@@ -460,15 +463,18 @@ export class AgentRunner {
         return { allowed: result.allowed, ...(result.reason ? { reason: result.reason } : {}) };
     }
     async expandSkillCommand(cwd, text) {
+        const parsed = parseSkillCommand(text);
+        if (!parsed)
+            return text;
+        const custom = this.commands ? await this.commands.find(cwd, parsed.name) : undefined;
+        if (custom)
+            return renderCommand(custom.body, parsed.rest);
         if (!this.skills)
             return text;
-        const command = parseSkillCommand(text);
-        if (!command)
-            return text;
-        const skill = await this.skills.find(cwd, command.name);
+        const skill = await this.skills.find(cwd, parsed.name);
         if (!skill)
             return text;
-        const request = command.rest !== "" ? command.rest : "Follow the skill instructions above.";
+        const request = parsed.rest !== "" ? parsed.rest : "Follow the skill instructions above.";
         return `[Skill "${skill.name}" — full text]\n${skill.body}\n\n[User request]\n${request}`;
     }
     /**
