@@ -43,7 +43,7 @@ openwebcode/
 │   │   └── styles.css    # 全部样式
 │   └── test/             # vitest + jsdom（约 10 测试用例）
 ├── packaging/            # 分发布局、安装脚本、owc.cmd、CI 发布流水线
-└── .github/workflows/    # release.yml：打 tag 产 MSI + tar.gz
+└── .github/workflows/    # core.yml / server.yml / web.yml（CI）+ release.yml（发布）
 ```
 
 ## 构建三件套
@@ -207,9 +207,28 @@ cd server && npm run dev
 - **权限与沙盒正交**：yolo 跳权限确认但不解除沙盒；`--no-sandbox` 才完全解除（不推荐）。
 - **Hooks 安全级别等同 yolo**：`.owc/hooks.json` 里的 command 由 server 直接 spawn，不经沙盒与权限链。
 
-## CI 与发布
+## CI
 
-打 tag `v*`（或 Actions 手动触发 `release` 工作流输入 tag）→ `.github/workflows/release.yml` 产：
+四个工作流，都在 `.github/workflows/`：
+
+| 工作流 | 触发 | 覆盖 |
+|---|---|---|
+| `core.yml` | 改 `core/**` | Linux gcc+clang / Windows MSVC：configure→build→ctest（C 单测 + Python 协议/fs 脚本） |
+| `server.yml` | 改 `server/**` 或 `core/**` | Ubuntu + Windows：先构建 core Debug，再 `npm ci && npm run build && npm test`（296 测试，含依赖真实 owc-exec 的 core-client / core-tcp / stage3-e2e / web-e2e——通过 `OWC_CORE_PATH` 注入路径） |
+| `web.yml` | 改 `web/**` | Ubuntu：`npm ci && npm run build && npm test`（10 测试，vitest + jsdom + axe） |
+| `release.yml` | 打 `v*` tag 或手动触发 | 发布前先跑 server + web 全测试网关，再产 MSI / tar.gz |
+
+关键点：
+
+- 三件套各有独立 workflow，写哪个跑哪个——改 `web/` 不会触发 core 编译
+- `server.yml` 和 `release.yml` 都构建 core Debug 给真实 owc-exec 测例使用；测例用 `OWC_CORE_PATH` 或 `skipIf(existsSync)` 兜底，缺二进制时跳过而非挂
+- 所有 workflow 有 `concurrency`，同分支新推送取消旧运行
+- npm 用 `setup-node` 的 cache，依赖 lockfile 路径
+- `release.yml` 的测试网关在 `npm prune --omit=dev` 之前跑——staging 的 `node_modules/` 是 prune 后的生产依赖
+
+## 发布
+
+`release.yml` 在测试全绿后产两个分发物并上传到该 tag 的 GitHub Release：
 
 | 产物 | 平台 | 内容 |
 |---|---|---|
