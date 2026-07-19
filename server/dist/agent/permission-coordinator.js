@@ -8,7 +8,7 @@ export class PermissionCoordinator {
     needsApproval(mode, rules, tool, input) {
         // 只读工具 + remember 自动放行：remember 是 agent 写自身长期记忆（低风险），
         // 写入路径固定为 <cwd>/.owc/memory.md 或 <dataDir>/memory.md，不接受任意路径
-        if (["read_file", "glob", "grep", "read_artifact", "load_skill", "spawn_task", "remember"].includes(tool))
+        if (["read_file", "glob", "grep", "read_artifact", "load_skill", "spawn_task", "todo_write", "remember"].includes(tool))
             return false;
         if (mode === "yolo")
             return false;

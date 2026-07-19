@@ -1,4 +1,4 @@
-import type { Checkpoint, ContextView, CostReport, FileEntry, ManagedWorkspaceCapability, ModelProfile, PendingPermission, PricingDocument, SandboxCapabilities, SandboxMode, Session, SessionDetail, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo } from "./contracts";
+import type { Checkpoint, ContextView, CostReport, FileEntry, ManagedWorkspaceCapability, ModelProfile, PendingPermission, PricingDocument, SandboxCapabilities, SandboxMode, Session, SessionDetail, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo, TodoItem } from "./contracts";
 
 export class ApiError extends Error {
   constructor(readonly status: number, message: string) {
@@ -34,6 +34,7 @@ export const api = {
   respondPermission: (id: string, body: { requestId: string; decision: "allow" | "allow_always" | "deny"; reason?: string }) =>
     request<{ accepted: boolean }>(`/api/sessions/${id}/permissions/respond`, { method: "POST", body: JSON.stringify(body) }),
   pendingPermissions: (id: string) => request<PendingPermission[]>(`/api/sessions/${id}/permissions`),
+  todos: (id: string) => request<TodoItem[]>(`/api/sessions/${id}/todos`),
   updateSession: (id: string, body: Record<string, unknown>) =>
     request<Session>(`/api/sessions/${id}/config`, { method: "PUT", body: JSON.stringify(body) }),
   context: (id: string) => request<ContextView>(`/api/sessions/${id}/context`),

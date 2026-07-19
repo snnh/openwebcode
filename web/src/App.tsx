@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./lib/api";
-import type { AppEvent } from "./lib/contracts";
+import type { AppEvent, TodoItem } from "./lib/contracts";
 import { formatCurrency } from "./lib/format";
 import { loadSendKey, loadSessionDefaults, saveSendKey, saveSessionDefaults, type SendKey, type SessionDefaults } from "./lib/prefs";
 import { useTheme } from "./theme";
@@ -70,6 +70,7 @@ export function App(): ReactElement {
   const steering = useQuery({ queryKey: ["steering", currentId], queryFn: () => api.steering(currentId!), enabled: Boolean(currentId) });
   const contextView = useQuery({ queryKey: ["context", currentId], queryFn: () => api.context(currentId!), enabled: Boolean(currentId) });
   const skills = useQuery({ queryKey: queryKeys.skills(currentId ?? ""), queryFn: () => api.skills(currentId!), enabled: Boolean(currentId) });
+  const todos = useQuery({ queryKey: ["todos", currentId], queryFn: () => api.todos(currentId!), enabled: Boolean(currentId) });
   // 待确认权限以服务端为准（刷新后可恢复），WS 事件只作即时补充
   const serverPermissions = useQuery({ queryKey: ["permissions", currentId], queryFn: () => api.pendingPermissions(currentId!), enabled: Boolean(currentId) });
 
@@ -99,6 +100,7 @@ export function App(): ReactElement {
           queryClient.invalidateQueries({ queryKey: queryKeys.detail(currentId ?? "") });
           queryClient.invalidateQueries({ queryKey: ["context", currentId] });
           queryClient.invalidateQueries({ queryKey: ["checkpoints", currentId] });
+          queryClient.invalidateQueries({ queryKey: ["todos", currentId] });
           return;
         }
         // agent.state 跨会话跟踪：驱动侧栏运行标记与头部状态徽章
@@ -131,6 +133,9 @@ export function App(): ReactElement {
           setNotice(`上下文压缩失败：${(event.payload as { message?: string }).message ?? "未知错误"}`);
         }
         if (!event.sessionId || event.sessionId !== currentId) return;
+        if (event.type === "todos.updated") {
+          queryClient.setQueryData<TodoItem[]>(["todos", event.sessionId], (event.payload as { items?: TodoItem[] }).items ?? []);
+        }
         if (event.type === "message.delta") {
           const text = (event.payload as { text?: string }).text ?? "";
           setStream((value) => ({ ...value, [event.sessionId!]: `${value[event.sessionId!] ?? ""}${text}` }));
@@ -298,6 +303,17 @@ export function App(): ReactElement {
               costSummary={costSummary}
               onAbort={() => api.abort(current.id).catch((error: unknown) => setNotice(error instanceof Error ? error.message : "无法中断"))}
             />
+            {todos.data && todos.data.length > 0 && (
+              <details className="todo-panel" open>
+                <summary>任务清单 · {todos.data.filter((item) => item.status === "done").length}/{todos.data.length}</summary>
+                <ul>{todos.data.map((item, index) => (
+                  <li key={`${item.content}-${index}`} data-status={item.status}>
+                    <span>{item.status === "done" ? "✓" : item.status === "in_progress" ? "●" : "○"}</span>
+                    {item.status === "in_progress" && item.activeForm ? item.activeForm : item.content}
+                  </li>
+                ))}</ul>
+              </details>
+            )}
             <ExecutionTrack
               session={current}
               streamText={stream[current.id] ?? ""}

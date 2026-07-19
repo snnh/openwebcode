@@ -73,6 +73,30 @@ const SPAWN_TASK_TOOL = {
         additionalProperties: false,
     },
 };
+const TODO_WRITE_TOOL = {
+    name: "todo_write",
+    description: "Replace the session task list. Use it to track multi-step work; keep exactly one item in_progress.",
+    inputSchema: {
+        type: "object",
+        properties: {
+            items: {
+                type: "array",
+                items: {
+                    type: "object",
+                    properties: {
+                        content: { type: "string" },
+                        status: { type: "string", enum: ["pending", "in_progress", "done"] },
+                        activeForm: { type: "string" },
+                    },
+                    required: ["content", "status"],
+                    additionalProperties: false,
+                },
+            },
+        },
+        required: ["items"],
+        additionalProperties: false,
+    },
+};
 const REMEMBER_TOOL = {
     name: "remember",
     description: "Save a durable fact to long-term memory; remembered facts are injected into the system prompt on every turn. " +
@@ -88,7 +112,7 @@ const REMEMBER_TOOL = {
         additionalProperties: false,
     },
 };
-const TOOLS = [BASH_TOOL, ...FILE_TOOLS, READ_ARTIFACT_TOOL, LOAD_SKILL_TOOL, SPAWN_TASK_TOOL, REMEMBER_TOOL];
+const TOOLS = [BASH_TOOL, ...FILE_TOOLS, READ_ARTIFACT_TOOL, LOAD_SKILL_TOOL, SPAWN_TASK_TOOL, TODO_WRITE_TOOL, REMEMBER_TOOL];
 const MAX_STEERING_ITEMS = 16;
 const MAX_STEERING_LENGTH = 8_000;
 /** 系统提示中单个记忆/约定小节的字符上限 */
@@ -122,6 +146,7 @@ export class AgentRunner {
     steering = new Map();
     repeatedCalls = new Map();
     mcpWarningSignatures = new Map();
+    todos = new Map();
     permissions;
     constructor(sessions, providers, core, events, pricing, exchangeRates, defaultLanguage = "zh-CN", maxTurns = 50, getProfile = getModelProfile, usageLog, skills, mcp, compactor, dataDir, agents, commands) {
         this.sessions = sessions;
@@ -362,8 +387,13 @@ export class AgentRunner {
             // abort 路径保留未应用的 steering 队列，供用户编辑/重发；正常结束才清理
             if (!controller.signal.aborted)
                 this.steering.delete(sessionId);
+            this.todos.delete(sessionId);
+            this.events.publish({ source: "agent", type: "todos.updated", sessionId, payload: { items: [] } });
             this.state(sessionId, "idle");
         }
+    }
+    listTodos(sessionId) {
+        return [...(this.todos.get(sessionId) ?? [])];
     }
     listPendingPermissions(sessionId) {
         return this.permissions.listPending(sessionId);
@@ -597,6 +627,36 @@ export class AgentRunner {
                     payload: { toolCallId, result: { conclusion: result.conclusion, turns: result.turns, toolsUsed: result.toolsUsed } },
                 });
                 return { type: "tool_result", toolCallId, content: result.conclusion, isError: false };
+            }
+            catch (error) {
+                const content = error instanceof Error ? error.message : String(error);
+                this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
+                return { type: "tool_result", toolCallId, content, isError: true };
+            }
+        }
+        if (name === "todo_write") {
+            this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+            this.state(sessionId, "tool_running");
+            try {
+                if (!Array.isArray(input.items))
+                    throw new Error("todo_write requires an items array");
+                const items = input.items.map((raw) => {
+                    if (!raw || typeof raw !== "object")
+                        throw new Error("Each todo item must be an object");
+                    const item = raw;
+                    const content = typeof item.content === "string" ? item.content.trim() : "";
+                    if (!content)
+                        throw new Error("Each todo item requires non-empty content");
+                    if (!["pending", "in_progress", "done"].includes(item.status))
+                        throw new Error(`Invalid todo status: ${String(item.status)}`);
+                    if (item.activeForm !== undefined && typeof item.activeForm !== "string")
+                        throw new Error("Todo activeForm must be a string");
+                    return { content, status: item.status, ...(item.activeForm ? { activeForm: item.activeForm } : {}) };
+                });
+                this.todos.set(sessionId, items);
+                this.events.publish({ source: "agent", type: "todos.updated", sessionId, payload: { items } });
+                this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: { count: items.length } } });
+                return { type: "tool_result", toolCallId, content: `Task list replaced (${items.length} item(s)).`, isError: false };
             }
             catch (error) {
                 const content = error instanceof Error ? error.message : String(error);
