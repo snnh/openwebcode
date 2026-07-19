@@ -66,6 +66,17 @@ export function permissionRule(tool, input) {
         return { tool, argumentPrefix: input.cmd };
     if (["write_file", "edit_file"].includes(tool) && typeof input.path === "string")
         return { tool, argumentPrefix: input.path };
+    if (tool === "web_fetch" && typeof input.url === "string") {
+        try {
+            const url = new URL(input.url);
+            if (url.protocol === "http:" || url.protocol === "https:")
+                return { tool, argumentPrefix: url.origin };
+        }
+        catch {
+            // 非法 URL 不得退化为整个工具永久放行
+        }
+        return { tool, argumentPrefix: "invalid:" };
+    }
     return { tool };
 }
 function matchesRule(rule, tool, input) {
@@ -73,6 +84,16 @@ function matchesRule(rule, tool, input) {
         return false;
     if (rule.argumentPrefix === undefined)
         return true;
+    if (tool === "web_fetch") {
+        if (typeof input.url !== "string")
+            return false;
+        try {
+            return new URL(input.url).origin === rule.argumentPrefix;
+        }
+        catch {
+            return false;
+        }
+    }
     const value = tool === "bash" ? input.cmd : input.path;
     if (typeof value !== "string")
         return false;
