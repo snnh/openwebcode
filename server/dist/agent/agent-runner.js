@@ -61,6 +61,7 @@ const SPAWN_TASK_TOOL = {
         type: "object",
         properties: {
             prompt: { type: "string", description: "Self-contained task description for the sub-agent." },
+            agent: { type: "string", description: "Optional custom sub-agent name from the system prompt catalog." },
             tools: {
                 type: "array",
                 items: { type: "string", enum: [...SUB_AGENT_TOOL_NAMES] },
@@ -114,12 +115,13 @@ export class AgentRunner {
     mcp;
     compactor;
     dataDir;
+    agents;
     running = new Map();
     steering = new Map();
     repeatedCalls = new Map();
     mcpWarningSignatures = new Map();
     permissions;
-    constructor(sessions, providers, core, events, pricing, exchangeRates, defaultLanguage = "zh-CN", maxTurns = 50, getProfile = getModelProfile, usageLog, skills, mcp, compactor, dataDir) {
+    constructor(sessions, providers, core, events, pricing, exchangeRates, defaultLanguage = "zh-CN", maxTurns = 50, getProfile = getModelProfile, usageLog, skills, mcp, compactor, dataDir, agents) {
         this.sessions = sessions;
         this.providers = providers;
         this.core = core;
@@ -134,6 +136,7 @@ export class AgentRunner {
         this.mcp = mcp;
         this.compactor = compactor;
         this.dataDir = dataDir;
+        this.agents = agents;
         this.permissions = new PermissionCoordinator(events);
         core.on("event", (event) => {
             const payload = event.payload;
@@ -222,6 +225,13 @@ export class AgentRunner {
                 const skillSection = skillCatalog.length > 0
                     ? `\n\nAvailable skills (load full text with the load_skill tool when relevant; the user can also trigger one with /name):\n${skillCatalog.map((skill) => `- ${skill.name}: ${skill.description}`).join("\n")}`
                     : "";
+                const agentCatalog = this.agents ? await this.agents.listFor(session.cwd) : [];
+                const agentSection = agentCatalog.length > 0
+                    ? `\n\nAvailable sub-agents (pass agent=<name> to spawn_task; omit for the default read-only explorer):\n${agentCatalog.map((agent) => {
+                        const ignored = (agent.tools ?? []).filter((tool) => !SUB_AGENT_TOOL_NAMES.includes(tool));
+                        return `- ${agent.name}: ${agent.description}${ignored.length > 0 ? ` (unsupported tools ignored: ${ignored.join(", ")})` : ""}`;
+                    }).join("\n")}`
+                    : "";
                 // MCP 工具：失败 server 降级为告警（同一组告警每轮只播一次）
                 const mcpBinding = this.mcp ? await this.mcp.toolsFor(session.cwd) : { tools: [], warnings: [] };
                 if (mcpBinding.warnings.length > 0) {
@@ -242,7 +252,7 @@ export class AgentRunner {
                     model: session.model,
                     ...(session.thinking ? { thinking: session.thinking } : {}),
                     ...(session.effort ? { effort: session.effort } : {}),
-                    system: `You are OpenWebCode. The workspace is ${session.cwd}. Respond in ${this.defaultLanguage} unless the user explicitly requests another language.${skillSection}${memorySection}`,
+                    system: `You are OpenWebCode. The workspace is ${session.cwd}. Respond in ${this.defaultLanguage} unless the user explicitly requests another language.${skillSection}${agentSection}${memorySection}`,
                     messages: view.messages,
                     cacheBreakpoints,
                     tools: [...TOOLS, ...mcpBinding.tools],
@@ -551,13 +561,20 @@ export class AgentRunner {
                 const prompt = String(input.prompt ?? "");
                 if (!prompt)
                     throw new Error("spawn_task requires a non-empty prompt");
-                const toolNames = Array.isArray(input.tools) ? input.tools.map((item) => String(item)) : [...SUB_AGENT_TOOL_NAMES];
+                const agentName = typeof input.agent === "string" ? input.agent.trim() : "";
+                const definition = agentName && this.agents ? await this.agents.find(session.cwd, agentName) : undefined;
+                if (agentName && !definition)
+                    throw new Error(`Unknown sub-agent: ${agentName}`);
+                const requestedTools = definition?.tools ?? (Array.isArray(input.tools) ? input.tools.map((item) => String(item)) : [...SUB_AGENT_TOOL_NAMES]);
+                const toolNames = requestedTools.filter((tool) => SUB_AGENT_TOOL_NAMES.includes(tool));
                 // 子代理期间不发布 message.delta/thinking_delta，避免污染主聊天流；
                 // 子代理 token 经 onUsage 复用主循环记账路径，计入会话成本
                 const subUsageContext = new ContextManager(this.sessions.contextRoot(sessionId));
                 const result = await runSubAgent({
                     provider,
                     model: session.model,
+                    ...(definition?.model ? { modelOverride: definition.model } : {}),
+                    ...(definition ? { systemExtra: definition.body, agent: definition.name } : {}),
                     prompt,
                     toolNames,
                     core: this.core,
@@ -565,7 +582,7 @@ export class AgentRunner {
                     cwd: session.cwd,
                     contextRoot: this.sessions.contextRoot(sessionId),
                     signal,
-                    onUsage: (usage) => this.recordUsageEvent(sessionId, subUsageContext, session.provider, session.model, usage),
+                    onUsage: (usage) => this.recordUsageEvent(sessionId, subUsageContext, session.provider, definition?.model ?? session.model, usage),
                 });
                 this.events.publish({
                     source: "agent",
