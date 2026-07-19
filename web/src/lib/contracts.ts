@@ -205,3 +205,16 @@ export interface CostReport {
   sessions: Array<ReportMetrics & { sessionId: string; title?: string; providers: ProviderBreakdown[] }>;
   preferences: { currency: "USD" | "CNY" };
 }
+
+export interface BackgroundTaskInfo {
+  taskId: string;
+  sessionId: string;
+  cmd: string;
+  cwd: string;
+  status: "running" | "done" | "failed" | "stopped";
+  exitCode?: number;
+  startedAt: string;
+  finishedAt?: string;
+  output?: string;
+  truncated?: boolean;
+}

@@ -133,6 +133,12 @@ const PATHS = {
       <path d="m2 12 10 5 10-5" />
     </>
   ),
+  terminal: (
+    <>
+      <path d="m4 17 6-6-6-6" />
+      <path d="M12 19h8" />
+    </>
+  ),
 } satisfies Record<string, ReactNode>;
 
 export type IconName = keyof typeof PATHS;

@@ -1,5 +1,7 @@
-import type { ReactElement } from "react";
-import type { SessionDetail } from "../lib/contracts";
+import { useState, type ReactElement } from "react";
+import { useQuery } from "@tanstack/react-query";
+import type { SessionDetail, BackgroundTaskInfo } from "../lib/contracts";
+import { api } from "../lib/api";
 import { formatTokensShort } from "../lib/format";
 import { Icon } from "./Icon";
 
@@ -22,6 +24,13 @@ export interface CostSummary {
   paused: boolean;
 }
 
+const STATUS_LABELS: Record<string, string> = {
+  running: "运行中",
+  done: "完成",
+  failed: "失败",
+  stopped: "已停止",
+};
+
 export function JobHeader({ session, agentState, costSummary, onAbort }: {
   session: SessionDetail;
   agentState?: string;
@@ -30,6 +39,29 @@ export function JobHeader({ session, agentState, costSummary, onAbort }: {
 }): ReactElement {
   const busy = isBusyState(agentState);
   const budgetRatio = costSummary?.tokenBudget ? Math.min(1, costSummary.tokens / costSummary.tokenBudget) : undefined;
+  const [tasksOpen, setTasksOpen] = useState(false);
+  const [expandedTask, setExpandedTask] = useState<string | null>(null);
+  // 任务列表路由不含 output（避免载荷过大），展开时按 taskId 拉详情缓存于此
+  const [taskDetails, setTaskDetails] = useState<Record<string, BackgroundTaskInfo>>({});
+  const tasks = useQuery({
+    queryKey: ["tasks", session.id],
+    queryFn: () => api.tasks(session.id),
+    refetchInterval: 5_000,
+  });
+  const runningTasks = tasks.data?.filter((t) => t.status === "running") ?? [];
+  const allTasks = tasks.data ?? [];
+
+  const openTask = (taskId: string): void => {
+    if (expandedTask === taskId) {
+      setExpandedTask(null);
+    } else {
+      setExpandedTask(taskId);
+      api.task(session.id, taskId)
+        .then((detail) => setTaskDetails((prev) => ({ ...prev, [taskId]: detail })))
+        .catch(() => undefined);
+    }
+  };
+
   return (
     <header className="job-header">
       <div className="job-title">
@@ -49,6 +81,16 @@ export function JobHeader({ session, agentState, costSummary, onAbort }: {
               <i className="budget-bar" aria-hidden><i style={{ width: `${Math.round(budgetRatio * 100)}%` }} /></i>
             )}
           </span>
+        )}
+        {runningTasks.length > 0 && (
+          <button
+            className={`task-badge${tasksOpen ? " open" : ""}`}
+            onClick={() => setTasksOpen((v) => !v)}
+            title={`${runningTasks.length} 个后台任务运行中`}
+          >
+            <Icon name="terminal" size={12} />
+            {runningTasks.length}
+          </button>
         )}
         {agentState && agentState !== "idle" && (
           <span className={`state-badge state-${agentState}`}>{STATE_LABELS[agentState] ?? agentState}</span>
@@ -70,6 +112,27 @@ export function JobHeader({ session, agentState, costSummary, onAbort }: {
           <button className="btn danger-outline" onClick={onAbort}>中断</button>
         )}
       </div>
+      {tasksOpen && allTasks.length > 0 && (
+        <div className="task-dropdown">
+          {allTasks.map((task) => (
+            <div key={task.taskId} className={`task-item task-${task.status}`}>
+              <div className="task-item-header" onClick={() => openTask(task.taskId)}>
+                <span className={`task-status-dot task-${task.status}`} />
+                <span className="task-id mono">{task.taskId}</span>
+                <span className="task-status-label">{STATUS_LABELS[task.status] ?? task.status}</span>
+                {task.exitCode !== undefined && <span className="task-exit-code mono">exit {task.exitCode}</span>}
+                <span className="task-cmd">{task.cmd.length > 60 ? task.cmd.slice(0, 60) + "..." : task.cmd}</span>
+              </div>
+              {expandedTask === task.taskId && (
+                <pre className="task-output mono">
+                  {taskDetails[task.taskId]?.output ?? (task.status === "running" ? "（运行中，输出累积中…）" : "(无输出)")}
+                  {taskDetails[task.taskId]?.truncated ? "\n…（输出过长，头部已截断）" : ""}
+                </pre>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </header>
   );
 }

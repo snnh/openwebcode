@@ -24,6 +24,7 @@ import type { McpManager } from "../mcp/manager.js";
 import { appendMemory, readGlobalMemory, readProjectMemory } from "../memory.js";
 import type { UsageLog } from "../usage-log.js";
 import { webFetch, type SearchProvider } from "../web-tools.js";
+import type { BackgroundTaskRegistry } from "./background-tasks.js";
 
 interface ExecutionContext {
   sessionId: string;
@@ -32,10 +33,15 @@ interface ExecutionContext {
 
 const BASH_TOOL: ProviderTool = {
   name: "bash",
-  description: "Execute a shell command in the session workspace. Call this when command-line execution is required.",
+  description: "Execute a shell command in the session workspace. Call this when command-line execution is required. " +
+    "Set run_in_background=true to run the command asynchronously; the agent loop continues immediately and you can check " +
+    "the result later with task_output (or wait with block=true).",
   inputSchema: {
     type: "object",
-    properties: { cmd: { type: "string" } },
+    properties: {
+      cmd: { type: "string" },
+      run_in_background: { type: "boolean", description: "Run the command in the background and return immediately." },
+    },
     required: ["cmd"],
     additionalProperties: false,
   },
@@ -162,7 +168,34 @@ const WEB_SEARCH_TOOL: ProviderTool = {
   },
 };
 
-const TOOLS = [BASH_TOOL, ...FILE_TOOLS, READ_ARTIFACT_TOOL, LOAD_SKILL_TOOL, SPAWN_TASK_TOOL, TODO_WRITE_TOOL, REMEMBER_TOOL, WEB_FETCH_TOOL];
+const TASK_OUTPUT_TOOL: ProviderTool = {
+  name: "task_output",
+  description: "Read the output of a background task started with bash run_in_background=true. " +
+    "Set block=true to wait until the task finishes (up to timeoutMs, default 30s).",
+  inputSchema: {
+    type: "object",
+    properties: {
+      taskId: { type: "string", description: "The taskId returned from a background bash call." },
+      block: { type: "boolean", description: "Whether to wait for the task to complete." },
+      timeoutMs: { type: "integer", description: "Maximum time to wait in ms when block=true (max 30000)." },
+    },
+    required: ["taskId"],
+    additionalProperties: false,
+  },
+};
+
+const TASK_STOP_TOOL: ProviderTool = {
+  name: "task_stop",
+  description: "Stop a running background task by killing its core process.",
+  inputSchema: {
+    type: "object",
+    properties: { taskId: { type: "string", description: "The taskId returned from a background bash call." } },
+    required: ["taskId"],
+    additionalProperties: false,
+  },
+};
+
+const TOOLS = [BASH_TOOL, ...FILE_TOOLS, READ_ARTIFACT_TOOL, LOAD_SKILL_TOOL, SPAWN_TASK_TOOL, TODO_WRITE_TOOL, REMEMBER_TOOL, WEB_FETCH_TOOL, TASK_OUTPUT_TOOL, TASK_STOP_TOOL];
 
 interface SteeringItem {
   id: string;
@@ -209,6 +242,7 @@ export class AgentRunner {
     private readonly commands?: CommandRegistry,
     private readonly search?: SearchProvider,
     private readonly fetchImpl?: typeof fetch,
+    private readonly backgroundTasks?: BackgroundTaskRegistry,
   ) {
     this.permissions = new PermissionCoordinator(events);
     core.on("event", (event: CoreEvent) => {
@@ -325,13 +359,17 @@ export class AgentRunner {
         // 长期记忆注入（§2.3/§7.5）：CLAUDE.md/AGENTS.md + 项目/全局 memory.md，每轮现读
         const memorySection = await this.buildMemorySection(session.cwd);
 
+        // 后台任务完成提示（读后即清）
+        const bgNotices = this.backgroundTasks?.drainNotices(sessionId) ?? [];
+        const bgNoticeSection = bgNotices.length > 0 ? `\n\n${bgNotices.join("\n")}` : "";
+
         const turn = await collectProviderTurn(
           provider,
           {
             model: session.model,
             ...(session.thinking ? { thinking: session.thinking } : {}),
             ...(session.effort ? { effort: session.effort } : {}),
-            system: `You are OpenWebCode. The workspace is ${session.cwd}. Respond in ${this.defaultLanguage} unless the user explicitly requests another language.${skillSection}${agentSection}${memorySection}${session.agentMode === "plan" ? "\n\nYou are in PLAN mode (read-only). Investigate with read-only tools, then output a step-by-step implementation plan and ask the user to switch to build mode to execute it." : ""}`,
+            system: `You are OpenWebCode. The workspace is ${session.cwd}. Respond in ${this.defaultLanguage} unless the user explicitly requests another language.${skillSection}${agentSection}${memorySection}${bgNoticeSection}${session.agentMode === "plan" ? "\n\nYou are in PLAN mode (read-only). Investigate with read-only tools, then output a step-by-step implementation plan and ask the user to switch to build mode to execute it." : ""}`,
             messages: view.messages,
             cacheBreakpoints,
             tools: [...TOOLS, ...(this.search ? [WEB_SEARCH_TOOL] : []), ...mcpBinding.tools],
@@ -523,7 +561,7 @@ export class AgentRunner {
     const session = await this.sessions.get(sessionId);
     if (!session) return { allowed: false, reason: "Session not found" };
     // Plan 模式门禁：只读工具放行，其余一律拦截
-    const PLAN_READONLY = new Set(["read_file", "glob", "grep", "read_artifact", "load_skill", "spawn_task", "todo_write", "web_fetch", "web_search"]);
+    const PLAN_READONLY = new Set(["read_file", "glob", "grep", "read_artifact", "load_skill", "spawn_task", "todo_write", "web_fetch", "web_search", "task_output"]);
     if (session.agentMode === "plan") {
       if (tool.startsWith("mcp__")) return { allowed: false, reason: `Plan 模式为只读：MCP 工具 ${tool} 被拦截（无法判定读写）。请输出实施计划并请用户切换到 build 模式执行。` };
       if (!PLAN_READONLY.has(tool)) return { allowed: false, reason: `Plan 模式为只读：${tool} 被拦截。请输出实施计划并请用户切换到 build 模式执行。` };
@@ -785,9 +823,86 @@ export class AgentRunner {
         return { type: "tool_result", toolCallId, content, isError: true };
       }
     }
+    if (name === "task_output") {
+      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+      this.state(sessionId, "tool_running");
+      try {
+        const taskId = String(input.taskId ?? "");
+        if (!taskId) throw new Error("task_output requires a non-empty taskId");
+        const block = Boolean(input.block);
+        const timeoutMs = Math.min(Number(input.timeoutMs) || 30000, 30000);
+        if (!this.backgroundTasks) throw new Error("Background tasks are not enabled");
+        if (block) {
+          const deadline = Date.now() + timeoutMs;
+          const poll = async (): Promise<ReturnType<BackgroundTaskRegistry["get"]>> => {
+            const entry = this.backgroundTasks!.get(taskId);
+            if (!entry) throw new Error(`Task not found: ${taskId}`);
+            if (entry.status !== "running") return entry;
+            if (Date.now() >= deadline) return entry;
+            await new Promise((resolve) => setTimeout(resolve, 250));
+            return poll();
+          };
+          const result = await poll();
+          this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result } });
+          return { type: "tool_result", toolCallId, content: JSON.stringify(result), isError: false };
+        }
+        const entry = this.backgroundTasks.get(taskId);
+        if (!entry) throw new Error(`Task not found: ${taskId}`);
+        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: entry } });
+        return { type: "tool_result", toolCallId, content: JSON.stringify(entry), isError: false };
+      } catch (error) {
+        const content = error instanceof Error ? error.message : String(error);
+        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
+        return { type: "tool_result", toolCallId, content, isError: true };
+      }
+    }
+    if (name === "task_stop") {
+      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+      this.state(sessionId, "tool_running");
+      try {
+        const taskId = String(input.taskId ?? "");
+        if (!taskId) throw new Error("task_stop requires a non-empty taskId");
+        if (!this.backgroundTasks) throw new Error("Background tasks are not enabled");
+        const stopped = await this.backgroundTasks.stop(taskId);
+        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: { stopped } } });
+        return { type: "tool_result", toolCallId, content: JSON.stringify({ stopped }), isError: false };
+      } catch (error) {
+        const content = error instanceof Error ? error.message : String(error);
+        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
+        return { type: "tool_result", toolCallId, content, isError: true };
+      }
+    }
     if (name !== "bash" || typeof input.cmd !== "string" || !input.cmd) {
       return { type: "tool_result", toolCallId, content: `Unsupported or invalid tool call: ${name}`, isError: true };
     }
+
+    // 后台 bash：独立 core 进程，不阻塞主循环
+    if (input.run_in_background) {
+      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+      this.state(sessionId, "tool_running");
+      try {
+        if (!this.backgroundTasks) throw new Error("后台任务未启用");
+        const session = await this.sessions.get(sessionId);
+        if (!session) throw new Error("Session not found");
+        if (session.sandboxMode === "wsb") throw new Error("WSB 沙盒模式不支持后台 bash");
+        if (session.workspace?.mode === "managed") throw new Error("托管工作区不支持后台 bash");
+        const taskId = `task-${randomUUID().slice(0, 8)}`;
+        await this.backgroundTasks.start({
+          sessionId,
+          taskId,
+          cmd: input.cmd,
+          cwd: session.cwd,
+        });
+        const result = { taskId, status: "started" as const };
+        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result } });
+        return { type: "tool_result", toolCallId, content: JSON.stringify(result), isError: false };
+      } catch (error) {
+        const content = error instanceof Error ? error.message : String(error);
+        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
+        return { type: "tool_result", toolCallId, content, isError: true };
+      }
+    }
+
     signal.throwIfAborted();
     const execId = `${sessionId}:${randomUUID()}`;
     const execution: ExecutionContext = { sessionId, output: [] };

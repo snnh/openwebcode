@@ -7,6 +7,7 @@ import { stat } from "node:fs/promises";
 import path from "node:path";
 import type { AgentRunner } from "./agent/agent-runner.js";
 import { SteeringError } from "./agent/agent-runner.js";
+import type { BackgroundTaskRegistry } from "./agent/background-tasks.js";
 import { CoreRpcError, type CoreClientLike, type ExecRequest } from "./core-client.js";
 import { ContextManager, type BudgetUpdate } from "./context/context-manager.js";
 import type { ServerConfig } from "./config.js";
@@ -79,6 +80,7 @@ export interface ServerDependencies {
   managed?: ManagedWorkspaceLike;
   getPreferences?: () => { currency: Currency; language: string };
   webDist?: string;
+  backgroundTasks?: BackgroundTaskRegistry;
 }
 
 function serializePricing(pricing: ModelPricing): Record<string, string> {
@@ -551,6 +553,8 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     }
     const detail = await sessions.get(request.params.id);
     if (!detail) return reply.code(404).send({ error: "Session not found" });
+    // 停止该会话的后台任务
+    await dependencies.backgroundTasks?.stopForSession(request.params.id).catch(() => undefined);
     await core.cleanupSession(request.params.id).catch(() => undefined);
     // 释放会话持有的沙盒 core（WSB 虚拟机蒸发）；裸 CoreClient 无 release，为 no-op
     await core.release?.(request.params.id).catch(() => undefined);
@@ -560,6 +564,21 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     }
     if (!(await sessions.delete(request.params.id))) return reply.code(404).send({ error: "Session not found" });
     return reply.code(204).send();
+  });
+
+  // 后台任务 REST 路由
+  app.get<{ Params: { id: string } }>("/api/sessions/:id/tasks", async (request, reply) => {
+    if (!dependencies.backgroundTasks) return reply.code(501).send({ error: "Background tasks are not enabled" });
+    if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
+    return dependencies.backgroundTasks.listForSession(request.params.id);
+  });
+
+  app.get<{ Params: { id: string; taskId: string } }>("/api/sessions/:id/tasks/:taskId", async (request, reply) => {
+    if (!dependencies.backgroundTasks) return reply.code(501).send({ error: "Background tasks are not enabled" });
+    if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
+    const task = dependencies.backgroundTasks.get(request.params.taskId);
+    if (!task) return reply.code(404).send({ error: "Task not found" });
+    return task;
   });
 
   // 上下文压缩（§7.4）：/compact（overview）、/compact tools（toolcalls），以及协议 REST 路由
