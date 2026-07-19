@@ -646,6 +646,10 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       }
       const session = await sessions.get(request.params.id);
       if (!session) return reply.code(404).send({ error: "Session not found" });
+      // shell 快捷前缀挂起中（权限审批/执行）：避免消息落盘与 shell 落盘竞态，要求先 respond
+      if (agent.isShellPending(request.params.id)) {
+        return reply.code(409).send({ error: "shell 命令挂起中，请先回应权限请求或等待其完成" });
+      }
       const images = request.body.images;
       if (images !== undefined) {
         if (!Array.isArray(images) || images.length > MAX_IMAGES_PER_MESSAGE || images.some((image) => !isValidImage(image))) {
@@ -759,6 +763,22 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     if (!(await agent.respondPermission(request.params.id, body.requestId, body.decision, body.reason))) return reply.code(404).send({ error: "Permission request not found" });
     return { accepted: true };
   });
+
+  // C2 `!` shell 快捷前缀：走与 bash 工具相同的权限链 + core.run，但不进 agent run 循环（isRunning 全程 false）。
+  // 落盘 user (`!cmd`) + tool_result 一对；权限挂起复用 permission.request/respond 机制。
+  app.post<{ Params: { id: string }; Body: { cmd?: string } }>(
+    "/api/sessions/:id/shell",
+    async (request, reply) => {
+      const session = await sessions.get(request.params.id);
+      if (!session) return reply.code(404).send({ error: "Session not found" });
+      const cmd = request.body?.cmd;
+      if (typeof cmd !== "string" || cmd.trim() === "") return reply.code(400).send({ error: "cmd must be a non-empty string" });
+      if (agent.isRunning(request.params.id)) return reply.code(409).send({ error: "Session agent is running; wait for it to finish before running a shell command" });
+      if (agent.isShellPending(request.params.id)) return reply.code(409).send({ error: "A shell command is already pending; respond to its permission request first" });
+      void agent.runShell(request.params.id, cmd).catch(() => undefined);
+      return reply.code(202).send({ accepted: true });
+    },
+  );
 
   app.get<{ Params: { id: string } }>("/api/sessions/:id/steering", async (request, reply) => {
     if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });

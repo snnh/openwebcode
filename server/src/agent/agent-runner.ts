@@ -218,6 +218,7 @@ export class SteeringError extends Error {
 
 export class AgentRunner {
   private readonly running = new Map<string, AbortController>();
+  private readonly shells = new Map<string, AbortController>();
   private readonly steering = new Map<string, SteeringItem[]>();
   private readonly repeatedCalls = new Map<string, { signature: string; count: number }>();
   private readonly mcpWarningSignatures = new Map<string, string>();
@@ -284,6 +285,7 @@ export class AgentRunner {
     },
   ): Promise<void> {
     if (this.running.has(sessionId)) throw new Error("Session agent is already running");
+    if (this.shells.has(sessionId)) throw new Error("A shell command is pending; respond to its permission request first");
     const controller = new AbortController();
     this.running.set(sessionId, controller);
     try {
@@ -538,8 +540,77 @@ export class AgentRunner {
     return true;
   }
 
+  /**
+   * shell 快捷前缀 `!cmd`：走与 bash 工具相同的 authorizeTool 权限链 + core.run + boundToolResult 截断，
+   * 但**不进 agent run 循环**（isRunning 全程 false）。落盘用户消息（`!cmd`）+ tool_result 一对，
+   * 不触发 provider turn。
+   *
+   * 权限挂起复用现有 permission.request 事件 + respond 驱动机制：用独立 AbortController（不入 running Map），
+   * respondPermission 路由驱动 permissions.request() 解析继续。run() 与 runShell() 通过 shells Map 互斥
+   * （run() 开头检查 shells.has -> throw；shell 路由检查 isRunning -> 409）。
+   *
+   * PreToolUse/PostToolUse 钩子与 bash 工具一致触发（exit 2 否决 -> 错误 tool_result）。
+   * 权限规则用 tool="bash" 复用现有 bash allow_always 规则（用户对 bash 的持久放行自动适用于 ! shell）。
+   */
+  async runShell(sessionId: string, cmd: string): Promise<void> {
+    if (this.running.has(sessionId)) throw new Error("Session agent is running; wait for it to finish before running a shell command");
+    if (this.shells.has(sessionId)) throw new Error("A shell command is already pending in this session");
+    const controller = new AbortController();
+    this.shells.set(sessionId, controller);
+    const toolCallId = `shell-${randomUUID().slice(0, 8)}`;
+    try {
+      const session = await this.sessions.get(sessionId);
+      if (!session) throw new Error("Session not found");
+      // 沙盒配置幂等（与 /files 路由同款）；不写 configuredSessions 缓存（app.ts 私有，重复配置无害）
+      await this.core.configureSession({
+        sessionId,
+        cwd: session.cwd,
+        sandbox: session.sandbox ?? { enabled: true, readRoots: [session.cwd], writeRoots: [session.cwd], denyPaths: [], network: "allow" },
+      });
+      // 落盘用户消息（保留 ! 前缀作为 shell 标记，便于前端「发给 agent」按钮识别配对）
+      await this.sessions.appendMessage(sessionId, "user", [{ type: "text", text: `!${cmd}` }]);
+      // 权限链（与 bash 工具一致；plan 模式会被门禁拦截）
+      const permission = await this.authorizeTool(sessionId, "bash", { cmd }, controller.signal);
+      if (!permission.allowed) {
+        await this.sessions.appendMessage(sessionId, "tool", [{ type: "tool_result", toolCallId, content: permission.reason ?? "Shell command permission denied", isError: true }]);
+        return;
+      }
+      // PreToolUse 钩子：exit 2 否决 -> 错误 tool_result
+      if (this.hooks) {
+        const outcome = await this.hooks.run("PreToolUse", { sessionId, cwd: session.cwd, tool: "bash", input: { cmd } });
+        if (outcome.blocked) {
+          await this.sessions.appendMessage(sessionId, "tool", [{ type: "tool_result", toolCallId, content: outcome.reason ?? "Blocked by hook", isError: true }]);
+          return;
+        }
+      }
+      const result = await this.executeBash(sessionId, cmd, toolCallId, controller.signal);
+      await this.sessions.appendMessage(sessionId, "tool", [{ type: "tool_result", toolCallId, content: result.content, isError: result.isError }]);
+      // PostToolUse 钩子：成功后触发（与 bash 工具一致，不阻断）
+      if (this.hooks && !result.isError) {
+        const summary = result.content.slice(0, 300);
+        await this.hooks.run("PostToolUse", { sessionId, cwd: session.cwd, tool: "bash", input: { cmd }, result: { summary } });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.events.publish({ source: "agent", type: "agent.error", sessionId, payload: { message } });
+      // 尽力落盘错误 tool_result 防止丢失（appendMessage 自身失败则忽略）
+      try {
+        await this.sessions.appendMessage(sessionId, "tool", [{ type: "tool_result", toolCallId, content: message, isError: true }]);
+      } catch {
+        // 二次落盘失败不再抛错
+      }
+    } finally {
+      this.shells.delete(sessionId);
+    }
+  }
+
   isRunning(sessionId: string): boolean {
     return this.running.has(sessionId);
+  }
+
+  /** shell 快捷前缀 `!cmd` 是否在挂起中（权限审批/执行中）；agent.isRunning 全程 false。 */
+  isShellPending(sessionId: string): boolean {
+    return this.shells.has(sessionId);
   }
 
   enqueueSteering(sessionId: string, content: string): { id: string; position: number } {
@@ -931,16 +1002,31 @@ export class AgentRunner {
       }
     }
 
+    const bashResult = await this.executeBash(sessionId, input.cmd, toolCallId, signal);
+    return { type: "tool_result", toolCallId, content: bashResult.content, isError: bashResult.isError };
+  }
+
+  /**
+   * 前台 bash 执行（runShell 与 executeTool 的 bash 分支共用）：
+   * core.run + exec.output 推送收集 + boundToolResult 截断。
+   * 失败转成 isError=true 返回，不抛错（调用方负责落盘 tool_result）。
+   */
+  private async executeBash(
+    sessionId: string,
+    cmd: string,
+    toolCallId: string,
+    signal: AbortSignal,
+  ): Promise<{ content: string; isError: boolean }> {
     signal.throwIfAborted();
     const execId = `${sessionId}:${randomUUID()}`;
     const execution: ExecutionContext = { sessionId, output: [] };
     this.executions.set(execId, execution);
-    this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input, execId } });
+    this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name: "bash", input: { cmd }, execId } });
     this.state(sessionId, "tool_running");
     try {
       const session = await this.sessions.get(sessionId);
       if (!session) throw new Error("Session not found");
-      const result = await this.core.run({ sessionId, execId, cmd: input.cmd, cwd: session.cwd });
+      const result = await this.core.run({ sessionId, execId, cmd, cwd: session.cwd });
       const output = execution.output
         .sort((a, b) => a.seq - b.seq)
         .map((chunk) => ({
@@ -948,15 +1034,14 @@ export class AgentRunner {
           data: Buffer.from(chunk.data, "base64").toString("utf8"),
         }));
       const rawContent = JSON.stringify({ ...result, output });
-      const bounded = await boundToolResult(this.sessions.contextRoot(sessionId), name, rawContent);
-      const content = bounded.content;
+      const bounded = await boundToolResult(this.sessions.contextRoot(sessionId), "bash", rawContent);
       this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result, truncated: bounded.truncated, ...(bounded.artifactId ? { artifactId: bounded.artifactId } : {}) } });
-      return { type: "tool_result", toolCallId, content, isError: false };
+      return { content: bounded.content, isError: false };
     } catch (error) {
       if (signal.aborted) throw error;
       const content = error instanceof Error ? error.message : String(error);
       this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
-      return { type: "tool_result", toolCallId, content, isError: true };
+      return { content, isError: true };
     } finally {
       this.executions.delete(execId);
     }
