@@ -274,7 +274,15 @@ export class AgentRunner {
     this.defaultLanguage = language;
   }
 
-  async run(sessionId: string, text: string, options?: { images?: Array<{ mediaType: string; data: string }> }): Promise<void> {
+  async run(
+    sessionId: string,
+    text: string,
+    options?: {
+      images?: Array<{ mediaType: string; data: string }>;
+      /** 预组装的附件 text 块（app.ts 已读取+截断+包装为 `[Attachment <path>]\n<内容>`）；插入在 images 之后、正文之前 */
+      attachments?: Array<{ text: string }>;
+    },
+  ): Promise<void> {
     if (this.running.has(sessionId)) throw new Error("Session agent is already running");
     const controller = new AbortController();
     this.running.set(sessionId, controller);
@@ -292,6 +300,7 @@ export class AgentRunner {
       this.events.publish({ source: "session", type: "checkpoint.created", sessionId, payload: checkpoint });
       await this.sessions.appendMessage(sessionId, "user", [
         ...(options?.images ?? []).map((image): MessageContent => ({ type: "image", mediaType: image.mediaType, data: image.data })),
+        ...(options?.attachments ?? []).map((block): MessageContent => ({ type: "text", text: block.text })),
         { type: "text", text: effectiveText },
       ]);
       this.state(sessionId, "thinking");

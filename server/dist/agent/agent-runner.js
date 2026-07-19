@@ -262,6 +262,7 @@ export class AgentRunner {
             this.events.publish({ source: "session", type: "checkpoint.created", sessionId, payload: checkpoint });
             await this.sessions.appendMessage(sessionId, "user", [
                 ...(options?.images ?? []).map((image) => ({ type: "image", mediaType: image.mediaType, data: image.data })),
+                ...(options?.attachments ?? []).map((block) => ({ type: "text", text: block.text })),
                 { type: "text", text: effectiveText },
             ]);
             this.state(sessionId, "thinking");
