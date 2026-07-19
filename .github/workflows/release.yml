@@ -13,6 +13,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   # bundled Node 20 运行时的具体版本（nodejs.org 发行包），升级时只改这个常量
   NODE_DIST_VERSION: "20.19.0"
@@ -25,6 +29,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            server/package-lock.json
+            web/package-lock.json
       - name: Resolve version from tag
         shell: bash
         run: |
@@ -38,7 +46,20 @@ jobs:
           cd server
           npm ci
           npm run build
-          npm prune --omit=dev
+      - name: Build core (Debug, for tests)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S core -B build-debug -A x64
+          cmake --build build-debug --config Debug --parallel
+      - name: Test server
+        shell: bash
+        env:
+          OWC_CORE_PATH: ${{ runner.workspace }}/openwebcode/build-debug/Debug/owc-exec.exe
+        run: |
+          set -euo pipefail
+          cd server
+          npm test
       - name: Build web
         shell: bash
         run: |
@@ -46,6 +67,18 @@ jobs:
           cd web
           npm ci
           npm run build
+      - name: Test web
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd web
+          npm test
+      - name: Prune dev deps for staging
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd server
+          npm prune --omit=dev
       - name: Build core (Release)
         shell: bash
         run: |
@@ -96,6 +129,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            server/package-lock.json
+            web/package-lock.json
       - name: Resolve version from tag
         shell: bash
         run: |
@@ -108,13 +145,34 @@ jobs:
           cd server
           npm ci
           npm run build
-          npm prune --omit=dev
+      - name: Build core (Debug, for tests)
+        run: |
+          set -euo pipefail
+          cmake -S core -B build-debug -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build-debug --parallel
+      - name: Test server
+        env:
+          OWC_CORE_PATH: ${{ runner.workspace }}/openwebcode/build-debug/owc-exec
+        run: |
+          set -euo pipefail
+          cd server
+          npm test
       - name: Build web
         run: |
           set -euo pipefail
           cd web
           npm ci
           npm run build
+      - name: Test web
+        run: |
+          set -euo pipefail
+          cd web
+          npm test
+      - name: Prune dev deps for staging
+        run: |
+          set -euo pipefail
+          cd server
+          npm prune --omit=dev
       - name: Build core (Release)
         run: |
           set -euo pipefail
