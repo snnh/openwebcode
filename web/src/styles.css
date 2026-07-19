@@ -285,6 +285,84 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .state-badge { background: var(--accent-soft); color: var(--accent); }
 .state-badge.state-error { background: var(--danger-bg); color: var(--danger); }
 
+/* ================= 后台任务 ================= */
+.task-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+.task-badge.open, .task-badge:hover { border-color: var(--accent); }
+.task-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 22px;
+  right: 22px;
+  z-index: 10;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  max-height: 320px;
+  overflow-y: auto;
+  margin-top: 4px;
+}
+.task-item {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.task-item:last-child { border-bottom: none; }
+.task-item-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.task-item-header:hover { color: var(--accent); }
+.task-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.task-status-dot.task-running { background: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
+.task-status-dot.task-done { background: var(--ok); }
+.task-status-dot.task-failed { background: var(--danger); }
+.task-status-dot.task-stopped { background: var(--text-3); }
+.task-id { color: var(--text-3); font-size: 11px; }
+.task-status-label { font-size: 11px; color: var(--text-2); font-weight: 500; }
+.task-exit-code { font-size: 11px; color: var(--text-3); }
+.task-cmd {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-2);
+}
+.task-output {
+  margin: 6px 0 0;
+  padding: 8px;
+  background: var(--code-bg);
+  border-radius: var(--radius-s);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 200px;
+  overflow-y: auto;
+  color: var(--text-2);
+}
+.job-header { position: relative; }
+
 /* ================= 执行轨道 ================= */
 .todo-panel {
   margin: 14px clamp(20px, 4vw, 64px) 0;

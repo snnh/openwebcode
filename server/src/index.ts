@@ -1,6 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AgentRunner } from "./agent/agent-runner.js";
+import { BackgroundTaskRegistry } from "./agent/background-tasks.js";
 import { buildServer } from "./app.js";
 import { loadConfig } from "./config.js";
 import { ModelRegistry } from "./context/model-registry.js";
@@ -71,7 +72,16 @@ const mcp = new McpManager(dataDir);
 const provider2 = new Provider2Client(config.provider2);
 const compactor = new Compactor(sessions, provider2, { usageLog, pricing, exchangeRates });
 const search = createSearchProvider(config.search);
-const agent = new AgentRunner(sessions, providers, core, events, pricing, exchangeRates, config.defaultLanguage, 50, (model) => models.get(model), usageLog, skills, mcp, compactor, dataDir, agents, commands, search);
+const backgroundTasks = new BackgroundTaskRegistry(
+  () => new CoreClient(config.corePath, config.coreRequestTimeoutMs),
+  async (client, sessionId, cwd) => {
+    const session = await sessions.get(sessionId);
+    const sandbox = session?.sandbox ?? { enabled: true, readRoots: [cwd], writeRoots: [cwd], denyPaths: [], network: "allow" as const };
+    await client.configureSession({ sessionId, cwd, sandbox });
+  },
+  (info) => events.publish({ source: "agent", type: "task.finished", sessionId: info.sessionId, payload: info }),
+);
+const agent = new AgentRunner(sessions, providers, core, events, pricing, exchangeRates, config.defaultLanguage, 50, (model) => models.get(model), usageLog, skills, mcp, compactor, dataDir, agents, commands, search, undefined, backgroundTasks);
 // 托管工作区（plan §6.4）：镜像/挂载点位于 dataDir 下；孤儿挂载清理挂在 GC 启动扫描上
 const managed = new ManagedWorkspaceManager({ dataDir });
 const gc = new StorageGC(path.join(dataDir, "sessions"), config.gcMaxBytes, () => managed.sweepOrphans());
@@ -107,6 +117,7 @@ const app = await buildServer({
   usageLog,
   skills,
   compactor,
+  backgroundTasks,
   getPreferences: () => {
     const effective = settings.effective();
     return { currency: effective.defaultCurrency, language: effective.defaultLanguage };
@@ -117,6 +128,7 @@ async function shutdown(): Promise<void> {
   clearInterval(gcTimer);
   exchangeRates.close();
   await mcp.close();
+  await backgroundTasks.shutdown().catch((error: unknown) => console.error("Background tasks shutdown error:", error));
   await app.close();
   await core.stop();
 }

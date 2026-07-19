@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./lib/api";
-import type { AppEvent, TodoItem } from "./lib/contracts";
+import type { AppEvent, BackgroundTaskInfo, TodoItem } from "./lib/contracts";
 import { formatCurrency } from "./lib/format";
 import { loadSendKey, loadSessionDefaults, saveSendKey, saveSessionDefaults, type SendKey, type SessionDefaults } from "./lib/prefs";
 import { useTheme } from "./theme";
@@ -101,6 +101,7 @@ export function App(): ReactElement {
           queryClient.invalidateQueries({ queryKey: ["context", currentId] });
           queryClient.invalidateQueries({ queryKey: ["checkpoints", currentId] });
           queryClient.invalidateQueries({ queryKey: ["todos", currentId] });
+          queryClient.invalidateQueries({ queryKey: ["tasks", currentId] });
           return;
         }
         // agent.state 跨会话跟踪：驱动侧栏运行标记与头部状态徽章
@@ -157,6 +158,12 @@ export function App(): ReactElement {
         }
         if (["steering.queued", "steering.applied", "steering.removed"].includes(event.type)) {
           queryClient.invalidateQueries({ queryKey: ["steering", event.sessionId] });
+        }
+        // 后台任务完成通知：刷新任务列表
+        if (event.type === "task.finished") {
+          const task = event.payload as BackgroundTaskInfo;
+          setNotice(`后台任务 ${task.taskId} 已结束（exit ${task.exitCode ?? "?"}）`);
+          queryClient.invalidateQueries({ queryKey: ["tasks", currentId] });
         }
         if ([
           "agent.state", "tool.end", "checkpoint.created", "checkpoint.restored", "checkpoint.deleted", "context.usage",

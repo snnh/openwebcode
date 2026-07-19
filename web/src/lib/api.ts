@@ -1,4 +1,4 @@
-import type { Checkpoint, ContextView, CostReport, FileEntry, ManagedWorkspaceCapability, ModelProfile, PendingPermission, PricingDocument, SandboxCapabilities, SandboxMode, Session, SessionDetail, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo, TodoItem } from "./contracts";
+import type { BackgroundTaskInfo, Checkpoint, ContextView, CostReport, FileEntry, ManagedWorkspaceCapability, ModelProfile, PendingPermission, PricingDocument, SandboxCapabilities, SandboxMode, Session, SessionDetail, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo, TodoItem } from "./contracts";
 
 export class ApiError extends Error {
   constructor(readonly status: number, message: string) {
@@ -89,4 +89,6 @@ export const api = {
   },
   saveSettings: (overrides: Record<string, SettingValue | null>) =>
     request<SettingsView>("/api/settings", { method: "PUT", body: JSON.stringify({ overrides }) }),
+  tasks: (id: string) => request<BackgroundTaskInfo[]>(`/api/sessions/${id}/tasks`),
+  task: (id: string, taskId: string) => request<BackgroundTaskInfo>(`/api/sessions/${id}/tasks/${taskId}`),
 };
