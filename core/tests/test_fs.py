@@ -71,13 +71,20 @@ def main():
         assert not list(root.glob("*.tmp")) and not list(root.glob(".*.tmp"))
         (pathlib.Path(outside)/"secret").write_text("secret")
         link=root/"escape"
+        linked=False
         try:
             if os.name=="nt": os.symlink(outside,link,target_is_directory=True)
             else: os.symlink(outside,link)
-        except OSError: pass
-        else:
+            linked=True
+        except OSError:
+            # Creating a symbolic link needs elevation on some Windows hosts;
+            # a directory junction exercises the same reparse-point boundary.
+            if os.name=="nt":
+                linked=subprocess.run(["cmd","/c","mklink","/J",str(link),outside],capture_output=True).returncode==0
+        if linked:
             assert fs(50,"fs.read",{"path":"escape/secret","offset":0,"limit":1})["error"]["code"]==-32002
-            assert fs(51,"fs.write",{"path":"escape/new","content":"no"})["error"]["code"]==-32002
+            escaped_write=fs(51,"fs.write",{"path":"escape/new","content":"no"})
+            assert escaped_write.get("error",{}).get("code")==-32002,escaped_write
         assert send(p,99,"core.shutdown",{})["result"]["ok"]
     assert p.wait()==0
 if __name__=="__main__":main()
