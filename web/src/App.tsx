@@ -39,7 +39,7 @@ function storeSetting(key: string, value: string): void {
 
 export function App(): ReactElement {
   const queryClient = useQueryClient();
-  const { theme, preference, setPreference, toggleTheme } = useTheme();
+  const { theme, preference, setPreference, toggleTheme, accent, setAccent } = useTheme();
   const [currentId, setCurrentId] = useState<string>();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -395,6 +395,8 @@ export function App(): ReactElement {
         open={settingsOpen}
         preference={preference}
         setPreference={setPreference}
+        accent={accent}
+        setAccent={setAccent}
         sendKey={sendKey}
         setSendKey={setSendKey}
         defaults={sessionDefaults}
