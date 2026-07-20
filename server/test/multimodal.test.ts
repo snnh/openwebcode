@@ -16,7 +16,12 @@ import { SessionStore } from "../src/sessions/session-store.js";
 import type { ChatMessage } from "../src/sessions/types.js";
 
 const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
+afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, {
+  recursive: true,
+  force: true,
+  maxRetries: 5,
+  retryDelay: 100,
+}))));
 
 async function tempDir(): Promise<string> {
   const root = await mkdtemp(path.join(os.tmpdir(), "owc-mm-"));
@@ -149,6 +154,12 @@ describe("messages route with images", () => {
       expect(badType.statusCode).toBe(400);
       const tooMany = await app.inject({ method: "POST", url: `/api/sessions/${capable.id}/messages`, payload: { content: "x", images: Array.from({ length: 5 }, () => ({ mediaType: "image/png", data: PNG })) } });
       expect(tooMany.statusCode).toBe(400);
+      // POST /messages only acknowledges the background run.  Wait for it to
+      // release the session files before afterEach removes the Windows temp dir.
+      for (let attempt = 0; attempt < 60 && agent.isRunning(capable.id); attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      expect(agent.isRunning(capable.id)).toBe(false);
     } finally {
       await app.close();
     }
