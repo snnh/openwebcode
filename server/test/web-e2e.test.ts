@@ -181,14 +181,14 @@ describe.skipIf(!coreAvailable)("stage 4 web E2E", () => {
     const firstIdle = waitForEvent(events, session.id, "agent.state", (e) => (e.payload as { state?: string }).state === "idle");
     expect((await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "第一轮" } })).statusCode).toBe(202);
     await firstIdle;
-    const updated = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { model: "claude-opus-4-8", thinking: "adaptive", effort: "xhigh" } });
+    const updated = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { model: "deepseek-reasoner", thinking: "enabled" } });
     expect(updated.statusCode).toBe(200);
     const secondIdle = waitForEvent(events, session.id, "agent.state", (e) => (e.payload as { state?: string }).state === "idle");
     expect((await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "第二轮" } })).statusCode).toBe(202);
     await secondIdle;
 
     expect(requests[0]).toMatchObject({ model: "claude-haiku-4-5" });
-    expect(requests[1]).toMatchObject({ model: "claude-opus-4-8", thinking: "adaptive", effort: "xhigh" });
+    expect(requests[1]).toMatchObject({ model: "deepseek-reasoner", thinking: "enabled" });
   }, 30_000);
 
   it("rolls back a checkpoint over HTTP, restoring files and truncating messages", async () => {

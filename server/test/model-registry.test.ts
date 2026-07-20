@@ -46,8 +46,8 @@ function fetchStub(routes: FetchRoute[], seen?: string[]): typeof fetch {
 }
 
 describe("model metadata lookup", () => {
-  it("matches exact id, then prefix, then conservative fallback", () => {
-    expect(lookupModelMetadata("claude-opus-4-8").contextWindow).toBe(1_000_000);
+  it("matches prefix, then conservative fallback", () => {
+    expect(lookupModelMetadata("deepseek-reasoner").contextWindow).toBe(64_000);
     expect(lookupModelMetadata("gpt-4o-2024-11-20").maxOutput).toBe(16_000);
     expect(lookupModelMetadata("gpt-4o-2024-11-20").capabilities.modalities).toContain("image");
     expect(lookupModelMetadata("some-random-model")).toEqual(FALLBACK_METADATA);
@@ -70,16 +70,16 @@ describe("ModelRegistry", () => {
       openai: { baseURL: "https://openai.test", apiKey: "sk-oai" },
     });
     expect(report.errors).toEqual([]);
-    expect(report.added).toBe(3);
+    expect(report.added).toBe(4);
 
     const list = registry.list();
-    // builtin 同名 id 保留 builtin 来源与策展档案
+    // claude-opus-4-8 不再内置，经 API 拉取后按 metadata 前缀匹配成档
     const opus = list.find((model) => model.id === "claude-opus-4-8");
-    expect(opus?.source).toBe("builtin");
-    expect(opus?.contextWindow).toBe(1_000_000);
+    expect(opus?.source).toBe("api");
+    expect(opus?.contextWindow).toBe(128_000);
     const future = list.find((model) => model.id === "claude-future-9");
     expect(future).toMatchObject({ source: "api", provider: "anthropic", displayName: "Claude Future 9" });
-    expect(future?.capabilities.modalities).toContain("image");
+    expect(future?.capabilities.modalities).toEqual(["text"]);
     const gpt4o = list.find((model) => model.id === "gpt-4o");
     expect(gpt4o).toMatchObject({ source: "api", provider: "openai", contextWindow: 128_000 });
     expect(list.find((model) => model.id === "gpt-weird")?.contextWindow).toBe(FALLBACK_METADATA.contextWindow);
@@ -225,7 +225,7 @@ describe("models API", () => {
     ]);
     try {
       const before = (await app.inject({ method: "GET", url: "/api/models" })).json<CatalogModel[]>();
-      expect(before.find((model) => model.id === "claude-opus-4-8")?.source).toBe("builtin");
+      expect(before).toEqual([]);
       expect(before.some((model) => model.id === "gpt-4o")).toBe(false);
 
       const refresh = await app.inject({ method: "POST", url: "/api/models/refresh" });
@@ -254,7 +254,7 @@ describe("models API", () => {
       expect((await app.inject({ method: "PUT", url: "/api/models/bad", payload: { contextWindow: -1 } })).statusCode).toBe(400);
       expect((await app.inject({ method: "PUT", url: "/api/models/no-provider", payload: {} })).statusCode).toBe(400);
       expect((await app.inject({ method: "PUT", url: "/api/models/bad-caps", payload: { provider: "openai", capabilities: { tools: "yes" } } })).statusCode).toBe(400);
-      expect((await app.inject({ method: "DELETE", url: "/api/models/claude-opus-4-8" })).statusCode).toBe(409);
+      expect((await app.inject({ method: "DELETE", url: "/api/models/nonexistent" })).statusCode).toBe(409);
       expect((await app.inject({ method: "DELETE", url: "/api/models/my-custom" })).statusCode).toBe(204);
       const after = (await app.inject({ method: "GET", url: "/api/models" })).json<CatalogModel[]>();
       expect(after.some((model) => model.id === "my-custom")).toBe(false);
