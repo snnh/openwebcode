@@ -34,6 +34,18 @@ static void reap_child(pid_t child, int *status) {
     while (waitpid(child, status, 0) < 0 && errno == EINTR) {}
 }
 
+static int write_all(int descriptor, const void *data, size_t size) {
+    const unsigned char *cursor = (const unsigned char *)data;
+    size_t written = 0;
+    while (written < size) {
+        ssize_t count = write(descriptor, cursor + written, size - written);
+        if (count < 0 && errno == EINTR) continue;
+        if (count <= 0) return 0;
+        written += (size_t)count;
+    }
+    return 1;
+}
+
 int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *result) {
     int out_pipe[2] = {-1, -1}, err_pipe[2] = {-1, -1}, sandbox_pipe[2] = {-1, -1};
     int status = 0, running = 1, ok = 0, saved_error = 0;
@@ -70,8 +82,9 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
         if (dup2(out_pipe[1], STDOUT_FILENO) < 0 || dup2(err_pipe[1], STDERR_FILENO) < 0) _exit(126);
         close(out_pipe[1]); close(err_pipe[1]);
         if (chdir(request->cwd) != 0) _exit(126);
-        if(request->sandbox_enabled){if(!owc_landlock_apply(request->cwd,request->allow_network,&sandbox)){(void)write(sandbox_pipe[1],&sandbox,sizeof(sandbox));}else (void)write(sandbox_pipe[1],&sandbox,sizeof(sandbox));}
-        else{sandbox.status=OWC_SANDBOX_ADVISORY;(void)snprintf(sandbox.reason,sizeof(sandbox.reason),"sandbox disabled by session policy");(void)write(sandbox_pipe[1],&sandbox,sizeof(sandbox));}
+        if(request->sandbox_enabled)(void)owc_landlock_apply(request->cwd,request->allow_network,&sandbox);
+        else{sandbox.status=OWC_SANDBOX_ADVISORY;(void)snprintf(sandbox.reason,sizeof(sandbox.reason),"sandbox disabled by session policy");}
+        if(!write_all(sandbox_pipe[1],&sandbox,sizeof(sandbox)))_exit(126);
         execl("/bin/sh", "sh", "-c", request->command, (char *)NULL);
         _exit(127);
     }
