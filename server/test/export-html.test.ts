@@ -144,4 +144,18 @@ describe("GET /api/sessions/:id/export.html", () => {
       await harness.app.close();
     }
   });
+
+  it("lang=en 生成英文分享页", async () => {
+    const harness = await setup();
+    try {
+      const res = await harness.app.inject({ method: "GET", url: `/api/sessions/${harness.session.id}/export.html?lang=en` });
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.body).toContain('<html lang="en">');
+      expect(res.body).toContain("No messages");
+      expect(res.body).toContain("OpenWebCode session export");
+      expect(res.body).toContain("Exported by OpenWebCode");
+    } finally {
+      await harness.app.close();
+    }
+  });
 });

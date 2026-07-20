@@ -3,6 +3,7 @@ import { api } from "../lib/api";
 import type { ChatMessage, ExtensionInfo, MessageContent } from "../lib/contracts";
 import { Icon } from "./Icon";
 import { CodeBlock, Markdown } from "./Markdown";
+import { useI18n } from "../i18n";
 
 const TOOL_SUMMARY_KEYS = ["command", "path", "file_path", "filePath", "pattern", "query", "url", "cwd"];
 
@@ -17,6 +18,7 @@ export function summarizeToolInput(input?: Record<string, unknown>): string | un
 }
 
 export function ToolCallCard({ name, input }: { name: string; input?: Record<string, unknown> }): ReactElement {
+  const { t } = useI18n();
   const summary = summarizeToolInput(input);
   const json = JSON.stringify(input ?? {}, null, 2);
   return (
@@ -28,7 +30,7 @@ export function ToolCallCard({ name, input }: { name: string; input?: Record<str
       {summary && <p className="tool-summary mono" title={summary}>{summary}</p>}
       {json !== "{}" && (
         <details className="tool-detail">
-          <summary>参数</summary>
+          <summary>{t("参数", "Parameters")}</summary>
           <CodeBlock lang="json" code={json} />
         </details>
       )}
@@ -37,11 +39,12 @@ export function ToolCallCard({ name, input }: { name: string; input?: Record<str
 }
 
 export function ToolResultCard({ content, error }: { content: string; error: boolean }): ReactElement {
+  const { t } = useI18n();
   const collapsible = error || content.length > 400 || content.includes("\n");
   if (!collapsible) {
     return (
       <section className={`tool-result${error ? " error" : ""}`}>
-        <span className="tool-result-label">结果</span>
+        <span className="tool-result-label">{t("结果", "Result")}</span>
         <p className="mono">{content}</p>
       </section>
     );
@@ -49,7 +52,7 @@ export function ToolResultCard({ content, error }: { content: string; error: boo
   return (
     <section className={`tool-result${error ? " error" : ""}`}>
       <details open={error}>
-        <summary>{error ? "执行失败" : `执行结果（${content.length} 字符）`}</summary>
+        <summary>{error ? t("执行失败", "Execution failed") : t(`执行结果（${content.length} 字符）`, `Result (${content.length} characters)`)}</summary>
         <pre className="mono">{content}</pre>
       </details>
     </section>
@@ -57,15 +60,17 @@ export function ToolResultCard({ content, error }: { content: string; error: boo
 }
 
 export function ThinkingBlock({ text, streaming = false }: { text: string; streaming?: boolean }): ReactElement {
+  const { t } = useI18n();
   return (
     <details className={`thinking${streaming ? " live" : ""}`}>
-      <summary>{streaming ? "正在思考" : "思考过程"}</summary>
+      <summary>{streaming ? t("正在思考", "Thinking") : t("思考过程", "Reasoning")}</summary>
       <Markdown>{text}</Markdown>
     </details>
   );
 }
 
 function ContentBlock({ block }: { block: MessageContent }): ReactElement | null {
+  const { t } = useI18n();
   switch (block.type) {
     case "text":
       return <Markdown>{block.text ?? ""}</Markdown>;
@@ -76,7 +81,7 @@ function ContentBlock({ block }: { block: MessageContent }): ReactElement | null
     case "tool_result":
       return <ToolResultCard content={block.content ?? ""} error={Boolean(block.isError)} />;
     case "image":
-      return <img className="message-image" src={`data:${block.mediaType ?? "image/png"};base64,${block.data ?? ""}`} alt="用户上传的图片" />;
+      return <img className="message-image" src={`data:${block.mediaType ?? "image/png"};base64,${block.data ?? ""}`} alt={t("用户上传的图片", "User-uploaded image")} />;
     default:
       return null;
   }
@@ -96,7 +101,7 @@ export function coalesceAssistantText(content: MessageContent[]): MessageContent
   return result;
 }
 
-const ROLE_LABELS: Record<string, string> = { user: "你", assistant: "OpenWebCode", tool: "工具" };
+const ROLE_LABELS: Record<string, [string, string]> = { user: ["你", "You"], assistant: ["OpenWebCode", "OpenWebCode"], tool: ["工具", "Tool"] };
 
 async function writeClipboard(text: string): Promise<boolean> {
   try {
@@ -123,6 +128,7 @@ async function writeClipboard(text: string): Promise<boolean> {
 }
 
 export function MessageCard({ message, sessionId, contentLens, onNotice }: { message: ChatMessage; sessionId?: string; contentLens?: ExtensionInfo; onNotice?(message: string, kind?: "info" | "error"): void }): ReactElement {
+  const { t, locale } = useI18n();
   const createdAt = new Date(message.createdAt);
   const articleRef = useRef<HTMLElement>(null);
   const [copied, setCopied] = useState(false);
@@ -152,15 +158,15 @@ export function MessageCard({ message, sessionId, contentLens, onNotice }: { mes
     setLensBusy(true);
     api.translateMessage(sessionId, message.id, targetLanguage, glossary)
       .then((value) => setTranslation(value.text))
-      .catch((error: unknown) => onNotice?.(error instanceof Error ? error.message : "自动翻译失败", "error"))
+      .catch((error: unknown) => onNotice?.(error instanceof Error ? error.message : t("自动翻译失败", "Automatic translation failed"), "error"))
       .finally(() => setLensBusy(false));
   }, [contentLens?.enabled, glossary, message.id, onNotice, sessionId, targetLanguage, text, translateMode]);
   return (
     <article className={`message ${message.role}`} ref={articleRef}>
       <span className="track-node" aria-hidden />
       <div className="message-meta">
-        <span className="message-author">{ROLE_LABELS[message.role] ?? message.role}</span>
-        <time dateTime={message.createdAt} title={createdAt.toLocaleString()}>{createdAt.toLocaleTimeString()}</time>
+        <span className="message-author">{ROLE_LABELS[message.role] ? t(...ROLE_LABELS[message.role]!) : message.role}</span>
+        <time dateTime={message.createdAt} title={createdAt.toLocaleString(locale)}>{createdAt.toLocaleTimeString(locale)}</time>
         {text && (
           <button
             className="copy-btn"
@@ -173,7 +179,7 @@ export function MessageCard({ message, sessionId, contentLens, onNotice }: { mes
             }}
           >
             <Icon name={copied ? "check" : "copy"} size={12} />
-            {copied ? "已复制" : "复制"}
+            {copied ? t("已复制", "Copied") : t("复制", "Copy")}
           </button>
         )}
         {text && sessionId && contentLens?.enabled && (
@@ -182,27 +188,27 @@ export function MessageCard({ message, sessionId, contentLens, onNotice }: { mes
               setLensBusy(true);
               api.translateMessage(sessionId, message.id, targetLanguage, glossary)
                 .then((value) => setTranslation(value.text))
-                .catch((error: unknown) => onNotice?.(error instanceof Error ? error.message : "翻译失败", "error"))
+                .catch((error: unknown) => onNotice?.(error instanceof Error ? error.message : t("翻译失败", "Translation failed"), "error"))
                 .finally(() => setLensBusy(false));
-            }}>{translateMode === "auto" && translation ? "重译" : "译"}</button>}
-            <button className="copy-btn" disabled={lensBusy} title="先在本条消息中选择不超过 200 字符" onClick={() => {
+            }}>{translateMode === "auto" && translation ? t("重译", "Translate again") : t("译", "Translate")}</button>}
+            <button className="copy-btn" disabled={lensBusy} title={t("先在本条消息中选择不超过 200 字符", "Select up to 200 characters in this message first")} onClick={() => {
               const selection = window.getSelection();
               const selected = selection?.toString().trim() ?? "";
               if (!selected || selected.length > 200 || !articleRef.current?.contains(selection?.anchorNode ?? null) || !articleRef.current?.contains(selection?.focusNode ?? null)) {
-                onNotice?.("请先在本条消息中选择 1–200 个字符", "error"); return;
+                onNotice?.(t("请先在本条消息中选择 1–200 个字符", "Select 1–200 characters in this message first"), "error"); return;
               }
               setLensBusy(true);
               api.explainSelection(sessionId, selected, targetLanguage)
                 .then((value) => setExplanation({ selection: selected, text: value.text }))
-                .catch((error: unknown) => onNotice?.(error instanceof Error ? error.message : "解析失败", "error"))
+                .catch((error: unknown) => onNotice?.(error instanceof Error ? error.message : t("解析失败", "Explanation failed"), "error"))
                 .finally(() => setLensBusy(false));
-            }}>解析选中</button>
+            }}>{t("解析选中", "Explain selection")}</button>
           </>
         )}
       </div>
       {content.map((block, index) => <ContentBlock key={index} block={block} />)}
-      {translation && <details className="content-lens-result" open><summary>译文</summary><Markdown>{translation}</Markdown></details>}
-      {explanation && <details className="content-lens-result" open><summary>解析：{explanation.selection}</summary><Markdown>{explanation.text}</Markdown></details>}
+      {translation && <details className="content-lens-result" open><summary>{t("译文", "Translation")}</summary><Markdown>{translation}</Markdown></details>}
+      {explanation && <details className="content-lens-result" open><summary>{t("解析：", "Explanation: ")}{explanation.selection}</summary><Markdown>{explanation.text}</Markdown></details>}
     </article>
   );
 }

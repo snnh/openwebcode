@@ -342,7 +342,7 @@ export async function buildServer(dependencies) {
         return reply
             .type("text/html; charset=utf-8")
             .header("content-disposition", `attachment; filename="session-${request.params.id}.html"`)
-            .send(renderSessionHtml(detail));
+            .send(renderSessionHtml(detail, request.query.lang === "en" ? "en" : "zh-CN"));
     });
     app.post("/api/sessions/import", { bodyLimit: 50 * 1024 * 1024 }, async (request, reply) => {
         if (typeof request.body !== "string" || request.body.trim() === "") {

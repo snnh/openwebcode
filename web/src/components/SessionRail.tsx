@@ -2,6 +2,7 @@ import { useRef, useState, type MouseEvent as ReactMouseEvent, type ReactElement
 import type { Session } from "../lib/contracts";
 import type { Theme } from "../theme";
 import { Icon } from "./Icon";
+import { useI18n } from "../i18n";
 
 export const RAIL_MIN_WIDTH = 200;
 export const RAIL_MAX_WIDTH = 380;
@@ -23,6 +24,7 @@ export function SessionRail({ sessions, currentId, runningIds, theme, collapsed,
   onOpenSettings(): void;
   onResize(width: number): void;
 }): ReactElement {
+  const { language, t } = useI18n();
   const [filter, setFilter] = useState("");
   // 移动端抽屉开合（≤720px 时 .rail-menu-btn 可见，nav-open 由 CSS 接管为全屏抽屉）
   const [navOpen, setNavOpen] = useState(false);
@@ -46,11 +48,11 @@ export function SessionRail({ sessions, currentId, runningIds, theme, collapsed,
   };
 
   return (
-    <aside className={`session-rail${collapsed ? " collapsed" : ""}${navOpen ? " nav-open" : ""}`} aria-label="会话">
+    <aside className={`session-rail${collapsed ? " collapsed" : ""}${navOpen ? " nav-open" : ""}`} aria-label={t("会话", "Sessions")}>
       {!collapsed && (
         <button
           className="rail-resize"
-          aria-label="调整会话栏宽度（方向键左右）"
+          aria-label={t("调整会话栏宽度（方向键左右）", "Resize session rail (use arrow keys)")}
           onMouseDown={startDrag}
           onKeyDown={(event) => {
             if (event.key === "ArrowRight") onResize(clampRailWidth(width + 16));
@@ -61,7 +63,7 @@ export function SessionRail({ sessions, currentId, runningIds, theme, collapsed,
       <header>
         <button
           className="rail-menu-btn"
-          aria-label="会话列表"
+          aria-label={t("会话列表", "Session list")}
           aria-expanded={navOpen}
           onClick={() => setNavOpen((value) => !value)}
         >☰</button>
@@ -77,8 +79,8 @@ export function SessionRail({ sessions, currentId, runningIds, theme, collapsed,
             event.target.value = "";
           }}
         />
-        <button className="icon-btn" onClick={() => fileInput.current?.click()} aria-label="导入会话" title="导入会话（JSONL）"><Icon name="upload" size={15} /></button>
-        <button className="icon-btn" onClick={onCreate} aria-label="新建会话" title="新建会话"><Icon name="plus" size={16} /></button>
+        <button className="icon-btn" onClick={() => fileInput.current?.click()} aria-label={t("导入会话", "Import session")} title={t("导入会话（JSONL）", "Import session (JSONL)")}><Icon name="upload" size={15} /></button>
+        <button className="icon-btn" onClick={onCreate} aria-label={t("新建会话", "New session")} title={t("新建会话", "New session")}><Icon name="plus" size={16} /></button>
       </header>
       {!collapsed && (
         <span className="rail-search-wrap">
@@ -90,8 +92,8 @@ export function SessionRail({ sessions, currentId, runningIds, theme, collapsed,
             onKeyDown={(event) => {
               if (event.key === "Escape") setFilter("");
             }}
-            placeholder="搜索会话"
-            aria-label="搜索会话"
+            placeholder={t("搜索会话", "Search sessions")}
+            aria-label={t("搜索会话", "Search sessions")}
           />
         </span>
       )}
@@ -103,40 +105,40 @@ export function SessionRail({ sessions, currentId, runningIds, theme, collapsed,
                 <span className="session-title">{session.title}</span>
                 <span className="session-meta">{session.provider} · {session.model}</span>
               </button>
-              {runningIds.has(session.id) && <span className="running-dot" role="status" aria-label="运行中" title="运行中" />}
+              {runningIds.has(session.id) && <span className="running-dot" role="status" aria-label={t("运行中", "Running")} title={t("运行中", "Running")} />}
               <button
                 className="session-export"
-                aria-label={`导出分享页 ${session.title}`}
-                title="导出分享页（HTML）"
-                onClick={() => window.open(`/api/sessions/${session.id}/export.html`, "_blank")}
+                aria-label={t(`导出分享页 ${session.title}`, `Export share page for ${session.title}`)}
+                title={t("导出分享页（HTML）", "Export share page (HTML)")}
+                onClick={() => window.open(`/api/sessions/${session.id}/export.html?lang=${language}`, "_blank")}
               >
                 <Icon name="download" size={13} />
               </button>
               <button
                 className="session-delete"
-                aria-label={`删除会话 ${session.title}`}
-                title="删除会话"
+                aria-label={t(`删除会话 ${session.title}`, `Delete session ${session.title}`)}
+                title={t("删除会话", "Delete session")}
                 onClick={() => onDelete(session.id)}
               >
                 <Icon name="trash" size={13} />
               </button>
             </div>
           ))}
-          {sessions === undefined && <p className="rail-empty">加载中…</p>}
-          {sessions && sessions.length === 0 && <p className="rail-empty">还没有会话</p>}
-          {sessions && sessions.length > 0 && filtered?.length === 0 && <p className="rail-empty">无匹配会话</p>}
+          {sessions === undefined && <p className="rail-empty">{t("加载中…", "Loading…")}</p>}
+          {sessions && sessions.length === 0 && <p className="rail-empty">{t("还没有会话", "No sessions yet")}</p>}
+          {sessions && sessions.length > 0 && filtered?.length === 0 && <p className="rail-empty">{t("无匹配会话", "No matching sessions")}</p>}
         </nav>
       )}
       <footer>
-        <button className="icon-btn" onClick={onToggleTheme} aria-label="切换主题" title="切换主题">
+        <button className="icon-btn" onClick={onToggleTheme} aria-label={t("切换主题", "Toggle theme")} title={t("切换主题", "Toggle theme")}>
           <Icon name={theme === "dark" ? "sun" : "moon"} size={15} />
         </button>
-        <button className="icon-btn" onClick={onOpenSettings} aria-label="设置" title="设置"><Icon name="settings" size={15} /></button>
+        <button className="icon-btn" onClick={onOpenSettings} aria-label={t("设置", "Settings")} title={t("设置", "Settings")}><Icon name="settings" size={15} /></button>
         <button
           className="icon-btn collapse-btn"
           onClick={onToggleCollapsed}
-          aria-label={collapsed ? "展开会话栏" : "收起会话栏"}
-          title={collapsed ? "展开会话栏" : "收起会话栏"}
+          aria-label={collapsed ? t("展开会话栏", "Expand session rail") : t("收起会话栏", "Collapse session rail")}
+          title={collapsed ? t("展开会话栏", "Expand session rail") : t("收起会话栏", "Collapse session rail")}
         >
           <Icon name={collapsed ? "chevrons-right" : "chevrons-left"} size={15} />
         </button>

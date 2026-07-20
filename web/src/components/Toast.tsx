@@ -1,5 +1,6 @@
 import { useEffect, type ReactElement } from "react";
 import { Icon } from "./Icon";
+import { useI18n } from "../i18n";
 
 export interface Notice {
   kind: "info" | "error";
@@ -7,6 +8,7 @@ export interface Notice {
 }
 
 export function Toast({ notice, onDismiss }: { notice: Notice; onDismiss(): void }): ReactElement {
+  const { t } = useI18n();
   useEffect(() => {
     const timer = window.setTimeout(onDismiss, 6000);
     return () => window.clearTimeout(timer);
@@ -19,7 +21,7 @@ export function Toast({ notice, onDismiss }: { notice: Notice; onDismiss(): void
       style={isError ? { borderColor: "var(--danger-border)", color: "var(--danger)" } : undefined}
     >
       <span>{notice.text}</span>
-      <button onClick={onDismiss} aria-label="关闭通知"><Icon name="x" size={14} /></button>
+      <button onClick={onDismiss} aria-label={t("关闭通知", "Dismiss notification")}><Icon name="x" size={14} /></button>
     </div>
   );
 }

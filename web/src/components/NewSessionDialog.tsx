@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactElement } from "react";
 import { api } from "../lib/api";
 import type { ManagedWorkspaceCapability, ModelProfile, PermissionMode, SandboxCapabilities, SandboxMode } from "../lib/contracts";
 import type { SessionDefaults } from "../lib/prefs";
+import { useI18n } from "../i18n";
 
 export interface NewSessionValues {
   cwd: string;
@@ -15,11 +16,11 @@ export interface NewSessionValues {
   workspaceMode?: "managed";
 }
 
-const SANDBOX_MODE_LABELS: Record<SandboxMode, string> = {
-  appcontainer: "应用容器（AppContainer，默认）",
-  wsb: "Windows Sandbox（不可信代码）",
-  jobobject: "兼容模式（Job Object）",
-  off: "关闭沙盒",
+const SANDBOX_MODE_LABELS: Record<SandboxMode, [string, string]> = {
+  appcontainer: ["应用容器（AppContainer，默认）", "AppContainer (default)"],
+  wsb: ["Windows Sandbox（不可信代码）", "Windows Sandbox (untrusted code)"],
+  jobobject: ["兼容模式（Job Object）", "Compatibility (Job Object)"],
+  off: ["关闭沙盒", "Sandbox off"],
 };
 
 export function NewSessionDialog({ open, providers, models, defaults, busy = false, onClose, onCreate }: {
@@ -31,6 +32,7 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
   onClose(): void;
   onCreate(values: NewSessionValues): void;
 }): ReactElement | null {
+  const { t } = useI18n();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [cwd, setCwd] = useState("");
   const [title, setTitle] = useState("");
@@ -48,7 +50,7 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
   // provider 无模型档案（如 development）时提供占位项，服务端对未知模型有 fallback profile
   const dialogModels = availableModels.length > 0
     ? availableModels
-    : [{ id: "default", displayName: "默认模型" } as ModelProfile];
+    : [{ id: "default", displayName: t("默认模型", "Default model") } as ModelProfile];
 
   useEffect(() => {
     if (!open) return;
@@ -101,8 +103,8 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
   const noProviders = providers.length === 0;
   const managedAvailable = managedCaps?.backends.some((item) => item.available) ?? false;
   const managedUnavailableReason = managedCaps === undefined
-    ? "能力检测中…"
-    : managedCaps.backends.map((item) => item.detail).filter(Boolean).join("；") || "当前平台不支持托管工作区";
+    ? t("能力检测中…", "Detecting capabilities…")
+    : managedCaps.backends.map((item) => item.detail).filter(Boolean).join(t("；", "; ")) || t("当前平台不支持托管工作区", "Managed workspaces are not supported on this platform");
 
   return (
     <dialog
@@ -120,7 +122,7 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
           if (busy || noProviders || !cwd.trim() || !model) return;
           onCreate({
             cwd: cwd.trim(),
-            title: title.trim() || fallbackTitle || "新会话",
+            title: title.trim() || fallbackTitle || t("新会话", "New session"),
             provider,
             model,
             agentMode,
@@ -132,44 +134,42 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
           });
         }}
       >
-        <h2>新建会话</h2>
+        <h2>{t("新建会话", "New session")}</h2>
         <label>
-          工作区模式
+          {t("工作区模式", "Workspace mode")}
           <select value={workspaceMode} onChange={(event) => setWorkspaceMode(event.target.value as "direct" | "managed")}>
-            <option value="direct">直接（默认）</option>
+            <option value="direct">{t("直接（默认）", "Direct (default)")}</option>
             <option value="managed" disabled={!managedAvailable} title={managedAvailable ? undefined : managedUnavailableReason}>
-              托管工作区（镜像盘隔离）
+              {t("托管工作区（镜像盘隔离）", "Managed workspace (disk-image isolation)")}
             </option>
           </select>
         </label>
         {managedCaps && !managedAvailable && (
-          <p className="dialog-hint">托管工作区不可用：{managedUnavailableReason}</p>
+          <p className="dialog-hint">{t("托管工作区不可用：", "Managed workspace unavailable: ")}{managedUnavailableReason}</p>
         )}
         {workspaceMode === "managed" && (
-          <p className="dialog-hint">
-            将创建 20GB 稀疏镜像盘并挂载到数据根 mnt/ 目录，源目录内容（排除 node_modules 等）会复制进去；需要管理员（Hyper-V）或 root（qemu-nbd）权限。
-          </p>
+          <p className="dialog-hint">{t("将创建 20GB 稀疏镜像盘并挂载到数据根 mnt/ 目录，源目录内容（排除 node_modules 等）会复制进去；需要管理员（Hyper-V）或 root（qemu-nbd）权限。", "A 20 GB sparse disk image will be created and mounted under mnt/ in the data root. Source contents (excluding node_modules and similar paths) are copied into it. Administrator (Hyper-V) or root (qemu-nbd) access is required.")}</p>
         )}
         <label>
-          {workspaceMode === "managed" ? "源目录（将复制进托管工作区）" : "工作目录"}
+          {workspaceMode === "managed" ? t("源目录（将复制进托管工作区）", "Source directory (copied into managed workspace)") : t("工作目录", "Working directory")}
           <input
             value={cwd}
             onChange={(event) => setCwd(event.target.value)}
-            placeholder="绝对路径，如 D:\projects\demo 或 /home/me/demo"
+            placeholder={t("绝对路径，如 D:\\projects\\demo 或 /home/me/demo", "Absolute path, such as D:\\projects\\demo or /home/me/demo")}
             required
             autoFocus
           />
         </label>
         <label>
-          标题（可选）
+          {t("标题（可选）", "Title (optional)")}
           <input
             value={title}
             onChange={(event) => setTitle(event.target.value)}
-            placeholder={fallbackTitle || "默认为目录名"}
+            placeholder={fallbackTitle || t("默认为目录名", "Defaults to directory name")}
           />
         </label>
         {noProviders && (
-          <p className="dialog-hint">还没有可用的 Provider，请先在 设置 → 服务设置 配置 Provider 和 API Key</p>
+          <p className="dialog-hint">{t("还没有可用的 Provider，请先在 设置 → 服务设置 配置 Provider 和 API Key", "No providers are available. Configure a provider and API key under Settings → Server first.")}</p>
         )}
         <label>
           Provider
@@ -178,52 +178,52 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
           </select>
         </label>
         <label>
-          模型
+          {t("模型", "Model")}
           <select value={model} disabled={noProviders} onChange={(event) => setModel(event.target.value)}>
             {dialogModels.map((item) => <option key={item.id} value={item.id}>{item.displayName ?? item.id}</option>)}
           </select>
         </label>
         <label>
-          模式
+          {t("模式", "Mode")}
           <select value={agentMode} onChange={(event) => setAgentMode(event.target.value as "plan" | "build")}>
-            <option value="build">构建模式（Build）</option>
-            <option value="plan">计划模式（Plan）</option>
+            <option value="build">{t("构建模式（Build）", "Build")}</option>
+            <option value="plan">{t("计划模式（Plan）", "Plan")}</option>
           </select>
         </label>
         <label>
-          权限模式
+          {t("权限模式", "Permission mode")}
           <select value={permissionMode} onChange={(event) => setPermissionMode(event.target.value as PermissionMode)}>
-            <option value="ask">每次确认</option>
-            <option value="acceptEdits">接受编辑</option>
+            <option value="ask">{t("每次确认", "Ask every time")}</option>
+            <option value="acceptEdits">{t("接受编辑", "Accept edits")}</option>
             <option value="yolo">YOLO</option>
           </select>
         </label>
         <label>
-          沙盒模式
+          {t("沙盒模式", "Sandbox mode")}
           <select value={sandboxMode} onChange={(event) => setSandboxMode(event.target.value as SandboxMode)}>
             {(Object.keys(SANDBOX_MODE_LABELS) as SandboxMode[]).map((mode) => (
               <option key={mode} value={mode} disabled={mode === "wsb" && sandboxCaps !== undefined && !sandboxCaps.wsb.available}>
-                {SANDBOX_MODE_LABELS[mode]}
+                {t(...SANDBOX_MODE_LABELS[mode])}
               </option>
             ))}
           </select>
         </label>
         {sandboxCaps && !sandboxCaps.wsb.available && (
-          <p className="dialog-hint">Windows Sandbox 不可用：{sandboxCaps.wsb.reason ?? "未启用可选功能"}</p>
+          <p className="dialog-hint">{t("Windows Sandbox 不可用：", "Windows Sandbox unavailable: ")}{sandboxCaps.wsb.reason ?? t("未启用可选功能", "optional feature is not enabled")}</p>
         )}
         {sandboxMode === "wsb" && (
           <label>
-            初始化脚本（可选）
+            {t("初始化脚本（可选）", "Setup script (optional)")}
             <input
               value={setupScript}
               onChange={(event) => setSetupScript(event.target.value)}
-              placeholder="沙盒启动后、agent 启动前执行的命令"
+              placeholder={t("沙盒启动后、agent 启动前执行的命令", "Command to run after the sandbox starts and before the agent starts")}
             />
           </label>
         )}
         <div className="dialog-actions">
-          <button type="button" className="btn" onClick={onClose}>取消</button>
-          <button type="submit" className="btn primary" disabled={busy || noProviders || !cwd.trim() || !model}>{busy ? "创建中…" : "创建"}</button>
+          <button type="button" className="btn" onClick={onClose}>{t("取消", "Cancel")}</button>
+          <button type="submit" className="btn primary" disabled={busy || noProviders || !cwd.trim() || !model}>{busy ? t("创建中…", "Creating…") : t("创建", "Create")}</button>
         </div>
       </form>
     </dialog>

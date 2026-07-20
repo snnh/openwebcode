@@ -4,6 +4,7 @@ import { Icon } from "./Icon";
 import { Markdown } from "./Markdown";
 import { MessageCard, ThinkingBlock } from "./MessageCard";
 import { PermissionCard, type PermissionRequest } from "./PermissionCard";
+import { useI18n } from "../i18n";
 
 /** 用户消息若以 `!` 开头则是 shell 快捷命令，返回命令文本；否则 undefined */
 function shellCommandOf(message?: ChatMessage): string | undefined {
@@ -37,6 +38,7 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, per
   contentLens?: ExtensionInfo;
   onNotice?(message: string, kind?: "info" | "error"): void;
 }): ReactElement {
+  const { t } = useI18n();
   const trackRef = useRef<HTMLDivElement>(null);
   // 用户位于底部附近时新内容自动贴底；上翻阅读时不打扰
   const [pinned, setPinned] = useState(true);
@@ -67,7 +69,7 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, per
         }}
       >
         {session.messages.length === 0 && !streamText && (
-          <p className="track-empty">还没有消息。在下方描述要完成的任务，开始第一项作业。</p>
+          <p className="track-empty">{t("还没有消息。在下方描述要完成的任务，开始第一项作业。", "No messages yet. Describe a task below to start your first job.")}</p>
         )}
         {session.messages.map((message, index) => {
           // shell 快捷命令的结果卡（user `!cmd` + tool_result 配对）附「发给 agent」按钮
@@ -75,7 +77,7 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, per
           return (
             <Fragment key={message.id}>
               {cleared && Math.min(cleared.uptoIndex, session.messages.length) === index && (
-                <div className="context-cleared-divider" role="separator">上下文已清空（历史保留）</div>
+                <div className="context-cleared-divider" role="separator">{t("上下文已清空（历史保留）", "Context cleared (history retained)")}</div>
               )}
               <MessageCard message={message} sessionId={session.id} contentLens={contentLens} onNotice={onNotice} />
               {shellCmd && onSendToAgent && (
@@ -83,21 +85,21 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, per
                   className="send-to-agent"
                   onClick={() => onSendToAgent(shellCmd, toolResultOf(message))}
                 >
-                  <Icon name="send" size={11} /> 发给 agent
+                  <Icon name="send" size={11} /> {t("发给 agent", "Send to agent")}
                 </button>
               )}
             </Fragment>
           );
         })}
         {cleared && Math.min(cleared.uptoIndex, session.messages.length) === session.messages.length && (
-          <div className="context-cleared-divider" role="separator">上下文已清空（历史保留）</div>
+          <div className="context-cleared-divider" role="separator">{t("上下文已清空（历史保留）", "Context cleared (history retained)")}</div>
         )}
         {(streamText || thinkingText) && (
           <article className="message assistant live">
             <span className="track-node" aria-hidden />
             <div className="message-meta">
               <span className="message-author">OpenWebCode</span>
-              <span>正在输出</span>
+              <span>{t("正在输出", "Responding")}</span>
             </div>
             {thinkingText && <ThinkingBlock text={thinkingText} streaming />}
             {streamText && <Markdown>{streamText}</Markdown>}
@@ -116,7 +118,7 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, per
             setPinned(true);
           }}
         >
-          <Icon name="arrow-down" size={13} /> 回到底部
+          <Icon name="arrow-down" size={13} /> {t("回到底部", "Jump to bottom")}
         </button>
       )}
     </div>

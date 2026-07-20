@@ -75,31 +75,32 @@ function renderMarkdown(source) {
     flushList();
     return html.join("\n");
 }
-function renderBlock(block) {
+const tr = (language, chinese, english) => language === "en" ? english : chinese;
+function renderBlock(block, language) {
     switch (block.type) {
         case "text":
             return `<div class="text">${renderMarkdown(block.text)}</div>`;
         case "thinking":
-            return `<details class="thinking"><summary>思考过程</summary>${renderMarkdown(block.text)}</details>`;
+            return `<details class="thinking"><summary>${tr(language, "思考过程", "Reasoning")}</summary>${renderMarkdown(block.text)}</details>`;
         case "tool_call":
             return `<div class="tool-call"><span class="tool-name">${escapeHtml(block.name)}</span><pre><code>${escapeHtml(JSON.stringify(block.input, null, 2))}</code></pre></div>`;
         case "tool_result":
-            return `<details class="tool-result${block.isError ? " error" : ""}"><summary>工具结果${block.isError ? "（错误）" : ""}</summary><pre><code>${escapeHtml(block.content)}</code></pre></details>`;
+            return `<details class="tool-result${block.isError ? " error" : ""}"><summary>${tr(language, "工具结果", "Tool result")}${block.isError ? tr(language, "（错误）", " (error)") : ""}</summary><pre><code>${escapeHtml(block.content)}</code></pre></details>`;
         case "image": {
             // data 来自 messages.jsonl，而 /import 路由不强制 base64 字母表——
             // 非 base64 字符（如 "><script>）可闭合属性注入任意 HTML。严格校验字母表，不匹配则跳过。
             const isBase64 = typeof block.data === "string" && /^[A-Za-z0-9+/=]*$/.test(block.data);
             if (!isBase64)
                 return "";
-            return `<img class="msg-image" src="data:${escapeHtml(block.mediaType)};base64,${block.data}" alt="图片">`;
+            return `<img class="msg-image" src="data:${escapeHtml(block.mediaType)};base64,${block.data}" alt="${tr(language, "图片", "Image")}">`;
         }
     }
 }
-const ROLE_LABELS = { user: "用户", assistant: "助手", tool: "工具" };
-function renderMessage(message) {
-    const body = message.content.map(renderBlock).join("\n");
+const ROLE_LABELS = { user: ["用户", "User"], assistant: ["助手", "Assistant"], tool: ["工具", "Tool"] };
+function renderMessage(message, language) {
+    const body = message.content.map((block) => renderBlock(block, language)).join("\n");
     return `<section class="msg ${message.role}">
-<div class="msg-head"><span class="role">${ROLE_LABELS[message.role]}</span><time>${escapeHtml(message.createdAt)}</time></div>
+<div class="msg-head"><span class="role">${tr(language, ...ROLE_LABELS[message.role])}</span><time>${escapeHtml(message.createdAt)}</time></div>
 ${body}
 </section>`;
 }
@@ -138,18 +139,18 @@ footer.page { margin-top: 20px; text-align: center; color: #9ca3af; font-size: 1
 }
 `;
 /** 会话导出为自包含 HTML 分享页：内联样式、零外部资源、全部用户/模型文本转义。 */
-export function renderSessionHtml(detail) {
+export function renderSessionHtml(detail, language = "zh-CN") {
     const title = escapeHtml(detail.title);
     const meta = escapeHtml(`${detail.provider} · ${detail.model} · ${detail.createdAt} · ${detail.cwd}`);
     const messages = detail.messages.length
-        ? detail.messages.map(renderMessage).join("\n")
-        : `<p class="empty">暂无消息</p>`;
+        ? detail.messages.map((message) => renderMessage(message, language)).join("\n")
+        : `<p class="empty">${tr(language, "暂无消息", "No messages")}</p>`;
     return `<!doctype html>
-<html lang="zh-CN">
+<html lang="${language}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${title} - OpenWebCode 会话导出</title>
+<title>${title} - ${tr(language, "OpenWebCode 会话导出", "OpenWebCode session export")}</title>
 <style>${STYLE}</style>
 </head>
 <body>
@@ -159,7 +160,7 @@ export function renderSessionHtml(detail) {
 <div class="meta">${meta}</div>
 </header>
 ${messages}
-<footer class="page">由 OpenWebCode 导出 · ${escapeHtml(detail.id)}</footer>
+<footer class="page">${tr(language, "由 OpenWebCode 导出", "Exported by OpenWebCode")} · ${escapeHtml(detail.id)}</footer>
 </main>
 </body>
 </html>

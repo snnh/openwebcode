@@ -4,6 +4,7 @@ import { api, ApiError } from "../../lib/api";
 import type { FileEntry } from "../../lib/contracts";
 import { Icon } from "../Icon";
 import { CodeBlock } from "../Markdown";
+import { useI18n } from "../../i18n";
 
 const joinPath = (base: string, name: string): string => (base === "." ? name : `${base}/${name}`);
 
@@ -33,11 +34,12 @@ function DirChildren({ sessionId, path, depth, selectedFile, onSelect }: {
   selectedFile?: string;
   onSelect(path: string): void;
 }): ReactElement {
+  const { t } = useI18n();
   const files = useQuery({ queryKey: ["files", sessionId, path], queryFn: () => api.listFiles(sessionId, path) });
   const indent = { paddingLeft: 10 + depth * 14 };
-  if (files.isPending) return <p className="tree-note" style={indent}>加载中…</p>;
-  if (files.isError) return <p className="tree-note" style={indent}>无法读取目录</p>;
-  if (files.data.entries.length === 0) return <p className="tree-note" style={indent}>（空目录）</p>;
+  if (files.isPending) return <p className="tree-note" style={indent}>{t("加载中…", "Loading…")}</p>;
+  if (files.isError) return <p className="tree-note" style={indent}>{t("无法读取目录", "Could not read directory")}</p>;
+  if (files.data.entries.length === 0) return <p className="tree-note" style={indent}>{t("（空目录）", "(Empty directory)")}</p>;
   return (
     <>
       {sortEntries(files.data.entries).map((entry) =>
@@ -96,6 +98,7 @@ function TreeDir({ sessionId, path, name, depth, selectedFile, onSelect }: {
 }
 
 export function FilesPanel({ sessionId }: { sessionId?: string }): ReactElement {
+  const { t } = useI18n();
   const [selectedFile, setSelectedFile] = useState<string>();
   useEffect(() => setSelectedFile(undefined), [sessionId]);
   const preview = useQuery({
@@ -105,7 +108,7 @@ export function FilesPanel({ sessionId }: { sessionId?: string }): ReactElement 
   });
 
   if (!sessionId) {
-    return <div className="inspector-body"><p className="panel-empty">选择会话以浏览工作区文件。</p></div>;
+    return <div className="inspector-body"><p className="panel-empty">{t("选择会话以浏览工作区文件。", "Select a session to browse workspace files.")}</p></div>;
   }
 
   const ext = selectedFile?.split(".").pop()?.toLowerCase() ?? "";
@@ -119,26 +122,26 @@ export function FilesPanel({ sessionId }: { sessionId?: string }): ReactElement 
         </div>
       </div>
       {selectedFile && (
-        <section className="file-preview" aria-label={`预览 ${selectedFile}`}>
+        <section className="file-preview" aria-label={t(`预览 ${selectedFile}`, `Preview ${selectedFile}`)}>
           <header>
             <span className="mono" title={selectedFile}>{selectedFile}</span>
-            <button className="icon-btn" onClick={() => setSelectedFile(undefined)} aria-label="关闭预览"><Icon name="x" size={14} /></button>
+            <button className="icon-btn" onClick={() => setSelectedFile(undefined)} aria-label={t("关闭预览", "Close preview")}><Icon name="x" size={14} /></button>
           </header>
           {preview.isError ? (
             <p className="preview-note">
               {preview.error instanceof ApiError && /UTF-8/i.test(preview.error.message)
-                ? "该文件非 UTF-8 文本（可能为二进制），无法预览。"
+                ? t("该文件非 UTF-8 文本（可能为二进制），无法预览。", "This file is not UTF-8 text (it may be binary) and cannot be previewed.")
                 : preview.error instanceof ApiError
                   ? preview.error.message
-                  : "无法读取该文件。"}
+                  : t("无法读取该文件。", "Could not read this file.")}
             </p>
           ) : preview.data ? (
             <>
               <CodeBlock lang={previewLang} code={preview.data.content} />
-              {preview.data.truncated && <p className="preview-note">内容过长，已截断。</p>}
+              {preview.data.truncated && <p className="preview-note">{t("内容过长，已截断。", "Content was truncated because it is too long.")}</p>}
             </>
           ) : (
-            <p className="preview-note">加载中…</p>
+            <p className="preview-note">{t("加载中…", "Loading…")}</p>
           )}
         </section>
       )}

@@ -4,6 +4,7 @@ import { api } from "../lib/api";
 import { extractAttachmentPaths } from "../lib/attachments";
 import type { SendKey } from "../lib/prefs";
 import { Icon } from "./Icon";
+import { useI18n } from "../i18n";
 
 export interface PendingImage {
   mediaType: string;
@@ -17,13 +18,9 @@ const MAX_ATTACHMENTS = 4;
 
 /** 服务端内置斜杠命令（app.ts 消息路由匹配），与技能/自定义命令一起参与补全 */
 type Suggestion = SkillInfo & { builtin?: boolean };
-const BUILTIN_COMMANDS: Suggestion[] = [
-  { name: "clear", description: "清空上下文（历史保留，可回滚）", source: "global", builtin: true },
-  { name: "compact", description: "压缩上下文（/compact tools 为规则压缩）", source: "global", builtin: true },
-];
 
 /** 思考模式下拉的中文标签；value 保持英文枚举不变 */
-const THINKING_LABEL: Record<string, string> = { adaptive: "自适应", enabled: "开启", disabled: "关闭" };
+const THINKING_LABEL: Record<string, [string, string]> = { adaptive: ["自适应", "Adaptive"], enabled: ["开启", "Enabled"], disabled: ["关闭", "Disabled"] };
 
 export function Composer({ current, model, models, draft, setDraft, onSend, onConfig, running, sendKey, skills, attachments, setAttachments, supportsImages, onNotice, sendPending = false }: {
   current: SessionDetail;
@@ -43,6 +40,7 @@ export function Composer({ current, model, models, draft, setDraft, onSend, onCo
   supportsImages: boolean;
   onNotice(message: string): void;
 }): ReactElement {
+  const { t } = useI18n();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [dismissed, setDismissed] = useState(false);
   const [active, setActive] = useState(0);
@@ -58,8 +56,12 @@ export function Composer({ current, model, models, draft, setDraft, onSend, onCo
   // 输入 /前缀 时呼出技能补全；Esc 暂时关闭，内容变化后重新打开
   const command = draft.match(/^\/([\w-]*)$/);
   const slashActive = command !== null && !dismissed;
+  const builtinCommands: Suggestion[] = [
+    { name: "clear", description: t("清空上下文（历史保留，可回滚）", "Clear context (retain history; reversible)"), source: "global", builtin: true },
+    { name: "compact", description: t("压缩上下文（/compact tools 为规则压缩）", "Compact context (/compact tools uses rule-based compaction)"), source: "global", builtin: true },
+  ];
   const suggestions: Suggestion[] = command && !dismissed
-    ? [...BUILTIN_COMMANDS, ...skills].filter((skill) => skill.name.toLowerCase().startsWith(command[1]!.toLowerCase()))
+    ? [...builtinCommands, ...skills].filter((skill) => skill.name.toLowerCase().startsWith(command[1]!.toLowerCase()))
     : [];
   const popupOpen = slashActive;
   const hasSuggestions = suggestions.length > 0;
@@ -172,21 +174,21 @@ const mentionHasMatches = mentionMatches.length > 0;
     const images = files.filter((file) => file.type.startsWith("image/"));
     if (images.length === 0) return;
     if (!supportsImages) {
-      onNotice("当前模型不支持图片输入");
+      onNotice(t("当前模型不支持图片输入", "The current model does not support image input"));
       return;
     }
     const room = MAX_ATTACHMENTS - attachments.length;
     if (room <= 0) {
-      onNotice(`最多附带 ${MAX_ATTACHMENTS} 张图片`);
+      onNotice(t(`最多附带 ${MAX_ATTACHMENTS} 张图片`, `You can attach up to ${MAX_ATTACHMENTS} images`));
       return;
     }
     for (const file of images.slice(0, room)) {
       if (!IMAGE_TYPES.has(file.type)) {
-        onNotice(`仅支持 png/jpeg/webp/gif 图片（${file.type || "未知类型"}）`);
+        onNotice(t(`仅支持 png/jpeg/webp/gif 图片（${file.type || "未知类型"}）`, `Only PNG, JPEG, WebP, and GIF images are supported (${file.type || "unknown type"})`));
         continue;
       }
       if (file.size > MAX_IMAGE_BYTES) {
-        onNotice(`图片「${file.name || "剪贴板图片"}」超过 5MB 限制`);
+        onNotice(t(`图片「${file.name || "剪贴板图片"}」超过 5MB 限制`, `Image “${file.name || "clipboard image"}” exceeds the 5 MB limit`));
         continue;
       }
       const mediaType = file.type;
@@ -240,13 +242,13 @@ const mentionHasMatches = mentionMatches.length > 0;
   return (
     <footer className="composer" onDrop={onDrop} onDragOver={(event) => event.preventDefault()}>
       {attachments.length > 0 && (
-        <div className="attachment-strip" aria-label="图片附件">
+        <div className="attachment-strip" aria-label={t("图片附件", "Image attachments")}>
           {attachments.map((image, index) => (
             <span className="attachment" key={`${index}-${image.data.length}`}>
-              <img src={image.previewUrl} alt={`附件 ${index + 1}`} />
+              <img src={image.previewUrl} alt={t(`附件 ${index + 1}`, `Attachment ${index + 1}`)} />
               <button
                 className="attachment-remove"
-                aria-label={`移除附件 ${index + 1}`}
+                aria-label={t(`移除附件 ${index + 1}`, `Remove attachment ${index + 1}`)}
                 onClick={() => setAttachments((prev) => prev.filter((_, item) => item !== index))}
               >
                 <Icon name="x" size={10} />
@@ -257,18 +259,18 @@ const mentionHasMatches = mentionMatches.length > 0;
       )}
       <div className="config-row">
         <label>
-          模式
+          {t("模式", "Mode")}
           <select
             value={current.agentMode ?? "build"}
             disabled={running}
             onChange={(event) => onConfig({ agentMode: event.target.value === "build" ? null : "plan" })}
           >
-            <option value="build">构建模式（Build）</option>
-            <option value="plan">计划模式（Plan）</option>
+            <option value="build">{t("构建模式（Build）", "Build")}</option>
+            <option value="plan">{t("计划模式（Plan）", "Plan")}</option>
           </select>
         </label>
         <label>
-          模型
+          {t("模型", "Model")}
           <select value={current.model} disabled={running} onChange={(event) => onConfig({ model: event.target.value })}>
             {(() => {
               const available = models.filter((item) => item.provider === current.provider);
@@ -279,18 +281,18 @@ const mentionHasMatches = mentionMatches.length > 0;
           </select>
         </label>
         <label>
-          思考
+          {t("思考", "Thinking")}
           <select
             value={current.thinking ?? "disabled"}
             disabled={running || (model !== undefined && supportedThinking.length === 0)}
             onChange={(event) => onConfig({ thinking: event.target.value === "disabled" ? null : event.target.value })}
           >
-            {thinkingModes.map((item) => <option key={item} value={item}>{THINKING_LABEL[item] ?? item}</option>)}
+            {thinkingModes.map((item) => <option key={item} value={item}>{THINKING_LABEL[item] ? t(...THINKING_LABEL[item]!) : item}</option>)}
           </select>
         </label>
         {efforts.length > 0 && (
           <label>
-            力度
+            {t("力度", "Effort")}
             <select
               value={current.effort ?? efforts[0]}
               disabled={running}
@@ -301,22 +303,22 @@ const mentionHasMatches = mentionMatches.length > 0;
           </label>
         )}
         <label>
-          权限
+          {t("权限", "Permissions")}
           <select
             value={current.permissionMode ?? "ask"}
             disabled={running}
             onChange={(event) => onConfig({ permissionMode: event.target.value })}
           >
-            <option value="ask">每次确认</option>
-            <option value="acceptEdits">接受编辑</option>
+            <option value="ask">{t("每次确认", "Ask every time")}</option>
+            <option value="acceptEdits">{t("接受编辑", "Accept edits")}</option>
             <option value="yolo">YOLO</option>
           </select>
         </label>
-        {running && <span className="steering-hint">运行中 · 发送将进入 Steering 队列</span>}
+        {running && <span className="steering-hint">{t("运行中 · 发送将进入 Steering 队列", "Running · new messages enter the Steering queue")}</span>}
       </div>
       <div className="composer-input">
         {popupOpen && (
-          <ul id="skill-listbox" className="skill-popup" role="listbox" aria-label="技能建议">
+          <ul id="skill-listbox" className="skill-popup" role="listbox" aria-label={t("技能建议", "Skill suggestions")}>
             {hasSuggestions ? suggestions.map((skill, index) => (
               <li key={skill.name}>
                 <button
@@ -332,16 +334,16 @@ const mentionHasMatches = mentionMatches.length > 0;
                 >
                   <span className="skill-name">/{skill.name}</span>
                   <span className="skill-desc">{skill.description}</span>
-                  <span className="skill-source">{skill.builtin ? "内置" : skill.source === "project" ? "项目" : "全局"}</span>
+                  <span className="skill-source">{skill.builtin ? t("内置", "Built-in") : skill.source === "project" ? t("项目", "Project") : t("全局", "Global")}</span>
                 </button>
               </li>
             )) : (
-              <li className="skill-empty"><span className="skill-desc">无匹配命令（内置 /clear、/compact；技能在 skills/ 放 SKILL.md；按 Esc 关闭）</span></li>
+              <li className="skill-empty"><span className="skill-desc">{t("无匹配命令（内置 /clear、/compact；技能在 skills/ 放 SKILL.md；按 Esc 关闭）", "No matching command (built-ins: /clear, /compact; place SKILL.md under skills/; press Esc to close)")}</span></li>
             )}
           </ul>
         )}
         {mentionOpen && (
-          <ul id="mention-listbox" className="mention-popup" role="listbox" aria-label="文件引用建议">
+          <ul id="mention-listbox" className="mention-popup" role="listbox" aria-label={t("文件引用建议", "File reference suggestions")}>
             {mentionHasMatches ? mentionMatches.map((item, index) => (
               <li key={item.path}>
                 <button
@@ -360,7 +362,7 @@ const mentionHasMatches = mentionMatches.length > 0;
                 </button>
               </li>
             )) : (
-              <li className="mention-empty"><span className="mention-path">{mentionFailed ? "文件列表加载失败（继续输入重试，或按 Esc 关闭）" : "无匹配文件（继续输入或按 Esc 关闭）"}</span></li>
+              <li className="mention-empty"><span className="mention-path">{mentionFailed ? t("文件列表加载失败（继续输入重试，或按 Esc 关闭）", "Could not load files (keep typing to retry, or press Esc to close)") : t("无匹配文件（继续输入或按 Esc 关闭）", "No matching files (keep typing or press Esc to close)")}</span></li>
             )}
           </ul>
         )}
@@ -368,7 +370,7 @@ const mentionHasMatches = mentionMatches.length > 0;
           ref={textareaRef}
           rows={2}
           value={draft}
-          aria-label="消息输入框；输入 @ 可引用工作区文件"
+          aria-label={t("消息输入框；输入 @ 可引用工作区文件", "Message input; type @ to reference workspace files")}
           role="combobox"
           aria-expanded={mentionOpen || popupOpen}
           aria-controls={mentionOpen ? "mention-listbox" : popupOpen ? "skill-listbox" : undefined}
@@ -459,21 +461,21 @@ const mentionHasMatches = mentionMatches.length > 0;
             }
           }}
           placeholder={running
-            ? "向正在执行的作业补充指令…"
-            : sendKey === "enter" ? "描述要完成的编码任务…（Enter 发送，Shift+Enter 换行，@ 引用文件）" : "描述要完成的编码任务…（Ctrl+Enter 发送，@ 引用文件）"}
+            ? t("向正在执行的作业补充指令…", "Add instructions to the running job…")
+            : sendKey === "enter" ? t("描述要完成的编码任务…（Enter 发送，Shift+Enter 换行，@ 引用文件）", "Describe a coding task… (Enter to send, Shift+Enter for a new line, @ to reference files)") : t("描述要完成的编码任务…（Ctrl+Enter 发送，@ 引用文件）", "Describe a coding task… (Ctrl+Enter to send, @ to reference files)")}
         />
         <button
           className="btn primary send"
           disabled={!draft.trim() || sendPending}
-          title={sendPending ? "发送中…" : undefined}
+          title={sendPending ? t("发送中…", "Sending…") : undefined}
           onClick={onSend}
         >
           <Icon name="send" size={13} />
-          {draft.trimStart().startsWith("!") ? "运行" : running ? "加入队列" : "发送"}
+          {draft.trimStart().startsWith("!") ? t("运行", "Run") : running ? t("加入队列", "Queue") : t("发送", "Send")}
         </button>
       </div>
       {mentionedPaths.length > 0 && (
-        <div className="mention-strip" aria-label="文件引用">
+        <div className="mention-strip" aria-label={t("文件引用", "File references")}>
           {mentionedPaths.map((filePath) => (
             <span className="mention-chip" key={filePath}>
               <Icon name="file" size={10} />
@@ -481,7 +483,7 @@ const mentionHasMatches = mentionMatches.length > 0;
               <button
                 type="button"
                 className="mention-remove"
-                aria-label={`移除引用 @${filePath}`}
+                aria-label={t(`移除引用 @${filePath}`, `Remove reference @${filePath}`)}
                 onClick={() => removeMention(filePath)}
               >
                 <Icon name="x" size={10} />
@@ -490,7 +492,7 @@ const mentionHasMatches = mentionMatches.length > 0;
           ))}
         </div>
       )}
-      {supportsImages && <div className="composer-hint">支持粘贴/拖拽图片（≤4 张，每张 ≤5MB）；输入 @ 引用工作区文件</div>}
+      {supportsImages && <div className="composer-hint">{t("支持粘贴/拖拽图片（≤4 张，每张 ≤5MB）；输入 @ 引用工作区文件", "Paste or drop images (up to 4, 5 MB each); type @ to reference workspace files")}</div>}
     </footer>
   );
 }
