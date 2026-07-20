@@ -133,8 +133,8 @@ describe("messages route with images", () => {
       expect(rejected.statusCode).toBe(400);
       expect(rejected.json<{ error: string }>().error).toContain("不支持图片");
 
-      // 内置档案支持图片的模型：接受
-      const capable = await sessions.create({ cwd: root, provider: "development", model: "claude-haiku-4-5", title: "带图模型" });
+      // metadata 前缀档案支持图片的模型：接受
+      const capable = await sessions.create({ cwd: root, provider: "development", model: "qwen-vl-plus", title: "带图模型" });
       const accepted = await app.inject({ method: "POST", url: `/api/sessions/${capable.id}/messages`, payload: { content: "看图", images: [{ mediaType: "image/png", data: PNG }] } });
       expect(accepted.statusCode).toBe(202);
       let stored;

@@ -14,25 +14,11 @@ const caps = (overrides: Partial<ModelCapabilities> = {}): ModelCapabilities => 
   ...overrides,
 });
 
-const CLAUDE_FLAGS = { modalities: ["text", "image"], thinking: ["adaptive", "disabled"], effort: ["low", "medium", "high", "xhigh", "max"] } as const;
-
-// 内置元数据库：保守文档值，仅作刷新目录时的成档依据；未知 id 走 FALLBACK_METADATA。
-// exact 命中优先，否则取首个匹配的 id 前缀。
-const EXACT: Record<string, ModelMetadata> = {
-  "claude-opus-4-8": { contextWindow: 1_000_000, maxOutput: 128_000, capabilities: caps({ ...CLAUDE_FLAGS }) },
-  "claude-sonnet-5": { contextWindow: 1_000_000, maxOutput: 128_000, capabilities: caps({ ...CLAUDE_FLAGS }) },
-  "claude-haiku-4-5": {
-    contextWindow: 200_000,
-    maxOutput: 64_000,
-    capabilities: caps({ modalities: ["text", "image"], thinking: ["enabled", "disabled"] }),
-  },
-};
+// 内置元数据库：不内置 claude 条目，anthropic provider 仍可经凭据从 API 拉取；
+// 未知 id 走 FALLBACK_METADATA。exact 命中优先，否则取首个匹配的 id 前缀。
+const EXACT: Record<string, ModelMetadata> = {};
 
 const PREFIXES: Array<[string, ModelMetadata]> = [
-  ["claude-opus", EXACT["claude-opus-4-8"]!],
-  ["claude-sonnet", EXACT["claude-sonnet-5"]!],
-  ["claude-haiku", EXACT["claude-haiku-4-5"]!],
-  ["claude", { contextWindow: 200_000, maxOutput: 64_000, capabilities: caps({ modalities: ["text", "image"], thinking: ["adaptive", "disabled"] }) }],
   ["gpt-4.1", { contextWindow: 1_000_000, maxOutput: 32_000, capabilities: caps({ modalities: ["text", "image"] }) }],
   ["gpt-4o", { contextWindow: 128_000, maxOutput: 16_000, capabilities: caps({ modalities: ["text", "image"] }) }],
   ["gpt-4", { contextWindow: 128_000, maxOutput: 8_000, capabilities: caps({ modalities: ["text", "image"] }) }],
