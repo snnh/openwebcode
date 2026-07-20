@@ -131,7 +131,7 @@ jobs:
           generate_release_notes: true
           draft: false
           fail_on_unmatched_files: true
-          files: build/openwebcode-${{ env.VERSION }}-windows-x64.msi
+          files: openwebcode-${{ env.VERSION }}-windows-x64.msi
 
   linux:
     runs-on: ubuntu-latest
