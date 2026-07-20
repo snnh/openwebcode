@@ -1,5 +1,7 @@
 # 分发与打包
 
+[中文](./README.md) | [English](./README.en.md)
+
 打 tag `v*`（或 Actions 手动触发 `release` 工作流并输入 tag）后，
 `.github/workflows/release.yml` 产出两个分发物并上传到该 tag 的 GitHub Release：
 
@@ -26,7 +28,128 @@ node/                   Node 20 运行时（Windows: node.exe；Linux: bin/node 
 install.sh              Linux 安装脚本（仅 tar.gz，位于包顶层）
 ```
 
+## 打包流程总览
+
+正式分发包必须经过同一条流水线，不能只把 `server/dist` 或 `web/dist` 单独压缩：
+
+1. 安装锁文件指定的 Server/Web 依赖；
+2. 构建 Debug core，并以真实 `owc-exec` 运行 Server 测试；
+3. 构建并测试 Web；
+4. 将 Server 依赖裁剪为 production-only；
+5. 构建 Release core；
+6. 从空目录组装 `build/stage/`，加入固定版本的 Node 20 运行时和平台启动脚本；
+7. 先对 staging 做结构检查和启动冒烟，再生成 MSI 或 tar.gz；
+8. 计算校验值，并由 GitHub Release 发布产物。
+
+其中第 2、3 步是发布门禁。`npm prune --omit=dev` 会移除 Server 的开发依赖，因此应在测试完成后执行；继续开发前重新运行 `npm --prefix server ci`。
+
 ## Windows（MSI）
+
+### 环境要求
+
+- Windows x64；
+- Node.js 20 或更新版本（只用于构建，包内 Node 版本由 `$NodeVersion` 固定）；
+- CMake 3.16 或更新版本；
+- Visual Studio 2022 Build Tools，安装“使用 C++ 的桌面开发”；
+- WiX Toolset v3（`candle.exe`、`light.exe` 可通过 PATH 或 `WIX` 环境变量找到）；
+- PowerShell 5.1 或更新版本。
+
+以下命令都从仓库根目录执行。
+
+### 1. 构建并通过发布测试门禁
+
+```powershell
+$ErrorActionPreference = "Stop"
+$Version = "0.1.0"
+$NodeVersion = "20.19.0"
+
+npm --prefix server ci
+npm --prefix server run build
+
+cmake -S core -B build-debug -A x64
+cmake --build build-debug --config Debug --parallel
+$env:OWC_CORE_PATH = (Resolve-Path "build-debug\Debug\owc-exec.exe").Path
+npm --prefix server test
+Remove-Item Env:OWC_CORE_PATH
+
+npm --prefix web ci
+npm --prefix web run build
+npm --prefix web test
+```
+
+### 2. 构建 Release core 并组装干净 staging
+
+```powershell
+# 测试通过后才能裁剪依赖；该命令会移除 server 的 devDependencies。
+npm --prefix server prune --omit=dev
+Remove-Item server\node_modules\@fastify\send\test -Recurse -Force -ErrorAction SilentlyContinue
+
+cmake -S core -B build -A x64 -DCPACK_PACKAGE_VERSION=$Version
+cmake --build build --config Release --target owc-exec --parallel
+
+# 正式打包必须从空 staging 开始，避免残留旧的 Vite 哈希资源或依赖。
+Remove-Item build\stage -Recurse -Force -ErrorAction SilentlyContinue
+@(
+  "build\stage\bin",
+  "build\stage\server",
+  "build\stage\web",
+  "build\stage\node"
+) | ForEach-Object { New-Item -ItemType Directory -Force -Path $_ | Out-Null }
+
+Copy-Item build\Release\owc-exec.exe build\stage\bin\
+Copy-Item server\dist build\stage\server\dist -Recurse -Force
+Copy-Item server\package.json build\stage\server\
+Copy-Item server\node_modules build\stage\server\node_modules -Recurse -Force
+Copy-Item server\assets build\stage\server\assets -Recurse -Force
+Copy-Item web\dist build\stage\web\dist -Recurse -Force
+
+# 下载并嵌入与 CI 相同的 Node 运行时。
+$NodeZip = "build\node-v$NodeVersion-win-x64.zip"
+$NodeExtract = "build\node-runtime"
+Remove-Item $NodeExtract -Recurse -Force -ErrorAction SilentlyContinue
+Invoke-WebRequest `
+  "https://nodejs.org/dist/v$NodeVersion/node-v$NodeVersion-win-x64.zip" `
+  -OutFile $NodeZip
+Expand-Archive $NodeZip -DestinationPath $NodeExtract -Force
+Copy-Item "$NodeExtract\node-v$NodeVersion-win-x64\node.exe" build\stage\node\node.exe
+
+# cmd.exe 使用的启动脚本统一写成无 BOM 的 ASCII + CRLF。
+$Launcher = (Get-Content packaging\owc.cmd -Raw) -replace "`r?`n", "`r`n"
+[IO.File]::WriteAllText(
+  (Join-Path $PWD "build\stage\bin\owc.cmd"),
+  $Launcher,
+  [Text.Encoding]::ASCII
+)
+```
+
+### 3. 检查 staging 并生成 MSI
+
+```powershell
+$Required = @(
+  "build\stage\bin\owc-exec.exe",
+  "build\stage\bin\owc.cmd",
+  "build\stage\server\dist\index.js",
+  "build\stage\server\package.json",
+  "build\stage\server\node_modules",
+  "build\stage\server\assets",
+  "build\stage\web\dist\index.html",
+  "build\stage\node\node.exe"
+)
+$Missing = $Required | Where-Object { -not (Test-Path $_) }
+if ($Missing) { throw "staging 缺少：$($Missing -join ', ')" }
+
+# 可选冒烟：启动后访问 http://127.0.0.1:3000/api/health，确认成功再按 Ctrl+C。
+$env:OWC_DATA_DIR = Join-Path $env:TEMP "openwebcode-package-smoke"
+& build\stage\bin\owc.cmd
+Remove-Item Env:OWC_DATA_DIR
+
+cpack --config build\CPackConfig.cmake -G WIX -C Release
+Get-FileHash "openwebcode-$Version-windows-x64.msi" -Algorithm SHA256
+```
+
+`cpack` 的输出位于仓库根目录。若 WiX 报字符编码错误，确认 `server/node_modules/@fastify/send/test` 已被移除；若包内界面仍是旧版本，删除整个 `build/stage` 后重新组装，不要在旧目录上覆盖。
+
+### 安装与卸载
 
 - 双击安装，默认装到 `C:\Program Files\openwebcode\`（需要管理员权限；升级码固定，可覆盖升级）。
 - 运行 `bin\owc.cmd` 启动（或把 `<安装目录>\bin` 加入 PATH 后在任意终端运行 `owc`），
@@ -34,6 +157,52 @@ install.sh              Linux 安装脚本（仅 tar.gz，位于包顶层）
 - 卸载：Windows「设置 → 应用」里移除 openwebcode；用户数据留在 `%LOCALAPPDATA%\openwebcode`，按需手删。
 
 ## Linux（tar.gz）
+
+Linux 使用与 Windows 相同的测试门禁和 production-only 依赖。核心差异是 Release core 为单配置构建，并把完整 Node Linux 发行目录放入 staging：
+
+```sh
+set -euo pipefail
+VERSION=0.1.0
+NODE_VERSION=20.19.0
+
+npm --prefix server ci
+npm --prefix server run build
+cmake -S core -B build-debug -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-debug --parallel
+OWC_CORE_PATH="$PWD/build-debug/owc-exec" npm --prefix server test
+
+npm --prefix web ci
+npm --prefix web run build
+npm --prefix web test
+npm --prefix server prune --omit=dev
+rm -rf server/node_modules/@fastify/send/test
+
+cmake -S core -B build -DCMAKE_BUILD_TYPE=Release -DCPACK_PACKAGE_VERSION="$VERSION"
+cmake --build build --target owc-exec --parallel
+
+rm -rf build/stage
+mkdir -p build/stage/{bin,server,web,node}
+cp build/owc-exec build/stage/bin/
+cp -r server/dist server/package.json server/node_modules server/assets build/stage/server/
+cp -r web/dist build/stage/web/
+curl -fsSLo build/node.tar.gz \
+  "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.gz"
+tar -xzf build/node.tar.gz -C build/stage/node --strip-components=1
+
+test -x build/stage/bin/owc-exec
+test -x build/stage/node/bin/node
+test -f build/stage/server/dist/index.js
+test -f build/stage/web/dist/index.html
+
+tar -czf "openwebcode-${VERSION}-linux-x64.tar.gz" \
+  -C build/stage . \
+  -C "$PWD/packaging" install.sh
+sha256sum "openwebcode-${VERSION}-linux-x64.tar.gz"
+```
+
+解包到临时目录后运行 `./install.sh --prefix <临时前缀>`，再访问 `/api/health`，可完成安装包级冒烟。
+
+### 安装与卸载
 
 ```sh
 mkdir openwebcode && tar -xzf openwebcode-<version>-linux-x64.tar.gz -C openwebcode
@@ -61,9 +230,9 @@ cd openwebcode
 
 运行时优先使用包内 `node/`，缺失时回落系统 `node`（要求 >= 20）。
 
-## 本地更新 staging
+## 开发期间快速更新 staging
 
-`build/stage/` 是完整运行时树，不是只放单个可执行文件的输出目录。修改 Server/Web 后至少重新执行：
+此流程只适合已有完整 staging 的本地联调，不能代替上面的正式干净打包。`build/stage/` 是完整运行时树，不是只放单个可执行文件的输出目录。修改 Server/Web 后至少重新执行：
 
 ```powershell
 npm --prefix server run build
@@ -83,3 +252,12 @@ Server 模块在进程启动时加载，复制后必须重启 `build\stage\bin\o
   `tar -C stage . -C packaging install.sh` 打包 → 上传 tar.gz。
 - bundled Node 版本固定在 workflow 的 `env.NODE_DIST_VERSION`（当前 20.19.0），升级时改这一个常量。
 - Release 由 `softprops/action-gh-release@v2` 创建/更新，`generate_release_notes: true`，非草稿。
+
+推荐发布方式是先推送已审核提交，再创建并推送语义化版本 tag：
+
+```sh
+git tag -a v0.1.0 -m "OpenWebCode v0.1.0"
+git push origin v0.1.0
+```
+
+也可在 GitHub Actions 中手动运行 `release`，输入形如 `v0.1.0` 的 tag。两个平台 job 都成功且 Release 页面同时出现 MSI 与 tar.gz 后，发布才算完成；随后核对下载文件名、SHA-256、安装/启动和 `/api/health`。

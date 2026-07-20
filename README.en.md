@@ -115,16 +115,15 @@ npm run build
 npm test
 ```
 
-The server serves `web/dist`. Distribution layout, local staging, and release workflow details are documented in [`packaging/README.md`](./packaging/README.md).
+The server serves `web/dist`. Distribution layout, clean staging, local packaging, smoke testing, and the release workflow are documented in [`packaging/README.en.md`](./packaging/README.en.md).
 
 ## Documentation
 
 - [`help/usage.md`](./help/usage.md) — user guide (Chinese)
 - [`help/faq.md`](./help/faq.md) — troubleshooting and FAQ (Chinese)
 - [`help/development.md`](./help/development.md) — development guide (Chinese)
-- [`docs/README.md`](./docs/README.md) — architecture and internal documentation index
-- [`docs/localization.md`](./docs/localization.md) — interface localization design and contributor rules
-- [`packaging/README.md`](./packaging/README.md) — packaging and release pipeline
+- Internal design notes under `docs/` are maintained locally and are not distributed through the remote repository.
+- [`packaging/README.en.md`](./packaging/README.en.md) — packaging and release pipeline
 
 ## Data locations
 
