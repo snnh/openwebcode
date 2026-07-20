@@ -764,9 +764,20 @@ export async function buildServer(dependencies) {
         if (!body || typeof body.requestId !== "string" || !["allow", "allow_always", "deny"].includes(body.decision) || (body.reason !== undefined && typeof body.reason !== "string")) {
             return reply.code(400).send({ error: "requestId, decision allow|allow_always|deny, and optional reason are required" });
         }
-        if (!(await agent.respondPermission(request.params.id, body.requestId, body.decision, body.reason)))
+        const complete = await agent.preparePermissionResponse(request.params.id, body.requestId, body.decision, body.reason);
+        if (!complete)
             return reply.code(404).send({ error: "Permission request not found" });
-        return { accepted: true };
+        let resumed = false;
+        const resume = () => {
+            if (resumed)
+                return;
+            resumed = true;
+            complete();
+        };
+        // 先把批准结果交付给浏览器，再恢复可能耗时的工具执行；连接提前关闭时也执行已确认的决定。
+        reply.raw.once("finish", resume);
+        reply.raw.once("close", resume);
+        return reply.send({ accepted: true });
     });
     // C2 `!` shell 快捷前缀：走与 bash 工具相同的权限链 + core.run，但不进 agent run 循环（isRunning 全程 false）。
     // 落盘 user (`!cmd`) + tool_result 一对；权限挂起复用 permission.request/respond 机制。

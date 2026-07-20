@@ -13,6 +13,7 @@
 - **随时回退**：每轮自动打检查点，时间线面板一键回滚（文件 + 会话历史一起退）
 - **不怕跑飞**：默认沙盒隔离（Windows AppContainer / Linux Landlock），不可信代码可上 WSB 一会话一 VM
 - **长任务不阻塞**：后台 bash 任务继续跑，你照常对话，完成自动通知
+- **技术内容直接读**：对话支持 GFM Markdown、代码高亮与 KaTeX 公式；思考过程默认折叠并弱化显示
 - **脚本可集成**：`owc run "..."` 非交互执行，`--json` 出 NDJSON 事件流，CI 直接用
 
 ## 快速开始
@@ -66,9 +67,9 @@ cd openwebcode
 - `skills/` — Skills（`/name` 触发，正文按需加载）
 - `mcp.json` — MCP 客户端配置（stdio/HTTP 双传输）
 
-**模型**：会话中热切换、思考程度开关（low/medium/high）、缓存断点优化（Anthropic 显式 cache_control，OpenAI 系自动）、按会话/按日/按 provider 成本报表（双币种 USD/CNY）。
+**模型**：会话中热切换、思考程度开关（low/medium/high）、缓存断点优化（Anthropic 显式 cache_control，OpenAI 系自动）、按会话/按日/按 provider 成本报表（双币种 USD/CNY）。设置页可按“每百万 tokens 单价”维护带生效日期的模型定价。
 
-**权限**：ask / acceptEdits / yolo 三级，「总是允许」生成持久规则。「总是允许」与 yolo 都不解除沙盒——两个机制正交。
+**权限**：ask / acceptEdits / yolo 三级。「允许一次」仅批准当前调用，响应送达后才启动工具；「总是允许」生成持久规则。「总是允许」与 yolo 都不解除沙盒——两个机制正交。
 
 **沙盒**（默认开启）：Windows AppContainer（Job Object 兼容兜底）/ WSB（不可信代码）/ Linux Landlock。能力探测如实上报（enforced/partial/advisory），不谎报。
 
@@ -78,7 +79,7 @@ cd openwebcode
 
 **会话生命周期**：关浏览器不停 agent；断线重连自动补拉；权限请求挂起等你 respond（**无超时**，长任务记得回来确认）。
 
-**其他**：多模态图片输入（粘贴/拖拽）、会话导出/导入（JSONL）、会话分享（`export.html` 自包含只读页）、Headless CLI（`owc run`）、断线重连、存储 GC。
+**其他**：多模态图片输入（粘贴/拖拽）、GFM Markdown + KaTeX 数学公式、折叠思考块、会话导出/导入（JSONL）、会话分享（`export.html` 自包含只读页）、Headless CLI（`owc run`）、断线重连、存储 GC。
 
 ## Headless CLI
 

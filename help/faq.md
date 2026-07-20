@@ -42,7 +42,11 @@ Anthropic（Claude）与 OpenAI 兼容协议（DeepSeek/Qwen/Ollama/GLM 等皆�
 
 ### Q: thinking / reasoning 模型怎么开？
 
-支持 thinking 的模型在输入框上方有「思考」开关与程度选择器（low/medium/high）。Anthropic 翻译为 `thinking.budget_tokens`，OpenAI 系翻译为 `reasoning_effort`。思考块默认折叠，思考 token 计入成本。
+支持 thinking 的模型在输入框上方有「思考」开关与程度选择器（low/medium/high）。Anthropic 翻译为 `thinking.budget_tokens`，OpenAI 系翻译为 `reasoning_effort`。思考块默认折叠，完成后随消息持久化，思考 token 计入成本。
+
+### Q: 对话支持 Markdown 和数学公式吗？
+
+支持。正文与思考块都支持 GFM Markdown（表格、任务列表、删除线、代码块等）；行内公式写 `$...$`，块级公式写成独占一段的 `$$...$$`，由 KaTeX 渲染。思考块默认折叠且颜色比正文更浅。
 
 ### Q: 缓存命中省钱吗？
 
@@ -56,7 +60,13 @@ Anthropic 显式 `cache_control` 断点（系统提示词后、驱逐边界后�
 - `acceptEdits`：文件编辑类自动放行，bash 等仍需确认
 - `yolo`：全部自动放行——**但沙盒仍生效**（yolo 与沙盒是两个正交机制）
 
-`总是允许` 会生成持久规则（如 `bash(npm test:*)`），随会话保存。
+`总是允许` 会生成持久规则（如精确的 `bash(npm test)`），随会话保存。
+
+### Q: 「允许一次」和「总是允许」有什么区别？
+
+「允许一次」只恢复当前这一项工具调用，不写权限规则；「总是允许」需要二次确认，并把当前工具及参数规则保存到会话。两者都会先完成批准接口响应，再开始工具执行，避免浏览器等待审批响应时被长命令拖住。
+
+Windows 默认 AppContainer 会话使用 `cmd.exe`。如果批准后立即出现“不是内部或外部命令”，通常是模型生成了 PowerShell/POSIX 语法；改用 `dir`、`type`、`where` 等 cmd 命令，或显式调用已安装的 shell。
 
 ### Q: yolo 了还会被沙盒拦吗？
 
@@ -159,6 +169,10 @@ owc run "跑测试并修复失败的用例" --cwd . --yolo --json | tee events.n
 ### Q: WebSocket 断线重连后事件丢失？
 
 不会。重连时带 `after=<lastSeq>` 参数补拉。仅当 `after` 早于服务端历史缓冲区最旧事件（默认保留 1000 条）时返回 `resync.required`，客户端走 REST 全量重取。
+
+### Q: 模型定价新增时报 `effectiveFrom must be a valid YYYY-MM-DD date`？
+
+新版表单在币种后有「生效日期」，默认当天。若看不到该字段，说明浏览器仍加载旧前端：先重启 OpenWebCode，再用 `Ctrl+F5` 强制刷新；从源码或 staging 更新时确认 `web/dist/index.html` 指向最新哈希资源。缓存读/写留空会按 `0` 保存，输入/输出单价必须填写。
 
 ### Q: core（C 执行器）崩溃了怎么办？
 

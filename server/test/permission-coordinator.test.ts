@@ -42,4 +42,18 @@ describe("PermissionCoordinator", () => {
     controller.abort();
     expect(await aborted).toMatchObject({ allowed: false, persist: false });
   });
+
+  it("does not grant a claimed one-time permission if the run aborts before completion", async () => {
+    const events = new EventBus(); const observed: AppEvent[] = [];
+    events.on("event", (event: AppEvent) => observed.push(event));
+    const coordinator = new PermissionCoordinator(events);
+    const controller = new AbortController();
+    const pending = coordinator.request("session", "bash", { cmd: "dir" }, controller.signal);
+    const requestId = (observed[0]?.payload as { requestId: string }).requestId;
+    const response = coordinator.respond("session", requestId, "allow");
+
+    controller.abort();
+    response?.complete();
+    expect(await pending).toEqual({ allowed: false, reason: "Permission request aborted", persist: false });
+  });
 });

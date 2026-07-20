@@ -2,7 +2,7 @@ import { Fragment, useEffect, useRef, useState, type ReactElement } from "react"
 import type { ChatMessage, SessionDetail } from "../lib/contracts";
 import { Icon } from "./Icon";
 import { Markdown } from "./Markdown";
-import { MessageCard } from "./MessageCard";
+import { MessageCard, ThinkingBlock } from "./MessageCard";
 import { PermissionCard, type PermissionRequest } from "./PermissionCard";
 
 /** 用户消息若以 `!` 开头则是 shell 快捷命令，返回命令文本；否则 undefined */
@@ -97,12 +97,7 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, per
               <span className="message-author">OpenWebCode</span>
               <span>正在输出</span>
             </div>
-            {thinkingText && (
-              <details className="thinking">
-                <summary>思考过程</summary>
-                <pre>{thinkingText}</pre>
-              </details>
-            )}
+            {thinkingText && <ThinkingBlock text={thinkingText} streaming />}
             {streamText && <Markdown>{streamText}</Markdown>}
             <span className="cursor" aria-hidden />
           </article>

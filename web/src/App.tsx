@@ -172,13 +172,16 @@ export function App(): ReactElement {
           "agent.state", "tool.end", "checkpoint.created", "checkpoint.restored", "checkpoint.deleted", "context.usage",
           "context.budget_updated", "context.restored", "session.config_updated",
         ].includes(event.type)) {
-          queryClient.invalidateQueries({ queryKey: queryKeys.detail(event.sessionId) });
+          const detailRefresh = queryClient.invalidateQueries({ queryKey: queryKeys.detail(event.sessionId) });
           queryClient.invalidateQueries({ queryKey: ["context", event.sessionId] });
           queryClient.invalidateQueries({ queryKey: ["checkpoints", event.sessionId] });
           queryClient.invalidateQueries({ queryKey: ["permissions", event.sessionId] });
           if (event.type === "agent.state" && (event.payload as { state?: string }).state === "idle") {
-            setStream((value) => ({ ...value, [event.sessionId!]: "" }));
-            setThinkingStream((value) => ({ ...value, [event.sessionId!]: "" }));
+            // 等持久化消息重新拉取完成后再撤掉临时流，避免思考/正文在切换到历史卡片时闪烁或消失。
+            void detailRefresh.finally(() => {
+              setStream((value) => ({ ...value, [event.sessionId!]: "" }));
+              setThinkingStream((value) => ({ ...value, [event.sessionId!]: "" }));
+            });
           }
         }
       };

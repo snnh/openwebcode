@@ -42,7 +42,27 @@ const PERMISSION_OPTIONS: Array<{ value: PermissionMode | ""; label: string }> =
   { value: "yolo", label: "YOLO" },
 ];
 
-function PricingSection(): ReactElement {
+interface PricingForm {
+  provider: string;
+  model: string;
+  currency: "USD" | "CNY";
+  effectiveFrom: string;
+  input: string;
+  output: string;
+  cacheRead: string;
+  cacheWrite: string;
+}
+
+function localDateValue(date = new Date()): string {
+  const pad = (value: number): string => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function emptyPricingForm(): PricingForm {
+  return { provider: "", model: "", currency: "CNY", effectiveFrom: localDateValue(), input: "", output: "", cacheRead: "", cacheWrite: "" };
+}
+
+export function PricingSection(): ReactElement {
   const queryClient = useQueryClient();
   const pricing = useQuery({ queryKey: ["model-pricing"], queryFn: api.modelPricing });
   const [editing, setEditing] = useState(false);
@@ -51,7 +71,7 @@ function PricingSection(): ReactElement {
   const [saving, setSaving] = useState(false);
   // 添加条目表单
   const [adding, setAdding] = useState(false);
-  const [form, setForm] = useState({ provider: "", model: "", currency: "CNY", input: "", output: "", cacheRead: "", cacheWrite: "" });
+  const [form, setForm] = useState<PricingForm>(emptyPricingForm);
 
   const startEdit = (): void => {
     if (!pricing.data) return;
@@ -60,18 +80,22 @@ function PricingSection(): ReactElement {
     setEditing(true);
   };
 
-  const save = (document: PricingDocument): Promise<void> => {
+  const save = async (document: PricingDocument): Promise<boolean> => {
     setSaving(true);
     setError(undefined);
-    return api.saveModelPricing(document)
-      .then(() => {
-        setEditing(false);
-        setAdding(false);
-        void queryClient.invalidateQueries({ queryKey: ["model-pricing"] });
-        void queryClient.invalidateQueries({ queryKey: ["models"] });
-      })
-      .catch((saveError: unknown) => { setError(saveError instanceof Error ? saveError.message : "保存失败"); throw saveError; })
-      .finally(() => setSaving(false));
+    try {
+      await api.saveModelPricing(document);
+      setEditing(false);
+      setAdding(false);
+      void queryClient.invalidateQueries({ queryKey: ["model-pricing"] });
+      void queryClient.invalidateQueries({ queryKey: ["models"] });
+      return true;
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "保存失败");
+      return false;
+    } finally {
+      setSaving(false);
+    }
   };
 
   const saveJson = (): void => {
@@ -93,21 +117,28 @@ function PricingSection(): ReactElement {
       setError("模型 id 与 provider 必填");
       return;
     }
+    if (!form.effectiveFrom) {
+      setError("请选择生效日期");
+      return;
+    }
     // 价格字段：每百万 tokens 单价（元/美元），转 micro-units（×1000000）
-    const toMicro = (value: string): string => {
+    const toMicro = (value: string, label: string, optional = false): string => {
       const trimmed = value.trim();
-      if (!trimmed) return "";
+      if (!trimmed) {
+        if (optional) return "0";
+        throw new Error(`${label}必填`);
+      }
       const num = Number(trimmed);
-      if (!Number.isFinite(num) || num < 0) throw new Error(`价格「${value}」无效`);
+      if (!Number.isFinite(num) || num < 0) throw new Error(`${label}「${value}」无效`);
       return String(Math.round(num * 1_000_000));
     };
     let parsed: { input: string; output: string; cacheRead: string; cacheWrite: string };
     try {
       parsed = {
-        input: toMicro(form.input),
-        output: toMicro(form.output),
-        cacheRead: toMicro(form.cacheRead),
-        cacheWrite: toMicro(form.cacheWrite),
+        input: toMicro(form.input, "输入单价"),
+        output: toMicro(form.output, "输出单价"),
+        cacheRead: toMicro(form.cacheRead, "缓存读单价", true),
+        cacheWrite: toMicro(form.cacheWrite, "缓存写单价", true),
       };
     } catch (parseError) {
       setError(parseError instanceof Error ? parseError.message : "价格格式错误");
@@ -115,12 +146,14 @@ function PricingSection(): ReactElement {
     }
     const document: PricingDocument = {
       ...pricing.data,
+      updatedAt: new Date().toISOString(),
       entries: [
         ...pricing.data.entries,
         {
           provider,
           model,
           currency: form.currency as "USD" | "CNY",
+          effectiveFrom: form.effectiveFrom,
           input: parsed.input,
           output: parsed.output,
           cacheRead: parsed.cacheRead,
@@ -128,8 +161,8 @@ function PricingSection(): ReactElement {
         },
       ],
     };
-    void save(document).then(() => {
-      setForm({ provider: "", model: "", currency: "CNY", input: "", output: "", cacheRead: "", cacheWrite: "" });
+    void save(document).then((saved) => {
+      if (saved) setForm(emptyPricingForm());
     });
   };
 
@@ -140,6 +173,7 @@ function PricingSection(): ReactElement {
     if (!window.confirm(`删除 ${entry.provider}/${entry.model} 的定价？`)) return;
     const document: PricingDocument = {
       ...pricing.data,
+      updatedAt: new Date().toISOString(),
       entries: pricing.data.entries.filter((_, i) => i !== index),
     };
     void save(document);
@@ -153,7 +187,7 @@ function PricingSection(): ReactElement {
     <>
       <div className="pricing-head">
         <span className="settings-note">{document.entries.length} 条定价 · 每百万 tokens 单价 · 更新于 {new Date(document.updatedAt).toLocaleString()}</span>
-        {!editing && !adding && <button className="btn small" onClick={() => setAdding(true)}>添加条目</button>}
+        {!editing && !adding && <button className="btn small" onClick={() => { setForm(emptyPricingForm()); setError(undefined); setAdding(true); }}>添加条目</button>}
         {!editing && <button className="btn small" onClick={startEdit}>编辑 JSON</button>}
       </div>
       {adding && (
@@ -163,14 +197,15 @@ function PricingSection(): ReactElement {
           <div className="catalog-form">
             <input value={form.provider} placeholder="provider" aria-label="provider" onChange={(e) => setForm((p) => ({ ...p, provider: e.target.value }))} spellCheck={false} />
             <input value={form.model} placeholder="模型 id" aria-label="模型 id" onChange={(e) => setForm((p) => ({ ...p, model: e.target.value }))} spellCheck={false} />
-            <select value={form.currency} aria-label="币种" onChange={(e) => setForm((p) => ({ ...p, currency: e.target.value }))}>
+            <select value={form.currency} aria-label="币种" onChange={(e) => setForm((p) => ({ ...p, currency: e.target.value as PricingForm["currency"] }))}>
               <option value="CNY">CNY</option>
               <option value="USD">USD</option>
             </select>
-            <input value={form.input} placeholder="输入单价" aria-label="输入单价" inputMode="decimal" onChange={(e) => setForm((p) => ({ ...p, input: e.target.value }))} />
-            <input value={form.output} placeholder="输出单价" aria-label="输出单价" inputMode="decimal" onChange={(e) => setForm((p) => ({ ...p, output: e.target.value }))} />
-            <input value={form.cacheRead} placeholder="缓存读（可空）" aria-label="缓存读" inputMode="decimal" onChange={(e) => setForm((p) => ({ ...p, cacheRead: e.target.value }))} />
-            <input value={form.cacheWrite} placeholder="缓存写（可空）" aria-label="缓存写" inputMode="decimal" onChange={(e) => setForm((p) => ({ ...p, cacheWrite: e.target.value }))} />
+            <input type="date" value={form.effectiveFrom} aria-label="生效日期" title="生效日期" onChange={(e) => setForm((p) => ({ ...p, effectiveFrom: e.target.value }))} />
+            <input type="number" min="0" step="any" value={form.input} placeholder="输入单价" aria-label="输入单价" inputMode="decimal" onChange={(e) => setForm((p) => ({ ...p, input: e.target.value }))} />
+            <input type="number" min="0" step="any" value={form.output} placeholder="输出单价" aria-label="输出单价" inputMode="decimal" onChange={(e) => setForm((p) => ({ ...p, output: e.target.value }))} />
+            <input type="number" min="0" step="any" value={form.cacheRead} placeholder="缓存读（可空）" aria-label="缓存读" inputMode="decimal" onChange={(e) => setForm((p) => ({ ...p, cacheRead: e.target.value }))} />
+            <input type="number" min="0" step="any" value={form.cacheWrite} placeholder="缓存写（可空）" aria-label="缓存写" inputMode="decimal" onChange={(e) => setForm((p) => ({ ...p, cacheWrite: e.target.value }))} />
           </div>
           <div className="dialog-actions">
             <button className="btn" disabled={saving} onClick={() => { setAdding(false); setError(undefined); }}>取消</button>

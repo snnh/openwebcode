@@ -55,11 +55,11 @@ export function ToolResultCard({ content, error }: { content: string; error: boo
   );
 }
 
-function ThinkingBlock({ text }: { text: string }): ReactElement {
+export function ThinkingBlock({ text, streaming = false }: { text: string; streaming?: boolean }): ReactElement {
   return (
-    <details className="thinking">
-      <summary>思考过程</summary>
-      <pre>{text}</pre>
+    <details className={`thinking${streaming ? " live" : ""}`}>
+      <summary>{streaming ? "正在思考" : "思考过程"}</summary>
+      <Markdown>{text}</Markdown>
     </details>
   );
 }
@@ -79,6 +79,20 @@ function ContentBlock({ block }: { block: MessageContent }): ReactElement | null
     default:
       return null;
   }
+}
+
+/** 兼容旧会话：历史版本会把 assistant 的每个流式分片保存成独立 text 块。 */
+export function coalesceAssistantText(content: MessageContent[]): MessageContent[] {
+  const result: MessageContent[] = [];
+  for (const block of content) {
+    const previous = result.at(-1);
+    if (block.type === "text" && previous?.type === "text") {
+      result[result.length - 1] = { ...previous, text: `${previous.text ?? ""}${block.text ?? ""}` };
+    } else {
+      result.push(block);
+    }
+  }
+  return result;
 }
 
 const ROLE_LABELS: Record<string, string> = { user: "你", assistant: "OpenWebCode", tool: "工具" };
@@ -110,7 +124,8 @@ async function writeClipboard(text: string): Promise<boolean> {
 export function MessageCard({ message }: { message: ChatMessage }): ReactElement {
   const createdAt = new Date(message.createdAt);
   const [copied, setCopied] = useState(false);
-  const text = message.content
+  const content = message.role === "assistant" ? coalesceAssistantText(message.content) : message.content;
+  const text = content
     .filter((block) => block.type === "text")
     .map((block) => block.text ?? "")
     .join("\n")
@@ -137,7 +152,7 @@ export function MessageCard({ message }: { message: ChatMessage }): ReactElement
           </button>
         )}
       </div>
-      {message.content.map((block, index) => <ContentBlock key={index} block={block} />)}
+      {content.map((block, index) => <ContentBlock key={index} block={block} />)}
     </article>
   );
 }

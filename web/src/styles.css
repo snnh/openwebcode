@@ -607,20 +607,19 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .tool-result.error summary, .tool-result.error .tool-result-label { color: var(--danger); }
 .thinking {
   background: var(--panel-2);
-  border-left: 3px solid var(--border-strong);
+  background: color-mix(in srgb, var(--panel-2) 58%, transparent);
+  border-left: 3px solid var(--border);
   border-radius: 0 var(--radius-s) var(--radius-s) 0;
   padding: 9px 13px;
   margin: 10px 0;
   max-width: min(100%, 1100px);
+  color: var(--text-3);
 }
-.thinking summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--text-2); }
-.thinking pre {
-  margin: 8px 0 0;
-  font: 12px/1.6 var(--font-mono);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  color: var(--text-2);
-}
+.thinking summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--text-3); }
+.thinking summary:hover { color: var(--text-2); }
+.thinking[open] summary { margin-bottom: 8px; }
+.thinking .markdown { color: var(--text-3); font-size: 12.5px; line-height: 1.65; }
+.thinking.live summary::after { content: "…"; }
 .permission-card {
   background: var(--amber-bg);
   border: 1px solid var(--amber-border);
@@ -640,21 +639,27 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .permission-actions { display: flex; gap: 8px; }
 
 /* ================= Markdown / 代码块 ================= */
-.markdown { line-height: 1.7; font-size: 14px; overflow-wrap: anywhere; }
+.markdown { min-width: 0; line-height: 1.7; font-size: 14px; overflow-wrap: anywhere; }
 .markdown p { margin: 0 0 10px; }
 .markdown > *:last-child { margin-bottom: 0; }
 .markdown h1, .markdown h2, .markdown h3, .markdown h4 { margin: 18px 0 8px; line-height: 1.35; }
 .markdown h1 { font-size: 19px; } .markdown h2 { font-size: 17px; } .markdown h3 { font-size: 15px; } .markdown h4 { font-size: 14px; }
 .markdown ul, .markdown ol { margin: 0 0 10px; padding-left: 22px; }
 .markdown a { color: var(--accent); }
+.markdown hr { margin: 16px 0; border: 0; border-top: 1px solid var(--border); }
+.markdown del { color: var(--text-3); }
+.markdown input[type="checkbox"] { margin: 0 6px 0 0; vertical-align: -1px; accent-color: var(--accent); }
 .markdown blockquote {
   margin: 0 0 10px;
   padding: 4px 12px;
   border-left: 3px solid var(--border-strong);
   color: var(--text-2);
 }
-.markdown table { border-collapse: collapse; margin: 0 0 10px; }
+.markdown table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 0 0 10px; }
 .markdown th, .markdown td { border: 1px solid var(--border); padding: 5px 10px; font-size: 13px; }
+.markdown .katex { font-size: 1.04em; }
+.markdown .katex-display { max-width: 100%; margin: 12px 0; padding: 3px 0; overflow-x: auto; overflow-y: hidden; }
+.markdown .katex-display > .katex { min-width: max-content; }
 .inline-code {
   background: var(--code-bg);
   border-radius: 5px;
