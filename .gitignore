@@ -58,6 +58,6 @@ docs/
 build/
 .claude/
 .openwebcode/
-server/node_modules/
+server/node_modules
 web/node_modules/
 web/dist/
