@@ -22,7 +22,7 @@ function messageSummary(session: SessionDetail | undefined, messageId: string): 
 function BudgetSection({ sessionId, running, onNotice }: {
   sessionId: string;
   running: boolean;
-  onNotice(message: string): void;
+  onNotice(message: string, kind?: "info" | "error"): void;
 }): ReactElement {
   const queryClient = useQueryClient();
   const context = useQuery({ queryKey: ["context", sessionId], queryFn: () => api.context(sessionId) });
@@ -43,11 +43,11 @@ function BudgetSection({ sessionId, running, onNotice }: {
     const tokens = tokenLimit.trim();
     const cost = costLimit.trim();
     if (tokens && (!/^\d+$/.test(tokens) || Number(tokens) < 1)) {
-      onNotice("Token 上限必须为正整数");
+      onNotice("Token 上限必须为正整数", "error");
       return;
     }
     if (cost && (!/^\d+(\.\d+)?$/.test(cost) || Number(cost) <= 0)) {
-      onNotice("成本上限必须为正数");
+      onNotice("成本上限必须为正数", "error");
       return;
     }
     setSaving(true);
@@ -59,7 +59,7 @@ function BudgetSection({ sessionId, running, onNotice }: {
         void queryClient.invalidateQueries({ queryKey: ["context", sessionId] });
         onNotice("预算已更新");
       })
-      .catch((error: unknown) => onNotice(error instanceof Error ? error.message : "预算更新失败"))
+      .catch((error: unknown) => onNotice(error instanceof Error ? error.message : "预算更新失败", "error"))
       .finally(() => setSaving(false));
   };
 
@@ -117,7 +117,7 @@ export function ContextPanel({ sessionId, session, running, onNotice }: {
   sessionId?: string;
   session?: SessionDetail;
   running: boolean;
-  onNotice(message: string): void;
+  onNotice(message: string, kind?: "info" | "error"): void;
 }): ReactElement {
   const queryClient = useQueryClient();
   const context = useQuery({
@@ -196,7 +196,7 @@ export function ContextPanel({ sessionId, session, running, onNotice }: {
                     void queryClient.invalidateQueries({ queryKey: ["session", sessionId] });
                     onNotice("已恢复上下文条目");
                   })
-                  .catch((error: unknown) => onNotice(error instanceof Error ? error.message : "恢复失败"));
+                  .catch((error: unknown) => onNotice(error instanceof Error ? error.message : "恢复失败", "error"));
               }}
             >
               恢复
