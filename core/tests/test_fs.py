@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-import json, os, pathlib, subprocess, sys, tempfile
+import ctypes, json, os, pathlib, subprocess, sys, tempfile
+
+def windows_short_path(path):
+    if os.name != "nt": return None
+    required=ctypes.windll.kernel32.GetShortPathNameW(str(path),None,0)
+    if not required: return None
+    buffer=ctypes.create_unicode_buffer(required)
+    if not ctypes.windll.kernel32.GetShortPathNameW(str(path),buffer,required): return None
+    return buffer.value
 
 def send(p, i, method, params):
     body=json.dumps({"jsonrpc":"2.0","id":i,"method":method,"params":params},ensure_ascii=False,separators=(",",":")).encode()
@@ -24,7 +32,8 @@ def main():
         assert send(p,104,"fs.read",{"sessionId":"test-session","path":".env"})["error"]["code"]==-32002
         assert send(p,106,"fs.read",{"sessionId":"test-session","path":"private/secret.txt"})["error"]["code"]==-32002
         def fs(i,method,params): return send(p,i,method,{"sessionId":"test-session",**params})
-        assert fs(1,"fs.write",{"path":"目录/文件.txt","content":"一\n二\n三"})["result"]["ok"]
+        first_write=fs(1,"fs.write",{"path":"目录/文件.txt","content":"一\n二\n三"})
+        assert first_write.get("result",{}).get("ok"),first_write
         assert fs(101,"fs.write",{"path":"新/深/文件.txt","content":"alpha\nbeta","createDirs":True})["result"]["ok"]
         globbed=fs(102,"fs.glob",{"path":".","pattern":"新/*/文件.txt"})["result"]
         assert globbed=={"paths":["新/深/文件.txt"],"truncated":False},globbed
@@ -37,6 +46,15 @@ def main():
         assert listing["truncated"] is False
         assert any(x["name"]=="文件.txt" for x in listing["entries"])
         assert fs(41,"fs.read",{"path":"目录/文件.txt"})["result"]["content"]=="一\n二\n三"
+        # Windows returns canonical long paths from file handles.  A cwd supplied
+        # in 8.3 form must still compare as the same workspace root.
+        short_root=root/"short path root"; short_root.mkdir()
+        short_cwd=windows_short_path(short_root)
+        if short_cwd and os.path.normcase(short_cwd)!=os.path.normcase(str(short_root)):
+            assert send(p,142,"session.configure",{"sessionId":"short-path-session","cwd":short_cwd,"sandbox":{"enabled":True,"readRoots":[short_cwd],"writeRoots":[short_cwd],"denyPaths":[],"network":"allow"}})["result"]["sandboxCapability"] in {"advisory","partial","enforced"}
+            short_write=send(p,143,"fs.write",{"sessionId":"short-path-session","path":"result.txt","content":"short-path-ok"})
+            assert short_write.get("result",{}).get("ok"),short_write
+            assert (short_root/"result.txt").read_text()=="short-path-ok"
         assert fs(5,"fs.read",{"path":"目录/文件.txt","offset":-1,"limit":1})["error"]["code"]==-32602
         assert fs(6,"fs.read",{"path":"目录/文件.txt","offset":0,"limit":0})["error"]["code"]==-32602
         assert fs(7,"fs.write",{"path":"目录/nul","content":"a\u0000b"})["error"]["code"]==-32700
