@@ -114,7 +114,12 @@ jobs:
           echo 'C:\Program Files (x86)\WiX Toolset v3.14\bin' >> "$GITHUB_PATH"
       - name: Pack MSI (CPack WIX)
         shell: bash
-        run: cpack --config build/CPackConfig.cmake -G WIX -C Release
+        run: |
+          set -euo pipefail
+          if ! cpack --config build/CPackConfig.cmake -G WIX -C Release; then
+            find _CPack_Packages -name wix.log -print -exec cat '{}' \; || true
+            exit 1
+          fi
       - name: Upload MSI to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
