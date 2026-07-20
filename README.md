@@ -77,6 +77,8 @@ cd openwebcode
 
 **上下文管理**：token 预算账本、滚动驱逐 + 占位符回写、provider2 两种压缩、85% 水位强制概览压缩。前端始终看全量历史，驱逐只影响 LLM 视图。
 
+**扩展系统**：独立 Extension Host 子进程（IPC、5 秒钩子保护、manifest 权限与持久化管理）。内置 context-manager、attention-optimizer、content-lens；可在设置页启停、调参并从本地目录安装第三方 `owc-ext-*` 扩展。
+
 **会话生命周期**：关浏览器不停 agent；断线重连自动补拉；权限请求挂起等你 respond（**无超时**，长任务记得回来确认）。
 
 **其他**：多模态图片输入（粘贴/拖拽）、GFM Markdown + KaTeX 数学公式、折叠思考块、会话导出/导入（JSONL）、会话分享（`export.html` 自包含只读页）、Headless CLI（`owc run`）、断线重连、存储 GC。
@@ -101,6 +103,7 @@ owc run "给 main.ts 加个单元测试" --cwd . --json --yolo
 | `~/.openwebcode/{agents,commands,skills}/` | 全局自定义扩展点 |
 | `~/.openwebcode/hooks.json` | 全局 Hooks（**安全级别等同 yolo**） |
 | `~/.openwebcode/mcp.json` | 全局 MCP 客户端配置 |
+| `~/.openwebcode/extensions/` | Extension Host 配置与第三方扩展 |
 | `<cwd>/.owc/` | 项目级（同名覆盖全局） |
 
 Windows 下 `~` 指 `%USERPROFILE%`。

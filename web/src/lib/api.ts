@@ -1,4 +1,4 @@
-import type { BackgroundTaskInfo, Checkpoint, CompletePathResponse, ContextView, CostReport, FileEntry, ManagedWorkspaceCapability, MessageAttachment, ModelProfile, PendingPermission, PricingDocument, SandboxCapabilities, SandboxMode, Session, SessionDetail, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo, TodoItem } from "./contracts";
+import type { BackgroundTaskInfo, Checkpoint, CompletePathResponse, ContextView, CostReport, ExtensionInfo, FileEntry, ManagedWorkspaceCapability, MessageAttachment, ModelProfile, PendingPermission, PricingDocument, SandboxCapabilities, SandboxMode, Session, SessionDetail, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo, TodoItem } from "./contracts";
 
 export class ApiError extends Error {
   constructor(readonly status: number, message: string) {
@@ -51,6 +51,14 @@ export const api = {
     request<void>(`/api/sessions/${id}/context/budget`, { method: "PUT", body: JSON.stringify(body) }),
   restoreContext: (id: string, messageId: string) =>
     request<void>(`/api/sessions/${id}/context/restore`, { method: "POST", body: JSON.stringify({ messageId }) }),
+  updateContextPolicy: (id: string, body: Partial<NonNullable<ContextView["ledger"]["policy"]>>) =>
+    request<ContextView["ledger"]>(`/api/sessions/${id}/context/policy`, { method: "PUT", body: JSON.stringify(body) }),
+  compactContext: (id: string, mode: "toolcalls" | "overview") =>
+    request<{ changed: boolean; mode: string; reason?: string }>(`/api/sessions/${id}/compact`, { method: "POST", body: JSON.stringify({ mode }) }),
+  mutateContextEntry: (id: string, messageId: string, action: "evict" | "pin" | "unpin") =>
+    request<ContextView["ledger"]>(`/api/sessions/${id}/context/entries/${encodeURIComponent(messageId)}`, { method: "POST", body: JSON.stringify({ action }) }),
+  contextArtifact: (id: string, artifactId: string) =>
+    request<{ content: string }>(`/api/sessions/${id}/context/artifacts/${encodeURIComponent(artifactId)}`),
   checkpoints: (id: string) => request<Checkpoint[]>(`/api/sessions/${id}/checkpoints`),
   snapshotCapability: (id: string) => request<SnapshotCapabilityInfo>(`/api/sessions/${id}/snapshot-capability`),
   createCheckpoint: (id: string, label?: string) =>
@@ -100,4 +108,13 @@ export const api = {
     request<SettingsView>("/api/settings", { method: "PUT", body: JSON.stringify({ overrides }) }),
   tasks: (id: string) => request<BackgroundTaskInfo[]>(`/api/sessions/${id}/tasks`),
   task: (id: string, taskId: string) => request<BackgroundTaskInfo>(`/api/sessions/${id}/tasks/${taskId}`),
+  extensions: () => request<ExtensionInfo[]>("/api/extensions"),
+  configureExtension: (id: string, body: { enabled?: boolean; config?: Record<string, unknown> }) =>
+    request<ExtensionInfo>("/api/extensions", { method: "POST", body: JSON.stringify({ id, ...body }) }),
+  installExtension: (path: string) => request<ExtensionInfo>("/api/extensions", { method: "POST", body: JSON.stringify({ action: "install", path }) }),
+  uninstallExtension: (id: string) => request<void>(`/api/extensions/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  translateMessage: (sessionId: string, messageId: string, targetLanguage: string, glossary?: Record<string, string>) =>
+    request<{ text: string; cached: boolean }>(`/api/sessions/${sessionId}/content-lens/translate`, { method: "POST", body: JSON.stringify({ messageId, targetLanguage, ...(glossary ? { glossary } : {}) }) }),
+  explainSelection: (sessionId: string, text: string, targetLanguage = "zh-CN") =>
+    request<{ text: string }>(`/api/sessions/${sessionId}/content-lens/explain`, { method: "POST", body: JSON.stringify({ text, targetLanguage }) }),
 };

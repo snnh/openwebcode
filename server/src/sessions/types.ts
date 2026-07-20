@@ -56,6 +56,8 @@ export interface ManagedWorkspaceMeta {
 export type SandboxBackendMode = "appcontainer" | "jobobject" | "off";
 /** 用户可选的沙盒模式；undefined = appcontainer（现状默认） */
 export type SandboxMode = "appcontainer" | "wsb" | "jobobject" | "off";
+/** 自动 = 每轮用户消息前创建检查点；手动 = 仅由用户显式创建检查点。 */
+export type SnapshotMode = "auto" | "manual";
 /** 全局 Job Object 资源限制（仅 Windows；字段缺省时 core 用内置默认值 4096 MB / 64 进程） */
 export interface JobObjectLimits {
   memoryMB?: number;
@@ -90,6 +92,8 @@ export interface SessionMeta {
   setupScript?: string;
   /** 探测到的快照后端名（zfs 附带数据集："zfs:<dataset>"），由 snapshots/index.ts 落盘 */
   snapshotBackend?: string;
+  /** 快照创建模式；undefined 为向后兼容的自动模式。 */
+  snapshotMode?: SnapshotMode;
   /** 托管工作区：cwd 指向稀疏镜像盘挂载点，originCwd 为创建时的复制来源（plan §6.4） */
   workspace?: ManagedWorkspaceMeta;
   title: string;

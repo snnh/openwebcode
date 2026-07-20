@@ -32,6 +32,12 @@ describe("session model config", () => {
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({ model: "deepseek-reasoner", thinking: "enabled" });
       expect(await sessions.get(session.id)).toMatchObject({ model: "deepseek-reasoner", thinking: "enabled" });
+      const invalidSnapshot = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { snapshotMode: "sometimes" } });
+      expect(invalidSnapshot.statusCode).toBe(400);
+      const modes = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { sandboxMode: "off", snapshotMode: "manual" } });
+      expect(modes.statusCode).toBe(200);
+      expect(modes.json()).toMatchObject({ sandboxMode: "off", snapshotMode: "manual" });
+      expect(await sessions.get(session.id)).toMatchObject({ sandboxMode: "off", snapshotMode: "manual" });
     } finally { await app.close(); }
   });
 });

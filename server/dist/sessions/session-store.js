@@ -104,6 +104,10 @@ export class SessionStore {
             delete meta.agentMode;
         else
             meta.agentMode = update.agentMode;
+        if (update.snapshotMode === undefined || update.snapshotMode === "auto")
+            delete meta.snapshotMode;
+        else
+            meta.snapshotMode = update.snapshotMode;
         meta.updatedAt = new Date().toISOString();
         await this.writeMeta(meta);
         return meta;
