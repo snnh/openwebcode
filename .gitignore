@@ -57,6 +57,7 @@ dkms.conf
 docs/
 build/
 .claude/
+.agents/
 .openwebcode/
 server/node_modules
 web/node_modules/
