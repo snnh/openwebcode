@@ -93,7 +93,7 @@ web/dist 不入库——由 server 静态托管（server 解析 `server/dist/../
 
 对话渲染链位于 `components/Markdown.tsx`：`react-markdown` + `remark-gfm` + `remark-math` + `rehype-katex`，代码块再交给 Shiki。KaTeX CSS 与字体由 Vite 打进 `web/dist/assets/`；部署时不能只复制入口 JS。
 
-界面本地化位于 `web/src/i18n.tsx`。生产入口用 `I18nProvider` 包裹应用；组件通过 `useI18n()` 取得 `t(中文, English)`、当前语言和区域格式。新增用户可见文案必须同时提供中英文，不要按 DOM 文本做运行时替换。完整约定见 [`../docs/localization.md`](../docs/localization.md)。
+界面本地化位于 `web/src/i18n.tsx`。生产入口用 `I18nProvider` 包裹应用；组件通过 `useI18n()` 取得 `t(中文, English)`、当前语言和区域格式。新增用户可见文案必须同时提供中英文，不要按 DOM 文本做运行时替换。
 
 ## 本地开发循环
 
@@ -181,7 +181,7 @@ cd server && npm run dev
 
 1. `server/src/snapshots/` 下加后端实现，follow 现有 `git-shadow.ts` / `btrfs.ts` 模式
 2. 探测链在 `snapshots/index.ts`（或探测入口），按能力自上而下尝试
-3. RPC 方法走 core 侧 `snapshot.*`（如需 core 协助），协议见 `docs/protocol.md`
+3. RPC 方法走 core 侧 `snapshot.*`（如需 core 协助），以 `core/src/rpc.c` 和 `server/src/core-client.ts` 的当前实现为准
 4. 测试：`test/snapshot-backends.test.ts` 用 `recordingRunner` / `tableRunner`
 
 ### 加一个 MCP 客户端传输
@@ -208,7 +208,7 @@ cd server && npm run dev
 
 ## 架构要点（改动前必读）
 
-- **C↔Node 通信**：子进程 + JSON-RPC 2.0 over stdio，`Content-Length: N\r\n\r\n{json}` 分帧（LSP 式）。传输层抽象在 `core-client.ts`，支持 TCP（为 WSB 模式铺路）。协议规范见 `docs/protocol.md`。
+- **C↔Node 通信**：子进程 + JSON-RPC 2.0 over stdio，`Content-Length: N\r\n\r\n{json}` 分帧（LSP 式）。传输层抽象在 `core-client.ts`，支持 TCP（为 WSB 模式铺路）；协议实现以 `core/src/rpc.c` 和 `server/src/core-client.ts` 为准。
 - **Agent 循环在 Node 层**，C 只做执行器。状态机：`idle → thinking → (tool_calls? → waiting_permission → tool_running → thinking)* → idle`。
 - **机制在核心，策略在扩展**：核心安全网（85% 水位、当前轮保护、账本一致性、沙盒路径校验）不可被绕过；扩展点（Skills/Commands/Hooks/自定义子代理/MCP）只加策略不绕机制。
 - **权限与沙盒正交**：yolo 跳权限确认但不解除沙盒；`--no-sandbox` 才完全解除（不推荐）。
@@ -246,7 +246,7 @@ cd server && npm run dev
 - Windows：`npm ci/build`（server+web）→ CMake Release 构建 core → 按 `core/CMakeLists.txt` 末尾契约组装 `build/stage/` → `cpack -G WIX`
 - Linux：同样构建后组装 `build/stage/` + 下载 Node 20 整树解入 `node/` → `tar` 打包
 - bundled Node 版本固定在 workflow 的 `env.NODE_DIST_VERSION`，升级改这一个常量
-- staging 契约细节见 `core/CMakeLists.txt` 末尾注释 + `packaging/README.md`
+- staging 契约细节见 `core/CMakeLists.txt` 末尾注释；从干净源码执行测试门禁、组装 staging、本地生成 MSI/tar.gz、冒烟与发布检查的逐步命令见 [`../packaging/README.md`](../packaging/README.md)
 - 本地替换 staging 前端时应整体替换 `web/dist/` 并重启 server；若 UI 仍显示旧布局，用 `Ctrl+F5` 清掉旧入口缓存。只覆盖部分 assets 会留下入口与哈希文件不匹配的风险
 
 ## 提交与代码规范
@@ -255,7 +255,7 @@ cd server && npm run dev
 - 不主动 `git push` / `rebase` / `reset`，只顺序 commit
 - `server/dist/` 是 git 跟踪产物，`npm run build` 后随源码提交
 - `web/dist/` 不入库，由 server 静态托管
-- `docs/` 纳入版本控制——架构、协议、本地化与实施状态应随相关代码同步更新
+- `docs/` 仅在本地维护并由 `.gitignore` 排除，不提交到远端仓库
 - `help/` 入库——用户文档与本文档随 git 同步
 - C 源文件注释纯 ASCII（GBK 代码页 `/WX` 把 C4819 当错误）
 - `server/assets/*.ps1` 必须 UTF-8 带 BOM
