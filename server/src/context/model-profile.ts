@@ -30,44 +30,7 @@ export interface ModelProfile {
   capabilities: ModelCapabilities;
 }
 
-const PROFILES: Record<string, ModelProfile> = {
-  "claude-opus-4-8": {
-    id: "claude-opus-4-8",
-    provider: "anthropic",
-    contextWindow: 1_000_000,
-    maxOutput: 128_000,
-    capabilities: {
-      modalities: ["text", "image"],
-      thinking: ["adaptive", "disabled"],
-      effort: ["low", "medium", "high", "xhigh", "max"],
-      tools: true,
-    },
-  },
-  "claude-sonnet-5": {
-    id: "claude-sonnet-5",
-    provider: "anthropic",
-    contextWindow: 1_000_000,
-    maxOutput: 128_000,
-    capabilities: {
-      modalities: ["text", "image"],
-      thinking: ["adaptive", "disabled"],
-      effort: ["low", "medium", "high", "xhigh", "max"],
-      tools: true,
-    },
-  },
-  "claude-haiku-4-5": {
-    id: "claude-haiku-4-5",
-    provider: "anthropic",
-    contextWindow: 200_000,
-    maxOutput: 64_000,
-    capabilities: {
-      modalities: ["text", "image"],
-      thinking: ["enabled", "disabled"],
-      effort: [],
-      tools: true,
-    },
-  },
-};
+const PROFILES: Record<string, ModelProfile> = {};
 
 export function listModelProfiles(): ModelProfile[] {
   return Object.values(PROFILES).map((profile) => ({

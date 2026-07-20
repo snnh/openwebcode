@@ -23,13 +23,15 @@ describe("session model config", () => {
     const agent = { isRunning: () => false } as AgentRunner;
     const app = await buildServer({ core: {} as CoreClient, sessions, agent, events: new EventBus(), providers, pricing });
     try {
-      const session = await sessions.create({ cwd: root, provider: "anthropic", model: "claude-haiku-4-5" });
+      const session = await sessions.create({ cwd: root, provider: "anthropic", model: "deepseek-chat" });
+      // deepseek-chat 无 effort 能力 -> 设置 effort 被拒
       const invalid = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { effort: "high" } });
       expect(invalid.statusCode).toBe(400);
-      const response = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { model: "claude-opus-4-8", thinking: "adaptive", effort: "xhigh" } });
+      // deepseek-reasoner 支持 thinking -> 切换模型并设置 thinking 通过
+      const response = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { model: "deepseek-reasoner", thinking: "enabled" } });
       expect(response.statusCode).toBe(200);
-      expect(response.json()).toMatchObject({ model: "claude-opus-4-8", thinking: "adaptive", effort: "xhigh" });
-      expect(await sessions.get(session.id)).toMatchObject({ model: "claude-opus-4-8", thinking: "adaptive", effort: "xhigh" });
+      expect(response.json()).toMatchObject({ model: "deepseek-reasoner", thinking: "enabled" });
+      expect(await sessions.get(session.id)).toMatchObject({ model: "deepseek-reasoner", thinking: "enabled" });
     } finally { await app.close(); }
   });
 });
