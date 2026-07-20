@@ -60,6 +60,7 @@ function installFetchMock(overrides: Partial<SessionDetail> = {}): void {
     if (url.includes("/api/sessions/s1/files")) return json({ entries: [{ name: "src", type: "directory", size: 0 }, { name: "README.md", type: "file", size: 12 }], truncated: false });
     if (url.endsWith("/api/models")) return json(models);
     if (url.endsWith("/api/providers")) return json(["anthropic"]);
+    if (url.endsWith("/api/sandbox/capabilities")) return json({ appcontainer: true, jobobject: true, off: true, wsb: { available: false, reason: "测试环境" } });
     if (url.includes("/api/sessions/s1/steering")) return json([]);
     if (url.includes("/api/sessions/s1/permissions")) return json([]);
     if (url.match(/\/api\/sessions\/s1$/)) return json(session);

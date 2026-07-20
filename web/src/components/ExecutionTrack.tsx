@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState, type ReactElement } from "react";
-import type { ChatMessage, SessionDetail } from "../lib/contracts";
+import type { ChatMessage, ExtensionInfo, SessionDetail } from "../lib/contracts";
 import { Icon } from "./Icon";
 import { Markdown } from "./Markdown";
 import { MessageCard, ThinkingBlock } from "./MessageCard";
@@ -25,7 +25,7 @@ function toolResultOf(message?: ChatMessage): string {
     .join("\n");
 }
 
-export function ExecutionTrack({ session, cleared, streamText, thinkingText, permissions, onPermissionDone, onPermissionError, onSendToAgent }: {
+export function ExecutionTrack({ session, cleared, streamText, thinkingText, permissions, onPermissionDone, onPermissionError, onSendToAgent, contentLens, onNotice }: {
   session: SessionDetail;
   cleared?: { uptoIndex: number; at: string };
   streamText: string;
@@ -34,6 +34,8 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, per
   onPermissionDone(requestId: string): void;
   onPermissionError?(message: string): void;
   onSendToAgent?(cmd: string, output: string): void;
+  contentLens?: ExtensionInfo;
+  onNotice?(message: string, kind?: "info" | "error"): void;
 }): ReactElement {
   const trackRef = useRef<HTMLDivElement>(null);
   // 用户位于底部附近时新内容自动贴底；上翻阅读时不打扰
@@ -75,7 +77,7 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, per
               {cleared && Math.min(cleared.uptoIndex, session.messages.length) === index && (
                 <div className="context-cleared-divider" role="separator">上下文已清空（历史保留）</div>
               )}
-              <MessageCard message={message} />
+              <MessageCard message={message} sessionId={session.id} contentLens={contentLens} onNotice={onNotice} />
               {shellCmd && onSendToAgent && (
                 <button
                   className="send-to-agent"

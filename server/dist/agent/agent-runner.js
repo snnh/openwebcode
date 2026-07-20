@@ -194,6 +194,7 @@ export class AgentRunner {
     fetchImpl;
     backgroundTasks;
     hooks;
+    extensions;
     running = new Map();
     shells = new Map();
     steering = new Map();
@@ -201,7 +202,7 @@ export class AgentRunner {
     mcpWarningSignatures = new Map();
     todos = new Map();
     permissions;
-    constructor(sessions, providers, core, events, pricing, exchangeRates, defaultLanguage = "zh-CN", maxTurns = 50, getProfile = getModelProfile, usageLog, skills, mcp, compactor, dataDir, agents, commands, search, fetchImpl, backgroundTasks, hooks) {
+    constructor(sessions, providers, core, events, pricing, exchangeRates, defaultLanguage = "zh-CN", maxTurns = 50, getProfile = getModelProfile, usageLog, skills, mcp, compactor, dataDir, agents, commands, search, fetchImpl, backgroundTasks, hooks, extensions) {
         this.sessions = sessions;
         this.providers = providers;
         this.core = core;
@@ -222,6 +223,7 @@ export class AgentRunner {
         this.fetchImpl = fetchImpl;
         this.backgroundTasks = backgroundTasks;
         this.hooks = hooks;
+        this.extensions = extensions;
         this.permissions = new PermissionCoordinator(events);
         core.on("event", (event) => {
             const payload = event.payload;
@@ -261,10 +263,12 @@ export class AgentRunner {
             if (this.hooks)
                 await this.hooks.run("UserPromptSubmit", { sessionId, cwd: configuredSession.cwd, prompt: effectiveText.slice(0, 2000) });
             await this.core.configureSession({ sessionId, cwd: configuredSession.cwd, sandbox: configuredSession.sandbox ?? { enabled: true, readRoots: [configuredSession.cwd], writeRoots: [configuredSession.cwd], denyPaths: [], network: "allow" } });
-            const checkpointContext = new ContextManager(this.sessions.contextRoot(sessionId));
-            const checkpoint = await (await getSnapshotBackend(this.sessions, configuredSession))
-                .create(text.slice(0, 80) || "User message", configuredSession.messages.length, await checkpointContext.load());
-            this.events.publish({ source: "session", type: "checkpoint.created", sessionId, payload: checkpoint });
+            if ((configuredSession.snapshotMode ?? "auto") === "auto") {
+                const checkpointContext = new ContextManager(this.sessions.contextRoot(sessionId));
+                const checkpoint = await (await getSnapshotBackend(this.sessions, configuredSession))
+                    .create(text.slice(0, 80) || "User message", configuredSession.messages.length, await checkpointContext.load());
+                this.events.publish({ source: "session", type: "checkpoint.created", sessionId, payload: checkpoint });
+            }
             await this.sessions.appendMessage(sessionId, "user", [
                 ...(options?.images ?? []).map((image) => ({ type: "image", mediaType: image.mediaType, data: image.data })),
                 ...(options?.attachments ?? []).map((block) => ({ type: "text", text: block.text })),
@@ -286,6 +290,32 @@ export class AgentRunner {
                     return;
                 }
                 const view = await context.buildView(session.messages);
+                if (this.extensions) {
+                    const transformed = await this.extensions.transformContext({
+                        sessionId,
+                        cwd: session.cwd,
+                        messages: view.messages,
+                        ledger: {
+                            round: view.ledger.round,
+                            entries: view.ledger.entries.map((entry) => ({ messageId: entry.messageId, state: entry.state, pinnedUntilRound: entry.pinnedUntilRound })),
+                            ...(view.ledger.compacted ? { compacted: { summary: view.ledger.compacted.summary, instructions: view.ledger.compacted.instructions } } : {}),
+                        },
+                    });
+                    view.messages = transformed.messages;
+                    if (transformed.metadata)
+                        this.events.publish({ source: "agent", type: "extension.context_transformed", sessionId, payload: transformed.metadata });
+                    const beforeSend = await this.extensions.beforeSend({
+                        sessionId,
+                        cwd: session.cwd,
+                        messages: view.messages,
+                        ledger: {
+                            round: view.ledger.round,
+                            entries: view.ledger.entries.map((entry) => ({ messageId: entry.messageId, state: entry.state, pinnedUntilRound: entry.pinnedUntilRound })),
+                            ...(view.ledger.compacted ? { compacted: { summary: view.ledger.compacted.summary, instructions: view.ledger.compacted.instructions } } : {}),
+                        },
+                    });
+                    view.messages = beforeSend.messages;
+                }
                 const cacheBreakpoints = selectCacheBreakpoints(view.messages, view.ledger);
                 await context.recordCacheBreakpoints(cacheBreakpoints);
                 const profile = this.getProfile(session.model);
@@ -428,37 +458,45 @@ export class AgentRunner {
                 if (toolCalls.length === 0)
                     throw new Error("Provider stopped for tool use without a tool call");
                 for (const call of toolCalls) {
-                    const repeated = this.recordToolCall(sessionId, call.name, call.input);
+                    const extensionOutcome = this.extensions
+                        ? await this.extensions.beforeTool({ sessionId, cwd: session.cwd, tool: call.name, input: call.input })
+                        : { sessionId, cwd: session.cwd, tool: call.name, input: call.input };
+                    if (extensionOutcome.blocked) {
+                        await this.sessions.appendMessage(sessionId, "tool", [{ type: "tool_result", toolCallId: call.id, content: extensionOutcome.reason ?? "Blocked by extension", isError: true }]);
+                        continue;
+                    }
+                    const effectiveInput = extensionOutcome.input;
+                    const repeated = this.recordToolCall(sessionId, call.name, effectiveInput);
                     if (repeated >= 3) {
                         const content = `Tool call blocked: ${call.name} was requested with identical arguments ${repeated} consecutive times.`;
-                        this.events.publish({ source: "agent", type: "tool.repeated", sessionId, payload: { name: call.name, input: call.input, count: repeated } });
+                        this.events.publish({ source: "agent", type: "tool.repeated", sessionId, payload: { name: call.name, input: effectiveInput, count: repeated } });
                         await this.sessions.appendMessage(sessionId, "tool", [{ type: "tool_result", toolCallId: call.id, content, isError: true }]);
                         continue;
                     }
-                    const permission = await this.authorizeTool(sessionId, call.name, call.input, controller.signal);
+                    const permission = await this.authorizeTool(sessionId, call.name, effectiveInput, controller.signal);
                     if (!permission.allowed) {
                         await this.sessions.appendMessage(sessionId, "tool", [{ type: "tool_result", toolCallId: call.id, content: permission.reason ?? "Tool permission denied", isError: true }]);
                         continue;
                     }
                     // PreToolUse 钩子：exit 2 否决 → 工具不执行，stderr 回填 LLM
                     if (this.hooks) {
-                        const outcome = await this.hooks.run("PreToolUse", { sessionId, cwd: session.cwd, tool: call.name, input: call.input });
+                        const outcome = await this.hooks.run("PreToolUse", { sessionId, cwd: session.cwd, tool: call.name, input: effectiveInput });
                         if (outcome.blocked) {
                             await this.sessions.appendMessage(sessionId, "tool", [{ type: "tool_result", toolCallId: call.id, content: outcome.reason ?? "Blocked by hook", isError: true }]);
                             continue;
                         }
                     }
-                    const result = await this.executeTool(sessionId, call.name, call.id, call.input, controller.signal);
+                    const result = await this.executeTool(sessionId, call.name, call.id, effectiveInput, controller.signal);
                     await this.sessions.appendMessage(sessionId, "tool", [result]);
                     // PostToolUse 钩子：仅写类工具成功后触发（format-on-write 等），不阻断
                     if (this.hooks && !result.isError && ["write_file", "edit_file", "bash"].includes(call.name)) {
                         const summary = result.content.slice(0, 300);
-                        await this.hooks.run("PostToolUse", { sessionId, cwd: session.cwd, tool: call.name, input: call.input, result: { summary } });
+                        await this.hooks.run("PostToolUse", { sessionId, cwd: session.cwd, tool: call.name, input: effectiveInput, result: { summary } });
                     }
                 }
                 await context.advanceRound();
                 const afterTools = await this.sessions.get(sessionId);
-                if (afterTools) {
+                if (afterTools && (!this.extensions || this.extensions.isEnabled("context-manager"))) {
                     await context.evict(afterTools.messages);
                     this.events.publish({ source: "agent", type: "context.evicted", sessionId, payload: (await context.load()).entries });
                 }

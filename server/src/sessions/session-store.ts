@@ -107,7 +107,7 @@ export class SessionStore {
     return message;
   }
 
-  async updateConfig(id: string, update: Pick<SessionMeta, "provider" | "model"> & Partial<Pick<SessionMeta, "thinking" | "effort" | "agentMode">>): Promise<SessionMeta> {
+  async updateConfig(id: string, update: Pick<SessionMeta, "provider" | "model"> & Partial<Pick<SessionMeta, "thinking" | "effort" | "agentMode" | "snapshotMode">>): Promise<SessionMeta> {
     const meta = await this.readMeta(id);
     meta.provider = update.provider;
     meta.model = update.model;
@@ -117,6 +117,8 @@ export class SessionStore {
     else meta.effort = update.effort;
     if (update.agentMode === undefined || update.agentMode === "build") delete meta.agentMode;
     else meta.agentMode = update.agentMode;
+    if (update.snapshotMode === undefined || update.snapshotMode === "auto") delete meta.snapshotMode;
+    else meta.snapshotMode = update.snapshotMode;
     meta.updatedAt = new Date().toISOString();
     await this.writeMeta(meta);
     return meta;

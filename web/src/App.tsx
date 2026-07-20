@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./lib/api";
 import { extractAttachmentPaths, toAttachments } from "./lib/attachments";
-import type { AppEvent, BackgroundTaskInfo, TodoItem } from "./lib/contracts";
+import type { AppEvent, BackgroundTaskInfo, SessionDetail, TodoItem } from "./lib/contracts";
 import { formatCurrency } from "./lib/format";
 import { loadSendKey, loadSessionDefaults, saveSendKey, saveSessionDefaults, type SendKey, type SessionDefaults } from "./lib/prefs";
 import { useTheme } from "./theme";
@@ -74,6 +74,7 @@ export function App(): ReactElement {
   const contextView = useQuery({ queryKey: ["context", currentId], queryFn: () => api.context(currentId!), enabled: Boolean(currentId) });
   const skills = useQuery({ queryKey: queryKeys.skills(currentId ?? ""), queryFn: () => api.skills(currentId!), enabled: Boolean(currentId) });
   const todos = useQuery({ queryKey: ["todos", currentId], queryFn: () => api.todos(currentId!), enabled: Boolean(currentId) });
+  const extensions = useQuery({ queryKey: ["extensions"], queryFn: api.extensions });
   // 待确认权限以服务端为准（刷新后可恢复），WS 事件只作即时补充
   const serverPermissions = useQuery({ queryKey: ["permissions", currentId], queryFn: () => api.pendingPermissions(currentId!), enabled: Boolean(currentId) });
 
@@ -336,6 +337,15 @@ export function App(): ReactElement {
               agentState={currentState}
               costSummary={costSummary}
               onAbort={() => api.abort(current.id).catch((error: unknown) => notify(error instanceof Error ? error.message : "无法中断", "error"))}
+              onConfig={(body) => api.updateSession(current.id, body)
+                .then((updated) => {
+                  queryClient.setQueryData<SessionDetail>(queryKeys.detail(current.id), (previous) => previous ? { ...previous, ...updated } : previous);
+                  void queryClient.invalidateQueries({ queryKey: queryKeys.detail(current.id) });
+                  void queryClient.invalidateQueries({ queryKey: queryKeys.sessions });
+                })
+                .catch((error: unknown) => {
+                  notify(error instanceof Error ? error.message : "模式切换失败", "error");
+                })}
             />
             {todos.data && todos.data.length > 0 && (
               <details className="todo-panel" open>
@@ -350,6 +360,8 @@ export function App(): ReactElement {
             )}
             <ExecutionTrack
               session={current}
+              contentLens={extensions.data?.find((extension) => extension.id === "content-lens" && extension.enabled)}
+              onNotice={notify}
               {...(contextView.data?.ledger.cleared ? { cleared: contextView.data.ledger.cleared } : {})}
               streamText={stream[current.id] ?? ""}
               thinkingText={thinkingStream[current.id] ?? ""}

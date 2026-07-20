@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -47,5 +48,30 @@ describe("thinking persistence", () => {
       { type: "thinking", text: "先分析问题。", provider: "openai-compatible" },
       { type: "text", text: "最终答案" },
     ]);
+  });
+
+  it("skips automatic checkpoints in manual snapshot mode", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-manual-snapshot-"));
+    roots.push(root);
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const session = await sessions.create({ cwd: root, provider: "test", model: "test-model" });
+    await sessions.updateConfig(session.id, { provider: "test", model: "test-model", snapshotMode: "manual" });
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const providers = new ProviderRegistry();
+    providers.register({
+      name: "test",
+      async *streamChat() {
+        yield { type: "text_delta", text: "完成" };
+        yield { type: "done", stopReason: "end_turn" };
+      },
+    });
+    const runner = new AgentRunner(sessions, providers, core, new EventBus(), pricing);
+
+    await runner.run(session.id, "不要自动快照");
+
+    expect(existsSync(path.join(sessions.contextRoot(session.id), "shadow.git"))).toBe(false);
+    expect((await sessions.get(session.id))?.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
   });
 });

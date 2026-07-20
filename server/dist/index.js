@@ -26,6 +26,8 @@ import { Compactor } from "./context/compactor.js";
 import { StorageGC } from "./storage-gc.js";
 import { UsageLog } from "./usage-log.js";
 import { createSearchProvider } from "./web-tools.js";
+import { ExtensionManager } from "./extensions/extension-manager.js";
+import { ContentLensService } from "./extensions/content-lens.js";
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const resolveFromServer = (value) => (path.isAbsolute(value) ? value : path.resolve(moduleDirectory, "..", value));
 // settings 文件固定放在 env/默认数据目录下；dataDir 的文件覆盖重启后对业务数据生效，
@@ -69,6 +71,9 @@ const commands = new CommandRegistry(path.join(dataDir, "commands"));
 const mcp = new McpManager(dataDir);
 const provider2 = new Provider2Client(config.provider2);
 const compactor = new Compactor(sessions, provider2, { usageLog, pricing, exchangeRates });
+const extensions = new ExtensionManager(dataDir, events);
+await extensions.initialize();
+const contentLens = new ContentLensService(sessions, provider2);
 const search = createSearchProvider(config.search);
 const backgroundTasks = new BackgroundTaskRegistry(() => new CoreClient(config.corePath, config.coreRequestTimeoutMs), async (client, sessionId, cwd) => {
     const session = await sessions.get(sessionId);
@@ -77,7 +82,7 @@ const backgroundTasks = new BackgroundTaskRegistry(() => new CoreClient(config.c
 }, (info) => events.publish({ source: "agent", type: "task.finished", sessionId: info.sessionId, payload: info }));
 // Hooks（可信配置，等同 yolo 级别）：全局 <dataDir>/hooks.json，项目 <cwd>/.owc/hooks.json 现读覆盖
 const hooks = new HookRunner(path.join(dataDir, "hooks.json"), events);
-const agent = new AgentRunner(sessions, providers, core, events, pricing, exchangeRates, config.defaultLanguage, 50, (model) => models.get(model), usageLog, skills, mcp, compactor, dataDir, agents, commands, search, undefined, backgroundTasks, hooks);
+const agent = new AgentRunner(sessions, providers, core, events, pricing, exchangeRates, config.defaultLanguage, 50, (model) => models.get(model), usageLog, skills, mcp, compactor, dataDir, agents, commands, search, undefined, backgroundTasks, hooks, extensions);
 // 托管工作区（plan §6.4）：镜像/挂载点位于 dataDir 下；孤儿挂载清理挂在 GC 启动扫描上
 const managed = new ManagedWorkspaceManager({ dataDir });
 const gc = new StorageGC(path.join(dataDir, "sessions"), config.gcMaxBytes, () => managed.sweepOrphans());
@@ -112,6 +117,8 @@ const app = await buildServer({
     skills,
     compactor,
     backgroundTasks,
+    extensions,
+    contentLens,
     getPreferences: () => {
         const effective = settings.effective();
         return { currency: effective.defaultCurrency, language: effective.defaultLanguage };
@@ -121,6 +128,7 @@ async function shutdown() {
     clearInterval(gcTimer);
     exchangeRates.close();
     await mcp.close();
+    await extensions.close();
     await backgroundTasks.shutdown().catch((error) => console.error("Background tasks shutdown error:", error));
     await app.close();
     await core.stop();

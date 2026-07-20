@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ChatMessage, MessageContent } from "../sessions/types.js";
 import type { Currency } from "./model-profile.js";
@@ -84,6 +84,8 @@ export interface BudgetUpdate {
   maxSessionTokens?: number | undefined;
   maxSessionCost?: { currency: Currency; microUnits: string } | undefined;
 }
+
+export type ContextPolicyUpdate = Partial<Pick<ContextPolicy, "enabled" | "strategy" | "lag" | "interval" | "pinExemptRounds" | "restoreBudget">>;
 
 export interface ContextView {
   messages: ChatMessage[];
@@ -206,6 +208,29 @@ export class ContextManager {
     });
   }
 
+  async updatePolicy(update: ContextPolicyUpdate): Promise<ContextLedger> {
+    return this.serial(async () => {
+      const ledger = await this.load();
+      if (update.enabled !== undefined) {
+        if (typeof update.enabled !== "boolean") throw new Error("enabled must be a boolean");
+        ledger.policy.enabled = update.enabled;
+      }
+      if (update.strategy !== undefined) {
+        if (!["lag", "interval", "off"].includes(update.strategy)) throw new Error("strategy must be lag, interval, or off");
+        ledger.policy.strategy = update.strategy;
+      }
+      for (const key of ["lag", "interval", "pinExemptRounds", "restoreBudget"] as const) {
+        const value = update[key];
+        if (value === undefined) continue;
+        const minimum = key === "interval" || key === "restoreBudget" ? 1 : 0;
+        if (!Number.isSafeInteger(value) || value < minimum) throw new Error(`${key} must be an integer >= ${minimum}`);
+        ledger.policy[key] = value;
+      }
+      await this.save(ledger);
+      return ledger;
+    });
+  }
+
   async setBudget(
     maxSessionTokens: number | undefined,
     maxSessionCost: { currency: Currency; microUnits: string } | undefined,
@@ -316,6 +341,40 @@ export class ContextManager {
     });
   }
 
+  async evictMessage(messages: ChatMessage[], messageId: string): Promise<ContextLedger> {
+    return this.serial(async () => {
+      const ledger = await this.load();
+      const message = messages.find((item) => item.id === messageId && item.role === "tool");
+      if (!message) throw new Error("Tool result message not found");
+      const existing = ledger.entries.find((entry) => entry.messageId === messageId);
+      if (existing) {
+        existing.state = "evicted";
+        existing.pinnedUntilRound = 0;
+        delete existing.restoredAt;
+      } else {
+        const result = message.content.find((block) => block.type === "tool_result");
+        if (!result || result.type !== "tool_result") throw new Error("Message has no tool result");
+        const artifactId = `artifact-${randomUUID()}`;
+        await mkdir(path.join(this.sessionRoot, "artifacts"), { recursive: true });
+        await writeFile(path.join(this.sessionRoot, "artifacts", `${artifactId}.txt`), result.content, "utf8");
+        ledger.entries.push({ messageId, kind: "tool_result", artifactId, state: "evicted", createdRound: ledger.round, pinnedUntilRound: 0 });
+      }
+      await this.save(ledger);
+      return ledger;
+    });
+  }
+
+  async setPinned(messageId: string, pinned: boolean): Promise<ContextLedger> {
+    return this.serial(async () => {
+      const ledger = await this.load();
+      const entry = ledger.entries.find((candidate) => candidate.messageId === messageId);
+      if (!entry) throw new Error("Context entry not found");
+      entry.pinnedUntilRound = pinned ? Number.MAX_SAFE_INTEGER : 0;
+      await this.save(ledger);
+      return ledger;
+    });
+  }
+
   async readArtifact(artifactId: string, offset: number, limit: number): Promise<string> {
     if (!/^artifact-[0-9a-f-]{36}$/.test(artifactId)) throw new Error("Invalid artifact ID");
     if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("offset must be a non-negative integer");
@@ -350,6 +409,24 @@ export class ContextManager {
       entry.state = "restored";
       entry.restoredAt = new Date().toISOString();
       entry.pinnedUntilRound = ledger.round + ledger.policy.pinExemptRounds;
+      // restoreBudget 约束的是受保护的回写总量：超额时从最早回写项开始提前解除 pin，
+      // 内容仍保留到下一次正常驱逐，避免一次点击造成 UI 抖动。
+      const restored = ledger.entries
+        .filter((candidate) => candidate.state === "restored" && candidate.pinnedUntilRound > ledger.round)
+        .sort((left, right) => (left.restoredAt ?? "").localeCompare(right.restoredAt ?? ""));
+      const sizes = new Map<string, number>();
+      let estimatedTokens = 0;
+      for (const candidate of restored) {
+        const bytes = await stat(path.join(this.sessionRoot, "artifacts", `${candidate.artifactId}.txt`)).then((value) => value.size).catch(() => 0);
+        const tokens = Math.ceil(bytes / 4);
+        sizes.set(candidate.messageId, tokens);
+        estimatedTokens += tokens;
+      }
+      for (const candidate of restored) {
+        if (estimatedTokens <= ledger.policy.restoreBudget) break;
+        candidate.pinnedUntilRound = 0;
+        estimatedTokens -= sizes.get(candidate.messageId) ?? 0;
+      }
       await this.save(ledger);
       return ledger;
     });

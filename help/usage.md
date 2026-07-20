@@ -75,9 +75,10 @@
 ## 右侧面板
 
 - **文件树**：懒加载，文件只读预览
-- **上下文用量**：token 用量明细（输入/输出/缓存读写）、成本（CNY/USD 双币种）、预算上限设置、压缩记录、上下文条目列表（已逐出条目可一键恢复）
+- **上下文用量**：token/成本/预算明细；支持 lag/interval/off 策略热调、工具调用/概览压缩、条目逐出/回写/pin，以及 artifact 原文查看
 - **时间线**：检查点列表 → diff 查看 → 「完整回滚」或「仅文件」回滚（二次确认），新建检查点
 - **沙盒状态**：会话头部徽标（enforced / advisory），标识当前沙盒是否生效
+- **模式切换**：会话空闲时可在头部直接切换沙盒模式，以及快照的「每轮自动 / 仅手动」模式；运行中会暂时禁用切换
 
 ## 模型与成本
 
@@ -114,9 +115,20 @@ owc run "给 main.ts 加个单元测试" --cwd . --json
 | `~/.openwebcode/skills/<name>/SKILL.md` | 全局 Skills |
 | `~/.openwebcode/hooks.json` | 全局 Hooks（**安全级别等同 yolo**） |
 | `~/.openwebcode/mcp.json` | 全局 MCP 客户端配置 |
+| `~/.openwebcode/extensions/` | Extension Host 配置与第三方 `owc-ext-*` 扩展 |
 | `<cwd>/.owc/agents/`、`.owc/commands/`、`.owc/skills/`、`.owc/hooks.json`、`.owc/mcp.json`、`.owc/memory.md` | 项目级（同名覆盖全局） |
 
 ## 自定义扩展点
+
+### Extension Host 与官方扩展
+
+设置 → **扩展** 可管理独立 Extension Host 中的扩展。内置三项：
+
+- `context-manager`：默认启用，负责滚动驱逐策略和上下文管理面板；停用后不会自动逐出工具结果，85% 核心水位安全网仍保留
+- `attention-optimizer`：默认关闭，把关键约束/目标复制到上下文首尾锚区；`bottomOnly` 缓存影响较小，`full` 会增加输入 token
+- `content-lens`：默认关闭；启用且已配置 provider2 后，消息旁出现「译」与「解析选中」，结果只存 `translations/`，不进入 LLM 上下文
+
+第三方扩展目录需包含 `manifest.json`（`apiVersion: "1"`）和 `index.js`，可在设置页输入本地绝对路径安装。v1 扩展是可信代码，安装即信任其声明权限；钩子运行超时 5 秒会跳过并告警。
 
 ### 子代理（`.owc/agents/reviewer.md`）
 

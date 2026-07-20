@@ -1,5 +1,6 @@
-import { useState, type ReactElement } from "react";
-import type { ChatMessage, MessageContent } from "../lib/contracts";
+import { useEffect, useRef, useState, type ReactElement } from "react";
+import { api } from "../lib/api";
+import type { ChatMessage, ExtensionInfo, MessageContent } from "../lib/contracts";
 import { Icon } from "./Icon";
 import { CodeBlock, Markdown } from "./Markdown";
 
@@ -121,17 +122,41 @@ async function writeClipboard(text: string): Promise<boolean> {
   }
 }
 
-export function MessageCard({ message }: { message: ChatMessage }): ReactElement {
+export function MessageCard({ message, sessionId, contentLens, onNotice }: { message: ChatMessage; sessionId?: string; contentLens?: ExtensionInfo; onNotice?(message: string, kind?: "info" | "error"): void }): ReactElement {
   const createdAt = new Date(message.createdAt);
+  const articleRef = useRef<HTMLElement>(null);
   const [copied, setCopied] = useState(false);
+  const [lensBusy, setLensBusy] = useState(false);
+  const [translation, setTranslation] = useState<string>();
+  const [explanation, setExplanation] = useState<{ selection: string; text: string }>();
   const content = message.role === "assistant" ? coalesceAssistantText(message.content) : message.content;
   const text = content
     .filter((block) => block.type === "text")
     .map((block) => block.text ?? "")
     .join("\n")
     .trim();
+  const targetLanguage = typeof contentLens?.config.targetLang === "string" ? contentLens.config.targetLang : "zh-CN";
+  const rawTranslateConfig = contentLens?.config.translate;
+  const translateConfig = rawTranslateConfig && typeof rawTranslateConfig === "object" && !Array.isArray(rawTranslateConfig)
+    ? rawTranslateConfig as Record<string, unknown>
+    : {};
+  const translateMode = translateConfig.mode === "auto" || translateConfig.mode === "off" ? translateConfig.mode : "manual";
+  const glossary = translateConfig.glossary && typeof translateConfig.glossary === "object" && !Array.isArray(translateConfig.glossary)
+    ? translateConfig.glossary as Record<string, string>
+    : undefined;
+  const autoAttempted = useRef(false);
+
+  useEffect(() => {
+    if (translateMode !== "auto" || !contentLens?.enabled || !sessionId || !text || autoAttempted.current) return;
+    autoAttempted.current = true;
+    setLensBusy(true);
+    api.translateMessage(sessionId, message.id, targetLanguage, glossary)
+      .then((value) => setTranslation(value.text))
+      .catch((error: unknown) => onNotice?.(error instanceof Error ? error.message : "自动翻译失败", "error"))
+      .finally(() => setLensBusy(false));
+  }, [contentLens?.enabled, glossary, message.id, onNotice, sessionId, targetLanguage, text, translateMode]);
   return (
-    <article className={`message ${message.role}`}>
+    <article className={`message ${message.role}`} ref={articleRef}>
       <span className="track-node" aria-hidden />
       <div className="message-meta">
         <span className="message-author">{ROLE_LABELS[message.role] ?? message.role}</span>
@@ -151,8 +176,33 @@ export function MessageCard({ message }: { message: ChatMessage }): ReactElement
             {copied ? "已复制" : "复制"}
           </button>
         )}
+        {text && sessionId && contentLens?.enabled && (
+          <>
+            {translateMode !== "off" && <button className="copy-btn" disabled={lensBusy} onClick={() => {
+              setLensBusy(true);
+              api.translateMessage(sessionId, message.id, targetLanguage, glossary)
+                .then((value) => setTranslation(value.text))
+                .catch((error: unknown) => onNotice?.(error instanceof Error ? error.message : "翻译失败", "error"))
+                .finally(() => setLensBusy(false));
+            }}>{translateMode === "auto" && translation ? "重译" : "译"}</button>}
+            <button className="copy-btn" disabled={lensBusy} title="先在本条消息中选择不超过 200 字符" onClick={() => {
+              const selection = window.getSelection();
+              const selected = selection?.toString().trim() ?? "";
+              if (!selected || selected.length > 200 || !articleRef.current?.contains(selection?.anchorNode ?? null) || !articleRef.current?.contains(selection?.focusNode ?? null)) {
+                onNotice?.("请先在本条消息中选择 1–200 个字符", "error"); return;
+              }
+              setLensBusy(true);
+              api.explainSelection(sessionId, selected, targetLanguage)
+                .then((value) => setExplanation({ selection: selected, text: value.text }))
+                .catch((error: unknown) => onNotice?.(error instanceof Error ? error.message : "解析失败", "error"))
+                .finally(() => setLensBusy(false));
+            }}>解析选中</button>
+          </>
+        )}
       </div>
       {content.map((block, index) => <ContentBlock key={index} block={block} />)}
+      {translation && <details className="content-lens-result" open><summary>译文</summary><Markdown>{translation}</Markdown></details>}
+      {explanation && <details className="content-lens-result" open><summary>解析：{explanation.selection}</summary><Markdown>{explanation.text}</Markdown></details>}
     </article>
   );
 }
