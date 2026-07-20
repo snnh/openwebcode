@@ -94,7 +94,11 @@ set(CPACK_PACKAGE_VENDOR "OpenWebCode")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "OpenWebCode: web-based agentic coding environment")
 # 版本默认 0.1.0；CI 用 -DCPACK_PACKAGE_VERSION=x.y.z 注入 tag 版本
 set(CPACK_PACKAGE_VERSION "0.1.0" CACHE STRING "Package version (x.y.z)")
-set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/../LICENSE")
+# WiX accepts .rtf directly and converts .txt to RTF, but rejects a license
+# path without an extension. Keep the repository's canonical LICENSE intact
+# and give the configured copy the extension required by the generator.
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/../LICENSE" "${CMAKE_CURRENT_BINARY_DIR}/LICENSE.txt" COPYONLY)
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_BINARY_DIR}/LICENSE.txt")
 set(CPACK_PACKAGE_INSTALL_DIRECTORY "openwebcode")
 if(WIN32)
     set(CPACK_GENERATOR "WIX")
