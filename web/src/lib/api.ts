@@ -7,9 +7,14 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = { ...(init?.headers as Record<string, string> | undefined) };
+  // 仅有 body 时声明 content-type，避免 Fastify 对空 body 的 POST 报校验错误
+  if (init?.body && !headers["content-type"] && !headers["Content-Type"]) {
+    headers["content-type"] = "application/json";
+  }
   const response = await fetch(path, {
     ...init,
-    headers: { "content-type": "application/json", ...(init?.headers ?? {}) },
+    headers,
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({ error: response.statusText })) as { error?: string };
