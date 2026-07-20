@@ -18,6 +18,7 @@ import { clampRailWidth, SessionRail } from "./components/SessionRail";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { SteeringQueue } from "./components/SteeringQueue";
 import { Toast, type Notice } from "./components/Toast";
+import { useI18n } from "./i18n";
 
 const queryKeys = { sessions: ["sessions"] as const, detail: (id: string) => ["session", id] as const, skills: (id: string) => ["skills", id] as const };
 
@@ -38,6 +39,7 @@ function storeSetting(key: string, value: string): void {
 }
 
 export function App(): ReactElement {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const { theme, preference, setPreference, toggleTheme, accent, setAccent } = useTheme();
   const [currentId, setCurrentId] = useState<string>();
@@ -125,23 +127,23 @@ export function App(): ReactElement {
         }
         // MCP server 连接失败降级：该 server 工具未注入，给出告警
         if (event.type === "mcp.degraded" && event.sessionId === currentId) {
-          notify((event.payload as { message?: string }).message ?? "MCP server 降级", "error");
+          notify((event.payload as { message?: string }).message ?? t("MCP server 降级", "MCP server degraded"), "error");
         }
         // 上下文清空（/clear 命令）：刷新会话详情与上下文面板并提示
         if (event.type === "context.cleared" && event.sessionId && event.sessionId === currentId) {
-          notify("上下文已清空（历史保留）");
+          notify(t("上下文已清空（历史保留）", "Context cleared (history retained)"));
           queryClient.invalidateQueries({ queryKey: queryKeys.detail(event.sessionId) });
           queryClient.invalidateQueries({ queryKey: ["context", event.sessionId] });
         }
         // 上下文压缩（手动/85% 强制）：刷新上下文面板并提示
         if (event.type === "context.compacted" && event.sessionId === currentId) {
           const payload = event.payload as { mode?: string; forced?: boolean };
-          const modeLabel = payload.mode === "overview" ? "概览" : payload.mode === "toolcalls" ? "工具调用" : "规则截断";
-          notify(`已压缩上下文（${payload.forced ? "85% 水位强制 · " : ""}${modeLabel}）`);
+          const modeLabel = payload.mode === "overview" ? t("概览", "overview") : payload.mode === "toolcalls" ? t("工具调用", "tool calls") : t("规则截断", "rule-based truncation");
+          notify(t(`已压缩上下文（${payload.forced ? "85% 水位强制 · " : ""}${modeLabel}）`, `Context compacted (${payload.forced ? "forced at 85% · " : ""}${modeLabel})`));
           queryClient.invalidateQueries({ queryKey: ["context", currentId] });
         }
         if (event.type === "context.compact_failed" && event.sessionId === currentId) {
-          notify(`上下文压缩失败：${(event.payload as { message?: string }).message ?? "未知错误"}`, "error");
+          notify(t(`上下文压缩失败：${(event.payload as { message?: string }).message ?? "未知错误"}`, `Context compaction failed: ${(event.payload as { message?: string }).message ?? "unknown error"}`), "error");
         }
         if (!event.sessionId || event.sessionId !== currentId) return;
         if (event.type === "todos.updated") {
@@ -166,7 +168,7 @@ export function App(): ReactElement {
         // 后台任务完成通知：刷新任务列表
         if (event.type === "task.finished") {
           const task = event.payload as BackgroundTaskInfo;
-          notify(`后台任务 ${task.taskId} 已结束（exit ${task.exitCode ?? "?"}）`);
+          notify(t(`后台任务 ${task.taskId} 已结束（exit ${task.exitCode ?? "?"}）`, `Background task ${task.taskId} finished (exit ${task.exitCode ?? "?"})`));
           queryClient.invalidateQueries({ queryKey: ["tasks", currentId] });
         }
         if ([
@@ -192,7 +194,7 @@ export function App(): ReactElement {
     };
     connect();
     return () => { socket?.close(); if (timer) window.clearTimeout(timer); };
-  }, [currentId, queryClient]);
+  }, [currentId, queryClient, t]);
 
   const current = detail.data;
   const currentState = currentId ? agentStates[currentId] : undefined;
@@ -239,19 +241,19 @@ export function App(): ReactElement {
       setDraft("");
       setAttachments([]);
       const queued = result as { queued?: boolean; position?: number } | undefined;
-      if (queued?.queued) notify(`已加入 Steering 队列（第 ${queued.position} 项）`);
+      if (queued?.queued) notify(t(`已加入 Steering 队列（第 ${queued.position} 项）`, `Added to Steering queue (position ${queued.position})`));
       queryClient.invalidateQueries({ queryKey: queryKeys.detail(currentId ?? "") });
     },
-    onError: (error) => notify(error instanceof Error ? error.message : "发送失败", "error"),
+    onError: (error) => notify(error instanceof Error ? error.message : t("发送失败", "Send failed"), "error"),
   });
 
   // shell 结果卡「发给 agent」：把 `!cmd` 与输出摘要作为普通用户消息送入 agent run
   const sendShellToAgent = (cmd: string, output: string): void => {
     if (!currentId) return;
-    const summary = output.length > 2000 ? `${output.slice(0, 2000)}\n…（输出已截断）` : output;
-    api.sendMessage(currentId, `刚才执行的 shell 命令：\n${cmd}\n\n输出：\n${summary}`)
+    const summary = output.length > 2000 ? t(`${output.slice(0, 2000)}\n…（输出已截断）`, `${output.slice(0, 2000)}\n…(output truncated)`) : output;
+    api.sendMessage(currentId, t(`刚才执行的 shell 命令：\n${cmd}\n\n输出：\n${summary}`, `Shell command just executed:\n${cmd}\n\nOutput:\n${summary}`))
       .then(() => queryClient.invalidateQueries({ queryKey: queryKeys.detail(currentId) }))
-      .catch((error: unknown) => notify(error instanceof Error ? error.message : "发送失败", "error"));
+      .catch((error: unknown) => notify(error instanceof Error ? error.message : t("发送失败", "Send failed"), "error"));
   };
 
   const create = useMutation({
@@ -264,33 +266,33 @@ export function App(): ReactElement {
       if (values.permissionMode && values.permissionMode !== "ask") {
         api.updateSession(session.id, { permissionMode: values.permissionMode })
           .then(() => queryClient.invalidateQueries({ queryKey: queryKeys.detail(session.id) }))
-          .catch((error: unknown) => notify(error instanceof Error ? error.message : "权限模式应用失败", "error"));
+          .catch((error: unknown) => notify(error instanceof Error ? error.message : t("权限模式应用失败", "Could not apply permission mode"), "error"));
       }
     },
-    onError: (error) => notify(error instanceof Error ? error.message : "创建会话失败", "error"),
+    onError: (error) => notify(error instanceof Error ? error.message : t("创建会话失败", "Could not create session"), "error"),
   });
 
   const removeSession = (id: string): void => {
     const target = sessions.data?.find((session) => session.id === id);
-    const runningPrefix = runningIds.has(id) ? "该会话正在运行，" : "";
-    if (!window.confirm(`${runningPrefix}删除会话「${target?.title ?? id}」？该操作不可撤销。`)) return;
+    const runningPrefix = runningIds.has(id) ? t("该会话正在运行，", "This session is running. ") : "";
+    if (!window.confirm(t(`${runningPrefix}删除会话「${target?.title ?? id}」？该操作不可撤销。`, `${runningPrefix}Delete session “${target?.title ?? id}”? This cannot be undone.`))) return;
     api.deleteSession(id)
       .then(() => {
         if (currentId === id) setCurrentId(sessions.data?.find((session) => session.id !== id)?.id);
         queryClient.invalidateQueries({ queryKey: queryKeys.sessions });
       })
-      .catch((error: unknown) => notify(error instanceof Error ? error.message : "删除会话失败", "error"));
+      .catch((error: unknown) => notify(error instanceof Error ? error.message : t("删除会话失败", "Could not delete session"), "error"));
   };
 
   const importSession = (file: File): void => {
     file.text()
       .then((text) => api.importSession(text))
       .then((session) => {
-        notify(`已导入会话「${session.title}」`);
+        notify(t(`已导入会话「${session.title}」`, `Imported session “${session.title}”`));
         setCurrentId(session.id);
         queryClient.invalidateQueries({ queryKey: queryKeys.sessions });
       })
-      .catch((error: unknown) => notify(error instanceof Error ? error.message : "导入失败", "error"));
+      .catch((error: unknown) => notify(error instanceof Error ? error.message : t("导入失败", "Import failed"), "error"));
   };
 
   const model = useMemo(() => models.data?.find((item) => item.id === current?.model), [models.data, current?.model]);
@@ -336,7 +338,7 @@ export function App(): ReactElement {
               session={current}
               agentState={currentState}
               costSummary={costSummary}
-              onAbort={() => api.abort(current.id).catch((error: unknown) => notify(error instanceof Error ? error.message : "无法中断", "error"))}
+              onAbort={() => api.abort(current.id).catch((error: unknown) => notify(error instanceof Error ? error.message : t("无法中断", "Could not stop the job"), "error"))}
               onConfig={(body) => api.updateSession(current.id, body)
                 .then((updated) => {
                   queryClient.setQueryData<SessionDetail>(queryKeys.detail(current.id), (previous) => previous ? { ...previous, ...updated } : previous);
@@ -344,12 +346,12 @@ export function App(): ReactElement {
                   void queryClient.invalidateQueries({ queryKey: queryKeys.sessions });
                 })
                 .catch((error: unknown) => {
-                  notify(error instanceof Error ? error.message : "模式切换失败", "error");
+                  notify(error instanceof Error ? error.message : t("模式切换失败", "Mode change failed"), "error");
                 })}
             />
             {todos.data && todos.data.length > 0 && (
               <details className="todo-panel" open>
-                <summary>任务清单 · {todos.data.filter((item) => item.status === "done").length}/{todos.data.length}</summary>
+                <summary>{t("任务清单", "Task list")} · {todos.data.filter((item) => item.status === "done").length}/{todos.data.length}</summary>
                 <ul>{todos.data.map((item, index) => (
                   <li key={`${item.content}-${index}`} data-status={item.status}>
                     <span>{item.status === "done" ? "✓" : item.status === "in_progress" ? "●" : "○"}</span>
@@ -378,7 +380,7 @@ export function App(): ReactElement {
                 items={steering.data}
                 onRemove={(itemId) => api.removeSteering(current.id, itemId)
                   .then(() => steering.refetch())
-                  .catch((error: unknown) => notify(error instanceof Error ? error.message : "撤销 Steering 失败", "error"))}
+                  .catch((error: unknown) => notify(error instanceof Error ? error.message : t("撤销 Steering 失败", "Could not remove Steering item"), "error"))}
               />
             )}
             <Composer
@@ -391,7 +393,7 @@ export function App(): ReactElement {
               onConfig={(body) => {
                 api.updateSession(current.id, body)
                   .then(() => queryClient.invalidateQueries({ queryKey: queryKeys.detail(current.id) }))
-                  .catch((error: unknown) => notify(error instanceof Error ? error.message : "配置失败", "error"));
+                  .catch((error: unknown) => notify(error instanceof Error ? error.message : t("配置失败", "Configuration failed"), "error"));
               }}
               running={running}
               sendPending={send.isPending}

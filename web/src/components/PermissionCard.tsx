@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactElement } from "react";
 import { api } from "../lib/api";
 import { CodeBlock } from "./Markdown";
 import { summarizeToolInput } from "./MessageCard";
+import { useI18n } from "../i18n";
 
 export interface PermissionRequest {
   requestId: string;
@@ -15,6 +16,7 @@ export function PermissionCard({ permission, sessionId, onDone, onError }: {
   onDone(requestId: string): void;
   onError?(message: string): void;
 }): ReactElement {
+  const { t } = useI18n();
   const [reason, setReason] = useState("");
   const [pending, setPending] = useState(false);
   // 「总是允许」需二次确认：第一次点击进入确认态，3 秒内再点才生效
@@ -42,7 +44,7 @@ export function PermissionCard({ permission, sessionId, onDone, onError }: {
       .then(() => onDone(permission.requestId))
       .catch(() => {
         setPending(false);
-        onError?.("权限响应失败，请重试");
+        onError?.(t("权限响应失败，请重试", "Permission response failed. Try again."));
       });
   };
 
@@ -60,25 +62,25 @@ export function PermissionCard({ permission, sessionId, onDone, onError }: {
   return (
     <article className="permission-card" role="alertdialog" aria-labelledby={titleId}>
       <span className="track-node" aria-hidden />
-      <div className="message-meta">需要你的确认</div>
-      <h2 id={titleId}>允许执行 <b className="mono">{permission.tool}</b> 吗？</h2>
+      <div className="message-meta">{t("需要你的确认", "Your confirmation is required")}</div>
+      <h2 id={titleId}>{t("允许执行", "Allow")} <b className="mono">{permission.tool}</b>{t(" 吗？", "?")}</h2>
       {summary && <p className="tool-summary mono" title={summary}>{summary}</p>}
       <details className="tool-detail">
-        <summary>完整参数</summary>
+        <summary>{t("完整参数", "Full parameters")}</summary>
         <CodeBlock lang="json" code={JSON.stringify(permission.input, null, 2)} />
       </details>
       <input
         value={reason}
         onChange={(event) => setReason(event.target.value)}
-        placeholder="拒绝理由（可选）"
-        aria-label="拒绝理由（可选）"
+        placeholder={t("拒绝理由（可选）", "Reason for denial (optional)")}
+        aria-label={t("拒绝理由（可选）", "Reason for denial (optional)")}
       />
       <div className="permission-actions">
-        <button ref={allowOnceRef} className="btn primary" disabled={pending} onClick={() => { cancelConfirm(); decide("allow"); }}>允许一次</button>
+        <button ref={allowOnceRef} className="btn primary" disabled={pending} onClick={() => { cancelConfirm(); decide("allow"); }}>{t("允许一次", "Allow once")}</button>
         <button className={`btn${confirmAlways ? " danger" : ""}`} disabled={pending} onClick={clickAllowAlways}>
-          {confirmAlways ? "确认总是允许？" : "总是允许"}
+          {confirmAlways ? t("确认总是允许？", "Confirm always allow?") : t("总是允许", "Always allow")}
         </button>
-        <button className="btn danger" disabled={pending} onClick={() => { cancelConfirm(); decide("deny"); }}>拒绝</button>
+        <button className="btn danger" disabled={pending} onClick={() => { cancelConfirm(); decide("deny"); }}>{t("拒绝", "Deny")}</button>
       </div>
     </article>
   );

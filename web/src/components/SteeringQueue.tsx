@@ -1,4 +1,5 @@
 import type { ReactElement } from "react";
+import { useI18n } from "../i18n";
 
 export interface SteeringItem {
   id: string;
@@ -10,14 +11,15 @@ export function SteeringQueue({ items, onRemove }: {
   items: SteeringItem[];
   onRemove(itemId: string): void;
 }): ReactElement {
+  const { t } = useI18n();
   return (
     <div className="steering-queue">
-      <b>Steering 队列</b>
+      <b>{t("Steering 队列", "Steering queue")}</b>
       {items.map((item, index) => (
         <div key={item.id}>
           <span>{index + 1}</span>
           <p title={item.content}>{item.content}</p>
-          <button onClick={() => onRemove(item.id)} title="撤销" aria-label="撤销">撤销</button>
+          <button onClick={() => onRemove(item.id)} title={t("撤销", "Remove")} aria-label={t("撤销", "Remove")}>{t("撤销", "Remove")}</button>
         </div>
       ))}
     </div>
