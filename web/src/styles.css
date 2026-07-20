@@ -28,6 +28,7 @@
   --shadow: 0 1px 2px rgb(23 32 42 / 0.06), 0 8px 24px rgb(23 32 42 / 0.08);
   --radius: 8px;
   --radius-s: 6px;
+  --gutter: clamp(20px, 3vw, 52px);
 }
 
 [data-theme="dark"] {
@@ -167,6 +168,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   display: grid;
   grid-template-columns: 250px minmax(0, 1fr);
   height: 100vh;
+  height: 100dvh;
   background: var(--bg);
 }
 
@@ -280,6 +282,17 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   z-index: 3;
 }
 .rail-resize:hover, .rail-resize:focus-visible { background: var(--accent-soft); }
+/* 移动端抽屉开关：桌面默认隐藏，图标按钮风格同 .icon-btn */
+.rail-menu-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-s);
+  color: var(--text-2);
+}
+.rail-menu-btn:hover { background: var(--panel-2); color: var(--text); }
 .session-rail footer {
   display: flex;
   align-items: center;
@@ -309,7 +322,15 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   border-bottom: 1px solid var(--border);
 }
 .job-title { min-width: 0; }
-.job-header h1 { margin: 0; font-size: 16px; font-weight: 650; }
+.job-header h1 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .job-cwd {
   margin: 2px 0 0;
   font-size: 11.5px;
@@ -317,9 +338,9 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 560px;
+  max-width: min(560px, 40vw);
 }
-.job-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.job-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; flex-wrap: wrap; }
 .cost-summary {
   display: inline-flex;
   align-items: center;
@@ -426,7 +447,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 
 /* ================= 执行轨道 ================= */
 .todo-panel {
-  margin: 14px clamp(20px, 4vw, 64px) 0;
+  margin: 14px var(--gutter) 0;
   padding: 10px 14px;
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -434,25 +455,16 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   color: var(--text-2);
   font-size: 13px;
 }
-.todo-panel summary { cursor: pointer; color: var(--text-1); font-weight: 650; }
-.todo-panel ul { margin: 9px 0 2px; padding: 0; list-style: none; display: grid; gap: 6px; }
+.todo-panel summary { cursor: pointer; color: var(--text); font-weight: 650; }
+.todo-panel ul { margin: 9px 0 2px; padding: 0; list-style: none; display: grid; gap: 6px; max-height: 30vh; overflow-y: auto; }
 .todo-panel li { display: flex; gap: 8px; align-items: baseline; }
 .todo-panel li[data-status="done"] { color: var(--text-3); text-decoration: line-through; }
 .todo-panel li[data-status="in_progress"] span { color: var(--accent); }
 .execution-track-wrap { position: relative; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); flex: 1; }
 .execution-track {
   overflow-y: auto;
-  padding: 26px clamp(20px, 3vw, 52px) 44px;
+  padding: 26px var(--gutter) 44px;
   position: relative;
-}
-.execution-track::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: calc(clamp(20px, 3vw, 52px) + 28px);
-  width: 2px;
-  background: var(--border);
 }
 .track-empty { color: var(--text-3); font-size: 13px; padding-left: 30px; }
 .context-cleared-divider {
@@ -473,13 +485,27 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   padding: 3px 10px;
   font-size: 12px;
   color: var(--text-2);
-  background: var(--bg-2, transparent);
+  background: transparent;
   border: 1px solid var(--border);
   border-radius: 6px;
   cursor: pointer;
 }
 .send-to-agent:hover { color: var(--accent); border-color: var(--accent); }
 .message, .permission-card { position: relative; max-width: min(100%, 1100px); margin: 0 0 22px; padding-left: 30px; }
+/* 分段竖线：每条消息/权限卡自带一段，对齐圆点中心并桥接 22px 间距 */
+.message::before, .permission-card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 2px;
+  height: calc(100% + 22px);
+  background: var(--border);
+}
+/* 尾部截断：后面没有带竖线的兄弟元素时，线段不再外溢 22px 桥接段 */
+.message:last-child::before, .permission-card:last-child::before,
+.message:has(+ :not(.message):not(.permission-card))::before,
+.permission-card:has(+ :not(.message):not(.permission-card))::before { height: 100%; }
 .track-node {
   position: absolute;
   left: -4px;
@@ -715,7 +741,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   margin: 0;
   padding: 4px;
   list-style: none;
-  min-width: 320px;
+  min-width: min(320px, calc(100vw - 24px));
   max-width: 100%;
   max-height: 260px;
   overflow-y: auto;
@@ -883,7 +909,9 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .panel-fold:hover { color: var(--text); }
 .panel-content { overflow: hidden; }
 .panel-content .inspector-body { height: 100%; overflow-y: auto; }
-.inspector-body { flex: 1; overflow-y: auto; padding: 14px 18px; position: relative; }
+.inspector-body { flex: 1; overflow: auto; padding: 14px 18px; position: relative; }
+/* 文件面板外层：非滚动容器，预览浮层相对它定位，不随文件树滚动 */
+.files-panel-wrap { position: relative; overflow: hidden; height: 100%; }
 .inspector-body h2 { margin: 0 0 12px; font-size: 13px; font-weight: 650; }
 .inspector-body h2:not(:first-child) { margin-top: 20px; }
 .panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
@@ -996,6 +1024,8 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   color: var(--text);
   padding: 22px;
   width: min(440px, 92vw);
+  max-height: 86vh;
+  overflow-y: auto;
   box-shadow: var(--shadow);
 }
 .session-dialog::backdrop { background: rgb(8 12 16 / 0.5); }
@@ -1240,7 +1270,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 
 /* ================= 响应式 ================= */
 @media (max-width: 720px) {
-  .console-shell { display: block; height: auto; min-height: 100vh; }
+  .console-shell { display: block; height: 100vh; height: 100dvh; overflow: hidden; }
   .session-rail {
     flex-direction: row;
     align-items: center;
@@ -1251,26 +1281,40 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
     border-bottom: 1px solid var(--border);
   }
   .session-rail header { padding: 8px 6px 8px 14px; flex: 1; }
-  .session-rail nav, .rail-search { display: none; }
-  .session-rail footer { border-top: 0; padding: 8px 10px; }
-  .rail-resize, .collapse-btn { display: none; }
-  .workbench { min-height: calc(100vh - 45px); display: flex; flex-direction: column; }
-  .execution-track-wrap { flex: 1; }
-  .job-header { padding: 10px 14px; }
-  .job-header h1 { font-size: 15px; }
-  .job-cwd { max-width: 40vw; }
-  .sandbox-badge { display: none; }
-  .execution-track { padding: 20px 16px 32px; }
-  .execution-track::before { left: 44px; }
-  .message, .permission-card { padding-left: 26px; }
-  .composer { position: sticky; bottom: 0; padding: 10px 12px; }
-  .config-row { flex-wrap: nowrap; overflow-x: auto; }
-  .bottom-panel.open {
+  .session-rail nav { display: none; }
+  /* 会话抽屉：.nav-open 由 tsx 切换，nav 全屏覆盖 */
+  .session-rail.nav-open nav {
+    display: block;
     position: fixed;
     top: 45px;
     left: 0;
     right: 0;
     bottom: 0;
+    z-index: 30;
+    background: var(--panel);
+    overflow-y: auto;
+    padding: 8px;
+  }
+  .rail-search-wrap { display: none; }
+  .rail-menu-btn { display: inline-flex; }
+  .session-rail footer { border-top: 0; padding: 8px 10px; }
+  .rail-resize, .collapse-btn { display: none; }
+  .workbench { height: calc(100vh - 45px); height: calc(100dvh - 45px); min-height: 0; display: flex; flex-direction: column; }
+  .execution-track-wrap { flex: 1; min-height: 0; }
+  .job-header { padding: 10px 14px; }
+  .job-header h1 { font-size: 15px; }
+  .sandbox-badge { display: none; }
+  .execution-track { padding: 20px 16px 32px; }
+  .message, .permission-card { padding-left: 26px; }
+  .composer { position: sticky; bottom: 0; padding: 10px 12px; }
+  .config-row { flex-wrap: nowrap; overflow-x: auto; }
+  .settings-grid { grid-template-columns: 1fr; }
+  .bottom-panel.open {
+    position: fixed;
+    top: 45px;
+    left: 0;
+    right: 0;
+    bottom: 64px;
     z-index: 25;
   }
   .bottom-panel.open .panel-content { flex: 1; height: auto !important; }

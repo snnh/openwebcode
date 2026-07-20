@@ -7,7 +7,7 @@ import { CodeBlock } from "../Markdown";
 export function TimelinePanel({ sessionId, running, onNotice }: {
   sessionId?: string;
   running: boolean;
-  onNotice(message: string): void;
+  onNotice(message: string, kind?: "info" | "error"): void;
 }): ReactElement {
   const queryClient = useQueryClient();
   const [selectedCheckpoint, setSelectedCheckpoint] = useState<string>();
@@ -45,7 +45,7 @@ export function TimelinePanel({ sessionId, running, onNotice }: {
           onClick={() => {
             api.createCheckpoint(sessionId)
               .then(() => { refresh(); onNotice("已创建检查点"); })
-              .catch((error: unknown) => onNotice(error instanceof Error ? error.message : "创建检查点失败"));
+              .catch((error: unknown) => onNotice(error instanceof Error ? error.message : "创建检查点失败", "error"));
           }}
         >
           <Icon name="plus" size={12} /> 新建
@@ -78,7 +78,7 @@ export function TimelinePanel({ sessionId, running, onNotice }: {
                 if (window.confirm(`完整回滚到「${checkpoint.label}」？文件和对话将同步恢复。`)) {
                   api.restoreCheckpoint(sessionId, checkpoint.id)
                     .then(() => { refresh(); onNotice("已完整恢复检查点"); })
-                    .catch((error: unknown) => onNotice(error instanceof Error ? error.message : "回滚失败"));
+                    .catch((error: unknown) => onNotice(error instanceof Error ? error.message : "回滚失败", "error"));
                 }
               }}
             >
@@ -91,7 +91,7 @@ export function TimelinePanel({ sessionId, running, onNotice }: {
                 if (window.confirm(`仅恢复「${checkpoint.label}」的文件？对话不会截断。`)) {
                   api.restoreCheckpoint(sessionId, checkpoint.id, true)
                     .then(() => { refresh(); onNotice("已仅恢复文件"); })
-                    .catch((error: unknown) => onNotice(error instanceof Error ? error.message : "回滚失败"));
+                    .catch((error: unknown) => onNotice(error instanceof Error ? error.message : "回滚失败", "error"));
                 }
               }}
             >
@@ -109,7 +109,7 @@ export function TimelinePanel({ sessionId, running, onNotice }: {
                       refresh();
                       onNotice("已删除检查点");
                     })
-                    .catch((error: unknown) => onNotice(error instanceof Error ? error.message : "删除检查点失败"));
+                    .catch((error: unknown) => onNotice(error instanceof Error ? error.message : "删除检查点失败", "error"));
                 }
               }}
             >

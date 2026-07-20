@@ -112,9 +112,11 @@ export function FilesPanel({ sessionId }: { sessionId?: string }): ReactElement 
   const previewLang = EXT_LANGS[ext];
 
   return (
-    <div className="inspector-body files-panel">
-      <div className="file-tree">
-        <DirChildren sessionId={sessionId} path="." depth={0} selectedFile={selectedFile} onSelect={setSelectedFile} />
+    <div className="files-panel-wrap">
+      <div className="inspector-body files-panel">
+        <div className="file-tree">
+          <DirChildren sessionId={sessionId} path="." depth={0} selectedFile={selectedFile} onSelect={setSelectedFile} />
+        </div>
       </div>
       {selectedFile && (
         <section className="file-preview" aria-label={`预览 ${selectedFile}`}>

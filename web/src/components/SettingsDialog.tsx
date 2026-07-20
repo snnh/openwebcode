@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import type { ModelProfile, PermissionMode, PricingDocument, SettingsField, SettingValue } from "../lib/contracts";
 import { formatCurrency } from "../lib/format";
+import { Icon } from "./Icon";
 import type { SendKey, SessionDefaults } from "../lib/prefs";
 import type { ThemePreference, AccentPreference } from "../theme";
 
@@ -284,18 +285,21 @@ function ServerInfoSection({ providers, models }: {
   );
 }
 
-function ServerSettingsSection(): ReactElement {
+function ServerSettingsSection({ onDirtyChange }: { onDirtyChange?(dirty: boolean): void }): ReactElement {
   const queryClient = useQueryClient();
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   const [draft, setDraft] = useState<Record<string, string | boolean | null>>({});
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
 
+  const dirty = Object.keys(draft).length > 0;
+  // 向上汇报 dirty，供对话框关闭前确认
+  useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
+
   if (settings.isPending) return <p className="panel-empty">加载中…</p>;
   if (settings.isError || !settings.data) return <p className="panel-empty">无法加载服务设置。</p>;
 
   const fields = new Map(settings.data.groups.flatMap((group) => group.fields.map((field) => [field.key, field] as const)));
-  const dirty = Object.keys(draft).length > 0;
 
   const setField = (key: string, value: string | boolean | null): void => {
     setDraft((prev) => ({ ...prev, [key]: value }));
@@ -505,6 +509,7 @@ function ModelCatalogSection(): ReactElement {
   };
 
   const removeManual = (id: string): void => {
+    if (!window.confirm(`删除手动模型「${id}」？`)) return;
     setBusy(true);
     setError(undefined);
     api.deleteModel(id)
@@ -620,6 +625,8 @@ export function SettingsDialog({ open, preference, setPreference, accent, setAcc
 }): ReactElement | null {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [activeTab, setActiveTab] = useState<SettingsTab>("appearance");
+  // 服务设置的未保存改动由 ServerSettingsSection 上报
+  const serverDirtyRef = useRef(false);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -630,16 +637,35 @@ export function SettingsDialog({ open, preference, setPreference, accent, setAcc
 
   if (!open) return null;
 
+  // 统一关闭入口：有未保存的服务设置改动时先确认
+  const requestClose = (): void => {
+    if (serverDirtyRef.current && !window.confirm("服务设置有未保存的更改，确定放弃？")) return;
+    dialogRef.current?.close();
+  };
+
   return (
     <dialog
       ref={dialogRef}
       className="session-dialog settings-dialog"
       onClose={onClose}
+      onCancel={(event) => {
+        event.preventDefault();
+        requestClose();
+      }}
       onClick={(event) => {
-        if (event.target === dialogRef.current) onClose();
+        if (event.target === dialogRef.current) requestClose();
       }}
     >
-      <div className="settings-body">
+      <div className="settings-body" style={{ position: "relative" }}>
+        <button
+          className="icon-btn"
+          aria-label="关闭"
+          title="关闭"
+          onClick={requestClose}
+          style={{ position: "absolute", top: 0, right: 0 }}
+        >
+          <Icon name="x" size={15} />
+        </button>
         <h2>设置</h2>
         <nav className="settings-nav" aria-label="设置分类">
           {TAB_META.map((tab) => (
@@ -717,7 +743,7 @@ export function SettingsDialog({ open, preference, setPreference, accent, setAcc
           {activeTab === "server" && (
             <section>
               <h3>服务设置</h3>
-              <ServerSettingsSection />
+              <ServerSettingsSection onDirtyChange={(dirty) => { serverDirtyRef.current = dirty; }} />
             </section>
           )}
           {activeTab === "models" && (
@@ -746,7 +772,7 @@ export function SettingsDialog({ open, preference, setPreference, accent, setAcc
           )}
         </div>
         <div className="dialog-actions">
-          <button className="btn" onClick={onClose}>关闭</button>
+          <button className="btn" onClick={requestClose}>关闭</button>
         </div>
       </div>
     </dialog>

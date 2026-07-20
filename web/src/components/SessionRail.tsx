@@ -24,6 +24,8 @@ export function SessionRail({ sessions, currentId, runningIds, theme, collapsed,
   onResize(width: number): void;
 }): ReactElement {
   const [filter, setFilter] = useState("");
+  // 移动端抽屉开合（≤720px 时 .rail-menu-btn 可见，nav-open 由 CSS 接管为全屏抽屉）
+  const [navOpen, setNavOpen] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const keyword = filter.trim().toLowerCase();
   const filtered = sessions?.filter((session) =>
@@ -44,7 +46,7 @@ export function SessionRail({ sessions, currentId, runningIds, theme, collapsed,
   };
 
   return (
-    <aside className={`session-rail${collapsed ? " collapsed" : ""}`} aria-label="会话">
+    <aside className={`session-rail${collapsed ? " collapsed" : ""}${navOpen ? " nav-open" : ""}`} aria-label="会话">
       {!collapsed && (
         <button
           className="rail-resize"
@@ -57,6 +59,12 @@ export function SessionRail({ sessions, currentId, runningIds, theme, collapsed,
         />
       )}
       <header>
+        <button
+          className="rail-menu-btn"
+          aria-label="会话列表"
+          aria-expanded={navOpen}
+          onClick={() => setNavOpen((value) => !value)}
+        >☰</button>
         {!collapsed && <span className="brand">Open<b>WebCode</b></span>}
         <input
           ref={fileInput}
@@ -79,6 +87,9 @@ export function SessionRail({ sessions, currentId, runningIds, theme, collapsed,
             className="rail-search"
             value={filter}
             onChange={(event) => setFilter(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") setFilter("");
+            }}
             placeholder="搜索会话"
             aria-label="搜索会话"
           />
@@ -88,7 +99,7 @@ export function SessionRail({ sessions, currentId, runningIds, theme, collapsed,
         <nav>
           {filtered?.map((session) => (
             <div key={session.id} className={`session-item${session.id === currentId ? " active" : ""}`}>
-              <button className="session-link" onClick={() => onSelect(session.id)}>
+              <button className="session-link" onClick={() => { setNavOpen(false); onSelect(session.id); }}>
                 <span className="session-title">{session.title}</span>
                 <span className="session-meta">{session.provider} · {session.model}</span>
               </button>
@@ -111,6 +122,7 @@ export function SessionRail({ sessions, currentId, runningIds, theme, collapsed,
               </button>
             </div>
           ))}
+          {sessions === undefined && <p className="rail-empty">加载中…</p>}
           {sessions && sessions.length === 0 && <p className="rail-empty">还没有会话</p>}
           {sessions && sessions.length > 0 && filtered?.length === 0 && <p className="rail-empty">无匹配会话</p>}
         </nav>

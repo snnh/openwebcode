@@ -1,6 +1,11 @@
 export function formatCurrency(microUnits: string, currency: string): string {
-  return new Intl.NumberFormat("zh-CN", { style: "currency", currency: currency === "CNY" ? "CNY" : "USD" })
-    .format(Number(BigInt(microUnits)) / 1_000_000);
+  // 服务端脏数据（空串/非数字）不应炸掉渲染，降级为占位符
+  try {
+    return new Intl.NumberFormat("zh-CN", { style: "currency", currency: currency === "CNY" ? "CNY" : "USD" })
+      .format(Number(BigInt(microUnits)) / 1_000_000);
+  } catch {
+    return "-";
+  }
 }
 
 export function formatTokens(value: number): string {

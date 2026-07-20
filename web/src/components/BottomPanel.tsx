@@ -42,7 +42,7 @@ export function BottomPanel({ sessionId, session, running, onNotice }: {
   sessionId?: string;
   session?: SessionDetail;
   running: boolean;
-  onNotice(message: string): void;
+  onNotice(message: string, kind?: "info" | "error"): void;
 }): ReactElement {
   const [tab, setTab] = useState<PanelTab>(() => {
     const stored = readStored("owc-panel-tab");

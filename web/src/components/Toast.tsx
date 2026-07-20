@@ -1,14 +1,24 @@
 import { useEffect, type ReactElement } from "react";
 import { Icon } from "./Icon";
 
-export function Toast({ message, onDismiss }: { message: string; onDismiss(): void }): ReactElement {
+export interface Notice {
+  kind: "info" | "error";
+  text: string;
+}
+
+export function Toast({ notice, onDismiss }: { notice: Notice; onDismiss(): void }): ReactElement {
   useEffect(() => {
     const timer = window.setTimeout(onDismiss, 6000);
     return () => window.clearTimeout(timer);
-  }, [message, onDismiss]);
+  }, [notice, onDismiss]);
+  const isError = notice.kind === "error";
   return (
-    <div className="toast" role="status">
-      <span>{message}</span>
+    <div
+      className="toast"
+      role={isError ? "alert" : "status"}
+      style={isError ? { borderColor: "var(--danger-border)", color: "var(--danger)" } : undefined}
+    >
+      <span>{notice.text}</span>
       <button onClick={onDismiss} aria-label="关闭通知"><Icon name="x" size={14} /></button>
     </div>
   );

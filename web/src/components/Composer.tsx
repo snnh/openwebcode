@@ -15,7 +15,7 @@ const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const MAX_ATTACHMENTS = 4;
 
-export function Composer({ current, model, models, draft, setDraft, onSend, onConfig, running, sendKey, skills, attachments, setAttachments, supportsImages, onNotice }: {
+export function Composer({ current, model, models, draft, setDraft, onSend, onConfig, running, sendKey, skills, attachments, setAttachments, supportsImages, onNotice, sendPending = false }: {
   current: SessionDetail;
   model?: ModelProfile;
   models: ModelProfile[];
@@ -24,6 +24,8 @@ export function Composer({ current, model, models, draft, setDraft, onSend, onCo
   onSend(): void;
   onConfig(body: Record<string, unknown>): void;
   running: boolean;
+  /** 发送请求进行中：屏蔽重复提交（按钮禁用、Enter 不触发），运行中入队场景不受影响 */
+  sendPending?: boolean;
   sendKey: SendKey;
   skills: SkillInfo[];
   attachments: PendingImage[];
@@ -61,6 +63,7 @@ export function Composer({ current, model, models, draft, setDraft, onSend, onCo
   const [mentionMatches, setMentionMatches] = useState<Array<{ path: string }>>([]);
   const [mentionActive, setMentionActive] = useState(0);
   const [mentionDismissed, setMentionDismissed] = useState(false);
+  const [mentionFailed, setMentionFailed] = useState(false);
   // Esc 关闭后，draft 内容变化才重新打开（避免方向键移动光标反复触发）
   useEffect(() => { setMentionDismissed(false); }, [draft]);
 
@@ -83,19 +86,32 @@ export function Composer({ current, model, models, draft, setDraft, onSend, onCo
   useEffect(() => {
     if (mentionPartial === null || mentionPartial === "") {
       setMentionMatches([]);
+      setMentionFailed(false);
       return;
     }
     let cancelled = false;
     const timer = setTimeout(() => {
       api.completePath(current.id, mentionPartial)
-        .then((res) => { if (!cancelled) setMentionMatches(res.matches.slice(0, 20)); })
-        .catch(() => { if (!cancelled) setMentionMatches([]); });
+        .then((res) => { if (!cancelled) { setMentionMatches(res.matches.slice(0, 20)); setMentionFailed(false); } })
+        .catch(() => { if (!cancelled) { setMentionMatches([]); setMentionFailed(true); } });
     }, 200);
     return () => { cancelled = true; clearTimeout(timer); };
   }, [mentionPartial, current.id]);
 
   const mentionOpen = !mentionDismissed && mentionPartial !== null && mentionPartial !== "";
 const mentionHasMatches = mentionMatches.length > 0;
+
+  // 方向键移动激活项时滚动保持可见（仅弹层打开时执行）
+  useEffect(() => {
+    if (mentionOpen && mentionHasMatches) {
+      document.getElementById(`mention-option-${mentionActive}`)?.scrollIntoView({ block: "nearest" });
+    }
+  }, [mentionActive, mentionOpen, mentionHasMatches]);
+  useEffect(() => {
+    if (popupOpen && hasSuggestions) {
+      document.getElementById(`skill-option-${active}`)?.scrollIntoView({ block: "nearest" });
+    }
+  }, [active, popupOpen, hasSuggestions]);
 
   const insertMention = useCallback((filePath: string): void => {
     const el = textareaRef.current;
@@ -176,10 +192,27 @@ const mentionHasMatches = mentionMatches.length > 0;
 
   const onPaste = (event: ReactClipboardEvent): void => {
     const files = [...(event.clipboardData?.files ?? [])];
-    if (files.some((file) => file.type.startsWith("image/"))) {
-      event.preventDefault();
-      addFiles(files);
-    }
+    if (!files.some((file) => file.type.startsWith("image/"))) return;
+    event.preventDefault();
+    addFiles(files);
+    // 剪贴板常同时携带文本（路径/说明），插入光标处而非静默丢弃
+    const text = event.clipboardData?.getData("text") ?? "";
+    if (!text) return;
+    const el = textareaRef.current;
+    const start = el?.selectionStart ?? draft.length;
+    const end = el?.selectionEnd ?? start;
+    const next = draft.slice(0, start) + text + draft.slice(end);
+    setDraft(next);
+    updateMentionFromValue(next, start + text.length, mentionDismissed);
+    requestAnimationFrame(() => {
+      const node = textareaRef.current;
+      if (node) {
+        const pos = start + text.length;
+        node.selectionStart = pos;
+        node.selectionEnd = pos;
+        node.focus();
+      }
+    });
   };
 
   const onDrop = (event: ReactDragEvent): void => {
@@ -271,12 +304,13 @@ const mentionHasMatches = mentionMatches.length > 0;
       </div>
       <div className="composer-input">
         {popupOpen && (
-          <ul className="skill-popup" role="listbox" aria-label="技能建议">
+          <ul id="skill-listbox" className="skill-popup" role="listbox" aria-label="技能建议">
             {hasSuggestions ? suggestions.map((skill, index) => (
               <li key={skill.name}>
                 <button
                   type="button"
                   role="option"
+                  id={`skill-option-${index}`}
                   aria-selected={index === active}
                   className={index === active ? "active" : ""}
                   onMouseDown={(event) => {
@@ -314,7 +348,7 @@ const mentionHasMatches = mentionMatches.length > 0;
                 </button>
               </li>
             )) : (
-              <li className="mention-empty"><span className="mention-path">无匹配文件（继续输入或按 Esc 关闭）</span></li>
+              <li className="mention-empty"><span className="mention-path">{mentionFailed ? "文件列表加载失败（继续输入重试，或按 Esc 关闭）" : "无匹配文件（继续输入或按 Esc 关闭）"}</span></li>
             )}
           </ul>
         )}
@@ -323,6 +357,15 @@ const mentionHasMatches = mentionMatches.length > 0;
           rows={2}
           value={draft}
           aria-label="消息输入框；输入 @ 可引用工作区文件"
+          role="combobox"
+          aria-expanded={mentionOpen || popupOpen}
+          aria-controls={mentionOpen ? "mention-listbox" : popupOpen ? "skill-listbox" : undefined}
+          aria-activedescendant={
+            mentionOpen
+              ? (mentionHasMatches ? `mention-option-${mentionActive}` : undefined)
+              : popupOpen && hasSuggestions ? `skill-option-${active}` : undefined
+          }
+          aria-autocomplete="list"
           onChange={(event) => {
             setDraft(event.target.value);
             syncMention(event.target);
@@ -332,29 +375,37 @@ const mentionHasMatches = mentionMatches.length > 0;
           onKeyUp={(event) => syncMention(event.currentTarget)}
           onPaste={onPaste}
           onKeyDown={(event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
-            if (mentionOpen && mentionHasMatches) {
-              const count = mentionMatches.length;
-              if (event.key === "ArrowDown") {
-                event.preventDefault();
-                setMentionActive((value) => (value + 1) % count);
-                return;
+            if (mentionOpen) {
+              if (mentionHasMatches) {
+                const count = mentionMatches.length;
+                if (event.key === "ArrowDown") {
+                  event.preventDefault();
+                  setMentionActive((value) => (value + 1) % count);
+                  return;
+                }
+                if (event.key === "ArrowUp") {
+                  event.preventDefault();
+                  setMentionActive((value) => (value - 1 + count) % count);
+                  return;
+                }
               }
-              if (event.key === "ArrowUp") {
-                event.preventDefault();
-                setMentionActive((value) => (value - 1 + count) % count);
-                return;
-              }
+              // 补全打开期间 Enter/Tab 一律拦截：有匹配则选中；无匹配（防抖加载中或真空）则关闭补全，避免误发送半成品
               if (event.key === "Tab" || event.key === "Enter") {
                 event.preventDefault();
-                insertMention(mentionMatches[Math.min(mentionActive, count - 1)]!.path);
+                if (mentionHasMatches) {
+                  insertMention(mentionMatches[Math.min(mentionActive, mentionMatches.length - 1)]!.path);
+                } else {
+                  setMentionDismissed(true);
+                  setMentionPartial(null);
+                }
                 return;
               }
-            }
-            if (mentionOpen && event.key === "Escape") {
-              event.preventDefault();
-              setMentionDismissed(true);
-              setMentionPartial(null);
-              return;
+              if (event.key === "Escape") {
+                event.preventDefault();
+                setMentionDismissed(true);
+                setMentionPartial(null);
+                return;
+              }
             }
             if (popupOpen && hasSuggestions) {
               if (event.key === "ArrowDown") {
@@ -373,6 +424,12 @@ const mentionHasMatches = mentionMatches.length > 0;
                 return;
               }
             }
+            if (popupOpen && (event.key === "Tab" || event.key === "Enter")) {
+              // 无技能建议时同样拦截 Enter：关闭补全而非发送
+              event.preventDefault();
+              setDismissed(true);
+              return;
+            }
             if (popupOpen && event.key === "Escape") {
               event.preventDefault();
               setDismissed(true);
@@ -385,14 +442,20 @@ const mentionHasMatches = mentionMatches.length > 0;
               : event.ctrlKey || event.metaKey;
             if (shouldSend) {
               event.preventDefault();
-              onSend();
+              // 发送进行中忽略重复提交（运行中入队场景仍允许，由 running 控制）
+              if (!sendPending) onSend();
             }
           }}
           placeholder={running
             ? "向正在执行的作业补充指令…"
             : sendKey === "enter" ? "描述要完成的编码任务…（Enter 发送，Shift+Enter 换行，@ 引用文件）" : "描述要完成的编码任务…（Ctrl+Enter 发送，@ 引用文件）"}
         />
-        <button className="btn primary send" disabled={!draft.trim()} onClick={onSend}>
+        <button
+          className="btn primary send"
+          disabled={!draft.trim() || sendPending}
+          title={sendPending ? "发送中…" : undefined}
+          onClick={onSend}
+        >
           <Icon name="send" size={13} />
           {draft.trimStart().startsWith("!") ? "运行" : running ? "加入队列" : "发送"}
         </button>
