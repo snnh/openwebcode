@@ -61,6 +61,19 @@ cd openwebcode
 
 运行时优先使用包内 `node/`，缺失时回落系统 `node`（要求 >= 20）。
 
+## 本地更新 staging
+
+`build/stage/` 是完整运行时树，不是只放单个可执行文件的输出目录。修改 Server/Web 后至少重新执行：
+
+```powershell
+npm --prefix server run build
+npm --prefix web run build
+Copy-Item -Recurse -Force server\dist\* build\stage\server\dist\
+Copy-Item -Recurse -Force web\dist\* build\stage\web\dist\
+```
+
+Server 模块在进程启动时加载，复制后必须重启 `build\stage\bin\owc.cmd`。Vite 入口引用带哈希的 assets；若重启后仍看到旧界面，使用 `Ctrl+F5` 强制刷新。正式发布应按 CI 流程重建整个 staging，并确保 `server/node_modules/` 只含生产依赖，而不是长期在旧目录上叠加文件。
+
 ## CI 发布流水线（release.yml）
 
 - 触发：`push: tags: ["v*"]`，或 `workflow_dispatch` 输入 tag（tag 不存在时基于当前提交创建）。

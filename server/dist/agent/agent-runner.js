@@ -16,6 +16,8 @@ import { webFetch } from "../web-tools.js";
 const BASH_TOOL = {
     name: "bash",
     description: "Execute a shell command in the session workspace. Call this when command-line execution is required. " +
+        "On Windows sandbox sessions commands run under cmd.exe: use cmd syntax (for example dir, type, where, and &&), " +
+        "and do not use PowerShell cmdlets or POSIX commands unless explicitly invoking an available shell. " +
         "Set run_in_background=true to run the command asynchronously; the agent loop continues immediately and you can check " +
         "the result later with task_output (or wait with block=true).",
     inputSchema: {
@@ -361,22 +363,42 @@ export class AgentRunner {
                 });
                 this.events.publish({ source: "agent", type: "message.attempt", sessionId, payload: { attemptId: turn.attemptId } });
                 const assistantContent = [];
+                let activeThinkingIndex;
                 let stopReason;
                 for (const event of turn.events) {
                     if (event.type === "text_delta") {
-                        assistantContent.push({ type: "text", text: event.text });
+                        // Provider 文本以 token/chunk 形式流入。相邻分片属于同一段正文，
+                        // 落盘前合并，避免前端把每个分片当成独立块而逐词换行。
+                        const previous = assistantContent.at(-1);
+                        if (previous?.type === "text")
+                            previous.text = `${previous.text ?? ""}${event.text}`;
+                        else
+                            assistantContent.push({ type: "text", text: event.text });
                         this.events.publish({ source: "agent", type: "message.delta", sessionId, payload: { text: event.text } });
                     }
                     else if (event.type === "thinking_delta") {
+                        const activeThinking = activeThinkingIndex === undefined ? undefined : assistantContent[activeThinkingIndex];
+                        if (activeThinking?.type === "thinking") {
+                            activeThinking.text = `${activeThinking.text ?? ""}${event.text}`;
+                        }
+                        else {
+                            assistantContent.push({ type: "thinking", text: event.text, provider: provider.name });
+                            activeThinkingIndex = assistantContent.length - 1;
+                        }
                         this.events.publish({ source: "agent", type: "message.thinking_delta", sessionId, payload: { text: event.text } });
                     }
                     else if (event.type === "thinking_end") {
-                        assistantContent.push({
+                        const completedThinking = {
                             type: "thinking",
                             text: event.text,
                             ...(event.signature ? { signature: event.signature } : {}),
                             provider: provider.name,
-                        });
+                        };
+                        if (activeThinkingIndex === undefined)
+                            assistantContent.push(completedThinking);
+                        else
+                            assistantContent[activeThinkingIndex] = completedThinking;
+                        activeThinkingIndex = undefined;
                     }
                     else if (event.type === "tool_call") {
                         assistantContent.push({ type: "tool_call", id: event.id, name: event.name, input: event.input });
@@ -478,10 +500,10 @@ export class AgentRunner {
     listPendingPermissions(sessionId) {
         return this.permissions.listPending(sessionId);
     }
-    async respondPermission(sessionId, requestId, decision, reason) {
+    async preparePermissionResponse(sessionId, requestId, decision, reason) {
         const response = this.permissions.respond(sessionId, requestId, decision, reason);
         if (!response)
-            return false;
+            return undefined;
         try {
             if (response.persist) {
                 const session = await this.sessions.get(sessionId);
@@ -491,8 +513,8 @@ export class AgentRunner {
                 const rules = [...(session.permissionRules ?? []).filter((item) => item.tool !== rule.tool || item.argumentPrefix !== rule.argumentPrefix), rule];
                 await this.sessions.updatePermissions(sessionId, session.permissionMode ?? "ask", rules);
             }
-            response.complete();
-            return true;
+            // 由 HTTP 层在批准响应完成后调用，避免工具执行抢在响应发送前开始。
+            return () => response.complete();
         }
         catch (error) {
             response.complete(false, "Failed to persist permission rule");

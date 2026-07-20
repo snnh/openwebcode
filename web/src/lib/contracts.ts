@@ -129,12 +129,13 @@ export interface SnapshotCapabilityInfo {
 export interface PricingEntry {
   provider: string;
   model: string;
-  currency: string;
-  input?: string;
-  output?: string;
-  cacheRead?: string;
-  cacheWrite?: string;
-  [key: string]: unknown;
+  currency: "USD" | "CNY";
+  effectiveFrom: string;
+  effectiveUntil?: string;
+  input: string;
+  output: string;
+  cacheRead: string;
+  cacheWrite: string;
 }
 
 export interface PricingDocument {

@@ -33,7 +33,7 @@ openwebcode/
 │   │   ├── sandbox/      # core-router 策略映射
 │   │   ├── mcp/          # MCP 客户端（stdio + HTTP）
 │   │   └── rpc/          # C RPC 类型定义
-│   ├── test/             # vitest 测试（约 296 测试用例）
+│   ├── test/             # vitest 测试（单元、HTTP、真实 core 端到端）
 │   └── dist/             # 编译产物（ts 输出，git 跟踪）
 ├── web/                  # React + Vite 前端
 │   ├── src/
@@ -41,7 +41,7 @@ openwebcode/
 │   │   ├── components/   # Composer / ExecutionTrack / MessageCard / JobHeader 等
 │   │   ├── lib/          # api.ts（REST 客户端）、contracts.ts（类型契约）
 │   │   └── styles.css    # 全部样式
-│   └── test/             # vitest + jsdom（约 10 测试用例）
+│   └── test/             # vitest + jsdom + Testing Library + axe
 ├── packaging/            # 分发布局、安装脚本、owc.cmd、CI 发布流水线
 └── .github/workflows/    # core.yml / server.yml / web.yml（CI）+ release.yml（发布）
 ```
@@ -70,7 +70,7 @@ Windows MSVC 默认 `/W4 /WX`（警告即错误）。**C 源文件注释必须�
 cd server
 npm ci
 npm run build       # tsc -p tsconfig.json，产物到 dist/（ESM）
-npm test            # vitest run，约 296 测试
+npm test            # vitest run，运行完整测试套件
 npm start           # node dist/index.js
 npm run dev         # tsx watch src/index.ts，源码改动热重启
 ```
@@ -90,6 +90,8 @@ npm run dev         # vite dev server，HMR
 ```
 
 web/dist 不入库——由 server 静态托管（server 解析 `server/dist/../../web/dist`）。
+
+对话渲染链位于 `components/Markdown.tsx`：`react-markdown` + `remark-gfm` + `remark-math` + `rehype-katex`，代码块再交给 Shiki。KaTeX CSS 与字体由 Vite 打进 `web/dist/assets/`；部署时不能只复制入口 JS。
 
 ## 本地开发循环
 
@@ -138,6 +140,7 @@ cd server && npm run dev
 - 临时目录：`mkdtemp(os.tmpdir())` + 模块级 `roots[]` + `afterEach` 递归清理（防 Windows ENOTEMPTY 竞态）
 - fake provider：参考 `test/shell.test.ts`、`test/memory.test.ts`——返回 `AsyncIterable<ProviderEvent>` 的最小实现
 - HTTP 层：`buildServer(deps)` 注入 fake provider/core 后 `app.inject({...})`，不起真实端口
+- 权限响应：`POST /permissions/respond` 必须先完成 HTTP 响应，再恢复挂起工具；测试需覆盖 allow / allow_always / deny 与响应后执行顺序
 - 外部命令：`recordingRunner` / `tableRunner`（参考 `test/snapshot-backends.test.ts`）
 - 异步落盘竞态：用 `vi.waitFor(() => expect(...), { timeout: 5000 })` 轮询，别在 `finally` 里直接 `app.close()` 配 `rm -rf`（Windows 会撞 ENOTEMPTY）
 
@@ -199,6 +202,7 @@ cd server && npm run dev
 - WS 事件流：`App.tsx` 的 onmessage 分发到 state + react-query invalidate
 - 样式：单文件 `styles.css`，CSS 变量主题（亮/暗）
 - 新组件：`components/` 下独立文件，follow 现有命名（`JobHeader.tsx` / `MessageCard.tsx`）
+- Markdown/LaTeX：统一改 `Markdown.tsx`，不要在正文、历史思考、流式思考分别维护解析器；思考块只负责折叠与弱化视觉层级
 
 ## 架构要点（改动前必读）
 
@@ -216,8 +220,8 @@ cd server && npm run dev
 | 工作流 | 触发 | 覆盖 |
 |---|---|---|
 | `core.yml` | 改 `core/**` | Linux gcc+clang / Windows MSVC：configure→build→ctest（C 单测 + Python 协议/fs 脚本） |
-| `server.yml` | 改 `server/**` 或 `core/**` | Ubuntu + Windows：先构建 core Debug，再 `npm ci && npm run build && npm test`（296 测试，含依赖真实 owc-exec 的 core-client / core-tcp / stage3-e2e / web-e2e——通过 `OWC_CORE_PATH` 注入路径） |
-| `web.yml` | 改 `web/**` | Ubuntu：`npm ci && npm run build && npm test`（10 测试，vitest + jsdom + axe） |
+| `server.yml` | 改 `server/**` 或 `core/**` | Ubuntu + Windows：先构建 core Debug，再 `npm ci && npm run build && npm test`（含依赖真实 owc-exec 的 core-client / core-tcp / stage3-e2e / web-e2e——通过 `OWC_CORE_PATH` 注入路径） |
+| `web.yml` | 改 `web/**` | Ubuntu：`npm ci && npm run build && npm test`（vitest + jsdom + Testing Library + axe） |
 | `release.yml` | 打 `v*` tag 或手动触发 | 发布前先跑 server + web 全测试网关，再产 MSI / tar.gz |
 
 关键点：
@@ -241,6 +245,7 @@ cd server && npm run dev
 - Linux：同样构建后组装 `build/stage/` + 下载 Node 20 整树解入 `node/` → `tar` 打包
 - bundled Node 版本固定在 workflow 的 `env.NODE_DIST_VERSION`，升级改这一个常量
 - staging 契约细节见 `core/CMakeLists.txt` 末尾注释 + `packaging/README.md`
+- 本地替换 staging 前端时应整体替换 `web/dist/` 并重启 server；若 UI 仍显示旧布局，用 `Ctrl+F5` 清掉旧入口缓存。只覆盖部分 assets 会留下入口与哈希文件不匹配的风险
 
 ## 提交与代码规范
 
