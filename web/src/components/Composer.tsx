@@ -45,10 +45,12 @@ export function Composer({ current, model, models, draft, setDraft, onSend, onCo
 
   // 输入 /前缀 时呼出技能补全；Esc 暂时关闭，内容变化后重新打开
   const command = draft.match(/^\/([\w-]*)$/);
+  const slashActive = command !== null && !dismissed;
   const suggestions = command && !dismissed
     ? skills.filter((skill) => skill.name.toLowerCase().startsWith(command[1]!.toLowerCase()))
     : [];
-  const popupOpen = suggestions.length > 0;
+  const popupOpen = slashActive;
+  const hasSuggestions = suggestions.length > 0;
   useEffect(() => {
     setDismissed(false);
     setActive(0);
@@ -92,7 +94,8 @@ export function Composer({ current, model, models, draft, setDraft, onSend, onCo
     return () => { cancelled = true; clearTimeout(timer); };
   }, [mentionPartial, current.id]);
 
-  const mentionOpen = !mentionDismissed && mentionPartial !== null && mentionPartial !== "" && mentionMatches.length > 0;
+  const mentionOpen = !mentionDismissed && mentionPartial !== null && mentionPartial !== "";
+const mentionHasMatches = mentionMatches.length > 0;
 
   const insertMention = useCallback((filePath: string): void => {
     const el = textareaRef.current;
@@ -269,7 +272,7 @@ export function Composer({ current, model, models, draft, setDraft, onSend, onCo
       <div className="composer-input">
         {popupOpen && (
           <ul className="skill-popup" role="listbox" aria-label="技能建议">
-            {suggestions.map((skill, index) => (
+            {hasSuggestions ? suggestions.map((skill, index) => (
               <li key={skill.name}>
                 <button
                   type="button"
@@ -286,12 +289,14 @@ export function Composer({ current, model, models, draft, setDraft, onSend, onCo
                   <span className="skill-source">{skill.source === "project" ? "项目" : "全局"}</span>
                 </button>
               </li>
-            ))}
+            )) : (
+              <li className="skill-empty"><span className="skill-desc">无技能可用（在数据目录 skills/ 放 SKILL.md，或按 Esc 关闭）</span></li>
+            )}
           </ul>
         )}
         {mentionOpen && (
           <ul id="mention-listbox" className="mention-popup" role="listbox" aria-label="文件引用建议">
-            {mentionMatches.map((item, index) => (
+            {mentionHasMatches ? mentionMatches.map((item, index) => (
               <li key={item.path}>
                 <button
                   type="button"
@@ -308,7 +313,9 @@ export function Composer({ current, model, models, draft, setDraft, onSend, onCo
                   <span className="mention-path">{item.path}</span>
                 </button>
               </li>
-            ))}
+            )) : (
+              <li className="mention-empty"><span className="mention-path">无匹配文件（继续输入或按 Esc 关闭）</span></li>
+            )}
           </ul>
         )}
         <textarea
@@ -325,7 +332,7 @@ export function Composer({ current, model, models, draft, setDraft, onSend, onCo
           onKeyUp={(event) => syncMention(event.currentTarget)}
           onPaste={onPaste}
           onKeyDown={(event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
-            if (mentionOpen) {
+            if (mentionOpen && mentionHasMatches) {
               const count = mentionMatches.length;
               if (event.key === "ArrowDown") {
                 event.preventDefault();
@@ -342,14 +349,14 @@ export function Composer({ current, model, models, draft, setDraft, onSend, onCo
                 insertMention(mentionMatches[Math.min(mentionActive, count - 1)]!.path);
                 return;
               }
-              if (event.key === "Escape") {
-                event.preventDefault();
-                setMentionDismissed(true);
-                setMentionPartial(null);
-                return;
-              }
             }
-            if (popupOpen) {
+            if (mentionOpen && event.key === "Escape") {
+              event.preventDefault();
+              setMentionDismissed(true);
+              setMentionPartial(null);
+              return;
+            }
+            if (popupOpen && hasSuggestions) {
               if (event.key === "ArrowDown") {
                 event.preventDefault();
                 setActive((value) => (value + 1) % suggestions.length);
@@ -365,11 +372,11 @@ export function Composer({ current, model, models, draft, setDraft, onSend, onCo
                 pick(suggestions[Math.min(active, suggestions.length - 1)]!);
                 return;
               }
-              if (event.key === "Escape") {
-                event.preventDefault();
-                setDismissed(true);
-                return;
-              }
+            }
+            if (popupOpen && event.key === "Escape") {
+              event.preventDefault();
+              setDismissed(true);
+              return;
             }
             // 输入法组合中的 Enter 不触发发送；发送键可在设置中切换
             if (event.nativeEvent.isComposing || event.key !== "Enter") return;
