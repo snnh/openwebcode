@@ -59,7 +59,15 @@ export class PermissionCoordinator {
       tool: pending.tool,
       input: pending.input,
       persist,
-      complete: (allowed = decision !== "deny", failureReason = reason) => pending.resolve({ allowed, ...(failureReason ? { reason: failureReason } : {}), persist: allowed && persist }),
+      complete: (allowed = decision !== "deny", failureReason = reason) => {
+        const aborted = pending.signal.aborted;
+        const granted = allowed && !aborted;
+        pending.resolve({
+          allowed: granted,
+          ...(aborted ? { reason: "Permission request aborted" } : failureReason ? { reason: failureReason } : {}),
+          persist: granted && persist,
+        });
+      },
     };
   }
 

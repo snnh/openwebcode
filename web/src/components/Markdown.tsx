@@ -1,5 +1,9 @@
 import { Children, isValidElement, useEffect, useState, type ReactElement, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
+import rehypeKatex from "rehype-katex";
+import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import "katex/dist/katex.min.css";
 import { highlightCode } from "../highlight";
 
 /** 代码块：高亮器就绪前渲染纯文本，就绪后注入双主题高亮 HTML */
@@ -32,6 +36,8 @@ export function Markdown({ children }: { children: string }): ReactElement {
   return (
     <div className="markdown">
       <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
         components={{
           pre: ({ children }) => {
             const { lang, code } = extractCode(children);
