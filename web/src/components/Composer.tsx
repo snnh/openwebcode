@@ -15,6 +15,16 @@ const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const MAX_ATTACHMENTS = 4;
 
+/** 服务端内置斜杠命令（app.ts 消息路由匹配），与技能/自定义命令一起参与补全 */
+type Suggestion = SkillInfo & { builtin?: boolean };
+const BUILTIN_COMMANDS: Suggestion[] = [
+  { name: "clear", description: "清空上下文（历史保留，可回滚）", source: "global", builtin: true },
+  { name: "compact", description: "压缩上下文（/compact tools 为规则压缩）", source: "global", builtin: true },
+];
+
+/** 思考模式下拉的中文标签；value 保持英文枚举不变 */
+const THINKING_LABEL: Record<string, string> = { adaptive: "自适应", enabled: "开启", disabled: "关闭" };
+
 export function Composer({ current, model, models, draft, setDraft, onSend, onConfig, running, sendKey, skills, attachments, setAttachments, supportsImages, onNotice, sendPending = false }: {
   current: SessionDetail;
   model?: ModelProfile;
@@ -48,8 +58,8 @@ export function Composer({ current, model, models, draft, setDraft, onSend, onCo
   // 输入 /前缀 时呼出技能补全；Esc 暂时关闭，内容变化后重新打开
   const command = draft.match(/^\/([\w-]*)$/);
   const slashActive = command !== null && !dismissed;
-  const suggestions = command && !dismissed
-    ? skills.filter((skill) => skill.name.toLowerCase().startsWith(command[1]!.toLowerCase()))
+  const suggestions: Suggestion[] = command && !dismissed
+    ? [...BUILTIN_COMMANDS, ...skills].filter((skill) => skill.name.toLowerCase().startsWith(command[1]!.toLowerCase()))
     : [];
   const popupOpen = slashActive;
   const hasSuggestions = suggestions.length > 0;
@@ -222,7 +232,9 @@ const mentionHasMatches = mentionMatches.length > 0;
     }
   };
 
-  const thinkingModes = model?.capabilities.thinking ?? ["disabled"];
+  const supportedThinking = model?.capabilities.thinking ?? [];
+  // 模型不支持思考（thinking 为空数组）时退化为仅「关闭」并禁用，避免空下拉
+  const thinkingModes = supportedThinking.length > 0 ? supportedThinking : ["disabled"];
   const efforts = model?.capabilities.effort ?? [];
 
   return (
@@ -270,10 +282,10 @@ const mentionHasMatches = mentionMatches.length > 0;
           思考
           <select
             value={current.thinking ?? "disabled"}
-            disabled={running}
+            disabled={running || (model !== undefined && supportedThinking.length === 0)}
             onChange={(event) => onConfig({ thinking: event.target.value === "disabled" ? null : event.target.value })}
           >
-            {thinkingModes.map((item) => <option key={item} value={item}>{item}</option>)}
+            {thinkingModes.map((item) => <option key={item} value={item}>{THINKING_LABEL[item] ?? item}</option>)}
           </select>
         </label>
         {efforts.length > 0 && (
@@ -320,11 +332,11 @@ const mentionHasMatches = mentionMatches.length > 0;
                 >
                   <span className="skill-name">/{skill.name}</span>
                   <span className="skill-desc">{skill.description}</span>
-                  <span className="skill-source">{skill.source === "project" ? "项目" : "全局"}</span>
+                  <span className="skill-source">{skill.builtin ? "内置" : skill.source === "project" ? "项目" : "全局"}</span>
                 </button>
               </li>
             )) : (
-              <li className="skill-empty"><span className="skill-desc">无技能可用（在数据目录 skills/ 放 SKILL.md，或按 Esc 关闭）</span></li>
+              <li className="skill-empty"><span className="skill-desc">无匹配命令（内置 /clear、/compact；技能在 skills/ 放 SKILL.md；按 Esc 关闭）</span></li>
             )}
           </ul>
         )}
