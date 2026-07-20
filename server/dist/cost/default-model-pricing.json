@@ -42,6 +42,26 @@
             "output": "5000000",
             "cacheRead": "100000",
             "cacheWrite": "1250000"
+        },
+        {
+            "provider": "deepseek",
+            "model": "deepseek-chat",
+            "currency": "CNY",
+            "effectiveFrom": "2025-01-01",
+            "input": "1000000",
+            "output": "8000000",
+            "cacheRead": "100000",
+            "cacheWrite": "1000000"
+        },
+        {
+            "provider": "deepseek",
+            "model": "deepseek-reasoner",
+            "currency": "CNY",
+            "effectiveFrom": "2025-01-01",
+            "input": "4000000",
+            "output": "16000000",
+            "cacheRead": "1000000",
+            "cacheWrite": "4000000"
         }
     ]
 }
