@@ -25,13 +25,14 @@ function toolResultOf(message?: ChatMessage): string {
     .join("\n");
 }
 
-export function ExecutionTrack({ session, cleared, streamText, thinkingText, permissions, onPermissionDone, onSendToAgent }: {
+export function ExecutionTrack({ session, cleared, streamText, thinkingText, permissions, onPermissionDone, onPermissionError, onSendToAgent }: {
   session: SessionDetail;
   cleared?: { uptoIndex: number; at: string };
   streamText: string;
   thinkingText?: string;
   permissions: PermissionRequest[];
   onPermissionDone(requestId: string): void;
+  onPermissionError?(message: string): void;
   onSendToAgent?(cmd: string, output: string): void;
 }): ReactElement {
   const trackRef = useRef<HTMLDivElement>(null);
@@ -107,7 +108,7 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, per
           </article>
         )}
         {permissions.map((permission) => (
-          <PermissionCard key={permission.requestId} permission={permission} sessionId={session.id} onDone={onPermissionDone} />
+          <PermissionCard key={permission.requestId} permission={permission} sessionId={session.id} onDone={onPermissionDone} onError={onPermissionError} />
         ))}
       </div>
       {!pinned && (

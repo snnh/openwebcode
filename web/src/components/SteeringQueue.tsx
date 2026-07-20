@@ -17,7 +17,7 @@ export function SteeringQueue({ items, onRemove }: {
         <div key={item.id}>
           <span>{index + 1}</span>
           <p title={item.content}>{item.content}</p>
-          <button onClick={() => onRemove(item.id)}>撤销</button>
+          <button onClick={() => onRemove(item.id)} title="撤销" aria-label="撤销">撤销</button>
         </div>
       ))}
     </div>

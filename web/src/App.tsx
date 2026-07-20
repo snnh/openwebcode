@@ -17,7 +17,7 @@ import type { PermissionRequest } from "./components/PermissionCard";
 import { clampRailWidth, SessionRail } from "./components/SessionRail";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { SteeringQueue } from "./components/SteeringQueue";
-import { Toast } from "./components/Toast";
+import { Toast, type Notice } from "./components/Toast";
 
 const queryKeys = { sessions: ["sessions"] as const, detail: (id: string) => ["session", id] as const, skills: (id: string) => ["skills", id] as const };
 
@@ -59,7 +59,9 @@ export function App(): ReactElement {
   const [thinkingStream, setThinkingStream] = useState<Record<string, string>>({});
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
   const [agentStates, setAgentStates] = useState<Record<string, string>>({});
-  const [notice, setNotice] = useState<string>();
+  const [notice, setNotice] = useState<Notice>();
+  // 失败类提示用 error（红色、role=alert），成功/进度类用 info
+  const notify = (text: string, kind: Notice["kind"] = "info"): void => setNotice({ kind, text });
   const sessionEventSeq = useRef<Record<string, number>>({});
   const globalSeq = useRef(0);
   const activeSeq = Math.max(currentId ? (sessionEventSeq.current[currentId] ?? 0) : 0, globalSeq.current);
@@ -122,11 +124,11 @@ export function App(): ReactElement {
         }
         // MCP server 连接失败降级：该 server 工具未注入，给出告警
         if (event.type === "mcp.degraded" && event.sessionId === currentId) {
-          setNotice((event.payload as { message?: string }).message ?? "MCP server 降级");
+          notify((event.payload as { message?: string }).message ?? "MCP server 降级", "error");
         }
         // 上下文清空（/clear 命令）：刷新会话详情与上下文面板并提示
         if (event.type === "context.cleared" && event.sessionId && event.sessionId === currentId) {
-          setNotice("上下文已清空（历史保留）");
+          notify("上下文已清空（历史保留）");
           queryClient.invalidateQueries({ queryKey: queryKeys.detail(event.sessionId) });
           queryClient.invalidateQueries({ queryKey: ["context", event.sessionId] });
         }
@@ -134,11 +136,11 @@ export function App(): ReactElement {
         if (event.type === "context.compacted" && event.sessionId === currentId) {
           const payload = event.payload as { mode?: string; forced?: boolean };
           const modeLabel = payload.mode === "overview" ? "概览" : payload.mode === "toolcalls" ? "工具调用" : "规则截断";
-          setNotice(`已压缩上下文（${payload.forced ? "85% 水位强制 · " : ""}${modeLabel}）`);
+          notify(`已压缩上下文（${payload.forced ? "85% 水位强制 · " : ""}${modeLabel}）`);
           queryClient.invalidateQueries({ queryKey: ["context", currentId] });
         }
         if (event.type === "context.compact_failed" && event.sessionId === currentId) {
-          setNotice(`上下文压缩失败：${(event.payload as { message?: string }).message ?? "未知错误"}`);
+          notify(`上下文压缩失败：${(event.payload as { message?: string }).message ?? "未知错误"}`, "error");
         }
         if (!event.sessionId || event.sessionId !== currentId) return;
         if (event.type === "todos.updated") {
@@ -163,7 +165,7 @@ export function App(): ReactElement {
         // 后台任务完成通知：刷新任务列表
         if (event.type === "task.finished") {
           const task = event.payload as BackgroundTaskInfo;
-          setNotice(`后台任务 ${task.taskId} 已结束（exit ${task.exitCode ?? "?"}）`);
+          notify(`后台任务 ${task.taskId} 已结束（exit ${task.exitCode ?? "?"}）`);
           queryClient.invalidateQueries({ queryKey: ["tasks", currentId] });
         }
         if ([
@@ -233,10 +235,10 @@ export function App(): ReactElement {
       setDraft("");
       setAttachments([]);
       const queued = result as { queued?: boolean; position?: number } | undefined;
-      if (queued?.queued) setNotice(`已加入 Steering 队列（第 ${queued.position} 项）`);
+      if (queued?.queued) notify(`已加入 Steering 队列（第 ${queued.position} 项）`);
       queryClient.invalidateQueries({ queryKey: queryKeys.detail(currentId ?? "") });
     },
-    onError: (error) => setNotice(error instanceof Error ? error.message : "发送失败"),
+    onError: (error) => notify(error instanceof Error ? error.message : "发送失败", "error"),
   });
 
   // shell 结果卡「发给 agent」：把 `!cmd` 与输出摘要作为普通用户消息送入 agent run
@@ -245,7 +247,7 @@ export function App(): ReactElement {
     const summary = output.length > 2000 ? `${output.slice(0, 2000)}\n…（输出已截断）` : output;
     api.sendMessage(currentId, `刚才执行的 shell 命令：\n${cmd}\n\n输出：\n${summary}`)
       .then(() => queryClient.invalidateQueries({ queryKey: queryKeys.detail(currentId) }))
-      .catch((error: unknown) => setNotice(error instanceof Error ? error.message : "发送失败"));
+      .catch((error: unknown) => notify(error instanceof Error ? error.message : "发送失败", "error"));
   };
 
   const create = useMutation({
@@ -258,32 +260,33 @@ export function App(): ReactElement {
       if (values.permissionMode && values.permissionMode !== "ask") {
         api.updateSession(session.id, { permissionMode: values.permissionMode })
           .then(() => queryClient.invalidateQueries({ queryKey: queryKeys.detail(session.id) }))
-          .catch((error: unknown) => setNotice(error instanceof Error ? error.message : "权限模式应用失败"));
+          .catch((error: unknown) => notify(error instanceof Error ? error.message : "权限模式应用失败", "error"));
       }
     },
-    onError: (error) => setNotice(error instanceof Error ? error.message : "创建会话失败"),
+    onError: (error) => notify(error instanceof Error ? error.message : "创建会话失败", "error"),
   });
 
   const removeSession = (id: string): void => {
     const target = sessions.data?.find((session) => session.id === id);
-    if (!window.confirm(`删除会话「${target?.title ?? id}」？该操作不可撤销。`)) return;
+    const runningPrefix = runningIds.has(id) ? "该会话正在运行，" : "";
+    if (!window.confirm(`${runningPrefix}删除会话「${target?.title ?? id}」？该操作不可撤销。`)) return;
     api.deleteSession(id)
       .then(() => {
         if (currentId === id) setCurrentId(sessions.data?.find((session) => session.id !== id)?.id);
         queryClient.invalidateQueries({ queryKey: queryKeys.sessions });
       })
-      .catch((error: unknown) => setNotice(error instanceof Error ? error.message : "删除会话失败"));
+      .catch((error: unknown) => notify(error instanceof Error ? error.message : "删除会话失败", "error"));
   };
 
   const importSession = (file: File): void => {
     file.text()
       .then((text) => api.importSession(text))
       .then((session) => {
-        setNotice(`已导入会话「${session.title}」`);
+        notify(`已导入会话「${session.title}」`);
         setCurrentId(session.id);
         queryClient.invalidateQueries({ queryKey: queryKeys.sessions });
       })
-      .catch((error: unknown) => setNotice(error instanceof Error ? error.message : "导入失败"));
+      .catch((error: unknown) => notify(error instanceof Error ? error.message : "导入失败", "error"));
   };
 
   const model = useMemo(() => models.data?.find((item) => item.id === current?.model), [models.data, current?.model]);
@@ -329,7 +332,7 @@ export function App(): ReactElement {
               session={current}
               agentState={currentState}
               costSummary={costSummary}
-              onAbort={() => api.abort(current.id).catch((error: unknown) => setNotice(error instanceof Error ? error.message : "无法中断"))}
+              onAbort={() => api.abort(current.id).catch((error: unknown) => notify(error instanceof Error ? error.message : "无法中断", "error"))}
             />
             {todos.data && todos.data.length > 0 && (
               <details className="todo-panel" open>
@@ -353,9 +356,15 @@ export function App(): ReactElement {
                 setPendingPermissions((prev) => prev.filter((item) => item.requestId !== requestId));
                 queryClient.invalidateQueries({ queryKey: ["permissions", current.id] });
               }}
+              onPermissionError={(message) => notify(message, "error")}
             />
             {steering.data && steering.data.length > 0 && (
-              <SteeringQueue items={steering.data} onRemove={(itemId) => api.removeSteering(current.id, itemId).then(() => steering.refetch())} />
+              <SteeringQueue
+                items={steering.data}
+                onRemove={(itemId) => api.removeSteering(current.id, itemId)
+                  .then(() => steering.refetch())
+                  .catch((error: unknown) => notify(error instanceof Error ? error.message : "撤销 Steering 失败", "error"))}
+              />
             )}
             <Composer
               current={current}
@@ -367,27 +376,29 @@ export function App(): ReactElement {
               onConfig={(body) => {
                 api.updateSession(current.id, body)
                   .then(() => queryClient.invalidateQueries({ queryKey: queryKeys.detail(current.id) }))
-                  .catch((error: unknown) => setNotice(error instanceof Error ? error.message : "配置失败"));
+                  .catch((error: unknown) => notify(error instanceof Error ? error.message : "配置失败", "error"));
               }}
-              running={running || send.isPending}
+              running={running}
+              sendPending={send.isPending}
               sendKey={sendKey}
               skills={skills.data?.skills ?? []}
               attachments={attachments}
               setAttachments={setAttachments}
               supportsImages={supportsImages}
-              onNotice={setNotice}
+              onNotice={(message) => notify(message, "error")}
             />
           </>
         ) : (
           <EmptyState sessions={sessions.data ?? []} onSelect={setCurrentId} onCreate={() => setDialogOpen(true)} />
         )}
-        <BottomPanel sessionId={currentId} session={current} running={running} onNotice={setNotice} />
+        <BottomPanel sessionId={currentId} session={current} running={running} onNotice={notify} />
       </section>
       <NewSessionDialog
         open={dialogOpen}
         providers={providers.data ?? []}
         models={models.data ?? []}
         defaults={sessionDefaults}
+        busy={create.isPending}
         onClose={() => setDialogOpen(false)}
         onCreate={(values) => create.mutate(values)}
       />
@@ -406,7 +417,7 @@ export function App(): ReactElement {
         onResetLayout={resetLayout}
         onClose={() => setSettingsOpen(false)}
       />
-      {notice && <Toast message={notice} onDismiss={() => setNotice(undefined)} />}
+      {notice && <Toast notice={notice} onDismiss={() => setNotice(undefined)} />}
     </main>
   );
 }

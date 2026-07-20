@@ -22,11 +22,12 @@ const SANDBOX_MODE_LABELS: Record<SandboxMode, string> = {
   off: "关闭沙盒",
 };
 
-export function NewSessionDialog({ open, providers, models, defaults, onClose, onCreate }: {
+export function NewSessionDialog({ open, providers, models, defaults, busy = false, onClose, onCreate }: {
   open: boolean;
   providers: string[];
   models: ModelProfile[];
   defaults?: SessionDefaults;
+  busy?: boolean;
   onClose(): void;
   onCreate(values: NewSessionValues): void;
 }): ReactElement | null {
@@ -97,6 +98,7 @@ export function NewSessionDialog({ open, providers, models, defaults, onClose, o
   if (!open) return null;
 
   const fallbackTitle = cwd.trim().split(/[\\/]/).filter(Boolean).pop() ?? "";
+  const noProviders = providers.length === 0;
   const managedAvailable = managedCaps?.backends.some((item) => item.available) ?? false;
   const managedUnavailableReason = managedCaps === undefined
     ? "能力检测中…"
@@ -115,7 +117,7 @@ export function NewSessionDialog({ open, providers, models, defaults, onClose, o
       <form
         onSubmit={(event) => {
           event.preventDefault();
-          if (!cwd.trim() || !model) return;
+          if (busy || noProviders || !cwd.trim() || !model) return;
           onCreate({
             cwd: cwd.trim(),
             title: title.trim() || fallbackTitle || "新会话",
@@ -166,15 +168,18 @@ export function NewSessionDialog({ open, providers, models, defaults, onClose, o
             placeholder={fallbackTitle || "默认为目录名"}
           />
         </label>
+        {noProviders && (
+          <p className="dialog-hint">还没有可用的 Provider，请先在 设置 → 服务设置 配置 Provider 和 API Key</p>
+        )}
         <label>
           Provider
-          <select value={provider} onChange={(event) => setProvider(event.target.value)}>
+          <select value={provider} disabled={noProviders} onChange={(event) => setProvider(event.target.value)}>
             {providers.map((name) => <option key={name} value={name}>{name}</option>)}
           </select>
         </label>
         <label>
           模型
-          <select value={model} onChange={(event) => setModel(event.target.value)}>
+          <select value={model} disabled={noProviders} onChange={(event) => setModel(event.target.value)}>
             {dialogModels.map((item) => <option key={item.id} value={item.id}>{item.displayName ?? item.id}</option>)}
           </select>
         </label>
@@ -218,7 +223,7 @@ export function NewSessionDialog({ open, providers, models, defaults, onClose, o
         )}
         <div className="dialog-actions">
           <button type="button" className="btn" onClick={onClose}>取消</button>
-          <button type="submit" className="btn primary" disabled={!cwd.trim() || !model}>创建</button>
+          <button type="submit" className="btn primary" disabled={busy || noProviders || !cwd.trim() || !model}>{busy ? "创建中…" : "创建"}</button>
         </div>
       </form>
     </dialog>
