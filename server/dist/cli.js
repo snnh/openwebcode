@@ -1,6 +1,7 @@
-// C3 Headless CLI：`owc run "prompt" ...` 的入口。零新依赖（全局 fetch + WebSocket，Node 22+）。
+// C3 Headless CLI：`owc run "prompt" ...` 的入口。fetch 使用 Node 20 全局实现，WebSocket 使用 ws 兼容 Node 20。
 // 流程：POST /api/sessions（或 --session 复用）→ WS 订阅 /api/events → POST messages → 按事件流输出。
 // 退出码：agent.state=idle → 0；agent.error/连接失败 → 1；permission.request 且未带 --yolo → 2。
+import WebSocket from "ws";
 function usage() {
     process.stderr.write('用法: owc run "prompt" [--cwd .] [--provider X] [--model Y] [--json] [--yolo] [--server http://127.0.0.1:3000] [--session ID]\n');
     process.exit(2);
@@ -179,4 +180,3 @@ main().catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     process.exit(1);
 });
-export {};
