@@ -134,11 +134,20 @@ describe("Composer", () => {
     expect(textarea.getAttribute("aria-expanded")).toBe("true");
     expect(textarea.getAttribute("aria-controls")).toBe("skill-listbox");
     expect(textarea.getAttribute("aria-activedescendant")).toBe("skill-option-0");
+    // 内置命令排在技能前：option-0=/clear、option-1=/compact、之后才是技能
     fireEvent.keyDown(textarea, { key: "ArrowDown" });
     expect(textarea.getAttribute("aria-activedescendant")).toBe("skill-option-1");
     fireEvent.keyDown(textarea, { key: "Enter" });
     expect(onSend).not.toHaveBeenCalled();
-    expect(textarea.value).toBe("/run ");
+    expect(textarea.value).toBe("/compact ");
+  });
+
+  it("内置命令参与斜杠补全并标记「内置」", () => {
+    const { textarea } = renderComposer({ onSend: vi.fn() });
+    fireEvent.change(textarea, { target: { value: "/cl" } });
+    const option = screen.getByRole("option", { name: /\/clear/ });
+    expect(option).toHaveTextContent("内置");
+    expect(screen.queryByRole("option", { name: /\/compact/ })).not.toBeInTheDocument();
   });
 
   it("技能补全无匹配时 Enter 关闭弹层而不发送", () => {
