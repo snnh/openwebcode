@@ -1,4 +1,5 @@
 import type { ChatMessage } from "../sessions/types.js";
+import { lookupModelMetadata } from "./model-metadata.js";
 
 export type Currency = "USD" | "CNY";
 export type ModelModality = "text" | "image";
@@ -68,20 +69,6 @@ const PROFILES: Record<string, ModelProfile> = {
   },
 };
 
-const FALLBACK_CAPABILITIES: ModelCapabilities = {
-  modalities: ["text"],
-  thinking: [],
-  effort: [],
-  tools: false,
-};
-const FALLBACK: ModelProfile = {
-  id: "unknown",
-  provider: "unknown",
-  contextWindow: 200_000,
-  maxOutput: 16_000,
-  capabilities: FALLBACK_CAPABILITIES,
-};
-
 export function listModelProfiles(): ModelProfile[] {
   return Object.values(PROFILES).map((profile) => ({
     ...profile,
@@ -95,7 +82,18 @@ export function listModelProfiles(): ModelProfile[] {
 }
 
 export function getModelProfile(model: string): ModelProfile {
-  return PROFILES[model] ?? { ...FALLBACK, id: model };
+  const exact = PROFILES[model];
+  if (exact) return exact;
+  // PROFILES 未命中时回退到元数据库（覆盖 deepseek/qwen 等非 Claude 模型），
+  // 复用其 contextWindow/maxOutput/capabilities，避免两套系统默认值不一致。
+  const metadata = lookupModelMetadata(model);
+  return {
+    id: model,
+    provider: "unknown",
+    contextWindow: metadata.contextWindow,
+    maxOutput: metadata.maxOutput,
+    capabilities: metadata.capabilities,
+  };
 }
 
 export function estimateTokens(value: string): number {
