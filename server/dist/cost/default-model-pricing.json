@@ -3,47 +3,6 @@
     "updatedAt": "2026-07-14T00:00:00.000Z",
     "entries": [
         {
-            "provider": "anthropic",
-            "model": "claude-opus-4-8",
-            "currency": "USD",
-            "effectiveFrom": "2026-01-01",
-            "input": "5000000",
-            "output": "25000000",
-            "cacheRead": "500000",
-            "cacheWrite": "6250000"
-        },
-        {
-            "provider": "anthropic",
-            "model": "claude-sonnet-5",
-            "currency": "USD",
-            "effectiveFrom": "2026-01-01",
-            "effectiveUntil": "2026-09-01",
-            "input": "2000000",
-            "output": "10000000",
-            "cacheRead": "200000",
-            "cacheWrite": "2500000"
-        },
-        {
-            "provider": "anthropic",
-            "model": "claude-sonnet-5",
-            "currency": "USD",
-            "effectiveFrom": "2026-09-01",
-            "input": "3000000",
-            "output": "15000000",
-            "cacheRead": "300000",
-            "cacheWrite": "3750000"
-        },
-        {
-            "provider": "anthropic",
-            "model": "claude-haiku-4-5",
-            "currency": "USD",
-            "effectiveFrom": "2025-01-01",
-            "input": "1000000",
-            "output": "5000000",
-            "cacheRead": "100000",
-            "cacheWrite": "1250000"
-        },
-        {
             "provider": "deepseek",
             "model": "deepseek-chat",
             "currency": "CNY",
