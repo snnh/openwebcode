@@ -390,7 +390,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .todo-panel li { display: flex; gap: 8px; align-items: baseline; }
 .todo-panel li[data-status="done"] { color: var(--text-3); text-decoration: line-through; }
 .todo-panel li[data-status="in_progress"] span { color: var(--accent); }
-.execution-track-wrap { position: relative; min-height: 0; display: grid; }
+.execution-track-wrap { position: relative; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); flex: 1; }
 .execution-track {
   overflow-y: auto;
   padding: 26px clamp(20px, 4vw, 64px) 44px;
