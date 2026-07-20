@@ -4,13 +4,14 @@ import type { SessionDetail, BackgroundTaskInfo, SandboxMode, SnapshotMode } fro
 import { api } from "../lib/api";
 import { formatTokensShort } from "../lib/format";
 import { Icon } from "./Icon";
+import { useI18n } from "../i18n";
 
-const STATE_LABELS: Record<string, string> = {
-  thinking: "思考中",
-  tool_running: "执行工具",
-  waiting_permission: "等待确认",
-  budget_paused: "预算暂停",
-  error: "错误",
+const STATE_LABELS: Record<string, [string, string]> = {
+  thinking: ["思考中", "Thinking"],
+  tool_running: ["执行工具", "Running tool"],
+  waiting_permission: ["等待确认", "Waiting for approval"],
+  budget_paused: ["预算暂停", "Budget paused"],
+  error: ["错误", "Error"],
 };
 
 export function isBusyState(state?: string): boolean {
@@ -24,18 +25,18 @@ export interface CostSummary {
   paused: boolean;
 }
 
-const STATUS_LABELS: Record<string, string> = {
-  running: "运行中",
-  done: "完成",
-  failed: "失败",
-  stopped: "已停止",
+const STATUS_LABELS: Record<string, [string, string]> = {
+  running: ["运行中", "Running"],
+  done: ["完成", "Done"],
+  failed: ["失败", "Failed"],
+  stopped: ["已停止", "Stopped"],
 };
 
-const SANDBOX_LABELS: Record<SandboxMode, string> = {
-  appcontainer: "AppContainer",
-  wsb: "Windows Sandbox",
-  jobobject: "Job Object",
-  off: "关闭",
+const SANDBOX_LABELS: Record<SandboxMode, [string, string]> = {
+  appcontainer: ["AppContainer", "AppContainer"],
+  wsb: ["Windows Sandbox", "Windows Sandbox"],
+  jobobject: ["Job Object", "Job Object"],
+  off: ["关闭", "Off"],
 };
 
 export function JobHeader({ session, agentState, costSummary, onAbort, onConfig }: {
@@ -45,6 +46,7 @@ export function JobHeader({ session, agentState, costSummary, onAbort, onConfig 
   onAbort(): void;
   onConfig(body: Record<string, unknown>): Promise<void>;
 }): ReactElement {
+  const { t } = useI18n();
   const busy = isBusyState(agentState);
   const budgetRatio = costSummary?.tokenBudget ? Math.min(1, costSummary.tokens / costSummary.tokenBudget) : undefined;
   const [tasksOpen, setTasksOpen] = useState(false);
@@ -82,7 +84,7 @@ export function JobHeader({ session, agentState, costSummary, onAbort, onConfig 
   };
 
   const changeSandbox = (mode: SandboxMode): void => {
-    if (mode === "off" && !window.confirm("关闭沙盒后，命令可访问工作目录以外的文件。确定继续吗？")) return;
+    if (mode === "off" && !window.confirm(t("关闭沙盒后，命令可访问工作目录以外的文件。确定继续吗？", "With the sandbox off, commands can access files outside the workspace. Continue?"))) return;
     updateMode({ sandboxMode: mode, ...(mode === "wsb" && session.setupScript ? { setupScript: session.setupScript } : {}) });
   };
 
@@ -97,8 +99,8 @@ export function JobHeader({ session, agentState, costSummary, onAbort, onConfig 
           <span
             className={`cost-summary${costSummary.paused ? " paused" : ""}`}
             title={costSummary.tokenBudget
-              ? `Token 预算 ${formatTokensShort(costSummary.tokenBudget)}，已用 ${formatTokensShort(costSummary.tokens)}`
-              : "本会话 tokens 与成本"}
+              ? t(`Token 预算 ${formatTokensShort(costSummary.tokenBudget)}，已用 ${formatTokensShort(costSummary.tokens)}`, `Token budget ${formatTokensShort(costSummary.tokenBudget)}; ${formatTokensShort(costSummary.tokens)} used`)
+              : t("本会话 tokens 与成本", "Tokens and cost for this session")}
           >
             {formatTokensShort(costSummary.tokens)} tokens · {costSummary.costLabel}
             {budgetRatio !== undefined && (
@@ -110,55 +112,55 @@ export function JobHeader({ session, agentState, costSummary, onAbort, onConfig 
           <button
             className={`task-badge${tasksOpen ? " open" : ""}`}
             onClick={() => setTasksOpen((v) => !v)}
-            title={`${runningTasks.length} 个后台任务运行中`}
+            title={t(`${runningTasks.length} 个后台任务运行中`, `${runningTasks.length} background tasks running`)}
           >
             <Icon name="terminal" size={12} />
             {runningTasks.length}
           </button>
         )}
         {agentState && agentState !== "idle" && (
-          <span className={`state-badge state-${agentState}`}>{STATE_LABELS[agentState] ?? agentState}</span>
+          <span className={`state-badge state-${agentState}`}>{STATE_LABELS[agentState] ? t(...STATE_LABELS[agentState]!) : agentState}</span>
         )}
-        <label className={`mode-switch sandbox-mode-switch ${(session.sandboxMode ?? "appcontainer") === "off" ? "advisory" : "enforced"}`} title="切换当前会话的命令执行沙盒">
+        <label className={`mode-switch sandbox-mode-switch ${(session.sandboxMode ?? "appcontainer") === "off" ? "advisory" : "enforced"}`} title={t("切换当前会话的命令执行沙盒", "Change the command sandbox for this session")}>
           <Icon name="shield" size={11} />
-          <span>沙盒</span>
+          <span>{t("沙盒", "Sandbox")}</span>
           <select
-            aria-label="沙盒模式"
+            aria-label={t("沙盒模式", "Sandbox mode")}
             value={session.sandboxMode ?? "appcontainer"}
             disabled={busy || configPending}
             onChange={(event) => changeSandbox(event.target.value as SandboxMode)}
           >
             {(Object.keys(SANDBOX_LABELS) as SandboxMode[]).map((mode) => (
               <option key={mode} value={mode} disabled={mode === "wsb" && sandboxCapabilities.data !== undefined && !sandboxCapabilities.data.wsb.available}>
-                {SANDBOX_LABELS[mode]}
+                {t(...SANDBOX_LABELS[mode])}
               </option>
             ))}
           </select>
         </label>
-        <label className="mode-switch snapshot-mode-switch" title="自动模式会在每轮用户消息前创建检查点">
+        <label className="mode-switch snapshot-mode-switch" title={t("自动模式会在每轮用户消息前创建检查点", "Automatic mode creates a checkpoint before each user turn")}>
           <Icon name="history" size={11} />
-          <span>快照</span>
+          <span>{t("快照", "Snapshot")}</span>
           <select
-            aria-label="快照模式"
+            aria-label={t("快照模式", "Snapshot mode")}
             value={session.snapshotMode ?? "auto"}
             disabled={busy || configPending}
             onChange={(event) => updateMode({ snapshotMode: event.target.value as SnapshotMode })}
           >
-            <option value="auto">每轮自动</option>
-            <option value="manual">仅手动</option>
+            <option value="auto">{t("每轮自动", "Automatic")}</option>
+            <option value="manual">{t("仅手动", "Manual only")}</option>
           </select>
         </label>
         <a
           className="icon-btn"
           href={`/api/sessions/${session.id}/export`}
           download
-          aria-label="导出会话"
-          title="导出会话（JSONL，不含账本与 artifacts）"
+          aria-label={t("导出会话", "Export session")}
+          title={t("导出会话（JSONL，不含账本与 artifacts）", "Export session (JSONL, excluding ledger and artifacts)")}
         >
           <Icon name="download" size={14} />
         </a>
         {busy && (
-          <button className="btn danger-outline" onClick={onAbort}>中断</button>
+          <button className="btn danger-outline" onClick={onAbort}>{t("中断", "Stop")}</button>
         )}
       </div>
       {tasksOpen && allTasks.length > 0 && (
@@ -168,14 +170,14 @@ export function JobHeader({ session, agentState, costSummary, onAbort, onConfig 
               <div className="task-item-header" onClick={() => openTask(task.taskId)}>
                 <span className={`task-status-dot task-${task.status}`} />
                 <span className="task-id mono">{task.taskId}</span>
-                <span className="task-status-label">{STATUS_LABELS[task.status] ?? task.status}</span>
+                <span className="task-status-label">{STATUS_LABELS[task.status] ? t(...STATUS_LABELS[task.status]!) : task.status}</span>
                 {task.exitCode !== undefined && <span className="task-exit-code mono">exit {task.exitCode}</span>}
                 <span className="task-cmd">{task.cmd.length > 60 ? task.cmd.slice(0, 60) + "..." : task.cmd}</span>
               </div>
               {expandedTask === task.taskId && (
                 <pre className="task-output mono">
-                  {taskDetails[task.taskId]?.output ?? (task.status === "running" ? "（运行中，输出累积中…）" : "(无输出)")}
-                  {taskDetails[task.taskId]?.truncated ? "\n…（输出过长，头部已截断）" : ""}
+                  {taskDetails[task.taskId]?.output ?? (task.status === "running" ? t("（运行中，输出累积中…）", "(Running; output is accumulating…)") : t("(无输出)", "(No output)"))}
+                  {taskDetails[task.taskId]?.truncated ? t("\n…（输出过长，头部已截断）", "\n…(Output too long; beginning truncated)") : ""}
                 </pre>
               )}
             </div>

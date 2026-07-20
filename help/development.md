@@ -41,7 +41,7 @@ openwebcode/
 │   │   ├── components/   # Composer / ExecutionTrack / MessageCard / JobHeader 等
 │   │   ├── lib/          # api.ts（REST 客户端）、contracts.ts（类型契约）
 │   │   └── styles.css    # 全部样式
-│   └── test/             # vitest + jsdom + Testing Library + axe
+│   └── src/test/         # vitest + jsdom + Testing Library + axe
 ├── packaging/            # 分发布局、安装脚本、owc.cmd、CI 发布流水线
 └── .github/workflows/    # core.yml / server.yml / web.yml（CI）+ release.yml（发布）
 ```
@@ -92,6 +92,8 @@ npm run dev         # vite dev server，HMR
 web/dist 不入库——由 server 静态托管（server 解析 `server/dist/../../web/dist`）。
 
 对话渲染链位于 `components/Markdown.tsx`：`react-markdown` + `remark-gfm` + `remark-math` + `rehype-katex`，代码块再交给 Shiki。KaTeX CSS 与字体由 Vite 打进 `web/dist/assets/`；部署时不能只复制入口 JS。
+
+界面本地化位于 `web/src/i18n.tsx`。生产入口用 `I18nProvider` 包裹应用；组件通过 `useI18n()` 取得 `t(中文, English)`、当前语言和区域格式。新增用户可见文案必须同时提供中英文，不要按 DOM 文本做运行时替换。完整约定见 [`../docs/localization.md`](../docs/localization.md)。
 
 ## 本地开发循环
 
@@ -206,7 +208,7 @@ cd server && npm run dev
 
 ## 架构要点（改动前必读）
 
-- **C↔Node 通信**：子进程 + JSON-RPC 2.0 over stdio，`Content-Length: N\r\n\r\n{json}` 分帧（LSP 式）。传输层抽象在 `core-client.ts`，支持 TCP（为 WSB 模式铺路）。协议规范见 `docs/protocol.md`（本地，不随 git 同步）。
+- **C↔Node 通信**：子进程 + JSON-RPC 2.0 over stdio，`Content-Length: N\r\n\r\n{json}` 分帧（LSP 式）。传输层抽象在 `core-client.ts`，支持 TCP（为 WSB 模式铺路）。协议规范见 `docs/protocol.md`。
 - **Agent 循环在 Node 层**，C 只做执行器。状态机：`idle → thinking → (tool_calls? → waiting_permission → tool_running → thinking)* → idle`。
 - **机制在核心，策略在扩展**：核心安全网（85% 水位、当前轮保护、账本一致性、沙盒路径校验）不可被绕过；扩展点（Skills/Commands/Hooks/自定义子代理/MCP）只加策略不绕机制。
 - **权限与沙盒正交**：yolo 跳权限确认但不解除沙盒；`--no-sandbox` 才完全解除（不推荐）。
@@ -253,7 +255,7 @@ cd server && npm run dev
 - 不主动 `git push` / `rebase` / `reset`，只顺序 commit
 - `server/dist/` 是 git 跟踪产物，`npm run build` 后随源码提交
 - `web/dist/` 不入库，由 server 静态托管
-- `docs/` 被 gitignore——开发文档只落本地不进 commit
+- `docs/` 纳入版本控制——架构、协议、本地化与实施状态应随相关代码同步更新
 - `help/` 入库——用户文档与本文档随 git 同步
 - C 源文件注释纯 ASCII（GBK 代码页 `/WX` 把 C4819 当错误）
 - `server/assets/*.ps1` 必须 UTF-8 带 BOM

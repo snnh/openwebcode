@@ -391,13 +391,13 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       .send(jsonl);
   });
 
-  app.get<{ Params: { id: string } }>("/api/sessions/:id/export.html", async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { lang?: string } }>("/api/sessions/:id/export.html", async (request, reply) => {
     const detail = await sessions.get(request.params.id);
     if (!detail) return reply.code(404).send({ error: "Session not found" });
     return reply
       .type("text/html; charset=utf-8")
       .header("content-disposition", `attachment; filename="session-${request.params.id}.html"`)
-      .send(renderSessionHtml(detail));
+      .send(renderSessionHtml(detail, request.query.lang === "en" ? "en" : "zh-CN"));
   });
 
   app.post("/api/sessions/import", { bodyLimit: 50 * 1024 * 1024 }, async (request, reply) => {

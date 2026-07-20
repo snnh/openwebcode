@@ -1,5 +1,7 @@
 # openwebcode
 
+[English](./README.en.md) | 简体中文
+
 浏览器打开即用的 AI 编码工作台。原生支持 Windows / Linux，自带沙盒、快照回滚与上下文管理。
 
 ```
@@ -35,9 +37,10 @@ cd openwebcode
 
 ### 首次使用
 
-1. **设置页**配置模型提供商（baseUrl、apiKey），点「刷新模型目录」拉取可用模型。Anthropic 与 OpenAI 兼容协议（DeepSeek/Qwen/Ollama 等）都支持。
-2. 侧栏 **+** 新建会话：选工作目录、provider/模型、沙盒模式、工作区模式。
-3. 输入框描述任务，回车发送。
+1. 界面首次按浏览器语言选择中文或英文；可在 **设置 → 外观 → 语言** 随时切换，选择保存在本机并立即生效。
+2. **设置页**配置模型提供商（baseUrl、apiKey），点「刷新模型目录」拉取可用模型。Anthropic 与 OpenAI 兼容协议（DeepSeek/Qwen/Ollama 等）都支持。
+3. 侧栏 **+** 新建会话：选工作目录、provider/模型、沙盒模式、工作区模式。
+4. 输入框描述任务，回车发送。
 
 > 关闭浏览器标签页 **不会** 停止正在运行的 agent——服务器继续执行，结果照常落盘，重开 UI 选回会话自动补拉断线期间事件。要主动停下用顶部「中断」按钮。
 
@@ -131,7 +134,7 @@ cd web && npm ci && npm run build && npm test
   - [`help/faq.md`](./help/faq.md) — 常见问题：模型接入、权限与沙盒、上下文管理、快照回滚、CLI 集成、故障排查
 - **开发者文档**（随 git 同步）：
   - [`help/development.md`](./help/development.md) — 编译与二次开发：仓库布局、三件套构建、本地开发循环、测试约定、二次开发切入点、CI 与发布
-- **开发文档**（`docs/`，本地不随 git 同步）：架构总览、RPC 协议规范、实施阶段与交接记录
+- **开发文档**（`docs/`，随 git 同步）：架构总览、RPC 协议规范、实施阶段、界面本地化与交接记录
 - `packaging/README.md` — 分发布局、安装脚本与 CI 发布流水线
 
 ## 卸载

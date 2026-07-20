@@ -6,15 +6,16 @@ import { CostPanel } from "./panels/CostPanel";
 import { FilesPanel } from "./panels/FilesPanel";
 import { SandboxPanel } from "./panels/SandboxPanel";
 import { TimelinePanel } from "./panels/TimelinePanel";
+import { useI18n } from "../i18n";
 
 export type PanelTab = "files" | "context" | "timeline" | "sandbox" | "cost";
 
-const TAB_META: Record<PanelTab, { label: string; icon: IconName }> = {
-  files: { label: "文件", icon: "folder" },
-  context: { label: "上下文", icon: "layers" },
-  timeline: { label: "时间线", icon: "history" },
-  sandbox: { label: "沙盒", icon: "shield" },
-  cost: { label: "成本", icon: "chart" },
+const TAB_META: Record<PanelTab, { zh: string; en: string; icon: IconName }> = {
+  files: { zh: "文件", en: "Files", icon: "folder" },
+  context: { zh: "上下文", en: "Context", icon: "layers" },
+  timeline: { zh: "时间线", en: "Timeline", icon: "history" },
+  sandbox: { zh: "沙盒", en: "Sandbox", icon: "shield" },
+  cost: { zh: "成本", en: "Cost", icon: "chart" },
 };
 
 const MIN_HEIGHT = 140;
@@ -44,6 +45,7 @@ export function BottomPanel({ sessionId, session, running, onNotice }: {
   running: boolean;
   onNotice(message: string, kind?: "info" | "error"): void;
 }): ReactElement {
+  const { t } = useI18n();
   const [tab, setTab] = useState<PanelTab>(() => {
     const stored = readStored("owc-panel-tab");
     return stored && stored in TAB_META ? (stored as PanelTab) : "files";
@@ -78,11 +80,11 @@ export function BottomPanel({ sessionId, session, running, onNotice }: {
   };
 
   return (
-    <section className={`bottom-panel${open ? " open" : ""}`} aria-label="面板">
+    <section className={`bottom-panel${open ? " open" : ""}`} aria-label={t("面板", "Panel")}>
       {open && (
         <button
           className="panel-resize"
-          aria-label="调整面板高度（方向键上下）"
+          aria-label={t("调整面板高度（方向键上下）", "Resize panel (use arrow keys)")}
           onMouseDown={startDrag}
           onKeyDown={(event) => {
             if (event.key === "ArrowUp") setHeight((value) => clampHeight(value + 40));
@@ -99,12 +101,12 @@ export function BottomPanel({ sessionId, session, running, onNotice }: {
             onClick={() => selectTab(item)}
           >
             <Icon name={TAB_META[item].icon} size={13} />
-            {TAB_META[item].label}
+            {t(TAB_META[item].zh, TAB_META[item].en)}
           </button>
         ))}
         <button
           className="panel-fold"
-          aria-label={open ? "收起面板" : "展开面板"}
+          aria-label={open ? t("收起面板", "Collapse panel") : t("展开面板", "Expand panel")}
           onClick={() => setOpen((value) => !value)}
         >
           <Icon name={open ? "chevron-down" : "chevron-up"} size={14} />
