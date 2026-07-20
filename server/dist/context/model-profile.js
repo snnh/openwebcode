@@ -1,54 +1,5 @@
-const PROFILES = {
-    "claude-opus-4-8": {
-        id: "claude-opus-4-8",
-        provider: "anthropic",
-        contextWindow: 1_000_000,
-        maxOutput: 128_000,
-        capabilities: {
-            modalities: ["text", "image"],
-            thinking: ["adaptive", "disabled"],
-            effort: ["low", "medium", "high", "xhigh", "max"],
-            tools: true,
-        },
-    },
-    "claude-sonnet-5": {
-        id: "claude-sonnet-5",
-        provider: "anthropic",
-        contextWindow: 1_000_000,
-        maxOutput: 128_000,
-        capabilities: {
-            modalities: ["text", "image"],
-            thinking: ["adaptive", "disabled"],
-            effort: ["low", "medium", "high", "xhigh", "max"],
-            tools: true,
-        },
-    },
-    "claude-haiku-4-5": {
-        id: "claude-haiku-4-5",
-        provider: "anthropic",
-        contextWindow: 200_000,
-        maxOutput: 64_000,
-        capabilities: {
-            modalities: ["text", "image"],
-            thinking: ["enabled", "disabled"],
-            effort: [],
-            tools: true,
-        },
-    },
-};
-const FALLBACK_CAPABILITIES = {
-    modalities: ["text"],
-    thinking: [],
-    effort: [],
-    tools: false,
-};
-const FALLBACK = {
-    id: "unknown",
-    provider: "unknown",
-    contextWindow: 200_000,
-    maxOutput: 16_000,
-    capabilities: FALLBACK_CAPABILITIES,
-};
+import { lookupModelMetadata } from "./model-metadata.js";
+const PROFILES = {};
 export function listModelProfiles() {
     return Object.values(PROFILES).map((profile) => ({
         ...profile,
@@ -61,7 +12,19 @@ export function listModelProfiles() {
     }));
 }
 export function getModelProfile(model) {
-    return PROFILES[model] ?? { ...FALLBACK, id: model };
+    const exact = PROFILES[model];
+    if (exact)
+        return exact;
+    // PROFILES 未命中时回退到元数据库（覆盖 deepseek/qwen 等非 Claude 模型），
+    // 复用其 contextWindow/maxOutput/capabilities，避免两套系统默认值不一致。
+    const metadata = lookupModelMetadata(model);
+    return {
+        id: model,
+        provider: "unknown",
+        contextWindow: metadata.contextWindow,
+        maxOutput: metadata.maxOutput,
+        capabilities: metadata.capabilities,
+    };
 }
 export function estimateTokens(value) {
     return Math.max(1, Math.ceil(value.length / 4));
