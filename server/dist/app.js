@@ -83,6 +83,45 @@ export async function buildServer(dependencies) {
         return managed.capability();
     });
     app.get("/api/providers", async () => providers.list());
+    app.get("/api/extensions", async (_request, reply) => {
+        if (!dependencies.extensions)
+            return reply.code(501).send({ error: "Extension Host is not configured" });
+        return dependencies.extensions.list();
+    });
+    app.post("/api/extensions", async (request, reply) => {
+        const extensions = dependencies.extensions;
+        if (!extensions)
+            return reply.code(501).send({ error: "Extension Host is not configured" });
+        const body = request.body ?? {};
+        try {
+            if (body.action === "install") {
+                if (typeof body.path !== "string" || !body.path)
+                    return reply.code(400).send({ error: "path is required" });
+                return await extensions.install(body.path);
+            }
+            if (typeof body.id !== "string" || !body.id)
+                return reply.code(400).send({ error: "id is required" });
+            if (body.enabled !== undefined && typeof body.enabled !== "boolean")
+                return reply.code(400).send({ error: "enabled must be a boolean" });
+            if (body.config !== undefined && (!body.config || typeof body.config !== "object" || Array.isArray(body.config)))
+                return reply.code(400).send({ error: "config must be an object" });
+            return await extensions.configure(body.id, { ...(body.enabled === undefined ? {} : { enabled: body.enabled }), ...(body.config ? { config: body.config } : {}) });
+        }
+        catch (error) {
+            return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+        }
+    });
+    app.delete("/api/extensions/:id", async (request, reply) => {
+        if (!dependencies.extensions)
+            return reply.code(501).send({ error: "Extension Host is not configured" });
+        try {
+            await dependencies.extensions.uninstall(request.params.id);
+            return reply.code(204).send();
+        }
+        catch (error) {
+            return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+        }
+    });
     // 模型目录：registry（api/manual/builtin 三向合并）缺省时回退静态档案
     const catalog = () => dependencies.models?.list() ?? listModelProfiles().map((profile) => ({ ...profile, source: "builtin" }));
     const profileOf = (model) => dependencies.models?.get(model) ?? getModelProfile(model);
@@ -376,6 +415,10 @@ export async function buildServer(dependencies) {
         if (agentMode !== undefined && !["plan", "build"].includes(agentMode)) {
             return reply.code(400).send({ error: 'agentMode must be "plan" or "build"' });
         }
+        const snapshotMode = request.body && "snapshotMode" in request.body ? request.body.snapshotMode ?? undefined : session.snapshotMode;
+        if (snapshotMode !== undefined && !["auto", "manual"].includes(snapshotMode)) {
+            return reply.code(400).send({ error: 'snapshotMode must be "auto" or "manual"' });
+        }
         const permissionMode = request.body?.permissionMode ?? session.permissionMode ?? "ask";
         if (!["ask", "acceptEdits", "yolo"].includes(permissionMode))
             return reply.code(400).send({ error: "permissionMode must be ask, acceptEdits, or yolo" });
@@ -388,10 +431,15 @@ export async function buildServer(dependencies) {
                 return reply.code(400).send({ error: "setupScript must be a string" });
             }
         }
-        await sessions.updateConfig(request.params.id, { provider, model, ...(thinking ? { thinking } : {}), ...(effort ? { effort } : {}), ...(agentMode ? { agentMode } : {}) });
+        if (touchesSandbox && session.sandboxMode === "wsb") {
+            // WSB 的启动脚本和模式只在虚拟机启动时生效，切换前先释放旧实例。
+            await core.release?.(session.id);
+        }
+        await sessions.updateConfig(request.params.id, { provider, model, ...(thinking ? { thinking } : {}), ...(effort ? { effort } : {}), ...(agentMode ? { agentMode } : {}), ...(snapshotMode ? { snapshotMode } : {}) });
         let updated = await sessions.updatePermissions(request.params.id, permissionMode, session.permissionRules ?? []);
         if (touchesSandbox) {
             updated = await sessions.updateSandboxMode(request.params.id, request.body?.sandboxMode, request.body?.setupScript);
+            configuredSessions.delete(session.id);
         }
         events.publish({ source: "session", type: "session.config_updated", sessionId: session.id, payload: updated });
         return updated;
@@ -442,6 +490,21 @@ export async function buildServer(dependencies) {
         events.publish({ source: "session", type: "context.budget_updated", sessionId: request.params.id, payload: await manager.budgetStatus() });
         return ledger;
     });
+    app.put("/api/sessions/:id/context/policy", async (request, reply) => {
+        if (!(await sessions.get(request.params.id)))
+            return reply.code(404).send({ error: "Session not found" });
+        if (agent.isRunning(request.params.id))
+            return reply.code(409).send({ error: "Session is running; update context policy when it is idle" });
+        try {
+            const manager = new ContextManager(sessions.contextRoot(request.params.id));
+            const ledger = await manager.updatePolicy(request.body ?? {});
+            events.publish({ source: "session", type: "context.policy_updated", sessionId: request.params.id, payload: ledger.policy });
+            return ledger;
+        }
+        catch (error) {
+            return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+        }
+    });
     app.post("/api/sessions/:id/context/restore", async (request, reply) => {
         if (!(await sessions.get(request.params.id)))
             return reply.code(404).send({ error: "Session not found" });
@@ -459,6 +522,75 @@ export async function buildServer(dependencies) {
         }
         catch (error) {
             return reply.code(409).send({ error: error instanceof Error ? error.message : String(error) });
+        }
+    });
+    app.post("/api/sessions/:id/context/entries/:messageId", async (request, reply) => {
+        const session = await sessions.get(request.params.id);
+        if (!session)
+            return reply.code(404).send({ error: "Session not found" });
+        if (agent.isRunning(request.params.id))
+            return reply.code(409).send({ error: "Session is running; mutate context when it is idle" });
+        const manager = new ContextManager(sessions.contextRoot(request.params.id));
+        try {
+            const action = request.body?.action;
+            const ledger = action === "evict"
+                ? await manager.evictMessage(session.messages, request.params.messageId)
+                : action === "pin"
+                    ? await manager.setPinned(request.params.messageId, true)
+                    : action === "unpin"
+                        ? await manager.setPinned(request.params.messageId, false)
+                        : undefined;
+            if (!ledger)
+                return reply.code(400).send({ error: "action must be evict, pin, or unpin" });
+            events.publish({ source: "session", type: "context.entry_updated", sessionId: request.params.id, payload: { messageId: request.params.messageId, action } });
+            return ledger;
+        }
+        catch (error) {
+            return reply.code(409).send({ error: error instanceof Error ? error.message : String(error) });
+        }
+    });
+    app.get("/api/sessions/:id/context/artifacts/:artifactId", async (request, reply) => {
+        if (!(await sessions.get(request.params.id)))
+            return reply.code(404).send({ error: "Session not found" });
+        const offset = Number(request.query.offset ?? 0);
+        const limit = Number(request.query.limit ?? 64_000);
+        try {
+            return { content: await new ContextManager(sessions.contextRoot(request.params.id)).readArtifact(request.params.artifactId, offset, limit) };
+        }
+        catch (error) {
+            return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+        }
+    });
+    app.post("/api/sessions/:id/content-lens/translate", async (request, reply) => {
+        if (!dependencies.extensions?.isEnabled("content-lens"))
+            return reply.code(409).send({ error: "content-lens extension is disabled" });
+        if (!dependencies.contentLens)
+            return reply.code(503).send({ error: "content-lens service is unavailable" });
+        if (typeof request.body?.messageId !== "string" || typeof request.body?.targetLanguage !== "string" || !request.body.targetLanguage.trim() || request.body.targetLanguage.length > 64)
+            return reply.code(400).send({ error: "messageId and targetLanguage (1-64 characters) are required" });
+        const glossary = request.body.glossary;
+        if (glossary !== undefined && (!glossary || typeof glossary !== "object" || Array.isArray(glossary) || Object.keys(glossary).length > 200 || Object.entries(glossary).some(([key, value]) => !key || key.length > 100 || typeof value !== "string" || value.length > 200))) {
+            return reply.code(400).send({ error: "glossary must contain at most 200 short string pairs" });
+        }
+        try {
+            return await dependencies.contentLens.translate(request.params.id, request.body.messageId, request.body.targetLanguage, glossary ?? {});
+        }
+        catch (error) {
+            return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+        }
+    });
+    app.post("/api/sessions/:id/content-lens/explain", async (request, reply) => {
+        if (!dependencies.extensions?.isEnabled("content-lens"))
+            return reply.code(409).send({ error: "content-lens extension is disabled" });
+        if (!dependencies.contentLens)
+            return reply.code(503).send({ error: "content-lens service is unavailable" });
+        if (typeof request.body?.text !== "string" || (request.body.targetLanguage !== undefined && (typeof request.body.targetLanguage !== "string" || !request.body.targetLanguage.trim() || request.body.targetLanguage.length > 64)))
+            return reply.code(400).send({ error: "text and a valid targetLanguage are required" });
+        try {
+            return await dependencies.contentLens.explain(request.params.id, request.body.text, request.body.targetLanguage ?? "zh-CN");
+        }
+        catch (error) {
+            return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
         }
     });
     app.get("/api/sessions/:id/files", async (request, reply) => {

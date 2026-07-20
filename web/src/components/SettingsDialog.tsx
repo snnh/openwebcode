@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
-import type { ModelProfile, PermissionMode, PricingDocument, SettingsField, SettingValue } from "../lib/contracts";
+import type { ExtensionInfo, ModelProfile, PermissionMode, PricingDocument, SettingsField, SettingValue } from "../lib/contracts";
 import { formatCurrency } from "../lib/format";
 import { Icon } from "./Icon";
 import type { SendKey, SessionDefaults } from "../lib/prefs";
@@ -22,7 +22,7 @@ const ACCENT_OPTIONS: Array<{ value: AccentPreference; label: string; swatch: st
   { value: "green", label: "绿", swatch: "#2f9e44" },
 ];
 
-type SettingsTab = "appearance" | "general" | "defaults" | "server" | "models" | "skills" | "pricing" | "info";
+type SettingsTab = "appearance" | "general" | "defaults" | "server" | "models" | "skills" | "extensions" | "pricing" | "info";
 
 const TAB_META: Array<{ id: SettingsTab; label: string }> = [
   { id: "appearance", label: "外观" },
@@ -31,6 +31,7 @@ const TAB_META: Array<{ id: SettingsTab; label: string }> = [
   { id: "server", label: "服务设置" },
   { id: "models", label: "模型目录" },
   { id: "skills", label: "技能" },
+  { id: "extensions", label: "扩展" },
   { id: "pricing", label: "模型定价" },
   { id: "info", label: "服务信息" },
 ];
@@ -781,6 +782,103 @@ function SkillsSection(): ReactElement {
   );
 }
 
+function ExtensionRow({ extension }: { extension: ExtensionInfo }): ReactElement {
+  const queryClient = useQueryClient();
+  const [json, setJson] = useState(() => JSON.stringify(extension.config, null, 2));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+
+  useEffect(() => setJson(JSON.stringify(extension.config, null, 2)), [extension.config]);
+
+  const update = (body: { enabled?: boolean; config?: Record<string, unknown> }): void => {
+    setBusy(true);
+    setError(undefined);
+    api.configureExtension(extension.id, body)
+      .then(() => void queryClient.invalidateQueries({ queryKey: ["extensions"] }))
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "扩展更新失败"))
+      .finally(() => setBusy(false));
+  };
+
+  const saveConfig = (): void => {
+    try {
+      const value = JSON.parse(json) as unknown;
+      if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("配置必须是 JSON 对象");
+      update({ config: value as Record<string, unknown> });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "配置 JSON 无效");
+    }
+  };
+
+  return (
+    <article className="extension-card">
+      <header>
+        <div>
+          <strong>{extension.name}</strong>
+          <span className="mono">{extension.id} · v{extension.version}</span>
+        </div>
+        <label className="extension-switch">
+          <input type="checkbox" checked={extension.enabled} disabled={busy} onChange={(event) => update({ enabled: event.target.checked })} />
+          {extension.enabled ? "已启用" : "已停用"}
+        </label>
+      </header>
+      <p>{extension.description}</p>
+      <div className="extension-badges">
+        {extension.builtIn && <span>官方内置</span>}
+        <span className={`extension-status status-${extension.status}`}>{extension.status === "running" ? "运行中" : extension.status === "disabled" ? "已停用" : "异常"}</span>
+        {extension.permissions.map((permission) => <span key={permission}>{permission}</span>)}
+      </div>
+      {extension.id === "context-manager" && <p className="settings-note">驱逐、回写和压缩策略按会话配置，请在底部“上下文”面板中调整。</p>}
+      {extension.id !== "context-manager" && <details>
+        <summary>配置 JSON</summary>
+        <textarea className="extension-json mono" rows={7} value={json} disabled={busy} onChange={(event) => setJson(event.target.value)} spellCheck={false} />
+        <button className="btn small" disabled={busy} onClick={saveConfig}>{busy ? "保存中…" : "保存配置"}</button>
+      </details>}
+      {!extension.builtIn && (
+        <button className="btn small danger" disabled={busy} onClick={() => {
+          if (!window.confirm(`卸载扩展 ${extension.name}？其配置会一并删除。`)) return;
+          setBusy(true); setError(undefined);
+          api.uninstallExtension(extension.id)
+            .then(() => void queryClient.invalidateQueries({ queryKey: ["extensions"] }))
+            .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "卸载失败"))
+            .finally(() => setBusy(false));
+        }}>卸载扩展</button>
+      )}
+      {extension.error && <p className="settings-error">{extension.error}</p>}
+      {error && <p className="settings-error">{error}</p>}
+    </article>
+  );
+}
+
+function ExtensionsSection(): ReactElement {
+  const queryClient = useQueryClient();
+  const extensions = useQuery({ queryKey: ["extensions"], queryFn: api.extensions });
+  const [installPath, setInstallPath] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  if (extensions.isPending) return <p className="panel-empty">正在连接 Extension Host…</p>;
+  if (extensions.isError || !extensions.data) return <p className="panel-empty">无法加载扩展清单。</p>;
+  return (
+    <>
+      <p className="settings-note">扩展运行于独立 Extension Host 子进程；单个钩子超时 5 秒后跳过。v1 扩展是可信代码，安装即代表允许其 manifest 中声明的权限。</p>
+      <div className="extension-list">{extensions.data.map((extension) => <ExtensionRow key={extension.id} extension={extension} />)}</div>
+      <h3>安装本地扩展</h3>
+      <p className="settings-note">选择包含 manifest.json 和 index.js 的绝对目录；安装后复制到数据目录 extensions/。</p>
+      <div className="settings-inline-form">
+        <input value={installPath} onChange={(event) => setInstallPath(event.target.value)} placeholder="D:\\path\\owc-ext-example" spellCheck={false} />
+        <button className="btn small" disabled={busy || !installPath.trim()} onClick={() => {
+          if (!window.confirm("v1 扩展会作为可信代码在独立进程中运行。确认信任并安装此目录中的代码？")) return;
+          setBusy(true); setError(undefined);
+          api.installExtension(installPath.trim())
+            .then(() => { setInstallPath(""); void queryClient.invalidateQueries({ queryKey: ["extensions"] }); })
+            .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "安装失败"))
+            .finally(() => setBusy(false));
+        }}>{busy ? "安装中…" : "安装"}</button>
+      </div>
+      {error && <p className="settings-error">{error}</p>}
+    </>
+  );
+}
+
 export function SettingsDialog({ open, preference, setPreference, accent, setAccent, sendKey, setSendKey, defaults, setDefaults, providers, models, onResetLayout, onClose }: {
   open: boolean;
   preference: ThemePreference;
@@ -929,6 +1027,12 @@ export function SettingsDialog({ open, preference, setPreference, accent, setAcc
             <section>
               <h3>技能</h3>
               <SkillsSection />
+            </section>
+          )}
+          {activeTab === "extensions" && (
+            <section>
+              <h3>扩展管理</h3>
+              <ExtensionsSection />
             </section>
           )}
           {activeTab === "pricing" && (

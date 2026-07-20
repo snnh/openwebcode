@@ -7,6 +7,7 @@ export interface TodoItem {
 export type PermissionMode = "ask" | "acceptEdits" | "yolo";
 export type SandboxCapability = "advisory" | "partial" | "enforced";
 export type SandboxMode = "appcontainer" | "wsb" | "jobobject" | "off";
+export type SnapshotMode = "auto" | "manual";
 
 export interface SandboxCapabilities {
   appcontainer: boolean;
@@ -52,6 +53,7 @@ export interface Session {
   agentMode?: "plan" | "build";
   permissionMode?: PermissionMode;
   sandboxMode?: SandboxMode;
+  snapshotMode?: SnapshotMode;
   setupScript?: string;
   sandbox?: {
     enabled: boolean;
@@ -86,14 +88,42 @@ export interface AppEvent {
 
 export interface ContextView {
   ledger: {
+    round?: number;
     usage: { inputTokens: number; outputTokens: number; cacheRead: number; cacheWrite: number };
     cost: { usdMicroUnits: string; cnyMicroUnits: string; unpricedTokens: number };
-    entries: Array<{ messageId: string; state: "full" | "evicted" | "restored"; artifactId: string }>;
-    policy?: { maxSessionTokens?: number; maxSessionCost?: { currency: "USD" | "CNY"; microUnits: string } };
+    entries: Array<{ messageId: string; state: "full" | "evicted" | "restored"; artifactId: string; pinnedUntilRound?: number }>;
+    policy?: {
+      enabled: boolean;
+      strategy: "lag" | "interval" | "off";
+      lag: number;
+      interval: number;
+      pinExemptRounds: number;
+      restoreBudget: number;
+      maxSessionTokens?: number;
+      maxSessionCost?: { currency: "USD" | "CNY"; microUnits: string };
+    };
     compacted?: { uptoIndex: number; mode: "toolcalls" | "overview" | "truncated"; summary: string; instructions: string[]; createdAt: string };
     cleared?: { uptoIndex: number; at: string };
   };
   preferences: { language: string; currency: "USD" | "CNY"; currencyLabel: string };
+}
+
+export type ExtensionPermission = "context:read" | "context:mutate" | "tools:register" | "sessions:read" | "ui:panel" | "ui:messageAttachment" | "network:fetch";
+
+export interface ExtensionInfo {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  apiVersion: string;
+  permissions: ExtensionPermission[];
+  official?: boolean;
+  defaultEnabled?: boolean;
+  enabled: boolean;
+  builtIn: boolean;
+  status: "running" | "disabled" | "error";
+  config: Record<string, unknown>;
+  error?: string;
 }
 
 export interface ModelProfile {
