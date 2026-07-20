@@ -43,6 +43,33 @@ async function setup(provider: Provider): Promise<Harness> {
   await sessions.initialize();
   const pricing = new PricingCatalog(path.join(root, "pricing.json"));
   await pricing.initialize();
+  // 内置默认不再含 claude 定价，测试自行注入，避免依赖内置目录内容
+  await pricing.replace({
+    version: 1,
+    updatedAt: "2026-07-14T00:00:00.000Z",
+    entries: [
+      {
+        provider: "anthropic",
+        model: "claude-opus-4-8",
+        currency: "USD",
+        effectiveFrom: "2026-01-01",
+        input: "5000000",
+        output: "25000000",
+        cacheRead: "500000",
+        cacheWrite: "6250000",
+      },
+      {
+        provider: "anthropic",
+        model: "claude-haiku-4-5",
+        currency: "USD",
+        effectiveFrom: "2025-01-01",
+        input: "1000000",
+        output: "5000000",
+        cacheRead: "100000",
+        cacheWrite: "1250000",
+      },
+    ],
+  });
   const events = new EventBus();
   const providers = new ProviderRegistry();
   providers.register(provider);

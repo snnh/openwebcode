@@ -26,16 +26,24 @@ function entry(provider: string, model: string, from: string, until?: string): P
 }
 
 describe("PricingCatalog", () => {
-  it("seeds JSON and switches Sonnet pricing by effective interval", async () => {
+  it("seeds JSON and switches pricing by effective interval", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "owc-pricing-"));
     roots.push(root);
     const file = path.join(root, "model-pricing.json");
     const catalog = new PricingCatalog(file);
     await catalog.initialize();
 
-    expect(catalog.get("anthropic", "claude-sonnet-5", new Date("2026-08-31T12:00:00Z"))?.input).toBe(2_000_000n);
-    expect(catalog.get("anthropic", "claude-sonnet-5", new Date("2026-09-01T00:00:00Z"))?.input).toBe(3_000_000n);
+    // 内置种子（deepseek）
+    expect(catalog.get("deepseek", "deepseek-chat")?.input).toBe(1_000_000n);
     expect(JSON.parse(await readFile(file, "utf8")).version).toBe(1);
+
+    // 生效区间切换
+    await catalog.replace(document([
+      entry("deepseek", "deepseek-chat", "2026-01-01", "2026-09-01"),
+      { ...entry("deepseek", "deepseek-chat", "2026-09-01"), input: "3000000" },
+    ]));
+    expect(catalog.get("deepseek", "deepseek-chat", new Date("2026-08-31T12:00:00Z"))?.input).toBe(2_000_000n);
+    expect(catalog.get("deepseek", "deepseek-chat", new Date("2026-09-01T00:00:00Z"))?.input).toBe(3_000_000n);
   });
 
   it("isolates pricing by provider and hot-replaces future lookups", async () => {
@@ -58,7 +66,7 @@ describe("PricingCatalog", () => {
     await import("node:fs/promises").then(({ writeFile }) => writeFile(file, "{broken", "utf8"));
     const catalog = new PricingCatalog(file);
     await catalog.initialize();
-    expect(catalog.get("anthropic", "claude-opus-4-8")?.input).toBe(5_000_000n);
+    expect(catalog.get("deepseek", "deepseek-chat")?.input).toBe(1_000_000n);
   });
 
   it("rejects normalized but nonexistent calendar dates", async () => {
