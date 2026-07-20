@@ -18,6 +18,9 @@ import { detectWsb } from "./sandbox/wsb.js";
 import { getSnapshotBackend } from "./snapshots/index.js";
 import { SessionTransferError } from "./sessions/session-transfer.js";
 import { SettingsValidationError } from "./settings-service.js";
+const MODEL_MODALITIES = ["text", "image"];
+const THINKING_MODES = ["adaptive", "enabled", "disabled"];
+const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
 function serializePricing(pricing) {
     return {
         currency: pricing.currency,
@@ -115,6 +118,11 @@ export async function buildServer(dependencies) {
                 && typeof value.tools === "boolean";
             if (!valid)
                 return reply.code(400).send({ error: "capabilities must include modalities/thinking/effort arrays and a tools boolean" });
+            const inRange = value.modalities.every((item) => MODEL_MODALITIES.includes(item))
+                && value.thinking.every((item) => THINKING_MODES.includes(item))
+                && value.effort.every((item) => EFFORT_LEVELS.includes(item));
+            if (!inRange)
+                return reply.code(400).send({ error: "capabilities values out of range (modalities: text/image; thinking: adaptive/enabled/disabled; effort: low/medium/high/xhigh/max)" });
         }
         for (const key of ["contextWindow", "maxOutput"]) {
             if (body[key] !== undefined && (!Number.isSafeInteger(body[key]) || body[key] < 1)) {

@@ -14,7 +14,7 @@ import { ContextManager, type BudgetUpdate } from "./context/context-manager.js"
 import { renderSessionHtml } from "./export-html.js";
 import { boundToolResult } from "./context/tool-result-budget.js";
 import type { ServerConfig } from "./config.js";
-import { getModelProfile, listModelProfiles, type Currency, type EffortLevel, type ModelPricing, type ModelProfile, type ThinkingMode } from "./context/model-profile.js";
+import { getModelProfile, listModelProfiles, type Currency, type EffortLevel, type ModelModality, type ModelPricing, type ModelProfile, type ThinkingMode } from "./context/model-profile.js";
 import { lookupModelMetadata } from "./context/model-metadata.js";
 import type { CatalogModel, ModelRegistry } from "./context/model-registry.js";
 import { PricingValidationError, type PricingCatalog, type PricingDocument } from "./cost/pricing-catalog.js";
@@ -66,6 +66,10 @@ interface BudgetBody {
   maxSessionTokens?: number | null;
   maxSessionCost?: { amount: string; currency?: Currency | "RMB" } | null;
 }
+
+const MODEL_MODALITIES: readonly ModelModality[] = ["text", "image"];
+const THINKING_MODES: readonly ThinkingMode[] = ["adaptive", "enabled", "disabled"];
+const EFFORT_LEVELS: readonly EffortLevel[] = ["low", "medium", "high", "xhigh", "max"];
 
 export interface ServerDependencies {
   core: CoreClientLike;
@@ -182,6 +186,10 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
         && Array.isArray(value.modalities) && Array.isArray(value.thinking) && Array.isArray(value.effort)
         && typeof value.tools === "boolean";
       if (!valid) return reply.code(400).send({ error: "capabilities must include modalities/thinking/effort arrays and a tools boolean" });
+      const inRange = value.modalities.every((item) => MODEL_MODALITIES.includes(item as ModelModality))
+        && value.thinking.every((item) => THINKING_MODES.includes(item as ThinkingMode))
+        && value.effort.every((item) => EFFORT_LEVELS.includes(item as EffortLevel));
+      if (!inRange) return reply.code(400).send({ error: "capabilities values out of range (modalities: text/image; thinking: adaptive/enabled/disabled; effort: low/medium/high/xhigh/max)" });
     }
     for (const key of ["contextWindow", "maxOutput"] as const) {
       if (body[key] !== undefined && (!Number.isSafeInteger(body[key]) || (body[key] as number) < 1)) {

@@ -254,6 +254,15 @@ describe("models API", () => {
       expect((await app.inject({ method: "PUT", url: "/api/models/bad", payload: { contextWindow: -1 } })).statusCode).toBe(400);
       expect((await app.inject({ method: "PUT", url: "/api/models/no-provider", payload: {} })).statusCode).toBe(400);
       expect((await app.inject({ method: "PUT", url: "/api/models/bad-caps", payload: { provider: "openai", capabilities: { tools: "yes" } } })).statusCode).toBe(400);
+      // capabilities 数组元素枚举校验：modalities/thinking/effort 越界一律 400
+      const badEnum = { modalities: ["audio"], thinking: ["sometimes"], effort: ["ultra"], tools: true };
+      expect((await app.inject({ method: "PUT", url: "/api/models/my-custom", payload: { capabilities: badEnum } })).statusCode).toBe(400);
+      expect((await app.inject({ method: "PUT", url: "/api/models/my-custom", payload: { capabilities: { modalities: ["text"], thinking: [], effort: ["ultra"], tools: true } } })).statusCode).toBe(400);
+      // 合法 capabilities 原样持久化（含 thinking/effort 覆盖）
+      const caps = { modalities: ["text", "image"], thinking: ["adaptive", "disabled"], effort: ["low", "high"], tools: false };
+      const updated = await app.inject({ method: "PUT", url: "/api/models/my-custom", payload: { capabilities: caps, maxOutput: 8_000 } });
+      expect(updated.statusCode).toBe(200);
+      expect(updated.json()).toMatchObject({ id: "my-custom", source: "manual", maxOutput: 8_000, capabilities: caps });
       expect((await app.inject({ method: "DELETE", url: "/api/models/nonexistent" })).statusCode).toBe(409);
       expect((await app.inject({ method: "DELETE", url: "/api/models/my-custom" })).statusCode).toBe(204);
       const after = (await app.inject({ method: "GET", url: "/api/models" })).json<CatalogModel[]>();

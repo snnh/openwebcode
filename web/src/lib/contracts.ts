@@ -106,7 +106,8 @@ export interface ModelProfile {
   capabilities: {
     thinking: Array<"adaptive" | "enabled" | "disabled">;
     effort: Array<"low" | "medium" | "high" | "xhigh" | "max">;
-    modalities: string[];
+    modalities: Array<"text" | "image">;
+    tools: boolean;
   };
   pricing?: { currency: string; input: string; output: string; cacheRead: string; cacheWrite: string };
 }

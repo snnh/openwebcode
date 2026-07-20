@@ -459,6 +459,21 @@ function ServerSettingsSection({ onDirtyChange }: { onDirtyChange?(dirty: boolea
 }
 
 const SOURCE_LABEL: Record<string, string> = { builtin: "内置", api: "API", manual: "手动" };
+const THINKING_LABEL: Record<string, string> = { adaptive: "自适应", enabled: "开启", disabled: "关闭" };
+const THINKING_OPTIONS = ["adaptive", "enabled", "disabled"] as const;
+const EFFORT_OPTIONS = ["low", "medium", "high", "xhigh", "max"] as const;
+const MODALITY_OPTIONS = ["text", "image"] as const;
+
+interface ModelEditForm {
+  id: string;
+  provider: string;
+  contextWindow: string;
+  maxOutput: string;
+  thinking: string[];
+  effort: string[];
+  modalities: string[];
+  tools: boolean;
+}
 
 function ModelCatalogSection(): ReactElement {
   const queryClient = useQueryClient();
@@ -467,6 +482,7 @@ function ModelCatalogSection(): ReactElement {
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState({ id: "", provider: "", contextWindow: "" });
+  const [editing, setEditing] = useState<ModelEditForm | null>(null);
 
   const invalidate = (): void => void queryClient.invalidateQueries({ queryKey: ["models"] });
 
@@ -521,12 +537,84 @@ function ModelCatalogSection(): ReactElement {
       .finally(() => setBusy(false));
   };
 
+  // 双击行进入编辑态：API/内置来源的模型保存后成为手动覆盖（list 合并时手动优先）
+  const startEdit = (model: ModelProfile): void => {
+    setNotice(undefined);
+    setError(undefined);
+    setEditing({
+      id: model.id,
+      provider: model.provider,
+      contextWindow: String(model.contextWindow),
+      maxOutput: String(model.maxOutput),
+      thinking: [...model.capabilities.thinking],
+      effort: [...model.capabilities.effort],
+      modalities: [...model.capabilities.modalities],
+      tools: model.capabilities.tools,
+    });
+  };
+
+  const cancelEdit = (): void => setEditing(null);
+
+  const toggleCapability = (key: "thinking" | "effort" | "modalities", value: string): void => {
+    setEditing((prev) => {
+      if (!prev) return prev;
+      const selected = prev[key];
+      return { ...prev, [key]: selected.includes(value) ? selected.filter((item) => item !== value) : [...selected, value] };
+    });
+  };
+
+  const saveEdit = (): void => {
+    if (!editing) return;
+    const contextWindow = editing.contextWindow.trim() ? Number(editing.contextWindow) : undefined;
+    if (contextWindow !== undefined && (!Number.isSafeInteger(contextWindow) || contextWindow < 1)) {
+      setError("上下文窗口必须是正整数");
+      return;
+    }
+    const maxOutput = editing.maxOutput.trim() ? Number(editing.maxOutput) : undefined;
+    if (maxOutput !== undefined && (!Number.isSafeInteger(maxOutput) || maxOutput < 1)) {
+      setError("最大输出必须是正整数");
+      return;
+    }
+    setBusy(true);
+    setError(undefined);
+    api.saveModel(editing.id, {
+      ...(editing.provider.trim() ? { provider: editing.provider.trim() } : {}),
+      ...(contextWindow ? { contextWindow } : {}),
+      ...(maxOutput ? { maxOutput } : {}),
+      capabilities: {
+        thinking: editing.thinking as ModelProfile["capabilities"]["thinking"],
+        effort: editing.effort as ModelProfile["capabilities"]["effort"],
+        modalities: editing.modalities as ModelProfile["capabilities"]["modalities"],
+        tools: editing.tools,
+      },
+    })
+      .then(() => {
+        setEditing(null);
+        setNotice(`已保存模型 ${editing.id}`);
+        invalidate();
+      })
+      .catch((saveError: unknown) => setError(saveError instanceof Error ? saveError.message : "保存失败"))
+      .finally(() => setBusy(false));
+  };
+
+  const renderCapGroup = (title: string, options: readonly string[], selected: string[], key: "thinking" | "effort" | "modalities", labels?: Record<string, string>): ReactElement => (
+    <div className="capability-row">
+      <span className="capability-title">{title}</span>
+      {options.map((option) => (
+        <label key={option}>
+          <input type="checkbox" checked={selected.includes(option)} onChange={() => toggleCapability(key, option)} />
+          {labels?.[option] ?? option}
+        </label>
+      ))}
+    </div>
+  );
+
   if (models.isPending) return <p className="panel-empty">加载中…</p>;
   if (models.isError || !models.data) return <p className="panel-empty">无法加载模型目录。</p>;
 
   return (
     <>
-      <p className="settings-note">从已配置凭据的 provider 拉取模型列表；未知模型按内置元数据库保守成档。手动条目永不被刷新覆盖。</p>
+      <p className="settings-note">从已配置凭据的 provider 拉取模型列表；未知模型按内置元数据库保守成档。手动条目永不被刷新覆盖。双击行可编辑模型能力（API/内置模型保存后成为手动覆盖）。</p>
       <div className="dialog-actions catalog-actions">
         <button className="btn small" disabled={busy} onClick={refresh}>{busy ? "处理中…" : "刷新模型目录"}</button>
       </div>
@@ -534,44 +622,94 @@ function ModelCatalogSection(): ReactElement {
       {error && <p className="settings-error">{error}</p>}
       <table className="pricing-table catalog-table">
         <thead>
-          <tr><th>模型</th><th>Provider</th><th>来源</th><th>上下文</th><th></th></tr>
+          <tr><th>模型</th><th>Provider</th><th>来源</th><th>上下文</th><th>思考</th><th>力度</th><th></th></tr>
         </thead>
         <tbody>
           {models.data.map((model) => (
-            <tr key={model.id}>
+            <tr key={model.id} title="双击编辑" onDoubleClick={() => startEdit(model)}>
               <td className="mono">{model.displayName ?? model.id}</td>
               <td>{model.provider}</td>
               <td><span className={`badge badge-source-${model.source ?? "builtin"}`}>{SOURCE_LABEL[model.source ?? "builtin"]}</span></td>
               <td className="mono">{model.contextWindow.toLocaleString()}</td>
+              <td>{model.capabilities.thinking.length > 0 ? model.capabilities.thinking.map((item) => THINKING_LABEL[item] ?? item).join("、") : "—"}</td>
+              <td>{model.capabilities.effort.length > 0 ? model.capabilities.effort.join("、") : "—"}</td>
               <td>{model.source === "manual" && <button className="badge badge-action" disabled={busy} onClick={() => removeManual(model.id)}>删除</button>}</td>
             </tr>
           ))}
         </tbody>
       </table>
-      <div className="catalog-form">
-        <input
-          value={form.id}
-          placeholder="模型 id（如 gpt-4o）"
-          onChange={(event) => setForm((prev) => ({ ...prev, id: event.target.value }))}
-          aria-label="模型 id"
-          spellCheck={false}
-        />
-        <input
-          value={form.provider}
-          placeholder="provider（新模型必填）"
-          onChange={(event) => setForm((prev) => ({ ...prev, provider: event.target.value }))}
-          aria-label="provider"
-          spellCheck={false}
-        />
-        <input
-          value={form.contextWindow}
-          placeholder="上下文窗口（可选）"
-          onChange={(event) => setForm((prev) => ({ ...prev, contextWindow: event.target.value }))}
-          aria-label="上下文窗口"
-          inputMode="numeric"
-        />
-        <button className="btn small" disabled={busy} onClick={addManual}>添加手动模型</button>
-      </div>
+      {editing ? (
+        <div className="catalog-edit-form" onKeyDown={(event) => { if (event.key === "Escape") cancelEdit(); }}>
+          <h4>编辑模型 <span className="mono">{editing.id}</span></h4>
+          <div className="catalog-form">
+            <input value={editing.id} disabled aria-label="模型 id" spellCheck={false} />
+            <input
+              value={editing.provider}
+              placeholder="provider"
+              onChange={(event) => setEditing((prev) => prev && { ...prev, provider: event.target.value })}
+              aria-label="provider"
+              spellCheck={false}
+            />
+            <input
+              value={editing.contextWindow}
+              placeholder="上下文窗口"
+              onChange={(event) => setEditing((prev) => prev && { ...prev, contextWindow: event.target.value })}
+              aria-label="上下文窗口"
+              inputMode="numeric"
+            />
+            <input
+              value={editing.maxOutput}
+              placeholder="最大输出"
+              onChange={(event) => setEditing((prev) => prev && { ...prev, maxOutput: event.target.value })}
+              aria-label="最大输出"
+              inputMode="numeric"
+            />
+          </div>
+          {renderCapGroup("思考", THINKING_OPTIONS, editing.thinking, "thinking", THINKING_LABEL)}
+          {renderCapGroup("力度", EFFORT_OPTIONS, editing.effort, "effort")}
+          {renderCapGroup("模态", MODALITY_OPTIONS, editing.modalities, "modalities")}
+          <div className="capability-row">
+            <span className="capability-title">工具</span>
+            <label>
+              <input
+                type="checkbox"
+                checked={editing.tools}
+                onChange={(event) => setEditing((prev) => prev && { ...prev, tools: event.target.checked })}
+              />
+              启用
+            </label>
+          </div>
+          <div className="dialog-actions">
+            <button className="btn small" disabled={busy} onClick={cancelEdit}>取消（Esc）</button>
+            <button className="btn small primary" disabled={busy} onClick={saveEdit}>{busy ? "保存中…" : "保存模型"}</button>
+          </div>
+        </div>
+      ) : (
+        <div className="catalog-form">
+          <input
+            value={form.id}
+            placeholder="模型 id（如 gpt-4o）"
+            onChange={(event) => setForm((prev) => ({ ...prev, id: event.target.value }))}
+            aria-label="模型 id"
+            spellCheck={false}
+          />
+          <input
+            value={form.provider}
+            placeholder="provider（新模型必填）"
+            onChange={(event) => setForm((prev) => ({ ...prev, provider: event.target.value }))}
+            aria-label="provider"
+            spellCheck={false}
+          />
+          <input
+            value={form.contextWindow}
+            placeholder="上下文窗口（可选）"
+            onChange={(event) => setForm((prev) => ({ ...prev, contextWindow: event.target.value }))}
+            aria-label="上下文窗口"
+            inputMode="numeric"
+          />
+          <button className="btn small" disabled={busy} onClick={addManual}>添加手动模型</button>
+        </div>
+      )}
     </>
   );
 }
