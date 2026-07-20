@@ -79,6 +79,10 @@ jobs:
           set -euo pipefail
           cd server
           npm prune --omit=dev
+          # @fastify/send publishes test fixtures, including a snowman-named
+          # directory that WiX v3's code page 1252 cannot represent. Tests are
+          # not used at runtime, so omit them from the distributable tree.
+          rm -rf node_modules/@fastify/send/test
       - name: Build core (Release)
         shell: bash
         run: |
@@ -180,6 +184,8 @@ jobs:
           set -euo pipefail
           cd server
           npm prune --omit=dev
+          # Keep both platform bundles on the same production dependency tree.
+          rm -rf node_modules/@fastify/send/test
       - name: Build core (Release)
         run: |
           set -euo pipefail
