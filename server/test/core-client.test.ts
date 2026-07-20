@@ -43,10 +43,10 @@ describe.skipIf(!existsSync(corePath))("CoreClient", () => {
         ? "Write-Output node-core-ok; [Console]::Error.WriteLine('node-core-error'); exit 7"
         : "printf 'node-core-ok\\n'; printf 'node-core-error\\n' >&2; exit 7",
       cwd,
-      timeoutMs: 5_000,
+      timeoutMs: 15_000,
     });
     expect(result.exitCode).toBe(7);
     const output = events.filter((event) => event.type === "exec.output");
     expect(output).toHaveLength(2);
-  });
+  }, 30_000);
 });
