@@ -95,7 +95,9 @@ jobs:
           cp -r server/dist server/package.json server/node_modules server/assets build/stage/server/
           cp -r web/dist build/stage/web/
           curl -fsSLo node.zip "https://nodejs.org/dist/v${NODE_DIST_VERSION}/node-v${NODE_DIST_VERSION}-win-x64.zip"
-          tar -xf node.zip
+          # Git for Windows 的 tar 在部分 runner 镜像中只支持 tar 流，不能解 zip；
+          # 使用系统 PowerShell 的 Expand-Archive，避免把 ZIP 误判为 tar。
+          pwsh -NoLogo -NoProfile -NonInteractive -Command "Expand-Archive -LiteralPath 'node.zip' -DestinationPath '.' -Force"
           cp "node-v${NODE_DIST_VERSION}-win-x64/node.exe" build/stage/node/
           test -f build/stage/node/node.exe
           # .cmd 需要 CRLF：先去已有 \r 再统一加（与 checkout 的 EOL 配置无关）
