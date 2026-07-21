@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { CoreClientLike, ExecResult } from "../core-client.js";
+import { decodeProcessOutputChunks, type EncodedProcessOutput } from "./output-decoder.js";
 
 export interface BackgroundTaskInfo {
   taskId: string;
@@ -14,7 +15,9 @@ export interface BackgroundTaskInfo {
 
 interface TaskEntry {
   info: BackgroundTaskInfo;
-  output: string;
+  output: EncodedProcessOutput[];
+  outputBytes: number;
+  nextOutputSeq: number;
   truncated: boolean;
   client: CoreClientLike;
   settled: boolean;
@@ -25,7 +28,8 @@ interface TaskEntry {
  * 走与主循环相同的 configureSession + sandbox 策略，然后发起 run 但不 await。
  * 主循环的 core 连接完全不受影响。
  *
- * 输出环形缓冲：每任务解码后文本总量上限 256KB，超限丢头部（记 truncated 标志）。
+ * 输出环形缓冲：每任务原始字节总量上限 256KB，超限丢头部（记 truncated 标志）。
+ * 保留字节至读取时再解码，避免多字节 UTF-8/GBK 字符恰好被 pipe 分片时变成替换字符。
  * task_stop 即 kill 该任务专属 CoreClient 进程（Windows Job Object KILL_ON_JOB_CLOSE 保证
  *  kill core 进程即杀尽孙进程树）。posix 平台 kill 后孙进程可能孤儿化。
  */
@@ -59,7 +63,9 @@ export class BackgroundTaskRegistry {
 
     const entry: TaskEntry = {
       info,
-      output: "",
+      output: [],
+      outputBytes: 0,
+      nextOutputSeq: 0,
       truncated: false,
       client,
       settled: false,
@@ -69,8 +75,13 @@ export class BackgroundTaskRegistry {
     // 收集输出
     client.on("event", (event: { type: string; payload?: { execId?: string; stream?: string; data?: string; seq?: number } }) => {
       if (event.type === "exec.output" && event.payload?.data && typeof event.payload.data === "string") {
-        const decoded = Buffer.from(event.payload.data, "base64").toString("utf8");
-        this.appendOutput(entry, decoded);
+        const seq = typeof event.payload.seq === "number" ? event.payload.seq : entry.nextOutputSeq;
+        this.appendOutput(entry, {
+          stream: event.payload.stream ?? "stdout",
+          data: event.payload.data,
+          seq,
+        });
+        entry.nextOutputSeq = Math.max(entry.nextOutputSeq, seq + 1);
       }
     });
 
@@ -92,7 +103,8 @@ export class BackgroundTaskRegistry {
   get(taskId: string): (BackgroundTaskInfo & { output: string; truncated?: boolean }) | undefined {
     const entry = this.tasks.get(taskId);
     if (!entry) return undefined;
-    return { ...entry.info, output: entry.output, ...(entry.truncated ? { truncated: true } : {}) };
+    const output = decodeProcessOutputChunks(entry.output).map((chunk) => chunk.data).join("");
+    return { ...entry.info, output, ...(entry.truncated ? { truncated: true } : {}) };
   }
 
   listForSession(sessionId: string): BackgroundTaskInfo[] {
@@ -185,21 +197,25 @@ export class BackgroundTaskRegistry {
     this.notices.set(sessionId, list);
   }
 
-  private appendOutput(entry: TaskEntry, text: string): void {
-    const MAX_OUTPUT = 256 * 1024; // 256KB
-    const newLength = entry.output.length + text.length;
-    if (newLength > MAX_OUTPUT) {
-      // 丢弃头部保留尾部；超限后持续滚动
-      const excess = newLength - MAX_OUTPUT;
-      if (excess >= entry.output.length) {
-        // 旧输出全部丢弃，新文本从后截取
-        entry.output = text.slice(excess - entry.output.length);
-      } else {
-        entry.output = entry.output.slice(excess) + text;
-      }
+  private appendOutput(entry: TaskEntry, chunk: EncodedProcessOutput): void {
+    const MAX_OUTPUT_BYTES = 256 * 1024;
+    const raw = Buffer.from(chunk.data, "base64");
+    if (raw.length >= MAX_OUTPUT_BYTES) {
+      // Core normally emits 4KB frames, but preserve the tail if an injected or
+      // future transport frame is larger than the entire ring buffer.
+      const tail = raw.subarray(raw.length - MAX_OUTPUT_BYTES);
+      entry.output = [{ ...chunk, data: tail.toString("base64") }];
+      entry.outputBytes = tail.length;
       entry.truncated = true;
-    } else {
-      entry.output += text;
+      return;
+    }
+    const byteLength = raw.length;
+    entry.output.push(chunk);
+    entry.outputBytes += byteLength;
+    while (entry.outputBytes > MAX_OUTPUT_BYTES && entry.output.length > 0) {
+      const oldest = entry.output.shift()!;
+      entry.outputBytes -= Buffer.from(oldest.data, "base64").length;
+      entry.truncated = true;
     }
   }
 }

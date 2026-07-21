@@ -14,7 +14,7 @@ The `release` workflow produces:
 | `openwebcode-<version>-linux-x64.tar.gz` | Linux x64 | Runtime tree plus top-level `install.sh` |
 | `SHA256SUMS.txt` | Both | SHA-256 checksums for the two release archives |
 
-`<version>` is the release tag without its leading `v` (for example, `v0.2.0` becomes `0.2.0`).
+`<version>` is the release tag without its leading `v` (for example, `v0.2.1` becomes `0.2.1`).
 
 Windows MSI packaging requires CMake 3.19 or newer (for CPack's WiX custom-namespace support) and WiX Toolset v3.
 
@@ -87,8 +87,8 @@ Restart `build\stage\bin\owc.cmd` afterward and use `Ctrl+F5` if the browser ret
 Pushing a semantic version tag starts the release workflow:
 
 ```sh
-git tag -a v0.2.0 -m "OpenWebCode v0.2.0"
-git push origin v0.2.0
+git tag -a v0.2.1 -m "OpenWebCode v0.2.1"
+git push origin v0.2.1
 ```
 
 The workflow can also be dispatched manually with a `v*` tag. A single release job publishes the MSI, tar.gz, and `SHA256SUMS.txt` only after both platform jobs succeed; installation and `/api/health` smoke checks are release gates.

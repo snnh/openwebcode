@@ -993,6 +993,33 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .file-preview header .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .preview-note { color: var(--text-3); font-size: 12.5px; }
 
+/* 托管工作区：预览三方差异后才允许回写源目录。 */
+.workspace-sync-preview {
+  margin: 0 0 12px;
+  padding: 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  font-size: 12px;
+}
+.workspace-sync-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.workspace-sync-head h3 { margin: 0; font-size: 12.5px; }
+.workspace-sync-head p, .workspace-sync-origin { margin: 4px 0 0; color: var(--text-2); overflow-wrap: anywhere; }
+.workspace-sync-error { margin: 0 0 10px; color: var(--danger); font-size: 12px; }
+.workspace-sync-warning { margin: 9px 0 0; padding: 7px 8px; border-left: 3px solid var(--border-strong); background: var(--panel); color: var(--text-2); line-height: 1.45; }
+.workspace-sync-summary { display: flex; flex-wrap: wrap; gap: 5px; margin: 10px 0; }
+.workspace-sync-summary span { padding: 2px 6px; border: 1px solid var(--border); border-radius: 999px; color: var(--text-2); background: var(--panel); }
+.workspace-sync-summary .danger, .workspace-sync-conflict .workspace-sync-action { color: var(--danger); border-color: var(--danger-border); }
+.workspace-sync-summary .warning, .workspace-sync-unsupported .workspace-sync-action { color: var(--text-2); border-color: var(--border-strong); }
+.workspace-sync-list { max-height: 165px; margin: 0; padding: 0; overflow: auto; list-style: none; border: 1px solid var(--border); border-radius: var(--radius-s); background: var(--panel); }
+.workspace-sync-list li { display: flex; align-items: baseline; gap: 7px; padding: 5px 7px; border-bottom: 1px solid var(--border); }
+.workspace-sync-list li:last-child { border-bottom: 0; }
+.workspace-sync-list code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); color: var(--text); }
+.workspace-sync-action { flex: 0 0 42px; color: var(--text-2); font-size: 11px; }
+.workspace-sync-force { display: flex; align-items: flex-start; gap: 7px; margin-top: 10px; color: var(--text-2); line-height: 1.4; cursor: pointer; }
+.workspace-sync-force input { margin: 2px 0 0; }
+.workspace-sync-actions { margin-top: 11px; }
+
 /* 上下文 / 沙盒 */
 .inspector-body dl {
   display: grid;

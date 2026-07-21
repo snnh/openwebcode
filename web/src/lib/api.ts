@@ -1,4 +1,4 @@
-import type { BackgroundTaskInfo, CatalogSyncStatus, Checkpoint, CompletePathResponse, ContextView, CostReport, ExtensionInfo, FileEntry, ManagedWorkspaceCapability, MessageAttachment, ModelProfile, PendingPermission, PricingDocument, SandboxCapabilities, SandboxMode, Session, SessionDetail, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo, SyncResult, TodoItem } from "./contracts";
+import type { BackgroundTaskInfo, CatalogSyncStatus, Checkpoint, CompletePathResponse, ContextView, CostReport, ExtensionInfo, FileEntry, ManagedWorkspaceCapability, ManagedWorkspaceSyncPreview, ManagedWorkspaceSyncResult, MessageAttachment, ModelProfile, PendingPermission, PricingDocument, SandboxCapabilities, SandboxMode, Session, SessionDetail, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo, SyncResult, TodoItem } from "./contracts";
 
 export class ApiError extends Error {
   constructor(readonly status: number, message: string) {
@@ -54,6 +54,9 @@ export const api = {
     request<Session>("/api/sessions", { method: "POST", body: JSON.stringify(body) }),
   sandboxCapabilities: () => request<SandboxCapabilities>("/api/sandbox/capabilities"),
   managedWorkspaceCapability: () => request<ManagedWorkspaceCapability>("/api/managed-workspace/capability"),
+  workspaceSyncPreview: (id: string) => request<ManagedWorkspaceSyncPreview>(`/api/sessions/${encodeURIComponent(id)}/workspace/sync-preview`),
+  syncWorkspace: (id: string, body: { confirm: true; previewFingerprint: string; overwriteConflicts?: boolean }) =>
+    request<ManagedWorkspaceSyncResult>(`/api/sessions/${encodeURIComponent(id)}/workspace/sync`, { method: "POST", body: JSON.stringify(body) }),
   deleteSession: (id: string) => request<void>(`/api/sessions/${id}`, { method: "DELETE" }),
   sendMessage: (id: string, content: string, images?: Array<{ mediaType: string; data: string }>, attachments?: MessageAttachment[]) =>
     request<{ accepted: boolean; queued?: boolean; position?: number; compacted?: boolean }>(`/api/sessions/${id}/messages`, { method: "POST", body: JSON.stringify({ content, ...(images?.length ? { images } : {}), ...(attachments?.length ? { attachments } : {}) }) }),
