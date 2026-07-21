@@ -25,7 +25,7 @@ import { appendMemory, readGlobalMemory, readProjectMemory } from "../memory.js"
 import type { UsageLog } from "../usage-log.js";
 import { webFetch, type SearchProvider } from "../web-tools.js";
 import type { BackgroundTaskRegistry } from "./background-tasks.js";
-import type { HookRunner } from "../hooks.js";
+import type { HookEvent, HookPayload, HookRunner } from "../hooks.js";
 import type { ExtensionManager } from "../extensions/extension-manager.js";
 import { decodeProcessOutputChunks } from "./output-decoder.js";
 
@@ -319,21 +319,47 @@ export class AgentRunner {
     try {
       const configuredSession = await this.sessions.get(sessionId);
       if (!configuredSession) throw new Error("Session not found");
-      // 输入框 /技能名 手动触发：展开为技能全文 + 用户补充（检查点标题仍用原文）
-      const effectiveText = await this.expandSkillCommand(configuredSession.cwd, text);
-      // UserPromptSubmit 钩子：仅通知不阻断（否决语义为 PreToolUse 专属）
-      if (this.hooks) await this.hooks.run("UserPromptSubmit", { sessionId, cwd: configuredSession.cwd, prompt: effectiveText.slice(0, 2000) });
+      const appendUserMessage = async (message: string): Promise<void> => {
+        await this.sessions.appendMessage(sessionId, "user", [
+          ...(options?.images ?? []).map((image): MessageContent => ({ type: "image", mediaType: image.mediaType, data: image.data })),
+          ...(options?.attachments ?? []).map((block): MessageContent => ({ type: "text", text: block.text })),
+          { type: "text", text: message },
+        ]);
+      };
+      // 输入框 /技能名 手动触发：展开为技能全文 + 用户补充（检查点标题仍用原文）。
+      // 展开本身若意外失败，也先保留原始用户输入，避免 202 已确认的消息消失。
+      let effectiveText: string;
+      try {
+        effectiveText = await this.expandSkillCommand(configuredSession.cwd, text);
+      } catch (error) {
+        await appendUserMessage(text);
+        throw error;
+      }
+
+      const automaticSnapshot = (configuredSession.snapshotMode ?? "auto") === "auto";
+      const snapshotMessageCount = configuredSession.messages.length;
+      // 在用户消息写入前读取 ledger；实际镜像创建放到写入后，以保证任何快照/权限错误
+      // 都不会吞掉已接受的消息。用户写入不改变 ledger 或工作区，因此仍是本轮前状态。
+      const snapshotLedger = automaticSnapshot
+        ? new ContextManager(this.sessions.contextRoot(sessionId)).load().then(
+          (ledger) => ({ ledger }),
+          (error: unknown) => ({ error }),
+        )
+        : undefined;
+
+      // 一旦路由返回 202，用户输入优先于所有可失败的集成步骤（快照、Hook、Core、Provider）。
+      await appendUserMessage(effectiveText);
+      // UserPromptSubmit 钩子：仅通知不阻断（否决语义为 PreToolUse 专属）。
+      await this.runNotificationHook("UserPromptSubmit", { sessionId, cwd: configuredSession.cwd, prompt: effectiveText.slice(0, 2000) });
       await this.core.configureSession({ sessionId, cwd: configuredSession.cwd, sandbox: configuredSession.sandbox ?? { enabled: true, readRoots: [configuredSession.cwd], writeRoots: [configuredSession.cwd], denyPaths: [], network: "allow" } });
-      if ((configuredSession.snapshotMode ?? "auto") === "auto") {
-        // A checkpoint is a safety aid, not a prerequisite for communicating
-        // with the agent.  In particular, a managed VHDX/qcow2 workspace can
-        // lose its privileged snapshot capability after the session was
-        // created.  Do not make an accepted user message disappear in that
-        // case; report the failure and continue the turn without a checkpoint.
+      if (automaticSnapshot) {
+        // 配置成功后再创建镜像，避免 Core 无法启动时留下无用的 VHD checkpoint；
+        // 仍使用写入用户消息前捕获的 ledger/messageCount，恢复语义保持为本轮前状态。
         try {
-          const checkpointContext = new ContextManager(this.sessions.contextRoot(sessionId));
+          const prepared = await snapshotLedger!;
+          if ("error" in prepared) throw prepared.error;
           const checkpoint = await (await getSnapshotBackend(this.sessions, configuredSession))
-            .create(text.slice(0, 80) || "User message", configuredSession.messages.length, await checkpointContext.load());
+            .create(text.slice(0, 80) || "User message", snapshotMessageCount, prepared.ledger);
           this.events.publish({ source: "session", type: "checkpoint.created", sessionId, payload: checkpoint });
         } catch (error) {
           this.events.publish({
@@ -344,11 +370,6 @@ export class AgentRunner {
           });
         }
       }
-      await this.sessions.appendMessage(sessionId, "user", [
-        ...(options?.images ?? []).map((image): MessageContent => ({ type: "image", mediaType: image.mediaType, data: image.data })),
-        ...(options?.attachments ?? []).map((block): MessageContent => ({ type: "text", text: block.text })),
-        { type: "text", text: effectiveText },
-      ]);
       this.state(sessionId, "thinking");
       // 85% 水位强制概览压缩（§7.3 处理链⑤）：每次运行只触发一次
       let forceCompacted = false;
@@ -518,48 +539,57 @@ export class AgentRunner {
             this.state(sessionId, "thinking");
             continue;
           }
-          // Stop 钩子：run 正常结束时通知（abort/error 路径不触发）
-          if (this.hooks) await this.hooks.run("Stop", { sessionId, cwd: session.cwd });
+          // Stop 钩子：run 正常结束时通知（abort/error 路径不触发）。
+          await this.runNotificationHook("Stop", { sessionId, cwd: session.cwd });
           return;
         }
 
         const toolCalls = assistantContent.filter((block) => block.type === "tool_call");
         if (toolCalls.length === 0) throw new Error("Provider stopped for tool use without a tool call");
         for (const call of toolCalls) {
-          const extensionOutcome = this.extensions
-            ? await this.extensions.beforeTool({ sessionId, cwd: session.cwd, tool: call.name, input: call.input })
-            : { sessionId, cwd: session.cwd, tool: call.name, input: call.input };
-          if (extensionOutcome.blocked) {
-            await this.sessions.appendMessage(sessionId, "tool", [{ type: "tool_result", toolCallId: call.id, content: extensionOutcome.reason ?? "Blocked by extension", isError: true }]);
-            continue;
-          }
-          const effectiveInput = extensionOutcome.input;
-          const repeated = this.recordToolCall(sessionId, call.name, effectiveInput);
-          if (repeated >= 3) {
-            const content = `Tool call blocked: ${call.name} was requested with identical arguments ${repeated} consecutive times.`;
-            this.events.publish({ source: "agent", type: "tool.repeated", sessionId, payload: { name: call.name, input: effectiveInput, count: repeated } });
-            await this.sessions.appendMessage(sessionId, "tool", [{ type: "tool_result", toolCallId: call.id, content, isError: true }]);
-            continue;
-          }
-          const permission = await this.authorizeTool(sessionId, call.name, effectiveInput, controller.signal);
-          if (!permission.allowed) {
-            await this.sessions.appendMessage(sessionId, "tool", [{ type: "tool_result", toolCallId: call.id, content: permission.reason ?? "Tool permission denied", isError: true }]);
-            continue;
-          }
-          // PreToolUse 钩子：exit 2 否决 → 工具不执行，stderr 回填 LLM
-          if (this.hooks) {
-            const outcome = await this.hooks.run("PreToolUse", { sessionId, cwd: session.cwd, tool: call.name, input: effectiveInput });
-            if (outcome.blocked) {
-              await this.sessions.appendMessage(sessionId, "tool", [{ type: "tool_result", toolCallId: call.id, content: outcome.reason ?? "Blocked by hook", isError: true }]);
-              continue;
+          let effectiveInput = call.input;
+          let result: Extract<MessageContent, { type: "tool_result" }>;
+          try {
+            const extensionOutcome = this.extensions
+              ? await this.extensions.beforeTool({ sessionId, cwd: session.cwd, tool: call.name, input: call.input })
+              : { sessionId, cwd: session.cwd, tool: call.name, input: call.input };
+            if (extensionOutcome.blocked) {
+              result = { type: "tool_result", toolCallId: call.id, content: extensionOutcome.reason ?? "Blocked by extension", isError: true };
+            } else {
+              effectiveInput = extensionOutcome.input;
+              const repeated = this.recordToolCall(sessionId, call.name, effectiveInput);
+              if (repeated >= 3) {
+                const content = `Tool call blocked: ${call.name} was requested with identical arguments ${repeated} consecutive times.`;
+                this.events.publish({ source: "agent", type: "tool.repeated", sessionId, payload: { name: call.name, input: effectiveInput, count: repeated } });
+                result = { type: "tool_result", toolCallId: call.id, content, isError: true };
+              } else {
+                const permission = await this.authorizeTool(sessionId, call.name, effectiveInput, controller.signal);
+                if (!permission.allowed) {
+                  result = { type: "tool_result", toolCallId: call.id, content: permission.reason ?? "Tool permission denied", isError: true };
+                } else {
+                  // PreToolUse 钩子：exit 2 否决 → 工具不执行，stderr 回填 LLM
+                  const outcome = this.hooks
+                    ? await this.hooks.run("PreToolUse", { sessionId, cwd: session.cwd, tool: call.name, input: effectiveInput })
+                    : undefined;
+                  result = outcome?.blocked
+                    ? { type: "tool_result", toolCallId: call.id, content: outcome.reason ?? "Blocked by hook", isError: true }
+                    : await this.executeTool(sessionId, call.name, call.id, effectiveInput, controller.signal);
+                }
+              }
             }
+          } catch (error) {
+            // Abort 仍按原语义结束整个 run；其他前置工具失败必须回填给 provider，
+            // 否则已落盘的 tool_call 会永久没有对应 tool_result。
+            if (controller.signal.aborted) throw error;
+            const content = error instanceof Error ? error.message : String(error);
+            this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId: call.id, error: content } });
+            result = { type: "tool_result", toolCallId: call.id, content, isError: true };
           }
-          const result = await this.executeTool(sessionId, call.name, call.id, effectiveInput, controller.signal);
           await this.sessions.appendMessage(sessionId, "tool", [result]);
           // PostToolUse 钩子：仅写类工具成功后触发（format-on-write 等），不阻断
-          if (this.hooks && !result.isError && ["write_file", "edit_file", "bash"].includes(call.name)) {
+          if (!result.isError && ["write_file", "edit_file", "bash"].includes(call.name)) {
             const summary = result.content.slice(0, 300);
-            await this.hooks.run("PostToolUse", { sessionId, cwd: session.cwd, tool: call.name, input: effectiveInput, result: { summary } });
+            await this.runNotificationHook("PostToolUse", { sessionId, cwd: session.cwd, tool: call.name, input: effectiveInput, result: { summary } });
           }
         }
         await context.advanceRound();
@@ -653,14 +683,15 @@ export class AgentRunner {
     try {
       const session = await this.sessions.get(sessionId);
       if (!session) throw new Error("Session not found");
+      // 先落盘 shell 请求；Core 配置/权限失败也必须让用户看得到原始命令和对应错误。
+      // 保留 ! 前缀作为 shell 标记，便于前端「发给 agent」按钮识别配对。
+      await this.sessions.appendMessage(sessionId, "user", [{ type: "text", text: `!${cmd}` }]);
       // 沙盒配置幂等（与 /files 路由同款）；不写 configuredSessions 缓存（app.ts 私有，重复配置无害）
       await this.core.configureSession({
         sessionId,
         cwd: session.cwd,
         sandbox: session.sandbox ?? { enabled: true, readRoots: [session.cwd], writeRoots: [session.cwd], denyPaths: [], network: "allow" },
       });
-      // 落盘用户消息（保留 ! 前缀作为 shell 标记，便于前端「发给 agent」按钮识别配对）
-      await this.sessions.appendMessage(sessionId, "user", [{ type: "text", text: `!${cmd}` }]);
       // 权限链（与 bash 工具一致；plan 模式会被门禁拦截）
       const permission = await this.authorizeTool(sessionId, "bash", { cmd }, controller.signal);
       if (!permission.allowed) {
@@ -678,9 +709,9 @@ export class AgentRunner {
       const result = await this.executeBash(sessionId, cmd, toolCallId, controller.signal);
       await this.sessions.appendMessage(sessionId, "tool", [{ type: "tool_result", toolCallId, content: result.content, isError: result.isError }]);
       // PostToolUse 钩子：成功后触发（与 bash 工具一致，不阻断）
-      if (this.hooks && !result.isError) {
+      if (!result.isError) {
         const summary = result.content.slice(0, 300);
-        await this.hooks.run("PostToolUse", { sessionId, cwd: session.cwd, tool: "bash", input: { cmd }, result: { summary } });
+        await this.runNotificationHook("PostToolUse", { sessionId, cwd: session.cwd, tool: "bash", input: { cmd }, result: { summary } });
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -764,6 +795,24 @@ export class AgentRunner {
     const result = await this.permissions.request(sessionId, tool, input, signal);
     this.state(sessionId, "tool_running");
     return { allowed: result.allowed, ...(result.reason ? { reason: result.reason } : {}) };
+  }
+
+  /** 非拦截型 Hook（用户提交、工具后、正常结束）绝不能让已接受的会话卡住。 */
+  private async runNotificationHook(
+    event: Exclude<HookEvent, "PreToolUse" | "SessionStart">,
+    payload: HookPayload,
+  ): Promise<void> {
+    if (!this.hooks) return;
+    try {
+      await this.hooks.run(event, payload);
+    } catch (error) {
+      this.events.publish({
+        source: "server",
+        type: "hook.failed",
+        sessionId: payload.sessionId,
+        payload: { event, message: error instanceof Error ? error.message : String(error) },
+      });
+    }
   }
 
   private async expandSkillCommand(cwd: string, text: string): Promise<string> {

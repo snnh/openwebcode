@@ -61,6 +61,8 @@ export function App(): ReactElement {
   const [thinkingStream, setThinkingStream] = useState<Record<string, string>>({});
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
   const [agentStates, setAgentStates] = useState<Record<string, string>>({});
+  // agent.error 除了短暂 toast，也保留在当前会话的轨道中；下一次真正开始运行时再清除。
+  const [runFailures, setRunFailures] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<Notice>();
   // 失败类提示用 error（红色、role=alert），成功/进度类用 info
   const notify = (text: string, kind: Notice["kind"] = "info"): void => setNotice({ kind, text });
@@ -113,7 +115,20 @@ export function App(): ReactElement {
         // agent.state 跨会话跟踪：驱动侧栏运行标记与头部状态徽章
         if (event.type === "agent.state" && event.sessionId) {
           const state = (event.payload as { state?: string }).state;
-          if (state) setAgentStates((prev) => ({ ...prev, [event.sessionId!]: state }));
+          if (state) {
+            setAgentStates((prev) => ({ ...prev, [event.sessionId!]: state }));
+            if (state === "thinking") {
+              setRunFailures((previous) => {
+                if (!(event.sessionId! in previous)) return previous;
+                const { [event.sessionId!]: _cleared, ...remaining } = previous;
+                return remaining;
+              });
+            }
+          }
+        }
+        if (event.type === "agent.error" && event.sessionId) {
+          const message = (event.payload as { message?: string }).message ?? t("未知错误", "unknown error");
+          setRunFailures((previous) => ({ ...previous, [event.sessionId!]: message }));
         }
         // server.settings_updated / models.updated 无 sessionId，必须在按会话过滤之前处理
         if (event.type === "server.settings_updated") {
@@ -395,6 +410,7 @@ export function App(): ReactElement {
               {...(contextView.data?.ledger.cleared ? { cleared: contextView.data.ledger.cleared } : {})}
               streamText={stream[current.id] ?? ""}
               thinkingText={thinkingStream[current.id] ?? ""}
+              runError={runFailures[current.id]}
               permissions={mergedPermissions}
               onSendToAgent={sendShellToAgent}
               onPermissionDone={(requestId) => {
