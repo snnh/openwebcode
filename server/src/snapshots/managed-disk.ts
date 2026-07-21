@@ -1,7 +1,8 @@
 import { existsSync } from "node:fs";
-import { cp, mkdir, readdir, readFile, rm, rmdir, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, rm, rmdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { writeUtf8Atomically } from "../atomic-file.js";
 import type { ManagedWorkspaceMeta } from "../sessions/types.js";
 import {
   newSnapshotId,
@@ -25,7 +26,7 @@ import { createExecFileRunner, type CommandRunner } from "./probe.js";
 
 /** 稀疏基盘大小：20GB */
 export const MANAGED_IMAGE_SIZE_BYTES = 20 * 1024 * 1024 * 1024;
-/** 链长上限：超过即在 create 后自动合并最老段 */
+/** 检查点安全上限：达到后拒绝新建，避免在挂载链上进行破坏性合并。 */
 export const MANAGED_MAX_CHAIN = 32;
 /** 复制进托管工作区时按目录名排除（任意深度；参考 git-shadow 的排除思路） */
 const COPY_EXCLUDES = MANAGED_WORKSPACE_COPY_EXCLUDES;
@@ -147,9 +148,12 @@ async function runScript(runner: CommandRunner, mode: string, args: string[]): P
 /**
  * 托管工作区快照后端：会话项目目录活在稀疏镜像盘挂载点上，
  * 快照 = 差分链新叶子（旧叶子冻结为检查点），回滚 = 从任一检查点盘文件拉新分支叶子。
- * 检查点本体永不覆写；delete 不支持逐段删除（链长超 32 自动合并最老段）。
+ * 检查点本体永不覆写；delete 不支持逐段删除。链达到 32 段时拒绝新建，
+ * 而不是在仍被 Hyper-V 挂载的祖先链上进行不安全的 merge。
  */
 export class ManagedDiskBackend implements SnapshotBackend {
+  /** Backends are constructed per request, so the mutation queue must be shared by workspace path. */
+  private static readonly mutationQueues = new Map<string, Promise<void>>();
   readonly name: string;
   private readonly statePath: string;
 
@@ -172,34 +176,39 @@ export class ManagedDiskBackend implements SnapshotBackend {
 
   async capability(): Promise<SnapshotCapabilityInfo> {
     const detail = this.kind === "vhdx"
-      ? "VHDX 差分链（Hyper-V）：需管理员或 Hyper-V Administrators 组；不支持删除单个检查点，链长超 32 自动合并最老段"
-      : "qcow2 差分链（qemu-nbd）：需 root/免密 sudo；不支持删除单个检查点，链长超 32 自动合并最老段";
+      ? "VHDX 差分链（Hyper-V）：需管理员或 Hyper-V Administrators 组；不支持删除单个检查点，最多 32 个检查点"
+      : "qcow2 差分链（qemu-nbd）：需 root/免密 sudo；不支持删除单个检查点，最多 32 个检查点";
     return { backend: this.name, costHint: "instant", requiresAdmin: true, detail };
   }
 
   async create(label: string, messageCount: number, ledger?: unknown): Promise<Checkpoint> {
-    await this.initialize();
-    const state = await this.readState();
-    const id = newSnapshotId();
-    const child = path.join(this.workspaceRoot, `leaf-${id}.${this.kind}`);
-    // 以当前叶子为 backing 建新差分盘并换叶；旧叶子（= 检查点载体）自此冻结
-    await this.createDiff(state.active.file, child);
-    await this.swapMount(state.active.file, child, state.device);
-    const entry: ChainEntry = {
-      id,
-      label,
-      createdAt: new Date().toISOString(),
-      messageCount,
-      ...(ledger === undefined ? {} : { ledger }),
-      file: state.active.file,
-      parentFile: state.active.parentFile,
-    };
-    state.checkpoints.unshift(entry);
-    state.active = { file: child, parentFile: entry.file };
-    if (state.checkpoints.length > MANAGED_MAX_CHAIN) await this.mergeOldest(state);
-    await this.writeState(state);
-    const checkpoint: Checkpoint = { id, label, createdAt: entry.createdAt, messageCount, ...(ledger === undefined ? {} : { ledger }) };
-    return checkpoint;
+    return this.serialMutation(async () => {
+      await this.initialize();
+      const state = await this.readState();
+      if (state.checkpoints.length >= MANAGED_MAX_CHAIN) {
+        throw new Error(`managed-disk 检查点已达到 ${MANAGED_MAX_CHAIN} 个安全上限；为避免对挂载中的差分链执行不安全合并，暂不能创建新检查点`);
+      }
+      const id = newSnapshotId();
+      const child = path.join(this.workspaceRoot, `leaf-${id}.${this.kind}`);
+      // 以当前叶子为 backing 建新差分盘并换叶；旧叶子（= 检查点载体）自此冻结。
+      // VHDX 必须先卸载 parent；forkAndSwap 在失败时会恢复旧叶，chain.json 仅在成功后变更。
+      const previousLeaf = state.active.file;
+      await this.forkAndSwap(previousLeaf, child, state.device);
+      const entry: ChainEntry = {
+        id,
+        label,
+        createdAt: new Date().toISOString(),
+        messageCount,
+        ...(ledger === undefined ? {} : { ledger }),
+        file: state.active.file,
+        parentFile: state.active.parentFile,
+      };
+      state.checkpoints.unshift(entry);
+      state.active = { file: child, parentFile: entry.file };
+      await this.writeStateOrRollback(state, child, previousLeaf, state.device);
+      const checkpoint: Checkpoint = { id, label, createdAt: entry.createdAt, messageCount, ...(ledger === undefined ? {} : { ledger }) };
+      return checkpoint;
+    });
   }
 
   async list(): Promise<Checkpoint[]> {
@@ -237,56 +246,27 @@ export class ManagedDiskBackend implements SnapshotBackend {
 
   async restore(id: string): Promise<void> {
     validateSnapshotId(id);
-    await this.initialize();
-    const state = await this.readState();
-    const entry = state.checkpoints.find((item) => item.id === id);
-    if (!entry) throw new Error("Checkpoint not found");
-    // 分支语义：从检查点盘文件拉新差分叶子并换叶，检查点本体永不覆写
-    const child = path.join(this.workspaceRoot, `leaf-${newSnapshotId()}.${this.kind}`);
-    const previousLeaf = state.active.file;
-    await this.createDiff(entry.file, child);
-    await this.swapMount(previousLeaf, child, state.device);
-    state.active = { file: child, parentFile: entry.file };
-    // 被回滚抛弃的旧叶子不是任何检查点的载体（active 恒为无子新叶），删除避免磁盘泄漏
-    if (!state.checkpoints.some((item) => item.file === previousLeaf)) {
-      await rm(previousLeaf, { force: true }).catch(() => undefined);
-    }
-    await this.writeState(state);
+    await this.serialMutation(async () => {
+      await this.initialize();
+      const state = await this.readState();
+      const entry = state.checkpoints.find((item) => item.id === id);
+      if (!entry) throw new Error("Checkpoint not found");
+      // 分支语义：从检查点盘文件拉新差分叶子并换叶，检查点本体永不覆写
+      const child = path.join(this.workspaceRoot, `leaf-${newSnapshotId()}.${this.kind}`);
+      const previousLeaf = state.active.file;
+      await this.forkAndSwap(entry.file, child, state.device, previousLeaf);
+      state.active = { file: child, parentFile: entry.file };
+      await this.writeStateOrRollback(state, child, previousLeaf, state.device);
+      // 被回滚抛弃的旧叶子不是任何检查点的载体（active 恒为无子新叶），删除避免磁盘泄漏
+      if (!state.checkpoints.some((item) => item.file === previousLeaf)) {
+        await rm(previousLeaf, { force: true }).catch(() => undefined);
+      }
+    });
   }
 
   async delete(id: string): Promise<void> {
     validateSnapshotId(id);
-    throw new Error("managed-disk 链式后端不支持删除单个检查点；链长超 32 自动合并最老段");
-  }
-
-  /**
-   * 合并最老段：最老检查点（链尾）的恢复点被并入次老段。
-   * 序列（qcow2）：commit 次老段（写入其 backing=最老段文件）→ 若有第三段 rebase -u -b 最老段文件 → 删次老段文件。
-   * 序列（vhdx）：Merge-VHD 次老段（并入其 parent）→ 若有第三段 Set-VHD -ParentPath 最老段文件 -IgnoreIdentifierMismatch → 删次老段文件。
-   * chain.json：移除最老检查点条目，次老检查点接管最老段的文件（成为新链尾）。
-   */
-  private async mergeOldest(state: ChainState): Promise<void> {
-    const oldest = state.checkpoints.at(-1);
-    const next = state.checkpoints.at(-2);
-    if (!oldest || !next) return;
-    const third = state.checkpoints.at(-3);
-    if (this.kind === "qcow2") {
-      ensureOk("qemu-img commit", await this.runner.run("qemu-img", ["commit", next.file], { timeoutMs: 600_000 }));
-      if (third) {
-        ensureOk("qemu-img rebase", await this.runner.run("qemu-img", ["rebase", "-u", "-b", oldest.file, third.file], { timeoutMs: 600_000 }));
-        third.parentFile = oldest.file;
-      }
-    } else {
-      await runScript(this.runner, "merge", ["-Path", next.file]);
-      if (third) {
-        await runScript(this.runner, "reparent", ["-Path", third.file, "-ParentPath", oldest.file]);
-        third.parentFile = oldest.file;
-      }
-    }
-    await rm(next.file, { force: true });
-    next.file = oldest.file;
-    next.parentFile = oldest.parentFile;
-    state.checkpoints.pop();
+    throw new Error("managed-disk 链式后端不支持删除单个检查点；达到 32 个检查点安全上限后请新建会话或先导出工作区");
   }
 
   private async createDiff(parent: string, child: string): Promise<void> {
@@ -295,6 +275,20 @@ export class ManagedDiskBackend implements SnapshotBackend {
     } else {
       await runScript(this.runner, "new-diff", ["-Parent", parent, "-Child", child]);
     }
+  }
+
+  /**
+   * qcow2 可先创建 child 再重连 nbd；Hyper-V 会锁住已挂载的可写 parent，
+   * 因此 VHDX 必须由脚本在一个可恢复事务里先卸旧叶再创建/挂载 child。
+   * restore 的 parent 与当前挂载叶可能不同，故单独传入 oldFile。
+   */
+  private async forkAndSwap(parent: string, child: string, device: string | undefined, oldFile = parent): Promise<void> {
+    if (this.kind === "vhdx") {
+      await runScript(this.runner, "fork-swap", ["-Parent", parent, "-Child", child, "-OldImage", oldFile, "-MountPoint", this.mountPoint]);
+      return;
+    }
+    await this.createDiff(parent, child);
+    await this.swapMount(oldFile, child, device);
   }
 
   /** 换叶：卸载当前叶子并挂载新叶子（qcow2 复用同一 nbd 设备重连新文件）。 */
@@ -327,7 +321,57 @@ export class ManagedDiskBackend implements SnapshotBackend {
   }
 
   private async writeState(state: ChainState): Promise<void> {
-    await writeFile(this.statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+    await writeUtf8Atomically(this.statePath, `${JSON.stringify(state, null, 2)}\n`);
+  }
+
+  /**
+   * After a successful physical leaf switch there has been no opportunity for
+   * workspace writes yet. If durable state persistence fails, switch back to
+   * the old leaf before surfacing the error so chain.json cannot point at a
+   * deleted or unmounted image after restart.
+   */
+  private async writeStateOrRollback(state: ChainState, child: string, previousLeaf: string, device: string | undefined): Promise<void> {
+    try {
+      await this.writeState(state);
+    } catch (error) {
+      try {
+        await this.rollbackForkAndSwap(child, previousLeaf, device);
+      } catch (recoveryError) {
+        const original = error instanceof Error ? error.message : String(error);
+        const recovery = recoveryError instanceof Error ? recoveryError.message : String(recoveryError);
+        throw new Error(`${original}；chain.json 落盘失败后的工作区回滚也失败：${recovery}`);
+      }
+      throw error;
+    }
+  }
+
+  private async rollbackForkAndSwap(child: string, previousLeaf: string, device: string | undefined): Promise<void> {
+    if (this.kind === "vhdx") {
+      await runScript(this.runner, "rollback-fork-swap", ["-NewImage", child, "-OldImage", previousLeaf, "-MountPoint", this.mountPoint]);
+      return;
+    }
+    await this.swapMount(child, previousLeaf, device);
+    await rm(child, { force: true });
+  }
+
+  /** Serialize create/restore across short-lived backend instances for the same managed workspace. */
+  private async serialMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const key = this.statePath;
+    const previous = ManagedDiskBackend.mutationQueues.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const tail = previous.catch(() => undefined).then(() => gate);
+    ManagedDiskBackend.mutationQueues.set(key, tail);
+    await previous.catch(() => undefined);
+    try {
+      return await operation();
+    } finally {
+      release();
+      await tail;
+      if (ManagedDiskBackend.mutationQueues.get(key) === tail) {
+        ManagedDiskBackend.mutationQueues.delete(key);
+      }
+    }
   }
 }
 
@@ -410,7 +454,9 @@ export class ManagedWorkspaceManager implements ManagedWorkspaceLike {
   /** 删除 managed 会话：先卸载再删镜像目录与挂载点。 */
   async teardown(session: { id: string; workspace?: ManagedWorkspaceMeta }): Promise<void> {
     const { workspaceRoot, mountPoint } = managedWorkspacePaths(this.dataDir, session.id);
-    await this.unmountBestEffort(session.id, session.workspace);
+    if (!await this.unmountBestEffort(session.id, session.workspace)) {
+      throw new Error("无法卸载托管工作区镜像；为保留恢复信息，未删除会话或磁盘文件");
+    }
     await rm(workspaceRoot, { recursive: true, force: true });
     await rm(session.workspace?.mountPoint ?? mountPoint, { recursive: true, force: true });
   }
@@ -478,28 +524,58 @@ export class ManagedWorkspaceManager implements ManagedWorkspaceLike {
       ...(device === undefined ? {} : { device }),
       checkpoints: [],
     };
-    await writeFile(path.join(path.dirname(image), "chain.json"), `${JSON.stringify(state, null, 2)}\n`, "utf8");
+    await writeUtf8Atomically(path.join(path.dirname(image), "chain.json"), `${JSON.stringify(state, null, 2)}\n`);
   }
 
-  /** 尽力卸载：镜像类型按 meta.workspace 或 workspaces/<id>/ 下实际镜像推断；命令失败忽略。 */
-  private async unmountBestEffort(sessionId: string, workspace?: ManagedWorkspaceMeta): Promise<void> {
+  /**
+   * 卸载当前工作区叶子。正常情况从 chain.json.active 取镜像，避免快照后仍只
+   * 卸 base；PowerShell 同时按受控 MountPoint 兜底找回状态损坏时的实际 VHD。
+   */
+  private async unmountBestEffort(sessionId: string, workspace?: ManagedWorkspaceMeta): Promise<boolean> {
     const { workspaceRoot, mountPoint } = managedWorkspacePaths(this.dataDir, sessionId);
     const backend = workspace?.backend ?? (await this.detectImageBackend(workspaceRoot));
     if (backend === "vhdx") {
-      const image = workspace?.image ?? path.join(workspaceRoot, "base.vhdx");
-      await this.runner.run("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", managedDiskScriptPath(), "-Mode", "dismount", "-Image", image], { timeoutMs: 60_000 }).catch(() => undefined);
-      return;
+      const image = await this.activeImage(workspaceRoot, backend) ?? workspace?.image ?? path.join(workspaceRoot, "base.vhdx");
+      const result = await this.runner.run("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", managedDiskScriptPath(), "-Mode", "dismount", "-Image", image, "-MountPoint", workspace?.mountPoint ?? mountPoint], { timeoutMs: 60_000 }).catch(() => undefined);
+      return result?.code === 0;
     }
     if (backend === "qcow2") {
       const device = await this.readDevice(workspaceRoot) ?? "/dev/nbd0";
-      await this.runner.run("sudo", ["umount", workspace?.mountPoint ?? mountPoint], { timeoutMs: 60_000 }).catch(() => undefined);
-      await this.runner.run("sudo", ["qemu-nbd", "-d", device], { timeoutMs: 60_000 }).catch(() => undefined);
+      const unmount = await this.runner.run("sudo", ["umount", workspace?.mountPoint ?? mountPoint], { timeoutMs: 60_000 }).catch(() => undefined);
+      const disconnect = await this.runner.run("sudo", ["qemu-nbd", "-d", device], { timeoutMs: 60_000 }).catch(() => undefined);
+      return unmount?.code === 0 && disconnect?.code === 0;
+    }
+    return true;
+  }
+
+  /** Only accept an active image recorded inside this server-owned workspace. */
+  private async activeImage(workspaceRoot: string, backend: ManagedBackendKind): Promise<string | undefined> {
+    try {
+      const state = JSON.parse(await readFile(path.join(workspaceRoot, "chain.json"), "utf8")) as ChainState;
+      if (typeof state.active?.file !== "string") return undefined;
+      const root = path.resolve(workspaceRoot);
+      const image = path.resolve(state.active.file);
+      const relative = path.relative(root, image);
+      if (!relative || relative.startsWith("..") || path.isAbsolute(relative) || path.extname(image) !== `.${backend}`) return undefined;
+      return image;
+    } catch {
+      return undefined;
     }
   }
 
   private async detectImageBackend(workspaceRoot: string): Promise<ManagedBackendKind | undefined> {
     if (existsSync(path.join(workspaceRoot, "base.vhdx"))) return "vhdx";
     if (existsSync(path.join(workspaceRoot, "base.qcow2"))) return "qcow2";
+    // A failed/manual cleanup may have removed the base while a leaf remains.
+    // Detect by extension as well so orphan sweeping can still dismount via
+    // the controlled mount point instead of leaving a live VHD behind.
+    try {
+      const files = await readdir(workspaceRoot);
+      if (files.some((file) => file.endsWith(".vhdx"))) return "vhdx";
+      if (files.some((file) => file.endsWith(".qcow2"))) return "qcow2";
+    } catch {
+      // no workspace directory
+    }
     return undefined;
   }
 

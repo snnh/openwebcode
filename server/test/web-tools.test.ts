@@ -8,7 +8,7 @@ import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
-import { assertSafeWebUrl, createSearchProvider, htmlToText, webFetch, type SearchProvider } from "../src/web-tools.js";
+import { assertSafeWebUrl, createSearchProvider, createWebFetchProvider, htmlToText, webFetch, type SearchProvider, type WebFetchProvider } from "../src/web-tools.js";
 
 const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
@@ -58,9 +58,10 @@ describe("webFetch", () => {
 });
 
 describe("search providers", () => {
-  it("honestly degrades and maps Brave results", async () => {
+  it("honestly degrades and maps Brave/Tavily results", async () => {
     expect(createSearchProvider(undefined)).toBeUndefined();
     expect(createSearchProvider({ provider: "brave" })).toBeUndefined();
+    expect(createSearchProvider({ provider: "tavily" })).toBeUndefined();
     expect(createSearchProvider({ provider: "brave", apiKey: "   " })).toBeUndefined();
     expect(createSearchProvider({ provider: "custom", baseURL: "not a URL" })).toBeUndefined();
     expect(createSearchProvider({ provider: "custom", baseURL: "ftp://search.test" })).toBeUndefined();
@@ -68,6 +69,17 @@ describe("search providers", () => {
     const provider = createSearchProvider({ provider: "brave", apiKey: "secret" }, fetchImpl)!;
     expect(await provider.search("query", 5)).toEqual([{ title: "One", url: "https://one.test", snippet: "First" }]);
     expect(fetchImpl).toHaveBeenCalledOnce();
+
+    const tavilyFetch = vi.fn(async () => Response.json({ results: [{ title: "Two", url: "https://two.test", content: "Second" }] })) as typeof fetch;
+    const tavily = createSearchProvider({ provider: "tavily", apiKey: "tvly-secret" }, tavilyFetch)!;
+    await expect(tavily.search("query", 3)).resolves.toEqual([{ title: "Two", url: "https://two.test", snippet: "Second" }]);
+    const [endpoint, request] = tavilyFetch.mock.calls[0] ?? [];
+    expect(endpoint).toBe("https://api.tavily.com/search");
+    expect(request).toMatchObject({
+      method: "POST",
+      headers: { Authorization: "Bearer tvly-secret", "Content-Type": "application/json" },
+    });
+    expect(JSON.parse(String(request?.body))).toMatchObject({ query: "query", max_results: 3 });
   });
 
   it("cleans common HTML constructs", () => {
@@ -75,8 +87,26 @@ describe("search providers", () => {
   });
 });
 
+describe("web fetch providers", () => {
+  it("requires an explicit provider and supports Jina or a URL-template reader", async () => {
+    expect(createWebFetchProvider(undefined)).toBeUndefined();
+    expect(createWebFetchProvider({ provider: "custom" })).toBeUndefined();
+    expect(createWebFetchProvider({ provider: "custom", baseURL: "https://reader.test/fetch" })).toBeUndefined();
+    const fetchImpl = vi.fn(async () => textResponse("reader result")) as typeof fetch;
+    const jina = createWebFetchProvider({ provider: "jina", apiKey: "key" }, fetchImpl)!;
+    await expect(jina.fetchUrl("https://example.com/article")).resolves.toMatchObject({ url: "https://example.com/article", text: "reader result" });
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe("https://r.jina.ai/https://example.com/article");
+    expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({ headers: expect.objectContaining({ Authorization: "Bearer key" }) });
+
+    const customFetch = vi.fn(async () => textResponse("custom result")) as typeof fetch;
+    const custom = createWebFetchProvider({ provider: "custom", baseURL: "https://reader.test/fetch?url={url}" }, customFetch)!;
+    await custom.fetchUrl("https://example.com/a?b=1");
+    expect(String(customFetch.mock.calls[0]?.[0])).toBe("https://reader.test/fetch?url=https%3A%2F%2Fexample.com%2Fa%3Fb%3D1");
+  });
+});
+
 describe("AgentRunner web tools", () => {
-  async function exposedTools(search?: SearchProvider): Promise<string[]> {
+  async function exposedTools(search?: SearchProvider, webFetchProvider?: WebFetchProvider): Promise<string[]> {
     const root = await mkdtemp(path.join(os.tmpdir(), "owc-web-tools-")); roots.push(root);
     const sessions = new SessionStore(path.join(root, "sessions")); await sessions.initialize();
     const session = await sessions.create({ cwd: root, provider: "fake", model: "model" });
@@ -86,16 +116,23 @@ describe("AgentRunner web tools", () => {
     const provider: Provider = { name: "fake", async *streamChat(request) { requests.push(request); yield { type: "done", stopReason: "end_turn" }; } };
     const providers = new ProviderRegistry(); providers.register(provider);
     const core = { on() { return core; }, async configureSession() { return { sandboxCapability: "advisory" }; } } as unknown as CoreClientLike;
-    const runner = new AgentRunner(sessions, providers, core, new EventBus(), pricing, undefined, "zh-CN", 50, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, search);
+    const runner = new AgentRunner(sessions, providers, core, new EventBus(), pricing, undefined, "zh-CN", 50, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, search, undefined, undefined, undefined, undefined, webFetchProvider);
     await runner.run(session.id, "check tools");
     return requests[0]?.tools.map((tool) => tool.name) ?? [];
   }
 
-  it("always exposes web_fetch and only exposes configured web_search", async () => {
+  it("only injects web tools whose service is configured", async () => {
     const search: SearchProvider = { name: "fake", async search() { return []; } };
-    const [withoutSearch, withSearch] = await Promise.all([exposedTools(), exposedTools(search)]);
-    expect(withoutSearch).toContain("web_fetch");
-    expect(withoutSearch).not.toContain("web_search");
+    const webFetchProvider: WebFetchProvider = { name: "fake-reader", async fetchUrl() { return { url: "https://example.com", finalUrl: "https://example.com", contentType: "text/plain", text: "ok" }; } };
+    const [withoutServices, withSearch, withFetch, withBoth] = await Promise.all([
+      exposedTools(), exposedTools(search), exposedTools(undefined, webFetchProvider), exposedTools(search, webFetchProvider),
+    ]);
+    expect(withoutServices).not.toContain("web_fetch");
+    expect(withoutServices).not.toContain("web_search");
     expect(withSearch).toContain("web_search");
+    expect(withSearch).not.toContain("web_fetch");
+    expect(withFetch).toContain("web_fetch");
+    expect(withFetch).not.toContain("web_search");
+    expect(withBoth).toEqual(expect.arrayContaining(["web_fetch", "web_search"]));
   }, 15_000);
 });

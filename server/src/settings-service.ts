@@ -1,5 +1,6 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { writeUtf8Atomically } from "./atomic-file.js";
 import type { AgentRunner } from "./agent/agent-runner.js";
 import { type ServerConfig } from "./config.js";
 import { MAX_SYNC_INTERVAL_MINUTES } from "./remote-sync-scheduler.js";
@@ -11,6 +12,7 @@ import type { ProviderRegistry } from "./providers/provider.js";
 import type { ModelRegistry } from "./context/model-registry.js";
 import type { StorageGC } from "./storage-gc.js";
 import type { Provider2Client } from "./provider2.js";
+import { createWebFetchProvider } from "./web-tools.js";
 
 export class SettingsValidationError extends Error {
   constructor(message: string) {
@@ -75,6 +77,7 @@ interface RuntimeDependencies {
 const GROUPS = [
   { id: "models", label: "模型接入" },
   { id: "provider2", label: "上下文压缩" },
+  { id: "webFetch", label: "网页读取" },
   { id: "search", label: "网络搜索" },
   { id: "general", label: "语言与货币" },
   { id: "executor", label: "执行器" },
@@ -180,10 +183,14 @@ const FIELDS: FieldSpec[] = [
   { key: "provider2BaseURL", group: "provider2", label: "provider2 Base URL", type: "text", env: "OWC_PROVIDER2_BASE_URL", defaultValue: null, restartRequired: false, validate: requireHttpUrl, description: "OpenAI 兼容端点；与模型名同时填写后启用" },
   { key: "provider2ApiKey", group: "provider2", label: "provider2 API Key", type: "secret", env: "OWC_PROVIDER2_API_KEY", defaultValue: null, restartRequired: false },
   { key: "provider2Model", group: "provider2", label: "provider2 模型", type: "text", env: "OWC_PROVIDER2_MODEL", defaultValue: null, restartRequired: false, description: "如 deepseek-chat / claude-haiku-4-5" },
+  // 网页读取：必须显式选服务商，未配置时 web_fetch 不会注入模型工具/提示词。
+  { key: "webFetchProvider", group: "webFetch", label: "网页读取 Provider", type: "select", env: "OWC_WEB_FETCH_PROVIDER", defaultValue: null, restartRequired: false, options: ["jina", "custom"] },
+  { key: "webFetchApiKey", group: "webFetch", label: "网页读取 API Key", type: "secret", env: "OWC_WEB_FETCH_API_KEY", defaultValue: null, restartRequired: false },
+  { key: "webFetchBaseURL", group: "webFetch", label: "网页读取 Base URL", type: "text", env: "OWC_WEB_FETCH_BASE_URL", defaultValue: null, restartRequired: false, validate: requireHttpUrl, description: "custom provider 必填，使用 {url} 作为 URL 编码后的目标地址占位符" },
   // 网络搜索（重启生效）
-  { key: "searchProvider", group: "search", label: "搜索 Provider", type: "select", env: "OWC_SEARCH_PROVIDER", defaultValue: null, restartRequired: true, options: ["brave", "custom"] },
+  { key: "searchProvider", group: "search", label: "搜索 Provider", type: "select", env: "OWC_SEARCH_PROVIDER", defaultValue: null, restartRequired: true, options: ["brave", "tavily", "custom"] },
   { key: "searchApiKey", group: "search", label: "搜索 API Key", type: "secret", env: "OWC_SEARCH_API_KEY", defaultValue: null, restartRequired: true },
-  { key: "searchBaseURL", group: "search", label: "搜索 Base URL", type: "text", env: "OWC_SEARCH_BASE_URL", defaultValue: null, restartRequired: true, validate: requireHttpUrl, description: "custom provider 的 HTTP 端点" },
+  { key: "searchBaseURL", group: "search", label: "搜索 Base URL", type: "text", env: "OWC_SEARCH_BASE_URL", defaultValue: null, restartRequired: true, validate: requireHttpUrl, description: "custom provider 的 HTTP 端点；Tavily 内置使用 API Key 调用 https://api.tavily.com/search（远程 MCP URL 请配置在 mcp.json）" },
   // 通用（热生效）
   { key: "defaultLanguage", group: "general", label: "默认语言", type: "select", env: "OWC_DEFAULT_LANGUAGE", defaultValue: "zh-CN", restartRequired: false, options: LANGUAGE_OPTIONS },
   { key: "defaultCurrency", group: "general", label: "默认货币", type: "select", env: "OWC_DEFAULT_CURRENCY", defaultValue: "CNY", restartRequired: false, options: ["USD", "CNY"], fromEnv: envCurrency },
@@ -304,6 +311,9 @@ export class SettingsService {
     const provider2BaseURL = value("provider2BaseURL");
     const provider2ApiKey = value("provider2ApiKey");
     const provider2Model = value("provider2Model");
+    const webFetchProvider = value("webFetchProvider");
+    const webFetchApiKey = value("webFetchApiKey");
+    const webFetchBaseURL = value("webFetchBaseURL");
     const searchProvider = value("searchProvider");
     const searchApiKey = value("searchApiKey");
     const searchBaseURL = value("searchBaseURL");
@@ -369,9 +379,18 @@ export class SettingsService {
               model: provider2Model,
               ...(typeof provider2ApiKey === "string" ? { apiKey: provider2ApiKey } : {}),
             },
+        }
+        : {}),
+      ...((webFetchProvider === "jina" || webFetchProvider === "custom")
+        ? {
+            webFetch: {
+              provider: webFetchProvider,
+              ...(typeof webFetchApiKey === "string" ? { apiKey: webFetchApiKey } : {}),
+              ...(typeof webFetchBaseURL === "string" ? { baseURL: webFetchBaseURL } : {}),
+            },
           }
         : {}),
-      ...((searchProvider === "brave" || searchProvider === "custom")
+      ...((searchProvider === "brave" || searchProvider === "tavily" || searchProvider === "custom")
         ? {
             search: {
               provider: searchProvider,
@@ -503,6 +522,9 @@ export class SettingsService {
     if (changed.some((key) => key.startsWith("provider2")) && this.deps.provider2) {
       this.deps.provider2.setConfig(this.effective().provider2);
     }
+    if (changed.some((key) => key.startsWith("webFetch"))) {
+      this.deps.agent.setWebFetchProvider(createWebFetchProvider(this.effective().webFetch));
+    }
     if (changed.includes("gcMaxBytes") && this.deps.gc) {
       const gc = this.deps.gc;
       gc.setMaxBytes(this.effective().gcMaxBytes);
@@ -547,8 +569,6 @@ export class SettingsService {
   private async persist(): Promise<void> {
     await mkdir(path.dirname(this.filePath), { recursive: true });
     const document = { version: 1, updatedAt: new Date().toISOString(), overrides: this.overrides };
-    const temporary = `${this.filePath}.tmp`;
-    await writeFile(temporary, `${JSON.stringify(document, null, 2)}\n`, "utf8");
-    await rename(temporary, this.filePath);
+    await writeUtf8Atomically(this.filePath, `${JSON.stringify(document, null, 2)}\n`);
   }
 }

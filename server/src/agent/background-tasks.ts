@@ -117,6 +117,14 @@ export class BackgroundTaskRegistry {
     return result;
   }
 
+  /** Snapshot/managed-workspace mutations must not unmount a directory used by a task's dedicated core process. */
+  hasRunningForSession(sessionId: string): boolean {
+    for (const entry of this.tasks.values()) {
+      if (entry.info.sessionId === sessionId && !entry.settled && entry.info.status === "running") return true;
+    }
+    return false;
+  }
+
   async stop(taskId: string): Promise<boolean> {
     const entry = this.tasks.get(taskId);
     if (!entry) return false;

@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
+import type { BackgroundTaskRegistry } from "../src/agent/background-tasks.js";
 import type { CoreClientLike } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
@@ -72,6 +73,41 @@ describe("thinking persistence", () => {
     await runner.run(session.id, "不要自动快照");
 
     expect(existsSync(path.join(sessions.contextRoot(session.id), "shadow.git"))).toBe(false);
+    expect((await sessions.get(session.id))?.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+  });
+
+  it("skips automatic checkpoint while a background task still uses the workspace", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-background-snapshot-"));
+    roots.push(root);
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const session = await sessions.create({ cwd: root, provider: "test", model: "test-model" });
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const providers = new ProviderRegistry();
+    providers.register({
+      name: "test",
+      async *streamChat() {
+        yield { type: "text_delta", text: "继续执行" };
+        yield { type: "done", stopReason: "end_turn" };
+      },
+    });
+    const events = new EventBus();
+    const observed: Array<{ type: string; payload: unknown }> = [];
+    events.on("event", (event) => observed.push(event));
+    const backgroundTasks = { hasRunningForSession: () => true, drainNotices: () => [] } as unknown as BackgroundTaskRegistry;
+    const runner = new AgentRunner(
+      sessions, providers, core, events, pricing,
+      undefined, "zh-CN", 50, undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, undefined, undefined, undefined, backgroundTasks,
+    );
+
+    await runner.run(session.id, "后台任务还在运行");
+
+    expect(existsSync(path.join(sessions.contextRoot(session.id), "shadow.git"))).toBe(false);
+    expect(observed).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "checkpoint.failed", payload: expect.objectContaining({ message: expect.stringContaining("后台任务") }) }),
+    ]));
     expect((await sessions.get(session.id))?.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
   });
 

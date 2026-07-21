@@ -1,6 +1,6 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { writeUtf8Atomically } from "../atomic-file.js";
 import defaultCatalog from "./default-model-pricing.json" with { type: "json" };
 import type { Currency, ModelPricing } from "../context/model-profile.js";
 
@@ -136,9 +136,7 @@ export class PricingCatalog {
 
   private async persist(document: PricingDocument): Promise<void> {
     await mkdir(path.dirname(this.filePath), { recursive: true });
-    const temporary = `${this.filePath}.${process.pid}.${randomUUID()}.tmp`;
-    await writeFile(temporary, `${JSON.stringify(document, null, 2)}\n`, "utf8");
-    await rename(temporary, this.filePath);
+    await writeUtf8Atomically(this.filePath, `${JSON.stringify(document, null, 2)}\n`);
   }
 
   private serial<T>(operation: () => Promise<T>): Promise<T> {

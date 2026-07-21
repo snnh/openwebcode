@@ -29,7 +29,9 @@ export interface ServerConfig {
   anthropic?: { apiKey?: string; baseURL?: string; promptCaching?: boolean };
   openai?: { apiKey?: string; baseURL: string };
   provider2?: { baseURL: string; apiKey?: string; model: string };
-  search?: { provider: "brave" | "custom"; apiKey?: string; baseURL?: string };
+  /** Explicit reader service for web_fetch. Omit it to keep web_fetch unavailable. */
+  webFetch?: { provider: "jina" | "custom"; apiKey?: string; baseURL?: string };
+  search?: { provider: "brave" | "tavily" | "custom"; apiKey?: string; baseURL?: string };
 }
 
 function positiveInteger(value: string | undefined, fallback: number): number {
@@ -162,7 +164,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
           },
         }
       : {}),
-    ...(env.OWC_SEARCH_PROVIDER === "brave" || env.OWC_SEARCH_PROVIDER === "custom"
+    ...(env.OWC_WEB_FETCH_PROVIDER === "jina" || env.OWC_WEB_FETCH_PROVIDER === "custom"
+      ? {
+          webFetch: {
+            provider: env.OWC_WEB_FETCH_PROVIDER,
+            ...(env.OWC_WEB_FETCH_API_KEY ? { apiKey: env.OWC_WEB_FETCH_API_KEY } : {}),
+            ...(env.OWC_WEB_FETCH_BASE_URL ? { baseURL: env.OWC_WEB_FETCH_BASE_URL } : {}),
+          },
+        }
+      : {}),
+    ...(env.OWC_SEARCH_PROVIDER === "brave" || env.OWC_SEARCH_PROVIDER === "tavily" || env.OWC_SEARCH_PROVIDER === "custom"
       ? {
           search: {
             provider: env.OWC_SEARCH_PROVIDER,

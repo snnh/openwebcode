@@ -23,7 +23,7 @@ import { renderCommand, type CommandRegistry } from "../commands.js";
 import type { McpManager } from "../mcp/manager.js";
 import { appendMemory, readGlobalMemory, readProjectMemory } from "../memory.js";
 import type { UsageLog } from "../usage-log.js";
-import { webFetch, type SearchProvider } from "../web-tools.js";
+import type { SearchProvider, WebFetchProvider } from "../web-tools.js";
 import type { BackgroundTaskRegistry } from "./background-tasks.js";
 import type { HookEvent, HookPayload, HookRunner } from "../hooks.js";
 import type { ExtensionManager } from "../extensions/extension-manager.js";
@@ -209,6 +209,7 @@ const TASK_STOP_TOOL: ProviderTool = {
 function builtInTools(options: {
   skillsAvailable: boolean;
   backgroundTasksEnabled: boolean;
+  fetchAvailable: boolean;
   searchAvailable: boolean;
 }): ProviderTool[] {
   return [
@@ -219,7 +220,7 @@ function builtInTools(options: {
     SPAWN_TASK_TOOL,
     TODO_WRITE_TOOL,
     REMEMBER_TOOL,
-    WEB_FETCH_TOOL,
+    ...(options.fetchAvailable ? [WEB_FETCH_TOOL] : []),
     ...(options.backgroundTasksEnabled ? [TASK_OUTPUT_TOOL, TASK_STOP_TOOL] : []),
     ...(options.searchAvailable ? [WEB_SEARCH_TOOL] : []),
   ];
@@ -291,6 +292,7 @@ export class AgentRunner {
   private readonly mcpWarningSignatures = new Map<string, string>();
   private readonly todos = new Map<string, TodoItem[]>();
   private readonly permissions: PermissionCoordinator;
+  private webFetchProvider: WebFetchProvider | undefined;
 
   constructor(
     private readonly sessions: SessionStore,
@@ -310,12 +312,14 @@ export class AgentRunner {
     private readonly agents?: AgentRegistry,
     private readonly commands?: CommandRegistry,
     private readonly search?: SearchProvider,
-    private readonly fetchImpl?: typeof fetch,
+    _fetchImpl?: typeof fetch,
     private readonly backgroundTasks?: BackgroundTaskRegistry,
     private readonly hooks?: HookRunner,
     private readonly extensions?: ExtensionManager,
+    webFetchProvider?: WebFetchProvider,
   ) {
     this.permissions = new PermissionCoordinator(events);
+    this.webFetchProvider = webFetchProvider;
     core.on("event", (event: CoreEvent) => {
       const payload = event.payload as
         | { execId?: string; stream?: string; data?: string; seq?: number }
@@ -341,6 +345,11 @@ export class AgentRunner {
 
   setDefaultLanguage(language: string): void {
     this.defaultLanguage = language;
+  }
+
+  /** Enables/disables web_fetch for future turns without restarting the server. */
+  setWebFetchProvider(provider: WebFetchProvider | undefined): void {
+    this.webFetchProvider = provider;
   }
 
   async run(
@@ -376,7 +385,11 @@ export class AgentRunner {
         throw error;
       }
 
-      const automaticSnapshot = (configuredSession.snapshotMode ?? "auto") === "auto";
+      const automaticSnapshotRequested = (configuredSession.snapshotMode ?? "auto") === "auto";
+      // 每个后台任务都有独立 core/子进程，可能正以托管工作区为 cwd。换 VHDX/qcow2
+      // 叶子会短暂卸载该目录，因此不能在它运行时自动快照；本轮对话继续，不阻塞用户。
+      const backgroundTaskRunning = this.backgroundTasks?.hasRunningForSession(sessionId) ?? false;
+      const automaticSnapshot = automaticSnapshotRequested && !backgroundTaskRunning;
       const snapshotMessageCount = configuredSession.messages.length;
       // 在用户消息写入前读取 ledger；实际镜像创建放到写入后，以保证任何快照/权限错误
       // 都不会吞掉已接受的消息。用户写入不改变 ledger 或工作区，因此仍是本轮前状态。
@@ -389,6 +402,14 @@ export class AgentRunner {
 
       // 一旦路由返回 202，用户输入优先于所有可失败的集成步骤（快照、Hook、Core、Provider）。
       await appendUserMessage(effectiveText);
+      if (automaticSnapshotRequested && backgroundTaskRunning) {
+        this.events.publish({
+          source: "session",
+          type: "checkpoint.failed",
+          sessionId,
+          payload: { message: "后台任务正在运行，已跳过自动快照；请等待任务结束后再创建手动快照。" },
+        });
+      }
       // UserPromptSubmit 钩子：仅通知不阻断（否决语义为 PreToolUse 专属）。
       await this.runNotificationHook("UserPromptSubmit", { sessionId, cwd: configuredSession.cwd, prompt: effectiveText.slice(0, 2000) });
       await this.core.configureSession({ sessionId, cwd: configuredSession.cwd, sandbox: configuredSession.sandbox ?? { enabled: true, readRoots: [configuredSession.cwd], writeRoots: [configuredSession.cwd], denyPaths: [], network: "allow" } });
@@ -513,6 +534,7 @@ export class AgentRunner {
               ...builtInTools({
                 skillsAvailable: skillCatalog.length > 0,
                 backgroundTasksEnabled: Boolean(this.backgroundTasks),
+                fetchAvailable: Boolean(this.webFetchProvider),
                 searchAvailable: Boolean(this.search),
               }),
               ...mcpBinding.tools,
@@ -975,9 +997,10 @@ export class AgentRunner {
         signal.throwIfAborted();
         let value: unknown;
         if (name === "web_fetch") {
+          if (!this.webFetchProvider) throw new Error("Web fetch is not configured");
           const url = typeof input.url === "string" ? input.url.trim() : "";
           if (!url) throw new Error("web_fetch requires a non-empty url");
-          value = await webFetch(url, { ...(this.fetchImpl ? { fetchImpl: this.fetchImpl } : {}), signal });
+          value = await this.webFetchProvider.fetchUrl(url, { signal });
         } else {
           if (!this.search) throw new Error("Web search is not configured");
           const query = typeof input.query === "string" ? input.query.trim() : "";

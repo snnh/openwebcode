@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, rename, rm, writeFile, appendFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile, appendFile } from "node:fs/promises";
 import path from "node:path";
+import { writeUtf8Atomically } from "../atomic-file.js";
 import { parseSessionImport, serializeSession } from "./session-transfer.js";
 import type { ChatMessage, ManagedWorkspaceMeta, MessageContent, MessageRole, SandboxMode, SessionDetail, SessionMeta } from "./types.js";
 
@@ -234,9 +235,7 @@ export class SessionStore {
 
   private async writeMeta(meta: SessionMeta): Promise<void> {
     const target = this.metaPath(meta.id);
-    const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
-    await writeFile(temporary, `${JSON.stringify(meta, null, 2)}\n`, "utf8");
-    await rename(temporary, target);
+    await writeUtf8Atomically(target, `${JSON.stringify(meta, null, 2)}\n`);
   }
 }
 

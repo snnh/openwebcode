@@ -23,6 +23,12 @@ export interface SearchProvider {
   search(query: string, limit: number): Promise<SearchResult[]>;
 }
 
+/** A configured reader service used by web_fetch. It is intentionally absent by default. */
+export interface WebFetchProvider {
+  name: string;
+  fetchUrl(url: string, options?: { signal?: AbortSignal }): Promise<WebFetchResult>;
+}
+
 function blockedIpv4(hostname: string): boolean {
   const octets = hostname.split(".").map(Number);
   if (octets.length !== 4 || octets.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) return false;
@@ -144,6 +150,74 @@ export async function webFetch(
   throw new Error("Too many redirects");
 }
 
+/**
+ * Reader services fetch the public target on the user's behalf.  We still
+ * validate the target before passing it onward, but do not silently fall back
+ * to a direct server-side request when no reader was configured.
+ */
+class HttpReaderProvider implements WebFetchProvider {
+  constructor(
+    readonly name: string,
+    private readonly endpointFor: (requested: URL) => URL,
+    private readonly apiKey: string | undefined,
+    private readonly fetchImpl: typeof fetch,
+  ) {}
+
+  async fetchUrl(value: string, options: { signal?: AbortSignal } = {}): Promise<WebFetchResult> {
+    const requested = assertSafeWebUrl(value);
+    const timeout = AbortSignal.timeout(DEFAULT_TIMEOUT_MS);
+    const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
+    const response = await this.fetchImpl(this.endpointFor(requested), {
+      headers: {
+        Accept: "text/plain, text/markdown, text/html;q=0.9, application/json;q=0.8",
+        ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
+      },
+      signal,
+    });
+    if (!response.ok) throw new Error(`${this.name} returned HTTP ${response.status} ${response.statusText}`.trim());
+    const contentType = response.headers.get("content-type") ?? "text/plain";
+    if (!supportedContentType(contentType)) throw new Error(`${this.name} returned unsupported content type: ${contentType || "unknown"}`);
+    const raw = await readLimited(response, DEFAULT_MAX_BYTES);
+    return {
+      url: requested.href,
+      // A reader endpoint may follow redirects internally but cannot reliably
+      // report the target's terminal URL, so never leak its own service URL.
+      finalUrl: requested.href,
+      contentType,
+      text: contentType.toLowerCase().startsWith("text/html") ? htmlToText(raw) : raw,
+    };
+  }
+}
+
+function customReaderEndpoint(template: string, requested: URL): URL {
+  return new URL(template.replaceAll("{url}", encodeURIComponent(requested.href)));
+}
+
+/**
+ * Build an explicitly configured web reader. Jina accepts the target as a
+ * path suffix; custom endpoints use a `{url}` placeholder and receive an
+ * encoded target URL, for example `https://reader.example/fetch?url={url}`.
+ */
+export function createWebFetchProvider(
+  config: ServerConfig["webFetch"],
+  fetchImpl: typeof fetch = globalThis.fetch,
+): WebFetchProvider | undefined {
+  if (!config) return undefined;
+  const apiKey = config.apiKey?.trim() || undefined;
+  if (config.provider === "jina") {
+    return new HttpReaderProvider("jina", (requested) => new URL(`https://r.jina.ai/${requested.href}`), apiKey, fetchImpl);
+  }
+  const template = config.baseURL?.trim();
+  if (!template || !template.includes("{url}")) return undefined;
+  try {
+    const probe = customReaderEndpoint(template, new URL("https://example.com/"));
+    if (probe.protocol !== "http:" && probe.protocol !== "https:") return undefined;
+    return new HttpReaderProvider("custom", (requested) => customReaderEndpoint(template, requested), apiKey, fetchImpl);
+  } catch {
+    return undefined;
+  }
+}
+
 function normalizeResults(value: unknown, limit: number): SearchResult[] {
   const root = value as { web?: { results?: unknown[] }; results?: unknown[] };
   const items = root?.web?.results ?? root?.results ?? [];
@@ -153,7 +227,10 @@ function normalizeResults(value: unknown, limit: number): SearchResult[] {
     const entry = item as Record<string, unknown>;
     const title = typeof entry.title === "string" ? entry.title : "";
     const url = typeof entry.url === "string" ? entry.url : "";
-    const snippet = typeof entry.description === "string" ? entry.description : typeof entry.snippet === "string" ? entry.snippet : "";
+    const snippet = typeof entry.description === "string" ? entry.description
+      : typeof entry.snippet === "string" ? entry.snippet
+        : typeof entry.content === "string" ? entry.content
+          : "";
     return title && url ? [{ title, url, snippet }] : [];
   });
 }
@@ -182,12 +259,43 @@ class HttpSearchProvider implements SearchProvider {
   }
 }
 
+class TavilySearchProvider implements SearchProvider {
+  readonly name = "tavily";
+
+  constructor(private readonly apiKey: string, private readonly fetchImpl: typeof fetch) {}
+
+  async search(query: string, limit: number): Promise<SearchResult[]> {
+    const response = await this.fetchImpl("https://api.tavily.com/search", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        query,
+        max_results: limit,
+        search_depth: "basic",
+        include_answer: false,
+        include_raw_content: false,
+        include_images: false,
+      }),
+      signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+    });
+    if (!response.ok) throw new Error(`Tavily returned HTTP ${response.status}`);
+    return normalizeResults(await response.json(), limit);
+  }
+}
+
 export function createSearchProvider(config: ServerConfig["search"], fetchImpl: typeof fetch = globalThis.fetch): SearchProvider | undefined {
   if (!config) return undefined;
   if (config.provider === "brave") {
     const apiKey = config.apiKey?.trim();
     if (!apiKey) return undefined;
     return new HttpSearchProvider("brave", "https://api.search.brave.com/res/v1/web/search", apiKey, fetchImpl);
+  }
+  if (config.provider === "tavily") {
+    const apiKey = config.apiKey?.trim();
+    return apiKey ? new TavilySearchProvider(apiKey, fetchImpl) : undefined;
   }
   const baseURL = config.baseURL?.trim();
   if (!baseURL) return undefined;

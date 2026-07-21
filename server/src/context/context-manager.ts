@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { writeUtf8Atomically } from "../atomic-file.js";
 import type { ChatMessage, MessageContent } from "../sessions/types.js";
 import type { Currency } from "./model-profile.js";
 
@@ -119,9 +120,7 @@ export class ContextManager {
   async save(ledger: ContextLedger): Promise<void> {
     await mkdir(this.sessionRoot, { recursive: true });
     const target = path.join(this.sessionRoot, "ledger.json");
-    const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
-    await writeFile(temporary, `${JSON.stringify(ledger, null, 2)}\n`, "utf8");
-    await rename(temporary, target);
+    await writeUtf8Atomically(target, `${JSON.stringify(ledger, null, 2)}\n`);
   }
 
   async buildView(messages: ChatMessage[]): Promise<ContextView> {

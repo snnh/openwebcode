@@ -44,9 +44,11 @@ Anthropic（Claude）与 OpenAI 兼容协议（DeepSeek/Qwen/Ollama/GLM 等皆�
 
 模型目录的 `tools` 能力开关决定本轮是否下发工具。关闭时，server 不会发送内置工具 schema、工具提示、MCP 工具、技能目录或后台任务通知，模型仍可正常聊天和输出方案；即使兼容 provider 异常返回 tool call，server 也会拒绝执行并把错误结果写入会话。需要文件操作、bash、子代理或 MCP 时，切换到标为支持 tools 的模型。
 
-### Q: 为什么没有 `web_search`？
+### Q: 为什么没有 `web_fetch` 或 `web_search`？
 
-`web_search` 只在搜索服务可用时注入：Brave 需要有效 API key；自定义服务需要有效的 `http://` 或 `https://` endpoint。未设置、空 key、畸形地址或非 HTTP(S) 地址都会自动降级为不提供搜索工具，不影响普通对话和 `web_fetch`。
+联网工具不会默认注入，避免模型在未配置服务时反复调用必然失败的工具。`web_fetch` 需要在「设置 → 服务设置 → 网页读取」显式选择 Jina 或 custom；custom Base URL 必须含 `{url}` 占位符。`web_search` 需要选择 Brave、Tavily 或 custom 并填写有效凭据；Tavily 使用 API Key 调用内置 Search API。未设置、空 key、畸形地址或非 HTTP(S) 地址都会自动降级为不提供对应工具/提示词，不影响普通对话。
+
+`https://mcp.tavily.com/mcp/?tavilyApiKey=...` 是 Tavily 的远程 MCP 地址；如需直接使用 Tavily MCP 的完整工具集，请把它写到 `<业务数据目录>/mcp.json`，不要填进搜索 Base URL。
 
 ### Q: thinking / reasoning 模型怎么开？
 
@@ -136,7 +138,7 @@ provider2 是快速廉价的辅助模型，做压缩/标题生成/翻译等旁�
 - 不可信代码（配合 WSB 或容器）
 - 想隔离多个工作区
 
-代价：挂载需管理员权限（Windows Hyper-V Administrators 组 / Linux root helper），链长 >32 自动合并最老段。
+代价：挂载需管理员权限（Windows Hyper-V Administrators 组 / Linux root helper）。为避免在仍挂载的差分祖先链上执行破坏性合并，当前每个托管工作区最多保留 32 个检查点；达到上限会明确拒绝新建而不会损坏已有链。
 
 ## 子代理与扩展
 
