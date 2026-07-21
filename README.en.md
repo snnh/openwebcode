@@ -131,6 +131,7 @@ The server serves `web/dist`. Distribution layout, clean staging, local packagin
 
 ## Documentation
 
+- [`CHANGELOG.md`](./CHANGELOG.md) — version history (Chinese)
 - [`help/usage.md`](./help/usage.md) — user guide (Chinese)
 - [`help/faq.md`](./help/faq.md) — troubleshooting and FAQ (Chinese)
 - [`help/development.md`](./help/development.md) — development guide (Chinese)
