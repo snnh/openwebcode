@@ -146,7 +146,7 @@ cd web && npm ci && npm run build && npm test
   - [`help/faq.md`](./help/faq.md) — 常见问题：模型接入、权限与沙盒、上下文管理、快照回滚、CLI 集成、故障排查
 - **开发者文档**（随 git 同步）：
   - [`help/development.md`](./help/development.md) — 编译与二次开发：仓库布局、三件套构建、本地开发循环、测试约定、二次开发切入点、CI 与发布
-- **内部文档**：`docs/` 默认仅在本地维护；已显式跟踪的路线图会随仓库分发：[`fantomex-superboy-polaris.md`](./docs/fantomex-superboy-polaris.md)
+- **内部文档**：`docs/` 仅在本地维护，不随远端仓库分发
 - [`packaging/README.md`](./packaging/README.md) — 完整打包流程、分发布局、安装脚本与 CI 发布流水线
 
 ## 卸载
