@@ -11,6 +11,16 @@ import {
   type SnapshotBackend,
   type SnapshotCapabilityInfo,
 } from "./backend.js";
+import {
+  applyManagedWorkspaceSync,
+  createManagedWorkspaceSyncBaseline,
+  MANAGED_WORKSPACE_COPY_EXCLUDES,
+  ManagedWorkspaceSyncError,
+  previewManagedWorkspaceSync,
+  type ManagedWorkspaceSyncApplyInput,
+  type ManagedWorkspaceSyncApplyResult,
+  type ManagedWorkspaceSyncPreview,
+} from "./managed-sync.js";
 import { createExecFileRunner, type CommandRunner } from "./probe.js";
 
 /** 稀疏基盘大小：20GB */
@@ -18,7 +28,7 @@ export const MANAGED_IMAGE_SIZE_BYTES = 20 * 1024 * 1024 * 1024;
 /** 链长上限：超过即在 create 后自动合并最老段 */
 export const MANAGED_MAX_CHAIN = 32;
 /** 复制进托管工作区时按目录名排除（任意深度；参考 git-shadow 的排除思路） */
-const COPY_EXCLUDES = new Set(["node_modules", ".owc", ".openwebcode"]);
+const COPY_EXCLUDES = MANAGED_WORKSPACE_COPY_EXCLUDES;
 
 export type ManagedBackendKind = "vhdx" | "qcow2";
 
@@ -65,11 +75,17 @@ export function managedWorkspacePaths(dataDir: string, sessionId: string): { wor
   };
 }
 
-/** 能力检测：win32 → VHDX（Hyper-V PS 模块）；linux → qcow2（qemu-img + qemu-nbd + 免密 sudo）。REST 与创建流程共用。 */
+/** 能力检测：win32 → VHDX（Hyper-V PS 模块 + 当前进程 Hyper-V 访问权）；linux → qcow2（qemu-img + qemu-nbd + 免密 sudo）。REST 与创建流程共用。 */
 export async function detectManagedWorkspace(platform: NodeJS.Platform, runner: CommandRunner): Promise<ManagedWorkspaceCapability> {
   if (platform === "win32") {
-    const result = await runner.run("powershell", ["-NoProfile", "-Command", "Get-Command New-VHD"]).catch(() => ({ stdout: "", code: 1 }));
-    const available = result.code === 0 && result.stdout.trim().length > 0;
+    const module = await runner.run("powershell", ["-NoProfile", "-Command", "Get-Command New-VHD"]).catch(() => ({ stdout: "", code: 1 }));
+    const hasModule = module.code === 0 && module.stdout.trim().length > 0;
+    // Get-Command 只能说明 cmdlet 已安装；Get-VMHost 会经 Hyper-V 服务校验当前进程
+    // 的有效 token（管理员 / Hyper-V Administrators）。不通过时，创建 VHDX 必然会失败。
+    const access = hasModule
+      ? await runner.run("powershell", ["-NoProfile", "-Command", "Get-VMHost -ErrorAction Stop | Out-Null"]).catch(() => ({ stdout: "", code: 1 }))
+      : { stdout: "", code: 1 };
+    const available = hasModule && access.code === 0;
     return {
       platform,
       backends: [{
@@ -78,7 +94,9 @@ export async function detectManagedWorkspace(platform: NodeJS.Platform, runner: 
         requiresAdmin: true,
         detail: available
           ? "Hyper-V PowerShell 模块可用；镜像操作需管理员或 Hyper-V Administrators 组成员身份"
-          : "未找到 Hyper-V PowerShell 模块（New-VHD）；需安装/启用 Hyper-V 管理工具",
+          : !hasModule
+            ? "未找到 Hyper-V PowerShell 模块（New-VHD）；需安装/启用 Hyper-V 管理工具"
+            : "Hyper-V PowerShell 模块可用，但当前进程无 Hyper-V 管理权限或服务不可访问；请以管理员身份运行，或加入 Hyper-V Administrators 组后重新登录",
       }],
     };
   }
@@ -329,6 +347,8 @@ export interface ManagedProvisionResult {
 export interface ManagedWorkspaceLike {
   capability(): Promise<ManagedWorkspaceCapability>;
   provision(input: ManagedProvisionInput): Promise<ManagedProvisionResult>;
+  previewSync(session: { id: string; workspace?: ManagedWorkspaceMeta }): Promise<ManagedWorkspaceSyncPreview>;
+  applySync(session: { id: string; workspace?: ManagedWorkspaceMeta }, input: ManagedWorkspaceSyncApplyInput): Promise<ManagedWorkspaceSyncApplyResult>;
   teardown(session: { id: string; workspace?: ManagedWorkspaceMeta }): Promise<void>;
 }
 
@@ -336,6 +356,7 @@ export interface ManagedWorkspaceLike {
 export class ManagedWorkspaceManager implements ManagedWorkspaceLike {
   private readonly runner: CommandRunner;
   private readonly platform: NodeJS.Platform;
+  private readonly syncingSessions = new Set<string>();
 
   constructor(private readonly options: { dataDir: string; runner?: CommandRunner; platform?: NodeJS.Platform }) {
     this.runner = options.runner ?? createExecFileRunner();
@@ -346,6 +367,20 @@ export class ManagedWorkspaceManager implements ManagedWorkspaceLike {
 
   capability(): Promise<ManagedWorkspaceCapability> {
     return detectManagedWorkspace(this.platform, this.runner);
+  }
+
+  async previewSync(session: { id: string; workspace?: ManagedWorkspaceMeta }): Promise<ManagedWorkspaceSyncPreview> {
+    return previewManagedWorkspaceSync(this.syncRoots(session));
+  }
+
+  async applySync(session: { id: string; workspace?: ManagedWorkspaceMeta }, input: ManagedWorkspaceSyncApplyInput): Promise<ManagedWorkspaceSyncApplyResult> {
+    if (this.syncingSessions.has(session.id)) throw new ManagedWorkspaceSyncError("sync_in_progress", "A managed workspace sync is already in progress for this session");
+    this.syncingSessions.add(session.id);
+    try {
+      return await applyManagedWorkspaceSync(this.syncRoots(session), input);
+    } finally {
+      this.syncingSessions.delete(session.id);
+    }
   }
 
   /** 建 20GB 稀疏基盘 → 格式化挂载 → 复制源 cwd 内容（排除 node_modules/.owc/.openwebcode）。失败清理半成品。 */
@@ -361,6 +396,8 @@ export class ManagedWorkspaceManager implements ManagedWorkspaceLike {
         recursive: true,
         filter: (source) => !COPY_EXCLUDES.has(path.basename(source)),
       });
+      // 基线取复制后的挂载树，确保三方比较的共同版本就是实际隔离副本的起点；sidecar 位于私有 workspaceRoot。
+      await createManagedWorkspaceSyncBaseline({ sessionId: input.sessionId, workspaceRoot, mountPoint, originCwd: input.originCwd });
       return { backend: input.backend, image, mountPoint };
     } catch (error) {
       await this.unmountBestEffort(input.sessionId).catch(() => undefined);
@@ -473,5 +510,17 @@ export class ManagedWorkspaceManager implements ManagedWorkspaceLike {
     } catch {
       return undefined;
     }
+  }
+
+  /** 同步的目标与 sidecar 均从服务端 dataDir/session id 推导，绝不信任可导入的 mountPoint/image 元数据。 */
+  private syncRoots(session: { id: string; workspace?: ManagedWorkspaceMeta }): { sessionId: string; workspaceRoot: string; mountPoint: string; originCwd: string } {
+    const workspace = session.workspace;
+    if (!workspace || workspace.mode !== "managed") throw new ManagedWorkspaceSyncError("unsafe_path", "Session does not use a managed workspace");
+    const derived = managedWorkspacePaths(this.dataDir, session.id);
+    const workspaceRoot = path.resolve(derived.workspaceRoot);
+    const mountPoint = path.resolve(derived.mountPoint);
+    if (path.resolve(workspace.mountPoint) !== mountPoint) throw new ManagedWorkspaceSyncError("unsafe_path", "Managed workspace metadata mount point does not match this server");
+    if (!existsSync(path.join(workspaceRoot, `base.${workspace.backend}`))) throw new ManagedWorkspaceSyncError("unsafe_path", "Managed workspace image is not owned by this server");
+    return { sessionId: session.id, workspaceRoot, mountPoint, originCwd: workspace.originCwd };
   }
 }

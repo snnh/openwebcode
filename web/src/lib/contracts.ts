@@ -22,6 +22,52 @@ export interface ManagedWorkspaceCapability {
   backends: Array<{ backend: "vhdx" | "qcow2"; available: boolean; requiresAdmin: boolean; detail?: string }>;
 }
 
+/** 会话的镜像盘工作区元数据；源目录只会在用户确认手动同步时被写回。 */
+export interface ManagedWorkspace {
+  mode: "managed";
+  backend: "vhdx" | "qcow2";
+  originCwd: string;
+  image: string;
+  mountPoint: string;
+}
+
+/** 单个工作区条目的可比较状态；不向浏览器暴露绝对路径。 */
+export interface ManagedWorkspaceSyncNode {
+  kind: "file" | "directory" | "symlink" | "other";
+  sha256?: string;
+  size?: number;
+  mode?: number;
+}
+
+export type ManagedWorkspaceSyncAction = "create" | "update" | "delete" | "none" | "conflict" | "unsupported";
+
+/** 基线、源目录和镜像盘三方比较得到的一项变更。 */
+export interface ManagedWorkspaceSyncChange {
+  path: string;
+  action: ManagedWorkspaceSyncAction;
+  reason: string;
+  baseline: ManagedWorkspaceSyncNode | null;
+  origin: ManagedWorkspaceSyncNode | null;
+  managed: ManagedWorkspaceSyncNode | null;
+  originChanged: boolean;
+  managedChanged: boolean;
+}
+
+export interface ManagedWorkspaceSyncPreview {
+  baseline: { available: boolean; reason?: "missing" | "invalid"; createdAt?: string; version?: number };
+  /** 预览为空基线时仍可由显式覆盖流程提供校验指纹。 */
+  fingerprint: string | null;
+  changes: ManagedWorkspaceSyncChange[];
+  summary: { create: number; update: number; delete: number; conflicts: number; unsupported: number; unchanged: number };
+}
+
+export interface ManagedWorkspaceSyncResult {
+  applied: Array<{ path: string; action: "create" | "update" | "delete" | "overwrite" }>;
+  conflicts: ManagedWorkspaceSyncChange[];
+  unsupported: ManagedWorkspaceSyncChange[];
+  nextPreview: ManagedWorkspaceSyncPreview;
+}
+
 export interface MessageContent {
   type: "text" | "thinking" | "tool_call" | "tool_result" | "image";
   text?: string;
@@ -62,6 +108,7 @@ export interface Session {
     denyPaths: string[];
     network: "allow" | "deny";
   };
+  workspace?: ManagedWorkspace;
   title: string;
   createdAt: string;
   updatedAt: string;

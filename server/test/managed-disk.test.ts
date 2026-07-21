@@ -21,6 +21,7 @@ import {
   type ManagedWorkspaceLike,
 } from "../src/snapshots/managed-disk.js";
 import type { CommandRunner } from "../src/snapshots/probe.js";
+import type { ManagedWorkspaceSyncApplyInput, ManagedWorkspaceSyncApplyResult, ManagedWorkspaceSyncPreview } from "../src/snapshots/managed-sync.js";
 import { StorageGC } from "../src/storage-gc.js";
 import { makeStubProvider } from "./helpers/stub-provider.js";
 
@@ -61,8 +62,11 @@ async function readChain(workspaceRoot: string): Promise<TestChainState> {
 }
 
 describe("detectManagedWorkspace", () => {
-  it("win32：Hyper-V 模块在 → vhdx 可用", async () => {
-    const { runner } = tableRunner({ "powershell -NoProfile -Command Get-Command New-VHD": { stdout: "New-VHD\r\n", code: 0 } });
+  it("win32：Hyper-V 模块与当前进程访问权都可用 → vhdx 可用", async () => {
+    const { runner } = tableRunner({
+      "powershell -NoProfile -Command Get-Command New-VHD": { stdout: "New-VHD\r\n", code: 0 },
+      "powershell -NoProfile -Command Get-VMHost -ErrorAction Stop | Out-Null": { code: 0 },
+    });
     const capability = await detectManagedWorkspace("win32", runner);
     expect(capability.platform).toBe("win32");
     expect(capability.backends).toEqual([
@@ -75,6 +79,20 @@ describe("detectManagedWorkspace", () => {
     const capability = await detectManagedWorkspace("win32", runner);
     expect(capability.backends[0]).toMatchObject({ backend: "vhdx", available: false, requiresAdmin: true });
     expect(capability.backends[0]?.detail).toContain("New-VHD");
+  });
+
+  it("win32：模块存在但当前 token 无 Hyper-V 访问权 → vhdx 不可用", async () => {
+    const { runner, lines } = tableRunner({
+      "powershell -NoProfile -Command Get-Command New-VHD": { stdout: "New-VHD\r\n", code: 0 },
+      "powershell -NoProfile -Command Get-VMHost -ErrorAction Stop | Out-Null": { code: 1 },
+    });
+    const capability = await detectManagedWorkspace("win32", runner);
+    expect(capability.backends[0]).toMatchObject({ backend: "vhdx", available: false, requiresAdmin: true });
+    expect(capability.backends[0]?.detail).toContain("权限");
+    expect(lines()).toEqual([
+      "powershell -NoProfile -Command Get-Command New-VHD",
+      "powershell -NoProfile -Command Get-VMHost -ErrorAction Stop | Out-Null",
+    ]);
   });
 
   it("linux：qemu-img/qemu-nbd/免密 sudo 齐备 → qcow2 可用", async () => {
@@ -97,6 +115,17 @@ describe("detectManagedWorkspace", () => {
     const capability = await detectManagedWorkspace("linux", runner);
     expect(capability.backends[0]?.available).toBe(false);
     expect(capability.backends[0]?.detail).toContain("sudo");
+  });
+});
+
+describe("managed-disk.ps1", () => {
+  it("错误输出显式使用无 BOM UTF-8 stderr，供 Node 原样捕获", async () => {
+    const script = await readFile(managedDiskScriptPath(), "utf8");
+    expect(script).toContain("$utf8NoBom = New-Object System.Text.UTF8Encoding($false)");
+    expect(script).toContain("[Console]::OutputEncoding = $utf8NoBom");
+    expect(script).toContain("[Console]::OpenStandardError()");
+    expect(script).toContain("$stderr.Write($bytes, 0, $bytes.Length)");
+    expect(script).toContain("Write-Utf8Stderr $_.Exception.Message");
   });
 });
 
@@ -340,13 +369,13 @@ describe("StorageGC.startup", () => {
 });
 
 describe("managed workspace REST", () => {
-  async function buildApp(root: string, managed?: ManagedWorkspaceLike) {
+  async function buildApp(root: string, managed?: ManagedWorkspaceLike, isRunning: () => boolean = () => false) {
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const events = new EventBus();
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));
     await pricing.initialize();
-    const agent = { isRunning: () => false } as unknown as AgentRunner;
+    const agent = { isRunning } as unknown as AgentRunner;
     const core = { cleanupSession: async () => ({}), release: async () => {} } as unknown as CoreClient;
     const providers = new ProviderRegistry();
     providers.register(makeStubProvider("test-stub"));
@@ -354,13 +383,28 @@ describe("managed workspace REST", () => {
     return { app, sessions };
   }
 
-  function fakeManaged(root: string, spies: { provision?: ManagedProvisionInput[]; teardown?: string[] }): ManagedWorkspaceLike {
+  function fakeManaged(root: string, spies: { provision?: ManagedProvisionInput[]; teardown?: string[]; preview?: string[]; apply?: Array<{ sessionId: string; input: ManagedWorkspaceSyncApplyInput }> }): ManagedWorkspaceLike {
+    const preview: ManagedWorkspaceSyncPreview = {
+      baseline: { available: true, createdAt: "2026-01-01T00:00:00.000Z", version: 1 },
+      fingerprint: "a".repeat(64),
+      changes: [],
+      summary: { create: 0, update: 0, delete: 0, conflicts: 0, unsupported: 0, unchanged: 0 },
+    };
+    const result = (): ManagedWorkspaceSyncApplyResult => ({ applied: [], conflicts: [], unsupported: [], nextPreview: preview });
     return {
       capability: async () => ({ platform: "linux", backends: [{ backend: "qcow2", available: true, requiresAdmin: true }] }),
       provision: async (input) => {
         spies.provision?.push(input);
         const { workspaceRoot, mountPoint } = managedWorkspacePaths(root, input.sessionId);
         return { backend: input.backend, image: path.join(workspaceRoot, "base.qcow2"), mountPoint };
+      },
+      previewSync: async (session) => {
+        spies.preview?.push(session.id);
+        return preview;
+      },
+      applySync: async (session, input) => {
+        spies.apply?.push({ sessionId: session.id, input });
+        return result();
       },
       teardown: async (session) => { spies.teardown?.push(session.id); },
     };
@@ -404,6 +448,64 @@ describe("managed workspace REST", () => {
       expect(stored?.workspace?.mode).toBe("managed");
       expect(stored?.snapshotBackend).toBe("qcow2-chain");
     } finally {
+      await app.close();
+    }
+  });
+
+  it("workspace sync REST：预览可在运行中读取，apply 要求 idle+confirm+fingerprint，并对同会话加锁", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
+    const origin = path.join(root, "origin-project");
+    await mkdir(origin);
+    const spies: { preview: string[]; apply: Array<{ sessionId: string; input: ManagedWorkspaceSyncApplyInput }> } = { preview: [], apply: [] };
+    let running = false;
+    const managed = fakeManaged(root, spies);
+    let signalStarted!: () => void;
+    const started = new Promise<void>((resolve) => { signalStarted = resolve; });
+    let releaseApply!: () => void;
+    const applyGate = new Promise<void>((resolve) => { releaseApply = resolve; });
+    const originalApply = managed.applySync.bind(managed);
+    managed.applySync = async (session, input) => {
+      signalStarted();
+      await applyGate;
+      return originalApply(session, input);
+    };
+    const { app } = await buildApp(root, managed, () => running);
+    try {
+      const created = await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: origin, provider: "test-stub", model: "deterministic-tool-loop", workspaceMode: "managed" } });
+      const id = created.json<{ id: string }>().id;
+
+      running = true;
+      const preview = await app.inject({ method: "GET", url: `/api/sessions/${id}/workspace/sync-preview` });
+      expect(preview.statusCode).toBe(200);
+      expect(spies.preview).toEqual([id]);
+      const whileRunning = await app.inject({ method: "POST", url: `/api/sessions/${id}/workspace/sync`, payload: { confirm: true, previewFingerprint: "a".repeat(64) } });
+      expect(whileRunning.statusCode).toBe(409);
+
+      running = false;
+      const missingConfirm = await app.inject({ method: "POST", url: `/api/sessions/${id}/workspace/sync`, payload: { previewFingerprint: "a".repeat(64) } });
+      expect(missingConfirm.statusCode).toBe(400);
+
+      const first = app.inject({ method: "POST", url: `/api/sessions/${id}/workspace/sync`, payload: { confirm: true, previewFingerprint: "a".repeat(64) } });
+      await started;
+      const second = await app.inject({ method: "POST", url: `/api/sessions/${id}/workspace/sync`, payload: { confirm: true, previewFingerprint: "a".repeat(64) } });
+      expect(second.statusCode).toBe(409);
+      const checkpoint = await app.inject({ method: "POST", url: `/api/sessions/${id}/checkpoints`, payload: { label: "blocked by sync" } });
+      expect(checkpoint.statusCode).toBe(409);
+      const message = await app.inject({ method: "POST", url: `/api/sessions/${id}/messages`, payload: { content: "must wait for sync" } });
+      expect(message.statusCode).toBe(409);
+      const pdf = await app.inject({ method: "POST", url: `/api/sessions/${id}/pdf-upload`, payload: {} });
+      expect(pdf.statusCode).toBe(409);
+      const shell = await app.inject({ method: "POST", url: `/api/sessions/${id}/shell`, payload: { cmd: "echo blocked" } });
+      expect(shell.statusCode).toBe(409);
+      const exec = await app.inject({ method: "POST", url: "/api/exec", payload: { sessionId: id, execId: "blocked", cmd: "echo blocked", cwd: origin } });
+      expect(exec.statusCode).toBe(409);
+      const deleting = await app.inject({ method: "DELETE", url: `/api/sessions/${id}` });
+      expect(deleting.statusCode).toBe(409);
+      releaseApply();
+      expect((await first).statusCode).toBe(200);
+      expect(spies.apply).toEqual([{ sessionId: id, input: { confirm: true, previewFingerprint: "a".repeat(64) } }]);
+    } finally {
+      releaseApply?.();
       await app.close();
     }
   });

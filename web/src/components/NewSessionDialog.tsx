@@ -149,7 +149,7 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
           <p className="dialog-hint">{t("托管工作区不可用：", "Managed workspace unavailable: ")}{managedUnavailableReason}</p>
         )}
         {workspaceMode === "managed" && (
-          <p className="dialog-hint">{t("将创建 20GB 稀疏镜像盘并挂载到数据根 mnt/ 目录，源目录内容（排除 node_modules 等）会复制进去；需要管理员（Hyper-V）或 root（qemu-nbd）权限。", "A 20 GB sparse disk image will be created and mounted under mnt/ in the data root. Source contents (excluding node_modules and similar paths) are copied into it. Administrator (Hyper-V) or root (qemu-nbd) access is required.")}</p>
+          <p className="dialog-hint">{t("将创建 20GB 稀疏镜像盘并挂载到数据根 mnt/ 目录，源目录内容（排除 node_modules 等）会复制进去；需要管理员（Hyper-V）或 root（qemu-nbd）权限。源目录不会在关闭或删除会话时自动覆盖；可在“文件”面板随时预览差异并确认同步回源。", "A 20 GB sparse disk image will be created and mounted under mnt/ in the data root. Source contents (excluding node_modules and similar paths) are copied into it. Administrator (Hyper-V) or root (qemu-nbd) access is required. Closing or deleting the session never overwrites the source directory automatically; use the Files panel to preview changes and explicitly sync them back at any time.")}</p>
         )}
         <label>
           {workspaceMode === "managed" ? t("源目录（将复制进托管工作区）", "Source directory (copied into managed workspace)") : t("工作目录", "Working directory")}

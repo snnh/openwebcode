@@ -54,7 +54,7 @@ Open <http://127.0.0.1:3000> after the service starts.
 
 The first visit follows the browser language: Chinese browsers use Simplified Chinese and other browsers use English. To change it later, open **Settings → Appearance → Language**. The selection takes effect immediately, is stored in local storage as `owc-language`, and updates the document language used by assistive technology.
 
-Then configure a model provider under **Settings → Server**. Anthropic and OpenAI-compatible endpoints are supported, including services such as DeepSeek, Qwen, and Ollama. Refresh the model catalog, create a session from the **+** button, choose a workspace and model, and describe the task in the composer.
+Then configure a model provider under **Settings → Server**. Anthropic and OpenAI-compatible endpoints are supported, including services such as DeepSeek, Qwen, and Ollama. Refresh the model catalog, create a session from the **+** button, choose a workspace and model, and describe the task in the composer. A managed workspace first copies its source directory into a disk image; use **Sync back to source** in the Files panel to review changes and explicitly write them back.
 
 Closing the browser tab does not stop an active agent. The server continues the job and persists its output. Reopen the UI and select the session to replay missed events. Use **Stop** when you want to cancel a job.
 
@@ -77,7 +77,7 @@ Messages sent while a job is running enter the Steering queue and are injected o
 
 Permission mode and sandbox mode are independent. `yolo` skips interactive approval but never disables the sandbox. The path policy applies `denyPaths > writeRoots > readRoots`. Use Windows Sandbox for untrusted code; it runs one ephemeral VM per session.
 
-Automatic snapshot mode creates a checkpoint before every user turn. Native Btrfs, ZFS, and ReFS backends are detected when available, with a git shadow repository as the fallback. Managed workspaces use VHDX or qcow2 differential images for low-cost snapshots.
+Automatic snapshot mode creates a checkpoint before every user turn. Native Btrfs, ZFS, and ReFS backends are detected when available, with a git shadow repository as the fallback. Managed workspaces use VHDX or qcow2 differential images for low-cost snapshots. They never overwrite the source directory when a session closes or is deleted: the Files panel can generate a three-way diff at any time, and confirmation writes back only conflict-free changes by default.
 
 ## Extension points
 
