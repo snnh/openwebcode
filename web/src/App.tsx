@@ -146,6 +146,17 @@ export function App(): ReactElement {
           notify(t(`上下文压缩失败：${(event.payload as { message?: string }).message ?? "未知错误"}`, `Context compaction failed: ${(event.payload as { message?: string }).message ?? "unknown error"}`), "error");
         }
         if (!event.sessionId || event.sessionId !== currentId) return;
+        if (event.type === "checkpoint.failed") {
+          const message = (event.payload as { message?: string }).message ?? t("未知错误", "unknown error");
+          notify(t(
+            `自动快照失败，但本次消息仍会继续发送：${message}。可切换为“仅手动”，或使用具备快照权限的账户重试。`,
+            `Automatic snapshot failed, but this message will still be sent: ${message}. Switch to Manual only or retry with an account that has snapshot permission.`,
+          ), "error");
+        }
+        if (event.type === "agent.error") {
+          const message = (event.payload as { message?: string }).message ?? t("未知错误", "unknown error");
+          notify(t(`任务失败：${message}`, `Task failed: ${message}`), "error");
+        }
         if (event.type === "todos.updated") {
           queryClient.setQueryData<TodoItem[]>(["todos", event.sessionId], (event.payload as { items?: TodoItem[] }).items ?? []);
         }
@@ -173,7 +184,7 @@ export function App(): ReactElement {
         }
         if ([
           "agent.state", "tool.end", "checkpoint.created", "checkpoint.restored", "checkpoint.deleted", "context.usage",
-          "context.budget_updated", "context.restored", "session.config_updated",
+          "checkpoint.failed", "agent.error", "context.budget_updated", "context.restored", "session.config_updated",
         ].includes(event.type)) {
           const detailRefresh = queryClient.invalidateQueries({ queryKey: queryKeys.detail(event.sessionId) });
           queryClient.invalidateQueries({ queryKey: ["context", event.sessionId] });

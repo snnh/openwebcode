@@ -22,8 +22,8 @@
 
 ### Windows
 
-1. 从 Releases 下载 `openwebcode-<version>-windows-x64.msi` 双击安装（需管理员权限）
-2. 终端运行 `owc`（把 `bin` 加进 PATH 后任意终端都行）
+1. 从 Releases 下载 `openwebcode-<version>-windows-x64.msi` 双击安装（需管理员权限）；在 “Shell integration” 页按需保留桌面快捷方式和“添加到 PATH”选项
+2. 若勾选 PATH，重新打开终端后运行 `owc`；否则从安装目录的 `bin\owc.cmd` 启动
 3. 浏览器打开 <http://127.0.0.1:3000>
 
 ### Linux

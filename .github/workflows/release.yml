@@ -124,6 +124,10 @@ jobs:
             find _CPack_Packages -name wix.log -print -exec cat '{}' \; || true
             exit 1
           fi
+      - name: Verify MSI shell integration options
+        shell: pwsh
+        run: |
+          ./packaging/verify-wix-options.ps1 -MsiPath "openwebcode-${env:VERSION}-windows-x64.msi"
       - name: Upload MSI for release job
         uses: actions/upload-artifact@v4
         with:

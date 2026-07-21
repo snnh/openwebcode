@@ -5,7 +5,7 @@ import { CoreRouter, toSandboxPath } from "../src/sandbox/core-router.js";
 import { buildWsbConfig, detectWsb } from "../src/sandbox/wsb.js";
 import type { SandboxPolicy, SessionMeta } from "../src/sessions/types.js";
 
-const info: CoreInfo = { version: "0.2.1", platform: "windows", sandboxCapability: "partial" };
+const info: CoreInfo = { version: "0.2.2", platform: "windows", sandboxCapability: "partial" };
 
 function fakeClient(): CoreClientLike & { [key: string]: ReturnType<typeof vi.fn> } {
   const emitter = new EventEmitter();

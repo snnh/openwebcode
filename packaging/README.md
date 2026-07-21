@@ -11,7 +11,7 @@
 | `openwebcode-<version>-linux-x64.tar.gz` | Linux | tar.gz + 顶层 `install.sh` |
 | `SHA256SUMS.txt` | 全平台 | 两个发行包的 SHA-256 校验和 |
 
-`<version>` 为 tag 去掉前导 `v`（如 `v0.2.1` → `0.2.1`）。
+`<version>` 为 tag 去掉前导 `v`（如 `v0.2.2` → `0.2.2`）。
 
 ## 包内布局
 
@@ -61,7 +61,7 @@ install.sh              Linux 安装脚本（仅 tar.gz，位于包顶层）
 
 ```powershell
 $ErrorActionPreference = "Stop"
-$Version = "0.2.1"
+$Version = "0.2.2"
 $NodeVersion = "20.19.0"
 
 npm --prefix server ci
@@ -145,15 +145,16 @@ $env:OWC_DATA_DIR = Join-Path $env:TEMP "openwebcode-package-smoke"
 Remove-Item Env:OWC_DATA_DIR
 
 cpack --config build\CPackConfig.cmake -G WIX -C Release
+.\packaging\verify-wix-options.ps1 -MsiPath "openwebcode-$Version-windows-x64.msi"
 Get-FileHash "openwebcode-$Version-windows-x64.msi" -Algorithm SHA256
 ```
 
-`cpack` 的输出位于仓库根目录。若 WiX 报字符编码错误，确认 `server/node_modules/@fastify/send/test` 已被移除；若包内界面仍是旧版本，删除整个 `build/stage` 后重新组装，不要在旧目录上覆盖。
+`cpack` 的输出位于仓库根目录。`verify-wix-options.ps1` 会读取 MSI 数据库，确认 Shell integration 页、条件桌面快捷方式/PATH 组件和 UAC 属性传递都存在。若 WiX 报字符编码错误，确认 `server/node_modules/@fastify/send/test` 已被移除；若包内界面仍是旧版本，删除整个 `build/stage` 后重新组装，不要在旧目录上覆盖。
 
 ### 安装与卸载
 
 - 双击安装，默认装到 `C:\Program Files\openwebcode\`（需要管理员权限；升级码固定，可覆盖升级）。
-- 安装会创建“开始”菜单与桌面的 **OpenWebCode** 快捷方式，二者都启动 `bin\owc.cmd`；安装用户的 `PATH` 会追加 `<安装目录>\bin`。重新打开终端后可直接运行 `owc`，浏览器打开 <http://127.0.0.1:3000>。
+- 安装会始终创建“开始”菜单的 **OpenWebCode** 快捷方式（启动 `bin\owc.cmd`）。在“Shell integration”页可勾选创建桌面快捷方式，以及将 `<安装目录>\bin` 添加到**运行安装程序的用户**的 `PATH`；两个选项默认勾选，重新打开终端后可直接运行 `owc`。不勾选 PATH 时仍可从安装目录运行 `bin\owc.cmd`。
 - 卸载默认保留 `%LOCALAPPDATA%\openwebcode`。如确认要删除**默认**用户数据，可在拥有 MSI 文件时显式执行：
 
   ```powershell
@@ -170,7 +171,7 @@ Linux 使用与 Windows 相同的测试门禁和 production-only 依赖。核心
 
 ```sh
 set -euo pipefail
-VERSION=0.2.1
+VERSION=0.2.2
 NODE_VERSION=20.19.0
 
 npm --prefix server ci
@@ -284,8 +285,8 @@ Server 模块在进程启动时加载，复制后必须重启 `build\stage\bin\o
 推荐发布方式是先推送已审核提交，再创建并推送语义化版本 tag：
 
 ```sh
-git tag -a v0.2.1 -m "OpenWebCode v0.2.1"
-git push origin v0.2.1
+git tag -a v0.2.2 -m "OpenWebCode v0.2.2"
+git push origin v0.2.2
 ```
 
-也可在 GitHub Actions 中手动运行 `release`，输入形如 `v0.2.1` 的 tag。Windows 与 Linux job 都成功后，唯一的 release job 才会汇总上传 MSI、tar.gz 与 `SHA256SUMS.txt`；随后核对下载文件名、校验和、安装/启动和 `/api/health`。
+也可在 GitHub Actions 中手动运行 `release`，输入形如 `v0.2.2` 的 tag。Windows 与 Linux job 都成功后，唯一的 release job 才会汇总上传 MSI、tar.gz 与 `SHA256SUMS.txt`；随后核对下载文件名、校验和、安装/启动和 `/api/health`。
