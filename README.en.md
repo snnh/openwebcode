@@ -132,7 +132,7 @@ The server serves `web/dist`. Distribution layout, clean staging, local packagin
 - [`help/usage.md`](./help/usage.md) — user guide (Chinese)
 - [`help/faq.md`](./help/faq.md) — troubleshooting and FAQ (Chinese)
 - [`help/development.md`](./help/development.md) — development guide (Chinese)
-- Design notes under `docs/` are local by default; explicitly tracked roadmaps are distributed with the repository, including [`fantomex-superboy-polaris.md`](./docs/fantomex-superboy-polaris.md).
+- Internal design notes under `docs/` are maintained locally and are not distributed through the remote repository.
 - [`packaging/README.en.md`](./packaging/README.en.md) — packaging and release pipeline
 
 ## Data locations
