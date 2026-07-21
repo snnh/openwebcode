@@ -1117,7 +1117,11 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       void agent.run(request.params.id, request.body.content, {
         ...(images?.length ? { images } : {}),
         ...(attachmentBlocks.length ? { attachments: attachmentBlocks } : {}),
-      }).catch(() => undefined);
+      }).catch((error: unknown) => {
+        // The browser already received 202, so keep the detailed failure in
+        // the server log as well as AgentRunner's agent.error event.
+        request.log.error({ err: error, sessionId: request.params.id }, "Agent run failed after accepting message");
+      });
       return reply.code(202).send({ accepted: true });
     },
   );

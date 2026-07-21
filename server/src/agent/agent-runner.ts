@@ -325,10 +325,24 @@ export class AgentRunner {
       if (this.hooks) await this.hooks.run("UserPromptSubmit", { sessionId, cwd: configuredSession.cwd, prompt: effectiveText.slice(0, 2000) });
       await this.core.configureSession({ sessionId, cwd: configuredSession.cwd, sandbox: configuredSession.sandbox ?? { enabled: true, readRoots: [configuredSession.cwd], writeRoots: [configuredSession.cwd], denyPaths: [], network: "allow" } });
       if ((configuredSession.snapshotMode ?? "auto") === "auto") {
-        const checkpointContext = new ContextManager(this.sessions.contextRoot(sessionId));
-        const checkpoint = await (await getSnapshotBackend(this.sessions, configuredSession))
-          .create(text.slice(0, 80) || "User message", configuredSession.messages.length, await checkpointContext.load());
-        this.events.publish({ source: "session", type: "checkpoint.created", sessionId, payload: checkpoint });
+        // A checkpoint is a safety aid, not a prerequisite for communicating
+        // with the agent.  In particular, a managed VHDX/qcow2 workspace can
+        // lose its privileged snapshot capability after the session was
+        // created.  Do not make an accepted user message disappear in that
+        // case; report the failure and continue the turn without a checkpoint.
+        try {
+          const checkpointContext = new ContextManager(this.sessions.contextRoot(sessionId));
+          const checkpoint = await (await getSnapshotBackend(this.sessions, configuredSession))
+            .create(text.slice(0, 80) || "User message", configuredSession.messages.length, await checkpointContext.load());
+          this.events.publish({ source: "session", type: "checkpoint.created", sessionId, payload: checkpoint });
+        } catch (error) {
+          this.events.publish({
+            source: "session",
+            type: "checkpoint.failed",
+            sessionId,
+            payload: { message: error instanceof Error ? error.message : String(error) },
+          });
+        }
       }
       await this.sessions.appendMessage(sessionId, "user", [
         ...(options?.images ?? []).map((image): MessageContent => ({ type: "image", mediaType: image.mediaType, data: image.data })),

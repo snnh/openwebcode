@@ -1,0 +1,187 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Copyright (c) .NET Foundation and contributors. All rights reserved.
+  Licensed under the Microsoft Reciprocal License. See LICENSE.WiXUI.txt in
+  this directory for the license governing the copied WixUI_InstallDir flow.
+
+  OpenWebCode's WiX v3 installer additions.
+
+  CPack's WixUI_InstallDir jumps directly from InstallDirDlg to
+  VerifyReadyDlg.  This is a full, renamed copy of that dialog flow so the
+  optional shell-integration page can be inserted without adding a competing
+  Publish row to the stock UI.  Keep all visible strings ASCII: WiX v3's
+  default MSI code page is 1252.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <UI Id="OpenWebCodeUI">
+      <TextStyle Id="WixUI_Font_Normal" FaceName="Tahoma" Size="8" />
+      <TextStyle Id="WixUI_Font_Bigger" FaceName="Tahoma" Size="12" />
+      <TextStyle Id="WixUI_Font_Title" FaceName="Tahoma" Size="9" Bold="yes" />
+      <Property Id="DefaultUIFont" Value="WixUI_Font_Normal" />
+      <Property Id="WixUI_Mode" Value="InstallDir" />
+
+      <DialogRef Id="BrowseDlg" />
+      <DialogRef Id="DiskCostDlg" />
+      <DialogRef Id="ErrorDlg" />
+      <DialogRef Id="FatalError" />
+      <DialogRef Id="FilesInUse" />
+      <DialogRef Id="MsiRMFilesInUse" />
+      <DialogRef Id="PrepareDlg" />
+      <DialogRef Id="ProgressDlg" />
+      <DialogRef Id="ResumeDlg" />
+      <DialogRef Id="UserExit" />
+
+      <Dialog Id="OpenWebCodeOptionsDlg" Width="370" Height="270"
+              Title="[ProductName] Setup">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370"
+                 Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+        <Control Id="Title" Type="Text" X="15" Y="6" Width="260" Height="15"
+                 Transparent="yes" NoPrefix="yes" Text="Shell integration" />
+        <Control Id="Description" Type="Text" X="25" Y="23" Width="320" Height="15"
+                 Transparent="yes" NoPrefix="yes"
+                 Text="Choose how OpenWebCode appears on this Windows account." />
+
+        <Control Id="OptionsText" Type="Text" X="20" Y="66" Width="325" Height="28"
+                 NoPrefix="yes"
+                 Text="These choices apply to the user running this installer and are retained for repairs and upgrades." />
+        <Control Id="CreateDesktopShortcut" Type="CheckBox" X="20" Y="108"
+                 Width="325" Height="17" Property="OWC_CREATE_DESKTOP_SHORTCUT"
+                 CheckBoxValue="1" Text="Create a desktop shortcut" />
+        <Control Id="AddToPath" Type="CheckBox" X="20" Y="137" Width="325"
+                 Height="17" Property="OWC_ADD_TO_PATH" CheckBoxValue="1"
+                 Text="Add OpenWebCode to this user's PATH" />
+        <Control Id="PathHint" Type="Text" X="40" Y="159" Width="305" Height="24"
+                 NoPrefix="yes"
+                 Text="Open a new terminal after installation to use the owc command." />
+
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17"
+                 Text="!(loc.WixUIBack)">
+          <Publish Event="NewDialog" Value="InstallDirDlg">1</Publish>
+        </Control>
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17"
+                 Default="yes" Text="!(loc.WixUINext)">
+          <!-- A WiX checkbox clears its Property when unchecked.  Persist a
+               literal 0 instead, so AppSearch can faithfully restore this
+               choice on repair or major upgrade. -->
+          <Publish Property="OWC_CREATE_DESKTOP_SHORTCUT" Value="0" Order="1">
+            NOT OWC_CREATE_DESKTOP_SHORTCUT
+          </Publish>
+          <Publish Property="OWC_ADD_TO_PATH" Value="0" Order="2">
+            NOT OWC_ADD_TO_PATH
+          </Publish>
+          <Publish Event="NewDialog" Value="VerifyReadyDlg" Order="3">1</Publish>
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17"
+                 Cancel="yes" Text="!(loc.WixUICancel)">
+          <Publish Event="SpawnDialog" Value="CancelDlg">1</Publish>
+        </Control>
+      </Dialog>
+
+      <Publish Dialog="BrowseDlg" Control="OK" Event="DoAction"
+               Value="WixUIValidatePath" Order="3">1</Publish>
+      <Publish Dialog="BrowseDlg" Control="OK" Event="SpawnDialog"
+               Value="InvalidDirDlg" Order="4">
+        NOT WIXUI_DONTVALIDATEPATH AND WIXUI_INSTALLDIR_VALID&lt;&gt;&quot;1&quot;
+      </Publish>
+      <Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog"
+               Value="Return" Order="999">1</Publish>
+
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog"
+               Value="LicenseAgreementDlg">NOT Installed</Publish>
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog"
+               Value="VerifyReadyDlg">Installed AND PATCH</Publish>
+      <Publish Dialog="LicenseAgreementDlg" Control="Back" Event="NewDialog"
+               Value="WelcomeDlg">1</Publish>
+      <Publish Dialog="LicenseAgreementDlg" Control="Next" Event="NewDialog"
+               Value="InstallDirDlg">LicenseAccepted = &quot;1&quot;</Publish>
+
+      <Publish Dialog="InstallDirDlg" Control="Back" Event="NewDialog"
+               Value="LicenseAgreementDlg">1</Publish>
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="SetTargetPath"
+               Value="[WIXUI_INSTALLDIR]" Order="1">1</Publish>
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="DoAction"
+               Value="WixUIValidatePath" Order="2">NOT WIXUI_DONTVALIDATEPATH</Publish>
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="SpawnDialog"
+               Value="InvalidDirDlg" Order="3">
+        NOT WIXUI_DONTVALIDATEPATH AND WIXUI_INSTALLDIR_VALID&lt;&gt;&quot;1&quot;
+      </Publish>
+      <Publish Dialog="InstallDirDlg" Control="Next" Event="NewDialog"
+               Value="OpenWebCodeOptionsDlg" Order="4">
+        WIXUI_DONTVALIDATEPATH OR WIXUI_INSTALLDIR_VALID=&quot;1&quot;
+      </Publish>
+      <Publish Dialog="InstallDirDlg" Control="ChangeFolder" Property="_BrowseProperty"
+               Value="[WIXUI_INSTALLDIR]" Order="1">1</Publish>
+      <Publish Dialog="InstallDirDlg" Control="ChangeFolder" Event="SpawnDialog"
+               Value="BrowseDlg" Order="2">1</Publish>
+
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog"
+               Value="OpenWebCodeOptionsDlg" Order="1">NOT Installed</Publish>
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog"
+               Value="MaintenanceTypeDlg" Order="2">Installed AND NOT PATCH</Publish>
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog"
+               Value="WelcomeDlg" Order="3">Installed AND PATCH</Publish>
+
+      <Publish Dialog="MaintenanceWelcomeDlg" Control="Next" Event="NewDialog"
+               Value="MaintenanceTypeDlg">1</Publish>
+      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog"
+               Value="VerifyReadyDlg">1</Publish>
+      <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog"
+               Value="VerifyReadyDlg">1</Publish>
+      <Publish Dialog="MaintenanceTypeDlg" Control="Back" Event="NewDialog"
+               Value="MaintenanceWelcomeDlg">1</Publish>
+
+      <Property Id="ARPNOMODIFY" Value="1" />
+    </UI>
+    <UIRef Id="WixUI_Common" />
+  </Fragment>
+
+  <Fragment>
+    <!-- CPack creates no DesktopFolder when CPACK_DESKTOP_SHORTCUTS is absent. -->
+    <DirectoryRef Id="TARGETDIR">
+      <Directory Id="DesktopFolder" Name="Desktop" />
+    </DirectoryRef>
+
+    <DirectoryRef Id="DesktopFolder">
+      <Component Id="OpenWebCodeDesktopShortcut"
+                 Guid="{F6202D8E-CDB3-440D-950B-2B5FEA7D03A1}" Win64="yes">
+        <Condition>OWC_CREATE_DESKTOP_SHORTCUT = &quot;1&quot;</Condition>
+        <RegistryValue Root="HKCU" Key="Software\OpenWebCode\Installer"
+                       Name="DesktopShortcutComponent" Value="1" Type="integer"
+                       KeyPath="yes" />
+        <Shortcut Id="OpenWebCodeDesktopShortcutLink" Name="OpenWebCode"
+                  Target="[#CM_FP_bin.owc.cmd]" WorkingDirectory="CM_DP_bin"
+                  Icon="ProductIcon.ico" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="CM_DP_bin">
+      <!-- This component is intentionally separate from owc.cmd: an unchecked
+           PATH option must never prevent the launcher from being installed. -->
+      <Component Id="OpenWebCodeUserPath"
+                 Guid="{9B333474-B0B1-456D-976E-40B4C4B5A9FD}" Win64="yes">
+        <Condition>OWC_ADD_TO_PATH = &quot;1&quot;</Condition>
+        <RegistryValue Root="HKCU" Key="Software\OpenWebCode\Installer"
+                       Name="UserPathComponent" Value="1" Type="integer"
+                       KeyPath="yes" />
+        <Environment Id="OpenWebCodeBinPath" Name="PATH" Value="[INSTALL_ROOT]bin"
+                     Action="set" Part="last" Permanent="no" System="no" />
+      </Component>
+
+      <!-- Store the selections independently of the optional components so a
+           repair or major upgrade does not turn an intentionally unchecked
+           option back on.  Full uninstall removes this component and values. -->
+      <Component Id="OpenWebCodeShellIntegrationState"
+                 Guid="{2EAF24C7-7C9E-4089-B87C-0C8C5DFF2A3C}" Win64="yes">
+        <RegistryValue Root="HKCU" Key="Software\OpenWebCode\Installer"
+                       Name="CreateDesktopShortcut"
+                       Value="[OWC_CREATE_DESKTOP_SHORTCUT]" Type="string"
+                       KeyPath="yes" />
+        <RegistryValue Root="HKCU" Key="Software\OpenWebCode\Installer"
+                       Name="AddToPath" Value="[OWC_ADD_TO_PATH]" Type="string" />
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+</Wix>
