@@ -74,4 +74,35 @@ describe("thinking persistence", () => {
     expect(existsSync(path.join(sessions.contextRoot(session.id), "shadow.git"))).toBe(false);
     expect((await sessions.get(session.id))?.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
   });
+
+  it("continues the user turn when an automatic checkpoint cannot be created", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-checkpoint-failure-"));
+    roots.push(root);
+    const missingWorkspace = path.join(root, "workspace-was-removed");
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const session = await sessions.create({ cwd: missingWorkspace, provider: "test", model: "test-model" });
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const providers = new ProviderRegistry();
+    providers.register({
+      name: "test",
+      async *streamChat() {
+        yield { type: "text_delta", text: "仍然继续" };
+        yield { type: "done", stopReason: "end_turn" };
+      },
+    });
+    const events = new EventBus();
+    const observed: Array<{ type: string; payload: unknown }> = [];
+    events.on("event", (event) => observed.push(event));
+    const runner = new AgentRunner(sessions, providers, core, events, pricing);
+
+    await runner.run(session.id, "不要因为快照失败而丢失这条消息");
+
+    expect(observed).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "checkpoint.failed", payload: expect.objectContaining({ message: expect.any(String) }) }),
+    ]));
+    expect(observed.some((event) => event.type === "agent.error")).toBe(false);
+    expect((await sessions.get(session.id))?.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+  });
 });

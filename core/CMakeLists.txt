@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(openwebcode_core VERSION 0.2.1 LANGUAGES C)
+project(openwebcode_core VERSION 0.2.2 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -92,8 +92,8 @@ install(DIRECTORY "${CMAKE_BINARY_DIR}/stage/" DESTINATION . OPTIONAL)
 set(CPACK_PACKAGE_NAME "openwebcode")
 set(CPACK_PACKAGE_VENDOR "OpenWebCode")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "OpenWebCode: web-based agentic coding environment")
-# 版本默认 0.2.1；CI 用 -DCPACK_PACKAGE_VERSION=x.y.z 注入 tag 版本
-set(CPACK_PACKAGE_VERSION "0.2.1" CACHE STRING "Package version (x.y.z)")
+# 版本默认 0.2.2；CI 用 -DCPACK_PACKAGE_VERSION=x.y.z 注入 tag 版本
+set(CPACK_PACKAGE_VERSION "0.2.2" CACHE STRING "Package version (x.y.z)")
 # WiX accepts .rtf directly and converts .txt to RTF, but rejects a license
 # path without an extension. Keep the repository's canonical LICENSE intact
 # and give the configured copy the extension required by the generator.
@@ -115,14 +115,20 @@ if(WIN32)
     # 编入 owc-exec.exe，因此安装后和裸可执行文件的视觉标识保持一致。
     set(CPACK_WIX_PRODUCT_ICON "${CMAKE_CURRENT_SOURCE_DIR}/../assets/icon.ico")
 
-    # 这些是 CPack WIX 的已支持安装文件属性；目标必须是实际启动
-    # Server 的 owc.cmd，而非仅提供 RPC 的 owc-exec.exe。
+    # 开始菜单快捷方式始终提供；桌面快捷方式及用户 PATH 由自定义 WiX
+    # 选项页控制。目标必须是实际启动 Server 的 owc.cmd，而非仅提供 RPC
+    # 的 owc-exec.exe。
     set(CPACK_WIX_PROGRAM_MENU_FOLDER "OpenWebCode")
     set_property(INSTALL "bin/owc.cmd" PROPERTY CPACK_START_MENU_SHORTCUTS "OpenWebCode")
-    set_property(INSTALL "bin/owc.cmd" PROPERTY CPACK_DESKTOP_SHORTCUTS "OpenWebCode")
 
-    # CPack 没有 WIX 的 ADD_TO_PATH 开关。PATH 与可选默认数据清理由
-    # 经过 CPack 生成文件核验的 WiX component patch 实现。
+    # CPack 没有 WIX 的 ADD_TO_PATH 开关，也无法把桌面快捷方式做成可选项。
+    # 使用完整但改名的 InstallDir UI，在安装目录选择页与确认页之间插入
+    # OpenWebCode 选项页；组件本身放在额外 WXS，默认数据清理仍由 patch
+    # 注入。不要改 CPACK_WIX_INSTALL_SCOPE：已发布 MSI 使用 CPack 的遗留
+    # NONE 行为，切换为 perMachine 会破坏其升级兼容性。
+    set(CPACK_WIX_UI_REF "OpenWebCodeUI")
+    set(CPACK_WIX_EXTRA_SOURCES
+        "${CMAKE_CURRENT_SOURCE_DIR}/../packaging/openwebcode-ui.wxs")
     set(CPACK_WIX_PATCH_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../packaging/wix-patch.xml")
     set(CPACK_WIX_CUSTOM_XMLNS "util=http://schemas.microsoft.com/wix/UtilExtension")
     set(CPACK_WIX_EXTENSIONS "WixUtilExtension")

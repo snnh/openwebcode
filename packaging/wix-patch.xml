@@ -10,6 +10,24 @@
 -->
 <CPackWiXPatch xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
   <CPackWiXFragment Id="#PRODUCT">
+    <!-- These public properties cross the UI/elevated execute boundary.  A
+         registry search restores a prior selection for repair/major upgrade;
+         the Value attribute supplies the first-install default. -->
+    <Property Id="OWC_CREATE_DESKTOP_SHORTCUT" Value="1" Secure="yes">
+      <RegistrySearch Id="FindOwcDesktopShortcutPreference"
+                      Root="HKCU"
+                      Key="Software\OpenWebCode\Installer"
+                      Name="CreateDesktopShortcut"
+                      Type="raw" />
+    </Property>
+    <Property Id="OWC_ADD_TO_PATH" Value="1" Secure="yes">
+      <RegistrySearch Id="FindOwcPathPreference"
+                      Root="HKCU"
+                      Key="Software\OpenWebCode\Installer"
+                      Name="AddToPath"
+                      Type="raw" />
+    </Property>
+
     <!-- Default is deliberately non-destructive.  PURGE_DATA is a public MSI
          property so a user can opt in with: msiexec /x package.msi PURGE_DATA=1 -->
     <Property Id="PURGE_DATA" Value="0" />
@@ -32,17 +50,6 @@
   </CPackWiXFragment>
 
   <CPackWiXFragment Id="CM_CP_bin.owc.cmd">
-    <!-- Append rather than replace PATH, and let MSI remove this exact entry
-         when the launcher component is uninstalled.  System=no intentionally
-         limits the change to the installing user's PATH. -->
-    <Environment Id="OpenWebCodeBinPath"
-                 Name="PATH"
-                 Value="[INSTALL_ROOT]bin"
-                 Action="set"
-                 Part="last"
-                 Permanent="no"
-                 System="no" />
-
     <!-- The conditional property assignment above means this affects only
          opt-in full uninstalls of the launcher's default LOCALAPPDATA
          location; custom OWC_DATA_DIR values and workspace .owc directories
@@ -50,5 +57,14 @@
     <util:RemoveFolderEx Id="PurgeOpenWebCodeDefaultData"
                          Property="OwcDefaultDataDir"
                          On="uninstall" />
+  </CPackWiXFragment>
+
+  <!-- Components declared in packaging/openwebcode-ui.wxs participate in
+       CPack's root feature.  They are separate from owc.cmd so unchecking
+       PATH never suppresses the launcher itself. -->
+  <CPackWiXFragment Id="#PRODUCTFEATURE">
+    <ComponentRef Id="OpenWebCodeDesktopShortcut" />
+    <ComponentRef Id="OpenWebCodeUserPath" />
+    <ComponentRef Id="OpenWebCodeShellIntegrationState" />
   </CPackWiXFragment>
 </CPackWiXPatch>

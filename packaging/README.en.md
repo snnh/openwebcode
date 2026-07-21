@@ -14,7 +14,7 @@ The `release` workflow produces:
 | `openwebcode-<version>-linux-x64.tar.gz` | Linux x64 | Runtime tree plus top-level `install.sh` |
 | `SHA256SUMS.txt` | Both | SHA-256 checksums for the two release archives |
 
-`<version>` is the release tag without its leading `v` (for example, `v0.2.1` becomes `0.2.1`).
+`<version>` is the release tag without its leading `v` (for example, `v0.2.2` becomes `0.2.2`).
 
 Windows MSI packaging requires CMake 3.19 or newer (for CPack's WiX custom-namespace support) and WiX Toolset v3.
 
@@ -46,6 +46,14 @@ install.sh                  # archive top level, Linux only
 ```
 
 The pinned runtime version is `NODE_DIST_VERSION` in [`.github/workflows/release.yml`](../.github/workflows/release.yml). The exact PowerShell and shell commands, prerequisites, staging validation, smoke test, and troubleshooting notes are in the [canonical packaging guide](./README.md).
+
+## Windows MSI shell integration
+
+The MSI always creates an OpenWebCode Start menu entry. Its **Shell integration** page has two checkboxes, both selected by default: create a desktop shortcut, and add `<install-dir>\bin` to the current user's `PATH`. Uncheck either option to omit it. The choices are remembered for repair and major upgrades; a full uninstall removes only the shortcut and PATH entry created by its corresponding MSI component. Open a new terminal before using `owc` after selecting the PATH option.
+
+After a local MSI build, run `./packaging/verify-wix-options.ps1 -MsiPath "openwebcode-<version>-windows-x64.msi"`. It reads the MSI database to verify the dialog, conditional components, and UAC-safe properties; the release workflow runs the same gate.
+
+The copied WiX `InstallDir` dialog flow in [`openwebcode-ui.wxs`](./openwebcode-ui.wxs) is covered by the Microsoft Reciprocal License; its full text is in [`LICENSE.WiXUI.txt`](./LICENSE.WiXUI.txt).
 
 ## Data directory
 
@@ -87,8 +95,8 @@ Restart `build\stage\bin\owc.cmd` afterward and use `Ctrl+F5` if the browser ret
 Pushing a semantic version tag starts the release workflow:
 
 ```sh
-git tag -a v0.2.1 -m "OpenWebCode v0.2.1"
-git push origin v0.2.1
+git tag -a v0.2.2 -m "OpenWebCode v0.2.2"
+git push origin v0.2.2
 ```
 
 The workflow can also be dispatched manually with a `v*` tag. A single release job publishes the MSI, tar.gz, and `SHA256SUMS.txt` only after both platform jobs succeed; installation and `/api/health` smoke checks are release gates.
