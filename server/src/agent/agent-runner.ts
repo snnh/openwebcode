@@ -284,6 +284,29 @@ export class SteeringError extends Error {
   }
 }
 
+/**
+ * Lease supplied by the HTTP workspace gate for a managed-session run.
+ *
+ * An automatic VHDX/qcow2 checkpoint starts with the exclusive side of the
+ * gate.  Once the short leaf-switch has finished, the route downgrades it to
+ * a normal shared lease for the rest of the agent turn.  Keeping the gate
+ * transition owned by app.ts makes it atomic with file/exec/sync routes.
+ */
+export interface ManagedWorkspaceRunLease {
+  /** `false` means another workspace operation was already using the mount. */
+  automaticSnapshotAllowed: boolean;
+  /** Idempotently change an exclusive automatic-checkpoint lease to shared. */
+  downgradeAfterAutomaticSnapshot?: () => void;
+}
+
+export interface AgentRunOptions {
+  images?: Array<{ mediaType: string; data: string }>;
+  /** 预组装的附件 text 块（app.ts 已读取+截断+包装为 `[Attachment <path>]\n<内容>`）；插入在 images 之后、正文之前 */
+  attachments?: Array<{ text: string }>;
+  /** app.ts managed-workspace shared/exclusive lease; absent for direct/test runs. */
+  managedWorkspace?: ManagedWorkspaceRunLease;
+}
+
 export class AgentRunner {
   private readonly running = new Map<string, AbortController>();
   private readonly shells = new Map<string, AbortController>();
@@ -355,11 +378,7 @@ export class AgentRunner {
   async run(
     sessionId: string,
     text: string,
-    options?: {
-      images?: Array<{ mediaType: string; data: string }>;
-      /** 预组装的附件 text 块（app.ts 已读取+截断+包装为 `[Attachment <path>]\n<内容>`）；插入在 images 之后、正文之前 */
-      attachments?: Array<{ text: string }>;
-    },
+    options?: AgentRunOptions,
   ): Promise<void> {
     if (this.running.has(sessionId)) throw new Error("Session agent is already running");
     if (this.shells.has(sessionId)) throw new Error("A shell command is pending; respond to its permission request first");
@@ -389,7 +408,14 @@ export class AgentRunner {
       // 每个后台任务都有独立 core/子进程，可能正以托管工作区为 cwd。换 VHDX/qcow2
       // 叶子会短暂卸载该目录，因此不能在它运行时自动快照；本轮对话继续，不阻塞用户。
       const backgroundTaskRunning = this.backgroundTasks?.hasRunningForSession(sessionId) ?? false;
-      const automaticSnapshot = automaticSnapshotRequested && !backgroundTaskRunning;
+      // app.ts 在进入 run 前原子地预留了独占 checkpoint lease。若工作区已经有
+      // 文件/命令等 shared use，则它改为 shared lease，并让本轮安全地跳过自动快照。
+      const workspaceBusyForAutomaticSnapshot = automaticSnapshotRequested
+        && options?.managedWorkspace?.automaticSnapshotAllowed === false;
+      const automaticSnapshot = automaticSnapshotRequested && !backgroundTaskRunning && !workspaceBusyForAutomaticSnapshot;
+      // 若入口预留独占 lease 后才发现后台任务，或配置在 run 期间切换为手动模式，
+      // 不等待本轮结束，立即降级为 shared lease，避免无谓阻塞文件浏览和命令执行。
+      if (!automaticSnapshot) options?.managedWorkspace?.downgradeAfterAutomaticSnapshot?.();
       const snapshotMessageCount = configuredSession.messages.length;
       // 在用户消息写入前读取 ledger；实际镜像创建放到写入后，以保证任何快照/权限错误
       // 都不会吞掉已接受的消息。用户写入不改变 ledger 或工作区，因此仍是本轮前状态。
@@ -408,6 +434,13 @@ export class AgentRunner {
           type: "checkpoint.failed",
           sessionId,
           payload: { message: "后台任务正在运行，已跳过自动快照；请等待任务结束后再创建手动快照。" },
+        });
+      } else if (workspaceBusyForAutomaticSnapshot) {
+        this.events.publish({
+          source: "session",
+          type: "checkpoint.failed",
+          sessionId,
+          payload: { message: "工作区正在被文件或命令操作使用，已跳过自动快照；请等待操作结束后再创建手动快照。" },
         });
       }
       // UserPromptSubmit 钩子：仅通知不阻断（否决语义为 PreToolUse 专属）。
@@ -429,6 +462,10 @@ export class AgentRunner {
             sessionId,
             payload: { message: error instanceof Error ? error.message : String(error) },
           });
+        } finally {
+          // 物理换叶已经结束（成功或已由 backend 回滚），后续 provider/tool 回合
+          // 只需 shared lease；否则会把整个长对话错误地当成 checkpoint 临界区。
+          options?.managedWorkspace?.downgradeAfterAutomaticSnapshot?.();
         }
       }
       this.state(sessionId, "thinking");
@@ -1007,7 +1044,7 @@ export class AgentRunner {
           if (!query) throw new Error("web_search requires a non-empty query");
           const requested = input.limit === undefined ? 5 : Number(input.limit);
           if (!Number.isInteger(requested) || requested < 1) throw new Error("web_search limit must be a positive integer");
-          value = await this.search.search(query, Math.min(requested, 10));
+          value = await this.search.search(query, Math.min(requested, 10), { signal });
         }
         const bounded = await boundToolResult(this.sessions.contextRoot(sessionId), name, JSON.stringify(value));
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: value, truncated: bounded.truncated, ...(bounded.artifactId ? { artifactId: bounded.artifactId } : {}) } });
