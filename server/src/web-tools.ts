@@ -185,9 +185,17 @@ class HttpSearchProvider implements SearchProvider {
 export function createSearchProvider(config: ServerConfig["search"], fetchImpl: typeof fetch = globalThis.fetch): SearchProvider | undefined {
   if (!config) return undefined;
   if (config.provider === "brave") {
-    if (!config.apiKey) return undefined;
-    return new HttpSearchProvider("brave", "https://api.search.brave.com/res/v1/web/search", config.apiKey, fetchImpl);
+    const apiKey = config.apiKey?.trim();
+    if (!apiKey) return undefined;
+    return new HttpSearchProvider("brave", "https://api.search.brave.com/res/v1/web/search", apiKey, fetchImpl);
   }
-  if (!config.baseURL) return undefined;
-  return new HttpSearchProvider("custom", config.baseURL, config.apiKey, fetchImpl);
+  const baseURL = config.baseURL?.trim();
+  if (!baseURL) return undefined;
+  try {
+    const parsed = new URL(baseURL);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return undefined;
+    return new HttpSearchProvider("custom", parsed.href, config.apiKey?.trim() || undefined, fetchImpl);
+  } catch {
+    return undefined;
+  }
 }

@@ -44,14 +44,18 @@ export class OpenAICompatibleProvider implements Provider {
         max_tokens: this.maxTokens,
         ...(this.options.reasoningEffort !== false && request.effort ? { reasoning_effort: request.effort } : {}),
         messages: toOpenAIMessages(request.system, request.messages),
-        tools: request.tools.map((tool) => ({
-          type: "function",
-          function: {
-            name: tool.name,
-            description: tool.description,
-            parameters: tool.inputSchema,
-          },
-        })),
+        ...(request.tools.length > 0
+          ? {
+              tools: request.tools.map((tool) => ({
+                type: "function",
+                function: {
+                  name: tool.name,
+                  description: tool.description,
+                  parameters: tool.inputSchema,
+                },
+              })),
+            }
+          : {}),
       }),
         signal: request.signal,
       });

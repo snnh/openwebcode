@@ -61,6 +61,9 @@ describe("search providers", () => {
   it("honestly degrades and maps Brave results", async () => {
     expect(createSearchProvider(undefined)).toBeUndefined();
     expect(createSearchProvider({ provider: "brave" })).toBeUndefined();
+    expect(createSearchProvider({ provider: "brave", apiKey: "   " })).toBeUndefined();
+    expect(createSearchProvider({ provider: "custom", baseURL: "not a URL" })).toBeUndefined();
+    expect(createSearchProvider({ provider: "custom", baseURL: "ftp://search.test" })).toBeUndefined();
     const fetchImpl = vi.fn(async () => Response.json({ web: { results: [{ title: "One", url: "https://one.test", description: "First" }] } })) as typeof fetch;
     const provider = createSearchProvider({ provider: "brave", apiKey: "secret" }, fetchImpl)!;
     expect(await provider.search("query", 5)).toEqual([{ title: "One", url: "https://one.test", snippet: "First" }]);

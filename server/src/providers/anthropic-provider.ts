@@ -38,7 +38,7 @@ export class AnthropicProvider implements Provider {
           ...(request.effort ? { output_config: { effort: request.effort } } : {}),
           system: request.system,
           messages: toAnthropicMessages(request.messages, new Set(request.cacheBreakpoints ?? [])),
-          tools: request.tools.map(toAnthropicTool),
+          ...(request.tools.length > 0 ? { tools: request.tools.map(toAnthropicTool) } : {}),
           ...(this.promptCaching ? { cache_control: { type: "ephemeral" as const } } : {}),
         },
         { signal: request.signal },
