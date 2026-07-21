@@ -60,4 +60,28 @@ describe("provider reasoning parameters", () => {
     expect(bodies[0]).toMatchObject({ reasoning_effort: "high" });
     expect(bodies[1]).not.toHaveProperty("reasoning_effort");
   });
+
+  it("omits an empty tools field instead of advertising an unavailable tool schema", async () => {
+    const anthropicBodies: Array<Record<string, unknown>> = [];
+    const anthropic = new AnthropicProvider({ apiKey: "test" });
+    const stream = (body: Record<string, unknown>) => {
+      anthropicBodies.push(body);
+      return {
+        async *[Symbol.asyncIterator]() {},
+        async finalMessage() { return { content: [], usage: { input_tokens: 0, output_tokens: 0 }, stop_reason: "end_turn" }; },
+      };
+    };
+    (anthropic as unknown as { client: { messages: { stream: typeof stream } } }).client.messages.stream = stream;
+    await drain(anthropic.streamChat(request()));
+
+    const openAiBodies: Array<Record<string, unknown>> = [];
+    const fetch = async (_input: string | URL | Request, init?: RequestInit) => {
+      openAiBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response("data: [DONE]\n\n", { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+    await drain(new OpenAICompatibleProvider({ baseURL: "https://example.invalid/v1", fetch: fetch as typeof globalThis.fetch }).streamChat(request()));
+
+    expect(anthropicBodies[0]).not.toHaveProperty("tools");
+    expect(openAiBodies[0]).not.toHaveProperty("tools");
+  });
 });

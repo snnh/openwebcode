@@ -71,7 +71,7 @@ cd openwebcode
 
 ## 主要能力
 
-**Agent 工具集**：bash（含后台任务）、文件读写/编辑、glob/grep、`spawn_task`（隔离上下文子代理）、`remember`（长期记忆）、`todo_write`（任务清单实时展示）、`web_fetch`/`web_search`（SSRF 防护）、MCP 注入工具。
+**Agent 工具集**：bash（含后台任务）、文件读写/编辑、glob/grep、`spawn_task`（隔离上下文子代理）、`remember`（长期记忆）、`todo_write`（任务清单实时展示）、`web_fetch`/`web_search`（SSRF 防护）、MCP 注入工具。工具 schema、工具提示和 MCP 只会下发给模型目录中标为支持 tools 的模型；不支持时会以普通对话运行。`web_search` 还要求搜索服务已正确配置且可构造，未配置或地址无效时不会暴露该工具。
 
 **自定义扩展**（项目 `.owc/` + 全局两级，项目同名覆盖全局）：
 - `agents/*.md` — 专职子代理（frontmatter 声明工具集与模型，`spawn_task agent=<name>` 调用）

@@ -40,6 +40,14 @@ Anthropic（Claude）与 OpenAI 兼容协议（DeepSeek/Qwen/Ollama/GLM 等皆�
 
 能。输入框上方模型选择器随时切换，下轮生效。账本按新模型上下文窗口重算；若新模型不支持图片而历史里有图片，那些图片会替换为占位描述。
 
+### Q: 为什么有些模型看不到或不能调用工具？
+
+模型目录的 `tools` 能力开关决定本轮是否下发工具。关闭时，server 不会发送内置工具 schema、工具提示、MCP 工具、技能目录或后台任务通知，模型仍可正常聊天和输出方案；即使兼容 provider 异常返回 tool call，server 也会拒绝执行并把错误结果写入会话。需要文件操作、bash、子代理或 MCP 时，切换到标为支持 tools 的模型。
+
+### Q: 为什么没有 `web_search`？
+
+`web_search` 只在搜索服务可用时注入：Brave 需要有效 API key；自定义服务需要有效的 `http://` 或 `https://` endpoint。未设置、空 key、畸形地址或非 HTTP(S) 地址都会自动降级为不提供搜索工具，不影响普通对话和 `web_fetch`。
+
 ### Q: thinking / reasoning 模型怎么开？
 
 支持 thinking 的模型在输入框上方有「思考」开关与程度选择器（low/medium/high）。Anthropic 翻译为 `thinking.budget_tokens`，OpenAI 系翻译为 `reasoning_effort`。思考块默认折叠，完成后随消息持久化，思考 token 计入成本。

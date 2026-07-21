@@ -34,23 +34,29 @@ interface ExecutionContext {
   output: Array<{ stream: string; data: string; seq: number }>;
 }
 
-const BASH_TOOL: ProviderTool = {
-  name: "bash",
-  description: "Execute a shell command in the session workspace. Call this when command-line execution is required. " +
-    "On Windows sandbox sessions commands run under cmd.exe: use cmd syntax (for example dir, type, where, and &&), " +
-    "and do not use PowerShell cmdlets or POSIX commands unless explicitly invoking an available shell. " +
-    "Set run_in_background=true to run the command asynchronously; the agent loop continues immediately and you can check " +
-    "the result later with task_output (or wait with block=true).",
-  inputSchema: {
-    type: "object",
-    properties: {
-      cmd: { type: "string" },
-      run_in_background: { type: "boolean", description: "Run the command in the background and return immediately." },
+function bashTool(backgroundTasksEnabled: boolean): ProviderTool {
+  return {
+    name: "bash",
+    description: "Execute a shell command in the session workspace. Call this when command-line execution is required. " +
+      "On Windows sandbox sessions commands run under cmd.exe: use cmd syntax (for example dir, type, where, and &&), " +
+      "and do not use PowerShell cmdlets or POSIX commands unless explicitly invoking an available shell." +
+      (backgroundTasksEnabled
+        ? " Set run_in_background=true to run the command asynchronously; the agent loop continues immediately and you can check " +
+          "the result later with task_output (or wait with block=true)."
+        : ""),
+    inputSchema: {
+      type: "object",
+      properties: {
+        cmd: { type: "string" },
+        ...(backgroundTasksEnabled
+          ? { run_in_background: { type: "boolean", description: "Run the command in the background and return immediately." } }
+          : {}),
+      },
+      required: ["cmd"],
+      additionalProperties: false,
     },
-    required: ["cmd"],
-    additionalProperties: false,
-  },
-};
+  };
+}
 
 const READ_ARTIFACT_TOOL: ProviderTool = {
   name: "read_artifact",
@@ -200,7 +206,24 @@ const TASK_STOP_TOOL: ProviderTool = {
   },
 };
 
-const TOOLS = [BASH_TOOL, ...FILE_TOOLS, READ_ARTIFACT_TOOL, LOAD_SKILL_TOOL, SPAWN_TASK_TOOL, TODO_WRITE_TOOL, REMEMBER_TOOL, WEB_FETCH_TOOL, TASK_OUTPUT_TOOL, TASK_STOP_TOOL];
+function builtInTools(options: {
+  skillsAvailable: boolean;
+  backgroundTasksEnabled: boolean;
+  searchAvailable: boolean;
+}): ProviderTool[] {
+  return [
+    bashTool(options.backgroundTasksEnabled),
+    ...FILE_TOOLS,
+    READ_ARTIFACT_TOOL,
+    ...(options.skillsAvailable ? [LOAD_SKILL_TOOL] : []),
+    SPAWN_TASK_TOOL,
+    TODO_WRITE_TOOL,
+    REMEMBER_TOOL,
+    WEB_FETCH_TOOL,
+    ...(options.backgroundTasksEnabled ? [TASK_OUTPUT_TOOL, TASK_STOP_TOOL] : []),
+    ...(options.searchAvailable ? [WEB_SEARCH_TOOL] : []),
+  ];
+}
 
 interface SteeringItem {
   id: string;
@@ -213,14 +236,31 @@ const MAX_STEERING_LENGTH = 8_000;
 /** 系统提示中单个记忆/约定小节的字符上限 */
 const MEMORY_SECTION_LIMIT = 8_000;
 
-const WORK_DISCIPLINE_SECTION = [
-  "\n\n## Work discipline",
-  "- Inspect relevant code and context before editing.",
-  "- For exploration, use read_file, glob, and grep instead of bash when they suffice.",
-  "- Group independent read-only calls in one tool turn.",
-  "- For multi-step work, use todo_write; after an error, adjust rather than retrying the identical call.",
-  "- Before handoff, run focused tests or other relevant verification and report the result.",
-].join("\n");
+function workDisciplineSection(toolNames: ReadonlySet<string>): string {
+  if (toolNames.size === 0) return "";
+  const lines = [
+    "\n\n## Work discipline",
+    "- Inspect relevant code and context before editing.",
+  ];
+  if (["read_file", "glob", "grep"].every((name) => toolNames.has(name))) {
+    lines.push("- For exploration, use read_file, glob, and grep instead of bash when they suffice.");
+    lines.push("- Group independent read-only calls in one tool turn.");
+  }
+  if (toolNames.has("todo_write")) {
+    lines.push("- For multi-step work, use todo_write; after an error, adjust rather than retrying the identical call.");
+  } else if (toolNames.size > 0) {
+    lines.push("- After a tool error, use the returned error to adjust rather than retrying the identical call.");
+  }
+  lines.push("- Before handoff, run focused tests or other relevant verification and report the result.");
+  return lines.join("\n");
+}
+
+function planModeSection(enabled: boolean): string {
+  if (enabled) {
+    return "\n\nYou are in PLAN mode (read-only). Investigate with read-only tools, then output a step-by-step implementation plan and ask the user to switch to build mode to execute it.";
+  }
+  return "\n\nYou are in PLAN mode. Assess the available conversation context, output a step-by-step implementation plan, and ask the user to switch to build mode to execute it.";
+}
 
 function communicationSection(defaultLanguage: string): string {
   return [
@@ -434,21 +474,28 @@ export class AgentRunner {
         const provider = this.providers.get(session.provider);
         if (!provider) throw new Error(`Provider ${session.provider} is not configured`);
 
-        // 技能目录注入系统提示：每轮现扫，保证新增技能即时可见
-        const skillCatalog = this.skills ? await this.skills.listFor(session.cwd) : [];
-        const skillSection = skillCatalog.length > 0
-          ? `\n\nAvailable skills (load full text with the load_skill tool when relevant; the user can also trigger one with /name):\n${skillCatalog.map((skill) => `- ${skill.name}: ${skill.description}`).join("\n")}`
-          : "";
-        const agentCatalog = this.agents ? await this.agents.listFor(session.cwd) : [];
-        const agentSection = agentCatalog.length > 0
-          ? `\n\nAvailable sub-agents (pass agent=<name> to spawn_task; omit for the default read-only explorer):\n${agentCatalog.map((agent) => {
-            const ignored = (agent.tools ?? []).filter((tool) => !(SUB_AGENT_TOOL_NAMES as readonly string[]).includes(tool));
-            return `- ${agent.name}: ${agent.description}${ignored.length > 0 ? ` (unsupported tools ignored: ${ignored.join(", ")})` : ""}`;
-          }).join("\n")}`
-          : "";
+        // 模型不支持 function calling 时，绝不能下发工具 schema 或包含工具指令的系统提示。
+        // 这不仅避免不支持 tools 的模型报错，也避免失真的 "可用工具" 提示诱导它返回 tool_call。
+        const toolsEnabled = profile.capabilities.tools;
 
-        // MCP 工具：失败 server 降级为告警（同一组告警每轮只播一次）
-        const mcpBinding = this.mcp ? await this.mcp.toolsFor(session.cwd) : { tools: [], warnings: [] as string[] };
+        // 技能/子代理目录只会在工具启用时进入本轮上下文。/skill 显式命令仍在 run 开头展开，
+        // 因此不支持工具的模型仍可使用用户明确触发的技能内容。
+        const skillCatalog = toolsEnabled && this.skills ? await this.skills.listFor(session.cwd) : [];
+        const agentCatalog = toolsEnabled && this.agents ? await this.agents.listFor(session.cwd) : [];
+
+        // MCP 连接可能包含外部进程/网络握手；模型不支持工具时不探测。配置加载等全局失败同样
+        // 只能降级为本轮无 MCP 工具，不能打断已经接受的对话。
+        let mcpBinding: { tools: ProviderTool[]; warnings: string[] } = { tools: [], warnings: [] };
+        if (toolsEnabled && this.mcp) {
+          try {
+            mcpBinding = await this.mcp.toolsFor(session.cwd);
+          } catch (error) {
+            mcpBinding = {
+              tools: [],
+              warnings: [`MCP 工具发现失败，未注入：${error instanceof Error ? error.message : String(error)}`],
+            };
+          }
+        }
         if (mcpBinding.warnings.length > 0) {
           const signature = mcpBinding.warnings.join("\n");
           if (this.mcpWarningSignatures.get(sessionId) !== signature) {
@@ -461,11 +508,33 @@ export class AgentRunner {
           this.mcpWarningSignatures.delete(sessionId);
         }
 
+        const tools = toolsEnabled
+          ? [
+              ...builtInTools({
+                skillsAvailable: skillCatalog.length > 0,
+                backgroundTasksEnabled: Boolean(this.backgroundTasks),
+                searchAvailable: Boolean(this.search),
+              }),
+              ...mcpBinding.tools,
+            ]
+          : [];
+        const availableToolNames = new Set(tools.map((tool) => tool.name));
+        const skillSection = availableToolNames.has("load_skill")
+          ? `\n\nAvailable skills (load full text with the load_skill tool when relevant; the user can also trigger one with /name):\n${skillCatalog.map((skill) => `- ${skill.name}: ${skill.description}`).join("\n")}`
+          : "";
+        const agentSection = availableToolNames.has("spawn_task") && agentCatalog.length > 0
+          ? `\n\nAvailable sub-agents (pass agent=<name> to spawn_task; omit for the default read-only explorer):\n${agentCatalog.map((agent) => {
+            const ignored = (agent.tools ?? []).filter((tool) => !(SUB_AGENT_TOOL_NAMES as readonly string[]).includes(tool));
+            return `- ${agent.name}: ${agent.description}${ignored.length > 0 ? ` (unsupported tools ignored: ${ignored.join(", ")})` : ""}`;
+          }).join("\n")}`
+          : "";
+
         // 长期记忆注入（§2.3/§7.5）：CLAUDE.md/AGENTS.md + 项目/全局 memory.md，每轮现读
         const memorySection = await this.buildMemorySection(session.cwd);
 
         // 后台任务完成提示（读后即清）
-        const bgNotices = this.backgroundTasks?.drainNotices(sessionId) ?? [];
+        // 后台任务是工具能力的一部分；不支持工具的模型既不注入也不消费待发送通知。
+        const bgNotices = toolsEnabled ? (this.backgroundTasks?.drainNotices(sessionId) ?? []) : [];
         const bgNoticeSection = bgNotices.length > 0 ? `\n\n${bgNotices.join("\n")}` : "";
 
         const turn = await collectProviderTurn(
@@ -474,10 +543,10 @@ export class AgentRunner {
             model: session.model,
             ...(session.thinking ? { thinking: session.thinking } : {}),
             ...(session.effort ? { effort: session.effort } : {}),
-            system: `You are OpenWebCode. The workspace is ${session.cwd}.${WORK_DISCIPLINE_SECTION}${communicationSection(this.defaultLanguage)}${skillSection}${agentSection}${memorySection}${bgNoticeSection}${session.agentMode === "plan" ? "\n\nYou are in PLAN mode (read-only). Investigate with read-only tools, then output a step-by-step implementation plan and ask the user to switch to build mode to execute it." : ""}${SAFETY_BOUNDARY_SECTION}`,
+            system: `You are OpenWebCode. The workspace is ${session.cwd}.${workDisciplineSection(availableToolNames)}${communicationSection(this.defaultLanguage)}${skillSection}${agentSection}${memorySection}${bgNoticeSection}${session.agentMode === "plan" ? planModeSection(toolsEnabled) : ""}${SAFETY_BOUNDARY_SECTION}`,
             messages: view.messages,
             cacheBreakpoints,
-            tools: [...TOOLS, ...(this.search ? [WEB_SEARCH_TOOL] : []), ...mcpBinding.tools],
+            tools,
             signal: controller.signal,
           },
           {
@@ -533,7 +602,11 @@ export class AgentRunner {
         if (assistantContent.length > 0) {
           await this.sessions.appendMessage(sessionId, "assistant", assistantContent);
         }
-        if (stopReason !== "tool_use") {
+        const toolCalls = assistantContent.filter((block) => block.type === "tool_call");
+        // Some compatible providers have emitted tool_call blocks with a non-tool stop reason.
+        // A persisted tool_call must always receive one matching tool_result; otherwise the next
+        // request has an invalid conversation shape and can fail before a user-visible reply.
+        if (toolCalls.length === 0 && stopReason !== "tool_use") {
           if (this.steering.get(sessionId)?.length) {
             await this.applySteering(sessionId);
             this.state(sessionId, "thinking");
@@ -543,47 +616,57 @@ export class AgentRunner {
           await this.runNotificationHook("Stop", { sessionId, cwd: session.cwd });
           return;
         }
-
-        const toolCalls = assistantContent.filter((block) => block.type === "tool_call");
         if (toolCalls.length === 0) throw new Error("Provider stopped for tool use without a tool call");
         for (const call of toolCalls) {
           let effectiveInput = call.input;
           let result: Extract<MessageContent, { type: "tool_result" }>;
-          try {
-            const extensionOutcome = this.extensions
-              ? await this.extensions.beforeTool({ sessionId, cwd: session.cwd, tool: call.name, input: call.input })
-              : { sessionId, cwd: session.cwd, tool: call.name, input: call.input };
-            if (extensionOutcome.blocked) {
-              result = { type: "tool_result", toolCallId: call.id, content: extensionOutcome.reason ?? "Blocked by extension", isError: true };
-            } else {
-              effectiveInput = extensionOutcome.input;
-              const repeated = this.recordToolCall(sessionId, call.name, effectiveInput);
-              if (repeated >= 3) {
-                const content = `Tool call blocked: ${call.name} was requested with identical arguments ${repeated} consecutive times.`;
-                this.events.publish({ source: "agent", type: "tool.repeated", sessionId, payload: { name: call.name, input: effectiveInput, count: repeated } });
-                result = { type: "tool_result", toolCallId: call.id, content, isError: true };
-              } else {
-                const permission = await this.authorizeTool(sessionId, call.name, effectiveInput, controller.signal);
-                if (!permission.allowed) {
-                  result = { type: "tool_result", toolCallId: call.id, content: permission.reason ?? "Tool permission denied", isError: true };
-                } else {
-                  // PreToolUse 钩子：exit 2 否决 → 工具不执行，stderr 回填 LLM
-                  const outcome = this.hooks
-                    ? await this.hooks.run("PreToolUse", { sessionId, cwd: session.cwd, tool: call.name, input: effectiveInput })
-                    : undefined;
-                  result = outcome?.blocked
-                    ? { type: "tool_result", toolCallId: call.id, content: outcome.reason ?? "Blocked by hook", isError: true }
-                    : await this.executeTool(sessionId, call.name, call.id, effectiveInput, controller.signal);
-                }
-              }
-            }
-          } catch (error) {
-            // Abort 仍按原语义结束整个 run；其他前置工具失败必须回填给 provider，
-            // 否则已落盘的 tool_call 会永久没有对应 tool_result。
-            if (controller.signal.aborted) throw error;
-            const content = error instanceof Error ? error.message : String(error);
+          if (!availableToolNames.has(call.name)) {
+            // Keep the plan-mode MCP safety boundary ahead of availability diagnostics: an
+            // unadvertised MCP name is still opaque and must be described as read/write unknown.
+            const content = session.agentMode === "plan" && call.name.startsWith("mcp__")
+              ? `Plan 模式为只读：MCP 工具 ${call.name} 被拦截（无法判定读写）。请输出实施计划并请用户切换到 build 模式执行。`
+              : toolsEnabled
+                ? `Tool is not available in this turn: ${call.name}`
+                : `Tool calls are disabled for the selected model: ${call.name}`;
             this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId: call.id, error: content } });
             result = { type: "tool_result", toolCallId: call.id, content, isError: true };
+          } else {
+            try {
+              const extensionOutcome = this.extensions
+                ? await this.extensions.beforeTool({ sessionId, cwd: session.cwd, tool: call.name, input: call.input })
+                : { sessionId, cwd: session.cwd, tool: call.name, input: call.input };
+              if (extensionOutcome.blocked) {
+                result = { type: "tool_result", toolCallId: call.id, content: extensionOutcome.reason ?? "Blocked by extension", isError: true };
+              } else {
+                effectiveInput = extensionOutcome.input;
+                const repeated = this.recordToolCall(sessionId, call.name, effectiveInput);
+                if (repeated >= 3) {
+                  const content = `Tool call blocked: ${call.name} was requested with identical arguments ${repeated} consecutive times.`;
+                  this.events.publish({ source: "agent", type: "tool.repeated", sessionId, payload: { name: call.name, input: effectiveInput, count: repeated } });
+                  result = { type: "tool_result", toolCallId: call.id, content, isError: true };
+                } else {
+                  const permission = await this.authorizeTool(sessionId, call.name, effectiveInput, controller.signal);
+                  if (!permission.allowed) {
+                    result = { type: "tool_result", toolCallId: call.id, content: permission.reason ?? "Tool permission denied", isError: true };
+                  } else {
+                    // PreToolUse 钩子：exit 2 否决 → 工具不执行，stderr 回填 LLM
+                    const outcome = this.hooks
+                      ? await this.hooks.run("PreToolUse", { sessionId, cwd: session.cwd, tool: call.name, input: effectiveInput })
+                      : undefined;
+                    result = outcome?.blocked
+                      ? { type: "tool_result", toolCallId: call.id, content: outcome.reason ?? "Blocked by hook", isError: true }
+                      : await this.executeTool(sessionId, call.name, call.id, effectiveInput, controller.signal);
+                  }
+                }
+              }
+            } catch (error) {
+              // Abort 仍按原语义结束整个 run；其他前置工具失败必须回填给 provider，
+              // 否则已落盘的 tool_call 会永久没有对应 tool_result。
+              if (controller.signal.aborted) throw error;
+              const content = error instanceof Error ? error.message : String(error);
+              this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId: call.id, error: content } });
+              result = { type: "tool_result", toolCallId: call.id, content, isError: true };
+            }
           }
           await this.sessions.appendMessage(sessionId, "tool", [result]);
           // PostToolUse 钩子：仅写类工具成功后触发（format-on-write 等），不阻断

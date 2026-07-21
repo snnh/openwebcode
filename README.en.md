@@ -77,6 +77,8 @@ Messages sent while a job is running enter the Steering queue and are injected o
 
 Permission mode and sandbox mode are independent. `yolo` skips interactive approval but never disables the sandbox. The path policy applies `denyPaths > writeRoots > readRoots`. Use Windows Sandbox for untrusted code; it runs one ephemeral VM per session.
 
+Tool schemas, tool-specific prompt guidance, and MCP discovery are sent only to models whose catalog capability enables tools; other models continue as normal chat. `web_search` is exposed only when a valid search-provider instance is configured, while `web_fetch` remains subject to the model tool capability.
+
 Automatic snapshot mode creates a checkpoint before every user turn and can be switched to manual only. Native Btrfs, ZFS, and ReFS backends are detected when available, with a git shadow repository as the fallback. Managed workspaces use VHDX or qcow2 differential images for low-cost snapshots and expose **Snapshot now** in the header whenever the session is idle. They never overwrite the source directory when a session closes or is deleted: the Files panel can generate a three-way diff at any time, and confirmation writes back only conflict-free changes by default.
 
 ## Extension points
