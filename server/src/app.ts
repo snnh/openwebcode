@@ -264,9 +264,9 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   // 与 create 并发改同一条 chain；后台/快捷 shell 也必须先结束，不能持有挂载目录。
   const managedCheckpointingSessions = new Set<string>();
   // Shared/exclusive gate for managed mount points. A checkpoint/sync/teardown
-  // takes the exclusive side; core filesystem/exec work holds a shared lease
-  // until its promise settles. This closes the check-then-await race where a
-  // VHDX could be dismounted halfway through an otherwise valid request.
+  // takes the exclusive side; core filesystem/exec and agent work hold a shared
+  // lease until their promise settles. This closes the check-then-await race
+  // where a VHDX could be dismounted halfway through an otherwise valid request.
   const managedWorkspaceUses = new Map<string, number>();
   type ManagedSession = { id: string; workspace?: { mode?: string } };
   const isManagedSession = (session: ManagedSession): boolean => session.workspace?.mode === "managed";
@@ -293,6 +293,57 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       if (released) return;
       released = true;
       set.delete(session.id);
+    };
+  };
+  type ManagedWorkspaceRunLease = {
+    release: () => void;
+    automaticSnapshotAllowed: boolean;
+    downgradeAfterAutomaticSnapshot?: () => void;
+  };
+  /**
+   * Reserve an automatic checkpoint before AgentRunner's first await.  This is
+   * deliberately synchronous: a normal message run cannot sneak a VHD leaf
+   * switch between the route's availability check and its shared lease.
+   *
+   * If another safe reader/exec is already using the workspace, retain a
+   * shared lease and let AgentRunner report that this *automatic* checkpoint
+   * was skipped.  A manual checkpoint remains available after that use ends.
+   */
+  const acquireManagedWorkspaceRun = (session: ManagedSession, reserveAutomaticCheckpoint: boolean): ManagedWorkspaceRunLease | undefined => {
+    if (!isManagedSession(session)) return { release: () => undefined, automaticSnapshotAllowed: true };
+    if (!reserveAutomaticCheckpoint) {
+      const release = acquireManagedWorkspaceUse(session);
+      return release ? { release, automaticSnapshotAllowed: false } : undefined;
+    }
+    const releaseExclusive = acquireManagedWorkspaceExclusive(session, "checkpoint");
+    if (!releaseExclusive) {
+      const releaseShared = acquireManagedWorkspaceUse(session);
+      return releaseShared ? { release: releaseShared, automaticSnapshotAllowed: false } : undefined;
+    }
+    let releaseCurrent = releaseExclusive;
+    let mode: "exclusive" | "shared" | "released" = "exclusive";
+    const release = (): void => {
+      if (mode === "released") return;
+      mode = "released";
+      releaseCurrent();
+    };
+    return {
+      release,
+      automaticSnapshotAllowed: true,
+      downgradeAfterAutomaticSnapshot: () => {
+        if (mode !== "exclusive") return;
+        // Both calls are synchronous, so no other request can interleave and
+        // acquire an exclusive lease in the hand-off gap.
+        releaseCurrent();
+        const releaseShared = acquireManagedWorkspaceUse(session);
+        if (!releaseShared) {
+          mode = "released";
+          releaseCurrent = () => undefined;
+          throw new Error("Managed workspace state changed while finishing automatic checkpoint");
+        }
+        releaseCurrent = releaseShared;
+        mode = "shared";
+      },
     };
   };
   const hasRunningBackgroundTask = (sessionId: string): boolean => dependencies.backgroundTasks?.hasRunningForSession(sessionId) ?? false;
@@ -1200,12 +1251,19 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
           return reply.code(code).send({ error: error instanceof Error ? error.message : String(error) });
         }
       }
-      const releaseWorkspace = acquireManagedWorkspaceUse(session);
-      if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
+      const automaticSnapshotRequested = (session.snapshotMode ?? "auto") === "auto";
+      // Background task state is checked again inside AgentRunner. This early
+      // check merely avoids reserving an exclusive lease when it is already
+      // known that this turn cannot make an automatic checkpoint.
+      const workspaceLease = acquireManagedWorkspaceRun(
+        session,
+        automaticSnapshotRequested && !hasRunningBackgroundTask(session.id),
+      );
+      if (!workspaceLease) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
       try {
         const budget = await new ContextManager(sessions.contextRoot(request.params.id)).budgetStatus();
         if (budget.paused) {
-          releaseWorkspace();
+          workspaceLease.release();
           return reply.code(409).send({
             error: budget.cost.paused ? "Session cost budget is exhausted or unavailable" : "Session token budget is exhausted",
             budget,
@@ -1235,14 +1293,20 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
         void agent.run(request.params.id, request.body.content, {
           ...(images?.length ? { images } : {}),
           ...(attachmentBlocks.length ? { attachments: attachmentBlocks } : {}),
+          managedWorkspace: {
+            automaticSnapshotAllowed: workspaceLease.automaticSnapshotAllowed,
+            ...(workspaceLease.downgradeAfterAutomaticSnapshot
+              ? { downgradeAfterAutomaticSnapshot: workspaceLease.downgradeAfterAutomaticSnapshot }
+              : {}),
+          },
         }).catch((error: unknown) => {
           // The browser already received 202, so keep the detailed failure in
           // the server log as well as AgentRunner's agent.error event.
           request.log.error({ err: error, sessionId: request.params.id }, "Agent run failed after accepting message");
-        }).finally(releaseWorkspace);
+        }).finally(workspaceLease.release);
         return reply.code(202).send({ accepted: true });
       } catch (error) {
-        releaseWorkspace();
+        workspaceLease.release();
         throw error;
       }
     },

@@ -23,8 +23,11 @@ describe("webFetch", () => {
   it.each([
     "http://localhost/", "http://sub.localhost/", "http://127.1.2.3/", "http://10.0.0.1/",
     "http://172.16.0.1/", "http://172.31.255.255/", "http://192.168.1.1/",
-    "http://169.254.169.254/", "http://[::1]/", "http://[fc00::1]/", "http://[fd12::1]/",
-    "http://[fe80::1]/", "http://[febf::ffff]/",
+    "http://0.0.0.0/", "http://100.64.0.1/", "http://169.254.169.254/", "http://192.0.2.1/",
+    "http://198.18.0.1/", "http://198.51.100.1/", "http://203.0.113.1/",
+    "http://[::1]/", "http://[::ffff:127.0.0.1]/", "http://[::ffff:10.0.0.1]/",
+    "http://[fc00::1]/", "http://[fd12::1]/", "http://[fe80::1]/", "http://[febf::ffff]/",
+    "http://[ff02::1]/", "http://[100::1]/", "http://[2001:db8::1]/",
     "ftp://example.com/",
   ])("rejects unsafe URL %s", (url) => expect(() => assertSafeWebUrl(url)).toThrow());
 
@@ -85,6 +88,31 @@ describe("search providers", () => {
   it("cleans common HTML constructs", () => {
     expect(htmlToText("<p>A&nbsp;B</p><div>&#x43; &#68;</div>")).toBe("A B\nC D");
   });
+
+  it("propagates caller aborts and bounds Tavily JSON responses", async () => {
+    let receivedSignal: AbortSignal | null | undefined;
+    const waitingFetch = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      receivedSignal = init?.signal;
+      return new Promise<Response>((_resolve, reject) => {
+        receivedSignal?.addEventListener("abort", () => reject(receivedSignal?.reason), { once: true });
+      });
+    }) as typeof fetch;
+    const abortable = createSearchProvider({ provider: "tavily", apiKey: "tvly-secret" }, waitingFetch)!;
+    const controller = new AbortController();
+    const pending = abortable.search("query", 1, { signal: controller.signal });
+    controller.abort(new Error("cancelled by user"));
+    await expect(pending).rejects.toThrow("cancelled by user");
+    expect(receivedSignal?.aborted).toBe(true);
+
+    const oversizedFetch = vi.fn(async () => new Response(new ReadableStream<Uint8Array>({
+      start(stream) {
+        stream.enqueue(new Uint8Array(2 * 1024 * 1024 + 1));
+        stream.close();
+      },
+    }), { headers: { "content-type": "application/json" } })) as typeof fetch;
+    const bounded = createSearchProvider({ provider: "tavily", apiKey: "tvly-secret" }, oversizedFetch)!;
+    await expect(bounded.search("query", 1)).rejects.toThrow(/byte limit/i);
+  });
 });
 
 describe("web fetch providers", () => {
@@ -102,6 +130,24 @@ describe("web fetch providers", () => {
     const custom = createWebFetchProvider({ provider: "custom", baseURL: "https://reader.test/fetch?url={url}" }, customFetch)!;
     await custom.fetchUrl("https://example.com/a?b=1");
     expect(String(customFetch.mock.calls[0]?.[0])).toBe("https://reader.test/fetch?url=https%3A%2F%2Fexample.com%2Fa%3Fb%3D1");
+  });
+
+  it("does not follow a reader redirect to an untrusted origin", async () => {
+    const crossOriginFetch = vi.fn(async () => new Response(null, {
+      status: 302,
+      headers: { location: "http://127.0.0.1/internal" },
+    })) as typeof fetch;
+    const provider = createWebFetchProvider({ provider: "jina", apiKey: "key" }, crossOriginFetch)!;
+    await expect(provider.fetchUrl("https://example.com/article")).rejects.toThrow(/leaves the configured reader origin/i);
+    expect(crossOriginFetch).toHaveBeenCalledOnce();
+    expect(crossOriginFetch.mock.calls[0]?.[1]).toMatchObject({ redirect: "manual" });
+
+    const sameOriginFetch = vi.fn(async (input: string | URL | Request) => String(input).endsWith("/final")
+      ? textResponse("followed safely")
+      : new Response(null, { status: 302, headers: { location: "/final" } })) as typeof fetch;
+    const sameOrigin = createWebFetchProvider({ provider: "jina", apiKey: "key" }, sameOriginFetch)!;
+    await expect(sameOrigin.fetchUrl("https://example.com/article")).resolves.toMatchObject({ text: "followed safely" });
+    expect(sameOriginFetch).toHaveBeenCalledTimes(2);
   });
 });
 

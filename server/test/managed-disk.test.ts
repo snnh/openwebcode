@@ -546,6 +546,80 @@ describe("managed workspace REST", () => {
     }
   });
 
+  it("自动快照遇到正在读取的托管工作区时传入 shared lease，并安全跳过", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-managed-message-gate-")); roots.push(root);
+    const mountPoint = path.join(root, "mnt", "message-gate");
+    await mkdir(mountPoint, { recursive: true });
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const events = new EventBus();
+    let signalFileStarted!: () => void;
+    const fileStarted = new Promise<void>((resolve) => { signalFileStarted = resolve; });
+    let releaseFile!: () => void;
+    const fileGate = new Promise<void>((resolve) => { releaseFile = resolve; });
+    let signalAgentStarted!: () => void;
+    const agentStarted = new Promise<void>((resolve) => { signalAgentStarted = resolve; });
+    let releaseAgent!: () => void;
+    const agentGate = new Promise<void>((resolve) => { releaseAgent = resolve; });
+    let signalAgentFinished!: () => void;
+    const agentFinished = new Promise<void>((resolve) => { signalAgentFinished = resolve; });
+    let runOptions: { managedWorkspace?: { automaticSnapshotAllowed: boolean } } | undefined;
+    const agent = {
+      isRunning: () => false,
+      isShellPending: () => false,
+      async run(_sessionId: string, _text: string, options?: { managedWorkspace?: { automaticSnapshotAllowed: boolean } }) {
+        runOptions = options;
+        signalAgentStarted();
+        await agentGate;
+        signalAgentFinished();
+      },
+    } as unknown as AgentRunner;
+    const core = {
+      async configureSession() { return { sandboxCapability: "advisory" }; },
+      async listFiles() {
+        signalFileStarted();
+        await fileGate;
+        return { entries: [] };
+      },
+    } as unknown as CoreClient;
+    const providers = new ProviderRegistry();
+    providers.register(makeStubProvider("test-stub"));
+    const app = await buildServer({ core, sessions, agent, events, providers, pricing });
+    try {
+      const session = await sessions.create({
+        cwd: mountPoint,
+        provider: "test-stub",
+        model: "deterministic-tool-loop",
+        snapshotBackend: "git-shadow",
+        workspace: {
+          mode: "managed",
+          backend: "qcow2",
+          originCwd: root,
+          image: path.join(root, "workspaces", "message-gate", "base.qcow2"),
+          mountPoint,
+        },
+      });
+      const files = app.inject({ method: "GET", url: `/api/sessions/${session.id}/files` });
+      await fileStarted;
+
+      const message = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "在读取时继续" } });
+      expect(message.statusCode).toBe(202);
+      await agentStarted;
+      expect(runOptions?.managedWorkspace?.automaticSnapshotAllowed).toBe(false);
+
+      releaseFile();
+      expect((await files).statusCode).toBe(200);
+      releaseAgent();
+      await agentFinished;
+    } finally {
+      releaseFile?.();
+      releaseAgent?.();
+      await app.close();
+    }
+  });
+
   it("workspace sync REST：预览可在运行中读取，apply 要求 idle+confirm+fingerprint，并对同会话加锁", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
     const origin = path.join(root, "origin-project");
