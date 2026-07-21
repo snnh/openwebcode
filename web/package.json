@@ -1,6 +1,6 @@
 {
   "name": "@openwebcode/web",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -16,6 +16,7 @@
     "@tanstack/react-query": "^5.66.0",
     "@vitejs/plugin-react": "^4.4.1",
     "katex": "^0.18.1",
+    "pdfjs-dist": "4.10.38",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-markdown": "^10.0.0",

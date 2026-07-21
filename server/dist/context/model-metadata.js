@@ -1,5 +1,6 @@
 const caps = (overrides = {}) => ({
     modalities: ["text"],
+    imageOutput: false,
     thinking: [],
     effort: [],
     tools: true,

@@ -18,7 +18,7 @@ Windows 与 Linux 原生支持（沙盒分别走 AppContainer/Landlock）。macO
 
 ### Q: 数据存在哪里？
 
-默认 `~/.openwebcode/`（Windows 为 `%USERPROFILE%\.openwebcode\`）。会话在 `sessions/<id>/`，配置在 `config.json`。详见 [usage.md 的配置文件位置表](./usage.md#配置文件位置)。
+用户显式设置的 `OWC_DATA_DIR` 优先。未设置时，安装版启动器会注入默认目录（Windows `%LOCALAPPDATA%\openwebcode`；Linux `${XDG_DATA_HOME:-~/.local/share}/openwebcode`）；只有绕过启动器直接运行 `node server/dist/index.js` 时，才以相对 `server` 目录的 `../.openwebcode` 作为启动/设置目录兜底。设置文件为 `<启动/设置目录>/server-settings.json`；其中保存的“数据目录”会在未设置 `OWC_DATA_DIR` 时于下次启动后决定业务数据目录。会话在 `<业务数据目录>/sessions/<id>/`；自定义路径建议使用绝对路径。详见 [usage.md 的配置文件位置表](./usage.md#配置文件位置)。
 
 ### Q: 如何升级？
 
@@ -132,11 +132,12 @@ provider2 是快速廉价的辅助模型，做压缩/标题生成/翻译等旁�
 
 ## 子代理与扩展
 
-### Q: 三个官方扩展分别做什么？
+### Q: 四个官方扩展分别做什么？
 
 - `context-manager` 默认启用，承载滚动驱逐与上下文管理界面
 - `attention-optimizer` 默认关闭，通过复制关键引用建立注意力锚区，不移动原消息
 - `content-lens` 默认关闭，提供旁路翻译与划词解析；需要 provider2，结果不会进入上下文账本
+- `pdf-to-image` 默认启用，Web 选择的 PDF 会先保存到当前工作区 `.owc/uploads/`，再将最多 4 页以 150 DPI、最长边 2048px 转为图片附件；停用后仅把这个工作区相对路径引用发送给主代理
 
 它们可在「设置 → 扩展」启停和编辑配置。Extension Host 是独立子进程，单个钩子最多运行 5 秒。第三方 v1 扩展不是安全沙盒，只有信任其代码和权限声明时才安装。
 
@@ -166,13 +167,24 @@ owc run "跑测试并修复失败的用例" --cwd . --yolo --json | tee events.n
 
 ### Q: `owc run` 会创建新会话吗？
 
-默认每次创建新会话。`--session <id>` 复用已有会话（续聊）。会话 id 从 web UI 或 `~/.openwebcode/sessions/` 目录名取。
+默认每次创建新会话。`--session <id>` 复用已有会话（续聊）。会话 id 从 web UI 或 `<业务数据目录>/sessions/` 目录名取。
 
 ### Q: Windows 下 `owc run` 报找不到命令？
 
-`packaging/owc.cmd` 被 `.gitignore` 忽略（`*.cmd` 规则），从源码直接跑时可能缺失。用 `node server/dist/cli.js run ...` 替代，或从 Releases 下载已打包的发行版。
+源码目录不会自动把 `owc` 加入 `PATH`。可用 `node server/dist/cli.js run ...` 直接运行，或使用发布版/打包生成的启动器。
 
 ## 故障排查
+
+### Q: Linux 的 `install.sh` 会在 CI 或脚本里等输入吗？
+
+不会。只有 stdin/stdout 都是 TTY 且没有传 `--yes` 时才会询问配置；重定向、管道和 CI 会直接使用默认值或命令行提供的值。自动化安装应显式传 `--yes`，例如：
+
+```sh
+./install.sh --yes --prefix "$HOME/.local" --port 3000 \
+  --data-dir "$HOME/.local/share/openwebcode" --host 127.0.0.1
+```
+
+`--prefix`、`--data-dir` 必须是绝对路径，端口必须在 1–65535。`--use-system-node` 会在安装时校验 PATH 中的 Node.js 20+；运行时 `OWC_PORT`、`OWC_DATA_DIR`、`OWC_HOST` 可覆盖安装时默认值。若指定非回环 `--host`，当前版本没有内置 HTTP 鉴权，只应在受信网络或认证反向代理后使用。
 
 ### Q: 启动后浏览器打不开 / 连接被拒？
 
@@ -190,7 +202,7 @@ owc run "跑测试并修复失败的用例" --cwd . --yolo --json | tee events.n
 
 ### Q: core（C 执行器）崩溃了怎么办？
 
-core-client 自动重启（指数退避，≤3 次），重启后广播 error 并标记运行中工具失败。频繁崩溃看 `~/.openwebcode/logs/` 里的 core stderr。
+core-client 自动重启（指数退避，≤3 次），重启后广播 error 并标记运行中工具失败。频繁崩溃看 `<业务数据目录>/logs/` 里的 core stderr。
 
 ### Q: 沙盒导致某些命令失败？
 

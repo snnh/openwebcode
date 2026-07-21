@@ -9,6 +9,7 @@ import { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { buildServer } from "../src/app.js";
+import { makeStubProvider } from "./helpers/stub-provider.js";
 
 const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
@@ -210,13 +211,13 @@ describe("plan mode — agent-runner level", () => {
     const root = await tempRoot();
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
-    // 用 "development" provider 创建，但注册 "fake" 用于验证 PUT 行为
-    const session = await sessions.create({ cwd: root, provider: "development", model: "model" });
+    // 用 test-only provider 创建，验证 PUT 行为不依赖运行时 provider
+    const session = await sessions.create({ cwd: root, provider: "test-stub", model: "model" });
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));
     await pricing.initialize();
     const events = new EventBus();
     const providers = new ProviderRegistry();
-    providers.register({ name: "development", async *streamChat() { yield { type: "done", stopReason: "end_turn" }; } });
+    providers.register(makeStubProvider("test-stub", async function* () { yield { type: "done", stopReason: "end_turn" }; }));
     const core = { on() { return core; }, async configureSession() { return { sandboxCapability: "advisory" }; }, async cleanupSession() { return { ok: true }; }, setRequestTimeoutMs() {} } as unknown as CoreClientLike;
     const agent = new AgentRunner(sessions, providers, core, events, pricing);
     const app = await buildServer({ core, sessions, agent, events, providers, pricing });
@@ -256,17 +257,17 @@ describe("plan mode — agent-runner level", () => {
     await pricing.initialize();
     const events = new EventBus();
     const providers = new ProviderRegistry();
-    providers.register({ name: "development", async *streamChat() { yield { type: "done", stopReason: "end_turn" }; } });
+    providers.register(makeStubProvider("test-stub", async function* () { yield { type: "done", stopReason: "end_turn" }; }));
     const core = { on() { return core; }, async configureSession() { return { sandboxCapability: "advisory" }; } } as unknown as CoreClientLike;
     const agent = new AgentRunner(sessions, providers, core, events, pricing);
     const app = await buildServer({ core, sessions, agent, events, providers, pricing });
 
-    const plan = await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: root, agentMode: "plan" } });
+    const plan = await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: root, provider: "test-stub", model: "deterministic-tool-loop", agentMode: "plan" } });
     expect(plan.statusCode).toBe(201);
     expect(plan.json<{ agentMode?: string }>().agentMode).toBe("plan");
-    const direct = await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: root } });
+    const direct = await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: root, provider: "test-stub", model: "deterministic-tool-loop" } });
     expect(direct.json<{ agentMode?: string }>().agentMode).toBeUndefined();
-    const invalid = await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: root, agentMode: "study" } });
+    const invalid = await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: root, provider: "test-stub", model: "deterministic-tool-loop", agentMode: "study" } });
     expect(invalid.statusCode).toBe(400);
   });
 });

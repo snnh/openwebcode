@@ -4,6 +4,7 @@ import { api } from "../lib/api";
 import type { ExtensionInfo, ModelProfile, PermissionMode, PricingDocument, SettingsField, SettingValue } from "../lib/contracts";
 import { formatCurrency } from "../lib/format";
 import { Icon } from "./Icon";
+import { ModelCapabilityBadges } from "./ModelCapabilityBadges";
 import type { SendKey, SessionDefaults } from "../lib/prefs";
 import type { ThemePreference, AccentPreference } from "../theme";
 import { useI18n, type Language } from "../i18n";
@@ -60,6 +61,9 @@ const SETTINGS_FIELD_EN: Record<string, { label: string; description?: string }>
   anthropicPromptCaching: { label: "Anthropic prompt caching" },
   openaiBaseURL: { label: "OpenAI-compatible Base URL", description: "Enables the OpenAI-compatible provider when set" },
   openaiApiKey: { label: "OpenAI API Key" },
+  catalogSyncUrl: { label: "Remote model catalog URL", description: "Leave empty to disable remote model catalog sync" },
+  pricingSyncUrl: { label: "Remote pricing catalog URL", description: "Leave empty to disable remote pricing sync" },
+  syncIntervalMinutes: { label: "Remote sync interval (minutes)", description: "0 means manual sync only; a value above 0 enables periodic sync (maximum 35,791 minutes)" },
   provider2BaseURL: { label: "provider2 Base URL", description: "OpenAI-compatible endpoint; enabled when both endpoint and model are set" },
   provider2ApiKey: { label: "provider2 API Key" },
   provider2Model: { label: "provider2 model", description: "For example, deepseek-chat or claude-haiku-4-5" },
@@ -70,6 +74,7 @@ const SETTINGS_FIELD_EN: Record<string, { label: string; description?: string }>
   defaultCurrency: { label: "Default currency" },
   corePath: { label: "Executor path" },
   coreRequestTimeoutMs: { label: "Executor request timeout (ms)" },
+  sandboxAllowPaths: { label: "Additional AppContainer directories", description: "One directory per line, up to 16; merged with the session working directory at execution time" },
   jobObjectMemoryMB: { label: "Job memory limit (MB)", description: "Job Object commit-memory limit; defaults to 4096" },
   jobObjectMaxProcesses: { label: "Job process limit", description: "Job Object active-process limit; defaults to 64" },
   gcMaxBytes: { label: "Storage limit (bytes)", description: "Global LRU limit for session artifacts; oldest data is removed first" },
@@ -81,10 +86,13 @@ const SETTINGS_FIELD_EN: Record<string, { label: string; description?: string }>
   fixedUsdCnyRate: { label: "Fixed USD/CNY rate", description: "Skips online exchange-rate lookup when set" },
 };
 
+const MAX_SYNC_INTERVAL_MINUTES = 35_791;
+
 const OFFICIAL_EXTENSION_EN: Record<string, { name: string; description: string }> = {
   "context-manager": { name: "Context Manager", description: "Rolling eviction, context compaction, writeback, and ledger views." },
   "attention-optimizer": { name: "Attention Optimizer", description: "Copies critical constraints and the current task into a context anchor to reduce lost-in-the-middle effects." },
   "content-lens": { name: "Content Lens", description: "Translates messages and explains selected text without adding content to the model context." },
+  "pdf-to-image": { name: "PDF to Image", description: "Converts PDF pages into image attachments for models that support image input." },
 };
 
 interface PricingForm {
@@ -114,6 +122,7 @@ export function PricingSection(): ReactElement {
   const [editing, setEditing] = useState(false);
   const [json, setJson] = useState("");
   const [error, setError] = useState<string>();
+  const [notice, setNotice] = useState<string>();
   const [saving, setSaving] = useState(false);
   // 添加条目表单
   const [adding, setAdding] = useState(false);
@@ -129,6 +138,7 @@ export function PricingSection(): ReactElement {
   const save = async (document: PricingDocument): Promise<boolean> => {
     setSaving(true);
     setError(undefined);
+    setNotice(undefined);
     try {
       await api.saveModelPricing(document);
       setEditing(false);
@@ -225,6 +235,25 @@ export function PricingSection(): ReactElement {
     void save(document);
   };
 
+  const syncRemote = (): void => {
+    setSaving(true);
+    setError(undefined);
+    setNotice(undefined);
+    api.syncModelPricing()
+      .then((result) => {
+        if (!result.ok) {
+          setError(result.error || t("远程定价同步失败", "Remote pricing sync failed"));
+          return;
+        }
+        const updatedAt = new Date(result.updatedAt).toLocaleString(locale);
+        setNotice(t(`已同步 ${result.count} 条远程定价 · ${updatedAt}`, `Synced ${result.count} remote pricing entries · ${updatedAt}`));
+        void queryClient.invalidateQueries({ queryKey: ["model-pricing"] });
+        void queryClient.invalidateQueries({ queryKey: ["models"] });
+      })
+      .catch((syncError: unknown) => setError(syncError instanceof Error ? syncError.message : t("远程定价同步失败", "Remote pricing sync failed")))
+      .finally(() => setSaving(false));
+  };
+
   if (pricing.isPending) return <p className="panel-empty">{t("加载中…", "Loading…")}</p>;
   if (pricing.isError || !pricing.data) return <p className="panel-empty">{t("无法加载定价目录。", "Could not load the pricing catalog.")}</p>;
 
@@ -233,9 +262,11 @@ export function PricingSection(): ReactElement {
     <>
       <div className="pricing-head">
         <span className="settings-note">{t(`${document.entries.length} 条定价 · 每百万 tokens 单价 · 更新于 ${new Date(document.updatedAt).toLocaleString(locale)}`, `${document.entries.length} entries · price per million tokens · updated ${new Date(document.updatedAt).toLocaleString(locale)}`)}</span>
+        {!editing && !adding && <button className="btn small" disabled={saving} onClick={syncRemote}>{saving ? t("同步中…", "Syncing…") : t("立即同步", "Sync now")}</button>}
         {!editing && !adding && <button className="btn small" onClick={() => { setForm(emptyPricingForm()); setError(undefined); setAdding(true); }}>{t("添加条目", "Add entry")}</button>}
         {!editing && <button className="btn small" onClick={startEdit}>{t("编辑 JSON", "Edit JSON")}</button>}
       </div>
+      {notice && <p className="settings-note">{notice}</p>}
       {adding && (
         <div className="pricing-add-form">
           <h4>{t("添加定价条目", "Add pricing entry")}</h4>
@@ -411,13 +442,27 @@ function ServerSettingsSection({ onDirtyChange }: { onDirtyChange?(dirty: boolea
       if (field.type === "secret" && value === "") continue;
       if (field.type === "number") {
         const parsed = Number(value);
-        if (!Number.isSafeInteger(parsed) || parsed < 1) {
-          setError(t(`${field.label} 必须是正整数`, `${fieldLabel(field)} must be a positive integer`));
+        const allowsZero = field.key === "syncIntervalMinutes";
+        if (!Number.isSafeInteger(parsed) || parsed < (allowsZero ? 0 : 1)) {
+          setError(allowsZero
+            ? t(`${field.label} 必须是大于或等于 0 的整数`, `${fieldLabel(field)} must be a non-negative integer`)
+            : t(`${field.label} 必须是正整数`, `${fieldLabel(field)} must be a positive integer`));
+          return;
+        }
+        if (allowsZero && parsed > MAX_SYNC_INTERVAL_MINUTES) {
+          setError(t(`${field.label} 不能超过 ${MAX_SYNC_INTERVAL_MINUTES} 分钟`, `${fieldLabel(field)} cannot exceed ${MAX_SYNC_INTERVAL_MINUTES} minutes`));
           return;
         }
         overrides[key] = parsed;
       } else if (field.type === "boolean") {
         overrides[key] = value === true;
+      } else if (field.type === "pathList") {
+        const paths = String(value).split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean);
+        if (paths.length > 16) {
+          setError(t(`${field.label} 最多允许 16 个目录`, `${fieldLabel(field)} accepts at most 16 directories`));
+          return;
+        }
+        overrides[key] = paths;
       } else if (value === "") {
         if (field.nullable) overrides[key] = null;
         else {
@@ -481,10 +526,29 @@ function ServerSettingsSection({ onDirtyChange }: { onDirtyChange?(dirty: boolea
         />
       );
     }
+    if (field.type === "pathList") {
+      const value = typeof pending === "string" ? pending : Array.isArray(field.value) ? field.value.join("\n") : "";
+      return (
+        <textarea
+          rows={Math.max(2, Math.min(6, value.split("\n").length))}
+          value={resetting ? "" : value}
+          placeholder={resetting ? t("保存后重置为空", "Reset to empty on save") : t("每行一个绝对目录", "One absolute directory per line")}
+          disabled={disabled}
+          onChange={(event) => setField(field.key, event.target.value)}
+          aria-label={fieldLabel(field)}
+          spellCheck={false}
+        />
+      );
+    }
     const value = typeof pending === "string" ? pending : String(field.value ?? "");
     return (
       <input
         type={field.type === "number" ? "number" : "text"}
+        {...(field.type === "number" ? {
+          min: field.key === "syncIntervalMinutes" ? 0 : 1,
+          ...(field.key === "syncIntervalMinutes" ? { max: MAX_SYNC_INTERVAL_MINUTES } : {}),
+          step: 1,
+        } : {})}
         value={resetting ? "" : value}
         placeholder={resetting ? t("保存后重置为默认", "Reset to default on save") : field.nullable ? t("未设置", "Not set") : undefined}
         disabled={disabled}
@@ -544,11 +608,12 @@ function ServerSettingsSection({ onDirtyChange }: { onDirtyChange?(dirty: boolea
   );
 }
 
-const SOURCE_LABEL: Record<string, [string, string]> = { builtin: ["内置", "Built-in"], api: ["API", "API"], manual: ["手动", "Manual"] };
+const SOURCE_LABEL: Record<string, [string, string]> = { builtin: ["内置", "Built-in"], api: ["API", "API"], synced: ["远程同步", "Synced"], manual: ["手动", "Manual"] };
 const THINKING_LABEL: Record<string, [string, string]> = { adaptive: ["自适应", "Adaptive"], enabled: ["开启", "Enabled"], disabled: ["关闭", "Disabled"] };
 const THINKING_OPTIONS = ["adaptive", "enabled", "disabled"] as const;
 const EFFORT_OPTIONS = ["low", "medium", "high", "xhigh", "max"] as const;
-const MODALITY_OPTIONS = ["text", "image"] as const;
+const MODALITY_OPTIONS = ["text", "image", "video"] as const;
+const MODALITY_LABEL: Record<string, [string, string]> = { text: ["文本", "Text"], image: ["图片", "Image"], video: ["视频", "Video"] };
 
 interface ModelEditForm {
   id: string;
@@ -558,20 +623,25 @@ interface ModelEditForm {
   thinking: string[];
   effort: string[];
   modalities: string[];
+  imageOutput: boolean;
   tools: boolean;
 }
 
-function ModelCatalogSection(): ReactElement {
+export function ModelCatalogSection(): ReactElement {
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const models = useQuery({ queryKey: ["models"], queryFn: api.models });
+  const syncStatus = useQuery({ queryKey: ["model-sync-status"], queryFn: api.modelSyncStatus });
   const [notice, setNotice] = useState<string>();
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState({ id: "", provider: "", contextWindow: "" });
   const [editing, setEditing] = useState<ModelEditForm | null>(null);
 
-  const invalidate = (): void => void queryClient.invalidateQueries({ queryKey: ["models"] });
+  const invalidate = (): void => {
+    void queryClient.invalidateQueries({ queryKey: ["models"] });
+    void queryClient.invalidateQueries({ queryKey: ["model-sync-status"] });
+  };
 
   const refresh = (): void => {
     setBusy(true);
@@ -585,6 +655,24 @@ function ModelCatalogSection(): ReactElement {
         else setNotice(base);
       })
       .catch((refreshError: unknown) => setError(refreshError instanceof Error ? refreshError.message : t("刷新失败", "Refresh failed")))
+      .finally(() => setBusy(false));
+  };
+
+  const syncRemote = (): void => {
+    setBusy(true);
+    setNotice(undefined);
+    setError(undefined);
+    api.syncModels()
+      .then((result) => {
+        if (!result.ok) {
+          setError(result.error || t("远程模型目录同步失败", "Remote model catalog sync failed"));
+          return;
+        }
+        invalidate();
+        const updatedAt = new Date(result.updatedAt).toLocaleString(locale);
+        setNotice(t(`已同步 ${result.count} 个远程模型 · ${updatedAt}`, `Synced ${result.count} remote models · ${updatedAt}`));
+      })
+      .catch((syncError: unknown) => setError(syncError instanceof Error ? syncError.message : t("远程模型目录同步失败", "Remote model catalog sync failed")))
       .finally(() => setBusy(false));
   };
 
@@ -636,6 +724,8 @@ function ModelCatalogSection(): ReactElement {
       thinking: [...model.capabilities.thinking],
       effort: [...model.capabilities.effort],
       modalities: [...model.capabilities.modalities],
+      // The fallback keeps the editor safe while an older local catalog is being upgraded.
+      imageOutput: model.capabilities.imageOutput ?? false,
       tools: model.capabilities.tools,
     });
   };
@@ -672,6 +762,7 @@ function ModelCatalogSection(): ReactElement {
         thinking: editing.thinking as ModelProfile["capabilities"]["thinking"],
         effort: editing.effort as ModelProfile["capabilities"]["effort"],
         modalities: editing.modalities as ModelProfile["capabilities"]["modalities"],
+        imageOutput: editing.imageOutput,
         tools: editing.tools,
       },
     })
@@ -702,14 +793,19 @@ function ModelCatalogSection(): ReactElement {
   return (
     <>
       <p className="settings-note">{t("从已配置凭据的 provider 拉取模型列表；未知模型按内置元数据库保守成档。手动条目永不被刷新覆盖。双击行可编辑模型能力（API/内置模型保存后成为手动覆盖）。", "Fetch models from providers with configured credentials. Unknown models receive conservative built-in metadata; refresh never overwrites manual entries. Double-click a row to edit capabilities.")}</p>
+      {syncStatus.data?.updatedAt && <p className="settings-note">{t(
+        `上次同步：${new Date(syncStatus.data.updatedAt).toLocaleString(locale)} · ${syncStatus.data.count} 个远程模型`,
+        `Last synced: ${new Date(syncStatus.data.updatedAt).toLocaleString(locale)} · ${syncStatus.data.count} remote models`,
+      )}</p>}
       <div className="dialog-actions catalog-actions">
+        <button className="btn small" disabled={busy} onClick={syncRemote}>{busy ? t("同步中…", "Syncing…") : t("立即同步", "Sync now")}</button>
         <button className="btn small" disabled={busy} onClick={refresh}>{busy ? t("处理中…", "Working…") : t("刷新模型目录", "Refresh catalog")}</button>
       </div>
       {notice && <p className="settings-note">{notice}</p>}
       {error && <p className="settings-error">{error}</p>}
       <table className="pricing-table catalog-table">
         <thead>
-          <tr><th>{t("模型", "Model")}</th><th>Provider</th><th>{t("来源", "Source")}</th><th>{t("上下文", "Context")}</th><th>{t("思考", "Thinking")}</th><th>{t("力度", "Effort")}</th><th></th></tr>
+          <tr><th>{t("模型", "Model")}</th><th>Provider</th><th>{t("来源", "Source")}</th><th>{t("上下文", "Context")}</th><th>{t("能力", "Capabilities")}</th><th>{t("思考", "Thinking")}</th><th>{t("力度", "Effort")}</th><th></th></tr>
         </thead>
         <tbody>
           {models.data.map((model) => (
@@ -718,6 +814,7 @@ function ModelCatalogSection(): ReactElement {
               <td>{model.provider}</td>
               <td><span className={`badge badge-source-${model.source ?? "builtin"}`}>{t(...(SOURCE_LABEL[model.source ?? "builtin"] ?? [model.source ?? "builtin", model.source ?? "builtin"]))}</span></td>
               <td className="mono">{model.contextWindow.toLocaleString(locale)}</td>
+              <td><ModelCapabilityBadges capabilities={model.capabilities} /></td>
               <td>{model.capabilities.thinking.length > 0 ? model.capabilities.thinking.map((item) => THINKING_LABEL[item] ? t(...THINKING_LABEL[item]!) : item).join(t("、", ", ")) : "—"}</td>
               <td>{model.capabilities.effort.length > 0 ? model.capabilities.effort.join(t("、", ", ")) : "—"}</td>
               <td>{model.source === "manual" && <button className="badge badge-action" disabled={busy} onClick={() => removeManual(model.id)}>{t("删除", "Delete")}</button>}</td>
@@ -754,7 +851,19 @@ function ModelCatalogSection(): ReactElement {
           </div>
           {renderCapGroup(t("思考", "Thinking"), THINKING_OPTIONS, editing.thinking, "thinking", THINKING_LABEL)}
           {renderCapGroup(t("力度", "Effort"), EFFORT_OPTIONS, editing.effort, "effort")}
-          {renderCapGroup(t("模态", "Modalities"), MODALITY_OPTIONS, editing.modalities, "modalities")}
+          {renderCapGroup(t("输入", "Input"), MODALITY_OPTIONS, editing.modalities, "modalities", MODALITY_LABEL)}
+          <div className="capability-row">
+            <span className="capability-title">{t("图片输出", "Image output")}</span>
+            <label>
+              <input
+                type="checkbox"
+                aria-label={t("图片输出", "Image output")}
+                checked={editing.imageOutput}
+                onChange={(event) => setEditing((prev) => prev && { ...prev, imageOutput: event.target.checked })}
+              />
+              {t("支持", "Supported")}
+            </label>
+          </div>
           <div className="capability-row">
             <span className="capability-title">{t("工具", "Tools")}</span>
             <label>

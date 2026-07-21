@@ -22,6 +22,18 @@ export interface PricingDocument {
   entries: PricingEntry[];
 }
 
+/** Result returned by a remote catalog synchronization attempt. */
+export type SyncResult =
+  | { ok: true; count: number; updatedAt: string }
+  | { ok: false; error: string };
+
+export interface PricingSyncOptions {
+  /** Injectable for tests and alternate transport implementations. */
+  fetchImpl?: typeof fetch;
+  /** Request deadline in milliseconds. Defaults to 15 seconds. */
+  timeoutMs?: number;
+}
+
 interface CompiledEntry extends PricingEntry {
   pricing: ModelPricing;
   fromTime: number;
@@ -71,10 +83,39 @@ export class PricingCatalog {
   async replace(value: unknown): Promise<PricingDocument> {
     return this.serial(async () => {
       const document = parseDocument(value);
-      await this.persist(document);
-      this.install(document);
-      return cloneDocument(document);
+      return this.replaceDocument(document);
     });
+  }
+
+  /**
+   * Fetch and atomically install a remote pricing document.  Validation is
+   * completed before the catalog is committed, so a bad response never
+   * changes the active catalog. The complete fetch-to-commit operation is
+   * serialized: a later invocation cannot be overwritten by an older, slower
+   * response.
+   */
+  async syncFromUrl(url: string, options: PricingSyncOptions = {}): Promise<SyncResult> {
+    return this.serial(async () => {
+      try {
+        const response = await (options.fetchImpl ?? globalThis.fetch)(url, {
+          signal: AbortSignal.timeout(options.timeoutMs ?? 15_000),
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+        const document = parseDocument(await response.json());
+        const installed = await this.replaceDocument(document);
+        return { ok: true, count: installed.entries.length, updatedAt: installed.updatedAt };
+      } catch (error) {
+        return { ok: false, error: syncErrorMessage(error) };
+      }
+    });
+  }
+
+  /** Commit a document that has already passed parseDocument validation. */
+  private async replaceDocument(document: PricingDocument): Promise<PricingDocument> {
+    await this.persist(document);
+    this.install(document);
+    return cloneDocument(document);
   }
 
   private install(document: PricingDocument): void {
@@ -210,4 +251,9 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function isMissing(error: unknown): boolean {
   return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
+
+function syncErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  return "Failed to sync model pricing";
 }

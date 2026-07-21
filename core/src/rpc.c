@@ -121,7 +121,7 @@ static int parse_job_limit(const owc_json *value, unsigned long maximum, unsigne
     *result=(unsigned long)number; return 1;
 }
 
-static int session_exec_policy(const char *id,const char *cwd,int *enabled,int *allow_network,int *mode,unsigned long *job_memory_mb,unsigned long *job_max_processes);
+static int session_exec_policy(const char *id,const char *cwd,int *enabled,int *allow_network,int *mode,const char *const **allow_paths,size_t *allow_path_count,unsigned long *job_memory_mb,unsigned long *job_max_processes);
 
 static int handle_exec_run(owc_rpc *rpc,const owc_json *id,const owc_json *params) {
     const char *command=owc_json_get_string(owc_json_object_get(params,"cmd"));
@@ -131,7 +131,7 @@ static int handle_exec_run(owc_rpc *rpc,const owc_json *id,const owc_json *param
     owc_exec_request request; owc_exec_result result; output_context context; int sandbox_enabled,allow_network,sandbox_mode; unsigned long job_memory_mb,job_max_processes;
     if(!params || params->type!=OWC_JSON_OBJECT || !command || !cwd || !exec_id || !session_id || !command[0] || !cwd[0] || !exec_id[0] || !session_id[0]) return reply_error(rpc,id,-32602,"exec.run requires non-empty string sessionId, execId, cmd, and cwd");
     memset(&request,0,sizeof(request)); context.rpc=rpc; context.exec_id=exec_id;
-    if(!session_exec_policy(session_id,cwd,&sandbox_enabled,&allow_network,&sandbox_mode,&job_memory_mb,&job_max_processes))return reply_error(rpc,id,-32002,"session cwd is not configured");
+    if(!session_exec_policy(session_id,cwd,&sandbox_enabled,&allow_network,&sandbox_mode,&request.allow_paths,&request.allow_path_count,&job_memory_mb,&job_max_processes))return reply_error(rpc,id,-32002,"session cwd is not configured");
     request.command=command; request.cwd=cwd; request.session_id=session_id;request.sandbox_enabled=sandbox_enabled;request.allow_network=allow_network;request.sandbox_mode=sandbox_mode;
     request.job_memory_mb=job_memory_mb; request.job_max_processes=job_max_processes;
     if(!parse_timeout(owc_json_object_get(params,"timeoutMs"),&request.timeout_ms)) return reply_error(rpc,id,-32602,"timeoutMs must be a positive integer");
@@ -146,7 +146,7 @@ static int handle_exec_run(owc_rpc *rpc,const owc_json *id,const owc_json *param
     }
 }
 
-typedef struct { char *session_id; char *cwd; char *deny_paths[16]; size_t deny_count; int sandbox_enabled; int allow_network; int sandbox_mode; unsigned long job_memory_mb; unsigned long job_max_processes; } session_config;
+typedef struct { char *session_id; char *cwd; char *deny_paths[16]; size_t deny_count; char *allow_paths[16]; size_t allow_count; int sandbox_enabled; int allow_network; int sandbox_mode; unsigned long job_memory_mb; unsigned long job_max_processes; } session_config;
 static session_config sessions[64];
 static size_t session_count=0;
 static char *copy_text(const char *value){size_t n=strlen(value)+1;char *copy=(char*)malloc(n);if(copy)memcpy(copy,value,n);return copy;}
@@ -157,7 +157,7 @@ static int policy_path_equal(const char *left,const char *right){while(*left&&*r
  if(a=='\\')a='/';if(b=='\\')b='/';a=(char)tolower((unsigned char)a);b=(char)tolower((unsigned char)b);
 #endif
  if(a!=b)return 0;}return *left=='\0'&&*right=='\0';}
-static int session_exec_policy(const char *id,const char *cwd,int *enabled,int *allow_network,int *mode,unsigned long *job_memory_mb,unsigned long *job_max_processes){session_config *session=session_find(id);if(!session||!policy_path_equal(session->cwd,cwd))return 0;*enabled=session->sandbox_enabled;*allow_network=session->allow_network;*mode=session->sandbox_mode;*job_memory_mb=session->job_memory_mb;*job_max_processes=session->job_max_processes;return 1;}
+static int session_exec_policy(const char *id,const char *cwd,int *enabled,int *allow_network,int *mode,const char *const **allow_paths,size_t *allow_path_count,unsigned long *job_memory_mb,unsigned long *job_max_processes){session_config *session=session_find(id);if(!session||!policy_path_equal(session->cwd,cwd))return 0;*enabled=session->sandbox_enabled;*allow_network=session->allow_network;*mode=session->sandbox_mode;*allow_paths=(const char *const *)session->allow_paths;*allow_path_count=session->allow_count;*job_memory_mb=session->job_memory_mb;*job_max_processes=session->job_max_processes;return 1;}
 static int policy_path_within(const char *path,const char *root){while(*path&&*root){char a=*path++,b=*root++;
 #ifdef _WIN32
  if(a=='\\')a='/';if(b=='\\')b='/';a=(char)tolower((unsigned char)a);b=(char)tolower((unsigned char)b);
@@ -166,8 +166,10 @@ static int policy_path_within(const char *path,const char *root){while(*path&&*r
 static int session_denied(const char *id,const char *path){session_config *session=session_find(id);size_t i,n;char *joined;if(!session)return 1;n=strlen(session->cwd)+strlen(path)+2;joined=(char*)malloc(n);if(!joined)return 1;(void)snprintf(joined,n,"%s/%s",session->cwd,path);for(i=0;i<session->deny_count;i++)if(policy_path_within(path,session->deny_paths[i])||policy_path_within(joined,session->deny_paths[i])){free(joined);return 1;}free(joined);return 0;}
 static int configure_session(const char *id,const char *cwd){size_t i;char *root=copy_text(cwd);if(!root)return 0;for(i=0;i<session_count;i++)if(!strcmp(sessions[i].session_id,id)){free(sessions[i].cwd);sessions[i].cwd=root;return 1;}if(session_count>=sizeof(sessions)/sizeof(sessions[0])){free(root);return 0;}memset(&sessions[session_count],0,sizeof(sessions[0]));sessions[session_count].session_id=copy_text(id);if(!sessions[session_count].session_id){free(root);return 0;}sessions[session_count].cwd=root;session_count++;return 1;}
 static void clear_denies(session_config *session){size_t i;for(i=0;i<session->deny_count;i++)free(session->deny_paths[i]);session->deny_count=0;}
-static int configure_policy(const char *id,const owc_json *sandbox){session_config *session=session_find(id);const owc_json *denies,*enabled,*network,*mode,*job_memory,*job_processes;size_t i;if(!session)return 0;clear_denies(session);session->sandbox_enabled=1;session->allow_network=1;session->sandbox_mode=(int)OWC_SANDBOX_MODE_APPCONTAINER;session->job_memory_mb=OWC_JOB_DEFAULT_MEMORY_MB;session->job_max_processes=OWC_JOB_DEFAULT_MAX_PROCESSES;if(!sandbox)return 1;if(sandbox->type!=OWC_JSON_OBJECT)return 0;enabled=owc_json_object_get(sandbox,"enabled");network=owc_json_object_get(sandbox,"network");mode=owc_json_object_get(sandbox,"mode");if(enabled){if(enabled->type!=OWC_JSON_BOOL)return 0;session->sandbox_enabled=enabled->value.boolean;}if(network){const char *value=owc_json_get_string(network);if(!value||(strcmp(value,"allow")&&strcmp(value,"deny")))return 0;session->allow_network=!strcmp(value,"allow");}if(mode){const char *value=owc_json_get_string(mode);if(!value)return 0;if(!strcmp(value,"appcontainer"))session->sandbox_mode=(int)OWC_SANDBOX_MODE_APPCONTAINER;else if(!strcmp(value,"jobobject"))session->sandbox_mode=(int)OWC_SANDBOX_MODE_JOBOBJECT;else if(!strcmp(value,"off"))session->sandbox_mode=(int)OWC_SANDBOX_MODE_OFF;else return 0;if(session->sandbox_mode==(int)OWC_SANDBOX_MODE_OFF)session->sandbox_enabled=0;}job_memory=owc_json_object_get(sandbox,"jobMemoryMB");if(job_memory&&!parse_job_limit(job_memory,1048576ul,&session->job_memory_mb))return 0;job_processes=owc_json_object_get(sandbox,"jobMaxProcesses");if(job_processes&&!parse_job_limit(job_processes,4096ul,&session->job_max_processes))return 0;denies=owc_json_object_get(sandbox,"denyPaths");if(!denies)return 1;if(denies->type!=OWC_JSON_ARRAY||denies->value.children.count>16)return 0;for(i=0;i<denies->value.children.count;i++){const char *value=owc_json_get_string(denies->value.children.items[i]);if(!value)return 0;session->deny_paths[session->deny_count]=copy_text(value);if(!session->deny_paths[session->deny_count])return 0;session->deny_count++;}return 1;}
-static int cleanup_session(const char *id){size_t i;for(i=0;i<session_count;i++)if(!strcmp(sessions[i].session_id,id)){clear_denies(&sessions[i]);free(sessions[i].session_id);free(sessions[i].cwd);sessions[i]=sessions[session_count-1];session_count--;return 1;}return 0;}
+static void clear_allows(session_config *session){size_t i;for(i=0;i<session->allow_count;i++)free(session->allow_paths[i]);session->allow_count=0;}
+static int copy_string_array(const owc_json *array,char **values,size_t *count){size_t i;if(!array)return 1;if(array->type!=OWC_JSON_ARRAY||array->value.children.count>16)return 0;for(i=0;i<array->value.children.count;i++){const char *value=owc_json_get_string(array->value.children.items[i]);if(!value||!value[0])return 0;values[*count]=copy_text(value);if(!values[*count])return 0;(*count)++;}return 1;}
+static int configure_policy(const char *id,const owc_json *sandbox){session_config *session=session_find(id);const owc_json *denies,*allows,*enabled,*network,*mode,*job_memory,*job_processes;if(!session)return 0;clear_denies(session);clear_allows(session);session->sandbox_enabled=1;session->allow_network=1;session->sandbox_mode=(int)OWC_SANDBOX_MODE_APPCONTAINER;session->job_memory_mb=OWC_JOB_DEFAULT_MEMORY_MB;session->job_max_processes=OWC_JOB_DEFAULT_MAX_PROCESSES;if(!sandbox)return 1;if(sandbox->type!=OWC_JSON_OBJECT)return 0;enabled=owc_json_object_get(sandbox,"enabled");network=owc_json_object_get(sandbox,"network");mode=owc_json_object_get(sandbox,"mode");if(enabled){if(enabled->type!=OWC_JSON_BOOL)return 0;session->sandbox_enabled=enabled->value.boolean;}if(network){const char *value=owc_json_get_string(network);if(!value||(strcmp(value,"allow")&&strcmp(value,"deny")))return 0;session->allow_network=!strcmp(value,"allow");}if(mode){const char *value=owc_json_get_string(mode);if(!value)return 0;if(!strcmp(value,"appcontainer"))session->sandbox_mode=(int)OWC_SANDBOX_MODE_APPCONTAINER;else if(!strcmp(value,"jobobject"))session->sandbox_mode=(int)OWC_SANDBOX_MODE_JOBOBJECT;else if(!strcmp(value,"off"))session->sandbox_mode=(int)OWC_SANDBOX_MODE_OFF;else return 0;if(session->sandbox_mode==(int)OWC_SANDBOX_MODE_OFF)session->sandbox_enabled=0;}job_memory=owc_json_object_get(sandbox,"jobMemoryMB");if(job_memory&&!parse_job_limit(job_memory,1048576ul,&session->job_memory_mb))return 0;job_processes=owc_json_object_get(sandbox,"jobMaxProcesses");if(job_processes&&!parse_job_limit(job_processes,4096ul,&session->job_max_processes))return 0;allows=owc_json_object_get(sandbox,"allowPaths");denies=owc_json_object_get(sandbox,"denyPaths");if(!copy_string_array(allows,session->allow_paths,&session->allow_count)||!copy_string_array(denies,session->deny_paths,&session->deny_count)){clear_allows(session);clear_denies(session);return 0;}return 1;}
+static int cleanup_session(const char *id){size_t i;for(i=0;i<session_count;i++)if(!strcmp(sessions[i].session_id,id)){clear_denies(&sessions[i]);clear_allows(&sessions[i]);free(sessions[i].session_id);free(sessions[i].cwd);sessions[i]=sessions[session_count-1];session_count--;return 1;}return 0;}
 
 static int reply_session_capability(owc_rpc *rpc,const owc_json *id,const char *sid){session_config *session=session_find(sid);char reason[192],detail[192],result[640];char *escaped,*escaped_detail=NULL;owc_sandbox_status status;int ok;if(!session)return reply_error(rpc,id,-32000,"session was not configured");detail[0]='\0';if(!session->sandbox_enabled){status=OWC_SANDBOX_ADVISORY;(void)snprintf(reason,sizeof(reason),"sandbox disabled by session policy");}else if(session->sandbox_mode==(int)OWC_SANDBOX_MODE_JOBOBJECT){status=OWC_SANDBOX_PARTIAL;(void)snprintf(reason,sizeof(reason),"Job Object compatibility mode requested by session policy");(void)snprintf(detail,sizeof(detail),"Job Object limits active processes to %lu and committed memory to %lu MB; no filesystem or network isolation (requires AppContainer)",session->job_max_processes,session->job_memory_mb);}else{
 #ifdef _WIN32
@@ -182,12 +184,80 @@ static int allowed_keys(const owc_json *p,const char *const *keys,size_t count) 
 static int json_size(const owc_json*v,size_t *n){double d;if(!v||v->type!=OWC_JSON_NUMBER)return 0;d=v->value.number;if(d<0||d>(double)SIZE_MAX||d!=(double)(size_t)d)return 0;*n=(size_t)d;return 1;}
 static int json_bool(const owc_json *v,int fallback,int *result){if(!v){*result=fallback;return 1;}if(v->type!=OWC_JSON_BOOL)return 0;*result=v->value.boolean;return 1;}
 static const char *type_name(owc_fs_type t){return t==OWC_FS_TYPE_FILE?"file":t==OWC_FS_TYPE_DIRECTORY?"directory":"other";}
+
+static int base64_digit(unsigned char value) {
+    if(value>='A'&&value<='Z') return value-'A';
+    if(value>='a'&&value<='z') return value-'a'+26;
+    if(value>='0'&&value<='9') return value-'0'+52;
+    if(value=='+') return 62;
+    if(value=='/') return 63;
+    return -1;
+}
+
+/* Keep binary ingress deliberately narrow: strict conventional base64, a
+ * bounded decoded payload, and no implicit text conversion. The server
+ * validates PDF magic before it calls this RPC; core repeats the base64 and
+ * size validation because the RPC boundary is independently reachable. */
+static int base64_decode_bounded(const char *encoded,unsigned char **result,size_t *result_length) {
+    size_t input_length,padding=0,output_length,index,at=0;
+    unsigned char *decoded=NULL;
+    if(!encoded||!result||!result_length) return 0;
+    *result=NULL;*result_length=0;
+    input_length=strlen(encoded);
+    if(!input_length||input_length%4u||input_length>4u*((OWC_FS_MAX_BINARY_FILE_SIZE+2u)/3u)) return 0;
+    if(encoded[input_length-1]=='=') {
+        padding=1;
+        if(input_length>=2u&&encoded[input_length-2]=='=') padding=2;
+    }
+    output_length=input_length/4u*3u-padding;
+    if(!output_length||output_length>OWC_FS_MAX_BINARY_FILE_SIZE) return 0;
+    decoded=(unsigned char*)malloc(output_length);
+    if(!decoded) return 0;
+    for(index=0;index<input_length;index+=4u) {
+        int a=base64_digit((unsigned char)encoded[index]);
+        int b=base64_digit((unsigned char)encoded[index+1]);
+        int c,d;
+        int final_group=index+4u==input_length;
+        if(a<0||b<0) goto invalid;
+        if(encoded[index+2]=='=') {
+            if(!final_group||encoded[index+3]!='=') goto invalid;
+            c=0;d=0;
+            if((b&15)!=0) goto invalid;
+        } else {
+            c=base64_digit((unsigned char)encoded[index+2]);
+            if(c<0) goto invalid;
+            if(encoded[index+3]=='=') {
+                if(!final_group||(c&3)!=0) goto invalid;
+                d=0;
+            } else {
+                d=base64_digit((unsigned char)encoded[index+3]);
+                if(d<0) goto invalid;
+            }
+        }
+        if(at>=output_length) goto invalid;
+        decoded[at++]=(unsigned char)((a<<2)|(b>>4));
+        if(encoded[index+2]!='=') {
+            if(at>=output_length) goto invalid;
+            decoded[at++]=(unsigned char)((b<<4)|(c>>2));
+            if(encoded[index+3]!='=') {
+                if(at>=output_length) goto invalid;
+                decoded[at++]=(unsigned char)((c<<6)|d);
+            }
+        }
+    }
+    if(at!=output_length) goto invalid;
+    *result=decoded;*result_length=output_length;return 1;
+invalid:
+    free(decoded);return 0;
+}
+
 static int handle_fs(owc_rpc *rpc,const owc_json *id,const char *method,const owc_json *p){
     const char *cwd,*path,*content,*old,*replacement,*session_id; owc_fs_error e; char *a,*b; size_t off=0,lim=OWC_FS_DEFAULT_READ_LINES,i,matches=0; int option;
-    static const char *rp[]={"sessionId","path","offset","limit"},*wp[]={"sessionId","path","content","createDirs"},*ep[]={"sessionId","path","oldText","newText","replaceAll"},*searchp[]={"sessionId","path","pattern"},*sp[]={"sessionId","path"};
+    static const char *rp[]={"sessionId","path","offset","limit"},*wp[]={"sessionId","path","content","createDirs"},*bp[]={"sessionId","path","data","createDirs"},*ep[]={"sessionId","path","oldText","newText","replaceAll"},*searchp[]={"sessionId","path","pattern"},*sp[]={"sessionId","path"};
     session_id=owc_json_get_string(owc_json_object_get(p,"sessionId"));path=owc_json_get_string(owc_json_object_get(p,"path"));cwd=session_id?session_root(session_id):NULL;if(!cwd||!path)return reply_error(rpc,id,-32602,"sessionId must identify a configured session and path must be a string");if(session_denied(session_id,path))return reply_error(rpc,id,-32002,"path is denied by session policy");
     if(!strcmp(method,"fs.read")){owc_fs_read_result r;const owc_json *value;if(!allowed_keys(p,rp,4))return reply_error(rpc,id,-32602,"fs.read contains unknown fields");value=owc_json_object_get(p,"offset");if(value&&!json_size(value,&off))return reply_error(rpc,id,-32602,"offset must be a non-negative integer");value=owc_json_object_get(p,"limit");if(value&&(!json_size(value,&lim)||!lim))return reply_error(rpc,id,-32602,"limit must be a positive integer");e=owc_fs_read(cwd,path,off,lim,&r);if(e)return reply_error(rpc,id,fs_code(e),owc_fs_error_message(e));a=owc_json_escape_string(r.content);if(!a){owc_fs_read_free(&r);return reply_error(rpc,id,-32000,"out of memory");}i=(size_t)snprintf(NULL,0,"{\"content\":%s,\"totalLines\":%zu,\"encoding\":\"utf-8\",\"truncated\":%s}",a,r.total_lines,r.truncated?"true":"false");b=(char*)malloc(i+1);if(b)snprintf(b,i+1,"{\"content\":%s,\"totalLines\":%zu,\"encoding\":\"utf-8\",\"truncated\":%s}",a,r.total_lines,r.truncated?"true":"false");free(a);owc_fs_read_free(&r);if(!b)return reply_error(rpc,id,-32000,"out of memory");i=reply_result(rpc,id,b);free(b);return (int)i;}
     if(!strcmp(method,"fs.write")){if(!allowed_keys(p,wp,4)||(content=owc_json_get_string(owc_json_object_get(p,"content")))==NULL||!json_bool(owc_json_object_get(p,"createDirs"),0,&option))return reply_error(rpc,id,-32602,"fs.write requires string cwd, path, content, and optional boolean createDirs");e=owc_fs_write(cwd,path,content,strlen(content),option);if(e)return reply_error(rpc,id,fs_code(e),owc_fs_error_message(e));return reply_result(rpc,id,"{\"ok\":true}");}
+    if(!strcmp(method,"fs.writeBase64")){const char *encoded;unsigned char *decoded=NULL;size_t decoded_length=0;if(!allowed_keys(p,bp,4)||(encoded=owc_json_get_string(owc_json_object_get(p,"data")))==NULL||!json_bool(owc_json_object_get(p,"createDirs"),0,&option))return reply_error(rpc,id,-32602,"fs.writeBase64 requires string sessionId, path, data, and optional boolean createDirs");if(!base64_decode_bounded(encoded,&decoded,&decoded_length))return reply_error(rpc,id,-32602,"fs.writeBase64 data must be canonical base64 no larger than 20 MiB");e=owc_fs_write_binary(cwd,path,decoded,decoded_length,option);free(decoded);if(e)return reply_error(rpc,id,fs_code(e),owc_fs_error_message(e));return reply_result(rpc,id,"{\"ok\":true}");}
     if(!strcmp(method,"fs.edit")){if(!allowed_keys(p,ep,5)||(old=owc_json_get_string(owc_json_object_get(p,"oldText")))==NULL||(replacement=owc_json_get_string(owc_json_object_get(p,"newText")))==NULL||!json_bool(owc_json_object_get(p,"replaceAll"),0,&option))return reply_error(rpc,id,-32602,"fs.edit requires string cwd, path, oldText, newText, and optional boolean replaceAll");e=owc_fs_edit(cwd,path,old,strlen(old),replacement,strlen(replacement),option,&matches);if(e)return reply_error(rpc,id,fs_code(e),owc_fs_error_message(e));b=(char*)malloc(64);if(!b)return reply_error(rpc,id,-32000,"out of memory");snprintf(b,64,"{\"matches\":%zu}",matches);i=reply_result(rpc,id,b);free(b);return (int)i;}
     if(!strcmp(method,"fs.glob")){owc_fs_glob_result r;const char *pattern=owc_json_get_string(owc_json_object_get(p,"pattern"));if(!allowed_keys(p,searchp,3)||!pattern)return reply_error(rpc,id,-32602,"fs.glob requires string cwd, path, and pattern");e=owc_fs_glob(cwd,path,pattern,&r);if(e)return reply_error(rpc,id,fs_code(e),owc_fs_error_message(e));b=(char*)malloc(12);if(!b){owc_fs_glob_free(&r);return reply_error(rpc,id,-32000,"out of memory");}strcpy(b,"{\"paths\":[");for(i=0;i<r.count;i++){char*q=owc_json_escape_string(r.paths[i]);size_t oldn=strlen(b),add;if(!q){free(b);owc_fs_glob_free(&r);return reply_error(rpc,id,-32000,"out of memory");}add=strlen(q)+(i?1u:0u);{char *grown=(char*)realloc(b,oldn+add+32);if(!grown){free(q);free(b);owc_fs_glob_free(&r);return reply_error(rpc,id,-32000,"out of memory");}b=grown;}snprintf(b+oldn,add+1,"%s%s",i?",":"",q);free(q);}i=strlen(b);snprintf(b+i,32,"],\"truncated\":%s}",r.truncated?"true":"false");owc_fs_glob_free(&r);i=reply_result(rpc,id,b);free(b);return (int)i;}
     if(!strcmp(method,"fs.grep")){owc_fs_grep_result r;const char *pattern=owc_json_get_string(owc_json_object_get(p,"pattern"));if(!allowed_keys(p,searchp,3)||!pattern)return reply_error(rpc,id,-32602,"fs.grep requires string cwd, path, and pattern");e=owc_fs_grep(cwd,path,pattern,&r);if(e)return reply_error(rpc,id,fs_code(e),owc_fs_error_message(e));b=(char*)malloc(14);if(!b){owc_fs_grep_free(&r);return reply_error(rpc,id,-32000,"out of memory");}strcpy(b,"{\"matches\":[");for(i=0;i<r.count;i++){char*q=owc_json_escape_string(r.matches[i].path),*t=owc_json_escape_string(r.matches[i].text);size_t oldn=strlen(b),add;if(!q||!t){free(q);free(t);free(b);owc_fs_grep_free(&r);return reply_error(rpc,id,-32000,"out of memory");}add=(size_t)snprintf(NULL,0,"%s{\"path\":%s,\"line\":%zu,\"text\":%s}",i?",":"",q,r.matches[i].line,t);{char *grown=(char*)realloc(b,oldn+add+32);if(!grown){free(q);free(t);free(b);owc_fs_grep_free(&r);return reply_error(rpc,id,-32000,"out of memory");}b=grown;}snprintf(b+oldn,add+1,"%s{\"path\":%s,\"line\":%zu,\"text\":%s}",i?",":"",q,r.matches[i].line,t);free(q);free(t);}i=strlen(b);snprintf(b+i,32,"],\"truncated\":%s}",r.truncated?"true":"false");owc_fs_grep_free(&r);i=reply_result(rpc,id,b);free(b);return (int)i;}
@@ -211,12 +281,12 @@ int owc_rpc_dispatch(owc_rpc *rpc, const char *body, size_t length) {
 #else
         const char *platform="linux";
 #endif
-        char reason[192],result[512];char *escaped;owc_sandbox_status capability=owc_sandbox_probe(reason,sizeof(reason));escaped=owc_json_escape_string(reason);if(!escaped)(void)reply_error(rpc,id,-32000,"failed to encode sandbox capability");else{(void)snprintf(result,sizeof(result),"{\"version\":\"0.1.0\",\"platform\":\"%s\",\"sandboxCapability\":\"%s\",\"sandboxReason\":%s}",platform,owc_sandbox_status_name(capability),escaped);free(escaped);(void)reply_result(rpc,id,result);}
+        char reason[192],result[512];char *escaped;owc_sandbox_status capability=owc_sandbox_probe(reason,sizeof(reason));escaped=owc_json_escape_string(reason);if(!escaped)(void)reply_error(rpc,id,-32000,"failed to encode sandbox capability");else{(void)snprintf(result,sizeof(result),"{\"version\":\"0.2.0\",\"platform\":\"%s\",\"sandboxCapability\":\"%s\",\"sandboxReason\":%s}",platform,owc_sandbox_status_name(capability),escaped);free(escaped);(void)reply_result(rpc,id,result);}
     } else if(strcmp(method,"core.shutdown")==0) { (void)reply_result(rpc,id,"{\"ok\":true}"); rpc->shutting_down=1; }
     else if(strcmp(method,"session.configure")==0) { const char *sid=owc_json_get_string(owc_json_object_get(params,"sessionId")),*cwd=owc_json_get_string(owc_json_object_get(params,"cwd"));if(!sid||!sid[0]||!cwd||!cwd[0])(void)reply_error(rpc,id,-32602,"session.configure requires sessionId and cwd");else if(!configure_session(sid,cwd)||!configure_policy(sid,owc_json_object_get(params,"sandbox")))(void)reply_error(rpc,id,-32000,"failed to configure session");else(void)reply_session_capability(rpc,id,sid); }
     else if(strcmp(method,"session.cleanup")==0) { const char *sid=owc_json_get_string(owc_json_object_get(params,"sessionId"));if(!sid||!sid[0])(void)reply_error(rpc,id,-32602,"session.cleanup requires sessionId");else{(void)cleanup_session(sid);(void)reply_result(rpc,id,"{\"ok\":true}");} }
     else if(strcmp(method,"exec.run")==0) (void)handle_exec_run(rpc,id,params);
-    else if(strcmp(method,"fs.read")==0 || strcmp(method,"fs.write")==0 || strcmp(method,"fs.edit")==0 || strcmp(method,"fs.stat")==0 || strcmp(method,"fs.list")==0 || strcmp(method,"fs.glob")==0 || strcmp(method,"fs.grep")==0) (void)handle_fs(rpc,id,method,params);
+    else if(strcmp(method,"fs.read")==0 || strcmp(method,"fs.write")==0 || strcmp(method,"fs.writeBase64")==0 || strcmp(method,"fs.edit")==0 || strcmp(method,"fs.stat")==0 || strcmp(method,"fs.list")==0 || strcmp(method,"fs.glob")==0 || strcmp(method,"fs.grep")==0) (void)handle_fs(rpc,id,method,params);
     else (void)reply_error(rpc,id,-32601,"method not found");
     rpc->suppress_responses=0; owc_json_free(root); return 1;
 }

@@ -21,6 +21,10 @@ typedef struct {
     int sandbox_enabled;
     int allow_network;
     int sandbox_mode; /* owc_sandbox_mode; only meaningful when sandbox_enabled */
+    /* Additional configured AppContainer write roots. The platform layer adds
+       cwd, normalizes the combined list, and removes duplicates. */
+    const char *const *allow_paths;
+    size_t allow_path_count;
     unsigned long job_memory_mb;     /* job-wide committed memory limit; 0 = default */
     unsigned long job_max_processes; /* active process limit; 0 = default */
     int timeout_ms;

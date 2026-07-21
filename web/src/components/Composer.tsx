@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactElement } from "react";
-import type { ModelProfile, SessionDetail, SkillInfo } from "../lib/contracts";
+import type { ExtensionInfo, ModelProfile, SessionDetail, SkillInfo } from "../lib/contracts";
 import { api } from "../lib/api";
 import { extractAttachmentPaths } from "../lib/attachments";
+import type { PdfRenderOptions } from "../lib/pdf-to-images";
 import type { SendKey } from "../lib/prefs";
 import { Icon } from "./Icon";
+import { ModelCapabilityBadges } from "./ModelCapabilityBadges";
 import { useI18n } from "../i18n";
 
 export interface PendingImage {
@@ -14,7 +16,59 @@ export interface PendingImage {
 
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+// Keep this client-side guard aligned with server/src/app.ts. It prevents an
+// oversized PDF from being fully base64-encoded in the browser only to be
+// rejected by the upload route.
+const MAX_PDF_UPLOAD_BYTES = 20 * 1024 * 1024;
 const MAX_ATTACHMENTS = 4;
+
+type PdfToImageExtension = Pick<ExtensionInfo, "enabled" | "config">;
+type PdfToImageStatus = "loading" | "ready" | "unavailable";
+type NoticeKind = "info" | "error";
+type PdfProgress =
+  | { stage: "uploading"; fileName: string }
+  | { stage: "converting"; completed: number; total: number };
+
+interface AttachmentTask {
+  sessionId: string;
+  generation: number;
+}
+
+function isPdf(file: File): boolean {
+  return file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+}
+
+function isImage(file: File): boolean {
+  return file.type.startsWith("image/");
+}
+
+function positiveInteger(value: unknown, max = Number.MAX_SAFE_INTEGER): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? Math.min(value, max) : undefined;
+}
+
+function pdfRenderOptions(config: Record<string, unknown>, room: number): PdfRenderOptions {
+  const configuredPages = positiveInteger(config.maxPages);
+  // 扩展配置来自可编辑 JSON；页数受附件槽位限制，画布参数再加保守上限。
+  const dpi = positiveInteger(config.dpi, 300);
+  const maxDimension = positiveInteger(config.maxDimension, 2048);
+  return {
+    maxPages: Math.min(room, configuredPages ?? room),
+    ...(dpi === undefined ? {} : { dpi }),
+    ...(maxDimension === undefined ? {} : { maxDimension }),
+  };
+}
+
+function readImage(file: File): Promise<PendingImage> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const previewUrl = String(reader.result);
+      resolve({ mediaType: file.type, data: previewUrl.slice(previewUrl.indexOf(",") + 1), previewUrl });
+    };
+    reader.onerror = () => reject(reader.error ?? new Error("Unable to read image"));
+    reader.readAsDataURL(file);
+  });
+}
 
 /** 服务端内置斜杠命令（app.ts 消息路由匹配），与技能/自定义命令一起参与补全 */
 type Suggestion = SkillInfo & { builtin?: boolean };
@@ -22,10 +76,17 @@ type Suggestion = SkillInfo & { builtin?: boolean };
 /** 思考模式下拉的中文标签；value 保持英文枚举不变 */
 const THINKING_LABEL: Record<string, [string, string]> = { adaptive: ["自适应", "Adaptive"], enabled: ["开启", "Enabled"], disabled: ["关闭", "Disabled"] };
 
-export function Composer({ current, model, models, draft, setDraft, onSend, onConfig, running, sendKey, skills, attachments, setAttachments, supportsImages, onNotice, sendPending = false }: {
+export function Composer({ current, model, models, providers = [], pdfToImageExtension, pdfToImageStatus = "ready", imageCapabilitiesReady = true, draft, setDraft, onSend, onConfig, running, sendKey, skills, attachments, setAttachments, supportsImages, onNotice, sendPending = false }: {
   current: SessionDetail;
   model?: ModelProfile;
   models: ModelProfile[];
+  providers?: string[];
+  /** 官方 PDF 转图片扩展的持久化启用状态及渲染配置。 */
+  pdfToImageExtension?: PdfToImageExtension;
+  /** 扩展目录尚未返回时，不把未知状态误判成「已关闭」。 */
+  pdfToImageStatus?: PdfToImageStatus;
+  /** 模型目录尚未返回时，避免把未知图片能力误判成不支持。 */
+  imageCapabilitiesReady?: boolean;
   draft: string;
   setDraft(value: string): void;
   onSend(): void;
@@ -38,12 +99,63 @@ export function Composer({ current, model, models, draft, setDraft, onSend, onCo
   attachments: PendingImage[];
   setAttachments(value: PendingImage[] | ((prev: PendingImage[]) => PendingImage[])): void;
   supportsImages: boolean;
-  onNotice(message: string): void;
+  onNotice(message: string, kind?: NoticeKind): void;
 }): ReactElement {
   const { t } = useI18n();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const draftRef = useRef(draft);
+  const attachmentsRef = useRef(attachments);
+  const attachmentQueueRef = useRef(Promise.resolve());
+  const pdfJobsRef = useRef(0);
+  const pdfJobsTaskRef = useRef<AttachmentTask | undefined>(undefined);
+  // Tasks outlive a render. Bind each one to this identity so an upload or a
+  // PDF.js render started in session A can never update the global draft or
+  // image attachments after the user switches to session B.
+  const taskSessionRef = useRef<AttachmentTask>({ sessionId: current.id, generation: 0 });
+  if (taskSessionRef.current.sessionId !== current.id) {
+    taskSessionRef.current = { sessionId: current.id, generation: taskSessionRef.current.generation + 1 };
+    attachmentQueueRef.current = Promise.resolve();
+    pdfJobsRef.current = 0;
+    pdfJobsTaskRef.current = undefined;
+    // App clears the shared attachment state in an effect. Clear the local
+    // reservation synchronously so a newly selected session cannot inherit it.
+    attachmentsRef.current = [];
+  }
   const [dismissed, setDismissed] = useState(false);
   const [active, setActive] = useState(0);
+  const [pdfJobs, setPdfJobs] = useState(0);
+  const [pdfProgress, setPdfProgress] = useState<PdfProgress | null>(null);
+  const pdfToImageEnabled = pdfToImageExtension?.enabled === true;
+
+  useEffect(() => { draftRef.current = draft; }, [draft]);
+  useEffect(() => { attachmentsRef.current = attachments; }, [attachments]);
+  useEffect(() => {
+    attachmentQueueRef.current = Promise.resolve();
+    pdfJobsRef.current = 0;
+    pdfJobsTaskRef.current = undefined;
+    setPdfJobs(0);
+    setPdfProgress(null);
+  }, [current.id]);
+  const isCurrentTask = useCallback((task: AttachmentTask): boolean => (
+    taskSessionRef.current.sessionId === task.sessionId
+    && taskSessionRef.current.generation === task.generation
+  ), []);
+  const currentTask = (): AttachmentTask => ({ ...taskSessionRef.current });
+  const notifyTask = (task: AttachmentTask, message: string, kind: NoticeKind = "info"): void => {
+    if (isCurrentTask(task)) onNotice(message, kind);
+  };
+  const updatePdfProgress = (task: AttachmentTask, progress: PdfProgress): void => {
+    if (isCurrentTask(task)) setPdfProgress(progress);
+  };
+  // Ref identity flips synchronously during a session-switch render, so the
+  // new session is never visually or functionally locked while effects reset
+  // the old task's state on the following commit.
+  const processingPdf = pdfJobs > 0 && pdfJobsTaskRef.current !== undefined && isCurrentTask(pdfJobsTaskRef.current);
+  const writeDraft = useCallback((value: string): void => {
+    draftRef.current = value;
+    setDraft(value);
+  }, [setDraft]);
   // 随内容自动增高，上限由 CSS max-height 控制
   useEffect(() => {
     const element = textareaRef.current;
@@ -135,7 +247,7 @@ const mentionHasMatches = mentionMatches.length > 0;
     const startIdx = before.length - match[0].length;
     const replacement = `@${filePath} `;
     const next = draft.slice(0, startIdx) + replacement + after;
-    setDraft(next);
+    writeDraft(next);
     setMentionPartial(null);
     setMentionMatches([]);
     setMentionDismissed(false);
@@ -148,7 +260,7 @@ const mentionHasMatches = mentionMatches.length > 0;
         node.focus();
       }
     });
-  }, [draft, setDraft]);
+  }, [draft, writeDraft]);
 
   const removeMention = (filePath: string): void => {
     const token = `@${filePath}`;
@@ -156,7 +268,7 @@ const mentionHasMatches = mentionMatches.length > 0;
     if (idx < 0) return;
     let end = idx + token.length;
     if (draft[end] === " ") end += 1;
-    setDraft(draft.slice(0, idx) + draft.slice(end));
+    writeDraft(draft.slice(0, idx) + draft.slice(end));
   };
 
   const mentionedPaths = extractAttachmentPaths(draft);
@@ -166,60 +278,242 @@ const mentionHasMatches = mentionMatches.length > 0;
   };
 
   const pick = (skill: SkillInfo): void => {
-    setDraft(`/${skill.name} `);
+    writeDraft(`/${skill.name} `);
     textareaRef.current?.focus();
   };
 
-  const addFiles = (files: File[]): void => {
-    const images = files.filter((file) => file.type.startsWith("image/"));
-    if (images.length === 0) return;
-    if (!supportsImages) {
-      onNotice(t("当前模型不支持图片输入", "The current model does not support image input"));
-      return;
-    }
-    const room = MAX_ATTACHMENTS - attachments.length;
-    if (room <= 0) {
-      onNotice(t(`最多附带 ${MAX_ATTACHMENTS} 张图片`, `You can attach up to ${MAX_ATTACHMENTS} images`));
-      return;
-    }
-    for (const file of images.slice(0, room)) {
-      if (!IMAGE_TYPES.has(file.type)) {
-        onNotice(t(`仅支持 png/jpeg/webp/gif 图片（${file.type || "未知类型"}）`, `Only PNG, JPEG, WebP, and GIF images are supported (${file.type || "unknown type"})`));
-        continue;
+  const appendAttachments = (images: PendingImage[], task: AttachmentTask): number => {
+    if (!isCurrentTask(task)) return 0;
+    const room = Math.max(0, MAX_ATTACHMENTS - attachmentsRef.current.length);
+    const accepted = images.slice(0, room);
+    if (accepted.length === 0) return 0;
+    // 先保留槽位，避免 PDF 和普通图片的异步读取互相超出上限。
+    attachmentsRef.current = [...attachmentsRef.current, ...accepted];
+    setAttachments((prev) => {
+      // React may flush this state updater after a session switch. Returning
+      // the new session's previous value prevents a stale task from leaking
+      // an image across sessions.
+      if (!isCurrentTask(task)) {
+        attachmentsRef.current = prev;
+        return prev;
       }
-      if (file.size > MAX_IMAGE_BYTES) {
-        onNotice(t(`图片「${file.name || "剪贴板图片"}」超过 5MB 限制`, `Image “${file.name || "clipboard image"}” exceeds the 5 MB limit`));
-        continue;
+      const next = accepted.slice(0, Math.max(0, MAX_ATTACHMENTS - prev.length));
+      attachmentsRef.current = [...prev, ...next];
+      return next.length > 0 ? [...prev, ...next] : prev;
+    });
+    return accepted.length;
+  };
+
+  const remainingAttachmentSlots = (task: AttachmentTask): number => (
+    isCurrentTask(task) ? Math.max(0, MAX_ATTACHMENTS - attachmentsRef.current.length) : 0
+  );
+
+  const appendUploadedPdfReference = (path: string, task: AttachmentTask): boolean => {
+    if (!isCurrentTask(task)) return false;
+    const currentDraft = draftRef.current;
+    const separator = currentDraft && !/\s$/.test(currentDraft) ? " " : "";
+    const inserted = `${separator}[PDF path: ${path}]`;
+    const next = `${currentDraft}${inserted}`;
+    writeDraft(next);
+    updateMentionFromValue(next, next.length, mentionDismissed);
+    requestAnimationFrame(() => {
+      if (!isCurrentTask(task)) return;
+      const node = textareaRef.current;
+      if (node) {
+        node.selectionStart = next.length;
+        node.selectionEnd = next.length;
+        node.focus();
       }
-      const mediaType = file.type;
-      const reader = new FileReader();
-      reader.onload = () => {
-        const url = String(reader.result);
-        const data = url.slice(url.indexOf(",") + 1);
-        setAttachments((prev) => (prev.length >= MAX_ATTACHMENTS ? prev : [...prev, { mediaType, data, previewUrl: url }]));
-      };
-      reader.readAsDataURL(file);
+    });
+    return true;
+  };
+
+  const convertPdf = async (file: File, path: string, room: number, task: AttachmentTask): Promise<void> => {
+    updatePdfProgress(task, { stage: "converting", completed: 0, total: room });
+    try {
+      // 仅在官方扩展启用且用户实际添加 PDF 时加载 PDF.js/worker。
+      const { renderPdfToImages } = await import("../lib/pdf-to-images");
+      if (!isCurrentTask(task)) return;
+      const result = await renderPdfToImages(file, pdfRenderOptions(pdfToImageExtension?.config ?? {}, room), (progress) => updatePdfProgress(task, { stage: "converting", ...progress }));
+      if (!isCurrentTask(task)) return;
+      const added = appendAttachments(result.images, task);
+      if (result.truncated || added < result.images.length) {
+        const total = result.totalPages > 0 ? `/${result.totalPages}` : "";
+        notifyTask(task, t(
+          `PDF「${file.name || "文档"}」仅转换前 ${added}${total} 页（附件最多 ${MAX_ATTACHMENTS} 张）`,
+          `Only the first ${added}${total} pages of “${file.name || "PDF"}” were converted (up to ${MAX_ATTACHMENTS} attachments).`,
+        ));
+      }
+    } catch (error) {
+      if (!isCurrentTask(task)) return;
+      appendUploadedPdfReference(path, task);
+      const detail = error instanceof Error && error.message ? `：${error.message}` : "";
+      const englishDetail = error instanceof Error && error.message ? `: ${error.message}` : "";
+      notifyTask(task, t(
+        `PDF「${file.name || "文档"}」转换失败${detail}；已插入工作区路径引用。`,
+        `Could not convert PDF “${file.name || "PDF"}”${englishDetail}; a workspace path reference was inserted.`,
+      ), "error");
     }
   };
 
-  const onPaste = (event: ReactClipboardEvent): void => {
-    const files = [...(event.clipboardData?.files ?? [])];
-    if (!files.some((file) => file.type.startsWith("image/"))) return;
-    event.preventDefault();
-    addFiles(files);
-    // 剪贴板常同时携带文本（路径/说明），插入光标处而非静默丢弃
-    const text = event.clipboardData?.getData("text") ?? "";
-    if (!text) return;
+  const uploadPdf = async (file: File, task: AttachmentTask): Promise<string | undefined> => {
+    updatePdfProgress(task, { stage: "uploading", fileName: file.name || "PDF" });
+    try {
+      const uploaded = await api.uploadPdf(task.sessionId, file);
+      if (!isCurrentTask(task)) return undefined;
+      if (!uploaded.path) throw new Error("Server did not return a workspace path");
+      return uploaded.path;
+    } catch (error) {
+      if (!isCurrentTask(task)) return undefined;
+      const detail = error instanceof Error && error.message ? `：${error.message}` : "";
+      const englishDetail = error instanceof Error && error.message ? `: ${error.message}` : "";
+      notifyTask(task, t(
+        `PDF「${file.name || "文档"}」保存到工作区失败${detail}`,
+        `Could not save PDF “${file.name || "PDF"}” to the workspace${englishDetail}`,
+      ), "error");
+      return undefined;
+    }
+  };
+
+  const processPdf = async (file: File, task: AttachmentTask): Promise<void> => {
+    // 不论扩展开关，先把用户选择的 PDF 保存到当前会话工作区，避免依赖浏览器不可用的本机路径。
+    const path = await uploadPdf(file, task);
+    if (!path || !isCurrentTask(task)) return;
+    if (!pdfToImageEnabled) {
+      appendUploadedPdfReference(path, task);
+      notifyTask(task, t(
+        `PDF 已保存到工作区「${path}」；PDF 转图片扩展未启用，已插入路径引用。`,
+        `PDF was saved to “${path}”. The PDF-to-image extension is disabled, so a path reference was inserted.`,
+      ));
+      return;
+    }
+    if (!supportsImages) {
+      appendUploadedPdfReference(path, task);
+      notifyTask(task, t(
+        `PDF 已保存到工作区「${path}」，但当前模型不支持图片输入，已插入路径引用。`,
+        `PDF was saved to “${path}”, but the current model does not support image input, so a path reference was inserted.`,
+      ));
+      return;
+    }
+    const room = remainingAttachmentSlots(task);
+    if (room <= 0) {
+      appendUploadedPdfReference(path, task);
+      notifyTask(task, t(
+        `PDF 已保存到工作区「${path}」，但最多附带 ${MAX_ATTACHMENTS} 张图片，已插入路径引用。`,
+        `PDF was saved to “${path}”, but the ${MAX_ATTACHMENTS}-image attachment limit leaves no room to convert it, so a path reference was inserted.`,
+      ));
+      return;
+    }
+    await convertPdf(file, path, room, task);
+  };
+
+  const addFiles = (files: File[]): void => {
+    let pdfAvailabilityNoticeShown = false;
+    let pdfSizeNoticeShown = false;
+    const attachmentFiles = files.filter((file) => {
+      if (!isImage(file) && !isPdf(file)) return false;
+      if (!isPdf(file)) return true;
+      if (file.size > MAX_PDF_UPLOAD_BYTES) {
+        if (!pdfSizeNoticeShown) {
+          onNotice(t("PDF 超过 20MB 限制，未开始上传", "The PDF exceeds the 20 MB limit and was not uploaded."), "error");
+          pdfSizeNoticeShown = true;
+        }
+        return false;
+      }
+      if (pdfToImageStatus !== "ready") {
+        if (!pdfAvailabilityNoticeShown) {
+          onNotice(t(
+            pdfToImageStatus === "loading" ? "正在读取 PDF 扩展状态，请稍候再添加 PDF" : "无法读取 PDF 扩展状态，暂不能添加 PDF",
+            pdfToImageStatus === "loading" ? "PDF extension status is still loading. Please try adding the PDF again shortly." : "PDF extension status is unavailable, so PDFs cannot be added yet.",
+          ), "error");
+          pdfAvailabilityNoticeShown = true;
+        }
+        return false;
+      }
+      if (pdfToImageEnabled && !imageCapabilitiesReady) {
+        if (!pdfAvailabilityNoticeShown) {
+          onNotice(t("正在读取当前模型的图片能力，请稍候再添加 PDF", "The current model's image capability is still loading. Please try adding the PDF again shortly."), "error");
+          pdfAvailabilityNoticeShown = true;
+        }
+        return false;
+      }
+      return true;
+    });
+    if (attachmentFiles.length === 0) return;
+    const task = currentTask();
+    const hasPdf = attachmentFiles.some(isPdf);
+    if (hasPdf) {
+      pdfJobsTaskRef.current = task;
+      pdfJobsRef.current += 1;
+      setPdfJobs(pdfJobsRef.current);
+      updatePdfProgress(task, { stage: "uploading", fileName: "" });
+    }
+
+    attachmentQueueRef.current = attachmentQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        if (!isCurrentTask(task)) return;
+        for (const file of attachmentFiles) {
+          if (!isCurrentTask(task)) return;
+          if (isPdf(file)) {
+            await processPdf(file, task);
+            continue;
+          }
+          if (!supportsImages) {
+            notifyTask(task, t("当前模型不支持图片输入", "The current model does not support image input"), "error");
+            continue;
+          }
+          const room = remainingAttachmentSlots(task);
+          if (room <= 0) {
+            notifyTask(task, t(`最多附带 ${MAX_ATTACHMENTS} 张图片`, `You can attach up to ${MAX_ATTACHMENTS} images`), "error");
+            break;
+          }
+          if (!IMAGE_TYPES.has(file.type)) {
+            notifyTask(task, t(`仅支持 png/jpeg/webp/gif 图片（${file.type || "未知类型"}）`, `Only PNG, JPEG, WebP, and GIF images are supported (${file.type || "unknown type"})`), "error");
+            continue;
+          }
+          if (file.size > MAX_IMAGE_BYTES) {
+            notifyTask(task, t(`图片「${file.name || "剪贴板图片"}」超过 5MB 限制`, `Image “${file.name || "clipboard image"}” exceeds the 5 MB limit`), "error");
+            continue;
+          }
+          try {
+            const image = await readImage(file);
+            if (!isCurrentTask(task)) return;
+            appendAttachments([image], task);
+          } catch {
+            notifyTask(task, t(`无法读取图片「${file.name || "剪贴板图片"}」`, `Could not read image “${file.name || "clipboard image"}”`), "error");
+          }
+        }
+      })
+      .finally(() => {
+        if (!hasPdf || !isCurrentTask(task)) return;
+        pdfJobsRef.current = Math.max(0, pdfJobsRef.current - 1);
+        setPdfJobs(pdfJobsRef.current);
+        if (pdfJobsRef.current === 0) {
+          pdfJobsTaskRef.current = undefined;
+          setPdfProgress(null);
+        }
+      });
+  };
+
+  const insertDraftAtSelection = (value: string, addWhitespaceAtBoundaries = false): void => {
+    if (!value) return;
+    const currentDraft = draftRef.current;
     const el = textareaRef.current;
-    const start = el?.selectionStart ?? draft.length;
+    const start = el?.selectionStart ?? currentDraft.length;
     const end = el?.selectionEnd ?? start;
-    const next = draft.slice(0, start) + text + draft.slice(end);
-    setDraft(next);
-    updateMentionFromValue(next, start + text.length, mentionDismissed);
+    const before = currentDraft.slice(0, start);
+    const after = currentDraft.slice(end);
+    const prefix = addWhitespaceAtBoundaries && before && !/\s$/.test(before) ? " " : "";
+    const suffix = addWhitespaceAtBoundaries && after && !/^\s/.test(after) ? " " : "";
+    const inserted = `${prefix}${value}${suffix}`;
+    const next = before + inserted + after;
+    writeDraft(next);
+    updateMentionFromValue(next, before.length + inserted.length, mentionDismissed);
     requestAnimationFrame(() => {
       const node = textareaRef.current;
       if (node) {
-        const pos = start + text.length;
+        const pos = before.length + inserted.length;
         node.selectionStart = pos;
         node.selectionEnd = pos;
         node.focus();
@@ -227,8 +521,18 @@ const mentionHasMatches = mentionMatches.length > 0;
     });
   };
 
+  const onPaste = (event: ReactClipboardEvent): void => {
+    const files = [...(event.clipboardData?.files ?? [])];
+    if (!files.some((file) => isImage(file) || isPdf(file))) return;
+    event.preventDefault();
+    addFiles(files);
+    // 剪贴板常同时携带文本（路径/说明），插入光标处而非静默丢弃
+    const text = event.clipboardData?.getData("text") ?? "";
+    insertDraftAtSelection(text);
+  };
+
   const onDrop = (event: ReactDragEvent): void => {
-    if ([...(event.dataTransfer?.files ?? [])].some((file) => file.type.startsWith("image/"))) {
+    if ([...(event.dataTransfer?.files ?? [])].some((file) => isImage(file) || isPdf(file))) {
       event.preventDefault();
       addFiles([...event.dataTransfer.files]);
     }
@@ -238,9 +542,27 @@ const mentionHasMatches = mentionMatches.length > 0;
   // 模型不支持思考（thinking 为空数组）时退化为仅「关闭」并禁用，避免空下拉
   const thinkingModes = supportedThinking.length > 0 ? supportedThinking : ["disabled"];
   const efforts = model?.capabilities.effort ?? [];
+  const providerModels = models.filter((item) => item.provider === current.provider);
+  const selectedModel = providerModels.find((item) => item.id === current.model) ?? model;
+  const providerIsUnavailable = current.provider !== "" && !providers.includes(current.provider);
+  const changeProvider = (provider: string): void => {
+    const nextModel = models.find((item) => item.provider === provider)?.id ?? "";
+    onConfig({ provider, model: nextModel });
+  };
 
   return (
     <footer className="composer" onDrop={onDrop} onDragOver={(event) => event.preventDefault()}>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,.pdf"
+        multiple
+        hidden
+        onChange={(event) => {
+          addFiles([...(event.target.files ?? [])]);
+          event.target.value = "";
+        }}
+      />
       {attachments.length > 0 && (
         <div className="attachment-strip" aria-label={t("图片附件", "Image attachments")}>
           {attachments.map((image, index) => (
@@ -259,6 +581,17 @@ const mentionHasMatches = mentionMatches.length > 0;
       )}
       <div className="config-row">
         <label>
+          Provider
+          <select
+            value={current.provider}
+            disabled={running || providers.length === 0}
+            onChange={(event) => changeProvider(event.target.value)}
+          >
+            {providerIsUnavailable && <option value={current.provider}>{`${current.provider} (${t("不可用", "unavailable")})`}</option>}
+            {providers.map((provider) => <option key={provider} value={provider}>{provider}</option>)}
+          </select>
+        </label>
+        <label>
           {t("模式", "Mode")}
           <select
             value={current.agentMode ?? "build"}
@@ -272,14 +605,19 @@ const mentionHasMatches = mentionMatches.length > 0;
         <label>
           {t("模型", "Model")}
           <select value={current.model} disabled={running} onChange={(event) => onConfig({ model: event.target.value })}>
-            {(() => {
-              const available = models.filter((item) => item.provider === current.provider);
-              // 当前 provider 无模型档案（如 development）时至少显示当前模型，避免空 select
-              const options = available.length > 0 ? available : [{ id: current.model, displayName: current.model } as ModelProfile];
-              return options.map((item) => <option key={item.id} value={item.id}>{item.displayName ?? item.id}</option>);
-            })()}
+            {providerModels.length > 0
+              ? providerModels.map((item) => <option key={item.id} value={item.id}>{item.displayName ?? item.id}</option>)
+              : current.model
+                ? <option value={current.model}>{current.model}</option>
+                : <option value="">{t("暂无可用模型", "No model available")}</option>}
           </select>
         </label>
+        {selectedModel && (
+          <div className="model-capability-summary" aria-label={t("所选模型能力", "Selected model capabilities")}>
+            <span className="model-capability-summary-label">{t("能力", "Capabilities")}</span>
+            <ModelCapabilityBadges capabilities={selectedModel.capabilities} />
+          </div>
+        )}
         <label>
           {t("思考", "Thinking")}
           <select
@@ -381,7 +719,7 @@ const mentionHasMatches = mentionMatches.length > 0;
           }
           aria-autocomplete="list"
           onChange={(event) => {
-            setDraft(event.target.value);
+            writeDraft(event.target.value);
             syncMention(event.target);
           }}
           onSelect={(event) => syncMention(event.currentTarget)}
@@ -457,7 +795,7 @@ const mentionHasMatches = mentionMatches.length > 0;
             if (shouldSend) {
               event.preventDefault();
               // 发送进行中忽略重复提交（运行中入队场景仍允许，由 running 控制）
-              if (!sendPending) onSend();
+              if (!sendPending && !processingPdf) onSend();
             }
           }}
           placeholder={running
@@ -465,9 +803,19 @@ const mentionHasMatches = mentionMatches.length > 0;
             : sendKey === "enter" ? t("描述要完成的编码任务…（Enter 发送，Shift+Enter 换行，@ 引用文件）", "Describe a coding task… (Enter to send, Shift+Enter for a new line, @ to reference files)") : t("描述要完成的编码任务…（Ctrl+Enter 发送，@ 引用文件）", "Describe a coding task… (Ctrl+Enter to send, @ to reference files)")}
         />
         <button
+          type="button"
+          className="icon-btn composer-attach"
+          disabled={processingPdf}
+          aria-label={t("添加图片或 PDF", "Add image or PDF")}
+          title={t("添加图片或 PDF", "Add image or PDF")}
+          onClick={() => fileInputRef.current?.click()}
+        >
+          <Icon name="upload" size={14} />
+        </button>
+        <button
           className="btn primary send"
-          disabled={!draft.trim() || sendPending}
-          title={sendPending ? t("发送中…", "Sending…") : undefined}
+          disabled={!draft.trim() || sendPending || processingPdf}
+          title={processingPdf ? t("正在处理 PDF…", "Processing PDF…") : sendPending ? t("发送中…", "Sending…") : undefined}
           onClick={onSend}
         >
           <Icon name="send" size={13} />
@@ -492,7 +840,23 @@ const mentionHasMatches = mentionMatches.length > 0;
           ))}
         </div>
       )}
-      {supportsImages && <div className="composer-hint">{t("支持粘贴/拖拽图片（≤4 张，每张 ≤5MB）；输入 @ 引用工作区文件", "Paste or drop images (up to 4, 5 MB each); type @ to reference workspace files")}</div>}
+      {processingPdf && (
+        <div className="composer-conversion" role="status" aria-live="polite">
+          {pdfProgress?.stage === "converting"
+            ? t(`正在将 PDF 转为图片（${pdfProgress.completed}/${pdfProgress.total}）…`, `Converting PDF to images (${pdfProgress.completed}/${pdfProgress.total})…`)
+            : t(`正在保存 PDF${pdfProgress?.fileName ? `「${pdfProgress.fileName}」` : ""}到工作区…`, `Saving PDF${pdfProgress?.fileName ? ` “${pdfProgress.fileName}”` : ""} to the workspace…`)}
+        </div>
+      )}
+      {pdfToImageStatus !== "ready" ? (
+        <div className="composer-hint">{t(
+          pdfToImageStatus === "loading" ? "PDF 扩展状态加载中；图片可正常添加，PDF 请稍候重试。" : "PDF 扩展状态不可用；图片可正常添加，PDF 暂不能添加。",
+          pdfToImageStatus === "loading" ? "PDF extension status is loading; images can still be added, but please retry PDFs shortly." : "PDF extension status is unavailable; images can still be added, but PDFs are unavailable for now.",
+        )}</div>
+      ) : pdfToImageEnabled ? (
+        supportsImages && <div className="composer-hint">{t("支持添加、粘贴或拖拽图片/PDF（≤4 张图片，每张 ≤5MB）；PDF 会转为图片；输入 @ 引用工作区文件", "Add, paste, or drop images/PDFs (up to 4 images, 5 MB each); PDFs are converted to images; type @ to reference workspace files")}</div>
+      ) : (
+        <div className="composer-hint">{t("PDF 转图片扩展未启用；PDF 会先保存到工作区，再插入其路径引用。", "The PDF-to-image extension is disabled; PDFs are saved to the workspace and inserted as path references.")}</div>
+      )}
     </footer>
   );
 }

@@ -67,6 +67,8 @@ export interface SandboxPolicy {
   enabled: boolean;
   readRoots: string[];
   writeRoots: string[];
+  /** AppContainer 额外可写目录；core 会与 cwd 合并、规范化并去重。 */
+  allowPaths?: string[];
   denyPaths: string[];
   network: "allow" | "deny";
   mode?: SandboxBackendMode;

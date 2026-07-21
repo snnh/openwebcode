@@ -9,8 +9,9 @@ import { buildServer } from "../src/app.js";
 import type { CoreClientLike, CoreEvent, ExecResult } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
-import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
+import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
+import { makeStubProvider } from "./helpers/stub-provider.js";
 
 const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
@@ -21,12 +22,9 @@ async function tempRoot(): Promise<string> {
   return root;
 }
 
-const echoProvider: Provider = {
-  name: "development",
-  async *streamChat(_request: StreamChatRequest) {
-    yield { type: "done", stopReason: "end_turn" };
-  },
-};
+const echoProvider = makeStubProvider("test-stub", async function* () {
+  yield { type: "done", stopReason: "end_turn" };
+});
 
 /**
  * 可控 fake CoreClient：run() 返回挂起 Promise，由 release() 驱动 resolve；
@@ -97,7 +95,7 @@ async function setup(options?: { permissionMode?: "ask" | "acceptEdits" | "yolo"
   const root = await tempRoot();
   const sessions = new SessionStore(path.join(root, "sessions"));
   await sessions.initialize();
-  const session = await sessions.create({ cwd: root, provider: "development", model: "deterministic-tool-loop", title: "Shell test" });
+  const session = await sessions.create({ cwd: root, provider: "test-stub", model: "deterministic-tool-loop", title: "Shell test" });
   await sessions.updatePermissions(session.id, options?.permissionMode ?? "yolo", []);
   const pricing = new PricingCatalog(path.join(root, "pricing.json"));
   await pricing.initialize();

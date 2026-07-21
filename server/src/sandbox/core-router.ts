@@ -12,6 +12,7 @@ import type {
   FsReadRequest,
   FsReadResult,
   FsSearchRequest,
+  FsWriteBase64Request,
   FsWriteRequest,
 } from "../core-client.js";
 import type { SessionStore } from "../sessions/session-store.js";
@@ -45,14 +46,21 @@ function translatePath<T extends { path: string }>(request: T, meta: SessionMeta
  * 与 CoreClient 同构（CoreClientLike）。
  */
 export class CoreRouter extends EventEmitter {
+  /** 全局 Job Object 资源限制覆盖（仅 Windows）；缺省不下发，core 用内置默认值。 */
+  private readonly jobObject: JobObjectLimits | undefined;
+  /** AppContainer 额外可写目录；WSB 会话不映射宿主机目录。 */
+  private readonly allowPaths: string[] | undefined;
+
   constructor(
     private readonly shared: CoreClientLike,
     private readonly sessions: Pick<SessionStore, "get">,
     private readonly wsb: WsbManager,
-    /** 全局 Job Object 资源限制覆盖（仅 Windows）；缺省不下发，core 用内置默认值 */
-    private readonly jobObject?: JobObjectLimits,
+    jobObject?: JobObjectLimits,
+    allowPaths?: string[],
   ) {
     super();
+    this.jobObject = jobObject;
+    this.allowPaths = allowPaths;
     for (const event of ["event", "diagnostic", "error"]) {
       shared.on(event, (...args: unknown[]) => this.emit(event, ...args));
     }
@@ -64,10 +72,11 @@ export class CoreRouter extends EventEmitter {
   }
 
   /** sandboxMode → 下发给 core 的策略：wsb/off 由 VM/关闭充当边界；jobobject 下发兼容模式；jobObject 限制仅随启用路径下发 */
-  static policyFor(meta: SessionMeta | undefined, sandbox: SandboxPolicy, jobObject?: JobObjectLimits): SandboxPolicy {
+  static policyFor(meta: SessionMeta | undefined, sandbox: SandboxPolicy, jobObject?: JobObjectLimits, allowPaths?: string[]): SandboxPolicy {
     const mode = meta?.sandboxMode;
     if (mode === "wsb" || mode === "off") return { ...sandbox, enabled: false };
     const limits = {
+      ...(allowPaths && allowPaths.length > 0 ? { allowPaths } : {}),
       ...(jobObject?.memoryMB !== undefined ? { jobMemoryMB: jobObject.memoryMB } : {}),
       ...(jobObject?.maxProcesses !== undefined ? { jobMaxProcesses: jobObject.maxProcesses } : {}),
     };
@@ -110,7 +119,7 @@ export class CoreRouter extends EventEmitter {
   async configureSession(request: { sessionId: string; cwd: string; sandbox: SandboxPolicy }): Promise<{ sandboxCapability: string }> {
     const { client, meta } = await this.clientFor(request.sessionId);
     const cwd = meta?.sandboxMode === "wsb" && meta.cwd ? toSandboxPath(request.cwd, meta.cwd) : request.cwd;
-    return client.configureSession({ ...request, cwd, sandbox: CoreRouter.policyFor(meta, request.sandbox, this.jobObject) });
+    return client.configureSession({ ...request, cwd, sandbox: CoreRouter.policyFor(meta, request.sandbox, this.jobObject, this.allowPaths) });
   }
 
   async cleanupSession(sessionId: string): Promise<{ ok: true }> {
@@ -138,6 +147,12 @@ export class CoreRouter extends EventEmitter {
   async writeFile(request: FsWriteRequest): Promise<{ ok: true }> {
     const { client, meta } = await this.clientFor(request.sessionId);
     return client.writeFile(translatePath(request, meta));
+  }
+
+  async writeFileBase64(request: FsWriteBase64Request): Promise<{ ok: true }> {
+    const { client, meta } = await this.clientFor(request.sessionId);
+    if (!client.writeFileBase64) throw new Error("Core binary upload support is unavailable");
+    return client.writeFileBase64(translatePath(request, meta));
   }
 
   async editFile(request: FsEditRequest): Promise<{ matches: number }> {

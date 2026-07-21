@@ -38,7 +38,7 @@ function fakeProvider2(text: string, calls: Array<{ system: string; prompt: stri
 const EMPTY_PROVIDER2 = { configured: false, model: undefined, setConfig() { /* noop */ } } as unknown as Provider2Client;
 
 async function sessionWithMessages(store: SessionStore, count: number): Promise<string> {
-  const session = await store.create({ cwd: os.tmpdir(), provider: "development", title: "压缩样例" });
+  const session = await store.create({ cwd: os.tmpdir(), provider: "test-stub", title: "压缩样例" });
   for (let index = 0; index < count; index += 1) {
     await store.appendMessage(session.id, index % 2 === 0 ? "user" : "assistant", [{ type: "text", text: `消息 ${index + 1}` }]);
   }
@@ -104,7 +104,7 @@ describe("Compactor", () => {
     const root = await tempDir();
     const store = new SessionStore(path.join(root, "sessions"));
     await store.initialize();
-    const session = await store.create({ cwd: os.tmpdir(), provider: "development", title: "压缩样例" });
+    const session = await store.create({ cwd: os.tmpdir(), provider: "test-stub", title: "压缩样例" });
     // 工具消息放最前，确保落在压缩区段内
     await store.appendMessage(session.id, "assistant", [
       { type: "tool_call", id: "t1", name: "bash", input: { cmd: "npm test" } },

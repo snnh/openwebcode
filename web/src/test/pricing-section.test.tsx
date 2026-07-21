@@ -57,4 +57,15 @@ describe("PricingSection", () => {
       }],
     });
   });
+
+  it("displays a structured remote pricing sync error", async () => {
+    vi.spyOn(api, "modelPricing").mockResolvedValue(catalog);
+    const sync = vi.spyOn(api, "syncModelPricing").mockResolvedValue({ ok: false, error: "Remote document is invalid" });
+    const view = renderSection();
+
+    fireEvent.click(await view.findByRole("button", { name: "立即同步" }));
+
+    await waitFor(() => expect(sync).toHaveBeenCalledTimes(1));
+    expect(await view.findByText("Remote document is invalid")).toBeInTheDocument();
+  });
 });

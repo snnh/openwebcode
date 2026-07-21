@@ -35,6 +35,7 @@
 *.i*86
 *.x86_64
 *.hex
+*.zip
 
 # Debug files
 *.dSYM/
@@ -63,3 +64,5 @@ web/node_modules/
 web/dist/
 node_modules/
 docs/
+tmp/
+_CPack_Packages/

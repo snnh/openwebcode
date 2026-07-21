@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  CPack WIX inserts these fragments into the generated source.  The component
+  id below is intentionally tied to bin/owc.cmd and was verified from CPack's
+  generated files.wxs for this install layout:
+
+    <Component Id="CM_CP_bin.owc.cmd" ...>
+
+  Keep the two IDs in sync if the staging/install layout changes.
+-->
+<CPackWiXPatch xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+  <CPackWiXFragment Id="#PRODUCT">
+    <!-- Default is deliberately non-destructive.  PURGE_DATA is a public MSI
+         property so a user can opt in with: msiexec /x package.msi PURGE_DATA=1 -->
+    <Property Id="PURGE_DATA" Value="0" />
+    <!-- Keep the deletion root private (mixed case): PURGE_DATA is the only
+         command-line opt-in, and must not also allow redirecting the root. -->
+    <Property Id="OwcDefaultDataDir" Value="%LOCALAPPDATA%\openwebcode" />
+    <!-- WiX v3's RemoveFolderEx has no Condition attribute.  It schedules
+         WixRemoveFoldersEx itself before CostInitialize; condition that
+         existing action so it is skipped entirely unless the user opted in.
+         Put the quoted REMOVE comparison last because CPack's patch writer
+         normalizes whitespace immediately after XML quote entities. -->
+    <InstallExecuteSequence>
+      <Custom Action="WixRemoveFoldersEx">NOT UPGRADINGPRODUCTCODE AND PURGE_DATA=1 AND REMOVE=&quot;ALL&quot;</Custom>
+    </InstallExecuteSequence>
+  </CPackWiXFragment>
+
+  <CPackWiXFragment Id="CM_CP_bin.owc.cmd">
+    <!-- Append rather than replace PATH, and let MSI remove this exact entry
+         when the launcher component is uninstalled.  System=no intentionally
+         limits the change to the installing user's PATH. -->
+    <Environment Id="OpenWebCodeBinPath"
+                 Name="PATH"
+                 Value="[INSTALL_ROOT]bin"
+                 Action="set"
+                 Part="last"
+                 Permanent="no"
+                 System="no" />
+
+    <!-- The sequence condition above means this affects only opt-in full
+         uninstalls of the launcher's default LOCALAPPDATA location; custom
+         OWC_DATA_DIR values and workspace .owc directories are intentionally
+         outside this action. -->
+    <util:RemoveFolderEx Id="PurgeOpenWebCodeDefaultData"
+                         Property="OwcDefaultDataDir"
+                         On="uninstall" />
+  </CPackWiXFragment>
+</CPackWiXPatch>

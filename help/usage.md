@@ -4,11 +4,26 @@
 
 ## 启动
 
-1. 运行 `owc`（Windows：`owc.cmd`；Linux：`owc` 软链）；
+1. 运行 `owc`（Windows：`owc.cmd`；Linux：安装器生成的 `<prefix>/bin/owc`）；
 2. 浏览器打开 <http://127.0.0.1:3000>；
 3. 首次使用先去**设置页**配置模型提供商（baseUrl、apiKey），点「刷新模型目录」拉取可用模型。
 
 如果端口被占用或想换端口：设置环境变量 `OWC_PORT=4000` 后启动 `owc`（launcher 脚本默认 3000，server 自身兜底 3210）。
+
+### Linux 安装器交互与自动化
+
+从 Linux tar.gz 解包后直接运行 `./install.sh`，且 stdin/stdout 都是终端时，安装器会依次询问未由命令行提供的安装前缀、端口、数据目录、监听地址、是否使用系统 Node.js，以及是否写用户级 systemd unit。直接回车保留默认值；命令行参数优先。
+
+```sh
+# 自动化、CI、管道或重定向中：--yes 保证绝不读取交互输入。
+./install.sh --yes --prefix "$HOME/.local" --port 3000 \
+  --data-dir "$HOME/.local/share/openwebcode" --host 127.0.0.1
+```
+
+- `--prefix` 与 `--data-dir` 必须是绝对路径；prefix 创建后会规范化并拒绝根目录。
+- `--port` 只接受 1–65535；`--host` 默认 `127.0.0.1`。非回环监听会告警：当前没有内置 HTTP 鉴权，只能放在受信网络或认证反向代理后。
+- `--use-system-node` 不复制包内 `node/`，并在安装时验证 `PATH` 中的绝对路径 Node.js 为 20+；`--with-systemd` 仅写用户级 service 文件，不自动启用。
+- 运行时的 `OWC_PORT`、`OWC_DATA_DIR`、`OWC_HOST` 始终覆盖安装时写入的默认值。`--system` 与 `--with-desktop-entry` 目前会明确失败，尚未提供系统级/桌面集成。
 
 ## 界面语言
 
@@ -115,27 +130,32 @@ owc run "给 main.ts 加个单元测试" --cwd . --json
 
 ## 配置文件位置
 
+`<启动/设置目录>` 按启动方式确定：用户显式设置的 `OWC_DATA_DIR` 优先；未设置时，安装版启动器会注入平台注册默认值（Windows `%LOCALAPPDATA%\openwebcode`，Linux `${XDG_DATA_HOME:-~/.local/share}/openwebcode`）；只有绕过启动器直接运行 `node server/dist/index.js` 时，才用相对 `server` 目录的 `../.openwebcode` 作为兜底。为避免相对路径按 `server` 目录解析，建议为 `OWC_DATA_DIR` 和设置页中的数据目录填写绝对路径。
+
+设置页保存到 `<启动/设置目录>/server-settings.json`。其中已保存的“数据目录”会在**未设置 `OWC_DATA_DIR`**时、下次启动后决定 `<业务数据目录>`；设置文件不会随之移动。未保存覆盖时，`<业务数据目录>` 与 `<启动/设置目录>` 相同。
+
 | 路径 | 用途 |
 |---|---|
-| `~/.openwebcode/config.json` | 全局配置（provider/模型/定价/汇率/上下文策略） |
-| `~/.openwebcode/sessions/<id>/` | 会话数据（meta.json + messages.jsonl + ledger.json + artifacts/） |
-| `~/.openwebcode/agents/*.md` | 全局自定义子代理 |
-| `~/.openwebcode/commands/*.md` | 全局自定义斜杠命令 |
-| `~/.openwebcode/skills/<name>/SKILL.md` | 全局 Skills |
-| `~/.openwebcode/hooks.json` | 全局 Hooks（**安全级别等同 yolo**） |
-| `~/.openwebcode/mcp.json` | 全局 MCP 客户端配置 |
-| `~/.openwebcode/extensions/` | Extension Host 配置与第三方 `owc-ext-*` 扩展 |
+| `<启动/设置目录>/server-settings.json` | 设置页保存的服务设置 |
+| `<业务数据目录>/sessions/<id>/` | 会话数据（meta.json + messages.jsonl + ledger.json + artifacts/） |
+| `<业务数据目录>/agents/*.md` | 全局自定义子代理 |
+| `<业务数据目录>/commands/*.md` | 全局自定义斜杠命令 |
+| `<业务数据目录>/skills/<name>/SKILL.md` | 全局 Skills |
+| `<业务数据目录>/hooks.json` | 全局 Hooks（**安全级别等同 yolo**） |
+| `<业务数据目录>/mcp.json` | 全局 MCP 客户端配置 |
+| `<业务数据目录>/extensions/` | Extension Host 配置与第三方 `owc-ext-*` 扩展 |
 | `<cwd>/.owc/agents/`、`.owc/commands/`、`.owc/skills/`、`.owc/hooks.json`、`.owc/mcp.json`、`.owc/memory.md` | 项目级（同名覆盖全局） |
 
 ## 自定义扩展点
 
 ### Extension Host 与官方扩展
 
-设置 → **扩展** 可管理独立 Extension Host 中的扩展。内置三项：
+设置 → **扩展** 可管理独立 Extension Host 中的扩展。内置四项：
 
 - `context-manager`：默认启用，负责滚动驱逐策略和上下文管理面板；停用后不会自动逐出工具结果，85% 核心水位安全网仍保留
 - `attention-optimizer`：默认关闭，把关键约束/目标复制到上下文首尾锚区；`bottomOnly` 缓存影响较小，`full` 会增加输入 token
 - `content-lens`：默认关闭；启用且已配置 provider2 后，消息旁出现「译」与「解析选中」，结果只存 `translations/`，不进入 LLM 上下文
+- `pdf-to-image`：默认启用；通过 Web 选择的 PDF 会先保存到当前工作区 `.owc/uploads/`，再将最多 4 页按 150 DPI、长边最大 2048px 转为图片附件，供支持图片输入的模型读取；停用时 Composer 仅把这个工作区相对路径引用交给主代理处理
 
 第三方扩展目录需包含 `manifest.json`（`apiVersion: "1"`）和 `index.js`，可在设置页输入本地绝对路径安装。v1 扩展是可信代码，安装即信任其声明权限；钩子运行超时 5 秒会跳过并告警。
 

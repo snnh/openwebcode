@@ -31,9 +31,19 @@
 ```sh
 mkdir openwebcode && tar -xzf openwebcode-<version>-linux-x64.tar.gz -C openwebcode
 cd openwebcode
-./install.sh --prefix ~/.local    # 可选 --with-systemd 注册用户级服务
+# 直接运行时会在 TTY 中询问安装前缀、端口、数据目录、监听地址和 Node 选择
+./install.sh
 ~/.local/bin/owc                  # 浏览器打开 http://127.0.0.1:3000
 ```
+
+脚本/CI 安装使用 `--yes` 避免提问，例如：
+
+```sh
+./install.sh --yes --prefix "$HOME/.local" --port 3000 \
+  --data-dir "$HOME/.local/share/openwebcode" --host 127.0.0.1
+```
+
+完整选项、系统 Node.js 和用户级 systemd 服务说明见 [`packaging/README.md`](./packaging/README.md)。
 
 ### 首次使用
 
@@ -80,7 +90,7 @@ cd openwebcode
 
 **上下文管理**：token 预算账本、滚动驱逐 + 占位符回写、provider2 两种压缩、85% 水位强制概览压缩。前端始终看全量历史，驱逐只影响 LLM 视图。
 
-**扩展系统**：独立 Extension Host 子进程（IPC、5 秒钩子保护、manifest 权限与持久化管理）。内置 context-manager、attention-optimizer、content-lens；可在设置页启停、调参并从本地目录安装第三方 `owc-ext-*` 扩展。
+**扩展系统**：独立 Extension Host 子进程（IPC、5 秒钩子保护、manifest 权限与持久化管理）。内置 context-manager、attention-optimizer、content-lens、pdf-to-image；可在设置页启停、调参并从本地目录安装第三方 `owc-ext-*` 扩展。
 
 **会话生命周期**：关浏览器不停 agent；断线重连自动补拉；权限请求挂起等你 respond（**无超时**，长任务记得回来确认）。
 
@@ -99,17 +109,19 @@ owc run "给 main.ts 加个单元测试" --cwd . --json --yolo
 
 ## 配置文件位置
 
+`<启动/设置目录>` 按启动方式确定：用户显式设置的 `OWC_DATA_DIR` 优先；未设置时，安装版启动器会注入平台注册默认值（Windows `%LOCALAPPDATA%\openwebcode`，Linux `${XDG_DATA_HOME:-~/.local/share}/openwebcode`）；只有绕过启动器直接运行 `node server/dist/index.js` 时，才用相对 `server` 目录的 `../.openwebcode` 作为兜底。为避免相对路径按 `server` 目录解析，建议为 `OWC_DATA_DIR` 和设置页中的数据目录填写绝对路径。
+
+设置页的持久化文件固定为 `<启动/设置目录>/server-settings.json`。其中已保存的“数据目录”会在**未设置 `OWC_DATA_DIR`**时、下次启动后决定 `<业务数据目录>`；设置文件本身不会随之移动。未保存覆盖时，`<业务数据目录>` 与 `<启动/设置目录>` 相同。
+
 | 路径 | 用途 |
 |---|---|
-| `~/.openwebcode/config.json` | 全局配置（provider/模型/定价/汇率/上下文策略） |
-| `~/.openwebcode/sessions/<id>/` | 会话数据（meta + messages.jsonl + ledger + artifacts） |
-| `~/.openwebcode/{agents,commands,skills}/` | 全局自定义扩展点 |
-| `~/.openwebcode/hooks.json` | 全局 Hooks（**安全级别等同 yolo**） |
-| `~/.openwebcode/mcp.json` | 全局 MCP 客户端配置 |
-| `~/.openwebcode/extensions/` | Extension Host 配置与第三方扩展 |
+| `<启动/设置目录>/server-settings.json` | 设置页保存的服务设置 |
+| `<业务数据目录>/sessions/<id>/` | 会话数据（meta + messages.jsonl + ledger + artifacts） |
+| `<业务数据目录>/{agents,commands,skills}/` | 全局自定义扩展点 |
+| `<业务数据目录>/hooks.json` | 全局 Hooks（**安全级别等同 yolo**） |
+| `<业务数据目录>/mcp.json` | 全局 MCP 客户端配置 |
+| `<业务数据目录>/extensions/` | Extension Host 配置与第三方扩展 |
 | `<cwd>/.owc/` | 项目级（同名覆盖全局） |
-
-Windows 下 `~` 指 `%USERPROFILE%`。
 
 ## 从源码构建
 
@@ -134,12 +146,12 @@ cd web && npm ci && npm run build && npm test
   - [`help/faq.md`](./help/faq.md) — 常见问题：模型接入、权限与沙盒、上下文管理、快照回滚、CLI 集成、故障排查
 - **开发者文档**（随 git 同步）：
   - [`help/development.md`](./help/development.md) — 编译与二次开发：仓库布局、三件套构建、本地开发循环、测试约定、二次开发切入点、CI 与发布
-- **内部文档**：`docs/` 仅在本地维护，不随远端仓库分发
+- **内部文档**：`docs/` 默认仅在本地维护；已显式跟踪的路线图会随仓库分发：[`fantomex-superboy-polaris.md`](./docs/fantomex-superboy-polaris.md)
 - [`packaging/README.md`](./packaging/README.md) — 完整打包流程、分发布局、安装脚本与 CI 发布流水线
 
 ## 卸载
 
-- **Windows**：「设置 → 应用」卸载，用户数据默认保留（可选全删 `~/.openwebcode/`）
+- **Windows**：「设置 → 应用」卸载，默认数据目录 `%LOCALAPPDATA%\openwebcode` 保留；显式 `OWC_DATA_DIR` 指定的数据也不会自动删除
 - **Linux**：`rm -rf ~/.local/lib/openwebcode ~/.local/bin/owc`，用户数据保留
 
 ## 特别感谢

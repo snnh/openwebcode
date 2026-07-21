@@ -1,5 +1,5 @@
-cmake_minimum_required(VERSION 3.16)
-project(openwebcode_core VERSION 0.1.0 LANGUAGES C)
+cmake_minimum_required(VERSION 3.19)
+project(openwebcode_core VERSION 0.2.0 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -15,7 +15,7 @@ add_executable(owc-exec
 )
 
 if(WIN32)
-    target_sources(owc-exec PRIVATE src/platform/exec_win.c src/platform/path_win.c src/platform/fs_win.c src/platform/sandbox_win.c)
+    target_sources(owc-exec PRIVATE src/icon.rc src/platform/exec_win.c src/platform/path_win.c src/platform/fs_win.c src/platform/sandbox_win.c)
     target_compile_definitions(owc-exec PRIVATE WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
     target_link_libraries(owc-exec PRIVATE userenv advapi32)
 else()
@@ -92,8 +92,8 @@ install(DIRECTORY "${CMAKE_BINARY_DIR}/stage/" DESTINATION . OPTIONAL)
 set(CPACK_PACKAGE_NAME "openwebcode")
 set(CPACK_PACKAGE_VENDOR "OpenWebCode")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "OpenWebCode: web-based agentic coding environment")
-# 版本默认 0.1.0；CI 用 -DCPACK_PACKAGE_VERSION=x.y.z 注入 tag 版本
-set(CPACK_PACKAGE_VERSION "0.1.0" CACHE STRING "Package version (x.y.z)")
+# 版本默认 0.2.0；CI 用 -DCPACK_PACKAGE_VERSION=x.y.z 注入 tag 版本
+set(CPACK_PACKAGE_VERSION "0.2.0" CACHE STRING "Package version (x.y.z)")
 # WiX accepts .rtf directly and converts .txt to RTF, but rejects a license
 # path without an extension. Keep the repository's canonical LICENSE intact
 # and give the configured copy the extension required by the generator.
@@ -109,5 +109,23 @@ else()
 endif()
 # 固定 UpgradeCode，跨版本升级识别为同一产品；不要再改
 set(CPACK_WIX_UPGRADE_GUID "7F3A2C1E-9B4D-4E6F-A1C8-2D5B7E9F0C3A")
+
+if(WIN32)
+    # 安装程序与程序和功能使用同一套应用图标。该资源也由 src/icon.rc
+    # 编入 owc-exec.exe，因此安装后和裸可执行文件的视觉标识保持一致。
+    set(CPACK_WIX_PRODUCT_ICON "${CMAKE_CURRENT_SOURCE_DIR}/../assets/icon.ico")
+
+    # 这些是 CPack WIX 的已支持安装文件属性；目标必须是实际启动
+    # Server 的 owc.cmd，而非仅提供 RPC 的 owc-exec.exe。
+    set(CPACK_WIX_PROGRAM_MENU_FOLDER "OpenWebCode")
+    set_property(INSTALL "bin/owc.cmd" PROPERTY CPACK_START_MENU_SHORTCUTS "OpenWebCode")
+    set_property(INSTALL "bin/owc.cmd" PROPERTY CPACK_DESKTOP_SHORTCUTS "OpenWebCode")
+
+    # CPack 没有 WIX 的 ADD_TO_PATH 开关。PATH 与可选默认数据清理由
+    # 经过 CPack 生成文件核验的 WiX component patch 实现。
+    set(CPACK_WIX_PATCH_FILE "${CMAKE_CURRENT_SOURCE_DIR}/../packaging/wix-patch.xml")
+    set(CPACK_WIX_CUSTOM_XMLNS "util=http://schemas.microsoft.com/wix/UtilExtension")
+    set(CPACK_WIX_EXTENSIONS "WixUtilExtension")
+endif()
 
 include(CPack)

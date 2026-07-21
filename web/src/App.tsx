@@ -387,6 +387,10 @@ export function App(): ReactElement {
               current={current}
               model={model}
               models={models.data ?? []}
+              providers={providers.data ?? []}
+              pdfToImageExtension={extensions.data?.find((extension) => extension.id === "pdf-to-image")}
+              pdfToImageStatus={extensions.isPending ? "loading" : extensions.isError ? "unavailable" : "ready"}
+              imageCapabilitiesReady={!models.isPending}
               draft={draft}
               setDraft={setDraft}
               onSend={() => send.mutate()}
@@ -402,7 +406,7 @@ export function App(): ReactElement {
               attachments={attachments}
               setAttachments={setAttachments}
               supportsImages={supportsImages}
-              onNotice={(message) => notify(message, "error")}
+              onNotice={(message, kind = "info") => notify(message, kind)}
             />
           </>
         ) : (

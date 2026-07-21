@@ -32,8 +32,10 @@ export class SessionStore {
     const meta: SessionMeta = {
       id: input.id ?? randomUUID(),
       cwd: resolvedCwd,
-      provider: input.provider ?? "development",
-      model: input.model ?? "deterministic-tool-loop",
+      // API callers resolve a configured provider/model before creating a session.
+      // Keep direct store use neutral rather than choosing an implicit provider.
+      provider: input.provider ?? "",
+      model: input.model ?? "",
       sandbox: { enabled: true, readRoots: [resolvedCwd], writeRoots: [resolvedCwd], denyPaths: [path.join(resolvedCwd, ".env")], network: "allow" },
       title: input.title ?? "New session",
       createdAt: now,

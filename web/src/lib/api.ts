@@ -1,4 +1,4 @@
-import type { BackgroundTaskInfo, Checkpoint, CompletePathResponse, ContextView, CostReport, ExtensionInfo, FileEntry, ManagedWorkspaceCapability, MessageAttachment, ModelProfile, PendingPermission, PricingDocument, SandboxCapabilities, SandboxMode, Session, SessionDetail, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo, TodoItem } from "./contracts";
+import type { BackgroundTaskInfo, CatalogSyncStatus, Checkpoint, CompletePathResponse, ContextView, CostReport, ExtensionInfo, FileEntry, ManagedWorkspaceCapability, MessageAttachment, ModelProfile, PendingPermission, PricingDocument, SandboxCapabilities, SandboxMode, Session, SessionDetail, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo, SyncResult, TodoItem } from "./contracts";
 
 export class ApiError extends Error {
   constructor(readonly status: number, message: string) {
@@ -24,6 +24,28 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+/** Encode a browser File without exposing its data-URL prefix to the API. */
+function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error("Unable to read file"));
+    reader.onabort = () => reject(reader.error ?? new Error("File read aborted"));
+    reader.onload = () => {
+      if (typeof reader.result !== "string") {
+        reject(new Error("Unable to encode file as base64"));
+        return;
+      }
+      const separator = reader.result.indexOf(",");
+      if (separator < 0) {
+        reject(new Error("Unable to encode file as base64"));
+        return;
+      }
+      resolve(reader.result.slice(separator + 1));
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 export const api = {
   sessions: () => request<Session[]>("/api/sessions"),
   health: () => request<{ status: string }>("/api/health"),
@@ -35,6 +57,13 @@ export const api = {
   deleteSession: (id: string) => request<void>(`/api/sessions/${id}`, { method: "DELETE" }),
   sendMessage: (id: string, content: string, images?: Array<{ mediaType: string; data: string }>, attachments?: MessageAttachment[]) =>
     request<{ accepted: boolean; queued?: boolean; position?: number; compacted?: boolean }>(`/api/sessions/${id}/messages`, { method: "POST", body: JSON.stringify({ content, ...(images?.length ? { images } : {}), ...(attachments?.length ? { attachments } : {}) }) }),
+  uploadPdf: async (sessionId: string, file: File): Promise<{ path: string }> => {
+    const data = await readFileAsBase64(file);
+    return request<{ path: string }>(`/api/sessions/${encodeURIComponent(sessionId)}/pdf-upload`, {
+      method: "POST",
+      body: JSON.stringify({ name: file.name, data }),
+    });
+  },
   completePath: (id: string, q: string) =>
     request<CompletePathResponse>(`/api/sessions/${id}/complete-path?q=${encodeURIComponent(q)}`),
   abort: (id: string) => request<{ accepted: boolean }>(`/api/sessions/${id}/abort`, { method: "POST" }),
@@ -71,11 +100,14 @@ export const api = {
     request<{ diff: string }>(`/api/sessions/${id}/checkpoints/${checkpointId}/diff`),
   providers: () => request<string[]>("/api/providers"),
   models: () => request<ModelProfile[]>("/api/models"),
+  modelSyncStatus: () => request<CatalogSyncStatus>("/api/models/sync-status"),
   refreshModels: () => request<{ added: number; total: number; errors: string[] }>("/api/models/refresh", { method: "POST" }),
+  syncModels: () => request<SyncResult>("/api/models/sync", { method: "POST" }),
   saveModel: (id: string, body: { provider?: string; displayName?: string; contextWindow?: number; maxOutput?: number; capabilities?: ModelProfile["capabilities"] }) =>
     request<ModelProfile>(`/api/models/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteModel: (id: string) => request<void>(`/api/models/${encodeURIComponent(id)}`, { method: "DELETE" }),
   modelPricing: () => request<PricingDocument>("/api/model-pricing"),
+  syncModelPricing: () => request<SyncResult>("/api/model-pricing/sync", { method: "POST" }),
   saveModelPricing: (document: PricingDocument) =>
     request<PricingDocument>("/api/model-pricing", { method: "PUT", body: JSON.stringify(document) }),
   listFiles: (id: string, path = ".") => request<{ entries: FileEntry[]; truncated: boolean }>(`/api/sessions/${id}/files?path=${encodeURIComponent(path)}`),

@@ -11,9 +11,10 @@ import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
 import { AnthropicProvider } from "../src/providers/anthropic-provider.js";
 import { OpenAICompatibleProvider } from "../src/providers/openai-compatible-provider.js";
-import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
+import { ProviderRegistry, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import type { ChatMessage } from "../src/sessions/types.js";
+import { makeStubProvider } from "./helpers/stub-provider.js";
 
 const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, {
@@ -122,24 +123,22 @@ describe("messages route with images", () => {
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));
     await pricing.initialize();
     const providers = new ProviderRegistry();
-    const echoProvider: Provider = {
-      name: "development",
-      async *streamChat() { yield { type: "done", stopReason: "end_turn" }; },
-    };
-    providers.register(echoProvider);
+    providers.register(makeStubProvider("text-stub", async function* () {
+      yield { type: "done", stopReason: "end_turn" };
+    }));
     const events = new EventBus();
     const core = { on() { return core; }, async configureSession() { return { sandboxCapability: "advisory" }; } } as unknown as CoreClient;
     const agent = new AgentRunner(sessions, providers, core, events, pricing);
     const app = await buildServer({ core, sessions, agent, events, providers, pricing });
     try {
-      // development 模型档案为纯文本：带图 400
-      const textOnly = await sessions.create({ cwd: root, provider: "development", title: "纯文本模型" });
+      // text-stub 的默认模型档案为纯文本：带图 400
+      const textOnly = await sessions.create({ cwd: root, provider: "text-stub", title: "纯文本模型" });
       const rejected = await app.inject({ method: "POST", url: `/api/sessions/${textOnly.id}/messages`, payload: { content: "看图", images: [{ mediaType: "image/png", data: PNG }] } });
       expect(rejected.statusCode).toBe(400);
       expect(rejected.json<{ error: string }>().error).toContain("不支持图片");
 
       // metadata 前缀档案支持图片的模型：接受
-      const capable = await sessions.create({ cwd: root, provider: "development", model: "qwen-vl-plus", title: "带图模型" });
+      const capable = await sessions.create({ cwd: root, provider: "text-stub", model: "qwen-vl-plus", title: "带图模型" });
       const accepted = await app.inject({ method: "POST", url: `/api/sessions/${capable.id}/messages`, payload: { content: "看图", images: [{ mediaType: "image/png", data: PNG }] } });
       expect(accepted.statusCode).toBe(202);
       let stored;

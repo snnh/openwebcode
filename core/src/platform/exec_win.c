@@ -15,6 +15,38 @@ static wchar_t *utf8_to_wide(const char *value) {
     return wide;
 }
 
+static char *normalize_path(const char *value) {
+    wchar_t *wide=utf8_to_wide(value),*full=NULL;
+    char *utf8=NULL;
+    DWORD wide_length;
+    int utf8_length;
+    size_t length;
+    if(!wide)return NULL;
+    wide_length=GetFullPathNameW(wide,0,NULL,NULL);
+    if(!wide_length)goto cleanup;
+    full=(wchar_t *)malloc((size_t)wide_length*sizeof(*full));
+    if(!full||!GetFullPathNameW(wide,wide_length,full,NULL))goto cleanup;
+    length=wcslen(full);
+    while(length>3&&(full[length-1]==L'\\'||full[length-1]==L'/'))full[--length]=L'\0';
+    utf8_length=WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,full,-1,NULL,0,NULL,NULL);
+    if(!utf8_length)goto cleanup;
+    utf8=(char *)malloc((size_t)utf8_length);
+    if(!utf8||!WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,full,-1,utf8,utf8_length,NULL,NULL)){free(utf8);utf8=NULL;}
+cleanup:
+    free(wide);free(full);return utf8;
+}
+
+static int add_write_root(char **roots,size_t *count,size_t capacity,const char *path) {
+    char *normalized;
+    size_t i;
+    if(*count>=capacity)return 0;
+    normalized=normalize_path(path);
+    if(!normalized)return 0;
+    for(i=0;i<*count;i++)if(_stricmp(roots[i],normalized)==0){free(normalized);return 1;}
+    roots[(*count)++]=normalized;
+    return 1;
+}
+
 static void drain_pipe(HANDLE pipe, const char *stream, const owc_exec_request *request,
                        owc_exec_result *result, size_t *forwarded, unsigned *sequence) {
     DWORD available=0, read_count;
@@ -59,7 +91,7 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
     SIZE_T attribute_size=0;
     wchar_t *cwd=NULL,*command=NULL; wchar_t shell_path[MAX_PATH]; char *full_command=NULL;
     owc_sandbox *sandbox=NULL; owc_sandbox_options sandbox_options={0};
-    const char *write_roots[1];
+    char *write_roots[17]={0}; size_t write_root_count=0,write_root_index;
     ULONGLONG started=GetTickCount64(); size_t forwarded=0; unsigned sequence=0;
     DWORD wait_result,exit_code=1; int ok=0,powershell=0;
 
@@ -86,7 +118,10 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
     startup.StartupInfo.hStdOutput=out_write; startup.StartupInfo.hStdError=err_write; startup.StartupInfo.hStdInput=input;
     inherited[0]=out_write; inherited[1]=err_write; inherited[2]=input;
     sandbox_options.session_id=request->session_id; sandbox_options.allow_network=request->allow_network;
-    write_roots[0]=request->cwd; sandbox_options.write_roots=write_roots; sandbox_options.write_root_count=1;
+    if(request->allow_path_count>16||!add_write_root(write_roots,&write_root_count,ARRAYSIZE(write_roots),request->cwd))goto cleanup;
+    for(write_root_index=0;write_root_index<request->allow_path_count;write_root_index++)
+        if(!add_write_root(write_roots,&write_root_count,ARRAYSIZE(write_roots),request->allow_paths[write_root_index]))goto cleanup;
+    sandbox_options.write_roots=(const char *const *)write_roots; sandbox_options.write_root_count=write_root_count;
     if(request->sandbox_enabled && request->sandbox_mode==(int)OWC_SANDBOX_MODE_JOBOBJECT) {
         /* Session explicitly asked for compatibility mode: skip the AppContainer
            profile and process attribute, keep only the Job Object below. */
@@ -158,5 +193,6 @@ cleanup:
     if(err_read) CloseHandle(err_read); if(err_write) CloseHandle(err_write); if(input) CloseHandle(input);
     if(attributes) DeleteProcThreadAttributeList(attributes); free(attributes);
     owc_sandbox_destroy(sandbox);
+    for(write_root_index=0;write_root_index<write_root_count;write_root_index++)free(write_roots[write_root_index]);
     free(cwd); free(command); free(full_command); return ok;
 }

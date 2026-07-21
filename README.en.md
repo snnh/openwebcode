@@ -34,9 +34,19 @@ Browser (React) ── HTTP/WebSocket ──► Node service (agent loop and too
 mkdir openwebcode
 tar -xzf openwebcode-<version>-linux-x64.tar.gz -C openwebcode
 cd openwebcode
-./install.sh --prefix ~/.local       # optionally add --with-systemd
+# In a TTY, choose prefix, port, data directory, host, and Node.js interactively.
+./install.sh
 ~/.local/bin/owc
 ```
+
+For scripts and CI, use `--yes` to suppress prompts:
+
+```sh
+./install.sh --yes --prefix "$HOME/.local" --port 3000 \
+  --data-dir "$HOME/.local/share/openwebcode" --host 127.0.0.1
+```
+
+See [`packaging/README.md`](./packaging/README.md) for every installer option, system Node.js, and user-systemd details.
 
 Open <http://127.0.0.1:3000> after the service starts.
 
@@ -79,7 +89,7 @@ Project configuration lives under `<workspace>/.owc/` and overrides matching glo
 - `hooks.json` — lifecycle shell hooks;
 - `mcp.json` — stdio or HTTP MCP servers.
 
-The independent Extension Host also manages installable `owc-ext-*` packages. Three official extensions are included: Context Manager, Attention Optimizer, and Content Lens.
+The independent Extension Host also manages installable `owc-ext-*` packages. Four official extensions are included: Context Manager, Attention Optimizer, Content Lens, and PDF to Image (enabled by default to turn PDF pages into image attachments).
 
 ## Headless CLI
 
@@ -94,7 +104,7 @@ owc run "Add a unit test for main.ts" --cwd . --json --yolo
 
 ## Build from source
 
-Requirements: Node.js 20 or newer, CMake 3.16 or newer, a C11 compiler, and Python 3 for core protocol tests.
+Requirements: Node.js 20 or newer, CMake 3.19 or newer, a C11 compiler, and Python 3 for core protocol tests.
 
 ```sh
 # Core executor
@@ -122,11 +132,13 @@ The server serves `web/dist`. Distribution layout, clean staging, local packagin
 - [`help/usage.md`](./help/usage.md) — user guide (Chinese)
 - [`help/faq.md`](./help/faq.md) — troubleshooting and FAQ (Chinese)
 - [`help/development.md`](./help/development.md) — development guide (Chinese)
-- Internal design notes under `docs/` are maintained locally and are not distributed through the remote repository.
+- Design notes under `docs/` are local by default; explicitly tracked roadmaps are distributed with the repository, including [`fantomex-superboy-polaris.md`](./docs/fantomex-superboy-polaris.md).
 - [`packaging/README.en.md`](./packaging/README.en.md) — packaging and release pipeline
 
 ## Data locations
 
-Installed launchers use `%LOCALAPPDATA%\openwebcode` on Windows and `${XDG_DATA_HOME:-~/.local/share}/openwebcode` on Linux. Source runs default to `../.openwebcode` relative to the server directory unless `OWC_DATA_DIR` is set.
+The boot/settings directory is chosen by the launch path: an explicitly set `OWC_DATA_DIR` wins; otherwise the installed launcher injects `%LOCALAPPDATA%\openwebcode` on Windows or `${XDG_DATA_HOME:-~/.local/share}/openwebcode` on Linux. Only a direct `node server/dist/index.js` run that bypasses the launcher uses the `../.openwebcode` fallback relative to the `server` directory. Use absolute paths for `OWC_DATA_DIR` and the Settings page’s Data directory to avoid server-directory-relative resolution.
+
+The Settings page is persisted as `<boot/settings directory>/server-settings.json`. When `OWC_DATA_DIR` is not set, its saved Data directory value selects the business data directory on the next launch; the settings file itself remains in the boot/settings directory. Without that saved override, both directories are the same.
 
 Session data includes metadata, append-only message JSONL, context ledgers, artifacts, sub-agent state, and checkpoints. Uninstalling the application does not delete user data automatically.

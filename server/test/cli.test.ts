@@ -13,6 +13,7 @@ import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
+import { makeStubProvider } from "./helpers/stub-provider.js";
 
 const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
@@ -26,28 +27,22 @@ async function tempRoot(): Promise<string> {
 const cliPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist/cli.js");
 
 /** 纯文本 fake provider：直接产出一段 assistant 文本后收尾 */
-const textProvider: Provider = {
-  name: "development",
-  async *streamChat() {
-    yield { type: "text_delta", text: "hello from assistant" };
-    yield { type: "done", stopReason: "end_turn" };
-  },
-};
+const textProvider = makeStubProvider("test-stub", async function* () {
+  yield { type: "text_delta", text: "hello from assistant" };
+  yield { type: "done", stopReason: "end_turn" };
+});
 
 /** 工具调用 fake provider：首轮固定请求 bash；看到 tool 结果后产出文本收尾 */
-const bashProvider: Provider = {
-  name: "development",
-  async *streamChat(request) {
-    const last = request.messages[request.messages.length - 1];
-    if (last?.role === "tool") {
-      yield { type: "text_delta", text: "command finished" };
-      yield { type: "done", stopReason: "end_turn" };
-      return;
-    }
-    yield { type: "tool_call", id: "call-1", name: "bash", input: { cmd: "echo hi" } };
-    yield { type: "done", stopReason: "tool_use" };
-  },
-};
+const bashProvider = makeStubProvider("test-stub", async function* (request) {
+  const last = request.messages[request.messages.length - 1];
+  if (last?.role === "tool") {
+    yield { type: "text_delta", text: "command finished" };
+    yield { type: "done", stopReason: "end_turn" };
+    return;
+  }
+  yield { type: "tool_call", id: "call-1", name: "bash", input: { cmd: "echo hi" } };
+  yield { type: "done", stopReason: "tool_use" };
+});
 
 /** 可控 fake CoreClient（同 shell.test.ts）：run() 挂起，由 release() 驱动 resolve */
 function createControllableCore(): {
@@ -137,7 +132,7 @@ describe("headless CLI（owc run）", () => {
   it("ask 模式 + 需审批工具（无 --yolo）：退出码 2", async () => {
     const harness = await setup(bashProvider);
     try {
-      const session = await harness.sessions.create({ cwd: harness.root, provider: "development", model: "deterministic-tool-loop", title: "cli ask" });
+      const session = await harness.sessions.create({ cwd: harness.root, provider: "test-stub", model: "deterministic-tool-loop", title: "cli ask" });
       await harness.sessions.updatePermissions(session.id, "ask", []);
       const result = await runCli(["run", "run ls", "--session", session.id, "--server", harness.baseUrl]);
       expect(result.code).toBe(2);
@@ -150,7 +145,7 @@ describe("headless CLI（owc run）", () => {
   it("--yolo：permission.request 自动 allow，工具执行后退出码 0", async () => {
     const harness = await setup(bashProvider);
     try {
-      const session = await harness.sessions.create({ cwd: harness.root, provider: "development", model: "deterministic-tool-loop", title: "cli yolo" });
+      const session = await harness.sessions.create({ cwd: harness.root, provider: "test-stub", model: "deterministic-tool-loop", title: "cli yolo" });
       await harness.sessions.updatePermissions(session.id, "ask", []);
       const running = runCli(["run", "run ls", "--session", session.id, "--server", harness.baseUrl, "--yolo"]);
       // 自动 allow 后工具真正执行：core.run 被调用，release 驱动完成

@@ -8,7 +8,6 @@ import type { AgentRunner } from "../src/agent/agent-runner.js";
 import type { CoreClient } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
-import { DevelopmentProvider } from "../src/providers/development-provider.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { getSnapshotBackend } from "../src/snapshots/index.js";
@@ -23,6 +22,7 @@ import {
 } from "../src/snapshots/managed-disk.js";
 import type { CommandRunner } from "../src/snapshots/probe.js";
 import { StorageGC } from "../src/storage-gc.js";
+import { makeStubProvider } from "./helpers/stub-provider.js";
 
 const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
@@ -349,7 +349,7 @@ describe("managed workspace REST", () => {
     const agent = { isRunning: () => false } as unknown as AgentRunner;
     const core = { cleanupSession: async () => ({}), release: async () => {} } as unknown as CoreClient;
     const providers = new ProviderRegistry();
-    providers.register(new DevelopmentProvider());
+    providers.register(makeStubProvider("test-stub"));
     const app = await buildServer({ core, sessions, agent, events, providers, pricing, ...(managed ? { managed } : {}) });
     return { app, sessions };
   }
@@ -385,7 +385,7 @@ describe("managed workspace REST", () => {
     const spies: { provision: ManagedProvisionInput[] } = { provision: [] };
     const { app, sessions } = await buildApp(root, fakeManaged(root, spies));
     try {
-      const response = await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: origin, workspaceMode: "managed" } });
+      const response = await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: origin, provider: "test-stub", model: "deterministic-tool-loop", workspaceMode: "managed" } });
       expect(response.statusCode).toBe(201);
       const body = response.json<{ id: string; cwd: string; snapshotBackend?: string; workspace?: Record<string, unknown> }>();
       expect(spies.provision).toHaveLength(1);
@@ -418,7 +418,7 @@ describe("managed workspace REST", () => {
     };
     const { app } = await buildApp(root, unavailable);
     try {
-      const response = await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: origin, workspaceMode: "managed" } });
+      const response = await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: origin, provider: "test-stub", model: "deterministic-tool-loop", workspaceMode: "managed" } });
       expect(response.statusCode).toBe(400);
       expect(response.json<{ error: string }>().error).toContain("托管工作区不可用");
       expect(response.json<{ error: string }>().error).toContain("sudo");
@@ -431,9 +431,9 @@ describe("managed workspace REST", () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
     const { app } = await buildApp(root, fakeManaged(root, {}));
     try {
-      const invalid = await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: root, workspaceMode: "weird" } });
+      const invalid = await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: root, provider: "test-stub", model: "deterministic-tool-loop", workspaceMode: "weird" } });
       expect(invalid.statusCode).toBe(400);
-      const missing = await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: path.join(root, "no-such-dir"), workspaceMode: "managed" } });
+      const missing = await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: path.join(root, "no-such-dir"), provider: "test-stub", model: "deterministic-tool-loop", workspaceMode: "managed" } });
       expect(missing.statusCode).toBe(400);
       expect(missing.json<{ error: string }>().error).toContain("源目录不存在");
     } finally {
@@ -448,7 +448,7 @@ describe("managed workspace REST", () => {
     const spies: { teardown: string[] } = { teardown: [] };
     const { app, sessions } = await buildApp(root, fakeManaged(root, spies));
     try {
-      const created = await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: origin, workspaceMode: "managed" } });
+      const created = await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: origin, provider: "test-stub", model: "deterministic-tool-loop", workspaceMode: "managed" } });
       const id = created.json<{ id: string }>().id;
       const deleted = await app.inject({ method: "DELETE", url: `/api/sessions/${id}` });
       expect(deleted.statusCode).toBe(204);

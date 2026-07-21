@@ -25,6 +25,12 @@ function entry(provider: string, model: string, from: string, until?: string): P
   };
 }
 
+function deferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((finish) => { resolve = finish; });
+  return { promise, resolve };
+}
+
 describe("PricingCatalog", () => {
   it("seeds JSON and switches pricing by effective interval", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "owc-pricing-"));
@@ -89,5 +95,113 @@ describe("PricingCatalog", () => {
       entry("anthropic", "x", "2026-09-01"),
     ]))).rejects.toThrow("overlap");
     expect(catalog.list()).toEqual(before);
+  });
+
+  it("syncs a valid remote pricing document atomically", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-pricing-"));
+    roots.push(root);
+    const catalog = new PricingCatalog(path.join(root, "model-pricing.json"));
+    await catalog.initialize();
+    const remote = {
+      ...document([entry("openai", "gpt-future", "2026-01-01")]),
+      updatedAt: "2026-07-21T12:00:00.000Z",
+    };
+    let signal: AbortSignal | undefined;
+
+    const result = await catalog.syncFromUrl("https://pricing.example.test/catalog.json", {
+      timeoutMs: 321,
+      fetchImpl: (async (_url, init) => {
+        signal = init?.signal ?? undefined;
+        return new Response(JSON.stringify(remote), {
+          headers: { "content-type": "application/json" },
+        });
+      }) as typeof fetch,
+    });
+
+    expect(result).toEqual({ ok: true, count: 1, updatedAt: remote.updatedAt });
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(catalog.list()).toEqual(remote);
+    expect(catalog.get("openai", "gpt-future")?.input).toBe(2_000_000n);
+  });
+
+  it.each([
+    ["invalid JSON", new Response("{not-json", { headers: { "content-type": "application/json" } }), undefined],
+    ["unsupported version", new Response(JSON.stringify({ version: 2, updatedAt: "2026-07-21T12:00:00.000Z", entries: [] })), "version 1"],
+    ["overlapping intervals", new Response(JSON.stringify(document([
+      entry("anthropic", "x", "2026-01-01", "2026-10-01"),
+      entry("anthropic", "x", "2026-09-01"),
+    ]))), "overlap"],
+  ])("does not replace the active catalog when remote data has %s", async (_name, response, message) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-pricing-"));
+    roots.push(root);
+    const catalog = new PricingCatalog(path.join(root, "model-pricing.json"));
+    await catalog.initialize();
+    const before = catalog.list();
+
+    const result = await catalog.syncFromUrl("https://pricing.example.test/catalog.json", {
+      fetchImpl: (async () => response) as typeof fetch,
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).not.toBe("");
+      if (message) expect(result.error).toContain(message);
+    }
+    expect(catalog.list()).toEqual(before);
+  });
+
+  it("does not replace the active catalog when the remote request fails", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-pricing-"));
+    roots.push(root);
+    const catalog = new PricingCatalog(path.join(root, "model-pricing.json"));
+    await catalog.initialize();
+    const before = catalog.list();
+
+    const result = await catalog.syncFromUrl("https://pricing.example.test/catalog.json", {
+      fetchImpl: (async () => { throw new Error("network unavailable"); }) as typeof fetch,
+    });
+
+    expect(result).toEqual({ ok: false, error: "network unavailable" });
+    expect(catalog.list()).toEqual(before);
+  });
+
+  it("serializes concurrent remote syncs so the later invocation wins", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-pricing-"));
+    roots.push(root);
+    const catalog = new PricingCatalog(path.join(root, "model-pricing.json"));
+    await catalog.initialize();
+    const firstStarted = deferred();
+    const releaseFirst = deferred();
+    let calls = 0;
+    const older = {
+      ...document([{ ...entry("openai", "gpt-future", "2026-01-01"), input: "1000000" }]),
+      updatedAt: "2026-07-21T12:00:00.000Z",
+    };
+    const newer = {
+      ...document([{ ...entry("openai", "gpt-future", "2026-01-01"), input: "9000000" }]),
+      updatedAt: "2026-07-21T12:01:00.000Z",
+    };
+    const fetchImpl = (async () => {
+      calls += 1;
+      if (calls === 1) {
+        firstStarted.resolve();
+        await releaseFirst.promise;
+        return Response.json(older);
+      }
+      return Response.json(newer);
+    }) as typeof fetch;
+
+    const first = catalog.syncFromUrl("https://pricing.example.test/older.json", { fetchImpl });
+    await firstStarted.promise;
+    const second = catalog.syncFromUrl("https://pricing.example.test/newer.json", { fetchImpl });
+    await Promise.resolve();
+    expect(calls).toBe(1);
+
+    releaseFirst.resolve();
+    await expect(first).resolves.toEqual({ ok: true, count: 1, updatedAt: older.updatedAt });
+    await expect(second).resolves.toEqual({ ok: true, count: 1, updatedAt: newer.updatedAt });
+    expect(calls).toBe(2);
+    expect(catalog.list()).toEqual(newer);
+    expect(catalog.get("openai", "gpt-future")?.input).toBe(9_000_000n);
   });
 });

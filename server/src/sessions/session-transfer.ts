@@ -48,10 +48,14 @@ export function parseSessionImport(text: string): ParsedSessionImport {
     throw new SessionTransferError("首行必须是 {kind:\"meta\",version:1,session:{...}}");
   }
   const session = head.session;
-  for (const key of ["cwd", "provider", "model", "title"] as const) {
+  for (const key of ["cwd", "provider", "title"] as const) {
     if (typeof session[key] !== "string" || session[key] === "") {
       throw new SessionTransferError(`meta.session.${key} 缺失或不是非空字符串`);
     }
+  }
+  // A newly created session may intentionally have no selected catalog model yet.
+  if (typeof session.model !== "string") {
+    throw new SessionTransferError("meta.session.model 缺失或不是字符串");
   }
   if (session.id !== undefined && !SESSION_ID_PATTERN.test(session.id)) {
     throw new SessionTransferError("meta.session.id 不是合法的会话 id");
