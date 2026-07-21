@@ -327,6 +327,8 @@ describe("BackgroundTaskRegistry", () => {
     const s1Tasks = registry.listForSession("s1");
     expect(s1Tasks).toHaveLength(2);
     expect(s1Tasks.map((t) => t.taskId).sort()).toEqual(["task-001", "task-002"]);
+    expect(registry.hasRunningForSession("s1")).toBe(true);
+    expect(registry.hasRunningForSession("missing")).toBe(false);
 
     const s2Tasks = registry.listForSession("s2");
     expect(s2Tasks).toHaveLength(1);
@@ -353,6 +355,7 @@ describe("BackgroundTaskRegistry", () => {
 
     const tasks = registry.listForSession("s1");
     expect(tasks.every((t) => t.status === "stopped")).toBe(true);
+    expect(registry.hasRunningForSession("s1")).toBe(false);
   });
 
   it("shutdown 清理所有任务", async () => {

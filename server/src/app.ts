@@ -260,6 +260,44 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   // 同一 managed 会话一次只允许一个回源操作；同步期间 checkpoint/delete 也必须等待，
   // 避免镜像挂载树在三方指纹校验之后被另一条管理操作换叶或卸载。
   const managedSyncingSessions = new Set<string>();
+  // VHDX/qcow2 换叶会短暂卸载工作区。用服务端互斥防止双击、双标签页或 restore
+  // 与 create 并发改同一条 chain；后台/快捷 shell 也必须先结束，不能持有挂载目录。
+  const managedCheckpointingSessions = new Set<string>();
+  // Shared/exclusive gate for managed mount points. A checkpoint/sync/teardown
+  // takes the exclusive side; core filesystem/exec work holds a shared lease
+  // until its promise settles. This closes the check-then-await race where a
+  // VHDX could be dismounted halfway through an otherwise valid request.
+  const managedWorkspaceUses = new Map<string, number>();
+  type ManagedSession = { id: string; workspace?: { mode?: string } };
+  const isManagedSession = (session: ManagedSession): boolean => session.workspace?.mode === "managed";
+  const acquireManagedWorkspaceUse = (session: ManagedSession): (() => void) | undefined => {
+    if (!isManagedSession(session)) return () => undefined;
+    if (managedCheckpointingSessions.has(session.id) || managedSyncingSessions.has(session.id)) return undefined;
+    managedWorkspaceUses.set(session.id, (managedWorkspaceUses.get(session.id) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const remaining = (managedWorkspaceUses.get(session.id) ?? 1) - 1;
+      if (remaining <= 0) managedWorkspaceUses.delete(session.id);
+      else managedWorkspaceUses.set(session.id, remaining);
+    };
+  };
+  const acquireManagedWorkspaceExclusive = (session: ManagedSession, kind: "checkpoint" | "sync" | "teardown"): (() => void) | undefined => {
+    if (!isManagedSession(session)) return () => undefined;
+    if (managedCheckpointingSessions.has(session.id) || managedSyncingSessions.has(session.id) || (managedWorkspaceUses.get(session.id) ?? 0) > 0) return undefined;
+    const set = kind === "sync" ? managedSyncingSessions : managedCheckpointingSessions;
+    set.add(session.id);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      set.delete(session.id);
+    };
+  };
+  const hasRunningBackgroundTask = (sessionId: string): boolean => dependencies.backgroundTasks?.hasRunningForSession(sessionId) ?? false;
+  // Test/embedding shims predating shell shortcuts may only implement isRunning.
+  const isShellPending = (sessionId: string): boolean => agent.isShellPending?.(sessionId) ?? false;
   const defaultSandbox = (cwd: string) => ({
     enabled: true,
     readRoots: [cwd],
@@ -449,7 +487,15 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   });
   app.post<{ Body: ExecRequest }>("/api/exec", async (request, reply) => {
     if (managedSyncingSessions.has(request.body.sessionId)) return reply.code(409).send({ error: "Managed workspace sync is in progress" });
-    return core.run(request.body);
+    if (managedCheckpointingSessions.has(request.body.sessionId)) return reply.code(409).send({ error: "Managed workspace checkpoint is in progress" });
+    const session = await sessions.get(request.body.sessionId);
+    const releaseWorkspace = session ? acquireManagedWorkspaceUse(session) : (() => undefined);
+    if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
+    try {
+      return await core.run(request.body);
+    } finally {
+      releaseWorkspace();
+    }
   });
 
   if (dependencies.settings) {
@@ -561,10 +607,15 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     const managed = dependencies.managed;
     if (!managed) return reply.code(501).send({ error: "Managed workspace is not configured" });
     if (managedSyncingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace sync is already in progress for this session" });
+    if (managedCheckpointingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace checkpoint is in progress" });
+    const releaseWorkspace = acquireManagedWorkspaceUse(session);
+    if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
     try {
       return await managed.previewSync(session);
     } catch (error) {
       return managedSyncFailure(reply, error);
+    } finally {
+      releaseWorkspace();
     }
   });
 
@@ -574,25 +625,26 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     if (!session) return reply.code(404).send({ error: "Session not found" });
     if (session.workspace?.mode !== "managed") return reply.code(400).send({ code: "NOT_MANAGED_WORKSPACE", error: "Session does not use a managed workspace" });
     if (agent.isRunning(session.id)) return reply.code(409).send({ error: "Session is running; wait for it to become idle before syncing its workspace" });
+    if (isShellPending(session.id) || hasRunningBackgroundTask(session.id)) return reply.code(409).send({ error: "A shell or background task is still using this managed workspace" });
     const body = request.body;
     if (!body || body.confirm !== true) return reply.code(400).send({ error: "confirm must be true before syncing a managed workspace" });
     if (typeof body.previewFingerprint !== "string") return reply.code(400).send({ error: "previewFingerprint must be a string from sync-preview" });
     if (body.overwriteConflicts !== undefined && typeof body.overwriteConflicts !== "boolean") return reply.code(400).send({ error: "overwriteConflicts must be a boolean" });
     const managed = dependencies.managed;
     if (!managed) return reply.code(501).send({ error: "Managed workspace is not configured" });
-    if (managedSyncingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace sync is already in progress for this session" });
+    const releaseWorkspace = acquireManagedWorkspaceExclusive(session, "sync");
+    if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace is in use or its checkpoint is in progress" });
     const input: ManagedWorkspaceSyncApplyInput = {
       confirm: true,
       previewFingerprint: body.previewFingerprint,
       ...(body.overwriteConflicts === undefined ? {} : { overwriteConflicts: body.overwriteConflicts }),
     };
-    managedSyncingSessions.add(session.id);
     try {
       return await managed.applySync(session, input);
     } catch (error) {
       return managedSyncFailure(reply, error);
     } finally {
-      managedSyncingSessions.delete(session.id);
+      releaseWorkspace();
     }
   });
 
@@ -834,22 +886,34 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   app.get<{ Params: { id: string }; Querystring: { path?: string } }>("/api/sessions/:id/files", async (request, reply) => {
     const session = await sessions.get(request.params.id);
     if (!session) return reply.code(404).send({ error: "Session not found" });
-    // 仅在 idle 且尚未配置时配置一次；运行中复用 agent 已配置的状态，避免竞态
-    if (!agent.isRunning(session.id) && !configuredSessions.has(session.id)) {
-      await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? defaultSandbox(session.cwd) });
-      configuredSessions.add(session.id);
+    const releaseWorkspace = acquireManagedWorkspaceUse(session);
+    if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
+    try {
+      // 仅在 idle 且尚未配置时配置一次；运行中复用 agent 已配置的状态，避免竞态
+      if (!agent.isRunning(session.id) && !configuredSessions.has(session.id)) {
+        await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? defaultSandbox(session.cwd) });
+        configuredSessions.add(session.id);
+      }
+      return await core.listFiles({ sessionId: request.params.id, path: request.query.path || "." });
+    } finally {
+      releaseWorkspace();
     }
-    return core.listFiles({ sessionId: request.params.id, path: request.query.path || "." });
   });
   app.get<{ Params: { id: string }; Querystring: { path?: string } }>("/api/sessions/:id/files/content", async (request, reply) => {
     const session = await sessions.get(request.params.id);
     if (!session) return reply.code(404).send({ error: "Session not found" });
     if (!request.query.path) return reply.code(400).send({ error: "path is required" });
-    if (!agent.isRunning(session.id) && !configuredSessions.has(session.id)) {
-      await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? defaultSandbox(session.cwd) });
-      configuredSessions.add(session.id);
+    const releaseWorkspace = acquireManagedWorkspaceUse(session);
+    if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
+    try {
+      if (!agent.isRunning(session.id) && !configuredSessions.has(session.id)) {
+        await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? defaultSandbox(session.cwd) });
+        configuredSessions.add(session.id);
+      }
+      return await core.readFile({ sessionId: request.params.id, path: request.query.path });
+    } finally {
+      releaseWorkspace();
     }
-    return core.readFile({ sessionId: request.params.id, path: request.query.path });
   });
   // @文件引用补全：core.globFiles（模式 *q*），≤20 条；只读免审批（与 /files 同处配置沙盒）
   app.get<{ Params: { id: string }; Querystring: { q?: string } }>("/api/sessions/:id/complete-path", async (request, reply) => {
@@ -857,13 +921,19 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     if (!session) return reply.code(404).send({ error: "Session not found" });
     const q = (request.query.q ?? "").trim();
     if (!q) return { matches: [] };
-    if (!agent.isRunning(session.id) && !configuredSessions.has(session.id)) {
-      await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? defaultSandbox(session.cwd) });
-      configuredSessions.add(session.id);
+    const releaseWorkspace = acquireManagedWorkspaceUse(session);
+    if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
+    try {
+      if (!agent.isRunning(session.id) && !configuredSessions.has(session.id)) {
+        await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? defaultSandbox(session.cwd) });
+        configuredSessions.add(session.id);
+      }
+      const result = await core.globFiles({ sessionId: request.params.id, path: session.cwd, pattern: `*${q}*` });
+      const matches = (result.paths ?? []).slice(0, 20).map((matchPath) => ({ path: matchPath }));
+      return { matches };
+    } finally {
+      releaseWorkspace();
     }
-    const result = await core.globFiles({ sessionId: request.params.id, path: session.cwd, pattern: `*${q}*` });
-    const matches = (result.paths ?? []).slice(0, 20).map((matchPath) => ({ path: matchPath }));
-    return { matches };
   });
   app.get<{ Params: { id: string; checkpointId: string } }>("/api/sessions/:id/checkpoints/:checkpointId/diff", async (request, reply) => {
     const session = await sessions.get(request.params.id); if (!session) return reply.code(404).send({ error: "Session not found" });
@@ -884,32 +954,56 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     const session = await sessions.get(request.params.id); if (!session) return reply.code(404).send({ error: "Session not found" });
     if (agent.isRunning(session.id)) return reply.code(409).send({ error: "Session is running" });
     if (managedSyncingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace sync is in progress" });
+    if (isShellPending(session.id)) return reply.code(409).send({ error: "A shell command is still using this session" });
+    if (hasRunningBackgroundTask(session.id)) return reply.code(409).send({ error: "A background task is still using this session" });
     const label = request.body?.label ?? "Manual checkpoint"; if (typeof label !== "string" || !label.trim()) return reply.code(400).send({ error: "label must be a non-empty string" });
-    const ledger = await new ContextManager(sessions.contextRoot(session.id)).load();
-    const backend = await getSnapshotBackend(sessions, session);
-    const checkpoint = await backend.create(label, session.messages.length, ledger);
-    events.publish({ source: "session", type: "checkpoint.created", sessionId: session.id, payload: checkpoint }); return reply.code(201).send(checkpoint);
+    const releaseWorkspace = acquireManagedWorkspaceExclusive(session, "checkpoint");
+    if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace is in use or its checkpoint is already in progress" });
+    try {
+      const ledger = await new ContextManager(sessions.contextRoot(session.id)).load();
+      const backend = await getSnapshotBackend(sessions, session);
+      const checkpoint = await backend.create(label, session.messages.length, ledger);
+      events.publish({ source: "session", type: "checkpoint.created", sessionId: session.id, payload: checkpoint }); return reply.code(201).send(checkpoint);
+    } finally {
+      releaseWorkspace();
+    }
   });
   app.post<{ Params: { id: string; checkpointId: string }; Body: { confirm?: boolean; filesOnly?: boolean } }>("/api/sessions/:id/checkpoints/:checkpointId/restore", async (request, reply) => {
     const session = await sessions.get(request.params.id); if (!session) return reply.code(404).send({ error: "Session not found" });
     if (agent.isRunning(session.id)) return reply.code(409).send({ error: "Session is running" });
     if (managedSyncingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace sync is in progress" });
+    if (isShellPending(session.id)) return reply.code(409).send({ error: "A shell command is still using this session" });
+    if (hasRunningBackgroundTask(session.id)) return reply.code(409).send({ error: "A background task is still using this session" });
     if (request.body?.confirm !== true) return reply.code(400).send({ error: "confirm must be true" });
-    const backend = await getSnapshotBackend(sessions, session);
-    const checkpoint = (await backend.list()).find((item) => item.id === request.params.checkpointId);
-    if (!checkpoint) return reply.code(404).send({ error: "Checkpoint not found" });
-    await backend.restore(checkpoint.id);
-    if (!request.body?.filesOnly) { await sessions.truncateMessages(session.id, checkpoint.messageCount); await new ContextManager(sessions.contextRoot(session.id)).replaceLedger(checkpoint.ledger); }
-    events.publish({ source: "session", type: "checkpoint.restored", sessionId: session.id, payload: { id: checkpoint.id, filesOnly: request.body?.filesOnly === true } }); return checkpoint;
+    const releaseWorkspace = acquireManagedWorkspaceExclusive(session, "checkpoint");
+    if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace is in use or its checkpoint is already in progress" });
+    try {
+      const backend = await getSnapshotBackend(sessions, session);
+      const checkpoint = (await backend.list()).find((item) => item.id === request.params.checkpointId);
+      if (!checkpoint) return reply.code(404).send({ error: "Checkpoint not found" });
+      await backend.restore(checkpoint.id);
+      if (!request.body?.filesOnly) { await sessions.truncateMessages(session.id, checkpoint.messageCount); await new ContextManager(sessions.contextRoot(session.id)).replaceLedger(checkpoint.ledger); }
+      events.publish({ source: "session", type: "checkpoint.restored", sessionId: session.id, payload: { id: checkpoint.id, filesOnly: request.body?.filesOnly === true } }); return checkpoint;
+    } finally {
+      releaseWorkspace();
+    }
   });
   app.delete<{ Params: { id: string; checkpointId: string } }>("/api/sessions/:id/checkpoints/:checkpointId", async (request, reply) => {
     const session = await sessions.get(request.params.id); if (!session) return reply.code(404).send({ error: "Session not found" });
     if (agent.isRunning(session.id)) return reply.code(409).send({ error: "Session is running" });
     if (managedSyncingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace sync is in progress" });
-    const backend = await getSnapshotBackend(sessions, session);
-    await backend.delete(request.params.checkpointId);
-    events.publish({ source: "session", type: "checkpoint.deleted", sessionId: session.id, payload: { id: request.params.checkpointId } });
-    return reply.code(204).send();
+    if (isShellPending(session.id)) return reply.code(409).send({ error: "A shell command is still using this session" });
+    if (hasRunningBackgroundTask(session.id)) return reply.code(409).send({ error: "A background task is still using this session" });
+    const releaseWorkspace = acquireManagedWorkspaceExclusive(session, "checkpoint");
+    if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace is in use or its checkpoint is already in progress" });
+    try {
+      const backend = await getSnapshotBackend(sessions, session);
+      await backend.delete(request.params.checkpointId);
+      events.publish({ source: "session", type: "checkpoint.deleted", sessionId: session.id, payload: { id: request.params.checkpointId } });
+      return reply.code(204).send();
+    } finally {
+      releaseWorkspace();
+    }
   });
 
   app.delete<{ Params: { id: string } }>("/api/sessions/:id", async (request, reply) => {
@@ -917,19 +1011,32 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       return reply.code(409).send({ error: "Session is running; abort it before deletion" });
     }
     if (managedSyncingSessions.has(request.params.id)) return reply.code(409).send({ error: "Managed workspace sync is in progress" });
+    if (managedCheckpointingSessions.has(request.params.id)) return reply.code(409).send({ error: "Managed workspace checkpoint is in progress" });
     const detail = await sessions.get(request.params.id);
     if (!detail) return reply.code(404).send({ error: "Session not found" });
-    // 停止该会话的后台任务
-    await dependencies.backgroundTasks?.stopForSession(request.params.id).catch(() => undefined);
-    await core.cleanupSession(request.params.id).catch(() => undefined);
-    // 释放会话持有的沙盒 core（WSB 虚拟机蒸发）；裸 CoreClient 无 release，为 no-op
-    await core.release?.(request.params.id).catch(() => undefined);
-    // 托管工作区：先卸载镜像盘再删目录（失败仅记日志，残留挂载由启动孤儿扫描兜底）
-    if (detail.workspace?.mode === "managed" && dependencies.managed) {
-      await dependencies.managed.teardown(detail).catch((error: unknown) => request.log.error(error, "Managed workspace teardown failed"));
+    const releaseWorkspace = acquireManagedWorkspaceExclusive(detail, "teardown");
+    if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace is in use or its checkpoint is in progress" });
+    try {
+      // 停止该会话的后台任务
+      await dependencies.backgroundTasks?.stopForSession(request.params.id).catch(() => undefined);
+      await core.cleanupSession(request.params.id).catch(() => undefined);
+      // 释放会话持有的沙盒 core（WSB 虚拟机蒸发）；裸 CoreClient 无 release，为 no-op
+      await core.release?.(request.params.id).catch(() => undefined);
+      // 托管工作区：必须先成功卸载当前叶子才删 meta。失败时保留会话与镜像，
+      // 否则会丢失 chain.json/恢复信息并留下无法定位的挂载盘。
+      if (detail.workspace?.mode === "managed" && dependencies.managed) {
+        try {
+          await dependencies.managed.teardown(detail);
+        } catch (error) {
+          request.log.error(error, "Managed workspace teardown failed");
+          return reply.code(500).send({ error: "Managed workspace teardown failed; the session was retained for recovery" });
+        }
+      }
+      if (!(await sessions.delete(request.params.id))) return reply.code(404).send({ error: "Session not found" });
+      return reply.code(204).send();
+    } finally {
+      releaseWorkspace();
     }
-    if (!(await sessions.delete(request.params.id))) return reply.code(404).send({ error: "Session not found" });
-    return reply.code(204).send();
   });
 
   // 后台任务 REST 路由
@@ -988,11 +1095,14 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       if (!session) return reply.code(404).send({ error: "Session not found" });
       if (agent.isRunning(request.params.id)) return reply.code(409).send({ error: "Session is running" });
       if (managedSyncingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace sync is in progress" });
+      if (managedCheckpointingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace checkpoint is in progress" });
       const name = safePdfUploadName(request.body?.name);
       if (!name) return reply.code(400).send({ error: "name must be a safe PDF filename" });
       const data = validatePdfUpload(request.body?.data);
       if (!data) return reply.code(400).send({ error: "data must be a base64 PDF no larger than 20 MiB" });
       if (!core.writeFileBase64) return reply.code(503).send({ error: "Core binary upload support is unavailable" });
+      const releaseWorkspace = acquireManagedWorkspaceUse(session);
+      if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
       try {
         // Reuse the same idle-only configuration discipline as file routes.
         // CoreRouter then maps the configured cwd for WSB and translates the
@@ -1005,12 +1115,15 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
         // Do not issue a workspace write after that transition.
         if (agent.isRunning(request.params.id)) return reply.code(409).send({ error: "Session is running" });
         if (managedSyncingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace sync is in progress" });
+        if (managedCheckpointingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace checkpoint is in progress" });
         const uploadPath = pdfUploadPath(name);
         await core.writeFileBase64({ sessionId: session.id, path: uploadPath, data, createDirs: true });
         return reply.code(201).send({ path: uploadPath });
       } catch (error) {
         request.log.error(error, "PDF upload write failed");
         return reply.code(500).send({ error: "Unable to save PDF upload" });
+      } finally {
+        releaseWorkspace();
       }
     },
   );
@@ -1025,8 +1138,9 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       const session = await sessions.get(request.params.id);
       if (!session) return reply.code(404).send({ error: "Session not found" });
       if (managedSyncingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace sync is in progress" });
+      if (managedCheckpointingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace checkpoint is in progress" });
       // shell 快捷前缀挂起中（权限审批/执行）：避免消息落盘与 shell 落盘竞态，要求先 respond
-      if (agent.isShellPending(request.params.id)) {
+      if (isShellPending(request.params.id)) {
         return reply.code(409).send({ error: "shell 命令挂起中，请先回应权限请求或等待其完成" });
       }
       const images = request.body.images;
@@ -1086,43 +1200,51 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
           return reply.code(code).send({ error: error instanceof Error ? error.message : String(error) });
         }
       }
-      const budget = await new ContextManager(sessions.contextRoot(request.params.id)).budgetStatus();
-      if (budget.paused) {
-        return reply.code(409).send({
-          error: budget.cost.paused ? "Session cost budget is exhausted or unavailable" : "Session token budget is exhausted",
-          budget,
-        });
-      }
-      // @文件引用：appendMessage 前对每个 path 调 core.readFile（受沙盒），过 boundToolResult（大文件截断 + artifact）；
-      // 越界/不可读降级为错误块而非抛错炸掉整个请求；组装为前置 text 块 `[Attachment <path>]\n<内容>`
-      let attachmentBlocks: Array<{ text: string }> = [];
-      if (attachments && attachments.length > 0) {
-        if (!agent.isRunning(session.id) && !configuredSessions.has(session.id)) {
-          await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? defaultSandbox(session.cwd) });
-          configuredSessions.add(session.id);
+      const releaseWorkspace = acquireManagedWorkspaceUse(session);
+      if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
+      try {
+        const budget = await new ContextManager(sessions.contextRoot(request.params.id)).budgetStatus();
+        if (budget.paused) {
+          releaseWorkspace();
+          return reply.code(409).send({
+            error: budget.cost.paused ? "Session cost budget is exhausted or unavailable" : "Session token budget is exhausted",
+            budget,
+          });
         }
-        const contextRoot = sessions.contextRoot(request.params.id);
-        for (const item of attachments) {
-          const attachmentPath = item.path.trim();
-          try {
-            const result = await core.readFile({ sessionId: request.params.id, path: attachmentPath });
-            const bounded = await boundToolResult(contextRoot, "read_file", result.content);
-            attachmentBlocks.push({ text: `[Attachment ${attachmentPath}]\n${bounded.content}` });
-          } catch (error) {
-            const reason = error instanceof Error ? error.message : String(error);
-            attachmentBlocks.push({ text: `[Attachment ${attachmentPath}]\n错误：路径越界或不可读（${reason}）` });
+        // @文件引用：appendMessage 前对每个 path 调 core.readFile（受沙盒），过 boundToolResult（大文件截断 + artifact）；
+        // 越界/不可读降级为错误块而非抛错炸掉整个请求；组装为前置 text 块 `[Attachment <path>]\n<内容>`
+        const attachmentBlocks: Array<{ text: string }> = [];
+        if (attachments && attachments.length > 0) {
+          if (!agent.isRunning(session.id) && !configuredSessions.has(session.id)) {
+            await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? defaultSandbox(session.cwd) });
+            configuredSessions.add(session.id);
+          }
+          const contextRoot = sessions.contextRoot(request.params.id);
+          for (const item of attachments) {
+            const attachmentPath = item.path.trim();
+            try {
+              const result = await core.readFile({ sessionId: request.params.id, path: attachmentPath });
+              const bounded = await boundToolResult(contextRoot, "read_file", result.content);
+              attachmentBlocks.push({ text: `[Attachment ${attachmentPath}]\n${bounded.content}` });
+            } catch (error) {
+              const reason = error instanceof Error ? error.message : String(error);
+              attachmentBlocks.push({ text: `[Attachment ${attachmentPath}]\n错误：路径越界或不可读（${reason}）` });
+            }
           }
         }
+        void agent.run(request.params.id, request.body.content, {
+          ...(images?.length ? { images } : {}),
+          ...(attachmentBlocks.length ? { attachments: attachmentBlocks } : {}),
+        }).catch((error: unknown) => {
+          // The browser already received 202, so keep the detailed failure in
+          // the server log as well as AgentRunner's agent.error event.
+          request.log.error({ err: error, sessionId: request.params.id }, "Agent run failed after accepting message");
+        }).finally(releaseWorkspace);
+        return reply.code(202).send({ accepted: true });
+      } catch (error) {
+        releaseWorkspace();
+        throw error;
       }
-      void agent.run(request.params.id, request.body.content, {
-        ...(images?.length ? { images } : {}),
-        ...(attachmentBlocks.length ? { attachments: attachmentBlocks } : {}),
-      }).catch((error: unknown) => {
-        // The browser already received 202, so keep the detailed failure in
-        // the server log as well as AgentRunner's agent.error event.
-        request.log.error({ err: error, sessionId: request.params.id }, "Agent run failed after accepting message");
-      });
-      return reply.code(202).send({ accepted: true });
     },
   );
 
@@ -1168,8 +1290,11 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       if (typeof cmd !== "string" || cmd.trim() === "") return reply.code(400).send({ error: "cmd must be a non-empty string" });
       if (agent.isRunning(request.params.id)) return reply.code(409).send({ error: "Session agent is running; wait for it to finish before running a shell command" });
       if (managedSyncingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace sync is in progress" });
-      if (agent.isShellPending(request.params.id)) return reply.code(409).send({ error: "A shell command is already pending; respond to its permission request first" });
-      void agent.runShell(request.params.id, cmd).catch(() => undefined);
+      if (managedCheckpointingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace checkpoint is in progress" });
+      if (isShellPending(request.params.id)) return reply.code(409).send({ error: "A shell command is already pending; respond to its permission request first" });
+      const releaseWorkspace = acquireManagedWorkspaceUse(session);
+      if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
+      void agent.runShell(request.params.id, cmd).catch(() => undefined).finally(releaseWorkspace);
       return reply.code(202).send({ accepted: true });
     },
   );
