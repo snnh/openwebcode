@@ -44,10 +44,38 @@ export class PricingCatalog {
     async replace(value) {
         return this.serial(async () => {
             const document = parseDocument(value);
-            await this.persist(document);
-            this.install(document);
-            return cloneDocument(document);
+            return this.replaceDocument(document);
         });
+    }
+    /**
+     * Fetch and atomically install a remote pricing document.  Validation is
+     * completed before the catalog is committed, so a bad response never
+     * changes the active catalog. The complete fetch-to-commit operation is
+     * serialized: a later invocation cannot be overwritten by an older, slower
+     * response.
+     */
+    async syncFromUrl(url, options = {}) {
+        return this.serial(async () => {
+            try {
+                const response = await (options.fetchImpl ?? globalThis.fetch)(url, {
+                    signal: AbortSignal.timeout(options.timeoutMs ?? 15_000),
+                });
+                if (!response.ok)
+                    throw new Error(`HTTP ${response.status}`);
+                const document = parseDocument(await response.json());
+                const installed = await this.replaceDocument(document);
+                return { ok: true, count: installed.entries.length, updatedAt: installed.updatedAt };
+            }
+            catch (error) {
+                return { ok: false, error: syncErrorMessage(error) };
+            }
+        });
+    }
+    /** Commit a document that has already passed parseDocument validation. */
+    async replaceDocument(document) {
+        await this.persist(document);
+        this.install(document);
+        return cloneDocument(document);
     }
     install(document) {
         this.document = cloneDocument(document);
@@ -176,4 +204,9 @@ function asRecord(value) {
 }
 function isMissing(error) {
     return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
+function syncErrorMessage(error) {
+    if (error instanceof Error && error.message)
+        return error.message;
+    return "Failed to sync model pricing";
 }

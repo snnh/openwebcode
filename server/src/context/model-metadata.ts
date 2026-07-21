@@ -8,6 +8,7 @@ export interface ModelMetadata {
 
 const caps = (overrides: Partial<ModelCapabilities> = {}): ModelCapabilities => ({
   modalities: ["text"],
+  imageOutput: false,
   thinking: [],
   effort: [],
   tools: true,

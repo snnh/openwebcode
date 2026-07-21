@@ -24,7 +24,7 @@ openwebcode/
 │   │   ├── app.ts        # Fastify HTTP/WS、REST 路由、buildServer(deps) 注入面
 │   │   ├── core-client.ts# C 子进程管理 + RPC 客户端（崩溃自动重启）
 │   │   ├── agent/        # agent loop、工具调度、权限、状态机、护栏、子代理、后台任务
-│   │   ├── providers/    # anthropic / openai / development + 统一流式接口
+│   │   ├── providers/    # anthropic / openai + 统一流式接口
 │   │   ├── context/      # 账本、buildView、驱逐、artifact、压缩
 │   │   ├── sessions/     # 多会话管理、JSONL 持久化
 │   │   ├── cost/         # 定价目录、汇率、成本核算
@@ -118,18 +118,19 @@ cd web && npm run dev    # Vite 默认 5173，proxy 到 server 3000
 
 `OWC_CORE_PATH` 指向编译出的 owc-exec，否则 server 按源码树相对位置找（开发态通常能找到）。
 
-### B. development provider（无需真实 LLM）
+### 数据目录解析
 
-server 内置一个 `development` provider，不调任何外部 API，按文本规则回放工具调用：
+用户显式设置的 `OWC_DATA_DIR` 优先。未设置时，安装版启动器会注入平台默认值（Windows `%LOCALAPPDATA%\openwebcode`；Linux `${XDG_DATA_HOME:-~/.local/share}/openwebcode`）；只有绕过启动器直接运行 `node server/dist/index.js` 时，才以相对 `server` 目录的 `../.openwebcode` 作为启动/设置目录兜底。设置文件固定在 `<启动/设置目录>/server-settings.json`；其已保存的 `dataDir` 会在未设置 `OWC_DATA_DIR` 时、下次启动后选择 `<业务数据目录>`，但不会移动设置文件。未保存覆盖时两者相同。为避免相对路径按 `server` 目录解析，建议两处都使用绝对路径；源码联调若想隔离数据，可显式设置 `OWC_DATA_DIR`。
 
-```sh
-cd server && npm run dev
-# 浏览器打开后，新建会话选 provider=development、model=deterministic-tool-loop
-# 输入框输入 "run: ls -la" → development provider 回放一个 bash 工具调用
-# 工具结果回来后自动回放 "Command completed: ..." 文本
-```
+### B. 测试用 provider（无需真实 LLM）
 
-参考 `server/src/providers/development-provider.ts`：解析 `run: <cmd>` 前缀发 bash tool_call，收到 tool_result 后回放文本。端到端测试 agent loop、工具调度、权限链、UI 事件流，**不耗 token**。先把它用熟，再上真实 LLM。
+运行时不再内置模拟 provider。端到端和单元测试使用
+`server/test/helpers/stub-provider.ts` 的 `makeStubProvider()` 注入一个确定性
+provider；它支持 `run: <cmd>` 的工具调用回放与 `tool_result` 回包，因此测试无需
+消耗 token，也不会把开发用途的 provider 暴露给实际用户。
+
+本地联调请在设置页配置 Anthropic 或 OpenAI 兼容端点的 API Key，并刷新模型目录后
+创建会话。
 
 ### C. 真实 LLM + 本地三件套
 
@@ -187,7 +188,7 @@ cd server && npm run dev
 ### 加一个 MCP 客户端传输
 
 1. `server/src/mcp/` 现有 stdio + Streamable HTTP，加新传输 follow 同样抽象
-2. 配置在 `~/.openwebcode/mcp.json` 或 `<cwd>/.owc/mcp.json`
+2. 配置在 `<业务数据目录>/mcp.json` 或 `<cwd>/.owc/mcp.json`
 3. 工具注入命名空间 `mcp__<server>__<tool>`，走与内置工具相同的权限链
 
 ### 改上下文策略
@@ -246,6 +247,7 @@ cd server && npm run dev
 - Windows：`npm ci/build`（server+web）→ CMake Release 构建 core → 按 `core/CMakeLists.txt` 末尾契约组装 `build/stage/` → `cpack -G WIX`
 - Linux：同样构建后组装 `build/stage/` + 下载 Node 20 整树解入 `node/` → `tar` 打包
 - bundled Node 版本固定在 workflow 的 `env.NODE_DIST_VERSION`，升级改这一个常量
+- Linux 安装器的 portable 回归可在 checkout 中运行 `sh packaging/test-install.sh`；它覆盖非 TTY 不提问、带空格/单引号路径、`--use-system-node` 与严格参数校验。发布冒烟应使用 `./install.sh --yes --prefix <临时绝对路径>`，避免 CI 被交互式配置卡住。
 - staging 契约细节见 `core/CMakeLists.txt` 末尾注释；从干净源码执行测试门禁、组装 staging、本地生成 MSI/tar.gz、冒烟与发布检查的逐步命令见 [`../packaging/README.md`](../packaging/README.md)
 - 本地替换 staging 前端时应整体替换 `web/dist/` 并重启 server；若 UI 仍显示旧布局，用 `Ctrl+F5` 清掉旧入口缓存。只覆盖部分 assets 会留下入口与哈希文件不匹配的风险
 
@@ -263,11 +265,11 @@ cd server && npm run dev
 
 ## 调试技巧
 
-- **看 core RPC 往来**：core 子进程的 stderr 由 server 捕获归档到 `~/.openwebcode/logs/`，限量轮转
+- **看 core RPC 往来**：core 子进程的 stderr 由 server 捕获归档到 `<业务数据目录>/logs/`，限量轮转
 - **看事件流**：WS `/api/events` 端点，浏览器 DevTools Network → WS 看每帧
-- **看账本**：`~/.openwebcode/sessions/<id>/ledger.json`，每轮更新
-- **看消息历史**：`~/.openwebcode/sessions/<id>/messages.jsonl`（每行一条）
-- **看 artifacts**：`~/.openwebcode/sessions/<id>/artifacts/`
-- **看子代理转录**：`~/.openwebcode/sessions/<id>/subagents/<taskId>.json`
+- **看账本**：`<业务数据目录>/sessions/<id>/ledger.json`，每轮更新
+- **看消息历史**：`<业务数据目录>/sessions/<id>/messages.jsonl`（每行一条）
+- **看 artifacts**：`<业务数据目录>/sessions/<id>/artifacts/`
+- **看子代理转录**：`<业务数据目录>/sessions/<id>/subagents/<taskId>.json`
 - **强制单轮**：`maxTurnsPerMessage` 在 config 里可调，调试时设小
 - **断 core**：杀 owc-exec 进程，观察 core-client 自动重启（指数退避 ≤3 次）与运行中工具标记失败

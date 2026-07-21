@@ -126,19 +126,26 @@ export interface ExtensionInfo {
   error?: string;
 }
 
+export type ModelModality = "text" | "image" | "video";
+
+export interface ModelCapabilities {
+  /** Input modalities accepted by the model. */
+  modalities: ModelModality[];
+  /** Whether the model can return image content. */
+  imageOutput: boolean;
+  thinking: Array<"adaptive" | "enabled" | "disabled">;
+  effort: Array<"low" | "medium" | "high" | "xhigh" | "max">;
+  tools: boolean;
+}
+
 export interface ModelProfile {
   id: string;
   provider: string;
   displayName?: string;
-  source?: "builtin" | "api" | "manual";
+  source?: "builtin" | "api" | "synced" | "manual";
   contextWindow: number;
   maxOutput: number;
-  capabilities: {
-    thinking: Array<"adaptive" | "enabled" | "disabled">;
-    effort: Array<"low" | "medium" | "high" | "xhigh" | "max">;
-    modalities: Array<"text" | "image">;
-    tools: boolean;
-  };
+  capabilities: ModelCapabilities;
   pricing?: { currency: string; input: string; output: string; cacheRead: string; cacheWrite: string };
 }
 
@@ -174,14 +181,25 @@ export interface PricingDocument {
   entries: PricingEntry[];
 }
 
+/** Result returned by a remote catalog or pricing synchronization attempt. */
+export type SyncResult =
+  | { ok: true; count: number; updatedAt: string }
+  | { ok: false; error: string };
+
+/** Persisted status of the remote model-catalog layer. */
+export interface CatalogSyncStatus {
+  count: number;
+  updatedAt?: string;
+}
+
 export interface FileEntry {
   name: string;
   type: "file" | "directory" | "other";
   size: number;
 }
 
-export type SettingFieldType = "text" | "secret" | "number" | "boolean" | "select";
-export type SettingValue = string | number | boolean;
+export type SettingFieldType = "text" | "secret" | "number" | "boolean" | "select" | "pathList";
+export type SettingValue = string | number | boolean | string[];
 
 export interface SettingsField {
   key: string;

@@ -18,9 +18,31 @@ import { detectWsb } from "./sandbox/wsb.js";
 import { getSnapshotBackend } from "./snapshots/index.js";
 import { SessionTransferError } from "./sessions/session-transfer.js";
 import { SettingsValidationError } from "./settings-service.js";
-const MODEL_MODALITIES = ["text", "image"];
+const MODEL_MODALITIES = ["text", "image", "video"];
 const THINKING_MODES = ["adaptive", "enabled", "disabled"];
 const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
+/**
+ * The global Fastify cap remains 1 MiB.  This route alone needs room for the
+ * four allowed image inputs (up to 7,000,000 base64 characters each), which is
+ * also how rendered PDF pages are submitted.  30 MiB leaves JSON-envelope
+ * headroom without granting other API routes a larger upload surface.
+ */
+const IMAGE_MESSAGE_BODY_LIMIT = 30 * 1024 * 1024;
+/** PDF uploads are decoded before they enter the message pipeline. Keep this
+ * route-local cap high enough for a 20 MiB PDF's base64 envelope, while the
+ * global Fastify limit remains 1 MiB for all unrelated APIs. */
+const PDF_UPLOAD_BODY_LIMIT = 30 * 1024 * 1024;
+const MAX_PDF_UPLOAD_BYTES = 20 * 1024 * 1024;
+const MAX_PDF_UPLOAD_BASE64 = Math.ceil(MAX_PDF_UPLOAD_BYTES / 3) * 4;
+/** Keep room for a `-<UUID>` suffix while staying below the 255-byte filename
+ * component limit imposed by common Windows and POSIX filesystems. */
+const MAX_PDF_UPLOAD_NAME_BYTES = 200;
+const MAX_PDF_UPLOAD_NAME_CHARACTERS = 128;
+const WINDOWS_RESERVED_BASENAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
+const NO_PROVIDER_MESSAGE = "请先在设置中配置至少一个 API 密钥";
+function syncUrlNotConfigured(label) {
+    return { ok: false, error: `${label} sync URL is not configured` };
+}
 function serializePricing(pricing) {
     return {
         currency: pricing.currency,
@@ -29,6 +51,100 @@ function serializePricing(pricing) {
         cacheRead: pricing.cacheRead.toString(),
         cacheWrite: pricing.cacheWrite.toString(),
     };
+}
+/**
+ * A provider is selectable by default only after its credentials have been
+ * configured.  Tests and embedders that do not provide SettingsService retain
+ * the registry-only behaviour, which is also useful for injected test providers.
+ */
+function resolveDefaultProvider(settings, providers) {
+    const configured = settings ? new Set(settings.configuredProviderNames()) : undefined;
+    return providers.list().find((name) => configured === undefined || configured.has(name));
+}
+function resolveDefaultModel(provider, models) {
+    return models?.list().find((model) => model.provider === provider)?.id ?? "";
+}
+/**
+ * Allow user-facing Unicode names, but never accept a pathname or a Windows
+ * device name. The returned name is safe to join below .owc/uploads on every
+ * supported host OS.
+ */
+function safePdfUploadName(value) {
+    if (typeof value !== "string")
+        return undefined;
+    // `@` is meaningful to the message attachment parser.  Uploaded PDFs may
+    // later be represented as a literal workspace path in a prompt, so normalize
+    // it out of the stored name rather than allowing it to create an accidental
+    // attachment reference (for example: "report @README.md.pdf").
+    const name = value.normalize("NFC").replaceAll("@", "_");
+    if (!name || name.length > MAX_PDF_UPLOAD_NAME_CHARACTERS || Buffer.byteLength(name, "utf8") > MAX_PDF_UPLOAD_NAME_BYTES || name.startsWith(".") || name.endsWith(".") || name.endsWith(" "))
+        return undefined;
+    if (!name.toLowerCase().endsWith(".pdf") || /[\\/\u0000-\u001f<>:"|?*]/.test(name))
+        return undefined;
+    if (WINDOWS_RESERVED_BASENAME.test(name))
+        return undefined;
+    return name;
+}
+function isBase64AlphabetCode(code) {
+    return (code >= 0x41 && code <= 0x5a) // A-Z
+        || (code >= 0x61 && code <= 0x7a) // a-z
+        || (code >= 0x30 && code <= 0x39) // 0-9
+        || code === 0x2b // +
+        || code === 0x2f; // /
+}
+function base64Digit(code) {
+    if (code >= 0x41 && code <= 0x5a)
+        return code - 0x41;
+    if (code >= 0x61 && code <= 0x7a)
+        return code - 0x61 + 26;
+    if (code >= 0x30 && code <= 0x39)
+        return code - 0x30 + 52;
+    if (code === 0x2b)
+        return 62;
+    if (code === 0x2f)
+        return 63;
+    return -1;
+}
+/** Linear validation avoids regex engine stack limits for a legal 20 MiB PDF. */
+function isCanonicalBase64(value) {
+    if (value.length === 0 || value.length % 4 !== 0)
+        return false;
+    const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+    for (let index = 0; index < value.length - padding; index += 1) {
+        if (!isBase64AlphabetCode(value.charCodeAt(index)))
+            return false;
+    }
+    for (let index = value.length - padding; index < value.length; index += 1) {
+        if (value.charCodeAt(index) !== 0x3d)
+            return false;
+    }
+    // RFC 4648's unused low bits must be zero. This makes `AB==` and `TWF=`
+    // invalid rather than alternate spellings of the same bytes.
+    if (padding === 2 && (base64Digit(value.charCodeAt(value.length - 3)) & 0x0f) !== 0)
+        return false;
+    if (padding === 1 && (base64Digit(value.charCodeAt(value.length - 2)) & 0x03) !== 0)
+        return false;
+    return true;
+}
+/** Strictly validate a conventional base64 PDF payload. Buffer.from() alone
+ * is deliberately not used as validation because it accepts malformed input.
+ * The validated canonical string is passed to core for the binary write so the
+ * server never has to choose or open a host filesystem destination. */
+function validatePdfUpload(value) {
+    if (typeof value !== "string" || value.length === 0 || value.length > MAX_PDF_UPLOAD_BASE64 || !isCanonicalBase64(value))
+        return undefined;
+    const bytes = Buffer.from(value, "base64");
+    if (bytes.length === 0 || bytes.length > MAX_PDF_UPLOAD_BYTES || bytes.toString("base64") !== value)
+        return undefined;
+    return bytes.subarray(0, 5).toString("ascii") === "%PDF-" ? value : undefined;
+}
+function pdfUploadPath(name) {
+    const extension = path.extname(name);
+    const stem = path.basename(name, extension);
+    // A UUID makes this final component unguessable and collision-resistant.
+    // Core owns parent traversal and the actual platform write, so there is no
+    // host-side lstat → mkdir/write time-of-check/time-of-use window here.
+    return path.posix.join(".owc", "uploads", `${stem}-${randomUUID()}${extension}`);
 }
 export async function buildServer(dependencies) {
     const { core, sessions, agent, events, providers, pricing } = dependencies;
@@ -131,12 +247,26 @@ export async function buildServer(dependencies) {
             pricing: serializePricing(pricing.get(profile.provider, profile.id)),
         } : {}),
     })));
+    app.get("/api/models/sync-status", async () => dependencies.models?.syncStatus() ?? { count: 0 });
+    app.post("/api/models/sync", async () => {
+        const url = dependencies.settings?.effective().models.catalogSyncUrl;
+        if (!url)
+            return syncUrlNotConfigured("Model catalog");
+        const models = dependencies.models;
+        if (!models)
+            return syncUrlNotConfigured("Model registry");
+        return models.syncCatalogFromUrl(url);
+    });
     app.post("/api/models/refresh", async (request, reply) => {
         const models = dependencies.models;
         if (!models)
             return reply.code(501).send({ error: "Model registry is not configured" });
         const config = dependencies.settings?.effective() ?? {};
-        return models.refresh({ ...(config.anthropic ? { anthropic: config.anthropic } : {}), ...(config.openai ? { openai: config.openai } : {}) });
+        const refreshed = await models.refresh({ ...(config.anthropic ? { anthropic: config.anthropic } : {}), ...(config.openai ? { openai: config.openai } : {}) });
+        const url = config.models?.catalogSyncUrl;
+        if (!url)
+            return refreshed;
+        return { ...refreshed, catalogSync: await models.syncCatalogFromUrl(url) };
     });
     app.put("/api/models/:id", async (request, reply) => {
         const models = dependencies.models;
@@ -154,14 +284,14 @@ export async function buildServer(dependencies) {
             const value = body.capabilities;
             const valid = Boolean(value) && typeof value === "object"
                 && Array.isArray(value.modalities) && Array.isArray(value.thinking) && Array.isArray(value.effort)
-                && typeof value.tools === "boolean";
+                && typeof value.imageOutput === "boolean" && typeof value.tools === "boolean";
             if (!valid)
-                return reply.code(400).send({ error: "capabilities must include modalities/thinking/effort arrays and a tools boolean" });
+                return reply.code(400).send({ error: "capabilities must include modalities/thinking/effort arrays plus imageOutput and tools booleans" });
             const inRange = value.modalities.every((item) => MODEL_MODALITIES.includes(item))
                 && value.thinking.every((item) => THINKING_MODES.includes(item))
                 && value.effort.every((item) => EFFORT_LEVELS.includes(item));
             if (!inRange)
-                return reply.code(400).send({ error: "capabilities values out of range (modalities: text/image; thinking: adaptive/enabled/disabled; effort: low/medium/high/xhigh/max)" });
+                return reply.code(400).send({ error: "capabilities values out of range (modalities: text/image/video; thinking: adaptive/enabled/disabled; effort: low/medium/high/xhigh/max)" });
         }
         for (const key of ["contextWindow", "maxOutput"]) {
             if (body[key] !== undefined && (!Number.isSafeInteger(body[key]) || body[key] < 1)) {
@@ -193,7 +323,10 @@ export async function buildServer(dependencies) {
             capabilities: body.capabilities ?? base.capabilities,
         };
         await models.upsertManual(model);
-        return model;
+        // Return the registry-normalized representation rather than echoing the
+        // request body. This keeps the public capability contract closed (for
+        // example, an unsupported videoOutput field is never reflected back).
+        return { ...models.get(id), source: "manual" };
     });
     app.delete("/api/models/:id", async (request, reply) => {
         const models = dependencies.models;
@@ -205,6 +338,20 @@ export async function buildServer(dependencies) {
         return reply.code(204).send();
     });
     app.get("/api/model-pricing", async () => pricing.list());
+    app.post("/api/model-pricing/sync", async () => {
+        const url = dependencies.settings?.effective().models.pricingSyncUrl;
+        if (!url)
+            return syncUrlNotConfigured("Model pricing");
+        const result = await pricing.syncFromUrl(url);
+        if (result.ok) {
+            events.publish({
+                source: "server",
+                type: "model.pricing_updated",
+                payload: { version: 1, updatedAt: result.updatedAt, entries: result.count },
+            });
+        }
+        return result;
+    });
     app.put("/api/model-pricing", async (request, reply) => {
         try {
             const document = await pricing.replace(request.body);
@@ -240,7 +387,7 @@ export async function buildServer(dependencies) {
         });
     }
     /** 托管工作区创建：能力检测 → 预分配 id 建盘挂载复制 → 落 meta（cwd=挂载点、snapshotBackend 预设）；失败清理半成品 */
-    const createManagedSession = async (body, provider, reply) => {
+    const createManagedSession = async (body, provider, model, reply) => {
         const managed = dependencies.managed;
         if (!managed)
             return reply.code(501).send({ error: "Managed workspace is not configured" });
@@ -274,6 +421,7 @@ export async function buildServer(dependencies) {
             const session = await sessions.create({
                 ...rest,
                 provider,
+                model,
                 id: sessionId,
                 cwd: provisioned.mountPoint,
                 workspace,
@@ -294,10 +442,14 @@ export async function buildServer(dependencies) {
         if (!request.body || typeof request.body.cwd !== "string" || !request.body.cwd) {
             return reply.code(400).send({ error: "cwd must be a non-empty string" });
         }
-        const provider = request.body.provider ?? "development";
+        const provider = request.body.provider ?? resolveDefaultProvider(dependencies.settings, providers);
+        if (!provider) {
+            return reply.code(400).send({ code: "NO_PROVIDER", message: NO_PROVIDER_MESSAGE, error: NO_PROVIDER_MESSAGE });
+        }
         if (!providers.get(provider)) {
             return reply.code(400).send({ error: `Provider ${provider} is not configured` });
         }
+        const model = request.body.model ?? resolveDefaultModel(provider, dependencies.models);
         const sandboxModeError = validateSandboxMode(request.body.sandboxMode);
         if (sandboxModeError)
             return reply.code(400).send({ error: sandboxModeError });
@@ -311,8 +463,8 @@ export async function buildServer(dependencies) {
             return reply.code(400).send({ error: 'workspaceMode must be "managed"' });
         }
         if (request.body.workspaceMode === "managed")
-            return createManagedSession(request.body, provider, reply);
-        const session = await sessions.create({ ...request.body, provider });
+            return createManagedSession(request.body, provider, model, reply);
+        const session = await sessions.create({ ...request.body, provider, model });
         events.publish({ source: "session", type: "session.created", sessionId: session.id, payload: session });
         // SessionStart 钩子：仅通知不阻断
         if (dependencies.hooks)
@@ -753,7 +905,7 @@ export async function buildServer(dependencies) {
         const record = image;
         return typeof record.mediaType === "string" && IMAGE_MEDIA_TYPES.has(record.mediaType) &&
             typeof record.data === "string" && record.data.length > 0 && record.data.length <= MAX_IMAGE_BASE64 &&
-            /^[A-Za-z0-9+/=]+$/.test(record.data);
+            isCanonicalBase64(record.data);
     };
     app.post("/api/sessions/:id/compact", async (request, reply) => {
         if (!dependencies.compactor)
@@ -770,7 +922,42 @@ export async function buildServer(dependencies) {
             return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
         }
     });
-    app.post("/api/sessions/:id/messages", { bodyLimit: 30 * 1024 * 1024 }, async (request, reply) => {
+    app.post("/api/sessions/:id/pdf-upload", { bodyLimit: PDF_UPLOAD_BODY_LIMIT }, async (request, reply) => {
+        const session = await sessions.get(request.params.id);
+        if (!session)
+            return reply.code(404).send({ error: "Session not found" });
+        if (agent.isRunning(request.params.id))
+            return reply.code(409).send({ error: "Session is running" });
+        const name = safePdfUploadName(request.body?.name);
+        if (!name)
+            return reply.code(400).send({ error: "name must be a safe PDF filename" });
+        const data = validatePdfUpload(request.body?.data);
+        if (!data)
+            return reply.code(400).send({ error: "data must be a base64 PDF no larger than 20 MiB" });
+        if (!core.writeFileBase64)
+            return reply.code(503).send({ error: "Core binary upload support is unavailable" });
+        try {
+            // Reuse the same idle-only configuration discipline as file routes.
+            // CoreRouter then maps the configured cwd for WSB and translates the
+            // relative upload path to the session's sandbox filesystem.
+            if (!configuredSessions.has(session.id)) {
+                await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? defaultSandbox(session.cwd) });
+                configuredSessions.add(session.id);
+            }
+            // An agent may have started while configuration awaited its core RPC.
+            // Do not issue a workspace write after that transition.
+            if (agent.isRunning(request.params.id))
+                return reply.code(409).send({ error: "Session is running" });
+            const uploadPath = pdfUploadPath(name);
+            await core.writeFileBase64({ sessionId: session.id, path: uploadPath, data, createDirs: true });
+            return reply.code(201).send({ path: uploadPath });
+        }
+        catch (error) {
+            request.log.error(error, "PDF upload write failed");
+            return reply.code(500).send({ error: "Unable to save PDF upload" });
+        }
+    });
+    app.post("/api/sessions/:id/messages", { bodyLimit: IMAGE_MESSAGE_BODY_LIMIT }, async (request, reply) => {
         if (!request.body || typeof request.body.content !== "string" || !request.body.content) {
             return reply.code(400).send({ error: "content must be a non-empty string" });
         }

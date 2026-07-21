@@ -33,7 +33,7 @@ async function storeAt(root: string): Promise<SessionStore> {
 describe("session export/import", () => {
   it("round-trips meta and messages, keeping the id when free", async () => {
     const source = await storeAt(await tempDir());
-    const created = await source.create({ cwd: os.tmpdir(), provider: "development", title: "迁移样例" });
+    const created = await source.create({ cwd: os.tmpdir(), provider: "test-stub", model: "deterministic-tool-loop", title: "迁移样例" });
     await source.appendMessage(created.id, "user", [{ type: "text", text: "你好" }]);
     await source.appendMessage(created.id, "assistant", [{ type: "text", text: "收到" }]);
 
@@ -54,7 +54,7 @@ describe("session export/import", () => {
 
   it("assigns a new id when the original is taken", async () => {
     const store = await storeAt(await tempDir());
-    const created = await store.create({ cwd: os.tmpdir(), title: "冲突样例" });
+    const created = await store.create({ cwd: os.tmpdir(), provider: "test-stub", model: "deterministic-tool-loop", title: "冲突样例" });
     await store.appendMessage(created.id, "user", [{ type: "text", text: "hi" }]);
     const jsonl = (await store.exportJsonl(created.id))!;
     const again = await store.importJsonl(jsonl);
@@ -93,7 +93,7 @@ describe("session export/import", () => {
     const agent = new AgentRunner(sessions, providers, core, events, pricing);
     const app = await buildServer({ core, sessions, agent, events, providers, pricing });
     try {
-      const created = await sessions.create({ cwd: os.tmpdir(), title: "HTTP 样例" });
+      const created = await sessions.create({ cwd: os.tmpdir(), provider: "test-stub", model: "deterministic-tool-loop", title: "HTTP 样例" });
       await sessions.appendMessage(created.id, "user", [{ type: "text", text: "hello" }]);
 
       const exported = await app.inject({ method: "GET", url: `/api/sessions/${created.id}/export` });

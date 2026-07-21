@@ -59,7 +59,7 @@ async function withTimeout(promise, ms = 5000) {
 }
 async function runHook(hook, original) {
     let current = original;
-    const ordered = ["context-manager", "attention-optimizer", "content-lens", ...handlers.keys()].filter((id, index, all) => all.indexOf(id) === index);
+    const ordered = ["context-manager", "attention-optimizer", "content-lens", "pdf-to-image", ...handlers.keys()].filter((id, index, all) => all.indexOf(id) === index);
     for (const id of ordered) {
         const state = states.get(id);
         if (!state?.enabled)

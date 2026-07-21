@@ -9,8 +9,9 @@ import { buildServer } from "../src/app.js";
 import type { CoreClientLike } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
-import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
+import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
+import { makeStubProvider } from "./helpers/stub-provider.js";
 
 const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
@@ -21,19 +22,16 @@ async function tempRoot(): Promise<string> {
   return root;
 }
 
-const echoProvider: Provider = {
-  name: "development",
-  async *streamChat(_request: StreamChatRequest) {
-    yield { type: "done", stopReason: "end_turn" };
-  },
-};
+const echoProvider = makeStubProvider("test-stub", async function* () {
+  yield { type: "done", stopReason: "end_turn" };
+});
 
 // export.html 路由只读 SessionStore，core 用最小 fake 即可满足 buildServer 依赖
 async function setup() {
   const root = await tempRoot();
   const sessions = new SessionStore(path.join(root, "sessions"));
   await sessions.initialize();
-  const session = await sessions.create({ cwd: root, provider: "development", model: "deterministic-tool-loop", title: "Export <b>test</b>" });
+  const session = await sessions.create({ cwd: root, provider: "test-stub", model: "deterministic-tool-loop", title: "Export <b>test</b>" });
   const pricing = new PricingCatalog(path.join(root, "pricing.json"));
   await pricing.initialize();
   const events = new EventBus();
@@ -53,7 +51,7 @@ describe("GET /api/sessions/:id/export.html", () => {
         { type: "text", text: "请运行 <script>alert(1)</script> 并说明 **重点**\n\n- 第一项\n- 第二项\n\n```js\nconsole.log(\"<x>\")\n```" },
       ]);
       await harness.sessions.appendMessage(harness.session.id, "assistant", [
-        { type: "thinking", text: "想一下 <b>方案</b>", provider: "development" },
+        { type: "thinking", text: "想一下 <b>方案</b>", provider: "test-stub" },
         { type: "text", text: "好的，调用工具。" },
         { type: "tool_call", id: "call-1", name: "bash", input: { cmd: "echo <hi>" } },
       ]);

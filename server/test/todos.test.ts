@@ -9,6 +9,7 @@ import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
+import { makeStubProvider } from "./helpers/stub-provider.js";
 
 const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
@@ -63,11 +64,11 @@ describe("GET /api/sessions/:id/todos", () => {
   it("返回当前快照（与 agent.listTodos 一致）；404 on missing session", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "owc-todos-rest-")); roots.push(root);
     const sessions = new SessionStore(path.join(root, "sessions")); await sessions.initialize();
-    const session = await sessions.create({ cwd: root, provider: "development", model: "deterministic-tool-loop" });
+    const session = await sessions.create({ cwd: root, provider: "test-stub", model: "deterministic-tool-loop" });
     const pricing = new PricingCatalog(path.join(root, "pricing.json")); await pricing.initialize();
     const events = new EventBus();
     const providers = new ProviderRegistry();
-    providers.register({ name: "development", async *streamChat() { yield { type: "done", stopReason: "end_turn" }; } });
+    providers.register(makeStubProvider("test-stub", async function* () { yield { type: "done", stopReason: "end_turn" }; }));
     const core = { on() { return core; }, async configureSession() { return { sandboxCapability: "advisory" }; } } as unknown as CoreClientLike;
     const agent = new AgentRunner(sessions, providers, core, events, pricing);
     const app = await buildServer({ core, sessions, agent, events, providers, pricing });

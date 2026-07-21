@@ -2,9 +2,11 @@
 import base64
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 
@@ -41,14 +43,70 @@ def collect_until_response(proc, request_id):
         notifications.append(message)
 
 
+def assert_landlock_filesystem_isolation_if_enforced(proc):
+    """Exercise the real exec path only where Landlock is usable.
+
+    The capability reply is a probe: unsupported kernels and constrained CI
+    containers legitimately report advisory/partial.  Do not turn those into
+    false failures, but once the configured session reports enforced, require
+    the child process to be able to write its workspace and unable to write an
+    independent temporary directory.
+    """
+    if sys.platform != "linux":
+        print("SKIP: Landlock integration test requires Linux", file=sys.stderr)
+        return
+
+    with tempfile.TemporaryDirectory(prefix="owc-landlock-workspace-") as workspace, \
+         tempfile.TemporaryDirectory(prefix="owc-landlock-outside-") as outside:
+        inside_path = os.path.join(workspace, "workspace-write.txt")
+        outside_path = os.path.join(outside, "outside-write.txt")
+        request(proc, 41, "session.configure", {
+            "sessionId": "landlock",
+            "cwd": workspace,
+            "sandbox": {"enabled": True, "network": "allow"},
+        })
+        response, _ = collect_until_response(proc, 41)
+        assert "result" in response, response
+        capability = response["result"]["sandboxCapability"]
+        if capability != "enforced":
+            reason = response["result"].get("sandboxReason", "unknown reason")
+            print(
+                f"SKIP: Landlock integration test needs enforced capability ({capability}: {reason})",
+                file=sys.stderr,
+            )
+            return
+
+        command = (
+            f"printf workspace-ok > {shlex.quote(inside_path)}; "
+            f"printf outside-must-fail > {shlex.quote(outside_path)}"
+        )
+        request(proc, 42, "exec.run", {
+            "sessionId": "landlock",
+            "execId": "landlock-write-boundary",
+            "cmd": command,
+            "cwd": workspace,
+            "timeoutMs": 5000,
+        })
+        response, _ = collect_until_response(proc, 42)
+        assert "result" in response, response
+        result = response["result"]
+        assert result["sandboxCapability"] == "enforced", result
+        assert result["exitCode"] != 0, result
+        with open(inside_path, "r", encoding="utf-8") as stored:
+            assert stored.read() == "workspace-ok"
+        assert not os.path.exists(outside_path), outside_path
+
+
 def main():
     executable = sys.argv[1]
     proc = subprocess.Popen([executable], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    binary_name = f"protocol-upload-{os.getpid()}.bin"
+    binary_path = os.path.join(os.getcwd(), binary_name)
     try:
         request(proc, "ping-中文", "core.ping")
         response, notes = collect_until_response(proc, "ping-中文")
         assert not notes
-        assert response["result"]["version"] == "0.1.0"
+        assert response["result"]["version"] == "0.2.0"
         assert response["result"]["sandboxCapability"] in {"advisory", "partial", "enforced"}
         assert response["result"]["sandboxReason"]
 
@@ -56,13 +114,13 @@ def main():
         response, notes = collect_until_response(proc, None)
         assert not notes
         assert response["id"] is None
-        assert response["result"]["version"] == "0.1.0"
+        assert response["result"]["version"] == "0.2.0"
 
         send(proc, {"jsonrpc": "2.0", "method": "core.ping", "params": {}})
         request(proc, "after-notification", "core.ping")
         response, notes = collect_until_response(proc, "after-notification")
         assert not notes
-        assert response["result"]["version"] == "0.1.0"
+        assert response["result"]["version"] == "0.2.0"
 
         request(proc, 2, "missing.method")
         response, _ = collect_until_response(proc, 2)
@@ -78,9 +136,31 @@ def main():
             command = "printf hello; printf error >&2; exit 7"
             slow = "sleep 5"
 
-        request(proc, 21, "session.configure", {"sessionId": "s1", "cwd": os.getcwd(), "sandbox": {"enabled": False, "denyPaths": [], "network": "allow"}})
+        request(proc, 21, "session.configure", {"sessionId": "s1", "cwd": os.getcwd(), "sandbox": {"enabled": False, "allowPaths": [os.getcwd()], "denyPaths": [], "network": "allow"}})
         response, _ = collect_until_response(proc, 21)
         assert response["result"]["sandboxCapability"] in {"advisory", "partial", "enforced"}
+
+        # Binary ingress is a dedicated, bounded base64 RPC. It must preserve
+        # bytes that fs.write intentionally rejects as non-UTF-8/text data.
+        binary = b"%PDF-1.7\x00binary\n%%EOF\n"
+        request(proc, 210, "fs.writeBase64", {"sessionId": "s1", "path": binary_name, "data": base64.b64encode(binary).decode("ascii"), "createDirs": True})
+        response, _ = collect_until_response(proc, 210)
+        assert response.get("result", {}).get("ok") is True, response
+        with open(binary_path, "rb") as stored:
+            assert stored.read() == binary
+        request(proc, 211, "fs.writeBase64", {"sessionId": "s1", "path": "bad-upload.bin", "data": "A===", "createDirs": True})
+        response, _ = collect_until_response(proc, 211)
+        assert response.get("error", {}).get("code") == -32602, response
+
+        # allowPaths is a bounded array of non-empty strings.
+        for bad_id, allow_paths in [
+            (22, "not-an-array"),
+            (23, [""]),
+            (24, list(map(str, range(17)))),
+        ]:
+            request(proc, bad_id, "session.configure", {"sessionId": "invalid-allow", "cwd": os.getcwd(), "sandbox": {"enabled": False, "allowPaths": allow_paths}})
+            response, _ = collect_until_response(proc, bad_id)
+            assert "error" in response, (allow_paths, response)
 
         request(proc, 3, "exec.run", {"sessionId": "s1", "execId": "e1", "cmd": command, "cwd": os.getcwd(), "timeoutMs": 5000})
         response, notes = collect_until_response(proc, 3)
@@ -88,6 +168,8 @@ def main():
         assert [n["params"]["seq"] for n in notes] == list(range(len(notes)))
         output = b"".join(base64.b64decode(n["params"]["data"]) for n in notes)
         assert b"hello" in output and b"error" in output
+
+        assert_landlock_filesystem_isolation_if_enforced(proc)
 
         started = time.monotonic()
         request(proc, 4, "exec.run", {"sessionId": "s1", "execId": "e2", "cmd": slow, "cwd": os.getcwd(), "timeoutMs": 100})
@@ -163,6 +245,8 @@ def main():
     finally:
         if proc.poll() is None:
             proc.kill()
+        if os.path.exists(binary_path):
+            os.remove(binary_path)
         stderr = proc.stderr.read().decode(errors="replace")
         if stderr:
             print(stderr, file=sys.stderr)

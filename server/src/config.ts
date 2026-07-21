@@ -1,3 +1,6 @@
+import path from "node:path";
+import { MAX_SYNC_INTERVAL_MINUTES } from "./remote-sync-scheduler.js";
+
 export interface ServerConfig {
   host: string;
   port: number;
@@ -14,7 +17,14 @@ export interface ServerConfig {
   };
   /** 全局 Job Object 资源限制覆盖（仅 Windows）；缺省不下发，core 用内置默认值 */
   sandbox?: {
+    allowPaths?: string[];
     jobObject?: { memoryMB?: number; maxProcesses?: number };
+  };
+  /** Optional remote model and pricing catalogs. A zero interval means manual sync only. */
+  models: {
+    catalogSyncUrl?: string;
+    pricingSyncUrl?: string;
+    syncIntervalMinutes: number;
   };
   anthropic?: { apiKey?: string; baseURL?: string; promptCaching?: boolean };
   openai?: { apiKey?: string; baseURL: string };
@@ -55,9 +65,45 @@ function currency(value: string | undefined): "USD" | "CNY" {
   throw new Error(`Expected USD, CNY, or RMB, received ${value}`);
 }
 
+function boundedNonNegativeInteger(value: string | undefined, fallback: number, maximum: number): number {
+  if (value === undefined) return fallback;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error(`Expected a non-negative integer, received ${value}`);
+  }
+  if (parsed > maximum) {
+    throw new Error(`Expected an integer <= ${maximum}, received ${value}`);
+  }
+  return parsed;
+}
+
+function optionalHttpUrl(value: string | undefined, name: string): string | undefined {
+  if (!value) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error(`${name} must be a valid http/https URL`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`${name} must use http or https`);
+  }
+  return value;
+}
+
+function pathList(value: string | undefined): string[] | undefined {
+  if (!value) return undefined;
+  const paths = value.split(path.delimiter).map((entry) => entry.trim()).filter(Boolean);
+  if (paths.length > 16) throw new Error("OWC_SANDBOX_ALLOW_PATHS accepts at most 16 paths");
+  return paths.length > 0 ? paths : undefined;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const jobMemoryMB = boundedInteger(env.OWC_JOB_MEMORY_MB, 1_048_576);
   const jobMaxProcesses = boundedInteger(env.OWC_JOB_MAX_PROCESSES, 4096);
+  const allowPaths = pathList(env.OWC_SANDBOX_ALLOW_PATHS);
+  const catalogSyncUrl = optionalHttpUrl(env.OWC_MODELS_CATALOG_SYNC_URL, "OWC_MODELS_CATALOG_SYNC_URL");
+  const pricingSyncUrl = optionalHttpUrl(env.OWC_MODELS_PRICING_SYNC_URL, "OWC_MODELS_PRICING_SYNC_URL");
   return {
     host: env.OWC_HOST ?? "127.0.0.1",
     port: positiveInteger(env.OWC_PORT, 3210),
@@ -72,13 +118,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       timeoutMs: positiveInteger(env.OWC_EXCHANGE_RATE_TIMEOUT_MS, 5_000),
       ...(env.OWC_USD_CNY_RATE ? { fixedUsdCnyRate: env.OWC_USD_CNY_RATE } : {}),
     },
-    ...(jobMemoryMB !== undefined || jobMaxProcesses !== undefined
+    models: {
+      ...(catalogSyncUrl ? { catalogSyncUrl } : {}),
+      ...(pricingSyncUrl ? { pricingSyncUrl } : {}),
+      syncIntervalMinutes: boundedNonNegativeInteger(env.OWC_MODELS_SYNC_INTERVAL_MINUTES, 0, MAX_SYNC_INTERVAL_MINUTES),
+    },
+    ...(allowPaths !== undefined || jobMemoryMB !== undefined || jobMaxProcesses !== undefined
       ? {
           sandbox: {
-            jobObject: {
-              ...(jobMemoryMB !== undefined ? { memoryMB: jobMemoryMB } : {}),
-              ...(jobMaxProcesses !== undefined ? { maxProcesses: jobMaxProcesses } : {}),
-            },
+            ...(allowPaths !== undefined ? { allowPaths } : {}),
+            ...(jobMemoryMB !== undefined || jobMaxProcesses !== undefined
+              ? { jobObject: {
+                  ...(jobMemoryMB !== undefined ? { memoryMB: jobMemoryMB } : {}),
+                  ...(jobMaxProcesses !== undefined ? { maxProcesses: jobMaxProcesses } : {}),
+                } }
+              : {}),
           },
         }
       : {}),

@@ -1,11 +1,13 @@
 import { EventEmitter } from "node:events";
 
 const HEADER_SEPARATOR = Buffer.from("\r\n\r\n");
-const MAX_MESSAGE_BYTES = 16 * 1024 * 1024;
+/** A 20 MiB PDF becomes just under 28 MiB when represented as canonical
+ * base64 in fs.writeBase64. Keep server framing in lockstep with core. */
+const MAX_MESSAGE_BYTES = 32 * 1024 * 1024;
 
 export function encodeFrame(message: unknown): Buffer {
   const body = Buffer.from(JSON.stringify(message), "utf8");
-  if (body.length > MAX_MESSAGE_BYTES) throw new Error("RPC message exceeds 16 MiB");
+  if (body.length > MAX_MESSAGE_BYTES) throw new Error("RPC message exceeds 32 MiB");
   return Buffer.concat([
     Buffer.from(`Content-Length: ${body.length}\r\n\r\n`, "ascii"),
     body,
@@ -46,7 +48,7 @@ export class FrameDecoder extends EventEmitter {
 
     if (contentLength === undefined) return this.fail(new Error("Missing Content-Length"));
     if (!Number.isSafeInteger(contentLength) || contentLength > MAX_MESSAGE_BYTES) {
-      return this.fail(new Error("RPC message exceeds 16 MiB"));
+      return this.fail(new Error("RPC message exceeds 32 MiB"));
     }
 
     const bodyStart = separator + HEADER_SEPARATOR.length;

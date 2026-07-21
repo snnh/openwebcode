@@ -226,6 +226,9 @@ describe("system prompt memory injection", () => {
     expect(system).toContain("## AGENTS.md\n构建：npm run build");
     expect(system).toContain("## Project memory (.owc/memory.md)\n# Memory\n- 用户偏好中文回复");
     expect(system).toContain("## Global memory\n# Global Memory\n- 全局约定");
+    // Workspace memory is dynamic/untrusted context; the safety boundary must
+    // remain after it so the base instruction cannot be weakened by its text.
+    expect(system.lastIndexOf("## Safety boundary")).toBeGreaterThan(system.lastIndexOf("## Global memory"));
   });
 
   it("adds no memory sections when nothing exists", async () => {
@@ -238,7 +241,20 @@ describe("system prompt memory injection", () => {
     await runner.run(session.id, "你好");
 
     const system = requests[0]!.system;
-    expect(system).toBe(`You are OpenWebCode. The workspace is ${session.cwd}. Respond in zh-CN unless the user explicitly requests another language.`);
+    expect(system).toContain(`You are OpenWebCode. The workspace is ${session.cwd}.`);
+    expect(system).toContain("## Work discipline\n- Inspect relevant code and context before editing.");
+    expect(system).toContain("- For exploration, use read_file, glob, and grep instead of bash when they suffice.");
+    expect(system).toContain("- Group independent read-only calls in one tool turn.");
+    expect(system).toContain("- For multi-step work, use todo_write; after an error, adjust rather than retrying the identical call.");
+    expect(system).toContain("- Before handoff, run focused tests or other relevant verification and report the result.");
+    expect(system).toContain("## Communication\n- Respond in the user's language; use zh-CN when the user has not indicated one.");
+    expect(system).toContain("- Keep updates brief and useful. Make final replies outcome-oriented; avoid filler, placeholders, and unnecessary explanation.");
+    expect(system).toContain("## Safety boundary\n- Stay within the workspace; do not access files outside it. Do not perform destructive or irreversible actions without the user's explicit approval.");
+    expect(system).toContain("- Do not rewrite Git history, commit, push, send external messages, or otherwise change external systems without the user's explicit approval.");
+    expect(system).not.toContain("## CLAUDE.md");
+    expect(system).not.toContain("## AGENTS.md");
+    expect(system).not.toContain("## Project memory");
+    expect(system).not.toContain("## Global memory");
   });
 
   it("truncates a section beyond 8000 characters", async () => {
@@ -253,7 +269,7 @@ describe("system prompt memory injection", () => {
 
     const system = requests[0]!.system;
     expect(system).toContain("…(truncated)");
-    expect(system.length).toBeLessThan(9_000);
+    expect(system.match(/长/g)).toHaveLength(8_000);
   });
 });
 
@@ -275,7 +291,7 @@ describe("overview compaction sediment", () => {
     await mkdir(cwd, { recursive: true });
     const store = new SessionStore(path.join(root, "sessions"));
     await store.initialize();
-    const session = await store.create({ cwd, provider: "development", title: "沉淀样例" });
+    const session = await store.create({ cwd, provider: "test-stub", title: "沉淀样例" });
     for (let index = 0; index < 15; index += 1) {
       await store.appendMessage(session.id, index % 2 === 0 ? "user" : "assistant", [{ type: "text", text: `消息 ${index + 1}` }]);
     }
@@ -309,7 +325,7 @@ describe("overview compaction sediment", () => {
     await mkdir(cwd, { recursive: true });
     const store = new SessionStore(path.join(root, "sessions"));
     await store.initialize();
-    const session = await store.create({ cwd, provider: "development", title: "降级样例" });
+    const session = await store.create({ cwd, provider: "test-stub", title: "降级样例" });
     // 用户消息含「关键发现」字样：规则摘要会带进正文，finalMode 守卫必须挡住误沉淀
     for (let index = 0; index < 15; index += 1) {
       await store.appendMessage(session.id, "user", [{ type: "text", text: `消息 ${index + 1} 关键发现： - 不该沉淀` }]);

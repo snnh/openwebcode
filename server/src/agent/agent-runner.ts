@@ -212,6 +212,29 @@ const MAX_STEERING_LENGTH = 8_000;
 /** 系统提示中单个记忆/约定小节的字符上限 */
 const MEMORY_SECTION_LIMIT = 8_000;
 
+const WORK_DISCIPLINE_SECTION = [
+  "\n\n## Work discipline",
+  "- Inspect relevant code and context before editing.",
+  "- For exploration, use read_file, glob, and grep instead of bash when they suffice.",
+  "- Group independent read-only calls in one tool turn.",
+  "- For multi-step work, use todo_write; after an error, adjust rather than retrying the identical call.",
+  "- Before handoff, run focused tests or other relevant verification and report the result.",
+].join("\n");
+
+function communicationSection(defaultLanguage: string): string {
+  return [
+    "\n\n## Communication",
+    `- Respond in the user's language; use ${defaultLanguage} when the user has not indicated one. Use consistent Chinese terminology in Chinese replies.`,
+    "- Keep updates brief and useful. Make final replies outcome-oriented; avoid filler, placeholders, and unnecessary explanation.",
+  ].join("\n");
+}
+
+const SAFETY_BOUNDARY_SECTION = [
+  "\n\n## Safety boundary",
+  "- Stay within the workspace; do not access files outside it. Do not perform destructive or irreversible actions without the user's explicit approval.",
+  "- Do not rewrite Git history, commit, push, send external messages, or otherwise change external systems without the user's explicit approval.",
+].join("\n");
+
 export class SteeringError extends Error {
   constructor(message: string, readonly code: "not_running" | "too_long" | "full") {
     super(message);
@@ -415,7 +438,7 @@ export class AgentRunner {
             model: session.model,
             ...(session.thinking ? { thinking: session.thinking } : {}),
             ...(session.effort ? { effort: session.effort } : {}),
-            system: `You are OpenWebCode. The workspace is ${session.cwd}. Respond in ${this.defaultLanguage} unless the user explicitly requests another language.${skillSection}${agentSection}${memorySection}${bgNoticeSection}${session.agentMode === "plan" ? "\n\nYou are in PLAN mode (read-only). Investigate with read-only tools, then output a step-by-step implementation plan and ask the user to switch to build mode to execute it." : ""}`,
+            system: `You are OpenWebCode. The workspace is ${session.cwd}.${WORK_DISCIPLINE_SECTION}${communicationSection(this.defaultLanguage)}${skillSection}${agentSection}${memorySection}${bgNoticeSection}${session.agentMode === "plan" ? "\n\nYou are in PLAN mode (read-only). Investigate with read-only tools, then output a step-by-step implementation plan and ask the user to switch to build mode to execute it." : ""}${SAFETY_BOUNDARY_SECTION}`,
             messages: view.messages,
             cacheBreakpoints,
             tools: [...TOOLS, ...(this.search ? [WEB_SEARCH_TOOL] : []), ...mcpBinding.tools],
