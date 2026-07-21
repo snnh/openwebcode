@@ -6,7 +6,7 @@ export const OFFICIAL_EXTENSIONS: ExtensionManifest[] = [
   {
     id: "context-manager",
     name: "上下文管理器",
-    version: "0.1.0",
+    version: "0.2.0",
     description: "滚动驱逐、上下文压缩、回写与账本视图。",
     apiVersion: "1",
     permissions: ["context:read", "context:mutate", "ui:panel"],
@@ -16,7 +16,7 @@ export const OFFICIAL_EXTENSIONS: ExtensionManifest[] = [
   {
     id: "attention-optimizer",
     name: "注意力优化器",
-    version: "0.1.0",
+    version: "0.2.0",
     description: "复制关键约束和当前任务到上下文锚区，缓解 lost-in-the-middle。",
     apiVersion: "1",
     permissions: ["context:read", "context:mutate", "ui:panel"],
@@ -26,12 +26,24 @@ export const OFFICIAL_EXTENSIONS: ExtensionManifest[] = [
   {
     id: "content-lens",
     name: "内容透镜",
-    version: "0.1.0",
+    version: "0.2.0",
     description: "提供不进入模型上下文的消息翻译与选中文本解析。",
     apiVersion: "1",
     permissions: ["sessions:read", "ui:panel", "ui:messageAttachment", "network:fetch"],
     official: true,
     defaultEnabled: false,
+  },
+  {
+    id: "pdf-to-image",
+    name: "PDF 转图片",
+    version: "0.2.0",
+    description: "将 PDF 页面转换为图片附件，供支持图片输入的模型读取。",
+    apiVersion: "1",
+    // The conversion is a Composer-side attachment feature; it needs no
+    // session, network, tool, or context access in the Extension Host.
+    permissions: ["ui:messageAttachment"],
+    official: true,
+    defaultEnabled: true,
   },
 ];
 
@@ -43,6 +55,7 @@ export const OFFICIAL_DEFAULT_CONFIG: Record<string, Record<string, unknown>> = 
     translate: { mode: "manual", layout: "sideBySide", glossary: {} },
     explain: { webSearch: true, searchProvider: "host" },
   },
+  "pdf-to-image": { maxPages: 4, dpi: 150, maxDimension: 2048 },
 };
 
 function textOf(message: ChatMessage): string {

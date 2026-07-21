@@ -112,6 +112,19 @@ const PATHS = {
       <path d="M13 2v7h7" />
     </>
   ),
+  image: (
+    <>
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <circle cx="8.5" cy="8.5" r="1.5" />
+      <path d="m21 15-5-5L5 21" />
+    </>
+  ),
+  video: (
+    <>
+      <rect x="3" y="6" width="13" height="12" rx="2" />
+      <path d="m16 10 5-3v10l-5-3z" />
+    </>
+  ),
   clock: (
     <>
       <circle cx="12" cy="12" r="10" />

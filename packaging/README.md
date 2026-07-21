@@ -9,8 +9,9 @@
 | --- | --- | --- |
 | `openwebcode-<version>-windows-x64.msi` | Windows | CPack/WiX 安装包 |
 | `openwebcode-<version>-linux-x64.tar.gz` | Linux | tar.gz + 顶层 `install.sh` |
+| `SHA256SUMS.txt` | 全平台 | 两个发行包的 SHA-256 校验和 |
 
-`<version>` 为 tag 去掉前导 `v`（如 `v0.1.0` → `0.1.0`）。
+`<version>` 为 tag 去掉前导 `v`（如 `v0.2.0` → `0.2.0`）。
 
 ## 包内布局
 
@@ -49,7 +50,7 @@ install.sh              Linux 安装脚本（仅 tar.gz，位于包顶层）
 
 - Windows x64；
 - Node.js 20 或更新版本（只用于构建，包内 Node 版本由 `$NodeVersion` 固定）；
-- CMake 3.16 或更新版本；
+- CMake 3.19 或更新版本（MSI 的 WiX 自定义命名空间由此版本的 CPack 提供）；
 - Visual Studio 2022 Build Tools，安装“使用 C++ 的桌面开发”；
 - WiX Toolset v3（`candle.exe`、`light.exe` 可通过 PATH 或 `WIX` 环境变量找到）；
 - PowerShell 5.1 或更新版本。
@@ -60,7 +61,7 @@ install.sh              Linux 安装脚本（仅 tar.gz，位于包顶层）
 
 ```powershell
 $ErrorActionPreference = "Stop"
-$Version = "0.1.0"
+$Version = "0.2.0"
 $NodeVersion = "20.19.0"
 
 npm --prefix server ci
@@ -152,9 +153,14 @@ Get-FileHash "openwebcode-$Version-windows-x64.msi" -Algorithm SHA256
 ### 安装与卸载
 
 - 双击安装，默认装到 `C:\Program Files\openwebcode\`（需要管理员权限；升级码固定，可覆盖升级）。
-- 运行 `bin\owc.cmd` 启动（或把 `<安装目录>\bin` 加入 PATH 后在任意终端运行 `owc`），
-  浏览器打开 <http://127.0.0.1:3000>。
-- 卸载：Windows「设置 → 应用」里移除 openwebcode；用户数据留在 `%LOCALAPPDATA%\openwebcode`，按需手删。
+- 安装会创建“开始”菜单与桌面的 **OpenWebCode** 快捷方式，二者都启动 `bin\owc.cmd`；安装用户的 `PATH` 会追加 `<安装目录>\bin`。重新打开终端后可直接运行 `owc`，浏览器打开 <http://127.0.0.1:3000>。
+- 卸载默认保留 `%LOCALAPPDATA%\openwebcode`。如确认要删除**默认**用户数据，可在拥有 MSI 文件时显式执行：
+
+  ```powershell
+  msiexec /x "openwebcode-<version>-windows-x64.msi" PURGE_DATA=1
+  ```
+
+  此选项不会删除通过 `OWC_DATA_DIR` 指定的其他数据目录，也不会删除任意工作区中的 `.owc/`（包括 PDF 上传文件）。升级安装不会触发清理。目前安装器没有“删除数据”图形复选框，避免误导用户以为未实现的 UI 能控制该破坏性操作。
 
 ## Linux（tar.gz）
 
@@ -162,7 +168,7 @@ Linux 使用与 Windows 相同的测试门禁和 production-only 依赖。核心
 
 ```sh
 set -euo pipefail
-VERSION=0.1.0
+VERSION=0.2.0
 NODE_VERSION=20.19.0
 
 npm --prefix server ci
@@ -200,33 +206,53 @@ tar -czf "openwebcode-${VERSION}-linux-x64.tar.gz" \
 sha256sum "openwebcode-${VERSION}-linux-x64.tar.gz"
 ```
 
-解包到临时目录后运行 `./install.sh --prefix <临时前缀>`，再访问 `/api/health`，可完成安装包级冒烟。
+解包到临时目录后运行 `./install.sh --yes --prefix <临时前缀>`，再访问 `/api/health`，可完成安装包级冒烟。仓库内另有不进入发行 tar.gz 的脚本级回归：`sh packaging/test-install.sh`。
 
 ### 安装与卸载
 
 ```sh
 mkdir openwebcode && tar -xzf openwebcode-<version>-linux-x64.tar.gz -C openwebcode
 cd openwebcode
-./install.sh --prefix ~/.local            # 可选 --with-systemd
+# TTY 中会交互询问未由命令行指定的安装项。
+./install.sh
 ~/.local/bin/owc
 ```
 
-- `install.sh` 把运行时树复制到 `<prefix>/lib/openwebcode/`（重跑整体覆盖，幂等），
-  并生成启动脚本 `<prefix>/bin/owc`。
-- `--with-systemd` 额外写 `~/.config/systemd/user/openwebcode.service`，按提示
-  `systemctl --user daemon-reload && systemctl --user enable --now openwebcode` 即可常驻。
-- 卸载：`rm -rf <prefix>/lib/openwebcode <prefix>/bin/owc`
-  （加 systemd unit 与数据目录，见 install.sh 头部注释）。
+`install.sh` 把运行时树复制到 `<prefix>/lib/openwebcode/`（重跑整体覆盖，幂等），
+并生成启动脚本 `<prefix>/bin/owc`。安装前缀必须是绝对路径；脚本会在创建后以物理路径规范化，拒绝根目录，避免相对路径或符号链接把运行时树绑到不确定位置。
+
+| 选项 | 行为 |
+| --- | --- |
+| `--prefix <绝对路径>` | 安装前缀，默认 `$HOME/.local`。 |
+| `--port <1-65535>` | 写入启动器的 `OWC_PORT` 默认值；`04312` 会规范化为 `4312`。 |
+| `--data-dir <绝对路径>` | 写入启动器的 `OWC_DATA_DIR` 默认值；不能是 `/`。 |
+| `--host <地址>` | 写入 `OWC_HOST` 默认值，默认 `127.0.0.1`。非回环地址会告警；当前没有内置 HTTP 鉴权，只应在受信网络或认证反向代理之后使用。 |
+| `--use-system-node` | 不复制包内 `node/`，安装时要求 `PATH` 中存在绝对路径的 Node.js **20+**。包内 Node 缺失时也会安全地改走这一模式。 |
+| `--with-systemd` | 写用户级 `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/openwebcode.service`，不自动执行 `systemctl`。按提示运行 `systemctl --user daemon-reload && systemctl --user enable --now openwebcode` 后常驻。 |
+| `--yes` / `-y` | 即使 stdin/stdout 是 TTY 也不提问；适用于 CI、重定向和脚本。 |
+
+未传 `--yes` 且 stdin/stdout 都是 TTY 时，脚本只询问没有由命令行指定的 prefix、port、data-dir、host、是否使用系统 Node.js 和是否写用户级 systemd unit；命令行选项优先。非 TTY 不会读取输入，因此不会卡住 CI。安装时生成的值只是默认值，运行时显式设置的 `OWC_PORT`、`OWC_DATA_DIR`、`OWC_HOST` 仍然优先。
+
+例如，自动化安装可写成：
+
+```sh
+./install.sh --yes --prefix "$HOME/.local" --port 3000 \
+  --data-dir "$HOME/.local/share/openwebcode" --host 127.0.0.1
+```
+
+`--system` 和 `--with-desktop-entry` 目前未实现，脚本会明确失败而不是伪装为完成系统级安装或桌面集成。卸载：`rm -rf <prefix>/lib/openwebcode <prefix>/bin/owc`（加 systemd unit 与数据目录，见 `install.sh` 头部注释）。
 
 ## owc 启动脚本行为
 
 `owc`（Linux shell 脚本）/ `owc.cmd`（Windows）做三件事：
 
 1. `export OWC_CORE_PATH=<包内 owc-exec>`——server 默认按源码树相对位置找 core，安装布局必须显式指定；
-2. 端口：`OWC_PORT` 已设则沿用，否则默认 **3000**（server 自身兜底值是 3210，见 `server/src/config.ts`）；
-3. 数据目录：`OWC_DATA_DIR` 已设则沿用，否则 Linux 默认 `${XDG_DATA_HOME:-~/.local/share}/openwebcode`，
-   Windows 默认 `%LOCALAPPDATA%\openwebcode`。不经启动脚本直接跑 `node server/dist/index.js` 时，
-   server 兜底为 `../.openwebcode`（相对 server 目录解析，会落进安装树）。
+2. 端口与监听地址：显式 `OWC_PORT`/`OWC_HOST` 已设则沿用，否则使用安装时选择的默认值（初始为 **3000** / `127.0.0.1`；server 自身端口兜底是 3210，见 `server/src/config.ts`）；
+3. 数据目录：显式 `OWC_DATA_DIR` 优先；未设置时，Linux 启动器使用安装时选择的默认值（初始为
+   `${XDG_DATA_HOME:-~/.local/share}/openwebcode`），Windows 启动器注入 `%LOCALAPPDATA%\openwebcode`。只有不经启动脚本
+   直接运行 `node server/dist/index.js` 时，才用相对 server 目录的 `../.openwebcode` 作为启动/设置目录兜底。
+   `server-settings.json` 固定保留在该目录；环境变量未设时，其中保存的 `dataDir` 会在重启后选择业务数据目录。
+   `OWC_DATA_DIR` 与 `dataDir` 建议使用绝对路径。
 
 运行时优先使用包内 `node/`，缺失时回落系统 `node`（要求 >= 20）。
 
@@ -256,8 +282,8 @@ Server 模块在进程启动时加载，复制后必须重启 `build\stage\bin\o
 推荐发布方式是先推送已审核提交，再创建并推送语义化版本 tag：
 
 ```sh
-git tag -a v0.1.0 -m "OpenWebCode v0.1.0"
-git push origin v0.1.0
+git tag -a v0.2.0 -m "OpenWebCode v0.2.0"
+git push origin v0.2.0
 ```
 
-也可在 GitHub Actions 中手动运行 `release`，输入形如 `v0.1.0` 的 tag。两个平台 job 都成功且 Release 页面同时出现 MSI 与 tar.gz 后，发布才算完成；随后核对下载文件名、SHA-256、安装/启动和 `/api/health`。
+也可在 GitHub Actions 中手动运行 `release`，输入形如 `v0.2.0` 的 tag。Windows 与 Linux job 都成功后，唯一的 release job 才会汇总上传 MSI、tar.gz 与 `SHA256SUMS.txt`；随后核对下载文件名、校验和、安装/启动和 `/api/health`。

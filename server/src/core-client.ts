@@ -40,6 +40,10 @@ export interface ExecResult {
 export interface FsPathRequest { sessionId: string; path: string }
 export interface FsReadRequest extends FsPathRequest { offset?: number; limit?: number }
 export interface FsWriteRequest extends FsPathRequest { content: string; createDirs?: boolean }
+/** Internal binary ingress only. data must be canonical base64; agent-facing
+ * writeFile remains UTF-8 text-only. Optional for compatibility with an older
+ * core binary, which the server reports as an unavailable upload capability. */
+export interface FsWriteBase64Request extends FsPathRequest { data: string; createDirs?: boolean }
 export interface FsEditRequest extends FsPathRequest { oldText: string; newText: string; replaceAll?: boolean }
 export interface FsSearchRequest extends FsPathRequest { pattern: string }
 export interface FsReadResult { content: string; totalLines: number; encoding: "utf-8"; truncated: boolean }
@@ -72,6 +76,7 @@ export interface CoreClientLike {
   cleanupSession(sessionId: string): Promise<{ ok: true }>;
   readFile(request: FsReadRequest): Promise<FsReadResult>;
   writeFile(request: FsWriteRequest): Promise<{ ok: true }>;
+  writeFileBase64?(request: FsWriteBase64Request): Promise<{ ok: true }>;
   editFile(request: FsEditRequest): Promise<{ matches: number }>;
   listFiles(request: FsPathRequest): Promise<FsListResult>;
   globFiles(request: FsSearchRequest): Promise<FsGlobResult>;
@@ -165,6 +170,7 @@ export class CoreClient extends EventEmitter {
   cleanupSession(sessionId: string): Promise<{ ok: true }> { return this.call("session.cleanup", { sessionId }); }
   readFile(request: FsReadRequest): Promise<FsReadResult> { return this.call("fs.read", request); }
   writeFile(request: FsWriteRequest): Promise<{ ok: true }> { return this.call("fs.write", request); }
+  writeFileBase64(request: FsWriteBase64Request): Promise<{ ok: true }> { return this.call("fs.writeBase64", request); }
   editFile(request: FsEditRequest): Promise<{ matches: number }> { return this.call("fs.edit", request); }
   listFiles(request: FsPathRequest): Promise<FsListResult> { return this.call("fs.list", request); }
   globFiles(request: FsSearchRequest): Promise<FsGlobResult> { return this.call("fs.glob", request); }

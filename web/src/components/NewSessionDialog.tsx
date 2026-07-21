@@ -3,6 +3,7 @@ import { api } from "../lib/api";
 import type { ManagedWorkspaceCapability, ModelProfile, PermissionMode, SandboxCapabilities, SandboxMode } from "../lib/contracts";
 import type { SessionDefaults } from "../lib/prefs";
 import { useI18n } from "../i18n";
+import { ModelCapabilityBadges } from "./ModelCapabilityBadges";
 
 export interface NewSessionValues {
   cwd: string;
@@ -47,19 +48,18 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
   const [managedCaps, setManagedCaps] = useState<ManagedWorkspaceCapability | undefined>();
 
   const availableModels = models.filter((item) => item.provider === provider);
-  // provider 无模型档案（如 development）时提供占位项，服务端对未知模型有 fallback profile
-  const dialogModels = availableModels.length > 0
-    ? availableModels
-    : [{ id: "default", displayName: t("默认模型", "Default model") } as ModelProfile];
+  const dialogModels = availableModels;
+  const selectedModel = dialogModels.find((item) => item.id === model);
 
   useEffect(() => {
     if (!open) return;
     // 应用设置里的会话默认值（provider 有效才预填）
-    if (!provider) {
+    if (!provider || !providers.includes(provider)) {
       const preset = defaults?.provider && providers.includes(defaults.provider)
         ? defaults.provider
         : providers[0];
-      if (preset) setProvider(preset);
+      setProvider(preset ?? "");
+      setModel("");
     }
     if (defaults?.permissionMode) setPermissionMode(defaults.permissionMode);
   }, [open, provider, providers, defaults]);
@@ -101,6 +101,7 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
 
   const fallbackTitle = cwd.trim().split(/[\\/]/).filter(Boolean).pop() ?? "";
   const noProviders = providers.length === 0;
+  const noModels = !noProviders && dialogModels.length === 0;
   const managedAvailable = managedCaps?.backends.some((item) => item.available) ?? false;
   const managedUnavailableReason = managedCaps === undefined
     ? t("能力检测中…", "Detecting capabilities…")
@@ -119,7 +120,7 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
       <form
         onSubmit={(event) => {
           event.preventDefault();
-          if (busy || noProviders || !cwd.trim() || !model) return;
+          if (busy || noProviders || noModels || !cwd.trim() || !model) return;
           onCreate({
             cwd: cwd.trim(),
             title: title.trim() || fallbackTitle || t("新会话", "New session"),
@@ -179,10 +180,20 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
         </label>
         <label>
           {t("模型", "Model")}
-          <select value={model} disabled={noProviders} onChange={(event) => setModel(event.target.value)}>
+          <select value={model} disabled={noProviders || noModels} onChange={(event) => setModel(event.target.value)}>
+            {noModels && <option value="">{t("暂无可用模型", "No model available")}</option>}
             {dialogModels.map((item) => <option key={item.id} value={item.id}>{item.displayName ?? item.id}</option>)}
           </select>
         </label>
+        {selectedModel && (
+          <div className="model-capability-summary" aria-label={t("所选模型能力", "Selected model capabilities")}>
+            <span className="model-capability-summary-label">{t("能力", "Capabilities")}</span>
+            <ModelCapabilityBadges capabilities={selectedModel.capabilities} />
+          </div>
+        )}
+        {noModels && (
+          <p className="dialog-hint">{t("该 Provider 尚无可用模型。请在 设置 → 模型目录 刷新模型列表，或添加手动模型后再创建会话。", "This provider has no available models. Refresh the model catalog or add a manual model under Settings → Models before creating a session.")}</p>
+        )}
         <label>
           {t("模式", "Mode")}
           <select value={agentMode} onChange={(event) => setAgentMode(event.target.value as "plan" | "build")}>
@@ -223,7 +234,7 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
         )}
         <div className="dialog-actions">
           <button type="button" className="btn" onClick={onClose}>{t("取消", "Cancel")}</button>
-          <button type="submit" className="btn primary" disabled={busy || noProviders || !cwd.trim() || !model}>{busy ? t("创建中…", "Creating…") : t("创建", "Create")}</button>
+          <button type="submit" className="btn primary" disabled={busy || noProviders || noModels || !cwd.trim() || !model}>{busy ? t("创建中…", "Creating…") : t("创建", "Create")}</button>
         </div>
       </form>
     </dialog>

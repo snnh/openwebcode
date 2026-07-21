@@ -37,7 +37,12 @@ describe("official extensions", () => {
         ["context-manager", true],
         ["attention-optimizer", false],
         ["content-lens", false],
+        ["pdf-to-image", true],
       ]);
+      expect(manager.list().find((item) => item.id === "pdf-to-image")).toMatchObject({
+        permissions: ["ui:messageAttachment"],
+        config: { maxPages: 4, dpi: 150, maxDimension: 2048 },
+      });
       await manager.configure("attention-optimizer", { enabled: true, config: { mode: "full", anchorBudget: 800 } });
       const transformed = await manager.transformContext({ sessionId: "s1", cwd: root, messages: [message("u1", "user", "必须运行测试")], ledger: { round: 1, entries: [] } });
       expect(transformed.messages.length).toBeGreaterThan(1);
@@ -65,7 +70,7 @@ describe("official extensions", () => {
     temporary.push(root);
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
-    const session = await sessions.create({ cwd: root, provider: "development", model: "development" });
+    const session = await sessions.create({ cwd: root, provider: "test-stub", model: "test-stub" });
     const saved = await sessions.appendMessage(session.id, "assistant", [{ type: "text", text: "Hello **world**" }]);
     let calls = 0;
     const provider2 = {

@@ -9,8 +9,9 @@ import { TOOL_RESULT_BUDGETS } from "../src/context/tool-result-budget.js";
 import type { CoreClientLike, FsReadRequest } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
-import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
+import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
+import { makeStubProvider } from "./helpers/stub-provider.js";
 
 const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
@@ -47,12 +48,9 @@ function createFakeCore(opts: {
   } as unknown as CoreClientLike;
 }
 
-const echoProvider: Provider = {
-  name: "development",
-  async *streamChat(_request: StreamChatRequest) {
-    yield { type: "done", stopReason: "end_turn" };
-  },
-};
+const echoProvider = makeStubProvider("test-stub", async function* () {
+  yield { type: "done", stopReason: "end_turn" };
+});
 
 /** 等待 agent 跑完并把首条用户消息落盘 */
 async function waitForUserMessage(sessions: SessionStore, id: string, timeoutMs = 5_000): Promise<void> {
@@ -69,7 +67,7 @@ describe("POST /messages attachments - injection order", () => {
     const root = await tempRoot();
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
-    const session = await sessions.create({ cwd: root, provider: "development", model: "deterministic-tool-loop", title: "Att order" });
+    const session = await sessions.create({ cwd: root, provider: "test-stub", model: "deterministic-tool-loop", title: "Att order" });
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));
     await pricing.initialize();
     const providers = new ProviderRegistry();
@@ -112,7 +110,7 @@ describe("POST /messages attachments - sandbox violation", () => {
     const root = await tempRoot();
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
-    const session = await sessions.create({ cwd: root, provider: "development", model: "deterministic-tool-loop", title: "Att oob" });
+    const session = await sessions.create({ cwd: root, provider: "test-stub", model: "deterministic-tool-loop", title: "Att oob" });
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));
     await pricing.initialize();
     const providers = new ProviderRegistry();
@@ -157,7 +155,7 @@ describe("POST /messages attachments - large file truncation", () => {
     const root = await tempRoot();
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
-    const session = await sessions.create({ cwd: root, provider: "development", model: "deterministic-tool-loop", title: "Att big" });
+    const session = await sessions.create({ cwd: root, provider: "test-stub", model: "deterministic-tool-loop", title: "Att big" });
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));
     await pricing.initialize();
     const providers = new ProviderRegistry();
@@ -213,7 +211,7 @@ describe("GET /api/sessions/:id/complete-path", () => {
     const root = await tempRoot();
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
-    const session = await sessions.create({ cwd: root, provider: "development", model: "deterministic-tool-loop", title: "Complete" });
+    const session = await sessions.create({ cwd: root, provider: "test-stub", model: "deterministic-tool-loop", title: "Complete" });
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));
     await pricing.initialize();
     const providers = new ProviderRegistry();
@@ -238,7 +236,7 @@ describe("GET /api/sessions/:id/complete-path", () => {
     const root = await tempRoot();
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
-    const session = await sessions.create({ cwd: root, provider: "development", model: "deterministic-tool-loop", title: "Complete cap" });
+    const session = await sessions.create({ cwd: root, provider: "test-stub", model: "deterministic-tool-loop", title: "Complete cap" });
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));
     await pricing.initialize();
     const providers = new ProviderRegistry();
@@ -262,7 +260,7 @@ describe("GET /api/sessions/:id/complete-path", () => {
     const root = await tempRoot();
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
-    const session = await sessions.create({ cwd: root, provider: "development", model: "deterministic-tool-loop", title: "Complete empty q" });
+    const session = await sessions.create({ cwd: root, provider: "test-stub", model: "deterministic-tool-loop", title: "Complete empty q" });
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));
     await pricing.initialize();
     const providers = new ProviderRegistry();
@@ -309,7 +307,7 @@ describe("POST /messages attachments - validation", () => {
     const root = await tempRoot();
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
-    const session = await sessions.create({ cwd: root, provider: "development", model: "deterministic-tool-loop", title: "Att too many" });
+    const session = await sessions.create({ cwd: root, provider: "test-stub", model: "deterministic-tool-loop", title: "Att too many" });
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));
     await pricing.initialize();
     const providers = new ProviderRegistry();
@@ -335,7 +333,7 @@ describe("POST /messages attachments - validation", () => {
     const root = await tempRoot();
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
-    const session = await sessions.create({ cwd: root, provider: "development", model: "deterministic-tool-loop", title: "Att empty path" });
+    const session = await sessions.create({ cwd: root, provider: "test-stub", model: "deterministic-tool-loop", title: "Att empty path" });
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));
     await pricing.initialize();
     const providers = new ProviderRegistry();
@@ -360,7 +358,7 @@ describe("POST /messages attachments - validation", () => {
     const root = await tempRoot();
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
-    const session = await sessions.create({ cwd: root, provider: "development", model: "deterministic-tool-loop", title: "Att clear" });
+    const session = await sessions.create({ cwd: root, provider: "test-stub", model: "deterministic-tool-loop", title: "Att clear" });
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));
     await pricing.initialize();
     const providers = new ProviderRegistry();

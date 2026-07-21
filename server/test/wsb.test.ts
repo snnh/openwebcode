@@ -5,7 +5,7 @@ import { CoreRouter, toSandboxPath } from "../src/sandbox/core-router.js";
 import { buildWsbConfig, detectWsb } from "../src/sandbox/wsb.js";
 import type { SandboxPolicy, SessionMeta } from "../src/sessions/types.js";
 
-const info: CoreInfo = { version: "0.1.0", platform: "windows", sandboxCapability: "partial" };
+const info: CoreInfo = { version: "0.2.0", platform: "windows", sandboxCapability: "partial" };
 
 function fakeClient(): CoreClientLike & { [key: string]: ReturnType<typeof vi.fn> } {
   const emitter = new EventEmitter();
@@ -18,6 +18,7 @@ function fakeClient(): CoreClientLike & { [key: string]: ReturnType<typeof vi.fn
     cleanupSession: vi.fn(async () => ({ ok: true as const })),
     readFile: vi.fn(async () => ({ content: "", totalLines: 0, encoding: "utf-8" as const, truncated: false })),
     writeFile: vi.fn(async () => ({ ok: true as const })),
+    writeFileBase64: vi.fn(async () => ({ ok: true as const })),
     editFile: vi.fn(async () => ({ matches: 0 })),
     listFiles: vi.fn(async () => ({ entries: [], truncated: false })),
     globFiles: vi.fn(async () => ({ paths: [], truncated: false })),
@@ -31,7 +32,7 @@ function makeMeta(id: string, sandboxMode?: SessionMeta["sandboxMode"]): Session
   return {
     id,
     cwd: "D:\\work",
-    provider: "development",
+    provider: "test-stub",
     model: "deterministic-tool-loop",
     title: id,
     createdAt: "2026-01-01T00:00:00.000Z",
@@ -48,7 +49,7 @@ const policy: SandboxPolicy = {
   network: "allow",
 };
 
-function makeRouter(metas: Map<string, SessionMeta>, jobObject?: { memoryMB?: number; maxProcesses?: number }) {
+function makeRouter(metas: Map<string, SessionMeta>, jobObject?: { memoryMB?: number; maxProcesses?: number }, allowPaths?: string[]) {
   const shared = fakeClient();
   const wsbClient = fakeClient();
   const wsb = {
@@ -60,7 +61,7 @@ function makeRouter(metas: Map<string, SessionMeta>, jobObject?: { memoryMB?: nu
   };
   const sessions = { get: async (id: string) => metas.get(id) };
   // CoreRouter 只用到 acquire/peek/release/releaseAll 与 onClientCreated 赋值
-  const router = new CoreRouter(shared, sessions, wsb as never, jobObject);
+  const router = new CoreRouter(shared, sessions, wsb as never, jobObject, allowPaths);
   return { router, shared, wsbClient, wsb };
 }
 
@@ -128,6 +129,8 @@ describe("CoreRouter", () => {
     expect(wsbClient.readFile).toHaveBeenCalledWith({ sessionId: "s1", path: "C:\\owc-workspace\\src\\a.ts" });
     await router.writeFile({ sessionId: "s1", path: "D:/work/b.md", content: "x" });
     expect(wsbClient.writeFile).toHaveBeenCalledWith({ sessionId: "s1", path: "C:\\owc-workspace\\b.md", content: "x" });
+    await router.writeFileBase64({ sessionId: "s1", path: "D:/work/.owc/uploads/a.pdf", data: "JVBERi0=", createDirs: true });
+    expect(wsbClient.writeFileBase64).toHaveBeenCalledWith({ sessionId: "s1", path: "C:\\owc-workspace\\.owc\\uploads\\a.pdf", data: "JVBERi0=", createDirs: true });
     // 工作目录外的路径原样透传（沙盒看不到，由沙盒内 core 拒绝）
     await router.listFiles({ sessionId: "s1", path: "C:\\Windows" });
     expect(wsbClient.listFiles).toHaveBeenCalledWith({ sessionId: "s1", path: "C:\\Windows" });
@@ -139,6 +142,25 @@ describe("CoreRouter", () => {
     await router.configureSession({ sessionId: "s1", cwd: "D:\\work", sandbox: policy });
     expect(shared.configureSession).toHaveBeenCalledWith({ sessionId: "s1", cwd: "D:\\work", sandbox: policy });
     expect(wsb.acquire).not.toHaveBeenCalled();
+  });
+
+  it("adds global allow paths only to host AppContainer policies", async () => {
+    const allowPaths = ["D:\\cache", "D:\\shared"];
+    const host = makeRouter(new Map([["host", makeMeta("host")]]), undefined, allowPaths);
+    await host.router.configureSession({ sessionId: "host", cwd: "D:\\work", sandbox: policy });
+    expect(host.shared.configureSession).toHaveBeenCalledWith({
+      sessionId: "host",
+      cwd: "D:\\work",
+      sandbox: { ...policy, allowPaths },
+    });
+
+    const guest = makeRouter(new Map([["guest", makeMeta("guest", "wsb")]]), undefined, allowPaths);
+    await guest.router.configureSession({ sessionId: "guest", cwd: "D:\\work", sandbox: policy });
+    expect(guest.wsbClient.configureSession).toHaveBeenCalledWith({
+      sessionId: "guest",
+      cwd: "C:\\owc-workspace",
+      sandbox: { ...policy, enabled: false },
+    });
   });
 
   it("maps sandboxMode off to sandbox.enabled=false on the shared client", async () => {

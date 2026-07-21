@@ -10,7 +10,6 @@ import { ExchangeRateService, HttpExchangeRateProvider } from "./cost/exchange-r
 import { PricingCatalog } from "./cost/pricing-catalog.js";
 import { EventBus } from "./events/event-bus.js";
 import { HookRunner } from "./hooks.js";
-import { DevelopmentProvider } from "./providers/development-provider.js";
 import { ProviderRegistry } from "./providers/provider.js";
 import { CoreRouter } from "./sandbox/core-router.js";
 import { WsbManager } from "./sandbox/wsb.js";
@@ -28,6 +27,7 @@ import { UsageLog } from "./usage-log.js";
 import { createSearchProvider } from "./web-tools.js";
 import { ExtensionManager } from "./extensions/extension-manager.js";
 import { ContentLensService } from "./extensions/content-lens.js";
+import { RemoteSyncScheduler } from "./remote-sync-scheduler.js";
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const resolveFromServer = (value) => (path.isAbsolute(value) ? value : path.resolve(moduleDirectory, "..", value));
 // settings 文件固定放在 env/默认数据目录下；dataDir 的文件覆盖重启后对业务数据生效，
@@ -48,7 +48,7 @@ const wsbManager = new WsbManager({
     sessionRootFor: (sessionId) => sessions.contextRoot(sessionId),
     requestTimeoutMs: config.coreRequestTimeoutMs,
 });
-const core = new CoreRouter(sharedCore, sessions, wsbManager, config.sandbox?.jobObject);
+const core = new CoreRouter(sharedCore, sessions, wsbManager, config.sandbox?.jobObject, config.sandbox?.allowPaths);
 const providers = new ProviderRegistry();
 const events = new EventBus();
 const pricing = new PricingCatalog(path.join(dataDir, "model-pricing.json"));
@@ -58,9 +58,9 @@ const exchangeRates = new ExchangeRateService({
     timeoutMs: config.exchangeRate.timeoutMs,
     ...(config.exchangeRate.fixedUsdCnyRate ? { fixedUsdCnyRate: config.exchangeRate.fixedUsdCnyRate } : {}),
 });
-providers.register(new DevelopmentProvider());
 const models = await ModelRegistry.load({
     snapshotPath: path.join(dataDir, "models.json"),
+    syncedSnapshotPath: path.join(dataDir, "models.synced.json"),
     manualPath: path.join(dataDir, "models.manual.json"),
     onUpdated: () => events.publish({ source: "server", type: "models.updated", payload: {} }),
 });
@@ -93,6 +93,48 @@ core.on("error", (error) => console.error("Core error:", error));
 await sessions.initialize();
 await pricing.initialize();
 await exchangeRates.initialize();
+/** Remote model/pricing catalogs share settings but fail independently: one bad endpoint never
+ * prevents the other catalog from refreshing, nor does it replace a validated local snapshot. */
+const syncRemoteCatalogs = async () => {
+    const remote = settings.effective().models;
+    if (remote.catalogSyncUrl) {
+        try {
+            const result = await models.syncCatalogFromUrl(remote.catalogSyncUrl);
+            if (!result.ok)
+                process.stderr.write(`[sync] 远程模型目录同步失败：${result.error}\n`);
+        }
+        catch (error) {
+            process.stderr.write(`[sync] 远程模型目录同步失败：${error instanceof Error ? error.message : String(error)}\n`);
+        }
+    }
+    if (remote.pricingSyncUrl) {
+        try {
+            const result = await pricing.syncFromUrl(remote.pricingSyncUrl);
+            if (result.ok) {
+                events.publish({ source: "server", type: "model.pricing_updated", payload: { updatedAt: result.updatedAt, entries: result.count } });
+            }
+            else {
+                process.stderr.write(`[sync] 远程模型定价同步失败：${result.error}\n`);
+            }
+        }
+        catch (error) {
+            process.stderr.write(`[sync] 远程模型定价同步失败：${error instanceof Error ? error.message : String(error)}\n`);
+        }
+    }
+};
+const remoteSyncScheduler = new RemoteSyncScheduler({
+    getIntervalMinutes: () => settings.effective().models.syncIntervalMinutes,
+    sync: syncRemoteCatalogs,
+});
+events.on("event", (event) => {
+    if (event.type !== "server.settings_updated" || !event.payload || typeof event.payload !== "object")
+        return;
+    const keys = event.payload.keys;
+    if (!Array.isArray(keys) || !keys.some((key) => key === "catalogSyncUrl" || key === "pricingSyncUrl" || key === "syncIntervalMinutes"))
+        return;
+    remoteSyncScheduler.refreshAfterSettingsChange();
+});
+remoteSyncScheduler.start();
 await core.start();
 // 存储 GC：启动时一次（含托管挂载孤儿清理）+ 每小时周期清理（失败仅记日志）
 void gc.startup().catch((error) => console.error("Storage GC failed:", error));
@@ -126,6 +168,7 @@ const app = await buildServer({
 });
 async function shutdown() {
     clearInterval(gcTimer);
+    remoteSyncScheduler.stop();
     exchangeRates.close();
     await mcp.close();
     await extensions.close();

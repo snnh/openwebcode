@@ -81,6 +81,7 @@ export class CoreClient extends EventEmitter {
     cleanupSession(sessionId) { return this.call("session.cleanup", { sessionId }); }
     readFile(request) { return this.call("fs.read", request); }
     writeFile(request) { return this.call("fs.write", request); }
+    writeFileBase64(request) { return this.call("fs.writeBase64", request); }
     editFile(request) { return this.call("fs.edit", request); }
     listFiles(request) { return this.call("fs.list", request); }
     globFiles(request) { return this.call("fs.glob", request); }

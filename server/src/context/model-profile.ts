@@ -2,7 +2,7 @@ import type { ChatMessage } from "../sessions/types.js";
 import { lookupModelMetadata } from "./model-metadata.js";
 
 export type Currency = "USD" | "CNY";
-export type ModelModality = "text" | "image";
+export type ModelModality = "text" | "image" | "video";
 export type ThinkingMode = "adaptive" | "enabled" | "disabled";
 export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -17,6 +17,8 @@ export interface ModelPricing {
 
 export interface ModelCapabilities {
   modalities: readonly ModelModality[];
+  /** Whether the model can generate an image response. Image input is declared in modalities. */
+  imageOutput: boolean;
   thinking: readonly ThinkingMode[];
   effort: readonly EffortLevel[];
   tools: boolean;

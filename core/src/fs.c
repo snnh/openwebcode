@@ -47,6 +47,11 @@ owc_fs_error owc_fs_write(const char *root,const char *path,const char *content,
     return owc_fs_platform_write(root,path,(const unsigned char *)content,length,create_dirs);
 }
 
+owc_fs_error owc_fs_write_binary(const char *root,const char *path,const unsigned char *content,size_t length,int create_dirs) {
+    if(length>OWC_FS_MAX_BINARY_FILE_SIZE||!valid_path(root,path)||(!content&&length)) return OWC_FS_INVALID_ARGUMENT;
+    return owc_fs_platform_write(root,path,content,length,create_dirs);
+}
+
 owc_fs_error owc_fs_edit(const char *root,const char *path,const char *old_text,size_t oldn,const char *new_text,size_t newn,int replace_all,size_t *matches) {
     owc_fs_bytes b={0}; owc_fs_error e; size_t i,count=0,outn,read_at=0,write_at=0; unsigned char *out;
     if(matches) *matches=0;

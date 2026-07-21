@@ -14,6 +14,8 @@ HRESULT WINAPI DeriveAppContainerSidFromAppContainerName(PCWSTR, PSID *);
 
 struct owc_acl_grant {
     wchar_t *path;
+    PSECURITY_DESCRIPTOR original_sd;
+    SECURITY_INFORMATION original_info;
 };
 
 struct owc_sandbox {
@@ -75,12 +77,56 @@ static DWORD change_root_access(const wchar_t *path, PSID sid, ACCESS_MODE mode,
     return error;
 }
 
-static int remember_grant(owc_sandbox *sandbox, wchar_t *path) {
+static DWORD snapshot_dacl(const wchar_t *path,
+                           PSECURITY_DESCRIPTOR *snapshot,
+                           SECURITY_INFORMATION *information) {
+    PACL acl = NULL;
+    PSECURITY_DESCRIPTOR descriptor = NULL;
+    SECURITY_DESCRIPTOR_CONTROL control = 0;
+    DWORD revision = 0, length, error;
+    *snapshot = NULL;
+    *information = DACL_SECURITY_INFORMATION;
+    error = GetNamedSecurityInfoW((LPWSTR)path, SE_FILE_OBJECT,
+                                  DACL_SECURITY_INFORMATION, NULL, NULL,
+                                  &acl, NULL, &descriptor);
+    if (error != ERROR_SUCCESS) return error;
+    if (GetSecurityDescriptorControl(descriptor, &control, &revision)) {
+        *information |= (control & SE_DACL_PROTECTED)
+                            ? PROTECTED_DACL_SECURITY_INFORMATION
+                            : UNPROTECTED_DACL_SECURITY_INFORMATION;
+    }
+    length = GetSecurityDescriptorLength(descriptor);
+    if (length) {
+        *snapshot = (PSECURITY_DESCRIPTOR)LocalAlloc(LMEM_FIXED, length);
+        if (*snapshot) (void)memcpy(*snapshot, descriptor, length);
+        /* If allocation fails, grant_one still proceeds. Cleanup falls back to
+           removing the AppContainer ACE, matching the legacy behavior. */
+    }
+    LocalFree(descriptor);
+    return ERROR_SUCCESS;
+}
+
+static DWORD restore_grant(const struct owc_acl_grant *grant, PSID sid) {
+    if (grant->original_sd)
+        return SetFileSecurityW(grant->path, grant->original_info,
+                                grant->original_sd)
+                   ? ERROR_SUCCESS
+                   : GetLastError();
+    return change_root_access(grant->path, sid, REVOKE_ACCESS, 0,
+                              NO_INHERITANCE);
+}
+
+static int remember_grant(owc_sandbox *sandbox, wchar_t *path,
+                          PSECURITY_DESCRIPTOR original_sd,
+                          SECURITY_INFORMATION original_info) {
     struct owc_acl_grant *grown = (struct owc_acl_grant *)realloc(
         sandbox->grants, (sandbox->grant_count + 1) * sizeof(*grown));
     if (!grown) return 0;
     sandbox->grants = grown;
-    sandbox->grants[sandbox->grant_count++].path = path;
+    sandbox->grants[sandbox->grant_count].path = path;
+    sandbox->grants[sandbox->grant_count].original_sd = original_sd;
+    sandbox->grants[sandbox->grant_count].original_info = original_info;
+    sandbox->grant_count++;
     return 1;
 }
 
@@ -88,13 +134,20 @@ static int grant_one(owc_sandbox *sandbox, const wchar_t *path,
                      DWORD permissions, DWORD inheritance) {
     size_t length = wcslen(path) + 1;
     wchar_t *copy = (wchar_t *)malloc(length * sizeof(*copy));
+    PSECURITY_DESCRIPTOR original_sd = NULL;
+    SECURITY_INFORMATION original_info = DACL_SECURITY_INFORMATION;
     if (!copy) return 0;
     (void)memcpy(copy, path, length * sizeof(*copy));
+    if (snapshot_dacl(copy, &original_sd, &original_info) != ERROR_SUCCESS) {
+        free(copy);
+        return 0;
+    }
     if (change_root_access(copy, sandbox->appcontainer_sid, GRANT_ACCESS,
                            permissions, inheritance) != ERROR_SUCCESS ||
-        !remember_grant(sandbox, copy)) {
-        (void)change_root_access(copy, sandbox->appcontainer_sid, REVOKE_ACCESS,
-                                 0, NO_INHERITANCE);
+        !remember_grant(sandbox, copy, original_sd, original_info)) {
+        struct owc_acl_grant grant = {copy, original_sd, original_info};
+        (void)restore_grant(&grant, sandbox->appcontainer_sid);
+        if (original_sd) LocalFree(original_sd);
         free(copy);
         return 0;
     }
@@ -125,11 +178,12 @@ static int grant_write_roots(owc_sandbox *sandbox,
 }
 
 static void revoke_write_roots(owc_sandbox *sandbox) {
-    size_t i;
-    for (i = 0; i < sandbox->grant_count; ++i) {
-        (void)change_root_access(sandbox->grants[i].path,
-                                 sandbox->appcontainer_sid, REVOKE_ACCESS,
-                                 0, NO_INHERITANCE);
+    size_t i = sandbox->grant_count;
+    while (i > 0) {
+        --i;
+        (void)restore_grant(&sandbox->grants[i], sandbox->appcontainer_sid);
+        if (sandbox->grants[i].original_sd)
+            LocalFree(sandbox->grants[i].original_sd);
         free(sandbox->grants[i].path);
     }
     free(sandbox->grants);

@@ -19,6 +19,11 @@ describe("extractAttachmentPaths", () => {
     expect(extractAttachmentPaths("@ 空格后无路径")).toEqual([]);
   });
 
+  it("does not reinterpret a generated PDF path marker as an @ attachment", () => {
+    expect(extractAttachmentPaths("请看 [PDF path: .owc/uploads/report @README.md.pdf]")).toEqual([]);
+    expect(extractAttachmentPaths("[PDF path: .owc/uploads/report @README.md.pdf] 以及 @src/a.ts")).toEqual(["src/a.ts"]);
+  });
+
   it("extracts multiple tokens on one line and keeps extension-only fragments", () => {
     expect(extractAttachmentPaths("@a.ts @b.ts @c.md")).toEqual(["a.ts", "b.ts", "c.md"]);
   });

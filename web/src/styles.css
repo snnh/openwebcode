@@ -747,6 +747,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .steering-hint { color: var(--amber); font-weight: 600; }
 .composer-input { display: flex; gap: 10px; align-items: flex-end; position: relative; }
 .composer-hint { margin-top: 6px; color: var(--text-3); font-size: 11px; }
+.composer-conversion { margin-top: 6px; color: var(--accent); font-size: 12px; }
 .attachment-strip { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
 .attachment { position: relative; display: inline-flex; }
 .attachment img { width: 56px; height: 56px; object-fit: cover; border-radius: var(--radius-s); border: 1px solid var(--border); }
@@ -1075,7 +1076,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .session-dialog form { display: flex; flex-direction: column; gap: 13px; }
 .session-dialog h2 { margin: 0 0 2px; font-size: 16px; }
 .session-dialog label { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; font-weight: 500; color: var(--text-2); }
-.session-dialog input, .session-dialog select {
+.session-dialog input, .session-dialog select, .session-dialog textarea {
   border: 1px solid var(--border);
   border-radius: var(--radius-s);
   background: var(--bg);
@@ -1084,7 +1085,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   font-size: 13px;
   font-weight: 400;
 }
-.session-dialog input:focus, .session-dialog select:focus { border-color: var(--accent); outline: none; }
+.session-dialog input:focus, .session-dialog select:focus, .session-dialog textarea:focus { border-color: var(--accent); outline: none; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 
 /* 设置对话框 */
@@ -1230,13 +1231,15 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .badge-action { border: none; cursor: pointer; font-family: inherit; background: var(--panel-2); color: var(--text-2); }
 .badge-action:hover { background: var(--accent-soft); color: var(--accent); }
 .settings-field .settings-note { margin: 0; }
-.settings-field input:disabled, .settings-field select:disabled { opacity: 0.65; cursor: not-allowed; }
+.settings-field textarea { resize: vertical; min-height: 58px; font-family: var(--font-mono); line-height: 1.45; }
+.settings-field input:disabled, .settings-field select:disabled, .settings-field textarea:disabled { opacity: 0.65; cursor: not-allowed; }
 
 /* 模型目录 */
 .catalog-actions { margin: 6px 0; }
 .catalog-table { margin-top: 6px; }
 .badge-source-builtin { background: var(--panel-2); color: var(--text-2); }
 .badge-source-api { background: var(--accent-soft); color: var(--accent); }
+.badge-source-synced { background: var(--amber-bg); color: var(--amber); }
 .badge-source-manual { background: var(--ok-bg); color: var(--ok); }
 .catalog-form { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; align-items: center; }
 .catalog-form input {
@@ -1256,6 +1259,15 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .capability-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 8px; font-size: 12px; color: var(--text-2); }
 .capability-row .capability-title { font-weight: 600; min-width: 28px; }
 .capability-row label { display: inline-flex; align-items: center; gap: 4px; color: var(--text); cursor: pointer; }
+.capability-badges { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.capability-badge { display: inline-flex; align-items: center; gap: 3px; width: max-content; padding: 2px 6px; border-radius: 99px; font-size: 10.5px; line-height: 1.25; white-space: nowrap; }
+.capability-badge-image { color: var(--accent); background: var(--accent-soft); }
+.capability-badge-video { color: var(--ok); background: var(--ok-bg); }
+.capability-badge-image-output { color: var(--ok); background: var(--ok-bg); }
+.capability-none { color: var(--text-3); }
+.model-capability-summary { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); }
+.model-capability-summary-label { font-weight: 500; }
+.session-dialog .model-capability-summary { margin-top: -7px; }
 
 /* 图标对齐 */
 .sandbox-badge { display: inline-flex; align-items: center; gap: 5px; }
