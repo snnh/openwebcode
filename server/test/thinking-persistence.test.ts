@@ -111,6 +111,38 @@ describe("thinking persistence", () => {
     expect((await sessions.get(session.id))?.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
   });
 
+  it("skips automatic checkpoint when app's managed workspace gate only has a shared lease", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-workspace-lease-snapshot-"));
+    roots.push(root);
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const session = await sessions.create({ cwd: root, provider: "test", model: "test-model" });
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const providers = new ProviderRegistry();
+    providers.register({
+      name: "test",
+      async *streamChat() {
+        yield { type: "text_delta", text: "继续执行" };
+        yield { type: "done", stopReason: "end_turn" };
+      },
+    });
+    const events = new EventBus();
+    const observed: Array<{ type: string; payload: unknown }> = [];
+    events.on("event", (event) => observed.push(event));
+    const runner = new AgentRunner(sessions, providers, core, events, pricing);
+
+    await runner.run(session.id, "工作区正在读取", {
+      managedWorkspace: { automaticSnapshotAllowed: false },
+    });
+
+    expect(existsSync(path.join(sessions.contextRoot(session.id), "shadow.git"))).toBe(false);
+    expect(observed).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "checkpoint.failed", payload: expect.objectContaining({ message: expect.stringContaining("文件或命令") }) }),
+    ]));
+    expect((await sessions.get(session.id))?.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+  });
+
   it("continues the user turn when an automatic checkpoint cannot be created", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "owc-checkpoint-failure-"));
     roots.push(root);
@@ -132,12 +164,19 @@ describe("thinking persistence", () => {
     const observed: Array<{ type: string; payload: unknown }> = [];
     events.on("event", (event) => observed.push(event));
     const runner = new AgentRunner(sessions, providers, core, events, pricing);
+    let downgraded = 0;
 
-    await runner.run(session.id, "不要因为快照失败而丢失这条消息");
+    await runner.run(session.id, "不要因为快照失败而丢失这条消息", {
+      managedWorkspace: {
+        automaticSnapshotAllowed: true,
+        downgradeAfterAutomaticSnapshot: () => { downgraded += 1; },
+      },
+    });
 
     expect(observed).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: "checkpoint.failed", payload: expect.objectContaining({ message: expect.any(String) }) }),
     ]));
+    expect(downgraded).toBe(1);
     expect(observed.some((event) => event.type === "agent.error")).toBe(false);
     expect((await sessions.get(session.id))?.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
   });

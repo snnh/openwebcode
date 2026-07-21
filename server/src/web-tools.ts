@@ -20,7 +20,8 @@ export interface SearchResult {
 
 export interface SearchProvider {
   name: string;
-  search(query: string, limit: number): Promise<SearchResult[]>;
+  /** The optional signal keeps older two-argument callers compatible. */
+  search(query: string, limit: number, options?: { signal?: AbortSignal }): Promise<SearchResult[]>;
 }
 
 /** A configured reader service used by web_fetch. It is intentionally absent by default. */
@@ -29,23 +30,79 @@ export interface WebFetchProvider {
   fetchUrl(url: string, options?: { signal?: AbortSignal }): Promise<WebFetchResult>;
 }
 
-function blockedIpv4(hostname: string): boolean {
+function parseIpv4(hostname: string): [number, number, number, number] | undefined {
   const octets = hostname.split(".").map(Number);
-  if (octets.length !== 4 || octets.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) return false;
-  const [a, b] = octets as [number, number, number, number];
-  return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168) || (a === 169 && b === 254);
+  if (octets.length !== 4 || octets.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) return undefined;
+  return octets as [number, number, number, number];
+}
+
+/** Block private, loopback, link-local, benchmark, documentation, multicast and other non-public IPv4 ranges. */
+function blockedIpv4(hostname: string): boolean {
+  const octets = parseIpv4(hostname);
+  if (!octets) return false;
+  const [a, b, c] = octets;
+  return a === 0 || a === 10 || a === 127 || a >= 224 ||
+    (a === 100 && b >= 64 && b <= 127) ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 0 && (c === 0 || c === 2)) ||
+    (a === 192 && b === 88 && c === 99) ||
+    (a === 192 && b === 168) ||
+    (a === 198 && (b === 18 || b === 19 || (b === 51 && c === 100))) ||
+    (a === 203 && b === 0 && c === 113);
+}
+
+function parseIpv6Side(value: string): number[] | undefined {
+  if (!value) return [];
+  const words: number[] = [];
+  for (const part of value.split(":")) {
+    if (!/^[0-9a-f]{1,4}$/i.test(part)) return undefined;
+    words.push(Number.parseInt(part, 16));
+  }
+  return words;
+}
+
+/** Parse enough of an IPv6 literal to identify IPv4-mapped and special-use ranges. */
+function parseIpv6(hostname: string): number[] | undefined {
+  let value = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (value.includes(".")) {
+    const separator = value.lastIndexOf(":");
+    if (separator === -1) return undefined;
+    const tail = parseIpv4(value.slice(separator + 1));
+    if (!tail) return undefined;
+    const [a, b, c, d] = tail;
+    value = `${value.slice(0, separator)}:${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+  }
+  const halves = value.split("::");
+  if (halves.length > 2) return undefined;
+  const head = parseIpv6Side(halves[0]!);
+  const tail = parseIpv6Side(halves[1] ?? "");
+  if (!head || !tail) return undefined;
+  if (halves.length === 1) return head.length === 8 ? head : undefined;
+  const missing = 8 - head.length - tail.length;
+  return missing < 1 ? undefined : [...head, ...Array<number>(missing).fill(0), ...tail];
 }
 
 function blockedIpv6(hostname: string): boolean {
-  const normalized = hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  if (normalized === "::1") return true;
-  const first = normalized.split(":", 1)[0] ?? "";
-  if (!first) return false;
-  const firstNum = Number.parseInt(first, 16);
-  if (Number.isNaN(firstNum)) return false;
-  // fc00::/7 唯一本地（fc00–fdff），fe80::/10 链路本地（fe80–febf）——均为内网，防 SSRF
-  return (firstNum & 0xfe00) === 0xfc00 || (firstNum & 0xffc0) === 0xfe80;
+  const words = parseIpv6(hostname);
+  if (!words) return false;
+  const first = words[0]!;
+  const firstFiveZero = words.slice(0, 5).every((word) => word === 0);
+  const firstSixZero = firstFiveZero && words[5] === 0;
+  // IPv4-compatible (::a.b.c.d) and IPv4-mapped (::ffff:a.b.c.d) literals
+  // must inherit the IPv4 deny list; otherwise ::ffff:127.0.0.1 bypasses it.
+  if (firstSixZero || (firstFiveZero && words[5] === 0xffff)) {
+    const ipv4 = `${words[6]! >>> 8}.${words[6]! & 0xff}.${words[7]! >>> 8}.${words[7]! & 0xff}`;
+    if (blockedIpv4(ipv4)) return true;
+  }
+  // :: is unspecified, ::1 is loopback.
+  if (words.every((word) => word === 0) || (words.slice(0, 7).every((word) => word === 0) && words[7] === 1)) return true;
+  // fc00::/7 unique local; fe80::/10 link-local; fec0::/10 deprecated site-local;
+  // ff00::/8 multicast. Also reject discard, benchmark and documentation ranges.
+  return (first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80 ||
+    (first & 0xffc0) === 0xfec0 || (first & 0xff00) === 0xff00 ||
+    (first === 0x0100 && words[1] === 0 && words[2] === 0 && words[3] === 0) ||
+    (first === 0x2001 && (words[1] === 0x0002 || words[1] === 0x0db8));
 }
 
 export function assertSafeWebUrl(value: string): URL {
@@ -123,8 +180,7 @@ export async function webFetch(
 ): Promise<WebFetchResult> {
   const requested = assertSafeWebUrl(value);
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
-  const timeout = AbortSignal.timeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-  const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
+  const signal = signalWithTimeout(options.signal, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   let current = requested;
   for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
     current = assertSafeWebUrl(current.href);
@@ -150,6 +206,20 @@ export async function webFetch(
   throw new Error("Too many redirects");
 }
 
+function signalWithTimeout(signal: AbortSignal | undefined, timeoutMs = DEFAULT_TIMEOUT_MS): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
+async function readLimitedJson(response: Response): Promise<unknown> {
+  const raw = await readLimited(response, DEFAULT_MAX_BYTES);
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    throw new Error("Search provider returned invalid JSON");
+  }
+}
+
 /**
  * Reader services fetch the public target on the user's behalf.  We still
  * validate the target before passing it onward, but do not silently fall back
@@ -165,27 +235,46 @@ class HttpReaderProvider implements WebFetchProvider {
 
   async fetchUrl(value: string, options: { signal?: AbortSignal } = {}): Promise<WebFetchResult> {
     const requested = assertSafeWebUrl(value);
-    const timeout = AbortSignal.timeout(DEFAULT_TIMEOUT_MS);
-    const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
-    const response = await this.fetchImpl(this.endpointFor(requested), {
-      headers: {
-        Accept: "text/plain, text/markdown, text/html;q=0.9, application/json;q=0.8",
-        ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
-      },
-      signal,
-    });
-    if (!response.ok) throw new Error(`${this.name} returned HTTP ${response.status} ${response.statusText}`.trim());
-    const contentType = response.headers.get("content-type") ?? "text/plain";
-    if (!supportedContentType(contentType)) throw new Error(`${this.name} returned unsupported content type: ${contentType || "unknown"}`);
-    const raw = await readLimited(response, DEFAULT_MAX_BYTES);
-    return {
-      url: requested.href,
-      // A reader endpoint may follow redirects internally but cannot reliably
-      // report the target's terminal URL, so never leak its own service URL.
-      finalUrl: requested.href,
-      contentType,
-      text: contentType.toLowerCase().startsWith("text/html") ? htmlToText(raw) : raw,
-    };
+    const signal = signalWithTimeout(options.signal);
+    let current = this.endpointFor(requested);
+    if (current.protocol !== "http:" && current.protocol !== "https:") throw new Error(`${this.name} endpoint is not http/https`);
+    const trustedOrigin = current.origin;
+    for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
+      const response = await this.fetchImpl(current, {
+        // Do not let fetch follow a reader-provided redirect to an unvalidated
+        // host (which could turn an otherwise configured reader into SSRF).
+        redirect: "manual",
+        headers: {
+          Accept: "text/plain, text/markdown, text/html;q=0.9, application/json;q=0.8",
+          ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
+        },
+        signal,
+      });
+      if (response.status >= 300 && response.status < 400) {
+        const location = response.headers.get("location");
+        if (!location) throw new Error(`${this.name} redirect ${response.status} has no Location header`);
+        if (redirects === MAX_REDIRECTS) throw new Error(`${this.name} redirected too many times`);
+        const next = new URL(location, current);
+        if ((next.protocol !== "http:" && next.protocol !== "https:") || next.origin !== trustedOrigin) {
+          throw new Error(`${this.name} redirect leaves the configured reader origin`);
+        }
+        current = next;
+        continue;
+      }
+      if (!response.ok) throw new Error(`${this.name} returned HTTP ${response.status} ${response.statusText}`.trim());
+      const contentType = response.headers.get("content-type") ?? "text/plain";
+      if (!supportedContentType(contentType)) throw new Error(`${this.name} returned unsupported content type: ${contentType || "unknown"}`);
+      const raw = await readLimited(response, DEFAULT_MAX_BYTES);
+      return {
+        url: requested.href,
+        // A reader endpoint may follow redirects internally but cannot reliably
+        // report the target's terminal URL, so never leak its own service URL.
+        finalUrl: requested.href,
+        contentType,
+        text: contentType.toLowerCase().startsWith("text/html") ? htmlToText(raw) : raw,
+      };
+    }
+    throw new Error(`${this.name} redirected too many times`);
   }
 }
 
@@ -243,7 +332,7 @@ class HttpSearchProvider implements SearchProvider {
     private readonly fetchImpl: typeof fetch,
   ) {}
 
-  async search(query: string, limit: number): Promise<SearchResult[]> {
+  async search(query: string, limit: number, options: { signal?: AbortSignal } = {}): Promise<SearchResult[]> {
     const url = new URL(this.baseURL);
     url.searchParams.set("q", query);
     url.searchParams.set("count", String(limit));
@@ -252,10 +341,10 @@ class HttpSearchProvider implements SearchProvider {
       : undefined;
     const response = await this.fetchImpl(url, {
       ...(headers ? { headers } : {}),
-      signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+      signal: signalWithTimeout(options.signal),
     });
     if (!response.ok) throw new Error(`Search provider returned HTTP ${response.status}`);
-    return normalizeResults(await response.json(), limit);
+    return normalizeResults(await readLimitedJson(response), limit);
   }
 }
 
@@ -264,7 +353,7 @@ class TavilySearchProvider implements SearchProvider {
 
   constructor(private readonly apiKey: string, private readonly fetchImpl: typeof fetch) {}
 
-  async search(query: string, limit: number): Promise<SearchResult[]> {
+  async search(query: string, limit: number, options: { signal?: AbortSignal } = {}): Promise<SearchResult[]> {
     const response = await this.fetchImpl("https://api.tavily.com/search", {
       method: "POST",
       headers: {
@@ -279,10 +368,10 @@ class TavilySearchProvider implements SearchProvider {
         include_raw_content: false,
         include_images: false,
       }),
-      signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+      signal: signalWithTimeout(options.signal),
     });
     if (!response.ok) throw new Error(`Tavily returned HTTP ${response.status}`);
-    return normalizeResults(await response.json(), limit);
+    return normalizeResults(await readLimitedJson(response), limit);
   }
 }
 
