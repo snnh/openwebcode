@@ -162,6 +162,8 @@ Get-FileHash "openwebcode-$Version-windows-x64.msi" -Algorithm SHA256
 
   此选项不会删除通过 `OWC_DATA_DIR` 指定的其他数据目录，也不会删除任意工作区中的 `.owc/`（包括 PDF 上传文件）。升级安装不会触发清理。目前安装器没有“删除数据”图形复选框，避免误导用户以为未实现的 UI 能控制该破坏性操作。
 
+  维护时不要给 `WixRemoveFoldersEx` 追加第二个 WiX 排序条目：WiX v3 的 `RemoveFolderEx` 已自行在 `CostInitialize` 前排程。`wix-patch.xml` 仅在它之前按条件把私有目录属性从保留的惰性路径替换为默认数据目录，以保持默认卸载不清理数据。
+
 ## Linux（tar.gz）
 
 Linux 使用与 Windows 相同的测试门禁和 production-only 依赖。核心差异是 Release core 为单配置构建，并把完整 Node Linux 发行目录放入 staging：
