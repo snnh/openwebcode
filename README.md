@@ -142,6 +142,7 @@ cd web && npm ci && npm run build && npm test
 ## 文档
 
 - **用户文档**（随 git 同步）：
+  - [`CHANGELOG.md`](./CHANGELOG.md) — 版本更新日志（v0.1.0 至当前版本）
   - [`help/usage.md`](./help/usage.md) — 使用帮助：启动、输入框快捷、运行中操作、自定义扩展点模板（子代理/斜杠命令/Hooks）
   - [`help/faq.md`](./help/faq.md) — 常见问题：模型接入、权限与沙盒、上下文管理、快照回滚、CLI 集成、故障排查
 - **开发者文档**（随 git 同步）：
