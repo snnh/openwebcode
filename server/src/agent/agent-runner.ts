@@ -27,6 +27,7 @@ import { webFetch, type SearchProvider } from "../web-tools.js";
 import type { BackgroundTaskRegistry } from "./background-tasks.js";
 import type { HookRunner } from "../hooks.js";
 import type { ExtensionManager } from "../extensions/extension-manager.js";
+import { decodeProcessOutputChunks } from "./output-decoder.js";
 
 interface ExecutionContext {
   sessionId: string;
@@ -1104,12 +1105,7 @@ export class AgentRunner {
       const session = await this.sessions.get(sessionId);
       if (!session) throw new Error("Session not found");
       const result = await this.core.run({ sessionId, execId, cmd, cwd: session.cwd });
-      const output = execution.output
-        .sort((a, b) => a.seq - b.seq)
-        .map((chunk) => ({
-          stream: chunk.stream,
-          data: Buffer.from(chunk.data, "base64").toString("utf8"),
-        }));
+      const output = decodeProcessOutputChunks(execution.output);
       const rawContent = JSON.stringify({ ...result, output });
       const bounded = await boundToolResult(this.sessions.contextRoot(sessionId), "bash", rawContent);
       this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result, truncated: bounded.truncated, ...(bounded.artifactId ? { artifactId: bounded.artifactId } : {}) } });

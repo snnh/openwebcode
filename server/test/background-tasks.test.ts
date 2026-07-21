@@ -32,13 +32,14 @@ function createControllableCore(): {
   client: CoreClientLike;
   release: (result: ExecResult) => void;
   rejectRun: (error: Error) => void;
-  emitExecOutput: (data: string) => void;
+  emitExecOutput: (data: string | Buffer) => void;
   stopCalled: () => boolean;
 } {
   let runResolve: ((result: ExecResult) => void) | undefined;
   let runReject: ((error: Error) => void) | undefined;
   let stopped = false;
   let eventListener: ((event: CoreEvent) => void) | undefined;
+  let sequence = 0;
 
   const emitter = new EventEmitter();
   const client: CoreClientLike = {
@@ -92,7 +93,7 @@ function createControllableCore(): {
         runResolve = undefined;
       }
     },
-    emitExecOutput: (data: string) => {
+    emitExecOutput: (data: string | Buffer) => {
       if (eventListener) {
         eventListener({
           source: "core",
@@ -101,7 +102,7 @@ function createControllableCore(): {
             execId: "test",
             stream: "stdout",
             data: Buffer.from(data).toString("base64"),
-            seq: 1,
+            seq: sequence++,
           },
         });
       }
@@ -169,6 +170,23 @@ describe("BackgroundTaskRegistry", () => {
     expect(entry!.exitCode).toBe(0);
     expect(entry!.output).toContain("hello world");
     expect(entry!.finishedAt).toBeTruthy();
+  });
+
+  it("后台任务将相邻 pipe 分片合并后再解码", async () => {
+    const root = await tempRoot();
+    const core = createControllableCore();
+    const registry = new BackgroundTaskRegistry(
+      () => core.client,
+      async () => undefined,
+    );
+
+    await registry.start({ sessionId: "s1", taskId: "task-gbk", cmd: "echo 中文", cwd: root });
+    // UTF-8 的“中文”被刻意拆在两个 pipe 通知中。
+    core.emitExecOutput(Buffer.from([0xe4, 0xb8]));
+    core.emitExecOutput(Buffer.from([0xad, 0xe6, 0x96, 0x87]));
+
+    expect(registry.get("task-gbk")?.output).toBe("中文");
+    core.release({ exitCode: 0, durationMs: 1, truncated: false });
   });
 
   it("task_output 读取输出；block=true 等到终态", async () => {

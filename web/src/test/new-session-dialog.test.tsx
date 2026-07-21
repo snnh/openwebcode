@@ -50,6 +50,7 @@ describe("NewSessionDialog 工作区模式", () => {
     fireEvent.change(select, { target: { value: "managed" } });
     expect(await screen.findByText("源目录（将复制进托管工作区）")).toBeInTheDocument();
     expect(screen.getByText(/20GB 稀疏镜像盘/)).toBeInTheDocument();
+    expect(screen.getByText(/关闭或删除会话时自动覆盖/)).toBeInTheDocument();
   });
 
   it("后端不可用时托管选项禁用并带原因 tooltip", async () => {

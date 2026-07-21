@@ -9,6 +9,22 @@ def windows_short_path(path):
     if not ctypes.windll.kernel32.GetShortPathNameW(str(path),buffer,required): return None
     return buffer.value
 
+def directory_link(link, target):
+    try:
+        if os.name == "nt": os.symlink(target, link, target_is_directory=True)
+        else: os.symlink(target, link)
+        return True
+    except OSError:
+        # Creating a symbolic link needs elevation on some Windows hosts;
+        # a directory junction exercises the same reparse-point boundary.
+        if os.name == "nt":
+            return subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],capture_output=True).returncode == 0
+        return False
+
+def directory_junction(link, target):
+    if os.name != "nt": return False
+    return subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)],capture_output=True).returncode == 0
+
 def send(p, i, method, params):
     body=json.dumps({"jsonrpc":"2.0","id":i,"method":method,"params":params},ensure_ascii=False,separators=(",",":")).encode()
     p.stdin.write(f"Content-Length: {len(body)}\r\n\r\n".encode()+body);p.stdin.flush()
@@ -55,6 +71,22 @@ def main():
             short_write=send(p,143,"fs.write",{"sessionId":"short-path-session","path":"result.txt","content":"short-path-ok"})
             assert short_write.get("result",{}).get("ok"),short_write
             assert (short_root/"result.txt").read_text()=="short-path-ok"
+        # A configured cwd must not gain the mounted-folder exception merely by
+        # being a directory junction.  This needs no elevated VHD creation.
+        if os.name == "nt":
+            linked_root=root/"root-junction"
+            if directory_junction(linked_root, outside):
+                assert send(p,144,"session.configure",{"sessionId":"root-junction-session","cwd":str(linked_root),"sandbox":{"enabled":True,"readRoots":[str(linked_root)],"writeRoots":[str(linked_root)],"denyPaths":[],"network":"allow"}})["result"]["sandboxCapability"] in {"advisory","partial","enforced"}
+                root_escape=send(p,145,"fs.write",{"sessionId":"root-junction-session","path":"must-not-write.txt","content":"no"})
+                assert root_escape.get("error",{}).get("code")==-32002,root_escape
+                assert not (pathlib.Path(outside)/"must-not-write.txt").exists()
+            # A junction directly to the volume root also is not a mounted
+            # folder.  Stat only: a broken implementation must not write C:\\.
+            volume_root_link=root/"root-volume-junction"
+            if directory_junction(volume_root_link, pathlib.Path(root.anchor)):
+                assert send(p,146,"session.configure",{"sessionId":"root-volume-junction-session","cwd":str(volume_root_link),"sandbox":{"enabled":True,"readRoots":[str(volume_root_link)],"writeRoots":[str(volume_root_link)],"denyPaths":[],"network":"allow"}})["result"]["sandboxCapability"] in {"advisory","partial","enforced"}
+                root_volume_escape=send(p,147,"fs.stat",{"sessionId":"root-volume-junction-session","path":"."})
+                assert root_volume_escape.get("error",{}).get("code")==-32002,root_volume_escape
         assert fs(5,"fs.read",{"path":"目录/文件.txt","offset":-1,"limit":1})["error"]["code"]==-32602
         assert fs(6,"fs.read",{"path":"目录/文件.txt","offset":0,"limit":0})["error"]["code"]==-32602
         assert fs(7,"fs.write",{"path":"目录/nul","content":"a\u0000b"})["error"]["code"]==-32700
@@ -71,16 +103,7 @@ def main():
         assert not list(root.glob("*.tmp")) and not list(root.glob(".*.tmp"))
         (pathlib.Path(outside)/"secret").write_text("secret")
         link=root/"escape"
-        linked=False
-        try:
-            if os.name=="nt": os.symlink(outside,link,target_is_directory=True)
-            else: os.symlink(outside,link)
-            linked=True
-        except OSError:
-            # Creating a symbolic link needs elevation on some Windows hosts;
-            # a directory junction exercises the same reparse-point boundary.
-            if os.name=="nt":
-                linked=subprocess.run(["cmd","/c","mklink","/J",str(link),outside],capture_output=True).returncode==0
+        linked=directory_link(link, outside)
         if linked:
             assert fs(50,"fs.read",{"path":"escape/secret","offset":0,"limit":1})["error"]["code"]==-32002
             escaped_write=fs(51,"fs.write",{"path":"escape/new","content":"no"})

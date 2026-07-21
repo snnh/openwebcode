@@ -114,7 +114,7 @@ export function BottomPanel({ sessionId, session, running, onNotice }: {
       </div>
       {open && (
         <div className="panel-content" style={{ height }}>
-          {tab === "files" && <FilesPanel sessionId={sessionId} />}
+          {tab === "files" && <FilesPanel sessionId={sessionId} session={session} running={running} onNotice={onNotice} />}
           {tab === "context" && <ContextPanel sessionId={sessionId} session={session} running={running} onNotice={onNotice} />}
           {tab === "timeline" && <TimelinePanel sessionId={sessionId} running={running} onNotice={onNotice} />}
           {tab === "sandbox" && <SandboxPanel session={session} />}

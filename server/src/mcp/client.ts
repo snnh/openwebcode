@@ -75,7 +75,7 @@ class Client implements McpClient {
     await this.request("initialize", {
       protocolVersion: PROTOCOL_VERSION,
       capabilities: {},
-      clientInfo: { name: "openwebcode", version: "0.2.0" },
+      clientInfo: { name: "openwebcode", version: "0.2.1" },
     });
     this.notify("notifications/initialized");
   }

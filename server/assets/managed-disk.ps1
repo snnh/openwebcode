@@ -16,6 +16,19 @@ param(
     [string]$ParentPath
 )
 
+# Windows PowerShell 5.1 默认以本地 OEM/ANSI 代码页写控制台错误；Node 按 UTF-8
+# 捕获 stderr 时会把中文错误解码成乱码。显式写 UTF-8 字节，确保上层能原样显示。
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[Console]::OutputEncoding = $utf8NoBom
+$OutputEncoding = $utf8NoBom
+
+function Write-Utf8Stderr([string]$Message) {
+    $bytes = $utf8NoBom.GetBytes("$Message`r`n")
+    $stderr = [Console]::OpenStandardError()
+    $stderr.Write($bytes, 0, $bytes.Length)
+    $stderr.Flush()
+}
+
 $ErrorActionPreference = "Stop"
 
 try {
@@ -56,7 +69,7 @@ try {
         }
     }
 } catch {
-    [Console]::Error.WriteLine($_.Exception.Message)
+    Write-Utf8Stderr $_.Exception.Message
     exit 1
 }
 exit 0
