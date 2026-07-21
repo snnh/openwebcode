@@ -59,10 +59,13 @@ build/
 .claude/
 .agents/
 .openwebcode/
-server/node_modules
-web/node_modules/
-web/dist/
+# JavaScript dependencies and generated bundles.  Keep the server entries
+# explicit because these paths were previously committed by mistake.
 node_modules/
+/server/node_modules/
+/server/dist/
+/web/node_modules/
+/web/dist/
 docs/
 tmp/
 _CPack_Packages/

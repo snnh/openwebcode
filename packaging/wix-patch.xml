@@ -14,15 +14,20 @@
          property so a user can opt in with: msiexec /x package.msi PURGE_DATA=1 -->
     <Property Id="PURGE_DATA" Value="0" />
     <!-- Keep the deletion root private (mixed case): PURGE_DATA is the only
-         command-line opt-in, and must not also allow redirecting the root. -->
-    <Property Id="OwcDefaultDataDir" Value="%LOCALAPPDATA%\openwebcode" />
-    <!-- WiX v3's RemoveFolderEx has no Condition attribute.  It schedules
-         WixRemoveFoldersEx itself before CostInitialize; condition that
-         existing action so it is skipped entirely unless the user opted in.
-         Put the quoted REMOVE comparison last because CPack's patch writer
-         normalizes whitespace immediately after XML quote entities. -->
+         command-line opt-in, and must not also allow redirecting the root.
+         WiX runs its table action on every install/uninstall, so its default
+         is a reserved inert path, never the application's data directory. -->
+    <Property Id="OwcDefaultDataDir"
+              Value="%LOCALAPPDATA%\OpenWebCode--PurgeDisabled--7F3A2C1E-9B4D-4E6F-A1C8-2D5B7E9F0C3A" />
+    <CustomAction Id="SetOwcDefaultDataDir"
+                  Property="OwcDefaultDataDir"
+                  Value="%LOCALAPPDATA%\openwebcode" />
+    <!-- WiX v3's RemoveFolderEx has no Condition attribute and its supplied
+         custom action is sequenced by the Util extension.  Replacing the
+         inert path only immediately before that action makes cleanup opt-in
+         without creating a second, conflicting sequence entry. -->
     <InstallExecuteSequence>
-      <Custom Action="WixRemoveFoldersEx">NOT UPGRADINGPRODUCTCODE AND PURGE_DATA=1 AND REMOVE=&quot;ALL&quot;</Custom>
+      <Custom Action="SetOwcDefaultDataDir" Before="WixRemoveFoldersEx">NOT UPGRADINGPRODUCTCODE AND PURGE_DATA=1 AND REMOVE=&quot;ALL&quot;</Custom>
     </InstallExecuteSequence>
   </CPackWiXFragment>
 
@@ -38,10 +43,10 @@
                  Permanent="no"
                  System="no" />
 
-    <!-- The sequence condition above means this affects only opt-in full
-         uninstalls of the launcher's default LOCALAPPDATA location; custom
-         OWC_DATA_DIR values and workspace .owc directories are intentionally
-         outside this action. -->
+    <!-- The conditional property assignment above means this affects only
+         opt-in full uninstalls of the launcher's default LOCALAPPDATA
+         location; custom OWC_DATA_DIR values and workspace .owc directories
+         are intentionally outside this action. -->
     <util:RemoveFolderEx Id="PurgeOpenWebCodeDefaultData"
                          Property="OwcDefaultDataDir"
                          On="uninstall" />
