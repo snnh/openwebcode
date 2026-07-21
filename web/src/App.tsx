@@ -258,6 +258,20 @@ export function App(): ReactElement {
     onError: (error) => notify(error instanceof Error ? error.message : t("发送失败", "Send failed"), "error"),
   });
 
+  // 托管工作区的镜像盘快照必须由用户显式触发；服务端仍会拒绝运行中或同步中的会话。
+  const manualSnapshot = useMutation({
+    mutationFn: (sessionId: string) => api.createCheckpoint(sessionId, t("手动虚拟磁盘快照", "Manual virtual disk snapshot")),
+    onSuccess: (checkpoint, sessionId) => {
+      notify(t(`已创建虚拟磁盘快照「${checkpoint.label}」`, `Virtual disk snapshot “${checkpoint.label}” created`));
+      void queryClient.invalidateQueries({ queryKey: ["checkpoints", sessionId] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.detail(sessionId) });
+    },
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : t("未知错误", "unknown error");
+      notify(t(`创建虚拟磁盘快照失败：${message}`, `Could not create virtual disk snapshot: ${message}`), "error");
+    },
+  });
+
   // shell 结果卡「发给 agent」：把 `!cmd` 与输出摘要作为普通用户消息送入 agent run
   const sendShellToAgent = (cmd: string, output: string): void => {
     if (!currentId) return;
@@ -359,6 +373,9 @@ export function App(): ReactElement {
                 .catch((error: unknown) => {
                   notify(error instanceof Error ? error.message : t("模式切换失败", "Mode change failed"), "error");
                 })}
+              onCreateCheckpoint={() => manualSnapshot.mutate(current.id)}
+              checkpointPending={manualSnapshot.isPending}
+              running={running}
             />
             {todos.data && todos.data.length > 0 && (
               <details className="todo-panel" open>

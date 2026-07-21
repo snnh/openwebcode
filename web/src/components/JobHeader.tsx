@@ -39,15 +39,20 @@ const SANDBOX_LABELS: Record<SandboxMode, [string, string]> = {
   off: ["关闭", "Off"],
 };
 
-export function JobHeader({ session, agentState, costSummary, onAbort, onConfig }: {
+export function JobHeader({ session, agentState, costSummary, onAbort, onConfig, onCreateCheckpoint, checkpointPending = false, running = false }: {
   session: SessionDetail;
   agentState?: string;
   costSummary?: CostSummary;
   onAbort(): void;
   onConfig(body: Record<string, unknown>): Promise<void>;
+  /** 托管工作区的显式镜像盘快照；由 App 统一处理通知与缓存刷新。 */
+  onCreateCheckpoint?(): void;
+  checkpointPending?: boolean;
+  /** 包含首个 agent.state 事件到达前的临时流，避免快照与运行中的会话竞态。 */
+  running?: boolean;
 }): ReactElement {
   const { t } = useI18n();
-  const busy = isBusyState(agentState);
+  const busy = isBusyState(agentState) || running;
   const budgetRatio = costSummary?.tokenBudget ? Math.min(1, costSummary.tokens / costSummary.tokenBudget) : undefined;
   const [tasksOpen, setTasksOpen] = useState(false);
   const [expandedTask, setExpandedTask] = useState<string | null>(null);
@@ -150,6 +155,22 @@ export function JobHeader({ session, agentState, costSummary, onAbort, onConfig 
             <option value="manual">{t("仅手动", "Manual only")}</option>
           </select>
         </label>
+        {session.workspace?.mode === "managed" && onCreateCheckpoint && (
+          <button
+            type="button"
+            className="btn small manual-snapshot-btn"
+            aria-label={t("创建虚拟磁盘快照", "Create virtual disk snapshot")}
+            title={checkpointPending
+              ? t("正在创建虚拟磁盘快照", "Creating virtual disk snapshot")
+              : busy || configPending
+                ? t("会话运行或配置更新时无法创建快照", "Cannot create a snapshot while the session is running or being updated")
+                : t("立即为当前虚拟磁盘创建手动差分链快照", "Create a manual differential-disk snapshot now")}
+            disabled={busy || configPending || checkpointPending}
+            onClick={onCreateCheckpoint}
+          >
+            <Icon name="history" size={12} /> {checkpointPending ? t("创建中…", "Creating…") : t("手动快照", "Snapshot now")}
+          </button>
+        )}
         <a
           className="icon-btn"
           href={`/api/sessions/${session.id}/export`}

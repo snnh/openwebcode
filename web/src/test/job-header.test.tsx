@@ -55,4 +55,69 @@ describe("JobHeader mode switches", () => {
     expect(screen.getByLabelText("沙盒模式")).toBeDisabled();
     expect(screen.getByLabelText("快照模式")).toBeDisabled();
   });
+
+  it("offers an explicit manual snapshot action for an idle managed disk workspace", async () => {
+    vi.spyOn(api, "tasks").mockResolvedValue([]);
+    vi.spyOn(api, "sandboxCapabilities").mockResolvedValue({ appcontainer: true, jobobject: true, off: true, wsb: { available: true } });
+    const onCreateCheckpoint = vi.fn();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const managedSession: SessionDetail = {
+      ...session,
+      workspace: {
+        mode: "managed",
+        backend: "vhdx",
+        originCwd: "C:\\source-workspace",
+        image: "C:\\data\\workspaces\\session-1\\base.vhdx",
+        mountPoint: "C:\\data\\mnt\\session-1",
+      },
+    };
+
+    render(
+      <QueryClientProvider client={client}>
+        <JobHeader
+          session={managedSession}
+          agentState="idle"
+          onAbort={() => undefined}
+          onConfig={async () => undefined}
+          onCreateCheckpoint={onCreateCheckpoint}
+        />
+      </QueryClientProvider>,
+    );
+
+    const button = screen.getByRole("button", { name: "创建虚拟磁盘快照" });
+    expect(button).toBeEnabled();
+    fireEvent.click(button);
+    expect(onCreateCheckpoint).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the managed-disk snapshot action disabled while the session is running", () => {
+    vi.spyOn(api, "tasks").mockResolvedValue([]);
+    vi.spyOn(api, "sandboxCapabilities").mockResolvedValue({ appcontainer: true, jobobject: true, off: true, wsb: { available: true } });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const managedSession: SessionDetail = {
+      ...session,
+      workspace: {
+        mode: "managed",
+        backend: "qcow2",
+        originCwd: "/source-workspace",
+        image: "/data/workspaces/session-1/base.qcow2",
+        mountPoint: "/data/mnt/session-1",
+      },
+    };
+
+    render(
+      <QueryClientProvider client={client}>
+        <JobHeader
+          session={managedSession}
+          agentState="idle"
+          running
+          onAbort={() => undefined}
+          onConfig={async () => undefined}
+          onCreateCheckpoint={() => undefined}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByRole("button", { name: "创建虚拟磁盘快照" })).toBeDisabled();
+  });
 });
