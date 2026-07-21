@@ -24,7 +24,7 @@ import { Provider2Client } from "./provider2.js";
 import { Compactor } from "./context/compactor.js";
 import { StorageGC } from "./storage-gc.js";
 import { UsageLog } from "./usage-log.js";
-import { createSearchProvider } from "./web-tools.js";
+import { createSearchProvider, createWebFetchProvider } from "./web-tools.js";
 import { ExtensionManager } from "./extensions/extension-manager.js";
 import { ContentLensService } from "./extensions/content-lens.js";
 import { RemoteSyncScheduler } from "./remote-sync-scheduler.js";
@@ -78,6 +78,7 @@ const extensions = new ExtensionManager(dataDir, events);
 await extensions.initialize();
 const contentLens = new ContentLensService(sessions, provider2);
 const search = createSearchProvider(config.search);
+const webFetch = createWebFetchProvider(config.webFetch);
 const backgroundTasks = new BackgroundTaskRegistry(
   () => new CoreClient(config.corePath, config.coreRequestTimeoutMs),
   async (client, sessionId, cwd) => {
@@ -89,7 +90,7 @@ const backgroundTasks = new BackgroundTaskRegistry(
 );
 // Hooks（可信配置，等同 yolo 级别）：全局 <dataDir>/hooks.json，项目 <cwd>/.owc/hooks.json 现读覆盖
 const hooks = new HookRunner(path.join(dataDir, "hooks.json"), events);
-const agent = new AgentRunner(sessions, providers, core, events, pricing, exchangeRates, config.defaultLanguage, 50, (model) => models.get(model), usageLog, skills, mcp, compactor, dataDir, agents, commands, search, undefined, backgroundTasks, hooks, extensions);
+const agent = new AgentRunner(sessions, providers, core, events, pricing, exchangeRates, config.defaultLanguage, 50, (model) => models.get(model), usageLog, skills, mcp, compactor, dataDir, agents, commands, search, undefined, backgroundTasks, hooks, extensions, webFetch);
 // 托管工作区（plan §6.4）：镜像/挂载点位于 dataDir 下；孤儿挂载清理挂在 GC 启动扫描上
 const managed = new ManagedWorkspaceManager({ dataDir });
 const gc = new StorageGC(path.join(dataDir, "sessions"), config.gcMaxBytes, () => managed.sweepOrphans());

@@ -1,5 +1,6 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { writeUtf8Atomically } from "../atomic-file.js";
 import { FALLBACK_METADATA, lookupModelMetadata, type ModelMetadata } from "./model-metadata.js";
 import {
   getModelProfile,
@@ -80,9 +81,7 @@ async function readJsonFile(filePath: string): Promise<SnapshotFile | undefined>
 
 async function writeJsonAtomic(filePath: string, value: SnapshotFile): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true });
-  const temp = `${filePath}.tmp`;
-  await writeFile(temp, JSON.stringify(value, null, 2));
-  await rename(temp, filePath);
+  await writeUtf8Atomically(filePath, JSON.stringify(value, null, 2));
 }
 
 function cloneCapabilities(capabilities: ModelCapabilities): ModelCapabilities {

@@ -53,9 +53,9 @@ describe("server settings API", () => {
       const response = await setup.app.inject({ method: "GET", url: "/api/settings" });
       expect(response.statusCode).toBe(200);
       const view = response.json<SettingsView>();
-      expect(view.groups.map((group) => group.id)).toEqual(["models", "provider2", "search", "general", "executor", "service", "exchangeRate"]);
+      expect(view.groups.map((group) => group.id)).toEqual(["models", "provider2", "webFetch", "search", "general", "executor", "service", "exchangeRate"]);
       const fields = view.groups.flatMap((group) => group.fields);
-      expect(fields).toHaveLength(28);
+      expect(fields).toHaveLength(31);
       for (const item of fields) {
         expect(item.source).toBe("default");
         expect(item.editable).toBe(true);
@@ -273,6 +273,29 @@ describe("server settings API", () => {
     }
   });
 
+  it("stores an explicit web reader configuration and masks its key", async () => {
+    const setup = await fixture();
+    try {
+      const put = await setup.app.inject({
+        method: "PUT",
+        url: "/api/settings",
+        payload: { overrides: { webFetchProvider: "jina", webFetchApiKey: "jina-secret-key-1234" } },
+      });
+      expect(put.statusCode).toBe(200);
+      const view = put.json<SettingsView>();
+      expect(field(view, "webFetchProvider")).toMatchObject({ value: "jina", source: "file", restartRequired: false });
+      expect(field(view, "webFetchApiKey")).toMatchObject({ value: null, hasValue: true, source: "file" });
+      expect(put.body).not.toContain("jina-secret-key-1234");
+      expect(setup.settings.effective().webFetch).toEqual({ provider: "jina", apiKey: "jina-secret-key-1234" });
+
+      const cleared = await setup.app.inject({ method: "PUT", url: "/api/settings", payload: { overrides: { webFetchProvider: null, webFetchApiKey: null } } });
+      expect(cleared.statusCode).toBe(200);
+      expect(setup.settings.effective().webFetch).toBeUndefined();
+    } finally {
+      await setup.app.close();
+    }
+  });
+
   it("persists remote sync settings and allows zero for manual-only sync", async () => {
     const setup = await fixture();
     try {
@@ -335,5 +358,16 @@ describe("server settings API", () => {
     expect(() => loadConfig({ OWC_MODELS_CATALOG_SYNC_URL: "ftp://example.com/models.json" })).toThrow(/http/i);
     expect(() => loadConfig({ OWC_MODELS_SYNC_INTERVAL_MINUTES: "-1" })).toThrow(/non-negative/i);
     expect(() => loadConfig({ OWC_MODELS_SYNC_INTERVAL_MINUTES: String(MAX_SYNC_INTERVAL_MINUTES + 1) })).toThrow(String(MAX_SYNC_INTERVAL_MINUTES));
+  });
+
+  it("loads explicit web-reader and Tavily search environment settings", () => {
+    const config = loadConfig({
+      OWC_WEB_FETCH_PROVIDER: "jina",
+      OWC_WEB_FETCH_API_KEY: "jina-secret",
+      OWC_SEARCH_PROVIDER: "tavily",
+      OWC_SEARCH_API_KEY: "tvly-secret",
+    });
+    expect(config.webFetch).toEqual({ provider: "jina", apiKey: "jina-secret" });
+    expect(config.search).toEqual({ provider: "tavily", apiKey: "tvly-secret" });
   });
 });

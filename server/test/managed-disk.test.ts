@@ -127,6 +127,22 @@ describe("managed-disk.ps1", () => {
     expect(script).toContain("$stderr.Write($bytes, 0, $bytes.Length)");
     expect(script).toContain("Write-Utf8Stderr $_.Exception.Message");
   });
+
+  it("VHDX fork-swap 先卸载旧叶再创建 child，失败时恢复旧叶", async () => {
+    const script = await readFile(managedDiskScriptPath(), "utf8");
+    expect(script).toContain('"fork-swap"');
+    const dismount = script.indexOf("Dismount-VHD -Path $oldLeaf");
+    const create = script.indexOf("New-DifferencingVhd -ParentPath $Parent -ChildPath $Child", dismount);
+    const mount = script.indexOf("Mount-ManagedVhd -ImagePath $Child -AccessPath $MountPoint", create);
+    expect(dismount).toBeGreaterThan(-1);
+    expect(create).toBeGreaterThan(dismount);
+    expect(mount).toBeGreaterThan(create);
+    expect(script).toContain("Remove-FailedChild -ImagePath $Child");
+    expect(script).toContain("Mount-ManagedVhd -ImagePath $oldLeaf -AccessPath $MountPoint");
+    expect(script).toContain('"rollback-fork-swap"');
+    expect(script).toContain("Dismount-IfAttached -ImagePath $NewImage");
+    expect(script).toContain("Mount-ManagedVhd -ImagePath $OldImage -AccessPath $MountPoint");
+  });
 });
 
 describe("ManagedDiskBackend", () => {
@@ -155,7 +171,7 @@ describe("ManagedDiskBackend", () => {
     expect((await backend.list())[0]).toMatchObject({ id: checkpoint.id, label: "first", messageCount: 5 });
   });
 
-  it("vhdx create：new-diff + swap 脚本命令序列正确", async () => {
+  it("vhdx create：单个可恢复 fork-swap 脚本事务，链状态只在成功后更新", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
     const workspaceRoot = path.join(root, "workspaces", "s1");
     const mountPoint = path.join(root, "mnt", "s1");
@@ -168,12 +184,94 @@ describe("ManagedDiskBackend", () => {
     const leaf = path.join(workspaceRoot, `leaf-${checkpoint.id}.vhdx`);
     const script = managedDiskScriptPath();
     expect(lines()).toEqual([
-      `powershell -NoProfile -ExecutionPolicy Bypass -File ${script} -Mode new-diff -Parent ${base} -Child ${leaf}`,
-      `powershell -NoProfile -ExecutionPolicy Bypass -File ${script} -Mode swap -OldImage ${base} -NewImage ${leaf} -MountPoint ${mountPoint}`,
+      `powershell -NoProfile -ExecutionPolicy Bypass -File ${script} -Mode fork-swap -Parent ${base} -Child ${leaf} -OldImage ${base} -MountPoint ${mountPoint}`,
     ]);
     const state = await readChain(workspaceRoot);
     expect(state.checkpoints[0]).toMatchObject({ id: checkpoint.id, file: base, parentFile: null });
     expect(state.active).toEqual({ file: leaf, parentFile: base });
+  });
+
+  it("VHDX 创建后 chain.json 落盘失败会回滚到旧叶，保留旧状态", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
+    const workspaceRoot = path.join(root, "workspaces", "s1");
+    const mountPoint = path.join(root, "mnt", "s1");
+    const base = path.join(workspaceRoot, "base.vhdx");
+    await writeChain(workspaceRoot, { active: { file: base, parentFile: null }, checkpoints: [] });
+    const { runner, calls } = recordingRunner(() => ({ code: 0 }));
+    const backend = new ManagedDiskBackend({ kind: "vhdx", workspaceRoot, mountPoint, runner });
+    (backend as unknown as { writeState: () => Promise<void> }).writeState = async () => { throw new Error("locked chain.json"); };
+
+    await expect(backend.create("first", 1)).rejects.toThrow("locked chain.json");
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.args).toContain("fork-swap");
+    expect(calls[1]?.args).toContain("rollback-fork-swap");
+    const child = calls[0]?.args[calls[0]!.args.indexOf("-Child") + 1];
+    expect(calls[1]?.args).toEqual(expect.arrayContaining(["-NewImage", child, "-OldImage", base, "-MountPoint", mountPoint]));
+    expect(await readChain(workspaceRoot)).toEqual({ active: { file: base, parentFile: null }, checkpoints: [] });
+  });
+
+  it("VHDX 恢复时先持久化新 active，失败不会删除原叶", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
+    const workspaceRoot = path.join(root, "workspaces", "s1");
+    const mountPoint = path.join(root, "mnt", "s1");
+    const base = path.join(workspaceRoot, "base.vhdx");
+    const current = path.join(workspaceRoot, "leaf-current.vhdx");
+    const checkpointId = "snap-2000-abcdef";
+    await writeChain(workspaceRoot, {
+      active: { file: current, parentFile: base },
+      checkpoints: [{ id: checkpointId, label: "base", createdAt: new Date().toISOString(), messageCount: 0, file: base, parentFile: null }],
+    });
+    await writeFile(current, "current leaf", "utf8");
+    const { runner, calls } = recordingRunner(() => ({ code: 0 }));
+    const backend = new ManagedDiskBackend({ kind: "vhdx", workspaceRoot, mountPoint, runner });
+    (backend as unknown as { writeState: () => Promise<void> }).writeState = async () => { throw new Error("locked chain.json"); };
+
+    await expect(backend.restore(checkpointId)).rejects.toThrow("locked chain.json");
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.args).toContain("fork-swap");
+    expect(calls[1]?.args).toContain("rollback-fork-swap");
+    expect(existsSync(current)).toBe(true);
+    expect((await readChain(workspaceRoot)).active).toEqual({ file: current, parentFile: base });
+  });
+
+  it("跨请求构造的 backend 也会串行换叶，避免双击读取同一条 chain", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
+    const workspaceRoot = path.join(root, "workspaces", "s1");
+    const mountPoint = path.join(root, "mnt", "s1");
+    const base = path.join(workspaceRoot, "base.qcow2");
+    await writeChain(workspaceRoot, { active: { file: base, parentFile: null }, device: "/dev/nbd0", checkpoints: [] });
+    const calls: Array<{ cmd: string; args: string[] }> = [];
+    let signalFirstCreate!: () => void;
+    const firstCreateStarted = new Promise<void>((resolve) => { signalFirstCreate = resolve; });
+    let releaseFirstCreate!: () => void;
+    const firstCreateGate = new Promise<void>((resolve) => { releaseFirstCreate = resolve; });
+    let creates = 0;
+    const runner: CommandRunner = {
+      run: async (cmd, args) => {
+        calls.push({ cmd, args });
+        if (cmd === "qemu-img" && args[0] === "create") {
+          creates += 1;
+          if (creates === 1) {
+            signalFirstCreate();
+            await firstCreateGate;
+          }
+        }
+        return { stdout: "", code: 0 };
+      },
+    };
+    const firstBackend = new ManagedDiskBackend({ kind: "qcow2", workspaceRoot, mountPoint, runner });
+    const secondBackend = new ManagedDiskBackend({ kind: "qcow2", workspaceRoot, mountPoint, runner });
+
+    const first = firstBackend.create("first", 1);
+    await firstCreateStarted;
+    const second = secondBackend.create("second", 2);
+    await Promise.resolve();
+    expect(calls.filter((call) => call.cmd === "qemu-img" && call.args[0] === "create")).toHaveLength(1);
+
+    releaseFirstCreate();
+    await Promise.all([first, second]);
+    expect(calls.filter((call) => call.cmd === "qemu-img" && call.args[0] === "create")).toHaveLength(2);
+    expect((await readChain(workspaceRoot)).checkpoints).toHaveLength(2);
   });
 
   it("qcow2 restore：从检查点盘文件拉新分支叶子，检查点文件不被覆写", async () => {
@@ -213,64 +311,24 @@ describe("ManagedDiskBackend", () => {
     expect(existsSync(previousLeaf)).toBe(false);
   });
 
-  it("链长 33 触发合并（qcow2）：commit + rebase 序列，chain.json 移除最老段", async () => {
+  it.each(["qcow2", "vhdx"] as const)("达到 32 个检查点时拒绝新建 %s，避免合并挂载中的祖先链", async (kind) => {
     const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
     const workspaceRoot = path.join(root, "workspaces", "s1");
     const mountPoint = path.join(root, "mnt", "s1");
-    const base = path.join(workspaceRoot, "base.qcow2");
-    const segment = (n: number) => path.join(workspaceRoot, `seg-${n}.qcow2`);
-    // 链（旧→新）：base ← seg-1 ← … ← seg-31；active = seg-32
+    const base = path.join(workspaceRoot, `base.${kind}`);
+    const segment = (n: number) => path.join(workspaceRoot, `seg-${n}.${kind}`);
     const checkpoints: TestChainState["checkpoints"] = [];
     for (let n = 31; n >= 1; n -= 1) {
       checkpoints.push({ id: `snap-${2000 + n}-abcdef`, label: `cp${n}`, createdAt: new Date().toISOString(), messageCount: n, file: segment(n), parentFile: n === 1 ? base : segment(n - 1) });
     }
     checkpoints.push({ id: "snap-2000-abcdef", label: "cp0", createdAt: new Date().toISOString(), messageCount: 0, file: base, parentFile: null });
-    await writeChain(workspaceRoot, { active: { file: segment(32), parentFile: segment(31) }, device: "/dev/nbd0", checkpoints });
-    await writeFile(segment(1), "oldest segment");
+    await writeChain(workspaceRoot, { active: { file: segment(32), parentFile: segment(31) }, ...(kind === "qcow2" ? { device: "/dev/nbd0" } : {}), checkpoints });
     const { runner, calls } = recordingRunner(() => ({ code: 0 }));
-    const backend = new ManagedDiskBackend({ kind: "qcow2", workspaceRoot, mountPoint, runner });
+    const backend = new ManagedDiskBackend({ kind, workspaceRoot, mountPoint, runner });
 
-    await backend.create("trigger", 99);
-    const lines = calls.map(({ cmd, args }) => [cmd, ...args].join(" "));
-    const commitIndex = lines.indexOf(`qemu-img commit ${segment(1)}`);
-    const rebaseIndex = lines.indexOf(`qemu-img rebase -u -b ${base} ${segment(2)}`);
-    expect(commitIndex).toBeGreaterThan(-1);
-    expect(rebaseIndex).toBeGreaterThan(commitIndex);
-    // 最老段文件被删除，次老检查点接管 base 成为新链尾
-    expect(existsSync(segment(1))).toBe(false);
-    const state = await readChain(workspaceRoot);
-    expect(state.checkpoints).toHaveLength(32);
-    expect(state.checkpoints.at(-1)).toMatchObject({ label: "cp1", file: base, parentFile: null });
-    expect(state.checkpoints.at(-2)).toMatchObject({ label: "cp2", file: segment(2), parentFile: base });
-    expect(state.checkpoints.some((item) => item.label === "cp0")).toBe(false);
-  });
-
-  it("链长 33 触发合并（vhdx）：Merge-VHD + Set-VHD 序列，chain.json 移除最老段", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
-    const workspaceRoot = path.join(root, "workspaces", "s1");
-    const mountPoint = path.join(root, "mnt", "s1");
-    const base = path.join(workspaceRoot, "base.vhdx");
-    const segment = (n: number) => path.join(workspaceRoot, `seg-${n}.vhdx`);
-    const checkpoints: TestChainState["checkpoints"] = [];
-    for (let n = 31; n >= 1; n -= 1) {
-      checkpoints.push({ id: `snap-${2000 + n}-abcdef`, label: `cp${n}`, createdAt: new Date().toISOString(), messageCount: n, file: segment(n), parentFile: n === 1 ? base : segment(n - 1) });
-    }
-    checkpoints.push({ id: "snap-2000-abcdef", label: "cp0", createdAt: new Date().toISOString(), messageCount: 0, file: base, parentFile: null });
-    await writeChain(workspaceRoot, { active: { file: segment(32), parentFile: segment(31) }, checkpoints });
-    const { runner, lines } = recordingRunner(() => ({ code: 0 }));
-    const backend = new ManagedDiskBackend({ kind: "vhdx", workspaceRoot, mountPoint, runner });
-
-    await backend.create("trigger", 99);
-    const script = managedDiskScriptPath();
-    const all = lines();
-    const mergeIndex = all.indexOf(`powershell -NoProfile -ExecutionPolicy Bypass -File ${script} -Mode merge -Path ${segment(1)}`);
-    const reparentIndex = all.indexOf(`powershell -NoProfile -ExecutionPolicy Bypass -File ${script} -Mode reparent -Path ${segment(2)} -ParentPath ${base}`);
-    expect(mergeIndex).toBeGreaterThan(-1);
-    expect(reparentIndex).toBeGreaterThan(mergeIndex);
-    const state = await readChain(workspaceRoot);
-    expect(state.checkpoints).toHaveLength(32);
-    expect(state.checkpoints.at(-1)).toMatchObject({ label: "cp1", file: base, parentFile: null });
-    expect(state.checkpoints.at(-2)).toMatchObject({ label: "cp2", file: segment(2), parentFile: base });
+    await expect(backend.create("trigger", 99)).rejects.toThrow("32 个安全上限");
+    expect(calls).toEqual([]);
+    expect((await readChain(workspaceRoot)).checkpoints).toHaveLength(32);
   });
 
   it("delete 抛明确错误：链式后端不支持逐段删除", async () => {
@@ -278,7 +336,7 @@ describe("ManagedDiskBackend", () => {
     const workspaceRoot = path.join(root, "workspaces", "s1");
     const { runner } = recordingRunner(() => ({ code: 0 }));
     const backend = new ManagedDiskBackend({ kind: "qcow2", workspaceRoot, mountPoint: path.join(root, "mnt", "s1"), runner });
-    await expect(backend.delete("snap-1-abcdef")).rejects.toThrow("managed-disk 链式后端不支持删除单个检查点；链长超 32 自动合并最老段");
+    await expect(backend.delete("snap-1-abcdef")).rejects.toThrow("managed-disk 链式后端不支持删除单个检查点；达到 32 个检查点安全上限");
   });
 
   it("diff 报告链中位置与载体文件信息，并如实说明无内容级 diff", async () => {
@@ -355,6 +413,42 @@ describe("sweepOrphans 孤儿挂载清理", () => {
     // 镜像目录不在清理范围（稀疏盘由用户/后续机制处理）
     expect((await stat(path.join(root, "workspaces", "orphan1", "base.qcow2"))).isFile()).toBe(true);
   });
+
+  it("teardown 优先卸载 chain.json 记录的 active VHDX 叶子，而非旧 base", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
+    const id = "active-leaf";
+    const { workspaceRoot, mountPoint } = managedWorkspacePaths(root, id);
+    const base = path.join(workspaceRoot, "base.vhdx");
+    const leaf = path.join(workspaceRoot, "leaf-snap-2000-abcdef.vhdx");
+    await mkdir(mountPoint, { recursive: true });
+    await writeChain(workspaceRoot, { active: { file: leaf, parentFile: base }, checkpoints: [] });
+    const { runner, lines } = recordingRunner(() => ({ code: 0 }));
+    const manager = new ManagedWorkspaceManager({ dataDir: root, runner, platform: "win32" });
+
+    await manager.teardown({
+      id,
+      workspace: { mode: "managed", backend: "vhdx", originCwd: root, image: base, mountPoint },
+    });
+
+    expect(lines()).toEqual([
+      `powershell -NoProfile -ExecutionPolicy Bypass -File ${managedDiskScriptPath()} -Mode dismount -Image ${leaf} -MountPoint ${mountPoint}`,
+    ]);
+    expect(existsSync(workspaceRoot)).toBe(false);
+  });
+
+  it("teardown 卸载失败会保留工作区，供用户恢复", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
+    const id = "teardown-fails";
+    const { workspaceRoot, mountPoint } = managedWorkspacePaths(root, id);
+    const base = path.join(workspaceRoot, "base.vhdx");
+    await mkdir(mountPoint, { recursive: true });
+    await writeChain(workspaceRoot, { active: { file: base, parentFile: null }, checkpoints: [] });
+    const { runner } = recordingRunner(() => ({ code: 1 }));
+    const manager = new ManagedWorkspaceManager({ dataDir: root, runner, platform: "win32" });
+
+    await expect(manager.teardown({ id, workspace: { mode: "managed", backend: "vhdx", originCwd: root, image: base, mountPoint } })).rejects.toThrow("未删除会话或磁盘文件");
+    expect(existsSync(workspaceRoot)).toBe(true);
+  });
 });
 
 describe("StorageGC.startup", () => {
@@ -375,7 +469,7 @@ describe("managed workspace REST", () => {
     const events = new EventBus();
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));
     await pricing.initialize();
-    const agent = { isRunning } as unknown as AgentRunner;
+    const agent = { isRunning, isShellPending: () => false } as unknown as AgentRunner;
     const core = { cleanupSession: async () => ({}), release: async () => {} } as unknown as CoreClient;
     const providers = new ProviderRegistry();
     providers.register(makeStubProvider("test-stub"));

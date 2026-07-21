@@ -1,5 +1,6 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { writeUtf8Atomically } from "../atomic-file.js";
 
 export const RATE_SCALE = 1_000_000n;
 
@@ -129,11 +130,8 @@ export class ExchangeRateService {
 
   private async saveCache(snapshot: ExchangeRateSnapshot): Promise<void> {
     await mkdir(path.dirname(this.options.cachePath), { recursive: true });
-    const target = this.options.cachePath;
-    const temporary = `${target}.${process.pid}.tmp`;
     const stored: StoredExchangeRateSnapshot = { ...snapshot, rate: snapshot.rate.toString() };
-    await writeFile(temporary, `${JSON.stringify(stored, null, 2)}\n`, "utf8");
-    await rename(temporary, target);
+    await writeUtf8Atomically(this.options.cachePath, `${JSON.stringify(stored, null, 2)}\n`);
   }
 }
 

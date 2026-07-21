@@ -70,6 +70,13 @@
 - 运行中再发消息会进入 **steering 队列**，下一轮注入，不中断当前作业
 - 默认 Enter 发送、Shift+Enter 换行；可在设置里改成 Ctrl+Enter 发送
 
+## 联网工具配置
+
+- `web_fetch` 默认不提供给模型。到 **设置 → 服务设置 → 网页读取** 显式选择 `jina` 或 `custom` 后才会注入工具与对应提示词；Jina 的 API Key 可选，custom Base URL 必须包含 `{url}` 占位符（会替换为 URL 编码后的目标地址）。
+- `web_search` 在 **设置 → 服务设置 → 网络搜索** 选择 `brave`、`tavily` 或 `custom` 并填好所需凭据后才注入。Tavily 使用单独的 API Key 调用其 Search API；其远程 MCP 地址 `https://mcp.tavily.com/mcp/?tavilyApiKey=...` 应配置在 `<业务数据目录>/mcp.json`，不是搜索 Base URL。
+- 也可通过环境变量配置：`OWC_WEB_FETCH_PROVIDER` / `OWC_WEB_FETCH_API_KEY` / `OWC_WEB_FETCH_BASE_URL` 与 `OWC_SEARCH_PROVIDER` / `OWC_SEARCH_API_KEY` / `OWC_SEARCH_BASE_URL`。环境变量优先，设置页只读显示。
+- 联网调用仍遵循会话权限模式；`ask` 下会请求确认，且内网/本地 URL 会被拒绝。
+
 ## 对话内容渲染
 
 - 正文支持 GFM Markdown：标题、列表、任务列表、表格、引用、删除线、链接、行内代码与代码块

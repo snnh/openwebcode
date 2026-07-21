@@ -1,0 +1,41 @@
+import { describe, expect, it } from "vitest";
+import { replaceFileWithRetry } from "../src/atomic-file.js";
+
+function sharingViolation(code: "EPERM" | "EACCES" | "EBUSY" = "EPERM"): NodeJS.ErrnoException {
+  return Object.assign(new Error("file is temporarily in use"), { code });
+}
+
+describe("replaceFileWithRetry", () => {
+  it("retries transient Windows sharing violations without deleting the previous target", async () => {
+    let attempts = 0;
+    const delays: number[] = [];
+    await replaceFileWithRetry("ledger.tmp", "ledger.json", {
+      platform: "win32",
+      retryDelaysMs: [5, 10],
+      renameFile: async () => {
+        attempts += 1;
+        if (attempts < 3) throw sharingViolation();
+      },
+      sleep: async (milliseconds) => { delays.push(milliseconds); },
+    });
+    expect(attempts).toBe(3);
+    expect(delays).toEqual([5, 10]);
+  });
+
+  it("does not retry permanent or non-Windows rename failures", async () => {
+    const permanent = Object.assign(new Error("read-only directory"), { code: "EROFS" });
+    await expect(replaceFileWithRetry("tmp", "target", {
+      platform: "win32",
+      renameFile: async () => { throw permanent; },
+      sleep: async () => undefined,
+    })).rejects.toBe(permanent);
+
+    let attempts = 0;
+    await expect(replaceFileWithRetry("tmp", "target", {
+      platform: "linux",
+      renameFile: async () => { attempts += 1; throw sharingViolation("EBUSY"); },
+      sleep: async () => undefined,
+    })).rejects.toMatchObject({ code: "EBUSY" });
+    expect(attempts).toBe(1);
+  });
+});
