@@ -26,11 +26,13 @@ function toolResultOf(message?: ChatMessage): string {
     .join("\n");
 }
 
-export function ExecutionTrack({ session, cleared, streamText, thinkingText, permissions, onPermissionDone, onPermissionError, onSendToAgent, contentLens, onNotice }: {
+export function ExecutionTrack({ session, cleared, streamText, thinkingText, runError, permissions, onPermissionDone, onPermissionError, onSendToAgent, contentLens, onNotice }: {
   session: SessionDetail;
   cleared?: { uptoIndex: number; at: string };
   streamText: string;
   thinkingText?: string;
+  /** 服务端本轮在工具/Provider/运行基础设施上失败时的持久可见说明。 */
+  runError?: string;
   permissions: PermissionRequest[];
   onPermissionDone(requestId: string): void;
   onPermissionError?(message: string): void;
@@ -93,6 +95,12 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, per
         })}
         {cleared && Math.min(cleared.uptoIndex, session.messages.length) === session.messages.length && (
           <div className="context-cleared-divider" role="separator">{t("上下文已清空（历史保留）", "Context cleared (history retained)")}</div>
+        )}
+        {runError && (
+          <section className="tool-result error run-error" role="alert">
+            <span className="tool-result-label">{t("本轮执行失败", "Run failed")}</span>
+            <pre className="mono">{runError}</pre>
+          </section>
         )}
         {(streamText || thinkingText) && (
           <article className="message assistant live">
