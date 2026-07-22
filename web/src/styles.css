@@ -747,6 +747,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 }
 .steering-hint { color: var(--amber); font-weight: 600; }
 .composer-input { display: flex; gap: 10px; align-items: flex-end; position: relative; }
+.queue-behavior { max-width: 148px; min-height: 34px; padding: 0 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel); color: var(--text); font-size: 12px; }
 .composer-hint { margin-top: 6px; color: var(--text-3); font-size: 11px; }
 .composer-conversion { margin-top: 6px; color: var(--accent); font-size: 12px; }
 .attachment-strip { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
