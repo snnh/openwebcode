@@ -14,7 +14,12 @@ import { SessionStore } from "../src/sessions/session-store.js";
 import { makeStubProvider } from "./helpers/stub-provider.js";
 
 const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
+afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, {
+  recursive: true,
+  force: true,
+  maxRetries: 10,
+  retryDelay: 100,
+}))));
 
 async function tempRoot(): Promise<string> {
   const root = await mkdtemp(path.join(os.tmpdir(), "owc-att-"));

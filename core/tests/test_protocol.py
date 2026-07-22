@@ -106,7 +106,7 @@ def main():
         request(proc, "ping-中文", "core.ping")
         response, notes = collect_until_response(proc, "ping-中文")
         assert not notes
-        assert response["result"]["version"] == "0.3.2"
+        assert response["result"]["version"] == "0.3.3"
         assert response["result"]["sandboxCapability"] in {"advisory", "partial", "enforced"}
         assert response["result"]["sandboxReason"]
         assert response["result"]["protocolVersion"] == "1.0"
@@ -122,13 +122,13 @@ def main():
         response, notes = collect_until_response(proc, None)
         assert not notes
         assert response["id"] is None
-        assert response["result"]["version"] == "0.3.2"
+        assert response["result"]["version"] == "0.3.3"
 
         send(proc, {"jsonrpc": "2.0", "method": "core.ping", "params": {}})
         request(proc, "after-notification", "core.ping")
         response, notes = collect_until_response(proc, "after-notification")
         assert not notes
-        assert response["result"]["version"] == "0.3.2"
+        assert response["result"]["version"] == "0.3.3"
 
         request(proc, 2, "missing.method")
         response, _ = collect_until_response(proc, 2)
@@ -172,6 +172,7 @@ def main():
 
         request(proc, 3, "exec.run", {"sessionId": "s1", "execId": "e1", "cmd": command, "cwd": os.getcwd(), "timeoutMs": 5000})
         response, notes = collect_until_response(proc, 3)
+        assert "result" in response, response
         assert response["result"]["exitCode"] == 7
         assert [n["params"]["seq"] for n in notes] == list(range(len(notes)))
         output = b"".join(base64.b64decode(n["params"]["data"]) for n in notes)
