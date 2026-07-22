@@ -76,6 +76,9 @@ export function parseSessionImport(text: string): ParsedSessionImport {
       role: parsed.role,
       content: parsed.content,
       createdAt: typeof parsed.createdAt === "string" ? parsed.createdAt : new Date().toISOString(),
+      ...(typeof parsed.parentId === "string" ? { parentId: parsed.parentId } : {}),
+      ...(typeof parsed.runId === "string" ? { runId: parsed.runId } : {}),
+      ...(typeof parsed.turnId === "string" ? { turnId: parsed.turnId } : {}),
     });
   }
   // createdAt/updatedAt 在 SessionMeta 上必填且列表按 updatedAt 排序：导入是信任边界，缺失时兜底为当前时间

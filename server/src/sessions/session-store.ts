@@ -89,17 +89,26 @@ export class SessionStore {
     sessionId: string,
     role: MessageRole,
     content: MessageContent[],
+    lineage?: Pick<ChatMessage, "parentId" | "runId" | "turnId">,
   ): Promise<ChatMessage> {
     const meta = await this.readMeta(sessionId);
+    const existing = meta.activeLeafId ? undefined : await this.readMessages(sessionId);
+    const parentId = lineage?.parentId ?? meta.activeLeafId ?? existing?.messages.at(-1)?.id;
     const now = new Date().toISOString();
     const message: ChatMessage = {
       id: randomUUID(),
       role,
       content,
       createdAt: now,
+      ...(parentId
+        ? { parentId }
+        : {}),
+      ...(lineage?.runId ? { runId: lineage.runId } : {}),
+      ...(lineage?.turnId ? { turnId: lineage.turnId } : {}),
     };
     await appendFile(this.messagesPath(sessionId), `${JSON.stringify(message)}\n`, "utf8");
     meta.updatedAt = now;
+    meta.activeLeafId = message.id;
     if (meta.title === "New session" && role === "user") {
       const firstText = content.find((block) => block.type === "text");
       if (firstText?.type === "text") meta.title = firstText.text.slice(0, 80);
@@ -231,6 +240,17 @@ export class SessionStore {
     return JSON.parse(await readFile(this.metaPath(id), "utf8")) as SessionMeta;
   }
 
+  /** Safe branch fallback: copy history into a separately selected workspace, never share a writable cwd. */
+  async cloneCurrent(id: string, cwd: string, title?: string): Promise<SessionDetail> {
+    const source = await this.get(id);
+    if (!source) throw new Error("Session not found");
+    if (path.resolve(cwd) === source.cwd) throw new Error("A cloned session requires a different workspace directory");
+    const meta = await this.create({ cwd, provider: source.provider, model: source.model, title: title ?? `${source.title} (clone)`, ...(source.agentMode ? { agentMode: source.agentMode } : {}), ...(source.sandboxMode ? { sandboxMode: source.sandboxMode } : {}), ...(source.setupScript ? { setupScript: source.setupScript } : {}) });
+    if (source.thinking !== undefined || source.effort !== undefined || source.snapshotMode !== undefined) await this.updateConfig(meta.id, { provider: source.provider, model: source.model, ...(source.thinking ? { thinking: source.thinking } : {}), ...(source.effort ? { effort: source.effort } : {}), ...(source.agentMode ? { agentMode: source.agentMode } : {}), ...(source.snapshotMode ? { snapshotMode: source.snapshotMode } : {}) });
+    for (const message of source.messages) await this.appendMessage(meta.id, message.role, message.content, { ...(message.runId ? { runId: message.runId } : {}), ...(message.turnId ? { turnId: message.turnId } : {}) });
+    return (await this.get(meta.id))!;
+  }
+
   /**
    * JSONL is append-only, so a process interruption can only normally damage
    * its final record. Keep every valid record and make the recovery state
@@ -255,7 +275,10 @@ export class SessionStore {
     let corruptTail = false;
     for (const index of nonEmpty) {
       try {
-        messages.push(JSON.parse(lines[index]!) as ChatMessage);
+        const parsed = JSON.parse(lines[index]!) as ChatMessage;
+        // Old linear logs stay untouched on disk; derive their parent links while reading.
+        if (!parsed.parentId && messages.length > 0) parsed.parentId = messages.at(-1)!.id;
+        messages.push(parsed);
       } catch {
         if (index === last) corruptTail = true;
         else corruptMiddle = true;

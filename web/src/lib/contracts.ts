@@ -131,6 +131,9 @@ export interface InteractionRequest {
   status: "pending" | "answered" | "cancelled"; createdAt: string; answer?: unknown; answeredAt?: string;
 }
 
+export interface SessionTimeline { activeLeafId?: string; entries: Array<{ id: string; parentId?: string; runId?: string; turnId?: string; role: "user" | "assistant" | "tool"; createdAt: string }>; }
+export interface QueueItem { id: string; sessionId: string; kind: "steer" | "follow_up"; content: string; status: "queued" | "consuming" | "applied" | "cancelled"; createdAt: string; updatedAt: string; }
+
 export interface AppEvent {
   eventId?: string;
   source: "server" | "core" | "agent" | "session";

@@ -14,6 +14,18 @@ const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
 
 describe("session model config", () => {
+  it("persists append-only message lineage and reconstructs legacy parents on reload", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-session-lineage-")); roots.push(root);
+    const sessions = new SessionStore(path.join(root, "sessions")); await sessions.initialize();
+    const session = await sessions.create({ cwd: root, provider: "test", model: "test" });
+    const first = await sessions.appendMessage(session.id, "user", [{ type: "text", text: "first" }]);
+    const second = await sessions.appendMessage(session.id, "assistant", [{ type: "text", text: "second" }], { runId: "run-1", turnId: "run-1:0" });
+    const reloaded = new SessionStore(path.join(root, "sessions")); await reloaded.initialize();
+    const detail = await reloaded.get(session.id);
+    expect(detail?.activeLeafId).toBe(second.id);
+    expect(detail?.messages).toMatchObject([{ id: first.id }, { id: second.id, parentId: first.id, runId: "run-1", turnId: "run-1:0" }]);
+  });
+
   it("validates and persists idle model thinking and effort updates", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "owc-session-config-")); roots.push(root);
     const sessions = new SessionStore(path.join(root, "sessions")); await sessions.initialize();
@@ -38,6 +50,12 @@ describe("session model config", () => {
       expect(modes.statusCode).toBe(200);
       expect(modes.json()).toMatchObject({ sandboxMode: "off", snapshotMode: "manual" });
       expect(await sessions.get(session.id)).toMatchObject({ sandboxMode: "off", snapshotMode: "manual" });
+      const first = await sessions.appendMessage(session.id, "user", [{ type: "text", text: "timeline" }]);
+      const second = await sessions.appendMessage(session.id, "assistant", [{ type: "text", text: "node" }], { runId: "run-test", turnId: "run-test:0" });
+      const timeline = await app.inject({ method: "GET", url: `/api/sessions/${session.id}/timeline` });
+      expect(timeline.statusCode).toBe(200);
+      expect(timeline.json().activeLeafId).toBe(second.id);
+      expect(timeline.json().entries).toEqual(expect.arrayContaining([expect.objectContaining({ id: second.id, parentId: first.id, runId: "run-test", turnId: "run-test:0" })]));
     } finally { await app.close(); }
   });
 });

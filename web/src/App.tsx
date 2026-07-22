@@ -109,7 +109,7 @@ export function App(): ReactElement {
   const detail = useQuery({ queryKey: queryKeys.detail(currentId ?? ""), queryFn: () => api.session(currentId!), enabled: Boolean(currentId) });
   const models = useQuery({ queryKey: ["models"], queryFn: api.models });
   const providers = useQuery({ queryKey: ["providers"], queryFn: api.providers });
-  const steering = useQuery({ queryKey: ["steering", currentId], queryFn: () => api.steering(currentId!), enabled: Boolean(currentId) });
+  const queue = useQuery({ queryKey: ["queue", currentId], queryFn: () => api.queue(currentId!), enabled: Boolean(currentId) });
   const interactions = useQuery({ queryKey: ["interactions", currentId], queryFn: () => api.interactions(currentId!), enabled: Boolean(currentId) });
   const contextView = useQuery({ queryKey: ["context", currentId], queryFn: () => api.context(currentId!), enabled: Boolean(currentId) });
   const skills = useQuery({ queryKey: queryKeys.skills(currentId ?? ""), queryFn: () => api.skills(currentId!), enabled: Boolean(currentId) });
@@ -214,8 +214,8 @@ export function App(): ReactElement {
           setPendingPermissions((prev) => [...prev.filter((item) => item.requestId !== req.requestId), req]);
           queryClient.invalidateQueries({ queryKey: ["permissions", event.sessionId] });
         }
-        if (["steering.queued", "steering.applied", "steering.removed"].includes(event.type)) {
-          queryClient.invalidateQueries({ queryKey: ["steering", event.sessionId] });
+        if (event.type.startsWith("queue.") || event.type.startsWith("steering.")) {
+          queryClient.invalidateQueries({ queryKey: ["queue", event.sessionId] });
         }
         if (event.type.startsWith("interaction.")) queryClient.invalidateQueries({ queryKey: ["interactions", event.sessionId] });
         // 后台任务完成通知：刷新任务列表
@@ -458,11 +458,11 @@ export function App(): ReactElement {
               }}
               onPermissionError={(message) => notify(message, "error")}
             />
-            {steering.data && steering.data.length > 0 && (
+            {queue.data?.some((item) => item.status === "queued") && (
               <SteeringQueue
-                items={steering.data}
-                onRemove={(itemId) => api.removeSteering(current.id, itemId)
-                  .then(() => steering.refetch())
+                items={queue.data}
+                onRemove={(itemId) => api.removeQueue(current.id, itemId)
+                  .then(() => queue.refetch())
                   .catch((error: unknown) => notify(error instanceof Error ? error.message : t("撤销 Steering 失败", "Could not remove Steering item"), "error"))}
               />
             )}
