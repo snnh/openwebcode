@@ -1,4 +1,4 @@
-import type { BackgroundTaskInfo, CatalogSyncStatus, Checkpoint, CompletePathResponse, ContextView, CostReport, ExtensionInfo, FileEntry, ManagedWorkspaceCapability, ManagedWorkspaceSyncPreview, ManagedWorkspaceSyncResult, MessageAttachment, ModelProfile, PendingPermission, PricingDocument, SandboxCapabilities, SandboxMode, Session, SessionDetail, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo, SyncResult, TodoItem } from "./contracts";
+import type { AgentRun, BackgroundTaskInfo, CatalogSyncStatus, Checkpoint, CompletePathResponse, ContextView, CostReport, ExtensionInfo, FileEntry, ManagedWorkspaceCapability, ManagedWorkspaceSyncPreview, ManagedWorkspaceSyncResult, MessageAttachment, ModelProfile, PendingPermission, PricingDocument, SandboxCapabilities, SandboxMode, Session, SessionDetail, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo, SyncResult, TodoItem } from "./contracts";
 
 export class ApiError extends Error {
   constructor(readonly status: number, message: string) {
@@ -50,6 +50,7 @@ export const api = {
   sessions: () => request<Session[]>("/api/sessions"),
   health: () => request<{ status: string }>("/api/health"),
   session: (id: string) => request<SessionDetail>(`/api/sessions/${id}`),
+  run: (id: string) => request<AgentRun>(`/api/sessions/${id}/run`),
   createSession: (body: { cwd: string; provider: string; model: string; title?: string; agentMode?: "plan" | "build"; sandboxMode?: SandboxMode; setupScript?: string; workspaceMode?: "managed" }) =>
     request<Session>("/api/sessions", { method: "POST", body: JSON.stringify(body) }),
   sandboxCapabilities: () => request<SandboxCapabilities>("/api/sandbox/capabilities"),

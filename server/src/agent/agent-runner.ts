@@ -29,6 +29,7 @@ import type { HookEvent, HookPayload, HookRunner } from "../hooks.js";
 import type { ExtensionManager } from "../extensions/extension-manager.js";
 import { decodeProcessOutputChunks } from "./output-decoder.js";
 import { buildSystemPrompt } from "./prompts/prompt-builder.js";
+import { RunStore, type AgentRunSnapshot, type AgentRunState } from "./run-store.js";
 
 interface ExecutionContext {
   sessionId: string;
@@ -323,6 +324,10 @@ export interface AgentRunOptions {
 
 export class AgentRunner {
   private readonly running = new Map<string, AbortController>();
+  /** Active Run snapshots. Historical/latest snapshots live under sessions/<id>/runs/. */
+  private readonly runs = new Map<string, AgentRunSnapshot>();
+  /** Serialize per-run snapshots so a later state cannot overtake an earlier one on disk. */
+  private readonly runWrites = new Map<string, Promise<void>>();
   /** Final assistant output is durable, but hooks/queue cleanup are not yet. */
   private readonly settling = new Set<string>();
   private readonly shells = new Map<string, AbortController>();
@@ -403,8 +408,8 @@ export class AgentRunner {
     try {
       const configuredSession = await this.sessions.get(sessionId);
       if (!configuredSession) throw new Error("Session not found");
-      const appendUserMessage = async (message: string): Promise<void> => {
-        await this.sessions.appendMessage(sessionId, "user", [
+      const appendUserMessage = async (message: string) => {
+        return this.sessions.appendMessage(sessionId, "user", [
           ...(options?.images ?? []).map((image): MessageContent => ({ type: "image", mediaType: image.mediaType, data: image.data })),
           ...(options?.attachments ?? []).map((block): MessageContent => ({ type: "text", text: block.text })),
           { type: "text", text: message },
@@ -443,7 +448,8 @@ export class AgentRunner {
         : undefined;
 
       // 一旦路由返回 202，用户输入优先于所有可失败的集成步骤（快照、Hook、Core、Provider）。
-      await appendUserMessage(effectiveText);
+      const triggerMessage = await appendUserMessage(effectiveText);
+      await this.createRun(sessionId, triggerMessage.id);
       if (automaticSnapshotRequested && backgroundTaskRunning) {
         this.events.publish({
           source: "session",
@@ -463,6 +469,7 @@ export class AgentRunner {
       await this.runNotificationHook("UserPromptSubmit", { sessionId, cwd: configuredSession.cwd, prompt: effectiveText.slice(0, 2000) });
       await this.core.configureSession({ sessionId, cwd: configuredSession.cwd, sandbox: configuredSession.sandbox ?? { enabled: true, readRoots: [configuredSession.cwd], writeRoots: [configuredSession.cwd], denyPaths: [], network: "allow" } });
       if (automaticSnapshot) {
+        await this.state(sessionId, "snapshotting");
         // 配置成功后再创建镜像，避免 Core 无法启动时留下无用的 VHD checkpoint；
         // 仍使用写入用户消息前捕获的 ledger/messageCount，恢复语义保持为本轮前状态。
         try {
@@ -484,17 +491,18 @@ export class AgentRunner {
           options?.managedWorkspace?.downgradeAfterAutomaticSnapshot?.();
         }
       }
-      this.state(sessionId, "thinking");
+      await this.state(sessionId, "preparing_context");
       // 85% 水位强制概览压缩（§7.3 处理链⑤）：每次运行只触发一次
       let forceCompacted = false;
-      for (let turn = 0; turn < this.maxTurns; turn++) {
+      for (let turnIndex = 0; turnIndex < this.maxTurns; turnIndex++) {
         controller.signal.throwIfAborted();
+        this.setTurnIndex(sessionId, turnIndex);
         const session = await this.sessions.get(sessionId);
         if (!session) throw new Error("Session not found");
         const context = new ContextManager(this.sessions.contextRoot(sessionId));
         const budget = await context.budgetStatus();
         if (budget.paused) {
-          this.state(sessionId, "budget_paused");
+          await this.state(sessionId, "budget_paused");
           this.events.publish({ source: "agent", type: "agent.budget_paused", sessionId, payload: budget });
           return;
         }
@@ -625,6 +633,7 @@ export class AgentRunner {
           projectContext: memorySection ? [{ path: "workspace instructions and memory", content: memorySection }] : [],
           notices: bgNoticeSection,
         });
+        await this.state(sessionId, "streaming");
         const turn = await collectProviderTurn(
           provider,
           {
@@ -697,14 +706,14 @@ export class AgentRunner {
         if (toolCalls.length === 0 && stopReason !== "tool_use") {
           if (this.steering.get(sessionId)?.length) {
             await this.applySteering(sessionId);
-            this.state(sessionId, "thinking");
+            await this.state(sessionId, "thinking");
             continue;
           }
           // Once output is durable, stop accepting steering.  A request in
           // this hook/cleanup window must receive a retryable 409 instead of
           // a 202 that would later be discarded by finally.
           this.settling.add(sessionId);
-          this.state(sessionId, "settling");
+          await this.state(sessionId, "settling");
           try {
             // Stop 钩子：run 正常结束时通知（abort/error 路径不触发）。
             await this.runNotificationHook("Stop", { sessionId, cwd: session.cwd });
@@ -714,6 +723,7 @@ export class AgentRunner {
           return;
         }
         if (toolCalls.length === 0) throw new Error("Provider stopped for tool use without a tool call");
+        await this.state(sessionId, "executing_tools");
         for (const call of toolCalls) {
           let effectiveInput = call.input;
           let result: Extract<MessageContent, { type: "tool_result" }>;
@@ -772,6 +782,7 @@ export class AgentRunner {
             await this.runNotificationHook("PostToolUse", { sessionId, cwd: session.cwd, tool: call.name, input: effectiveInput, result: { summary } });
           }
         }
+        await this.state(sessionId, "advancing_turn");
         await context.advanceRound();
         const afterTools = await this.sessions.get(sessionId);
         if (afterTools && (!this.extensions || this.extensions.isEnabled("context-manager"))) {
@@ -790,11 +801,12 @@ export class AgentRunner {
           sessionId,
           payload: { message: "Agent run aborted" },
         });
-        this.state(sessionId, "aborted");
+        await this.finishRun(sessionId, "aborted", { code: "aborted", message: "Agent run aborted", retryable: false });
         throw error;
       }
       const message = error instanceof Error ? error.message : String(error);
       this.events.publish({ source: "agent", type: "agent.error", sessionId, payload: { message } });
+      await this.finishRun(sessionId, "failed", { code: "run_failed", message, retryable: false });
       throw error;
     } finally {
       this.settling.delete(sessionId);
@@ -804,7 +816,7 @@ export class AgentRunner {
       if (!controller.signal.aborted) this.steering.delete(sessionId);
       this.todos.delete(sessionId);
       this.events.publish({ source: "agent", type: "todos.updated", sessionId, payload: { items: [] } });
-      this.state(sessionId, "idle");
+      if (this.runs.has(sessionId)) await this.finishRun(sessionId, "completed");
     }
   }
 
@@ -910,6 +922,32 @@ export class AgentRunner {
 
   isRunning(sessionId: string): boolean {
     return this.running.has(sessionId);
+  }
+
+  /** REST snapshot source. An unfinished snapshot after a process restart is
+   * explicitly failed: this runner cannot safely resume a half-completed tool
+   * turn and must never report a phantom running agent. */
+  async getRun(sessionId: string): Promise<AgentRunSnapshot | undefined> {
+    const active = this.runs.get(sessionId);
+    if (active) {
+      // A REST snapshot must never acknowledge a state that has not reached
+      // durable storage yet. State writers are serialized per session.
+      await this.runWrites.get(sessionId);
+      return { ...active, ...(active.error ? { error: { ...active.error } } : {}) };
+    }
+    const store = new RunStore(this.sessions.contextRoot(sessionId));
+    const saved = await store.readLatest();
+    if (!saved || ["completed", "failed", "aborted"].includes(saved.state)) return saved;
+    const now = new Date().toISOString();
+    const recovered: AgentRunSnapshot = {
+      ...saved,
+      state: "failed",
+      since: now,
+      settledAt: now,
+      error: { code: "server_restarted", message: "The server restarted before this run reached a terminal state", retryable: true },
+    };
+    await store.write(recovered);
+    return recovered;
   }
 
   /** shell 快捷前缀 `!cmd` 是否在挂起中（权限审批/执行中）；agent.isRunning 全程 false。 */
@@ -1470,8 +1508,115 @@ export class AgentRunner {
 
   private readonly executions = new Map<string, ExecutionContext>();
 
-  private state(sessionId: string, state: string): void {
-    this.events.publish({ source: "agent", type: "agent.state", sessionId, payload: { state } });
+  private async createRun(sessionId: string, triggerMessageId: string): Promise<void> {
+    const now = new Date().toISOString();
+    const run: AgentRunSnapshot = {
+      id: randomUUID(),
+      sessionId,
+      triggerMessageId,
+      state: "accepted",
+      turnIndex: 0,
+      startedAt: now,
+      since: now,
+    };
+    this.runs.set(sessionId, run);
+    await this.writeRun(sessionId, run, true);
+    this.events.publish({ source: "agent", type: "run.accepted", sessionId, runId: run.id, payload: { ...run } });
+    await this.state(sessionId, "starting");
+  }
+
+  private setTurnIndex(sessionId: string, turnIndex: number): void {
+    const run = this.runs.get(sessionId);
+    if (!run || run.turnIndex === turnIndex) return;
+    run.turnIndex = turnIndex;
+    this.queueRunWrite(sessionId, run, false);
+  }
+
+  /** Map legacy transient names to the persisted Run state machine. */
+  private state(sessionId: string, requested: string): Promise<void> {
+    const state: AgentRunState | undefined = ({
+      thinking: "preparing_context",
+      tool_running: "executing_tools",
+      waiting_permission: "waiting_permission",
+      settling: "settling",
+      budget_paused: "budget_paused",
+      starting: "starting",
+      snapshotting: "snapshotting",
+      preparing_context: "preparing_context",
+      streaming: "streaming",
+      executing_tools: "executing_tools",
+      advancing_turn: "advancing_turn",
+    } as Record<string, AgentRunState>)[requested];
+    const run = this.runs.get(sessionId);
+    if (!run || !state) {
+      this.events.publish({ source: "agent", type: "agent.state", sessionId, payload: { state: requested } });
+      return Promise.resolve();
+    }
+    run.state = state;
+    run.since = new Date().toISOString();
+    const write = this.writeRun(sessionId, run, true);
+    void write.catch((error) => {
+      this.events.publish({
+        source: "agent",
+        type: "run.persistence_failed",
+        sessionId,
+        runId: run.id,
+        payload: { message: error instanceof Error ? error.message : String(error) },
+      });
+    });
+    return write;
+  }
+
+  private async finishRun(
+    sessionId: string,
+    state: Extract<AgentRunState, "completed" | "failed" | "aborted">,
+    error?: AgentRunSnapshot["error"],
+  ): Promise<void> {
+    const run = this.runs.get(sessionId);
+    if (!run) return;
+    const now = new Date().toISOString();
+    run.state = state;
+    run.since = now;
+    run.settledAt = now;
+    if (error) run.error = error;
+    await this.writeRun(sessionId, run, true);
+    this.events.publish({ source: "agent", type: `run.${state}`, sessionId, runId: run.id, payload: { ...run } });
+    // Keep the legacy UI/CLI completion signal while REST snapshots expose the
+    // terminal state above. This event intentionally does not mutate the Run.
+    this.events.publish({ source: "agent", type: "agent.state", sessionId, runId: run.id, payload: { state: "idle" } });
+    this.runs.delete(sessionId);
+    this.runWrites.delete(sessionId);
+  }
+
+  private queueRunWrite(sessionId: string, run: AgentRunSnapshot, publishState: boolean): void {
+    void this.writeRun(sessionId, run, publishState).catch((error) => {
+      this.events.publish({
+        source: "agent",
+        type: "run.persistence_failed",
+        sessionId,
+        runId: run.id,
+        payload: { message: error instanceof Error ? error.message : String(error) },
+      });
+    });
+  }
+
+  private async writeRun(sessionId: string, run: AgentRunSnapshot, publishState: boolean): Promise<void> {
+    const snapshot = { ...run, ...(run.error ? { error: { ...run.error } } : {}) };
+    const previous = this.runWrites.get(sessionId) ?? Promise.resolve();
+    const write = previous.catch(() => undefined).then(async () => {
+      await new RunStore(this.sessions.contextRoot(sessionId)).write(snapshot);
+      if (publishState) {
+        this.events.publish({
+          source: "agent",
+          type: "agent.state",
+          sessionId,
+          runId: snapshot.id,
+          payload: { runId: snapshot.id, state: snapshot.state, turnIndex: snapshot.turnIndex, since: snapshot.since },
+        });
+      }
+    });
+    this.runWrites.set(sessionId, write);
+    await write;
   }
 }
 

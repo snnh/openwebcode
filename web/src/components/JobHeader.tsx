@@ -15,7 +15,7 @@ const STATE_LABELS: Record<string, [string, string]> = {
 };
 
 export function isBusyState(state?: string): boolean {
-  return Boolean(state) && state !== "idle" && state !== "error";
+  return state !== undefined && !["idle", "error", "completed", "failed", "aborted"].includes(state);
 }
 
 export interface CostSummary {

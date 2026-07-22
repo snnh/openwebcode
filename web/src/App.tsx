@@ -6,6 +6,8 @@ import type { AppEvent, BackgroundTaskInfo, SessionDetail, TodoItem } from "./li
 import { formatCurrency } from "./lib/format";
 import { loadSendKey, loadSessionDefaults, saveSendKey, saveSessionDefaults, type SendKey, type SessionDefaults } from "./lib/prefs";
 import { useTheme } from "./theme";
+import { useAgentRun } from "./hooks/use-agent-run";
+import { useSessionEventStream } from "./hooks/use-session-event-stream";
 import { BottomPanel } from "./components/BottomPanel";
 import { Composer } from "./components/Composer";
 import type { PendingImage } from "./components/Composer";
@@ -101,9 +103,6 @@ export function App(): ReactElement {
       ? window.requestAnimationFrame(flushStreamBuffers)
       : window.setTimeout(flushStreamBuffers, 80);
   }, [flushStreamBuffers]);
-  const sessionEventSeq = useRef<Record<string, number>>({});
-  const seenEventIds = useRef<Set<string>>(new Set());
-
   const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: api.sessions });
   const detail = useQuery({ queryKey: queryKeys.detail(currentId ?? ""), queryFn: () => api.session(currentId!), enabled: Boolean(currentId) });
   const models = useQuery({ queryKey: ["models"], queryFn: api.models });
@@ -115,46 +114,21 @@ export function App(): ReactElement {
   const extensions = useQuery({ queryKey: ["extensions"], queryFn: api.extensions });
   // 待确认权限以服务端为准（刷新后可恢复），WS 事件只作即时补充
   const serverPermissions = useQuery({ queryKey: ["permissions", currentId], queryFn: () => api.pendingPermissions(currentId!), enabled: Boolean(currentId) });
+  const { data: currentRun, applyEvent: applyRunEvent } = useAgentRun(currentId);
 
   useEffect(() => {
     if (!currentId && sessions.data?.[0]) setCurrentId(sessions.data[0].id);
   }, [currentId, sessions.data]);
 
-  useEffect(() => {
-    let retry = 0;
-    let socket: WebSocket | undefined;
-    let timer: number | undefined;
-    let disposed = false;
-    const connect = (): void => {
-      if (disposed) return;
-      const after = currentId ? sessionEventSeq.current[currentId] ?? 0 : 0;
-      const query = new URLSearchParams({ after: String(after), ...(currentId ? { sessionId: currentId } : {}) });
-      socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/events?${query}`);
-      socket.onmessage = (message) => {
-        const event = JSON.parse(message.data) as AppEvent;
-        if (disposed) return;
-        if (event.eventId) {
-          if (seenEventIds.current.has(event.eventId)) return;
-          seenEventIds.current.add(event.eventId);
-          // Keep deduplication bounded; sessionSeq remains the authoritative
-          // replay cursor for session-scoped streams.
-          if (seenEventIds.current.size > 4_096) {
-            const oldest = seenEventIds.current.values().next().value;
-            if (oldest) seenEventIds.current.delete(oldest);
-          }
-        }
-        // Session streams use their own cursor.  Drop replayed events before
-        // applying deltas so a reconnect cannot duplicate streamed text.
-        if (event.sessionId && typeof event.sessionSeq === "number") {
-          if (event.sessionSeq <= (sessionEventSeq.current[event.sessionId] ?? 0)) return;
-          sessionEventSeq.current = { ...sessionEventSeq.current, [event.sessionId]: event.sessionSeq };
-        }
+  const handleSessionEvent = useCallback((event: AppEvent): void => {
+        applyRunEvent(event);
         if (event.type === "resync.required") {
           queryClient.invalidateQueries({ queryKey: queryKeys.detail(currentId ?? "") });
           queryClient.invalidateQueries({ queryKey: ["context", currentId] });
           queryClient.invalidateQueries({ queryKey: ["checkpoints", currentId] });
           queryClient.invalidateQueries({ queryKey: ["todos", currentId] });
           queryClient.invalidateQueries({ queryKey: ["tasks", currentId] });
+          if (currentId) queryClient.invalidateQueries({ queryKey: ["run", currentId] });
           return;
         }
         // agent.state 跨会话跟踪：驱动侧栏运行标记与头部状态徽章
@@ -162,7 +136,7 @@ export function App(): ReactElement {
           const state = (event.payload as { state?: string }).state;
           if (state) {
             setAgentStates((prev) => ({ ...prev, [event.sessionId!]: state }));
-            if (state === "thinking") {
+            if (state === "thinking" || state === "starting" || state === "preparing_context") {
               setRunFailures((previous) => {
                 if (!(event.sessionId! in previous)) return previous;
                 const { [event.sessionId!]: _cleared, ...remaining } = previous;
@@ -170,6 +144,13 @@ export function App(): ReactElement {
               });
             }
           }
+        }
+        if (event.type === "run.accepted" && event.sessionId) {
+          setRunFailures((previous) => {
+            if (!(event.sessionId! in previous)) return previous;
+            const { [event.sessionId!]: _cleared, ...remaining } = previous;
+            return remaining;
+          });
         }
         if (event.type === "agent.error" && event.sessionId) {
           const message = (event.payload as { message?: string }).message ?? t("未知错误", "unknown error");
@@ -257,30 +238,18 @@ export function App(): ReactElement {
             });
           }
         }
-      };
-      socket.onclose = () => {
-        if (!disposed) timer = window.setTimeout(connect, Math.min(10_000, 500 * 2 ** retry++));
-      };
-    };
-    connect();
-    return () => {
-      disposed = true;
-      if (socket) {
-        socket.onmessage = null;
-        socket.onclose = null;
-      }
-      socket?.close();
-      if (timer) window.clearTimeout(timer);
-      if (streamFlushHandle.current !== undefined) {
-        if (typeof window.cancelAnimationFrame === "function") window.cancelAnimationFrame(streamFlushHandle.current);
-        else window.clearTimeout(streamFlushHandle.current);
-        flushStreamBuffers();
-      }
-    };
-  }, [currentId, flushStreamBuffers, queryClient, queueStreamDelta, t]);
+  }, [applyRunEvent, currentId, flushStreamBuffers, notify, queryClient, queueStreamDelta, t]);
+  const finishBufferedStreams = useCallback((): void => {
+    if (streamFlushHandle.current !== undefined) {
+      if (typeof window.cancelAnimationFrame === "function") window.cancelAnimationFrame(streamFlushHandle.current);
+      else window.clearTimeout(streamFlushHandle.current);
+    }
+    flushStreamBuffers();
+  }, [flushStreamBuffers]);
+  useSessionEventStream({ sessionId: currentId, onEvent: handleSessionEvent, onDisconnect: finishBufferedStreams });
 
   const current = detail.data;
-  const currentState = currentId ? agentStates[currentId] : undefined;
+  const currentState = currentRun?.state ?? (currentId ? agentStates[currentId] : undefined);
   const running = Boolean(stream[currentId ?? ""]) || isBusyState(currentState);
   const runningIds = useMemo(
     () => new Set(Object.entries(agentStates).filter(([, state]) => isBusyState(state)).map(([id]) => id)),
