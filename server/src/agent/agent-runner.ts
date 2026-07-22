@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { CoreClientLike, CoreEvent } from "../core-client.js";
+import { CoreGateway } from "../core-gateway.js";
 import type { EventBus } from "../events/event-bus.js";
 import { ContextManager, selectCacheBreakpoints } from "../context/context-manager.js";
 import type { Compactor } from "../context/compactor.js";
@@ -324,6 +325,7 @@ export interface AgentRunOptions {
 
 export class AgentRunner {
   private readonly running = new Map<string, AbortController>();
+  private readonly coreGateway: CoreGateway;
   /** Active Run snapshots. Historical/latest snapshots live under sessions/<id>/runs/. */
   private readonly runs = new Map<string, AgentRunSnapshot>();
   /** Serialize per-run snapshots so a later state cannot overtake an earlier one on disk. */
@@ -362,6 +364,7 @@ export class AgentRunner {
     private readonly extensions?: ExtensionManager,
     webFetchProvider?: WebFetchProvider,
   ) {
+    this.coreGateway = new CoreGateway(core);
     this.permissions = new PermissionCoordinator(events);
     this.webFetchProvider = webFetchProvider;
     core.on("event", (event: CoreEvent) => {
@@ -1390,8 +1393,7 @@ export class AgentRunner {
     try {
       const session = await this.sessions.get(sessionId);
       if (!session) throw new Error("Session not found");
-      const capabilities = await this.core.ping();
-      if (capabilities.features?.jobControl) {
+      if (await this.coreGateway.supports("jobControl")) {
         const jobId = `job-${randomUUID()}`;
         const output: Array<{ stream: "stdout" | "stderr"; data: string; seq: number }> = [];
         let afterSeq = 0;

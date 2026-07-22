@@ -6,7 +6,7 @@ import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
-import type { CoreClientLike, CoreEvent, ExecResult } from "../src/core-client.js";
+import type { CoreClientLike, CoreEvent, CoreInfo, ExecResult } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
@@ -25,6 +25,12 @@ async function tempRoot(): Promise<string> {
 const echoProvider = makeStubProvider("test-stub", async function* () {
   yield { type: "done", stopReason: "end_turn" };
 });
+
+const FAKE_CORE_INFO: CoreInfo = {
+  version: "0.2.4-test", protocolVersion: "1.0", platform: "windows", sandboxCapability: "advisory",
+  features: { fsStat: true, fsStatMany: true, fsWriteBase64: true, jobControl: false, fsHash: true, fsScanPagination: true, fsWatch: true },
+  limits: { maxFrameBytes: 33_554_432, maxWriteBase64Bytes: 20_971_520, maxHashBytes: 16_777_216, maxStatManyPaths: 128, maxStatManyPathBytes: 262_144, maxScanEntries: 256, maxScanDepth: 16, maxScanNodes: 2_048, maxWatches: 16, maxWatchEvents: 128, maxConcurrentJobs: 4, maxJobOutputBytes: 524_288 },
+};
 
 /**
  * 可控 fake CoreClient：run() 返回挂起 Promise，由 release() 驱动 resolve；
@@ -49,7 +55,7 @@ function createControllableCore(): {
       emitter.on(eventName, listener);
       return client;
     },
-    async start() { return { version: "0.0.0", platform: "test" as const, sandboxCapability: "advisory" }; },
+    async start() { return FAKE_CORE_INFO; },
     async stop() {
       if (runReject) { runReject(new Error("Core stopped")); runReject = undefined; runResolve = undefined; }
     },
@@ -58,7 +64,7 @@ function createControllableCore(): {
       runCalls.push({ sessionId: request.sessionId, execId: request.execId, cmd: request.cmd, cwd: request.cwd });
       return new Promise<ExecResult>((resolve, reject) => { runResolve = resolve; runReject = reject; });
     },
-    async ping() { return { version: "0.0.0", platform: "test" as const, sandboxCapability: "advisory" }; },
+    async ping() { return FAKE_CORE_INFO; },
     async cleanupSession() { return { ok: true as const }; },
     async readFile() { return { content: "", totalLines: 0, encoding: "utf-8" as const, truncated: false }; },
     async writeFile() { return { ok: true as const }; },
