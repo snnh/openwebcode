@@ -350,7 +350,8 @@ static owc_fs_error scan_collect(const char *root,const char *session_id,const c
         }
         owc_fs_list_free(&list);free(directory.relative);
     }
-    while(stack_count)free(stack[--stack_count].relative);free(stack);
+    while(stack_count)free(stack[--stack_count].relative);
+    free(stack);
     if(error){scan_free(scan);return error;}
     qsort(scan->items,scan->count,sizeof(*scan->items),scan_compare);return OWC_FS_OK;
 }
@@ -386,15 +387,25 @@ static int watch_is_internal_temp(const char *path){const char *name=strrchr(pat
 
 static int handle_fs_watch_start(owc_rpc *rpc,const owc_json *id,const owc_json *p){
     static const char *keys[]={"sessionId","path","recursive"};const char *session_id,*cwd,*path;int recursive=0;size_t i;owc_fs_error error;
-    if(!allowed_keys(p,keys,3))return reply_error(rpc,id,-32602,"fs.watch contains unknown fields");session_id=owc_json_get_string(owc_json_object_get(p,"sessionId"));path=owc_json_get_string(owc_json_object_get(p,"path"));cwd=session_id?session_root(session_id):NULL;
-    if(!cwd||!path||!path[0])return reply_error(rpc,id,-32602,"fs.watch requires a configured sessionId and non-empty path");if(!json_bool(owc_json_object_get(p,"recursive"),0,&recursive))return reply_error(rpc,id,-32602,"fs.watch recursive must be a boolean");if(session_denied(session_id,path))return reply_error(rpc,id,-32002,"path is denied by session policy");
-    for(i=0;i<OWC_FS_MAX_WATCHES;i++)if(!fs_watches[i].watch)break;if(i==OWC_FS_MAX_WATCHES)return reply_error(rpc,id,-32000,"watch limit reached");
+    if(!allowed_keys(p,keys,3))return reply_error(rpc,id,-32602,"fs.watch contains unknown fields");
+    session_id=owc_json_get_string(owc_json_object_get(p,"sessionId"));path=owc_json_get_string(owc_json_object_get(p,"path"));cwd=session_id?session_root(session_id):NULL;
+    if(!cwd||!path||!path[0])return reply_error(rpc,id,-32602,"fs.watch requires a configured sessionId and non-empty path");
+    if(!json_bool(owc_json_object_get(p,"recursive"),0,&recursive))return reply_error(rpc,id,-32602,"fs.watch recursive must be a boolean");
+    if(session_denied(session_id,path))return reply_error(rpc,id,-32002,"path is denied by session policy");
+    for(i=0;i<OWC_FS_MAX_WATCHES;i++)if(!fs_watches[i].watch)break;
+    if(i==OWC_FS_MAX_WATCHES)return reply_error(rpc,id,-32000,"watch limit reached");
     error=owc_fs_watch_open(cwd,path,recursive,&fs_watches[i].watch);if(error)return reply_error(rpc,id,fs_code(error),owc_fs_error_message(error));fs_watches[i].session_id=copy_text(session_id);fs_watches[i].base=copy_text(path);if(!fs_watches[i].session_id||!fs_watches[i].base){clear_watch(&fs_watches[i]);return reply_error(rpc,id,-32000,"out of memory");}fs_watches[i].id=next_watch_id++;if(!next_watch_id)next_watch_id=1;{char result[64];snprintf(result,sizeof(result),"{\"watchId\":%u}",fs_watches[i].id);return reply_result(rpc,id,result);}
 }
 
 static int handle_fs_watch_poll(owc_rpc *rpc,const owc_json *id,const owc_json *p){
     static const char *keys[]={"sessionId","watchId","limit"};const char *session_id;const owc_json *value;size_t limit=OWC_FS_WATCH_MAX_EVENTS,i,j;unsigned watch_id;fs_watch_record *record;owc_fs_watch_result events;owc_fs_error error;char *result;
-    if(!allowed_keys(p,keys,3))return reply_error(rpc,id,-32602,"fs.watch.poll contains unknown fields");session_id=owc_json_get_string(owc_json_object_get(p,"sessionId"));value=owc_json_object_get(p,"watchId");if(!session_id||!value||!json_size(value,&i)||!i||i>UINT_MAX)return reply_error(rpc,id,-32602,"fs.watch.poll requires sessionId and positive watchId");watch_id=(unsigned)i;value=owc_json_object_get(p,"limit");if(value&&(!json_size(value,&limit)||!limit||limit>OWC_FS_WATCH_MAX_EVENTS))return reply_error(rpc,id,-32602,"fs.watch.poll limit must be an integer from 1 to 128");record=find_watch(session_id,watch_id);if(!record)return reply_error(rpc,id,-32003,"watch not found");error=owc_fs_watch_poll(record->watch,limit,&events);if(error)return reply_error(rpc,id,fs_code(error),owc_fs_error_message(error));
+    if(!allowed_keys(p,keys,3))return reply_error(rpc,id,-32602,"fs.watch.poll contains unknown fields");
+    session_id=owc_json_get_string(owc_json_object_get(p,"sessionId"));value=owc_json_object_get(p,"watchId");
+    if(!session_id||!value||!json_size(value,&i)||!i||i>UINT_MAX)return reply_error(rpc,id,-32602,"fs.watch.poll requires sessionId and positive watchId");
+    watch_id=(unsigned)i;value=owc_json_object_get(p,"limit");
+    if(value&&(!json_size(value,&limit)||!limit||limit>OWC_FS_WATCH_MAX_EVENTS))return reply_error(rpc,id,-32602,"fs.watch.poll limit must be an integer from 1 to 128");
+    record=find_watch(session_id,watch_id);if(!record)return reply_error(rpc,id,-32003,"watch not found");
+    error=owc_fs_watch_poll(record->watch,limit,&events);if(error)return reply_error(rpc,id,fs_code(error),owc_fs_error_message(error));
     /* Hide policy-denied descendants and merge repeated path events from the
      * same kernel batch so a busy editor cannot amplify RPC/event traffic. */
     for(i=0;i<events.count;){char *policy_path=watch_policy_path(record->base,events.events[i].path);int denied=!policy_path||session_denied(session_id,policy_path);free(policy_path);if(denied||watch_is_internal_temp(events.events[i].path)){free(events.events[i].path);events.count--;if(i!=events.count)events.events[i]=events.events[events.count];continue;}for(j=0;j<i;j++)if(!strcmp(events.events[j].path,events.events[i].path)){free(events.events[j].path);events.events[j]=events.events[i];events.count--;if(i!=events.count)events.events[i]=events.events[events.count];break;}if(j==i)i++;}
