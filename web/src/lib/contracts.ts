@@ -125,10 +125,12 @@ export interface PendingPermission {
 }
 
 export interface AppEvent {
+  eventId?: string;
   source: "server" | "core" | "agent" | "session";
   type: string;
   sessionId?: string;
   seq: number;
+  sessionSeq?: number;
   createdAt: string;
   payload: unknown;
 }

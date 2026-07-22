@@ -55,8 +55,8 @@ export function App(): ReactElement {
   const setSessionDefaults = (value: SessionDefaults): void => { setSessionDefaultsState(value); saveSessionDefaults(value); };
   // 草稿按会话保留，切换会话不丢
   const [drafts, setDrafts] = useState<Record<string, string>>({});
-  // 待发送的图片附件（仅当前会话；发送成功或切换会话后清空）
-  const [attachments, setAttachments] = useState<PendingImage[]>([]);
+  // 草稿附件也按会话隔离；异步发送完成只能清理自己的源会话。
+  const [attachmentsBySession, setAttachmentsBySession] = useState<Record<string, PendingImage[]>>({});
   const [stream, setStream] = useState<Record<string, string>>({});
   const [thinkingStream, setThinkingStream] = useState<Record<string, string>>({});
   // WebSocket tokens often arrive in very small chunks. Buffer them outside
@@ -102,8 +102,7 @@ export function App(): ReactElement {
       : window.setTimeout(flushStreamBuffers, 80);
   }, [flushStreamBuffers]);
   const sessionEventSeq = useRef<Record<string, number>>({});
-  const globalSeq = useRef(0);
-  const activeSeq = Math.max(currentId ? (sessionEventSeq.current[currentId] ?? 0) : 0, globalSeq.current);
+  const seenEventIds = useRef<Set<string>>(new Set());
 
   const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: api.sessions });
   const detail = useQuery({ queryKey: queryKeys.detail(currentId ?? ""), queryFn: () => api.session(currentId!), enabled: Boolean(currentId) });
@@ -121,25 +120,36 @@ export function App(): ReactElement {
     if (!currentId && sessions.data?.[0]) setCurrentId(sessions.data[0].id);
   }, [currentId, sessions.data]);
 
-  // 切换会话时清空未发送的图片附件
-  useEffect(() => setAttachments([]), [currentId]);
-
   useEffect(() => {
     let retry = 0;
     let socket: WebSocket | undefined;
     let timer: number | undefined;
+    let disposed = false;
     const connect = (): void => {
-      const query = new URLSearchParams({ after: String(activeSeq), ...(currentId ? { sessionId: currentId } : {}) });
+      if (disposed) return;
+      const after = currentId ? sessionEventSeq.current[currentId] ?? 0 : 0;
+      const query = new URLSearchParams({ after: String(after), ...(currentId ? { sessionId: currentId } : {}) });
       socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/events?${query}`);
       socket.onmessage = (message) => {
         const event = JSON.parse(message.data) as AppEvent;
-        // connected/resync 等无 seq 帧不算真实事件，跳过水位推进
-        if (typeof event.seq === "number" && event.seq > globalSeq.current) globalSeq.current = event.seq;
-        if (event.sessionId && event.seq > (sessionEventSeq.current[event.sessionId] ?? 0)) {
-          sessionEventSeq.current = { ...sessionEventSeq.current, [event.sessionId]: event.seq };
+        if (disposed) return;
+        if (event.eventId) {
+          if (seenEventIds.current.has(event.eventId)) return;
+          seenEventIds.current.add(event.eventId);
+          // Keep deduplication bounded; sessionSeq remains the authoritative
+          // replay cursor for session-scoped streams.
+          if (seenEventIds.current.size > 4_096) {
+            const oldest = seenEventIds.current.values().next().value;
+            if (oldest) seenEventIds.current.delete(oldest);
+          }
+        }
+        // Session streams use their own cursor.  Drop replayed events before
+        // applying deltas so a reconnect cannot duplicate streamed text.
+        if (event.sessionId && typeof event.sessionSeq === "number") {
+          if (event.sessionSeq <= (sessionEventSeq.current[event.sessionId] ?? 0)) return;
+          sessionEventSeq.current = { ...sessionEventSeq.current, [event.sessionId]: event.sessionSeq };
         }
         if (event.type === "resync.required") {
-          if (typeof event.seq === "number" && event.seq > globalSeq.current) globalSeq.current = event.seq;
           queryClient.invalidateQueries({ queryKey: queryKeys.detail(currentId ?? "") });
           queryClient.invalidateQueries({ queryKey: ["context", currentId] });
           queryClient.invalidateQueries({ queryKey: ["checkpoints", currentId] });
@@ -249,11 +259,16 @@ export function App(): ReactElement {
         }
       };
       socket.onclose = () => {
-        timer = window.setTimeout(connect, Math.min(10_000, 500 * 2 ** retry++));
+        if (!disposed) timer = window.setTimeout(connect, Math.min(10_000, 500 * 2 ** retry++));
       };
     };
     connect();
     return () => {
+      disposed = true;
+      if (socket) {
+        socket.onmessage = null;
+        socket.onclose = null;
+      }
       socket?.close();
       if (timer) window.clearTimeout(timer);
       if (streamFlushHandle.current !== undefined) {
@@ -280,6 +295,15 @@ export function App(): ReactElement {
   }, [serverPermissions.data, pendingPermissions]);
 
   const draft = currentId ? (drafts[currentId] ?? "") : "";
+  const attachments = currentId ? (attachmentsBySession[currentId] ?? []) : [];
+  const setAttachments = (value: PendingImage[] | ((previous: PendingImage[]) => PendingImage[])): void => {
+    if (!currentId) return;
+    setAttachmentsBySession((previous) => {
+      const currentAttachments = previous[currentId] ?? [];
+      const next = typeof value === "function" ? value(currentAttachments) : value;
+      return { ...previous, [currentId]: next };
+    });
+  };
   const setDraft = (value: string): void => {
     if (currentId) setDrafts((prev) => ({ ...prev, [currentId]: value }));
   };
@@ -297,20 +321,18 @@ export function App(): ReactElement {
   }, [contextView.data, currentState]);
 
   const send = useMutation({
-    mutationFn: async () => {
-      if (!currentId || !draft.trim()) return;
-      const text = draft.trim();
+    mutationFn: async (input: { sessionId: string; text: string; images: PendingImage[]; pathAttachments: ReturnType<typeof toAttachments> }) => {
+      const { sessionId, text, images, pathAttachments } = input;
       // `!` 前缀走 shell 快捷路由：不进 agent run，权限挂起时后端 409 由 onError 提示
-      if (text.startsWith("!")) return api.runShell(currentId, text.slice(1).trim());
-      const pathAttachments = toAttachments(extractAttachmentPaths(text));
-      return api.sendMessage(currentId, text, attachments, pathAttachments.length ? pathAttachments : undefined);
+      if (text.startsWith("!")) return api.runShell(sessionId, text.slice(1).trim());
+      return api.sendMessage(sessionId, text, images, pathAttachments.length ? pathAttachments : undefined);
     },
-    onSuccess: (result) => {
-      setDraft("");
-      setAttachments([]);
+    onSuccess: (result, input) => {
+      setDrafts((previous) => ({ ...previous, [input.sessionId]: "" }));
+      setAttachmentsBySession((previous) => ({ ...previous, [input.sessionId]: [] }));
       const queued = result as { queued?: boolean; position?: number } | undefined;
       if (queued?.queued) notify(t(`已加入 Steering 队列（第 ${queued.position} 项）`, `Added to Steering queue (position ${queued.position})`));
-      queryClient.invalidateQueries({ queryKey: queryKeys.detail(currentId ?? "") });
+      queryClient.invalidateQueries({ queryKey: queryKeys.detail(input.sessionId) });
     },
     onError: (error) => notify(error instanceof Error ? error.message : t("发送失败", "Send failed"), "error"),
   });
@@ -479,7 +501,11 @@ export function App(): ReactElement {
               imageCapabilitiesReady={!models.isPending}
               draft={draft}
               setDraft={setDraft}
-              onSend={() => send.mutate()}
+              onSend={() => {
+                if (!currentId || !draft.trim()) return;
+                const text = draft.trim();
+                send.mutate({ sessionId: currentId, text, images: attachments, pathAttachments: toAttachments(extractAttachmentPaths(text)) });
+              }}
               onConfig={(body) => {
                 api.updateSession(current.id, body)
                   .then(() => queryClient.invalidateQueries({ queryKey: queryKeys.detail(current.id) }))

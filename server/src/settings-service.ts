@@ -2,7 +2,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "./atomic-file.js";
 import type { AgentRunner } from "./agent/agent-runner.js";
-import { type ServerConfig } from "./config.js";
+import { loadConfig, type ServerConfig } from "./config.js";
 import { MAX_SYNC_INTERVAL_MINUTES } from "./remote-sync-scheduler.js";
 import type { CoreClientLike } from "./core-client.js";
 import type { EventBus } from "./events/event-bus.js";
@@ -322,9 +322,17 @@ export class SettingsService {
     const sandboxAllowPaths = value("sandboxAllowPaths") as string[];
     const catalogSyncUrl = value("catalogSyncUrl");
     const pricingSyncUrl = value("pricingSyncUrl");
+    const host = value("host") as string;
+    // The listener address is editable in persisted settings, while the
+    // access token and allowed origins intentionally remain environment-only.
+    // Re-run their validation against the effective host so a saved remote
+    // address cannot bypass the startup guard in loadConfig().
+    const listenerSecurity = loadConfig({ ...this.env, OWC_HOST: host });
     return {
-      host: value("host") as string,
+      host,
       port: value("port") as number,
+      ...(listenerSecurity.accessToken ? { accessToken: listenerSecurity.accessToken } : {}),
+      allowedOrigins: listenerSecurity.allowedOrigins,
       corePath: value("corePath") as string,
       dataDir: value("dataDir") as string,
       coreRequestTimeoutMs: value("coreRequestTimeoutMs") as number,

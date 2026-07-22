@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import ctypes, hashlib, json, os, pathlib, subprocess, sys, tempfile
+import ctypes, hashlib, json, os, pathlib, subprocess, sys, tempfile, time
 
 def windows_short_path(path):
     if os.name != "nt": return None
@@ -46,11 +46,19 @@ def main():
         (root/"private").mkdir(); (root/"private"/"secret.txt").write_text("secret")
         assert send(p,105,"session.configure",{"sessionId":"test-session","cwd":td,"sandbox":{"enabled":True,"denyPaths":[str(root/".env"),str(root/"private")],"network":"allow"}})["result"]["sandboxCapability"] in {"advisory","partial","enforced"}
         assert send(p,104,"fs.read",{"sessionId":"test-session","path":".env"})["error"]["code"]==-32002
+        assert send(p,107,"fs.read",{"sessionId":"test-session","path":"./.env"})["error"]["code"]==-32002
         assert send(p,106,"fs.read",{"sessionId":"test-session","path":"private/secret.txt"})["error"]["code"]==-32002
         def fs(i,method,params): return send(p,i,method,{"sessionId":"test-session",**params})
         first_write=fs(1,"fs.write",{"path":"目录/文件.txt","content":"一\n二\n三"})
         assert first_write.get("result",{}).get("ok"),first_write
         assert fs(101,"fs.write",{"path":"新/深/文件.txt","content":"alpha\nbeta","createDirs":True})["result"]["ok"]
+        # readRoots/writeRoots are enforced by every file RPC, independently
+        # of denyPaths.  A later configure restores the broad workspace policy
+        # for the remaining filesystem coverage below.
+        assert send(p,108,"session.configure",{"sessionId":"test-session","cwd":td,"sandbox":{"enabled":True,"readRoots":[str(root/"目录")],"writeRoots":[str(root/"新")],"denyPaths":[],"network":"allow"}})["result"]["sandboxCapability"] in {"advisory","partial","enforced"}
+        assert fs(109,"fs.read",{"path":"新/深/文件.txt"})["error"]["code"]==-32002
+        assert fs(110,"fs.write",{"path":"目录/blocked.txt","content":"no"})["error"]["code"]==-32002
+        assert send(p,111,"session.configure",{"sessionId":"test-session","cwd":td,"sandbox":{"enabled":True,"readRoots":[td],"writeRoots":[td],"denyPaths":[str(root/".env"),str(root/"private")],"network":"allow"}})["result"]["sandboxCapability"] in {"advisory","partial","enforced"}
         globbed=fs(102,"fs.glob",{"path":".","pattern":"新/*/文件.txt"})["result"]
         assert globbed=={"paths":["新/深/文件.txt"],"truncated":False},globbed
         matches=fs(103,"fs.grep",{"path":"新","pattern":"beta"})["result"]

@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { randomUUID } from "node:crypto";
 
 export interface AppEventInput {
   source: "server" | "core" | "agent" | "session";
@@ -8,7 +9,10 @@ export interface AppEventInput {
 }
 
 export interface AppEvent extends AppEventInput {
+  eventId: string;
   seq: number;
+  /** Monotonic only within a session; used for session-filtered replay. */
+  sessionSeq?: number;
   createdAt: string;
 }
 
@@ -27,6 +31,7 @@ export interface EventBusStats {
 
 export class EventBus extends EventEmitter {
   private sequence = 0;
+  private readonly sessionSequences = new Map<string, number>();
   private readonly history: AppEvent[] = [];
   private historyBytes = 0;
   private oversizedNotRetained = 0;
@@ -36,9 +41,15 @@ export class EventBus extends EventEmitter {
   }
 
   publish(input: AppEventInput): AppEvent {
+    const sessionSeq = input.sessionId
+      ? (this.sessionSequences.get(input.sessionId) ?? 0) + 1
+      : undefined;
+    if (input.sessionId) this.sessionSequences.set(input.sessionId, sessionSeq!);
     const event: AppEvent = {
       ...input,
+      eventId: randomUUID(),
       seq: ++this.sequence,
+      ...(sessionSeq === undefined ? {} : { sessionSeq }),
       createdAt: new Date().toISOString(),
     };
     const bytes = Buffer.byteLength(JSON.stringify(event), "utf8");
@@ -57,6 +68,17 @@ export class EventBus extends EventEmitter {
   }
 
   replay(after: number, sessionId?: string): ReplayResult {
+    if (sessionId) {
+      const history = this.history.filter((event) => event.sessionId === sessionId);
+      const oldest = history[0]?.sessionSeq ?? (this.sessionSequences.get(sessionId) ?? 0) + 1;
+      const latestSeq = this.sessionSequences.get(sessionId) ?? 0;
+      const requiresResync = after > 0 && after < oldest - 1;
+      return {
+        events: requiresResync ? [] : history.filter((event) => (event.sessionSeq ?? 0) > after),
+        requiresResync,
+        latestSeq,
+      };
+    }
     // oldest 是当前缓冲区里最旧事件的 seq；历史为空时取 sequence+1（一个不存在的 seq），
     // 使 after>=1 的请求都判定为需要 resync。`after < oldest - 1` 表示客户端想从
     // after+1 开始补拉，但 after+1 已早于现存最旧事件 oldest，无法连续补齐 → 要求 REST resync。

@@ -52,6 +52,11 @@ jobs:
           set -euo pipefail
           cmake -S core -B build-debug -A x64
           cmake --build build-debug --config Debug --parallel
+      - name: Test core
+        shell: bash
+        run: |
+          set -euo pipefail
+          ctest --test-dir build-debug -C Debug --output-on-failure --timeout 60
       - name: Test server
         shell: bash
         env:
@@ -163,6 +168,10 @@ jobs:
           set -euo pipefail
           cmake -S core -B build-debug -DCMAKE_BUILD_TYPE=Debug
           cmake --build build-debug --parallel
+      - name: Test core
+        run: |
+          set -euo pipefail
+          ctest --test-dir build-debug --output-on-failure --timeout 60
       - name: Test server
         env:
           OWC_CORE_PATH: ${{ runner.workspace }}/openwebcode/build-debug/owc-exec

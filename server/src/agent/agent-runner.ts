@@ -322,6 +322,8 @@ export interface AgentRunOptions {
 
 export class AgentRunner {
   private readonly running = new Map<string, AbortController>();
+  /** Final assistant output is durable, but hooks/queue cleanup are not yet. */
+  private readonly settling = new Set<string>();
   private readonly shells = new Map<string, AbortController>();
   private readonly steering = new Map<string, SteeringItem[]>();
   private readonly repeatedCalls = new Map<string, { signature: string; count: number }>();
@@ -684,8 +686,17 @@ export class AgentRunner {
             this.state(sessionId, "thinking");
             continue;
           }
-          // Stop 钩子：run 正常结束时通知（abort/error 路径不触发）。
-          await this.runNotificationHook("Stop", { sessionId, cwd: session.cwd });
+          // Once output is durable, stop accepting steering.  A request in
+          // this hook/cleanup window must receive a retryable 409 instead of
+          // a 202 that would later be discarded by finally.
+          this.settling.add(sessionId);
+          this.state(sessionId, "settling");
+          try {
+            // Stop 钩子：run 正常结束时通知（abort/error 路径不触发）。
+            await this.runNotificationHook("Stop", { sessionId, cwd: session.cwd });
+          } finally {
+            this.settling.delete(sessionId);
+          }
           return;
         }
         if (toolCalls.length === 0) throw new Error("Provider stopped for tool use without a tool call");
@@ -772,6 +783,7 @@ export class AgentRunner {
       this.events.publish({ source: "agent", type: "agent.error", sessionId, payload: { message } });
       throw error;
     } finally {
+      this.settling.delete(sessionId);
       this.running.delete(sessionId);
       this.repeatedCalls.delete(sessionId);
       // abort 路径保留未应用的 steering 队列，供用户编辑/重发；正常结束才清理
@@ -893,6 +905,7 @@ export class AgentRunner {
 
   enqueueSteering(sessionId: string, content: string): { id: string; position: number } {
     if (!this.running.has(sessionId)) throw new SteeringError("Session agent is not running", "not_running");
+    if (this.settling.has(sessionId)) throw new SteeringError("Session is settling; retry after it becomes idle", "not_running");
     if (content.length > MAX_STEERING_LENGTH) throw new SteeringError(`Steering message exceeds ${MAX_STEERING_LENGTH} characters`, "too_long");
     const queue = this.steering.get(sessionId) ?? [];
     if (queue.length >= MAX_STEERING_ITEMS) throw new SteeringError("Steering queue is full", "full");
