@@ -34,6 +34,19 @@ interface ExecutionContext {
   output: Array<{ stream: string; data: string; seq: number }>;
 }
 
+const TOOL_EVENT_PREVIEW_CHARS = 1_024;
+
+/** Event replay is not the tool-result store. Keep payloads bounded and point
+ * clients at the artifact/session detail path for complete output. */
+function toolEventResult(bounded: Awaited<ReturnType<typeof boundToolResult>>) {
+  return {
+    preview: bounded.content.slice(0, TOOL_EVENT_PREVIEW_CHARS),
+    originalTokens: bounded.originalTokens,
+    truncated: bounded.truncated,
+    ...(bounded.artifactId ? { artifactId: bounded.artifactId } : {}),
+  };
+}
+
 function bashTool(backgroundTasksEnabled: boolean): ProviderTool {
   return {
     name: "bash",
@@ -1018,7 +1031,7 @@ export class AgentRunner {
           source: "agent",
           type: "tool.end",
           sessionId,
-          payload: { toolCallId, result: { content: bounded.content }, truncated: bounded.truncated, isError: result.isError, ...(bounded.artifactId ? { artifactId: bounded.artifactId } : {}) },
+          payload: { toolCallId, result: toolEventResult(bounded), isError: result.isError },
         });
         return { type: "tool_result", toolCallId, content: bounded.content, isError: result.isError };
       } catch (error) {
@@ -1047,7 +1060,7 @@ export class AgentRunner {
           value = await this.search.search(query, Math.min(requested, 10), { signal });
         }
         const bounded = await boundToolResult(this.sessions.contextRoot(sessionId), name, JSON.stringify(value));
-        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: value, truncated: bounded.truncated, ...(bounded.artifactId ? { artifactId: bounded.artifactId } : {}) } });
+        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: toolEventResult(bounded) } });
         return { type: "tool_result", toolCallId, content: bounded.content, isError: false };
       } catch (error) {
         const content = error instanceof Error ? error.message : String(error);
@@ -1198,7 +1211,7 @@ export class AgentRunner {
         else if (name === "glob") value = await this.core.globFiles({ sessionId, path, pattern: String(input.pattern ?? "") });
         else value = await this.core.grepFiles({ sessionId, path, pattern: String(input.pattern ?? "") });
         const bounded = await boundToolResult(this.sessions.contextRoot(sessionId), name, JSON.stringify(value));
-        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: value, truncated: bounded.truncated, ...(bounded.artifactId ? { artifactId: bounded.artifactId } : {}) } });
+        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: toolEventResult(bounded) } });
         return { type: "tool_result", toolCallId, content: bounded.content, isError: false };
       } catch (error) {
         const content = error instanceof Error ? error.message : String(error);
@@ -1226,13 +1239,15 @@ export class AgentRunner {
             return poll();
           };
           const result = await poll();
-          this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result } });
-          return { type: "tool_result", toolCallId, content: JSON.stringify(result), isError: false };
+          const bounded = await boundToolResult(this.sessions.contextRoot(sessionId), name, JSON.stringify(result));
+          this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: toolEventResult(bounded) } });
+          return { type: "tool_result", toolCallId, content: bounded.content, isError: false };
         }
         const entry = this.backgroundTasks.get(taskId);
         if (!entry) throw new Error(`Task not found: ${taskId}`);
-        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: entry } });
-        return { type: "tool_result", toolCallId, content: JSON.stringify(entry), isError: false };
+        const bounded = await boundToolResult(this.sessions.contextRoot(sessionId), name, JSON.stringify(entry));
+        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: toolEventResult(bounded) } });
+        return { type: "tool_result", toolCallId, content: bounded.content, isError: false };
       } catch (error) {
         const content = error instanceof Error ? error.message : String(error);
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });

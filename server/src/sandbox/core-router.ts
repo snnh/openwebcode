@@ -12,6 +12,10 @@ import type {
   FsReadRequest,
   FsReadResult,
   FsSearchRequest,
+  FsHashResult,
+  FsStatResult,
+  FsStatManyRequest,
+  FsStatManyResult,
   FsWriteBase64Request,
   FsWriteRequest,
 } from "../core-client.js";
@@ -158,6 +162,24 @@ export class CoreRouter extends EventEmitter {
   async editFile(request: FsEditRequest): Promise<{ matches: number }> {
     const { client, meta } = await this.clientFor(request.sessionId);
     return client.editFile(translatePath(request, meta));
+  }
+
+  async statFile(request: FsPathRequest): Promise<FsStatResult> {
+    const { client, meta } = await this.clientFor(request.sessionId);
+    return client.statFile(translatePath(request, meta));
+  }
+
+  async statFiles(request: FsStatManyRequest): Promise<FsStatManyResult> {
+    const { client, meta } = await this.clientFor(request.sessionId);
+    return client.statFiles({
+      ...request,
+      paths: request.paths.map((path) => translatePath({ sessionId: request.sessionId, path }, meta).path),
+    });
+  }
+
+  async hashFile(request: FsPathRequest): Promise<FsHashResult> {
+    const { client, meta } = await this.clientFor(request.sessionId);
+    return client.hashFile(translatePath(request, meta));
   }
 
   async listFiles(request: FsPathRequest): Promise<FsListResult> {

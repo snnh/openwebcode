@@ -20,6 +20,7 @@ import {
   previewManagedWorkspaceSync,
   type ManagedWorkspaceSyncApplyInput,
   type ManagedWorkspaceSyncApplyResult,
+  type ManagedWorkspaceSyncOperationOptions,
   type ManagedWorkspaceSyncPreview,
 } from "./managed-sync.js";
 import { createExecFileRunner, type CommandRunner } from "./probe.js";
@@ -392,7 +393,7 @@ export interface ManagedWorkspaceLike {
   capability(): Promise<ManagedWorkspaceCapability>;
   provision(input: ManagedProvisionInput): Promise<ManagedProvisionResult>;
   previewSync(session: { id: string; workspace?: ManagedWorkspaceMeta }): Promise<ManagedWorkspaceSyncPreview>;
-  applySync(session: { id: string; workspace?: ManagedWorkspaceMeta }, input: ManagedWorkspaceSyncApplyInput): Promise<ManagedWorkspaceSyncApplyResult>;
+  applySync(session: { id: string; workspace?: ManagedWorkspaceMeta }, input: ManagedWorkspaceSyncApplyInput, options?: ManagedWorkspaceSyncOperationOptions): Promise<ManagedWorkspaceSyncApplyResult>;
   teardown(session: { id: string; workspace?: ManagedWorkspaceMeta }): Promise<void>;
 }
 
@@ -417,11 +418,11 @@ export class ManagedWorkspaceManager implements ManagedWorkspaceLike {
     return previewManagedWorkspaceSync(this.syncRoots(session));
   }
 
-  async applySync(session: { id: string; workspace?: ManagedWorkspaceMeta }, input: ManagedWorkspaceSyncApplyInput): Promise<ManagedWorkspaceSyncApplyResult> {
+  async applySync(session: { id: string; workspace?: ManagedWorkspaceMeta }, input: ManagedWorkspaceSyncApplyInput, options: ManagedWorkspaceSyncOperationOptions = {}): Promise<ManagedWorkspaceSyncApplyResult> {
     if (this.syncingSessions.has(session.id)) throw new ManagedWorkspaceSyncError("sync_in_progress", "A managed workspace sync is already in progress for this session");
     this.syncingSessions.add(session.id);
     try {
-      return await applyManagedWorkspaceSync(this.syncRoots(session), input);
+      return await applyManagedWorkspaceSync(this.syncRoots(session), input, options);
     } finally {
       this.syncingSessions.delete(session.id);
     }

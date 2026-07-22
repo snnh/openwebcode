@@ -42,6 +42,8 @@ owc_fs_error owc_fs_write(const char *root, const char *path, const char *conten
 owc_fs_error owc_fs_write_binary(const char *root, const char *path, const unsigned char *content, size_t length, int create_dirs);
 owc_fs_error owc_fs_edit(const char *root, const char *path, const char *old_text, size_t old_length, const char *new_text, size_t new_length, int replace_all, size_t *matches);
 owc_fs_error owc_fs_stat(const char *root, const char *path, owc_fs_stat_result *result);
+/** SHA-256 of one regular, root-bound file. The existing 16 MiB read budget is enforced. */
+owc_fs_error owc_fs_hash(const char *root, const char *path, char output[65], size_t *size);
 owc_fs_error owc_fs_list(const char *root, const char *path, owc_fs_list_result *result);
 owc_fs_error owc_fs_glob(const char *root, const char *path, const char *pattern, owc_fs_glob_result *result);
 owc_fs_error owc_fs_grep(const char *root, const char *path, const char *pattern, owc_fs_grep_result *result);

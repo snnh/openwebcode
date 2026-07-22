@@ -24,11 +24,12 @@ describe("WebUI static hosting", () => {
     await sessions.initialize();
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));
     await pricing.initialize();
+    const events = new EventBus();
     const app = await buildServer({
       core: {} as CoreClient,
       sessions,
       agent: { isRunning: () => false } as AgentRunner,
-      events: new EventBus(),
+      events,
       providers: new ProviderRegistry(),
       pricing,
       webDist,
@@ -39,6 +40,7 @@ describe("WebUI static hosting", () => {
       expect(page.body).toContain("OpenWebCode");
       const health = await app.inject({ method: "GET", url: "/api/health" });
       expect(health.json()).toEqual({ status: "ok" });
+      expect((await app.inject({ method: "GET", url: "/api/metrics" })).json()).toMatchObject({ events: events.stats(), websocket: { clients: 0, slowClientDisconnects: 0, failedClientSends: 0 } });
     } finally {
       await app.close();
     }

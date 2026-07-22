@@ -19,6 +19,10 @@ export class ExtensionManager {
   private child: ChildProcess | undefined;
   private hostErrors: Record<string, string> = {};
   private readonly pending = new Map<string, { child: ChildProcess; resolve(value: unknown): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
+  private readonly stoppingHosts = new WeakSet<ChildProcess>();
+  private readonly handledHostFailures = new WeakSet<ChildProcess>();
+  private hostRestartTimer: NodeJS.Timeout | undefined;
+  private hostRestartCount = 0;
 
   constructor(dataDir: string, private readonly events?: EventBus) {
     this.root = path.join(dataDir, "extensions");
@@ -33,8 +37,11 @@ export class ExtensionManager {
   }
 
   async close(): Promise<void> {
+    if (this.hostRestartTimer) clearTimeout(this.hostRestartTimer);
+    this.hostRestartTimer = undefined;
     const child = this.child;
     if (!child) return;
+    this.stoppingHosts.add(child);
     await this.request("shutdown").catch(() => undefined);
     // Host 可能在 shutdown 响应后立即自行退出，exit handler 会先清空 this.child。
     // 始终操作捕获的实例，并只在它仍是当前实例时清理引用。
@@ -193,20 +200,18 @@ export class ExtensionManager {
       if (message.error) pending.reject(new Error(message.error));
       else pending.resolve(message.result);
     });
-    child.on("exit", () => {
-      // restart() 可能已经启动新 Host；旧进程的迟到 exit 不能清掉新引用。
-      if (this.child === child) this.child = undefined;
-      for (const [id, pending] of this.pending) {
-        if (pending.child !== child) continue;
-        clearTimeout(pending.timer);
-        pending.reject(new Error("Extension Host exited"));
-        this.pending.delete(id);
-      }
-      this.events?.publish({ source: "server", type: "extension.host_stopped", payload: {} });
-    });
-    const initialized = await this.request("initialize", { states: this.states, manifests: this.manifests }) as { errors?: Record<string, string> };
-    this.hostErrors = initialized.errors ?? {};
-    this.events?.publish({ source: "server", type: "extension.host_started", payload: { extensions: this.list().length } });
+    child.on("error", (error) => this.handleHostFailure(child, error));
+    child.on("disconnect", () => this.handleHostFailure(child, new Error("Extension Host IPC disconnected")));
+    child.on("exit", (code, signal) => this.handleHostFailure(child, new Error(`Extension Host exited${code !== null ? ` (${code})` : ""}${signal ? ` (${signal})` : ""}`)));
+    try {
+      const initialized = await this.request("initialize", { states: this.states, manifests: this.manifests }) as { errors?: Record<string, string> };
+      this.hostErrors = initialized.errors ?? {};
+      this.hostRestartCount = 0;
+      this.events?.publish({ source: "server", type: "extension.host_started", payload: { extensions: this.list().length } });
+    } catch (error) {
+      this.handleHostFailure(child, asError(error));
+      throw error;
+    }
   }
 
   private request(method: HostRequest["method"], params?: Record<string, unknown>): Promise<unknown> {
@@ -219,9 +224,46 @@ export class ExtensionManager {
         reject(new Error(`Extension Host ${method} timeout`));
       }, 5500);
       this.pending.set(id, { child, resolve, reject, timer });
-      child.send({ id, method, ...(params ? { params } : {}) } satisfies HostRequest);
+      child.send({ id, method, ...(params ? { params } : {}) } satisfies HostRequest, (error) => {
+        if (!error) return;
+        const pending = this.pending.get(id);
+        if (!pending) return;
+        clearTimeout(pending.timer);
+        this.pending.delete(id);
+        pending.reject(error);
+        this.handleHostFailure(child, error);
+      });
     });
   }
+
+  private handleHostFailure(child: ChildProcess, error: Error): void {
+    if (this.handledHostFailures.has(child)) return;
+    this.handledHostFailures.add(child);
+    const intentional = this.stoppingHosts.has(child);
+    if (this.child === child) this.child = undefined;
+    for (const [id, pending] of this.pending) {
+      if (pending.child !== child) continue;
+      clearTimeout(pending.timer);
+      pending.reject(error);
+      this.pending.delete(id);
+    }
+    if (intentional) {
+      this.events?.publish({ source: "server", type: "extension.host_stopped", payload: {} });
+      return;
+    }
+    this.events?.publish({ source: "server", type: "extension.host_failed", payload: { message: error.message } });
+    if (this.hostRestartTimer || this.hostRestartCount >= 3) return;
+    const delayMs = 250 * 2 ** this.hostRestartCount++;
+    this.hostRestartTimer = setTimeout(() => {
+      this.hostRestartTimer = undefined;
+      void this.startHost().catch(() => undefined);
+    }, delayMs);
+    this.hostRestartTimer.unref();
+  }
+}
+
+function asError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
 }
 
 async function readManifest(directory: string): Promise<ExtensionManifest> {

@@ -320,8 +320,11 @@ export class ContextManager {
         : ledger.policy.strategy === "interval" && ledger.round % Math.max(1, ledger.policy.interval) === 0
           ? toolMessages.slice(0, Math.max(0, toolMessages.length - ledger.policy.lag))
           : [];
+      // Ledger entries grow with the session. Index them once so eviction stays
+      // linear in the newly eligible tool messages instead of O(T×E).
+      const entriesByMessage = new Map(ledger.entries.map((entry) => [entry.messageId, entry]));
       for (const message of eligible) {
-        const existing = ledger.entries.find((entry) => entry.messageId === message.id);
+        const existing = entriesByMessage.get(message.id);
         if (existing) {
           if (existing.pinnedUntilRound >= ledger.round) continue;
           existing.state = "evicted";
@@ -333,7 +336,9 @@ export class ContextManager {
         const artifactId = `artifact-${randomUUID()}`;
         await mkdir(path.join(this.sessionRoot, "artifacts"), { recursive: true });
         await writeFile(path.join(this.sessionRoot, "artifacts", `${artifactId}.txt`), result.content, "utf8");
-        ledger.entries.push({ messageId: message.id, kind: "tool_result", artifactId, state: "evicted", createdRound: ledger.round, pinnedUntilRound: 0 });
+        const entry: LedgerEntry = { messageId: message.id, kind: "tool_result", artifactId, state: "evicted", createdRound: ledger.round, pinnedUntilRound: 0 };
+        ledger.entries.push(entry);
+        entriesByMessage.set(entry.messageId, entry);
       }
       await this.save(ledger);
       return ledger;

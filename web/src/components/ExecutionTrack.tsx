@@ -1,8 +1,8 @@
-import { Fragment, useEffect, useRef, useState, type ReactElement } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import type { ChatMessage, ExtensionInfo, SessionDetail } from "../lib/contracts";
 import { Icon } from "./Icon";
 import { Markdown } from "./Markdown";
-import { MessageCard, ThinkingBlock } from "./MessageCard";
+import { MemoMessageCard, ThinkingBlock } from "./MessageCard";
 import { PermissionCard, type PermissionRequest } from "./PermissionCard";
 import { useI18n } from "../i18n";
 
@@ -26,6 +26,36 @@ function toolResultOf(message?: ChatMessage): string {
     .join("\n");
 }
 
+const VIRTUALIZE_AFTER = 80;
+const ESTIMATED_MESSAGE_HEIGHT = 180;
+const OVERSCAN_PX = 900;
+
+function upperBound(values: number[], target: number): number {
+  let low = 0;
+  let high = values.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (values[middle]! <= target) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+function MeasuredItem({ index, onHeight, children }: { index: number; onHeight(index: number, height: number): void; children: ReactNode }): ReactElement {
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    const report = (): void => onHeight(index, Math.ceil(element.getBoundingClientRect().height));
+    report();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(report);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [index, onHeight]);
+  return <div className="virtual-message-item" ref={ref}>{children}</div>;
+}
+
 export function ExecutionTrack({ session, cleared, streamText, thinkingText, runError, permissions, onPermissionDone, onPermissionError, onSendToAgent, contentLens, onNotice }: {
   session: SessionDetail;
   cleared?: { uptoIndex: number; at: string };
@@ -44,6 +74,28 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, run
   const trackRef = useRef<HTMLDivElement>(null);
   // 用户位于底部附近时新内容自动贴底；上翻阅读时不打扰
   const [pinned, setPinned] = useState(true);
+  const heights = useRef(new Map<string, number>());
+  const [layoutVersion, setLayoutVersion] = useState(0);
+  const [viewport, setViewport] = useState({ top: 0, height: 800 });
+  const virtual = session.messages.length > VIRTUALIZE_AFTER;
+  const offsets = useMemo(() => {
+    const values = [0];
+    for (const message of session.messages) values.push(values.at(-1)! + (heights.current.get(message.id) ?? ESTIMATED_MESSAGE_HEIGHT));
+    return values;
+  }, [layoutVersion, session.messages]);
+  const totalMessageHeight = offsets.at(-1) ?? 0;
+  const [firstVisible, lastVisible] = useMemo(() => {
+    if (!virtual) return [0, session.messages.length] as const;
+    const start = Math.max(0, upperBound(offsets, Math.max(0, viewport.top - OVERSCAN_PX)) - 1);
+    const end = Math.min(session.messages.length, upperBound(offsets, viewport.top + viewport.height + OVERSCAN_PX) + 1);
+    return [start, end] as const;
+  }, [offsets, session.messages.length, viewport, virtual]);
+  const measure = useCallback((index: number, height: number): void => {
+    const id = session.messages[index]?.id;
+    if (!id || height < 1 || heights.current.get(id) === height) return;
+    heights.current.set(id, height);
+    setLayoutVersion((value) => value + 1);
+  }, [session.messages]);
 
   // jsdom 无 Element.scrollTo，测试环境回退到 scrollTop
   const scrollToBottom = (smooth = false): void => {
@@ -54,6 +106,7 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, run
     } else {
       element.scrollTop = element.scrollHeight;
     }
+    setViewport({ top: Math.max(0, element.scrollHeight - element.clientHeight), height: element.clientHeight || 800 });
   };
 
   useEffect(() => {
@@ -67,21 +120,26 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, run
         ref={trackRef}
         onScroll={() => {
           const element = trackRef.current;
-          if (element) setPinned(element.scrollHeight - element.scrollTop - element.clientHeight < 80);
+          if (element) {
+            setPinned(element.scrollHeight - element.scrollTop - element.clientHeight < 80);
+            setViewport({ top: element.scrollTop, height: element.clientHeight || 800 });
+          }
         }}
       >
         {session.messages.length === 0 && !streamText && (
           <p className="track-empty">{t("还没有消息。在下方描述要完成的任务，开始第一项作业。", "No messages yet. Describe a task below to start your first job.")}</p>
         )}
-        {session.messages.map((message, index) => {
+        {virtual && <div aria-hidden style={{ height: offsets[firstVisible] ?? 0 }} />}
+        {session.messages.slice(firstVisible, lastVisible).map((message, relativeIndex) => {
+          const index = firstVisible + relativeIndex;
           // shell 快捷命令的结果卡（user `!cmd` + tool_result 配对）附「发给 agent」按钮
           const shellCmd = message.role === "tool" ? shellCommandOf(session.messages[index - 1]) : undefined;
-          return (
+          const item = (
             <Fragment key={message.id}>
               {cleared && Math.min(cleared.uptoIndex, session.messages.length) === index && (
                 <div className="context-cleared-divider" role="separator">{t("上下文已清空（历史保留）", "Context cleared (history retained)")}</div>
               )}
-              <MessageCard message={message} sessionId={session.id} contentLens={contentLens} onNotice={onNotice} />
+              <MemoMessageCard message={message} sessionId={session.id} contentLens={contentLens} onNotice={onNotice} />
               {shellCmd && onSendToAgent && (
                 <button
                   className="send-to-agent"
@@ -92,7 +150,9 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, run
               )}
             </Fragment>
           );
+          return virtual ? <MeasuredItem key={message.id} index={index} onHeight={measure}>{item}</MeasuredItem> : item;
         })}
+        {virtual && <div aria-hidden style={{ height: Math.max(0, totalMessageHeight - (offsets[lastVisible] ?? totalMessageHeight)) }} />}
         {cleared && Math.min(cleared.uptoIndex, session.messages.length) === session.messages.length && (
           <div className="context-cleared-divider" role="separator">{t("上下文已清空（历史保留）", "Context cleared (history retained)")}</div>
         )}
