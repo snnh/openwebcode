@@ -344,7 +344,10 @@ static owc_fs_error scan_collect(const char *root,const char *session_id,const c
              * at the session workspace, so check the full request-relative
              * path. */
             {char *policy_path=!strcmp(base,".")?copy_text(child):scan_join(base,child);int denied=!policy_path||!session_path_allowed(session_id,policy_path,OWC_PATH_READ);free(policy_path);if(denied){free(child);continue;}}
-            if(!scan_add_item(scan,child,list.entries[i].type,list.entries[i].size)){free(child);error=OWC_FS_NO_MEMORY;break;}
+            /* Directory metadata sizes vary by filesystem (for example 0 on
+             * NTFS and 4096 on ext4).  fs.scan reports content sizes, so make
+             * directory entries deterministic across platforms. */
+            if(!scan_add_item(scan,child,list.entries[i].type,list.entries[i].type==OWC_FS_TYPE_DIRECTORY?0:list.entries[i].size)){free(child);error=OWC_FS_NO_MEMORY;break;}
             if(list.entries[i].type==OWC_FS_TYPE_DIRECTORY){
                 if(directory.depth>=max_depth)scan->depth_truncated=1;
                 else {char *next=copy_text(child);if(!next||!scan_push_directory(&stack,&stack_count,&stack_capacity,next,directory.depth+1)){free(next);error=OWC_FS_NO_MEMORY;break;}}
