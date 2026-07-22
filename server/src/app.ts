@@ -1487,6 +1487,17 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
     return agent.listSteering(request.params.id);
   });
+  app.get<{ Params: { id: string } }>("/api/sessions/:id/interactions", async (request, reply) => {
+    if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
+    return agent.listInteractions(request.params.id);
+  });
+  app.post<{ Params: { id: string; requestId: string }; Body: { answer: unknown } }>("/api/sessions/:id/interactions/:requestId/respond", async (request, reply) => {
+    if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
+    if (!request.body || !("answer" in request.body)) return reply.code(400).send({ error: "answer is required" });
+    const interaction = await agent.respondInteraction(request.params.id, request.params.requestId, request.body.answer);
+    if (!interaction) return reply.code(404).send({ error: "Pending interaction not found" });
+    return interaction;
+  });
   app.delete<{ Params: { id: string; steeringId: string } }>("/api/sessions/:id/steering/:steeringId", async (request, reply) => {
     if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
     if (!(await agent.removeSteering(request.params.id, request.params.steeringId))) return reply.code(404).send({ error: "Steering item not found" });

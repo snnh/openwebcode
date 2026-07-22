@@ -124,6 +124,13 @@ export interface PendingPermission {
   input: Record<string, unknown>;
 }
 
+export interface InteractionRequest {
+  id: string; sessionId: string; runId: string; toolCallId?: string;
+  kind: "confirm" | "single_select" | "multi_select" | "text";
+  title: string; prompt: string; options?: Array<{ id: string; label: string; description?: string }>;
+  status: "pending" | "answered" | "cancelled"; createdAt: string; answer?: unknown; answeredAt?: string;
+}
+
 export interface AppEvent {
   eventId?: string;
   source: "server" | "core" | "agent" | "session";
