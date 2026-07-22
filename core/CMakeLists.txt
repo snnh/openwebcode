@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(openwebcode_core VERSION 0.3.0 LANGUAGES C)
+project(openwebcode_core VERSION 0.3.1 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -94,8 +94,8 @@ install(DIRECTORY "${CMAKE_BINARY_DIR}/stage/" DESTINATION . OPTIONAL)
 set(CPACK_PACKAGE_NAME "openwebcode")
 set(CPACK_PACKAGE_VENDOR "OpenWebCode")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "OpenWebCode: web-based agentic coding environment")
-# 版本默认 0.3.0；CI 用 -DCPACK_PACKAGE_VERSION=x.y.z 注入 tag 版本
-set(CPACK_PACKAGE_VERSION "0.3.0" CACHE STRING "Package version (x.y.z)")
+# 版本默认 0.3.1；CI 用 -DCPACK_PACKAGE_VERSION=x.y.z 注入 tag 版本
+set(CPACK_PACKAGE_VERSION "0.3.1" CACHE STRING "Package version (x.y.z)")
 # WiX accepts .rtf directly and converts .txt to RTF, but rejects a license
 # path without an extension. Keep the repository's canonical LICENSE intact
 # and give the configured copy the extension required by the generator.
