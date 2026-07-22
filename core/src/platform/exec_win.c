@@ -161,7 +161,15 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
         limits.JobMemoryLimit=(SIZE_T)(request->job_memory_mb?request->job_memory_mb:OWC_JOB_DEFAULT_MEMORY_MB)*1024*1024;
         limits.BasicLimitInformation.ActiveProcessLimit=(DWORD)(request->job_max_processes?request->job_max_processes:OWC_JOB_DEFAULT_MAX_PROCESSES);
     }
-    if(!SetInformationJobObject(job,JobObjectExtendedLimitInformation,&limits,sizeof(limits)) || !AssignProcessToJobObject(job,process.hProcess)) goto cleanup;
+    if(!SetInformationJobObject(job,JobObjectExtendedLimitInformation,&limits,sizeof(limits)) || !AssignProcessToJobObject(job,process.hProcess)) {
+        /* Hosted Windows runners can already place this process in a Job
+         * Object and reject nesting.  A non-sandboxed command needs no
+         * enforcement Job Object; an AppContainer remains enforced without
+         * this cleanup-only handle.  Do not weaken a requested sandbox that
+         * failed to obtain AppContainer enforcement. */
+        if(request->sandbox_enabled&&!sandbox) goto cleanup;
+        CloseHandle(job);job=NULL;
+    }
     if(ResumeThread(process.hThread)==(DWORD)-1) goto cleanup;
     CloseHandle(out_write); out_write=NULL; CloseHandle(err_write); err_write=NULL; CloseHandle(input); input=NULL;
 
