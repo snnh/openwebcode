@@ -9,6 +9,7 @@ import { useTheme } from "./theme";
 import { useAgentRun } from "./hooks/use-agent-run";
 import { useSessionEventStream } from "./hooks/use-session-event-stream";
 import { BottomPanel } from "./components/BottomPanel";
+import { StatusBar } from "./components/StatusBar";
 import { Composer } from "./components/Composer";
 import type { PendingImage } from "./components/Composer";
 import { EmptyState } from "./components/EmptyState";
@@ -491,6 +492,7 @@ export function App(): ReactElement {
               supportsImages={supportsImages}
               onNotice={(message, kind = "info") => notify(message, kind)}
             />
+            <StatusBar session={current} state={currentState} tokens={costSummary?.tokens} costLabel={costSummary?.costLabel} />
           </>
         ) : (
           <EmptyState sessions={sessions.data ?? []} onSelect={setCurrentId} onCreate={() => setDialogOpen(true)} />

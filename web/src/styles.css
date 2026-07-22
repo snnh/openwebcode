@@ -395,6 +395,14 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 }
 .mode-switch select:disabled { cursor: not-allowed; opacity: 0.65; }
 .mode-switch option { color: var(--text); background: var(--panel); }
+.session-status-bar { display: flex; align-items: center; gap: 14px; min-height: 30px; padding: 5px 20px; border-top: 1px solid var(--border); background: var(--panel); color: var(--text-3); font: 11px var(--font-mono); overflow: hidden; }
+.session-status-bar > span { display: inline-flex; align-items: center; gap: 5px; min-width: 0; white-space: nowrap; }
+.session-status-bar > span:first-child { flex: 1; overflow: hidden; }
+.session-status-bar b { overflow: hidden; text-overflow: ellipsis; font-weight: 400; }
+.status-live { color: var(--text-2); }
+.status-live i { width: 7px; height: 7px; border-radius: 50%; background: var(--text-3); }
+.status-live:not(.status-idle) { color: var(--accent); }
+.status-live:not(.status-idle) i { background: currentColor; }
 
 /* ================= 后台任务 ================= */
 .task-badge {
@@ -1412,6 +1420,8 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   .job-header { padding: 10px 14px; }
   .job-header h1 { font-size: 15px; }
   .sandbox-badge, .mode-switch > span { display: none; }
+  .session-status-bar { gap: 9px; padding: 5px 12px; }
+  .session-status-bar .status-optional, .session-status-bar > span:nth-child(3) { display: none; }
   .execution-track { padding: 20px 16px 32px; }
   .message, .permission-card { padding-left: 26px; }
   .composer { position: sticky; bottom: 0; padding: 10px 12px; }
