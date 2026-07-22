@@ -109,6 +109,11 @@ def main():
         assert response["result"]["version"] == "0.2.3"
         assert response["result"]["sandboxCapability"] in {"advisory", "partial", "enforced"}
         assert response["result"]["sandboxReason"]
+        assert response["result"]["protocolVersion"] == "1.0"
+        assert response["result"]["features"]["fsWriteBase64"] is True
+        assert response["result"]["features"]["fsStatMany"] is True
+        assert response["result"]["features"]["fsHash"] is True
+        assert response["result"]["limits"] == {"maxFrameBytes": 32 * 1024 * 1024, "maxWriteBase64Bytes": 20 * 1024 * 1024, "maxHashBytes": 16 * 1024 * 1024, "maxStatManyPaths": 128, "maxStatManyPathBytes": 256 * 1024}
 
         request(proc, None, "core.ping")
         response, notes = collect_until_response(proc, None)

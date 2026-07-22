@@ -1,4 +1,4 @@
-import { readdir, readFile } from "node:fs/promises";
+import { lstat, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
 export interface Skill {
@@ -46,6 +46,8 @@ export function parseSkillCommand(text: string): { name: string; rest: string } 
  * 项目级覆盖同名全局技能；每次调用现扫（文件少、保证热更新，无需缓存失效逻辑）。
  */
 export class SkillRegistry {
+  private readonly scanCache = new Map<string, { fingerprint: string; skills: Skill[] }>();
+
   constructor(private readonly globalDir: string) {}
 
   async listFor(cwd?: string): Promise<Skill[]> {
@@ -68,17 +70,26 @@ export class SkillRegistry {
     } catch {
       return [];
     }
-    const skills: Skill[] = [];
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const filePath = path.join(dir, entry.name, "SKILL.md");
-      try {
-        const skill = parseSkillMarkdown(await readFile(filePath, "utf8"), entry.name, source, filePath);
-        if (skill) skills.push(skill);
-      } catch {
-        // 无 SKILL.md 或读取失败的目录直接跳过
-      }
-    }
-    return skills;
+    const files = await Promise.all(entries
+      .filter((entry) => entry.isDirectory())
+      .sort((left, right) => left.name.localeCompare(right.name))
+      .map(async (entry) => {
+        const filePath = path.join(dir, entry.name, "SKILL.md");
+        try {
+          const info = await lstat(filePath);
+          return info.isFile() ? { name: entry.name, filePath, fingerprint: `${entry.name}:${info.size}:${info.mtimeMs}` } : undefined;
+        } catch {
+          return undefined;
+        }
+      }));
+    const usable = files.filter((file): file is NonNullable<typeof file> => file !== undefined);
+    const fingerprint = usable.map((file) => file.fingerprint).join("|");
+    const cached = this.scanCache.get(dir);
+    if (cached?.fingerprint === fingerprint) return cached.skills.map((skill) => ({ ...skill }));
+    const skills = (await Promise.all(usable.map(async ({ name, filePath }) => {
+      try { return parseSkillMarkdown(await readFile(filePath, "utf8"), name, source, filePath); } catch { return undefined; }
+    }))).filter((skill): skill is Skill => skill !== undefined);
+    this.scanCache.set(dir, { fingerprint, skills });
+    return skills.map((skill) => ({ ...skill }));
   }
 }

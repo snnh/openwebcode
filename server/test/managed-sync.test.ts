@@ -58,6 +58,7 @@ describe("managed workspace sync-back", () => {
     const preview = await previewManagedWorkspaceSync(roots);
     expect(preview.baseline).toMatchObject({ available: true, version: 1 });
     expect(preview.fingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(preview.scanned).toMatchObject({ origin: { files: 4, bytes: expect.any(Number) }, managed: { files: 4, directories: 1, bytes: expect.any(Number) } });
     const byPath = new Map(preview.changes.map((change) => [change.path, change]));
     expect(byPath.get("safe.txt")).toMatchObject({ action: "update", reason: "managed_changed_only" });
     expect(byPath.get("nested/new.txt")).toMatchObject({ action: "create" });
@@ -94,6 +95,15 @@ describe("managed workspace sync-back", () => {
 
     await expect(applyManagedWorkspaceSync(roots, { confirm: true, previewFingerprint: preview.fingerprint! })).rejects.toMatchObject({ code: "stale_preview" });
     await expect(readFile(path.join(roots.originCwd, "file.txt"), "utf8")).resolves.toBe("external after preview");
+  });
+
+  it("honors a cancellation signal before scanning or writing", async () => {
+    const roots = await fixture();
+    await copyInitial(roots, "file.txt", "base");
+    await createManagedWorkspaceSyncBaseline(roots);
+    const controller = new AbortController();
+    controller.abort();
+    await expect(applyManagedWorkspaceSync(roots, { confirm: true, previewFingerprint: "0".repeat(64) }, { signal: controller.signal })).rejects.toMatchObject({ code: "cancelled" });
   });
 
   it("legacy session exposes all differences as conflicts and requires explicit overwriteConflicts", async () => {

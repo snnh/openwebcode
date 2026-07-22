@@ -60,7 +60,9 @@ export class SessionStore {
     const sessions = await Promise.all(
       entries.filter((entry) => entry.isDirectory()).map(async (entry) => {
         try {
-          return await this.readMeta(entry.name);
+          const meta = await this.readMeta(entry.name);
+          const { recovery } = await this.readMessages(entry.name);
+          return { ...meta, ...(recovery ? { recovery } : {}) };
         } catch {
           return undefined;
         }
@@ -79,12 +81,8 @@ export class SessionStore {
       if (isMissing(error)) return undefined;
       throw error;
     }
-    const raw = await readFile(this.messagesPath(id), "utf8");
-    const messages = raw
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as ChatMessage);
-    return { ...meta, messages };
+    const { messages, recovery } = await this.readMessages(id);
+    return { ...meta, ...(recovery ? { recovery } : {}), messages };
   }
 
   async appendMessage(
@@ -231,6 +229,45 @@ export class SessionStore {
 
   private async readMeta(id: string): Promise<SessionMeta> {
     return JSON.parse(await readFile(this.metaPath(id), "utf8")) as SessionMeta;
+  }
+
+  /**
+   * JSONL is append-only, so a process interruption can only normally damage
+   * its final record. Keep every valid record and make the recovery state
+   * explicit instead of making the complete session disappear from list().
+   */
+  private async readMessages(id: string): Promise<{ messages: ChatMessage[]; recovery?: NonNullable<SessionMeta["recovery"]> }> {
+    let raw: string;
+    try {
+      raw = await readFile(this.messagesPath(id), "utf8");
+    } catch (error) {
+      if (!isMissing(error)) throw error;
+      return { messages: [], recovery: { state: "needs_repair", message: "messages.jsonl is missing" } };
+    }
+    const lines = raw.split("\n");
+    const nonEmpty = lines.reduce<number[]>((indexes, line, index) => {
+      if (line.trim()) indexes.push(index);
+      return indexes;
+    }, []);
+    const last = nonEmpty.at(-1);
+    const messages: ChatMessage[] = [];
+    let corruptMiddle = false;
+    let corruptTail = false;
+    for (const index of nonEmpty) {
+      try {
+        messages.push(JSON.parse(lines[index]!) as ChatMessage);
+      } catch {
+        if (index === last) corruptTail = true;
+        else corruptMiddle = true;
+      }
+    }
+    if (corruptMiddle) {
+      return { messages, recovery: { state: "needs_repair", message: "messages.jsonl contains corrupt non-tail records" } };
+    }
+    if (corruptTail) {
+      return { messages, recovery: { state: "recovered", message: "Ignored a corrupt trailing messages.jsonl record" } };
+    }
+    return { messages };
   }
 
   private async writeMeta(meta: SessionMeta): Promise<void> {

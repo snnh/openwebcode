@@ -1,4 +1,4 @@
-import { readdir, readFile } from "node:fs/promises";
+import { lstat, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
 export interface AgentDefinition {
@@ -59,6 +59,8 @@ export function parseAgentMarkdown(
 }
 
 export class AgentRegistry {
+  private readonly scanCache = new Map<string, { fingerprint: string; agents: AgentDefinition[] }>();
+
   constructor(private readonly globalDir: string) {}
 
   async listFor(cwd: string): Promise<AgentDefinition[]> {
@@ -79,17 +81,26 @@ export class AgentRegistry {
     } catch {
       return [];
     }
-    const agents: AgentDefinition[] = [];
-    for (const entry of entries) {
-      if (!entry.isFile() || path.extname(entry.name).toLowerCase() !== ".md") continue;
-      try {
+    const files = await Promise.all(entries
+      .filter((entry) => entry.isFile() && path.extname(entry.name).toLowerCase() === ".md")
+      .sort((left, right) => left.name.localeCompare(right.name))
+      .map(async (entry) => {
         const filePath = path.join(dir, entry.name);
-        const agent = parseAgentMarkdown(await readFile(filePath, "utf8"), path.basename(entry.name, path.extname(entry.name)), source);
-        if (agent) agents.push(agent);
-      } catch {
-        // unreadable or malformed definitions are ignored
-      }
-    }
-    return agents;
+        try {
+          const info = await lstat(filePath);
+          return info.isFile() ? { name: entry.name, filePath, fingerprint: `${entry.name}:${info.size}:${info.mtimeMs}` } : undefined;
+        } catch {
+          return undefined;
+        }
+      }));
+    const usable = files.filter((file): file is NonNullable<typeof file> => file !== undefined);
+    const fingerprint = usable.map((file) => file.fingerprint).join("|");
+    const cached = this.scanCache.get(dir);
+    if (cached?.fingerprint === fingerprint) return cached.agents.map((agent) => ({ ...agent, ...(agent.tools ? { tools: [...agent.tools] } : {}) }));
+    const agents = (await Promise.all(usable.map(async ({ name, filePath }) => {
+      try { return parseAgentMarkdown(await readFile(filePath, "utf8"), path.basename(name, path.extname(name)), source); } catch { return undefined; }
+    }))).filter((agent): agent is AgentDefinition => agent !== undefined);
+    this.scanCache.set(dir, { fingerprint, agents });
+    return agents.map((agent) => ({ ...agent, ...(agent.tools ? { tools: [...agent.tools] } : {}) }));
   }
 }
