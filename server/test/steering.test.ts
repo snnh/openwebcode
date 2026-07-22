@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import type { CoreClient } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
@@ -13,6 +13,46 @@ const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
 
 describe("AgentRunner steering", () => {
+  it("starts one durable follow-up after the current run reaches a natural stop", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-follow-up-"));
+    roots.push(root);
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const session = await sessions.create({ cwd: root, provider: "steering", model: "claude-opus-4-8" });
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    let entered!: () => void;
+    const firstEntered = new Promise<void>((resolve) => { entered = resolve; });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const requests: StreamChatRequest[] = [];
+    const provider: Provider = {
+      name: "steering",
+      async *streamChat(request) {
+        requests.push(request);
+        if (requests.length === 1) {
+          entered();
+          await gate;
+        }
+        yield { type: "done", stopReason: "end_turn" };
+      },
+    };
+    const providers = new ProviderRegistry(); providers.register(provider);
+    const core = { on() { return core; }, async configureSession() { return { sandboxCapability: "advisory" }; } } as unknown as CoreClient;
+    const runner = new AgentRunner(sessions, providers, core, new EventBus(), pricing);
+
+    const initial = runner.run(session.id, "initial task");
+    await firstEntered;
+    const followUp = await runner.enqueueFollowUp(session.id, "continue with tests", "retry-safe-id");
+    const duplicate = await runner.enqueueFollowUp(session.id, "continue with tests", "retry-safe-id");
+    expect(duplicate).toMatchObject({ id: followUp.id, reused: true });
+    release();
+    await initial;
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+    await vi.waitFor(async () => expect((await sessions.get(session.id))?.messages.some((message) =>
+      message.role === "user" && message.content.some((block) => block.type === "text" && block.text === "continue with tests"))).toBe(true));
+  });
+
   it("queues messages during a provider turn and applies them at the next safe boundary", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "owc-steering-"));
     roots.push(root);
@@ -51,16 +91,16 @@ describe("AgentRunner steering", () => {
 
     const running = runner.run(session.id, "initial task");
     await firstEntered;
-    const queued = runner.enqueueSteering(session.id, "use the safer parser");
+    const queued = await runner.enqueueSteering(session.id, "use the safer parser");
     expect(queued.position).toBe(1);
-    expect(runner.listSteering(session.id)).toHaveLength(1);
+    expect(await runner.listSteering(session.id)).toHaveLength(1);
     allowFirstToFinish();
     await running;
 
     expect(requests).toHaveLength(2);
     expect(requests[1]?.messages.some((message) => message.role === "user" &&
       message.content.some((block) => block.type === "text" && block.text === "use the safer parser"))).toBe(true);
-    expect(runner.listSteering(session.id)).toEqual([]);
+    expect(await runner.listSteering(session.id)).toEqual([]);
     expect(published.map((event) => event.type)).toEqual(expect.arrayContaining(["steering.queued", "steering.applied"]));
   });
 
@@ -83,8 +123,8 @@ describe("AgentRunner steering", () => {
 
     const running = runner.run(session.id, "initial task");
     await firstEntered;
-    const queued = runner.enqueueSteering(session.id, "remove me");
-    expect(runner.removeSteering(session.id, queued.id)).toBe(true);
+    const queued = await runner.enqueueSteering(session.id, "remove me");
+    expect(await runner.removeSteering(session.id, queued.id)).toBe(true);
     finish();
     await running;
     expect((await sessions.get(session.id))?.messages.some((message) =>
@@ -119,11 +159,11 @@ describe("AgentRunner steering", () => {
 
     const running = runner.run(session.id, "initial task");
     await firstEntered;
-    runner.enqueueSteering(session.id, "saved for retry");
+    await runner.enqueueSteering(session.id, "saved for retry");
     expect(runner.abort(session.id)).toBe(true);
     await expect(running).rejects.toBeTruthy();
     // abort 保留未应用 steering，用户可在 idle 后重新入队/编辑
-    expect(runner.listSteering(session.id).map((item) => item.content)).toEqual(["saved for retry"]);
+    expect((await runner.listSteering(session.id)).map((item) => item.content)).toEqual(["saved for retry"]);
   });
 
   it("rejects an over-long steering message with a too_long error", async () => {
@@ -146,7 +186,7 @@ describe("AgentRunner steering", () => {
     const running = runner.run(session.id, "initial task");
     await firstEntered;
     const oversized = "x".repeat(8_001);
-    expect(() => runner.enqueueSteering(session.id, oversized)).toThrow(/exceeds/);
+    await expect(runner.enqueueSteering(session.id, oversized)).rejects.toThrow(/exceeds/);
     finish();
     await running;
   });
