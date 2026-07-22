@@ -279,15 +279,19 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   const app = Fastify({ logger: true, bodyLimit: 1024 * 1024 });
   const auth = dependencies.auth;
   const isAuthorized = (request: { headers: Record<string, string | string[] | undefined>; query?: unknown }, allowQueryToken = false) => !auth || safeTokenEqual(auth.accessToken, requestToken(request, allowQueryToken));
-  const originAllowed = (origin: string | undefined) => !origin || !auth || auth.allowedOrigins.includes(origin);
+  const originAllowed = (origin: string | undefined, nativeClient: boolean) => !auth || (origin ? auth.allowedOrigins.includes(origin) : nativeClient);
   if (auth) {
     app.addHook("onRequest", async (request, reply) => {
       if (!request.url.startsWith("/api/")) {
         // A remote browser can bootstrap an HttpOnly, same-site cookie by
-        // opening `/?token=...`; subsequent REST and WebSocket requests do
-        // not expose the token to application JavaScript or URLs.
-        if (request.method === "GET" && isAuthorized(request, true)) {
+        // opening `/?token=...`; redirect before serving the app so the token
+        // never reaches application JavaScript, page history, or subrequests.
+        const queryToken = request.query && typeof request.query === "object"
+          ? (request.query as Record<string, unknown>).token
+          : undefined;
+        if (request.method === "GET" && request.url.split("?", 1)[0] === "/" && typeof queryToken === "string" && safeTokenEqual(auth.accessToken, queryToken)) {
           reply.header("set-cookie", `owc_access_token=${auth.accessToken}; HttpOnly; SameSite=Strict; Path=/`);
+          return reply.redirect("/");
         }
         return;
       }
@@ -1472,7 +1476,9 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   });
 
   app.get<{ Querystring: { after?: string; sessionId?: string } }>("/api/events", { websocket: true }, (socket, request) => {
-    if (!isAuthorized(request, true) || !originAllowed(typeof request.headers.origin === "string" ? request.headers.origin : undefined)) {
+    const origin = typeof request.headers.origin === "string" ? request.headers.origin : undefined;
+    const nativeClient = request.headers["x-openwebcode-client"] === "cli";
+    if (!isAuthorized(request, true) || !originAllowed(origin, nativeClient)) {
       socket.close(1008, "Unauthorized origin or token");
       return;
     }

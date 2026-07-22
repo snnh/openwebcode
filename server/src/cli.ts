@@ -13,6 +13,7 @@ interface CliOptions {
   model?: string;
   json: boolean;
   yolo: boolean;
+  accessToken?: string | undefined;
 }
 
 interface StreamEvent {
@@ -24,14 +25,14 @@ interface StreamEvent {
 
 function usage(): never {
   process.stderr.write(
-    '用法: owc run "prompt" [--cwd .] [--provider X] [--model Y] [--json] [--yolo] [--server http://127.0.0.1:3000] [--session ID]\n',
+    '用法: OWC_ACCESS_TOKEN=… owc run "prompt" [--cwd .] [--provider X] [--model Y] [--json] [--yolo] [--server http://127.0.0.1:3000] [--session ID]\n',
   );
   process.exit(2);
 }
 
 function parseArgs(argv: string[]): CliOptions {
   if (argv[0] !== "run") usage();
-  const options: CliOptions = { prompt: "", cwd: process.cwd(), server: "http://127.0.0.1:3000", json: false, yolo: false };
+  const options: CliOptions = { prompt: "", cwd: process.cwd(), server: "http://127.0.0.1:3000", json: false, yolo: false, accessToken: process.env.OWC_ACCESS_TOKEN };
   for (let i = 1; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === "--json") {
@@ -58,10 +59,10 @@ function parseArgs(argv: string[]): CliOptions {
   return options;
 }
 
-async function postJson(url: string, body: unknown): Promise<{ ok: boolean; status: number; text: () => Promise<string> }> {
+async function postJson(url: string, body: unknown, accessToken?: string): Promise<{ ok: boolean; status: number; text: () => Promise<string> }> {
   const response = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}) },
     body: JSON.stringify(body),
   });
   return { ok: response.ok, status: response.status, text: () => response.text() };
@@ -78,7 +79,7 @@ async function main(): Promise<void> {
       cwd: options.cwd,
       ...(options.provider ? { provider: options.provider } : {}),
       ...(options.model ? { model: options.model } : {}),
-    });
+    }, options.accessToken);
     if (!created.ok) {
       process.stderr.write(`创建会话失败（HTTP ${created.status}）：${await created.text()}\n`);
       process.exit(1);
@@ -89,7 +90,12 @@ async function main(): Promise<void> {
   // 2. WS 订阅事件流（先连再发消息，避免漏事件）；connected 事件的 latestSeq 作为基线，
   // seq <= 基线的是本次 run 之前的历史事件（--session 复用时尤其重要），一律忽略。
   const wsUrl = `${server.replace(/^http/i, "ws")}/api/events?sessionId=${encodeURIComponent(sessionId)}`;
-  const ws = new WebSocket(wsUrl);
+  const ws = new WebSocket(wsUrl, {
+    headers: {
+      "x-openwebcode-client": "cli",
+      ...(options.accessToken ? { authorization: `Bearer ${options.accessToken}` } : {}),
+    },
+  });
   let baseline = -1;
   let finished = false;
   const finish = (code: number): void => {
@@ -131,7 +137,7 @@ async function main(): Promise<void> {
           const responded = await postJson(`${server}/api/sessions/${sessionId}/permissions/respond`, {
             requestId: payload.requestId,
             decision: "allow",
-          });
+          }, options.accessToken);
           if (!responded.ok) {
             process.stderr.write(`权限自动批准失败（HTTP ${responded.status}）\n`);
             finish(1);
@@ -176,7 +182,7 @@ async function main(): Promise<void> {
   };
 
   // 3. 发送消息，之后纯事件驱动
-  const sent = await postJson(`${server}/api/sessions/${sessionId}/messages`, { content: options.prompt });
+  const sent = await postJson(`${server}/api/sessions/${sessionId}/messages`, { content: options.prompt }, options.accessToken);
   if (!sent.ok) {
     process.stderr.write(`发送消息失败（HTTP ${sent.status}）：${await sent.text()}\n`);
     finish(1);
