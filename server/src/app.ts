@@ -720,6 +720,28 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     if (!session) return reply.code(404).send({ error: "Session not found" });
     return session;
   });
+  /** Read-only tree projection. Legacy sessions remain a single derived path. */
+  app.get<{ Params: { id: string } }>("/api/sessions/:id/timeline", async (request, reply) => {
+    const session = await sessions.get(request.params.id);
+    if (!session) return reply.code(404).send({ error: "Session not found" });
+    return {
+      activeLeafId: session.activeLeafId ?? session.messages.at(-1)?.id,
+      entries: session.messages.map((message) => ({
+        id: message.id, parentId: message.parentId,
+        runId: message.runId, turnId: message.turnId,
+        role: message.role, createdAt: message.createdAt,
+      })),
+    };
+  });
+  app.post<{ Params: { id: string }; Body: { cwd?: string; title?: string } }>("/api/sessions/:id/branches", async (request, reply) => {
+    if (agent.isRunning(request.params.id)) return reply.code(409).send({ error: "Session must be idle before cloning" });
+    if (!request.body || typeof request.body.cwd !== "string" || !request.body.cwd.trim() || (request.body.title !== undefined && typeof request.body.title !== "string")) return reply.code(400).send({ error: "cwd and optional title are required" });
+    try {
+      const cloned = await sessions.cloneCurrent(request.params.id, request.body.cwd, request.body.title);
+      events.publish({ source: "session", type: "branch.cloned", sessionId: cloned.id, payload: { sourceSessionId: request.params.id, mode: "conversation_only" } });
+      return reply.code(201).send({ ...cloned, branchMode: "conversation_only" });
+    } catch (error) { return reply.code(error instanceof Error && error.message === "Session not found" ? 404 : 409).send({ error: error instanceof Error ? error.message : String(error) }); }
+  });
 
   /** 只读预览允许在 agent 运行时调用；apply 会在下方单独拒绝运行中会话。 */
   app.get<{ Params: { id: string } }>("/api/sessions/:id/workspace/sync-preview", async (request, reply) => {
@@ -1487,9 +1509,34 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
     return agent.listSteering(request.params.id);
   });
+  app.get<{ Params: { id: string } }>("/api/sessions/:id/queue", async (request, reply) => {
+    if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
+    return agent.listQueue(request.params.id);
+  });
+  app.patch<{ Params: { id: string; itemId: string }; Body: { content?: string; kind?: "steer" | "follow_up" } }>("/api/sessions/:id/queue/:itemId", async (request, reply) => {
+    if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
+    const body = request.body;
+    if (!body || (body.content === undefined && body.kind === undefined) || (body.content !== undefined && (typeof body.content !== "string" || !body.content)) || (body.kind !== undefined && !["steer", "follow_up"].includes(body.kind))) return reply.code(400).send({ error: "content and/or kind steer|follow_up are required" });
+    const item = await agent.updateQueue(request.params.id, request.params.itemId, body);
+    if (!item) return reply.code(409).send({ error: "Queue item is missing or already consuming" });
+    return item;
+  });
+  app.delete<{ Params: { id: string; itemId: string } }>("/api/sessions/:id/queue/:itemId", async (request, reply) => {
+    if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
+    if (!(await agent.removeQueue(request.params.id, request.params.itemId))) return reply.code(409).send({ error: "Queue item is missing or already consuming" });
+    return reply.code(204).send();
+  });
   app.get<{ Params: { id: string } }>("/api/sessions/:id/interactions", async (request, reply) => {
     if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
     return agent.listInteractions(request.params.id);
+  });
+  app.post<{ Params: { id: string }; Body: { runId?: string; toolCallId?: string; kind?: string; title?: string; prompt?: string; options?: Array<{ id?: string; label?: string; description?: string }> } }>("/api/sessions/:id/interactions", async (request, reply) => {
+    if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
+    const body = request.body;
+    if (!body || typeof body.runId !== "string" || typeof body.title !== "string" || typeof body.prompt !== "string" || !["confirm", "single_select", "multi_select", "text"].includes(body.kind ?? "") || (body.toolCallId !== undefined && typeof body.toolCallId !== "string") || (body.options !== undefined && (!Array.isArray(body.options) || body.options.some((option) => !option || typeof option.id !== "string" || typeof option.label !== "string" || (option.description !== undefined && typeof option.description !== "string"))))) return reply.code(400).send({ error: "runId, kind, title, prompt, and valid optional options are required" });
+    if (["single_select", "multi_select"].includes(body.kind!) && (!body.options || body.options.length === 0)) return reply.code(400).send({ error: "select interactions require options" });
+    const item = await agent.createInteraction(request.params.id, { runId: body.runId, ...(body.toolCallId ? { toolCallId: body.toolCallId } : {}), kind: body.kind as "confirm" | "single_select" | "multi_select" | "text", title: body.title, prompt: body.prompt, ...(body.options ? { options: body.options as Array<{ id: string; label: string; description?: string }> } : {}) });
+    return reply.code(201).send(item);
   });
   app.post<{ Params: { id: string; requestId: string }; Body: { answer: unknown } }>("/api/sessions/:id/interactions/:requestId/respond", async (request, reply) => {
     if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });

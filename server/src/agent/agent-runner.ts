@@ -32,7 +32,7 @@ import { decodeProcessOutputChunks } from "./output-decoder.js";
 import { buildSystemPrompt } from "./prompts/prompt-builder.js";
 import { RunStore, type AgentRunSnapshot, type AgentRunState } from "./run-store.js";
 import { MessageQueue, type QueueItem } from "./message-queue.js";
-import { InteractionCoordinator, type InteractionRequest } from "./interaction-coordinator.js";
+import { InteractionCoordinator, type InteractionKind, type InteractionRequest } from "./interaction-coordinator.js";
 
 interface ExecutionContext {
   sessionId: string;
@@ -246,6 +246,14 @@ function builtInTools(options: {
 
 const MAX_STEERING_ITEMS = 16;
 const MAX_STEERING_LENGTH = 8_000;
+/** Scheduling metadata is product-side only; Provider schemas remain unchanged. */
+export type ToolExecutionClass = "read_only" | "workspace_write" | "process" | "external";
+const TOOL_EXECUTION_CLASS: Readonly<Record<string, ToolExecutionClass>> = {
+  read_file: "read_only", glob: "read_only", grep: "read_only", read_artifact: "read_only", load_skill: "read_only",
+  web_fetch: "external", web_search: "external", write_file: "workspace_write", edit_file: "workspace_write",
+  bash: "process", task_output: "read_only", task_stop: "process", todo_write: "workspace_write", remember: "workspace_write", spawn_task: "process",
+};
+function executionClass(name: string): ToolExecutionClass { return name.startsWith("mcp__") ? "external" : TOOL_EXECUTION_CLASS[name] ?? "workspace_write"; }
 /** 系统提示中单个记忆/约定小节的字符上限 */
 const MEMORY_SECTION_LIMIT = 8_000;
 
@@ -709,7 +717,7 @@ export class AgentRunner {
           }
         }
         if (assistantContent.length > 0) {
-          await this.sessions.appendMessage(sessionId, "assistant", assistantContent);
+          await this.sessions.appendMessage(sessionId, "assistant", assistantContent, this.messageLineage(sessionId));
         }
         const toolCalls = assistantContent.filter((block) => block.type === "tool_call");
         // Some compatible providers have emitted tool_call blocks with a non-tool stop reason.
@@ -787,7 +795,7 @@ export class AgentRunner {
               result = { type: "tool_result", toolCallId: call.id, content, isError: true };
             }
           }
-          await this.sessions.appendMessage(sessionId, "tool", [result]);
+          await this.sessions.appendMessage(sessionId, "tool", [result], this.messageLineage(sessionId));
           // PostToolUse 钩子：仅写类工具成功后触发（format-on-write 等），不阻断
           if (!result.isError && ["write_file", "edit_file", "bash"].includes(call.name)) {
             const summary = result.content.slice(0, 300);
@@ -995,8 +1003,25 @@ export class AgentRunner {
   async listSteering(sessionId: string): Promise<QueueItem[]> {
     return (await this.messageQueue.list(sessionId, "steer")).filter((item) => item.status === "queued");
   }
+  async listQueue(sessionId: string): Promise<QueueItem[]> { return this.messageQueue.list(sessionId); }
+  async updateQueue(sessionId: string, id: string, change: { content?: string; kind?: "steer" | "follow_up" }): Promise<QueueItem | undefined> {
+    const item = await this.messageQueue.update(sessionId, id, change);
+    if (item) this.events.publish({ source: "agent", type: "queue.updated", sessionId, payload: item });
+    return item;
+  }
+  async removeQueue(sessionId: string, id: string): Promise<boolean> {
+    const item = await this.messageQueue.cancel(sessionId, id);
+    if (!item) return false;
+    this.events.publish({ source: "agent", type: "queue.cancelled", sessionId, payload: { id: item.id, kind: item.kind } });
+    return true;
+  }
 
   async listInteractions(sessionId: string): Promise<InteractionRequest[]> { return this.interactions.list(sessionId); }
+  async createInteraction(sessionId: string, input: { runId: string; toolCallId?: string; kind: InteractionKind; title: string; prompt: string; options?: Array<{ id: string; label: string; description?: string }> }): Promise<InteractionRequest> {
+    const item = await this.interactions.create(sessionId, input);
+    this.events.publish({ source: "agent", type: "interaction.requested", sessionId, runId: item.runId, payload: item });
+    return item;
+  }
   async respondInteraction(sessionId: string, id: string, answer: unknown): Promise<InteractionRequest | undefined> {
     const item = await this.interactions.answer(sessionId, id, answer);
     if (item) this.events.publish({ source: "agent", type: "interaction.answered", sessionId, payload: item });
@@ -1128,6 +1153,8 @@ export class AgentRunner {
     input: Record<string, unknown>,
     signal: AbortSignal,
   ): Promise<MessageContent & { type: "tool_result" }> {
+    const execution = executionClass(name);
+    this.events.publish({ source: "agent", type: "tool.scheduling", sessionId, payload: { toolCallId, name, execution, parallelEligible: execution === "read_only" } });
     if (name.startsWith("mcp__")) {
       if (!this.mcp) {
         return { type: "tool_result", toolCallId, content: "MCP is not enabled on this server", isError: true };
@@ -1576,6 +1603,12 @@ export class AgentRunner {
     if (!run || run.turnIndex === turnIndex) return;
     run.turnIndex = turnIndex;
     this.queueRunWrite(sessionId, run, false);
+  }
+
+  /** Keep new agent output attributable to one durable run/turn without rewriting older history. */
+  private messageLineage(sessionId: string): { runId?: string; turnId?: string } {
+    const run = this.runs.get(sessionId);
+    return run ? { runId: run.id, turnId: `${run.id}:${run.turnIndex}` } : {};
   }
 
   /** Map legacy transient names to the persisted Run state machine. */
