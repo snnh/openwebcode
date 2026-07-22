@@ -31,6 +31,7 @@ import type { ExtensionManager } from "../extensions/extension-manager.js";
 import { decodeProcessOutputChunks } from "./output-decoder.js";
 import { buildSystemPrompt } from "./prompts/prompt-builder.js";
 import { RunStore, type AgentRunSnapshot, type AgentRunState } from "./run-store.js";
+import { MessageQueue, type QueueItem } from "./message-queue.js";
 
 interface ExecutionContext {
   sessionId: string;
@@ -242,12 +243,6 @@ function builtInTools(options: {
   ];
 }
 
-interface SteeringItem {
-  id: string;
-  content: string;
-  createdAt: string;
-}
-
 const MAX_STEERING_ITEMS = 16;
 const MAX_STEERING_LENGTH = 8_000;
 /** 系统提示中单个记忆/约定小节的字符上限 */
@@ -321,6 +316,8 @@ export interface AgentRunOptions {
   attachments?: Array<{ text: string }>;
   /** app.ts managed-workspace shared/exclusive lease; absent for direct/test runs. */
   managedWorkspace?: ManagedWorkspaceRunLease;
+  /** A durable follow-up queue entry which becomes applied when its user message is written. */
+  queueItemId?: string;
 }
 
 export class AgentRunner {
@@ -333,7 +330,7 @@ export class AgentRunner {
   /** Final assistant output is durable, but hooks/queue cleanup are not yet. */
   private readonly settling = new Set<string>();
   private readonly shells = new Map<string, AbortController>();
-  private readonly steering = new Map<string, SteeringItem[]>();
+  private readonly messageQueue: MessageQueue;
   private readonly repeatedCalls = new Map<string, { signature: string; count: number }>();
   private readonly mcpWarningSignatures = new Map<string, string>();
   private readonly todos = new Map<string, TodoItem[]>();
@@ -365,6 +362,7 @@ export class AgentRunner {
     webFetchProvider?: WebFetchProvider,
   ) {
     this.coreGateway = new CoreGateway(core);
+    this.messageQueue = new MessageQueue((sessionId) => this.sessions.contextRoot(sessionId));
     this.permissions = new PermissionCoordinator(events);
     this.webFetchProvider = webFetchProvider;
     core.on("event", (event: CoreEvent) => {
@@ -408,6 +406,8 @@ export class AgentRunner {
     if (this.shells.has(sessionId)) throw new Error("A shell command is pending; respond to its permission request first");
     const controller = new AbortController();
     this.running.set(sessionId, controller);
+    let followUpQueueItemId = options?.queueItemId;
+    let scheduleFollowUp = false;
     try {
       const configuredSession = await this.sessions.get(sessionId);
       if (!configuredSession) throw new Error("Session not found");
@@ -452,6 +452,12 @@ export class AgentRunner {
 
       // 一旦路由返回 202，用户输入优先于所有可失败的集成步骤（快照、Hook、Core、Provider）。
       const triggerMessage = await appendUserMessage(effectiveText);
+      if (followUpQueueItemId) {
+        const applied = await this.messageQueue.apply(sessionId, followUpQueueItemId, triggerMessage.id);
+        if (!applied) throw new Error("Follow-up queue item disappeared while applying it");
+        followUpQueueItemId = undefined;
+        this.events.publish({ source: "agent", type: "queue.applied", sessionId, payload: applied });
+      }
       await this.createRun(sessionId, triggerMessage.id);
       if (automaticSnapshotRequested && backgroundTaskRunning) {
         this.events.publish({
@@ -707,8 +713,7 @@ export class AgentRunner {
         // A persisted tool_call must always receive one matching tool_result; otherwise the next
         // request has an invalid conversation shape and can fail before a user-visible reply.
         if (toolCalls.length === 0 && stopReason !== "tool_use") {
-          if (this.steering.get(sessionId)?.length) {
-            await this.applySteering(sessionId);
+          if (await this.applySteering(sessionId)) {
             await this.state(sessionId, "thinking");
             continue;
           }
@@ -723,6 +728,7 @@ export class AgentRunner {
           } finally {
             this.settling.delete(sessionId);
           }
+          scheduleFollowUp = true;
           return;
         }
         if (toolCalls.length === 0) throw new Error("Provider stopped for tool use without a tool call");
@@ -792,11 +798,12 @@ export class AgentRunner {
           await context.evict(afterTools.messages);
           this.events.publish({ source: "agent", type: "context.evicted", sessionId, payload: (await context.load()).entries });
         }
-        if (this.steering.get(sessionId)?.length) await this.applySteering(sessionId);
+        await this.applySteering(sessionId);
         this.state(sessionId, "thinking");
       }
       throw new Error(`Agent exceeded ${this.maxTurns} turns`);
     } catch (error) {
+      if (followUpQueueItemId) await this.messageQueue.requeue(sessionId, followUpQueueItemId);
       if (controller.signal.aborted) {
         this.events.publish({
           source: "agent",
@@ -815,11 +822,11 @@ export class AgentRunner {
       this.settling.delete(sessionId);
       this.running.delete(sessionId);
       this.repeatedCalls.delete(sessionId);
-      // abort 路径保留未应用的 steering 队列，供用户编辑/重发；正常结束才清理
-      if (!controller.signal.aborted) this.steering.delete(sessionId);
+      // abort 与正常结束都保留未消费队列；queue.json 是用户可恢复状态。
       this.todos.delete(sessionId);
       this.events.publish({ source: "agent", type: "todos.updated", sessionId, payload: { items: [] } });
       if (this.runs.has(sessionId)) await this.finishRun(sessionId, "completed");
+      if (scheduleFollowUp && !controller.signal.aborted) void this.startFollowUp(sessionId);
     }
   }
 
@@ -958,48 +965,75 @@ export class AgentRunner {
     return this.shells.has(sessionId);
   }
 
-  enqueueSteering(sessionId: string, content: string): { id: string; position: number } {
+  async enqueueSteering(sessionId: string, content: string, requestId?: string): Promise<{ id: string; position: number; reused: boolean }> {
     if (!this.running.has(sessionId)) throw new SteeringError("Session agent is not running", "not_running");
     if (this.settling.has(sessionId)) throw new SteeringError("Session is settling; retry after it becomes idle", "not_running");
     if (content.length > MAX_STEERING_LENGTH) throw new SteeringError(`Steering message exceeds ${MAX_STEERING_LENGTH} characters`, "too_long");
-    const queue = this.steering.get(sessionId) ?? [];
-    if (queue.length >= MAX_STEERING_ITEMS) throw new SteeringError("Steering queue is full", "full");
-    const item: SteeringItem = { id: randomUUID(), content, createdAt: new Date().toISOString() };
-    queue.push(item);
-    this.steering.set(sessionId, queue);
-    this.events.publish({ source: "agent", type: "steering.queued", sessionId, payload: { ...item, position: queue.length } });
-    return { id: item.id, position: queue.length };
+    const queuedItems = await this.messageQueue.list(sessionId, "steer");
+    if (queuedItems.filter((item) => item.status === "queued").length >= MAX_STEERING_ITEMS) throw new SteeringError("Steering queue is full", "full");
+    const queued = await this.messageQueue.enqueue(sessionId, "steer", content, requestId);
+    const payload = { ...queued.item, position: queued.position, reused: queued.reused };
+    this.events.publish({ source: "agent", type: "queue.queued", sessionId, payload });
+    this.events.publish({ source: "agent", type: "steering.queued", sessionId, payload });
+    return { id: queued.item.id, position: queued.position, reused: queued.reused };
   }
 
-  listSteering(sessionId: string): SteeringItem[] {
-    return [...(this.steering.get(sessionId) ?? [])];
+  async enqueueFollowUp(sessionId: string, content: string, requestId?: string): Promise<{ id: string; position: number; reused: boolean }> {
+    if (!this.running.has(sessionId)) throw new SteeringError("Session agent is not running", "not_running");
+    if (content.length > MAX_STEERING_LENGTH) throw new SteeringError(`Follow-up message exceeds ${MAX_STEERING_LENGTH} characters`, "too_long");
+    const queuedItems = await this.messageQueue.list(sessionId, "follow_up");
+    if (queuedItems.filter((item) => item.status === "queued").length >= MAX_STEERING_ITEMS) throw new SteeringError("Follow-up queue is full", "full");
+    const queued = await this.messageQueue.enqueue(sessionId, "follow_up", content, requestId);
+    const payload = { ...queued.item, position: queued.position, reused: queued.reused };
+    this.events.publish({ source: "agent", type: "queue.queued", sessionId, payload });
+    return { id: queued.item.id, position: queued.position, reused: queued.reused };
   }
 
-  removeSteering(sessionId: string, id: string): boolean {
-    const queue = this.steering.get(sessionId);
-    if (!queue) return false;
-    const index = queue.findIndex((item) => item.id === id);
-    if (index < 0) return false;
-    const [item] = queue.splice(index, 1);
-    if (!queue.length) this.steering.delete(sessionId);
-    this.events.publish({ source: "agent", type: "steering.removed", sessionId, payload: { id: item!.id } });
+  async listSteering(sessionId: string): Promise<QueueItem[]> {
+    return (await this.messageQueue.list(sessionId, "steer")).filter((item) => item.status === "queued");
+  }
+
+  async removeSteering(sessionId: string, id: string): Promise<boolean> {
+    const item = await this.messageQueue.cancel(sessionId, id);
+    if (!item) return false;
+    this.events.publish({ source: "agent", type: "queue.cancelled", sessionId, payload: { id: item.id, kind: item.kind } });
+    this.events.publish({ source: "agent", type: "steering.removed", sessionId, payload: { id: item.id } });
     return true;
   }
 
-  private async applySteering(sessionId: string): Promise<void> {
-    const queue = this.steering.get(sessionId);
-    if (!queue?.length) return;
-    const remaining: SteeringItem[] = [];
-    for (const item of queue) {
-      try {
-        await this.sessions.appendMessage(sessionId, "user", [{ type: "text", text: item.content }]);
-        this.events.publish({ source: "agent", type: "steering.applied", sessionId, payload: item });
-      } catch {
-        remaining.push(item);
-      }
+  private async applySteering(sessionId: string): Promise<boolean> {
+    const item = await this.messageQueue.take(sessionId, "steer");
+    if (!item) return false;
+    try {
+      const message = await this.sessions.appendMessage(sessionId, "user", [{ type: "text", text: item.content }]);
+      const applied = await this.messageQueue.apply(sessionId, item.id, message.id);
+      if (!applied) throw new Error("Steering queue item disappeared while applying it");
+      this.events.publish({ source: "agent", type: "queue.applied", sessionId, payload: applied });
+      this.events.publish({ source: "agent", type: "steering.applied", sessionId, payload: applied });
+      return true;
+    } catch (error) {
+      await this.messageQueue.requeue(sessionId, item.id);
+      this.events.publish({ source: "agent", type: "queue.apply_failed", sessionId, payload: { id: item.id, kind: item.kind, message: error instanceof Error ? error.message : String(error) } });
+      return false;
     }
-    if (remaining.length) this.steering.set(sessionId, remaining);
-    else this.steering.delete(sessionId);
+  }
+
+  private async startFollowUp(sessionId: string): Promise<void> {
+    if (this.running.has(sessionId)) return;
+    // Avoid creating queue.json for the overwhelmingly common no-follow-up path.
+    // This also keeps a just-finished session from racing its caller's cleanup.
+    if (!(await this.messageQueue.list(sessionId, "follow_up")).some((item) => item.status === "queued")) return;
+    const item = await this.messageQueue.take(sessionId, "follow_up");
+    if (!item) return;
+    this.events.publish({ source: "agent", type: "queue.consuming", sessionId, payload: item });
+    void this.run(sessionId, item.content, { queueItemId: item.id }).catch((error: unknown) => {
+      this.events.publish({
+        source: "agent",
+        type: "queue.run_failed",
+        sessionId,
+        payload: { id: item.id, kind: item.kind, message: error instanceof Error ? error.message : String(error) },
+      });
+    });
   }
 
   private async authorizeTool(sessionId: string, tool: string, input: Record<string, unknown>, signal: AbortSignal): Promise<{ allowed: boolean; reason?: string }> {

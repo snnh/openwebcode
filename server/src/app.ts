@@ -50,6 +50,10 @@ interface CreateSessionBody {
 
 interface MessageBody {
   content: string;
+  /** Explicit delivery intent; omitted remains compatible with pre-0.3 clients. */
+  behavior?: "start" | "steer" | "follow_up";
+  /** Caller-generated request identity for a retry-safe queued delivery. */
+  requestId?: string;
   images?: Array<{ mediaType: string; data: string }>;
   /** @文件引用：server 在 appendMessage 前对每个 path 调 core.readFile（受沙盒），组装为前置 text 块 */
   attachments?: Array<{ path: string }>;
@@ -1283,6 +1287,12 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       if (!request.body || typeof request.body.content !== "string" || !request.body.content) {
         return reply.code(400).send({ error: "content must be a non-empty string" });
       }
+      if (request.body.behavior !== undefined && !["start", "steer", "follow_up"].includes(request.body.behavior)) {
+        return reply.code(400).send({ error: "behavior must be start, steer, or follow_up" });
+      }
+      if (request.body.requestId !== undefined && (typeof request.body.requestId !== "string" || !request.body.requestId.trim() || request.body.requestId.length > 200)) {
+        return reply.code(400).send({ error: "requestId must be a non-empty string of at most 200 characters" });
+      }
       const session = await sessions.get(request.params.id);
       if (!session) return reply.code(404).send({ error: "Session not found" });
       if (managedSyncingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace sync is in progress" });
@@ -1339,14 +1349,20 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       }
       if (agent.isRunning(request.params.id)) {
         try {
-          const queued = agent.enqueueSteering(request.params.id, request.body.content);
-          return reply.code(202).send({ accepted: true, queued: true, ...queued });
+          if (request.body.behavior === "start") return reply.code(409).send({ error: "Session is already running; use steer or follow_up" });
+          const queued = request.body.behavior === "follow_up"
+            ? await agent.enqueueFollowUp(request.params.id, request.body.content, request.body.requestId)
+            : await agent.enqueueSteering(request.params.id, request.body.content, request.body.requestId);
+          return reply.code(202).send({ accepted: true, queued: true, behavior: request.body.behavior ?? "steer", ...queued });
         } catch (error) {
           const code = error instanceof SteeringError
             ? (error.code === "full" ? 429 : error.code === "too_long" ? 413 : 409)
             : 409;
           return reply.code(code).send({ error: error instanceof Error ? error.message : String(error) });
         }
+      }
+      if (request.body.behavior === "steer" || request.body.behavior === "follow_up") {
+        return reply.code(409).send({ error: `${request.body.behavior} requires a running session` });
       }
       const automaticSnapshotRequested = (session.snapshotMode ?? "auto") === "auto";
       // Background task state is checked again inside AgentRunner. This early
@@ -1473,7 +1489,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   });
   app.delete<{ Params: { id: string; steeringId: string } }>("/api/sessions/:id/steering/:steeringId", async (request, reply) => {
     if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
-    if (!agent.removeSteering(request.params.id, request.params.steeringId)) return reply.code(404).send({ error: "Steering item not found" });
+    if (!(await agent.removeSteering(request.params.id, request.params.steeringId))) return reply.code(404).send({ error: "Steering item not found" });
     return reply.code(204).send();
   });
 

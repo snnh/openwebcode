@@ -89,7 +89,7 @@ export function Composer({ current, model, models, providers = [], pdfToImageExt
   imageCapabilitiesReady?: boolean;
   draft: string;
   setDraft(value: string): void;
-  onSend(): void;
+  onSend(behavior?: "start" | "steer" | "follow_up"): void;
   onConfig(body: Record<string, unknown>): void;
   running: boolean;
   /** 发送请求进行中：屏蔽重复提交（按钮禁用、Enter 不触发），运行中入队场景不受影响 */
@@ -126,6 +126,7 @@ export function Composer({ current, model, models, providers = [], pdfToImageExt
   const [active, setActive] = useState(0);
   const [pdfJobs, setPdfJobs] = useState(0);
   const [pdfProgress, setPdfProgress] = useState<PdfProgress | null>(null);
+  const [queuedBehavior, setQueuedBehavior] = useState<"steer" | "follow_up">("steer");
   const pdfToImageEnabled = pdfToImageExtension?.enabled === true;
 
   useEffect(() => { draftRef.current = draft; }, [draft]);
@@ -812,14 +813,25 @@ const mentionHasMatches = mentionMatches.length > 0;
         >
           <Icon name="upload" size={14} />
         </button>
+        {running && (
+          <select
+            className="queue-behavior"
+            value={queuedBehavior}
+            onChange={(event) => setQueuedBehavior(event.target.value as "steer" | "follow_up")}
+            aria-label={t("运行中消息行为", "Message behavior while running")}
+          >
+            <option value="steer">{t("本轮补充", "Steer current run")}</option>
+            <option value="follow_up">{t("完成后续跑", "Run after completion")}</option>
+          </select>
+        )}
         <button
           className="btn primary send"
           disabled={!draft.trim() || sendPending || processingPdf}
           title={processingPdf ? t("正在处理 PDF…", "Processing PDF…") : sendPending ? t("发送中…", "Sending…") : undefined}
-          onClick={onSend}
+          onClick={() => onSend(running ? queuedBehavior : "start")}
         >
           <Icon name="send" size={13} />
-          {draft.trimStart().startsWith("!") ? t("运行", "Run") : running ? t("加入队列", "Queue") : t("发送", "Send")}
+          {draft.trimStart().startsWith("!") ? t("运行", "Run") : running ? queuedBehavior === "follow_up" ? t("完成后续跑", "Run after") : t("加入队列", "Queue") : t("发送", "Send")}
         </button>
       </div>
       {mentionedPaths.length > 0 && (

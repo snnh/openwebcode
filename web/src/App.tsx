@@ -290,17 +290,19 @@ export function App(): ReactElement {
   }, [contextView.data, currentState]);
 
   const send = useMutation({
-    mutationFn: async (input: { sessionId: string; text: string; images: PendingImage[]; pathAttachments: ReturnType<typeof toAttachments> }) => {
-      const { sessionId, text, images, pathAttachments } = input;
+    mutationFn: async (input: { sessionId: string; text: string; images: PendingImage[]; pathAttachments: ReturnType<typeof toAttachments>; behavior: "start" | "steer" | "follow_up" }) => {
+      const { sessionId, text, images, pathAttachments, behavior } = input;
       // `!` 前缀走 shell 快捷路由：不进 agent run，权限挂起时后端 409 由 onError 提示
       if (text.startsWith("!")) return api.runShell(sessionId, text.slice(1).trim());
-      return api.sendMessage(sessionId, text, images, pathAttachments.length ? pathAttachments : undefined);
+      return api.sendMessage(sessionId, text, images, pathAttachments.length ? pathAttachments : undefined, behavior);
     },
     onSuccess: (result, input) => {
       setDrafts((previous) => ({ ...previous, [input.sessionId]: "" }));
       setAttachmentsBySession((previous) => ({ ...previous, [input.sessionId]: [] }));
       const queued = result as { queued?: boolean; position?: number } | undefined;
-      if (queued?.queued) notify(t(`已加入 Steering 队列（第 ${queued.position} 项）`, `Added to Steering queue (position ${queued.position})`));
+      if (queued?.queued) notify(input.behavior === "follow_up"
+        ? t(`已加入完成后续跑队列（第 ${queued.position} 项）`, `Added to follow-up queue (position ${queued.position})`)
+        : t(`已加入 Steering 队列（第 ${queued.position} 项）`, `Added to Steering queue (position ${queued.position})`));
       queryClient.invalidateQueries({ queryKey: queryKeys.detail(input.sessionId) });
     },
     onError: (error) => notify(error instanceof Error ? error.message : t("发送失败", "Send failed"), "error"),
@@ -470,10 +472,10 @@ export function App(): ReactElement {
               imageCapabilitiesReady={!models.isPending}
               draft={draft}
               setDraft={setDraft}
-              onSend={() => {
+              onSend={(behavior = running ? "steer" : "start") => {
                 if (!currentId || !draft.trim()) return;
                 const text = draft.trim();
-                send.mutate({ sessionId: currentId, text, images: attachments, pathAttachments: toAttachments(extractAttachmentPaths(text)) });
+                send.mutate({ sessionId: currentId, text, images: attachments, pathAttachments: toAttachments(extractAttachmentPaths(text)), behavior });
               }}
               onConfig={(body) => {
                 api.updateSession(current.id, body)
