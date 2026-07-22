@@ -129,10 +129,26 @@ export interface AppEvent {
   source: "server" | "core" | "agent" | "session";
   type: string;
   sessionId?: string;
+  runId?: string;
   seq: number;
   sessionSeq?: number;
   createdAt: string;
   payload: unknown;
+}
+
+export type AgentRunState = "accepted" | "starting" | "snapshotting" | "preparing_context" | "streaming" | "executing_tools" | "waiting_permission" | "advancing_turn" | "settling" | "budget_paused" | "completed" | "failed" | "aborted";
+
+/** Durable server-side run snapshot returned by GET /api/sessions/:id/run. */
+export interface AgentRun {
+  id: string;
+  sessionId: string;
+  triggerMessageId: string;
+  state: AgentRunState;
+  turnIndex: number;
+  startedAt: string;
+  since: string;
+  settledAt?: string;
+  error?: { code: string; message: string; retryable: boolean };
 }
 
 export interface ContextView {

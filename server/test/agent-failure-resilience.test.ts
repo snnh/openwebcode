@@ -53,8 +53,15 @@ describe("AgentRunner failure resilience", () => {
       { role: "user", content: [{ type: "text", text: "核心配置失败也不能丢消息" }] },
     ]);
     expect(runner.isRunning(harness.sessionId)).toBe(false);
+    await expect(runner.getRun(harness.sessionId)).resolves.toMatchObject({
+      sessionId: harness.sessionId,
+      state: "failed",
+      turnIndex: 0,
+      error: { code: "run_failed", message: "sandbox configuration denied", retryable: false },
+    });
     expect(observed).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: "agent.error", payload: expect.objectContaining({ message: "sandbox configuration denied" }) }),
+      expect.objectContaining({ type: "run.failed", payload: expect.objectContaining({ state: "failed" }) }),
       expect.objectContaining({ type: "agent.state", payload: { state: "idle" } }),
     ]));
   });
