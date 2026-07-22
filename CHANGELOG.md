@@ -1,8 +1,14 @@
 # 更新日志
 
-本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前 `v0.3.0` 的用户可感知变化。日期以 Git 标签发布日期为准。
+本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前 `v0.3.1` 的用户可感知变化。日期以 Git 标签发布日期为准。
 
 ## Unreleased
+
+## [0.3.1] - 2026-07-22
+
+### 修复
+
+- 修复 Linux 文件系统扫描会返回平台相关目录大小的问题；目录条目现在始终报告大小为 0，与 Windows 保持一致。
 
 ## [0.3.0] - 2026-07-22
 
@@ -99,6 +105,7 @@
 - 支持图片输入、Markdown/代码高亮/KaTeX、折叠思考内容、会话导入导出、可分享的自包含 HTML 页面和 `owc run` Headless CLI。
 - 提供 Windows MSI、Linux tar.gz 安装脚本和 GitHub Actions 发布流水线。
 
+[0.3.1]: https://github.com/snnh/openwebcode/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/snnh/openwebcode/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/snnh/openwebcode/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/snnh/openwebcode/compare/v0.2.2...v0.2.3
