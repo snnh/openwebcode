@@ -254,12 +254,16 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   if (dependencies.webDist && existsSync(dependencies.webDist)) {
     await app.register(fastifyStatic, { root: dependencies.webDist, prefix: "/" });
   }
-  const clients = new Set<{ send(data: string): void; readonly readyState: number; sessionId?: string }>();
+  const clients = new Set<{ send(data: string): void; close(code?: number, reason?: string): void; readonly readyState: number; readonly bufferedAmount: number; sessionId?: string }>();
+  const MAX_WS_BUFFERED_BYTES = 1 * 1024 * 1024;
+  let slowClientDisconnects = 0;
+  let failedClientSends = 0;
   // 已向 core 配置过 sandbox 的会话，避免文件浏览每次重配与 agent 运行竞态
   const configuredSessions = new Set<string>();
   // 同一 managed 会话一次只允许一个回源操作；同步期间 checkpoint/delete 也必须等待，
   // 避免镜像挂载树在三方指纹校验之后被另一条管理操作换叶或卸载。
   const managedSyncingSessions = new Set<string>();
+  const managedSyncAbortControllers = new Map<string, AbortController>();
   // VHDX/qcow2 换叶会短暂卸载工作区。用服务端互斥防止双击、双标签页或 restore
   // 与 create 并发改同一条 chain；后台/快捷 shell 也必须先结束，不能持有挂载目录。
   const managedCheckpointingSessions = new Set<string>();
@@ -371,11 +375,23 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   events.on("event", (event: AppEvent) => {
     const serialized = JSON.stringify(event);
     for (const client of clients) {
-      if (client.readyState === 1 && (!client.sessionId || !event.sessionId || client.sessionId === event.sessionId)) client.send(serialized);
+      if (client.readyState !== 1 || (client.sessionId && event.sessionId && client.sessionId !== event.sessionId)) continue;
+      if (client.bufferedAmount > MAX_WS_BUFFERED_BYTES) {
+        slowClientDisconnects++;
+        try { client.send(JSON.stringify({ source: "server", type: "resync.required", seq: event.seq, createdAt: new Date().toISOString(), ...(client.sessionId ? { sessionId: client.sessionId } : {}), payload: { latestSeq: event.seq, reason: "slow_client" } })); }
+        catch { failedClientSends++; }
+        try { client.close(1013, "Client is too slow; resync required"); }
+        catch { /* The socket is already unusable; removing it below is sufficient. */ }
+        clients.delete(client);
+        continue;
+      }
+      try { client.send(serialized); }
+      catch { failedClientSends++; clients.delete(client); }
     }
   });
 
   app.get("/api/health", async () => ({ status: "ok" }));
+  app.get("/api/metrics", async () => ({ events: events.stats(), websocket: { clients: clients.size, slowClientDisconnects, failedClientSends } }));
   app.get("/api/core", async () => core.ping());
   app.get("/api/sandbox/capabilities", async () => ({ appcontainer: true, jobobject: true, off: true, wsb: detectWsb() }));
   app.get("/api/managed-workspace/capability", async (_request, reply) => {
@@ -671,6 +687,17 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   });
 
   /** 真实回写必须带确认与刚取得的 fingerprint；不会由关闭/删除会话隐式触发。 */
+  app.post<{ Params: { id: string } }>("/api/sessions/:id/workspace/sync-cancel", async (request, reply) => {
+    const session = await sessions.get(request.params.id);
+    if (!session) return reply.code(404).send({ error: "Session not found" });
+    if (session.workspace?.mode !== "managed") return reply.code(400).send({ code: "NOT_MANAGED_WORKSPACE", error: "Session does not use a managed workspace" });
+    const controller = managedSyncAbortControllers.get(session.id);
+    if (!controller) return reply.code(409).send({ error: "Managed workspace sync is not running" });
+    controller.abort();
+    events.publish({ source: "session", type: "workspace.sync_cancel_requested", sessionId: session.id, payload: {} });
+    return reply.code(202).send({ accepted: true });
+  });
+
   app.post<{ Params: { id: string }; Body: ManagedWorkspaceSyncBody }>("/api/sessions/:id/workspace/sync", async (request, reply) => {
     const session = await sessions.get(request.params.id);
     if (!session) return reply.code(404).send({ error: "Session not found" });
@@ -690,11 +717,18 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       previewFingerprint: body.previewFingerprint,
       ...(body.overwriteConflicts === undefined ? {} : { overwriteConflicts: body.overwriteConflicts }),
     };
+    const controller = new AbortController();
+    managedSyncAbortControllers.set(session.id, controller);
+    events.publish({ source: "session", type: "workspace.sync_started", sessionId: session.id, payload: {} });
     try {
-      return await managed.applySync(session, input);
+      const result = await managed.applySync(session, input, { signal: controller.signal });
+      events.publish({ source: "session", type: "workspace.sync_completed", sessionId: session.id, payload: { applied: result.applied.length, conflicts: result.conflicts.length } });
+      return result;
     } catch (error) {
+      if (error instanceof ManagedWorkspaceSyncError && error.code === "cancelled") events.publish({ source: "session", type: "workspace.sync_cancelled", sessionId: session.id, payload: {} });
       return managedSyncFailure(reply, error);
     } finally {
+      if (managedSyncAbortControllers.get(session.id) === controller) managedSyncAbortControllers.delete(session.id);
       releaseWorkspace();
     }
   });
@@ -988,8 +1022,14 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   });
   app.get<{ Params: { id: string; checkpointId: string } }>("/api/sessions/:id/checkpoints/:checkpointId/diff", async (request, reply) => {
     const session = await sessions.get(request.params.id); if (!session) return reply.code(404).send({ error: "Session not found" });
-    const backend = await getSnapshotBackend(sessions, session);
-    return { diff: await backend.diff(request.params.checkpointId) };
+    const releaseWorkspace = acquireManagedWorkspaceUse(session);
+    if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
+    try {
+      const backend = await getSnapshotBackend(sessions, session);
+      return { diff: await backend.diff(request.params.checkpointId) };
+    } finally {
+      releaseWorkspace();
+    }
   });
 
   app.get<{ Params: { id: string } }>("/api/sessions/:id/snapshot-capability", async (request, reply) => {
@@ -999,7 +1039,13 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
 
   app.get<{ Params: { id: string } }>("/api/sessions/:id/checkpoints", async (request, reply) => {
     const session = await sessions.get(request.params.id); if (!session) return reply.code(404).send({ error: "Session not found" });
-    return (await getSnapshotBackend(sessions, session)).list();
+    const releaseWorkspace = acquireManagedWorkspaceUse(session);
+    if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
+    try {
+      return await (await getSnapshotBackend(sessions, session)).list();
+    } finally {
+      releaseWorkspace();
+    }
   });
   app.post<{ Params: { id: string }; Body: { label?: string } }>("/api/sessions/:id/checkpoints", async (request, reply) => {
     const session = await sessions.get(request.params.id); if (!session) return reply.code(404).send({ error: "Session not found" });
@@ -1397,7 +1443,9 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     }
     const client = {
       get readyState(): number { return socket.readyState; },
+      get bufferedAmount(): number { return socket.bufferedAmount; },
       send: (data: string) => socket.send(data),
+      close: (code?: number, reason?: string) => socket.close(code, reason),
       ...(sessionId ? { sessionId } : {}),
     };
     clients.add(client);

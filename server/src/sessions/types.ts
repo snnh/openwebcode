@@ -101,6 +101,8 @@ export interface SessionMeta {
   title: string;
   createdAt: string;
   updatedAt: string;
+  /** Derived on read when messages.jsonl was recovered or needs attention. Never persisted to meta.json. */
+  recovery?: { state: "recovered" | "needs_repair"; message: string };
 }
 
 export interface SessionDetail extends SessionMeta {

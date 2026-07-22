@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./lib/api";
 import { extractAttachmentPaths, toAttachments } from "./lib/attachments";
@@ -59,13 +59,48 @@ export function App(): ReactElement {
   const [attachments, setAttachments] = useState<PendingImage[]>([]);
   const [stream, setStream] = useState<Record<string, string>>({});
   const [thinkingStream, setThinkingStream] = useState<Record<string, string>>({});
+  // WebSocket tokens often arrive in very small chunks. Buffer them outside
+  // React and commit at most once per animation frame to avoid a page render
+  // (and a full accumulated-string copy) for every token.
+  const streamBuffers = useRef<Record<string, string[]>>({});
+  const thinkingBuffers = useRef<Record<string, string[]>>({});
+  const streamFlushHandle = useRef<number | undefined>(undefined);
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
   const [agentStates, setAgentStates] = useState<Record<string, string>>({});
   // agent.error 除了短暂 toast，也保留在当前会话的轨道中；下一次真正开始运行时再清除。
   const [runFailures, setRunFailures] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState<Notice>();
   // 失败类提示用 error（红色、role=alert），成功/进度类用 info
-  const notify = (text: string, kind: Notice["kind"] = "info"): void => setNotice({ kind, text });
+  const notify = useCallback((text: string, kind: Notice["kind"] = "info"): void => setNotice({ kind, text }), []);
+  const flushStreamBuffers = useCallback((): void => {
+    streamFlushHandle.current = undefined;
+    const text = streamBuffers.current;
+    const thinking = thinkingBuffers.current;
+    streamBuffers.current = {};
+    thinkingBuffers.current = {};
+    if (Object.keys(text).length) {
+      setStream((previous) => {
+        const next = { ...previous };
+        for (const [id, chunks] of Object.entries(text)) next[id] = `${next[id] ?? ""}${chunks.join("")}`;
+        return next;
+      });
+    }
+    if (Object.keys(thinking).length) {
+      setThinkingStream((previous) => {
+        const next = { ...previous };
+        for (const [id, chunks] of Object.entries(thinking)) next[id] = `${next[id] ?? ""}${chunks.join("")}`;
+        return next;
+      });
+    }
+  }, []);
+  const queueStreamDelta = useCallback((sessionId: string, text: string, thinking = false): void => {
+    const buffers = thinking ? thinkingBuffers.current : streamBuffers.current;
+    (buffers[sessionId] ??= []).push(text);
+    if (streamFlushHandle.current !== undefined) return;
+    streamFlushHandle.current = typeof window.requestAnimationFrame === "function"
+      ? window.requestAnimationFrame(flushStreamBuffers)
+      : window.setTimeout(flushStreamBuffers, 80);
+  }, [flushStreamBuffers]);
   const sessionEventSeq = useRef<Record<string, number>>({});
   const globalSeq = useRef(0);
   const activeSeq = Math.max(currentId ? (sessionEventSeq.current[currentId] ?? 0) : 0, globalSeq.current);
@@ -147,15 +182,12 @@ export function App(): ReactElement {
         // 上下文清空（/clear 命令）：刷新会话详情与上下文面板并提示
         if (event.type === "context.cleared" && event.sessionId && event.sessionId === currentId) {
           notify(t("上下文已清空（历史保留）", "Context cleared (history retained)"));
-          queryClient.invalidateQueries({ queryKey: queryKeys.detail(event.sessionId) });
-          queryClient.invalidateQueries({ queryKey: ["context", event.sessionId] });
         }
         // 上下文压缩（手动/85% 强制）：刷新上下文面板并提示
         if (event.type === "context.compacted" && event.sessionId === currentId) {
           const payload = event.payload as { mode?: string; forced?: boolean };
           const modeLabel = payload.mode === "overview" ? t("概览", "overview") : payload.mode === "toolcalls" ? t("工具调用", "tool calls") : t("规则截断", "rule-based truncation");
           notify(t(`已压缩上下文（${payload.forced ? "85% 水位强制 · " : ""}${modeLabel}）`, `Context compacted (${payload.forced ? "forced at 85% · " : ""}${modeLabel})`));
-          queryClient.invalidateQueries({ queryKey: ["context", currentId] });
         }
         if (event.type === "context.compact_failed" && event.sessionId === currentId) {
           notify(t(`上下文压缩失败：${(event.payload as { message?: string }).message ?? "未知错误"}`, `Context compaction failed: ${(event.payload as { message?: string }).message ?? "unknown error"}`), "error");
@@ -177,11 +209,11 @@ export function App(): ReactElement {
         }
         if (event.type === "message.delta") {
           const text = (event.payload as { text?: string }).text ?? "";
-          setStream((value) => ({ ...value, [event.sessionId!]: `${value[event.sessionId!] ?? ""}${text}` }));
+          queueStreamDelta(event.sessionId!, text);
         }
         if (event.type === "message.thinking_delta") {
           const text = (event.payload as { text?: string }).text ?? "";
-          setThinkingStream((value) => ({ ...value, [event.sessionId!]: `${value[event.sessionId!] ?? ""}${text}` }));
+          queueStreamDelta(event.sessionId!, text, true);
         }
         if (event.type === "permission.request") {
           const req = event.payload as PermissionRequest;
@@ -197,15 +229,17 @@ export function App(): ReactElement {
           notify(t(`后台任务 ${task.taskId} 已结束（exit ${task.exitCode ?? "?"}）`, `Background task ${task.taskId} finished (exit ${task.exitCode ?? "?"})`));
           queryClient.invalidateQueries({ queryKey: ["tasks", currentId] });
         }
-        if ([
-          "agent.state", "tool.end", "checkpoint.created", "checkpoint.restored", "checkpoint.deleted", "context.usage",
-          "checkpoint.failed", "agent.error", "context.budget_updated", "context.restored", "session.config_updated",
-        ].includes(event.type)) {
-          const detailRefresh = queryClient.invalidateQueries({ queryKey: queryKeys.detail(event.sessionId) });
-          queryClient.invalidateQueries({ queryKey: ["context", event.sessionId] });
-          queryClient.invalidateQueries({ queryKey: ["checkpoints", event.sessionId] });
-          queryClient.invalidateQueries({ queryKey: ["permissions", event.sessionId] });
+        const refreshDetail = ["agent.state", "tool.end", "agent.error", "session.config_updated"].includes(event.type);
+        const refreshContext = ["context.usage", "context.budget_updated", "context.restored", "context.evicted", "context.compacted", "context.cleared"].includes(event.type);
+        const refreshCheckpoints = ["checkpoint.created", "checkpoint.restored", "checkpoint.deleted", "checkpoint.failed"].includes(event.type);
+        if (refreshDetail || refreshContext || refreshCheckpoints) {
+          const detailRefresh = refreshDetail
+            ? queryClient.invalidateQueries({ queryKey: queryKeys.detail(event.sessionId) })
+            : Promise.resolve();
+          if (refreshContext) queryClient.invalidateQueries({ queryKey: ["context", event.sessionId] });
+          if (refreshCheckpoints) queryClient.invalidateQueries({ queryKey: ["checkpoints", event.sessionId] });
           if (event.type === "agent.state" && (event.payload as { state?: string }).state === "idle") {
+            flushStreamBuffers();
             // 等持久化消息重新拉取完成后再撤掉临时流，避免思考/正文在切换到历史卡片时闪烁或消失。
             void detailRefresh.finally(() => {
               setStream((value) => ({ ...value, [event.sessionId!]: "" }));
@@ -219,8 +253,16 @@ export function App(): ReactElement {
       };
     };
     connect();
-    return () => { socket?.close(); if (timer) window.clearTimeout(timer); };
-  }, [currentId, queryClient, t]);
+    return () => {
+      socket?.close();
+      if (timer) window.clearTimeout(timer);
+      if (streamFlushHandle.current !== undefined) {
+        if (typeof window.cancelAnimationFrame === "function") window.cancelAnimationFrame(streamFlushHandle.current);
+        else window.clearTimeout(streamFlushHandle.current);
+        flushStreamBuffers();
+      }
+    };
+  }, [currentId, flushStreamBuffers, queryClient, queueStreamDelta, t]);
 
   const current = detail.data;
   const currentState = currentId ? agentStates[currentId] : undefined;

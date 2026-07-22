@@ -1,4 +1,5 @@
 import type { ProviderTool } from "../providers/provider.js";
+import path from "node:path";
 import { loadMcpConfig, type McpServerConfig } from "./config.js";
 import { connectMcpServer, type McpClient, type McpToolCallResult, type McpToolSpec } from "./client.js";
 
@@ -25,8 +26,6 @@ export interface McpToolBinding {
   warnings: string[];
 }
 
-const entryKey = (cwd: string, name: string): string => `${cwd}${name}`;
-
 /**
  * MCP 连接管理器：连接与工具绑定都按 (cwd, server) 隔离——不同工作目录的
  * 并发会话互不影响（同名 server 在不同目录可以有不同配置）。
@@ -34,7 +33,7 @@ const entryKey = (cwd: string, name: string): string => `${cwd}${name}`;
  * plan §2.8：失败降级——单个 server 失败只产生 warning，不影响其他 server 与会话本身。
  */
 export class McpManager {
-  private readonly entries = new Map<string, ServerEntry>();
+  private readonly entriesByCwd = new Map<string, Map<string, ServerEntry>>();
   private readonly bindingsByCwd = new Map<string, Map<string, Binding>>();
   private readonly sweeper: NodeJS.Timeout;
 
@@ -44,22 +43,24 @@ export class McpManager {
   }
 
   async toolsFor(cwd: string): Promise<McpToolBinding> {
-    const { servers, skipped } = await loadMcpConfig(this.dataDir, cwd);
+    const canonicalCwd = path.resolve(cwd);
+    const { servers, skipped } = await loadMcpConfig(this.dataDir, canonicalCwd);
     const warnings: string[] = skipped.map((name) => `MCP server「${name}」配置非法，已跳过`);
     // 本 cwd 配置中已移除的 server：断开并清理
-    for (const [key, entry] of this.entries) {
-      if (!key.startsWith(`${cwd}`)) continue;
-      if (!servers[key.slice(cwd.length + 1)]) {
+    const workspaceEntries = this.entriesByCwd.get(canonicalCwd);
+    for (const [name, entry] of workspaceEntries ?? []) {
+      if (!servers[name]) {
         void entry.client?.close();
-        this.entries.delete(key);
+        workspaceEntries!.delete(name);
       }
     }
+    if (workspaceEntries?.size === 0) this.entriesByCwd.delete(canonicalCwd);
     const bindings = new Map<string, Binding>();
-    this.bindingsByCwd.set(cwd, bindings);
+    this.bindingsByCwd.set(canonicalCwd, bindings);
     const tools: ProviderTool[] = [];
     for (const [name, config] of Object.entries(servers)) {
       try {
-        const entry = await this.ensure(cwd, name, config);
+        const entry = await this.ensure(canonicalCwd, name, config);
         for (const tool of entry.tools) {
           const namespaced = `mcp__${name}__${tool.name}`;
           bindings.set(namespaced, { server: name, tool: tool.name, config });
@@ -77,17 +78,21 @@ export class McpManager {
   }
 
   private async ensure(cwd: string, name: string, config: McpServerConfig): Promise<ServerEntry> {
-    const key = entryKey(cwd, name);
+    let workspaceEntries = this.entriesByCwd.get(cwd);
+    if (!workspaceEntries) {
+      workspaceEntries = new Map();
+      this.entriesByCwd.set(cwd, workspaceEntries);
+    }
     const configKey = JSON.stringify(config);
-    let entry = this.entries.get(key);
+    let entry = workspaceEntries.get(name);
     if (entry && entry.configKey !== configKey) {
       await entry.client?.close();
-      this.entries.delete(key);
+      workspaceEntries.delete(name);
       entry = undefined;
     }
     if (!entry) {
       entry = { config, configKey, client: undefined, connecting: undefined, tools: [], lastUsed: Date.now() };
-      this.entries.set(key, entry);
+      workspaceEntries.set(name, entry);
     }
     if (!entry.client) {
       // 连接建立期间即视为活跃：否则慢速握手会被空闲扫描误判并关掉新连接
@@ -110,32 +115,36 @@ export class McpManager {
   }
 
   async callTool(cwd: string, namespaced: string, input: Record<string, unknown>): Promise<McpToolCallResult> {
-    const binding = this.bindingsByCwd.get(cwd)?.get(namespaced);
+    const canonicalCwd = path.resolve(cwd);
+    const binding = this.bindingsByCwd.get(canonicalCwd)?.get(namespaced);
     if (!binding) throw new Error(`Unknown MCP tool: ${namespaced}`);
     // 空闲断开后按需重连（binding.config 兜底，entry 被回收也能重建）
-    const entry = await this.ensure(cwd, binding.server, binding.config);
+    const entry = await this.ensure(canonicalCwd, binding.server, binding.config);
     return entry.client!.callTool(binding.tool, input);
   }
 
   private async sweepIdle(): Promise<void> {
     const idleMs = this.options.idleMs ?? 600_000;
     const now = Date.now();
-    for (const [key, entry] of this.entries) {
-      if (entry.connecting) continue;
-      if (entry.client && now - entry.lastUsed > idleMs) {
-        await entry.client.close();
-        entry.client = undefined;
-        entry.lastUsed = now;
+    for (const [cwd, workspaceEntries] of this.entriesByCwd) {
+      for (const [name, entry] of workspaceEntries) {
+        if (entry.connecting) continue;
+        if (entry.client && now - entry.lastUsed > idleMs) {
+          await entry.client.close();
+          entry.client = undefined;
+          entry.lastUsed = now;
+        }
+        // 无连接的空壳 entry 超时后移除（绑定里的 config 可随时重建）
+        if (!entry.client && now - entry.lastUsed > idleMs) workspaceEntries.delete(name);
       }
-      // 无连接的空壳 entry 超时后移除（绑定里的 config 可随时重建）
-      if (!entry.client && now - entry.lastUsed > idleMs) this.entries.delete(key);
+      if (workspaceEntries.size === 0) this.entriesByCwd.delete(cwd);
     }
   }
 
   async close(): Promise<void> {
     clearInterval(this.sweeper);
-    await Promise.all([...this.entries.values()].map((entry) => entry.client?.close()));
-    this.entries.clear();
+    await Promise.all([...this.entriesByCwd.values()].flatMap((entries) => [...entries.values()].map((entry) => entry.client?.close())));
+    this.entriesByCwd.clear();
     this.bindingsByCwd.clear();
   }
 }

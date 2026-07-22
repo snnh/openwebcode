@@ -61,6 +61,16 @@ describe("SkillRegistry", () => {
     expect(await registry.find(cwd, "missing")).toBeUndefined();
     expect((await registry.listFor(undefined)).map((skill) => skill.name)).toEqual(["alpha", "shared"]);
   });
+
+  it("invalidates a cached scan when a skill file changes", async () => {
+    const root = await tempDir();
+    const globalDir = path.join(root, "global-skills");
+    await writeSkill(globalDir, "alpha", "first");
+    const registry = new SkillRegistry(globalDir);
+    expect((await registry.listFor()).find((skill) => skill.name === "alpha")?.body).toBe("first");
+    await writeSkill(globalDir, "alpha", "second value");
+    expect((await registry.listFor()).find((skill) => skill.name === "alpha")?.body).toBe("second value");
+  });
 });
 
 describe("skills in agent runs", () => {

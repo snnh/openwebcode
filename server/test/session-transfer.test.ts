@@ -31,6 +31,32 @@ async function storeAt(root: string): Promise<SessionStore> {
 }
 
 describe("session export/import", () => {
+  it("recovers a truncated trailing JSONL record without hiding the session", async () => {
+    const store = await storeAt(await tempDir());
+    const created = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
+    await store.appendMessage(created.id, "user", [{ type: "text", text: "kept" }]);
+    await writeFile(path.join((store as unknown as { root: string }).root, created.id, "messages.jsonl"), `${JSON.stringify({ id: "kept", role: "user", content: [], createdAt: "x" })}\n{\"id\":`, "utf8");
+
+    const detail = await store.get(created.id);
+    expect(detail?.messages).toHaveLength(1);
+    expect(detail?.recovery).toMatchObject({ state: "recovered" });
+    expect((await store.list()).find((item) => item.id === created.id)?.recovery).toMatchObject({ state: "recovered" });
+  });
+
+  it("retains valid records but marks non-tail corruption and missing histories for repair", async () => {
+    const store = await storeAt(await tempDir());
+    const created = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
+    const directory = path.join((store as unknown as { root: string }).root, created.id);
+    await writeFile(path.join(directory, "messages.jsonl"), `${JSON.stringify({ id: "a", role: "user", content: [], createdAt: "x" })}\nnot-json\n${JSON.stringify({ id: "b", role: "assistant", content: [], createdAt: "x" })}\n`, "utf8");
+    const corrupt = await store.get(created.id);
+    expect(corrupt?.messages.map((message) => message.id)).toEqual(["a", "b"]);
+    expect(corrupt?.recovery).toMatchObject({ state: "needs_repair" });
+
+    await rm(path.join(directory, "messages.jsonl"));
+    expect((await store.get(created.id))?.recovery).toMatchObject({ state: "needs_repair" });
+    expect((await store.list()).find((item) => item.id === created.id)?.recovery).toMatchObject({ state: "needs_repair" });
+  });
+
   it("round-trips meta and messages, keeping the id when free", async () => {
     const source = await storeAt(await tempDir());
     const created = await source.create({ cwd: os.tmpdir(), provider: "test-stub", model: "deterministic-tool-loop", title: "迁移样例" });

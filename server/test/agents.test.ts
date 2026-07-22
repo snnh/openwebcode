@@ -53,6 +53,16 @@ describe("AgentRegistry", () => {
     expect(agents).toHaveLength(1);
     expect(agents[0]).toMatchObject({ name: "reviewer", description: "project", body: "Project body", source: "project" });
   });
+
+  it("invalidates a cached scan when an agent definition changes", async () => {
+    const root = await tempRoot();
+    const globalDir = path.join(root, "agents");
+    await writeAgent(globalDir, "reviewer", "---\ndescription: first\n---\nFirst body");
+    const registry = new AgentRegistry(globalDir);
+    expect((await registry.listFor(path.join(root, "workspace")))[0]?.description).toBe("first");
+    await writeAgent(globalDir, "reviewer", "---\ndescription: second definition\n---\nSecond body");
+    expect((await registry.listFor(path.join(root, "workspace")))[0]?.description).toBe("second definition");
+  });
 });
 
 describe("custom spawn_task agents", () => {

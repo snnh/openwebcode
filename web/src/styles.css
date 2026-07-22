@@ -496,6 +496,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   position: relative;
 }
 .track-empty { color: var(--text-3); font-size: 13px; padding-left: 30px; }
+.virtual-message-item { min-width: 0; }
 .context-cleared-divider {
   position: relative;
   max-width: min(100%, 1100px);

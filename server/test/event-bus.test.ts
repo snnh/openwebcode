@@ -24,4 +24,12 @@ describe("EventBus replay", () => {
     expect(bus.replay(0).requiresResync).toBe(false);
     expect(bus.replay(1)).toMatchObject({ requiresResync: true, latestSeq: 4 });
   });
+
+  it("enforces a total replay byte budget in addition to the event count", () => {
+    const bus = new EventBus(100, 200);
+    bus.publish({ source: "server", type: "small", payload: "a".repeat(40) });
+    bus.publish({ source: "server", type: "large", payload: "b".repeat(400) });
+    expect(bus.replay(1)).toMatchObject({ requiresResync: true, latestSeq: 2 });
+    expect(bus.stats()).toMatchObject({ published: 2, retained: 1, oversizedNotRetained: 1 });
+  });
 });

@@ -10,9 +10,11 @@ export const MANAGED_WORKSPACE_COPY_EXCLUDES = new Set(["node_modules", ".owc", 
 export const MANAGED_WORKSPACE_SYNC_EXCLUDES = new Set([...MANAGED_WORKSPACE_COPY_EXCLUDES, ".git", ".env"]);
 const BASELINE_FILE = "sync-baseline.json";
 const MANIFEST_VERSION = 1;
+/** Directory reads, lstat calls and file hashes share this bounded I/O pool. */
+export const MANAGED_WORKSPACE_SCAN_CONCURRENCY = 8;
 
 export type ManagedWorkspaceSyncNode =
-  | { kind: "file"; sha256: string; size: number; mode: number }
+  | { kind: "file"; sha256: string; size: number; mode: number; /** Optional for v1 baseline compatibility; enables safe unchanged-file hash reuse. */ mtimeMs?: number }
   | { kind: "directory" }
   | { kind: "symlink" }
   | { kind: "other" };
@@ -72,11 +74,20 @@ export interface ManagedWorkspaceSyncBaselineStatus {
   version?: number;
 }
 
+/** 已完成扫描的工作量，供调用方展示同步预览的覆盖范围。 */
+export interface ManagedWorkspaceScanSummary {
+  files: number;
+  directories: number;
+  bytes: number;
+}
+
 /** 前端先取该对象展示三方差异，再把 fingerprint 原样回传给 apply。 */
 export interface ManagedWorkspaceSyncPreview {
   baseline: ManagedWorkspaceSyncBaselineStatus;
   /** SHA-256；baseline 损坏时为 null。旧会话缺失 baseline 仍会给 legacy 预览指纹。 */
   fingerprint: string | null;
+  /** baseline 无效时不会扫描不可信目录，因此该字段缺失。 */
+  scanned?: { origin: ManagedWorkspaceScanSummary; managed: ManagedWorkspaceScanSummary };
   changes: ManagedWorkspaceSyncChange[];
   summary: ManagedWorkspaceSyncSummary;
 }
@@ -86,6 +97,11 @@ export interface ManagedWorkspaceSyncApplyInput {
   previewFingerprint: string;
   /** 显式选择时才会覆盖可安全写入的普通文件冲突；默认 false。 */
   overwriteConflicts?: boolean;
+}
+
+export interface ManagedWorkspaceSyncOperationOptions {
+  /** Cancellation is observed between scan tasks and atomic file operations. */
+  signal?: AbortSignal;
 }
 
 export interface ManagedWorkspaceSyncAppliedChange {
@@ -103,7 +119,7 @@ export interface ManagedWorkspaceSyncApplyResult {
   nextPreview: ManagedWorkspaceSyncPreview;
 }
 
-export type ManagedWorkspaceSyncErrorCode = "baseline_missing" | "baseline_invalid" | "confirmation_required" | "invalid_fingerprint" | "stale_preview" | "unsafe_path" | "scan_failed" | "apply_failed" | "sync_in_progress";
+export type ManagedWorkspaceSyncErrorCode = "baseline_missing" | "baseline_invalid" | "confirmation_required" | "invalid_fingerprint" | "stale_preview" | "unsafe_path" | "scan_failed" | "apply_failed" | "sync_in_progress" | "cancelled";
 
 export class ManagedWorkspaceSyncError extends Error {
   constructor(readonly code: ManagedWorkspaceSyncErrorCode, message: string) {
@@ -146,12 +162,13 @@ export async function previewManagedWorkspaceSync(input: ManagedWorkspaceSyncRoo
  * 重新扫描三方状态并比对 preview fingerprint 后才落盘。没有隐式同步：
  * 调用者必须传 confirm=true；冲突默认只返回而不覆盖。
  */
-export async function applyManagedWorkspaceSync(input: ManagedWorkspaceSyncRoots, request: ManagedWorkspaceSyncApplyInput): Promise<ManagedWorkspaceSyncApplyResult> {
+export async function applyManagedWorkspaceSync(input: ManagedWorkspaceSyncRoots, request: ManagedWorkspaceSyncApplyInput, options: ManagedWorkspaceSyncOperationOptions = {}): Promise<ManagedWorkspaceSyncApplyResult> {
+  throwIfAborted(options.signal);
   if (request.confirm !== true) throw new ManagedWorkspaceSyncError("confirmation_required", "confirm must be true before syncing a managed workspace");
   if (!/^[a-f0-9]{64}$/.test(request.previewFingerprint)) throw new ManagedWorkspaceSyncError("invalid_fingerprint", "previewFingerprint must be a SHA-256 hex string");
 
   const roots = normalizedRoots(input);
-  const computed = await computePreview(roots);
+  const computed = await computePreview(roots, options);
   if (!computed.origin || !computed.managed || !computed.preview.fingerprint) {
     throw new ManagedWorkspaceSyncError("baseline_invalid", "This managed workspace has an invalid sync baseline; refusing to overwrite the source directory");
   }
@@ -166,6 +183,7 @@ export async function applyManagedWorkspaceSync(input: ManagedWorkspaceSyncRoots
   const applied: ManagedWorkspaceSyncAppliedChange[] = [];
   try {
     for (const operation of operations) {
+      throwIfAborted(options.signal);
       await applyOperation(roots, operation);
       applied.push({ path: operation.change.path, action: operation.action });
     }
@@ -176,13 +194,17 @@ export async function applyManagedWorkspaceSync(input: ManagedWorkspaceSyncRoots
 
   // 只把已确认同步/两端已相同的路径推进 baseline；源目录独自修改和未解决冲突仍保留旧基线，
   // 这样后续 managed 改动不会悄悄覆盖用户在源目录里的外部修改。
-  const refreshedOrigin = await scanTree(roots.originCwd, { allowRootReparse: false });
-  const refreshedManaged = await scanTree(roots.mountPoint, { allowRootReparse: true });
+  const reuse = computed.baseline?.entries;
+  const reuseOptions = reuse ? { reuse } : {};
+  const cancellation = options.signal ? { signal: options.signal } : {};
+  const refreshedOrigin = await scanTree(roots.originCwd, { allowRootReparse: false, ...reuseOptions, ...cancellation });
+  const refreshedManaged = await scanTree(roots.mountPoint, { allowRootReparse: true, ...reuseOptions, ...cancellation });
   const updatedBaseline = computed.baseline
     ? advanceBaseline(computed.baseline, refreshedOrigin, refreshedManaged, computed.preview.changes, operations)
     : await legacyBaseline(roots, refreshedManaged);
+  throwIfAborted(options.signal);
   await writeBaseline(roots.workspaceRoot, updatedBaseline);
-  const nextPreview = await previewManagedWorkspaceSync(roots);
+  const nextPreview = (await computePreview(roots, options)).preview;
   return {
     applied,
     conflicts: nextPreview.changes.filter((change) => change.action === "conflict"),
@@ -212,7 +234,8 @@ function pathsOverlap(left: string, right: string): boolean {
   return relative === "" || reverse === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative)) || (!reverse.startsWith(`..${path.sep}`) && reverse !== ".." && !path.isAbsolute(reverse));
 }
 
-async function computePreview(input: ManagedWorkspaceSyncRoots): Promise<ComputedPreview> {
+async function computePreview(input: ManagedWorkspaceSyncRoots, options: ManagedWorkspaceSyncOperationOptions = {}): Promise<ComputedPreview> {
+  throwIfAborted(options.signal);
   const roots = normalizedRoots(input);
   const baselineState = await readBaseline(roots.workspaceRoot);
   if (baselineState.reason === "invalid") {
@@ -239,9 +262,11 @@ async function computePreview(input: ManagedWorkspaceSyncRoots): Promise<Compute
         },
       };
     }
+    const reuseOptions = baselineState.manifest ? { reuse: baselineState.manifest.entries } : {};
+    const cancellation = options.signal ? { signal: options.signal } : {};
     [origin, managed] = await Promise.all([
-      scanTree(roots.originCwd, { allowRootReparse: false }),
-      scanTree(roots.mountPoint, { allowRootReparse: true }),
+      scanTree(roots.originCwd, { allowRootReparse: false, ...reuseOptions, ...cancellation }),
+      scanTree(roots.mountPoint, { allowRootReparse: true, ...reuseOptions, ...cancellation }),
     ]);
   } catch (error) {
     if (error instanceof ManagedWorkspaceSyncError) throw error;
@@ -255,12 +280,13 @@ async function computePreview(input: ManagedWorkspaceSyncRoots): Promise<Compute
     ...(baselineState.manifest ? { baseline: baselineState.manifest } : {}),
     origin,
     managed,
-    preview: {
-      baseline: baselineState.manifest
-        ? { available: true, createdAt: baselineState.manifest.createdAt, version: baselineState.manifest.version }
-        : { available: false, reason: "missing" },
-      fingerprint,
-      changes,
+      preview: {
+        baseline: baselineState.manifest
+          ? { available: true, createdAt: baselineState.manifest.createdAt, version: baselineState.manifest.version }
+          : { available: false, reason: "missing" },
+        fingerprint,
+        scanned: { origin: summarizeTreeScan(origin), managed: summarizeTreeScan(managed) },
+        changes,
       summary: summarize(changes),
     },
   };
@@ -275,6 +301,15 @@ function baselineMatchesRoots(baseline: ManagedWorkspaceSyncManifest, roots: Man
 
 function emptySummary(): ManagedWorkspaceSyncSummary {
   return { create: 0, update: 0, delete: 0, conflicts: 0, unsupported: 0, unchanged: 0 };
+}
+
+function summarizeTreeScan(tree: ManagedWorkspaceSyncTree): ManagedWorkspaceScanSummary {
+  const summary: ManagedWorkspaceScanSummary = { files: 0, directories: 0, bytes: 0 };
+  for (const node of Object.values(tree.entries)) {
+    if (node.kind === "file") { summary.files++; summary.bytes += node.size; }
+    else if (node.kind === "directory") summary.directories++;
+  }
+  return summary;
 }
 
 function summarize(changes: ManagedWorkspaceSyncChange[]): ManagedWorkspaceSyncSummary {
@@ -546,51 +581,81 @@ function previewFingerprint(baseline: ManagedWorkspaceSyncTree | undefined, orig
   return hash.digest("hex");
 }
 
-async function scanTree(root: string, options: { allowRootReparse: boolean }): Promise<ManagedWorkspaceSyncTree> {
+type ScanTask =
+  | { kind: "directory"; relativeDirectory: string }
+  | { kind: "inspect"; relativePath: string }
+  | { kind: "hash"; relativePath: string; absolute: string; info: Awaited<ReturnType<typeof lstat>> };
+
+async function scanTree(root: string, options: { allowRootReparse: boolean; reuse?: Record<string, ManagedWorkspaceSyncNode>; signal?: AbortSignal }): Promise<ManagedWorkspaceSyncTree> {
+  throwIfAborted(options.signal);
   await assertDirectory(root, options.allowRootReparse, "workspace root");
   const entries: Record<string, ManagedWorkspaceSyncNode> = Object.create(null) as Record<string, ManagedWorkspaceSyncNode>;
-  await scanDirectory(root, "", entries);
+  await scanTreeWithWorkers(root, entries, options.reuse, options.signal);
   return { version: MANIFEST_VERSION, createdAt: new Date().toISOString(), entries };
 }
 
-async function scanDirectory(root: string, relativeDirectory: string, output: Record<string, ManagedWorkspaceSyncNode>): Promise<void> {
-  const directory = relativeDirectory ? safeJoin(root, relativeDirectory) : root;
-  let children;
-  try {
-    children = await readdir(directory, { withFileTypes: true });
-  } catch (error) {
-    throw new ManagedWorkspaceSyncError("scan_failed", `Unable to read managed workspace directory${relativeDirectory ? `: ${relativeDirectory}` : ""}`);
+async function scanTreeWithWorkers(root: string, output: Record<string, ManagedWorkspaceSyncNode>, reuse: Record<string, ManagedWorkspaceSyncNode> | undefined, signal: AbortSignal | undefined): Promise<void> {
+  const queue: ScanTask[] = [{ kind: "directory", relativeDirectory: "" }];
+  let active = 0;
+  let settled = false;
+  await new Promise<void>((resolve, reject) => {
+    const schedule = (): void => {
+      if (settled) return;
+      if (signal?.aborted) { settled = true; reject(new ManagedWorkspaceSyncError("cancelled", "Managed workspace sync was cancelled")); return; }
+      while (active < MANAGED_WORKSPACE_SCAN_CONCURRENCY && queue.length > 0) {
+        const task = queue.shift()!;
+        active++;
+        void runScanTask(root, output, reuse, task, signal).then((next) => {
+          active--;
+          queue.push(...next);
+          if (active === 0 && queue.length === 0) { settled = true; resolve(); }
+          else schedule();
+        }, (error: unknown) => {
+          if (!settled) { settled = true; reject(error); }
+        });
+      }
+      if (active === 0 && queue.length === 0 && !settled) { settled = true; resolve(); }
+    };
+    schedule();
+  });
+}
+
+async function runScanTask(root: string, output: Record<string, ManagedWorkspaceSyncNode>, reuse: Record<string, ManagedWorkspaceSyncNode> | undefined, task: ScanTask, signal: AbortSignal | undefined): Promise<ScanTask[]> {
+  throwIfAborted(signal);
+  if (task.kind === "directory") {
+    const directory = task.relativeDirectory ? safeJoin(root, task.relativeDirectory) : root;
+    let children;
+    try {
+      children = await readdir(directory, { withFileTypes: true });
+    } catch {
+      throw new ManagedWorkspaceSyncError("scan_failed", `Unable to read managed workspace directory${task.relativeDirectory ? `: ${task.relativeDirectory}` : ""}`);
+    }
+    return children
+      .sort((left, right) => left.name.localeCompare(right.name))
+      .filter((child) => !MANAGED_WORKSPACE_SYNC_EXCLUDES.has(child.name))
+      .map((child) => ({ kind: "inspect" as const, relativePath: task.relativeDirectory ? `${task.relativeDirectory}/${child.name}` : child.name }));
   }
-  for (const child of children.sort((left, right) => left.name.localeCompare(right.name))) {
-    if (MANAGED_WORKSPACE_SYNC_EXCLUDES.has(child.name)) continue;
-    const relativePath = relativeDirectory ? `${relativeDirectory}/${child.name}` : child.name;
-    if (!isSafeRelativePath(relativePath)) throw new ManagedWorkspaceSyncError("unsafe_path", "Unsafe relative path found while scanning managed workspace");
-    const absolute = safeJoin(root, relativePath);
+  if (task.kind === "inspect") {
+    if (!isSafeRelativePath(task.relativePath)) throw new ManagedWorkspaceSyncError("unsafe_path", "Unsafe relative path found while scanning managed workspace");
+    const absolute = safeJoin(root, task.relativePath);
     let info;
     try {
       info = await lstat(absolute);
-    } catch (error) {
-      throw new ManagedWorkspaceSyncError("scan_failed", `Unable to inspect managed workspace path: ${relativePath}`);
+    } catch {
+      throw new ManagedWorkspaceSyncError("scan_failed", `Unable to inspect managed workspace path: ${task.relativePath}`);
     }
-    if (info.isSymbolicLink()) {
-      output[relativePath] = { kind: "symlink" };
-      continue;
-    }
-    if (info.isDirectory()) {
-      output[relativePath] = { kind: "directory" };
-      await scanDirectory(root, relativePath, output);
-      continue;
-    }
-    if (info.isFile()) {
-      if (info.nlink > 1) {
-        output[relativePath] = { kind: "other" };
-        continue;
-      }
-      output[relativePath] = await hashRegularFile(absolute, info, relativePath);
-      continue;
-    }
-    output[relativePath] = { kind: "other" };
+    if (info.isSymbolicLink()) { output[task.relativePath] = { kind: "symlink" }; return []; }
+    if (info.isDirectory()) { output[task.relativePath] = { kind: "directory" }; return [{ kind: "directory", relativeDirectory: task.relativePath }]; }
+    if (info.isFile() && info.nlink <= 1) return [{ kind: "hash", relativePath: task.relativePath, absolute, info }];
+    output[task.relativePath] = { kind: "other" };
+    return [];
   }
+  output[task.relativePath] = await reuseOrHashRegularFile(task.absolute, task.info, task.relativePath, reuse?.[task.relativePath]);
+  return [];
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new ManagedWorkspaceSyncError("cancelled", "Managed workspace sync was cancelled");
 }
 
 async function readNodeAt(root: string, relativePath: string, options: { allowRootReparse: boolean }): Promise<ManagedWorkspaceSyncNode | null> {
@@ -621,10 +686,24 @@ async function hashRegularFile(filePath: string, before: Awaited<ReturnType<type
     for await (const chunk of stream) digest.update(chunk as Buffer);
     const after = await handle.stat();
     if (!sameFileIdentity(opened, after)) throw new ManagedWorkspaceSyncError("stale_preview", `File changed while hashing: ${relativePath}`);
-    return { kind: "file", sha256: digest.digest("hex"), size: opened.size, mode: opened.mode & 0o777 };
+    return { kind: "file", sha256: digest.digest("hex"), size: opened.size, mode: opened.mode & 0o777, mtimeMs: Math.trunc(opened.mtimeMs) };
   } finally {
     await handle.close().catch(() => undefined);
   }
+}
+
+/** Reuse a baseline hash only after reopening the path no-follow and rechecking its identity. */
+async function reuseOrHashRegularFile(filePath: string, before: Awaited<ReturnType<typeof lstat>>, relativePath: string, cached: ManagedWorkspaceSyncNode | undefined): Promise<Extract<ManagedWorkspaceSyncNode, { kind: "file" }>> {
+  if (cached?.kind !== "file" || cached.mtimeMs === undefined) return hashRegularFile(filePath, before, relativePath);
+  const handle = await openNoFollow(filePath, constants.O_RDONLY);
+  try {
+    const opened = await handle.stat();
+    if (!opened.isFile() || !sameFileIdentity(before, opened)) throw new ManagedWorkspaceSyncError("stale_preview", `File changed before reuse check: ${relativePath}`);
+    if (cached.size === opened.size && cached.mode === (opened.mode & 0o777) && cached.mtimeMs === Math.trunc(opened.mtimeMs)) return { ...cached };
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+  return hashRegularFile(filePath, before, relativePath);
 }
 
 async function openNoFollow(filePath: string, flags: number) {
@@ -759,11 +838,12 @@ function validateManifest(value: unknown): ManagedWorkspaceSyncManifest {
 
 function validateNode(value: unknown): ManagedWorkspaceSyncNode {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid node");
-  const node = value as { kind?: unknown; sha256?: unknown; size?: unknown; mode?: unknown };
+  const node = value as { kind?: unknown; sha256?: unknown; size?: unknown; mode?: unknown; mtimeMs?: unknown };
   if (node.kind === "file") {
     const { sha256, size, mode } = node;
     if (typeof sha256 !== "string" || !/^[a-f0-9]{64}$/.test(sha256) || typeof size !== "number" || !Number.isSafeInteger(size) || size < 0 || typeof mode !== "number" || !Number.isSafeInteger(mode) || mode < 0 || mode > 0o777) throw new Error("invalid file node");
-    return { kind: "file", sha256, size, mode };
+    if (node.mtimeMs !== undefined && (typeof node.mtimeMs !== "number" || !Number.isSafeInteger(node.mtimeMs) || node.mtimeMs < 0)) throw new Error("invalid file mtime");
+    return { kind: "file", sha256, size, mode, ...(typeof node.mtimeMs === "number" ? { mtimeMs: node.mtimeMs } : {}) };
   }
   if (node.kind === "directory" || node.kind === "symlink" || node.kind === "other") return { kind: node.kind };
   throw new Error("invalid node kind");

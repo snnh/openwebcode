@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactElement } from "react";
+import { memo, useEffect, useRef, useState, type ReactElement } from "react";
 import { api } from "../lib/api";
 import type { ChatMessage, ExtensionInfo, MessageContent } from "../lib/contracts";
 import { Icon } from "./Icon";
@@ -212,3 +212,6 @@ export function MessageCard({ message, sessionId, contentLens, onNotice }: { mes
     </article>
   );
 }
+
+/** Historical cards do not depend on live token state, so skip their Markdown/KaTeX work during streaming renders. */
+export const MemoMessageCard = memo(MessageCard);

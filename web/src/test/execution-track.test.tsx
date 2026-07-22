@@ -30,4 +30,19 @@ describe("ExecutionTrack failures", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("本轮执行失败");
     expect(screen.getByRole("alert")).toHaveTextContent("Core sandbox configuration failed");
   });
+
+  it("virtualizes long message histories instead of mounting every card", () => {
+    const longSession: SessionDetail = {
+      ...session,
+      messages: Array.from({ length: 200 }, (_, index) => ({
+        id: `message-${index}`,
+        role: "user" as const,
+        createdAt: session.createdAt,
+        content: [{ type: "text" as const, text: `message ${index}` }],
+      })),
+    };
+    const { container } = render(<ExecutionTrack session={longSession} streamText="" permissions={[]} onPermissionDone={() => undefined} />);
+    expect(container.querySelectorAll(".virtual-message-item").length).toBeLessThan(longSession.messages.length);
+    expect(container.querySelectorAll(".message").length).toBeLessThan(longSession.messages.length);
+  });
 });

@@ -20,6 +20,9 @@ function fakeClient(): CoreClientLike & { [key: string]: ReturnType<typeof vi.fn
     writeFile: vi.fn(async () => ({ ok: true as const })),
     writeFileBase64: vi.fn(async () => ({ ok: true as const })),
     editFile: vi.fn(async () => ({ matches: 0 })),
+    statFile: vi.fn(async () => ({ type: "file" as const, size: 0, modifiedMs: 0 })),
+    statFiles: vi.fn(async () => ({ entries: [] })),
+    hashFile: vi.fn(async () => ({ sha256: "0".repeat(64), size: 0 })),
     listFiles: vi.fn(async () => ({ entries: [], truncated: false })),
     globFiles: vi.fn(async () => ({ paths: [], truncated: false })),
     grepFiles: vi.fn(async () => ({ matches: [], truncated: false })),
@@ -131,6 +134,10 @@ describe("CoreRouter", () => {
     expect(wsbClient.writeFile).toHaveBeenCalledWith({ sessionId: "s1", path: "C:\\owc-workspace\\b.md", content: "x" });
     await router.writeFileBase64({ sessionId: "s1", path: "D:/work/.owc/uploads/a.pdf", data: "JVBERi0=", createDirs: true });
     expect(wsbClient.writeFileBase64).toHaveBeenCalledWith({ sessionId: "s1", path: "C:\\owc-workspace\\.owc\\uploads\\a.pdf", data: "JVBERi0=", createDirs: true });
+    await router.hashFile({ sessionId: "s1", path: "D:/work/src/a.ts" });
+    expect(wsbClient.hashFile).toHaveBeenCalledWith({ sessionId: "s1", path: "C:\\owc-workspace\\src\\a.ts" });
+    await router.statFiles({ sessionId: "s1", paths: ["D:/work/src/a.ts", "D:/work/b.md"] });
+    expect(wsbClient.statFiles).toHaveBeenCalledWith({ sessionId: "s1", paths: ["C:\\owc-workspace\\src\\a.ts", "C:\\owc-workspace\\b.md"] });
     // 工作目录外的路径原样透传（沙盒看不到，由沙盒内 core 拒绝）
     await router.listFiles({ sessionId: "s1", path: "C:\\Windows" });
     expect(wsbClient.listFiles).toHaveBeenCalledWith({ sessionId: "s1", path: "C:\\Windows" });

@@ -166,6 +166,24 @@ describe("McpManager", () => {
     }
   });
 
+  it("does not confuse adjacent workspace paths when one configuration is reloaded", async () => {
+    const root = await tempDir();
+    const cwd = path.join(root, "repo");
+    const adjacent = path.join(root, "repo-old");
+    await writeConfig(cwd, path.join(".owc", "mcp.json"), { mcpServers: { current: STDIO_CONFIG } });
+    await writeConfig(adjacent, path.join(".owc", "mcp.json"), { mcpServers: { adjacent: STDIO_CONFIG } });
+    const manager = new McpManager(root, { timeoutMs: 10_000 });
+    try {
+      await manager.toolsFor(cwd);
+      await manager.toolsFor(adjacent);
+      await writeConfig(cwd, path.join(".owc", "mcp.json"), { mcpServers: {} });
+      expect((await manager.toolsFor(cwd)).tools).toEqual([]);
+      expect((await manager.callTool(adjacent, "mcp__adjacent__echo", { text: "still connected" })).content).toBe("still connected");
+    } finally {
+      await manager.close();
+    }
+  });
+
   it("reconnects after config change and after idle sweep", async () => {
     const root = await tempDir();
     await writeConfig(root, "mcp.json", { mcpServers: { fake: STDIO_CONFIG } });

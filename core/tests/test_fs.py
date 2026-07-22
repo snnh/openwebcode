@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import ctypes, json, os, pathlib, subprocess, sys, tempfile
+import ctypes, hashlib, json, os, pathlib, subprocess, sys, tempfile
 
 def windows_short_path(path):
     if os.name != "nt": return None
@@ -58,6 +58,13 @@ def main():
         r=fs(2,"fs.read",{"path":"目录/文件.txt","offset":1,"limit":1})["result"]
         assert r=={"content":"二\n","totalLines":3,"encoding":"utf-8","truncated":True},r
         assert fs(3,"fs.stat",{"path":"目录/文件.txt"})["result"]["type"]=="file"
+        many=send(p,150,"fs.statMany",{"sessionId":"test-session","paths":["目录/文件.txt","新/深/文件.txt"]})["result"]
+        assert [entry["path"] for entry in many["entries"]]==["目录/文件.txt","新/深/文件.txt"]
+        assert [entry["type"] for entry in many["entries"]]==["file","file"]
+        assert send(p,151,"fs.statMany",{"sessionId":"test-session","paths":[]})["error"]["code"]==-32602
+        content="一\n二\n三".encode()
+        assert fs(148,"fs.hash",{"path":"目录/文件.txt"})["result"]=={"sha256":hashlib.sha256(content).hexdigest(),"size":len(content)}
+        assert fs(149,"fs.hash",{"path":"目录/文件.txt","unexpected":True})["error"]["code"]==-32602
         listing=fs(4,"fs.list",{"path":"目录"})["result"]
         assert listing["truncated"] is False
         assert any(x["name"]=="文件.txt" for x in listing["entries"])

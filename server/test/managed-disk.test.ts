@@ -21,7 +21,7 @@ import {
   type ManagedWorkspaceLike,
 } from "../src/snapshots/managed-disk.js";
 import type { CommandRunner } from "../src/snapshots/probe.js";
-import type { ManagedWorkspaceSyncApplyInput, ManagedWorkspaceSyncApplyResult, ManagedWorkspaceSyncPreview } from "../src/snapshots/managed-sync.js";
+import { ManagedWorkspaceSyncError, type ManagedWorkspaceSyncApplyInput, type ManagedWorkspaceSyncApplyResult, type ManagedWorkspaceSyncPreview } from "../src/snapshots/managed-sync.js";
 import { StorageGC } from "../src/storage-gc.js";
 import { makeStubProvider } from "./helpers/stub-provider.js";
 
@@ -481,6 +481,7 @@ describe("managed workspace REST", () => {
     const preview: ManagedWorkspaceSyncPreview = {
       baseline: { available: true, createdAt: "2026-01-01T00:00:00.000Z", version: 1 },
       fingerprint: "a".repeat(64),
+      scanned: { origin: { files: 0, directories: 0, bytes: 0 }, managed: { files: 0, directories: 0, bytes: 0 } },
       changes: [],
       summary: { create: 0, update: 0, delete: 0, conflicts: 0, unsupported: 0, unchanged: 0 },
     };
@@ -632,9 +633,12 @@ describe("managed workspace REST", () => {
     let releaseApply!: () => void;
     const applyGate = new Promise<void>((resolve) => { releaseApply = resolve; });
     const originalApply = managed.applySync.bind(managed);
-    managed.applySync = async (session, input) => {
+    let syncSignal: AbortSignal | undefined;
+    managed.applySync = async (session, input, options) => {
+      syncSignal = options?.signal;
       signalStarted();
       await applyGate;
+      if (syncSignal?.aborted) throw new ManagedWorkspaceSyncError("cancelled", "Managed workspace sync was cancelled");
       return originalApply(session, input);
     };
     const { app } = await buildApp(root, managed, () => running);
@@ -659,6 +663,10 @@ describe("managed workspace REST", () => {
       expect(second.statusCode).toBe(409);
       const checkpoint = await app.inject({ method: "POST", url: `/api/sessions/${id}/checkpoints`, payload: { label: "blocked by sync" } });
       expect(checkpoint.statusCode).toBe(409);
+      const checkpoints = await app.inject({ method: "GET", url: `/api/sessions/${id}/checkpoints` });
+      expect(checkpoints.statusCode).toBe(409);
+      const diff = await app.inject({ method: "GET", url: `/api/sessions/${id}/checkpoints/snap-1-abcdef/diff` });
+      expect(diff.statusCode).toBe(409);
       const message = await app.inject({ method: "POST", url: `/api/sessions/${id}/messages`, payload: { content: "must wait for sync" } });
       expect(message.statusCode).toBe(409);
       const pdf = await app.inject({ method: "POST", url: `/api/sessions/${id}/pdf-upload`, payload: {} });
@@ -669,9 +677,12 @@ describe("managed workspace REST", () => {
       expect(exec.statusCode).toBe(409);
       const deleting = await app.inject({ method: "DELETE", url: `/api/sessions/${id}` });
       expect(deleting.statusCode).toBe(409);
+      const cancelled = await app.inject({ method: "POST", url: `/api/sessions/${id}/workspace/sync-cancel` });
+      expect(cancelled.statusCode).toBe(202);
+      expect(syncSignal?.aborted).toBe(true);
       releaseApply();
-      expect((await first).statusCode).toBe(200);
-      expect(spies.apply).toEqual([{ sessionId: id, input: { confirm: true, previewFingerprint: "a".repeat(64) } }]);
+      expect((await first).statusCode).toBe(409);
+      expect(spies.apply).toEqual([]);
     } finally {
       releaseApply?.();
       await app.close();

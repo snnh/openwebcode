@@ -2,9 +2,55 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
+
+/* These native calls are resolved dynamically so the core keeps its ordinary
+ * Win32 link surface.  They are used solely to create/rename relative to an
+ * already verified directory handle; CreateFileW/MoveFileExW cannot express
+ * that invariant and leave a parent-directory reparse swap window. */
+typedef LONG (NTAPI *owc_nt_create_file_fn)(PHANDLE,ACCESS_MASK,PVOID,PVOID,PLARGE_INTEGER,ULONG,ULONG,ULONG,ULONG,PVOID,ULONG);
+typedef LONG (NTAPI *owc_nt_set_information_file_fn)(HANDLE,PVOID,PVOID,ULONG,ULONG);
+typedef struct {USHORT Length;USHORT MaximumLength;PWSTR Buffer;} owc_unicode_string;
+typedef struct {ULONG Length;HANDLE RootDirectory;owc_unicode_string *ObjectName;ULONG Attributes;PVOID SecurityDescriptor;PVOID SecurityQualityOfService;} owc_object_attributes;
+typedef struct {union {LONG Status;PVOID Pointer;} u;ULONG_PTR Information;} owc_io_status_block;
+typedef struct {BOOLEAN ReplaceIfExists;HANDLE RootDirectory;ULONG FileNameLength;WCHAR FileName[1];} owc_file_rename_information;
+typedef struct {BOOLEAN DeleteFile;} owc_file_disposition_information;
+#define OWC_FILE_CREATE 2UL
+#define OWC_FILE_RENAME_INFORMATION 10UL
+#define OWC_FILE_DISPOSITION_INFORMATION 13UL
+#define OWC_FILE_SYNCHRONOUS_IO_NONALERT 0x20UL
+#define OWC_FILE_NON_DIRECTORY_FILE 0x40UL
+#define OWC_FILE_OPEN_REPARSE_POINT 0x00200000UL
+#define OWC_OBJ_CASE_INSENSITIVE 0x40UL
+#define OWC_NT_SUCCESS(status) ((LONG)(status)>=0)
+
+static int native_file_api(owc_nt_create_file_fn *create_file,owc_nt_set_information_file_fn *set_information){
+    HMODULE ntdll=GetModuleHandleW(L"ntdll.dll");
+    if(!ntdll)return 0;
+    *create_file=(owc_nt_create_file_fn)GetProcAddress(ntdll,"NtCreateFile");
+    *set_information=(owc_nt_set_information_file_fn)GetProcAddress(ntdll,"NtSetInformationFile");
+    return *create_file&&*set_information;
+}
+static int native_create_relative(owc_nt_create_file_fn create_file,HANDLE parent,const wchar_t *name,HANDLE *file){
+    owc_unicode_string text;owc_object_attributes attributes;owc_io_status_block status;LONG result;size_t n=wcslen(name);
+    if(n>(USHRT_MAX/sizeof(*name)))return 0;
+    text.Length=(USHORT)(n*sizeof(*name));text.MaximumLength=text.Length;text.Buffer=(PWSTR)name;
+    attributes.Length=sizeof(attributes);attributes.RootDirectory=parent;attributes.ObjectName=&text;attributes.Attributes=OWC_OBJ_CASE_INSENSITIVE;attributes.SecurityDescriptor=NULL;attributes.SecurityQualityOfService=NULL;
+    result=create_file(file,GENERIC_WRITE|DELETE|SYNCHRONIZE,&attributes,&status,NULL,FILE_ATTRIBUTE_TEMPORARY,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,OWC_FILE_CREATE,OWC_FILE_SYNCHRONOUS_IO_NONALERT|OWC_FILE_NON_DIRECTORY_FILE|OWC_FILE_OPEN_REPARSE_POINT,NULL,0);
+    if(!OWC_NT_SUCCESS(result))SetLastError((unsigned long)result==0xC0000035UL?ERROR_FILE_EXISTS:ERROR_ACCESS_DENIED);
+    return OWC_NT_SUCCESS(result);
+}
+static int native_rename_relative(owc_nt_set_information_file_fn set_information,HANDLE file,HANDLE parent,const wchar_t *name){
+    owc_file_rename_information *rename;owc_io_status_block status;size_t n=wcslen(name),size;
+    if(n>(SIZE_MAX-offsetof(owc_file_rename_information,FileName))/sizeof(*name))return 0;
+    size=offsetof(owc_file_rename_information,FileName)+(n*sizeof(*name));rename=(owc_file_rename_information*)calloc(1,size);if(!rename)return 0;
+    rename->ReplaceIfExists=TRUE;rename->RootDirectory=parent;rename->FileNameLength=(ULONG)(n*sizeof(*name));memcpy(rename->FileName,name,n*sizeof(*name));
+    n=OWC_NT_SUCCESS(set_information(file,&status,rename,(ULONG)size,OWC_FILE_RENAME_INFORMATION));free(rename);return (int)n;
+}
+static void native_delete_on_close(owc_nt_set_information_file_fn set_information,HANDLE file){owc_file_disposition_information disposition;owc_io_status_block status;disposition.DeleteFile=TRUE;(void)set_information(file,&status,&disposition,sizeof(disposition),OWC_FILE_DISPOSITION_INFORMATION);}
 
 static owc_fs_error winerr(void){DWORD e=GetLastError();if(e==ERROR_FILE_NOT_FOUND||e==ERROR_PATH_NOT_FOUND)return OWC_FS_NOT_FOUND;if(e==ERROR_ACCESS_DENIED||e==ERROR_SHARING_VIOLATION)return OWC_FS_PERMISSION_DENIED;return OWC_FS_IO_ERROR;}
 static wchar_t *wide(const char *s){int n=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,s,-1,NULL,0);wchar_t*w;if(!n)return NULL;w=(wchar_t*)malloc((size_t)n*sizeof(*w));if(w&&!MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,s,-1,w,n)){free(w);w=NULL;}return w;}
@@ -73,7 +119,29 @@ static owc_fs_error paths(const char *root,const char *path,wchar_t **rw,wchar_t
 static owc_fs_error checked_open(const char*root,const char*path,DWORD access,DWORD create,HANDLE*h,wchar_t**name){wchar_t*r,*p,*final;DWORD n;BY_HANDLE_FILE_INFORMATION info;owc_fs_error e=paths(root,path,&r,&p);if(e)return e;*h=CreateFileW(p,access,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,NULL,create,FILE_FLAG_OPEN_REPARSE_POINT|FILE_FLAG_BACKUP_SEMANTICS,NULL);if(*h==INVALID_HANDLE_VALUE){e=winerr();free(r);free(p);return e;}if(!GetFileInformationByHandle(*h,&info)){CloseHandle(*h);free(r);free(p);return winerr();}/* Windows reports the configured mounted-folder root as a reparse point when it is addressed as root\\.; canonical_root already verified that one exact root. */if((info.dwFileAttributes&FILE_ATTRIBUTE_REPARSE_POINT)&&!is_configured_root_path(path)){CloseHandle(*h);free(r);free(p);return OWC_FS_OUTSIDE_ROOT;}n=GetFinalPathNameByHandleW(*h,NULL,0,FILE_NAME_NORMALIZED);final=(wchar_t*)malloc(((size_t)n+1)*sizeof(*final));if(!final||!GetFinalPathNameByHandleW(*h,final,n+1,FILE_NAME_NORMALIZED)){CloseHandle(*h);free(final);free(r);free(p);return OWC_FS_IO_ERROR;}if(!prefix(final,r)&&!(wcslen(final)>4&&prefix(final+4,r))){CloseHandle(*h);free(final);free(r);free(p);return OWC_FS_OUTSIDE_ROOT;}free(final);free(r);if(name)*name=p;else free(p);return OWC_FS_OK;}
 static owc_fs_error ensure_parents(const char *root,const char *path){char *copy,*cursor;size_t n=strlen(path);copy=(char*)malloc(n+1);if(!copy)return OWC_FS_NO_MEMORY;memcpy(copy,path,n+1);for(cursor=copy;*cursor;cursor++){if(*cursor=='/'||*cursor=='\\'){HANDLE h;owc_fs_error e;wchar_t *r,*p;char saved=*cursor;*cursor='\0';if(!copy[0]){free(copy);return OWC_FS_OUTSIDE_ROOT;}e=checked_open(root,copy,0,OPEN_EXISTING,&h,NULL);if(e==OWC_FS_NOT_FOUND){e=paths(root,copy,&r,&p);if(!e){if(!CreateDirectoryW(p,NULL)&&GetLastError()!=ERROR_ALREADY_EXISTS)e=winerr();free(r);free(p);}if(!e)e=checked_open(root,copy,0,OPEN_EXISTING,&h,NULL);}if(!e)CloseHandle(h);*cursor=saved;if(e){free(copy);return e;}}}free(copy);return OWC_FS_OK;}
 owc_fs_error owc_fs_platform_read(const char*root,const char*path,owc_fs_bytes*b){HANDLE h;LARGE_INTEGER z;DWORD got;size_t done=0;owc_fs_error e=checked_open(root,path,GENERIC_READ,OPEN_EXISTING,&h,NULL);if(e)return e;if(!GetFileSizeEx(h,&z)||z.QuadPart<0||(unsigned long long)z.QuadPart>OWC_FS_MAX_FILE_SIZE){CloseHandle(h);return OWC_FS_IO_ERROR;}b->length=(size_t)z.QuadPart;b->data=(unsigned char*)malloc(b->length+1);if(!b->data){CloseHandle(h);return OWC_FS_NO_MEMORY;}while(done<b->length){DWORD ask=(DWORD)((b->length-done)>0x40000000?0x40000000:(b->length-done));if(!ReadFile(h,b->data+done,ask,&got,NULL)||!got){free(b->data);CloseHandle(h);return OWC_FS_IO_ERROR;}done+=got;}b->data[b->length]=0;CloseHandle(h);return OWC_FS_OK;}
-owc_fs_error owc_fs_platform_write(const char*root,const char*path,const unsigned char*d,size_t len,int create_dirs){wchar_t*r,*p,*slash,*tmp,*parent_rel;HANDLE h,parent_handle;DWORD put;size_t done=0;unsigned i;owc_fs_error e;if(create_dirs){e=ensure_parents(root,path);if(e)return e;}e=paths(root,path,&r,&p);if(e)return e;slash=last_separator(p);if(!slash){free(r);free(p);return OWC_FS_OUTSIDE_ROOT;}parent_rel=wide(path);if(!parent_rel){free(r);free(p);return OWC_FS_INVALID_UTF8;}slash=last_separator(parent_rel);if(slash)*slash=0;else wcscpy(parent_rel,L".");{char*parent8=utf8(parent_rel);free(parent_rel);if(!parent8){free(r);free(p);return OWC_FS_INVALID_UTF8;}e=checked_open(root,parent8,0,OPEN_EXISTING,&parent_handle,NULL);free(parent8);if(e){free(r);free(p);return e;}CloseHandle(parent_handle);}free(r);slash=last_separator(p);tmp=(wchar_t*)malloc((wcslen(p)+64)*sizeof(*tmp));if(!tmp){free(p);return OWC_FS_NO_MEMORY;}for(i=0;i<128;i++){swprintf(tmp,wcslen(p)+64,L"%.*s\\.owc-%lu-%u.tmp",(int)(slash-p),p,GetCurrentProcessId(),i);h=CreateFileW(tmp,GENERIC_WRITE,0,NULL,CREATE_NEW,FILE_ATTRIBUTE_TEMPORARY,NULL);if(h!=INVALID_HANDLE_VALUE)break;if(GetLastError()!=ERROR_FILE_EXISTS)break;}if(h==INVALID_HANDLE_VALUE){e=winerr();goto end;}while(done<len){DWORD ask=(DWORD)((len-done)>0x40000000?0x40000000:(len-done));if(!WriteFile(h,d+done,ask,&put,NULL)||put!=ask){e=OWC_FS_IO_ERROR;CloseHandle(h);DeleteFileW(tmp);goto end;}done+=put;}if(!FlushFileBuffers(h)){e=OWC_FS_IO_ERROR;CloseHandle(h);DeleteFileW(tmp);goto end;}CloseHandle(h);if(!ReplaceFileW(p,tmp,NULL,REPLACEFILE_WRITE_THROUGH,NULL,NULL)){if(GetLastError()!=ERROR_FILE_NOT_FOUND||!MoveFileExW(tmp,p,MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)){e=winerr();DeleteFileW(tmp);goto end;}}e=OWC_FS_OK;end:free(tmp);free(p);return e;}
+owc_fs_error owc_fs_platform_write(const char*root,const char*path,const unsigned char*d,size_t len,int create_dirs){
+    char *parent8,*copy,*leaf8,*separator;wchar_t *leaf,*tmp;HANDLE h=INVALID_HANDLE_VALUE,parent=INVALID_HANDLE_VALUE;DWORD put;size_t done=0;unsigned i;owc_fs_error e;owc_nt_create_file_fn create_file;owc_nt_set_information_file_fn set_information;
+    if(create_dirs){e=ensure_parents(root,path);if(e)return e;}
+    copy=_strdup(path);if(!copy)return OWC_FS_NO_MEMORY;separator=strrchr(copy,'/');{char *back=strrchr(copy,'\\');if(back&&(!separator||back>separator))separator=back;}
+    if(separator){*separator=0;parent8=_strdup(copy[0]?copy:".");leaf8=separator+1;}else{parent8=_strdup(".");leaf8=copy;}
+    if(!parent8||!leaf8[0]){free(parent8);free(copy);return OWC_FS_OUTSIDE_ROOT;}
+    leaf=wide(leaf8);if(!leaf){free(parent8);free(copy);return OWC_FS_INVALID_UTF8;}
+    e=checked_open(root,parent8,FILE_LIST_DIRECTORY|FILE_ADD_FILE|SYNCHRONIZE,OPEN_EXISTING,&parent,NULL);free(parent8);free(copy);if(e){free(leaf);return e;}
+    if(!native_file_api(&create_file,&set_information)){CloseHandle(parent);free(leaf);return OWC_FS_IO_ERROR;}
+    tmp=(wchar_t*)malloc((wcslen(leaf)+64)*sizeof(*tmp));if(!tmp){CloseHandle(parent);free(leaf);return OWC_FS_NO_MEMORY;}
+    for(i=0;i<128;i++){
+        swprintf(tmp,wcslen(leaf)+64,L".%s.owc-%lu-%u.tmp",leaf,GetCurrentProcessId(),i);
+        if(native_create_relative(create_file,parent,tmp,&h))break;
+        if(GetLastError()!=ERROR_FILE_EXISTS)break;
+    }
+    if(h==INVALID_HANDLE_VALUE){e=winerr();goto end;}
+    while(done<len){DWORD ask=(DWORD)((len-done)>0x40000000?0x40000000:(len-done));if(!WriteFile(h,d+done,ask,&put,NULL)||put!=ask){e=OWC_FS_IO_ERROR;native_delete_on_close(set_information,h);goto end;}done+=put;}
+    if(!FlushFileBuffers(h)){e=OWC_FS_IO_ERROR;native_delete_on_close(set_information,h);goto end;}
+    if(!native_rename_relative(set_information,h,parent,leaf)){e=winerr();native_delete_on_close(set_information,h);goto end;}
+    e=OWC_FS_OK;
+end:
+    if(h!=INVALID_HANDLE_VALUE)CloseHandle(h);if(parent!=INVALID_HANDLE_VALUE)CloseHandle(parent);free(tmp);free(leaf);return e;
+}
 static void info(const BY_HANDLE_FILE_INFORMATION*i,owc_fs_stat_result*r){ULARGE_INTEGER z,t;z.HighPart=i->nFileSizeHigh;z.LowPart=i->nFileSizeLow;t.HighPart=i->ftLastWriteTime.dwHighDateTime;t.LowPart=i->ftLastWriteTime.dwLowDateTime;r->type=(i->dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY)?OWC_FS_TYPE_DIRECTORY:OWC_FS_TYPE_FILE;r->size=z.QuadPart;r->modified_ms=(long long)(t.QuadPart/10000ULL-11644473600000ULL);}
 owc_fs_error owc_fs_platform_stat(const char*root,const char*path,owc_fs_stat_result*r){HANDLE h;BY_HANDLE_FILE_INFORMATION i;owc_fs_error e=checked_open(root,path,0,OPEN_EXISTING,&h,NULL);if(e)return e;if(!GetFileInformationByHandle(h,&i)){CloseHandle(h);return winerr();}if((i.dwFileAttributes&FILE_ATTRIBUTE_REPARSE_POINT)&&!is_configured_root_path(path)){CloseHandle(h);return OWC_FS_OUTSIDE_ROOT;}info(&i,r);CloseHandle(h);return OWC_FS_OK;}
 owc_fs_error owc_fs_platform_list(const char*root,const char*path,owc_fs_list_result*r){HANDLE h,find;wchar_t*p,*pattern;WIN32_FIND_DATAW d;owc_fs_error e=checked_open(root,path,0,OPEN_EXISTING,&h,&p);if(e)return e;CloseHandle(h);pattern=(wchar_t*)malloc((wcslen(p)+3)*sizeof(*pattern));if(!pattern){free(p);return OWC_FS_NO_MEMORY;}wcscpy(pattern,p);wcscat(pattern,L"\\*");find=FindFirstFileW(pattern,&d);free(pattern);free(p);if(find==INVALID_HANDLE_VALUE)return winerr();do{owc_fs_entry*q;if(!wcscmp(d.cFileName,L".")||!wcscmp(d.cFileName,L"..")||(d.dwFileAttributes&FILE_ATTRIBUTE_REPARSE_POINT))continue;if(r->count>=OWC_FS_MAX_LIST_ENTRIES){r->truncated=1;break;}q=(owc_fs_entry*)realloc(r->entries,(r->count+1)*sizeof(*q));if(!q){FindClose(find);owc_fs_list_free(r);return OWC_FS_NO_MEMORY;}r->entries=q;r->entries[r->count].name=utf8(d.cFileName);if(!r->entries[r->count].name){FindClose(find);owc_fs_list_free(r);return OWC_FS_INVALID_UTF8;}r->entries[r->count].type=(d.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY)?OWC_FS_TYPE_DIRECTORY:OWC_FS_TYPE_FILE;r->entries[r->count].size=((unsigned long long)d.nFileSizeHigh<<32)|d.nFileSizeLow;r->count++;}while(FindNextFileW(find,&d));FindClose(find);return OWC_FS_OK;}

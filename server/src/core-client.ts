@@ -19,8 +19,11 @@ interface RpcResponse {
 
 export interface CoreInfo {
   version: string;
+  protocolVersion?: string;
   platform: "windows" | "linux";
   sandboxCapability: string;
+  features?: { fsStat: boolean; fsStatMany: boolean; fsWriteBase64: boolean; jobControl: boolean; fsHash: boolean; fsScanPagination: boolean; fsWatch: boolean };
+  limits?: { maxFrameBytes: number; maxWriteBase64Bytes: number; maxHashBytes: number; maxStatManyPaths: number; maxStatManyPathBytes: number };
 }
 
 export interface ExecRequest {
@@ -46,6 +49,10 @@ export interface FsWriteRequest extends FsPathRequest { content: string; createD
 export interface FsWriteBase64Request extends FsPathRequest { data: string; createDirs?: boolean }
 export interface FsEditRequest extends FsPathRequest { oldText: string; newText: string; replaceAll?: boolean }
 export interface FsSearchRequest extends FsPathRequest { pattern: string }
+export interface FsStatResult { type: "file" | "directory" | "other"; size: number; modifiedMs: number }
+export interface FsHashResult { sha256: string; size: number }
+export interface FsStatManyRequest { sessionId: string; paths: string[] }
+export interface FsStatManyResult { entries: Array<FsStatResult & { path: string }> }
 export interface FsReadResult { content: string; totalLines: number; encoding: "utf-8"; truncated: boolean }
 export interface FsListResult { entries: Array<{ name: string; type: "file" | "directory" | "other"; size: number }>; truncated: boolean }
 export interface FsGlobResult { paths: string[]; truncated: boolean }
@@ -78,6 +85,9 @@ export interface CoreClientLike {
   writeFile(request: FsWriteRequest): Promise<{ ok: true }>;
   writeFileBase64?(request: FsWriteBase64Request): Promise<{ ok: true }>;
   editFile(request: FsEditRequest): Promise<{ matches: number }>;
+  statFile(request: FsPathRequest): Promise<FsStatResult>;
+  statFiles(request: FsStatManyRequest): Promise<FsStatManyResult>;
+  hashFile(request: FsPathRequest): Promise<FsHashResult>;
   listFiles(request: FsPathRequest): Promise<FsListResult>;
   globFiles(request: FsSearchRequest): Promise<FsGlobResult>;
   grepFiles(request: FsSearchRequest): Promise<FsGrepResult>;
@@ -172,6 +182,9 @@ export class CoreClient extends EventEmitter {
   writeFile(request: FsWriteRequest): Promise<{ ok: true }> { return this.call("fs.write", request); }
   writeFileBase64(request: FsWriteBase64Request): Promise<{ ok: true }> { return this.call("fs.writeBase64", request); }
   editFile(request: FsEditRequest): Promise<{ matches: number }> { return this.call("fs.edit", request); }
+  statFile(request: FsPathRequest): Promise<FsStatResult> { return this.call("fs.stat", request); }
+  statFiles(request: FsStatManyRequest): Promise<FsStatManyResult> { return this.call("fs.statMany", request); }
+  hashFile(request: FsPathRequest): Promise<FsHashResult> { return this.call("fs.hash", request); }
   listFiles(request: FsPathRequest): Promise<FsListResult> { return this.call("fs.list", request); }
   globFiles(request: FsSearchRequest): Promise<FsGlobResult> { return this.call("fs.glob", request); }
   grepFiles(request: FsSearchRequest): Promise<FsGrepResult> { return this.call("fs.grep", request); }
