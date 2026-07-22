@@ -23,7 +23,7 @@ export interface CoreInfo {
   platform: "windows" | "linux";
   sandboxCapability: string;
   features?: { fsStat: boolean; fsStatMany: boolean; fsWriteBase64: boolean; jobControl: boolean; fsHash: boolean; fsScanPagination: boolean; fsWatch: boolean };
-  limits?: { maxFrameBytes: number; maxWriteBase64Bytes: number; maxHashBytes: number; maxStatManyPaths: number; maxStatManyPathBytes: number };
+  limits?: { maxFrameBytes: number; maxWriteBase64Bytes: number; maxHashBytes: number; maxStatManyPaths: number; maxStatManyPathBytes: number; maxScanEntries?: number; maxScanDepth?: number; maxScanNodes?: number; maxWatches?: number; maxWatchEvents?: number };
 }
 
 export interface ExecRequest {
@@ -53,6 +53,12 @@ export interface FsStatResult { type: "file" | "directory" | "other"; size: numb
 export interface FsHashResult { sha256: string; size: number }
 export interface FsStatManyRequest { sessionId: string; paths: string[] }
 export interface FsStatManyResult { entries: Array<FsStatResult & { path: string }> }
+/** Bounded recursive scan. Paths in the result are relative to request.path. */
+export interface FsScanRequest extends FsPathRequest { cursor?: number; limit?: number; maxDepth?: number }
+export interface FsScanResult { entries: Array<{ path: string; type: "file" | "directory" | "other"; size: number }>; nextCursor?: number; truncated: boolean }
+export interface FsWatchRequest extends FsPathRequest { recursive?: boolean }
+export interface FsWatchPollRequest { sessionId: string; watchId: number; limit?: number }
+export interface FsWatchPollResult { events: Array<{ path: string; kind: "created" | "changed" | "deleted" | "renamed" }>; overflow: boolean }
 export interface FsReadResult { content: string; totalLines: number; encoding: "utf-8"; truncated: boolean }
 export interface FsListResult { entries: Array<{ name: string; type: "file" | "directory" | "other"; size: number }>; truncated: boolean }
 export interface FsGlobResult { paths: string[]; truncated: boolean }
@@ -88,6 +94,10 @@ export interface CoreClientLike {
   statFile(request: FsPathRequest): Promise<FsStatResult>;
   statFiles(request: FsStatManyRequest): Promise<FsStatManyResult>;
   hashFile(request: FsPathRequest): Promise<FsHashResult>;
+  scanFiles(request: FsScanRequest): Promise<FsScanResult>;
+  watchFiles(request: FsWatchRequest): Promise<{ watchId: number }>;
+  pollWatch(request: FsWatchPollRequest): Promise<FsWatchPollResult>;
+  cancelWatch(request: { sessionId: string; watchId: number }): Promise<{ ok: true }>;
   listFiles(request: FsPathRequest): Promise<FsListResult>;
   globFiles(request: FsSearchRequest): Promise<FsGlobResult>;
   grepFiles(request: FsSearchRequest): Promise<FsGrepResult>;
@@ -185,6 +195,10 @@ export class CoreClient extends EventEmitter {
   statFile(request: FsPathRequest): Promise<FsStatResult> { return this.call("fs.stat", request); }
   statFiles(request: FsStatManyRequest): Promise<FsStatManyResult> { return this.call("fs.statMany", request); }
   hashFile(request: FsPathRequest): Promise<FsHashResult> { return this.call("fs.hash", request); }
+  scanFiles(request: FsScanRequest): Promise<FsScanResult> { return this.call("fs.scan", request); }
+  watchFiles(request: FsWatchRequest): Promise<{ watchId: number }> { return this.call("fs.watch", request); }
+  pollWatch(request: FsWatchPollRequest): Promise<FsWatchPollResult> { return this.call("fs.watch.poll", request); }
+  cancelWatch(request: { sessionId: string; watchId: number }): Promise<{ ok: true }> { return this.call("fs.watch.cancel", request); }
   listFiles(request: FsPathRequest): Promise<FsListResult> { return this.call("fs.list", request); }
   globFiles(request: FsSearchRequest): Promise<FsGlobResult> { return this.call("fs.glob", request); }
   grepFiles(request: FsSearchRequest): Promise<FsGrepResult> { return this.call("fs.grep", request); }
