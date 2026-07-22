@@ -1,8 +1,15 @@
 # 更新日志
 
-本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前 `v0.3.2` 的用户可感知变化。日期以 Git 标签发布日期为准。
+本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前 `v0.3.3` 的用户可感知变化。日期以 Git 标签发布日期为准。
 
 ## Unreleased
+
+## [0.3.3] - 2026-07-22
+
+### 修复
+
+- 附件请求的测试清理会在短暂的异步收尾期间重试，避免临时会话目录偶发残留而中断发布门禁。
+- Core 命令启动失败现在附带系统错误码，便于诊断受限 Windows 环境。
 
 ## [0.3.2] - 2026-07-22
 
@@ -112,6 +119,7 @@
 - 支持图片输入、Markdown/代码高亮/KaTeX、折叠思考内容、会话导入导出、可分享的自包含 HTML 页面和 `owc run` Headless CLI。
 - 提供 Windows MSI、Linux tar.gz 安装脚本和 GitHub Actions 发布流水线。
 
+[0.3.3]: https://github.com/snnh/openwebcode/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/snnh/openwebcode/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/snnh/openwebcode/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/snnh/openwebcode/compare/v0.2.4...v0.3.0
