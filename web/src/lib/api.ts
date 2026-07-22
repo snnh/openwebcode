@@ -61,6 +61,8 @@ export const api = {
   deleteSession: (id: string) => request<void>(`/api/sessions/${id}`, { method: "DELETE" }),
   sendMessage: (id: string, content: string, images?: Array<{ mediaType: string; data: string }>, attachments?: MessageAttachment[], behavior: "start" | "steer" | "follow_up" = "start") =>
     request<{ accepted: boolean; queued?: boolean; position?: number; compacted?: boolean; behavior?: string; reused?: boolean }>(`/api/sessions/${id}/messages`, { method: "POST", body: JSON.stringify({ content, behavior, ...(images?.length ? { images } : {}), ...(attachments?.length ? { attachments } : {}) }) }),
+  interactions: (id: string) => request<import("./contracts").InteractionRequest[]>(`/api/sessions/${id}/interactions`),
+  respondInteraction: (id: string, requestId: string, answer: unknown) => request<import("./contracts").InteractionRequest>(`/api/sessions/${id}/interactions/${requestId}/respond`, { method: "POST", body: JSON.stringify({ answer }) }),
   uploadPdf: async (sessionId: string, file: File): Promise<{ path: string }> => {
     const data = await readFileAsBase64(file);
     return request<{ path: string }>(`/api/sessions/${encodeURIComponent(sessionId)}/pdf-upload`, {
