@@ -28,6 +28,7 @@ import type { BackgroundTaskRegistry } from "./background-tasks.js";
 import type { HookEvent, HookPayload, HookRunner } from "../hooks.js";
 import type { ExtensionManager } from "../extensions/extension-manager.js";
 import { decodeProcessOutputChunks } from "./output-decoder.js";
+import { buildSystemPrompt } from "./prompts/prompt-builder.js";
 
 interface ExecutionContext {
   sessionId: string;
@@ -611,13 +612,26 @@ export class AgentRunner {
         const bgNotices = toolsEnabled ? (this.backgroundTasks?.drainNotices(sessionId) ?? []) : [];
         const bgNoticeSection = bgNotices.length > 0 ? `\n\n${bgNotices.join("\n")}` : "";
 
+        const system = buildSystemPrompt({
+          cwd: session.cwd,
+          tools,
+          productSections: [
+            workDisciplineSection(availableToolNames),
+            communicationSection(this.defaultLanguage),
+            session.agentMode === "plan" ? planModeSection(toolsEnabled) : "",
+          ],
+          finalConstraints: [SAFETY_BOUNDARY_SECTION],
+          skillsSection: `${skillSection}${agentSection}`,
+          projectContext: memorySection ? [{ path: "workspace instructions and memory", content: memorySection }] : [],
+          notices: bgNoticeSection,
+        });
         const turn = await collectProviderTurn(
           provider,
           {
             model: session.model,
             ...(session.thinking ? { thinking: session.thinking } : {}),
             ...(session.effort ? { effort: session.effort } : {}),
-            system: `You are OpenWebCode. The workspace is ${session.cwd}.${workDisciplineSection(availableToolNames)}${communicationSection(this.defaultLanguage)}${skillSection}${agentSection}${memorySection}${bgNoticeSection}${session.agentMode === "plan" ? planModeSection(toolsEnabled) : ""}${SAFETY_BOUNDARY_SECTION}`,
+            system,
             messages: view.messages,
             cacheBreakpoints,
             tools,

@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import WebSocket from "ws";
 import type { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
 import { loadConfig } from "../src/config.js";
@@ -13,6 +14,15 @@ import { SessionStore } from "../src/sessions/session-store.js";
 
 const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
+
+function connectWebSocket(url: string, headers: Record<string, string>): Promise<{ socket: WebSocket; connected?: unknown; closeCode?: number }> {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(url, { headers });
+    socket.once("message", (data) => resolve({ socket, connected: JSON.parse(String(data)) }));
+    socket.once("close", (closeCode) => resolve({ socket, closeCode }));
+    socket.once("error", reject);
+  });
+}
 
 describe("remote listener security", () => {
   it("refuses a non-loopback listener without a strong token and explicit origins", () => {
@@ -45,6 +55,22 @@ describe("remote listener security", () => {
       expect((await app.inject({ method: "GET", url: "/api/health" })).statusCode).toBe(401);
       expect((await app.inject({ method: "GET", url: "/api/health", headers: { authorization: `Bearer ${"t".repeat(32)}` } })).json()).toEqual({ status: "ok" });
       expect((await app.inject({ method: "GET", url: "/api/health", headers: { "x-openwebcode-token": "wrong" } })).statusCode).toBe(401);
+
+      const bootstrap = await app.inject({ method: "GET", url: `/?token=${"t".repeat(32)}` });
+      expect(bootstrap.statusCode).toBe(302);
+      expect(bootstrap.headers.location).toBe("/");
+      expect(bootstrap.headers["set-cookie"]).toContain("HttpOnly");
+
+      await app.listen({ host: "127.0.0.1", port: 0 });
+      const address = app.server.address();
+      if (!address || typeof address === "string") throw new Error("test server did not expose a TCP address");
+      const url = `ws://127.0.0.1:${address.port}/api/events`;
+      const denied = await connectWebSocket(url, { authorization: `Bearer ${"t".repeat(32)}`, origin: "https://other.example.test" });
+      expect(denied.closeCode).toBe(1008);
+
+      const accepted = await connectWebSocket(url, { authorization: `Bearer ${"t".repeat(32)}`, origin: "https://owc.example.test" });
+      expect(accepted.connected).toMatchObject({ type: "connected" });
+      accepted.socket.close();
     } finally {
       await app.close();
     }

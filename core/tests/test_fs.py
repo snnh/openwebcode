@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import ctypes, hashlib, json, os, pathlib, subprocess, sys, tempfile, time
+import atexit, ctypes, hashlib, json, os, pathlib, subprocess, sys, tempfile, time
 
 def windows_short_path(path):
     if os.name != "nt": return None
@@ -39,6 +39,15 @@ def send(p, i, method, params):
 
 def main():
     p=subprocess.Popen([sys.argv[1]],stdin=subprocess.PIPE,stdout=subprocess.PIPE)
+    def cleanup_process():
+        if p.poll() is None:
+            try:
+                p.terminate()
+                p.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                p.wait(timeout=5)
+    atexit.register(cleanup_process)
     with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as outside:
         root=pathlib.Path(td); (root/"目录").mkdir();
         assert send(p,0,"session.configure",{"sessionId":"test-session","cwd":td,"sandbox":{"enabled":True,"readRoots":[td],"writeRoots":[td],"denyPaths":[str(root/".env")],"network":"allow"}})["result"]["sandboxCapability"] in {"advisory","partial","enforced"}
@@ -153,4 +162,5 @@ def main():
             assert escaped_write.get("error",{}).get("code")==-32002,escaped_write
         assert send(p,99,"core.shutdown",{})["result"]["ok"]
     assert p.wait()==0
+    atexit.unregister(cleanup_process)
 if __name__=="__main__":main()
