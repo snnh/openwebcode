@@ -27,6 +27,10 @@ function fakeClient(): CoreClientLike & { [key: string]: ReturnType<typeof vi.fn
     watchFiles: vi.fn(async () => ({ watchId: 1 })),
     pollWatch: vi.fn(async () => ({ events: [], overflow: false })),
     cancelWatch: vi.fn(async () => ({ ok: true as const })),
+    startJob: vi.fn(async () => ({ jobId: "j1", state: "running" as const })),
+    cancelJob: vi.fn(async () => ({ jobId: "j1", accepted: true as const })),
+    jobStatus: vi.fn(async () => ({ jobId: "j1", state: "completed" as const })),
+    jobOutput: vi.fn(async () => ({ chunks: [], nextSeq: 0, truncated: false })),
     listFiles: vi.fn(async () => ({ entries: [], truncated: false })),
     globFiles: vi.fn(async () => ({ paths: [], truncated: false })),
     grepFiles: vi.fn(async () => ({ matches: [], truncated: false })),
@@ -150,6 +154,10 @@ describe("CoreRouter", () => {
     expect(wsbClient.pollWatch).toHaveBeenCalledWith({ sessionId: "s1", watchId: 1 });
     await router.cancelWatch({ sessionId: "s1", watchId: 1 });
     expect(wsbClient.cancelWatch).toHaveBeenCalledWith({ sessionId: "s1", watchId: 1 });
+    await router.startJob({ sessionId: "s1", jobId: "j1", kind: "exec", cmd: "dir", cwd: "D:/work" });
+    expect(wsbClient.startJob).toHaveBeenCalledWith({ sessionId: "s1", jobId: "j1", kind: "exec", cmd: "dir", cwd: "C:\\owc-workspace" });
+    await router.cancelJob({ sessionId: "s1", jobId: "j1" });
+    expect(wsbClient.cancelJob).toHaveBeenCalledWith({ sessionId: "s1", jobId: "j1" });
     // 工作目录外的路径原样透传（沙盒看不到，由沙盒内 core 拒绝）
     await router.listFiles({ sessionId: "s1", path: "C:\\Windows" });
     expect(wsbClient.listFiles).toHaveBeenCalledWith({ sessionId: "s1", path: "C:\\Windows" });
