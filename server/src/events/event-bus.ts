@@ -5,6 +5,8 @@ export interface AppEventInput {
   source: "server" | "core" | "agent" | "session";
   type: string;
   sessionId?: string;
+  /** Present for lifecycle events belonging to a persisted agent run. */
+  runId?: string;
   payload: unknown;
 }
 

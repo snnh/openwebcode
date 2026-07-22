@@ -1414,6 +1414,13 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     return agent.listTodos(request.params.id);
   });
 
+  app.get<{ Params: { id: string } }>("/api/sessions/:id/run", async (request, reply) => {
+    if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
+    const run = await agent.getRun(request.params.id);
+    if (!run) return reply.code(404).send({ error: "No run has been recorded for this session" });
+    return run;
+  });
+
   app.get<{ Params: { id: string } }>("/api/sessions/:id/permissions", async (request, reply) => {
     if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
     // 待确认权限走 REST 可恢复：刷新或重连后 WS 补发可能已越过 permission.request 事件
