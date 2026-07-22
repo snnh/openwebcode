@@ -63,6 +63,17 @@ export class MessageQueue {
     });
   }
 
+  async update(sessionId: string, id: string, change: { content?: string; kind?: QueueKind }): Promise<QueueItem | undefined> {
+    return this.mutate(sessionId, (items) => {
+      const item = items.find((entry) => entry.id === id && entry.status === "queued");
+      if (!item) return undefined;
+      if (change.content !== undefined) item.content = change.content;
+      if (change.kind !== undefined) item.kind = change.kind;
+      item.updatedAt = new Date().toISOString();
+      return clone(item);
+    });
+  }
+
   async take(sessionId: string, kind: QueueKind): Promise<QueueItem | undefined> {
     return this.mutate(sessionId, (items) => {
       const item = items.find((entry) => entry.kind === kind && entry.status === "queued");

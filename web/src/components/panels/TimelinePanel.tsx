@@ -18,6 +18,7 @@ export function TimelinePanel({ sessionId, running, onNotice }: {
     queryFn: () => api.checkpoints(sessionId!),
     enabled: Boolean(sessionId),
   });
+  const timeline = useQuery({ queryKey: ["timeline", sessionId], queryFn: () => api.timeline(sessionId!), enabled: Boolean(sessionId) });
   const capability = useQuery({
     queryKey: ["snapshot-capability", sessionId],
     queryFn: () => api.snapshotCapability(sessionId!),
@@ -39,7 +40,7 @@ export function TimelinePanel({ sessionId, running, onNotice }: {
   return (
     <div className="inspector-body">
       <div className="panel-head">
-        <h2>{t("检查点", "Checkpoints")}</h2>
+        <h2>{t("时间线与检查点", "Timeline & checkpoints")}</h2>
         <button
           className="btn small"
           disabled={running}
@@ -53,6 +54,14 @@ export function TimelinePanel({ sessionId, running, onNotice }: {
           <Icon name="plus" size={12} /> {t("新建", "New")}
         </button>
       </div>
+      {timeline.data && (
+        <div className="timeline-summary" aria-label={t("对话路径", "Conversation path")}>
+          <small>{t(`活动路径 · ${timeline.data.entries.length} 个节点`, `Active path · ${timeline.data.entries.length} nodes`)}</small>
+          {timeline.data.entries.slice(-8).map((entry) => <div key={entry.id} className={entry.id === timeline.data?.activeLeafId ? "active" : ""}>
+            <span>{entry.role}</span>{entry.runId && <code>{entry.turnId ?? entry.runId}</code>}{entry.id === timeline.data?.activeLeafId && <b>{t("当前", "Current")}</b>}
+          </div>)}
+        </div>
+      )}
       {capability.data && (
         <p className="backend-badge-row">
           <span className="badge backend-badge" title={capability.data.detail ?? capability.data.backend}>

@@ -62,6 +62,10 @@ export const api = {
   sendMessage: (id: string, content: string, images?: Array<{ mediaType: string; data: string }>, attachments?: MessageAttachment[], behavior: "start" | "steer" | "follow_up" = "start") =>
     request<{ accepted: boolean; queued?: boolean; position?: number; compacted?: boolean; behavior?: string; reused?: boolean }>(`/api/sessions/${id}/messages`, { method: "POST", body: JSON.stringify({ content, behavior, ...(images?.length ? { images } : {}), ...(attachments?.length ? { attachments } : {}) }) }),
   interactions: (id: string) => request<import("./contracts").InteractionRequest[]>(`/api/sessions/${id}/interactions`),
+  timeline: (id: string) => request<import("./contracts").SessionTimeline>(`/api/sessions/${id}/timeline`),
+  queue: (id: string) => request<import("./contracts").QueueItem[]>(`/api/sessions/${id}/queue`),
+  updateQueue: (id: string, itemId: string, body: { content?: string; kind?: "steer" | "follow_up" }) => request<import("./contracts").QueueItem>(`/api/sessions/${id}/queue/${itemId}`, { method: "PATCH", body: JSON.stringify(body) }),
+  removeQueue: (id: string, itemId: string) => request<void>(`/api/sessions/${id}/queue/${itemId}`, { method: "DELETE" }),
   respondInteraction: (id: string, requestId: string, answer: unknown) => request<import("./contracts").InteractionRequest>(`/api/sessions/${id}/interactions/${requestId}/respond`, { method: "POST", body: JSON.stringify({ answer }) }),
   uploadPdf: async (sessionId: string, file: File): Promise<{ path: string }> => {
     const data = await readFileAsBase64(file);

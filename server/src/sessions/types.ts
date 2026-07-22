@@ -40,6 +40,10 @@ export interface ChatMessage {
   role: MessageRole;
   content: MessageContent[];
   createdAt: string;
+  /** Optional lineage keeps legacy JSONL records readable without migration rewrites. */
+  parentId?: string;
+  runId?: string;
+  turnId?: string;
 }
 
 export type PermissionMode = "ask" | "acceptEdits" | "yolo";
@@ -101,6 +105,8 @@ export interface SessionMeta {
   title: string;
   createdAt: string;
   updatedAt: string;
+  /** Current history leaf; absent means a legacy linear session. */
+  activeLeafId?: string;
   /** Derived on read when messages.jsonl was recovered or needs attention. Never persisted to meta.json. */
   recovery?: { state: "recovered" | "needs_repair"; message: string };
 }
