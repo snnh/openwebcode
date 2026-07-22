@@ -17,6 +17,10 @@ import type {
   FsWatchPollRequest,
   FsWatchPollResult,
   FsWatchRequest,
+  JobOutputRequest,
+  JobOutputResult,
+  JobStartRequest,
+  JobStatus,
   FsHashResult,
   FsStatResult,
   FsStatManyRequest,
@@ -205,6 +209,27 @@ export class CoreRouter extends EventEmitter {
   async cancelWatch(request: { sessionId: string; watchId: number }): Promise<{ ok: true }> {
     const { client } = await this.clientFor(request.sessionId);
     return client.cancelWatch(request);
+  }
+
+  async startJob(request: JobStartRequest): Promise<JobStatus> {
+    const { client, meta } = await this.clientFor(request.sessionId);
+    const cwd = meta?.sandboxMode === "wsb" && meta.cwd ? toSandboxPath(request.cwd, meta.cwd) : request.cwd;
+    return client.startJob({ ...request, cwd });
+  }
+
+  async cancelJob(request: { sessionId: string; jobId: string }): Promise<{ jobId: string; accepted: true }> {
+    const { client } = await this.clientFor(request.sessionId);
+    return client.cancelJob(request);
+  }
+
+  async jobStatus(request: { sessionId: string; jobId: string }): Promise<JobStatus> {
+    const { client } = await this.clientFor(request.sessionId);
+    return client.jobStatus(request);
+  }
+
+  async jobOutput(request: JobOutputRequest): Promise<JobOutputResult> {
+    const { client } = await this.clientFor(request.sessionId);
+    return client.jobOutput(request);
   }
 
   async listFiles(request: FsPathRequest): Promise<FsListResult> {

@@ -184,6 +184,37 @@ def main():
         assert response["error"]["code"] == -32001
         assert time.monotonic() - started < 4
 
+        if os.name == "nt":
+            # job.start returns immediately; cancellation only targets its own
+            # Job Object and leaves the shared Core available for status RPCs.
+            request(proc, 40, "job.start", {"sessionId": "s1", "jobId": "cancel-me", "kind": "exec", "cmd": slow, "cwd": os.getcwd(), "timeoutMs": 5000})
+            response, _ = collect_until_response(proc, 40)
+            assert response["result"] == {"jobId": "cancel-me", "state": "running"}, response
+            request(proc, 41, "job.status", {"sessionId": "s1", "jobId": "cancel-me"})
+            response, _ = collect_until_response(proc, 41)
+            assert response["result"] ["jobId"] == "cancel-me" and response["result"]["state"] == "running", response
+            request(proc, 42, "job.cancel", {"sessionId": "s1", "jobId": "cancel-me"})
+            response, _ = collect_until_response(proc, 42)
+            assert response["result"] == {"jobId": "cancel-me", "accepted": True}, response
+            for _ in range(30):
+                request(proc, 43, "job.status", {"sessionId": "s1", "jobId": "cancel-me"})
+                response, _ = collect_until_response(proc, 43)
+                if response["result"]["state"] != "running": break
+                time.sleep(0.05)
+            assert response["result"]["state"] == "cancelled", response
+            request(proc, 44, "job.start", {"sessionId": "s1", "jobId": "output-me", "kind": "exec", "cmd": "echo job-output", "cwd": os.getcwd(), "timeoutMs": 5000})
+            response, _ = collect_until_response(proc, 44)
+            assert response["result"]["state"] == "running", response
+            for _ in range(30):
+                request(proc, 45, "job.status", {"sessionId": "s1", "jobId": "output-me"})
+                response, _ = collect_until_response(proc, 45)
+                if response["result"]["state"] != "running": break
+                time.sleep(0.05)
+            assert response["result"]["state"] == "completed", response
+            request(proc, 46, "job.output", {"sessionId": "s1", "jobId": "output-me", "afterSeq": 0})
+            response, _ = collect_until_response(proc, 46)
+            assert any(b"job-output" in base64.b64decode(chunk["data"]) for chunk in response["result"]["chunks"]), response
+
         # jobobject 兼容模式：默认 Job Object 限制在回复中如实上报
         request(proc, 30, "session.configure", {"sessionId": "s2", "cwd": os.getcwd(), "sandbox": {"enabled": True, "mode": "jobobject"}})
         response, _ = collect_until_response(proc, 30)

@@ -59,6 +59,10 @@ export interface FsScanResult { entries: Array<{ path: string; type: "file" | "d
 export interface FsWatchRequest extends FsPathRequest { recursive?: boolean }
 export interface FsWatchPollRequest { sessionId: string; watchId: number; limit?: number }
 export interface FsWatchPollResult { events: Array<{ path: string; kind: "created" | "changed" | "deleted" | "renamed" }>; overflow: boolean }
+export interface JobStartRequest { sessionId: string; jobId: string; kind: "exec"; cmd: string; cwd: string; timeoutMs?: number }
+export interface JobStatus { jobId: string; state: "running" | "completed" | "failed" | "cancelled" | "timed_out"; exitCode?: number; durationMs?: number; truncated?: boolean }
+export interface JobOutputRequest { sessionId: string; jobId: string; afterSeq: number; limit?: number }
+export interface JobOutputResult { chunks: Array<{ seq: number; stream: "stdout" | "stderr"; data: string }>; nextSeq: number; truncated: boolean }
 export interface FsReadResult { content: string; totalLines: number; encoding: "utf-8"; truncated: boolean }
 export interface FsListResult { entries: Array<{ name: string; type: "file" | "directory" | "other"; size: number }>; truncated: boolean }
 export interface FsGlobResult { paths: string[]; truncated: boolean }
@@ -98,6 +102,10 @@ export interface CoreClientLike {
   watchFiles(request: FsWatchRequest): Promise<{ watchId: number }>;
   pollWatch(request: FsWatchPollRequest): Promise<FsWatchPollResult>;
   cancelWatch(request: { sessionId: string; watchId: number }): Promise<{ ok: true }>;
+  startJob(request: JobStartRequest): Promise<JobStatus>;
+  cancelJob(request: { sessionId: string; jobId: string }): Promise<{ jobId: string; accepted: true }>;
+  jobStatus(request: { sessionId: string; jobId: string }): Promise<JobStatus>;
+  jobOutput(request: JobOutputRequest): Promise<JobOutputResult>;
   listFiles(request: FsPathRequest): Promise<FsListResult>;
   globFiles(request: FsSearchRequest): Promise<FsGlobResult>;
   grepFiles(request: FsSearchRequest): Promise<FsGrepResult>;
@@ -199,6 +207,10 @@ export class CoreClient extends EventEmitter {
   watchFiles(request: FsWatchRequest): Promise<{ watchId: number }> { return this.call("fs.watch", request); }
   pollWatch(request: FsWatchPollRequest): Promise<FsWatchPollResult> { return this.call("fs.watch.poll", request); }
   cancelWatch(request: { sessionId: string; watchId: number }): Promise<{ ok: true }> { return this.call("fs.watch.cancel", request); }
+  startJob(request: JobStartRequest): Promise<JobStatus> { return this.call("job.start", request); }
+  cancelJob(request: { sessionId: string; jobId: string }): Promise<{ jobId: string; accepted: true }> { return this.call("job.cancel", request); }
+  jobStatus(request: { sessionId: string; jobId: string }): Promise<JobStatus> { return this.call("job.status", request); }
+  jobOutput(request: JobOutputRequest): Promise<JobOutputResult> { return this.call("job.output", request); }
   listFiles(request: FsPathRequest): Promise<FsListResult> { return this.call("fs.list", request); }
   globFiles(request: FsSearchRequest): Promise<FsGlobResult> { return this.call("fs.glob", request); }
   grepFiles(request: FsSearchRequest): Promise<FsGrepResult> { return this.call("fs.grep", request); }

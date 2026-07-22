@@ -29,6 +29,10 @@ typedef struct {
     unsigned long job_max_processes; /* active process limit; 0 = default */
     int timeout_ms;
     size_t output_limit;
+    /* Optional cooperative cancellation flag.  The platform executor owns the
+       process tree and observes this while draining output; a future job
+       controller can therefore terminate only this execution. */
+    const volatile int *cancel_requested;
     owc_exec_output_fn on_output;
     void *user_data;
 } owc_exec_request;
@@ -38,6 +42,7 @@ typedef struct {
     long long duration_ms;
     int truncated;
     int timed_out;
+    int cancelled;
     unsigned long system_error;
     int sandbox_status;
     char sandbox_reason[192];

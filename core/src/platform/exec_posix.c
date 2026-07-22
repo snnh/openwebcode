@@ -102,6 +102,20 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
         int count = 0, i, poll_result;
         long long current = now_ms();
         if (current < 0) { saved_error = errno; goto cleanup; }
+        if (request->cancel_requested && *request->cancel_requested) {
+            int attempts;
+            (void)kill(-child, SIGTERM);
+            for(attempts=0;running&&attempts<10;attempts++) {
+                pid_t waited=waitpid(child,&status,WNOHANG);
+                if(waited==child) { running=0; break; }
+                if(waited<0&&errno!=EINTR) { saved_error=errno; goto cleanup; }
+                {struct timespec pause={0,50*1000*1000};(void)nanosleep(&pause,NULL);}
+            }
+            if(running) { (void)kill(-child,SIGKILL); reap_child(child,&status); running=0; }
+            result->cancelled = 1;
+            close_fd(&out_pipe[0]); close_fd(&err_pipe[0]);
+            break;
+        }
         if (current - started >= request->timeout_ms) {
             (void)kill(-child, SIGKILL);
             result->timed_out = 1;

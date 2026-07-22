@@ -171,6 +171,10 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
         wait_result=WaitForSingleObject(process.hProcess,20);
         if(wait_result==WAIT_OBJECT_0) break;
         if(wait_result==WAIT_FAILED) goto cleanup;
+        if(request->cancel_requested&&*request->cancel_requested) {
+            (void)TerminateJobObject(job,1);
+            result->cancelled=1; (void)WaitForSingleObject(process.hProcess,2000); break;
+        }
         if(GetTickCount64()-started>=(ULONGLONG)request->timeout_ms) {
             (void)TerminateJobObject(job,1);
             result->timed_out=1; (void)WaitForSingleObject(process.hProcess,2000); break;
