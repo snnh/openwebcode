@@ -23,6 +23,10 @@ function fakeClient(): CoreClientLike & { [key: string]: ReturnType<typeof vi.fn
     statFile: vi.fn(async () => ({ type: "file" as const, size: 0, modifiedMs: 0 })),
     statFiles: vi.fn(async () => ({ entries: [] })),
     hashFile: vi.fn(async () => ({ sha256: "0".repeat(64), size: 0 })),
+    scanFiles: vi.fn(async () => ({ entries: [], truncated: false })),
+    watchFiles: vi.fn(async () => ({ watchId: 1 })),
+    pollWatch: vi.fn(async () => ({ events: [], overflow: false })),
+    cancelWatch: vi.fn(async () => ({ ok: true as const })),
     listFiles: vi.fn(async () => ({ entries: [], truncated: false })),
     globFiles: vi.fn(async () => ({ paths: [], truncated: false })),
     grepFiles: vi.fn(async () => ({ matches: [], truncated: false })),
@@ -138,6 +142,14 @@ describe("CoreRouter", () => {
     expect(wsbClient.hashFile).toHaveBeenCalledWith({ sessionId: "s1", path: "C:\\owc-workspace\\src\\a.ts" });
     await router.statFiles({ sessionId: "s1", paths: ["D:/work/src/a.ts", "D:/work/b.md"] });
     expect(wsbClient.statFiles).toHaveBeenCalledWith({ sessionId: "s1", paths: ["C:\\owc-workspace\\src\\a.ts", "C:\\owc-workspace\\b.md"] });
+    await router.scanFiles({ sessionId: "s1", path: "D:/work/src", limit: 8, maxDepth: 2 });
+    expect(wsbClient.scanFiles).toHaveBeenCalledWith({ sessionId: "s1", path: "C:\\owc-workspace\\src", limit: 8, maxDepth: 2 });
+    await router.watchFiles({ sessionId: "s1", path: "D:/work/src", recursive: true });
+    expect(wsbClient.watchFiles).toHaveBeenCalledWith({ sessionId: "s1", path: "C:\\owc-workspace\\src", recursive: true });
+    await router.pollWatch({ sessionId: "s1", watchId: 1 });
+    expect(wsbClient.pollWatch).toHaveBeenCalledWith({ sessionId: "s1", watchId: 1 });
+    await router.cancelWatch({ sessionId: "s1", watchId: 1 });
+    expect(wsbClient.cancelWatch).toHaveBeenCalledWith({ sessionId: "s1", watchId: 1 });
     // 工作目录外的路径原样透传（沙盒看不到，由沙盒内 core 拒绝）
     await router.listFiles({ sessionId: "s1", path: "C:\\Windows" });
     expect(wsbClient.listFiles).toHaveBeenCalledWith({ sessionId: "s1", path: "C:\\Windows" });

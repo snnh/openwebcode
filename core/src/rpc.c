@@ -122,6 +122,7 @@ static int parse_job_limit(const owc_json *value, unsigned long maximum, unsigne
 }
 
 static int session_exec_policy(const char *id,const char *cwd,int *enabled,int *allow_network,int *mode,const char *const **allow_paths,size_t *allow_path_count,unsigned long *job_memory_mb,unsigned long *job_max_processes);
+static void remove_session_watches(const char *session_id);
 
 static int handle_exec_run(owc_rpc *rpc,const owc_json *id,const owc_json *params) {
     const char *command=owc_json_get_string(owc_json_object_get(params,"cmd"));
@@ -164,12 +165,12 @@ static int policy_path_within(const char *path,const char *root){while(*path&&*r
 #endif
  if(a!=b)return 0;}if(*root)return 0;return *path=='\0'||*path=='/'||*path=='\\';}
 static int session_denied(const char *id,const char *path){session_config *session=session_find(id);size_t i,n;char *joined;if(!session)return 1;n=strlen(session->cwd)+strlen(path)+2;joined=(char*)malloc(n);if(!joined)return 1;(void)snprintf(joined,n,"%s/%s",session->cwd,path);for(i=0;i<session->deny_count;i++)if(policy_path_within(path,session->deny_paths[i])||policy_path_within(joined,session->deny_paths[i])){free(joined);return 1;}free(joined);return 0;}
-static int configure_session(const char *id,const char *cwd){size_t i;char *root=copy_text(cwd);if(!root)return 0;for(i=0;i<session_count;i++)if(!strcmp(sessions[i].session_id,id)){free(sessions[i].cwd);sessions[i].cwd=root;return 1;}if(session_count>=sizeof(sessions)/sizeof(sessions[0])){free(root);return 0;}memset(&sessions[session_count],0,sizeof(sessions[0]));sessions[session_count].session_id=copy_text(id);if(!sessions[session_count].session_id){free(root);return 0;}sessions[session_count].cwd=root;session_count++;return 1;}
+static int configure_session(const char *id,const char *cwd){size_t i;char *root=copy_text(cwd);if(!root)return 0;for(i=0;i<session_count;i++)if(!strcmp(sessions[i].session_id,id)){remove_session_watches(id);free(sessions[i].cwd);sessions[i].cwd=root;return 1;}if(session_count>=sizeof(sessions)/sizeof(sessions[0])){free(root);return 0;}memset(&sessions[session_count],0,sizeof(sessions[0]));sessions[session_count].session_id=copy_text(id);if(!sessions[session_count].session_id){free(root);return 0;}sessions[session_count].cwd=root;session_count++;return 1;}
 static void clear_denies(session_config *session){size_t i;for(i=0;i<session->deny_count;i++)free(session->deny_paths[i]);session->deny_count=0;}
 static void clear_allows(session_config *session){size_t i;for(i=0;i<session->allow_count;i++)free(session->allow_paths[i]);session->allow_count=0;}
 static int copy_string_array(const owc_json *array,char **values,size_t *count){size_t i;if(!array)return 1;if(array->type!=OWC_JSON_ARRAY||array->value.children.count>16)return 0;for(i=0;i<array->value.children.count;i++){const char *value=owc_json_get_string(array->value.children.items[i]);if(!value||!value[0])return 0;values[*count]=copy_text(value);if(!values[*count])return 0;(*count)++;}return 1;}
 static int configure_policy(const char *id,const owc_json *sandbox){session_config *session=session_find(id);const owc_json *denies,*allows,*enabled,*network,*mode,*job_memory,*job_processes;if(!session)return 0;clear_denies(session);clear_allows(session);session->sandbox_enabled=1;session->allow_network=1;session->sandbox_mode=(int)OWC_SANDBOX_MODE_APPCONTAINER;session->job_memory_mb=OWC_JOB_DEFAULT_MEMORY_MB;session->job_max_processes=OWC_JOB_DEFAULT_MAX_PROCESSES;if(!sandbox)return 1;if(sandbox->type!=OWC_JSON_OBJECT)return 0;enabled=owc_json_object_get(sandbox,"enabled");network=owc_json_object_get(sandbox,"network");mode=owc_json_object_get(sandbox,"mode");if(enabled){if(enabled->type!=OWC_JSON_BOOL)return 0;session->sandbox_enabled=enabled->value.boolean;}if(network){const char *value=owc_json_get_string(network);if(!value||(strcmp(value,"allow")&&strcmp(value,"deny")))return 0;session->allow_network=!strcmp(value,"allow");}if(mode){const char *value=owc_json_get_string(mode);if(!value)return 0;if(!strcmp(value,"appcontainer"))session->sandbox_mode=(int)OWC_SANDBOX_MODE_APPCONTAINER;else if(!strcmp(value,"jobobject"))session->sandbox_mode=(int)OWC_SANDBOX_MODE_JOBOBJECT;else if(!strcmp(value,"off"))session->sandbox_mode=(int)OWC_SANDBOX_MODE_OFF;else return 0;if(session->sandbox_mode==(int)OWC_SANDBOX_MODE_OFF)session->sandbox_enabled=0;}job_memory=owc_json_object_get(sandbox,"jobMemoryMB");if(job_memory&&!parse_job_limit(job_memory,1048576ul,&session->job_memory_mb))return 0;job_processes=owc_json_object_get(sandbox,"jobMaxProcesses");if(job_processes&&!parse_job_limit(job_processes,4096ul,&session->job_max_processes))return 0;allows=owc_json_object_get(sandbox,"allowPaths");denies=owc_json_object_get(sandbox,"denyPaths");if(!copy_string_array(allows,session->allow_paths,&session->allow_count)||!copy_string_array(denies,session->deny_paths,&session->deny_count)){clear_allows(session);clear_denies(session);return 0;}return 1;}
-static int cleanup_session(const char *id){size_t i;for(i=0;i<session_count;i++)if(!strcmp(sessions[i].session_id,id)){clear_denies(&sessions[i]);clear_allows(&sessions[i]);free(sessions[i].session_id);free(sessions[i].cwd);sessions[i]=sessions[session_count-1];session_count--;return 1;}return 0;}
+static int cleanup_session(const char *id){size_t i;remove_session_watches(id);for(i=0;i<session_count;i++)if(!strcmp(sessions[i].session_id,id)){clear_denies(&sessions[i]);clear_allows(&sessions[i]);free(sessions[i].session_id);free(sessions[i].cwd);sessions[i]=sessions[session_count-1];session_count--;return 1;}return 0;}
 
 static int reply_session_capability(owc_rpc *rpc,const owc_json *id,const char *sid){session_config *session=session_find(sid);char reason[192],detail[192],result[640];char *escaped,*escaped_detail=NULL;owc_sandbox_status status;int ok;if(!session)return reply_error(rpc,id,-32000,"session was not configured");detail[0]='\0';if(!session->sandbox_enabled){status=OWC_SANDBOX_ADVISORY;(void)snprintf(reason,sizeof(reason),"sandbox disabled by session policy");}else if(session->sandbox_mode==(int)OWC_SANDBOX_MODE_JOBOBJECT){status=OWC_SANDBOX_PARTIAL;(void)snprintf(reason,sizeof(reason),"Job Object compatibility mode requested by session policy");(void)snprintf(detail,sizeof(detail),"Job Object limits active processes to %lu and committed memory to %lu MB; no filesystem or network isolation (requires AppContainer)",session->job_max_processes,session->job_memory_mb);}else{
 #ifdef _WIN32
@@ -254,6 +255,11 @@ invalid:
 #define OWC_FS_STAT_MANY_MAX_PATHS 128u
 #define OWC_FS_STAT_MANY_MAX_PATH_BYTES 4096u
 #define OWC_FS_STAT_MANY_MAX_TOTAL_PATH_BYTES (256u * 1024u)
+#define OWC_FS_SCAN_DEFAULT_LIMIT 128u
+#define OWC_FS_SCAN_MAX_LIMIT 256u
+#define OWC_FS_SCAN_DEFAULT_DEPTH 8u
+#define OWC_FS_SCAN_MAX_DEPTH 16u
+#define OWC_FS_SCAN_MAX_NODES 2048u
 
 static int handle_fs_stat_many(owc_rpc *rpc,const owc_json *id,const owc_json *p){
     static const char *keys[]={"sessionId","paths"};
@@ -282,6 +288,102 @@ static int handle_fs_stat_many(owc_rpc *rpc,const owc_json *id,const owc_json *p
         snprintf(result+used,add+1,"%s{\"path\":%s,\"type\":\"%s\",\"size\":%llu,\"modifiedMs\":%lld}",i?",":"",escaped,type_name(stat.type),stat.size,stat.modified_ms);free(escaped);
     }
     strcat(result,"]}");i=reply_result(rpc,id,result);free(result);return (int)i;
+}
+
+/* fs.scan deliberately stays at the Core boundary: every directory read goes
+ * through the existing root-bound/no-follow list primitive.  The result is
+ * collected under fixed traversal budgets, sorted by UTF-8 byte path for a
+ * stable integer cursor, and only then paged. */
+typedef struct { char *path; owc_fs_type type; unsigned long long size; } fs_scan_item;
+typedef struct { char *relative; size_t depth; } fs_scan_directory;
+typedef struct { fs_scan_item *items; size_t count,capacity,nodes; int budget_truncated,depth_truncated,list_truncated; } fs_scan_collection;
+static char *scan_join(const char *left,const char *right){size_t a=strlen(left),b=strlen(right),offset=a;char *joined=(char*)malloc(a+b+2);if(!joined)return NULL;if(a){memcpy(joined,left,a);joined[offset++]='/';}memcpy(joined+offset,right,b+1);return joined;}
+static void scan_free(fs_scan_collection *scan){size_t i;if(!scan)return;for(i=0;i<scan->count;i++)free(scan->items[i].path);free(scan->items);memset(scan,0,sizeof(*scan));}
+static int scan_add_item(fs_scan_collection *scan,char *path,owc_fs_type type,unsigned long long size){fs_scan_item *grown;if(scan->count==scan->capacity){size_t cap=scan->capacity?scan->capacity*2u:128u;grown=(fs_scan_item*)realloc(scan->items,cap*sizeof(*grown));if(!grown)return 0;scan->items=grown;scan->capacity=cap;}scan->items[scan->count].path=path;scan->items[scan->count].type=type;scan->items[scan->count].size=size;scan->count++;return 1;}
+static int scan_compare(const void *left,const void *right){const fs_scan_item *a=(const fs_scan_item*)left,*b=(const fs_scan_item*)right;return strcmp(a->path,b->path);}
+static int scan_push_directory(fs_scan_directory **stack,size_t *count,size_t *capacity,char *relative,size_t depth){fs_scan_directory *grown;if(*count==*capacity){size_t cap=*capacity?*capacity*2u:32u;grown=(fs_scan_directory*)realloc(*stack,cap*sizeof(*grown));if(!grown)return 0;*stack=grown;*capacity=cap;}(*stack)[*count].relative=relative;(*stack)[*count].depth=depth;(*count)++;return 1;}
+
+static owc_fs_error scan_collect(const char *root,const char *session_id,const char *base,size_t max_depth,fs_scan_collection *scan){
+    fs_scan_directory *stack=NULL;size_t stack_count=0,stack_capacity=0;owc_fs_error error=OWC_FS_OK;
+    memset(scan,0,sizeof(*scan));
+    if(!scan_push_directory(&stack,&stack_count,&stack_capacity,copy_text(""),0)){free(stack);return OWC_FS_NO_MEMORY;}
+    if(!stack[0].relative){free(stack);return OWC_FS_NO_MEMORY;}
+    while(stack_count&&error==OWC_FS_OK&&!scan->budget_truncated){
+        fs_scan_directory directory=stack[--stack_count];owc_fs_list_result list;char *full=directory.relative[0]?scan_join(base,directory.relative):copy_text(base);size_t i;
+        if(!full){free(directory.relative);error=OWC_FS_NO_MEMORY;break;}
+        error=owc_fs_list(root,full,&list);free(full);if(error){free(directory.relative);break;}
+        if(list.truncated)scan->list_truncated=1;
+        for(i=0;i<list.count;i++){
+            char *child;
+            if(scan->nodes++>=OWC_FS_SCAN_MAX_NODES){scan->budget_truncated=1;break;}
+            child=directory.relative[0]?scan_join(directory.relative,list.entries[i].name):copy_text(list.entries[i].name);
+            if(!child){error=OWC_FS_NO_MEMORY;break;}
+            /* A denied directory is neither returned nor traversed. The
+             * result path is relative to base, while policy paths are rooted
+             * at the session workspace, so check the full request-relative
+             * path. */
+            {char *policy_path=!strcmp(base,".")?copy_text(child):scan_join(base,child);int denied=!policy_path||session_denied(session_id,policy_path);free(policy_path);if(denied){free(child);continue;}}
+            if(!scan_add_item(scan,child,list.entries[i].type,list.entries[i].size)){free(child);error=OWC_FS_NO_MEMORY;break;}
+            if(list.entries[i].type==OWC_FS_TYPE_DIRECTORY){
+                if(directory.depth>=max_depth)scan->depth_truncated=1;
+                else {char *next=copy_text(child);if(!next||!scan_push_directory(&stack,&stack_count,&stack_capacity,next,directory.depth+1)){free(next);error=OWC_FS_NO_MEMORY;break;}}
+            }
+        }
+        owc_fs_list_free(&list);free(directory.relative);
+    }
+    while(stack_count)free(stack[--stack_count].relative);free(stack);
+    if(error){scan_free(scan);return error;}
+    qsort(scan->items,scan->count,sizeof(*scan->items),scan_compare);return OWC_FS_OK;
+}
+
+static int handle_fs_scan(owc_rpc *rpc,const owc_json *id,const owc_json *p){
+    static const char *keys[]={"sessionId","path","cursor","limit","maxDepth"};
+    const char *session_id,*cwd,*path;const owc_json *value;size_t cursor=0,limit=OWC_FS_SCAN_DEFAULT_LIMIT,max_depth=OWC_FS_SCAN_DEFAULT_DEPTH,end,i;fs_scan_collection scan;owc_fs_error error;char *result;
+    if(!allowed_keys(p,keys,5))return reply_error(rpc,id,-32602,"fs.scan contains unknown fields");
+    session_id=owc_json_get_string(owc_json_object_get(p,"sessionId"));path=owc_json_get_string(owc_json_object_get(p,"path"));cwd=session_id?session_root(session_id):NULL;
+    if(!cwd||!path||!path[0])return reply_error(rpc,id,-32602,"fs.scan requires a configured sessionId and non-empty path");
+    if(session_denied(session_id,path))return reply_error(rpc,id,-32002,"path is denied by session policy");
+    value=owc_json_object_get(p,"cursor");if(value&&(!json_size(value,&cursor)||cursor>OWC_FS_SCAN_MAX_NODES))return reply_error(rpc,id,-32602,"fs.scan cursor must be a non-negative integer within the scan budget");
+    value=owc_json_object_get(p,"limit");if(value&&(!json_size(value,&limit)||!limit||limit>OWC_FS_SCAN_MAX_LIMIT))return reply_error(rpc,id,-32602,"fs.scan limit must be an integer from 1 to 256");
+    value=owc_json_object_get(p,"maxDepth");if(value&&(!json_size(value,&max_depth)||max_depth>OWC_FS_SCAN_MAX_DEPTH))return reply_error(rpc,id,-32602,"fs.scan maxDepth must be an integer from 0 to 16");
+    error=scan_collect(cwd,session_id,path,max_depth,&scan);if(error)return reply_error(rpc,id,fs_code(error),owc_fs_error_message(error));
+    end=cursor>scan.count?cursor:scan.count-cursor<limit?scan.count:cursor+limit;
+    result=(char*)malloc(13);if(!result){scan_free(&scan);return reply_error(rpc,id,-32000,"out of memory");}strcpy(result,"{\"entries\":[");
+    for(i=cursor;i<end;i++){char *escaped=owc_json_escape_string(scan.items[i].path),*grown;size_t used,add;if(!escaped){free(result);scan_free(&scan);return reply_error(rpc,id,-32000,"out of memory");}used=strlen(result);add=(size_t)snprintf(NULL,0,"%s{\"path\":%s,\"type\":\"%s\",\"size\":%llu}",i==cursor?"":",",escaped,type_name(scan.items[i].type),scan.items[i].size);grown=(char*)realloc(result,used+add+64);if(!grown){free(escaped);free(result);scan_free(&scan);return reply_error(rpc,id,-32000,"out of memory");}result=grown;snprintf(result+used,add+1,"%s{\"path\":%s,\"type\":\"%s\",\"size\":%llu}",i==cursor?"":",",escaped,type_name(scan.items[i].type),scan.items[i].size);free(escaped);}
+    i=strlen(result);if(end<scan.count)snprintf(result+i,64,"],\"nextCursor\":%zu,\"truncated\":%s}",end,(scan.budget_truncated||scan.depth_truncated||scan.list_truncated)?"true":"false");else snprintf(result+i,48,"],\"truncated\":%s}",(scan.budget_truncated||scan.depth_truncated||scan.list_truncated)?"true":"false");
+    scan_free(&scan);i=reply_result(rpc,id,result);free(result);return (int)i;
+}
+
+#define OWC_FS_MAX_WATCHES 16u
+#define OWC_FS_WATCH_MAX_EVENTS 128u
+typedef struct { unsigned id; char *session_id,*base; owc_fs_watch *watch; } fs_watch_record;
+static fs_watch_record fs_watches[OWC_FS_MAX_WATCHES];
+static unsigned next_watch_id=1;
+static void clear_watch(fs_watch_record *record){if(!record)return;owc_fs_watch_close(record->watch);free(record->session_id);free(record->base);memset(record,0,sizeof(*record));}
+static void remove_session_watches(const char *session_id){size_t i;for(i=0;i<OWC_FS_MAX_WATCHES;i++)if(fs_watches[i].watch&&!strcmp(fs_watches[i].session_id,session_id))clear_watch(&fs_watches[i]);}
+static fs_watch_record *find_watch(const char *session_id,unsigned id){size_t i;for(i=0;i<OWC_FS_MAX_WATCHES;i++)if(fs_watches[i].watch&&fs_watches[i].id==id&&!strcmp(fs_watches[i].session_id,session_id))return &fs_watches[i];return NULL;}
+static char *watch_policy_path(const char *base,const char *relative){return !strcmp(base,".")?copy_text(relative):scan_join(base,relative);}
+static int watch_is_internal_temp(const char *path){const char *name=strrchr(path,'/');size_t length=strlen(path);name=name?name+1:path;return name[0]=='.'&&strstr(name,".owc-")&&length>=4&&!strcmp(path+length-4,".tmp");}
+
+static int handle_fs_watch_start(owc_rpc *rpc,const owc_json *id,const owc_json *p){
+    static const char *keys[]={"sessionId","path","recursive"};const char *session_id,*cwd,*path;int recursive=0;size_t i;owc_fs_error error;
+    if(!allowed_keys(p,keys,3))return reply_error(rpc,id,-32602,"fs.watch contains unknown fields");session_id=owc_json_get_string(owc_json_object_get(p,"sessionId"));path=owc_json_get_string(owc_json_object_get(p,"path"));cwd=session_id?session_root(session_id):NULL;
+    if(!cwd||!path||!path[0])return reply_error(rpc,id,-32602,"fs.watch requires a configured sessionId and non-empty path");if(!json_bool(owc_json_object_get(p,"recursive"),0,&recursive))return reply_error(rpc,id,-32602,"fs.watch recursive must be a boolean");if(session_denied(session_id,path))return reply_error(rpc,id,-32002,"path is denied by session policy");
+    for(i=0;i<OWC_FS_MAX_WATCHES;i++)if(!fs_watches[i].watch)break;if(i==OWC_FS_MAX_WATCHES)return reply_error(rpc,id,-32000,"watch limit reached");
+    error=owc_fs_watch_open(cwd,path,recursive,&fs_watches[i].watch);if(error)return reply_error(rpc,id,fs_code(error),owc_fs_error_message(error));fs_watches[i].session_id=copy_text(session_id);fs_watches[i].base=copy_text(path);if(!fs_watches[i].session_id||!fs_watches[i].base){clear_watch(&fs_watches[i]);return reply_error(rpc,id,-32000,"out of memory");}fs_watches[i].id=next_watch_id++;if(!next_watch_id)next_watch_id=1;{char result[64];snprintf(result,sizeof(result),"{\"watchId\":%u}",fs_watches[i].id);return reply_result(rpc,id,result);}
+}
+
+static int handle_fs_watch_poll(owc_rpc *rpc,const owc_json *id,const owc_json *p){
+    static const char *keys[]={"sessionId","watchId","limit"};const char *session_id;const owc_json *value;size_t limit=OWC_FS_WATCH_MAX_EVENTS,i,j;unsigned watch_id;fs_watch_record *record;owc_fs_watch_result events;owc_fs_error error;char *result;
+    if(!allowed_keys(p,keys,3))return reply_error(rpc,id,-32602,"fs.watch.poll contains unknown fields");session_id=owc_json_get_string(owc_json_object_get(p,"sessionId"));value=owc_json_object_get(p,"watchId");if(!session_id||!value||!json_size(value,&i)||!i||i>UINT_MAX)return reply_error(rpc,id,-32602,"fs.watch.poll requires sessionId and positive watchId");watch_id=(unsigned)i;value=owc_json_object_get(p,"limit");if(value&&(!json_size(value,&limit)||!limit||limit>OWC_FS_WATCH_MAX_EVENTS))return reply_error(rpc,id,-32602,"fs.watch.poll limit must be an integer from 1 to 128");record=find_watch(session_id,watch_id);if(!record)return reply_error(rpc,id,-32003,"watch not found");error=owc_fs_watch_poll(record->watch,limit,&events);if(error)return reply_error(rpc,id,fs_code(error),owc_fs_error_message(error));
+    /* Hide policy-denied descendants and merge repeated path events from the
+     * same kernel batch so a busy editor cannot amplify RPC/event traffic. */
+    for(i=0;i<events.count;){char *policy_path=watch_policy_path(record->base,events.events[i].path);int denied=!policy_path||session_denied(session_id,policy_path);free(policy_path);if(denied||watch_is_internal_temp(events.events[i].path)){free(events.events[i].path);events.count--;if(i!=events.count)events.events[i]=events.events[events.count];continue;}for(j=0;j<i;j++)if(!strcmp(events.events[j].path,events.events[i].path)){free(events.events[j].path);events.events[j]=events.events[i];events.count--;if(i!=events.count)events.events[i]=events.events[events.count];break;}if(j==i)i++;}
+    result=(char*)malloc(12);if(!result){owc_fs_watch_result_free(&events);return reply_error(rpc,id,-32000,"out of memory");}strcpy(result,"{\"events\":[");for(i=0;i<events.count;i++){char *path=owc_json_escape_string(events.events[i].path),*grown;size_t used,add;if(!path){free(result);owc_fs_watch_result_free(&events);return reply_error(rpc,id,-32000,"out of memory");}used=strlen(result);add=(size_t)snprintf(NULL,0,"%s{\"path\":%s,\"kind\":\"%s\"}",i?",":"",path,events.events[i].kind);grown=(char*)realloc(result,used+add+48);if(!grown){free(path);free(result);owc_fs_watch_result_free(&events);return reply_error(rpc,id,-32000,"out of memory");}result=grown;snprintf(result+used,add+1,"%s{\"path\":%s,\"kind\":\"%s\"}",i?",":"",path,events.events[i].kind);free(path);}i=strlen(result);snprintf(result+i,48,"],\"overflow\":%s}",events.overflow?"true":"false");owc_fs_watch_result_free(&events);i=reply_result(rpc,id,result);free(result);return (int)i;
+}
+
+static int handle_fs_watch_cancel(owc_rpc *rpc,const owc_json *id,const owc_json *p){
+    static const char *keys[]={"sessionId","watchId"};const char *session_id;const owc_json *value;size_t number;if(!allowed_keys(p,keys,2))return reply_error(rpc,id,-32602,"fs.watch.cancel contains unknown fields");session_id=owc_json_get_string(owc_json_object_get(p,"sessionId"));value=owc_json_object_get(p,"watchId");if(!session_id||!value||!json_size(value,&number)||!number||number>UINT_MAX)return reply_error(rpc,id,-32602,"fs.watch.cancel requires sessionId and positive watchId");{fs_watch_record *record=find_watch(session_id,(unsigned)number);if(!record)return reply_error(rpc,id,-32003,"watch not found");clear_watch(record);}return reply_result(rpc,id,"{\"ok\":true}");
 }
 
 static int handle_fs(owc_rpc *rpc,const owc_json *id,const char *method,const owc_json *p){
@@ -315,12 +417,16 @@ int owc_rpc_dispatch(owc_rpc *rpc, const char *body, size_t length) {
 #else
         const char *platform="linux";
 #endif
-        char reason[192],*escaped,*result;size_t result_size;owc_sandbox_status capability=owc_sandbox_probe(reason,sizeof(reason));escaped=owc_json_escape_string(reason);if(!escaped)(void)reply_error(rpc,id,-32000,"failed to encode sandbox capability");else{result_size=(size_t)snprintf(NULL,0,"{\"version\":\"0.2.3\",\"protocolVersion\":\"1.0\",\"platform\":\"%s\",\"sandboxCapability\":\"%s\",\"sandboxReason\":%s,\"features\":{\"fsStat\":true,\"fsStatMany\":true,\"fsWriteBase64\":true,\"jobControl\":false,\"fsHash\":true,\"fsScanPagination\":false,\"fsWatch\":false},\"limits\":{\"maxFrameBytes\":33554432,\"maxWriteBase64Bytes\":20971520,\"maxHashBytes\":16777216,\"maxStatManyPaths\":128,\"maxStatManyPathBytes\":262144}}",platform,owc_sandbox_status_name(capability),escaped);result=(char*)malloc(result_size+1);if(!result)(void)reply_error(rpc,id,-32000,"failed to encode core capabilities");else{(void)snprintf(result,result_size+1,"{\"version\":\"0.2.3\",\"protocolVersion\":\"1.0\",\"platform\":\"%s\",\"sandboxCapability\":\"%s\",\"sandboxReason\":%s,\"features\":{\"fsStat\":true,\"fsStatMany\":true,\"fsWriteBase64\":true,\"jobControl\":false,\"fsHash\":true,\"fsScanPagination\":false,\"fsWatch\":false},\"limits\":{\"maxFrameBytes\":33554432,\"maxWriteBase64Bytes\":20971520,\"maxHashBytes\":16777216,\"maxStatManyPaths\":128,\"maxStatManyPathBytes\":262144}}",platform,owc_sandbox_status_name(capability),escaped);(void)reply_result(rpc,id,result);free(result);}free(escaped);}
+        char reason[192],*escaped,*result;size_t result_size;owc_sandbox_status capability=owc_sandbox_probe(reason,sizeof(reason));escaped=owc_json_escape_string(reason);if(!escaped)(void)reply_error(rpc,id,-32000,"failed to encode sandbox capability");else{result_size=(size_t)snprintf(NULL,0,"{\"version\":\"0.2.3\",\"protocolVersion\":\"1.0\",\"platform\":\"%s\",\"sandboxCapability\":\"%s\",\"sandboxReason\":%s,\"features\":{\"fsStat\":true,\"fsStatMany\":true,\"fsWriteBase64\":true,\"jobControl\":false,\"fsHash\":true,\"fsScanPagination\":true,\"fsWatch\":true},\"limits\":{\"maxFrameBytes\":33554432,\"maxWriteBase64Bytes\":20971520,\"maxHashBytes\":16777216,\"maxStatManyPaths\":128,\"maxStatManyPathBytes\":262144,\"maxScanEntries\":256,\"maxScanDepth\":16,\"maxScanNodes\":2048,\"maxWatches\":16,\"maxWatchEvents\":128}}",platform,owc_sandbox_status_name(capability),escaped);result=(char*)malloc(result_size+1);if(!result)(void)reply_error(rpc,id,-32000,"failed to encode core capabilities");else{(void)snprintf(result,result_size+1,"{\"version\":\"0.2.3\",\"protocolVersion\":\"1.0\",\"platform\":\"%s\",\"sandboxCapability\":\"%s\",\"sandboxReason\":%s,\"features\":{\"fsStat\":true,\"fsStatMany\":true,\"fsWriteBase64\":true,\"jobControl\":false,\"fsHash\":true,\"fsScanPagination\":true,\"fsWatch\":true},\"limits\":{\"maxFrameBytes\":33554432,\"maxWriteBase64Bytes\":20971520,\"maxHashBytes\":16777216,\"maxStatManyPaths\":128,\"maxStatManyPathBytes\":262144,\"maxScanEntries\":256,\"maxScanDepth\":16,\"maxScanNodes\":2048,\"maxWatches\":16,\"maxWatchEvents\":128}}",platform,owc_sandbox_status_name(capability),escaped);(void)reply_result(rpc,id,result);free(result);}free(escaped);}
     } else if(strcmp(method,"core.shutdown")==0) { (void)reply_result(rpc,id,"{\"ok\":true}"); rpc->shutting_down=1; }
     else if(strcmp(method,"session.configure")==0) { const char *sid=owc_json_get_string(owc_json_object_get(params,"sessionId")),*cwd=owc_json_get_string(owc_json_object_get(params,"cwd"));if(!sid||!sid[0]||!cwd||!cwd[0])(void)reply_error(rpc,id,-32602,"session.configure requires sessionId and cwd");else if(!configure_session(sid,cwd)||!configure_policy(sid,owc_json_object_get(params,"sandbox")))(void)reply_error(rpc,id,-32000,"failed to configure session");else(void)reply_session_capability(rpc,id,sid); }
     else if(strcmp(method,"session.cleanup")==0) { const char *sid=owc_json_get_string(owc_json_object_get(params,"sessionId"));if(!sid||!sid[0])(void)reply_error(rpc,id,-32602,"session.cleanup requires sessionId");else{(void)cleanup_session(sid);(void)reply_result(rpc,id,"{\"ok\":true}");} }
     else if(strcmp(method,"exec.run")==0) (void)handle_exec_run(rpc,id,params);
     else if(strcmp(method,"fs.statMany")==0) (void)handle_fs_stat_many(rpc,id,params);
+    else if(strcmp(method,"fs.scan")==0) (void)handle_fs_scan(rpc,id,params);
+    else if(strcmp(method,"fs.watch")==0) (void)handle_fs_watch_start(rpc,id,params);
+    else if(strcmp(method,"fs.watch.poll")==0) (void)handle_fs_watch_poll(rpc,id,params);
+    else if(strcmp(method,"fs.watch.cancel")==0) (void)handle_fs_watch_cancel(rpc,id,params);
     else if(strcmp(method,"fs.read")==0 || strcmp(method,"fs.write")==0 || strcmp(method,"fs.writeBase64")==0 || strcmp(method,"fs.edit")==0 || strcmp(method,"fs.stat")==0 || strcmp(method,"fs.hash")==0 || strcmp(method,"fs.list")==0 || strcmp(method,"fs.glob")==0 || strcmp(method,"fs.grep")==0) (void)handle_fs(rpc,id,method,params);
     else (void)reply_error(rpc,id,-32601,"method not found");
     rpc->suppress_responses=0; owc_json_free(root); return 1;

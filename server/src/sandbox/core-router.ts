@@ -12,6 +12,11 @@ import type {
   FsReadRequest,
   FsReadResult,
   FsSearchRequest,
+  FsScanRequest,
+  FsScanResult,
+  FsWatchPollRequest,
+  FsWatchPollResult,
+  FsWatchRequest,
   FsHashResult,
   FsStatResult,
   FsStatManyRequest,
@@ -180,6 +185,26 @@ export class CoreRouter extends EventEmitter {
   async hashFile(request: FsPathRequest): Promise<FsHashResult> {
     const { client, meta } = await this.clientFor(request.sessionId);
     return client.hashFile(translatePath(request, meta));
+  }
+
+  async scanFiles(request: FsScanRequest): Promise<FsScanResult> {
+    const { client, meta } = await this.clientFor(request.sessionId);
+    return client.scanFiles(translatePath(request, meta));
+  }
+
+  async watchFiles(request: FsWatchRequest): Promise<{ watchId: number }> {
+    const { client, meta } = await this.clientFor(request.sessionId);
+    return client.watchFiles(translatePath(request, meta));
+  }
+
+  async pollWatch(request: FsWatchPollRequest): Promise<FsWatchPollResult> {
+    const { client } = await this.clientFor(request.sessionId);
+    return client.pollWatch(request);
+  }
+
+  async cancelWatch(request: { sessionId: string; watchId: number }): Promise<{ ok: true }> {
+    const { client } = await this.clientFor(request.sessionId);
+    return client.cancelWatch(request);
   }
 
   async listFiles(request: FsPathRequest): Promise<FsListResult> {
