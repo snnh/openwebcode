@@ -113,7 +113,9 @@ def main():
         assert response["result"]["features"]["fsWriteBase64"] is True
         assert response["result"]["features"]["fsStatMany"] is True
         assert response["result"]["features"]["fsHash"] is True
-        assert response["result"]["limits"] == {"maxFrameBytes": 32 * 1024 * 1024, "maxWriteBase64Bytes": 20 * 1024 * 1024, "maxHashBytes": 16 * 1024 * 1024, "maxStatManyPaths": 128, "maxStatManyPathBytes": 256 * 1024}
+        assert response["result"]["features"]["fsScanPagination"] is True
+        assert response["result"]["features"]["fsWatch"] is True
+        assert response["result"]["limits"] == {"maxFrameBytes": 32 * 1024 * 1024, "maxWriteBase64Bytes": 20 * 1024 * 1024, "maxHashBytes": 16 * 1024 * 1024, "maxStatManyPaths": 128, "maxStatManyPathBytes": 256 * 1024, "maxScanEntries": 256, "maxScanDepth": 16, "maxScanNodes": 2048, "maxWatches": 16, "maxWatchEvents": 128}
 
         request(proc, None, "core.ping")
         response, notes = collect_until_response(proc, None)

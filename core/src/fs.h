@@ -32,6 +32,9 @@ typedef struct { owc_fs_entry *entries; size_t count; int truncated; } owc_fs_li
 typedef struct { char **paths; size_t count; int truncated; } owc_fs_glob_result;
 typedef struct { char *path; size_t line; char *text; } owc_fs_grep_match;
 typedef struct { owc_fs_grep_match *matches; size_t count; int truncated; } owc_fs_grep_result;
+typedef struct owc_fs_watch owc_fs_watch;
+typedef struct { char *path; const char *kind; } owc_fs_watch_event;
+typedef struct { owc_fs_watch_event *events; size_t count; int overflow; } owc_fs_watch_result;
 
 int owc_fs_utf8_valid(const char *text, size_t length);
 owc_fs_error owc_fs_read(const char *root, const char *path, size_t offset, size_t limit, owc_fs_read_result *result);
@@ -47,6 +50,12 @@ owc_fs_error owc_fs_hash(const char *root, const char *path, char output[65], si
 owc_fs_error owc_fs_list(const char *root, const char *path, owc_fs_list_result *result);
 owc_fs_error owc_fs_glob(const char *root, const char *path, const char *pattern, owc_fs_glob_result *result);
 owc_fs_error owc_fs_grep(const char *root, const char *path, const char *pattern, owc_fs_grep_result *result);
+/* Non-blocking platform watch. The caller polls and owns cancellation, so the
+ * synchronous RPC reader remains able to accept fs.watch.cancel promptly. */
+owc_fs_error owc_fs_watch_open(const char *root, const char *path, int recursive, owc_fs_watch **watch);
+owc_fs_error owc_fs_watch_poll(owc_fs_watch *watch, size_t maximum_events, owc_fs_watch_result *result);
+void owc_fs_watch_close(owc_fs_watch *watch);
+void owc_fs_watch_result_free(owc_fs_watch_result *result);
 void owc_fs_read_free(owc_fs_read_result *result);
 void owc_fs_list_free(owc_fs_list_result *result);
 void owc_fs_glob_free(owc_fs_glob_result *result);

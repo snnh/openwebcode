@@ -65,6 +65,34 @@ def main():
         content="一\n二\n三".encode()
         assert fs(148,"fs.hash",{"path":"目录/文件.txt"})["result"]=={"sha256":hashlib.sha256(content).hexdigest(),"size":len(content)}
         assert fs(149,"fs.hash",{"path":"目录/文件.txt","unexpected":True})["error"]["code"]==-32602
+        assert fs(152,"fs.write",{"path":"scan-root/a.txt","content":"a","createDirs":True})["result"]["ok"]
+        assert fs(153,"fs.write",{"path":"scan-root/nested/b.txt","content":"b","createDirs":True})["result"]["ok"]
+        assert fs(154,"fs.write",{"path":"scan-root/private/secret.txt","content":"secret","createDirs":True})["result"]["ok"]
+        # scan paths are relative to the requested base, have a stable cursor,
+        # and never reveal or descend into a denied directory.
+        assert send(p,155,"session.configure",{"sessionId":"test-session","cwd":td,"sandbox":{"enabled":True,"denyPaths":[str(root/".env"),str(root/"private"),str(root/"scan-root"/"private")],"network":"allow"}})["result"]["sandboxCapability"] in {"advisory","partial","enforced"}
+        first_scan_response=fs(156,"fs.scan",{"path":"scan-root","limit":2,"maxDepth":8})
+        assert "result" in first_scan_response,first_scan_response
+        first_scan=first_scan_response["result"]
+        assert first_scan=={"entries":[{"path":"a.txt","type":"file","size":1},{"path":"nested","type":"directory","size":0}],"nextCursor":2,"truncated":False},first_scan
+        second_scan=fs(157,"fs.scan",{"path":"scan-root","cursor":first_scan["nextCursor"],"limit":2,"maxDepth":8})["result"]
+        assert second_scan=={"entries":[{"path":"nested/b.txt","type":"file","size":1}],"truncated":False},second_scan
+        shallow_scan=fs(158,"fs.scan",{"path":"scan-root","maxDepth":0})["result"]
+        assert [entry["path"] for entry in shallow_scan["entries"]]==["a.txt","nested"] and shallow_scan["truncated"] is True,shallow_scan
+        assert fs(159,"fs.scan",{"path":"scan-root","limit":257})["error"]["code"]==-32602
+        assert fs(160,"fs.scan",{"path":"scan-root","unexpected":True})["error"]["code"]==-32602
+        assert fs(161,"fs.write",{"path":"watch-root/.keep","content":"keep","createDirs":True})["result"]["ok"]
+        watch=fs(162,"fs.watch",{"path":"watch-root"})["result"]["watchId"]
+        assert isinstance(watch,int) and watch>0
+        assert fs(163,"fs.write",{"path":"watch-root/observed.txt","content":"observed"})["result"]["ok"]
+        watched=[]
+        for _ in range(10):
+            watched.extend(fs(164,"fs.watch.poll",{"watchId":watch,"limit":128})["result"]["events"])
+            if watched: break
+            time.sleep(0.05)
+        assert watched,watched
+        assert fs(165,"fs.watch.cancel",{"watchId":watch})["result"]=={"ok":True}
+        assert fs(166,"fs.watch.poll",{"watchId":watch})["error"]["code"]==-32003
         listing=fs(4,"fs.list",{"path":"目录"})["result"]
         assert listing["truncated"] is False
         assert any(x["name"]=="文件.txt" for x in listing["entries"])
