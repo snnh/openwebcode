@@ -166,6 +166,7 @@ const app = await buildServer({
   backgroundTasks,
   extensions,
   contentLens,
+  ...(config.accessToken ? { auth: { accessToken: config.accessToken, allowedOrigins: config.allowedOrigins } } : {}),
   getPreferences: () => {
     const effective = settings.effective();
     return { currency: effective.defaultCurrency, language: effective.defaultLanguage };

@@ -2,7 +2,7 @@ import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
 import { existsSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import type { AgentRunner } from "./agent/agent-runner.js";
@@ -144,6 +144,35 @@ export interface ServerDependencies {
   hooks?: HookRunner;
   extensions?: ExtensionManager;
   contentLens?: ContentLensService;
+  /** Remote-listener protection. Omitted for the loopback-only development default. */
+  auth?: { accessToken: string; allowedOrigins: string[] };
+}
+
+function parseCookies(value: string | undefined): Map<string, string> {
+  const result = new Map<string, string>();
+  for (const item of value?.split(";") ?? []) {
+    const separator = item.indexOf("=");
+    if (separator > 0) result.set(item.slice(0, separator).trim(), item.slice(separator + 1).trim());
+  }
+  return result;
+}
+
+function safeTokenEqual(expected: string, actual: string | undefined): boolean {
+  if (!actual) return false;
+  const left = Buffer.from(expected);
+  const right = Buffer.from(actual);
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
+function requestToken(request: { headers: Record<string, string | string[] | undefined>; query?: unknown }, allowQueryToken = false): string | undefined {
+  const authorization = request.headers.authorization;
+  if (typeof authorization === "string" && authorization.startsWith("Bearer ")) return authorization.slice(7);
+  const explicit = request.headers["x-openwebcode-token"];
+  if (typeof explicit === "string") return explicit;
+  const cookie = parseCookies(typeof request.headers.cookie === "string" ? request.headers.cookie : undefined).get("owc_access_token");
+  if (cookie || !allowQueryToken || !request.query || typeof request.query !== "object") return cookie;
+  const token = (request.query as Record<string, unknown>).token;
+  return typeof token === "string" ? token : undefined;
 }
 
 function serializePricing(pricing: ModelPricing): Record<string, string> {
@@ -248,6 +277,24 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   const defaultLanguage = dependencies.defaultLanguage ?? "zh-CN";
   const getPreferences = dependencies.getPreferences ?? (() => ({ currency: defaultCurrency, language: defaultLanguage }));
   const app = Fastify({ logger: true, bodyLimit: 1024 * 1024 });
+  const auth = dependencies.auth;
+  const isAuthorized = (request: { headers: Record<string, string | string[] | undefined>; query?: unknown }, allowQueryToken = false) => !auth || safeTokenEqual(auth.accessToken, requestToken(request, allowQueryToken));
+  const originAllowed = (origin: string | undefined) => !origin || !auth || auth.allowedOrigins.includes(origin);
+  if (auth) {
+    app.addHook("onRequest", async (request, reply) => {
+      if (!request.url.startsWith("/api/")) {
+        // A remote browser can bootstrap an HttpOnly, same-site cookie by
+        // opening `/?token=...`; subsequent REST and WebSocket requests do
+        // not expose the token to application JavaScript or URLs.
+        if (request.method === "GET" && isAuthorized(request, true)) {
+          reply.header("set-cookie", `owc_access_token=${auth.accessToken}; HttpOnly; SameSite=Strict; Path=/`);
+        }
+        return;
+      }
+      if (isAuthorized(request)) return;
+      return reply.code(401).send({ error: "Authentication required" });
+    });
+  }
   // 会话导入走 ndjson/纯文本原文，不经 JSON 解析
   app.addContentTypeParser(["application/x-ndjson", "text/plain"], { parseAs: "string" }, (_request, body, done) => done(null, body));
   await app.register(websocket);
@@ -378,7 +425,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       if (client.readyState !== 1 || (client.sessionId && event.sessionId && client.sessionId !== event.sessionId)) continue;
       if (client.bufferedAmount > MAX_WS_BUFFERED_BYTES) {
         slowClientDisconnects++;
-        try { client.send(JSON.stringify({ source: "server", type: "resync.required", seq: event.seq, createdAt: new Date().toISOString(), ...(client.sessionId ? { sessionId: client.sessionId } : {}), payload: { latestSeq: event.seq, reason: "slow_client" } })); }
+        try { client.send(JSON.stringify({ source: "server", type: "resync.required", seq: event.seq, createdAt: new Date().toISOString(), ...(client.sessionId ? { sessionId: client.sessionId, ...(event.sessionSeq !== undefined ? { sessionSeq: event.sessionSeq } : {}) } : {}), payload: { latestSeq: client.sessionId ? event.sessionSeq ?? 0 : event.seq, reason: "slow_client" } })); }
         catch { failedClientSends++; }
         try { client.close(1013, "Client is too slow; resync required"); }
         catch { /* The socket is already unusable; removing it below is sufficient. */ }
@@ -1425,6 +1472,10 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   });
 
   app.get<{ Querystring: { after?: string; sessionId?: string } }>("/api/events", { websocket: true }, (socket, request) => {
+    if (!isAuthorized(request, true) || !originAllowed(typeof request.headers.origin === "string" ? request.headers.origin : undefined)) {
+      socket.close(1008, "Unauthorized origin or token");
+      return;
+    }
     const parsedAfter = Number(request.query.after ?? 0);
     const after = Number.isSafeInteger(parsedAfter) && parsedAfter >= 0 ? parsedAfter : 0;
     const sessionId = request.query.sessionId;
@@ -1435,7 +1486,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
         type: "resync.required",
         seq: replay.latestSeq,
         createdAt: new Date().toISOString(),
-        ...(sessionId ? { sessionId } : {}),
+        ...(sessionId ? { sessionId, sessionSeq: replay.latestSeq } : {}),
         payload: { after, latestSeq: replay.latestSeq },
       }));
     } else {
@@ -1449,7 +1500,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       ...(sessionId ? { sessionId } : {}),
     };
     clients.add(client);
-    socket.send(JSON.stringify({ source: "server", type: "connected", seq: replay.latestSeq, createdAt: new Date().toISOString(), payload: { latestSeq: replay.latestSeq } }));
+    socket.send(JSON.stringify({ source: "server", type: "connected", seq: replay.latestSeq, createdAt: new Date().toISOString(), ...(sessionId ? { sessionId, sessionSeq: replay.latestSeq } : {}), payload: { latestSeq: replay.latestSeq } }));
     socket.on("close", () => clients.delete(client));
   });
 
