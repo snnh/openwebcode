@@ -32,6 +32,7 @@ import { decodeProcessOutputChunks } from "./output-decoder.js";
 import { buildSystemPrompt } from "./prompts/prompt-builder.js";
 import { RunStore, type AgentRunSnapshot, type AgentRunState } from "./run-store.js";
 import { MessageQueue, type QueueItem } from "./message-queue.js";
+import { InteractionCoordinator, type InteractionRequest } from "./interaction-coordinator.js";
 
 interface ExecutionContext {
   sessionId: string;
@@ -331,6 +332,7 @@ export class AgentRunner {
   private readonly settling = new Set<string>();
   private readonly shells = new Map<string, AbortController>();
   private readonly messageQueue: MessageQueue;
+  private readonly interactions: InteractionCoordinator;
   private readonly repeatedCalls = new Map<string, { signature: string; count: number }>();
   private readonly mcpWarningSignatures = new Map<string, string>();
   private readonly todos = new Map<string, TodoItem[]>();
@@ -363,6 +365,7 @@ export class AgentRunner {
   ) {
     this.coreGateway = new CoreGateway(core);
     this.messageQueue = new MessageQueue((sessionId) => this.sessions.contextRoot(sessionId));
+    this.interactions = new InteractionCoordinator((sessionId) => this.sessions.contextRoot(sessionId));
     this.permissions = new PermissionCoordinator(events);
     this.webFetchProvider = webFetchProvider;
     core.on("event", (event: CoreEvent) => {
@@ -991,6 +994,13 @@ export class AgentRunner {
 
   async listSteering(sessionId: string): Promise<QueueItem[]> {
     return (await this.messageQueue.list(sessionId, "steer")).filter((item) => item.status === "queued");
+  }
+
+  async listInteractions(sessionId: string): Promise<InteractionRequest[]> { return this.interactions.list(sessionId); }
+  async respondInteraction(sessionId: string, id: string, answer: unknown): Promise<InteractionRequest | undefined> {
+    const item = await this.interactions.answer(sessionId, id, answer);
+    if (item) this.events.publish({ source: "agent", type: "interaction.answered", sessionId, payload: item });
+    return item;
   }
 
   async removeSteering(sessionId: string, id: string): Promise<boolean> {

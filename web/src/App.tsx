@@ -10,6 +10,7 @@ import { useAgentRun } from "./hooks/use-agent-run";
 import { useSessionEventStream } from "./hooks/use-session-event-stream";
 import { BottomPanel } from "./components/BottomPanel";
 import { StatusBar } from "./components/StatusBar";
+import { InteractionCard } from "./components/InteractionCard";
 import { Composer } from "./components/Composer";
 import type { PendingImage } from "./components/Composer";
 import { EmptyState } from "./components/EmptyState";
@@ -109,6 +110,7 @@ export function App(): ReactElement {
   const models = useQuery({ queryKey: ["models"], queryFn: api.models });
   const providers = useQuery({ queryKey: ["providers"], queryFn: api.providers });
   const steering = useQuery({ queryKey: ["steering", currentId], queryFn: () => api.steering(currentId!), enabled: Boolean(currentId) });
+  const interactions = useQuery({ queryKey: ["interactions", currentId], queryFn: () => api.interactions(currentId!), enabled: Boolean(currentId) });
   const contextView = useQuery({ queryKey: ["context", currentId], queryFn: () => api.context(currentId!), enabled: Boolean(currentId) });
   const skills = useQuery({ queryKey: queryKeys.skills(currentId ?? ""), queryFn: () => api.skills(currentId!), enabled: Boolean(currentId) });
   const todos = useQuery({ queryKey: ["todos", currentId], queryFn: () => api.todos(currentId!), enabled: Boolean(currentId) });
@@ -215,6 +217,7 @@ export function App(): ReactElement {
         if (["steering.queued", "steering.applied", "steering.removed"].includes(event.type)) {
           queryClient.invalidateQueries({ queryKey: ["steering", event.sessionId] });
         }
+        if (event.type.startsWith("interaction.")) queryClient.invalidateQueries({ queryKey: ["interactions", event.sessionId] });
         // 后台任务完成通知：刷新任务列表
         if (event.type === "task.finished") {
           const task = event.payload as BackgroundTaskInfo;
@@ -463,6 +466,11 @@ export function App(): ReactElement {
                   .catch((error: unknown) => notify(error instanceof Error ? error.message : t("撤销 Steering 失败", "Could not remove Steering item"), "error"))}
               />
             )}
+            {interactions.data?.filter((item) => item.status === "pending").map((item) => (
+              <InteractionCard key={item.id} item={item} onRespond={(answer) => api.respondInteraction(current.id, item.id, answer)
+                .then(() => interactions.refetch())
+                .catch((error: unknown) => notify(error instanceof Error ? error.message : t("提交回答失败", "Could not submit answer"), "error"))} />
+            ))}
             <Composer
               current={current}
               model={model}

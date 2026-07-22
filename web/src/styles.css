@@ -403,6 +403,11 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .status-live i { width: 7px; height: 7px; border-radius: 50%; background: var(--text-3); }
 .status-live:not(.status-idle) { color: var(--accent); }
 .status-live:not(.status-idle) i { background: currentColor; }
+.interaction-card { margin: 8px 22px; padding: 12px; border: 1px solid var(--accent); border-radius: var(--radius); background: var(--panel); }
+.interaction-card p { margin: 6px 0; color: var(--text-2); }
+.interaction-card label { display: block; margin: 6px 0; }
+.interaction-card textarea { width: 100%; min-height: 72px; margin: 6px 0; }
+.interaction-card > div { display: flex; gap: 8px; }
 
 /* ================= 后台任务 ================= */
 .task-badge {
