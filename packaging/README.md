@@ -11,7 +11,7 @@
 | `openwebcode-<version>-linux-x64.tar.gz` | Linux | tar.gz + 顶层 `install.sh` |
 | `SHA256SUMS.txt` | 全平台 | 两个发行包的 SHA-256 校验和 |
 
-`<version>` 为 tag 去掉前导 `v`（如 `v0.2.4` → `0.2.4`）。
+`<version>` 为 tag 去掉前导 `v`（如 `v0.3.0` → `0.3.0`）。
 
 ## 包内布局
 
@@ -61,7 +61,7 @@ install.sh              Linux 安装脚本（仅 tar.gz，位于包顶层）
 
 ```powershell
 $ErrorActionPreference = "Stop"
-$Version = "0.2.4"
+$Version = "0.3.0"
 $NodeVersion = "20.19.0"
 
 npm --prefix server ci
@@ -171,7 +171,7 @@ Linux 使用与 Windows 相同的测试门禁和 production-only 依赖。核心
 
 ```sh
 set -euo pipefail
-VERSION=0.2.4
+VERSION=0.3.0
 NODE_VERSION=20.19.0
 
 npm --prefix server ci
@@ -285,8 +285,8 @@ Server 模块在进程启动时加载，复制后必须重启 `build\stage\bin\o
 推荐发布方式是先推送已审核提交，再创建并推送语义化版本 tag：
 
 ```sh
-git tag -a v0.2.4 -m "OpenWebCode v0.2.4"
-git push origin v0.2.4
+git tag -a v0.3.0 -m "OpenWebCode v0.3.0"
+git push origin v0.3.0
 ```
 
-也可在 GitHub Actions 中手动运行 `release`，输入形如 `v0.2.4` 的 tag。Windows 与 Linux job 都成功后，唯一的 release job 才会汇总上传 MSI、tar.gz 与 `SHA256SUMS.txt`；随后核对下载文件名、校验和、安装/启动和 `/api/health`。
+也可在 GitHub Actions 中手动运行 `release`，输入形如 `v0.3.0` 的 tag。Windows 与 Linux job 都成功后，唯一的 release job 才会汇总上传 MSI、tar.gz 与 `SHA256SUMS.txt`；随后核对下载文件名、校验和、安装/启动和 `/api/health`。

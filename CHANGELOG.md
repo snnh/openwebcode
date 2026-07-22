@@ -1,8 +1,22 @@
 # 更新日志
 
-本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前 `v0.2.4` 的用户可感知变化。日期以 Git 标签发布日期为准。
+本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前 `v0.3.0` 的用户可感知变化。日期以 Git 标签发布日期为准。
 
 ## Unreleased
+
+## [0.3.0] - 2026-07-22
+
+### 新增
+
+- 会话消息现在记录父消息、运行和轮次归属，可在时间线中查看对话、工具、队列和交互事件。
+- 新增持久化运行队列：可查看、重新排序、取消待执行消息，并将运行中的 follow-up 安全排入队列。
+- Agent 可向界面发起结构化的选择、文本和确认交互；用户的响应会持久化并恢复到对应运行。
+- 会话支持在空闲时创建仅复制对话数据的分支，避免意外复制或改写原工作区。
+
+### 改进与修复
+
+- 会话导入会保留消息的父级、运行和轮次关联，导入后时间线仍保持完整。
+- Web 顶部状态栏与队列面板统一展示当前运行、排队项和待处理交互。
 
 ## [0.2.4] - 2026-07-22
 
@@ -85,6 +99,7 @@
 - 支持图片输入、Markdown/代码高亮/KaTeX、折叠思考内容、会话导入导出、可分享的自包含 HTML 页面和 `owc run` Headless CLI。
 - 提供 Windows MSI、Linux tar.gz 安装脚本和 GitHub Actions 发布流水线。
 
+[0.3.0]: https://github.com/snnh/openwebcode/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/snnh/openwebcode/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/snnh/openwebcode/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/snnh/openwebcode/compare/v0.2.1...v0.2.2
