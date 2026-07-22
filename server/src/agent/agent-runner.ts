@@ -1325,6 +1325,41 @@ export class AgentRunner {
     try {
       const session = await this.sessions.get(sessionId);
       if (!session) throw new Error("Session not found");
+      const capabilities = await this.core.ping();
+      if (capabilities.features?.jobControl) {
+        const jobId = `job-${randomUUID()}`;
+        const output: Array<{ stream: "stdout" | "stderr"; data: string; seq: number }> = [];
+        let afterSeq = 0;
+        const cancel = () => { void this.core.cancelJob({ sessionId, jobId }).catch(() => undefined); };
+        signal.addEventListener("abort", cancel, { once: true });
+        try {
+          await this.core.startJob({ sessionId, jobId, kind: "exec", cmd, cwd: session.cwd });
+          for (;;) {
+            const page = await this.core.jobOutput({ sessionId, jobId, afterSeq, limit: 128 });
+            output.push(...page.chunks);
+            afterSeq = page.nextSeq;
+            const status = await this.core.jobStatus({ sessionId, jobId });
+            if (status.state === "running") {
+              await new Promise<void>((resolve) => setTimeout(resolve, 50));
+              continue;
+            }
+            // Drain chunks produced between the last poll and terminal state.
+            const tail = await this.core.jobOutput({ sessionId, jobId, afterSeq, limit: 128 });
+            output.push(...tail.chunks);
+            if (signal.aborted) signal.throwIfAborted();
+            if (status.state === "cancelled" || status.state === "timed_out" || status.state === "failed") {
+              throw new Error(`Job ${status.state}`);
+            }
+            const decoded = decodeProcessOutputChunks(output);
+            const rawContent = JSON.stringify({ ...status, output: decoded, outputTruncated: page.truncated || tail.truncated });
+            const bounded = await boundToolResult(this.sessions.contextRoot(sessionId), "bash", rawContent);
+            this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: toolEventResult(bounded) } });
+            return { content: bounded.content, isError: false };
+          }
+        } finally {
+          signal.removeEventListener("abort", cancel);
+        }
+      }
       const result = await this.core.run({ sessionId, execId, cmd, cwd: session.cwd });
       const output = decodeProcessOutputChunks(execution.output);
       const rawContent = JSON.stringify({ ...result, output });

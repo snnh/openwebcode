@@ -1,8 +1,10 @@
 # 更新日志
 
-本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前 `v0.2.3` 的用户可感知变化。日期以 Git 标签发布日期为准。
+本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前 `v0.2.4` 的用户可感知变化。日期以 Git 标签发布日期为准。
 
 ## Unreleased
+
+## [0.2.4] - 2026-07-22
 
 ### 新增
 
@@ -13,6 +15,8 @@
 - 托管工作区同步预览现在返回源目录和托管目录各自的文件数、目录数与扫描字节数。
 - 托管工作区同步支持安全取消：扫描与文件操作之间响应取消请求，且不打断单文件的原子替换。
 - `tool.end` 事件改为固定长度摘要与 artifact 引用，不再把完整 Web、文件或后台任务结果写入 WebSocket 回放缓冲。
+- Windows Core 提供可查询、可取消的后台作业控制；Agent 的长时间 bash 命令改用该通道，执行期间仍可继续对话。
+- Core 的后台作业保留会话沙盒策略及额外写入路径，避免策略重配影响已启动的作业。
 
 ## [0.2.3] - 2026-07-21
 
@@ -81,6 +85,7 @@
 - 支持图片输入、Markdown/代码高亮/KaTeX、折叠思考内容、会话导入导出、可分享的自包含 HTML 页面和 `owc run` Headless CLI。
 - 提供 Windows MSI、Linux tar.gz 安装脚本和 GitHub Actions 发布流水线。
 
+[0.2.4]: https://github.com/snnh/openwebcode/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/snnh/openwebcode/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/snnh/openwebcode/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/snnh/openwebcode/compare/v0.2.0...v0.2.1

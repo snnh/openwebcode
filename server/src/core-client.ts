@@ -23,7 +23,7 @@ export interface CoreInfo {
   platform: "windows" | "linux";
   sandboxCapability: string;
   features?: { fsStat: boolean; fsStatMany: boolean; fsWriteBase64: boolean; jobControl: boolean; fsHash: boolean; fsScanPagination: boolean; fsWatch: boolean };
-  limits?: { maxFrameBytes: number; maxWriteBase64Bytes: number; maxHashBytes: number; maxStatManyPaths: number; maxStatManyPathBytes: number; maxScanEntries?: number; maxScanDepth?: number; maxScanNodes?: number; maxWatches?: number; maxWatchEvents?: number };
+  limits?: { maxFrameBytes: number; maxWriteBase64Bytes: number; maxHashBytes: number; maxStatManyPaths: number; maxStatManyPathBytes: number; maxScanEntries?: number; maxScanDepth?: number; maxScanNodes?: number; maxWatches?: number; maxWatchEvents?: number; maxConcurrentJobs?: number; maxJobOutputBytes?: number };
 }
 
 export interface ExecRequest {
