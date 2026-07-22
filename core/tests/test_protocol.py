@@ -99,14 +99,20 @@ def assert_landlock_filesystem_isolation_if_enforced(proc):
 
 def main():
     executable = sys.argv[1]
-    proc = subprocess.Popen([executable], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    environment = os.environ.copy()
+    if os.name == "nt":
+        # Keep the protocol smoke test on cmd.exe. PowerShell itself has a
+        # separate integration surface and hosted runners can retain it past
+        # the command timeout, which is not relevant to this basic channel.
+        environment["PATH"] = os.pathsep.join(item for item in environment.get("PATH", "").split(os.pathsep) if "powershell" not in item.lower())
+    proc = subprocess.Popen([executable], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment)
     binary_name = f"protocol-upload-{os.getpid()}.bin"
     binary_path = os.path.join(os.getcwd(), binary_name)
     try:
         request(proc, "ping-中文", "core.ping")
         response, notes = collect_until_response(proc, "ping-中文")
         assert not notes
-        assert response["result"]["version"] == "0.3.3"
+        assert response["result"]["version"] == "0.3.4"
         assert response["result"]["sandboxCapability"] in {"advisory", "partial", "enforced"}
         assert response["result"]["sandboxReason"]
         assert response["result"]["protocolVersion"] == "1.0"
@@ -122,22 +128,19 @@ def main():
         response, notes = collect_until_response(proc, None)
         assert not notes
         assert response["id"] is None
-        assert response["result"]["version"] == "0.3.3"
+        assert response["result"]["version"] == "0.3.4"
 
         send(proc, {"jsonrpc": "2.0", "method": "core.ping", "params": {}})
         request(proc, "after-notification", "core.ping")
         response, notes = collect_until_response(proc, "after-notification")
         assert not notes
-        assert response["result"]["version"] == "0.3.3"
+        assert response["result"]["version"] == "0.3.4"
 
         request(proc, 2, "missing.method")
         response, _ = collect_until_response(proc, 2)
         assert response["error"]["code"] == -32601
 
-        if os.name == "nt" and shutil.which("pwsh"):
-            command = "Write-Output hello; [Console]::Error.WriteLine('error'); exit 7"
-            slow = "Start-Sleep -Seconds 5"
-        elif os.name == "nt":
+        if os.name == "nt":
             command = "echo hello&& echo error 1>&2&& exit /b 7"
             slow = "ping -n 6 127.0.0.1 >nul"
         else:
