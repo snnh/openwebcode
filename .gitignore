@@ -56,6 +56,7 @@ dkms.conf
 *.dwo
 
 build/
+build-debug/
 .claude/
 .agents/
 .openwebcode/
