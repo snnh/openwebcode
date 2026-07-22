@@ -4,6 +4,10 @@ import { MAX_SYNC_INTERVAL_MINUTES } from "./remote-sync-scheduler.js";
 export interface ServerConfig {
   host: string;
   port: number;
+  /** Required whenever the HTTP listener is reachable off-host. */
+  accessToken?: string;
+  /** Browser origins allowed to open the event WebSocket. */
+  allowedOrigins: string[];
   corePath: string;
   dataDir: string;
   coreRequestTimeoutMs: number;
@@ -93,6 +97,30 @@ function optionalHttpUrl(value: string | undefined, name: string): string | unde
   return value;
 }
 
+function isLoopbackHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase();
+  return normalized === "localhost" || normalized === "::1" || normalized === "[::1]" ||
+    normalized === "127.0.0.1" || normalized.startsWith("127.");
+}
+
+function originList(value: string | undefined): string[] {
+  if (!value) return [];
+  const origins = value.split(",").map((entry) => entry.trim()).filter(Boolean);
+  if (origins.length > 16) throw new Error("OWC_ALLOWED_ORIGINS accepts at most 16 origins");
+  return origins.map((origin) => {
+    let parsed: URL;
+    try {
+      parsed = new URL(origin);
+    } catch {
+      throw new Error(`OWC_ALLOWED_ORIGINS contains an invalid origin: ${origin}`);
+    }
+    if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || parsed.pathname !== "/" || parsed.search || parsed.hash) {
+      throw new Error(`OWC_ALLOWED_ORIGINS entries must be http(s) origins: ${origin}`);
+    }
+    return parsed.origin;
+  });
+}
+
 function pathList(value: string | undefined): string[] | undefined {
   if (!value) return undefined;
   const paths = value.split(path.delimiter).map((entry) => entry.trim()).filter(Boolean);
@@ -106,9 +134,22 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const allowPaths = pathList(env.OWC_SANDBOX_ALLOW_PATHS);
   const catalogSyncUrl = optionalHttpUrl(env.OWC_MODELS_CATALOG_SYNC_URL, "OWC_MODELS_CATALOG_SYNC_URL");
   const pricingSyncUrl = optionalHttpUrl(env.OWC_MODELS_PRICING_SYNC_URL, "OWC_MODELS_PRICING_SYNC_URL");
+  const host = env.OWC_HOST ?? "127.0.0.1";
+  const accessToken = env.OWC_ACCESS_TOKEN?.trim() || undefined;
+  const allowedOrigins = originList(env.OWC_ALLOWED_ORIGINS);
+  if (!isLoopbackHost(host)) {
+    if (!accessToken || accessToken.length < 32) {
+      throw new Error("Non-loopback OWC_HOST requires OWC_ACCESS_TOKEN with at least 32 characters");
+    }
+    if (allowedOrigins.length === 0) {
+      throw new Error("Non-loopback OWC_HOST requires OWC_ALLOWED_ORIGINS (comma-separated http(s) origins)");
+    }
+  }
   return {
-    host: env.OWC_HOST ?? "127.0.0.1",
+    host,
     port: positiveInteger(env.OWC_PORT, 3210),
+    ...(accessToken ? { accessToken } : {}),
+    allowedOrigins,
     corePath: env.OWC_CORE_PATH ?? "../build/Debug/owc-exec.exe",
     dataDir: env.OWC_DATA_DIR ?? "../.openwebcode",
     coreRequestTimeoutMs: positiveInteger(env.OWC_CORE_REQUEST_TIMEOUT_MS, 130_000),

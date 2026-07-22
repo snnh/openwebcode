@@ -8,10 +8,12 @@ describe("EventBus replay", () => {
     const second = bus.publish({ source: "agent", type: "two", sessionId: "b", payload: null });
     bus.publish({ source: "agent", type: "three", sessionId: "a", payload: null });
 
-    expect(first).toMatchObject({ seq: 1, type: "one" });
+    expect(first).toMatchObject({ seq: 1, sessionSeq: 1, type: "one" });
+    expect(first.eventId).toMatch(/[0-9a-f-]{36}/);
     expect(first.createdAt).toBeTruthy();
     expect(second.seq).toBe(2);
     expect(bus.replay(1, "a").events.map((event) => event.type)).toEqual(["three"]);
+    expect(bus.replay(1, "a").latestSeq).toBe(2);
   });
 
   it("requires REST resync when requested history was evicted", () => {
