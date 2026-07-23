@@ -42,8 +42,8 @@ async function fixture(env: NodeJS.ProcessEnv = {}) {
 }
 
 describe("default session provider", () => {
-  it("uses the first credentialed provider and its first catalog model", async () => {
-    const setup = await fixture({ ANTHROPIC_API_KEY: "test-anthropic-key" });
+  it("uses the first enabled provider and its first catalog model", async () => {
+    const setup = await fixture();
     try {
       const metadata = lookupModelMetadata("anthropic-default-test");
       await setup.models.upsertManual({
@@ -54,7 +54,7 @@ describe("default session provider", () => {
         maxOutput: metadata.maxOutput,
         capabilities: metadata.capabilities,
       });
-      setup.settings.reconcileProviders();
+      setup.providers.register(makeStubProvider("anthropic"));
 
       const response = await setup.app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: setup.root } });
       expect(response.statusCode).toBe(201);
@@ -64,10 +64,10 @@ describe("default session provider", () => {
     }
   });
 
-  it("keeps an unselected model exportable when the credentialed provider has no catalog entry", async () => {
-    const setup = await fixture({ ANTHROPIC_API_KEY: "test-anthropic-key" });
+  it("keeps an unselected model exportable when the enabled provider has no catalog entry", async () => {
+    const setup = await fixture();
     try {
-      setup.settings.reconcileProviders();
+      setup.providers.register(makeStubProvider("anthropic"));
       const created = await setup.app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: setup.root } });
       expect(created.statusCode).toBe(201);
       expect(created.json()).toMatchObject({ provider: "anthropic", model: "" });
@@ -110,16 +110,4 @@ describe("default session provider", () => {
     }
   });
 
-  it("does not treat an OpenAI base URL without an API key as a configured provider", async () => {
-    const setup = await fixture({ OPENAI_BASE_URL: "http://127.0.0.1:11434/v1" });
-    try {
-      setup.settings.reconcileProviders();
-      expect(setup.providers.list()).toEqual([]);
-      const response = await setup.app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: setup.root } });
-      expect(response.statusCode).toBe(400);
-      expect(response.json()).toMatchObject({ code: "NO_PROVIDER" });
-    } finally {
-      await setup.app.close();
-    }
-  });
 });

@@ -115,7 +115,7 @@ describe("Compactor", () => {
     }
     const compactor = new Compactor(store, EMPTY_PROVIDER2, {}, 10);
 
-    await expect(compactor.compact(session.id, "overview")).rejects.toThrow(/provider2 未配置/);
+    await expect(compactor.compact(session.id, "overview")).rejects.toThrow(/快速模型未配置/);
 
     const toolcalls = await compactor.compact(session.id, "toolcalls");
     expect(toolcalls).toMatchObject({ changed: true, mode: "toolcalls" });
@@ -218,7 +218,7 @@ describe("compact HTTP routes", () => {
       }
       const overview = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "/compact" } });
       expect(overview.statusCode).toBe(400);
-      expect(overview.json<{ error: string }>().error).toContain("provider2 未配置");
+      expect(overview.json<{ error: string }>().error).toContain("快速模型未配置");
     } finally {
       await app.close();
     }

@@ -347,6 +347,7 @@ export class AgentRunner {
   private readonly mcpWarningSignatures = new Map<string, string>();
   private readonly todos = new Map<string, TodoItem[]>();
   private readonly permissions: PermissionCoordinator;
+  private searchProvider: SearchProvider | undefined;
   private webFetchProvider: WebFetchProvider | undefined;
 
   constructor(
@@ -358,7 +359,7 @@ export class AgentRunner {
     private readonly exchangeRates?: ExchangeRateService,
     private defaultLanguage = "zh-CN",
     private readonly maxTurns = 50,
-    private readonly getProfile: (model: string) => ModelProfile = getModelProfile,
+    private readonly getProfile: (model: string, provider?: string) => ModelProfile = getModelProfile,
     private readonly usageLog?: UsageLog,
     private readonly skills?: SkillRegistry,
     private readonly mcp?: McpManager,
@@ -366,7 +367,7 @@ export class AgentRunner {
     private readonly dataDir?: string,
     private readonly agents?: AgentRegistry,
     private readonly commands?: CommandRegistry,
-    private readonly search?: SearchProvider,
+    search?: SearchProvider,
     _fetchImpl?: typeof fetch,
     private readonly backgroundTasks?: BackgroundTaskRegistry,
     private readonly hooks?: HookRunner,
@@ -377,6 +378,7 @@ export class AgentRunner {
     this.messageQueue = new MessageQueue((sessionId) => this.sessions.contextRoot(sessionId));
     this.interactions = new InteractionCoordinator((sessionId) => this.sessions.contextRoot(sessionId));
     this.permissions = new PermissionCoordinator(events);
+    this.searchProvider = search;
     this.webFetchProvider = webFetchProvider;
     core.on("event", (event: CoreEvent) => {
       const payload = event.payload as
@@ -408,6 +410,11 @@ export class AgentRunner {
   /** Enables/disables web_fetch for future turns without restarting the server. */
   setWebFetchProvider(provider: WebFetchProvider | undefined): void {
     this.webFetchProvider = provider;
+  }
+
+  /** Enables/disables web_search for future turns without restarting the server. */
+  setSearchProvider(provider: SearchProvider | undefined): void {
+    this.searchProvider = provider;
   }
 
   async run(
@@ -556,7 +563,7 @@ export class AgentRunner {
         }
         const cacheBreakpoints = selectCacheBreakpoints(view.messages, view.ledger);
         await context.recordCacheBreakpoints(cacheBreakpoints);
-        const profile = this.getProfile(session.model);
+        const profile = this.getProfile(session.model, session.provider);
         const estimatedTokens = estimateMessageTokens(view.messages);
         const workingBudget = Math.max(1, profile.contextWindow - profile.maxOutput);
         const utilization = estimatedTokens / workingBudget;
@@ -618,7 +625,7 @@ export class AgentRunner {
                 skillsAvailable: skillCatalog.length > 0,
                 backgroundTasksEnabled: Boolean(this.backgroundTasks),
                 fetchAvailable: Boolean(this.webFetchProvider),
-                searchAvailable: Boolean(this.search),
+                searchAvailable: Boolean(this.searchProvider),
                 shellBackend: session.shellBackend ?? "default",
               }),
               ...mcpBinding.tools,
@@ -1194,12 +1201,12 @@ export class AgentRunner {
           if (!url) throw new Error("web_fetch requires a non-empty url");
           value = await this.webFetchProvider.fetchUrl(url, { signal });
         } else {
-          if (!this.search) throw new Error("Web search is not configured");
+          if (!this.searchProvider) throw new Error("Web search is not configured");
           const query = typeof input.query === "string" ? input.query.trim() : "";
           if (!query) throw new Error("web_search requires a non-empty query");
           const requested = input.limit === undefined ? 5 : Number(input.limit);
           if (!Number.isInteger(requested) || requested < 1) throw new Error("web_search limit must be a positive integer");
-          value = await this.search.search(query, Math.min(requested, 10), { signal });
+          value = await this.searchProvider.search(query, Math.min(requested, 10), { signal });
         }
         const bounded = await boundToolResult(this.sessions.contextRoot(sessionId), name, JSON.stringify(value));
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: toolEventResult(bounded) } });

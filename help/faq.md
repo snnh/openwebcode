@@ -28,11 +28,11 @@ Windows：重新下载 MSI 双击安装（major upgrade 原地升级，用户数
 
 ### Q: 支持哪些 LLM provider？
 
-Anthropic（Claude）与 OpenAI 兼容协议（DeepSeek/Qwen/Ollama/GLM 等皆可）。设置页配置 baseUrl + apiKey 即可。
+支持 Anthropic Messages 与 OpenAI Chat Completions 两种接口类型（DeepSeek/Qwen/Ollama/GLM 等兼容端点均可）。设置页可保存多个具名服务商配置，逐个选择接口类型、Base URL、API Key 和是否启用；每个已启用服务商的模型会合并显示为 `模型ID【服务商】`。
 
 ### Q: 模型列表是空的 / 刷新不出来？
 
-- 检查 baseUrl 与 apiKey 是否正确
+- 检查服务商是否已启用，以及接口类型、Base URL 与 API Key 是否正确
 - 部分 provider（如 Ollama 本地）不实现 `/v1/models`，可直接手填模型 id（如 `qwen2.5-coder:14b`），上下文窗口/定价等元数据可后补
 - 拉取失败不阻塞使用，保守默认 + UI 提示完善
 
@@ -46,7 +46,7 @@ Anthropic（Claude）与 OpenAI 兼容协议（DeepSeek/Qwen/Ollama/GLM 等皆�
 
 ### Q: 为什么没有 `web_fetch` 或 `web_search`？
 
-联网工具不会默认注入，避免模型在未配置服务时反复调用必然失败的工具。`web_fetch` 需要在「设置 → 服务设置 → 网页读取」显式选择 Jina 或 custom；custom Base URL 必须含 `{url}` 占位符。`web_search` 需要选择 Brave、Tavily 或 custom 并填写有效凭据；Tavily 使用 API Key 调用内置 Search API。未设置、空 key、畸形地址或非 HTTP(S) 地址都会自动降级为不提供对应工具/提示词，不影响普通对话。
+联网工具不会默认注入，避免模型在未配置服务时反复调用必然失败的工具。先在「设置 → 服务设置 → 联网服务商」保存一个或多个配置；每项声明 Search / Fetch 能力，再分别选择当前配置。Jina 支持两项能力，Brave/Tavily 支持 Search，Custom 可自行声明能力且 Fetch URL 必须含 `{url}`。未选择对应能力时不会提供该工具或提示词，不影响普通对话。
 
 `https://mcp.tavily.com/mcp/?tavilyApiKey=...` 是 Tavily 的远程 MCP 地址；如需直接使用 Tavily MCP 的完整工具集，请把它写到 `<业务数据目录>/mcp.json`，不要填进搜索 Base URL。
 

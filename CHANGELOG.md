@@ -1,8 +1,21 @@
 # 更新日志
 
-本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前 `v0.3.5` 的用户可感知变化。日期以 Git 标签发布日期为准。
+本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前版本的用户可感知变化。日期以 Git 标签发布日期为准。
 
 ## Unreleased
+
+## [0.3.6] - 2026-07-23
+
+### 新增
+
+- 模型服务商改为可持久化的多配置注册表：每项独立选择 Anthropic Messages / OpenAI Chat Completions 接口、凭据与启用状态，并自动拉取或手动维护各自模型。
+- 模型选择器合并所有已启用服务商的实际模型，统一显示为 `模型ID【服务商】`；同名模型按服务商独立存在。
+- Web Search 与 Web Fetch 合并为多配置联网服务商注册表，通过能力声明分别选择当前配置；支持 Jina、Brave、Tavily 与 Custom。
+
+### 变更
+
+- 删除固定 Anthropic/OpenAI 与独立 Search/Fetch 的旧设置格式和环境变量入口，不执行旧格式迁移。
+- 用户界面中的 `provider2` 更名为“快速模型”。
 
 ## [0.3.5] - 2026-07-23
 
@@ -140,6 +153,7 @@
 - 支持图片输入、Markdown/代码高亮/KaTeX、折叠思考内容、会话导入导出、可分享的自包含 HTML 页面和 `owc run` Headless CLI。
 - 提供 Windows MSI、Linux tar.gz 安装脚本和 GitHub Actions 发布流水线。
 
+[0.3.6]: https://github.com/snnh/openwebcode/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/snnh/openwebcode/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/snnh/openwebcode/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/snnh/openwebcode/compare/v0.3.2...v0.3.3

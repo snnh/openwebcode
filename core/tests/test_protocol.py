@@ -112,7 +112,7 @@ def main():
         request(proc, "ping-中文", "core.ping")
         response, notes = collect_until_response(proc, "ping-中文")
         assert not notes
-        assert response["result"]["version"] == "0.3.5"
+        assert response["result"]["version"] == "0.3.6"
         assert response["result"]["sandboxCapability"] in {"advisory", "partial", "enforced"}
         assert response["result"]["sandboxReason"]
         assert response["result"]["protocolVersion"] == "1.0"
@@ -128,13 +128,13 @@ def main():
         response, notes = collect_until_response(proc, None)
         assert not notes
         assert response["id"] is None
-        assert response["result"]["version"] == "0.3.5"
+        assert response["result"]["version"] == "0.3.6"
 
         send(proc, {"jsonrpc": "2.0", "method": "core.ping", "params": {}})
         request(proc, "after-notification", "core.ping")
         response, notes = collect_until_response(proc, "after-notification")
         assert not notes
-        assert response["result"]["version"] == "0.3.5"
+        assert response["result"]["version"] == "0.3.6"
 
         request(proc, 2, "missing.method")
         response, _ = collect_until_response(proc, 2)

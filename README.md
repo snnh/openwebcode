@@ -48,7 +48,7 @@ cd openwebcode
 ### 首次使用
 
 1. 界面首次按浏览器语言选择中文或英文；可在 **设置 → 外观 → 语言** 随时切换，选择保存在本机并立即生效。
-2. **设置页**配置模型提供商（baseUrl、apiKey），点「刷新模型目录」拉取可用模型。Anthropic 与 OpenAI 兼容协议（DeepSeek/Qwen/Ollama 等）都支持。
+2. 在 **设置 → 服务设置** 添加并启用一个或多个具名模型服务商，选择 Anthropic Messages 或 OpenAI Chat Completions 接口，再刷新模型目录。模型统一显示为 `模型ID【服务商】`。
 3. 侧栏 **+** 新建会话：选工作目录、provider/模型、沙盒模式、工作区模式。
 4. 输入框描述任务，回车发送。若选择「托管工作区」，源目录会先复制到镜像盘；会话空闲时可在顶部点「手动快照」立即创建虚拟磁盘差分链快照。需要回写时，在底部「文件」面板点「同步回源」，先核对差异再确认。
 
@@ -71,7 +71,7 @@ cd openwebcode
 
 ## 主要能力
 
-**Agent 工具集**：bash（含后台任务）、文件读写/编辑、glob/grep、`spawn_task`（隔离上下文子代理）、`remember`（长期记忆）、`todo_write`（任务清单实时展示）、`web_fetch`/`web_search`（SSRF 防护）、MCP 注入工具。工具 schema、工具提示和 MCP 只会下发给模型目录中标为支持 tools 的模型；不支持时会以普通对话运行。联网工具均诚实降级：在「服务设置」显式配置网页读取服务（Jina 或 custom URL 模板）后才注入 `web_fetch`；`web_search` 仅在 Brave、Tavily 或 custom 搜索服务可构造时注入。未配置、空密钥或地址无效时不会把对应工具/提示词发给模型。
+**Agent 工具集**：bash（含后台任务）、文件读写/编辑、glob/grep、`spawn_task`（隔离上下文子代理）、`remember`（长期记忆）、`todo_write`（任务清单实时展示）、`web_fetch`/`web_search`（SSRF 防护）、MCP 注入工具。工具 schema、工具提示和 MCP 只会下发给模型目录中标为支持 tools 的模型；不支持时会以普通对话运行。联网工具通过统一的具名服务商注册表配置，每项声明 Search/Fetch 能力，再分别选择当前配置；没有选中对应能力时不会下发该工具或提示词。
 
 **自定义扩展**（项目 `.owc/` + 全局两级，项目同名覆盖全局）：
 - `agents/*.md` — 专职子代理（frontmatter 声明工具集与模型，`spawn_task agent=<name>` 调用）
@@ -80,7 +80,7 @@ cd openwebcode
 - `skills/` — Skills（`/name` 触发，正文按需加载）
 - `mcp.json` — MCP 客户端配置（stdio/HTTP 双传输）
 
-**模型**：会话中热切换、思考程度开关（low/medium/high）、缓存断点优化（Anthropic 显式 cache_control，OpenAI 系自动）、按会话/按日/按 provider 成本报表（双币种 USD/CNY）。设置页可按“每百万 tokens 单价”维护带生效日期的模型定价。
+**模型**：可保存并独立启用多个模型服务商，每个服务商自动拉取或手动维护自己的模型；同名模型按服务商独立存在。会话中可热切换统一模型列表，并支持思考程度、缓存断点优化和按 provider 成本报表。
 
 **权限**：ask / acceptEdits / yolo 三级。「允许一次」仅批准当前调用，响应送达后才启动工具；「总是允许」生成持久规则。「总是允许」与 yolo 都不解除沙盒——两个机制正交。
 
@@ -88,7 +88,7 @@ cd openwebcode
 
 **快照回滚**：每轮用户消息前自动检查点，也可切为「仅手动」；后端自动探测 Btrfs/ZFS/ReFS，兜底 git 影子仓库；可选「托管工作区」（项目活在 VHDX/qcow2 镜像盘上，差分链快照毫秒级、可分支）。托管工作区会在顶部提供「手动快照」，空闲时可随时立即生成镜像盘检查点。它不会在关闭或删除会话时自动覆盖源目录；可随时在「文件」面板生成三方差异，确认后只回写无冲突的改动。
 
-**上下文管理**：token 预算账本、滚动驱逐 + 占位符回写、provider2 两种压缩、85% 水位强制概览压缩。前端始终看全量历史，驱逐只影响 LLM 视图。
+**上下文管理**：token 预算账本、滚动驱逐 + 占位符回写、快速模型两种压缩、85% 水位强制概览压缩。前端始终看全量历史，驱逐只影响 LLM 视图。
 
 **扩展系统**：独立 Extension Host 子进程（IPC、5 秒钩子保护、manifest 权限与持久化管理）。内置 context-manager、attention-optimizer、content-lens、pdf-to-image；可在设置页启停、调参并从本地目录安装第三方 `owc-ext-*` 扩展。
 
@@ -116,6 +116,7 @@ owc run "给 main.ts 加个单元测试" --cwd . --json --yolo
 | 路径 | 用途 |
 |---|---|
 | `<启动/设置目录>/server-settings.json` | 设置页保存的服务设置 |
+| `<业务数据目录>/provider-profiles.json` | 多模型/联网服务商配置与密钥 |
 | `<业务数据目录>/sessions/<id>/` | 会话数据（meta + messages.jsonl + ledger + artifacts） |
 | `<业务数据目录>/{agents,commands,skills}/` | 全局自定义扩展点 |
 | `<业务数据目录>/hooks.json` | 全局 Hooks（**安全级别等同 yolo**） |

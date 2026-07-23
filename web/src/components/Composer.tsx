@@ -539,17 +539,14 @@ const mentionHasMatches = mentionMatches.length > 0;
     }
   };
 
-  const supportedThinking = model?.capabilities.thinking ?? [];
+  const selectableModels = models.filter((item) => providers.includes(item.provider));
+  const selectedModel = selectableModels.find((item) => item.provider === current.provider && item.id === current.model) ?? model;
+  const modelSelection = JSON.stringify([current.provider, current.model]);
+  const supportedThinking = selectedModel?.capabilities.thinking ?? [];
   // 模型不支持思考（thinking 为空数组）时退化为仅「关闭」并禁用，避免空下拉
   const thinkingModes = supportedThinking.length > 0 ? supportedThinking : ["disabled"];
-  const efforts = model?.capabilities.effort ?? [];
-  const providerModels = models.filter((item) => item.provider === current.provider);
-  const selectedModel = providerModels.find((item) => item.id === current.model) ?? model;
-  const providerIsUnavailable = current.provider !== "" && !providers.includes(current.provider);
-  const changeProvider = (provider: string): void => {
-    const nextModel = models.find((item) => item.provider === provider)?.id ?? "";
-    onConfig({ provider, model: nextModel });
-  };
+  const efforts = selectedModel?.capabilities.effort ?? [];
+  const selectionUnavailable = current.provider !== "" && !selectableModels.some((item) => item.provider === current.provider && item.id === current.model);
 
   return (
     <footer className="composer" onDrop={onDrop} onDragOver={(event) => event.preventDefault()}>
@@ -582,17 +579,6 @@ const mentionHasMatches = mentionMatches.length > 0;
       )}
       <div className="config-row">
         <label>
-          Provider
-          <select
-            value={current.provider}
-            disabled={running || providers.length === 0}
-            onChange={(event) => changeProvider(event.target.value)}
-          >
-            {providerIsUnavailable && <option value={current.provider}>{`${current.provider} (${t("不可用", "unavailable")})`}</option>}
-            {providers.map((provider) => <option key={provider} value={provider}>{provider}</option>)}
-          </select>
-        </label>
-        <label>
           {t("模式", "Mode")}
           <select
             value={current.agentMode ?? "build"}
@@ -605,11 +591,18 @@ const mentionHasMatches = mentionMatches.length > 0;
         </label>
         <label>
           {t("模型", "Model")}
-          <select value={current.model} disabled={running} onChange={(event) => onConfig({ model: event.target.value })}>
-            {providerModels.length > 0
-              ? providerModels.map((item) => <option key={item.id} value={item.id}>{item.displayName ?? item.id}</option>)
+          <select value={modelSelection} disabled={running} onChange={(event) => {
+            const next = selectableModels.find((item) => JSON.stringify([item.provider, item.id]) === event.target.value || item.id === event.target.value);
+            if (next) onConfig({ provider: next.provider, model: next.id });
+          }}>
+            {selectionUnavailable && current.model && <option value={modelSelection}>{`${current.model}【${current.provider}】 (${t("不可用", "unavailable")})`}</option>}
+            {selectableModels.length > 0
+              ? selectableModels.map((item) => {
+                  const value = JSON.stringify([item.provider, item.id]);
+                  return <option key={value} value={value}>{`${item.id}【${item.provider}】`}</option>;
+                })
               : current.model
-                ? <option value={current.model}>{current.model}</option>
+                ? <option value={modelSelection}>{`${current.model}【${current.provider}】`}</option>
                 : <option value="">{t("暂无可用模型", "No model available")}</option>}
           </select>
         </label>
@@ -623,7 +616,7 @@ const mentionHasMatches = mentionMatches.length > 0;
           {t("思考", "Thinking")}
           <select
             value={current.thinking ?? "disabled"}
-            disabled={running || (model !== undefined && supportedThinking.length === 0)}
+            disabled={running || (selectedModel !== undefined && supportedThinking.length === 0)}
             onChange={(event) => onConfig({ thinking: event.target.value === "disabled" ? null : event.target.value })}
           >
             {thinkingModes.map((item) => <option key={item} value={item}>{THINKING_LABEL[item] ? t(...THINKING_LABEL[item]!) : item}</option>)}

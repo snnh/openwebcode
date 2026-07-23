@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
-import type { ExtensionInfo, ModelProfile, PermissionMode, PricingDocument, SettingsField, SettingValue } from "../lib/contracts";
+import type { ExtensionInfo, ModelInterfaceType, ModelProfile, ModelProviderProfileView, PermissionMode, PricingDocument, SettingsField, SettingValue, WebCapability, WebProviderProfileView, WebProviderType } from "../lib/contracts";
 import { formatCurrency } from "../lib/format";
 import { Icon } from "./Icon";
 import { ModelCapabilityBadges } from "./ModelCapabilityBadges";
@@ -46,10 +46,8 @@ const PERMISSION_OPTIONS: Array<{ value: PermissionMode | ""; zh: string; en: st
 ];
 
 const SETTINGS_GROUP_EN: Record<string, string> = {
-  models: "Model providers",
-  provider2: "Context compaction",
-  webFetch: "Web reader",
-  search: "Web search",
+  models: "Model catalog sync",
+  provider2: "Fast model",
   general: "Language and currency",
   executor: "Executor",
   service: "Service",
@@ -57,23 +55,12 @@ const SETTINGS_GROUP_EN: Record<string, string> = {
 };
 
 const SETTINGS_FIELD_EN: Record<string, { label: string; description?: string }> = {
-  anthropicApiKey: { label: "Anthropic API Key" },
-  anthropicBaseURL: { label: "Anthropic Base URL", description: "Leave empty to use the official endpoint" },
-  anthropicPromptCaching: { label: "Anthropic prompt caching" },
-  openaiBaseURL: { label: "OpenAI-compatible Base URL", description: "Enables the OpenAI-compatible provider when set" },
-  openaiApiKey: { label: "OpenAI API Key" },
   catalogSyncUrl: { label: "Remote model catalog URL", description: "Leave empty to disable remote model catalog sync" },
   pricingSyncUrl: { label: "Remote pricing catalog URL", description: "Leave empty to disable remote pricing sync" },
   syncIntervalMinutes: { label: "Remote sync interval (minutes)", description: "0 means manual sync only; a value above 0 enables periodic sync (maximum 35,791 minutes)" },
-  provider2BaseURL: { label: "provider2 Base URL", description: "OpenAI-compatible endpoint; enabled when both endpoint and model are set" },
-  provider2ApiKey: { label: "provider2 API Key" },
-  provider2Model: { label: "provider2 model", description: "For example, deepseek-chat or claude-haiku-4-5" },
-  webFetchProvider: { label: "Web reader provider" },
-  webFetchApiKey: { label: "Web reader API Key" },
-  webFetchBaseURL: { label: "Web reader Base URL", description: "Required for custom; use {url} as the URL-encoded target placeholder" },
-  searchProvider: { label: "Search provider" },
-  searchApiKey: { label: "Search API Key" },
-  searchBaseURL: { label: "Search Base URL", description: "HTTP endpoint for custom. Tavily uses its API key with api.tavily.com/search; put a remote MCP URL in mcp.json." },
+  provider2BaseURL: { label: "Fast model Base URL", description: "OpenAI-compatible endpoint for low-latency context compaction; enabled when both endpoint and model are set" },
+  provider2ApiKey: { label: "Fast model API Key" },
+  provider2Model: { label: "Fast model", description: "For example, deepseek-chat or claude-haiku-4-5" },
   defaultLanguage: { label: "Default model language" },
   defaultCurrency: { label: "Default currency" },
   corePath: { label: "Executor path" },
@@ -344,32 +331,27 @@ function DefaultsSection({ defaults, setDefaults, providers, models }: {
   models: ModelProfile[];
 }): ReactElement {
   const { t } = useI18n();
-  const provider = defaults.provider ?? "";
-  const availableModels = models.filter((item) => item.provider === provider);
+  const availableModels = models.filter((item) => providers.includes(item.provider));
+  const selected = defaults.provider && defaults.model ? JSON.stringify([defaults.provider, defaults.model]) : "";
   return (
     <div className="settings-grid">
       <label>
-        {t("默认 Provider", "Default provider")}
+        {t("默认模型", "Default model")}
         <select
-          value={provider}
+          value={selected}
           onChange={(event) => {
-            const next = event.target.value || undefined;
-            setDefaults({ ...defaults, provider: next, model: undefined });
+            if (!event.target.value) setDefaults({ ...defaults, provider: undefined, model: undefined });
+            else {
+              const [provider, model] = JSON.parse(event.target.value) as [string, string];
+              setDefaults({ ...defaults, provider, model });
+            }
           }}
         >
           <option value="">{t("不预设", "Not set")}</option>
-          {providers.map((name) => <option key={name} value={name}>{name}</option>)}
-        </select>
-      </label>
-      <label>
-        {t("默认模型", "Default model")}
-        <select
-          value={defaults.model ?? ""}
-          disabled={!provider || availableModels.length === 0}
-          onChange={(event) => setDefaults({ ...defaults, model: event.target.value || undefined })}
-        >
-          <option value="">{t("不预设", "Not set")}</option>
-          {availableModels.map((item) => <option key={item.id} value={item.id}>{item.displayName ?? item.id}</option>)}
+          {availableModels.map((item) => {
+            const value = JSON.stringify([item.provider, item.id]);
+            return <option key={value} value={value}>{`${item.id}【${item.provider}】`}</option>;
+          })}
         </select>
       </label>
       <label>
@@ -400,6 +382,209 @@ function ServerInfoSection({ providers, models }: {
       <dt>{t("模型档案", "Model profiles")}</dt>
       <dd>{t(`${models.length} 个`, `${models.length}`)}</dd>
     </dl>
+  );
+}
+
+interface ModelProviderForm {
+  originalId?: string;
+  id: string;
+  enabled: boolean;
+  interfaceType: ModelInterfaceType;
+  baseURL: string;
+  apiKey: string;
+  promptCaching: boolean;
+  clearApiKey: boolean;
+}
+
+const emptyModelProvider = (): ModelProviderForm => ({
+  id: "",
+  enabled: true,
+  interfaceType: "openai-chat-completions",
+  baseURL: "",
+  apiKey: "",
+  promptCaching: true,
+  clearApiKey: false,
+});
+
+interface WebProviderForm {
+  originalId?: string;
+  id: string;
+  provider: WebProviderType;
+  capabilities: WebCapability[];
+  apiKey: string;
+  searchBaseURL: string;
+  fetchBaseURL: string;
+  clearApiKey: boolean;
+}
+
+const emptyWebProvider = (): WebProviderForm => ({
+  id: "",
+  provider: "brave",
+  capabilities: ["search"],
+  apiKey: "",
+  searchBaseURL: "",
+  fetchBaseURL: "",
+  clearApiKey: false,
+});
+
+export function ProviderProfilesSection(): ReactElement {
+  const { t } = useI18n();
+  const queryClient = useQueryClient();
+  const profiles = useQuery({ queryKey: ["provider-profiles"], queryFn: api.providerProfiles });
+  const [modelForm, setModelForm] = useState<ModelProviderForm>(emptyModelProvider);
+  const [webForm, setWebForm] = useState<WebProviderForm>(emptyWebProvider);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+
+  const accepted = (view: Awaited<ReturnType<typeof api.providerProfiles>>): void => {
+    queryClient.setQueryData(["provider-profiles"], view);
+    void queryClient.invalidateQueries({ queryKey: ["providers"] });
+    void queryClient.invalidateQueries({ queryKey: ["models"] });
+    setError(undefined);
+  };
+  const run = (operation: Promise<Awaited<ReturnType<typeof api.providerProfiles>>>, done?: () => void): void => {
+    setBusy(true);
+    setError(undefined);
+    operation.then((view) => { accepted(view); done?.(); })
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : t("保存失败", "Failed to save")))
+      .finally(() => setBusy(false));
+  };
+
+  if (profiles.isPending) return <p className="panel-empty">{t("加载服务商配置…", "Loading provider profiles…")}</p>;
+  if (profiles.isError || !profiles.data) return <p className="settings-error">{t("无法加载服务商配置。", "Could not load provider profiles.")}</p>;
+
+  const editModel = (profile: ModelProviderProfileView): void => setModelForm({
+    originalId: profile.id,
+    id: profile.id,
+    enabled: profile.enabled,
+    interfaceType: profile.interfaceType,
+    baseURL: profile.baseURL ?? "",
+    apiKey: "",
+    promptCaching: profile.promptCaching !== false,
+    clearApiKey: false,
+  });
+  const saveModelProvider = (): void => {
+    const id = modelForm.id.trim();
+    if (!id) { setError(t("模型服务商名称不能为空", "Model provider name is required")); return; }
+    const body: Record<string, unknown> = {
+      id,
+      enabled: modelForm.enabled,
+      interfaceType: modelForm.interfaceType,
+      ...(modelForm.baseURL.trim() ? { baseURL: modelForm.baseURL.trim() } : { baseURL: null }),
+      ...(modelForm.interfaceType === "anthropic-messages" ? { promptCaching: modelForm.promptCaching } : {}),
+      ...(modelForm.clearApiKey ? { apiKey: null } : modelForm.apiKey.trim() ? { apiKey: modelForm.apiKey.trim() } : {}),
+    };
+    run(modelForm.originalId ? api.saveModelProvider(modelForm.originalId, body) : api.createModelProvider(body), () => setModelForm(emptyModelProvider()));
+  };
+  const modelLabel = (profile: ModelProviderProfileView): string => profile.interfaceType === "anthropic-messages" ? "Anthropic Messages" : "OpenAI Chat Completions";
+
+  const editWeb = (profile: WebProviderProfileView): void => setWebForm({
+    originalId: profile.id,
+    id: profile.id,
+    provider: profile.provider,
+    capabilities: [...profile.capabilities],
+    apiKey: "",
+    searchBaseURL: profile.searchBaseURL ?? "",
+    fetchBaseURL: profile.fetchBaseURL ?? "",
+    clearApiKey: false,
+  });
+  const normalizedCapabilities = (provider: WebProviderType, selected: WebCapability[]): WebCapability[] => provider === "jina"
+    ? ["search", "fetch"]
+    : provider === "brave" || provider === "tavily" ? ["search"] : selected;
+  const saveWebProvider = (): void => {
+    const id = webForm.id.trim();
+    if (!id) { setError(t("联网服务商名称不能为空", "Web provider name is required")); return; }
+    const body: Record<string, unknown> = {
+      id,
+      provider: webForm.provider,
+      capabilities: normalizedCapabilities(webForm.provider, webForm.capabilities),
+      ...(webForm.searchBaseURL.trim() ? { searchBaseURL: webForm.searchBaseURL.trim() } : { searchBaseURL: null }),
+      ...(webForm.fetchBaseURL.trim() ? { fetchBaseURL: webForm.fetchBaseURL.trim() } : { fetchBaseURL: null }),
+      ...(webForm.clearApiKey ? { apiKey: null } : webForm.apiKey.trim() ? { apiKey: webForm.apiKey.trim() } : {}),
+    };
+    run(webForm.originalId ? api.saveWebProvider(webForm.originalId, body) : api.createWebProvider(body), () => setWebForm(emptyWebProvider()));
+  };
+  const toggleWebCapability = (capability: WebCapability): void => setWebForm((current) => ({
+    ...current,
+    capabilities: current.capabilities.includes(capability)
+      ? current.capabilities.filter((item) => item !== capability)
+      : [...current.capabilities, capability],
+  }));
+
+  return (
+    <>
+      <div className="server-settings-group">
+        <h4>{t("模型服务商", "Model providers")}</h4>
+        <p className="settings-note">{t("可保存多个服务商配置。启用后自动注册并拉取该服务商模型；模型选择器统一显示为 模型ID【服务商】。", "Save multiple provider profiles. Enabled profiles are registered and their models are fetched; the model picker shows Model ID【Provider】.")}</p>
+        {profiles.data.modelProviders.length > 0 && (
+          <table className="pricing-table catalog-table">
+            <thead><tr><th>{t("名称", "Name")}</th><th>{t("接口类型", "Interface")}</th><th>{t("状态", "Status")}</th><th>API Key</th><th></th></tr></thead>
+            <tbody>{profiles.data.modelProviders.map((profile) => (
+              <tr key={profile.id}>
+                <td className="mono">{profile.id}</td><td>{modelLabel(profile)}</td>
+                <td>{profile.enabled ? t("启用", "Enabled") : t("停用", "Disabled")}</td>
+                <td>{profile.maskedApiKey ?? "—"}</td>
+                <td><button className="badge badge-action" disabled={busy} onClick={() => editModel(profile)}>{t("编辑", "Edit")}</button>{" "}<button className="badge badge-action" disabled={busy} onClick={() => { if (window.confirm(t(`删除模型服务商「${profile.id}」？`, `Delete model provider “${profile.id}”?`))) run(api.deleteModelProvider(profile.id)); }}>{t("删除", "Delete")}</button></td>
+              </tr>
+            ))}</tbody>
+          </table>
+        )}
+        <div className="catalog-edit-form">
+          <h4>{modelForm.originalId ? t("编辑模型服务商", "Edit model provider") : t("添加模型服务商", "Add model provider")}</h4>
+          <div className="catalog-form">
+            <input value={modelForm.id} disabled={Boolean(modelForm.originalId)} placeholder={t("服务商名称", "Provider name")} onChange={(event) => setModelForm((current) => ({ ...current, id: event.target.value }))} />
+            <select value={modelForm.interfaceType} onChange={(event) => setModelForm((current) => ({ ...current, interfaceType: event.target.value as ModelInterfaceType }))}>
+              <option value="openai-chat-completions">OpenAI Chat Completions</option>
+              <option value="anthropic-messages">Anthropic Messages</option>
+            </select>
+            <input value={modelForm.baseURL} placeholder={t("Base URL（留空使用官方地址）", "Base URL (blank for official endpoint)")} onChange={(event) => setModelForm((current) => ({ ...current, baseURL: event.target.value }))} spellCheck={false} />
+            <input type="password" value={modelForm.apiKey} placeholder={modelForm.originalId ? t("API Key（留空保留）", "API Key (blank keeps current)") : "API Key"} onChange={(event) => setModelForm((current) => ({ ...current, apiKey: event.target.value, clearApiKey: false }))} autoComplete="off" />
+          </div>
+          <div className="settings-row">
+            <label className="theme-option"><input type="checkbox" checked={modelForm.enabled} onChange={(event) => setModelForm((current) => ({ ...current, enabled: event.target.checked }))} />{t("启用", "Enabled")}</label>
+            {modelForm.interfaceType === "anthropic-messages" && <label className="theme-option"><input type="checkbox" checked={modelForm.promptCaching} onChange={(event) => setModelForm((current) => ({ ...current, promptCaching: event.target.checked }))} />Prompt caching</label>}
+            {modelForm.originalId && <label className="theme-option"><input type="checkbox" checked={modelForm.clearApiKey} onChange={(event) => setModelForm((current) => ({ ...current, clearApiKey: event.target.checked, apiKey: "" }))} />{t("清除 API Key", "Clear API key")}</label>}
+          </div>
+          <div className="dialog-actions"><button className="btn small" disabled={busy} onClick={() => setModelForm(emptyModelProvider())}>{t("取消", "Cancel")}</button><button className="btn small primary" disabled={busy} onClick={saveModelProvider}>{t("保存服务商", "Save provider")}</button></div>
+        </div>
+      </div>
+
+      <div className="server-settings-group">
+        <h4>{t("联网服务商", "Web providers")}</h4>
+        <p className="settings-note">{t("Search 与 Fetch 合并管理；每个配置声明能力，再分别选择当前使用的配置。", "Search and Fetch share one registry. Each profile declares capabilities, then an active profile is selected for each capability.")}</p>
+        <div className="settings-grid">
+          {(["search", "fetch"] as const).map((capability) => (
+            <label key={capability}>{capability === "search" ? "Web Search" : "Web Fetch"}
+              <select value={profiles.data.activeWeb[capability] ?? ""} onChange={(event) => run(api.selectWebProvider(capability, event.target.value || null))}>
+                <option value="">{t("不启用", "Disabled")}</option>
+                {profiles.data.webProviders.filter((item) => item.capabilities.includes(capability)).map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}
+              </select>
+            </label>
+          ))}
+        </div>
+        {profiles.data.webProviders.length > 0 && (
+          <table className="pricing-table catalog-table"><thead><tr><th>{t("名称", "Name")}</th><th>{t("类型", "Type")}</th><th>{t("能力", "Capabilities")}</th><th>API Key</th><th></th></tr></thead>
+            <tbody>{profiles.data.webProviders.map((profile) => <tr key={profile.id}><td className="mono">{profile.id}</td><td>{profile.provider}</td><td>{profile.capabilities.join(" + ")}</td><td>{profile.maskedApiKey ?? "—"}</td><td><button className="badge badge-action" disabled={busy} onClick={() => editWeb(profile)}>{t("编辑", "Edit")}</button>{" "}<button className="badge badge-action" disabled={busy} onClick={() => { if (window.confirm(t(`删除联网服务商「${profile.id}」？`, `Delete web provider “${profile.id}”?`))) run(api.deleteWebProvider(profile.id)); }}>{t("删除", "Delete")}</button></td></tr>)}</tbody>
+          </table>
+        )}
+        <div className="catalog-edit-form">
+          <h4>{webForm.originalId ? t("编辑联网服务商", "Edit web provider") : t("添加联网服务商", "Add web provider")}</h4>
+          <div className="catalog-form">
+            <input value={webForm.id} disabled={Boolean(webForm.originalId)} placeholder={t("配置名称", "Profile name")} onChange={(event) => setWebForm((current) => ({ ...current, id: event.target.value }))} />
+            <select value={webForm.provider} onChange={(event) => { const provider = event.target.value as WebProviderType; setWebForm((current) => ({ ...current, provider, capabilities: normalizedCapabilities(provider, current.capabilities) })); }}><option value="brave">Brave</option><option value="tavily">Tavily</option><option value="jina">Jina</option><option value="custom">Custom</option></select>
+            <input type="password" value={webForm.apiKey} placeholder={webForm.originalId ? t("API Key（留空保留）", "API Key (blank keeps current)") : "API Key"} onChange={(event) => setWebForm((current) => ({ ...current, apiKey: event.target.value, clearApiKey: false }))} autoComplete="off" />
+          </div>
+          {webForm.provider === "custom" && <div className="settings-row"><label className="theme-option"><input type="checkbox" checked={webForm.capabilities.includes("search")} onChange={() => toggleWebCapability("search")} />Search</label><label className="theme-option"><input type="checkbox" checked={webForm.capabilities.includes("fetch")} onChange={() => toggleWebCapability("fetch")} />Fetch</label></div>}
+          <div className="catalog-form">
+            {(webForm.provider === "custom" && webForm.capabilities.includes("search")) && <input value={webForm.searchBaseURL} placeholder="Search Base URL" onChange={(event) => setWebForm((current) => ({ ...current, searchBaseURL: event.target.value }))} spellCheck={false} />}
+            {(webForm.provider === "custom" && webForm.capabilities.includes("fetch")) && <input value={webForm.fetchBaseURL} placeholder="Fetch Base URL（含 {url}）" onChange={(event) => setWebForm((current) => ({ ...current, fetchBaseURL: event.target.value }))} spellCheck={false} />}
+          </div>
+          {webForm.originalId && <label className="theme-option"><input type="checkbox" checked={webForm.clearApiKey} onChange={(event) => setWebForm((current) => ({ ...current, clearApiKey: event.target.checked, apiKey: "" }))} />{t("清除 API Key", "Clear API key")}</label>}
+          <div className="dialog-actions"><button className="btn small" disabled={busy} onClick={() => setWebForm(emptyWebProvider())}>{t("取消", "Cancel")}</button><button className="btn small primary" disabled={busy} onClick={saveWebProvider}>{t("保存服务商", "Save provider")}</button></div>
+        </div>
+      </div>
+      {error && <p className="settings-error">{error}</p>}
+    </>
   );
 }
 
@@ -622,6 +807,7 @@ const MODALITY_LABEL: Record<string, [string, string]> = { text: ["文本", "Tex
 interface ModelEditForm {
   id: string;
   provider: string;
+  originalProvider: string;
   contextWindow: string;
   maxOutput: string;
   thinking: string[];
@@ -636,6 +822,8 @@ export function ModelCatalogSection(): ReactElement {
   const queryClient = useQueryClient();
   const models = useQuery({ queryKey: ["models"], queryFn: api.models });
   const syncStatus = useQuery({ queryKey: ["model-sync-status"], queryFn: api.modelSyncStatus });
+  const providerProfiles = useQuery({ queryKey: ["provider-profiles"], queryFn: api.providerProfiles });
+  const enabledProviders = providerProfiles.data?.modelProviders.filter((item) => item.enabled).map((item) => item.id) ?? [];
   const [notice, setNotice] = useState<string>();
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
@@ -703,11 +891,11 @@ export function ModelCatalogSection(): ReactElement {
       .finally(() => setBusy(false));
   };
 
-  const removeManual = (id: string): void => {
-    if (!window.confirm(t(`删除手动模型「${id}」？`, `Delete manual model “${id}”?`))) return;
+  const removeManual = (id: string, provider: string): void => {
+    if (!window.confirm(t(`删除手动模型「${id}【${provider}】」？`, `Delete manual model “${id}【${provider}】”?`))) return;
     setBusy(true);
     setError(undefined);
-    api.deleteModel(id)
+    api.deleteModel(id, provider)
       .then(() => {
         setNotice(t(`已删除 ${id}`, `Deleted ${id}`));
         invalidate();
@@ -723,6 +911,7 @@ export function ModelCatalogSection(): ReactElement {
     setEditing({
       id: model.id,
       provider: model.provider,
+      originalProvider: model.provider,
       contextWindow: String(model.contextWindow),
       maxOutput: String(model.maxOutput),
       thinking: [...model.capabilities.thinking],
@@ -760,6 +949,7 @@ export function ModelCatalogSection(): ReactElement {
     setError(undefined);
     api.saveModel(editing.id, {
       ...(editing.provider.trim() ? { provider: editing.provider.trim() } : {}),
+      originalProvider: editing.originalProvider,
       ...(contextWindow ? { contextWindow } : {}),
       ...(maxOutput ? { maxOutput } : {}),
       capabilities: {
@@ -813,7 +1003,7 @@ export function ModelCatalogSection(): ReactElement {
         </thead>
         <tbody>
           {models.data.map((model) => (
-            <tr key={model.id} title={t("双击编辑", "Double-click to edit")} onDoubleClick={() => startEdit(model)}>
+            <tr key={`${model.provider}\u0000${model.id}`} title={t("双击编辑", "Double-click to edit")} onDoubleClick={() => startEdit(model)}>
               <td className="mono">{model.displayName ?? model.id}</td>
               <td>{model.provider}</td>
               <td><span className={`badge badge-source-${model.source ?? "builtin"}`}>{t(...(SOURCE_LABEL[model.source ?? "builtin"] ?? [model.source ?? "builtin", model.source ?? "builtin"]))}</span></td>
@@ -821,7 +1011,7 @@ export function ModelCatalogSection(): ReactElement {
               <td><ModelCapabilityBadges capabilities={model.capabilities} /></td>
               <td>{model.capabilities.thinking.length > 0 ? model.capabilities.thinking.map((item) => THINKING_LABEL[item] ? t(...THINKING_LABEL[item]!) : item).join(t("、", ", ")) : "—"}</td>
               <td>{model.capabilities.effort.length > 0 ? model.capabilities.effort.join(t("、", ", ")) : "—"}</td>
-              <td>{model.source === "manual" && <button className="badge badge-action" disabled={busy} onClick={() => removeManual(model.id)}>{t("删除", "Delete")}</button>}</td>
+              <td>{model.source === "manual" && <button className="badge badge-action" disabled={busy} onClick={() => removeManual(model.id, model.provider)}>{t("删除", "Delete")}</button>}</td>
             </tr>
           ))}
         </tbody>
@@ -831,13 +1021,14 @@ export function ModelCatalogSection(): ReactElement {
           <h4>{t("编辑模型", "Edit model")} <span className="mono">{editing.id}</span></h4>
           <div className="catalog-form">
             <input value={editing.id} disabled aria-label={t("模型 id", "Model ID")} spellCheck={false} />
-            <input
+            <select
               value={editing.provider}
-              placeholder="provider"
               onChange={(event) => setEditing((prev) => prev && { ...prev, provider: event.target.value })}
               aria-label="provider"
-              spellCheck={false}
-            />
+            >
+              {!enabledProviders.includes(editing.provider) && <option value={editing.provider}>{editing.provider}</option>}
+              {enabledProviders.map((provider) => <option key={provider} value={provider}>{provider}</option>)}
+            </select>
             <input
               value={editing.contextWindow}
               placeholder={t("上下文窗口", "Context window")}
@@ -893,13 +1084,14 @@ export function ModelCatalogSection(): ReactElement {
             aria-label={t("模型 id", "Model ID")}
             spellCheck={false}
           />
-          <input
+          <select
             value={form.provider}
-            placeholder={t("provider（新模型必填）", "Provider (required for new models)")}
             onChange={(event) => setForm((prev) => ({ ...prev, provider: event.target.value }))}
             aria-label="provider"
-            spellCheck={false}
-          />
+          >
+            <option value="">{t("选择服务商", "Select provider")}</option>
+            {enabledProviders.map((provider) => <option key={provider} value={provider}>{provider}</option>)}
+          </select>
           <input
             value={form.contextWindow}
             placeholder={t("上下文窗口（可选）", "Context window (optional)")}
@@ -1190,6 +1382,7 @@ export function SettingsDialog({ open, preference, setPreference, accent, setAcc
           {activeTab === "server" && (
             <section>
               <h3>{t("服务设置", "Server settings")}</h3>
+              <ProviderProfilesSection />
               <ServerSettingsSection onDirtyChange={(dirty) => { serverDirtyRef.current = dirty; }} />
             </section>
           )}

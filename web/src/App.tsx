@@ -159,7 +159,7 @@ export function App(): ReactElement {
           const message = (event.payload as { message?: string }).message ?? t("未知错误", "unknown error");
           setRunFailures((previous) => ({ ...previous, [event.sessionId!]: message }));
         }
-        // server.settings_updated / models.updated 无 sessionId，必须在按会话过滤之前处理
+        // 全局配置/目录事件无 sessionId，必须在按会话过滤之前处理。
         if (event.type === "server.settings_updated") {
           queryClient.invalidateQueries({ queryKey: ["providers"] });
           queryClient.invalidateQueries({ queryKey: ["settings"] });
@@ -167,6 +167,11 @@ export function App(): ReactElement {
           if (currentId) queryClient.invalidateQueries({ queryKey: ["context", currentId] });
         }
         if (event.type === "models.updated") {
+          queryClient.invalidateQueries({ queryKey: ["models"] });
+        }
+        if (event.type === "provider_profiles.updated") {
+          queryClient.invalidateQueries({ queryKey: ["provider-profiles"] });
+          queryClient.invalidateQueries({ queryKey: ["providers"] });
           queryClient.invalidateQueries({ queryKey: ["models"] });
         }
         // MCP server 连接失败降级：该 server 工具未注入，给出告警
@@ -374,7 +379,7 @@ export function App(): ReactElement {
       .catch((error: unknown) => notify(error instanceof Error ? error.message : t("导入失败", "Import failed"), "error"));
   };
 
-  const model = useMemo(() => models.data?.find((item) => item.id === current?.model), [models.data, current?.model]);
+  const model = useMemo(() => models.data?.find((item) => item.id === current?.model && item.provider === current?.provider), [models.data, current?.model, current?.provider]);
   // 模型档案缺 modalities 字段时按不支持图片处理（服务端仍会二次校验）
   const supportsImages = model?.capabilities.modalities?.includes("image") ?? false;
 

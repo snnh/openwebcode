@@ -6,7 +6,7 @@
 
 1. 运行 `owc`（Windows：`owc.cmd`；Linux：安装器生成的 `<prefix>/bin/owc`）；
 2. 浏览器打开 <http://127.0.0.1:3000>；
-3. 首次使用先去**设置页**配置模型提供商（baseUrl、apiKey），点「刷新模型目录」拉取可用模型。
+3. 首次使用先到 **设置 → 服务设置 → 模型服务商** 添加一个或多个配置，选择接口类型、Base URL、API Key 并启用；随后到「模型目录」刷新模型列表。
 
 如果端口被占用或想换端口：设置环境变量 `OWC_PORT=4000` 后启动 `owc`（launcher 脚本默认 3000，server 自身兜底 3210）。
 
@@ -39,7 +39,7 @@
 侧栏 **+** 新建会话：
 
 - **工作目录**：agent 的 cwd，文件读写/命令执行都在此目录下（受沙盒约束）
-- **provider / 模型**：从设置页配置的列表里选
+- **模型**：从所有已启用服务商的模型列表中选择，格式为 `模型ID【服务商】`
 - **沙盒模式**：
   - `AppContainer`（Windows 默认）/ `Landlock`（Linux 默认）—— 日常开发
   - `WSB`（Windows Sandbox）—— 跑不可信代码时用，一会话一 VM，关闭即蒸发
@@ -72,9 +72,9 @@
 
 ## 联网工具配置
 
-- `web_fetch` 默认不提供给模型。到 **设置 → 服务设置 → 网页读取** 显式选择 `jina` 或 `custom` 后才会注入工具与对应提示词；Jina 的 API Key 可选，custom Base URL 必须包含 `{url}` 占位符（会替换为 URL 编码后的目标地址）。
-- `web_search` 在 **设置 → 服务设置 → 网络搜索** 选择 `brave`、`tavily` 或 `custom` 并填好所需凭据后才注入。Tavily 使用单独的 API Key 调用其 Search API；其远程 MCP 地址 `https://mcp.tavily.com/mcp/?tavilyApiKey=...` 应配置在 `<业务数据目录>/mcp.json`，不是搜索 Base URL。
-- 也可通过环境变量配置：`OWC_WEB_FETCH_PROVIDER` / `OWC_WEB_FETCH_API_KEY` / `OWC_WEB_FETCH_BASE_URL` 与 `OWC_SEARCH_PROVIDER` / `OWC_SEARCH_API_KEY` / `OWC_SEARCH_BASE_URL`。环境变量优先，设置页只读显示。
+- Search 与 Fetch 使用同一套「联网服务商」配置。可以保存多个 Jina、Brave、Tavily 或 Custom 配置，每项声明 `search` / `fetch` 能力，再分别选择当前用于 Web Search 和 Web Fetch 的配置。
+- Jina 同时支持 Search 与 Fetch；Brave、Tavily 支持 Search；Custom 可自行声明能力。Custom Fetch URL 必须包含 `{url}` 占位符，Custom Search URL 接收 `q` 与 `count` 查询参数。
+- 未选中具备相应能力的配置时，对应工具不会注入模型。Tavily 的远程 MCP 地址 `https://mcp.tavily.com/mcp/?tavilyApiKey=...` 仍应配置在 `<业务数据目录>/mcp.json`，不是 Search Base URL。
 - 联网调用仍遵循会话权限模式；`ask` 下会请求确认，且内网/本地 URL 会被拒绝。
 
 ## 对话内容渲染
@@ -114,7 +114,8 @@
 
 ## 模型与成本
 
-- **会话中热切换模型**：下轮生效，账本按新窗口重算，模态不兼容的历史内容替换为占位描述
+- **模型服务商**：可保存并独立启用多个 Anthropic Messages / OpenAI Chat Completions 接口配置；每个服务商可自动拉取或手动添加自己的模型，同名模型互不覆盖
+- **会话中热切换模型**：统一列表显示为 `模型ID【服务商】`，下轮生效；账本按新窗口重算，模态不兼容的历史内容替换为占位描述
 - **思考程度**：支持 thinking 的模型在输入框上方有开关与程度选择器（low/medium/high）
 - **成本报表**：按会话/按日/按 provider，缓存读写分项，双币种（USD/CNY）汇率折算，预算触发暂停
 - **模型定价**：设置 → 模型定价 → 添加条目。价格单位是“每百万 tokens 的元/美元”；输入、输出单价必填，缓存读/写可空（按 `0` 保存），生效日期默认当天并可修改
@@ -145,6 +146,7 @@ owc run "给 main.ts 加个单元测试" --cwd . --json
 | 路径 | 用途 |
 |---|---|
 | `<启动/设置目录>/server-settings.json` | 设置页保存的服务设置 |
+| `<业务数据目录>/provider-profiles.json` | 多模型/联网服务商配置与密钥（本机明文保存，界面仅脱敏显示） |
 | `<业务数据目录>/sessions/<id>/` | 会话数据（meta.json + messages.jsonl + ledger.json + artifacts/） |
 | `<业务数据目录>/agents/*.md` | 全局自定义子代理 |
 | `<业务数据目录>/commands/*.md` | 全局自定义斜杠命令 |

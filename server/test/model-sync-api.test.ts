@@ -11,6 +11,7 @@ import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { SettingsService } from "../src/settings-service.js";
+import type { ProviderProfilesRuntime } from "../src/provider-profiles-runtime.js";
 
 const roots: string[] = [];
 
@@ -67,7 +68,6 @@ async function fixture(options: {
   const agent = new AgentRunner(sessions, providers, core, events, pricing);
   const settings = await SettingsService.load({
     env: {
-      ANTHROPIC_API_KEY: "sk-route-test",
       ...(options.catalogSyncUrl ? { OWC_MODELS_CATALOG_SYNC_URL: options.catalogSyncUrl } : {}),
       ...(options.pricingSyncUrl ? { OWC_MODELS_PRICING_SYNC_URL: options.pricingSyncUrl } : {}),
     },
@@ -80,7 +80,10 @@ async function fixture(options: {
     fetchImpl: fetchStub(options.fetchRoutes ?? [], seen),
     onUpdated: () => events.publish({ source: "server", type: "models.updated", payload: {} }),
   });
-  const app = await buildServer({ core, sessions, agent, events, providers, pricing, settings, models });
+  const providerProfilesRuntime = {
+    refreshModels: () => models.refresh({ providers: [{ provider: "anthropic", interfaceType: "anthropic-messages", apiKey: "sk-route-test" }] }),
+  } as unknown as ProviderProfilesRuntime;
+  const app = await buildServer({ core, sessions, agent, events, providers, pricing, settings, models, providerProfilesRuntime });
   return { app, models, pricing, observed, seen };
 }
 

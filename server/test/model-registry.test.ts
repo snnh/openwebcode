@@ -10,6 +10,7 @@ import { CoreClient } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
+import type { ProviderProfilesRuntime } from "../src/provider-profiles-runtime.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { SettingsService } from "../src/settings-service.js";
 
@@ -68,10 +69,10 @@ describe("ModelRegistry", () => {
         { match: "https://openai.test/models", body: { data: [{ id: "gpt-4o" }, { id: "gpt-weird" }] } },
       ]),
     });
-    const report = await registry.refresh({
-      anthropic: { apiKey: "sk-ant" },
-      openai: { baseURL: "https://openai.test", apiKey: "sk-oai" },
-    });
+    const report = await registry.refresh({ providers: [
+      { provider: "anthropic", interfaceType: "anthropic-messages", apiKey: "sk-ant" },
+      { provider: "openai", interfaceType: "openai-chat-completions", baseURL: "https://openai.test", apiKey: "sk-oai" },
+    ] });
     expect(report.errors).toEqual([]);
     expect(report.added).toBe(4);
 
@@ -99,7 +100,7 @@ describe("ModelRegistry", () => {
         { match: "https://api.anthropic.com/v1/models", body: { data: [{ id: "claude-page-1" }], has_more: true, last_id: "m2" } },
       ], seen),
     });
-    const report = await registry.refresh({ anthropic: { apiKey: "sk-ant" } });
+    const report = await registry.refresh({ providers: [{ provider: "anthropic", interfaceType: "anthropic-messages", apiKey: "sk-ant" }] });
     expect(report.errors).toEqual([]);
     expect(report.added).toBe(2);
     expect(seen).toHaveLength(2);
@@ -116,7 +117,7 @@ describe("ModelRegistry", () => {
       id: "gpt-4o", provider: "openai", source: "manual", contextWindow: 999, maxOutput: 99,
       capabilities: { modalities: ["text"], imageOutput: false, thinking: [], effort: [], tools: true },
     });
-    const report = await registry.refresh({ openai: { baseURL: "https://openai.test" } });
+    const report = await registry.refresh({ providers: [{ provider: "openai", interfaceType: "openai-chat-completions", baseURL: "https://openai.test" }] });
     expect(report.added).toBe(0);
     const gpt4o = registry.list().find((model) => model.id === "gpt-4o");
     expect(gpt4o?.source).toBe("manual");
@@ -134,11 +135,11 @@ describe("ModelRegistry", () => {
         return new Response(JSON.stringify({ data: [{ id: "gpt-4o" }] }), { status: 200 });
       }) as unknown as typeof fetch,
     });
-    await registry.refresh({ openai: { baseURL: "https://openai.test" } });
+    await registry.refresh({ providers: [{ provider: "openai", interfaceType: "openai-chat-completions", baseURL: "https://openai.test" }] });
     expect(registry.list().some((model) => model.id === "gpt-4o")).toBe(true);
 
     fail = true;
-    const report = await registry.refresh({ openai: { baseURL: "https://openai.test" } });
+    const report = await registry.refresh({ providers: [{ provider: "openai", interfaceType: "openai-chat-completions", baseURL: "https://openai.test" }] });
     expect(report.errors).toHaveLength(1);
     expect(report.errors[0]).toContain("openai");
     // 失败不清空旧目录
@@ -156,12 +157,12 @@ describe("ModelRegistry", () => {
         },
       ]),
     });
-    const first = await registry.refresh({ openai: { baseURL: "https://openai.test" } });
+    const first = await registry.refresh({ providers: [{ provider: "openai", interfaceType: "openai-chat-completions", baseURL: "https://openai.test" }] });
     expect(first.added).toBe(1);
     expect(registry.list().map((model) => model.id)).not.toContain("whisper-1");
     expect(registry.list().map((model) => model.id)).not.toContain("text-embedding-3-large");
 
-    const second = await registry.refresh({ openai: { baseURL: "https://openai.test" } });
+    const second = await registry.refresh({ providers: [{ provider: "openai", interfaceType: "openai-chat-completions", baseURL: "https://openai.test" }] });
     expect(second.added).toBe(0);
     expect(registry.list().some((model) => model.id === "gpt-4o")).toBe(true);
   });
@@ -169,9 +170,27 @@ describe("ModelRegistry", () => {
   it("reports an error when no credentials are configured", async () => {
     const root = await tempDir();
     const registry = await ModelRegistry.load({ ...paths(root), fetchImpl: fetchStub([]) });
-    const report = await registry.refresh({});
+    const report = await registry.refresh({ providers: [] });
     expect(report.errors).toEqual(["未配置任何 provider 凭据"]);
     expect(report.added).toBe(0);
+  });
+
+  it("removes cached API models when their provider is no longer enabled", async () => {
+    const root = await tempDir();
+    const registry = await ModelRegistry.load({
+      ...paths(root),
+      fetchImpl: fetchStub([{ match: "https://openai.test/models", body: { data: [{ id: "cached-model" }] } }]),
+    });
+    await registry.refresh({ providers: [{ provider: "local", interfaceType: "openai-chat-completions", baseURL: "https://openai.test" }] });
+    expect(registry.list().some((model) => model.id === "cached-model" && model.provider === "local")).toBe(true);
+
+    const report = await registry.refresh({ providers: [] });
+    expect(report.errors).toEqual(["未配置任何 provider 凭据"]);
+    expect(report.total).toBe(0);
+    expect(registry.list().some((model) => model.id === "cached-model" && model.provider === "local")).toBe(false);
+
+    const restored = await ModelRegistry.load({ ...paths(root), fetchImpl: fetchStub([]) });
+    expect(restored.list().some((model) => model.id === "cached-model" && model.provider === "local")).toBe(false);
   });
 
   it("restores api snapshot and manual entries across restarts", async () => {
@@ -180,7 +199,7 @@ describe("ModelRegistry", () => {
       ...paths(root),
       fetchImpl: fetchStub([{ match: "https://openai.test/models", body: { data: [{ id: "gpt-4o" }] } }]),
     });
-    await first.refresh({ openai: { baseURL: "https://openai.test" } });
+    await first.refresh({ providers: [{ provider: "openai", interfaceType: "openai-chat-completions", baseURL: "https://openai.test" }] });
     await first.upsertManual({
       id: "my-model", provider: "manual", source: "manual", contextWindow: 1000, maxOutput: 100,
       capabilities: { modalities: ["text"], imageOutput: true, thinking: [], effort: [], tools: false },
@@ -224,7 +243,7 @@ describe("ModelRegistry", () => {
     expect(registry.list().find((model) => model.id === "legacy-api-model")?.capabilities.imageOutput).toBe(false);
   });
 
-  it("syncs a separate remote catalog snapshot, preserving video input and manual precedence", async () => {
+  it("syncs a separate remote catalog snapshot while keeping same-id providers independent", async () => {
     const root = await tempDir();
     const registry = await ModelRegistry.load({ ...paths(root), fetchImpl: fetchStub([]) });
     expect(registry.syncStatus()).toEqual({ count: 0 });
@@ -265,9 +284,11 @@ describe("ModelRegistry", () => {
 
     expect(result).toEqual({ ok: true, count: 2, updatedAt: remoteDocument.updatedAt });
     expect(registry.syncStatus()).toEqual({ count: 2, updatedAt: remoteDocument.updatedAt });
-    // Manual is the final precedence layer over the remote catalog.
-    expect(registry.list().find((model) => model.id === "remote-overridden")).toMatchObject({
+    expect(registry.list().find((model) => model.id === "remote-overridden" && model.provider === "manual")).toMatchObject({
       source: "manual", provider: "manual", contextWindow: 9_999,
+    });
+    expect(registry.list().find((model) => model.id === "remote-overridden" && model.provider === "remote-provider")).toMatchObject({
+      source: "synced", contextWindow: 65_536,
     });
     const synced = registry.list().find((model) => model.id === "remote-image-video");
     expect(synced).toMatchObject({ source: "synced", provider: "remote-provider", displayName: "Remote Image + Video Input" });
@@ -377,16 +398,19 @@ describe("models API", () => {
     events.on("event", (event: AppEvent) => observed.push(event));
     const core = new CoreClient(path.join(root, "unused-core"));
     const agent = new AgentRunner(sessions, providers, core, events, pricing);
-    const settings = await SettingsService.load({
-      env: { ANTHROPIC_API_KEY: "sk-ant", OPENAI_BASE_URL: "https://openai.test" },
-      filePath: path.join(root, "server-settings.json"),
-    });
+    const settings = await SettingsService.load({ env: {}, filePath: path.join(root, "server-settings.json") });
     const models = await ModelRegistry.load({
       ...paths(root),
       fetchImpl: fetchStub(routes),
       onUpdated: () => events.publish({ source: "server", type: "models.updated", payload: {} }),
     });
-    const app = await buildServer({ core, sessions, agent, events, providers, pricing, settings, models });
+    const providerProfilesRuntime = {
+      refreshModels: () => models.refresh({ providers: [
+        { provider: "anthropic", interfaceType: "anthropic-messages", apiKey: "sk-ant" },
+        { provider: "openai", interfaceType: "openai-chat-completions", baseURL: "https://openai.test" },
+      ] }),
+    } as unknown as ProviderProfilesRuntime;
+    const app = await buildServer({ core, sessions, agent, events, providers, pricing, settings, models, providerProfilesRuntime });
     return { app, models, observed };
   }
 

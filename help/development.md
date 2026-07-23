@@ -129,12 +129,12 @@ cd web && npm run dev    # Vite 默认 5173，proxy 到 server 3000
 provider；它支持 `run: <cmd>` 的工具调用回放与 `tool_result` 回包，因此测试无需
 消耗 token，也不会把开发用途的 provider 暴露给实际用户。
 
-本地联调请在设置页配置 Anthropic 或 OpenAI 兼容端点的 API Key，并刷新模型目录后
+本地联调请在设置页添加并启用 Anthropic Messages 或 OpenAI Chat Completions 服务商配置，并刷新模型目录后
 创建会话。
 
 ### C. 真实 LLM + 本地三件套
 
-设置页配 Anthropic / OpenAI 兼容 provider（baseUrl + apiKey），点「刷新模型目录」。正常会话流程即此路径。
+设置页添加具名服务商配置（接口类型 + Base URL + API Key），启用后点「刷新模型目录」。正常会话流程即此路径。
 
 ## 测试约定
 

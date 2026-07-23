@@ -388,7 +388,7 @@ describe("Composer", () => {
     expect(screen.queryByRole("listbox", { name: "技能建议" })).not.toBeInTheDocument();
   });
 
-  it("可将旧会话切换到已配置 provider，并同步选择其首个模型", () => {
+  it("单一模型选择器同时切换 provider 与模型", () => {
     const onConfig = vi.fn();
     const models: ModelProfile[] = [{
       id: "gpt-4o-mini",
@@ -398,7 +398,7 @@ describe("Composer", () => {
       capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true },
     }];
     render(<Harness onSend={vi.fn()} onConfig={onConfig} providers={["openai"]} models={models} />);
-    fireEvent.change(screen.getByLabelText("Provider"), { target: { value: "openai" } });
+    fireEvent.change(screen.getByLabelText("模型"), { target: { value: JSON.stringify(["openai", "gpt-4o-mini"]) } });
     expect(onConfig).toHaveBeenCalledWith({ provider: "openai", model: "gpt-4o-mini" });
   });
 

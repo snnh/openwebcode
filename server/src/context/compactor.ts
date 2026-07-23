@@ -145,7 +145,7 @@ export class Compactor {
       this.recordProvider2Usage(sessionId, completion.usage);
     } else {
       if (mode === "overview" && !forced) {
-        throw new Error("provider2 未配置：概览压缩不可用。请在设置中配置 provider2，或使用 /compact tools（规则版）。");
+        throw new Error("快速模型未配置：概览压缩不可用。请在设置中配置快速模型，或使用 /compact tools（规则版）。");
       }
       summary = ruleBasedToolcalls(span);
       finalMode = mode === "overview" ? "truncated" : "toolcalls";
