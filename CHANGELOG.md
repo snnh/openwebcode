@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## [0.3.7] - 2026-07-23
+
 ### 新增
 
 - Tavily 联网配置同时提供 Search 与 Fetch；Fetch 使用 Tavily Extract API 提取目标页面正文。
@@ -12,6 +14,10 @@
 ### 变更
 
 - 快速模型复用所选模型服务商的接口类型、Base URL 与凭据，不再维护独立服务商配置；旧的独立快速模型格式不再读取。
+
+### 修复
+
+- `fs.glob`、`fs.grep` 与 `fs.scan` 递归遍历时跳过 `System Volume Information` 等受保护子目录，不再因单个目录不可读而整体报 `permission denied`。
 
 ## [0.3.6] - 2026-07-23
 
