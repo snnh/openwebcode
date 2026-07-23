@@ -51,6 +51,10 @@ describe("AgentRunner steering", () => {
     await vi.waitFor(() => expect(requests).toHaveLength(2));
     await vi.waitFor(async () => expect((await sessions.get(session.id))?.messages.some((message) =>
       message.role === "user" && message.content.some((block) => block.type === "text" && block.text === "continue with tests"))).toBe(true));
+    await vi.waitFor(async () => {
+      expect(runner.isRunning(session.id)).toBe(false);
+      expect((await runner.getRun(session.id))?.state).toBe("completed");
+    }, { timeout: 5_000 });
   });
 
   it("queues messages during a provider turn and applies them at the next safe boundary", async () => {
