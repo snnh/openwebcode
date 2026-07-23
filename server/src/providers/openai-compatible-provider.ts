@@ -41,7 +41,7 @@ export class OpenAICompatibleProvider implements Provider {
         model: request.model,
         stream: true,
         stream_options: { include_usage: true },
-        max_tokens: this.maxTokens,
+        max_tokens: request.maxTokens ?? this.maxTokens,
         ...(this.options.reasoningEffort !== false && request.effort ? { reasoning_effort: request.effort } : {}),
         messages: toOpenAIMessages(request.system, request.messages),
         ...(request.tools.length > 0

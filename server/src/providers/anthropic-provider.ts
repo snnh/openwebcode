@@ -29,12 +29,13 @@ export class AnthropicProvider implements Provider {
 
   async *streamChat(request: StreamChatRequest): AsyncIterable<ProviderEvent> {
     let streamStarted = false;
+    const maxTokens = request.maxTokens ?? this.maxTokens;
     try {
       const stream = this.client.messages.stream(
         {
           model: request.model,
-          max_tokens: this.maxTokens,
-          ...(anthropicThinking(request, this.maxTokens) ? { thinking: anthropicThinking(request, this.maxTokens)! } : {}),
+          max_tokens: maxTokens,
+          ...(anthropicThinking(request, maxTokens) ? { thinking: anthropicThinking(request, maxTokens)! } : {}),
           ...(request.effort ? { output_config: { effort: request.effort } } : {}),
           system: request.system,
           messages: toAnthropicMessages(request.messages, new Set(request.cacheBreakpoints ?? [])),

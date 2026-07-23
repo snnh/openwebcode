@@ -3,7 +3,7 @@ import type { ExchangeRateService } from "../cost/exchange-rate.js";
 import { calculateUsageCost } from "../cost/cost-calculator.js";
 import type { PricingCatalog } from "../cost/pricing-catalog.js";
 import { appendMemory, parseSedimentSections } from "../memory.js";
-import type { Provider2Client } from "../provider2.js";
+import type { FastModelClient } from "../fast-model.js";
 import type { ChatMessage, MessageContent } from "../sessions/types.js";
 import type { SessionStore } from "../sessions/session-store.js";
 import type { UsageLog } from "../usage-log.js";
@@ -31,7 +31,7 @@ const OVERVIEW_SYSTEM = `你是上下文压缩器。把对话中段压缩为结�
 用户明确指令：
 每个小节用 "- " 列表逐条列出。「用户明确指令」小节：先完整保留输入中给出的已有指令（逐字），再追加新发现的指令（去重）。只输出概览本身。`;
 
-/** 从 provider2 的 overview 输出中解析「用户明确指令」小节（- 列表行）。 */
+/** 从快速模型的 overview 输出中解析「用户明确指令」小节（- 列表行）。 */
 export function extractInstructions(text: string): string[] {
   const collected: string[] = [];
   let inSection = false;
@@ -84,7 +84,7 @@ export function renderSpan(span: ChatMessage[], budget = 30_000): string {
   return `${transcript.slice(0, head)}\n\n…[中段 ${transcript.length - budget} 字符省略]…\n\n${transcript.slice(-tail)}`;
 }
 
-/** 无 provider2 时的规则压缩：每个工具调用/用户消息压一行。 */
+/** 无快速模型时的规则压缩：每个工具调用/用户消息压一行。 */
 function ruleBasedToolcalls(span: ChatMessage[]): string {
   const lines: string[] = [];
   for (const message of span) {
@@ -100,15 +100,15 @@ function ruleBasedToolcalls(span: ChatMessage[]): string {
 
 /**
  * 上下文压缩器（plan §7.4）：
- * - toolcalls：占位摘要精炼（provider2）；未配置时规则降级
- * - overview：结构化概览（provider2），用户明确指令跨段累积置顶；
+ * - toolcalls：占位摘要精炼（快速模型）；未配置时规则降级
+ * - overview：结构化概览（快速模型），用户明确指令跨段累积置顶；
  *   未配置且非强制 → 报错提示；85% 强制 → 规则硬截断兜底（mode=truncated）
  * - 保留最近 keepTail 条消息不压缩；强制时 pinned 豁免失效（安全优先）
  */
 export class Compactor {
   constructor(
     private readonly sessions: SessionStore,
-    private readonly provider2: Provider2Client,
+    private readonly fastModel: FastModelClient,
     private readonly deps: { usageLog?: UsageLog; pricing?: PricingCatalog; exchangeRates?: ExchangeRateService } = {},
     private readonly keepTail = 10,
   ) {}
@@ -131,9 +131,9 @@ export class Compactor {
     let summary: string;
     let instructions = !ledger.cleared || compactedUpto > clearedUpto ? (ledger.compacted?.instructions ?? []) : [];
 
-    if (this.provider2.configured) {
+    if (this.fastModel.configured) {
       const transcript = renderSpan(span);
-      const completion = await this.provider2.complete({
+      const completion = await this.fastModel.complete({
         system: mode === "overview" ? OVERVIEW_SYSTEM : TOOLCALLS_SYSTEM,
         prompt: mode === "overview" && instructions.length > 0
           ? `已有的用户明确指令（逐字保留并置顶）：\n${instructions.map((item) => `- ${item}`).join("\n")}\n\n待压缩对话：\n${transcript}`
@@ -142,7 +142,7 @@ export class Compactor {
       });
       summary = completion.text.trim();
       if (mode === "overview") instructions = mergeInstructions(instructions, extractInstructions(summary));
-      this.recordProvider2Usage(sessionId, completion.usage);
+      this.recordFastModelUsage(sessionId, completion.usage);
     } else {
       if (mode === "overview" && !forced) {
         throw new Error("快速模型未配置：概览压缩不可用。请在设置中配置快速模型，或使用 /compact tools（规则版）。");
@@ -161,7 +161,7 @@ export class Compactor {
     // 长期记忆沉淀（§7.5）：overview 摘要的「关键发现/未决事项」落进项目 memory.md。
     // 单点落在此：85% 强制压缩（agent-runner）、REST 与 /compact 命令（app.ts runCompact）
     // 全部经 Compactor.compact；去重交给 appendMemory，失败只告警不影响压缩结果。
-    // 注意按 finalMode 判断：provider2 缺失降级 truncated 时规则摘要不含结构化小节，
+    // 注意按 finalMode 判断：快速模型缺失降级 truncated 时规则摘要不含结构化小节，
     // 若按请求 mode 判断会把工具参数里的「关键发现」字样误收进记忆
     if (finalMode === "overview") {
       try {
@@ -174,16 +174,17 @@ export class Compactor {
     return { changed: true, mode: finalMode, uptoIndex, summary };
   }
 
-  /** provider2 用量进全局报表（provider="provider2" 分项；定价目录无此模型则计为未定价）。 */
-  private recordProvider2Usage(sessionId: string, usage: { inputTokens: number; outputTokens: number }): void {
+  /** Fast-model usage is attributed to the selected real provider/model. */
+  private recordFastModelUsage(sessionId: string, usage: { inputTokens: number; outputTokens: number }): void {
     if (!this.deps.usageLog) return;
-    const model = this.provider2.model ?? "unknown";
+    const provider = this.fastModel.provider ?? "unknown";
+    const model = this.fastModel.model ?? "unknown";
     const tokens = { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, cacheRead: 0, cacheWrite: 0 };
-    const cost = calculateUsageCost(tokens, this.deps.pricing?.get("provider2", model), this.deps.exchangeRates?.current());
+    const cost = calculateUsageCost(tokens, this.deps.pricing?.get(provider, model), this.deps.exchangeRates?.current());
     void this.deps.usageLog.record({
       at: new Date().toISOString(),
       sessionId,
-      provider: "provider2",
+      provider,
       model,
       ...tokens,
       priced: cost.priced,

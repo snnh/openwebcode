@@ -1,5 +1,6 @@
 import path from "node:path";
 import { MAX_SYNC_INTERVAL_MINUTES } from "./remote-sync-scheduler.js";
+import type { FastModelConfig } from "./fast-model.js";
 
 export interface ServerConfig {
   host: string;
@@ -30,7 +31,7 @@ export interface ServerConfig {
     pricingSyncUrl?: string;
     syncIntervalMinutes: number;
   };
-  provider2?: { baseURL: string; apiKey?: string; model: string };
+  fastModel?: FastModelConfig;
 }
 
 function positiveInteger(value: string | undefined, fallback: number): number {
@@ -164,15 +165,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
                   ...(jobMaxProcesses !== undefined ? { maxProcesses: jobMaxProcesses } : {}),
                 } }
               : {}),
-          },
-        }
-      : {}),
-    ...(env.OWC_PROVIDER2_BASE_URL && env.OWC_PROVIDER2_MODEL
-      ? {
-          provider2: {
-            baseURL: env.OWC_PROVIDER2_BASE_URL,
-            model: env.OWC_PROVIDER2_MODEL,
-            ...(env.OWC_PROVIDER2_API_KEY ? { apiKey: env.OWC_PROVIDER2_API_KEY } : {}),
           },
         }
       : {}),

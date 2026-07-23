@@ -46,7 +46,7 @@ Windows：重新下载 MSI 双击安装（major upgrade 原地升级，用户数
 
 ### Q: 为什么没有 `web_fetch` 或 `web_search`？
 
-联网工具不会默认注入，避免模型在未配置服务时反复调用必然失败的工具。先在「设置 → 服务设置 → 联网服务商」保存一个或多个配置；每项声明 Search / Fetch 能力，再分别选择当前配置。Jina 支持两项能力，Brave/Tavily 支持 Search，Custom 可自行声明能力且 Fetch URL 必须含 `{url}`。未选择对应能力时不会提供该工具或提示词，不影响普通对话。
+联网工具不会默认注入，避免模型在未配置服务时反复调用必然失败的工具。先在「设置 → 服务设置 → 联网服务商」保存一个或多个配置；每项声明 Search / Fetch 能力，再分别选择当前配置。Jina 和 Tavily 支持两项能力（Tavily Fetch 使用 Extract API），Brave 仅支持 Search，Custom 可自行声明能力且 Fetch URL 必须含 `{url}`。未选择对应能力时不会提供该工具或提示词，不影响普通对话。
 
 `https://mcp.tavily.com/mcp/?tavilyApiKey=...` 是 Tavily 的远程 MCP 地址；如需直接使用 Tavily MCP 的完整工具集，请把它写到 `<业务数据目录>/mcp.json`，不要填进搜索 Base URL。
 
@@ -98,7 +98,7 @@ Windows：会话创建选 `WSB` 沙盒模式——一会话一 VM，关闭即蒸
 
 1. **结果预算截断**：bash 输出 8k、read 16k、grep 4k，超出截断 + artifact 指针
 2. **滚动驱逐**：默认 lag=1，每轮完成即把 N-1 轮的 toolcall 压成一行占位符（`[tool: bash "npm test" → exit 0, 2.1k tokens, artifact:a3f2]`），全量落盘 artifacts/
-3. **85% 水位强制压缩**：provider2 做结构化概览摘要
+3. **85% 水位强制压缩**：快速模型做结构化概览摘要
 
 手动介入：`/compact`（概览摘要）/ `/compact tools`（toolcalls 精炼）/ `/clear`（清视图留历史）。
 
@@ -110,9 +110,9 @@ Windows：会话创建选 `WSB` 沙盒模式——一会话一 VM，关闭即蒸
 
 不会。`/clear` 只清空当前 LLM 视图，messages.jsonl 全量保留，账本记 `cleared` 边界。回滚检查点会同步回退清空界。
 
-### Q: provider2 是什么？必须配置吗？
+### Q: 快速模型是什么？必须配置吗？
 
-provider2 是快速廉价的辅助模型，做压缩/标题生成/翻译等旁路任务。**非必须**——不配置时压缩走纯规则截断+占位，概览压缩不可用并提示。配一个便宜的（haiku/deepseek-chat）体验更好。
+快速模型是用于压缩、标题生成、翻译等旁路任务的低延迟模型。它直接从已启用服务商的统一模型目录选择，并复用该服务商的接口、Base URL 与密钥；设置页可单独配置 thinking、effort 和最大输出上限。**非必须**——不配置时压缩走纯规则截断+占位，概览压缩不可用并提示。选择一个便宜、响应快的模型体验更好。
 
 ### Q: 怎么调整上下文驱逐与压缩？
 
@@ -146,7 +146,7 @@ provider2 是快速廉价的辅助模型，做压缩/标题生成/翻译等旁�
 
 - `context-manager` 默认启用，承载滚动驱逐与上下文管理界面
 - `attention-optimizer` 默认关闭，通过复制关键引用建立注意力锚区，不移动原消息
-- `content-lens` 默认关闭，提供旁路翻译与划词解析；需要 provider2，结果不会进入上下文账本
+- `content-lens` 默认关闭，提供旁路翻译与划词解析；需要快速模型，结果不会进入上下文账本
 - `pdf-to-image` 默认启用，Web 选择的 PDF 会先保存到当前工作区 `.owc/uploads/`，再将最多 4 页以 150 DPI、最长边 2048px 转为图片附件；停用后仅把这个工作区相对路径引用发送给主代理
 
 它们可在「设置 → 扩展」启停和编辑配置。Extension Host 是独立子进程，单个钩子最多运行 5 秒。第三方 v1 扩展不是安全沙盒，只有信任其代码和权限声明时才安装。

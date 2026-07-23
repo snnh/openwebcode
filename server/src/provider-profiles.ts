@@ -97,8 +97,8 @@ function uniqueCapabilities(value: unknown): WebCapability[] {
 }
 
 function capabilitiesFor(provider: WebProviderType, requested?: unknown): WebCapability[] {
-  if (provider === "jina") return ["search", "fetch"];
-  if (provider === "brave" || provider === "tavily") return ["search"];
+  if (provider === "jina" || provider === "tavily") return ["search", "fetch"];
+  if (provider === "brave") return ["search"];
   return uniqueCapabilities(requested);
 }
 
