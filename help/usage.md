@@ -93,7 +93,7 @@
   - `允许一次` —— 仅批准当前工具调用；批准响应先返回浏览器，随后才启动工具
   - `总是允许` —— 二次确认后生成持久规则（如精确的 `bash(npm test)`），随会话保存
   - `拒绝` —— 可附理由回填给 LLM
-- Windows AppContainer 会话的 shell 是 `cmd.exe`；使用 `dir`、`type`、`where`、`&&` 等 cmd 语法。需要 PowerShell/POSIX 命令时应显式调用可用的 `powershell`、`pwsh` 或 `bash`
+- 会话头部可选择命令后端：`默认` 在 Windows AppContainer 中使用 `cmd.exe`，`PowerShell 7` 强制使用 `pwsh`。该选择同时作用于前台命令、后台任务和 agent 的 bash 工具，并随会话保存。选择 `pwsh` 前需先安装 PowerShell 7。
 - **后台 bash 任务**：bash 工具带 `run_in_background=true` 时立即返回 taskId，头部徽标查看运行中任务、点开看输出、随时终止；完成自动通知下一轮
 
 ## 会话生命周期（重要）
@@ -110,6 +110,7 @@
 - **时间线**：检查点列表 → diff 查看 → 「完整回滚」或「仅文件」回滚（二次确认），新建检查点
 - **沙盒状态**：会话头部徽标（enforced / advisory），标识当前沙盒是否生效
 - **模式切换**：会话空闲时可在头部直接切换沙盒模式，以及快照的「每轮自动 / 仅手动」模式；运行中会暂时禁用切换
+- **命令后端**：会话空闲时可在头部切换「默认 / PowerShell 7」；缺少 `pwsh` 时会返回明确错误，不会悄悄改用其他 shell
 
 ## 模型与成本
 

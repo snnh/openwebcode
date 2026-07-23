@@ -16,7 +16,7 @@ import { collectProviderTurn } from "../providers/retry.js";
 import { PermissionCoordinator, permissionRule, type PermissionDecision } from "./permission-coordinator.js";
 import { runSubAgent, SUB_AGENT_TOOL_NAMES } from "./sub-agent.js";
 import { getSnapshotBackend } from "../snapshots/index.js";
-import type { MessageContent } from "../sessions/types.js";
+import type { MessageContent, ShellBackend } from "../sessions/types.js";
 import type { SessionStore } from "../sessions/session-store.js";
 import { parseSkillCommand, type SkillRegistry } from "../skills.js";
 import type { AgentRegistry } from "../agents.js";
@@ -52,12 +52,13 @@ function toolEventResult(bounded: Awaited<ReturnType<typeof boundToolResult>>) {
   };
 }
 
-function bashTool(backgroundTasksEnabled: boolean): ProviderTool {
+function bashTool(backgroundTasksEnabled: boolean, shellBackend: ShellBackend): ProviderTool {
+  const shellGuidance = shellBackend === "pwsh"
+    ? "Commands run under PowerShell 7 (pwsh): use PowerShell syntax and cmdlets (for example Get-ChildItem, Get-Content, Get-Command, and ;). "
+    : "On Windows sandbox sessions commands run under cmd.exe: use cmd syntax (for example dir, type, where, and &&), and do not use PowerShell cmdlets or POSIX commands unless explicitly invoking an available shell. ";
   return {
     name: "bash",
-    description: "Execute a shell command in the session workspace. Call this when command-line execution is required. " +
-      "On Windows sandbox sessions commands run under cmd.exe: use cmd syntax (for example dir, type, where, and &&), " +
-      "and do not use PowerShell cmdlets or POSIX commands unless explicitly invoking an available shell." +
+    description: "Execute a shell command in the session workspace. Call this when command-line execution is required. " + shellGuidance +
       (backgroundTasksEnabled
         ? " Set run_in_background=true to run the command asynchronously; the agent loop continues immediately and you can check " +
           "the result later with task_output (or wait with block=true)."
@@ -229,9 +230,10 @@ function builtInTools(options: {
   backgroundTasksEnabled: boolean;
   fetchAvailable: boolean;
   searchAvailable: boolean;
+  shellBackend: ShellBackend;
 }): ProviderTool[] {
   return [
-    bashTool(options.backgroundTasksEnabled),
+    bashTool(options.backgroundTasksEnabled, options.shellBackend),
     ...FILE_TOOLS,
     READ_ARTIFACT_TOOL,
     ...(options.skillsAvailable ? [LOAD_SKILL_TOOL] : []),
@@ -617,6 +619,7 @@ export class AgentRunner {
                 backgroundTasksEnabled: Boolean(this.backgroundTasks),
                 fetchAvailable: Boolean(this.webFetchProvider),
                 searchAvailable: Boolean(this.search),
+                shellBackend: session.shellBackend ?? "default",
               }),
               ...mcpBinding.tools,
             ]
@@ -1429,6 +1432,7 @@ export class AgentRunner {
           taskId,
           cmd: input.cmd,
           cwd: session.cwd,
+          shellBackend: session.shellBackend ?? "default",
         });
         const result = { taskId, status: "started" as const };
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result } });
@@ -1471,7 +1475,7 @@ export class AgentRunner {
         const cancel = () => { void this.core.cancelJob({ sessionId, jobId }).catch(() => undefined); };
         signal.addEventListener("abort", cancel, { once: true });
         try {
-          await this.core.startJob({ sessionId, jobId, kind: "exec", cmd, cwd: session.cwd });
+          await this.core.startJob({ sessionId, jobId, kind: "exec", cmd, cwd: session.cwd, shellBackend: session.shellBackend ?? "default" });
           for (;;) {
             const page = await this.core.jobOutput({ sessionId, jobId, afterSeq, limit: 128 });
             output.push(...page.chunks);
@@ -1486,7 +1490,7 @@ export class AgentRunner {
             output.push(...tail.chunks);
             if (signal.aborted) signal.throwIfAborted();
             if (status.state === "cancelled" || status.state === "timed_out" || status.state === "failed") {
-              throw new Error(`Job ${status.state}`);
+              throw new Error(status.error ?? `Job ${status.state}`);
             }
             const decoded = decodeProcessOutputChunks(output);
             const rawContent = JSON.stringify({ ...status, output: decoded, outputTruncated: page.truncated || tail.truncated });
@@ -1498,7 +1502,7 @@ export class AgentRunner {
           signal.removeEventListener("abort", cancel);
         }
       }
-      const result = await this.core.run({ sessionId, execId, cmd, cwd: session.cwd });
+      const result = await this.core.run({ sessionId, execId, cmd, cwd: session.cwd, shellBackend: session.shellBackend ?? "default" });
       const output = decodeProcessOutputChunks(execution.output);
       const rawContent = JSON.stringify({ ...result, output });
       const bounded = await boundToolResult(this.sessions.contextRoot(sessionId), "bash", rawContent);

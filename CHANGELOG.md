@@ -1,8 +1,22 @@
 # 更新日志
 
-本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前 `v0.3.4` 的用户可感知变化。日期以 Git 标签发布日期为准。
+本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前 `v0.3.5` 的用户可感知变化。日期以 Git 标签发布日期为准。
 
 ## Unreleased
+
+## [0.3.5] - 2026-07-23
+
+### 新增
+
+- 会话可在头部选择默认命令解释器或 PowerShell 7（`pwsh`）；前台命令、后台任务与 agent 工具统一遵循并持久化该选择。
+
+### 修复
+
+- Windows VHDX 托管工作区改为挂载到源工作目录旁的无点号目录，避免 AppContainer 无法穿越应用数据目录而导致 `cwd`、读写和列目录失败。
+- AppContainer 在管理员宿主下只临时获得工作区祖先目录的穿越权限，实际读写权限仍限定在配置的工作区根目录，并在命令结束后清理。
+- 修复 Core 重启后会话工作目录策略丢失所导致的 `session cwd is not configured` / `Core is not running`。
+- 修复空后台输出响应缓冲区越界导致的 Core 退出与后续 `job not found`。
+- VHDX 换叶与恢复统一规范化目录 access path，避免重复挂载报“requested access path is already in use”。
 
 ## [0.3.4] - 2026-07-22
 
@@ -126,6 +140,7 @@
 - 支持图片输入、Markdown/代码高亮/KaTeX、折叠思考内容、会话导入导出、可分享的自包含 HTML 页面和 `owc run` Headless CLI。
 - 提供 Windows MSI、Linux tar.gz 安装脚本和 GitHub Actions 发布流水线。
 
+[0.3.5]: https://github.com/snnh/openwebcode/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/snnh/openwebcode/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/snnh/openwebcode/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/snnh/openwebcode/compare/v0.3.1...v0.3.2

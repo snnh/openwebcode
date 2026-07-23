@@ -31,14 +31,24 @@ function Write-Utf8Stderr([string]$Message) {
 
 $ErrorActionPreference = "Stop"
 
+function Normalize-AccessPath([string]$AccessPath) {
+    if (-not $AccessPath) { return $AccessPath }
+    # Get-Partition canonicalizes directory mount points with a trailing
+    # backslash, while Node passes MountPoint without one. Comparing the raw
+    # strings makes an already restored mount look absent and a second
+    # Add-PartitionAccessPath then fails with "access path is already in use".
+    return $AccessPath.TrimEnd([char[]]"\/") + "\"
+}
+
 function Mount-ManagedVhd([string]$ImagePath, [string]$AccessPath) {
     $disk = Mount-VHD -Path $ImagePath -PassThru | Get-Disk
     $partition = Get-Partition -DiskNumber $disk.Number | Where-Object { $_.Type -ne "Reserved" } | Select-Object -First 1
     if (-not $partition) {
         throw "虚拟硬盘没有可挂载的分区：$ImagePath"
     }
-    if (-not ($partition.AccessPaths | Where-Object { $_ -eq $AccessPath })) {
-        Add-PartitionAccessPath -DiskNumber $disk.Number -PartitionNumber $partition.PartitionNumber -AccessPath $AccessPath
+    $normalizedAccessPath = Normalize-AccessPath $AccessPath
+    if (-not ($partition.AccessPaths | Where-Object { (Normalize-AccessPath $_) -ieq $normalizedAccessPath })) {
+        Add-PartitionAccessPath -DiskNumber $disk.Number -PartitionNumber $partition.PartitionNumber -AccessPath $normalizedAccessPath
     }
 }
 
@@ -52,7 +62,8 @@ function Dismount-AtMountPoint([string]$AccessPath) {
     if (-not $AccessPath) { return }
     # chain.json 损坏或仍指向旧 base 时，不能只相信镜像路径。挂载目录由本服务
     # 推导且受控，按该 AccessPath 找回实际挂载 VHD 后再卸载，仍不使用 -Force。
-    $partition = Get-Partition | Where-Object { $_.AccessPaths | Where-Object { $_ -eq $AccessPath } } | Select-Object -First 1
+    $normalizedAccessPath = Normalize-AccessPath $AccessPath
+    $partition = Get-Partition | Where-Object { $_.AccessPaths | Where-Object { (Normalize-AccessPath $_) -ieq $normalizedAccessPath } } | Select-Object -First 1
     if (-not $partition) { return }
     $vhd = Get-VHD -DiskNumber $partition.DiskNumber -ErrorAction Stop
     if ($vhd.Attached) { Dismount-VHD -Path $vhd.Path }

@@ -85,7 +85,12 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
         if(request->sandbox_enabled)(void)owc_landlock_apply(request->cwd,request->allow_network,&sandbox);
         else{sandbox.status=OWC_SANDBOX_ADVISORY;(void)snprintf(sandbox.reason,sizeof(sandbox.reason),"sandbox disabled by session policy");}
         if(!write_all(sandbox_pipe[1],&sandbox,sizeof(sandbox)))_exit(126);
-        execl("/bin/sh", "sh", "-c", request->command, (char *)NULL);
+        if(request->shell_backend==(int)OWC_SHELL_PWSH) {
+            execlp("pwsh", "pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", request->command, (char *)NULL);
+            (void)dprintf(STDERR_FILENO,"pwsh executable was not found\n");
+        } else {
+            execl("/bin/sh", "sh", "-c", request->command, (char *)NULL);
+        }
         _exit(127);
     }
 

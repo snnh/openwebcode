@@ -44,9 +44,34 @@ describe.skipIf(!existsSync(corePath))("CoreClient", () => {
         : "printf 'node-core-ok\\n'; printf 'node-core-error\\n' >&2; exit 7",
       cwd,
       timeoutMs: 15_000,
+      shellBackend: process.platform === "win32" ? "pwsh" : "default",
     });
     expect(result.exitCode).toBe(7);
     const output = events.filter((event) => event.type === "exec.output");
     expect(output).toHaveLength(2);
+
+    if (process.platform === "win32") {
+      await client.configureSession({
+        sessionId: "test-session",
+        cwd,
+        sandbox: {
+          enabled: true,
+          readRoots: [cwd],
+          writeRoots: [cwd],
+          denyPaths: [],
+          network: "deny",
+        },
+      });
+      const directoryResult = await client.run({
+        sessionId: "test-session",
+        execId: "test-pwsh-directory",
+        cmd: "Get-ChildItem -Name | Select-Object -First 1",
+        cwd,
+        timeoutMs: 15_000,
+        shellBackend: "pwsh",
+      });
+      expect(directoryResult.exitCode).toBe(0);
+      await expect(client.ping()).resolves.toMatchObject({ platform: "windows" });
+    }
   }, 30_000);
 });

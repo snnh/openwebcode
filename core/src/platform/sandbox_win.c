@@ -14,8 +14,6 @@ HRESULT WINAPI DeriveAppContainerSidFromAppContainerName(PCWSTR, PSID *);
 
 struct owc_acl_grant {
     wchar_t *path;
-    PSECURITY_DESCRIPTOR original_sd;
-    SECURITY_INFORMATION original_info;
 };
 
 struct owc_sandbox {
@@ -51,107 +49,133 @@ static wchar_t *utf8_to_wide(const char *text) {
     return wide;
 }
 
+/* A DACL edit is read-modify-write (GetNamedSecurityInfo -> SetEntriesInAcl ->
+ * SetNamedSecurityInfo). Two commands on the same write root in this one core
+ * process can otherwise interleave and have one grant overwrite the other's.
+ * Serialize the RMW per process so concurrent grants/revokes never clobber. */
+static INIT_ONCE acl_once = INIT_ONCE_STATIC_INIT;
+static CRITICAL_SECTION acl_mutex;
+static BOOL CALLBACK acl_mutex_init(PINIT_ONCE once, PVOID param, PVOID *context) {
+    (void)once; (void)param; (void)context;
+    InitializeCriticalSection(&acl_mutex);
+    return TRUE;
+}
+
 static DWORD change_root_access(const wchar_t *path, PSID sid, ACCESS_MODE mode,
                                 DWORD permissions, DWORD inheritance) {
     PACL old_acl = NULL, new_acl = NULL;
     PSECURITY_DESCRIPTOR descriptor = NULL;
     EXPLICIT_ACCESSW access;
-    DWORD error = GetNamedSecurityInfoW((LPWSTR)path, SE_FILE_OBJECT,
-                                        DACL_SECURITY_INFORMATION, NULL, NULL,
-                                        &old_acl, NULL, &descriptor);
-    if (error != ERROR_SUCCESS) return error;
-    memset(&access, 0, sizeof(access));
-    access.grfAccessPermissions = permissions;
-    access.grfAccessMode = mode;
-    access.grfInheritance = inheritance;
-    access.Trustee.TrusteeForm = TRUSTEE_IS_SID;
-    access.Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
-    access.Trustee.ptstrName = (LPWSTR)sid;
-    error = SetEntriesInAclW(1, &access, old_acl, &new_acl);
-    if (error == ERROR_SUCCESS)
-        error = SetNamedSecurityInfoW((LPWSTR)path, SE_FILE_OBJECT,
-                                      DACL_SECURITY_INFORMATION,
-                                      NULL, NULL, new_acl, NULL);
+    DWORD error;
+    (void)InitOnceExecuteOnce(&acl_once, acl_mutex_init, NULL, NULL);
+    EnterCriticalSection(&acl_mutex);
+    error = GetNamedSecurityInfoW((LPWSTR)path, SE_FILE_OBJECT,
+                                  DACL_SECURITY_INFORMATION, NULL, NULL,
+                                  &old_acl, NULL, &descriptor);
+    if (error == ERROR_SUCCESS) {
+        memset(&access, 0, sizeof(access));
+        access.grfAccessPermissions = permissions;
+        access.grfAccessMode = mode;
+        access.grfInheritance = inheritance;
+        access.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+        access.Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
+        access.Trustee.ptstrName = (LPWSTR)sid;
+        error = SetEntriesInAclW(1, &access, old_acl, &new_acl);
+        if (error == ERROR_SUCCESS)
+            error = SetNamedSecurityInfoW((LPWSTR)path, SE_FILE_OBJECT,
+                                          DACL_SECURITY_INFORMATION,
+                                          NULL, NULL, new_acl, NULL);
+    }
+    LeaveCriticalSection(&acl_mutex);
     if (new_acl) LocalFree(new_acl);
     if (descriptor) LocalFree(descriptor);
     return error;
 }
 
-static DWORD snapshot_dacl(const wchar_t *path,
-                           PSECURITY_DESCRIPTOR *snapshot,
-                           SECURITY_INFORMATION *information) {
-    PACL acl = NULL;
-    PSECURITY_DESCRIPTOR descriptor = NULL;
-    SECURITY_DESCRIPTOR_CONTROL control = 0;
-    DWORD revision = 0, length, error;
-    *snapshot = NULL;
-    *information = DACL_SECURITY_INFORMATION;
-    error = GetNamedSecurityInfoW((LPWSTR)path, SE_FILE_OBJECT,
-                                  DACL_SECURITY_INFORMATION, NULL, NULL,
-                                  &acl, NULL, &descriptor);
-    if (error != ERROR_SUCCESS) return error;
-    if (GetSecurityDescriptorControl(descriptor, &control, &revision)) {
-        *information |= (control & SE_DACL_PROTECTED)
-                            ? PROTECTED_DACL_SECURITY_INFORMATION
-                            : UNPROTECTED_DACL_SECURITY_INFORMATION;
-    }
-    length = GetSecurityDescriptorLength(descriptor);
-    if (length) {
-        *snapshot = (PSECURITY_DESCRIPTOR)LocalAlloc(LMEM_FIXED, length);
-        if (*snapshot) (void)memcpy(*snapshot, descriptor, length);
-        /* If allocation fails, grant_one still proceeds. Cleanup falls back to
-           removing the AppContainer ACE, matching the legacy behavior. */
-    }
-    LocalFree(descriptor);
-    return ERROR_SUCCESS;
-}
-
+/* Cleanup revokes only the command's own SID ACE; it never rewrites the
+ * surrounding DACL, so concurrent commands on the same write root cannot
+ * strip one another's grant or resurrect a finished command's stale ACE. */
 static DWORD restore_grant(const struct owc_acl_grant *grant, PSID sid) {
-    if (grant->original_sd)
-        return SetFileSecurityW(grant->path, grant->original_info,
-                                grant->original_sd)
-                   ? ERROR_SUCCESS
-                   : GetLastError();
     return change_root_access(grant->path, sid, REVOKE_ACCESS, 0,
                               NO_INHERITANCE);
 }
 
-static int remember_grant(owc_sandbox *sandbox, wchar_t *path,
-                          PSECURITY_DESCRIPTOR original_sd,
-                          SECURITY_INFORMATION original_info) {
+static int remember_grant(owc_sandbox *sandbox, wchar_t *path) {
     struct owc_acl_grant *grown = (struct owc_acl_grant *)realloc(
         sandbox->grants, (sandbox->grant_count + 1) * sizeof(*grown));
     if (!grown) return 0;
     sandbox->grants = grown;
     sandbox->grants[sandbox->grant_count].path = path;
-    sandbox->grants[sandbox->grant_count].original_sd = original_sd;
-    sandbox->grants[sandbox->grant_count].original_info = original_info;
     sandbox->grant_count++;
     return 1;
 }
 
-static int grant_one(owc_sandbox *sandbox, const wchar_t *path,
-                     DWORD permissions, DWORD inheritance) {
+/* Add a command-unique SID ACE without snapshotting the entire DACL. Cleanup
+ * revokes only this SID, so concurrent commands on the same write root cannot
+ * overwrite one another's ACL state or resurrect a finished command's ACE.
+ * Inheritance is taken as a parameter so the same primitive serves traverse-
+ * only ancestor grants (NO_INHERITANCE) and write-root grants that must let
+ * newly created files inherit access (SUB_CONTAINERS_AND_OBJECTS_INHERIT). */
+static int grant_temporary(owc_sandbox *sandbox, const wchar_t *path,
+                           DWORD permissions, DWORD inheritance) {
     size_t length = wcslen(path) + 1;
     wchar_t *copy = (wchar_t *)malloc(length * sizeof(*copy));
-    PSECURITY_DESCRIPTOR original_sd = NULL;
-    SECURITY_INFORMATION original_info = DACL_SECURITY_INFORMATION;
     if (!copy) return 0;
     (void)memcpy(copy, path, length * sizeof(*copy));
-    if (snapshot_dacl(copy, &original_sd, &original_info) != ERROR_SUCCESS) {
-        free(copy);
-        return 0;
-    }
     if (change_root_access(copy, sandbox->appcontainer_sid, GRANT_ACCESS,
                            permissions, inheritance) != ERROR_SUCCESS ||
-        !remember_grant(sandbox, copy, original_sd, original_info)) {
-        struct owc_acl_grant grant = {copy, original_sd, original_info};
-        (void)restore_grant(&grant, sandbox->appcontainer_sid);
-        if (original_sd) LocalFree(original_sd);
+        !remember_grant(sandbox, copy)) {
+        (void)change_root_access(copy, sandbox->appcontainer_sid, REVOKE_ACCESS,
+                                 0, inheritance);
         free(copy);
         return 0;
     }
     return 1;
+}
+
+static int process_is_elevated(void) {
+    HANDLE token = NULL;
+    TOKEN_ELEVATION elevation;
+    DWORD size = 0;
+    int elevated = 0;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        if (GetTokenInformation(token, TokenElevation, &elevation,
+                                sizeof(elevation), &size))
+            elevated = elevation.TokenIsElevated != 0;
+        CloseHandle(token);
+    }
+    return elevated;
+}
+
+static int grant_ancestor_traverse(owc_sandbox *sandbox, const char *root) {
+    wchar_t *path = utf8_to_wide(root);
+    size_t length;
+    int ok = 1;
+    if (!path) return 0;
+    length = wcslen(path);
+    while (length > 3 && (path[length - 1] == L'\\' || path[length - 1] == L'/'))
+        path[--length] = L'\0';
+    for (;;) {
+        wchar_t *slash = wcsrchr(path, L'\\');
+        wchar_t *forward = wcsrchr(path, L'/');
+        if (!slash || (forward && forward > slash)) slash = forward;
+        if (!slash) break;
+        if (slash == path + 2 && path[1] == L':') {
+            path[3] = L'\0';
+            ok = grant_temporary(sandbox, path, FILE_TRAVERSE | SYNCHRONIZE,
+                                 NO_INHERITANCE);
+            break;
+        }
+        *slash = L'\0';
+        if (!path[0] || !grant_temporary(sandbox, path,
+                                         FILE_TRAVERSE | SYNCHRONIZE,
+                                         NO_INHERITANCE)) {
+            ok = 0;
+            break;
+        }
+    }
+    free(path);
+    return ok;
 }
 
 static int grant_write_roots(owc_sandbox *sandbox,
@@ -164,15 +188,24 @@ static int grant_write_roots(owc_sandbox *sandbox,
             set_reason(reason, reason_size, "writeRoot is not valid UTF-8");
             return 0;
         }
-        if (!grant_one(sandbox, path,
-                       FILE_GENERIC_READ | FILE_GENERIC_WRITE |
-                           FILE_GENERIC_EXECUTE | DELETE,
-                       SUB_CONTAINERS_AND_OBJECTS_INHERIT)) {
+        if (!grant_temporary(sandbox, path,
+                             FILE_GENERIC_READ | FILE_GENERIC_WRITE |
+                                 FILE_GENERIC_EXECUTE | DELETE,
+                             SUB_CONTAINERS_AND_OBJECTS_INHERIT)) {
             free(path);
             set_reason(reason, reason_size, "writeRoot ACL grant failed");
             return 0;
         }
         free(path);
+    }
+    if (process_is_elevated()) {
+        for (i = 0; i < options->write_root_count; ++i) {
+            if (!grant_ancestor_traverse(sandbox, options->write_roots[i])) {
+                set_reason(reason, reason_size,
+                           "writeRoot ancestor traverse grant failed");
+                return 0;
+            }
+        }
     }
     return 1;
 }
@@ -182,8 +215,6 @@ static void revoke_write_roots(owc_sandbox *sandbox) {
     while (i > 0) {
         --i;
         (void)restore_grant(&sandbox->grants[i], sandbox->appcontainer_sid);
-        if (sandbox->grants[i].original_sd)
-            LocalFree(sandbox->grants[i].original_sd);
         free(sandbox->grants[i].path);
     }
     free(sandbox->grants);
