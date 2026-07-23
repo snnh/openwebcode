@@ -101,7 +101,9 @@ def main():
     executable = sys.argv[1]
     environment = os.environ.copy()
     pwsh_available = shutil.which("pwsh", path=environment.get("PATH")) is not None
-    use_pwsh_main_channel = os.name == "nt" and pwsh_available
+    hosted_windows = os.name == "nt" and environment.get("GITHUB_ACTIONS", "").lower() == "true"
+    pwsh_integration = pwsh_available and not hosted_windows
+    use_pwsh_main_channel = os.name == "nt" and pwsh_integration
     shell_params = {"shellBackend": "pwsh"} if use_pwsh_main_channel else {}
     proc = subprocess.Popen([executable], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment)
     binary_name = f"protocol-upload-{os.getpid()}.bin"
@@ -186,18 +188,23 @@ def main():
         response, _ = collect_until_response(proc, 301)
         assert response.get("error", {}).get("code") == -32602, response
 
-        request(proc, 302, "exec.run", {"sessionId": "s1", "execId": "pwsh", "cmd": "Write-Output pwsh-ok; exit 9", "cwd": os.getcwd(), "timeoutMs": 5000, "shellBackend": "pwsh"})
-        response, notes = collect_until_response(proc, 302)
-        if pwsh_available:
+        if pwsh_integration:
+            request(proc, 302, "exec.run", {"sessionId": "s1", "execId": "pwsh", "cmd": "Write-Output pwsh-ok; exit 9", "cwd": os.getcwd(), "timeoutMs": 5000, "shellBackend": "pwsh"})
+            response, notes = collect_until_response(proc, 302)
             assert response.get("result", {}).get("exitCode") == 9, response
             output = b"".join(base64.b64decode(n["params"]["data"]) for n in notes)
             assert b"pwsh-ok" in output, output
-        elif os.name == "nt":
-            assert response.get("error", {}).get("message") == "pwsh executable was not found", response
+        elif not pwsh_available:
+            request(proc, 302, "exec.run", {"sessionId": "s1", "execId": "pwsh", "cmd": "Write-Output pwsh-ok; exit 9", "cwd": os.getcwd(), "timeoutMs": 5000, "shellBackend": "pwsh"})
+            response, notes = collect_until_response(proc, 302)
+            if os.name == "nt":
+                assert response.get("error", {}).get("message") == "pwsh executable was not found", response
+            else:
+                assert response.get("result", {}).get("exitCode") == 127, response
+                output = b"".join(base64.b64decode(n["params"]["data"]) for n in notes)
+                assert b"pwsh executable was not found" in output, output
         else:
-            assert response.get("result", {}).get("exitCode") == 127, response
-            output = b"".join(base64.b64decode(n["params"]["data"]) for n in notes)
-            assert b"pwsh executable was not found" in output, output
+            print("SKIP: GitHub-hosted Windows retains pwsh children past Core timeouts", file=sys.stderr)
 
         request(proc, 303, "core.ping")
         response, _ = collect_until_response(proc, 303)

@@ -66,10 +66,10 @@ static void drain_pipe(HANDLE pipe, const char *stream, const owc_exec_request *
     }
 }
 
-static int select_shell(wchar_t *path, size_t count, int shell_backend, int sandbox_enabled,
+static int select_shell(wchar_t *path, size_t count, int shell_backend,
                         int *powershell) {
     DWORD length;
-    if (shell_backend == (int)OWC_SHELL_PWSH || !sandbox_enabled) {
+    if (shell_backend == (int)OWC_SHELL_PWSH) {
         length = SearchPathW(NULL, L"pwsh.exe", NULL, (DWORD)count, path, NULL);
         if (length > 0 && length < count) {
             *powershell = 1;
@@ -114,7 +114,7 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
     {
         int command_length;
         const char *arguments;
-        if(!select_shell(shell_path,ARRAYSIZE(shell_path),request->shell_backend,request->sandbox_enabled,&powershell)){if(request->shell_backend==(int)OWC_SHELL_PWSH)result->shell_unavailable=1;goto cleanup;}
+        if(!select_shell(shell_path,ARRAYSIZE(shell_path),request->shell_backend,&powershell)){if(request->shell_backend==(int)OWC_SHELL_PWSH)result->shell_unavailable=1;goto cleanup;}
         arguments=powershell?"-NoLogo -NoProfile -NonInteractive -Command":"/d /s /c";
         command_length=powershell?snprintf(NULL,0,"\"%ls\" %s %s",shell_path,arguments,request->command):snprintf(NULL,0,"\"%ls\" %s \"%s\"",shell_path,arguments,request->command);
         if(command_length<0) goto cleanup;

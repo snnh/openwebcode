@@ -62,7 +62,7 @@ export type SandboxBackendMode = "appcontainer" | "jobobject" | "off";
 export type SandboxMode = "appcontainer" | "wsb" | "jobobject" | "off";
 /** 自动 = 每轮用户消息前创建检查点；手动 = 仅由用户显式创建检查点。 */
 export type SnapshotMode = "auto" | "manual";
-/** 命令解释器后端；default 保留平台现有行为，pwsh 强制使用 PowerShell 7。 */
+/** 命令解释器后端；default 使用平台默认 shell，pwsh 强制使用 PowerShell 7。 */
 export type ShellBackend = "default" | "pwsh";
 /** 全局 Job Object 资源限制（仅 Windows；字段缺省时 core 用内置默认值 4096 MB / 64 进程） */
 export interface JobObjectLimits {
