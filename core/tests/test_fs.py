@@ -151,6 +151,22 @@ def main():
         assert fs(12,"fs.edit",{"path":"multi","oldText":"bb","newText":"好"})["result"]["matches"]==1
         assert fs(13,"fs.stat",{"path":"missing"})["error"]["code"]==-32003
         assert fs(14,"fs.stat",{"path":"../x"})["error"]["code"]==-32002
+        # A directory that cannot be listed (for example System Volume
+        # Information on a mounted volume) must not abort glob/grep/scan of
+        # the surrounding workspace.
+        restricted=root/"restricted"
+        restricted.mkdir()
+        (restricted/"secret.txt").write_text("secret")
+        restricted_glob=fs(170,"fs.glob",{"path":".","pattern":"*/secret.txt"})
+        if os.name == "nt":
+            subprocess.run(["icacls",str(restricted),"/deny","%USERNAME%:(RD)"],capture_output=True)
+        assert fs(171,"fs.glob",{"path":".","pattern":"*"})["result"]["truncated"] is False
+        assert fs(172,"fs.scan",{"path":"."})["result"]["truncated"] is False
+        assert fs(173,"fs.grep",{"path":".","pattern":"secret"})["result"]["truncated"] is False
+        if os.name == "nt":
+            subprocess.run(["icacls",str(restricted),"/remove:d","%USERNAME%"],capture_output=True)
+        restored_glob=fs(174,"fs.glob",{"path":".","pattern":"*/secret.txt"})["result"]
+        assert "restricted/secret.txt" in restored_glob["paths"],restored_glob
         for i in range(20): assert fs(20+i,"fs.write",{"path":"repeat","content":str(i)})["result"]["ok"]
         assert not list(root.glob("*.tmp")) and not list(root.glob(".*.tmp"))
         (pathlib.Path(outside)/"secret").write_text("secret")
