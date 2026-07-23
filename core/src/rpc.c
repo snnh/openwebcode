@@ -345,7 +345,16 @@ static owc_fs_error scan_collect(const char *root,const char *session_id,const c
     while(stack_count&&error==OWC_FS_OK&&!scan->budget_truncated){
         fs_scan_directory directory=stack[--stack_count];owc_fs_list_result list;char *full=directory.relative[0]?scan_join(base,directory.relative):copy_text(base);size_t i;
         if(!full){free(directory.relative);error=OWC_FS_NO_MEMORY;break;}
-        error=owc_fs_list(root,full,&list);free(full);if(error){free(directory.relative);break;}
+        error=owc_fs_list(root,full,&list);free(full);
+        /* Skip protected subdirectories (for example System Volume Information)
+         * rather than failing the entire scan. The initial directory (depth 0)
+         * still reports errors so callers learn about inaccessible roots. */
+        if(error&&directory.depth>0&&(error==OWC_FS_PERMISSION_DENIED||error==OWC_FS_NOT_FOUND)){
+            free(directory.relative);
+            error=OWC_FS_OK;
+            continue;
+        }
+        if(error){free(directory.relative);break;}
         if(list.truncated)scan->list_truncated=1;
         for(i=0;i<list.count;i++){
             char *child;
