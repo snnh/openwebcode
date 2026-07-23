@@ -34,7 +34,7 @@ export class Provider2Client {
   }
 
   async complete(input: { system: string; prompt: string; maxTokens?: number }): Promise<Provider2Completion> {
-    if (!this.config) throw new Error("provider2 未配置");
+    if (!this.config) throw new Error("快速模型未配置");
     const baseURL = this.config.baseURL.replace(/\/+$/, "");
     let response: Response;
     try {
@@ -56,18 +56,18 @@ export class Provider2Client {
         signal: AbortSignal.timeout(60_000),
       });
     } catch (error) {
-      throw new Error(`provider2 请求失败：${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(`快速模型请求失败：${error instanceof Error ? error.message : String(error)}`);
     }
     if (!response.ok) {
       const detail = (await response.text().catch(() => "")).slice(0, 200);
-      throw new Error(`provider2 请求失败：HTTP ${response.status}${detail ? ` ${detail}` : ""}`);
+      throw new Error(`快速模型请求失败：HTTP ${response.status}${detail ? ` ${detail}` : ""}`);
     }
     const data = await response.json() as {
       choices?: Array<{ message?: { content?: string } }>;
       usage?: { prompt_tokens?: number; completion_tokens?: number };
     };
     const text = data.choices?.[0]?.message?.content;
-    if (typeof text !== "string" || text.trim() === "") throw new Error("provider2 返回为空");
+    if (typeof text !== "string" || text.trim() === "") throw new Error("快速模型返回为空");
     return {
       text,
       usage: {

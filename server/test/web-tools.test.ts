@@ -8,7 +8,7 @@ import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
-import { assertSafeWebUrl, createSearchProvider, createWebFetchProvider, htmlToText, webFetch, type SearchProvider, type WebFetchProvider } from "../src/web-tools.js";
+import { assertSafeWebUrl, createProfileSearchProvider, createProfileWebFetchProvider, htmlToText, webFetch, type SearchProvider, type WebFetchProvider } from "../src/web-tools.js";
 
 const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
@@ -62,19 +62,19 @@ describe("webFetch", () => {
 
 describe("search providers", () => {
   it("honestly degrades and maps Brave/Tavily results", async () => {
-    expect(createSearchProvider(undefined)).toBeUndefined();
-    expect(createSearchProvider({ provider: "brave" })).toBeUndefined();
-    expect(createSearchProvider({ provider: "tavily" })).toBeUndefined();
-    expect(createSearchProvider({ provider: "brave", apiKey: "   " })).toBeUndefined();
-    expect(createSearchProvider({ provider: "custom", baseURL: "not a URL" })).toBeUndefined();
-    expect(createSearchProvider({ provider: "custom", baseURL: "ftp://search.test" })).toBeUndefined();
+    expect(createProfileSearchProvider(undefined)).toBeUndefined();
+    expect(createProfileSearchProvider({ id: "brave", provider: "brave", capabilities: ["search"] })).toBeUndefined();
+    expect(createProfileSearchProvider({ id: "tavily", provider: "tavily", capabilities: ["search"] })).toBeUndefined();
+    expect(createProfileSearchProvider({ id: "brave", provider: "brave", capabilities: ["search"], apiKey: "   " })).toBeUndefined();
+    expect(createProfileSearchProvider({ id: "custom", provider: "custom", capabilities: ["search"], searchBaseURL: "not a URL" })).toBeUndefined();
+    expect(createProfileSearchProvider({ id: "custom", provider: "custom", capabilities: ["search"], searchBaseURL: "ftp://search.test" })).toBeUndefined();
     const fetchImpl = vi.fn(async () => Response.json({ web: { results: [{ title: "One", url: "https://one.test", description: "First" }] } })) as typeof fetch;
-    const provider = createSearchProvider({ provider: "brave", apiKey: "secret" }, fetchImpl)!;
+    const provider = createProfileSearchProvider({ id: "brave-main", provider: "brave", capabilities: ["search"], apiKey: "secret" }, fetchImpl)!;
     expect(await provider.search("query", 5)).toEqual([{ title: "One", url: "https://one.test", snippet: "First" }]);
     expect(fetchImpl).toHaveBeenCalledOnce();
 
     const tavilyFetch = vi.fn(async () => Response.json({ results: [{ title: "Two", url: "https://two.test", content: "Second" }] })) as typeof fetch;
-    const tavily = createSearchProvider({ provider: "tavily", apiKey: "tvly-secret" }, tavilyFetch)!;
+    const tavily = createProfileSearchProvider({ id: "tavily-main", provider: "tavily", capabilities: ["search"], apiKey: "tvly-secret" }, tavilyFetch)!;
     await expect(tavily.search("query", 3)).resolves.toEqual([{ title: "Two", url: "https://two.test", snippet: "Second" }]);
     const [endpoint, request] = tavilyFetch.mock.calls[0] ?? [];
     expect(endpoint).toBe("https://api.tavily.com/search");
@@ -97,7 +97,7 @@ describe("search providers", () => {
         receivedSignal?.addEventListener("abort", () => reject(receivedSignal?.reason), { once: true });
       });
     }) as typeof fetch;
-    const abortable = createSearchProvider({ provider: "tavily", apiKey: "tvly-secret" }, waitingFetch)!;
+    const abortable = createProfileSearchProvider({ id: "tavily", provider: "tavily", capabilities: ["search"], apiKey: "tvly-secret" }, waitingFetch)!;
     const controller = new AbortController();
     const pending = abortable.search("query", 1, { signal: controller.signal });
     controller.abort(new Error("cancelled by user"));
@@ -110,24 +110,24 @@ describe("search providers", () => {
         stream.close();
       },
     }), { headers: { "content-type": "application/json" } })) as typeof fetch;
-    const bounded = createSearchProvider({ provider: "tavily", apiKey: "tvly-secret" }, oversizedFetch)!;
+    const bounded = createProfileSearchProvider({ id: "tavily", provider: "tavily", capabilities: ["search"], apiKey: "tvly-secret" }, oversizedFetch)!;
     await expect(bounded.search("query", 1)).rejects.toThrow(/byte limit/i);
   });
 });
 
 describe("web fetch providers", () => {
   it("requires an explicit provider and supports Jina or a URL-template reader", async () => {
-    expect(createWebFetchProvider(undefined)).toBeUndefined();
-    expect(createWebFetchProvider({ provider: "custom" })).toBeUndefined();
-    expect(createWebFetchProvider({ provider: "custom", baseURL: "https://reader.test/fetch" })).toBeUndefined();
+    expect(createProfileWebFetchProvider(undefined)).toBeUndefined();
+    expect(createProfileWebFetchProvider({ id: "custom", provider: "custom", capabilities: ["fetch"] })).toBeUndefined();
+    expect(createProfileWebFetchProvider({ id: "custom", provider: "custom", capabilities: ["fetch"], fetchBaseURL: "https://reader.test/fetch" })).toBeUndefined();
     const fetchImpl = vi.fn(async () => textResponse("reader result")) as typeof fetch;
-    const jina = createWebFetchProvider({ provider: "jina", apiKey: "key" }, fetchImpl)!;
+    const jina = createProfileWebFetchProvider({ id: "jina", provider: "jina", capabilities: ["search", "fetch"], apiKey: "key" }, fetchImpl)!;
     await expect(jina.fetchUrl("https://example.com/article")).resolves.toMatchObject({ url: "https://example.com/article", text: "reader result" });
     expect(String(fetchImpl.mock.calls[0]?.[0])).toBe("https://r.jina.ai/https://example.com/article");
     expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({ headers: expect.objectContaining({ Authorization: "Bearer key" }) });
 
     const customFetch = vi.fn(async () => textResponse("custom result")) as typeof fetch;
-    const custom = createWebFetchProvider({ provider: "custom", baseURL: "https://reader.test/fetch?url={url}" }, customFetch)!;
+    const custom = createProfileWebFetchProvider({ id: "custom", provider: "custom", capabilities: ["fetch"], fetchBaseURL: "https://reader.test/fetch?url={url}" }, customFetch)!;
     await custom.fetchUrl("https://example.com/a?b=1");
     expect(String(customFetch.mock.calls[0]?.[0])).toBe("https://reader.test/fetch?url=https%3A%2F%2Fexample.com%2Fa%3Fb%3D1");
   });
@@ -137,7 +137,7 @@ describe("web fetch providers", () => {
       status: 302,
       headers: { location: "http://127.0.0.1/internal" },
     })) as typeof fetch;
-    const provider = createWebFetchProvider({ provider: "jina", apiKey: "key" }, crossOriginFetch)!;
+    const provider = createProfileWebFetchProvider({ id: "jina", provider: "jina", capabilities: ["search", "fetch"], apiKey: "key" }, crossOriginFetch)!;
     await expect(provider.fetchUrl("https://example.com/article")).rejects.toThrow(/leaves the configured reader origin/i);
     expect(crossOriginFetch).toHaveBeenCalledOnce();
     expect(crossOriginFetch.mock.calls[0]?.[1]).toMatchObject({ redirect: "manual" });
@@ -145,7 +145,7 @@ describe("web fetch providers", () => {
     const sameOriginFetch = vi.fn(async (input: string | URL | Request) => String(input).endsWith("/final")
       ? textResponse("followed safely")
       : new Response(null, { status: 302, headers: { location: "/final" } })) as typeof fetch;
-    const sameOrigin = createWebFetchProvider({ provider: "jina", apiKey: "key" }, sameOriginFetch)!;
+    const sameOrigin = createProfileWebFetchProvider({ id: "jina", provider: "jina", capabilities: ["search", "fetch"], apiKey: "key" }, sameOriginFetch)!;
     await expect(sameOrigin.fetchUrl("https://example.com/article")).resolves.toMatchObject({ text: "followed safely" });
     expect(sameOriginFetch).toHaveBeenCalledTimes(2);
   });

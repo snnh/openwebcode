@@ -1,5 +1,5 @@
 import { isIP } from "node:net";
-import type { ServerConfig } from "./config.js";
+import type { WebProviderProfile } from "./provider-profiles.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_BYTES = 2 * 1024 * 1024;
@@ -282,34 +282,9 @@ function customReaderEndpoint(template: string, requested: URL): URL {
   return new URL(template.replaceAll("{url}", encodeURIComponent(requested.href)));
 }
 
-/**
- * Build an explicitly configured web reader. Jina accepts the target as a
- * path suffix; custom endpoints use a `{url}` placeholder and receive an
- * encoded target URL, for example `https://reader.example/fetch?url={url}`.
- */
-export function createWebFetchProvider(
-  config: ServerConfig["webFetch"],
-  fetchImpl: typeof fetch = globalThis.fetch,
-): WebFetchProvider | undefined {
-  if (!config) return undefined;
-  const apiKey = config.apiKey?.trim() || undefined;
-  if (config.provider === "jina") {
-    return new HttpReaderProvider("jina", (requested) => new URL(`https://r.jina.ai/${requested.href}`), apiKey, fetchImpl);
-  }
-  const template = config.baseURL?.trim();
-  if (!template || !template.includes("{url}")) return undefined;
-  try {
-    const probe = customReaderEndpoint(template, new URL("https://example.com/"));
-    if (probe.protocol !== "http:" && probe.protocol !== "https:") return undefined;
-    return new HttpReaderProvider("custom", (requested) => customReaderEndpoint(template, requested), apiKey, fetchImpl);
-  } catch {
-    return undefined;
-  }
-}
-
 function normalizeResults(value: unknown, limit: number): SearchResult[] {
-  const root = value as { web?: { results?: unknown[] }; results?: unknown[] };
-  const items = root?.web?.results ?? root?.results ?? [];
+  const root = value as { web?: { results?: unknown[] }; results?: unknown[]; data?: unknown[] };
+  const items = root?.web?.results ?? root?.results ?? root?.data ?? [];
   if (!Array.isArray(items)) return [];
   return items.slice(0, limit).flatMap((item) => {
     if (!item || typeof item !== "object") return [];
@@ -330,17 +305,20 @@ class HttpSearchProvider implements SearchProvider {
     private readonly baseURL: string,
     private readonly apiKey: string | undefined,
     private readonly fetchImpl: typeof fetch,
+    private readonly authKind: "brave" | "bearer" = "bearer",
   ) {}
 
   async search(query: string, limit: number, options: { signal?: AbortSignal } = {}): Promise<SearchResult[]> {
     const url = new URL(this.baseURL);
     url.searchParams.set("q", query);
     url.searchParams.set("count", String(limit));
-    const headers = this.apiKey
-      ? (this.name === "brave" ? { "X-Subscription-Token": this.apiKey } : { Authorization: `Bearer ${this.apiKey}` })
-      : undefined;
+    const headers: Record<string, string> = { Accept: "application/json" };
+    if (this.apiKey) {
+      if (this.authKind === "brave") headers["X-Subscription-Token"] = this.apiKey;
+      else headers.Authorization = `Bearer ${this.apiKey}`;
+    }
     const response = await this.fetchImpl(url, {
-      ...(headers ? { headers } : {}),
+      headers,
       signal: signalWithTimeout(options.signal),
     });
     if (!response.ok) throw new Error(`Search provider returned HTTP ${response.status}`);
@@ -349,9 +327,7 @@ class HttpSearchProvider implements SearchProvider {
 }
 
 class TavilySearchProvider implements SearchProvider {
-  readonly name = "tavily";
-
-  constructor(private readonly apiKey: string, private readonly fetchImpl: typeof fetch) {}
+  constructor(readonly name: string, private readonly apiKey: string, private readonly fetchImpl: typeof fetch) {}
 
   async search(query: string, limit: number, options: { signal?: AbortSignal } = {}): Promise<SearchResult[]> {
     const response = await this.fetchImpl("https://api.tavily.com/search", {
@@ -375,24 +351,47 @@ class TavilySearchProvider implements SearchProvider {
   }
 }
 
-export function createSearchProvider(config: ServerConfig["search"], fetchImpl: typeof fetch = globalThis.fetch): SearchProvider | undefined {
-  if (!config) return undefined;
-  if (config.provider === "brave") {
-    const apiKey = config.apiKey?.trim();
-    if (!apiKey) return undefined;
-    return new HttpSearchProvider("brave", "https://api.search.brave.com/res/v1/web/search", apiKey, fetchImpl);
+/** Build a search implementation from a named profile. The profile's declared
+ * capability is the public contract; provider kind only selects wire format. */
+export function createProfileSearchProvider(
+  profile: WebProviderProfile | undefined,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): SearchProvider | undefined {
+  if (!profile?.capabilities.includes("search")) return undefined;
+  const apiKey = profile.apiKey?.trim() || undefined;
+  if (profile.provider === "brave") {
+    return apiKey ? new HttpSearchProvider(profile.id, "https://api.search.brave.com/res/v1/web/search", apiKey, fetchImpl, "brave") : undefined;
   }
-  if (config.provider === "tavily") {
-    const apiKey = config.apiKey?.trim();
-    return apiKey ? new TavilySearchProvider(apiKey, fetchImpl) : undefined;
+  if (profile.provider === "tavily") return apiKey ? new TavilySearchProvider(profile.id, apiKey, fetchImpl) : undefined;
+  if (profile.provider === "jina") {
+    return new HttpSearchProvider(profile.id, profile.searchBaseURL ?? "https://s.jina.ai/", apiKey, fetchImpl);
   }
-  const baseURL = config.baseURL?.trim();
+  const baseURL = profile.searchBaseURL?.trim();
   if (!baseURL) return undefined;
   try {
     const parsed = new URL(baseURL);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return undefined;
-    return new HttpSearchProvider("custom", parsed.href, config.apiKey?.trim() || undefined, fetchImpl);
-  } catch {
-    return undefined;
+    return parsed.protocol === "http:" || parsed.protocol === "https:"
+      ? new HttpSearchProvider(profile.id, parsed.href, apiKey, fetchImpl)
+      : undefined;
+  } catch { return undefined; }
+}
+
+export function createProfileWebFetchProvider(
+  profile: WebProviderProfile | undefined,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): WebFetchProvider | undefined {
+  if (!profile?.capabilities.includes("fetch")) return undefined;
+  const apiKey = profile.apiKey?.trim() || undefined;
+  if (profile.provider === "jina") {
+    return new HttpReaderProvider(profile.id, (requested) => new URL(`https://r.jina.ai/${requested.href}`), apiKey, fetchImpl);
   }
+  if (profile.provider !== "custom") return undefined;
+  const template = profile.fetchBaseURL?.trim();
+  if (!template?.includes("{url}")) return undefined;
+  try {
+    const probe = customReaderEndpoint(template, new URL("https://example.com/"));
+    return probe.protocol === "http:" || probe.protocol === "https:"
+      ? new HttpReaderProvider(profile.id, (requested) => customReaderEndpoint(template, requested), apiKey, fetchImpl)
+      : undefined;
+  } catch { return undefined; }
 }

@@ -53,16 +53,15 @@ describe("server settings API", () => {
       const response = await setup.app.inject({ method: "GET", url: "/api/settings" });
       expect(response.statusCode).toBe(200);
       const view = response.json<SettingsView>();
-      expect(view.groups.map((group) => group.id)).toEqual(["models", "provider2", "webFetch", "search", "general", "executor", "service", "exchangeRate"]);
+      expect(view.groups.map((group) => group.id)).toEqual(["models", "provider2", "general", "executor", "service", "exchangeRate"]);
       const fields = view.groups.flatMap((group) => group.fields);
-      expect(fields).toHaveLength(31);
+      expect(fields).toHaveLength(20);
       for (const item of fields) {
         expect(item.source).toBe("default");
         expect(item.editable).toBe(true);
       }
       expect(field(view, "port").value).toBe(3210);
-      expect(field(view, "anthropicPromptCaching").value).toBe(true);
-      expect(field(view, "anthropicApiKey").hasValue).toBe(false);
+      expect(field(view, "provider2ApiKey").hasValue).toBe(false);
       expect(field(view, "host").restartRequired).toBe(true);
       expect(field(view, "defaultLanguage").restartRequired).toBe(false);
       expect(field(view, "sandboxAllowPaths")).toMatchObject({ type: "pathList", value: [], restartRequired: true });
@@ -74,19 +73,19 @@ describe("server settings API", () => {
     }
   });
 
-  it("masks env-provided secrets and never leaks the raw value", async () => {
-    const setup = await fixture({ ANTHROPIC_API_KEY: "sk-ant-secret-key-1234567890" });
+  it("masks env-provided fast-model secrets and never leaks the raw value", async () => {
+    const setup = await fixture({ OWC_PROVIDER2_API_KEY: "fast-secret-key-1234567890" });
     try {
       const response = await setup.app.inject({ method: "GET", url: "/api/settings" });
       expect(response.statusCode).toBe(200);
-      expect(response.body).not.toContain("sk-ant-secret-key-1234567890");
+      expect(response.body).not.toContain("fast-secret-key-1234567890");
       const view = response.json<SettingsView>();
-      const secret = field(view, "anthropicApiKey");
+      const secret = field(view, "provider2ApiKey");
       expect(secret.source).toBe("env");
       expect(secret.editable).toBe(false);
       expect(secret.hasValue).toBe(true);
       expect(secret.value).toBeNull();
-      expect(secret.masked).toBe("sk-ant-…7890");
+      expect(secret.masked).toBe("fast-se…7890");
     } finally {
       await setup.app.close();
     }
@@ -160,49 +159,18 @@ describe("server settings API", () => {
   });
 
   it("rejects writes to env-controlled keys with 400", async () => {
-    const setup = await fixture({ OWC_PORT: "4000", ANTHROPIC_API_KEY: "sk-ant-secret-key-1234567890" });
+    const setup = await fixture({ OWC_PORT: "4000" });
     try {
       const response = await setup.app.inject({
         method: "PUT",
         url: "/api/settings",
-        payload: { overrides: { port: 4321, anthropicApiKey: "sk-ant-other-key-abcdefghij" } },
+        payload: { overrides: { port: 4321 } },
       });
       expect(response.statusCode).toBe(400);
       expect(response.json<{ error: string }>().error).toContain("OWC_PORT");
 
       const view = (await setup.app.inject({ method: "GET", url: "/api/settings" })).json<SettingsView>();
       expect(field(view, "port")).toMatchObject({ value: 4000, source: "env", editable: false });
-    } finally {
-      await setup.app.close();
-    }
-  });
-
-  it("hot-applies anthropic credentials so the provider appears and disappears live", async () => {
-    const setup = await fixture();
-    try {
-      expect(setup.providers.list()).not.toContain("anthropic");
-
-      const put = await setup.app.inject({
-        method: "PUT",
-        url: "/api/settings",
-        payload: { overrides: { anthropicApiKey: "sk-ant-test-key-abcdefghij" } },
-      });
-      expect(put.statusCode).toBe(200);
-      expect(setup.providers.list()).toContain("anthropic");
-      const providersResponse = await setup.app.inject({ method: "GET", url: "/api/providers" });
-      expect(providersResponse.json<string[]>()).toContain("anthropic");
-
-      const cleared = await setup.app.inject({
-        method: "PUT",
-        url: "/api/settings",
-        payload: { overrides: { anthropicApiKey: null } },
-      });
-      expect(cleared.statusCode).toBe(200);
-      expect(setup.providers.list()).not.toContain("anthropic");
-
-      const updates = setup.events.filter((event) => event.type === "server.settings_updated");
-      expect(updates).toHaveLength(2);
-      expect(updates[0]?.payload).toEqual({ keys: ["anthropicApiKey"] });
     } finally {
       await setup.app.close();
     }
@@ -273,29 +241,6 @@ describe("server settings API", () => {
     }
   });
 
-  it("stores an explicit web reader configuration and masks its key", async () => {
-    const setup = await fixture();
-    try {
-      const put = await setup.app.inject({
-        method: "PUT",
-        url: "/api/settings",
-        payload: { overrides: { webFetchProvider: "jina", webFetchApiKey: "jina-secret-key-1234" } },
-      });
-      expect(put.statusCode).toBe(200);
-      const view = put.json<SettingsView>();
-      expect(field(view, "webFetchProvider")).toMatchObject({ value: "jina", source: "file", restartRequired: false });
-      expect(field(view, "webFetchApiKey")).toMatchObject({ value: null, hasValue: true, source: "file" });
-      expect(put.body).not.toContain("jina-secret-key-1234");
-      expect(setup.settings.effective().webFetch).toEqual({ provider: "jina", apiKey: "jina-secret-key-1234" });
-
-      const cleared = await setup.app.inject({ method: "PUT", url: "/api/settings", payload: { overrides: { webFetchProvider: null, webFetchApiKey: null } } });
-      expect(cleared.statusCode).toBe(200);
-      expect(setup.settings.effective().webFetch).toBeUndefined();
-    } finally {
-      await setup.app.close();
-    }
-  });
-
   it("persists remote sync settings and allows zero for manual-only sync", async () => {
     const setup = await fixture();
     try {
@@ -360,14 +305,4 @@ describe("server settings API", () => {
     expect(() => loadConfig({ OWC_MODELS_SYNC_INTERVAL_MINUTES: String(MAX_SYNC_INTERVAL_MINUTES + 1) })).toThrow(String(MAX_SYNC_INTERVAL_MINUTES));
   });
 
-  it("loads explicit web-reader and Tavily search environment settings", () => {
-    const config = loadConfig({
-      OWC_WEB_FETCH_PROVIDER: "jina",
-      OWC_WEB_FETCH_API_KEY: "jina-secret",
-      OWC_SEARCH_PROVIDER: "tavily",
-      OWC_SEARCH_API_KEY: "tvly-secret",
-    });
-    expect(config.webFetch).toEqual({ provider: "jina", apiKey: "jina-secret" });
-    expect(config.search).toEqual({ provider: "tavily", apiKey: "tvly-secret" });
-  });
 });

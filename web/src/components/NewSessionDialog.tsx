@@ -47,35 +47,24 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
   const [agentMode, setAgentMode] = useState<"plan" | "build">("build");
   const [managedCaps, setManagedCaps] = useState<ManagedWorkspaceCapability | undefined>();
 
-  const availableModels = models.filter((item) => item.provider === provider);
-  const dialogModels = availableModels;
-  const selectedModel = dialogModels.find((item) => item.id === model);
+  const dialogModels = models.filter((item) => providers.includes(item.provider));
+  const selectedModel = dialogModels.find((item) => item.id === model && item.provider === provider);
+  const selection = JSON.stringify([provider, model]);
 
   useEffect(() => {
     if (!open) return;
-    // 应用设置里的会话默认值（provider 有效才预填）
-    if (!provider || !providers.includes(provider)) {
-      const preset = defaults?.provider && providers.includes(defaults.provider)
-        ? defaults.provider
-        : providers[0];
-      setProvider(preset ?? "");
-      setModel("");
-    }
+    const current = dialogModels.find((item) => item.provider === provider && item.id === model);
+    const preset = defaults?.provider && defaults.model
+      ? dialogModels.find((item) => item.provider === defaults.provider && item.id === defaults.model)
+      : undefined;
+    const next = current ?? preset ?? dialogModels[0];
+    setProvider(next?.provider ?? "");
+    setModel(next?.id ?? "");
     if (defaults?.permissionMode) setPermissionMode(defaults.permissionMode);
-  }, [open, provider, providers, defaults]);
-
-  useEffect(() => {
-    if (!open) return;
-    setModel((value) => {
-      // 设置里的默认模型在当前 provider 下可用时优先
-      if (defaults?.model && dialogModels.some((item) => item.id === defaults.model && value === "")) {
-        return defaults.model;
-      }
-      return dialogModels.some((item) => item.id === value) ? value : (dialogModels[0]?.id ?? "");
-    });
-    // dialogModels 随 provider 变化而重算
+    // dialogModels is derived from these dependencies; retaining a valid current
+    // pair avoids resetting a user's selection when the catalog refreshes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, provider, models]);
+  }, [open, providers, models, defaults]);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -173,16 +162,19 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
           <p className="dialog-hint">{t("还没有可用的 Provider，请先在 设置 → 服务设置 配置 Provider 和 API Key", "No providers are available. Configure a provider and API key under Settings → Server first.")}</p>
         )}
         <label>
-          Provider
-          <select value={provider} disabled={noProviders} onChange={(event) => setProvider(event.target.value)}>
-            {providers.map((name) => <option key={name} value={name}>{name}</option>)}
-          </select>
-        </label>
-        <label>
           {t("模型", "Model")}
-          <select value={model} disabled={noProviders || noModels} onChange={(event) => setModel(event.target.value)}>
+          <select value={selection} disabled={noProviders || noModels} onChange={(event) => {
+            const next = dialogModels.find((item) => JSON.stringify([item.provider, item.id]) === event.target.value || item.id === event.target.value);
+            if (next) {
+              setProvider(next.provider);
+              setModel(next.id);
+            }
+          }}>
             {noModels && <option value="">{t("暂无可用模型", "No model available")}</option>}
-            {dialogModels.map((item) => <option key={item.id} value={item.id}>{item.displayName ?? item.id}</option>)}
+            {dialogModels.map((item) => {
+              const value = JSON.stringify([item.provider, item.id]);
+              return <option key={value} value={value}>{`${item.id}【${item.provider}】`}</option>;
+            })}
           </select>
         </label>
         {selectedModel && (
@@ -192,7 +184,7 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
           </div>
         )}
         {noModels && (
-          <p className="dialog-hint">{t("该 Provider 尚无可用模型。请在 设置 → 模型目录 刷新模型列表，或添加手动模型后再创建会话。", "This provider has no available models. Refresh the model catalog or add a manual model under Settings → Models before creating a session.")}</p>
+          <p className="dialog-hint">{t("已启用的服务商尚无可用模型。请在设置中刷新模型列表，或为服务商手动添加模型。", "Enabled providers have no models. Refresh the model catalog or add a manual model for a provider in Settings.")}</p>
         )}
         <label>
           {t("模式", "Mode")}

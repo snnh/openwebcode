@@ -24,7 +24,9 @@ import { Provider2Client } from "./provider2.js";
 import { Compactor } from "./context/compactor.js";
 import { StorageGC } from "./storage-gc.js";
 import { UsageLog } from "./usage-log.js";
-import { createSearchProvider, createWebFetchProvider } from "./web-tools.js";
+import { createProfileSearchProvider, createProfileWebFetchProvider } from "./web-tools.js";
+import { ProviderProfilesService } from "./provider-profiles.js";
+import { ProviderProfilesRuntime } from "./provider-profiles-runtime.js";
 import { ExtensionManager } from "./extensions/extension-manager.js";
 import { ContentLensService } from "./extensions/content-lens.js";
 import { RemoteSyncScheduler } from "./remote-sync-scheduler.js";
@@ -67,6 +69,9 @@ const models = await ModelRegistry.load({
   manualPath: path.join(dataDir, "models.manual.json"),
   onUpdated: () => events.publish({ source: "server", type: "models.updated", payload: {} }),
 });
+const providerProfiles = await ProviderProfilesService.load({
+  filePath: path.join(dataDir, "provider-profiles.json"),
+});
 const usageLog = new UsageLog(dataDir);
 const skills = new SkillRegistry(path.join(dataDir, "skills"));
 const agents = new AgentRegistry(path.join(dataDir, "agents"));
@@ -77,8 +82,9 @@ const compactor = new Compactor(sessions, provider2, { usageLog, pricing, exchan
 const extensions = new ExtensionManager(dataDir, events);
 await extensions.initialize();
 const contentLens = new ContentLensService(sessions, provider2);
-const search = createSearchProvider(config.search);
-const webFetch = createWebFetchProvider(config.webFetch);
+const selectedWeb = providerProfiles.selectedWebProfiles();
+const search = createProfileSearchProvider(selectedWeb.search);
+const webFetch = createProfileWebFetchProvider(selectedWeb.fetch);
 const backgroundTasks = new BackgroundTaskRegistry(
   () => new CoreClient(config.corePath, config.coreRequestTimeoutMs),
   async (client, sessionId, cwd) => {
@@ -90,12 +96,13 @@ const backgroundTasks = new BackgroundTaskRegistry(
 );
 // Hooks（可信配置，等同 yolo 级别）：全局 <dataDir>/hooks.json，项目 <cwd>/.owc/hooks.json 现读覆盖
 const hooks = new HookRunner(path.join(dataDir, "hooks.json"), events);
-const agent = new AgentRunner(sessions, providers, core, events, pricing, exchangeRates, config.defaultLanguage, 50, (model) => models.get(model), usageLog, skills, mcp, compactor, dataDir, agents, commands, search, undefined, backgroundTasks, hooks, extensions, webFetch);
+const agent = new AgentRunner(sessions, providers, core, events, pricing, exchangeRates, config.defaultLanguage, 50, (model, provider) => models.get(model, provider), usageLog, skills, mcp, compactor, dataDir, agents, commands, search, undefined, backgroundTasks, hooks, extensions, webFetch);
+const providerProfilesRuntime = new ProviderProfilesRuntime(providerProfiles, providers, agent, models, events);
 // 托管工作区（plan §6.4）：镜像/挂载点位于 dataDir 下；孤儿挂载清理挂在 GC 启动扫描上
 const managed = new ManagedWorkspaceManager({ dataDir });
 const gc = new StorageGC(path.join(dataDir, "sessions"), config.gcMaxBytes, () => managed.sweepOrphans());
-settings.bind({ providers, core, agent, events, models, gc, provider2 });
-settings.reconcileProviders();
+settings.bind({ providers, core, agent, events, gc, provider2, profiles: providerProfiles });
+providerProfilesRuntime.start();
 
 core.on("diagnostic", (text: string) => process.stderr.write(`[owc-exec] ${text}`));
 core.on("error", (error: Error) => console.error("Core error:", error));
@@ -166,6 +173,8 @@ const app = await buildServer({
   backgroundTasks,
   extensions,
   contentLens,
+  providerProfiles,
+  providerProfilesRuntime,
   ...(config.accessToken ? { auth: { accessToken: config.accessToken, allowedOrigins: config.allowedOrigins } } : {}),
   getPreferences: () => {
     const effective = settings.effective();
@@ -176,6 +185,7 @@ const app = await buildServer({
 async function shutdown(): Promise<void> {
   clearInterval(gcTimer);
   remoteSyncScheduler.stop();
+  providerProfilesRuntime.stop();
   exchangeRates.close();
   await mcp.close();
   await extensions.close();

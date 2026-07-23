@@ -10,7 +10,7 @@ export class ContentLensService {
   constructor(private readonly sessions: SessionStore, private readonly provider2: Provider2Client) {}
 
   async translate(sessionId: string, messageId: string, targetLanguage: string, glossary: Record<string, string> = {}): Promise<{ text: string; cached: boolean }> {
-    if (!this.provider2.configured) throw new Error("provider2 未配置，内容透镜无法翻译");
+    if (!this.provider2.configured) throw new Error("快速模型未配置，内容透镜无法翻译");
     const session = await this.sessions.get(sessionId);
     if (!session) throw new Error("Session not found");
     const message = session.messages.find((item) => item.id === messageId);
@@ -33,7 +33,7 @@ export class ContentLensService {
   }
 
   async explain(sessionId: string, text: string, targetLanguage: string): Promise<{ text: string }> {
-    if (!this.provider2.configured) throw new Error("provider2 未配置，内容透镜无法解析");
+    if (!this.provider2.configured) throw new Error("快速模型未配置，内容透镜无法解析");
     if (!(await this.sessions.get(sessionId))) throw new Error("Session not found");
     const selected = text.trim();
     if (!selected || selected.length > 200) throw new Error("选中文本长度必须为 1–200 字符");

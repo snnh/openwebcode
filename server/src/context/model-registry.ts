@@ -20,8 +20,14 @@ export interface CatalogModel extends ModelProfile {
 }
 
 export interface ModelCredentials {
-  anthropic?: { apiKey?: string; baseURL?: string };
-  openai?: { apiKey?: string; baseURL: string };
+  providers: ModelProviderCredentials[];
+}
+
+export interface ModelProviderCredentials {
+  provider: string;
+  interfaceType: "anthropic-messages" | "openai-chat-completions";
+  apiKey?: string;
+  baseURL?: string;
 }
 
 export interface RefreshReport {
@@ -68,6 +74,10 @@ const MODEL_MODALITIES: readonly ModelModality[] = ["text", "image", "video"];
 const THINKING_MODES: readonly ThinkingMode[] = ["adaptive", "enabled", "disabled"];
 const EFFORT_LEVELS: readonly EffortLevel[] = ["low", "medium", "high", "xhigh", "max"];
 const ISO_8601_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+
+function modelKey(provider: string, id: string): string {
+  return `${provider}\u0000${id}`;
+}
 
 async function readJsonFile(filePath: string): Promise<SnapshotFile | undefined> {
   try {
@@ -192,8 +202,9 @@ function normalizeSyncedDocument(value: unknown): { updatedAt: string; models: C
   const models = value.models.map(normalizeSyncedModel);
   const ids = new Set<string>();
   for (const model of models) {
-    if (ids.has(model.id)) throw new Error(`Duplicate catalog model id: ${model.id}`);
-    ids.add(model.id);
+    const key = modelKey(model.provider, model.id);
+    if (ids.has(key)) throw new Error(`Duplicate catalog model: ${model.provider}/${model.id}`);
+    ids.add(key);
   }
   return { updatedAt: value.updatedAt, models };
 }
@@ -217,18 +228,18 @@ export class ModelRegistry {
     const registry = new ModelRegistry(options);
     const snapshot = await readJsonFile(options.snapshotPath);
     for (const model of snapshot?.models ?? []) {
-      if (model && typeof model.id === "string") registry.apiModels.set(model.id, normalizeCatalogModel(model, "api"));
+      if (model && typeof model.id === "string") registry.apiModels.set(modelKey(model.provider, model.id), normalizeCatalogModel(model, "api"));
     }
     const synced = await readJsonFile(registry.syncedSnapshotPath);
     for (const model of synced?.models ?? []) {
-      if (model && typeof model.id === "string") registry.syncedModels.set(model.id, normalizeCatalogModel(model, "synced"));
+      if (model && typeof model.id === "string") registry.syncedModels.set(modelKey(model.provider, model.id), normalizeCatalogModel(model, "synced"));
     }
     if (synced && ISO_8601_TIMESTAMP.test(synced.updatedAt) && !Number.isNaN(Date.parse(synced.updatedAt))) {
       registry.syncedUpdatedAt = synced.updatedAt;
     }
     const manual = await readJsonFile(options.manualPath);
     for (const model of manual?.models ?? []) {
-      if (model && typeof model.id === "string") registry.manualModels.set(model.id, normalizeCatalogModel(model, "manual"));
+      if (model && typeof model.id === "string") registry.manualModels.set(modelKey(model.provider, model.id), normalizeCatalogModel(model, "manual"));
     }
     return registry;
   }
@@ -239,20 +250,25 @@ export class ModelRegistry {
    */
   list(): CatalogModel[] {
     const merged = new Map<string, CatalogModel>();
-    for (const profile of listModelProfiles()) merged.set(profile.id, { ...profile, source: "builtin" });
-    for (const [id, model] of this.apiModels) if (!merged.has(id)) merged.set(id, model);
-    for (const [id, model] of this.syncedModels) merged.set(id, model);
-    for (const [id, model] of this.manualModels) merged.set(id, model);
+    for (const profile of listModelProfiles()) merged.set(modelKey(profile.provider, profile.id), { ...profile, source: "builtin" });
+    for (const [key, model] of this.apiModels) if (!merged.has(key)) merged.set(key, model);
+    for (const [key, model] of this.syncedModels) merged.set(key, model);
+    for (const [key, model] of this.manualModels) merged.set(key, model);
     return [...merged.values()];
   }
 
   /** 供账本水位线等消费方；未命中时回退静态档案（含 FALLBACK）。 */
-  get(id: string): ModelProfile {
-    return this.manualModels.get(id) ?? this.syncedModels.get(id) ?? this.apiModels.get(id) ?? getModelProfile(id);
+  get(id: string, provider?: string): ModelProfile {
+    if (provider) {
+      const key = modelKey(provider, id);
+      return this.manualModels.get(key) ?? this.syncedModels.get(key) ?? this.apiModels.get(key) ??
+        listModelProfiles().find((item) => item.id === id && item.provider === provider) ?? getModelProfile(id);
+    }
+    return this.list().find((item) => item.id === id) ?? getModelProfile(id);
   }
 
-  isManual(id: string): boolean {
-    return this.manualModels.has(id);
+  isManual(id: string, provider?: string): boolean {
+    return provider ? this.manualModels.has(modelKey(provider, id)) : [...this.manualModels.values()].some((item) => item.id === id);
   }
 
   /** Status survives restarts because the remote snapshot retains its document timestamp. */
@@ -287,7 +303,7 @@ export class ModelRegistry {
         : 15_000;
       const body = await this.fetchRemoteCatalogJson(url, opts.fetchImpl ?? this.fetchImpl, timeoutMs);
       const document = normalizeSyncedDocument(body);
-      const next = new Map(document.models.map((model) => [model.id, model]));
+      const next = new Map(document.models.map((model) => [modelKey(model.provider, model.id), model]));
 
       // Persist first. If the atomic write fails, keep the previous in-memory catalog as well.
       await this.persist(this.syncedSnapshotPath, next, document.updatedAt);
@@ -309,39 +325,62 @@ export class ModelRegistry {
     const errors: string[] = [];
     let added = 0;
     const tasks: Array<Promise<void>> = [];
-    if (credentials.anthropic?.apiKey) {
-      tasks.push(
-        this.fetchAnthropicModels(credentials.anthropic)
-          .then((models) => { added += this.replaceProviderEntries("anthropic", models); })
-          .catch((error: unknown) => { errors.push(`anthropic: ${error instanceof Error ? error.message : String(error)}`); }),
-      );
+    const configured = credentials.providers;
+    const activeProviders = new Set(configured.map((entry) => entry.provider));
+    let changed = false;
+    for (const [key, model] of this.apiModels) {
+      if (!activeProviders.has(model.provider)) {
+        this.apiModels.delete(key);
+        changed = true;
+      }
     }
-    if (credentials.openai?.baseURL) {
+    for (const entry of configured) {
+      if (entry.interfaceType === "anthropic-messages" && entry.apiKey) {
       tasks.push(
-        this.fetchOpenAIModels(credentials.openai)
-          .then((models) => { added += this.replaceProviderEntries("openai", models); })
-          .catch((error: unknown) => { errors.push(`openai: ${error instanceof Error ? error.message : String(error)}`); }),
+          this.fetchAnthropicModels(entry, entry.provider)
+            .then((models) => {
+              const result = this.replaceProviderEntries(entry.provider, models);
+              added += result.added;
+              changed ||= result.changed;
+            })
+            .catch((error: unknown) => { errors.push(`${entry.provider}: ${error instanceof Error ? error.message : String(error)}`); }),
       );
+      } else if (entry.interfaceType === "openai-chat-completions") {
+      tasks.push(
+          this.fetchOpenAIModels({ ...entry, baseURL: entry.baseURL ?? "https://api.openai.com/v1" }, entry.provider)
+            .then((models) => {
+              const result = this.replaceProviderEntries(entry.provider, models);
+              added += result.added;
+              changed ||= result.changed;
+            })
+            .catch((error: unknown) => { errors.push(`${entry.provider}: ${error instanceof Error ? error.message : String(error)}`); }),
+      );
+      }
     }
     if (tasks.length === 0) errors.push("未配置任何 provider 凭据");
     await Promise.all(tasks);
-    if (added > 0 || errors.length < tasks.length) await this.persist(this.options.snapshotPath, this.apiModels);
-    if (added > 0) this.options.onUpdated?.();
+    if (changed || errors.length < tasks.length) await this.persist(this.options.snapshotPath, this.apiModels);
+    if (changed) this.options.onUpdated?.();
     return { added, total: this.apiModels.size, errors };
   }
 
   async upsertManual(model: CatalogModel): Promise<void> {
     await this.enqueue(async () => {
-      this.manualModels.set(model.id, normalizeCatalogModel(model, "manual"));
+      this.manualModels.set(modelKey(model.provider, model.id), normalizeCatalogModel(model, "manual"));
       await this.persist(this.options.manualPath, this.manualModels);
     });
     this.options.onUpdated?.();
   }
 
-  async removeManual(id: string): Promise<boolean> {
+  async removeManual(id: string, provider?: string): Promise<boolean> {
     let removed = false;
     await this.enqueue(async () => {
-      removed = this.manualModels.delete(id);
+      if (provider) removed = this.manualModels.delete(modelKey(provider, id));
+      else {
+        for (const [key, model] of this.manualModels) {
+          if (model.id === id) { this.manualModels.delete(key); removed = true; }
+        }
+      }
       if (removed) await this.persist(this.options.manualPath, this.manualModels);
     });
     if (removed) this.options.onUpdated?.();
@@ -357,20 +396,23 @@ export class ModelRegistry {
     return run;
   }
 
-  /** 用拉取结果整体替换该 provider 的 api 条目；跳过 manual/builtin 同名 id，返回真正新增的 id 数。 */
-  private replaceProviderEntries(provider: string, models: CatalogModel[]): number {
-    const builtin = new Set(listModelProfiles().map((profile) => profile.id));
+  /** 用拉取结果整体替换该 provider 的 api 条目；跳过 manual/builtin 同名 id。 */
+  private replaceProviderEntries(provider: string, models: CatalogModel[]): { added: number; changed: boolean } {
+    const builtin = new Set(listModelProfiles().map((profile) => modelKey(profile.provider, profile.id)));
     const known = new Set([...this.apiModels.keys(), ...this.syncedModels.keys(), ...this.manualModels.keys(), ...builtin]);
-    for (const [id, model] of this.apiModels) {
-      if (model.provider === provider) this.apiModels.delete(id);
+    const previous = [...this.apiModels.values()].filter((model) => model.provider === provider);
+    for (const [key, model] of this.apiModels) {
+      if (model.provider === provider) this.apiModels.delete(key);
     }
     let added = 0;
     for (const model of models) {
-      if (this.manualModels.has(model.id) || builtin.has(model.id)) continue;
-      if (!known.has(model.id)) added += 1;
-      this.apiModels.set(model.id, normalizeCatalogModel(model, "api"));
+      const key = modelKey(model.provider, model.id);
+      if (this.manualModels.has(key) || builtin.has(key)) continue;
+      if (!known.has(key)) added += 1;
+      this.apiModels.set(key, normalizeCatalogModel(model, "api"));
     }
-    return added;
+    const current = [...this.apiModels.values()].filter((model) => model.provider === provider);
+    return { added, changed: JSON.stringify(previous) !== JSON.stringify(current) };
   }
 
   private persist(filePath: string, models: Map<string, CatalogModel>, updatedAt = new Date().toISOString()): Promise<void> {
@@ -406,7 +448,7 @@ export class ModelRegistry {
     };
   }
 
-  private async fetchAnthropicModels(credentials: { apiKey?: string; baseURL?: string }): Promise<CatalogModel[]> {
+  private async fetchAnthropicModels(credentials: { apiKey?: string; baseURL?: string }, provider: string): Promise<CatalogModel[]> {
     const base = (credentials.baseURL ?? ANTHROPIC_MODELS_URL).replace(/\/$/, "");
     const headers = { "x-api-key": credentials.apiKey ?? "", "anthropic-version": "2023-06-01" };
     const models: CatalogModel[] = [];
@@ -419,7 +461,7 @@ export class ModelRegistry {
         last_id?: string;
       };
       for (const entry of body.data ?? []) {
-        if (entry.id) models.push(this.toCatalog(entry.id, "anthropic", entry.display_name));
+        if (entry.id) models.push(this.toCatalog(entry.id, provider, entry.display_name));
       }
       if (!body.has_more || !body.last_id) return models;
       after = body.last_id;
@@ -427,13 +469,13 @@ export class ModelRegistry {
     return models;
   }
 
-  private async fetchOpenAIModels(credentials: { apiKey?: string; baseURL: string }): Promise<CatalogModel[]> {
+  private async fetchOpenAIModels(credentials: { apiKey?: string; baseURL: string }, provider: string): Promise<CatalogModel[]> {
     const base = credentials.baseURL.replace(/\/$/, "");
     const headers: Record<string, string> = credentials.apiKey ? { authorization: `Bearer ${credentials.apiKey}` } : {};
     const body = (await this.fetchJson(`${base}/models`, headers)) as { data?: Array<{ id?: string }> };
     return (body.data ?? [])
       .filter((entry) => entry.id && isChatModelId(entry.id))
-      .map((entry) => this.toCatalog(entry.id!, "openai"));
+      .map((entry) => this.toCatalog(entry.id!, provider));
   }
 }
 

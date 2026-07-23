@@ -1,4 +1,4 @@
-import type { AgentRun, BackgroundTaskInfo, CatalogSyncStatus, Checkpoint, CompletePathResponse, ContextView, CostReport, ExtensionInfo, FileEntry, ManagedWorkspaceCapability, ManagedWorkspaceSyncPreview, ManagedWorkspaceSyncResult, MessageAttachment, ModelProfile, PendingPermission, PricingDocument, SandboxCapabilities, SandboxMode, Session, SessionDetail, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo, SyncResult, TodoItem } from "./contracts";
+import type { AgentRun, BackgroundTaskInfo, CatalogSyncStatus, Checkpoint, CompletePathResponse, ContextView, CostReport, ExtensionInfo, FileEntry, ManagedWorkspaceCapability, ManagedWorkspaceSyncPreview, ManagedWorkspaceSyncResult, MessageAttachment, ModelProfile, PendingPermission, PricingDocument, ProviderProfilesView, SandboxCapabilities, SandboxMode, Session, SessionDetail, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo, SyncResult, TodoItem, WebCapability } from "./contracts";
 
 export class ApiError extends Error {
   constructor(readonly status: number, message: string) {
@@ -109,13 +109,21 @@ export const api = {
   checkpointDiff: (id: string, checkpointId: string) =>
     request<{ diff: string }>(`/api/sessions/${id}/checkpoints/${checkpointId}/diff`),
   providers: () => request<string[]>("/api/providers"),
+  providerProfiles: () => request<ProviderProfilesView>("/api/provider-profiles"),
+  createModelProvider: (body: Record<string, unknown>) => request<ProviderProfilesView>("/api/provider-profiles/models", { method: "POST", body: JSON.stringify(body) }),
+  saveModelProvider: (id: string, body: Record<string, unknown>) => request<ProviderProfilesView>(`/api/provider-profiles/models/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(body) }),
+  deleteModelProvider: (id: string) => request<ProviderProfilesView>(`/api/provider-profiles/models/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  createWebProvider: (body: Record<string, unknown>) => request<ProviderProfilesView>("/api/provider-profiles/web", { method: "POST", body: JSON.stringify(body) }),
+  saveWebProvider: (id: string, body: Record<string, unknown>) => request<ProviderProfilesView>(`/api/provider-profiles/web/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(body) }),
+  deleteWebProvider: (id: string) => request<ProviderProfilesView>(`/api/provider-profiles/web/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  selectWebProvider: (capability: WebCapability, id: string | null) => request<ProviderProfilesView>(`/api/provider-profiles/web-active/${capability}`, { method: "PUT", body: JSON.stringify({ id }) }),
   models: () => request<ModelProfile[]>("/api/models"),
   modelSyncStatus: () => request<CatalogSyncStatus>("/api/models/sync-status"),
   refreshModels: () => request<{ added: number; total: number; errors: string[] }>("/api/models/refresh", { method: "POST" }),
   syncModels: () => request<SyncResult>("/api/models/sync", { method: "POST" }),
-  saveModel: (id: string, body: { provider?: string; displayName?: string; contextWindow?: number; maxOutput?: number; capabilities?: ModelProfile["capabilities"] }) =>
+  saveModel: (id: string, body: { provider?: string; originalProvider?: string; displayName?: string; contextWindow?: number; maxOutput?: number; capabilities?: ModelProfile["capabilities"] }) =>
     request<ModelProfile>(`/api/models/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(body) }),
-  deleteModel: (id: string) => request<void>(`/api/models/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  deleteModel: (id: string, provider?: string) => request<void>(`/api/models/${encodeURIComponent(id)}${provider ? `?provider=${encodeURIComponent(provider)}` : ""}`, { method: "DELETE" }),
   modelPricing: () => request<PricingDocument>("/api/model-pricing"),
   syncModelPricing: () => request<SyncResult>("/api/model-pricing/sync", { method: "POST" }),
   saveModelPricing: (document: PricingDocument) =>
