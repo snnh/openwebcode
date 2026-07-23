@@ -176,10 +176,23 @@ static int test_reparse_acl_restore(void) {
         result = 24;
         goto cleanup;
     }
-    if (!capture_dacl_mode(link, 1, &link_granted, &lg_size, &lg_protected) ||
-        !capture_dacl(target, &target_granted, &tg_size, &tg_protected) ||
-        (lb_size == lg_size && memcmp(link_before, link_granted, lb_size) == 0) ||
-        (tb_size == tg_size && memcmp(target_before, target_granted, tb_size) == 0)) {
+    if (!capture_dacl_mode(link, 1, &link_granted, &lg_size, &lg_protected)) {
+        (void)fprintf(stderr, "could not capture granted reparse-point ACL\n");
+        result = 25;
+        goto cleanup;
+    }
+    if (!capture_dacl(target, &target_granted, &tg_size, &tg_protected)) {
+        (void)fprintf(stderr, "could not capture granted reparse-target ACL\n");
+        result = 25;
+        goto cleanup;
+    }
+    if (lb_size == lg_size && memcmp(link_before, link_granted, lb_size) == 0) {
+        (void)fprintf(stderr, "reparse-point ACL did not change\n");
+        result = 25;
+        goto cleanup;
+    }
+    if (tb_size == tg_size && memcmp(target_before, target_granted, tb_size) == 0) {
+        (void)fprintf(stderr, "reparse-target ACL did not change\n");
         result = 25;
         goto cleanup;
     }
