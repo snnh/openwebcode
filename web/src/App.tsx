@@ -168,11 +168,13 @@ export function App(): ReactElement {
         }
         if (event.type === "models.updated") {
           queryClient.invalidateQueries({ queryKey: ["models"] });
+          queryClient.invalidateQueries({ queryKey: ["settings"] });
         }
         if (event.type === "provider_profiles.updated") {
           queryClient.invalidateQueries({ queryKey: ["provider-profiles"] });
           queryClient.invalidateQueries({ queryKey: ["providers"] });
           queryClient.invalidateQueries({ queryKey: ["models"] });
+          queryClient.invalidateQueries({ queryKey: ["settings"] });
         }
         // MCP server 连接失败降级：该 server 工具未注入，给出告警
         if (event.type === "mcp.degraded" && event.sessionId === currentId) {

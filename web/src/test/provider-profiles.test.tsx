@@ -13,6 +13,7 @@ const profiles: ProviderProfilesView = {
   webProviders: [
     { id: "Brave 搜索", provider: "brave", capabilities: ["search"], hasApiKey: true, maskedApiKey: "brave-…5678" },
     { id: "Jina", provider: "jina", capabilities: ["search", "fetch"], hasApiKey: false },
+    { id: "Tavily", provider: "tavily", capabilities: ["search", "fetch"], hasApiKey: true, maskedApiKey: "tvly-…1234" },
   ],
   activeWeb: { search: "Brave 搜索", fetch: "Jina" },
 };

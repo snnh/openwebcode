@@ -8,8 +8,8 @@ import { Compactor } from "../src/context/compactor.js";
 import type { CoreClientLike } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
+import type { FastModelClient } from "../src/fast-model.js";
 import { appendMemory, parseSedimentSections, readGlobalMemory, readProjectMemory } from "../src/memory.js";
-import type { Provider2Client } from "../src/provider2.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 
@@ -274,15 +274,16 @@ describe("system prompt memory injection", () => {
 });
 
 describe("overview compaction sediment", () => {
-  function fakeProvider2(text: string): Provider2Client {
+  function fakeFastModel(text: string): FastModelClient {
     return {
       configured: true,
+      provider: "fast-provider",
       model: "fake-cheap-model",
       setConfig() { /* noop */ },
       async complete() {
         return { text, usage: { inputTokens: 10, outputTokens: 5 } };
       },
-    } as unknown as Provider2Client;
+    } as unknown as FastModelClient;
   }
 
   it("sediments 关键发现/未决事项 into project memory and dedups on repeat compaction", async () => {
@@ -305,7 +306,7 @@ describe("overview compaction sediment", () => {
       "用户明确指令：",
       "- 不要提交",
     ].join("\n");
-    const compactor = new Compactor(store, fakeProvider2(summary), {}, 10);
+    const compactor = new Compactor(store, fakeFastModel(summary), {}, 10);
 
     const result = await compactor.compact(session.id, "overview");
     expect(result.changed).toBe(true);
@@ -319,7 +320,7 @@ describe("overview compaction sediment", () => {
     expect(await readFile(memoryFile, "utf8")).toBe("# Memory\n- 压缩入口共有三处\n- 全局记忆 UI 未做\n");
   });
 
-  it("skips sediment when overview falls back to truncated (provider2 unconfigured)", async () => {
+  it("skips sediment when overview falls back to truncated (fast model unconfigured)", async () => {
     const root = await tempRoot();
     const cwd = path.join(root, "ws");
     await mkdir(cwd, { recursive: true });
@@ -332,10 +333,11 @@ describe("overview compaction sediment", () => {
     }
     const unconfigured = {
       configured: false,
+      provider: undefined,
       model: "",
       setConfig() { /* noop */ },
-      async complete() { throw new Error("provider2 not configured"); },
-    } as unknown as Provider2Client;
+      async complete() { throw new Error("fast model not configured"); },
+    } as unknown as FastModelClient;
     const compactor = new Compactor(store, unconfigured, {}, 10);
 
     const result = await compactor.compact(session.id, "overview", { forced: true });

@@ -194,7 +194,7 @@ provider；它支持 `run: <cmd>` 的工具调用回放与 `tool_result` 回包�
 ### 改上下文策略
 
 - 驱逐策略：`context/context-manager.ts` 的 `evictionPlan(ledger, strategy)` 纯账本运算
-- 压缩：`provider2.ts` + `context/compactor.ts`
+- 压缩：`fast-model.ts` + `context/compactor.ts`
 - 新增占位/回写状态：改 `ContextLedger` 接口 + `normalizeLedger` 兼容 + `buildView` 渲染 + `replaceLedger` 回滚
 - 前端始终用全量历史，驱逐只影响 LLM 视图——改策略不会破坏 UI
 

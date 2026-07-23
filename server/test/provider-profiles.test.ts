@@ -51,6 +51,7 @@ describe("ProviderProfilesService", () => {
     const setup = await fixture();
     await setup.service.upsertWeb(undefined, { id: "Jina", provider: "jina", capabilities: ["fetch"], apiKey: "jina-key" });
     await setup.service.upsertWeb(undefined, { id: "Brave", provider: "brave", capabilities: ["fetch"], apiKey: "brave-key" });
+    await setup.service.upsertWeb(undefined, { id: "Tavily", provider: "tavily", capabilities: ["search"], apiKey: "tavily-key" });
     await setup.service.upsertWeb(undefined, {
       id: "Internal Reader",
       provider: "custom",
@@ -65,6 +66,7 @@ describe("ProviderProfilesService", () => {
       webProviders: [
         { id: "Jina", capabilities: ["search", "fetch"] },
         { id: "Brave", capabilities: ["search"] },
+        { id: "Tavily", capabilities: ["search", "fetch"] },
         { id: "Internal Reader", capabilities: ["fetch"] },
       ],
     });

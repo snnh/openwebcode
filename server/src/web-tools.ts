@@ -351,6 +351,44 @@ class TavilySearchProvider implements SearchProvider {
   }
 }
 
+class TavilyExtractProvider implements WebFetchProvider {
+  constructor(readonly name: string, private readonly apiKey: string, private readonly fetchImpl: typeof fetch) {}
+
+  async fetchUrl(value: string, options: { signal?: AbortSignal } = {}): Promise<WebFetchResult> {
+    const requested = assertSafeWebUrl(value);
+    const response = await this.fetchImpl("https://api.tavily.com/extract", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        urls: requested.href,
+        extract_depth: "basic",
+        include_images: false,
+        format: "markdown",
+      }),
+      signal: signalWithTimeout(options.signal),
+    });
+    if (!response.ok) throw new Error(`Tavily Extract returned HTTP ${response.status}`);
+    const body = await readLimitedJson(response) as {
+      results?: Array<{ url?: unknown; raw_content?: unknown }>;
+      failed_results?: Array<{ url?: unknown; error?: unknown }>;
+    };
+    const result = body.results?.[0];
+    if (!result || typeof result.raw_content !== "string" || result.raw_content.trim() === "") {
+      const failure = body.failed_results?.[0]?.error;
+      throw new Error(`Tavily Extract returned no content${typeof failure === "string" && failure ? `: ${failure}` : ""}`);
+    }
+    return {
+      url: requested.href,
+      finalUrl: requested.href,
+      contentType: "text/markdown; charset=utf-8",
+      text: result.raw_content,
+    };
+  }
+}
+
 /** Build a search implementation from a named profile. The profile's declared
  * capability is the public contract; provider kind only selects wire format. */
 export function createProfileSearchProvider(
@@ -384,6 +422,9 @@ export function createProfileWebFetchProvider(
   const apiKey = profile.apiKey?.trim() || undefined;
   if (profile.provider === "jina") {
     return new HttpReaderProvider(profile.id, (requested) => new URL(`https://r.jina.ai/${requested.href}`), apiKey, fetchImpl);
+  }
+  if (profile.provider === "tavily") {
+    return apiKey ? new TavilyExtractProvider(profile.id, apiKey, fetchImpl) : undefined;
   }
   if (profile.provider !== "custom") return undefined;
   const template = profile.fetchBaseURL?.trim();

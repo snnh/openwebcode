@@ -6,11 +6,14 @@ import { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
 import { loadConfig } from "../src/config.js";
 import { CoreClient } from "../src/core-client.js";
+import { ModelRegistry } from "../src/context/model-registry.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
+import { FastModelClient } from "../src/fast-model.js";
+import { ProviderProfilesService } from "../src/provider-profiles.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
-import { SettingsService, type SettingsFieldView, type SettingsView } from "../src/settings-service.js";
+import { encodeFastModelSelection, SettingsService, type SettingsFieldView, type SettingsView } from "../src/settings-service.js";
 import { MAX_SYNC_INTERVAL_MINUTES } from "../src/remote-sync-scheduler.js";
 
 const roots: string[] = [];
@@ -32,10 +35,30 @@ async function fixture(env: NodeJS.ProcessEnv = {}) {
   events.on("event", (event: AppEvent) => observed.push(event));
   const core = new CoreClient(path.join(root, "unused-core"));
   const agent = new AgentRunner(sessions, providers, core, events, pricing);
+  const profiles = await ProviderProfilesService.load({ filePath: path.join(root, "provider-profiles.json") });
+  await profiles.upsertModel(undefined, {
+    id: "主服务",
+    enabled: true,
+    interfaceType: "openai-chat-completions",
+    baseURL: "https://example.test/v1",
+  });
+  const models = await ModelRegistry.load({
+    snapshotPath: path.join(root, "models.json"),
+    manualPath: path.join(root, "models.manual.json"),
+  });
+  await models.upsertManual({
+    id: "fast-1",
+    provider: "主服务",
+    source: "manual",
+    contextWindow: 128_000,
+    maxOutput: 8_192,
+    capabilities: { modalities: ["text"], imageOutput: false, thinking: ["disabled"], effort: ["low", "high"], tools: true },
+  });
+  const fastModel = new FastModelClient(providers);
   const settings = await SettingsService.load({ env, filePath: path.join(root, "server-settings.json") });
-  settings.bind({ providers, core, agent, events });
+  settings.bind({ providers, core, agent, events, fastModel, profiles, models });
   const app = await buildServer({ core, sessions, agent, events, providers, pricing, settings });
-  return { root, providers, events: observed, app, settings };
+  return { root, providers, events: observed, app, settings, fastModel };
 }
 
 function field(view: SettingsView, key: string): SettingsFieldView {
@@ -53,15 +76,20 @@ describe("server settings API", () => {
       const response = await setup.app.inject({ method: "GET", url: "/api/settings" });
       expect(response.statusCode).toBe(200);
       const view = response.json<SettingsView>();
-      expect(view.groups.map((group) => group.id)).toEqual(["models", "provider2", "general", "executor", "service", "exchangeRate"]);
+      expect(view.groups.map((group) => group.id)).toEqual(["models", "fastModel", "general", "executor", "service", "exchangeRate"]);
       const fields = view.groups.flatMap((group) => group.fields);
-      expect(fields).toHaveLength(20);
+      expect(fields).toHaveLength(21);
       for (const item of fields) {
         expect(item.source).toBe("default");
         expect(item.editable).toBe(true);
       }
       expect(field(view, "port").value).toBe(3210);
-      expect(field(view, "provider2ApiKey").hasValue).toBe(false);
+      expect(field(view, "fastModel")).toMatchObject({
+        type: "select",
+        value: null,
+        nullable: true,
+        options: [{ value: encodeFastModelSelection("主服务", "fast-1"), label: "fast-1【主服务】" }],
+      });
       expect(field(view, "host").restartRequired).toBe(true);
       expect(field(view, "defaultLanguage").restartRequired).toBe(false);
       expect(field(view, "sandboxAllowPaths")).toMatchObject({ type: "pathList", value: [], restartRequired: true });
@@ -73,19 +101,34 @@ describe("server settings API", () => {
     }
   });
 
-  it("masks env-provided fast-model secrets and never leaks the raw value", async () => {
-    const setup = await fixture({ OWC_PROVIDER2_API_KEY: "fast-secret-key-1234567890" });
+  it("selects a fast model from the unified catalog and hot-applies its request parameters", async () => {
+    const setup = await fixture();
     try {
-      const response = await setup.app.inject({ method: "GET", url: "/api/settings" });
+      const selection = encodeFastModelSelection("主服务", "fast-1");
+      const response = await setup.app.inject({
+        method: "PUT",
+        url: "/api/settings",
+        payload: { overrides: {
+          fastModel: selection,
+          fastModelThinking: "enabled",
+          fastModelEffort: "high",
+          fastModelMaxTokens: 2_048,
+        } },
+      });
       expect(response.statusCode).toBe(200);
-      expect(response.body).not.toContain("fast-secret-key-1234567890");
       const view = response.json<SettingsView>();
-      const secret = field(view, "provider2ApiKey");
-      expect(secret.source).toBe("env");
-      expect(secret.editable).toBe(false);
-      expect(secret.hasValue).toBe(true);
-      expect(secret.value).toBeNull();
-      expect(secret.masked).toBe("fast-se…7890");
+      expect(field(view, "fastModel")).toMatchObject({ value: selection, source: "file" });
+      expect(field(view, "fastModelThinking")).toMatchObject({ value: "enabled", source: "file" });
+      expect(field(view, "fastModelEffort")).toMatchObject({ value: "high", source: "file" });
+      expect(field(view, "fastModelMaxTokens")).toMatchObject({ value: 2_048, source: "file" });
+      expect(setup.settings.effective().fastModel).toEqual({
+        provider: "主服务",
+        model: "fast-1",
+        thinking: "enabled",
+        effort: "high",
+        maxTokens: 2_048,
+      });
+      expect(setup.fastModel).toMatchObject({ configured: true, provider: "主服务", model: "fast-1" });
     } finally {
       await setup.app.close();
     }
@@ -183,6 +226,11 @@ describe("server settings API", () => {
         { port: 0 },
         { port: 70_000 },
         { defaultCurrency: "EUR" },
+        { fastModel: "fast-1" },
+        { fastModel: encodeFastModelSelection("未启用服务", "fast-1") },
+        { fastModelThinking: "sometimes" },
+        { fastModelEffort: "ultra" },
+        { fastModelMaxTokens: 64_001 },
         { coreRequestTimeoutMs: -5 },
         { exchangeRateUrl: "ftp://example.com" },
         { catalogSyncUrl: "ftp://example.com" },

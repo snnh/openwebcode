@@ -20,7 +20,7 @@ import { AgentRegistry } from "./agents.js";
 import { CommandRegistry } from "./commands.js";
 import { McpManager } from "./mcp/manager.js";
 import { ManagedWorkspaceManager } from "./snapshots/managed-disk.js";
-import { Provider2Client } from "./provider2.js";
+import { FastModelClient } from "./fast-model.js";
 import { Compactor } from "./context/compactor.js";
 import { StorageGC } from "./storage-gc.js";
 import { UsageLog } from "./usage-log.js";
@@ -77,11 +77,11 @@ const skills = new SkillRegistry(path.join(dataDir, "skills"));
 const agents = new AgentRegistry(path.join(dataDir, "agents"));
 const commands = new CommandRegistry(path.join(dataDir, "commands"));
 const mcp = new McpManager(dataDir);
-const provider2 = new Provider2Client(config.provider2);
-const compactor = new Compactor(sessions, provider2, { usageLog, pricing, exchangeRates });
+const fastModel = new FastModelClient(providers, config.fastModel);
+const compactor = new Compactor(sessions, fastModel, { usageLog, pricing, exchangeRates });
 const extensions = new ExtensionManager(dataDir, events);
 await extensions.initialize();
-const contentLens = new ContentLensService(sessions, provider2);
+const contentLens = new ContentLensService(sessions, fastModel);
 const selectedWeb = providerProfiles.selectedWebProfiles();
 const search = createProfileSearchProvider(selectedWeb.search);
 const webFetch = createProfileWebFetchProvider(selectedWeb.fetch);
@@ -101,7 +101,7 @@ const providerProfilesRuntime = new ProviderProfilesRuntime(providerProfiles, pr
 // 托管工作区（plan §6.4）：镜像/挂载点位于 dataDir 下；孤儿挂载清理挂在 GC 启动扫描上
 const managed = new ManagedWorkspaceManager({ dataDir });
 const gc = new StorageGC(path.join(dataDir, "sessions"), config.gcMaxBytes, () => managed.sweepOrphans());
-settings.bind({ providers, core, agent, events, gc, provider2, profiles: providerProfiles });
+settings.bind({ providers, core, agent, events, gc, fastModel, profiles: providerProfiles, models });
 providerProfilesRuntime.start();
 
 core.on("diagnostic", (text: string) => process.stderr.write(`[owc-exec] ${text}`));

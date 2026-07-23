@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ExtensionManager } from "../src/extensions/extension-manager.js";
 import { ContentLensService } from "../src/extensions/content-lens.js";
 import { optimizeAttention } from "../src/extensions/official.js";
-import type { Provider2Client } from "../src/provider2.js";
+import type { FastModelClient } from "../src/fast-model.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import type { ChatMessage } from "../src/sessions/types.js";
 
@@ -73,11 +73,11 @@ describe("official extensions", () => {
     const session = await sessions.create({ cwd: root, provider: "test-stub", model: "test-stub" });
     const saved = await sessions.appendMessage(session.id, "assistant", [{ type: "text", text: "Hello **world**" }]);
     let calls = 0;
-    const provider2 = {
+    const fastModel = {
       configured: true,
       complete: async () => { calls += 1; return { text: "你好 **world**", usage: { inputTokens: 3, outputTokens: 3 } }; },
-    } as unknown as Provider2Client;
-    const lens = new ContentLensService(sessions, provider2);
+    } as unknown as FastModelClient;
+    const lens = new ContentLensService(sessions, fastModel);
     expect((await lens.translate(session.id, saved.id, "zh-CN")).cached).toBe(false);
     expect((await lens.translate(session.id, saved.id, "zh-CN")).cached).toBe(true);
     expect(calls).toBe(1);

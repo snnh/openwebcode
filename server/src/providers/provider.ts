@@ -11,6 +11,8 @@ export interface StreamChatRequest {
   model: string;
   thinking?: ThinkingMode;
   effort?: EffortLevel;
+  /** Per-request output ceiling used by internal fast-model calls. */
+  maxTokens?: number;
   system: string;
   messages: ChatMessage[];
   cacheBreakpoints?: string[];

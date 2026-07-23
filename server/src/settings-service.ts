@@ -8,8 +8,9 @@ import type { CoreClientLike } from "./core-client.js";
 import type { EventBus } from "./events/event-bus.js";
 import type { ProviderRegistry } from "./providers/provider.js";
 import type { StorageGC } from "./storage-gc.js";
-import type { Provider2Client } from "./provider2.js";
+import type { FastModelClient } from "./fast-model.js";
 import type { ProviderProfilesService } from "./provider-profiles.js";
+import type { ModelRegistry } from "./context/model-registry.js";
 
 export class SettingsValidationError extends Error {
   constructor(message: string) {
@@ -22,11 +23,16 @@ export type SettingFieldType = "text" | "secret" | "number" | "boolean" | "selec
 export type SettingValue = string | number | boolean | string[];
 export type SettingSource = "default" | "env" | "file";
 
+export interface SettingOptionView {
+  value: string;
+  label: string;
+}
+
 export interface SettingsFieldView {
   key: string;
   label: string;
   type: SettingFieldType;
-  options?: string[];
+  options?: SettingOptionView[];
   value: SettingValue | null;
   hasValue: boolean;
   masked?: string;
@@ -67,13 +73,14 @@ interface RuntimeDependencies {
   agent: AgentRunner;
   events: EventBus;
   gc?: StorageGC;
-  provider2?: Provider2Client;
+  fastModel?: FastModelClient;
   profiles?: ProviderProfilesService;
+  models?: ModelRegistry;
 }
 
 const GROUPS = [
   { id: "models", label: "模型接入" },
-  { id: "provider2", label: "快速模型" },
+  { id: "fastModel", label: "快速模型" },
   { id: "general", label: "语言与货币" },
   { id: "executor", label: "执行器" },
   { id: "service", label: "服务" },
@@ -81,6 +88,23 @@ const GROUPS = [
 ];
 
 const LANGUAGE_OPTIONS = ["zh-CN", "en-US", "zh-TW", "ja-JP", "ko-KR", "fr-FR", "de-DE", "es-ES", "ru-RU"];
+const THINKING_OPTIONS = ["disabled", "adaptive", "enabled"];
+const EFFORT_OPTIONS = ["none", "low", "medium", "high", "xhigh", "max"];
+
+export function encodeFastModelSelection(provider: string, model: string): string {
+  return JSON.stringify([provider, model]);
+}
+
+export function decodeFastModelSelection(value: unknown): [provider: string, model: string] | undefined {
+  if (typeof value !== "string") return undefined;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed) || parsed.length !== 2 ||
+        typeof parsed[0] !== "string" || parsed[0].trim() === "" ||
+        typeof parsed[1] !== "string" || parsed[1].trim() === "") return undefined;
+    return [parsed[0], parsed[1]];
+  } catch { return undefined; }
+}
 
 function requireHttpUrl(value: SettingValue): void {
   let parsed: URL;
@@ -129,6 +153,16 @@ function requireJobMaxProcesses(value: SettingValue): void {
   }
 }
 
+function requireFastModelSelection(value: SettingValue): void {
+  if (!decodeFastModelSelection(value)) throw new SettingsValidationError("快速模型选择无效");
+}
+
+function requireFastModelMaxTokens(value: SettingValue): void {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > 64_000) {
+    throw new SettingsValidationError("快速模型最大输出需为 1–64000 的整数");
+  }
+}
+
 function requirePathList(value: SettingValue): void {
   if (!Array.isArray(value) || value.length > 16 || value.some((entry) => typeof entry !== "string" || entry.trim() === "")) {
     throw new SettingsValidationError("允许目录必须是最多 16 项的非空路径列表");
@@ -162,10 +196,11 @@ const FIELDS: FieldSpec[] = [
   { key: "catalogSyncUrl", group: "models", label: "远程模型目录 URL", type: "text", env: "OWC_MODELS_CATALOG_SYNC_URL", defaultValue: null, restartRequired: false, validate: requireHttpUrl, description: "留空则不从远程链接同步模型目录" },
   { key: "pricingSyncUrl", group: "models", label: "远程定价目录 URL", type: "text", env: "OWC_MODELS_PRICING_SYNC_URL", defaultValue: null, restartRequired: false, validate: requireHttpUrl, description: "留空则不从远程链接同步模型定价" },
   { key: "syncIntervalMinutes", group: "models", label: "远程同步间隔（分钟）", type: "number", env: "OWC_MODELS_SYNC_INTERVAL_MINUTES", defaultValue: 0, restartRequired: false, fromEnv: envSyncIntervalMinutes, validate: requireSyncIntervalMinutes, description: `0 表示仅手动同步；大于 0 时按此间隔自动同步，最大 ${MAX_SYNC_INTERVAL_MINUTES} 分钟` },
-  // 上下文压缩 provider2（热生效）：快速廉价的 OpenAI 兼容端点，用于 compact/85% 水位强制压缩
-  { key: "provider2BaseURL", group: "provider2", label: "快速模型 Base URL", type: "text", env: "OWC_PROVIDER2_BASE_URL", defaultValue: null, restartRequired: false, validate: requireHttpUrl, description: "用于上下文压缩等低延迟任务的 OpenAI 兼容端点；与模型名同时填写后启用" },
-  { key: "provider2ApiKey", group: "provider2", label: "快速模型 API Key", type: "secret", env: "OWC_PROVIDER2_API_KEY", defaultValue: null, restartRequired: false },
-  { key: "provider2Model", group: "provider2", label: "快速模型", type: "text", env: "OWC_PROVIDER2_MODEL", defaultValue: null, restartRequired: false, description: "如 deepseek-chat / claude-haiku-4-5" },
+  // 内部低延迟任务复用已启用模型服务商，不维护第二套端点或密钥。
+  { key: "fastModel", group: "fastModel", label: "快速模型", type: "select", env: "OWC_FAST_MODEL", defaultValue: null, restartRequired: false, validate: requireFastModelSelection, description: "用于上下文压缩和内容透镜；模型来自已启用服务商的统一模型目录" },
+  { key: "fastModelThinking", group: "fastModel", label: "思考", type: "select", env: "OWC_FAST_MODEL_THINKING", defaultValue: "disabled", restartRequired: false, options: THINKING_OPTIONS },
+  { key: "fastModelEffort", group: "fastModel", label: "力度", type: "select", env: "OWC_FAST_MODEL_EFFORT", defaultValue: "none", restartRequired: false, options: EFFORT_OPTIONS },
+  { key: "fastModelMaxTokens", group: "fastModel", label: "最大输出上限", type: "number", env: "OWC_FAST_MODEL_MAX_TOKENS", defaultValue: 4_096, restartRequired: false, fromEnv: envNumber, validate: requireFastModelMaxTokens, description: "内部任务的输出 token 硬上限；具体任务可以使用更小上限" },
   // 通用（热生效）
   { key: "defaultLanguage", group: "general", label: "默认语言", type: "select", env: "OWC_DEFAULT_LANGUAGE", defaultValue: "zh-CN", restartRequired: false, options: LANGUAGE_OPTIONS },
   { key: "defaultCurrency", group: "general", label: "默认货币", type: "select", env: "OWC_DEFAULT_CURRENCY", defaultValue: "CNY", restartRequired: false, options: ["USD", "CNY"], fromEnv: envCurrency },
@@ -275,13 +310,35 @@ export class SettingsService {
     return field.defaultValue;
   }
 
+  private optionsFor(field: FieldSpec): SettingOptionView[] | undefined {
+    if (field.key !== "fastModel") {
+      return field.options?.map((value) => ({ value, label: value }));
+    }
+    const enabled = new Set(this.deps?.profiles?.modelProfiles()
+      .filter((profile) => profile.enabled)
+      .map((profile) => profile.id) ?? []);
+    const options = (this.deps?.models?.list() ?? [])
+      .filter((model) => enabled.has(model.provider))
+      .map((model) => ({
+        value: encodeFastModelSelection(model.provider, model.id),
+        label: `${model.id}【${model.provider}】`,
+      }))
+      .sort((left, right) => left.label.localeCompare(right.label));
+    const current = this.effectiveValue(field);
+    if (typeof current === "string" && decodeFastModelSelection(current) && !options.some((option) => option.value === current)) {
+      const [provider, model] = decodeFastModelSelection(current)!;
+      options.unshift({ value: current, label: `${model}【${provider}】（不可用）` });
+    }
+    return options;
+  }
+
   effective(): ServerConfig {
     const value = (key: string) => this.effectiveValue(FIELD_MAP.get(key)!);
     const exchangeRateUrl = value("exchangeRateUrl");
     const fixedUsdCnyRate = value("fixedUsdCnyRate");
-    const provider2BaseURL = value("provider2BaseURL");
-    const provider2ApiKey = value("provider2ApiKey");
-    const provider2Model = value("provider2Model");
+    const fastModelSelection = decodeFastModelSelection(value("fastModel"));
+    const fastModelThinking = value("fastModelThinking");
+    const fastModelEffort = value("fastModelEffort");
     const jobObjectMemoryMB = value("jobObjectMemoryMB");
     const jobObjectMaxProcesses = value("jobObjectMaxProcesses");
     const sandboxAllowPaths = value("sandboxAllowPaths") as string[];
@@ -327,13 +384,18 @@ export class SettingsService {
             },
           }
         : {}),
-      // provider2 需要 baseURL 与 model 同时配置才生效；apiKey 可空（本地端点）
-      ...(typeof provider2BaseURL === "string" && typeof provider2Model === "string"
+      ...(fastModelSelection
         ? {
-            provider2: {
-              baseURL: provider2BaseURL,
-              model: provider2Model,
-              ...(typeof provider2ApiKey === "string" ? { apiKey: provider2ApiKey } : {}),
+            fastModel: {
+              provider: fastModelSelection[0],
+              model: fastModelSelection[1],
+              ...(fastModelThinking === "adaptive" || fastModelThinking === "enabled" || fastModelThinking === "disabled"
+                ? { thinking: fastModelThinking }
+                : {}),
+              ...(fastModelEffort === "low" || fastModelEffort === "medium" || fastModelEffort === "high" || fastModelEffort === "xhigh" || fastModelEffort === "max"
+                ? { effort: fastModelEffort }
+                : {}),
+              maxTokens: value("fastModelMaxTokens") as number,
             },
         }
         : {}),
@@ -347,17 +409,18 @@ export class SettingsService {
         fields: FIELDS.filter((field) => field.group === group.id).map((field) => {
           const source = this.source(field);
           const value = this.effectiveValue(field);
+          const options = this.optionsFor(field);
           const base = {
             key: field.key,
             label: field.label,
             type: field.type,
-            ...(field.options ? { options: field.options } : {}),
+            ...(options !== undefined ? { options } : {}),
             source,
             editable: source !== "env",
             restartRequired: field.restartRequired,
             nullable: field.defaultValue === null,
             ...(field.description ? { description: field.description } : {}),
-          };
+          } satisfies Omit<SettingsFieldView, "value" | "hasValue" | "masked">;
           if (field.type === "secret") {
             const hasValue = typeof value === "string" && value.length > 0;
             return { ...base, value: null, hasValue, ...(hasValue ? { masked: maskSecret(value as string) } : {}) };
@@ -421,8 +484,8 @@ export class SettingsService {
     if (!this.deps) return;
     if (changed.includes("defaultLanguage")) this.deps.agent.setDefaultLanguage(this.effective().defaultLanguage);
     if (changed.includes("coreRequestTimeoutMs")) this.deps.core.setRequestTimeoutMs(this.effective().coreRequestTimeoutMs);
-    if (changed.some((key) => key.startsWith("provider2")) && this.deps.provider2) {
-      this.deps.provider2.setConfig(this.effective().provider2);
+    if (changed.some((key) => key.startsWith("fastModel")) && this.deps.fastModel) {
+      this.deps.fastModel.setConfig(this.effective().fastModel);
     }
     if (changed.includes("gcMaxBytes") && this.deps.gc) {
       const gc = this.deps.gc;
@@ -452,7 +515,13 @@ export class SettingsService {
         if (typeof value !== "boolean") throw new SettingsValidationError(`${field.label} 必须是布尔值`);
         break;
       case "select":
-        if (typeof value !== "string" || !field.options?.includes(value)) {
+        if (typeof value !== "string") throw new SettingsValidationError(`${field.label} 必须是字符串`);
+        if (field.key === "fastModel") {
+          if (!decodeFastModelSelection(value)) throw new SettingsValidationError("快速模型选择无效");
+          if (this.deps && !this.optionsFor(field)?.some((option) => option.value === value)) {
+            throw new SettingsValidationError("快速模型必须来自已启用服务商的模型目录");
+          }
+        } else if (!field.options?.includes(value)) {
           throw new SettingsValidationError(`${field.label} 必须是 ${field.options?.join(" / ")} 之一`);
         }
         break;
