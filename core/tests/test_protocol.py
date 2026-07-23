@@ -101,7 +101,8 @@ def main():
     executable = sys.argv[1]
     environment = os.environ.copy()
     pwsh_available = shutil.which("pwsh", path=environment.get("PATH")) is not None
-    shell_params = {"shellBackend": "pwsh"} if pwsh_available else {}
+    use_pwsh_main_channel = os.name == "nt" and pwsh_available
+    shell_params = {"shellBackend": "pwsh"} if use_pwsh_main_channel else {}
     proc = subprocess.Popen([executable], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment)
     binary_name = f"protocol-upload-{os.getpid()}.bin"
     binary_path = os.path.join(os.getcwd(), binary_name)
@@ -137,7 +138,7 @@ def main():
         response, _ = collect_until_response(proc, 2)
         assert response["error"]["code"] == -32601
 
-        if os.name == "nt" and pwsh_available:
+        if use_pwsh_main_channel:
             command = "Write-Output hello; [Console]::Error.WriteLine('error'); exit 7"
             slow = "Start-Sleep -Seconds 5"
         elif os.name == "nt":
@@ -228,7 +229,7 @@ def main():
                 if response["result"]["state"] != "running": break
                 time.sleep(0.05)
             assert response["result"]["state"] == "cancelled", response
-            output_command = "Write-Output job-output" if pwsh_available else "echo job-output"
+            output_command = "Write-Output job-output" if use_pwsh_main_channel else "echo job-output"
             request(proc, 44, "job.start", {"sessionId": "s1", "jobId": "output-me", "kind": "exec", "cmd": output_command, "cwd": os.getcwd(), "timeoutMs": 5000, **shell_params})
             response, _ = collect_until_response(proc, 44)
             assert response["result"]["state"] == "running", response
@@ -245,7 +246,7 @@ def main():
             # A just-started quiet job has no output yet. job.output must grow
             # the JSON suffix buffer even when the chunk loop emits nothing;
             # this previously corrupted the Windows heap and killed Core.
-            quiet_command = "Start-Sleep -Seconds 3; Write-Output delayed" if pwsh_available else "ping -n 3 127.0.0.1 >nul & echo delayed"
+            quiet_command = "Start-Sleep -Seconds 3; Write-Output delayed" if use_pwsh_main_channel else "ping -n 3 127.0.0.1 >nul & echo delayed"
             request(proc, 49, "job.start", {"sessionId": "s1", "jobId": "quiet-output", "kind": "exec", "cmd": quiet_command, "cwd": os.getcwd(), "timeoutMs": 5000, **shell_params})
             response, _ = collect_until_response(proc, 49)
             assert response["result"]["state"] == "running", response
