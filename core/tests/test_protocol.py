@@ -189,7 +189,10 @@ def main():
         assert response.get("error", {}).get("code") == -32602, response
 
         if pwsh_integration:
-            request(proc, 302, "exec.run", {"sessionId": "s1", "execId": "pwsh", "cmd": "Write-Output pwsh-ok; exit 9", "cwd": os.getcwd(), "timeoutMs": 5000, "shellBackend": "pwsh"})
+            # A cold pwsh start on hosted Linux can occasionally exceed five
+            # seconds. Keep the real integration coverage with enough startup
+            # headroom while remaining well below the enclosing CTest timeout.
+            request(proc, 302, "exec.run", {"sessionId": "s1", "execId": "pwsh", "cmd": "Write-Output pwsh-ok; exit 9", "cwd": os.getcwd(), "timeoutMs": 15000, "shellBackend": "pwsh"})
             response, notes = collect_until_response(proc, 302)
             assert response.get("result", {}).get("exitCode") == 9, response
             output = b"".join(base64.b64decode(n["params"]["data"]) for n in notes)
