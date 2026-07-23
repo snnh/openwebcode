@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, type Dirent } from "node:fs";
 import { cp, mkdir, readdir, readFile, rm, rmdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -61,6 +61,8 @@ interface ChainEntry {
 interface ChainState {
   active: { file: string; parentFile: string | null };
   device?: string;
+  /** Persisted so orphan cleanup can find sibling-directory VHDX mounts even when session meta is gone. */
+  mountPoint?: string;
   checkpoints: ChainEntry[];
 }
 
@@ -69,12 +71,25 @@ export function managedDiskScriptPath(): string {
   return path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "assets", "managed-disk.ps1");
 }
 
-/** 会话的托管工作区路径约定：<dataDir>/workspaces/<id>（镜像+chain.json）与 <dataDir>/mnt/<id>（挂载点）。 */
+/** 镜像仍由服务端私有 dataDir 持有；dataDir/mnt 仅用于 Linux qcow2。 */
 export function managedWorkspacePaths(dataDir: string, sessionId: string): { workspaceRoot: string; mountPoint: string } {
   return {
     workspaceRoot: path.join(dataDir, "workspaces", sessionId),
     mountPoint: path.join(dataDir, "mnt", sessionId),
   };
+}
+
+/**
+ * Windows VHDX 挂在源工作目录旁边，避免管理员宿主中的 AppContainer 穿越
+ * C:\Users\...\AppData 深层祖先，也避免 UAC 登录会话隔离的盘符映射。
+ * 名称不使用前导点：<source>-openwebcode-<sessionId>。
+ */
+export function managedVhdxMountPoint(originCwd: string, sessionId: string): string {
+  if (!/^[A-Za-z0-9-]+$/.test(sessionId)) throw new Error("Invalid managed workspace session id");
+  const origin = path.resolve(originCwd);
+  const parent = path.dirname(origin);
+  const base = (path.basename(origin) || "workspace").replaceAll(".", "-");
+  return path.join(parent, `${base}-openwebcode-${sessionId}`);
 }
 
 /** 能力检测：win32 → VHDX（Hyper-V PS 模块 + 当前进程 Hyper-V 访问权）；linux → qcow2（qemu-img + qemu-nbd + 免密 sudo）。REST 与创建流程共用。 */
@@ -309,6 +324,7 @@ export class ManagedDiskBackend implements SnapshotBackend {
     return {
       active: { file: path.join(this.workspaceRoot, `base.${this.kind}`), parentFile: null },
       ...(this.kind === "qcow2" ? { device: "/dev/nbd0" } : {}),
+      mountPoint: this.mountPoint,
       checkpoints: [],
     };
   }
@@ -430,10 +446,21 @@ export class ManagedWorkspaceManager implements ManagedWorkspaceLike {
 
   /** 建 20GB 稀疏基盘 → 格式化挂载 → 复制源 cwd 内容（排除 node_modules/.owc/.openwebcode）。失败清理半成品。 */
   async provision(input: ManagedProvisionInput): Promise<ManagedProvisionResult> {
-    const { workspaceRoot, mountPoint } = managedWorkspacePaths(this.dataDir, input.sessionId);
+    const derived = managedWorkspacePaths(this.dataDir, input.sessionId);
+    const workspaceRoot = derived.workspaceRoot;
+    const mountPoint = input.backend === "vhdx" && this.platform === "win32"
+      ? managedVhdxMountPoint(input.originCwd, input.sessionId)
+      : derived.mountPoint;
     const image = path.join(workspaceRoot, `base.${input.backend}`);
     await mkdir(workspaceRoot, { recursive: true });
-    await mkdir(mountPoint, { recursive: true });
+    // Sibling VHDX paths are external to dataDir: require a brand-new empty
+    // directory so failure cleanup can never remove a pre-existing user path.
+    try {
+      await mkdir(mountPoint, { recursive: !(input.backend === "vhdx" && this.platform === "win32") });
+    } catch (error) {
+      await rm(workspaceRoot, { recursive: true, force: true }).catch(() => undefined);
+      throw error;
+    }
     try {
       if (input.backend === "vhdx") await this.provisionVhdx(image, mountPoint);
       else await this.provisionQcow2(image, mountPoint);
@@ -445,9 +472,15 @@ export class ManagedWorkspaceManager implements ManagedWorkspaceLike {
       await createManagedWorkspaceSyncBaseline({ sessionId: input.sessionId, workspaceRoot, mountPoint, originCwd: input.originCwd });
       return { backend: input.backend, image, mountPoint };
     } catch (error) {
-      await this.unmountBestEffort(input.sessionId).catch(() => undefined);
+      await this.unmountBestEffort(input.sessionId, {
+        mode: "managed",
+        backend: input.backend,
+        originCwd: path.resolve(input.originCwd),
+        image,
+        mountPoint,
+      }).catch(() => undefined);
       await rm(workspaceRoot, { recursive: true, force: true }).catch(() => undefined);
-      await rm(mountPoint, { recursive: true, force: true }).catch(() => undefined);
+      await rmdir(mountPoint).catch(() => undefined);
       throw error;
     }
   }
@@ -458,8 +491,12 @@ export class ManagedWorkspaceManager implements ManagedWorkspaceLike {
     if (!await this.unmountBestEffort(session.id, session.workspace)) {
       throw new Error("无法卸载托管工作区镜像；为保留恢复信息，未删除会话或磁盘文件");
     }
+    // A dismounted managed access path must be empty. Never recursively remove
+    // a path beside the user's project if that invariant has been violated.
+    await rmdir(session.workspace?.mountPoint ?? mountPoint).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOENT") throw error;
+    });
     await rm(workspaceRoot, { recursive: true, force: true });
-    await rm(session.workspace?.mountPoint ?? mountPoint, { recursive: true, force: true });
   }
 
   /**
@@ -469,12 +506,10 @@ export class ManagedWorkspaceManager implements ManagedWorkspaceLike {
    */
   async sweepOrphans(): Promise<void> {
     const mntRoot = path.join(this.dataDir, "mnt");
-    let entries;
+    let entries: Dirent[] = [];
     try {
       entries = await readdir(mntRoot, { withFileTypes: true });
-    } catch {
-      return;
-    }
+    } catch { /* sibling VHDX mounts are scanned below even without dataDir/mnt */ }
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       const id = entry.name;
@@ -486,11 +521,51 @@ export class ManagedWorkspaceManager implements ManagedWorkspaceLike {
         await rmdir(path.join(mntRoot, id)).catch(() => undefined);
       } catch { /* 继续下一个 */ }
     }
+    if (this.platform === "win32") await this.sweepSiblingVhdxOrphans();
+  }
+
+  /**
+   * New VHDX mounts live beside the source project rather than under dataDir/mnt.
+   * chain.json records that path so a missing session meta can still be safely
+   * dismounted. Only the exact generated basename is accepted, and cleanup uses
+   * rmdir after dismount (never recursive deletion of a recorded external path).
+   */
+  private async sweepSiblingVhdxOrphans(): Promise<void> {
+    const workspacesRoot = path.join(this.dataDir, "workspaces");
+    let entries: Dirent[];
+    try {
+      entries = await readdir(workspacesRoot, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const id = entry.name;
+      if (existsSync(path.join(this.dataDir, "sessions", id, "meta.json"))) continue;
+      const workspaceRoot = path.join(workspacesRoot, id);
+      try {
+        const state = JSON.parse(await readFile(path.join(workspaceRoot, "chain.json"), "utf8")) as ChainState;
+        if (typeof state.mountPoint !== "string" || !path.isAbsolute(state.mountPoint)) continue;
+        const suffix = `-openwebcode-${id}`;
+        const mountName = path.basename(state.mountPoint);
+        if (!mountName.endsWith(suffix) || mountName.length <= suffix.length) continue;
+        if (await this.detectImageBackend(workspaceRoot) !== "vhdx") continue;
+        const image = await this.activeImage(workspaceRoot, "vhdx") ?? path.join(workspaceRoot, "base.vhdx");
+        const unmounted = await this.unmountBestEffort(id, {
+          mode: "managed",
+          backend: "vhdx",
+          originCwd: path.dirname(state.mountPoint),
+          image,
+          mountPoint: state.mountPoint,
+        });
+        if (unmounted) await rmdir(state.mountPoint).catch(() => undefined);
+      } catch { /* 继续下一个 */ }
+    }
   }
 
   private async provisionVhdx(image: string, mountPoint: string): Promise<void> {
     await runScript(this.runner, "new-base", ["-Image", image, "-MountPoint", mountPoint, "-SizeBytes", String(MANAGED_IMAGE_SIZE_BYTES)]);
-    await this.writeInitialState(image, undefined);
+    await this.writeInitialState(image, undefined, mountPoint);
   }
 
   private async provisionQcow2(image: string, mountPoint: string): Promise<void> {
@@ -511,7 +586,7 @@ export class ManagedWorkspaceManager implements ManagedWorkspaceLike {
       ensureOk("mkfs.ext4", await this.runner.run("sudo", ["mkfs.ext4", device], { timeoutMs: 600_000 }));
       ensureOk("mount", await this.runner.run("sudo", ["mount", device, mountPoint], { timeoutMs: 60_000 }));
       mounted = true;
-      await this.writeInitialState(image, device);
+      await this.writeInitialState(image, device, mountPoint);
     } catch (error) {
       if (mounted) await this.runner.run("sudo", ["umount", mountPoint]).catch(() => undefined);
       if (device) await this.runner.run("sudo", ["qemu-nbd", "-d", device]).catch(() => undefined);
@@ -519,10 +594,11 @@ export class ManagedWorkspaceManager implements ManagedWorkspaceLike {
     }
   }
 
-  private async writeInitialState(image: string, device: string | undefined): Promise<void> {
+  private async writeInitialState(image: string, device: string | undefined, mountPoint?: string): Promise<void> {
     const state: ChainState = {
       active: { file: image, parentFile: null },
       ...(device === undefined ? {} : { device }),
+      ...(mountPoint === undefined ? {} : { mountPoint }),
       checkpoints: [],
     };
     await writeUtf8Atomically(path.join(path.dirname(image), "chain.json"), `${JSON.stringify(state, null, 2)}\n`);
@@ -595,7 +671,9 @@ export class ManagedWorkspaceManager implements ManagedWorkspaceLike {
     if (!workspace || workspace.mode !== "managed") throw new ManagedWorkspaceSyncError("unsafe_path", "Session does not use a managed workspace");
     const derived = managedWorkspacePaths(this.dataDir, session.id);
     const workspaceRoot = path.resolve(derived.workspaceRoot);
-    const mountPoint = path.resolve(derived.mountPoint);
+    const mountPoint = path.resolve(workspace.backend === "vhdx" && this.platform === "win32"
+      ? managedVhdxMountPoint(workspace.originCwd, session.id)
+      : derived.mountPoint);
     if (path.resolve(workspace.mountPoint) !== mountPoint) throw new ManagedWorkspaceSyncError("unsafe_path", "Managed workspace metadata mount point does not match this server");
     if (!existsSync(path.join(workspaceRoot, `base.${workspace.backend}`))) throw new ManagedWorkspaceSyncError("unsafe_path", "Managed workspace image is not owned by this server");
     return { sessionId: session.id, workspaceRoot, mountPoint, originCwd: workspace.originCwd };

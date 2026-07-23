@@ -76,7 +76,7 @@ Anthropic 显式 `cache_control` 断点（系统提示词后、驱逐边界后�
 
 「允许一次」只恢复当前这一项工具调用，不写权限规则；「总是允许」需要二次确认，并把当前工具及参数规则保存到会话。两者都会先完成批准接口响应，再开始工具执行，避免浏览器等待审批响应时被长命令拖住。
 
-Windows 默认 AppContainer 会话使用 `cmd.exe`。如果批准后立即出现“不是内部或外部命令”，通常是模型生成了 PowerShell/POSIX 语法；改用 `dir`、`type`、`where` 等 cmd 命令，或显式调用已安装的 shell。
+Windows 默认 AppContainer 会话使用 `cmd.exe`。如果批准后立即出现“不是内部或外部命令”，通常是模型生成了 PowerShell/POSIX 语法；可在会话头部把命令后端切到 `PowerShell 7`（需安装 `pwsh`），或改用 `dir`、`type`、`where` 等 cmd 命令。
 
 ### Q: yolo 了还会被沙盒拦吗？
 
@@ -132,7 +132,7 @@ provider2 是快速廉价的辅助模型，做压缩/标题生成/翻译等旁�
 
 ### Q: 托管工作区是什么？什么时候用？
 
-项目活在 VHDX（Windows）/ qcow2（Linux）稀疏镜像盘挂载点上，快照走差分链——毫秒级、可再分支。适合：
+项目活在 VHDX（Windows）/ qcow2（Linux）稀疏镜像盘挂载点上，快照走差分链——毫秒级、可再分支。Windows 的 VHDX 以不含点号的目录名挂载在源工作目录旁边（例如 `work-openwebcode-<会话ID>`），镜像文件和链状态仍保存在 OpenWebCode 私有数据目录。适合：
 
 - 频繁回滚、想分支试验
 - 不可信代码（配合 WSB 或容器）

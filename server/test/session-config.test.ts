@@ -46,10 +46,12 @@ describe("session model config", () => {
       expect(await sessions.get(session.id)).toMatchObject({ model: "deepseek-reasoner", thinking: "enabled" });
       const invalidSnapshot = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { snapshotMode: "sometimes" } });
       expect(invalidSnapshot.statusCode).toBe(400);
-      const modes = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { sandboxMode: "off", snapshotMode: "manual" } });
+      const invalidShell = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { shellBackend: "powershell" } });
+      expect(invalidShell.statusCode).toBe(400);
+      const modes = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { sandboxMode: "off", snapshotMode: "manual", shellBackend: "pwsh" } });
       expect(modes.statusCode).toBe(200);
-      expect(modes.json()).toMatchObject({ sandboxMode: "off", snapshotMode: "manual" });
-      expect(await sessions.get(session.id)).toMatchObject({ sandboxMode: "off", snapshotMode: "manual" });
+      expect(modes.json()).toMatchObject({ sandboxMode: "off", snapshotMode: "manual", shellBackend: "pwsh" });
+      expect(await sessions.get(session.id)).toMatchObject({ sandboxMode: "off", snapshotMode: "manual", shellBackend: "pwsh" });
       const first = await sessions.appendMessage(session.id, "user", [{ type: "text", text: "timeline" }]);
       const second = await sessions.appendMessage(session.id, "assistant", [{ type: "text", text: "node" }], { runId: "run-test", turnId: "run-test:0" });
       const timeline = await app.inject({ method: "GET", url: `/api/sessions/${session.id}/timeline` });

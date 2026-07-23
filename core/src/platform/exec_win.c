@@ -6,6 +6,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+static volatile LONG sandbox_run_counter = 0;
+
 static wchar_t *utf8_to_wide(const char *value) {
     int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value, -1, NULL, 0);
     wchar_t *wide;
@@ -64,14 +66,18 @@ static void drain_pipe(HANDLE pipe, const char *stream, const owc_exec_request *
     }
 }
 
-static int select_shell(wchar_t *path, size_t count, int prefer_powershell,
+static int select_shell(wchar_t *path, size_t count, int shell_backend, int sandbox_enabled,
                         int *powershell) {
     DWORD length;
-    if (prefer_powershell) {
+    if (shell_backend == (int)OWC_SHELL_PWSH || !sandbox_enabled) {
         length = SearchPathW(NULL, L"pwsh.exe", NULL, (DWORD)count, path, NULL);
         if (length > 0 && length < count) {
             *powershell = 1;
             return 1;
+        }
+        if (shell_backend == (int)OWC_SHELL_PWSH) {
+            SetLastError(ERROR_FILE_NOT_FOUND);
+            return 0;
         }
     }
     length = GetSystemDirectoryW(path, (UINT)count);
@@ -81,6 +87,10 @@ static int select_shell(wchar_t *path, size_t count, int prefer_powershell,
     return 1;
 }
 
+/* AppContainer access is granted to the workspace and, for an elevated host,
+ * as traverse-only ACEs on its ancestors. Keep process creation on the host
+ * token: mixing a linked medium token with SECURITY_CAPABILITIES can leave
+ * shells stalled during initialization on split-token Windows accounts. */
 int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *result) {
     SECURITY_ATTRIBUTES security={sizeof(security),NULL,TRUE};
     HANDLE out_read=NULL,out_write=NULL,err_read=NULL,err_write=NULL,input=NULL,job=NULL;
@@ -91,6 +101,7 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
     SIZE_T attribute_size=0;
     wchar_t *cwd=NULL,*command=NULL; wchar_t shell_path[MAX_PATH]; char *full_command=NULL;
     owc_sandbox *sandbox=NULL; owc_sandbox_options sandbox_options={0};
+    char sandbox_identity[96];
     char *write_roots[17]={0}; size_t write_root_count=0,write_root_index;
     ULONGLONG started=GetTickCount64(); size_t forwarded=0; unsigned sequence=0;
     DWORD wait_result,exit_code=1; int ok=0,powershell=0;
@@ -103,13 +114,14 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
     {
         int command_length;
         const char *arguments;
-        if(!select_shell(shell_path,ARRAYSIZE(shell_path),!request->sandbox_enabled,&powershell)) goto cleanup;
+        if(!select_shell(shell_path,ARRAYSIZE(shell_path),request->shell_backend,request->sandbox_enabled,&powershell)){if(request->shell_backend==(int)OWC_SHELL_PWSH)result->shell_unavailable=1;goto cleanup;}
         arguments=powershell?"-NoLogo -NoProfile -NonInteractive -Command":"/d /s /c";
-        command_length=snprintf(NULL,0,"\"%ls\" %s \"%s\"",shell_path,arguments,request->command);
+        command_length=powershell?snprintf(NULL,0,"\"%ls\" %s %s",shell_path,arguments,request->command):snprintf(NULL,0,"\"%ls\" %s \"%s\"",shell_path,arguments,request->command);
         if(command_length<0) goto cleanup;
         full_command=(char *)malloc((size_t)command_length+1);
         if(!full_command) goto cleanup;
-        (void)snprintf(full_command,(size_t)command_length+1,"\"%ls\" %s \"%s\"",shell_path,arguments,request->command);
+        if(powershell)(void)snprintf(full_command,(size_t)command_length+1,"\"%ls\" %s %s",shell_path,arguments,request->command);
+        else (void)snprintf(full_command,(size_t)command_length+1,"\"%ls\" %s \"%s\"",shell_path,arguments,request->command);
     }
     if(!cwd) goto cleanup;
     command=utf8_to_wide(full_command); if(!command) goto cleanup;
@@ -117,7 +129,11 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
     startup.StartupInfo.cb=sizeof(startup); startup.StartupInfo.dwFlags=STARTF_USESTDHANDLES;
     startup.StartupInfo.hStdOutput=out_write; startup.StartupInfo.hStdError=err_write; startup.StartupInfo.hStdInput=input;
     inherited[0]=out_write; inherited[1]=err_write; inherited[2]=input;
-    sandbox_options.session_id=request->session_id; sandbox_options.allow_network=request->allow_network;
+    (void)snprintf(sandbox_identity,sizeof(sandbox_identity),"Run.%lu.%llu.%ld",
+                   (unsigned long)GetCurrentProcessId(),
+                   (unsigned long long)GetTickCount64(),
+                   (long)InterlockedIncrement(&sandbox_run_counter));
+    sandbox_options.session_id=sandbox_identity; sandbox_options.allow_network=request->allow_network;
     if(request->allow_path_count>16||!add_write_root(write_roots,&write_root_count,ARRAYSIZE(write_roots),request->cwd))goto cleanup;
     for(write_root_index=0;write_root_index<request->allow_path_count;write_root_index++)
         if(!add_write_root(write_roots,&write_root_count,ARRAYSIZE(write_roots),request->allow_paths[write_root_index]))goto cleanup;
@@ -139,7 +155,9 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
     if(!UpdateProcThreadAttribute(attributes,0,PROC_THREAD_ATTRIBUTE_HANDLE_LIST,inherited,sizeof(inherited),NULL,NULL)) goto cleanup;
     if(sandbox&&!owc_sandbox_add_process_attribute(sandbox,attributes,result->sandbox_reason,sizeof(result->sandbox_reason))){result->sandbox_status=(int)OWC_SANDBOX_PARTIAL;goto cleanup;}
 
-    if(!CreateProcessW(shell_path,command,NULL,NULL,TRUE,CREATE_NO_WINDOW|CREATE_SUSPENDED|EXTENDED_STARTUPINFO_PRESENT,NULL,cwd,&startup.StartupInfo,&process)) {
+    if(!CreateProcessW(shell_path,command,NULL,NULL,TRUE,
+                       CREATE_NO_WINDOW|CREATE_SUSPENDED|EXTENDED_STARTUPINFO_PRESENT,
+                       NULL,cwd,&startup.StartupInfo,&process)) {
         DWORD appcontainer_error=GetLastError();
         if(!sandbox) goto cleanup;
         owc_sandbox_destroy(sandbox);sandbox=NULL;result->sandbox_status=(int)OWC_SANDBOX_PARTIAL;

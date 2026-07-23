@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { SandboxPolicy } from "./sessions/types.js";
+import type { SandboxPolicy, ShellBackend } from "./sessions/types.js";
 import { StdioTransport, type RpcTransport } from "./rpc/transport.js";
 
 interface RpcErrorBody {
@@ -32,6 +32,7 @@ export interface ExecRequest {
   cmd: string;
   cwd: string;
   timeoutMs?: number;
+  shellBackend?: ShellBackend;
 }
 
 export interface ExecResult {
@@ -59,8 +60,8 @@ export interface FsScanResult { entries: Array<{ path: string; type: "file" | "d
 export interface FsWatchRequest extends FsPathRequest { recursive?: boolean }
 export interface FsWatchPollRequest { sessionId: string; watchId: number; limit?: number }
 export interface FsWatchPollResult { events: Array<{ path: string; kind: "created" | "changed" | "deleted" | "renamed" }>; overflow: boolean }
-export interface JobStartRequest { sessionId: string; jobId: string; kind: "exec"; cmd: string; cwd: string; timeoutMs?: number }
-export interface JobStatus { jobId: string; state: "running" | "completed" | "failed" | "cancelled" | "timed_out"; exitCode?: number; durationMs?: number; truncated?: boolean }
+export interface JobStartRequest { sessionId: string; jobId: string; kind: "exec"; cmd: string; cwd: string; timeoutMs?: number; shellBackend?: ShellBackend }
+export interface JobStatus { jobId: string; state: "running" | "completed" | "failed" | "cancelled" | "timed_out"; exitCode?: number; durationMs?: number; truncated?: boolean; error?: string }
 export interface JobOutputRequest { sessionId: string; jobId: string; afterSeq: number; limit?: number }
 export interface JobOutputResult { chunks: Array<{ seq: number; stream: "stdout" | "stderr"; data: string }>; nextSeq: number; truncated: boolean }
 export interface FsReadResult { content: string; totalLines: number; encoding: "utf-8"; truncated: boolean }

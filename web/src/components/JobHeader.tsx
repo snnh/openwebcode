@@ -1,6 +1,6 @@
 import { useState, type ReactElement } from "react";
 import { useQuery } from "@tanstack/react-query";
-import type { SessionDetail, BackgroundTaskInfo, SandboxMode, SnapshotMode } from "../lib/contracts";
+import type { SessionDetail, BackgroundTaskInfo, SandboxMode, ShellBackend, SnapshotMode } from "../lib/contracts";
 import { api } from "../lib/api";
 import { formatTokensShort } from "../lib/format";
 import { Icon } from "./Icon";
@@ -140,6 +140,19 @@ export function JobHeader({ session, agentState, costSummary, onAbort, onConfig,
                 {t(...SANDBOX_LABELS[mode])}
               </option>
             ))}
+          </select>
+        </label>
+        <label className="mode-switch shell-backend-switch" title={t("选择当前会话命令使用的解释器", "Choose the command shell for this session")}>
+          <Icon name="terminal" size={11} />
+          <span>Shell</span>
+          <select
+            aria-label={t("Shell 后端", "Shell backend")}
+            value={session.shellBackend ?? "default"}
+            disabled={busy || configPending}
+            onChange={(event) => updateMode({ shellBackend: event.target.value as ShellBackend })}
+          >
+            <option value="default">{t("默认", "Default")}</option>
+            <option value="pwsh">PowerShell 7</option>
           </select>
         </label>
         <label className="mode-switch snapshot-mode-switch" title={t("自动模式会在每轮用户消息前创建检查点", "Automatic mode creates a checkpoint before each user turn")}>
