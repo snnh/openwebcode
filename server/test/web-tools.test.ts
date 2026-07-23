@@ -116,7 +116,7 @@ describe("search providers", () => {
 });
 
 describe("web fetch providers", () => {
-  it("requires an explicit provider and supports Jina or a URL-template reader", async () => {
+  it("requires an explicit provider and supports Jina, Tavily, or a URL-template reader", async () => {
     expect(createProfileWebFetchProvider(undefined)).toBeUndefined();
     expect(createProfileWebFetchProvider({ id: "custom", provider: "custom", capabilities: ["fetch"] })).toBeUndefined();
     expect(createProfileWebFetchProvider({ id: "custom", provider: "custom", capabilities: ["fetch"], fetchBaseURL: "https://reader.test/fetch" })).toBeUndefined();
@@ -125,6 +125,28 @@ describe("web fetch providers", () => {
     await expect(jina.fetchUrl("https://example.com/article")).resolves.toMatchObject({ url: "https://example.com/article", text: "reader result" });
     expect(String(fetchImpl.mock.calls[0]?.[0])).toBe("https://r.jina.ai/https://example.com/article");
     expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({ headers: expect.objectContaining({ Authorization: "Bearer key" }) });
+
+    const tavilyFetch = vi.fn(async () => Response.json({
+      results: [{ url: "https://example.com/article", raw_content: "# Tavily result" }],
+      failed_results: [],
+    })) as typeof fetch;
+    const tavily = createProfileWebFetchProvider({ id: "tavily", provider: "tavily", capabilities: ["search", "fetch"], apiKey: "tvly-secret" }, tavilyFetch)!;
+    await expect(tavily.fetchUrl("https://example.com/article")).resolves.toMatchObject({
+      url: "https://example.com/article",
+      finalUrl: "https://example.com/article",
+      contentType: "text/markdown; charset=utf-8",
+      text: "# Tavily result",
+    });
+    expect(tavilyFetch.mock.calls[0]?.[0]).toBe("https://api.tavily.com/extract");
+    expect(tavilyFetch.mock.calls[0]?.[1]).toMatchObject({
+      method: "POST",
+      headers: { Authorization: "Bearer tvly-secret", "Content-Type": "application/json" },
+    });
+    expect(JSON.parse(String(tavilyFetch.mock.calls[0]?.[1]?.body))).toMatchObject({
+      urls: "https://example.com/article",
+      extract_depth: "basic",
+      format: "markdown",
+    });
 
     const customFetch = vi.fn(async () => textResponse("custom result")) as typeof fetch;
     const custom = createProfileWebFetchProvider({ id: "custom", provider: "custom", capabilities: ["fetch"], fetchBaseURL: "https://reader.test/fetch?url={url}" }, customFetch)!;

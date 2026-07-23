@@ -282,7 +282,7 @@ export interface SettingsField {
   key: string;
   label: string;
   type: SettingFieldType;
-  options?: string[];
+  options?: Array<{ value: string; label: string }>;
   value: SettingValue | null;
   hasValue: boolean;
   masked?: string;

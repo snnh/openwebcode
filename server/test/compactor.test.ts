@@ -9,7 +9,7 @@ import { ContextManager } from "../src/context/context-manager.js";
 import type { CoreClient } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
-import type { Provider2Client } from "../src/provider2.js";
+import type { FastModelClient } from "../src/fast-model.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { UsageLog } from "../src/usage-log.js";
@@ -23,19 +23,20 @@ async function tempDir(): Promise<string> {
   return root;
 }
 
-function fakeProvider2(text: string, calls: Array<{ system: string; prompt: string }>): Provider2Client {
+function fakeFastModel(text: string, calls: Array<{ system: string; prompt: string }>): FastModelClient {
   return {
     configured: true,
+    provider: "fast-provider",
     model: "fake-cheap-model",
     setConfig() { /* noop */ },
     async complete(input: { system: string; prompt: string }) {
       calls.push(input);
       return { text, usage: { inputTokens: 120, outputTokens: 30 } };
     },
-  } as unknown as Provider2Client;
+  } as unknown as FastModelClient;
 }
 
-const EMPTY_PROVIDER2 = { configured: false, model: undefined, setConfig() { /* noop */ } } as unknown as Provider2Client;
+const EMPTY_FAST_MODEL = { configured: false, provider: undefined, model: undefined, setConfig() { /* noop */ } } as unknown as FastModelClient;
 
 async function sessionWithMessages(store: SessionStore, count: number): Promise<string> {
   const session = await store.create({ cwd: os.tmpdir(), provider: "test-stub", title: "压缩样例" });
@@ -61,7 +62,7 @@ describe("Compactor", () => {
     const id = await sessionWithMessages(store, 10);
     await new ContextManager(store.contextRoot(id)).markCleared(5);
     const calls: Array<{ system: string; prompt: string }> = [];
-    const compactor = new Compactor(store, fakeProvider2("目标：\n- 新上下文", calls), {}, 2);
+    const compactor = new Compactor(store, fakeFastModel("目标：\n- 新上下文", calls), {}, 2);
     await compactor.compact(id, "overview");
     expect(calls[0]!.prompt).not.toContain("消息 1\n");
     expect(calls[0]!.prompt).toContain("消息 6");
@@ -74,7 +75,7 @@ describe("Compactor", () => {
     const id = await sessionWithMessages(store, 15);
     const calls: Array<{ system: string; prompt: string }> = [];
     const usageLog = new UsageLog(root);
-    const compactor = new Compactor(store, fakeProvider2("目标：\n- 测试\n用户明确指令：\n- 用中文\n", calls), { usageLog }, 10);
+    const compactor = new Compactor(store, fakeFastModel("目标：\n- 测试\n用户明确指令：\n- 用中文\n", calls), { usageLog }, 10);
 
     const result = await compactor.compact(id, "overview");
     expect(result).toMatchObject({ changed: true, mode: "overview", uptoIndex: 5 });
@@ -88,9 +89,9 @@ describe("Compactor", () => {
     expect(view.messages[0]!.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("用户明确指令（跨段累积") });
     expect(view.messages[0]!.content[0]).toMatchObject({ text: expect.stringContaining("- 用中文") });
     expect(view.messages).toHaveLength(1 + 10);
-    // provider2 用量进报表
+    // 快速模型用量按实际服务商/模型进入报表
     const report = await usageLog.report();
-    expect(report.sessions[0]?.providers[0]).toMatchObject({ provider: "provider2", model: "fake-cheap-model", inputTokens: 120 });
+    expect(report.sessions[0]?.providers[0]).toMatchObject({ provider: "fast-provider", model: "fake-cheap-model", inputTokens: 120 });
 
     // 第二次压缩：指令累积且去重
     await store.appendMessage(id, "user", [{ type: "text", text: "消息 16" }]);
@@ -100,7 +101,7 @@ describe("Compactor", () => {
     expect(ledger.compacted?.instructions).toEqual(["用中文"]);
   });
 
-  it("falls back to rule-based toolcalls without provider2; overview requires provider2 unless forced", async () => {
+  it("falls back to rule-based toolcalls without a fast model; overview requires it unless forced", async () => {
     const root = await tempDir();
     const store = new SessionStore(path.join(root, "sessions"));
     await store.initialize();
@@ -113,7 +114,7 @@ describe("Compactor", () => {
     for (let index = 0; index < 15; index += 1) {
       await store.appendMessage(session.id, index % 2 === 0 ? "user" : "assistant", [{ type: "text", text: `消息 ${index + 1}` }]);
     }
-    const compactor = new Compactor(store, EMPTY_PROVIDER2, {}, 10);
+    const compactor = new Compactor(store, EMPTY_FAST_MODEL, {}, 10);
 
     await expect(compactor.compact(session.id, "overview")).rejects.toThrow(/快速模型未配置/);
 
@@ -127,7 +128,7 @@ describe("Compactor", () => {
     expect(again.changed).toBe(false);
   });
 
-  it("forced overview without provider2 degrades to truncated and clears pins", async () => {
+  it("forced overview without a fast model degrades to truncated and clears pins", async () => {
     const root = await tempDir();
     const store = new SessionStore(path.join(root, "sessions"));
     await store.initialize();
@@ -137,7 +138,7 @@ describe("Compactor", () => {
     ledger.entries.push({ messageId: "m", kind: "tool_result", artifactId: "a", state: "restored", createdRound: 0, pinnedUntilRound: 99 });
     await context.save(ledger);
 
-    const compactor = new Compactor(store, EMPTY_PROVIDER2, {}, 10);
+    const compactor = new Compactor(store, EMPTY_FAST_MODEL, {}, 10);
     const result = await compactor.compact(id, "overview", { forced: true });
     expect(result.mode).toBe("truncated");
     expect((await context.load()).entries[0]?.pinnedUntilRound).toBe(0);
@@ -165,7 +166,7 @@ describe("85% watermark forced compaction", () => {
     const published: AppEvent[] = [];
     events.on("event", (event: AppEvent) => published.push(event));
     const core = { on() { return core; }, async configureSession() { return { sandboxCapability: "advisory" }; } } as unknown as CoreClient;
-    const compactor = new Compactor(sessions, fakeProvider2("概览：\n- 早段已压缩\n", []), {}, 2);
+    const compactor = new Compactor(sessions, fakeFastModel("概览：\n- 早段已压缩\n", []), {}, 2);
     const tinyWindow = () => ({ contextWindow: 100, maxOutput: 10, capabilities: { thinking: ["disabled"], effort: [] } }) as never;
     const runner = new AgentRunner(sessions, providers, core, events, pricing, undefined, "zh-CN", 50, tinyWindow, undefined, undefined, undefined, compactor);
     const session = await sessions.create({ cwd: root, provider: "anthropic", model: "tiny" });
@@ -193,7 +194,7 @@ describe("compact HTTP routes", () => {
     const events = new EventBus();
     const core = { on() { return core; } } as unknown as CoreClient;
     const agent = new AgentRunner(sessions, providers, core, events, pricing);
-    const compactor = new Compactor(sessions, EMPTY_PROVIDER2, {}, 3);
+    const compactor = new Compactor(sessions, EMPTY_FAST_MODEL, {}, 3);
     const app = await buildServer({ core, sessions, agent, events, providers, pricing, compactor });
     try {
       const session = await sessions.create({ cwd: os.tmpdir(), title: "HTTP 压缩" });
@@ -212,7 +213,7 @@ describe("compact HTTP routes", () => {
       expect(slash.statusCode).toBe(200);
       expect(slash.json<{ compacted: boolean }>().compacted).toBe(true);
 
-      // 再补 4 条制造可压缩区段，未配置 provider2 的 overview 应 400
+      // 再补 4 条制造可压缩区段，未配置快速模型的 overview 应 400
       for (let index = 0; index < 4; index += 1) {
         await sessions.appendMessage(session.id, "user", [{ type: "text", text: `还有 ${index + 1}` }]);
       }

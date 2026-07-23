@@ -60,7 +60,7 @@
 | `普通文本` | 发给 agent 的任务描述 |
 | `/技能名` | 触发 Skill（项目 `.owc/skills/` 或全局） |
 | `/自定义命令` | 触发自定义斜杠命令（项目 `.owc/commands/` 或全局） |
-| `/compact` | 概览压缩上下文（provider2 做结构化摘要） |
+| `/compact` | 概览压缩上下文（快速模型做结构化摘要） |
 | `/compact tools` | 规则压缩（toolcalls 占位精炼） |
 | `/clear` | 清空当前视图，**保留历史**（JSONL 全量在盘，可回滚） |
 | `@路径` | 引用工作区文件，内容随消息注入（大文件截断 + artifact 指针） |
@@ -73,8 +73,8 @@
 ## 联网工具配置
 
 - Search 与 Fetch 使用同一套「联网服务商」配置。可以保存多个 Jina、Brave、Tavily 或 Custom 配置，每项声明 `search` / `fetch` 能力，再分别选择当前用于 Web Search 和 Web Fetch 的配置。
-- Jina 同时支持 Search 与 Fetch；Brave、Tavily 支持 Search；Custom 可自行声明能力。Custom Fetch URL 必须包含 `{url}` 占位符，Custom Search URL 接收 `q` 与 `count` 查询参数。
-- 未选中具备相应能力的配置时，对应工具不会注入模型。Tavily 的远程 MCP 地址 `https://mcp.tavily.com/mcp/?tavilyApiKey=...` 仍应配置在 `<业务数据目录>/mcp.json`，不是 Search Base URL。
+- Jina 与 Tavily 同时支持 Search 与 Fetch（Tavily Fetch 使用 Extract API）；Brave 仅支持 Search；Custom 可自行声明能力。Custom Fetch URL 必须包含 `{url}` 占位符，Custom Search URL 接收 `q` 与 `count` 查询参数。
+- 未选中具备相应能力的配置时，对应工具不会注入模型。Tavily 的 API Key 由同一个联网服务商配置同时用于 Search 与 Fetch。
 - 联网调用仍遵循会话权限模式；`ask` 下会请求确认，且内网/本地 URL 会被拒绝。
 
 ## 对话内容渲染
@@ -116,6 +116,7 @@
 
 - **模型服务商**：可保存并独立启用多个 Anthropic Messages / OpenAI Chat Completions 接口配置；每个服务商可自动拉取或手动添加自己的模型，同名模型互不覆盖
 - **会话中热切换模型**：统一列表显示为 `模型ID【服务商】`，下轮生效；账本按新窗口重算，模态不兼容的历史内容替换为占位描述
+- **快速模型**：直接从同一统一模型列表中选择，用于上下文压缩与内容透镜；接口、Base URL 和密钥复用所选服务商，可单独设置 thinking、effort 与最大输出上限
 - **思考程度**：支持 thinking 的模型在输入框上方有开关与程度选择器（low/medium/high）
 - **成本报表**：按会话/按日/按 provider，缓存读写分项，双币种（USD/CNY）汇率折算，预算触发暂停
 - **模型定价**：设置 → 模型定价 → 添加条目。价格单位是“每百万 tokens 的元/美元”；输入、输出单价必填，缓存读/写可空（按 `0` 保存），生效日期默认当天并可修改
@@ -164,7 +165,7 @@ owc run "给 main.ts 加个单元测试" --cwd . --json
 
 - `context-manager`：默认启用，负责滚动驱逐策略和上下文管理面板；停用后不会自动逐出工具结果，85% 核心水位安全网仍保留
 - `attention-optimizer`：默认关闭，把关键约束/目标复制到上下文首尾锚区；`bottomOnly` 缓存影响较小，`full` 会增加输入 token
-- `content-lens`：默认关闭；启用且已配置 provider2 后，消息旁出现「译」与「解析选中」，结果只存 `translations/`，不进入 LLM 上下文
+- `content-lens`：默认关闭；启用且已配置快速模型后，消息旁出现「译」与「解析选中」，结果只存 `translations/`，不进入 LLM 上下文
 - `pdf-to-image`：默认启用；通过 Web 选择的 PDF 会先保存到当前工作区 `.owc/uploads/`，再将最多 4 页按 150 DPI、长边最大 2048px 转为图片附件，供支持图片输入的模型读取；停用时 Composer 仅把这个工作区相对路径引用交给主代理处理
 
 第三方扩展目录需包含 `manifest.json`（`apiVersion: "1"`）和 `index.js`，可在设置页输入本地绝对路径安装。v1 扩展是可信代码，安装即信任其声明权限；钩子运行超时 5 秒会跳过并告警。

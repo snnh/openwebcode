@@ -57,7 +57,6 @@ dkms.conf
 
 build/
 build-debug/
-.claude/
 .agents/
 .openwebcode/
 # JavaScript dependencies and generated bundles.  Keep the server entries
@@ -75,3 +74,4 @@ _CPack_Packages/
 /openwebcode-*-linux-x64.tar.gz
 /SHA256SUMS.txt
 /release-assets/
+protocol-upload-*.bin

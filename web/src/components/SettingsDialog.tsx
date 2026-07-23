@@ -47,7 +47,7 @@ const PERMISSION_OPTIONS: Array<{ value: PermissionMode | ""; zh: string; en: st
 
 const SETTINGS_GROUP_EN: Record<string, string> = {
   models: "Model catalog sync",
-  provider2: "Fast model",
+  fastModel: "Fast model",
   general: "Language and currency",
   executor: "Executor",
   service: "Service",
@@ -58,9 +58,10 @@ const SETTINGS_FIELD_EN: Record<string, { label: string; description?: string }>
   catalogSyncUrl: { label: "Remote model catalog URL", description: "Leave empty to disable remote model catalog sync" },
   pricingSyncUrl: { label: "Remote pricing catalog URL", description: "Leave empty to disable remote pricing sync" },
   syncIntervalMinutes: { label: "Remote sync interval (minutes)", description: "0 means manual sync only; a value above 0 enables periodic sync (maximum 35,791 minutes)" },
-  provider2BaseURL: { label: "Fast model Base URL", description: "OpenAI-compatible endpoint for low-latency context compaction; enabled when both endpoint and model are set" },
-  provider2ApiKey: { label: "Fast model API Key" },
-  provider2Model: { label: "Fast model", description: "For example, deepseek-chat or claude-haiku-4-5" },
+  fastModel: { label: "Fast model", description: "Used for context compaction and Content Lens; models come from the unified catalog of enabled providers" },
+  fastModelThinking: { label: "Thinking" },
+  fastModelEffort: { label: "Effort" },
+  fastModelMaxTokens: { label: "Maximum output limit", description: "Hard output-token ceiling for internal tasks; individual tasks may use a smaller limit" },
   defaultLanguage: { label: "Default model language" },
   defaultCurrency: { label: "Default currency" },
   corePath: { label: "Executor path" },
@@ -440,6 +441,7 @@ export function ProviderProfilesSection(): ReactElement {
     queryClient.setQueryData(["provider-profiles"], view);
     void queryClient.invalidateQueries({ queryKey: ["providers"] });
     void queryClient.invalidateQueries({ queryKey: ["models"] });
+    void queryClient.invalidateQueries({ queryKey: ["settings"] });
     setError(undefined);
   };
   const run = (operation: Promise<Awaited<ReturnType<typeof api.providerProfiles>>>, done?: () => void): void => {
@@ -490,7 +492,8 @@ export function ProviderProfilesSection(): ReactElement {
   });
   const normalizedCapabilities = (provider: WebProviderType, selected: WebCapability[]): WebCapability[] => provider === "jina"
     ? ["search", "fetch"]
-    : provider === "brave" || provider === "tavily" ? ["search"] : selected;
+    : provider === "tavily" ? ["search", "fetch"]
+      : provider === "brave" ? ["search"] : selected;
   const saveWebProvider = (): void => {
     const id = webForm.id.trim();
     if (!id) { setError(t("联网服务商名称不能为空", "Web provider name is required")); return; }
@@ -588,7 +591,7 @@ export function ProviderProfilesSection(): ReactElement {
   );
 }
 
-function ServerSettingsSection({ onDirtyChange }: { onDirtyChange?(dirty: boolean): void }): ReactElement {
+export function ServerSettingsSection({ onDirtyChange }: { onDirtyChange?(dirty: boolean): void }): ReactElement {
   const { t, language } = useI18n();
   const queryClient = useQueryClient();
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
@@ -696,8 +699,9 @@ function ServerSettingsSection({ onDirtyChange }: { onDirtyChange?(dirty: boolea
     if (field.type === "select") {
       const value = typeof pending === "string" ? pending : String(field.value ?? "");
       return (
-        <select value={value} disabled={disabled} onChange={(event) => setField(field.key, event.target.value)} aria-label={fieldLabel(field)}>
-          {(field.options ?? []).map((option) => <option key={option} value={option}>{option}</option>)}
+        <select value={resetting ? "" : value} disabled={disabled} onChange={(event) => setField(field.key, event.target.value || (field.nullable ? null : ""))} aria-label={fieldLabel(field)}>
+          {field.nullable && <option value="">{t("不启用", "Disabled")}</option>}
+          {(field.options ?? []).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
         </select>
       );
     }
@@ -735,7 +739,7 @@ function ServerSettingsSection({ onDirtyChange }: { onDirtyChange?(dirty: boolea
         type={field.type === "number" ? "number" : "text"}
         {...(field.type === "number" ? {
           min: field.key === "syncIntervalMinutes" ? 0 : 1,
-          ...(field.key === "syncIntervalMinutes" ? { max: MAX_SYNC_INTERVAL_MINUTES } : {}),
+          ...(field.key === "syncIntervalMinutes" ? { max: MAX_SYNC_INTERVAL_MINUTES } : field.key === "fastModelMaxTokens" ? { max: 64_000 } : {}),
           step: 1,
         } : {})}
         value={resetting ? "" : value}
@@ -833,6 +837,7 @@ export function ModelCatalogSection(): ReactElement {
   const invalidate = (): void => {
     void queryClient.invalidateQueries({ queryKey: ["models"] });
     void queryClient.invalidateQueries({ queryKey: ["model-sync-status"] });
+    void queryClient.invalidateQueries({ queryKey: ["settings"] });
   };
 
   const refresh = (): void => {
