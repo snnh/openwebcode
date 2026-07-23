@@ -4,6 +4,12 @@
 
 ## Unreleased
 
+## [0.3.8] - 2026-07-23
+
+### 修复
+
+- 在托管 CI 中跳过不稳定的冷启动 `pwsh` 集成测试；本地环境仍保留该真实集成覆盖，避免其偶发超时阻断发行。
+
 ## [0.3.7] - 2026-07-23
 
 ### 新增
@@ -168,6 +174,7 @@
 - 支持图片输入、Markdown/代码高亮/KaTeX、折叠思考内容、会话导入导出、可分享的自包含 HTML 页面和 `owc run` Headless CLI。
 - 提供 Windows MSI、Linux tar.gz 安装脚本和 GitHub Actions 发布流水线。
 
+[0.3.8]: https://github.com/snnh/openwebcode/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/snnh/openwebcode/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/snnh/openwebcode/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/snnh/openwebcode/compare/v0.3.4...v0.3.5
