@@ -198,6 +198,10 @@ static int grant_write_roots(owc_sandbox *sandbox,
         }
         free(path);
     }
+    /* The ACL unit-test target exercises write-root grant/cleanup without
+     * editing its elevated runner's system-wide ancestor ACLs. Production is
+     * compiled without this definition and always grants required traversal. */
+#ifndef OWC_SANDBOX_TEST_SKIP_ANCESTORS
     if (process_is_elevated()) {
         for (i = 0; i < options->write_root_count; ++i) {
             if (!grant_ancestor_traverse(sandbox, options->write_roots[i])) {
@@ -207,6 +211,7 @@ static int grant_write_roots(owc_sandbox *sandbox,
             }
         }
     }
+#endif
     return 1;
 }
 
