@@ -138,7 +138,20 @@ static int test_reparse_acl_restore(void) {
                              SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE)) {
         symlink_error = GetLastError();
         if (symlink_error == ERROR_PRIVILEGE_NOT_HELD ||
-            symlink_error == ERROR_INVALID_PARAMETER) goto cleanup;
+            symlink_error == ERROR_ACCESS_DENIED ||
+            symlink_error == ERROR_INVALID_PARAMETER ||
+            symlink_error == ERROR_INVALID_FUNCTION ||
+            symlink_error == ERROR_NOT_SUPPORTED) {
+            (void)fprintf(stderr,
+                          "reparse ACL test skipped: symbolic links unavailable "
+                          "(error=%lu)\n",
+                          (unsigned long)symlink_error);
+            goto cleanup;
+        }
+        (void)fprintf(stderr,
+                      "reparse ACL test could not create symbolic link "
+                      "(error=%lu)\n",
+                      (unsigned long)symlink_error);
         result = 22;
         goto cleanup;
     }
@@ -158,6 +171,8 @@ static int test_reparse_acl_restore(void) {
     options.write_root_count = 1;
     sandbox = owc_sandbox_create(&options, reason, sizeof(reason));
     if (!sandbox) {
+        (void)fprintf(stderr,
+                      "reparse ACL sandbox creation failed: %s\n", reason);
         result = 24;
         goto cleanup;
     }
@@ -199,11 +214,18 @@ int main(void) {
     if (status == OWC_SANDBOX_ENFORCED && strstr(reason, "available") == NULL) return 4;
     {
         int acl_result = test_acl_restore();
-        if (acl_result) return acl_result;
+        if (acl_result) {
+            (void)fprintf(stderr, "ACL restore test failed: %d\n", acl_result);
+            return acl_result;
+        }
     }
     {
         int reparse_result = test_reparse_acl_restore();
-        if (reparse_result) return reparse_result;
+        if (reparse_result) {
+            (void)fprintf(stderr, "reparse ACL restore test failed: %d\n",
+                          reparse_result);
+            return reparse_result;
+        }
     }
 #endif
     (void)printf("status=%s reason=%s\n", name, reason);
