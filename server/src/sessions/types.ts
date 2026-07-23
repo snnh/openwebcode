@@ -62,6 +62,8 @@ export type SandboxBackendMode = "appcontainer" | "jobobject" | "off";
 export type SandboxMode = "appcontainer" | "wsb" | "jobobject" | "off";
 /** 自动 = 每轮用户消息前创建检查点；手动 = 仅由用户显式创建检查点。 */
 export type SnapshotMode = "auto" | "manual";
+/** 命令解释器后端；default 保留平台现有行为，pwsh 强制使用 PowerShell 7。 */
+export type ShellBackend = "default" | "pwsh";
 /** 全局 Job Object 资源限制（仅 Windows；字段缺省时 core 用内置默认值 4096 MB / 64 进程） */
 export interface JobObjectLimits {
   memoryMB?: number;
@@ -100,6 +102,8 @@ export interface SessionMeta {
   snapshotBackend?: string;
   /** 快照创建模式；undefined 为向后兼容的自动模式。 */
   snapshotMode?: SnapshotMode;
+  /** 命令解释器；undefined 为向后兼容的 default。 */
+  shellBackend?: ShellBackend;
   /** 托管工作区：cwd 指向稀疏镜像盘挂载点，originCwd 为创建时的复制来源（plan §6.4） */
   workspace?: ManagedWorkspaceMeta;
   title: string;

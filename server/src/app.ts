@@ -26,7 +26,7 @@ import { getSnapshotBackend } from "./snapshots/index.js";
 import type { ManagedProvisionResult, ManagedWorkspaceLike } from "./snapshots/managed-disk.js";
 import { ManagedWorkspaceSyncError, type ManagedWorkspaceSyncApplyInput } from "./snapshots/managed-sync.js";
 import { SessionTransferError } from "./sessions/session-transfer.js";
-import type { PermissionMode, SandboxMode, SnapshotMode } from "./sessions/types.js";
+import type { PermissionMode, SandboxMode, ShellBackend, SnapshotMode } from "./sessions/types.js";
 import type { SessionStore } from "./sessions/session-store.js";
 import { SettingsValidationError, type SettingsService } from "./settings-service.js";
 import type { SkillRegistry } from "./skills.js";
@@ -74,6 +74,7 @@ interface SessionConfigBody {
   sandboxMode?: SandboxMode;
   setupScript?: string;
   snapshotMode?: SnapshotMode;
+  shellBackend?: ShellBackend;
 }
 
 interface BudgetBody {
@@ -899,6 +900,10 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     if (snapshotMode !== undefined && !["auto", "manual"].includes(snapshotMode)) {
       return reply.code(400).send({ error: 'snapshotMode must be "auto" or "manual"' });
     }
+    const shellBackend = request.body && "shellBackend" in request.body ? request.body.shellBackend ?? undefined : session.shellBackend;
+    if (shellBackend !== undefined && !["default", "pwsh"].includes(shellBackend)) {
+      return reply.code(400).send({ error: 'shellBackend must be "default" or "pwsh"' });
+    }
     const permissionMode = request.body?.permissionMode ?? session.permissionMode ?? "ask";
     if (!["ask", "acceptEdits", "yolo"].includes(permissionMode)) return reply.code(400).send({ error: "permissionMode must be ask, acceptEdits, or yolo" });
     const touchesSandbox = Boolean(request.body && ("sandboxMode" in request.body || "setupScript" in request.body));
@@ -913,7 +918,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       // WSB 的启动脚本和模式只在虚拟机启动时生效，切换前先释放旧实例。
       await core.release?.(session.id);
     }
-    await sessions.updateConfig(request.params.id, { provider, model, ...(thinking ? { thinking } : {}), ...(effort ? { effort } : {}), ...(agentMode ? { agentMode } : {}), ...(snapshotMode ? { snapshotMode } : {}) });
+    await sessions.updateConfig(request.params.id, { provider, model, ...(thinking ? { thinking } : {}), ...(effort ? { effort } : {}), ...(agentMode ? { agentMode } : {}), ...(snapshotMode ? { snapshotMode } : {}), ...(shellBackend ? { shellBackend } : {}) });
     let updated = await sessions.updatePermissions(request.params.id, permissionMode, session.permissionRules ?? []);
     if (touchesSandbox) {
       updated = await sessions.updateSandboxMode(request.params.id, request.body?.sandboxMode, request.body?.setupScript);

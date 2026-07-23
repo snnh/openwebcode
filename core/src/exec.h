@@ -14,6 +14,11 @@ typedef void (*owc_exec_output_fn)(void *user_data, const char *stream,
 #define OWC_JOB_DEFAULT_MEMORY_MB 4096ul
 #define OWC_JOB_DEFAULT_MAX_PROCESSES 64ul
 
+typedef enum {
+    OWC_SHELL_DEFAULT = 0,
+    OWC_SHELL_PWSH = 1
+} owc_shell_backend;
+
 typedef struct {
     const char *command;
     const char *cwd;
@@ -21,6 +26,7 @@ typedef struct {
     int sandbox_enabled;
     int allow_network;
     int sandbox_mode; /* owc_sandbox_mode; only meaningful when sandbox_enabled */
+    int shell_backend; /* owc_shell_backend */
     /* Additional configured AppContainer write roots. The platform layer adds
        cwd, normalizes the combined list, and removes duplicates. */
     const char *const *allow_paths;
@@ -44,6 +50,7 @@ typedef struct {
     int timed_out;
     int cancelled;
     unsigned long system_error;
+    int shell_unavailable;
     int sandbox_status;
     char sandbox_reason[192];
 } owc_exec_result;

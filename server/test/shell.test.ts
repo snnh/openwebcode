@@ -6,7 +6,7 @@ import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
-import type { CoreClientLike, CoreEvent, CoreInfo, ExecResult } from "../src/core-client.js";
+import type { CoreClientLike, CoreEvent, CoreInfo, ExecRequest, ExecResult } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
@@ -42,13 +42,13 @@ function createControllableCore(): {
   release: (result: ExecResult) => void;
   rejectRun: (error: Error) => void;
   emitExecOutput: (data: string, stream?: string) => void;
-  runCalls: Array<{ sessionId: string; execId: string; cmd: string; cwd: string }>;
+  runCalls: ExecRequest[];
 } {
   let runResolve: ((result: ExecResult) => void) | undefined;
   let runReject: ((error: Error) => void) | undefined;
   let eventListener: ((event: CoreEvent) => void) | undefined;
   const emitter = new EventEmitter();
-  const runCalls: Array<{ sessionId: string; execId: string; cmd: string; cwd: string }> = [];
+  const runCalls: ExecRequest[] = [];
   const client: CoreClientLike = {
     on(eventName: string, listener: (...args: unknown[]) => void) {
       if (eventName === "event") eventListener = listener as (event: CoreEvent) => void;
@@ -61,7 +61,7 @@ function createControllableCore(): {
     },
     async configureSession() { return { sandboxCapability: "advisory" as const }; },
     async run(request) {
-      runCalls.push({ sessionId: request.sessionId, execId: request.execId, cmd: request.cmd, cwd: request.cwd });
+      runCalls.push({ ...request });
       return new Promise<ExecResult>((resolve, reject) => { runResolve = resolve; runReject = reject; });
     },
     async ping() { return FAKE_CORE_INFO; },
@@ -128,6 +128,7 @@ describe("POST /api/sessions/:id/shell - yolo 执行", () => {
   it("落盘 user(!cmd) + tool_result 一对；core.run 收到 cmd；agent.isRunning 全程 false", async () => {
     const harness = await setup();
     try {
+      await harness.sessions.updateConfig(harness.session.id, { provider: harness.session.provider, model: harness.session.model, shellBackend: "pwsh" });
       const isRunningSnapshots: boolean[] = [];
       harness.events.on("event", (event: AppEvent) => {
         if (event.type === "tool.start") isRunningSnapshots.push(harness.agent.isRunning(harness.session.id));
@@ -140,7 +141,7 @@ describe("POST /api/sessions/:id/shell - yolo 执行", () => {
       expect(res.statusCode, res.body).toBe(202);
       // yolo 直接执行：core.run 已被调用但挂起，release 驱动完成
       await vi.waitFor(() => expect(harness.core.runCalls.length).toBe(1));
-      expect(harness.core.runCalls[0]).toMatchObject({ cmd: "echo hello", cwd: harness.session.cwd });
+      expect(harness.core.runCalls[0]).toMatchObject({ cmd: "echo hello", cwd: harness.session.cwd, shellBackend: "pwsh" });
       harness.core.emitExecOutput("hello world\n");
       harness.core.release({ exitCode: 0, durationMs: 1, truncated: false });
       await waitForToolMessage(harness.sessions, harness.session.id);

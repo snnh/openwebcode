@@ -100,11 +100,8 @@ def assert_landlock_filesystem_isolation_if_enforced(proc):
 def main():
     executable = sys.argv[1]
     environment = os.environ.copy()
-    if os.name == "nt":
-        # Keep the protocol smoke test on cmd.exe. PowerShell itself has a
-        # separate integration surface and hosted runners can retain it past
-        # the command timeout, which is not relevant to this basic channel.
-        environment["PATH"] = os.pathsep.join(item for item in environment.get("PATH", "").split(os.pathsep) if "powershell" not in item.lower())
+    pwsh_available = shutil.which("pwsh", path=environment.get("PATH")) is not None
+    shell_params = {"shellBackend": "pwsh"} if pwsh_available else {}
     proc = subprocess.Popen([executable], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment)
     binary_name = f"protocol-upload-{os.getpid()}.bin"
     binary_path = os.path.join(os.getcwd(), binary_name)
@@ -112,7 +109,7 @@ def main():
         request(proc, "ping-中文", "core.ping")
         response, notes = collect_until_response(proc, "ping-中文")
         assert not notes
-        assert response["result"]["version"] == "0.3.4"
+        assert response["result"]["version"] == "0.3.5"
         assert response["result"]["sandboxCapability"] in {"advisory", "partial", "enforced"}
         assert response["result"]["sandboxReason"]
         assert response["result"]["protocolVersion"] == "1.0"
@@ -128,19 +125,22 @@ def main():
         response, notes = collect_until_response(proc, None)
         assert not notes
         assert response["id"] is None
-        assert response["result"]["version"] == "0.3.4"
+        assert response["result"]["version"] == "0.3.5"
 
         send(proc, {"jsonrpc": "2.0", "method": "core.ping", "params": {}})
         request(proc, "after-notification", "core.ping")
         response, notes = collect_until_response(proc, "after-notification")
         assert not notes
-        assert response["result"]["version"] == "0.3.4"
+        assert response["result"]["version"] == "0.3.5"
 
         request(proc, 2, "missing.method")
         response, _ = collect_until_response(proc, 2)
         assert response["error"]["code"] == -32601
 
-        if os.name == "nt":
+        if os.name == "nt" and pwsh_available:
+            command = "Write-Output hello; [Console]::Error.WriteLine('error'); exit 7"
+            slow = "Start-Sleep -Seconds 5"
+        elif os.name == "nt":
             command = "echo hello&& echo error 1>&2&& exit /b 7"
             slow = "ping -n 6 127.0.0.1 >nul"
         else:
@@ -173,7 +173,7 @@ def main():
             response, _ = collect_until_response(proc, bad_id)
             assert "error" in response, (allow_paths, response)
 
-        request(proc, 3, "exec.run", {"sessionId": "s1", "execId": "e1", "cmd": command, "cwd": os.getcwd(), "timeoutMs": 5000})
+        request(proc, 3, "exec.run", {"sessionId": "s1", "execId": "e1", "cmd": command, "cwd": os.getcwd(), "timeoutMs": 5000, **shell_params})
         response, notes = collect_until_response(proc, 3)
         assert "result" in response, response
         assert response["result"]["exitCode"] == 7
@@ -181,10 +181,31 @@ def main():
         output = b"".join(base64.b64decode(n["params"]["data"]) for n in notes)
         assert b"hello" in output and b"error" in output
 
+        request(proc, 301, "exec.run", {"sessionId": "s1", "execId": "bad-shell", "cmd": "echo no", "cwd": os.getcwd(), "shellBackend": "powershell"})
+        response, _ = collect_until_response(proc, 301)
+        assert response.get("error", {}).get("code") == -32602, response
+
+        request(proc, 302, "exec.run", {"sessionId": "s1", "execId": "pwsh", "cmd": "Write-Output pwsh-ok; exit 9", "cwd": os.getcwd(), "timeoutMs": 5000, "shellBackend": "pwsh"})
+        response, notes = collect_until_response(proc, 302)
+        if pwsh_available:
+            assert response.get("result", {}).get("exitCode") == 9, response
+            output = b"".join(base64.b64decode(n["params"]["data"]) for n in notes)
+            assert b"pwsh-ok" in output, output
+        elif os.name == "nt":
+            assert response.get("error", {}).get("message") == "pwsh executable was not found", response
+        else:
+            assert response.get("result", {}).get("exitCode") == 127, response
+            output = b"".join(base64.b64decode(n["params"]["data"]) for n in notes)
+            assert b"pwsh executable was not found" in output, output
+
+        request(proc, 303, "core.ping")
+        response, _ = collect_until_response(proc, 303)
+        assert "result" in response, response
+
         assert_landlock_filesystem_isolation_if_enforced(proc)
 
         started = time.monotonic()
-        request(proc, 4, "exec.run", {"sessionId": "s1", "execId": "e2", "cmd": slow, "cwd": os.getcwd(), "timeoutMs": 100})
+        request(proc, 4, "exec.run", {"sessionId": "s1", "execId": "e2", "cmd": slow, "cwd": os.getcwd(), "timeoutMs": 100, **shell_params})
         response, _ = collect_until_response(proc, 4)
         assert response["error"]["code"] == -32001
         assert time.monotonic() - started < 4
@@ -192,7 +213,7 @@ def main():
         if os.name == "nt":
             # job.start returns immediately; cancellation only targets its own
             # Job Object and leaves the shared Core available for status RPCs.
-            request(proc, 40, "job.start", {"sessionId": "s1", "jobId": "cancel-me", "kind": "exec", "cmd": slow, "cwd": os.getcwd(), "timeoutMs": 5000})
+            request(proc, 40, "job.start", {"sessionId": "s1", "jobId": "cancel-me", "kind": "exec", "cmd": slow, "cwd": os.getcwd(), "timeoutMs": 5000, **shell_params})
             response, _ = collect_until_response(proc, 40)
             assert response["result"] == {"jobId": "cancel-me", "state": "running"}, response
             request(proc, 41, "job.status", {"sessionId": "s1", "jobId": "cancel-me"})
@@ -207,7 +228,8 @@ def main():
                 if response["result"]["state"] != "running": break
                 time.sleep(0.05)
             assert response["result"]["state"] == "cancelled", response
-            request(proc, 44, "job.start", {"sessionId": "s1", "jobId": "output-me", "kind": "exec", "cmd": "echo job-output", "cwd": os.getcwd(), "timeoutMs": 5000})
+            output_command = "Write-Output job-output" if pwsh_available else "echo job-output"
+            request(proc, 44, "job.start", {"sessionId": "s1", "jobId": "output-me", "kind": "exec", "cmd": output_command, "cwd": os.getcwd(), "timeoutMs": 5000, **shell_params})
             response, _ = collect_until_response(proc, 44)
             assert response["result"]["state"] == "running", response
             for _ in range(30):
@@ -219,6 +241,32 @@ def main():
             request(proc, 46, "job.output", {"sessionId": "s1", "jobId": "output-me", "afterSeq": 0})
             response, _ = collect_until_response(proc, 46)
             assert any(b"job-output" in base64.b64decode(chunk["data"]) for chunk in response["result"]["chunks"]), response
+
+            # A just-started quiet job has no output yet. job.output must grow
+            # the JSON suffix buffer even when the chunk loop emits nothing;
+            # this previously corrupted the Windows heap and killed Core.
+            quiet_command = "Start-Sleep -Seconds 3; Write-Output delayed" if pwsh_available else "ping -n 3 127.0.0.1 >nul & echo delayed"
+            request(proc, 49, "job.start", {"sessionId": "s1", "jobId": "quiet-output", "kind": "exec", "cmd": quiet_command, "cwd": os.getcwd(), "timeoutMs": 5000, **shell_params})
+            response, _ = collect_until_response(proc, 49)
+            assert response["result"]["state"] == "running", response
+            request(proc, 50, "job.output", {"sessionId": "s1", "jobId": "quiet-output", "afterSeq": 0})
+            response, _ = collect_until_response(proc, 50)
+            assert response["result"] == {"chunks": [], "nextSeq": 0, "truncated": False}, response
+            request(proc, 51, "job.cancel", {"sessionId": "s1", "jobId": "quiet-output"})
+            response, _ = collect_until_response(proc, 51)
+            assert response["result"]["accepted"] is True, response
+
+            if not pwsh_available:
+                request(proc, 47, "job.start", {"sessionId": "s1", "jobId": "missing-pwsh", "kind": "exec", "cmd": "Write-Output no", "cwd": os.getcwd(), "timeoutMs": 5000, "shellBackend": "pwsh"})
+                response, _ = collect_until_response(proc, 47)
+                assert response["result"]["state"] == "running", response
+                for _ in range(30):
+                    request(proc, 48, "job.status", {"sessionId": "s1", "jobId": "missing-pwsh"})
+                    response, _ = collect_until_response(proc, 48)
+                    if response["result"]["state"] != "running": break
+                    time.sleep(0.05)
+                assert response["result"]["state"] == "failed", response
+                assert response["result"]["error"] == "pwsh executable was not found", response
 
         # jobobject 兼容模式：默认 Job Object 限制在回复中如实上报
         request(proc, 30, "session.configure", {"sessionId": "s2", "cwd": os.getcwd(), "sandbox": {"enabled": True, "mode": "jobobject"}})

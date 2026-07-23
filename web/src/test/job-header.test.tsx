@@ -20,7 +20,7 @@ const session: SessionDetail = {
 afterEach(() => vi.restoreAllMocks());
 
 describe("JobHeader mode switches", () => {
-  it("updates sandbox and snapshot modes while idle", async () => {
+  it("updates sandbox, shell, and snapshot modes while idle", async () => {
     vi.spyOn(api, "tasks").mockResolvedValue([]);
     vi.spyOn(api, "sandboxCapabilities").mockResolvedValue({ appcontainer: true, jobobject: true, off: true, wsb: { available: false, reason: "未启用" } });
     vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -36,6 +36,8 @@ describe("JobHeader mode switches", () => {
     await waitFor(() => expect(api.sandboxCapabilities).toHaveBeenCalled());
     fireEvent.change(screen.getByLabelText("沙盒模式"), { target: { value: "off" } });
     await waitFor(() => expect(onConfig).toHaveBeenCalledWith({ sandboxMode: "off" }));
+    fireEvent.change(screen.getByLabelText("Shell 后端"), { target: { value: "pwsh" } });
+    await waitFor(() => expect(onConfig).toHaveBeenCalledWith({ shellBackend: "pwsh" }));
     fireEvent.change(screen.getByLabelText("快照模式"), { target: { value: "manual" } });
     await waitFor(() => expect(onConfig).toHaveBeenCalledWith({ snapshotMode: "manual" }));
     expect(screen.getByRole("option", { name: "Windows Sandbox" })).toBeDisabled();
@@ -54,6 +56,7 @@ describe("JobHeader mode switches", () => {
 
     expect(screen.getByLabelText("沙盒模式")).toBeDisabled();
     expect(screen.getByLabelText("快照模式")).toBeDisabled();
+    expect(screen.getByLabelText("Shell 后端")).toBeDisabled();
   });
 
   it("offers an explicit manual snapshot action for an idle managed disk workspace", async () => {

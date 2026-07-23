@@ -16,7 +16,7 @@ import {
   ManagedDiskBackend,
   managedDiskScriptPath,
   ManagedWorkspaceManager,
-  managedWorkspacePaths,
+  managedVhdxMountPoint,
   type ManagedProvisionInput,
   type ManagedWorkspaceLike,
 } from "../src/snapshots/managed-disk.js";
@@ -49,8 +49,52 @@ function tableRunner(responses: Record<string, { stdout?: string; code?: number 
 interface TestChainState {
   active: { file: string; parentFile: string | null };
   device?: string;
+  mountPoint?: string;
   checkpoints: Array<{ id: string; label: string; createdAt: string; messageCount: number; file: string; parentFile: string | null }>;
 }
+
+describe("managed VHDX sibling mount path", () => {
+  it("uses a dot-free sibling name derived from the source workspace", () => {
+    const origin = path.join(os.tmpdir(), "project-parent", "work.with.dots");
+    expect(managedVhdxMountPoint(origin, "a48001a2-5d1b-47d1-a942-c2ebde35f961"))
+      .toBe(path.join(os.tmpdir(), "project-parent", "work-with-dots-openwebcode-a48001a2-5d1b-47d1-a942-c2ebde35f961"));
+    expect(path.basename(managedVhdxMountPoint(origin, "abc-123"))).not.toContain(".");
+  });
+
+  it("provisions Windows VHDX beside the source and persists the cleanup path", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
+    const dataDir = path.join(root, "data");
+    const origin = path.join(root, "projects", "work");
+    await mkdir(origin, { recursive: true });
+    await writeFile(path.join(origin, "README.md"), "hello");
+    const { runner, calls } = recordingRunner(() => ({ code: 0 }));
+    const manager = new ManagedWorkspaceManager({ dataDir, runner, platform: "win32" });
+    const result = await manager.provision({ sessionId: "session-1", originCwd: origin, backend: "vhdx" });
+    const expectedMount = path.join(root, "projects", "work-openwebcode-session-1");
+    expect(result.mountPoint).toBe(expectedMount);
+    expect(calls[0]?.args).toContain(expectedMount);
+    expect(await readFile(path.join(expectedMount, "README.md"), "utf8")).toBe("hello");
+    const chain = JSON.parse(await readFile(path.join(dataDir, "workspaces", "session-1", "chain.json"), "utf8")) as TestChainState;
+    expect(chain.mountPoint).toBe(expectedMount);
+  });
+
+  it("does not touch an existing sibling and removes its private staging directory", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
+    const dataDir = path.join(root, "data");
+    const origin = path.join(root, "work");
+    const mountPoint = managedVhdxMountPoint(origin, "session-2");
+    await mkdir(origin, { recursive: true });
+    await mkdir(mountPoint);
+    await writeFile(path.join(mountPoint, "owned-by-user.txt"), "keep", "utf8");
+    const { runner, calls } = recordingRunner(() => ({ code: 0 }));
+    const manager = new ManagedWorkspaceManager({ dataDir, runner, platform: "win32" });
+
+    await expect(manager.provision({ sessionId: "session-2", originCwd: origin, backend: "vhdx" })).rejects.toMatchObject({ code: "EEXIST" });
+    expect(await readFile(path.join(mountPoint, "owned-by-user.txt"), "utf8")).toBe("keep");
+    expect(existsSync(path.join(dataDir, "workspaces", "session-2"))).toBe(false);
+    expect(calls).toHaveLength(0);
+  });
+});
 
 async function writeChain(workspaceRoot: string, state: TestChainState): Promise<void> {
   await mkdir(workspaceRoot, { recursive: true });
@@ -59,6 +103,10 @@ async function writeChain(workspaceRoot: string, state: TestChainState): Promise
 
 async function readChain(workspaceRoot: string): Promise<TestChainState> {
   return JSON.parse(await readFile(path.join(workspaceRoot, "chain.json"), "utf8")) as TestChainState;
+}
+
+function vhdxSiblingMount(root: string, sessionId = "s1"): string {
+  return managedVhdxMountPoint(path.join(root, "projects", "work.with.dots"), sessionId);
 }
 
 describe("detectManagedWorkspace", () => {
@@ -143,6 +191,14 @@ describe("managed-disk.ps1", () => {
     expect(script).toContain("Dismount-IfAttached -ImagePath $NewImage");
     expect(script).toContain("Mount-ManagedVhd -ImagePath $OldImage -AccessPath $MountPoint");
   });
+
+  it("目录挂载点统一末尾反斜杠后再比较，避免重复添加已自动恢复的 access path", async () => {
+    const script = await readFile(managedDiskScriptPath(), "utf8");
+    expect(script).toContain("function Normalize-AccessPath");
+    expect(script).toContain('$AccessPath.TrimEnd([char[]]"\\/") + "\\"');
+    expect(script).toContain("(Normalize-AccessPath $_) -ieq $normalizedAccessPath");
+    expect(script).toContain("-AccessPath $normalizedAccessPath");
+  });
 });
 
 describe("ManagedDiskBackend", () => {
@@ -174,9 +230,9 @@ describe("ManagedDiskBackend", () => {
   it("vhdx create：单个可恢复 fork-swap 脚本事务，链状态只在成功后更新", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
     const workspaceRoot = path.join(root, "workspaces", "s1");
-    const mountPoint = path.join(root, "mnt", "s1");
+    const mountPoint = vhdxSiblingMount(root);
     const base = path.join(workspaceRoot, "base.vhdx");
-    await writeChain(workspaceRoot, { active: { file: base, parentFile: null }, checkpoints: [] });
+    await writeChain(workspaceRoot, { active: { file: base, parentFile: null }, mountPoint, checkpoints: [] });
     const { runner, lines } = recordingRunner(() => ({ code: 0 }));
     const backend = new ManagedDiskBackend({ kind: "vhdx", workspaceRoot, mountPoint, runner });
 
@@ -194,9 +250,9 @@ describe("ManagedDiskBackend", () => {
   it("VHDX 创建后 chain.json 落盘失败会回滚到旧叶，保留旧状态", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
     const workspaceRoot = path.join(root, "workspaces", "s1");
-    const mountPoint = path.join(root, "mnt", "s1");
+    const mountPoint = vhdxSiblingMount(root);
     const base = path.join(workspaceRoot, "base.vhdx");
-    await writeChain(workspaceRoot, { active: { file: base, parentFile: null }, checkpoints: [] });
+    await writeChain(workspaceRoot, { active: { file: base, parentFile: null }, mountPoint, checkpoints: [] });
     const { runner, calls } = recordingRunner(() => ({ code: 0 }));
     const backend = new ManagedDiskBackend({ kind: "vhdx", workspaceRoot, mountPoint, runner });
     (backend as unknown as { writeState: () => Promise<void> }).writeState = async () => { throw new Error("locked chain.json"); };
@@ -207,18 +263,19 @@ describe("ManagedDiskBackend", () => {
     expect(calls[1]?.args).toContain("rollback-fork-swap");
     const child = calls[0]?.args[calls[0]!.args.indexOf("-Child") + 1];
     expect(calls[1]?.args).toEqual(expect.arrayContaining(["-NewImage", child, "-OldImage", base, "-MountPoint", mountPoint]));
-    expect(await readChain(workspaceRoot)).toEqual({ active: { file: base, parentFile: null }, checkpoints: [] });
+    expect(await readChain(workspaceRoot)).toEqual({ active: { file: base, parentFile: null }, mountPoint, checkpoints: [] });
   });
 
   it("VHDX 恢复时先持久化新 active，失败不会删除原叶", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
     const workspaceRoot = path.join(root, "workspaces", "s1");
-    const mountPoint = path.join(root, "mnt", "s1");
+    const mountPoint = vhdxSiblingMount(root);
     const base = path.join(workspaceRoot, "base.vhdx");
     const current = path.join(workspaceRoot, "leaf-current.vhdx");
     const checkpointId = "snap-2000-abcdef";
     await writeChain(workspaceRoot, {
       active: { file: current, parentFile: base },
+      mountPoint,
       checkpoints: [{ id: checkpointId, label: "base", createdAt: new Date().toISOString(), messageCount: 0, file: base, parentFile: null }],
     });
     await writeFile(current, "current leaf", "utf8");
@@ -314,7 +371,7 @@ describe("ManagedDiskBackend", () => {
   it.each(["qcow2", "vhdx"] as const)("达到 32 个检查点时拒绝新建 %s，避免合并挂载中的祖先链", async (kind) => {
     const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
     const workspaceRoot = path.join(root, "workspaces", "s1");
-    const mountPoint = path.join(root, "mnt", "s1");
+    const mountPoint = kind === "vhdx" ? vhdxSiblingMount(root) : path.join(root, "mnt", "s1");
     const base = path.join(workspaceRoot, `base.${kind}`);
     const segment = (n: number) => path.join(workspaceRoot, `seg-${n}.${kind}`);
     const checkpoints: TestChainState["checkpoints"] = [];
@@ -322,7 +379,7 @@ describe("ManagedDiskBackend", () => {
       checkpoints.push({ id: `snap-${2000 + n}-abcdef`, label: `cp${n}`, createdAt: new Date().toISOString(), messageCount: n, file: segment(n), parentFile: n === 1 ? base : segment(n - 1) });
     }
     checkpoints.push({ id: "snap-2000-abcdef", label: "cp0", createdAt: new Date().toISOString(), messageCount: 0, file: base, parentFile: null });
-    await writeChain(workspaceRoot, { active: { file: segment(32), parentFile: segment(31) }, ...(kind === "qcow2" ? { device: "/dev/nbd0" } : {}), checkpoints });
+    await writeChain(workspaceRoot, { active: { file: segment(32), parentFile: segment(31) }, ...(kind === "qcow2" ? { device: "/dev/nbd0" } : { mountPoint }), checkpoints });
     const { runner, calls } = recordingRunner(() => ({ code: 0 }));
     const backend = new ManagedDiskBackend({ kind, workspaceRoot, mountPoint, runner });
 
@@ -368,8 +425,21 @@ describe("getSnapshotBackend 免探测构造", () => {
     await sessions.initialize();
     const qcow2 = await sessions.create({ cwd: path.join(root, "mnt", "a") });
     await sessions.updateSnapshotBackend(qcow2.id, "qcow2-chain");
-    const vhdx = await sessions.create({ cwd: path.join(root, "mnt", "b") });
-    await sessions.updateSnapshotBackend(vhdx.id, "vhdx-chain");
+    const vhdxId = "00000000-0000-4000-8000-000000000035";
+    const vhdxOrigin = path.join(root, "projects", "b.with.dots");
+    const vhdxMount = managedVhdxMountPoint(vhdxOrigin, vhdxId);
+    const vhdx = await sessions.create({
+      id: vhdxId,
+      cwd: vhdxMount,
+      snapshotBackend: "vhdx-chain",
+      workspace: {
+        mode: "managed",
+        backend: "vhdx",
+        originCwd: vhdxOrigin,
+        image: path.join(root, "workspaces", vhdxId, "base.vhdx"),
+        mountPoint: vhdxMount,
+      },
+    });
 
     const qcow2Backend = await getSnapshotBackend(sessions, (await sessions.get(qcow2.id))!);
     expect(qcow2Backend).toBeInstanceOf(ManagedDiskBackend);
@@ -392,11 +462,11 @@ describe("sweepOrphans 孤儿挂载清理", () => {
     await mkdir(path.join(root, "sessions", "orphan2"), { recursive: true });
     await writeFile(path.join(root, "sessions", "orphan2", "meta.json"), "{}");
     await mkdir(path.join(root, "mnt", "orphan2"), { recursive: true });
-    // case3：正常（meta + vhdx 镜像 + 挂载点）
+    // case3：Linux 正常托管工作区（meta + qcow2 镜像 + dataDir/mnt 挂载点）
     await mkdir(path.join(root, "sessions", "keep3"), { recursive: true });
     await writeFile(path.join(root, "sessions", "keep3", "meta.json"), "{}");
     await mkdir(path.join(root, "workspaces", "keep3"), { recursive: true });
-    await writeFile(path.join(root, "workspaces", "keep3", "base.vhdx"), "img");
+    await writeFile(path.join(root, "workspaces", "keep3", "base.qcow2"), "img");
     await mkdir(path.join(root, "mnt", "keep3"), { recursive: true });
 
     const { runner, lines } = recordingRunner(() => ({ code: 0 }));
@@ -416,38 +486,73 @@ describe("sweepOrphans 孤儿挂载清理", () => {
 
   it("teardown 优先卸载 chain.json 记录的 active VHDX 叶子，而非旧 base", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
+    const dataDir = path.join(root, "data");
     const id = "active-leaf";
-    const { workspaceRoot, mountPoint } = managedWorkspacePaths(root, id);
+    const origin = path.join(root, "work");
+    const workspaceRoot = path.join(dataDir, "workspaces", id);
+    const mountPoint = managedVhdxMountPoint(origin, id);
     const base = path.join(workspaceRoot, "base.vhdx");
     const leaf = path.join(workspaceRoot, "leaf-snap-2000-abcdef.vhdx");
+    await mkdir(origin, { recursive: true });
     await mkdir(mountPoint, { recursive: true });
-    await writeChain(workspaceRoot, { active: { file: leaf, parentFile: base }, checkpoints: [] });
+    await writeChain(workspaceRoot, { active: { file: leaf, parentFile: base }, mountPoint, checkpoints: [] });
     const { runner, lines } = recordingRunner(() => ({ code: 0 }));
-    const manager = new ManagedWorkspaceManager({ dataDir: root, runner, platform: "win32" });
+    const manager = new ManagedWorkspaceManager({ dataDir, runner, platform: "win32" });
 
     await manager.teardown({
       id,
-      workspace: { mode: "managed", backend: "vhdx", originCwd: root, image: base, mountPoint },
+      workspace: { mode: "managed", backend: "vhdx", originCwd: origin, image: base, mountPoint },
     });
 
     expect(lines()).toEqual([
       `powershell -NoProfile -ExecutionPolicy Bypass -File ${managedDiskScriptPath()} -Mode dismount -Image ${leaf} -MountPoint ${mountPoint}`,
     ]);
     expect(existsSync(workspaceRoot)).toBe(false);
+    // 卸载成功后旁挂空目录一并移除，源目录保留
+    await expect(stat(mountPoint)).rejects.toThrow();
+    expect((await stat(origin)).isDirectory()).toBe(true);
+  });
+
+  it("meta 缺失时按 chain.json 清理工作目录旁的 VHDX 挂载点", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
+    const dataDir = path.join(root, "data");
+    const id = "sibling-orphan";
+    const workspaceRoot = path.join(dataDir, "workspaces", id);
+    const base = path.join(workspaceRoot, "base.vhdx");
+    const mountPoint = path.join(root, `work-openwebcode-${id}`);
+    await mkdir(mountPoint, { recursive: true });
+    await mkdir(workspaceRoot, { recursive: true });
+    await writeFile(base, "img");
+    await writeChain(workspaceRoot, { active: { file: base, parentFile: null }, mountPoint, checkpoints: [] });
+    const { runner, lines } = recordingRunner(() => ({ code: 0 }));
+    const manager = new ManagedWorkspaceManager({ dataDir, runner, platform: "win32" });
+
+    await manager.sweepOrphans();
+
+    expect(lines()).toEqual([
+      `powershell -NoProfile -ExecutionPolicy Bypass -File ${managedDiskScriptPath()} -Mode dismount -Image ${base} -MountPoint ${mountPoint}`,
+    ]);
+    await expect(stat(mountPoint)).rejects.toThrow();
+    expect(existsSync(base)).toBe(true);
   });
 
   it("teardown 卸载失败会保留工作区，供用户恢复", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
+    const dataDir = path.join(root, "data");
     const id = "teardown-fails";
-    const { workspaceRoot, mountPoint } = managedWorkspacePaths(root, id);
+    const origin = path.join(root, "work");
+    const workspaceRoot = path.join(dataDir, "workspaces", id);
+    const mountPoint = managedVhdxMountPoint(origin, id);
     const base = path.join(workspaceRoot, "base.vhdx");
+    await mkdir(origin, { recursive: true });
     await mkdir(mountPoint, { recursive: true });
-    await writeChain(workspaceRoot, { active: { file: base, parentFile: null }, checkpoints: [] });
+    await writeChain(workspaceRoot, { active: { file: base, parentFile: null }, mountPoint, checkpoints: [] });
     const { runner } = recordingRunner(() => ({ code: 1 }));
-    const manager = new ManagedWorkspaceManager({ dataDir: root, runner, platform: "win32" });
+    const manager = new ManagedWorkspaceManager({ dataDir, runner, platform: "win32" });
 
-    await expect(manager.teardown({ id, workspace: { mode: "managed", backend: "vhdx", originCwd: root, image: base, mountPoint } })).rejects.toThrow("未删除会话或磁盘文件");
+    await expect(manager.teardown({ id, workspace: { mode: "managed", backend: "vhdx", originCwd: origin, image: base, mountPoint } })).rejects.toThrow("未删除会话或磁盘文件");
     expect(existsSync(workspaceRoot)).toBe(true);
+    expect(existsSync(mountPoint)).toBe(true);
   });
 });
 
@@ -487,11 +592,12 @@ describe("managed workspace REST", () => {
     };
     const result = (): ManagedWorkspaceSyncApplyResult => ({ applied: [], conflicts: [], unsupported: [], nextPreview: preview });
     return {
-      capability: async () => ({ platform: "linux", backends: [{ backend: "qcow2", available: true, requiresAdmin: true }] }),
+      capability: async () => ({ platform: "win32" as const, backends: [{ backend: "vhdx" as const, available: true, requiresAdmin: true }] }),
       provision: async (input) => {
         spies.provision?.push(input);
-        const { workspaceRoot, mountPoint } = managedWorkspacePaths(root, input.sessionId);
-        return { backend: input.backend, image: path.join(workspaceRoot, "base.qcow2"), mountPoint };
+        const workspaceRoot = path.join(root, "workspaces", input.sessionId);
+        const mountPoint = managedVhdxMountPoint(input.originCwd, input.sessionId);
+        return { backend: input.backend, image: path.join(workspaceRoot, "base.vhdx"), mountPoint };
       },
       previewSync: async (session) => {
         spies.preview?.push(session.id);
@@ -511,7 +617,7 @@ describe("managed workspace REST", () => {
     try {
       const response = await app.inject({ method: "GET", url: "/api/managed-workspace/capability" });
       expect(response.statusCode).toBe(200);
-      expect(response.json()).toEqual({ platform: "linux", backends: [{ backend: "qcow2", available: true, requiresAdmin: true }] });
+      expect(response.json()).toEqual({ platform: "win32", backends: [{ backend: "vhdx", available: true, requiresAdmin: true }] });
     } finally {
       await app.close();
     }
@@ -528,20 +634,22 @@ describe("managed workspace REST", () => {
       expect(response.statusCode).toBe(201);
       const body = response.json<{ id: string; cwd: string; snapshotBackend?: string; workspace?: Record<string, unknown> }>();
       expect(spies.provision).toHaveLength(1);
-      expect(spies.provision[0]).toMatchObject({ originCwd: origin, backend: "qcow2" });
+      expect(spies.provision[0]).toMatchObject({ originCwd: origin, backend: "vhdx" });
       expect(body.id).toBe(spies.provision[0]!.sessionId);
-      expect(body.cwd).toBe(path.join(root, "mnt", body.id));
+      // Windows VHDX 挂在源工作目录旁边，名称无点号：<源目录名>-openwebcode-<会话ID>
+      expect(body.cwd).toBe(path.join(root, `origin-project-openwebcode-${body.id}`));
+      expect(body.cwd).not.toContain(`${path.sep}mnt${path.sep}`);
       expect(body.workspace).toMatchObject({
         mode: "managed",
-        backend: "qcow2",
+        backend: "vhdx",
         originCwd: path.resolve(origin),
-        image: path.join(root, "workspaces", body.id, "base.qcow2"),
+        image: path.join(root, "workspaces", body.id, "base.vhdx"),
         mountPoint: body.cwd,
       });
-      expect(body.snapshotBackend).toBe("qcow2-chain");
+      expect(body.snapshotBackend).toBe("vhdx-chain");
       const stored = await sessions.get(body.id);
       expect(stored?.workspace?.mode).toBe("managed");
-      expect(stored?.snapshotBackend).toBe("qcow2-chain");
+      expect(stored?.snapshotBackend).toBe("vhdx-chain");
     } finally {
       await app.close();
     }

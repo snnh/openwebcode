@@ -117,7 +117,7 @@ export class SessionStore {
     return message;
   }
 
-  async updateConfig(id: string, update: Pick<SessionMeta, "provider" | "model"> & Partial<Pick<SessionMeta, "thinking" | "effort" | "agentMode" | "snapshotMode">>): Promise<SessionMeta> {
+  async updateConfig(id: string, update: Pick<SessionMeta, "provider" | "model"> & Partial<Pick<SessionMeta, "thinking" | "effort" | "agentMode" | "snapshotMode" | "shellBackend">>): Promise<SessionMeta> {
     const meta = await this.readMeta(id);
     meta.provider = update.provider;
     meta.model = update.model;
@@ -129,6 +129,8 @@ export class SessionStore {
     else meta.agentMode = update.agentMode;
     if (update.snapshotMode === undefined || update.snapshotMode === "auto") delete meta.snapshotMode;
     else meta.snapshotMode = update.snapshotMode;
+    if (update.shellBackend === undefined || update.shellBackend === "default") delete meta.shellBackend;
+    else meta.shellBackend = update.shellBackend;
     meta.updatedAt = new Date().toISOString();
     await this.writeMeta(meta);
     return meta;
@@ -246,7 +248,7 @@ export class SessionStore {
     if (!source) throw new Error("Session not found");
     if (path.resolve(cwd) === source.cwd) throw new Error("A cloned session requires a different workspace directory");
     const meta = await this.create({ cwd, provider: source.provider, model: source.model, title: title ?? `${source.title} (clone)`, ...(source.agentMode ? { agentMode: source.agentMode } : {}), ...(source.sandboxMode ? { sandboxMode: source.sandboxMode } : {}), ...(source.setupScript ? { setupScript: source.setupScript } : {}) });
-    if (source.thinking !== undefined || source.effort !== undefined || source.snapshotMode !== undefined) await this.updateConfig(meta.id, { provider: source.provider, model: source.model, ...(source.thinking ? { thinking: source.thinking } : {}), ...(source.effort ? { effort: source.effort } : {}), ...(source.agentMode ? { agentMode: source.agentMode } : {}), ...(source.snapshotMode ? { snapshotMode: source.snapshotMode } : {}) });
+    if (source.thinking !== undefined || source.effort !== undefined || source.snapshotMode !== undefined || source.shellBackend !== undefined) await this.updateConfig(meta.id, { provider: source.provider, model: source.model, ...(source.thinking ? { thinking: source.thinking } : {}), ...(source.effort ? { effort: source.effort } : {}), ...(source.agentMode ? { agentMode: source.agentMode } : {}), ...(source.snapshotMode ? { snapshotMode: source.snapshotMode } : {}), ...(source.shellBackend ? { shellBackend: source.shellBackend } : {}) });
     for (const message of source.messages) await this.appendMessage(meta.id, message.role, message.content, { ...(message.runId ? { runId: message.runId } : {}), ...(message.turnId ? { turnId: message.turnId } : {}) });
     return (await this.get(meta.id))!;
   }

@@ -171,6 +171,36 @@ describe("CoreRouter", () => {
     expect(wsb.acquire).not.toHaveBeenCalled();
   });
 
+  it("reconfigures a session before the first tool call after the shared core restarts", async () => {
+    const metas = new Map([["s1", makeMeta("s1")]]);
+    const { router, shared } = makeRouter(metas);
+    await router.configureSession({ sessionId: "s1", cwd: "D:\\work", sandbox: policy });
+    expect(shared.configureSession).toHaveBeenCalledTimes(1);
+
+    const eventListener = shared.on.mock.calls.find(([event]) => event === "event")?.[1] as ((event: unknown) => void) | undefined;
+    expect(eventListener).toBeTypeOf("function");
+    eventListener?.({ source: "core", type: "core.exit", payload: { message: "crashed" } });
+
+    await router.readFile({ sessionId: "s1", path: "." });
+    expect(shared.start).toHaveBeenCalledOnce();
+    expect(shared.configureSession).toHaveBeenCalledTimes(2);
+    expect(shared.configureSession).toHaveBeenLastCalledWith({ sessionId: "s1", cwd: "D:\\work", sandbox: policy });
+    expect(shared.readFile).toHaveBeenCalledWith({ sessionId: "s1", path: "." });
+  });
+
+  it("auto-configures restored sessions even when the app-level cache predates this core", async () => {
+    const meta = makeMeta("s1");
+    meta.sandbox = policy;
+    const { router, shared } = makeRouter(new Map([["s1", meta]]));
+
+    await router.startJob({ sessionId: "s1", jobId: "j1", kind: "exec", cmd: "dir", cwd: "D:\\work" });
+
+    expect(shared.start).toHaveBeenCalledOnce();
+    expect(shared.configureSession).toHaveBeenCalledOnce();
+    expect(shared.configureSession).toHaveBeenCalledWith({ sessionId: "s1", cwd: "D:\\work", sandbox: policy });
+    expect(shared.startJob).toHaveBeenCalledWith({ sessionId: "s1", jobId: "j1", kind: "exec", cmd: "dir", cwd: "D:\\work" });
+  });
+
   it("adds global allow paths only to host AppContainer policies", async () => {
     const allowPaths = ["D:\\cache", "D:\\shared"];
     const host = makeRouter(new Map([["host", makeMeta("host")]]), undefined, allowPaths);

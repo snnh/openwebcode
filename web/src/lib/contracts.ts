@@ -8,6 +8,7 @@ export type PermissionMode = "ask" | "acceptEdits" | "yolo";
 export type SandboxCapability = "advisory" | "partial" | "enforced";
 export type SandboxMode = "appcontainer" | "wsb" | "jobobject" | "off";
 export type SnapshotMode = "auto" | "manual";
+export type ShellBackend = "default" | "pwsh";
 
 export interface SandboxCapabilities {
   appcontainer: boolean;
@@ -100,6 +101,7 @@ export interface Session {
   permissionMode?: PermissionMode;
   sandboxMode?: SandboxMode;
   snapshotMode?: SnapshotMode;
+  shellBackend?: ShellBackend;
   setupScript?: string;
   sandbox?: {
     enabled: boolean;

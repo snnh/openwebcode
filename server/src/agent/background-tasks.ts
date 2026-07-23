@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { CoreClientLike, ExecResult } from "../core-client.js";
+import type { ShellBackend } from "../sessions/types.js";
 import { decodeProcessOutputChunks, type EncodedProcessOutput } from "./output-decoder.js";
 
 export interface BackgroundTaskInfo {
@@ -49,8 +50,9 @@ export class BackgroundTaskRegistry {
     cmd: string;
     cwd: string;
     timeoutMs?: number;
+    shellBackend?: ShellBackend;
   }): Promise<BackgroundTaskInfo> {
-    const { sessionId, taskId, cmd, cwd, timeoutMs } = opts;
+    const { sessionId, taskId, cmd, cwd, timeoutMs, shellBackend } = opts;
     const client = this.coreFactory();
     const info: BackgroundTaskInfo = {
       taskId,
@@ -90,7 +92,7 @@ export class BackgroundTaskRegistry {
     await this.configureSession(client, sessionId, cwd);
 
     // 发起 run（不 await），完成后处理终态
-    void client.run({ sessionId, execId: taskId, cmd, cwd, ...(timeoutMs === undefined ? {} : { timeoutMs }) })
+    void client.run({ sessionId, execId: taskId, cmd, cwd, ...(timeoutMs === undefined ? {} : { timeoutMs }), ...(shellBackend ? { shellBackend } : {}) })
       .then((result: ExecResult) => this.finish(entry, "done", result.exitCode))
       .catch((error: Error) => {
         if (entry.settled) return; // 已由 stop 标记为 stopped
