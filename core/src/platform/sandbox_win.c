@@ -14,7 +14,13 @@ HRESULT WINAPI DeriveAppContainerSidFromAppContainerName(PCWSTR, PSID *);
 
 struct owc_acl_grant {
     wchar_t *path;
-    int open_reparse_point;
+    int access_kind;
+};
+
+enum owc_acl_access_kind {
+    OWC_ACL_NAMED_PATH = 0,
+    OWC_ACL_REPARSE_POINT = 1,
+    OWC_ACL_REPARSE_TARGET = 2
 };
 
 struct owc_sandbox {
@@ -64,7 +70,7 @@ static BOOL CALLBACK acl_mutex_init(PINIT_ONCE once, PVOID param, PVOID *context
 
 static DWORD change_root_access(const wchar_t *path, PSID sid, ACCESS_MODE mode,
                                 DWORD permissions, DWORD inheritance,
-                                int open_reparse_point) {
+                                int access_kind) {
     PACL old_acl = NULL, new_acl = NULL;
     PSECURITY_DESCRIPTOR descriptor = NULL;
     HANDLE handle = INVALID_HANDLE_VALUE;
@@ -72,12 +78,13 @@ static DWORD change_root_access(const wchar_t *path, PSID sid, ACCESS_MODE mode,
     DWORD error;
     (void)InitOnceExecuteOnce(&acl_once, acl_mutex_init, NULL, NULL);
     EnterCriticalSection(&acl_mutex);
-    if (open_reparse_point) {
+    if (access_kind != OWC_ACL_NAMED_PATH) {
+        DWORD flags = FILE_FLAG_BACKUP_SEMANTICS;
+        if (access_kind == OWC_ACL_REPARSE_POINT)
+            flags |= FILE_FLAG_OPEN_REPARSE_POINT;
         handle = CreateFileW(path, READ_CONTROL | WRITE_DAC,
                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                             NULL, OPEN_EXISTING,
-                             FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
-                             NULL);
+                             NULL, OPEN_EXISTING, flags, NULL);
         error = handle == INVALID_HANDLE_VALUE ? GetLastError() :
             GetSecurityInfo(handle, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
                             NULL, NULL, &old_acl, NULL, &descriptor);
@@ -96,7 +103,7 @@ static DWORD change_root_access(const wchar_t *path, PSID sid, ACCESS_MODE mode,
         access.Trustee.ptstrName = (LPWSTR)sid;
         error = SetEntriesInAclW(1, &access, old_acl, &new_acl);
         if (error == ERROR_SUCCESS) {
-            error = open_reparse_point
+            error = access_kind != OWC_ACL_NAMED_PATH
                 ? SetSecurityInfo(handle, SE_FILE_OBJECT,
                                   DACL_SECURITY_INFORMATION,
                                   NULL, NULL, new_acl, NULL)
@@ -117,17 +124,17 @@ static DWORD change_root_access(const wchar_t *path, PSID sid, ACCESS_MODE mode,
  * strip one another's grant or resurrect a finished command's stale ACE. */
 static DWORD restore_grant(const struct owc_acl_grant *grant, PSID sid) {
     return change_root_access(grant->path, sid, REVOKE_ACCESS, 0,
-                              NO_INHERITANCE, grant->open_reparse_point);
+                              NO_INHERITANCE, grant->access_kind);
 }
 
 static int remember_grant(owc_sandbox *sandbox, wchar_t *path,
-                          int open_reparse_point) {
+                          int access_kind) {
     struct owc_acl_grant *grown = (struct owc_acl_grant *)realloc(
         sandbox->grants, (sandbox->grant_count + 1) * sizeof(*grown));
     if (!grown) return 0;
     sandbox->grants = grown;
     sandbox->grants[sandbox->grant_count].path = path;
-    sandbox->grants[sandbox->grant_count].open_reparse_point = open_reparse_point;
+    sandbox->grants[sandbox->grant_count].access_kind = access_kind;
     sandbox->grant_count++;
     return 1;
 }
@@ -140,16 +147,16 @@ static int remember_grant(owc_sandbox *sandbox, wchar_t *path,
  * newly created files inherit access (SUB_CONTAINERS_AND_OBJECTS_INHERIT). */
 static int grant_temporary(owc_sandbox *sandbox, const wchar_t *path,
                            DWORD permissions, DWORD inheritance,
-                           int open_reparse_point) {
+                           int access_kind) {
     size_t length = wcslen(path) + 1;
     wchar_t *copy = (wchar_t *)malloc(length * sizeof(*copy));
     if (!copy) return 0;
     (void)memcpy(copy, path, length * sizeof(*copy));
     if (change_root_access(copy, sandbox->appcontainer_sid, GRANT_ACCESS,
-                           permissions, inheritance, open_reparse_point) != ERROR_SUCCESS ||
-        !remember_grant(sandbox, copy, open_reparse_point)) {
+                           permissions, inheritance, access_kind) != ERROR_SUCCESS ||
+        !remember_grant(sandbox, copy, access_kind)) {
         (void)change_root_access(copy, sandbox->appcontainer_sid, REVOKE_ACCESS,
-                                 0, inheritance, open_reparse_point);
+                                 0, inheritance, access_kind);
         free(copy);
         return 0;
     }
@@ -186,13 +193,13 @@ static int grant_ancestor_traverse(owc_sandbox *sandbox, const char *root) {
         if (slash == path + 2 && path[1] == L':') {
             path[3] = L'\0';
             ok = grant_temporary(sandbox, path, FILE_TRAVERSE | SYNCHRONIZE,
-                                 NO_INHERITANCE, 0);
+                                 NO_INHERITANCE, OWC_ACL_NAMED_PATH);
             break;
         }
         *slash = L'\0';
         if (!path[0] || !grant_temporary(sandbox, path,
                                          FILE_TRAVERSE | SYNCHRONIZE,
-                                         NO_INHERITANCE, 0)) {
+                                         NO_INHERITANCE, OWC_ACL_NAMED_PATH)) {
             ok = 0;
             break;
         }
@@ -217,7 +224,7 @@ static int grant_write_roots(owc_sandbox *sandbox,
             (attributes & FILE_ATTRIBUTE_REPARSE_POINT) &&
             !grant_temporary(sandbox, path,
                              FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-                             NO_INHERITANCE, 1)) {
+                             NO_INHERITANCE, OWC_ACL_REPARSE_POINT)) {
             free(path);
             set_reason(reason, reason_size, "writeRoot mount-point ACL grant failed");
             return 0;
@@ -225,7 +232,11 @@ static int grant_write_roots(owc_sandbox *sandbox,
         if (!grant_temporary(sandbox, path,
                              FILE_GENERIC_READ | FILE_GENERIC_WRITE |
                                  FILE_GENERIC_EXECUTE | DELETE,
-                             SUB_CONTAINERS_AND_OBJECTS_INHERIT, 0)) {
+                             SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+                             (attributes != INVALID_FILE_ATTRIBUTES &&
+                              (attributes & FILE_ATTRIBUTE_REPARSE_POINT))
+                                 ? OWC_ACL_REPARSE_TARGET
+                                 : OWC_ACL_NAMED_PATH)) {
             free(path);
             set_reason(reason, reason_size, "writeRoot ACL grant failed");
             return 0;
