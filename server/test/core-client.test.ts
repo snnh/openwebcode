@@ -70,7 +70,7 @@ describe.skipIf(!existsSync(corePath))("CoreClient", () => {
         // inconsistently. Non-sandbox pwsh is covered above; keep the hosted
         // sandbox integration on cmd and exercise sandbox+pwsh locally.
         cmd: hostedWindows
-          ? "dir /b >nul"
+          ? "if exist server\\package.json (exit /b 0) else (exit /b 1)"
           : "Get-ChildItem -Name | Select-Object -First 1",
         cwd,
         timeoutMs: 15_000,
