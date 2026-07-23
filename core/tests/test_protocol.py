@@ -101,8 +101,8 @@ def main():
     executable = sys.argv[1]
     environment = os.environ.copy()
     pwsh_available = shutil.which("pwsh", path=environment.get("PATH")) is not None
-    hosted_windows = os.name == "nt" and environment.get("GITHUB_ACTIONS", "").lower() == "true"
-    pwsh_integration = pwsh_available and not hosted_windows
+    hosted_ci = environment.get("GITHUB_ACTIONS", "").lower() == "true"
+    pwsh_integration = pwsh_available and not hosted_ci
     use_pwsh_main_channel = os.name == "nt" and pwsh_integration
     shell_params = {"shellBackend": "pwsh"} if use_pwsh_main_channel else {}
     proc = subprocess.Popen([executable], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment)
@@ -207,7 +207,7 @@ def main():
                 output = b"".join(base64.b64decode(n["params"]["data"]) for n in notes)
                 assert b"pwsh executable was not found" in output, output
         else:
-            print("SKIP: GitHub-hosted Windows retains pwsh children past Core timeouts", file=sys.stderr)
+            print("SKIP: hosted CI can retain pwsh children past Core timeouts", file=sys.stderr)
 
         request(proc, 303, "core.ping")
         response, _ = collect_until_response(proc, 303)
