@@ -30,12 +30,7 @@ export interface ServerConfig {
     pricingSyncUrl?: string;
     syncIntervalMinutes: number;
   };
-  anthropic?: { apiKey?: string; baseURL?: string; promptCaching?: boolean };
-  openai?: { apiKey?: string; baseURL: string };
   provider2?: { baseURL: string; apiKey?: string; model: string };
-  /** Explicit reader service for web_fetch. Omit it to keep web_fetch unavailable. */
-  webFetch?: { provider: "jina" | "custom"; apiKey?: string; baseURL?: string };
-  search?: { provider: "brave" | "tavily" | "custom"; apiKey?: string; baseURL?: string };
 }
 
 function positiveInteger(value: string | undefined, fallback: number): number {
@@ -55,13 +50,6 @@ function boundedInteger(value: string | undefined, maximum: number): number | un
     throw new Error(`Expected an integer <= ${maximum}, received ${value}`);
   }
   return parsed;
-}
-
-function booleanWithDefault(value: string | undefined, fallback: boolean): boolean {
-  if (value === undefined) return fallback;
-  if (value === "true" || value === "1") return true;
-  if (value === "false" || value === "0") return false;
-  throw new Error(`Expected a boolean, received ${value}`);
 }
 
 function currency(value: string | undefined): "USD" | "CNY" {
@@ -179,47 +167,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
           },
         }
       : {}),
-    ...(env.ANTHROPIC_API_KEY || env.ANTHROPIC_BASE_URL
-      ? {
-          anthropic: {
-            ...(env.ANTHROPIC_API_KEY ? { apiKey: env.ANTHROPIC_API_KEY } : {}),
-            ...(env.ANTHROPIC_BASE_URL ? { baseURL: env.ANTHROPIC_BASE_URL } : {}),
-            promptCaching: booleanWithDefault(env.ANTHROPIC_PROMPT_CACHING, true),
-          },
-        }
-      : {}),
-    ...(env.OPENAI_BASE_URL
-      ? {
-          openai: {
-            baseURL: env.OPENAI_BASE_URL,
-            ...(env.OPENAI_API_KEY ? { apiKey: env.OPENAI_API_KEY } : {}),
-          },
-        }
-      : {}),
     ...(env.OWC_PROVIDER2_BASE_URL && env.OWC_PROVIDER2_MODEL
       ? {
           provider2: {
             baseURL: env.OWC_PROVIDER2_BASE_URL,
             model: env.OWC_PROVIDER2_MODEL,
             ...(env.OWC_PROVIDER2_API_KEY ? { apiKey: env.OWC_PROVIDER2_API_KEY } : {}),
-          },
-        }
-      : {}),
-    ...(env.OWC_WEB_FETCH_PROVIDER === "jina" || env.OWC_WEB_FETCH_PROVIDER === "custom"
-      ? {
-          webFetch: {
-            provider: env.OWC_WEB_FETCH_PROVIDER,
-            ...(env.OWC_WEB_FETCH_API_KEY ? { apiKey: env.OWC_WEB_FETCH_API_KEY } : {}),
-            ...(env.OWC_WEB_FETCH_BASE_URL ? { baseURL: env.OWC_WEB_FETCH_BASE_URL } : {}),
-          },
-        }
-      : {}),
-    ...(env.OWC_SEARCH_PROVIDER === "brave" || env.OWC_SEARCH_PROVIDER === "tavily" || env.OWC_SEARCH_PROVIDER === "custom"
-      ? {
-          search: {
-            provider: env.OWC_SEARCH_PROVIDER,
-            ...(env.OWC_SEARCH_API_KEY ? { apiKey: env.OWC_SEARCH_API_KEY } : {}),
-            ...(env.OWC_SEARCH_BASE_URL ? { baseURL: env.OWC_SEARCH_BASE_URL } : {}),
           },
         }
       : {}),

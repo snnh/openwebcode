@@ -81,28 +81,30 @@ describe("NewSessionDialog provider 引导", () => {
     );
     expect(await screen.findByText(/还没有可用的 Provider/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "创建" })).toBeDisabled();
-    expect(screen.getByLabelText("Provider")).toBeDisabled();
+    expect(screen.getByLabelText("模型")).toBeDisabled();
   });
 
   it("provider 尚未有模型目录时不伪造模型并禁用创建", async () => {
     stubFetch({ available: true });
     renderDialog();
-    expect(await screen.findByText(/该 Provider 尚无可用模型/)).toBeInTheDocument();
+    expect(await screen.findByText(/已启用的服务商尚无可用模型/)).toBeInTheDocument();
     expect(screen.getByLabelText("模型")).toBeDisabled();
     expect(screen.getByRole("button", { name: "创建" })).toBeDisabled();
   });
 
-  it("已选 provider 从列表移除时切换到新的可用 provider", async () => {
+  it("已选服务商从列表移除时切换到新的可用模型记录", async () => {
     stubFetch({ available: true });
+    const anthropic = { id: "claude", provider: "anthropic", contextWindow: 1000, maxOutput: 100, capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true } } as ModelProfile;
+    const openai = { ...anthropic, id: "gpt", provider: "openai" };
     const { rerender } = render(
-      <NewSessionDialog open providers={["anthropic"]} models={[]} onClose={() => undefined} onCreate={() => undefined} />,
+      <NewSessionDialog open providers={["anthropic"]} models={[anthropic, openai]} onClose={() => undefined} onCreate={() => undefined} />,
     );
-    await waitFor(() => expect(screen.getByLabelText("Provider")).toHaveValue("anthropic"));
+    await waitFor(() => expect(screen.getByLabelText("模型")).toHaveValue(JSON.stringify(["anthropic", "claude"])));
 
     rerender(
-      <NewSessionDialog open providers={["openai"]} models={[]} onClose={() => undefined} onCreate={() => undefined} />,
+      <NewSessionDialog open providers={["openai"]} models={[anthropic, openai]} onClose={() => undefined} onCreate={() => undefined} />,
     );
-    await waitFor(() => expect(screen.getByLabelText("Provider")).toHaveValue("openai"));
+    await waitFor(() => expect(screen.getByLabelText("模型")).toHaveValue(JSON.stringify(["openai", "gpt"])));
   });
 
   it("在模型选择器旁显示所选模型的图片、视频输入和图片输出能力", async () => {
@@ -131,7 +133,7 @@ describe("NewSessionDialog provider 引导", () => {
     expect(screen.getByText("视频输入")).toBeInTheDocument();
     expect(screen.getByText("图片输出")).toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText("模型"), { target: { value: "text-only" } });
+    fireEvent.change(screen.getByLabelText("模型"), { target: { value: JSON.stringify(["test-stub", "text-only"]) } });
     await waitFor(() => expect(screen.queryByText("图片输入")).not.toBeInTheDocument());
     expect(screen.queryByText("视频输入")).not.toBeInTheDocument();
     expect(screen.queryByText("图片输出")).not.toBeInTheDocument();

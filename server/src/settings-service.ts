@@ -6,13 +6,10 @@ import { loadConfig, type ServerConfig } from "./config.js";
 import { MAX_SYNC_INTERVAL_MINUTES } from "./remote-sync-scheduler.js";
 import type { CoreClientLike } from "./core-client.js";
 import type { EventBus } from "./events/event-bus.js";
-import { AnthropicProvider } from "./providers/anthropic-provider.js";
-import { OpenAICompatibleProvider } from "./providers/openai-compatible-provider.js";
 import type { ProviderRegistry } from "./providers/provider.js";
-import type { ModelRegistry } from "./context/model-registry.js";
 import type { StorageGC } from "./storage-gc.js";
 import type { Provider2Client } from "./provider2.js";
-import { createWebFetchProvider } from "./web-tools.js";
+import type { ProviderProfilesService } from "./provider-profiles.js";
 
 export class SettingsValidationError extends Error {
   constructor(message: string) {
@@ -69,16 +66,14 @@ interface RuntimeDependencies {
   core: CoreClientLike;
   agent: AgentRunner;
   events: EventBus;
-  models?: ModelRegistry;
   gc?: StorageGC;
   provider2?: Provider2Client;
+  profiles?: ProviderProfilesService;
 }
 
 const GROUPS = [
   { id: "models", label: "模型接入" },
-  { id: "provider2", label: "上下文压缩" },
-  { id: "webFetch", label: "网页读取" },
-  { id: "search", label: "网络搜索" },
+  { id: "provider2", label: "快速模型" },
   { id: "general", label: "语言与货币" },
   { id: "executor", label: "执行器" },
   { id: "service", label: "服务" },
@@ -86,7 +81,6 @@ const GROUPS = [
 ];
 
 const LANGUAGE_OPTIONS = ["zh-CN", "en-US", "zh-TW", "ja-JP", "ko-KR", "fr-FR", "de-DE", "es-ES", "ru-RU"];
-const PROVIDER_KEYS = new Set(["anthropicApiKey", "anthropicBaseURL", "anthropicPromptCaching", "openaiBaseURL", "openaiApiKey"]);
 
 function requireHttpUrl(value: SettingValue): void {
   let parsed: URL;
@@ -151,12 +145,6 @@ function envSyncIntervalMinutes(raw: string): SettingValue | undefined {
   return Number.isSafeInteger(parsed) && parsed >= 0 && parsed <= MAX_SYNC_INTERVAL_MINUTES ? parsed : undefined;
 }
 
-function envBoolean(raw: string): SettingValue | undefined {
-  if (raw === "true" || raw === "1") return true;
-  if (raw === "false" || raw === "0") return false;
-  return undefined;
-}
-
 function envPathList(raw: string): SettingValue | undefined {
   const values = raw.split(path.delimiter).map((entry) => entry.trim()).filter(Boolean);
   return values.length > 0 && values.length <= 16 ? values : undefined;
@@ -170,27 +158,14 @@ function envCurrency(raw: string): SettingValue | undefined {
 }
 
 const FIELDS: FieldSpec[] = [
-  // 模型接入（热生效）
-  { key: "anthropicApiKey", group: "models", label: "Anthropic API Key", type: "secret", env: "ANTHROPIC_API_KEY", defaultValue: null, restartRequired: false },
-  { key: "anthropicBaseURL", group: "models", label: "Anthropic Base URL", type: "text", env: "ANTHROPIC_BASE_URL", defaultValue: null, restartRequired: false, validate: requireHttpUrl, description: "留空使用官方端点" },
-  { key: "anthropicPromptCaching", group: "models", label: "Anthropic Prompt Caching", type: "boolean", env: "ANTHROPIC_PROMPT_CACHING", defaultValue: true, restartRequired: false, fromEnv: envBoolean },
-  { key: "openaiBaseURL", group: "models", label: "OpenAI 兼容 Base URL", type: "text", env: "OPENAI_BASE_URL", defaultValue: null, restartRequired: false, validate: requireHttpUrl, description: "填写后启用 OpenAI 兼容接入" },
-  { key: "openaiApiKey", group: "models", label: "OpenAI API Key", type: "secret", env: "OPENAI_API_KEY", defaultValue: null, restartRequired: false },
+  // 模型目录同步；模型服务商连接由 provider-profiles.json 独立管理。
   { key: "catalogSyncUrl", group: "models", label: "远程模型目录 URL", type: "text", env: "OWC_MODELS_CATALOG_SYNC_URL", defaultValue: null, restartRequired: false, validate: requireHttpUrl, description: "留空则不从远程链接同步模型目录" },
   { key: "pricingSyncUrl", group: "models", label: "远程定价目录 URL", type: "text", env: "OWC_MODELS_PRICING_SYNC_URL", defaultValue: null, restartRequired: false, validate: requireHttpUrl, description: "留空则不从远程链接同步模型定价" },
   { key: "syncIntervalMinutes", group: "models", label: "远程同步间隔（分钟）", type: "number", env: "OWC_MODELS_SYNC_INTERVAL_MINUTES", defaultValue: 0, restartRequired: false, fromEnv: envSyncIntervalMinutes, validate: requireSyncIntervalMinutes, description: `0 表示仅手动同步；大于 0 时按此间隔自动同步，最大 ${MAX_SYNC_INTERVAL_MINUTES} 分钟` },
   // 上下文压缩 provider2（热生效）：快速廉价的 OpenAI 兼容端点，用于 compact/85% 水位强制压缩
-  { key: "provider2BaseURL", group: "provider2", label: "provider2 Base URL", type: "text", env: "OWC_PROVIDER2_BASE_URL", defaultValue: null, restartRequired: false, validate: requireHttpUrl, description: "OpenAI 兼容端点；与模型名同时填写后启用" },
-  { key: "provider2ApiKey", group: "provider2", label: "provider2 API Key", type: "secret", env: "OWC_PROVIDER2_API_KEY", defaultValue: null, restartRequired: false },
-  { key: "provider2Model", group: "provider2", label: "provider2 模型", type: "text", env: "OWC_PROVIDER2_MODEL", defaultValue: null, restartRequired: false, description: "如 deepseek-chat / claude-haiku-4-5" },
-  // 网页读取：必须显式选服务商，未配置时 web_fetch 不会注入模型工具/提示词。
-  { key: "webFetchProvider", group: "webFetch", label: "网页读取 Provider", type: "select", env: "OWC_WEB_FETCH_PROVIDER", defaultValue: null, restartRequired: false, options: ["jina", "custom"] },
-  { key: "webFetchApiKey", group: "webFetch", label: "网页读取 API Key", type: "secret", env: "OWC_WEB_FETCH_API_KEY", defaultValue: null, restartRequired: false },
-  { key: "webFetchBaseURL", group: "webFetch", label: "网页读取 Base URL", type: "text", env: "OWC_WEB_FETCH_BASE_URL", defaultValue: null, restartRequired: false, validate: requireHttpUrl, description: "custom provider 必填，使用 {url} 作为 URL 编码后的目标地址占位符" },
-  // 网络搜索（重启生效）
-  { key: "searchProvider", group: "search", label: "搜索 Provider", type: "select", env: "OWC_SEARCH_PROVIDER", defaultValue: null, restartRequired: true, options: ["brave", "tavily", "custom"] },
-  { key: "searchApiKey", group: "search", label: "搜索 API Key", type: "secret", env: "OWC_SEARCH_API_KEY", defaultValue: null, restartRequired: true },
-  { key: "searchBaseURL", group: "search", label: "搜索 Base URL", type: "text", env: "OWC_SEARCH_BASE_URL", defaultValue: null, restartRequired: true, validate: requireHttpUrl, description: "custom provider 的 HTTP 端点；Tavily 内置使用 API Key 调用 https://api.tavily.com/search（远程 MCP URL 请配置在 mcp.json）" },
+  { key: "provider2BaseURL", group: "provider2", label: "快速模型 Base URL", type: "text", env: "OWC_PROVIDER2_BASE_URL", defaultValue: null, restartRequired: false, validate: requireHttpUrl, description: "用于上下文压缩等低延迟任务的 OpenAI 兼容端点；与模型名同时填写后启用" },
+  { key: "provider2ApiKey", group: "provider2", label: "快速模型 API Key", type: "secret", env: "OWC_PROVIDER2_API_KEY", defaultValue: null, restartRequired: false },
+  { key: "provider2Model", group: "provider2", label: "快速模型", type: "text", env: "OWC_PROVIDER2_MODEL", defaultValue: null, restartRequired: false, description: "如 deepseek-chat / claude-haiku-4-5" },
   // 通用（热生效）
   { key: "defaultLanguage", group: "general", label: "默认语言", type: "select", env: "OWC_DEFAULT_LANGUAGE", defaultValue: "zh-CN", restartRequired: false, options: LANGUAGE_OPTIONS },
   { key: "defaultCurrency", group: "general", label: "默认货币", type: "select", env: "OWC_DEFAULT_CURRENCY", defaultValue: "CNY", restartRequired: false, options: ["USD", "CNY"], fromEnv: envCurrency },
@@ -253,8 +228,8 @@ export class SettingsService {
       const parsed = JSON.parse(raw) as { overrides?: unknown };
       if (parsed && typeof parsed === "object" && parsed.overrides && typeof parsed.overrides === "object") {
         for (const [key, value] of Object.entries(parsed.overrides as Record<string, unknown>)) {
-          // 未知键、非法类型与越界值直接忽略，保证旧文件向前兼容，
-          // 也避免损坏的 interval 传入 Node timer 后被钳制为 1 ms。
+          // 未知键不再进入内存，并会在下一次持久化时从文件中消失；
+          // 非法值同样忽略，避免损坏的 interval 被 Node timer 钳制为 1 ms。
           const field = FIELD_MAP.get(key);
           if (!field) continue;
           if (typeof value === "string" || typeof value === "number" || typeof value === "boolean" ||
@@ -302,21 +277,11 @@ export class SettingsService {
 
   effective(): ServerConfig {
     const value = (key: string) => this.effectiveValue(FIELD_MAP.get(key)!);
-    const anthropicApiKey = value("anthropicApiKey");
-    const anthropicBaseURL = value("anthropicBaseURL");
-    const openaiBaseURL = value("openaiBaseURL");
-    const openaiApiKey = value("openaiApiKey");
     const exchangeRateUrl = value("exchangeRateUrl");
     const fixedUsdCnyRate = value("fixedUsdCnyRate");
     const provider2BaseURL = value("provider2BaseURL");
     const provider2ApiKey = value("provider2ApiKey");
     const provider2Model = value("provider2Model");
-    const webFetchProvider = value("webFetchProvider");
-    const webFetchApiKey = value("webFetchApiKey");
-    const webFetchBaseURL = value("webFetchBaseURL");
-    const searchProvider = value("searchProvider");
-    const searchApiKey = value("searchApiKey");
-    const searchBaseURL = value("searchBaseURL");
     const jobObjectMemoryMB = value("jobObjectMemoryMB");
     const jobObjectMaxProcesses = value("jobObjectMaxProcesses");
     const sandboxAllowPaths = value("sandboxAllowPaths") as string[];
@@ -362,23 +327,6 @@ export class SettingsService {
             },
           }
         : {}),
-      ...(typeof anthropicApiKey === "string" || typeof anthropicBaseURL === "string"
-        ? {
-            anthropic: {
-              ...(typeof anthropicApiKey === "string" ? { apiKey: anthropicApiKey } : {}),
-              ...(typeof anthropicBaseURL === "string" ? { baseURL: anthropicBaseURL } : {}),
-              promptCaching: value("anthropicPromptCaching") as boolean,
-            },
-          }
-        : {}),
-      ...(typeof openaiBaseURL === "string"
-        ? {
-            openai: {
-              baseURL: openaiBaseURL,
-              ...(typeof openaiApiKey === "string" ? { apiKey: openaiApiKey } : {}),
-            },
-          }
-        : {}),
       // provider2 需要 baseURL 与 model 同时配置才生效；apiKey 可空（本地端点）
       ...(typeof provider2BaseURL === "string" && typeof provider2Model === "string"
         ? {
@@ -388,24 +336,6 @@ export class SettingsService {
               ...(typeof provider2ApiKey === "string" ? { apiKey: provider2ApiKey } : {}),
             },
         }
-        : {}),
-      ...((webFetchProvider === "jina" || webFetchProvider === "custom")
-        ? {
-            webFetch: {
-              provider: webFetchProvider,
-              ...(typeof webFetchApiKey === "string" ? { apiKey: webFetchApiKey } : {}),
-              ...(typeof webFetchBaseURL === "string" ? { baseURL: webFetchBaseURL } : {}),
-            },
-          }
-        : {}),
-      ...((searchProvider === "brave" || searchProvider === "tavily" || searchProvider === "custom")
-        ? {
-            search: {
-              provider: searchProvider,
-              ...(typeof searchApiKey === "string" ? { apiKey: searchApiKey } : {}),
-              ...(typeof searchBaseURL === "string" ? { baseURL: searchBaseURL } : {}),
-            },
-          }
         : {}),
     };
   }
@@ -434,7 +364,7 @@ export class SettingsService {
           }
           return { ...base, value, hasValue: value !== null };
         }),
-      })),
+      })).filter((group) => group.fields.length > 0),
     };
   }
 
@@ -479,59 +409,20 @@ export class SettingsService {
     return this.view();
   }
 
-  reconcileProviders(): void {
-    if (!this.deps) return;
-    const config = this.effective();
-    this.deps.providers.unregister("anthropic");
-    this.deps.providers.unregister("openai");
-    if (config.anthropic?.apiKey?.trim()) {
-      try {
-        this.deps.providers.register(new AnthropicProvider(config.anthropic));
-      } catch (error) {
-        process.stderr.write(`[settings] Anthropic 接入注册失败：${error instanceof Error ? error.message : String(error)}\n`);
-      }
-    }
-    if (config.openai?.apiKey?.trim()) {
-      try {
-        this.deps.providers.register(new OpenAICompatibleProvider(config.openai));
-      } catch (error) {
-        process.stderr.write(`[settings] OpenAI 接入注册失败：${error instanceof Error ? error.message : String(error)}\n`);
-      }
-    }
-  }
-
   /** Names of chat providers whose required connection credentials are configured. */
   configuredProviderNames(): string[] {
-    const config = this.effective();
-    return [
-      ...(config.anthropic?.apiKey?.trim() ? ["anthropic"] : []),
-      ...(config.openai?.apiKey?.trim() ? ["openai"] : []),
-    ];
+    if (this.deps?.profiles) {
+      return this.deps.profiles.modelProfiles().filter((profile) => profile.enabled).map((profile) => profile.id);
+    }
+    return this.deps?.providers.list() ?? [];
   }
 
   private hotApply(changed: string[]): void {
     if (!this.deps) return;
-    if (changed.some((key) => PROVIDER_KEYS.has(key))) {
-      this.reconcileProviders();
-      // 凭据变更后后台刷新模型目录；无凭据（如刚清除）时不刷新，失败仅记日志
-      const config = this.effective();
-      if (this.deps.models && (config.anthropic?.apiKey ?? config.openai?.apiKey)) {
-        const models = this.deps.models;
-        void models
-          .refresh({ ...(config.anthropic ? { anthropic: config.anthropic } : {}), ...(config.openai ? { openai: config.openai } : {}) })
-          .then((report) => {
-            if (report.errors.length > 0) process.stderr.write(`[settings] 模型目录刷新部分失败：${report.errors.join("; ")}\n`);
-          })
-          .catch((error: unknown) => process.stderr.write(`[settings] 模型目录刷新失败：${error instanceof Error ? error.message : String(error)}\n`));
-      }
-    }
     if (changed.includes("defaultLanguage")) this.deps.agent.setDefaultLanguage(this.effective().defaultLanguage);
     if (changed.includes("coreRequestTimeoutMs")) this.deps.core.setRequestTimeoutMs(this.effective().coreRequestTimeoutMs);
     if (changed.some((key) => key.startsWith("provider2")) && this.deps.provider2) {
       this.deps.provider2.setConfig(this.effective().provider2);
-    }
-    if (changed.some((key) => key.startsWith("webFetch"))) {
-      this.deps.agent.setWebFetchProvider(createWebFetchProvider(this.effective().webFetch));
     }
     if (changed.includes("gcMaxBytes") && this.deps.gc) {
       const gc = this.deps.gc;

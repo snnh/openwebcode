@@ -303,6 +303,36 @@ export interface SettingsView {
   groups: SettingsGroup[];
 }
 
+export type ModelInterfaceType = "anthropic-messages" | "openai-chat-completions";
+export type WebCapability = "search" | "fetch";
+export type WebProviderType = "jina" | "brave" | "tavily" | "custom";
+
+export interface ModelProviderProfileView {
+  id: string;
+  enabled: boolean;
+  interfaceType: ModelInterfaceType;
+  baseURL?: string;
+  promptCaching?: boolean;
+  hasApiKey: boolean;
+  maskedApiKey?: string;
+}
+
+export interface WebProviderProfileView {
+  id: string;
+  provider: WebProviderType;
+  capabilities: WebCapability[];
+  searchBaseURL?: string;
+  fetchBaseURL?: string;
+  hasApiKey: boolean;
+  maskedApiKey?: string;
+}
+
+export interface ProviderProfilesView {
+  modelProviders: ModelProviderProfileView[];
+  webProviders: WebProviderProfileView[];
+  activeWeb: { search?: string; fetch?: string };
+}
+
 export interface SkillInfo {
   name: string;
   description: string;

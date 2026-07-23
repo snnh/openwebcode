@@ -35,6 +35,8 @@ import type { ContextPolicyUpdate } from "./context/context-manager.js";
 import type { UsageLog } from "./usage-log.js";
 import type { ExtensionManager } from "./extensions/extension-manager.js";
 import type { ContentLensService } from "./extensions/content-lens.js";
+import { ProviderProfilesValidationError, type ProviderProfilesService, type WebCapability } from "./provider-profiles.js";
+import type { ProviderProfilesRuntime } from "./provider-profiles-runtime.js";
 
 interface CreateSessionBody {
   cwd: string;
@@ -149,6 +151,8 @@ export interface ServerDependencies {
   hooks?: HookRunner;
   extensions?: ExtensionManager;
   contentLens?: ContentLensService;
+  providerProfiles?: ProviderProfilesService;
+  providerProfilesRuntime?: ProviderProfilesRuntime;
   /** Remote-listener protection. Omitted for the loopback-only development default. */
   auth?: { accessToken: string; allowedOrigins: string[] };
 }
@@ -456,6 +460,35 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     return managed.capability();
   });
   app.get("/api/providers", async () => providers.list());
+  if (dependencies.providerProfiles) {
+    const profiles = dependencies.providerProfiles;
+    const profileFailure = (reply: FastifyReply, error: unknown) => reply
+      .code(error instanceof ProviderProfilesValidationError ? 400 : 500)
+      .send({ error: error instanceof Error ? error.message : String(error) });
+    app.get("/api/provider-profiles", async () => profiles.view());
+    app.post<{ Body: Record<string, unknown> }>("/api/provider-profiles/models", async (request, reply) => {
+      try { return await profiles.upsertModel(undefined, request.body ?? {}); } catch (error) { return profileFailure(reply, error); }
+    });
+    app.put<{ Params: { id: string }; Body: Record<string, unknown> }>("/api/provider-profiles/models/:id", async (request, reply) => {
+      try { return await profiles.upsertModel(request.params.id, request.body ?? {}); } catch (error) { return profileFailure(reply, error); }
+    });
+    app.delete<{ Params: { id: string } }>("/api/provider-profiles/models/:id", async (request, reply) => {
+      try { return await profiles.deleteModel(request.params.id); } catch (error) { return profileFailure(reply, error); }
+    });
+    app.post<{ Body: Record<string, unknown> }>("/api/provider-profiles/web", async (request, reply) => {
+      try { return await profiles.upsertWeb(undefined, request.body ?? {}); } catch (error) { return profileFailure(reply, error); }
+    });
+    app.put<{ Params: { id: string }; Body: Record<string, unknown> }>("/api/provider-profiles/web/:id", async (request, reply) => {
+      try { return await profiles.upsertWeb(request.params.id, request.body ?? {}); } catch (error) { return profileFailure(reply, error); }
+    });
+    app.delete<{ Params: { id: string } }>("/api/provider-profiles/web/:id", async (request, reply) => {
+      try { return await profiles.deleteWeb(request.params.id); } catch (error) { return profileFailure(reply, error); }
+    });
+    app.put<{ Params: { capability: WebCapability }; Body: { id?: string | null } }>("/api/provider-profiles/web-active/:capability", async (request, reply) => {
+      if (request.params.capability !== "search" && request.params.capability !== "fetch") return reply.code(400).send({ error: "capability must be search or fetch" });
+      try { return await profiles.selectWeb(request.params.capability, request.body?.id ?? null); } catch (error) { return profileFailure(reply, error); }
+    });
+  }
   app.get("/api/extensions", async (_request, reply) => {
     if (!dependencies.extensions) return reply.code(501).send({ error: "Extension Host is not configured" });
     return dependencies.extensions.list();
@@ -489,7 +522,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   // 模型目录：registry（api/manual/builtin 三向合并）缺省时回退静态档案
   const catalog = (): Array<ModelProfile | CatalogModel> =>
     dependencies.models?.list() ?? listModelProfiles().map((profile) => ({ ...profile, source: "builtin" as const }));
-  const profileOf = (model: string): ModelProfile => dependencies.models?.get(model) ?? getModelProfile(model);
+  const profileOf = (model: string, provider?: string): ModelProfile => dependencies.models?.get(model, provider) ?? getModelProfile(model);
   app.get("/api/models", async () => catalog().map((profile) => ({
     ...profile,
     ...(pricing.get(profile.provider, profile.id) ? {
@@ -508,12 +541,14 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     const models = dependencies.models;
     if (!models) return reply.code(501).send({ error: "Model registry is not configured" });
     const config: Partial<ServerConfig> = dependencies.settings?.effective() ?? {};
-    const refreshed = await models.refresh({ ...(config.anthropic ? { anthropic: config.anthropic } : {}), ...(config.openai ? { openai: config.openai } : {}) });
+    const refreshed = dependencies.providerProfilesRuntime
+      ? await dependencies.providerProfilesRuntime.refreshModels()
+      : await models.refresh({ providers: [] });
     const url = config.models?.catalogSyncUrl;
     if (!url) return refreshed;
     return { ...refreshed, catalogSync: await models.syncCatalogFromUrl(url) };
   });
-  app.put<{ Params: { id: string }; Body: Partial<CatalogModel> }>("/api/models/:id", async (request, reply) => {
+  app.put<{ Params: { id: string }; Body: Partial<CatalogModel> & { originalProvider?: string } }>("/api/models/:id", async (request, reply) => {
     const models = dependencies.models;
     if (!models) return reply.code(501).send({ error: "Model registry is not configured" });
     const id = request.params.id;
@@ -541,7 +576,16 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       }
     }
     // 已知模型沿用现有档案为底，未知模型经元数据库成档（保守默认）
-    const known = models.list().find((entry) => entry.id === id);
+    const originalProvider = typeof body.originalProvider === "string" ? body.originalProvider : undefined;
+    const candidates = models.list().filter((entry) => entry.id === id);
+    const known = originalProvider
+      ? candidates.find((entry) => entry.provider === originalProvider)
+      : body.provider
+        ? candidates.find((entry) => entry.provider === body.provider)
+        : candidates.length === 1 ? candidates[0] : undefined;
+    if (!originalProvider && body.provider === undefined && candidates.length > 1) {
+      return reply.code(400).send({ error: "provider is required because this model ID exists under multiple providers" });
+    }
     if (!known && body.provider === undefined) {
       return reply.code(400).send({ error: "provider is required for a new model" });
     }
@@ -564,17 +608,22 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       maxOutput: body.maxOutput ?? base.maxOutput,
       capabilities: body.capabilities ?? base.capabilities,
     };
+    if (known?.source === "manual" && known.provider !== model.provider) await models.removeManual(id, known.provider);
     await models.upsertManual(model);
     // Return the registry-normalized representation rather than echoing the
     // request body. This keeps the public capability contract closed (for
     // example, an unsupported videoOutput field is never reflected back).
-    return { ...models.get(id), source: "manual" as const };
+    return { ...models.get(id, model.provider), source: "manual" as const };
   });
-  app.delete<{ Params: { id: string } }>("/api/models/:id", async (request, reply) => {
+  app.delete<{ Params: { id: string }; Querystring: { provider?: string } }>("/api/models/:id", async (request, reply) => {
     const models = dependencies.models;
     if (!models) return reply.code(501).send({ error: "Model registry is not configured" });
-    if (!models.isManual(request.params.id)) return reply.code(409).send({ error: "Only manual models can be deleted" });
-    await models.removeManual(request.params.id);
+    const provider = request.query.provider;
+    const matches = models.list().filter((item) => item.id === request.params.id && item.source === "manual");
+    if (!provider && matches.length > 1) return reply.code(400).send({ error: "provider is required because this model ID exists under multiple providers" });
+    const selected = provider ?? matches[0]?.provider;
+    if (!selected || !models.isManual(request.params.id, selected)) return reply.code(409).send({ error: "Only manual models can be deleted" });
+    await models.removeManual(request.params.id, selected);
     return reply.code(204).send();
   });
   app.get("/api/model-pricing", async () => pricing.list());
@@ -883,7 +932,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     const model = request.body?.model ?? session.model;
     if (!providers.get(provider)) return reply.code(400).send({ error: `Provider ${provider} is not configured` });
     if (typeof model !== "string" || !model) return reply.code(400).send({ error: "model must be a non-empty string" });
-    const profile = profileOf(model);
+    const profile = profileOf(model, provider);
     const thinking = request.body && "thinking" in request.body ? request.body.thinking ?? undefined : session.thinking;
     const effort = request.body && "effort" in request.body ? request.body.effort ?? undefined : session.effort;
     if (thinking !== undefined && !profile.capabilities.thinking.includes(thinking)) {
