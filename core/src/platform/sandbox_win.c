@@ -14,6 +14,7 @@ HRESULT WINAPI DeriveAppContainerSidFromAppContainerName(PCWSTR, PSID *);
 
 struct owc_acl_grant {
     wchar_t *path;
+    int open_reparse_point;
 };
 
 struct owc_sandbox {
@@ -62,31 +63,50 @@ static BOOL CALLBACK acl_mutex_init(PINIT_ONCE once, PVOID param, PVOID *context
 }
 
 static DWORD change_root_access(const wchar_t *path, PSID sid, ACCESS_MODE mode,
-                                DWORD permissions, DWORD inheritance) {
+                                DWORD permissions, DWORD inheritance,
+                                int open_reparse_point) {
     PACL old_acl = NULL, new_acl = NULL;
     PSECURITY_DESCRIPTOR descriptor = NULL;
+    HANDLE handle = INVALID_HANDLE_VALUE;
     EXPLICIT_ACCESSW access;
     DWORD error;
     (void)InitOnceExecuteOnce(&acl_once, acl_mutex_init, NULL, NULL);
     EnterCriticalSection(&acl_mutex);
-    error = GetNamedSecurityInfoW((LPWSTR)path, SE_FILE_OBJECT,
-                                  DACL_SECURITY_INFORMATION, NULL, NULL,
-                                  &old_acl, NULL, &descriptor);
+    if (open_reparse_point) {
+        handle = CreateFileW(path, READ_CONTROL | WRITE_DAC,
+                             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                             NULL, OPEN_EXISTING,
+                             FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                             NULL);
+        error = handle == INVALID_HANDLE_VALUE ? GetLastError() :
+            GetSecurityInfo(handle, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+                            NULL, NULL, &old_acl, NULL, &descriptor);
+    } else {
+        error = GetNamedSecurityInfoW((LPWSTR)path, SE_FILE_OBJECT,
+                                      DACL_SECURITY_INFORMATION, NULL, NULL,
+                                      &old_acl, NULL, &descriptor);
+    }
     if (error == ERROR_SUCCESS) {
         memset(&access, 0, sizeof(access));
         access.grfAccessPermissions = permissions;
         access.grfAccessMode = mode;
         access.grfInheritance = inheritance;
         access.Trustee.TrusteeForm = TRUSTEE_IS_SID;
-        access.Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
+        access.Trustee.TrusteeType = TRUSTEE_IS_USER;
         access.Trustee.ptstrName = (LPWSTR)sid;
         error = SetEntriesInAclW(1, &access, old_acl, &new_acl);
-        if (error == ERROR_SUCCESS)
-            error = SetNamedSecurityInfoW((LPWSTR)path, SE_FILE_OBJECT,
-                                          DACL_SECURITY_INFORMATION,
-                                          NULL, NULL, new_acl, NULL);
+        if (error == ERROR_SUCCESS) {
+            error = open_reparse_point
+                ? SetSecurityInfo(handle, SE_FILE_OBJECT,
+                                  DACL_SECURITY_INFORMATION,
+                                  NULL, NULL, new_acl, NULL)
+                : SetNamedSecurityInfoW((LPWSTR)path, SE_FILE_OBJECT,
+                                        DACL_SECURITY_INFORMATION,
+                                        NULL, NULL, new_acl, NULL);
+        }
     }
     LeaveCriticalSection(&acl_mutex);
+    if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle);
     if (new_acl) LocalFree(new_acl);
     if (descriptor) LocalFree(descriptor);
     return error;
@@ -97,15 +117,17 @@ static DWORD change_root_access(const wchar_t *path, PSID sid, ACCESS_MODE mode,
  * strip one another's grant or resurrect a finished command's stale ACE. */
 static DWORD restore_grant(const struct owc_acl_grant *grant, PSID sid) {
     return change_root_access(grant->path, sid, REVOKE_ACCESS, 0,
-                              NO_INHERITANCE);
+                              NO_INHERITANCE, grant->open_reparse_point);
 }
 
-static int remember_grant(owc_sandbox *sandbox, wchar_t *path) {
+static int remember_grant(owc_sandbox *sandbox, wchar_t *path,
+                          int open_reparse_point) {
     struct owc_acl_grant *grown = (struct owc_acl_grant *)realloc(
         sandbox->grants, (sandbox->grant_count + 1) * sizeof(*grown));
     if (!grown) return 0;
     sandbox->grants = grown;
     sandbox->grants[sandbox->grant_count].path = path;
+    sandbox->grants[sandbox->grant_count].open_reparse_point = open_reparse_point;
     sandbox->grant_count++;
     return 1;
 }
@@ -117,16 +139,17 @@ static int remember_grant(owc_sandbox *sandbox, wchar_t *path) {
  * only ancestor grants (NO_INHERITANCE) and write-root grants that must let
  * newly created files inherit access (SUB_CONTAINERS_AND_OBJECTS_INHERIT). */
 static int grant_temporary(owc_sandbox *sandbox, const wchar_t *path,
-                           DWORD permissions, DWORD inheritance) {
+                           DWORD permissions, DWORD inheritance,
+                           int open_reparse_point) {
     size_t length = wcslen(path) + 1;
     wchar_t *copy = (wchar_t *)malloc(length * sizeof(*copy));
     if (!copy) return 0;
     (void)memcpy(copy, path, length * sizeof(*copy));
     if (change_root_access(copy, sandbox->appcontainer_sid, GRANT_ACCESS,
-                           permissions, inheritance) != ERROR_SUCCESS ||
-        !remember_grant(sandbox, copy)) {
+                           permissions, inheritance, open_reparse_point) != ERROR_SUCCESS ||
+        !remember_grant(sandbox, copy, open_reparse_point)) {
         (void)change_root_access(copy, sandbox->appcontainer_sid, REVOKE_ACCESS,
-                                 0, inheritance);
+                                 0, inheritance, open_reparse_point);
         free(copy);
         return 0;
     }
@@ -163,13 +186,13 @@ static int grant_ancestor_traverse(owc_sandbox *sandbox, const char *root) {
         if (slash == path + 2 && path[1] == L':') {
             path[3] = L'\0';
             ok = grant_temporary(sandbox, path, FILE_TRAVERSE | SYNCHRONIZE,
-                                 NO_INHERITANCE);
+                                 NO_INHERITANCE, 0);
             break;
         }
         *slash = L'\0';
         if (!path[0] || !grant_temporary(sandbox, path,
                                          FILE_TRAVERSE | SYNCHRONIZE,
-                                         NO_INHERITANCE)) {
+                                         NO_INHERITANCE, 0)) {
             ok = 0;
             break;
         }
@@ -184,14 +207,25 @@ static int grant_write_roots(owc_sandbox *sandbox,
     size_t i;
     for (i = 0; i < options->write_root_count; ++i) {
         wchar_t *path = utf8_to_wide(options->write_roots[i]);
+        DWORD attributes;
         if (!path) {
             set_reason(reason, reason_size, "writeRoot is not valid UTF-8");
+            return 0;
+        }
+        attributes = GetFileAttributesW(path);
+        if (attributes != INVALID_FILE_ATTRIBUTES &&
+            (attributes & FILE_ATTRIBUTE_REPARSE_POINT) &&
+            !grant_temporary(sandbox, path,
+                             FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                             NO_INHERITANCE, 1)) {
+            free(path);
+            set_reason(reason, reason_size, "writeRoot mount-point ACL grant failed");
             return 0;
         }
         if (!grant_temporary(sandbox, path,
                              FILE_GENERIC_READ | FILE_GENERIC_WRITE |
                                  FILE_GENERIC_EXECUTE | DELETE,
-                             SUB_CONTAINERS_AND_OBJECTS_INHERIT)) {
+                             SUB_CONTAINERS_AND_OBJECTS_INHERIT, 0)) {
             free(path);
             set_reason(reason, reason_size, "writeRoot ACL grant failed");
             return 0;
