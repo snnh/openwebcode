@@ -14,6 +14,7 @@ import { ContextManager, type BudgetUpdate } from "./context/context-manager.js"
 import { renderSessionHtml } from "./export-html.js";
 import { boundToolResult } from "./context/tool-result-budget.js";
 import type { ServerConfig } from "./config.js";
+import { isLoopbackHost } from "./config.js";
 import { getModelProfile, listModelProfiles, type Currency, type EffortLevel, type ModelModality, type ModelPricing, type ModelProfile, type ThinkingMode } from "./context/model-profile.js";
 import { lookupModelMetadata } from "./context/model-metadata.js";
 import type { CatalogModel, ModelRegistry } from "./context/model-registry.js";
@@ -26,6 +27,7 @@ import { getSnapshotBackend } from "./snapshots/index.js";
 import type { ManagedProvisionResult, ManagedWorkspaceLike } from "./snapshots/managed-disk.js";
 import { ManagedWorkspaceSyncError, type ManagedWorkspaceSyncApplyInput } from "./snapshots/managed-sync.js";
 import { SessionTransferError } from "./sessions/session-transfer.js";
+import { defaultSandboxDenyPaths } from "./sessions/default-sandbox.js";
 import type { PermissionMode, SandboxMode, ShellBackend, SnapshotMode } from "./sessions/types.js";
 import type { SessionStore } from "./sessions/session-store.js";
 import { SettingsValidationError, type SettingsService } from "./settings-service.js";
@@ -288,7 +290,26 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   const app = Fastify({ logger: true, bodyLimit: 1024 * 1024 });
   const auth = dependencies.auth;
   const isAuthorized = (request: { headers: Record<string, string | string[] | undefined>; query?: unknown }, allowQueryToken = false) => !auth || safeTokenEqual(auth.accessToken, requestToken(request, allowQueryToken));
-  const originAllowed = (origin: string | undefined, nativeClient: boolean) => !auth || (origin ? auth.allowedOrigins.includes(origin) : nativeClient);
+  const originAllowed = (origin: string | undefined, nativeClient: boolean) => {
+    if (auth) return origin ? auth.allowedOrigins.includes(origin) : nativeClient;
+    // 无认证（loopback 监听）模式：浏览器 Origin 必须指向本机，否则任意网页可跨域 WS 读取全部会话事件；
+    // 不带 Origin 的非浏览器客户端（CLI 等）放行。
+    if (origin === undefined) return true;
+    try {
+      const parsed = new URL(origin);
+      return (parsed.protocol === "http:" || parsed.protocol === "https:") && isLoopbackHost(parsed.hostname);
+    } catch {
+      return false;
+    }
+  };
+  // 无认证模式下的 WS Host 校验：仅接受 loopback Host，挡住 DNS rebinding 之类经非本机 Host 的握手。
+  const hostAllowed = (host: string | string[] | undefined): boolean => {
+    if (auth) return true;
+    const value = Array.isArray(host) ? host[0] : host;
+    if (typeof value !== "string" || value === "") return false;
+    const hostname = value.startsWith("[") ? value.slice(1, value.indexOf("]")) : value.split(":")[0] ?? "";
+    return isLoopbackHost(hostname);
+  };
   if (auth) {
     app.addHook("onRequest", async (request, reply) => {
       if (!request.url.startsWith("/api/")) {
@@ -417,7 +438,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     enabled: true,
     readRoots: [cwd],
     writeRoots: [cwd],
-    denyPaths: [path.join(cwd, ".env")],
+    denyPaths: defaultSandboxDenyPaths(cwd),
     network: "allow" as const,
   });
   const SANDBOX_MODES: readonly string[] = ["appcontainer", "wsb", "jobobject", "off"];
@@ -435,7 +456,10 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   events.on("event", (event: AppEvent) => {
     const serialized = JSON.stringify(event);
     for (const client of clients) {
-      if (client.readyState !== 1 || (client.sessionId && event.sessionId && client.sessionId !== event.sessionId)) continue;
+      // 运行状态类事件（agent.state / run.*）全局广播：跨会话的运行状态对所有客户端可见；
+      // 未带 sessionId 订阅的客户端始终收到全量事件流（web 端按 event.sessionId 分发）。
+      const globalEvent = event.type === "agent.state" || event.type.startsWith("run.");
+      if (client.readyState !== 1 || (client.sessionId && event.sessionId && client.sessionId !== event.sessionId && !globalEvent)) continue;
       if (client.bufferedAmount > MAX_WS_BUFFERED_BYTES) {
         slowClientDisconnects++;
         try { client.send(JSON.stringify({ source: "server", type: "resync.required", seq: event.seq, createdAt: new Date().toISOString(), ...(client.sessionId ? { sessionId: client.sessionId, ...(event.sessionSeq !== undefined ? { sessionSeq: event.sessionSeq } : {}) } : {}), payload: { latestSeq: client.sessionId ? event.sessionSeq ?? 0 : event.seq, reason: "slow_client" } })); }
@@ -1613,7 +1637,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   app.get<{ Querystring: { after?: string; sessionId?: string } }>("/api/events", { websocket: true }, (socket, request) => {
     const origin = typeof request.headers.origin === "string" ? request.headers.origin : undefined;
     const nativeClient = request.headers["x-openwebcode-client"] === "cli";
-    if (!isAuthorized(request, true) || !originAllowed(origin, nativeClient)) {
+    if (!isAuthorized(request, true) || !originAllowed(origin, nativeClient) || !hostAllowed(request.headers.host)) {
       socket.close(1008, "Unauthorized origin or token");
       return;
     }

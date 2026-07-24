@@ -1,5 +1,6 @@
 #include "fs_platform.h"
 #ifdef _WIN32
+#include "../path_policy.h"
 #include <windows.h>
 #include <stdint.h>
 #include <stddef.h>
@@ -55,6 +56,13 @@ static void native_delete_on_close(owc_nt_set_information_file_fn set_informatio
 static owc_fs_error winerr(void){DWORD e=GetLastError();if(e==ERROR_FILE_NOT_FOUND||e==ERROR_PATH_NOT_FOUND)return OWC_FS_NOT_FOUND;if(e==ERROR_ACCESS_DENIED||e==ERROR_SHARING_VIOLATION)return OWC_FS_PERMISSION_DENIED;return OWC_FS_IO_ERROR;}
 static wchar_t *wide(const char *s){int n=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,s,-1,NULL,0);wchar_t*w;if(!n)return NULL;w=(wchar_t*)malloc((size_t)n*sizeof(*w));if(w&&!MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,s,-1,w,n)){free(w);w=NULL;}return w;}
 static char *utf8(const wchar_t *s){int n=WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,s,-1,NULL,0,NULL,NULL);char*p;if(!n)return NULL;p=(char*)malloc((size_t)n);if(p&&!WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,s,-1,p,n,NULL,NULL)){free(p);p=NULL;}return p;}
+/* Borrowed session deny roots; see fs_platform.h.  Compared against the
+ * GetFinalPathNameByHandleW-resolved path so reparse points, 8.3 short names
+ * and trailing-dot spellings cannot disguise a denied directory. */
+static const char *const *deny_roots=NULL;
+static size_t deny_root_count=0;
+void owc_fs_platform_set_deny_roots(const char *const *roots,size_t count){deny_roots=roots;deny_root_count=roots?count:0;}
+static int final_path_denied(const wchar_t *final){size_t i;char *resolved;const wchar_t *bare=final;if(wcsncmp(final,L"\\\\?\\",4)==0)bare=final+4;resolved=utf8(bare);if(!resolved)return 0;for(i=0;i<deny_root_count;i++)if(owc_path_is_within(resolved,deny_roots[i])){free(resolved);return 1;}free(resolved);return 0;}
 static int prefix(const wchar_t*p,const wchar_t*r){size_t n=wcslen(r);return _wcsnicmp(p,r,n)==0&&(p[n]==0||p[n]==L'\\');}
 static wchar_t *last_separator(wchar_t *path){wchar_t *back=wcsrchr(path,L'\\'),*forward=wcsrchr(path,L'/');if(!back)return forward;if(!forward)return back;return forward>back?forward:back;}
 static void trim_canonical_separator(wchar_t *path){
@@ -113,10 +121,23 @@ static owc_fs_error paths(const char *root,const char *path,wchar_t **rw,wchar_t
        well before comparing the two paths, otherwise a valid child is
        incorrectly reported as escaping the workspace. */
     full=(wchar_t*)malloc((wcslen(r)+wcslen(p)+2)*sizeof(*full));if(!full){free(r);free(p);return OWC_FS_NO_MEMORY;}wcscpy(full,r);wcscat(full,L"\\");wcscat(full,p);free(p);
+    /* FILE_FLAG_OPEN_REPARSE_POINT on the final open guards only the leaf:
+       reject reparse points in intermediate components below the root as
+       well, otherwise a junction such as root\link would silently redirect
+       the open outside the verified directory tree.  The walk starts past
+       the root itself: canonical_root below owns the root reparse verdict
+       (a genuine volume mount point is admitted there). */
+    {wchar_t *cursor=full+wcslen(r)+1;
+     for(;*cursor;cursor++){if(*cursor!=L'\\'&&*cursor!=L'/')continue;{HANDLE component;DWORD attr=0;*cursor=0;
+        component=CreateFileW(full,0,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,NULL,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT|FILE_FLAG_BACKUP_SEMANTICS,NULL);
+        if(component==INVALID_HANDLE_VALUE){*cursor=L'\\';break;}
+        {BY_HANDLE_FILE_INFORMATION component_info;if(GetFileInformationByHandle(component,&component_info))attr=component_info.dwFileAttributes;CloseHandle(component);}
+        *cursor=L'\\';
+        if(attr&FILE_ATTRIBUTE_REPARSE_POINT){free(r);free(full);return OWC_FS_OUTSIDE_ROOT;}}}}
     /* Keep the ordinary DOS path above for file operations; use the handle-
        canonical path only for the workspace-boundary comparison. */
     e=canonical_root(&r);if(e){free(r);free(full);return e;}*rw=r;*pw=full;return OWC_FS_OK;}
-static owc_fs_error checked_open_mode(const char*root,const char*path,DWORD access,DWORD create,DWORD extra_flags,HANDLE*h,wchar_t**name){wchar_t*r,*p,*final;DWORD n;BY_HANDLE_FILE_INFORMATION info;owc_fs_error e=paths(root,path,&r,&p);if(e)return e;*h=CreateFileW(p,access,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,NULL,create,FILE_FLAG_OPEN_REPARSE_POINT|FILE_FLAG_BACKUP_SEMANTICS|extra_flags,NULL);if(*h==INVALID_HANDLE_VALUE){e=winerr();free(r);free(p);return e;}if(!GetFileInformationByHandle(*h,&info)){CloseHandle(*h);free(r);free(p);return winerr();}/* Windows reports the configured mounted-folder root as a reparse point when it is addressed as root\\.; canonical_root already verified that one exact root. */if((info.dwFileAttributes&FILE_ATTRIBUTE_REPARSE_POINT)&&!is_configured_root_path(path)){CloseHandle(*h);free(r);free(p);return OWC_FS_OUTSIDE_ROOT;}n=GetFinalPathNameByHandleW(*h,NULL,0,FILE_NAME_NORMALIZED);final=(wchar_t*)malloc(((size_t)n+1)*sizeof(*final));if(!final||!GetFinalPathNameByHandleW(*h,final,n+1,FILE_NAME_NORMALIZED)){CloseHandle(*h);free(final);free(r);free(p);return OWC_FS_IO_ERROR;}if(!prefix(final,r)&&!(wcslen(final)>4&&prefix(final+4,r))){CloseHandle(*h);free(final);free(r);free(p);return OWC_FS_OUTSIDE_ROOT;}free(final);free(r);if(name)*name=p;else free(p);return OWC_FS_OK;}
+static owc_fs_error checked_open_mode(const char*root,const char*path,DWORD access,DWORD create,DWORD extra_flags,HANDLE*h,wchar_t**name){wchar_t*r,*p,*final;DWORD n;BY_HANDLE_FILE_INFORMATION info;owc_fs_error e=paths(root,path,&r,&p);if(e)return e;*h=CreateFileW(p,access,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,NULL,create,FILE_FLAG_OPEN_REPARSE_POINT|FILE_FLAG_BACKUP_SEMANTICS|extra_flags,NULL);if(*h==INVALID_HANDLE_VALUE){e=winerr();free(r);free(p);return e;}if(!GetFileInformationByHandle(*h,&info)){CloseHandle(*h);free(r);free(p);return winerr();}/* Windows reports the configured mounted-folder root as a reparse point when it is addressed as root\\.; canonical_root already verified that one exact root. */if((info.dwFileAttributes&FILE_ATTRIBUTE_REPARSE_POINT)&&!is_configured_root_path(path)){CloseHandle(*h);free(r);free(p);return OWC_FS_OUTSIDE_ROOT;}n=GetFinalPathNameByHandleW(*h,NULL,0,FILE_NAME_NORMALIZED);final=(wchar_t*)malloc(((size_t)n+1)*sizeof(*final));if(!final||!GetFinalPathNameByHandleW(*h,final,n+1,FILE_NAME_NORMALIZED)){CloseHandle(*h);free(final);free(r);free(p);return OWC_FS_IO_ERROR;}if(!prefix(final,r)&&!(wcslen(final)>4&&prefix(final+4,r))){CloseHandle(*h);free(final);free(r);free(p);return OWC_FS_OUTSIDE_ROOT;}if(final_path_denied(final)){CloseHandle(*h);free(final);free(r);free(p);return OWC_FS_OUTSIDE_ROOT;}free(final);free(r);if(name)*name=p;else free(p);return OWC_FS_OK;}
 static owc_fs_error checked_open(const char*root,const char*path,DWORD access,DWORD create,HANDLE*h,wchar_t**name){return checked_open_mode(root,path,access,create,0,h,name);}
 static owc_fs_error ensure_parents(const char *root,const char *path){char *copy,*cursor;size_t n=strlen(path);copy=(char*)malloc(n+1);if(!copy)return OWC_FS_NO_MEMORY;memcpy(copy,path,n+1);for(cursor=copy;*cursor;cursor++){if(*cursor=='/'||*cursor=='\\'){HANDLE h;owc_fs_error e;wchar_t *r,*p;char saved=*cursor;*cursor='\0';if(!copy[0]){free(copy);return OWC_FS_OUTSIDE_ROOT;}e=checked_open(root,copy,0,OPEN_EXISTING,&h,NULL);if(e==OWC_FS_NOT_FOUND){e=paths(root,copy,&r,&p);if(!e){if(!CreateDirectoryW(p,NULL)&&GetLastError()!=ERROR_ALREADY_EXISTS)e=winerr();free(r);free(p);}if(!e)e=checked_open(root,copy,0,OPEN_EXISTING,&h,NULL);}if(!e)CloseHandle(h);*cursor=saved;if(e){free(copy);return e;}}}free(copy);return OWC_FS_OK;}
 owc_fs_error owc_fs_platform_read(const char*root,const char*path,owc_fs_bytes*b){HANDLE h;LARGE_INTEGER z;DWORD got;size_t done=0;owc_fs_error e=checked_open(root,path,GENERIC_READ,OPEN_EXISTING,&h,NULL);if(e)return e;if(!GetFileSizeEx(h,&z)||z.QuadPart<0||(unsigned long long)z.QuadPart>OWC_FS_MAX_FILE_SIZE){CloseHandle(h);return OWC_FS_IO_ERROR;}b->length=(size_t)z.QuadPart;b->data=(unsigned char*)malloc(b->length+1);if(!b->data){CloseHandle(h);return OWC_FS_NO_MEMORY;}while(done<b->length){DWORD ask=(DWORD)((b->length-done)>0x40000000?0x40000000:(b->length-done));if(!ReadFile(h,b->data+done,ask,&got,NULL)||!got){free(b->data);CloseHandle(h);return OWC_FS_IO_ERROR;}done+=got;}b->data[b->length]=0;CloseHandle(h);return OWC_FS_OK;}

@@ -97,6 +97,36 @@ def assert_landlock_filesystem_isolation_if_enforced(proc):
         assert not os.path.exists(outside_path), outside_path
 
 
+def assert_posix_children_killed_on_core_exit(executable):
+    """A core that exits must SIGKILL its spawned process groups (POSIX)."""
+    if os.name == "nt" or shutil.which("pgrep") is None:
+        return
+    marker = "sleep 31337"
+    proc = subprocess.Popen([executable], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    try:
+        request(proc, 1, "session.configure", {"sessionId": "orphan", "cwd": os.getcwd(), "sandbox": {"enabled": False}})
+        response, _ = collect_until_response(proc, 1)
+        assert "result" in response, response
+        request(proc, 2, "job.start", {"sessionId": "orphan", "jobId": "long", "kind": "exec", "cmd": f"exec {marker}", "cwd": os.getcwd(), "timeoutMs": 300000})
+        response, _ = collect_until_response(proc, 2)
+        assert response.get("result", {}).get("state") == "running", response
+        time.sleep(0.5)
+        assert subprocess.run(["pgrep", "-f", marker], capture_output=True).returncode == 0
+        proc.terminate()
+        proc.wait(timeout=5)
+        survived = True
+        for _ in range(30):
+            if subprocess.run(["pgrep", "-f", marker], capture_output=True).returncode != 0:
+                survived = False
+                break
+            time.sleep(0.1)
+        assert not survived, "spawned child survived core exit"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        subprocess.run(["pkill", "-f", marker], capture_output=True)
+
+
 def main():
     executable = sys.argv[1]
     environment = os.environ.copy()
@@ -112,7 +142,7 @@ def main():
         request(proc, "ping-中文", "core.ping")
         response, notes = collect_until_response(proc, "ping-中文")
         assert not notes
-        assert response["result"]["version"] == "0.3.6"
+        assert response["result"]["version"] == "0.3.10"
         assert response["result"]["sandboxCapability"] in {"advisory", "partial", "enforced"}
         assert response["result"]["sandboxReason"]
         assert response["result"]["protocolVersion"] == "1.0"
@@ -128,13 +158,13 @@ def main():
         response, notes = collect_until_response(proc, None)
         assert not notes
         assert response["id"] is None
-        assert response["result"]["version"] == "0.3.6"
+        assert response["result"]["version"] == "0.3.10"
 
         send(proc, {"jsonrpc": "2.0", "method": "core.ping", "params": {}})
         request(proc, "after-notification", "core.ping")
         response, notes = collect_until_response(proc, "after-notification")
         assert not notes
-        assert response["result"]["version"] == "0.3.6"
+        assert response["result"]["version"] == "0.3.10"
 
         request(proc, 2, "missing.method")
         response, _ = collect_until_response(proc, 2)
@@ -187,6 +217,12 @@ def main():
         request(proc, 301, "exec.run", {"sessionId": "s1", "execId": "bad-shell", "cmd": "echo no", "cwd": os.getcwd(), "shellBackend": "powershell"})
         response, _ = collect_until_response(proc, 301)
         assert response.get("error", {}).get("code") == -32602, response
+
+        # exec.run clamps timeoutMs to ten minutes instead of rejecting:
+        # an oversized value must still run a fast command normally.
+        request(proc, 304, "exec.run", {"sessionId": "s1", "execId": "huge-timeout", "cmd": command, "cwd": os.getcwd(), "timeoutMs": 2147483647, **shell_params})
+        response, _ = collect_until_response(proc, 304)
+        assert response.get("result", {}).get("exitCode") == 7, response
 
         if pwsh_integration:
             # A cold pwsh start on hosted Linux can occasionally exceed five
@@ -352,6 +388,7 @@ def main():
         stderr = proc.stderr.read().decode(errors="replace")
         if stderr:
             print(stderr, file=sys.stderr)
+    assert_posix_children_killed_on_core_exit(executable)
 
 
 if __name__ == "__main__":

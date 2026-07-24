@@ -3,6 +3,7 @@ import { mkdir, readFile, readdir, rm, writeFile, appendFile } from "node:fs/pro
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
 import { parseSessionImport, serializeSession } from "./session-transfer.js";
+import { defaultSandboxPolicy } from "./default-sandbox.js";
 import type { ChatMessage, ManagedWorkspaceMeta, MessageContent, MessageRole, SandboxMode, SessionDetail, SessionMeta } from "./types.js";
 
 export interface CreateSessionInput {
@@ -37,7 +38,7 @@ export class SessionStore {
       // Keep direct store use neutral rather than choosing an implicit provider.
       provider: input.provider ?? "",
       model: input.model ?? "",
-      sandbox: { enabled: true, readRoots: [resolvedCwd], writeRoots: [resolvedCwd], denyPaths: [path.join(resolvedCwd, ".env")], network: "allow" },
+      sandbox: defaultSandboxPolicy(resolvedCwd),
       title: input.title ?? "New session",
       createdAt: now,
       updatedAt: now,

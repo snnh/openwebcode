@@ -4,6 +4,22 @@
 
 ## Unreleased
 
+## [0.3.10] - 2026-07-24
+
+### 修复
+
+- 安全：修复路径策略 deny 规则的绕过问题，拒绝路径及其后代不再可通过变形路径访问。
+- 安全：`.owc` 目录内配置仅在可信来源下加载，避免工作区内被篡改的配置影响会话。
+- 安全：事件 WebSocket 校验浏览器 `Origin`，阻止跨站页面接入本地服务。
+- 安全：会话导入对数据做清洗，剔除非法或越权的字段与结构。
+- 安全：MCP 服务器环境变量继承受控，不再把宿主全部环境暴露给子进程。
+- 可用性：前台命令与后台任务统一遵守超时设置，避免无限挂起。
+- 可用性：POSIX 子进程在取消与退出路径上完整回收，不再残留僵尸进程。
+- 可用性：事件在跨会话场景下正确归属与投递。
+- 可用性：统一 core 与各组件上报的版本号，消除与发行版本不一致。
+- 可用性：修复 Windows 沙盒内 pwsh 工作目录回退到 `C:\` 导致相对路径命令被拒绝的问题；ACL 授权改用无子树传播的原生调用，消除大目录树上的卡顿。
+- 可用性：兼容 Node.js 24。
+
 ## [0.3.8] - 2026-07-23
 
 ### 修复
@@ -174,6 +190,7 @@
 - 支持图片输入、Markdown/代码高亮/KaTeX、折叠思考内容、会话导入导出、可分享的自包含 HTML 页面和 `owc run` Headless CLI。
 - 提供 Windows MSI、Linux tar.gz 安装脚本和 GitHub Actions 发布流水线。
 
+[0.3.10]: https://github.com/snnh/openwebcode/compare/v0.3.8...v0.3.10
 [0.3.8]: https://github.com/snnh/openwebcode/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/snnh/openwebcode/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/snnh/openwebcode/compare/v0.3.5...v0.3.6

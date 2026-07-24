@@ -301,3 +301,77 @@ describe("WebSocket event replay and resync", () => {
     expect(resyncType).toBe("resync.required");
   }, 15_000);
 });
+
+describe("WebSocket cross-session run-state broadcast", () => {
+  it("agent.state/run.* 全局广播；其他事件仍按 sessionId 过滤；无订阅客户端收全量", async () => {
+    const { WebSocket } = await import("ws");
+    const stubCore = { on() { return stubCore; } } as unknown as CoreClient;
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-ws-"));
+    roots.push(root);
+    const sessions = new SessionStore(path.join(root, ".sessions"));
+    await sessions.initialize();
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const events = new EventBus();
+    const providers = new ProviderRegistry();
+    const app = await buildServer({ core: stubCore, sessions, agent: { isRunning: () => false } as unknown as AgentRunner, events, providers, pricing });
+    apps.push(app);
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    const address = app.server.address();
+    const base = typeof address === "object" && address ? `ws://127.0.0.1:${address.port}` : "";
+
+    const nextEvent = (ws: InstanceType<typeof WebSocket>): Promise<AppEvent> => new Promise((resolve) => {
+      ws.on("message", function onMessage(data: Buffer) {
+        const event = JSON.parse(data.toString()) as AppEvent;
+        if (event.type === "connected") return;
+        ws.off("message", onMessage);
+        resolve(event);
+      });
+    });
+    const silence = (ws: InstanceType<typeof WebSocket>, ms: number): Promise<void> => new Promise((resolve, reject) => {
+      const timer = setTimeout(resolve, ms);
+      ws.on("message", (data: Buffer) => {
+        const event = JSON.parse(data.toString()) as AppEvent;
+        if (event.type === "connected") return;
+        clearTimeout(timer);
+        reject(new Error(`unexpected event: ${event.type}`));
+      });
+    });
+
+    const subscribed = new WebSocket(`${base}/api/events?sessionId=s1`);
+    const globalClient = new WebSocket(`${base}/api/events`);
+    // 等双方的 connected 帧到达（此时已注册进 clients）
+    const connected = (ws: InstanceType<typeof WebSocket>): Promise<void> => new Promise((resolve) => {
+      ws.on("message", function onMessage(data: Buffer) {
+        if ((JSON.parse(data.toString()) as AppEvent).type === "connected") {
+          ws.off("message", onMessage);
+          resolve();
+        }
+      });
+    });
+    await Promise.all([connected(subscribed), connected(globalClient)]);
+
+    // 其他会话的 agent.state：订阅 s1 的客户端也应收到
+    const receivedState = nextEvent(subscribed);
+    events.publish({ source: "agent", type: "agent.state", sessionId: "s2", payload: { state: "running" } });
+    expect((await receivedState).sessionId).toBe("s2");
+
+    // 其他会话的 run.* 事件同样全局广播
+    const receivedRun = nextEvent(subscribed);
+    events.publish({ source: "agent", type: "run.accepted", sessionId: "s2", payload: {} });
+    expect((await receivedRun).type).toBe("run.accepted");
+
+    // 非运行状态类事件仍按 sessionId 过滤
+    const filtered = silence(subscribed, 200);
+    events.publish({ source: "agent", type: "tool.end", sessionId: "s2", payload: {} });
+    await filtered;
+
+    // 未带 sessionId 的客户端收到全量事件流
+    const receivedAll = nextEvent(globalClient);
+    events.publish({ source: "agent", type: "tool.end", sessionId: "s3", payload: {} });
+    expect((await receivedAll).sessionId).toBe("s3");
+
+    subscribed.close();
+    globalClient.close();
+  }, 15_000);
+});

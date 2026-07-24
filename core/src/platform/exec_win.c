@@ -87,10 +87,46 @@ static int select_shell(wchar_t *path, size_t count, int shell_backend,
     return 1;
 }
 
-/* AppContainer access is granted to the workspace and, for an elevated host,
- * as traverse-only ACEs on its ancestors. Keep process creation on the host
+/* AppContainer access is granted to the workspace and, best-effort, as
+ * traverse/read-attributes ACEs on its ancestors. Keep process creation on the host
  * token: mixing a linked medium token with SECURITY_CAPABILITIES can leave
  * shells stalled during initialization on split-token Windows accounts. */
+static char *build_shell_command(const wchar_t *shell_path, const char *arguments,
+                                 const char *cwd, const char *user_command, int powershell) {
+    /* Under AppContainer, pwsh's FileSystem provider init fails (the profile
+       home is not granted) and its location falls back to C:\; and even a
+       plain Set-Location fails when an ancestor directory is not readable by
+       the AppContainer SID (provider resolution stats every component, and a
+       non-elevated core cannot grant DACLs it does not own).  Fall back to a
+       PSDrive rooted at the cwd: drive roots open by full path, which only
+       needs traverse on ancestors. */
+    const char *src;
+    char *escaped, *dst, *full;
+    size_t extra = 0, n;
+    int length;
+    if (!powershell) {
+        length = snprintf(NULL, 0, "\"%ls\" %s \"%s\"", shell_path, arguments, user_command);
+        if (length < 0) return NULL;
+        full = (char *)malloc((size_t)length + 1);
+        if (full) (void)snprintf(full, (size_t)length + 1, "\"%ls\" %s \"%s\"", shell_path, arguments, user_command);
+        return full;
+    }
+    for (src = cwd; *src; src++) if (*src == '\'') extra++;
+    n = (size_t)(src - cwd);
+    escaped = (char *)malloc(n + extra + 1);
+    if (!escaped) return NULL;
+    dst = escaped;
+    for (src = cwd; *src; src++) { if (*src == '\'') *dst++ = '\''; *dst++ = *src; }
+    *dst = '\0';
+    length = snprintf(NULL, 0, "\"%ls\" %s try { Set-Location -LiteralPath '%s' -ErrorAction Stop } catch { New-PSDrive -Name OWC -PSProvider FileSystem -Root '%s' | Out-Null; Set-Location OWC: }; %s", shell_path, arguments, escaped, escaped, user_command);
+    if (length >= 0) {
+        full = (char *)malloc((size_t)length + 1);
+        if (full) (void)snprintf(full, (size_t)length + 1, "\"%ls\" %s try { Set-Location -LiteralPath '%s' -ErrorAction Stop } catch { New-PSDrive -Name OWC -PSProvider FileSystem -Root '%s' | Out-Null; Set-Location OWC: }; %s", shell_path, arguments, escaped, escaped, user_command);
+    } else full = NULL;
+    free(escaped);
+    return full;
+}
+
 int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *result) {
     SECURITY_ATTRIBUTES security={sizeof(security),NULL,TRUE};
     HANDLE out_read=NULL,out_write=NULL,err_read=NULL,err_write=NULL,input=NULL,job=NULL;
@@ -112,16 +148,11 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
     if(input==INVALID_HANDLE_VALUE) { input=NULL; goto cleanup; }
     cwd=utf8_to_wide(request->cwd);
     {
-        int command_length;
         const char *arguments;
         if(!select_shell(shell_path,ARRAYSIZE(shell_path),request->shell_backend,&powershell)){if(request->shell_backend==(int)OWC_SHELL_PWSH)result->shell_unavailable=1;goto cleanup;}
         arguments=powershell?"-NoLogo -NoProfile -NonInteractive -Command":"/d /s /c";
-        command_length=powershell?snprintf(NULL,0,"\"%ls\" %s %s",shell_path,arguments,request->command):snprintf(NULL,0,"\"%ls\" %s \"%s\"",shell_path,arguments,request->command);
-        if(command_length<0) goto cleanup;
-        full_command=(char *)malloc((size_t)command_length+1);
+        full_command=build_shell_command(shell_path,arguments,request->cwd,request->command,powershell);
         if(!full_command) goto cleanup;
-        if(powershell)(void)snprintf(full_command,(size_t)command_length+1,"\"%ls\" %s %s",shell_path,arguments,request->command);
-        else (void)snprintf(full_command,(size_t)command_length+1,"\"%ls\" %s \"%s\"",shell_path,arguments,request->command);
     }
     if(!cwd) goto cleanup;
     command=utf8_to_wide(full_command); if(!command) goto cleanup;

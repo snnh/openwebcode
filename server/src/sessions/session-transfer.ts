@@ -83,12 +83,25 @@ export function parseSessionImport(text: string): ParsedSessionImport {
   }
   // createdAt/updatedAt 在 SessionMeta 上必填且列表按 updatedAt 排序：导入是信任边界，缺失时兜底为当前时间
   const now = new Date().toISOString();
-  const { id, ...rest } = session;
+  const { id } = session;
+  // 信任边界：显式挑选可保留字段，权限/沙盒元数据（permissionMode、permissionRules、
+  // sandbox、sandboxMode、setupScript）与托管工作区元数据（workspace）一律剥离，
+  // 重置为新建会话的默认值，避免导入文件在宿主放大执行权限。
   return {
     meta: {
-      ...rest,
+      cwd: session.cwd,
+      provider: session.provider,
+      model: session.model,
+      title: session.title,
       createdAt: typeof session.createdAt === "string" && session.createdAt !== "" ? session.createdAt : now,
       updatedAt: typeof session.updatedAt === "string" && session.updatedAt !== "" ? session.updatedAt : now,
+      ...(session.thinking === "adaptive" || session.thinking === "enabled" || session.thinking === "disabled" ? { thinking: session.thinking } : {}),
+      ...(session.effort === "low" || session.effort === "medium" || session.effort === "high" || session.effort === "xhigh" || session.effort === "max" ? { effort: session.effort } : {}),
+      ...(session.agentMode === "plan" || session.agentMode === "build" ? { agentMode: session.agentMode } : {}),
+      ...(typeof session.snapshotBackend === "string" ? { snapshotBackend: session.snapshotBackend } : {}),
+      ...(session.snapshotMode === "auto" || session.snapshotMode === "manual" ? { snapshotMode: session.snapshotMode } : {}),
+      ...(session.shellBackend === "default" || session.shellBackend === "pwsh" ? { shellBackend: session.shellBackend } : {}),
+      ...(typeof session.activeLeafId === "string" ? { activeLeafId: session.activeLeafId } : {}),
       ...(id ? { id } : {}),
     },
     messages,

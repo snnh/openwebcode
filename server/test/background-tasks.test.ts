@@ -654,3 +654,62 @@ describe("background bash — executeTool 与 REST 路径", () => {
     }
   }, 30_000);
 });
+
+describe("BackgroundTaskRegistry — 启动失败与超时", () => {
+  it("core 启动/配置失败：移除 entry、stop client 并抛错，不泄漏任务", async () => {
+    const root = await tempRoot();
+    let stopped = false;
+    const failingClient = {
+      on() { return failingClient; },
+      async start() { throw new Error("spawn failed"); },
+      async stop() { stopped = true; },
+    } as unknown as CoreClientLike;
+    const registry = new BackgroundTaskRegistry(
+      () => failingClient,
+      async () => undefined,
+    );
+
+    await expect(registry.start({ sessionId: "s1", taskId: "task-bad", cmd: "x", cwd: root }))
+      .rejects.toThrow("spawn failed");
+    expect(registry.get("task-bad")).toBeUndefined();
+    expect(registry.listForSession("s1")).toHaveLength(0);
+    expect(registry.hasRunningForSession("s1")).toBe(false);
+    expect(stopped).toBe(true);
+  });
+
+  it("configureSession 失败同样清理 entry 与 client", async () => {
+    const root = await tempRoot();
+    const core = createControllableCore();
+    const registry = new BackgroundTaskRegistry(
+      () => core.client,
+      async () => { throw new Error("configure failed"); },
+    );
+
+    await expect(registry.start({ sessionId: "s1", taskId: "task-bad", cmd: "x", cwd: root }))
+      .rejects.toThrow("configure failed");
+    expect(registry.get("task-bad")).toBeUndefined();
+    expect(core.stopCalled()).toBe(true);
+  });
+
+  it("start 的 timeoutMs 透传到 core run（后台任务长超时不被默认 RPC 超时杀连接）", async () => {
+    const root = await tempRoot();
+    const requests: Array<{ timeoutMs?: number }> = [];
+    const core = createControllableCore();
+    const runClient = {
+      ...core.client,
+      async run(request: { timeoutMs?: number }) {
+        requests.push(request);
+        return new Promise(() => undefined); // 挂起，测试只关心请求参数
+      },
+    } as unknown as CoreClientLike;
+    const registry = new BackgroundTaskRegistry(
+      () => runClient,
+      async () => undefined,
+    );
+
+    await registry.start({ sessionId: "s1", taskId: "task-long", cmd: "build", cwd: root, timeoutMs: 10 * 60_000 });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.timeoutMs).toBe(600_000);
+    await registry.stop("task-long");
+  });
+});

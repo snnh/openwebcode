@@ -56,15 +56,28 @@ static wchar_t *utf8_to_wide(const char *text) {
     return wide;
 }
 
-/* A DACL edit is read-modify-write (GetNamedSecurityInfo -> SetEntriesInAcl ->
- * SetNamedSecurityInfo). Two commands on the same write root in this one core
- * process can otherwise interleave and have one grant overwrite the other's.
- * Serialize the RMW per process so concurrent grants/revokes never clobber. */
+/* A DACL edit is read-modify-write (GetSecurityInfo -> SetEntriesInAcl ->
+ * NtSetSecurityObject).  The Win32 Set*SecurityInfo writers propagate
+ * inheritable ACEs to every descendant, which can rewrite huge numbers of
+ * ACLs on large directory trees; the native call only touches the object
+ * itself and children pick up the inheritable ACE at access-check time.
+ * Two commands on the same write root in this one core process can
+ * otherwise interleave and have one grant overwrite the other's.
+ * Serialize the RMW per process so concurrent grants/revokes never
+ * clobber. */
 static INIT_ONCE acl_once = INIT_ONCE_STATIC_INIT;
 static CRITICAL_SECTION acl_mutex;
+static LONG (NTAPI *nt_set_security_object)(HANDLE, SECURITY_INFORMATION,
+                                            PSECURITY_DESCRIPTOR);
 static BOOL CALLBACK acl_mutex_init(PINIT_ONCE once, PVOID param, PVOID *context) {
+    HMODULE ntdll;
     (void)once; (void)param; (void)context;
     InitializeCriticalSection(&acl_mutex);
+    ntdll = GetModuleHandleW(L"ntdll.dll");
+    if (ntdll)
+        nt_set_security_object = (LONG (NTAPI *)(HANDLE, SECURITY_INFORMATION,
+                                                 PSECURITY_DESCRIPTOR))
+            GetProcAddress(ntdll, "NtSetSecurityObject");
     return TRUE;
 }
 
@@ -78,7 +91,7 @@ static DWORD change_root_access(const wchar_t *path, PSID sid, ACCESS_MODE mode,
     DWORD error;
     (void)InitOnceExecuteOnce(&acl_once, acl_mutex_init, NULL, NULL);
     EnterCriticalSection(&acl_mutex);
-    if (access_kind != OWC_ACL_NAMED_PATH) {
+    {
         DWORD flags = FILE_FLAG_BACKUP_SEMANTICS;
         if (access_kind == OWC_ACL_REPARSE_POINT)
             flags |= FILE_FLAG_OPEN_REPARSE_POINT;
@@ -88,10 +101,6 @@ static DWORD change_root_access(const wchar_t *path, PSID sid, ACCESS_MODE mode,
         error = handle == INVALID_HANDLE_VALUE ? GetLastError() :
             GetSecurityInfo(handle, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
                             NULL, NULL, &old_acl, NULL, &descriptor);
-    } else {
-        error = GetNamedSecurityInfoW((LPWSTR)path, SE_FILE_OBJECT,
-                                      DACL_SECURITY_INFORMATION, NULL, NULL,
-                                      &old_acl, NULL, &descriptor);
     }
     if (error == ERROR_SUCCESS) {
         memset(&access, 0, sizeof(access));
@@ -103,13 +112,19 @@ static DWORD change_root_access(const wchar_t *path, PSID sid, ACCESS_MODE mode,
         access.Trustee.ptstrName = (LPWSTR)sid;
         error = SetEntriesInAclW(1, &access, old_acl, &new_acl);
         if (error == ERROR_SUCCESS) {
-            error = access_kind != OWC_ACL_NAMED_PATH
-                ? SetSecurityInfo(handle, SE_FILE_OBJECT,
-                                  DACL_SECURITY_INFORMATION,
-                                  NULL, NULL, new_acl, NULL)
-                : SetNamedSecurityInfoW((LPWSTR)path, SE_FILE_OBJECT,
+            if (nt_set_security_object) {
+                SECURITY_DESCRIPTOR replacement;
+                LONG status;
+                InitializeSecurityDescriptor(&replacement, SECURITY_DESCRIPTOR_REVISION);
+                SetSecurityDescriptorDacl(&replacement, TRUE, new_acl, FALSE);
+                status = nt_set_security_object(handle, DACL_SECURITY_INFORMATION,
+                                                &replacement);
+                error = status >= 0 ? ERROR_SUCCESS : ERROR_ACCESS_DENIED;
+            } else {
+                error = SetSecurityInfo(handle, SE_FILE_OBJECT,
                                         DACL_SECURITY_INFORMATION,
                                         NULL, NULL, new_acl, NULL);
+            }
         }
     }
     LeaveCriticalSection(&acl_mutex);
@@ -163,20 +178,6 @@ static int grant_temporary(owc_sandbox *sandbox, const wchar_t *path,
     return 1;
 }
 
-static int process_is_elevated(void) {
-    HANDLE token = NULL;
-    TOKEN_ELEVATION elevation;
-    DWORD size = 0;
-    int elevated = 0;
-    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
-        if (GetTokenInformation(token, TokenElevation, &elevation,
-                                sizeof(elevation), &size))
-            elevated = elevation.TokenIsElevated != 0;
-        CloseHandle(token);
-    }
-    return elevated;
-}
-
 static int grant_ancestor_traverse(owc_sandbox *sandbox, const char *root) {
     wchar_t *path = utf8_to_wide(root);
     size_t length;
@@ -192,13 +193,13 @@ static int grant_ancestor_traverse(owc_sandbox *sandbox, const char *root) {
         if (!slash) break;
         if (slash == path + 2 && path[1] == L':') {
             path[3] = L'\0';
-            ok = grant_temporary(sandbox, path, FILE_TRAVERSE | SYNCHRONIZE,
+            ok = grant_temporary(sandbox, path, FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
                                  NO_INHERITANCE, OWC_ACL_NAMED_PATH);
             break;
         }
         *slash = L'\0';
         if (!path[0] || !grant_temporary(sandbox, path,
-                                         FILE_TRAVERSE | SYNCHRONIZE,
+                                         FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
                                          NO_INHERITANCE, OWC_ACL_NAMED_PATH)) {
             ok = 0;
             break;
@@ -244,18 +245,15 @@ static int grant_write_roots(owc_sandbox *sandbox,
         free(path);
     }
     /* The ACL unit-test target exercises write-root grant/cleanup without
-     * editing its elevated runner's system-wide ancestor ACLs. Production is
-     * compiled without this definition and always grants required traversal. */
+     * editing the test runner's ancestor ACLs. */
 #ifndef OWC_SANDBOX_TEST_SKIP_ANCESTORS
-    if (process_is_elevated()) {
-        for (i = 0; i < options->write_root_count; ++i) {
-            if (!grant_ancestor_traverse(sandbox, options->write_roots[i])) {
-                set_reason(reason, reason_size,
-                           "writeRoot ancestor traverse grant failed");
-                return 0;
-            }
-        }
-    }
+    /* Best-effort on every ancestor: a non-elevated core cannot edit DACLs
+       it does not own (drive roots), and the ancestor may already be
+       traversable via an existing ACE.  Grant where possible so shells that
+       stat every path component (pwsh Set-Location) work on user-owned
+       layouts; the write-root grant above remains the enforced boundary. */
+    for (i = 0; i < options->write_root_count; ++i)
+        (void)grant_ancestor_traverse(sandbox, options->write_roots[i]);
 #endif
     return 1;
 }

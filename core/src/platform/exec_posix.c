@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,6 +33,42 @@ static void close_fd(int *descriptor) {
 
 static void reap_child(pid_t child, int *status) {
     while (waitpid(child, status, 0) < 0 && errno == EINTR) {}
+}
+
+/* kill(-child) only reaches the whole tree once setpgid took effect; when
+ * that raced or failed the group does not exist and the call fails with
+ * ESRCH, silently sparing the child.  Fall back to signalling the child
+ * directly and check the return value. */
+static void signal_child_group(pid_t child, int sig) {
+    if (kill(-child, sig) != 0) (void)kill(child, sig);
+}
+
+/* Live children run in their own process group (setpgid below).  Track them
+ * so the core can kill those groups when it exits, normally or via a fatal
+ * signal, instead of orphaning the spawned trees. */
+#define OWC_EXEC_MAX_TRACKED 16
+static volatile sig_atomic_t tracked_children[OWC_EXEC_MAX_TRACKED];
+static pthread_mutex_t tracked_children_mutex=PTHREAD_MUTEX_INITIALIZER;
+static void track_child(pid_t child) {
+    size_t i;
+    (void)pthread_mutex_lock(&tracked_children_mutex);
+    for(i=0;i<OWC_EXEC_MAX_TRACKED;i++) if(!tracked_children[i]) { tracked_children[i]=child; break; }
+    (void)pthread_mutex_unlock(&tracked_children_mutex);
+}
+static void untrack_child(pid_t child) {
+    size_t i;
+    (void)pthread_mutex_lock(&tracked_children_mutex);
+    for(i=0;i<OWC_EXEC_MAX_TRACKED;i++) if(tracked_children[i]==child) tracked_children[i]=0;
+    (void)pthread_mutex_unlock(&tracked_children_mutex);
+}
+/* Lock-free on purpose: safe to call from a signal handler (kill is
+ * async-signal-safe).  A stale slot only costs a harmless ESRCH. */
+void owc_platform_exec_terminate_all(void) {
+    size_t i;
+    for(i=0;i<OWC_EXEC_MAX_TRACKED;i++) {
+        pid_t child=(pid_t)tracked_children[i];
+        if(child>0) signal_child_group(child,SIGKILL);
+    }
 }
 
 static int write_all(int descriptor, const void *data, size_t size) {
@@ -94,6 +131,7 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
         _exit(127);
     }
 
+    track_child(child);
     (void)setpgid(child, child);
     close_fd(&out_pipe[1]); close_fd(&err_pipe[1]); close_fd(&sandbox_pipe[1]);
     if (fcntl(out_pipe[0], F_SETFL, fcntl(out_pipe[0], F_GETFL) | O_NONBLOCK) < 0 ||
@@ -109,20 +147,20 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
         if (current < 0) { saved_error = errno; goto cleanup; }
         if (request->cancel_requested && *request->cancel_requested) {
             int attempts;
-            (void)kill(-child, SIGTERM);
+            signal_child_group(child, SIGTERM);
             for(attempts=0;running&&attempts<10;attempts++) {
                 pid_t waited=waitpid(child,&status,WNOHANG);
                 if(waited==child) { running=0; break; }
                 if(waited<0&&errno!=EINTR) { saved_error=errno; goto cleanup; }
                 {struct timespec pause={0,50*1000*1000};(void)nanosleep(&pause,NULL);}
             }
-            if(running) { (void)kill(-child,SIGKILL); reap_child(child,&status); running=0; }
+            if(running) { signal_child_group(child,SIGKILL); reap_child(child,&status); running=0; }
             result->cancelled = 1;
             close_fd(&out_pipe[0]); close_fd(&err_pipe[0]);
             break;
         }
         if (current - started >= request->timeout_ms) {
-            (void)kill(-child, SIGKILL);
+            signal_child_group(child, SIGKILL);
             result->timed_out = 1;
             if (running) reap_child(child, &status);
             running = 0;
@@ -170,10 +208,11 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
 
 cleanup:
     if (!ok && child > 0) {
-        (void)kill(-child, SIGKILL);
+        signal_child_group(child, SIGKILL);
         if (running) reap_child(child, &status);
         result->system_error=(unsigned long)(saved_error ? saved_error : EIO);
     }
     close_fd(&out_pipe[0]); close_fd(&out_pipe[1]); close_fd(&err_pipe[0]); close_fd(&err_pipe[1]); close_fd(&sandbox_pipe[0]); close_fd(&sandbox_pipe[1]);
+    untrack_child(child);
     return ok;
 }

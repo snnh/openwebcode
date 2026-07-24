@@ -28,6 +28,27 @@ interface PendingRequest {
 
 const PROTOCOL_VERSION = "2025-06-18";
 
+/**
+ * stdio 子进程环境白名单（键名大小写不敏感，兼容 Windows 的 Path 等写法）：
+ * 默认不透传宿主完整 process.env（含 API key 等凭据），仅配置中显式声明的 env 追加。
+ */
+const ENV_PASSTHROUGH = new Set([
+  "PATH", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC",
+  "HOME", "USERPROFILE", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL",
+]);
+
+/** 测试用：暴露白名单键集合（大写）。 */
+export const MCP_ENV_PASSTHROUGH: ReadonlySet<string> = ENV_PASSTHROUGH;
+
+/** 从 process.env 提取白名单内的最小运行环境。 */
+export function minimalChildEnv(): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined && ENV_PASSTHROUGH.has(key.toUpperCase())) result[key] = value;
+  }
+  return result;
+}
+
 /** 抽取 tools/call 结果：全文本块拼接，混合块序列化为 JSON。 */
 function renderContent(result: unknown): McpToolCallResult {
   const record = (result ?? {}) as { content?: Array<{ type?: string; text?: string }>; isError?: boolean };
@@ -55,7 +76,7 @@ class Client implements McpClient {
     if (!isHttpConfig(this.config)) {
       const { command, args = [], env, cwd } = this.config;
       this.child = spawn(command, args, {
-        env: { ...process.env, ...env },
+        env: { ...minimalChildEnv(), ...env },
         ...(cwd ? { cwd } : {}),
         stdio: ["pipe", "pipe", "pipe"],
       });

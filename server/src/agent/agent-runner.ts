@@ -18,6 +18,7 @@ import { runSubAgent, SUB_AGENT_TOOL_NAMES } from "./sub-agent.js";
 import { getSnapshotBackend } from "../snapshots/index.js";
 import type { MessageContent, ShellBackend } from "../sessions/types.js";
 import type { SessionStore } from "../sessions/session-store.js";
+import { defaultSandboxPolicy } from "../sessions/default-sandbox.js";
 import { parseSkillCommand, type SkillRegistry } from "../skills.js";
 import type { AgentRegistry } from "../agents.js";
 import { renderCommand, type CommandRegistry } from "../commands.js";
@@ -496,7 +497,7 @@ export class AgentRunner {
       }
       // UserPromptSubmit 钩子：仅通知不阻断（否决语义为 PreToolUse 专属）。
       await this.runNotificationHook("UserPromptSubmit", { sessionId, cwd: configuredSession.cwd, prompt: effectiveText.slice(0, 2000) });
-      await this.core.configureSession({ sessionId, cwd: configuredSession.cwd, sandbox: configuredSession.sandbox ?? { enabled: true, readRoots: [configuredSession.cwd], writeRoots: [configuredSession.cwd], denyPaths: [], network: "allow" } });
+      await this.core.configureSession({ sessionId, cwd: configuredSession.cwd, sandbox: configuredSession.sandbox ?? defaultSandboxPolicy(configuredSession.cwd) });
       if (automaticSnapshot) {
         await this.state(sessionId, "snapshotting");
         // 配置成功后再创建镜像，避免 Core 无法启动时留下无用的 VHD checkpoint；
@@ -914,7 +915,7 @@ export class AgentRunner {
       await this.core.configureSession({
         sessionId,
         cwd: session.cwd,
-        sandbox: session.sandbox ?? { enabled: true, readRoots: [session.cwd], writeRoots: [session.cwd], denyPaths: [], network: "allow" },
+        sandbox: session.sandbox ?? defaultSandboxPolicy(session.cwd),
       });
       // 权限链（与 bash 工具一致；plan 模式会被门禁拦截）
       const permission = await this.authorizeTool(sessionId, "bash", { cmd }, controller.signal);
@@ -1439,6 +1440,8 @@ export class AgentRunner {
           taskId,
           cmd: input.cmd,
           cwd: session.cwd,
+          // 后台任务语义是长时间运行：独立 core 连接，10 分钟超时（core-client RPC 超时随之为 610s，不再 ~130s 杀连接）
+          timeoutMs: 10 * 60_000,
           shellBackend: session.shellBackend ?? "default",
         });
         const result = { taskId, status: "started" as const };
@@ -1482,7 +1485,8 @@ export class AgentRunner {
         const cancel = () => { void this.core.cancelJob({ sessionId, jobId }).catch(() => undefined); };
         signal.addEventListener("abort", cancel, { once: true });
         try {
-          await this.core.startJob({ sessionId, jobId, kind: "exec", cmd, cwd: session.cwd, shellBackend: session.shellBackend ?? "default" });
+          // jobControl 路径本身无 RPC 超时兜底：给 core 侧 10 分钟上限，轮询循环遇 timed_out 终止
+          await this.core.startJob({ sessionId, jobId, kind: "exec", cmd, cwd: session.cwd, timeoutMs: 10 * 60_000, shellBackend: session.shellBackend ?? "default" });
           for (;;) {
             const page = await this.core.jobOutput({ sessionId, jobId, afterSeq, limit: 128 });
             output.push(...page.chunks);

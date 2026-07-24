@@ -18,8 +18,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # bundled Node 20 运行时的具体版本（nodejs.org 发行包），升级时只改这个常量
-  NODE_DIST_VERSION: "20.19.0"
+  # bundled Node 24 运行时的具体版本（nodejs.org 发行包），升级时只改这个常量
+  NODE_DIST_VERSION: "24.18.0"
 
 jobs:
   windows:
@@ -28,7 +28,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
           cache-dependency-path: |
             server/package-lock.json
@@ -119,7 +119,7 @@ jobs:
             echo "WiX already available"
             exit 0
           fi
-          choco install wixtoolset --no-progress
+          choco install wixtoolset --version 3.14.1.20250415 --no-progress
           echo 'C:\Program Files (x86)\WiX Toolset v3.14\bin' >> "$GITHUB_PATH"
       - name: Pack MSI (CPack WIX)
         shell: bash
@@ -133,6 +133,50 @@ jobs:
         shell: pwsh
         run: |
           ./packaging/verify-wix-options.ps1 -MsiPath "openwebcode-${env:VERSION}-windows-x64.msi"
+      - name: Smoke-test Windows MSI installation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msi = (Resolve-Path "openwebcode-${env:VERSION}-windows-x64.msi").Path
+          $installDir = Join-Path $env:ProgramFiles 'openwebcode'
+          $proc = $null
+          try {
+            # msiexec /quiet 需要管理员；windows runner 默认即是
+            $install = Start-Process msiexec.exe -Wait -PassThru -ArgumentList '/i', "`"$msi`"", '/quiet', '/norestart', '/L*v', 'msi-install.log'
+            if ($install.ExitCode -ne 0) {
+              Get-Content msi-install.log -ErrorAction SilentlyContinue
+              throw "msiexec install failed with exit code $($install.ExitCode)"
+            }
+            $owc = Join-Path $installDir 'bin\owc.cmd'
+            if (-not (Test-Path $owc)) { throw "launcher missing after install: $owc" }
+            $env:OWC_PORT = '39032'
+            $env:OWC_DATA_DIR = Join-Path $env:RUNNER_TEMP 'owc-smoke-data'
+            $proc = Start-Process -PassThru -FilePath 'cmd.exe' -ArgumentList '/c', "`"$owc`"" `
+              -RedirectStandardOutput 'owc-smoke.log' -RedirectStandardError 'owc-smoke.err'
+            $ready = $false
+            foreach ($i in 1..30) {
+              try {
+                $response = Invoke-RestMethod -Uri 'http://127.0.0.1:39032/api/health' -TimeoutSec 2
+                if ($response.status -eq 'ok') { $ready = $true; break }
+              } catch {}
+              if ($proc.HasExited) {
+                Get-Content owc-smoke.log, owc-smoke.err -ErrorAction SilentlyContinue
+                throw 'server exited before the health check passed'
+              }
+              Start-Sleep -Seconds 1
+            }
+            if (-not $ready) {
+              Get-Content owc-smoke.log, owc-smoke.err -ErrorAction SilentlyContinue
+              throw 'health check did not pass within 30s'
+            }
+          } finally {
+            # 结束进程树（cmd.exe 下的 node.exe），再卸载，保证 job 结束即清理
+            if ($proc -and -not $proc.HasExited) {
+              taskkill /PID $proc.Id /T /F | Out-Null
+            }
+            $uninstall = Start-Process msiexec.exe -Wait -PassThru -ArgumentList '/x', "`"$msi`"", '/quiet', '/norestart'
+            if ($uninstall.ExitCode -ne 0) { Write-Warning "msiexec uninstall returned $($uninstall.ExitCode)" }
+          }
       - name: Upload MSI for release job
         uses: actions/upload-artifact@v4
         with:
@@ -146,7 +190,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
           cache-dependency-path: |
             server/package-lock.json

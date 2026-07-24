@@ -56,7 +56,7 @@ IFS= read -r ACTUAL < "$WORK_DIR/launcher.override.env"
 [ "$ACTUAL" = "4999|$WORK_DIR/override|127.0.0.1" ] || fail "runtime override was ignored: $ACTUAL"
 
 # A package without bundled Node.js must work with --use-system-node only after
-# validating a >=20 executable resolved from PATH, and must not copy node/.
+# validating a >=24 executable resolved from PATH, and must not copy node/.
 SYSTEM_PACKAGE="$WORK_DIR/system-package"
 SYSTEM_PREFIX="$WORK_DIR/system-prefix"
 SYSTEM_BIN="$WORK_DIR/system-bin"
@@ -64,7 +64,13 @@ make_package "$SYSTEM_PACKAGE"
 mkdir -p "$SYSTEM_BIN"
 printf '%s\n' \
     '#!/bin/sh' \
-    'if [ "${1:-}" = "-p" ]; then printf "20.19.0\n"; exit 0; fi' \
+    'if [ "${1:-}" = "-p" ]; then' \
+    '    case "${2:-}" in' \
+    '        process.versions.node) printf "24.18.0\n" ;;' \
+    '        *) printf "%064d\n" 7 ;;' \
+    '    esac' \
+    '    exit 0' \
+    'fi' \
     'exit 0' \
     > "$SYSTEM_BIN/node"
 chmod +x "$SYSTEM_BIN/node"
@@ -74,6 +80,18 @@ PATH="$SYSTEM_BIN:$PATH" HOME="$WORK_DIR/home" "$SYSTEM_PACKAGE/install.sh" \
 [ ! -e "$SYSTEM_PREFIX/lib/openwebcode/node" ] || fail "--use-system-node copied bundled Node.js"
 grep -F "OWC_NODE='$SYSTEM_BIN/node'" "$SYSTEM_PREFIX/bin/owc" >/dev/null || \
     fail "system Node.js path was not pinned in launcher"
+
+# A non-loopback install must generate an OWC_ACCESS_TOKEN default in the
+# launcher; the server refuses to start a non-loopback listener without one.
+TOKEN_PREFIX="$WORK_DIR/token-prefix"
+PATH="$SYSTEM_BIN:$PATH" HOME="$WORK_DIR/home" "$SYSTEM_PACKAGE/install.sh" \
+    --yes --prefix "$TOKEN_PREFIX" --port 3002 --data-dir "$WORK_DIR/token-data" \
+    --host 0.0.0.0 --use-system-node > "$WORK_DIR/token-install.out" 2>&1
+sh -n "$TOKEN_PREFIX/bin/owc"
+grep -E "OWC_DEFAULT_ACCESS_TOKEN='[0-9a-f]{64}'" "$TOKEN_PREFIX/bin/owc" >/dev/null || \
+    fail "non-loopback install did not write an OWC_ACCESS_TOKEN default"
+grep -q 'OWC_ALLOWED_ORIGINS' "$WORK_DIR/token-install.out" || \
+    fail "non-loopback install did not mention OWC_ALLOWED_ORIGINS"
 
 # Strict option validation must fail before any destructive copy.
 if HOME="$WORK_DIR/home" "$PACKAGE/install.sh" --yes --prefix relative \
