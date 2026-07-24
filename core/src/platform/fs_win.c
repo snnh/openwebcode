@@ -56,12 +56,36 @@ static void native_delete_on_close(owc_nt_set_information_file_fn set_informatio
 static owc_fs_error winerr(void){DWORD e=GetLastError();if(e==ERROR_FILE_NOT_FOUND||e==ERROR_PATH_NOT_FOUND)return OWC_FS_NOT_FOUND;if(e==ERROR_ACCESS_DENIED||e==ERROR_SHARING_VIOLATION)return OWC_FS_PERMISSION_DENIED;return OWC_FS_IO_ERROR;}
 static wchar_t *wide(const char *s){int n=MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,s,-1,NULL,0);wchar_t*w;if(!n)return NULL;w=(wchar_t*)malloc((size_t)n*sizeof(*w));if(w&&!MultiByteToWideChar(CP_UTF8,MB_ERR_INVALID_CHARS,s,-1,w,n)){free(w);w=NULL;}return w;}
 static char *utf8(const wchar_t *s){int n=WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,s,-1,NULL,0,NULL,NULL);char*p;if(!n)return NULL;p=(char*)malloc((size_t)n);if(p&&!WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,s,-1,p,n,NULL,NULL)){free(p);p=NULL;}return p;}
-/* Borrowed session deny roots; see fs_platform.h.  Compared against the
- * GetFinalPathNameByHandleW-resolved path so reparse points, 8.3 short names
- * and trailing-dot spellings cannot disguise a denied directory. */
-static const char *const *deny_roots=NULL;
+/* Session deny roots, canonicalized at publish time: the configured roots
+ * may themselves contain 8.3 short names (e.g. temp dirs on CI runners),
+ * which would never prefix-match a GetFinalPathNameByHandleW-resolved
+ * path.  Owned copies; freed on the next publish. */
+static char **deny_roots=NULL;
 static size_t deny_root_count=0;
-void owc_fs_platform_set_deny_roots(const char *const *roots,size_t count){deny_roots=roots;deny_root_count=roots?count:0;}
+static char *canonical_deny_root(const char *root){
+    wchar_t *w=wide(root),*buf; char *out=NULL; HANDLE h; DWORD n;
+    if(!w) return NULL;
+    h=CreateFileW(w,FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,NULL,OPEN_EXISTING,FILE_FLAG_BACKUP_SEMANTICS,NULL);
+    buf=(wchar_t*)malloc(32768*sizeof(*buf));
+    if(h!=INVALID_HANDLE_VALUE){
+        if(buf){n=GetFinalPathNameByHandleW(h,buf,32768,VOLUME_NAME_DOS);
+            if(n>0&&n<32768){const wchar_t *bare=buf;if(wcsncmp(buf,L"\\\\?\\",4)==0)bare=buf+4;out=utf8(bare);}}
+        CloseHandle(h);
+    }
+    if(!out&&buf){n=GetLongPathNameW(w,buf,32768);if(n>0&&n<32768)out=utf8(buf);}
+    free(buf);free(w);
+    if(!out){out=(char*)malloc(strlen(root)+1);if(out)strcpy(out,root);}
+    return out;
+}
+void owc_fs_platform_set_deny_roots(const char *const *roots,size_t count){
+    size_t i;
+    for(i=0;i<deny_root_count;i++) free(deny_roots[i]);
+    free(deny_roots);deny_roots=NULL;deny_root_count=0;
+    if(!roots||!count) return;
+    deny_roots=(char**)calloc(count,sizeof(*deny_roots));
+    if(!deny_roots) return;
+    for(i=0;i<count;i++){char *c=canonical_deny_root(roots[i]);if(c)deny_roots[deny_root_count++]=c;}
+}
 static int final_path_denied(const wchar_t *final){size_t i;char *resolved;const wchar_t *bare=final;if(wcsncmp(final,L"\\\\?\\",4)==0)bare=final+4;resolved=utf8(bare);if(!resolved)return 0;for(i=0;i<deny_root_count;i++)if(owc_path_is_within(resolved,deny_roots[i])){free(resolved);return 1;}free(resolved);return 0;}
 static int prefix(const wchar_t*p,const wchar_t*r){size_t n=wcslen(r);return _wcsnicmp(p,r,n)==0&&(p[n]==0||p[n]==L'\\');}
 static wchar_t *last_separator(wchar_t *path){wchar_t *back=wcsrchr(path,L'\\'),*forward=wcsrchr(path,L'/');if(!back)return forward;if(!forward)return back;return forward>back?forward:back;}
