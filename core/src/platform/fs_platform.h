@@ -11,5 +11,11 @@ owc_fs_error owc_fs_platform_list(const char *root, const char *path, owc_fs_lis
 owc_fs_error owc_fs_platform_watch_open(const char *root, const char *path, int recursive, owc_fs_watch **watch);
 owc_fs_error owc_fs_platform_watch_poll(owc_fs_watch *watch, size_t maximum_events, owc_fs_watch_result *result);
 void owc_fs_platform_watch_close(owc_fs_watch *watch);
+/* Session deny roots consulted after the platform resolves the final on-disk
+ * path, so junction / 8.3 short-name / trailing-dot spellings of a denied
+ * directory cannot bypass the policy-layer textual comparison.  The array is
+ * borrowed, not copied: callers refresh it before each filesystem operation
+ * (the RPC dispatch loop is single-threaded for filesystem calls). */
+void owc_fs_platform_set_deny_roots(const char *const *roots, size_t count);
 
 #endif

@@ -13,7 +13,7 @@
 #   --port <n>           启动器的 OWC_PORT 默认值（1-65535，默认 3000）
 #   --data-dir <dir>     启动器的 OWC_DATA_DIR 默认值（必须为绝对路径）
 #   --host <addr>        启动器的 OWC_HOST 默认值（默认 127.0.0.1）
-#   --use-system-node    不复制包内 node/，安装时验证系统 Node.js >= 20
+#   --use-system-node    不复制包内 node/，安装时验证系统 Node.js >= 24
 #   --with-systemd       额外写入用户级 systemd unit（不主动执行 systemctl）
 #   --yes                静默安装；即使在 TTY 也不提问
 #
@@ -45,7 +45,7 @@ usage() {
   --port <n>           启动器默认端口（1-65535，默认 3000）
   --data-dir <dir>     启动器默认数据目录（必须为绝对路径）
   --host <addr>        启动器默认监听地址（默认 127.0.0.1）
-  --use-system-node    使用系统 Node.js（安装时要求 >= 20）
+  --use-system-node    使用系统 Node.js（安装时要求 >= 24）
   --with-systemd       写入用户级 systemd unit，不自动启用
   --yes, -y            不交互；适合 CI、脚本和重定向输入
   -h, --help           显示本帮助
@@ -307,7 +307,7 @@ if [ "$INTERACTIVE" -eq 1 ]; then
             ask_until_valid "默认监听地址" "$HOST" valid_host "请输入 DNS 名、IPv4 或未加方括号的 IPv6 地址"
             HOST=$REPLY
             if is_loopback_host "$HOST"; then break; fi
-            echo "警告：非回环地址会把 OpenWebCode 暴露给网络；本安装器不会配置 HTTP 认证。" >&2
+            echo "警告：非回环地址会把 OpenWebCode 暴露给网络；安装器会生成 OWC_ACCESS_TOKEN 写入启动器，但 OWC_ALLOWED_ORIGINS 需自行设置。" >&2
             ask_yes_no "确认使用 $HOST（仅应在受信网络或认证反向代理后使用）" no
             [ "$REPLY" = yes ] && break
         done
@@ -349,7 +349,7 @@ if [ "$USE_SYSTEM_NODE" -eq 1 ]; then
     SYSTEM_NODE=$(command -v node 2>/dev/null || true)
     case "$SYSTEM_NODE" in
         /*) [ -x "$SYSTEM_NODE" ] || die "系统 node 不可执行: $SYSTEM_NODE" 1 ;;
-        *) die "未找到可执行的系统 node；--use-system-node 需要 Node.js >= 20" 1 ;;
+        *) die "未找到可执行的系统 node；--use-system-node 需要 Node.js >= 24" 1 ;;
     esac
     if ! SYSTEM_NODE_VERSION=$("$SYSTEM_NODE" -p 'process.versions.node' 2>/dev/null); then
         die "无法读取系统 Node.js 版本: $SYSTEM_NODE" 1
@@ -362,12 +362,25 @@ if [ "$USE_SYSTEM_NODE" -eq 1 ]; then
     case "$SYSTEM_NODE_MAJOR" in
         ''|*[!0123456789]*) die "系统 node 返回了无效版本: $SYSTEM_NODE_VERSION" 1 ;;
     esac
-    [ "${#SYSTEM_NODE_MAJOR}" -le 3 ] && [ "$SYSTEM_NODE_MAJOR" -ge 20 ] || \
-        die "系统 Node.js 版本必须 >= 20（当前 $SYSTEM_NODE_VERSION）" 1
+    [ "${#SYSTEM_NODE_MAJOR}" -le 3 ] && [ "$SYSTEM_NODE_MAJOR" -ge 24 ] || \
+        die "系统 Node.js 版本必须 >= 24（当前 $SYSTEM_NODE_VERSION）" 1
 fi
 
+ACCESS_TOKEN=''
 if ! is_loopback_host "$HOST"; then
-    echo "警告：OWC_HOST=$HOST 不是回环地址。安装器不会配置 HTTP 认证；请仅在受信网络或认证反向代理后使用。" >&2
+    # server 对非回环监听强制要求 OWC_ACCESS_TOKEN（>=32 字符）与
+    # OWC_ALLOWED_ORIGINS（见 server/src/config.ts），否则拒绝启动；
+    # 安装器生成随机 token 写入启动器默认值，origins 仍需用户按需设置。
+    if command -v openssl >/dev/null 2>&1; then
+        ACCESS_TOKEN=$(openssl rand -hex 32)
+    elif [ -x "$SRC_DIR/node/bin/node" ]; then
+        ACCESS_TOKEN=$("$SRC_DIR/node/bin/node" -p 'require("node:crypto").randomBytes(32).toString("hex")')
+    elif [ -n "$SYSTEM_NODE" ]; then
+        ACCESS_TOKEN=$("$SYSTEM_NODE" -p 'require("node:crypto").randomBytes(32).toString("hex")')
+    else
+        die "非回环监听需要生成 OWC_ACCESS_TOKEN，但未找到 openssl 或可用的 node" 1
+    fi
+    echo "警告：OWC_HOST=$HOST 不是回环地址。已生成 OWC_ACCESS_TOKEN 并写入启动器默认值；仍需按需设置 OWC_ALLOWED_ORIGINS，并仅在受信网络或认证反向代理后使用。" >&2
 fi
 
 LIB_DIR="$PREFIX/lib/openwebcode"
@@ -398,6 +411,14 @@ OWC_DEFAULT_HOST=$Q_HOST
 : "\${OWC_HOST:=\$OWC_DEFAULT_HOST}"
 export OWC_PORT OWC_DATA_DIR OWC_HOST
 EOF
+if [ -n "$ACCESS_TOKEN" ]; then
+    Q_ACCESS_TOKEN=$(shell_quote "$ACCESS_TOKEN")
+    cat >> "$PREFIX/bin/owc" <<EOF
+OWC_DEFAULT_ACCESS_TOKEN=$Q_ACCESS_TOKEN
+: "\${OWC_ACCESS_TOKEN:=\$OWC_DEFAULT_ACCESS_TOKEN}"
+export OWC_ACCESS_TOKEN
+EOF
+fi
 if [ "$USE_SYSTEM_NODE" -eq 1 ]; then
     Q_SYSTEM_NODE=$(shell_quote "$SYSTEM_NODE")
     printf '%s\n' "OWC_NODE=$Q_SYSTEM_NODE" >> "$PREFIX/bin/owc"
@@ -416,7 +437,7 @@ EOF
 chmod +x "$PREFIX/bin/owc"
 
 if [ "$WITH_SYSTEMD" -eq 1 ]; then
-    # systemd ExecStart 的解析不与 shell 相同；对用��级 unit 限制为常见安全路径，
+    # systemd ExecStart 的解析不与 shell 相同；对用户级 unit 限制为常见安全路径，
     # 避免空格/引号导致生成一个和安装路径不一致的服务。
     case "$PREFIX" in
         *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_@%+=:,./-]*)
@@ -447,3 +468,7 @@ case "$HOST" in
 esac
 echo "安装完成: $LIB_DIR"
 echo "启动:     $PREFIX/bin/owc  （浏览器打开 http://$DISPLAY_HOST:$PORT）"
+if [ -n "$ACCESS_TOKEN" ]; then
+    echo "访问令牌: OWC_ACCESS_TOKEN 已写入 $PREFIX/bin/owc 默认值（环境变量可覆盖）"
+    echo "注意:     非回环监听还需设置 OWC_ALLOWED_ORIGINS（逗号分隔的 http(s) 源），否则 server 拒绝启动"
+fi

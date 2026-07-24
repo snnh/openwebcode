@@ -13,9 +13,20 @@
 #pragma comment(lib, "ws2_32.lib")
 #else
 #include <netdb.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include "platform/exec_platform.h"
+
+/* Spawned jobs run in their own process groups; a core that exits (loop end
+ * or fatal signal) must not leave them orphaned.  The handler re-raises with
+ * the default disposition so the exit status still reflects the signal. */
+static void on_fatal_signal(int sig) {
+    owc_platform_exec_terminate_all();
+    (void)signal(sig,SIG_DFL);
+    (void)raise(sig);
+}
 #endif
 
 static void usage(void) {
@@ -114,6 +125,10 @@ int main(int argc, char **argv) {
     FILE *input=NULL, *output=NULL;
 #ifdef _WIN32
     WSADATA wsa;
+#else
+    (void)signal(SIGTERM,on_fatal_signal);
+    (void)signal(SIGINT,on_fatal_signal);
+    (void)signal(SIGHUP,on_fatal_signal);
 #endif
     for (i=1; i<argc; i++) {
         if (!strcmp(argv[i],"--connect")) {
@@ -148,9 +163,16 @@ int main(int argc, char **argv) {
     while(!rpc.shutting_down) {
         char *body=NULL; size_t length=0; int status=owc_rpc_read(&rpc,&body,&length);
         if(status==0) break;
-        if(status<0) { fprintf(stderr,"owc-exec: invalid RPC frame\n"); free(body); return 2; }
+        if(status<0) { fprintf(stderr,"owc-exec: invalid RPC frame\n"); free(body);
+#ifndef _WIN32
+            owc_platform_exec_terminate_all();
+#endif
+            return 2; }
         (void)owc_rpc_dispatch(&rpc,body,length); free(body);
     }
+#ifndef _WIN32
+    owc_platform_exec_terminate_all();
+#endif
     if (input) fclose(input);
     if (output) fclose(output);
 #ifdef _WIN32

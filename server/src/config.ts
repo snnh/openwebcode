@@ -86,7 +86,7 @@ function optionalHttpUrl(value: string | undefined, name: string): string | unde
   return value;
 }
 
-function isLoopbackHost(host: string): boolean {
+export function isLoopbackHost(host: string): boolean {
   const normalized = host.trim().toLowerCase();
   return normalized === "localhost" || normalized === "::1" || normalized === "[::1]" ||
     normalized === "127.0.0.1" || normalized.startsWith("127.");

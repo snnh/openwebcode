@@ -1,10 +1,13 @@
 cmake_minimum_required(VERSION 3.19)
-project(openwebcode_core VERSION 0.3.6 LANGUAGES C)
+project(openwebcode_core VERSION 0.3.10 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
+# 版本号唯一来源是上方的 project(VERSION)：configure_file 生成 version.h，
+# core.ping 经 OWC_CORE_VERSION 上报，避免与 C/C++ 侧硬编码漂移。
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/version.h.in" "${CMAKE_CURRENT_BINARY_DIR}/version.h" @ONLY)
 add_executable(owc-exec
     src/main.c
     src/json.c
@@ -25,7 +28,7 @@ else()
     target_link_libraries(owc-exec PRIVATE Threads::Threads)
 endif()
 
-target_include_directories(owc-exec PRIVATE src)
+target_include_directories(owc-exec PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}")
 
 if(MSVC)
     target_compile_options(owc-exec PRIVATE /W4 /WX)
@@ -94,8 +97,8 @@ install(DIRECTORY "${CMAKE_BINARY_DIR}/stage/" DESTINATION . OPTIONAL)
 set(CPACK_PACKAGE_NAME "openwebcode")
 set(CPACK_PACKAGE_VENDOR "OpenWebCode")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "OpenWebCode: web-based agentic coding environment")
-# 版本默认 0.3.6；CI 用 -DCPACK_PACKAGE_VERSION=x.y.z 注入 tag 版本
-set(CPACK_PACKAGE_VERSION "0.3.6" CACHE STRING "Package version (x.y.z)")
+# 版本默认与 project(VERSION) 一致；CI 用 -DCPACK_PACKAGE_VERSION=x.y.z 注入 tag 版本
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}" CACHE STRING "Package version (x.y.z)")
 # WiX accepts .rtf directly and converts .txt to RTF, but rejects a license
 # path without an extension. Keep the repository's canonical LICENSE intact
 # and give the configured copy the extension required by the generator.

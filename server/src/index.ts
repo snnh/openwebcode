@@ -14,6 +14,7 @@ import { ProviderRegistry } from "./providers/provider.js";
 import { CoreRouter } from "./sandbox/core-router.js";
 import { WsbManager } from "./sandbox/wsb.js";
 import { SessionStore } from "./sessions/session-store.js";
+import { defaultSandboxPolicy } from "./sessions/default-sandbox.js";
 import { SettingsService } from "./settings-service.js";
 import { SkillRegistry } from "./skills.js";
 import { AgentRegistry } from "./agents.js";
@@ -89,7 +90,7 @@ const backgroundTasks = new BackgroundTaskRegistry(
   () => new CoreClient(config.corePath, config.coreRequestTimeoutMs),
   async (client, sessionId, cwd) => {
     const session = await sessions.get(sessionId);
-    const sandbox = session?.sandbox ?? { enabled: true, readRoots: [cwd], writeRoots: [cwd], denyPaths: [], network: "allow" as const };
+    const sandbox = session?.sandbox ?? defaultSandboxPolicy(cwd);
     await client.configureSession({ sessionId, cwd, sandbox });
   },
   (info) => events.publish({ source: "agent", type: "task.finished", sessionId: info.sessionId, payload: info }),

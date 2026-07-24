@@ -58,6 +58,17 @@ def main():
         assert send(p,107,"fs.read",{"sessionId":"test-session","path":"./.env"})["error"]["code"]==-32002
         assert send(p,106,"fs.read",{"sessionId":"test-session","path":"private/secret.txt"})["error"]["code"]==-32002
         def fs(i,method,params): return send(p,i,method,{"sessionId":"test-session",**params})
+        # denyPaths is enforced on the resolved path, not the request text:
+        # a directory junction into a denied tree and a trailing-dot spelling
+        # of the denied directory must both be rejected (Windows only).
+        if os.name == "nt":
+            if directory_junction(root/"private-link", root/"private"):
+                assert fs(180,"fs.read",{"path":"private-link/secret.txt"})["error"]["code"]==-32002
+                assert fs(181,"fs.write",{"path":"private-link/injected.txt","content":"no"})["error"]["code"]==-32002
+                # Remove the junction again: later glob/scan coverage only
+                # tolerates unreadable directories, not reparse points.
+                os.rmdir(root/"private-link")
+            assert fs(182,"fs.read",{"path":"private./secret.txt"})["error"]["code"]==-32002
         first_write=fs(1,"fs.write",{"path":"目录/文件.txt","content":"一\n二\n三"})
         assert first_write.get("result",{}).get("ok"),first_write
         assert fs(101,"fs.write",{"path":"新/深/文件.txt","content":"alpha\nbeta","createDirs":True})["result"]["ok"]

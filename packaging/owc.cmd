@@ -7,7 +7,10 @@ set "OWC_HOME=%~dp0.."
 set "OWC_CORE_PATH=%OWC_HOME%\bin\owc-exec.exe"
 if not defined OWC_PORT set "OWC_PORT=3000"
 if not defined OWC_DATA_DIR set "OWC_DATA_DIR=%LOCALAPPDATA%\openwebcode"
-if exist "%OWC_HOME%\node\node.exe" (set "OWC_NODE=%OWC_HOME%\node\node.exe") else (set "OWC_NODE=node")
+if exist "%OWC_HOME%\node\node.exe" (set "OWC_NODE=%OWC_HOME%\node\node.exe") else (
+    echo owc.cmd: warning: bundled node.exe not found under "%OWC_HOME%\node", falling back to Node.js from PATH. 1>&2
+    set "OWC_NODE=node"
+)
 rem "owc run ..." goes to the headless CLI; anything else starts the server.
 if /i "%~1"=="run" (set "OWC_TARGET=cli.js") else (set "OWC_TARGET=index.js")
 "%OWC_NODE%" "%OWC_HOME%\server\dist\%OWC_TARGET%" %*

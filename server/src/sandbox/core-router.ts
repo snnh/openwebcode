@@ -29,6 +29,7 @@ import type {
   FsWriteRequest,
 } from "../core-client.js";
 import type { SessionStore } from "../sessions/session-store.js";
+import { defaultSandboxPolicy } from "../sessions/default-sandbox.js";
 import type { JobObjectLimits, SandboxPolicy, SessionMeta } from "../sessions/types.js";
 import { WSB_WORKSPACE_MOUNT, type WsbManager } from "./wsb.js";
 
@@ -136,7 +137,7 @@ export class CoreRouter extends EventEmitter {
     return {
       sessionId: meta.id,
       cwd: meta.cwd,
-      sandbox: meta.sandbox ?? { enabled: true, readRoots: [meta.cwd], writeRoots: [meta.cwd], denyPaths: [], network: "allow" },
+      sandbox: meta.sandbox ?? defaultSandboxPolicy(meta.cwd),
     };
   }
 
