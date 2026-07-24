@@ -20,7 +20,8 @@ struct owc_acl_grant {
 enum owc_acl_access_kind {
     OWC_ACL_NAMED_PATH = 0,
     OWC_ACL_REPARSE_POINT = 1,
-    OWC_ACL_REPARSE_TARGET = 2
+    OWC_ACL_REPARSE_TARGET = 2,
+    OWC_ACL_ANCESTOR = 3
 };
 
 struct owc_sandbox {
@@ -56,15 +57,17 @@ static wchar_t *utf8_to_wide(const char *text) {
     return wide;
 }
 
-/* A DACL edit is read-modify-write (GetSecurityInfo -> SetEntriesInAcl ->
- * NtSetSecurityObject).  The Win32 Set*SecurityInfo writers propagate
- * inheritable ACEs to every descendant, which can rewrite huge numbers of
- * ACLs on large directory trees; the native call only touches the object
- * itself and children pick up the inheritable ACE at access-check time.
- * Two commands on the same write root in this one core process can
- * otherwise interleave and have one grant overwrite the other's.
- * Serialize the RMW per process so concurrent grants/revokes never
- * clobber. */
+/* A DACL edit is read-modify-write.  Two write modes on purpose:
+ * write roots use the *Named* Win32 APIs, which physically propagate
+ * inheritable ACEs to existing descendants (access checks do not
+ * apply a parent's new ACE retroactively, so the workspace tree is
+ * only accessible through this propagation); ancestor traverse
+ * grants use NtSetSecurityObject, which touches only the object
+ * itself, because propagating into an ancestor's tree can rewrite
+ * millions of ACLs.  Two commands on the same write root in this one
+ * core process can otherwise interleave and have one grant overwrite
+ * the other's.  Serialize the RMW per process so concurrent
+ * grants/revokes never clobber. */
 static INIT_ONCE acl_once = INIT_ONCE_STATIC_INIT;
 static CRITICAL_SECTION acl_mutex;
 static LONG (NTAPI *nt_set_security_object)(HANDLE, SECURITY_INFORMATION,
@@ -91,7 +94,7 @@ static DWORD change_root_access(const wchar_t *path, PSID sid, ACCESS_MODE mode,
     DWORD error;
     (void)InitOnceExecuteOnce(&acl_once, acl_mutex_init, NULL, NULL);
     EnterCriticalSection(&acl_mutex);
-    {
+    if (access_kind != OWC_ACL_NAMED_PATH) {
         DWORD flags = FILE_FLAG_BACKUP_SEMANTICS;
         if (access_kind == OWC_ACL_REPARSE_POINT)
             flags |= FILE_FLAG_OPEN_REPARSE_POINT;
@@ -101,6 +104,10 @@ static DWORD change_root_access(const wchar_t *path, PSID sid, ACCESS_MODE mode,
         error = handle == INVALID_HANDLE_VALUE ? GetLastError() :
             GetSecurityInfo(handle, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
                             NULL, NULL, &old_acl, NULL, &descriptor);
+    } else {
+        error = GetNamedSecurityInfoW((LPWSTR)path, SE_FILE_OBJECT,
+                                      DACL_SECURITY_INFORMATION, NULL, NULL,
+                                      &old_acl, NULL, &descriptor);
     }
     if (error == ERROR_SUCCESS) {
         memset(&access, 0, sizeof(access));
@@ -112,7 +119,11 @@ static DWORD change_root_access(const wchar_t *path, PSID sid, ACCESS_MODE mode,
         access.Trustee.ptstrName = (LPWSTR)sid;
         error = SetEntriesInAclW(1, &access, old_acl, &new_acl);
         if (error == ERROR_SUCCESS) {
-            if (nt_set_security_object) {
+            if (access_kind == OWC_ACL_NAMED_PATH) {
+                error = SetNamedSecurityInfoW((LPWSTR)path, SE_FILE_OBJECT,
+                                              DACL_SECURITY_INFORMATION,
+                                              NULL, NULL, new_acl, NULL);
+            } else if (nt_set_security_object) {
                 SECURITY_DESCRIPTOR replacement;
                 LONG status;
                 InitializeSecurityDescriptor(&replacement, SECURITY_DESCRIPTOR_REVISION);
@@ -194,13 +205,13 @@ static int grant_ancestor_traverse(owc_sandbox *sandbox, const char *root) {
         if (slash == path + 2 && path[1] == L':') {
             path[3] = L'\0';
             ok = grant_temporary(sandbox, path, FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-                                 NO_INHERITANCE, OWC_ACL_NAMED_PATH);
+                                 NO_INHERITANCE, OWC_ACL_ANCESTOR);
             break;
         }
         *slash = L'\0';
         if (!path[0] || !grant_temporary(sandbox, path,
                                          FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-                                         NO_INHERITANCE, OWC_ACL_NAMED_PATH)) {
+                                         NO_INHERITANCE, OWC_ACL_ANCESTOR)) {
             ok = 0;
             break;
         }
