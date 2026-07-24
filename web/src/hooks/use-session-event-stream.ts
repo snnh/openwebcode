@@ -18,6 +18,7 @@ export function useSessionEventStream({ sessionId, onEvent, onDisconnect }: Sess
   const onEventRef = useRef(onEvent);
   const onDisconnectRef = useRef(onDisconnect);
   const sessionSeq = useRef<Record<string, number>>({});
+  const globalSeq = useRef(0);
   const seenEventIds = useRef<Set<string>>(new Set());
 
   useEffect(() => { onEventRef.current = onEvent; }, [onEvent]);
@@ -30,7 +31,9 @@ export function useSessionEventStream({ sessionId, onEvent, onDisconnect }: Sess
     let disposed = false;
     const connect = (): void => {
       if (disposed) return;
-      const after = sessionId ? sessionSeq.current[sessionId] ?? 0 : 0;
+      // 会话级订阅按该会话的 sessionSeq 续传；全局订阅（不传 sessionId）
+      // 按事件的全局 seq 续传，重连后服务端补发缺口，去重逻辑不变。
+      const after = sessionId ? sessionSeq.current[sessionId] ?? 0 : globalSeq.current;
       const query = new URLSearchParams({ after: String(after), ...(sessionId ? { sessionId } : {}) });
       socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/events?${query}`);
       socket.onmessage = (message) => {
@@ -48,6 +51,9 @@ export function useSessionEventStream({ sessionId, onEvent, onDisconnect }: Sess
             const oldest = seenEventIds.current.values().next().value;
             if (oldest) seenEventIds.current.delete(oldest);
           }
+        }
+        if (typeof event.seq === "number" && event.seq > globalSeq.current) {
+          globalSeq.current = event.seq;
         }
         if (event.sessionId && typeof event.sessionSeq === "number") {
           if (event.sessionSeq <= (sessionSeq.current[event.sessionId] ?? 0)) return;

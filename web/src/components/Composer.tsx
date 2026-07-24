@@ -289,17 +289,16 @@ const mentionHasMatches = mentionMatches.length > 0;
     const accepted = images.slice(0, room);
     if (accepted.length === 0) return 0;
     // 先保留槽位，避免 PDF 和普通图片的异步读取互相超出上限。
+    // ref 只在 updater 外提交这一次：StrictMode 会双调 updater，内部写 ref
+    // 会导致重复追加、remainingAttachmentSlots 错乱。
     attachmentsRef.current = [...attachmentsRef.current, ...accepted];
     setAttachments((prev) => {
-      // React may flush this state updater after a session switch. Returning
-      // the new session's previous value prevents a stale task from leaking
-      // an image across sessions.
-      if (!isCurrentTask(task)) {
-        attachmentsRef.current = prev;
-        return prev;
-      }
+      // updater 必须保持纯函数。React may flush this state updater after a
+      // session switch. Returning the new session's previous value prevents a
+      // stale task from leaking an image across sessions; the session-switch
+      // path resets attachmentsRef synchronously.
+      if (!isCurrentTask(task)) return prev;
       const next = accepted.slice(0, Math.max(0, MAX_ATTACHMENTS - prev.length));
-      attachmentsRef.current = [...prev, ...next];
       return next.length > 0 ? [...prev, ...next] : prev;
     });
     return accepted.length;

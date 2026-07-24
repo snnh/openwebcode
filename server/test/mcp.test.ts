@@ -8,7 +8,7 @@ import type { CoreClient } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { loadMcpConfig } from "../src/mcp/config.js";
-import { connectMcpServer } from "../src/mcp/client.js";
+import { connectMcpServer, MCP_ENV_PASSTHROUGH, minimalChildEnv } from "../src/mcp/client.js";
 import { McpManager } from "../src/mcp/manager.js";
 import { ProviderRegistry, type Provider } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
@@ -28,6 +28,7 @@ async function tempDir(): Promise<string> {
 }
 
 const FIXTURE = path.join(__dirname, "fixtures", "fake-mcp-server.mjs");
+const ENV_FIXTURE = path.join(__dirname, "fixtures", "fake-mcp-env.mjs");
 const STDIO_CONFIG = { command: process.execPath, args: [FIXTURE] };
 
 async function writeConfig(dir: string, relative: string, config: unknown): Promise<void> {
@@ -281,6 +282,42 @@ describe("MCP tools in agent runs", () => {
       expect(degraded[0]?.payload).toMatchObject({ message: expect.stringContaining("ghost") });
     } finally {
       await mcp.close();
+    }
+  });
+});
+
+describe("MCP stdio child environment", () => {
+  it("minimalChildEnv 只保留白名单变量且键名大小写不敏感，不透传凭据", () => {
+    const secret = "owc-test-secret-token";
+    process.env.OWC_TEST_SECRET = secret;
+    try {
+      const env = minimalChildEnv();
+      // 白名单外的变量（如 API key）不透传
+      expect(env.OWC_TEST_SECRET).toBeUndefined();
+      expect(Object.keys(env).every((key) => MCP_ENV_PASSTHROUGH.has(key.toUpperCase()))).toBe(true);
+      // 运行必需变量保留（PATH 在各平台都应存在；Windows 上可能是 Path）
+      expect(Object.keys(env).some((key) => key.toUpperCase() === "PATH")).toBe(true);
+    } finally {
+      delete process.env.OWC_TEST_SECRET;
+    }
+  });
+
+  it("stdio 子进程环境 = 白名单 + 配置显式 env（ANTHROPIC_API_KEY 等不透传）", async () => {
+    process.env.OWC_TEST_SECRET = "should-not-leak";
+    try {
+      const client = await connectMcpServer("fake-env", { command: process.execPath, args: [ENV_FIXTURE], env: { OWC_TEST_EXPLICIT: "yes" } }, { timeoutMs: 10_000 });
+      try {
+        const result = await client.callTool("env", {});
+        expect(result.isError).toBe(false);
+        const child = JSON.parse(result.content) as Record<string, string | undefined>;
+        expect(child.OWC_TEST_EXPLICIT).toBe("yes");
+        expect(child.OWC_TEST_SECRET).toBeUndefined();
+        expect(child.PATH ?? child.Path).toBeTruthy();
+      } finally {
+        await client.close();
+      }
+    } finally {
+      delete process.env.OWC_TEST_SECRET;
     }
   });
 });

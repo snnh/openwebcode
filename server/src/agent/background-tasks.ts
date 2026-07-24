@@ -87,9 +87,19 @@ export class BackgroundTaskRegistry {
       }
     });
 
-    // 启动 core 连接
-    await client.start();
-    await this.configureSession(client, sessionId, cwd);
+    // 启动 core 连接；失败时移除 entry 并停掉 client，避免泄漏未配置完成的任务与进程
+    try {
+      await client.start();
+      await this.configureSession(client, sessionId, cwd);
+    } catch (error) {
+      this.tasks.delete(taskId);
+      try {
+        await client.stop();
+      } catch {
+        // 清理失败的进程不影响原始错误抛出
+      }
+      throw error;
+    }
 
     // 发起 run（不 await），完成后处理终态
     void client.run({ sessionId, execId: taskId, cmd, cwd, ...(timeoutMs === undefined ? {} : { timeoutMs }), ...(shellBackend ? { shellBackend } : {}) })

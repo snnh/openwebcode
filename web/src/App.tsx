@@ -126,12 +126,14 @@ export function App(): ReactElement {
   const handleSessionEvent = useCallback((event: AppEvent): void => {
         applyRunEvent(event);
         if (event.type === "resync.required") {
-          queryClient.invalidateQueries({ queryKey: queryKeys.detail(currentId ?? "") });
-          queryClient.invalidateQueries({ queryKey: ["context", currentId] });
-          queryClient.invalidateQueries({ queryKey: ["checkpoints", currentId] });
-          queryClient.invalidateQueries({ queryKey: ["todos", currentId] });
-          queryClient.invalidateQueries({ queryKey: ["tasks", currentId] });
-          if (currentId) queryClient.invalidateQueries({ queryKey: ["run", currentId] });
+          // 事件流为全局订阅：按事件所属会话刷新，缺省回退当前会话。
+          const targetId = event.sessionId ?? currentId;
+          queryClient.invalidateQueries({ queryKey: queryKeys.detail(targetId ?? "") });
+          queryClient.invalidateQueries({ queryKey: ["context", targetId] });
+          queryClient.invalidateQueries({ queryKey: ["checkpoints", targetId] });
+          queryClient.invalidateQueries({ queryKey: ["todos", targetId] });
+          queryClient.invalidateQueries({ queryKey: ["tasks", targetId] });
+          if (targetId) queryClient.invalidateQueries({ queryKey: ["run", targetId] });
           return;
         }
         // agent.state 跨会话跟踪：驱动侧栏运行标记与头部状态徽章
@@ -257,7 +259,8 @@ export function App(): ReactElement {
     }
     flushStreamBuffers();
   }, [flushStreamBuffers]);
-  useSessionEventStream({ sessionId: currentId, onEvent: handleSessionEvent, onDisconnect: finishBufferedStreams });
+  // 全局订阅：服务端在未传 sessionId 时全量推送，handler 按 event.sessionId 分发。
+  useSessionEventStream({ onEvent: handleSessionEvent, onDisconnect: finishBufferedStreams });
 
   const current = detail.data;
   const currentState = currentRun?.state ?? (currentId ? agentStates[currentId] : undefined);
@@ -365,6 +368,20 @@ export function App(): ReactElement {
     api.deleteSession(id)
       .then(() => {
         if (currentId === id) setCurrentId(sessions.data?.find((session) => session.id !== id)?.id);
+        // 同步清理按会话键控的内存状态，避免已删会话的条目残留
+        const removeKey = <T,>(previous: Record<string, T>): Record<string, T> => {
+          if (!(id in previous)) return previous;
+          const { [id]: _removed, ...remaining } = previous;
+          return remaining;
+        };
+        setDrafts(removeKey);
+        setAttachmentsBySession(removeKey);
+        setStream(removeKey);
+        setThinkingStream(removeKey);
+        setAgentStates(removeKey);
+        setRunFailures(removeKey);
+        delete streamBuffers.current[id];
+        delete thinkingBuffers.current[id];
         queryClient.invalidateQueries({ queryKey: queryKeys.sessions });
       })
       .catch((error: unknown) => notify(error instanceof Error ? error.message : t("删除会话失败", "Could not delete session"), "error"));

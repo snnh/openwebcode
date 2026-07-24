@@ -6,7 +6,7 @@ import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
-import type { CoreClientLike, CoreEvent, CoreInfo, ExecRequest, ExecResult } from "../src/core-client.js";
+import type { CoreClientLike, CoreEvent, CoreInfo, ExecRequest, ExecResult, JobStartRequest, JobStatus } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
@@ -436,6 +436,105 @@ describe("POST /api/sessions/:id/shell - 路由校验", () => {
       });
       // 等 tool_result 落盘 + runShell 收尾再退出，避免 afterEach 清理与异步落盘竞态（Windows ENOTEMPTY）
       await waitForToolMessage(harness.sessions, harness.session.id);
+      await vi.waitFor(() => expect(harness.agent.isShellPending(harness.session.id)).toBe(false), { timeout: 5_000 });
+    } finally {
+      await harness.app.close();
+    }
+  }, 15_000);
+});
+
+describe("POST /api/sessions/:id/shell - jobControl 路径超时", () => {
+  const JOB_CORE_INFO: CoreInfo = {
+    ...FAKE_CORE_INFO,
+    features: { ...FAKE_CORE_INFO.features!, jobControl: true },
+  };
+
+  /** jobControl fake core：startJob 记录请求，jobStatus 直接回终态 */
+  function createJobCore(finalStatus: JobStatus): { client: CoreClientLike; startJobCalls: JobStartRequest[] } {
+    const emitter = new EventEmitter();
+    const startJobCalls: JobStartRequest[] = [];
+    const client: CoreClientLike = {
+      on(eventName: string, listener: (...args: unknown[]) => void) {
+        emitter.on(eventName, listener);
+        return client;
+      },
+      async start() { return JOB_CORE_INFO; },
+      async stop() { /* 无挂起 run */ },
+      async ping() { return JOB_CORE_INFO; },
+      async configureSession() { return { sandboxCapability: "advisory" as const }; },
+      async startJob(request: JobStartRequest) {
+        startJobCalls.push({ ...request });
+        return { jobId: request.jobId, state: "running" as const };
+      },
+      async jobStatus() { return finalStatus; },
+      async jobOutput() { return { chunks: [], nextSeq: 0, truncated: false }; },
+      async cancelJob() { return { jobId: finalStatus.jobId, accepted: true as const }; },
+      async run() { throw new Error("jobControl 路径不应走 exec.run"); },
+      async cleanupSession() { return { ok: true as const }; },
+      async readFile() { return { content: "", totalLines: 0, encoding: "utf-8" as const, truncated: false }; },
+      async writeFile() { return { ok: true as const }; },
+      async editFile() { return { matches: 0 }; },
+      async listFiles() { return { entries: [], truncated: false }; },
+      async globFiles() { return { paths: [], truncated: false }; },
+      async grepFiles() { return { matches: [], truncated: false }; },
+      setRequestTimeoutMs() {},
+    } as unknown as CoreClientLike;
+    return { client, startJobCalls };
+  }
+
+  async function setupJob(finalStatus: JobStatus) {
+    const root = await tempRoot();
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const session = await sessions.create({ cwd: root, provider: "test-stub", model: "deterministic-tool-loop", title: "Job shell" });
+    await sessions.updatePermissions(session.id, "yolo", []);
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const events = new EventBus();
+    const providers = new ProviderRegistry();
+    providers.register(echoProvider);
+    const core = createJobCore(finalStatus);
+    const agent = new AgentRunner(sessions, providers, core.client, events, pricing);
+    const app = await buildServer({ core: core.client, sessions, agent, events, providers, pricing });
+    return { root, sessions, session, core, agent, app };
+  }
+
+  it("startJob 带默认 timeoutMs（10 分钟），completed 正常收尾", async () => {
+    const harness = await setupJob({ jobId: "j1", state: "completed", exitCode: 0, durationMs: 5 });
+    try {
+      const res = await harness.app.inject({
+        method: "POST",
+        url: `/api/sessions/${harness.session.id}/shell`,
+        payload: { cmd: "echo hi" },
+      });
+      expect(res.statusCode).toBe(202);
+      await vi.waitFor(() => expect(harness.core.startJobCalls.length).toBe(1));
+      expect(harness.core.startJobCalls[0]).toMatchObject({ cmd: "echo hi", timeoutMs: 600_000 });
+      await waitForToolMessage(harness.sessions, harness.session.id);
+      const toolResult = (await harness.sessions.get(harness.session.id))?.messages.find((m) => m.role === "tool")?.content[0] as { type: string; isError?: boolean };
+      expect(toolResult.type).toBe("tool_result");
+      expect(toolResult.isError).toBe(false);
+      await vi.waitFor(() => expect(harness.agent.isShellPending(harness.session.id)).toBe(false), { timeout: 5_000 });
+    } finally {
+      await harness.app.close();
+    }
+  }, 15_000);
+
+  it("core 回 timed_out -> tool_result isError 且含超时信息，轮询循环终止", async () => {
+    const harness = await setupJob({ jobId: "j1", state: "timed_out", error: "Job timed out after 600000ms" });
+    try {
+      const res = await harness.app.inject({
+        method: "POST",
+        url: `/api/sessions/${harness.session.id}/shell`,
+        payload: { cmd: "sleep 9999" },
+      });
+      expect(res.statusCode).toBe(202);
+      await vi.waitFor(() => expect(harness.core.startJobCalls.length).toBe(1));
+      await waitForToolMessage(harness.sessions, harness.session.id);
+      const toolResult = (await harness.sessions.get(harness.session.id))?.messages.find((m) => m.role === "tool")?.content[0] as { type: string; content: string; isError?: boolean };
+      expect(toolResult.type).toBe("tool_result");
+      expect(toolResult.isError).toBe(true);
+      expect(toolResult.content).toContain("timed out");
       await vi.waitFor(() => expect(harness.agent.isShellPending(harness.session.id)).toBe(false), { timeout: 5_000 });
     } finally {
       await harness.app.close();

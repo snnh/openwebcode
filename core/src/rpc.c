@@ -3,7 +3,9 @@
 #include "fs.h"
 #include "json.h"
 #include "path_policy.h"
+#include "platform/fs_platform.h"
 #include "sandbox.h"
+#include "version.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -156,6 +158,8 @@ static int parse_shell_backend(const owc_json *params, int *backend) {
     return 0;
 }
 
+/* See handle_exec_run: synchronous exec.run timeouts are clamped to this. */
+#define OWC_EXEC_RUN_MAX_TIMEOUT_MS (10*60*1000)
 static int handle_exec_run(owc_rpc *rpc,const owc_json *id,const owc_json *params) {
     const char *command=owc_json_get_string(owc_json_object_get(params,"cmd"));
     const char *cwd=owc_json_get_string(owc_json_object_get(params,"cwd"));
@@ -169,6 +173,12 @@ static int handle_exec_run(owc_rpc *rpc,const owc_json *id,const owc_json *param
     request.command=command; request.cwd=cwd; request.session_id=session_id;request.sandbox_enabled=sandbox_enabled;request.allow_network=allow_network;request.sandbox_mode=sandbox_mode;
     request.job_memory_mb=job_memory_mb; request.job_max_processes=job_max_processes;
     if(!parse_timeout(owc_json_object_get(params,"timeoutMs"),&request.timeout_ms)) return reply_error(rpc,id,-32602,"timeoutMs must be a positive integer");
+    /* A synchronous exec.run blocks the entire RPC loop until the command
+     * finishes, so an effectively unbounded timeout (parse_timeout accepts
+     * up to INT_MAX ms, roughly 24 days) would wedge every session behind
+     * one request.  Clamp to ten minutes; long-running work belongs in
+     * job.start, which is asynchronous. */
+    if(request.timeout_ms>OWC_EXEC_RUN_MAX_TIMEOUT_MS) request.timeout_ms=OWC_EXEC_RUN_MAX_TIMEOUT_MS;
     request.output_limit=10u*1024u*1024u; request.on_output=output_notification; request.user_data=&context;
     if(!owc_exec_run(&request,&result)) { char message[96];if(result.shell_unavailable)return reply_error(rpc,id,-32000,"pwsh executable was not found");(void)snprintf(message,sizeof(message),"failed to start or monitor command (system error %lu)",result.system_error);return reply_error(rpc,id,-32000,message); }
     if(result.timed_out) return reply_error(rpc,id,-32001,"command timed out");
@@ -197,7 +207,11 @@ static int session_exec_policy(const char *id,const char *cwd,int *enabled,int *
  * not bypass an absolute deny root.  Traversal and absolute paths are denied
  * here as well as by the no-follow platform implementation. */
 static char *session_policy_path(const session_config *session,const char *path){const char *cursor;char *out;size_t capacity,used,components=0;if(!session||!path||!path[0]||path[0]=='/'||path[0]=='\\'||(path[0]&&path[1]==':'))return NULL;capacity=strlen(session->cwd)+strlen(path)+3;out=(char*)malloc(capacity);if(!out)return NULL;used=strlen(session->cwd);memcpy(out,session->cwd,used);while(used&& (out[used-1]=='/'||out[used-1]=='\\'))used--;out[used]='\0';cursor=path;while(*cursor){const char *end;size_t length;while(*cursor=='/'||*cursor=='\\')cursor++;if(!*cursor)break;end=cursor;while(*end&&*end!='/'&&*end!='\\')end++;length=(size_t)(end-cursor);if(length==1&&cursor[0]=='.'){cursor=end;continue;}if(length==2&&cursor[0]=='.'&&cursor[1]=='.'){free(out);return NULL;}if(++components>256u){free(out);return NULL;}if(used&&out[used-1]!='/'&&out[used-1]!='\\')out[used++]='/';memcpy(out+used,cursor,length);used+=length;out[used]='\0';cursor=end;}return out;}
-static int session_path_allowed(const char *id,const char *path,owc_path_permission permission){session_config *session=session_find(id);owc_path_policy policy;char *canonical;int allowed;if(!session)return 0;canonical=session_policy_path(session,path);if(!canonical)return 0;memset(&policy,0,sizeof(policy));policy.read_roots=(const char *const *)session->read_roots;policy.read_root_count=session->read_root_count;policy.write_roots=(const char *const *)session->write_roots;policy.write_root_count=session->write_root_count;policy.deny_roots=(const char *const *)session->deny_paths;policy.deny_root_count=session->deny_count;allowed=owc_path_policy_check(&policy,canonical,permission);free(canonical);return allowed;}
+static int session_path_allowed(const char *id,const char *path,owc_path_permission permission){session_config *session=session_find(id);owc_path_policy policy;char *canonical;int allowed;if(!session)return 0;/* Publish the session deny roots to the platform layer before any file
+ * operation that follows this check: the textual comparison below cannot see
+ * junction / 8.3 / trailing-dot aliases, so the platform re-checks the
+ * resolved final path (Windows) against the same roots. */
+owc_fs_platform_set_deny_roots((const char *const *)session->deny_paths,session->deny_count);canonical=session_policy_path(session,path);if(!canonical)return 0;memset(&policy,0,sizeof(policy));policy.read_roots=(const char *const *)session->read_roots;policy.read_root_count=session->read_root_count;policy.write_roots=(const char *const *)session->write_roots;policy.write_root_count=session->write_root_count;policy.deny_roots=(const char *const *)session->deny_paths;policy.deny_root_count=session->deny_count;allowed=owc_path_policy_check(&policy,canonical,permission);free(canonical);return allowed;}
 static int configure_session(const char *id,const char *cwd){size_t i;char *root=copy_text(cwd);if(!root)return 0;for(i=0;i<session_count;i++)if(!strcmp(sessions[i].session_id,id)){remove_session_watches(id);free(sessions[i].cwd);sessions[i].cwd=root;return 1;}if(session_count>=sizeof(sessions)/sizeof(sessions[0])){free(root);return 0;}memset(&sessions[session_count],0,sizeof(sessions[0]));sessions[session_count].session_id=copy_text(id);if(!sessions[session_count].session_id){free(root);return 0;}sessions[session_count].cwd=root;session_count++;return 1;}
 static void clear_denies(session_config *session){size_t i;for(i=0;i<session->deny_count;i++)free(session->deny_paths[i]);session->deny_count=0;}
 static void clear_allows(session_config *session){size_t i;for(i=0;i<session->allow_count;i++)free(session->allow_paths[i]);session->allow_count=0;}
@@ -501,7 +515,7 @@ int owc_rpc_dispatch(owc_rpc *rpc, const char *body, size_t length) {
 #else
         const char *job_control="false";
 #endif
-        escaped=owc_json_escape_string(reason);if(!escaped)(void)reply_error(rpc,id,-32000,"failed to encode sandbox capability");else{result_size=(size_t)snprintf(NULL,0,"{\"version\":\"0.3.6\",\"protocolVersion\":\"1.0\",\"platform\":\"%s\",\"sandboxCapability\":\"%s\",\"sandboxReason\":%s,\"features\":{\"fsStat\":true,\"fsStatMany\":true,\"fsWriteBase64\":true,\"jobControl\":%s,\"fsHash\":true,\"fsScanPagination\":true,\"fsWatch\":true},\"limits\":{\"maxFrameBytes\":33554432,\"maxWriteBase64Bytes\":20971520,\"maxHashBytes\":16777216,\"maxStatManyPaths\":128,\"maxStatManyPathBytes\":262144,\"maxScanEntries\":256,\"maxScanDepth\":16,\"maxScanNodes\":2048,\"maxWatches\":16,\"maxWatchEvents\":128,\"maxConcurrentJobs\":4,\"maxJobOutputBytes\":524288}}",platform,owc_sandbox_status_name(capability),escaped,job_control);result=(char*)malloc(result_size+1);if(!result)(void)reply_error(rpc,id,-32000,"failed to encode core capabilities");else{(void)snprintf(result,result_size+1,"{\"version\":\"0.3.6\",\"protocolVersion\":\"1.0\",\"platform\":\"%s\",\"sandboxCapability\":\"%s\",\"sandboxReason\":%s,\"features\":{\"fsStat\":true,\"fsStatMany\":true,\"fsWriteBase64\":true,\"jobControl\":%s,\"fsHash\":true,\"fsScanPagination\":true,\"fsWatch\":true},\"limits\":{\"maxFrameBytes\":33554432,\"maxWriteBase64Bytes\":20971520,\"maxHashBytes\":16777216,\"maxStatManyPaths\":128,\"maxStatManyPathBytes\":262144,\"maxScanEntries\":256,\"maxScanDepth\":16,\"maxScanNodes\":2048,\"maxWatches\":16,\"maxWatchEvents\":128,\"maxConcurrentJobs\":4,\"maxJobOutputBytes\":524288}}",platform,owc_sandbox_status_name(capability),escaped,job_control);(void)reply_result(rpc,id,result);free(result);}free(escaped);}
+        escaped=owc_json_escape_string(reason);if(!escaped)(void)reply_error(rpc,id,-32000,"failed to encode sandbox capability");else{result_size=(size_t)snprintf(NULL,0,"{\"version\":\"%s\",\"protocolVersion\":\"1.0\",\"platform\":\"%s\",\"sandboxCapability\":\"%s\",\"sandboxReason\":%s,\"features\":{\"fsStat\":true,\"fsStatMany\":true,\"fsWriteBase64\":true,\"jobControl\":%s,\"fsHash\":true,\"fsScanPagination\":true,\"fsWatch\":true},\"limits\":{\"maxFrameBytes\":33554432,\"maxWriteBase64Bytes\":20971520,\"maxHashBytes\":16777216,\"maxStatManyPaths\":128,\"maxStatManyPathBytes\":262144,\"maxScanEntries\":256,\"maxScanDepth\":16,\"maxScanNodes\":2048,\"maxWatches\":16,\"maxWatchEvents\":128,\"maxConcurrentJobs\":4,\"maxJobOutputBytes\":524288}}",OWC_CORE_VERSION,platform,owc_sandbox_status_name(capability),escaped,job_control);result=(char*)malloc(result_size+1);if(!result)(void)reply_error(rpc,id,-32000,"failed to encode core capabilities");else{(void)snprintf(result,result_size+1,"{\"version\":\"%s\",\"protocolVersion\":\"1.0\",\"platform\":\"%s\",\"sandboxCapability\":\"%s\",\"sandboxReason\":%s,\"features\":{\"fsStat\":true,\"fsStatMany\":true,\"fsWriteBase64\":true,\"jobControl\":%s,\"fsHash\":true,\"fsScanPagination\":true,\"fsWatch\":true},\"limits\":{\"maxFrameBytes\":33554432,\"maxWriteBase64Bytes\":20971520,\"maxHashBytes\":16777216,\"maxStatManyPaths\":128,\"maxStatManyPathBytes\":262144,\"maxScanEntries\":256,\"maxScanDepth\":16,\"maxScanNodes\":2048,\"maxWatches\":16,\"maxWatchEvents\":128,\"maxConcurrentJobs\":4,\"maxJobOutputBytes\":524288}}",OWC_CORE_VERSION,platform,owc_sandbox_status_name(capability),escaped,job_control);(void)reply_result(rpc,id,result);free(result);}free(escaped);}
     } else if(strcmp(method,"core.shutdown")==0) { (void)reply_result(rpc,id,"{\"ok\":true}"); rpc->shutting_down=1; }
     else if(strcmp(method,"session.configure")==0) { const char *sid=owc_json_get_string(owc_json_object_get(params,"sessionId")),*cwd=owc_json_get_string(owc_json_object_get(params,"cwd"));if(!sid||!sid[0]||!cwd||!cwd[0])(void)reply_error(rpc,id,-32602,"session.configure requires sessionId and cwd");else if(!configure_session(sid,cwd)||!configure_policy(sid,owc_json_object_get(params,"sandbox")))(void)reply_error(rpc,id,-32000,"failed to configure session");else(void)reply_session_capability(rpc,id,sid); }
     else if(strcmp(method,"session.cleanup")==0) { const char *sid=owc_json_get_string(owc_json_object_get(params,"sessionId"));if(!sid||!sid[0])(void)reply_error(rpc,id,-32602,"session.cleanup requires sessionId");else{(void)cleanup_session(sid);(void)reply_result(rpc,id,"{\"ok\":true}");} }
