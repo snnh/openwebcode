@@ -67,7 +67,8 @@ function ensureLanguage(highlighter: HighlighterCore, lang: string): Promise<voi
 // 高亮结果缓存：同一代码块（语言+内容）只高亮一次。流式代码块内容变化时 key 随之变化，
 // 天然只重算正在更新的块；已完成块重新挂载（虚拟化窗口滚动回来）直接命中缓存。
 const HIGHLIGHT_CACHE_LIMIT = 256;
-const highlightCache = new Map<string, Promise<string | undefined>>();
+// 缓存值：整文件高亮 HTML（string）或按行高亮片段（string[]），由 cacheKey 前缀区分
+const highlightCache = new Map<string, Promise<string | string[] | undefined>>();
 
 /** 简单的字符串 hash（FNV-1a 32bit），配合长度把碰撞概率降到可忽略 */
 function hashCode(text: string): number {
@@ -91,7 +92,7 @@ export async function highlightCode(code: string, lang?: string): Promise<string
   if (!target) return undefined;
   const cacheKey = `${target}:${code.length}:${hashCode(code)}`;
   const cached = highlightCache.get(cacheKey);
-  if (cached) return cached;
+  if (cached) return cached as Promise<string | undefined>;
   const promise = (async (): Promise<string | undefined> => {
     try {
       const highlighter = await getHighlighter();
@@ -106,6 +107,52 @@ export async function highlightCode(code: string, lang?: string): Promise<string
   })();
   highlightCache.set(cacheKey, promise);
   // LRU：超限时淘汰最久未用的条目
+  if (highlightCache.size > HIGHLIGHT_CACHE_LIMIT) {
+    const oldest = highlightCache.keys().next().value;
+    if (oldest !== undefined) highlightCache.delete(oldest);
+  }
+  return promise;
+}
+
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+/**
+ * 按行返回高亮 HTML 片段（每行一个字符串，供只读代码视图逐行渲染行号）。
+ * 复用同一高亮器与语言动态加载；语言不支持或失败时返回 undefined，调用方回退纯文本。
+ */
+export async function highlightLines(code: string, lang?: string): Promise<string[] | undefined> {
+  const normalized = (lang ?? "").toLowerCase();
+  const target = SUPPORTED.has(normalized) ? normalized : LANG_ALIASES[normalized];
+  if (!target) return undefined;
+  const cacheKey = `lines:${target}:${code.length}:${hashCode(code)}`;
+  const cached = highlightCache.get(cacheKey);
+  if (cached) return cached as Promise<string[] | undefined>;
+  const promise = (async (): Promise<string[] | undefined> => {
+    try {
+      const highlighter = await getHighlighter();
+      await ensureLanguage(highlighter, target);
+      const { tokens } = highlighter.codeToTokens(code, {
+        lang: target,
+        themes: { light: "github-light", dark: "github-dark" },
+      });
+      return tokens.map((line) =>
+        line.map((token) => {
+          // 双主题时 htmlStyle 为对象（color 为亮色值，--shiki-dark 为暗色变量），序列化为内联样式
+          const raw = token.htmlStyle;
+          const style = typeof raw === "string"
+            ? raw
+            : raw && typeof raw === "object"
+              ? Object.entries(raw).map(([key, value]) => `${key}:${value}`).join(";")
+              : "";
+          return style ? `<span style="${escapeHtml(style)}">${escapeHtml(token.content)}</span>` : escapeHtml(token.content);
+        }).join(""));
+    } catch {
+      return undefined;
+    }
+  })();
+  highlightCache.set(cacheKey, promise);
   if (highlightCache.size > HIGHLIGHT_CACHE_LIMIT) {
     const oldest = highlightCache.keys().next().value;
     if (oldest !== undefined) highlightCache.delete(oldest);

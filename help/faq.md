@@ -194,13 +194,33 @@ owc run "跑测试并修复失败的用例" --cwd . --yolo --json | tee events.n
   --data-dir "$HOME/.local/share/openwebcode" --host 127.0.0.1
 ```
 
-`--prefix`、`--data-dir` 必须是绝对路径，端口必须在 1–65535。`--use-system-node` 会在安装时校验 PATH 中的 Node.js 20+；运行时 `OWC_PORT`、`OWC_DATA_DIR`、`OWC_HOST` 可覆盖安装时默认值。若指定非回环 `--host`，当前版本没有内置 HTTP 鉴权，只应在受信网络或认证反向代理后使用。
+`--prefix`、`--data-dir` 必须是绝对路径，端口必须在 1–65535。`--use-system-node` 会在安装时校验 PATH 中的 Node.js 20+；运行时 `OWC_PORT`、`OWC_DATA_DIR`、`OWC_HOST` 可覆盖安装时默认值。非回环 `--host` 要求启动时提供 `OWC_ACCESS_TOKEN`（≥32 字符），仍建议只在受信网络或认证反向代理后使用。
 
 ### Q: 启动后浏览器打不开 / 连接被拒？
 
 - 确认 `owc` 进程在跑（`ps aux | grep owc` 或任务管理器）
 - 确认端口未被占用、未被防火墙拦
-- 默认监听 `127.0.0.1`；远程访问需设置 `OWC_HOST=0.0.0.0`（注意：当前无内置鉴权，仅建议在可信内网使用）
+- 默认监听 `127.0.0.1`；远程/局域网访问需设置 `OWC_HOST=0.0.0.0` 且**必须**同时设置 `OWC_ACCESS_TOKEN`（≥32 字符），否则 server 拒绝启动。浏览器首次用 `http://<主机>:<端口>/?token=<token>` 换取 HttpOnly Cookie；`owc run` 用 `OWC_ACCESS_TOKEN` 环境变量走 Bearer 头
+
+### Q: 手机上能用吗？
+
+可以。移动端（≤768px）是单列布局：对话下发任务、看运行状态、处理权限卡与结构化交互、队列操作、启停 run、切换会话都完整可用；代码审查等重活建议回桌面。浏览器「安装到主屏」后有 PWA 壳；不做离线缓存。手机访问意味着非回环监听，必须先配好 `OWC_ACCESS_TOKEN`（见上一条）。
+
+### Q: 命令面板和快捷键有哪些？
+
+`Ctrl/Cmd+Shift+P` 打开命令面板（全部命令可搜索），`Ctrl/Cmd+P` Quick Open 直达文件（`#` 前缀搜符号），`Shift+?` 查看快捷键速查。默认集对齐 VSCode 习惯（`mod+B` 侧栏、`` mod+` `` 底部面板、`mod+,` 设置、`F6` 区域轮换等），完整清单在设置 → 快捷键；0.4.0 暂不支持自定义键位。
+
+### Q: agent 提交 git 提交需要我确认吗？
+
+始终需要。`git_commit` 工具默认不开放自动执行，yolo 模式下也需确认，且拒绝 `--no-verify` 等绕过参数；提交信息建议经 SCM 面板「生成提交信息 → 确认」流程，全部走权限链并记录审计。
+
+### Q: test_runner 支持哪些测试框架？
+
+结构化解析覆盖 vitest/jest、pytest、go test、dotnet test 四类；项目类型按 package.json/pyproject/go.mod/*.sln 自动检测生成默认命令。解析失败时回退原文尾部（不丢输出），失败摘要有界注入 agent 上下文，完整结果落会话 artifact 并在问题面板可视化。
+
+### Q: 索引没建或损坏时 agent 还能搜代码吗？
+
+能。`code_search` 在未建索引时明确回退 grep 路径；索引只是加速缓存，文件系统永远是真相。索引损坏可在服务端整体重建（`POST /api/workspaces/index/rebuild`），不会进入会话历史。
 
 ### Q: WebSocket 断线重连后事件丢失？
 

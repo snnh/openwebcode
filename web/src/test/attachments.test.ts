@@ -28,6 +28,11 @@ describe("extractAttachmentPaths", () => {
     expect(extractAttachmentPaths("@a.ts @b.ts @c.md")).toEqual(["a.ts", "b.ts", "c.md"]);
   });
 
+  it("strips the :line suffix inserted by symbol completion so injection still targets the file", () => {
+    expect(extractAttachmentPaths("符号引用 @src/a.ts:12 看看")).toEqual(["src/a.ts"]);
+    expect(extractAttachmentPaths("@src/a.ts:12 与 @src/a.ts 去重")).toEqual(["src/a.ts"]);
+  });
+
   it("returns empty for plain text without @", () => {
     expect(extractAttachmentPaths("普通文本无引用")).toEqual([]);
   });
