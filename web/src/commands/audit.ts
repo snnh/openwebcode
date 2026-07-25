@@ -25,7 +25,9 @@ export const REST_ACTION_COMMANDS: ReadonlyArray<{ action: ApiAction; command: s
   // 文件与视图
   { action: "listFiles", command: COMMAND_IDS.showFilesView },
   { action: "readFile", command: COMMAND_IDS.quickOpen },
+  { action: "writeFile", command: COMMAND_IDS.saveEditorFile },
   { action: "workspaceFiles", command: COMMAND_IDS.quickOpen },
+  { action: "workspaceFileSymbols", command: COMMAND_IDS.saveEditorFile },
   { action: "completePath", command: COMMAND_IDS.quickOpen },
   { action: "latestDiagnostics", command: COMMAND_IDS.showProblemsView },
   { action: "scmStatus", command: COMMAND_IDS.showScmView },

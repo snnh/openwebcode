@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./lib/api";
 import { extractAttachmentPaths, toAttachments } from "./lib/attachments";
-import type { AppEvent, BackgroundTaskInfo, SessionDetail, TodoItem, WorkspaceIndexStatus } from "./lib/contracts";
+import type { AppEvent, BackgroundTaskInfo, ChatMessage, SessionDetail, TodoItem, WorkspaceIndexStatus } from "./lib/contracts";
 import { formatCurrency } from "./lib/format";
 import { loadSendKey, loadSessionDefaults, saveSendKey, saveSessionDefaults, type SendKey, type SessionDefaults } from "./lib/prefs";
 import { useTheme } from "./theme";
@@ -45,6 +45,11 @@ const QuickOpen = lazy(() => import("./components/QuickOpen").then((m) => ({ def
 const ShortcutsDialog = lazy(() => import("./components/ShortcutsDialog").then((m) => ({ default: m.ShortcutsDialog })));
 const CodeOverlay = lazy(() => import("./components/CodeOverlay").then((m) => ({ default: m.CodeOverlay })));
 const NotificationsOverlay = lazy(() => import("./components/NotificationsOverlay").then((m) => ({ default: m.NotificationsOverlay })));
+// 编辑器分栏（0.5.0 Phase 1a）：组件自身懒加载；Monaco 在其内部再经 monaco-loader 动态 import（独立 chunk）
+const EditorPane = lazy(() => import("./components/editor/EditorPane").then((m) => ({ default: m.EditorPane })));
+// 统一 diff 视图（0.5.0 Phase 1b）：SCM/检查点/工具改动三来源同一组件，复用编辑器分栏机制
+const DiffPane = lazy(() => import("./components/editor/DiffPane").then((m) => ({ default: m.DiffPane })));
+import type { DiffSpec } from "./components/editor/DiffPane";
 
 const queryKeys = { sessions: ["sessions"] as const, detail: (id: string) => ["session", id] as const, skills: (id: string) => ["skills", id] as const };
 
@@ -60,9 +65,17 @@ export function App(): ReactElement {
   const [quickOpenOpen, setQuickOpenOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [codeOverlayPath, setCodeOverlayPath] = useState<string>();
+  // 编辑器分栏（0.5.0 Phase 1a）：对话的辅助视图，随需打开、Esc 即回对话；不持久化，新会话默认无编辑器
+  const [editorPane, setEditorPane] = useState<{ path: string; line?: number; column?: number }>();
+  // 统一 diff 视图（0.5.0 Phase 1b）：与编辑器分栏互斥（同屏最多一个辅助视图），同样随需打开、切换会话即关闭
+  const [diffPane, setDiffPane] = useState<DiffSpec>();
   // 通知中心（Phase 5b §6.6）：toast 与后台事件汇总为可回看列表
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  // 0.5.0 Phase 2：会话消息分页——在初始页之前加载的更早消息
+  const [olderMessages, setOlderMessages] = useState<ChatMessage[]>([]);
+  const [hasMoreOlder, setHasMoreOlder] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   // 移动端（Phase 5b §6.8）：CSS 媒体查询为主判定，JS 仅做状态联动（选中会话收起抽屉）
   const isMobile = useMediaQuery(MOBILE_BREAKPOINT);
   const importInput = useRef<HTMLInputElement>(null);
@@ -96,7 +109,7 @@ export function App(): ReactElement {
     setNotifications((previous) => pushNotification(previous, { kind, text, ...(target ? { target } : {}) }));
   }, []);
   const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: api.sessions });
-  const detail = useQuery({ queryKey: queryKeys.detail(currentId ?? ""), queryFn: () => api.session(currentId!), enabled: Boolean(currentId) });
+  const detail = useQuery({ queryKey: queryKeys.detail(currentId ?? ""), queryFn: () => api.session(currentId!, 100), enabled: Boolean(currentId) });
   const models = useQuery({ queryKey: ["models"], queryFn: api.models });
   const providers = useQuery({ queryKey: ["providers"], queryFn: api.providers });
   const queue = useQuery({ queryKey: ["queue", currentId], queryFn: () => api.queue(currentId!), enabled: Boolean(currentId) });
@@ -120,6 +133,11 @@ export function App(): ReactElement {
         if (event.type === "resync.required") {
           // 事件流为全局订阅：按事件所属会话刷新，缺省回退当前会话。
           const targetId = event.sessionId ?? currentId;
+          // 0.5.0 Phase 2：resync 时清空分页加载的更早消息（可能已过期）
+          if (targetId === currentId) {
+            setOlderMessages([]);
+            setHasMoreOlder(false);
+          }
           queryClient.invalidateQueries({ queryKey: queryKeys.detail(targetId ?? "") });
           queryClient.invalidateQueries({ queryKey: ["context", targetId] });
           queryClient.invalidateQueries({ queryKey: ["checkpoints", targetId] });
@@ -277,6 +295,12 @@ export function App(): ReactElement {
   useSessionEventStream({ onEvent: handleSessionEvent, onDisconnect: finishBufferedStreams });
 
   const current = detail.data;
+  // 0.5.0 Phase 2：合并分页加载的更早消息，形成完整显示会话
+  const displaySession = useMemo<SessionDetail | undefined>(() => {
+    if (!current) return current;
+    if (olderMessages.length === 0) return current;
+    return { ...current, messages: [...olderMessages, ...current.messages] };
+  }, [current, olderMessages]);
   const currentState = currentRun?.state ?? (currentId ? agentStates[currentId] : undefined);
   const running = Boolean(stream[currentId ?? ""]) || isBusyState(currentState);
   const runningIds = useMemo(
@@ -285,6 +309,68 @@ export function App(): ReactElement {
   );
   // 切换会话后丢弃上一会话的 WS 即时权限卡，改由服务端列表播种
   useEffect(() => setPendingPermissions([]), [currentId]);
+  // 新会话永远回到纯对话：切换会话即关闭编辑器/diff 分栏（布局回归约束）
+  useEffect(() => {
+    setEditorPane(undefined);
+    setDiffPane(undefined);
+    // 0.5.0 Phase 2：清空分页加载的更早消息
+    setOlderMessages([]);
+    setHasMoreOlder(false);
+  }, [currentId]);
+  // 0.5.0 Phase 2：初始页加载后同步 hasMoreMessages
+  useEffect(() => {
+    setHasMoreOlder(current?.hasMoreMessages ?? false);
+  }, [current?.hasMoreMessages]);
+  // 0.5.0 Phase 2：加载更早消息——基于当前最旧消息 ID 向前翻页
+  const loadMoreMessages = useCallback(async (): Promise<void> => {
+    if (!current || loadingMore) return;
+    const oldestId = olderMessages.length > 0 ? olderMessages[0]!.id : current.messages[0]?.id;
+    if (!oldestId) return;
+    setLoadingMore(true);
+    try {
+      const page = await api.messagesPage(current.id, oldestId, 100);
+      setOlderMessages((prev) => [...page.messages, ...prev]);
+      setHasMoreOlder(page.hasMore);
+    } catch {
+      // 网络错误静默处理——用户可重试
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [current, olderMessages, loadingMore]);
+  // 编辑器命令动作面：mod+s 保存 / mod+\ 焦点切换（EditorPane 挂载时注册）
+  const editorActionsRef = useRef<{ save?(): void; focus?(): void }>({});
+  // diff 视图命令动作面：接受/拒绝当前 hunk（DiffPane 挂载时注册）
+  const diffActionsRef = useRef<{ accept?(): void; reject?(): void; focus?(): void }>({});
+  // 打开编辑器分栏；移动端不提供编辑器，降级为只读代码视图浮层（§6.8 语义平移）
+  const openEditor = useCallback((path: string, position?: { line?: number; column?: number }): void => {
+    if (isMobile) {
+      setCodeOverlayPath(path);
+      return;
+    }
+    setCodeOverlayPath(undefined);
+    setQuickOpenOpen(false);
+    setDiffPane(undefined);
+    setEditorPane({ path, ...(position?.line !== undefined ? { line: position.line } : {}), ...(position?.column !== undefined ? { column: position.column } : {}) });
+  }, [isMobile]);
+  // 打开统一 diff 视图（0.5.0 Phase 1b）：桌面进分栏，移动端降级只读摘要浮层
+  const openDiff = useCallback((spec: DiffSpec): void => {
+    setCodeOverlayPath(undefined);
+    setQuickOpenOpen(false);
+    setEditorPane(undefined);
+    setDiffPane(spec);
+  }, []);
+  // diff/编辑器操作完成后焦点回 Composer（对话为主约束）
+  const focusComposer = useCallback((): void => {
+    document.getElementById("composer-input")?.focus();
+  }, []);
+  const closeEditor = useCallback((): void => {
+    setEditorPane(undefined);
+    focusComposer();
+  }, [focusComposer]);
+  const closeDiff = useCallback((): void => {
+    setDiffPane(undefined);
+    focusComposer();
+  }, [focusComposer]);
   // 打开 Problems 侧栏视图即视为已查看，清除角标（原底部面板语义平移）
   useEffect(() => {
     if (layout.sidebarView === "problems" && layout.sidebarVisible && currentId) {
@@ -454,7 +540,11 @@ export function App(): ReactElement {
     multipleSessions: (sessions.data?.length ?? 0) > 1,
     // 浮层打开状态（含通知中心）：供命令 when 条件使用（如 "!dialogOpen"）
     dialogOpen: dialogOpen || settingsOpen || paletteOpen || quickOpenOpen || shortcutsOpen || notificationsOpen || Boolean(codeOverlayPath),
-  }), [currentId, running, draft, sessions.data, dialogOpen, settingsOpen, paletteOpen, quickOpenOpen, shortcutsOpen, notificationsOpen, codeOverlayPath]);
+    // 编辑器分栏开合（0.5.0）：保存/焦点切换命令的 when 条件
+    editorOpen: Boolean(editorPane) && !isMobile,
+    // diff 视图开合（0.5.0 Phase 1b）：hunk 接受/拒绝命令的 when 条件
+    diffOpen: Boolean(diffPane) && !isMobile,
+  }), [currentId, running, draft, sessions.data, dialogOpen, settingsOpen, paletteOpen, quickOpenOpen, shortcutsOpen, notificationsOpen, codeOverlayPath, editorPane, diffPane, isMobile]);
 
   const stepSession = useCallback((delta: number): void => {
     const list = sessions.data ?? [];
@@ -488,6 +578,15 @@ export function App(): ReactElement {
     showKeyboardShortcuts: () => setShortcutsOpen(true),
     cycleZone: () => window.dispatchEvent(new CustomEvent(CYCLE_ZONE_EVENT)),
     showNotifications: () => setNotificationsOpen(true),
+    saveEditorFile: () => editorActionsRef.current.save?.(),
+    toggleEditorSplit: () => {
+      const inEditor = document.activeElement instanceof HTMLElement && Boolean(document.activeElement.closest(".editor-pane"));
+      if (inEditor) document.getElementById("composer-input")?.focus();
+      else editorActionsRef.current.focus?.();
+    },
+    // 统一 diff 视图（0.5.0 Phase 1b）：接受/拒绝当前（首个待处理）hunk，写回走权限链
+    diffAcceptHunk: () => diffActionsRef.current.accept?.(),
+    diffRejectHunk: () => diffActionsRef.current.reject?.(),
   };
   useEffect(() => registerBuiltinCommands(() => actionsRef.current), []);
   useGlobalKeybindings(whenContext);
@@ -543,6 +642,8 @@ export function App(): ReactElement {
         session={current}
         running={running}
         onNotice={notify}
+        onOpenInEditor={isMobile ? undefined : (file, line, column) => openEditor(file, { ...(line !== undefined ? { line } : {}), ...(column !== undefined ? { column } : {}) })}
+        onOpenDiff={openDiff}
       />
     )
   ) : undefined;
@@ -565,7 +666,9 @@ export function App(): ReactElement {
         }
         sidebar={sidebar}
         main={
-          <section className="workbench">
+          // 编辑器分栏是对话的辅助视图：同屏不超过主区一半（CSS 约束），关闭即回纯对话
+          <div className="wb-main-split">
+            <section className="workbench">
             {current ? (
               <>
                 <JobHeader
@@ -598,7 +701,7 @@ export function App(): ReactElement {
                   </details>
                 )}
                 <ExecutionTrack
-                  session={current}
+                  session={displaySession ?? current}
                   contentLens={extensions.data?.find((extension) => extension.id === "content-lens" && extension.enabled)}
                   onNotice={notify}
                   {...(contextView.data?.ledger.cleared ? { cleared: contextView.data.ledger.cleared } : {})}
@@ -612,6 +715,10 @@ export function App(): ReactElement {
                     queryClient.invalidateQueries({ queryKey: ["permissions", current.id] });
                   }}
                   onPermissionError={(message) => notify(message, "error")}
+                  onOpenDiff={openDiff}
+                  hasMoreMessages={hasMoreOlder}
+                  onLoadMore={loadMoreMessages}
+                  loadingMore={loadingMore}
                 />
                 {queue.data?.some((item) => item.status === "queued") && (
                   <SteeringQueue
@@ -655,7 +762,36 @@ export function App(): ReactElement {
             ) : (
               <EmptyState sessions={sessions.data ?? []} onSelect={selectSession} onCreate={() => setDialogOpen(true)} />
             )}
-          </section>
+            </section>
+            {editorPane && currentId && !isMobile && (
+              <Suspense fallback={null}>
+                <EditorPane
+                  sessionId={currentId}
+                  path={editorPane.path}
+                  {...(editorPane.line !== undefined ? { line: editorPane.line } : {})}
+                  {...(editorPane.column !== undefined ? { column: editorPane.column } : {})}
+                  readOnly={current?.agentMode === "plan"}
+                  dark={theme === "dark"}
+                  actionsRef={editorActionsRef}
+                  onClose={closeEditor}
+                  onNotice={notify}
+                />
+              </Suspense>
+            )}
+            {diffPane && currentId && !isMobile && (
+              <Suspense fallback={null}>
+                <DiffPane
+                  sessionId={currentId}
+                  spec={diffPane}
+                  readOnly={current?.agentMode === "plan"}
+                  dark={theme === "dark"}
+                  actionsRef={diffActionsRef}
+                  onClose={closeDiff}
+                  onNotice={notify}
+                />
+              </Suspense>
+            )}
+          </div>
         }
         bottom={
           <BottomPanel
@@ -665,6 +801,7 @@ export function App(): ReactElement {
             onNotice={notify}
             open={layout.bottomOpen}
             onOpenChange={layout.setBottomOpen}
+            onOpenDiff={openDiff}
           />
         }
         statusBar={current && <StatusBar session={current} state={currentState} tokens={costSummary?.tokens} costLabel={costSummary?.costLabel} indexStatus={indexStatus.data?.status} />}
@@ -711,6 +848,7 @@ export function App(): ReactElement {
             open={quickOpenOpen}
             sessionId={currentId}
             onOpenFile={(path) => setCodeOverlayPath(path)}
+            onOpenInEditor={isMobile ? undefined : (path) => openEditor(path)}
             onClose={() => setQuickOpenOpen(false)}
           />
         )}
@@ -726,7 +864,27 @@ export function App(): ReactElement {
           />
         )}
         {codeOverlayPath && currentId && (
-          <CodeOverlay sessionId={currentId} path={codeOverlayPath} onClose={() => setCodeOverlayPath(undefined)} />
+          <CodeOverlay
+            sessionId={currentId}
+            path={codeOverlayPath}
+            onEdit={isMobile ? undefined : (path) => openEditor(path)}
+            onClose={() => setCodeOverlayPath(undefined)}
+          />
+        )}
+        {/* 移动端 diff 降级：只读摘要浮层（不加载 Monaco、不写回），桌面端走编辑器区分栏 */}
+        {diffPane && currentId && isMobile && (
+          <div className="wb-overlay-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeDiff(); }}>
+            <div className="wb-overlay code-overlay" role="dialog" aria-modal="true" aria-label={t("变更摘要", "Change summary")}>
+              <DiffPane
+                sessionId={currentId}
+                spec={diffPane}
+                summaryOnly
+                dark={theme === "dark"}
+                onClose={closeDiff}
+                onNotice={notify}
+              />
+            </div>
+          </div>
         )}
       </Suspense>
       {notice && <Toast notice={notice} onDismiss={() => setNotice(undefined)} />}

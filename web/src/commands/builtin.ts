@@ -27,6 +27,10 @@ export const COMMAND_IDS = {
   keyboardShortcuts: "workbench.action.keyboardShortcuts",
   cycleZone: "workbench.action.cycleZone",
   showNotifications: "workbench.action.showNotifications",
+  saveEditorFile: "workbench.action.saveEditorFile",
+  toggleEditorSplit: "workbench.action.toggleEditorSplit",
+  diffAcceptHunk: "workbench.action.diffAcceptHunk",
+  diffRejectHunk: "workbench.action.diffRejectHunk",
 } as const;
 
 /** App 提供给命令的动作面；全部保持已绑定的回调，注册表不感知 React 状态 */
@@ -49,6 +53,12 @@ export interface CommandActions {
   showKeyboardShortcuts(): void;
   cycleZone(): void;
   showNotifications(): void;
+  /** 编辑器分栏（0.5.0 Phase 1a）：保存当前文件（走权限链）与对话/编辑器焦点切换 */
+  saveEditorFile(): void;
+  toggleEditorSplit(): void;
+  /** 统一 diff 视图（0.5.0 Phase 1b）：接受/拒绝当前（首个待处理）hunk，写回走权限链 */
+  diffAcceptHunk(): void;
+  diffRejectHunk(): void;
 }
 
 export function registerBuiltinCommands(getActions: () => CommandActions): () => void {
@@ -74,6 +84,12 @@ export function registerBuiltinCommands(getActions: () => CommandActions): () =>
     registerCommand({ id: COMMAND_IDS.keyboardShortcuts, title: { zh: "键盘快捷方式速查", en: "Keyboard Shortcuts Reference" }, handler: () => getActions().showKeyboardShortcuts() }),
     registerCommand({ id: COMMAND_IDS.cycleZone, title: { zh: "在界面区域间轮换焦点", en: "Cycle Focus Between Regions" }, handler: () => getActions().cycleZone() }),
     registerCommand({ id: COMMAND_IDS.showNotifications, title: { zh: "显示通知中心", en: "Show Notifications" }, handler: () => getActions().showNotifications() }),
+    // 编辑器分栏（0.5.0 Phase 1a）：仅编辑器打开时可用
+    registerCommand({ id: COMMAND_IDS.saveEditorFile, title: { zh: "保存编辑器文件", en: "Save Editor File" }, when: "editorOpen", handler: () => getActions().saveEditorFile() }),
+    registerCommand({ id: COMMAND_IDS.toggleEditorSplit, title: { zh: "在对话与编辑器间切换焦点", en: "Toggle Focus Between Conversation and Editor" }, when: "editorOpen", handler: () => getActions().toggleEditorSplit() }),
+    // 统一 diff 视图（0.5.0 Phase 1b）：仅 diff 打开时可用；接受=保留改动，拒绝=写回还原（走权限链）
+    registerCommand({ id: COMMAND_IDS.diffAcceptHunk, title: { zh: "接受当前 hunk", en: "Accept Current Hunk" }, when: "diffOpen", handler: () => getActions().diffAcceptHunk() }),
+    registerCommand({ id: COMMAND_IDS.diffRejectHunk, title: { zh: "拒绝当前 hunk", en: "Reject Current Hunk" }, when: "diffOpen", handler: () => getActions().diffRejectHunk() }),
   ];
   return () => {
     for (const cleanup of cleanups) cleanup();

@@ -7,6 +7,7 @@ import { lazy, Suspense, type MouseEvent as ReactMouseEvent, type ReactElement }
 import type { SessionDetail } from "../lib/contracts";
 import { useI18n } from "../i18n";
 import type { SidebarView } from "./useWorkbenchLayout";
+import type { DiffSpec } from "../components/editor/DiffPane";
 
 const FilesPanel = lazy(() => import("../components/panels/FilesPanel").then((m) => ({ default: m.FilesPanel })));
 const ScmPanel = lazy(() => import("../components/panels/ScmPanel").then((m) => ({ default: m.ScmPanel })));
@@ -22,7 +23,7 @@ const TITLES: Record<string, [string, string]> = {
   problems: ["问题", "Problems"],
 };
 
-export function SidebarPanel({ view, width, onResize, sessionId, session, running, onNotice }: {
+export function SidebarPanel({ view, width, onResize, sessionId, session, running, onNotice, onOpenInEditor, onOpenDiff }: {
   view: Exclude<SidebarView, "sessions">;
   width: number;
   onResize(width: number): void;
@@ -30,6 +31,10 @@ export function SidebarPanel({ view, width, onResize, sessionId, session, runnin
   session?: SessionDetail;
   running: boolean;
   onNotice(message: string, kind?: "info" | "error"): void;
+  /** 0.5.0 Phase 1a：Problems 跳转升级为编辑器分栏；移动端/未提供时面板保持只读预览 */
+  onOpenInEditor?(file: string, line?: number, column?: number): void;
+  /** 0.5.0 Phase 1b：SCM 文件 diff 一键在统一 diff 视图中打开（hunk 级接受/拒绝） */
+  onOpenDiff?(spec: DiffSpec): void;
 }): ReactElement {
   const { t } = useI18n();
 
@@ -63,8 +68,8 @@ export function SidebarPanel({ view, width, onResize, sessionId, session, runnin
       <div className="sidebar-panel-body">
         <Suspense fallback={null}>
           {view === "files" && <FilesPanel sessionId={sessionId} session={session} running={running} onNotice={onNotice} />}
-          {view === "scm" && <ScmPanel sessionId={sessionId} onNotice={onNotice} />}
-          {view === "problems" && <ProblemsPanel sessionId={sessionId} />}
+          {view === "scm" && <ScmPanel sessionId={sessionId} onNotice={onNotice} onOpenDiff={onOpenDiff} />}
+          {view === "problems" && <ProblemsPanel sessionId={sessionId} onOpenInEditor={onOpenInEditor} />}
         </Suspense>
       </div>
     </aside>
