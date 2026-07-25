@@ -10,6 +10,7 @@ export const TOOL_RESULT_BUDGETS: Record<string, number> = {
   glob: 4_000,
   web_fetch: 8_000,
   web_search: 4_000,
+  repo_map: 16_000,
 };
 
 export interface BoundedToolResult {

@@ -103,6 +103,10 @@ export interface Session {
   snapshotMode?: SnapshotMode;
   shellBackend?: ShellBackend;
   setupScript?: string;
+  /** 选择性上下文：pin 的消息 id/文件路径（不被驱逐）。 */
+  contextPins?: string[];
+  /** 上下文排除路径 glob（不是安全边界）。 */
+  contextExcludes?: string[];
   sandbox?: {
     enabled: boolean;
     readRoots: string[];
@@ -163,7 +167,26 @@ export interface AgentRun {
   error?: { code: string; message: string; retryable: boolean };
 }
 
+export interface ContextSegmentBreakdown {
+  system: number;
+  compactionSummary: number;
+  toolResults: number;
+  messages: number;
+  repoMap: number;
+  other: number;
+}
+
+export interface ContextBuildStats {
+  totalTokens: number;
+  segments: ContextSegmentBreakdown;
+  pinnedTokens: number;
+  buildMs: number;
+  incremental: boolean;
+}
+
 export interface ContextView {
+  stats?: ContextBuildStats;
+  selection?: { pins: string[]; excludes: string[] };
   ledger: {
     round?: number;
     usage: { inputTokens: number; outputTokens: number; cacheRead: number; cacheWrite: number };
@@ -180,6 +203,8 @@ export interface ContextView {
       maxSessionCost?: { currency: "USD" | "CNY"; microUnits: string };
     };
     compacted?: { uptoIndex: number; mode: "toolcalls" | "overview" | "truncated"; summary: string; instructions: string[]; createdAt: string };
+    /** 最近记录的 prompt cache 消息级断点（消息 id）；诊断用。 */
+    cacheBreakpoints?: string[];
     cleared?: { uptoIndex: number; at: string };
   };
   preferences: { language: string; currency: "USD" | "CNY"; currencyLabel: string };

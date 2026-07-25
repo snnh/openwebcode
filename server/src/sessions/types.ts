@@ -104,6 +104,14 @@ export interface SessionMeta {
   snapshotMode?: SnapshotMode;
   /** 命令解释器；undefined 为向后兼容的 default。 */
   shellBackend?: ShellBackend;
+  /** 选择性上下文（§4.4）：pin 的消息 id/文件路径（不被驱逐）。 */
+  contextPins?: string[];
+  /** 上下文排除路径 glob（不进上下文组装/repo map/索引；不是安全边界）。 */
+  contextExcludes?: string[];
+  /** repo map 自动注入开关；undefined = 开（§4.1 默认开，会话可关）。 */
+  repoMapEnabled?: boolean;
+  /** repo map token 预算；undefined = 2048（DEFAULT_REPO_MAP_BUDGET）。 */
+  repoMapBudget?: number;
   /** 托管工作区：cwd 指向稀疏镜像盘挂载点，originCwd 为创建时的复制来源（plan §6.4） */
   workspace?: ManagedWorkspaceMeta;
   title: string;

@@ -10,7 +10,7 @@ import { SteeringError } from "./agent/agent-runner.js";
 import type { BackgroundTaskRegistry } from "./agent/background-tasks.js";
 import type { HookRunner } from "./hooks.js";
 import { CoreRpcError, type CoreClientLike, type ExecRequest } from "./core-client.js";
-import { ContextManager, type BudgetUpdate } from "./context/context-manager.js";
+import { ContextManager, isPathExcluded, type BudgetUpdate } from "./context/context-manager.js";
 import { renderSessionHtml } from "./export-html.js";
 import { boundToolResult } from "./context/tool-result-budget.js";
 import type { ServerConfig } from "./config.js";
@@ -21,6 +21,7 @@ import type { CatalogModel, ModelRegistry } from "./context/model-registry.js";
 import { PricingValidationError, type PricingCatalog, type PricingDocument, type SyncResult } from "./cost/pricing-catalog.js";
 import { parseDecimalToScaled } from "./cost/exchange-rate.js";
 import type { AppEvent, EventBus } from "./events/event-bus.js";
+import { DEFAULT_WS_BACKPRESSURE_LIMITS, isSlowClient, type WsBackpressureLimits } from "./events/ws-backpressure.js";
 import type { ProviderRegistry } from "./providers/provider.js";
 import { detectWsb } from "./sandbox/wsb.js";
 import { getSnapshotBackend } from "./snapshots/index.js";
@@ -157,6 +158,8 @@ export interface ServerDependencies {
   providerProfilesRuntime?: ProviderProfilesRuntime;
   /** Remote-listener protection. Omitted for the loopback-only development default. */
   auth?: { accessToken: string; allowedOrigins: string[] };
+  /** 慢 WS 客户端背压阈值覆盖（测试用）；缺省用 ws-backpressure 的常量。 */
+  wsBackpressureLimits?: Partial<WsBackpressureLimits>;
 }
 
 function parseCookies(value: string | undefined): Map<string, string> {
@@ -335,8 +338,9 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   if (dependencies.webDist && existsSync(dependencies.webDist)) {
     await app.register(fastifyStatic, { root: dependencies.webDist, prefix: "/" });
   }
-  const clients = new Set<{ send(data: string): void; close(code?: number, reason?: string): void; readonly readyState: number; readonly bufferedAmount: number; sessionId?: string }>();
-  const MAX_WS_BUFFERED_BYTES = 1 * 1024 * 1024;
+  const clients = new Set<{ send(data: string): void; close(code?: number, reason?: string): void; readonly readyState: number; readonly bufferedAmount: number; pendingSends: number; sessionId?: string }>();
+  // 慢客户端背压阈值：字节与消息数双上限（0.4.x §5.1），可用依赖覆盖便于测试。
+  const wsLimits: WsBackpressureLimits = { ...DEFAULT_WS_BACKPRESSURE_LIMITS, ...dependencies.wsBackpressureLimits };
   let slowClientDisconnects = 0;
   let failedClientSends = 0;
   // 已向 core 配置过 sandbox 的会话，避免文件浏览每次重配与 agent 运行竞态
@@ -460,7 +464,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       // 未带 sessionId 订阅的客户端始终收到全量事件流（web 端按 event.sessionId 分发）。
       const globalEvent = event.type === "agent.state" || event.type.startsWith("run.");
       if (client.readyState !== 1 || (client.sessionId && event.sessionId && client.sessionId !== event.sessionId && !globalEvent)) continue;
-      if (client.bufferedAmount > MAX_WS_BUFFERED_BYTES) {
+      if (isSlowClient(client, wsLimits)) {
         slowClientDisconnects++;
         try { client.send(JSON.stringify({ source: "server", type: "resync.required", seq: event.seq, createdAt: new Date().toISOString(), ...(client.sessionId ? { sessionId: client.sessionId, ...(event.sessionSeq !== undefined ? { sessionSeq: event.sessionSeq } : {}) } : {}), payload: { latestSeq: client.sessionId ? event.sessionSeq ?? 0 : event.seq, reason: "slow_client" } })); }
         catch { failedClientSends++; }
@@ -1005,9 +1009,10 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     const session = await sessions.get(request.params.id);
     if (!session) return reply.code(404).send({ error: "Session not found" });
     const manager = new ContextManager(sessions.contextRoot(request.params.id));
-    const view = await manager.buildView(session.messages);
+    const selection = { pins: session.contextPins ?? [], excludes: session.contextExcludes ?? [] };
+    const view = await manager.buildView(session.messages, { selection });
     const prefs = getPreferences();
-    return { ...view, preferences: { language: prefs.language, currency: prefs.currency, currencyLabel: prefs.currency === "CNY" ? "RMB" : "USD" } };
+    return { ...view, selection, preferences: { language: prefs.language, currency: prefs.currency, currencyLabel: prefs.currency === "CNY" ? "RMB" : "USD" } };
   });
 
   app.put<{ Params: { id: string }; Body: BudgetBody }>("/api/sessions/:id/context/budget", async (request, reply) => {
@@ -1051,6 +1056,39 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       const ledger = await manager.updatePolicy(request.body ?? {});
       events.publish({ source: "session", type: "context.policy_updated", sessionId: request.params.id, payload: ledger.policy });
       return ledger;
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+  app.put<{ Params: { id: string }; Body: { pins?: string[]; excludes?: string[] } }>("/api/sessions/:id/context/selection", async (request, reply) => {
+    if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
+    if (agent.isRunning(request.params.id)) return reply.code(409).send({ error: "Session is running; update context selection when it is idle" });
+    try {
+      const meta = await sessions.updateContextSelection(request.params.id, { pins: request.body?.pins, excludes: request.body?.excludes });
+      const selection = { pins: meta.contextPins ?? [], excludes: meta.contextExcludes ?? [] };
+      events.publish({ source: "session", type: "context.selection_updated", sessionId: request.params.id, payload: selection });
+      return selection;
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+  app.put<{ Params: { id: string }; Body: { enabled?: boolean; budget?: number | null } }>("/api/sessions/:id/context/repo-map", async (request, reply) => {
+    if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
+    if (agent.isRunning(request.params.id)) return reply.code(409).send({ error: "Session is running; update repo map settings when it is idle" });
+    if (request.body?.enabled !== undefined && typeof request.body.enabled !== "boolean") {
+      return reply.code(400).send({ error: "enabled must be a boolean" });
+    }
+    if (request.body?.budget !== undefined && request.body.budget !== null && (!Number.isSafeInteger(request.body.budget) || request.body.budget < 64 || request.body.budget > 100_000)) {
+      return reply.code(400).send({ error: "budget must be an integer between 64 and 100000, or null" });
+    }
+    try {
+      const meta = await sessions.updateRepoMapSettings(request.params.id, {
+        enabled: request.body?.enabled,
+        budget: request.body?.budget ?? undefined,
+      });
+      const settings = { enabled: meta.repoMapEnabled !== false, budget: meta.repoMapBudget ?? 2048 };
+      events.publish({ source: "session", type: "context.repo_map_updated", sessionId: request.params.id, payload: settings });
+      return settings;
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
     }
@@ -1491,8 +1529,14 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
             configuredSessions.add(session.id);
           }
           const contextRoot = sessions.contextRoot(request.params.id);
+          const contextExcludes = session.contextExcludes ?? [];
           for (const item of attachments) {
             const attachmentPath = item.path.trim();
+            if (isPathExcluded(attachmentPath, contextExcludes)) {
+              attachmentBlocks.push({ text: `[Attachment ${attachmentPath}]
+已被会话上下文排除清单跳过（排除只影响上下文组装，不是安全边界；工具仍可按权限读取该文件）` });
+              continue;
+            }
             try {
               const result = await core.readFile({ sessionId: request.params.id, path: attachmentPath });
               const bounded = await boundToolResult(contextRoot, "read_file", result.content);
@@ -1660,7 +1704,12 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     const client = {
       get readyState(): number { return socket.readyState; },
       get bufferedAmount(): number { return socket.bufferedAmount; },
-      send: (data: string) => socket.send(data),
+      // 已 send 未 flush 的消息条数：配合 bufferedAmount 构成双维度背压判定。
+      pendingSends: 0,
+      send: (data: string) => {
+        client.pendingSends++;
+        socket.send(data, () => { client.pendingSends = Math.max(0, client.pendingSends - 1); });
+      },
       close: (code?: number, reason?: string) => socket.close(code, reason),
       ...(sessionId ? { sessionId } : {}),
     };
