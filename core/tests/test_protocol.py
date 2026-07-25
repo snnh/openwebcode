@@ -151,8 +151,9 @@ def main():
         assert response["result"]["features"]["fsHash"] is True
         assert response["result"]["features"]["fsScanPagination"] is True
         assert response["result"]["features"]["fsWatch"] is True
+        assert response["result"]["features"]["indexScan"] is True
         assert response["result"]["features"]["jobControl"] is (os.name == "nt")
-        assert response["result"]["limits"] == {"maxFrameBytes": 32 * 1024 * 1024, "maxWriteBase64Bytes": 20 * 1024 * 1024, "maxHashBytes": 16 * 1024 * 1024, "maxStatManyPaths": 128, "maxStatManyPathBytes": 256 * 1024, "maxScanEntries": 256, "maxScanDepth": 16, "maxScanNodes": 2048, "maxWatches": 16, "maxWatchEvents": 128, "maxConcurrentJobs": 4, "maxJobOutputBytes": 512 * 1024}
+        assert response["result"]["limits"] == {"maxFrameBytes": 32 * 1024 * 1024, "maxWriteBase64Bytes": 20 * 1024 * 1024, "maxHashBytes": 16 * 1024 * 1024, "maxStatManyPaths": 128, "maxStatManyPathBytes": 256 * 1024, "maxScanEntries": 256, "maxScanDepth": 16, "maxScanNodes": 2048, "maxWatches": 16, "maxWatchEvents": 128, "maxConcurrentJobs": 4, "maxJobOutputBytes": 512 * 1024, "maxIndexScanNodes": 1000000, "maxIndexScanDepth": 64, "maxIndexScanBytes": 16 * 1024 * 1024 * 1024, "maxIndexScanMs": 600000}
 
         request(proc, None, "core.ping")
         response, notes = collect_until_response(proc, None)

@@ -33,6 +33,21 @@ static int CloseHandle(HANDLE handle){free(handle);return 1;}
 #define LeaveCriticalSection(lock) ((void)pthread_mutex_unlock((lock)))
 #endif
 
+#ifndef _WIN32
+#include <time.h>
+#endif
+
+/* Monotonic millisecond clock for scan time budgets (wall-clock-independent). */
+static unsigned long long monotonic_ms(void) {
+#ifdef _WIN32
+    return (unsigned long long)GetTickCount64();
+#else
+    struct timespec now;
+    if(clock_gettime(CLOCK_MONOTONIC,&now)!=0) return 0;
+    return (unsigned long long)now.tv_sec*1000ull+(unsigned long long)now.tv_nsec/1000000ull;
+#endif
+}
+
 static int write_format(owc_rpc *rpc, const char *format, ...) {
     va_list args, copy; int length; char *body;
     va_start(args,format); va_copy(copy,args); length=vsnprintf(NULL,0,format,args); va_end(args);
@@ -206,12 +221,13 @@ static int session_exec_policy(const char *id,const char *cwd,int *enabled,int *
  * paths before comparing policy roots so cosmetic forms such as ./private do
  * not bypass an absolute deny root.  Traversal and absolute paths are denied
  * here as well as by the no-follow platform implementation. */
-static char *session_policy_path(const session_config *session,const char *path){const char *cursor;char *out;size_t capacity,used,components=0;if(!session||!path||!path[0]||path[0]=='/'||path[0]=='\\'||(path[0]&&path[1]==':'))return NULL;capacity=strlen(session->cwd)+strlen(path)+3;out=(char*)malloc(capacity);if(!out)return NULL;used=strlen(session->cwd);memcpy(out,session->cwd,used);while(used&& (out[used-1]=='/'||out[used-1]=='\\'))used--;out[used]='\0';cursor=path;while(*cursor){const char *end;size_t length;while(*cursor=='/'||*cursor=='\\')cursor++;if(!*cursor)break;end=cursor;while(*end&&*end!='/'&&*end!='\\')end++;length=(size_t)(end-cursor);if(length==1&&cursor[0]=='.'){cursor=end;continue;}if(length==2&&cursor[0]=='.'&&cursor[1]=='.'){free(out);return NULL;}if(++components>256u){free(out);return NULL;}if(used&&out[used-1]!='/'&&out[used-1]!='\\')out[used++]='/';memcpy(out+used,cursor,length);used+=length;out[used]='\0';cursor=end;}return out;}
-static int session_path_allowed(const char *id,const char *path,owc_path_permission permission){session_config *session=session_find(id);owc_path_policy policy;char *canonical;int allowed;if(!session)return 0;/* Publish the session deny roots to the platform layer before any file
+static char *session_policy_path(const char *cwd,const char *path){const char *cursor;char *out;size_t capacity,used,components=0;if(!cwd||!path||!path[0]||path[0]=='/'||path[0]=='\\'||(path[0]&&path[1]==':'))return NULL;capacity=strlen(cwd)+strlen(path)+3;out=(char*)malloc(capacity);if(!out)return NULL;used=strlen(cwd);memcpy(out,cwd,used);while(used&& (out[used-1]=='/'||out[used-1]=='\\'))used--;out[used]='\0';cursor=path;while(*cursor){const char *end;size_t length;while(*cursor=='/'||*cursor=='\\')cursor++;if(!*cursor)break;end=cursor;while(*end&&*end!='/'&&*end!='\\')end++;length=(size_t)(end-cursor);if(length==1&&cursor[0]=='.'){cursor=end;continue;}if(length==2&&cursor[0]=='.'&&cursor[1]=='.'){free(out);return NULL;}if(++components>256u){free(out);return NULL;}if(used&&out[used-1]!='/'&&out[used-1]!='\\')out[used++]='/';memcpy(out+used,cursor,length);used+=length;out[used]='\0';cursor=end;}return out;}
+static int session_path_check(const session_config *session,const char *path,owc_path_permission permission){owc_path_policy policy;char *canonical;int allowed;if(!session)return 0;canonical=session_policy_path(session->cwd,path);if(!canonical)return 0;memset(&policy,0,sizeof(policy));policy.read_roots=(const char *const *)session->read_roots;policy.read_root_count=session->read_root_count;policy.write_roots=(const char *const *)session->write_roots;policy.write_root_count=session->write_root_count;policy.deny_roots=(const char *const *)session->deny_paths;policy.deny_root_count=session->deny_count;allowed=owc_path_policy_check(&policy,canonical,permission);free(canonical);return allowed;}
+static int session_path_allowed(const char *id,const char *path,owc_path_permission permission){session_config *session=session_find(id);if(!session)return 0;/* Publish the session deny roots to the platform layer before any file
  * operation that follows this check: the textual comparison below cannot see
  * junction / 8.3 / trailing-dot aliases, so the platform re-checks the
  * resolved final path (Windows) against the same roots. */
-owc_fs_platform_set_deny_roots((const char *const *)session->deny_paths,session->deny_count);canonical=session_policy_path(session,path);if(!canonical)return 0;memset(&policy,0,sizeof(policy));policy.read_roots=(const char *const *)session->read_roots;policy.read_root_count=session->read_root_count;policy.write_roots=(const char *const *)session->write_roots;policy.write_root_count=session->write_root_count;policy.deny_roots=(const char *const *)session->deny_paths;policy.deny_root_count=session->deny_count;allowed=owc_path_policy_check(&policy,canonical,permission);free(canonical);return allowed;}
+owc_fs_platform_set_deny_roots((const char *const *)session->deny_paths,session->deny_count);return session_path_check(session,path,permission);}
 static int configure_session(const char *id,const char *cwd){size_t i;char *root=copy_text(cwd);if(!root)return 0;for(i=0;i<session_count;i++)if(!strcmp(sessions[i].session_id,id)){remove_session_watches(id);free(sessions[i].cwd);sessions[i].cwd=root;return 1;}if(session_count>=sizeof(sessions)/sizeof(sessions[0])){free(root);return 0;}memset(&sessions[session_count],0,sizeof(sessions[0]));sessions[session_count].session_id=copy_text(id);if(!sessions[session_count].session_id){free(root);return 0;}sessions[session_count].cwd=root;session_count++;return 1;}
 static void clear_denies(session_config *session){size_t i;for(i=0;i<session->deny_count;i++)free(session->deny_paths[i]);session->deny_count=0;}
 static void clear_allows(session_config *session){size_t i;for(i=0;i<session->allow_count;i++)free(session->allow_paths[i]);session->allow_count=0;}
@@ -417,6 +433,9 @@ static int handle_fs_scan(owc_rpc *rpc,const owc_json *id,const owc_json *p){
 
 #define OWC_FS_MAX_WATCHES 16u
 #define OWC_FS_WATCH_MAX_EVENTS 128u
+/* Burst folding threshold: a single directory contributing this many events
+ * in one poll batch collapses into one directory-level "changed" event. */
+#define OWC_FS_WATCH_FOLD_MIN 4u
 typedef struct { unsigned id; char *session_id,*base; owc_fs_watch *watch; } fs_watch_record;
 static fs_watch_record fs_watches[OWC_FS_MAX_WATCHES];
 static unsigned next_watch_id=1;
@@ -450,6 +469,24 @@ static int handle_fs_watch_poll(owc_rpc *rpc,const owc_json *id,const owc_json *
     /* Hide policy-denied descendants and merge repeated path events from the
      * same kernel batch so a busy editor cannot amplify RPC/event traffic. */
     for(i=0;i<events.count;){char *policy_path=watch_policy_path(record->base,events.events[i].path);int denied=!policy_path||!session_path_allowed(session_id,policy_path,OWC_PATH_READ);free(policy_path);if(denied||watch_is_internal_temp(events.events[i].path)){free(events.events[i].path);events.count--;if(i!=events.count)events.events[i]=events.events[events.count];continue;}for(j=0;j<i;j++)if(!strcmp(events.events[j].path,events.events[i].path)){free(events.events[j].path);events.events[j]=events.events[i];events.count--;if(i!=events.count)events.events[i]=events.events[events.count];break;}if(j==i)i++;}
+    /* Burst folding (for example a build directory rewriting many files
+     * between polls): collapse directories with many same-batch events into
+     * one directory-level "changed" event. The parent of a root-level path is
+     * the watched root itself (""). Folding can repeat upwards when several
+     * folded siblings share a parent; each pass strictly shrinks the batch,
+     * so it terminates. */
+    for(i=0;i<events.count;){
+        char *slash=strrchr(events.events[i].path,'/');size_t parent_length=slash?(size_t)(slash-events.events[i].path):0;size_t same=0;
+        for(j=0;j<events.count;j++){char *other=strrchr(events.events[j].path,'/');size_t other_length=other?(size_t)(other-events.events[j].path):0;if(other_length==parent_length&&!strncmp(events.events[j].path,events.events[i].path,parent_length))same++;}
+        if(same<OWC_FS_WATCH_FOLD_MIN){i++;continue;}
+        {char *directory=(char*)malloc(parent_length+1);owc_fs_watch_event *grown;
+        if(!directory){owc_fs_watch_result_free(&events);return reply_error(rpc,id,-32000,"out of memory");}
+        memcpy(directory,events.events[i].path,parent_length);directory[parent_length]='\0';
+        for(j=0;j<events.count;){char *other=strrchr(events.events[j].path,'/');size_t other_length=other?(size_t)(other-events.events[j].path):0;if(other_length==parent_length&&!strncmp(events.events[j].path,directory,parent_length)){free(events.events[j].path);events.count--;if(j!=events.count)events.events[j]=events.events[events.count];}else j++;}
+        grown=(owc_fs_watch_event*)realloc(events.events,(events.count+1)*sizeof(*grown));
+        if(!grown){free(directory);owc_fs_watch_result_free(&events);return reply_error(rpc,id,-32000,"out of memory");}
+        events.events=grown;events.events[events.count].path=directory;events.events[events.count].kind="changed";events.count++;}
+    }
     result=(char*)malloc(12);if(!result){owc_fs_watch_result_free(&events);return reply_error(rpc,id,-32000,"out of memory");}strcpy(result,"{\"events\":[");for(i=0;i<events.count;i++){char *path=owc_json_escape_string(events.events[i].path),*grown;size_t used,add;if(!path){free(result);owc_fs_watch_result_free(&events);return reply_error(rpc,id,-32000,"out of memory");}used=strlen(result);add=(size_t)snprintf(NULL,0,"%s{\"path\":%s,\"kind\":\"%s\"}",i?",":"",path,events.events[i].kind);grown=(char*)realloc(result,used+add+48);if(!grown){free(path);free(result);owc_fs_watch_result_free(&events);return reply_error(rpc,id,-32000,"out of memory");}result=grown;snprintf(result+used,add+1,"%s{\"path\":%s,\"kind\":\"%s\"}",i?",":"",path,events.events[i].kind);free(path);}i=strlen(result);snprintf(result+i,48,"],\"overflow\":%s}",events.overflow?"true":"false");owc_fs_watch_result_free(&events);i=reply_result(rpc,id,result);free(result);return (int)i;
 }
 
@@ -462,17 +499,232 @@ static int handle_fs_watch_cancel(owc_rpc *rpc,const owc_json *id,const owc_json
 #define OWC_JOB_OUTPUT_CHUNKS 128u
 #define OWC_JOB_OUTPUT_CHUNK_BYTES 4096u
 typedef enum { OWC_JOB_EMPTY,OWC_JOB_RUNNING,OWC_JOB_COMPLETED,OWC_JOB_FAILED,OWC_JOB_CANCELLED,OWC_JOB_TIMED_OUT } owc_job_state;
+typedef enum { OWC_JOB_EXEC,OWC_JOB_INDEX_SCAN } owc_job_kind;
 typedef struct {unsigned sequence;char stream[7];size_t length;unsigned char data[OWC_JOB_OUTPUT_CHUNK_BYTES];} owc_job_chunk;
-typedef struct {char *id,*session,*cmd,*cwd;char *allow_paths[16];size_t allow_path_count;int sandbox_enabled,allow_network,sandbox_mode,shell_backend;unsigned long memory,processes;int timeout;volatile int cancel;owc_job_state state;owc_exec_result result;HANDLE thread;owc_job_chunk output[OWC_JOB_OUTPUT_CHUNKS];size_t output_start,output_count;unsigned next_output_sequence;int output_truncated;} owc_job;
+#define OWC_INDEX_MAX_PATTERNS 64u
+typedef struct {char *id,*session,*cmd,*cwd;char *allow_paths[16];size_t allow_path_count;int sandbox_enabled,allow_network,sandbox_mode,shell_backend;unsigned long memory,processes;int timeout;volatile int cancel;owc_job_state state;owc_job_kind kind;owc_exec_result result;HANDLE thread;owc_job_chunk output[OWC_JOB_OUTPUT_CHUNKS];size_t output_start,output_count;unsigned next_output_sequence;int output_truncated;char *scan_path;char *scan_include[OWC_INDEX_MAX_PATTERNS];size_t scan_include_count;char *scan_exclude[OWC_INDEX_MAX_PATTERNS];size_t scan_exclude_count;unsigned long scan_max_nodes,scan_max_depth;unsigned long long scan_max_bytes;int scan_max_ms;char *scan_read_roots[16];size_t scan_read_root_count;char *scan_deny_roots[16];size_t scan_deny_root_count;} owc_job;
 static owc_job jobs[OWC_JOB_MAX_RUNNING];static CRITICAL_SECTION jobs_mutex;static int jobs_ready=0;
 static void jobs_init(void){if(!jobs_ready){InitializeCriticalSection(&jobs_mutex);jobs_ready=1;}}
-static void job_free(owc_job *job){size_t i;if(job->thread)CloseHandle(job->thread);free(job->id);free(job->session);free(job->cmd);free(job->cwd);for(i=0;i<job->allow_path_count;i++)free(job->allow_paths[i]);memset(job,0,sizeof(*job));}
+static void job_free(owc_job *job){size_t i;if(job->thread)CloseHandle(job->thread);free(job->id);free(job->session);free(job->cmd);free(job->cwd);free(job->scan_path);for(i=0;i<job->allow_path_count;i++)free(job->allow_paths[i]);for(i=0;i<job->scan_include_count;i++)free(job->scan_include[i]);for(i=0;i<job->scan_exclude_count;i++)free(job->scan_exclude[i]);for(i=0;i<job->scan_read_root_count;i++)free(job->scan_read_roots[i]);for(i=0;i<job->scan_deny_root_count;i++)free(job->scan_deny_roots[i]);memset(job,0,sizeof(*job));}
 static void job_output(void *data,const char *stream,const unsigned char *bytes,size_t length,unsigned sequence){owc_job *job=(owc_job*)data;size_t offset=0;(void)sequence;EnterCriticalSection(&jobs_mutex);while(offset<length){owc_job_chunk *chunk;size_t take=length-offset,index;if(job->output_count==OWC_JOB_OUTPUT_CHUNKS){job->output_start=(job->output_start+1u)%OWC_JOB_OUTPUT_CHUNKS;job->output_count--;job->output_truncated=1;}if(take>OWC_JOB_OUTPUT_CHUNK_BYTES)take=OWC_JOB_OUTPUT_CHUNK_BYTES;index=(job->output_start+job->output_count)%OWC_JOB_OUTPUT_CHUNKS;chunk=&job->output[index];chunk->sequence=++job->next_output_sequence;(void)snprintf(chunk->stream,sizeof(chunk->stream),"%s",stream);memcpy(chunk->data,bytes+offset,take);chunk->length=take;job->output_count++;offset+=take;}LeaveCriticalSection(&jobs_mutex);}
-static DWORD WINAPI job_worker(void *data){owc_job *job=(owc_job*)data;owc_exec_request request;owc_exec_result result;memset(&request,0,sizeof(request));request.command=job->cmd;request.cwd=job->cwd;request.session_id=job->session;request.allow_paths=(const char *const *)job->allow_paths;request.allow_path_count=job->allow_path_count;request.sandbox_enabled=job->sandbox_enabled;request.allow_network=job->allow_network;request.sandbox_mode=job->sandbox_mode;request.shell_backend=job->shell_backend;request.job_memory_mb=job->memory;request.job_max_processes=job->processes;request.timeout_ms=job->timeout;request.output_limit=1024u*1024u;request.cancel_requested=&job->cancel;request.on_output=job_output;request.user_data=job;(void)owc_exec_run(&request,&result);EnterCriticalSection(&jobs_mutex);job->result=result;if(result.cancelled)job->state=OWC_JOB_CANCELLED;else if(result.timed_out)job->state=OWC_JOB_TIMED_OUT;else if(!result.system_error)job->state=OWC_JOB_COMPLETED;else job->state=OWC_JOB_FAILED;LeaveCriticalSection(&jobs_mutex);return 0;}
+/* ------------------------------------------------------------------ */
+/* index.scan: bounded, cancellable workspace file-manifest scan.
+ *
+ * Traversal reuses the same root-bound/no-follow list primitive and the same
+ * session path policy as fs.scan; hashing reuses owc_fs_hash (SHA-256 with
+ * the existing 16 MiB per-file read budget). Entries are collected, sorted by
+ * UTF-8 path for deterministic output, and only then streamed as JSONL to the
+ * job output ring. The scan always reports complete entries; incremental
+ * change sets are computed by the Node layer from successive manifests.
+ *
+ * The worker thread never dereferences the live session_config (cleanup or
+ * reconfigure could free it mid-scan); job.start snapshots the read/deny
+ * policy roots into the job, and index_path_allowed checks that snapshot.
+ * Enumeration-supplied real names cannot carry the 8.3/trailing-dot aliases
+ * the platform deny-root re-check exists to catch, and reparse points are
+ * rejected structurally by the platform traversal, so the worker does not
+ * publish deny roots to the platform layer (a main-thread affair). */
+#define OWC_INDEX_SCAN_DEFAULT_NODES 200000ul
+#define OWC_INDEX_SCAN_NODES_LIMIT 1000000ul
+#define OWC_INDEX_SCAN_DEFAULT_DEPTH 32ul
+#define OWC_INDEX_SCAN_DEPTH_LIMIT 64ul
+#define OWC_INDEX_SCAN_DEFAULT_BYTES (1024ull*1024ull*1024ull)
+#define OWC_INDEX_SCAN_BYTES_LIMIT (16ull*1024ull*1024ull*1024ull)
+#define OWC_INDEX_SCAN_DEFAULT_MS 60000
+#define OWC_INDEX_SCAN_MS_LIMIT 600000
+#define OWC_INDEX_SCAN_CHECK_INTERVAL 64u
+
+typedef struct { char *path; unsigned long long size; long long modified_ms; char sha256[65]; int hashed; } index_scan_item;
+typedef struct { index_scan_item *items; size_t count,capacity,nodes; unsigned long long hashed_bytes; int truncated,halt,hash_truncated; const char *reason; } index_scan_collection;
+static void index_scan_free(index_scan_collection *scan){size_t i;if(!scan)return;for(i=0;i<scan->count;i++)free(scan->items[i].path);free(scan->items);memset(scan,0,sizeof(*scan));}
+static int index_scan_add(index_scan_collection *scan,char *path,unsigned long long size,long long modified_ms,const char *sha256,int hashed){index_scan_item *grown;if(scan->count==scan->capacity){size_t cap=scan->capacity?scan->capacity*2u:256u;grown=(index_scan_item*)realloc(scan->items,cap*sizeof(*grown));if(!grown)return 0;scan->items=grown;scan->capacity=cap;}scan->items[scan->count].path=path;scan->items[scan->count].size=size;scan->items[scan->count].modified_ms=modified_ms;scan->items[scan->count].hashed=hashed;if(hashed)memcpy(scan->items[scan->count].sha256,sha256,65);else scan->items[scan->count].sha256[0]='\0';scan->count++;return 1;}
+static int index_scan_compare(const void *left,const void *right){const index_scan_item *a=(const index_scan_item*)left,*b=(const index_scan_item*)right;return strcmp(a->path,b->path);}
+static int index_pattern_match(char **patterns,size_t count,const char *path){size_t i;for(i=0;i<count;i++)if(owc_fs_match_pattern(patterns[i],path))return 1;return 0;}
+static int index_scan_halted(owc_job *job,index_scan_collection *scan,unsigned long long deadline){if(job->cancel)return 1;if(monotonic_ms()>=deadline){scan->truncated=1;scan->halt=1;scan->reason="time";return 1;}return 0;}
+/* Policy check against the policy snapshot taken at job.start: the worker
+ * thread must never dereference the live session_config, because
+ * session.cleanup / session.configure can free or rebuild it mid-scan. */
+static int index_path_allowed(const owc_job *job,const char *path){owc_path_policy policy;char *canonical;int allowed;canonical=session_policy_path(job->cwd,path);if(!canonical)return 0;memset(&policy,0,sizeof(policy));policy.read_roots=(const char *const *)job->scan_read_roots;policy.read_root_count=job->scan_read_root_count;policy.deny_roots=(const char *const *)job->scan_deny_roots;policy.deny_root_count=job->scan_deny_root_count;allowed=owc_path_policy_check(&policy,canonical,OWC_PATH_READ);free(canonical);return allowed;}
+
+static owc_fs_error index_scan_collect(owc_job *job,index_scan_collection *scan){
+    fs_scan_directory *stack=NULL;size_t stack_count=0,stack_capacity=0;owc_fs_error error=OWC_FS_OK;
+    unsigned long long deadline=monotonic_ms()+(unsigned long long)job->scan_max_ms;
+    const char *base=job->scan_path,*root=job->cwd;
+    memset(scan,0,sizeof(*scan));
+    if(!scan_push_directory(&stack,&stack_count,&stack_capacity,copy_text(""),0)){free(stack);return OWC_FS_NO_MEMORY;}
+    if(!stack[0].relative){free(stack);return OWC_FS_NO_MEMORY;}
+    while(stack_count&&error==OWC_FS_OK&&!scan->halt&&!job->cancel){
+        fs_scan_directory directory=stack[--stack_count];owc_fs_list_result list;char *full=directory.relative[0]?scan_join(base,directory.relative):copy_text(base);size_t i;
+        if(!full){free(directory.relative);error=OWC_FS_NO_MEMORY;break;}
+        error=owc_fs_list(root,full,&list);free(full);
+        /* Same protected-directory tolerance as fs.scan (depth 0 still fails). */
+        if(error&&directory.depth>0&&(error==OWC_FS_PERMISSION_DENIED||error==OWC_FS_NOT_FOUND)){free(directory.relative);error=OWC_FS_OK;continue;}
+        if(error){free(directory.relative);break;}
+        /* Same single-directory enumeration cap as fs.scan: flagged, but the
+         * rest of the tree is still traversed. */
+        if(list.truncated){scan->truncated=1;if(!scan->reason)scan->reason="list";}
+        for(i=0;i<list.count;i++){
+            char *child,*policy_path;
+            if(scan->nodes%OWC_INDEX_SCAN_CHECK_INTERVAL==0&&index_scan_halted(job,scan,deadline))break;
+            if(scan->nodes++>=job->scan_max_nodes){scan->truncated=1;scan->halt=1;scan->reason="nodes";break;}
+            child=directory.relative[0]?scan_join(directory.relative,list.entries[i].name):copy_text(list.entries[i].name);
+            if(!child){error=OWC_FS_NO_MEMORY;break;}
+            /* Excluded paths are neither listed nor traversed. */
+            if(index_pattern_match(job->scan_exclude,job->scan_exclude_count,child)){free(child);continue;}
+            /* Same deny-descendant rule as fs.scan: check the full
+             * workspace-relative path, never just the scan-relative one. */
+            policy_path=!strcmp(base,".")?copy_text(child):scan_join(base,child);
+            if(!policy_path){free(child);error=OWC_FS_NO_MEMORY;break;}
+            if(!index_path_allowed(job,policy_path)){free(policy_path);free(child);continue;}
+            free(policy_path);
+            if(list.entries[i].type==OWC_FS_TYPE_DIRECTORY){
+                if(directory.depth>=job->scan_max_depth){scan->truncated=1;if(!scan->reason)scan->reason="depth";}
+                else {char *next=copy_text(child);if(!next||!scan_push_directory(&stack,&stack_count,&stack_capacity,next,directory.depth+1)){free(next);free(child);error=OWC_FS_NO_MEMORY;break;}}
+                free(child);continue;
+            }
+            if(list.entries[i].type!=OWC_FS_TYPE_FILE){free(child);continue;}
+            /* include rules constrain files only; directories are always
+             * traversed so patterns such as src/*.ts can match below. */
+            if(job->scan_include_count&&!index_pattern_match(job->scan_include,job->scan_include_count,child)){free(child);continue;}
+            {
+                char *relative=!strcmp(base,".")?copy_text(child):scan_join(base,child);owc_fs_stat_result stat;
+                if(!relative){free(child);error=OWC_FS_NO_MEMORY;break;}
+                /* Files deleted or replaced mid-scan are skipped honestly. */
+                if(owc_fs_stat(root,relative,&stat)){free(relative);free(child);continue;}
+                {char digest[65];size_t hashed_size=0;int hashed=0;
+                if(stat.size<=OWC_FS_MAX_FILE_SIZE&&scan->hashed_bytes+stat.size<=job->scan_max_bytes){
+                    if(!owc_fs_hash(root,relative,digest,&hashed_size)){scan->hashed_bytes+=hashed_size;hashed=1;}
+                } else scan->hash_truncated=1;
+                if(!index_scan_add(scan,child,stat.size,stat.modified_ms,digest,hashed)){free(relative);error=OWC_FS_NO_MEMORY;break;}}
+                free(relative);
+            }
+        }
+        owc_fs_list_free(&list);free(directory.relative);
+    }
+    while(stack_count)free(stack[--stack_count].relative);
+    free(stack);
+    if(error){index_scan_free(scan);return error;}
+    qsort(scan->items,scan->count,sizeof(*scan->items),index_scan_compare);return OWC_FS_OK;
+}
+
+static DWORD WINAPI index_scan_worker(void *data){
+    owc_job *job=(owc_job*)data;index_scan_collection scan;owc_fs_error error;size_t i;unsigned long long started=monotonic_ms();
+    error=index_scan_collect(job,&scan);
+    if(error){EnterCriticalSection(&jobs_mutex);job->state=OWC_JOB_FAILED;LeaveCriticalSection(&jobs_mutex);return 0;}
+    if(!job->cancel){
+        /* Batch JSONL lines into ~3.5 KiB writes: one chunk slot per line
+         * would cap the manifest at 128 entries (the output ring depth),
+         * while batching lets the 512 KiB ring carry thousands of entries. */
+        char batch[3584];size_t used=0;
+        for(i=0;i<scan.count;i++){
+            char *escaped=owc_json_escape_string(scan.items[i].path),*line;int length;
+            if(!escaped)break;
+            if(scan.items[i].hashed)length=snprintf(NULL,0,"{\"path\":%s,\"size\":%llu,\"modifiedMs\":%lld,\"sha256\":\"%s\"}\n",escaped,scan.items[i].size,scan.items[i].modified_ms,scan.items[i].sha256);
+            else length=snprintf(NULL,0,"{\"path\":%s,\"size\":%llu,\"modifiedMs\":%lld}\n",escaped,scan.items[i].size,scan.items[i].modified_ms);
+            line=length<0?NULL:(char*)malloc((size_t)length+1);
+            if(!line){free(escaped);break;}
+            if(scan.items[i].hashed)(void)snprintf(line,(size_t)length+1,"{\"path\":%s,\"size\":%llu,\"modifiedMs\":%lld,\"sha256\":\"%s\"}\n",escaped,scan.items[i].size,scan.items[i].modified_ms,scan.items[i].sha256);
+            else (void)snprintf(line,(size_t)length+1,"{\"path\":%s,\"size\":%llu,\"modifiedMs\":%lld}\n",escaped,scan.items[i].size,scan.items[i].modified_ms);
+            free(escaped);
+            if((size_t)length>sizeof(batch)-used){job_output(job,"stdout",(const unsigned char*)batch,used,0);used=0;}
+            if((size_t)length>=sizeof(batch))job_output(job,"stdout",(const unsigned char*)line,(size_t)length,0);
+            else {memcpy(batch+used,line,(size_t)length);used+=(size_t)length;}
+            free(line);
+            if(job->cancel)break;
+        }
+        if(!job->cancel){
+            char summary[256];int length=snprintf(summary,sizeof(summary),"{\"summary\":{\"entries\":%zu,\"truncated\":%s,\"reason\":%s%s%s,\"hashTruncated\":%s}}\n",scan.count,scan.truncated?"true":"false",scan.reason?"\"":"",scan.reason?scan.reason:"null",scan.reason?"\"":"",scan.hash_truncated?"true":"false");
+            if(length>0&&(size_t)length<sizeof(summary)){
+                if(sizeof(batch)-used>(size_t)length){memcpy(batch+used,summary,(size_t)length);used+=(size_t)length;}
+                else {job_output(job,"stdout",(const unsigned char*)batch,used,0);used=0;memcpy(batch,summary,(size_t)length);used=(size_t)length;}
+            }
+        }
+        if(used)job_output(job,"stdout",(const unsigned char*)batch,used,0);
+    }
+    EnterCriticalSection(&jobs_mutex);
+    job->result.exit_code=0;
+    job->result.duration_ms=(long long)(monotonic_ms()-started);
+    job->state=job->cancel?OWC_JOB_CANCELLED:OWC_JOB_COMPLETED;
+    LeaveCriticalSection(&jobs_mutex);
+    index_scan_free(&scan);
+    return 0;
+}
+
+static DWORD WINAPI job_worker(void *data){owc_job *job=(owc_job*)data;owc_exec_request request;owc_exec_result result;if(job->kind==OWC_JOB_INDEX_SCAN)return index_scan_worker(job);memset(&request,0,sizeof(request));request.command=job->cmd;request.cwd=job->cwd;request.session_id=job->session;request.allow_paths=(const char *const *)job->allow_paths;request.allow_path_count=job->allow_path_count;request.sandbox_enabled=job->sandbox_enabled;request.allow_network=job->allow_network;request.sandbox_mode=job->sandbox_mode;request.shell_backend=job->shell_backend;request.job_memory_mb=job->memory;request.job_max_processes=job->processes;request.timeout_ms=job->timeout;request.output_limit=1024u*1024u;request.cancel_requested=&job->cancel;request.on_output=job_output;request.user_data=job;(void)owc_exec_run(&request,&result);EnterCriticalSection(&jobs_mutex);job->result=result;if(result.cancelled)job->state=OWC_JOB_CANCELLED;else if(result.timed_out)job->state=OWC_JOB_TIMED_OUT;else if(!result.system_error)job->state=OWC_JOB_COMPLETED;else job->state=OWC_JOB_FAILED;LeaveCriticalSection(&jobs_mutex);return 0;}
 static const char *job_state_name(owc_job_state state){return state==OWC_JOB_RUNNING?"running":state==OWC_JOB_COMPLETED?"completed":state==OWC_JOB_CANCELLED?"cancelled":state==OWC_JOB_TIMED_OUT?"timed_out":"failed";}
 static owc_job *find_job(const char *session,const char *id){size_t i;for(i=0;i<OWC_JOB_MAX_RUNNING;i++)if(jobs[i].state!=OWC_JOB_EMPTY&&!strcmp(jobs[i].session,session)&&!strcmp(jobs[i].id,id))return &jobs[i];return NULL;}
 static void cancel_session_jobs(const char *session_id){size_t i;if(!jobs_ready)return;EnterCriticalSection(&jobs_mutex);for(i=0;i<OWC_JOB_MAX_RUNNING;i++)if(jobs[i].state==OWC_JOB_RUNNING&&!strcmp(jobs[i].session,session_id))jobs[i].cancel=1;LeaveCriticalSection(&jobs_mutex);}
-static int handle_job_start(owc_rpc *rpc,const owc_json *id,const owc_json *p){static const char *keys[]={"sessionId","jobId","kind","cmd","cwd","timeoutMs","shellBackend"};const char *session,*job_id,*kind,*cmd,*cwd,*const *allow_paths;int enabled,network,mode,shell_backend;unsigned long memory,processes;size_t allow_count,i;owc_job *job=NULL;if(!allowed_keys(p,keys,7))return reply_error(rpc,id,-32602,"job.start contains unknown fields");session=owc_json_get_string(owc_json_object_get(p,"sessionId"));job_id=owc_json_get_string(owc_json_object_get(p,"jobId"));kind=owc_json_get_string(owc_json_object_get(p,"kind"));cmd=owc_json_get_string(owc_json_object_get(p,"cmd"));cwd=owc_json_get_string(owc_json_object_get(p,"cwd"));if(!session||!job_id||!cmd||!cwd||!job_id[0]||strlen(job_id)>128||!kind||strcmp(kind,"exec"))return reply_error(rpc,id,-32602,"job.start requires sessionId, jobId, kind exec, cmd, and cwd");if(!parse_shell_backend(p,&shell_backend))return reply_error(rpc,id,-32602,"shellBackend must be default or pwsh");if(!session_exec_policy(session,cwd,&enabled,&network,&mode,&allow_paths,&allow_count,&memory,&processes))return reply_error(rpc,id,-32002,"session cwd is not configured");jobs_init();EnterCriticalSection(&jobs_mutex);if(find_job(session,job_id)){LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32602,"jobId already exists in this session");}for(i=0;i<OWC_JOB_MAX_RUNNING;i++)if(jobs[i].state!=OWC_JOB_RUNNING)break;if(i==OWC_JOB_MAX_RUNNING){LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32000,"job limit reached");}job=&jobs[i];job_free(job);job->id=copy_text(job_id);job->session=copy_text(session);job->cmd=copy_text(cmd);job->cwd=copy_text(cwd);for(i=0;i<allow_count;i++){job->allow_paths[i]=copy_text(allow_paths[i]);if(!job->allow_paths[i]){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32000,"out of memory");}job->allow_path_count++;}job->sandbox_enabled=enabled;job->allow_network=network;job->sandbox_mode=mode;job->shell_backend=shell_backend;job->memory=memory;job->processes=processes;job->timeout=120000;{const owc_json *timeout=owc_json_object_get(p,"timeoutMs");if(timeout&&!parse_timeout(timeout,&job->timeout)){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32602,"timeoutMs must be a positive integer");}}if(!job->id||!job->session||!job->cmd||!job->cwd){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32000,"out of memory");}job->state=OWC_JOB_RUNNING;job->thread=CreateThread(NULL,0,job_worker,job,0,NULL);if(!job->thread){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32000,"failed to start job");}LeaveCriticalSection(&jobs_mutex);{char *escaped=owc_json_escape_string(job_id);char result[192];int ok;if(!escaped)return reply_error(rpc,id,-32000,"out of memory");snprintf(result,sizeof(result),"{\"jobId\":%s,\"state\":\"running\"}",escaped);free(escaped);ok=reply_result(rpc,id,result);return ok;}}
+static int copy_patterns(const owc_json *array,char **values,size_t *count){
+    size_t i;
+    if(!array)return 1;
+    if(array->type!=OWC_JSON_ARRAY||array->value.children.count>OWC_INDEX_MAX_PATTERNS)return 0;
+    for(i=0;i<array->value.children.count;i++){
+        const char *value=owc_json_get_string(array->value.children.items[i]);
+        if(!value||!value[0]||strlen(value)>512)return 0;
+        values[*count]=copy_text(value);
+        if(!values[*count])return 0;
+        (*count)++;
+    }
+    return 1;
+}
+static int handle_job_start(owc_rpc *rpc,const owc_json *id,const owc_json *p){
+    static const char *exec_keys[]={"sessionId","jobId","kind","cmd","cwd","timeoutMs","shellBackend"};
+    static const char *scan_keys[]={"sessionId","jobId","kind","cwd","path","include","exclude","maxDepth","maxNodes","maxBytes","maxMs","timeoutMs"};
+    const char *session,*job_id,*kind,*cmd,*cwd,*const *allow_paths;
+    int enabled,network,mode,shell_backend,is_scan;
+    unsigned long memory,processes;
+    size_t allow_count,i;
+    owc_job *job=NULL;
+    session=owc_json_get_string(owc_json_object_get(p,"sessionId"));
+    job_id=owc_json_get_string(owc_json_object_get(p,"jobId"));
+    kind=owc_json_get_string(owc_json_object_get(p,"kind"));
+    if(!session||!job_id||!job_id[0]||strlen(job_id)>128||!kind)return reply_error(rpc,id,-32602,"job.start requires sessionId, jobId, and kind");
+    is_scan=!strcmp(kind,"index.scan");
+    if(!is_scan&&strcmp(kind,"exec"))return reply_error(rpc,id,-32602,"job.start kind must be exec or index.scan");
+    if(!allowed_keys(p,is_scan?scan_keys:exec_keys,is_scan?sizeof(scan_keys)/sizeof(scan_keys[0]):sizeof(exec_keys)/sizeof(exec_keys[0])))return reply_error(rpc,id,-32602,"job.start contains unknown fields");
+    cmd=owc_json_get_string(owc_json_object_get(p,"cmd"));
+    cwd=owc_json_get_string(owc_json_object_get(p,"cwd"));
+    if(!cwd)return reply_error(rpc,id,-32602,"job.start requires cwd");
+    if(!is_scan&&!cmd)return reply_error(rpc,id,-32602,"job.start kind exec requires cmd");
+    if(!parse_shell_backend(p,&shell_backend))return reply_error(rpc,id,-32602,"shellBackend must be default or pwsh");
+    if(!session_exec_policy(session,cwd,&enabled,&network,&mode,&allow_paths,&allow_count,&memory,&processes))return reply_error(rpc,id,-32002,"session cwd is not configured");
+    jobs_init();EnterCriticalSection(&jobs_mutex);
+    if(find_job(session,job_id)){LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32602,"jobId already exists in this session");}
+    for(i=0;i<OWC_JOB_MAX_RUNNING;i++)if(jobs[i].state!=OWC_JOB_RUNNING)break;
+    if(i==OWC_JOB_MAX_RUNNING){LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32000,"job limit reached");}
+    job=&jobs[i];job_free(job);
+    job->id=copy_text(job_id);job->session=copy_text(session);job->cwd=copy_text(cwd);
+    job->kind=is_scan?OWC_JOB_INDEX_SCAN:OWC_JOB_EXEC;
+    if(is_scan){
+        const char *path=owc_json_get_string(owc_json_object_get(p,"path"));const owc_json *value;size_t number=0;
+        if(!path||!path[0]){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32602,"job.start kind index.scan requires a non-empty path");}
+        if(!session_path_check(session_find(session),path,OWC_PATH_READ)){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32002,"path is denied by session policy");}
+        job->scan_path=copy_text(path);
+        job->scan_max_nodes=OWC_INDEX_SCAN_DEFAULT_NODES;job->scan_max_depth=OWC_INDEX_SCAN_DEFAULT_DEPTH;job->scan_max_bytes=OWC_INDEX_SCAN_DEFAULT_BYTES;job->scan_max_ms=OWC_INDEX_SCAN_DEFAULT_MS;
+        value=owc_json_object_get(p,"maxNodes");if(value&&(!json_size(value,&number)||!number||number>OWC_INDEX_SCAN_NODES_LIMIT)){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32602,"maxNodes must be an integer from 1 to 1000000");}if(value)job->scan_max_nodes=(unsigned long)number;
+        value=owc_json_object_get(p,"maxDepth");if(value&&(!json_size(value,&number)||number>OWC_INDEX_SCAN_DEPTH_LIMIT)){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32602,"maxDepth must be an integer from 0 to 64");}if(value)job->scan_max_depth=(unsigned long)number;
+        value=owc_json_object_get(p,"maxBytes");if(value&&(!json_size(value,&number)||!number||number>OWC_INDEX_SCAN_BYTES_LIMIT)){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32602,"maxBytes must be an integer from 1 to 17179869184");}if(value)job->scan_max_bytes=(unsigned long long)number;
+        value=owc_json_object_get(p,"maxMs");if(value&&(!json_size(value,&number)||!number||number>OWC_INDEX_SCAN_MS_LIMIT)){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32602,"maxMs must be an integer from 1 to 600000");}if(value)job->scan_max_ms=(int)number;
+        if(!copy_patterns(owc_json_object_get(p,"include"),job->scan_include,&job->scan_include_count)||!copy_patterns(owc_json_object_get(p,"exclude"),job->scan_exclude,&job->scan_exclude_count)){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32602,"include/exclude must be arrays of up to 64 non-empty glob patterns (512 bytes each)");}
+        /* Snapshot the session read/deny roots so the scan worker never
+         * dereferences the live session_config (see index_path_allowed). */
+        {session_config *snapshot=session_find(session);size_t r;
+        for(r=0;snapshot&&r<snapshot->read_root_count;r++){job->scan_read_roots[job->scan_read_root_count]=copy_text(snapshot->read_roots[r]);if(!job->scan_read_roots[job->scan_read_root_count])break;job->scan_read_root_count++;}
+        for(r=0;snapshot&&r<snapshot->deny_count;r++){job->scan_deny_roots[job->scan_deny_root_count]=copy_text(snapshot->deny_paths[r]);if(!job->scan_deny_roots[job->scan_deny_root_count])break;job->scan_deny_root_count++;}
+        if(!snapshot||job->scan_read_root_count!=snapshot->read_root_count||job->scan_deny_root_count!=snapshot->deny_count){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32000,"out of memory");}}
+    } else {
+        job->cmd=copy_text(cmd);
+        for(i=0;i<allow_count;i++){job->allow_paths[i]=copy_text(allow_paths[i]);if(!job->allow_paths[i]){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32000,"out of memory");}job->allow_path_count++;}
+    }
+    job->sandbox_enabled=enabled;job->allow_network=network;job->sandbox_mode=mode;job->shell_backend=shell_backend;job->memory=memory;job->processes=processes;
+    job->timeout=120000;{const owc_json *timeout=owc_json_object_get(p,"timeoutMs");if(timeout&&!parse_timeout(timeout,&job->timeout)){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32602,"timeoutMs must be a positive integer");}}
+    if(!job->id||!job->session||!job->cwd||(!is_scan&&!job->cmd)||(is_scan&&!job->scan_path)){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32000,"out of memory");}
+    job->state=OWC_JOB_RUNNING;
+    job->thread=CreateThread(NULL,0,job_worker,job,0,NULL);
+    if(!job->thread){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32000,"failed to start job");}
+    LeaveCriticalSection(&jobs_mutex);
+    {char *escaped=owc_json_escape_string(job_id);char result[192];int ok;if(!escaped)return reply_error(rpc,id,-32000,"out of memory");snprintf(result,sizeof(result),"{\"jobId\":%s,\"state\":\"running\"}",escaped);free(escaped);ok=reply_result(rpc,id,result);return ok;}
+}
 static int handle_job_cancel(owc_rpc *rpc,const owc_json *id,const owc_json *p){static const char *keys[]={"sessionId","jobId"};const char *session,*job_id;owc_job *job;char *escaped;char result[192];if(!allowed_keys(p,keys,2))return reply_error(rpc,id,-32602,"job.cancel contains unknown fields");session=owc_json_get_string(owc_json_object_get(p,"sessionId"));job_id=owc_json_get_string(owc_json_object_get(p,"jobId"));if(!session||!job_id)return reply_error(rpc,id,-32602,"job.cancel requires sessionId and jobId");jobs_init();EnterCriticalSection(&jobs_mutex);job=find_job(session,job_id);if(!job){LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32003,"job not found");}if(job->state==OWC_JOB_RUNNING)job->cancel=1;escaped=owc_json_escape_string(job->id);if(!escaped){LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32000,"out of memory");}snprintf(result,sizeof(result),"{\"jobId\":%s,\"accepted\":true}",escaped);free(escaped);LeaveCriticalSection(&jobs_mutex);return reply_result(rpc,id,result);}
 static int handle_job_status(owc_rpc *rpc,const owc_json *id,const owc_json *p){static const char *keys[]={"sessionId","jobId"};const char *session,*job_id;owc_job *job;char *escaped,*result;int needed;if(!allowed_keys(p,keys,2))return reply_error(rpc,id,-32602,"job.status contains unknown fields");session=owc_json_get_string(owc_json_object_get(p,"sessionId"));job_id=owc_json_get_string(owc_json_object_get(p,"jobId"));if(!session||!job_id)return reply_error(rpc,id,-32602,"job.status requires sessionId and jobId");jobs_init();EnterCriticalSection(&jobs_mutex);job=find_job(session,job_id);if(!job){LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32003,"job not found");}escaped=owc_json_escape_string(job->id);if(!escaped){LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32000,"out of memory");}needed=snprintf(NULL,0,"{\"jobId\":%s,\"state\":\"%s\",\"exitCode\":%d,\"durationMs\":%lld,\"truncated\":%s%s}",escaped,job_state_name(job->state),job->result.exit_code,job->result.duration_ms,(job->result.truncated||job->output_truncated)?"true":"false",job->result.shell_unavailable?",\"error\":\"pwsh executable was not found\"":"");if(needed<0){free(escaped);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32000,"failed to encode job status");}result=(char*)malloc((size_t)needed+1);if(!result){free(escaped);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32000,"out of memory");}(void)snprintf(result,(size_t)needed+1,"{\"jobId\":%s,\"state\":\"%s\",\"exitCode\":%d,\"durationMs\":%lld,\"truncated\":%s%s}",escaped,job_state_name(job->state),job->result.exit_code,job->result.duration_ms,(job->result.truncated||job->output_truncated)?"true":"false",job->result.shell_unavailable?",\"error\":\"pwsh executable was not found\"":"");free(escaped);LeaveCriticalSection(&jobs_mutex);{int ok=reply_result(rpc,id,result);free(result);return ok;}}
 static int handle_job_output(owc_rpc *rpc,const owc_json *id,const owc_json *p){static const char *keys[]={"sessionId","jobId","afterSeq","limit"};const char *session,*job_id;const owc_json *value;size_t after=0,limit=64,i,emitted=0;unsigned next_sequence;owc_job *job;char *result;if(!allowed_keys(p,keys,4))return reply_error(rpc,id,-32602,"job.output contains unknown fields");session=owc_json_get_string(owc_json_object_get(p,"sessionId"));job_id=owc_json_get_string(owc_json_object_get(p,"jobId"));value=owc_json_object_get(p,"afterSeq");if(!session||!job_id||!value||!json_size(value,&after)||after>UINT_MAX)return reply_error(rpc,id,-32602,"job.output requires sessionId, jobId, and non-negative afterSeq");value=owc_json_object_get(p,"limit");if(value&&(!json_size(value,&limit)||!limit||limit>OWC_JOB_OUTPUT_CHUNKS))return reply_error(rpc,id,-32602,"job.output limit must be an integer from 1 to 128");jobs_init();EnterCriticalSection(&jobs_mutex);job=find_job(session,job_id);if(!job){LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32003,"job not found");}next_sequence=(unsigned)after;result=(char*)malloc(12);if(!result){LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32000,"out of memory");}strcpy(result,"{\"chunks\":[");for(i=0;i<job->output_count&&emitted<limit;i++){owc_job_chunk *chunk=&job->output[(job->output_start+i)%OWC_JOB_OUTPUT_CHUNKS];char *data;if(chunk->sequence<=after)continue;data=base64_encode(chunk->data,chunk->length);if(!data){free(result);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32000,"out of memory");}{char *grown;size_t used=strlen(result),add=(size_t)snprintf(NULL,0,"%s{\"seq\":%u,\"stream\":\"%s\",\"data\":\"%s\"}",emitted?",":"",chunk->sequence,chunk->stream,data);grown=(char*)realloc(result,used+add+1);if(!grown){free(data);free(result);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32000,"out of memory");}result=grown;snprintf(result+used,add+1,"%s{\"seq\":%u,\"stream\":\"%s\",\"data\":\"%s\"}",emitted?",":"",chunk->sequence,chunk->stream,data);free(data);emitted++;next_sequence=chunk->sequence;}}{char *grown;size_t used=strlen(result),suffix=(size_t)snprintf(NULL,0,"],\"nextSeq\":%u,\"truncated\":%s}",next_sequence,job->output_truncated?"true":"false");grown=(char*)realloc(result,used+suffix+1);if(!grown){free(result);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32000,"out of memory");}result=grown;snprintf(result+used,suffix+1,"],\"nextSeq\":%u,\"truncated\":%s}",next_sequence,job->output_truncated?"true":"false");}LeaveCriticalSection(&jobs_mutex);i=reply_result(rpc,id,result);free(result);return (int)i;}
@@ -515,7 +767,7 @@ int owc_rpc_dispatch(owc_rpc *rpc, const char *body, size_t length) {
 #else
         const char *job_control="false";
 #endif
-        escaped=owc_json_escape_string(reason);if(!escaped)(void)reply_error(rpc,id,-32000,"failed to encode sandbox capability");else{result_size=(size_t)snprintf(NULL,0,"{\"version\":\"%s\",\"protocolVersion\":\"1.0\",\"platform\":\"%s\",\"sandboxCapability\":\"%s\",\"sandboxReason\":%s,\"features\":{\"fsStat\":true,\"fsStatMany\":true,\"fsWriteBase64\":true,\"jobControl\":%s,\"fsHash\":true,\"fsScanPagination\":true,\"fsWatch\":true},\"limits\":{\"maxFrameBytes\":33554432,\"maxWriteBase64Bytes\":20971520,\"maxHashBytes\":16777216,\"maxStatManyPaths\":128,\"maxStatManyPathBytes\":262144,\"maxScanEntries\":256,\"maxScanDepth\":16,\"maxScanNodes\":2048,\"maxWatches\":16,\"maxWatchEvents\":128,\"maxConcurrentJobs\":4,\"maxJobOutputBytes\":524288}}",OWC_CORE_VERSION,platform,owc_sandbox_status_name(capability),escaped,job_control);result=(char*)malloc(result_size+1);if(!result)(void)reply_error(rpc,id,-32000,"failed to encode core capabilities");else{(void)snprintf(result,result_size+1,"{\"version\":\"%s\",\"protocolVersion\":\"1.0\",\"platform\":\"%s\",\"sandboxCapability\":\"%s\",\"sandboxReason\":%s,\"features\":{\"fsStat\":true,\"fsStatMany\":true,\"fsWriteBase64\":true,\"jobControl\":%s,\"fsHash\":true,\"fsScanPagination\":true,\"fsWatch\":true},\"limits\":{\"maxFrameBytes\":33554432,\"maxWriteBase64Bytes\":20971520,\"maxHashBytes\":16777216,\"maxStatManyPaths\":128,\"maxStatManyPathBytes\":262144,\"maxScanEntries\":256,\"maxScanDepth\":16,\"maxScanNodes\":2048,\"maxWatches\":16,\"maxWatchEvents\":128,\"maxConcurrentJobs\":4,\"maxJobOutputBytes\":524288}}",OWC_CORE_VERSION,platform,owc_sandbox_status_name(capability),escaped,job_control);(void)reply_result(rpc,id,result);free(result);}free(escaped);}
+        escaped=owc_json_escape_string(reason);if(!escaped)(void)reply_error(rpc,id,-32000,"failed to encode sandbox capability");else{result_size=(size_t)snprintf(NULL,0,"{\"version\":\"%s\",\"protocolVersion\":\"1.0\",\"platform\":\"%s\",\"sandboxCapability\":\"%s\",\"sandboxReason\":%s,\"features\":{\"fsStat\":true,\"fsStatMany\":true,\"fsWriteBase64\":true,\"jobControl\":%s,\"fsHash\":true,\"fsScanPagination\":true,\"fsWatch\":true,\"indexScan\":true},\"limits\":{\"maxFrameBytes\":33554432,\"maxWriteBase64Bytes\":20971520,\"maxHashBytes\":16777216,\"maxStatManyPaths\":128,\"maxStatManyPathBytes\":262144,\"maxScanEntries\":256,\"maxScanDepth\":16,\"maxScanNodes\":2048,\"maxWatches\":16,\"maxWatchEvents\":128,\"maxConcurrentJobs\":4,\"maxJobOutputBytes\":524288,\"maxIndexScanNodes\":1000000,\"maxIndexScanDepth\":64,\"maxIndexScanBytes\":17179869184,\"maxIndexScanMs\":600000}}",OWC_CORE_VERSION,platform,owc_sandbox_status_name(capability),escaped,job_control);result=(char*)malloc(result_size+1);if(!result)(void)reply_error(rpc,id,-32000,"failed to encode core capabilities");else{(void)snprintf(result,result_size+1,"{\"version\":\"%s\",\"protocolVersion\":\"1.0\",\"platform\":\"%s\",\"sandboxCapability\":\"%s\",\"sandboxReason\":%s,\"features\":{\"fsStat\":true,\"fsStatMany\":true,\"fsWriteBase64\":true,\"jobControl\":%s,\"fsHash\":true,\"fsScanPagination\":true,\"fsWatch\":true,\"indexScan\":true},\"limits\":{\"maxFrameBytes\":33554432,\"maxWriteBase64Bytes\":20971520,\"maxHashBytes\":16777216,\"maxStatManyPaths\":128,\"maxStatManyPathBytes\":262144,\"maxScanEntries\":256,\"maxScanDepth\":16,\"maxScanNodes\":2048,\"maxWatches\":16,\"maxWatchEvents\":128,\"maxConcurrentJobs\":4,\"maxJobOutputBytes\":524288,\"maxIndexScanNodes\":1000000,\"maxIndexScanDepth\":64,\"maxIndexScanBytes\":17179869184,\"maxIndexScanMs\":600000}}",OWC_CORE_VERSION,platform,owc_sandbox_status_name(capability),escaped,job_control);(void)reply_result(rpc,id,result);free(result);}free(escaped);}
     } else if(strcmp(method,"core.shutdown")==0) { (void)reply_result(rpc,id,"{\"ok\":true}"); rpc->shutting_down=1; }
     else if(strcmp(method,"session.configure")==0) { const char *sid=owc_json_get_string(owc_json_object_get(params,"sessionId")),*cwd=owc_json_get_string(owc_json_object_get(params,"cwd"));if(!sid||!sid[0]||!cwd||!cwd[0])(void)reply_error(rpc,id,-32602,"session.configure requires sessionId and cwd");else if(!configure_session(sid,cwd)||!configure_policy(sid,owc_json_object_get(params,"sandbox")))(void)reply_error(rpc,id,-32000,"failed to configure session");else(void)reply_session_capability(rpc,id,sid); }
     else if(strcmp(method,"session.cleanup")==0) { const char *sid=owc_json_get_string(owc_json_object_get(params,"sessionId"));if(!sid||!sid[0])(void)reply_error(rpc,id,-32602,"session.cleanup requires sessionId");else{(void)cleanup_session(sid);(void)reply_result(rpc,id,"{\"ok\":true}");} }
