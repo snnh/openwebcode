@@ -1,4 +1,5 @@
 import type { CoreClientLike } from "../core-client.js";
+import type { RepoMapSymbolFile } from "../index/index-manager.js";
 import { isPathExcluded } from "./context-manager.js";
 import { estimateTokens } from "./model-profile.js";
 
@@ -36,6 +37,13 @@ const KEY_FILE_EXACT = new Set([
 ]);
 const KEY_FILE_PATTERN = /^(readme|license|licence|changelog|contributing)(\.|$)|\.(sln|csproj|xcodeproj)$/i;
 const KEY_FILE_CAP = 12;
+
+/** 索引可用时附符号摘要的关键文件数与每文件符号数上限（Phase 2 §4.1）。 */
+const SYMBOL_FILE_CAP = 15;
+const SYMBOL_NAMES_CAP = 8;
+
+/** Phase 2：索引符号摘要提供者；返回 undefined 表示索引不可用 → 保持静态树降级。 */
+export type RepoMapSymbolProvider = (cwd: string) => Promise<RepoMapSymbolFile[] | undefined>;
 
 export interface RepoMapEntry {
   path: string;
@@ -82,21 +90,39 @@ interface DirNode {
 
 export class RepoMapGenerator {
   private readonly scans = new Map<string, ScanCacheEntry>();
+  /** Phase 2：可选的索引符号提供者（IndexManager.symbolSummary）。 */
+  private symbolProvider?: RepoMapSymbolProvider;
 
   constructor(private readonly core: CoreClientLike) {}
+
+  setSymbolProvider(provider: RepoMapSymbolProvider): void {
+    this.symbolProvider = provider;
+  }
 
   async generate(options: RepoMapOptions): Promise<RepoMapResult> {
     const budget = Math.max(64, Math.floor(options.budget ?? DEFAULT_REPO_MAP_BUDGET));
     const maxDepth = Math.max(1, Math.floor(options.maxDepth ?? DEFAULT_MAX_DEPTH));
     const excludes = [...REPO_MAP_DEFAULT_EXCLUDES, ...(options.excludes ?? [])];
     const scan = await this.scan(options.sessionId, options.cwd);
-    const renderKey = `${budget}|${maxDepth}|${excludes.join("|")}`;
+    // 索引可用时取符号摘要（最近修改优先）；失败/未建一律降级为纯静态树
+    let symbolFiles: RepoMapSymbolFile[] | undefined;
+    if (this.symbolProvider) {
+      try {
+        symbolFiles = await this.symbolProvider(options.cwd);
+      } catch {
+        symbolFiles = undefined;
+      }
+    }
+    // 渲染缓存键纳入符号指纹：索引刷新（最新 mtime/文件数变化）后旧渲染不复用
+    const symbolFingerprint = symbolFiles ? `${symbolFiles.length}:${symbolFiles[0]?.modifiedMs ?? 0}` : "none";
+    const renderKey = `${budget}|${maxDepth}|${excludes.join("|")}|${symbolFingerprint}`;
     const cachedRender = scan.renders.get(renderKey);
     if (cachedRender) return { ...cachedRender, cached: true };
 
     const { root, entryCount } = buildTree(scan.entries, excludes);
     const keyFiles = collectKeyFiles(root);
-    const rendered = renderWithinBudget(root, keyFiles, {
+    const header = [...(keyFiles.length > 0 ? [`Key files: ${keyFiles.join(", ")}`] : []), ...renderSymbolLines(symbolFiles)];
+    const rendered = renderWithinBudget(root, header, {
       budget,
       maxDepth,
       entryCount,
@@ -187,6 +213,21 @@ function collectKeyFiles(root: DirNode): string[] {
     .slice(0, KEY_FILE_CAP);
 }
 
+/** 索引符号摘要行：最近修改优先，每行列出顶层符号名（截断如实标注）。 */
+function renderSymbolLines(symbolFiles: readonly RepoMapSymbolFile[] | undefined): string[] {
+  if (!symbolFiles || symbolFiles.length === 0) return [];
+  const sorted = [...symbolFiles].sort((a, b) => b.modifiedMs - a.modifiedMs || a.path.localeCompare(b.path));
+  const lines: string[] = [];
+  for (const file of sorted.slice(0, SYMBOL_FILE_CAP)) {
+    const names = file.symbols.slice(0, SYMBOL_NAMES_CAP).map((symbol) => symbol.name);
+    const more = file.symbols.length > names.length ? `, … (+${file.symbols.length - names.length})` : "";
+    if (names.length > 0) lines.push(`${file.path}: ${names.join(", ")}${more}`);
+  }
+  if (lines.length === 0) return [];
+  const extra = symbolFiles.length > SYMBOL_FILE_CAP ? ` (+${symbolFiles.length - SYMBOL_FILE_CAP} more files)` : "";
+  return [`Key files with symbols (recent first)${extra}:`, ...lines];
+}
+
 interface RenderBudget {
   budget: number;
   maxDepth: number;
@@ -195,8 +236,7 @@ interface RenderBudget {
 }
 
 /** 预算收缩策略：先逐级降深度，再折叠每层条目，最后硬截断；任何裁剪都如实标注。 */
-function renderWithinBudget(root: DirNode, keyFiles: string[], options: RenderBudget): Omit<RepoMapResult, "cached" | "entryCount"> {
-  const header = keyFiles.length > 0 ? [`Key files: ${keyFiles.join(", ")}`] : [];
+function renderWithinBudget(root: DirNode, header: string[], options: RenderBudget): Omit<RepoMapResult, "cached" | "entryCount"> {
   for (let depth = options.maxDepth; depth >= 1; depth -= 1) {
     const lines = renderTree(root, depth, Number.POSITIVE_INFINITY);
     const candidate = compose(header, lines, truncationNote(depth < options.maxDepth || options.scanTruncated, options));
