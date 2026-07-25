@@ -21,6 +21,7 @@ import type {
   JobOutputResult,
   JobStartRequest,
   JobStatus,
+  IndexScanStartRequest,
   FsHashResult,
   FsStatResult,
   FsStatManyRequest,
@@ -302,6 +303,12 @@ export class CoreRouter extends EventEmitter {
     const { client, meta } = await this.ensureConfigured(request.sessionId);
     const cwd = meta?.sandboxMode === "wsb" && meta.cwd ? toSandboxPath(request.cwd, meta.cwd) : request.cwd;
     return client.startJob({ ...request, cwd });
+  }
+
+  async startIndexScan(request: IndexScanStartRequest): Promise<JobStatus> {
+    const { client, meta } = await this.ensureConfigured(request.sessionId);
+    const cwd = meta?.sandboxMode === "wsb" && meta.cwd ? toSandboxPath(request.cwd, meta.cwd) : request.cwd;
+    return client.startIndexScan(translatePath({ ...request, cwd }, meta));
   }
 
   async cancelJob(request: { sessionId: string; jobId: string }): Promise<{ jobId: string; accepted: true }> {

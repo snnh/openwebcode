@@ -50,6 +50,8 @@ owc_fs_error owc_fs_hash(const char *root, const char *path, char output[65], si
 owc_fs_error owc_fs_list(const char *root, const char *path, owc_fs_list_result *result);
 owc_fs_error owc_fs_glob(const char *root, const char *path, const char *pattern, owc_fs_glob_result *result);
 owc_fs_error owc_fs_grep(const char *root, const char *path, const char *pattern, owc_fs_grep_result *result);
+/* fs.glob * / ? matching semantics, shared with index.scan include/exclude rules. */
+int owc_fs_match_pattern(const char *pattern, const char *value);
 /* Non-blocking platform watch. The caller polls and owns cancellation, so the
  * synchronous RPC reader remains able to accept fs.watch.cancel promptly. */
 owc_fs_error owc_fs_watch_open(const char *root, const char *path, int recursive, owc_fs_watch **watch);

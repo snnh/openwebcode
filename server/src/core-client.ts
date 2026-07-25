@@ -22,8 +22,8 @@ export interface CoreInfo {
   protocolVersion?: string;
   platform: "windows" | "linux";
   sandboxCapability: string;
-  features?: { fsStat: boolean; fsStatMany: boolean; fsWriteBase64: boolean; jobControl: boolean; fsHash: boolean; fsScanPagination: boolean; fsWatch: boolean };
-  limits?: { maxFrameBytes: number; maxWriteBase64Bytes: number; maxHashBytes: number; maxStatManyPaths: number; maxStatManyPathBytes: number; maxScanEntries?: number; maxScanDepth?: number; maxScanNodes?: number; maxWatches?: number; maxWatchEvents?: number; maxConcurrentJobs?: number; maxJobOutputBytes?: number };
+  features?: { fsStat: boolean; fsStatMany: boolean; fsWriteBase64: boolean; jobControl: boolean; fsHash: boolean; fsScanPagination: boolean; fsWatch: boolean; indexScan?: boolean };
+  limits?: { maxFrameBytes: number; maxWriteBase64Bytes: number; maxHashBytes: number; maxStatManyPaths: number; maxStatManyPathBytes: number; maxScanEntries?: number; maxScanDepth?: number; maxScanNodes?: number; maxWatches?: number; maxWatchEvents?: number; maxConcurrentJobs?: number; maxJobOutputBytes?: number; maxIndexScanNodes?: number; maxIndexScanDepth?: number; maxIndexScanBytes?: number; maxIndexScanMs?: number };
 }
 
 export interface ExecRequest {
@@ -61,6 +61,35 @@ export interface FsWatchRequest extends FsPathRequest { recursive?: boolean }
 export interface FsWatchPollRequest { sessionId: string; watchId: number; limit?: number }
 export interface FsWatchPollResult { events: Array<{ path: string; kind: "created" | "changed" | "deleted" | "renamed" }>; overflow: boolean }
 export interface JobStartRequest { sessionId: string; jobId: string; kind: "exec"; cmd: string; cwd: string; timeoutMs?: number; shellBackend?: ShellBackend }
+/**
+ * index.scan job（0.4.0 Phase 2）：按 glob 规则产出完整文件清单。
+ * 输出是 job.output 上的 JSONL 流（stdout 流），每行一个条目：
+ *   {"path","size","modifiedMs","sha256"?}   —— 按 path 排序，两次扫描结果确定
+ *   {"summary":{"entries","truncated","reason","hashTruncated"}} —— 最后一行
+ * sha256 仅在文件可哈希（≤16 MiB 且在 maxBytes 预算内）时出现；增量变化集
+ * 由 Node 侧对连续 manifest 做 diff，core 始终输出完整清单。
+ * timeoutMs 对 index.scan 无效（扫描时长由 maxMs 预算控制，超时为优雅截断）。
+ */
+export interface IndexScanStartRequest {
+  sessionId: string;
+  jobId: string;
+  kind: "index.scan";
+  cwd: string;
+  /** 相对会话根的扫描根目录 */
+  path: string;
+  /** fs.glob 语义的 * / ? 规则；空/缺省表示全部文件 */
+  include?: string[];
+  /** 命中的文件与目录既不收录也不遍历 */
+  exclude?: string[];
+  maxDepth?: number;
+  maxNodes?: number;
+  /** 哈希字节预算；用尽后文件仍收录但不再带 sha256（summary.hashTruncated） */
+  maxBytes?: number;
+  /** 时间预算（毫秒）；用尽后扫描优雅截断（summary.truncated, reason:"time"） */
+  maxMs?: number;
+}
+export interface IndexScanEntry { path: string; size: number; modifiedMs: number; sha256?: string }
+export interface IndexScanSummary { entries: number; truncated: boolean; reason: "nodes" | "depth" | "time" | "list" | null; hashTruncated: boolean }
 export interface JobStatus { jobId: string; state: "running" | "completed" | "failed" | "cancelled" | "timed_out"; exitCode?: number; durationMs?: number; truncated?: boolean; error?: string }
 export interface JobOutputRequest { sessionId: string; jobId: string; afterSeq: number; limit?: number }
 export interface JobOutputResult { chunks: Array<{ seq: number; stream: "stdout" | "stderr"; data: string }>; nextSeq: number; truncated: boolean }
@@ -104,6 +133,7 @@ export interface CoreClientLike {
   pollWatch(request: FsWatchPollRequest): Promise<FsWatchPollResult>;
   cancelWatch(request: { sessionId: string; watchId: number }): Promise<{ ok: true }>;
   startJob(request: JobStartRequest): Promise<JobStatus>;
+  startIndexScan(request: IndexScanStartRequest): Promise<JobStatus>;
   cancelJob(request: { sessionId: string; jobId: string }): Promise<{ jobId: string; accepted: true }>;
   jobStatus(request: { sessionId: string; jobId: string }): Promise<JobStatus>;
   jobOutput(request: JobOutputRequest): Promise<JobOutputResult>;
@@ -209,6 +239,7 @@ export class CoreClient extends EventEmitter {
   pollWatch(request: FsWatchPollRequest): Promise<FsWatchPollResult> { return this.call("fs.watch.poll", request); }
   cancelWatch(request: { sessionId: string; watchId: number }): Promise<{ ok: true }> { return this.call("fs.watch.cancel", request); }
   startJob(request: JobStartRequest): Promise<JobStatus> { return this.call("job.start", request); }
+  startIndexScan(request: IndexScanStartRequest): Promise<JobStatus> { return this.call("job.start", request); }
   cancelJob(request: { sessionId: string; jobId: string }): Promise<{ jobId: string; accepted: true }> { return this.call("job.cancel", request); }
   jobStatus(request: { sessionId: string; jobId: string }): Promise<JobStatus> { return this.call("job.status", request); }
   jobOutput(request: JobOutputRequest): Promise<JobOutputResult> { return this.call("job.output", request); }

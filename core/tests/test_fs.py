@@ -121,6 +121,20 @@ def main():
         assert watched,watched
         assert fs(165,"fs.watch.cancel",{"watchId":watch})["result"]=={"ok":True}
         assert fs(166,"fs.watch.poll",{"watchId":watch})["error"]["code"]==-32003
+        if os.name!="nt":
+            # Burst folding: many changes in one watched directory between
+            # polls collapse into a single directory-level "changed" event.
+            # (Windows reports a single root-level changed event by design.)
+            burst=fs(190,"fs.watch",{"path":"watch-root"})["result"]["watchId"]
+            for n in range(6):
+                assert fs(191,"fs.write",{"path":f"watch-root/burst-{n}.txt","content":str(n)})["result"]["ok"]
+            folded=[]
+            for _ in range(20):
+                folded.extend(fs(192,"fs.watch.poll",{"watchId":burst,"limit":128})["result"]["events"])
+                if folded: break
+                time.sleep(0.05)
+            assert folded==[{"path":"","kind":"changed"}],folded
+            assert fs(193,"fs.watch.cancel",{"watchId":burst})["result"]=={"ok":True}
         listing=fs(4,"fs.list",{"path":"目录"})["result"]
         assert listing["truncated"] is False
         assert any(x["name"]=="文件.txt" for x in listing["entries"])
