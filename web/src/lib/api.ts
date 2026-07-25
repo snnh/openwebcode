@@ -92,6 +92,8 @@ export const api = {
     request<void>(`/api/sessions/${id}/context/restore`, { method: "POST", body: JSON.stringify({ messageId }) }),
   updateContextPolicy: (id: string, body: Partial<NonNullable<ContextView["ledger"]["policy"]>>) =>
     request<ContextView["ledger"]>(`/api/sessions/${id}/context/policy`, { method: "PUT", body: JSON.stringify(body) }),
+  updateContextSelection: (id: string, body: { pins?: string[]; excludes?: string[] }) =>
+    request<{ pins: string[]; excludes: string[] }>(`/api/sessions/${id}/context/selection`, { method: "PUT", body: JSON.stringify(body) }),
   compactContext: (id: string, mode: "toolcalls" | "overview") =>
     request<{ changed: boolean; mode: string; reason?: string }>(`/api/sessions/${id}/compact`, { method: "POST", body: JSON.stringify({ mode }) }),
   mutateContextEntry: (id: string, messageId: string, action: "evict" | "pin" | "unpin") =>

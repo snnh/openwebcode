@@ -3,7 +3,7 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
 import type { ChatMessage, MessageContent } from "../sessions/types.js";
-import type { Currency } from "./model-profile.js";
+import { estimateTokens, IMAGE_TOKEN_ESTIMATE, type Currency } from "./model-profile.js";
 
 export interface RecordedCost {
   priced: boolean;
@@ -88,9 +88,47 @@ export interface BudgetUpdate {
 
 export type ContextPolicyUpdate = Partial<Pick<ContextPolicy, "enabled" | "strategy" | "lag" | "interval" | "pinExemptRounds" | "restoreBudget">>;
 
+/**
+ * 选择性上下文（§4.4）：pins 为消息 id 或文件路径（pin 的消息不被驱逐）；
+ * excludes 为路径 glob（不进入上下文组装/repo map/索引）。
+ * 注意：排除不是安全边界——文件访问权限仍由路径策略与沙盒保证。
+ */
+export interface ContextSelection {
+  pins: string[];
+  excludes: string[];
+}
+
+/** 按段 token 归因：system/repoMap 段由后续阶段（provider 侧/Phase 1c）供数，此处预留。 */
+export interface ContextSegmentBreakdown {
+  system: number;
+  compactionSummary: number;
+  toolResults: number;
+  messages: number;
+  repoMap: number;
+  other: number;
+}
+
+export interface ContextBuildStats {
+  totalTokens: number;
+  segments: ContextSegmentBreakdown;
+  /** 被 pin 的消息在视图中占用的估算 tokens；超预算时由调用方如实提示，不悄悄驱逐。 */
+  pinnedTokens: number;
+  /** 本次构建耗时（毫秒），为 0.5.0 性能基准留数据。 */
+  buildMs: number;
+  /** true 表示复用了上一 turn 的不可变前缀构建结果。 */
+  incremental: boolean;
+}
+
 export interface ContextView {
   messages: ChatMessage[];
   ledger: ContextLedger;
+  stats: ContextBuildStats;
+}
+
+export interface BuildViewOptions {
+  selection?: ContextSelection;
+  /** 强制全量重建（压缩、配置变更、会话恢复后的首次构建；等价性测试亦用）。 */
+  forceFullRebuild?: boolean;
 }
 
 const DEFAULT_POLICY: ContextPolicy = {
@@ -102,8 +140,90 @@ const DEFAULT_POLICY: ContextPolicy = {
   restoreBudget: 20_000,
 };
 
+/** 视图中一条消息的构建片段：最终注入形态（驱逐占位/图像预算已应用）+ 预估算 tokens。 */
+interface ViewFragment {
+  message: ChatMessage;
+  tokens: number;
+  segment: keyof ContextSegmentBreakdown;
+  pinned: boolean;
+}
+
+/** 增量构建缓存：键校验通过后只需为追加消息构建新片段。 */
+interface ViewBuildCache {
+  sourceIds: string[];
+  ledgerKey: string;
+  selectionKey: string;
+  header?: ViewFragment | undefined;
+  fragments: ViewFragment[];
+}
+
+/** 构建单条消息片段：深克隆 + 驱逐占位替换（pin 的消息跳过替换）。 */
+function buildFragment(message: ChatMessage, byMessage: Map<string, LedgerEntry>, pinnedIds: ReadonlySet<string>): ViewFragment {
+  const entry = byMessage.get(message.id);
+  const pinned = pinnedIds.has(message.id);
+  const evictResult = entry && entry.state !== "full" && entry.state !== "restored" && !pinned;
+  return {
+    message: {
+      ...message,
+      content: message.content.map((block) => {
+        if (!evictResult || block.type !== "tool_result") return { ...block };
+        return {
+          ...block,
+          content: `[tool result evicted; artifact:${entry.artifactId}; use the UI restore action to reinsert full text]`,
+        };
+      }),
+    },
+    tokens: 0,
+    segment: message.role === "tool" ? "toolResults" : "messages",
+    pinned,
+  };
+}
+
+/** 与 estimateMessageTokens 逐块规则一致的单消息估算（调用方对总和再取 max(1, …)）。 */
+function estimateFragmentTokens(message: ChatMessage): number {
+  let total = 4;
+  for (const block of message.content) {
+    if (block.type === "image") total += IMAGE_TOKEN_ESTIMATE;
+    else if (block.type === "tool_call") total += estimateTokens(JSON.stringify(block.input)) + 8;
+    else if (block.type === "tool_result") total += estimateTokens(block.content);
+    else if (block.type === "text" || block.type === "thinking") total += estimateTokens(block.text);
+  }
+  return total;
+}
+
+function globToRegExp(glob: string): RegExp {
+  const normalized = glob.replace(/\\/g, "/");
+  let source = "";
+  for (let index = 0; index < normalized.length; index += 1) {
+    const char = normalized[index]!;
+    if (char === "*" && normalized[index + 1] === "*") { source += ".*"; index += 1; }
+    else if (char === "*") source += "[^/]*";
+    else if (char === "?") source += "[^/]";
+    else source += char.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+  return new RegExp(`^${source}$`, "i");
+}
+
+/**
+ * 上下文排除钩子（§4.4）：判断路径是否命中会话排除清单（简单 glob：*、**、?）。
+ * 排除只影响上下文组装/repo map/索引，不是安全边界——文件访问仍由路径策略与沙盒保证。
+ * 无 / 的模式按 basename 匹配，含 / 的模式按规范化全路径匹配。
+ */
+export function isPathExcluded(target: string, excludes: readonly string[]): boolean {
+  const normalized = target.replace(/\\/g, "/").replace(/^\.\//, "");
+  const basename = normalized.split("/").pop() ?? normalized;
+  for (const exclude of excludes) {
+    const pattern = exclude.trim();
+    if (!pattern) continue;
+    const regex = globToRegExp(pattern);
+    if (pattern.includes("/") ? regex.test(normalized) : regex.test(basename)) return true;
+  }
+  return false;
+}
+
 export class ContextManager {
   private static readonly operations = new Map<string, Promise<void>>();
+  private static readonly viewCaches = new Map<string, ViewBuildCache>();
 
   constructor(private readonly sessionRoot: string) {}
 
@@ -123,36 +243,92 @@ export class ContextManager {
     await writeUtf8Atomically(target, `${JSON.stringify(ledger, null, 2)}\n`);
   }
 
-  async buildView(messages: ChatMessage[]): Promise<ContextView> {
+  async buildView(messages: ChatMessage[], options?: BuildViewOptions): Promise<ContextView> {
+    const startedAt = performance.now();
     const ledger = await this.load();
+    const selection: ContextSelection = { pins: options?.selection?.pins ?? [], excludes: options?.selection?.excludes ?? [] };
+    const pinnedIds = new Set(selection.pins);
     const compacted = ledger.compacted;
     const compactedIndex = compacted ? Math.min(compacted.uptoIndex, messages.length) : 0;
     const clearedIndex = ledger.cleared ? Math.min(ledger.cleared.uptoIndex, messages.length) : 0;
     // 压缩和清空都裁剪消息前缀；较新的边界获胜。clear 覆盖压缩时不得重新注入旧摘要。
     const uptoIndex = Math.max(compactedIndex, clearedIndex);
-    const view = messages.slice(uptoIndex).map((message) => ({ ...message, content: message.content.map((block) => ({ ...block })) }));
-    const byMessage = new Map(ledger.entries.map((entry) => [entry.messageId, entry]));
-    for (const message of view) {
-      const entry = byMessage.get(message.id);
-      if (!entry || entry.state === "full" || entry.state === "restored") continue;
-      message.content = message.content.map((block) => {
-        if (block.type !== "tool_result") return block;
-        return {
-          ...block,
-          content: `[tool result evicted; artifact:${entry.artifactId}; use the UI restore action to reinsert full text]`,
+
+    // 增量复用（§4.4）：缓存键覆盖所有影响注入字节的输入——ledger 的压缩/清空/驱逐条目
+    // 与 pin/排除配置。压缩、驱逐、恢复、配置变更都会改变键值而自然触发全量重建；
+    // 会话恢复截断消息则令前缀校验失败。缓存只复用计算，最终产出字节与全量重建一致。
+    const ledgerKey = JSON.stringify({
+      compacted: ledger.compacted ?? null,
+      cleared: ledger.cleared ?? null,
+      entries: ledger.entries.map((entry) => [entry.messageId, entry.artifactId, entry.state]),
+    });
+    const selectionKey = JSON.stringify(selection);
+    const sourceIds = messages.map((message) => message.id);
+
+    const cached = ContextManager.viewCaches.get(this.sessionRoot);
+    let incremental = false;
+    let header: ViewFragment | undefined;
+    let fragments: ViewFragment[] | undefined;
+    if (!options?.forceFullRebuild && cached
+        && cached.ledgerKey === ledgerKey && cached.selectionKey === selectionKey
+        && cached.sourceIds.length <= sourceIds.length
+        && cached.sourceIds.every((id, index) => id === sourceIds[index])) {
+      // 追加消息含图片时，图像预算的占位替换会回溯到前缀，必须全量重建。
+      const appended = messages.slice(cached.sourceIds.length);
+      if (!appended.some((message) => message.content.some((block) => block.type === "image"))) {
+        header = cached.header;
+        fragments = [...cached.fragments];
+        const byMessage = new Map(ledger.entries.map((entry) => [entry.messageId, entry]));
+        for (const message of appended) {
+          const fragment = buildFragment(message, byMessage, pinnedIds);
+          // 追加消息不含图片（否则已回退全量），可立即完成该片段的 token 估算。
+          fragment.tokens = estimateFragmentTokens(fragment.message);
+          fragments.push(fragment);
+        }
+        incremental = true;
+      }
+    }
+    if (!fragments) {
+      const byMessage = new Map(ledger.entries.map((entry) => [entry.messageId, entry]));
+      fragments = messages.slice(uptoIndex).map((message) => buildFragment(message, byMessage, pinnedIds));
+      if (compacted && (!ledger.cleared || compactedIndex > clearedIndex)) {
+        header = {
+          message: {
+            id: `compaction:${compacted.createdAt}`,
+            role: "user",
+            createdAt: compacted.createdAt,
+            content: [{ type: "text", text: `[Earlier context compacted (${compacted.mode})]\n${renderCompaction(compacted)}` }],
+          },
+          segment: "compactionSummary",
+          pinned: false,
+          tokens: 0,
         };
-      });
+      }
+      // 图像独立预算作用于整个视图（从尾部计数），只在全量构建时应用。
+      enforceImageBudget(fragments.map((fragment) => fragment.message));
+      const rebuilt = header ? [header, ...fragments] : fragments;
+      for (const fragment of rebuilt) fragment.tokens = estimateFragmentTokens(fragment.message);
     }
-    if (compacted && (!ledger.cleared || compactedIndex > clearedIndex)) {
-      view.unshift({
-        id: `compaction:${compacted.createdAt}`,
-        role: "user",
-        createdAt: compacted.createdAt,
-        content: [{ type: "text", text: `[Earlier context compacted (${compacted.mode})]\n${renderCompaction(compacted)}` }],
-      });
+    const all = header ? [header, ...fragments] : fragments;
+    const segments: ContextSegmentBreakdown = { system: 0, compactionSummary: 0, toolResults: 0, messages: 0, repoMap: 0, other: 0 };
+    let total = 0;
+    let pinnedTokens = 0;
+    for (const fragment of all) {
+      total += fragment.tokens;
+      segments[fragment.segment] += fragment.tokens;
+      if (fragment.pinned) pinnedTokens += fragment.tokens;
     }
-    enforceImageBudget(view);
-    return { messages: view, ledger };
+    const stats: ContextBuildStats = {
+      totalTokens: Math.max(1, total),
+      segments,
+      pinnedTokens,
+      buildMs: performance.now() - startedAt,
+      incremental,
+    };
+    ContextManager.viewCaches.set(this.sessionRoot, { sourceIds, ledgerKey, selectionKey, header, fragments });
+    // 返回逐块克隆，调用方（扩展 transform 等）可自由修改而不污染缓存模板。
+    const view = all.map((fragment) => ({ ...fragment.message, content: fragment.message.content.map((block) => ({ ...block })) }));
+    return { messages: view, ledger, stats };
   }
 
   async budgetStatus(): Promise<{
@@ -310,7 +486,7 @@ export class ContextManager {
     });
   }
 
-  async evict(messages: ChatMessage[]): Promise<ContextLedger> {
+  async evict(messages: ChatMessage[], pinnedIds?: ReadonlySet<string>): Promise<ContextLedger> {
     return this.serial(async () => {
       const ledger = await this.load();
       const toolMessages = messages.filter((message) => message.role === "tool");
@@ -324,6 +500,8 @@ export class ContextManager {
       // linear in the newly eligible tool messages instead of O(T×E).
       const entriesByMessage = new Map(ledger.entries.map((entry) => [entry.messageId, entry]));
       for (const message of eligible) {
+        // pin 的消息不被驱逐；pin 占用超预算时由构建统计如实上报，不在这里悄悄绕过。
+        if (pinnedIds?.has(message.id)) continue;
         const existing = entriesByMessage.get(message.id);
         if (existing) {
           if (existing.pinnedUntilRound >= ledger.round) continue;

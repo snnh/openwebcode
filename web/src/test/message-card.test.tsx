@@ -1,4 +1,4 @@
-import { render } from "@testing-library/react";
+import { render, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { MessageCard } from "../components/MessageCard";
 import type { ChatMessage } from "../lib/contracts";
@@ -26,7 +26,7 @@ describe("MessageCard", () => {
     expect(container.querySelectorAll(".markdown")).toHaveLength(2);
   });
 
-  it("shows markdown-capable thinking in a collapsed, separate block", () => {
+  it("shows markdown-capable thinking in a collapsed, separate block", async () => {
     const thinkingMessage: ChatMessage = {
       ...message("assistant", ["最终答案"]),
       content: [
@@ -40,6 +40,7 @@ describe("MessageCard", () => {
     expect(details).toBeInTheDocument();
     expect(details).not.toHaveAttribute("open");
     expect(getByText("思考过程")).toBeInTheDocument();
-    expect(details?.querySelector(".katex")).toBeInTheDocument();
+    // Markdown 懒加载，等待 KaTeX 渲染完成
+    await waitFor(() => expect(details?.querySelector(".katex")).toBeInTheDocument());
   });
 });

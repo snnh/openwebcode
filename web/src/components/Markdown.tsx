@@ -1,53 +1,18 @@
-import { Children, isValidElement, useEffect, useState, type ReactElement, type ReactNode } from "react";
-import ReactMarkdown from "react-markdown";
-import rehypeKatex from "rehype-katex";
-import remarkGfm from "remark-gfm";
-import remarkMath from "remark-math";
-import "katex/dist/katex.min.css";
-import { highlightCode } from "../highlight";
+import { lazy, memo, Suspense, type ReactElement } from "react";
 
-/** 代码块：高亮器就绪前渲染纯文本，就绪后注入双主题高亮 HTML */
-export function CodeBlock({ lang, code }: { lang?: string; code: string }): ReactElement {
-  const [html, setHtml] = useState<string>();
-  useEffect(() => {
-    let alive = true;
-    setHtml(undefined);
-    void highlightCode(code, lang).then((result) => {
-      if (alive && result) setHtml(result);
-    });
-    return () => { alive = false; };
-  }, [code, lang]);
-  if (html) return <div className="code-block" dangerouslySetInnerHTML={{ __html: html }} />;
-  return <pre className="code-block code-plain"><code>{code}</code></pre>;
-}
+const MarkdownImpl = lazy(() => import("./MarkdownImpl"));
+// 内容不变时不重复渲染：memo 比较字符串 children，相同内容直接跳过
+//（包括 React 对已 resolve 的 Suspense 边界的重渲染）
+const MemoMarkdownImpl = memo(MarkdownImpl);
 
-function extractCode(children: ReactNode): { lang?: string; code: string } {
-  const child = Children.toArray(children)[0];
-  if (isValidElement<{ className?: string; children?: ReactNode }>(child)) {
-    const lang = /language-([\w#+-]+)/.exec(child.props.className ?? "")?.[1];
-    const raw = child.props.children;
-    const code = (Array.isArray(raw) ? raw.join("") : String(raw ?? "")).replace(/\n$/, "");
-    return { lang, code };
-  }
-  return { code: String(children ?? "") };
-}
+// CodeBlock 保持同步可用（不依赖 react-markdown），供 PermissionCard、面板等直接引用
+export { CodeBlock } from "./CodeBlock";
 
+/** Markdown 按需加载（react-markdown/katex 独立 chunk），加载期间先渲染纯文本，不阻塞流式输出 */
 export function Markdown({ children }: { children: string }): ReactElement {
   return (
-    <div className="markdown">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
-        rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
-        components={{
-          pre: ({ children }) => {
-            const { lang, code } = extractCode(children);
-            return <CodeBlock lang={lang} code={code} />;
-          },
-          code: ({ children }) => <code className="inline-code">{children}</code>,
-        }}
-      >
-        {children}
-      </ReactMarkdown>
-    </div>
+    <Suspense fallback={<div className="markdown">{children}</div>}>
+      <MemoMarkdownImpl>{children}</MemoMarkdownImpl>
+    </Suspense>
   );
 }

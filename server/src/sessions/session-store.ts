@@ -170,6 +170,47 @@ export class SessionStore {
     return meta;
   }
 
+  /** 选择性上下文（§4.4）：pin/排除清单持久化在会话配置；空清单视为缺省（从 meta 删除）。 */
+  async updateContextSelection(id: string, selection: { pins?: string[] | undefined; excludes?: string[] | undefined }): Promise<SessionMeta> {
+    const meta = await this.readMeta(id);
+    const clean = (values: string[] | undefined, label: string): string[] | undefined => {
+      if (values === undefined) return undefined;
+      if (!Array.isArray(values) || values.some((value) => typeof value !== "string")) {
+        throw new Error(`${label} must be an array of strings`);
+      }
+      const items = [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))];
+      if (items.length > 200) throw new Error(`${label} must contain at most 200 entries`);
+      if (items.some((value) => value.length > 1024)) throw new Error(`${label} entries must be at most 1024 characters`);
+      return items.length > 0 ? items : undefined;
+    };
+    const pins = clean(selection.pins, "pins");
+    const excludes = clean(selection.excludes, "excludes");
+    if (pins === undefined) delete meta.contextPins;
+    else meta.contextPins = pins;
+    if (excludes === undefined) delete meta.contextExcludes;
+    else meta.contextExcludes = excludes;
+    meta.updatedAt = new Date().toISOString();
+    await this.writeMeta(meta);
+    return meta;
+  }
+
+  /** repo map 自动注入开关与 token 预算（§4.1）；缺省值不落盘（开 / 2048）。 */
+  async updateRepoMapSettings(id: string, settings: { enabled?: boolean | undefined; budget?: number | undefined }): Promise<SessionMeta> {
+    const meta = await this.readMeta(id);
+    if (settings.enabled === undefined || settings.enabled === true) delete meta.repoMapEnabled;
+    else meta.repoMapEnabled = false;
+    if (settings.budget === undefined) delete meta.repoMapBudget;
+    else {
+      if (!Number.isSafeInteger(settings.budget) || settings.budget < 64 || settings.budget > 100_000) {
+        throw new Error("repo map budget must be an integer between 64 and 100000");
+      }
+      meta.repoMapBudget = settings.budget;
+    }
+    meta.updatedAt = new Date().toISOString();
+    await this.writeMeta(meta);
+    return meta;
+  }
+
   /** 记录探测到的快照后端名（zfs 附带数据集："zfs:<dataset>"）。 */
   async updateSnapshotBackend(id: string, backend: string): Promise<SessionMeta> {
     const meta = await this.readMeta(id);

@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactElement } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../lib/api";
-import type { SessionDetail } from "../../lib/contracts";
+import type { ContextView, SessionDetail } from "../../lib/contracts";
 import { formatCurrency, formatTokens, microToDecimal } from "../../lib/format";
 import { useI18n } from "../../i18n";
 
@@ -70,6 +70,128 @@ function PolicySection({ sessionId, running, onNotice }: { sessionId: string; ru
         <label>{t("回写保护轮数", "Restore protection rounds")}<input value={form.pinExemptRounds} disabled={running || busy} inputMode="numeric" onChange={(event) => setForm((value) => ({ ...value, pinExemptRounds: event.target.value }))} /></label>
         <label>{t("回写预算 tokens", "Restore budget (tokens)")}<input value={form.restoreBudget} disabled={running || busy} inputMode="numeric" onChange={(event) => setForm((value) => ({ ...value, restoreBudget: event.target.value }))} /></label>
         <button className="btn small" disabled={running || busy} onClick={save}>{busy ? t("处理中…", "Working…") : t("保存策略", "Save policy")}</button>
+      </div>
+    </>
+  );
+}
+
+/** 按段 token 归因（§4.4）：展示本次上下文构建各段占用与构建耗时。 */
+function SegmentStats({ stats }: { stats: NonNullable<ContextView["stats"]> }): ReactElement {
+  const { t } = useI18n();
+  const rows: Array<[string, string, number]> = [
+    [t("压缩摘要", "Compaction summary"), "compactionSummary", stats.segments.compactionSummary],
+    [t("工具结果", "Tool results"), "toolResults", stats.segments.toolResults],
+    [t("对话消息", "Messages"), "messages", stats.segments.messages],
+    [t("Repo map", "Repo map"), "repoMap", stats.segments.repoMap],
+    [t("系统/cache 稳定段", "System / cache-stable"), "system", stats.segments.system],
+  ];
+  return (
+    <>
+      <h2>{t("按段 token 归因", "Token usage by segment")}</h2>
+      <dl>
+        {rows.map(([label, key, value]) => (
+          <FragmentRow key={key} label={label} value={value} />
+        ))}
+        <dt>{t("本次构建", "Last build")}</dt>
+        <dd>
+          {stats.buildMs.toFixed(1)}ms · {stats.incremental ? t("增量复用", "Incremental") : t("全量重建", "Full rebuild")}
+        </dd>
+        {stats.pinnedTokens > 0 && (
+          <>
+            <dt>{t("pin 占用", "Pinned tokens")}</dt>
+            <dd>{formatTokens(stats.pinnedTokens)}</dd>
+          </>
+        )}
+      </dl>
+    </>
+  );
+}
+
+function FragmentRow({ label, value }: { label: string; value: number }): ReactElement {
+  return (
+    <>
+      <dt>{label}</dt>
+      <dd>{formatTokens(value)}</dd>
+    </>
+  );
+}
+
+/** 选择性上下文（§4.4）：pin 不被驱逐；排除路径不进上下文。排除不是安全边界。 */
+function SelectionSection({ sessionId, running, onNotice }: { sessionId: string; running: boolean; onNotice(message: string, kind?: "info" | "error"): void }): ReactElement {
+  const { t } = useI18n();
+  const queryClient = useQueryClient();
+  const context = useQuery({ queryKey: ["context", sessionId], queryFn: () => api.context(sessionId) });
+  const selection = context.data?.selection ?? { pins: [], excludes: [] };
+  const [pinInput, setPinInput] = useState("");
+  const [excludeInput, setExcludeInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const save = (pins: string[], excludes: string[]): void => {
+    setBusy(true);
+    api.updateContextSelection(sessionId, { pins, excludes })
+      .then(() => {
+        void queryClient.invalidateQueries({ queryKey: ["context", sessionId] });
+        void queryClient.invalidateQueries({ queryKey: ["session", sessionId] });
+        onNotice(t("选择性上下文已更新", "Context selection updated"));
+      })
+      .catch((error: unknown) => onNotice(error instanceof Error ? error.message : t("更新失败", "Update failed"), "error"))
+      .finally(() => setBusy(false));
+  };
+  const addPin = (): void => {
+    const value = pinInput.trim();
+    if (!value) return;
+    if (selection.pins.includes(value)) { setPinInput(""); return; }
+    save([...selection.pins, value], selection.excludes);
+    setPinInput("");
+  };
+  const addExclude = (): void => {
+    const value = excludeInput.trim();
+    if (!value) return;
+    if (selection.excludes.includes(value)) { setExcludeInput(""); return; }
+    save(selection.pins, [...selection.excludes, value]);
+    setExcludeInput("");
+  };
+  const disabled = running || busy;
+  return (
+    <>
+      <h2>{t("选择性上下文（pin / 排除）", "Selective context (pin / exclude)")}</h2>
+      <p className="panel-note">
+        {t("pin 的消息或文件不被自动驱逐；排除的路径不进入上下文组装、repo map 与索引。注意：排除不是安全边界——文件访问权限仍由路径策略与沙盒保证。", "Pinned messages or files are never auto-evicted; excluded paths stay out of the context, repo map, and index. Note: exclusion is not a security boundary — file access is still governed by path policy and the sandbox.")}
+      </p>
+      <h3>{t("已 pin", "Pinned")}</h3>
+      {selection.pins.length === 0 && <p className="panel-empty">{t("暂无 pin。", "No pins.")}</p>}
+      {selection.pins.map((pin) => (
+        <div className="context-entry" key={pin}>
+          <span className="entry-summary mono" title={pin}>{pin}</span>
+          <button className="btn small" disabled={disabled} onClick={() => save(selection.pins.filter((item) => item !== pin), selection.excludes)}>{t("移除", "Remove")}</button>
+        </div>
+      ))}
+      <div className="context-actions">
+        <input
+          value={pinInput}
+          disabled={disabled}
+          placeholder={t("消息 id 或文件路径", "Message id or file path")}
+          onChange={(event) => setPinInput(event.target.value)}
+          aria-label={t("新增 pin", "Add pin")}
+        />
+        <button className="btn small" disabled={disabled || !pinInput.trim()} onClick={addPin}>{t("添加 pin", "Add pin")}</button>
+      </div>
+      <h3>{t("排除路径", "Excluded paths")}</h3>
+      {selection.excludes.length === 0 && <p className="panel-empty">{t("暂无排除。", "No exclusions.")}</p>}
+      {selection.excludes.map((exclude) => (
+        <div className="context-entry" key={exclude}>
+          <span className="entry-summary mono" title={exclude}>{exclude}</span>
+          <button className="btn small" disabled={disabled} onClick={() => save(selection.pins, selection.excludes.filter((item) => item !== exclude))}>{t("移除", "Remove")}</button>
+        </div>
+      ))}
+      <div className="context-actions">
+        <input
+          value={excludeInput}
+          disabled={disabled}
+          placeholder={t("路径 glob，如 **/*.log", "Path glob, for example **/*.log")}
+          onChange={(event) => setExcludeInput(event.target.value)}
+          aria-label={t("新增排除路径", "Add excluded path")}
+        />
+        <button className="btn small" disabled={disabled || !excludeInput.trim()} onClick={addExclude}>{t("添加排除", "Add exclusion")}</button>
       </div>
     </>
   );
@@ -204,6 +326,18 @@ export function ContextPanel({ sessionId, session, running, onNotice }: {
         <dt>{t("缓存读 / 写", "Cache read / write")}</dt>
         <dd>{formatTokens(usage.cacheRead)} / {formatTokens(usage.cacheWrite)}</dd>
       </dl>
+      <h2>{t("Prompt cache 断点", "Prompt cache breakpoints")}</h2>
+      {(context.data.ledger.cacheBreakpoints ?? []).length === 0 ? (
+        <p className="panel-empty">{t("本回合还没有记录断点；Anthropic 兼容 Provider 会在工具定义、稳定系统段与消息前缀上打显式断点，OpenAI 兼容 Provider 由服务端自动缓存。", "No breakpoints recorded this run yet. Anthropic-compatible providers place explicit breakpoints on tool definitions, the stable system prefix, and message prefixes; OpenAI-compatible providers cache automatically server-side.")}</p>
+      ) : (
+        <dl>
+          <dt>{t("消息级断点数", "Message breakpoints")}</dt>
+          <dd>{context.data.ledger.cacheBreakpoints!.length}</dd>
+          {context.data.ledger.cacheBreakpoints!.map((id) => (
+            <dd key={id} className="mono" title={id}>{messageSummary(session, id, t)}</dd>
+          ))}
+        </dl>
+      )}
       <h2>{t("成本", "Cost")}</h2>
       <dl>
         <dt>{t("人民币", "Chinese yuan")}</dt>
@@ -217,6 +351,8 @@ export function ContextPanel({ sessionId, session, running, onNotice }: {
           </>
         )}
       </dl>
+      {context.data.stats && <SegmentStats stats={context.data.stats} />}
+      <SelectionSection sessionId={sessionId} running={running} onNotice={onNotice} />
       <BudgetSection sessionId={sessionId} running={running} onNotice={onNotice} />
       <PolicySection sessionId={sessionId} running={running} onNotice={onNotice} />
       {context.data.ledger.compacted && (

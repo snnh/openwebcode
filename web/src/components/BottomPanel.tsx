@@ -1,11 +1,13 @@
-import { useEffect, useState, type MouseEvent as ReactMouseEvent, type ReactElement } from "react";
+import { lazy, Suspense, useEffect, useState, type MouseEvent as ReactMouseEvent, type ReactElement } from "react";
 import type { SessionDetail } from "../lib/contracts";
 import { Icon, type IconName } from "./Icon";
-import { ContextPanel } from "./panels/ContextPanel";
-import { CostPanel } from "./panels/CostPanel";
-import { FilesPanel } from "./panels/FilesPanel";
-import { SandboxPanel } from "./panels/SandboxPanel";
-import { TimelinePanel } from "./panels/TimelinePanel";
+
+// 五个面板各自独立 chunk，仅在打开对应标签页时加载
+const ContextPanel = lazy(() => import("./panels/ContextPanel").then((m) => ({ default: m.ContextPanel })));
+const CostPanel = lazy(() => import("./panels/CostPanel").then((m) => ({ default: m.CostPanel })));
+const FilesPanel = lazy(() => import("./panels/FilesPanel").then((m) => ({ default: m.FilesPanel })));
+const SandboxPanel = lazy(() => import("./panels/SandboxPanel").then((m) => ({ default: m.SandboxPanel })));
+const TimelinePanel = lazy(() => import("./panels/TimelinePanel").then((m) => ({ default: m.TimelinePanel })));
 import { useI18n } from "../i18n";
 
 export type PanelTab = "files" | "context" | "timeline" | "sandbox" | "cost";
@@ -114,11 +116,13 @@ export function BottomPanel({ sessionId, session, running, onNotice }: {
       </div>
       {open && (
         <div className="panel-content" style={{ height }}>
+          <Suspense fallback={null}>
           {tab === "files" && <FilesPanel sessionId={sessionId} session={session} running={running} onNotice={onNotice} />}
           {tab === "context" && <ContextPanel sessionId={sessionId} session={session} running={running} onNotice={onNotice} />}
           {tab === "timeline" && <TimelinePanel sessionId={sessionId} running={running} onNotice={onNotice} />}
           {tab === "sandbox" && <SandboxPanel session={session} />}
           {tab === "cost" && <CostPanel />}
+          </Suspense>
         </div>
       )}
     </section>

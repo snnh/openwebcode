@@ -15,7 +15,7 @@ export class AnthropicProvider implements Provider {
   readonly name: string;
   private readonly client: Anthropic;
   private readonly maxTokens: number;
-  private readonly promptCaching: boolean;
+  readonly promptCaching: boolean;
 
   constructor(options: AnthropicProviderOptions = {}) {
     this.name = options.name ?? "anthropic";
@@ -30,6 +30,8 @@ export class AnthropicProvider implements Provider {
   async *streamChat(request: StreamChatRequest): AsyncIterable<ProviderEvent> {
     let streamStarted = false;
     const maxTokens = request.maxTokens ?? this.maxTokens;
+    // 服务级（provider 配置）与请求级开关共同决定；任一关闭则不打任何显式断点。
+    const caching = this.promptCaching && request.promptCaching !== false;
     try {
       const stream = this.client.messages.stream(
         {
@@ -37,10 +39,10 @@ export class AnthropicProvider implements Provider {
           max_tokens: maxTokens,
           ...(anthropicThinking(request, maxTokens) ? { thinking: anthropicThinking(request, maxTokens)! } : {}),
           ...(request.effort ? { output_config: { effort: request.effort } } : {}),
-          system: request.system,
-          messages: toAnthropicMessages(request.messages, new Set(request.cacheBreakpoints ?? [])),
-          ...(request.tools.length > 0 ? { tools: request.tools.map(toAnthropicTool) } : {}),
-          ...(this.promptCaching ? { cache_control: { type: "ephemeral" as const } } : {}),
+          system: toAnthropicSystem(request, caching),
+          messages: toAnthropicMessages(request.messages, messageBreakpoints(request, caching)),
+          ...(request.tools.length > 0 ? { tools: toAnthropicTools(request.tools, caching) } : {}),
+          ...(caching ? { cache_control: { type: "ephemeral" as const } } : {}),
         },
         { signal: request.signal },
       );
@@ -91,6 +93,38 @@ function anthropicThinking(request: StreamChatRequest, maxTokens: number): Anthr
   if (request.thinking === "adaptive") return { type: "adaptive", display: "summarized" };
   if (maxTokens < 2) throw new Error("Enabled thinking requires maxTokens of at least 2");
   return { type: "enabled", budget_tokens: Math.min(16_000, maxTokens - 1) };
+}
+
+/** Anthropic 每请求至多 4 个断点（tools/system/messages 合计）。 */
+const MAX_CACHE_BREAKPOINTS = 4;
+
+/**
+ * system 组装：稳定前缀单独成块并打 ephemeral 断点；动态尾部（逐 turn 变化的通知）
+ * 追加为不带断点的后续块，避免其变化污染稳定前缀的缓存。关闭缓存时退化为纯字符串。
+ */
+function toAnthropicSystem(request: StreamChatRequest, caching: boolean): string | Anthropic.TextBlockParam[] {
+  const suffix = request.systemSuffix?.trim();
+  if (!caching) return suffix ? `${request.system}\n\n${suffix}` : request.system;
+  const blocks: Anthropic.TextBlockParam[] = [
+    { type: "text", text: request.system, cache_control: { type: "ephemeral" } },
+  ];
+  if (suffix) blocks.push({ type: "text", text: suffix });
+  return blocks;
+}
+
+/** 消息级断点预算：system 块占 1 个，tools 末位占 1 个，剩余额度给消息前缀（取最早者，缓存前缀最长）。 */
+function messageBreakpoints(request: StreamChatRequest, caching: boolean): ReadonlySet<string> {
+  if (!caching) return new Set();
+  const budget = MAX_CACHE_BREAKPOINTS - 1 - (request.tools.length > 0 ? 1 : 0);
+  return new Set((request.cacheBreakpoints ?? []).slice(0, Math.max(0, budget)));
+}
+
+/** 工具定义逐 turn 稳定，末位工具打断点即可缓存整个 tools 前缀。 */
+function toAnthropicTools(tools: ProviderTool[], caching: boolean): Anthropic.Tool[] {
+  return tools.map((tool, index) => ({
+    ...toAnthropicTool(tool),
+    ...(caching && index === tools.length - 1 ? { cache_control: { type: "ephemeral" as const } } : {}),
+  }) as Anthropic.Tool);
 }
 
 function toAnthropicMessages(messages: ChatMessage[], breakpoints: ReadonlySet<string>): Anthropic.MessageParam[] {

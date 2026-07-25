@@ -24,6 +24,21 @@ export interface ReplayResult {
   latestSeq: number;
 }
 
+/**
+ * 可追加型 delta 事件的合批窗口（毫秒），与客户端按帧渲染节奏对齐。
+ * 只作用于 payload 形如 `{ text: string }` 的纯追加 delta；
+ * 状态迁移、权限、交互等非 delta 事件永不进入合批，即时发布。
+ */
+export const DELTA_BATCH_WINDOW_MS = 16;
+
+/** 允许合批的事件类型：同一 (sessionId, type) 键下的 text 可直接拼接。 */
+const BATCHABLE_DELTA_TYPES = new Set(["message.delta", "message.thinking_delta"]);
+
+interface PendingDelta {
+  input: AppEventInput;
+  text: string;
+}
+
 export interface EventBusStats {
   published: number;
   retained: number;
@@ -37,12 +52,74 @@ export class EventBus extends EventEmitter {
   private readonly history: AppEvent[] = [];
   private historyBytes = 0;
   private oversizedNotRetained = 0;
+  /** 合批缓冲区：键为 `${sessionId ?? ""}${type}`，值为待合并的 delta。 */
+  private readonly pendingDeltas = new Map<string, PendingDelta>();
+  private deltaFlushTimer: ReturnType<typeof setTimeout> | undefined;
 
-  constructor(private readonly historyLimit = 1_000, private readonly historyByteLimit = 4 * 1024 * 1024) {
+  constructor(
+    private readonly historyLimit = 1_000,
+    private readonly historyByteLimit = 4 * 1024 * 1024,
+    private readonly deltaBatchWindowMs: number = DELTA_BATCH_WINDOW_MS,
+  ) {
     super();
   }
 
   publish(input: AppEventInput): AppEvent {
+    if (this.isBatchableDelta(input)) return this.bufferDelta(input);
+    // 非 delta 事件不得被合批延迟；先把挂起的 delta 冲刷出去，保住全局发布顺序。
+    this.flushDeltas();
+    return this.publishNow(input);
+  }
+
+  /**
+   * 判定是否为可合批的纯追加 delta：类型在白名单内且 payload 仅为 `{ text }` 追加。
+   */
+  private isBatchableDelta(input: AppEventInput): boolean {
+    if (this.deltaBatchWindowMs <= 0 || !BATCHABLE_DELTA_TYPES.has(input.type)) return false;
+    const payload = input.payload;
+    return typeof payload === "object" && payload !== null && typeof (payload as { text?: unknown }).text === "string";
+  }
+
+  /**
+   * 把 delta 并入 (sessionId, type) 键对应的缓冲，并在窗口到期时合并发布。
+   * 返回值为占位事件（seq 指向最后一条已定序事件），实际事件在 flush 时才定序；
+   * 当前没有调用方消费 delta 发布的返回值。
+   */
+  private bufferDelta(input: AppEventInput): AppEvent {
+    const key = `${input.sessionId ?? ""}${input.type}`;
+    const text = (input.payload as { text: string }).text;
+    const pending = this.pendingDeltas.get(key);
+    if (pending) pending.text += text;
+    else this.pendingDeltas.set(key, { input, text });
+    if (!this.deltaFlushTimer) {
+      this.deltaFlushTimer = setTimeout(() => this.flushDeltas(), this.deltaBatchWindowMs);
+      // 不让合批定时器阻止进程退出（测试与 CLI 短生命周期场景）。
+      this.deltaFlushTimer.unref?.();
+    }
+    return {
+      ...input,
+      payload: { ...(input.payload as Record<string, unknown>), text: this.pendingDeltas.get(key)!.text },
+      eventId: "pending",
+      seq: this.sequence,
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  /** 立即合并发布所有挂起的 delta（每个 (sessionId, type) 键一条事件）。 */
+  flushDeltas(): void {
+    if (this.deltaFlushTimer) {
+      clearTimeout(this.deltaFlushTimer);
+      this.deltaFlushTimer = undefined;
+    }
+    if (this.pendingDeltas.size === 0) return;
+    const pending = [...this.pendingDeltas.values()];
+    this.pendingDeltas.clear();
+    for (const delta of pending) {
+      this.publishNow({ ...delta.input, payload: { ...(delta.input.payload as Record<string, unknown>), text: delta.text } });
+    }
+  }
+
+  private publishNow(input: AppEventInput): AppEvent {
     const sessionSeq = input.sessionId
       ? (this.sessionSequences.get(input.sessionId) ?? 0) + 1
       : undefined;
@@ -70,6 +147,8 @@ export class EventBus extends EventEmitter {
   }
 
   replay(after: number, sessionId?: string): ReplayResult {
+    // 先冲刷挂起的合批 delta，保证 replay 看到完整的已定序历史。
+    this.flushDeltas();
     if (sessionId) {
       const history = this.history.filter((event) => event.sessionId === sessionId);
       const oldest = history[0]?.sessionSeq ?? (this.sessionSequences.get(sessionId) ?? 0) + 1;

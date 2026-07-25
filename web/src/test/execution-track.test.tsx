@@ -1,7 +1,7 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { ExecutionTrack } from "../components/ExecutionTrack";
-import type { SessionDetail } from "../lib/contracts";
+import type { ChatMessage, SessionDetail } from "../lib/contracts";
 
 const session: SessionDetail = {
   id: "session-1",
@@ -44,5 +44,91 @@ describe("ExecutionTrack failures", () => {
     const { container } = render(<ExecutionTrack session={longSession} streamText="" permissions={[]} onPermissionDone={() => undefined} />);
     expect(container.querySelectorAll(".virtual-message-item").length).toBeLessThan(longSession.messages.length);
     expect(container.querySelectorAll(".message").length).toBeLessThan(longSession.messages.length);
+  });
+});
+
+function makeMessages(count: number): ChatMessage[] {
+  return Array.from({ length: count }, (_, index) => ({
+    id: `message-${index}`,
+    role: index % 2 === 0 ? "user" as const : "assistant" as const,
+    createdAt: session.createdAt,
+    content: [{ type: "text" as const, text: `第 ${index} 条消息` }],
+  }));
+}
+
+function renderTrack(messages: ChatMessage[]) {
+  return render(
+    <ExecutionTrack
+      session={{ ...session, messages }}
+      streamText=""
+      permissions={[]}
+      onPermissionDone={() => undefined}
+    />,
+  );
+}
+
+/** jsdom 无布局，用可配置 getter 模拟滚动尺寸 */
+function stubScrollGeometry(track: HTMLElement, state: { scrollHeight: number; clientHeight: number }): void {
+  Object.defineProperty(track, "scrollHeight", { configurable: true, get: () => state.scrollHeight });
+  Object.defineProperty(track, "clientHeight", { configurable: true, get: () => state.clientHeight });
+}
+
+describe("ExecutionTrack virtualization", () => {
+  it("5000 条消息时渲染的 DOM 节点数有界", () => {
+    const messages = makeMessages(5000);
+    const { container } = renderTrack(messages);
+    const rendered = container.querySelectorAll(".virtual-message-item").length;
+    expect(rendered).toBeGreaterThan(0);
+    // 视口 + overscan 只应渲染几十条，远小于全量 5000
+    expect(rendered).toBeLessThan(200);
+    expect(container.querySelectorAll("article.message").length).toBeLessThan(200);
+  });
+
+  it("停留在底部时新消息到达自动吸底", () => {
+    const messages = makeMessages(6);
+    const { container, rerender } = renderTrack(messages);
+    const track = container.querySelector<HTMLElement>(".execution-track")!;
+    const geometry = { scrollHeight: 10_000, clientHeight: 500 };
+    stubScrollGeometry(track, geometry);
+
+    // 用户位于底部（距底 < 80px）
+    track.scrollTop = 9_600;
+    fireEvent.scroll(track);
+
+    // 新消息到达，滚动高度增长
+    geometry.scrollHeight = 10_500;
+    rerender(
+      <ExecutionTrack
+        session={{ ...session, messages: [...messages, ...makeMessages(1).map((m) => ({ ...m, id: "new" }))] }}
+        streamText=""
+        permissions={[]}
+        onPermissionDone={() => undefined}
+      />,
+    );
+    expect(track.scrollTop).toBe(10_500);
+  });
+
+  it("上翻阅读时不抢滚动，并给出回到底部入口", () => {
+    const messages = makeMessages(6);
+    const { container, rerender } = renderTrack(messages);
+    const track = container.querySelector<HTMLElement>(".execution-track")!;
+    const geometry = { scrollHeight: 10_000, clientHeight: 500 };
+    stubScrollGeometry(track, geometry);
+
+    // 用户上翻到中部
+    track.scrollTop = 100;
+    fireEvent.scroll(track);
+
+    geometry.scrollHeight = 10_500;
+    rerender(
+      <ExecutionTrack
+        session={{ ...session, messages: [...messages, ...makeMessages(1).map((m) => ({ ...m, id: "new" }))] }}
+        streamText=""
+        permissions={[]}
+        onPermissionDone={() => undefined}
+      />,
+    );
+    expect(track.scrollTop).toBe(100);
+    expect(screen.getByText("回到底部")).toBeInTheDocument();
   });
 });
