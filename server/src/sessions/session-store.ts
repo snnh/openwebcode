@@ -4,7 +4,8 @@ import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
 import { parseSessionImport, serializeSession } from "./session-transfer.js";
 import { defaultSandboxPolicy } from "./default-sandbox.js";
-import type { ChatMessage, ManagedWorkspaceMeta, MessageContent, MessageRole, SandboxMode, SessionDetail, SessionMeta } from "./types.js";
+import { readMessagesTail, readMessagesBefore, checkRecovery, DEFAULT_PAGE_SIZE } from "./message-reader.js";
+import type { ChatMessage, ManagedWorkspaceMeta, MessageContent, MessageRole, MessagesPage, SandboxMode, SessionDetail, SessionMeta } from "./types.js";
 
 export interface CreateSessionInput {
   cwd: string;
@@ -62,7 +63,8 @@ export class SessionStore {
       entries.filter((entry) => entry.isDirectory()).map(async (entry) => {
         try {
           const meta = await this.readMeta(entry.name);
-          const { recovery } = await this.readMessages(entry.name);
+          // 0.5.0 Phase 2: only check tail corruption for list() — full scan deferred to get()
+          const { recovery } = await checkRecovery(this.messagesPath(entry.name));
           return { ...meta, ...(recovery ? { recovery } : {}) };
         } catch {
           return undefined;
@@ -84,6 +86,45 @@ export class SessionStore {
     }
     const { messages, recovery } = await this.readMessages(id);
     return { ...meta, ...(recovery ? { recovery } : {}), messages };
+  }
+
+  /**
+   * 0.5.0 Phase 2: paginated session load.
+   * Returns meta + last `limit` messages + pagination metadata.
+   * Only JSON.parses the returned page — not the entire history.
+   */
+  async getTail(id: string, limit: number = DEFAULT_PAGE_SIZE): Promise<SessionDetail | undefined> {
+    let meta: SessionMeta;
+    try {
+      meta = await this.readMeta(id);
+    } catch (error) {
+      if (isMissing(error)) return undefined;
+      throw error;
+    }
+    const page = await readMessagesTail<ChatMessage>(this.messagesPath(id), limit);
+    return {
+      ...meta,
+      ...(page.recovery ? { recovery: page.recovery } : {}),
+      messages: page.messages,
+      messageCount: page.totalLines,
+      hasMoreMessages: page.hasMore,
+    };
+  }
+
+  /**
+   * 0.5.0 Phase 2: load older messages before a given message ID.
+   * Used for "load more" pagination when scrolling up in the conversation.
+   */
+  async getMessagesBefore(id: string, beforeMessageId: string, limit: number = DEFAULT_PAGE_SIZE): Promise<MessagesPage | undefined> {
+    // Verify session exists
+    try {
+      await this.readMeta(id);
+    } catch (error) {
+      if (isMissing(error)) return undefined;
+      throw error;
+    }
+    const page = await readMessagesBefore<ChatMessage>(this.messagesPath(id), beforeMessageId, limit);
+    return { messages: page.messages, hasMore: page.hasMore, totalLines: page.totalLines };
   }
 
   async appendMessage(

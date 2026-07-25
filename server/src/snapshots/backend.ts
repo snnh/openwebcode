@@ -22,7 +22,7 @@ export interface SnapshotBackend {
   capability(): Promise<SnapshotCapabilityInfo>;
   create(label: string, messageCount: number, ledger?: unknown): Promise<Checkpoint>;
   list(): Promise<Checkpoint[]>;
-  /** 简要的 stat 文本 */
+  /** 简要的差异文本（stat 摘要）；git-shadow 后端附带完整 unified diff（有界），供 0.5.0 diff 视图 hunk 解析 */
   diff(id: string): Promise<string>;
   /** inplace 恢复文件 */
   restore(id: string): Promise<void>;
