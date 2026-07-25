@@ -49,6 +49,8 @@ function readFileAsBase64(file: File): Promise<string> {
 export const api = {
   sessions: () => request<Session[]>("/api/sessions"),
   health: () => request<{ status: string }>("/api/health"),
+  indexStatus: (sessionId: string) => request<import("./contracts").WorkspaceIndexStatus>(`/api/workspaces/index/status?sessionId=${encodeURIComponent(sessionId)}`),
+  rebuildIndex: (sessionId: string) => request<{ accepted: boolean; jobId: string }>("/api/workspaces/index/rebuild", { method: "POST", body: JSON.stringify({ sessionId }) }),
   session: (id: string) => request<SessionDetail>(`/api/sessions/${id}`),
   run: (id: string) => request<AgentRun>(`/api/sessions/${id}/run`),
   createSession: (body: { cwd: string; provider: string; model: string; title?: string; agentMode?: "plan" | "build"; sandboxMode?: SandboxMode; setupScript?: string; workspaceMode?: "managed" }) =>
@@ -76,6 +78,11 @@ export const api = {
   },
   completePath: (id: string, q: string) =>
     request<CompletePathResponse>(`/api/sessions/${id}/complete-path?q=${encodeURIComponent(q)}`),
+  // @ 补全优先走索引缓存（§5.2）；索引未建/未启用时 409/501，由调用方回退 completePath
+  workspaceFiles: (sessionId: string, q: string, limit = 15) =>
+    request<import("./contracts").WorkspaceFilesResponse>(`/api/workspaces/files?sessionId=${encodeURIComponent(sessionId)}&q=${encodeURIComponent(q)}&limit=${limit}`),
+  workspaceSymbols: (sessionId: string, q: string, limit = 8) =>
+    request<import("./contracts").WorkspaceSymbolsResponse>(`/api/workspaces/symbols?sessionId=${encodeURIComponent(sessionId)}&q=${encodeURIComponent(q)}&limit=${limit}`),
   abort: (id: string) => request<{ accepted: boolean }>(`/api/sessions/${id}/abort`, { method: "POST" }),
   runShell: (id: string, cmd: string) =>
     request<{ accepted: boolean }>(`/api/sessions/${id}/shell`, { method: "POST", body: JSON.stringify({ cmd }) }),
@@ -132,6 +139,26 @@ export const api = {
     request<PricingDocument>("/api/model-pricing", { method: "PUT", body: JSON.stringify(document) }),
   listFiles: (id: string, path = ".") => request<{ entries: FileEntry[]; truncated: boolean }>(`/api/sessions/${id}/files?path=${encodeURIComponent(path)}`),
   readFile: (id: string, path: string) => request<{ content: string; encoding: string; truncated: boolean }>(`/api/sessions/${id}/files/content?path=${encodeURIComponent(path)}`),
+  // 最近一次诊断结果（Phase 3）；无记录时服务端 404，由调用方按空态处理
+  latestDiagnostics: (id: string) => request<import("./contracts").DiagnosticSet>(`/api/sessions/${encodeURIComponent(id)}/diagnostics/latest`),
+  // SCM（Phase 4）：只读 status/diff + worktree 管理；提交不走 REST，由面板下发 agent 消息走权限链
+  scmStatus: (id: string) => request<import("./contracts").ScmStatus>(`/api/sessions/${encodeURIComponent(id)}/git/status`),
+  scmDiff: (id: string, opts: { staged?: boolean; base?: string; file?: string } = {}) => {
+    const params = new URLSearchParams();
+    params.set("staged", opts.staged ? "true" : "false");
+    if (opts.base) params.set("base", opts.base);
+    if (opts.file) params.set("file", opts.file);
+    return request<import("./contracts").ScmDiff>(`/api/sessions/${encodeURIComponent(id)}/git/diff?${params.toString()}`);
+  },
+  scmWorktrees: async (id: string) => {
+    // server 返回 { worktrees: WorktreeEntry[] }
+    const response = await request<{ worktrees: import("./contracts").ScmWorktree[] }>(`/api/sessions/${encodeURIComponent(id)}/git/worktrees`);
+    return response.worktrees;
+  },
+  scmCreateWorktree: (id: string, body: { name?: string; branch?: string }) =>
+    request<import("./contracts").ScmWorktree>(`/api/sessions/${encodeURIComponent(id)}/git/worktrees`, { method: "POST", body: JSON.stringify(body) }),
+  scmDeleteWorktree: (id: string, name: string, opts: { force?: boolean } = {}) =>
+    request<{ removed: true; name: string }>(`/api/sessions/${encodeURIComponent(id)}/git/worktrees/${encodeURIComponent(name)}${opts.force ? "?force=true" : ""}`, { method: "DELETE" }),
   steering: (id: string) => request<Array<{ id: string; content: string; createdAt: string }>>(`/api/sessions/${id}/steering`),
   removeSteering: (id: string, itemId: string) => request<void>(`/api/sessions/${id}/steering/${itemId}`, { method: "DELETE" }),
   importSession: async (jsonl: string): Promise<Session> => {

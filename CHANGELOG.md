@@ -6,9 +6,25 @@
 
 ### 新增
 
+- 工作台五区布局（0.4.0 Phase 5）：活动栏/侧栏/主区/底部面板/状态栏重构为固定职责的五区模型，`F6` 在区域间轮换，布局状态（侧栏宽度、面板开合）按工作区持久化在本机；对话轨道与输入框始终是主区中心。
+- 命令面板与 Quick Open：`Ctrl/Cmd+Shift+P` 命令面板统一暴露会话/运行/面板/设置等全部内建命令（20 项），标注当前快捷键，`>` 前缀强制命令模式；`Ctrl/Cmd+P` Quick Open 混排工作区文件（索引供数、未建索引回退 glob）与符号条目（`#` 前缀），共用模糊匹配与防抖乱序丢弃；两者均为懒加载独立 chunk。
+- 快捷键体系：全局 keybindings 注册表（`{ commandId, key, when }`），默认集对齐 VSCode 习惯（`mod+B` 侧栏、`mod+`` 底部面板、`mod+,` 设置、`mod+Shift+E/F/G/M` 各视图、`mod+L` 聚焦输入框、`mod+PageUp/Down` 切换会话等），输入框焦点下不抢键；`Shift+?` 打开快捷键速查；0.4.0 暂不支持自定义键位。
+- 诊断闭环（0.4.0 Phase 3）：新增 `test_runner` 工具——自动检测项目类型（package.json/pyproject/go.mod/*.sln）生成默认运行命令，经 Core job 执行并继承权限与沙盒；vitest/jest、pytest、go test、dotnet test 四类输出解析为统一 `DiagnosticSet`（解析失败回退原文尾部，不丢输出），失败摘要有界回授 agent（前 20 条、每条 ≤500 字符），完整结果落会话 artifact 并经 REST/WS 暴露。
+- Problems 面板：诊断按文件分组、严重度过滤、来源工具标注，点击跳转到只读代码视图对应行列；agent 运行中的新诊断以角标提示，不弹窗打断。
+- 只读代码视图：Shiki 按行高亮 + 行号 + 行列跳转的统一代码查看形态，从工具卡、Problems、SCM diff 或 Quick Open 打开，关闭即回到对话；diff 为只读渲染（hunk 级接受/拒绝与编辑器属 0.5.0）。
+- Git 集成（0.4.0 Phase 4）：新增 `git_status`/`git_diff`/`git_commit` 工具——状态按 porcelain 分组（每组 200 条截断保留 totals）、diff 大输出落 artifact、提交在 yolo 下也需确认且拒绝 `--no-verify`；Source Control 面板展示分支/ahead-behind 与三组变更状态、只读 diff 入口，提交辅助经对话下发 `git_commit`（默认不开放 agent 自动提交）；无 git 仓库时面板降级为如实标注。worktree 创建/合并/移除（上限 4、冲突 `--abort` 如实报告）经服务端 REST 提供，子代理 `isolation:"worktree"` spawn 参数留待 0.5.0。
+- 代码库理解（0.4.0 Phase 2 Node 侧）：服务端符号提取（TS/JS、Python、Go、Rust、C/C++、Java、C# 八种语言）与索引存储（`<业务数据目录>/index/<workspace-hash>/`，append-only + 压实，损坏整体重建）；新增 `code_search`（符号名模糊 + 种类过滤，未建索引明确回退 grep）与 `repo_map` 工具（默认 2k token 预算、会话可关、索引可用时附关键文件符号）；索引新鲜度以 Core watch 驱动增量更新，watch 不可用时降级 mtime 抽样，REST 提供索引状态/重建/符号查询。
+- Prompt cache 断点（0.4.0 Phase 1）：支持的 Provider 上把稳定前缀组织为显式 cache 断点（≤4 个），连续 turn 前缀逐字节一致；cache 命中/创建/读取 tokens 进入成本面板与 usage 日志。
+- 远程访问 token 认证：非回环监听（`OWC_HOST` 非 `127.0.0.1`）强制要求 `OWC_ACCESS_TOKEN`（≥32 字符），否则拒绝启动；浏览器经 `?token=` 换取 HttpOnly Cookie，CLI 用 `OWC_ACCESS_TOKEN` 环境变量走 Bearer 头。设置页「远程访问」分区展示监听状态与风险提示。
+- Core `index.scan` 作业（0.4.0 Phase 2 第一块）：`job.start` 新增 `kind:"index.scan"`，按 glob include/exclude 规则产出完整文件清单（路径、大小、mtime、SHA-256），遵守节点/深度/字节（哈希）/时间预算、可取消、结果按路径排序确定；输出经 `job.output` 分页为 JSONL 条目流 + 末行 summary（截断原因与哈希预算标记）。增量变化集由 Node 侧对连续 manifest 做 diff，core 不做语言解析。`core.ping` 新增 `indexScan` capability 与 `maxIndexScan*` limits（双平台声明）；协议见 `docs/protocol.md`。
+- watch 突发折叠：`fs.watch.poll` 在同批去重之后，若某目录（含被监听根）产生 4 个及以上事件，折叠为一条目录级 `changed` 事件，可向上传播，抑制 build 目录等突发变更的事件风暴。
 - 上下文工程（0.4.0 Phase 1）：ContextManager 增量复用上一 turn 的不可变前缀构建结果（消息构建与 token 估算），压缩/驱逐/恢复/配置变更自动回退全量重建，最终注入字节与全量构建等价；每 turn 构建耗时与增量标记进入 run 诊断（context.watermark 事件）。
 - 选择性上下文：会话级 pin（消息 id/文件路径，不被驱逐；pin 占用超预算时如实警告）与排除路径 glob（不进上下文组装，repo map/索引钩子预留）。清单持久化在会话配置，Context 面板可视化管理。注意：排除不是安全边界，文件访问仍由路径策略与沙盒保证。
 - 成本归因：上下文按段（压缩摘要/工具结果/对话消息等）统计 token，Context 面板展示"钱花在哪一段"与构建耗时。
+- 通知中心（0.4.0 Phase 5b）：toast 提示与后台事件（任务完成、诊断更新、SCM 更新、后台任务结束）汇总为可回看列表；未读角标、逐条/全部清除、点击跳转相关会话与视图；活动栏铃铛入口与 `workbench.action.showNotifications` 命令；权限请求与结构化交互不进入通知流。
+- 设置页升级：新增"快捷键"分区（如实列出默认键位集，暂不支持自定义）与"远程访问"分区（展示监听地址、回环/非回环状态与 token 认证说明；非回环监听持续展示风险提示）。
+- 移动端（§6.8）：断点统一为 ≤768px，活动栏变顶部横条（保留全部入口），侧栏变全屏抽屉（选中会话自动收起），底部面板全屏 sheet；权限/交互/队列按钮点击目标 ≥44px；会话切换经顶部入口可达。
+- PWA：新增 manifest（standalone、图标、theme_color）与 apple-touch-icon，可安装到主屏；不做离线缓存 SW（应用强依赖实时连接，见 docs/0.4.xplan.md §6.8 取舍）。
 
 ## [0.3.10] - 2026-07-24
 

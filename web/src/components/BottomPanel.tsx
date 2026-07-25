@@ -2,18 +2,17 @@ import { lazy, Suspense, useEffect, useState, type MouseEvent as ReactMouseEvent
 import type { SessionDetail } from "../lib/contracts";
 import { Icon, type IconName } from "./Icon";
 
-// 五个面板各自独立 chunk，仅在打开对应标签页时加载
+// 底部面板标签各自独立 chunk，仅在打开对应标签页时加载；
+// 文件/源代码管理/问题视图已迁至侧边栏（0.4.0 Phase 5a 五区布局）
 const ContextPanel = lazy(() => import("./panels/ContextPanel").then((m) => ({ default: m.ContextPanel })));
 const CostPanel = lazy(() => import("./panels/CostPanel").then((m) => ({ default: m.CostPanel })));
-const FilesPanel = lazy(() => import("./panels/FilesPanel").then((m) => ({ default: m.FilesPanel })));
 const SandboxPanel = lazy(() => import("./panels/SandboxPanel").then((m) => ({ default: m.SandboxPanel })));
 const TimelinePanel = lazy(() => import("./panels/TimelinePanel").then((m) => ({ default: m.TimelinePanel })));
 import { useI18n } from "../i18n";
 
-export type PanelTab = "files" | "context" | "timeline" | "sandbox" | "cost";
+export type PanelTab = "context" | "timeline" | "sandbox" | "cost";
 
 const TAB_META: Record<PanelTab, { zh: string; en: string; icon: IconName }> = {
-  files: { zh: "文件", en: "Files", icon: "folder" },
   context: { zh: "上下文", en: "Context", icon: "layers" },
   timeline: { zh: "时间线", en: "Timeline", icon: "history" },
   sandbox: { zh: "沙盒", en: "Sandbox", icon: "shield" },
@@ -41,22 +40,23 @@ function store(key: string, value: string): void {
   }
 }
 
-export function BottomPanel({ sessionId, session, running, onNotice }: {
+export function BottomPanel({ sessionId, session, running, onNotice, open, onOpenChange }: {
   sessionId?: string;
   session?: SessionDetail;
   running: boolean;
   onNotice(message: string, kind?: "info" | "error"): void;
+  /** 受控开合（布局持久化在 useWorkbenchLayout，Ctrl/Cmd+` 切换） */
+  open: boolean;
+  onOpenChange(open: boolean): void;
 }): ReactElement {
   const { t } = useI18n();
   const [tab, setTab] = useState<PanelTab>(() => {
     const stored = readStored("owc-panel-tab");
-    return stored && stored in TAB_META ? (stored as PanelTab) : "files";
+    return stored && stored in TAB_META ? (stored as PanelTab) : "context";
   });
-  const [open, setOpen] = useState(() => readStored("owc-panel-open") === "1");
   const [height, setHeight] = useState(() => clampHeight(Number(readStored("owc-panel-height")) || 260));
 
   useEffect(() => store("owc-panel-tab", tab), [tab]);
-  useEffect(() => store("owc-panel-open", open ? "1" : "0"), [open]);
   useEffect(() => store("owc-panel-height", String(height)), [height]);
 
   // 顶部拖拽调高：向上拖增大高度；键盘 ArrowUp/Down 每次 40px
@@ -74,10 +74,10 @@ export function BottomPanel({ sessionId, session, running, onNotice }: {
   };
 
   const selectTab = (item: PanelTab): void => {
-    if (item === tab) setOpen((value) => !value);
+    if (item === tab) onOpenChange(!open);
     else {
       setTab(item);
-      setOpen(true);
+      onOpenChange(true);
     }
   };
 
@@ -109,7 +109,7 @@ export function BottomPanel({ sessionId, session, running, onNotice }: {
         <button
           className="panel-fold"
           aria-label={open ? t("收起面板", "Collapse panel") : t("展开面板", "Expand panel")}
-          onClick={() => setOpen((value) => !value)}
+          onClick={() => onOpenChange(!open)}
         >
           <Icon name={open ? "chevron-down" : "chevron-up"} size={14} />
         </button>
@@ -117,7 +117,6 @@ export function BottomPanel({ sessionId, session, running, onNotice }: {
       {open && (
         <div className="panel-content" style={{ height }}>
           <Suspense fallback={null}>
-          {tab === "files" && <FilesPanel sessionId={sessionId} session={session} running={running} onNotice={onNotice} />}
           {tab === "context" && <ContextPanel sessionId={sessionId} session={session} running={running} onNotice={onNotice} />}
           {tab === "timeline" && <TimelinePanel sessionId={sessionId} running={running} onNotice={onNotice} />}
           {tab === "sandbox" && <SandboxPanel session={session} />}

@@ -32,15 +32,23 @@ openwebcode/
 │   │   ├── snapshots/    # 快照后端探测链、git 影子、托管工作区
 │   │   ├── sandbox/      # core-router 策略映射
 │   │   ├── mcp/          # MCP 客户端（stdio + HTTP）
+│   │   ├── index/        # 符号提取、索引存储、code_search/repo_map 供数（0.4.0）
+│   │   ├── diagnostics/  # test_runner 检测、四类生态解析器、DiagnosticSet（0.4.0）
+│   │   ├── scm/          # git status/diff/commit 编排、worktree 生命周期（0.4.0）
 │   │   └── rpc/          # C RPC 类型定义
 │   ├── test/             # vitest 测试（单元、HTTP、真实 core 端到端）
 │   └── dist/             # 编译产物（ts 输出，git 跟踪）
 ├── web/                  # React + Vite 前端
 │   ├── src/
 │   │   ├── App.tsx       # 顶层组件、WS 事件流、状态管理
-│   │   ├── components/   # Composer / ExecutionTrack / MessageCard / JobHeader 等
+│   │   ├── workbench/    # 五区布局外壳、活动栏、布局持久化（0.4.0）
+│   │   ├── commands/     # 命令注册表、keybindings 注册表与默认集、覆盖审计（0.4.0）
+│   │   ├── components/   # Composer / ExecutionTrack / MessageCard / JobHeader /
+│   │   │                 #   CommandPalette / QuickOpen / ShortcutsDialog 等
+│   │   │   ├── editor/   # 只读 CodeView（行列跳转；可编辑编辑器属 0.5.0）
+│   │   │   └── panels/   # Context / Cost / Files / Problems / Sandbox / Scm / Timeline
 │   │   ├── lib/          # api.ts（REST 客户端）、contracts.ts（类型契约）
-│   │   └── styles.css    # 全部样式
+│   │   └── styles.css    # 全部样式（含移动端 ≤768px 响应式）
 │   └── src/test/         # vitest + jsdom + Testing Library + axe
 ├── packaging/            # 分发布局、安装脚本、owc.cmd、CI 发布流水线
 └── .github/workflows/    # core.yml / server.yml / web.yml（CI）+ release.yml（发布）
@@ -205,6 +213,7 @@ provider；它支持 `run: <cmd>` 的工具调用回放与 `tool_result` 回包�
 - WS 事件流：`App.tsx` 的 onmessage 分发到 state + react-query invalidate
 - 样式：单文件 `styles.css`，CSS 变量主题（亮/暗）
 - 新组件：`components/` 下独立文件，follow 现有命名（`JobHeader.tsx` / `MessageCard.tsx`）
+- 新命令/快捷键：在 `commands/builtin.ts` 注册命令（含 `when` 上下文），默认键位加到 `commands/keybindings.ts`；`command-coverage` 审计测试会校验每个 REST 动作都有对应命令
 - Markdown/LaTeX：统一改 `Markdown.tsx`，不要在正文、历史思考、流式思考分别维护解析器；思考块只负责折叠与弱化视觉层级
 
 ## 架构要点（改动前必读）
