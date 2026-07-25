@@ -125,4 +125,15 @@ export interface SessionMeta {
 
 export interface SessionDetail extends SessionMeta {
   messages: ChatMessage[];
+  /** Total message count in messages.jsonl (may exceed messages.length when paginated) */
+  messageCount?: number;
+  /** Whether older messages exist beyond the returned page */
+  hasMoreMessages?: boolean;
+}
+
+/** Paginated message page returned by GET /api/sessions/:id/messages */
+export interface MessagesPage {
+  messages: ChatMessage[];
+  hasMore: boolean;
+  totalLines: number;
 }

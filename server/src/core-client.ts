@@ -90,6 +90,49 @@ export interface IndexScanStartRequest {
 }
 export interface IndexScanEntry { path: string; size: number; modifiedMs: number; sha256?: string }
 export interface IndexScanSummary { entries: number; truncated: boolean; reason: "nodes" | "depth" | "time" | "list" | null; hashTruncated: boolean }
+/**
+ * grep job（0.5.0 Phase 2c）：并行文件内容搜索。
+ * 输出是 job.output 上的 JSONL 流（stdout 流），每行一个匹配：
+ *   {"path","line","text"}   —— 按 path（再按 line）排序，两次搜索结果确定
+ *   {"summary":{"matches","truncated","reason"}} —— 最后一行
+ * 文件读取由 N 个工作线程并行完成；遍历预算/取消/策略与 index.scan 一致。
+ * timeoutMs 对 grep 无效（搜索时长由 maxMs 预算控制，超时为优雅截断）。
+ */
+export interface GrepJobStartRequest {
+  sessionId: string;
+  jobId: string;
+  kind: "grep";
+  cwd: string;
+  path: string;
+  pattern: string;
+  include?: string[];
+  exclude?: string[];
+  maxDepth?: number;
+  maxNodes?: number;
+  maxMs?: number;
+}
+/**
+ * glob job（0.5.0 Phase 2c）：路径模式匹配搜索。
+ * 输出是 job.output 上的 JSONL 流（stdout 流），每行一个路径：
+ *   {"path"}   —— 按 path 排序，两次搜索结果确定
+ *   {"summary":{"entries","truncated","reason"}} —— 最后一行
+ */
+export interface GlobJobStartRequest {
+  sessionId: string;
+  jobId: string;
+  kind: "glob";
+  cwd: string;
+  path: string;
+  pattern: string;
+  include?: string[];
+  exclude?: string[];
+  maxDepth?: number;
+  maxNodes?: number;
+  maxMs?: number;
+}
+export interface GrepJobEntry { path: string; line: number; text: string }
+export interface GlobJobEntry { path: string }
+export interface SearchJobSummary { matches?: number; entries?: number; truncated: boolean; reason: "nodes" | "depth" | "time" | "list" | "matches" | null }
 export interface JobStatus { jobId: string; state: "running" | "completed" | "failed" | "cancelled" | "timed_out"; exitCode?: number; durationMs?: number; truncated?: boolean; error?: string }
 export interface JobOutputRequest { sessionId: string; jobId: string; afterSeq: number; limit?: number }
 export interface JobOutputResult { chunks: Array<{ seq: number; stream: "stdout" | "stderr"; data: string }>; nextSeq: number; truncated: boolean }
@@ -134,6 +177,8 @@ export interface CoreClientLike {
   cancelWatch(request: { sessionId: string; watchId: number }): Promise<{ ok: true }>;
   startJob(request: JobStartRequest): Promise<JobStatus>;
   startIndexScan(request: IndexScanStartRequest): Promise<JobStatus>;
+  startGrepJob(request: GrepJobStartRequest): Promise<JobStatus>;
+  startGlobJob(request: GlobJobStartRequest): Promise<JobStatus>;
   cancelJob(request: { sessionId: string; jobId: string }): Promise<{ jobId: string; accepted: true }>;
   jobStatus(request: { sessionId: string; jobId: string }): Promise<JobStatus>;
   jobOutput(request: JobOutputRequest): Promise<JobOutputResult>;
@@ -240,6 +285,8 @@ export class CoreClient extends EventEmitter {
   cancelWatch(request: { sessionId: string; watchId: number }): Promise<{ ok: true }> { return this.call("fs.watch.cancel", request); }
   startJob(request: JobStartRequest): Promise<JobStatus> { return this.call("job.start", request); }
   startIndexScan(request: IndexScanStartRequest): Promise<JobStatus> { return this.call("job.start", request); }
+  startGrepJob(request: GrepJobStartRequest): Promise<JobStatus> { return this.call("job.start", request); }
+  startGlobJob(request: GlobJobStartRequest): Promise<JobStatus> { return this.call("job.start", request); }
   cancelJob(request: { sessionId: string; jobId: string }): Promise<{ jobId: string; accepted: true }> { return this.call("job.cancel", request); }
   jobStatus(request: { sessionId: string; jobId: string }): Promise<JobStatus> { return this.call("job.status", request); }
   jobOutput(request: JobOutputRequest): Promise<JobOutputResult> { return this.call("job.output", request); }

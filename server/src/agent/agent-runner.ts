@@ -458,6 +458,14 @@ export class SteeringError extends Error {
   }
 }
 
+/** 编辑器保存被权限链拒绝（plan 只读门禁/用户拒绝）；REST 层映射为 403。 */
+export class WorkspaceWriteDeniedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WorkspaceWriteDeniedError";
+  }
+}
+
 /**
  * Lease supplied by the HTTP workspace gate for a managed-session run.
  *
@@ -483,6 +491,23 @@ export interface AgentRunOptions {
   queueItemId?: string;
 }
 
+/** 0.5.0 Phase 2d：run 级性能采样记录（脱敏：不含消息内容、文件路径、模型名）。 */
+export interface RunPerfRecord {
+  runId: string;
+  sessionId: string;
+  startedAt: string;
+  finishedAt: string;
+  turnCount: number;
+  stages: {
+    contextBuildMs: number;
+    providerCallMs: number;
+    toolExecMs: number;
+    totalMs: number;
+  };
+}
+
+const PERF_RING_SIZE = 20;
+
 export class AgentRunner {
   private readonly running = new Map<string, AbortController>();
   private readonly coreGateway: CoreGateway;
@@ -493,6 +518,8 @@ export class AgentRunner {
   /** Final assistant output is durable, but hooks/queue cleanup are not yet. */
   private readonly settling = new Set<string>();
   private readonly shells = new Map<string, AbortController>();
+  /** 编辑器保存（REST 写）挂起态：与 run/shell 互斥，abort 时一并取消 */
+  private readonly workspaceWrites = new Map<string, AbortController>();
   private readonly messageQueue: MessageQueue;
   private readonly interactions: InteractionCoordinator;
   private readonly repeatedCalls = new Map<string, { signature: string; count: number }>();
@@ -502,6 +529,8 @@ export class AgentRunner {
   private readonly repoMap: RepoMapGenerator;
   private indexManager?: IndexManager;
   private diagnostics?: DiagnosticsService;
+  /** 0.5.0 Phase 2d：per-session 性能环形缓冲（最近 20 次 run）。 */
+  private readonly perfRecords = new Map<string, RunPerfRecord[]>();
 
   /** Phase 2：注入符号索引管理器；同时让 repo map 在索引可用时带符号摘要（不可用降级静态树）。 */
   setIndexManager(indexManager: IndexManager): void {
@@ -599,10 +628,19 @@ export class AgentRunner {
   ): Promise<void> {
     if (this.running.has(sessionId)) throw new Error("Session agent is already running");
     if (this.shells.has(sessionId)) throw new Error("A shell command is pending; respond to its permission request first");
+    if (this.workspaceWrites.has(sessionId)) throw new Error("A file save is pending; respond to its permission request first");
     const controller = new AbortController();
     this.running.set(sessionId, controller);
     let followUpQueueItemId = options?.queueItemId;
     let scheduleFollowUp = false;
+    // 0.5.0 Phase 2d：性能采样累加器（声明在 try 外层，finally 可访问）
+    let perfStartedAt = 0;
+    let perfStartedAtIso = "";
+    let perfContextBuildMs = 0;
+    let perfProviderCallMs = 0;
+    let perfToolExecMs = 0;
+    let perfTurnCount = 0;
+    let perfActive = false;
     try {
       const configuredSession = await this.sessions.get(sessionId);
       if (!configuredSession) throw new Error("Session not found");
@@ -698,6 +736,10 @@ export class AgentRunner {
       await this.state(sessionId, "preparing_context");
       // 85% 水位强制概览压缩（§7.3 处理链⑤）：每次运行只触发一次
       let forceCompacted = false;
+      // 0.5.0 Phase 2d：性能采样初始化
+      perfStartedAt = performance.now();
+      perfStartedAtIso = new Date().toISOString();
+      perfActive = true;
       for (let turnIndex = 0; turnIndex < this.maxTurns; turnIndex++) {
         controller.signal.throwIfAborted();
         this.setTurnIndex(sessionId, turnIndex);
@@ -712,7 +754,9 @@ export class AgentRunner {
         }
         // 选择性上下文（§4.4）：pin 不被驱逐、排除不进组装；配置持久化在会话 meta。
         const contextSelection = { pins: session.contextPins ?? [], excludes: session.contextExcludes ?? [] };
+        const ctxBuildStart = performance.now();
         const view = await context.buildView(session.messages, { selection: contextSelection });
+        perfContextBuildMs += performance.now() - ctxBuildStart;
         if (this.extensions) {
           const transformed = await this.extensions.transformContext({
             sessionId,
@@ -876,6 +920,7 @@ export class AgentRunner {
           projectContext: memorySection ? [{ path: "workspace instructions and memory", content: memorySection }] : [],
         });
         await this.state(sessionId, "streaming");
+        const providerCallStart = performance.now();
         const turn = await collectProviderTurn(
           provider,
           {
@@ -905,6 +950,7 @@ export class AgentRunner {
           },
         );
         this.events.publish({ source: "agent", type: "message.attempt", sessionId, payload: { attemptId: turn.attemptId } });
+        perfProviderCallMs += performance.now() - providerCallStart;
         const assistantContent: MessageContent[] = [];
         let activeThinkingIndex: number | undefined;
         let stopReason: string | undefined;
@@ -971,6 +1017,7 @@ export class AgentRunner {
         }
         if (toolCalls.length === 0) throw new Error("Provider stopped for tool use without a tool call");
         await this.state(sessionId, "executing_tools");
+        const toolExecStart = performance.now();
         for (const call of toolCalls) {
           let effectiveInput = call.input;
           let result: Extract<MessageContent, { type: "tool_result" }>;
@@ -1029,6 +1076,8 @@ export class AgentRunner {
             await this.runNotificationHook("PostToolUse", { sessionId, cwd: session.cwd, tool: call.name, input: effectiveInput, result: { summary } });
           }
         }
+        perfToolExecMs += performance.now() - toolExecStart;
+        perfTurnCount++;
         await this.state(sessionId, "advancing_turn");
         await context.advanceRound();
         const afterTools = await this.sessions.get(sessionId);
@@ -1063,6 +1112,29 @@ export class AgentRunner {
       // abort 与正常结束都保留未消费队列；queue.json 是用户可恢复状态。
       this.todos.delete(sessionId);
       this.events.publish({ source: "agent", type: "todos.updated", sessionId, payload: { items: [] } });
+      // 0.5.0 Phase 2d：发布 run.perf 事件并存入环形缓冲
+      if (perfActive) {
+        const runId = this.runs.get(sessionId)?.id ?? "unknown";
+        const totalMs = performance.now() - perfStartedAt;
+        const record: RunPerfRecord = {
+          runId,
+          sessionId,
+          startedAt: perfStartedAtIso,
+          finishedAt: new Date().toISOString(),
+          turnCount: perfTurnCount,
+          stages: {
+            contextBuildMs: Math.round(perfContextBuildMs * 100) / 100,
+            providerCallMs: Math.round(perfProviderCallMs * 100) / 100,
+            toolExecMs: Math.round(perfToolExecMs * 100) / 100,
+            totalMs: Math.round(totalMs * 100) / 100,
+          },
+        };
+        this.events.publish({ source: "agent", type: "run.perf", sessionId, payload: record });
+        const ring = this.perfRecords.get(sessionId) ?? [];
+        ring.push(record);
+        if (ring.length > PERF_RING_SIZE) ring.shift();
+        this.perfRecords.set(sessionId, ring);
+      }
       if (this.runs.has(sessionId)) await this.finishRun(sessionId, "completed");
       if (scheduleFollowUp && !controller.signal.aborted) void this.startFollowUp(sessionId);
     }
@@ -1099,6 +1171,7 @@ export class AgentRunner {
     const controller = this.running.get(sessionId);
     if (!controller) return false;
     controller.abort();
+    this.workspaceWrites.get(sessionId)?.abort();
     this.permissions.cancelSession(sessionId);
     return true;
   }
@@ -1201,6 +1274,46 @@ export class AgentRunner {
   /** shell 快捷前缀 `!cmd` 是否在挂起中（权限审批/执行中）；agent.isRunning 全程 false。 */
   isShellPending(sessionId: string): boolean {
     return this.shells.has(sessionId);
+  }
+
+  /** 0.5.0 Phase 2d：返回最近 N 次 run 的性能采样记录（内存环形缓冲，脱敏）。 */
+  getPerf(sessionId: string): RunPerfRecord[] {
+    return this.perfRecords.get(sessionId) ?? [];
+  }
+
+  /** 编辑器保存（REST 写）是否在挂起中。 */
+  isWorkspaceWritePending(sessionId: string): boolean {
+    return this.workspaceWrites.has(sessionId);
+  }
+
+  /**
+   * 编辑器保存（0.5.0 Phase 1a）：REST 触发的工作区文件写入，复用与 write_file 工具
+   * 完全相同的权限链（authorizeTool：plan 模式只读门禁 + 权限模式/规则 + permission.request
+   * 事件挂起与 respond 恢复），不绕过任何审批；不落盘消息、不进 agent run 循环。
+   * 与 run/shell 互斥（避免并发写竞态），abort 会取消挂起的审批。
+   */
+  async writeWorkspaceFile(sessionId: string, path: string, content: string): Promise<void> {
+    if (this.running.has(sessionId)) throw new Error("Session agent is running; wait for it to finish before saving files");
+    if (this.shells.has(sessionId)) throw new Error("A shell command is pending; respond to its permission request first");
+    if (this.workspaceWrites.has(sessionId)) throw new Error("A file save is already pending in this session");
+    const controller = new AbortController();
+    this.workspaceWrites.set(sessionId, controller);
+    try {
+      const session = await this.sessions.get(sessionId);
+      if (!session) throw new Error("Session not found");
+      // 沙盒配置幂等（与 runShell 同款）
+      await this.core.configureSession({
+        sessionId,
+        cwd: session.cwd,
+        sandbox: session.sandbox ?? defaultSandboxPolicy(session.cwd),
+      });
+      // 权限链（与 write_file 工具一致；plan 模式会被门禁拦截）
+      const permission = await this.authorizeTool(sessionId, "write_file", { path }, controller.signal);
+      if (!permission.allowed) throw new WorkspaceWriteDeniedError(permission.reason ?? "File write permission denied");
+      await this.core.writeFile({ sessionId, path, content });
+    } finally {
+      this.workspaceWrites.delete(sessionId);
+    }
   }
 
   async enqueueSteering(sessionId: string, content: string, requestId?: string): Promise<{ id: string; position: number; reused: boolean }> {

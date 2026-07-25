@@ -40,7 +40,13 @@ describe("GitShadowSnapshots", () => {
     await writeFile(path.join(workspace, "new.txt"), "new", "utf8");
     await writeFile(path.join(workspace, "new.cache"), "ignored", "utf8");
     await writeFile(path.join(workspace, "saved.cache"), "changed", "utf8");
-    expect(await snapshots.diff(checkpoint.id)).toContain("a.txt");
+    // 0.5.0 Phase 1b：diff 返回 stat 摘要 + 完整 unified diff（供 Web diff 视图 hunk 解析）
+    const diffText = await snapshots.diff(checkpoint.id);
+    expect(diffText).toContain("a.txt");
+    expect(diffText).toContain("diff --git a/a.txt b/a.txt");
+    expect(diffText).toMatch(/@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/);
+    expect(diffText).toContain("-one");
+    expect(diffText).toContain("+two");
     await snapshots.restore(checkpoint.id);
     const restored = (await snapshots.list()).find((item) => item.id === checkpoint.id);
 
