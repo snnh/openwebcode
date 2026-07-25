@@ -6,7 +6,7 @@ import { randomUUID, timingSafeEqual } from "node:crypto";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import type { AgentRunner } from "./agent/agent-runner.js";
-import { SteeringError } from "./agent/agent-runner.js";
+import { SteeringError, WorkspaceWriteDeniedError } from "./agent/agent-runner.js";
 import type { BackgroundTaskRegistry } from "./agent/background-tasks.js";
 import type { HookRunner } from "./hooks.js";
 import { CoreRpcError, type CoreClientLike, type ExecRequest } from "./core-client.js";
@@ -497,6 +497,8 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     return managed.capability();
   });
   app.get("/api/providers", async () => providers.list());
+  /** 0.5.0 Phase 2：per-provider 并发与队列深度诊断 */
+  app.get("/api/providers/stats", async () => providers.concurrencyStats());
   if (dependencies.providerProfiles) {
     const profiles = dependencies.providerProfiles;
     const profileFailure = (reply: FastifyReply, error: unknown) => reply
@@ -802,10 +804,30 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
 
   app.get("/api/sessions", async () => sessions.list());
 
-  app.get<{ Params: { id: string } }>("/api/sessions/:id", async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { limit?: string } }>("/api/sessions/:id", async (request, reply) => {
+    // 0.5.0 Phase 2: paginated session load — only return last N messages
+    const limitParam = request.query.limit;
+    if (limitParam !== undefined) {
+      const limit = Math.max(1, Math.min(500, parseInt(limitParam, 10) || 100));
+      const session = await sessions.getTail(request.params.id, limit);
+      if (!session) return reply.code(404).send({ error: "Session not found" });
+      return session;
+    }
     const session = await sessions.get(request.params.id);
     if (!session) return reply.code(404).send({ error: "Session not found" });
     return session;
+  });
+  /**
+   * 0.5.0 Phase 2: paginated message history — load older messages before a given message ID.
+   * Used by the frontend "load more" when scrolling up in long conversations.
+   */
+  app.get<{ Params: { id: string }; Querystring: { before?: string; limit?: string } }>("/api/sessions/:id/messages", async (request, reply) => {
+    const before = request.query.before;
+    if (!before) return reply.code(400).send({ error: "before query parameter is required" });
+    const limit = Math.max(1, Math.min(500, parseInt(request.query.limit ?? "100", 10) || 100));
+    const page = await sessions.getMessagesBefore(request.params.id, before, limit);
+    if (!page) return reply.code(404).send({ error: "Session not found" });
+    return page;
   });
   /** Read-only tree projection. Legacy sessions remain a single derived path. */
   app.get<{ Params: { id: string } }>("/api/sessions/:id/timeline", async (request, reply) => {
@@ -1140,7 +1162,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     if (!cancelled) return reply.code(409).send({ error: "No index rebuild is running for this workspace" });
     return { accepted: true };
   });
-  app.get<{ Querystring: { sessionId?: string; q?: string; kind?: string; limit?: string } }>("/api/workspaces/symbols", async (request, reply) => {
+  app.get<{ Querystring: { sessionId?: string; q?: string; kind?: string; limit?: string; file?: string } }>("/api/workspaces/symbols", async (request, reply) => {
     const indexManager = requireIndexManager();
     if (!indexManager) return reply.code(501).send({ error: "Symbol index is not enabled" });
     const sessionId = request.query.sessionId;
@@ -1149,14 +1171,18 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     if (!session) return reply.code(404).send({ error: "Session not found" });
     const query = request.query.q?.trim() ?? "";
     const kind = request.query.kind?.trim() || undefined;
+    const file = request.query.file?.trim() || undefined;
     const parsedLimit = request.query.limit === undefined ? undefined : Number(request.query.limit);
     if (parsedLimit !== undefined && (!Number.isInteger(parsedLimit) || parsedLimit < 1 || parsedLimit > 200)) {
       return reply.code(400).send({ error: "limit must be an integer between 1 and 200" });
     }
     try {
-      const symbols = query
-        ? await indexManager.searchSymbols(session.cwd, query, { ...(kind ? { kind } : {}), ...(parsedLimit !== undefined ? { limit: parsedLimit } : {}) })
-        : [];
+      // file 参数（编辑器面包屑，0.5.0 Phase 1a）：按文件精确取符号，与 q 互斥、优先生效
+      const symbols = file
+        ? await indexManager.symbolsInFile(session.cwd, file)
+        : query
+          ? await indexManager.searchSymbols(session.cwd, query, { ...(kind ? { kind } : {}), ...(parsedLimit !== undefined ? { limit: parsedLimit } : {}) })
+          : [];
       const status = await indexManager.status(sessionId, session.cwd);
       return { symbols, indexStatus: status.status };
     } catch (error) {
@@ -1216,6 +1242,12 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     const latest = await diagnostics.latest(session.id);
     if (!latest) return reply.code(404).send({ error: "No diagnostics recorded for this session" });
     return latest;
+  });
+  // ---- 性能采样（0.5.0 Phase 2d）：最近 N 次 run 的阶段耗时（脱敏） ----
+  app.get<{ Params: { id: string } }>("/api/sessions/:id/perf", async (request, reply) => {
+    const session = await sessions.get(request.params.id);
+    if (!session) return reply.code(404).send({ error: "Session not found" });
+    return { records: agent.getPerf(session.id) };
   });
   // ---- Git 集成（0.4.0 Phase 4a）：状态/diff 只读，worktree 生命周期；写操作走托管工作区共享租约，与快照互斥 ----
   app.get<{ Params: { id: string } }>("/api/sessions/:id/git/status", async (request, reply) => {
@@ -1847,6 +1879,34 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
       void agent.runShell(request.params.id, cmd).catch(() => undefined).finally(releaseWorkspace);
       return reply.code(202).send({ accepted: true });
+    },
+  );
+
+  // 编辑器保存（0.5.0 Phase 1a）：复用 write_file 工具同一权限链（plan 只读门禁/审批事件），不落盘消息。
+  // 与 shell 不同步返回结果：前端需要保存成功/失败的明确反馈；审批挂起期间请求保持打开，respond 后完成。
+  app.put<{ Params: { id: string }; Body: { path?: string; content?: string } }>(
+    "/api/sessions/:id/files/content",
+    async (request, reply) => {
+      const session = await sessions.get(request.params.id);
+      if (!session) return reply.code(404).send({ error: "Session not found" });
+      const path = request.body?.path;
+      const content = request.body?.content;
+      if (typeof path !== "string" || path.trim() === "" || typeof content !== "string") return reply.code(400).send({ error: "path and content are required" });
+      if (agent.isRunning(request.params.id)) return reply.code(409).send({ error: "Session agent is running; wait for it to finish before saving files" });
+      if (managedSyncingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace sync is in progress" });
+      if (managedCheckpointingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace checkpoint is in progress" });
+      if (isShellPending(request.params.id)) return reply.code(409).send({ error: "A shell command is already pending; respond to its permission request first" });
+      const releaseWorkspace = acquireManagedWorkspaceUse(session);
+      if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
+      try {
+        await agent.writeWorkspaceFile(request.params.id, path, content);
+        return { ok: true };
+      } catch (error) {
+        if (error instanceof WorkspaceWriteDeniedError) return reply.code(403).send({ error: error.message });
+        return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      } finally {
+        releaseWorkspace();
+      }
     },
   );
 

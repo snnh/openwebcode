@@ -1,5 +1,6 @@
 import type { EffortLevel, ThinkingMode } from "../context/model-profile.js";
 import type { ChatMessage } from "../sessions/types.js";
+import { ConcurrencyLimitedProvider, type ProviderConcurrencyStats } from "./concurrency-limiter.js";
 
 export interface ProviderTool {
   name: string;
@@ -43,20 +44,33 @@ export type ProviderEvent =
 export interface Provider {
   readonly name: string;
   /** 显式 prompt cache 断点是否启用；undefined 表示该 Provider 无显式断点能力（如自动缓存）。 */
-  readonly promptCaching?: boolean;
+  readonly promptCaching?: boolean | undefined;
   streamChat(request: StreamChatRequest): AsyncIterable<ProviderEvent>;
 }
 
 export class ProviderRegistry {
   private readonly providers = new Map<string, Provider>();
+  /** 0.5.0 Phase 2：并发限制包装器（用于诊断） */
+  private readonly limiters = new Map<string, ConcurrencyLimitedProvider>();
 
-  register(provider: Provider): void {
+  /**
+   * Register a provider.
+   * @param maxConcurrent 0.5.0 Phase 2: per-provider 并发上限（默认 3）；超出排队等待。
+   */
+  register(provider: Provider, maxConcurrent?: number): void {
     if (this.providers.has(provider.name)) throw new Error(`Provider ${provider.name} is already registered`);
-    this.providers.set(provider.name, provider);
+    if (maxConcurrent !== undefined && maxConcurrent > 0) {
+      const limited = new ConcurrencyLimitedProvider(provider, maxConcurrent);
+      this.limiters.set(provider.name, limited);
+      this.providers.set(provider.name, limited);
+    } else {
+      this.providers.set(provider.name, provider);
+    }
   }
 
   unregister(name: string): void {
     this.providers.delete(name);
+    this.limiters.delete(name);
   }
 
   get(name: string): Provider | undefined {
@@ -65,5 +79,14 @@ export class ProviderRegistry {
 
   list(): string[] {
     return [...this.providers.keys()].sort();
+  }
+
+  /** 0.5.0 Phase 2：per-provider 并发与队列深度诊断 */
+  concurrencyStats(): Record<string, ProviderConcurrencyStats> {
+    const result: Record<string, ProviderConcurrencyStats> = {};
+    for (const [name, limiter] of this.limiters) {
+      result[name] = limiter.getStats();
+    }
+    return result;
   }
 }

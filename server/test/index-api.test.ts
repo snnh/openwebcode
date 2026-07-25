@@ -118,6 +118,15 @@ describe("索引 REST 契约（§7.2）", () => {
     // limit 非法 → 400
     expect((await app.inject({ method: "GET", url: `/api/workspaces/symbols?sessionId=${session.id}&q=x&limit=abc` })).statusCode).toBe(400);
 
+    // file 参数（编辑器面包屑，0.5.0 Phase 1a）：按文件精确取符号，前导 ./ 归一
+    const byFile = await app.inject({ method: "GET", url: `/api/workspaces/symbols?sessionId=${session.id}&file=${encodeURIComponent("./src/util.ts")}` });
+    expect(byFile.statusCode).toBe(200);
+    expect(byFile.json().symbols).toHaveLength(1);
+    expect(byFile.json().symbols[0]).toMatchObject({ name: "getTopSymbols", kind: "function", path: "src/util.ts", startLine: 1 });
+    const wrongFile = await app.inject({ method: "GET", url: `/api/workspaces/symbols?sessionId=${session.id}&file=src/other.ts` });
+    expect(wrongFile.statusCode).toBe(200);
+    expect(wrongFile.json().symbols).toEqual([]);
+
     // files 端点：索引文件清单搜索（@ 补全数据源，§5.2）
     const files = await app.inject({ method: "GET", url: `/api/workspaces/files?sessionId=${session.id}&q=util` });
     expect(files.statusCode).toBe(200);

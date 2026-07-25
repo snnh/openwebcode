@@ -131,4 +131,91 @@ describe.skipIf(!existsSync(corePath))("CoreClient", () => {
     expect(entries[1].sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(entries[1].modifiedMs).toBeGreaterThan(0);
   }, 30_000);
+
+  /** 0.5.0 Phase 2c：通过真实 CoreClient 驱动 startGrepJob/startGlobJob（Node->core 真链路）。 */
+  it("runs grep/glob jobs through the real core with determinism, budgets and cancellation", async () => {
+    client = new CoreClient(corePath);
+    const info = await client.start();
+    expect(info.features?.grepJob).toBe(true);
+    expect(info.features?.globJob).toBe(true);
+
+    const workspace = mkdtempSync(path.join(tmpdir(), "owc-search-job-"));
+    mkdirSync(path.join(workspace, "src"));
+    writeFileSync(path.join(workspace, "src", "main.ts"), "export const main = 1;\nconst beta = 2;\n");
+    writeFileSync(path.join(workspace, "src", "util.ts"), "export const util = 2;\nconst beta = 3;\n");
+    writeFileSync(path.join(workspace, "docs.md"), "# guide\nbeta reference\n");
+    await client.configureSession({
+      sessionId: "search-session",
+      cwd: workspace,
+      sandbox: { enabled: false, readRoots: [workspace], writeRoots: [workspace], denyPaths: [], network: "allow" },
+    });
+
+    const drain = async (jobId: string): Promise<{ lines: unknown[]; summary: { truncated: boolean; reason: string | null } }> => {
+      let status = await client!.jobStatus({ sessionId: "search-session", jobId });
+      for (let attempt = 0; status.state === "running" && attempt < 200; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        status = await client!.jobStatus({ sessionId: "search-session", jobId });
+      }
+      expect(status.state).toBe("completed");
+      const chunks: string[] = [];
+      let afterSeq = 0;
+      for (;;) {
+        const page = await client!.jobOutput({ sessionId: "search-session", jobId, afterSeq, limit: 64 });
+        chunks.push(...page.chunks.map((chunk) => Buffer.from(chunk.data, "base64").toString("utf8")));
+        if (page.nextSeq === afterSeq) break;
+        afterSeq = page.nextSeq;
+      }
+      const parsed = chunks.join("").trim().split("\n").map((line) => JSON.parse(line));
+      const summary = parsed.pop() as { summary: { truncated: boolean; reason: string | null } };
+      return { lines: parsed, summary: summary.summary };
+    };
+
+    // grep: 找到 beta 全部匹配，按 path/line 排序
+    await client.startGrepJob({
+      sessionId: "search-session", jobId: "grep-1", kind: "grep", cwd: workspace, path: ".", pattern: "beta",
+    });
+    const first = await drain("grep-1");
+    const keys = (first.lines as Array<{ path: string; line: number }>).map((m) => [m.path, m.line]);
+    expect(keys).toEqual([...keys].sort());
+    expect(first.summary.truncated).toBe(false);
+    expect((first.lines as Array<{ path: string }>).some((m) => m.path === "src/main.ts")).toBe(true);
+
+    // 确定性：第二次 grep 结果完全一致
+    await client.startGrepJob({
+      sessionId: "search-session", jobId: "grep-2", kind: "grep", cwd: workspace, path: ".", pattern: "beta",
+    });
+    const again = await drain("grep-2");
+    expect(again.lines).toEqual(first.lines);
+    expect(again.summary).toEqual(first.summary);
+
+    // glob: 匹配 .ts 路径，排序
+    await client.startGlobJob({
+      sessionId: "search-session", jobId: "glob-1", kind: "glob", cwd: workspace, path: ".", pattern: "*.ts",
+    });
+    const glob = await drain("glob-1");
+    const paths = (glob.lines as Array<{ path: string }>).map((e) => e.path);
+    expect(paths).toEqual(["src/main.ts", "src/util.ts"]);
+    expect(glob.summary.truncated).toBe(false);
+
+    // 预算截断：maxNodes=1 必定截断
+    await client.startGlobJob({
+      sessionId: "search-session", jobId: "glob-budget", kind: "glob", cwd: workspace, path: ".", pattern: "*", maxNodes: 1,
+    });
+    const budget = await drain("glob-budget");
+    expect(budget.summary.truncated).toBe(true);
+    expect(budget.summary.reason).toBe("nodes");
+
+    // 取消语义：cancelJob 可取消一个运行中的 job
+    await client.startGrepJob({
+      sessionId: "search-session", jobId: "grep-cancel", kind: "grep", cwd: workspace, path: ".", pattern: "beta",
+    });
+    const cancelled = await client.cancelJob({ sessionId: "search-session", jobId: "grep-cancel" });
+    expect(cancelled).toEqual({ jobId: "grep-cancel", accepted: true });
+    let status = await client.jobStatus({ sessionId: "search-session", jobId: "grep-cancel" });
+    for (let attempt = 0; status.state === "running" && attempt < 100; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      status = await client.jobStatus({ sessionId: "search-session", jobId: "grep-cancel" });
+    }
+    expect(status.state).toBe("cancelled");
+  }, 30_000);
 });

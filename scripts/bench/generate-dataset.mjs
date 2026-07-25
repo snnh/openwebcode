@@ -1,7 +1,8 @@
-// 固定数据集生成器：长历史会话（5000 消息 / 1000 工具块）。
+// 固定数据集生成器：长历史会话（5000 消息 / 1000 工具块）+ 多工具回合（50 tool_call）。
 // 内容全部由固定 seed 的 PRNG 生成，跨机器逐字节可重复。
 // 用法：server/node_modules/.bin/tsx scripts/bench/generate-dataset.mjs
 // 输出：scripts/bench/data/long-history/.sessions/<id>/{meta.json,messages.jsonl}（已 gitignore）
+//       scripts/bench/data/multi-tool/events.json（已 gitignore）
 
 import { mkdir, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
@@ -83,4 +84,34 @@ async function main() {
   console.log(`  消息 ${MESSAGE_COUNT} 条，工具块 ${toolBlocks} 个，messages.jsonl ${(bytes / 1024 / 1024).toFixed(2)} MiB`);
 }
 
+/** 多工具回合数据集：50 个 tool_call + 50 个 tool_result，模拟单次 agent run 的工具密集场景。 */
+async function generateMultiTool(rng) {
+  const outDir = path.join(DATA_DIR, "multi-tool");
+  await mkdir(outDir, { recursive: true });
+  const TOOL_COUNT = 50;
+  const events = [];
+  for (let i = 0; i < TOOL_COUNT; i++) {
+    events.push({
+      type: "tool_call",
+      payload: {
+        id: `call_mt_${i}`,
+        name: ["read_file", "write_file", "bash", "search", "list_dir"][i % 5],
+        input: { path: `src/module-${i}/file-${i}.ts`, content: pseudoText(rng, 300 + Math.floor(rng() * 700)) },
+      },
+    });
+    events.push({
+      type: "tool_result",
+      payload: {
+        toolCallId: `call_mt_${i}`,
+        content: pseudoText(rng, 800 + Math.floor(rng() * 2000)),
+        isError: rng() < 0.05,
+      },
+    });
+  }
+  await writeFile(path.join(outDir, "events.json"), JSON.stringify(events, null, 2) + "\n", "utf8");
+  console.log(`多工具数据集已生成：${path.relative(process.cwd(), outDir)}/events.json`);
+  console.log(`  tool_call ${TOOL_COUNT} 个，tool_result ${TOOL_COUNT} 个，共 ${events.length} 事件`);
+}
+
 await main();
+await generateMultiTool(mulberry32((SEED + 1) >>> 0));

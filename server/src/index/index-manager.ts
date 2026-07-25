@@ -558,6 +558,19 @@ export class IndexManager {
     return hits.slice(0, limit).map((entry) => entry.hit);
   }
 
+  /** 编辑器面包屑供数（0.5.0 Phase 1a）：按文件精确取符号（路径分隔符与前导 ./ 归一后比较），按行号排序。 */
+  async symbolsInFile(cwd: string, filePath: string): Promise<SymbolSearchHit[]> {
+    const loaded = await this.requireIndex(cwd);
+    const wanted = normalizeLookupPath(filePath);
+    for (const [path, symbols] of loaded.symbols) {
+      if (normalizeLookupPath(path) !== wanted) continue;
+      return [...symbols]
+        .sort((a, b) => a.startLine - b.startLine || a.name.localeCompare(b.name))
+        .map((symbol) => ({ name: symbol.name, kind: symbol.kind, path, startLine: symbol.startLine, endLine: symbol.endLine, signature: symbol.signature }));
+    }
+    return [];
+  }
+
   /** @ 文件补全供数：索引文件清单按路径模糊匹配（评分与 searchSymbols 同族）。 */
   async searchFiles(cwd: string, query: string, options: { limit?: number } = {}): Promise<FileSearchHit[]> {
     const loaded = await this.requireIndex(cwd);
@@ -601,6 +614,11 @@ export class IndexManager {
 function basenameOf(filePath: string): string {
   const normalized = filePath.replace(/\\/g, "/");
   return normalized.slice(normalized.lastIndexOf("/") + 1);
+}
+
+/** 按文件查符号的路径归一：统一分隔符、去前导 ./（索引键与编辑器相对路径对齐）。 */
+function normalizeLookupPath(filePath: string): string {
+  return filePath.replace(/\\/g, "/").replace(/^\.\//, "");
 }
 
 /**

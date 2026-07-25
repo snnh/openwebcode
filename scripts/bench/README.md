@@ -1,7 +1,8 @@
 # OpenWebCode 基准体系（scripts/bench）
 
 0.4.x 计划 §5.4 的可重复基准。目标：用固定数据集、固定参数把关键性能路径量化成
-机器可读的 JSON，让"回归 > 15%"有据可查。当前为 Phase 0 首批，**不接 CI**。
+机器可读的 JSON，让“回归 > 15%”有据可查。已在 `release.yml` 的 benchmark job 中接入 CI
+（首版 continue-on-error 报警，两个版本后转硬门槛）。
 
 ## 跑法
 
@@ -21,6 +22,15 @@ $TSX scripts/bench/bench-long-stream.mjs
 
 # 3. 慢 WS 客户端背压（慢客户端断连 + 正常客户端不受影响）
 $TSX scripts/bench/bench-slow-client.mjs
+
+# 4. 多工具回合（50 tool_call + 50 tool_result 事件流）
+$TSX scripts/bench/bench-multi-tool.mjs
+
+# 5. 上下文构建稳态（全量 vs 增量 buildView，验收 speedup >= 2x）
+$TSX scripts/bench/bench-context-build.mjs
+
+# 6. 浏览器渲染（Playwright，需先 npm run build --prefix web && npx playwright install chromium）
+$TSX scripts/bench/browser/bench-browser-render.mjs
 
 # 对比两份结果（回归 > 15% 标红、退出码 1）
 $TSX scripts/bench/compare.mjs <baseline.json> <candidate.json>
@@ -63,6 +73,9 @@ $TSX scripts/bench/compare.mjs results/baseline.json results/long-history.json
 | 长历史会话 | `bench-long-history.mjs` | `SessionStore.get()/list()` 真实加载 5000 消息数据集 | 加载耗时 p50/p95、堆内存增量 |
 | 长流式 | `bench-long-stream.mjs` | 真实 server + WS 客户端，~1 MiB/s 突发 `message.delta`，合批 16ms / 直发对照 | 端到端延迟 p50/p95、吞吐、服务端内存增量 |
 | 慢 WS 客户端 | `bench-slow-client.mjs` | 真实 server，慢客户端（socket pause）+ 正常客户端并发 | 慢客户端断连耗时/关闭码、正常客户端交付数/吞吐 |
+| 多工具回合 | `bench-multi-tool.mjs` | 真实 server + WS，50 tool_call + 50 tool_result 事件流 | 端到端延迟 p50/p95、事件吞吐 events/s、内存增量 |
+| 上下文构建稳态 | `bench-context-build.mjs` | ContextManager 全量 vs 增量 buildView（5000 消息数据集） | 全量/增量 p50/p95、加速比、命中率 |
+| 浏览器渲染 | `browser/bench-browser-render.mjs` | Playwright + 真实 server，5000 消息会话 | 滚动 fps、输入回显延迟、内存增长 |
 
 设计约束：
 
@@ -83,11 +96,12 @@ $TSX scripts/bench/compare.mjs results/baseline.json results/long-history.json
 
 ## 后续场景 TODO（§5.4 全量清单）
 
-- [ ] 多工具回合（50 工具/run）：需构造含 50 个 tool_call 的 run 事件流，测渲染/事件路径
+- [x] 多工具回合（50 工具/run）：`bench-multi-tool.mjs`，测事件路径端到端延迟与吞吐
 - [ ] 大仓库索引与补全（10 万文件）：需固定文件树生成器 + 索引/补全入口基准
-- [ ] 上下文构建稳态耗时：需固定会话 + context 构建入口的稳态（非首包）耗时
-- [ ] CI 接入：release 流程跑基准并归档结果，回归 > 15% 先报警、两个版本后转硬门槛
-- [ ] 诊断页接入：turn 各阶段耗时 / 事件吞吐 / 渲染帧率采样（脱敏）
+- [x] 上下文构建稳态耗时：`bench-context-build.mjs`，全量 vs 增量 buildView 对比，验收加速比 >= 2.0x
+- [x] 浏览器渲染基准：`browser/bench-browser-render.mjs`，Playwright 真实浏览器三项指标
+- [x] CI 接入：release 流程跑基准并归档结果，回归 > 15% 先报警、两个版本后转硬门槛
+- [x] 诊断页接入：turn 各阶段耗时 / 事件吞吐 / 渲染帧率采样（脱敏）
 
 扩展方式：新场景加 `bench-<name>.mjs`（复用 `lib/common.mjs` 的
 `startBenchServer` / `writeResult`），需要新数据集就在 `generate-dataset.mjs`

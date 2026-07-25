@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { isCheckpoint, type Checkpoint, type SnapshotBackend } from "./backend.js";
+import { isCheckpoint, truncateLines, type Checkpoint, type SnapshotBackend } from "./backend.js";
 
 export type { Checkpoint } from "./backend.js";
 
@@ -61,7 +61,11 @@ export class GitShadowSnapshots implements SnapshotBackend {
 
   async diff(id: string): Promise<string> {
     validateId(id);
-    return this.git(["diff", "--stat", id]);
+    // 0.5.0 Phase 1b：stat 摘要之后附完整 unified diff（有界截断），
+    // 供 Web 统一 diff 视图做 hunk 解析与"恢复到此 hunk"；其他后端仍只给摘要文本。
+    const stat = await this.git(["diff", "--stat", id]);
+    const full = await this.git(["diff", id]);
+    return truncateLines(`${stat.trimEnd()}\n\n${full}`.trim(), 4000);
   }
 
   async restore(id: string): Promise<void> {
