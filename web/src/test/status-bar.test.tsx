@@ -16,4 +16,14 @@ describe("StatusBar", () => {
     expect(screen.getByLabelText("Session status")).toHaveTextContent("Waiting for approval");
     expect(screen.getByLabelText("Session status")).toHaveTextContent("1,234 tokens");
   });
+
+  it("shows the symbol index status when provided (Phase 2)", () => {
+    render(<I18nProvider><StatusBar session={session} indexStatus="stale" /></I18nProvider>);
+    expect(screen.getByTestId("index-status")).toHaveTextContent("Index:stale");
+  });
+
+  it("hides the index status entry when the server has no index support", () => {
+    render(<I18nProvider><StatusBar session={session} /></I18nProvider>);
+    expect(screen.queryByTestId("index-status")).toBeNull();
+  });
 });

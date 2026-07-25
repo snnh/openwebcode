@@ -24,9 +24,12 @@ export function extractAttachmentPaths(text: string): string[] {
     if (pdfPathRanges.some((range) => start >= range.start && start < range.end)) continue;
     const raw = match[1];
     if (!raw) continue;
-    if (seen.has(raw)) continue;
-    seen.add(raw);
-    paths.push(raw);
+    // 符号补全插入 `@路径:行号`；行号只是定位信息，附件注入仍以文件路径为准
+    const cleaned = raw.replace(/:\d+$/, "");
+    if (!cleaned) continue;
+    if (seen.has(cleaned)) continue;
+    seen.add(cleaned);
+    paths.push(cleaned);
   }
   return paths;
 }

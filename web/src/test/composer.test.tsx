@@ -108,8 +108,43 @@ function renderComposer(options: Parameters<typeof Harness>[0]): { textarea: HTM
   return { textarea: screen.getByRole("combobox", { name: /消息输入框/ }) as HTMLTextAreaElement, onSend };
 }
 
+/**
+ * 路由式 fetch stub：@ 补全优先走索引端点（/api/workspaces/files、symbols），
+ * 409/501 回退 complete-path。保持旧签名语义：status!==200 时索引端点也按该状态响应，
+ * body.matches 自动映射为索引 files 响应，便于既有用例复用。
+ */
+function respond(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+}
+
 function stubCompletePath(body: unknown, status = 200): void {
-  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })));
+  stubMentionApi({
+    files: status === 200 && body && typeof body === "object" && "matches" in body
+      ? { files: (body as { matches: Array<{ path: string }> }).matches.map((m) => ({ path: m.path, modifiedMs: 0 })), indexStatus: "fresh" }
+      : body,
+    filesStatus: status,
+    fallback: body,
+    fallbackStatus: status,
+  });
+}
+
+function stubMentionApi(options: {
+  files?: unknown;
+  filesStatus?: number;
+  symbols?: unknown;
+  symbolsStatus?: number;
+  fallback?: unknown;
+  fallbackStatus?: number;
+  onFetch?: (url: string) => void;
+}): void {
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    options.onFetch?.(url);
+    if (url.includes("/api/workspaces/files")) return respond(options.files ?? { files: [], indexStatus: "fresh" }, options.filesStatus ?? 200);
+    if (url.includes("/api/workspaces/symbols")) return respond(options.symbols ?? { symbols: [], indexStatus: "fresh" }, options.symbolsStatus ?? 200);
+    if (url.includes("/complete-path")) return respond(options.fallback ?? { matches: [] }, options.fallbackStatus ?? 200);
+    return respond({}, 404);
+  }));
 }
 
 describe("Composer", () => {
@@ -352,6 +387,63 @@ describe("Composer", () => {
     fireEvent.keyDown(textarea, { key: "Enter" });
     expect(onSend).not.toHaveBeenCalled();
     expect(textarea.value).toBe("@src/b.ts ");
+  });
+
+  it("mention 索引命中：符号条目显示 kind 与位置，选中插入 @路径:行号", async () => {
+    stubMentionApi({
+      files: { files: [{ path: "src/util.ts", modifiedMs: 0 }], indexStatus: "fresh" },
+      symbols: { symbols: [{ name: "getTopSymbols", kind: "function", path: "src/util.ts", startLine: 3, endLine: 5, signature: "" }], indexStatus: "fresh" },
+    });
+    const { textarea, onSend } = renderComposer({ onSend: vi.fn() });
+    fireEvent.change(textarea, { target: { value: "@util" } });
+    expect(await screen.findByText("getTopSymbols")).toBeInTheDocument();
+    expect(screen.getByText("function")).toBeInTheDocument();
+    expect(screen.getByText("src/util.ts:3")).toBeInTheDocument();
+    // 文件在前、符号在后：移到符号条目后 Enter 选中
+    fireEvent.keyDown(textarea, { key: "ArrowDown" });
+    expect(textarea.getAttribute("aria-activedescendant")).toBe("mention-option-1");
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(onSend).not.toHaveBeenCalled();
+    expect(textarea.value).toBe("@src/util.ts:3 ");
+  });
+
+  it("mention 索引 409 时回退 complete-path 并给出状态提示", async () => {
+    stubMentionApi({
+      files: { error: "Symbol index has not been built", code: "INDEX_UNAVAILABLE" },
+      filesStatus: 409,
+      fallback: { matches: [{ path: "src/live.ts" }] },
+    });
+    const { textarea } = renderComposer({ onSend: vi.fn() });
+    fireEvent.change(textarea, { target: { value: "@live" } });
+    expect(await screen.findByText("src/live.ts")).toBeInTheDocument();
+    expect(screen.getByText(/索引未建或不可用/)).toBeInTheDocument();
+  });
+
+  it("mention 索引滞后时提示结果可能不是最新", async () => {
+    stubMentionApi({
+      files: { files: [{ path: "src/stale.ts", modifiedMs: 0 }], indexStatus: "stale" },
+    });
+    const { textarea } = renderComposer({ onSend: vi.fn() });
+    fireEvent.change(textarea, { target: { value: "@stale" } });
+    expect(await screen.findByText("src/stale.ts")).toBeInTheDocument();
+    expect(screen.getByText(/索引滞后/)).toBeInTheDocument();
+  });
+
+  it("mention 防抖：快速连续输入只发最后一次索引请求", async () => {
+    vi.useFakeTimers();
+    try {
+      const calls: string[] = [];
+      stubMentionApi({ onFetch: (url) => calls.push(url) });
+      const { textarea } = renderComposer({ onSend: vi.fn() });
+      fireEvent.change(textarea, { target: { value: "@a" } });
+      fireEvent.change(textarea, { target: { value: "@ab" } });
+      await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+      const fileCalls = calls.filter((url) => url.includes("/api/workspaces/files"));
+      expect(fileCalls).toHaveLength(1);
+      expect(fileCalls[0]).toContain("q=ab");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("技能补全弹层接线：combobox 语义、方向键与 Enter 选中", () => {

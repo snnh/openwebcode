@@ -35,9 +35,16 @@ describe("ModelCatalogSection capabilities", () => {
     vi.restoreAllMocks();
   });
 
-  it("shows image/video input and image output badges, then persists capabilities", async () => {
+  // ModelCatalogSection 还会查询 provider-profiles（编辑表单的可用服务商列表），
+  // 不 mock 会打到真实 fetch，其时序依赖环境，曾导致 waitFor 偶发超时。
+  function mockProfileQueries(): void {
     vi.spyOn(api, "models").mockResolvedValue([multimodalModel]);
     vi.spyOn(api, "modelSyncStatus").mockResolvedValue({ count: 0 });
+    vi.spyOn(api, "providerProfiles").mockResolvedValue({ modelProviders: [], webProviders: [], activeWeb: {} });
+  }
+
+  it("shows image/video input and image output badges, then persists capabilities", async () => {
+    mockProfileQueries();
     const save = vi.spyOn(api, "saveModel").mockResolvedValue(multimodalModel);
     const view = renderCatalog();
 
@@ -63,8 +70,7 @@ describe("ModelCatalogSection capabilities", () => {
   });
 
   it("runs remote catalog sync and displays its result", async () => {
-    vi.spyOn(api, "models").mockResolvedValue([multimodalModel]);
-    vi.spyOn(api, "modelSyncStatus").mockResolvedValue({ count: 0 });
+    mockProfileQueries();
     const sync = vi.spyOn(api, "syncModels").mockResolvedValue({
       ok: true,
       count: 2,
@@ -84,6 +90,7 @@ describe("ModelCatalogSection capabilities", () => {
       count: 2,
       updatedAt: "2026-07-21T00:00:00.000Z",
     });
+    vi.spyOn(api, "providerProfiles").mockResolvedValue({ modelProviders: [], webProviders: [], activeWeb: {} });
     const view = renderCatalog();
 
     expect(await view.findByText(/上次同步：/)).toHaveTextContent("2 个远程模型");

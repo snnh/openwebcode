@@ -300,6 +300,84 @@ export interface FileEntry {
   size: number;
 }
 
+/** 单条诊断失败项（DiagnosticSet.failures 元素）；file/line 缺失表示无法定位到文件 */
+export interface DiagnosticFailure {
+  name: string;
+  file?: string;
+  line?: number;
+  column?: number;
+  message: string;
+  excerpt?: string;
+}
+
+/** 一次诊断运行的汇总（test_runner 等工具产出） */
+export interface DiagnosticSet {
+  tool: string;
+  summary: { passed: number; failed: number; skipped: number; durationMs: number };
+  failures: DiagnosticFailure[];
+}
+
+/** WS 事件 diagnostics.updated 的 payload：携带 runId 与汇总，客户端收到后重新拉取 latest */
+export interface DiagnosticsUpdatedEvent {
+  sessionId: string;
+  runId?: string;
+  summary?: { failed?: number };
+}
+
+// ---- SCM（Phase 4）：GET /api/sessions/:id/git/* 的契约（与 server/src/scm/types.ts 对齐） ----
+
+/** 单条变更条目（porcelain v1 解析结果）：path + XY 状态码（如 "M "、" M"、"A "、"??"），rename 带 originalPath */
+export interface ScmStatusEntry {
+  path: string;
+  code: string;
+  originalPath?: string;
+}
+
+/** GET /api/sessions/:id/git/status 的响应；非 git 仓库时 isRepo=false 且分支等字段缺省 */
+export interface ScmStatus {
+  isRepo: boolean;
+  branch?: string;
+  upstream?: string;
+  ahead?: number;
+  behind?: number;
+  staged: ScmStatusEntry[];
+  unstaged: ScmStatusEntry[];
+  untracked: ScmStatusEntry[];
+  /** 分组截断后仍保留真实总数 */
+  totals: { staged: number; unstaged: number; untracked: number };
+  /** 任一分组因有界输出被截断 */
+  truncated: boolean;
+}
+
+/** GET /api/sessions/:id/git/diff 的响应；truncated 时只有 stat，完整 diff 落 artifact（artifactId 可经 read_artifact 续读） */
+export interface ScmDiff {
+  isRepo: boolean;
+  /** git diff --stat 输出（可能为空字符串表示无变更） */
+  stat: string;
+  /** 未超阈值时的完整 unified diff 文本 */
+  diff?: string;
+  artifactId?: string;
+  /** 完整 diff 字节数 */
+  totalBytes: number;
+  truncated: boolean;
+}
+
+/** worktree 条目：name 为注册名（也是 DELETE 路由参数），exists 为 list 时的磁盘探测结果 */
+export interface ScmWorktree {
+  name: string;
+  path: string;
+  branch: string;
+  createdAt: string;
+  exists: boolean;
+}
+
+/** WS 事件 scm.updated 的 payload（reason 如 worktree.create，附带 detail 字段）；收到后刷新该会话的 SCM 状态 */
+export interface ScmUpdatedEvent {
+  sessionId: string;
+  reason: string;
+  [key: string]: unknown;
+}
+
 export type SettingFieldType = "text" | "secret" | "number" | "boolean" | "select" | "pathList";
 export type SettingValue = string | number | boolean | string[];
 
@@ -409,4 +487,43 @@ export interface MessageAttachment {
 /** GET /api/sessions/:id/complete-path 响应：core.globFiles（模式 *q*）截断至 20 条 */
 export interface CompletePathResponse {
   matches: Array<{ path: string }>;
+}
+
+/** GET /api/workspaces/files 响应（0.4.0 Phase 2 §5.2）：索引文件清单搜索 */
+export interface WorkspaceFileHit {
+  path: string;
+  modifiedMs: number;
+}
+export interface WorkspaceFilesResponse {
+  files: WorkspaceFileHit[];
+  indexStatus: WorkspaceIndexState;
+}
+
+/** GET /api/workspaces/symbols 响应：索引符号模糊搜索 */
+export interface WorkspaceSymbolHit {
+  name: string;
+  kind: string;
+  path: string;
+  startLine: number;
+  endLine: number;
+  signature: string;
+}
+export interface WorkspaceSymbolsResponse {
+  symbols: WorkspaceSymbolHit[];
+  indexStatus: WorkspaceIndexState;
+}
+
+/** GET /api/workspaces/index/status 响应（0.4.0 Phase 2 §7.2） */
+export type WorkspaceIndexState = "fresh" | "stale" | "building" | "missing";
+export interface WorkspaceIndexStatus {
+  status: WorkspaceIndexState;
+  workspace: string;
+  files: number;
+  symbols: number;
+  lastScanAt?: number;
+  scanTruncated?: boolean;
+  staleReason?: "watch" | "mtime" | "corrupt" | "cancelled" | "error";
+  watch: "active" | "fallback" | "none";
+  jobId?: string;
+  message?: string;
 }

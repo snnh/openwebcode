@@ -8,6 +8,8 @@ import { ModelCapabilityBadges } from "./ModelCapabilityBadges";
 import type { SendKey, SessionDefaults } from "../lib/prefs";
 import type { ThemePreference, AccentPreference } from "../theme";
 import { useI18n, type Language } from "../i18n";
+import { DEFAULT_KEYBINDINGS, formatCombo, isMacPlatform } from "../commands/keybindings";
+import { getCommand } from "../commands/registry";
 
 const THEME_OPTIONS: Array<{ value: ThemePreference; zh: string; en: string }> = [
   { value: "light", zh: "浅色", en: "Light" },
@@ -24,13 +26,15 @@ const ACCENT_OPTIONS: Array<{ value: AccentPreference; zh: string; en: string; s
   { value: "green", zh: "绿", en: "Green", swatch: "#2f9e44" },
 ];
 
-type SettingsTab = "appearance" | "general" | "defaults" | "server" | "models" | "skills" | "extensions" | "pricing" | "info";
+type SettingsTab = "appearance" | "general" | "defaults" | "shortcuts" | "server" | "remote" | "models" | "skills" | "extensions" | "pricing" | "info";
 
 const TAB_META: Array<{ id: SettingsTab; zh: string; en: string }> = [
   { id: "appearance", zh: "外观", en: "Appearance" },
   { id: "general", zh: "通用", en: "General" },
   { id: "defaults", zh: "会话默认", en: "Session defaults" },
+  { id: "shortcuts", zh: "快捷键", en: "Shortcuts" },
   { id: "server", zh: "服务设置", en: "Server" },
+  { id: "remote", zh: "远程访问", en: "Remote access" },
   { id: "models", zh: "模型目录", en: "Models" },
   { id: "skills", zh: "技能", en: "Skills" },
   { id: "extensions", zh: "扩展", en: "Extensions" },
@@ -1111,6 +1115,73 @@ export function ModelCatalogSection(): ReactElement {
   );
 }
 
+/**
+ * 快捷键分区（0.4.0 Phase 5b）：如实列出默认键位集与命令标题（与速查表同源）。
+ * 0.4.0 不支持自定义键位，仅展示。
+ */
+export function ShortcutsSection(): ReactElement {
+  const { t } = useI18n();
+  const isMac = isMacPlatform();
+  return (
+    <>
+      <p className="settings-note">{t("默认键位集（暂不支持自定义）。mod 在 Windows/Linux 为 Ctrl，macOS 为 Cmd。", "Default keybindings (customization is not supported yet). mod is Ctrl on Windows/Linux and Cmd on macOS.")}</p>
+      <table className="shortcuts-table">
+        <tbody>
+          {DEFAULT_KEYBINDINGS.map((binding) => {
+            const command = getCommand(binding.command);
+            return (
+              <tr key={`${binding.command}-${binding.key}`}>
+                <td>{command ? t(command.title.zh, command.title.en) : binding.command}</td>
+                <td><kbd>{formatCombo(binding.key, isMac)}</kbd></td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </>
+  );
+}
+
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+
+/**
+ * 远程访问分区（0.4.0 Phase 5b §6.8）：展示监听地址与 token 认证配置状态，
+ * 非回环监听时持续展示风险提示。只读展示；修改仍在“服务设置”分区（host/port）或服务端环境变量。
+ */
+export function RemoteAccessSection(): ReactElement {
+  const { t } = useI18n();
+  const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
+  if (settings.isPending) return <p className="panel-empty">{t("加载中…", "Loading…")}</p>;
+  if (settings.isError || !settings.data) return <p className="panel-empty">{t("无法加载服务设置。", "Could not load server settings.")}</p>;
+  const service = settings.data.groups.find((group) => group.id === "service");
+  const hostField = service?.fields.find((field) => field.key === "host");
+  const portField = service?.fields.find((field) => field.key === "port");
+  const host = String(hostField?.value ?? hostField?.masked ?? "127.0.0.1");
+  const loopback = LOOPBACK_HOSTS.has(host);
+  return (
+    <>
+      <dl className="server-info">
+        <dt>{t("监听地址", "Listen address")}</dt>
+        <dd className="mono">{host}{portField?.value != null ? `:${String(portField.value)}` : ""}</dd>
+        <dt>{t("访问范围", "Exposure")}</dt>
+        <dd>{loopback ? t("仅本机回环（默认，安全）", "Loopback only (default, safe)") : t("非回环监听：局域网/外部可达", "Non-loopback: reachable from the LAN/network")}</dd>
+        <dt>{t("Token 认证", "Token authentication")}</dt>
+        <dd>{t("由服务端 OWC_ACCESS_TOKEN 环境变量配置；非回环监听时必须设置（服务端强制，未设置会拒绝启动）。", "Configured via the server's OWC_ACCESS_TOKEN environment variable; required for non-loopback listeners (enforced by the server at startup).")}</dd>
+      </dl>
+      {!loopback && (
+        <p className="settings-error" role="alert">{t(
+          "风险：当前服务对网络可达。请确认已设置 OWC_ACCESS_TOKEN 与 OWC_ALLOWED_ORIGINS，且只在受信网络中暴露；任何人持有 token 即可操作你的会话与工具。",
+          "Risk: the server is reachable from the network. Make sure OWC_ACCESS_TOKEN and OWC_ALLOWED_ORIGINS are set and only expose it on trusted networks; anyone with the token can drive your sessions and tools.",
+        )}</p>
+      )}
+      <p className="settings-note">{t(
+        "移动端/局域网访问：将“服务设置”中的监听地址改为 0.0.0.0（需重启），并在服务端环境变量中配置 OWC_ACCESS_TOKEN（≥32 字符）与 OWC_ALLOWED_ORIGINS。浏览器首次用 ?token= 打开后会写入 HttpOnly Cookie。修改监听地址后重启服务生效。",
+        "Mobile/LAN access: set the listen address to 0.0.0.0 in Server settings (restart required), and configure OWC_ACCESS_TOKEN (at least 32 characters) plus OWC_ALLOWED_ORIGINS as server environment variables. Opening the page once with ?token= stores an HttpOnly cookie. Restart the server after changing the listen address.",
+      )}</p>
+    </>
+  );
+}
+
 function SkillsSection(): ReactElement {
   const { t } = useI18n();
   const skills = useQuery({ queryKey: ["global-skills"], queryFn: api.globalSkills });
@@ -1382,6 +1453,18 @@ export function SettingsDialog({ open, preference, setPreference, accent, setAcc
               <h3>{t("会话默认", "Session defaults")}</h3>
               <p className="settings-note">{t("新建会话时预填的取值，可在对话框中再改。", "These values prefill the new-session dialog and can still be changed there.")}</p>
               <DefaultsSection defaults={defaults} setDefaults={setDefaults} providers={providers} models={models} />
+            </section>
+          )}
+          {activeTab === "shortcuts" && (
+            <section>
+              <h3>{t("键盘快捷方式", "Keyboard Shortcuts")}</h3>
+              <ShortcutsSection />
+            </section>
+          )}
+          {activeTab === "remote" && (
+            <section>
+              <h3>{t("远程访问", "Remote access")}</h3>
+              <RemoteAccessSection />
             </section>
           )}
           {activeTab === "server" && (

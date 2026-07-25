@@ -1,14 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./lib/api";
 import { extractAttachmentPaths, toAttachments } from "./lib/attachments";
-import type { AppEvent, BackgroundTaskInfo, SessionDetail, TodoItem } from "./lib/contracts";
+import type { AppEvent, BackgroundTaskInfo, SessionDetail, TodoItem, WorkspaceIndexStatus } from "./lib/contracts";
 import { formatCurrency } from "./lib/format";
 import { loadSendKey, loadSessionDefaults, saveSendKey, saveSessionDefaults, type SendKey, type SessionDefaults } from "./lib/prefs";
 import { useTheme } from "./theme";
 import { useAgentRun } from "./hooks/use-agent-run";
 import { useSessionEventStream } from "./hooks/use-session-event-stream";
 import { useStreamBuffers } from "./hooks/use-stream-buffers";
+import { applyDiagnosticsBadgeUpdate, clearDiagnosticsBadge } from "./lib/diagnostics";
 import { BottomPanel } from "./components/BottomPanel";
 import { StatusBar } from "./components/StatusBar";
 import { InteractionCard } from "./components/InteractionCard";
@@ -19,29 +20,33 @@ import { ExecutionTrack } from "./components/ExecutionTrack";
 import { isBusyState, JobHeader } from "./components/JobHeader";
 import { NewSessionDialog, type NewSessionValues } from "./components/NewSessionDialog";
 import type { PermissionRequest } from "./components/PermissionCard";
-import { clampRailWidth, SessionRail } from "./components/SessionRail";
+import { SessionRail } from "./components/SessionRail";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { SteeringQueue } from "./components/SteeringQueue";
 import { Toast, type Notice } from "./components/Toast";
 import { useI18n } from "./i18n";
+import {
+  clearNotifications, markAllRead, markRead, pushNotification, removeNotification, unreadCount,
+  type AppNotification,
+} from "./lib/notifications";
+import { MOBILE_BREAKPOINT, useMediaQuery } from "./hooks/use-media-query";
+// 0.4.0 Phase 5a：五区布局与命令体系
+import { ActivityBar } from "./workbench/ActivityBar";
+import { SidebarPanel } from "./workbench/SidebarPanel";
+import { WorkbenchShell, CYCLE_ZONE_EVENT } from "./workbench/WorkbenchShell";
+import { LAYOUT_STORAGE_KEYS, useWorkbenchLayout, type SidebarView } from "./workbench/useWorkbenchLayout";
+import { registerBuiltinCommands, type CommandActions } from "./commands/builtin";
+import type { WhenContext } from "./commands/registry";
+import { useGlobalKeybindings } from "./commands/useKeybindings";
+
+// 覆盖层各自独立 chunk，仅打开时加载，不占入口体积
+const CommandPalette = lazy(() => import("./components/CommandPalette").then((m) => ({ default: m.CommandPalette })));
+const QuickOpen = lazy(() => import("./components/QuickOpen").then((m) => ({ default: m.QuickOpen })));
+const ShortcutsDialog = lazy(() => import("./components/ShortcutsDialog").then((m) => ({ default: m.ShortcutsDialog })));
+const CodeOverlay = lazy(() => import("./components/CodeOverlay").then((m) => ({ default: m.CodeOverlay })));
+const NotificationsOverlay = lazy(() => import("./components/NotificationsOverlay").then((m) => ({ default: m.NotificationsOverlay })));
 
 const queryKeys = { sessions: ["sessions"] as const, detail: (id: string) => ["session", id] as const, skills: (id: string) => ["skills", id] as const };
-
-function readStoredSetting(key: string): string | undefined {
-  try {
-    return window.localStorage.getItem(key) ?? undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function storeSetting(key: string, value: string): void {
-  try {
-    window.localStorage.setItem(key, value);
-  } catch {
-    // 持久化失败不影响使用
-  }
-}
 
 export function App(): ReactElement {
   const { t } = useI18n();
@@ -50,12 +55,20 @@ export function App(): ReactElement {
   const [currentId, setCurrentId] = useState<string>();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [railWidth, setRailWidth] = useState(() => clampRailWidth(Number(readStoredSetting("owc-rail-width")) || 250));
-  const [railCollapsed, setRailCollapsed] = useState(() => readStoredSetting("owc-rail-collapsed") === "1");
+  // 覆盖层（Phase 5a）：命令面板 / Quick Open / 快捷键速查 / 只读代码视图浮层
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [quickOpenOpen, setQuickOpenOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [codeOverlayPath, setCodeOverlayPath] = useState<string>();
+  // 通知中心（Phase 5b §6.6）：toast 与后台事件汇总为可回看列表
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  // 移动端（Phase 5b §6.8）：CSS 媒体查询为主判定，JS 仅做状态联动（选中会话收起抽屉）
+  const isMobile = useMediaQuery(MOBILE_BREAKPOINT);
+  const importInput = useRef<HTMLInputElement>(null);
+  const layout = useWorkbenchLayout();
   const [sendKey, setSendKeyState] = useState<SendKey>(loadSendKey);
   const [sessionDefaults, setSessionDefaultsState] = useState<SessionDefaults>(loadSessionDefaults);
-  useEffect(() => storeSetting("owc-rail-width", String(railWidth)), [railWidth]);
-  useEffect(() => storeSetting("owc-rail-collapsed", railCollapsed ? "1" : "0"), [railCollapsed]);
   const setSendKey = (value: SendKey): void => { setSendKeyState(value); saveSendKey(value); };
   const setSessionDefaults = (value: SessionDefaults): void => { setSessionDefaultsState(value); saveSessionDefaults(value); };
   // 草稿按会话保留，切换会话不丢
@@ -66,11 +79,22 @@ export function App(): ReactElement {
   const { stream, thinkingStream, queueDelta: queueStreamDelta, flush: flushStreamBuffers, finish: finishBufferedStreams, clear: clearStream, discard: discardStream } = useStreamBuffers();
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
   const [agentStates, setAgentStates] = useState<Record<string, string>>({});
+  // agent 完成检测（通知中心）：记录每个会话上一状态，busy→idle 视为一轮任务完成
+  const lastStatesRef = useRef<Record<string, string>>({});
   // agent.error 除了短暂 toast，也保留在当前会话的轨道中；下一次真正开始运行时再清除。
   const [runFailures, setRunFailures] = useState<Record<string, string>>({});
+  // Problems 视图角标：diagnostics.updated 到达时记录未查看失败数，打开 Problems 视图清除
+  const [problemsBadges, setProblemsBadges] = useState<Record<string, number>>({});
   const [notice, setNotice] = useState<Notice>();
-  // 失败类提示用 error（红色、role=alert），成功/进度类用 info
-  const notify = useCallback((text: string, kind: Notice["kind"] = "info"): void => setNotice({ kind, text }), []);
+  // 失败类提示用 error（红色、role=alert），成功/进度类用 info；同时汇入通知中心
+  const notify = useCallback((text: string, kind: Notice["kind"] = "info"): void => {
+    setNotice({ kind, text });
+    setNotifications((previous) => pushNotification(previous, { kind, text }));
+  }, []);
+  // 后台事件进通知流（可带跳转目标），不弹 toast 打扰
+  const pushEventNotification = useCallback((text: string, kind: AppNotification["kind"], target?: AppNotification["target"]): void => {
+    setNotifications((previous) => pushNotification(previous, { kind, text, ...(target ? { target } : {}) }));
+  }, []);
   const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: api.sessions });
   const detail = useQuery({ queryKey: queryKeys.detail(currentId ?? ""), queryFn: () => api.session(currentId!), enabled: Boolean(currentId) });
   const models = useQuery({ queryKey: ["models"], queryFn: api.models });
@@ -81,6 +105,8 @@ export function App(): ReactElement {
   const skills = useQuery({ queryKey: queryKeys.skills(currentId ?? ""), queryFn: () => api.skills(currentId!), enabled: Boolean(currentId) });
   const todos = useQuery({ queryKey: ["todos", currentId], queryFn: () => api.todos(currentId!), enabled: Boolean(currentId) });
   const extensions = useQuery({ queryKey: ["extensions"], queryFn: api.extensions });
+  // 符号索引状态（Phase 2）：server 未启用索引时 501，保持隐藏（retry:false）
+  const indexStatus = useQuery({ queryKey: ["index-status", currentId], queryFn: () => api.indexStatus(currentId!), enabled: Boolean(currentId), retry: false });
   // 待确认权限以服务端为准（刷新后可恢复），WS 事件只作即时补充
   const serverPermissions = useQuery({ queryKey: ["permissions", currentId], queryFn: () => api.pendingPermissions(currentId!), enabled: Boolean(currentId) });
   const { data: currentRun, applyEvent: applyRunEvent } = useAgentRun(currentId);
@@ -99,6 +125,9 @@ export function App(): ReactElement {
           queryClient.invalidateQueries({ queryKey: ["checkpoints", targetId] });
           queryClient.invalidateQueries({ queryKey: ["todos", targetId] });
           queryClient.invalidateQueries({ queryKey: ["tasks", targetId] });
+          queryClient.invalidateQueries({ queryKey: ["diagnostics", targetId] });
+          queryClient.invalidateQueries({ queryKey: ["scm-status", targetId] });
+          queryClient.invalidateQueries({ queryKey: ["scm-worktrees", targetId] });
           if (targetId) queryClient.invalidateQueries({ queryKey: ["run", targetId] });
           return;
         }
@@ -106,6 +135,15 @@ export function App(): ReactElement {
         if (event.type === "agent.state" && event.sessionId) {
           const state = (event.payload as { state?: string }).state;
           if (state) {
+            const previousState = lastStatesRef.current[event.sessionId];
+            lastStatesRef.current[event.sessionId] = state;
+            if (state === "idle" && previousState && isBusyState(previousState)) {
+              pushEventNotification(
+                t(`会话任务已完成（${sessions.data?.find((session) => session.id === event.sessionId)?.title ?? event.sessionId}）`, `Run finished (${sessions.data?.find((session) => session.id === event.sessionId)?.title ?? event.sessionId})`),
+                "info",
+                { sessionId: event.sessionId, view: "sessions" },
+              );
+            }
             setAgentStates((prev) => ({ ...prev, [event.sessionId!]: state }));
             if (state === "thinking" || state === "starting" || state === "preparing_context") {
               setRunFailures((previous) => {
@@ -122,6 +160,22 @@ export function App(): ReactElement {
             const { [event.sessionId!]: _cleared, ...remaining } = previous;
             return remaining;
           });
+        }
+        // 诊断更新（Phase 3）：刷新 Problems 视图数据并更新角标；不弹窗不打断
+        if (event.type === "diagnostics.updated" && event.sessionId) {
+          queryClient.invalidateQueries({ queryKey: ["diagnostics", event.sessionId] });
+          const failed = (event.payload as { summary?: { failed?: number } }).summary?.failed ?? 0;
+          setProblemsBadges((previous) => applyDiagnosticsBadgeUpdate(previous, event.sessionId!, failed));
+          if (failed > 0) {
+            pushEventNotification(t(`诊断更新：${failed} 项失败`, `Diagnostics updated: ${failed} failure(s)`), "error", { sessionId: event.sessionId, view: "problems" });
+          }
+        }
+        // SCM 更新（Phase 4）：刷新源代码管理面板数据；不弹窗不打断
+        if (event.type === "scm.updated" && event.sessionId) {
+          queryClient.invalidateQueries({ queryKey: ["scm-status", event.sessionId] });
+          queryClient.invalidateQueries({ queryKey: ["scm-worktrees", event.sessionId] });
+          queryClient.invalidateQueries({ queryKey: ["scm-diff", event.sessionId] });
+          pushEventNotification(t("源代码管理状态已更新", "Source control state updated"), "info", { sessionId: event.sessionId, view: "scm" });
         }
         if (event.type === "agent.error" && event.sessionId) {
           const message = (event.payload as { message?: string }).message ?? t("未知错误", "unknown error");
@@ -176,6 +230,10 @@ export function App(): ReactElement {
         if (event.type === "todos.updated") {
           queryClient.setQueryData<TodoItem[]>(["todos", event.sessionId], (event.payload as { items?: TodoItem[] }).items ?? []);
         }
+        // 索引状态事件（index.status）：payload 即完整状态对象，直接写缓存驱动状态栏
+        if (event.type === "index.status") {
+          queryClient.setQueryData<WorkspaceIndexStatus>(["index-status", event.sessionId], event.payload as WorkspaceIndexStatus);
+        }
         if (event.type === "message.delta") {
           const text = (event.payload as { text?: string }).text ?? "";
           queueStreamDelta(event.sessionId!, text);
@@ -214,7 +272,7 @@ export function App(): ReactElement {
             void detailRefresh.finally(() => clearStream(event.sessionId!));
           }
         }
-  }, [applyRunEvent, clearStream, currentId, flushStreamBuffers, notify, queryClient, queueStreamDelta, t]);
+  }, [applyRunEvent, clearStream, currentId, flushStreamBuffers, notify, pushEventNotification, queryClient, queueStreamDelta, sessions.data, t]);
   // 全局订阅：服务端在未传 sessionId 时全量推送，handler 按 event.sessionId 分发。
   useSessionEventStream({ onEvent: handleSessionEvent, onDisconnect: finishBufferedStreams });
 
@@ -227,6 +285,12 @@ export function App(): ReactElement {
   );
   // 切换会话后丢弃上一会话的 WS 即时权限卡，改由服务端列表播种
   useEffect(() => setPendingPermissions([]), [currentId]);
+  // 打开 Problems 侧栏视图即视为已查看，清除角标（原底部面板语义平移）
+  useEffect(() => {
+    if (layout.sidebarView === "problems" && layout.sidebarVisible && currentId) {
+      setProblemsBadges((previous) => clearDiagnosticsBadge(previous, currentId));
+    }
+  }, [layout.sidebarView, layout.sidebarVisible, currentId]);
   const mergedPermissions = useMemo(() => {
     const server = serverPermissions.data ?? [];
     const local = pendingPermissions.filter((item) => !server.some((entry) => entry.requestId === item.requestId));
@@ -277,6 +341,20 @@ export function App(): ReactElement {
     },
     onError: (error) => notify(error instanceof Error ? error.message : t("发送失败", "Send failed"), "error"),
   });
+
+  // Composer 发送与 session.send 命令共用同一提交逻辑（键盘全流程可达）
+  const submitDraft = useCallback((behavior?: "start" | "steer" | "follow_up"): void => {
+    if (!currentId) return;
+    const text = (drafts[currentId] ?? "").trim();
+    if (!text) return;
+    send.mutate({
+      sessionId: currentId,
+      text,
+      images: attachmentsBySession[currentId] ?? [],
+      pathAttachments: toAttachments(extractAttachmentPaths(text)),
+      behavior: behavior ?? (running ? "steer" : "start"),
+    });
+  }, [currentId, drafts, attachmentsBySession, running, send]);
 
   // 托管工作区的镜像盘快照必须由用户显式触发；服务端仍会拒绝运行中或同步中的会话。
   const manualSnapshot = useMutation({
@@ -334,6 +412,8 @@ export function App(): ReactElement {
         setAttachmentsBySession(removeKey);
         setAgentStates(removeKey);
         setRunFailures(removeKey);
+        setProblemsBadges(removeKey);
+        delete lastStatesRef.current[id];
         discardStream(id);
         queryClient.invalidateQueries({ queryKey: queryKeys.sessions });
       })
@@ -356,7 +436,7 @@ export function App(): ReactElement {
   const supportsImages = model?.capabilities.modalities?.includes("image") ?? false;
 
   const resetLayout = (): void => {
-    for (const key of ["owc-rail-width", "owc-rail-collapsed", "owc-panel-tab", "owc-panel-open", "owc-panel-height"]) {
+    for (const key of LAYOUT_STORAGE_KEYS) {
       try {
         window.localStorage.removeItem(key);
       } catch {
@@ -366,124 +446,240 @@ export function App(): ReactElement {
     window.location.reload();
   };
 
-  return (
-    <main
-      className="console-shell"
-      style={{ gridTemplateColumns: railCollapsed ? "56px minmax(0, 1fr)" : `${railWidth}px minmax(0, 1fr)` }}
-    >
+  // ===== 命令体系（Phase 5a）：when 上下文 + 动作面 + 注册 =====
+  const whenContext: WhenContext = useMemo(() => ({
+    sessionActive: Boolean(currentId),
+    running,
+    draftNonEmpty: Boolean(draft.trim()),
+    multipleSessions: (sessions.data?.length ?? 0) > 1,
+    // 浮层打开状态（含通知中心）：供命令 when 条件使用（如 "!dialogOpen"）
+    dialogOpen: dialogOpen || settingsOpen || paletteOpen || quickOpenOpen || shortcutsOpen || notificationsOpen || Boolean(codeOverlayPath),
+  }), [currentId, running, draft, sessions.data, dialogOpen, settingsOpen, paletteOpen, quickOpenOpen, shortcutsOpen, notificationsOpen, codeOverlayPath]);
+
+  const stepSession = useCallback((delta: number): void => {
+    const list = sessions.data ?? [];
+    if (list.length < 2) return;
+    const index = list.findIndex((session) => session.id === currentId);
+    const next = list[(Math.max(index, 0) + delta + list.length) % list.length];
+    if (next) setCurrentId(next.id);
+  }, [sessions.data, currentId]);
+
+  // 命令动作面存 ref：注册表只挂一次，handler 每次取最新动作（闭包不捕获过期状态）
+  const actionsRef = useRef<CommandActions>(null as unknown as CommandActions);
+  actionsRef.current = {
+    showCommands: () => setPaletteOpen(true),
+    quickOpen: () => setQuickOpenOpen(true),
+    toggleSidebar: layout.toggleSidebar,
+    toggleBottomPanel: layout.toggleBottomPanel,
+    showView: (view: SidebarView) => layout.showView(view),
+    openSettings: () => setSettingsOpen(true),
+    newSession: () => setDialogOpen(true),
+    importSession: () => importInput.current?.click(),
+    deleteCurrentSession: () => { if (currentId) removeSession(currentId); },
+    sendDraft: () => submitDraft(),
+    abortRun: () => {
+      if (!currentId) return;
+      api.abort(currentId).catch((error: unknown) => notify(error instanceof Error ? error.message : t("无法中断", "Could not stop the job"), "error"));
+    },
+    toggleTheme,
+    focusComposer: () => document.getElementById("composer-input")?.focus(),
+    nextSession: () => stepSession(1),
+    previousSession: () => stepSession(-1),
+    showKeyboardShortcuts: () => setShortcutsOpen(true),
+    cycleZone: () => window.dispatchEvent(new CustomEvent(CYCLE_ZONE_EVENT)),
+    showNotifications: () => setNotificationsOpen(true),
+  };
+  useEffect(() => registerBuiltinCommands(() => actionsRef.current), []);
+  useGlobalKeybindings(whenContext);
+
+  // 通知中心开合（在 actionsRef 之前声明，命令动作面引用）
+  const openNotifications = useCallback((): void => {
+    setNotificationsOpen(true);
+  }, []);
+
+  // 关闭时全部标记已读（角标清零；列表内未读高亮在打开期间可见）
+  const closeNotifications = useCallback((): void => {
+    setNotificationsOpen(false);
+    setNotifications((previous) => markAllRead(previous));
+  }, []);
+
+  const activateNotification = useCallback((item: AppNotification): void => {
+    setNotifications((previous) => markRead(previous, item.id));
+    setNotificationsOpen(false);
+    if (item.target?.sessionId) setCurrentId(item.target.sessionId);
+    if (item.target?.view) layout.showView(item.target.view);
+  }, [layout]);
+
+  // 移动端抽屉：选中会话后收起侧栏（桌面端行为不变）
+  const selectSession = useCallback((id: string): void => {
+    setCurrentId(id);
+    if (isMobile) layout.setSidebarVisible(false);
+  }, [isMobile, layout]);
+
+  const sidebar = layout.sidebarVisible ? (
+    layout.sidebarView === "sessions" ? (
       <SessionRail
         sessions={sessions.data}
         currentId={currentId}
         runningIds={runningIds}
         theme={theme}
-        collapsed={railCollapsed}
-        width={railWidth}
-        onSelect={setCurrentId}
+        collapsed={false}
+        width={layout.sidebarWidth}
+        onSelect={selectSession}
         onCreate={() => setDialogOpen(true)}
         onDelete={removeSession}
         onImport={importSession}
         onToggleTheme={toggleTheme}
-        onToggleCollapsed={() => setRailCollapsed((value) => !value)}
+        onToggleCollapsed={layout.toggleSidebar}
         onOpenSettings={() => setSettingsOpen(true)}
-        onResize={setRailWidth}
+        onResize={layout.setSidebarWidth}
       />
-      <section className="workbench">
-        {current ? (
-          <>
-            <JobHeader
-              session={current}
-              agentState={currentState}
-              costSummary={costSummary}
-              onAbort={() => api.abort(current.id).catch((error: unknown) => notify(error instanceof Error ? error.message : t("无法中断", "Could not stop the job"), "error"))}
-              onConfig={(body) => api.updateSession(current.id, body)
-                .then((updated) => {
-                  queryClient.setQueryData<SessionDetail>(queryKeys.detail(current.id), (previous) => previous ? { ...previous, ...updated } : previous);
-                  void queryClient.invalidateQueries({ queryKey: queryKeys.detail(current.id) });
-                  void queryClient.invalidateQueries({ queryKey: queryKeys.sessions });
-                })
-                .catch((error: unknown) => {
-                  notify(error instanceof Error ? error.message : t("模式切换失败", "Mode change failed"), "error");
-                })}
-              onCreateCheckpoint={() => manualSnapshot.mutate(current.id)}
-              checkpointPending={manualSnapshot.isPending}
-              running={running}
-            />
-            {todos.data && todos.data.length > 0 && (
-              <details className="todo-panel" open>
-                <summary>{t("任务清单", "Task list")} · {todos.data.filter((item) => item.status === "done").length}/{todos.data.length}</summary>
-                <ul>{todos.data.map((item, index) => (
-                  <li key={`${item.content}-${index}`} data-status={item.status}>
-                    <span>{item.status === "done" ? "✓" : item.status === "in_progress" ? "●" : "○"}</span>
-                    {item.status === "in_progress" && item.activeForm ? item.activeForm : item.content}
-                  </li>
-                ))}</ul>
-              </details>
+    ) : (
+      <SidebarPanel
+        view={layout.sidebarView}
+        width={layout.sidebarWidth}
+        onResize={layout.setSidebarWidth}
+        sessionId={currentId}
+        session={current}
+        running={running}
+        onNotice={notify}
+      />
+    )
+  ) : undefined;
+
+  return (
+    <>
+      <WorkbenchShell
+        sidebarWidth={layout.sidebarVisible ? layout.sidebarWidth : undefined}
+        activityBar={
+          <ActivityBar
+            activeView={layout.sidebarView}
+            sidebarVisible={layout.sidebarVisible}
+            problemsBadge={currentId ? problemsBadges[currentId] ?? 0 : 0}
+            notificationsBadge={unreadCount(notifications)}
+            onShowView={layout.showView}
+            onShowCommands={() => setPaletteOpen(true)}
+            onShowNotifications={openNotifications}
+            onOpenSettings={() => setSettingsOpen(true)}
+          />
+        }
+        sidebar={sidebar}
+        main={
+          <section className="workbench">
+            {current ? (
+              <>
+                <JobHeader
+                  session={current}
+                  agentState={currentState}
+                  costSummary={costSummary}
+                  onAbort={() => api.abort(current.id).catch((error: unknown) => notify(error instanceof Error ? error.message : t("无法中断", "Could not stop the job"), "error"))}
+                  onConfig={(body) => api.updateSession(current.id, body)
+                    .then((updated) => {
+                      queryClient.setQueryData<SessionDetail>(queryKeys.detail(current.id), (previous) => previous ? { ...previous, ...updated } : previous);
+                      void queryClient.invalidateQueries({ queryKey: queryKeys.detail(current.id) });
+                      void queryClient.invalidateQueries({ queryKey: queryKeys.sessions });
+                    })
+                    .catch((error: unknown) => {
+                      notify(error instanceof Error ? error.message : t("模式切换失败", "Mode change failed"), "error");
+                    })}
+                  onCreateCheckpoint={() => manualSnapshot.mutate(current.id)}
+                  checkpointPending={manualSnapshot.isPending}
+                  running={running}
+                />
+                {todos.data && todos.data.length > 0 && (
+                  <details className="todo-panel" open>
+                    <summary>{t("任务清单", "Task list")} · {todos.data.filter((item) => item.status === "done").length}/{todos.data.length}</summary>
+                    <ul>{todos.data.map((item, index) => (
+                      <li key={`${item.content}-${index}`} data-status={item.status}>
+                        <span>{item.status === "done" ? "✓" : item.status === "in_progress" ? "●" : "○"}</span>
+                        {item.status === "in_progress" && item.activeForm ? item.activeForm : item.content}
+                      </li>
+                    ))}</ul>
+                  </details>
+                )}
+                <ExecutionTrack
+                  session={current}
+                  contentLens={extensions.data?.find((extension) => extension.id === "content-lens" && extension.enabled)}
+                  onNotice={notify}
+                  {...(contextView.data?.ledger.cleared ? { cleared: contextView.data.ledger.cleared } : {})}
+                  streamText={stream[current.id] ?? ""}
+                  thinkingText={thinkingStream[current.id] ?? ""}
+                  runError={runFailures[current.id]}
+                  permissions={mergedPermissions}
+                  onSendToAgent={sendShellToAgent}
+                  onPermissionDone={(requestId) => {
+                    setPendingPermissions((prev) => prev.filter((item) => item.requestId !== requestId));
+                    queryClient.invalidateQueries({ queryKey: ["permissions", current.id] });
+                  }}
+                  onPermissionError={(message) => notify(message, "error")}
+                />
+                {queue.data?.some((item) => item.status === "queued") && (
+                  <SteeringQueue
+                    items={queue.data}
+                    onRemove={(itemId) => api.removeQueue(current.id, itemId)
+                      .then(() => queue.refetch())
+                      .catch((error: unknown) => notify(error instanceof Error ? error.message : t("撤销 Steering 失败", "Could not remove Steering item"), "error"))}
+                  />
+                )}
+                {interactions.data?.filter((item) => item.status === "pending").map((item) => (
+                  <InteractionCard key={item.id} item={item} onRespond={(answer) => api.respondInteraction(current.id, item.id, answer)
+                    .then(() => interactions.refetch())
+                    .catch((error: unknown) => notify(error instanceof Error ? error.message : t("提交回答失败", "Could not submit answer"), "error"))} />
+                ))}
+                <Composer
+                  current={current}
+                  model={model}
+                  models={models.data ?? []}
+                  providers={providers.data ?? []}
+                  pdfToImageExtension={extensions.data?.find((extension) => extension.id === "pdf-to-image")}
+                  pdfToImageStatus={extensions.isPending ? "loading" : extensions.isError ? "unavailable" : "ready"}
+                  imageCapabilitiesReady={!models.isPending}
+                  draft={draft}
+                  setDraft={setDraft}
+                  onSend={(behavior) => submitDraft(behavior)}
+                  onConfig={(body) => {
+                    api.updateSession(current.id, body)
+                      .then(() => queryClient.invalidateQueries({ queryKey: queryKeys.detail(current.id) }))
+                      .catch((error: unknown) => notify(error instanceof Error ? error.message : t("配置失败", "Configuration failed"), "error"));
+                  }}
+                  running={running}
+                  sendPending={send.isPending}
+                  sendKey={sendKey}
+                  skills={skills.data?.skills ?? []}
+                  attachments={attachments}
+                  setAttachments={setAttachments}
+                  supportsImages={supportsImages}
+                  onNotice={(message, kind = "info") => notify(message, kind)}
+                />
+              </>
+            ) : (
+              <EmptyState sessions={sessions.data ?? []} onSelect={selectSession} onCreate={() => setDialogOpen(true)} />
             )}
-            <ExecutionTrack
-              session={current}
-              contentLens={extensions.data?.find((extension) => extension.id === "content-lens" && extension.enabled)}
-              onNotice={notify}
-              {...(contextView.data?.ledger.cleared ? { cleared: contextView.data.ledger.cleared } : {})}
-              streamText={stream[current.id] ?? ""}
-              thinkingText={thinkingStream[current.id] ?? ""}
-              runError={runFailures[current.id]}
-              permissions={mergedPermissions}
-              onSendToAgent={sendShellToAgent}
-              onPermissionDone={(requestId) => {
-                setPendingPermissions((prev) => prev.filter((item) => item.requestId !== requestId));
-                queryClient.invalidateQueries({ queryKey: ["permissions", current.id] });
-              }}
-              onPermissionError={(message) => notify(message, "error")}
-            />
-            {queue.data?.some((item) => item.status === "queued") && (
-              <SteeringQueue
-                items={queue.data}
-                onRemove={(itemId) => api.removeQueue(current.id, itemId)
-                  .then(() => queue.refetch())
-                  .catch((error: unknown) => notify(error instanceof Error ? error.message : t("撤销 Steering 失败", "Could not remove Steering item"), "error"))}
-              />
-            )}
-            {interactions.data?.filter((item) => item.status === "pending").map((item) => (
-              <InteractionCard key={item.id} item={item} onRespond={(answer) => api.respondInteraction(current.id, item.id, answer)
-                .then(() => interactions.refetch())
-                .catch((error: unknown) => notify(error instanceof Error ? error.message : t("提交回答失败", "Could not submit answer"), "error"))} />
-            ))}
-            <Composer
-              current={current}
-              model={model}
-              models={models.data ?? []}
-              providers={providers.data ?? []}
-              pdfToImageExtension={extensions.data?.find((extension) => extension.id === "pdf-to-image")}
-              pdfToImageStatus={extensions.isPending ? "loading" : extensions.isError ? "unavailable" : "ready"}
-              imageCapabilitiesReady={!models.isPending}
-              draft={draft}
-              setDraft={setDraft}
-              onSend={(behavior = running ? "steer" : "start") => {
-                if (!currentId || !draft.trim()) return;
-                const text = draft.trim();
-                send.mutate({ sessionId: currentId, text, images: attachments, pathAttachments: toAttachments(extractAttachmentPaths(text)), behavior });
-              }}
-              onConfig={(body) => {
-                api.updateSession(current.id, body)
-                  .then(() => queryClient.invalidateQueries({ queryKey: queryKeys.detail(current.id) }))
-                  .catch((error: unknown) => notify(error instanceof Error ? error.message : t("配置失败", "Configuration failed"), "error"));
-              }}
-              running={running}
-              sendPending={send.isPending}
-              sendKey={sendKey}
-              skills={skills.data?.skills ?? []}
-              attachments={attachments}
-              setAttachments={setAttachments}
-              supportsImages={supportsImages}
-              onNotice={(message, kind = "info") => notify(message, kind)}
-            />
-            <StatusBar session={current} state={currentState} tokens={costSummary?.tokens} costLabel={costSummary?.costLabel} />
-          </>
-        ) : (
-          <EmptyState sessions={sessions.data ?? []} onSelect={setCurrentId} onCreate={() => setDialogOpen(true)} />
-        )}
-        <BottomPanel sessionId={currentId} session={current} running={running} onNotice={notify} />
-      </section>
+          </section>
+        }
+        bottom={
+          <BottomPanel
+            sessionId={currentId}
+            session={current}
+            running={running}
+            onNotice={notify}
+            open={layout.bottomOpen}
+            onOpenChange={layout.setBottomOpen}
+          />
+        }
+        statusBar={current && <StatusBar session={current} state={currentState} tokens={costSummary?.tokens} costLabel={costSummary?.costLabel} indexStatus={indexStatus.data?.status} />}
+      />
+      <input
+        ref={importInput}
+        type="file"
+        accept=".jsonl,.ndjson,.txt,application/x-ndjson"
+        hidden
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          if (file) importSession(file);
+          event.target.value = "";
+        }}
+      />
       <NewSessionDialog
         open={dialogOpen}
         providers={providers.data ?? []}
@@ -508,7 +704,32 @@ export function App(): ReactElement {
         onResetLayout={resetLayout}
         onClose={() => setSettingsOpen(false)}
       />
+      <Suspense fallback={null}>
+        {paletteOpen && <CommandPalette open={paletteOpen} context={whenContext} onClose={() => setPaletteOpen(false)} />}
+        {quickOpenOpen && currentId && (
+          <QuickOpen
+            open={quickOpenOpen}
+            sessionId={currentId}
+            onOpenFile={(path) => setCodeOverlayPath(path)}
+            onClose={() => setQuickOpenOpen(false)}
+          />
+        )}
+        {shortcutsOpen && <ShortcutsDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />}
+        {notificationsOpen && (
+          <NotificationsOverlay
+            open={notificationsOpen}
+            notifications={notifications}
+            onActivate={activateNotification}
+            onDismiss={(id) => setNotifications((previous) => removeNotification(previous, id))}
+            onClearAll={() => setNotifications(clearNotifications())}
+            onClose={closeNotifications}
+          />
+        )}
+        {codeOverlayPath && currentId && (
+          <CodeOverlay sessionId={currentId} path={codeOverlayPath} onClose={() => setCodeOverlayPath(undefined)} />
+        )}
+      </Suspense>
       {notice && <Toast notice={notice} onDismiss={() => setNotice(undefined)} />}
-    </main>
+    </>
   );
 }

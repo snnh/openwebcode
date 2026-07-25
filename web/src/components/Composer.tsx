@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactElement } from "react";
 import type { ExtensionInfo, ModelProfile, SessionDetail, SkillInfo } from "../lib/contracts";
-import { api } from "../lib/api";
+import { api, ApiError } from "../lib/api";
 import { extractAttachmentPaths } from "../lib/attachments";
 import type { PdfRenderOptions } from "../lib/pdf-to-images";
 import type { SendKey } from "../lib/prefs";
@@ -72,6 +72,46 @@ function readImage(file: File): Promise<PendingImage> {
 
 /** 服务端内置斜杠命令（app.ts 消息路由匹配），与技能/自定义命令一起参与补全 */
 type Suggestion = SkillInfo & { builtin?: boolean };
+
+/** @ 补全条目：文件与符号两类（0.4.0 Phase 2 §5.2，共用服务端索引缓存） */
+type MentionItem =
+  | { type: "file"; path: string }
+  | { type: "symbol"; name: string; kind: string; path: string; line: number };
+
+/** 索引状态："unavailable" 表示索引未建/未启用，已回退实时文件搜索 */
+type MentionIndexStatus = "fresh" | "stale" | "building" | "missing" | "unavailable";
+
+/** 符号条目选择后插入 `@路径:行号`，与 extractAttachmentPaths 的 `:行号` 剥离约定一致 */
+function mentionInsertPath(item: MentionItem): string {
+  return item.type === "symbol" ? `${item.path}:${item.line}` : item.path;
+}
+
+/**
+ * @ 补全数据源：优先索引缓存（文件清单 + 符号），索引端点 409/501 时回退
+ * complete-path 实时 glob（行为与索引上线前一致，用户无感）。符号查询失败只丢
+ * 符号条目，不影响文件结果。
+ */
+async function loadMentionItems(sessionId: string, q: string): Promise<{ items: MentionItem[]; indexStatus: MentionIndexStatus }> {
+  try {
+    const filesRes = await api.workspaceFiles(sessionId, q);
+    const items: MentionItem[] = filesRes.files.map((file) => ({ type: "file", path: file.path }));
+    try {
+      const symbolsRes = await api.workspaceSymbols(sessionId, q);
+      for (const symbol of symbolsRes.symbols) {
+        items.push({ type: "symbol", name: symbol.name, kind: symbol.kind, path: symbol.path, line: symbol.startLine });
+      }
+    } catch {
+      // 符号索引不可用/查询失败：只降级掉符号条目
+    }
+    return { items, indexStatus: filesRes.indexStatus };
+  } catch (error) {
+    if (error instanceof ApiError && (error.status === 409 || error.status === 501)) {
+      const fallback = await api.completePath(sessionId, q);
+      return { items: fallback.matches.map((match) => ({ type: "file", path: match.path })), indexStatus: "unavailable" };
+    }
+    throw error;
+  }
+}
 
 /** 思考模式下拉的中文标签；value 保持英文枚举不变 */
 const THINKING_LABEL: Record<string, [string, string]> = { adaptive: ["自适应", "Adaptive"], enabled: ["开启", "Enabled"], disabled: ["关闭", "Disabled"] };
@@ -183,9 +223,11 @@ export function Composer({ current, model, models, providers = [], pdfToImageExt
     setActive(0);
   }, [draft]);
 
-  // @文件引用补全：检测光标前 `@<partial>`，防抖 200ms 调 complete-path REST
+  // @文件引用补全：检测光标前 `@<partial>`，防抖 200ms 查询（优先索引缓存，409/501 回退 complete-path）
   const [mentionPartial, setMentionPartial] = useState<string | null>(null);
-  const [mentionMatches, setMentionMatches] = useState<Array<{ path: string }>>([]);
+  const [mentionItems, setMentionItems] = useState<MentionItem[]>([]);
+  // 索引状态非 fresh 时在弹层顶部给一行提示；null=尚未返回
+  const [mentionIndexStatus, setMentionIndexStatus] = useState<MentionIndexStatus | null>(null);
   const [mentionActive, setMentionActive] = useState(0);
   const [mentionDismissed, setMentionDismissed] = useState(false);
   const [mentionFailed, setMentionFailed] = useState(false);
@@ -207,24 +249,25 @@ export function Composer({ current, model, models, providers = [], pdfToImageExt
     setMentionActive(0);
   }, []);
 
-  // 防抖调 complete-path；partial 为空（仅 @ 无字符）不调 API
+  // 防抖调 loadMentionItems；partial 为空（仅 @ 无字符）不调 API
   useEffect(() => {
     if (mentionPartial === null || mentionPartial === "") {
-      setMentionMatches([]);
+      setMentionItems([]);
+      setMentionIndexStatus(null);
       setMentionFailed(false);
       return;
     }
     let cancelled = false;
     const timer = setTimeout(() => {
-      api.completePath(current.id, mentionPartial)
-        .then((res) => { if (!cancelled) { setMentionMatches(res.matches.slice(0, 20)); setMentionFailed(false); } })
-        .catch(() => { if (!cancelled) { setMentionMatches([]); setMentionFailed(true); } });
+      loadMentionItems(current.id, mentionPartial)
+        .then((res) => { if (!cancelled) { setMentionItems(res.items.slice(0, 20)); setMentionIndexStatus(res.indexStatus); setMentionFailed(false); } })
+        .catch(() => { if (!cancelled) { setMentionItems([]); setMentionIndexStatus(null); setMentionFailed(true); } });
     }, 200);
     return () => { cancelled = true; clearTimeout(timer); };
   }, [mentionPartial, current.id]);
 
   const mentionOpen = !mentionDismissed && mentionPartial !== null && mentionPartial !== "";
-const mentionHasMatches = mentionMatches.length > 0;
+const mentionHasMatches = mentionItems.length > 0;
 
   // 方向键移动激活项时滚动保持可见（仅弹层打开时执行）
   useEffect(() => {
@@ -238,7 +281,7 @@ const mentionHasMatches = mentionMatches.length > 0;
     }
   }, [active, popupOpen, hasSuggestions]);
 
-  const insertMention = useCallback((filePath: string): void => {
+  const insertMention = useCallback((item: MentionItem): void => {
     const el = textareaRef.current;
     const cursor = el?.selectionStart ?? draft.length;
     const before = draft.slice(0, cursor);
@@ -246,11 +289,11 @@ const mentionHasMatches = mentionMatches.length > 0;
     const match = before.match(/@([^\s@]*)$/);
     if (!match) return;
     const startIdx = before.length - match[0].length;
-    const replacement = `@${filePath} `;
+    const replacement = `@${mentionInsertPath(item)} `;
     const next = draft.slice(0, startIdx) + replacement + after;
     writeDraft(next);
     setMentionPartial(null);
-    setMentionMatches([]);
+    setMentionItems([]);
     setMentionDismissed(false);
     requestAnimationFrame(() => {
       const node = textareaRef.current;
@@ -268,6 +311,9 @@ const mentionHasMatches = mentionMatches.length > 0;
     const idx = draft.indexOf(token);
     if (idx < 0) return;
     let end = idx + token.length;
+    // 草稿里可能带符号补全插入的 :行号 后缀，一并移除
+    const suffix = draft.slice(end).match(/^:\d+/);
+    if (suffix) end += suffix[0].length;
     if (draft[end] === " ") end += 1;
     writeDraft(draft.slice(0, idx) + draft.slice(end));
   };
@@ -675,8 +721,18 @@ const mentionHasMatches = mentionMatches.length > 0;
         )}
         {mentionOpen && (
           <ul id="mention-listbox" className="mention-popup" role="listbox" aria-label={t("文件引用建议", "File reference suggestions")}>
-            {mentionHasMatches ? mentionMatches.map((item, index) => (
-              <li key={item.path}>
+            {mentionIndexStatus !== null && mentionIndexStatus !== "fresh" && (
+              // 索引滞后/构建中/不可用（已回退实时搜索）的一行状态提示
+              <li className="mention-status" aria-live="polite"><span>
+                {mentionIndexStatus === "stale"
+                  ? t("索引滞后：结果可能不是最新", "Index is stale: results may be outdated")
+                  : mentionIndexStatus === "building"
+                    ? t("索引构建中：结果可能不完整", "Index is building: results may be incomplete")
+                    : t("索引未建或不可用：已回退实时文件搜索", "Index unavailable: fell back to live file search")}
+              </span></li>
+            )}
+            {mentionHasMatches ? mentionItems.map((item, index) => (
+              <li key={item.type === "symbol" ? `s:${item.path}:${item.line}:${item.name}` : `f:${item.path}`}>
                 <button
                   type="button"
                   role="option"
@@ -685,11 +741,21 @@ const mentionHasMatches = mentionMatches.length > 0;
                   className={index === mentionActive ? "active" : ""}
                   onMouseDown={(event) => {
                     event.preventDefault();
-                    insertMention(item.path);
+                    insertMention(item);
                   }}
                 >
-                  <Icon name="file" size={11} />
-                  <span className="mention-path">{item.path}</span>
+                  {item.type === "symbol" ? (
+                    <>
+                      <span className="mention-kind">{item.kind}</span>
+                      <span className="mention-path">{item.name}</span>
+                      <span className="mention-loc">{item.path}:{item.line}</span>
+                    </>
+                  ) : (
+                    <>
+                      <Icon name="file" size={11} />
+                      <span className="mention-path">{item.path}</span>
+                    </>
+                  )}
                 </button>
               </li>
             )) : (
@@ -699,6 +765,7 @@ const mentionHasMatches = mentionMatches.length > 0;
         )}
         <textarea
           ref={textareaRef}
+          id="composer-input"
           rows={2}
           value={draft}
           aria-label={t("消息输入框；输入 @ 可引用工作区文件", "Message input; type @ to reference workspace files")}
@@ -722,7 +789,7 @@ const mentionHasMatches = mentionMatches.length > 0;
           onKeyDown={(event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
             if (mentionOpen) {
               if (mentionHasMatches) {
-                const count = mentionMatches.length;
+                const count = mentionItems.length;
                 if (event.key === "ArrowDown") {
                   event.preventDefault();
                   setMentionActive((value) => (value + 1) % count);
@@ -738,7 +805,7 @@ const mentionHasMatches = mentionMatches.length > 0;
               if (event.key === "Tab" || event.key === "Enter") {
                 event.preventDefault();
                 if (mentionHasMatches) {
-                  insertMention(mentionMatches[Math.min(mentionActive, mentionMatches.length - 1)]!.path);
+                  insertMention(mentionItems[Math.min(mentionActive, mentionItems.length - 1)]!);
                 } else {
                   setMentionDismissed(true);
                   setMentionPartial(null);

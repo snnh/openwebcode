@@ -1,0 +1,14 @@
+{
+  "name": "OpenWebCode",
+  "short_name": "OpenWebCode",
+  "description": "OpenWebCode coding console — conversation-driven agent workbench",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "background_color": "#F2F2F2",
+  "theme_color": "#F2F2F2",
+  "icons": [
+    { "src": "/icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
