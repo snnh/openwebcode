@@ -1,0 +1,9 @@
+{"Time":"2025-01-01T00:00:00Z","Action":"run","Package":"example.com/proj/math","Test":"TestAdd"}
+{"Time":"2025-01-01T00:00:00Z","Action":"output","Package":"example.com/proj/math","Test":"TestAdd","Output":"=== RUN   TestAdd\n"}
+{"Time":"2025-01-01T00:00:00Z","Action":"pass","Package":"example.com/proj/math","Test":"TestAdd","Elapsed":0.001}
+{"Time":"2025-01-01T00:00:00Z","Action":"run","Package":"example.com/proj/math","Test":"TestDivide"}
+{"Time":"2025-01-01T00:00:00Z","Action":"output","Package":"example.com/proj/math","Test":"TestDivide","Output":"=== RUN   TestDivide\n"}
+{"Time":"2025-01-01T00:00:00Z","Action":"output","Package":"example.com/proj/math","Test":"TestDivide","Output":"    math_test.go:13: got 3, want 4\n"}
+{"Time":"2025-01-01T00:00:00Z","Action":"fail","Package":"example.com/proj/math","Test":"TestDivide","Elapsed":0.002}
+{"Time":"2025-01-01T00:00:00Z","Action":"skip","Package":"example.com/proj/math","Test":"TestLegacy","Elapsed":0}
+{"Time":"2025-01-01T00:00:00Z","Action":"fail","Package":"example.com/proj/math","Elapsed":0.05}

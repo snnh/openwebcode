@@ -1,0 +1,7 @@
+Failed!  - Failed: 1, Passed: 2, Skipped: 1, Total: 4, Duration: 12 ms - Proj.Tests.dll (net8.0)
+
+  Failed Proj.Tests.MathTests.Divides [3 ms]
+  Error Message:
+   Assert.AreEqual failed. Expected:<4>. Actual:<3>.
+  Stack Trace:
+     at Proj.Tests.MathTests.Divides() in D:\proj\Tests\MathTests.cs:line 13

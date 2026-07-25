@@ -8,6 +8,9 @@ import { ContextManager, selectCacheBreakpoints } from "../context/context-manag
 import type { Compactor } from "../context/compactor.js";
 import { boundToolResult } from "../context/tool-result-budget.js";
 import { RepoMapGenerator, DEFAULT_REPO_MAP_BUDGET } from "../context/repo-map.js";
+import { IndexManager, IndexUnavailableError } from "../index/index-manager.js";
+import type { DiagnosticsService } from "../diagnostics/service.js";
+import type { ScmService } from "../scm/service.js";
 import { getModelProfile, type ModelProfile } from "../context/model-profile.js";
 import { calculateUsageCost } from "../cost/cost-calculator.js";
 import type { ExchangeRateService } from "../cost/exchange-rate.js";
@@ -110,6 +113,130 @@ const REPO_MAP_TOOL: ProviderTool = {
   inputSchema: {
     type: "object",
     properties: { budget: { type: "integer", minimum: 64, description: "Token budget for the map; defaults to the session repo map budget (2048)." } },
+    additionalProperties: false,
+  },
+};
+
+const CODE_SEARCH_TOOL: ProviderTool = {
+  name: "code_search",
+  description:
+    "Search the workspace symbol index with a fuzzy symbol-name query and optional kind filter " +
+    "(function/method/class/interface/type/struct/enum/trait/impl/constant). Returns definition " +
+    "locations (file:line) with signature summaries. Read-only. If the index is unavailable, " +
+    "fall back to grep/glob; rebuilding is an explicit user action, do not retry in a loop.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      query: { type: "string", description: "Symbol name to fuzzy-match (exact > prefix > substring > subsequence)." },
+      kind: { type: "string", description: "Optional symbol kind filter, e.g. function, class, method." },
+      limit: { type: "integer", minimum: 1, maximum: 200, description: "Max results; default 50." },
+    },
+    required: ["query"],
+    additionalProperties: false,
+  },
+};
+
+const TEST_RUNNER_TOOL: ProviderTool = {
+  name: "test_runner",
+  description:
+    "Run the project test suite and return a bounded failure summary. The test command is auto-detected " +
+    "(package.json/npm test or vitest, pyproject.toml/pytest, go.mod/go test, *.sln/dotnet test); pass command to override. " +
+    "Vitest/jest/pytest/go/dotnet output is parsed into structured diagnostics; at most 20 failures are returned inline, " +
+    "full diagnostics are persisted to a session diagnostics artifact referenced in the result.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      command: { type: "string", description: "Optional custom test command overriding auto-detection." },
+    },
+    additionalProperties: false,
+  },
+};
+
+const GIT_STATUS_TOOL: ProviderTool = {
+  name: "git_status",
+  description:
+    "Show the git working-tree status of the session workspace (porcelain): current branch, ahead/behind, " +
+    "and staged/unstaged/untracked change groups. Read-only; large repositories are truncated per group with true totals kept.",
+  inputSchema: { type: "object", properties: {}, additionalProperties: false },
+};
+
+const GIT_DIFF_TOOL: ProviderTool = {
+  name: "git_diff",
+  description:
+    "Show the git diff of the session workspace. Defaults to unstaged changes; pass staged=true for the index, " +
+    "base for a commit range (e.g. HEAD~1 or main...HEAD), file to limit to one path. Read-only; when the diff " +
+    "exceeds the inline limit only the stat summary is returned and the full diff is stored in an artifact.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      staged: { type: "boolean", description: "Diff the staged index instead of the working tree." },
+      base: { type: "string", description: "Commit range or baseline ref, e.g. HEAD~1 or main...HEAD (mutually exclusive with staged)." },
+      file: { type: "string", description: "Limit the diff to one relative path." },
+    },
+    additionalProperties: false,
+  },
+};
+
+const GIT_COMMIT_TOOL: ProviderTool = {
+  name: "git_commit",
+  description:
+    "Create a git commit in the session workspace. Always requires explicit user confirmation. " +
+    "Optionally stages changes first (stageAll or an explicit files list); arbitrary git flags are not accepted. " +
+    "The result includes the new commit hash and a fresh git status summary.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      message: { type: "string", description: "Commit message (required, <= 2000 chars)." },
+      stageAll: { type: "boolean", description: "Stage all changes (git add -A) before committing." },
+      files: { type: "array", items: { type: "string" }, description: "Stage only these relative paths before committing (mutually exclusive with stageAll)." },
+    },
+    required: ["message"],
+    additionalProperties: false,
+  },
+};
+
+const GIT_WORKTREE_CREATE_TOOL: ProviderTool = {
+  name: "git_worktree_create",
+  description:
+    "Create an isolated git worktree for this session (stored in the server data directory, outside the repo) " +
+    "on a new branch, for parallel isolated work. Merging back is an explicit git_worktree_merge call; " +
+    "worktrees are never auto-deleted — the user removes them via git_worktree_remove or the REST API.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      name: { type: "string", description: "Worktree name ([a-zA-Z0-9._-]); auto-generated when omitted." },
+      branch: { type: "string", description: "Branch to create; defaults to owc/<name>." },
+    },
+    additionalProperties: false,
+  },
+};
+
+const GIT_WORKTREE_REMOVE_TOOL: ProviderTool = {
+  name: "git_worktree_remove",
+  description: "Remove a session worktree by name. Fails on uncommitted changes unless force=true.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      name: { type: "string" },
+      force: { type: "boolean", description: "Discard uncommitted changes in the worktree." },
+    },
+    required: ["name"],
+    additionalProperties: false,
+  },
+};
+
+const GIT_WORKTREE_MERGE_TOOL: ProviderTool = {
+  name: "git_worktree_merge",
+  description:
+    "Merge a session worktree's branch back into the session workspace (merge or cherry-pick). " +
+    "Conflicts are reported as a file list and the merge is aborted — never auto-resolved.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      name: { type: "string" },
+      strategy: { type: "string", enum: ["merge", "cherry-pick"], description: "Defaults to merge (--no-ff)." },
+    },
+    required: ["name"],
     additionalProperties: false,
   },
 };
@@ -251,6 +378,14 @@ function builtInTools(options: {
     ...FILE_TOOLS,
     READ_ARTIFACT_TOOL,
     REPO_MAP_TOOL,
+    CODE_SEARCH_TOOL,
+    TEST_RUNNER_TOOL,
+    GIT_STATUS_TOOL,
+    GIT_DIFF_TOOL,
+    GIT_COMMIT_TOOL,
+    GIT_WORKTREE_CREATE_TOOL,
+    GIT_WORKTREE_REMOVE_TOOL,
+    GIT_WORKTREE_MERGE_TOOL,
     ...(options.skillsAvailable ? [LOAD_SKILL_TOOL] : []),
     SPAWN_TASK_TOOL,
     TODO_WRITE_TOOL,
@@ -266,9 +401,11 @@ const MAX_STEERING_LENGTH = 8_000;
 /** Scheduling metadata is product-side only; Provider schemas remain unchanged. */
 export type ToolExecutionClass = "read_only" | "workspace_write" | "process" | "external";
 const TOOL_EXECUTION_CLASS: Readonly<Record<string, ToolExecutionClass>> = {
-  read_file: "read_only", glob: "read_only", grep: "read_only", read_artifact: "read_only", load_skill: "read_only", repo_map: "read_only",
+  read_file: "read_only", glob: "read_only", grep: "read_only", read_artifact: "read_only", load_skill: "read_only", repo_map: "read_only", code_search: "read_only",
+  git_status: "read_only", git_diff: "read_only",
   web_fetch: "external", web_search: "external", write_file: "workspace_write", edit_file: "workspace_write",
-  bash: "process", task_output: "read_only", task_stop: "process", todo_write: "workspace_write", remember: "workspace_write", spawn_task: "process",
+  bash: "process", task_output: "read_only", task_stop: "process", todo_write: "workspace_write", remember: "workspace_write", spawn_task: "process", test_runner: "process",
+  git_commit: "process", git_worktree_create: "process", git_worktree_remove: "process", git_worktree_merge: "process",
 };
 function executionClass(name: string): ToolExecutionClass { return name.startsWith("mcp__") ? "external" : TOOL_EXECUTION_CLASS[name] ?? "workspace_write"; }
 /** 系统提示中单个记忆/约定小节的字符上限 */
@@ -363,6 +500,27 @@ export class AgentRunner {
   private readonly todos = new Map<string, TodoItem[]>();
   private readonly permissions: PermissionCoordinator;
   private readonly repoMap: RepoMapGenerator;
+  private indexManager?: IndexManager;
+  private diagnostics?: DiagnosticsService;
+
+  /** Phase 2：注入符号索引管理器；同时让 repo map 在索引可用时带符号摘要（不可用降级静态树）。 */
+  setIndexManager(indexManager: IndexManager): void {
+    this.indexManager = indexManager;
+    this.repoMap.setSymbolProvider((cwd) => indexManager.symbolSummary(cwd));
+  }
+
+  /** Phase 3a：注入诊断服务，启用 test_runner 工具。 */
+  setDiagnostics(diagnostics: DiagnosticsService): void {
+    this.diagnostics = diagnostics;
+  }
+
+  private scm?: ScmService;
+
+  /** Phase 4a：注入 SCM 服务，启用 git_status/git_diff/git_commit/git_worktree_* 工具。 */
+  setScm(scm: ScmService): void {
+    this.scm = scm;
+  }
+
   private searchProvider: SearchProvider | undefined;
   private webFetchProvider: WebFetchProvider | undefined;
 
@@ -595,6 +753,9 @@ export class AgentRunner {
           },
         });
         const profile = this.getProfile(session.model, session.provider);
+        // 索引新鲜度（Phase 2 §4.1）：turn 边界检查。watch 激活时零成本；
+        // watch 不可用时 mtime 抽样标滞后。失败/缺失都不阻断运行。
+        if (this.indexManager) void this.indexManager.noteTurnBoundary(sessionId, session.cwd).catch(() => undefined);
         // repo map 预算段（§4.1 Phase 1）：默认开、会话可关；生成失败降级为空段，不阻断运行。
         // 注入位置在稳定 system 前缀之后的动态侧（systemSuffix），避免其逐 turn 变化污染
         // cache 断点；token 归因到 segments.repoMap，Context 面板按段可见。
@@ -608,7 +769,7 @@ export class AgentRunner {
               excludes: contextSelection.excludes,
             });
             view.stats.segments.repoMap = map.tokens;
-            repoMapSection = `## Repository map (workspace structure; budget-bounded, symbols arrive in Phase 2)\n${map.text}`;
+            repoMapSection = `## Repository map (workspace structure; budget-bounded; key files carry symbol summaries when the index is available)\n${map.text}`;
           } catch (error) {
             this.events.publish({ source: "agent", type: "context.repo_map_failed", sessionId, payload: { message: error instanceof Error ? error.message : String(error) } });
           }
@@ -1141,7 +1302,7 @@ export class AgentRunner {
     const session = await this.sessions.get(sessionId);
     if (!session) return { allowed: false, reason: "Session not found" };
     // Plan 模式门禁：只读工具放行，其余一律拦截
-    const PLAN_READONLY = new Set(["read_file", "glob", "grep", "read_artifact", "load_skill", "spawn_task", "todo_write", "web_fetch", "web_search", "task_output", "repo_map"]);
+    const PLAN_READONLY = new Set(["read_file", "glob", "grep", "read_artifact", "load_skill", "spawn_task", "todo_write", "web_fetch", "web_search", "task_output", "repo_map", "code_search", "git_status", "git_diff"]);
     if (session.agentMode === "plan") {
       if (tool.startsWith("mcp__")) return { allowed: false, reason: `Plan 模式为只读：MCP 工具 ${tool} 被拦截（无法判定读写）。请输出实施计划并请用户切换到 build 模式执行。` };
       if (!PLAN_READONLY.has(tool)) return { allowed: false, reason: `Plan 模式为只读：${tool} 被拦截。请输出实施计划并请用户切换到 build 模式执行。` };
@@ -1423,6 +1584,142 @@ export class AgentRunner {
         return { type: "tool_result", toolCallId, content: bounded.content, isError: false };
       } catch (error) {
         const content = error instanceof Error ? error.message : String(error);
+        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
+        return { type: "tool_result", toolCallId, content, isError: true };
+      }
+    }
+    if (name === "test_runner") {
+      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+      this.state(sessionId, "tool_running");
+      try {
+        const session = await this.sessions.get(sessionId);
+        if (!session) throw new Error("Session not found");
+        if (!this.diagnostics) throw new Error("Diagnostics service is not enabled on this server.");
+        const command = typeof input.command === "string" && input.command.trim() ? input.command.trim() : undefined;
+        // Run 轨道子节点：agentRunId 挂当前 run；diagnostics.updated 事件与 artifact 均带该归属
+        const agentRunId = this.runs.get(sessionId)?.id;
+        const { record, feedback } = await this.diagnostics.run(sessionId, session.cwd, {
+          ...(command ? { command } : {}),
+          ...(agentRunId ? { agentRunId } : {}),
+          signal,
+          shellBackend: session.shellBackend ?? "default",
+        });
+        this.events.publish({
+          source: "agent",
+          type: "tool.end",
+          sessionId,
+          payload: { toolCallId, result: { runId: record.runId, summary: record.diagnostics.summary, parseFallback: record.parseFallback, repeatedSignatureCount: record.repeatedSignatureCount } },
+        });
+        return { type: "tool_result", toolCallId, content: feedback, isError: false };
+      } catch (error) {
+        if (signal.aborted) throw error;
+        const content = error instanceof Error ? error.message : String(error);
+        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
+        return { type: "tool_result", toolCallId, content, isError: true };
+      }
+    }
+    if (name === "git_status" || name === "git_diff" || name === "git_commit" || name === "git_worktree_create" || name === "git_worktree_remove" || name === "git_worktree_merge") {
+      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+      this.state(sessionId, "tool_running");
+      try {
+        const session = await this.sessions.get(sessionId);
+        if (!session) throw new Error("Session not found");
+        if (!this.scm) throw new Error("SCM service is not enabled on this server.");
+        const context = { shellBackend: session.shellBackend ?? "default", signal };
+        let text: string;
+        let eventResult: Record<string, unknown>;
+        if (name === "git_status") {
+          const status = await this.scm.status(sessionId, session.cwd, context);
+          if (!status.isRepo) throw new Error("Session workspace is not a git repository");
+          const totals = status.totals;
+          text = [
+            `Branch: ${status.branch ?? "(unknown)"}${status.upstream ? ` tracking ${status.upstream}` : ""} (ahead ${status.ahead ?? 0}, behind ${status.behind ?? 0})`,
+            `Staged (${totals.staged}):`,
+            ...status.staged.map((entry) => `  ${entry.code} ${entry.path}`),
+            `Unstaged (${totals.unstaged}):`,
+            ...status.unstaged.map((entry) => `  ${entry.code} ${entry.path}`),
+            `Untracked (${totals.untracked}):`,
+            ...status.untracked.map((entry) => `  ${entry.path}`),
+            ...(status.truncated ? [`(output truncated per group at 200 entries; totals above are exact)`] : []),
+          ].join("\n");
+          eventResult = { branch: status.branch, ahead: status.ahead, behind: status.behind, totals, truncated: status.truncated };
+        } else if (name === "git_diff") {
+          const options = {
+            ...(input.staged !== undefined ? { staged: Boolean(input.staged) } : {}),
+            ...(typeof input.base === "string" && input.base.trim() ? { base: input.base.trim() } : {}),
+            ...(typeof input.file === "string" && input.file.trim() ? { file: input.file.trim() } : {}),
+          };
+          if (options.staged && options.base) throw new Error("git_diff staged and base are mutually exclusive");
+          const diff = await this.scm.diff(sessionId, session.cwd, options, context);
+          if (!diff.isRepo) throw new Error("Session workspace is not a git repository");
+          text = diff.truncated
+            ? `Diff is ${diff.totalBytes} bytes (over the inline limit); showing stat only. Full diff is in artifact:${diff.artifactId} (use read_artifact).\n\n${diff.stat}`
+            : (diff.diff ?? "") === ""
+              ? "No changes."
+              : `${diff.stat}\n${diff.diff}`;
+          eventResult = { totalBytes: diff.totalBytes, truncated: diff.truncated, ...(diff.artifactId ? { artifactId: diff.artifactId } : {}) };
+        } else if (name === "git_commit") {
+          const result = await this.scm.commit(sessionId, session.cwd, {
+            message: String(input.message ?? ""),
+            ...(input.stageAll !== undefined ? { stageAll: Boolean(input.stageAll) } : {}),
+            ...(Array.isArray(input.files) ? { files: input.files.map((item) => String(item)) } : {}),
+          }, context);
+          const totals = result.status.totals;
+          text = `Committed ${result.commit.slice(0, 12)}: ${result.subject}\nPost-commit status: branch ${result.status.branch ?? "(unknown)"}, staged ${totals.staged}, unstaged ${totals.unstaged}, untracked ${totals.untracked}.`;
+          eventResult = { commit: result.commit, subject: result.subject, totals };
+        } else if (name === "git_worktree_create") {
+          const entry = await this.scm.createWorktree(sessionId, session.cwd, {
+            ...(typeof input.name === "string" && input.name.trim() ? { name: input.name.trim() } : {}),
+            ...(typeof input.branch === "string" && input.branch.trim() ? { branch: input.branch.trim() } : {}),
+          }, context);
+          text = `Worktree created: ${entry.name}\nPath: ${entry.path}\nBranch: ${entry.branch}\nMerge back explicitly with git_worktree_merge; worktrees are not auto-deleted.`;
+          eventResult = { name: entry.name, path: entry.path, branch: entry.branch };
+        } else if (name === "git_worktree_remove") {
+          const result = await this.scm.removeWorktree(sessionId, session.cwd, String(input.name ?? ""), { force: Boolean(input.force) }, context);
+          text = `Worktree removed: ${result.name}`;
+          eventResult = result;
+        } else {
+          const result = await this.scm.mergeWorktree(sessionId, session.cwd, String(input.name ?? ""), {
+            strategy: input.strategy === "cherry-pick" ? "cherry-pick" : "merge",
+          }, context);
+          text = result.merged
+            ? `Merged worktree branch ${result.branch} into the workspace (${result.strategy}).`
+            : `Merge of ${result.branch} reported conflicts and was aborted (no auto-resolution). Conflicting files:\n${result.conflicts.map((file) => `  ${file}`).join("\n") || "  (none listed)"}`;
+          eventResult = result as unknown as Record<string, unknown>;
+        }
+        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: eventResult } });
+        return { type: "tool_result", toolCallId, content: text, isError: false };
+      } catch (error) {
+        if (signal.aborted) throw error;
+        const content = error instanceof Error ? error.message : String(error);
+        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
+        return { type: "tool_result", toolCallId, content, isError: true };
+      }
+    }
+    if (name === "code_search") {
+      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+      this.state(sessionId, "tool_running");
+      try {
+        const session = await this.sessions.get(sessionId);
+        if (!session) throw new Error("Session not found");
+        if (!this.indexManager) throw new IndexUnavailableError("Symbol index is not enabled on this server.");
+        const query = typeof input.query === "string" ? input.query.trim() : "";
+        if (!query) throw new Error("code_search requires a non-empty query");
+        const kind = typeof input.kind === "string" && input.kind.trim() ? input.kind.trim() : undefined;
+        const limit = input.limit === undefined ? undefined : Number(input.limit);
+        const hits = await this.indexManager.searchSymbols(session.cwd, query, { ...(kind ? { kind } : {}), ...(limit !== undefined ? { limit } : {}) });
+        // 输出为紧凑文本行：file:line kind name — signature；结果可 artifact 化（§4.1）
+        const text = hits.length === 0
+          ? `No symbols matching "${query}"${kind ? ` (kind=${kind})` : ""}. Try a broader query, or fall back to grep/glob.`
+          : hits.map((hit) => `${hit.path}:${hit.startLine}\t${hit.kind}\t${hit.name}\t${hit.signature}`).join("\n");
+        const bounded = await boundToolResult(this.sessions.contextRoot(sessionId), name, text);
+        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: toolEventResult(bounded), truncated: bounded.truncated } });
+        return { type: "tool_result", toolCallId, content: bounded.content, isError: false };
+      } catch (error) {
+        // 索引未建/损坏：明确指引 agent 退回 grep/glob，不自动触发重建（重建是显式动作）
+        const content = error instanceof IndexUnavailableError
+          ? `${error.message} Fall back to grep/glob for navigation.`
+          : error instanceof Error ? error.message : String(error);
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
         return { type: "tool_result", toolCallId, content, isError: true };
       }

@@ -10,6 +10,9 @@ import { ExchangeRateService, HttpExchangeRateProvider } from "./cost/exchange-r
 import { PricingCatalog } from "./cost/pricing-catalog.js";
 import { EventBus } from "./events/event-bus.js";
 import { HookRunner } from "./hooks.js";
+import { IndexManager } from "./index/index-manager.js";
+import { DiagnosticsService } from "./diagnostics/service.js";
+import { ScmService } from "./scm/service.js";
 import { ProviderRegistry } from "./providers/provider.js";
 import { CoreRouter } from "./sandbox/core-router.js";
 import { WsbManager } from "./sandbox/wsb.js";
@@ -98,6 +101,15 @@ const backgroundTasks = new BackgroundTaskRegistry(
 // Hooks（可信配置，等同 yolo 级别）：全局 <dataDir>/hooks.json，项目 <cwd>/.owc/hooks.json 现读覆盖
 const hooks = new HookRunner(path.join(dataDir, "hooks.json"), events);
 const agent = new AgentRunner(sessions, providers, core, events, pricing, exchangeRates, config.defaultLanguage, 50, (model, provider) => models.get(model, provider), usageLog, skills, mcp, compactor, dataDir, agents, commands, search, undefined, backgroundTasks, hooks, extensions, webFetch);
+// 符号索引（0.4.0 Phase 2）：数据目录 index/ 下，按 workspace-hash 分桶；不进会话历史、不导出
+const indexManager = new IndexManager(core, path.join(dataDir, "index"), events);
+agent.setIndexManager(indexManager);
+// 诊断闭环（0.4.0 Phase 3a）：test_runner 工具、REST tests/diagnostics、diagnostics.updated 事件共用
+const diagnostics = new DiagnosticsService(core, sessions, events);
+agent.setDiagnostics(diagnostics);
+// Git 集成（0.4.0 Phase 4a）：git_status/diff/commit 工具、git/* REST、worktree 生命周期（<dataDir>/worktrees）、scm.updated 事件共用
+const scm = new ScmService(core, sessions, events, { worktreeRoot: path.join(dataDir, "worktrees") });
+agent.setScm(scm);
 const providerProfilesRuntime = new ProviderProfilesRuntime(providerProfiles, providers, agent, models, events);
 // 托管工作区（plan §6.4）：镜像/挂载点位于 dataDir 下；孤儿挂载清理挂在 GC 启动扫描上
 const managed = new ManagedWorkspaceManager({ dataDir });
@@ -176,6 +188,9 @@ const app = await buildServer({
   contentLens,
   providerProfiles,
   providerProfilesRuntime,
+  indexManager,
+  diagnostics,
+  scm,
   ...(config.accessToken ? { auth: { accessToken: config.accessToken, allowedOrigins: config.allowedOrigins } } : {}),
   getPreferences: () => {
     const effective = settings.effective();
@@ -185,6 +200,7 @@ const app = await buildServer({
 
 async function shutdown(): Promise<void> {
   clearInterval(gcTimer);
+  indexManager.stop();
   remoteSyncScheduler.stop();
   providerProfilesRuntime.stop();
   exchangeRates.close();

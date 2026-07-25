@@ -10,6 +10,9 @@ import { SteeringError } from "./agent/agent-runner.js";
 import type { BackgroundTaskRegistry } from "./agent/background-tasks.js";
 import type { HookRunner } from "./hooks.js";
 import { CoreRpcError, type CoreClientLike, type ExecRequest } from "./core-client.js";
+import { IndexBuildingError, IndexUnavailableError, type IndexManager } from "./index/index-manager.js";
+import type { DiagnosticsService } from "./diagnostics/service.js";
+import type { ScmService } from "./scm/service.js";
 import { ContextManager, isPathExcluded, type BudgetUpdate } from "./context/context-manager.js";
 import { renderSessionHtml } from "./export-html.js";
 import { boundToolResult } from "./context/tool-result-budget.js";
@@ -160,6 +163,12 @@ export interface ServerDependencies {
   auth?: { accessToken: string; allowedOrigins: string[] };
   /** 慢 WS 客户端背压阈值覆盖（测试用）；缺省用 ws-backpressure 的常量。 */
   wsBackpressureLimits?: Partial<WsBackpressureLimits>;
+  /** 符号索引管理器（0.4.0 Phase 2）；未注入时 /api/workspaces/index/* 与 symbols 路由 501 */
+  indexManager?: IndexManager;
+  /** 诊断服务（0.4.0 Phase 3a）；未注入时 tests/diagnostics 路由 501 */
+  diagnostics?: DiagnosticsService;
+  /** SCM 服务（0.4.0 Phase 4a）；未注入时 git/* 路由 501 */
+  scm?: ScmService;
 }
 
 function parseCookies(value: string | undefined): Map<string, string> {
@@ -1091,6 +1100,220 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       return settings;
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+  // ---- 符号索引（0.4.0 Phase 2 §7.2）：状态 / 显式重建（job，可取消）/ 符号查询 ----
+  // 索引只是加速缓存：未建或损坏时 symbols 查询返回 409 并引导显式重建，绝不自动触发。
+  const requireIndexManager = (): IndexManager | undefined => dependencies.indexManager;
+  app.get<{ Querystring: { sessionId?: string } }>("/api/workspaces/index/status", async (request, reply) => {
+    const indexManager = requireIndexManager();
+    if (!indexManager) return reply.code(501).send({ error: "Symbol index is not enabled" });
+    const sessionId = request.query.sessionId;
+    if (!sessionId) return reply.code(400).send({ error: "sessionId query parameter is required" });
+    const session = await sessions.get(sessionId);
+    if (!session) return reply.code(404).send({ error: "Session not found" });
+    return indexManager.status(sessionId, session.cwd);
+  });
+  app.post<{ Body: { sessionId?: string } }>("/api/workspaces/index/rebuild", async (request, reply) => {
+    const indexManager = requireIndexManager();
+    if (!indexManager) return reply.code(501).send({ error: "Symbol index is not enabled" });
+    const sessionId = request.body?.sessionId;
+    if (!sessionId) return reply.code(400).send({ error: "sessionId is required" });
+    const session = await sessions.get(sessionId);
+    if (!session) return reply.code(404).send({ error: "Session not found" });
+    try {
+      const { jobId } = await indexManager.rebuild(sessionId, session.cwd);
+      return reply.code(202).send({ accepted: true, jobId });
+    } catch (error) {
+      if (error instanceof IndexBuildingError) return reply.code(409).send({ error: error.message });
+      throw error;
+    }
+  });
+  app.post<{ Body: { sessionId?: string } }>("/api/workspaces/index/rebuild/cancel", async (request, reply) => {
+    const indexManager = requireIndexManager();
+    if (!indexManager) return reply.code(501).send({ error: "Symbol index is not enabled" });
+    const sessionId = request.body?.sessionId;
+    if (!sessionId) return reply.code(400).send({ error: "sessionId is required" });
+    const session = await sessions.get(sessionId);
+    if (!session) return reply.code(404).send({ error: "Session not found" });
+    const cancelled = await indexManager.cancel(sessionId, session.cwd);
+    if (!cancelled) return reply.code(409).send({ error: "No index rebuild is running for this workspace" });
+    return { accepted: true };
+  });
+  app.get<{ Querystring: { sessionId?: string; q?: string; kind?: string; limit?: string } }>("/api/workspaces/symbols", async (request, reply) => {
+    const indexManager = requireIndexManager();
+    if (!indexManager) return reply.code(501).send({ error: "Symbol index is not enabled" });
+    const sessionId = request.query.sessionId;
+    if (!sessionId) return reply.code(400).send({ error: "sessionId query parameter is required" });
+    const session = await sessions.get(sessionId);
+    if (!session) return reply.code(404).send({ error: "Session not found" });
+    const query = request.query.q?.trim() ?? "";
+    const kind = request.query.kind?.trim() || undefined;
+    const parsedLimit = request.query.limit === undefined ? undefined : Number(request.query.limit);
+    if (parsedLimit !== undefined && (!Number.isInteger(parsedLimit) || parsedLimit < 1 || parsedLimit > 200)) {
+      return reply.code(400).send({ error: "limit must be an integer between 1 and 200" });
+    }
+    try {
+      const symbols = query
+        ? await indexManager.searchSymbols(session.cwd, query, { ...(kind ? { kind } : {}), ...(parsedLimit !== undefined ? { limit: parsedLimit } : {}) })
+        : [];
+      const status = await indexManager.status(sessionId, session.cwd);
+      return { symbols, indexStatus: status.status };
+    } catch (error) {
+      if (error instanceof IndexUnavailableError) return reply.code(409).send({ error: error.message, code: error.code });
+      throw error;
+    }
+  });
+  // @ 文件补全供数（0.4.0 Phase 2 §5.2）：索引文件清单搜索；与 complete-path 实时 glob 互补，
+  // 索引未建/损坏时 409 INDEX_UNAVAILABLE，前端据此回退 complete-path，用户无感。
+  app.get<{ Querystring: { sessionId?: string; q?: string; limit?: string } }>("/api/workspaces/files", async (request, reply) => {
+    const indexManager = requireIndexManager();
+    if (!indexManager) return reply.code(501).send({ error: "Symbol index is not enabled" });
+    const sessionId = request.query.sessionId;
+    if (!sessionId) return reply.code(400).send({ error: "sessionId query parameter is required" });
+    const session = await sessions.get(sessionId);
+    if (!session) return reply.code(404).send({ error: "Session not found" });
+    const query = request.query.q?.trim() ?? "";
+    const parsedLimit = request.query.limit === undefined ? undefined : Number(request.query.limit);
+    if (parsedLimit !== undefined && (!Number.isInteger(parsedLimit) || parsedLimit < 1 || parsedLimit > 200)) {
+      return reply.code(400).send({ error: "limit must be an integer between 1 and 200" });
+    }
+    try {
+      const files = query
+        ? await indexManager.searchFiles(session.cwd, query, { ...(parsedLimit !== undefined ? { limit: parsedLimit } : {}) })
+        : [];
+      const status = await indexManager.status(sessionId, session.cwd);
+      return { files, indexStatus: status.status };
+    } catch (error) {
+      if (error instanceof IndexUnavailableError) return reply.code(409).send({ error: error.message, code: error.code });
+      throw error;
+    }
+  });
+  // ---- 诊断闭环（0.4.0 Phase 3a）：运行测试 / 读取最近诊断 ----
+  // 与 test_runner 工具共用 DiagnosticsService：Core job 执行继承会话权限沙盒，
+  // 完整 DiagnosticSet 落 sessions/<id>/diagnostics/<run-id>.json，完成后广播 diagnostics.updated。
+  app.post<{ Params: { id: string }; Body: { command?: string } }>("/api/sessions/:id/tests/run", async (request, reply) => {
+    const diagnostics = dependencies.diagnostics;
+    if (!diagnostics) return reply.code(501).send({ error: "Diagnostics service is not enabled" });
+    const session = await sessions.get(request.params.id);
+    if (!session) return reply.code(404).send({ error: "Session not found" });
+    const command = typeof request.body?.command === "string" && request.body.command.trim() ? request.body.command.trim() : undefined;
+    try {
+      const { record, feedback } = await diagnostics.run(session.id, session.cwd, {
+        ...(command ? { command } : {}),
+        shellBackend: session.shellBackend ?? "default",
+      });
+      return { record, feedback };
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+  app.get<{ Params: { id: string } }>("/api/sessions/:id/diagnostics/latest", async (request, reply) => {
+    const diagnostics = dependencies.diagnostics;
+    if (!diagnostics) return reply.code(501).send({ error: "Diagnostics service is not enabled" });
+    const session = await sessions.get(request.params.id);
+    if (!session) return reply.code(404).send({ error: "Session not found" });
+    const latest = await diagnostics.latest(session.id);
+    if (!latest) return reply.code(404).send({ error: "No diagnostics recorded for this session" });
+    return latest;
+  });
+  // ---- Git 集成（0.4.0 Phase 4a）：状态/diff 只读，worktree 生命周期；写操作走托管工作区共享租约，与快照互斥 ----
+  app.get<{ Params: { id: string } }>("/api/sessions/:id/git/status", async (request, reply) => {
+    const scm = dependencies.scm;
+    if (!scm) return reply.code(501).send({ error: "SCM service is not enabled" });
+    const session = await sessions.get(request.params.id);
+    if (!session) return reply.code(404).send({ error: "Session not found" });
+    const releaseWorkspace = acquireManagedWorkspaceUse(session);
+    if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
+    try {
+      return await scm.status(session.id, session.cwd, { shellBackend: session.shellBackend ?? "default" });
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      releaseWorkspace();
+    }
+  });
+  app.get<{ Params: { id: string }; Querystring: { staged?: string; base?: string; file?: string } }>("/api/sessions/:id/git/diff", async (request, reply) => {
+    const scm = dependencies.scm;
+    if (!scm) return reply.code(501).send({ error: "SCM service is not enabled" });
+    const session = await sessions.get(request.params.id);
+    if (!session) return reply.code(404).send({ error: "Session not found" });
+    const staged = request.query.staged === "true" || request.query.staged === "1";
+    const base = typeof request.query.base === "string" && request.query.base.trim() ? request.query.base.trim() : undefined;
+    if (staged && base) return reply.code(400).send({ error: "staged and base are mutually exclusive" });
+    const releaseWorkspace = acquireManagedWorkspaceUse(session);
+    if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
+    try {
+      return await scm.diff(session.id, session.cwd, {
+        ...(staged ? { staged } : {}),
+        ...(base ? { base } : {}),
+        ...(typeof request.query.file === "string" && request.query.file.trim() ? { file: request.query.file.trim() } : {}),
+      }, { shellBackend: session.shellBackend ?? "default" });
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      releaseWorkspace();
+    }
+  });
+  app.get<{ Params: { id: string } }>("/api/sessions/:id/git/worktrees", async (request, reply) => {
+    const scm = dependencies.scm;
+    if (!scm) return reply.code(501).send({ error: "SCM service is not enabled" });
+    const session = await sessions.get(request.params.id);
+    if (!session) return reply.code(404).send({ error: "Session not found" });
+    return { worktrees: await scm.listWorktrees(session.id) };
+  });
+  app.post<{ Params: { id: string }; Body: { name?: string; branch?: string } }>("/api/sessions/:id/git/worktrees", async (request, reply) => {
+    const scm = dependencies.scm;
+    if (!scm) return reply.code(501).send({ error: "SCM service is not enabled" });
+    const session = await sessions.get(request.params.id);
+    if (!session) return reply.code(404).send({ error: "Session not found" });
+    const releaseWorkspace = acquireManagedWorkspaceUse(session);
+    if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
+    try {
+      const entry = await scm.createWorktree(session.id, session.cwd, {
+        ...(typeof request.body?.name === "string" && request.body.name.trim() ? { name: request.body.name.trim() } : {}),
+        ...(typeof request.body?.branch === "string" && request.body.branch.trim() ? { branch: request.body.branch.trim() } : {}),
+      }, { shellBackend: session.shellBackend ?? "default" });
+      return entry;
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      releaseWorkspace();
+    }
+  });
+  app.delete<{ Params: { id: string; name: string }; Querystring: { force?: string } }>("/api/sessions/:id/git/worktrees/:name", async (request, reply) => {
+    const scm = dependencies.scm;
+    if (!scm) return reply.code(501).send({ error: "SCM service is not enabled" });
+    const session = await sessions.get(request.params.id);
+    if (!session) return reply.code(404).send({ error: "Session not found" });
+    const releaseWorkspace = acquireManagedWorkspaceUse(session);
+    if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
+    try {
+      return await scm.removeWorktree(session.id, session.cwd, request.params.name, {
+        force: request.query.force === "true" || request.query.force === "1",
+      }, { shellBackend: session.shellBackend ?? "default" });
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      releaseWorkspace();
+    }
+  });
+  // 合回显式执行；冲突如实报告文件列表并中止，不做自动解决
+  app.post<{ Params: { id: string; name: string }; Body: { strategy?: "merge" | "cherry-pick" } }>("/api/sessions/:id/git/worktrees/:name/merge", async (request, reply) => {
+    const scm = dependencies.scm;
+    if (!scm) return reply.code(501).send({ error: "SCM service is not enabled" });
+    const session = await sessions.get(request.params.id);
+    if (!session) return reply.code(404).send({ error: "Session not found" });
+    const releaseWorkspace = acquireManagedWorkspaceUse(session);
+    if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
+    try {
+      return await scm.mergeWorktree(session.id, session.cwd, request.params.name, {
+        strategy: request.body?.strategy === "cherry-pick" ? "cherry-pick" : "merge",
+      }, { shellBackend: session.shellBackend ?? "default" });
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      releaseWorkspace();
     }
   });
   app.post<{ Params: { id: string }; Body: { messageId: string } }>("/api/sessions/:id/context/restore", async (request, reply) => {
