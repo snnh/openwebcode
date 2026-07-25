@@ -63,7 +63,7 @@ function installFetchMock(overrides: Partial<SessionDetail> = {}): void {
     if (url.endsWith("/api/sandbox/capabilities")) return json({ appcontainer: true, jobobject: true, off: true, wsb: { available: false, reason: "测试环境" } });
     if (url.includes("/api/sessions/s1/steering")) return json([]);
     if (url.includes("/api/sessions/s1/permissions")) return json([]);
-    if (url.match(/\/api\/sessions\/s1$/)) return json(session);
+    if (url.match(/\/api\/sessions\/s1(\?.*)?$/)) return json(session);
     return json({ error: "not mocked" }, 404);
   });
   vi.stubGlobal("fetch", handler);

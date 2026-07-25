@@ -1,6 +1,7 @@
 import { memo, useEffect, useRef, useState, type ReactElement } from "react";
 import { api } from "../lib/api";
 import type { ChatMessage, ExtensionInfo, MessageContent } from "../lib/contracts";
+import type { DiffSpec } from "./editor/DiffPane";
 import { Icon } from "./Icon";
 import { CodeBlock, Markdown } from "./Markdown";
 import { useI18n } from "../i18n";
@@ -17,15 +18,34 @@ export function summarizeToolInput(input?: Record<string, unknown>): string | un
   return undefined;
 }
 
-export function ToolCallCard({ name, input }: { name: string; input?: Record<string, unknown> }): ReactElement {
+/** 从 write_file/edit_file 工具入参构造 diff 视图打开规格；非文件改动工具返回 undefined */
+export function diffSpecForTool(name: string, input?: Record<string, unknown>): DiffSpec | undefined {
+  const path = typeof input?.path === "string" ? input.path : undefined;
+  if (!path) return undefined;
+  if (name === "write_file") return { source: "agent-write", path, content: String(input?.content ?? "") };
+  if (name === "edit_file") return { source: "agent-edit", path, oldText: String(input?.oldText ?? ""), newText: String(input?.newText ?? "") };
+  return undefined;
+}
+
+export function ToolCallCard({ name, input, onOpenDiff }: { name: string; input?: Record<string, unknown>; onOpenDiff?(spec: DiffSpec): void }): ReactElement {
   const { t } = useI18n();
   const summary = summarizeToolInput(input);
   const json = JSON.stringify(input ?? {}, null, 2);
+  const diffSpec = diffSpecForTool(name, input);
   return (
     <section className="tool-card">
       <header>
         <span className="tool-icon" aria-hidden><Icon name="wrench" size={13} /></span>
         <b className="mono">{name}</b>
+        {diffSpec && onOpenDiff && (
+          <button
+            className="btn small tool-diff-open"
+            onClick={() => onOpenDiff(diffSpec)}
+            aria-label={t("在 diff 视图中打开该文件变化", "Open this file change in the diff view")}
+          >
+            {t("在 diff 中打开", "Open in diff")}
+          </button>
+        )}
       </header>
       {summary && <p className="tool-summary mono" title={summary}>{summary}</p>}
       {json !== "{}" && (
@@ -69,7 +89,7 @@ export function ThinkingBlock({ text, streaming = false }: { text: string; strea
   );
 }
 
-function ContentBlock({ block }: { block: MessageContent }): ReactElement | null {
+function ContentBlock({ block, onOpenDiff }: { block: MessageContent; onOpenDiff?(spec: DiffSpec): void }): ReactElement | null {
   const { t } = useI18n();
   switch (block.type) {
     case "text":
@@ -77,7 +97,7 @@ function ContentBlock({ block }: { block: MessageContent }): ReactElement | null
     case "thinking":
       return <ThinkingBlock text={block.text ?? ""} />;
     case "tool_call":
-      return <ToolCallCard name={block.name ?? "tool"} input={block.input} />;
+      return <ToolCallCard name={block.name ?? "tool"} input={block.input} onOpenDiff={onOpenDiff} />;
     case "tool_result":
       return <ToolResultCard content={block.content ?? ""} error={Boolean(block.isError)} />;
     case "image":
@@ -127,7 +147,7 @@ async function writeClipboard(text: string): Promise<boolean> {
   }
 }
 
-export function MessageCard({ message, sessionId, contentLens, onNotice }: { message: ChatMessage; sessionId?: string; contentLens?: ExtensionInfo; onNotice?(message: string, kind?: "info" | "error"): void }): ReactElement {
+export function MessageCard({ message, sessionId, contentLens, onNotice, onOpenDiff }: { message: ChatMessage; sessionId?: string; contentLens?: ExtensionInfo; onNotice?(message: string, kind?: "info" | "error"): void; onOpenDiff?(spec: DiffSpec): void }): ReactElement {
   const { t, locale } = useI18n();
   const createdAt = new Date(message.createdAt);
   const articleRef = useRef<HTMLElement>(null);
@@ -206,7 +226,7 @@ export function MessageCard({ message, sessionId, contentLens, onNotice }: { mes
           </>
         )}
       </div>
-      {content.map((block, index) => <ContentBlock key={index} block={block} />)}
+      {content.map((block, index) => <ContentBlock key={index} block={block} onOpenDiff={onOpenDiff} />)}
       {translation && <details className="content-lens-result" open><summary>{t("译文", "Translation")}</summary><Markdown>{translation}</Markdown></details>}
       {explanation && <details className="content-lens-result" open><summary>{t("解析：", "Explanation: ")}{explanation.selection}</summary><Markdown>{explanation.text}</Markdown></details>}
     </article>
@@ -230,6 +250,7 @@ export const MemoMessageCard = memo(MessageCard, (previous, next) =>
   previous.contentLens === next.contentLens
   && previous.sessionId === next.sessionId
   && previous.onNotice === next.onNotice
+  && previous.onOpenDiff === next.onOpenDiff
   && previous.message.id === next.message.id
   && previous.message.role === next.message.role
   && previous.message.createdAt === next.message.createdAt

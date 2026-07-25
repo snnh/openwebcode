@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import type { ChatMessage, ExtensionInfo, SessionDetail } from "../lib/contracts";
+import type { DiffSpec } from "./editor/DiffPane";
 import { Icon } from "./Icon";
 import { Markdown } from "./Markdown";
 import { MemoMessageCard, ThinkingBlock } from "./MessageCard";
@@ -56,7 +57,7 @@ function MeasuredItem({ index, onHeight, children }: { index: number; onHeight(i
   return <div className="virtual-message-item" ref={ref}>{children}</div>;
 }
 
-export function ExecutionTrack({ session, cleared, streamText, thinkingText, runError, permissions, onPermissionDone, onPermissionError, onSendToAgent, contentLens, onNotice }: {
+export function ExecutionTrack({ session, cleared, streamText, thinkingText, runError, permissions, onPermissionDone, onPermissionError, onSendToAgent, contentLens, onNotice, onOpenDiff, hasMoreMessages, onLoadMore, loadingMore }: {
   session: SessionDetail;
   cleared?: { uptoIndex: number; at: string };
   streamText: string;
@@ -69,6 +70,14 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, run
   onSendToAgent?(cmd: string, output: string): void;
   contentLens?: ExtensionInfo;
   onNotice?(message: string, kind?: "info" | "error"): void;
+  /** 0.5.0 Phase 1b：write_file/edit_file 工具卡的文件变化一键在统一 diff 视图打开 */
+  onOpenDiff?(spec: DiffSpec): void;
+  /** 0.5.0 Phase 2：历史消息分页——是否有更早的消息可加载 */
+  hasMoreMessages?: boolean;
+  /** 0.5.0 Phase 2：加载更早消息的回调 */
+  onLoadMore?(): void;
+  /** 0.5.0 Phase 2：加载中状态 */
+  loadingMore?: boolean;
 }): ReactElement {
   const { t } = useI18n();
   const trackRef = useRef<HTMLDivElement>(null);
@@ -126,6 +135,13 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, run
           }
         }}
       >
+        {hasMoreMessages && onLoadMore && (
+          <div className="load-more-bar">
+            <button className="load-more-btn" onClick={onLoadMore} disabled={loadingMore}>
+              {loadingMore ? t("加载中…", "Loading…") : t("加载更早的消息", "Load earlier messages")}
+            </button>
+          </div>
+        )}
         {session.messages.length === 0 && !streamText && (
           <p className="track-empty">{t("还没有消息。在下方描述要完成的任务，开始第一项作业。", "No messages yet. Describe a task below to start your first job.")}</p>
         )}
@@ -139,7 +155,7 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, run
               {cleared && Math.min(cleared.uptoIndex, session.messages.length) === index && (
                 <div className="context-cleared-divider" role="separator">{t("上下文已清空（历史保留）", "Context cleared (history retained)")}</div>
               )}
-              <MemoMessageCard message={message} sessionId={session.id} contentLens={contentLens} onNotice={onNotice} />
+              <MemoMessageCard message={message} sessionId={session.id} contentLens={contentLens} onNotice={onNotice} onOpenDiff={onOpenDiff} />
               {shellCmd && onSendToAgent && (
                 <button
                   className="send-to-agent"

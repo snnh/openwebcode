@@ -15,6 +15,8 @@ function stubActions(): CommandActions {
     deleteCurrentSession: vi.fn(), sendDraft: vi.fn(), abortRun: vi.fn(), toggleTheme: vi.fn(),
     focusComposer: vi.fn(), nextSession: vi.fn(), previousSession: vi.fn(),
     showKeyboardShortcuts: vi.fn(), cycleZone: vi.fn(), showNotifications: vi.fn(),
+    saveEditorFile: vi.fn(), toggleEditorSplit: vi.fn(),
+    diffAcceptHunk: vi.fn(), diffRejectHunk: vi.fn(),
   };
 }
 

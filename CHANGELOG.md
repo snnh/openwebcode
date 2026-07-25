@@ -6,6 +6,11 @@
 
 ### 新增
 
+- Monaco 编辑器与统一 diff 视图（0.5.0 Phase 1）：工具卡文件变化、Problems 跳转、SCM diff、Quick Open 均可打开 Monaco 编辑器/分栏 diff（独立懒加载 chunk，未打开不加载）；三来源统一 diff（agent 工具改动/SCM/检查点）支持逐 hunk 接受/拒绝，写回走权限链与 plan 门禁；`mod+S` 保存、`mod+\` 分栏、`mod+alt+a/r` 接受/拒绝 hunk。加载失败降级只读代码视图，移动端降级为全屏只读摘要。
+- 会话加载分页（0.5.0 Phase 2a）：10 万行历史会话打开 ≤ 1s；首屏只取尾部 N 条，ExecutionTrack 顶部“加载更早消息”按钮向前翻页。
+- Provider 并发控制（0.5.0 Phase 2b）：per-provider 并发上限与队列深度诊断，避免多会话并发打满单一 provider；`GET /api/providers/stats` 暴露 active/queued/maxConcurrent。
+- 并行 grep/glob（0.5.0 Phase 2c）：Core 4 线程工作窃取并行文件搜索，结果确定性排序，保持预算/取消/no-follow 语义。
+- 性能诊断面板（0.5.0 Phase 2d）：底部面板新增“性能”标签页，展示渲染帧率（rAF 采样 fps p50/p95/掉帧）、事件吞吐（published/retained/retainedBytes）、Turn 阶段耗时条形图（ctx/llm/tool 三段）；数据脱敏，不含消息内容/路径/模型名。
 - 工作台五区布局（0.4.0 Phase 5）：活动栏/侧栏/主区/底部面板/状态栏重构为固定职责的五区模型，`F6` 在区域间轮换，布局状态（侧栏宽度、面板开合）按工作区持久化在本机；对话轨道与输入框始终是主区中心。
 - 命令面板与 Quick Open：`Ctrl/Cmd+Shift+P` 命令面板统一暴露会话/运行/面板/设置等全部内建命令（20 项），标注当前快捷键，`>` 前缀强制命令模式；`Ctrl/Cmd+P` Quick Open 混排工作区文件（索引供数、未建索引回退 glob）与符号条目（`#` 前缀），共用模糊匹配与防抖乱序丢弃；两者均为懒加载独立 chunk。
 - 快捷键体系：全局 keybindings 注册表（`{ commandId, key, when }`），默认集对齐 VSCode 习惯（`mod+B` 侧栏、`mod+`` 底部面板、`mod+,` 设置、`mod+Shift+E/F/G/M` 各视图、`mod+L` 聚焦输入框、`mod+PageUp/Down` 切换会话等），输入框焦点下不抢键；`Shift+?` 打开快捷键速查；0.4.0 暂不支持自定义键位。

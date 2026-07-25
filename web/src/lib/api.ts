@@ -1,4 +1,4 @@
-import type { AgentRun, BackgroundTaskInfo, CatalogSyncStatus, Checkpoint, CompletePathResponse, ContextView, CostReport, ExtensionInfo, FileEntry, ManagedWorkspaceCapability, ManagedWorkspaceSyncPreview, ManagedWorkspaceSyncResult, MessageAttachment, ModelProfile, PendingPermission, PricingDocument, ProviderProfilesView, SandboxCapabilities, SandboxMode, Session, SessionDetail, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo, SyncResult, TodoItem, WebCapability } from "./contracts";
+import type { AgentRun, BackgroundTaskInfo, CatalogSyncStatus, Checkpoint, CompletePathResponse, ContextView, CostReport, ExtensionInfo, FileEntry, ManagedWorkspaceCapability, ManagedWorkspaceSyncPreview, ManagedWorkspaceSyncResult, MessageAttachment, MessagesPage, ModelProfile, PendingPermission, PricingDocument, ProviderConcurrencyStats, ProviderProfilesView, SandboxCapabilities, SandboxMode, Session, SessionDetail, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo, SyncResult, TodoItem, WebCapability } from "./contracts";
 
 export class ApiError extends Error {
   constructor(readonly status: number, message: string) {
@@ -49,9 +49,11 @@ function readFileAsBase64(file: File): Promise<string> {
 export const api = {
   sessions: () => request<Session[]>("/api/sessions"),
   health: () => request<{ status: string }>("/api/health"),
+  providerStats: () => request<Record<string, ProviderConcurrencyStats>>("/api/providers/stats"),
   indexStatus: (sessionId: string) => request<import("./contracts").WorkspaceIndexStatus>(`/api/workspaces/index/status?sessionId=${encodeURIComponent(sessionId)}`),
   rebuildIndex: (sessionId: string) => request<{ accepted: boolean; jobId: string }>("/api/workspaces/index/rebuild", { method: "POST", body: JSON.stringify({ sessionId }) }),
-  session: (id: string) => request<SessionDetail>(`/api/sessions/${id}`),
+  session: (id: string, limit?: number) => request<SessionDetail>(`/api/sessions/${id}${limit ? `?limit=${limit}` : ""}`),
+  messagesPage: (id: string, before: string, limit?: number) => request<MessagesPage>(`/api/sessions/${id}/messages?before=${encodeURIComponent(before)}${limit ? `&limit=${limit}` : ""}`),
   run: (id: string) => request<AgentRun>(`/api/sessions/${id}/run`),
   createSession: (body: { cwd: string; provider: string; model: string; title?: string; agentMode?: "plan" | "build"; sandboxMode?: SandboxMode; setupScript?: string; workspaceMode?: "managed" }) =>
     request<Session>("/api/sessions", { method: "POST", body: JSON.stringify(body) }),
@@ -139,6 +141,13 @@ export const api = {
     request<PricingDocument>("/api/model-pricing", { method: "PUT", body: JSON.stringify(document) }),
   listFiles: (id: string, path = ".") => request<{ entries: FileEntry[]; truncated: boolean }>(`/api/sessions/${id}/files?path=${encodeURIComponent(path)}`),
   readFile: (id: string, path: string) => request<{ content: string; encoding: string; truncated: boolean }>(`/api/sessions/${id}/files/content?path=${encodeURIComponent(path)}`),
+  // 编辑器保存（0.5.0 Phase 1a）：走 server 端 write_file 同一权限链与 plan 只读门禁；
+  // 审批挂起期间请求保持打开，403=权限/plan 拒绝
+  writeFile: (id: string, path: string, content: string) =>
+    request<{ ok: true }>(`/api/sessions/${id}/files/content`, { method: "PUT", body: JSON.stringify({ path, content }) }),
+  // 编辑器面包屑符号（0.5.0 Phase 1a）：按文件取符号；索引未启用/未建时 501/409，调用方按无符号降级
+  workspaceFileSymbols: (sessionId: string, file: string) =>
+    request<import("./contracts").WorkspaceSymbolsResponse>(`/api/workspaces/symbols?sessionId=${encodeURIComponent(sessionId)}&file=${encodeURIComponent(file)}`),
   // 最近一次诊断结果（Phase 3）；无记录时服务端 404，由调用方按空态处理
   latestDiagnostics: (id: string) => request<import("./contracts").DiagnosticSet>(`/api/sessions/${encodeURIComponent(id)}/diagnostics/latest`),
   // SCM（Phase 4）：只读 status/diff + worktree 管理；提交不走 REST，由面板下发 agent 消息走权限链
@@ -196,4 +205,7 @@ export const api = {
     request<{ text: string; cached: boolean }>(`/api/sessions/${sessionId}/content-lens/translate`, { method: "POST", body: JSON.stringify({ messageId, targetLanguage, ...(glossary ? { glossary } : {}) }) }),
   explainSelection: (sessionId: string, text: string, targetLanguage = "zh-CN") =>
     request<{ text: string }>(`/api/sessions/${sessionId}/content-lens/explain`, { method: "POST", body: JSON.stringify({ text, targetLanguage }) }),
+  // 0.5.0 Phase 2d：性能采样（脱敏）
+  sessionPerf: (id: string) => request<{ records: import("./contracts").RunPerfRecord[] }>(`/api/sessions/${encodeURIComponent(id)}/perf`),
+  serverMetrics: () => request<{ events: { published: number; retained: number; retainedBytes: number; oversizedNotRetained: number }; websocket: { clients: number; slowClientDisconnects: number; failedClientSends: number } }>("/api/metrics"),
 };

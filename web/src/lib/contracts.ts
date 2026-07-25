@@ -122,6 +122,17 @@ export interface Session {
 
 export interface SessionDetail extends Session {
   messages: ChatMessage[];
+  /** Total message count in messages.jsonl (may exceed messages.length when paginated) */
+  messageCount?: number;
+  /** Whether older messages exist beyond the returned page */
+  hasMoreMessages?: boolean;
+}
+
+/** 0.5.0 Phase 2: paginated message page from GET /api/sessions/:id/messages */
+export interface MessagesPage {
+  messages: ChatMessage[];
+  hasMore: boolean;
+  totalLines: number;
 }
 
 export interface PendingPermission {
@@ -526,4 +537,28 @@ export interface WorkspaceIndexStatus {
   watch: "active" | "fallback" | "none";
   jobId?: string;
   message?: string;
+}
+
+// ---- 性能采样（0.5.0 Phase 2d）：GET /api/sessions/:id/perf 的契约 ----
+
+/** 单次 run 的性能采样记录（脱敏：不含消息内容、文件路径、模型名） */
+export interface RunPerfRecord {
+  runId: string;
+  sessionId: string;
+  startedAt: string;
+  finishedAt: string;
+  turnCount: number;
+  stages: {
+    contextBuildMs: number;
+    providerCallMs: number;
+    toolExecMs: number;
+    totalMs: number;
+  };
+}
+
+/** 0.5.0 Phase 2：per-provider 并发与队列深度诊断（GET /api/providers/stats） */
+export interface ProviderConcurrencyStats {
+  active: number;
+  queued: number;
+  maxConcurrent: number;
 }

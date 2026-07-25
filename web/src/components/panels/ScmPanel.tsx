@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactElement } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../../lib/api";
 import type { ScmDiff, ScmStatusEntry } from "../../lib/contracts";
+import type { DiffSpec } from "../editor/DiffPane";
 import { Icon } from "../Icon";
 import { useI18n } from "../../i18n";
 
@@ -70,9 +71,11 @@ function StatusGroup({ title, entries, total, onOpen }: {
   );
 }
 
-export function ScmPanel({ sessionId, onNotice }: {
+export function ScmPanel({ sessionId, onNotice, onOpenDiff }: {
   sessionId?: string;
   onNotice?(message: string, kind?: "info" | "error"): void;
+  /** 0.5.0 Phase 1b：文件 diff 一键在统一 diff 视图中打开（hunk 级接受/拒绝） */
+  onOpenDiff?(spec: DiffSpec): void;
 }): ReactElement {
   const { t } = useI18n();
   const queryClient = useQueryClient();
@@ -292,6 +295,15 @@ export function ScmPanel({ sessionId, onNotice }: {
             <span className="mono" title={selected.path}>
               {selected.path}{selected.staged ? t("（已暂存）", " (staged)") : ""}
             </span>
+            {onOpenDiff && (
+              <button
+                className="btn small"
+                onClick={() => onOpenDiff({ source: "scm", path: selected.path, staged: selected.staged })}
+                aria-label={t("在 diff 视图中打开（支持 hunk 接受/拒绝）", "Open in diff view (hunk accept/reject)")}
+              >
+                {t("在 diff 视图中打开", "Open in diff view")}
+              </button>
+            )}
             <button className="icon-btn" onClick={() => setSelected(undefined)} aria-label={t("关闭 diff 视图", "Close diff view")}><Icon name="x" size={14} /></button>
           </header>
           {diff.isError ? (

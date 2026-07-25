@@ -17,9 +17,11 @@ export function langFromPath(path: string): string | undefined {
   return aliases[ext] ?? ext;
 }
 
-export function CodeOverlay({ sessionId, path, onClose }: {
+export function CodeOverlay({ sessionId, path, onEdit, onClose }: {
   sessionId: string;
   path: string;
+  /** 0.5.0 Phase 1a：升级为可编辑编辑器分栏；移动端/未提供时不显示入口 */
+  onEdit?(path: string): void;
   onClose(): void;
 }): ReactElement {
   const { t } = useI18n();
@@ -46,6 +48,11 @@ export function CodeOverlay({ sessionId, path, onClose }: {
       <div className="wb-overlay code-overlay" role="dialog" aria-modal="true" aria-label={path}>
         <header className="wb-overlay-header">
           <span className="code-overlay-path"><Icon name="file" size={13} /> {path}</span>
+          {onEdit && (
+            <button className="btn small" onClick={() => onEdit(path)} aria-label={t("在编辑器中打开", "Open in editor")}>
+              {t("编辑", "Edit")}
+            </button>
+          )}
           <button className="icon-btn" aria-label={t("关闭（Esc）", "Close (Esc)")} onClick={onClose}>✕</button>
         </header>
         <div className="code-overlay-body">

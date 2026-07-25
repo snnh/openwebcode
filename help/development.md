@@ -45,13 +45,20 @@ openwebcode/
 │   │   ├── commands/     # 命令注册表、keybindings 注册表与默认集、覆盖审计（0.4.0）
 │   │   ├── components/   # Composer / ExecutionTrack / MessageCard / JobHeader /
 │   │   │                 #   CommandPalette / QuickOpen / ShortcutsDialog 等
-│   │   │   ├── editor/   # 只读 CodeView（行列跳转；可编辑编辑器属 0.5.0）
-│   │   │   └── panels/   # Context / Cost / Files / Problems / Sandbox / Scm / Timeline
-│   │   ├── lib/          # api.ts（REST 客户端）、contracts.ts（类型契约）
+│   │   │   ├── editor/   # 只读 CodeView、Monaco 编辑器、DiffPane（0.5.0）
+│   │   │   └── panels/   # Context / Cost / Files / Problems / Sandbox / Scm / Timeline / Perf
+│   │   ├── lib/          # api.ts（REST 客户端）、contracts.ts（类型契约）、perf-sampler.ts（帧率采样）
 │   │   └── styles.css    # 全部样式（含移动端 ≤768px 响应式）
 │   └── src/test/         # vitest + jsdom + Testing Library + axe
 ├── packaging/            # 分发布局、安装脚本、owc.cmd、CI 发布流水线
-└── .github/workflows/    # core.yml / server.yml / web.yml（CI）+ release.yml（发布）
+├── scripts/bench/        # 性能基准体系（Node + Playwright）
+│   ├── lib/common.mjs    # 共享工具：startBenchServer、writeResult、percentile
+│   ├── generate-dataset.mjs # 确定性数据集生成（固定 seed）
+│   ├── bench-*.mjs       # 各场景基准脚本
+│   ├── browser/          # Playwright 浏览器渲染基准
+│   ├── compare.mjs       # 结果对比（回归 >15% 标红）
+│   └── results/          # 结果 JSON（gitignore）
+└── .github/workflows/    # core.yml / server.yml / web.yml（CI）+ release.yml（发布 + 基准）
 ```
 
 ## 构建三件套
@@ -234,7 +241,7 @@ provider；它支持 `run: <cmd>` 的工具调用回放与 `tool_result` 回包�
 | `core.yml` | 改 `core/**` | Linux gcc+clang / Windows MSVC：configure→build→ctest（C 单测 + Python 协议/fs 脚本） |
 | `server.yml` | 改 `server/**` 或 `core/**` | Ubuntu + Windows：先构建 core Debug，再 `npm ci && npm run build && npm test`（含依赖真实 owc-exec 的 core-client / core-tcp / stage3-e2e / web-e2e——通过 `OWC_CORE_PATH` 注入路径） |
 | `web.yml` | 改 `web/**` | Ubuntu：`npm ci && npm run build && npm test`（vitest + jsdom + Testing Library + axe） |
-| `release.yml` | 打 `v*` tag 或手动触发 | 发布前先跑 server + web 全测试网关，再产 MSI / tar.gz |
+| `release.yml` | 打 `v*` tag 或手动触发 | 发布前先跑 server + web 全测试网关，再产 MSI / tar.gz；新增 benchmark job（与 windows/linux 并行）跑全部 Node + Playwright 基准并归档结果 |
 
 关键点：
 

@@ -1,14 +1,17 @@
 import { useState, type ReactElement } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../lib/api";
+import type { DiffSpec } from "../editor/DiffPane";
 import { Icon } from "../Icon";
 import { CodeBlock } from "../Markdown";
 import { useI18n } from "../../i18n";
 
-export function TimelinePanel({ sessionId, running, onNotice }: {
+export function TimelinePanel({ sessionId, running, onNotice, onOpenDiff }: {
   sessionId?: string;
   running: boolean;
   onNotice(message: string, kind?: "info" | "error"): void;
+  /** 0.5.0 Phase 1b：检查点对比一键在统一 diff 视图中打开（hunk 级"恢复到此 hunk"） */
+  onOpenDiff?(spec: DiffSpec): void;
 }): ReactElement {
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
@@ -128,7 +131,18 @@ export function TimelinePanel({ sessionId, running, onNotice }: {
             </button>
           </div>
           {selectedCheckpoint === checkpoint.id && (
-            diff.data ? <CodeBlock lang="diff" code={diff.data.diff || t("（无差异）", "(No differences)")} /> : <p className="panel-empty">{t("加载 diff…", "Loading diff…")}</p>
+            <>
+              {onOpenDiff && (
+                <button
+                  className="btn small"
+                  onClick={() => onOpenDiff({ source: "checkpoint", checkpointId: checkpoint.id, label: checkpoint.label })}
+                  aria-label={t("在 diff 视图中打开（支持 hunk 级恢复）", "Open in diff view (hunk-level restore)")}
+                >
+                  {t("在 diff 视图中打开", "Open in diff view")}
+                </button>
+              )}
+              {diff.data ? <CodeBlock lang="diff" code={diff.data.diff || t("（无差异）", "(No differences)")} /> : <p className="panel-empty">{t("加载 diff…", "Loading diff…")}</p>}
+            </>
           )}
         </div>
       ))}

@@ -103,4 +103,10 @@ export const DEFAULT_KEYBINDINGS: readonly Keybinding[] = [
   { command: "workbench.action.previousSession", key: "mod+pageup", global: true },
   { command: "workbench.action.keyboardShortcuts", key: "shift+?" },
   { command: "workbench.action.cycleZone", key: "f6", global: true },
+  // 编辑器分栏（0.5.0 Phase 1a）：global 使 Monaco 聚焦时同样生效
+  { command: "workbench.action.saveEditorFile", key: "mod+s", global: true, when: "editorOpen" },
+  { command: "workbench.action.toggleEditorSplit", key: "mod+\\", global: true, when: "editorOpen" },
+  // 统一 diff 视图（0.5.0 Phase 1b）：global 使 Monaco DiffEditor 聚焦时同样生效
+  { command: "workbench.action.diffAcceptHunk", key: "mod+alt+a", global: true, when: "diffOpen" },
+  { command: "workbench.action.diffRejectHunk", key: "mod+alt+r", global: true, when: "diffOpen" },
 ];

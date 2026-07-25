@@ -22,10 +22,12 @@ export async function queryWorkspaceFiles(sessionId: string, q: string, limit = 
   }
 }
 
-export function QuickOpen({ open, sessionId, onOpenFile, onClose }: {
+export function QuickOpen({ open, sessionId, onOpenFile, onOpenInEditor, onClose }: {
   open: boolean;
   sessionId?: string;
   onOpenFile(path: string): void;
+  /** 0.5.0 Phase 1a：Ctrl/Cmd+Enter 在编辑器分栏打开；移动端/未提供时无此入口 */
+  onOpenInEditor?(path: string): void;
   onClose(): void;
 }): ReactElement | null {
   const { t } = useI18n();
@@ -74,9 +76,10 @@ export function QuickOpen({ open, sessionId, onOpenFile, onClose }: {
   // 服务端已按 q 过滤；客户端再做一次模糊排序，保证相关性顺序稳定
   const ranked = filterAndRank(query, items, (path) => path);
 
-  const pick = (path: string): void => {
+  const pick = (path: string, inEditor = false): void => {
     onClose();
-    onOpenFile(path);
+    if (inEditor && onOpenInEditor) onOpenInEditor(path);
+    else onOpenFile(path);
   };
 
   return (
@@ -91,7 +94,7 @@ export function QuickOpen({ open, sessionId, onOpenFile, onClose }: {
             if (event.key === "Escape") onClose();
             else if (event.key === "ArrowDown") { event.preventDefault(); setActive((value) => Math.min(value + 1, ranked.length - 1)); }
             else if (event.key === "ArrowUp") { event.preventDefault(); setActive((value) => Math.max(value - 1, 0)); }
-            else if (event.key === "Enter" && ranked[active]) { event.preventDefault(); pick(ranked[active]); }
+            else if (event.key === "Enter" && ranked[active]) { event.preventDefault(); pick(ranked[active], (event.ctrlKey || event.metaKey) && Boolean(onOpenInEditor)); }
           }}
           placeholder={t("按名称搜索文件", "Search files by name")}
           aria-label={t("文件搜索", "File search")}
@@ -102,6 +105,9 @@ export function QuickOpen({ open, sessionId, onOpenFile, onClose }: {
         />
         {indexStatus === "unavailable" && (
           <p className="wb-overlay-hint">{t("索引不可用，使用实时文件搜索", "Index unavailable; using live file search")}</p>
+        )}
+        {onOpenInEditor && (
+          <p className="wb-overlay-hint">{t("Enter 打开只读视图，Ctrl/Cmd+Enter 在编辑器中打开", "Enter opens the read-only view; Ctrl/Cmd+Enter opens in the editor")}</p>
         )}
         <ul className="wb-overlay-list" id="quick-open-listbox" role="listbox" aria-label={t("文件", "Files")}>
           {ranked.map((path, index) => (
