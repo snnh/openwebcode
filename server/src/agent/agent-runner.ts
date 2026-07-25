@@ -7,7 +7,8 @@ import type { EventBus } from "../events/event-bus.js";
 import { ContextManager, selectCacheBreakpoints } from "../context/context-manager.js";
 import type { Compactor } from "../context/compactor.js";
 import { boundToolResult } from "../context/tool-result-budget.js";
-import { estimateMessageTokens, getModelProfile, type ModelProfile } from "../context/model-profile.js";
+import { RepoMapGenerator, DEFAULT_REPO_MAP_BUDGET } from "../context/repo-map.js";
+import { getModelProfile, type ModelProfile } from "../context/model-profile.js";
 import { calculateUsageCost } from "../cost/cost-calculator.js";
 import type { ExchangeRateService } from "../cost/exchange-rate.js";
 import type { PricingCatalog } from "../cost/pricing-catalog.js";
@@ -100,6 +101,18 @@ const FILE_TOOLS: ProviderTool[] = [
   { name: "glob", description: "Recursively match workspace paths using * and ? wildcards.", inputSchema: { type: "object", properties: { path: { type: "string" }, pattern: { type: "string" } }, required: ["path", "pattern"], additionalProperties: false } },
   { name: "grep", description: "Recursively search UTF-8 workspace files for literal text.", inputSchema: { type: "object", properties: { path: { type: "string" }, pattern: { type: "string" } }, required: ["path", "pattern"], additionalProperties: false } },
 ];
+
+const REPO_MAP_TOOL: ProviderTool = {
+  name: "repo_map",
+  description:
+    "Summarize the workspace repository structure as a bounded directory tree plus key-file hints, " +
+    "fit within a token budget (default 2048). Read-only; truncated output is annotated as such.",
+  inputSchema: {
+    type: "object",
+    properties: { budget: { type: "integer", minimum: 64, description: "Token budget for the map; defaults to the session repo map budget (2048)." } },
+    additionalProperties: false,
+  },
+};
 
 const LOAD_SKILL_TOOL: ProviderTool = {
   name: "load_skill",
@@ -237,6 +250,7 @@ function builtInTools(options: {
     bashTool(options.backgroundTasksEnabled, options.shellBackend),
     ...FILE_TOOLS,
     READ_ARTIFACT_TOOL,
+    REPO_MAP_TOOL,
     ...(options.skillsAvailable ? [LOAD_SKILL_TOOL] : []),
     SPAWN_TASK_TOOL,
     TODO_WRITE_TOOL,
@@ -252,7 +266,7 @@ const MAX_STEERING_LENGTH = 8_000;
 /** Scheduling metadata is product-side only; Provider schemas remain unchanged. */
 export type ToolExecutionClass = "read_only" | "workspace_write" | "process" | "external";
 const TOOL_EXECUTION_CLASS: Readonly<Record<string, ToolExecutionClass>> = {
-  read_file: "read_only", glob: "read_only", grep: "read_only", read_artifact: "read_only", load_skill: "read_only",
+  read_file: "read_only", glob: "read_only", grep: "read_only", read_artifact: "read_only", load_skill: "read_only", repo_map: "read_only",
   web_fetch: "external", web_search: "external", write_file: "workspace_write", edit_file: "workspace_write",
   bash: "process", task_output: "read_only", task_stop: "process", todo_write: "workspace_write", remember: "workspace_write", spawn_task: "process",
 };
@@ -348,6 +362,7 @@ export class AgentRunner {
   private readonly mcpWarningSignatures = new Map<string, string>();
   private readonly todos = new Map<string, TodoItem[]>();
   private readonly permissions: PermissionCoordinator;
+  private readonly repoMap: RepoMapGenerator;
   private searchProvider: SearchProvider | undefined;
   private webFetchProvider: WebFetchProvider | undefined;
 
@@ -379,6 +394,7 @@ export class AgentRunner {
     this.messageQueue = new MessageQueue((sessionId) => this.sessions.contextRoot(sessionId));
     this.interactions = new InteractionCoordinator((sessionId) => this.sessions.contextRoot(sessionId));
     this.permissions = new PermissionCoordinator(events);
+    this.repoMap = new RepoMapGenerator(core);
     this.searchProvider = search;
     this.webFetchProvider = webFetchProvider;
     core.on("event", (event: CoreEvent) => {
@@ -536,7 +552,9 @@ export class AgentRunner {
           this.events.publish({ source: "agent", type: "agent.budget_paused", sessionId, payload: budget });
           return;
         }
-        const view = await context.buildView(session.messages);
+        // 选择性上下文（§4.4）：pin 不被驱逐、排除不进组装；配置持久化在会话 meta。
+        const contextSelection = { pins: session.contextPins ?? [], excludes: session.contextExcludes ?? [] };
+        const view = await context.buildView(session.messages, { selection: contextSelection });
         if (this.extensions) {
           const transformed = await this.extensions.transformContext({
             sessionId,
@@ -564,11 +582,44 @@ export class AgentRunner {
         }
         const cacheBreakpoints = selectCacheBreakpoints(view.messages, view.ledger);
         await context.recordCacheBreakpoints(cacheBreakpoints);
+        // 断点策略写入 run 诊断：事件流可查，ledger.cacheBreakpoints 持久化供 Context 面板展示；
+        // providerCaching 为 null 表示该 Provider 无显式断点（如 OpenAI 兼容的自动缓存）。
+        this.events.publish({
+          source: "agent",
+          type: "context.cache_strategy",
+          sessionId,
+          payload: {
+            provider: session.provider,
+            providerCaching: this.providers.get(session.provider)?.promptCaching ?? null,
+            messageBreakpoints: cacheBreakpoints,
+          },
+        });
         const profile = this.getProfile(session.model, session.provider);
-        const estimatedTokens = estimateMessageTokens(view.messages);
+        // repo map 预算段（§4.1 Phase 1）：默认开、会话可关；生成失败降级为空段，不阻断运行。
+        // 注入位置在稳定 system 前缀之后的动态侧（systemSuffix），避免其逐 turn 变化污染
+        // cache 断点；token 归因到 segments.repoMap，Context 面板按段可见。
+        let repoMapSection = "";
+        if (session.repoMapEnabled !== false) {
+          try {
+            const map = await this.repoMap.generate({
+              sessionId,
+              cwd: session.cwd,
+              budget: session.repoMapBudget ?? DEFAULT_REPO_MAP_BUDGET,
+              excludes: contextSelection.excludes,
+            });
+            view.stats.segments.repoMap = map.tokens;
+            repoMapSection = `## Repository map (workspace structure; budget-bounded, symbols arrive in Phase 2)\n${map.text}`;
+          } catch (error) {
+            this.events.publish({ source: "agent", type: "context.repo_map_failed", sessionId, payload: { message: error instanceof Error ? error.message : String(error) } });
+          }
+        }
+        // 增量构建的 token 估算与 estimateMessageTokens 同规则；等价性由 server 测试断言。
+        const estimatedTokens = view.stats.totalTokens;
         const workingBudget = Math.max(1, profile.contextWindow - profile.maxOutput);
         const utilization = estimatedTokens / workingBudget;
-        this.events.publish({ source: "agent", type: "context.watermark", sessionId, payload: { estimatedTokens, contextWindow: profile.contextWindow, maxOutput: profile.maxOutput, workingBudget, utilization, warning: utilization >= 0.85 ? "force_compact" : utilization >= 0.7 ? "compact_recommended" : undefined } });
+        // pin 占用如实上报：超预算时给明确警告，不悄悄驱逐 pin 的消息。
+        const pinWarning = view.stats.pinnedTokens >= workingBudget ? "pins_over_budget" : undefined;
+        this.events.publish({ source: "agent", type: "context.watermark", sessionId, payload: { estimatedTokens, contextWindow: profile.contextWindow, maxOutput: profile.maxOutput, workingBudget, utilization, warning: utilization >= 0.85 ? "force_compact" : utilization >= 0.7 ? "compact_recommended" : undefined, segments: view.stats.segments, pinnedTokens: view.stats.pinnedTokens, buildMs: view.stats.buildMs, incremental: view.stats.incremental, ...(pinWarning ? { pinWarning } : {}) } });
         // 85% 水位强制概览压缩：压缩成功后重建视图（消耗一个 turn 防止死循环）
         if (utilization >= 0.85 && this.compactor && !forceCompacted) {
           forceCompacted = true;
@@ -662,7 +713,6 @@ export class AgentRunner {
           finalConstraints: [SAFETY_BOUNDARY_SECTION],
           skillsSection: `${skillSection}${agentSection}`,
           projectContext: memorySection ? [{ path: "workspace instructions and memory", content: memorySection }] : [],
-          notices: bgNoticeSection,
         });
         await this.state(sessionId, "streaming");
         const turn = await collectProviderTurn(
@@ -672,6 +722,11 @@ export class AgentRunner {
             ...(session.thinking ? { thinking: session.thinking } : {}),
             ...(session.effort ? { effort: session.effort } : {}),
             system,
+            // 动态尾块（repo map 段 + 后台任务完成提示）独立于稳定 system 前缀下发，
+            // 其逐 turn 变化不会污染稳定前缀的缓存断点。
+            ...(repoMapSection || bgNoticeSection.trim()
+              ? { systemSuffix: [repoMapSection, bgNoticeSection.trim()].filter(Boolean).join("\n\n") }
+              : {}),
             messages: view.messages,
             cacheBreakpoints,
             tools,
@@ -817,7 +872,7 @@ export class AgentRunner {
         await context.advanceRound();
         const afterTools = await this.sessions.get(sessionId);
         if (afterTools && (!this.extensions || this.extensions.isEnabled("context-manager"))) {
-          await context.evict(afterTools.messages);
+          await context.evict(afterTools.messages, new Set(afterTools.contextPins ?? []));
           this.events.publish({ source: "agent", type: "context.evicted", sessionId, payload: (await context.load()).entries });
         }
         await this.applySteering(sessionId);
@@ -1086,7 +1141,7 @@ export class AgentRunner {
     const session = await this.sessions.get(sessionId);
     if (!session) return { allowed: false, reason: "Session not found" };
     // Plan 模式门禁：只读工具放行，其余一律拦截
-    const PLAN_READONLY = new Set(["read_file", "glob", "grep", "read_artifact", "load_skill", "spawn_task", "todo_write", "web_fetch", "web_search", "task_output"]);
+    const PLAN_READONLY = new Set(["read_file", "glob", "grep", "read_artifact", "load_skill", "spawn_task", "todo_write", "web_fetch", "web_search", "task_output", "repo_map"]);
     if (session.agentMode === "plan") {
       if (tool.startsWith("mcp__")) return { allowed: false, reason: `Plan 模式为只读：MCP 工具 ${tool} 被拦截（无法判定读写）。请输出实施计划并请用户切换到 build 模式执行。` };
       if (!PLAN_READONLY.has(tool)) return { allowed: false, reason: `Plan 模式为只读：${tool} 被拦截。请输出实施计划并请用户切换到 build 模式执行。` };
@@ -1346,6 +1401,32 @@ export class AgentRunner {
         return { type: "tool_result", toolCallId, content: error instanceof Error ? error.message : String(error), isError: true };
       }
     }
+    if (name === "repo_map") {
+      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+      this.state(sessionId, "tool_running");
+      try {
+        const session = await this.sessions.get(sessionId);
+        if (!session) throw new Error("Session not found");
+        if (input.budget !== undefined && (!Number.isInteger(Number(input.budget)) || Number(input.budget) < 64)) {
+          throw new Error("repo_map budget must be an integer >= 64");
+        }
+        // 与自动注入共用同一生成器/缓存；显式调用不受会话自动注入开关影响。
+        const map = await this.repoMap.generate({
+          sessionId,
+          cwd: session.cwd,
+          budget: input.budget === undefined ? (session.repoMapBudget ?? DEFAULT_REPO_MAP_BUDGET) : Number(input.budget),
+          excludes: session.contextExcludes ?? [],
+        });
+        // 大预算结果经 boundToolResult artifact 化，超预算部分可从 artifact 续读
+        const bounded = await boundToolResult(this.sessions.contextRoot(sessionId), name, map.text);
+        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: toolEventResult(bounded), truncated: map.truncated || bounded.truncated } });
+        return { type: "tool_result", toolCallId, content: bounded.content, isError: false };
+      } catch (error) {
+        const content = error instanceof Error ? error.message : String(error);
+        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
+        return { type: "tool_result", toolCallId, content, isError: true };
+      }
+    }
     if (FILE_TOOLS.some((tool) => tool.name === name)) {
       this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
       this.state(sessionId, "tool_running");
@@ -1517,7 +1598,8 @@ export class AgentRunner {
       const output = decodeProcessOutputChunks(execution.output);
       const rawContent = JSON.stringify({ ...result, output });
       const bounded = await boundToolResult(this.sessions.contextRoot(sessionId), "bash", rawContent);
-      this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result, truncated: bounded.truncated, ...(bounded.artifactId ? { artifactId: bounded.artifactId } : {}) } });
+      // 事件只发摘要 + artifact 引用（0.3.x 规约）；完整输出走 artifact/session 读取路径。
+      this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: toolEventResult(bounded) } });
       return { content: bounded.content, isError: false };
     } catch (error) {
       if (signal.aborted) throw error;

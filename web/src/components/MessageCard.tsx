@@ -213,5 +213,25 @@ export function MessageCard({ message, sessionId, contentLens, onNotice }: { mes
   );
 }
 
-/** Historical cards do not depend on live token state, so skip their Markdown/KaTeX work during streaming renders. */
-export const MemoMessageCard = memo(MessageCard);
+/** 内容块逐项相等（不含未知字段时退化为引用比较之外的浅比较） */
+function sameContent(previous: MessageContent[], next: MessageContent[]): boolean {
+  if (previous === next) return true;
+  if (previous.length !== next.length) return false;
+  // 消息块字段有限且不含函数，序列化比较足够且实现简单
+  return JSON.stringify(previous) === JSON.stringify(next);
+}
+
+/**
+ * Historical cards do not depend on live token state, so skip their Markdown/KaTeX work during streaming renders.
+ * 自定义比较：事件重放/会话刷新会重建消息对象（引用不同但 id 与内容相同），
+ * 此时不重复渲染，Markdown 与代码高亮结果随之复用。
+ */
+export const MemoMessageCard = memo(MessageCard, (previous, next) =>
+  previous.contentLens === next.contentLens
+  && previous.sessionId === next.sessionId
+  && previous.onNotice === next.onNotice
+  && previous.message.id === next.message.id
+  && previous.message.role === next.message.role
+  && previous.message.createdAt === next.message.createdAt
+  && sameContent(previous.message.content, next.message.content),
+);

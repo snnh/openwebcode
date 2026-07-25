@@ -8,6 +8,7 @@ import { loadSendKey, loadSessionDefaults, saveSendKey, saveSessionDefaults, typ
 import { useTheme } from "./theme";
 import { useAgentRun } from "./hooks/use-agent-run";
 import { useSessionEventStream } from "./hooks/use-session-event-stream";
+import { useStreamBuffers } from "./hooks/use-stream-buffers";
 import { BottomPanel } from "./components/BottomPanel";
 import { StatusBar } from "./components/StatusBar";
 import { InteractionCard } from "./components/InteractionCard";
@@ -61,14 +62,8 @@ export function App(): ReactElement {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   // 草稿附件也按会话隔离；异步发送完成只能清理自己的源会话。
   const [attachmentsBySession, setAttachmentsBySession] = useState<Record<string, PendingImage[]>>({});
-  const [stream, setStream] = useState<Record<string, string>>({});
-  const [thinkingStream, setThinkingStream] = useState<Record<string, string>>({});
-  // WebSocket tokens often arrive in very small chunks. Buffer them outside
-  // React and commit at most once per animation frame to avoid a page render
-  // (and a full accumulated-string copy) for every token.
-  const streamBuffers = useRef<Record<string, string[]>>({});
-  const thinkingBuffers = useRef<Record<string, string[]>>({});
-  const streamFlushHandle = useRef<number | undefined>(undefined);
+  // WebSocket token delta 在 React 之外缓冲、按动画帧合批提交（见 use-stream-buffers）
+  const { stream, thinkingStream, queueDelta: queueStreamDelta, flush: flushStreamBuffers, finish: finishBufferedStreams, clear: clearStream, discard: discardStream } = useStreamBuffers();
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
   const [agentStates, setAgentStates] = useState<Record<string, string>>({});
   // agent.error 除了短暂 toast，也保留在当前会话的轨道中；下一次真正开始运行时再清除。
@@ -76,35 +71,6 @@ export function App(): ReactElement {
   const [notice, setNotice] = useState<Notice>();
   // 失败类提示用 error（红色、role=alert），成功/进度类用 info
   const notify = useCallback((text: string, kind: Notice["kind"] = "info"): void => setNotice({ kind, text }), []);
-  const flushStreamBuffers = useCallback((): void => {
-    streamFlushHandle.current = undefined;
-    const text = streamBuffers.current;
-    const thinking = thinkingBuffers.current;
-    streamBuffers.current = {};
-    thinkingBuffers.current = {};
-    if (Object.keys(text).length) {
-      setStream((previous) => {
-        const next = { ...previous };
-        for (const [id, chunks] of Object.entries(text)) next[id] = `${next[id] ?? ""}${chunks.join("")}`;
-        return next;
-      });
-    }
-    if (Object.keys(thinking).length) {
-      setThinkingStream((previous) => {
-        const next = { ...previous };
-        for (const [id, chunks] of Object.entries(thinking)) next[id] = `${next[id] ?? ""}${chunks.join("")}`;
-        return next;
-      });
-    }
-  }, []);
-  const queueStreamDelta = useCallback((sessionId: string, text: string, thinking = false): void => {
-    const buffers = thinking ? thinkingBuffers.current : streamBuffers.current;
-    (buffers[sessionId] ??= []).push(text);
-    if (streamFlushHandle.current !== undefined) return;
-    streamFlushHandle.current = typeof window.requestAnimationFrame === "function"
-      ? window.requestAnimationFrame(flushStreamBuffers)
-      : window.setTimeout(flushStreamBuffers, 80);
-  }, [flushStreamBuffers]);
   const sessions = useQuery({ queryKey: queryKeys.sessions, queryFn: api.sessions });
   const detail = useQuery({ queryKey: queryKeys.detail(currentId ?? ""), queryFn: () => api.session(currentId!), enabled: Boolean(currentId) });
   const models = useQuery({ queryKey: ["models"], queryFn: api.models });
@@ -245,20 +211,10 @@ export function App(): ReactElement {
           if (event.type === "agent.state" && (event.payload as { state?: string }).state === "idle") {
             flushStreamBuffers();
             // 等持久化消息重新拉取完成后再撤掉临时流，避免思考/正文在切换到历史卡片时闪烁或消失。
-            void detailRefresh.finally(() => {
-              setStream((value) => ({ ...value, [event.sessionId!]: "" }));
-              setThinkingStream((value) => ({ ...value, [event.sessionId!]: "" }));
-            });
+            void detailRefresh.finally(() => clearStream(event.sessionId!));
           }
         }
-  }, [applyRunEvent, currentId, flushStreamBuffers, notify, queryClient, queueStreamDelta, t]);
-  const finishBufferedStreams = useCallback((): void => {
-    if (streamFlushHandle.current !== undefined) {
-      if (typeof window.cancelAnimationFrame === "function") window.cancelAnimationFrame(streamFlushHandle.current);
-      else window.clearTimeout(streamFlushHandle.current);
-    }
-    flushStreamBuffers();
-  }, [flushStreamBuffers]);
+  }, [applyRunEvent, clearStream, currentId, flushStreamBuffers, notify, queryClient, queueStreamDelta, t]);
   // 全局订阅：服务端在未传 sessionId 时全量推送，handler 按 event.sessionId 分发。
   useSessionEventStream({ onEvent: handleSessionEvent, onDisconnect: finishBufferedStreams });
 
@@ -376,12 +332,9 @@ export function App(): ReactElement {
         };
         setDrafts(removeKey);
         setAttachmentsBySession(removeKey);
-        setStream(removeKey);
-        setThinkingStream(removeKey);
         setAgentStates(removeKey);
         setRunFailures(removeKey);
-        delete streamBuffers.current[id];
-        delete thinkingBuffers.current[id];
+        discardStream(id);
         queryClient.invalidateQueries({ queryKey: queryKeys.sessions });
       })
       .catch((error: unknown) => notify(error instanceof Error ? error.message : t("删除会话失败", "Could not delete session"), "error"));
