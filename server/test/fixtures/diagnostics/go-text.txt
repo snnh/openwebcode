@@ -1,0 +1,9 @@
+=== RUN   TestAdd
+--- PASS: TestAdd (0.00s)
+=== RUN   TestDivide
+--- FAIL: TestDivide (0.00s)
+    math_test.go:13: got 3, want 4
+=== RUN   TestLegacy
+--- SKIP: TestLegacy (0.00s)
+FAIL
+FAIL	example.com/proj/math	0.050s

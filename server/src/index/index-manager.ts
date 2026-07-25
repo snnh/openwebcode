@@ -1,0 +1,623 @@
+/**
+ * 索引管理器（0.4.0 Phase 2 §4.1）：workspace 级符号索引的编排。
+ *
+ * 流程：core `index.scan` job 产出完整 manifest（JSONL 流）→ Node 对连续
+ * manifest 做 diff（新增/修改/删除，sha256 优先）→ 对变化文件经 core 原语
+ * 读内容、跑轻量符号提取 → append 批次写 files.jsonl/symbols.jsonl（定期压实）。
+ *
+ * 语义约束：
+ * - 索引只是加速缓存，文件系统永远是真相；损坏整体作废、显式重建。
+ * - 一切文件访问走 core（不直接 fs 读工作区），不绕过权限/沙盒/路径策略。
+ * - 重建是显式动作（REST/工具错误提示引导），code_search 失败不自动触发。
+ * - 新鲜度：watch 可用时 watch 驱动（事件 → 标滞后 + 去抖增量刷新）；
+ *   watch 不可用时降级为 turn 边界 mtime 抽样 + 手动刷新。
+ */
+
+import { randomUUID } from "node:crypto";
+import type { CoreClientLike, IndexScanEntry, IndexScanSummary } from "../core-client.js";
+import type { EventBus } from "../events/event-bus.js";
+import { diffManifest } from "./manifest.js";
+import { IndexCorruptError, IndexStore, workspaceHash, type IndexMeta, type LoadedIndex } from "./index-store.js";
+import { extractSymbols, languageForPath, MAX_EXTRACT_FILE_BYTES, type SymbolRecord } from "./symbols.js";
+
+export type IndexStatus = "missing" | "building" | "fresh" | "stale";
+
+export interface IndexStatusInfo {
+  status: IndexStatus;
+  /** workspace-hash（索引目录名）。 */
+  workspace: string;
+  files: number;
+  symbols: number;
+  lastScanAt?: number;
+  scanTruncated?: boolean;
+  staleReason?: "watch" | "mtime" | "corrupt" | "cancelled" | "error";
+  /** watch 驱动模式：active=core watch；fallback=turn 边界 mtime 抽样。 */
+  watch: "active" | "fallback" | "none";
+  jobId?: string;
+  message?: string;
+}
+
+export interface SymbolSearchHit {
+  name: string;
+  kind: string;
+  path: string;
+  startLine: number;
+  endLine: number;
+  signature: string;
+}
+
+/** 文件清单搜索命中（@ 补全/Quick Open 共用）。 */
+export interface FileSearchHit {
+  path: string;
+  modifiedMs: number;
+}
+
+/** repo map 消费的关键文件符号摘要（按最近修改排序由调用方做）。 */
+export interface RepoMapSymbolFile {
+  path: string;
+  modifiedMs: number;
+  symbols: Array<{ name: string; kind: string }>;
+}
+
+export class IndexUnavailableError extends Error {
+  readonly code = "INDEX_UNAVAILABLE";
+  constructor(message: string) {
+    super(message);
+    this.name = "IndexUnavailableError";
+  }
+}
+
+export class IndexBuildingError extends Error {
+  readonly code = "INDEX_BUILDING";
+  constructor() {
+    super("Index rebuild is already running for this workspace");
+    this.name = "IndexBuildingError";
+  }
+}
+
+/** 扫描预算默认值：与 core maxIndexScan* 上限对齐，宁可截断也不做无界扫描。 */
+export interface IndexScanBudget {
+  maxDepth: number;
+  maxNodes: number;
+  maxBytes: number;
+  maxMs: number;
+  /** 单次扫描最多做符号提取的文件数（超出部分留到下次）。 */
+  maxExtractFiles: number;
+}
+
+const DEFAULT_BUDGET: IndexScanBudget = {
+  maxDepth: 32,
+  maxNodes: 200_000,
+  maxBytes: 512 * 1024 * 1024,
+  maxMs: 120_000,
+  maxExtractFiles: 5_000,
+};
+
+/** 索引扫描的默认排除：与 repo map 默认忽略约定同族。 */
+const DEFAULT_EXCLUDES = [
+  ".git", ".owc", ".openwebcode", "node_modules",
+  "dist", "build", "build-*", "out", "coverage", "target",
+  ".next", ".cache", "__pycache__", ".venv", "_CPack_Packages",
+];
+
+/** 提取并发：小并发即可，瓶颈在 core IPC 而非 CPU。 */
+const EXTRACT_CONCURRENCY = 8;
+const SEARCH_LIMIT_DEFAULT = 50;
+const SEARCH_LIMIT_MAX = 200;
+
+interface WorkspaceState {
+  cwd: string;
+  store: IndexStore;
+  loaded?: LoadedIndex | undefined;
+  loading?: Promise<void> | undefined;
+  corrupt: boolean;
+  stale: boolean;
+  staleReason?: IndexStatusInfo["staleReason"];
+  building?: { jobId: string; abort: AbortController } | undefined;
+  watchMode: "active" | "fallback" | "none";
+  watchId?: number | undefined;
+  watchTimer?: NodeJS.Timeout | undefined;
+  refreshTimer?: NodeJS.Timeout | undefined;
+  batch: number;
+}
+
+export interface IndexManagerOptions {
+  budget?: Partial<IndexScanBudget>;
+  /** job 输出轮询间隔（测试可调 0）。 */
+  pollMs?: number;
+  /** watch 轮询间隔。 */
+  watchPollMs?: number;
+  /** watch 事件后触发增量刷新的去抖。 */
+  refreshDebounceMs?: number;
+  /** turn 边界 mtime 抽样的文件数。 */
+  mtimeSampleSize?: number;
+  /** watch 事件是否自动触发增量刷新（false 则只标滞后）。 */
+  autoRefresh?: boolean;
+  /** 测试注入的时钟。 */
+  now?: () => number;
+}
+
+export class IndexManager {
+  private readonly workspaces = new Map<string, WorkspaceState>();
+  private readonly budget: IndexScanBudget;
+  private readonly pollMs: number;
+  private readonly watchPollMs: number;
+  private readonly refreshDebounceMs: number;
+  private readonly mtimeSampleSize: number;
+  private readonly autoRefresh: boolean;
+  private readonly now: () => number;
+
+  constructor(
+    private readonly core: CoreClientLike,
+    /** 服务端数据目录下的 index 根（<dataDir>/index）。 */
+    private readonly indexRoot: string,
+    private readonly events: EventBus,
+    options: IndexManagerOptions = {},
+  ) {
+    this.budget = { ...DEFAULT_BUDGET, ...options.budget };
+    this.pollMs = options.pollMs ?? 100;
+    this.watchPollMs = options.watchPollMs ?? 2_000;
+    this.refreshDebounceMs = options.refreshDebounceMs ?? 3_000;
+    this.mtimeSampleSize = options.mtimeSampleSize ?? 32;
+    this.autoRefresh = options.autoRefresh ?? true;
+    this.now = options.now ?? Date.now;
+  }
+
+  /** 测试与优雅停机用：清掉全部定时器。 */
+  stop(): void {
+    for (const ws of this.workspaces.values()) {
+      if (ws.watchTimer) clearInterval(ws.watchTimer);
+      if (ws.refreshTimer) clearTimeout(ws.refreshTimer);
+      ws.watchTimer = undefined;
+      ws.refreshTimer = undefined;
+    }
+  }
+
+  private ws(cwd: string): WorkspaceState {
+    const key = workspaceHash(cwd);
+    let state = this.workspaces.get(key);
+    if (!state) {
+      state = {
+        cwd,
+        store: new IndexStore(this.indexRoot, cwd),
+        corrupt: false,
+        stale: false,
+        watchMode: "none",
+        batch: 0,
+      };
+      this.workspaces.set(key, state);
+    }
+    return state;
+  }
+
+  async status(sessionId: string, cwd: string): Promise<IndexStatusInfo> {
+    const ws = this.ws(cwd);
+    await this.ensureLoaded(ws);
+    const info = this.statusOf(ws);
+    // 已建索引且尚未决定驱动方式时，尝试建立 watch（失败转 fallback）
+    if (info.status !== "missing" && info.status !== "building" && ws.watchMode === "none") {
+      await this.ensureWatch(ws, sessionId);
+    }
+    return this.statusOf(ws);
+  }
+
+  private statusOf(ws: WorkspaceState): IndexStatusInfo {
+    const meta = ws.loaded?.meta;
+    const base: IndexStatusInfo = {
+      status: "missing",
+      workspace: workspaceHash(ws.cwd),
+      files: ws.loaded?.files.size ?? 0,
+      symbols: ws.loaded ? [...ws.loaded.symbols.values()].reduce((sum, list) => sum + list.length, 0) : 0,
+      watch: ws.watchMode,
+      ...(meta?.lastScan ? { lastScanAt: meta.lastScan.at, scanTruncated: meta.lastScan.truncated } : {}),
+    };
+    if (ws.building) return { ...base, status: "building", jobId: ws.building.jobId };
+    if (!ws.loaded?.meta) return { ...base, status: "missing", ...(ws.staleReason ? { staleReason: ws.staleReason } : {}) };
+    if (ws.stale) return { ...base, status: "stale", ...(ws.staleReason ? { staleReason: ws.staleReason } : {}) };
+    return { ...base, status: "fresh" };
+  }
+
+  private publish(sessionId: string, ws: WorkspaceState, message?: string): void {
+    const info = { ...this.statusOf(ws), ...(message ? { message } : {}) };
+    this.events.publish({ source: "server", type: "index.status", sessionId, payload: info });
+  }
+
+  /** 加载索引进内存；损坏则整体作废（缓存可丢，下次显式重建）。并发调用共用同一次加载。 */
+  private async ensureLoaded(ws: WorkspaceState): Promise<void> {
+    if (ws.loaded) return;
+    ws.loading ??= this.doLoad(ws).finally(() => {
+      ws.loading = undefined;
+    });
+    return ws.loading;
+  }
+
+  private async doLoad(ws: WorkspaceState): Promise<void> {
+    if (ws.loaded) return;
+    try {
+      ws.loaded = await ws.store.load();
+      ws.corrupt = false;
+    } catch (error) {
+      if (error instanceof IndexCorruptError) {
+        // meta.json 与 jsonl 都不存在 = 从未建过索引（正常态），不是损坏
+        const hasMeta = await ws.store.exists();
+        const hasData = await ws.store.hasDataFiles();
+        if (!hasMeta && !hasData) {
+          // 从未建过索引（正常空态）。corrupt 标志保持粘性：reset 之后
+          // 查询仍如实报告"损坏已作废"，直到一次成功重建翻转它。
+          ws.loaded = { files: new Map(), symbols: new Map(), meta: undefined, fileLines: 0, symbolLines: 0 };
+          return;
+        }
+        ws.loaded = undefined;
+        ws.corrupt = true;
+        ws.staleReason = "corrupt";
+        await ws.store.reset().catch(() => undefined);
+        return;
+      }
+      throw error;
+    }
+  }
+
+  /** 显式重建（也是增量刷新入口：core 始终给完整 manifest，diff 决定提取量）。 */
+  async rebuild(sessionId: string, cwd: string): Promise<{ jobId: string }> {
+    const ws = this.ws(cwd);
+    if (ws.building) throw new IndexBuildingError();
+    const jobId = `index-${randomUUID()}`;
+    ws.building = { jobId, abort: new AbortController() };
+    this.publish(sessionId, ws);
+    const building = ws.building;
+    void this.runScan(ws, sessionId, jobId, building.abort.signal)
+      .catch(() => undefined) // runScan 内部已归置状态与事件
+      .finally(() => {
+        if (ws.building?.jobId === jobId) ws.building = undefined;
+      });
+    return { jobId };
+  }
+
+  async cancel(sessionId: string, cwd: string): Promise<boolean> {
+    const ws = this.ws(cwd);
+    if (!ws.building) return false;
+    ws.building.abort.abort();
+    await this.core.cancelJob({ sessionId, jobId: ws.building.jobId }).catch(() => undefined);
+    return true;
+  }
+
+  private async runScan(ws: WorkspaceState, sessionId: string, jobId: string, signal: AbortSignal): Promise<void> {
+    const startedAt = this.now();
+    try {
+      await this.core.startIndexScan({
+        sessionId,
+        jobId,
+        kind: "index.scan",
+        cwd: ws.cwd,
+        path: ".",
+        exclude: [...DEFAULT_EXCLUDES],
+        maxDepth: this.budget.maxDepth,
+        maxNodes: this.budget.maxNodes,
+        maxBytes: this.budget.maxBytes,
+        maxMs: this.budget.maxMs,
+      });
+      const { entries, summary } = await this.collectManifest(ws, sessionId, jobId, signal);
+      await this.applyManifest(ws, sessionId, entries, summary, this.now() - startedAt, signal);
+      ws.stale = false;
+      ws.staleReason = undefined;
+      ws.corrupt = false; // 成功重建后翻转损坏标记
+      // 先清 building 再发布，保证事件里的状态是终态而非 building
+      if (ws.building?.jobId === jobId) ws.building = undefined;
+      this.publish(sessionId, ws);
+      if (ws.watchMode === "none") await this.ensureWatch(ws, sessionId);
+    } catch (error) {
+      if (ws.building?.jobId === jobId) ws.building = undefined;
+      if (signal.aborted) {
+        // 取消：保留旧索引，如实标滞后
+        ws.stale = true;
+        ws.staleReason = "cancelled";
+        this.publish(sessionId, ws, "Index rebuild cancelled");
+        return;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      ws.stale = true;
+      ws.staleReason = "error";
+      this.publish(sessionId, ws, `Index rebuild failed: ${message}`);
+    }
+  }
+
+  /** 轮询 job 输出直到终态，解析 JSONL 流为 manifest + summary。 */
+  private async collectManifest(
+    ws: WorkspaceState,
+    sessionId: string,
+    jobId: string,
+    signal: AbortSignal,
+  ): Promise<{ entries: IndexScanEntry[]; summary: IndexScanSummary | undefined }> {
+    let seq = 0;
+    let buffer = "";
+    const entries: IndexScanEntry[] = [];
+    let summary: IndexScanSummary | undefined;
+    const drain = (flush: boolean): void => {
+      const lines = flush ? buffer.split("\n") : buffer.slice(0, buffer.lastIndexOf("\n") + 1).split("\n");
+      buffer = flush ? "" : buffer.slice(buffer.lastIndexOf("\n") + 1);
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const record = JSON.parse(trimmed) as IndexScanEntry & { summary?: IndexScanSummary };
+        if (record.summary) summary = record.summary;
+        else if (typeof record.path === "string") {
+          entries.push({ path: record.path, size: record.size, modifiedMs: record.modifiedMs, ...(record.sha256 ? { sha256: record.sha256 } : {}) });
+        }
+      }
+    };
+    for (;;) {
+      if (signal.aborted) throw new Error("cancelled");
+      const status = await this.core.jobStatus({ sessionId, jobId });
+      const output = await this.core.jobOutput({ sessionId, jobId, afterSeq: seq, limit: 512 });
+      for (const chunk of output.chunks) {
+        if (chunk.stream === "stdout") buffer += chunk.data;
+      }
+      seq = output.nextSeq;
+      drain(false);
+      if (status.state !== "running") {
+        drain(true);
+        if (status.state === "completed") return { entries, summary };
+        throw new Error(`index.scan job ${status.state}${status.error ? `: ${status.error}` : ""}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, this.pollMs));
+    }
+  }
+
+  /** diff → 变化文件提取符号 → append 批次 → 必要时压实 → 写 meta。 */
+  private async applyManifest(
+    ws: WorkspaceState,
+    sessionId: string,
+    entries: IndexScanEntry[],
+    summary: IndexScanSummary | undefined,
+    durationMs: number,
+    signal: AbortSignal,
+  ): Promise<void> {
+    await this.ensureLoaded(ws);
+    const loaded: LoadedIndex = ws.loaded ?? { files: new Map(), symbols: new Map(), meta: undefined, fileLines: 0, symbolLines: 0 };
+    ws.loaded = loaded;
+    const diff = diffManifest(loaded.files, entries);
+
+    const extractable = [...diff.added, ...diff.changed]
+      .filter((entry) => languageForPath(entry.path) !== undefined && entry.size <= MAX_EXTRACT_FILE_BYTES)
+      .slice(0, this.budget.maxExtractFiles);
+    const extracted = new Map<string, SymbolRecord[]>();
+    let cursor = 0;
+    const worker = async (): Promise<void> => {
+      while (cursor < extractable.length) {
+        if (signal.aborted) return;
+        const entry = extractable[cursor];
+        cursor += 1;
+        if (!entry) continue;
+        try {
+          const content = await this.core.readFile({ sessionId, path: entry.path });
+          extracted.set(entry.path, extractSymbols(languageForPath(entry.path)!, content.content));
+        } catch {
+          // 单个文件读取/解析失败只丢该文件符号，不丢整个批次（文件清单仍更新）
+          extracted.set(entry.path, []);
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(EXTRACT_CONCURRENCY, extractable.length) }, () => worker()));
+
+    // 应用 manifest 全量态
+    const nextFiles = new Map<string, IndexScanEntry>(entries.map((entry) => [entry.path, entry]));
+    for (const filePath of diff.deleted) loaded.symbols.delete(filePath);
+    for (const [filePath, symbols] of extracted) {
+      if (symbols.length > 0) loaded.symbols.set(filePath, symbols);
+      else loaded.symbols.delete(filePath);
+    }
+    loaded.files = nextFiles;
+
+    ws.batch += 1;
+    const appended = await ws.store.appendBatch(
+      ws.batch,
+      { upsert: [...diff.added, ...diff.changed], deleted: diff.deleted },
+      {
+        upsert: [...extracted.entries()].map(([filePath, symbols]) => ({ path: filePath, symbols })),
+        deleted: diff.deleted,
+      },
+    );
+    loaded.fileLines += appended.fileLines;
+    loaded.symbolLines += appended.symbolLines;
+    if (ws.store.shouldCompact(loaded.fileLines, loaded.files.size) || ws.store.shouldCompact(loaded.symbolLines, loaded.symbols.size)) {
+      await ws.store.compact(loaded.files, loaded.symbols);
+      loaded.fileLines = loaded.files.size + 1;
+      loaded.symbolLines = loaded.symbols.size + 1;
+    }
+
+    const now = this.now();
+    const meta: IndexMeta = {
+      version: 1,
+      cwd: ws.cwd,
+      createdAt: loaded.meta?.createdAt ?? now,
+      updatedAt: now,
+      lastScan: {
+        at: now,
+        entries: summary?.entries ?? entries.length,
+        truncated: summary?.truncated ?? false,
+        reason: summary?.reason ?? null,
+        hashTruncated: summary?.hashTruncated ?? false,
+        durationMs,
+      },
+      files: loaded.files.size,
+      symbols: [...loaded.symbols.values()].reduce((sum, list) => sum + list.length, 0),
+    };
+    await ws.store.writeMeta(meta);
+    loaded.meta = meta;
+  }
+
+  // ---- 新鲜度：watch 驱动 / mtime 抽样降级 ----
+
+  private async ensureWatch(ws: WorkspaceState, sessionId: string): Promise<void> {
+    if (ws.watchMode !== "none") return;
+    try {
+      const { watchId } = await this.core.watchFiles({ sessionId, path: ws.cwd, recursive: true });
+      ws.watchId = watchId;
+      ws.watchMode = "active";
+      ws.watchTimer = setInterval(() => void this.pollWatch(ws, sessionId), this.watchPollMs);
+      ws.watchTimer.unref();
+      this.publish(sessionId, ws);
+    } catch {
+      // watch 不可用：降级为 turn 边界 mtime 抽样（noteTurnBoundary）
+      ws.watchMode = "fallback";
+      this.publish(sessionId, ws);
+    }
+  }
+
+  private async pollWatch(ws: WorkspaceState, sessionId: string): Promise<void> {
+    if (ws.watchId === undefined) return;
+    try {
+      const result = await this.core.pollWatch({ sessionId, watchId: ws.watchId, limit: 500 });
+      if (result.events.length === 0 && !result.overflow) return;
+      this.markStale(ws, "watch", sessionId);
+    } catch {
+      // watch 中途失败（core 重启等）：转降级模式
+      if (ws.watchTimer) clearInterval(ws.watchTimer);
+      ws.watchTimer = undefined;
+      ws.watchId = undefined;
+      ws.watchMode = "fallback";
+      this.publish(sessionId, ws);
+    }
+  }
+
+  private markStale(ws: WorkspaceState, reason: IndexStatusInfo["staleReason"], sessionId: string): void {
+    ws.stale = true;
+    ws.staleReason = reason;
+    this.publish(sessionId, ws);
+    if (!this.autoRefresh || ws.building || !ws.loaded?.meta) return;
+    if (ws.refreshTimer) clearTimeout(ws.refreshTimer);
+    ws.refreshTimer = setTimeout(() => {
+      ws.refreshTimer = undefined;
+      void this.rebuild(sessionId, ws.cwd).catch(() => undefined);
+    }, this.refreshDebounceMs);
+    ws.refreshTimer.unref();
+  }
+
+  /**
+   * turn 边界新鲜度检查（agent 每轮开头调用）：
+   * watch 激活时零成本跳过；fallback 模式对索引文件做 mtime 抽样，
+   * 样本有变化即标滞后（不自动重建，重建是显式动作）。
+   */
+  async noteTurnBoundary(sessionId: string, cwd: string): Promise<void> {
+    const ws = this.ws(cwd);
+    if (ws.building) return;
+    await this.ensureLoaded(ws);
+    if (!ws.loaded?.meta || ws.stale) return;
+    if (ws.watchMode === "none") await this.ensureWatch(ws, sessionId);
+    if (ws.watchMode !== "fallback") return;
+    const paths = [...ws.loaded.files.keys()];
+    if (paths.length === 0) return;
+    const step = Math.max(1, Math.floor(paths.length / this.mtimeSampleSize));
+    const sample = paths.filter((_, index) => index % step === 0).slice(0, this.mtimeSampleSize);
+    try {
+      const result = await this.core.statFiles({ sessionId, paths: sample });
+      const byPath = new Map(result.entries.map((entry) => [entry.path, entry]));
+      for (const filePath of sample) {
+        const current = byPath.get(filePath);
+        const indexed = ws.loaded.files.get(filePath);
+        if (!current || !indexed || current.size !== indexed.size || current.modifiedMs !== indexed.modifiedMs) {
+          this.markStale(ws, "mtime", sessionId);
+          return;
+        }
+      }
+    } catch {
+      // 抽样失败（文件被删等）一律按滞后处理
+      this.markStale(ws, "mtime", sessionId);
+    }
+  }
+
+  // ---- 查询 ----
+
+  private async requireIndex(cwd: string): Promise<LoadedIndex> {
+    const ws = this.ws(cwd);
+    await this.ensureLoaded(ws);
+    if (!ws.loaded?.meta) {
+      throw new IndexUnavailableError(
+        ws.corrupt
+          ? "Symbol index is corrupt and has been discarded; rebuild it explicitly (POST /api/workspaces/index/rebuild)."
+          : "Symbol index has not been built for this workspace; rebuild it explicitly (POST /api/workspaces/index/rebuild).",
+      );
+    }
+    return ws.loaded;
+  }
+
+  /** code_search 供数：符号名模糊匹配 + kind 过滤 + limit。 */
+  async searchSymbols(cwd: string, query: string, options: { kind?: string; limit?: number } = {}): Promise<SymbolSearchHit[]> {
+    const loaded = await this.requireIndex(cwd);
+    const limit = Math.min(SEARCH_LIMIT_MAX, Math.max(1, Math.floor(options.limit ?? SEARCH_LIMIT_DEFAULT)));
+    const hits: Array<{ score: number; hit: SymbolSearchHit }> = [];
+    for (const [filePath, symbols] of loaded.symbols) {
+      for (const symbol of symbols) {
+        if (options.kind && symbol.kind !== options.kind) continue;
+        const score = fuzzyScore(symbol.name, query);
+        if (score <= 0) continue;
+        hits.push({ score, hit: { name: symbol.name, kind: symbol.kind, path: filePath, startLine: symbol.startLine, endLine: symbol.endLine, signature: symbol.signature } });
+      }
+    }
+    hits.sort((a, b) => b.score - a.score || a.hit.name.localeCompare(b.hit.name) || a.hit.path.localeCompare(b.hit.path));
+    return hits.slice(0, limit).map((entry) => entry.hit);
+  }
+
+  /** @ 文件补全供数：索引文件清单按路径模糊匹配（评分与 searchSymbols 同族）。 */
+  async searchFiles(cwd: string, query: string, options: { limit?: number } = {}): Promise<FileSearchHit[]> {
+    const loaded = await this.requireIndex(cwd);
+    const limit = Math.min(SEARCH_LIMIT_MAX, Math.max(1, Math.floor(options.limit ?? SEARCH_LIMIT_DEFAULT)));
+    const hits: Array<{ score: number; hit: FileSearchHit }> = [];
+    for (const [filePath, entry] of loaded.files) {
+      // 全路径与基名各评一次取高分：用户常只记文件名
+      const score = Math.max(fuzzyScore(filePath, query), fuzzyScore(basenameOf(filePath), query));
+      if (score <= 0) continue;
+      hits.push({ score, hit: { path: filePath, modifiedMs: entry.modifiedMs } });
+    }
+    hits.sort((a, b) => b.score - a.score || a.hit.path.localeCompare(b.hit.path));
+    return hits.slice(0, limit).map((entry) => entry.hit);
+  }
+
+  /** repo map 供数：索引可用时返回带符号的文件清单；不可用返回 undefined（调用方降级静态树）。 */
+  async symbolSummary(cwd: string): Promise<RepoMapSymbolFile[] | undefined> {
+    const ws = this.ws(cwd);
+    try {
+      await this.ensureLoaded(ws);
+    } catch {
+      return undefined;
+    }
+    if (!ws.loaded?.meta) return undefined;
+    const result: RepoMapSymbolFile[] = [];
+    for (const [filePath, symbols] of ws.loaded.symbols) {
+      if (symbols.length === 0) continue;
+      const file = ws.loaded.files.get(filePath);
+      result.push({
+        path: filePath,
+        modifiedMs: file?.modifiedMs ?? 0,
+        symbols: symbols.map((symbol) => ({ name: symbol.name, kind: symbol.kind })),
+      });
+    }
+    result.sort((a, b) => b.modifiedMs - a.modifiedMs || a.path.localeCompare(b.path));
+    return result;
+  }
+}
+
+/** 索引清单路径统一为相对路径；分隔符兼容 / 与 \。 */
+function basenameOf(filePath: string): string {
+  const normalized = filePath.replace(/\\/g, "/");
+  return normalized.slice(normalized.lastIndexOf("/") + 1);
+}
+
+/**
+ * 模糊匹配评分：完全相等(忽略大小写)=100，前缀=75，子串=50，子序列=25，不匹配=0。
+ * 简单可解释，够 code_search 排序用。
+ */
+export function fuzzyScore(name: string, query: string): number {
+  const n = name.toLowerCase();
+  const q = query.toLowerCase();
+  if (!q) return 0;
+  if (n === q) return 100;
+  if (n.startsWith(q)) return 75;
+  if (n.includes(q)) return 50;
+  let i = 0;
+  for (const ch of n) {
+    if (ch === q[i]) i += 1;
+    if (i === q.length) return 25;
+  }
+  return 0;
+}

@@ -1,0 +1,15 @@
+ ✓ src/util.test.ts (2 tests) 4ms
+   ✓ util > trims whitespace
+   ✓ util > pads numbers
+ × src/math.test.ts (2 tests | 1 failed) 8ms
+   ✓ math > adds numbers
+   × math > divides numbers
+
+ FAIL  src/math.test.ts > math > divides numbers
+AssertionError: expected 2 to be 3
+
+ ❯ src/math.test.ts:13:18
+
+ Test Files  1 failed | 1 passed (2)
+      Tests  1 failed | 2 passed | 1 skipped (4)
+   Duration  312ms

@@ -1,0 +1,16 @@
+Results File: D:\proj\TestResults\run.trx
+<?xml version="1.0" encoding="utf-8"?>
+<TestRun>
+  <Results>
+    <UnitTestResult testName="Proj.Tests.MathTests.Adds" outcome="Passed" duration="00:00:00.0010000" />
+    <UnitTestResult testName="Proj.Tests.MathTests.Divides" outcome="Failed" duration="00:00:00.0030000">
+      <Output>
+        <ErrorInfo>
+          <Message>Assert.AreEqual failed. Expected:&lt;4&gt;. Actual:&lt;3&gt;.</Message>
+          <StackTrace>at Proj.Tests.MathTests.Divides() in D:\proj\Tests\MathTests.cs:line 13</StackTrace>
+        </ErrorInfo>
+      </Output>
+    </UnitTestResult>
+    <UnitTestResult testName="Proj.Tests.MathTests.Legacy" outcome="NotExecuted" duration="00:00:00.0000000" />
+  </Results>
+</TestRun>
