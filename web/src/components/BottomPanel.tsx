@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useState, type MouseEvent as ReactMouseEvent, type ReactElement } from "react";
 import type { SessionDetail } from "../lib/contracts";
+import type { DiffSpec } from "./editor/DiffPane";
 import { Icon, type IconName } from "./Icon";
 
 // 底部面板标签各自独立 chunk，仅在打开对应标签页时加载；
@@ -8,15 +9,17 @@ const ContextPanel = lazy(() => import("./panels/ContextPanel").then((m) => ({ d
 const CostPanel = lazy(() => import("./panels/CostPanel").then((m) => ({ default: m.CostPanel })));
 const SandboxPanel = lazy(() => import("./panels/SandboxPanel").then((m) => ({ default: m.SandboxPanel })));
 const TimelinePanel = lazy(() => import("./panels/TimelinePanel").then((m) => ({ default: m.TimelinePanel })));
+const PerfPanel = lazy(() => import("./panels/PerfPanel").then((m) => ({ default: m.PerfPanel })));
 import { useI18n } from "../i18n";
 
-export type PanelTab = "context" | "timeline" | "sandbox" | "cost";
+export type PanelTab = "context" | "timeline" | "sandbox" | "cost" | "perf";
 
 const TAB_META: Record<PanelTab, { zh: string; en: string; icon: IconName }> = {
   context: { zh: "上下文", en: "Context", icon: "layers" },
   timeline: { zh: "时间线", en: "Timeline", icon: "history" },
   sandbox: { zh: "沙盒", en: "Sandbox", icon: "shield" },
   cost: { zh: "成本", en: "Cost", icon: "chart" },
+  perf: { zh: "性能", en: "Perf", icon: "clock" },
 };
 
 const MIN_HEIGHT = 140;
@@ -40,7 +43,7 @@ function store(key: string, value: string): void {
   }
 }
 
-export function BottomPanel({ sessionId, session, running, onNotice, open, onOpenChange }: {
+export function BottomPanel({ sessionId, session, running, onNotice, open, onOpenChange, onOpenDiff }: {
   sessionId?: string;
   session?: SessionDetail;
   running: boolean;
@@ -48,6 +51,8 @@ export function BottomPanel({ sessionId, session, running, onNotice, open, onOpe
   /** 受控开合（布局持久化在 useWorkbenchLayout，Ctrl/Cmd+` 切换） */
   open: boolean;
   onOpenChange(open: boolean): void;
+  /** 0.5.0 Phase 1b：检查点对比一键在统一 diff 视图中打开（hunk 级恢复） */
+  onOpenDiff?(spec: DiffSpec): void;
 }): ReactElement {
   const { t } = useI18n();
   const [tab, setTab] = useState<PanelTab>(() => {
@@ -118,9 +123,10 @@ export function BottomPanel({ sessionId, session, running, onNotice, open, onOpe
         <div className="panel-content" style={{ height }}>
           <Suspense fallback={null}>
           {tab === "context" && <ContextPanel sessionId={sessionId} session={session} running={running} onNotice={onNotice} />}
-          {tab === "timeline" && <TimelinePanel sessionId={sessionId} running={running} onNotice={onNotice} />}
+          {tab === "timeline" && <TimelinePanel sessionId={sessionId} running={running} onNotice={onNotice} onOpenDiff={onOpenDiff} />}
           {tab === "sandbox" && <SandboxPanel session={session} />}
           {tab === "cost" && <CostPanel />}
+          {tab === "perf" && <PerfPanel sessionId={sessionId} />}
           </Suspense>
         </div>
       )}

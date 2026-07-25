@@ -20,8 +20,10 @@ function formatDuration(ms: number): string {
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
 }
 
-export function ProblemsPanel({ sessionId }: {
+export function ProblemsPanel({ sessionId, onOpenInEditor }: {
   sessionId?: string;
+  /** 0.5.0 Phase 1a：从只读预览升级为编辑器分栏（行列跳转）；未提供时保持只读 */
+  onOpenInEditor?(file: string, line?: number, column?: number): void;
 }): ReactElement {
   const { t } = useI18n();
   const [filter, setFilter] = useState<SeverityFilter>("all");
@@ -149,6 +151,15 @@ export function ProblemsPanel({ sessionId }: {
             <span className="mono" title={selected.file}>
               {selected.file}{selected.line !== undefined ? `:${selected.line}${selected.column !== undefined ? `:${selected.column}` : ""}` : ""}
             </span>
+            {onOpenInEditor && (
+              <button
+                className="btn small"
+                onClick={() => onOpenInEditor(selected.file, selected.line, selected.column)}
+                aria-label={t("在编辑器中打开", "Open in editor")}
+              >
+                {t("在编辑器中打开", "Open in editor")}
+              </button>
+            )}
             <button className="icon-btn" onClick={() => setSelected(undefined)} aria-label={t("关闭代码视图", "Close code view")}><Icon name="x" size={14} /></button>
           </header>
           {preview.isError ? (
