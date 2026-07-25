@@ -57,6 +57,7 @@ dkms.conf
 
 build/
 build-debug/
+build-*/
 .agents/
 .openwebcode/
 # JavaScript dependencies and generated bundles.  Keep the server entries
