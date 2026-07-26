@@ -1372,7 +1372,7 @@ export function SettingsDialog({ open, preference, setPreference, accent, setAcc
 }): ReactElement | null {
   const { language, setLanguage, t } = useI18n();
   const dialogRef = useRef<HTMLDialogElement>(null);
-  const contentRef = useRef<HTMLElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const [activeTab, setActiveTab] = useState<SettingsTab>("appearance");
   // 服务设置的未保存改动由 ServerSettingsSection 上报
   const serverDirtyRef = useRef(false);
@@ -1456,7 +1456,7 @@ export function SettingsDialog({ open, preference, setPreference, accent, setAcc
               </div>
             ))}
           </nav>
-          <main className="settings-content" ref={contentRef}>
+          <main className="settings-content">
             <header className="settings-content-header">
               <span className="settings-section-icon"><Icon name={activeMeta.icon} size={18} /></span>
               <div>
@@ -1464,7 +1464,7 @@ export function SettingsDialog({ open, preference, setPreference, accent, setAcc
                 <p>{t(activeMeta.descriptionZh, activeMeta.descriptionEn)}</p>
               </div>
             </header>
-            <div className="settings-panel" key={activeTab} aria-labelledby="settings-section-title">
+            <div ref={contentRef} className="settings-panel" key={activeTab} aria-labelledby="settings-section-title">
           {activeTab === "appearance" && (
             <section>
               <h3>{t("语言", "Language")}</h3>
