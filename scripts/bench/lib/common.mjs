@@ -157,8 +157,9 @@ export async function startBenchServer({ deltaBatchWindowMs, wsBackpressureLimit
 }
 
 /** 连接 /api/events 并收集事件，返回记录器。skipTypes 默认滤掉首条 connected。 */
-export async function connectWs(base, { skipTypes = ["connected"] } = {}) {
-  const ws = new WebSocket(`${base}/api/events`);
+export async function connectWs(base, { skipTypes = ["connected"], sessionId } = {}) {
+  const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
+  const ws = new WebSocket(`${base}/api/events${query}`);
   const received = []; // { event, bytes, at }
   let closeCode = 0;
   const closed = new Promise((resolve) => ws.on("close", (code) => { closeCode = code; resolve(); }));
