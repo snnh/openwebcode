@@ -55,7 +55,8 @@ describe("慢 WS 客户端背压 enforcement（集成）", () => {
     await pricing.initialize();
     const events = new EventBus();
     const providers = new ProviderRegistry();
-    // 字节上限压到 256KB，让测试不必真的打满 4MB 内核缓冲
+    // 用待发送消息数稳定触发背压；字节阈值已由上面的纯函数测试覆盖。
+    // 不依赖 runner 的 TCP 接收窗口大小，避免约 2MB 数据仍被内核接收时超时。
     const deps: ServerDependencies = {
       core: stubCore,
       sessions,
@@ -63,7 +64,7 @@ describe("慢 WS 客户端背压 enforcement（集成）", () => {
       events,
       providers,
       pricing,
-      wsBackpressureLimits: { maxBufferedBytes: 256 * 1024 },
+      wsBackpressureLimits: { maxBufferedMessages: 1 },
     };
     const app = await buildServer(deps);
     apps.push(app);
@@ -72,7 +73,7 @@ describe("慢 WS 客户端背压 enforcement（集成）", () => {
     const base = typeof address === "object" && address ? `ws://127.0.0.1:${address.port}` : "";
 
     // 慢客户端：握手成功后立即 pause 底层 socket，模拟永不读的消费端
-    const slow = new WebSocket(`${base}/api/events`);
+    const slow = new WebSocket(`${base}/api/events?sessionId=slow-client`);
     const slowMessages: AppEvent[] = [];
     let slowCloseCode = 0;
     slow.on("message", (data: Buffer) => slowMessages.push(JSON.parse(data.toString()) as AppEvent));
@@ -81,7 +82,7 @@ describe("慢 WS 客户端背压 enforcement（集成）", () => {
     (slow as unknown as { _socket: { pause(): void; resume(): void } })._socket.pause();
 
     // 健康客户端：正常读取
-    const healthy = new WebSocket(`${base}/api/events`);
+    const healthy = new WebSocket(`${base}/api/events?sessionId=healthy-client`);
     const healthyTypes: string[] = [];
     const healthyGot = (count: number) => new Promise<void>((resolve) => {
       const check = () => (healthyTypes.length >= count ? resolve() : setTimeout(check, 10));
@@ -93,11 +94,10 @@ describe("慢 WS 客户端背压 enforcement（集成）", () => {
     });
     await new Promise<void>((resolve) => healthy.on("open", resolve));
 
-    // 灌入 ~2MB 事件流，慢客户端的内核/WS 缓冲被打满后触发背压断连。
-    // 每次发布让出事件循环，给健康客户端留出走空窗口，避免它被误判为慢客户端。
-    for (let i = 0; i < 10; i++) {
-      events.publish({ source: "server", type: `flood-${i}`, payload: "x".repeat(200_000) });
-      await new Promise((resolve) => setImmediate(resolve));
+    // 同步发布时 send callback 尚未运行：第三条事件观察到两条待发送消息，
+    // 确定性触发慢客户端路径。会话过滤保证健康客户端不接收这组洪峰。
+    for (let i = 0; i < 3; i++) {
+      events.publish({ source: "server", sessionId: "slow-client", type: `flood-${i}`, payload: "x" });
     }
 
     // 恢复读取：应能收到断连前补发的 resync.required，然后连接被关闭
@@ -111,8 +111,8 @@ describe("慢 WS 客户端背压 enforcement（集成）", () => {
     // 慢客户端已从 clients 移除并计入指标；健康客户端不受影响，仍在收事件
     const metrics = await app.inject({ method: "GET", url: "/api/metrics" });
     expect(metrics.json().websocket.slowClientDisconnects).toBeGreaterThanOrEqual(1);
+    events.publish({ source: "server", sessionId: "healthy-client", type: "after-disconnect", payload: null });
     await healthyGot(1);
-    events.publish({ source: "server", type: "after-disconnect", payload: null });
     await new Promise<void>((resolve) => {
       const check = () => (healthyTypes.includes("after-disconnect") ? resolve() : setTimeout(check, 10));
       check();
