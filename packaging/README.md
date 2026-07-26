@@ -274,13 +274,13 @@ Server 模块在进程启动时加载，复制后必须重启 `build\stage\bin\o
 
 ## CI 发布流水线（release.yml）
 
-- 触发：`push: tags: ["v*"]`，或 `workflow_dispatch` 输入 tag（tag 不存在时基于当前提交创建）。
+- 触发：`push: tags: ["v*"]`，或 `workflow_dispatch` 输入 tag（tag 不存在时基于当前提交创建）。手动触发可显式启用 `skip_performance_tests` 跳过性能基准；默认关闭，tag 触发不允许跳过。
 - Windows：`npm ci/build`（server+web）→ CMake Release 构建 core → 按契约组装 `build/stage/`
   （含下载固定版本 Node 24 win-x64 zip 取 `node.exe`）→ `cpack -G WIX` → 上传 MSI。
 - Linux：同样构建后组装 `build/stage/`（下载固定版本 Node 24 linux-x64 tar.gz 整树解入 `node/`），
   `tar -C stage . -C packaging install.sh` 打包 → 上传 tar.gz。
 - bundled Node 版本固定在 workflow 的 `env.NODE_DIST_VERSION`（当前 24.18.0），升级时改这一个常量。
-- benchmark job 是 release 的硬依赖；相对上一版任一指标回归超过 15% 会阻断发布。结果以 `bench-results-*.json` 同 MSI/tar.gz 一起发布，供下一版下载为基线。
+- benchmark job 默认是 release 的硬依赖；相对上一版任一指标回归超过 15% 会阻断发布。结果以 `bench-results-*.json` 同 MSI/tar.gz 一起发布，供下一版下载为基线。仅手动发布显式启用 `skip_performance_tests` 时允许跳过，且该次 release 不包含基准 JSON。
 - Release 由 `softprops/action-gh-release@v2` 创建/更新，`generate_release_notes: true`，非草稿。
 
 推荐发布方式是先推送已审核提交，再创建并推送语义化版本 tag：
@@ -290,4 +290,4 @@ git tag -a v0.5.0 -m "OpenWebCode v0.5.0"
 git push origin v0.5.0
 ```
 
-也可在 GitHub Actions 中手动运行 `release`，输入形如 `v0.5.0` 的 tag。Windows、Linux 与 benchmark job 都成功后，唯一的 release job 才会汇总上传 MSI、tar.gz、`SHA256SUMS.txt` 与基准 JSON；随后核对下载文件名、校验和、安装/启动和 `/api/health`。
+也可在 GitHub Actions 中手动运行 `release`，输入形如 `v0.5.0` 的 tag。默认要求 Windows、Linux 与 benchmark job 全部成功；紧急发布可显式启用 `skip_performance_tests`，此时仍要求两个平台 job 成功，但不运行性能基准，也不上传基准 JSON。发布后应核对下载文件名、校验和、安装/启动和 `/api/health`。

@@ -2,8 +2,9 @@
 
 0.4.x 计划 §5.4 的可重复基准。目标：用固定数据集、固定参数把关键性能路径量化成
 机器可读的 JSON，让“回归 > 15%”有据可查。已在 `release.yml` 的 benchmark job 中接入 CI；
-上一 release 基线缺失或任一可比指标回归超过 15% 都会阻断发布。首次建立基线必须由
-`workflow_dispatch` 显式启用 bootstrap。
+上一 release 基线缺失或任一可比指标回归超过 15% 默认都会阻断发布。首次建立基线必须由
+`workflow_dispatch` 显式启用 bootstrap；紧急手动发布可显式设置 `skip_performance_tests`，
+tag 触发不可跳过，且跳过时不生成基准资产。
 
 ## 跑法
 
@@ -100,7 +101,7 @@ $TSX scripts/bench/compare.mjs results/baseline.json results/long-history.json
 - [ ] 大仓库索引与补全（10 万文件）：需固定文件树生成器 + 索引/补全入口基准
 - [x] 上下文构建稳态耗时：`bench-context-build.mjs`，全量 vs 增量 buildView 对比，验收加速比 >= 2.0x
 - [x] 浏览器渲染基准：`browser/bench-browser-render.mjs`，Playwright 真实浏览器三项指标
-- [x] CI 接入：release 流程跑基准并归档结果；基线缺失或回归 > 15% 均为硬门槛
+- [x] CI 接入：release 流程默认跑基准并归档结果；基线缺失或回归 > 15% 均为硬门槛，手动触发可显式跳过
 - [x] 诊断页接入：turn 各阶段耗时 / 事件吞吐 / 渲染帧率采样（脱敏）
 
 扩展方式：新场景加 `bench-<name>.mjs`（复用 `lib/common.mjs` 的
