@@ -19,6 +19,7 @@ describe("interface localization", () => {
     window.localStorage.clear();
     HTMLDialogElement.prototype.showModal = function showModal(this: HTMLDialogElement) { this.open = true; };
     HTMLDialogElement.prototype.close = function close(this: HTMLDialogElement) { this.open = false; };
+    HTMLElement.prototype.scrollTo = () => undefined;
   });
 
   it("loads a saved English preference and updates the document language", async () => {
@@ -67,6 +68,12 @@ describe("interface localization", () => {
     fireEvent.change(screen.getByLabelText("界面语言"), { target: { value: "en" } });
     expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();
     expect(screen.getByLabelText("Interface language")).toHaveValue("en");
+    expect(screen.getByText("Preferences")).toBeInTheDocument();
+    expect(screen.getByText("AI & services")).toBeInTheDocument();
+
+    fireEvent.keyDown(screen.getByRole("button", { name: "Appearance" }), { key: "ArrowDown" });
+    expect(screen.getByRole("button", { name: "General" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("heading", { name: "General" })).toBeInTheDocument();
     expect(window.localStorage.getItem("owc-language")).toBe("en");
   });
 });
