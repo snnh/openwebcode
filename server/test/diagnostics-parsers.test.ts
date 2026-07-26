@@ -42,6 +42,9 @@ describe("测试输出解析器 golden（0.4.0 Phase 3a）", () => {
     expect(parsed!.failures).toHaveLength(1);
     expect(parsed!.failures[0]).toMatchObject({ name: "tests/test_math.py::test_divides", file: "tests/test_math.py" });
     expect(parsed!.failures[0].message).toContain("AssertionError");
+
+    const parsedCrlf = parseTestOutput("pytest", output.replace(/\n/g, "\r\n"));
+    expect(parsedCrlf).toEqual(parsed);
   });
 
   it("go test -json：事件流解析", async () => {
