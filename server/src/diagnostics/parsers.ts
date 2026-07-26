@@ -339,9 +339,10 @@ export const PARSERS: readonly TestOutputParser[] = [
 
 /** 按命令与输出选择解析器并解析；全部失败返回 undefined（调用方走回退）。 */
 export function parseTestOutput(command: string, output: string): DiagnosticSet | undefined {
+  const normalizedOutput = output.replace(/\r\n?/g, "\n");
   for (const parser of PARSERS) {
-    if (!parser.match(command, output)) continue;
-    const parsed = parser.parse(output);
+    if (!parser.match(command, normalizedOutput)) continue;
+    const parsed = parser.parse(normalizedOutput);
     if (parsed) return parsed;
   }
   return undefined;
@@ -349,6 +350,7 @@ export function parseTestOutput(command: string, output: string): DiagnosticSet 
 
 /** 解析失败回退：summary 置零、无 failures，原文尾部由调用方存入 artifact。 */
 export function fallbackDiagnosticSet(command: string, output: string): DiagnosticSet {
-  const matched = PARSERS.find((parser) => parser.match(command, output));
+  const normalizedOutput = output.replace(/\r\n?/g, "\n");
+  const matched = PARSERS.find((parser) => parser.match(command, normalizedOutput));
   return { tool: matched?.tool ?? "unknown", summary: { passed: 0, failed: 0, skipped: 0, durationMs: 0 }, failures: [] };
 }
