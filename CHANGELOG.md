@@ -4,6 +4,10 @@
 
 ## Unreleased
 
+### 发布工程
+
+- 手动触发 release workflow 时可显式启用 `skip_performance_tests` 跳过性能基准；默认仍执行，tag 触发不可跳过，跳过时不会生成或发布基准 JSON。
+
 ## [0.5.0] - 2026-07-26
 
 ### 新增

@@ -14,6 +14,11 @@ on:
         required: false
         default: false
         type: boolean
+      skip_performance_tests:
+        description: "跳过性能基准（仅手动发布；不生成或发布基准 JSON）"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -328,6 +333,20 @@ jobs:
   release:
     name: Publish GitHub Release
     needs: [windows, linux, benchmark]
+    if: >-
+      ${{
+        always() &&
+        needs.windows.result == 'success' &&
+        needs.linux.result == 'success' &&
+        (
+          needs.benchmark.result == 'success' ||
+          (
+            github.event_name == 'workflow_dispatch' &&
+            inputs.skip_performance_tests == true &&
+            needs.benchmark.result == 'skipped'
+          )
+        )
+      }}
     runs-on: ubuntu-latest
     steps:
       - name: Resolve version from tag
@@ -347,6 +366,7 @@ jobs:
           name: release-linux-tarball
           path: release-assets
       - name: Download benchmark baselines
+        if: ${{ needs.benchmark.result == 'success' }}
         uses: actions/download-artifact@v4
         with:
           name: bench-results-${{ env.VERSION }}
@@ -381,10 +401,11 @@ jobs:
             release-assets/openwebcode-${{ env.VERSION }}-windows-x64.msi
             release-assets/openwebcode-${{ env.VERSION }}-linux-x64.tar.gz
             release-assets/SHA256SUMS.txt
-            release-assets/benchmarks/bench-results-*.json
+            ${{ needs.benchmark.result == 'success' && 'release-assets/benchmarks/bench-results-*.json' || '' }}
 
   benchmark:
     name: Performance Benchmarks
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.skip_performance_tests != true }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
