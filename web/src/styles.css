@@ -1249,14 +1249,11 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 }
 .settings-tab.active svg { color: var(--accent); }
 .settings-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.settings-content { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow-y: auto; scroll-behavior: smooth; }
+.settings-content { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
 .settings-content-header {
   display: flex;
   align-items: center;
   gap: 11px;
-  position: sticky;
-  top: 0;
-  z-index: 3;
   flex: 0 0 auto;
   min-height: 72px;
   padding: 0 24px;
@@ -1267,14 +1264,19 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .settings-section-icon { width: 34px; height: 34px; }
 .settings-content-header h3 { margin: 0; font-size: 15px; font-weight: 650; }
 .settings-content-header p { margin: 4px 0 0; color: var(--text-3); font-size: 11.5px; }
-.settings-panel { flex: 1; min-height: 200px; padding: 22px 24px 16px; }
+.settings-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 22px 24px 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-behavior: smooth;
+  scrollbar-gutter: stable;
+}
 .settings-panel > section { animation: settings-panel-in 180ms ease-out; }
 .settings-panel h3 { margin: 0 0 8px; font-size: 13px; font-weight: 650; }
 .settings-panel h3:not(:first-child) { margin-top: 18px; }
 .settings-actions {
-  position: sticky;
-  bottom: 0;
-  z-index: 3;
   flex: 0 0 auto;
   margin: 0;
   padding: 10px 24px;
