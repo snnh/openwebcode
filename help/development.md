@@ -241,7 +241,7 @@ provider；它支持 `run: <cmd>` 的工具调用回放与 `tool_result` 回包�
 | `core.yml` | 改 `core/**` | Linux gcc+clang / Windows MSVC：configure→build→ctest（C 单测 + Python 协议/fs 脚本） |
 | `server.yml` | 改 `server/**` 或 `core/**` | Ubuntu + Windows：先构建 core Debug，再 `npm ci && npm run build && npm test`（含依赖真实 owc-exec 的 core-client / core-tcp / stage3-e2e / web-e2e——通过 `OWC_CORE_PATH` 注入路径） |
 | `web.yml` | 改 `web/**` | Ubuntu：`npm ci && npm run build && npm test`（vitest + jsdom + Testing Library + axe） |
-| `release.yml` | 打 `v*` tag 或手动触发 | 发布前先跑 server + web 全测试网关，再产 MSI / tar.gz；新增 benchmark job（与 windows/linux 并行）跑全部 Node + Playwright 基准并归档结果 |
+| `release.yml` | 打 `v*` tag 或手动触发 | 发布前先跑 server + web 全测试网关，再产 MSI / tar.gz；benchmark job（与 windows/linux 并行）跑全部 Node + Playwright 基准并归档结果。手动触发可显式设置 `skip_performance_tests`，tag 发布不可跳过 |
 
 关键点：
 

@@ -99,4 +99,4 @@ git tag -a v0.2.4 -m "OpenWebCode v0.2.4"
 git push origin v0.2.4
 ```
 
-The workflow can also be dispatched manually with a `v*` tag. The benchmark job is a hard release dependency: a regression over 15% fails the workflow, and normalized `bench-results-*.json` files ship as release assets for the next baseline. A single release job publishes those results with the MSI, tar.gz, and `SHA256SUMS.txt` only after both platform jobs and benchmarks succeed; installation and `/api/health` smoke checks are release gates.
+The workflow can also be dispatched manually with a `v*` tag. By default, the benchmark job is a hard release dependency: a regression over 15% fails the workflow, and normalized `bench-results-*.json` files ship as release assets for the next baseline. A manual dispatch may explicitly set `skip_performance_tests` for an emergency release; tag-triggered releases cannot skip benchmarks, and a skipped run publishes no benchmark JSON. The release still requires both platform jobs, installation checks, and the `/api/health` smoke checks to pass.
