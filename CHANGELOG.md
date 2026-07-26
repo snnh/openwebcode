@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## [0.5.0] - 2026-07-26
+
 ### 新增
 
 - Monaco 编辑器与统一 diff：工具卡、Problems、SCM、Quick Open 和检查点均可打开懒加载编辑器或分栏 diff；支持逐 hunk 接受/拒绝、保存快捷键、只读/移动端降级，写回继续经过权限与 plan 门禁。
