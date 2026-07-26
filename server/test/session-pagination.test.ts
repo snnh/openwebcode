@@ -47,6 +47,20 @@ describe("session pagination (0.5.0 Phase 2)", () => {
     expect(tail!.messageCount).toBe(250);
   });
 
+  it("cached tail index extends correctly after append-only growth", async () => {
+    const store = await storeAt(await tempDir());
+    const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
+    await seedMessages(store, session.id, 250);
+    const before = await store.getTail(session.id, 100);
+    expect(before?.messageCount).toBe(250);
+
+    const appended = await store.appendMessage(session.id, "user", [{ type: "text", text: "after-index" }]);
+    const after = await store.getTail(session.id, 100);
+    expect(after?.messageCount).toBe(251);
+    expect(after?.messages.at(-1)?.id).toBe(appended.id);
+    expect(after?.messages[0]?.id).toBe(before?.messages[1]?.id);
+  });
+
   it("getTail returns all messages when fewer than limit", async () => {
     const store = await storeAt(await tempDir());
     const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });

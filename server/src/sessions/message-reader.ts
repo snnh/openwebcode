@@ -1,177 +1,237 @@
 /**
- * Efficient JSONL message reading for session pagination.
+ * Indexed, bounded-memory JSONL message reading for session pagination.
  *
- * Key optimisation: read the raw file once but only `JSON.parse` the lines
- * in the requested page. For a 100 K-line session this avoids parsing
- * 99 900 messages that will never be sent to the client.
+ * The first access builds an in-memory byte-offset index without parsing every
+ * JSON object. Later pages stat the file and read only their byte range. The
+ * append-only growth extends the cached index from the previous EOF after a
+ * bounded tail-integrity check. Rewrites fall back to a full rebuild. The
+ * cache is LRU-bounded across sessions.
  */
-import { readFile } from "node:fs/promises";
+import { open, stat } from "node:fs/promises";
 
 export interface MessagePage<T> {
   messages: T[];
-  /** Whether older messages exist beyond this page */
   hasMore: boolean;
-  /** Total non-empty lines in the JSONL file */
   totalLines: number;
-  /** Recovery status derived from the returned page only */
   recovery?: { state: "recovered" | "needs_repair"; message: string } | undefined;
 }
 
-/** Default number of messages returned on initial session load */
 export const DEFAULT_PAGE_SIZE = 100;
+const READ_CHUNK_BYTES = 64 * 1024;
+const MAX_CACHED_INDEXES = 32;
+const PREFIX_FINGERPRINT_BYTES = 64;
 
-/**
- * Read the last `limit` messages from a JSONL file.
- *
- * Reads the raw file once, splits into lines, then only `JSON.parse`s
- * the last `limit` non-empty lines. The rest are skipped without
- * any JSON parsing cost.
- */
-export async function readMessagesTail<T>(
-  filePath: string,
-  limit: number = DEFAULT_PAGE_SIZE,
-): Promise<MessagePage<T>> {
-  let raw: string;
+interface LineRef { start: number; length: number }
+interface MessageFileIndex {
+  size: number;
+  modifiedMs: number;
+  changedMs: number;
+  device: number;
+  inode: number;
+  endsWithNewline: boolean;
+  prefixTail: Buffer;
+  lines: LineRef[];
+  byId: Map<string, number>;
+}
+
+const indexes = new Map<string, MessageFileIndex>();
+
+export async function readMessagesTail<T>(filePath: string, limit: number = DEFAULT_PAGE_SIZE): Promise<MessagePage<T>> {
   try {
-    raw = await readFile(filePath, "utf8");
+    const index = await getIndex(filePath);
+    if (index.lines.length === 0) return { messages: [], hasMore: false, totalLines: 0 };
+    const refs = index.lines.slice(Math.max(0, index.lines.length - limit));
+    const lines = await readLines(filePath, refs);
+    const { messages, recovery } = parsePage<T>(lines, true);
+    return { messages, hasMore: index.lines.length > limit, totalLines: index.lines.length, recovery };
   } catch (error) {
     if (!isEnoent(error)) throw error;
     return { messages: [], hasMore: false, totalLines: 0, recovery: { state: "needs_repair", message: "messages.jsonl is missing" } };
   }
-
-  if (!raw.trim()) return { messages: [], hasMore: false, totalLines: 0 };
-
-  const allLines = raw.split("\n");
-  const nonEmpty: number[] = [];
-  for (let i = 0; i < allLines.length; i++) {
-    if (allLines[i]!.trim()) nonEmpty.push(i);
-  }
-
-  const total = nonEmpty.length;
-  if (total === 0) return { messages: [], hasMore: false, totalLines: 0 };
-
-  const hasMore = total > limit;
-  const startIdx = hasMore ? total - limit : 0;
-  const pageLines = nonEmpty.slice(startIdx);
-
-  const messages: T[] = [];
-  let corruptTail = false;
-  let corruptMiddle = false;
-  const lastIdx = pageLines[pageLines.length - 1];
-
-  for (const idx of pageLines) {
-    try {
-      messages.push(JSON.parse(allLines[idx]!) as T);
-    } catch {
-      if (idx === lastIdx) corruptTail = true;
-      else corruptMiddle = true;
-    }
-  }
-
-  let recovery: MessagePage<T>["recovery"];
-  if (corruptMiddle) recovery = { state: "needs_repair", message: "messages.jsonl contains corrupt non-tail records" };
-  else if (corruptTail) recovery = { state: "recovered", message: "Ignored a corrupt trailing messages.jsonl record" };
-
-  return { messages, hasMore, totalLines: total, recovery };
 }
 
-/**
- * Read `limit` messages that appear **before** the given `beforeId` in the JSONL file.
- *
- * Scans line IDs via lightweight regex (no full JSON.parse) to find the
- * target message, then only parses the `limit` lines preceding it.
- */
-export async function readMessagesBefore<T>(
-  filePath: string,
-  beforeId: string,
-  limit: number = DEFAULT_PAGE_SIZE,
-): Promise<MessagePage<T>> {
-  let raw: string;
+export async function readMessagesBefore<T>(filePath: string, beforeId: string, limit: number = DEFAULT_PAGE_SIZE): Promise<MessagePage<T>> {
   try {
-    raw = await readFile(filePath, "utf8");
+    const index = await getIndex(filePath);
+    const target = index.byId.get(beforeId);
+    if (target === undefined) return { messages: [], hasMore: false, totalLines: index.lines.length };
+    const start = Math.max(0, target - limit);
+    const lines = await readLines(filePath, index.lines.slice(start, target));
+    return { messages: parsePage<T>(lines, false).messages, hasMore: start > 0, totalLines: index.lines.length };
   } catch (error) {
     if (!isEnoent(error)) throw error;
     return { messages: [], hasMore: false, totalLines: 0, recovery: { state: "needs_repair", message: "messages.jsonl is missing" } };
   }
-
-  if (!raw.trim()) return { messages: [], hasMore: false, totalLines: 0 };
-
-  const allLines = raw.split("\n");
-  const nonEmpty: number[] = [];
-  for (let i = 0; i < allLines.length; i++) {
-    if (allLines[i]!.trim()) nonEmpty.push(i);
-  }
-
-  const total = nonEmpty.length;
-  if (total === 0) return { messages: [], hasMore: false, totalLines: 0 };
-
-  // Find the line index of beforeId using lightweight regex (no JSON.parse)
-  let targetIdx = -1;
-  for (let i = 0; i < nonEmpty.length; i++) {
-    const lineIdx = nonEmpty[i]!;
-    const id = extractId(allLines[lineIdx]!);
-    if (id === beforeId) {
-      targetIdx = i;
-      break;
-    }
-  }
-
-  // Message not found — return empty (caller should treat as no more)
-  if (targetIdx === -1) return { messages: [], hasMore: false, totalLines: total };
-
-  // Read `limit` messages before the target
-  const startIdx = Math.max(0, targetIdx - limit);
-  const pageLines = nonEmpty.slice(startIdx, targetIdx);
-
-  const messages: T[] = [];
-  for (const idx of pageLines) {
-    try {
-      messages.push(JSON.parse(allLines[idx]!) as T);
-    } catch {
-      // Skip corrupt lines in pagination
-    }
-  }
-
-  return { messages, hasMore: startIdx > 0, totalLines: total };
 }
 
-/**
- * Check recovery status by reading only the last non-empty line.
- * Much faster than reading + parsing all messages.
- *
- * Only detects tail corruption (the common case from interrupted writes).
- * Middle corruption requires a full scan and is deferred to `readMessages()`.
- */
 export async function checkRecovery(filePath: string): Promise<{ recovery?: { state: "recovered" | "needs_repair"; message: string } }> {
-  let raw: string;
   try {
-    raw = await readFile(filePath, "utf8");
+    const index = await getIndex(filePath);
+    const last = index.lines.at(-1);
+    if (!last) return {};
+    const [line] = await readLines(filePath, [last]);
+    try {
+      JSON.parse(line!);
+      return {};
+    } catch {
+      return { recovery: { state: "recovered", message: "Ignored a corrupt trailing messages.jsonl record" } };
+    }
   } catch (error) {
     if (!isEnoent(error)) throw error;
     return { recovery: { state: "needs_repair", message: "messages.jsonl is missing" } };
   }
-
-  if (!raw.trim()) return {};
-
-  // Find the last non-empty line without splitting the entire file
-  const trimmed = raw.replace(/\n+$/, "");
-  const lastNewline = trimmed.lastIndexOf("\n");
-  const lastLine = lastNewline === -1 ? trimmed : trimmed.slice(lastNewline + 1);
-
-  if (!lastLine.trim()) return {};
-
-  try {
-    JSON.parse(lastLine);
-    return {};
-  } catch {
-    return { recovery: { state: "recovered", message: "Ignored a corrupt trailing messages.jsonl record" } };
-  }
 }
 
-/** Fast extraction of the "id" field from a JSON line without full JSON.parse */
+async function getIndex(filePath: string): Promise<MessageFileIndex> {
+  const info = await stat(filePath);
+  const cached = indexes.get(filePath);
+  if (cached && cached.size === info.size && cached.modifiedMs === info.mtimeMs && cached.changedMs === info.ctimeMs) {
+    indexes.delete(filePath);
+    indexes.set(filePath, cached);
+    return cached;
+  }
+
+  if (cached && info.size > cached.size && cached.endsWithNewline && cached.device === info.dev && cached.inode === info.ino) {
+    const handle = await open(filePath, "r");
+    try {
+      const prefixTail = await readTail(handle, cached.size);
+      if (prefixTail.equals(cached.prefixTail)) {
+        const scan = await scanRange(handle, cached.size, info.size, cached.lines, cached.byId);
+        cached.size = info.size;
+        cached.modifiedMs = info.mtimeMs;
+        cached.changedMs = info.ctimeMs;
+        cached.endsWithNewline = scan.endsWithNewline;
+        cached.prefixTail = await readTail(handle, info.size);
+        touchIndex(filePath, cached);
+        return cached;
+      }
+    } catch {
+      // A concurrent rewrite/read failure invalidates the partially extended
+      // entry. The full rebuild below starts from authoritative file bytes.
+      indexes.delete(filePath);
+    } finally {
+      await handle.close();
+    }
+  }
+
+  const lines: LineRef[] = [];
+  const byId = new Map<string, number>();
+  const handle = await open(filePath, "r");
+  let scan: { endsWithNewline: boolean };
+  let prefixTail: Buffer;
+  try {
+    scan = await scanRange(handle, 0, info.size, lines, byId);
+    prefixTail = await readTail(handle, info.size);
+  } finally {
+    await handle.close();
+  }
+
+  const built = {
+    size: info.size,
+    modifiedMs: info.mtimeMs,
+    changedMs: info.ctimeMs,
+    device: info.dev,
+    inode: info.ino,
+    endsWithNewline: scan.endsWithNewline,
+    prefixTail,
+    lines,
+    byId,
+  };
+  touchIndex(filePath, built);
+  return built;
+}
+
+async function scanRange(handle: Awaited<ReturnType<typeof open>>, start: number, end: number, lines: LineRef[], byId: Map<string, number>): Promise<{ endsWithNewline: boolean }> {
+  const buffer = Buffer.allocUnsafe(READ_CHUNK_BYTES);
+  let remainder = Buffer.alloc(0);
+  let fileOffset = start;
+  let lastByte: number | undefined;
+  const record = (bytes: Buffer, recordStart: number): void => {
+    const text = bytes.toString("utf8");
+    if (!text.trim()) return;
+    const lineIndex = lines.length;
+    lines.push({ start: recordStart, length: bytes.length });
+    const id = extractId(text);
+    if (id) byId.set(id, lineIndex);
+  };
+  while (fileOffset < end) {
+    const requested = Math.min(buffer.length, end - fileOffset);
+    const { bytesRead } = await handle.read(buffer, 0, requested, fileOffset);
+    if (bytesRead === 0) throw new Error("messages.jsonl changed while indexing");
+    const dataBase = fileOffset - remainder.length;
+    const incoming = buffer.subarray(0, bytesRead);
+    const data = remainder.length ? Buffer.concat([remainder, incoming]) : incoming;
+    fileOffset += bytesRead;
+    lastByte = incoming[bytesRead - 1];
+    let lineStart = 0;
+    for (let index = 0; index < data.length; index += 1) {
+      if (data[index] !== 0x0a) continue;
+      record(data.subarray(lineStart, index), dataBase + lineStart);
+      lineStart = index + 1;
+    }
+    remainder = Buffer.from(data.subarray(lineStart));
+  }
+  if (remainder.length) record(remainder, end - remainder.length);
+  return { endsWithNewline: end === 0 || lastByte === 0x0a };
+}
+
+async function readTail(handle: Awaited<ReturnType<typeof open>>, end: number): Promise<Buffer> {
+  const length = Math.min(PREFIX_FINGERPRINT_BYTES, end);
+  const tail = Buffer.allocUnsafe(length);
+  let read = 0;
+  while (read < length) {
+    const result = await handle.read(tail, read, length - read, end - length + read);
+    if (result.bytesRead === 0) throw new Error("messages.jsonl changed while validating its index");
+    read += result.bytesRead;
+  }
+  return tail;
+}
+
+function touchIndex(filePath: string, index: MessageFileIndex): void {
+  indexes.delete(filePath);
+  indexes.set(filePath, index);
+  while (indexes.size > MAX_CACHED_INDEXES) indexes.delete(indexes.keys().next().value!);
+}
+
+/** Read one contiguous page range, then slice individual UTF-8 records. */
+async function readLines(filePath: string, refs: LineRef[]): Promise<string[]> {
+  if (refs.length === 0) return [];
+  const first = refs[0]!;
+  const last = refs.at(-1)!;
+  const length = last.start + last.length - first.start;
+  const bytes = Buffer.allocUnsafe(length);
+  const handle = await open(filePath, "r");
+  let read = 0;
+  try {
+    while (read < length) {
+      const result = await handle.read(bytes, read, length - read, first.start + read);
+      if (result.bytesRead === 0) throw new Error("messages.jsonl changed while reading a page");
+      read += result.bytesRead;
+    }
+  } finally {
+    await handle.close();
+  }
+  return refs.map((ref) => bytes.subarray(ref.start - first.start, ref.start - first.start + ref.length).toString("utf8"));
+}
+
+function parsePage<T>(lines: string[], detectRecovery: boolean): { messages: T[]; recovery?: MessagePage<T>["recovery"] } {
+  const messages: T[] = [];
+  let corruptTail = false;
+  let corruptMiddle = false;
+  for (let index = 0; index < lines.length; index += 1) {
+    try { messages.push(JSON.parse(lines[index]!) as T); }
+    catch {
+      if (detectRecovery && index === lines.length - 1) corruptTail = true;
+      else corruptMiddle = true;
+    }
+  }
+  if (corruptMiddle) return { messages, recovery: { state: "needs_repair", message: "messages.jsonl contains corrupt non-tail records" } };
+  if (corruptTail) return { messages, recovery: { state: "recovered", message: "Ignored a corrupt trailing messages.jsonl record" } };
+  return { messages };
+}
+
 function extractId(line: string): string | undefined {
-  const match = line.match(/"id"\s*:\s*"([0-9a-f-]{36})"/);
-  return match?.[1];
+  return /"id"\s*:\s*"([0-9a-f-]{36})"/.exec(line)?.[1];
 }
 
 function isEnoent(error: unknown): boolean {

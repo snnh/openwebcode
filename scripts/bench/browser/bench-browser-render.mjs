@@ -5,7 +5,7 @@
 //   3. 内存增长：循环滚动 N 次，performance.memory 首尾差值比（目标 <= 20%）
 // 用法：server/node_modules/.bin/tsx scripts/bench/browser/bench-browser-render.mjs [--out path]
 // 前置：先跑 generate-dataset.mjs；需要 web/dist 已构建（npm run build --prefix web）；
-//       需要 playwright chromium（npx playwright install chromium）
+//       需要 playwright chromium（server/node_modules/.bin/playwright install chromium）
 
 import path from "node:path";
 import { existsSync } from "node:fs";
@@ -35,7 +35,7 @@ try {
   try {
     ({ chromium } = await import("playwright"));
   } catch {
-    console.error("playwright 未安装。请运行：npm install playwright --prefix server && npx playwright install chromium");
+    console.error("playwright 未安装。请运行：npm --prefix server install && server/node_modules/.bin/playwright install chromium");
     process.exit(2);
   }
 }
@@ -60,6 +60,7 @@ const app = await buildServer({
   events,
   providers: new ProviderRegistry(),
   pricing,
+  webDist: path.join(benchRoot, "..", "..", "web", "dist"),
 });
 await app.listen({ port: 0, host: "127.0.0.1" });
 const address = app.server.address();
@@ -70,17 +71,35 @@ console.log(`Server 已启动：${serverBase}`);
 const browser = await chromium.launch({ args: ["--enable-precise-memory-info"] });
 const page = await browser.newPage({ viewport: { width: WINDOW_WIDTH, height: WINDOW_HEIGHT } });
 
-// 导航到会话页面（web/dist 通过 server 的 static 路由 serve）
-await page.goto(`${serverBase}/`, { waitUntil: "networkidle" });
-// 等待会话列表加载并点击目标会话
-await page.waitForTimeout(1000);
+// 导航到真实 Web 页面，并把分页历史全部载入后再采样。任何 selector 缺失都必须失败，
+// 避免 404/空白页被误测成高帧率。
+const response = await page.goto(`${serverBase}/`, { waitUntil: "networkidle" });
+if (!response?.ok()) throw new Error(`Web 页面加载失败：HTTP ${response?.status() ?? "unknown"}`);
+await page.locator(".session-link").first().click();
+await page.locator("#composer-input").waitFor({ state: "visible" });
+await page.locator(".execution-track").waitFor({ state: "visible" });
+
+let pageLoads = 0;
+while (await page.locator(".load-more-btn").count()) {
+  const button = page.locator(".load-more-btn").first();
+  if (await button.isDisabled()) {
+    await page.waitForTimeout(50);
+    continue;
+  }
+  await button.click();
+  pageLoads++;
+  if (pageLoads > 60) throw new Error("历史分页超过 60 次，疑似未收敛");
+  await page.waitForTimeout(20);
+}
+console.log(`真实 Web 已就绪：历史分页加载 ${pageLoads} 次`);
 
 // ---- 指标 1：滚动帧率 ----
 console.log("测量滚动帧率…");
 const fpsSamples = await page.evaluate(async (opts) => {
-  const { sessionId, scrollRounds } = opts;
-  // 找到消息滚动容器（ExecutionTrack 或主滚动区域）
-  const container = document.querySelector(".execution-track") ?? document.querySelector("[class*='messages']") ?? document.documentElement;
+  const { scrollRounds } = opts;
+  const container = document.querySelector(".execution-track");
+  if (!(container instanceof HTMLElement)) throw new Error("找不到 execution-track");
+  if (container.scrollHeight <= container.clientHeight) throw new Error("execution-track 没有可滚动内容");
   const intervals = [];
   let lastTs = 0;
   let rafCount = 0;
@@ -106,7 +125,7 @@ const fpsSamples = await page.evaluate(async (opts) => {
   // 等 rAF 采样完成
   await new Promise((r) => setTimeout(r, 200));
   return intervals;
-}, { sessionId: SESSION_ID, scrollRounds: SCROLL_ROUNDS });
+}, { scrollRounds: SCROLL_ROUNDS });
 
 const fpsValues = fpsSamples.filter((v) => v > 0).map((v) => 1000 / v);
 fpsValues.sort((a, b) => a - b);
@@ -117,16 +136,17 @@ const fpsP95 = fpsValues.length > 0 ? fpsValues[Math.floor(fpsValues.length * 0.
 console.log("测量输入回显延迟…");
 const inputLatencies = [];
 for (let i = 0; i < 10; i++) {
-  const latency = await page.evaluate(() => {
-    const textarea = document.querySelector("textarea");
-    if (!textarea) return -1;
+  const latency = await page.evaluate(async () => {
+    const textarea = document.querySelector("#composer-input");
+    if (!(textarea instanceof HTMLTextAreaElement)) throw new Error("找不到 composer 输入框");
     const start = performance.now();
-    textarea.value = `bench input ${Date.now()}`;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    setter?.call(textarea, `bench input ${Date.now()}`);
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
-    // 测量 DOM 更新（同步渲染框架下 input 事件处理后即更新）
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     return performance.now() - start;
   });
-  if (latency >= 0) inputLatencies.push(latency);
+  inputLatencies.push(latency);
   await page.waitForTimeout(50);
 }
 inputLatencies.sort((a, b) => a - b);
@@ -137,7 +157,8 @@ console.log("测量内存增长…");
 const memBefore = await page.evaluate(() => /** @type {any} */(performance).memory?.usedJSHeapSize ?? 0);
 // 加速滚动模拟长时间使用
 await page.evaluate(async (rounds) => {
-  const container = document.querySelector(".execution-track") ?? document.documentElement;
+  const container = document.querySelector(".execution-track");
+  if (!(container instanceof HTMLElement)) throw new Error("找不到 execution-track");
   const scrollHeight = container.scrollHeight || document.body.scrollHeight;
   for (let i = 0; i < rounds; i++) {
     const target = i % 2 === 0 ? scrollHeight : 0;
@@ -165,5 +186,13 @@ await writeResult("browser-render", [
   { name: "memory.growthPct", value: ms(memGrowthPct), unit: "%", direction: "lower-better" },
   { name: "scroll.samples", value: fpsSamples.length, unit: "count", direction: "none" },
 ], args.out, {
-  params: { scrollRounds: SCROLL_ROUNDS, windowWidth: WINDOW_WIDTH, windowHeight: WINDOW_HEIGHT },
+  params: { scrollRounds: SCROLL_ROUNDS, windowWidth: WINDOW_WIDTH, windowHeight: WINDOW_HEIGHT, messages: 5000, pageLoads },
 });
+
+const violations = [];
+if (fpsP50 < 50) violations.push(`滚动帧率 ${ms(fpsP50)} fps < 50 fps`);
+if (inputP50 > 50) violations.push(`输入回显 ${ms(inputP50)} ms > 50 ms`);
+if (memBefore <= 0) violations.push("performance.memory 不可用");
+if (memGrowthPct > 20) violations.push(`内存增长 ${ms(memGrowthPct)}% > 20%`);
+if (fpsSamples.length < 100) violations.push(`帧率样本不足：${fpsSamples.length}`);
+if (violations.length > 0) throw new Error(`浏览器性能门禁失败：${violations.join("；")}`);

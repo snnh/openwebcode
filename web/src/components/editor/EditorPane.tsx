@@ -56,6 +56,7 @@ export function EditorPane({ sessionId, path, line, column, readOnly = false, da
   const hostRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<import("monaco-editor").editor.IStandaloneCodeEditor | undefined>(undefined);
   const savedValueRef = useRef<string | undefined>(undefined);
+  const revisionRef = useRef<string | undefined>(undefined);
   const [monaco, setMonaco] = useState<MonacoApi>();
   const [monacoFailed, setMonacoFailed] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -94,6 +95,7 @@ export function EditorPane({ sessionId, path, line, column, readOnly = false, da
     monaco.editor.setTheme(dark ? "vs-dark" : "vs");
     const model = monaco.editor.createModel(code, monacoLanguageForPath(monaco, path));
     savedValueRef.current = code;
+    revisionRef.current = content.data?.revision;
     const editor = monaco.editor.create(hostRef.current, {
       model,
       readOnly: saveBlocked,
@@ -137,10 +139,13 @@ export function EditorPane({ sessionId, path, line, column, readOnly = false, da
   const save = useCallback((): void => {
     const editor = editorRef.current;
     if (!editor || saving || saveBlocked) return;
+    const expectedRevision = revisionRef.current;
+    if (!expectedRevision) return;
     setSaving(true);
-    api.writeFile(sessionId, path, editor.getValue()).then(
-      () => {
+    api.writeFile(sessionId, path, editor.getValue(), expectedRevision).then(
+      (result) => {
         savedValueRef.current = editor.getValue();
+        revisionRef.current = result.revision;
         setDirty(false);
         onNotice(t(`已保存 ${path}`, `Saved ${path}`));
       },

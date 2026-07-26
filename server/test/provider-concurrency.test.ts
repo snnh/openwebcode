@@ -100,6 +100,33 @@ describe("ConcurrencyLimitedProvider (0.5.0 Phase 2)", () => {
     expect(callCount).toBe(2);
   });
 
+  it("removes and rejects a queued request immediately when it is aborted", async () => {
+    let releaseFirst!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const provider: Provider = {
+      name: "test",
+      async *streamChat(): AsyncIterable<ProviderEvent> {
+        await gate;
+        yield { type: "done", stopReason: "end_turn" };
+      },
+    };
+    const limited = new ConcurrencyLimitedProvider(provider, 1);
+    const first = (async () => { for await (const _ of limited.streamChat(dummyRequest)) {} })();
+    await vi.waitFor(() => expect(limited.getStats().active).toBe(1));
+
+    const controller = new AbortController();
+    const queued = (async () => {
+      for await (const _ of limited.streamChat({ ...dummyRequest, signal: controller.signal })) {}
+    })();
+    await vi.waitFor(() => expect(limited.getStats().queued).toBe(1));
+    controller.abort(new DOMException("cancelled", "AbortError"));
+    await expect(queued).rejects.toMatchObject({ name: "AbortError" });
+    expect(limited.getStats()).toMatchObject({ active: 1, queued: 0 });
+
+    releaseFirst();
+    await first;
+  });
+
   it("exposes correct stats", async () => {
     // Use a provider with a controlled gate: each call blocks until a shared counter is incremented
     let gate = 0;

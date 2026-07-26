@@ -1292,7 +1292,7 @@ export class AgentRunner {
    * 事件挂起与 respond 恢复），不绕过任何审批；不落盘消息、不进 agent run 循环。
    * 与 run/shell 互斥（避免并发写竞态），abort 会取消挂起的审批。
    */
-  async writeWorkspaceFile(sessionId: string, path: string, content: string): Promise<void> {
+  async writeWorkspaceFile(sessionId: string, path: string, content: string, expectedSha256: string): Promise<void> {
     if (this.running.has(sessionId)) throw new Error("Session agent is running; wait for it to finish before saving files");
     if (this.shells.has(sessionId)) throw new Error("A shell command is pending; respond to its permission request first");
     if (this.workspaceWrites.has(sessionId)) throw new Error("A file save is already pending in this session");
@@ -1310,7 +1310,7 @@ export class AgentRunner {
       // 权限链（与 write_file 工具一致；plan 模式会被门禁拦截）
       const permission = await this.authorizeTool(sessionId, "write_file", { path }, controller.signal);
       if (!permission.allowed) throw new WorkspaceWriteDeniedError(permission.reason ?? "File write permission denied");
-      await this.core.writeFile({ sessionId, path, content });
+      await this.core.writeFile({ sessionId, path, content, expectedSha256 });
     } finally {
       this.workspaceWrites.delete(sessionId);
     }

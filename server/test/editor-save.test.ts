@@ -5,7 +5,7 @@ import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
-import type { CoreClientLike, CoreInfo, FsWriteRequest } from "../src/core-client.js";
+import { CoreRpcError, type CoreClientLike, type CoreInfo, type FsWriteRequest } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
@@ -43,7 +43,11 @@ function createFakeCore(): { client: CoreClientLike; writeCalls: FsWriteRequest[
     async ping() { return FAKE_CORE_INFO; },
     async cleanupSession() { return { ok: true as const }; },
     async readFile() { return { content: "", totalLines: 0, encoding: "utf-8" as const, truncated: false }; },
-    async writeFile(request: FsWriteRequest) { writeCalls.push({ ...request }); return { ok: true as const }; },
+    async writeFile(request: FsWriteRequest) {
+      if (request.expectedSha256 === "f".repeat(64)) throw new CoreRpcError(-32004, "file changed since it was read");
+      writeCalls.push({ ...request });
+      return { ok: true as const };
+    },
     async editFile() { return { matches: 0 }; },
     async listFiles() { return { entries: [], truncated: false }; },
     async globFiles() { return { paths: [], truncated: false }; },
@@ -72,7 +76,11 @@ async function setup(options?: { permissionMode?: "ask" | "acceptEdits" | "yolo"
 }
 
 function saveRequest(app: Awaited<ReturnType<typeof setup>>["app"], sessionId: string, payload: unknown) {
-  return app.inject({ method: "PUT", url: `/api/sessions/${sessionId}/files/content`, payload });
+  const value = payload && typeof payload === "object" ? payload as Record<string, unknown> : undefined;
+  const withRevision = value && typeof value.path === "string" && typeof value.content === "string" && value.expectedRevision === undefined
+    ? { ...value, expectedRevision: "0".repeat(64) }
+    : payload;
+  return app.inject({ method: "PUT", url: `/api/sessions/${sessionId}/files/content`, payload: withRevision });
 }
 
 describe("PUT /api/sessions/:id/files/content（编辑器保存，0.5.0 Phase 1a）", () => {
@@ -81,9 +89,10 @@ describe("PUT /api/sessions/:id/files/content（编辑器保存，0.5.0 Phase 1a
     try {
       const res = await saveRequest(harness.app, harness.session.id, { path: "src/a.ts", content: "export const a = 1;\n" });
       expect(res.statusCode, res.body).toBe(200);
-      expect(res.json()).toEqual({ ok: true });
+      expect(res.json()).toMatchObject({ ok: true, revision: expect.stringMatching(/^[0-9a-f]{64}$/) });
       expect(harness.core.writeCalls).toHaveLength(1);
       expect(harness.core.writeCalls[0]).toMatchObject({ sessionId: harness.session.id, path: "src/a.ts", content: "export const a = 1;\n" });
+      expect(harness.core.writeCalls[0]?.expectedSha256).toBe("0".repeat(64));
       const detail = await harness.sessions.get(harness.session.id);
       expect(detail?.messages ?? []).toHaveLength(0);
     } finally {
@@ -163,6 +172,22 @@ describe("PUT /api/sessions/:id/files/content（编辑器保存，0.5.0 Phase 1a
       expect((await saveRequest(harness.app, harness.session.id, { content: "x" })).statusCode).toBe(400);
       expect((await saveRequest(harness.app, harness.session.id, { path: "a.ts" })).statusCode).toBe(400);
       expect((await saveRequest(harness.app, "00000000-0000-4000-8000-000000000000", { path: "a.ts", content: "x" })).statusCode).toBe(404);
+    } finally {
+      await harness.app.close();
+    }
+  });
+
+  it("文件 revision 已变化时返回 409 且不覆盖内容", async () => {
+    const harness = await setup();
+    try {
+      const res = await saveRequest(harness.app, harness.session.id, {
+        path: "src/a.ts",
+        content: "stale",
+        expectedRevision: "f".repeat(64),
+      });
+      expect(res.statusCode, res.body).toBe(409);
+      expect(res.json()).toMatchObject({ error: "file changed since it was read" });
+      expect(harness.core.writeCalls).toHaveLength(0);
     } finally {
       await harness.app.close();
     }
