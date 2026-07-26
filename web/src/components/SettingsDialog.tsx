@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import type { ExtensionInfo, ModelInterfaceType, ModelProfile, ModelProviderProfileView, PermissionMode, PricingDocument, SettingsField, SettingValue, WebCapability, WebProviderProfileView, WebProviderType } from "../lib/contracts";
 import { formatCurrency } from "../lib/format";
-import { Icon } from "./Icon";
+import { Icon, type IconName } from "./Icon";
 import { ModelCapabilityBadges } from "./ModelCapabilityBadges";
 import type { SendKey, SessionDefaults } from "../lib/prefs";
 import type { ThemePreference, AccentPreference } from "../theme";
@@ -28,19 +28,58 @@ const ACCENT_OPTIONS: Array<{ value: AccentPreference; zh: string; en: string; s
 
 type SettingsTab = "appearance" | "general" | "defaults" | "shortcuts" | "server" | "remote" | "models" | "skills" | "extensions" | "pricing" | "info";
 
-const TAB_META: Array<{ id: SettingsTab; zh: string; en: string }> = [
-  { id: "appearance", zh: "外观", en: "Appearance" },
-  { id: "general", zh: "通用", en: "General" },
-  { id: "defaults", zh: "会话默认", en: "Session defaults" },
-  { id: "shortcuts", zh: "快捷键", en: "Shortcuts" },
-  { id: "server", zh: "服务设置", en: "Server" },
-  { id: "remote", zh: "远程访问", en: "Remote access" },
-  { id: "models", zh: "模型目录", en: "Models" },
-  { id: "skills", zh: "技能", en: "Skills" },
-  { id: "extensions", zh: "扩展", en: "Extensions" },
-  { id: "pricing", zh: "模型定价", en: "Pricing" },
-  { id: "info", zh: "服务信息", en: "Server info" },
+interface SettingsTabMeta {
+  id: SettingsTab;
+  zh: string;
+  en: string;
+  descriptionZh: string;
+  descriptionEn: string;
+  icon: IconName;
+}
+
+const SETTINGS_GROUPS: Array<{ id: string; zh: string; en: string; tabs: SettingsTabMeta[] }> = [
+  {
+    id: "preferences",
+    zh: "个人偏好",
+    en: "Preferences",
+    tabs: [
+      { id: "appearance", zh: "外观", en: "Appearance", descriptionZh: "语言、主题与界面强调色", descriptionEn: "Language, theme, and interface accent", icon: "sun" },
+      { id: "general", zh: "通用", en: "General", descriptionZh: "输入方式与工作区布局", descriptionEn: "Input behavior and workspace layout", icon: "settings" },
+      { id: "defaults", zh: "会话默认", en: "Session defaults", descriptionZh: "新会话的模型与运行参数", descriptionEn: "Model and runtime defaults for new sessions", icon: "history" },
+      { id: "shortcuts", zh: "快捷键", en: "Shortcuts", descriptionZh: "查看可用的键盘操作", descriptionEn: "Browse available keyboard actions", icon: "terminal" },
+    ],
+  },
+  {
+    id: "ai-services",
+    zh: "AI 与服务",
+    en: "AI & services",
+    tabs: [
+      { id: "server", zh: "服务设置", en: "Server", descriptionZh: "Provider、执行器与服务端参数", descriptionEn: "Providers, executor, and server options", icon: "wrench" },
+      { id: "models", zh: "模型目录", en: "Models", descriptionZh: "同步并维护可用模型能力", descriptionEn: "Sync and maintain model capabilities", icon: "layers" },
+      { id: "pricing", zh: "模型定价", en: "Pricing", descriptionZh: "管理 token 价格与计费币种", descriptionEn: "Manage token prices and billing currencies", icon: "chart" },
+    ],
+  },
+  {
+    id: "capabilities",
+    zh: "能力与连接",
+    en: "Capabilities",
+    tabs: [
+      { id: "skills", zh: "技能", en: "Skills", descriptionZh: "查看内置与工作区技能", descriptionEn: "Browse built-in and workspace skills", icon: "check" },
+      { id: "extensions", zh: "扩展", en: "Extensions", descriptionZh: "安装、启用与配置扩展", descriptionEn: "Install, enable, and configure extensions", icon: "plus" },
+      { id: "remote", zh: "远程访问", en: "Remote access", descriptionZh: "检查网络暴露与访问安全", descriptionEn: "Review network exposure and access security", icon: "shield" },
+    ],
+  },
+  {
+    id: "system",
+    zh: "系统",
+    en: "System",
+    tabs: [
+      { id: "info", zh: "服务信息", en: "Server info", descriptionZh: "运行状态、版本与连接信息", descriptionEn: "Runtime status, version, and connection details", icon: "alert" },
+    ],
+  },
 ];
+
+const TAB_META = SETTINGS_GROUPS.flatMap((group) => group.tabs);
 
 const PERMISSION_OPTIONS: Array<{ value: PermissionMode | ""; zh: string; en: string }> = [
   { value: "", zh: "不预设", en: "Not set" },
@@ -1333,6 +1372,7 @@ export function SettingsDialog({ open, preference, setPreference, accent, setAcc
 }): ReactElement | null {
   const { language, setLanguage, t } = useI18n();
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const contentRef = useRef<HTMLElement>(null);
   const [activeTab, setActiveTab] = useState<SettingsTab>("appearance");
   // 服务设置的未保存改动由 ServerSettingsSection 上报
   const serverDirtyRef = useRef(false);
@@ -1352,6 +1392,14 @@ export function SettingsDialog({ open, preference, setPreference, accent, setAcc
     dialogRef.current?.close();
   };
 
+  const selectTab = (tab: SettingsTab): void => {
+    setActiveTab(tab);
+    const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    contentRef.current?.scrollTo({ top: 0, behavior: reduceMotion ? "auto" : "smooth" });
+  };
+
+  const activeMeta = TAB_META.find((tab) => tab.id === activeTab) ?? TAB_META[0];
+
   return (
     <dialog
       ref={dialogRef}
@@ -1365,31 +1413,58 @@ export function SettingsDialog({ open, preference, setPreference, accent, setAcc
         if (event.target === dialogRef.current) requestClose();
       }}
     >
-      <div className="settings-body" style={{ position: "relative" }}>
-        <button
-          className="icon-btn"
-          aria-label={t("关闭", "Close")}
-          title={t("关闭", "Close")}
-          onClick={requestClose}
-          style={{ position: "absolute", top: 0, right: 0 }}
-        >
-          <Icon name="x" size={15} />
-        </button>
-        <h2>{t("设置", "Settings")}</h2>
-        <nav className="settings-nav" aria-label={t("设置分类", "Settings categories")}>
-          {TAB_META.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              className={`settings-tab${activeTab === tab.id ? " active" : ""}`}
-              aria-current={activeTab === tab.id}
-              onClick={() => setActiveTab(tab.id)}
-            >
-              {t(tab.zh, tab.en)}
-            </button>
-          ))}
-        </nav>
-        <div className="settings-panel">
+      <div className="settings-body">
+        <header className="settings-dialog-header">
+          <div className="settings-dialog-title">
+            <span className="settings-title-icon"><Icon name="settings" size={18} /></span>
+            <div>
+              <h2>{t("设置", "Settings")}</h2>
+              <p>{t("个性化 OpenWebCode，并管理模型与服务", "Personalize OpenWebCode and manage models and services")}</p>
+            </div>
+          </div>
+          <button className="icon-btn settings-close" aria-label={t("关闭", "Close")} title={t("关闭", "Close")} onClick={requestClose}>
+            <Icon name="x" size={16} />
+          </button>
+        </header>
+        <div className="settings-layout">
+          <nav className="settings-nav" aria-label={t("设置分类", "Settings categories")}>
+            {SETTINGS_GROUPS.map((group) => (
+              <div className="settings-nav-group" key={group.id}>
+                <span className="settings-nav-label">{t(group.zh, group.en)}</span>
+                {group.tabs.map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    data-settings-tab={tab.id}
+                    className={`settings-tab${activeTab === tab.id ? " active" : ""}`}
+                    aria-current={activeTab === tab.id ? "page" : undefined}
+                    onClick={() => selectTab(tab.id)}
+                    onKeyDown={(event) => {
+                      if (!["ArrowDown", "ArrowUp", "ArrowRight", "ArrowLeft"].includes(event.key)) return;
+                      event.preventDefault();
+                      const index = TAB_META.findIndex((item) => item.id === tab.id);
+                      const offset = event.key === "ArrowDown" || event.key === "ArrowRight" ? 1 : -1;
+                      const next = TAB_META[(index + offset + TAB_META.length) % TAB_META.length];
+                      selectTab(next.id);
+                      dialogRef.current?.querySelector<HTMLElement>(`[data-settings-tab="${next.id}"]`)?.focus();
+                    }}
+                  >
+                    <Icon name={tab.icon} size={15} />
+                    <span>{t(tab.zh, tab.en)}</span>
+                  </button>
+                ))}
+              </div>
+            ))}
+          </nav>
+          <main className="settings-content" ref={contentRef}>
+            <header className="settings-content-header">
+              <span className="settings-section-icon"><Icon name={activeMeta.icon} size={18} /></span>
+              <div>
+                <h3 id="settings-section-title">{t(activeMeta.zh, activeMeta.en)}</h3>
+                <p>{t(activeMeta.descriptionZh, activeMeta.descriptionEn)}</p>
+              </div>
+            </header>
+            <div className="settings-panel" key={activeTab} aria-labelledby="settings-section-title">
           {activeTab === "appearance" && (
             <section>
               <h3>{t("语言", "Language")}</h3>
@@ -1504,9 +1579,11 @@ export function SettingsDialog({ open, preference, setPreference, accent, setAcc
               <ServerInfoSection providers={providers} models={models} />
             </section>
           )}
-        </div>
-        <div className="dialog-actions">
-          <button className="btn" onClick={requestClose}>{t("关闭", "Close")}</button>
+            </div>
+            <div className="dialog-actions settings-actions">
+              <button className="btn" onClick={requestClose}>{t("完成", "Done")}</button>
+            </div>
+          </main>
         </div>
       </div>
     </dialog>
