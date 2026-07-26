@@ -11,7 +11,7 @@
 | `openwebcode-<version>-linux-x64.tar.gz` | Linux | tar.gz + 顶层 `install.sh` |
 | `SHA256SUMS.txt` | 全平台 | 两个发行包的 SHA-256 校验和 |
 
-`<version>` 为 tag 去掉前导 `v`（如 `v0.3.4` → `0.3.4`）。
+`<version>` 为 tag 去掉前导 `v`（如 `v0.5.0` → `0.5.0`）。
 
 ## 包内布局
 
@@ -25,7 +25,7 @@ server/package.json     "type": "module" 声明（dist 为 ESM，必需）
 server/node_modules/    生产依赖（npm prune --omit=dev 之后）
 server/assets/          运行时资产（refs-clone.ps1 等）
 web/dist/               前端静态资源（server 按 server/dist/../../web/dist 解析托管）
-node/                   Node 20 运行时（Windows: node.exe；Linux: bin/node 及完整发行目录）
+node/                   固定版本 Node 24 运行时（Windows: node.exe；Linux: bin/node 及完整发行目录）
 install.sh              Linux 安装脚本（仅 tar.gz，位于包顶层）
 ```
 
@@ -38,7 +38,7 @@ install.sh              Linux 安装脚本（仅 tar.gz，位于包顶层）
 3. 构建并测试 Web；
 4. 将 Server 依赖裁剪为 production-only；
 5. 构建 Release core；
-6. 从空目录组装 `build/stage/`，加入固定版本的 Node 20 运行时和平台启动脚本；
+6. 从空目录组装 `build/stage/`，加入固定版本的 Node 24 运行时和平台启动脚本；
 7. 先对 staging 做结构检查和启动冒烟，再生成 MSI 或 tar.gz；
 8. 计算校验值，并由 GitHub Release 发布产物。
 
@@ -61,8 +61,8 @@ install.sh              Linux 安装脚本（仅 tar.gz，位于包顶层）
 
 ```powershell
 $ErrorActionPreference = "Stop"
-$Version = "0.3.4"
-$NodeVersion = "20.19.0"
+$Version = "0.5.0"
+$NodeVersion = "24.18.0"
 
 npm --prefix server ci
 npm --prefix server run build
@@ -171,8 +171,8 @@ Linux 使用与 Windows 相同的测试门禁和 production-only 依赖。核心
 
 ```sh
 set -euo pipefail
-VERSION=0.3.4
-NODE_VERSION=20.19.0
+VERSION=0.5.0
+NODE_VERSION=24.18.0
 
 npm --prefix server ci
 npm --prefix server run build
@@ -276,17 +276,18 @@ Server 模块在进程启动时加载，复制后必须重启 `build\stage\bin\o
 
 - 触发：`push: tags: ["v*"]`，或 `workflow_dispatch` 输入 tag（tag 不存在时基于当前提交创建）。
 - Windows：`npm ci/build`（server+web）→ CMake Release 构建 core → 按契约组装 `build/stage/`
-  （含下载 Node 20 win-x64 zip 取 `node.exe`）→ `cpack -G WIX` → 上传 MSI。
-- Linux：同样构建后组装 `build/stage/`（下载 Node 20 linux-x64 tar.gz 整树解入 `node/`），
+  （含下载固定版本 Node 24 win-x64 zip 取 `node.exe`）→ `cpack -G WIX` → 上传 MSI。
+- Linux：同样构建后组装 `build/stage/`（下载固定版本 Node 24 linux-x64 tar.gz 整树解入 `node/`），
   `tar -C stage . -C packaging install.sh` 打包 → 上传 tar.gz。
-- bundled Node 版本固定在 workflow 的 `env.NODE_DIST_VERSION`（当前 20.19.0），升级时改这一个常量。
+- bundled Node 版本固定在 workflow 的 `env.NODE_DIST_VERSION`（当前 24.18.0），升级时改这一个常量。
+- benchmark job 是 release 的硬依赖；相对上一版任一指标回归超过 15% 会阻断发布。结果以 `bench-results-*.json` 同 MSI/tar.gz 一起发布，供下一版下载为基线。
 - Release 由 `softprops/action-gh-release@v2` 创建/更新，`generate_release_notes: true`，非草稿。
 
 推荐发布方式是先推送已审核提交，再创建并推送语义化版本 tag：
 
 ```sh
-git tag -a v0.3.4 -m "OpenWebCode v0.3.4"
-git push origin v0.3.4
+git tag -a v0.5.0 -m "OpenWebCode v0.5.0"
+git push origin v0.5.0
 ```
 
-也可在 GitHub Actions 中手动运行 `release`，输入形如 `v0.3.4` 的 tag。Windows 与 Linux job 都成功后，唯一的 release job 才会汇总上传 MSI、tar.gz 与 `SHA256SUMS.txt`；随后核对下载文件名、校验和、安装/启动和 `/api/health`。
+也可在 GitHub Actions 中手动运行 `release`，输入形如 `v0.5.0` 的 tag。Windows、Linux 与 benchmark job 都成功后，唯一的 release job 才会汇总上传 MSI、tar.gz、`SHA256SUMS.txt` 与基准 JSON；随后核对下载文件名、校验和、安装/启动和 `/api/health`。

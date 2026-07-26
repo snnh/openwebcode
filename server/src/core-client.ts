@@ -43,7 +43,7 @@ export interface ExecResult {
 
 export interface FsPathRequest { sessionId: string; path: string }
 export interface FsReadRequest extends FsPathRequest { offset?: number; limit?: number }
-export interface FsWriteRequest extends FsPathRequest { content: string; createDirs?: boolean }
+export interface FsWriteRequest extends FsPathRequest { content: string; createDirs?: boolean; /** Reject if the current file no longer has this digest. */ expectedSha256?: string }
 /** Internal binary ingress only. data must be canonical base64; agent-facing
  * writeFile remains UTF-8 text-only. Optional for compatibility with an older
  * core binary, which the server reports as an unavailable upload capability. */

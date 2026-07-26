@@ -83,6 +83,7 @@ export function DiffPane({ sessionId, spec, readOnly = false, dark, summaryOnly 
   const [selectedPath, setSelectedPath] = useState<string>();
   // 当前（新侧）内容：初始来自磁盘，拒绝 hunk 写回成功后更新
   const [modified, setModified] = useState<string>();
+  const [revision, setRevision] = useState<string>();
   // hunk 决策：下标 → accepted/rejected
   const [decisions, setDecisions] = useState<Record<number, "accepted" | "rejected">>({});
 
@@ -118,6 +119,7 @@ export function DiffPane({ sessionId, spec, readOnly = false, dark, summaryOnly 
   // 磁盘内容到达或路径切换时重置本地状态；agent-write 没有磁盘读取，直接用工具写入内容
   useEffect(() => {
     setModified(spec.source === "agent-write" ? spec.content : fileContent.data?.content);
+    setRevision(spec.source === "agent-write" ? undefined : fileContent.data?.revision);
     setDecisions({});
   }, [fileContent.data?.content, activePath, spec]);
   // 切换打开目标时清空文件选择
@@ -250,32 +252,36 @@ export function DiffPane({ sessionId, spec, readOnly = false, dark, summaryOnly 
       onNotice(error instanceof Error ? error.message : "hunk 与当前文件内容不匹配", "error");
       return;
     }
+    if (!revision) return;
     setBusy(true);
-    api.writeFile(sessionId, model.path, next).then(
-      () => {
+    api.writeFile(sessionId, model.path, next, revision).then(
+      (result) => {
         setModified(next);
+        setRevision(result.revision);
         setDecisions((previous) => ({ ...previous, [index]: "rejected" }));
         onNotice(t("已拒绝该 hunk 并写回文件", "Hunk rejected and written back"));
       },
       (error: unknown) => onNotice(error instanceof Error ? error.message : t("写回失败", "Write-back failed"), "error"),
     ).finally(() => setBusy(false));
-  }, [activeFile, busy, model.path, modified, onNotice, sessionId, t]);
+  }, [activeFile, busy, model.path, modified, onNotice, revision, sessionId, t]);
 
   // change 模式（agent edit_file）：接受 = 保留（标记完成）；拒绝 = 写回改动前内容
   const [changeResolved, setChangeResolved] = useState<"accepted" | "rejected">();
   useEffect(() => setChangeResolved(undefined), [spec]);
   const rejectChange = useCallback((): void => {
     if (busy || model.mode !== "change" || !model.path || model.original === undefined) return;
+    if (!revision) return;
     setBusy(true);
-    api.writeFile(sessionId, model.path, model.original).then(
-      () => {
+    api.writeFile(sessionId, model.path, model.original, revision).then(
+      (result) => {
         setModified(model.original);
+        setRevision(result.revision);
         setChangeResolved("rejected");
         onNotice(t("已还原该工具改动", "Tool change reverted"));
       },
       (error: unknown) => onNotice(error instanceof Error ? error.message : t("写回失败", "Write-back failed"), "error"),
     ).finally(() => setBusy(false));
-  }, [busy, model.mode, model.path, model.original, onNotice, sessionId, t]);
+  }, [busy, model.mode, model.path, model.original, onNotice, revision, sessionId, t]);
 
   // App 命令动作面：接受/拒绝当前（首个待处理）hunk、聚焦
   useEffect(() => {

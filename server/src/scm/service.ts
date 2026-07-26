@@ -32,8 +32,8 @@ const POLL_INTERVAL_MS = 50;
 
 /** 严格白名单：分支名/worktree 名/ref（禁空格、引号、shell 元字符、连续点、开头短横线）。 */
 const SAFE_NAME = /^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,127}$/;
-/** 相对路径白名单：拒绝绝对路径、..、shell 元字符与空白（跨 cmd.exe/sh 安全）。 */
-const UNSAFE_PATH_CHARS = /[\s"'%&|;<>`$\\]/;
+/** 相对路径白名单：普通空格由 quoteArg 安全引用；拒绝控制符与 shell 元字符。 */
+const UNSAFE_PATH_CHARS = /[\r\n\t"'%&|;<>`$\\]/;
 
 function isMissing(error: unknown): boolean {
   return error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT";
@@ -145,6 +145,60 @@ export function parseStatusPorcelain(text: string): Omit<GitStatusResult, "isRep
   };
 }
 
+/** Parse `git status --porcelain=v1 --branch -z` without display quoting. */
+export function parseStatusPorcelainZ(text: string): Omit<GitStatusResult, "isRepo"> {
+  const records = text.split("\0");
+  const staged: GitStatusEntry[] = [];
+  const unstaged: GitStatusEntry[] = [];
+  const untracked: GitStatusEntry[] = [];
+  let branch: string | undefined;
+  let upstream: string | undefined;
+  let ahead = 0;
+  let behind = 0;
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index]!;
+    if (!record) continue;
+    if (record.startsWith("## ")) {
+      const header = record.slice(3);
+      if (header.startsWith("HEAD (no branch)") || header === "HEAD") branch = "HEAD";
+      else {
+        const separator = header.indexOf("...");
+        const branchPart = separator >= 0 ? header.slice(0, separator) : header;
+        const restPart = separator >= 0 ? header.slice(separator + 3) : "";
+        const tracking = /\[([^\]]*)\]/.exec(restPart)?.[1] ?? "";
+        if (branchPart) branch = branchPart;
+        upstream = /^([^\s[]+)/.exec(restPart)?.[1];
+        ahead = Number(/ahead (\d+)/.exec(tracking)?.[1] ?? 0);
+        behind = Number(/behind (\d+)/.exec(tracking)?.[1] ?? 0);
+      }
+      continue;
+    }
+    const code = record.slice(0, 2);
+    const filePath = record.slice(3);
+    // In -z mode Git emits rename/copy records as destination\0source\0.
+    const originalPath = code.includes("R") || code.includes("C") ? records[++index] : undefined;
+    const entry: GitStatusEntry = { path: filePath, code, ...(originalPath ? { originalPath } : {}) };
+    if (code === "??") untracked.push(entry);
+    else {
+      const [indexCode, worktreeCode] = code;
+      if (indexCode !== " " && indexCode !== "?") staged.push(entry);
+      if (worktreeCode !== " " && worktreeCode !== "?") unstaged.push(entry);
+    }
+  }
+  const cap = (entries: GitStatusEntry[]): GitStatusEntry[] => entries.slice(0, MAX_STATUS_ENTRIES_PER_GROUP);
+  return {
+    ...(branch ? { branch } : {}),
+    ...(upstream ? { upstream } : {}),
+    ahead,
+    behind,
+    staged: cap(staged),
+    unstaged: cap(unstaged),
+    untracked: cap(untracked),
+    totals: { staged: staged.length, unstaged: unstaged.length, untracked: untracked.length },
+    truncated: staged.length > MAX_STATUS_ENTRIES_PER_GROUP || unstaged.length > MAX_STATUS_ENTRIES_PER_GROUP || untracked.length > MAX_STATUS_ENTRIES_PER_GROUP,
+  };
+}
+
 /**
  * SCM 服务（0.4.0 Phase 4a）：git_status / git_diff / git_commit 与 worktree 生命周期。
  * 执行默认经 Core job（与 bash/test_runner 同路径，继承会话权限沙盒与 cwd 约束）；
@@ -222,9 +276,9 @@ export class ScmService {
     if (probe.exitCode !== 0 || probe.stdout.trim() !== "true") {
       return { isRepo: false, staged: [], unstaged: [], untracked: [], totals: { staged: 0, unstaged: 0, untracked: 0 }, truncated: false };
     }
-    const result = await this.git(sessionId, cwd, ["status", "--porcelain=v1", "--branch"], context);
+    const result = await this.git(sessionId, cwd, ["status", "--porcelain=v1", "--branch", "-z"], context);
     if (result.exitCode !== 0) throw new Error(`git status failed: ${result.stderr.trim() || `exit ${result.exitCode}`}`);
-    return { isRepo: true, ...parseStatusPorcelain(result.stdout) };
+    return { isRepo: true, ...parseStatusPorcelainZ(result.stdout) };
   }
 
   async diff(sessionId: string, cwd: string, options: GitDiffOptions = {}, context: { shellBackend?: ShellBackend; signal?: AbortSignal } = {}): Promise<GitDiffResult> {
@@ -369,7 +423,21 @@ export class ScmService {
     const entry = entries.find((item) => item.name === validated);
     if (!entry) throw new Error(`Worktree not found: ${validated}`);
     await this.requireRepo(sessionId, cwd, context);
-    const args = strategy === "merge" ? ["merge", "--no-ff", "--no-edit", entry.branch] : ["cherry-pick", "--no-commit", entry.branch];
+    let args: string[];
+    if (strategy === "merge") {
+      args = ["merge", "--no-ff", "--no-edit", entry.branch];
+    } else {
+      const base = await this.git(sessionId, cwd, ["merge-base", "HEAD", entry.branch], context);
+      if (base.exitCode !== 0 || !base.stdout.trim()) throw new Error(`git merge-base failed: ${base.stderr.trim() || `exit ${base.exitCode}`}`);
+      const commits = await this.git(sessionId, cwd, ["rev-list", "--reverse", `${base.stdout.trim()}..${entry.branch}`], context);
+      if (commits.exitCode !== 0) throw new Error(`git rev-list failed: ${commits.stderr.trim() || `exit ${commits.exitCode}`}`);
+      const ordered = commits.stdout.split("\n").map((commit) => commit.trim()).filter(Boolean);
+      if (ordered.length === 0) {
+        this.publish(sessionId, "worktree.merge", { name: validated, strategy, branch: entry.branch });
+        return { merged: true, conflicts: [], strategy, branch: entry.branch };
+      }
+      args = ["cherry-pick", "--no-commit", ...ordered];
+    }
     const result = await this.git(sessionId, cwd, args, context);
     if (result.exitCode === 0) {
       // cherry-pick --no-commit 需要补一次提交完成合回

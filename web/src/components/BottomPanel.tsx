@@ -10,9 +10,10 @@ const CostPanel = lazy(() => import("./panels/CostPanel").then((m) => ({ default
 const SandboxPanel = lazy(() => import("./panels/SandboxPanel").then((m) => ({ default: m.SandboxPanel })));
 const TimelinePanel = lazy(() => import("./panels/TimelinePanel").then((m) => ({ default: m.TimelinePanel })));
 const PerfPanel = lazy(() => import("./panels/PerfPanel").then((m) => ({ default: m.PerfPanel })));
+const EvalPanel = lazy(() => import("./panels/EvalPanel").then((m) => ({ default: m.EvalPanel })));
 import { useI18n } from "../i18n";
 
-export type PanelTab = "context" | "timeline" | "sandbox" | "cost" | "perf";
+export type PanelTab = "context" | "timeline" | "sandbox" | "cost" | "perf" | "eval";
 
 const TAB_META: Record<PanelTab, { zh: string; en: string; icon: IconName }> = {
   context: { zh: "上下文", en: "Context", icon: "layers" },
@@ -20,6 +21,7 @@ const TAB_META: Record<PanelTab, { zh: string; en: string; icon: IconName }> = {
   sandbox: { zh: "沙盒", en: "Sandbox", icon: "shield" },
   cost: { zh: "成本", en: "Cost", icon: "chart" },
   perf: { zh: "性能", en: "Perf", icon: "clock" },
+  eval: { zh: "评测", en: "Eval", icon: "chart" },
 };
 
 const MIN_HEIGHT = 140;
@@ -43,10 +45,11 @@ function store(key: string, value: string): void {
   }
 }
 
-export function BottomPanel({ sessionId, session, running, onNotice, open, onOpenChange, onOpenDiff }: {
+export function BottomPanel({ sessionId, session, running, evalEnabled = false, onNotice, open, onOpenChange, onOpenDiff }: {
   sessionId?: string;
   session?: SessionDetail;
   running: boolean;
+  evalEnabled?: boolean;
   onNotice(message: string, kind?: "info" | "error"): void;
   /** 受控开合（布局持久化在 useWorkbenchLayout，Ctrl/Cmd+` 切换） */
   open: boolean;
@@ -63,6 +66,9 @@ export function BottomPanel({ sessionId, session, running, onNotice, open, onOpe
 
   useEffect(() => store("owc-panel-tab", tab), [tab]);
   useEffect(() => store("owc-panel-height", String(height)), [height]);
+  useEffect(() => {
+    if (!evalEnabled && tab === "eval") setTab("context");
+  }, [evalEnabled, tab]);
 
   // 顶部拖拽调高：向上拖增大高度；键盘 ArrowUp/Down 每次 40px
   const startDrag = (event: ReactMouseEvent): void => {
@@ -100,7 +106,7 @@ export function BottomPanel({ sessionId, session, running, onNotice, open, onOpe
         />
       )}
       <div className="panel-tabs">
-        {(Object.keys(TAB_META) as PanelTab[]).map((item) => (
+        {(Object.keys(TAB_META) as PanelTab[]).filter((item) => item !== "eval" || evalEnabled).map((item) => (
           <button
             key={item}
             className={tab === item && open ? "active" : ""}
@@ -127,6 +133,7 @@ export function BottomPanel({ sessionId, session, running, onNotice, open, onOpe
           {tab === "sandbox" && <SandboxPanel session={session} />}
           {tab === "cost" && <CostPanel />}
           {tab === "perf" && <PerfPanel sessionId={sessionId} />}
+          {tab === "eval" && evalEnabled && <EvalPanel onNotice={onNotice} />}
           </Suspense>
         </div>
       )}

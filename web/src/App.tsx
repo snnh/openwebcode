@@ -798,6 +798,7 @@ export function App(): ReactElement {
             sessionId={currentId}
             session={current}
             running={running}
+            evalEnabled={extensions.data?.some((extension) => extension.id === "owc-eval" && extension.enabled) === true}
             onNotice={notify}
             open={layout.bottomOpen}
             onOpenChange={layout.setBottomOpen}

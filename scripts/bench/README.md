@@ -1,8 +1,9 @@
 # OpenWebCode 基准体系（scripts/bench）
 
 0.4.x 计划 §5.4 的可重复基准。目标：用固定数据集、固定参数把关键性能路径量化成
-机器可读的 JSON，让“回归 > 15%”有据可查。已在 `release.yml` 的 benchmark job 中接入 CI
-（首版 continue-on-error 报警，两个版本后转硬门槛）。
+机器可读的 JSON，让“回归 > 15%”有据可查。已在 `release.yml` 的 benchmark job 中接入 CI；
+上一 release 基线缺失或任一可比指标回归超过 15% 都会阻断发布。首次建立基线必须由
+`workflow_dispatch` 显式启用 bootstrap。
 
 ## 跑法
 
@@ -70,7 +71,7 @@ $TSX scripts/bench/compare.mjs results/baseline.json results/long-history.json
 
 | 场景 | 脚本 | 测量路径 | 关键指标 |
 | --- | --- | --- | --- |
-| 长历史会话 | `bench-long-history.mjs` | `SessionStore.get()/list()` 真实加载 5000 消息数据集 | 加载耗时 p50/p95、堆内存增量 |
+| 长历史会话 | `bench-long-history.mjs` | `SessionStore.getTail()/getMessagesBefore()/list()` 真实分页 5000 消息数据集，并在临时副本连续追加消息 | 冷启动、首屏/向前分页、追加索引刷新 p50/p95、堆内存增量 |
 | 长流式 | `bench-long-stream.mjs` | 真实 server + WS 客户端，~1 MiB/s 突发 `message.delta`，合批 16ms / 直发对照 | 端到端延迟 p50/p95、吞吐、服务端内存增量 |
 | 慢 WS 客户端 | `bench-slow-client.mjs` | 真实 server，慢客户端（socket pause）+ 正常客户端并发 | 慢客户端断连耗时/关闭码、正常客户端交付数/吞吐 |
 | 多工具回合 | `bench-multi-tool.mjs` | 真实 server + WS，50 tool_call + 50 tool_result 事件流 | 端到端延迟 p50/p95、事件吞吐 events/s、内存增量 |
@@ -90,9 +91,8 @@ $TSX scripts/bench/compare.mjs results/baseline.json results/long-history.json
 ## 阈值语义
 
 对比脚本以 15% 为回归线（§5.4）：任一可比指标越线即标 `[回归]` 并以退出码 1
-结束，供未来 CI/脚本消费。首轮基线只是"现状快照"，不代表达标线——例如长历史
-加载当前是全量 `readFile` + 逐行 `JSON.parse`（无分页尾读），基准数值就是后续
-优化的对照原点。
+结束，供 CI/脚本消费。长历史场景分别记录首次 byte-offset 索引构建、缓存分页和
+追加后增量扩展；`appendRefresh.p50/p95` 会使重新退化为每次全量建索引的实现触发门禁。
 
 ## 后续场景 TODO（§5.4 全量清单）
 
@@ -100,7 +100,7 @@ $TSX scripts/bench/compare.mjs results/baseline.json results/long-history.json
 - [ ] 大仓库索引与补全（10 万文件）：需固定文件树生成器 + 索引/补全入口基准
 - [x] 上下文构建稳态耗时：`bench-context-build.mjs`，全量 vs 增量 buildView 对比，验收加速比 >= 2.0x
 - [x] 浏览器渲染基准：`browser/bench-browser-render.mjs`，Playwright 真实浏览器三项指标
-- [x] CI 接入：release 流程跑基准并归档结果，回归 > 15% 先报警、两个版本后转硬门槛
+- [x] CI 接入：release 流程跑基准并归档结果；基线缺失或回归 > 15% 均为硬门槛
 - [x] 诊断页接入：turn 各阶段耗时 / 事件吞吐 / 渲染帧率采样（脱敏）
 
 扩展方式：新场景加 `bench-<name>.mjs`（复用 `lib/common.mjs` 的

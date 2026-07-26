@@ -56,7 +56,7 @@ function installFetchMock(overrides: Partial<SessionDetail> = {}): void {
     if (url.includes("/api/sessions/s1/checkpoints") && url.includes("/diff")) return json({ diff: "diff --git a/x b/y\n-line\n+line" });
     if (url.includes("/api/sessions/s1/checkpoints")) return json(checkpoints);
     if (url.includes("/api/sessions/s1/snapshot-capability")) return json({ backend: "git-shadow", costHint: "linear", requiresAdmin: false });
-    if (url.includes("/api/sessions/s1/files/content")) return json({ content: "文件内容预览", encoding: "utf-8", truncated: false });
+    if (url.includes("/api/sessions/s1/files/content")) return json({ content: "文件内容预览", encoding: "utf-8", truncated: false, revision: "a".repeat(64) });
     if (url.includes("/api/sessions/s1/files")) return json({ entries: [{ name: "src", type: "directory", size: 0 }, { name: "README.md", type: "file", size: 12 }], truncated: false });
     if (url.endsWith("/api/models")) return json(models);
     if (url.endsWith("/api/providers")) return json(["anthropic"]);

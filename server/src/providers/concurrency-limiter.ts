@@ -17,7 +17,7 @@ const DEFAULT_MAX_CONCURRENT = 3;
 
 export class ConcurrencyLimitedProvider implements Provider {
   private active = 0;
-  private readonly queue: Array<() => void> = [];
+  private readonly queue: Array<{ grant: () => void; reject: (reason: unknown) => void; signal: AbortSignal; onAbort: () => void }> = [];
   private readonly maxConcurrent: number;
 
   constructor(
@@ -36,7 +36,7 @@ export class ConcurrencyLimitedProvider implements Provider {
   }
 
   async *streamChat(request: StreamChatRequest): AsyncIterable<ProviderEvent> {
-    await this.acquire();
+    await this.acquire(request.signal);
     try {
       yield* this.inner.streamChat(request);
     } finally {
@@ -44,19 +44,38 @@ export class ConcurrencyLimitedProvider implements Provider {
     }
   }
 
-  private async acquire(): Promise<void> {
+  private async acquire(signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
     if (this.active < this.maxConcurrent) {
       this.active++;
       return;
     }
-    await new Promise<void>((resolve) => this.queue.push(resolve));
+    await new Promise<void>((resolve, reject) => {
+      const waiter = {
+        signal,
+        reject,
+        grant: () => {
+          signal.removeEventListener("abort", waiter.onAbort);
+          resolve();
+        },
+        onAbort: () => {
+          const index = this.queue.indexOf(waiter);
+          if (index >= 0) this.queue.splice(index, 1);
+          reject(signal.reason ?? new DOMException("The operation was aborted", "AbortError"));
+        },
+      };
+      signal.addEventListener("abort", waiter.onAbort, { once: true });
+      this.queue.push(waiter);
+      // Close the enqueue/listener race if the signal aborted synchronously.
+      if (signal.aborted) waiter.onAbort();
+    });
     this.active++;
   }
 
   private release(): void {
     this.active--;
     const next = this.queue.shift();
-    if (next) next();
+    if (next) next.grant();
   }
 
   getStats(): ProviderConcurrencyStats {

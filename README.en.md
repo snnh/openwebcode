@@ -91,7 +91,7 @@ Project configuration lives under `<workspace>/.owc/` and overrides matching glo
 - `hooks.json` — lifecycle shell hooks;
 - `mcp.json` — stdio or HTTP MCP servers.
 
-The independent Extension Host also manages installable `owc-ext-*` packages. Four official extensions are included: Context Manager, Attention Optimizer, Content Lens, and PDF to Image (enabled by default to turn PDF pages into image attachments).
+The independent Extension Host also manages installable `owc-ext-*` packages. Five official extensions are included: Context Manager, Attention Optimizer, Content Lens, PDF to Image, and the default-off `owc-eval` regression harness. When enabled, its built-in panel replays deterministic mock-provider tasks in isolated workspaces, persists baseline/candidate comparisons with regression and improvement summaries, and exports self-contained JSON reports.
 
 ## Headless CLI
 

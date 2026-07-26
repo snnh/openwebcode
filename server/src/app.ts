@@ -2,7 +2,7 @@ import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
 import { existsSync } from "node:fs";
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import type { AgentRunner } from "./agent/agent-runner.js";
@@ -43,6 +43,7 @@ import type { ExtensionManager } from "./extensions/extension-manager.js";
 import type { ContentLensService } from "./extensions/content-lens.js";
 import { ProviderProfilesValidationError, type ProviderProfilesService, type WebCapability } from "./provider-profiles.js";
 import type { ProviderProfilesRuntime } from "./provider-profiles-runtime.js";
+import type { EvalEvaluator } from "./eval/evaluator.js";
 
 interface CreateSessionBody {
   cwd: string;
@@ -169,6 +170,8 @@ export interface ServerDependencies {
   diagnostics?: DiagnosticsService;
   /** SCM 服务（0.4.0 Phase 4a）；未注入时 git/* 路由 501 */
   scm?: ScmService;
+  /** 评测 harness（0.5.0 Phase 3a）；扩展禁用时 eval/* 路由 503 */
+  evalEvaluator?: EvalEvaluator;
 }
 
 function parseCookies(value: string | undefined): Map<string, string> {
@@ -1443,7 +1446,8 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
         await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? defaultSandbox(session.cwd) });
         configuredSessions.add(session.id);
       }
-      return await core.readFile({ sessionId: request.params.id, path: request.query.path });
+      const result = await core.readFile({ sessionId: request.params.id, path: request.query.path });
+      return { ...result, revision: createHash("sha256").update(result.content, "utf8").digest("hex") };
     } finally {
       releaseWorkspace();
     }
@@ -1884,14 +1888,15 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
 
   // 编辑器保存（0.5.0 Phase 1a）：复用 write_file 工具同一权限链（plan 只读门禁/审批事件），不落盘消息。
   // 与 shell 不同步返回结果：前端需要保存成功/失败的明确反馈；审批挂起期间请求保持打开，respond 后完成。
-  app.put<{ Params: { id: string }; Body: { path?: string; content?: string } }>(
+  app.put<{ Params: { id: string }; Body: { path?: string; content?: string; expectedRevision?: string } }>(
     "/api/sessions/:id/files/content",
     async (request, reply) => {
       const session = await sessions.get(request.params.id);
       if (!session) return reply.code(404).send({ error: "Session not found" });
       const path = request.body?.path;
       const content = request.body?.content;
-      if (typeof path !== "string" || path.trim() === "" || typeof content !== "string") return reply.code(400).send({ error: "path and content are required" });
+      const expectedRevision = request.body?.expectedRevision;
+      if (typeof path !== "string" || path.trim() === "" || typeof content !== "string" || typeof expectedRevision !== "string" || !/^[0-9a-f]{64}$/.test(expectedRevision)) return reply.code(400).send({ error: "path, content, and a valid expectedRevision are required" });
       if (agent.isRunning(request.params.id)) return reply.code(409).send({ error: "Session agent is running; wait for it to finish before saving files" });
       if (managedSyncingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace sync is in progress" });
       if (managedCheckpointingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace checkpoint is in progress" });
@@ -1899,10 +1904,11 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       const releaseWorkspace = acquireManagedWorkspaceUse(session);
       if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
       try {
-        await agent.writeWorkspaceFile(request.params.id, path, content);
-        return { ok: true };
+        await agent.writeWorkspaceFile(request.params.id, path, content, expectedRevision);
+        return { ok: true, revision: createHash("sha256").update(content, "utf8").digest("hex") };
       } catch (error) {
         if (error instanceof WorkspaceWriteDeniedError) return reply.code(403).send({ error: error.message });
+        if (error instanceof CoreRpcError && error.code === -32004) return reply.code(409).send({ error: error.message });
         return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
       } finally {
         releaseWorkspace();
@@ -1999,6 +2005,58 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     clients.add(client);
     socket.send(JSON.stringify({ source: "server", type: "connected", seq: replay.latestSeq, createdAt: new Date().toISOString(), ...(sessionId ? { sessionId, sessionSeq: replay.latestSeq } : {}), payload: { latestSeq: replay.latestSeq } }));
     socket.on("close", () => clients.delete(client));
+  });
+
+  // ---- 评测 harness（0.5.0 Phase 3a）----
+  app.get("/api/eval/tasks", async (request, reply) => {
+    if (!dependencies.extensions?.isEnabled("owc-eval")) return reply.code(503).send({ error: "owc-eval extension is disabled" });
+    if (!dependencies.evalEvaluator) return reply.code(503).send({ error: "eval service is unavailable" });
+    return { tasks: dependencies.evalEvaluator.listTasks() };
+  });
+  app.post<{ Body: { taskIds?: string[] } }>("/api/eval/run", async (request, reply) => {
+    if (!dependencies.extensions?.isEnabled("owc-eval")) return reply.code(503).send({ error: "owc-eval extension is disabled" });
+    if (!dependencies.evalEvaluator) return reply.code(503).send({ error: "eval service is unavailable" });
+    const taskIds = Array.isArray(request.body?.taskIds) ? request.body.taskIds.filter((id): id is string => typeof id === "string") : undefined;
+    try {
+      const report = await dependencies.evalEvaluator.runTasks(taskIds);
+      return reply.code(200).send(report);
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+  app.get<{ Params: { runId: string } }>("/api/eval/runs/:runId", async (request, reply) => {
+    if (!dependencies.extensions?.isEnabled("owc-eval")) return reply.code(503).send({ error: "owc-eval extension is disabled" });
+    if (!dependencies.evalEvaluator) return reply.code(503).send({ error: "eval service is unavailable" });
+    const report = await dependencies.evalEvaluator.getRun(request.params.runId);
+    if (!report) return reply.code(404).send({ error: "Run not found" });
+    return report;
+  });
+  app.get("/api/eval/runs", async (request, reply) => {
+    if (!dependencies.extensions?.isEnabled("owc-eval")) return reply.code(503).send({ error: "owc-eval extension is disabled" });
+    if (!dependencies.evalEvaluator) return reply.code(503).send({ error: "eval service is unavailable" });
+    return { runs: await dependencies.evalEvaluator.listRuns() };
+  });
+  app.post<{ Body: { baselineRunId?: string; candidateRunId?: string } }>("/api/eval/compare", async (request, reply) => {
+    if (!dependencies.extensions?.isEnabled("owc-eval")) return reply.code(503).send({ error: "owc-eval extension is disabled" });
+    if (!dependencies.evalEvaluator) return reply.code(503).send({ error: "eval service is unavailable" });
+    const baseline = request.body?.baselineRunId;
+    const candidate = request.body?.candidateRunId;
+    if (!baseline || !candidate || baseline === candidate) return reply.code(400).send({ error: "baseline and candidate must be different eval run IDs" });
+    const comparison = await dependencies.evalEvaluator.compareRuns(baseline, candidate);
+    if (!comparison) return reply.code(404).send({ error: "Evaluation run not found" });
+    return comparison;
+  });
+  app.get("/api/eval/comparisons", async (request, reply) => {
+    if (!dependencies.extensions?.isEnabled("owc-eval")) return reply.code(503).send({ error: "owc-eval extension is disabled" });
+    if (!dependencies.evalEvaluator) return reply.code(503).send({ error: "eval service is unavailable" });
+    return { comparisons: await dependencies.evalEvaluator.listComparisons() };
+  });
+  app.get<{ Params: { comparisonId: string } }>("/api/eval/comparisons/:comparisonId", async (request, reply) => {
+    if (!dependencies.extensions?.isEnabled("owc-eval")) return reply.code(503).send({ error: "owc-eval extension is disabled" });
+    if (!dependencies.evalEvaluator) return reply.code(503).send({ error: "eval service is unavailable" });
+    const comparison = await dependencies.evalEvaluator.getComparison(request.params.comparisonId);
+    if (!comparison) return reply.code(404).send({ error: "Comparison not found" });
+    return comparison;
   });
 
   app.setErrorHandler((error, _request, reply) => {

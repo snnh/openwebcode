@@ -27,7 +27,7 @@ Every distributable follows the same sequence:
 3. Build and test the Web UI.
 4. Prune Server dependencies to production-only.
 5. Build the Release core.
-6. Assemble a clean `build/stage/` tree with the pinned Node 20 runtime and platform launcher.
+6. Assemble a clean `build/stage/` tree with the pinned Node 24 runtime and platform launcher.
 7. Validate and smoke-test staging.
 8. Create the MSI or tar.gz and calculate its SHA-256 digest.
 
@@ -41,7 +41,7 @@ server/package.json
 server/node_modules/        # production dependencies only
 server/assets/
 web/dist/
-node/                       # pinned Node 20 runtime
+node/                       # pinned Node 24 runtime
 install.sh                  # archive top level, Linux only
 ```
 
@@ -99,4 +99,4 @@ git tag -a v0.2.4 -m "OpenWebCode v0.2.4"
 git push origin v0.2.4
 ```
 
-The workflow can also be dispatched manually with a `v*` tag. A single release job publishes the MSI, tar.gz, and `SHA256SUMS.txt` only after both platform jobs succeed; installation and `/api/health` smoke checks are release gates.
+The workflow can also be dispatched manually with a `v*` tag. The benchmark job is a hard release dependency: a regression over 15% fails the workflow, and normalized `bench-results-*.json` files ship as release assets for the next baseline. A single release job publishes those results with the MSI, tar.gz, and `SHA256SUMS.txt` only after both platform jobs and benchmarks succeed; installation and `/api/health` smoke checks are release gates.

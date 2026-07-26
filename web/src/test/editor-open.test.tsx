@@ -41,8 +41,8 @@ function installFetchMock(): void {
     if (url.includes("/api/workspaces/")) return json({ error: "Symbol index is not enabled" }, 501);
     if (url.includes("/complete-path")) return json({ matches: [{ path: "src/a.ts" }] });
     if (url.includes("/files/content")) {
-      if (init?.method === "PUT") return json({ ok: true });
-      return json({ content: "export const a = 1;\n", encoding: "utf-8", truncated: false });
+      if (init?.method === "PUT") return json({ ok: true, revision: "b".repeat(64) });
+      return json({ content: "export const a = 1;\n", encoding: "utf-8", truncated: false, revision: "a".repeat(64) });
     }
     if (url.match(/\/api\/sessions\/(s1|s2)\//)) return json([]);
     if (url.match(/\/api\/sessions\/s1(\?.*)?$/)) return json(S1);

@@ -14,6 +14,7 @@ import {
   NotARepoError,
   ScmService,
   parseStatusPorcelain,
+  parseStatusPorcelainZ,
 } from "../src/scm/service.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 
@@ -152,6 +153,9 @@ describe("ScmService（0.4.0 Phase 4a，真实 git 集成）", () => {
     await expect(scm.commit(session.id, repo, { message: "x", files: ["d.txt; rm -rf /"] })).rejects.toThrow("Invalid relative path");
     await expect(scm.commit(session.id, repo, { message: "  " })).rejects.toThrow("non-empty message");
     await expect(scm.commit(session.id, repo, { message: "x", stageAll: true, files: ["d.txt"] })).rejects.toThrow("mutually exclusive");
+    await writeFile(path.join(repo, "中文 文件.txt"), "safe\n");
+    const spaced = await scm.commit(session.id, repo, { message: "add spaced unicode path", files: ["中文 文件.txt"] });
+    expect(spaced.commit).toMatch(/^[0-9a-f]{40}$/);
     // 白名单内的 files 正常暂存
     const ok = await scm.commit(session.id, repo, { message: "add d", files: ["d.txt"] });
     expect(ok.commit).toMatch(/^[0-9a-f]{40}$/);
@@ -211,6 +215,21 @@ describe("ScmService（0.4.0 Phase 4a，真实 git 集成）", () => {
     expect(cherry.conflicts).toEqual(["a.txt"]);
   });
 
+  it("worktree cherry-pick 合回包含分支上的全部提交", async () => {
+    const { repo, session, scm } = await setup();
+    const worktree = await scm.createWorktree(session.id, repo, { name: "multi" });
+    await writeFile(path.join(worktree.path, "first.txt"), "first\n");
+    await realGit(["add", "first.txt"], worktree.path);
+    await realGit(["commit", "-m", "first change"], worktree.path);
+    await writeFile(path.join(worktree.path, "second.txt"), "second\n");
+    await realGit(["add", "second.txt"], worktree.path);
+    await realGit(["commit", "-m", "second change"], worktree.path);
+    const result = await scm.mergeWorktree(session.id, repo, "multi", { strategy: "cherry-pick" });
+    expect(result.merged).toBe(true);
+    expect(await readFile(path.join(repo, "first.txt"), "utf8")).toBe("first\n");
+    expect(await readFile(path.join(repo, "second.txt"), "utf8")).toBe("second\n");
+  });
+
   it("worktree 注册表损坏/不存在时 list 返回空", async () => {
     const { session, scm } = await setup();
     expect(await scm.listWorktrees(session.id)).toEqual([]);
@@ -235,6 +254,13 @@ describe("ScmService（0.4.0 Phase 4a，真实 git 集成）", () => {
     expect(parsed.ahead).toBe(2);
     expect(parsed.behind).toBe(1);
     expect(parsed.staged[0]).toMatchObject({ path: "new.txt", originalPath: "old.txt" });
+  });
+
+  it("parseStatusPorcelainZ：保留空格、非 ASCII 与 rename 原始路径", () => {
+    const parsed = parseStatusPorcelainZ("## main...origin/main [ahead 1]\0R  新 文件.ts\0旧 文件.ts\0?? quote\\name.txt\0");
+    expect(parsed).toMatchObject({ branch: "main", upstream: "origin/main", ahead: 1, behind: 0 });
+    expect(parsed.staged[0]).toMatchObject({ path: "新 文件.ts", originalPath: "旧 文件.ts" });
+    expect(parsed.untracked[0]).toMatchObject({ path: "quote\\name.txt" });
   });
 });
 

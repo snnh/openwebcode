@@ -261,7 +261,7 @@ provider；它支持 `run: <cmd>` 的工具调用回放与 `tool_result` 回包�
 | `openwebcode-<version>-linux-x64.tar.gz` | Linux | tar.gz + 顶层 `install.sh` |
 
 - Windows：`npm ci/build`（server+web）→ CMake Release 构建 core → 按 `core/CMakeLists.txt` 末尾契约组装 `build/stage/` → `cpack -G WIX`
-- Linux：同样构建后组装 `build/stage/` + 下载 Node 20 整树解入 `node/` → `tar` 打包
+- Linux：同样构建后组装 `build/stage/` + 下载固定版本 Node 24 整树解入 `node/` → `tar` 打包
 - bundled Node 版本固定在 workflow 的 `env.NODE_DIST_VERSION`，升级改这一个常量
 - Linux 安装器的 portable 回归可在 checkout 中运行 `sh packaging/test-install.sh`；它覆盖非 TTY 不提问、带空格/单引号路径、`--use-system-node` 与严格参数校验。发布冒烟应使用 `./install.sh --yes --prefix <临时绝对路径>`，避免 CI 被交互式配置卡住。
 - staging 契约细节见 `core/CMakeLists.txt` 末尾注释；从干净源码执行测试门禁、组装 staging、本地生成 MSI/tar.gz、冒烟与发布检查的逐步命令见 [`../packaging/README.md`](../packaging/README.md)
