@@ -38,6 +38,7 @@ describe("official extensions", () => {
         ["attention-optimizer", false],
         ["content-lens", false],
         ["pdf-to-image", true],
+        ["owc-eval", false],
       ]);
       expect(manager.list().find((item) => item.id === "pdf-to-image")).toMatchObject({
         permissions: ["ui:messageAttachment"],

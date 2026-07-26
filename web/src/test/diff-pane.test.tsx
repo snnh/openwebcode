@@ -40,6 +40,7 @@ const checkpointDiff = vi.mocked(api.checkpointDiff);
 
 const CURRENT = "line1\nline2 changed\nline3\n";
 const ORIGINAL = "line1\nline2\nline3\n";
+const REVISION = "a".repeat(64);
 const SCM_DIFF_TEXT = [
   "diff --git a/src/a.ts b/src/a.ts",
   "--- a/src/a.ts",
@@ -74,8 +75,8 @@ function renderPane(spec: DiffSpec, props: Partial<Parameters<typeof DiffPane>[0
 
 beforeEach(() => {
   vi.clearAllMocks();
-  readFile.mockResolvedValue({ content: CURRENT, encoding: "utf-8", truncated: false });
-  writeFile.mockResolvedValue({ ok: true });
+  readFile.mockResolvedValue({ content: CURRENT, encoding: "utf-8", truncated: false, revision: REVISION });
+  writeFile.mockResolvedValue({ ok: true, revision: "b".repeat(64) });
   scmDiff.mockResolvedValue({ isRepo: true, stat: " src/a.ts | 2 +-", diff: SCM_DIFF_TEXT, totalBytes: SCM_DIFF_TEXT.length, truncated: false });
   checkpointDiff.mockResolvedValue({ diff: ` src/a.ts | 2 +-\n\n${SCM_DIFF_TEXT}` });
 });
@@ -103,7 +104,7 @@ describe("DiffPane：SCM 来源", () => {
     const { view, onNotice } = renderPane(spec);
     await waitFor(() => expect(fake.diffEditors).toHaveLength(1));
     fireEvent.click(await view.findByRole("button", { name: "拒绝" }));
-    await waitFor(() => expect(writeFile).toHaveBeenCalledWith("s1", "src/a.ts", ORIGINAL));
+    await waitFor(() => expect(writeFile).toHaveBeenCalledWith("s1", "src/a.ts", ORIGINAL, REVISION));
     expect(await view.findByText("已拒绝")).toBeInTheDocument();
     await waitFor(() => expect(onNotice.mock.calls.some(([message]) => String(message).includes("写回"))).toBe(true));
   });
@@ -144,7 +145,7 @@ describe("DiffPane：SCM 来源", () => {
     const { view, actionsRef } = renderPane(spec);
     await waitFor(() => expect(fake.diffEditors).toHaveLength(1));
     act(() => actionsRef.current.reject?.());
-    await waitFor(() => expect(writeFile).toHaveBeenCalledWith("s1", "src/a.ts", ORIGINAL));
+    await waitFor(() => expect(writeFile).toHaveBeenCalledWith("s1", "src/a.ts", ORIGINAL, REVISION));
     expect(await view.findByText("已拒绝")).toBeInTheDocument();
   });
 });
@@ -159,7 +160,7 @@ describe("DiffPane：检查点来源", () => {
     await waitFor(() => expect(fake.diffEditors).toHaveLength(1));
     expect(fake.diffEditors[0].model?.original.value).toBe(ORIGINAL);
     fireEvent.click(await view.findByRole("button", { name: "拒绝" }));
-    await waitFor(() => expect(writeFile).toHaveBeenCalledWith("s1", "src/a.ts", ORIGINAL));
+    await waitFor(() => expect(writeFile).toHaveBeenCalledWith("s1", "src/a.ts", ORIGINAL, REVISION));
   });
 
   it("后端只给摘要（非 unified diff）：摘要模式展示原文，无 hunk 操作", async () => {
@@ -180,14 +181,14 @@ describe("DiffPane：agent 工具改动来源", () => {
     await waitFor(() => expect(fake.diffEditors).toHaveLength(1));
     expect(fake.diffEditors[0].model?.original.value).toBe(ORIGINAL);
     fireEvent.click(await view.findByRole("button", { name: "拒绝改动" }));
-    await waitFor(() => expect(writeFile).toHaveBeenCalledWith("s1", "src/a.ts", ORIGINAL));
+    await waitFor(() => expect(writeFile).toHaveBeenCalledWith("s1", "src/a.ts", ORIGINAL, REVISION));
     expect(await view.findByText(/已拒绝并还原该工具改动/)).toBeInTheDocument();
   });
 
   it("edit_file：改动已不在当前文件中 → 提示且不提供写操作", async () => {
     const fake = createFakeMonaco();
     loadMonacoMock.mockResolvedValue(fake.monaco);
-    readFile.mockResolvedValue({ content: "unrelated\n", encoding: "utf-8", truncated: false });
+    readFile.mockResolvedValue({ content: "unrelated\n", encoding: "utf-8", truncated: false, revision: REVISION });
     const { view } = renderPane({ source: "agent-edit", path: "src/a.ts", oldText: "line2", newText: "line2 changed" });
     expect(await view.findByText(/已找不到该工具改动/)).toBeInTheDocument();
     expect(view.queryByRole("button", { name: "拒绝改动" })).toBeNull();
@@ -211,7 +212,7 @@ describe("DiffPane：降级与关闭", () => {
     loadMonacoMock.mockRejectedValue(new Error("chunk load failed"));
     const { view } = renderPane(spec);
     fireEvent.click(await view.findByRole("button", { name: "拒绝" }));
-    await waitFor(() => expect(writeFile).toHaveBeenCalledWith("s1", "src/a.ts", ORIGINAL));
+    await waitFor(() => expect(writeFile).toHaveBeenCalledWith("s1", "src/a.ts", ORIGINAL, REVISION));
     expect(await view.findByTestId("diff-fallback-content")).toBeInTheDocument();
   });
 

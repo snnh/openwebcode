@@ -65,8 +65,8 @@ function installFetchMock(): void {
     if (url.includes("/snapshot-capability")) return json({ backend: "git-shadow", costHint: "linear", requiresAdmin: false });
     if (url.includes("/timeline")) return json({ entries: [], activeLeafId: undefined });
     if (url.includes("/files/content")) {
-      if (init?.method === "PUT") return json({ ok: true });
-      return json({ content: CURRENT, encoding: "utf-8", truncated: false });
+      if (init?.method === "PUT") return json({ ok: true, revision: "b".repeat(64) });
+      return json({ content: CURRENT, encoding: "utf-8", truncated: false, revision: "a".repeat(64) });
     }
     if (url.match(/\/api\/sessions\/(s1|s2)\//)) return json([]);
     if (url.match(/\/api\/sessions\/s1(\?.*)?$/)) return json(S1);

@@ -69,7 +69,7 @@ describe("ProblemsPanel", () => {
 
   it("点击条目在只读代码视图中打开对应文件行列", async () => {
     vi.spyOn(api, "latestDiagnostics").mockResolvedValue(diagnostics);
-    const readFile = vi.spyOn(api, "readFile").mockResolvedValue({ content: "line1\nline2\nline3", encoding: "utf-8", truncated: false });
+    const readFile = vi.spyOn(api, "readFile").mockResolvedValue({ content: "line1\nline2\nline3", encoding: "utf-8", truncated: false, revision: "0".repeat(64) });
     renderPanel();
 
     fireEvent.click(await screen.findByText("parses output"));

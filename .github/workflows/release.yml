@@ -9,6 +9,11 @@ on:
         description: "发布版本号（形如 vX.Y.Z；tag 不存在时基于当前提交创建）"
         required: true
         type: string
+      bootstrap_benchmark_baseline:
+        description: "仅首次建立性能基线时显式允许无上一版本基线"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -99,6 +104,7 @@ jobs:
         run: |
           set -euo pipefail
           # staging 契约见 core/CMakeLists.txt 末尾注释
+          rm -rf build/stage
           mkdir -p build/stage/bin build/stage/server build/stage/web build/stage/node
           cp build/Release/owc-exec.exe build/stage/bin/
           cp -r server/dist server/package.json server/node_modules server/assets build/stage/server/
@@ -250,6 +256,7 @@ jobs:
         run: |
           set -euo pipefail
           # staging 契约见 core/CMakeLists.txt 末尾注释
+          rm -rf build/stage
           mkdir -p build/stage/bin build/stage/server build/stage/web build/stage/node
           cp build/owc-exec build/stage/bin/
           cp -r server/dist server/package.json server/node_modules server/assets build/stage/server/
@@ -320,7 +327,7 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: [windows, linux]
+    needs: [windows, linux, benchmark]
     runs-on: ubuntu-latest
     steps:
       - name: Resolve version from tag
@@ -339,6 +346,11 @@ jobs:
         with:
           name: release-linux-tarball
           path: release-assets
+      - name: Download benchmark baselines
+        uses: actions/download-artifact@v4
+        with:
+          name: bench-results-${{ env.VERSION }}
+          path: release-assets/benchmarks
       - name: Verify release assets
         shell: bash
         run: |
@@ -369,13 +381,15 @@ jobs:
             release-assets/openwebcode-${{ env.VERSION }}-windows-x64.msi
             release-assets/openwebcode-${{ env.VERSION }}-linux-x64.tar.gz
             release-assets/SHA256SUMS.txt
+            release-assets/benchmarks/bench-results-*.json
 
   benchmark:
     name: Performance Benchmarks
     runs-on: ubuntu-latest
-    continue-on-error: true # 首版只报警，两个版本后移除此行转硬门槛
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -417,7 +431,7 @@ jobs:
           $TSX scripts/bench/bench-context-build.mjs
       - name: Install Playwright Chromium
         shell: bash
-        run: npx --yes playwright install chromium --with-deps
+        run: server/node_modules/.bin/playwright install chromium --with-deps
       - name: Run browser rendering benchmark
         shell: bash
         run: |
@@ -425,39 +439,66 @@ jobs:
           server/node_modules/.bin/tsx scripts/bench/browser/bench-browser-render.mjs
       - name: Compare with previous release baseline
         shell: bash
-        continue-on-error: true
         run: |
           set -euo pipefail
           TSX=server/node_modules/.bin/tsx
-          # 尝试下载上一 release 的基准结果
-          PREV_TAG=$(git tag --sort=-v:refname | grep '^v' | sed -n '2p' || true)
+          BOOTSTRAP="${{ inputs.bootstrap_benchmark_baseline || 'false' }}"
+          EXPECTED=(long-history long-stream multi-tool slow-client context-build browser-render)
+          # 排除当前目标 tag 后选择最新 release；兼容 tag push 与 workflow_dispatch。
+          CURRENT_TAG="${{ inputs.tag || github.ref_name }}"
+          PREV_TAG=$(git tag --sort=-v:refname | grep '^v' | grep -Fvx "$CURRENT_TAG" | head -n 1 || true)
           if [ -z "$PREV_TAG" ]; then
-            echo "无上一 release 基线，跳过对比"
-            exit 0
+            if [ "$BOOTSTRAP" = "true" ]; then
+              echo "::notice::已显式启用首次性能基线 bootstrap"
+              exit 0
+            fi
+            echo "::error::无上一 release 基线；首次建立基线必须通过 workflow_dispatch 显式启用 bootstrap_benchmark_baseline"
+            exit 1
           fi
           echo "对比基线：$PREV_TAG"
           mkdir -p baseline
-          # 从上一 release artifact 下载（如果可用）
-          gh release download "$PREV_TAG" --pattern 'bench-results-*.json' --dir baseline 2>/dev/null || {
-            echo "无法下载上一 release 基准结果，跳过对比"
-            exit 0
-          }
-          REGRESSION=0
-          for result in scripts/bench/results/*.json; do
-            scenario=$(basename "$result" .json)
-            base="baseline/${scenario}.json"
-            if [ -f "$base" ]; then
-              $TSX scripts/bench/compare.mjs "$base" "$result" || REGRESSION=1
+          # 基准 JSON 是上一 GitHub Release 的正式资产。
+          if ! gh release download "$PREV_TAG" --pattern 'bench-results-*.json' --dir baseline; then
+            if [ "$BOOTSTRAP" = "true" ]; then
+              echo "::notice::上一 release 无可用基准资产；已显式启用 bootstrap"
+              exit 0
             fi
+            echo "::error::无法下载上一 release ($PREV_TAG) 的基准结果"
+            exit 1
+          fi
+          REGRESSION=0
+          for scenario in "${EXPECTED[@]}"; do
+            result="scripts/bench/results/${scenario}.json"
+            base="baseline/bench-results-${scenario}.json"
+            if [ ! -f "$result" ]; then
+              echo "::error::当前构建缺少基准场景结果：$scenario"
+              REGRESSION=1
+              continue
+            fi
+            if [ ! -f "$base" ]; then
+              echo "::error::上一 release 缺少基准场景：$scenario"
+              REGRESSION=1
+              continue
+            fi
+            $TSX scripts/bench/compare.mjs "$base" "$result" || REGRESSION=1
           done
           if [ "$REGRESSION" -eq 1 ]; then
-            echo "::warning::性能回归超过 15% 阈值，请检查基准结果"
+            echo "::error::性能回归超过 15% 阈值"
+            exit 1
           fi
         env:
           GH_TOKEN: ${{ github.token }}
+      - name: Prepare benchmark release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p benchmark-release
+          for result in scripts/bench/results/*.json; do
+            cp "$result" "benchmark-release/bench-results-$(basename "$result")"
+          done
       - name: Upload benchmark results
         uses: actions/upload-artifact@v4
         with:
           name: bench-results-${{ env.VERSION }}
-          if-no-files-found: warn
-          path: scripts/bench/results/*.json
+          if-no-files-found: error
+          path: benchmark-release/bench-results-*.json

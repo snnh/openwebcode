@@ -34,7 +34,8 @@ const readFile = vi.mocked(api.readFile);
 const writeFile = vi.mocked(api.writeFile);
 const fileSymbols = vi.mocked(api.workspaceFileSymbols);
 
-const FILE = { content: "export function foo() {\n  return 1;\n}\n", encoding: "utf-8", truncated: false };
+const REVISION = "a".repeat(64);
+const FILE = { content: "export function foo() {\n  return 1;\n}\n", encoding: "utf-8", truncated: false, revision: REVISION };
 const SYMBOLS = { symbols: [{ name: "foo", kind: "function", path: "src/a.ts", startLine: 1, endLine: 3, signature: "function foo()" }], indexStatus: "fresh" as const };
 
 function renderPane(props: Partial<Parameters<typeof EditorPane>[0]> = {}) {
@@ -61,7 +62,7 @@ function renderPane(props: Partial<Parameters<typeof EditorPane>[0]> = {}) {
 beforeEach(() => {
   vi.clearAllMocks();
   readFile.mockResolvedValue({ ...FILE });
-  writeFile.mockResolvedValue({ ok: true });
+  writeFile.mockResolvedValue({ ok: true, revision: "b".repeat(64) });
   fileSymbols.mockResolvedValue({ ...SYMBOLS });
 });
 
@@ -93,7 +94,7 @@ describe("EditorPane：保存走权限链", () => {
     const saveButton = view.getByRole("button", { name: "保存" });
     expect(saveButton).toBeEnabled();
     fireEvent.click(saveButton);
-    await waitFor(() => expect(writeFile).toHaveBeenCalledWith("s1", "src/a.ts", "export function foo() {\n  return 2;\n}\n"));
+    await waitFor(() => expect(writeFile).toHaveBeenCalledWith("s1", "src/a.ts", "export function foo() {\n  return 2;\n}\n", REVISION));
     await waitFor(() => expect(onNotice.mock.calls.some(([message]) => String(message).includes("已保存"))).toBe(true));
     await waitFor(() => expect(view.getByRole("button", { name: "保存" })).toBeDisabled());
   });
@@ -125,7 +126,7 @@ describe("EditorPane：保存走权限链", () => {
       fake.editors[0].__emitContent();
     });
     act(() => actionsRef.current.save?.());
-    await waitFor(() => expect(writeFile).toHaveBeenCalledWith("s1", "src/a.ts", "via-command"));
+    await waitFor(() => expect(writeFile).toHaveBeenCalledWith("s1", "src/a.ts", "via-command", REVISION));
   });
 });
 

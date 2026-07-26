@@ -90,7 +90,7 @@ cd openwebcode
 
 **上下文管理**：token 预算账本、滚动驱逐 + 占位符回写、快速模型两种压缩、85% 水位强制概览压缩。前端始终看全量历史，驱逐只影响 LLM 视图。
 
-**扩展系统**：独立 Extension Host 子进程（IPC、5 秒钩子保护、manifest 权限与持久化管理）。内置 context-manager、attention-optimizer、content-lens、pdf-to-image；可在设置页启停、调参并从本地目录安装第三方 `owc-ext-*` 扩展。
+**扩展系统**：独立 Extension Host 子进程（IPC、5 秒钩子保护、manifest 权限与持久化管理）。内置 context-manager、attention-optimizer、content-lens、pdf-to-image，以及默认关闭的 `owc-eval` 评测服务；可在设置页启停、调参并从本地目录安装第三方 `owc-ext-*` 扩展。
 
 **会话生命周期**：关浏览器不停 agent；断线重连自动补拉；权限请求挂起等你 respond（**无超时**，长任务记得回来确认）。
 

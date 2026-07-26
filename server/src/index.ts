@@ -34,6 +34,7 @@ import { ProviderProfilesRuntime } from "./provider-profiles-runtime.js";
 import { ExtensionManager } from "./extensions/extension-manager.js";
 import { ContentLensService } from "./extensions/content-lens.js";
 import { RemoteSyncScheduler } from "./remote-sync-scheduler.js";
+import { EvalEvaluator } from "./eval/evaluator.js";
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const resolveFromServer = (value: string) => (path.isAbsolute(value) ? value : path.resolve(moduleDirectory, "..", value));
@@ -86,6 +87,9 @@ const compactor = new Compactor(sessions, fastModel, { usageLog, pricing, exchan
 const extensions = new ExtensionManager(dataDir, events);
 await extensions.initialize();
 const contentLens = new ContentLensService(sessions, fastModel);
+// Production evaluations share the normal Core boundary, so workspace access
+// keeps the same path policy and sandbox enforcement as ordinary sessions.
+const evalEvaluator = new EvalEvaluator(dataDir, core);
 const selectedWeb = providerProfiles.selectedWebProfiles();
 const search = createProfileSearchProvider(selectedWeb.search);
 const webFetch = createProfileWebFetchProvider(selectedWeb.fetch);
@@ -191,6 +195,7 @@ const app = await buildServer({
   indexManager,
   diagnostics,
   scm,
+  evalEvaluator,
   ...(config.accessToken ? { auth: { accessToken: config.accessToken, allowedOrigins: config.allowedOrigins } } : {}),
   getPreferences: () => {
     const effective = settings.effective();

@@ -140,11 +140,11 @@ export const api = {
   saveModelPricing: (document: PricingDocument) =>
     request<PricingDocument>("/api/model-pricing", { method: "PUT", body: JSON.stringify(document) }),
   listFiles: (id: string, path = ".") => request<{ entries: FileEntry[]; truncated: boolean }>(`/api/sessions/${id}/files?path=${encodeURIComponent(path)}`),
-  readFile: (id: string, path: string) => request<{ content: string; encoding: string; truncated: boolean }>(`/api/sessions/${id}/files/content?path=${encodeURIComponent(path)}`),
+  readFile: (id: string, path: string) => request<{ content: string; encoding: string; truncated: boolean; revision: string }>(`/api/sessions/${id}/files/content?path=${encodeURIComponent(path)}`),
   // 编辑器保存（0.5.0 Phase 1a）：走 server 端 write_file 同一权限链与 plan 只读门禁；
   // 审批挂起期间请求保持打开，403=权限/plan 拒绝
-  writeFile: (id: string, path: string, content: string) =>
-    request<{ ok: true }>(`/api/sessions/${id}/files/content`, { method: "PUT", body: JSON.stringify({ path, content }) }),
+  writeFile: (id: string, path: string, content: string, expectedRevision: string) =>
+    request<{ ok: true; revision: string }>(`/api/sessions/${id}/files/content`, { method: "PUT", body: JSON.stringify({ path, content, expectedRevision }) }),
   // 编辑器面包屑符号（0.5.0 Phase 1a）：按文件取符号；索引未启用/未建时 501/409，调用方按无符号降级
   workspaceFileSymbols: (sessionId: string, file: string) =>
     request<import("./contracts").WorkspaceSymbolsResponse>(`/api/workspaces/symbols?sessionId=${encodeURIComponent(sessionId)}&file=${encodeURIComponent(file)}`),
@@ -208,4 +208,13 @@ export const api = {
   // 0.5.0 Phase 2d：性能采样（脱敏）
   sessionPerf: (id: string) => request<{ records: import("./contracts").RunPerfRecord[] }>(`/api/sessions/${encodeURIComponent(id)}/perf`),
   serverMetrics: () => request<{ events: { published: number; retained: number; retainedBytes: number; oversizedNotRetained: number }; websocket: { clients: number; slowClientDisconnects: number; failedClientSends: number } }>("/api/metrics"),
+  // 0.5.0 Phase 3a：评测 harness
+  evalTasks: () => request<{ tasks: import("./contracts").EvalTaskInfo[] }>("/api/eval/tasks"),
+  evalRun: (taskIds?: string[]) =>
+    request<import("./contracts").EvalRunReport>("/api/eval/run", { method: "POST", body: JSON.stringify({ ...(taskIds ? { taskIds } : {}) }) }),
+  evalRunReport: (runId: string) => request<import("./contracts").EvalRunReport>(`/api/eval/runs/${encodeURIComponent(runId)}`),
+  evalRuns: () => request<{ runs: import("./contracts").EvalRunSummary[] }>("/api/eval/runs"),
+  evalCompare: (baselineRunId: string, candidateRunId: string) => request<import("./contracts").EvalRunComparison>("/api/eval/compare", { method: "POST", body: JSON.stringify({ baselineRunId, candidateRunId }) }),
+  evalComparisons: () => request<{ comparisons: import("./contracts").EvalComparisonSummary[] }>("/api/eval/comparisons"),
+  evalComparison: (comparisonId: string) => request<import("./contracts").EvalRunComparison>(`/api/eval/comparisons/${encodeURIComponent(comparisonId)}`),
 };

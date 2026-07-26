@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import base64
+import hashlib
 import json
 import os
 import shlex
@@ -138,11 +139,13 @@ def main():
     proc = subprocess.Popen([executable], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment)
     binary_name = f"protocol-upload-{os.getpid()}.bin"
     binary_path = os.path.join(os.getcwd(), binary_name)
+    text_name = f"protocol-cas-{os.getpid()}.txt"
+    text_path = os.path.join(os.getcwd(), text_name)
     try:
         request(proc, "ping-中文", "core.ping")
         response, notes = collect_until_response(proc, "ping-中文")
         assert not notes
-        assert response["result"]["version"] == "0.3.10"
+        assert response["result"]["version"] == "0.5.0"
         assert response["result"]["sandboxCapability"] in {"advisory", "partial", "enforced"}
         assert response["result"]["sandboxReason"]
         assert response["result"]["protocolVersion"] == "1.0"
@@ -161,13 +164,13 @@ def main():
         response, notes = collect_until_response(proc, None)
         assert not notes
         assert response["id"] is None
-        assert response["result"]["version"] == "0.3.10"
+        assert response["result"]["version"] == "0.5.0"
 
         send(proc, {"jsonrpc": "2.0", "method": "core.ping", "params": {}})
         request(proc, "after-notification", "core.ping")
         response, notes = collect_until_response(proc, "after-notification")
         assert not notes
-        assert response["result"]["version"] == "0.3.10"
+        assert response["result"]["version"] == "0.5.0"
 
         request(proc, 2, "missing.method")
         response, _ = collect_until_response(proc, 2)
@@ -186,6 +189,21 @@ def main():
         request(proc, 21, "session.configure", {"sessionId": "s1", "cwd": os.getcwd(), "sandbox": {"enabled": False, "allowPaths": [os.getcwd()], "denyPaths": [], "network": "allow"}})
         response, _ = collect_until_response(proc, 21)
         assert response["result"]["sandboxCapability"] in {"advisory", "partial", "enforced"}
+
+        # Conditional text writes reject a stale editor revision instead of
+        # silently overwriting a file changed since it was read.
+        request(proc, 212, "fs.write", {"sessionId": "s1", "path": text_name, "content": "one"})
+        response, _ = collect_until_response(proc, 212)
+        assert response.get("result", {}).get("ok") is True, response
+        first_digest = hashlib.sha256(b"one").hexdigest()
+        request(proc, 213, "fs.write", {"sessionId": "s1", "path": text_name, "content": "two", "expectedSha256": first_digest})
+        response, _ = collect_until_response(proc, 213)
+        assert response.get("result", {}).get("ok") is True, response
+        request(proc, 214, "fs.write", {"sessionId": "s1", "path": text_name, "content": "stale", "expectedSha256": first_digest})
+        response, _ = collect_until_response(proc, 214)
+        assert response.get("error", {}).get("code") == -32004, response
+        with open(text_path, "r", encoding="utf-8") as stored:
+            assert stored.read() == "two"
 
         # Binary ingress is a dedicated, bounded base64 RPC. It must preserve
         # bytes that fs.write intentionally rejects as non-UTF-8/text data.
@@ -388,6 +406,8 @@ def main():
             proc.kill()
         if os.path.exists(binary_path):
             os.remove(binary_path)
+        if os.path.exists(text_path):
+            os.remove(text_path)
         stderr = proc.stderr.read().decode(errors="replace")
         if stderr:
             print(stderr, file=sys.stderr)

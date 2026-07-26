@@ -45,6 +45,19 @@ export const OFFICIAL_EXTENSIONS: ExtensionManifest[] = [
     official: true,
     defaultEnabled: true,
   },
+  {
+    id: "owc-eval",
+    name: "评测 Harness",
+    version: "0.5.0",
+    description: "任务集回放与回归对比：通过率、工具选择、token/耗时报告。",
+    apiVersion: "1",
+    // UI visibility + independent enable/disable only. The eval service runs
+    // server-side via the built-in eval module, not through the Extension Host
+    // hook mechanism.
+    permissions: ["sessions:read", "ui:panel"],
+    official: true,
+    defaultEnabled: false,
+  },
 ];
 
 export const OFFICIAL_DEFAULT_CONFIG: Record<string, Record<string, unknown>> = {
@@ -56,6 +69,7 @@ export const OFFICIAL_DEFAULT_CONFIG: Record<string, Record<string, unknown>> = 
     explain: { webSearch: true, searchProvider: "host" },
   },
   "pdf-to-image": { maxPages: 4, dpi: 150, maxDimension: 2048 },
+  "owc-eval": {},
 };
 
 function textOf(message: ChatMessage): string {

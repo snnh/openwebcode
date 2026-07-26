@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(openwebcode_core VERSION 0.3.10 LANGUAGES C)
+project(openwebcode_core VERSION 0.5.0 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -90,7 +90,7 @@ install(TARGETS owc-exec RUNTIME DESTINATION bin)
 #   stage/server/node_modules/   生产依赖（npm prune --omit=dev 之后）
 #   stage/server/assets/         运行时资产（refs-clone.ps1 等）
 #   stage/web/dist/              前端静态资源（server 解析 server/dist/../../web/dist 托管）
-#   stage/node/                  Node 20 运行时（Windows: node.exe；Linux: bin/node）
+#   stage/node/                  固定版本 Node 24 运行时（Windows: node.exe；Linux: bin/node）
 # 本地开发 configure 时 stage/ 通常不存在：install(DIRECTORY ... OPTIONAL)
 # 静默跳过，此时包内只有 owc-exec。
 # ---------------------------------------------------------------------------
