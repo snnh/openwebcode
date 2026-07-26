@@ -14,7 +14,7 @@
 
 ### Q: 支持 Windows / Linux / macOS 吗？
 
-Windows 与 Linux 原生支持（沙盒分别走 AppContainer/Landlock）。macOS 暂无原生沙盒后端，可以跑但沙盒为 advisory 降级（UI 会警示）。
+Windows 与 Linux 原生支持（沙盒分别走 AppContainer/Landlock）。macOS 暂不支持。
 
 ### Q: 数据存在哪里？
 
