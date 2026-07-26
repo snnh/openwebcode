@@ -5,6 +5,24 @@ import type { RunPerfRecord } from "../../lib/contracts";
 import { getFpsStats, startFrameSampler, stopFrameSampler, type FpsStats } from "../../lib/perf-sampler";
 import { useI18n } from "../../i18n";
 
+const MONITORING_STORAGE_KEY = "owc-perf-monitoring";
+
+function readMonitoringPreference(): boolean {
+  try {
+    return window.localStorage.getItem(MONITORING_STORAGE_KEY) !== "false";
+  } catch {
+    return true;
+  }
+}
+
+function storeMonitoringPreference(enabled: boolean): void {
+  try {
+    window.localStorage.setItem(MONITORING_STORAGE_KEY, String(enabled));
+  } catch {
+    // 持久化失败不影响当前面板使用
+  }
+}
+
 function formatMs(ms: number): string {
   if (ms >= 1000) return `${(ms / 1000).toFixed(2)}s`;
   return `${ms.toFixed(1)}ms`;
@@ -42,43 +60,69 @@ function StageBar({ record }: { record: RunPerfRecord }): ReactElement {
 export function PerfPanel({ sessionId }: { sessionId?: string }): ReactElement {
   const { t } = useI18n();
   const [fps, setFps] = useState<FpsStats>({ fps50: 0, fps95: 0, droppedFrames: 0, sampleCount: 0 });
+  const [monitoring, setMonitoring] = useState(readMonitoringPreference);
   const fpsTimer = useRef<ReturnType<typeof setInterval>>(undefined);
 
-  // 面板打开时启动帧率采样，关闭时停止
+  // 面板打开且监控开关启用时采样；关闭面板或开关时立即停止。
   useEffect(() => {
+    storeMonitoringPreference(monitoring);
+    if (!monitoring) {
+      stopFrameSampler();
+      if (fpsTimer.current) clearInterval(fpsTimer.current);
+      fpsTimer.current = undefined;
+      return;
+    }
     startFrameSampler();
     setFps(getFpsStats());
     fpsTimer.current = setInterval(() => setFps(getFpsStats()), 1000);
     return () => {
       stopFrameSampler();
       if (fpsTimer.current) clearInterval(fpsTimer.current);
+      fpsTimer.current = undefined;
     };
-  }, []);
+  }, [monitoring]);
 
   const perf = useQuery({
     queryKey: ["perf", sessionId],
     queryFn: () => api.sessionPerf(sessionId!),
-    enabled: Boolean(sessionId),
-    refetchInterval: 5000,
+    enabled: monitoring && Boolean(sessionId),
+    refetchInterval: monitoring ? 5000 : false,
   });
 
   const metrics = useQuery({
     queryKey: ["serverMetrics"],
     queryFn: () => api.serverMetrics(),
-    refetchInterval: 5000,
+    enabled: monitoring,
+    refetchInterval: monitoring ? 5000 : false,
   });
 
   const concurrency = useQuery({
     queryKey: ["providerStats"],
     queryFn: () => api.providerStats(),
-    refetchInterval: 5000,
+    enabled: monitoring,
+    refetchInterval: monitoring ? 5000 : false,
   });
 
   const records = perf.data?.records ?? [];
 
   return (
     <div className="inspector-body perf-panel">
-      <div className="panel-head"><h2>{t("性能", "Performance")}</h2></div>
+      <div className="panel-head perf-panel-head">
+        <h2>{t("性能", "Performance")}</h2>
+        <button
+          type="button"
+          className="perf-monitor-toggle"
+          role="switch"
+          aria-checked={monitoring}
+          aria-label={t("实时性能监控", "Live performance monitoring")}
+          onClick={() => setMonitoring((enabled) => !enabled)}
+        >
+          <span>{monitoring ? t("监控中", "Monitoring") : t("已暂停", "Paused")}</span>
+          <span className="perf-toggle-track" aria-hidden="true"><span /></span>
+        </button>
+      </div>
+
+      {!monitoring && <p className="perf-paused">{t("实时采样与数据刷新已暂停。", "Live sampling and data refresh are paused.")}</p>}
 
       {/* 渲染帧率 */}
       <section className="perf-section">
