@@ -1,0 +1,441 @@
+import { EventEmitter } from "node:events";
+import type { ChildProcess, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { AgentRunner } from "../src/agent/agent-runner.js";
+import { buildServer } from "../src/app.js";
+import type { CoreClientLike, CoreInfo } from "../src/core-client.js";
+import { PricingCatalog } from "../src/cost/pricing-catalog.js";
+import { EventBus } from "../src/events/event-bus.js";
+import { ProviderRegistry } from "../src/providers/provider.js";
+import { SessionStore } from "../src/sessions/session-store.js";
+import { UpdateApplier, UpdateApplyError, type UpdateApplyState } from "../src/update-applier.js";
+
+const roots: string[] = [];
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+
+async function tempRoot(): Promise<string> {
+  const root = await mkdtemp(path.join(os.tmpdir(), "owc-update-apply-"));
+  roots.push(root);
+  return root;
+}
+
+const RELEASE_URL = "https://api.github.com/repos/snnh/openwebcode/releases/latest";
+const ASSET_BASE = "https://github.com/snnh/openwebcode/releases/download/v0.6.0";
+const TARGET_VERSION = "0.6.0";
+
+function assetNameFor(platform: "win32" | "linux"): string {
+  return platform === "win32"
+    ? `openwebcode-${TARGET_VERSION}-windows-x64.msi`
+    : `openwebcode-${TARGET_VERSION}-linux-x64.tar.gz`;
+}
+
+function sha256Hex(data: Buffer): string {
+  return createHash("sha256").update(data).digest("hex");
+}
+
+interface FakeFetchOptions {
+  platform: "win32" | "linux";
+  tag?: string;
+  assetBytes?: Buffer;
+  /** 提供时 SHA256SUMS.txt 内容（缺省按 assetBytes 计算） */
+  sumsText?: string;
+  /** 覆盖资产的 browser_download_url（用于非 github.com 拒绝用例） */
+  assetUrlOverride?: string;
+  /** 提供时资产响应使用该流（可挂起以测试并发互斥） */
+  assetBody?: ReadableStream<Uint8Array>;
+}
+
+function makeFetch(options: FakeFetchOptions): typeof fetch {
+  const tag = options.tag ?? `v${TARGET_VERSION}`;
+  const assetName = assetNameFor(options.platform);
+  const assetBytes = options.assetBytes ?? Buffer.from(`fake-${options.platform}-payload`);
+  const assetUrl = options.assetUrlOverride ?? `${ASSET_BASE}/${assetName}`;
+  const sumsUrl = `${ASSET_BASE}/SHA256SUMS.txt`;
+  const sumsText = options.sumsText ?? `${sha256Hex(assetBytes)}  ${assetName}\n`;
+  return (async (input: unknown) => {
+    const url = String(input);
+    if (url === RELEASE_URL) {
+      return new Response(JSON.stringify({
+        tag_name: tag,
+        html_url: `https://github.com/snnh/openwebcode/releases/tag/${tag}`,
+        assets: [
+          { name: assetName, browser_download_url: assetUrl },
+          { name: "SHA256SUMS.txt", browser_download_url: sumsUrl },
+        ],
+      }), { status: 200 });
+    }
+    if (url === assetUrl) {
+      const body = options.assetBody ?? new Response(new Uint8Array(assetBytes)).body;
+      return new Response(body, { status: 200, headers: { "content-length": String(assetBytes.length) } });
+    }
+    if (url === sumsUrl) return new Response(sumsText, { status: 200 });
+    return new Response("not found", { status: 404 });
+  }) as unknown as typeof fetch;
+}
+
+interface SpawnCall {
+  command: string;
+  args: string[];
+  options?: unknown;
+}
+
+/** fake spawn：tar -tzf 返回固定列表；tar -xzf 在目标目录生成仿真的解压产物；其余直接成功。 */
+function makeSpawn(): { calls: SpawnCall[]; impl: typeof spawn } {
+  const calls: SpawnCall[] = [];
+  const impl = ((command: string, args: readonly string[], options?: unknown) => {
+    calls.push({ command, args: [...args], options });
+    const child = new EventEmitter() as ChildProcess;
+    const streams = child as unknown as { stdout: EventEmitter; stderr: EventEmitter; unref: () => void };
+    streams.stdout = new EventEmitter();
+    streams.stderr = new EventEmitter();
+    streams.unref = () => undefined;
+    setImmediate(() => {
+      void (async () => {
+        if (command === "tar" && args[0] === "-tzf") {
+          streams.stdout.emit("data", Buffer.from("server/\nserver/dist/\nserver/dist/index.js\nweb/\nweb/index.html\ninstall.sh\n"));
+        } else if (command === "tar" && args[0] === "-xzf") {
+          const dir = args[args.indexOf("-C") + 1]!;
+          await mkdir(path.join(dir, "server", "dist"), { recursive: true });
+          await writeFile(path.join(dir, "server", "dist", "index.js"), "// new version\n", "utf8");
+          await mkdir(path.join(dir, "web"), { recursive: true });
+          await writeFile(path.join(dir, "web", "index.html"), "<html></html>\n", "utf8");
+          await writeFile(path.join(dir, "install.sh"), "#!/bin/sh\n", "utf8");
+        }
+        child.emit("close", 0);
+      })().catch(() => child.emit("close", 1));
+    });
+    return child;
+  }) as unknown as typeof spawn;
+  return { calls, impl };
+}
+
+interface ApplierFixture {
+  applier: UpdateApplier;
+  dataDir: string;
+  installRoot: string;
+}
+
+async function makeApplier(overrides: {
+  platform: "win32" | "linux";
+  fetchImpl: typeof fetch;
+  spawnImpl: typeof spawn;
+  exitImpl: () => void;
+  currentVersion?: string;
+}): Promise<ApplierFixture> {
+  const dataDir = await tempRoot();
+  const installRoot = path.join(await tempRoot(), "owc-home");
+  await mkdir(installRoot, { recursive: true });
+  const applier = new UpdateApplier({
+    dataDir,
+    installRoot,
+    platform: overrides.platform,
+    getReleaseUrl: () => RELEASE_URL,
+    getCurrentVersion: () => overrides.currentVersion ?? "0.5.2",
+    fetchImpl: overrides.fetchImpl,
+    spawnImpl: overrides.spawnImpl,
+    exitImpl: overrides.exitImpl,
+  });
+  return { applier, dataDir, installRoot };
+}
+
+async function withConfigHome<T>(dir: string, fn: () => Promise<T>): Promise<T> {
+  const previous = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = dir;
+  try {
+    return await fn();
+  } finally {
+    if (previous === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = previous;
+  }
+}
+
+describe("UpdateApplier", () => {
+  it("linux 全流程：下载/校验/解压/复制，无 systemd unit 时 done 且不退出", async () => {
+    const spawn = makeSpawn();
+    let exitCalls = 0;
+    const fixture = await makeApplier({
+      platform: "linux",
+      fetchImpl: makeFetch({ platform: "linux" }),
+      spawnImpl: spawn.impl,
+      exitImpl: () => { exitCalls += 1; },
+    });
+    const configHome = await tempRoot();
+    await withConfigHome(configHome, async () => {
+      const state = await fixture.applier.apply();
+      expect(state.status).toBe("done");
+      expect(state.version).toBe(TARGET_VERSION);
+      expect(state.message).toContain("手动重启");
+      expect(state.startedAt).toBeTruthy();
+    });
+    // 复制进 installRoot；install.sh 不复制
+    expect(existsSync(path.join(fixture.installRoot, "server", "dist", "index.js"))).toBe(true);
+    expect(existsSync(path.join(fixture.installRoot, "web", "index.html"))).toBe(true);
+    expect(existsSync(path.join(fixture.installRoot, "install.sh"))).toBe(false);
+    // 解压使用了系统 tar
+    expect(spawn.calls.some((call) => call.command === "tar" && call.args[0] === "-xzf")).toBe(true);
+    expect(exitCalls).toBe(0);
+  });
+
+  it("linux 有 systemd user unit 时 restarting，spawn systemctl 且调用 exitImpl", async () => {
+    const spawn = makeSpawn();
+    let exitCalls = 0;
+    const fixture = await makeApplier({
+      platform: "linux",
+      fetchImpl: makeFetch({ platform: "linux" }),
+      spawnImpl: spawn.impl,
+      exitImpl: () => { exitCalls += 1; },
+    });
+    const configHome = await tempRoot();
+    await mkdir(path.join(configHome, "systemd", "user"), { recursive: true });
+    await writeFile(path.join(configHome, "systemd", "user", "openwebcode.service"), "[Unit]\n", "utf8");
+    await withConfigHome(configHome, async () => {
+      const state = await fixture.applier.apply();
+      expect(state.status).toBe("restarting");
+      expect(state.message).toContain("自动重启");
+    });
+    const restartCall = spawn.calls.find((call) => call.command === "sh");
+    expect(restartCall?.args.join(" ")).toContain("systemctl --user try-restart openwebcode.service");
+    expect(exitCalls).toBe(1);
+    expect(existsSync(path.join(fixture.installRoot, "server", "dist", "index.js"))).toBe(true);
+  });
+
+  it("sha256 不匹配：error，不复制文件，状态保留", async () => {
+    const spawn = makeSpawn();
+    const fixture = await makeApplier({
+      platform: "linux",
+      fetchImpl: makeFetch({ platform: "linux", sumsText: `${"0".repeat(64)}  ${assetNameFor("linux")}\n` }),
+      spawnImpl: spawn.impl,
+      exitImpl: () => undefined,
+    });
+    await expect(fixture.applier.apply()).rejects.toThrow(/SHA256/);
+    const state = fixture.applier.state();
+    expect(state?.status).toBe("error");
+    expect(state?.error).toContain("SHA256");
+    expect(existsSync(path.join(fixture.installRoot, "server"))).toBe(false);
+    // 校验失败发生在解压之前
+    expect(spawn.calls.some((call) => call.command === "tar")).toBe(false);
+  });
+
+  it("非 github.com 的资产 URL 被拒绝（400 语义）", async () => {
+    const spawn = makeSpawn();
+    const fixture = await makeApplier({
+      platform: "linux",
+      fetchImpl: makeFetch({ platform: "linux", assetUrlOverride: "https://evil.example.com/payload.tar.gz" }),
+      spawnImpl: spawn.impl,
+      exitImpl: () => undefined,
+    });
+    const error = await fixture.applier.apply().catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(UpdateApplyError);
+    expect((error as UpdateApplyError).statusCode).toBe(400);
+  });
+
+  it("tag 不新于当前版本：400 语义「已是最新版本」", async () => {
+    const spawn = makeSpawn();
+    const fixture = await makeApplier({
+      platform: "linux",
+      fetchImpl: makeFetch({ platform: "linux", tag: "v0.5.2" }),
+      spawnImpl: spawn.impl,
+      exitImpl: () => undefined,
+      currentVersion: "0.5.2",
+    });
+    const error = await fixture.applier.apply().catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(UpdateApplyError);
+    expect((error as UpdateApplyError).statusCode).toBe(400);
+    expect((error as UpdateApplyError).message).toContain("已是最新版本");
+    // 未开始更新流程，内存状态保持空
+    expect(fixture.applier.state()).toBeNull();
+  });
+
+  it("win32：spawn msiexec 延迟安装并调用 exitImpl，状态 restarting", async () => {
+    const spawn = makeSpawn();
+    let exitCalls = 0;
+    const fixture = await makeApplier({
+      platform: "win32",
+      fetchImpl: makeFetch({ platform: "win32" }),
+      spawnImpl: spawn.impl,
+      exitImpl: () => { exitCalls += 1; },
+    });
+    const state = await fixture.applier.apply();
+    expect(state.status).toBe("restarting");
+    expect(state.version).toBe(TARGET_VERSION);
+    const cmdCall = spawn.calls.find((call) => call.command === "cmd.exe");
+    expect(cmdCall).toBeTruthy();
+    expect(cmdCall?.args.join(" ")).toContain("msiexec /i");
+    expect(cmdCall?.args.join(" ")).toContain(assetNameFor("win32"));
+    expect(exitCalls).toBe(1);
+  });
+
+  it("并发 apply：第二个得到 409 语义", async () => {
+    const spawn = makeSpawn();
+    const assetBytes = Buffer.from("fake-linux-payload");
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+    const assetBody = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        controller.enqueue(new Uint8Array(assetBytes));
+        await gate;
+        controller.close();
+      },
+    });
+    const fixture = await makeApplier({
+      platform: "linux",
+      fetchImpl: makeFetch({ platform: "linux", assetBytes, assetBody }),
+      spawnImpl: spawn.impl,
+      exitImpl: () => undefined,
+    });
+    const configHome = await tempRoot();
+    await withConfigHome(configHome, async () => {
+      const first = fixture.applier.apply();
+      await vi.waitFor(() => expect(fixture.applier.state()?.status).toBe("downloading"), { timeout: 5000 });
+      const error = await fixture.applier.apply().catch((err: unknown) => err);
+      expect(error).toBeInstanceOf(UpdateApplyError);
+      expect((error as UpdateApplyError).statusCode).toBe(409);
+      releaseGate();
+      const state = await first;
+      expect(state.status).toBe("done");
+    });
+  });
+
+  it("下载完成后资产落盘且内容完整", async () => {
+    const spawn = makeSpawn();
+    const assetBytes = Buffer.alloc(4096, 1);
+    const fixture = await makeApplier({
+      platform: "linux",
+      fetchImpl: makeFetch({ platform: "linux", assetBytes }),
+      spawnImpl: spawn.impl,
+      exitImpl: () => undefined,
+    });
+    const configHome = await tempRoot();
+    await withConfigHome(configHome, async () => {
+      const state = await fixture.applier.apply();
+      expect(state.status).toBe("done");
+    });
+    // 下载完成后资产落盘且哈希通过即说明下载/校验流程正确（done 后 progress 为 null）
+    expect(existsSync(path.join(fixture.installRoot, "server", "dist", "index.js"))).toBe(true);
+    const downloaded = await readFile(path.join(fixture.dataDir, "updates", TARGET_VERSION, assetNameFor("linux")));
+    expect(downloaded.length).toBe(assetBytes.length);
+  });
+});
+
+const FAKE_CORE_INFO: CoreInfo = {
+  version: "0.5.2", protocolVersion: "1.0", platform: "windows", sandboxCapability: "advisory",
+  features: { fsStat: true, fsStatMany: true, fsWriteBase64: true, jobControl: false, fsHash: true, fsScanPagination: true, fsWatch: true },
+  limits: { maxFrameBytes: 33_554_432, maxWriteBase64Bytes: 20_971_520, maxHashBytes: 16_777_216, maxStatManyPaths: 128, maxStatManyPathBytes: 262_144, maxScanEntries: 256, maxScanDepth: 16, maxScanNodes: 2_048, maxWatches: 16, maxWatchEvents: 128, maxConcurrentJobs: 4, maxJobOutputBytes: 524_288 },
+};
+
+function fakeCore(): CoreClientLike {
+  const emitter = new EventEmitter();
+  const client = {
+    on(eventName: string, listener: (...args: unknown[]) => void) { emitter.on(eventName, listener); return client; },
+    async start() { return FAKE_CORE_INFO; },
+    async stop() { return; },
+    async ping() { return FAKE_CORE_INFO; },
+    setRequestTimeoutMs() {},
+  } as unknown as CoreClientLike;
+  return client;
+}
+
+async function setupApp(updateApplier?: UpdateApplier) {
+  const root = await tempRoot();
+  const sessions = new SessionStore(path.join(root, "sessions"));
+  await sessions.initialize();
+  const pricing = new PricingCatalog(path.join(root, "model-pricing.json"));
+  await pricing.initialize();
+  const providers = new ProviderRegistry();
+  const events = new EventBus();
+  const core = fakeCore();
+  const agent = new AgentRunner(sessions, providers, core, events, pricing);
+  const app = await buildServer({ core, sessions, agent, events, providers, pricing, ...(updateApplier ? { updateApplier } : {}) });
+  return app;
+}
+
+const DONE_STATE: UpdateApplyState = {
+  status: "done",
+  version: TARGET_VERSION,
+  progress: null,
+  message: "更新已应用，请手动重启服务生效",
+  startedAt: "2026-07-27T00:00:00.000Z",
+};
+
+describe("/api/update/apply", () => {
+  it("未注入 applier 时 GET/POST 返回 501", async () => {
+    const app = await setupApp();
+    try {
+      const got = await app.inject({ method: "GET", url: "/api/update/apply" });
+      expect(got.statusCode).toBe(501);
+      const posted = await app.inject({ method: "POST", url: "/api/update/apply" });
+      expect(posted.statusCode).toBe(501);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("GET 返回当前状态（无记录为 null）", async () => {
+    const applier = {
+      state: () => DONE_STATE,
+      apply: async () => DONE_STATE,
+    } as unknown as UpdateApplier;
+    const app = await setupApp(applier);
+    try {
+      const response = await app.inject({ method: "GET", url: "/api/update/apply" });
+      expect(response.statusCode).toBe(200);
+      expect(response.json<{ state: UpdateApplyState | null }>().state?.status).toBe("done");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("POST 成功返回 202 与状态", async () => {
+    const applier = {
+      state: () => null,
+      apply: async () => DONE_STATE,
+    } as unknown as UpdateApplier;
+    const app = await setupApp(applier);
+    try {
+      const response = await app.inject({ method: "POST", url: "/api/update/apply" });
+      expect(response.statusCode).toBe(202);
+      const body = response.json<{ state: UpdateApplyState }>();
+      expect(body.state.status).toBe("done");
+      expect(body.state.version).toBe(TARGET_VERSION);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("POST 已是最新返回 400", async () => {
+    const applier = {
+      state: () => null,
+      apply: async () => { throw new UpdateApplyError(400, "已是最新版本"); },
+    } as unknown as UpdateApplier;
+    const app = await setupApp(applier);
+    try {
+      const response = await app.inject({ method: "POST", url: "/api/update/apply" });
+      expect(response.statusCode).toBe(400);
+      expect(response.json<{ error: string }>().error).toContain("已是最新版本");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("POST 已有进行中的更新返回 409", async () => {
+    const applier = {
+      state: () => null,
+      apply: async () => { throw new UpdateApplyError(409, "已有进行中的更新"); },
+    } as unknown as UpdateApplier;
+    const app = await setupApp(applier);
+    try {
+      const response = await app.inject({ method: "POST", url: "/api/update/apply" });
+      expect(response.statusCode).toBe(409);
+      expect(response.json<{ error: string }>().error).toContain("已有进行中的更新");
+    } finally {
+      await app.close();
+    }
+  });
+});
