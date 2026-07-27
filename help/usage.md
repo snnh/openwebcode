@@ -220,6 +220,14 @@ owc run "给 main.ts 加个单元测试" --cwd . --json
 
 - 设置 → **服务信息** 展示 Server/Core 版本与协议版本；命令行 `owc --version` 打印服务版本。
 - 设置 → **更新检查**（默认关闭）：启用后周期性查询 GitHub Releases 最新版本，结果仅在「服务信息」静默展示，可点「立即检查」手动刷新，并在有新版本时给出下载链接。相关环境变量：`OWC_UPDATE_CHECK_ENABLED`、`OWC_UPDATE_CHECK_URL`、`OWC_UPDATE_CHECK_INTERVAL_HOURS`。
+- 发现新版本后可直接在设置页**一键在线更新**：Windows 下载 MSI 后启动安装程序并退出当前服务（安装程序完成覆盖升级）；Linux 替换安装目录 `<prefix>/lib/openwebcode/` 内容后自动重启（未以后台服务运行时需手动重启）。启动器、systemd unit 与数据目录均不受影响。
+- Linux 也可用一行命令在线安装或更新（自动校验 SHA-256；已安装则走更新模式）：
+
+  ```sh
+  curl -fsSL https://raw.githubusercontent.com/snnh/openwebcode/main/packaging/install-online.sh | bash
+  ```
+
+  参数与行为详见 [packaging/README.md 的「在线安装与更新」](../packaging/README.md#在线安装与更新)。
 
 ## 自定义扩展点
 

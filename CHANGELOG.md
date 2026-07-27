@@ -8,6 +8,8 @@
 
 - 提示词修改：设置页新增「提示词」分组，可覆盖内置系统提示词基线并追加自定义指令；全局存于数据目录 `system-prompt.md` / `system-prompt-append.md`，项目级 `.owc/system-prompt.md` 覆盖全局。提示词不是安全边界，plan 模式/权限/沙箱仍由服务独立强制。
 - 更新检查：设置页「更新检查」分组（默认关闭），启用后周期性查询 GitHub Releases 最新版本，结果在「服务信息」静默展示并支持手动「立即检查」与下载链接。
+- WebUI 在线更新：设置页发现新版本后可一键更新——Windows 下载 MSI 后启动安装程序并退出当前服务；Linux 替换安装目录内容后自动/手动重启。启动器、systemd unit 与数据目录均保留。
+- Linux 在线安装/更新脚本 `packaging/install-online.sh`：`curl | bash` 一条命令完成安装或升级，下载后先经 SHA-256 校验（失败即中止），已安装时进入更新模式替换 `lib/openwebcode/` 并保留启动器与数据目录；该脚本同时作为 release 资产发布。
 - 版本号显示：设置页「服务信息」展示 Server/Core 版本与协议版本；CLI 新增 `owc --version`；新增 `GET /api/version`。
 - 配置默认值拆分：安装目录 `config/defaults.json` 存放随发布更新的默认配置，数据目录 `server-settings.json` 只存用户覆盖，启动时按 env > 用户覆盖 > 安装默认自动组合；被覆盖项在安装默认变化时会提示「采纳新默认」。
 

@@ -26,7 +26,7 @@ Windows：重新下载 MSI 双击安装（major upgrade 原地升级，用户数
 
 ### Q: 怎么知道有没有新版本？
 
-设置 → **服务信息** 会显示当前 Server/Core 版本。开启设置 → **更新检查** 后，服务会周期性查询 GitHub Releases 并在「服务信息」静默提示最新版本与下载链接（默认关闭，不发起外部请求）。命令行可用 `owc --version` 查看服务版本。
+设置 → **服务信息** 会显示当前 Server/Core 版本。开启设置 → **更新检查** 后，服务会周期性查询 GitHub Releases 并在「服务信息」静默提示最新版本与下载链接（默认关闭，不发起外部请求）。命令行可用 `owc --version` 查看服务版本。发现新版本后可直接在设置页一键在线更新；Linux 也可用一行命令完成安装/更新：`curl -fsSL https://raw.githubusercontent.com/snnh/openwebcode/main/packaging/install-online.sh | bash`。
 
 ### Q: 能自定义系统提示词吗？
 
