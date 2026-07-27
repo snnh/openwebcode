@@ -3,6 +3,7 @@
 // 退出码：agent.state=idle → 0；agent.error/连接失败 → 1；permission.request 且未带 --yolo → 2。
 
 import WebSocket from "ws";
+import { getServerVersion } from "./version.js";
 
 interface CliOptions {
   prompt: string;
@@ -25,6 +26,7 @@ interface StreamEvent {
 
 function usage(): never {
   process.stderr.write(
+    `openwebcode ${getServerVersion()}\n` +
     '用法: OWC_ACCESS_TOKEN=… owc run "prompt" [--cwd .] [--provider X] [--model Y] [--json] [--yolo] [--server http://127.0.0.1:3000] [--session ID]\n',
   );
   process.exit(2);
@@ -69,7 +71,13 @@ async function postJson(url: string, body: unknown, accessToken?: string): Promi
 }
 
 async function main(): Promise<void> {
-  const options = parseArgs(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  // --version / -V：打印版本后立即退出，不连接 server
+  if (argv.length === 1 && (argv[0] === "--version" || argv[0] === "-V")) {
+    process.stdout.write(`openwebcode ${getServerVersion()}\n`);
+    return;
+  }
+  const options = parseArgs(argv);
   const server = options.server.replace(/\/+$/, "");
 
   // 1. 会话：--session 复用，否则新建

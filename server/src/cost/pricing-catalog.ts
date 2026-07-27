@@ -1,6 +1,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
+import { getUserAgent } from "../http.js";
 import defaultCatalog from "./default-model-pricing.json" with { type: "json" };
 import type { Currency, ModelPricing } from "../context/model-profile.js";
 
@@ -99,6 +100,7 @@ export class PricingCatalog {
       try {
         const response = await (options.fetchImpl ?? globalThis.fetch)(url, {
           signal: AbortSignal.timeout(options.timeoutMs ?? 15_000),
+          headers: { "User-Agent": getUserAgent() },
         });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
 

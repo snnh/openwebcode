@@ -1,5 +1,6 @@
 import { isIP } from "node:net";
 import type { WebProviderProfile } from "./provider-profiles.js";
+import { getUserAgent } from "./http.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_BYTES = 2 * 1024 * 1024;
@@ -184,7 +185,7 @@ export async function webFetch(
   let current = requested;
   for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
     current = assertSafeWebUrl(current.href);
-    const response = await fetchImpl(current, { redirect: "manual", signal });
+    const response = await fetchImpl(current, { redirect: "manual", signal, headers: { "User-Agent": getUserAgent() } });
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get("location");
       if (!location) throw new Error(`Redirect ${response.status} has no Location header`);
@@ -246,6 +247,7 @@ class HttpReaderProvider implements WebFetchProvider {
         redirect: "manual",
         headers: {
           Accept: "text/plain, text/markdown, text/html;q=0.9, application/json;q=0.8",
+          "User-Agent": getUserAgent(),
           ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
         },
         signal,
@@ -312,7 +314,7 @@ class HttpSearchProvider implements SearchProvider {
     const url = new URL(this.baseURL);
     url.searchParams.set("q", query);
     url.searchParams.set("count", String(limit));
-    const headers: Record<string, string> = { Accept: "application/json" };
+    const headers: Record<string, string> = { Accept: "application/json", "User-Agent": getUserAgent() };
     if (this.apiKey) {
       if (this.authKind === "brave") headers["X-Subscription-Token"] = this.apiKey;
       else headers.Authorization = `Bearer ${this.apiKey}`;
@@ -335,6 +337,7 @@ class TavilySearchProvider implements SearchProvider {
       headers: {
         Authorization: `Bearer ${this.apiKey}`,
         "Content-Type": "application/json",
+        "User-Agent": getUserAgent(),
       },
       body: JSON.stringify({
         query,
@@ -361,6 +364,7 @@ class TavilyExtractProvider implements WebFetchProvider {
       headers: {
         Authorization: `Bearer ${this.apiKey}`,
         "Content-Type": "application/json",
+        "User-Agent": getUserAgent(),
       },
       body: JSON.stringify({
         urls: requested.href,
