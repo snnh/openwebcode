@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## [0.6.0] - 2026-07-27
+
 ### 新增
 
 - 提示词修改：设置页新增「提示词」分组，可覆盖内置系统提示词基线并追加自定义指令；全局存于数据目录 `system-prompt.md` / `system-prompt-append.md`，项目级 `.owc/system-prompt.md` 覆盖全局。提示词不是安全边界，plan 模式/权限/沙箱仍由服务独立强制。
@@ -16,6 +18,7 @@
 ### 改进
 
 - 全部出站 HTTP 请求统一注入 `User-Agent: owc/openwebcode{version}`（LLM provider、MCP、联网工具、定价/汇率/模型目录同步、更新检查）；MCP `clientInfo` 版本号改为读取真实服务版本。
+- delta 合批的占位事件不再复制累计文本，长流下每次突发减少 O(delta 数) 次对象分配。
 
 ## [0.5.2] - 2026-07-27
 
