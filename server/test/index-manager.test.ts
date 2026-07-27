@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import type { CoreClientLike, IndexScanEntry } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
@@ -35,10 +35,14 @@ function manifestJsonl(entries: IndexScanEntry[]): string {
   ].join("\n") + "\n";
 }
 
-function extractJsonl(files: string[], symbols: Record<string, SymbolRecord[]>): string {
+function extractJsonl(files: string[], symbols: Record<string, SymbolRecord[]>, summary?: { truncated: boolean; reason: "bytes" | "time" | null }): string {
   return [
     ...files.map((filePath) => JSON.stringify({ path: filePath, symbols: symbols[filePath] ?? [] })),
-    JSON.stringify({ summary: { files: files.length, symbols: files.reduce((sum, filePath) => sum + (symbols[filePath]?.length ?? 0), 0), truncated: false, reason: null } }),
+    JSON.stringify({
+      summary: summary
+        ? { files: files.length, symbols: files.reduce((sum, filePath) => sum + (symbols[filePath]?.length ?? 0), 0), ...summary }
+        : { files: files.length, symbols: files.reduce((sum, filePath) => sum + (symbols[filePath]?.length ?? 0), 0), truncated: false, reason: null },
+    }),
   ].join("\n") + "\n";
 }
 
@@ -62,6 +66,12 @@ function createFakeScanCore(options: FakeScanCoreOptions) {
     extractFilesByJob: new Map<string, string[]>(),
     pollEvents: [] as Array<{ path: string; kind: "created" | "changed" | "deleted" | "renamed" }>,
     servedJobs: new Set<string>(),
+    /** 这些文件不出现在 extract 输出（模拟 core 截断未处理）。 */
+    skipExtractFiles: [] as string[],
+    /** extract summary 的 truncated/reason 覆盖。 */
+    extractSummary: undefined as { truncated: boolean; reason: "bytes" | "time" | null } | undefined,
+    /** true 时 jobOutput 报 truncated（core 输出 ring 溢出）。 */
+    outputTruncated: false,
   };
   const core = {
     on() { return core; },
@@ -91,12 +101,13 @@ function createFakeScanCore(options: FakeScanCoreOptions) {
     },
     async jobOutput(request: { jobId: string; afterSeq: number }) {
       if (options.neverFinish) return { chunks: [], nextSeq: request.afterSeq, truncated: false };
+      if (state.outputTruncated) return { chunks: [], nextSeq: request.afterSeq, truncated: true };
       if (request.afterSeq !== 0 || state.servedJobs.has(request.jobId)) {
         return { chunks: [], nextSeq: request.afterSeq, truncated: false };
       }
       state.servedJobs.add(request.jobId);
       const data = request.jobId.endsWith("-x")
-        ? extractJsonl(state.extractFilesByJob.get(request.jobId) ?? [], options.symbols)
+        ? extractJsonl((state.extractFilesByJob.get(request.jobId) ?? []).filter((file) => !state.skipExtractFiles.includes(file)), options.symbols, state.extractSummary)
         : manifestJsonl(options.manifest);
       return { chunks: [{ seq: 1, stream: "stdout" as const, data }], nextSeq: 2, truncated: false };
     },
@@ -309,6 +320,67 @@ describe("IndexManager", () => {
     state.pollEvents.push({ path: "src/util.ts", kind: "changed" });
     await waitFor(async () => (await manager.status("s1", CWD)).status === "stale");
     expect((await manager.status("s1", CWD)).staleReason).toBe("watch");
+  });
+
+  it("extract 截断（summary.truncated）时未输出文件保留旧符号并打 warn，不静默清空", async () => {
+    const root = await tempRoot();
+    // 本地 manifest/symbols：避免与其他用例共享可变的 BASE_* 全局
+    const manifest: IndexScanEntry[] = [
+      { path: "src/util.ts", size: UTIL_TS.length, modifiedMs: 100, sha256: "u1" },
+      { path: "README.md", size: 20, modifiedMs: 100, sha256: "r1" },
+    ];
+    const symbols: Record<string, SymbolRecord[]> = {
+      "src/util.ts": [
+        { name: "getTopSymbols", kind: "function", startLine: 1, endLine: 3, signature: "export function getTopSymbols(list: string[]): string {" },
+      ],
+    };
+    const { core, state } = createFakeScanCore({ manifest, symbols, watchMode: "fail" });
+    const manager = createManager(core, path.join(root, "index"), new EventBus());
+    await manager.rebuild("s1", CWD);
+    await waitFor(async () => (await manager.status("s1", CWD)).status === "fresh");
+    expect(await manager.searchSymbols(CWD, "getTop")).toHaveLength(1);
+
+    const stderrChunks: string[] = [];
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation(((chunk: unknown) => {
+      stderrChunks.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write);
+    try {
+      // 第二轮：util.ts 变化 + 新增 added.py；extract 只输出 added.py，summary.truncated=true
+      const addedPy = "def added_fn():\n    pass\n";
+      symbols["src/added.py"] = [
+        { name: "added_fn", kind: "function", startLine: 1, endLine: 2, signature: "def added_fn():" },
+      ];
+      manifest.splice(0, manifest.length,
+        { path: "src/util.ts", size: UTIL_TS.length, modifiedMs: 200, sha256: "u2" },
+        { path: "src/added.py", size: addedPy.length, modifiedMs: 200, sha256: "a1" },
+        { path: "README.md", size: 20, modifiedMs: 100, sha256: "r1" },
+      );
+      state.skipExtractFiles = ["src/util.ts"];
+      state.extractSummary = { truncated: true, reason: "time" };
+      await manager.rebuild("s1", CWD);
+      await waitFor(async () => (await manager.status("s1", CWD)).status === "fresh");
+
+      // util.ts 旧符号保留（不清空）；added.py 新符号正常入库
+      expect(await manager.searchSymbols(CWD, "getTop")).toHaveLength(1);
+      expect((await manager.searchSymbols(CWD, "added_fn"))[0]).toMatchObject({ kind: "function", path: "src/added.py" });
+      // warn 日志含 reason 与跳过文件数
+      expect(stderrChunks.some((chunk) => chunk.includes("index.extract") && chunk.includes("time") && chunk.includes("1 个文件"))).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("jobOutput truncated（core 输出 ring 溢出）：runScan 走 error/stale 而非静默成功", async () => {
+    const root = await tempRoot();
+    const { core, state } = createFakeScanCore({ manifest: BASE_MANIFEST, symbols: BASE_SYMBOLS, watchMode: "fail" });
+    state.outputTruncated = true;
+    const manager = createManager(core, path.join(root, "index"), new EventBus());
+    await manager.rebuild("s1", CWD);
+    await waitFor(async () => (await manager.status("s1", CWD)).status !== "building");
+    const status = await manager.status("s1", CWD);
+    expect(status.status).toBe("missing"); // 从未成功建过索引
+    expect(status.staleReason).toBe("error");
   });
 });
 

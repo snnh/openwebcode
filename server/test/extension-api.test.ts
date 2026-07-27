@@ -196,6 +196,34 @@ describe("extension events.subscribe", () => {
       await manager.close();
     }
   }, 20_000);
+
+  it("re-subscribing accumulates types (union, matching host-side semantics)", async () => {
+    const { manager, events } = await setupManager({
+      permissions: ["tools:register", "sessions:read"],
+      entry: `
+const seen = [];
+export function activate(api) {
+  api.registerTool({ name: "seen", description: "Seen events" }, () => JSON.stringify(seen));
+  api.events.subscribe(["tool.start"], (event) => { seen.push(event.type); });
+  api.events.subscribe(["tool.end"], (event) => { seen.push(event.type); });
+}
+`,
+    });
+    try {
+      await manager.configure("sample", { enabled: true });
+      const seen = async (): Promise<string[]> => JSON.parse((await manager.invokeTool("ext__sample__seen", {})).content) as string[];
+      // host 侧 events.subscribe 的 api 调用是 fire-and-forget：轮询重发事件直到两次订阅都生效
+      await vi.waitFor(async () => {
+        events.publish({ source: "agent", type: "tool.start", sessionId: "s1", payload: { toolCallId: "1", name: "bash", input: {} } });
+        events.publish({ source: "agent", type: "tool.end", sessionId: "s1", payload: { toolCallId: "1" } });
+        const types = await seen();
+        expect(types).toContain("tool.start"); // 替换语义下第二次 subscribe 会丢掉 tool.start
+        expect(types).toContain("tool.end");
+      }, { timeout: 5_000 });
+    } finally {
+      await manager.close();
+    }
+  }, 20_000);
 });
 
 /** agent 链路：首回合固定调用 ext__sample__echo，第二回合（看到 tool_result）结束。 */

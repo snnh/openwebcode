@@ -4,10 +4,11 @@
 #include <stddef.h>
 
 /* Lightweight per-language symbol extraction for the index.extract job.
- * This is a pure-C port of the server-side heuristic extractor
- * (server/src/index/symbols.ts): single-line anchored matchers, no regex
- * engine, no external dependencies.  The extraction operates on an
- * in-memory UTF-8 buffer; all file IO and policy checks live in rpc.c. */
+ * This is a pure-C port of the former server-side heuristic extractor
+ * (server/src/index/symbols.ts, since removed): single-line anchored
+ * matchers, no regex engine, no external dependencies.  The extraction
+ * operates on an in-memory UTF-8 buffer; all file IO and policy checks
+ * live in rpc.c. */
 
 /* Files larger than this are skipped by the job (same 1 MiB cap as the
  * TypeScript MAX_EXTRACT_FILE_BYTES). */

@@ -135,7 +135,7 @@ export interface GlobJobEntry { path: string }
 export interface SearchJobSummary { matches?: number; entries?: number; truncated: boolean; reason: "nodes" | "depth" | "time" | "list" | "matches" | null }
 /**
  * index.extract job：对 Node 侧 manifest diff 算出的变化文件集做符号提取。
- * 提取规则是 server/src/index/symbols.ts 的 C 移植（core/src/symbol_extract.c），
+ * 提取规则是原 server 侧 symbols.ts（已删除）的 C 移植（core/src/symbol_extract.c），
  * 输出是 job.output 上的 JSONL 流（stdout 流）：
  *   {"path","symbols":[{"name","kind","startLine","endLine","signature"}]} —— 每个处理文件一行（0 符号也输出）
  *   {"summary":{"files","symbols","truncated","reason"}} —— 最后一行
