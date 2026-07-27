@@ -11,7 +11,7 @@ import path from "node:path";
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { DATA_DIR, parseArgs, percentile, startBenchServer, tryGc, writeResult } from "../lib/common.mjs";
+import { DATA_DIR, parseArgs, percentile, startBenchServer, writeResult } from "../lib/common.mjs";
 
 const SESSION_ID = "01234567-89ab-4def-8012-3456789abcde";
 const SCROLL_ROUNDS = 60; // 循环滚动次数（模拟 10 分钟使用的加速版）
@@ -70,6 +70,22 @@ console.log(`Server 已启动：${serverBase}`);
 // 启动浏览器
 const browser = await chromium.launch({ args: ["--enable-precise-memory-info"] });
 const page = await browser.newPage({ viewport: { width: WINDOW_WIDTH, height: WINDOW_HEIGHT } });
+
+/**
+ * Request browser-side garbage collection before reading the heap. A single
+ * performance.memory snapshot is dominated by Chromium's nondeterministic GC
+ * schedule on shared CI runners, so sample three post-GC low-water marks.
+ */
+async function measureSettledHeap() {
+  const samples = [];
+  for (let i = 0; i < 3; i++) {
+    await page.requestGC();
+    await page.waitForTimeout(50);
+    samples.push(await page.evaluate(() => /** @type {any} */(performance).memory?.usedJSHeapSize ?? 0));
+  }
+  const available = samples.filter((value) => value > 0);
+  return available.length > 0 ? Math.min(...available) : 0;
+}
 
 // 导航到真实 Web 页面，并把分页历史全部载入后再采样。任何 selector 缺失都必须失败，
 // 避免 404/空白页被误测成高帧率。
@@ -154,7 +170,7 @@ const inputP50 = inputLatencies.length > 0 ? inputLatencies[Math.floor(inputLate
 
 // ---- 指标 3：内存增长 ----
 console.log("测量内存增长…");
-const memBefore = await page.evaluate(() => /** @type {any} */(performance).memory?.usedJSHeapSize ?? 0);
+const memBefore = await measureSettledHeap();
 // 加速滚动模拟长时间使用
 await page.evaluate(async (rounds) => {
   const container = document.querySelector(".execution-track");
@@ -166,8 +182,11 @@ await page.evaluate(async (rounds) => {
     await new Promise((r) => setTimeout(r, 50));
   }
 }, SCROLL_ROUNDS * 3);
-const memAfter = await page.evaluate(() => /** @type {any} */(performance).memory?.usedJSHeapSize ?? 0);
-const memGrowthPct = memBefore > 0 ? ((memAfter - memBefore) / memBefore) * 100 : 0;
+const memAfter = await measureSettledHeap();
+const rawMemGrowthPct = memBefore > 0 ? ((memAfter - memBefore) / memBefore) * 100 : 0;
+// Heap shrinking is healthy and should be reported as zero growth, not a
+// negative percentage that makes cross-release comparisons misleading.
+const memGrowthPct = Math.max(0, rawMemGrowthPct);
 
 // 清理
 await browser.close();
@@ -177,13 +196,15 @@ await app.close();
 const ms = (v) => Math.round(v * 100) / 100;
 console.log(`\n滚动帧率 p50: ${ms(fpsP50)} fps（目标 >= 50）`);
 console.log(`输入回显 p50: ${ms(inputP50)} ms（目标 <= 50）`);
-console.log(`内存增长: ${ms(memGrowthPct)}%（目标 <= 20%）`);
+console.log(`内存增长: ${ms(memGrowthPct)}%（${ms(memBefore / 1024 / 1024)} → ${ms(memAfter / 1024 / 1024)} MiB，目标 <= 20%）`);
 
 await writeResult("browser-render", [
   { name: "scroll.fps.p50", value: ms(fpsP50), unit: "fps", direction: "higher-better" },
   { name: "scroll.fps.p95", value: ms(fpsP95), unit: "fps", direction: "higher-better" },
   { name: "input.latency.p50", value: ms(inputP50), unit: "ms", direction: "lower-better" },
   { name: "memory.growthPct", value: ms(memGrowthPct), unit: "%", direction: "lower-better" },
+  { name: "memory.heapBeforeMiB", value: ms(memBefore / 1024 / 1024), unit: "MiB", direction: "none" },
+  { name: "memory.heapAfterMiB", value: ms(memAfter / 1024 / 1024), unit: "MiB", direction: "none" },
   { name: "scroll.samples", value: fpsSamples.length, unit: "count", direction: "none" },
 ], args.out, {
   params: { scrollRounds: SCROLL_ROUNDS, windowWidth: WINDOW_WIDTH, windowHeight: WINDOW_HEIGHT, messages: 5000, pageLoads },
