@@ -3,12 +3,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Pure-C port of server/src/index/symbols.ts.  Every rule of the
- * TypeScript regex-based extractor is rewritten as a hand-rolled
- * single-line matcher; all patterns are line-start anchored and never
- * look past the current line.  Matching semantics (rule order, reject
- * conditions, name capture, kind mapping) must stay in lockstep with
- * the TypeScript version - the server golden tests are the oracle. */
+/* Pure-C port of the former server/src/index/symbols.ts (since removed).
+ * Every rule of the TypeScript regex-based extractor is rewritten as a
+ * hand-rolled single-line matcher; all patterns are line-start anchored
+ * and never look past the current line.  Matching semantics (rule order,
+ * reject conditions, name capture, kind mapping) were kept in lockstep
+ * with the original TypeScript version. */
 
 typedef struct {
     size_t name_off;   /* byte offset of the name within the line */

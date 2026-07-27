@@ -272,8 +272,13 @@ export class ExtensionManager {
       case "events.subscribe": {
         const requested = Array.isArray(params.types) ? params.types.filter((type): type is string => typeof type === "string") : [];
         const allowed = requested.filter(isExtensionEventAllowed);
-        if (allowed.length > 0) this.eventSubscriptions.set(manifest.id, new Set(allowed));
-        else this.eventSubscriptions.delete(manifest.id);
+        // 与 host 侧累加语义对齐：重订阅取并集而非替换
+        const existing = this.eventSubscriptions.get(manifest.id);
+        if (existing) {
+          for (const type of allowed) existing.add(type);
+        } else if (allowed.length > 0) {
+          this.eventSubscriptions.set(manifest.id, new Set(allowed));
+        }
         this.attachBusListener();
         return { subscribed: allowed };
       }
