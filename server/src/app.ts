@@ -3,7 +3,7 @@ import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
 import { existsSync } from "node:fs";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import type { AgentRunner } from "./agent/agent-runner.js";
 import { SteeringError, WorkspaceWriteDeniedError } from "./agent/agent-runner.js";
@@ -39,6 +39,7 @@ import { getServerVersion, GITHUB_REPO } from "./version.js";
 import type { UpdateChecker } from "./update-checker.js";
 import { UpdateApplyError, type UpdateApplier } from "./update-applier.js";
 import { loadPromptOverride, writeGlobalPromptOverride } from "./agent/prompts/prompt-overrides.js";
+import { INIT_COMMAND_PROMPT } from "./agent/prompts/init-prompt.js";
 import { PI_BASE_SYSTEM_PROMPT, PI_PROMPT_VERSION } from "./agent/prompts/pi-base.js";
 import type { SkillRegistry } from "./skills.js";
 import type { Compactor } from "./context/compactor.js";
@@ -1733,6 +1734,26 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     return task;
   });
 
+  // 子代理转录：runSubAgent 落盘 <contextRoot>/subagents/<taskId>.json，taskId 限定 uuid 防路径穿越
+  app.get<{ Params: { id: string; taskId: string } }>("/api/sessions/:id/subagents/:taskId", async (request, reply) => {
+    if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(request.params.taskId)) {
+      return reply.code(400).send({ error: "taskId must be a uuid" });
+    }
+    const transcriptPath = path.join(sessions.contextRoot(request.params.id), "subagents", `${request.params.taskId}.json`);
+    let raw: string;
+    try {
+      raw = await readFile(transcriptPath, "utf8");
+    } catch {
+      return reply.code(404).send({ error: "Subagent transcript not found" });
+    }
+    try {
+      return JSON.parse(raw) as unknown;
+    } catch {
+      return reply.code(500).send({ error: "Subagent transcript is corrupted" });
+    }
+  });
+
   // 上下文压缩（§7.4）：/compact（overview）、/compact tools（toolcalls），以及协议 REST 路由
   const runCompact = async (sessionId: string, mode: "toolcalls" | "overview") => {
     const result = await dependencies.compactor!.compact(sessionId, mode);
@@ -1873,6 +1894,11 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
         } catch (error) {
           return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
         }
+      }
+      // /init：展开为内置探查提示词后继续走正常 agent.run() 路径（写 AGENTS.md 经权限链与快照）
+      if (/^\/init\s*$/i.test(request.body.content)) {
+        if (agent.isRunning(request.params.id)) return reply.code(409).send({ error: "会话运行中，请先等待完成或中断后再初始化" });
+        request.body.content = INIT_COMMAND_PROMPT;
       }
       if (agent.isRunning(request.params.id)) {
         try {

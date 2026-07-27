@@ -39,9 +39,12 @@ export interface SubAgentOptions {
   maxTurns?: number;
   /** 每次 LLM 用量事件回调（由调用方记账，子代理 token 计入会话成本）。 */
   onUsage?: (usage: Extract<ProviderEvent, { type: "usage" }>) => void | Promise<void>;
+  /** taskId 生成后立即回调（用于发布 subagent.started；转录文件名即 <taskId>.json）。 */
+  onStart?: (taskId: string) => void;
 }
 
 export interface SubAgentResult {
+  taskId: string;
   conclusion: string;
   turns: number;
   toolsUsed: string[];
@@ -60,6 +63,7 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
 
   const taskId = randomUUID();
   const startedAt = new Date().toISOString();
+  options.onStart?.(taskId);
   const messages: ChatMessage[] = [subMessage("user", [{ type: "text", text: options.prompt }])];
   const toolsUsed: string[] = [];
   let turns = 0;
@@ -118,7 +122,7 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
         ? `${lastText}\n[reached max turns (${maxTurns}); partial answer]`
         : `[reached max turns (${maxTurns}) without a final answer]`;
     conclusion = truncateConclusion(conclusion);
-    return { conclusion, turns, toolsUsed };
+    return { taskId, conclusion, turns, toolsUsed };
   } finally {
     // 转录存档：失败只 warn，不影响结论返回
     try {
