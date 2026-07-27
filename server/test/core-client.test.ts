@@ -205,9 +205,15 @@ describe.skipIf(!existsSync(corePath))("CoreClient", () => {
     expect(budget.summary.truncated).toBe(true);
     expect(budget.summary.reason).toBe("nodes");
 
-    // 取消语义：cancelJob 可取消一个运行中的 job
+    // 取消语义：cancelJob 可取消一个运行中的 job。
+    // 小工作区会在 cancel 到达前就完成（竞态，Linux CI 上出现过），因此先在
+    // bulk/ 下铺足够多的文件，保证 grep 在 cancel 处理完之前必定仍在运行。
+    mkdirSync(path.join(workspace, "bulk"));
+    for (let i = 0; i < 3000; i += 1) {
+      writeFileSync(path.join(workspace, "bulk", `f${i}.txt`), `beta line ${i}\n`);
+    }
     await client.startGrepJob({
-      sessionId: "search-session", jobId: "grep-cancel", kind: "grep", cwd: workspace, path: ".", pattern: "beta",
+      sessionId: "search-session", jobId: "grep-cancel", kind: "grep", cwd: workspace, path: "bulk", pattern: "beta",
     });
     const cancelled = await client.cancelJob({ sessionId: "search-session", jobId: "grep-cancel" });
     expect(cancelled).toEqual({ jobId: "grep-cancel", accepted: true });
