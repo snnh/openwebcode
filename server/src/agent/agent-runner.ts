@@ -438,7 +438,7 @@ const TOOL_EXECUTION_CLASS: Readonly<Record<string, ToolExecutionClass>> = {
   bash: "process", task_output: "read_only", task_stop: "process", todo_write: "workspace_write", remember: "workspace_write", spawn_task: "process", spawn_swarm: "process", test_runner: "process",
   git_commit: "process", git_worktree_create: "process", git_worktree_remove: "process", git_worktree_merge: "process",
 };
-function executionClass(name: string): ToolExecutionClass { return name.startsWith("mcp__") ? "external" : TOOL_EXECUTION_CLASS[name] ?? "workspace_write"; }
+function executionClass(name: string): ToolExecutionClass { return name.startsWith("mcp__") || name.startsWith("ext__") ? "external" : TOOL_EXECUTION_CLASS[name] ?? "workspace_write"; }
 /** 系统提示中单个记忆/约定小节的字符上限 */
 const MEMORY_SECTION_LIMIT = 8_000;
 
@@ -914,6 +914,10 @@ export class AgentRunner {
           this.mcpWarningSignatures.delete(sessionId);
         }
 
+        // 扩展注册工具（ext__<extensionId>__<tool>）：注册表由 ExtensionManager 同步维护，
+        // 仅含已启用扩展；host 断线时注册表已清空，本轮自然不注入。
+        const extensionTools = toolsEnabled && this.extensions ? this.extensions.registeredTools() : [];
+
         const tools = toolsEnabled
           ? [
               ...builtInTools({
@@ -924,6 +928,7 @@ export class AgentRunner {
                 shellBackend: session.shellBackend ?? "default",
               }),
               ...mcpBinding.tools,
+              ...extensionTools,
             ]
           : [];
         const availableToolNames = new Set(tools.map((tool) => tool.name));
@@ -1070,8 +1075,9 @@ export class AgentRunner {
           if (!availableToolNames.has(call.name)) {
             // Keep the plan-mode MCP safety boundary ahead of availability diagnostics: an
             // unadvertised MCP name is still opaque and must be described as read/write unknown.
-            const content = session.agentMode === "plan" && call.name.startsWith("mcp__")
-              ? `Plan 模式为只读：MCP 工具 ${call.name} 被拦截（无法判定读写）。请输出实施计划并请用户切换到 build 模式执行。`
+            const externalLabel = call.name.startsWith("mcp__") ? "MCP 工具" : call.name.startsWith("ext__") ? "扩展工具" : undefined;
+            const content = session.agentMode === "plan" && externalLabel
+              ? `Plan 模式为只读：${externalLabel} ${call.name} 被拦截（无法判定读写）。请输出实施计划并请用户切换到 build 模式执行。`
               : toolsEnabled
                 ? `Tool is not available in this turn: ${call.name}`
                 : `Tool calls are disabled for the selected model: ${call.name}`;
@@ -1464,6 +1470,7 @@ export class AgentRunner {
     const PLAN_READONLY = new Set(["read_file", "glob", "grep", "read_artifact", "load_skill", "spawn_task", "spawn_swarm", "todo_write", "web_fetch", "web_search", "task_output", "repo_map", "code_search", "git_status", "git_diff"]);
     if (session.agentMode === "plan") {
       if (tool.startsWith("mcp__")) return { allowed: false, reason: `Plan 模式为只读：MCP 工具 ${tool} 被拦截（无法判定读写）。请输出实施计划并请用户切换到 build 模式执行。` };
+      if (tool.startsWith("ext__")) return { allowed: false, reason: `Plan 模式为只读：扩展工具 ${tool} 被拦截（无法判定读写）。请输出实施计划并请用户切换到 build 模式执行。` };
       if (!PLAN_READONLY.has(tool)) return { allowed: false, reason: `Plan 模式为只读：${tool} 被拦截。请输出实施计划并请用户切换到 build 模式执行。` };
     }
     const mode = session.permissionMode ?? "ask";
@@ -1532,6 +1539,39 @@ export class AgentRunner {
     return sections.length === 0 ? "" : `\n\n${sections.join("\n\n")}`;
   }
 
+  /**
+   * mcp__ / ext__ 共用的外部工具执行路径：tool.start/end 事件、tool_running 状态、
+   * boundToolResult 截断包装完全一致；差异仅在底层调用（MCP 连接 vs Extension Host IPC）。
+   */
+  private async executeExternalTool(
+    sessionId: string,
+    name: string,
+    toolCallId: string,
+    input: Record<string, unknown>,
+    call: (cwd: string) => Promise<{ content: string; isError?: boolean }>,
+  ): Promise<MessageContent & { type: "tool_result" }> {
+    this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+    this.state(sessionId, "tool_running");
+    try {
+      const session = await this.sessions.get(sessionId);
+      if (!session) throw new Error("Session not found");
+      const result = await call(session.cwd);
+      const isError = result.isError === true;
+      const bounded = await boundToolResult(this.sessions.contextRoot(sessionId), name, result.content);
+      this.events.publish({
+        source: "agent",
+        type: "tool.end",
+        sessionId,
+        payload: { toolCallId, result: toolEventResult(bounded), isError },
+      });
+      return { type: "tool_result", toolCallId, content: bounded.content, isError };
+    } catch (error) {
+      const content = error instanceof Error ? error.message : String(error);
+      this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
+      return { type: "tool_result", toolCallId, content, isError: true };
+    }
+  }
+
   private async executeTool(
     sessionId: string,
     name: string,
@@ -1542,28 +1582,18 @@ export class AgentRunner {
     const execution = executionClass(name);
     this.events.publish({ source: "agent", type: "tool.scheduling", sessionId, payload: { toolCallId, name, execution, parallelEligible: execution === "read_only" } });
     if (name.startsWith("mcp__")) {
-      if (!this.mcp) {
+      const mcp = this.mcp;
+      if (!mcp) {
         return { type: "tool_result", toolCallId, content: "MCP is not enabled on this server", isError: true };
       }
-      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
-      this.state(sessionId, "tool_running");
-      try {
-        const session = await this.sessions.get(sessionId);
-        if (!session) throw new Error("Session not found");
-        const result = await this.mcp.callTool(session.cwd, name, input);
-        const bounded = await boundToolResult(this.sessions.contextRoot(sessionId), name, result.content);
-        this.events.publish({
-          source: "agent",
-          type: "tool.end",
-          sessionId,
-          payload: { toolCallId, result: toolEventResult(bounded), isError: result.isError },
-        });
-        return { type: "tool_result", toolCallId, content: bounded.content, isError: result.isError };
-      } catch (error) {
-        const content = error instanceof Error ? error.message : String(error);
-        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
-        return { type: "tool_result", toolCallId, content, isError: true };
+      return this.executeExternalTool(sessionId, name, toolCallId, input, (cwd) => mcp.callTool(cwd, name, input));
+    }
+    if (name.startsWith("ext__")) {
+      const extensions = this.extensions;
+      if (!extensions) {
+        return { type: "tool_result", toolCallId, content: "Extension Host is not configured on this server", isError: true };
       }
+      return this.executeExternalTool(sessionId, name, toolCallId, input, () => extensions.invokeTool(name, input));
     }
     if (name === "web_fetch" || name === "web_search") {
       this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
