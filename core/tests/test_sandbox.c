@@ -88,6 +88,7 @@ static int test_acl_restore(void) {
     options.write_root_count = 1;
     sandbox = owc_sandbox_create(&options, reason, sizeof(reason));
     if (!sandbox) {
+        (void)fprintf(stderr, "ACL sandbox creation failed: %s\n", reason);
         result = 13;
         goto cleanup;
     }
@@ -225,19 +226,21 @@ int main(void) {
         strcmp(name, "enforced") != 0) return 3;
 #ifdef _WIN32
     if (status == OWC_SANDBOX_ENFORCED && strstr(reason, "available") == NULL) return 4;
-    {
+    if (status == OWC_SANDBOX_ADVISORY) {
+        (void)fprintf(stderr, "Windows ACL sandbox tests skipped: %s\n", reason);
+    } else {
         int acl_result = test_acl_restore();
         if (acl_result) {
             (void)fprintf(stderr, "ACL restore test failed: %d\n", acl_result);
             return acl_result;
         }
-    }
-    {
-        int reparse_result = test_reparse_acl_restore();
-        if (reparse_result) {
-            (void)fprintf(stderr, "reparse ACL restore test failed: %d\n",
-                          reparse_result);
-            return reparse_result;
+        {
+            int reparse_result = test_reparse_acl_restore();
+            if (reparse_result) {
+                (void)fprintf(stderr, "reparse ACL restore test failed: %d\n",
+                              reparse_result);
+                return reparse_result;
+            }
         }
     }
 #endif

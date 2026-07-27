@@ -34,9 +34,10 @@ const skills: SkillInfo[] = [
   { name: "run", description: "运行", source: "global" },
 ];
 
-function Harness({ onSend, onConfig = () => {}, sendPending = false, initialDraft = "", initialAttachments = [], withSkills = skills, providers = [], models = [], supportsImages = true, pdfToImageExtension, pdfToImageStatus, imageCapabilitiesReady, onNotice = () => {} }: {
+function Harness({ onSend, onConfig = () => {}, current = session, sendPending = false, initialDraft = "", initialAttachments = [], withSkills = skills, providers = [], models = [], supportsImages = true, pdfToImageExtension, pdfToImageStatus, imageCapabilitiesReady, onNotice = () => {} }: {
   onSend(): void;
   onConfig?(body: Record<string, unknown>): void;
+  current?: SessionDetail;
   sendPending?: boolean;
   initialDraft?: string;
   initialAttachments?: PendingImage[];
@@ -53,7 +54,7 @@ function Harness({ onSend, onConfig = () => {}, sendPending = false, initialDraf
   const [attachments, setAttachments] = useState<PendingImage[]>(initialAttachments);
   return (
     <Composer
-      current={session}
+      current={current}
       models={models}
       providers={providers}
       pdfToImageExtension={pdfToImageExtension}
@@ -156,6 +157,12 @@ describe("Composer", () => {
     vi.unstubAllGlobals();
     renderPdfToImagesMock.mockReset();
     uploadPdfMock.mockReset();
+  });
+
+  it("对话输入区位于横向会话配置之前", () => {
+    const { textarea } = renderComposer({ onSend: vi.fn() });
+    const mode = screen.getByLabelText("模式");
+    expect(textarea.compareDocumentPosition(mode) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
   });
 
   it("粘贴图片+文本的混合内容时文本插入光标处而非丢弃", () => {
@@ -494,6 +501,77 @@ describe("Composer", () => {
     expect(onConfig).toHaveBeenCalledWith({ provider: "openai", model: "gpt-4o-mini" });
   });
 
+  it("切换模型时在同一次配置请求中清除目标不支持的思考设置", () => {
+    const onConfig = vi.fn();
+    const models: ModelProfile[] = [{
+      id: "claude-opus-4-8",
+      provider: "anthropic",
+      contextWindow: 1_000_000,
+      maxOutput: 128_000,
+      capabilities: { thinking: ["adaptive"], effort: ["xhigh"], modalities: ["text"], imageOutput: false, tools: true },
+    }, {
+      id: "gpt-4o-mini",
+      provider: "openai",
+      contextWindow: 128_000,
+      maxOutput: 16_384,
+      capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true },
+    }];
+    render(
+      <Harness
+        onSend={vi.fn()}
+        onConfig={onConfig}
+        current={{ ...session, thinking: "adaptive", effort: "xhigh" }}
+        providers={["anthropic", "openai"]}
+        models={models}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("模型"), { target: { value: JSON.stringify(["openai", "gpt-4o-mini"]) } });
+    expect(onConfig).toHaveBeenCalledWith({
+      provider: "openai",
+      model: "gpt-4o-mini",
+      thinking: null,
+      effort: null,
+    });
+  });
+
+  it("思考移到主配置行，并用单一选择器合并开关与强度", () => {
+    const onConfig = vi.fn();
+    const models: ModelProfile[] = [{
+      id: "claude-opus-4-8",
+      provider: "anthropic",
+      contextWindow: 1_000_000,
+      maxOutput: 128_000,
+      capabilities: {
+        thinking: ["adaptive", "disabled"],
+        effort: ["low", "high", "xhigh"],
+        modalities: ["text", "image"],
+        imageOutput: false,
+        tools: true,
+      },
+    }];
+    render(
+      <Harness
+        onSend={vi.fn()}
+        onConfig={onConfig}
+        current={{ ...session, thinking: "disabled", effort: "high" }}
+        providers={["anthropic"]}
+        models={models}
+      />,
+    );
+
+    const thinking = screen.getByLabelText("思考");
+    expect(thinking.closest(".composer-config-main")).not.toBeNull();
+    expect(screen.queryByLabelText("力度")).not.toBeInTheDocument();
+    expect(thinking).toHaveValue("mode:disabled");
+
+    fireEvent.change(thinking, { target: { value: "effort:xhigh" } });
+    expect(onConfig).toHaveBeenLastCalledWith({ thinking: "adaptive", effort: "xhigh" });
+
+    fireEvent.change(thinking, { target: { value: "mode:disabled" } });
+    expect(onConfig).toHaveBeenLastCalledWith({ thinking: null, effort: null });
+  });
+
   it("在模型选择器旁显示当前模型的图片、视频输入和图片输出能力", () => {
     const models: ModelProfile[] = [{
       id: "claude-opus-4-8",
@@ -504,6 +582,8 @@ describe("Composer", () => {
     }];
     renderComposer({ onSend: vi.fn(), providers: ["anthropic"], models });
 
+    expect(screen.queryByText("图片输入")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "高级设置" }));
     expect(screen.getByText("图片输入")).toBeInTheDocument();
     expect(screen.getByText("视频输入")).toBeInTheDocument();
     expect(screen.getByText("图片输出")).toBeInTheDocument();

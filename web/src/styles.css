@@ -306,6 +306,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .session-rail footer .icon-btn:first-child { margin-right: auto; }
 .session-rail.collapsed header { justify-content: center; padding: 12px 0; }
 .session-rail.collapsed footer { flex-direction: column; align-items: center; gap: 2px; margin-top: auto; padding: 8px 0; }
+.rail-mobile-title { display: none; font-size: 14px; font-weight: 650; }
 
 /* ================= 工作台 ================= */
 .workbench {
@@ -316,14 +317,14 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 }
 .job-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
   padding: 13px 22px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
 }
-.job-title { min-width: 0; }
+.job-title { flex: 1 1 180px; min-width: 0; }
 .job-header h1 {
   margin: 0;
   font-size: 16px;
@@ -342,7 +343,15 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   white-space: nowrap;
   max-width: min(560px, 40vw);
 }
-.job-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; flex-wrap: wrap; }
+.job-actions {
+  flex: 1 1 680px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
 .cost-summary {
   display: inline-flex;
   align-items: center;
@@ -751,27 +760,78 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .composer {
   background: var(--panel);
   border-top: 1px solid var(--border);
-  padding: 11px 22px 14px;
+  padding: 9px 22px 11px;
 }
 .config-row {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 14px;
-  margin-bottom: 9px;
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
   font-size: 12px;
   color: var(--text-2);
 }
-.config-row label { display: flex; align-items: center; gap: 6px; }
+.composer-config-main,
+.composer-config-advanced {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  min-width: 0;
+}
+.config-row label {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  line-height: 1;
+  white-space: nowrap;
+}
 .config-row select {
+  min-height: 32px;
   border: 1px solid var(--border);
   border-radius: var(--radius-s);
   background: var(--bg);
   color: var(--text);
   padding: 4px 6px;
   font-size: 12px;
-  max-width: 180px;
+  max-width: 220px;
 }
+.composer-model-field { flex: 0 1 320px; min-width: 240px; max-width: 320px; }
+.composer-model-field select { flex: 1; min-width: 0; width: auto; max-width: none; }
+.composer-thinking-field { flex: 0 0 auto; }
+.composer-thinking-field select { min-width: 82px; }
+.composer-config-toggle {
+  min-height: 32px;
+  margin-left: auto;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: var(--panel);
+  color: var(--text-2);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.composer-config-toggle:hover,
+.composer-config-toggle.open { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.composer-config-advanced {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--panel-2) 55%, var(--panel));
+}
+.config-row .model-capability-summary {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  align-self: center;
+  min-height: 32px;
+  justify-content: center;
+}
+.config-row .steering-hint { justify-self: start; }
 .steering-hint { color: var(--amber); font-weight: 600; }
 .composer-input { display: flex; gap: 10px; align-items: flex-end; position: relative; }
 .queue-behavior { max-width: 148px; min-height: 34px; padding: 0 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel); color: var(--text); font-size: 12px; }
@@ -1509,23 +1569,46 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(6px); } }
 
 /* ================= 响应式（0.4.0 Phase 5b §6.8 移动端单列布局） ================= */
-@media (max-width: 768px) {
-  .console-shell { display: block; height: 100vh; height: 100dvh; overflow: hidden; }
-  /* 活动栏变顶部横条：移动端保留全部入口（视图/通知/命令/设置），点击目标 ≥44px */
-  .wb-activity { display: block; position: sticky; top: 0; z-index: 20; }
-  .activity-bar { flex-direction: row; align-items: center; border-right: 0; border-bottom: 1px solid var(--border); padding: 0 6px; }
-  .activity-bar-top { flex-direction: row; }
-  .activity-bar-bottom { margin-top: 0; margin-left: auto; flex-direction: row; }
-  .activity-btn { width: 44px; height: 44px; }
-  /* 侧栏变全屏抽屉（选中会话后由 App 收起；collapse 按钮在抽屉内可用） */
+@media (max-width: 1024px) {
+  .console-shell.wb-shell {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+  }
+  /* 窄窗口使用固定顶部应用栏；全部入口横排，超窄手机可水平滚动。 */
+  .wb-activity { flex: 0 0 53px; position: sticky; top: 0; z-index: 40; height: 53px; }
+  .wb-activity > .activity-bar {
+    min-height: 53px;
+    flex-direction: row;
+    align-items: center;
+    gap: 4px;
+    padding: 0 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    box-shadow: 0 1px 8px rgb(23 32 42 / 0.06);
+  }
+  .wb-activity .activity-mobile-brand { display: inline-block; flex: none; margin: 0 6px 0 4px; font-size: 14px; font-weight: 700; white-space: nowrap; }
+  .wb-activity .activity-mobile-brand b { color: var(--accent); }
+  .wb-activity .activity-bar-top,
+  .wb-activity .activity-bar-bottom { flex: none; flex-direction: row; gap: 2px; }
+  .wb-activity .activity-bar-bottom { margin: 0 0 0 auto; }
+  .wb-activity .activity-btn { width: 40px; height: 40px; flex: none; }
+  /* 侧栏成为独立抽屉，而不是覆盖整页的空白画布。 */
   .wb-sidebar {
     position: fixed;
-    top: 45px;
+    top: 53px;
     left: 0;
-    right: 0;
+    right: auto;
     bottom: 0;
-    z-index: 30;
+    z-index: 35;
+    width: min(420px, calc(100vw - 32px));
     background: var(--panel);
+    border-right: 1px solid var(--border);
+    box-shadow: 12px 0 32px rgb(23 32 42 / 0.16);
   }
   .wb-sidebar .session-rail {
     flex-direction: column;
@@ -1536,9 +1619,13 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
     border-right: 0;
     border-bottom: 0;
   }
-  .wb-sidebar .session-rail nav { display: block; position: static; flex: 1; overflow-y: auto; padding: 8px; }
+  .wb-sidebar .session-rail header { flex: none; min-height: 54px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  .wb-sidebar .session-rail .brand { display: none; }
+  .wb-sidebar .rail-mobile-title { display: inline; margin-right: auto; }
+  .wb-sidebar .rail-search-wrap { display: flex; margin: 12px 14px 6px; }
+  .wb-sidebar .session-rail nav { display: block; position: static; flex: 1; overflow-y: auto; padding: 8px 10px 12px; }
   .wb-sidebar .session-rail footer { border-top: 1px solid var(--border); }
-  .wb-sidebar .collapse-btn { display: inline-flex; }
+  .wb-sidebar .collapse-btn { display: none; }
   .session-rail {
     flex-direction: row;
     align-items: center;
@@ -1550,27 +1637,14 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   }
   .session-rail header { padding: 8px 6px 8px 14px; flex: 1; }
   .session-rail nav { display: none; }
-  /* 会话抽屉：.nav-open 由 tsx 切换，nav 全屏覆盖 */
-  .session-rail.nav-open nav {
-    display: block;
-    position: fixed;
-    top: 45px;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 30;
-    background: var(--panel);
-    overflow-y: auto;
-    padding: 8px;
-  }
-  .rail-search-wrap { display: none; }
-  .rail-menu-btn { display: inline-flex; }
   .session-rail footer { border-top: 0; padding: 8px 10px; }
-  .rail-resize, .collapse-btn { display: none; }
-  .wb-main { display: block; }
-  .sidebar-panel { width: 100% !important; border-right: 0; border-bottom: 1px solid var(--border); height: 100%; }
+  .rail-resize, .rail-menu-btn, .collapse-btn { display: none; }
+  .wb-main { flex: 1 1 0; min-height: 0; }
+  .wb-main > .wb-main-split { flex: 1 1 0; min-height: 0; height: 100%; }
+  .wb-bottom, .wb-status { flex: 0 0 auto; }
+  .wb-sidebar > .sidebar-panel { width: 100% !important; border-right: 0; border-bottom: 1px solid var(--border); height: 100%; }
   .sidebar-panel .rail-resize { display: none; }
-  .workbench { height: calc(100vh - 45px); height: calc(100dvh - 45px); min-height: 0; display: flex; flex-direction: column; }
+  .workbench { height: 100%; min-height: 0; display: flex; flex-direction: column; }
   .execution-track-wrap { flex: 1; min-height: 0; }
   .job-header { padding: 10px 14px; }
   .job-header h1 { font-size: 15px; }
@@ -1584,7 +1658,13 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   .permission-actions { flex-wrap: wrap; }
   .permission-actions .btn, .interaction-card .btn, .steering-queue .btn { min-height: 44px; }
   .composer { position: sticky; bottom: 0; padding: 10px 12px; }
-  .config-row { flex-wrap: nowrap; overflow-x: auto; }
+  .composer-config-main {
+    display: flex;
+    align-items: center;
+  }
+  .composer-model-field { flex: 0 1 300px; min-width: 220px; max-width: 300px; }
+  .composer-config-toggle { width: auto; margin-left: 0; justify-content: center; }
+  .composer-config-advanced { display: flex; }
   .settings-dialog {
     width: calc(100vw - 16px);
     height: calc(100dvh - 16px);
@@ -1619,7 +1699,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   /* 底部面板全屏 sheet */
   .bottom-panel.open {
     position: fixed;
-    top: 45px;
+    top: 53px;
     left: 0;
     right: 0;
     bottom: 0;
@@ -1629,6 +1709,16 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   .toast { right: 12px; bottom: 12px; left: 12px; max-width: none; }
   /* 浮层移动端近全屏 */
   .wb-overlay { width: calc(100vw - 16px); max-height: 84vh; }
+}
+
+@media (max-width: 480px) {
+  .wb-activity .activity-mobile-brand { display: none; }
+  .wb-sidebar { width: 100vw; }
+  .composer-config-main label,
+  .composer-config-advanced label { flex: 1 1 100%; }
+  .composer-config-main select,
+  .composer-config-advanced select { flex: 1; width: auto; max-width: none; }
+  .composer-config-toggle { width: 100%; margin-left: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1774,6 +1864,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 }
 .activity-bar-top { display: flex; flex-direction: column; gap: 2px; }
 .activity-bar-bottom { margin-top: auto; display: flex; flex-direction: column; gap: 2px; }
+.activity-mobile-brand { display: none; }
 .activity-btn {
   position: relative;
   display: flex;

@@ -44,6 +44,52 @@ describe("慢客户端背压判定（单元）", () => {
 });
 
 describe("慢 WS 客户端背压 enforcement（集成）", () => {
+  it("会话订阅的实时过滤与回放一致，不混入其他会话的运行状态", async () => {
+    const { WebSocket } = await import("ws");
+    const stubCore = { on() { return stubCore; } } as unknown as CoreClient;
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-ws-scope-"));
+    roots.push(root);
+    const sessions = new SessionStore(path.join(root, ".sessions"));
+    await sessions.initialize();
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const events = new EventBus();
+    const app = await buildServer({
+      core: stubCore,
+      sessions,
+      agent: { isRunning: () => false } as unknown as AgentRunner,
+      events,
+      providers: new ProviderRegistry(),
+      pricing,
+    });
+    apps.push(app);
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    const address = app.server.address();
+    const base = typeof address === "object" && address ? `ws://127.0.0.1:${address.port}` : "";
+    const socket = new WebSocket(`${base}/api/events?sessionId=target`);
+    const received: AppEvent[] = [];
+    let connectedResolve: (() => void) | undefined;
+    const connected = new Promise<void>((resolve) => { connectedResolve = resolve; });
+    socket.on("message", (data: Buffer) => {
+      const event = JSON.parse(data.toString()) as AppEvent;
+      if (event.type === "connected") connectedResolve?.();
+      else received.push(event);
+    });
+    await connected;
+
+    events.publish({ source: "agent", sessionId: "other", type: "agent.state", payload: { marker: "foreign" } });
+    events.publish({ source: "agent", sessionId: "other", type: "run.started", payload: { marker: "foreign-run" } });
+    events.publish({ source: "server", type: "models.updated", payload: { marker: "global" } });
+    events.publish({ source: "agent", sessionId: "target", type: "agent.state", payload: { marker: "own" } });
+
+    await new Promise<void>((resolve) => {
+      const check = () => (received.length >= 2 ? resolve() : setTimeout(check, 10));
+      check();
+    });
+    expect(received.map((event) => (event.payload as { marker?: string }).marker)).toEqual(["global", "own"]);
+    socket.close();
+  }, 20_000);
+
   it("慢客户端被补发 resync.required 后以 1013 断连，健康客户端照常收事件", async () => {
     const { WebSocket } = await import("ws");
     const stubCore = { on() { return stubCore; } } as unknown as CoreClient;

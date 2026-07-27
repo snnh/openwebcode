@@ -14,7 +14,7 @@ The `release` workflow produces:
 | `openwebcode-<version>-linux-x64.tar.gz` | Linux x64 | Runtime tree plus top-level `install.sh` |
 | `SHA256SUMS.txt` | Both | SHA-256 checksums for the two release archives |
 
-`<version>` is the release tag without its leading `v` (for example, `v0.5.1` becomes `0.5.1`).
+`<version>` is the release tag without its leading `v` (for example, `v0.5.2` becomes `0.5.2`).
 
 Windows MSI packaging requires CMake 3.19 or newer (for CPack's WiX custom-namespace support) and WiX Toolset v3.
 
@@ -70,7 +70,7 @@ Run `./install.sh` from the unpacked Linux tarball in a terminal to configure th
 
 - `--prefix <absolute-dir>` installs under `<prefix>/lib/openwebcode` and writes `<prefix>/bin/owc`. The script creates and physically canonicalizes it, then rejects `/`.
 - `--port <1-65535>`, `--data-dir <absolute-dir>`, and `--host <address>` become launcher defaults. Runtime `OWC_PORT`, `OWC_DATA_DIR`, and `OWC_HOST` still override them.
-- A non-loopback `--host` prints a warning. This distribution does not configure HTTP authentication; expose it only on a trusted network or behind an authenticated reverse proxy.
+- A non-loopback `--host` requires `OWC_ACCESS_TOKEN` with at least 32 characters or the server refuses to start. Use the one-time `/?token=...` bootstrap URL to obtain an HttpOnly cookie; keep the service on a trusted network or behind an authenticated reverse proxy.
 - `--use-system-node` skips bundled `node/` and requires an absolute executable Node.js 20+ on `PATH` at install time. If the bundle is missing, the installer switches to that validated mode.
 - `--with-systemd` writes a user unit only and never runs `systemctl`; follow the printed `systemctl --user daemon-reload && systemctl --user enable --now openwebcode` command.
 - `--system` and `--with-desktop-entry` are deliberately not implemented: the installer fails explicitly instead of claiming system-wide installation or desktop integration.
@@ -95,8 +95,8 @@ Restart `build\stage\bin\owc.cmd` afterward and use `Ctrl+F5` if the browser ret
 Pushing a semantic version tag starts the release workflow:
 
 ```sh
-git tag -a v0.5.1 -m "OpenWebCode v0.5.1"
-git push origin v0.5.1
+git tag -a v0.5.2 -m "OpenWebCode v0.5.2"
+git push origin v0.5.2
 ```
 
 The workflow can also be dispatched manually with a `v*` tag. By default, the benchmark job is a hard release dependency: a regression over 15% fails the workflow, and normalized `bench-results-*.json` files ship as release assets for the next baseline. A manual dispatch may explicitly set `skip_performance_tests` for an emergency release; tag-triggered releases cannot skip benchmarks, and a skipped run publishes no benchmark JSON. The release still requires both platform jobs, installation checks, and the `/api/health` smoke checks to pass.

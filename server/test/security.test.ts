@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import type { FastifyInstance } from "fastify";
 import type { AgentRunner } from "../src/agent/agent-runner.js";
-import { buildServer } from "../src/app.js";
+import { buildServer, sanitizeRequestUrl } from "../src/app.js";
 import { loadConfig } from "../src/config.js";
 import type { CoreClient } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
@@ -44,6 +44,7 @@ describe("remote listener security", () => {
     await sessions.initialize();
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));
     await pricing.initialize();
+    const token = `${"t".repeat(30)};=`;
     const app = await buildServer({
       core: {} as CoreClient,
       sessions,
@@ -51,26 +52,30 @@ describe("remote listener security", () => {
       events: new EventBus(),
       providers: new ProviderRegistry(),
       pricing,
-      auth: { accessToken: "t".repeat(32), allowedOrigins: ["https://owc.example.test"] },
+      auth: { accessToken: token, allowedOrigins: ["https://owc.example.test"] },
     });
     try {
       expect((await app.inject({ method: "GET", url: "/api/health" })).statusCode).toBe(401);
-      expect((await app.inject({ method: "GET", url: "/api/health", headers: { authorization: `Bearer ${"t".repeat(32)}` } })).json()).toEqual({ status: "ok" });
+      expect((await app.inject({ method: "GET", url: "/api/health", headers: { authorization: `Bearer ${token}` } })).json()).toEqual({ status: "ok" });
       expect((await app.inject({ method: "GET", url: "/api/health", headers: { "x-openwebcode-token": "wrong" } })).statusCode).toBe(401);
 
-      const bootstrap = await app.inject({ method: "GET", url: `/?token=${"t".repeat(32)}` });
+      const bootstrap = await app.inject({ method: "GET", url: `/?token=${encodeURIComponent(token)}` });
       expect(bootstrap.statusCode).toBe(302);
       expect(bootstrap.headers.location).toBe("/");
       expect(bootstrap.headers["set-cookie"]).toContain("HttpOnly");
+      expect(bootstrap.headers["set-cookie"]).toContain(encodeURIComponent(token));
+      const cookie = String(bootstrap.headers["set-cookie"]).split(";", 1)[0];
+      expect((await app.inject({ method: "GET", url: "/api/health", headers: { cookie } })).statusCode).toBe(200);
+      expect(sanitizeRequestUrl(`/?token=${encodeURIComponent(token)}&next=1`)).toBe("/?token=%5BREDACTED%5D&next=1");
 
       await app.listen({ host: "127.0.0.1", port: 0 });
       const address = app.server.address();
       if (!address || typeof address === "string") throw new Error("test server did not expose a TCP address");
       const url = `ws://127.0.0.1:${address.port}/api/events`;
-      const denied = await connectWebSocket(url, { authorization: `Bearer ${"t".repeat(32)}`, origin: "https://other.example.test" });
+      const denied = await connectWebSocket(url, { authorization: `Bearer ${token}`, origin: "https://other.example.test" });
       expect(denied.closeCode).toBe(1008);
 
-      const accepted = await connectWebSocket(url, { authorization: `Bearer ${"t".repeat(32)}`, origin: "https://owc.example.test" });
+      const accepted = await connectWebSocket(url, { authorization: `Bearer ${token}`, origin: "https://owc.example.test" });
       expect(accepted.connected).toMatchObject({ type: "connected" });
       accepted.socket.close();
     } finally {
@@ -115,9 +120,14 @@ describe("no-auth loopback WebSocket origin policy", () => {
     });
   }
 
-  it("拒绝非本机 Origin/Host，放行 loopback Origin 与无 Origin 客户端", async () => {
+  it("HTTP 与 WS 均拒绝非本机 Host，WS 另拒绝非本机 Origin", async () => {
     const app = await buildNoAuthApp();
     try {
+      const reboundHttp = await app.inject({ method: "GET", url: "/api/health", headers: { host: "evil.example.test" } });
+      expect(reboundHttp.statusCode).toBe(403);
+      expect(reboundHttp.json()).toEqual({ error: "Loopback mode requires a loopback Host header" });
+      expect((await app.inject({ method: "GET", url: "/api/health", headers: { host: "localhost:3000" } })).statusCode).toBe(200);
+
       await app.listen({ host: "127.0.0.1", port: 0 });
       const address = app.server.address();
       if (!address || typeof address === "string") throw new Error("test server did not expose a TCP address");

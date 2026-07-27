@@ -47,6 +47,19 @@ describe("useWorkbenchLayout", () => {
     expect(window.localStorage.getItem("owc-rail-collapsed")).toBe("1");
   });
 
+  it("selectView 只切换视图，不展开已折叠的桌面侧栏", () => {
+    window.localStorage.setItem("owc-rail-collapsed", "1");
+    const { result } = renderHook(() => useWorkbenchLayout());
+    expect(result.current.sidebarVisible).toBe(false);
+
+    act(() => result.current.selectView("files"));
+
+    expect(result.current.sidebarView).toBe("files");
+    expect(result.current.sidebarVisible).toBe(false);
+    expect(window.localStorage.getItem("owc-wb-view")).toBe("files");
+    expect(window.localStorage.getItem("owc-rail-collapsed")).toBe("1");
+  });
+
   it("toggleSidebar / toggleBottomPanel 写入 localStorage", () => {
     const { result } = renderHook(() => useWorkbenchLayout());
     act(() => result.current.toggleSidebar());

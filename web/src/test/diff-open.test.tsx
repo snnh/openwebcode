@@ -13,7 +13,7 @@ import type { MonacoApi } from "../components/editor/monaco-loader";
 
 let mobileMatches = false;
 vi.mock("../hooks/use-media-query", () => ({
-  MOBILE_BREAKPOINT: "(max-width: 768px)",
+  MOBILE_BREAKPOINT: "(max-width: 1024px)",
   useMediaQuery: () => mobileMatches,
 }));
 

@@ -26,8 +26,6 @@ export function SessionRail({ sessions, currentId, runningIds, theme, collapsed,
 }): ReactElement {
   const { language, t } = useI18n();
   const [filter, setFilter] = useState("");
-  // 移动端抽屉开合（≤720px 时 .rail-menu-btn 可见，nav-open 由 CSS 接管为全屏抽屉）
-  const [navOpen, setNavOpen] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const keyword = filter.trim().toLowerCase();
   const filtered = sessions?.filter((session) =>
@@ -48,7 +46,7 @@ export function SessionRail({ sessions, currentId, runningIds, theme, collapsed,
   };
 
   return (
-    <aside className={`session-rail${collapsed ? " collapsed" : ""}${navOpen ? " nav-open" : ""}`} aria-label={t("会话", "Sessions")}>
+    <aside className={`session-rail${collapsed ? " collapsed" : ""}`} aria-label={t("会话", "Sessions")}>
       {!collapsed && (
         <button
           className="rail-resize"
@@ -61,12 +59,7 @@ export function SessionRail({ sessions, currentId, runningIds, theme, collapsed,
         />
       )}
       <header>
-        <button
-          className="rail-menu-btn"
-          aria-label={t("会话列表", "Session list")}
-          aria-expanded={navOpen}
-          onClick={() => setNavOpen((value) => !value)}
-        >☰</button>
+        <span className="rail-mobile-title">{t("会话", "Sessions")}</span>
         {!collapsed && <span className="brand">Open<b>WebCode</b></span>}
         <input
           ref={fileInput}
@@ -101,7 +94,7 @@ export function SessionRail({ sessions, currentId, runningIds, theme, collapsed,
         <nav>
           {filtered?.map((session) => (
             <div key={session.id} className={`session-item${session.id === currentId ? " active" : ""}`}>
-              <button className="session-link" onClick={() => { setNavOpen(false); onSelect(session.id); }}>
+              <button className="session-link" onClick={() => onSelect(session.id)}>
                 <span className="session-title">{session.title}</span>
                 <span className="session-meta">{session.provider} · {session.model}</span>
               </button>

@@ -52,7 +52,9 @@ owc_sandbox_status owc_sandbox_get_status(const owc_sandbox *sandbox);
 void owc_sandbox_destroy(owc_sandbox *sandbox);
 #else
 void owc_landlock_probe(int allow_network, owc_sandbox_result *result);
-int owc_landlock_apply(const char *cwd, int allow_network, owc_sandbox_result *result);
+int owc_landlock_apply(const char *cwd, const char *const *allow_paths,
+                       size_t allow_path_count, int allow_network,
+                       owc_sandbox_result *result);
 #endif
 
 #endif

@@ -294,6 +294,54 @@ static wchar_t *make_profile_name(const char *session_id) {
     return name;
 }
 
+static INIT_ONCE sandbox_probe_once = INIT_ONCE_STATIC_INIT;
+static owc_sandbox_status sandbox_probe_status = OWC_SANDBOX_ADVISORY;
+static char sandbox_probe_reason[192];
+
+static BOOL CALLBACK sandbox_probe_init(PINIT_ONCE once, PVOID param,
+                                        PVOID *context) {
+    wchar_t profile_name[64];
+    PSID sid = NULL;
+    HRESULT hr;
+    int profile_available = 0;
+    (void)once; (void)param; (void)context;
+    if (swprintf_s(profile_name, ARRAYSIZE(profile_name),
+                   L"OpenWebCode.Probe.%lu",
+                   (unsigned long)GetCurrentProcessId()) < 0) {
+        set_reason(sandbox_probe_reason, sizeof(sandbox_probe_reason),
+                   "AppContainer probe name creation failed");
+        return TRUE;
+    }
+    hr = CreateAppContainerProfile(profile_name, profile_name,
+                                   L"OpenWebCode capability probe", NULL, 0,
+                                   &sid);
+    if (hr == HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS)) {
+        hr = DeriveAppContainerSidFromAppContainerName(profile_name, &sid);
+        profile_available = SUCCEEDED(hr);
+    } else {
+        profile_available = SUCCEEDED(hr);
+    }
+    if (profile_available) {
+        if (sid) FreeSid(sid);
+        (void)DeleteAppContainerProfile(profile_name);
+        sandbox_probe_status = OWC_SANDBOX_PARTIAL;
+        set_reason(sandbox_probe_reason, sizeof(sandbox_probe_reason),
+                   "AppContainer profile creation is available; per-process enforcement has not yet been verified");
+        return TRUE;
+    }
+    if (sid) FreeSid(sid);
+    if (hr == HRESULT_FROM_WIN32(ERROR_CALL_NOT_IMPLEMENTED) ||
+        hr == HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND)) {
+        set_reason(sandbox_probe_reason, sizeof(sandbox_probe_reason),
+                   "AppContainer APIs are not supported by this Windows version");
+    } else {
+        (void)snprintf(sandbox_probe_reason, sizeof(sandbox_probe_reason),
+                       "AppContainer profile creation is unavailable (HRESULT=0x%08lx)",
+                       (unsigned long)hr);
+    }
+    return TRUE;
+}
+
 const char *owc_sandbox_status_name(owc_sandbox_status status) {
     if (status == OWC_SANDBOX_ENFORCED) return "enforced";
     if (status == OWC_SANDBOX_PARTIAL) return "partial";
@@ -301,20 +349,10 @@ const char *owc_sandbox_status_name(owc_sandbox_status status) {
 }
 
 owc_sandbox_status owc_sandbox_probe(char *reason, size_t reason_size) {
-    PSID sid = NULL;
-    HRESULT hr = DeriveAppContainerSidFromAppContainerName(L"OpenWebCode.Probe", &sid);
-    if (SUCCEEDED(hr)) {
-        FreeSid(sid);
-        set_reason(reason, reason_size, "AppContainer APIs are available; per-process enforcement has not yet been verified");
-        return OWC_SANDBOX_PARTIAL;
-    }
-    if (hr == HRESULT_FROM_WIN32(ERROR_CALL_NOT_IMPLEMENTED) ||
-        hr == HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND)) {
-        set_reason(reason, reason_size, "AppContainer APIs are not supported by this Windows version");
-        return OWC_SANDBOX_ADVISORY;
-    }
-    set_reason(reason, reason_size, "AppContainer SID derivation failed; sandbox is advisory");
-    return OWC_SANDBOX_PARTIAL;
+    (void)InitOnceExecuteOnce(&sandbox_probe_once, sandbox_probe_init,
+                              NULL, NULL);
+    set_reason(reason, reason_size, sandbox_probe_reason);
+    return sandbox_probe_status;
 }
 
 owc_sandbox *owc_sandbox_create(const owc_sandbox_options *options,
@@ -345,7 +383,10 @@ owc_sandbox *owc_sandbox_create(const owc_sandbox_options *options,
             goto fail;
         }
     } else if (FAILED(hr)) {
-        set_reason(reason, reason_size, "AppContainer profile creation failed; sandbox is partial");
+        if (reason && reason_size > 0)
+            (void)snprintf(reason, reason_size,
+                           "AppContainer profile creation failed (HRESULT=0x%08lx); sandbox is partial",
+                           (unsigned long)hr);
         goto fail;
     } else {
         sandbox->profile_created = 1;

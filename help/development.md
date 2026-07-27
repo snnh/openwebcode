@@ -48,7 +48,7 @@ openwebcode/
 │   │   │   ├── editor/   # 只读 CodeView、Monaco 编辑器、DiffPane（0.5.0）
 │   │   │   └── panels/   # Context / Cost / Files / Problems / Sandbox / Scm / Timeline / Perf
 │   │   ├── lib/          # api.ts（REST 客户端）、contracts.ts（类型契约）、perf-sampler.ts（帧率采样）
-│   │   └── styles.css    # 全部样式（含移动端 ≤768px 响应式）
+│   │   └── styles.css    # 全部样式（含窄窗口 ≤1024px 响应式）
 │   └── src/test/         # vitest + jsdom + Testing Library + axe
 ├── packaging/            # 分发布局、安装脚本、owc.cmd、CI 发布流水线
 ├── scripts/bench/        # 性能基准体系（Node + Playwright）

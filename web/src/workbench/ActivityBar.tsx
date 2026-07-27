@@ -29,6 +29,7 @@ export function ActivityBar({ activeView, sidebarVisible, problemsBadge = 0, not
   const { t } = useI18n();
   return (
     <div className="activity-bar">
+      <span className="activity-mobile-brand" aria-hidden>Open<b>WebCode</b></span>
       <div className="activity-bar-top">
         {(Object.keys(VIEW_META) as SidebarView[]).map((view) => {
           const meta = VIEW_META[view];

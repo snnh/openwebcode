@@ -302,8 +302,8 @@ describe("WebSocket event replay and resync", () => {
   }, 15_000);
 });
 
-describe("WebSocket cross-session run-state broadcast", () => {
-  it("agent.state/run.* 全局广播；其他事件仍按 sessionId 过滤；无订阅客户端收全量", async () => {
+describe("WebSocket session isolation", () => {
+  it("带 sessionId 的客户端仅收本会话与全局事件；无订阅客户端收全量", async () => {
     const { WebSocket } = await import("ws");
     const stubCore = { on() { return stubCore; } } as unknown as CoreClient;
     const root = await mkdtemp(path.join(os.tmpdir(), "owc-ws-"));
@@ -328,14 +328,32 @@ describe("WebSocket cross-session run-state broadcast", () => {
         resolve(event);
       });
     });
+    const collect = (ws: InstanceType<typeof WebSocket>, count: number): Promise<AppEvent[]> => new Promise((resolve) => {
+      const received: AppEvent[] = [];
+      const onMessage = (data: Buffer) => {
+        const event = JSON.parse(data.toString()) as AppEvent;
+        if (event.type === "connected") return;
+        received.push(event);
+        if (received.length === count) {
+          ws.off("message", onMessage);
+          resolve(received);
+        }
+      };
+      ws.on("message", onMessage);
+    });
     const silence = (ws: InstanceType<typeof WebSocket>, ms: number): Promise<void> => new Promise((resolve, reject) => {
-      const timer = setTimeout(resolve, ms);
-      ws.on("message", (data: Buffer) => {
+      const onMessage = (data: Buffer) => {
         const event = JSON.parse(data.toString()) as AppEvent;
         if (event.type === "connected") return;
         clearTimeout(timer);
+        ws.off("message", onMessage);
         reject(new Error(`unexpected event: ${event.type}`));
-      });
+      };
+      const timer = setTimeout(() => {
+        ws.off("message", onMessage);
+        resolve();
+      }, ms);
+      ws.on("message", onMessage);
     });
 
     const subscribed = new WebSocket(`${base}/api/events?sessionId=s1`);
@@ -351,25 +369,19 @@ describe("WebSocket cross-session run-state broadcast", () => {
     });
     await Promise.all([connected(subscribed), connected(globalClient)]);
 
-    // 其他会话的 agent.state：订阅 s1 的客户端也应收到
-    const receivedState = nextEvent(subscribed);
-    events.publish({ source: "agent", type: "agent.state", sessionId: "s2", payload: { state: "running" } });
-    expect((await receivedState).sessionId).toBe("s2");
-
-    // 其他会话的 run.* 事件同样全局广播
-    const receivedRun = nextEvent(subscribed);
-    events.publish({ source: "agent", type: "run.accepted", sessionId: "s2", payload: {} });
-    expect((await receivedRun).type).toBe("run.accepted");
-
-    // 非运行状态类事件仍按 sessionId 过滤
+    // 其他会话的运行状态不会越过会话边界，但全量客户端仍会收到。
     const filtered = silence(subscribed, 200);
+    const receivedForeign = collect(globalClient, 3);
+    events.publish({ source: "agent", type: "agent.state", sessionId: "s2", payload: { state: "running" } });
+    events.publish({ source: "agent", type: "run.accepted", sessionId: "s2", payload: {} });
     events.publish({ source: "agent", type: "tool.end", sessionId: "s2", payload: {} });
     await filtered;
+    expect((await receivedForeign).map((event) => event.type)).toEqual(["agent.state", "run.accepted", "tool.end"]);
 
-    // 未带 sessionId 的客户端收到全量事件流
-    const receivedAll = nextEvent(globalClient);
-    events.publish({ source: "agent", type: "tool.end", sessionId: "s3", payload: {} });
-    expect((await receivedAll).sessionId).toBe("s3");
+    // 本会话事件照常送达订阅客户端。
+    const receivedOwn = nextEvent(subscribed);
+    events.publish({ source: "agent", type: "agent.state", sessionId: "s1", payload: { state: "running" } });
+    expect((await receivedOwn).sessionId).toBe("s1");
 
     subscribed.close();
     globalClient.close();

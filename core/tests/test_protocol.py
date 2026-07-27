@@ -58,13 +58,15 @@ def assert_landlock_filesystem_isolation_if_enforced(proc):
         return
 
     with tempfile.TemporaryDirectory(prefix="owc-landlock-workspace-") as workspace, \
+         tempfile.TemporaryDirectory(prefix="owc-landlock-allowed-") as allowed, \
          tempfile.TemporaryDirectory(prefix="owc-landlock-outside-") as outside:
         inside_path = os.path.join(workspace, "workspace-write.txt")
+        allowed_path = os.path.join(allowed, "allowed-write.txt")
         outside_path = os.path.join(outside, "outside-write.txt")
         request(proc, 41, "session.configure", {
             "sessionId": "landlock",
             "cwd": workspace,
-            "sandbox": {"enabled": True, "network": "allow"},
+            "sandbox": {"enabled": True, "network": "allow", "allowPaths": [allowed]},
         })
         response, _ = collect_until_response(proc, 41)
         assert "result" in response, response
@@ -79,6 +81,7 @@ def assert_landlock_filesystem_isolation_if_enforced(proc):
 
         command = (
             f"printf workspace-ok > {shlex.quote(inside_path)}; "
+            f"printf allowed-ok > {shlex.quote(allowed_path)}; "
             f"printf outside-must-fail > {shlex.quote(outside_path)}"
         )
         request(proc, 42, "exec.run", {
@@ -95,6 +98,8 @@ def assert_landlock_filesystem_isolation_if_enforced(proc):
         assert result["exitCode"] != 0, result
         with open(inside_path, "r", encoding="utf-8") as stored:
             assert stored.read() == "workspace-ok"
+        with open(allowed_path, "r", encoding="utf-8") as stored:
+            assert stored.read() == "allowed-ok"
         assert not os.path.exists(outside_path), outside_path
 
 
@@ -145,7 +150,7 @@ def main():
         request(proc, "ping-中文", "core.ping")
         response, notes = collect_until_response(proc, "ping-中文")
         assert not notes
-        assert response["result"]["version"] == "0.5.1"
+        assert response["result"]["version"] == "0.5.2"
         assert response["result"]["sandboxCapability"] in {"advisory", "partial", "enforced"}
         assert response["result"]["sandboxReason"]
         assert response["result"]["protocolVersion"] == "1.0"
@@ -164,13 +169,13 @@ def main():
         response, notes = collect_until_response(proc, None)
         assert not notes
         assert response["id"] is None
-        assert response["result"]["version"] == "0.5.1"
+        assert response["result"]["version"] == "0.5.2"
 
         send(proc, {"jsonrpc": "2.0", "method": "core.ping", "params": {}})
         request(proc, "after-notification", "core.ping")
         response, notes = collect_until_response(proc, "after-notification")
         assert not notes
-        assert response["result"]["version"] == "0.5.1"
+        assert response["result"]["version"] == "0.5.2"
 
         request(proc, 2, "missing.method")
         response, _ = collect_until_response(proc, 2)
@@ -226,6 +231,38 @@ def main():
             request(proc, bad_id, "session.configure", {"sessionId": "invalid-allow", "cwd": os.getcwd(), "sandbox": {"enabled": False, "allowPaths": allow_paths}})
             response, _ = collect_until_response(proc, bad_id)
             assert "error" in response, (allow_paths, response)
+
+        # session.configure is transactional: an invalid replacement must not
+        # destroy the live cwd/policy, and failed new sessions must not consume
+        # any of the fixed 64 slots.
+        request(proc, "invalid-reconfigure", "session.configure", {
+            "sessionId": "s1",
+            "cwd": os.path.dirname(os.getcwd()),
+            "sandbox": {"enabled": "not-a-boolean"},
+        })
+        response, _ = collect_until_response(proc, "invalid-reconfigure")
+        assert "error" in response, response
+        request(proc, "read-after-invalid", "fs.read", {"sessionId": "s1", "path": text_name})
+        response, _ = collect_until_response(proc, "read-after-invalid")
+        assert response.get("result", {}).get("content") == "two", response
+        for slot in range(70):
+            request(proc, f"invalid-slot-{slot}", "session.configure", {
+                "sessionId": f"invalid-slot-{slot}",
+                "cwd": os.getcwd(),
+                "sandbox": {"network": "invalid"},
+            })
+            response, _ = collect_until_response(proc, f"invalid-slot-{slot}")
+            assert "error" in response, response
+        request(proc, "valid-after-invalid-slots", "session.configure", {
+            "sessionId": "valid-after-invalid-slots",
+            "cwd": os.getcwd(),
+            "sandbox": {"enabled": False},
+        })
+        response, _ = collect_until_response(proc, "valid-after-invalid-slots")
+        assert "result" in response, response
+        request(proc, "cleanup-valid-after-invalid", "session.cleanup", {"sessionId": "valid-after-invalid-slots"})
+        response, _ = collect_until_response(proc, "cleanup-valid-after-invalid")
+        assert response.get("result", {}).get("ok") is True, response
 
         request(proc, 3, "exec.run", {"sessionId": "s1", "execId": "e1", "cmd": command, "cwd": os.getcwd(), "timeoutMs": 5000, **shell_params})
         response, notes = collect_until_response(proc, 3)
