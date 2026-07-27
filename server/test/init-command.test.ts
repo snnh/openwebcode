@@ -13,7 +13,22 @@ import { SessionStore } from "../src/sessions/session-store.js";
 import { makeStubProvider } from "./helpers/stub-provider.js";
 
 const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
+
+/** rm 带重试：agent 首轮落盘（sessions/<id>/runs/）可能与 afterEach 清理竞态，
+ * Windows 上文件句柄释放滞后导致 ENOTEMPTY，需等写完后重试（同 hooks.test.ts）。 */
+async function rmWithRetry(target: string, retries = 15, delayMs = 500): Promise<void> {
+  for (let i = 0; i < retries; i++) {
+    try {
+      await rm(target, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (i === retries - 1) throw error;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+}
+
+afterEach(async () => Promise.all(roots.splice(0).map((root) => rmWithRetry(root))));
 
 async function tempRoot(): Promise<string> {
   const root = await mkdtemp(path.join(os.tmpdir(), "owc-init-"));
