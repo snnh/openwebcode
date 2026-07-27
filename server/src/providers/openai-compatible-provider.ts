@@ -1,4 +1,5 @@
 import type { ChatMessage } from "../sessions/types.js";
+import { getUserAgent } from "../http.js";
 import { classifyHttpError, normalizeProviderError, parseRetryAfter } from "./provider-error.js";
 import type { Provider, ProviderEvent, StreamChatRequest } from "./provider.js";
 
@@ -35,6 +36,7 @@ export class OpenAICompatibleProvider implements Provider {
       method: "POST",
       headers: {
         "content-type": "application/json",
+        "user-agent": getUserAgent(),
         ...(this.options.apiKey ? { authorization: `Bearer ${this.options.apiKey}` } : {}),
       },
       body: JSON.stringify({

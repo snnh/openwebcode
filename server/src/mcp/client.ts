@@ -1,6 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import type { McpServerConfig } from "./config.js";
 import { isHttpConfig } from "./config.js";
+import { getServerVersion } from "../version.js";
+import { getUserAgent } from "../http.js";
 
 export interface McpToolSpec {
   name: string;
@@ -96,7 +98,7 @@ class Client implements McpClient {
     await this.request("initialize", {
       protocolVersion: PROTOCOL_VERSION,
       capabilities: {},
-      clientInfo: { name: "openwebcode", version: "0.2.3" },
+      clientInfo: { name: "openwebcode", version: getServerVersion() },
     });
     this.notify("notifications/initialized");
   }
@@ -156,6 +158,7 @@ class Client implements McpClient {
         headers: {
           "content-type": "application/json",
           accept: "application/json, text/event-stream",
+          "user-agent": getUserAgent(),
           ...config.headers,
           ...(this.sessionId ? { "mcp-session-id": this.sessionId } : {}),
         },

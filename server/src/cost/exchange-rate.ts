@@ -1,6 +1,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
+import { getUserAgent } from "../http.js";
 
 export const RATE_SCALE = 1_000_000n;
 
@@ -30,7 +31,7 @@ export class HttpExchangeRateProvider implements ExchangeRateProvider {
   constructor(private readonly url: string) {}
 
   async fetch(signal: AbortSignal): Promise<ExchangeRateSnapshot> {
-    const response = await fetch(this.url, { signal });
+    const response = await fetch(this.url, { signal, headers: { "User-Agent": getUserAgent() } });
     if (!response.ok) throw new Error(`Exchange rate request failed with status ${response.status}`);
     const value = await response.json() as unknown;
     const record = asRecord(value);

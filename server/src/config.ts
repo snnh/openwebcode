@@ -31,6 +31,12 @@ export interface ServerConfig {
     pricingSyncUrl?: string;
     syncIntervalMinutes: number;
   };
+  /** Optional update check against GitHub Releases. Disabled by default. */
+  updateCheck: {
+    enabled: boolean;
+    url?: string;
+    intervalHours: number;
+  };
   fastModel?: FastModelConfig;
 }
 
@@ -154,6 +160,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       ...(catalogSyncUrl ? { catalogSyncUrl } : {}),
       ...(pricingSyncUrl ? { pricingSyncUrl } : {}),
       syncIntervalMinutes: boundedNonNegativeInteger(env.OWC_MODELS_SYNC_INTERVAL_MINUTES, 0, MAX_SYNC_INTERVAL_MINUTES),
+    },
+    updateCheck: {
+      enabled: env.OWC_UPDATE_CHECK_ENABLED === "1" || env.OWC_UPDATE_CHECK_ENABLED === "true",
+      ...(env.OWC_UPDATE_CHECK_URL ? { url: env.OWC_UPDATE_CHECK_URL } : {}),
+      intervalHours: boundedNonNegativeInteger(env.OWC_UPDATE_CHECK_INTERVAL_HOURS, 24, 24 * 30),
     },
     ...(allowPaths !== undefined || jobMemoryMB !== undefined || jobMaxProcesses !== undefined
       ? {

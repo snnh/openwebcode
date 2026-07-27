@@ -11,6 +11,8 @@ import type { StorageGC } from "./storage-gc.js";
 import type { FastModelClient } from "./fast-model.js";
 import type { ProviderProfilesService } from "./provider-profiles.js";
 import type { ModelRegistry } from "./context/model-registry.js";
+import type { UpdateChecker } from "./update-checker.js";
+import installDefaultsDocument from "./config/defaults.json" with { type: "json" };
 
 export class SettingsValidationError extends Error {
   constructor(message: string) {
@@ -40,6 +42,8 @@ export interface SettingsFieldView {
   editable: boolean;
   restartRequired: boolean;
   nullable: boolean;
+  /** 安装目录默认值；当 source=file 且与 value 不同时，UI 可提示"采纳新默认"。 */
+  installDefault?: SettingValue | null;
   description?: string;
 }
 
@@ -76,6 +80,7 @@ interface RuntimeDependencies {
   fastModel?: FastModelClient;
   profiles?: ProviderProfilesService;
   models?: ModelRegistry;
+  updateChecker?: UpdateChecker;
 }
 
 const GROUPS = [
@@ -85,6 +90,7 @@ const GROUPS = [
   { id: "executor", label: "执行器" },
   { id: "service", label: "服务" },
   { id: "exchangeRate", label: "汇率" },
+  { id: "updateCheck", label: "更新检查" },
 ];
 
 const LANGUAGE_OPTIONS = ["zh-CN", "en-US", "zh-TW", "ja-JP", "ko-KR", "fr-FR", "de-DE", "es-ES", "ru-RU"];
@@ -141,6 +147,12 @@ function requireSyncIntervalMinutes(value: SettingValue): void {
   }
 }
 
+function requireUpdateCheckIntervalHours(value: SettingValue): void {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > 24 * 30) {
+    throw new SettingsValidationError("必须是 0–720 的整数小时");
+  }
+}
+
 function requireJobMemoryMB(value: SettingValue): void {
   if (typeof value !== "number" || value < 1 || value > 1_048_576) {
     throw new SettingsValidationError("Job 内存上限需为 1–1048576 MB (1 TB)");
@@ -191,6 +203,17 @@ function envCurrency(raw: string): SettingValue | undefined {
   return undefined;
 }
 
+function envBoolean(raw: string): SettingValue | undefined {
+  if (raw === "1" || raw === "true") return true;
+  if (raw === "0" || raw === "false") return false;
+  return undefined;
+}
+
+function envUpdateCheckIntervalHours(raw: string): SettingValue | undefined {
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && parsed >= 0 && parsed <= 24 * 30 ? parsed : undefined;
+}
+
 const FIELDS: FieldSpec[] = [
   // 模型目录同步；模型服务商连接由 provider-profiles.json 独立管理。
   { key: "catalogSyncUrl", group: "models", label: "远程模型目录 URL", type: "text", env: "OWC_MODELS_CATALOG_SYNC_URL", defaultValue: null, restartRequired: false, validate: requireHttpUrl, description: "留空则不从远程链接同步模型目录" },
@@ -230,9 +253,29 @@ const FIELDS: FieldSpec[] = [
   { key: "exchangeRateUrl", group: "exchangeRate", label: "汇率接口 URL", type: "text", env: "OWC_EXCHANGE_RATE_URL", defaultValue: null, restartRequired: true, validate: requireHttpUrl },
   { key: "exchangeRateTimeoutMs", group: "exchangeRate", label: "汇率请求超时 (ms)", type: "number", env: "OWC_EXCHANGE_RATE_TIMEOUT_MS", defaultValue: 5_000, restartRequired: true, fromEnv: envNumber },
   { key: "fixedUsdCnyRate", group: "exchangeRate", label: "固定美元汇率", type: "text", env: "OWC_USD_CNY_RATE", defaultValue: null, restartRequired: true, validate: requirePositiveDecimal, description: "填写后跳过在线汇率" },
+  // 更新检查（默认关闭，热生效）：周期性查询 GitHub Releases 最新版本，结果仅在设置页静默展示
+  { key: "updateCheckEnabled", group: "updateCheck", label: "启用更新检查", type: "boolean", env: "OWC_UPDATE_CHECK_ENABLED", defaultValue: false, restartRequired: false, fromEnv: envBoolean, description: "默认关闭；启用后周期性查询 GitHub Releases 最新版本" },
+  { key: "updateCheckUrl", group: "updateCheck", label: "更新检查 URL", type: "text", env: "OWC_UPDATE_CHECK_URL", defaultValue: "https://api.github.com/repos/snnh/openwebcode/releases/latest", restartRequired: false, validate: requireHttpUrl, description: "GitHub Releases API 端点" },
+  { key: "updateCheckIntervalHours", group: "updateCheck", label: "检查间隔（小时）", type: "number", env: "OWC_UPDATE_CHECK_INTERVAL_HOURS", defaultValue: 24, restartRequired: false, fromEnv: envUpdateCheckIntervalHours, validate: requireUpdateCheckIntervalHours, description: "0 表示仅手动检查；最大 720 小时" },
 ];
 
 const FIELD_MAP = new Map(FIELDS.map((field) => [field.key, field]));
+
+/**
+ * 安装目录默认配置（config/defaults.json，随构建发布、跟随更新）。
+ * 数据目录的 server-settings.json 只存用户覆盖；effectiveValue 按
+ * env > 用户覆盖 > 安装默认 > 代码兜底（FIELDS.defaultValue）组合。
+ * defaults.json 与 FIELDS.defaultValue 由测试强制保持一致。
+ */
+const INSTALL_DEFAULTS = new Map<string, SettingValue>(
+  Object.entries(installDefaultsDocument as Record<string, unknown>)
+    .filter(([, value]) => value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean" ||
+      (Array.isArray(value) && value.every((entry) => typeof entry === "string")))
+    .map(([key, value]) => [key, value as SettingValue]),
+);
+
+/** 代码内默认值（FIELDS.defaultValue）；测试用于校验与 config/defaults.json 保持一致。 */
+export const CODE_DEFAULTS: ReadonlyMap<string, SettingValue | null> = new Map(FIELDS.map((field) => [field.key, field.defaultValue]));
 
 function maskSecret(value: string): string {
   if (value.length <= 12) return "••••••";
@@ -303,11 +346,16 @@ export class SettingsService {
     return "default";
   }
 
+  /** 安装目录默认值（config/defaults.json）；缺失时回退代码内 FIELDS.defaultValue。 */
+  private installDefault(field: FieldSpec): SettingValue | null {
+    return INSTALL_DEFAULTS.has(field.key) ? INSTALL_DEFAULTS.get(field.key)! : field.defaultValue;
+  }
+
   private effectiveValue(field: FieldSpec): SettingValue | null {
     const fromEnv = this.envValue(field);
     if (fromEnv !== undefined) return fromEnv;
     if (field.key in this.overrides) return this.overrides[field.key]!;
-    return field.defaultValue;
+    return this.installDefault(field);
   }
 
   private optionsFor(field: FieldSpec): SettingOptionView[] | undefined {
@@ -371,6 +419,11 @@ export class SettingsService {
         ...(typeof pricingSyncUrl === "string" ? { pricingSyncUrl } : {}),
         syncIntervalMinutes: value("syncIntervalMinutes") as number,
       },
+      updateCheck: {
+        enabled: value("updateCheckEnabled") as boolean,
+        ...(typeof value("updateCheckUrl") === "string" ? { url: value("updateCheckUrl") as string } : {}),
+        intervalHours: value("updateCheckIntervalHours") as number,
+      },
       ...(sandboxAllowPaths.length > 0 || typeof jobObjectMemoryMB === "number" || typeof jobObjectMaxProcesses === "number"
         ? {
             sandbox: {
@@ -419,6 +472,7 @@ export class SettingsService {
             editable: source !== "env",
             restartRequired: field.restartRequired,
             nullable: field.defaultValue === null,
+            installDefault: this.installDefault(field),
             ...(field.description ? { description: field.description } : {}),
           } satisfies Omit<SettingsFieldView, "value" | "hasValue" | "masked">;
           if (field.type === "secret") {
@@ -449,8 +503,8 @@ export class SettingsService {
     const changed: string[] = [];
     for (const [key, value] of entries) {
       const field = FIELD_MAP.get(key)!;
-      // 写入与默认值相同的值视为清除覆盖，避免无意义的"已覆盖"残留
-      if (value === null || sameSettingValue(value, field.defaultValue)) {
+      // 写入与安装默认值相同的值视为清除覆盖，避免无意义的"已覆盖"残留
+      if (value === null || sameSettingValue(value, this.installDefault(field))) {
         if (key in next) {
           delete next[key];
           changed.push(key);
@@ -491,6 +545,11 @@ export class SettingsService {
       const gc = this.deps.gc;
       gc.setMaxBytes(this.effective().gcMaxBytes);
       void gc.collect().catch((error: unknown) => process.stderr.write(`[settings] 存储 GC 失败：${error instanceof Error ? error.message : String(error)}\n`));
+    }
+    if (changed.some((key) => key.startsWith("updateCheck")) && this.deps.updateChecker) {
+      const cfg = this.effective().updateCheck;
+      this.deps.updateChecker.configure(cfg);
+      if (cfg.enabled) void this.deps.updateChecker.refresh().catch(() => undefined);
     }
     // defaultCurrency 无需主动推送：app 路由经 getPreferences 每次实时读取
   }

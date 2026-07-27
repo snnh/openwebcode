@@ -28,6 +28,8 @@ import { FastModelClient } from "./fast-model.js";
 import { Compactor } from "./context/compactor.js";
 import { StorageGC } from "./storage-gc.js";
 import { UsageLog } from "./usage-log.js";
+import { readServerVersion, setServerVersion } from "./version.js";
+import { UpdateChecker } from "./update-checker.js";
 import { createProfileSearchProvider, createProfileWebFetchProvider } from "./web-tools.js";
 import { ProviderProfilesService } from "./provider-profiles.js";
 import { ProviderProfilesRuntime } from "./provider-profiles-runtime.js";
@@ -43,6 +45,10 @@ const resolveFromServer = (value: string) => (path.isAbsolute(value) ? value : p
 // 但不改变 settings 文件自身的位置（否则重启后会丢失配置入口）。
 const envConfig = loadConfig();
 const bootDataDir = resolveFromServer(envConfig.dataDir);
+// 解析服务版本并初始化全局 User-Agent（所有出站 HTTP 统一注入 UA）
+const serverVersion = await readServerVersion();
+setServerVersion(serverVersion);
+process.stderr.write(`openwebcode ${serverVersion} starting\n`);
 const settings = await SettingsService.load({
   env: process.env,
   filePath: path.join(bootDataDir, "server-settings.json"),
@@ -118,7 +124,13 @@ const providerProfilesRuntime = new ProviderProfilesRuntime(providerProfiles, pr
 // 托管工作区（plan §6.4）：镜像/挂载点位于 dataDir 下；孤儿挂载清理挂在 GC 启动扫描上
 const managed = new ManagedWorkspaceManager({ dataDir });
 const gc = new StorageGC(path.join(dataDir, "sessions"), config.gcMaxBytes, () => managed.sweepOrphans());
-settings.bind({ providers, core, agent, events, gc, fastModel, profiles: providerProfiles, models });
+// 更新检查（默认关闭）：周期性查询 GitHub Releases 最新版本，结果仅在设置页静默展示
+const updateChecker = new UpdateChecker({
+  cachePath: path.join(dataDir, "update-check.json"),
+  defaultUrl: config.updateCheck.url ?? "https://api.github.com/repos/snnh/openwebcode/releases/latest",
+});
+updateChecker.configure(config.updateCheck);
+settings.bind({ providers, core, agent, events, gc, fastModel, profiles: providerProfiles, models, updateChecker });
 providerProfilesRuntime.start();
 
 core.on("diagnostic", (text: string) => process.stderr.write(`[owc-exec] ${text}`));
@@ -127,6 +139,7 @@ core.on("error", (error: Error) => console.error("Core error:", error));
 await sessions.initialize();
 await pricing.initialize();
 await exchangeRates.initialize();
+await updateChecker.initialize();
 
 /** Remote model/pricing catalogs share settings but fail independently: one bad endpoint never
  * prevents the other catalog from refreshing, nor does it replace a validated local snapshot. */
@@ -196,6 +209,8 @@ const app = await buildServer({
   diagnostics,
   scm,
   evalEvaluator,
+  updateChecker,
+  dataDir,
   ...(config.accessToken ? { auth: { accessToken: config.accessToken, allowedOrigins: config.allowedOrigins } } : {}),
   getPreferences: () => {
     const effective = settings.effective();
@@ -208,6 +223,7 @@ async function shutdown(): Promise<void> {
   indexManager.stop();
   remoteSyncScheduler.stop();
   providerProfilesRuntime.stop();
+  updateChecker.close();
   exchangeRates.close();
   await mcp.close();
   await extensions.close();

@@ -35,6 +35,10 @@ import { defaultSandboxDenyPaths } from "./sessions/default-sandbox.js";
 import type { PermissionMode, SandboxMode, ShellBackend, SnapshotMode } from "./sessions/types.js";
 import type { SessionStore } from "./sessions/session-store.js";
 import { SettingsValidationError, type SettingsService } from "./settings-service.js";
+import { getServerVersion, GITHUB_REPO } from "./version.js";
+import type { UpdateChecker } from "./update-checker.js";
+import { loadPromptOverride, writeGlobalPromptOverride } from "./agent/prompts/prompt-overrides.js";
+import { PI_BASE_SYSTEM_PROMPT, PI_PROMPT_VERSION } from "./agent/prompts/pi-base.js";
 import type { SkillRegistry } from "./skills.js";
 import type { Compactor } from "./context/compactor.js";
 import type { ContextPolicyUpdate } from "./context/context-manager.js";
@@ -172,6 +176,10 @@ export interface ServerDependencies {
   scm?: ScmService;
   /** 评测 harness（0.5.0 Phase 3a）；扩展禁用时 eval/* 路由 503 */
   evalEvaluator?: EvalEvaluator;
+  /** 更新检查（0.5.x）；未注入时 /api/update-check 返回 501 */
+  updateChecker?: UpdateChecker;
+  /** 数据目录（提示词覆盖 REST 读写需要）；未注入时 /api/prompt 返回 501 */
+  dataDir?: string;
 }
 
 function parseCookies(value: string | undefined): Map<string, string> {
@@ -532,6 +540,57 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   app.get("/api/health", async () => ({ status: "ok" }));
   app.get("/api/metrics", async () => ({ events: events.stats(), websocket: { clients: clients.size, slowClientDisconnects, failedClientSends } }));
   app.get("/api/core", async () => core.ping());
+  app.get("/api/version", async () => {
+    const info = await core.ping();
+    const snapshot = dependencies.updateChecker?.current();
+    return {
+      server: getServerVersion(),
+      core: info.version,
+      ...(info.protocolVersion ? { protocolVersion: info.protocolVersion } : {}),
+      githubRepo: GITHUB_REPO,
+      ...(snapshot
+        ? { latestRelease: { version: snapshot.latestVersion, isNewer: snapshot.isNewer, htmlUrl: snapshot.htmlUrl, publishedAt: snapshot.publishedAt, checkedAt: snapshot.checkedAt } }
+        : {}),
+    };
+  });
+  app.get("/api/update-check", async (_request, reply) => {
+    const checker = dependencies.updateChecker;
+    if (!checker) return reply.code(501).send({ error: "Update checker is not configured" });
+    return { snapshot: checker.current() ?? null };
+  });
+  app.post("/api/update-check/refresh", async (_request, reply) => {
+    const checker = dependencies.updateChecker;
+    if (!checker) return reply.code(501).send({ error: "Update checker is not configured" });
+    const snapshot = await checker.refresh();
+    return { snapshot: snapshot ?? null };
+  });
+  app.get<{ Querystring: { cwd?: string } }>("/api/prompt", async (request, reply) => {
+    const dataDir = dependencies.dataDir;
+    if (!dataDir) return reply.code(501).send({ error: "Prompt override is not configured" });
+    const cwd = typeof request.query.cwd === "string" ? request.query.cwd : "";
+    const override = await loadPromptOverride(dataDir, cwd);
+    return {
+      builtinBase: PI_BASE_SYSTEM_PROMPT,
+      promptVersion: PI_PROMPT_VERSION,
+      baseOverride: override.baseOverride ?? null,
+      customAppend: override.customAppend ?? null,
+    };
+  });
+  app.put<{ Body: { baseOverride?: string | null; customAppend?: string | null } }>("/api/prompt", async (request, reply) => {
+    const dataDir = dependencies.dataDir;
+    if (!dataDir) return reply.code(501).send({ error: "Prompt override is not configured" });
+    const body = request.body ?? {};
+    try {
+      await writeGlobalPromptOverride(dataDir, {
+        ...(typeof body.baseOverride === "string" ? { baseOverride: body.baseOverride } : {}),
+        ...(typeof body.customAppend === "string" ? { customAppend: body.customAppend } : {}),
+      });
+      dependencies.agent.refreshPromptOverride();
+      return { ok: true };
+    } catch (error) {
+      return reply.code(500).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
   app.get("/api/sandbox/capabilities", async () => ({ appcontainer: true, jobobject: true, off: true, wsb: detectWsb() }));
   app.get("/api/managed-workspace/capability", async (_request, reply) => {
     const managed = dependencies.managed;
