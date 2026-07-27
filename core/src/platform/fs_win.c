@@ -59,9 +59,17 @@ static char *utf8(const wchar_t *s){int n=WideCharToMultiByte(CP_UTF8,WC_ERR_INV
 /* Session deny roots, canonicalized at publish time: the configured roots
  * may themselves contain 8.3 short names (e.g. temp dirs on CI runners),
  * which would never prefix-match a GetFinalPathNameByHandleW-resolved
- * path.  Owned copies; freed on the next publish. */
-static char **deny_roots=NULL;
-static size_t deny_root_count=0;
+ * path.  These values are thread-local because background index/search jobs
+ * run concurrently with main-thread RPCs from other sessions.  Process-wide
+ * mutable roots would cross-contaminate policies and could be freed while a
+ * worker was reading them.  Owned copies; freed on this thread's next publish. */
+#if defined(_MSC_VER)
+#define OWC_THREAD_LOCAL __declspec(thread)
+#else
+#define OWC_THREAD_LOCAL _Thread_local
+#endif
+static OWC_THREAD_LOCAL char **deny_roots=NULL;
+static OWC_THREAD_LOCAL size_t deny_root_count=0;
 static char *canonical_deny_root(const char *root){
     wchar_t *w=wide(root),*buf; char *out=NULL; HANDLE h; DWORD n;
     if(!w) return NULL;

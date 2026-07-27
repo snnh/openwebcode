@@ -44,6 +44,13 @@ describe("session model config", () => {
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({ model: "deepseek-reasoner", thinking: "enabled" });
       expect(await sessions.get(session.id)).toMatchObject({ model: "deepseek-reasoner", thinking: "enabled" });
+      // 切到不支持旧思考设置的模型时应原子清除旧值，而不是要求用户先
+      // 单独关闭思考再切模型。
+      const switched = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { model: "deepseek-chat" } });
+      expect(switched.statusCode).toBe(200);
+      expect(switched.json()).toMatchObject({ model: "deepseek-chat" });
+      expect(switched.json()).not.toHaveProperty("thinking");
+      expect(await sessions.get(session.id)).not.toHaveProperty("thinking");
       const invalidSnapshot = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { snapshotMode: "sometimes" } });
       expect(invalidSnapshot.statusCode).toBe(400);
       const invalidShell = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { shellBackend: "powershell" } });

@@ -38,10 +38,10 @@ def send(p, i, method, params):
             return msg
 
 
-def wait_terminal(p, job_id, timeout=30):
+def wait_terminal(p, job_id, timeout=30, session_id="s"):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        status = send(p, "status", "job.status", {"sessionId": "s", "jobId": job_id})["result"]
+        status = send(p, "status", "job.status", {"sessionId": session_id, "jobId": job_id})["result"]
         if status["state"] != "running":
             return status
         time.sleep(0.05)
@@ -122,6 +122,35 @@ def main():
 
         configured = send(p, 1, "session.configure", {"sessionId": "s", "cwd": td, "sandbox": {"enabled": True, "readRoots": [td], "writeRoots": [td], "denyPaths": [str(root / "denied")], "network": "allow"}})
         assert configured["result"]["sandboxCapability"] in {"advisory", "partial", "enforced"}, configured
+
+        # Windows resolved-path deny roots are thread-scoped. Publishing a
+        # second session's policy on the RPC thread must not make an already
+        # snapshotted search worker inherit that policy and reject its own cwd.
+        other_root = pathlib.Path(outside)
+        (other_root / "probe.txt").write_text("probe")
+        other = send(p, "configure-other", "session.configure", {
+            "sessionId": "other",
+            "cwd": outside,
+            "sandbox": {
+                "enabled": True,
+                "readRoots": [outside],
+                "writeRoots": [outside],
+                "denyPaths": [td],
+                "network": "allow",
+            },
+        })
+        assert "result" in other, other
+        assert send(p, "publish-other-policy", "fs.stat", {"sessionId": "other", "path": "."}).get("result", {}).get("type") == "directory"
+        isolated = send(p, "start-policy-isolation", "job.start", {
+            "sessionId": "s",
+            "jobId": "policy-isolation",
+            "kind": "glob",
+            "cwd": td,
+            "path": ".",
+            "pattern": "*.ts",
+        })
+        assert isolated.get("result", {}).get("state") == "running", isolated
+        assert wait_terminal(p, "policy-isolation")["state"] == "completed"
 
         # --- grep job: basic content search ---
 

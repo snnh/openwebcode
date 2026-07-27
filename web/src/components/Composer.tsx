@@ -115,6 +115,13 @@ async function loadMentionItems(sessionId: string, q: string): Promise<{ items: 
 
 /** 思考模式下拉的中文标签；value 保持英文枚举不变 */
 const THINKING_LABEL: Record<string, [string, string]> = { adaptive: ["自适应", "Adaptive"], enabled: ["开启", "Enabled"], disabled: ["关闭", "Disabled"] };
+const EFFORT_LABEL: Record<string, [string, string]> = {
+  low: ["低", "Low"],
+  medium: ["中", "Medium"],
+  high: ["高", "High"],
+  xhigh: ["极高", "Extra high"],
+  max: ["最大", "Maximum"],
+};
 
 export function Composer({ current, model, models, providers = [], pdfToImageExtension, pdfToImageStatus = "ready", imageCapabilitiesReady = true, draft, setDraft, onSend, onConfig, running, sendKey, skills, attachments, setAttachments, supportsImages, onNotice, sendPending = false }: {
   current: SessionDetail;
@@ -167,6 +174,7 @@ export function Composer({ current, model, models, providers = [], pdfToImageExt
   const [pdfJobs, setPdfJobs] = useState(0);
   const [pdfProgress, setPdfProgress] = useState<PdfProgress | null>(null);
   const [queuedBehavior, setQueuedBehavior] = useState<"steer" | "follow_up">("steer");
+  const [advancedConfigOpen, setAdvancedConfigOpen] = useState(false);
   const pdfToImageEnabled = pdfToImageExtension?.enabled === true;
 
   useEffect(() => { draftRef.current = draft; }, [draft]);
@@ -588,9 +596,29 @@ const mentionHasMatches = mentionItems.length > 0;
   const selectedModel = selectableModels.find((item) => item.provider === current.provider && item.id === current.model) ?? model;
   const modelSelection = JSON.stringify([current.provider, current.model]);
   const supportedThinking = selectedModel?.capabilities.thinking ?? [];
-  // 模型不支持思考（thinking 为空数组）时退化为仅「关闭」并禁用，避免空下拉
-  const thinkingModes = supportedThinking.length > 0 ? supportedThinking : ["disabled"];
   const efforts = selectedModel?.capabilities.effort ?? [];
+  // 思考模式和力度合为一个选择器。无 thinking 枚举但支持 effort 的模型以「默认」
+  // 表示不显式下发 reasoning_effort；完全不支持时退化为禁用的「关闭」。
+  const thinkingChoices: Array<{ value: string; label: [string, string] }> = [];
+  if (supportedThinking.includes("disabled")) thinkingChoices.push({ value: "mode:disabled", label: THINKING_LABEL.disabled! });
+  if (supportedThinking.length === 0 && efforts.length > 0) thinkingChoices.push({ value: "default", label: ["默认", "Default"] });
+  for (const mode of supportedThinking) {
+    if (mode !== "disabled") thinkingChoices.push({ value: `mode:${mode}`, label: THINKING_LABEL[mode] ?? [mode, mode] });
+  }
+  for (const effort of efforts) thinkingChoices.push({ value: `effort:${effort}`, label: EFFORT_LABEL[effort] ?? [effort, effort] });
+  if (thinkingChoices.length === 0) thinkingChoices.push({ value: "mode:disabled", label: THINKING_LABEL.disabled! });
+  const hasActiveThinkingMode = supportedThinking.some((mode) => mode !== "disabled");
+  const thinkingExplicitlyOff = hasActiveThinkingMode
+    && supportedThinking.includes("disabled")
+    && (!current.thinking || current.thinking === "disabled");
+  const thinkingSelection = thinkingExplicitlyOff
+    ? "mode:disabled"
+    : current.effort && efforts.includes(current.effort)
+      ? `effort:${current.effort}`
+      : current.thinking && supportedThinking.includes(current.thinking)
+        ? `mode:${current.thinking}`
+        : thinkingChoices[0]!.value;
+  const thinkingControlSupported = hasActiveThinkingMode || efforts.length > 0;
   const selectionUnavailable = current.provider !== "" && !selectableModels.some((item) => item.provider === current.provider && item.id === current.model);
 
   return (
@@ -622,77 +650,6 @@ const mentionHasMatches = mentionItems.length > 0;
           ))}
         </div>
       )}
-      <div className="config-row">
-        <label>
-          {t("模式", "Mode")}
-          <select
-            value={current.agentMode ?? "build"}
-            disabled={running}
-            onChange={(event) => onConfig({ agentMode: event.target.value === "build" ? null : "plan" })}
-          >
-            <option value="build">{t("构建模式（Build）", "Build")}</option>
-            <option value="plan">{t("计划模式（Plan）", "Plan")}</option>
-          </select>
-        </label>
-        <label>
-          {t("模型", "Model")}
-          <select value={modelSelection} disabled={running} onChange={(event) => {
-            const next = selectableModels.find((item) => JSON.stringify([item.provider, item.id]) === event.target.value || item.id === event.target.value);
-            if (next) onConfig({ provider: next.provider, model: next.id });
-          }}>
-            {selectionUnavailable && current.model && <option value={modelSelection}>{`${current.model}【${current.provider}】 (${t("不可用", "unavailable")})`}</option>}
-            {selectableModels.length > 0
-              ? selectableModels.map((item) => {
-                  const value = JSON.stringify([item.provider, item.id]);
-                  return <option key={value} value={value}>{`${item.id}【${item.provider}】`}</option>;
-                })
-              : current.model
-                ? <option value={modelSelection}>{`${current.model}【${current.provider}】`}</option>
-                : <option value="">{t("暂无可用模型", "No model available")}</option>}
-          </select>
-        </label>
-        {selectedModel && (
-          <div className="model-capability-summary" aria-label={t("所选模型能力", "Selected model capabilities")}>
-            <span className="model-capability-summary-label">{t("能力", "Capabilities")}</span>
-            <ModelCapabilityBadges capabilities={selectedModel.capabilities} />
-          </div>
-        )}
-        <label>
-          {t("思考", "Thinking")}
-          <select
-            value={current.thinking ?? "disabled"}
-            disabled={running || (selectedModel !== undefined && supportedThinking.length === 0)}
-            onChange={(event) => onConfig({ thinking: event.target.value === "disabled" ? null : event.target.value })}
-          >
-            {thinkingModes.map((item) => <option key={item} value={item}>{THINKING_LABEL[item] ? t(...THINKING_LABEL[item]!) : item}</option>)}
-          </select>
-        </label>
-        {efforts.length > 0 && (
-          <label>
-            {t("力度", "Effort")}
-            <select
-              value={current.effort ?? efforts[0]}
-              disabled={running}
-              onChange={(event) => onConfig({ effort: event.target.value })}
-            >
-              {efforts.map((item) => <option key={item} value={item}>{item}</option>)}
-            </select>
-          </label>
-        )}
-        <label>
-          {t("权限", "Permissions")}
-          <select
-            value={current.permissionMode ?? "ask"}
-            disabled={running}
-            onChange={(event) => onConfig({ permissionMode: event.target.value })}
-          >
-            <option value="ask">{t("每次确认", "Ask every time")}</option>
-            <option value="acceptEdits">{t("接受编辑", "Accept edits")}</option>
-            <option value="yolo">YOLO</option>
-          </select>
-        </label>
-        {running && <span className="steering-hint">{t("运行中 · 发送将进入 Steering 队列", "Running · new messages enter the Steering queue")}</span>}
-      </div>
       <div className="composer-input">
         {popupOpen && (
           <ul id="skill-listbox" className="skill-popup" role="listbox" aria-label={t("技能建议", "Skill suggestions")}>
@@ -928,6 +885,110 @@ const mentionHasMatches = mentionItems.length > 0;
       ) : (
         <div className="composer-hint">{t("PDF 转图片扩展未启用；PDF 会先保存到工作区，再插入其路径引用。", "The PDF-to-image extension is disabled; PDFs are saved to the workspace and inserted as path references.")}</div>
       )}
+      <div className="config-row" aria-label={t("会话配置", "Session configuration")}>
+        <div className="composer-config-main">
+          <label>
+            {t("模式", "Mode")}
+            <select
+              value={current.agentMode ?? "build"}
+              disabled={running}
+              onChange={(event) => onConfig({ agentMode: event.target.value === "build" ? null : "plan" })}
+            >
+              <option value="build">{t("构建模式（Build）", "Build")}</option>
+              <option value="plan">{t("计划模式（Plan）", "Plan")}</option>
+            </select>
+          </label>
+          <label className="composer-model-field">
+            {t("模型", "Model")}
+            <select value={modelSelection} disabled={running} onChange={(event) => {
+              const next = selectableModels.find((item) => JSON.stringify([item.provider, item.id]) === event.target.value || item.id === event.target.value);
+              if (next) {
+                const config: Record<string, unknown> = { provider: next.provider, model: next.id };
+                // Submit the target model and any required reasoning cleanup in
+                // one request.  This avoids a rejected intermediate state when
+                // the current model's thinking/effort values are unsupported by
+                // the newly selected profile.
+                if (current.thinking && !next.capabilities.thinking.includes(current.thinking)) config.thinking = null;
+                if (current.effort && !next.capabilities.effort.includes(current.effort)) config.effort = null;
+                onConfig(config);
+              }
+            }}>
+              {selectionUnavailable && current.model && <option value={modelSelection}>{`${current.model}【${current.provider}】 (${t("不可用", "unavailable")})`}</option>}
+              {selectableModels.length > 0
+                ? selectableModels.map((item) => {
+                    const value = JSON.stringify([item.provider, item.id]);
+                    return <option key={value} value={value}>{`${item.id}【${item.provider}】`}</option>;
+                  })
+                : current.model
+                  ? <option value={modelSelection}>{`${current.model}【${current.provider}】`}</option>
+                  : <option value="">{t("暂无可用模型", "No model available")}</option>}
+            </select>
+          </label>
+          <label className="composer-thinking-field">
+            {t("思考", "Thinking")}
+            <select
+              value={thinkingSelection}
+              disabled={running || (selectedModel !== undefined && !thinkingControlSupported)}
+              onChange={(event) => {
+                const choice = event.target.value;
+                if (choice === "default" || choice === "mode:disabled") {
+                  onConfig({ thinking: null, effort: null });
+                  return;
+                }
+                if (choice.startsWith("mode:")) {
+                  onConfig({ thinking: choice.slice("mode:".length), effort: null });
+                  return;
+                }
+                const effort = choice.slice("effort:".length);
+                const activeThinking = current.thinking !== "disabled" && current.thinking && supportedThinking.includes(current.thinking)
+                  ? current.thinking
+                  : supportedThinking.includes("enabled")
+                    ? "enabled"
+                    : supportedThinking.includes("adaptive")
+                      ? "adaptive"
+                      : null;
+                onConfig({ thinking: activeThinking, effort });
+              }}
+            >
+              {thinkingChoices.map((choice) => <option key={choice.value} value={choice.value}>{t(...choice.label)}</option>)}
+            </select>
+          </label>
+          <label>
+            {t("权限", "Permissions")}
+            <select
+              value={current.permissionMode ?? "ask"}
+              disabled={running}
+              onChange={(event) => onConfig({ permissionMode: event.target.value })}
+            >
+              <option value="ask">{t("每次确认", "Ask every time")}</option>
+              <option value="acceptEdits">{t("接受编辑", "Accept edits")}</option>
+              <option value="yolo">YOLO</option>
+            </select>
+          </label>
+          <button
+            type="button"
+            className={`composer-config-toggle${advancedConfigOpen ? " open" : ""}`}
+            aria-expanded={advancedConfigOpen}
+            aria-controls="composer-advanced-config"
+            onClick={() => setAdvancedConfigOpen((value) => !value)}
+          >
+            <Icon name="settings" size={13} />
+            {t("高级设置", "Advanced")}
+            <Icon name={advancedConfigOpen ? "chevron-up" : "chevron-down"} size={12} />
+          </button>
+        </div>
+        {advancedConfigOpen && (
+          <div id="composer-advanced-config" className="composer-config-advanced">
+            {selectedModel && (
+              <div className="model-capability-summary" aria-label={t("所选模型能力", "Selected model capabilities")}>
+                <span className="model-capability-summary-label">{t("模型能力", "Model capabilities")}</span>
+                <ModelCapabilityBadges capabilities={selectedModel.capabilities} />
+              </div>
+            )}
+          </div>
+        )}
+        {running && <span className="steering-hint">{t("运行中 · 发送将进入 Steering 队列", "Running · new messages enter the Steering queue")}</span>}
+      </div>
     </footer>
   );
 }

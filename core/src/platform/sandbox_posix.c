@@ -142,7 +142,9 @@ owc_sandbox_status owc_sandbox_probe(char *reason, size_t reason_size) {
     return result.status;
 }
 
-int owc_landlock_apply(const char *cwd, int allow_network, owc_sandbox_result *result) {
+int owc_landlock_apply(const char *cwd, const char *const *allow_paths,
+                       size_t allow_path_count, int allow_network,
+                       owc_sandbox_result *result) {
 #if defined(OWC_HAVE_LANDLOCK_SYSCALLS)
     struct landlock_ruleset_attr ruleset;
     unsigned long long read_exec;
@@ -170,6 +172,9 @@ int owc_landlock_apply(const char *cwd, int allow_network, owc_sandbox_result *r
     read_exec = LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE |
                 LANDLOCK_ACCESS_FS_READ_DIR;
     if (!add_path_rule(ruleset_fd, cwd, handled, 1, result)) goto fail;
+    for (i = 0; i < allow_path_count; ++i) {
+        if (!add_path_rule(ruleset_fd, allow_paths[i], handled, 0, result)) goto fail;
+    }
     for (i = 0; i < sizeof(runtime_paths) / sizeof(runtime_paths[0]); ++i) {
         if (!add_path_rule(ruleset_fd, runtime_paths[i], read_exec, 0, result)) goto fail;
     }
@@ -190,6 +195,8 @@ fail:
     return 0;
 #else
     (void)cwd;
+    (void)allow_paths;
+    (void)allow_path_count;
     owc_landlock_probe(allow_network, result);
     return 0;
 #endif

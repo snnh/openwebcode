@@ -58,8 +58,10 @@ export interface WorkbenchLayoutState {
   bottomOpen: boolean;
   /** 点同一视图图标时折叠侧栏（VSCode 行为），否则切换视图并展开 */
   showView(view: SidebarView): void;
+  /** 仅选择活动视图，不改变侧栏可见性（窄窗口临时抽屉使用） */
+  selectView(view: SidebarView): void;
   toggleSidebar(): void;
-  /** 显式设置侧栏可见性（移动端抽屉：选中会话后收起） */
+  /** 显式设置桌面侧栏可见性 */
   setSidebarVisible(visible: boolean): void;
   setSidebarWidth(width: number): void;
   setBottomOpen(open: boolean | ((previous: boolean) => boolean)): void;
@@ -87,9 +89,10 @@ export function useWorkbenchLayout(): WorkbenchLayoutState {
       return view;
     });
   }, []);
+  const selectView = useCallback((view: SidebarView): void => setSidebarView(view), []);
   const toggleSidebar = useCallback((): void => setSidebarVisible((value) => !value), []);
   const setSidebarWidth = useCallback((width: number): void => setSidebarWidthState(clampRailWidth(width)), []);
   const toggleBottomPanel = useCallback((): void => setBottomOpen((value) => !value), []);
 
-  return { sidebarView, sidebarVisible, sidebarWidth, bottomOpen, showView, toggleSidebar, setSidebarVisible, setSidebarWidth, setBottomOpen, toggleBottomPanel };
+  return { sidebarView, sidebarVisible, sidebarWidth, bottomOpen, showView, selectView, toggleSidebar, setSidebarVisible, setSidebarWidth, setBottomOpen, toggleBottomPanel };
 }

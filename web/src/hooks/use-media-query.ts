@@ -5,8 +5,8 @@
  */
 import { useEffect, useState } from "react";
 
-/** 移动端断点：与 styles.css 的 @media (max-width: 768px) 保持一致 */
-export const MOBILE_BREAKPOINT = "(max-width: 768px)";
+/** 窄窗口断点：与 styles.css 保持一致；桌面三栏在此宽度以下会产生明显挤压。 */
+export const MOBILE_BREAKPOINT = "(max-width: 1024px)";
 
 export function useMediaQuery(query: string): boolean {
   const [matches, setMatches] = useState<boolean>(() =>
