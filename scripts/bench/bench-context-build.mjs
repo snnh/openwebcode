@@ -98,12 +98,16 @@ console.log(`加速比: ${speedup.toFixed(2)}x（目标 >= 2.0x）`);
 console.log(`增量命中率: ${incrementalHits}/${INCREMENTAL_RUNS}`);
 
 const ms = (v) => Math.round(v * 100) / 100;
+// 增量构建是亚毫秒级操作（20 次采样）：共享 CI runner 上 ±0.3ms 抖动即对应
+// ±30%+ 百分比，纯相对阈值会系统性误报。minDelta=0.5ms 是绝对噪声地板；
+// speedup 由 p50 派生、噪声同源，且下方有 speedup>=2.0 的验收断言兜底，
+// 故只展示不参与跨版本判定。
 await writeResult("context-build", [
   { name: "fullBuild.p50", value: ms(fullSummary.p50), unit: "ms", direction: "lower-better" },
   { name: "fullBuild.p95", value: ms(fullSummary.p95), unit: "ms", direction: "lower-better" },
-  { name: "incremental.p50", value: ms(incSummary.p50), unit: "ms", direction: "lower-better" },
-  { name: "incremental.p95", value: ms(incSummary.p95), unit: "ms", direction: "lower-better" },
-  { name: "context.incremental.speedup", value: ms(speedup), unit: "x", direction: "higher-better" },
+  { name: "incremental.p50", value: ms(incSummary.p50), unit: "ms", direction: "lower-better", minDelta: 0.5 },
+  { name: "incremental.p95", value: ms(incSummary.p95), unit: "ms", direction: "lower-better", minDelta: 0.5 },
+  { name: "context.incremental.speedup", value: ms(speedup), unit: "x", direction: "none" },
   { name: "incremental.hitRate", value: ms(incrementalHits / INCREMENTAL_RUNS), unit: "ratio", direction: "higher-better" },
   { name: "heapDelta", value: ms(heapDeltaMB), unit: "MiB", direction: "lower-better" },
   { name: "dataset.messages", value: messages.length, unit: "count", direction: "none" },
