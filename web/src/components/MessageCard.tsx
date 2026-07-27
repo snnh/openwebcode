@@ -1,4 +1,5 @@
 import { memo, useEffect, useRef, useState, type ReactElement } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import type { ChatMessage, ExtensionInfo, MessageContent } from "../lib/contracts";
 import type { DiffSpec } from "./editor/DiffPane";
@@ -58,14 +59,59 @@ export function ToolCallCard({ name, input, onOpenDiff }: { name: string; input?
   );
 }
 
-export function ToolResultCard({ content, error }: { content: string; error: boolean }): ReactElement {
+/** spawn_task/spawn_swarm 工具结果携带的子代理转录：展开时按 taskId 拉取，只读展示 */
+function SubagentTranscriptDetails({ sessionId, taskId, index }: { sessionId: string; taskId: string; index?: number | undefined }): ReactElement {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const transcript = useQuery({
+    queryKey: ["subagent-transcript", sessionId, taskId],
+    queryFn: () => api.subagentTranscript(sessionId, taskId),
+    enabled: open,
+    staleTime: Number.POSITIVE_INFINITY,
+  });
+  const label = index !== undefined
+    ? t(`子代理转录 ${index}`, `Subagent transcript ${index}`)
+    : t("子代理转录", "Subagent transcript");
+  return (
+    <details className="subagent-transcript" onToggle={(event) => setOpen(event.currentTarget.open)}>
+      <summary>{label}</summary>
+      {open && transcript.isPending && <p className="subagent-transcript-status">{t("加载中…", "Loading…")}</p>}
+      {open && transcript.isError && <p className="subagent-transcript-status">{t("转录加载失败", "Failed to load transcript")}</p>}
+      {open && transcript.data && (
+        <div className="subagent-transcript-body">
+          <p className="subagent-transcript-meta mono">
+            {[
+              transcript.data.agent,
+              t(`${transcript.data.turns} 轮`, `${transcript.data.turns} turns`),
+              transcript.data.toolsUsed.length > 0 ? transcript.data.toolsUsed.join(", ") : undefined,
+            ].filter(Boolean).join(" · ")}
+          </p>
+          <p className="subagent-transcript-prompt">{transcript.data.prompt}</p>
+          <Markdown>{transcript.data.conclusion}</Markdown>
+        </div>
+      )}
+    </details>
+  );
+}
+
+export function ToolResultCard({ content, error, sessionId, subagentTaskIds }: { content: string; error: boolean; sessionId?: string | undefined; subagentTaskIds?: string[] | undefined }): ReactElement {
   const { t } = useI18n();
   const collapsible = error || content.length > 400 || content.includes("\n");
+  const transcripts = sessionId && subagentTaskIds && subagentTaskIds.length > 0
+    ? (
+      <div className="subagent-transcripts">
+        {subagentTaskIds.map((taskId, i) => (
+          <SubagentTranscriptDetails key={taskId} sessionId={sessionId} taskId={taskId} index={subagentTaskIds.length > 1 ? i + 1 : undefined} />
+        ))}
+      </div>
+    )
+    : null;
   if (!collapsible) {
     return (
       <section className={`tool-result${error ? " error" : ""}`}>
         <span className="tool-result-label">{t("结果", "Result")}</span>
         <p className="mono">{content}</p>
+        {transcripts}
       </section>
     );
   }
@@ -75,6 +121,7 @@ export function ToolResultCard({ content, error }: { content: string; error: boo
         <summary>{error ? t("执行失败", "Execution failed") : t(`执行结果（${content.length} 字符）`, `Result (${content.length} characters)`)}</summary>
         <pre className="mono">{content}</pre>
       </details>
+      {transcripts}
     </section>
   );
 }
@@ -89,7 +136,7 @@ export function ThinkingBlock({ text, streaming = false }: { text: string; strea
   );
 }
 
-function ContentBlock({ block, onOpenDiff }: { block: MessageContent; onOpenDiff?(spec: DiffSpec): void }): ReactElement | null {
+function ContentBlock({ block, sessionId, onOpenDiff }: { block: MessageContent; sessionId?: string | undefined; onOpenDiff?(spec: DiffSpec): void }): ReactElement | null {
   const { t } = useI18n();
   switch (block.type) {
     case "text":
@@ -99,7 +146,7 @@ function ContentBlock({ block, onOpenDiff }: { block: MessageContent; onOpenDiff
     case "tool_call":
       return <ToolCallCard name={block.name ?? "tool"} input={block.input} onOpenDiff={onOpenDiff} />;
     case "tool_result":
-      return <ToolResultCard content={block.content ?? ""} error={Boolean(block.isError)} />;
+      return <ToolResultCard content={block.content ?? ""} error={Boolean(block.isError)} sessionId={sessionId} subagentTaskIds={block.subagentTaskIds} />;
     case "image":
       return <img className="message-image" src={`data:${block.mediaType ?? "image/png"};base64,${block.data ?? ""}`} alt={t("用户上传的图片", "User-uploaded image")} />;
     default:
@@ -226,7 +273,7 @@ export function MessageCard({ message, sessionId, contentLens, onNotice, onOpenD
           </>
         )}
       </div>
-      {content.map((block, index) => <ContentBlock key={index} block={block} onOpenDiff={onOpenDiff} />)}
+      {content.map((block, index) => <ContentBlock key={index} block={block} sessionId={sessionId} onOpenDiff={onOpenDiff} />)}
       {translation && <details className="content-lens-result" open><summary>{t("译文", "Translation")}</summary><Markdown>{translation}</Markdown></details>}
       {explanation && <details className="content-lens-result" open><summary>{t("解析：", "Explanation: ")}{explanation.selection}</summary><Markdown>{explanation.text}</Markdown></details>}
     </article>

@@ -281,7 +281,7 @@ export function App(): ReactElement {
           notify(t(`后台任务 ${task.taskId} 已结束（exit ${task.exitCode ?? "?"}）`, `Background task ${task.taskId} finished (exit ${task.exitCode ?? "?"})`));
           queryClient.invalidateQueries({ queryKey: ["tasks", currentId] });
         }
-        const refreshDetail = ["agent.state", "tool.end", "agent.error", "session.config_updated"].includes(event.type);
+        const refreshDetail = ["agent.state", "tool.end", "agent.error", "session.config_updated", "subagent.finished"].includes(event.type);
         const refreshContext = ["context.usage", "context.budget_updated", "context.restored", "context.evicted", "context.compacted", "context.cleared"].includes(event.type);
         const refreshCheckpoints = ["checkpoint.created", "checkpoint.restored", "checkpoint.deleted", "checkpoint.failed"].includes(event.type);
         if (refreshDetail || refreshContext || refreshCheckpoints) {
