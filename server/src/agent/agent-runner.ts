@@ -35,6 +35,7 @@ import type { HookEvent, HookPayload, HookRunner } from "../hooks.js";
 import type { ExtensionManager } from "../extensions/extension-manager.js";
 import { decodeProcessOutputChunks } from "./output-decoder.js";
 import { buildSystemPrompt } from "./prompts/prompt-builder.js";
+import { loadPromptOverride, type PromptOverride } from "./prompts/prompt-overrides.js";
 import { RunStore, type AgentRunSnapshot, type AgentRunState } from "./run-store.js";
 import { MessageQueue, type QueueItem } from "./message-queue.js";
 import { InteractionCoordinator, type InteractionKind, type InteractionRequest } from "./interaction-coordinator.js";
@@ -524,6 +525,8 @@ export class AgentRunner {
   private readonly interactions: InteractionCoordinator;
   private readonly repeatedCalls = new Map<string, { signature: string; count: number }>();
   private readonly mcpWarningSignatures = new Map<string, string>();
+  /** 可编辑提示词覆盖：按 cwd 缓存一次，避免每轮 IO；首次构建时读取。 */
+  private readonly promptOverrideCache = new Map<string, PromptOverride>();
   private readonly todos = new Map<string, TodoItem[]>();
   private readonly permissions: PermissionCoordinator;
   private readonly repoMap: RepoMapGenerator;
@@ -548,6 +551,11 @@ export class AgentRunner {
   /** Phase 4a：注入 SCM 服务，启用 git_status/git_diff/git_commit/git_worktree_* 工具。 */
   setScm(scm: ScmService): void {
     this.scm = scm;
+  }
+
+  /** 提示词覆盖更新后清空缓存，下次构建提示词时重新读取覆盖文件。 */
+  refreshPromptOverride(): void {
+    this.promptOverrideCache.clear();
   }
 
   private searchProvider: SearchProvider | undefined;
@@ -902,6 +910,13 @@ export class AgentRunner {
         // 长期记忆注入（§2.3/§7.5）：CLAUDE.md/AGENTS.md + 项目/全局 memory.md，每轮现读
         const memorySection = await this.buildMemorySection(session.cwd);
 
+        // 可编辑提示词覆盖：按 cwd 缓存一次（首次读取文件，后续复用）
+        let promptOverride = this.promptOverrideCache.get(session.cwd);
+        if (!promptOverride && this.dataDir) {
+          promptOverride = await loadPromptOverride(this.dataDir, session.cwd);
+          this.promptOverrideCache.set(session.cwd, promptOverride);
+        }
+
         // 后台任务完成提示（读后即清）
         // 后台任务是工具能力的一部分；不支持工具的模型既不注入也不消费待发送通知。
         const bgNotices = toolsEnabled ? (this.backgroundTasks?.drainNotices(sessionId) ?? []) : [];
@@ -918,6 +933,7 @@ export class AgentRunner {
           finalConstraints: [SAFETY_BOUNDARY_SECTION],
           skillsSection: `${skillSection}${agentSection}`,
           projectContext: memorySection ? [{ path: "workspace instructions and memory", content: memorySection }] : [],
+          ...(promptOverride ? { basePromptOverride: promptOverride.baseOverride, customAppend: promptOverride.customAppend } : {}),
         });
         await this.state(sessionId, "streaming");
         const providerCallStart = performance.now();

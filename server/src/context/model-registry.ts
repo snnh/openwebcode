@@ -1,6 +1,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
+import { getUserAgent } from "../http.js";
 import { FALLBACK_METADATA, lookupModelMetadata, type ModelMetadata } from "./model-metadata.js";
 import {
   getModelProfile,
@@ -424,13 +425,13 @@ export class ModelRegistry {
   }
 
   private async fetchJsonWith(url: string, headers: Record<string, string>, fetchImpl: typeof fetch, timeoutMs: number): Promise<unknown> {
-    const response = await fetchImpl(url, { headers, signal: AbortSignal.timeout(timeoutMs) });
+    const response = await fetchImpl(url, { headers: { "User-Agent": getUserAgent(), ...headers }, signal: AbortSignal.timeout(timeoutMs) });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return response.json();
   }
 
   private async fetchRemoteCatalogJson(url: string, fetchImpl: typeof fetch, timeoutMs: number): Promise<unknown> {
-    const response = await fetchImpl(url, { signal: AbortSignal.timeout(timeoutMs) });
+    const response = await fetchImpl(url, { headers: { "User-Agent": getUserAgent() }, signal: AbortSignal.timeout(timeoutMs) });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return response.json();
   }

@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { ChatMessage } from "../sessions/types.js";
+import { getUserAgent } from "../http.js";
 import { normalizeProviderError } from "./provider-error.js";
 import type { Provider, ProviderEvent, ProviderTool, StreamChatRequest } from "./provider.js";
 
@@ -24,6 +25,7 @@ export class AnthropicProvider implements Provider {
     this.client = new Anthropic({
       ...(options.apiKey ? { apiKey: options.apiKey } : {}),
       ...(options.baseURL ? { baseURL: options.baseURL } : {}),
+      defaultHeaders: { "User-Agent": getUserAgent() },
     });
   }
 
