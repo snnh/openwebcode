@@ -349,6 +349,7 @@ jobs:
       }}
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - name: Resolve version from tag
         shell: bash
         run: |
@@ -401,6 +402,7 @@ jobs:
             release-assets/openwebcode-${{ env.VERSION }}-windows-x64.msi
             release-assets/openwebcode-${{ env.VERSION }}-linux-x64.tar.gz
             release-assets/SHA256SUMS.txt
+            packaging/install-online.sh
             ${{ needs.benchmark.result == 'success' && 'release-assets/benchmarks/bench-results-*.json' || '' }}
 
   benchmark:

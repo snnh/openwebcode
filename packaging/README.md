@@ -9,6 +9,7 @@
 | --- | --- | --- |
 | `openwebcode-<version>-windows-x64.msi` | Windows | CPack/WiX 安装包 |
 | `openwebcode-<version>-linux-x64.tar.gz` | Linux | tar.gz + 顶层 `install.sh` |
+| `install-online.sh` | Linux | `curl \| bash` 在线安装/更新脚本 |
 | `SHA256SUMS.txt` | 全平台 | 两个发行包的 SHA-256 校验和 |
 
 `<version>` 为 tag 去掉前导 `v`（如 `v0.5.2` → `0.5.2`）。
@@ -244,6 +245,32 @@ cd openwebcode
 ```
 
 `--system` 和 `--with-desktop-entry` 目前未实现，脚本会明确失败而不是伪装为完成系统级安装或桌面集成。卸载：`rm -rf <prefix>/lib/openwebcode <prefix>/bin/owc`（加 systemd unit 与数据目录，见 `install.sh` 头部注释）。
+
+### 在线安装与更新
+
+`packaging/install-online.sh` 是不落盘的 `curl | bash` 安装/更新脚本（POSIX sh），适合一条命令完成安装或升级：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/snnh/openwebcode/main/packaging/install-online.sh | bash
+# 指定版本、前缀并跳过交互：
+curl -fsSL https://raw.githubusercontent.com/snnh/openwebcode/main/packaging/install-online.sh \
+  | bash -s -- --version 0.6.0 --prefix /opt/openwebcode --yes
+```
+
+脚本从 GitHub Releases 下载 `openwebcode-<version>-linux-x64.tar.gz` 与 `SHA256SUMS.txt`，先用 `sha256sum --check`（只取目标行；无 `sha256sum` 时回落 `shasum -a 256`）校验，失败即中止，再解压到 `mktemp -d` 临时目录（退出时自动清理）。依赖仅为 curl 或 wget、tar、校验工具，不依赖 jq。
+
+| 选项 | 行为 |
+| --- | --- |
+| `--version <x.y.z>` | 目标版本；缺省查询 `https://api.github.com/repos/snnh/openwebcode/releases/latest` 的 `tag_name`（sed/grep 解析）。 |
+| `--prefix <绝对路径>` | 安装前缀，默认 `$HOME/.local`；用于判定全新安装还是更新，并透传给包内 `install.sh`。 |
+| `--yes` / `--port` / `--host` / `--data-dir` / `--with-systemd` / `--use-system-node` | 原样透传给包内 `install.sh`（仅全新安装时生效；更新模式不重建启动器，会提示这些参数被忽略）。 |
+
+两种模式：
+
+- **全新安装**：调用解压出的 `install.sh`，行为与离线安装完全一致（生成 `<prefix>/bin/owc`、可选 `--with-systemd`）。
+- **更新**：`<prefix>/lib/openwebcode/server/dist/index.js` 已存在时进入更新模式——整体替换 `<prefix>/lib/openwebcode/` 内容为新版，保留 `<prefix>/bin/owc` 启动器与已写入的 systemd unit 不动，数据目录不受影响。目标目录不可写时会给出明确错误（可能需要 sudo 或修正权限）。完成后按提示重启：存在用户级 unit 时 `systemctl --user restart openwebcode`，否则手动重启正在运行的 `owc`。
+
+下载基址可用环境变量 `OWC_INSTALL_BASE_URL` 覆盖（默认 `https://github.com/snnh/openwebcode/releases/download/v<version>`），便于镜像或 `file://` 本地测试。
 
 ## owc 启动脚本行为
 
