@@ -83,7 +83,8 @@ export class EventBus extends EventEmitter {
   /**
    * 把 delta 并入 (sessionId, type) 键对应的缓冲，并在窗口到期时合并发布。
    * 返回值为占位事件（seq 指向最后一条已定序事件），实际事件在 flush 时才定序；
-   * 当前没有调用方消费 delta 发布的返回值。
+   * 当前没有调用方消费 delta 发布的返回值，因此占位事件直接引用原 payload，
+   * 不再复制累计文本（避免长流下每个 delta 都构造一次携带完整缓冲的新对象）。
    */
   private bufferDelta(input: AppEventInput): AppEvent {
     const key = `${input.sessionId ?? ""}${input.type}`;
@@ -98,7 +99,6 @@ export class EventBus extends EventEmitter {
     }
     return {
       ...input,
-      payload: { ...(input.payload as Record<string, unknown>), text: this.pendingDeltas.get(key)!.text },
       eventId: "pending",
       seq: this.sequence,
       createdAt: new Date().toISOString(),
