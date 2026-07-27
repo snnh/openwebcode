@@ -129,7 +129,15 @@ describe("spawn_task via AgentRunner", () => {
       event.type === "tool.end" && (event.payload as { toolCallId?: string }).toolCallId === "spawn-1");
     expect(toolEnd).toBeDefined();
     expect((toolEnd!.payload as { result?: { conclusion?: string; turns?: number; toolsUsed?: string[] } }).result)
-      .toEqual({ conclusion: "结论：一切正常", turns: 2, toolsUsed: ["read_file"] });
+      .toMatchObject({ conclusion: "结论：一切正常", turns: 2, toolsUsed: ["read_file"] });
+
+    // 子代理生命周期事件 + 工具结果携带转录 id
+    const taskId = (toolResult as { subagentTaskIds?: string[] }).subagentTaskIds?.[0];
+    expect(taskId).toBeTruthy();
+    expect(captured.some((event) =>
+      event.type === "subagent.started" && (event.payload as { taskId?: string }).taskId === taskId)).toBe(true);
+    expect(captured.some((event) =>
+      event.type === "subagent.finished" && (event.payload as { taskId?: string; status?: string }).taskId === taskId)).toBe(true);
 
     // 子代理文本不进入主聊天流
     expect(captured.some((event) =>

@@ -275,6 +275,35 @@ const SPAWN_TASK_TOOL: ProviderTool = {
   },
 };
 
+/** swarm 单项数上限：低于 Kimi Code AgentSwarm 的 128，作为自托管部署的成本护栏。 */
+export const SPAWN_SWARM_MAX_ITEMS = 16;
+/** 同时运行的子代理数；超出排队，与"launch 自动排队"语义一致。 */
+export const SPAWN_SWARM_CONCURRENCY = 4;
+
+const SPAWN_SWARM_TOOL: ProviderTool = {
+  name: "spawn_swarm",
+  description:
+    "Launch multiple read-only sub-agents from one prompt template over different inputs, running in parallel (launches beyond the concurrency limit are queued). " +
+    "The {{item}} placeholder in prompt_template is replaced with each items value; each item launches one independent sub-agent with an isolated context. " +
+    "Use when many independent tasks of the same kind should run in parallel (e.g. reviewing several files or endpoints). " +
+    "For a single task use spawn_task instead. Each sub-agent can only use the read-only tools read_file, glob, grep and read_artifact; " +
+    "only its final conclusion (at most 2000 characters) is returned, aggregated as numbered results.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      prompt_template: { type: "string", description: "Prompt template for every sub-agent; must contain the {{item}} placeholder where each item value is substituted." },
+      items: {
+        type: "array",
+        items: { type: "string" },
+        description: "Values used to fill {{item}}. Each item launches one sub-agent; 2-16 items, and the filled-in prompts must be distinct.",
+      },
+      agent: { type: "string", description: "Optional custom sub-agent name from the system prompt catalog, applied to every launch." },
+    },
+    required: ["prompt_template", "items"],
+    additionalProperties: false,
+  },
+};
+
 const TODO_WRITE_TOOL: ProviderTool = {
   name: "todo_write",
   description: "Replace the session task list. Use it to track multi-step work; keep exactly one item in_progress.",
@@ -389,6 +418,7 @@ function builtInTools(options: {
     GIT_WORKTREE_MERGE_TOOL,
     ...(options.skillsAvailable ? [LOAD_SKILL_TOOL] : []),
     SPAWN_TASK_TOOL,
+    SPAWN_SWARM_TOOL,
     TODO_WRITE_TOOL,
     REMEMBER_TOOL,
     ...(options.fetchAvailable ? [WEB_FETCH_TOOL] : []),
@@ -405,7 +435,7 @@ const TOOL_EXECUTION_CLASS: Readonly<Record<string, ToolExecutionClass>> = {
   read_file: "read_only", glob: "read_only", grep: "read_only", read_artifact: "read_only", load_skill: "read_only", repo_map: "read_only", code_search: "read_only",
   git_status: "read_only", git_diff: "read_only",
   web_fetch: "external", web_search: "external", write_file: "workspace_write", edit_file: "workspace_write",
-  bash: "process", task_output: "read_only", task_stop: "process", todo_write: "workspace_write", remember: "workspace_write", spawn_task: "process", test_runner: "process",
+  bash: "process", task_output: "read_only", task_stop: "process", todo_write: "workspace_write", remember: "workspace_write", spawn_task: "process", spawn_swarm: "process", test_runner: "process",
   git_commit: "process", git_worktree_create: "process", git_worktree_remove: "process", git_worktree_merge: "process",
 };
 function executionClass(name: string): ToolExecutionClass { return name.startsWith("mcp__") ? "external" : TOOL_EXECUTION_CLASS[name] ?? "workspace_write"; }
@@ -1431,7 +1461,7 @@ export class AgentRunner {
     const session = await this.sessions.get(sessionId);
     if (!session) return { allowed: false, reason: "Session not found" };
     // Plan 模式门禁：只读工具放行，其余一律拦截
-    const PLAN_READONLY = new Set(["read_file", "glob", "grep", "read_artifact", "load_skill", "spawn_task", "todo_write", "web_fetch", "web_search", "task_output", "repo_map", "code_search", "git_status", "git_diff"]);
+    const PLAN_READONLY = new Set(["read_file", "glob", "grep", "read_artifact", "load_skill", "spawn_task", "spawn_swarm", "todo_write", "web_fetch", "web_search", "task_output", "repo_map", "code_search", "git_status", "git_diff"]);
     if (session.agentMode === "plan") {
       if (tool.startsWith("mcp__")) return { allowed: false, reason: `Plan 模式为只读：MCP 工具 ${tool} 被拦截（无法判定读写）。请输出实施计划并请用户切换到 build 模式执行。` };
       if (!PLAN_READONLY.has(tool)) return { allowed: false, reason: `Plan 模式为只读：${tool} 被拦截。请输出实施计划并请用户切换到 build 模式执行。` };
@@ -1611,15 +1641,136 @@ export class AgentRunner {
           cwd: session.cwd,
           contextRoot: this.sessions.contextRoot(sessionId),
           signal,
+          onStart: (taskId) => {
+            this.events.publish({
+              source: "agent",
+              type: "subagent.started",
+              sessionId,
+              payload: { toolCallId, taskId, prompt: prompt.slice(0, 200), ...(definition ? { agent: definition.name } : {}) },
+            });
+          },
           onUsage: (usage) => this.recordUsageEvent(sessionId, subUsageContext, session.provider, definition?.model ?? session.model, usage),
+        });
+        this.events.publish({
+          source: "agent",
+          type: "subagent.finished",
+          sessionId,
+          payload: { toolCallId, taskId: result.taskId, status: "done", turns: result.turns },
         });
         this.events.publish({
           source: "agent",
           type: "tool.end",
           sessionId,
-          payload: { toolCallId, result: { conclusion: result.conclusion, turns: result.turns, toolsUsed: result.toolsUsed } },
+          payload: { toolCallId, result: { taskId: result.taskId, conclusion: result.conclusion, turns: result.turns, toolsUsed: result.toolsUsed } },
         });
-        return { type: "tool_result", toolCallId, content: result.conclusion, isError: false };
+        return { type: "tool_result", toolCallId, content: result.conclusion, isError: false, subagentTaskIds: [result.taskId] };
+      } catch (error) {
+        const content = error instanceof Error ? error.message : String(error);
+        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
+        return { type: "tool_result", toolCallId, content, isError: true };
+      }
+    }
+    if (name === "spawn_swarm") {
+      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+      this.state(sessionId, "tool_running");
+      try {
+        const session = await this.sessions.get(sessionId);
+        if (!session) throw new Error("Session not found");
+        const provider = this.providers.get(session.provider);
+        if (!provider) throw new Error(`Provider ${session.provider} is not configured`);
+        const template = String(input.prompt_template ?? "");
+        if (!template.includes("{{item}}")) throw new Error("spawn_swarm requires prompt_template to contain the {{item}} placeholder");
+        const rawItems = Array.isArray(input.items) ? input.items.map((item) => String(item)) : [];
+        if (rawItems.length < 2) throw new Error("spawn_swarm requires at least 2 items; for a single task use spawn_task");
+        if (rawItems.length > SPAWN_SWARM_MAX_ITEMS) throw new Error(`spawn_swarm supports at most ${SPAWN_SWARM_MAX_ITEMS} items (got ${rawItems.length})`);
+        const prompts = rawItems.map((item) => template.split("{{item}}").join(item));
+        if (new Set(prompts).size !== prompts.length) throw new Error("spawn_swarm items must produce distinct filled-in prompts");
+        const agentName = typeof input.agent === "string" ? input.agent.trim() : "";
+        const definition = agentName && this.agents ? await this.agents.find(session.cwd, agentName) : undefined;
+        if (agentName && !definition) throw new Error(`Unknown sub-agent: ${agentName}`);
+        const requestedTools = definition?.tools ?? [...SUB_AGENT_TOOL_NAMES];
+        const toolNames = requestedTools.filter((tool) => (SUB_AGENT_TOOL_NAMES as readonly string[]).includes(tool));
+        const subUsageContext = new ContextManager(this.sessions.contextRoot(sessionId));
+        const contextRoot = this.sessions.contextRoot(sessionId);
+        interface SwarmItemOutcome { ok: boolean; conclusion?: string; error?: string }
+        const subagentTaskIds: string[] = [];
+        const runOne = async (prompt: string, index: number): Promise<SwarmItemOutcome> => {
+          const swarm = { index: index + 1, total: prompts.length };
+          let taskId = "";
+          try {
+            const result = await runSubAgent({
+              provider,
+              model: session.model,
+              ...(definition?.model ? { modelOverride: definition.model } : {}),
+              ...(definition ? { systemExtra: definition.body, agent: definition.name } : {}),
+              prompt,
+              toolNames,
+              core: this.core,
+              sessionId,
+              cwd: session.cwd,
+              contextRoot,
+              signal,
+              onStart: (id) => {
+                taskId = id;
+                subagentTaskIds[index] = id;
+                this.events.publish({
+                  source: "agent",
+                  type: "subagent.started",
+                  sessionId,
+                  payload: { toolCallId, taskId: id, prompt: prompt.slice(0, 200), swarm, ...(definition ? { agent: definition.name } : {}) },
+                });
+              },
+              onUsage: (usage) => this.recordUsageEvent(sessionId, subUsageContext, session.provider, definition?.model ?? session.model, usage),
+            });
+            this.events.publish({
+              source: "agent",
+              type: "subagent.finished",
+              sessionId,
+              payload: { toolCallId, taskId: result.taskId, status: "done", turns: result.turns, swarm },
+            });
+            return { ok: true, conclusion: result.conclusion };
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            this.events.publish({
+              source: "agent",
+              type: "subagent.finished",
+              sessionId,
+              payload: { toolCallId, taskId, status: "failed", error: message, swarm },
+            });
+            return { ok: false, error: message };
+          }
+        };
+        // 并发上限内的 worker-pool：超出项排队，单项失败不拖垮整批（allSettled 语义）
+        const outcomes: SwarmItemOutcome[] = new Array(prompts.length) as SwarmItemOutcome[];
+        let next = 0;
+        const workers = Array.from({ length: Math.min(SPAWN_SWARM_CONCURRENCY, prompts.length) }, async () => {
+          while (next < prompts.length) {
+            const index = next;
+            next += 1;
+            outcomes[index] = await runOne(prompts[index]!, index);
+          }
+        });
+        await Promise.all(workers);
+        const failed = outcomes.filter((outcome) => !outcome.ok).length;
+        const aggregated = outcomes
+          .map((outcome, index) => outcome.ok
+            ? `[${index + 1}/${outcomes.length}] ${outcome.conclusion ?? ""}`
+            : `[${index + 1}/${outcomes.length}] FAILED: ${outcome.error ?? "unknown error"}`)
+          .join("\n\n");
+        const bounded = await boundToolResult(contextRoot, name, aggregated);
+        this.events.publish({
+          source: "agent",
+          type: "tool.end",
+          sessionId,
+          payload: { toolCallId, result: { total: outcomes.length, failed, ...toolEventResult(bounded) } },
+        });
+        return {
+          type: "tool_result",
+          toolCallId,
+          content: bounded.content,
+          isError: failed === outcomes.length,
+          subagentTaskIds: subagentTaskIds.filter((id): id is string => typeof id === "string" && id.length > 0),
+        };
       } catch (error) {
         const content = error instanceof Error ? error.message : String(error);
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });

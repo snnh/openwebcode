@@ -24,6 +24,8 @@ export interface ToolResultContent {
   toolCallId: string;
   content: string;
   isError: boolean;
+  /** spawn_task/spawn_swarm 产生的子代理转录 id（<contextRoot>/subagents/<taskId>.json），供 UI 查看转录。 */
+  subagentTaskIds?: string[];
 }
 
 /** 用户消息中的图片块（base64 内联，mediaType 限 image/png|jpeg|webp|gif）。 */
