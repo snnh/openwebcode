@@ -2,8 +2,8 @@
  * 索引管理器（0.4.0 Phase 2 §4.1）：workspace 级符号索引的编排。
  *
  * 流程：core `index.scan` job 产出完整 manifest（JSONL 流）→ Node 对连续
- * manifest 做 diff（新增/修改/删除，sha256 优先）→ 对变化文件经 core 原语
- * 读内容、跑轻量符号提取 → append 批次写 files.jsonl/symbols.jsonl（定期压实）。
+ * manifest 做 diff（新增/修改/删除，sha256 优先）→ 变化文件交给 core
+ * `index.extract` job 提取符号 → append 批次写 files.jsonl/symbols.jsonl（定期压实）。
  *
  * 语义约束：
  * - 索引只是加速缓存，文件系统永远是真相；损坏整体作废、显式重建。
@@ -14,11 +14,20 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { CoreClientLike, IndexScanEntry, IndexScanSummary } from "../core-client.js";
+import type { CoreClientLike, IndexExtractEntry, IndexExtractSummary, IndexExtractSymbol, IndexScanEntry, IndexScanSummary } from "../core-client.js";
 import type { EventBus } from "../events/event-bus.js";
 import { diffManifest } from "./manifest.js";
-import { IndexCorruptError, IndexStore, workspaceHash, type IndexMeta, type LoadedIndex } from "./index-store.js";
-import { extractSymbols, languageForPath, MAX_EXTRACT_FILE_BYTES, type SymbolRecord } from "./symbols.js";
+import {
+  IndexCorruptError,
+  IndexStore,
+  isSymbolKind,
+  languageForPath,
+  MAX_EXTRACT_FILE_BYTES,
+  workspaceHash,
+  type IndexMeta,
+  type LoadedIndex,
+  type SymbolRecord,
+} from "./index-store.js";
 
 export type IndexStatus = "missing" | "building" | "fresh" | "stale";
 
@@ -100,8 +109,6 @@ const DEFAULT_EXCLUDES = [
   ".next", ".cache", "__pycache__", ".venv", "_CPack_Packages",
 ];
 
-/** 提取并发：小并发即可，瓶颈在 core IPC 而非 CPU。 */
-const EXTRACT_CONCURRENCY = 8;
 const SEARCH_LIMIT_DEFAULT = 50;
 const SEARCH_LIMIT_MAX = 200;
 
@@ -296,8 +303,8 @@ export class IndexManager {
         maxBytes: this.budget.maxBytes,
         maxMs: this.budget.maxMs,
       });
-      const { entries, summary } = await this.collectManifest(ws, sessionId, jobId, signal);
-      await this.applyManifest(ws, sessionId, entries, summary, this.now() - startedAt, signal);
+      const { entries, summary } = await this.collectManifest(sessionId, jobId, signal);
+      await this.applyManifest(ws, sessionId, jobId, entries, summary, this.now() - startedAt, signal);
       ws.stale = false;
       ws.staleReason = undefined;
       ws.corrupt = false; // 成功重建后翻转损坏标记
@@ -321,28 +328,17 @@ export class IndexManager {
     }
   }
 
-  /** 轮询 job 输出直到终态，解析 JSONL 流为 manifest + summary。 */
-  private async collectManifest(
-    ws: WorkspaceState,
-    sessionId: string,
-    jobId: string,
-    signal: AbortSignal,
-  ): Promise<{ entries: IndexScanEntry[]; summary: IndexScanSummary | undefined }> {
+  /** 轮询 job 输出直到终态，收集 stdout 的 JSONL 行（去空白行）；非 completed 抛错。 */
+  private async collectJobJsonLines(sessionId: string, jobId: string, signal: AbortSignal, jobKind: string): Promise<string[]> {
     let seq = 0;
     let buffer = "";
-    const entries: IndexScanEntry[] = [];
-    let summary: IndexScanSummary | undefined;
+    const lines: string[] = [];
     const drain = (flush: boolean): void => {
-      const lines = flush ? buffer.split("\n") : buffer.slice(0, buffer.lastIndexOf("\n") + 1).split("\n");
+      const part = flush ? buffer : buffer.slice(0, buffer.lastIndexOf("\n") + 1);
       buffer = flush ? "" : buffer.slice(buffer.lastIndexOf("\n") + 1);
-      for (const line of lines) {
+      for (const line of part.split("\n")) {
         const trimmed = line.trim();
-        if (!trimmed) continue;
-        const record = JSON.parse(trimmed) as IndexScanEntry & { summary?: IndexScanSummary };
-        if (record.summary) summary = record.summary;
-        else if (typeof record.path === "string") {
-          entries.push({ path: record.path, size: record.size, modifiedMs: record.modifiedMs, ...(record.sha256 ? { sha256: record.sha256 } : {}) });
-        }
+        if (trimmed) lines.push(trimmed);
       }
     };
     for (;;) {
@@ -356,17 +352,36 @@ export class IndexManager {
       drain(false);
       if (status.state !== "running") {
         drain(true);
-        if (status.state === "completed") return { entries, summary };
-        throw new Error(`index.scan job ${status.state}${status.error ? `: ${status.error}` : ""}`);
+        if (status.state === "completed") return lines;
+        throw new Error(`${jobKind} job ${status.state}${status.error ? `: ${status.error}` : ""}`);
       }
       await new Promise((resolve) => setTimeout(resolve, this.pollMs));
     }
   }
 
-  /** diff → 变化文件提取符号 → append 批次 → 必要时压实 → 写 meta。 */
+  /** 解析 index.scan 的 JSONL 流为 manifest + summary。 */
+  private async collectManifest(
+    sessionId: string,
+    jobId: string,
+    signal: AbortSignal,
+  ): Promise<{ entries: IndexScanEntry[]; summary: IndexScanSummary | undefined }> {
+    const entries: IndexScanEntry[] = [];
+    let summary: IndexScanSummary | undefined;
+    for (const line of await this.collectJobJsonLines(sessionId, jobId, signal, "index.scan")) {
+      const record = JSON.parse(line) as IndexScanEntry & { summary?: IndexScanSummary };
+      if (record.summary) summary = record.summary;
+      else if (typeof record.path === "string") {
+        entries.push({ path: record.path, size: record.size, modifiedMs: record.modifiedMs, ...(record.sha256 ? { sha256: record.sha256 } : {}) });
+      }
+    }
+    return { entries, summary };
+  }
+
+  /** diff → 变化文件经 core index.extract job 提取符号 → append 批次 → 必要时压实 → 写 meta。 */
   private async applyManifest(
     ws: WorkspaceState,
     sessionId: string,
+    jobId: string,
     entries: IndexScanEntry[],
     summary: IndexScanSummary | undefined,
     durationMs: number,
@@ -381,23 +396,26 @@ export class IndexManager {
       .filter((entry) => languageForPath(entry.path) !== undefined && entry.size <= MAX_EXTRACT_FILE_BYTES)
       .slice(0, this.budget.maxExtractFiles);
     const extracted = new Map<string, SymbolRecord[]>();
-    let cursor = 0;
-    const worker = async (): Promise<void> => {
-      while (cursor < extractable.length) {
-        if (signal.aborted) return;
-        const entry = extractable[cursor];
-        cursor += 1;
-        if (!entry) continue;
-        try {
-          const content = await this.core.readFile({ sessionId, path: entry.path });
-          extracted.set(entry.path, extractSymbols(languageForPath(entry.path)!, content.content));
-        } catch {
-          // 单个文件读取/解析失败只丢该文件符号，不丢整个批次（文件清单仍更新）
-          extracted.set(entry.path, []);
-        }
+    if (extractable.length > 0) {
+      const extractJobId = `${jobId}-x`;
+      await this.core.startIndexExtract({
+        sessionId,
+        jobId: extractJobId,
+        kind: "index.extract",
+        cwd: ws.cwd,
+        path: ".",
+        files: extractable.map((entry) => entry.path),
+      });
+      for (const line of await this.collectJobJsonLines(sessionId, extractJobId, signal, "index.extract")) {
+        const record = JSON.parse(line) as Partial<IndexExtractEntry> & { summary?: IndexExtractSummary };
+        if (record.summary || typeof record.path !== "string" || !Array.isArray(record.symbols)) continue;
+        extracted.set(record.path, record.symbols.map(toSymbolRecord));
       }
-    };
-    await Promise.all(Array.from({ length: Math.min(EXTRACT_CONCURRENCY, extractable.length) }, () => worker()));
+      // core 整条跳过的文件（读失败/非 UTF-8/策略拒绝）按 0 符号处理：清掉旧符号但不丢文件清单
+      for (const entry of extractable) {
+        if (!extracted.has(entry.path)) extracted.set(entry.path, []);
+      }
+    }
 
     // 应用 manifest 全量态
     const nextFiles = new Map<string, IndexScanEntry>(entries.map((entry) => [entry.path, entry]));
@@ -608,6 +626,17 @@ export class IndexManager {
     result.sort((a, b) => b.modifiedMs - a.modifiedMs || a.path.localeCompare(b.path));
     return result;
   }
+}
+
+/** core index.extract 符号 → 存储记录；不认识的 kind 兜底 "variable"（丢精度不丢符号）。 */
+function toSymbolRecord(symbol: IndexExtractSymbol): SymbolRecord {
+  return {
+    name: symbol.name,
+    kind: isSymbolKind(symbol.kind) ? symbol.kind : "variable",
+    startLine: symbol.startLine,
+    endLine: symbol.endLine,
+    signature: symbol.signature,
+  };
 }
 
 /** 索引清单路径统一为相对路径；分隔符兼容 / 与 \。 */

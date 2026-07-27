@@ -8,6 +8,7 @@ import type { CoreClientLike, IndexScanEntry } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
 import { IndexManager } from "../src/index/index-manager.js";
+import type { SymbolRecord } from "../src/index/index-store.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 
@@ -22,25 +23,41 @@ afterEach(async () => {
 
 const UTIL_TS = "export function getTopSymbols(): string {\n  return \"x\";\n}\n";
 const MANIFEST: IndexScanEntry[] = [{ path: "src/util.ts", size: UTIL_TS.length, modifiedMs: 100, sha256: "u1" }];
+const SYMBOLS: Record<string, SymbolRecord[]> = {
+  "src/util.ts": [
+    { name: "getTopSymbols", kind: "function", startLine: 1, endLine: 3, signature: "export function getTopSymbols(): string {" },
+  ],
+};
 
 function createFakeScanCore(): CoreClientLike {
-  let served = false;
+  const servedJobs = new Set<string>();
+  const extractFiles = new Map<string, string[]>();
   const jsonl = MANIFEST.map((entry) => JSON.stringify(entry)).join("\n") + "\n"
     + JSON.stringify({ summary: { entries: MANIFEST.length, truncated: false, reason: null, hashTruncated: false } }) + "\n";
   const core = {
     on() { return core; },
     async configureSession() { return { sandboxCapability: "advisory" }; },
-    async startIndexScan() { served = false; return { jobId: "j", state: "running" as const }; },
-    async jobStatus() { return { jobId: "j", state: "completed" as const }; },
-    async jobOutput(request: { afterSeq: number }) {
-      if (request.afterSeq === 0 && !served) {
-        served = true;
-        return { chunks: [{ seq: 1, stream: "stdout" as const, data: jsonl }], nextSeq: 2, truncated: false };
+    async startIndexScan(request: { jobId: string }) { servedJobs.delete(request.jobId); return { jobId: request.jobId, state: "running" as const }; },
+    async startIndexExtract(request: { jobId: string; files?: string[] }) {
+      extractFiles.set(request.jobId, request.files ?? []);
+      servedJobs.delete(request.jobId);
+      return { jobId: request.jobId, state: "running" as const };
+    },
+    async jobStatus(request: { jobId: string }) { return { jobId: request.jobId, state: "completed" as const }; },
+    async jobOutput(request: { jobId: string; afterSeq: number }) {
+      if (request.afterSeq !== 0 || servedJobs.has(request.jobId)) {
+        return { chunks: [], nextSeq: request.afterSeq, truncated: false };
       }
-      return { chunks: [], nextSeq: request.afterSeq, truncated: false };
+      servedJobs.add(request.jobId);
+      if (request.jobId.endsWith("-x")) {
+        const files = extractFiles.get(request.jobId) ?? [];
+        const extractJsonl = files.map((filePath) => JSON.stringify({ path: filePath, symbols: SYMBOLS[filePath] ?? [] })).join("\n") + "\n"
+          + JSON.stringify({ summary: { files: files.length, symbols: 1, truncated: false, reason: null } }) + "\n";
+        return { chunks: [{ seq: 1, stream: "stdout" as const, data: extractJsonl }], nextSeq: 2, truncated: false };
+      }
+      return { chunks: [{ seq: 1, stream: "stdout" as const, data: jsonl }], nextSeq: 2, truncated: false };
     },
     async cancelJob(request: { jobId: string }) { return { jobId: request.jobId, accepted: true as const }; },
-    async readFile() { return { content: UTIL_TS, totalLines: 3, encoding: "utf-8" as const, truncated: false }; },
     async watchFiles() { throw new Error("fs.watch unavailable"); },
   } as unknown as CoreClientLike;
   return core;

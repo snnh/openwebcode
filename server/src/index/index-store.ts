@@ -10,9 +10,64 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { IndexScanEntry } from "../core-client.js";
-import type { SymbolRecord } from "./symbols.js";
 
 export const INDEX_FORMAT_VERSION = 1;
+
+/** 符号种类：与 core `index.extract` 输出的 kind 集合对齐；"variable" 是不认识 kind 的兜底桶。 */
+export type SymbolKind =
+  | "function"
+  | "method"
+  | "class"
+  | "interface"
+  | "type"
+  | "struct"
+  | "enum"
+  | "trait"
+  | "impl"
+  | "constant"
+  | "variable";
+
+const SYMBOL_KINDS: ReadonlySet<string> = new Set([
+  "function", "method", "class", "interface", "type",
+  "struct", "enum", "trait", "impl", "constant", "variable",
+]);
+
+export function isSymbolKind(kind: string): kind is SymbolKind {
+  return SYMBOL_KINDS.has(kind);
+}
+
+export interface SymbolRecord {
+  name: string;
+  kind: SymbolKind;
+  /** 1 起始，闭区间 */
+  startLine: number;
+  endLine: number;
+  /** 签名摘要：匹配行去首尾空白后截取前 120 字符 */
+  signature: string;
+}
+
+/** 参与提取的源文件大小上限（字节）：与 core index.extract 单文件上限一致。 */
+export const MAX_EXTRACT_FILE_BYTES = 1_048_576;
+
+/** 按扩展名识别语言；不支持的返回 undefined（只进文件清单，不提符号）。 */
+export function languageForPath(filePath: string): string | undefined {
+  const lower = filePath.toLowerCase();
+  const dot = lower.lastIndexOf(".");
+  if (dot < 0) return undefined;
+  const ext = lower.slice(dot + 1);
+  switch (ext) {
+    case "ts": case "tsx": case "mts": case "cts": return "typescript";
+    case "js": case "jsx": case "mjs": case "cjs": return "javascript";
+    case "py": case "pyi": return "python";
+    case "go": return "go";
+    case "rs": return "rust";
+    case "c": case "h": return "c";
+    case "cpp": case "cc": case "cxx": case "hpp": case "hh": case "hxx": return "cpp";
+    case "java": return "java";
+    case "cs": return "csharp";
+    default: return undefined;
+  }
+}
 /** 冗余行超过（存活条目的 2 倍 + 500）或超过 2 万行时压实。 */
 const COMPACT_SLACK_LINES = 500;
 const COMPACT_HARD_LINES = 20_000;
