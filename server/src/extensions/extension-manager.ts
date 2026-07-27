@@ -3,13 +3,43 @@ import { fork, type ChildProcess } from "node:child_process";
 import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { EventBus } from "../events/event-bus.js";
-import type { ChatMessage } from "../sessions/types.js";
-import { EXTENSION_API_VERSION, type ContextHookPayload, type ExtensionHook, type ExtensionInfo, type ExtensionManifest, type ExtensionState, type HostRequest, type HostResponse, type ToolHookPayload } from "./types.js";
+import type { AppEvent, EventBus } from "../events/event-bus.js";
+import type { ProviderTool } from "../providers/provider.js";
+import type { ChatMessage, SessionDetail, SessionMeta } from "../sessions/types.js";
+import type { SessionStore } from "../sessions/session-store.js";
+import { ContextManager } from "../context/context-manager.js";
+import { EXTENSION_API_VERSION, isExtensionEventAllowed, type ApiRequest, type ApiResponse, type ContextHookPayload, type EventMessage, type ExtensionApiMethod, type ExtensionHook, type ExtensionInfo, type ExtensionManifest, type ExtensionPermission, type ExtensionState, type ExtensionToolResult, type ExtensionToolSpec, type HostRequest, type HostResponse, type ToolHookPayload } from "./types.js";
 import { OFFICIAL_DEFAULT_CONFIG, OFFICIAL_EXTENSIONS } from "./official.js";
 
 interface StoredConfig { version: 1; extensions: Record<string, ExtensionState> }
 type DiscoveredManifest = ExtensionManifest & { directory?: string };
+
+/** 扩展 API 所需的权限映射；events.subscribe 挂 sessions:read。 */
+const API_PERMISSIONS: Record<ExtensionApiMethod, ExtensionPermission> = {
+  "sessions.list": "sessions:read",
+  "sessions.get": "sessions:read",
+  "context.getView": "context:read",
+  "context.readArtifact": "context:read",
+  "events.subscribe": "sessions:read",
+};
+
+/** sessions:read 只暴露元信息白名单字段；不落出沙盒路径/setupScript 等内部配置。 */
+function publicSessionMeta(meta: SessionMeta): Record<string, unknown> {
+  return {
+    id: meta.id,
+    title: meta.title,
+    cwd: meta.cwd,
+    provider: meta.provider,
+    model: meta.model,
+    createdAt: meta.createdAt,
+    updatedAt: meta.updatedAt,
+    ...(meta.thinking ? { thinking: meta.thinking } : {}),
+    ...(meta.effort ? { effort: meta.effort } : {}),
+    ...(meta.agentMode ? { agentMode: meta.agentMode } : {}),
+    ...(meta.permissionMode ? { permissionMode: meta.permissionMode } : {}),
+    ...(meta.recovery ? { recovery: meta.recovery } : {}),
+  };
+}
 
 export class ExtensionManager {
   private readonly root: string;
@@ -23,8 +53,13 @@ export class ExtensionManager {
   private readonly handledHostFailures = new WeakSet<ChildProcess>();
   private hostRestartTimer: NodeJS.Timeout | undefined;
   private hostRestartCount = 0;
+  /** 扩展注册的工具表（extensionId → toolName → spec），由 initialize/reload 响应重建。 */
+  private readonly extensionTools = new Map<string, Map<string, ExtensionToolSpec>>();
+  /** 扩展的事件订阅（extensionId → 类型集合），host 断线时清空。 */
+  private readonly eventSubscriptions = new Map<string, Set<string>>();
+  private busListenerAttached = false;
 
-  constructor(dataDir: string, private readonly events?: EventBus) {
+  constructor(dataDir: string, private readonly events?: EventBus, private readonly deps: { sessions?: SessionStore } = {}) {
     this.root = path.join(dataDir, "extensions");
     this.configPath = path.join(this.root, "extensions.json");
   }
@@ -39,6 +74,12 @@ export class ExtensionManager {
   async close(): Promise<void> {
     if (this.hostRestartTimer) clearTimeout(this.hostRestartTimer);
     this.hostRestartTimer = undefined;
+    if (this.busListenerAttached && this.events) {
+      this.events.removeListener("event", this.onBusEvent);
+      this.busListenerAttached = false;
+    }
+    this.eventSubscriptions.clear();
+    this.extensionTools.clear();
     const child = this.child;
     if (!child) return;
     this.stoppingHosts.add(child);
@@ -81,7 +122,8 @@ export class ExtensionManager {
       config: update.config ? { ...previous.config, ...update.config } : previous.config,
     };
     await this.saveStates();
-    await this.request("reload", { states: this.states });
+    const reloaded = await this.request("reload", { states: this.states }) as { tools?: Record<string, ExtensionToolSpec[]> };
+    this.replaceTools(reloaded.tools);
     this.events?.publish({ source: "server", type: "extension.updated", payload: { id, ...this.states[id] } });
     return this.list().find((item) => item.id === id)!;
   }
@@ -124,6 +166,54 @@ export class ExtensionManager {
     return this.hook("tool.beforeExecute", payload) as Promise<ToolHookPayload & { blocked?: boolean; reason?: string }>;
   }
 
+  /** 已启用扩展注册的工具表（ext__<extensionId>__<name>），供 agent 工具注入；同步读注册表。 */
+  registeredTools(): ProviderTool[] {
+    const result: ProviderTool[] = [];
+    for (const [extensionId, tools] of this.extensionTools) {
+      if (!this.isEnabled(extensionId)) continue;
+      for (const spec of tools.values()) {
+        result.push({
+          name: `ext__${extensionId}__${spec.name}`,
+          description: `[${extensionId}] ${spec.description || spec.name}`,
+          inputSchema: spec.inputSchema,
+        });
+      }
+    }
+    return result;
+  }
+
+  /** 转发 agent 的 ext__ 工具调用到 Extension Host；5 秒超时按工具失败处理。 */
+  async invokeTool(namespaced: string, input: Record<string, unknown>): Promise<ExtensionToolResult> {
+    const match = /^ext__([a-z0-9][a-z0-9-]{1,63})__([a-zA-Z0-9_-]{1,64})$/.exec(namespaced);
+    const extensionId = match?.[1] ?? "";
+    const tool = match?.[2] ?? "";
+    if (!match || !this.extensionTools.get(extensionId)?.has(tool)) throw new Error(`Unknown extension tool: ${namespaced}`);
+    if (!this.isEnabled(extensionId)) throw new Error(`Extension ${extensionId} is disabled`);
+    const result = await this.request("tool.invoke", { extensionId, tool, input }, 5000);
+    if (!result || typeof result !== "object" || typeof (result as { content?: unknown }).content !== "string") {
+      throw new Error(`Extension tool ${namespaced} returned an invalid result`);
+    }
+    const value = result as { content: string; isError?: unknown };
+    return { content: value.content, ...(value.isError === true ? { isError: true } : {}) };
+  }
+
+  private replaceTools(reported: Record<string, ExtensionToolSpec[]> | undefined): void {
+    this.extensionTools.clear();
+    for (const [extensionId, specs] of Object.entries(reported ?? {})) {
+      if (!Array.isArray(specs)) continue;
+      const registered = new Map<string, ExtensionToolSpec>();
+      for (const spec of specs) {
+        if (!spec || typeof spec.name !== "string" || typeof spec.description !== "string") continue;
+        registered.set(spec.name, {
+          name: spec.name,
+          description: spec.description,
+          inputSchema: spec.inputSchema && typeof spec.inputSchema === "object" ? spec.inputSchema : { type: "object", properties: {} },
+        });
+      }
+      if (registered.size > 0) this.extensionTools.set(extensionId, registered);
+    }
+  }
+
   private async hook(hook: ExtensionHook, payload: unknown): Promise<unknown> {
     try {
       return await this.request("hook", { hook, payload });
@@ -132,6 +222,89 @@ export class ExtensionManager {
       return payload;
     }
   }
+
+  /** host→server 能力调用：校验扩展身份与 manifest 权限后分发，结果以 ApiResponse 回送。 */
+  private async handleApi(child: ChildProcess, request: ApiRequest): Promise<void> {
+    let result: unknown;
+    let error: string | undefined;
+    try {
+      result = await this.dispatchApi(request);
+    } catch (caught) {
+      error = caught instanceof Error ? caught.message : String(caught);
+    }
+    if (!child.connected) return;
+    child.send({ id: request.id, api: request.api, ...(error ? { error } : { result }) } satisfies ApiResponse, () => undefined);
+  }
+
+  private async dispatchApi(request: ApiRequest): Promise<unknown> {
+    const manifest = this.manifests.find((item) => item.id === request.extensionId);
+    if (!manifest) throw new Error(`Unknown extension: ${request.extensionId}`);
+    const required = API_PERMISSIONS[request.api];
+    if (!required) throw new Error(`Unsupported extension api: ${request.api}`);
+    if (!manifest.permissions.includes(required)) throw new Error(`Extension ${manifest.id} lacks permission: ${required}`);
+    const sessions = this.deps.sessions;
+    const params = request.params ?? {};
+    switch (request.api) {
+      case "sessions.list": {
+        if (!sessions) throw new Error("Session store is not configured");
+        return (await sessions.list()).map((meta) => publicSessionMeta(meta));
+      }
+      case "sessions.get": {
+        if (!sessions) throw new Error("Session store is not configured");
+        const detail = await sessions.get(String(params.id ?? ""));
+        if (!detail) throw new Error("Session not found");
+        return this.publicSessionDetail(detail);
+      }
+      case "context.getView": {
+        if (!sessions) throw new Error("Session store is not configured");
+        const detail = await sessions.get(String(params.sessionId ?? ""));
+        if (!detail) throw new Error("Session not found");
+        return new ContextManager(sessions.contextRoot(detail.id)).buildView(detail.messages);
+      }
+      case "context.readArtifact": {
+        if (!sessions) throw new Error("Session store is not configured");
+        const sessionId = String(params.sessionId ?? "");
+        if (!(await sessions.getTail(sessionId, 1))) throw new Error("Session not found");
+        const offset = params.offset === undefined ? 0 : Number(params.offset);
+        const limit = params.limit === undefined ? 64_000 : Number(params.limit);
+        return new ContextManager(sessions.contextRoot(sessionId)).readArtifact(String(params.artifactId ?? ""), offset, limit);
+      }
+      case "events.subscribe": {
+        const requested = Array.isArray(params.types) ? params.types.filter((type): type is string => typeof type === "string") : [];
+        const allowed = requested.filter(isExtensionEventAllowed);
+        if (allowed.length > 0) this.eventSubscriptions.set(manifest.id, new Set(allowed));
+        else this.eventSubscriptions.delete(manifest.id);
+        this.attachBusListener();
+        return { subscribed: allowed };
+      }
+    }
+  }
+
+  private publicSessionDetail(detail: SessionDetail): Record<string, unknown> {
+    return {
+      ...publicSessionMeta(detail),
+      messages: detail.messages,
+      ...(detail.messageCount !== undefined ? { messageCount: detail.messageCount } : {}),
+      ...(detail.hasMoreMessages !== undefined ? { hasMoreMessages: detail.hasMoreMessages } : {}),
+    };
+  }
+
+  private attachBusListener(): void {
+    if (this.busListenerAttached || !this.events) return;
+    this.busListenerAttached = true;
+    this.events.on("event", this.onBusEvent);
+  }
+
+  /** EventBus → host 推送：白名单 + 扩展订阅类型双重过滤；host 断线时自然静默。 */
+  private readonly onBusEvent = (event: AppEvent): void => {
+    if (this.eventSubscriptions.size === 0 || !isExtensionEventAllowed(event.type)) return;
+    const child = this.child;
+    if (!child?.connected) return;
+    for (const [extensionId, types] of this.eventSubscriptions) {
+      if (!types.has(event.type) || !this.isEnabled(extensionId)) continue;
+      child.send({ event: event.type, ...(event.sessionId ? { sessionId: event.sessionId } : {}), payload: event.payload } satisfies EventMessage, () => undefined);
+    }
+  };
 
   private stateFor(manifest: ExtensionManifest): ExtensionState {
     return this.states[manifest.id] ?? {
@@ -192,7 +365,11 @@ export class ExtensionManager {
     this.child = fork(worker, [], { stdio: ["ignore", "ignore", "pipe", "ipc"], execArgv });
     const child = this.child;
     child.stderr?.on("data", (chunk: Buffer) => process.stderr.write(chunk));
-    child.on("message", (message: HostResponse) => {
+    child.on("message", (message: HostResponse | ApiRequest) => {
+      if ("api" in message) {
+        void this.handleApi(child, message);
+        return;
+      }
       const pending = this.pending.get(message.id);
       if (!pending) return;
       clearTimeout(pending.timer);
@@ -204,8 +381,9 @@ export class ExtensionManager {
     child.on("disconnect", () => this.handleHostFailure(child, new Error("Extension Host IPC disconnected")));
     child.on("exit", (code, signal) => this.handleHostFailure(child, new Error(`Extension Host exited${code !== null ? ` (${code})` : ""}${signal ? ` (${signal})` : ""}`)));
     try {
-      const initialized = await this.request("initialize", { states: this.states, manifests: this.manifests }) as { errors?: Record<string, string> };
+      const initialized = await this.request("initialize", { states: this.states, manifests: this.manifests }) as { errors?: Record<string, string>; tools?: Record<string, ExtensionToolSpec[]> };
       this.hostErrors = initialized.errors ?? {};
+      this.replaceTools(initialized.tools);
       this.hostRestartCount = 0;
       this.events?.publish({ source: "server", type: "extension.host_started", payload: { extensions: this.list().length } });
     } catch (error) {
@@ -214,7 +392,7 @@ export class ExtensionManager {
     }
   }
 
-  private request(method: HostRequest["method"], params?: Record<string, unknown>): Promise<unknown> {
+  private request(method: HostRequest["method"], params?: Record<string, unknown>, timeoutMs = 5500): Promise<unknown> {
     const child = this.child;
     if (!child?.connected) return Promise.reject(new Error("Extension Host is not connected"));
     const id = randomUUID();
@@ -222,7 +400,7 @@ export class ExtensionManager {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`Extension Host ${method} timeout`));
-      }, 5500);
+      }, timeoutMs);
       this.pending.set(id, { child, resolve, reject, timer });
       child.send({ id, method, ...(params ? { params } : {}) } satisfies HostRequest, (error) => {
         if (!error) return;
@@ -241,6 +419,9 @@ export class ExtensionManager {
     this.handledHostFailures.add(child);
     const intentional = this.stoppingHosts.has(child);
     if (this.child === child) this.child = undefined;
+    // host 断线：工具注册表与事件订阅全部失效（重启后由 initialize/activate 重建）。
+    this.extensionTools.clear();
+    this.eventSubscriptions.clear();
     for (const [id, pending] of this.pending) {
       if (pending.child !== child) continue;
       clearTimeout(pending.timer);

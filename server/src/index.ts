@@ -91,7 +91,7 @@ const commands = new CommandRegistry(path.join(dataDir, "commands"));
 const mcp = new McpManager(dataDir);
 const fastModel = new FastModelClient(providers, config.fastModel);
 const compactor = new Compactor(sessions, fastModel, { usageLog, pricing, exchangeRates });
-const extensions = new ExtensionManager(dataDir, events);
+const extensions = new ExtensionManager(dataDir, events, { sessions });
 await extensions.initialize();
 const contentLens = new ContentLensService(sessions, fastModel);
 // Production evaluations share the normal Core boundary, so workspace access
