@@ -404,6 +404,7 @@ export interface SettingsField {
   editable: boolean;
   restartRequired: boolean;
   nullable: boolean;
+  installDefault?: SettingValue | null;
   description?: string;
 }
 
@@ -675,4 +676,37 @@ export interface EvalComparisonSummary {
   candidateRunId: string;
   createdAt: string;
   summary: EvalRunComparison["summary"];
+}
+
+export interface VersionInfo {
+  server: string;
+  core: string;
+  protocolVersion?: string;
+  githubRepo: string;
+  latestRelease?: {
+    version: string;
+    isNewer: boolean;
+    htmlUrl: string;
+    publishedAt: string;
+    checkedAt: string;
+  };
+}
+
+export interface UpdateCheckSnapshot {
+  latestVersion: string;
+  isNewer: boolean;
+  htmlUrl: string;
+  publishedAt: string;
+  checkedAt: string;
+}
+
+export interface UpdateCheckResponse {
+  snapshot: UpdateCheckSnapshot | null;
+}
+
+export interface PromptOverrideView {
+  builtinBase: string;
+  promptVersion: string;
+  baseOverride: string | null;
+  customAppend: string | null;
 }

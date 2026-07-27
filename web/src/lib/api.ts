@@ -49,6 +49,12 @@ function readFileAsBase64(file: File): Promise<string> {
 export const api = {
   sessions: () => request<Session[]>("/api/sessions"),
   health: () => request<{ status: string }>("/api/health"),
+  version: () => request<import("./contracts").VersionInfo>("/api/version"),
+  updateCheck: () => request<import("./contracts").UpdateCheckResponse>("/api/update-check"),
+  refreshUpdateCheck: () => request<import("./contracts").UpdateCheckResponse>("/api/update-check/refresh", { method: "POST" }),
+  promptOverride: (cwd?: string) => request<import("./contracts").PromptOverrideView>(`/api/prompt${cwd ? `?cwd=${encodeURIComponent(cwd)}` : ""}`),
+  savePromptOverride: (body: { baseOverride?: string | null; customAppend?: string | null }) =>
+    request<{ ok: boolean }>("/api/prompt", { method: "PUT", body: JSON.stringify(body) }),
   providerStats: () => request<Record<string, ProviderConcurrencyStats>>("/api/providers/stats"),
   indexStatus: (sessionId: string) => request<import("./contracts").WorkspaceIndexStatus>(`/api/workspaces/index/status?sessionId=${encodeURIComponent(sessionId)}`),
   rebuildIndex: (sessionId: string) => request<{ accepted: boolean; jobId: string }>("/api/workspaces/index/rebuild", { method: "POST", body: JSON.stringify({ sessionId }) }),

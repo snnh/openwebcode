@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactElement } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import type { ExtensionInfo, ModelInterfaceType, ModelProfile, ModelProviderProfileView, PermissionMode, PricingDocument, SettingsField, SettingValue, WebCapability, WebProviderProfileView, WebProviderType } from "../lib/contracts";
 import { formatCurrency } from "../lib/format";
@@ -26,7 +26,7 @@ const ACCENT_OPTIONS: Array<{ value: AccentPreference; zh: string; en: string; s
   { value: "green", zh: "绿", en: "Green", swatch: "#2f9e44" },
 ];
 
-type SettingsTab = "appearance" | "general" | "defaults" | "shortcuts" | "server" | "remote" | "models" | "skills" | "extensions" | "pricing" | "info";
+type SettingsTab = "appearance" | "general" | "defaults" | "shortcuts" | "server" | "remote" | "models" | "skills" | "extensions" | "pricing" | "prompt" | "info";
 
 interface SettingsTabMeta {
   id: SettingsTab;
@@ -57,6 +57,7 @@ const SETTINGS_GROUPS: Array<{ id: string; zh: string; en: string; tabs: Setting
       { id: "server", zh: "服务设置", en: "Server", descriptionZh: "Provider、执行器与服务端参数", descriptionEn: "Providers, executor, and server options", icon: "wrench" },
       { id: "models", zh: "模型目录", en: "Models", descriptionZh: "同步并维护可用模型能力", descriptionEn: "Sync and maintain model capabilities", icon: "layers" },
       { id: "pricing", zh: "模型定价", en: "Pricing", descriptionZh: "管理 token 价格与计费币种", descriptionEn: "Manage token prices and billing currencies", icon: "chart" },
+      { id: "prompt", zh: "提示词", en: "Prompt", descriptionZh: "覆盖系统提示词基线与追加自定义指令", descriptionEn: "Override the system prompt baseline and append custom instructions", icon: "wrench" },
     ],
   },
   {
@@ -80,6 +81,23 @@ const SETTINGS_GROUPS: Array<{ id: string; zh: string; en: string; tabs: Setting
 ];
 
 const TAB_META = SETTINGS_GROUPS.flatMap((group) => group.tabs);
+
+/** 比较两个设置值（数组按元素逐项比较）。 */
+function sameValue(left: SettingValue | null | undefined, right: SettingValue | null | undefined): boolean {
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right) &&
+      left.length === right.length && left.every((entry, index) => entry === right[index]);
+  }
+  return left === right;
+}
+
+/** 将设置值格式化为简短的展示文本（用于"安装默认值现为 …"提示）。 */
+function formatSettingValue(value: SettingValue | null | undefined): string {
+  if (value === null || value === undefined) return "—";
+  if (Array.isArray(value)) return value.length > 0 ? value.join(", ") : "[]";
+  if (typeof value === "boolean") return value ? "true" : "false";
+  return String(value);
+}
 
 const PERMISSION_OPTIONS: Array<{ value: PermissionMode | ""; zh: string; en: string }> = [
   { value: "", zh: "不预设", en: "Not set" },
@@ -417,15 +435,145 @@ function ServerInfoSection({ providers, models }: {
 }): ReactElement {
   const { t } = useI18n();
   const health = useQuery({ queryKey: ["health"], queryFn: api.health, refetchInterval: 15_000 });
+  const version = useQuery({ queryKey: ["version"], queryFn: api.version, staleTime: 60_000 });
+  const updateCheck = useQuery({ queryKey: ["update-check"], queryFn: api.updateCheck, staleTime: 60_000 });
+  const refreshMutation = useMutation({
+    mutationFn: api.refreshUpdateCheck,
+    onSuccess: () => updateCheck.refetch(),
+  });
+  const snapshot = updateCheck.data?.snapshot ?? version.data?.latestRelease;
+  const latest = snapshot ? {
+    version: "latestVersion" in snapshot ? snapshot.latestVersion : snapshot.version,
+    isNewer: snapshot.isNewer,
+    htmlUrl: snapshot.htmlUrl,
+    checkedAt: snapshot.checkedAt,
+  } : undefined;
   return (
     <dl className="server-info">
+      <dt>{t("版本", "Version")}</dt>
+      <dd>
+        {version.data
+          ? `Server ${version.data.server} / Core ${version.data.core}${version.data.protocolVersion ? ` (${version.data.protocolVersion})` : ""}`
+          : version.isError ? t("不可达", "Unavailable") : t("检查中…", "Checking…")}
+      </dd>
+      <dt>{t("更新检查", "Update check")}</dt>
+      <dd>
+        {latest
+          ? (latest.isNewer
+              ? t(`最新版本 ${latest.version}（可更新）`, `Latest ${latest.version} (update available)`)
+              : t(`已是最新（${latest.version}）`, `Up to date (${latest.version})`))
+          : updateCheck.isError ? t("未启用", "Not enabled") : t("检查中…", "Checking…")}
+        {" "}
+        <button
+          type="button"
+          className="btn small"
+          disabled={refreshMutation.isPending}
+          onClick={() => refreshMutation.mutate()}
+        >
+          {refreshMutation.isPending ? t("检查中…", "Checking…") : t("立即检查", "Check now")}
+        </button>
+        {latest?.isNewer && latest.htmlUrl ? (
+          <>
+            {" "}
+            <a href={latest.htmlUrl} target="_blank" rel="noreferrer">{t("下载", "Download")}</a>
+          </>
+        ) : null}
+      </dd>
       <dt>{t("API 状态", "API status")}</dt>
       <dd>{health.data?.status === "ok" ? t("在线", "Online") : health.isError ? t("不可达", "Unavailable") : t("检查中…", "Checking…")}</dd>
       <dt>Providers</dt>
-      <dd>{providers.length > 0 ? providers.join("、") : "—"}</dd>
+      <dd>{providers.length > 0 ? providers.join("、") : "-"}</dd>
       <dt>{t("模型档案", "Model profiles")}</dt>
       <dd>{t(`${models.length} 个`, `${models.length}`)}</dd>
     </dl>
+  );
+}
+
+function PromptSection(): ReactElement {
+  const { t } = useI18n();
+  const queryClient = useQueryClient();
+  const prompt = useQuery({ queryKey: ["prompt-override"], queryFn: () => api.promptOverride() });
+  const [baseOverride, setBaseOverride] = useState("");
+  const [customAppend, setCustomAppend] = useState("");
+  const [initialized, setInitialized] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState<string>();
+  const [error, setError] = useState<string>();
+
+  useEffect(() => {
+    if (!prompt.data || initialized) return;
+    setBaseOverride(prompt.data.baseOverride ?? "");
+    setCustomAppend(prompt.data.customAppend ?? "");
+    setInitialized(true);
+  }, [prompt.data, initialized]);
+
+  const save = async (body: { baseOverride?: string | null; customAppend?: string | null }): Promise<void> => {
+    setSaving(true);
+    setNotice(undefined);
+    setError(undefined);
+    try {
+      await api.savePromptOverride(body);
+      void queryClient.invalidateQueries({ queryKey: ["prompt-override"] });
+      setNotice(t("已保存", "Saved"));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const data = prompt.data;
+  return (
+    <div className="prompt-section">
+      <p className="muted">
+        {t(
+          "提示词不是安全边界：plan 模式、权限与沙箱由服务独立强制，不受此处覆盖影响。项目级 .owc/system-prompt.md 会覆盖全局设置。",
+          "The prompt is not a security boundary: plan mode, permissions, and sandbox are enforced independently. Project-level .owc/system-prompt.md overrides these global settings.",
+        )}
+      </p>
+      {data ? (
+        <details className="prompt-builtin">
+          <summary>{t(`内置基线（${data.promptVersion}）`, `Built-in baseline (${data.promptVersion})`)}</summary>
+          <pre className="prompt-builtin-text">{data.builtinBase}</pre>
+        </details>
+      ) : null}
+      <label className="settings-field">
+        <span>{t("全局基线覆盖", "Global baseline override")}</span>
+        <textarea
+          rows={6}
+          value={baseOverride}
+          placeholder={t("留空则使用内置基线", "Leave empty to use the built-in baseline")}
+          onChange={(event) => setBaseOverride(event.target.value)}
+        />
+      </label>
+      <label className="settings-field">
+        <span>{t("全局追加指令", "Global custom instructions")}</span>
+        <textarea
+          rows={6}
+          value={customAppend}
+          placeholder={t("追加到安全约束之后的自定义指令", "Custom instructions appended after safety constraints")}
+          onChange={(event) => setCustomAppend(event.target.value)}
+        />
+      </label>
+      <div className="dialog-actions">
+        <button
+          className="btn primary"
+          disabled={saving}
+          onClick={() => void save({ baseOverride: baseOverride.trim() === "" ? null : baseOverride, customAppend: customAppend.trim() === "" ? null : customAppend })}
+        >
+          {saving ? t("保存中…", "Saving…") : t("保存", "Save")}
+        </button>
+        <button
+          className="btn"
+          disabled={saving}
+          onClick={() => void save({ baseOverride: null, customAppend: null })}
+        >
+          {t("恢复内置基线", "Restore built-in baseline")}
+        </button>
+      </div>
+      {notice ? <p className="notice">{notice}</p> : null}
+      {error ? <p className="error">{error}</p> : null}
+    </div>
   );
 }
 
@@ -821,6 +969,9 @@ export function ServerSettingsSection({ onDirtyChange }: { onDirtyChange?(dirty:
         </div>
         {renderInput(field)}
         {fieldDescription(field) && <p className="settings-note">{fieldDescription(field)}</p>}
+        {!resetting && field.source === "file" && field.installDefault !== undefined && !sameValue(field.value, field.installDefault) && (
+          <p className="settings-note">{t(`安装默认值现为 ${formatSettingValue(field.installDefault)}，可点「重置」采纳`, `Install default is now ${formatSettingValue(field.installDefault)}; click "Reset" to adopt`)}</p>
+        )}
         {!field.editable && <p className="settings-note">{t("由环境变量控制，界面内不可修改", "Controlled by an environment variable and cannot be changed here")}</p>}
       </div>
     );
@@ -1571,6 +1722,12 @@ export function SettingsDialog({ open, preference, setPreference, accent, setAcc
             <section>
               <h3>{t("模型定价", "Model pricing")}</h3>
               <PricingSection />
+            </section>
+          )}
+          {activeTab === "prompt" && (
+            <section>
+              <h3>{t("提示词", "System prompt")}</h3>
+              <PromptSection />
             </section>
           )}
           {activeTab === "info" && (
