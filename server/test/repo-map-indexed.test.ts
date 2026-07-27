@@ -83,21 +83,25 @@ describe("repo_map 索引形态（Phase 2 §4.1）", () => {
     const manifest: IndexScanEntry[] = [{ path: "src/util.ts", size: utilTs.length, modifiedMs: 100, sha256: "u1" }];
     const jsonl = manifest.map((entry) => JSON.stringify(entry)).join("\n") + "\n"
       + JSON.stringify({ summary: { entries: 1, truncated: false, reason: null, hashTruncated: false } }) + "\n";
-    let served = false;
+    const extractJsonl = JSON.stringify({
+      path: "src/util.ts",
+      symbols: [{ name: "helperFn", kind: "function", startLine: 1, endLine: 2, signature: "export function helperFn(): void {" }],
+    }) + "\n" + JSON.stringify({ summary: { files: 1, symbols: 1, truncated: false, reason: null } }) + "\n";
+    const servedJobs = new Set<string>();
     const treeCore = createTreeCore(FILES);
     const core = {
       ...treeCore,
       on() { return this; },
-      async startIndexScan() { served = false; return { jobId: "j", state: "running" as const }; },
-      async jobStatus() { return { jobId: "j", state: "completed" as const }; },
-      async jobOutput(request: { afterSeq: number }) {
-        if (request.afterSeq === 0 && !served) {
-          served = true;
-          return { chunks: [{ seq: 1, stream: "stdout" as const, data: jsonl }], nextSeq: 2, truncated: false };
+      async startIndexScan(request: { jobId: string }) { servedJobs.delete(request.jobId); return { jobId: request.jobId, state: "running" as const }; },
+      async startIndexExtract(request: { jobId: string }) { servedJobs.delete(request.jobId); return { jobId: request.jobId, state: "running" as const }; },
+      async jobStatus(request: { jobId: string }) { return { jobId: request.jobId, state: "completed" as const }; },
+      async jobOutput(request: { jobId: string; afterSeq: number }) {
+        if (request.afterSeq !== 0 || servedJobs.has(request.jobId)) {
+          return { chunks: [], nextSeq: request.afterSeq, truncated: false };
         }
-        return { chunks: [], nextSeq: request.afterSeq, truncated: false };
+        servedJobs.add(request.jobId);
+        return { chunks: [{ seq: 1, stream: "stdout" as const, data: request.jobId.endsWith("-x") ? extractJsonl : jsonl }], nextSeq: 2, truncated: false };
       },
-      async readFile() { return { content: utilTs, totalLines: 2, encoding: "utf-8" as const, truncated: false }; },
       async watchFiles() { throw new Error("fs.watch unavailable"); },
     } as unknown as CoreClientLike;
     const manager = new IndexManager(core, path.join(root, "index"), new EventBus(), { pollMs: 1, autoRefresh: false });

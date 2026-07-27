@@ -22,8 +22,8 @@ export interface CoreInfo {
   protocolVersion?: string;
   platform: "windows" | "linux";
   sandboxCapability: string;
-  features?: { fsStat: boolean; fsStatMany: boolean; fsWriteBase64: boolean; jobControl: boolean; fsHash: boolean; fsScanPagination: boolean; fsWatch: boolean; indexScan?: boolean };
-  limits?: { maxFrameBytes: number; maxWriteBase64Bytes: number; maxHashBytes: number; maxStatManyPaths: number; maxStatManyPathBytes: number; maxScanEntries?: number; maxScanDepth?: number; maxScanNodes?: number; maxWatches?: number; maxWatchEvents?: number; maxConcurrentJobs?: number; maxJobOutputBytes?: number; maxIndexScanNodes?: number; maxIndexScanDepth?: number; maxIndexScanBytes?: number; maxIndexScanMs?: number };
+  features?: { fsStat: boolean; fsStatMany: boolean; fsWriteBase64: boolean; jobControl: boolean; fsHash: boolean; fsScanPagination: boolean; fsWatch: boolean; indexScan?: boolean; indexExtract?: boolean };
+  limits?: { maxFrameBytes: number; maxWriteBase64Bytes: number; maxHashBytes: number; maxStatManyPaths: number; maxStatManyPathBytes: number; maxScanEntries?: number; maxScanDepth?: number; maxScanNodes?: number; maxWatches?: number; maxWatchEvents?: number; maxConcurrentJobs?: number; maxJobOutputBytes?: number; maxIndexScanNodes?: number; maxIndexScanDepth?: number; maxIndexScanBytes?: number; maxIndexScanMs?: number; maxIndexExtractFiles?: number; maxIndexExtractBytes?: number; maxIndexExtractMs?: number; indexExtractDefaultSymbolsPerFile?: number; maxIndexExtractSymbolsPerFile?: number };
 }
 
 export interface ExecRequest {
@@ -133,6 +133,34 @@ export interface GlobJobStartRequest {
 export interface GrepJobEntry { path: string; line: number; text: string }
 export interface GlobJobEntry { path: string }
 export interface SearchJobSummary { matches?: number; entries?: number; truncated: boolean; reason: "nodes" | "depth" | "time" | "list" | "matches" | null }
+/**
+ * index.extract job：对 Node 侧 manifest diff 算出的变化文件集做符号提取。
+ * 提取规则是 server/src/index/symbols.ts 的 C 移植（core/src/symbol_extract.c），
+ * 输出是 job.output 上的 JSONL 流（stdout 流）：
+ *   {"path","symbols":[{"name","kind","startLine","endLine","signature"}]} —— 每个处理文件一行（0 符号也输出）
+ *   {"summary":{"files","symbols","truncated","reason"}} —— 最后一行
+ * 不支持的扩展名、>1 MiB、非 UTF-8、读取失败、策略拒绝的文件整条跳过（不出现在输出）。
+ * timeoutMs 对 index.extract 无效（时长由 maxMs 预算控制，超时为优雅截断）。
+ */
+export interface IndexExtractStartRequest {
+  sessionId: string;
+  jobId: string;
+  kind: "index.extract";
+  cwd: string;
+  /** 相对会话根的根目录；files 相对该目录 */
+  path: string;
+  /** 相对 path 的文件清单（最多 4096 条，单条最长 1024 字节），按给定顺序处理 */
+  files: string[];
+  /** 总读取字节预算（默认 64 MiB，上限 1 GiB）；用尽后截断（reason:"bytes"） */
+  maxBytes?: number;
+  /** 时间预算毫秒（默认 30000，上限 300000）；用尽后截断（reason:"time"） */
+  maxMs?: number;
+  /** 单文件符号数上限（默认 200，上限 10000） */
+  maxSymbolsPerFile?: number;
+}
+export interface IndexExtractSymbol { name: string; kind: string; startLine: number; endLine: number; signature: string }
+export interface IndexExtractEntry { path: string; symbols: IndexExtractSymbol[] }
+export interface IndexExtractSummary { files: number; symbols: number; truncated: boolean; reason: "bytes" | "time" | null }
 export interface JobStatus { jobId: string; state: "running" | "completed" | "failed" | "cancelled" | "timed_out"; exitCode?: number; durationMs?: number; truncated?: boolean; error?: string }
 export interface JobOutputRequest { sessionId: string; jobId: string; afterSeq: number; limit?: number }
 export interface JobOutputResult { chunks: Array<{ seq: number; stream: "stdout" | "stderr"; data: string }>; nextSeq: number; truncated: boolean }
@@ -179,6 +207,7 @@ export interface CoreClientLike {
   startIndexScan(request: IndexScanStartRequest): Promise<JobStatus>;
   startGrepJob(request: GrepJobStartRequest): Promise<JobStatus>;
   startGlobJob(request: GlobJobStartRequest): Promise<JobStatus>;
+  startIndexExtract(request: IndexExtractStartRequest): Promise<JobStatus>;
   cancelJob(request: { sessionId: string; jobId: string }): Promise<{ jobId: string; accepted: true }>;
   jobStatus(request: { sessionId: string; jobId: string }): Promise<JobStatus>;
   jobOutput(request: JobOutputRequest): Promise<JobOutputResult>;
@@ -287,6 +316,7 @@ export class CoreClient extends EventEmitter {
   startIndexScan(request: IndexScanStartRequest): Promise<JobStatus> { return this.call("job.start", request); }
   startGrepJob(request: GrepJobStartRequest): Promise<JobStatus> { return this.call("job.start", request); }
   startGlobJob(request: GlobJobStartRequest): Promise<JobStatus> { return this.call("job.start", request); }
+  startIndexExtract(request: IndexExtractStartRequest): Promise<JobStatus> { return this.call("job.start", request); }
   cancelJob(request: { sessionId: string; jobId: string }): Promise<{ jobId: string; accepted: true }> { return this.call("job.cancel", request); }
   jobStatus(request: { sessionId: string; jobId: string }): Promise<JobStatus> { return this.call("job.status", request); }
   jobOutput(request: JobOutputRequest): Promise<JobOutputResult> { return this.call("job.output", request); }

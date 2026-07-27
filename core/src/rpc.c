@@ -5,6 +5,7 @@
 #include "path_policy.h"
 #include "platform/fs_platform.h"
 #include "sandbox.h"
+#include "symbol_extract.h"
 #include "version.h"
 
 #include <ctype.h>
@@ -533,13 +534,13 @@ static int handle_fs_watch_cancel(owc_rpc *rpc,const owc_json *id,const owc_json
 #define OWC_JOB_OUTPUT_CHUNKS 128u
 #define OWC_JOB_OUTPUT_CHUNK_BYTES 4096u
 typedef enum { OWC_JOB_EMPTY,OWC_JOB_RUNNING,OWC_JOB_COMPLETED,OWC_JOB_FAILED,OWC_JOB_CANCELLED,OWC_JOB_TIMED_OUT } owc_job_state;
-typedef enum { OWC_JOB_EXEC,OWC_JOB_INDEX_SCAN,OWC_JOB_GREP,OWC_JOB_GLOB } owc_job_kind;
+typedef enum { OWC_JOB_EXEC,OWC_JOB_INDEX_SCAN,OWC_JOB_GREP,OWC_JOB_GLOB,OWC_JOB_INDEX_EXTRACT } owc_job_kind;
 typedef struct {unsigned sequence;char stream[7];size_t length;unsigned char data[OWC_JOB_OUTPUT_CHUNK_BYTES];} owc_job_chunk;
 #define OWC_INDEX_MAX_PATTERNS 64u
-typedef struct {char *id,*session,*cmd,*cwd;char *allow_paths[16];size_t allow_path_count;int sandbox_enabled,allow_network,sandbox_mode,shell_backend;unsigned long memory,processes;int timeout;volatile int cancel;owc_job_state state;owc_job_kind kind;owc_exec_result result;HANDLE thread;owc_job_chunk output[OWC_JOB_OUTPUT_CHUNKS];size_t output_start,output_count;unsigned next_output_sequence;int output_truncated;char *scan_path;char *scan_include[OWC_INDEX_MAX_PATTERNS];size_t scan_include_count;char *scan_exclude[OWC_INDEX_MAX_PATTERNS];size_t scan_exclude_count;unsigned long scan_max_nodes,scan_max_depth;unsigned long long scan_max_bytes;int scan_max_ms;char *search_pattern;char *scan_read_roots[16];size_t scan_read_root_count;char *scan_deny_roots[16];size_t scan_deny_root_count;} owc_job;
+typedef struct {char *id,*session,*cmd,*cwd;char *allow_paths[16];size_t allow_path_count;int sandbox_enabled,allow_network,sandbox_mode,shell_backend;unsigned long memory,processes;int timeout;volatile int cancel;owc_job_state state;owc_job_kind kind;owc_exec_result result;HANDLE thread;owc_job_chunk output[OWC_JOB_OUTPUT_CHUNKS];size_t output_start,output_count;unsigned next_output_sequence;int output_truncated;char *scan_path;char *scan_include[OWC_INDEX_MAX_PATTERNS];size_t scan_include_count;char *scan_exclude[OWC_INDEX_MAX_PATTERNS];size_t scan_exclude_count;unsigned long scan_max_nodes,scan_max_depth;unsigned long long scan_max_bytes;int scan_max_ms;char *search_pattern;char **extract_files;size_t extract_file_count;unsigned long extract_max_symbols;char *scan_read_roots[16];size_t scan_read_root_count;char *scan_deny_roots[16];size_t scan_deny_root_count;} owc_job;
 static owc_job jobs[OWC_JOB_MAX_RUNNING];static CRITICAL_SECTION jobs_mutex;static int jobs_ready=0;
 static void jobs_init(void){if(!jobs_ready){InitializeCriticalSection(&jobs_mutex);jobs_ready=1;}}
-static void job_free(owc_job *job){size_t i;if(job->thread)CloseHandle(job->thread);free(job->id);free(job->session);free(job->cmd);free(job->cwd);free(job->scan_path);free(job->search_pattern);for(i=0;i<job->allow_path_count;i++)free(job->allow_paths[i]);for(i=0;i<job->scan_include_count;i++)free(job->scan_include[i]);for(i=0;i<job->scan_exclude_count;i++)free(job->scan_exclude[i]);for(i=0;i<job->scan_read_root_count;i++)free(job->scan_read_roots[i]);for(i=0;i<job->scan_deny_root_count;i++)free(job->scan_deny_roots[i]);memset(job,0,sizeof(*job));}
+static void job_free(owc_job *job){size_t i;if(job->thread)CloseHandle(job->thread);free(job->id);free(job->session);free(job->cmd);free(job->cwd);free(job->scan_path);free(job->search_pattern);for(i=0;i<job->allow_path_count;i++)free(job->allow_paths[i]);for(i=0;i<job->scan_include_count;i++)free(job->scan_include[i]);for(i=0;i<job->scan_exclude_count;i++)free(job->scan_exclude[i]);for(i=0;i<job->scan_read_root_count;i++)free(job->scan_read_roots[i]);for(i=0;i<job->scan_deny_root_count;i++)free(job->scan_deny_roots[i]);for(i=0;i<job->extract_file_count;i++)free(job->extract_files[i]);free(job->extract_files);memset(job,0,sizeof(*job));}
 static void job_output(void *data,const char *stream,const unsigned char *bytes,size_t length,unsigned sequence){owc_job *job=(owc_job*)data;size_t offset=0;(void)sequence;EnterCriticalSection(&jobs_mutex);while(offset<length){owc_job_chunk *chunk;size_t take=length-offset,index;if(job->output_count==OWC_JOB_OUTPUT_CHUNKS){job->output_start=(job->output_start+1u)%OWC_JOB_OUTPUT_CHUNKS;job->output_count--;job->output_truncated=1;}if(take>OWC_JOB_OUTPUT_CHUNK_BYTES)take=OWC_JOB_OUTPUT_CHUNK_BYTES;index=(job->output_start+job->output_count)%OWC_JOB_OUTPUT_CHUNKS;chunk=&job->output[index];chunk->sequence=++job->next_output_sequence;(void)snprintf(chunk->stream,sizeof(chunk->stream),"%s",stream);memcpy(chunk->data,bytes+offset,take);chunk->length=take;job->output_count++;offset+=take;}LeaveCriticalSection(&jobs_mutex);}
 /* ------------------------------------------------------------------ */
 /* index.scan: bounded, cancellable workspace file-manifest scan.
@@ -975,7 +976,129 @@ static DWORD WINAPI glob_job_worker(void *data) {
     return 0;
 }
 
-static DWORD WINAPI job_worker(void *data){owc_job *job=(owc_job*)data;owc_exec_request request;owc_exec_result result;if(job->kind==OWC_JOB_INDEX_SCAN||job->kind==OWC_JOB_GREP||job->kind==OWC_JOB_GLOB){DWORD worker_result;owc_fs_platform_set_deny_roots((const char *const *)job->scan_deny_roots,job->scan_deny_root_count);if(job->kind==OWC_JOB_INDEX_SCAN)worker_result=index_scan_worker(job);else if(job->kind==OWC_JOB_GREP)worker_result=grep_job_worker(job);else worker_result=glob_job_worker(job);owc_fs_platform_set_deny_roots(NULL,0);return worker_result;}memset(&request,0,sizeof(request));request.command=job->cmd;request.cwd=job->cwd;request.session_id=job->session;request.allow_paths=(const char *const *)job->allow_paths;request.allow_path_count=job->allow_path_count;request.sandbox_enabled=job->sandbox_enabled;request.allow_network=job->allow_network;request.sandbox_mode=job->sandbox_mode;request.shell_backend=job->shell_backend;request.job_memory_mb=job->memory;request.job_max_processes=job->processes;request.timeout_ms=job->timeout;request.output_limit=1024u*1024u;request.cancel_requested=&job->cancel;request.on_output=job_output;request.user_data=job;(void)owc_exec_run(&request,&result);EnterCriticalSection(&jobs_mutex);job->result=result;if(result.cancelled)job->state=OWC_JOB_CANCELLED;else if(result.timed_out)job->state=OWC_JOB_TIMED_OUT;else if(!result.system_error)job->state=OWC_JOB_COMPLETED;else job->state=OWC_JOB_FAILED;LeaveCriticalSection(&jobs_mutex);return 0;}
+
+/* ------------------------------------------------------------------ */
+/* index.extract: bounded, cancellable symbol extraction over an
+ * explicit file list (the Node side computes the changed set from
+ * successive manifests).  Files are processed in the given order; each
+ * file is policy-checked against the same read/deny snapshot as
+ * index.scan, read through the root-bound platform primitive, and
+ * matched by the pure-C engine in symbol_extract.c.  Output is JSONL:
+ * one object per processed file, then a trailing summary line. */
+#define OWC_EXTRACT_MAX_FILES 4096u
+#define OWC_EXTRACT_PATH_BYTES 1024u
+#define OWC_EXTRACT_DEFAULT_BYTES (64ull*1024ull*1024ull)
+#define OWC_EXTRACT_BYTES_LIMIT (1024ull*1024ull*1024ull)
+#define OWC_EXTRACT_DEFAULT_MS 30000
+#define OWC_EXTRACT_MS_LIMIT 300000
+#define OWC_EXTRACT_DEFAULT_SYMBOLS 200ul
+#define OWC_EXTRACT_SYMBOLS_LIMIT 10000ul
+
+typedef struct { char *data; size_t length, capacity; } extract_strbuf;
+static void extract_sb_free(extract_strbuf *sb){free(sb->data);memset(sb,0,sizeof(*sb));}
+static int extract_sb_append(extract_strbuf *sb,const char *text,size_t length){
+    if(sb->length+length+1>sb->capacity){
+        size_t cap=sb->capacity?sb->capacity:256u;char *grown;
+        while(cap<sb->length+length+1)cap*=2u;
+        grown=(char*)realloc(sb->data,cap);
+        if(!grown)return 0;
+        sb->data=grown;sb->capacity=cap;
+    }
+    memcpy(sb->data+sb->length,text,length);sb->length+=length;sb->data[sb->length]='\0';
+    return 1;
+}
+static int extract_sb_printf(extract_strbuf *sb,const char *format,...){
+    va_list args,copy;int length;char *text;int ok;
+    va_start(args,format);va_copy(copy,args);
+    length=vsnprintf(NULL,0,format,args);va_end(args);
+    if(length<0){va_end(copy);return 0;}
+    text=(char*)malloc((size_t)length+1);
+    if(!text){va_end(copy);return 0;}
+    (void)vsnprintf(text,(size_t)length+1,format,copy);va_end(copy);
+    ok=extract_sb_append(sb,text,(size_t)length);
+    free(text);
+    return ok;
+}
+
+static DWORD WINAPI index_extract_worker(void *data){
+    owc_job *job=(owc_job*)data;
+    unsigned long long started=monotonic_ms();
+    unsigned long long deadline=started+(unsigned long long)job->scan_max_ms;
+    unsigned long long bytes_read=0;
+    size_t files_done=0,symbols_total=0,file_index;
+    int truncated=0,failed=0;
+    const char *reason=NULL;
+    char batch[3584];size_t used=0;
+    for(file_index=0;file_index<job->extract_file_count&&!job->cancel;file_index++){
+        const char *file=job->extract_files[file_index];
+        const char *language;
+        char *full;
+        owc_fs_bytes bytes;
+        owc_fs_error error;
+        if(monotonic_ms()>=deadline){truncated=1;reason="time";break;}
+        /* Unsupported extensions are skipped entirely (no output line). */
+        language=owc_symbol_language_for_path(file);
+        if(!language)continue;
+        full=!strcmp(job->scan_path,".")?copy_text(file):scan_join(job->scan_path,file);
+        if(!full){failed=1;break;}
+        /* Same read/deny policy snapshot as index.scan; traversal and
+         * absolute spellings are rejected by session_policy_path. */
+        if(!index_path_allowed(job,full)){free(full);continue;}
+        memset(&bytes,0,sizeof(bytes));
+        error=owc_fs_platform_read(job->cwd,full,&bytes);
+        free(full);
+        /* Files deleted or unreadable mid-job are skipped honestly. */
+        if(error||!bytes.data){free(bytes.data);continue;}
+        if(bytes.length>OWC_SYMBOL_MAX_FILE_BYTES){free(bytes.data);continue;}
+        if(bytes_read+bytes.length>job->scan_max_bytes){free(bytes.data);truncated=1;reason="bytes";break;}
+        bytes_read+=bytes.length;
+        if(!owc_fs_utf8_valid((const char*)bytes.data,bytes.length)){free(bytes.data);continue;}
+        {
+            owc_symbol_record *records=NULL;size_t record_count=0,i;
+            extract_strbuf line;
+            if(owc_symbol_extract(language,(const char*)bytes.data,bytes.length,(size_t)job->extract_max_symbols,&records,&record_count)){free(bytes.data);failed=1;break;}
+            free(bytes.data);
+            memset(&line,0,sizeof(line));
+            {
+                char *escaped=owc_json_escape_string(file);
+                int ok=escaped&&extract_sb_append(&line,"{\"path\":",8)&&extract_sb_append(&line,escaped,strlen(escaped))&&extract_sb_append(&line,",\"symbols\":[",12);
+                free(escaped);
+                if(!ok){extract_sb_free(&line);owc_symbol_records_free(records,record_count);failed=1;break;}
+            }
+            for(i=0;i<record_count;i++){
+                char *ename=owc_json_escape_string(records[i].name);
+                char *esig=owc_json_escape_string(records[i].signature);
+                int ok=ename&&esig&&extract_sb_printf(&line,"%s{\"name\":%s,\"kind\":\"%s\",\"startLine\":%zu,\"endLine\":%zu,\"signature\":%s}",i?",":"",ename,records[i].kind,records[i].start_line,records[i].end_line,esig);
+                free(ename);free(esig);
+                if(!ok){extract_sb_free(&line);owc_symbol_records_free(records,record_count);failed=1;break;}
+            }
+            if(failed)break;
+            if(!extract_sb_append(&line,"]}\n",3)){extract_sb_free(&line);owc_symbol_records_free(records,record_count);failed=1;break;}
+            owc_symbol_records_free(records,record_count);
+            /* Same ~3.5 KiB batching as index.scan: one chunk slot per
+             * line would cap output at the 128-slot ring depth. */
+            if(line.length>sizeof(batch)-used){job_output(job,"stdout",(const unsigned char*)batch,used,0);used=0;}
+            if(line.length>=sizeof(batch))job_output(job,"stdout",(const unsigned char*)line.data,line.length,0);
+            else{memcpy(batch+used,line.data,line.length);used+=line.length;}
+            extract_sb_free(&line);
+            files_done++;symbols_total+=record_count;
+        }
+    }
+    if(failed){EnterCriticalSection(&jobs_mutex);job->state=OWC_JOB_FAILED;LeaveCriticalSection(&jobs_mutex);return 0;}
+    if(!job->cancel){
+        char summary[256];int slen=snprintf(summary,sizeof(summary),"{\"summary\":{\"files\":%zu,\"symbols\":%zu,\"truncated\":%s,\"reason\":%s%s%s}}\n",files_done,symbols_total,truncated?"true":"false",reason?"\"":"",reason?reason:"null",reason?"\"":"");
+        if(slen>0&&(size_t)slen<sizeof(summary)){if(sizeof(batch)-used>(size_t)slen){memcpy(batch+used,summary,(size_t)slen);used+=(size_t)slen;}else{job_output(job,"stdout",(const unsigned char*)batch,used,0);used=0;memcpy(batch,summary,(size_t)slen);used=(size_t)slen;}}
+    }
+    if(used)job_output(job,"stdout",(const unsigned char*)batch,used,0);
+    EnterCriticalSection(&jobs_mutex);
+    job->result.exit_code=0;
+    job->result.duration_ms=(long long)(monotonic_ms()-started);
+    job->state=job->cancel?OWC_JOB_CANCELLED:OWC_JOB_COMPLETED;
+    LeaveCriticalSection(&jobs_mutex);
+    return 0;
+}
+
+static DWORD WINAPI job_worker(void *data){owc_job *job=(owc_job*)data;owc_exec_request request;owc_exec_result result;if(job->kind==OWC_JOB_INDEX_SCAN||job->kind==OWC_JOB_GREP||job->kind==OWC_JOB_GLOB||job->kind==OWC_JOB_INDEX_EXTRACT){DWORD worker_result;owc_fs_platform_set_deny_roots((const char *const *)job->scan_deny_roots,job->scan_deny_root_count);if(job->kind==OWC_JOB_INDEX_SCAN)worker_result=index_scan_worker(job);else if(job->kind==OWC_JOB_GREP)worker_result=grep_job_worker(job);else if(job->kind==OWC_JOB_INDEX_EXTRACT)worker_result=index_extract_worker(job);else worker_result=glob_job_worker(job);owc_fs_platform_set_deny_roots(NULL,0);return worker_result;}memset(&request,0,sizeof(request));request.command=job->cmd;request.cwd=job->cwd;request.session_id=job->session;request.allow_paths=(const char *const *)job->allow_paths;request.allow_path_count=job->allow_path_count;request.sandbox_enabled=job->sandbox_enabled;request.allow_network=job->allow_network;request.sandbox_mode=job->sandbox_mode;request.shell_backend=job->shell_backend;request.job_memory_mb=job->memory;request.job_max_processes=job->processes;request.timeout_ms=job->timeout;request.output_limit=1024u*1024u;request.cancel_requested=&job->cancel;request.on_output=job_output;request.user_data=job;(void)owc_exec_run(&request,&result);EnterCriticalSection(&jobs_mutex);job->result=result;if(result.cancelled)job->state=OWC_JOB_CANCELLED;else if(result.timed_out)job->state=OWC_JOB_TIMED_OUT;else if(!result.system_error)job->state=OWC_JOB_COMPLETED;else job->state=OWC_JOB_FAILED;LeaveCriticalSection(&jobs_mutex);return 0;}
 static const char *job_state_name(owc_job_state state){return state==OWC_JOB_RUNNING?"running":state==OWC_JOB_COMPLETED?"completed":state==OWC_JOB_CANCELLED?"cancelled":state==OWC_JOB_TIMED_OUT?"timed_out":"failed";}
 static owc_job *find_job(const char *session,const char *id){size_t i;for(i=0;i<OWC_JOB_MAX_RUNNING;i++)if(jobs[i].state!=OWC_JOB_EMPTY&&!strcmp(jobs[i].session,session)&&!strcmp(jobs[i].id,id))return &jobs[i];return NULL;}
 static void cancel_session_jobs(const char *session_id){size_t i;if(!jobs_ready)return;EnterCriticalSection(&jobs_mutex);for(i=0;i<OWC_JOB_MAX_RUNNING;i++)if(jobs[i].state==OWC_JOB_RUNNING&&!strcmp(jobs[i].session,session_id))jobs[i].cancel=1;LeaveCriticalSection(&jobs_mutex);}
@@ -996,8 +1119,9 @@ static int handle_job_start(owc_rpc *rpc,const owc_json *id,const owc_json *p){
     static const char *exec_keys[]={"sessionId","jobId","kind","cmd","cwd","timeoutMs","shellBackend"};
     static const char *scan_keys[]={"sessionId","jobId","kind","cwd","path","include","exclude","maxDepth","maxNodes","maxBytes","maxMs","timeoutMs"};
     static const char *search_keys[]={"sessionId","jobId","kind","cwd","path","pattern","include","exclude","maxDepth","maxNodes","maxMs","timeoutMs"};
+    static const char *extract_keys[]={"sessionId","jobId","kind","cwd","path","files","maxBytes","maxMs","maxSymbolsPerFile","timeoutMs"};
     const char *session,*job_id,*kind,*cmd,*cwd,*const *allow_paths;
-    int enabled,network,mode,shell_backend,is_scan,is_search;
+    int enabled,network,mode,shell_backend,is_scan,is_search,is_extract;
     unsigned long memory,processes;
     size_t allow_count,i;
     owc_job *job=NULL;
@@ -1007,16 +1131,18 @@ static int handle_job_start(owc_rpc *rpc,const owc_json *id,const owc_json *p){
     if(!session||!job_id||!job_id[0]||strlen(job_id)>128||!kind)return reply_error(rpc,id,-32602,"job.start requires sessionId, jobId, and kind");
     is_scan=!strcmp(kind,"index.scan");
     is_search=!strcmp(kind,"grep")||!strcmp(kind,"glob");
-    if(!is_scan&&!is_search&&strcmp(kind,"exec"))return reply_error(rpc,id,-32602,"job.start kind must be exec, index.scan, grep, or glob");
+    is_extract=!strcmp(kind,"index.extract");
+    if(!is_scan&&!is_search&&!is_extract&&strcmp(kind,"exec"))return reply_error(rpc,id,-32602,"job.start kind must be exec, index.scan, index.extract, grep, or glob");
     {const char *const *keys;size_t nkeys;
     if(is_scan){keys=scan_keys;nkeys=sizeof(scan_keys)/sizeof(scan_keys[0]);}
     else if(is_search){keys=search_keys;nkeys=sizeof(search_keys)/sizeof(search_keys[0]);}
+    else if(is_extract){keys=extract_keys;nkeys=sizeof(extract_keys)/sizeof(extract_keys[0]);}
     else{keys=exec_keys;nkeys=sizeof(exec_keys)/sizeof(exec_keys[0]);}
     if(!allowed_keys(p,keys,nkeys))return reply_error(rpc,id,-32602,"job.start contains unknown fields");}
     cmd=owc_json_get_string(owc_json_object_get(p,"cmd"));
     cwd=owc_json_get_string(owc_json_object_get(p,"cwd"));
     if(!cwd)return reply_error(rpc,id,-32602,"job.start requires cwd");
-    if(!is_scan&&!is_search&&!cmd)return reply_error(rpc,id,-32602,"job.start kind exec requires cmd");
+    if(!is_scan&&!is_search&&!is_extract&&!cmd)return reply_error(rpc,id,-32602,"job.start kind exec requires cmd");
     if(!parse_shell_backend(p,&shell_backend))return reply_error(rpc,id,-32602,"shellBackend must be default or pwsh");
     if(!session_exec_policy(session,cwd,&enabled,&network,&mode,&allow_paths,&allow_count,&memory,&processes))return reply_error(rpc,id,-32002,"session cwd is not configured");
     jobs_init();EnterCriticalSection(&jobs_mutex);
@@ -1025,7 +1151,7 @@ static int handle_job_start(owc_rpc *rpc,const owc_json *id,const owc_json *p){
     if(i==OWC_JOB_MAX_RUNNING){LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32000,"job limit reached");}
     job=&jobs[i];job_free(job);
     job->id=copy_text(job_id);job->session=copy_text(session);job->cwd=copy_text(cwd);
-    job->kind=is_scan?OWC_JOB_INDEX_SCAN:is_search?(!strcmp(kind,"grep")?OWC_JOB_GREP:OWC_JOB_GLOB):OWC_JOB_EXEC;
+    job->kind=is_scan?OWC_JOB_INDEX_SCAN:is_search?(!strcmp(kind,"grep")?OWC_JOB_GREP:OWC_JOB_GLOB):is_extract?OWC_JOB_INDEX_EXTRACT:OWC_JOB_EXEC;
     if(is_scan){
         const char *path=owc_json_get_string(owc_json_object_get(p,"path"));const owc_json *value;size_t number=0;
         if(!path||!path[0]){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32602,"job.start kind index.scan requires a non-empty path");}
@@ -1058,13 +1184,37 @@ static int handle_job_start(owc_rpc *rpc,const owc_json *id,const owc_json *p){
         for(r=0;snapshot&&r<snapshot->read_root_count;r++){job->scan_read_roots[job->scan_read_root_count]=copy_text(snapshot->read_roots[r]);if(!job->scan_read_roots[job->scan_read_root_count])break;job->scan_read_root_count++;}
         for(r=0;snapshot&&r<snapshot->deny_count;r++){job->scan_deny_roots[job->scan_deny_root_count]=copy_text(snapshot->deny_paths[r]);if(!job->scan_deny_roots[job->scan_deny_root_count])break;job->scan_deny_root_count++;}
         if(!snapshot||job->scan_read_root_count!=snapshot->read_root_count||job->scan_deny_root_count!=snapshot->deny_count){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32000,"out of memory");}}
+    } else if(is_extract) {
+        const char *path=owc_json_get_string(owc_json_object_get(p,"path"));const owc_json *files=owc_json_object_get(p,"files");const owc_json *value;size_t number=0,f;
+        if(!path||!path[0]){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32602,"job.start kind index.extract requires a non-empty path");}
+        if(!session_path_check(session_find(session),path,OWC_PATH_READ)){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32002,"path is denied by session policy");}
+        if(!files||files->type!=OWC_JSON_ARRAY||files->value.children.count>OWC_EXTRACT_MAX_FILES){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32602,"job.start kind index.extract requires files to be an array of up to 4096 paths");}
+        job->scan_path=copy_text(path);
+        job->extract_files=(char**)calloc(files->value.children.count?files->value.children.count:1u,sizeof(char*));
+        if(!job->extract_files){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32000,"out of memory");}
+        for(f=0;f<files->value.children.count;f++){
+            const char *entry=owc_json_get_string(files->value.children.items[f]);
+            if(!entry||!entry[0]||strlen(entry)>OWC_EXTRACT_PATH_BYTES||!owc_fs_utf8_valid(entry,strlen(entry))){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32602,"files entries must be non-empty strings of at most 1024 bytes");}
+            job->extract_files[job->extract_file_count]=copy_text(entry);
+            if(!job->extract_files[job->extract_file_count]){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32000,"out of memory");}
+            job->extract_file_count++;
+        }
+        job->scan_max_bytes=OWC_EXTRACT_DEFAULT_BYTES;job->scan_max_ms=OWC_EXTRACT_DEFAULT_MS;job->extract_max_symbols=OWC_EXTRACT_DEFAULT_SYMBOLS;
+        value=owc_json_object_get(p,"maxBytes");if(value&&(!json_size(value,&number)||!number||number>OWC_EXTRACT_BYTES_LIMIT)){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32602,"maxBytes must be an integer from 1 to 1073741824");}if(value)job->scan_max_bytes=(unsigned long long)number;
+        value=owc_json_object_get(p,"maxMs");if(value&&(!json_size(value,&number)||!number||number>OWC_EXTRACT_MS_LIMIT)){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32602,"maxMs must be an integer from 1 to 300000");}if(value)job->scan_max_ms=(int)number;
+        value=owc_json_object_get(p,"maxSymbolsPerFile");if(value&&(!json_size(value,&number)||!number||number>OWC_EXTRACT_SYMBOLS_LIMIT)){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32602,"maxSymbolsPerFile must be an integer from 1 to 10000");}if(value)job->extract_max_symbols=(unsigned long)number;
+        /* Same read/deny policy snapshot as index.scan (see index_path_allowed). */
+        {session_config *snapshot=session_find(session);size_t r;
+        for(r=0;snapshot&&r<snapshot->read_root_count;r++){job->scan_read_roots[job->scan_read_root_count]=copy_text(snapshot->read_roots[r]);if(!job->scan_read_roots[job->scan_read_root_count])break;job->scan_read_root_count++;}
+        for(r=0;snapshot&&r<snapshot->deny_count;r++){job->scan_deny_roots[job->scan_deny_root_count]=copy_text(snapshot->deny_paths[r]);if(!job->scan_deny_roots[job->scan_deny_root_count])break;job->scan_deny_root_count++;}
+        if(!snapshot||job->scan_read_root_count!=snapshot->read_root_count||job->scan_deny_root_count!=snapshot->deny_count){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32000,"out of memory");}}
     } else {
         job->cmd=copy_text(cmd);
         for(i=0;i<allow_count;i++){job->allow_paths[i]=copy_text(allow_paths[i]);if(!job->allow_paths[i]){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32000,"out of memory");}job->allow_path_count++;}
     }
     job->sandbox_enabled=enabled;job->allow_network=network;job->sandbox_mode=mode;job->shell_backend=shell_backend;job->memory=memory;job->processes=processes;
     job->timeout=120000;{const owc_json *timeout=owc_json_object_get(p,"timeoutMs");if(timeout&&!parse_timeout(timeout,&job->timeout)){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32602,"timeoutMs must be a positive integer");}}
-    if(!job->id||!job->session||!job->cwd||(!is_scan&&!is_search&&!job->cmd)||((is_scan||is_search)&&!job->scan_path)||(is_search&&!job->search_pattern)){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32000,"out of memory");}
+    if(!job->id||!job->session||!job->cwd||(!is_scan&&!is_search&&!is_extract&&!job->cmd)||((is_scan||is_search||is_extract)&&!job->scan_path)||(is_search&&!job->search_pattern)||(is_extract&&!job->extract_files)){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32000,"out of memory");}
     job->state=OWC_JOB_RUNNING;
     job->thread=CreateThread(NULL,0,job_worker,job,0,NULL);
     if(!job->thread){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32000,"failed to start job");}
@@ -1113,7 +1263,7 @@ int owc_rpc_dispatch(owc_rpc *rpc, const char *body, size_t length) {
 #else
         const char *job_control="false";
 #endif
-        escaped=owc_json_escape_string(reason);if(!escaped)(void)reply_error(rpc,id,-32000,"failed to encode sandbox capability");else{result_size=(size_t)snprintf(NULL,0,"{\"version\":\"%s\",\"protocolVersion\":\"1.0\",\"platform\":\"%s\",\"sandboxCapability\":\"%s\",\"sandboxReason\":%s,\"features\":{\"fsStat\":true,\"fsStatMany\":true,\"fsWriteBase64\":true,\"jobControl\":%s,\"fsHash\":true,\"fsScanPagination\":true,\"fsWatch\":true,\"indexScan\":true,\"grepJob\":true,\"globJob\":true},\"limits\":{\"maxFrameBytes\":33554432,\"maxWriteBase64Bytes\":20971520,\"maxHashBytes\":16777216,\"maxStatManyPaths\":128,\"maxStatManyPathBytes\":262144,\"maxScanEntries\":256,\"maxScanDepth\":16,\"maxScanNodes\":2048,\"maxWatches\":16,\"maxWatchEvents\":128,\"maxConcurrentJobs\":4,\"maxJobOutputBytes\":524288,\"maxIndexScanNodes\":1000000,\"maxIndexScanDepth\":64,\"maxIndexScanBytes\":17179869184,\"maxIndexScanMs\":600000,\"maxSearchNodes\":1000000,\"maxSearchDepth\":64,\"maxSearchMs\":300000}}",OWC_CORE_VERSION,platform,owc_sandbox_status_name(capability),escaped,job_control);result=(char*)malloc(result_size+1);if(!result)(void)reply_error(rpc,id,-32000,"failed to encode core capabilities");else{(void)snprintf(result,result_size+1,"{\"version\":\"%s\",\"protocolVersion\":\"1.0\",\"platform\":\"%s\",\"sandboxCapability\":\"%s\",\"sandboxReason\":%s,\"features\":{\"fsStat\":true,\"fsStatMany\":true,\"fsWriteBase64\":true,\"jobControl\":%s,\"fsHash\":true,\"fsScanPagination\":true,\"fsWatch\":true,\"indexScan\":true,\"grepJob\":true,\"globJob\":true},\"limits\":{\"maxFrameBytes\":33554432,\"maxWriteBase64Bytes\":20971520,\"maxHashBytes\":16777216,\"maxStatManyPaths\":128,\"maxStatManyPathBytes\":262144,\"maxScanEntries\":256,\"maxScanDepth\":16,\"maxScanNodes\":2048,\"maxWatches\":16,\"maxWatchEvents\":128,\"maxConcurrentJobs\":4,\"maxJobOutputBytes\":524288,\"maxIndexScanNodes\":1000000,\"maxIndexScanDepth\":64,\"maxIndexScanBytes\":17179869184,\"maxIndexScanMs\":600000,\"maxSearchNodes\":1000000,\"maxSearchDepth\":64,\"maxSearchMs\":300000}}",OWC_CORE_VERSION,platform,owc_sandbox_status_name(capability),escaped,job_control);(void)reply_result(rpc,id,result);free(result);}free(escaped);}
+        escaped=owc_json_escape_string(reason);if(!escaped)(void)reply_error(rpc,id,-32000,"failed to encode sandbox capability");else{result_size=(size_t)snprintf(NULL,0,"{\"version\":\"%s\",\"protocolVersion\":\"1.0\",\"platform\":\"%s\",\"sandboxCapability\":\"%s\",\"sandboxReason\":%s,\"features\":{\"fsStat\":true,\"fsStatMany\":true,\"fsWriteBase64\":true,\"jobControl\":%s,\"fsHash\":true,\"fsScanPagination\":true,\"fsWatch\":true,\"indexScan\":true,\"grepJob\":true,\"globJob\":true,\"indexExtract\":true},\"limits\":{\"maxFrameBytes\":33554432,\"maxWriteBase64Bytes\":20971520,\"maxHashBytes\":16777216,\"maxStatManyPaths\":128,\"maxStatManyPathBytes\":262144,\"maxScanEntries\":256,\"maxScanDepth\":16,\"maxScanNodes\":2048,\"maxWatches\":16,\"maxWatchEvents\":128,\"maxConcurrentJobs\":4,\"maxJobOutputBytes\":524288,\"maxIndexScanNodes\":1000000,\"maxIndexScanDepth\":64,\"maxIndexScanBytes\":17179869184,\"maxIndexScanMs\":600000,\"maxSearchNodes\":1000000,\"maxSearchDepth\":64,\"maxSearchMs\":300000,\"maxIndexExtractFiles\":4096,\"maxIndexExtractBytes\":1073741824,\"maxIndexExtractMs\":300000,\"indexExtractDefaultSymbolsPerFile\":200,\"maxIndexExtractSymbolsPerFile\":10000}}",OWC_CORE_VERSION,platform,owc_sandbox_status_name(capability),escaped,job_control);result=(char*)malloc(result_size+1);if(!result)(void)reply_error(rpc,id,-32000,"failed to encode core capabilities");else{(void)snprintf(result,result_size+1,"{\"version\":\"%s\",\"protocolVersion\":\"1.0\",\"platform\":\"%s\",\"sandboxCapability\":\"%s\",\"sandboxReason\":%s,\"features\":{\"fsStat\":true,\"fsStatMany\":true,\"fsWriteBase64\":true,\"jobControl\":%s,\"fsHash\":true,\"fsScanPagination\":true,\"fsWatch\":true,\"indexScan\":true,\"grepJob\":true,\"globJob\":true,\"indexExtract\":true},\"limits\":{\"maxFrameBytes\":33554432,\"maxWriteBase64Bytes\":20971520,\"maxHashBytes\":16777216,\"maxStatManyPaths\":128,\"maxStatManyPathBytes\":262144,\"maxScanEntries\":256,\"maxScanDepth\":16,\"maxScanNodes\":2048,\"maxWatches\":16,\"maxWatchEvents\":128,\"maxConcurrentJobs\":4,\"maxJobOutputBytes\":524288,\"maxIndexScanNodes\":1000000,\"maxIndexScanDepth\":64,\"maxIndexScanBytes\":17179869184,\"maxIndexScanMs\":600000,\"maxSearchNodes\":1000000,\"maxSearchDepth\":64,\"maxSearchMs\":300000,\"maxIndexExtractFiles\":4096,\"maxIndexExtractBytes\":1073741824,\"maxIndexExtractMs\":300000,\"indexExtractDefaultSymbolsPerFile\":200,\"maxIndexExtractSymbolsPerFile\":10000}}",OWC_CORE_VERSION,platform,owc_sandbox_status_name(capability),escaped,job_control);(void)reply_result(rpc,id,result);free(result);}free(escaped);}
     } else if(strcmp(method,"core.shutdown")==0) { (void)reply_result(rpc,id,"{\"ok\":true}"); rpc->shutting_down=1; }
     else if(strcmp(method,"session.configure")==0) { const char *sid=owc_json_get_string(owc_json_object_get(params,"sessionId")),*cwd=owc_json_get_string(owc_json_object_get(params,"cwd"));if(!sid||!sid[0]||!cwd||!cwd[0])(void)reply_error(rpc,id,-32602,"session.configure requires sessionId and cwd");else if(!configure_session(sid,cwd,owc_json_object_get(params,"sandbox")))(void)reply_error(rpc,id,-32000,"failed to configure session");else(void)reply_session_capability(rpc,id,sid); }
     else if(strcmp(method,"session.cleanup")==0) { const char *sid=owc_json_get_string(owc_json_object_get(params,"sessionId"));if(!sid||!sid[0])(void)reply_error(rpc,id,-32602,"session.cleanup requires sessionId");else{(void)cleanup_session(sid);(void)reply_result(rpc,id,"{\"ok\":true}");} }
