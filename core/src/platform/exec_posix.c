@@ -119,7 +119,7 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
         if (dup2(out_pipe[1], STDOUT_FILENO) < 0 || dup2(err_pipe[1], STDERR_FILENO) < 0) _exit(126);
         close(out_pipe[1]); close(err_pipe[1]);
         if (chdir(request->cwd) != 0) _exit(126);
-        if(request->sandbox_enabled)(void)owc_landlock_apply(request->cwd,request->allow_network,&sandbox);
+        if(request->sandbox_enabled)(void)owc_landlock_apply(request->cwd,request->allow_paths,request->allow_path_count,request->allow_network,&sandbox);
         else{sandbox.status=OWC_SANDBOX_ADVISORY;(void)snprintf(sandbox.reason,sizeof(sandbox.reason),"sandbox disabled by session policy");}
         if(!write_all(sandbox_pipe[1],&sandbox,sizeof(sandbox)))_exit(126);
         if(request->shell_backend==(int)OWC_SHELL_PWSH) {

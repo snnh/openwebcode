@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
 import { existsSync } from "node:fs";
@@ -178,9 +178,23 @@ function parseCookies(value: string | undefined): Map<string, string> {
   const result = new Map<string, string>();
   for (const item of value?.split(";") ?? []) {
     const separator = item.indexOf("=");
-    if (separator > 0) result.set(item.slice(0, separator).trim(), item.slice(separator + 1).trim());
+    if (separator > 0) {
+      const raw = item.slice(separator + 1).trim();
+      try { result.set(item.slice(0, separator).trim(), decodeURIComponent(raw)); }
+      catch { result.set(item.slice(0, separator).trim(), raw); }
+    }
   }
   return result;
+}
+
+/** Keep bootstrap credentials out of structured request logs. */
+export function sanitizeRequestUrl(value: string): string {
+  const separator = value.indexOf("?");
+  if (separator < 0) return value;
+  const params = new URLSearchParams(value.slice(separator + 1));
+  if (!params.has("token")) return value;
+  params.set("token", "[REDACTED]");
+  return `${value.slice(0, separator)}?${params.toString()}`;
 }
 
 function safeTokenEqual(expected: string, actual: string | undefined): boolean {
@@ -302,7 +316,22 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   const defaultCurrency = dependencies.defaultCurrency ?? "CNY";
   const defaultLanguage = dependencies.defaultLanguage ?? "zh-CN";
   const getPreferences = dependencies.getPreferences ?? (() => ({ currency: defaultCurrency, language: defaultLanguage }));
-  const app = Fastify({ logger: true, bodyLimit: 1024 * 1024 });
+  const app = Fastify({
+    logger: {
+      serializers: {
+        req(request: FastifyRequest) {
+          return {
+            method: request.method,
+            url: sanitizeRequestUrl(request.url),
+            host: request.headers.host ?? "",
+            remoteAddress: request.ip,
+            ...(request.socket.remotePort === undefined ? {} : { remotePort: request.socket.remotePort }),
+          };
+        },
+      },
+    },
+    bodyLimit: 1024 * 1024,
+  });
   const auth = dependencies.auth;
   const isAuthorized = (request: { headers: Record<string, string | string[] | undefined>; query?: unknown }, allowQueryToken = false) => !auth || safeTokenEqual(auth.accessToken, requestToken(request, allowQueryToken));
   const originAllowed = (origin: string | undefined, nativeClient: boolean) => {
@@ -325,6 +354,17 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     const hostname = value.startsWith("[") ? value.slice(1, value.indexOf("]")) : value.split(":")[0] ?? "";
     return isLoopbackHost(hostname);
   };
+  // Loopback mode intentionally has no bearer token, so the Host header is
+  // part of the trust boundary for every browser HTTP request.  Without this
+  // check a DNS-rebinding page can become same-origin with 127.0.0.1 and call
+  // file, extension, or execution APIs.  Keep WebSocket upgrades on the route
+  // guard below so rejected handshakes still receive the documented 1008 close.
+  app.addHook("onRequest", async (request, reply) => {
+    const upgrade = Array.isArray(request.headers.upgrade) ? request.headers.upgrade[0] : request.headers.upgrade;
+    if (!auth && upgrade?.toLowerCase() !== "websocket" && !hostAllowed(request.headers.host)) {
+      return reply.code(403).send({ error: "Loopback mode requires a loopback Host header" });
+    }
+  });
   if (auth) {
     app.addHook("onRequest", async (request, reply) => {
       if (!request.url.startsWith("/api/")) {
@@ -335,7 +375,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
           ? (request.query as Record<string, unknown>).token
           : undefined;
         if (request.method === "GET" && request.url.split("?", 1)[0] === "/" && typeof queryToken === "string" && safeTokenEqual(auth.accessToken, queryToken)) {
-          reply.header("set-cookie", `owc_access_token=${auth.accessToken}; HttpOnly; SameSite=Strict; Path=/`);
+          reply.header("set-cookie", `owc_access_token=${encodeURIComponent(auth.accessToken)}; HttpOnly; SameSite=Strict; Path=/`);
           return reply.redirect("/");
         }
         return;
@@ -472,10 +512,9 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   events.on("event", (event: AppEvent) => {
     const serialized = JSON.stringify(event);
     for (const client of clients) {
-      // 运行状态类事件（agent.state / run.*）全局广播：跨会话的运行状态对所有客户端可见；
-      // 未带 sessionId 订阅的客户端始终收到全量事件流（web 端按 event.sessionId 分发）。
-      const globalEvent = event.type === "agent.state" || event.type.startsWith("run.");
-      if (client.readyState !== 1 || (client.sessionId && event.sessionId && client.sessionId !== event.sessionId && !globalEvent)) continue;
+      // 未带 sessionId 的 Web 客户端接收全量事件；显式会话订阅必须与
+      // replay() 使用同一过滤语义，不能在实时阶段混入其他会话的状态。
+      if (client.readyState !== 1 || (client.sessionId && event.sessionId && client.sessionId !== event.sessionId)) continue;
       if (isSlowClient(client, wsLimits)) {
         slowClientDisconnects++;
         try { client.send(JSON.stringify({ source: "server", type: "resync.required", seq: event.seq, createdAt: new Date().toISOString(), ...(client.sessionId ? { sessionId: client.sessionId, ...(event.sessionSeq !== undefined ? { sessionSeq: event.sessionSeq } : {}) } : {}), payload: { latestSeq: client.sessionId ? event.sessionSeq ?? 0 : event.seq, reason: "slow_client" } })); }
@@ -995,14 +1034,26 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     if (!providers.get(provider)) return reply.code(400).send({ error: `Provider ${provider} is not configured` });
     if (typeof model !== "string" || !model) return reply.code(400).send({ error: "model must be a non-empty string" });
     const profile = profileOf(model, provider);
-    const thinking = request.body && "thinking" in request.body ? request.body.thinking ?? undefined : session.thinking;
-    const effort = request.body && "effort" in request.body ? request.body.effort ?? undefined : session.effort;
-    if (thinking !== undefined && !profile.capabilities.thinking.includes(thinking)) {
-      return reply.code(400).send({ error: `Model ${model} does not support thinking mode ${thinking}` });
+    const thinkingExplicit = Boolean(request.body && Object.prototype.hasOwnProperty.call(request.body, "thinking"));
+    const effortExplicit = Boolean(request.body && Object.prototype.hasOwnProperty.call(request.body, "effort"));
+    const requestedThinking = thinkingExplicit ? request.body.thinking ?? undefined : session.thinking;
+    const requestedEffort = effortExplicit ? request.body.effort ?? undefined : session.effort;
+    if (thinkingExplicit && requestedThinking !== undefined && !profile.capabilities.thinking.includes(requestedThinking)) {
+      return reply.code(400).send({ error: `Model ${model} does not support thinking mode ${requestedThinking}` });
     }
-    if (effort !== undefined && !profile.capabilities.effort.includes(effort)) {
-      return reply.code(400).send({ error: `Model ${model} does not support effort ${effort}` });
+    if (effortExplicit && requestedEffort !== undefined && !profile.capabilities.effort.includes(requestedEffort)) {
+      return reply.code(400).send({ error: `Model ${model} does not support effort ${requestedEffort}` });
     }
+    // A model/provider switch is atomic from the UI's perspective.  Preserve
+    // compatible inherited reasoning settings, and automatically clear stale
+    // values that the target profile cannot accept.  Explicit invalid values
+    // remain a 400 above so callers still receive useful validation feedback.
+    const thinking = requestedThinking !== undefined && profile.capabilities.thinking.includes(requestedThinking)
+      ? requestedThinking
+      : undefined;
+    const effort = requestedEffort !== undefined && profile.capabilities.effort.includes(requestedEffort)
+      ? requestedEffort
+      : undefined;
     const agentMode = request.body && "agentMode" in request.body ? request.body.agentMode ?? undefined : session.agentMode;
     if (agentMode !== undefined && !["plan", "build"].includes(agentMode)) {
       return reply.code(400).send({ error: 'agentMode must be "plan" or "build"' });
@@ -1997,7 +2048,13 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       pendingSends: 0,
       send: (data: string) => {
         client.pendingSends++;
-        socket.send(data, () => { client.pendingSends = Math.max(0, client.pendingSends - 1); });
+        socket.send(data, (error) => {
+          client.pendingSends = Math.max(0, client.pendingSends - 1);
+          if (error) {
+            failedClientSends++;
+            clients.delete(client);
+          }
+        });
       },
       close: (code?: number, reason?: string) => socket.close(code, reason),
       ...(sessionId ? { sessionId } : {}),

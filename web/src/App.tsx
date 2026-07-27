@@ -80,6 +80,12 @@ export function App(): ReactElement {
   const isMobile = useMediaQuery(MOBILE_BREAKPOINT);
   const importInput = useRef<HTMLInputElement>(null);
   const layout = useWorkbenchLayout();
+  // 窄窗口抽屉只在当前视口内开合，不污染桌面侧栏的持久化展开状态。
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const sidebarVisible = isMobile ? mobileSidebarOpen : layout.sidebarVisible;
+  useEffect(() => {
+    if (!isMobile) setMobileSidebarOpen(false);
+  }, [isMobile]);
   const [sendKey, setSendKeyState] = useState<SendKey>(loadSendKey);
   const [sessionDefaults, setSessionDefaultsState] = useState<SessionDefaults>(loadSessionDefaults);
   const setSendKey = (value: SendKey): void => { setSendKeyState(value); saveSendKey(value); };
@@ -373,10 +379,10 @@ export function App(): ReactElement {
   }, [focusComposer]);
   // 打开 Problems 侧栏视图即视为已查看，清除角标（原底部面板语义平移）
   useEffect(() => {
-    if (layout.sidebarView === "problems" && layout.sidebarVisible && currentId) {
+    if (layout.sidebarView === "problems" && sidebarVisible && currentId) {
       setProblemsBadges((previous) => clearDiagnosticsBadge(previous, currentId));
     }
-  }, [layout.sidebarView, layout.sidebarVisible, currentId]);
+  }, [layout.sidebarView, sidebarVisible, currentId]);
   const mergedPermissions = useMemo(() => {
     const server = serverPermissions.data ?? [];
     const local = pendingPermissions.filter((item) => !server.some((entry) => entry.requestId === item.requestId));
@@ -554,14 +560,32 @@ export function App(): ReactElement {
     if (next) setCurrentId(next.id);
   }, [sessions.data, currentId]);
 
+  const showWorkbenchView = useCallback((view: SidebarView): void => {
+    if (!isMobile) {
+      layout.showView(view);
+      return;
+    }
+    if (mobileSidebarOpen && layout.sidebarView === view) {
+      setMobileSidebarOpen(false);
+      return;
+    }
+    layout.selectView(view);
+    setMobileSidebarOpen(true);
+  }, [isMobile, layout.selectView, layout.showView, layout.sidebarView, mobileSidebarOpen]);
+
+  const toggleWorkbenchSidebar = useCallback((): void => {
+    if (isMobile) setMobileSidebarOpen((open) => !open);
+    else layout.toggleSidebar();
+  }, [isMobile, layout.toggleSidebar]);
+
   // 命令动作面存 ref：注册表只挂一次，handler 每次取最新动作（闭包不捕获过期状态）
   const actionsRef = useRef<CommandActions>(null as unknown as CommandActions);
   actionsRef.current = {
     showCommands: () => setPaletteOpen(true),
     quickOpen: () => setQuickOpenOpen(true),
-    toggleSidebar: layout.toggleSidebar,
+    toggleSidebar: toggleWorkbenchSidebar,
     toggleBottomPanel: layout.toggleBottomPanel,
-    showView: (view: SidebarView) => layout.showView(view),
+    showView: showWorkbenchView,
     openSettings: () => setSettingsOpen(true),
     newSession: () => setDialogOpen(true),
     importSession: () => importInput.current?.click(),
@@ -606,16 +630,16 @@ export function App(): ReactElement {
     setNotifications((previous) => markRead(previous, item.id));
     setNotificationsOpen(false);
     if (item.target?.sessionId) setCurrentId(item.target.sessionId);
-    if (item.target?.view) layout.showView(item.target.view);
-  }, [layout]);
+    if (item.target?.view) showWorkbenchView(item.target.view);
+  }, [showWorkbenchView]);
 
   // 移动端抽屉：选中会话后收起侧栏（桌面端行为不变）
   const selectSession = useCallback((id: string): void => {
     setCurrentId(id);
-    if (isMobile) layout.setSidebarVisible(false);
-  }, [isMobile, layout]);
+    if (isMobile) setMobileSidebarOpen(false);
+  }, [isMobile]);
 
-  const sidebar = layout.sidebarVisible ? (
+  const sidebar = sidebarVisible ? (
     layout.sidebarView === "sessions" ? (
       <SessionRail
         sessions={sessions.data}
@@ -651,14 +675,14 @@ export function App(): ReactElement {
   return (
     <>
       <WorkbenchShell
-        sidebarWidth={layout.sidebarVisible ? layout.sidebarWidth : undefined}
+        sidebarWidth={sidebarVisible ? layout.sidebarWidth : undefined}
         activityBar={
           <ActivityBar
             activeView={layout.sidebarView}
-            sidebarVisible={layout.sidebarVisible}
+            sidebarVisible={sidebarVisible}
             problemsBadge={currentId ? problemsBadges[currentId] ?? 0 : 0}
             notificationsBadge={unreadCount(notifications)}
-            onShowView={layout.showView}
+            onShowView={showWorkbenchView}
             onShowCommands={() => setPaletteOpen(true)}
             onShowNotifications={openNotifications}
             onOpenSettings={() => setSettingsOpen(true)}

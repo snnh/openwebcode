@@ -35,6 +35,10 @@ function mockMatchMedia(initial: boolean): { setMatches(next: boolean): void; ca
 afterEach(() => vi.unstubAllGlobals());
 
 describe("useMediaQuery（移动端断点 state 层，§6.8）", () => {
+  it("在桌面三栏开始拥挤前切换窄窗口布局", () => {
+    expect(MOBILE_BREAKPOINT).toBe("(max-width: 1024px)");
+  });
+
   it("初始读取 matchMedia 结果", () => {
     mockMatchMedia(true);
     const { result } = renderHook(() => useMediaQuery(MOBILE_BREAKPOINT));

@@ -13,7 +13,7 @@ import type { MonacoApi } from "../components/editor/monaco-loader";
 
 let mobileMatches = false;
 vi.mock("../hooks/use-media-query", () => ({
-  MOBILE_BREAKPOINT: "(max-width: 768px)",
+  MOBILE_BREAKPOINT: "(max-width: 1024px)",
   useMediaQuery: () => mobileMatches,
 }));
 
@@ -77,6 +77,7 @@ describe("编辑器分栏：布局回归", () => {
   let originalWebSocket: typeof WebSocket;
   beforeEach(() => {
     mobileMatches = false;
+    window.localStorage.clear();
     loadMonacoMock.mockClear();
     originalWebSocket = globalThis.WebSocket;
     class StubWebSocket {
@@ -125,5 +126,22 @@ describe("编辑器分栏：布局回归", () => {
     await view.findByRole("dialog", { name: "src/a.ts" });
     expect(view.container.querySelector(".editor-pane")).toBeNull();
     expect(loadMonacoMock).not.toHaveBeenCalled();
+  });
+
+  it("窄窗口侧栏使用临时抽屉，不继承或改写桌面展开状态", async () => {
+    window.localStorage.setItem("owc-rail-collapsed", "1");
+    mobileMatches = true;
+    const view = renderApp();
+    await view.findByRole("heading", { name: "会话一" });
+
+    expect(view.container.querySelector(".wb-sidebar")).toBeNull();
+    fireEvent.click(view.getByRole("button", { name: "会话" }));
+    expect(view.container.querySelector(".wb-sidebar")).not.toBeNull();
+    expect(view.getByRole("textbox", { name: "搜索会话" })).toBeInTheDocument();
+    expect(window.localStorage.getItem("owc-rail-collapsed")).toBe("1");
+
+    fireEvent.click((await view.findAllByText("会话二"))[0]);
+    await waitFor(() => expect(view.container.querySelector(".wb-sidebar")).toBeNull());
+    expect(window.localStorage.getItem("owc-rail-collapsed")).toBe("1");
   });
 });
