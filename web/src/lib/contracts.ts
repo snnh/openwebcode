@@ -81,6 +81,20 @@ export interface MessageContent {
   isError?: boolean;
   mediaType?: string;
   data?: string;
+  /** spawn_task/spawn_swarm 工具结果携带的子代理转录 id 列表 */
+  subagentTaskIds?: string[];
+}
+
+/** GET /api/sessions/:id/subagents/:taskId 响应：runSubAgent 落盘的子代理转录 */
+export interface SubagentTranscript {
+  id: string;
+  prompt: string;
+  agent?: string;
+  startedAt: string;
+  turns: number;
+  toolsUsed: string[];
+  conclusion: string;
+  messages: ChatMessage[];
 }
 
 export interface ChatMessage {
