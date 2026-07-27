@@ -35,9 +35,10 @@ openwebcode/
 │   │   ├── index/        # 符号提取、索引存储、code_search/repo_map 供数（0.4.0）
 │   │   ├── diagnostics/  # test_runner 检测、四类生态解析器、DiagnosticSet（0.4.0）
 │   │   ├── scm/          # git status/diff/commit 编排、worktree 生命周期（0.4.0）
+│   │   ├── config/       # defaults.json：安装默认配置（随发布更新，构建进 dist/config/）
 │   │   └── rpc/          # C RPC 类型定义
 │   ├── test/             # vitest 测试（单元、HTTP、真实 core 端到端）
-│   └── dist/             # 编译产物（ts 输出，git 跟踪）
+│   └── dist/             # 编译产物（ts 输出，不 git 跟踪；打包时整体进 staging）
 ├── web/                  # React + Vite 前端
 │   ├── src/
 │   │   ├── App.tsx       # 顶层组件、WS 事件流、状态管理
@@ -90,7 +91,7 @@ npm start           # node dist/index.js
 npm run dev         # tsx watch src/index.ts，源码改动热重启
 ```
 
-tsconfig 严格档：`strict` + `noUncheckedIndexedAccess` + `exactOptionalPropertyTypes`。`dist/` 是 git 跟踪的编译产物，`npm run build` 后随源码一起提交（CRLF warning 正常）。
+tsconfig 严格档：`strict` + `noUncheckedIndexedAccess` + `exactOptionalPropertyTypes`。`dist/` 不 git 跟踪（曾误入库，`.gitignore` 已排除）；发布打包时整体复制进 staging，`config/defaults.json` 随 `dist/config/` 一起分发。
 
 ### 3. web（前端）
 
@@ -135,7 +136,7 @@ cd web && npm run dev    # Vite 默认 5173，proxy 到 server 3000
 
 ### 数据目录解析
 
-用户显式设置的 `OWC_DATA_DIR` 优先。未设置时，安装版启动器会注入平台默认值（Windows `%LOCALAPPDATA%\openwebcode`；Linux `${XDG_DATA_HOME:-~/.local/share}/openwebcode`）；只有绕过启动器直接运行 `node server/dist/index.js` 时，才以相对 `server` 目录的 `../.openwebcode` 作为启动/设置目录兜底。设置文件固定在 `<启动/设置目录>/server-settings.json`；其已保存的 `dataDir` 会在未设置 `OWC_DATA_DIR` 时、下次启动后选择 `<业务数据目录>`，但不会移动设置文件。未保存覆盖时两者相同。为避免相对路径按 `server` 目录解析，建议两处都使用绝对路径；源码联调若想隔离数据，可显式设置 `OWC_DATA_DIR`。
+用户显式设置的 `OWC_DATA_DIR` 优先。未设置时，安装版启动器会注入平台默认值（Windows `%LOCALAPPDATA%\openwebcode`；Linux `${XDG_DATA_HOME:-~/.local/share}/openwebcode`）；只有绕过启动器直接运行 `node server/dist/index.js` 时，才以相对 `server` 目录的 `../.openwebcode` 作为启动/设置目录兜底。设置文件固定在 `<启动/设置目录>/server-settings.json`；其已保存的 `dataDir` 会在未设置 `OWC_DATA_DIR` 时、下次启动后选择 `<业务数据目录>`，但不会移动设置文件。未保存覆盖时两者相同。默认配置随安装目录分发：`server/src/config/defaults.json`（构建进 `dist/config/`）是默认来源，`server-settings.json` 只存用户覆盖，生效值按 env > 用户覆盖 > 安装默认 > 代码兜底（`FIELDS.defaultValue`）组合，两处默认由 `test/defaults-sync.test.ts` 强制一致。为避免相对路径按 `server` 目录解析，建议两处都使用绝对路径；源码联调若想隔离数据，可显式设置 `OWC_DATA_DIR`。
 
 ### B. 测试用 provider（无需真实 LLM）
 
@@ -271,7 +272,7 @@ provider；它支持 `run: <cmd>` 的工具调用回放与 `tool_result` 回包�
 
 - 提交信息中文，格式 `feat(scope): 标题` / `fix(scope): 标题`，正文列要点（参考 `git log --oneline`）
 - 不主动 `git push` / `rebase` / `reset`，只顺序 commit
-- `server/dist/` 是 git 跟踪产物，`npm run build` 后随源码提交
+- `server/dist/` 不 git 跟踪（曾误入库，`.gitignore` 已排除）；发布打包时整体复制进 staging
 - `web/dist/` 不入库，由 server 静态托管
 - `docs/` 仅在本地维护并由 `.gitignore` 排除，不提交到远端仓库
 - `help/` 入库——用户文档与本文档随 git 同步

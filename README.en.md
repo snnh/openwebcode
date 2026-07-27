@@ -145,3 +145,9 @@ The boot/settings directory is chosen by the launch path: an explicitly set `OWC
 The Settings page is persisted as `<boot/settings directory>/server-settings.json`. When `OWC_DATA_DIR` is not set, its saved Data directory value selects the business data directory on the next launch; the settings file itself remains in the boot/settings directory. Without that saved override, both directories are the same.
 
 Session data includes metadata, append-only message JSONL, context ledgers, artifacts, sub-agent state, and checkpoints. Uninstalling the application does not delete user data automatically.
+
+## Acknowledgments
+
+1. Thanks to glm-5.2 and kimi-k3 for assisting development.
+2. Thanks to community friends for inspiration.
+3. Thanks to [pi-agent](https://github.com/earendil-works/pi); the default system prompt is adapted from its baseline (MIT, by Mario Zechner).

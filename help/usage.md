@@ -199,8 +199,27 @@ owc run "给 main.ts 加个单元测试" --cwd . --json
 | `<业务数据目录>/skills/<name>/SKILL.md` | 全局 Skills |
 | `<业务数据目录>/hooks.json` | 全局 Hooks（**安全级别等同 yolo**） |
 | `<业务数据目录>/mcp.json` | 全局 MCP 客户端配置 |
+| `<业务数据目录>/system-prompt.md` | 全局系统提示词基线覆盖（设置页「提示词」编辑） |
+| `<业务数据目录>/system-prompt-append.md` | 全局自定义追加指令 |
+| `<业务数据目录>/update-check.json` | 更新检查缓存（最新版本与检查时间） |
 | `<业务数据目录>/extensions/` | Extension Host 配置与第三方 `owc-ext-*` 扩展 |
-| `<cwd>/.owc/agents/`、`.owc/commands/`、`.owc/skills/`、`.owc/hooks.json`、`.owc/mcp.json`、`.owc/memory.md` | 项目级（同名覆盖全局） |
+| `<安装目录>/config/defaults.json` | 随发布更新的默认配置；数据目录只存用户覆盖，启动时自动组合 |
+| `<cwd>/.owc/agents/`、`.owc/commands/`、`.owc/skills/`、`.owc/hooks.json`、`.owc/mcp.json`、`.owc/memory.md`、`.owc/system-prompt.md`、`.owc/system-prompt-append.md` | 项目级（同名覆盖全局） |
+
+## 自定义系统提示词
+
+设置 → **提示词** 可覆盖内置系统提示词基线，并追加自定义指令：
+
+- **全局基线覆盖**：留空则使用内置 Pi 基线；填写后完整替换基线段落。
+- **全局追加指令**：追加到安全约束之后的自定义指令。
+- 项目级 `<cwd>/.owc/system-prompt.md` 与 `.owc/system-prompt-append.md` 存在时覆盖全局（手工维护）。
+
+> 提示词**不是安全边界**：plan 模式、权限与沙箱由服务独立强制，不受提示词覆盖影响。「恢复内置基线」按钮可一键清空全局覆盖。
+
+## 版本号与更新检查
+
+- 设置 → **服务信息** 展示 Server/Core 版本与协议版本；命令行 `owc --version` 打印服务版本。
+- 设置 → **更新检查**（默认关闭）：启用后周期性查询 GitHub Releases 最新版本，结果仅在「服务信息」静默展示，可点「立即检查」手动刷新，并在有新版本时给出下载链接。相关环境变量：`OWC_UPDATE_CHECK_ENABLED`、`OWC_UPDATE_CHECK_URL`、`OWC_UPDATE_CHECK_INTERVAL_HOURS`。
 
 ## 自定义扩展点
 
