@@ -222,6 +222,7 @@ export function makeEvalCore(): CoreClientLike & { setWorkspace(sessionId: strin
     async startIndexScan(): Promise<JobStatus> { return { jobId: "", state: "completed", durationMs: 0, truncated: false }; },
     async startGrepJob(): Promise<JobStatus> { return { jobId: "", state: "completed", durationMs: 0, truncated: false }; },
     async startGlobJob(): Promise<JobStatus> { return { jobId: "", state: "completed", durationMs: 0, truncated: false }; },
+    async startIndexExtract(): Promise<JobStatus> { return { jobId: "", state: "completed", durationMs: 0, truncated: false }; },
     async cancelJob(): Promise<{ jobId: string; accepted: true }> { return { jobId: "", accepted: true }; },
     async jobStatus(): Promise<JobStatus> { return { jobId: "", state: "completed", durationMs: 0, truncated: false }; },
     async jobOutput(): Promise<JobOutputResult> { return { chunks: [], nextSeq: 0, truncated: false }; },

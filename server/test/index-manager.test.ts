@@ -7,7 +7,7 @@ import type { CoreClientLike, IndexScanEntry } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { IndexManager, IndexUnavailableError } from "../src/index/index-manager.js";
-import { workspaceHash } from "../src/index/index-store.js";
+import { languageForPath, workspaceHash, type SymbolRecord } from "../src/index/index-store.js";
 import { ProviderRegistry, type Provider } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 
@@ -35,33 +35,51 @@ function manifestJsonl(entries: IndexScanEntry[]): string {
   ].join("\n") + "\n";
 }
 
+function extractJsonl(files: string[], symbols: Record<string, SymbolRecord[]>): string {
+  return [
+    ...files.map((filePath) => JSON.stringify({ path: filePath, symbols: symbols[filePath] ?? [] })),
+    JSON.stringify({ summary: { files: files.length, symbols: files.reduce((sum, filePath) => sum + (symbols[filePath]?.length ?? 0), 0), truncated: false, reason: null } }),
+  ].join("\n") + "\n";
+}
+
 interface FakeScanCoreOptions {
   manifest: IndexScanEntry[];
-  files: Record<string, string>;
+  /** index.extract 回放的符号表（替代真实提取，提取逻辑已下沉 core）。 */
+  symbols: Record<string, SymbolRecord[]>;
   stats?: Map<string, { size: number; modifiedMs: number }>;
   watchMode: "fail" | "active";
   /** true 时 jobStatus 永远 running（取消路径测试用）。 */
   neverFinish?: boolean;
 }
 
-/** fake core：index.scan job 输出预置 manifest JSONL；readFile/statFiles 由内存表供数。 */
+/** fake core：index.scan / index.extract job 分别回放预置 manifest 与符号 JSONL；statFiles 由内存表供数。 */
 function createFakeScanCore(options: FakeScanCoreOptions) {
   const state = {
-    readCalls: [] as string[],
+    extractedFiles: [] as string[],
     cancelCalls: [] as string[],
     scanRequests: [] as unknown[],
+    extractRequests: [] as unknown[],
+    extractFilesByJob: new Map<string, string[]>(),
     pollEvents: [] as Array<{ path: string; kind: "created" | "changed" | "deleted" | "renamed" }>,
-    outputServed: false,
+    servedJobs: new Set<string>(),
   };
   const core = {
     on() { return core; },
     setRequestTimeoutMs() {},
     async configureSession() { return { sandboxCapability: "advisory" }; },
     async cleanupSession() { return { ok: true }; },
-    async startIndexScan(request: unknown) {
+    async startIndexScan(request: { jobId: string }) {
       state.scanRequests.push(request);
-      state.outputServed = false;
-      return { jobId: (request as { jobId: string }).jobId, state: "running" as const };
+      state.servedJobs.delete(request.jobId);
+      return { jobId: request.jobId, state: "running" as const };
+    },
+    async startIndexExtract(request: { jobId: string; files?: string[] }) {
+      state.extractRequests.push(request);
+      const files = request.files ?? [];
+      state.extractFilesByJob.set(request.jobId, files);
+      state.extractedFiles.push(...files);
+      state.servedJobs.delete(request.jobId);
+      return { jobId: request.jobId, state: "running" as const };
     },
     async jobStatus(request: { jobId: string }) {
       if (options.neverFinish) {
@@ -71,23 +89,20 @@ function createFakeScanCore(options: FakeScanCoreOptions) {
       }
       return { jobId: request.jobId, state: "completed" as const };
     },
-    async jobOutput(request: { afterSeq: number }) {
+    async jobOutput(request: { jobId: string; afterSeq: number }) {
       if (options.neverFinish) return { chunks: [], nextSeq: request.afterSeq, truncated: false };
-      if (request.afterSeq === 0 && !state.outputServed) {
-        state.outputServed = true;
-        return { chunks: [{ seq: 1, stream: "stdout" as const, data: manifestJsonl(options.manifest) }], nextSeq: 2, truncated: false };
+      if (request.afterSeq !== 0 || state.servedJobs.has(request.jobId)) {
+        return { chunks: [], nextSeq: request.afterSeq, truncated: false };
       }
-      return { chunks: [], nextSeq: request.afterSeq, truncated: false };
+      state.servedJobs.add(request.jobId);
+      const data = request.jobId.endsWith("-x")
+        ? extractJsonl(state.extractFilesByJob.get(request.jobId) ?? [], options.symbols)
+        : manifestJsonl(options.manifest);
+      return { chunks: [{ seq: 1, stream: "stdout" as const, data }], nextSeq: 2, truncated: false };
     },
     async cancelJob(request: { jobId: string }) {
       state.cancelCalls.push(request.jobId);
       return { jobId: request.jobId, accepted: true as const };
-    },
-    async readFile(request: { path: string }) {
-      state.readCalls.push(request.path);
-      const content = options.files[request.path];
-      if (content === undefined) throw new Error(`file not found: ${request.path}`);
-      return { content, totalLines: content.split("\n").length, encoding: "utf-8" as const, truncated: false };
     },
     async statFiles(request: { paths: string[] }) {
       const entries = request.paths.map((p) => {
@@ -132,7 +147,16 @@ const BASE_MANIFEST: IndexScanEntry[] = [
   { path: "src/main.py", size: MAIN_PY.length, modifiedMs: 100, sha256: "m1" },
   { path: "README.md", size: 20, modifiedMs: 100, sha256: "r1" },
 ];
-const BASE_FILES: Record<string, string> = { "src/util.ts": UTIL_TS, "src/main.py": MAIN_PY, "README.md": "# demo\n" };
+const BASE_SYMBOLS: Record<string, SymbolRecord[]> = {
+  "src/util.ts": [
+    { name: "getTopSymbols", kind: "function", startLine: 1, endLine: 3, signature: "export function getTopSymbols(list: string[]): string {" },
+    { name: "Helper", kind: "class", startLine: 5, endLine: 9, signature: "export class Helper {" },
+    { name: "createDefault", kind: "method", startLine: 6, endLine: 8, signature: "private static createDefault() {" },
+  ],
+  "src/main.py": [
+    { name: "top_level", kind: "function", startLine: 1, endLine: 1, signature: "def top_level(a, b):" },
+  ],
+};
 
 describe("IndexManager", () => {
   it("rebuild 建立索引：manifest 入库、符号可搜、状态 fresh、事件齐全", async () => {
@@ -140,7 +164,7 @@ describe("IndexManager", () => {
     const events = new EventBus();
     const seen: AppEvent[] = [];
     events.on("event", (event: AppEvent) => { if (event.type === "index.status") seen.push(event); });
-    const { core } = createFakeScanCore({ manifest: BASE_MANIFEST, files: BASE_FILES, watchMode: "fail" });
+    const { core } = createFakeScanCore({ manifest: BASE_MANIFEST, symbols: BASE_SYMBOLS, watchMode: "fail" });
     const manager = createManager(core, path.join(root, "index"), events);
 
     const { jobId } = await manager.rebuild("s1", CWD);
@@ -172,17 +196,19 @@ describe("IndexManager", () => {
 
   it("增量重建只对变化文件重提符号，删除文件的符号被清除", async () => {
     const root = await tempRoot();
-    const { core, state } = createFakeScanCore({ manifest: BASE_MANIFEST, files: BASE_FILES, watchMode: "fail" });
+    const { core, state } = createFakeScanCore({ manifest: BASE_MANIFEST, symbols: BASE_SYMBOLS, watchMode: "fail" });
     const manager = createManager(core, path.join(root, "index"), new EventBus());
     await manager.rebuild("s1", CWD);
     await waitFor(async () => (await manager.status("s1", CWD)).status === "fresh");
-    expect(state.readCalls.sort()).toEqual(["src/main.py", "src/util.ts"]);
+    expect(state.extractedFiles.sort()).toEqual(["src/main.py", "src/util.ts"]);
 
     // 第二次扫描：util.ts hash 变化、main.py 删除、新增 added.py；README.md 不变
     const addedPy = "def added_fn():\n    pass\n";
-    state.readCalls.length = 0;
-    Object.assign(BASE_FILES, { "src/added.py": addedPy });
-    delete BASE_FILES["src/main.py"];
+    state.extractedFiles.length = 0;
+    BASE_SYMBOLS["src/added.py"] = [
+      { name: "added_fn", kind: "function", startLine: 1, endLine: 2, signature: "def added_fn():" },
+    ];
+    delete BASE_SYMBOLS["src/main.py"];
     // fake 的 manifest 是引用捕获，直接改数组
     BASE_MANIFEST.splice(0, BASE_MANIFEST.length,
       { path: "src/util.ts", size: UTIL_TS.length, modifiedMs: 200, sha256: "u2" },
@@ -191,7 +217,7 @@ describe("IndexManager", () => {
     );
     await manager.rebuild("s1", CWD);
     await waitFor(async () => (await manager.status("s1", CWD)).status === "fresh");
-    expect(state.readCalls.sort()).toEqual(["src/added.py", "src/util.ts"]); // 只重提变化文件
+    expect(state.extractedFiles.sort()).toEqual(["src/added.py", "src/util.ts"]); // 只重提变化文件
     const status = await manager.status("s1", CWD);
     expect(status.files).toBe(3);
     // 删除文件的符号已清除；新文件符号可搜
@@ -201,7 +227,7 @@ describe("IndexManager", () => {
 
   it("未建索引时 searchSymbols 拒绝并指引显式重建", async () => {
     const root = await tempRoot();
-    const { core } = createFakeScanCore({ manifest: [], files: {}, watchMode: "fail" });
+    const { core } = createFakeScanCore({ manifest: [], symbols: {}, watchMode: "fail" });
     const manager = createManager(core, path.join(root, "index"), new EventBus());
     await expect(manager.searchSymbols(CWD, "x")).rejects.toThrow(IndexUnavailableError);
     await expect(manager.searchSymbols(CWD, "x")).rejects.toThrow(/has not been built/);
@@ -209,7 +235,7 @@ describe("IndexManager", () => {
 
   it("重建进行中再次 rebuild 报 INDEX_BUILDING", async () => {
     const root = await tempRoot();
-    const { core } = createFakeScanCore({ manifest: BASE_MANIFEST, files: BASE_FILES, watchMode: "fail", neverFinish: true });
+    const { core } = createFakeScanCore({ manifest: BASE_MANIFEST, symbols: BASE_SYMBOLS, watchMode: "fail", neverFinish: true });
     const manager = createManager(core, path.join(root, "index"), new EventBus());
     await manager.rebuild("s1", CWD);
     await expect(manager.rebuild("s1", CWD)).rejects.toThrow(/already running/);
@@ -218,7 +244,7 @@ describe("IndexManager", () => {
 
   it("取消重建：保留旧状态、如实标滞后（cancelled）", async () => {
     const root = await tempRoot();
-    const { core, state } = createFakeScanCore({ manifest: BASE_MANIFEST, files: BASE_FILES, watchMode: "fail", neverFinish: true });
+    const { core, state } = createFakeScanCore({ manifest: BASE_MANIFEST, symbols: BASE_SYMBOLS, watchMode: "fail", neverFinish: true });
     const manager = createManager(core, path.join(root, "index"), new EventBus());
     await manager.rebuild("s1", CWD);
     await waitFor(async () => (await manager.status("s1", CWD)).status === "building");
@@ -232,7 +258,7 @@ describe("IndexManager", () => {
 
   it("索引损坏（JSONL 解析失败）整体作废，可显式重建恢复", async () => {
     const root = await tempRoot();
-    const { core } = createFakeScanCore({ manifest: BASE_MANIFEST, files: BASE_FILES, watchMode: "fail" });
+    const { core } = createFakeScanCore({ manifest: BASE_MANIFEST, symbols: BASE_SYMBOLS, watchMode: "fail" });
     const indexRoot = path.join(root, "index");
     const first = createManager(core, indexRoot, new EventBus());
     await first.rebuild("s1", CWD);
@@ -256,7 +282,7 @@ describe("IndexManager", () => {
   it("watch 不可用时降级 turn 边界 mtime 抽样：样本变化标滞后", async () => {
     const root = await tempRoot();
     const stats = new Map(BASE_MANIFEST.map((entry) => [entry.path, { size: entry.size, modifiedMs: entry.modifiedMs }]));
-    const { core } = createFakeScanCore({ manifest: BASE_MANIFEST, files: BASE_FILES, watchMode: "fail", stats });
+    const { core } = createFakeScanCore({ manifest: BASE_MANIFEST, symbols: BASE_SYMBOLS, watchMode: "fail", stats });
     const manager = createManager(core, path.join(root, "index"), new EventBus());
     await manager.rebuild("s1", CWD);
     await waitFor(async () => (await manager.status("s1", CWD)).status === "fresh");
@@ -274,7 +300,7 @@ describe("IndexManager", () => {
 
   it("watch 激活时 watch 事件驱动标滞后", async () => {
     const root = await tempRoot();
-    const { core, state } = createFakeScanCore({ manifest: BASE_MANIFEST, files: BASE_FILES, watchMode: "active" });
+    const { core, state } = createFakeScanCore({ manifest: BASE_MANIFEST, symbols: BASE_SYMBOLS, watchMode: "active" });
     const manager = createManager(core, path.join(root, "index"), new EventBus(), { watchPollMs: 5 });
     await manager.rebuild("s1", CWD);
     await waitFor(async () => (await manager.status("s1", CWD)).status === "fresh");
@@ -295,7 +321,7 @@ describe("code_search 工具（agent 级）", () => {
     await sessions.updatePermissions(session.id, "acceptEdits", []);
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));
     await pricing.initialize();
-    const { core } = createFakeScanCore({ manifest: BASE_MANIFEST, files: BASE_FILES, watchMode: "fail" });
+    const { core } = createFakeScanCore({ manifest: BASE_MANIFEST, symbols: BASE_SYMBOLS, watchMode: "fail" });
     const events = new EventBus();
     const providers = new ProviderRegistry();
     let turn = 0;
@@ -346,5 +372,21 @@ describe("code_search 工具（agent 级）", () => {
     expect(text).toContain("Fall back to grep/glob");
     const toolResult = toolMessage?.content.find((block) => block.type === "tool_result");
     expect((toolResult as { isError?: boolean } | undefined)?.isError).toBe(true);
+  });
+});
+
+describe("languageForPath（提取候选过滤）", () => {
+  it("覆盖主要语言扩展名并拒绝未知扩展", () => {
+    expect(languageForPath("src/a.ts")).toBe("typescript");
+    expect(languageForPath("src/a.tsx")).toBe("typescript");
+    expect(languageForPath("src/a.jsx")).toBe("javascript");
+    expect(languageForPath("pkg/main.go")).toBe("go");
+    expect(languageForPath("src/lib.rs")).toBe("rust");
+    expect(languageForPath("src/x.h")).toBe("c");
+    expect(languageForPath("src/x.hpp")).toBe("cpp");
+    expect(languageForPath("App.java")).toBe("java");
+    expect(languageForPath("Program.cs")).toBe("csharp");
+    expect(languageForPath("README.md")).toBeUndefined();
+    expect(languageForPath("Makefile")).toBeUndefined();
   });
 });

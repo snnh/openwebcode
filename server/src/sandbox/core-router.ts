@@ -24,6 +24,7 @@ import type {
   IndexScanStartRequest,
   GrepJobStartRequest,
   GlobJobStartRequest,
+  IndexExtractStartRequest,
   FsHashResult,
   FsStatResult,
   FsStatManyRequest,
@@ -323,6 +324,12 @@ export class CoreRouter extends EventEmitter {
     const { client, meta } = await this.ensureConfigured(request.sessionId);
     const cwd = meta?.sandboxMode === "wsb" && meta.cwd ? toSandboxPath(request.cwd, meta.cwd) : request.cwd;
     return client.startGlobJob(translatePath({ ...request, cwd }, meta));
+  }
+
+  async startIndexExtract(request: IndexExtractStartRequest): Promise<JobStatus> {
+    const { client, meta } = await this.ensureConfigured(request.sessionId);
+    const cwd = meta?.sandboxMode === "wsb" && meta.cwd ? toSandboxPath(request.cwd, meta.cwd) : request.cwd;
+    return client.startIndexExtract(translatePath({ ...request, cwd }, meta));
   }
 
   async cancelJob(request: { sessionId: string; jobId: string }): Promise<{ jobId: string; accepted: true }> {
