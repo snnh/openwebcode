@@ -28,8 +28,9 @@ import { FastModelClient } from "./fast-model.js";
 import { Compactor } from "./context/compactor.js";
 import { StorageGC } from "./storage-gc.js";
 import { UsageLog } from "./usage-log.js";
-import { readServerVersion, setServerVersion } from "./version.js";
+import { getServerVersion, readServerVersion, setServerVersion } from "./version.js";
 import { UpdateChecker } from "./update-checker.js";
+import { UpdateApplier } from "./update-applier.js";
 import { createProfileSearchProvider, createProfileWebFetchProvider } from "./web-tools.js";
 import { ProviderProfilesService } from "./provider-profiles.js";
 import { ProviderProfilesRuntime } from "./provider-profiles-runtime.js";
@@ -130,6 +131,13 @@ const updateChecker = new UpdateChecker({
   defaultUrl: config.updateCheck.url ?? "https://api.github.com/repos/snnh/openwebcode/releases/latest",
 });
 updateChecker.configure(config.updateCheck);
+// 在线更新：installRoot 在 dist 下解析为 OWC_HOME（server/dist/../..）；tsx dev 时为 server/ 上一级，仅开发场景
+const updateApplier = new UpdateApplier({
+  dataDir,
+  installRoot: path.resolve(moduleDirectory, "../.."),
+  getReleaseUrl: () => settings.effective().updateCheck.url ?? "https://api.github.com/repos/snnh/openwebcode/releases/latest",
+  getCurrentVersion: getServerVersion,
+});
 settings.bind({ providers, core, agent, events, gc, fastModel, profiles: providerProfiles, models, updateChecker });
 providerProfilesRuntime.start();
 
@@ -210,6 +218,7 @@ const app = await buildServer({
   scm,
   evalEvaluator,
   updateChecker,
+  updateApplier,
   dataDir,
   ...(config.accessToken ? { auth: { accessToken: config.accessToken, allowedOrigins: config.allowedOrigins } } : {}),
   getPreferences: () => {

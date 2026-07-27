@@ -37,6 +37,7 @@ import type { SessionStore } from "./sessions/session-store.js";
 import { SettingsValidationError, type SettingsService } from "./settings-service.js";
 import { getServerVersion, GITHUB_REPO } from "./version.js";
 import type { UpdateChecker } from "./update-checker.js";
+import { UpdateApplyError, type UpdateApplier } from "./update-applier.js";
 import { loadPromptOverride, writeGlobalPromptOverride } from "./agent/prompts/prompt-overrides.js";
 import { PI_BASE_SYSTEM_PROMPT, PI_PROMPT_VERSION } from "./agent/prompts/pi-base.js";
 import type { SkillRegistry } from "./skills.js";
@@ -178,6 +179,8 @@ export interface ServerDependencies {
   evalEvaluator?: EvalEvaluator;
   /** 更新检查（0.5.x）；未注入时 /api/update-check 返回 501 */
   updateChecker?: UpdateChecker;
+  /** 在线更新执行器；未注入时 /api/update/apply 返回 501 */
+  updateApplier?: UpdateApplier;
   /** 数据目录（提示词覆盖 REST 读写需要）；未注入时 /api/prompt 返回 501 */
   dataDir?: string;
 }
@@ -563,6 +566,23 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     if (!checker) return reply.code(501).send({ error: "Update checker is not configured" });
     const snapshot = await checker.refresh();
     return { snapshot: snapshot ?? null };
+  });
+  app.get("/api/update/apply", async (_request, reply) => {
+    const applier = dependencies.updateApplier;
+    if (!applier) return reply.code(501).send({ error: "Update applier is not configured" });
+    return { state: applier.state() ?? null };
+  });
+  app.post("/api/update/apply", async (_request, reply) => {
+    const applier = dependencies.updateApplier;
+    if (!applier) return reply.code(501).send({ error: "Update applier is not configured" });
+    try {
+      const state = await applier.apply();
+      return reply.code(202).send({ state });
+    } catch (error) {
+      // UpdateApplyError 携带语义化 statusCode（400 已是最新/平台不支持，409 已有进行中的更新）
+      if (error instanceof UpdateApplyError) return reply.code(error.statusCode).send({ error: error.message });
+      return reply.code(500).send({ error: error instanceof Error ? error.message : String(error) });
+    }
   });
   app.get<{ Querystring: { cwd?: string } }>("/api/prompt", async (request, reply) => {
     const dataDir = dependencies.dataDir;
