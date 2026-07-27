@@ -11,6 +11,9 @@ const STATE_LABELS: Record<string, [string, string]> = {
   tool_running: ["执行工具", "Running tool"],
   waiting_permission: ["等待确认", "Waiting for approval"],
   budget_paused: ["预算暂停", "Budget paused"],
+  completed: ["已完成", "Completed"],
+  failed: ["失败", "Failed"],
+  aborted: ["已中断", "Aborted"],
   error: ["错误", "Error"],
 };
 
