@@ -66,6 +66,8 @@ $TSX scripts/bench/compare.mjs results/baseline.json results/long-history.json
 
 - `direction` 决定回归方向：`lower-better` 涨幅 > +15% 记回归；
   `higher-better` 跌幅 > -15% 记回归；`none` 只展示不判定（如 closeCode、数据集规模）。
+- 可选 `minDelta`：绝对增量地板（单位同指标）。百分比越阈但绝对增量不超过
+  `minDelta` 时不记回归（显示 `[噪声内]`），用于亚毫秒级指标在共享 CI runner 上的防抖。
 - 数值只在**同环境**对比时有意义；`environment` 用于比对两次运行是否可比。
 
 ## 场景清单

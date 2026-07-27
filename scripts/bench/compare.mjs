@@ -4,7 +4,9 @@
 //   lower-better  涨幅 > +15% 记回归
 //   higher-better 跌幅 > -15% 记回归
 //   none          只展示不参与判定
-// 跨场景文件对比时只比交集指标。
+// 可选 minDelta（绝对增量地板，单位同指标）：百分比越阈但绝对增量不超过
+// minDelta 时不记回归——亚毫秒级指标在共享 CI runner 上百分比噪声极大，
+// 纯相对阈值会系统性误报。跨场景文件对比时只比交集指标。
 
 import { readFile } from "node:fs/promises";
 
@@ -46,9 +48,12 @@ for (const cand of candidate.metrics) {
   }
   compared++;
   const pct = ((cand.value - base.value) / base.value) * 100;
-  const isRegression = cand.direction === "lower-better" ? pct > REGRESSION_THRESHOLD : pct < -REGRESSION_THRESHOLD;
+  const regressDelta = cand.direction === "lower-better" ? cand.value - base.value : base.value - cand.value;
+  const minDelta = typeof cand.minDelta === "number" ? cand.minDelta : 0;
+  const beyondPct = cand.direction === "lower-better" ? pct > REGRESSION_THRESHOLD : pct < -REGRESSION_THRESHOLD;
+  const isRegression = beyondPct && regressDelta > minDelta;
   if (isRegression) regressions++;
-  const tag = isRegression ? `${RED}[回归]` : pct === 0 ? `${DIM}[持平]` : `${GREEN}[正常]`;
+  const tag = isRegression ? `${RED}[回归]` : beyondPct ? `${DIM}[噪声内]` : pct === 0 ? `${DIM}[持平]` : `${GREEN}[正常]`;
   console.log(`  ${tag} ${cand.name}: ${base.value} → ${cand.value} ${cand.unit} (${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%)${RESET}`);
 }
 
