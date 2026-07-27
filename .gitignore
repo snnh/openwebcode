@@ -37,6 +37,7 @@ build-*/
 .agents/
 .openwebcode/
 AGENTS.md
+.zcode/
 # JavaScript dependencies and generated bundles.  Keep the server entries
 # explicit because these paths were previously committed by mistake.
 node_modules/
