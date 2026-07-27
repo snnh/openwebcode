@@ -107,6 +107,7 @@
 | `/compact` | 概览压缩上下文（快速模型做结构化摘要） |
 | `/compact tools` | 规则压缩（toolcalls 占位精炼） |
 | `/clear` | 清空当前视图，**保留历史**（JSONL 全量在盘，可回滚） |
+| `/init` | 分析当前工作区并生成/更新根目录 `AGENTS.md`（写文件走权限链） |
 | `@路径` | 引用工作区文件，内容随消息注入（大文件截断 + artifact 指针） |
 | `!命令` | shell 快捷前缀，走与 bash 工具相同的权限链执行，结果可一键「发给 agent」 |
 
@@ -260,6 +261,14 @@ model: claude-sonnet-4-5
 ```
 
 调用：`spawn_task agent=reviewer prompt="审查 src/auth.ts 的最近改动"`
+
+多个独立的同类只读任务可用 `spawn_swarm` 并行（模板 + 逐项替换，超出并发上限自动排队）：
+
+```
+spawn_swarm prompt_template="审查 {{item}} 的最近改动，输出风险点" items=["src/auth.ts", "src/api.ts", "src/pay.ts"]
+```
+
+子代理结论按 `[序号/总数]` 聚合返回；每次派生的完整转录存在会话数据目录 `subagents/<taskId>.json`，可在聊天中工具结果下方的「子代理转录」展开查看。
 
 ### 斜杠命令（`.owc/commands/review.md`）
 

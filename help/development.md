@@ -177,7 +177,7 @@ provider；它支持 `run: <cmd>` 的工具调用回放与 `tool_result` 回包�
 
 ### 加一个内置工具
 
-1. 在 `agent-runner.ts` 顶部工具 schema 常量区定义 `XXX_TOOL`（follow 现有 `TODO_WRITE_TOOL` 模式）
+1. 在 `agent-runner.ts` 顶部工具 schema 常量区定义 `XXX_TOOL`（follow 现有 `TODO_WRITE_TOOL` 模式），注册进 `builtInTools()` 与 `TOOL_EXECUTION_CLASS`
 2. `executeTool()` 的 if 链加分支（或抽 `executeBash` 那样的私有方法）
 3. 想自动放行：加到 `permission-coordinator.ts` 的只读白名单首行
 4. 想进子代理只读集：加到 `sub-agent.ts` 的 `SUB_AGENT_TOOL_NAMES`

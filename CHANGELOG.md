@@ -4,6 +4,18 @@
 
 ## Unreleased
 
+### 新增
+
+- `/init` 内置斜杠命令：分析当前工作区并生成/更新根目录 `AGENTS.md`（项目概述、构建与测试命令、代码组织、约定边界）；走正常 agent 流程，写文件经权限链与自动快照。
+- `spawn_swarm` 并行子代理（agent 集群）：按 `prompt_template` + `{{item}}` 占位符 + `items[]` 一次派发 2–16 个只读子代理，并发上限 4、超出自动排队；单项失败不拖垮整批，结论按 `[序号/总数]` 聚合返回。单项任务仍用 `spawn_task`。
+- 子代理可见性：新增 `subagent.started` / `subagent.finished` WS 事件与 `GET /api/sessions/:id/subagents/:taskId` 转录接口；`spawn_task`/`spawn_swarm` 工具结果携带转录 id，聊天中可展开「子代理转录」查看 prompt、轮次、工具与结论。
+
+### 界面与体验
+
+- 会话状态徽章补齐 completed/failed/aborted 中英文标签与语义色（绿/红/黄）。
+- 窄屏（≤1024px）顶栏改为标题独占一行、操作区整行左对齐；「回到底部」按钮降级为纯图标并补 aria-label。
+- 修复「加载更早的消息」按钮引用未定义 CSS 变量导致的透明背景；设置导航分组加分隔线；底部面板标签栏支持横向滚动、折叠按钮钉在右侧。
+
 ## [0.6.0] - 2026-07-27
 
 ### 新增
