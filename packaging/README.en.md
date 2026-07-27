@@ -12,6 +12,7 @@ The `release` workflow produces:
 | --- | --- | --- |
 | `openwebcode-<version>-windows-x64.msi` | Windows x64 | CPack/WiX MSI |
 | `openwebcode-<version>-linux-x64.tar.gz` | Linux x64 | Runtime tree plus top-level `install.sh` |
+| `install-online.sh` | Linux x64 | `curl \| bash` online install/update script |
 | `SHA256SUMS.txt` | Both | SHA-256 checksums for the two release archives |
 
 `<version>` is the release tag without its leading `v` (for example, `v0.5.2` becomes `0.5.2`).
@@ -76,6 +77,25 @@ Run `./install.sh` from the unpacked Linux tarball in a terminal to configure th
 - `--system` and `--with-desktop-entry` are deliberately not implemented: the installer fails explicitly instead of claiming system-wide installation or desktop integration.
 
 Run `sh packaging/test-install.sh` from a checkout for the portable installer smoke tests; the test file is not shipped in the release tarball.
+
+## Linux online install and update
+
+[`install-online.sh`](./install-online.sh) is a POSIX `curl | bash` installer for Linux:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/snnh/openwebcode/main/packaging/install-online.sh | bash
+curl -fsSL https://raw.githubusercontent.com/snnh/openwebcode/main/packaging/install-online.sh \
+  | bash -s -- --version 0.6.0 --prefix /opt/openwebcode --yes
+```
+
+It downloads `openwebcode-<version>-linux-x64.tar.gz` and `SHA256SUMS.txt` from GitHub Releases, verifies the tarball with `sha256sum --check` (target line only; falls back to `shasum -a 256`) and aborts on mismatch, then extracts into a `mktemp -d` working directory cleaned up on exit. It needs only curl or wget, tar, and a checksum tool — no jq.
+
+- `--version <x.y.z>` picks the release; without it the script queries the `tag_name` of the latest GitHub release.
+- `--prefix <absolute-dir>` (default `$HOME/.local`) selects the install prefix and decides the mode; `--yes`, `--port`, `--host`, `--data-dir`, `--with-systemd`, and `--use-system-node` pass through to the bundled `install.sh`.
+- **Fresh install**: delegates to the bundled `install.sh`, identical to an offline install.
+- **Update**: when `<prefix>/lib/openwebcode/server/dist/index.js` already exists, the script replaces the contents of `<prefix>/lib/openwebcode/` with the new version while keeping the `<prefix>/bin/owc` launcher and any user systemd unit untouched; the data directory is never affected. A non-writable target fails with a clear error (sudo or ownership fix may be required). Restart afterward: `systemctl --user restart openwebcode` when the user unit exists, otherwise restart the running `owc` manually.
+
+Set `OWC_INSTALL_BASE_URL` to override the download base URL (default `https://github.com/snnh/openwebcode/releases/download/v<version>`), which is useful for mirrors or `file://` local testing.
 
 ## Development-only staging refresh
 
