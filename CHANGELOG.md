@@ -9,12 +9,17 @@
 - `/init` 内置斜杠命令：分析当前工作区并生成/更新根目录 `AGENTS.md`（项目概述、构建与测试命令、代码组织、约定边界）；走正常 agent 流程，写文件经权限链与自动快照。
 - `spawn_swarm` 并行子代理（agent 集群）：按 `prompt_template` + `{{item}}` 占位符 + `items[]` 一次派发 2–16 个只读子代理，并发上限 4、超出自动排队；单项失败不拖垮整批，结论按 `[序号/总数]` 聚合返回。单项任务仍用 `spawn_task`。
 - 子代理可见性：新增 `subagent.started` / `subagent.finished` WS 事件与 `GET /api/sessions/:id/subagents/:taskId` 转录接口；`spawn_task`/`spawn_swarm` 工具结果携带转录 id，聊天中可展开「子代理转录」查看 prompt、轮次、工具与结论。
+- 扩展 API 第一批：v1 扩展可 `registerTool` 注册 agent 工具（以 `ext__<扩展id>__<工具名>` 注入，与 MCP 工具共用权限链与 plan 模式拦截，单次调用 5 秒超时）、只读访问会话列表/详情（`sessions:read`）、读取上下文视图与 artifact（`context:read`）、订阅 `agent.state`/`tool.*`/`context.*`/`checkpoint.*`/`subagent.*` 事件流；能力调用按 manifest 权限逐项校验，缺权限即报错并如实标记扩展状态。
 
 ### 界面与体验
 
 - 会话状态徽章补齐 completed/failed/aborted 中英文标签与语义色（绿/红/黄）。
 - 窄屏（≤1024px）顶栏改为标题独占一行、操作区整行左对齐；「回到底部」按钮降级为纯图标并补 aria-label。
 - 修复「加载更早的消息」按钮引用未定义 CSS 变量导致的透明背景；设置导航分组加分隔线；底部面板标签栏支持横向滚动、折叠按钮钉在右侧。
+
+### 改进
+
+- 索引符号提取下沉到 core：新增 `job.start kind:"index.extract"`（C 侧手写行匹配器，覆盖既有 9 种语言），server 索引管理器改为单次 job 批量提取，删除 JS 侧逐文件 `readFile` + 正则提取路径（`symbols.ts` 移除）；core 侧自动跳过超大/非 UTF-8/不支持扩展名的文件。
 
 ## [0.6.0] - 2026-07-27
 

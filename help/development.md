@@ -207,6 +207,17 @@ provider；它支持 `run: <cmd>` 的工具调用回放与 `tool_result` 回包�
 2. 配置在 `<业务数据目录>/mcp.json` 或 `<cwd>/.owc/mcp.json`
 3. 工具注入命名空间 `mcp__<server>__<tool>`，走与内置工具相同的权限链
 
+### 写一个扩展（扩展 API）
+
+v1 扩展运行于独立 Extension Host 子进程（可信代码，安全级别 ≈ yolo），经 IPC 拿到注入的 `ctx`。manifest 声明权限，能力调用逐项校验，缺权限在 activate 时抛错并把扩展状态标为 error。
+
+- **注册 agent 工具**（权限 `tools:register`）：`ctx.registerTool({ name, description, inputSchema }, handler)`；工具以 `ext__<扩展id>__<name>` 注入 agent（仅扩展启用时），与 `mcp__` 工具共用权限链（ask / yolo / allow_always）、plan 模式拦截与 `executionClass: "external"`；server→host `tool.invoke` 单次 5 秒超时。
+- **只读会话**（权限 `sessions:read`）：`ctx.sessions.list()` 返回脱敏元信息（白名单字段，不含 sandbox/setupScript 等内部配置）；`ctx.sessions.get(id)` 附加完整消息历史。
+- **只读上下文**（权限 `context:read`）：`ctx.context.getView(sessionId)`（buildView 结果）、`ctx.context.readArtifact(sessionId, artifactId, offset?, limit?)`。
+- **订阅事件**（权限 `sessions:read`）：`ctx.events.subscribe(types, handler)`，类型白名单 `agent.state` / `tool.start` / `tool.end` / `context.*` / `checkpoint.*` / `subagent.*`，host 断线自动退订。
+
+实现参考：`extensions/types.ts`（协议与权限）、`extension-host-process.ts`（ctx 注入与 `tool.invoke` 处理）、`extension-manager.ts`（工具注册表 / API 分发 / 事件转发）、`agent-runner.ts` 的 `ext__` 分支（与 `mcp__` 共用 `executeExternalTool`）。测试样例：`server/test/extension-api.test.ts`。
+
 ### 改上下文策略
 
 - 驱逐策略：`context/context-manager.ts` 的 `evictionPlan(ledger, strategy)` 纯账本运算
