@@ -52,6 +52,9 @@ export const api = {
   version: () => request<import("./contracts").VersionInfo>("/api/version"),
   updateCheck: () => request<import("./contracts").UpdateCheckResponse>("/api/update-check"),
   refreshUpdateCheck: () => request<import("./contracts").UpdateCheckResponse>("/api/update-check/refresh", { method: "POST" }),
+  // 在线更新（应用内升级）：POST 202 返回初始状态；400=已是最新/平台不支持，409=已有更新进行中，501=未配置
+  updateApplyStatus: () => request<{ state: import("./contracts").UpdateApplyState | null }>("/api/update/apply"),
+  updateApplyStart: () => request<{ state: import("./contracts").UpdateApplyState }>("/api/update/apply", { method: "POST" }),
   promptOverride: (cwd?: string) => request<import("./contracts").PromptOverrideView>(`/api/prompt${cwd ? `?cwd=${encodeURIComponent(cwd)}` : ""}`),
   savePromptOverride: (body: { baseOverride?: string | null; customAppend?: string | null }) =>
     request<{ ok: boolean }>("/api/prompt", { method: "PUT", body: JSON.stringify(body) }),

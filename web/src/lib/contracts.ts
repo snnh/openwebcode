@@ -704,6 +704,18 @@ export interface UpdateCheckResponse {
   snapshot: UpdateCheckSnapshot | null;
 }
 
+export type UpdateApplyStatus = "idle" | "downloading" | "verifying" | "applying" | "restarting" | "done" | "error";
+
+export interface UpdateApplyState {
+  status: UpdateApplyStatus;
+  version: string;
+  /** 0..1，未知为 null */
+  progress: number | null;
+  message: string;
+  error?: string;
+  startedAt: string;
+}
+
 export interface PromptOverrideView {
   builtinBase: string;
   promptVersion: string;
