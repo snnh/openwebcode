@@ -158,4 +158,5 @@ cd web && npm ci && npm run build && npm test
 
 ## 特别感谢
 1. 感谢glm-5.2，kimi-k3，本项目由上述模型辅助开发
-2. 感谢一些不愿透露姓名的群友提供的灵感
+2. 感谢一些群友提供的灵感
+3. 感谢 [pi-agent](https://github.com/earendil-works/pi)，本项目默认系统提示词以其为基线（MIT，作者 Mario Zechner）
