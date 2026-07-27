@@ -197,12 +197,13 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, run
       {!pinned && (
         <button
           className="scroll-bottom"
+          aria-label={t("回到底部", "Jump to bottom")}
           onClick={() => {
             scrollToBottom(true);
             setPinned(true);
           }}
         >
-          <Icon name="arrow-down" size={13} /> {t("回到底部", "Jump to bottom")}
+          <Icon name="arrow-down" size={13} /> <span className="scroll-bottom-label">{t("回到底部", "Jump to bottom")}</span>
         </button>
       )}
     </div>
