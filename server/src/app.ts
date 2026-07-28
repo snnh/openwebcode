@@ -6,7 +6,7 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import type { AgentRunner } from "./agent/agent-runner.js";
-import { SteeringError, WorkspaceWriteDeniedError } from "./agent/agent-runner.js";
+import { SteeringError, SubAgentLaunchError, WorkspaceWriteDeniedError } from "./agent/agent-runner.js";
 import type { BackgroundTaskRegistry } from "./agent/background-tasks.js";
 import type { HookRunner } from "./hooks.js";
 import { CoreRpcError, type CoreClientLike, type ExecRequest } from "./core-client.js";
@@ -1784,6 +1784,32 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     const task = dependencies.backgroundTasks.get(request.params.taskId);
     if (!task) return reply.code(404).send({ error: "Task not found" });
     return task;
+  });
+
+  // 手动启动子代理（WebUI 发起）：校验与并发登记同步完成，运行 detachment，
+  // 生命周期经与 spawn_task 相同的 subagent.started/progress/finished 事件跟踪（started 带 manual: true）。
+  app.post<{ Params: { id: string }; Body: { prompt?: string; agent?: string } }>("/api/sessions/:id/subagents", async (request, reply) => {
+    if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
+    const body = request.body;
+    const prompt = typeof body?.prompt === "string" ? body.prompt.trim() : "";
+    if (!prompt) return reply.code(400).send({ error: "prompt must be a non-empty string" });
+    if (prompt.length > 4_000) return reply.code(400).send({ error: "prompt must be at most 4000 characters" });
+    if (body?.agent !== undefined && typeof body.agent !== "string") return reply.code(400).send({ error: "agent must be a string" });
+    try {
+      const launched = await agent.launchManualSubagent(request.params.id, { prompt, ...(body?.agent ? { agent: body.agent } : {}) });
+      return reply.code(202).send(launched);
+    } catch (error) {
+      if (error instanceof SubAgentLaunchError) {
+        return reply.code(error.code === "busy" ? 429 : 400).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+
+  // 子代理目录：内置 explore/general 在前，随后自定义 markdown 子代理（?cwd= 提供项目目录，否则仅全局）
+  app.get<{ Querystring: { cwd?: string } }>("/api/agents", async (request) => {
+    const cwd = typeof request.query.cwd === "string" && request.query.cwd.trim() ? request.query.cwd.trim() : undefined;
+    return { agents: await agent.listAgentCatalog(cwd) };
   });
 
   // 子代理转录：runSubAgent 落盘 <contextRoot>/subagents/<taskId>.json，taskId 限定 uuid 防路径穿越

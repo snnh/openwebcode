@@ -15,17 +15,34 @@ import { getModelProfile, type ModelProfile } from "../context/model-profile.js"
 import { calculateUsageCost } from "../cost/cost-calculator.js";
 import type { ExchangeRateService } from "../cost/exchange-rate.js";
 import type { PricingCatalog } from "../cost/pricing-catalog.js";
-import type { ProviderRegistry, ProviderTool, ProviderEvent } from "../providers/provider.js";
+import type { Provider, ProviderRegistry, ProviderTool, ProviderEvent } from "../providers/provider.js";
 import { ProviderError } from "../providers/provider-error.js";
 import { collectProviderTurn } from "../providers/retry.js";
 import { PermissionCoordinator, permissionRule, type PermissionDecision } from "./permission-coordinator.js";
-import { runSubAgent, SUB_AGENT_TOOL_NAMES } from "./sub-agent.js";
+import {
+  BUILTIN_SUB_AGENTS,
+  GENERAL_AGENT_TOOL_NAMES,
+  getBuiltinSubAgent,
+  runSubAgent,
+  SUB_AGENT_TOOL_NAMES,
+  type BuiltinSubAgent,
+} from "./sub-agent.js";
+import {
+  bashTool,
+  CODE_SEARCH_TOOL,
+  FILE_TOOLS,
+  READ_ARTIFACT_TOOL,
+  REPO_MAP_TOOL,
+  TEST_RUNNER_TOOL,
+  WEB_FETCH_TOOL,
+  WEB_SEARCH_TOOL,
+} from "./tool-schemas.js";
 import { getSnapshotBackend } from "../snapshots/index.js";
 import type { MessageContent, ShellBackend } from "../sessions/types.js";
 import type { SessionStore } from "../sessions/session-store.js";
 import { defaultSandboxPolicy } from "../sessions/default-sandbox.js";
 import { parseSkillCommand, type SkillRegistry } from "../skills.js";
-import type { AgentDefinition, AgentRegistry } from "../agents.js";
+import type { AgentRegistry } from "../agents.js";
 import { renderCommand, type CommandRegistry } from "../commands.js";
 import type { McpManager } from "../mcp/manager.js";
 import { appendMemory, readGlobalMemory, readProjectMemory } from "../memory.js";
@@ -60,101 +77,6 @@ function toolEventResult(bounded: Awaited<ReturnType<typeof boundToolResult>>) {
     ...(bounded.artifactId ? { artifactId: bounded.artifactId } : {}),
   };
 }
-
-function bashTool(backgroundTasksEnabled: boolean, shellBackend: ShellBackend): ProviderTool {
-  const shellGuidance = shellBackend === "pwsh"
-    ? "Commands run under PowerShell 7 (pwsh): use PowerShell syntax and cmdlets (for example Get-ChildItem, Get-Content, Get-Command, and ;). "
-    : "On Windows sandbox sessions commands run under cmd.exe: use cmd syntax (for example dir, type, where, and &&), and do not use PowerShell cmdlets or POSIX commands unless explicitly invoking an available shell. ";
-  return {
-    name: "bash",
-    description: "Execute a shell command in the session workspace. Call this when command-line execution is required. " + shellGuidance +
-      (backgroundTasksEnabled
-        ? " Set run_in_background=true to run the command asynchronously; the agent loop continues immediately and you can check " +
-          "the result later with task_output (or wait with block=true)."
-        : ""),
-    inputSchema: {
-      type: "object",
-      properties: {
-        cmd: { type: "string" },
-        ...(backgroundTasksEnabled
-          ? { run_in_background: { type: "boolean", description: "Run the command in the background and return immediately." } }
-          : {}),
-      },
-      required: ["cmd"],
-      additionalProperties: false,
-    },
-  };
-}
-
-const READ_ARTIFACT_TOOL: ProviderTool = {
-  name: "read_artifact",
-  description: "Read a bounded slice of a tool-output artifact when an evicted or truncated result points to an artifact ID.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      artifactId: { type: "string" },
-      offset: { type: "integer" },
-      limit: { type: "integer" },
-    },
-    required: ["artifactId", "offset", "limit"],
-    additionalProperties: false,
-  },
-};
-
-const FILE_TOOLS: ProviderTool[] = [
-  { name: "read_file", description: "Read UTF-8 lines from a workspace file.", inputSchema: { type: "object", properties: { path: { type: "string" }, offset: { type: "integer" }, limit: { type: "integer" } }, required: ["path"], additionalProperties: false } },
-  { name: "write_file", description: "Atomically write a UTF-8 workspace file.", inputSchema: { type: "object", properties: { path: { type: "string" }, content: { type: "string" }, createDirs: { type: "boolean" } }, required: ["path", "content"], additionalProperties: false } },
-  { name: "edit_file", description: "Replace exact text in a UTF-8 workspace file.", inputSchema: { type: "object", properties: { path: { type: "string" }, oldText: { type: "string" }, newText: { type: "string" }, replaceAll: { type: "boolean" } }, required: ["path", "oldText", "newText"], additionalProperties: false } },
-  { name: "glob", description: "Recursively match workspace paths using * and ? wildcards.", inputSchema: { type: "object", properties: { path: { type: "string" }, pattern: { type: "string" } }, required: ["path", "pattern"], additionalProperties: false } },
-  { name: "grep", description: "Recursively search UTF-8 workspace files for literal text.", inputSchema: { type: "object", properties: { path: { type: "string" }, pattern: { type: "string" } }, required: ["path", "pattern"], additionalProperties: false } },
-];
-
-const REPO_MAP_TOOL: ProviderTool = {
-  name: "repo_map",
-  description:
-    "Summarize the workspace repository structure as a bounded directory tree plus key-file hints, " +
-    "fit within a token budget (default 2048). Read-only; truncated output is annotated as such.",
-  inputSchema: {
-    type: "object",
-    properties: { budget: { type: "integer", minimum: 64, description: "Token budget for the map; defaults to the session repo map budget (2048)." } },
-    additionalProperties: false,
-  },
-};
-
-const CODE_SEARCH_TOOL: ProviderTool = {
-  name: "code_search",
-  description:
-    "Search the workspace symbol index with a fuzzy symbol-name query and optional kind filter " +
-    "(function/method/class/interface/type/struct/enum/trait/impl/constant). Returns definition " +
-    "locations (file:line) with signature summaries. Read-only. If the index is unavailable, " +
-    "fall back to grep/glob; rebuilding is an explicit user action, do not retry in a loop.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      query: { type: "string", description: "Symbol name to fuzzy-match (exact > prefix > substring > subsequence)." },
-      kind: { type: "string", description: "Optional symbol kind filter, e.g. function, class, method." },
-      limit: { type: "integer", minimum: 1, maximum: 200, description: "Max results; default 50." },
-    },
-    required: ["query"],
-    additionalProperties: false,
-  },
-};
-
-const TEST_RUNNER_TOOL: ProviderTool = {
-  name: "test_runner",
-  description:
-    "Run the project test suite and return a bounded failure summary. The test command is auto-detected " +
-    "(package.json/npm test or vitest, pyproject.toml/pytest, go.mod/go test, *.sln/dotnet test); pass command to override. " +
-    "Vitest/jest/pytest/go/dotnet output is parsed into structured diagnostics; at most 20 failures are returned inline, " +
-    "full diagnostics are persisted to a session diagnostics artifact referenced in the result.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      command: { type: "string", description: "Optional custom test command overriding auto-detection." },
-    },
-    additionalProperties: false,
-  },
-};
 
 const GIT_STATUS_TOOL: ProviderTool = {
   name: "git_status",
@@ -259,18 +181,19 @@ const LOAD_SKILL_TOOL: ProviderTool = {
 const SPAWN_TASK_TOOL: ProviderTool = {
   name: "spawn_task",
   description:
-    "Launch a read-only sub-agent with an isolated context to explore or research a task. " +
+    "Launch a sub-agent with an isolated context to work on a task. " +
     "The sub-agent does not share this session's context; only its final conclusion (at most 2000 characters) is returned. " +
-    "It can only use the read-only tools read_file, glob, grep and read_artifact.",
+    "Built-in agent types: explore (default; read-only read_file, glob, grep, read_artifact) and general (write-capable coding tools, run through the session permission chain and sandbox). " +
+    "Custom sub-agents from the catalog are always read-only. Sub-agents cannot spawn further sub-agents.",
   inputSchema: {
     type: "object",
     properties: {
       prompt: { type: "string", description: "Self-contained task description for the sub-agent." },
-      agent: { type: "string", description: "Optional custom sub-agent name from the system prompt catalog." },
+      agent: { type: "string", description: "Built-in sub-agent type (explore or general) or a custom sub-agent name from the system prompt catalog." },
       tools: {
         type: "array",
-        items: { type: "string", enum: [...SUB_AGENT_TOOL_NAMES] },
-        description: "Subset of read_file/glob/grep/read_artifact the sub-agent may use; defaults to all four.",
+        items: { type: "string", enum: [...GENERAL_AGENT_TOOL_NAMES] },
+        description: "Subset of the resolved agent type's tool allowlist; names outside that allowlist are ignored. Defaults to the type's full allowlist (explore: read_file/glob/grep/read_artifact).",
       },
     },
     required: ["prompt"],
@@ -283,14 +206,36 @@ export const SPAWN_SWARM_MAX_ITEMS = 16;
 /** 同时运行的子代理数；超出排队，与"launch 自动排队"语义一致。 */
 export const SPAWN_SWARM_CONCURRENCY = 4;
 
+/** 手动启动（REST）子代理的每会话并发上限：与 SPAWN_SWARM_CONCURRENCY 对齐，超出直接 429。 */
+export const MAX_MANUAL_SUBAGENTS = 4;
+
+/** 手动子代理启动失败：REST 层按 code 映射 400/429。 */
+export class SubAgentLaunchError extends Error {
+  constructor(message: string, readonly code: "invalid_agent" | "busy") {
+    super(message);
+    this.name = "SubAgentLaunchError";
+  }
+}
+
+/** resolveSubAgent 的输出：内置类型或自定义 markdown 子代理的统一执行参数。 */
+interface ResolvedSubAgent {
+  /** transcript/事件回显名；未指定（默认 explore）时省略 */
+  name?: string;
+  kind: "explore" | "general";
+  systemExtra?: string;
+  modelOverride?: string;
+  toolNames: string[];
+  maxTurns?: number;
+}
+
 const SPAWN_SWARM_TOOL: ProviderTool = {
   name: "spawn_swarm",
   description:
-    "Launch multiple read-only sub-agents from one prompt template over different inputs, running in parallel (launches beyond the concurrency limit are queued). " +
+    "Launch multiple sub-agents from one prompt template over different inputs, running in parallel (launches beyond the concurrency limit are queued). " +
     "The {{item}} placeholder in prompt_template is replaced with each item's task value; each item launches one independent sub-agent with an isolated context. " +
     "Use when many independent tasks of the same kind should run in parallel (e.g. reviewing several files or endpoints). " +
-    "For a single task use spawn_task instead. Each sub-agent can only use the read-only tools read_file, glob, grep and read_artifact; " +
-    "only its final conclusion (at most 2000 characters) is returned, aggregated as numbered results.",
+    "For a single task use spawn_task instead. Built-in agent types: explore (default; read-only) and general (write-capable, via the session permission chain); custom sub-agents are read-only. " +
+    "Only each sub-agent's final conclusion (at most 2000 characters) is returned, aggregated as numbered results.",
   inputSchema: {
     type: "object",
     properties: {
@@ -304,7 +249,7 @@ const SPAWN_SWARM_TOOL: ProviderTool = {
               type: "object",
               properties: {
                 task: { type: "string", description: "Value used to fill {{item}} for this item." },
-                agent: { type: "string", description: "Optional custom sub-agent name overriding the call-level agent for this item only." },
+                agent: { type: "string", description: "Optional built-in type (explore/general) or custom sub-agent name overriding the call-level agent for this item only." },
               },
               required: ["task"],
               additionalProperties: false,
@@ -313,7 +258,7 @@ const SPAWN_SWARM_TOOL: ProviderTool = {
         },
         description: "Values used to fill {{item}}. Each item launches one sub-agent; 2-16 items, and the filled-in prompts must be distinct. An item may be a plain string or an object { task, agent? } to override the agent for that item.",
       },
-      agent: { type: "string", description: "Optional custom sub-agent name from the system prompt catalog, applied to every launch unless an item overrides it." },
+      agent: { type: "string", description: "Built-in sub-agent type (explore or general) or a custom sub-agent name from the system prompt catalog, applied to every launch unless an item overrides it." },
     },
     required: ["prompt_template", "items"],
     additionalProperties: false,
@@ -364,23 +309,6 @@ const REMEMBER_TOOL: ProviderTool = {
       scope: { type: "string", enum: ["project", "global"], description: "Where to store the fact; defaults to project." },
     },
     required: ["fact"],
-    additionalProperties: false,
-  },
-};
-
-const WEB_FETCH_TOOL: ProviderTool = {
-  name: "web_fetch",
-  description: "Fetch a public http/https URL and return bounded readable text.",
-  inputSchema: { type: "object", properties: { url: { type: "string" } }, required: ["url"], additionalProperties: false },
-};
-
-const WEB_SEARCH_TOOL: ProviderTool = {
-  name: "web_search",
-  description: "Search the web using the configured search provider.",
-  inputSchema: {
-    type: "object",
-    properties: { query: { type: "string" }, limit: { type: "integer", minimum: 1, maximum: 10 } },
-    required: ["query"],
     additionalProperties: false,
   },
 };
@@ -577,6 +505,10 @@ export class AgentRunner {
   private readonly toolAliases = new Map<string, Map<string, string>>();
   private readonly todos = new Map<string, TodoItem[]>();
   private readonly permissions: PermissionCoordinator;
+  /** 手动启动（REST）子代理：sessionId → 在途 taskId 集（并发上限见 MAX_MANUAL_SUBAGENTS）。 */
+  private readonly manualSubagents = new Map<string, Set<string>>();
+  /** 手动子代理的 AbortController：会话 abort 时一并取消。 */
+  private readonly manualSubagentControllers = new Map<string, Set<AbortController>>();
   private readonly repoMap: RepoMapGenerator;
   private indexManager?: IndexManager;
   private diagnostics?: DiagnosticsService;
@@ -979,7 +911,7 @@ export class AgentRunner {
           ? `\n\nAvailable skills (load full text with the load_skill tool when relevant; the user can also trigger one with /name):\n${skillCatalog.map((skill) => `- ${skill.name}: ${skill.description}`).join("\n")}`
           : "";
         const agentSection = availableToolNames.has("spawn_task") && agentCatalog.length > 0
-          ? `\n\nAvailable sub-agents (pass agent=<name> to spawn_task; omit for the default read-only explorer):\n${agentCatalog.map((agent) => {
+          ? `\n\nAvailable sub-agents (pass agent=<name> to spawn_task; built-in types explore (default, read-only) and general (write-capable, via the session permission chain) are always available; the custom agents below are read-only):\n${agentCatalog.map((agent) => {
             const ignored = (agent.tools ?? []).filter((tool) => !(SUB_AGENT_TOOL_NAMES as readonly string[]).includes(tool));
             return `- ${agent.name}: ${agent.description}${ignored.length > 0 ? ` (unsupported tools ignored: ${ignored.join(", ")})` : ""}`;
           }).join("\n")}`
@@ -1291,11 +1223,278 @@ export class AgentRunner {
 
   abort(sessionId: string): boolean {
     const controller = this.running.get(sessionId);
+    // 手动子代理独立于主 run：无论主循环是否在跑都一并取消；其挂起的权限请求同样解除
+    for (const sub of this.manualSubagentControllers.get(sessionId) ?? []) sub.abort();
+    this.permissions.cancelSession(sessionId);
     if (!controller) return false;
     controller.abort();
     this.workspaceWrites.get(sessionId)?.abort();
-    this.permissions.cancelSession(sessionId);
     return true;
+  }
+
+  /**
+   * 解析子代理引用：内置类型（explore/general）优先，其次自定义 markdown 子代理。
+   * agentName 为空时返回默认 explore（不回显 name，保持历史行为）。
+   * 自定义子代理维持只读子集；其 frontmatter tools 优先于调用方 tools 参数。
+   */
+  private async resolveSubAgent(cwd: string, sessionId: string, agentName: string, requestedTools?: string[]): Promise<ResolvedSubAgent> {
+    const builtin = agentName ? getBuiltinSubAgent(agentName) : undefined;
+    if (builtin) {
+      const requested = requestedTools ?? [...builtin.toolNames];
+      return { name: builtin.id, kind: builtin.id, toolNames: this.filterSubAgentTools(sessionId, requested, builtin), maxTurns: builtin.maxTurns };
+    }
+    const definition = agentName && this.agents ? await this.agents.find(cwd, agentName) : undefined;
+    if (agentName && !definition) throw new Error(`Unknown sub-agent: ${agentName}`);
+    const requested = definition?.tools ?? requestedTools ?? [...SUB_AGENT_TOOL_NAMES];
+    return {
+      ...(definition ? { name: definition.name, systemExtra: definition.body, ...(definition.model ? { modelOverride: definition.model } : {}) } : {}),
+      kind: "explore",
+      toolNames: this.filterSubAgentTools(sessionId, requested, undefined),
+    };
+  }
+
+  /** allowlist 以内置名为准：先把可能的工具形态别名解析回内置名再过滤。 */
+  private filterSubAgentTools(sessionId: string, requested: string[], builtin: BuiltinSubAgent | undefined): string[] {
+    const allowlist: readonly string[] = builtin ? builtin.toolNames : SUB_AGENT_TOOL_NAMES;
+    return requested.map((tool) => this.resolveBuiltinToolName(sessionId, tool)).filter((tool) => allowlist.includes(tool));
+  }
+
+  /** GET /api/agents：内置类型在前（description 为中文，前端按 id 做 i18n），随后自定义子代理。 */
+  async listAgentCatalog(cwd?: string): Promise<Array<{ id: string; name: string; description: string; builtin: boolean }>> {
+    const builtins = BUILTIN_SUB_AGENTS.map((agent) => ({ id: agent.id, name: agent.id, description: agent.description, builtin: true }));
+    // 未提供 cwd 时只列全局目录，避免误扫进程相对路径下的 .owc/agents
+    const custom = this.agents ? (cwd ? await this.agents.listFor(cwd) : await this.agents.listGlobal()) : [];
+    return [...builtins, ...custom.map((agent) => ({ id: agent.name, name: agent.name, description: agent.description, builtin: false }))];
+  }
+
+  /**
+   * 手动启动子代理（REST POST /api/sessions/:id/subagents）：校验 + 并发登记同步完成，
+   * 实际运行 detachment（调用方拿到 202 后经 subagent.* 事件跟踪）。
+   * toolCallId 固定为 `manual-<taskId>`；事件负载与 spawn_task 相同，started 额外带 manual: true。
+   */
+  async launchManualSubagent(sessionId: string, input: { prompt: string; agent?: string }): Promise<{ taskId: string; toolCallId: string }> {
+    const session = await this.sessions.get(sessionId);
+    if (!session) throw new SubAgentLaunchError("Session not found", "invalid_agent");
+    const agentName = input.agent?.trim() ?? "";
+    let resolved: ResolvedSubAgent;
+    try {
+      resolved = await this.resolveSubAgent(session.cwd, sessionId, agentName, undefined);
+    } catch (error) {
+      throw new SubAgentLaunchError(error instanceof Error ? error.message : String(error), "invalid_agent");
+    }
+    const provider = this.providers.get(session.provider);
+    if (!provider) throw new SubAgentLaunchError(`Provider ${session.provider} is not configured`, "invalid_agent");
+    const running = this.manualSubagents.get(sessionId) ?? new Set<string>();
+    if (running.size >= MAX_MANUAL_SUBAGENTS) {
+      throw new SubAgentLaunchError(`已有 ${MAX_MANUAL_SUBAGENTS} 个手动子代理在运行，请等待其完成后再启动`, "busy");
+    }
+    const taskId = randomUUID();
+    const toolCallId = `manual-${taskId}`;
+    running.add(taskId);
+    this.manualSubagents.set(sessionId, running);
+    const controller = new AbortController();
+    const controllers = this.manualSubagentControllers.get(sessionId) ?? new Set<AbortController>();
+    controllers.add(controller);
+    this.manualSubagentControllers.set(sessionId, controllers);
+    void this.runManualSubagent(sessionId, resolved, {
+      taskId,
+      toolCallId,
+      prompt: input.prompt,
+      providerName: session.provider,
+      provider,
+      signal: controller.signal,
+    }).finally(() => {
+      running.delete(taskId);
+      controllers.delete(controller);
+      if (running.size === 0) this.manualSubagents.delete(sessionId);
+      if (controllers.size === 0) this.manualSubagentControllers.delete(sessionId);
+    });
+    return { taskId, toolCallId };
+  }
+
+  /** 手动子代理的运行体：任何失败都以 subagent.finished(failed) 收尾，不向调用方抛出。 */
+  private async runManualSubagent(
+    sessionId: string,
+    resolved: ResolvedSubAgent,
+    context: {
+      taskId: string;
+      toolCallId: string;
+      prompt: string;
+      providerName: string;
+      provider: Provider;
+      signal: AbortSignal;
+    },
+  ): Promise<void> {
+    const { taskId, toolCallId, prompt, signal } = context;
+    try {
+      const session = await this.sessions.get(sessionId);
+      if (!session) throw new Error("Session not found");
+      // 与 runShell 同款幂等沙盒配置：手动子代理可能在主循环之外首次触达 core
+      await this.core.configureSession({
+        sessionId,
+        cwd: session.cwd,
+        sandbox: session.sandbox ?? defaultSandboxPolicy(session.cwd),
+      });
+      const subUsageContext = new ContextManager(this.sessions.contextRoot(sessionId));
+      const result = await runSubAgent({
+        provider: context.provider,
+        model: session.model,
+        ...(resolved.modelOverride ? { modelOverride: resolved.modelOverride } : {}),
+        ...(resolved.systemExtra ? { systemExtra: resolved.systemExtra } : {}),
+        ...(resolved.name ? { agent: resolved.name } : {}),
+        agentKind: resolved.kind,
+        prompt,
+        toolNames: resolved.toolNames,
+        ...(resolved.maxTurns ? { maxTurns: resolved.maxTurns } : {}),
+        // general 类型：工具调用经会话权限链 + 主循环同一沙盒执行（见 executeSubAgentTool）
+        ...(resolved.kind === "general" ? { executeTool: (call: { name: string; input: Record<string, unknown> }) => this.executeSubAgentTool(sessionId, call.name, call.input, signal) } : {}),
+        core: this.core,
+        sessionId,
+        cwd: session.cwd,
+        contextRoot: this.sessions.contextRoot(sessionId),
+        signal,
+        taskId,
+        onStart: (id) => {
+          this.events.publish({
+            source: "agent",
+            type: "subagent.started",
+            sessionId,
+            payload: { toolCallId, taskId: id, prompt: prompt.slice(0, 200), manual: true, ...(resolved.name ? { agent: resolved.name } : {}) },
+          });
+        },
+        onProgress: (progress) => {
+          this.events.publish({
+            source: "agent",
+            type: "subagent.progress",
+            sessionId,
+            payload: { toolCallId, taskId, turns: progress.turns, toolsUsed: progress.toolsUsed },
+          });
+        },
+        onUsage: (usage) => this.recordUsageEvent(sessionId, subUsageContext, context.providerName, resolved.modelOverride ?? session.model, usage),
+      });
+      this.events.publish({
+        source: "agent",
+        type: "subagent.finished",
+        sessionId,
+        payload: { toolCallId, taskId: result.taskId, status: "done", turns: result.turns, toolsUsed: result.toolsUsed },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.events.publish({ source: "agent", type: "subagent.finished", sessionId, payload: { toolCallId, taskId, status: "failed", error: message } });
+    }
+  }
+
+  /**
+   * general 子代理的工具执行入口：与主循环工具完全相同的权限链（authorizeTool：
+   * plan 只读门禁 + 权限模式/规则 + permission.request 挂起与 respond 恢复），
+   * 执行复用主循环同一 core/沙盒配置。不发布 tool.start/end、不改变 run 状态——
+   * 子代理进度只经 subagent.progress 暴露。
+   */
+  private async executeSubAgentTool(sessionId: string, name: string, input: Record<string, unknown>, signal: AbortSignal): Promise<{ content: string; isError: boolean }> {
+    const permission = await this.authorizeTool(sessionId, name, input, signal);
+    if (!permission.allowed) return { content: permission.reason ?? "Tool permission denied", isError: true };
+    try {
+      return await this.dispatchSubAgentTool(sessionId, name, input, signal);
+    } catch (error) {
+      if (signal.aborted) throw error;
+      return { content: error instanceof Error ? error.message : String(error), isError: true };
+    }
+  }
+
+  /** general 子代理的工具分发：语义对齐 executeTool 各分支，但无事件/状态副作用。 */
+  private async dispatchSubAgentTool(sessionId: string, name: string, input: Record<string, unknown>, signal: AbortSignal): Promise<{ content: string; isError: boolean }> {
+    const contextRoot = this.sessions.contextRoot(sessionId);
+    if ((FILE_TOOLS as readonly ProviderTool[]).some((tool) => tool.name === name)) {
+      const raw = await this.callCoreFileTool(sessionId, name, input);
+      const bounded = await boundToolResult(contextRoot, name, raw);
+      return { content: bounded.content, isError: false };
+    }
+    if (name === "read_artifact") {
+      const manager = new ContextManager(contextRoot);
+      const content = await manager.readArtifact(String(input.artifactId), Number(input.offset), Number(input.limit));
+      return { content, isError: false };
+    }
+    if (name === "bash") {
+      const cmd = typeof input.cmd === "string" ? input.cmd : "";
+      if (!cmd) throw new Error("bash requires a non-empty cmd");
+      return this.executeBash(sessionId, cmd, `subagent-${randomUUID().slice(0, 8)}`, signal, { quiet: true });
+    }
+    if (name === "repo_map") {
+      const session = await this.sessions.get(sessionId);
+      if (!session) throw new Error("Session not found");
+      if (input.budget !== undefined && (!Number.isInteger(Number(input.budget)) || Number(input.budget) < 64)) {
+        throw new Error("repo_map budget must be an integer >= 64");
+      }
+      const map = await this.repoMap.generate({
+        sessionId,
+        cwd: session.cwd,
+        budget: input.budget === undefined ? (session.repoMapBudget ?? DEFAULT_REPO_MAP_BUDGET) : Number(input.budget),
+        excludes: session.contextExcludes ?? [],
+      });
+      const bounded = await boundToolResult(contextRoot, name, map.text);
+      return { content: bounded.content, isError: false };
+    }
+    if (name === "code_search") {
+      const session = await this.sessions.get(sessionId);
+      if (!session) throw new Error("Session not found");
+      if (!this.indexManager) throw new IndexUnavailableError("Symbol index is not enabled on this server. Fall back to grep/glob for navigation.");
+      const query = typeof input.query === "string" ? input.query.trim() : "";
+      if (!query) throw new Error("code_search requires a non-empty query");
+      const kind = typeof input.kind === "string" && input.kind.trim() ? input.kind.trim() : undefined;
+      const limit = input.limit === undefined ? undefined : Number(input.limit);
+      const hits = await this.indexManager.searchSymbols(session.cwd, query, { ...(kind ? { kind } : {}), ...(limit !== undefined ? { limit } : {}) });
+      const text = hits.length === 0
+        ? `No symbols matching "${query}"${kind ? ` (kind=${kind})` : ""}. Try a broader query, or fall back to grep/glob.`
+        : hits.map((hit) => `${hit.path}:${hit.startLine}\t${hit.kind}\t${hit.name}\t${hit.signature}`).join("\n");
+      const bounded = await boundToolResult(contextRoot, name, text);
+      return { content: bounded.content, isError: false };
+    }
+    if (name === "test_runner") {
+      const session = await this.sessions.get(sessionId);
+      if (!session) throw new Error("Session not found");
+      if (!this.diagnostics) throw new Error("Diagnostics service is not enabled on this server.");
+      const command = typeof input.command === "string" && input.command.trim() ? input.command.trim() : undefined;
+      const { feedback } = await this.diagnostics.run(sessionId, session.cwd, {
+        ...(command ? { command } : {}),
+        ...(this.runs.get(sessionId)?.id ? { agentRunId: this.runs.get(sessionId)!.id } : {}),
+        signal,
+        shellBackend: session.shellBackend ?? "default",
+      });
+      return { content: feedback, isError: false };
+    }
+    if (name === "web_fetch" || name === "web_search") {
+      signal.throwIfAborted();
+      let value: unknown;
+      if (name === "web_fetch") {
+        if (!this.webFetchProvider) throw new Error("Web fetch is not configured");
+        const url = typeof input.url === "string" ? input.url.trim() : "";
+        if (!url) throw new Error("web_fetch requires a non-empty url");
+        value = await this.webFetchProvider.fetchUrl(url, { signal });
+      } else {
+        if (!this.searchProvider) throw new Error("Web search is not configured");
+        const query = typeof input.query === "string" ? input.query.trim() : "";
+        if (!query) throw new Error("web_search requires a non-empty query");
+        const requested = input.limit === undefined ? 5 : Number(input.limit);
+        if (!Number.isInteger(requested) || requested < 1) throw new Error("web_search limit must be a positive integer");
+        value = await this.searchProvider.search(query, Math.min(requested, 10), { signal });
+      }
+      const bounded = await boundToolResult(contextRoot, name, JSON.stringify(value));
+      return { content: bounded.content, isError: false };
+    }
+    return { content: `Unsupported tool for general sub-agent: ${name}`, isError: true };
+  }
+
+  /** FILE_TOOLS 各分支共用的 core 调用分发（主循环与 general 子代理共用）。 */
+  private async callCoreFileTool(sessionId: string, name: string, input: Record<string, unknown>): Promise<string> {
+    const path = typeof input.path === "string" ? input.path : "";
+    if (!path) throw new Error(`${name} requires a non-empty path`);
+    let value: unknown;
+    if (name === "read_file") value = await this.core.readFile({ sessionId, path, ...(input.offset === undefined ? {} : { offset: Number(input.offset) }), ...(input.limit === undefined ? {} : { limit: Number(input.limit) }) });
+    else if (name === "write_file") value = await this.core.writeFile({ sessionId, path, content: String(input.content ?? ""), ...(input.createDirs === undefined ? {} : { createDirs: Boolean(input.createDirs) }) });
+    else if (name === "edit_file") value = await this.core.editFile({ sessionId, path, oldText: String(input.oldText ?? ""), newText: String(input.newText ?? ""), ...(input.replaceAll === undefined ? {} : { replaceAll: Boolean(input.replaceAll) }) });
+    else if (name === "glob") value = await this.core.globFiles({ sessionId, path, pattern: String(input.pattern ?? "") });
+    else value = await this.core.grepFiles({ sessionId, path, pattern: String(input.pattern ?? "") });
+    return JSON.stringify(value);
   }
 
   /**
@@ -1729,21 +1928,23 @@ export class AgentRunner {
         const prompt = String(input.prompt ?? "");
         if (!prompt) throw new Error("spawn_task requires a non-empty prompt");
         const agentName = typeof input.agent === "string" ? input.agent.trim() : "";
-        const definition = agentName && this.agents ? await this.agents.find(session.cwd, agentName) : undefined;
-        if (agentName && !definition) throw new Error(`Unknown sub-agent: ${agentName}`);
-        const requestedTools = definition?.tools ?? (Array.isArray(input.tools) ? input.tools.map((item) => String(item)) : [...SUB_AGENT_TOOL_NAMES]);
-        // allowlist 以内置名为准：先把可能的工具形态别名解析回内置名再过滤
-        const toolNames = requestedTools.map((tool) => this.resolveBuiltinToolName(sessionId, tool)).filter((tool) => (SUB_AGENT_TOOL_NAMES as readonly string[]).includes(tool));
+        const requestedTools = Array.isArray(input.tools) ? input.tools.map((item) => String(item)) : undefined;
+        const resolved = await this.resolveSubAgent(session.cwd, sessionId, agentName, requestedTools);
         // 子代理期间不发布 message.delta/thinking_delta，避免污染主聊天流；
         // 子代理 token 经 onUsage 复用主循环记账路径，计入会话成本
         const subUsageContext = new ContextManager(this.sessions.contextRoot(sessionId));
         const result = await runSubAgent({
           provider,
           model: session.model,
-          ...(definition?.model ? { modelOverride: definition.model } : {}),
-          ...(definition ? { systemExtra: definition.body, agent: definition.name } : {}),
+          ...(resolved.modelOverride ? { modelOverride: resolved.modelOverride } : {}),
+          ...(resolved.systemExtra ? { systemExtra: resolved.systemExtra } : {}),
+          ...(resolved.name ? { agent: resolved.name } : {}),
+          agentKind: resolved.kind,
           prompt,
-          toolNames,
+          toolNames: resolved.toolNames,
+          ...(resolved.maxTurns ? { maxTurns: resolved.maxTurns } : {}),
+          // general 类型：工具调用经会话权限链 + 主循环同一沙盒执行（见 executeSubAgentTool）
+          ...(resolved.kind === "general" ? { executeTool: (call: { name: string; input: Record<string, unknown> }) => this.executeSubAgentTool(sessionId, call.name, call.input, signal) } : {}),
           core: this.core,
           sessionId,
           cwd: session.cwd,
@@ -1755,7 +1956,7 @@ export class AgentRunner {
               source: "agent",
               type: "subagent.started",
               sessionId,
-              payload: { toolCallId, taskId: id, prompt: prompt.slice(0, 200), ...(definition ? { agent: definition.name } : {}) },
+              payload: { toolCallId, taskId: id, prompt: prompt.slice(0, 200), ...(resolved.name ? { agent: resolved.name } : {}) },
             });
           },
           onProgress: (progress) => {
@@ -1767,7 +1968,7 @@ export class AgentRunner {
               payload: { toolCallId, taskId, turns: progress.turns, toolsUsed: progress.toolsUsed },
             });
           },
-          onUsage: (usage) => this.recordUsageEvent(sessionId, subUsageContext, session.provider, definition?.model ?? session.model, usage),
+          onUsage: (usage) => this.recordUsageEvent(sessionId, subUsageContext, session.provider, resolved.modelOverride ?? session.model, usage),
         });
         this.events.publish({
           source: "agent",
@@ -1837,36 +2038,38 @@ export class AgentRunner {
         const prompts = items.map((item) => template.split("{{item}}").join(item.task));
         if (new Set(prompts).size !== prompts.length) throw new Error("spawn_swarm items must produce distinct filled-in prompts");
         const agentName = typeof input.agent === "string" ? input.agent.trim() : "";
-        const definition = agentName && this.agents ? await this.agents.find(session.cwd, agentName) : undefined;
-        if (agentName && !definition) throw new Error(`Unknown sub-agent: ${agentName}`);
+        const resolvedDefault = await this.resolveSubAgent(session.cwd, sessionId, agentName, undefined);
         // 预解析逐项 agent 覆盖：未知名称直接拒绝整次调用（与调用级 agent 一致）
-        const itemDefinitions = new Map<number, AgentDefinition>();
+        const itemResolutions = new Map<number, ResolvedSubAgent>();
         for (const [index, item] of items.entries()) {
           if (!item.agent) continue;
-          const found = this.agents ? await this.agents.find(session.cwd, item.agent) : undefined;
-          if (!found) throw new Error(`Unknown sub-agent: ${item.agent} (item ${index + 1})`);
-          itemDefinitions.set(index, found);
+          try {
+            itemResolutions.set(index, await this.resolveSubAgent(session.cwd, sessionId, item.agent, undefined));
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            throw new Error(`${message} (item ${index + 1})`);
+          }
         }
-        const requestedTools = definition?.tools ?? [...SUB_AGENT_TOOL_NAMES];
-        const toolNames = requestedTools.map((tool) => this.resolveBuiltinToolName(sessionId, tool)).filter((tool) => (SUB_AGENT_TOOL_NAMES as readonly string[]).includes(tool));
         const subUsageContext = new ContextManager(this.sessions.contextRoot(sessionId));
         const contextRoot = this.sessions.contextRoot(sessionId);
         interface SwarmItemOutcome { ok: boolean; conclusion?: string; error?: string }
         const runOne = async (prompt: string, index: number): Promise<SwarmItemOutcome> => {
           const swarm = { index: index + 1, total: prompts.length };
-          const effective = itemDefinitions.get(index) ?? definition;
-          const effectiveTools = effective?.tools
-            ? effective.tools.map((tool) => this.resolveBuiltinToolName(sessionId, tool)).filter((tool) => (SUB_AGENT_TOOL_NAMES as readonly string[]).includes(tool))
-            : toolNames;
+          const effective = itemResolutions.get(index) ?? resolvedDefault;
           let taskId = "";
           try {
             const result = await runSubAgent({
               provider,
               model: session.model,
-              ...(effective?.model ? { modelOverride: effective.model } : {}),
-              ...(effective ? { systemExtra: effective.body, agent: effective.name } : {}),
+              ...(effective.modelOverride ? { modelOverride: effective.modelOverride } : {}),
+              ...(effective.systemExtra ? { systemExtra: effective.systemExtra } : {}),
+              ...(effective.name ? { agent: effective.name } : {}),
+              agentKind: effective.kind,
               prompt,
-              toolNames: effectiveTools,
+              toolNames: effective.toolNames,
+              ...(effective.maxTurns ? { maxTurns: effective.maxTurns } : {}),
+              // general 类型：工具调用经会话权限链 + 主循环同一沙盒执行（见 executeSubAgentTool）
+              ...(effective.kind === "general" ? { executeTool: (call: { name: string; input: Record<string, unknown> }) => this.executeSubAgentTool(sessionId, call.name, call.input, signal) } : {}),
               core: this.core,
               sessionId,
               cwd: session.cwd,
@@ -1879,7 +2082,7 @@ export class AgentRunner {
                   source: "agent",
                   type: "subagent.started",
                   sessionId,
-                  payload: { toolCallId, taskId: id, prompt: prompt.slice(0, 200), swarm, ...(effective ? { agent: effective.name } : {}) },
+                  payload: { toolCallId, taskId: id, prompt: prompt.slice(0, 200), swarm, ...(effective.name ? { agent: effective.name } : {}) },
                 });
               },
               onProgress: (progress) => {
@@ -1891,7 +2094,7 @@ export class AgentRunner {
                   payload: { toolCallId, taskId, turns: progress.turns, toolsUsed: progress.toolsUsed, swarm },
                 });
               },
-              onUsage: (usage) => this.recordUsageEvent(sessionId, subUsageContext, session.provider, effective?.model ?? session.model, usage),
+              onUsage: (usage) => this.recordUsageEvent(sessionId, subUsageContext, session.provider, effective.modelOverride ?? session.model, usage),
             });
             this.events.publish({
               source: "agent",
@@ -2195,15 +2398,8 @@ export class AgentRunner {
       try {
         const session = await this.sessions.get(sessionId);
         if (!session) throw new Error("Session not found");
-        const path = typeof input.path === "string" ? input.path : "";
-        if (!path) throw new Error(`${name} requires a non-empty path`);
-        let value: unknown;
-        if (name === "read_file") value = await this.core.readFile({ sessionId, path, ...(input.offset === undefined ? {} : { offset: Number(input.offset) }), ...(input.limit === undefined ? {} : { limit: Number(input.limit) }) });
-        else if (name === "write_file") value = await this.core.writeFile({ sessionId, path, content: String(input.content ?? ""), ...(input.createDirs === undefined ? {} : { createDirs: Boolean(input.createDirs) }) });
-        else if (name === "edit_file") value = await this.core.editFile({ sessionId, path, oldText: String(input.oldText ?? ""), newText: String(input.newText ?? ""), ...(input.replaceAll === undefined ? {} : { replaceAll: Boolean(input.replaceAll) }) });
-        else if (name === "glob") value = await this.core.globFiles({ sessionId, path, pattern: String(input.pattern ?? "") });
-        else value = await this.core.grepFiles({ sessionId, path, pattern: String(input.pattern ?? "") });
-        const bounded = await boundToolResult(this.sessions.contextRoot(sessionId), name, JSON.stringify(value));
+        const raw = await this.callCoreFileTool(sessionId, name, input);
+        const bounded = await boundToolResult(this.sessions.contextRoot(sessionId), name, raw);
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: toolEventResult(bounded) } });
         return { type: "tool_result", toolCallId, content: bounded.content, isError: false };
       } catch (error) {
@@ -2305,19 +2501,24 @@ export class AgentRunner {
    * 前台 bash 执行（runShell 与 executeTool 的 bash 分支共用）：
    * core.run + exec.output 推送收集 + boundToolResult 截断。
    * 失败转成 isError=true 返回，不抛错（调用方负责落盘 tool_result）。
+   * quiet（general 子代理）：不发布 tool.start/end、不触碰 run 状态，执行语义不变。
    */
   private async executeBash(
     sessionId: string,
     cmd: string,
     toolCallId: string,
     signal: AbortSignal,
+    options?: { quiet?: boolean },
   ): Promise<{ content: string; isError: boolean }> {
+    const quiet = options?.quiet === true;
     signal.throwIfAborted();
     const execId = `${sessionId}:${randomUUID()}`;
     const execution: ExecutionContext = { sessionId, output: [] };
     this.executions.set(execId, execution);
-    this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name: "bash", input: { cmd }, execId } });
-    this.state(sessionId, "tool_running");
+    if (!quiet) {
+      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name: "bash", input: { cmd }, execId } });
+      this.state(sessionId, "tool_running");
+    }
     try {
       const session = await this.sessions.get(sessionId);
       if (!session) throw new Error("Session not found");
@@ -2349,7 +2550,7 @@ export class AgentRunner {
             const decoded = decodeProcessOutputChunks(output);
             const rawContent = JSON.stringify({ ...status, output: decoded, outputTruncated: page.truncated || tail.truncated });
             const bounded = await boundToolResult(this.sessions.contextRoot(sessionId), "bash", rawContent);
-            this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: toolEventResult(bounded) } });
+            if (!quiet) this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: toolEventResult(bounded) } });
             return { content: bounded.content, isError: false };
           }
         } finally {
@@ -2361,12 +2562,12 @@ export class AgentRunner {
       const rawContent = JSON.stringify({ ...result, output });
       const bounded = await boundToolResult(this.sessions.contextRoot(sessionId), "bash", rawContent);
       // 事件只发摘要 + artifact 引用（0.3.x 规约）；完整输出走 artifact/session 读取路径。
-      this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: toolEventResult(bounded) } });
+      if (!quiet) this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: toolEventResult(bounded) } });
       return { content: bounded.content, isError: false };
     } catch (error) {
       if (signal.aborted) throw error;
       const content = error instanceof Error ? error.message : String(error);
-      this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
+      if (!quiet) this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
       return { content, isError: true };
     } finally {
       this.executions.delete(execId);

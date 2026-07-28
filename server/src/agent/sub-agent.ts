@@ -7,27 +7,91 @@ import { boundToolResult } from "../context/tool-result-budget.js";
 import type { Provider, ProviderEvent, ProviderTool } from "../providers/provider.js";
 import { collectProviderTurn } from "../providers/retry.js";
 import type { ChatMessage, MessageContent, MessageRole } from "../sessions/types.js";
+import {
+  bashTool,
+  CODE_SEARCH_TOOL,
+  FILE_TOOLS,
+  READ_ARTIFACT_TOOL,
+  REPO_MAP_TOOL,
+  TEST_RUNNER_TOOL,
+  WEB_FETCH_TOOL,
+  WEB_SEARCH_TOOL,
+} from "./tool-schemas.js";
 
 /**
  * 子代理允许使用的只读工具全集（构造上只读；spawn_task 不在其中，子代理不可再派生）。
  */
 export const SUB_AGENT_TOOL_NAMES = ["read_file", "glob", "grep", "read_artifact"] as const;
 
+/**
+ * general 内置子代理的工具全集：文件读写/编辑 + glob/grep + bash + repo_map/code_search
+ * + test_runner + web_fetch/web_search（可用时）。编排类（spawn_task/spawn_swarm）与
+ * 会话控制类工具刻意排除——子代理不可再派生，也不能触碰父会话状态。
+ * 键名一律为真实内置名（工具形态别名由 agent-runner 归一后再传入）。
+ */
+export const GENERAL_AGENT_TOOL_NAMES = [
+  "read_file", "write_file", "edit_file", "glob", "grep", "read_artifact",
+  "bash", "repo_map", "code_search", "test_runner", "web_fetch", "web_search",
+] as const;
+
 export const SUB_AGENT_CONCLUSION_LIMIT = 2_000;
 
-const SUB_AGENT_TOOLS: ProviderTool[] = [
-  { name: "read_file", description: "Read UTF-8 lines from a workspace file.", inputSchema: { type: "object", properties: { path: { type: "string" }, offset: { type: "integer" }, limit: { type: "integer" } }, required: ["path"], additionalProperties: false } },
-  { name: "glob", description: "Recursively match workspace paths using * and ? wildcards.", inputSchema: { type: "object", properties: { path: { type: "string" }, pattern: { type: "string" } }, required: ["path", "pattern"], additionalProperties: false } },
-  { name: "grep", description: "Recursively search UTF-8 workspace files for literal text.", inputSchema: { type: "object", properties: { path: { type: "string" }, pattern: { type: "string" } }, required: ["path", "pattern"], additionalProperties: false } },
-  { name: "read_artifact", description: "Read a bounded slice of a tool-output artifact when an evicted or truncated result points to an artifact ID.", inputSchema: { type: "object", properties: { artifactId: { type: "string" }, offset: { type: "integer" }, limit: { type: "integer" } }, required: ["artifactId", "offset", "limit"], additionalProperties: false } },
+export type BuiltinSubAgentKind = "explore" | "general";
+
+export interface BuiltinSubAgent {
+  id: BuiltinSubAgentKind;
+  /** 中文描述（GET /api/agents；前端按 id 做 i18n）。 */
+  description: string;
+  toolNames: readonly string[];
+  maxTurns: number;
+}
+
+/** 内置子代理类型注册表：explore 为缺省（只读探索，行为与历史一致），general 为可写通用子代理。 */
+export const BUILTIN_SUB_AGENTS: readonly BuiltinSubAgent[] = [
+  {
+    id: "explore",
+    description: "只读探索子代理（read_file/glob/grep/read_artifact）",
+    toolNames: SUB_AGENT_TOOL_NAMES,
+    maxTurns: 15,
+  },
+  {
+    id: "general",
+    description: "通用子代理（可读写文件、执行命令，走会话权限链与沙盒）",
+    toolNames: GENERAL_AGENT_TOOL_NAMES,
+    maxTurns: 40,
+  },
 ];
+
+export function getBuiltinSubAgent(name: string): BuiltinSubAgent | undefined {
+  return BUILTIN_SUB_AGENTS.find((agent) => agent.id === name);
+}
+
+/** 子代理工具 schema 总表：复用 tool-schemas 的内置 schema，按名字过滤出各类型允许集。 */
+const SUB_AGENT_TOOL_SCHEMAS: readonly ProviderTool[] = [
+  ...FILE_TOOLS,
+  READ_ARTIFACT_TOOL,
+  // 子代理 bash 不开后台任务（run_in_background 依赖主循环的 BackgroundTaskRegistry）
+  bashTool(false, "default"),
+  REPO_MAP_TOOL,
+  CODE_SEARCH_TOOL,
+  TEST_RUNNER_TOOL,
+  WEB_FETCH_TOOL,
+  WEB_SEARCH_TOOL,
+];
+
+/** 一次子代理工具调用经调用方（agent-runner）的权限链 + 沙盒执行后的结果。 */
+export interface SubAgentToolExecutor {
+  (call: { name: string; input: Record<string, unknown>; toolCallId: string }): Promise<{ content: string; isError: boolean }>;
+}
 
 export interface SubAgentOptions {
   provider: Provider;
   model: string;
   prompt: string;
-  /** 请求放行的工具名；实际生效为 ∩ SUB_AGENT_TOOL_NAMES。 */
+  /** 请求放行的工具名；实际生效为 ∩ 解析类型的允许集。 */
   toolNames: string[];
+  /** 内置类型：explore（默认，只读）或 general（可写，工具经 executeTool 走权限链）。 */
+  agentKind?: BuiltinSubAgentKind;
   systemExtra?: string;
   modelOverride?: string;
   agent?: string;
@@ -37,6 +101,14 @@ export interface SubAgentOptions {
   contextRoot: string;
   signal: AbortSignal;
   maxTurns?: number;
+  /** 手动启动等需要预分配 taskId 的场景；缺省内部生成（转录文件名即 <taskId>.json）。 */
+  taskId?: string;
+  /**
+   * general 类型的工具执行入口（由 agent-runner 注入）：每个工具调用经会话权限链
+   * （authorizeTool：plan 门禁 + 权限模式/规则 + permission.request 挂起）与主循环
+   * 同一沙盒配置执行。explore/自定义类型不注入，保持本地只读执行。
+   */
+  executeTool?: SubAgentToolExecutor;
   /** 每次 LLM 用量事件回调（由调用方记账，子代理 token 计入会话成本）。 */
   onUsage?: (usage: Extract<ProviderEvent, { type: "usage" }>) => void | Promise<void>;
   /** taskId 生成后立即回调（用于发布 subagent.started；转录文件名即 <taskId>.json）。 */
@@ -52,18 +124,31 @@ export interface SubAgentResult {
   toolsUsed: string[];
 }
 
-export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentResult> {
-  const maxTurns = options.maxTurns ?? 15;
-  const allowed = new Set(options.toolNames.filter((name) => (SUB_AGENT_TOOL_NAMES as readonly string[]).includes(name)));
-  const tools = SUB_AGENT_TOOLS.filter((tool) => allowed.has(tool.name));
-  const system =
-    `You are a read-only exploration sub-agent spawned by OpenWebCode. The workspace is ${options.cwd}. ` +
-    "You run in an isolated context and cannot see the parent conversation. " +
-    "You may only use the read-only tools provided; you cannot modify files or run commands. " +
-    "Investigate the task, then reply with one concise conclusion in the user's language (default 中文). " +
-    `Do not ask questions; make reasonable assumptions.${options.systemExtra ? `\n\n${options.systemExtra}` : ""}`;
+function systemPrompt(kind: BuiltinSubAgentKind, cwd: string, systemExtra: string | undefined): string {
+  const base = kind === "general"
+    ? `You are a general-purpose coding sub-agent spawned by OpenWebCode. The workspace is ${cwd}. ` +
+      "You run in an isolated context and cannot see the parent conversation. " +
+      "Complete the assigned task end-to-end: you may read and modify files and run commands with the tools provided. " +
+      "Write operations and commands go through the session's permission chain and sandbox; if a call is denied, adjust rather than retrying the identical call. " +
+      "When finished, reply with one concise conclusion in the user's language (default 中文) summarizing what you changed and how you verified it. " +
+      "Do not ask questions; make reasonable assumptions."
+    : `You are a read-only exploration sub-agent spawned by OpenWebCode. The workspace is ${cwd}. ` +
+      "You run in an isolated context and cannot see the parent conversation. " +
+      "You may only use the read-only tools provided; you cannot modify files or run commands. " +
+      "Investigate the task, then reply with one concise conclusion in the user's language (default 中文). " +
+      "Do not ask questions; make reasonable assumptions.";
+  return `${base}${systemExtra ? `\n\n${systemExtra}` : ""}`;
+}
 
-  const taskId = randomUUID();
+export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentResult> {
+  const kind = options.agentKind ?? "explore";
+  const builtin = getBuiltinSubAgent(kind) ?? BUILTIN_SUB_AGENTS[0]!;
+  const maxTurns = options.maxTurns ?? builtin.maxTurns;
+  const allowed = new Set(options.toolNames.filter((name) => builtin.toolNames.includes(name)));
+  const tools = SUB_AGENT_TOOL_SCHEMAS.filter((tool) => allowed.has(tool.name));
+  const system = systemPrompt(kind, options.cwd, options.systemExtra);
+
+  const taskId = options.taskId ?? randomUUID();
   const startedAt = new Date().toISOString();
   options.onStart?.(taskId);
   const messages: ChatMessage[] = [subMessage("user", [{ type: "text", text: options.prompt }])];
@@ -113,7 +198,7 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
       const results: MessageContent[] = [];
       for (const call of toolCalls) {
         if (call.type !== "tool_call") continue;
-        const outcome = await executeSubTool(options, allowed, call.name, call.input);
+        const outcome = await executeSubTool(options, allowed, call.name, call.input, call.id);
         if (!outcome.isError && !toolsUsed.includes(call.name)) toolsUsed.push(call.name);
         results.push({ type: "tool_result", toolCallId: call.id, content: outcome.content, isError: outcome.isError });
       }
@@ -147,10 +232,20 @@ async function executeSubTool(
   allowed: ReadonlySet<string>,
   name: string,
   input: Record<string, unknown>,
+  toolCallId: string,
 ): Promise<{ content: string; isError: boolean }> {
   if (!allowed.has(name)) {
     const list = [...allowed].join(", ") || "(none)";
     return { content: `Tool not available to this sub-agent: ${name}. Allowed tools: ${list}`, isError: true };
+  }
+  // general 类型：全部工具（含只读）统一经调用方注入的权限链执行入口
+  if (options.executeTool) {
+    try {
+      return await options.executeTool({ name, input, toolCallId });
+    } catch (error) {
+      if (options.signal.aborted) throw error;
+      return { content: error instanceof Error ? error.message : String(error), isError: true };
+    }
   }
   try {
     let raw: string;

@@ -70,6 +70,11 @@ export class AgentRegistry {
     return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
   }
 
+  /** 仅全局目录（无项目 cwd 时的 REST 目录查询）。 */
+  async listGlobal(): Promise<AgentDefinition[]> {
+    return this.scan(this.globalDir, "global");
+  }
+
   async find(cwd: string, name: string): Promise<AgentDefinition | undefined> {
     return (await this.listFor(cwd)).find((agent) => agent.name === name);
   }
