@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useState, type MouseEvent as ReactMouseEvent, type ReactElement } from "react";
-import type { ContextUsage, SessionDetail } from "../lib/contracts";
+import type { ContextUsage, LiveSubagentRun, SessionDetail } from "../lib/contracts";
 import type { ContextWindowInfo } from "../lib/context-window";
 import type { DiffSpec } from "./editor/DiffPane";
 import { Icon, type IconName } from "./Icon";
@@ -12,13 +12,15 @@ const SandboxPanel = lazy(() => import("./panels/SandboxPanel").then((m) => ({ d
 const TimelinePanel = lazy(() => import("./panels/TimelinePanel").then((m) => ({ default: m.TimelinePanel })));
 const PerfPanel = lazy(() => import("./panels/PerfPanel").then((m) => ({ default: m.PerfPanel })));
 const EvalPanel = lazy(() => import("./panels/EvalPanel").then((m) => ({ default: m.EvalPanel })));
+const SubagentsPanel = lazy(() => import("./panels/SubagentsPanel").then((m) => ({ default: m.SubagentsPanel })));
 import { useI18n } from "../i18n";
 
-export type PanelTab = "context" | "timeline" | "sandbox" | "cost" | "perf" | "eval";
+export type PanelTab = "context" | "timeline" | "subagents" | "sandbox" | "cost" | "perf" | "eval";
 
 const TAB_META: Record<PanelTab, { zh: string; en: string; icon: IconName }> = {
   context: { zh: "上下文", en: "Context", icon: "layers" },
   timeline: { zh: "时间线", en: "Timeline", icon: "history" },
+  subagents: { zh: "子代理", en: "Subagents", icon: "layers" },
   sandbox: { zh: "沙盒", en: "Sandbox", icon: "shield" },
   cost: { zh: "成本", en: "Cost", icon: "chart" },
   perf: { zh: "性能", en: "Perf", icon: "clock" },
@@ -46,7 +48,7 @@ function store(key: string, value: string): void {
   }
 }
 
-export function BottomPanel({ sessionId, session, running, evalEnabled = false, windowUsage, latestUsage, onNotice, open, onOpenChange, onOpenDiff }: {
+export function BottomPanel({ sessionId, session, running, evalEnabled = false, windowUsage, latestUsage, subagentRuns, onNotice, open, onOpenChange, onOpenDiff }: {
   sessionId?: string;
   session?: SessionDetail;
   running: boolean;
@@ -55,6 +57,8 @@ export function BottomPanel({ sessionId, session, running, evalEnabled = false, 
   windowUsage?: ContextWindowInfo;
   /** 最近一轮 token 用量（App 下发的 context.usage）；仅上下文标签页使用。 */
   latestUsage?: ContextUsage;
+  /** 当前会话合并后的子代理运行（taskId → run）；仅子代理标签页使用。 */
+  subagentRuns?: Record<string, LiveSubagentRun>;
   onNotice(message: string, kind?: "info" | "error"): void;
   /** 受控开合（布局持久化在 useWorkbenchLayout，Ctrl/Cmd+` 切换） */
   open: boolean;
@@ -135,6 +139,7 @@ export function BottomPanel({ sessionId, session, running, evalEnabled = false, 
           <Suspense fallback={null}>
           {tab === "context" && <ContextPanel sessionId={sessionId} session={session} running={running} windowUsage={windowUsage} latestUsage={latestUsage} onNotice={onNotice} />}
           {tab === "timeline" && <TimelinePanel sessionId={sessionId} running={running} onNotice={onNotice} onOpenDiff={onOpenDiff} />}
+          {tab === "subagents" && <SubagentsPanel sessionId={sessionId} runs={subagentRuns ?? {}} />}
           {tab === "sandbox" && <SandboxPanel session={session} />}
           {tab === "cost" && <CostPanel />}
           {tab === "perf" && <PerfPanel sessionId={sessionId} />}

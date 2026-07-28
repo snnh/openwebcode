@@ -132,7 +132,7 @@ export interface SubagentFinishedEvent {
   swarm?: SubagentSwarmRef;
 }
 
-/** 客户端按会话维护的子代理实时运行状态（tool.end 到达后由持久化 tool_result 接管渲染） */
+/** 客户端按会话维护的子代理运行状态（实时事件驱动，终态保留供子代理面板展示会话级历史；消息轨道卡片与面板共用） */
 export interface LiveSubagentRun {
   taskId: string;
   toolCallId: string;
