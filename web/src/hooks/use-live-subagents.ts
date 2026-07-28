@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { AppEvent, LiveSubagentRun, SubagentFinishedEvent, SubagentProgressEvent, SubagentStartedEvent } from "../lib/contracts";
 import { capLiveSubagentRuns, LIVE_SUBAGENT_CAP } from "../lib/subagent-runs";
 
@@ -10,6 +10,8 @@ export interface UseLiveSubagentsOptions {
   dropOnToolEnd?: boolean;
   /** 每个会话保留的条目上限（默认 LIVE_SUBAGENT_CAP），超出时丢弃最旧的 */
   maxPerSession?: number;
+  /** subagent.started 到达时回调（如主区标签自动创建）；存 ref 调用，不影响 applyEvent 的引用稳定性 */
+  onStarted?: (sessionId: string, payload: SubagentStartedEvent) => void;
 }
 
 /**
@@ -23,6 +25,8 @@ export function useLiveSubagents(options?: UseLiveSubagentsOptions): {
 } {
   const dropOnToolEnd = options?.dropOnToolEnd ?? true;
   const maxPerSession = options?.maxPerSession ?? LIVE_SUBAGENT_CAP;
+  const onStartedRef = useRef(options?.onStarted);
+  onStartedRef.current = options?.onStarted;
   const [liveSubagents, setLiveSubagents] = useState<Record<string, Record<string, LiveSubagentRun>>>({});
 
   const applyEvent = useCallback((event: AppEvent): void => {
@@ -46,6 +50,7 @@ export function useLiveSubagents(options?: UseLiveSubagentsOptions): {
           },
         }, maxPerSession),
       }));
+      onStartedRef.current?.(sessionId, payload);
       return;
     }
     if (event.type === "subagent.progress") {
