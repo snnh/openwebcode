@@ -26,7 +26,7 @@ const ACCENT_OPTIONS: Array<{ value: AccentPreference; zh: string; en: string; s
   { value: "green", zh: "绿", en: "Green", swatch: "#2f9e44" },
 ];
 
-export type SettingsTab = "appearance" | "general" | "defaults" | "shortcuts" | "server" | "remote" | "models" | "skills" | "extensions" | "pricing" | "prompt" | "info";
+export type SettingsTab = "appearance" | "general" | "defaults" | "shortcuts" | "remote" | "models" | "skills" | "extensions" | "pricing" | "prompt" | "info";
 
 interface SettingsTabMeta {
   id: SettingsTab;
@@ -44,7 +44,7 @@ const SETTINGS_GROUPS: Array<{ id: string; zh: string; en: string; tabs: Setting
     en: "Preferences",
     tabs: [
       { id: "appearance", zh: "外观", en: "Appearance", descriptionZh: "语言、主题与界面强调色", descriptionEn: "Language, theme, and interface accent", icon: "sun" },
-      { id: "general", zh: "通用", en: "General", descriptionZh: "输入方式与工作区布局", descriptionEn: "Input behavior and workspace layout", icon: "settings" },
+      { id: "general", zh: "通用", en: "General", descriptionZh: "输入方式、模型语言货币与工作区布局", descriptionEn: "Input behavior, model language & currency, and workspace layout", icon: "settings" },
       { id: "defaults", zh: "会话默认", en: "Session defaults", descriptionZh: "新会话的模型与运行参数", descriptionEn: "Model and runtime defaults for new sessions", icon: "history" },
       { id: "shortcuts", zh: "快捷键", en: "Shortcuts", descriptionZh: "查看可用的键盘操作", descriptionEn: "Browse available keyboard actions", icon: "terminal" },
     ],
@@ -54,9 +54,8 @@ const SETTINGS_GROUPS: Array<{ id: string; zh: string; en: string; tabs: Setting
     zh: "AI 与服务",
     en: "AI & services",
     tabs: [
-      { id: "server", zh: "服务设置", en: "Server", descriptionZh: "Provider、执行器与服务端参数", descriptionEn: "Providers, executor, and server options", icon: "wrench" },
-      { id: "models", zh: "模型目录", en: "Models", descriptionZh: "同步并维护可用模型能力", descriptionEn: "Sync and maintain model capabilities", icon: "layers" },
-      { id: "pricing", zh: "模型定价", en: "Pricing", descriptionZh: "管理 token 价格与计费币种", descriptionEn: "Manage token prices and billing currencies", icon: "chart" },
+      { id: "models", zh: "模型目录", en: "Models", descriptionZh: "服务商、模型接入与可用模型能力", descriptionEn: "Providers, model access, and model capabilities", icon: "layers" },
+      { id: "pricing", zh: "模型定价", en: "Pricing", descriptionZh: "管理 token 价格、计费币种与汇率", descriptionEn: "Manage token prices, billing currencies, and exchange rates", icon: "chart" },
       { id: "prompt", zh: "提示词", en: "Prompt", descriptionZh: "覆盖系统提示词基线与追加自定义指令", descriptionEn: "Override the system prompt baseline and append custom instructions", icon: "wrench" },
     ],
   },
@@ -75,7 +74,7 @@ const SETTINGS_GROUPS: Array<{ id: string; zh: string; en: string; tabs: Setting
     zh: "系统",
     en: "System",
     tabs: [
-      { id: "info", zh: "服务信息", en: "Server info", descriptionZh: "运行状态、版本与连接信息", descriptionEn: "Runtime status, version, and connection details", icon: "alert" },
+      { id: "info", zh: "服务信息", en: "Server info", descriptionZh: "运行状态、版本、执行器与存储", descriptionEn: "Runtime status, version, executor, and storage", icon: "alert" },
     ],
   },
 ];
@@ -111,13 +110,35 @@ const SETTINGS_GROUP_EN: Record<string, string> = {
   fastModel: "Fast model",
   general: "Language and currency",
   executor: "Executor",
-  service: "Service",
+  service: "Storage",
   network: "Listen address and port",
   exchangeRate: "Exchange rate",
+  updateCheck: "Update check",
 };
 
-/** 监听地址/端口所在分组：渲染在"远程访问"页签而非"服务设置" */
+/** 监听地址/端口所在分组：渲染在"远程访问"页签 */
 const NETWORK_SETTINGS_GROUP = "network";
+
+/**
+ * 服务端设置分组 → 设置页签归属。分组 id 由服务端保持稳定（见 server/src/settings-service.ts），
+ * web 端决定每个分组渲染在哪个页签：模型接入/快速模型 → 模型目录，语言与货币 → 通用，
+ * 汇率 → 模型定价，执行器/存储/更新检查 → 服务信息，监听与端口 → 远程访问。
+ */
+const SETTING_GROUP_TAB: Record<string, SettingsTab> = {
+  models: "models",
+  fastModel: "models",
+  general: "general",
+  executor: "info",
+  service: "info",
+  network: "remote",
+  exchangeRate: "pricing",
+  updateCheck: "info",
+};
+
+/** 「模型目录」页签承载的设置分组（模型接入 + 快速模型） */
+const MODELS_TAB_GROUPS = new Set(["models", "fastModel"]);
+/** 「服务信息」页签承载的设置分组（执行器 + 存储 + 更新检查，系统级参数） */
+const INFO_TAB_GROUPS = new Set(["executor", "service", "updateCheck"]);
 
 const SETTINGS_FIELD_EN: Record<string, { label: string; description?: string }> = {
   catalogSyncUrl: { label: "Remote model catalog URL", description: "Leave empty to disable remote model catalog sync" },
@@ -895,8 +916,8 @@ export function ProviderProfilesSection(): ReactElement {
   );
 }
 
-/** 服务设置字段表单：按分组过滤渲染，draft/校验/保存逻辑在两个页签间共享。 */
-function ServerSettingsFields({ showGroup, note, onDirtyChange }: {
+/** 服务设置字段表单：按分组过滤渲染，draft/校验/保存逻辑在各页签间共享。 */
+export function ServerSettingsFields({ showGroup, note, onDirtyChange }: {
   showGroup(groupId: string): boolean;
   /** 分组列表前的说明文案 [zh, en]；不传则不渲染 */
   note?: [string, string];
@@ -1114,11 +1135,23 @@ function ServerSettingsFields({ showGroup, note, onDirtyChange }: {
   );
 }
 
-export function ServerSettingsSection({ onDirtyChange }: { onDirtyChange?(dirty: boolean): void }): ReactElement {
+/** 模型接入/快速模型分组字段：渲染在「模型目录」页签，与服务商配置、模型目录同区。 */
+export function ModelAccessSection({ onDirtyChange }: { onDirtyChange?(dirty: boolean): void }): ReactElement {
   return (
     <ServerSettingsFields
-      showGroup={(groupId) => groupId !== NETWORK_SETTINGS_GROUP}
-      note={["服务端配置项（监听地址/端口在「远程访问」页签）。密钥仅脱敏显示；保存的密钥以明文存放在本机数据目录。", "Server settings (listen address and port live in the Remote access tab). Secrets are masked here but stored as plain text in the local data directory."]}
+      showGroup={(groupId) => MODELS_TAB_GROUPS.has(groupId)}
+      note={["远程目录同步与快速模型设置。密钥仅脱敏显示；保存的密钥以明文存放在本机数据目录。", "Remote catalog sync and fast-model settings. Secrets are masked here but stored as plain text in the local data directory."]}
+      onDirtyChange={onDirtyChange}
+    />
+  );
+}
+
+/** 执行器/存储/更新检查分组字段：渲染在「服务信息」页签（系统级参数）。 */
+export function SystemStorageSection({ onDirtyChange }: { onDirtyChange?(dirty: boolean): void }): ReactElement {
+  return (
+    <ServerSettingsFields
+      showGroup={(groupId) => INFO_TAB_GROUPS.has(groupId)}
+      note={["执行器、存储与更新检查等系统级参数；密钥仅脱敏显示。", "System-level executor, storage, and update-check options. Secrets are masked here."]}
       onDirtyChange={onDirtyChange}
     />
   );
@@ -1661,9 +1694,9 @@ export function SettingsDialog({ open, initialTab, preference, setPreference, ac
   // 左侧导航搜索：匹配页签标题/描述、分组名与服务设置字段标签（中英文）
   const [navQuery, setNavQuery] = useState("");
   // 字段标签在打开时经 api.settings 拉取（不经 react-query，i18n 等无 Provider 的渲染也能工作）；失败按无字段匹配处理
-  // tab：network 分组（监听地址/端口）归"远程访问"页签，其余字段归"服务设置"
+  // tab：按 SETTING_GROUP_TAB 归属到各页签（模型目录/通用/模型定价/服务信息/远程访问）
   const [fieldLabels, setFieldLabels] = useState<Array<{ key: string; label: string; tab: SettingsTab }>>([]);
-  // 服务设置的未保存改动由 ServerSettingsSection / RemoteAccessSection 上报
+  // 服务设置的未保存改动由各页签内的 ServerSettingsFields 实例上报
   const serverDirtyRef = useRef(false);
 
   useEffect(() => {
@@ -1674,7 +1707,7 @@ export function SettingsDialog({ open, initialTab, preference, setPreference, ac
         if (!cancelled) setFieldLabels(view.groups.flatMap((group) => group.fields.map((field) => ({
           key: field.key,
           label: field.label,
-          tab: group.id === NETWORK_SETTINGS_GROUP ? "remote" as const : "server" as const,
+          tab: SETTING_GROUP_TAB[group.id] ?? ("info" as const),
         }))));
       })
       .catch(() => undefined);
@@ -1697,7 +1730,7 @@ export function SettingsDialog({ open, initialTab, preference, setPreference, ac
   if (!open) return null;
 
   const query = navQuery.trim().toLowerCase();
-  // 字段标签命中（中英文）：按字段所在分组归属到 server 或 remote 页签
+  // 字段标签命中（中英文）：按字段所在分组归属到对应页签
   const fieldHit = (tabId: SettingsTab): boolean => query !== "" && fieldLabels
     .some((field) => field.tab === tabId &&
       (field.label.toLowerCase().includes(query) || (SETTINGS_FIELD_EN[field.key]?.label ?? "").toLowerCase().includes(query)));
@@ -1706,8 +1739,8 @@ export function SettingsDialog({ open, initialTab, preference, setPreference, ac
     if (tab.zh.toLowerCase().includes(query) || tab.en.toLowerCase().includes(query)) return true;
     if (tab.descriptionZh.toLowerCase().includes(query) || tab.descriptionEn.toLowerCase().includes(query)) return true;
     if (group.zh.toLowerCase().includes(query) || group.en.toLowerCase().includes(query)) return true;
-    // 服务设置字段按分组挂在 server / remote 页签下
-    if ((tab.id === "server" || tab.id === "remote") && fieldHit(tab.id)) return true;
+    // 服务设置字段按分组挂在各自页签下（模型目录/通用/模型定价/服务信息/远程访问）
+    if (fieldHit(tab.id)) return true;
     return false;
   };
   const visibleGroups = SETTINGS_GROUPS
@@ -1863,6 +1896,12 @@ export function SettingsDialog({ open, initialTab, preference, setPreference, ac
               <h3>{t("布局", "Layout")}</h3>
               <p className="settings-note">{t("会话栏宽度/折叠、底部面板高度与开合保存在本机。", "The session rail width and collapsed state, plus bottom-panel height and visibility, are saved locally.")}</p>
               <button className="btn small" onClick={onResetLayout}>{t("重置布局为默认", "Reset layout")}</button>
+              <h3>{t("语言与货币", "Language and currency")}</h3>
+              <ServerSettingsFields
+                showGroup={(groupId) => groupId === "general"}
+                note={["模型回复的默认语言与计费币种（界面语言在「外观」页签切换，两者相互独立）。", "Default language for model replies and the billing currency (the interface language is switched in the Appearance tab; the two are independent)."]}
+                onDirtyChange={(dirty) => { serverDirtyRef.current = dirty; }}
+              />
             </section>
           )}
           {activeTab === "defaults" && (
@@ -1884,16 +1923,11 @@ export function SettingsDialog({ open, initialTab, preference, setPreference, ac
               <RemoteAccessSection onDirtyChange={(dirty) => { serverDirtyRef.current = dirty; }} />
             </section>
           )}
-          {activeTab === "server" && (
-            <section>
-              <h3>{t("服务设置", "Server settings")}</h3>
-              <ProviderProfilesSection />
-              <ServerSettingsSection onDirtyChange={(dirty) => { serverDirtyRef.current = dirty; }} />
-            </section>
-          )}
           {activeTab === "models" && (
             <section>
               <h3>{t("模型目录", "Model catalog")}</h3>
+              <ProviderProfilesSection />
+              <ModelAccessSection onDirtyChange={(dirty) => { serverDirtyRef.current = dirty; }} />
               <ModelCatalogSection />
             </section>
           )}
@@ -1913,6 +1947,11 @@ export function SettingsDialog({ open, initialTab, preference, setPreference, ac
             <section>
               <h3>{t("模型定价", "Model pricing")}</h3>
               <PricingSection />
+              <h3>{t("汇率", "Exchange rate")}</h3>
+              <ServerSettingsFields
+                showGroup={(groupId) => groupId === "exchangeRate"}
+                onDirtyChange={(dirty) => { serverDirtyRef.current = dirty; }}
+              />
             </section>
           )}
           {activeTab === "prompt" && (
@@ -1925,6 +1964,8 @@ export function SettingsDialog({ open, initialTab, preference, setPreference, ac
             <section>
               <h3>{t("服务信息", "Server information")}</h3>
               <ServerInfoSection providers={providers} models={models} />
+              <h3>{t("系统与存储", "System and storage")}</h3>
+              <SystemStorageSection onDirtyChange={(dirty) => { serverDirtyRef.current = dirty; }} />
             </section>
           )}
             </div>

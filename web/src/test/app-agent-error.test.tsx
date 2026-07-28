@@ -138,15 +138,15 @@ describe("App agent.error 可操作提示与新版本通知", () => {
       emit(socket, { type: "agent.error", sessionId: "s1", payload: { message: "invalid api key", kind: "authentication", retryable: false } });
     });
 
-    await screen.findByText("认证失败：请检查 设置 → 服务设置 中的 API Key");
+    await screen.findByText("认证失败：请检查 设置 → 模型目录 中的 API Key");
     // toast 为短摘要，不粘贴原始信息
     const toast = document.querySelector(".toast");
     expect(toast?.textContent).toContain("任务失败：认证失败，请检查 API Key");
     expect(toast?.textContent).not.toContain("invalid api key");
 
-    fireEvent.click(screen.getByRole("button", { name: "打开服务设置" }));
+    fireEvent.click(screen.getByRole("button", { name: "打开模型设置" }));
     await waitFor(() => {
-      expect(document.querySelector('[data-settings-tab="server"]')?.className).toContain("active");
+      expect(document.querySelector('[data-settings-tab="models"]')?.className).toContain("active");
     });
   });
 

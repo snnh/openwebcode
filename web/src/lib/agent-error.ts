@@ -10,7 +10,7 @@ export type I18nFn = (zh: string, en: string) => string;
 /** 错误卡的可操作指引：hint 文案、可选设置深链页签、是否展示重试按钮 */
 export interface AgentErrorGuidance {
   hint?: string;
-  settingsTab?: "server" | "models";
+  settingsTab?: "models";
   retryable: boolean;
 }
 
@@ -19,14 +19,14 @@ export function agentErrorGuidance(error: Pick<AgentErrorPayload, "kind" | "retr
     case "authentication":
     case "permission":
       return {
-        hint: t("认证失败：请检查 设置 → 服务设置 中的 API Key", "Authentication failed: check the API Key in Settings → Server settings"),
-        settingsTab: "server",
+        hint: t("认证失败：请检查 设置 → 模型目录 中的 API Key", "Authentication failed: check the API Key in Settings → Models"),
+        settingsTab: "models",
         retryable: error.retryable === true,
       };
     case "not_found":
       return {
         hint: t("接口不存在：请检查 Base URL 或模型 ID", "Endpoint not found: check the Base URL or model ID"),
-        settingsTab: "server",
+        settingsTab: "models",
         retryable: error.retryable === true,
       };
     case "invalid_request":
