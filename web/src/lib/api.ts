@@ -214,6 +214,7 @@ export const api = {
   configureExtension: (id: string, body: { enabled?: boolean; config?: Record<string, unknown> }) =>
     request<ExtensionInfo>("/api/extensions", { method: "POST", body: JSON.stringify({ id, ...body }) }),
   installExtension: (path: string) => request<ExtensionInfo>("/api/extensions", { method: "POST", body: JSON.stringify({ action: "install", path }) }),
+  envSimPersonas: () => request<{ personas: Array<{ id: string; name: string; builtin: boolean }>; directory: string }>("/api/extensions/env-sim/personas"),
   uninstallExtension: (id: string) => request<void>(`/api/extensions/${encodeURIComponent(id)}`, { method: "DELETE" }),
   translateMessage: (sessionId: string, messageId: string, targetLanguage: string, glossary?: Record<string, string>) =>
     request<{ text: string; cached: boolean }>(`/api/sessions/${sessionId}/content-lens/translate`, { method: "POST", body: JSON.stringify({ messageId, targetLanguage, ...(glossary ? { glossary } : {}) }) }),

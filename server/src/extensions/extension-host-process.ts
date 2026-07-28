@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { OFFICIAL_EXTENSIONS, optimizeAttention } from "./official.js";
-import { isExtensionEventAllowed, type ApiRequest, type ApiResponse, type ContextHookPayload, type ContextHookResult, type EventMessage, type ExtensionApiMethod, type ExtensionHook, type ExtensionManifest, type ExtensionPermission, type ExtensionState, type ExtensionToolResult, type ExtensionToolSpec, type HostRequest, type HostResponse, type ToolHookPayload, type ToolHookResult } from "./types.js";
+import { isExtensionEventAllowed, type ApiRequest, type ApiResponse, type ContextHookPayload, type ContextHookResult, type EventMessage, type ExtensionApiMethod, type ExtensionHook, type ExtensionManifest, type ExtensionPermission, type ExtensionState, type ExtensionToolResult, type ExtensionToolSpec, type HostRequest, type HostResponse, type PromptHookPayload, type PromptHookResult, type ToolHookPayload, type ToolHookResult } from "./types.js";
 
 type Handler = (payload: unknown, config: Record<string, unknown>) => unknown | Promise<unknown>;
 type ToolHandler = (input: Record<string, unknown>, config: Record<string, unknown>) => unknown | Promise<unknown>;
@@ -16,6 +16,8 @@ const HOOK_PERMISSIONS: Record<ExtensionHook, ExtensionPermission[]> = {
   "context.beforeBuild": ["context:read", "context:mutate"],
   "message.beforeSend": ["context:read", "context:mutate"],
   "tool.beforeExecute": ["tools:register"],
+  // prompt.beforeBuild 不暴露消息内容，仅提示词字段；无需权限（env-sim permissions 为空）。
+  "prompt.beforeBuild": [],
 };
 const TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 
@@ -73,7 +75,7 @@ async function loadThirdParty(manifests: Array<ExtensionManifest & { directory?:
       await activate({
         manifest: Object.freeze({ ...manifest }),
         on(hook: ExtensionHook, handler: Handler): void {
-          if (!["context.beforeBuild", "tool.beforeExecute", "message.beforeSend"].includes(hook) || typeof handler !== "function") {
+          if (!["context.beforeBuild", "tool.beforeExecute", "message.beforeSend", "prompt.beforeBuild"].includes(hook) || typeof handler !== "function") {
             throw new Error(`Unsupported extension hook: ${hook}`);
           }
           const missing = HOOK_PERMISSIONS[hook].filter((permission) => !manifest.permissions.includes(permission));
@@ -152,6 +154,33 @@ async function withTimeout<T>(promise: Promise<T>, ms = 5000): Promise<T> {
 }
 
 async function runHook(hook: ExtensionHook, original: unknown): Promise<unknown> {
+  // prompt.beforeBuild 的合并语义与消息 hook 不同：结果是覆盖字段而非变换后的载荷，
+  // 顺序应用时后续 handler 看到已叠加前面结果的载荷。
+  if (hook === "prompt.beforeBuild") {
+    const result: PromptHookResult = {};
+    const ordered = ["env-sim", ...handlers.keys()].filter((id, index, all) => all.indexOf(id) === index);
+    for (const id of ordered) {
+      const state = states.get(id);
+      if (!state?.enabled) continue;
+      for (const handler of handlers.get(id)?.get(hook) ?? []) {
+        let value: unknown;
+        try {
+          const view = { ...(original as PromptHookPayload), ...(result.identity !== undefined ? { identity: result.identity } : {}), ...(result.basePromptOverride !== undefined ? { basePrompt: result.basePromptOverride } : {}), ...(result.productSections ? { productSections: result.productSections } : {}) };
+          value = await withTimeout(Promise.resolve(handler(view, state.config)));
+        } catch (error) {
+          process.stderr.write(`[extension-host] ${id} ${hook}: ${error instanceof Error ? error.message : String(error)}\n`);
+          continue;
+        }
+        if (!value || typeof value !== "object") continue;
+        const patch = value as PromptHookResult;
+        if (patch.identity !== undefined) result.identity = patch.identity;
+        if (patch.basePromptOverride !== undefined) result.basePromptOverride = patch.basePromptOverride;
+        if (patch.productSections) result.productSections = patch.productSections;
+        if (patch.prependSections) result.prependSections = [...(result.prependSections ?? []), ...patch.prependSections];
+      }
+    }
+    return result;
+  }
   let current = original;
   const ordered = ["context-manager", "attention-optimizer", "content-lens", "pdf-to-image", ...handlers.keys()].filter((id, index, all) => all.indexOf(id) === index);
   for (const id of ordered) {
