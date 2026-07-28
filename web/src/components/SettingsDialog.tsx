@@ -26,7 +26,7 @@ const ACCENT_OPTIONS: Array<{ value: AccentPreference; zh: string; en: string; s
   { value: "green", zh: "绿", en: "Green", swatch: "#2f9e44" },
 ];
 
-type SettingsTab = "appearance" | "general" | "defaults" | "shortcuts" | "server" | "remote" | "models" | "skills" | "extensions" | "pricing" | "prompt" | "info";
+export type SettingsTab = "appearance" | "general" | "defaults" | "shortcuts" | "server" | "remote" | "models" | "skills" | "extensions" | "pricing" | "prompt" | "info";
 
 interface SettingsTabMeta {
   id: SettingsTab;
@@ -706,6 +706,8 @@ export function ProviderProfilesSection(): ReactElement {
   const [webForm, setWebForm] = useState<WebProviderForm>(emptyWebProvider);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  type ConnectionTest = { status: "idle" } | { status: "pending" } | { status: "ok"; latencyMs: number; note?: string } | { status: "fail"; error: string };
+  const [connectionTest, setConnectionTest] = useState<ConnectionTest>({ status: "idle" });
 
   const accepted = (view: Awaited<ReturnType<typeof api.providerProfiles>>): void => {
     queryClient.setQueryData(["provider-profiles"], view);
@@ -725,16 +727,19 @@ export function ProviderProfilesSection(): ReactElement {
   if (profiles.isPending) return <p className="panel-empty">{t("加载服务商配置…", "Loading provider profiles…")}</p>;
   if (profiles.isError || !profiles.data) return <p className="settings-error">{t("无法加载服务商配置。", "Could not load provider profiles.")}</p>;
 
-  const editModel = (profile: ModelProviderProfileView): void => setModelForm({
-    originalId: profile.id,
-    id: profile.id,
-    enabled: profile.enabled,
-    interfaceType: profile.interfaceType,
-    baseURL: profile.baseURL ?? "",
-    apiKey: "",
-    promptCaching: profile.promptCaching !== false,
-    clearApiKey: false,
-  });
+  const editModel = (profile: ModelProviderProfileView): void => {
+    setConnectionTest({ status: "idle" });
+    setModelForm({
+      originalId: profile.id,
+      id: profile.id,
+      enabled: profile.enabled,
+      interfaceType: profile.interfaceType,
+      baseURL: profile.baseURL ?? "",
+      apiKey: "",
+      promptCaching: profile.promptCaching !== false,
+      clearApiKey: false,
+    });
+  };
   const saveModelProvider = (): void => {
     const id = modelForm.id.trim();
     if (!id) { setError(t("模型服务商名称不能为空", "Model provider name is required")); return; }
@@ -747,6 +752,25 @@ export function ProviderProfilesSection(): ReactElement {
       ...(modelForm.clearApiKey ? { apiKey: null } : modelForm.apiKey.trim() ? { apiKey: modelForm.apiKey.trim() } : {}),
     };
     run(modelForm.originalId ? api.saveModelProvider(modelForm.originalId, body) : api.createModelProvider(body), () => setModelForm(emptyModelProvider()));
+  };
+  // 用表单当前值（未保存）做连接测试；编辑旧配置且 API Key 留空时会按“无 Key”测试
+  const testModelConnection = (): void => {
+    const id = modelForm.id.trim();
+    if (!id) { setConnectionTest({ status: "fail", error: t("请先填写服务商名称", "Enter a provider name first") }); return; }
+    setConnectionTest({ status: "pending" });
+    api.testModelProvider({
+      id,
+      enabled: modelForm.enabled,
+      interfaceType: modelForm.interfaceType,
+      ...(modelForm.baseURL.trim() ? { baseURL: modelForm.baseURL.trim() } : {}),
+      ...(modelForm.apiKey.trim() ? { apiKey: modelForm.apiKey.trim() } : {}),
+    }).then((result) => {
+      setConnectionTest(result.ok
+        ? { status: "ok", latencyMs: result.latencyMs ?? 0, ...(result.note ? { note: result.note } : {}) }
+        : { status: "fail", error: result.error ?? t("连接测试失败", "Connection test failed") });
+    }).catch((reason: unknown) => {
+      setConnectionTest({ status: "fail", error: reason instanceof Error ? reason.message : t("连接测试失败", "Connection test failed") });
+    });
   };
   const modelLabel = (profile: ModelProviderProfileView): string => profile.interfaceType === "anthropic-messages" ? "Anthropic Messages" : "OpenAI Chat Completions";
 
@@ -818,7 +842,13 @@ export function ProviderProfilesSection(): ReactElement {
             {modelForm.interfaceType === "anthropic-messages" && <label className="theme-option"><input type="checkbox" checked={modelForm.promptCaching} onChange={(event) => setModelForm((current) => ({ ...current, promptCaching: event.target.checked }))} />Prompt caching</label>}
             {modelForm.originalId && <label className="theme-option"><input type="checkbox" checked={modelForm.clearApiKey} onChange={(event) => setModelForm((current) => ({ ...current, clearApiKey: event.target.checked, apiKey: "" }))} />{t("清除 API Key", "Clear API key")}</label>}
           </div>
-          <div className="dialog-actions"><button className="btn small" disabled={busy} onClick={() => setModelForm(emptyModelProvider())}>{t("取消", "Cancel")}</button><button className="btn small primary" disabled={busy} onClick={saveModelProvider}>{t("保存服务商", "Save provider")}</button></div>
+          <div className="dialog-actions"><button className="btn small" disabled={busy} onClick={() => { setModelForm(emptyModelProvider()); setConnectionTest({ status: "idle" }); }}>{t("取消", "Cancel")}</button><button className="btn small" disabled={busy || connectionTest.status === "pending"} onClick={testModelConnection}>{connectionTest.status === "pending" ? t("测试中…", "Testing…") : t("测试连接", "Test connection")}</button><button className="btn small primary" disabled={busy} onClick={saveModelProvider}>{t("保存服务商", "Save provider")}</button></div>
+          {connectionTest.status === "ok" && (
+            <p className="connection-test-result ok">✓ {t("连接成功", "Connection OK")} · {connectionTest.latencyMs} ms{connectionTest.note ? `（${connectionTest.note}）` : ""}</p>
+          )}
+          {connectionTest.status === "fail" && (
+            <p className="connection-test-result fail">{connectionTest.error}</p>
+          )}
         </div>
       </div>
 
@@ -1585,8 +1615,10 @@ function ExtensionsSection(): ReactElement {
   );
 }
 
-export function SettingsDialog({ open, preference, setPreference, accent, setAccent, sendKey, setSendKey, defaults, setDefaults, providers, models, onResetLayout, onClose }: {
+export function SettingsDialog({ open, initialTab, preference, setPreference, accent, setAccent, sendKey, setSendKey, defaults, setDefaults, providers, models, onResetLayout, onClose }: {
   open: boolean;
+  /** 深链入口：打开时定位到指定页签；不传则保持默认页签（外观） */
+  initialTab?: SettingsTab;
   preference: ThemePreference;
   setPreference(value: ThemePreference): void;
   accent: AccentPreference;
@@ -1613,6 +1645,11 @@ export function SettingsDialog({ open, preference, setPreference, accent, setAcc
     if (open && !dialog.open) dialog.showModal();
     if (!open && dialog.open) dialog.close();
   }, [open]);
+
+  // 深链：带 initialTab 打开时定位到对应页签
+  useEffect(() => {
+    if (open && initialTab) setActiveTab(initialTab);
+  }, [open, initialTab]);
 
   if (!open) return null;
 

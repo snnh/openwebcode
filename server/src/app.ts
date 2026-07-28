@@ -47,7 +47,8 @@ import type { ContextPolicyUpdate } from "./context/context-manager.js";
 import type { UsageLog } from "./usage-log.js";
 import type { ExtensionManager } from "./extensions/extension-manager.js";
 import type { ContentLensService } from "./extensions/content-lens.js";
-import { ProviderProfilesValidationError, type ProviderProfilesService, type WebCapability } from "./provider-profiles.js";
+import { ProviderProfilesValidationError, normalizeModel, type ProviderProfilesService, type WebCapability } from "./provider-profiles.js";
+import { testModelProviderConnection } from "./provider-connection-test.js";
 import type { ProviderProfilesRuntime } from "./provider-profiles-runtime.js";
 import type { EvalEvaluator } from "./eval/evaluator.js";
 
@@ -627,6 +628,13 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       .code(error instanceof ProviderProfilesValidationError ? 400 : 500)
       .send({ error: error instanceof Error ? error.message : String(error) });
     app.get("/api/provider-profiles", async () => profiles.view());
+    // 候选配置连接测试：不落盘，直接对表单值做最小化认证请求
+    app.post<{ Body: Record<string, unknown> }>("/api/provider-profiles/test", async (request, reply) => {
+      try {
+        const profile = normalizeModel(request.body ?? {});
+        return await testModelProviderConnection(profile);
+      } catch (error) { return profileFailure(reply, error); }
+    });
     app.post<{ Body: Record<string, unknown> }>("/api/provider-profiles/models", async (request, reply) => {
       try { return await profiles.upsertModel(undefined, request.body ?? {}); } catch (error) { return profileFailure(reply, error); }
     });

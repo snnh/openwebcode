@@ -544,6 +544,14 @@ export interface ProviderProfilesView {
   activeWeb: { search?: string; fetch?: string };
 }
 
+/** POST /api/provider-profiles/test 的返回：ok 时带延迟（429 限流视为可达并附 note），失败时给中文可操作错误 */
+export interface ProviderConnectionTestResult {
+  ok: boolean;
+  latencyMs?: number;
+  note?: string;
+  error?: string;
+}
+
 export interface SkillInfo {
   name: string;
   description: string;

@@ -102,7 +102,7 @@ function capabilitiesFor(provider: WebProviderType, requested?: unknown): WebCap
   return uniqueCapabilities(requested);
 }
 
-function normalizeModel(value: unknown): ModelProviderProfile {
+export function normalizeModel(value: unknown): ModelProviderProfile {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new ProviderProfilesValidationError("模型服务商配置必须是对象");
   const raw = value as Record<string, unknown>;
   const id = requireId(raw.id);

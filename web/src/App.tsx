@@ -26,7 +26,7 @@ import { isBusyState, JobHeader } from "./components/JobHeader";
 import { NewSessionDialog, type NewSessionValues } from "./components/NewSessionDialog";
 import type { PermissionRequest } from "./components/PermissionCard";
 import { SessionRail } from "./components/SessionRail";
-import { SettingsDialog } from "./components/SettingsDialog";
+import { SettingsDialog, type SettingsTab } from "./components/SettingsDialog";
 import { SteeringQueue } from "./components/SteeringQueue";
 import { Toast, type Notice } from "./components/Toast";
 import { useI18n } from "./i18n";
@@ -65,6 +65,12 @@ export function App(): ReactElement {
   const [currentId, setCurrentId] = useState<string>();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // 设置深链目标页签；undefined 表示默认页签（外观）
+  const [settingsTab, setSettingsTab] = useState<SettingsTab | undefined>();
+  const openSettings = useCallback((tab?: SettingsTab): void => {
+    setSettingsTab(tab);
+    setSettingsOpen(true);
+  }, []);
   // 覆盖层（Phase 5a）：命令面板 / Quick Open / 快捷键速查 / 只读代码视图浮层
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [quickOpenOpen, setQuickOpenOpen] = useState(false);
@@ -643,7 +649,7 @@ export function App(): ReactElement {
     toggleSidebar: toggleWorkbenchSidebar,
     toggleBottomPanel: layout.toggleBottomPanel,
     showView: showWorkbenchView,
-    openSettings: () => setSettingsOpen(true),
+    openSettings: () => openSettings(),
     newSession: () => setDialogOpen(true),
     importSession: () => importInput.current?.click(),
     deleteCurrentSession: () => { if (currentId) removeSession(currentId); },
@@ -711,7 +717,7 @@ export function App(): ReactElement {
         onImport={importSession}
         onToggleTheme={toggleTheme}
         onToggleCollapsed={layout.toggleSidebar}
-        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenSettings={() => openSettings()}
         onResize={layout.setSidebarWidth}
       />
     ) : (
@@ -742,7 +748,7 @@ export function App(): ReactElement {
             onShowView={showWorkbenchView}
             onShowCommands={() => setPaletteOpen(true)}
             onShowNotifications={openNotifications}
-            onOpenSettings={() => setSettingsOpen(true)}
+            onOpenSettings={() => openSettings()}
           />
         }
         sidebar={sidebar}
@@ -845,7 +851,7 @@ export function App(): ReactElement {
                 />
               </>
             ) : (
-              <EmptyState sessions={sessions.data ?? []} onSelect={selectSession} onCreate={() => setDialogOpen(true)} />
+              <EmptyState sessions={sessions.data ?? []} providers={providers.data} onSelect={selectSession} onCreate={() => setDialogOpen(true)} onOpenSettings={openSettings} />
             )}
             </section>
             {editorPane && currentId && !isMobile && (
@@ -923,9 +929,11 @@ export function App(): ReactElement {
         busy={create.isPending}
         onClose={() => setDialogOpen(false)}
         onCreate={(values) => create.mutate(values)}
+        onOpenSettings={(tab) => { setDialogOpen(false); openSettings(tab); }}
       />
       <SettingsDialog
         open={settingsOpen}
+        {...(settingsTab !== undefined ? { initialTab: settingsTab } : {})}
         preference={preference}
         setPreference={setPreference}
         accent={accent}
