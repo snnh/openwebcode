@@ -3,7 +3,7 @@
 // 退出码：agent.state=idle → 0；agent.error/连接失败 → 1；permission.request 且未带 --yolo → 2。
 
 import WebSocket from "ws";
-import { getServerVersion } from "./version.js";
+import { getServerVersion, readServerVersion } from "./version.js";
 
 interface CliOptions {
   prompt: string;
@@ -103,6 +103,8 @@ async function postJson(url: string, body: unknown, accessToken?: string): Promi
 }
 
 async function main(): Promise<void> {
+  // 解析并缓存版本号，使 --version/--help/usage 打印真实版本而非 0.0.0
+  await readServerVersion();
   const argv = process.argv.slice(2);
   // --version / -V：打印版本后立即退出，不连接 server
   if (argv.length === 1 && (argv[0] === "--version" || argv[0] === "-V")) {
