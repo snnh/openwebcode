@@ -1728,7 +1728,14 @@ export class AgentRunner {
           sessionId,
           payload: { toolCallId, result: { taskId: result.taskId, conclusion: result.conclusion, turns: result.turns, toolsUsed: result.toolsUsed } },
         });
-        return { type: "tool_result", toolCallId, content: result.conclusion, isError: false, subagentTaskIds: [result.taskId] };
+        return {
+          type: "tool_result",
+          toolCallId,
+          content: result.conclusion,
+          isError: false,
+          subagentTaskIds: [result.taskId],
+          subagentTasks: [{ taskId: result.taskId, index: 0, status: "done" }],
+        };
       } catch (error) {
         const content = error instanceof Error ? error.message : String(error);
         // 子代理已启动后失败（含中断）：补发 finished，与 spawn_swarm 单项失败语义一致
@@ -1736,12 +1743,23 @@ export class AgentRunner {
           this.events.publish({ source: "agent", type: "subagent.finished", sessionId, payload: { toolCallId, taskId, status: "failed", error: content } });
         }
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
-        return { type: "tool_result", toolCallId, content, isError: true };
+        // 子代理已启动：保留 taskId 与逐项终态，页面刷新后历史可还原（转录已落盘）
+        return {
+          type: "tool_result",
+          toolCallId,
+          content,
+          isError: true,
+          ...(taskId ? { subagentTaskIds: [taskId], subagentTasks: [{ taskId, index: 0, status: "failed" as const, error: content }] } : {}),
+        };
       }
     }
     if (name === "spawn_swarm") {
       this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
       this.state(sessionId, "tool_running");
+      // catch 分支需引用（中断/整体失败仍回报已启动项的 taskId 与逐项终态），声明在 try 之外
+      interface SwarmTaskStatus { taskId: string; index: number; status: "done" | "failed"; error?: string }
+      const subagentTaskIds: string[] = [];
+      const subagentTasks: SwarmTaskStatus[] = [];
       try {
         const session = await this.sessions.get(sessionId);
         if (!session) throw new Error("Session not found");
@@ -1781,7 +1799,6 @@ export class AgentRunner {
         const subUsageContext = new ContextManager(this.sessions.contextRoot(sessionId));
         const contextRoot = this.sessions.contextRoot(sessionId);
         interface SwarmItemOutcome { ok: boolean; conclusion?: string; error?: string }
-        const subagentTaskIds: string[] = [];
         const runOne = async (prompt: string, index: number): Promise<SwarmItemOutcome> => {
           const swarm = { index: index + 1, total: prompts.length };
           const effective = itemDefinitions.get(index) ?? definition;
@@ -1829,6 +1846,7 @@ export class AgentRunner {
               sessionId,
               payload: { toolCallId, taskId: result.taskId, status: "done", turns: result.turns, toolsUsed: result.toolsUsed, swarm },
             });
+            subagentTasks.push({ taskId, index, status: "done" });
             return { ok: true, conclusion: result.conclusion };
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
@@ -1838,6 +1856,8 @@ export class AgentRunner {
               sessionId,
               payload: { toolCallId, taskId, status: "failed", error: message, swarm },
             });
+            // 启动前失败的项没有 taskId/转录，不进入逐项终态
+            if (taskId) subagentTasks.push({ taskId, index, status: "failed", error: message });
             return { ok: false, error: message };
           }
         };
@@ -1873,11 +1893,20 @@ export class AgentRunner {
           content: bounded.content,
           isError: failed === outcomes.length,
           subagentTaskIds: subagentTaskIds.filter((id): id is string => typeof id === "string" && id.length > 0),
+          subagentTasks: [...subagentTasks].sort((a, b) => a.index - b.index),
         };
       } catch (error) {
         const content = error instanceof Error ? error.message : String(error);
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
-        return { type: "tool_result", toolCallId, content, isError: true };
+        // 中断/整体失败仍回报已启动子代理的 taskId 与逐项终态，页面刷新后历史可还原
+        const ids = subagentTaskIds.filter((id): id is string => typeof id === "string" && id.length > 0);
+        return {
+          type: "tool_result",
+          toolCallId,
+          content,
+          isError: true,
+          ...(ids.length > 0 ? { subagentTaskIds: ids, subagentTasks: [...subagentTasks].sort((a, b) => a.index - b.index) } : {}),
+        };
       }
     }
     if (name === "todo_write") {

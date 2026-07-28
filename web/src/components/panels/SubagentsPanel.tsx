@@ -33,7 +33,7 @@ export function groupSubagentRuns(runs: Record<string, LiveSubagentRun>): Subage
   return [...groups.values()].reverse();
 }
 
-/** 单个子代理运行行（状态徽标 + 实时轮次/工具 + 完成后的转录折叠）；子代理面板与主区标签视图共用 */
+/** 单个子代理运行行（状态徽标 + 实时轮次/工具 + 终态（完成/失败）后的转录折叠）；子代理面板与主区标签视图共用 */
 export function SubagentRunRow({ run, sessionId, onOpenInTab }: {
   run: LiveSubagentRun;
   sessionId: string;
@@ -53,7 +53,7 @@ export function SubagentRunRow({ run, sessionId, onOpenInTab }: {
           {t("在标签中打开", "Open in tab")}
         </button>
       )}
-      {run.status === "done" && (
+      {(run.status === "done" || run.status === "failed") && (
         <SubagentTranscriptDetails sessionId={sessionId} taskId={run.taskId} {...(run.swarm ? { index: run.swarm.index } : {})} />
       )}
     </li>

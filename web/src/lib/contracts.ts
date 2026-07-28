@@ -83,6 +83,8 @@ export interface MessageContent {
   data?: string;
   /** spawn_task/spawn_swarm 工具结果携带的子代理转录 id 列表 */
   subagentTaskIds?: string[];
+  /** spawn_task/spawn_swarm 逐项终态（index 显式对应 swarm item 序号）；优先于 isError 启发式 */
+  subagentTasks?: Array<{ taskId: string; index: number; status: "done" | "failed"; error?: string }>;
 }
 
 /** GET /api/sessions/:id/subagents/:taskId 响应：runSubAgent 落盘的子代理转录 */
