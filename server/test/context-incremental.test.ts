@@ -123,6 +123,27 @@ describe("incremental context build", () => {
     expect(isPathExcluded("src/a.ts", ["*.log", "docs/**"])).toBe(false);
     expect(isPathExcluded("src/a.ts", [])).toBe(false);
   });
+
+  it("does not pollute the cached view when callers replace returned messages/content arrays", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-view-isolation-"));
+    temporary.push(root);
+    const manager = new ContextManager(root);
+    const messages = [text("hello"), toolResult("world")];
+    const first = await manager.buildView(messages);
+    // 调用方（扩展 transform / agent-runner）整体替换返回数组、消息或内容数组，
+    // 都不得污染缓存主本；下一次增量构建必须产出未受影响的视图。
+    first.messages.length = 0;
+    const second = await manager.buildView(messages);
+    expect(second.messages).toHaveLength(2);
+    second.messages[0]!.content = [];
+    second.messages[1]! = { ...second.messages[1]!, content: [] };
+    messages.push(text("next"));
+    const third = await manager.buildView(messages);
+    expect(third.stats.incremental).toBe(true);
+    expect(third.messages).toHaveLength(3);
+    expect(third.messages[0]!.content[0]).toMatchObject({ type: "text", text: "hello" });
+    expect(third.messages[1]!.content[0]).toMatchObject({ type: "tool_result", content: "world" });
+  });
 });
 
 describe("context selection REST", () => {
