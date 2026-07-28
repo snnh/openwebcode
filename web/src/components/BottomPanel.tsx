@@ -48,7 +48,7 @@ function store(key: string, value: string): void {
   }
 }
 
-export function BottomPanel({ sessionId, session, running, evalEnabled = false, windowUsage, latestUsage, subagentRuns, onNotice, open, onOpenChange, onOpenDiff }: {
+export function BottomPanel({ sessionId, session, running, evalEnabled = false, windowUsage, latestUsage, subagentRuns, onNotice, open, onOpenChange, onOpenDiff, onOpenSubagentTab }: {
   sessionId?: string;
   session?: SessionDetail;
   running: boolean;
@@ -65,6 +65,8 @@ export function BottomPanel({ sessionId, session, running, evalEnabled = false, 
   onOpenChange(open: boolean): void;
   /** 0.5.0 Phase 1b：检查点对比一键在统一 diff 视图中打开（hunk 级恢复） */
   onOpenDiff?(spec: DiffSpec): void;
+  /** 桌面端子代理「在标签中打开」：按 toolCallId 在主区开标签并聚焦（移动端不传） */
+  onOpenSubagentTab?: ((toolCallId: string) => void) | undefined;
 }): ReactElement {
   const { t } = useI18n();
   const [tab, setTab] = useState<PanelTab>(() => {
@@ -139,7 +141,7 @@ export function BottomPanel({ sessionId, session, running, evalEnabled = false, 
           <Suspense fallback={null}>
           {tab === "context" && <ContextPanel sessionId={sessionId} session={session} running={running} windowUsage={windowUsage} latestUsage={latestUsage} onNotice={onNotice} />}
           {tab === "timeline" && <TimelinePanel sessionId={sessionId} running={running} onNotice={onNotice} onOpenDiff={onOpenDiff} />}
-          {tab === "subagents" && <SubagentsPanel sessionId={sessionId} runs={subagentRuns ?? {}} />}
+          {tab === "subagents" && <SubagentsPanel sessionId={sessionId} runs={subagentRuns ?? {}} {...(onOpenSubagentTab ? { onOpenInTab: onOpenSubagentTab } : {})} />}
           {tab === "sandbox" && <SandboxPanel session={session} />}
           {tab === "cost" && <CostPanel />}
           {tab === "perf" && <PerfPanel sessionId={sessionId} />}

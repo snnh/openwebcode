@@ -13,6 +13,7 @@ import { deriveInputHistory } from "./lib/input-history";
 import { useTheme } from "./theme";
 import { useAgentRun } from "./hooks/use-agent-run";
 import { useLiveSubagents } from "./hooks/use-live-subagents";
+import { useSubagentTabs } from "./hooks/use-subagent-tabs";
 import { deriveSubagentRunsFromMessages, mergeSubagentRuns } from "./lib/subagent-runs";
 import { useSessionEventStream } from "./hooks/use-session-event-stream";
 import { useStreamBuffers } from "./hooks/use-stream-buffers";
@@ -24,6 +25,8 @@ import { Composer } from "./components/Composer";
 import type { PendingImage } from "./components/Composer";
 import { EmptyState } from "./components/EmptyState";
 import { ExecutionTrack } from "./components/ExecutionTrack";
+import { SubagentTabStrip } from "./components/SubagentTabStrip";
+import { SubagentTabView } from "./components/SubagentTabView";
 import { isBusyState, JobHeader } from "./components/JobHeader";
 import { NewSessionDialog, type NewSessionValues } from "./components/NewSessionDialog";
 import { ConfirmDeleteDialog } from "./components/ConfirmDeleteDialog";
@@ -120,8 +123,10 @@ export function App(): ReactElement {
   const lastStatesRef = useRef<Record<string, string>>({});
   // agent.error 除了短暂 toast，也保留在当前会话的轨道中；下一次真正开始运行时再清除。
   const [runFailures, setRunFailures] = useState<Record<string, AgentErrorPayload>>({});
+  // 主区子代理标签（0.7.x）：按会话键控，subagent.started 自动创建（不抢焦点）
+  const { tabsBySession: subagentTabs, selectedBySession: selectedSubagentTabs, openFromStarted: openSubagentTabFromStarted, openTab: focusSubagentTab, selectTab: selectSubagentTab, closeTab: closeSubagentTab, removeSession: removeSubagentTabsSession } = useSubagentTabs();
   // 子代理运行状态：sessionId → taskId → run；终态保留（子代理面板需要会话级历史），按会话封顶
-  const { liveSubagents, applyEvent: applySubagentEvent, removeSession: removeSubagentSession } = useLiveSubagents({ dropOnToolEnd: false });
+  const { liveSubagents, applyEvent: applySubagentEvent, removeSession: removeSubagentSession } = useLiveSubagents({ dropOnToolEnd: false, onStarted: openSubagentTabFromStarted });
   // Problems 视图角标：diagnostics.updated 到达时记录未查看失败数，打开 Problems 视图清除
   const [problemsBadges, setProblemsBadges] = useState<Record<string, number>>({});
   const [notice, setNotice] = useState<Notice>();
@@ -372,6 +377,21 @@ export function App(): ReactElement {
     () => mergeSubagentRuns(currentId ? liveSubagents[currentId] ?? {} : {}, deriveSubagentRunsFromMessages(displaySession?.messages ?? [])),
     [currentId, liveSubagents, displaySession],
   );
+  // 当前会话选中的子代理标签（undefined = 「对话」）；标签列表按会话隔离，切换会话自动回对话
+  const currentSubagentTabs = currentId ? subagentTabs[currentId] ?? [] : [];
+  const selectedSubagentTab = currentId ? selectedSubagentTabs[currentId] : undefined;
+  // 子代理面板「在标签中打开」：从合并运行记录取标签字段，创建并聚焦（关闭不影响运行本身）
+  const openSubagentTab = useCallback((toolCallId: string): void => {
+    if (!currentId) return;
+    const run = Object.values(subagentRuns).find((entry) => entry.toolCallId === toolCallId);
+    if (!run) return;
+    focusSubagentTab(currentId, {
+      toolCallId,
+      prompt: run.prompt,
+      ...(run.agent ? { agent: run.agent } : {}),
+      ...(run.swarm ? { swarmTotal: run.swarm.total } : {}),
+    });
+  }, [currentId, subagentRuns, focusSubagentTab]);
   const currentState = currentRun?.state ?? (currentId ? agentStates[currentId] : undefined);
   const running = Boolean(stream[currentId ?? ""]) || isBusyState(currentState);
   // Composer 输入历史：本会话已发送的用户消息（最新在前），↑/↓ 回查
@@ -627,6 +647,7 @@ export function App(): ReactElement {
         setUsages(removeKey);
         setRunFailures(removeKey);
         removeSubagentSession(id);
+        removeSubagentTabsSession(id);
         setProblemsBadges(removeKey);
         delete lastStatesRef.current[id];
         discardStream(id);
@@ -861,6 +882,15 @@ export function App(): ReactElement {
                   checkpointPending={manualSnapshot.isPending}
                   running={running}
                 />
+                {!isMobile && (
+                  <SubagentTabStrip
+                    tabs={currentSubagentTabs}
+                    runs={subagentRuns}
+                    selected={selectedSubagentTab}
+                    onSelect={(toolCallId) => selectSubagentTab(current.id, toolCallId)}
+                    onClose={(toolCallId) => closeSubagentTab(current.id, toolCallId)}
+                  />
+                )}
                 {todos.data && todos.data.length > 0 && (
                   <details className="todo-panel" open>
                     <summary>{t("任务清单", "Task list")} · {todos.data.filter((item) => item.status === "done").length}/{todos.data.length}</summary>
@@ -872,6 +902,8 @@ export function App(): ReactElement {
                     ))}</ul>
                   </details>
                 )}
+                {/* 对话/子代理标签内容互换：ExecutionTrack 保持挂载（hidden 隐藏），滚动与展开状态不丢 */}
+                <div className="main-tab-panel" role="tabpanel" aria-label={t("对话", "Chat")} hidden={selectedSubagentTab !== undefined}>
                 <ExecutionTrack
                   session={displaySession ?? current}
                   contentLens={extensions.data?.find((extension) => extension.id === "content-lens" && extension.enabled)}
@@ -895,6 +927,12 @@ export function App(): ReactElement {
                   onLoadMore={loadMoreMessages}
                   loadingMore={loadingMore}
                 />
+                </div>
+                {selectedSubagentTab !== undefined && (
+                  <div className="main-tab-panel" role="tabpanel" aria-label={t("子代理", "Subagent")}>
+                    <SubagentTabView sessionId={current.id} toolCallId={selectedSubagentTab} runs={subagentRuns} />
+                  </div>
+                )}
                 {queue.data?.some((item) => item.status === "queued") && (
                   <SteeringQueue
                     items={queue.data}
@@ -994,6 +1032,7 @@ export function App(): ReactElement {
             open={layout.bottomOpen}
             onOpenChange={layout.setBottomOpen}
             onOpenDiff={openDiff}
+            {...(!isMobile ? { onOpenSubagentTab: openSubagentTab } : {})}
           />
         }
         statusBar={current && (
