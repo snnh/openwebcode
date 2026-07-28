@@ -109,4 +109,7 @@ export const DEFAULT_KEYBINDINGS: readonly Keybinding[] = [
   // 统一 diff 视图（0.5.0 Phase 1b）：global 使 Monaco DiffEditor 聚焦时同样生效
   { command: "workbench.action.diffAcceptHunk", key: "mod+alt+a", global: true, when: "diffOpen" },
   { command: "workbench.action.diffRejectHunk", key: "mod+alt+r", global: true, when: "diffOpen" },
+  // Esc 中断运行中任务：非 global，输入框聚焦（含 Composer 补全弹层，自行处理 Esc）不触发；
+  // 浮层/编辑器/diff 打开或权限卡待决时 Esc 各有其主，不抢。
+  { command: "session.abort", key: "escape", when: "running !dialogOpen !editorOpen !diffOpen !permissionPending" },
 ];

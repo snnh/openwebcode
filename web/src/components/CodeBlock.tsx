@@ -1,9 +1,14 @@
 import { Children, isValidElement, useEffect, useState, type ReactElement, type ReactNode } from "react";
 import { highlightCode } from "../highlight";
+import { writeClipboard } from "../lib/clipboard";
+import { Icon } from "./Icon";
+import { useI18n } from "../i18n";
 
-/** 代码块：高亮器就绪前渲染纯文本，就绪后注入双主题高亮 HTML */
+/** 代码块：高亮器就绪前渲染纯文本，就绪后注入双主题高亮 HTML；悬停显示复制按钮 */
 export function CodeBlock({ lang, code }: { lang?: string; code: string }): ReactElement {
+  const { t } = useI18n();
   const [html, setHtml] = useState<string>();
+  const [copied, setCopied] = useState(false);
   useEffect(() => {
     let alive = true;
     setHtml(undefined);
@@ -12,8 +17,28 @@ export function CodeBlock({ lang, code }: { lang?: string; code: string }): Reac
     });
     return () => { alive = false; };
   }, [code, lang]);
-  if (html) return <div className="code-block" dangerouslySetInnerHTML={{ __html: html }} />;
-  return <pre className="code-block code-plain"><code>{code}</code></pre>;
+  return (
+    <div className="code-block-wrap">
+      {html
+        ? <div className="code-block" dangerouslySetInnerHTML={{ __html: html }} />
+        : <pre className="code-block code-plain"><code>{code}</code></pre>}
+      <button
+        type="button"
+        className="code-copy-btn"
+        aria-label={copied ? t("已复制", "Copied") : t("复制代码", "Copy code")}
+        onClick={() => {
+          void writeClipboard(code).then((ok) => {
+            if (!ok) return;
+            setCopied(true);
+            window.setTimeout(() => setCopied(false), 1500);
+          });
+        }}
+      >
+        <Icon name={copied ? "check" : "copy"} size={12} />
+        {copied ? t("已复制", "Copied") : t("复制", "Copy")}
+      </button>
+    </div>
+  );
 }
 
 export function extractCode(children: ReactNode): { lang?: string; code: string } {

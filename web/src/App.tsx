@@ -6,6 +6,8 @@ import type { AppEvent, BackgroundTaskInfo, ChatMessage, ContextUsage, ContextWa
 import { deriveWindowInfo } from "./lib/context-window";
 import { formatCurrency } from "./lib/format";
 import { loadSendKey, loadSessionDefaults, saveSendKey, saveSessionDefaults, type SendKey, type SessionDefaults } from "./lib/prefs";
+import { loadDraft, pruneDrafts, saveDraft } from "./lib/drafts";
+import { deriveInputHistory } from "./lib/input-history";
 import { useTheme } from "./theme";
 import { useAgentRun } from "./hooks/use-agent-run";
 import { useLiveSubagents } from "./hooks/use-live-subagents";
@@ -316,7 +318,7 @@ export function App(): ReactElement {
         }
   }, [applyRunEvent, applySubagentEvent, clearStream, currentId, flushStreamBuffers, notify, pushEventNotification, queryClient, queueStreamDelta, sessions.data, t]);
   // 全局订阅：服务端在未传 sessionId 时全量推送，handler 按 event.sessionId 分发。
-  useSessionEventStream({ onEvent: handleSessionEvent, onDisconnect: finishBufferedStreams });
+  const { reconnecting } = useSessionEventStream({ onEvent: handleSessionEvent, onDisconnect: finishBufferedStreams });
 
   const current = detail.data;
   // 0.5.0 Phase 2：合并分页加载的更早消息，形成完整显示会话
@@ -332,6 +334,8 @@ export function App(): ReactElement {
   );
   const currentState = currentRun?.state ?? (currentId ? agentStates[currentId] : undefined);
   const running = Boolean(stream[currentId ?? ""]) || isBusyState(currentState);
+  // Composer 输入历史：本会话已发送的用户消息（最新在前），↑/↓ 回查
+  const inputHistory = useMemo(() => deriveInputHistory(displaySession?.messages ?? []), [displaySession]);
   const runningIds = useMemo(
     () => new Set(Object.entries(agentStates).filter(([, state]) => isBusyState(state)).map(([id]) => id)),
     [agentStates],
@@ -425,6 +429,24 @@ export function App(): ReactElement {
   const setDraft = (value: string): void => {
     if (currentId) setDrafts((prev) => ({ ...prev, [currentId]: value }));
   };
+
+  // 草稿持久化（localStorage `owc-draft-<id>`）：内存 drafts 的全量镜像，发送后清空条目
+  useEffect(() => {
+    for (const [sessionId, value] of Object.entries(drafts)) saveDraft(sessionId, value);
+  }, [drafts]);
+  // 选中会话时：内存无草稿则从 localStorage 恢复（刷新/重开不丢未发送内容）
+  useEffect(() => {
+    if (!currentId) return;
+    setDrafts((previous) => {
+      if (currentId in previous) return previous;
+      const saved = loadDraft(currentId);
+      return saved === undefined ? previous : { ...previous, [currentId]: saved };
+    });
+  }, [currentId]);
+  // 会话列表加载后修剪已删除会话残留的草稿键
+  useEffect(() => {
+    if (sessions.data) pruneDrafts(new Set(sessions.data.map((session) => session.id)));
+  }, [sessions.data]);
 
   const costSummary = useMemo(() => {
     const ledger = contextView.data?.ledger;
@@ -583,7 +605,9 @@ export function App(): ReactElement {
     editorOpen: Boolean(editorPane) && !isMobile,
     // diff 视图开合（0.5.0 Phase 1b）：hunk 接受/拒绝命令的 when 条件
     diffOpen: Boolean(diffPane) && !isMobile,
-  }), [currentId, running, draft, sessions.data, dialogOpen, settingsOpen, paletteOpen, quickOpenOpen, shortcutsOpen, notificationsOpen, codeOverlayPath, editorPane, diffPane, isMobile]);
+    // 权限卡待决：Esc 中断等全局键位不抢占权限响应焦点
+    permissionPending: mergedPermissions.length > 0,
+  }), [currentId, running, draft, sessions.data, dialogOpen, settingsOpen, paletteOpen, quickOpenOpen, shortcutsOpen, notificationsOpen, codeOverlayPath, editorPane, diffPane, isMobile, mergedPermissions]);
 
   const stepSession = useCallback((delta: number): void => {
     const list = sessions.data ?? [];
@@ -798,6 +822,7 @@ export function App(): ReactElement {
                   model={model}
                   models={models.data ?? []}
                   providers={providers.data ?? []}
+                  history={inputHistory}
                   pdfToImageExtension={extensions.data?.find((extension) => extension.id === "pdf-to-image")}
                   pdfToImageStatus={extensions.isPending ? "loading" : extensions.isError ? "unavailable" : "ready"}
                   imageCapabilitiesReady={!models.isPending}
@@ -961,6 +986,12 @@ export function App(): ReactElement {
         )}
       </Suspense>
       {notice && <Toast notice={notice} onDismiss={() => setNotice(undefined)} />}
+      {/* 事件流断线重连提示：仅展示不阻塞交互，恢复后自动消失 */}
+      {reconnecting && (
+        <div className="connection-banner" role="status">
+          {t("连接中断，正在重连…", "Connection lost, reconnecting…")}
+        </div>
+      )}
     </>
   );
 }
