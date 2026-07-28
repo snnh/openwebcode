@@ -75,6 +75,24 @@ describe("SessionRail 重命名与置顶", () => {
     expect(screen.getByText("旧标题")).toBeInTheDocument();
   });
 
+  it("清空标题提交：发送空串以清除标题覆盖（服务端回落派生标题）", () => {
+    const props = renderRail([makeSession("a", "自定义标题")]);
+    fireEvent.click(screen.getByRole("button", { name: "重命名 自定义标题" }));
+    const input = screen.getByRole("textbox", { name: "重命名会话" });
+    fireEvent.change(input, { target: { value: "   " } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(props.onRename).toHaveBeenCalledWith("a", "");
+    expect(screen.queryByRole("textbox", { name: "重命名会话" })).toBeNull();
+  });
+
+  it("未编辑直接提交（blur）不回调", () => {
+    const props = renderRail([makeSession("a", "旧标题")]);
+    fireEvent.click(screen.getByRole("button", { name: "重命名 旧标题" }));
+    const input = screen.getByRole("textbox", { name: "重命名会话" });
+    fireEvent.blur(input);
+    expect(props.onRename).not.toHaveBeenCalled();
+  });
+
   it("双击标题进入重命名", () => {
     renderRail([makeSession("a", "旧标题")]);
     fireEvent.doubleClick(screen.getByText("旧标题"));

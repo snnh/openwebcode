@@ -23,6 +23,9 @@ export interface CreateSessionInput {
 }
 
 export class SessionStore {
+  /** 首条用户消息派生标题时回调（"New session" → 派生标题）；由装配层接线为 session.updated 事件 */
+  onDerivedTitle?: (meta: SessionMeta) => void;
+
   constructor(private readonly root: string) {}
 
   async initialize(): Promise<void> {
@@ -151,11 +154,16 @@ export class SessionStore {
     await appendFile(this.messagesPath(sessionId), `${JSON.stringify(message)}\n`, "utf8");
     meta.updatedAt = now;
     meta.activeLeafId = message.id;
+    let titleDerived = false;
     if (meta.title === "New session" && role === "user") {
       const firstText = content.find((block) => block.type === "text");
-      if (firstText?.type === "text") meta.title = firstText.text.slice(0, 80);
+      if (firstText?.type === "text") {
+        meta.title = firstText.text.slice(0, 80);
+        titleDerived = true;
+      }
     }
     await this.writeMeta(meta);
+    if (titleDerived) this.onDerivedTitle?.(meta);
     return message;
   }
 
@@ -178,7 +186,8 @@ export class SessionStore {
     return meta;
   }
 
-  /** 会话显示属性：title 为用户覆盖（空串清除覆盖并回落到派生标题），pinned 控制列表置顶（false 从 meta 删除）。 */
+  /** 会话显示属性：title 为用户覆盖（空串清除覆盖并回落到派生标题），pinned 控制列表置顶（false 从 meta 删除）。
+   *  纯展示属性：不更新 updatedAt，避免重命名/置顶改变列表排序。 */
   async updateDisplay(id: string, update: { title?: string; pinned?: boolean }): Promise<SessionMeta> {
     const meta = await this.readMeta(id);
     if (update.title !== undefined) {
@@ -192,7 +201,6 @@ export class SessionStore {
       if (update.pinned) meta.pinned = true;
       else delete meta.pinned;
     }
-    meta.updatedAt = new Date().toISOString();
     await this.writeMeta(meta);
     return meta;
   }

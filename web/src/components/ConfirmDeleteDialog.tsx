@@ -35,15 +35,15 @@ export function ConfirmDeleteDialog({ open, title, running = false, onCancel, on
       }}
     >
       <h2>{t("删除会话", "Delete session")}</h2>
-      <p>
+      <p>{t(`删除会话「${title}」？`, `Delete session “${title}”?`)}</p>
+      <p className="confirm-warning">
         {running
-          ? t(`该会话正在运行。删除会话「${title}」？`, `This session is running. Delete session “${title}”?`)
-          : t(`删除会话「${title}」？`, `Delete session “${title}”?`)}
+          ? t("该会话正在运行，服务端会拒绝删除。请先在会话中中断任务，再删除。", "This session is running and the server will reject the delete. Stop the job first, then delete.")
+          : t("删除后不可恢复。", "This cannot be undone.")}
       </p>
-      <p className="confirm-warning">{t("删除后不可恢复。", "This cannot be undone.")}</p>
       <div className="dialog-actions">
         <button type="button" className="btn" autoFocus onClick={onCancel}>{t("取消", "Cancel")}</button>
-        <button type="button" className="btn danger" onClick={onConfirm}>{t("删除", "Delete")}</button>
+        <button type="button" className="btn danger" disabled={running} title={running ? t("请先中断运行中的任务", "Stop the running job first") : undefined} onClick={onConfirm}>{t("删除", "Delete")}</button>
       </div>
     </dialog>
   );
