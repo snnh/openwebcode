@@ -26,7 +26,7 @@ Windows：重新下载 MSI 双击安装（major upgrade 原地升级，用户数
 
 ### Q: 怎么知道有没有新版本？
 
-设置 → **服务信息** 会显示当前 Server/Core 版本。开启设置 → **更新检查** 后，服务会周期性查询 GitHub Releases 并在「服务信息」静默提示最新版本与下载链接（默认关闭，不发起外部请求）。命令行可用 `owc --version` 查看服务版本。发现新版本后可直接在设置页一键在线更新；Linux 也可用一行命令完成安装/更新：`curl -fsSL https://raw.githubusercontent.com/snnh/openwebcode/main/packaging/install-online.sh | bash`。
+设置 → **服务信息** 会显示当前 Server/Core 版本。开启设置 → **更新检查** 后，服务会周期性查询 GitHub Releases 并在「服务信息」静默提示最新版本与下载链接（默认关闭，不发起外部请求）；发现新版本时通知中心也会出现按版本去重的提醒条目，点击直达服务信息。命令行可用 `owc --version` 查看服务版本。发现新版本后可直接在设置页一键在线更新；Linux 也可用一行命令完成安装/更新：`curl -fsSL https://raw.githubusercontent.com/snnh/openwebcode/main/packaging/install-online.sh | bash`。
 
 ### Q: 能自定义系统提示词吗？
 
@@ -45,6 +45,7 @@ Windows：重新下载 MSI 双击安装（major upgrade 原地升级，用户数
 ### Q: 模型列表是空的 / 刷新不出来？
 
 - 检查服务商是否已启用，以及接口类型、Base URL 与 API Key 是否正确
+- 用服务商表单里的「测试连接」按钮快速定位：错误会按认证失败、URL 错误、无法连接、限流分类给出中文提示（5 秒超时）
 - 部分 provider（如 Ollama 本地）不实现 `/v1/models`，可直接手填模型 id（如 `qwen2.5-coder:14b`），上下文窗口/定价等元数据可后补
 - 拉取失败不阻塞使用，保守默认 + UI 提示完善
 
@@ -69,6 +70,10 @@ Windows：重新下载 MSI 双击安装（major upgrade 原地升级，用户数
 ### Q: 对话支持 Markdown 和数学公式吗？
 
 支持。正文与思考块都支持 GFM Markdown（表格、任务列表、删除线、代码块等）；行内公式写 `$...$`，块级公式写成独占一段的 `$$...$$`，由 KaTeX 渲染。思考块默认折叠且颜色比正文更浅。
+
+### Q: agent 运行报错（认证失败 / 限流 / 过载）怎么办？
+
+错误事件会分类为 authentication / permission / not_found / invalid_request / rate_limit / overloaded，运行错误卡按类型给出可操作提示，并附设置深链按钮（认证问题直达「服务设置」，模型/请求无效直达「模型目录」）。限流、过载等可重试错误会提供「重试」按钮，一键重发上一条用户消息；toast 只显示一行摘要，完整信息看错误卡。
 
 ### Q: 缓存命中省钱吗？
 
@@ -106,7 +111,7 @@ Windows：会话创建选 `WSB` 沙盒模式——一会话一 VM，关闭即蒸
 
 ### Q: 上下文满了怎么办？
 
-三层防御自动介入：
+会话头部实时显示窗口占用（`45k/128k · 38%`，≥70% 变黄、≥85% 变红）与缓存命中；上下文面板顶部「上下文窗口」区可查看分段 token 归因与水位提示。接近上限时三层防御自动介入：
 
 1. **结果预算截断**：bash 输出 8k、read 16k、grep 4k，超出截断 + artifact 指针
 2. **滚动驱逐**：默认 lag=1，每轮完成即把 N-1 轮的 toolcall 压成一行占位符（`[tool: bash "npm test" → exit 0, 2.1k tokens, artifact:a3f2]`），全量落盘 artifacts/
@@ -186,7 +191,7 @@ owc run "跑测试并修复失败的用例" --cwd . --yolo --json | tee events.n
 
 - `--yolo`：权限请求自动 allow（CI 不能交互）
 - `--json`：NDJSON 事件流，便于解析
-- 退出码：`0` 完成 / `1` agent 错误 / `2` 权限拒绝（非 `--yolo` 时遇到权限请求即退出）
+- 退出码：`0` 完成 / `1` agent 错误或参数错误 / `2` 权限拒绝（非 `--yolo` 时遇到权限请求即退出）
 
 ### Q: `owc run` 会创建新会话吗？
 
@@ -237,7 +242,7 @@ owc run "跑测试并修复失败的用例" --cwd . --yolo --json | tee events.n
 
 ### Q: WebSocket 断线重连后事件丢失？
 
-不会。重连时带 `after=<lastSeq>` 参数补拉。仅当 `after` 早于服务端历史缓冲区最旧事件（默认保留 1000 条）时返回 `resync.required`，客户端走 REST 全量重取。
+不会。断连期间界面顶部显示「连接中断，正在重连…」横幅；重连时带 `after=<lastSeq>` 参数补拉。仅当 `after` 早于服务端历史缓冲区最旧事件（默认保留 1000 条）时返回 `resync.required`，客户端走 REST 全量重取。
 
 ### Q: 模型定价新增时报 `effectiveFrom must be a valid YYYY-MM-DD date`？
 
