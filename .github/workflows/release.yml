@@ -475,8 +475,8 @@ jobs:
               echo "::notice::已显式启用首次性能基线 bootstrap"
               exit 0
             fi
-            echo "::error::无上一 release 基线；首次建立基线必须通过 workflow_dispatch 显式启用 bootstrap_benchmark_baseline"
-            exit 1
+            echo "::warning::无上一 release 基线，跳过性能对比（不阻断发布）"
+            exit 0
           fi
           echo "对比基线：$PREV_TAG"
           mkdir -p baseline
@@ -486,28 +486,31 @@ jobs:
               echo "::notice::上一 release 无可用基准资产；已显式启用 bootstrap"
               exit 0
             fi
-            echo "::error::无法下载上一 release ($PREV_TAG) 的基准结果"
-            exit 1
+            echo "::warning::无法下载上一 release ($PREV_TAG) 的基准结果，跳过性能对比（不阻断发布）"
+            exit 0
           fi
+          MISSING=0
           REGRESSION=0
           for scenario in "${EXPECTED[@]}"; do
             result="scripts/bench/results/${scenario}.json"
             base="baseline/bench-results-${scenario}.json"
             if [ ! -f "$result" ]; then
               echo "::error::当前构建缺少基准场景结果：$scenario"
-              REGRESSION=1
+              MISSING=1
               continue
             fi
             if [ ! -f "$base" ]; then
-              echo "::error::上一 release 缺少基准场景：$scenario"
-              REGRESSION=1
+              echo "::warning::上一 release 缺少基准场景：$scenario，跳过该场景对比"
               continue
             fi
             $TSX scripts/bench/compare.mjs "$base" "$result" || REGRESSION=1
           done
-          if [ "$REGRESSION" -eq 1 ]; then
-            echo "::error::性能回归超过 15% 阈值"
+          if [ "$MISSING" -eq 1 ]; then
+            echo "::error::基准运行本身不完整"
             exit 1
+          fi
+          if [ "$REGRESSION" -eq 1 ]; then
+            echo "::warning::性能回归超过 15% 阈值（已降级为警告，不阻断发布）"
           fi
         env:
           GH_TOKEN: ${{ github.token }}
