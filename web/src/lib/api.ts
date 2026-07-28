@@ -1,4 +1,4 @@
-import type { AgentRun, BackgroundTaskInfo, CatalogSyncStatus, Checkpoint, CompletePathResponse, ContextView, CostReport, ExtensionInfo, FileEntry, ManagedWorkspaceCapability, ManagedWorkspaceSyncPreview, ManagedWorkspaceSyncResult, MessageAttachment, MessagesPage, ModelProfile, PendingPermission, PricingDocument, ProviderConcurrencyStats, ProviderProfilesView, SandboxCapabilities, SandboxMode, Session, SessionDetail, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo, SubagentTranscript, SyncResult, TodoItem, WebCapability } from "./contracts";
+import type { AgentRun, BackgroundTaskInfo, CatalogSyncStatus, Checkpoint, CompletePathResponse, ContextView, CostReport, ExtensionInfo, FileEntry, ManagedWorkspaceCapability, ManagedWorkspaceSyncPreview, ManagedWorkspaceSyncResult, MessageAttachment, MessagesPage, ModelProfile, PendingPermission, PricingDocument, ProviderConcurrencyStats, ProviderConnectionTestResult, ProviderProfilesView, SandboxCapabilities, SandboxMode, Session, SessionDetail, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo, SubagentTranscript, SyncResult, TodoItem, WebCapability } from "./contracts";
 
 export class ApiError extends Error {
   constructor(readonly status: number, message: string) {
@@ -133,6 +133,7 @@ export const api = {
   createModelProvider: (body: Record<string, unknown>) => request<ProviderProfilesView>("/api/provider-profiles/models", { method: "POST", body: JSON.stringify(body) }),
   saveModelProvider: (id: string, body: Record<string, unknown>) => request<ProviderProfilesView>(`/api/provider-profiles/models/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteModelProvider: (id: string) => request<ProviderProfilesView>(`/api/provider-profiles/models/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  testModelProvider: (body: Record<string, unknown>) => request<ProviderConnectionTestResult>("/api/provider-profiles/test", { method: "POST", body: JSON.stringify(body) }),
   createWebProvider: (body: Record<string, unknown>) => request<ProviderProfilesView>("/api/provider-profiles/web", { method: "POST", body: JSON.stringify(body) }),
   saveWebProvider: (id: string, body: Record<string, unknown>) => request<ProviderProfilesView>(`/api/provider-profiles/web/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteWebProvider: (id: string) => request<ProviderProfilesView>(`/api/provider-profiles/web/${encodeURIComponent(id)}`, { method: "DELETE" }),
