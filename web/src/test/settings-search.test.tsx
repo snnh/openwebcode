@@ -14,14 +14,23 @@ beforeEach(() => {
 });
 
 const settingsView: SettingsView = {
-  groups: [{
-    id: "service",
-    label: "服务",
-    fields: [
-      { key: "host", label: "监听地址", type: "text", value: "127.0.0.1", hasValue: true, source: "file", editable: true, restartRequired: true, nullable: false },
-      { key: "port", label: "监听端口", type: "number", value: 3210, hasValue: true, source: "default", editable: true, restartRequired: true, nullable: false },
-    ],
-  }],
+  groups: [
+    {
+      id: "network",
+      label: "监听与端口",
+      fields: [
+        { key: "host", label: "监听地址", type: "text", value: "127.0.0.1", hasValue: true, source: "file", editable: true, restartRequired: true, nullable: false },
+        { key: "port", label: "监听端口", type: "number", value: 3210, hasValue: true, source: "default", editable: true, restartRequired: true, nullable: false },
+      ],
+    },
+    {
+      id: "service",
+      label: "服务",
+      fields: [
+        { key: "dataDir", label: "数据目录", type: "text", value: "../.openwebcode", hasValue: true, source: "default", editable: true, restartRequired: true, nullable: false },
+      ],
+    },
+  ],
 };
 
 function renderDialog() {
@@ -65,14 +74,20 @@ describe("设置搜索", () => {
 
   it("匹配服务设置字段中文标签 → 服务设置页签", async () => {
     renderDialog();
-    fireEvent.change(screen.getByRole("textbox", { name: "搜索设置" }), { target: { value: "监听地址" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "搜索设置" }), { target: { value: "数据目录" } });
     await waitFor(() => expect(visibleTabs()).toEqual(["服务设置"]));
   });
 
-  it("匹配字段英文标签（SETTINGS_FIELD_EN）→ 服务设置页签", async () => {
+  it("匹配 network 分组字段中文标签（监听端口）→ 远程访问页签", async () => {
+    renderDialog();
+    fireEvent.change(screen.getByRole("textbox", { name: "搜索设置" }), { target: { value: "监听端口" } });
+    await waitFor(() => expect(visibleTabs()).toEqual(["远程访问"]));
+  });
+
+  it("匹配字段英文标签（SETTINGS_FIELD_EN）→ 远程访问页签", async () => {
     renderDialog();
     fireEvent.change(screen.getByRole("textbox", { name: "搜索设置" }), { target: { value: "Listen Port" } });
-    await waitFor(() => expect(visibleTabs()).toEqual(["服务设置"]));
+    await waitFor(() => expect(visibleTabs()).toEqual(["远程访问"]));
   });
 
   it("匹配分组名时该分组全部页签保留", () => {

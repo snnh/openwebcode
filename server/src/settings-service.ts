@@ -89,6 +89,8 @@ const GROUPS = [
   { id: "general", label: "语言与货币" },
   { id: "executor", label: "执行器" },
   { id: "service", label: "服务" },
+  // 监听地址/端口单独分组：Web 端在"远程访问"页签渲染，其余分组在"服务设置"页签
+  { id: "network", label: "监听与端口" },
   { id: "exchangeRate", label: "汇率" },
   { id: "updateCheck", label: "更新检查" },
 ];
@@ -235,9 +237,9 @@ const FIELDS: FieldSpec[] = [
   { key: "jobObjectMemoryMB", group: "executor", label: "Job 内存上限 (MB)", type: "number", env: "OWC_JOB_MEMORY_MB", defaultValue: null, restartRequired: true, fromEnv: envNumber, validate: requireJobMemoryMB, description: "Job Object 提交内存上限，缺省 4096" },
   { key: "jobObjectMaxProcesses", group: "executor", label: "Job 进程数上限", type: "number", env: "OWC_JOB_MAX_PROCESSES", defaultValue: null, restartRequired: true, fromEnv: envNumber, validate: requireJobMaxProcesses, description: "Job Object 活跃进程上限，缺省 64" },
   { key: "gcMaxBytes", group: "service", label: "存储上限 (字节)", type: "number", env: "OWC_GC_MAX_BYTES", defaultValue: 2_147_483_648, restartRequired: false, fromEnv: envNumber, description: "会话 artifacts 全局 LRU 上限，超出后从最旧开始清理" },
-  // 服务（重启生效）
-  { key: "host", group: "service", label: "监听地址", type: "text", env: "OWC_HOST", defaultValue: "127.0.0.1", restartRequired: true, validate: requireNonEmpty },
-  { key: "port", group: "service", label: "监听端口", type: "number", env: "OWC_PORT", defaultValue: 3210, restartRequired: true, fromEnv: envNumber, validate: requirePort },
+  // 监听（重启生效）；Web 端归入"远程访问"页签
+  { key: "host", group: "network", label: "监听地址", type: "text", env: "OWC_HOST", defaultValue: "127.0.0.1", restartRequired: true, validate: requireNonEmpty },
+  { key: "port", group: "network", label: "监听端口", type: "number", env: "OWC_PORT", defaultValue: 3210, restartRequired: true, fromEnv: envNumber, validate: requirePort },
   {
     key: "dataDir",
     group: "service",

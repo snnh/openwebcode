@@ -76,7 +76,7 @@ describe("server settings API", () => {
       const response = await setup.app.inject({ method: "GET", url: "/api/settings" });
       expect(response.statusCode).toBe(200);
       const view = response.json<SettingsView>();
-      expect(view.groups.map((group) => group.id)).toEqual(["models", "fastModel", "general", "executor", "service", "exchangeRate", "updateCheck"]);
+      expect(view.groups.map((group) => group.id)).toEqual(["models", "fastModel", "general", "executor", "service", "network", "exchangeRate", "updateCheck"]);
       const fields = view.groups.flatMap((group) => group.fields);
       expect(fields).toHaveLength(24);
       for (const item of fields) {

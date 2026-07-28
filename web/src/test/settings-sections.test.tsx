@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { RemoteAccessSection, ShortcutsSection } from "../components/SettingsDialog";
+import { RemoteAccessSection, ServerSettingsSection, ShortcutsSection } from "../components/SettingsDialog";
 import { registerBuiltinCommands, type CommandActions } from "../commands/builtin";
 import { resetCommands } from "../commands/registry";
 import { DEFAULT_KEYBINDINGS } from "../commands/keybindings";
@@ -28,8 +28,8 @@ function withClient(node: React.ReactNode): ReturnType<typeof render> {
 function settingsWithHost(host: string): SettingsView {
   return {
     groups: [{
-      id: "service",
-      label: "服务",
+      id: "network",
+      label: "监听与端口",
       fields: [
         { key: "host", label: "监听地址", type: "text", value: host, hasValue: true, source: "file", editable: true, restartRequired: true, nullable: false },
         { key: "port", label: "监听端口", type: "number", value: 3210, hasValue: true, source: "default", editable: true, restartRequired: true, nullable: false },
@@ -82,5 +82,68 @@ describe("设置分区：远程访问（Phase 5b §6.8）", () => {
     vi.spyOn(api, "settings").mockRejectedValue(new Error("boom"));
     const view = withClient(<RemoteAccessSection />);
     expect(await view.findByText(/无法加载服务设置/)).toBeInTheDocument();
+  });
+
+  it("监听地址/端口字段在远程访问页签可编辑并带重启徽标", async () => {
+    vi.spyOn(api, "settings").mockResolvedValue(settingsWithHost("127.0.0.1"));
+    const view = withClient(<RemoteAccessSection />);
+    // 分组标题
+    expect(await view.findByRole("heading", { name: "监听与端口", level: 4 })).toBeInTheDocument();
+    // 可编辑输入框（aria-label 为字段标签）
+    expect(view.getByLabelText("监听地址")).toBeEnabled();
+    expect(view.getByLabelText("监听端口")).toBeEnabled();
+    // host source=file → 已覆盖徽标；两者 restartRequired → 重启后生效徽标
+    expect(view.getByText("已覆盖")).toBeInTheDocument();
+    expect(view.getAllByText("重启后生效")).toHaveLength(2);
+    expect(view.getByRole("button", { name: "保存服务设置" })).toBeInTheDocument();
+  });
+
+  it("环境变量控制的监听地址在远程访问页签保持只读", async () => {
+    const envLocked: SettingsView = {
+      groups: [{
+        id: "network",
+        label: "监听与端口",
+        fields: [
+          { key: "host", label: "监听地址", type: "text", value: "0.0.0.0", hasValue: true, source: "env", editable: false, restartRequired: true, nullable: false },
+          { key: "port", label: "监听端口", type: "number", value: 3210, hasValue: true, source: "default", editable: true, restartRequired: true, nullable: false },
+        ],
+      }],
+    };
+    vi.spyOn(api, "settings").mockResolvedValue(envLocked);
+    const view = withClient(<RemoteAccessSection />);
+    expect(await view.findByLabelText("监听地址")).toBeDisabled();
+    expect(view.getByText("环境变量")).toBeInTheDocument();
+    expect(view.getByText(/由环境变量控制，界面内不可修改/)).toBeInTheDocument();
+  });
+});
+
+describe("设置分区：服务设置（network 分组迁出后）", () => {
+  const mixed: SettingsView = {
+    groups: [
+      {
+        id: "service",
+        label: "服务",
+        fields: [
+          { key: "dataDir", label: "数据目录", type: "text", value: "../.openwebcode", hasValue: true, source: "default", editable: true, restartRequired: true, nullable: false },
+        ],
+      },
+      {
+        id: "network",
+        label: "监听与端口",
+        fields: [
+          { key: "host", label: "监听地址", type: "text", value: "127.0.0.1", hasValue: true, source: "default", editable: true, restartRequired: true, nullable: false },
+          { key: "port", label: "监听端口", type: "number", value: 3210, hasValue: true, source: "default", editable: true, restartRequired: true, nullable: false },
+        ],
+      },
+    ],
+  };
+
+  it("服务设置页签不再渲染监听地址/端口，其余分组保留", async () => {
+    vi.spyOn(api, "settings").mockResolvedValue(mixed);
+    const view = withClient(<ServerSettingsSection />);
+    expect(await view.findByLabelText("数据目录")).toBeInTheDocument();
+    expect(view.queryByLabelText("监听地址")).toBeNull();
+    expect(view.queryByLabelText("监听端口")).toBeNull();
+    expect(view.queryByRole("heading", { name: "监听与端口", level: 4 })).toBeNull();
   });
 });
