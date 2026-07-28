@@ -1127,8 +1127,9 @@ export class AgentRunner {
         await context.advanceRound();
         const afterTools = await this.sessions.get(sessionId);
         if (afterTools && (!this.extensions || this.extensions.isEnabled("context-manager"))) {
-          await context.evict(afterTools.messages, new Set(afterTools.contextPins ?? []));
-          this.events.publish({ source: "agent", type: "context.evicted", sessionId, payload: (await context.load()).entries });
+          // evict 的返回值就是落盘后的 ledger（serial 队列保证期间无其他写入），不必再 load 一次。
+          const evictedLedger = await context.evict(afterTools.messages, new Set(afterTools.contextPins ?? []));
+          this.events.publish({ source: "agent", type: "context.evicted", sessionId, payload: evictedLedger.entries });
         }
         await this.applySteering(sessionId);
         this.state(sessionId, "thinking");

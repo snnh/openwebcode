@@ -527,8 +527,10 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     return undefined;
   };
 
-  events.on("event", (event: AppEvent) => {
-    const serialized = JSON.stringify(event);
+  events.on("event", (event: AppEvent, published?: string) => {
+    // EventBus 发布时已序列化一次（字节预算/历史留存），fan-out 直接复用；
+    // fallback 兼容测试里手工 emit("event", event) 的场景。
+    const serialized = published ?? JSON.stringify(event);
     for (const client of clients) {
       // 未带 sessionId 的 Web 客户端接收全量事件；显式会话订阅必须与
       // replay() 使用同一过滤语义，不能在实时阶段混入其他会话的状态。
