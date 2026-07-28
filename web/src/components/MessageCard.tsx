@@ -1,10 +1,11 @@
 import { memo, useEffect, useRef, useState, type ReactElement } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
-import type { ChatMessage, ExtensionInfo, MessageContent } from "../lib/contracts";
+import type { ChatMessage, ExtensionInfo, LiveSubagentRun, MessageContent } from "../lib/contracts";
 import type { DiffSpec } from "./editor/DiffPane";
 import { Icon } from "./Icon";
 import { CodeBlock, Markdown } from "./Markdown";
+import { SubagentRunCard } from "./SubagentRunCard";
 import { useI18n } from "../i18n";
 
 const TOOL_SUMMARY_KEYS = ["command", "path", "file_path", "filePath", "pattern", "query", "url", "cwd"];
@@ -59,8 +60,42 @@ export function ToolCallCard({ name, input, onOpenDiff }: { name: string; input?
   );
 }
 
+/** 转录消息折叠阈值：超过后默认只展示最近 N 条（转录可能很长，不做虚拟化） */
+const TRANSCRIPT_MESSAGE_FOLD = 20;
+
+/** 转录消息内容的紧凑渲染：assistant 文本用 Markdown，工具调用/结果压缩为单行 */
+function TranscriptBlock({ block }: { block: MessageContent }): ReactElement | null {
+  const { t } = useI18n();
+  switch (block.type) {
+    case "text":
+      return block.text ? <Markdown>{block.text}</Markdown> : null;
+    case "tool_call": {
+      const summary = summarizeToolInput(block.input);
+      return (
+        <p className="subagent-transcript-tool mono">
+          <Icon name="wrench" size={11} /> {block.name ?? "tool"}{summary ? ` · ${summary}` : ""}
+        </p>
+      );
+    }
+    case "tool_result": {
+      const text = block.content ?? "";
+      const truncated = text.length > 300 ? `${text.slice(0, 300)}…` : text;
+      return (
+        <details className="subagent-transcript-result">
+          <summary>{block.isError ? t("工具结果（错误）", "Tool result (error)") : t("工具结果", "Tool result")}</summary>
+          <pre className="mono">{truncated}</pre>
+        </details>
+      );
+    }
+    default:
+      return null;
+  }
+}
+
+const TRANSCRIPT_ROLE_LABELS: Record<string, [string, string]> = { user: ["任务", "Task"], assistant: ["子代理", "Subagent"], tool: ["工具", "Tool"] };
+
 /** spawn_task/spawn_swarm 工具结果携带的子代理转录：展开时按 taskId 拉取，只读展示 */
-function SubagentTranscriptDetails({ sessionId, taskId, index }: { sessionId: string; taskId: string; index?: number | undefined }): ReactElement {
+export function SubagentTranscriptDetails({ sessionId, taskId, index }: { sessionId: string; taskId: string; index?: number | undefined }): ReactElement {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const transcript = useQuery({
@@ -72,6 +107,9 @@ function SubagentTranscriptDetails({ sessionId, taskId, index }: { sessionId: st
   const label = index !== undefined
     ? t(`子代理转录 ${index}`, `Subagent transcript ${index}`)
     : t("子代理转录", "Subagent transcript");
+  const messages = transcript.data?.messages ?? [];
+  const hiddenCount = Math.max(0, messages.length - TRANSCRIPT_MESSAGE_FOLD);
+  const shownMessages = hiddenCount > 0 ? messages.slice(hiddenCount) : messages;
   return (
     <details className="subagent-transcript" onToggle={(event) => setOpen(event.currentTarget.open)}>
       <summary>{label}</summary>
@@ -88,6 +126,20 @@ function SubagentTranscriptDetails({ sessionId, taskId, index }: { sessionId: st
           </p>
           <p className="subagent-transcript-prompt">{transcript.data.prompt}</p>
           <Markdown>{transcript.data.conclusion}</Markdown>
+          {messages.length > 0 && (
+            <details className="subagent-transcript-messages">
+              <summary>{t(`消息记录（${messages.length} 条）`, `Messages (${messages.length})`)}</summary>
+              {hiddenCount > 0 && (
+                <p className="subagent-transcript-status">{t(`仅显示最近 ${TRANSCRIPT_MESSAGE_FOLD} 条，已折叠前 ${hiddenCount} 条`, `Showing the last ${TRANSCRIPT_MESSAGE_FOLD}; ${hiddenCount} earlier folded`)}</p>
+              )}
+              {shownMessages.map((message) => (
+                <div key={message.id} className={`subagent-transcript-message ${message.role}`}>
+                  <span className="subagent-transcript-role">{TRANSCRIPT_ROLE_LABELS[message.role] ? t(...TRANSCRIPT_ROLE_LABELS[message.role]!) : message.role}</span>
+                  {message.content.map((block, blockIndex) => <TranscriptBlock key={blockIndex} block={block} />)}
+                </div>
+              ))}
+            </details>
+          )}
         </div>
       )}
     </details>
@@ -136,15 +188,21 @@ export function ThinkingBlock({ text, streaming = false }: { text: string; strea
   );
 }
 
-function ContentBlock({ block, sessionId, onOpenDiff }: { block: MessageContent; sessionId?: string | undefined; onOpenDiff?(spec: DiffSpec): void }): ReactElement | null {
+function ContentBlock({ block, sessionId, liveSubagents, onOpenDiff }: { block: MessageContent; sessionId?: string | undefined; liveSubagents?: LiveSubagentRun[] | undefined; onOpenDiff?(spec: DiffSpec): void }): ReactElement | null {
   const { t } = useI18n();
   switch (block.type) {
     case "text":
       return <Markdown>{block.text ?? ""}</Markdown>;
     case "thinking":
       return <ThinkingBlock text={block.text ?? ""} />;
-    case "tool_call":
+    case "tool_call": {
+      // spawn_task/spawn_swarm 用专用卡片：运行中展示实时进度，历史卡片展示静态摘要
+      if ((block.name === "spawn_task" || block.name === "spawn_swarm") && block.id) {
+        const live = liveSubagents?.filter((run) => run.toolCallId === block.id);
+        return <SubagentRunCard name={block.name} input={block.input} sessionId={sessionId} live={live} />;
+      }
       return <ToolCallCard name={block.name ?? "tool"} input={block.input} onOpenDiff={onOpenDiff} />;
+    }
     case "tool_result":
       return <ToolResultCard content={block.content ?? ""} error={Boolean(block.isError)} sessionId={sessionId} subagentTaskIds={block.subagentTaskIds} />;
     case "image":
@@ -194,7 +252,7 @@ async function writeClipboard(text: string): Promise<boolean> {
   }
 }
 
-export function MessageCard({ message, sessionId, contentLens, onNotice, onOpenDiff }: { message: ChatMessage; sessionId?: string; contentLens?: ExtensionInfo; onNotice?(message: string, kind?: "info" | "error"): void; onOpenDiff?(spec: DiffSpec): void }): ReactElement {
+export function MessageCard({ message, sessionId, contentLens, liveSubagents, onNotice, onOpenDiff }: { message: ChatMessage; sessionId?: string; contentLens?: ExtensionInfo; /** 本消息内 spawn 工具调用关联的实时子代理运行（已由 ExecutionTrack 按 toolCallId 过滤） */ liveSubagents?: LiveSubagentRun[] | undefined; onNotice?(message: string, kind?: "info" | "error"): void; onOpenDiff?(spec: DiffSpec): void }): ReactElement {
   const { t, locale } = useI18n();
   const createdAt = new Date(message.createdAt);
   const articleRef = useRef<HTMLElement>(null);
@@ -273,7 +331,7 @@ export function MessageCard({ message, sessionId, contentLens, onNotice, onOpenD
           </>
         )}
       </div>
-      {content.map((block, index) => <ContentBlock key={index} block={block} sessionId={sessionId} onOpenDiff={onOpenDiff} />)}
+      {content.map((block, index) => <ContentBlock key={index} block={block} sessionId={sessionId} liveSubagents={liveSubagents} onOpenDiff={onOpenDiff} />)}
       {translation && <details className="content-lens-result" open><summary>{t("译文", "Translation")}</summary><Markdown>{translation}</Markdown></details>}
       {explanation && <details className="content-lens-result" open><summary>{t("解析：", "Explanation: ")}{explanation.selection}</summary><Markdown>{explanation.text}</Markdown></details>}
     </article>
@@ -298,6 +356,8 @@ export const MemoMessageCard = memo(MessageCard, (previous, next) =>
   && previous.sessionId === next.sessionId
   && previous.onNotice === next.onNotice
   && previous.onOpenDiff === next.onOpenDiff
+  // 实时子代理状态字段有限且不含函数，JSON 比较足够（仅含本消息相关条目，通常为空）
+  && JSON.stringify(previous.liveSubagents ?? null) === JSON.stringify(next.liveSubagents ?? null)
   && previous.message.id === next.message.id
   && previous.message.role === next.message.role
   && previous.message.createdAt === next.message.createdAt

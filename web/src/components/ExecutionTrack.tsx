@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
-import type { ChatMessage, ExtensionInfo, SessionDetail } from "../lib/contracts";
+import type { ChatMessage, ExtensionInfo, LiveSubagentRun, SessionDetail } from "../lib/contracts";
 import type { DiffSpec } from "./editor/DiffPane";
 import { Icon } from "./Icon";
 import { Markdown } from "./Markdown";
@@ -57,7 +57,20 @@ function MeasuredItem({ index, onHeight, children }: { index: number; onHeight(i
   return <div className="virtual-message-item" ref={ref}>{children}</div>;
 }
 
-export function ExecutionTrack({ session, cleared, streamText, thinkingText, runError, permissions, onPermissionDone, onPermissionError, onSendToAgent, contentLens, onNotice, onOpenDiff, hasMoreMessages, onLoadMore, loadingMore }: {
+/** 提取消息内 spawn_task/spawn_swarm 工具调用关联的实时子代理运行（无则 undefined，保持 memo 稳定） */
+function liveRunsForMessage(message: ChatMessage, liveSubagents?: Record<string, LiveSubagentRun>): LiveSubagentRun[] | undefined {
+  if (!liveSubagents) return undefined;
+  const callIds = new Set(
+    message.content
+      .filter((block) => block.type === "tool_call" && (block.name === "spawn_task" || block.name === "spawn_swarm"))
+      .map((block) => block.id),
+  );
+  if (callIds.size === 0) return undefined;
+  const runs = Object.values(liveSubagents).filter((run) => callIds.has(run.toolCallId));
+  return runs.length > 0 ? runs : undefined;
+}
+
+export function ExecutionTrack({ session, cleared, streamText, thinkingText, runError, permissions, onPermissionDone, onPermissionError, onSendToAgent, contentLens, onNotice, onOpenDiff, hasMoreMessages, onLoadMore, loadingMore, liveSubagents }: {
   session: SessionDetail;
   cleared?: { uptoIndex: number; at: string };
   streamText: string;
@@ -78,6 +91,8 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, run
   onLoadMore?(): void;
   /** 0.5.0 Phase 2：加载中状态 */
   loadingMore?: boolean;
+  /** 本会话子代理实时运行状态（taskId → run），按消息内 spawn 工具调用的 toolCallId 过滤下发 */
+  liveSubagents?: Record<string, LiveSubagentRun>;
 }): ReactElement {
   const { t } = useI18n();
   const trackRef = useRef<HTMLDivElement>(null);
@@ -155,7 +170,7 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, run
               {cleared && Math.min(cleared.uptoIndex, session.messages.length) === index && (
                 <div className="context-cleared-divider" role="separator">{t("上下文已清空（历史保留）", "Context cleared (history retained)")}</div>
               )}
-              <MemoMessageCard message={message} sessionId={session.id} contentLens={contentLens} onNotice={onNotice} onOpenDiff={onOpenDiff} />
+              <MemoMessageCard message={message} sessionId={session.id} contentLens={contentLens} liveSubagents={liveRunsForMessage(message, liveSubagents)} onNotice={onNotice} onOpenDiff={onOpenDiff} />
               {shellCmd && onSendToAgent && (
                 <button
                   className="send-to-agent"

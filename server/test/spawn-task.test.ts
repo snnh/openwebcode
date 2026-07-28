@@ -139,6 +139,15 @@ describe("spawn_task via AgentRunner", () => {
     expect(captured.some((event) =>
       event.type === "subagent.finished" && (event.payload as { taskId?: string; status?: string }).taskId === taskId)).toBe(true);
 
+    // 进度事件：每轮 provider 调用后与工具执行后各发一次（仅元数据，不含文本）
+    const progress = captured.filter((event) =>
+      event.type === "subagent.progress" && (event.payload as { toolCallId?: string }).toolCallId === "spawn-1");
+    expect(progress.length).toBeGreaterThanOrEqual(2);
+    expect(progress.every((event) => (event.payload as { taskId?: string }).taskId === taskId)).toBe(true);
+    const lastProgress = progress.at(-1)!.payload as { turns?: number; toolsUsed?: string[] };
+    expect(lastProgress.turns).toBe(2);
+    expect(lastProgress.toolsUsed).toEqual(["read_file"]);
+
     // 子代理文本不进入主聊天流
     expect(captured.some((event) =>
       event.type === "message.delta" && (event.payload as { text?: string }).text === "结论：一切正常")).toBe(false);
@@ -153,6 +162,37 @@ describe("spawn_task via AgentRunner", () => {
 });
 
 describe("runSubAgent", () => {
+  it("reports progress after each provider turn and after tool execution", async () => {
+    const root = await tempRoot();
+    const core = createFakeCore({
+      async globFiles() { return { matches: ["a.ts"] }; },
+    });
+    let calls = 0;
+    const provider: Provider = {
+      name: "fake",
+      async *streamChat() {
+        calls += 1;
+        if (calls === 1) {
+          yield { type: "tool_call", id: "glob-1", name: "glob", input: { path: ".", pattern: "*.ts" } };
+          yield { type: "done", stopReason: "tool_use" };
+        } else {
+          yield { type: "text_delta", text: "结论" };
+          yield { type: "done", stopReason: "end_turn" };
+        }
+      },
+    };
+    const events: Array<{ turns: number; toolsUsed: string[] }> = [];
+    const result = await runSubAgent(subAgentOptions(provider, core, root, { onProgress: (progress) => events.push(progress) }));
+
+    expect(result.turns).toBe(2);
+    // 第 1 轮 provider 结束后（尚无工具）、第 1 轮工具执行后、第 2 轮 provider 结束后
+    expect(events).toEqual([
+      { turns: 1, toolsUsed: [] },
+      { turns: 1, toolsUsed: ["glob"] },
+      { turns: 2, toolsUsed: ["glob"] },
+    ]);
+  });
+
   it("truncates a conclusion longer than 2000 characters", async () => {
     const root = await tempRoot();
     const provider: Provider = {

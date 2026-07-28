@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useState, type MouseEvent as ReactMouseEvent, type ReactElement } from "react";
-import type { SessionDetail } from "../lib/contracts";
+import type { ContextUsage, SessionDetail } from "../lib/contracts";
+import type { ContextWindowInfo } from "../lib/context-window";
 import type { DiffSpec } from "./editor/DiffPane";
 import { Icon, type IconName } from "./Icon";
 
@@ -45,11 +46,15 @@ function store(key: string, value: string): void {
   }
 }
 
-export function BottomPanel({ sessionId, session, running, evalEnabled = false, onNotice, open, onOpenChange, onOpenDiff }: {
+export function BottomPanel({ sessionId, session, running, evalEnabled = false, windowUsage, latestUsage, onNotice, open, onOpenChange, onOpenDiff }: {
   sessionId?: string;
   session?: SessionDetail;
   running: boolean;
   evalEnabled?: boolean;
+  /** 上下文窗口占用（App 下发的实时水位）；仅上下文标签页使用。 */
+  windowUsage?: ContextWindowInfo;
+  /** 最近一轮 token 用量（App 下发的 context.usage）；仅上下文标签页使用。 */
+  latestUsage?: ContextUsage;
   onNotice(message: string, kind?: "info" | "error"): void;
   /** 受控开合（布局持久化在 useWorkbenchLayout，Ctrl/Cmd+` 切换） */
   open: boolean;
@@ -128,7 +133,7 @@ export function BottomPanel({ sessionId, session, running, evalEnabled = false, 
       {open && (
         <div className="panel-content" style={{ height }}>
           <Suspense fallback={null}>
-          {tab === "context" && <ContextPanel sessionId={sessionId} session={session} running={running} onNotice={onNotice} />}
+          {tab === "context" && <ContextPanel sessionId={sessionId} session={session} running={running} windowUsage={windowUsage} latestUsage={latestUsage} onNotice={onNotice} />}
           {tab === "timeline" && <TimelinePanel sessionId={sessionId} running={running} onNotice={onNotice} onOpenDiff={onOpenDiff} />}
           {tab === "sandbox" && <SandboxPanel session={session} />}
           {tab === "cost" && <CostPanel />}
