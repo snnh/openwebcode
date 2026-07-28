@@ -1,0 +1,123 @@
+import { useEffect, useState, type ReactElement } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { api } from "../../lib/api";
+import type { ExtensionInfo } from "../../lib/contracts";
+import { useI18n } from "../../i18n";
+import { ExtensionConfigForm, parseConfigSchema } from "./ExtensionConfigForm";
+
+const OFFICIAL_EXTENSION_EN: Record<string, { name: string; description: string }> = {
+  "context-manager": { name: "Context Manager", description: "Rolling eviction, context compaction, writeback, and ledger views." },
+  "attention-optimizer": { name: "Attention Optimizer", description: "Copies critical constraints and the current task into a context anchor to reduce lost-in-the-middle effects." },
+  "content-lens": { name: "Content Lens", description: "Translates messages and explains selected text without adding content to the model context." },
+  "pdf-to-image": { name: "PDF to Image", description: "Converts PDF pages into image attachments for models that support image input." },
+  "env-sim": { name: "Environment Simulation", description: "Mimic another coding agent's system-prompt style and default tool shapes via a selectable preset." },
+};
+
+export function ExtensionRow({ extension }: { extension: ExtensionInfo }): ReactElement {
+  const { t, language } = useI18n();
+  const queryClient = useQueryClient();
+  const [json, setJson] = useState(() => JSON.stringify(extension.config, null, 2));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const displayName = language === "en" ? (OFFICIAL_EXTENSION_EN[extension.id]?.name ?? extension.name) : extension.name;
+  const displayDescription = language === "en" ? (OFFICIAL_EXTENSION_EN[extension.id]?.description ?? extension.description) : extension.description;
+  const configFields = parseConfigSchema(extension.configSchema);
+
+  useEffect(() => setJson(JSON.stringify(extension.config, null, 2)), [extension.config]);
+
+  const update = (body: { enabled?: boolean; config?: Record<string, unknown> }): void => {
+    setBusy(true);
+    setError(undefined);
+    api.configureExtension(extension.id, body)
+      .then(() => void queryClient.invalidateQueries({ queryKey: ["extensions"] }))
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : t("扩展更新失败", "Extension update failed")))
+      .finally(() => setBusy(false));
+  };
+
+  const saveConfig = (): void => {
+    try {
+      const value = JSON.parse(json) as unknown;
+      if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(t("配置必须是 JSON 对象", "Configuration must be a JSON object"));
+      update({ config: value as Record<string, unknown> });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("配置 JSON 无效", "Invalid configuration JSON"));
+    }
+  };
+
+  return (
+    <article className="extension-card">
+      <header>
+        <div>
+          <strong>{displayName}</strong>
+          <span className="mono">{extension.id} · v{extension.version}</span>
+        </div>
+        <label className="extension-switch">
+          <input type="checkbox" checked={extension.enabled} disabled={busy} onChange={(event) => update({ enabled: event.target.checked })} />
+          {extension.enabled ? t("已启用", "Enabled") : t("已停用", "Disabled")}
+        </label>
+      </header>
+      <p>{displayDescription}</p>
+      <div className="extension-badges">
+        {extension.builtIn && <span>{t("官方内置", "Official")}</span>}
+        <span className={`extension-status status-${extension.status}`}>{extension.status === "running" ? t("运行中", "Running") : extension.status === "disabled" ? t("已停用", "Disabled") : t("异常", "Error")}</span>
+        {extension.permissions.map((permission) => <span key={permission}>{permission}</span>)}
+      </div>
+      {extension.id === "context-manager" && <p className="settings-note">{t("驱逐、回写和压缩策略按会话配置，请在底部“上下文”面板中调整。", "Eviction, writeback, and compaction policies are configured per session in the Context panel.")}</p>}
+      {extension.id !== "context-manager" && (configFields ? (
+        <details>
+          <summary>{t("配置", "Configuration")}</summary>
+          <ExtensionConfigForm extension={extension} fields={configFields} busy={busy} onSave={(config) => update({ config })} />
+        </details>
+      ) : (
+        <details>
+          <summary>{t("配置 JSON", "Configuration JSON")}</summary>
+          <textarea className="extension-json mono" rows={7} value={json} disabled={busy} onChange={(event) => setJson(event.target.value)} spellCheck={false} />
+          <button className="btn small" disabled={busy} onClick={saveConfig}>{busy ? t("保存中…", "Saving…") : t("保存配置", "Save configuration")}</button>
+        </details>
+      ))}
+      {!extension.builtIn && (
+        <button className="btn small danger" disabled={busy} onClick={() => {
+          if (!window.confirm(t(`卸载扩展 ${displayName}？其配置会一并删除。`, `Uninstall ${displayName}? Its configuration will also be deleted.`))) return;
+          setBusy(true); setError(undefined);
+          api.uninstallExtension(extension.id)
+            .then(() => void queryClient.invalidateQueries({ queryKey: ["extensions"] }))
+            .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : t("卸载失败", "Uninstall failed")))
+            .finally(() => setBusy(false));
+        }}>{t("卸载扩展", "Uninstall extension")}</button>
+      )}
+      {extension.error && <p className="settings-error">{extension.error}</p>}
+      {error && <p className="settings-error">{error}</p>}
+    </article>
+  );
+}
+
+export function ExtensionsSection(): ReactElement {
+  const { t } = useI18n();
+  const queryClient = useQueryClient();
+  const extensions = useQuery({ queryKey: ["extensions"], queryFn: api.extensions });
+  const [installPath, setInstallPath] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  if (extensions.isPending) return <p className="panel-empty">{t("正在连接 Extension Host…", "Connecting to Extension Host…")}</p>;
+  if (extensions.isError || !extensions.data) return <p className="panel-empty">{t("无法加载扩展清单。", "Could not load extensions.")}</p>;
+  return (
+    <>
+      <p className="settings-note">{t("扩展运行于独立 Extension Host 子进程；单个钩子超时 5 秒后跳过。v1 扩展是可信代码，安装即代表允许其 manifest 中声明的权限。", "Extensions run in a separate Extension Host process; hooks are skipped after a five-second timeout. v1 extensions are trusted code, and installation grants the permissions declared in their manifest.")}</p>
+      <div className="extension-list">{extensions.data.map((extension) => <ExtensionRow key={extension.id} extension={extension} />)}</div>
+      <h3>{t("安装本地扩展", "Install local extension")}</h3>
+      <p className="settings-note">{t("选择包含 manifest.json 和 index.js 的绝对目录；安装后复制到数据目录 extensions/。", "Enter the absolute path to a directory containing manifest.json and index.js. It will be copied into the data directory's extensions folder.")}</p>
+      <div className="settings-inline-form">
+        <input value={installPath} onChange={(event) => setInstallPath(event.target.value)} placeholder="D:\\path\\owc-ext-example" spellCheck={false} />
+        <button className="btn small" disabled={busy || !installPath.trim()} onClick={() => {
+          if (!window.confirm(t("v1 扩展会作为可信代码在独立进程中运行。确认信任并安装此目录中的代码？", "v1 extensions run as trusted code in a separate process. Trust and install the code in this directory?"))) return;
+          setBusy(true); setError(undefined);
+          api.installExtension(installPath.trim())
+            .then(() => { setInstallPath(""); void queryClient.invalidateQueries({ queryKey: ["extensions"] }); })
+            .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : t("安装失败", "Installation failed")))
+            .finally(() => setBusy(false));
+        }}>{busy ? t("安装中…", "Installing…") : t("安装", "Install")}</button>
+      </div>
+      {error && <p className="settings-error">{error}</p>}
+    </>
+  );
+}

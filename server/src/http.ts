@@ -7,7 +7,7 @@
  * remain enforced at each call site (notably `web-tools.ts`). It only adds the
  * UA header and an optional timeout so every outbound request identifies itself.
  */
-import { buildUserAgent, getServerVersion, setServerVersion } from "./version.js";
+import { buildUserAgent, getServerVersion } from "./version.js";
 
 /**
  * The User-Agent string sent on every outbound HTTP request.
@@ -16,11 +16,6 @@ import { buildUserAgent, getServerVersion, setServerVersion } from "./version.js
  */
 export function getUserAgent(): string {
   return buildUserAgent(getServerVersion());
-}
-
-/** Initialize the User-Agent from the resolved server version (called once at startup). */
-export function initUserAgent(version: string): void {
-  setServerVersion(version);
 }
 
 export interface FetchJsonOptions {

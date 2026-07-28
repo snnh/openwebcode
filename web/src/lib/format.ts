@@ -29,3 +29,15 @@ export function microToDecimal(microUnits: string): string {
   const value = Number(BigInt(microUnits)) / 1_000_000;
   return String(Number(value.toFixed(6)));
 }
+
+/** 时长：1.2s / 350ms（各面板统一精度） */
+export function formatDuration(ms: number): string {
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
+}
+
+/** 字节数：1.25 MiB / 512 KiB / 128 B */
+export function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(2)} MiB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${bytes} B`;
+}

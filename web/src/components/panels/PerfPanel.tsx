@@ -4,6 +4,7 @@ import { api } from "../../lib/api";
 import type { RunPerfRecord } from "../../lib/contracts";
 import { getFpsStats, startFrameSampler, stopFrameSampler, type FpsStats } from "../../lib/perf-sampler";
 import { useI18n } from "../../i18n";
+import { formatBytes, formatDuration } from "../../lib/format";
 
 const MONITORING_STORAGE_KEY = "owc-perf-monitoring";
 
@@ -23,16 +24,6 @@ function storeMonitoringPreference(enabled: boolean): void {
   }
 }
 
-function formatMs(ms: number): string {
-  if (ms >= 1000) return `${(ms / 1000).toFixed(2)}s`;
-  return `${ms.toFixed(1)}ms`;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(2)} MiB`;
-  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
-  return `${bytes} B`;
-}
 
 /** 阶段耗时条形图（相对比例） */
 function StageBar({ record }: { record: RunPerfRecord }): ReactElement {
@@ -44,13 +35,13 @@ function StageBar({ record }: { record: RunPerfRecord }): ReactElement {
     { label: "tool", ms: stages.toolExecMs, color: "var(--warning, #ffb74d)" },
   ];
   return (
-    <div className="perf-stage-bar" title={`total: ${formatMs(stages.totalMs)}`}>
+    <div className="perf-stage-bar" title={`total: ${formatDuration(stages.totalMs)}`}>
       {segments.map((seg) => (
         <div
           key={seg.label}
           className="perf-seg"
           style={{ width: `${Math.max(1, (seg.ms / total) * 100)}%`, background: seg.color }}
-          title={`${seg.label}: ${formatMs(seg.ms)}`}
+          title={`${seg.label}: ${formatDuration(seg.ms)}`}
         />
       ))}
     </div>
@@ -175,11 +166,11 @@ export function PerfPanel({ sessionId }: { sessionId?: string }): ReactElement {
             {records.slice().reverse().map((record) => (
               <div key={record.runId} className="perf-record-row">
                 <span className="perf-record-meta">
-                  {record.turnCount} turn{record.turnCount > 1 ? "s" : ""} · {formatMs(record.stages.totalMs)}
+                  {record.turnCount} turn{record.turnCount > 1 ? "s" : ""} · {formatDuration(record.stages.totalMs)}
                 </span>
                 <StageBar record={record} />
                 <span className="perf-record-detail">
-                  ctx {formatMs(record.stages.contextBuildMs)} · llm {formatMs(record.stages.providerCallMs)} · tool {formatMs(record.stages.toolExecMs)}
+                  ctx {formatDuration(record.stages.contextBuildMs)} · llm {formatDuration(record.stages.providerCallMs)} · tool {formatDuration(record.stages.toolExecMs)}
                 </span>
               </div>
             ))}
