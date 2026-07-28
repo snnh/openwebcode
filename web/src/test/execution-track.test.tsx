@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ExecutionTrack } from "../components/ExecutionTrack";
 import type { ChatMessage, SessionDetail } from "../lib/contracts";
 
@@ -21,7 +21,7 @@ describe("ExecutionTrack failures", () => {
       <ExecutionTrack
         session={session}
         streamText=""
-        runError="Core sandbox configuration failed"
+        runError={{ message: "Core sandbox configuration failed" }}
         permissions={[]}
         onPermissionDone={() => undefined}
       />,
@@ -29,6 +29,100 @@ describe("ExecutionTrack failures", () => {
 
     expect(screen.getByRole("alert")).toHaveTextContent("本轮执行失败");
     expect(screen.getByRole("alert")).toHaveTextContent("Core sandbox configuration failed");
+  });
+
+  it("shows an actionable hint and a settings deep-link for an authentication failure", () => {
+    const onOpenSettings = vi.fn();
+    render(
+      <ExecutionTrack
+        session={session}
+        streamText=""
+        runError={{ message: "invalid api key", kind: "authentication", retryable: false }}
+        permissions={[]}
+        onPermissionDone={() => undefined}
+        onOpenSettings={onOpenSettings}
+      />,
+    );
+
+    const card = screen.getByRole("alert");
+    expect(card).toHaveTextContent("认证失败：请检查 设置 → 服务设置 中的 API Key");
+    expect(card).toHaveTextContent("invalid api key");
+    fireEvent.click(screen.getByRole("button", { name: "打开服务设置" }));
+    expect(onOpenSettings).toHaveBeenCalledWith("server");
+    expect(screen.queryByRole("button", { name: "重试" })).toBeNull();
+  });
+
+  it("deep-links invalid_request failures to the models tab", () => {
+    const onOpenSettings = vi.fn();
+    render(
+      <ExecutionTrack
+        session={session}
+        streamText=""
+        runError={{ message: "unsupported parameter", kind: "invalid_request", retryable: false }}
+        permissions={[]}
+        onPermissionDone={() => undefined}
+        onOpenSettings={onOpenSettings}
+      />,
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent("请求被拒绝：请检查模型 ID 与参数配置");
+    fireEvent.click(screen.getByRole("button", { name: "打开模型设置" }));
+    expect(onOpenSettings).toHaveBeenCalledWith("models");
+  });
+
+  it("offers a retry button for rate-limit failures", () => {
+    const onRetryRun = vi.fn();
+    render(
+      <ExecutionTrack
+        session={session}
+        streamText=""
+        runError={{ message: "rate limited", kind: "rate_limit", retryable: true }}
+        permissions={[]}
+        onPermissionDone={() => undefined}
+        onRetryRun={onRetryRun}
+      />,
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent("服务限流/过载，稍后重试");
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    expect(onRetryRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers a retry button for retryable errors without a kind (e.g. server_restarted)", () => {
+    const onRetryRun = vi.fn();
+    render(
+      <ExecutionTrack
+        session={session}
+        streamText=""
+        runError={{ message: "The server restarted before this run reached a terminal state", retryable: true }}
+        permissions={[]}
+        onPermissionDone={() => undefined}
+        onRetryRun={onRetryRun}
+      />,
+    );
+
+    expect(screen.getByRole("alert").querySelector(".run-error-hint")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    expect(onRetryRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("collapses long raw provider blobs behind a details toggle", () => {
+    const blob = JSON.stringify({ error: { message: "x".repeat(600) } });
+    render(
+      <ExecutionTrack
+        session={session}
+        streamText=""
+        runError={{ message: blob, kind: "authentication", retryable: false }}
+        permissions={[]}
+        onPermissionDone={() => undefined}
+        onOpenSettings={() => undefined}
+      />,
+    );
+
+    const details = screen.getByRole("alert").querySelector("details.run-error-details");
+    expect(details).not.toBeNull();
+    expect(details).not.toHaveAttribute("open");
+    expect(details).toHaveTextContent(blob);
   });
 
   it("virtualizes long message histories instead of mounting every card", () => {
