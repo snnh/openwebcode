@@ -178,6 +178,36 @@ export class SessionStore {
     return meta;
   }
 
+  /** 会话显示属性：title 为用户覆盖（空串清除覆盖并回落到派生标题），pinned 控制列表置顶（false 从 meta 删除）。 */
+  async updateDisplay(id: string, update: { title?: string; pinned?: boolean }): Promise<SessionMeta> {
+    const meta = await this.readMeta(id);
+    if (update.title !== undefined) {
+      if (typeof update.title !== "string") throw new Error("title must be a string");
+      const trimmed = update.title.trim();
+      if (trimmed.length > 120) throw new Error("title must be at most 120 characters");
+      meta.title = trimmed || await this.deriveTitle(id);
+    }
+    if (update.pinned !== undefined) {
+      if (typeof update.pinned !== "boolean") throw new Error("pinned must be a boolean");
+      if (update.pinned) meta.pinned = true;
+      else delete meta.pinned;
+    }
+    meta.updatedAt = new Date().toISOString();
+    await this.writeMeta(meta);
+    return meta;
+  }
+
+  /** 派生标题：首条非空用户文本消息的前 80 字符；无消息时回退 "New session"（与 appendMessage 的自动命名一致）。 */
+  private async deriveTitle(id: string): Promise<string> {
+    const { messages } = await this.readMessages(id);
+    for (const message of messages) {
+      if (message.role !== "user") continue;
+      const text = message.content.find((block) => block.type === "text");
+      if (text?.type === "text" && text.text.trim()) return text.text.slice(0, 80);
+    }
+    return "New session";
+  }
+
   async truncateMessages(id: string, count: number): Promise<void> {
     if (!Number.isSafeInteger(count) || count < 0) throw new Error("Message count must be a non-negative integer");
     const detail = await this.get(id);

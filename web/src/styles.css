@@ -203,7 +203,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   flex: 1;
   min-width: 0;
   text-align: left;
-  padding: 9px 52px 9px 12px;
+  padding: 9px 100px 9px 12px;
   border-radius: var(--radius);
   display: flex;
   flex-direction: column;
@@ -211,6 +211,19 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 }
 .session-link:hover { background: var(--panel-2); }
 .session-item.active .session-link { background: var(--accent-soft); }
+.session-rename {
+  flex: 1;
+  min-width: 0;
+  margin: 2px 4px;
+  padding: 7px 10px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-s);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+.session-rename:focus { outline: none; }
 .session-title {
   font-size: 13px;
   font-weight: 600;
@@ -228,13 +241,38 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 }
 .running-dot {
   position: absolute;
-  right: 56px;
+  right: 104px;
   width: 7px;
   height: 7px;
   border-radius: 50%;
   background: var(--accent);
   animation: pulse 1.6s ease-in-out infinite;
 }
+.session-pin {
+  position: absolute;
+  right: 78px;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-s);
+  color: var(--text-3);
+  font-size: 14px;
+  opacity: 0;
+}
+.session-item:hover .session-pin, .session-pin:focus-visible, .session-pin.active { opacity: 1; }
+.session-pin.active { color: var(--accent); }
+.session-pin:hover { color: var(--accent); background: var(--accent-soft); }
+.session-rename-btn {
+  position: absolute;
+  right: 54px;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-s);
+  color: var(--text-3);
+  font-size: 14px;
+  opacity: 0;
+}
+.session-item:hover .session-rename-btn, .session-rename-btn:focus-visible { opacity: 1; }
+.session-rename-btn:hover { color: var(--accent); background: var(--accent-soft); }
 .session-delete {
   position: absolute;
   right: 6px;
@@ -1334,6 +1372,9 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 }
 .session-dialog input:focus, .session-dialog select:focus, .session-dialog textarea:focus { border-color: var(--accent); outline: none; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.confirm-dialog { max-width: 400px; }
+.confirm-dialog p { margin: 6px 0; font-size: 13.5px; }
+.confirm-warning { color: var(--danger); font-size: 12.5px; }
 
 /* 设置对话框 */
 .extension-list { display: grid; gap: 10px; margin: 12px 0 18px; }
@@ -1399,6 +1440,20 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   background: color-mix(in srgb, var(--panel-2) 42%, var(--panel));
 }
 .settings-nav-group { display: flex; flex-direction: column; gap: 3px; }
+.settings-search-wrap { position: relative; display: block; color: var(--text-3); }
+.settings-search-wrap svg { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); pointer-events: none; }
+.settings-search {
+  width: 100%;
+  margin: 0;
+  padding: 7px 10px 7px 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12.5px;
+}
+.settings-search:focus { border-color: var(--accent); outline: none; }
+.settings-nav-empty { padding: 8px 10px; color: var(--text-3); font-size: 12px; }
 .settings-nav-group + .settings-nav-group { border-top: 1px solid var(--border); padding-top: 13px; }
 .settings-nav-label {
   padding: 0 10px 4px;
@@ -1653,6 +1708,8 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .scroll-bottom { display: inline-flex; align-items: center; gap: 6px; }
 .session-delete { display: inline-flex; align-items: center; justify-content: center; }
 .session-export { display: inline-flex; align-items: center; justify-content: center; }
+.session-pin { display: inline-flex; align-items: center; justify-content: center; }
+.session-rename-btn { display: inline-flex; align-items: center; justify-content: center; }
 .tree-arrow { display: inline-flex; align-items: center; }
 .tool-icon { display: inline-flex; align-items: center; }
 .send { display: inline-flex; align-items: center; gap: 6px; }
@@ -1683,6 +1740,18 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .empty-card p { margin: 0 0 22px; color: var(--text-2); font-size: 13.5px; line-height: 1.7; }
 .empty-recent { max-width: 460px; width: 100%; }
 .empty-recent h2 { margin: 0 0 10px; font-size: 13px; font-weight: 650; color: var(--text-2); }
+.empty-examples { margin-top: 22px; }
+.empty-examples h2 { margin: 0 0 10px; font-size: 13px; font-weight: 650; color: var(--text-2); }
+.empty-example-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.empty-example-chip {
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--text-2);
+  font-size: 12.5px;
+}
+.empty-example-chip:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .recent-item {
   display: flex;
   flex-direction: column;
