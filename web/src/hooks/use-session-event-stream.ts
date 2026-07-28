@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AppEvent } from "../lib/contracts";
 
 export interface SessionEventStreamOptions {
@@ -8,18 +8,24 @@ export interface SessionEventStreamOptions {
   onDisconnect?(): void;
 }
 
+export interface SessionEventStreamState {
+  /** 连接断开后退避重连进行中；恢复（onopen）后归 false。仅作展示，不阻塞交互。 */
+  reconnecting: boolean;
+}
+
 /**
  * Owns the lifecycle correctness of the session-scoped event socket. UI code
  * receives already de-duplicated, in-order events and only decides how to
  * render them. A socket generation is disposed on every session switch so an
  * old connection can never reconnect into the newly selected session.
  */
-export function useSessionEventStream({ sessionId, onEvent, onDisconnect }: SessionEventStreamOptions): void {
+export function useSessionEventStream({ sessionId, onEvent, onDisconnect }: SessionEventStreamOptions): SessionEventStreamState {
   const onEventRef = useRef(onEvent);
   const onDisconnectRef = useRef(onDisconnect);
   const sessionSeq = useRef<Record<string, number>>({});
   const globalSeq = useRef(0);
   const seenEventIds = useRef<Set<string>>(new Set());
+  const [reconnecting, setReconnecting] = useState(false);
 
   useEffect(() => { onEventRef.current = onEvent; }, [onEvent]);
   useEffect(() => { onDisconnectRef.current = onDisconnect; }, [onDisconnect]);
@@ -36,6 +42,9 @@ export function useSessionEventStream({ sessionId, onEvent, onDisconnect }: Sess
       const after = sessionId ? sessionSeq.current[sessionId] ?? 0 : globalSeq.current;
       const query = new URLSearchParams({ after: String(after), ...(sessionId ? { sessionId } : {}) });
       socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/events?${query}`);
+      socket.onopen = () => {
+        if (!disposed) setReconnecting(false);
+      };
       socket.onmessage = (message) => {
         let event: AppEvent;
         try {
@@ -62,13 +71,17 @@ export function useSessionEventStream({ sessionId, onEvent, onDisconnect }: Sess
         onEventRef.current(event);
       };
       socket.onclose = () => {
-        if (!disposed) timer = window.setTimeout(connect, Math.min(10_000, 500 * 2 ** retry++));
+        if (disposed) return;
+        setReconnecting(true);
+        timer = window.setTimeout(connect, Math.min(10_000, 500 * 2 ** retry++));
       };
     };
     connect();
     return () => {
       disposed = true;
+      setReconnecting(false);
       if (socket) {
+        socket.onopen = null;
         socket.onmessage = null;
         socket.onclose = null;
       }
@@ -77,4 +90,5 @@ export function useSessionEventStream({ sessionId, onEvent, onDisconnect }: Sess
       onDisconnectRef.current?.();
     };
   }, [sessionId]);
+  return { reconnecting };
 }

@@ -806,6 +806,43 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   background-color: transparent !important;
 }
 .code-plain { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* 代码块复制按钮：悬停/聚焦显现，右上角绝对定位（预留右侧 padding 不遮代码） */
+.code-block-wrap { position: relative; }
+.code-copy-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-3);
+  padding: 2px 8px;
+  border-radius: var(--radius-s);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  opacity: 0;
+}
+.code-block-wrap:hover .code-copy-btn, .code-copy-btn:focus-visible { opacity: 1; }
+.code-copy-btn:hover { background: var(--panel-2); color: var(--accent); }
+/* 事件流断线重连横幅：顶部细条，仅提示不阻塞交互 */
+.connection-banner {
+  position: fixed;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 35;
+  pointer-events: none;
+  font-size: 12px;
+  color: var(--amber);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 14px;
+  box-shadow: var(--shadow);
+  animation: toast-in 0.18s ease;
+}
 /* shiki 双主题：dark 变量在 data-theme=dark 时生效 */
 [data-theme="dark"] .shiki,
 [data-theme="dark"] .shiki span {

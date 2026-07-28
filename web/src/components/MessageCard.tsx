@@ -1,6 +1,7 @@
 import { memo, useEffect, useRef, useState, type ReactElement } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import { writeClipboard } from "../lib/clipboard";
 import type { ChatMessage, ExtensionInfo, LiveSubagentRun, MessageContent } from "../lib/contracts";
 import type { DiffSpec } from "./editor/DiffPane";
 import { Icon } from "./Icon";
@@ -227,30 +228,6 @@ export function coalesceAssistantText(content: MessageContent[]): MessageContent
 }
 
 const ROLE_LABELS: Record<string, [string, string]> = { user: ["你", "You"], assistant: ["OpenWebCode", "OpenWebCode"], tool: ["工具", "Tool"] };
-
-async function writeClipboard(text: string): Promise<boolean> {
-  try {
-    if (navigator.clipboard) {
-      await navigator.clipboard.writeText(text);
-      return true;
-    }
-  } catch {
-    // 降级到 execCommand
-  }
-  try {
-    const textarea = document.createElement("textarea");
-    textarea.value = text;
-    textarea.style.position = "fixed";
-    textarea.style.opacity = "0";
-    document.body.appendChild(textarea);
-    textarea.select();
-    const ok = document.execCommand("copy");
-    textarea.remove();
-    return ok;
-  } catch {
-    return false;
-  }
-}
 
 export function MessageCard({ message, sessionId, contentLens, liveSubagents, onNotice, onOpenDiff }: { message: ChatMessage; sessionId?: string; contentLens?: ExtensionInfo; /** 本消息内 spawn 工具调用关联的实时子代理运行（已由 ExecutionTrack 按 toolCallId 过滤） */ liveSubagents?: LiveSubagentRun[] | undefined; onNotice?(message: string, kind?: "info" | "error"): void; onOpenDiff?(spec: DiffSpec): void }): ReactElement {
   const { t, locale } = useI18n();

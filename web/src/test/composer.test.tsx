@@ -34,13 +34,14 @@ const skills: SkillInfo[] = [
   { name: "run", description: "运行", source: "global" },
 ];
 
-function Harness({ onSend, onConfig = () => {}, current = session, sendPending = false, initialDraft = "", initialAttachments = [], withSkills = skills, providers = [], models = [], supportsImages = true, pdfToImageExtension, pdfToImageStatus, imageCapabilitiesReady, onNotice = () => {} }: {
+function Harness({ onSend, onConfig = () => {}, current = session, sendPending = false, initialDraft = "", initialAttachments = [], history = [], withSkills = skills, providers = [], models = [], supportsImages = true, pdfToImageExtension, pdfToImageStatus, imageCapabilitiesReady, onNotice = () => {} }: {
   onSend(): void;
   onConfig?(body: Record<string, unknown>): void;
   current?: SessionDetail;
   sendPending?: boolean;
   initialDraft?: string;
   initialAttachments?: PendingImage[];
+  history?: string[];
   withSkills?: SkillInfo[];
   providers?: string[];
   models?: ModelProfile[];
@@ -71,6 +72,7 @@ function Harness({ onSend, onConfig = () => {}, current = session, sendPending =
       setAttachments={setAttachments}
       supportsImages={supportsImages}
       sendPending={sendPending}
+      history={history}
       onNotice={onNotice}
     />
   );
@@ -595,5 +597,70 @@ describe("Composer", () => {
     expect(screen.getByText("图片输入")).toBeInTheDocument();
     expect(screen.getByText("视频输入")).toBeInTheDocument();
     expect(screen.getByText("图片输出")).toBeInTheDocument();
+  });
+});
+
+describe("Composer 输入历史回查", () => {
+  beforeEach(() => {
+    window.HTMLElement.prototype.scrollIntoView = vi.fn();
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  const history = ["最新一条", "中间一条", "最早一条"];
+
+  it("↑ 逐条回退历史，回到底后 ↓ 恢复进入时暂存的草稿", () => {
+    const { textarea } = renderComposer({ onSend: vi.fn(), initialDraft: "未发送草稿", history });
+    fireEvent.keyDown(textarea, { key: "ArrowUp" });
+    expect(textarea.value).toBe("最新一条");
+    fireEvent.keyDown(textarea, { key: "ArrowUp" });
+    expect(textarea.value).toBe("中间一条");
+    fireEvent.keyDown(textarea, { key: "ArrowUp" });
+    expect(textarea.value).toBe("最早一条");
+    // 到顶后继续 ↑ 保持最旧一条
+    fireEvent.keyDown(textarea, { key: "ArrowUp" });
+    expect(textarea.value).toBe("最早一条");
+    fireEvent.keyDown(textarea, { key: "ArrowDown" });
+    expect(textarea.value).toBe("中间一条");
+    fireEvent.keyDown(textarea, { key: "ArrowDown" });
+    expect(textarea.value).toBe("最新一条");
+    // ↓ 越过最新一条：退出回查并恢复暂存草稿
+    fireEvent.keyDown(textarea, { key: "ArrowDown" });
+    expect(textarea.value).toBe("未发送草稿");
+  });
+
+  it("多行草稿光标不在首行时 ↑ 不触发回查，移到首行后触发", () => {
+    const { textarea } = renderComposer({ onSend: vi.fn(), initialDraft: "第一行\n第二行", history });
+    textarea.selectionStart = textarea.value.length;
+    textarea.selectionEnd = textarea.value.length;
+    fireEvent.keyDown(textarea, { key: "ArrowUp" });
+    expect(textarea.value).toBe("第一行\n第二行");
+    textarea.selectionStart = 0;
+    textarea.selectionEnd = 0;
+    fireEvent.keyDown(textarea, { key: "ArrowUp" });
+    expect(textarea.value).toBe("最新一条");
+  });
+
+  it("技能补全弹层打开时 ↑ 由弹层消费，不触发历史回查", () => {
+    const { textarea } = renderComposer({ onSend: vi.fn(), initialDraft: "/r", history });
+    expect(screen.getByRole("listbox", { name: "技能建议" })).toBeInTheDocument();
+    fireEvent.keyDown(textarea, { key: "ArrowUp" });
+    expect(textarea.value).toBe("/r");
+  });
+
+  it("回查中用户编辑即退出回查，再次 ↑ 重新暂存当前文本", () => {
+    const { textarea } = renderComposer({ onSend: vi.fn(), history });
+    fireEvent.keyDown(textarea, { key: "ArrowUp" });
+    expect(textarea.value).toBe("最新一条");
+    fireEvent.change(textarea, { target: { value: "改过的文本" } });
+    fireEvent.keyDown(textarea, { key: "ArrowUp" });
+    expect(textarea.value).toBe("最新一条");
+    fireEvent.keyDown(textarea, { key: "ArrowDown" });
+    expect(textarea.value).toBe("改过的文本");
+  });
+
+  it("历史为空时 ↑ 不改变草稿", () => {
+    const { textarea } = renderComposer({ onSend: vi.fn(), initialDraft: "保持原样" });
+    fireEvent.keyDown(textarea, { key: "ArrowUp" });
+    expect(textarea.value).toBe("保持原样");
   });
 });

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { registerCommand, resetCommands } from "../commands/registry";
-import { comboFromEvent, dispatchKeybinding, formatCombo, type Keybinding } from "../commands/keybindings";
+import { comboFromEvent, DEFAULT_KEYBINDINGS, dispatchKeybinding, formatCombo, type Keybinding } from "../commands/keybindings";
 
 afterEach(() => resetCommands());
 
@@ -78,5 +78,55 @@ describe("formatCombo", () => {
     expect(formatCombo("mod+`", false)).toBe("Ctrl+`");
     expect(formatCombo("mod+shift+p", true)).toBe("⌘⇧P");
     expect(formatCombo("f6", false)).toBe("F6");
+  });
+});
+
+describe("Esc 中断键位（session.abort）", () => {
+  // 与 builtin.ts 的注册保持一致：命令级 when 叠加键位级 when
+  function registerAbort(): ReturnType<typeof vi.fn> {
+    const abort = vi.fn();
+    registerCommand({ id: "session.abort", title: { zh: "中断当前任务", en: "Stop Current Run" }, when: "sessionActive running", handler: abort });
+    return abort;
+  }
+
+  const runningContext = { sessionActive: true, running: true };
+
+  it("运行中按 Esc 触发中断", () => {
+    const abort = registerAbort();
+    const result = dispatchKeybinding(keyEvent({ key: "Escape" }), DEFAULT_KEYBINDINGS, runningContext);
+    expect(result).toEqual({ command: "session.abort", handled: true });
+    expect(abort).toHaveBeenCalledTimes(1);
+  });
+
+  it("非运行状态不触发", () => {
+    const abort = registerAbort();
+    expect(dispatchKeybinding(keyEvent({ key: "Escape" }), DEFAULT_KEYBINDINGS, { sessionActive: true, running: false })).toBeUndefined();
+    expect(abort).not.toHaveBeenCalled();
+  });
+
+  it("浮层打开（dialogOpen）时不抢 Esc", () => {
+    const abort = registerAbort();
+    expect(dispatchKeybinding(keyEvent({ key: "Escape" }), DEFAULT_KEYBINDINGS, { ...runningContext, dialogOpen: true })).toBeUndefined();
+    expect(abort).not.toHaveBeenCalled();
+  });
+
+  it("编辑器/diff 分栏打开时不抢 Esc", () => {
+    const abort = registerAbort();
+    expect(dispatchKeybinding(keyEvent({ key: "Escape" }), DEFAULT_KEYBINDINGS, { ...runningContext, editorOpen: true })).toBeUndefined();
+    expect(dispatchKeybinding(keyEvent({ key: "Escape" }), DEFAULT_KEYBINDINGS, { ...runningContext, diffOpen: true })).toBeUndefined();
+    expect(abort).not.toHaveBeenCalled();
+  });
+
+  it("权限卡待决（permissionPending）时不抢 Esc", () => {
+    const abort = registerAbort();
+    expect(dispatchKeybinding(keyEvent({ key: "Escape" }), DEFAULT_KEYBINDINGS, { ...runningContext, permissionPending: true })).toBeUndefined();
+    expect(abort).not.toHaveBeenCalled();
+  });
+
+  it("输入框聚焦（Composer 自行处理 Esc/补全弹层）时不触发", () => {
+    const abort = registerAbort();
+    const textarea = document.createElement("textarea");
+    expect(dispatchKeybinding(keyEvent({ key: "Escape", target: textarea }), DEFAULT_KEYBINDINGS, runningContext)).toBeUndefined();
+    expect(abort).not.toHaveBeenCalled();
   });
 });

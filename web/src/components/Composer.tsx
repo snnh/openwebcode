@@ -123,7 +123,7 @@ const EFFORT_LABEL: Record<string, [string, string]> = {
   max: ["最大", "Maximum"],
 };
 
-export function Composer({ current, model, models, providers = [], pdfToImageExtension, pdfToImageStatus = "ready", imageCapabilitiesReady = true, draft, setDraft, onSend, onConfig, running, sendKey, skills, attachments, setAttachments, supportsImages, onNotice, sendPending = false }: {
+export function Composer({ current, model, models, providers = [], pdfToImageExtension, pdfToImageStatus = "ready", imageCapabilitiesReady = true, draft, setDraft, onSend, onConfig, running, sendKey, skills, attachments, setAttachments, supportsImages, onNotice, sendPending = false, history = [] }: {
   current: SessionDetail;
   model?: ModelProfile;
   models: ModelProfile[];
@@ -147,6 +147,8 @@ export function Composer({ current, model, models, providers = [], pdfToImageExt
   setAttachments(value: PendingImage[] | ((prev: PendingImage[]) => PendingImage[])): void;
   supportsImages: boolean;
   onNotice(message: string, kind?: NoticeKind): void;
+  /** 输入历史（本会话已发送的用户消息，最新在前）：↑/↓ 回查，弹层打开时弹层优先 */
+  history?: string[];
 }): ReactElement {
   const { t } = useI18n();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -175,6 +177,9 @@ export function Composer({ current, model, models, providers = [], pdfToImageExt
   const [pdfProgress, setPdfProgress] = useState<PdfProgress | null>(null);
   const [queuedBehavior, setQueuedBehavior] = useState<"steer" | "follow_up">("steer");
   const [advancedConfigOpen, setAdvancedConfigOpen] = useState(false);
+  // 输入历史回查：null = 未在回查；进入回查时把当前草稿暂存，回查到底（最新之后）恢复
+  const [historyIndex, setHistoryIndex] = useState<number | null>(null);
+  const historyStashRef = useRef("");
   const pdfToImageEnabled = pdfToImageExtension?.enabled === true;
 
   useEffect(() => { draftRef.current = draft; }, [draft]);
@@ -185,6 +190,8 @@ export function Composer({ current, model, models, providers = [], pdfToImageExt
     pdfJobsTaskRef.current = undefined;
     setPdfJobs(0);
     setPdfProgress(null);
+    // 会话切换：历史属于旧会话，退出回查状态
+    setHistoryIndex(null);
   }, [current.id]);
   const isCurrentTask = useCallback((task: AttachmentTask): boolean => (
     taskSessionRef.current.sessionId === task.sessionId
@@ -737,6 +744,8 @@ const mentionHasMatches = mentionItems.length > 0;
           }
           aria-autocomplete="list"
           onChange={(event) => {
+            // 用户编辑（非回查写入）即退出回查：当前文本成为新的编辑起点
+            if (historyIndex !== null) setHistoryIndex(null);
             writeDraft(event.target.value);
             syncMention(event.target);
           }}
@@ -805,6 +814,43 @@ const mentionHasMatches = mentionItems.length > 0;
               setDismissed(true);
               return;
             }
+            // 输入历史回查：光标在首行（或输入为空）且弹层已让行后，↑ 逐条回退、↓ 前进，
+            // 回查到底（最新之后）恢复进入时暂存的草稿；修饰键组合不触发
+            if (!event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
+              if (event.key === "ArrowUp" && history.length > 0) {
+                const node = event.currentTarget;
+                const onFirstLine = historyIndex !== null || !node.value.slice(0, node.selectionStart ?? 0).includes("\n");
+                if (onFirstLine) {
+                  event.preventDefault();
+                  if (historyIndex === null) historyStashRef.current = draftRef.current;
+                  const next = Math.min((historyIndex ?? -1) + 1, history.length - 1);
+                  if (next !== historyIndex) {
+                    setHistoryIndex(next);
+                    writeDraft(history[next]!);
+                    requestAnimationFrame(() => {
+                      const el = textareaRef.current;
+                      if (el) { el.selectionStart = el.value.length; el.selectionEnd = el.value.length; }
+                    });
+                  }
+                  return;
+                }
+              }
+              if (event.key === "ArrowDown" && historyIndex !== null) {
+                event.preventDefault();
+                if (historyIndex === 0) {
+                  setHistoryIndex(null);
+                  writeDraft(historyStashRef.current);
+                } else {
+                  setHistoryIndex(historyIndex - 1);
+                  writeDraft(history[historyIndex - 1]!);
+                }
+                requestAnimationFrame(() => {
+                  const el = textareaRef.current;
+                  if (el) { el.selectionStart = el.value.length; el.selectionEnd = el.value.length; }
+                });
+                return;
+              }
+            }
             // 输入法组合中的 Enter 不触发发送；发送键可在设置中切换
             if (event.nativeEvent.isComposing || event.key !== "Enter") return;
             const shouldSend = sendKey === "enter"
@@ -813,7 +859,7 @@ const mentionHasMatches = mentionItems.length > 0;
             if (shouldSend) {
               event.preventDefault();
               // 发送进行中忽略重复提交（运行中入队场景仍允许，由 running 控制）
-              if (!sendPending && !processingPdf) onSend();
+              if (!sendPending && !processingPdf) { setHistoryIndex(null); onSend(); }
             }
           }}
           placeholder={running

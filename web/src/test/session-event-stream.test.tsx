@@ -1,10 +1,11 @@
-import { act, render } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useSessionEventStream } from "../hooks/use-session-event-stream";
 import type { AppEvent } from "../lib/contracts";
 
 class StubWebSocket {
   static instances: StubWebSocket[] = [];
+  onopen: (() => void) | null = null;
   onmessage: ((event: MessageEvent<string>) => void) | null = null;
   onclose: (() => void) | null = null;
   readonly close = vi.fn();
@@ -33,8 +34,8 @@ function event(overrides: Partial<AppEvent> = {}): AppEvent {
 }
 
 function Probe({ sessionId, onEvent }: { sessionId?: string; onEvent(event: AppEvent): void }) {
-  useSessionEventStream({ sessionId, onEvent });
-  return null;
+  const { reconnecting } = useSessionEventStream({ sessionId, onEvent });
+  return <span data-testid="reconnecting">{String(reconnecting)}</span>;
 }
 
 describe("useSessionEventStream", () => {
@@ -42,6 +43,7 @@ describe("useSessionEventStream", () => {
   afterEach(() => {
     StubWebSocket.instances = [];
     globalThis.WebSocket = original;
+    vi.useRealTimers();
   });
 
   it("uses session cursors, de-duplicates replay, and disposes the old socket on a session switch", () => {
@@ -62,5 +64,24 @@ describe("useSessionEventStream", () => {
     act(() => first.emit(event({ eventId: "old", sessionId: "s1", sessionSeq: 2 })));
     act(() => second.emit(event({ eventId: "new", sessionId: "s2", sessionSeq: 1 })));
     expect(received.map((item) => item.eventId)).toEqual(["event-1", "new"]);
+  });
+
+  it("断线退避重连期间暴露 reconnecting，重连成功后恢复", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("WebSocket", StubWebSocket as unknown as typeof WebSocket);
+    render(<Probe sessionId="s1" onEvent={() => undefined} />);
+    const status = (): string | null => screen.getByTestId("reconnecting").textContent;
+    expect(status()).toBe("false");
+
+    const first = StubWebSocket.instances[0]!;
+    act(() => first.onclose?.());
+    expect(status()).toBe("true");
+
+    // 退避定时器触发重连，新 socket 握手成功后横幅消失
+    act(() => vi.advanceTimersByTime(500));
+    const second = StubWebSocket.instances[1]!;
+    expect(second).toBeDefined();
+    act(() => second.onopen?.());
+    expect(status()).toBe("false");
   });
 });
