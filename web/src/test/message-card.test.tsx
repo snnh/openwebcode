@@ -132,6 +132,13 @@ describe("MessageCard", () => {
     await waitFor(() => expect(details.querySelector(".subagent-transcript-messages")).toBeInTheDocument());
     expect(details.querySelectorAll(".subagent-transcript-message")).toHaveLength(20);
     expect(details.querySelector(".subagent-transcript-messages > .subagent-transcript-status")).toHaveTextContent("仅显示最近 20 条");
+
+    // 「展开全部」toggle：显示全部 25 条，再「收起」回到 20 条
+    fireEvent.click(details.querySelector<HTMLButtonElement>(".subagent-transcript-fold-toggle")!);
+    expect(details.querySelectorAll(".subagent-transcript-message")).toHaveLength(25);
+    expect(details.querySelector(".subagent-transcript-messages > .subagent-transcript-status")).not.toHaveTextContent("仅显示最近 20 条");
+    fireEvent.click(details.querySelector<HTMLButtonElement>(".subagent-transcript-fold-toggle")!);
+    expect(details.querySelectorAll(".subagent-transcript-message")).toHaveLength(20);
   });
 
   it("renders spawn tool calls as dedicated cards with live status from props", () => {

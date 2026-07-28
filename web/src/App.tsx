@@ -12,6 +12,7 @@ import { writeClipboard } from "./lib/clipboard";
 import { deriveInputHistory } from "./lib/input-history";
 import { useTheme } from "./theme";
 import { useAgentRun } from "./hooks/use-agent-run";
+import { useLiveActivity, type LiveActivityInfo } from "./hooks/use-live-activity";
 import { useLiveSubagents } from "./hooks/use-live-subagents";
 import { useSubagentTabs } from "./hooks/use-subagent-tabs";
 import { deriveSubagentRunsFromMessages, mergeSubagentRuns } from "./lib/subagent-runs";
@@ -19,11 +20,12 @@ import { useSessionEventStream } from "./hooks/use-session-event-stream";
 import { useStreamBuffers } from "./hooks/use-stream-buffers";
 import { applyDiagnosticsBadgeUpdate, clearDiagnosticsBadge } from "./lib/diagnostics";
 import { BottomPanel } from "./components/BottomPanel";
-import { StatusBar } from "./components/StatusBar";
+import { StatusBar, INACTIVE_STATES } from "./components/StatusBar";
 import { InteractionCard } from "./components/InteractionCard";
 import { Composer } from "./components/Composer";
 import type { PendingImage } from "./components/Composer";
 import { EmptyState } from "./components/EmptyState";
+import { SessionSkeleton } from "./components/SessionSkeleton";
 import { ExecutionTrack } from "./components/ExecutionTrack";
 import { SubagentTabStrip } from "./components/SubagentTabStrip";
 import { SubagentTabView } from "./components/SubagentTabView";
@@ -157,6 +159,8 @@ export function App(): ReactElement {
   // 待确认权限以服务端为准（刷新后可恢复），WS 事件只作即时补充
   const serverPermissions = useQuery({ queryKey: ["permissions", currentId], queryFn: () => api.pendingPermissions(currentId!), enabled: Boolean(currentId) });
   const { data: currentRun, applyEvent: applyRunEvent } = useAgentRun(currentId);
+  // 实时活动（agent.state + tool.start/end）：对话区底部吸底活动条的数据源
+  const { activityFor, applyEvent: applyActivityEvent } = useLiveActivity();
 
   useEffect(() => {
     if (!currentId && sessions.data?.[0]) setCurrentId(sessions.data[0].id);
@@ -180,6 +184,7 @@ export function App(): ReactElement {
 
   const handleSessionEvent = useCallback((event: AppEvent): void => {
         applyRunEvent(event);
+        applyActivityEvent(event);
         if (event.type === "resync.required") {
           // 事件流为全局订阅：按事件所属会话刷新，缺省回退当前会话。
           const targetId = event.sessionId ?? currentId;
@@ -361,7 +366,7 @@ export function App(): ReactElement {
             void detailRefresh.finally(() => clearStream(event.sessionId!));
           }
         }
-  }, [applyRunEvent, applySubagentEvent, clearStream, currentId, flushStreamBuffers, notify, pushEventNotification, queryClient, queueStreamDelta, sessions.data, t]);
+  }, [applyRunEvent, applyActivityEvent, applySubagentEvent, clearStream, currentId, flushStreamBuffers, notify, pushEventNotification, queryClient, queueStreamDelta, sessions.data, t]);
   // 全局订阅：服务端在未传 sessionId 时全量推送，handler 按 event.sessionId 分发。
   const { reconnecting } = useSessionEventStream({ onEvent: handleSessionEvent, onDisconnect: finishBufferedStreams });
 
@@ -399,6 +404,20 @@ export function App(): ReactElement {
   }, [currentId, subagentRuns, focusSubagentTab]);
   const currentState = currentRun?.state ?? (currentId ? agentStates[currentId] : undefined);
   const running = Boolean(stream[currentId ?? ""]) || isBusyState(currentState);
+  // 对话区底部实时活动条：WS 工具事件优先，状态/起始时间回退到 run 快照（刷新页面后首个事件前可用）
+  const liveActivity = useMemo<LiveActivityInfo | undefined>(() => {
+    if (!currentId) return undefined;
+    const info = activityFor(currentId);
+    const state = info?.state ?? currentState;
+    if (!state || INACTIVE_STATES.has(state)) return undefined;
+    const since = info?.since ?? (currentRun?.since ? Date.parse(currentRun.since) : undefined);
+    return {
+      state,
+      ...(since !== undefined && !Number.isNaN(since) ? { since } : {}),
+      ...(info?.currentTool ? { currentTool: info.currentTool } : {}),
+      toolCount: info?.toolCount ?? 0,
+    };
+  }, [activityFor, currentId, currentState, currentRun?.since]);
   // Composer 输入历史：本会话已发送的用户消息（最新在前），↑/↓ 回查
   const inputHistory = useMemo(() => deriveInputHistory(displaySession?.messages ?? []), [displaySession]);
   const runningIds = useMemo(
@@ -943,6 +962,7 @@ export function App(): ReactElement {
                   hasMoreMessages={hasMoreOlder}
                   onLoadMore={loadMoreMessages}
                   loadingMore={loadingMore}
+                  liveActivity={liveActivity}
                 />
                 </div>
                 {selectedSubagentTab !== undefined && (
@@ -990,6 +1010,9 @@ export function App(): ReactElement {
                   onNotice={(message, kind = "info") => notify(message, kind)}
                 />
               </>
+            ) : currentId && detail.isLoading ? (
+              // 会话详情首次加载中：渲染对话骨架，避免欢迎页闪烁
+              <SessionSkeleton />
             ) : (
               <EmptyState
                 sessions={sessions.data ?? []}
@@ -1044,6 +1067,14 @@ export function App(): ReactElement {
             windowUsage={windowInfo}
             subagentRuns={subagentRuns}
             {...(latestUsage ? { latestUsage } : {})}
+            {...(!isMobile && current ? {
+              status: {
+                state: currentState,
+                tokens: costSummary?.tokens,
+                costLabel: costSummary?.costLabel,
+                windowPercent: windowInfo?.utilization !== undefined ? Math.round(windowInfo.utilization * 100) : undefined,
+              },
+            } : {})}
             evalEnabled={extensions.data?.some((extension) => extension.id === "owc-eval" && extension.enabled) === true}
             onNotice={notify}
             open={layout.bottomOpen}
@@ -1052,7 +1083,8 @@ export function App(): ReactElement {
             {...(!isMobile ? { onOpenSubagentTab: openSubagentTab } : {})}
           />
         }
-        statusBar={current && (
+        // 桌面端状态项已并入 BottomPanel 标签条；状态栏仅移动端保留（底部面板在移动端为覆盖层）
+        statusBar={isMobile && current ? (
           <StatusBar
             session={current}
             state={currentState}
@@ -1061,7 +1093,7 @@ export function App(): ReactElement {
             indexStatus={indexStatus.data?.status}
             {...(windowInfo?.utilization !== undefined ? { windowPercent: Math.round(windowInfo.utilization * 100) } : {})}
           />
-        )}
+        ) : null}
       />
       <input
         ref={importInput}
