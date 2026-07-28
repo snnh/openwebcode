@@ -1,8 +1,10 @@
 import { useState, type ReactElement } from "react";
 import { useQuery } from "@tanstack/react-query";
-import type { SessionDetail, BackgroundTaskInfo, SandboxMode, ShellBackend, SnapshotMode } from "../lib/contracts";
+import type { SessionDetail, BackgroundTaskInfo, ContextUsage, SandboxMode, ShellBackend, SnapshotMode } from "../lib/contracts";
 import { api } from "../lib/api";
-import { formatTokensShort } from "../lib/format";
+import { formatTokens, formatTokensShort } from "../lib/format";
+import { cacheHitRate } from "../lib/cache-stats";
+import { windowLevel, type ContextWindowInfo } from "../lib/context-window";
 import { Icon } from "./Icon";
 import { useI18n } from "../i18n";
 
@@ -42,10 +44,14 @@ const SANDBOX_LABELS: Record<SandboxMode, [string, string]> = {
   off: ["关闭", "Off"],
 };
 
-export function JobHeader({ session, agentState, costSummary, onAbort, onConfig, onCreateCheckpoint, checkpointPending = false, running = false }: {
+export function JobHeader({ session, agentState, costSummary, windowUsage, latestUsage, onAbort, onConfig, onCreateCheckpoint, checkpointPending = false, running = false }: {
   session: SessionDetail;
   agentState?: string;
   costSummary?: CostSummary;
+  /** 上下文窗口占用（WS 水位优先，REST stats 播种）；无时隐藏。 */
+  windowUsage?: ContextWindowInfo;
+  /** 最近一轮 token 用量（WS context.usage）；驱动缓存命中率 pill，无时隐藏。 */
+  latestUsage?: ContextUsage;
   onAbort(): void;
   onConfig(body: Record<string, unknown>): Promise<void>;
   /** 托管工作区的显式镜像盘快照；由 App 统一处理通知与缓存刷新。 */
@@ -57,6 +63,9 @@ export function JobHeader({ session, agentState, costSummary, onAbort, onConfig,
   const { t } = useI18n();
   const busy = isBusyState(agentState) || running;
   const budgetRatio = costSummary?.tokenBudget ? Math.min(1, costSummary.tokens / costSummary.tokenBudget) : undefined;
+  const windowState = windowLevel(windowUsage?.utilization);
+  const windowPct = windowUsage?.utilization !== undefined ? Math.round((windowUsage?.utilization ?? 0) * 100) : undefined;
+  const cache = latestUsage ? cacheHitRate(latestUsage) : undefined;
   const [tasksOpen, setTasksOpen] = useState(false);
   const [expandedTask, setExpandedTask] = useState<string | null>(null);
   const [configPending, setConfigPending] = useState(false);
@@ -114,6 +123,35 @@ export function JobHeader({ session, agentState, costSummary, onAbort, onConfig,
             {budgetRatio !== undefined && (
               <i className="budget-bar" aria-hidden><i style={{ width: `${Math.round(budgetRatio * 100)}%` }} /></i>
             )}
+          </span>
+        )}
+        {windowUsage && (
+          <span
+            className="window-usage"
+            data-testid="window-usage"
+            data-level={windowState}
+            title={windowUsage.contextWindow
+              ? t(`上下文窗口 ${formatTokens(windowUsage.estimatedTokens)} / ${formatTokens(windowUsage.contextWindow)} tokens（${windowPct ?? 0}%）`, `Context window ${formatTokens(windowUsage.estimatedTokens)} / ${formatTokens(windowUsage.contextWindow)} tokens (${windowPct ?? 0}%)`)
+              : t(`当前上下文约 ${formatTokens(windowUsage.estimatedTokens)} tokens`, `Current context ≈ ${formatTokens(windowUsage.estimatedTokens)} tokens`)}
+          >
+            {windowUsage.contextWindow && windowPct !== undefined
+              ? `${formatTokensShort(windowUsage.estimatedTokens)}/${formatTokensShort(windowUsage.contextWindow)} · ${windowPct}%`
+              : `${formatTokensShort(windowUsage.estimatedTokens)} ${t("上下文", "context")}`}
+            {windowPct !== undefined && (
+              <i className={`budget-bar${windowState !== "normal" ? ` level-${windowState}` : ""}`} aria-hidden><i style={{ width: `${Math.min(100, windowPct)}%` }} /></i>
+            )}
+          </span>
+        )}
+        {latestUsage && cache && cache.rate !== null && (
+          <span
+            className="window-usage cache-usage"
+            data-testid="cache-usage"
+            title={t(
+              `缓存读取 ${formatTokensShort(cache.cacheRead)} · 写入 ${formatTokensShort(cache.cacheWrite)} · 未缓存输入 ${formatTokensShort(latestUsage.inputTokens)}`,
+              `Cache read ${formatTokensShort(cache.cacheRead)} · write ${formatTokensShort(cache.cacheWrite)} · uncached input ${formatTokensShort(latestUsage.inputTokens)}`,
+            )}
+          >
+            {t("缓存", "cache")} {Math.round(cache.rate * 100)}%
           </span>
         )}
         {runningTasks.length > 0 && (

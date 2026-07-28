@@ -24,7 +24,7 @@ import type { MessageContent, ShellBackend } from "../sessions/types.js";
 import type { SessionStore } from "../sessions/session-store.js";
 import { defaultSandboxPolicy } from "../sessions/default-sandbox.js";
 import { parseSkillCommand, type SkillRegistry } from "../skills.js";
-import type { AgentRegistry } from "../agents.js";
+import type { AgentDefinition, AgentRegistry } from "../agents.js";
 import { renderCommand, type CommandRegistry } from "../commands.js";
 import type { McpManager } from "../mcp/manager.js";
 import { appendMemory, readGlobalMemory, readProjectMemory } from "../memory.js";
@@ -284,20 +284,33 @@ const SPAWN_SWARM_TOOL: ProviderTool = {
   name: "spawn_swarm",
   description:
     "Launch multiple read-only sub-agents from one prompt template over different inputs, running in parallel (launches beyond the concurrency limit are queued). " +
-    "The {{item}} placeholder in prompt_template is replaced with each items value; each item launches one independent sub-agent with an isolated context. " +
+    "The {{item}} placeholder in prompt_template is replaced with each item's task value; each item launches one independent sub-agent with an isolated context. " +
     "Use when many independent tasks of the same kind should run in parallel (e.g. reviewing several files or endpoints). " +
     "For a single task use spawn_task instead. Each sub-agent can only use the read-only tools read_file, glob, grep and read_artifact; " +
     "only its final conclusion (at most 2000 characters) is returned, aggregated as numbered results.",
   inputSchema: {
     type: "object",
     properties: {
-      prompt_template: { type: "string", description: "Prompt template for every sub-agent; must contain the {{item}} placeholder where each item value is substituted." },
+      prompt_template: { type: "string", description: "Prompt template for every sub-agent; must contain the {{item}} placeholder where each item's task value is substituted." },
       items: {
         type: "array",
-        items: { type: "string" },
-        description: "Values used to fill {{item}}. Each item launches one sub-agent; 2-16 items, and the filled-in prompts must be distinct.",
+        items: {
+          anyOf: [
+            { type: "string" },
+            {
+              type: "object",
+              properties: {
+                task: { type: "string", description: "Value used to fill {{item}} for this item." },
+                agent: { type: "string", description: "Optional custom sub-agent name overriding the call-level agent for this item only." },
+              },
+              required: ["task"],
+              additionalProperties: false,
+            },
+          ],
+        },
+        description: "Values used to fill {{item}}. Each item launches one sub-agent; 2-16 items, and the filled-in prompts must be distinct. An item may be a plain string or an object { task, agent? } to override the agent for that item.",
       },
-      agent: { type: "string", description: "Optional custom sub-agent name from the system prompt catalog, applied to every launch." },
+      agent: { type: "string", description: "Optional custom sub-agent name from the system prompt catalog, applied to every launch unless an item overrides it." },
     },
     required: ["prompt_template", "items"],
     additionalProperties: false,
@@ -1644,6 +1657,8 @@ export class AgentRunner {
     if (name === "spawn_task") {
       this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
       this.state(sessionId, "tool_running");
+      // catch 分支需引用（子代理启动后失败补发 subagent.finished），声明在 try 之外
+      let taskId = "";
       try {
         const session = await this.sessions.get(sessionId);
         if (!session) throw new Error("Session not found");
@@ -1671,12 +1686,22 @@ export class AgentRunner {
           cwd: session.cwd,
           contextRoot: this.sessions.contextRoot(sessionId),
           signal,
-          onStart: (taskId) => {
+          onStart: (id) => {
+            taskId = id;
             this.events.publish({
               source: "agent",
               type: "subagent.started",
               sessionId,
-              payload: { toolCallId, taskId, prompt: prompt.slice(0, 200), ...(definition ? { agent: definition.name } : {}) },
+              payload: { toolCallId, taskId: id, prompt: prompt.slice(0, 200), ...(definition ? { agent: definition.name } : {}) },
+            });
+          },
+          onProgress: (progress) => {
+            if (!taskId) return;
+            this.events.publish({
+              source: "agent",
+              type: "subagent.progress",
+              sessionId,
+              payload: { toolCallId, taskId, turns: progress.turns, toolsUsed: progress.toolsUsed },
             });
           },
           onUsage: (usage) => this.recordUsageEvent(sessionId, subUsageContext, session.provider, definition?.model ?? session.model, usage),
@@ -1685,7 +1710,7 @@ export class AgentRunner {
           source: "agent",
           type: "subagent.finished",
           sessionId,
-          payload: { toolCallId, taskId: result.taskId, status: "done", turns: result.turns },
+          payload: { toolCallId, taskId: result.taskId, status: "done", turns: result.turns, toolsUsed: result.toolsUsed },
         });
         this.events.publish({
           source: "agent",
@@ -1696,6 +1721,10 @@ export class AgentRunner {
         return { type: "tool_result", toolCallId, content: result.conclusion, isError: false, subagentTaskIds: [result.taskId] };
       } catch (error) {
         const content = error instanceof Error ? error.message : String(error);
+        // 子代理已启动后失败（含中断）：补发 finished，与 spawn_swarm 单项失败语义一致
+        if (taskId) {
+          this.events.publish({ source: "agent", type: "subagent.finished", sessionId, payload: { toolCallId, taskId, status: "failed", error: content } });
+        }
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
         return { type: "tool_result", toolCallId, content, isError: true };
       }
@@ -1710,14 +1739,33 @@ export class AgentRunner {
         if (!provider) throw new Error(`Provider ${session.provider} is not configured`);
         const template = String(input.prompt_template ?? "");
         if (!template.includes("{{item}}")) throw new Error("spawn_swarm requires prompt_template to contain the {{item}} placeholder");
-        const rawItems = Array.isArray(input.items) ? input.items.map((item) => String(item)) : [];
-        if (rawItems.length < 2) throw new Error("spawn_swarm requires at least 2 items; for a single task use spawn_task");
-        if (rawItems.length > SPAWN_SWARM_MAX_ITEMS) throw new Error(`spawn_swarm supports at most ${SPAWN_SWARM_MAX_ITEMS} items (got ${rawItems.length})`);
-        const prompts = rawItems.map((item) => template.split("{{item}}").join(item));
+        // items 兼容两种形态：纯字符串，或 { task, agent? }（agent 覆盖本次调用的整体 agent）
+        interface SwarmItemSpec { task: string; agent?: string }
+        const items: SwarmItemSpec[] = (Array.isArray(input.items) ? input.items : []).map((raw) => {
+          if (typeof raw === "string") return { task: raw };
+          if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+            const record = raw as Record<string, unknown>;
+            const agent = typeof record.agent === "string" ? record.agent.trim() : "";
+            return { task: String(record.task ?? ""), ...(agent ? { agent } : {}) };
+          }
+          return { task: String(raw) };
+        });
+        if (items.length < 2) throw new Error("spawn_swarm requires at least 2 items; for a single task use spawn_task");
+        if (items.length > SPAWN_SWARM_MAX_ITEMS) throw new Error(`spawn_swarm supports at most ${SPAWN_SWARM_MAX_ITEMS} items (got ${items.length})`);
+        if (items.some((item) => !item.task.trim())) throw new Error("spawn_swarm items require a non-empty task");
+        const prompts = items.map((item) => template.split("{{item}}").join(item.task));
         if (new Set(prompts).size !== prompts.length) throw new Error("spawn_swarm items must produce distinct filled-in prompts");
         const agentName = typeof input.agent === "string" ? input.agent.trim() : "";
         const definition = agentName && this.agents ? await this.agents.find(session.cwd, agentName) : undefined;
         if (agentName && !definition) throw new Error(`Unknown sub-agent: ${agentName}`);
+        // 预解析逐项 agent 覆盖：未知名称直接拒绝整次调用（与调用级 agent 一致）
+        const itemDefinitions = new Map<number, AgentDefinition>();
+        for (const [index, item] of items.entries()) {
+          if (!item.agent) continue;
+          const found = this.agents ? await this.agents.find(session.cwd, item.agent) : undefined;
+          if (!found) throw new Error(`Unknown sub-agent: ${item.agent} (item ${index + 1})`);
+          itemDefinitions.set(index, found);
+        }
         const requestedTools = definition?.tools ?? [...SUB_AGENT_TOOL_NAMES];
         const toolNames = requestedTools.filter((tool) => (SUB_AGENT_TOOL_NAMES as readonly string[]).includes(tool));
         const subUsageContext = new ContextManager(this.sessions.contextRoot(sessionId));
@@ -1726,15 +1774,19 @@ export class AgentRunner {
         const subagentTaskIds: string[] = [];
         const runOne = async (prompt: string, index: number): Promise<SwarmItemOutcome> => {
           const swarm = { index: index + 1, total: prompts.length };
+          const effective = itemDefinitions.get(index) ?? definition;
+          const effectiveTools = effective?.tools
+            ? effective.tools.filter((tool) => (SUB_AGENT_TOOL_NAMES as readonly string[]).includes(tool))
+            : toolNames;
           let taskId = "";
           try {
             const result = await runSubAgent({
               provider,
               model: session.model,
-              ...(definition?.model ? { modelOverride: definition.model } : {}),
-              ...(definition ? { systemExtra: definition.body, agent: definition.name } : {}),
+              ...(effective?.model ? { modelOverride: effective.model } : {}),
+              ...(effective ? { systemExtra: effective.body, agent: effective.name } : {}),
               prompt,
-              toolNames,
+              toolNames: effectiveTools,
               core: this.core,
               sessionId,
               cwd: session.cwd,
@@ -1747,16 +1799,25 @@ export class AgentRunner {
                   source: "agent",
                   type: "subagent.started",
                   sessionId,
-                  payload: { toolCallId, taskId: id, prompt: prompt.slice(0, 200), swarm, ...(definition ? { agent: definition.name } : {}) },
+                  payload: { toolCallId, taskId: id, prompt: prompt.slice(0, 200), swarm, ...(effective ? { agent: effective.name } : {}) },
                 });
               },
-              onUsage: (usage) => this.recordUsageEvent(sessionId, subUsageContext, session.provider, definition?.model ?? session.model, usage),
+              onProgress: (progress) => {
+                if (!taskId) return;
+                this.events.publish({
+                  source: "agent",
+                  type: "subagent.progress",
+                  sessionId,
+                  payload: { toolCallId, taskId, turns: progress.turns, toolsUsed: progress.toolsUsed, swarm },
+                });
+              },
+              onUsage: (usage) => this.recordUsageEvent(sessionId, subUsageContext, session.provider, effective?.model ?? session.model, usage),
             });
             this.events.publish({
               source: "agent",
               type: "subagent.finished",
               sessionId,
-              payload: { toolCallId, taskId: result.taskId, status: "done", turns: result.turns, swarm },
+              payload: { toolCallId, taskId: result.taskId, status: "done", turns: result.turns, toolsUsed: result.toolsUsed, swarm },
             });
             return { ok: true, conclusion: result.conclusion };
           } catch (error) {
@@ -1770,17 +1831,19 @@ export class AgentRunner {
             return { ok: false, error: message };
           }
         };
-        // 并发上限内的 worker-pool：超出项排队，单项失败不拖垮整批（allSettled 语义）
+        // 并发上限内的 worker-pool：超出项排队，单项失败不拖垮整批（allSettled 语义）；
+        // 中断后不再启动排队项（在途项经 signal 自然中止）
         const outcomes: SwarmItemOutcome[] = new Array(prompts.length) as SwarmItemOutcome[];
         let next = 0;
         const workers = Array.from({ length: Math.min(SPAWN_SWARM_CONCURRENCY, prompts.length) }, async () => {
-          while (next < prompts.length) {
+          while (!signal.aborted && next < prompts.length) {
             const index = next;
             next += 1;
             outcomes[index] = await runOne(prompts[index]!, index);
           }
         });
         await Promise.all(workers);
+        signal.throwIfAborted();
         const failed = outcomes.filter((outcome) => !outcome.ok).length;
         const aggregated = outcomes
           .map((outcome, index) => outcome.ok

@@ -1,7 +1,8 @@
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { AgentRegistry } from "../src/agents.js";
 import { AgentRunner, SPAWN_SWARM_MAX_ITEMS } from "../src/agent/agent-runner.js";
 import type { CoreClientLike } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
@@ -35,10 +36,12 @@ interface SwarmFixture {
   captured: AppEvent[];
   requests: StreamChatRequest[];
   sessionId: string;
+  /** 子代理实际收到的 prompt（按启动顺序） */
+  startedSub: string[];
 }
 
-/** 主循环第一轮调用 spawn_swarm；子代理按用户消息里的 item 回结论；failOn 命中的 item 抛错 */
-async function setupSwarm(input: Record<string, unknown>, failOn?: string): Promise<SwarmFixture> {
+/** 主循环第一轮调用 spawn_swarm；子代理按用户消息里的 item 回结论；failOn 命中的 item 抛错；hang 时子代理挂起直到中断 */
+async function setupSwarm(input: Record<string, unknown>, failOn?: string, options?: { registry?: AgentRegistry; hang?: boolean }): Promise<SwarmFixture> {
   const root = await tempRoot();
   const sessions = new SessionStore(path.join(root, "sessions"));
   await sessions.initialize();
@@ -50,6 +53,7 @@ async function setupSwarm(input: Record<string, unknown>, failOn?: string): Prom
   events.on("event", (event: AppEvent) => captured.push(event));
 
   const requests: StreamChatRequest[] = [];
+  const startedSub: string[] = [];
   let mainTurn = 0;
   const provider: Provider = {
     name: "fake",
@@ -59,6 +63,15 @@ async function setupSwarm(input: Record<string, unknown>, failOn?: string): Prom
         const last = request.messages.at(-1);
         const text = last?.content.find((block) => block.type === "text");
         const prompt = text?.type === "text" ? text.text : "";
+        startedSub.push(prompt);
+        if (options?.hang) {
+          // 挂起直到 run 中断（与 steering.test.ts 同一模式）：模拟在途长任务，验证中断传播与排队项门控
+          await new Promise<void>((resolve) => {
+            if (request.signal.aborted) resolve();
+            request.signal.addEventListener("abort", () => resolve(), { once: true });
+          });
+          if (request.signal.aborted) throw request.signal.reason instanceof Error ? request.signal.reason : new Error("sub aborted");
+        }
         if (failOn && prompt.includes(failOn)) throw new Error("provider boom");
         yield { type: "text_delta", text: `结论：${prompt}` };
         yield { type: "done", stopReason: "end_turn" };
@@ -75,8 +88,10 @@ async function setupSwarm(input: Record<string, unknown>, failOn?: string): Prom
   };
   const providers = new ProviderRegistry();
   providers.register(provider);
-  const runner = new AgentRunner(sessions, providers, createFakeCore(), events, pricing);
-  return { sessions, runner, captured, requests, sessionId: session.id };
+  const runner = options?.registry
+    ? new AgentRunner(sessions, providers, createFakeCore(), events, pricing, undefined, "zh-CN", 50, undefined, undefined, undefined, undefined, undefined, undefined, options.registry)
+    : new AgentRunner(sessions, providers, createFakeCore(), events, pricing);
+  return { sessions, runner, captured, requests, sessionId: session.id, startedSub };
 }
 
 async function swarmToolResult(fixture: SwarmFixture) {
@@ -107,6 +122,13 @@ describe("spawn_swarm via AgentRunner", () => {
     expect(started.map((event) => (event.payload as { swarm?: { index: number } }).swarm?.index).sort()).toEqual([1, 2, 3]);
     expect(fixture.captured.filter((event) => event.type === "subagent.finished")).toHaveLength(3);
 
+    // 进度事件携带 swarm 序号（每个子代理单轮，无工具）
+    const progress = fixture.captured.filter((event) => event.type === "subagent.progress");
+    expect(progress).toHaveLength(3);
+    expect(progress.map((event) => (event.payload as { swarm?: { index: number } }).swarm?.index).sort()).toEqual([1, 2, 3]);
+    expect(progress.every((event) => (event.payload as { turns?: number; toolsUsed?: string[] }).turns === 1)).toBe(true);
+    expect(progress.every((event) => ((event.payload as { toolsUsed?: string[] }).toolsUsed ?? []).length === 0)).toBe(true);
+
     // 工具结果携带转录 id；tool.end 汇总 total/failed
     const ids = (toolResult as { subagentTaskIds?: string[] }).subagentTaskIds;
     expect(ids).toHaveLength(3);
@@ -124,6 +146,7 @@ describe("spawn_swarm via AgentRunner", () => {
       { input: { prompt_template: "评审 {{item}}", items: ["a.ts"] }, message: "at least 2 items" },
       { input: { prompt_template: "评审 {{item}}", items: Array.from({ length: SPAWN_SWARM_MAX_ITEMS + 1 }, (_, i) => `f${i}.ts`) }, message: "at most" },
       { input: { prompt_template: "评审 {{item}}", items: ["a.ts", "a.ts"] }, message: "distinct" },
+      { input: { prompt_template: "评审 {{item}}", items: [{ task: " " }, "b.ts"] }, message: "non-empty task" },
     ];
     for (const { input, message } of cases) {
       const fixture = await setupSwarm(input);
@@ -150,5 +173,75 @@ describe("spawn_swarm via AgentRunner", () => {
     const toolEnd = fixture.captured.find((event) =>
       event.type === "tool.end" && (event.payload as { toolCallId?: string }).toolCallId === "swarm-1");
     expect((toolEnd!.payload as { result?: { total?: number; failed?: number } }).result).toMatchObject({ total: 2, failed: 1 });
+  });
+
+  it("lets an item override the call-level agent and reports the effective agent in started events", async () => {
+    const root = await tempRoot();
+    const globalDir = path.join(root, "agents");
+    await mkdir(globalDir, { recursive: true });
+    await writeFile(path.join(globalDir, "reviewer.md"), "---\ndescription: Reviews code\n---\nREVIEWER BODY", "utf8");
+    await writeFile(path.join(globalDir, "scout.md"), "---\ndescription: Scans code\n---\nSCOUT BODY", "utf8");
+    const registry = new AgentRegistry(globalDir);
+    const fixture = await setupSwarm(
+      { prompt_template: "评审 {{item}}", items: [{ task: "a.ts", agent: "reviewer" }, "b.ts"], agent: "scout" },
+      undefined,
+      { registry },
+    );
+    await fixture.runner.run(fixture.sessionId, "逐项覆盖 agent");
+
+    const toolResult = await swarmToolResult(fixture);
+    expect(toolResult).toMatchObject({ isError: false });
+
+    // started 事件携带实际生效的 agent：第 1 项覆盖为 reviewer，第 2 项用调用级 scout
+    const started = fixture.captured.filter((event) => event.type === "subagent.started");
+    expect(started).toHaveLength(2);
+    const agentByIndex = new Map(started.map((event) => {
+      const payload = event.payload as { swarm?: { index: number }; agent?: string };
+      return [payload.swarm?.index, payload.agent];
+    }));
+    expect(agentByIndex.get(1)).toBe("reviewer");
+    expect(agentByIndex.get(2)).toBe("scout");
+
+    // 覆盖项的子代理请求使用对应 body 作为 systemExtra
+    const subRequests = fixture.requests.filter((request) => request.system.includes("exploration sub-agent"));
+    expect(subRequests.some((request) => request.system.includes("REVIEWER BODY"))).toBe(true);
+    expect(subRequests.some((request) => request.system.includes("SCOUT BODY"))).toBe(true);
+
+    // 字符串 items 与对象 items 混用保持向后兼容（b.ts 结论仍聚合）
+    expect((toolResult as { content: string }).content).toContain("[2/2] 结论：评审 b.ts");
+  });
+
+  it("rejects an unknown per-item agent before launching anything", async () => {
+    const root = await tempRoot();
+    const globalDir = path.join(root, "agents");
+    await mkdir(globalDir, { recursive: true });
+    const registry = new AgentRegistry(globalDir);
+    const fixture = await setupSwarm(
+      { prompt_template: "评审 {{item}}", items: [{ task: "a.ts", agent: "ghost" }, "b.ts"] },
+      undefined,
+      { registry },
+    );
+    await fixture.runner.run(fixture.sessionId, "未知逐项 agent");
+
+    const toolResult = await swarmToolResult(fixture);
+    expect(toolResult).toMatchObject({ isError: true });
+    expect((toolResult as { content: string }).content).toContain("Unknown sub-agent: ghost");
+    expect(fixture.requests.some((request) => request.system.includes("exploration sub-agent"))).toBe(false);
+  });
+
+  it("stops launching queued items once the run is aborted", async () => {
+    // 6 项、并发 4：4 项在途 + 2 项排队；中断后排队项不再启动
+    const fixture = await setupSwarm(
+      { prompt_template: "评审 {{item}}", items: ["a", "b", "c", "d", "e", "f"] },
+      undefined,
+      { hang: true },
+    );
+    const run = fixture.runner.run(fixture.sessionId, "中断 swarm");
+    await vi.waitFor(() => expect(fixture.startedSub).toHaveLength(4), { timeout: 5000 });
+    fixture.runner.abort(fixture.sessionId);
+    await expect(run).rejects.toBeTruthy();
+
+    // 在途 4 项经 signal 中止；排队的 e/f 两项从未启动
+    expect(fixture.startedSub).toHaveLength(4);
   });
 });

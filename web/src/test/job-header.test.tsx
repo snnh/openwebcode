@@ -3,7 +3,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { JobHeader } from "../components/JobHeader";
 import { api } from "../lib/api";
-import type { SessionDetail } from "../lib/contracts";
+import type { ContextWindowInfo } from "../lib/context-window";
+import type { SessionDetail, ContextUsage } from "../lib/contracts";
 
 const session: SessionDetail = {
   id: "session-1",
@@ -122,5 +123,86 @@ describe("JobHeader mode switches", () => {
     );
 
     expect(screen.getByRole("button", { name: "创建虚拟磁盘快照" })).toBeDisabled();
+  });
+});
+
+describe("JobHeader 上下文窗口 meter", () => {
+  function renderHeader(windowUsage: ContextWindowInfo): void {
+    vi.spyOn(api, "tasks").mockResolvedValue([]);
+    vi.spyOn(api, "sandboxCapabilities").mockResolvedValue({ appcontainer: true, jobobject: true, off: true, wsb: { available: false, reason: "测试" } });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <JobHeader session={session} agentState="idle" windowUsage={windowUsage} onAbort={() => undefined} onConfig={async () => undefined} />
+      </QueryClientProvider>,
+    );
+  }
+
+  const base: ContextWindowInfo = {
+    estimatedTokens: 45_000,
+    contextWindow: 128_000,
+    workingBudget: 120_000,
+    utilization: 0.375,
+    segments: { system: 0, compactionSummary: 0, toolResults: 0, messages: 45_000, repoMap: 0, other: 0 },
+    pinnedTokens: 0,
+  };
+
+  it("显示 45k/128k · 38% 与 normal 水位", () => {
+    renderHeader(base);
+    const meter = screen.getByTestId("window-usage");
+    expect(meter.textContent).toContain("45k/128k · 38%");
+    expect(meter.dataset.level).toBe("normal");
+  });
+
+  it("≥70% 标记 warn，≥85% 标记 danger", () => {
+    renderHeader({ ...base, utilization: 0.72 });
+    renderHeader({ ...base, utilization: 0.9 });
+    const meters = screen.getAllByTestId("window-usage");
+    expect(meters[0]!.dataset.level).toBe("warn");
+    expect(meters[1]!.dataset.level).toBe("danger");
+    expect(meters[1]!.querySelector(".budget-bar")!.className).toContain("level-danger");
+  });
+
+  it("窗口未知时仅显示估算 tokens，不显示百分比", () => {
+    renderHeader({ estimatedTokens: 45_000, segments: base.segments, pinnedTokens: 0 });
+    const meter = screen.getByTestId("window-usage");
+    expect(meter.textContent).toContain("45k");
+    expect(meter.textContent).not.toContain("%");
+    expect(meter.querySelector(".budget-bar")).toBeNull();
+  });
+});
+
+describe("JobHeader 缓存命中 badge", () => {
+  function renderHeader(latestUsage?: ContextUsage): void {
+    vi.spyOn(api, "tasks").mockResolvedValue([]);
+    vi.spyOn(api, "sandboxCapabilities").mockResolvedValue({ appcontainer: true, jobobject: true, off: true, wsb: { available: false, reason: "测试" } });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <JobHeader session={session} agentState="idle" {...(latestUsage ? { latestUsage } : {})} onAbort={() => undefined} onConfig={async () => undefined} />
+      </QueryClientProvider>,
+    );
+  }
+
+  const usage: ContextUsage = { inputTokens: 21_000, outputTokens: 500, cacheRead: 98_000, cacheWrite: 12_000 };
+
+  it("显示最近一轮命中率与 tooltip 明细", () => {
+    renderHeader(usage);
+    const badge = screen.getByTestId("cache-usage");
+    // 98k / (21k + 98k) ≈ 82%
+    expect(badge.textContent).toBe("缓存 82%");
+    expect(badge.title).toContain("缓存读取 98k");
+    expect(badge.title).toContain("写入 12k");
+    expect(badge.title).toContain("未缓存输入 21k");
+  });
+
+  it("无用量数据时隐藏 badge", () => {
+    renderHeader();
+    expect(screen.queryByTestId("cache-usage")).toBeNull();
+  });
+
+  it("总输入为 0（rate null）时隐藏 badge", () => {
+    renderHeader({ inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0 });
+    expect(screen.queryByTestId("cache-usage")).toBeNull();
   });
 });

@@ -2,7 +2,8 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./lib/api";
 import { extractAttachmentPaths, toAttachments } from "./lib/attachments";
-import type { AppEvent, BackgroundTaskInfo, ChatMessage, SessionDetail, TodoItem, WorkspaceIndexStatus } from "./lib/contracts";
+import type { AppEvent, BackgroundTaskInfo, ChatMessage, ContextUsage, ContextWatermark, LiveSubagentRun, SessionDetail, SubagentFinishedEvent, SubagentProgressEvent, SubagentStartedEvent, TodoItem, WorkspaceIndexStatus } from "./lib/contracts";
+import { deriveWindowInfo } from "./lib/context-window";
 import { formatCurrency } from "./lib/format";
 import { loadSendKey, loadSessionDefaults, saveSendKey, saveSessionDefaults, type SendKey, type SessionDefaults } from "./lib/prefs";
 import { useTheme } from "./theme";
@@ -98,10 +99,16 @@ export function App(): ReactElement {
   const { stream, thinkingStream, queueDelta: queueStreamDelta, flush: flushStreamBuffers, finish: finishBufferedStreams, clear: clearStream, discard: discardStream } = useStreamBuffers();
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
   const [agentStates, setAgentStates] = useState<Record<string, string>>({});
+  // 上下文窗口水位（context.watermark）：按会话保留最近一次，切换会话展示该会话最后已知水位
+  const [watermarks, setWatermarks] = useState<Record<string, ContextWatermark>>({});
+  // 最近一轮 token 用量（context.usage）：按会话保留，驱动缓存命中率展示
+  const [usages, setUsages] = useState<Record<string, ContextUsage>>({});
   // agent 完成检测（通知中心）：记录每个会话上一状态，busy→idle 视为一轮任务完成
   const lastStatesRef = useRef<Record<string, string>>({});
   // agent.error 除了短暂 toast，也保留在当前会话的轨道中；下一次真正开始运行时再清除。
   const [runFailures, setRunFailures] = useState<Record<string, string>>({});
+  // 子代理实时运行状态：sessionId → taskId → run；tool.end 到达后清除，由持久化 tool_result 接管渲染
+  const [liveSubagents, setLiveSubagents] = useState<Record<string, Record<string, LiveSubagentRun>>>({});
   // Problems 视图角标：diagnostics.updated 到达时记录未查看失败数，打开 Problems 视图清除
   const [problemsBadges, setProblemsBadges] = useState<Record<string, number>>({});
   const [notice, setNotice] = useState<Notice>();
@@ -176,6 +183,76 @@ export function App(): ReactElement {
                 return remaining;
               });
             }
+          }
+        }
+        // 上下文窗口水位跨会话跟踪：驱动 JobHeader 与上下文面板的占用 meter
+        if (event.type === "context.watermark" && event.sessionId) {
+          setWatermarks((previous) => ({ ...previous, [event.sessionId!]: event.payload as ContextWatermark }));
+        }
+        if (event.type === "context.usage" && event.sessionId) {
+          setUsages((previous) => ({ ...previous, [event.sessionId!]: event.payload as ContextUsage }));
+        }
+        // 子代理生命周期跨会话跟踪：驱动消息轨道中 spawn_task/spawn_swarm 的实时卡片
+        if (event.type === "subagent.started" && event.sessionId) {
+          const payload = event.payload as SubagentStartedEvent;
+          setLiveSubagents((previous) => ({
+            ...previous,
+            [event.sessionId!]: {
+              ...previous[event.sessionId!],
+              [payload.taskId]: {
+                taskId: payload.taskId,
+                toolCallId: payload.toolCallId,
+                prompt: payload.prompt,
+                ...(payload.agent ? { agent: payload.agent } : {}),
+                ...(payload.swarm ? { swarm: payload.swarm } : {}),
+                status: "running",
+                turns: 0,
+                toolsUsed: [],
+              },
+            },
+          }));
+        }
+        if (event.type === "subagent.progress" && event.sessionId) {
+          const payload = event.payload as SubagentProgressEvent;
+          setLiveSubagents((previous) => {
+            const sessionRuns = previous[event.sessionId!];
+            const run = sessionRuns?.[payload.taskId];
+            if (!sessionRuns || !run) return previous;
+            return { ...previous, [event.sessionId!]: { ...sessionRuns, [payload.taskId]: { ...run, turns: payload.turns, toolsUsed: payload.toolsUsed } } };
+          });
+        }
+        if (event.type === "subagent.finished" && event.sessionId) {
+          const payload = event.payload as SubagentFinishedEvent;
+          setLiveSubagents((previous) => {
+            const sessionRuns = previous[event.sessionId!];
+            const run = sessionRuns?.[payload.taskId];
+            if (!sessionRuns || !run) return previous;
+            return {
+              ...previous,
+              [event.sessionId!]: {
+                ...sessionRuns,
+                [payload.taskId]: {
+                  ...run,
+                  status: payload.status,
+                  ...(payload.turns !== undefined ? { turns: payload.turns } : {}),
+                  ...(payload.toolsUsed ? { toolsUsed: payload.toolsUsed } : {}),
+                  ...(payload.error ? { error: payload.error } : {}),
+                },
+              },
+            };
+          });
+        }
+        // spawn 工具的 tool.end 到达后移除其实时条目：持久化 tool_result（含转录链接）接管渲染
+        if (event.type === "tool.end" && event.sessionId) {
+          const toolCallId = (event.payload as { toolCallId?: string }).toolCallId;
+          if (toolCallId) {
+            setLiveSubagents((previous) => {
+              const sessionRuns = previous[event.sessionId!];
+              if (!sessionRuns) return previous;
+              const remaining = Object.fromEntries(Object.entries(sessionRuns).filter(([, run]) => run.toolCallId !== toolCallId));
+              if (Object.keys(remaining).length === Object.keys(sessionRuns).length) return previous;
+              return { ...previous, [event.sessionId!]: remaining };
+            });
           }
         }
         if (event.type === "run.accepted" && event.sessionId) {
@@ -503,7 +580,10 @@ export function App(): ReactElement {
         setDrafts(removeKey);
         setAttachmentsBySession(removeKey);
         setAgentStates(removeKey);
+        setWatermarks(removeKey);
+        setUsages(removeKey);
         setRunFailures(removeKey);
+        setLiveSubagents(removeKey);
         setProblemsBadges(removeKey);
         delete lastStatesRef.current[id];
         discardStream(id);
@@ -526,6 +606,13 @@ export function App(): ReactElement {
   const model = useMemo(() => models.data?.find((item) => item.id === current?.model && item.provider === current?.provider), [models.data, current?.model, current?.provider]);
   // 模型档案缺 modalities 字段时按不支持图片处理（服务端仍会二次校验）
   const supportsImages = model?.capabilities.modalities?.includes("image") ?? false;
+  // 上下文窗口占用：WS 实时水位优先，否则由 REST stats + 模型档案播种（刷新后首个 watermark 前可用）
+  const windowInfo = useMemo(
+    () => deriveWindowInfo(currentId ? watermarks[currentId] : undefined, contextView.data?.stats, model),
+    [watermarks, currentId, contextView.data?.stats, model],
+  );
+  // 当前会话最近一轮 token 用量（context.usage），驱动缓存命中率 pill/行
+  const latestUsage = currentId ? usages[currentId] : undefined;
 
   const resetLayout = (): void => {
     for (const key of LAYOUT_STORAGE_KEYS) {
@@ -699,6 +786,8 @@ export function App(): ReactElement {
                   session={current}
                   agentState={currentState}
                   costSummary={costSummary}
+                  windowUsage={windowInfo}
+                  {...(latestUsage ? { latestUsage } : {})}
                   onAbort={() => api.abort(current.id).catch((error: unknown) => notify(error instanceof Error ? error.message : t("无法中断", "Could not stop the job"), "error"))}
                   onConfig={(body) => api.updateSession(current.id, body)
                     .then((updated) => {
@@ -728,6 +817,7 @@ export function App(): ReactElement {
                   session={displaySession ?? current}
                   contentLens={extensions.data?.find((extension) => extension.id === "content-lens" && extension.enabled)}
                   onNotice={notify}
+                  liveSubagents={liveSubagents[current.id] ?? {}}
                   {...(contextView.data?.ledger.cleared ? { cleared: contextView.data.ledger.cleared } : {})}
                   streamText={stream[current.id] ?? ""}
                   thinkingText={thinkingStream[current.id] ?? ""}
@@ -822,6 +912,8 @@ export function App(): ReactElement {
             sessionId={currentId}
             session={current}
             running={running}
+            windowUsage={windowInfo}
+            {...(latestUsage ? { latestUsage } : {})}
             evalEnabled={extensions.data?.some((extension) => extension.id === "owc-eval" && extension.enabled) === true}
             onNotice={notify}
             open={layout.bottomOpen}
@@ -829,7 +921,16 @@ export function App(): ReactElement {
             onOpenDiff={openDiff}
           />
         }
-        statusBar={current && <StatusBar session={current} state={currentState} tokens={costSummary?.tokens} costLabel={costSummary?.costLabel} indexStatus={indexStatus.data?.status} />}
+        statusBar={current && (
+          <StatusBar
+            session={current}
+            state={currentState}
+            tokens={costSummary?.tokens}
+            costLabel={costSummary?.costLabel}
+            indexStatus={indexStatus.data?.status}
+            {...(windowInfo?.utilization !== undefined ? { windowPercent: Math.round(windowInfo.utilization * 100) } : {})}
+          />
+        )}
       />
       <input
         ref={importInput}
