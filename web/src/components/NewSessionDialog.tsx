@@ -32,8 +32,8 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
   busy?: boolean;
   onClose(): void;
   onCreate(values: NewSessionValues): void;
-  /** 深链到设置页签（服务设置 server / 模型目录 models）；不提供时提示保持纯文本 */
-  onOpenSettings?(tab: "server" | "models"): void;
+  /** 深链到设置页签（模型目录 models）；不提供时提示保持纯文本 */
+  onOpenSettings?(tab: "models"): void;
 }): ReactElement | null {
   const { t } = useI18n();
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -161,7 +161,7 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
           />
         </label>
         {noProviders && (
-          <p className="dialog-hint">{t("还没有可用的 Provider，请先在 设置 → 服务设置 配置 Provider 和 API Key", "No providers are available. Configure a provider and API key under Settings → Server first.")}{onOpenSettings && <>{" "}<button type="button" className="dialog-hint-link" onClick={() => onOpenSettings("server")}>{t("前往配置 →", "Configure →")}</button></>}</p>
+          <p className="dialog-hint">{t("还没有可用的 Provider，请先在 设置 → 模型目录 配置 Provider 和 API Key", "No providers are available. Configure a provider and API key under Settings → Models first.")}{onOpenSettings && <>{" "}<button type="button" className="dialog-hint-link" onClick={() => onOpenSettings("models")}>{t("前往配置 →", "Configure →")}</button></>}</p>
         )}
         <label>
           {t("模型", "Model")}

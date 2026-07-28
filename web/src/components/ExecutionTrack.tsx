@@ -87,7 +87,7 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, run
   /** 0.5.0 Phase 1b：write_file/edit_file 工具卡的文件变化一键在统一 diff 视图打开 */
   onOpenDiff?(spec: DiffSpec): void;
   /** 错误卡深链：打开设置对话框的指定页签 */
-  onOpenSettings?(tab: "server" | "models"): void;
+  onOpenSettings?(tab: "models"): void;
   /** 错误卡「重试」：重发本会话最近一条用户消息（仅会话空闲且存在用户消息时下发） */
   onRetryRun?(): void;
   /** 0.5.0 Phase 2：历史消息分页——是否有更早的消息可加载 */
@@ -212,7 +212,7 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, run
                 <div className="run-error-actions">
                   {guidance.settingsTab && (
                     <button type="button" className="btn small" onClick={() => onOpenSettings?.(guidance.settingsTab!)}>
-                      {guidance.settingsTab === "models" ? t("打开模型设置", "Open model settings") : t("打开服务设置", "Open server settings")}
+                      {t("打开模型设置", "Open model settings")}
                     </button>
                   )}
                   {guidance.retryable && onRetryRun && (

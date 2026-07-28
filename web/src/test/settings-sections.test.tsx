@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { RemoteAccessSection, ServerSettingsSection, ShortcutsSection } from "../components/SettingsDialog";
+import { ModelAccessSection, RemoteAccessSection, ServerSettingsFields, ShortcutsSection, SystemStorageSection } from "../components/SettingsDialog";
 import { registerBuiltinCommands, type CommandActions } from "../commands/builtin";
 import { resetCommands } from "../commands/registry";
 import { DEFAULT_KEYBINDINGS } from "../commands/keybindings";
@@ -117,12 +117,12 @@ describe("设置分区：远程访问（Phase 5b §6.8）", () => {
   });
 });
 
-describe("设置分区：服务设置（network 分组迁出后）", () => {
+describe("设置分组迁移（服务设置页签移除后）", () => {
   const mixed: SettingsView = {
     groups: [
       {
         id: "service",
-        label: "服务",
+        label: "存储",
         fields: [
           { key: "dataDir", label: "数据目录", type: "text", value: "../.openwebcode", hasValue: true, source: "default", editable: true, restartRequired: true, nullable: false },
         ],
@@ -135,15 +135,97 @@ describe("设置分区：服务设置（network 分组迁出后）", () => {
           { key: "port", label: "监听端口", type: "number", value: 3210, hasValue: true, source: "default", editable: true, restartRequired: true, nullable: false },
         ],
       },
+      {
+        id: "models",
+        label: "模型接入",
+        fields: [
+          { key: "catalogSyncUrl", label: "远程模型目录 URL", type: "text", value: null, hasValue: false, source: "default", editable: true, restartRequired: false, nullable: true },
+        ],
+      },
+      {
+        id: "fastModel",
+        label: "快速模型",
+        fields: [
+          { key: "fastModelMaxTokens", label: "最大输出上限", type: "number", value: 4_096, hasValue: true, source: "default", editable: true, restartRequired: false, nullable: false },
+        ],
+      },
+      {
+        id: "exchangeRate",
+        label: "汇率",
+        fields: [
+          { key: "fixedUsdCnyRate", label: "固定美元汇率", type: "text", value: null, hasValue: false, source: "default", editable: true, restartRequired: true, nullable: true },
+        ],
+      },
+      {
+        id: "general",
+        label: "语言与货币",
+        fields: [
+          { key: "defaultCurrency", label: "默认货币", type: "select", options: [{ value: "USD", label: "USD" }, { value: "CNY", label: "CNY" }], value: "CNY", hasValue: true, source: "default", editable: true, restartRequired: false, nullable: false },
+        ],
+      },
+      {
+        id: "executor",
+        label: "执行器",
+        fields: [
+          { key: "corePath", label: "执行器路径", type: "text", value: "owc-exec", hasValue: true, source: "env", editable: false, restartRequired: true, nullable: false },
+        ],
+      },
+      {
+        id: "updateCheck",
+        label: "更新检查",
+        fields: [
+          { key: "updateCheckEnabled", label: "启用更新检查", type: "boolean", value: false, hasValue: true, source: "default", editable: true, restartRequired: false, nullable: false },
+        ],
+      },
     ],
   };
 
-  it("服务设置页签不再渲染监听地址/端口，其余分组保留", async () => {
+  it("执行器/存储/更新检查分组渲染在服务信息分区（系统与存储）", async () => {
     vi.spyOn(api, "settings").mockResolvedValue(mixed);
-    const view = withClient(<ServerSettingsSection />);
+    const view = withClient(<SystemStorageSection />);
     expect(await view.findByLabelText("数据目录")).toBeInTheDocument();
+    expect(view.getByLabelText("执行器路径")).toBeInTheDocument();
+    expect(view.getByText("启用更新检查")).toBeInTheDocument();
+    expect(view.getByRole("heading", { name: "存储", level: 4 })).toBeInTheDocument();
+    expect(view.getByRole("heading", { name: "更新检查", level: 4 })).toBeInTheDocument();
+    // 其他分组不渲染
     expect(view.queryByLabelText("监听地址")).toBeNull();
-    expect(view.queryByLabelText("监听端口")).toBeNull();
-    expect(view.queryByRole("heading", { name: "监听与端口", level: 4 })).toBeNull();
+    expect(view.queryByLabelText("远程模型目录 URL")).toBeNull();
+    expect(view.queryByLabelText("固定美元汇率")).toBeNull();
+  });
+
+  it("env-lock 与重启徽标在服务信息分区保持", async () => {
+    vi.spyOn(api, "settings").mockResolvedValue(mixed);
+    const view = withClient(<SystemStorageSection />);
+    expect(await view.findByLabelText("执行器路径")).toBeDisabled();
+    expect(view.getByText("环境变量")).toBeInTheDocument();
+    expect(view.getByText(/由环境变量控制，界面内不可修改/)).toBeInTheDocument();
+    // dataDir 与 corePath 均 restartRequired
+    expect(view.getAllByText("重启后生效")).toHaveLength(2);
+  });
+
+  it("模型接入/快速模型分组渲染在模型目录分区", async () => {
+    vi.spyOn(api, "settings").mockResolvedValue(mixed);
+    const view = withClient(<ModelAccessSection />);
+    expect(await view.findByLabelText("远程模型目录 URL")).toBeInTheDocument();
+    expect(view.getByLabelText("最大输出上限")).toBeInTheDocument();
+    expect(view.queryByLabelText("数据目录")).toBeNull();
+    expect(view.queryByLabelText("监听地址")).toBeNull();
+  });
+
+  it("汇率分组渲染在定价页签字段组件", async () => {
+    vi.spyOn(api, "settings").mockResolvedValue(mixed);
+    const view = withClient(<ServerSettingsFields showGroup={(groupId) => groupId === "exchangeRate"} />);
+    expect(await view.findByLabelText("固定美元汇率")).toBeInTheDocument();
+    expect(view.getByRole("heading", { name: "汇率", level: 4 })).toBeInTheDocument();
+    expect(view.queryByLabelText("数据目录")).toBeNull();
+  });
+
+  it("语言与货币分组渲染在通用页签字段组件", async () => {
+    vi.spyOn(api, "settings").mockResolvedValue(mixed);
+    const view = withClient(<ServerSettingsFields showGroup={(groupId) => groupId === "general"} />);
+    expect(await view.findByLabelText("默认货币")).toBeInTheDocument();
+    expect(view.getByRole("heading", { name: "语言与货币", level: 4 })).toBeInTheDocument();
+    expect(view.queryByLabelText("数据目录")).toBeNull();
   });
 });

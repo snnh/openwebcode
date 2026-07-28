@@ -45,10 +45,10 @@ describe("ExecutionTrack failures", () => {
     );
 
     const card = screen.getByRole("alert");
-    expect(card).toHaveTextContent("认证失败：请检查 设置 → 服务设置 中的 API Key");
+    expect(card).toHaveTextContent("认证失败：请检查 设置 → 模型目录 中的 API Key");
     expect(card).toHaveTextContent("invalid api key");
-    fireEvent.click(screen.getByRole("button", { name: "打开服务设置" }));
-    expect(onOpenSettings).toHaveBeenCalledWith("server");
+    fireEvent.click(screen.getByRole("button", { name: "打开模型设置" }));
+    expect(onOpenSettings).toHaveBeenCalledWith("models");
     expect(screen.queryByRole("button", { name: "重试" })).toBeNull();
   });
 

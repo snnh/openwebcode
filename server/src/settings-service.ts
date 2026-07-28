@@ -88,8 +88,8 @@ const GROUPS = [
   { id: "fastModel", label: "快速模型" },
   { id: "general", label: "语言与货币" },
   { id: "executor", label: "执行器" },
-  { id: "service", label: "服务" },
-  // 监听地址/端口单独分组：Web 端在"远程访问"页签渲染，其余分组在"服务设置"页签
+  { id: "service", label: "存储" },
+  // 监听地址/端口单独分组：Web 端在"远程访问"页签渲染；分组 id 保持稳定，渲染位置由 Web 端决定
   { id: "network", label: "监听与端口" },
   { id: "exchangeRate", label: "汇率" },
   { id: "updateCheck", label: "更新检查" },

@@ -8,8 +8,8 @@ export function EmptyState({ sessions, providers, onSelect, onCreate, onOpenSett
   providers?: string[] | undefined;
   onSelect(id: string): void;
   onCreate(): void;
-  /** 深链到设置页签（服务设置 server / 模型目录 models） */
-  onOpenSettings?(tab: "server" | "models"): void;
+  /** 深链到设置页签（模型目录 models） */
+  onOpenSettings?(tab: "models"): void;
   /** 示例任务 chip 点击：把文案交给调用方（复制到剪贴板），由用户粘贴进新会话输入框 */
   onExample?(text: string): void;
 }): ReactElement {
@@ -31,7 +31,7 @@ export function EmptyState({ sessions, providers, onSelect, onCreate, onOpenSett
             <h2>{t("快速开始", "Quick start")}</h2>
             <ol className="empty-guide-steps">
               <li>
-                <button type="button" className="empty-guide-step" onClick={() => onOpenSettings?.("server")}>
+                <button type="button" className="empty-guide-step" onClick={() => onOpenSettings?.("models")}>
                   <span className="empty-guide-num">①</span>
                   <span>{t("配置服务商与 API Key", "Configure a provider and API key")}</span>
                 </button>
