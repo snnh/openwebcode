@@ -98,6 +98,8 @@ function makeClient(): QueryClient {
 describe("App 主区子代理标签", () => {
   let originalWebSocket: typeof WebSocket;
   beforeEach(() => {
+    // 底层面板页签/开合持久化在 localStorage（owc-panel-tab 等），用例间必须隔离
+    window.localStorage.clear();
     sockets.length = 0;
     eventSeq = 0;
     originalWebSocket = globalThis.WebSocket;
@@ -201,6 +203,34 @@ describe("App 主区子代理标签", () => {
     expect(screen.getByRole("tab", { name: "对话" })).toHaveAttribute("aria-selected", "true");
     expect(document.querySelector(".subagent-tab-view")).toBeNull();
     expect(document.querySelector(".main-tab-panel[hidden]")).toBeNull();
+  });
+
+  it("关闭标签后同 toolCallId 的后续 started 不重开，面板手动打开仍可用", async () => {
+    const socket = await renderApp();
+
+    // swarm 第一项自动开标签
+    act(() => {
+      emit(socket, started("s1", "call-5", "task-5a", { swarm: { index: 1, total: 2 } }));
+    });
+    await screen.findByRole("tab", { name: /群 2 项/ });
+
+    // 用户主动关闭标签
+    fireEvent.click(screen.getByRole("button", { name: /关闭标签 群 2 项/ }));
+    expect(screen.queryByRole("tab", { name: /群 2 项/ })).toBeNull();
+
+    // swarm 第二项 started（同 toolCallId）：不得重开已关闭的标签
+    act(() => {
+      emit(socket, started("s1", "call-5", "task-5b", { swarm: { index: 2, total: 2 } }));
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(screen.queryByRole("tab", { name: /群 2 项/ })).toBeNull();
+
+    // 子代理面板手动「在标签中打开」仍然可用（并清除关闭标记）
+    fireEvent.click(screen.getByRole("button", { name: "子代理" }));
+    const openButtons = await screen.findAllByRole("button", { name: "在标签中打开" });
+    fireEvent.click(openButtons[0]!);
+    const tab = await screen.findByRole("tab", { name: /群 2 项/ });
+    expect(tab).toHaveAttribute("aria-selected", "true");
   });
 
   it("子代理面板「在标签中打开」创建并聚焦标签", async () => {

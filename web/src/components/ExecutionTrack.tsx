@@ -71,7 +71,7 @@ function liveRunsForMessage(message: ChatMessage, liveSubagents?: Record<string,
   return runs.length > 0 ? runs : undefined;
 }
 
-export function ExecutionTrack({ session, cleared, streamText, thinkingText, runError, permissions, onPermissionDone, onPermissionError, onSendToAgent, contentLens, onNotice, onOpenDiff, onOpenSettings, onRetryRun, hasMoreMessages, onLoadMore, loadingMore, liveSubagents }: {
+export function ExecutionTrack({ session, cleared, streamText, thinkingText, runError, permissions, onPermissionDone, onPermissionError, onSendToAgent, contentLens, onNotice, onOpenDiff, onOpenSettings, onRetryRun, hasMoreMessages, onLoadMore, loadingMore, liveSubagents, trackVisible = true }: {
   session: SessionDetail;
   cleared?: { uptoIndex: number; at: string };
   streamText: string;
@@ -98,6 +98,8 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, run
   loadingMore?: boolean;
   /** 本会话子代理实时运行状态（taskId → run），按消息内 spawn 工具调用的 toolCallId 过滤下发 */
   liveSubagents?: Record<string, LiveSubagentRun>;
+  /** 对话面板是否可见（子代理标签选中时容器为 hidden）：不可见时暂停吸底滚动，恢复可见时重新贴底 */
+  trackVisible?: boolean;
 }): ReactElement {
   const { t } = useI18n();
   const trackRef = useRef<HTMLDivElement>(null);
@@ -129,7 +131,8 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, run
   // jsdom 无 Element.scrollTo，测试环境回退到 scrollTop
   const scrollToBottom = (smooth = false): void => {
     const element = trackRef.current;
-    if (!element) return;
+    // 容器无布局（如对话面板 hidden 时 display:none）：跳过，避免 scrollHeight===0 重置滚动位置
+    if (!element || element.clientHeight === 0) return;
     if (smooth && typeof element.scrollTo === "function") {
       element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
     } else {
@@ -139,8 +142,10 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, run
   };
 
   useEffect(() => {
-    if (pinned) scrollToBottom();
-  }, [pinned, session.messages.length, streamText, thinkingText, permissions.length]);
+    // 面板隐藏时暂停吸底；trackVisible 翻回 true 时本 effect 重跑，pinned 状态下重新贴底
+    if (!pinned || !trackVisible) return;
+    scrollToBottom();
+  }, [pinned, trackVisible, session.messages.length, streamText, thinkingText, permissions.length]);
 
   return (
     <div className="execution-track-wrap">

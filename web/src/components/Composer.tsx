@@ -816,8 +816,8 @@ const mentionHasMatches = mentionItems.length > 0;
               return;
             }
             // 输入历史回查：光标在首行（或输入为空）且弹层已让行后，↑ 逐条回退、↓ 前进，
-            // 回查到底（最新之后）恢复进入时暂存的草稿；修饰键组合不触发
-            if (!event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
+            // 回查到底（最新之后）恢复进入时暂存的草稿；修饰键组合与输入法组合中（CJK IME 用 ↑/↓ 选候选）不触发
+            if (!event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && !event.nativeEvent.isComposing) {
               if (event.key === "ArrowUp" && history.length > 0) {
                 const node = event.currentTarget;
                 const onFirstLine = historyIndex !== null || !node.value.slice(0, node.selectionStart ?? 0).includes("\n");
