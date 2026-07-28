@@ -68,6 +68,54 @@ describe("deriveSubagentRunsFromMessages", () => {
 
     expect(deriveSubagentRunsFromMessages(messages)).toEqual({});
   });
+
+  it("prefers per-item subagentTasks over the isError heuristic (partial swarm failure)", () => {
+    const messages = [
+      message("m-1", "assistant", [{
+        type: "tool_call",
+        id: "call-1",
+        name: "spawn_swarm",
+        input: { prompt_template: "评审 {{item}}", items: [{ task: "a.ts", agent: "reviewer" }, "b.ts"], agent: "scout" },
+      }]),
+      message("m-2", "tool", [{
+        type: "tool_result",
+        toolCallId: "call-1",
+        content: "[1/2] 结论：评审 a.ts\n\n[2/2] FAILED: provider boom",
+        isError: false,
+        subagentTaskIds: ["t-1", "t-2"],
+        subagentTasks: [
+          { taskId: "t-1", index: 0, status: "done" },
+          { taskId: "t-2", index: 1, status: "failed", error: "provider boom" },
+        ],
+      }]),
+    ];
+
+    const runs = deriveSubagentRunsFromMessages(messages);
+
+    // 部分失败：逐项状态独立，swarm 序号取显式 index，agent 覆盖按 item 对齐
+    expect(Object.keys(runs)).toEqual(["t-1", "t-2"]);
+    expect(runs["t-1"]).toMatchObject({ status: "done", swarm: { index: 1, total: 2 }, prompt: "a.ts", agent: "reviewer" });
+    expect(runs["t-2"]).toMatchObject({ status: "failed", error: "provider boom", swarm: { index: 2, total: 2 }, prompt: "b.ts", agent: "scout" });
+  });
+
+  it("derives a failed spawn_task run from subagentTasks on an error result (failure after start)", () => {
+    const messages = [
+      message("m-1", "assistant", [{ type: "tool_call", id: "call-1", name: "spawn_task", input: { prompt: "调查 a.ts" } }]),
+      message("m-2", "tool", [{
+        type: "tool_result",
+        toolCallId: "call-1",
+        content: "provider boom",
+        isError: true,
+        subagentTaskIds: ["task-1"],
+        subagentTasks: [{ taskId: "task-1", index: 0, status: "failed", error: "provider boom" }],
+      }]),
+    ];
+
+    const runs = deriveSubagentRunsFromMessages(messages);
+
+    expect(runs["task-1"]).toMatchObject({ taskId: "task-1", toolCallId: "call-1", prompt: "调查 a.ts", status: "failed", error: "provider boom" });
+    expect(runs["task-1"]!.swarm).toBeUndefined();
+  });
 });
 
 describe("mergeSubagentRuns", () => {

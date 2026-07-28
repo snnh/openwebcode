@@ -372,10 +372,15 @@ export function App(): ReactElement {
     if (olderMessages.length === 0) return current;
     return { ...current, messages: [...olderMessages, ...current.messages] };
   }, [current, olderMessages]);
-  // 子代理面板数据：实时运行（终态保留）+ 从已加载消息推导的历史运行，实时条目优先
+  // 子代理面板数据：实时运行（终态保留）+ 从已加载消息推导的历史运行，实时条目优先。
+  // 推导只依赖会话消息（刷新/翻页才重算），不与实时进度 tick 耦合；合并层随进度 tick 更新。
+  const derivedSubagentRuns = useMemo(
+    () => deriveSubagentRunsFromMessages(displaySession?.messages ?? []),
+    [displaySession],
+  );
   const subagentRuns = useMemo(
-    () => mergeSubagentRuns(currentId ? liveSubagents[currentId] ?? {} : {}, deriveSubagentRunsFromMessages(displaySession?.messages ?? [])),
-    [currentId, liveSubagents, displaySession],
+    () => mergeSubagentRuns(currentId ? liveSubagents[currentId] ?? {} : {}, derivedSubagentRuns),
+    [currentId, liveSubagents, derivedSubagentRuns],
   );
   // 当前会话选中的子代理标签（undefined = 「对话」）；标签列表按会话隔离，切换会话自动回对话
   const currentSubagentTabs = currentId ? subagentTabs[currentId] ?? [] : [];

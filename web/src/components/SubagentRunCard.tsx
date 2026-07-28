@@ -74,7 +74,7 @@ export function SubagentRunCard({ name, input, sessionId, live }: {
                   {task && <span className="subagent-run-task" title={task}>{snippet(task, 80)}</span>}
                   {run ? <SubagentStatusChip status={run.status} /> : live && live.length > 0 ? <SubagentStatusChip status="pending" /> : null}
                   {run && <SubagentRunStats run={run} />}
-                  {run && run.status === "done" && sessionId && (
+                  {run && (run.status === "done" || run.status === "failed") && sessionId && (
                     <SubagentTranscriptDetails sessionId={sessionId} taskId={run.taskId} index={index + 1} />
                   )}
                 </li>
@@ -100,7 +100,7 @@ export function SubagentRunCard({ name, input, sessionId, live }: {
       </header>
       {prompt && <p className="tool-summary" title={prompt}>{snippet(prompt)}</p>}
       {run && <SubagentRunStats run={run} />}
-      {run && run.status === "done" && sessionId && <SubagentTranscriptDetails sessionId={sessionId} taskId={run.taskId} />}
+      {run && (run.status === "done" || run.status === "failed") && sessionId && <SubagentTranscriptDetails sessionId={sessionId} taskId={run.taskId} />}
     </section>
   );
 }

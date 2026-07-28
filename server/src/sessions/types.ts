@@ -26,6 +26,8 @@ export interface ToolResultContent {
   isError: boolean;
   /** spawn_task/spawn_swarm 产生的子代理转录 id（<contextRoot>/subagents/<taskId>.json），供 UI 查看转录。 */
   subagentTaskIds?: string[];
+  /** spawn_task/spawn_swarm 逐项终态（index 显式对应 swarm item 序号，spawn_task 恒为 0）；部分失败/中断后刷新仍可还原每项状态。 */
+  subagentTasks?: Array<{ taskId: string; index: number; status: "done" | "failed"; error?: string }>;
 }
 
 /** 用户消息中的图片块（base64 内联，mediaType 限 image/png|jpeg|webp|gif）。 */
