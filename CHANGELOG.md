@@ -2,6 +2,44 @@
 
 本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前版本的用户可感知变化。日期以 Git 标签发布日期为准。
 
+## [1.0.0] - 2026-07-29
+
+首个正式版。
+
+### 新增
+
+- 官方扩展「环境模拟」（`env-sim`）：启用并选择预设后，系统提示词切换为该产品风格（身份行 + 工作方式），内置工具以该产品的命名/描述/参数形态呈现（如 `Read`/`Bash`/`Edit`），底层仍走原工具实现与权限链。内置 `claude-code`/`kimi-code`/`zcode`/`codex` 四档预设；自制预设 JSON 放入 `<业务数据目录>/env-sim/personas/` 即可使用并与他人分享。
+- 扩展 API 第二批：`prompt.beforeBuild` 钩子（身份行与基线提示词可覆盖，安全约束段仍由核心追加）；manifest `toolShaping`（仅官方扩展：隐藏/别名内置工具，别名保留原权限类别与 plan 门禁）；manifest `configSchema`（设置页渲染 typed 配置表单，server 松散校验）。
+- 普通子代理 `general`：内置子代理类型注册表——`explore`（默认，只读探索，行为不变）与 `general`（通用：可读写文件、执行 bash，工具调用经与主代理相同的权限链与同配置沙盒，plan 门禁同源）；`spawn_task`/`spawn_swarm` 的 `agent` 参数与逐项派发均支持。
+- WebUI 手动启动子代理：底部「子代理」面板顶部输入任务并选择类型（explore/general/自定义）即可启动，新增 `POST /api/sessions/:id/subagents`（并发上限 4）与 `GET /api/agents`；中断会话同时取消手动子代理。
+
+### 界面与体验
+
+- 运行活动条：对话区底部吸顶显示当前状态（思考中/执行工具/等待确认…）、已耗时长（秒级跳动）与正在执行的工具，空闲自动隐藏。
+- 会话打开加载骨架屏，替代欢迎页闪烁；底部面板懒加载增加占位。
+- 底部排版合并：状态栏内容（运行状态/模式/模型/token/窗口占用/成本）右移进面板页签条（桌面端），移动端保留原状态栏；去除与头部重复的工作目录显示。
+- 子代理标签页与主对话同一渲染（MemoMessageCard 完整转录），低饱和状态色区分子代理标签与「对话」标签；子代理面板可直接手动启动；历史运行不再显示「0 轮」；转录 20 条折叠可展开。
+- 对话轮次与层级深浅强调：assistant/tool 消息淡底色，工具卡片缩进并加左侧引导线。
+
+### 性能
+
+- agent 循环每轮两次全量解析消息历史改为会话级缓存（LRU 32，stat 指纹校验 + append-through）：`sessions.get()` p50 8.00→0.41ms（-94.9%），单轮总耗时 -74.9%，5000 消息会话每轮消除约万次 JSON.parse。
+- 流式 Markdown 分块增量渲染：稳定块只解析一次，流式每帧仅重渲染尾部块（渲染管线不变），长回答流式主线程占用从平方级降为近线性。
+- EventBus 单次序列化（扇出与驱逐复用）；ledger.json 内存缓存（每轮省 3 次原子写）；buildView 增量路径累计化（ledgerKey 惰性化、token/片段缓存、克隆复用）；`evict` 的 mkdir 提出循环；glob 排除正则按模式缓存；视图缓存加 LRU 上限。agent-loop 基准 buildView.p50 0.88→0.30ms。
+- 新增 `bench-agent-loop` 基准场景，覆盖真实 agent 循环读路径（原 context-build 基准只喂内存数组，存在测量盲区）。
+
+### 改进
+
+- 设置对话框按页签拆分为独立组件（2038→360 行外壳）；删除死代码（initUserAgent、遗留 job 类型、parsePricingDocument）；格式化助手下沉 `lib/format.ts`；web 依赖清理（移除零引用的 zustand，`@vitejs/plugin-react` 移入 devDependencies）。
+
+### 发布工程
+
+- release.yml 新增 tag 与仓库版本一致性检查（`server/package.json` 与 `core/CMakeLists.txt` 不等于 tag 版本即失败）；bundled Node 下载增加官方 SHASUMS.txt 校验；Release 说明改为从 CHANGELOG 对应版本段提取（缺失或为空则阻断发布），替代自动生成。
+
+### 升级说明
+
+- Windows MSI 未做 Authenticode 签名，首次安装/升级可能被 SmartScreen 提示；发布资产（MSI/tar.gz）带 SHA256SUMS.txt，安装与在线更新流程均强制校验。
+
 ## [0.8.0] - 2026-07-28
 
 ### 新增

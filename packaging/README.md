@@ -307,8 +307,8 @@ Server 模块在进程启动时加载，复制后必须重启 `build\stage\bin\o
 - Linux：同样构建后组装 `build/stage/`（下载固定版本 Node 24 linux-x64 tar.gz 整树解入 `node/`），
   `tar -C stage . -C packaging install.sh` 打包 → 上传 tar.gz。
 - bundled Node 版本固定在 workflow 的 `env.NODE_DIST_VERSION`（当前 24.18.0），升级时改这一个常量。
-- benchmark job 默认是 release 的硬依赖；相对上一版任一指标回归超过 15% 会阻断发布。结果以 `bench-results-*.json` 同 MSI/tar.gz 一起发布，供下一版下载为基线。仅手动发布显式启用 `skip_performance_tests` 时允许跳过，且该次 release 不包含基准 JSON。
-- Release 由 `softprops/action-gh-release@v2` 创建/更新，`generate_release_notes: true`，非草稿。
+- benchmark job 默认是 release 的依赖；回归对比为警告级（不阻断发布），但当前构建必须产出全部基准场景结果。结果以 `bench-results-*.json` 同 MSI/tar.gz 一起发布，供下一版下载为基线。仅手动发布显式启用 `skip_performance_tests` 时允许跳过，且该次 release 不包含基准 JSON。
+- Release 由 `softprops/action-gh-release@v2` 创建/更新，发布说明取自 `CHANGELOG.md` 的 `## [版本]` 段落（缺失或为空会阻断发布），非草稿。
 
 推荐发布方式是先推送已审核提交，再创建并推送语义化版本 tag：
 
