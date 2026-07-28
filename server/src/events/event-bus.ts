@@ -46,10 +46,17 @@ export interface EventBusStats {
   oversizedNotRetained: number;
 }
 
+/** 历史条目：事件本体 + 发布时一次性算出的字节数与序列化串（回放重传与 fan-out 复用，避免重复 stringify）。 */
+interface HistoryEntry {
+  event: AppEvent;
+  bytes: number;
+  serialized: string;
+}
+
 export class EventBus extends EventEmitter {
   private sequence = 0;
   private readonly sessionSequences = new Map<string, number>();
-  private readonly history: AppEvent[] = [];
+  private readonly history: HistoryEntry[] = [];
   private historyBytes = 0;
   private oversizedNotRetained = 0;
   /** 合批缓冲区：键为 `${sessionId ?? ""}${type}`，值为待合并的 delta。 */
@@ -131,18 +138,19 @@ export class EventBus extends EventEmitter {
       ...(sessionSeq === undefined ? {} : { sessionSeq }),
       createdAt: new Date().toISOString(),
     };
-    const bytes = Buffer.byteLength(JSON.stringify(event), "utf8");
+    const serialized = JSON.stringify(event);
+    const bytes = Buffer.byteLength(serialized, "utf8");
     // A single oversize event is still delivered live, but never retained for
     // replay: retaining it would defeat the history memory budget.
     if (bytes <= this.historyByteLimit) {
-      this.history.push(event);
+      this.history.push({ event, bytes, serialized });
       this.historyBytes += bytes;
       while (this.history.length > this.historyLimit || this.historyBytes > this.historyByteLimit) {
         const removed = this.history.shift();
-        if (removed) this.historyBytes -= Buffer.byteLength(JSON.stringify(removed), "utf8");
+        if (removed) this.historyBytes -= removed.bytes;
       }
     } else this.oversizedNotRetained++;
-    this.emit("event", event);
+    this.emit("event", event, serialized);
     return event;
   }
 
@@ -150,7 +158,7 @@ export class EventBus extends EventEmitter {
     // 先冲刷挂起的合批 delta，保证 replay 看到完整的已定序历史。
     this.flushDeltas();
     if (sessionId) {
-      const history = this.history.filter((event) => event.sessionId === sessionId);
+      const history = this.history.filter((entry) => entry.event.sessionId === sessionId).map((entry) => entry.event);
       const oldest = history[0]?.sessionSeq ?? (this.sessionSequences.get(sessionId) ?? 0) + 1;
       const latestSeq = this.sessionSequences.get(sessionId) ?? 0;
       const requiresResync = after > 0 && after < oldest - 1;
@@ -163,13 +171,14 @@ export class EventBus extends EventEmitter {
     // oldest 是当前缓冲区里最旧事件的 seq；历史为空时取 sequence+1（一个不存在的 seq），
     // 使 after>=1 的请求都判定为需要 resync。`after < oldest - 1` 表示客户端想从
     // after+1 开始补拉，但 after+1 已早于现存最旧事件 oldest，无法连续补齐 → 要求 REST resync。
-    const oldest = this.history[0]?.seq ?? this.sequence + 1;
-    const latestRetained = this.history.at(-1)?.seq ?? 0;
+    const oldest = this.history[0]?.event.seq ?? this.sequence + 1;
+    const latestRetained = this.history.at(-1)?.event.seq ?? 0;
     const requiresResync = (after > 0 && after < oldest - 1) || (after < this.sequence && latestRetained !== this.sequence);
     const events = requiresResync
       ? []
-      : this.history.filter((event) =>
-          event.seq > after && (!sessionId || !event.sessionId || event.sessionId === sessionId));
+      : this.history.filter((entry) =>
+          entry.event.seq > after && (!sessionId || !entry.event.sessionId || entry.event.sessionId === sessionId))
+        .map((entry) => entry.event);
     return { events, requiresResync, latestSeq: this.sequence };
   }
 

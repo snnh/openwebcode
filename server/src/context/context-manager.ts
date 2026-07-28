@@ -155,6 +155,35 @@ interface ViewBuildCache {
   selectionKey: string;
   header?: ViewFragment | undefined;
   fragments: ViewFragment[];
+  /** header+fragments 的累计统计：增量命中只需累加追加片段，不再全视图求和。 */
+  totalTokens: number;
+  segments: ContextSegmentBreakdown;
+  pinnedTokens: number;
+  /** 最终注入形态的主克隆（cache 私有，不外出）；每次返回按消息/内容数组浅拷。 */
+  view: ChatMessage[];
+}
+
+/** ledger.json 内存缓存：size+mtimeMs+ctimeMs 指纹校验（同 session-store 消息缓存纪律），
+ *  命中时免去 readFile+全量 JSON.parse；save 后重 stat 保持一致。ledgerKey 随缓存预算，
+ *  只有落盘变更才重算。 */
+interface LedgerCacheEntry {
+  ledger: ContextLedger;
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+  ledgerKey: string;
+}
+
+const MAX_CACHED_LEDGERS = 32;
+const MAX_CACHED_VIEWS = 32;
+
+/** buildView 缓存键的 ledger 部分：压缩/清空/驱逐条目（与历史实现逐字节一致）。 */
+function computeLedgerKey(ledger: ContextLedger): string {
+  return JSON.stringify({
+    compacted: ledger.compacted ?? null,
+    cleared: ledger.cleared ?? null,
+    entries: ledger.entries.map((entry) => [entry.messageId, entry.artifactId, entry.state]),
+  });
 }
 
 /** 构建单条消息片段：深克隆 + 驱逐占位替换（pin 的消息跳过替换）。 */
@@ -191,7 +220,13 @@ function estimateFragmentTokens(message: ChatMessage): number {
   return total;
 }
 
+/** glob → RegExp 编译缓存：pattern 来自会话配置（≤200 条/会话），小 Map 足够；FIFO 逐出兜底防膨胀。 */
+const globRegExpCache = new Map<string, RegExp>();
+const MAX_CACHED_GLOB_REGEXPS = 256;
+
 function globToRegExp(glob: string): RegExp {
+  const cached = globRegExpCache.get(glob);
+  if (cached) return cached;
   const normalized = glob.replace(/\\/g, "/");
   let source = "";
   for (let index = 0; index < normalized.length; index += 1) {
@@ -201,7 +236,10 @@ function globToRegExp(glob: string): RegExp {
     else if (char === "?") source += "[^/]";
     else source += char.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
-  return new RegExp(`^${source}$`, "i");
+  const regex = new RegExp(`^${source}$`, "i");
+  globRegExpCache.set(glob, regex);
+  while (globRegExpCache.size > MAX_CACHED_GLOB_REGEXPS) globRegExpCache.delete(globRegExpCache.keys().next().value!);
+  return regex;
 }
 
 /**
@@ -224,28 +262,83 @@ export function isPathExcluded(target: string, excludes: readonly string[]): boo
 export class ContextManager {
   private static readonly operations = new Map<string, Promise<void>>();
   private static readonly viewCaches = new Map<string, ViewBuildCache>();
+  private static readonly ledgerCaches = new Map<string, LedgerCacheEntry>();
 
   constructor(private readonly sessionRoot: string) {}
 
   async load(): Promise<ContextLedger> {
+    return (await this.loadLedger()).ledger;
+  }
+
+  /**
+   * 读取 ledger + 预算好的 buildView 缓存键。磁盘事实只在指纹（size/mtime/ctime）
+   * 变化时重读；缓存主本不外出——调用方拿到 structuredClone，save 仍是唯一提交点。
+   */
+  private async loadLedger(): Promise<{ ledger: ContextLedger; ledgerKey: string }> {
+    const target = path.join(this.sessionRoot, "ledger.json");
+    const cached = ContextManager.ledgerCaches.get(this.sessionRoot);
+    if (cached) {
+      const info = await stat(target).catch((error: unknown) => {
+        if (isMissing(error)) return undefined;
+        throw error;
+      });
+      const hit = cached.size < 0
+        ? info === undefined
+        : info !== undefined && info.size === cached.size && info.mtimeMs === cached.mtimeMs && info.ctimeMs === cached.ctimeMs;
+      if (hit) {
+        ContextManager.touchLedgerCache(this.sessionRoot, cached);
+        return { ledger: structuredClone(cached.ledger), ledgerKey: cached.ledgerKey };
+      }
+    }
+    let value: Partial<ContextLedger> = {};
+    let fingerprint = { size: -1, mtimeMs: -1, ctimeMs: -1 };
     try {
-      const ledger = JSON.parse(await readFile(path.join(this.sessionRoot, "ledger.json"), "utf8")) as Partial<ContextLedger>;
-      return normalizeLedger(ledger);
+      value = JSON.parse(await readFile(target, "utf8")) as Partial<ContextLedger>;
+      const info = await stat(target);
+      fingerprint = { size: info.size, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs };
     } catch (error) {
       if (!isMissing(error)) throw error;
-      return normalizeLedger({});
     }
+    const ledger = normalizeLedger(value);
+    const entry: LedgerCacheEntry = { ledger, ...fingerprint, ledgerKey: computeLedgerKey(ledger) };
+    ContextManager.touchLedgerCache(this.sessionRoot, entry);
+    return { ledger: structuredClone(ledger), ledgerKey: entry.ledgerKey };
   }
 
   async save(ledger: ContextLedger): Promise<void> {
     await mkdir(this.sessionRoot, { recursive: true });
     const target = path.join(this.sessionRoot, "ledger.json");
     await writeUtf8Atomically(target, `${JSON.stringify(ledger, null, 2)}\n`);
+    // 落盘即提交点：重 stat 更新缓存主本（克隆隔离，调用方后续改动不影响缓存）。
+    const info = await stat(target);
+    ContextManager.touchLedgerCache(this.sessionRoot, {
+      ledger: structuredClone(ledger),
+      size: info.size,
+      mtimeMs: info.mtimeMs,
+      ctimeMs: info.ctimeMs,
+      ledgerKey: computeLedgerKey(ledger),
+    });
+  }
+
+  private static touchLedgerCache(sessionRoot: string, entry: LedgerCacheEntry): void {
+    ContextManager.ledgerCaches.delete(sessionRoot);
+    ContextManager.ledgerCaches.set(sessionRoot, entry);
+    while (ContextManager.ledgerCaches.size > MAX_CACHED_LEDGERS) {
+      ContextManager.ledgerCaches.delete(ContextManager.ledgerCaches.keys().next().value!);
+    }
+  }
+
+  private static touchViewCache(sessionRoot: string, cache: ViewBuildCache): void {
+    ContextManager.viewCaches.delete(sessionRoot);
+    ContextManager.viewCaches.set(sessionRoot, cache);
+    while (ContextManager.viewCaches.size > MAX_CACHED_VIEWS) {
+      ContextManager.viewCaches.delete(ContextManager.viewCaches.keys().next().value!);
+    }
   }
 
   async buildView(messages: ChatMessage[], options?: BuildViewOptions): Promise<ContextView> {
     const startedAt = performance.now();
-    const ledger = await this.load();
+    const { ledger, ledgerKey } = await this.loadLedger();
     const selection: ContextSelection = { pins: options?.selection?.pins ?? [], excludes: options?.selection?.excludes ?? [] };
     const pinnedIds = new Set(selection.pins);
     const compacted = ledger.compacted;
@@ -257,33 +350,45 @@ export class ContextManager {
     // 增量复用（§4.4）：缓存键覆盖所有影响注入字节的输入——ledger 的压缩/清空/驱逐条目
     // 与 pin/排除配置。压缩、驱逐、恢复、配置变更都会改变键值而自然触发全量重建；
     // 会话恢复截断消息则令前缀校验失败。缓存只复用计算，最终产出字节与全量重建一致。
-    const ledgerKey = JSON.stringify({
-      compacted: ledger.compacted ?? null,
-      cleared: ledger.cleared ?? null,
-      entries: ledger.entries.map((entry) => [entry.messageId, entry.artifactId, entry.state]),
-    });
+    // ledgerKey 随 ledger 内存缓存预算，仅落盘变更时重算（见 loadLedger/save）。
     const selectionKey = JSON.stringify(selection);
-    const sourceIds = messages.map((message) => message.id);
 
     const cached = ContextManager.viewCaches.get(this.sessionRoot);
     let incremental = false;
     let header: ViewFragment | undefined;
     let fragments: ViewFragment[] | undefined;
+    let sourceIds: string[] | undefined;
+    let total = 0;
+    let pinnedTokens = 0;
+    let segments: ContextSegmentBreakdown | undefined;
+    let master: ChatMessage[] | undefined;
     if (!options?.forceFullRebuild && cached
         && cached.ledgerKey === ledgerKey && cached.selectionKey === selectionKey
-        && cached.sourceIds.length <= sourceIds.length
-        && cached.sourceIds.every((id, index) => id === sourceIds[index])) {
+        && cached.sourceIds.length <= messages.length
+        && cached.sourceIds.every((id, index) => messages[index]!.id === id)) {
       // 追加消息含图片时，图像预算的占位替换会回溯到前缀，必须全量重建。
       const appended = messages.slice(cached.sourceIds.length);
       if (!appended.some((message) => message.content.some((block) => block.type === "image"))) {
+        ContextManager.touchViewCache(this.sessionRoot, cached);
         header = cached.header;
         fragments = [...cached.fragments];
+        sourceIds = [...cached.sourceIds];
+        total = cached.totalTokens;
+        pinnedTokens = cached.pinnedTokens;
+        segments = { ...cached.segments };
+        master = [...cached.view];
         const byMessage = new Map(ledger.entries.map((entry) => [entry.messageId, entry]));
         for (const message of appended) {
           const fragment = buildFragment(message, byMessage, pinnedIds);
           // 追加消息不含图片（否则已回退全量），可立即完成该片段的 token 估算。
           fragment.tokens = estimateFragmentTokens(fragment.message);
           fragments.push(fragment);
+          sourceIds.push(message.id);
+          total += fragment.tokens;
+          segments[fragment.segment] += fragment.tokens;
+          if (fragment.pinned) pinnedTokens += fragment.tokens;
+          // buildFragment 产出已是私有深克隆，直接入主克隆数组，不再二次克隆。
+          master.push(fragment.message);
         }
         incremental = true;
       }
@@ -307,27 +412,32 @@ export class ContextManager {
       // 图像独立预算作用于整个视图（从尾部计数），只在全量构建时应用。
       enforceImageBudget(fragments.map((fragment) => fragment.message));
       const rebuilt = header ? [header, ...fragments] : fragments;
-      for (const fragment of rebuilt) fragment.tokens = estimateFragmentTokens(fragment.message);
-    }
-    const all = header ? [header, ...fragments] : fragments;
-    const segments: ContextSegmentBreakdown = { system: 0, compactionSummary: 0, toolResults: 0, messages: 0, repoMap: 0, other: 0 };
-    let total = 0;
-    let pinnedTokens = 0;
-    for (const fragment of all) {
-      total += fragment.tokens;
-      segments[fragment.segment] += fragment.tokens;
-      if (fragment.pinned) pinnedTokens += fragment.tokens;
+      // token 估算与统计累加同一趟完成；片段消息已是 buildFragment 的私有克隆，
+      // 图像预算也已应用，直接作为主克隆，省掉过去整视图的一次额外逐块克隆。
+      segments = { system: 0, compactionSummary: 0, toolResults: 0, messages: 0, repoMap: 0, other: 0 };
+      for (const fragment of rebuilt) {
+        fragment.tokens = estimateFragmentTokens(fragment.message);
+        total += fragment.tokens;
+        segments[fragment.segment] += fragment.tokens;
+        if (fragment.pinned) pinnedTokens += fragment.tokens;
+      }
+      master = rebuilt.map((fragment) => fragment.message);
+      sourceIds = messages.map((message) => message.id);
     }
     const stats: ContextBuildStats = {
       totalTokens: Math.max(1, total),
-      segments,
+      segments: segments!,
       pinnedTokens,
       buildMs: performance.now() - startedAt,
       incremental,
     };
-    ContextManager.viewCaches.set(this.sessionRoot, { sourceIds, ledgerKey, selectionKey, header, fragments });
-    // 返回逐块克隆，调用方（扩展 transform 等）可自由修改而不污染缓存模板。
-    const view = all.map((fragment) => ({ ...fragment.message, content: fragment.message.content.map((block) => ({ ...block })) }));
+    ContextManager.touchViewCache(this.sessionRoot, {
+      sourceIds: sourceIds!, ledgerKey, selectionKey, header, fragments,
+      totalTokens: total, segments: { ...segments! }, pinnedTokens, view: master!,
+    });
+    // 返回按消息/内容数组浅拷：调用方（扩展 transform 等）可替换消息或内容数组而不污染
+    // 缓存主本；内容块按不可变数据共享（现有调用方均为整体替换或 IPC 序列化，无原地改写）。
+    const view = master!.map((message) => ({ ...message, content: [...message.content] }));
     return { messages: view, ledger, stats };
   }
 
@@ -471,7 +581,12 @@ export class ContextManager {
   async recordCacheBreakpoints(messageIds: string[]): Promise<ContextLedger> {
     return this.serial(async () => {
       const ledger = await this.load();
-      ledger.cacheBreakpoints = [...new Set(messageIds)].slice(-3);
+      const next = [...new Set(messageIds)].slice(-3);
+      // 内容未变时跳过落盘（热路径每轮都调用，多数轮断点不变）。
+      if (next.length === ledger.cacheBreakpoints.length && next.every((id, index) => id === ledger.cacheBreakpoints[index])) {
+        return ledger;
+      }
+      ledger.cacheBreakpoints = next;
       await this.save(ledger);
       return ledger;
     });
@@ -499,26 +614,37 @@ export class ContextManager {
       // Ledger entries grow with the session. Index them once so eviction stays
       // linear in the newly eligible tool messages instead of O(T×E).
       const entriesByMessage = new Map(ledger.entries.map((entry) => [entry.messageId, entry]));
+      // artifacts 目录 mkdir 每轮最多一次（原来每条被驱逐消息一次 recursive mkdir）。
+      let artifactsDirReady = false;
+      let mutated = false;
       for (const message of eligible) {
         // pin 的消息不被驱逐；pin 占用超预算时由构建统计如实上报，不在这里悄悄绕过。
         if (pinnedIds?.has(message.id)) continue;
         const existing = entriesByMessage.get(message.id);
         if (existing) {
           if (existing.pinnedUntilRound >= ledger.round) continue;
-          existing.state = "evicted";
-          delete existing.restoredAt;
+          if (existing.state !== "evicted" || existing.restoredAt !== undefined) {
+            existing.state = "evicted";
+            delete existing.restoredAt;
+            mutated = true;
+          }
           continue;
         }
         const result = message.content.find((block) => block.type === "tool_result");
         if (!result || result.type !== "tool_result") continue;
         const artifactId = `artifact-${randomUUID()}`;
-        await mkdir(path.join(this.sessionRoot, "artifacts"), { recursive: true });
+        if (!artifactsDirReady) {
+          await mkdir(path.join(this.sessionRoot, "artifacts"), { recursive: true });
+          artifactsDirReady = true;
+        }
         await writeFile(path.join(this.sessionRoot, "artifacts", `${artifactId}.txt`), result.content, "utf8");
         const entry: LedgerEntry = { messageId: message.id, kind: "tool_result", artifactId, state: "evicted", createdRound: ledger.round, pinnedUntilRound: 0 };
         ledger.entries.push(entry);
         entriesByMessage.set(entry.messageId, entry);
+        mutated = true;
       }
-      await this.save(ledger);
+      // 无新增/状态变化时跳过落盘（lag 窗口内多数轮 eligible 为空或已全部驱逐）。
+      if (mutated) await this.save(ledger);
       return ledger;
     });
   }
