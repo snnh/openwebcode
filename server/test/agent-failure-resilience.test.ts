@@ -90,6 +90,61 @@ describe("AgentRunner failure resilience", () => {
     expect(observed.filter((event) => event.type === "agent.state").at(-1)?.payload).toEqual({ state: "idle" });
   });
 
+  it("tags agent.error with the classified kind and retryable=false for an authentication failure", async () => {
+    const harness = await setup("broken");
+    harness.providers.register({
+      name: "broken",
+      async *streamChat() {
+        throw Object.assign(new Error("invalid api key"), { status: 401 });
+      },
+    });
+    const observed: Array<{ type: string; payload: unknown }> = [];
+    harness.events.on("event", (event) => observed.push(event));
+    const runner = new AgentRunner(harness.sessions, harness.providers, makeCore(), harness.events, harness.pricing);
+
+    await expect(runner.run(harness.sessionId, "401 需要分类提示")).rejects.toThrow("invalid api key");
+
+    expect(observed).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "agent.error",
+        payload: expect.objectContaining({ message: "invalid api key", kind: "authentication", retryable: false }),
+      }),
+    ]));
+    await expect(runner.getRun(harness.sessionId)).resolves.toMatchObject({
+      state: "failed",
+      error: { code: "run_failed", message: "invalid api key", retryable: false },
+    });
+  });
+
+  it("tags agent.error with kind=rate_limit and retryable=true after retry exhaustion", async () => {
+    const harness = await setup("broken");
+    let calls = 0;
+    harness.providers.register({
+      name: "broken",
+      async *streamChat() {
+        calls += 1;
+        throw Object.assign(new Error("rate limited"), { status: 429 });
+      },
+    });
+    const observed: Array<{ type: string; payload: unknown }> = [];
+    harness.events.on("event", (event) => observed.push(event));
+    const runner = new AgentRunner(harness.sessions, harness.providers, makeCore(), harness.events, harness.pricing);
+
+    await expect(runner.run(harness.sessionId, "限流耗尽后标记可重试")).rejects.toThrow("rate limited");
+
+    expect(calls).toBe(3);
+    expect(observed).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "agent.error",
+        payload: expect.objectContaining({ message: "rate limited", kind: "rate_limit", retryable: true }),
+      }),
+    ]));
+    await expect(runner.getRun(harness.sessionId)).resolves.toMatchObject({
+      state: "failed",
+      error: { code: "run_failed", message: "rate limited", retryable: true },
+    });
+  });
+
   it("converts a tool preflight exception into one persisted tool_result and continues the turn", async () => {
     const harness = await setup();
     let turn = 0;

@@ -16,6 +16,7 @@ import { calculateUsageCost } from "../cost/cost-calculator.js";
 import type { ExchangeRateService } from "../cost/exchange-rate.js";
 import type { PricingCatalog } from "../cost/pricing-catalog.js";
 import type { ProviderRegistry, ProviderTool, ProviderEvent } from "../providers/provider.js";
+import { ProviderError } from "../providers/provider-error.js";
 import { collectProviderTurn } from "../providers/retry.js";
 import { PermissionCoordinator, permissionRule, type PermissionDecision } from "./permission-coordinator.js";
 import { runSubAgent, SUB_AGENT_TOOL_NAMES } from "./sub-agent.js";
@@ -1167,8 +1168,16 @@ export class AgentRunner {
         throw error;
       }
       const message = error instanceof Error ? error.message : String(error);
-      this.events.publish({ source: "agent", type: "agent.error", sessionId, payload: { message } });
-      await this.finishRun(sessionId, "failed", { code: "run_failed", message, retryable: false });
+      // Provider 错误（重试耗尽后抛出 ProviderError）携带分类 kind 与 retryable，
+      // 供前端给出可操作的提示（检查 API Key / 限流稍后重试等）；非 provider 路径省略 kind。
+      const providerError = error instanceof ProviderError ? error : undefined;
+      this.events.publish({
+        source: "agent",
+        type: "agent.error",
+        sessionId,
+        payload: { message, retryable: providerError?.retryable ?? false, ...(providerError ? { kind: providerError.kind } : {}) },
+      });
+      await this.finishRun(sessionId, "failed", { code: "run_failed", message, retryable: providerError?.retryable ?? false });
       throw error;
     } finally {
       this.settling.delete(sessionId);
@@ -1294,7 +1303,8 @@ export class AgentRunner {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.events.publish({ source: "agent", type: "agent.error", sessionId, payload: { message } });
+      // runShell 不经过 provider，payload 不带 kind；retryable 恒为 false
+      this.events.publish({ source: "agent", type: "agent.error", sessionId, payload: { message, retryable: false } });
       // 尽力落盘错误 tool_result 防止丢失（appendMessage 自身失败则忽略）
       try {
         await this.sessions.appendMessage(sessionId, "tool", [{ type: "tool_result", toolCallId, content: message, isError: true }]);

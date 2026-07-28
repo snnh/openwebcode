@@ -690,6 +690,12 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .tool-result-label { font-size: 11px; color: var(--text-3); }
 .tool-result.error { border-color: var(--danger-border); background: var(--danger-bg); }
 .tool-result.error summary, .tool-result.error .tool-result-label { color: var(--danger); }
+/* run-error 卡（agent.error 持久展示）：hint 为可执行建议，原始错误弱化/折叠，附深链与重试按钮 */
+.run-error-hint { margin: 4px 0 0; font-size: 12.5px; color: var(--danger); }
+.run-error-message { margin: 6px 0 0; font-size: 12px; color: var(--text-2); }
+.run-error-details { margin-top: 6px; }
+.run-error-details pre { margin: 4px 0 0; font-size: 12px; color: var(--text-2); max-height: 200px; overflow-y: auto; }
+.run-error-actions { display: flex; gap: 8px; margin-top: 8px; }
 /* 子代理转录（spawn_task / spawn_swarm 工具结果下方） */
 .subagent-transcripts { display: grid; gap: 6px; margin-top: 8px; }
 .subagent-transcript summary { cursor: pointer; font-size: 12px; color: var(--accent); }

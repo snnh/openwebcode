@@ -7,10 +7,11 @@
 
 export type NotificationKind = "info" | "error";
 
-/** 点击通知的跳转目标：会话 + 可选侧栏视图 */
+/** 点击通知的跳转目标：会话 + 可选侧栏视图，或设置对话框的指定页签（SettingsTab） */
 export interface NotificationTarget {
   sessionId?: string;
   view?: "sessions" | "files" | "scm" | "problems";
+  settingsTab?: string;
 }
 
 export interface AppNotification {

@@ -225,6 +225,25 @@ export interface AppEvent {
   payload: unknown;
 }
 
+/** agent.error 事件中 provider 错误的分类（与 server providers/provider-error.ts 对齐）；非 provider 失败省略 kind */
+export type AgentErrorKind =
+  | "authentication"
+  | "permission"
+  | "not_found"
+  | "rate_limit"
+  | "overloaded"
+  | "network"
+  | "stream_interrupted"
+  | "invalid_request"
+  | "unknown";
+
+/** WS 事件 agent.error 的 payload */
+export interface AgentErrorPayload {
+  message: string;
+  kind?: AgentErrorKind;
+  retryable?: boolean;
+}
+
 export type AgentRunState = "accepted" | "starting" | "snapshotting" | "preparing_context" | "streaming" | "executing_tools" | "waiting_permission" | "advancing_turn" | "settling" | "budget_paused" | "completed" | "failed" | "aborted";
 
 /** Durable server-side run snapshot returned by GET /api/sessions/:id/run. */
