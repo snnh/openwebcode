@@ -215,8 +215,11 @@ v1 扩展运行于独立 Extension Host 子进程（可信代码，安全级别 
 - **只读会话**（权限 `sessions:read`）：`ctx.sessions.list()` 返回脱敏元信息（白名单字段，不含 sandbox/setupScript 等内部配置）；`ctx.sessions.get(id)` 附加完整消息历史。
 - **只读上下文**（权限 `context:read`）：`ctx.context.getView(sessionId)`（buildView 结果）、`ctx.context.readArtifact(sessionId, artifactId, offset?, limit?)`。
 - **订阅事件**（权限 `sessions:read`）：`ctx.events.subscribe(types, handler)`，类型白名单 `agent.state` / `tool.start` / `tool.end` / `context.*` / `checkpoint.*` / `subagent.*`，host 断线自动退订。
+- **提示词钩子** `prompt.beforeBuild`（1.0.0 起）：在系统提示词组装前回调，载荷 `{ sessionId, cwd, identity, basePrompt, productSections }`，可返回 `{ identity?, basePromptOverride?, productSections?, prependSections? }` 逐项覆盖；身份行、基线提示词均可替换，但安全约束段（SAFETY_BOUNDARY）始终由核心追加，扩展不可移除。文件级覆盖（`system-prompt.md`）先加载，钩子在其结果上再变换，钩子结果不跨 run 缓存。
+- **工具塑形** `toolShaping`（仅官方扩展，1.0.0 起）：manifest 声明 `{ hideBuiltIns?: string[], aliases?: [{ from, as, description?, inputSchema? }] }`，在 server 侧对每轮工具表做隐藏/重命名；别名工具保留原权限类别与 plan 门禁（不降级 external）。第三方 manifest 携带该字段直接拒绝。
+- **配置表单** `configSchema`（1.0.0 起）：manifest 声明 JSON Schema 子集（type/properties/required/enum/default），设置页渲染 typed 表单（enum 下拉/数字/布尔），无 schema 回退原始 JSON 编辑；server 对配置更新做松散校验（类型/枚举/未知键）。
 
-实现参考：`extensions/types.ts`（协议与权限）、`extension-host-process.ts`（ctx 注入与 `tool.invoke` 处理）、`extension-manager.ts`（工具注册表 / API 分发 / 事件转发）、`agent-runner.ts` 的 `ext__` 分支（与 `mcp__` 共用 `executeExternalTool`）。测试样例：`server/test/extension-api.test.ts`。
+实现参考：`extensions/types.ts`（协议与权限）、`extension-host-process.ts`（ctx 注入与 `tool.invoke` 处理）、`extension-manager.ts`（工具注册表 / API 分发 / 事件转发 / transformPrompt / activeToolShaping）、`extensions/env-sim/`（官方预设与 persona 加载范例）、`agent-runner.ts` 的 `ext__` 分支（与 `mcp__` 共用 `executeExternalTool`）。测试样例：`server/test/extension-api.test.ts`、`server/test/env-sim.test.ts`。
 
 ### 改上下文策略
 
@@ -227,7 +230,7 @@ v1 扩展运行于独立 Extension Host 子进程（可信代码，安全级别 
 
 ### 改 UI
 
-- 状态：`App.tsx` 顶层 + `zustand` store（偏好/布局）
+- 状态：`App.tsx` 顶层组件状态（偏好/布局，localStorage 持久化）
 - 数据：`@tanstack/react-query`（`queryKeys` 集中定义）
 - WS 事件流：`App.tsx` 的 onmessage 分发到 state + react-query invalidate
 - 样式：单文件 `styles.css`，CSS 变量主题（亮/暗）

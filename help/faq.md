@@ -73,7 +73,7 @@ Windows：重新下载 MSI 双击安装（major upgrade 原地升级，用户数
 
 ### Q: agent 运行报错（认证失败 / 限流 / 过载）怎么办？
 
-错误事件会分类为 authentication / permission / not_found / invalid_request / rate_limit / overloaded，运行错误卡按类型给出可操作提示，并附设置深链按钮（认证问题直达「服务设置」，模型/请求无效直达「模型目录」）。限流、过载等可重试错误会提供「重试」按钮，一键重发上一条用户消息；toast 只显示一行摘要，完整信息看错误卡。
+错误事件会分类为 authentication / permission / not_found / invalid_request / rate_limit / overloaded，运行错误卡按类型给出可操作提示，并附设置深链按钮（认证/接口问题直达「模型目录」）。限流、过载等可重试错误会提供「重试」按钮，一键重发上一条用户消息；toast 只显示一行摘要，完整信息看错误卡。
 
 ### Q: 缓存命中省钱吗？
 
