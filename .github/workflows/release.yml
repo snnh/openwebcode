@@ -36,6 +36,24 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Verify tag matches repo versions
+        # 手动触发（ref 为分支）时跳过；tag 发布必须三方一致，尽早失败
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          PKG_VERSION="$(node -p "require('./server/package.json').version")"
+          CORE_VERSION="$(sed -n 's/^project(openwebcode_core VERSION \([0-9][0-9.]*\).*/\1/p' core/CMakeLists.txt | head -n 1)"
+          if [ -z "$PKG_VERSION" ] || [ -z "$CORE_VERSION" ]; then
+            echo "::error::无法解析仓库内版本号：package.json='$PKG_VERSION' CMakeLists.txt='$CORE_VERSION'"
+            exit 1
+          fi
+          if [ "$VERSION" != "$PKG_VERSION" ] || [ "$VERSION" != "$CORE_VERSION" ]; then
+            echo "::error::tag 版本 ($VERSION) 与 server/package.json ($PKG_VERSION)、core/CMakeLists.txt ($CORE_VERSION) 不一致，请先对齐再发版"
+            exit 1
+          fi
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -115,6 +133,15 @@ jobs:
           cp -r server/dist server/package.json server/node_modules server/assets build/stage/server/
           cp -r web/dist build/stage/web/
           curl -fsSLo node.zip "https://nodejs.org/dist/v${NODE_DIST_VERSION}/node-v${NODE_DIST_VERSION}-win-x64.zip"
+          # 对照官方 SHASUMS.txt 校验下载的 bundled Node（防截断/镜像损坏），不硬编码哈希
+          curl -fsSLo SHASUMS.txt "https://nodejs.org/dist/v${NODE_DIST_VERSION}/SHASUMS.txt"
+          EXPECTED_SHA="$(grep "node-v${NODE_DIST_VERSION}-win-x64\.zip\$" SHASUMS.txt | awk '{print $1}')"
+          test -n "$EXPECTED_SHA"
+          ACTUAL_SHA="$(certutil -hashfile node.zip SHA256 | sed -n '2p' | tr -d ' \r' | tr 'A-F' 'a-f')"
+          if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+            echo "::error::bundled Node zip SHA-256 校验失败：期望 $EXPECTED_SHA，实际 $ACTUAL_SHA"
+            exit 1
+          fi
           # Git for Windows 的 tar 在部分 runner 镜像中只支持 tar 流，不能解 zip；
           # 使用系统 PowerShell 的 Expand-Archive，避免把 ZIP 误判为 tar。
           pwsh -NoLogo -NoProfile -NonInteractive -Command "Expand-Archive -LiteralPath 'node.zip' -DestinationPath '.' -Force"
@@ -199,6 +226,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Verify tag matches repo versions
+        # 手动触发（ref 为分支）时跳过；tag 发布必须三方一致，尽早失败
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          PKG_VERSION="$(node -p "require('./server/package.json').version")"
+          CORE_VERSION="$(sed -n 's/^project(openwebcode_core VERSION \([0-9][0-9.]*\).*/\1/p' core/CMakeLists.txt | head -n 1)"
+          if [ -z "$PKG_VERSION" ] || [ -z "$CORE_VERSION" ]; then
+            echo "::error::无法解析仓库内版本号：package.json='$PKG_VERSION' CMakeLists.txt='$CORE_VERSION'"
+            exit 1
+          fi
+          if [ "$VERSION" != "$PKG_VERSION" ] || [ "$VERSION" != "$CORE_VERSION" ]; then
+            echo "::error::tag 版本 ($VERSION) 与 server/package.json ($PKG_VERSION)、core/CMakeLists.txt ($CORE_VERSION) 不一致，请先对齐再发版"
+            exit 1
+          fi
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -266,8 +311,12 @@ jobs:
           cp build/owc-exec build/stage/bin/
           cp -r server/dist server/package.json server/node_modules server/assets build/stage/server/
           cp -r web/dist build/stage/web/
-          curl -fsSLo node.tar.gz "https://nodejs.org/dist/v${NODE_DIST_VERSION}/node-v${NODE_DIST_VERSION}-linux-x64.tar.gz"
-          tar -xzf node.tar.gz -C build/stage/node --strip-components=1
+          NODE_ARCHIVE="node-v${NODE_DIST_VERSION}-linux-x64.tar.gz"
+          curl -fsSLo "$NODE_ARCHIVE" "https://nodejs.org/dist/v${NODE_DIST_VERSION}/${NODE_ARCHIVE}"
+          # 对照官方 SHASUMS.txt 校验下载的 bundled Node（防截断/镜像损坏），不硬编码哈希
+          curl -fsSLo SHASUMS.txt "https://nodejs.org/dist/v${NODE_DIST_VERSION}/SHASUMS.txt"
+          grep "${NODE_ARCHIVE}\$" SHASUMS.txt | sha256sum --check
+          tar -xzf "$NODE_ARCHIVE" -C build/stage/node --strip-components=1
           test -x build/stage/node/bin/node
       - name: Pack tar.gz (install.sh at archive top level)
         run: |
@@ -388,11 +437,26 @@ jobs:
               "openwebcode-${VERSION}-linux-x64.tar.gz" > SHA256SUMS.txt
             sha256sum --check SHA256SUMS.txt
           )
+      - name: Extract release notes from CHANGELOG
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 取 "## [$VERSION] - ..." 标题之后到下一个 "## [" 之间的正文；缺失或为空则阻断发布
+          # 用 index/substr 而非正则，兼容 mawk（ubuntu 默认 awk）
+          awk -v heading="## [$VERSION]" '
+            index($0, heading) == 1 { found=1; next }
+            found && substr($0, 1, 4) == "## [" { exit }
+            found { print }
+          ' CHANGELOG.md > RELEASE_NOTES.md
+          if ! grep -q '[^[:space:]]' RELEASE_NOTES.md; then
+            echo "::error::CHANGELOG.md 中缺少 [${VERSION}] 的发布说明段落（或为空），请先补 CHANGELOG 再发版"
+            exit 1
+          fi
       - name: Publish artifacts to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ env.VERSION }}
-          generate_release_notes: true
+          body_path: RELEASE_NOTES.md
           draft: false
           fail_on_unmatched_files: true
           # On workflow_dispatch, a new tag must point at the commit that

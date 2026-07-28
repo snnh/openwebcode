@@ -67,7 +67,7 @@
 | `Esc` | 中断正在运行的 agent（弹窗、对话框、权限卡、编辑器聚焦时不抢键） |
 | `Shift+?` | 快捷键速查 |
 
-完整键位见设置 → **快捷键** 分区；0.4.0 暂不支持自定义键位。输入框聚焦时全局快捷键不抢键。设置对话框左侧导航带搜索框，按分区/分组/字段名（中英文）直接定位；界面各处的「前往设置」入口会深链到对应分区。
+完整键位见设置 → **快捷键** 分区；暂不支持自定义键位。输入框聚焦时全局快捷键不抢键。设置对话框左侧导航带搜索框，按分区/分组/字段名（中英文）直接定位；界面各处的「前往设置」入口会深链到对应分区。
 
 ## 问题（Problems）与源代码管理（SCM）面板
 
@@ -248,17 +248,20 @@ owc run "给 main.ts 加个单元测试" --cwd . --json
 
 ### Extension Host 与官方扩展
 
-设置 → **扩展** 可管理官方及第三方扩展。内置五项：
+设置 → **扩展** 可管理官方及第三方扩展。内置六项：
 
 - `context-manager`：默认启用，负责滚动驱逐策略和上下文管理面板；停用后不会自动逐出工具结果，85% 核心水位安全网仍保留
 - `attention-optimizer`：默认关闭，把关键约束/目标复制到上下文首尾锚区；`bottomOnly` 缓存影响较小，`full` 会增加输入 token
 - `content-lens`：默认关闭；启用且已配置快速模型后，消息旁出现「译」与「解析选中」，结果只存 `translations/`，不进入 LLM 上下文
 - `pdf-to-image`：默认启用；通过 Web 选择的 PDF 会先保存到当前工作区 `.owc/uploads/`，再将最多 4 页按 150 DPI、长边最大 2048px 转为图片附件，供支持图片输入的模型读取；停用时 Composer 仅把这个工作区相对路径引用交给主代理处理
 - `owc-eval`：默认关闭；启用后底部面板出现「评测」，可选择固定 mock-provider 示例与 0.4 工具契约任务，在独立临时工作区回放 AgentRunner。报告包含断言、工具、token 与耗时；可把历史运行设为基线，与当前运行生成持久化的回归/改善对比并导出自包含 JSON。评测服务内置于 server，不读取原始 API Key；生产运行仍走正常 Core 权限与沙盒边界
+- `env-sim`（环境模拟）：默认关闭；启用并选择预设后，系统提示词切换为该产品风格（身份行 + 工作方式），内置工具以该产品的命名/描述呈现（如 `Read`/`Bash`/`Edit`），底层仍走原工具实现与权限链。内置 `claude-code`/`kimi-code`/`zcode`/`codex` 四档预设；把自制预设 JSON 放入 `<业务数据目录>/env-sim/personas/` 即可添加并与他人分享（格式见该目录生成的示例或开发文档）
 
 第三方扩展目录需包含 `manifest.json`（`apiVersion: "1"`）和 `index.js`，可在设置页输入本地绝对路径安装。v1 扩展是可信代码，安装即信任其声明权限；钩子运行超时 5 秒会跳过并告警。
 
 ### 子代理（`.owc/agents/reviewer.md`）
+
+内置两种类型：`explore`（默认，只读探索：read_file/glob/grep/read_artifact）与 `general`（通用：可读写文件、执行 bash，工具调用经与主代理相同的权限链与沙盒）。`spawn_task agent=general prompt="..."` 即可派发可写任务；自定义 markdown 子代理仍为只读。
 
 ```markdown
 ---
@@ -282,7 +285,7 @@ model: claude-sonnet-4-5
 spawn_swarm prompt_template="审查 {{item}} 的最近改动，输出风险点" items=["src/auth.ts", "src/api.ts", "src/pay.ts"]
 ```
 
-`items` 也可逐项指定子代理：`items=[{"task": "审查 src/auth.ts", "agent": "reviewer"}, ...]`（字符串形式仍兼容）。子代理结论按 `[序号/总数]` 聚合返回；派生过程在消息轨道渲染为实时卡片（swarm 逐项状态、轮次与工具数），底部面板「子代理」标签页按调用分组汇总；每次派生的完整转录存在会话数据目录 `subagents/<taskId>.json`，可在卡片或面板中展开查看完整内部消息流（折叠到最近 20 轮）。中断 agent 不会再启动排队中的 swarm 项。
+`items` 也可逐项指定子代理：`items=[{"task": "审查 src/auth.ts", "agent": "reviewer"}, ...]`（字符串形式仍兼容，`agent` 也可填内置 `general`）。子代理结论按 `[序号/总数]` 聚合返回；派生过程在消息轨道渲染为实时卡片（swarm 逐项状态、轮次与工具数），底部面板「子代理」标签页按调用分组汇总，顶部还可手动启动子代理（任务描述 + 类型选择，`POST /api/sessions/:id/subagents`）；主窗口子代理标签页以与主对话相同的渲染展示完整转录。每次派生的完整转录存在会话数据目录 `subagents/<taskId>.json`。中断 agent 不会再启动排队中的 swarm 项，也会取消手动启动的子代理。
 
 ### 斜杠命令（`.owc/commands/review.md`）
 
