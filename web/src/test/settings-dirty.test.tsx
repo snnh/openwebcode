@@ -43,7 +43,7 @@ afterEach(() => {
 function stubApis(): void {
   vi.spyOn(api, "settings").mockResolvedValue(settingsView);
   vi.spyOn(api, "health").mockResolvedValue({ status: "ok" });
-  vi.spyOn(api, "version").mockResolvedValue({ server: "0.7.0", core: "0.7.0" });
+  vi.spyOn(api, "version").mockResolvedValue({ server: "0.7.0", core: "0.7.0", githubRepo: "snnh/openwebcode" });
   vi.spyOn(api, "updateCheck").mockRejectedValue(new Error("not enabled"));
   vi.spyOn(api, "refreshUpdateCheck").mockRejectedValue(new Error("not enabled"));
   vi.spyOn(api, "modelPricing").mockResolvedValue(pricingCatalog);
@@ -78,7 +78,7 @@ function renderDialog(withI18n = false): void {
 }
 
 function activeTab(): string | null {
-  return document.querySelector(".settings-tab.active")?.getAttribute("data-settings-tab");
+  return document.querySelector(".settings-tab.active")?.getAttribute("data-settings-tab") ?? null;
 }
 
 async function openTab(name: string): Promise<void> {
