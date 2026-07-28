@@ -751,6 +751,8 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .subagent-transcript-result { margin-top: 4px; }
 .subagent-transcript-result summary { font-size: 11.5px; color: var(--text-3); }
 .subagent-transcript-result pre { margin: 4px 0 0; font-size: 11.5px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 200px; overflow-y: auto; }
+.subagent-transcript-fold-toggle { margin-left: 6px; font-size: 11.5px; color: var(--accent); padding: 0; }
+.subagent-transcript-fold-toggle:hover { text-decoration: underline; }
 /* spawn_task / spawn_swarm 实时卡片 */
 .subagent-run header { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .subagent-run-label { font-size: 11px; color: var(--text-3); }
@@ -777,8 +779,15 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .subagents-group-header { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-2); margin-bottom: 4px; }
 .subagents-open-tab { margin-left: auto; flex: none; font-size: 11.5px; color: var(--accent); padding: 1px 6px; border-radius: var(--radius-s); }
 .subagents-open-tab:hover { text-decoration: underline; }
+/* 子代理面板顶部手动启动器 */
+.subagent-launcher { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.subagent-launcher-input { flex: 1; min-width: 160px; padding: 6px 9px; border: 1px solid var(--border); border-radius: var(--radius-s); background: var(--panel); color: var(--text); font-size: 12.5px; }
+.subagent-launcher-input:focus { border-color: var(--accent); outline: none; }
+.subagent-launcher-agent { padding: 5px 6px; border: 1px solid var(--border); border-radius: var(--radius-s); background: var(--panel); color: var(--text); font-size: 12px; }
+.subagent-launcher-error { flex-basis: 100%; margin: 2px 0 0; font-size: 12px; color: var(--danger); }
 
 /* 主区子代理标签条（桌面端）：对话 + 每个 spawn 调用一个标签，样式对齐底部面板标签 */
+/* 子代理标签用低饱和状态色（scoped 变量），「对话」标签保留 accent 下划线，一眼区分主/子 */
 .subagent-tabs {
   display: flex;
   align-items: center;
@@ -789,6 +798,14 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   scrollbar-width: thin;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
+  --subagent-running: #7d9dbd;
+  --subagent-done: #82a58c;
+  --subagent-failed: #b08080;
+}
+[data-theme="dark"] .subagent-tabs {
+  --subagent-running: #89aac6;
+  --subagent-done: #8db89b;
+  --subagent-failed: #bd9292;
 }
 .subagent-tab-main {
   flex: none;
@@ -803,12 +820,25 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 }
 .subagent-tab-main:hover { color: var(--text); }
 .subagent-tab-main[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
-.subagent-tab { display: inline-flex; align-items: center; flex: none; }
+.subagent-tab { display: inline-flex; align-items: center; flex: none; border-radius: var(--radius-s); }
+/* 低饱和状态底色（淡 tint），不用 accent */
+.subagent-tab[data-status="running"] { background: color-mix(in srgb, var(--subagent-running) 14%, transparent); }
+.subagent-tab[data-status="done"] { background: color-mix(in srgb, var(--subagent-done) 13%, transparent); }
+.subagent-tab[data-status="failed"] { background: color-mix(in srgb, var(--subagent-failed) 14%, transparent); }
+/* 选中：同色系稍深 tint + 细下边框 */
+.subagent-tab[data-status="running"]:has(.subagent-tab-main[aria-selected="true"]) { background: color-mix(in srgb, var(--subagent-running) 24%, transparent); }
+.subagent-tab[data-status="done"]:has(.subagent-tab-main[aria-selected="true"]) { background: color-mix(in srgb, var(--subagent-done) 22%, transparent); }
+.subagent-tab[data-status="failed"]:has(.subagent-tab-main[aria-selected="true"]) { background: color-mix(in srgb, var(--subagent-failed) 24%, transparent); }
+.subagent-tab[data-status="running"] .subagent-tab-main[aria-selected="true"] { color: var(--subagent-running); border-bottom-color: var(--subagent-running); }
+.subagent-tab[data-status="done"] .subagent-tab-main[aria-selected="true"] { color: var(--subagent-done); border-bottom-color: var(--subagent-done); }
+.subagent-tab[data-status="failed"] .subagent-tab-main[aria-selected="true"] { color: var(--subagent-failed); border-bottom-color: var(--subagent-failed); }
 /* 运行中且未选中：琥珀色吸引注意（spinner 继承 currentColor） */
 .subagent-tab.attention .subagent-tab-main { color: var(--amber); }
 .subagent-tab-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
-.subagent-tab-dot[data-status="done"] { background: var(--ok); }
-.subagent-tab-dot[data-status="failed"] { background: var(--danger); }
+.subagent-tab-dot[data-status="done"] { background: var(--subagent-done); }
+.subagent-tab-dot[data-status="failed"] { background: var(--subagent-failed); }
+/* 标签内 spinner：复用 .subagent-run-spinner 的旋转动画，只覆写尺寸与低饱和色 */
+.subagent-tab-spinner { width: 9px; height: 9px; color: var(--subagent-running); }
 .subagent-tab-close { display: inline-flex; align-items: center; padding: 3px 4px; color: var(--text-3); border-radius: var(--radius-s); }
 .subagent-tab-close:hover { color: var(--text); background: var(--panel-2); }
 /* 对话/子代理标签内容容器：撑满主列剩余高度；hidden 时整体隐藏（ExecutionTrack 保持挂载） */
@@ -816,6 +846,12 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .main-tab-panel[hidden] { display: none; }
 .subagent-tab-view { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 16px; display: flex; flex-direction: column; gap: 8px; }
 .subagent-tab-empty { padding: 12px 16px; }
+/* 标签内单个子代理运行：头部状态行 + 对话式转录（MessageCard 复用 .message 全局样式） */
+.subagent-tab-run { display: flex; flex-direction: column; gap: 6px; }
+.subagent-tab-run-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+.subagent-tab-run-header .subagent-run-stats,
+.subagent-tab-run-header .subagent-run-error { margin-top: 0; }
+.subagent-tab-hint { margin: 0; font-size: 12px; color: var(--text-3); }
 .thinking {
   background: var(--panel-2);
   background: color-mix(in srgb, var(--panel-2) 58%, transparent);
@@ -2492,3 +2528,95 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   .eval-panel { grid-template-columns: 1fr; }
   .eval-panel > .panel-head { grid-column: 1; }
 }
+
+/* ================= 0.7.x UX 批次：实时活动条 / 会话骨架 / 底部状态合并 / 回合底色 ================= */
+/* 实时活动指示：对话滚动区底部吸底条（running 时由 ExecutionTrack 渲染） */
+.live-activity {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(100%, 1100px);
+  margin-top: 4px;
+  margin-left: 30px;
+  padding: 7px 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  font-size: 12px;
+  color: var(--text-2);
+}
+.live-activity-spinner {
+  flex: none;
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid var(--accent);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: subagent-run-spin 0.8s linear infinite;
+}
+.live-activity-label { white-space: nowrap; }
+.live-activity-elapsed { color: var(--text-3); font: 11px var(--font-mono); }
+.live-activity-tool {
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+}
+
+/* 会话打开加载骨架：详情查询进行中替代欢迎页，纯 CSS 微光动画 */
+.session-skeleton { padding: 26px var(--gutter) 44px; display: flex; flex-direction: column; gap: 26px; }
+.skeleton-message { display: flex; flex-direction: column; gap: 8px; max-width: min(100%, 720px); }
+.skeleton-message:nth-child(even) { align-self: flex-end; align-items: flex-end; }
+.skeleton-line {
+  display: block;
+  width: 100%;
+  height: 12px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, var(--panel) 25%, var(--panel-2) 50%, var(--panel) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.4s ease infinite;
+}
+.skeleton-line.skeleton-meta { width: 140px; height: 10px; }
+.skeleton-line.short { width: 55%; }
+@keyframes skeleton-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+/* 底部状态合并（桌面端）：会话状态项并入面板标签条右侧，替代独立状态栏行 */
+.panel-status {
+  margin-left: auto;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-left: 12px;
+  color: var(--text-3);
+  font: 11px var(--font-mono);
+  overflow: hidden;
+  white-space: nowrap;
+}
+.panel-status > span { display: inline-flex; align-items: center; gap: 5px; min-width: 0; white-space: nowrap; }
+.panel-loading { padding: 18px; text-align: center; color: var(--text-3); font-size: 12.5px; }
+
+/* 回合底色：assistant/tool 消息铺极淡面板色（用户消息保持 accent 气泡），与轨道竖线共存 */
+.message.assistant, .message.tool {
+  background: color-mix(in srgb, var(--panel) 55%, transparent);
+  border-radius: var(--radius);
+  padding-top: 10px;
+  padding-right: 14px;
+  padding-bottom: 12px;
+}
+.message.assistant .track-node, .message.tool .track-node { background: color-mix(in srgb, var(--panel) 55%, var(--bg)); }
+/* 层级：工具/子代理块缩进 + 左侧引导线，视觉上嵌套在其 assistant 消息内；错误卡保持红色 */
+.message .tool-card, .message .tool-result, .message .subagent-run {
+  margin-left: 14px;
+  border-left: 2px solid var(--border);
+}
+.message .tool-result.error { border-left-color: var(--danger-border); }

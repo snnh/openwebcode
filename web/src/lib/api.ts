@@ -1,4 +1,4 @@
-import type { AgentRun, BackgroundTaskInfo, CatalogSyncStatus, Checkpoint, CompletePathResponse, ContextView, CostReport, ExtensionInfo, FileEntry, ManagedWorkspaceCapability, ManagedWorkspaceSyncPreview, ManagedWorkspaceSyncResult, MessageAttachment, MessagesPage, ModelProfile, PendingPermission, PricingDocument, ProviderConcurrencyStats, ProviderConnectionTestResult, ProviderProfilesView, SandboxCapabilities, SandboxMode, Session, SessionDetail, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo, SubagentTranscript, SyncResult, TodoItem, WebCapability } from "./contracts";
+import type { AgentListResponse, AgentRun, BackgroundTaskInfo, CatalogSyncStatus, Checkpoint, CompletePathResponse, ContextView, CostReport, ExtensionInfo, FileEntry, ManagedWorkspaceCapability, ManagedWorkspaceSyncPreview, ManagedWorkspaceSyncResult, MessageAttachment, MessagesPage, ModelProfile, PendingPermission, PricingDocument, ProviderConcurrencyStats, ProviderConnectionTestResult, ProviderProfilesView, SandboxCapabilities, SandboxMode, Session, SessionDetail, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo, StartSubagentResponse, SubagentTranscript, SyncResult, TodoItem, WebCapability } from "./contracts";
 
 export class ApiError extends Error {
   constructor(readonly status: number, message: string) {
@@ -210,6 +210,10 @@ export const api = {
   tasks: (id: string) => request<BackgroundTaskInfo[]>(`/api/sessions/${id}/tasks`),
   task: (id: string, taskId: string) => request<BackgroundTaskInfo>(`/api/sessions/${id}/tasks/${taskId}`),
   subagentTranscript: (id: string, taskId: string) => request<SubagentTranscript>(`/api/sessions/${id}/subagents/${taskId}`),
+  agents: () => request<AgentListResponse>("/api/agents"),
+  // 手动启动子代理：202 返回 { taskId, toolCallId }；400=非法 prompt/agent，429=超出并发
+  startSubagent: (id: string, body: { prompt: string; agent?: string }) =>
+    request<StartSubagentResponse>(`/api/sessions/${id}/subagents`, { method: "POST", body: JSON.stringify(body) }),
   extensions: () => request<ExtensionInfo[]>("/api/extensions"),
   configureExtension: (id: string, body: { enabled?: boolean; config?: Record<string, unknown> }) =>
     request<ExtensionInfo>("/api/extensions", { method: "POST", body: JSON.stringify({ id, ...body }) }),

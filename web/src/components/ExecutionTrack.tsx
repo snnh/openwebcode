@@ -3,6 +3,8 @@ import type { AgentErrorPayload, ChatMessage, ExtensionInfo, LiveSubagentRun, Se
 import { agentErrorGuidance } from "../lib/agent-error";
 import type { DiffSpec } from "./editor/DiffPane";
 import { Icon } from "./Icon";
+import { LiveActivity } from "./LiveActivity";
+import type { LiveActivityInfo } from "../hooks/use-live-activity";
 import { Markdown } from "./Markdown";
 import { MemoMessageCard, ThinkingBlock } from "./MessageCard";
 import { PermissionCard, type PermissionRequest } from "./PermissionCard";
@@ -71,7 +73,7 @@ function liveRunsForMessage(message: ChatMessage, liveSubagents?: Record<string,
   return runs.length > 0 ? runs : undefined;
 }
 
-export function ExecutionTrack({ session, cleared, streamText, thinkingText, runError, permissions, onPermissionDone, onPermissionError, onSendToAgent, contentLens, onNotice, onOpenDiff, onOpenSettings, onRetryRun, retryPending, hasMoreMessages, onLoadMore, loadingMore, liveSubagents, trackVisible = true }: {
+export function ExecutionTrack({ session, cleared, streamText, thinkingText, runError, permissions, onPermissionDone, onPermissionError, onSendToAgent, contentLens, onNotice, onOpenDiff, onOpenSettings, onRetryRun, retryPending, hasMoreMessages, onLoadMore, loadingMore, liveSubagents, liveActivity, trackVisible = true }: {
   session: SessionDetail;
   cleared?: { uptoIndex: number; at: string };
   streamText: string;
@@ -102,6 +104,8 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, run
   liveSubagents?: Record<string, LiveSubagentRun>;
   /** 对话面板是否可见（子代理标签选中时容器为 hidden）：不可见时暂停吸底滚动，恢复可见时重新贴底 */
   trackVisible?: boolean;
+  /** 实时活动（agent.state + 未结束工具）：有值时在滚动区底部渲染吸底活动条 */
+  liveActivity?: LiveActivityInfo | undefined;
 }): ReactElement {
   const { t } = useI18n();
   const trackRef = useRef<HTMLDivElement>(null);
@@ -251,6 +255,7 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, run
         {permissions.map((permission) => (
           <PermissionCard key={permission.requestId} permission={permission} sessionId={session.id} onDone={onPermissionDone} onError={onPermissionError} />
         ))}
+        {liveActivity && <LiveActivity activity={liveActivity} />}
       </div>
       {!pinned && (
         <button

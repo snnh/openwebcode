@@ -1,5 +1,7 @@
-import { useMemo, type ReactElement } from "react";
-import type { LiveSubagentRun } from "../../lib/contracts";
+import { useMemo, useState, type ReactElement } from "react";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { api } from "../../lib/api";
+import type { AgentInfo, LiveSubagentRun } from "../../lib/contracts";
 import { snippet } from "../../lib/subagent-runs";
 import { SubagentRunStats, SubagentStatusChip } from "../SubagentRunCard";
 import { SubagentTranscriptDetails } from "../MessageCard";
@@ -60,7 +62,72 @@ export function SubagentRunRow({ run, sessionId, onOpenInTab }: {
   );
 }
 
-/** 子代理面板：当前会话全部 spawn_task / spawn_swarm 运行的监视视图（实时 + 历史合并，最新在前） */
+/** api.agents() 不可用时的兜底选项（内置两类），保证启动器始终可用 */
+const FALLBACK_AGENTS: AgentInfo[] = [
+  { id: "explore", name: "explore", description: "", builtin: true },
+  { id: "general", name: "general", description: "", builtin: true },
+];
+
+/** 手动启动子代理：输入任务 + 选择代理类型（内置在前），成功后经 WS subagent.started 自动进入运行列表与标签 */
+function SubagentLauncher({ sessionId }: { sessionId: string }): ReactElement {
+  const { t } = useI18n();
+  const [prompt, setPrompt] = useState("");
+  // 手动启动的意图是干活，默认可写的通用代理
+  const [agent, setAgent] = useState("general");
+  const agentsQuery = useQuery({ queryKey: ["agents"], queryFn: () => api.agents(), staleTime: 300_000, retry: false });
+  const start = useMutation({
+    mutationFn: (body: { prompt: string; agent: string }) => api.startSubagent(sessionId, body),
+    onSuccess: () => setPrompt(""),
+  });
+  const agents = useMemo(() => {
+    const list = agentsQuery.data?.agents ?? FALLBACK_AGENTS;
+    return [...list].sort((a, b) => Number(b.builtin) - Number(a.builtin));
+  }, [agentsQuery.data]);
+  const submit = (): void => {
+    const text = prompt.trim();
+    if (!text || start.isPending) return;
+    start.mutate({ prompt: text, agent });
+  };
+  return (
+    <form
+      className="subagent-launcher"
+      onSubmit={(event) => {
+        event.preventDefault();
+        submit();
+      }}
+    >
+      <input
+        className="subagent-launcher-input"
+        value={prompt}
+        placeholder={t("描述子代理任务…", "Describe the subagent task…")}
+        aria-label={t("子代理任务描述", "Subagent task description")}
+        onChange={(event) => setPrompt(event.target.value)}
+      />
+      <select
+        className="subagent-launcher-agent"
+        aria-label={t("子代理类型", "Subagent type")}
+        value={agent}
+        onChange={(event) => setAgent(event.target.value)}
+      >
+        {agents.map((item) => (
+          <option key={item.id} value={item.id}>
+            {item.builtin ? t(`${item.name}（内置）`, `${item.name} (builtin)`) : t(`${item.name}（自定义）`, `${item.name} (custom)`)}
+          </option>
+        ))}
+      </select>
+      <button type="submit" className="btn small" disabled={!prompt.trim() || start.isPending}>
+        {start.isPending ? t("启动中…", "Launching…") : t("启动", "Launch")}
+      </button>
+      {start.isError && (
+        <p className="subagent-launcher-error" role="alert">
+          {start.error instanceof Error ? start.error.message : t("启动子代理失败", "Failed to launch the subagent")}
+        </p>
+      )}
+    </form>
+  );
+}
+
+/** 子代理面板：顶部手动启动器 + 当前会话全部 spawn_task / spawn_swarm 运行的监视视图（实时 + 历史合并，最新在前） */
 export function SubagentsPanel({ sessionId, runs, onOpenInTab }: {
   sessionId?: string;
   /** 当前会话合并后的子代理运行（taskId → run），App 下发 */
@@ -71,7 +138,7 @@ export function SubagentsPanel({ sessionId, runs, onOpenInTab }: {
   const { t } = useI18n();
   const groups = useMemo(() => groupSubagentRuns(runs), [runs]);
 
-  if (!sessionId || groups.length === 0) {
+  if (!sessionId) {
     return (
       <p className="panel-empty subagents-panel-empty">
         {t(
@@ -85,6 +152,15 @@ export function SubagentsPanel({ sessionId, runs, onOpenInTab }: {
   let swarmSeq = 0;
   return (
     <div className="subagents-panel">
+      <SubagentLauncher sessionId={sessionId} />
+      {groups.length === 0 && (
+        <p className="panel-empty subagents-panel-empty">
+          {t(
+            "还没有子代理运行记录——agent 运行中可通过 spawn_task / spawn_swarm 派生子代理并行处理任务。",
+            "No subagent runs yet — the agent can spawn subagents via spawn_task / spawn_swarm while running.",
+          )}
+        </p>
+      )}
       {groups.map((group) => {
         if (!group.swarm) {
           const run = group.runs[0]!;

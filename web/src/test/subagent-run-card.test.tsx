@@ -68,6 +68,32 @@ describe("SubagentRunCard", () => {
     expect(container.querySelector(".subagent-run-error")).toHaveTextContent("provider boom");
   });
 
+  it("历史推导的运行（turns=0 且已完成）不显示「0 轮」", () => {
+    const { container } = renderWithClient(
+      <SubagentRunCard
+        name="spawn_task"
+        input={{ prompt: "调查" }}
+        live={[run({ status: "done", turns: 0, toolsUsed: [] })]}
+      />,
+    );
+
+    expect(container.querySelector(".subagent-run-stats")).toBeNull();
+    expect(container.textContent).not.toContain("0 轮");
+  });
+
+  it("历史推导的运行有工具记录时只列工具、不显示轮次", () => {
+    const { container } = renderWithClient(
+      <SubagentRunCard
+        name="spawn_task"
+        input={{ prompt: "调查" }}
+        live={[run({ status: "done", turns: 0, toolsUsed: ["read_file"] })]}
+      />,
+    );
+
+    expect(container.querySelector(".subagent-run-stats")).toHaveTextContent("read_file");
+    expect(container.querySelector(".subagent-run-stats")).not.toHaveTextContent("0 轮");
+  });
+
   it("offers a transcript for a failed spawn_task too (server writes transcripts for failed runs)", () => {
     const { container } = renderWithClient(
       <SubagentRunCard

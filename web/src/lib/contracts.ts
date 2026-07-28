@@ -147,6 +147,25 @@ export interface LiveSubagentRun {
   error?: string;
 }
 
+/** GET /api/agents 响应项：内置与自定义子代理类型 */
+export interface AgentInfo {
+  id: string;
+  name: string;
+  description: string;
+  builtin: boolean;
+}
+
+/** GET /api/agents 响应 */
+export interface AgentListResponse {
+  agents: AgentInfo[];
+}
+
+/** POST /api/sessions/:id/subagents 202 响应（手动启动子代理）；toolCallId = "manual-" + taskId */
+export interface StartSubagentResponse {
+  taskId: string;
+  toolCallId: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "tool";

@@ -99,6 +99,8 @@ const TRANSCRIPT_ROLE_LABELS: Record<string, [string, string]> = { user: ["任�
 export function SubagentTranscriptDetails({ sessionId, taskId, index }: { sessionId: string; taskId: string; index?: number | undefined }): ReactElement {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
+  // 折叠超过 TRANSCRIPT_MESSAGE_FOLD 的历史消息；用户可手动展开全部
+  const [showAll, setShowAll] = useState(false);
   const transcript = useQuery({
     queryKey: ["subagent-transcript", sessionId, taskId],
     queryFn: () => api.subagentTranscript(sessionId, taskId),
@@ -110,7 +112,7 @@ export function SubagentTranscriptDetails({ sessionId, taskId, index }: { sessio
     : t("子代理转录", "Subagent transcript");
   const messages = transcript.data?.messages ?? [];
   const hiddenCount = Math.max(0, messages.length - TRANSCRIPT_MESSAGE_FOLD);
-  const shownMessages = hiddenCount > 0 ? messages.slice(hiddenCount) : messages;
+  const shownMessages = hiddenCount > 0 && !showAll ? messages.slice(hiddenCount) : messages;
   return (
     <details className="subagent-transcript" onToggle={(event) => setOpen(event.currentTarget.open)}>
       <summary>{label}</summary>
@@ -131,7 +133,12 @@ export function SubagentTranscriptDetails({ sessionId, taskId, index }: { sessio
             <details className="subagent-transcript-messages">
               <summary>{t(`消息记录（${messages.length} 条）`, `Messages (${messages.length})`)}</summary>
               {hiddenCount > 0 && (
-                <p className="subagent-transcript-status">{t(`仅显示最近 ${TRANSCRIPT_MESSAGE_FOLD} 条，已折叠前 ${hiddenCount} 条`, `Showing the last ${TRANSCRIPT_MESSAGE_FOLD}; ${hiddenCount} earlier folded`)}</p>
+                <p className="subagent-transcript-status">
+                  {!showAll && t(`仅显示最近 ${TRANSCRIPT_MESSAGE_FOLD} 条，已折叠前 ${hiddenCount} 条`, `Showing the last ${TRANSCRIPT_MESSAGE_FOLD}; ${hiddenCount} earlier folded`)}
+                  <button type="button" className="subagent-transcript-fold-toggle" onClick={() => setShowAll((value) => !value)}>
+                    {showAll ? t("收起", "Collapse") : t(`展开全部 ${messages.length} 条`, `Show all ${messages.length}`)}
+                  </button>
+                </p>
               )}
               {shownMessages.map((message) => (
                 <div key={message.id} className={`subagent-transcript-message ${message.role}`}>
