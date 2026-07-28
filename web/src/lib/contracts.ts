@@ -97,6 +97,54 @@ export interface SubagentTranscript {
   messages: ChatMessage[];
 }
 
+/** swarm 批量派生中的单项序号（WS 事件与实时状态共用） */
+export interface SubagentSwarmRef {
+  index: number;
+  total: number;
+}
+
+/** WS 事件 subagent.started 的 payload */
+export interface SubagentStartedEvent {
+  toolCallId: string;
+  taskId: string;
+  prompt: string;
+  agent?: string;
+  swarm?: SubagentSwarmRef;
+}
+
+/** WS 事件 subagent.progress 的 payload（仅元数据：轮次与已用工具，不含文本） */
+export interface SubagentProgressEvent {
+  toolCallId: string;
+  taskId: string;
+  turns: number;
+  toolsUsed: string[];
+  swarm?: SubagentSwarmRef;
+}
+
+/** WS 事件 subagent.finished 的 payload */
+export interface SubagentFinishedEvent {
+  toolCallId: string;
+  taskId: string;
+  status: "done" | "failed";
+  turns?: number;
+  toolsUsed?: string[];
+  error?: string;
+  swarm?: SubagentSwarmRef;
+}
+
+/** 客户端按会话维护的子代理实时运行状态（tool.end 到达后由持久化 tool_result 接管渲染） */
+export interface LiveSubagentRun {
+  taskId: string;
+  toolCallId: string;
+  prompt: string;
+  agent?: string;
+  swarm?: SubagentSwarmRef;
+  status: "running" | "done" | "failed";
+  turns: number;
+  toolsUsed: string[];
+  error?: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "tool";
@@ -209,12 +257,46 @@ export interface ContextBuildStats {
   incremental: boolean;
 }
 
+/** WS 事件 context.watermark 的 payload：每轮 agent 结束后上报的实时上下文窗口水位。 */
+export interface ContextWatermark {
+  estimatedTokens: number;
+  contextWindow: number;
+  maxOutput: number;
+  workingBudget: number;
+  utilization: number;
+  warning?: "force_compact" | "compact_recommended";
+  segments: ContextSegmentBreakdown;
+  pinnedTokens: number;
+  buildMs: number;
+  incremental: boolean;
+  pinWarning?: string;
+}
+
+/** 一组 token 用量计数。Anthropic 口径：inputTokens 为未缓存输入，总输入 = inputTokens + cacheRead。 */
+export interface ContextTokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+/** WS 事件 context.usage 的 payload：每次 provider API 调用后的本轮 token 用量与成本。 */
+export interface ContextUsage extends ContextTokenUsage {
+  cost?: {
+    priced: boolean;
+    source?: { currency: string; amount: number };
+    usd?: number;
+    cny?: number;
+  };
+  sessionCost?: { usdMicroUnits: string; cnyMicroUnits: string; unpricedTokens: number };
+}
+
 export interface ContextView {
   stats?: ContextBuildStats;
   selection?: { pins: string[]; excludes: string[] };
   ledger: {
     round?: number;
-    usage: { inputTokens: number; outputTokens: number; cacheRead: number; cacheWrite: number };
+    usage: ContextTokenUsage;
     cost: { usdMicroUnits: string; cnyMicroUnits: string; unpricedTokens: number };
     entries: Array<{ messageId: string; state: "full" | "evicted" | "restored"; artifactId: string; pinnedUntilRound?: number }>;
     policy?: {

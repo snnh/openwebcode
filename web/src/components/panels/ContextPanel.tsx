@@ -1,8 +1,10 @@
 import { useEffect, useState, type ReactElement } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../lib/api";
-import type { ContextView, SessionDetail } from "../../lib/contracts";
-import { formatCurrency, formatTokens, microToDecimal } from "../../lib/format";
+import type { ContextTokenUsage, ContextUsage, ContextView, SessionDetail } from "../../lib/contracts";
+import { cacheHitRate } from "../../lib/cache-stats";
+import { deriveWindowInfo, windowLevel, type ContextWindowInfo } from "../../lib/context-window";
+import { formatCurrency, formatTokens, formatTokensShort, microToDecimal } from "../../lib/format";
 import { useI18n } from "../../i18n";
 
 const STATE_LABELS: Record<string, [string, string]> = { full: ["保留", "Retained"], evicted: ["已逐出", "Evicted"], restored: ["已恢复", "Restored"] };
@@ -103,6 +105,97 @@ function SegmentStats({ stats }: { stats: NonNullable<ContextView["stats"]> }): 
           </>
         )}
       </dl>
+    </>
+  );
+}
+
+/** 上下文窗口占用（§水位）：占用 meter + 缓存命中行 + 分段堆叠条 + 压缩水位提示。 */
+function WindowSection({ info, latestUsage, cumulativeUsage }: {
+  info: ContextWindowInfo;
+  /** 最近一轮 token 用量（WS context.usage）；本轮缓存命中来源。 */
+  latestUsage?: ContextUsage;
+  /** 会话累计用量（ledger.usage）；累计缓存命中来源。 */
+  cumulativeUsage: ContextTokenUsage;
+}): ReactElement {
+  const { t } = useI18n();
+  const level = windowLevel(info.utilization);
+  const pct = info.utilization !== undefined ? Math.round(info.utilization * 100) : undefined;
+  const latestCache = latestUsage ? cacheHitRate(latestUsage) : undefined;
+  const cumulativeCache = cacheHitRate(cumulativeUsage);
+  // 完全无缓存活动（本轮与累计读写均为 0）时不渲染缓存行
+  const hasCacheActivity =
+    (latestCache !== undefined && (latestCache.cacheRead > 0 || latestCache.cacheWrite > 0)) ||
+    cumulativeCache.cacheRead > 0 || cumulativeCache.cacheWrite > 0;
+  const rows: Array<[string, string, number]> = [
+    ["messages", t("对话消息", "Messages"), info.segments.messages],
+    ["toolResults", t("工具结果", "Tool results"), info.segments.toolResults],
+    ["repoMap", t("Repo map", "Repo map"), info.segments.repoMap],
+    ["compactionSummary", t("压缩摘要", "Compaction summary"), info.segments.compactionSummary],
+    ["system", t("系统/cache 稳定段", "System / cache-stable"), info.segments.system],
+    ["other", t("其他", "Other"), info.segments.other],
+  ];
+  const segmentTotal = rows.reduce((sum, [, , value]) => sum + value, 0);
+  const visibleRows = rows.filter(([, , value]) => value > 0);
+  return (
+    <>
+      <h2>{t("上下文窗口", "Context window")}</h2>
+      <p
+        className="ctx-window-label"
+        title={info.workingBudget !== undefined
+          ? t(`工作预算 ${formatTokens(info.workingBudget)} tokens（窗口 − 最大输出）`, `Working budget ${formatTokens(info.workingBudget)} tokens (window − max output)`)
+          : undefined}
+      >
+        {info.contextWindow !== undefined && pct !== undefined
+          ? `${formatTokens(info.estimatedTokens)} / ${formatTokens(info.contextWindow)} · ${pct}%`
+          : `${formatTokens(info.estimatedTokens)} tokens`}
+      </p>
+      {pct !== undefined && (
+        <div
+          className={`ctx-window-bar${level !== "normal" ? ` level-${level}` : ""}`}
+          role="meter"
+          aria-valuenow={pct}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-label={t("上下文窗口占用", "Context window usage")}
+        >
+          <i style={{ width: `${Math.min(100, pct)}%` }} />
+        </div>
+      )}
+      {hasCacheActivity && (
+        <p className="ctx-cache-row" data-testid="ctx-cache">
+          {latestCache && latestCache.rate !== null && (latestCache.cacheRead > 0 || latestCache.cacheWrite > 0) && (
+            <span>{t("本轮缓存命中", "Last-call cache hit")} {Math.round(latestCache.rate * 100)}%{t(`（读取 ${formatTokensShort(latestCache.cacheRead)} · 写入 ${formatTokensShort(latestCache.cacheWrite)}）`, `(read ${formatTokensShort(latestCache.cacheRead)} · write ${formatTokensShort(latestCache.cacheWrite)})`)}</span>
+          )}
+          {cumulativeCache.rate !== null && (cumulativeCache.cacheRead > 0 || cumulativeCache.cacheWrite > 0) && (
+            <span
+              title={t(`累计缓存读取 ${formatTokens(cumulativeCache.cacheRead)} · 写入 ${formatTokens(cumulativeCache.cacheWrite)}`, `Session cache read ${formatTokens(cumulativeCache.cacheRead)} · write ${formatTokens(cumulativeCache.cacheWrite)}`)}
+            >
+              {t("累计缓存命中", "Session cache hit")} {Math.round(cumulativeCache.rate * 100)}%
+            </span>
+          )}
+        </p>
+      )}
+      {segmentTotal > 0 && (
+        <>
+          <div className="segment-bar" aria-hidden>
+            {visibleRows.map(([key, , value]) => (
+              <i key={key} className={`seg-${key}`} style={{ width: `${(value / segmentTotal) * 100}%` }} />
+            ))}
+          </div>
+          <ul className="segment-legend">
+            {visibleRows.map(([key, label, value]) => (
+              <li key={key}><span className={`seg-dot seg-${key}`} aria-hidden />{label} {formatTokens(value)}</li>
+            ))}
+            {info.pinnedTokens > 0 && <li>{t("pin 占用", "Pinned")} {formatTokens(info.pinnedTokens)}</li>}
+          </ul>
+        </>
+      )}
+      {info.warning === "compact_recommended" && (
+        <p className="panel-note">{t("上下文接近上限，建议压缩", "Context is nearing its limit; compaction is recommended.")}</p>
+      )}
+      {info.warning === "force_compact" && (
+        <p className="panel-note danger">{t("已达强制压缩水位，本轮已自动压缩", "Force-compact threshold reached; this turn was compacted automatically.")}</p>
+      )}
     </>
   );
 }
@@ -292,10 +385,14 @@ function BudgetSection({ sessionId, running, onNotice }: {
   );
 }
 
-export function ContextPanel({ sessionId, session, running, onNotice }: {
+export function ContextPanel({ sessionId, session, running, windowUsage, latestUsage, onNotice }: {
   sessionId?: string;
   session?: SessionDetail;
   running: boolean;
+  /** 上下文窗口占用（WS 实时水位，由 App 经 BottomPanel 下发）；缺省由 REST stats + 模型档案播种。 */
+  windowUsage?: ContextWindowInfo;
+  /** 最近一轮 token 用量（WS context.usage，由 App 经 BottomPanel 下发）；驱动本轮缓存命中行。 */
+  latestUsage?: ContextUsage;
   onNotice(message: string, kind?: "info" | "error"): void;
 }): ReactElement {
   const { t, locale } = useI18n();
@@ -306,15 +403,20 @@ export function ContextPanel({ sessionId, session, running, onNotice }: {
     queryFn: () => api.context(sessionId!),
     enabled: Boolean(sessionId),
   });
+  const models = useQuery({ queryKey: ["models"], queryFn: api.models });
 
   if (!sessionId) return <div className="inspector-body"><p className="panel-empty">{t("选择会话以查看上下文。", "Select a session to view context.")}</p></div>;
   if (context.isPending) return <div className="inspector-body"><p className="panel-empty">{t("加载中…", "Loading…")}</p></div>;
   if (context.isError || !context.data) return <div className="inspector-body"><p className="panel-empty">{t("暂无用量数据。", "No usage data available.")}</p></div>;
 
   const { usage, cost, entries } = context.data.ledger;
+  const model = models.data?.find((item) => item.id === session?.model && item.provider === session?.provider);
+  // 实时水位优先；缺省时由 REST stats + 模型档案播种（窗口未知则只展示 tokens，不显示百分比）
+  const windowInfo = windowUsage ?? deriveWindowInfo(undefined, context.data.stats, model);
 
   return (
     <div className="inspector-body">
+      {windowInfo && <WindowSection info={windowInfo} {...(latestUsage ? { latestUsage } : {})} cumulativeUsage={usage} />}
       <h2>{t("上下文用量", "Context usage")}</h2>
       <dl>
         <dt>{t("输入 tokens", "Input tokens")}</dt>

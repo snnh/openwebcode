@@ -3,7 +3,7 @@ import { fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MessageCard } from "../components/MessageCard";
 import { api } from "../lib/api";
-import type { ChatMessage } from "../lib/contracts";
+import type { ChatMessage, SubagentTranscript } from "../lib/contracts";
 
 function message(role: ChatMessage["role"], texts: string[]): ChatMessage {
   return {
@@ -49,14 +49,18 @@ describe("MessageCard", () => {
   });
 
   it("renders subagent transcript viewer for spawn tool results and loads on expand", async () => {
-    const transcript = {
+    const transcript: SubagentTranscript = {
       id: "task-1",
       prompt: "调查 a.ts",
       startedAt: "2026-07-20T00:00:00.000Z",
       turns: 2,
       toolsUsed: ["read_file"],
       conclusion: "子代理结论",
-      messages: [],
+      messages: [
+        { id: "sm-1", role: "user", createdAt: "2026-07-20T00:00:00.000Z", content: [{ type: "text", text: "调查 a.ts" }] },
+        { id: "sm-2", role: "assistant", createdAt: "2026-07-20T00:00:01.000Z", content: [{ type: "tool_call", id: "sc-1", name: "read_file", input: { path: "a.ts" } }] },
+        { id: "sm-3", role: "tool", createdAt: "2026-07-20T00:00:02.000Z", content: [{ type: "tool_result", toolCallId: "sc-1", content: "文件内容" }] },
+      ],
     };
     const spy = vi.spyOn(api, "subagentTranscript").mockResolvedValue(transcript);
     const toolMessage: ChatMessage = {
@@ -83,5 +87,72 @@ describe("MessageCard", () => {
     await waitFor(() => expect(spy).toHaveBeenCalledWith("s-1", "task-1"));
     await waitFor(() => expect(details?.querySelector(".subagent-transcript-prompt")).toHaveTextContent("调查 a.ts"));
     expect(details?.querySelector(".subagent-transcript-meta")).toHaveTextContent("2 轮");
+
+    // 转录消息记录：角色行 + 工具调用/结果紧凑展示
+    await waitFor(() => expect(details?.querySelector(".subagent-transcript-messages")).toBeInTheDocument());
+    const rows = details!.querySelectorAll(".subagent-transcript-message");
+    expect(rows).toHaveLength(3);
+    expect(rows[0]!.querySelector(".subagent-transcript-role")).toHaveTextContent("任务");
+    expect(rows[1]!.querySelector(".subagent-transcript-tool")).toHaveTextContent("read_file · a.ts");
+    expect(rows[2]!.querySelector(".subagent-transcript-result")).toBeInTheDocument();
+  });
+
+  it("folds long transcripts to the last 20 messages", async () => {
+    const transcript: SubagentTranscript = {
+      id: "task-long",
+      prompt: "长任务",
+      startedAt: "2026-07-20T00:00:00.000Z",
+      turns: 13,
+      toolsUsed: [],
+      conclusion: "结论",
+      messages: Array.from({ length: 25 }, (_, i) => ({
+        id: `lm-${i}`,
+        role: (i % 2 === 0 ? "assistant" : "tool") as ChatMessage["role"],
+        createdAt: "2026-07-20T00:00:00.000Z",
+        content: [{ type: "tool_result" as const, toolCallId: `c-${i}`, content: `结果 ${i}` }],
+      })),
+    };
+    vi.spyOn(api, "subagentTranscript").mockResolvedValue(transcript);
+    const toolMessage: ChatMessage = {
+      id: "m-tool-long",
+      role: "assistant",
+      createdAt: "2026-07-20T00:00:00.000Z",
+      content: [{ type: "tool_result", toolCallId: "call-1", content: "结论", isError: false, subagentTaskIds: ["task-long"] }],
+    };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { container } = render(
+      <QueryClientProvider client={client}>
+        <MessageCard message={toolMessage} sessionId="s-1" />
+      </QueryClientProvider>,
+    );
+
+    const details = container.querySelector("details.subagent-transcript")!;
+    (details as HTMLDetailsElement).open = true;
+    fireEvent(details, new Event("toggle"));
+    await waitFor(() => expect(details.querySelector(".subagent-transcript-messages")).toBeInTheDocument());
+    expect(details.querySelectorAll(".subagent-transcript-message")).toHaveLength(20);
+    expect(details.querySelector(".subagent-transcript-messages > .subagent-transcript-status")).toHaveTextContent("仅显示最近 20 条");
+  });
+
+  it("renders spawn tool calls as dedicated cards with live status from props", () => {
+    const spawnMessage: ChatMessage = {
+      id: "m-spawn",
+      role: "assistant",
+      createdAt: "2026-07-20T00:00:00.000Z",
+      content: [{ type: "tool_call", id: "call-9", name: "spawn_task", input: { prompt: "调查 b.ts" } }],
+    };
+    const { container } = render(
+      <MessageCard
+        message={spawnMessage}
+        sessionId="s-1"
+        liveSubagents={[{ taskId: "t-9", toolCallId: "call-9", prompt: "调查 b.ts", status: "running", turns: 4, toolsUsed: ["grep"] }]}
+      />,
+    );
+
+    // 专用卡片取代通用 ToolCallCard：无参数 <details>，有实时状态
+    expect(container.querySelector(".subagent-run")).toBeInTheDocument();
+    expect(container.querySelector(".tool-detail")).not.toBeInTheDocument();
+    expect(container.querySelector(".subagent-run-status")).toHaveTextContent("运行中");
+    expect(container.querySelector(".subagent-run-stats")).toHaveTextContent("第 4 轮 · 已用 grep");
   });
 });

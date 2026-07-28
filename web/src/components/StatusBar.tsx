@@ -18,7 +18,7 @@ const INDEX_LABELS: Record<WorkspaceIndexState, [string, string]> = {
   missing: ["索引:未建", "Index:none"],
 };
 
-export function StatusBar({ session, state, tokens, costLabel, indexStatus }: { session: SessionDetail; state?: AgentRunState | string; tokens?: number; costLabel?: string; indexStatus?: WorkspaceIndexState }): ReactElement {
+export function StatusBar({ session, state, tokens, costLabel, indexStatus, windowPercent }: { session: SessionDetail; state?: AgentRunState | string; tokens?: number; costLabel?: string; indexStatus?: WorkspaceIndexState; windowPercent?: number }): ReactElement {
   const { t } = useI18n();
   const status = state && !["completed", "failed", "aborted"].includes(state) ? state : "idle";
   return (
@@ -29,6 +29,7 @@ export function StatusBar({ session, state, tokens, costLabel, indexStatus }: { 
       <span><Icon name="settings" size={12} /> {session.provider}/{session.model}</span>
       {session.thinking && <span className="status-optional">thinking: {session.thinking}</span>}
       {tokens !== undefined && <span className="status-optional">{tokens.toLocaleString()} tokens</span>}
+      {windowPercent !== undefined && <span className="status-optional" title={t("上下文窗口占用", "Context window usage")}>{t("窗口", "ctx")} {windowPercent}%</span>}
       {costLabel && <span className="status-optional">{costLabel}</span>}
       {indexStatus && <span className="status-optional" data-testid="index-status">{t(...INDEX_LABELS[indexStatus])}</span>}
       <span className={`status-live status-${status}`}><i aria-hidden /> {status === "idle" ? t("空闲", "Idle") : t(...(STATE_LABELS[status] ?? [status, status]))}</span>

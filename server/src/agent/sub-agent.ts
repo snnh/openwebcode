@@ -41,6 +41,8 @@ export interface SubAgentOptions {
   onUsage?: (usage: Extract<ProviderEvent, { type: "usage" }>) => void | Promise<void>;
   /** taskId 生成后立即回调（用于发布 subagent.started；转录文件名即 <taskId>.json）。 */
   onStart?: (taskId: string) => void;
+  /** 每轮 provider 调用结束与每批工具执行结束后回调（仅元数据，不含文本；用于发布 subagent.progress）。 */
+  onProgress?: (progress: { turns: number; toolsUsed: string[] }) => void;
 }
 
 export interface SubAgentResult {
@@ -98,6 +100,7 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
       }
       if (assistantContent.length > 0) messages.push(subMessage("assistant", assistantContent));
       lastText = text || lastText;
+      options.onProgress?.({ turns, toolsUsed: [...toolsUsed] });
       if (stopReason !== "tool_use") {
         finished = true;
         break;
@@ -115,6 +118,7 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
         results.push({ type: "tool_result", toolCallId: call.id, content: outcome.content, isError: outcome.isError });
       }
       messages.push(subMessage("tool", results));
+      options.onProgress?.({ turns, toolsUsed: [...toolsUsed] });
     }
     conclusion = finished
       ? lastText
