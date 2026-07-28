@@ -112,8 +112,12 @@ const SETTINGS_GROUP_EN: Record<string, string> = {
   general: "Language and currency",
   executor: "Executor",
   service: "Service",
+  network: "Listen address and port",
   exchangeRate: "Exchange rate",
 };
+
+/** 监听地址/端口所在分组：渲染在"远程访问"页签而非"服务设置" */
+const NETWORK_SETTINGS_GROUP = "network";
 
 const SETTINGS_FIELD_EN: Record<string, { label: string; description?: string }> = {
   catalogSyncUrl: { label: "Remote model catalog URL", description: "Leave empty to disable remote model catalog sync" },
@@ -891,7 +895,13 @@ export function ProviderProfilesSection(): ReactElement {
   );
 }
 
-export function ServerSettingsSection({ onDirtyChange }: { onDirtyChange?(dirty: boolean): void }): ReactElement {
+/** 服务设置字段表单：按分组过滤渲染，draft/校验/保存逻辑在两个页签间共享。 */
+function ServerSettingsFields({ showGroup, note, onDirtyChange }: {
+  showGroup(groupId: string): boolean;
+  /** 分组列表前的说明文案 [zh, en]；不传则不渲染 */
+  note?: [string, string];
+  onDirtyChange?(dirty: boolean): void;
+}): ReactElement {
   const { t, language } = useI18n();
   const queryClient = useQueryClient();
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
@@ -1088,8 +1098,8 @@ export function ServerSettingsSection({ onDirtyChange }: { onDirtyChange?(dirty:
 
   return (
     <>
-      <p className="settings-note">{t("服务端全部配置项。密钥仅脱敏显示；保存的密钥以明文存放在本机数据目录。", "All server settings. Secrets are masked here but stored as plain text in the local data directory.")}</p>
-      {settings.data.groups.map((group) => (
+      {note && <p className="settings-note">{t(note[0], note[1])}</p>}
+      {settings.data.groups.filter((group) => showGroup(group.id)).map((group) => (
         <div className="server-settings-group" key={group.id}>
           <h4>{language === "en" ? (SETTINGS_GROUP_EN[group.id] ?? group.label) : group.label}</h4>
           {group.fields.map(renderField)}
@@ -1101,6 +1111,16 @@ export function ServerSettingsSection({ onDirtyChange }: { onDirtyChange?(dirty:
         <button className="btn primary" disabled={!dirty || saving} onClick={save}>{saving ? t("保存中…", "Saving…") : t("保存服务设置", "Save server settings")}</button>
       </div>
     </>
+  );
+}
+
+export function ServerSettingsSection({ onDirtyChange }: { onDirtyChange?(dirty: boolean): void }): ReactElement {
+  return (
+    <ServerSettingsFields
+      showGroup={(groupId) => groupId !== NETWORK_SETTINGS_GROUP}
+      note={["服务端配置项（监听地址/端口在「远程访问」页签）。密钥仅脱敏显示；保存的密钥以明文存放在本机数据目录。", "Server settings (listen address and port live in the Remote access tab). Secrets are masked here but stored as plain text in the local data directory."]}
+      onDirtyChange={onDirtyChange}
+    />
   );
 }
 
@@ -1445,16 +1465,17 @@ const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
 
 /**
  * 远程访问分区（0.4.0 Phase 5b §6.8）：展示监听地址与 token 认证配置状态，
- * 非回环监听时持续展示风险提示。只读展示；修改仍在“服务设置”分区（host/port）或服务端环境变量。
+ * 非回环监听时持续展示风险提示。监听地址/端口（network 分组）也在此编辑；
+ * access token / allowed origins 仍仅由服务端环境变量配置。
  */
-export function RemoteAccessSection(): ReactElement {
+export function RemoteAccessSection({ onDirtyChange }: { onDirtyChange?(dirty: boolean): void }): ReactElement {
   const { t } = useI18n();
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings });
   if (settings.isPending) return <p className="panel-empty">{t("加载中…", "Loading…")}</p>;
   if (settings.isError || !settings.data) return <p className="panel-empty">{t("无法加载服务设置。", "Could not load server settings.")}</p>;
-  const service = settings.data.groups.find((group) => group.id === "service");
-  const hostField = service?.fields.find((field) => field.key === "host");
-  const portField = service?.fields.find((field) => field.key === "port");
+  const network = settings.data.groups.find((group) => group.id === NETWORK_SETTINGS_GROUP);
+  const hostField = network?.fields.find((field) => field.key === "host");
+  const portField = network?.fields.find((field) => field.key === "port");
   const host = String(hostField?.value ?? hostField?.masked ?? "127.0.0.1");
   const loopback = LOOPBACK_HOSTS.has(host);
   return (
@@ -1473,9 +1494,10 @@ export function RemoteAccessSection(): ReactElement {
           "Risk: the server is reachable from the network. Make sure OWC_ACCESS_TOKEN and OWC_ALLOWED_ORIGINS are set and only expose it on trusted networks; anyone with the token can drive your sessions and tools.",
         )}</p>
       )}
+      <ServerSettingsFields showGroup={(groupId) => groupId === NETWORK_SETTINGS_GROUP} onDirtyChange={onDirtyChange} />
       <p className="settings-note">{t(
-        "移动端/局域网访问：将“服务设置”中的监听地址改为 0.0.0.0（需重启），并在服务端环境变量中配置 OWC_ACCESS_TOKEN（≥32 字符）与 OWC_ALLOWED_ORIGINS。浏览器首次用 ?token= 打开后会写入 HttpOnly Cookie。修改监听地址后重启服务生效。",
-        "Mobile/LAN access: set the listen address to 0.0.0.0 in Server settings (restart required), and configure OWC_ACCESS_TOKEN (at least 32 characters) plus OWC_ALLOWED_ORIGINS as server environment variables. Opening the page once with ?token= stores an HttpOnly cookie. Restart the server after changing the listen address.",
+        "移动端/局域网访问：将上方监听地址改为 0.0.0.0（需重启），并在服务端环境变量中配置 OWC_ACCESS_TOKEN（≥32 字符）与 OWC_ALLOWED_ORIGINS。浏览器首次用 ?token= 打开后会写入 HttpOnly Cookie。修改监听地址后重启服务生效。",
+        "Mobile/LAN access: set the listen address above to 0.0.0.0 (restart required), and configure OWC_ACCESS_TOKEN (at least 32 characters) plus OWC_ALLOWED_ORIGINS as server environment variables. Opening the page once with ?token= stores an HttpOnly cookie. Restart the server after changing the listen address.",
       )}</p>
     </>
   );
@@ -1639,8 +1661,9 @@ export function SettingsDialog({ open, initialTab, preference, setPreference, ac
   // 左侧导航搜索：匹配页签标题/描述、分组名与服务设置字段标签（中英文）
   const [navQuery, setNavQuery] = useState("");
   // 字段标签在打开时经 api.settings 拉取（不经 react-query，i18n 等无 Provider 的渲染也能工作）；失败按无字段匹配处理
-  const [fieldLabels, setFieldLabels] = useState<Array<{ key: string; label: string }>>([]);
-  // 服务设置的未保存改动由 ServerSettingsSection 上报
+  // tab：network 分组（监听地址/端口）归"远程访问"页签，其余字段归"服务设置"
+  const [fieldLabels, setFieldLabels] = useState<Array<{ key: string; label: string; tab: SettingsTab }>>([]);
+  // 服务设置的未保存改动由 ServerSettingsSection / RemoteAccessSection 上报
   const serverDirtyRef = useRef(false);
 
   useEffect(() => {
@@ -1648,7 +1671,11 @@ export function SettingsDialog({ open, initialTab, preference, setPreference, ac
     let cancelled = false;
     api.settings()
       .then((view) => {
-        if (!cancelled) setFieldLabels(view.groups.flatMap((group) => group.fields.map((field) => ({ key: field.key, label: field.label }))));
+        if (!cancelled) setFieldLabels(view.groups.flatMap((group) => group.fields.map((field) => ({
+          key: field.key,
+          label: field.label,
+          tab: group.id === NETWORK_SETTINGS_GROUP ? "remote" as const : "server" as const,
+        }))));
       })
       .catch(() => undefined);
     return () => { cancelled = true; };
@@ -1670,15 +1697,17 @@ export function SettingsDialog({ open, initialTab, preference, setPreference, ac
   if (!open) return null;
 
   const query = navQuery.trim().toLowerCase();
-  const fieldHit = query !== "" && fieldLabels
-    .some((field) => field.label.toLowerCase().includes(query) || (SETTINGS_FIELD_EN[field.key]?.label ?? "").toLowerCase().includes(query));
+  // 字段标签命中（中英文）：按字段所在分组归属到 server 或 remote 页签
+  const fieldHit = (tabId: SettingsTab): boolean => query !== "" && fieldLabels
+    .some((field) => field.tab === tabId &&
+      (field.label.toLowerCase().includes(query) || (SETTINGS_FIELD_EN[field.key]?.label ?? "").toLowerCase().includes(query)));
   const tabMatches = (tab: SettingsTabMeta, group: { zh: string; en: string }): boolean => {
     if (!query) return true;
     if (tab.zh.toLowerCase().includes(query) || tab.en.toLowerCase().includes(query)) return true;
     if (tab.descriptionZh.toLowerCase().includes(query) || tab.descriptionEn.toLowerCase().includes(query)) return true;
     if (group.zh.toLowerCase().includes(query) || group.en.toLowerCase().includes(query)) return true;
-    // 服务设置的字段都挂在 server 页签下
-    if (tab.id === "server" && fieldHit) return true;
+    // 服务设置字段按分组挂在 server / remote 页签下
+    if ((tab.id === "server" || tab.id === "remote") && fieldHit(tab.id)) return true;
     return false;
   };
   const visibleGroups = SETTINGS_GROUPS
@@ -1852,7 +1881,7 @@ export function SettingsDialog({ open, initialTab, preference, setPreference, ac
           {activeTab === "remote" && (
             <section>
               <h3>{t("远程访问", "Remote access")}</h3>
-              <RemoteAccessSection />
+              <RemoteAccessSection onDirtyChange={(dirty) => { serverDirtyRef.current = dirty; }} />
             </section>
           )}
           {activeTab === "server" && (
