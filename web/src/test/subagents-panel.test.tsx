@@ -63,6 +63,10 @@ describe("SubagentsPanel", () => {
     expect(items[1]).toHaveAttribute("data-status", "failed");
     expect(items[1]!.querySelector(".subagent-run-error")).toHaveTextContent("provider boom");
     expect(items[2]).toHaveAttribute("data-status", "running");
+    // 完成与失败行都提供转录折叠（失败子代理的转录服务端同样落盘），运行中行不提供
+    expect(items[0]!.querySelector("details.subagent-transcript")).toBeInTheDocument();
+    expect(items[1]!.querySelector("details.subagent-transcript")).toBeInTheDocument();
+    expect(items[2]!.querySelector("details.subagent-transcript")).not.toBeInTheDocument();
   });
 
   it("lists newest groups first", () => {

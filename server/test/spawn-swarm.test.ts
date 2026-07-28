@@ -173,6 +173,15 @@ describe("spawn_swarm via AgentRunner", () => {
     const toolEnd = fixture.captured.find((event) =>
       event.type === "tool.end" && (event.payload as { toolCallId?: string }).toolCallId === "swarm-1");
     expect((toolEnd!.payload as { result?: { total?: number; failed?: number } }).result).toMatchObject({ total: 2, failed: 1 });
+
+    // 逐项终态：显式 index + status，刷新后部分失败可还原（不再被整体 isError 带偏）
+    const ids = (toolResult as { subagentTaskIds?: string[] }).subagentTaskIds;
+    expect(ids).toHaveLength(2);
+    const tasks = (toolResult as { subagentTasks?: Array<{ taskId: string; index: number; status: string; error?: string }> }).subagentTasks;
+    expect(tasks).toHaveLength(2);
+    expect(tasks?.[0]).toMatchObject({ taskId: ids![0], index: 0, status: "done" });
+    expect(tasks?.[1]).toMatchObject({ taskId: ids![1], index: 1, status: "failed" });
+    expect(tasks?.[1]?.error).toContain("provider boom");
   });
 
   it("lets an item override the call-level agent and reports the effective agent in started events", async () => {
@@ -243,5 +252,15 @@ describe("spawn_swarm via AgentRunner", () => {
 
     // 在途 4 项经 signal 中止；排队的 e/f 两项从未启动
     expect(fixture.startedSub).toHaveLength(4);
+
+    // 中断路径的 tool_result 仍携带已启动项的 taskId 与逐项终态（刷新后历史可还原）
+    const toolResult = await swarmToolResult(fixture);
+    expect(toolResult).toMatchObject({ isError: true });
+    const ids = (toolResult as { subagentTaskIds?: string[] } | undefined)?.subagentTaskIds;
+    expect(ids).toHaveLength(4);
+    const tasks = (toolResult as { subagentTasks?: Array<{ taskId: string; index: number; status: string }> } | undefined)?.subagentTasks;
+    expect(tasks).toHaveLength(4);
+    expect(tasks?.map((task) => task.index).sort()).toEqual([0, 1, 2, 3]);
+    expect(tasks?.every((task) => task.status === "failed")).toBe(true);
   });
 });

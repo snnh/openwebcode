@@ -159,6 +159,64 @@ describe("spawn_task via AgentRunner", () => {
     expect(ledger.usage.inputTokens).toBe(120);
     expect(ledger.usage.outputTokens).toBe(30);
   });
+
+  it("keeps the started subagent taskId and per-item status in the tool result when the subagent fails", async () => {
+    const root = await tempRoot();
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const session = await sessions.create({ cwd: root, provider: "fake", model: "test-model" });
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const events = new EventBus();
+    const captured: AppEvent[] = [];
+    events.on("event", (event: AppEvent) => captured.push(event));
+
+    let mainTurn = 0;
+    const provider: Provider = {
+      name: "fake",
+      async *streamChat(request) {
+        if (request.system.includes("exploration sub-agent")) {
+          // 子代理已启动（onStart 先于 provider 调用），随后失败
+          throw new Error("provider boom");
+        }
+        if (mainTurn++ === 0) {
+          yield { type: "tool_call", id: "spawn-1", name: "spawn_task", input: { prompt: "调查代码结构" } };
+          yield { type: "done", stopReason: "tool_use" };
+        } else {
+          yield { type: "text_delta", text: "完成" };
+          yield { type: "done", stopReason: "end_turn" };
+        }
+      },
+    };
+    const providers = new ProviderRegistry();
+    providers.register(provider);
+    const runner = new AgentRunner(sessions, providers, createFakeCore({}), events, pricing);
+
+    await runner.run(session.id, "派生一个会失败的子代理");
+
+    // 启动后失败的 tool_result 仍携带 taskId 与逐项终态，页面刷新后历史可还原
+    const detail = await sessions.get(session.id);
+    const toolResult = detail?.messages
+      .filter((message) => message.role === "tool")
+      .flatMap((message) => message.content)
+      .find((block) => block.type === "tool_result" && block.toolCallId === "spawn-1");
+    expect(toolResult).toMatchObject({ isError: true });
+    expect((toolResult as { content: string }).content).toContain("provider boom");
+    const taskId = (toolResult as { subagentTaskIds?: string[] }).subagentTaskIds?.[0];
+    expect(taskId).toBeTruthy();
+    const tasks = (toolResult as { subagentTasks?: Array<{ taskId: string; index: number; status: string; error?: string }> }).subagentTasks;
+    expect(tasks).toHaveLength(1);
+    expect(tasks?.[0]).toMatchObject({ taskId, index: 0, status: "failed" });
+    expect(tasks?.[0]?.error).toContain("provider boom");
+
+    // 失败子代理的转录已落盘（UI 可提供转录入口）
+    const transcripts = await readdir(path.join(sessions.contextRoot(session.id), "subagents"));
+    expect(transcripts).toHaveLength(1);
+    expect(captured.some((event) =>
+      event.type === "subagent.finished"
+      && (event.payload as { taskId?: string; status?: string }).taskId === taskId
+      && (event.payload as { status?: string }).status === "failed")).toBe(true);
+  });
 });
 
 describe("runSubAgent", () => {

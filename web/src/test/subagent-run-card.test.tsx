@@ -68,6 +68,21 @@ describe("SubagentRunCard", () => {
     expect(container.querySelector(".subagent-run-error")).toHaveTextContent("provider boom");
   });
 
+  it("offers a transcript for a failed spawn_task too (server writes transcripts for failed runs)", () => {
+    const { container } = renderWithClient(
+      <SubagentRunCard
+        name="spawn_task"
+        input={{ prompt: "调查" }}
+        sessionId="s-1"
+        live={[run({ status: "failed", error: "provider boom" })]}
+      />,
+    );
+
+    // 错误行保留，同时提供转录折叠（懒加载）
+    expect(container.querySelector(".subagent-run-error")).toHaveTextContent("provider boom");
+    expect(container.querySelector("details.subagent-transcript")).toBeInTheDocument();
+  });
+
   it("renders swarm items with per-item status transitions and agent overrides", () => {
     const { container } = renderWithClient(
       <SubagentRunCard

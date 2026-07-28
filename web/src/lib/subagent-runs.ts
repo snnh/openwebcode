@@ -31,8 +31,10 @@ export function capLiveSubagentRuns(runs: Record<string, LiveSubagentRun>, cap: 
 
 /**
  * 从已加载的会话消息推导历史子代理运行（页面刷新后无实时事件时填充子代理面板）：
- * spawn_task/spawn_swarm 的 tool_call 提供 prompt/agent，配对的 tool_result 的 subagentTaskIds 提供 taskId。
- * 推导条目不包含实时轮次/工具明细（turns/toolsUsed 置空），状态由 tool_result.isError 决定。
+ * spawn_task/spawn_swarm 的 tool_call 提供 prompt/agent，配对的 tool_result 提供 taskId 与终态。
+ * 优先读 tool_result.subagentTasks（逐项 status/index，显式对应 swarm item 序号）；
+ * 旧消息无该字段时回退到 subagentTaskIds 位置对齐 + 整体 isError 启发式。
+ * 推导条目不包含实时轮次/工具明细（turns/toolsUsed 置空）。
  */
 export function deriveSubagentRunsFromMessages(messages: ChatMessage[]): Record<string, LiveSubagentRun> {
   const calls = new Map<string, { name: string; input?: Record<string, unknown> }>();
@@ -43,20 +45,48 @@ export function deriveSubagentRunsFromMessages(messages: ChatMessage[]): Record<
         calls.set(block.id, { name: block.name, ...(block.input ? { input: block.input } : {}) });
         continue;
       }
-      if (block.type !== "tool_result" || !block.toolCallId || !block.subagentTaskIds?.length) continue;
+      if (block.type !== "tool_result" || !block.toolCallId) continue;
+      if (!block.subagentTasks?.length && !block.subagentTaskIds?.length) continue;
       const call = calls.get(block.toolCallId);
       if (!call) continue;
       const callAgent = typeof call.input?.agent === "string" && call.input.agent.trim() ? call.input.agent.trim() : undefined;
       const items = call.name === "spawn_swarm" ? swarmItems(call.input) : [];
-      const total = block.subagentTaskIds.length;
-      block.subagentTaskIds.forEach((taskId, index) => {
+      const toolCallId = block.toolCallId;
+      // 新格式：逐项终态（部分失败的 swarm 各项状态独立，不再被整体 isError 带偏）
+      if (block.subagentTasks?.length) {
+        const total = Math.max(items.length, block.subagentTasks.length);
+        for (const task of block.subagentTasks) {
+          if (!task || typeof task.taskId !== "string" || !task.taskId) continue;
+          const index = typeof task.index === "number" ? task.index : 0;
+          const agent = call.name === "spawn_swarm" ? items[index]?.agent ?? callAgent : callAgent;
+          const prompt = call.name === "spawn_swarm"
+            ? items[index]?.task ?? ""
+            : typeof call.input?.prompt === "string" ? call.input.prompt : "";
+          const failed = task.status === "failed";
+          runs[task.taskId] = {
+            taskId: task.taskId,
+            toolCallId,
+            prompt,
+            ...(agent ? { agent } : {}),
+            ...(call.name === "spawn_swarm" ? { swarm: { index: index + 1, total } } : {}),
+            status: failed ? "failed" : "done",
+            turns: 0,
+            toolsUsed: [],
+            ...(failed ? { error: snippet(task.error ?? block.content ?? "unknown error") } : {}),
+          };
+        }
+        continue;
+      }
+      // 旧消息回退：subagentTaskIds 与 items 位置对齐，整体 isError 决定全部条目状态
+      const total = block.subagentTaskIds!.length;
+      block.subagentTaskIds!.forEach((taskId, index) => {
         const agent = call.name === "spawn_swarm" ? items[index]?.agent ?? callAgent : callAgent;
         const prompt = call.name === "spawn_swarm"
           ? items[index]?.task ?? ""
           : typeof call.input?.prompt === "string" ? call.input.prompt : "";
         runs[taskId] = {
           taskId,
-          toolCallId: block.toolCallId!,
+          toolCallId,
           prompt,
           ...(agent ? { agent } : {}),
           ...(call.name === "spawn_swarm" ? { swarm: { index: index + 1, total } } : {}),
