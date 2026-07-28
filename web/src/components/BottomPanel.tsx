@@ -2,7 +2,9 @@ import { lazy, Suspense, useEffect, useState, type MouseEvent as ReactMouseEvent
 import type { ContextUsage, LiveSubagentRun, SessionDetail } from "../lib/contracts";
 import type { ContextWindowInfo } from "../lib/context-window";
 import type { DiffSpec } from "./editor/DiffPane";
+import { formatTokensShort } from "../lib/format";
 import { Icon, type IconName } from "./Icon";
+import { INACTIVE_STATES, stateLabel } from "./StatusBar";
 
 // 底部面板标签各自独立 chunk，仅在打开对应标签页时加载；
 // 文件/源代码管理/问题视图已迁至侧边栏（0.4.0 Phase 5a 五区布局）
@@ -20,7 +22,7 @@ export type PanelTab = "context" | "timeline" | "subagents" | "sandbox" | "cost"
 const TAB_META: Record<PanelTab, { zh: string; en: string; icon: IconName }> = {
   context: { zh: "上下文", en: "Context", icon: "layers" },
   timeline: { zh: "时间线", en: "Timeline", icon: "history" },
-  subagents: { zh: "子代理", en: "Subagents", icon: "layers" },
+  subagents: { zh: "子代理", en: "Subagents", icon: "git" },
   sandbox: { zh: "沙盒", en: "Sandbox", icon: "shield" },
   cost: { zh: "成本", en: "Cost", icon: "chart" },
   perf: { zh: "性能", en: "Perf", icon: "clock" },
@@ -48,7 +50,15 @@ function store(key: string, value: string): void {
   }
 }
 
-export function BottomPanel({ sessionId, session, running, evalEnabled = false, windowUsage, latestUsage, subagentRuns, onNotice, open, onOpenChange, onOpenDiff, onOpenSubagentTab }: {
+/** 桌面端并入标签条的会话状态项（原独立状态栏；cwd/沙盒由作业头展示，不重复） */
+export interface PanelStatusInfo {
+  state?: string | undefined;
+  tokens?: number | undefined;
+  costLabel?: string | undefined;
+  windowPercent?: number | undefined;
+}
+
+export function BottomPanel({ sessionId, session, running, evalEnabled = false, windowUsage, latestUsage, subagentRuns, status, onNotice, open, onOpenChange, onOpenDiff, onOpenSubagentTab }: {
   sessionId?: string;
   session?: SessionDetail;
   running: boolean;
@@ -59,6 +69,8 @@ export function BottomPanel({ sessionId, session, running, evalEnabled = false, 
   latestUsage?: ContextUsage;
   /** 当前会话合并后的子代理运行（taskId → run）；仅子代理标签页使用。 */
   subagentRuns?: Record<string, LiveSubagentRun>;
+  /** 桌面端会话状态项：提供时在标签条右侧渲染（移动端由独立 StatusBar 承担，不下发） */
+  status?: PanelStatusInfo | undefined;
   onNotice(message: string, kind?: "info" | "error"): void;
   /** 受控开合（布局持久化在 useWorkbenchLayout，Ctrl/Cmd+` 切换） */
   open: boolean;
@@ -103,6 +115,9 @@ export function BottomPanel({ sessionId, session, running, evalEnabled = false, 
     }
   };
 
+  // 标签条右侧的会话状态（桌面端并入）：活跃态圆点+标签在最前，未知枚举不原样透出
+  const liveStatus = status?.state && !INACTIVE_STATES.has(status.state) ? status.state : "idle";
+
   return (
     <section className={`bottom-panel${open ? " open" : ""}`} aria-label={t("面板", "Panel")}>
       {open && (
@@ -128,6 +143,18 @@ export function BottomPanel({ sessionId, session, running, evalEnabled = false, 
             {t(TAB_META[item].zh, TAB_META[item].en)}
           </button>
         ))}
+        {status && session && (
+          <div className="panel-status" aria-label={t("会话状态", "Session status")}>
+            <span className={`status-live status-${liveStatus}`}>
+              <i aria-hidden /> {liveStatus === "idle" ? t("空闲", "Idle") : t(...stateLabel(liveStatus))}
+            </span>
+            <span>{session.agentMode ?? "build"}</span>
+            <span title={`${session.provider}/${session.model}`}>{session.model}</span>
+            {status.tokens !== undefined && <span className="status-optional">{formatTokensShort(status.tokens)} tokens</span>}
+            {status.windowPercent !== undefined && <span className="status-optional" title={t("上下文窗口占用", "Context window usage")}>{t("窗口", "ctx")} {status.windowPercent}%</span>}
+            {status.costLabel && <span className="status-optional">{status.costLabel}</span>}
+          </div>
+        )}
         <button
           className="panel-fold"
           aria-label={open ? t("收起面板", "Collapse panel") : t("展开面板", "Expand panel")}
@@ -138,7 +165,7 @@ export function BottomPanel({ sessionId, session, running, evalEnabled = false, 
       </div>
       {open && (
         <div className="panel-content" style={{ height }}>
-          <Suspense fallback={null}>
+          <Suspense fallback={<div className="panel-loading">{t("加载中…", "Loading…")}</div>}>
           {tab === "context" && <ContextPanel sessionId={sessionId} session={session} running={running} windowUsage={windowUsage} latestUsage={latestUsage} onNotice={onNotice} />}
           {tab === "timeline" && <TimelinePanel sessionId={sessionId} running={running} onNotice={onNotice} onOpenDiff={onOpenDiff} />}
           {tab === "subagents" && <SubagentsPanel sessionId={sessionId} runs={subagentRuns ?? {}} {...(onOpenSubagentTab ? { onOpenInTab: onOpenSubagentTab } : {})} />}
