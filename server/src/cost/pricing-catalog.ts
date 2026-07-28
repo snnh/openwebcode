@@ -148,10 +148,6 @@ export class PricingCatalog {
   }
 }
 
-export function parsePricingDocument(value: unknown): PricingDocument {
-  return parseDocument(value);
-}
-
 function parseDocument(value: unknown): PricingDocument {
   try {
     return parseDocumentValue(value);
