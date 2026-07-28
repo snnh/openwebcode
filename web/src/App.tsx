@@ -71,10 +71,10 @@ export function App(): ReactElement {
   const [currentId, setCurrentId] = useState<string>();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  // 设置深链目标页签；undefined 表示默认页签（外观）
-  const [settingsTab, setSettingsTab] = useState<SettingsTab | undefined>();
+  // 设置深链目标页签 + 触发序号（同一页签重复深链也能重新定位）；undefined 表示保持上次使用的页签
+  const [settingsTab, setSettingsTab] = useState<{ tab: SettingsTab; at: number } | undefined>();
   const openSettings = useCallback((tab?: SettingsTab): void => {
-    setSettingsTab(tab);
+    setSettingsTab(tab === undefined ? undefined : { tab, at: Date.now() });
     setSettingsOpen(true);
   }, []);
   // 覆盖层（Phase 5a）：命令面板 / Quick Open / 快捷键速查 / 只读代码视图浮层
@@ -299,6 +299,11 @@ export function App(): ReactElement {
         if (event.type === "context.compact_failed" && event.sessionId === currentId) {
           notify(t(`上下文压缩失败：${(event.payload as { message?: string }).message ?? "未知错误"}`, `Context compaction failed: ${(event.payload as { message?: string }).message ?? "unknown error"}`), "error");
         }
+        // 会话显示属性变更（重命名/置顶，可能来自其他客户端）：任何会话都刷新列表；详情仅当前会话
+        if (event.type === "session.updated" && event.sessionId) {
+          queryClient.invalidateQueries({ queryKey: queryKeys.sessions });
+          if (event.sessionId === currentId) queryClient.invalidateQueries({ queryKey: queryKeys.detail(event.sessionId) });
+        }
         if (!event.sessionId || event.sessionId !== currentId) return;
         if (event.type === "checkpoint.failed") {
           const message = (event.payload as { message?: string }).message ?? t("未知错误", "unknown error");
@@ -335,11 +340,6 @@ export function App(): ReactElement {
           queryClient.invalidateQueries({ queryKey: ["queue", event.sessionId] });
         }
         if (event.type.startsWith("interaction.")) queryClient.invalidateQueries({ queryKey: ["interactions", event.sessionId] });
-        // 会话显示属性变更（重命名/置顶，可能来自其他客户端）：刷新列表与详情标题
-        if (event.type === "session.updated") {
-          queryClient.invalidateQueries({ queryKey: queryKeys.sessions });
-          queryClient.invalidateQueries({ queryKey: queryKeys.detail(event.sessionId) });
-        }
         // 后台任务完成通知：刷新任务列表
         if (event.type === "task.finished") {
           const task = event.payload as BackgroundTaskInfo;
@@ -584,7 +584,8 @@ export function App(): ReactElement {
         .map((block) => block.text ?? "")
         .join("\n")
         .trim();
-      if (text) return text;
+      // 跳过 `!` 前缀的 shell 快捷消息：重试应重发真正的 agent 输入，而不是 shell 命令
+      if (text && !text.startsWith("!")) return text;
     }
     return undefined;
   }, [displaySession]);
@@ -809,7 +810,7 @@ export function App(): ReactElement {
     if (item.target?.sessionId) setCurrentId(item.target.sessionId);
     if (item.target?.view) showWorkbenchView(item.target.view);
     // 设置深链（如新版本提示 → 服务信息页签）
-    if (item.target?.settingsTab) openSettings(item.target.settingsTab as SettingsTab);
+    if (item.target?.settingsTab) openSettings(item.target.settingsTab);
   }, [showWorkbenchView, openSettings]);
 
   // 移动端抽屉：选中会话后收起侧栏（桌面端行为不变）
@@ -932,6 +933,7 @@ export function App(): ReactElement {
                   onSendToAgent={sendShellToAgent}
                   onOpenSettings={openSettings}
                   {...(lastUserMessageText && !running ? { onRetryRun: retryRun } : {})}
+                  retryPending={send.isPending}
                   onPermissionDone={(requestId) => {
                     setPendingPermissions((prev) => prev.filter((item) => item.requestId !== requestId));
                     queryClient.invalidateQueries({ queryKey: ["permissions", current.id] });
@@ -1084,7 +1086,7 @@ export function App(): ReactElement {
       />
       <SettingsDialog
         open={settingsOpen}
-        {...(settingsTab !== undefined ? { initialTab: settingsTab } : {})}
+        {...(settingsTab !== undefined ? { initialTab: settingsTab.tab, initialTabAt: settingsTab.at } : {})}
         preference={preference}
         setPreference={setPreference}
         accent={accent}

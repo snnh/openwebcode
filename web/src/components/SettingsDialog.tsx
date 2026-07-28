@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
-import type { ExtensionInfo, ModelInterfaceType, ModelProfile, ModelProviderProfileView, PermissionMode, PricingDocument, SettingsField, SettingValue, UpdateApplyState, WebCapability, WebProviderProfileView, WebProviderType } from "../lib/contracts";
+import type { ExtensionInfo, ModelInterfaceType, ModelProfile, ModelProviderProfileView, PermissionMode, PricingDocument, SettingsField, SettingsTab, SettingValue, UpdateApplyState, WebCapability, WebProviderProfileView, WebProviderType } from "../lib/contracts";
 import { formatCurrency } from "../lib/format";
 import { Icon, type IconName } from "./Icon";
 import { ModelCapabilityBadges } from "./ModelCapabilityBadges";
@@ -26,7 +26,7 @@ const ACCENT_OPTIONS: Array<{ value: AccentPreference; zh: string; en: string; s
   { value: "green", zh: "绿", en: "Green", swatch: "#2f9e44" },
 ];
 
-export type SettingsTab = "appearance" | "general" | "defaults" | "shortcuts" | "remote" | "models" | "skills" | "extensions" | "pricing" | "prompt" | "info";
+export type { SettingsTab } from "../lib/contracts";
 
 interface SettingsTabMeta {
   id: SettingsTab;
@@ -162,9 +162,15 @@ const SETTINGS_FIELD_EN: Record<string, { label: string; description?: string }>
   exchangeRateUrl: { label: "Exchange-rate API URL" },
   exchangeRateTimeoutMs: { label: "Exchange-rate request timeout (ms)" },
   fixedUsdCnyRate: { label: "Fixed USD/CNY rate", description: "Skips online exchange-rate lookup when set" },
+  updateCheckEnabled: { label: "Enable update check", description: "Off by default; when enabled, periodically checks GitHub Releases for the latest version" },
+  updateCheckUrl: { label: "Update check URL", description: "GitHub Releases API endpoint" },
+  updateCheckIntervalHours: { label: "Check interval (hours)", description: "0 means manual checks only; maximum 720 hours" },
 };
 
 const MAX_SYNC_INTERVAL_MINUTES = 35_791;
+const MAX_UPDATE_CHECK_INTERVAL_HOURS = 720;
+/** 允许填 0 的数值设置（0 表示仅手动）：远程同步间隔、更新检查间隔 */
+const ZERO_ALLOWED_NUMBER_KEYS = new Set(["syncIntervalMinutes", "updateCheckIntervalHours"]);
 
 const OFFICIAL_EXTENSION_EN: Record<string, { name: string; description: string }> = {
   "context-manager": { name: "Context Manager", description: "Rolling eviction, context compaction, writeback, and ledger views." },
@@ -193,12 +199,14 @@ function emptyPricingForm(): PricingForm {
   return { provider: "", model: "", currency: "CNY", effectiveFrom: localDateValue(), input: "", output: "", cacheRead: "", cacheWrite: "" };
 }
 
-export function PricingSection(): ReactElement {
+export function PricingSection({ onDirtyChange }: { onDirtyChange?(dirty: boolean): void }): ReactElement {
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const pricing = useQuery({ queryKey: ["model-pricing"], queryFn: api.modelPricing });
   const [editing, setEditing] = useState(false);
   const [json, setJson] = useState("");
+  // 进入 JSON 编辑时的基线：dirty = 编辑中且内容已偏离基线（供对话框关闭/切页签前确认）
+  const [jsonBaseline, setJsonBaseline] = useState("");
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [saving, setSaving] = useState(false);
@@ -208,10 +216,15 @@ export function PricingSection(): ReactElement {
 
   const startEdit = (): void => {
     if (!pricing.data) return;
-    setJson(JSON.stringify(pricing.data, null, 2));
+    const text = JSON.stringify(pricing.data, null, 2);
+    setJson(text);
+    setJsonBaseline(text);
     setError(undefined);
     setEditing(true);
   };
+
+  // 向上汇报 JSON 编辑 dirty，供对话框关闭/切换页签前确认
+  useEffect(() => { onDirtyChange?.(editing && json !== jsonBaseline); }, [editing, json, jsonBaseline, onDirtyChange]);
 
   const save = async (document: PricingDocument): Promise<boolean> => {
     setSaving(true);
@@ -593,23 +606,32 @@ export function ServerInfoSection({ providers, models }: {
   );
 }
 
-function PromptSection(): ReactElement {
+function PromptSection({ onDirtyChange }: { onDirtyChange?(dirty: boolean): void }): ReactElement {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const prompt = useQuery({ queryKey: ["prompt-override"], queryFn: () => api.promptOverride() });
   const [baseOverride, setBaseOverride] = useState("");
   const [customAppend, setCustomAppend] = useState("");
   const [initialized, setInitialized] = useState(false);
+  // 已保存基线：dirty = 文本框偏离基线（保存/恢复成功后基线同步推进）
+  const [savedBaseline, setSavedBaseline] = useState({ baseOverride: "", customAppend: "" });
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<string>();
   const [error, setError] = useState<string>();
 
   useEffect(() => {
     if (!prompt.data || initialized) return;
-    setBaseOverride(prompt.data.baseOverride ?? "");
-    setCustomAppend(prompt.data.customAppend ?? "");
+    const loaded = { baseOverride: prompt.data.baseOverride ?? "", customAppend: prompt.data.customAppend ?? "" };
+    setBaseOverride(loaded.baseOverride);
+    setCustomAppend(loaded.customAppend);
+    setSavedBaseline(loaded);
     setInitialized(true);
   }, [prompt.data, initialized]);
+
+  // 向上汇报 dirty，供对话框关闭/切换页签前确认
+  useEffect(() => {
+    onDirtyChange?.(initialized && (baseOverride !== savedBaseline.baseOverride || customAppend !== savedBaseline.customAppend));
+  }, [initialized, baseOverride, customAppend, savedBaseline, onDirtyChange]);
 
   const save = async (body: { baseOverride?: string | null; customAppend?: string | null }): Promise<void> => {
     setSaving(true);
@@ -618,6 +640,9 @@ function PromptSection(): ReactElement {
     try {
       await api.savePromptOverride(body);
       void queryClient.invalidateQueries({ queryKey: ["prompt-override"] });
+      setSavedBaseline({ baseOverride: body.baseOverride ?? "", customAppend: body.customAppend ?? "" });
+      setBaseOverride(body.baseOverride ?? "");
+      setCustomAppend(body.customAppend ?? "");
       setNotice(t("已保存", "Saved"));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -799,6 +824,12 @@ export function ProviderProfilesSection(): ReactElement {
   };
   const modelLabel = (profile: ModelProviderProfileView): string => profile.interfaceType === "anthropic-messages" ? "Anthropic Messages" : "OpenAI Chat Completions";
 
+  // 表单字段变动后，之前的连接测试结果不再对应，重置为 idle
+  const updateModelForm = (patch: Partial<ModelProviderForm>): void => {
+    setConnectionTest({ status: "idle" });
+    setModelForm((current) => ({ ...current, ...patch }));
+  };
+
   const editWeb = (profile: WebProviderProfileView): void => setWebForm({
     originalId: profile.id,
     id: profile.id,
@@ -854,18 +885,18 @@ export function ProviderProfilesSection(): ReactElement {
         <div className="catalog-edit-form">
           <h4>{modelForm.originalId ? t("编辑模型服务商", "Edit model provider") : t("添加模型服务商", "Add model provider")}</h4>
           <div className="catalog-form">
-            <input value={modelForm.id} disabled={Boolean(modelForm.originalId)} placeholder={t("服务商名称", "Provider name")} onChange={(event) => setModelForm((current) => ({ ...current, id: event.target.value }))} />
-            <select value={modelForm.interfaceType} onChange={(event) => setModelForm((current) => ({ ...current, interfaceType: event.target.value as ModelInterfaceType }))}>
+            <input value={modelForm.id} disabled={Boolean(modelForm.originalId)} placeholder={t("服务商名称", "Provider name")} onChange={(event) => updateModelForm({ id: event.target.value })} />
+            <select value={modelForm.interfaceType} onChange={(event) => updateModelForm({ interfaceType: event.target.value as ModelInterfaceType })}>
               <option value="openai-chat-completions">OpenAI Chat Completions</option>
               <option value="anthropic-messages">Anthropic Messages</option>
             </select>
-            <input value={modelForm.baseURL} placeholder={t("Base URL（留空使用官方地址）", "Base URL (blank for official endpoint)")} onChange={(event) => setModelForm((current) => ({ ...current, baseURL: event.target.value }))} spellCheck={false} />
-            <input type="password" value={modelForm.apiKey} placeholder={modelForm.originalId ? t("API Key（留空保留）", "API Key (blank keeps current)") : "API Key"} onChange={(event) => setModelForm((current) => ({ ...current, apiKey: event.target.value, clearApiKey: false }))} autoComplete="off" />
+            <input value={modelForm.baseURL} placeholder={t("Base URL（留空使用官方地址）", "Base URL (blank for official endpoint)")} onChange={(event) => updateModelForm({ baseURL: event.target.value })} spellCheck={false} />
+            <input type="password" value={modelForm.apiKey} placeholder={modelForm.originalId ? t("API Key（留空保留）", "API Key (blank keeps current)") : "API Key"} onChange={(event) => updateModelForm({ apiKey: event.target.value, clearApiKey: false })} autoComplete="off" />
           </div>
           <div className="settings-row">
-            <label className="theme-option"><input type="checkbox" checked={modelForm.enabled} onChange={(event) => setModelForm((current) => ({ ...current, enabled: event.target.checked }))} />{t("启用", "Enabled")}</label>
-            {modelForm.interfaceType === "anthropic-messages" && <label className="theme-option"><input type="checkbox" checked={modelForm.promptCaching} onChange={(event) => setModelForm((current) => ({ ...current, promptCaching: event.target.checked }))} />Prompt caching</label>}
-            {modelForm.originalId && <label className="theme-option"><input type="checkbox" checked={modelForm.clearApiKey} onChange={(event) => setModelForm((current) => ({ ...current, clearApiKey: event.target.checked, apiKey: "" }))} />{t("清除 API Key", "Clear API key")}</label>}
+            <label className="theme-option"><input type="checkbox" checked={modelForm.enabled} onChange={(event) => updateModelForm({ enabled: event.target.checked })} />{t("启用", "Enabled")}</label>
+            {modelForm.interfaceType === "anthropic-messages" && <label className="theme-option"><input type="checkbox" checked={modelForm.promptCaching} onChange={(event) => updateModelForm({ promptCaching: event.target.checked })} />Prompt caching</label>}
+            {modelForm.originalId && <label className="theme-option"><input type="checkbox" checked={modelForm.clearApiKey} onChange={(event) => updateModelForm({ clearApiKey: event.target.checked, apiKey: "" })} />{t("清除 API Key", "Clear API key")}</label>}
           </div>
           <div className="dialog-actions"><button className="btn small" disabled={busy} onClick={() => { setModelForm(emptyModelProvider()); setConnectionTest({ status: "idle" }); }}>{t("取消", "Cancel")}</button><button className="btn small" disabled={busy || connectionTest.status === "pending"} onClick={testModelConnection}>{connectionTest.status === "pending" ? t("测试中…", "Testing…") : t("测试连接", "Test connection")}</button><button className="btn small primary" disabled={busy} onClick={saveModelProvider}>{t("保存服务商", "Save provider")}</button></div>
           {connectionTest.status === "ok" && (
@@ -965,15 +996,19 @@ export function ServerSettingsFields({ showGroup, note, onDirtyChange }: {
       if (field.type === "secret" && value === "") continue;
       if (field.type === "number") {
         const parsed = Number(value);
-        const allowsZero = field.key === "syncIntervalMinutes";
+        const allowsZero = ZERO_ALLOWED_NUMBER_KEYS.has(field.key);
         if (!Number.isSafeInteger(parsed) || parsed < (allowsZero ? 0 : 1)) {
           setError(allowsZero
             ? t(`${field.label} 必须是大于或等于 0 的整数`, `${fieldLabel(field)} must be a non-negative integer`)
             : t(`${field.label} 必须是正整数`, `${fieldLabel(field)} must be a positive integer`));
           return;
         }
-        if (allowsZero && parsed > MAX_SYNC_INTERVAL_MINUTES) {
+        if (field.key === "syncIntervalMinutes" && parsed > MAX_SYNC_INTERVAL_MINUTES) {
           setError(t(`${field.label} 不能超过 ${MAX_SYNC_INTERVAL_MINUTES} 分钟`, `${fieldLabel(field)} cannot exceed ${MAX_SYNC_INTERVAL_MINUTES} minutes`));
+          return;
+        }
+        if (field.key === "updateCheckIntervalHours" && parsed > MAX_UPDATE_CHECK_INTERVAL_HOURS) {
+          setError(t(`${field.label} 不能超过 ${MAX_UPDATE_CHECK_INTERVAL_HOURS} 小时`, `${fieldLabel(field)} cannot exceed ${MAX_UPDATE_CHECK_INTERVAL_HOURS} hours`));
           return;
         }
         overrides[key] = parsed;
@@ -1069,8 +1104,8 @@ export function ServerSettingsFields({ showGroup, note, onDirtyChange }: {
       <input
         type={field.type === "number" ? "number" : "text"}
         {...(field.type === "number" ? {
-          min: field.key === "syncIntervalMinutes" ? 0 : 1,
-          ...(field.key === "syncIntervalMinutes" ? { max: MAX_SYNC_INTERVAL_MINUTES } : field.key === "fastModelMaxTokens" ? { max: 64_000 } : {}),
+          min: ZERO_ALLOWED_NUMBER_KEYS.has(field.key) ? 0 : 1,
+          ...(field.key === "syncIntervalMinutes" ? { max: MAX_SYNC_INTERVAL_MINUTES } : field.key === "updateCheckIntervalHours" ? { max: MAX_UPDATE_CHECK_INTERVAL_HOURS } : field.key === "fastModelMaxTokens" ? { max: 64_000 } : {}),
           step: 1,
         } : {})}
         value={resetting ? "" : value}
@@ -1670,10 +1705,12 @@ function ExtensionsSection(): ReactElement {
   );
 }
 
-export function SettingsDialog({ open, initialTab, preference, setPreference, accent, setAccent, sendKey, setSendKey, defaults, setDefaults, providers, models, onResetLayout, onClose }: {
+export function SettingsDialog({ open, initialTab, initialTabAt, preference, setPreference, accent, setAccent, sendKey, setSendKey, defaults, setDefaults, providers, models, onResetLayout, onClose }: {
   open: boolean;
-  /** 深链入口：打开时定位到指定页签；不传则保持默认页签（外观） */
+  /** 深链入口：打开时定位到指定页签；不传则保持上次使用的页签 */
   initialTab?: SettingsTab;
+  /** 深链触发序号：同一页签重复深链时随每次调用变化，强制重新定位 */
+  initialTabAt?: number;
   preference: ThemePreference;
   setPreference(value: ThemePreference): void;
   accent: AccentPreference;
@@ -1696,19 +1733,24 @@ export function SettingsDialog({ open, initialTab, preference, setPreference, ac
   // 字段标签在打开时经 api.settings 拉取（不经 react-query，i18n 等无 Provider 的渲染也能工作）；失败按无字段匹配处理
   // tab：按 SETTING_GROUP_TAB 归属到各页签（模型目录/通用/模型定价/服务信息/远程访问）
   const [fieldLabels, setFieldLabels] = useState<Array<{ key: string; label: string; tab: SettingsTab }>>([]);
-  // 服务设置的未保存改动由各页签内的 ServerSettingsFields 实例上报
+  // 服务设置/定价 JSON/提示词的未保存改动由各页签内的分区组件上报
   const serverDirtyRef = useRef(false);
 
   useEffect(() => {
     if (!open) return;
+    // 每次打开从干净状态开始（关闭时未保存改动已随分区组件卸载丢弃）
+    serverDirtyRef.current = false;
     let cancelled = false;
     api.settings()
       .then((view) => {
-        if (!cancelled) setFieldLabels(view.groups.flatMap((group) => group.fields.map((field) => ({
-          key: field.key,
-          label: field.label,
-          tab: SETTING_GROUP_TAB[group.id] ?? ("info" as const),
-        }))));
+        if (!cancelled) setFieldLabels(view.groups
+          // 未识别分组没有对应渲染页签，不进搜索结果（否则命中后无处可跳）
+          .filter((group) => SETTING_GROUP_TAB[group.id] !== undefined)
+          .flatMap((group) => group.fields.map((field) => ({
+            key: field.key,
+            label: field.label,
+            tab: SETTING_GROUP_TAB[group.id]!,
+          }))));
       })
       .catch(() => undefined);
     return () => { cancelled = true; };
@@ -1721,11 +1763,11 @@ export function SettingsDialog({ open, initialTab, preference, setPreference, ac
     if (!open && dialog.open) dialog.close();
   }, [open]);
 
-  // 深链：带 initialTab 打开时定位到对应页签
+  // 深链：带 initialTab 打开时定位到对应页签；initialTabAt 变化表示同一页签被重复深链，重新定位
   useEffect(() => {
     if (open && initialTab) setActiveTab(initialTab);
     if (open) setNavQuery("");
-  }, [open, initialTab]);
+  }, [open, initialTab, initialTabAt]);
 
   if (!open) return null;
 
@@ -1747,13 +1789,19 @@ export function SettingsDialog({ open, initialTab, preference, setPreference, ac
     .map((group) => ({ group, tabs: group.tabs.filter((tab) => tabMatches(tab, group)) }))
     .filter((entry) => entry.tabs.length > 0);
 
-  // 统一关闭入口：有未保存的服务设置改动时先确认
+  // 放弃未保存改动前的统一确认（服务设置 / 定价 JSON / 提示词）
+  const confirmDiscard = (): boolean =>
+    !serverDirtyRef.current || window.confirm(t("有未保存的更改，确定放弃？", "There are unsaved changes. Discard them?"));
+
+  // 统一关闭入口：有未保存改动时先确认
   const requestClose = (): void => {
-    if (serverDirtyRef.current && !window.confirm(t("服务设置有未保存的更改，确定放弃？", "Server settings have unsaved changes. Discard them?"))) return;
+    if (!confirmDiscard()) return;
     dialogRef.current?.close();
   };
 
   const selectTab = (tab: SettingsTab): void => {
+    // 切换页签会卸载当前分区（key 重挂载），有未保存改动时先确认
+    if (tab !== activeTab && !confirmDiscard()) return;
     setActiveTab(tab);
     const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
     contentRef.current?.scrollTo({ top: 0, behavior: reduceMotion ? "auto" : "smooth" });
@@ -1946,7 +1994,7 @@ export function SettingsDialog({ open, initialTab, preference, setPreference, ac
           {activeTab === "pricing" && (
             <section>
               <h3>{t("模型定价", "Model pricing")}</h3>
-              <PricingSection />
+              <PricingSection onDirtyChange={(dirty) => { serverDirtyRef.current = dirty; }} />
               <h3>{t("汇率", "Exchange rate")}</h3>
               <ServerSettingsFields
                 showGroup={(groupId) => groupId === "exchangeRate"}
@@ -1957,7 +2005,7 @@ export function SettingsDialog({ open, initialTab, preference, setPreference, ac
           {activeTab === "prompt" && (
             <section>
               <h3>{t("提示词", "System prompt")}</h3>
-              <PromptSection />
+              <PromptSection onDirtyChange={(dirty) => { serverDirtyRef.current = dirty; }} />
             </section>
           )}
           {activeTab === "info" && (

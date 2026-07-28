@@ -16,9 +16,14 @@ describe("删除会话确认对话框", () => {
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "取消" }));
   });
 
-  it("运行中的会话追加运行中警示", () => {
-    render(<ConfirmDeleteDialog open title="我的会话" running onCancel={() => undefined} onConfirm={() => undefined} />);
-    expect(screen.getByText(/该会话正在运行/)).toBeInTheDocument();
+  it("运行中的会话：提示先中断，删除按钮禁用（服务端会以 409 拒绝）", () => {
+    const onConfirm = vi.fn();
+    render(<ConfirmDeleteDialog open title="我的会话" running onCancel={() => undefined} onConfirm={onConfirm} />);
+    expect(screen.getByText(/请先在会话中中断任务，再删除/)).toBeInTheDocument();
+    const deleteButton = screen.getByRole("button", { name: "删除" });
+    expect(deleteButton).toBeDisabled();
+    fireEvent.click(deleteButton);
+    expect(onConfirm).not.toHaveBeenCalled();
   });
 
   it("确认路径：点删除回调 onConfirm；全程不触达原生 window.confirm", () => {

@@ -4,6 +4,7 @@
  * 为可回看列表。纯函数 + App 内 useState 持有，不引外部状态库。
  * 权限请求与结构化交互不进入通知流（保持一等卡片语义）。
  */
+import type { SettingsTab } from "./contracts";
 
 export type NotificationKind = "info" | "error";
 
@@ -11,7 +12,7 @@ export type NotificationKind = "info" | "error";
 export interface NotificationTarget {
   sessionId?: string;
   view?: "sessions" | "files" | "scm" | "problems";
-  settingsTab?: string;
+  settingsTab?: SettingsTab;
 }
 
 export interface AppNotification {

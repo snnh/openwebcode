@@ -41,6 +41,13 @@ export function agentErrorGuidance(error: Pick<AgentErrorPayload, "kind" | "retr
         hint: t("服务限流/过载，稍后重试", "The service is rate-limited/overloaded; try again later"),
         retryable: true,
       };
+    case "network":
+    case "stream_interrupted":
+      // 非设置问题：只给排查提示，不给设置深链；retryable 时附重试按钮
+      return {
+        hint: t("连接中断：请检查网络连接与 Base URL 可达性", "Connection interrupted: check your network and that the Base URL is reachable"),
+        retryable: error.retryable === true,
+      };
     default:
       // 无 kind（如 server_restarted）或未分类错误：仅按 retryable 决定是否给重试按钮
       return { retryable: error.retryable === true };

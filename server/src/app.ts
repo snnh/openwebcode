@@ -326,6 +326,10 @@ function pdfUploadPath(name: string): string {
 
 export async function buildServer(dependencies: ServerDependencies): Promise<FastifyInstance> {
   const { core, sessions, agent, events, providers, pricing } = dependencies;
+  // 首条用户消息派生标题（"New session" → 派生）与 PATCH 重命名走同一 session.updated 事件，通知所有客户端刷新列表
+  sessions.onDerivedTitle = (meta) => {
+    events.publish({ source: "session", type: "session.updated", sessionId: meta.id, payload: meta });
+  };
   const defaultCurrency = dependencies.defaultCurrency ?? "CNY";
   const defaultLanguage = dependencies.defaultLanguage ?? "zh-CN";
   const getPreferences = dependencies.getPreferences ?? (() => ({ currency: defaultCurrency, language: defaultLanguage }));

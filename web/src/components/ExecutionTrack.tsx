@@ -71,7 +71,7 @@ function liveRunsForMessage(message: ChatMessage, liveSubagents?: Record<string,
   return runs.length > 0 ? runs : undefined;
 }
 
-export function ExecutionTrack({ session, cleared, streamText, thinkingText, runError, permissions, onPermissionDone, onPermissionError, onSendToAgent, contentLens, onNotice, onOpenDiff, onOpenSettings, onRetryRun, hasMoreMessages, onLoadMore, loadingMore, liveSubagents, trackVisible = true }: {
+export function ExecutionTrack({ session, cleared, streamText, thinkingText, runError, permissions, onPermissionDone, onPermissionError, onSendToAgent, contentLens, onNotice, onOpenDiff, onOpenSettings, onRetryRun, retryPending, hasMoreMessages, onLoadMore, loadingMore, liveSubagents, trackVisible = true }: {
   session: SessionDetail;
   cleared?: { uptoIndex: number; at: string };
   streamText: string;
@@ -90,6 +90,8 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, run
   onOpenSettings?(tab: "models"): void;
   /** 错误卡「重试」：重发本会话最近一条用户消息（仅会话空闲且存在用户消息时下发） */
   onRetryRun?(): void;
+  /** 重试发送进行中（发送 mutation pending）：禁用重试按钮防止双击重发 */
+  retryPending?: boolean;
   /** 0.5.0 Phase 2：历史消息分页——是否有更早的消息可加载 */
   hasMoreMessages?: boolean;
   /** 0.5.0 Phase 2：加载更早消息的回调 */
@@ -221,7 +223,13 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, run
                     </button>
                   )}
                   {guidance.retryable && onRetryRun && (
-                    <button type="button" className="btn small" onClick={onRetryRun}>{t("重试", "Retry")}</button>
+                    <button
+                      type="button"
+                      className="btn small"
+                      disabled={retryPending}
+                      title={t("重发最近一条用户消息；附件不随重试重发", "Resends the latest user message; attachments are not re-sent")}
+                      onClick={onRetryRun}
+                    >{t("重试", "Retry")}</button>
                   )}
                 </div>
               )}

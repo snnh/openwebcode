@@ -18,7 +18,7 @@ export function SessionRail({ sessions, currentId, runningIds, theme, collapsed,
   onSelect(id: string): void;
   onCreate(): void;
   onDelete(id: string): void;
-  /** 重命名提交（仅在新标题非空且有变化时调用） */
+  /** 重命名提交（仅在用户编辑过且 trim 后有变化时调用；空串表示清除标题覆盖，服务端回落派生标题） */
   onRename(id: string, title: string): void;
   onTogglePin(id: string, pinned: boolean): void;
   onImport(file: File): void;
@@ -31,6 +31,8 @@ export function SessionRail({ sessions, currentId, runningIds, theme, collapsed,
   const [filter, setFilter] = useState("");
   const [renamingId, setRenamingId] = useState<string | undefined>();
   const [renameDraft, setRenameDraft] = useState("");
+  // 用户是否真正编辑过草稿：区分「清空以清除标题覆盖」与「未改动直接提交」
+  const renameEdited = useRef(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const keyword = filter.trim().toLowerCase();
   const filtered = sessions?.filter((session) =>
@@ -55,11 +57,16 @@ export function SessionRail({ sessions, currentId, runningIds, theme, collapsed,
   const startRename = (session: Session): void => {
     setRenamingId(session.id);
     setRenameDraft(session.title);
+    renameEdited.current = false;
   };
   const commitRename = (session: Session): void => {
     const title = renameDraft.trim();
+    const edited = renameEdited.current;
     setRenamingId(undefined);
-    if (title && title !== session.title) onRename(session.id, title);
+    renameEdited.current = false;
+    if (!edited || title === session.title) return;
+    // 清空提交发送空串：服务端清除标题覆盖并回落到派生标题
+    onRename(session.id, title);
   };
 
   return (
@@ -118,7 +125,7 @@ export function SessionRail({ sessions, currentId, runningIds, theme, collapsed,
                   maxLength={120}
                   autoFocus
                   aria-label={t("重命名会话", "Rename session")}
-                  onChange={(event) => setRenameDraft(event.target.value)}
+                  onChange={(event) => { renameEdited.current = true; setRenameDraft(event.target.value); }}
                   onBlur={() => commitRename(session)}
                   onKeyDown={(event) => {
                     if (event.key === "Enter") commitRename(session);
