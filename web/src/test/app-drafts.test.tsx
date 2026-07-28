@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
@@ -15,16 +15,24 @@ const session: SessionDetail = {
   messages: [],
 };
 
-function installFetchMock(): void {
+const sessionB: SessionDetail = {
+  ...session,
+  id: "s2",
+  title: "另一个作业",
+};
+
+function installFetchMock(extraSessions: SessionDetail[] = []): void {
+  const all = [session, ...extraSessions];
   const handler = vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
     const url = typeof input === "string" ? input : input.toString();
     const json = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-    if (url.endsWith("/api/sessions")) return json([{ id: session.id, cwd: session.cwd, provider: session.provider, model: session.model, title: session.title, createdAt: session.createdAt, updatedAt: session.updatedAt }]);
+    if (url.endsWith("/api/sessions")) return json(all.map(({ id, cwd, provider, model, title, createdAt, updatedAt }) => ({ id, cwd, provider, model, title, createdAt, updatedAt })));
     if (url.endsWith("/api/models")) return json([]);
     if (url.endsWith("/api/providers")) return json(["anthropic"]);
-    if (url.includes("/api/sessions/s1/steering")) return json([]);
-    if (url.includes("/api/sessions/s1/permissions")) return json([]);
-    if (url.match(/\/api\/sessions\/s1(\?.*)?$/)) return json(session);
+    if (url.includes("/steering")) return json([]);
+    if (url.includes("/permissions")) return json([]);
+    const detail = all.find((entry) => url.match(new RegExp(`/api/sessions/${entry.id}(\\?.*)?$`)));
+    if (detail) return json(detail);
     return json({}, 404);
   });
   vi.stubGlobal("fetch", handler);
@@ -83,5 +91,36 @@ describe("App 草稿持久化（localStorage owc-draft-<id>）", () => {
     expect(window.localStorage.getItem("owc-draft-s1")).toBe(JSON.stringify("正在输入"));
     fireEvent.change(textarea, { target: { value: "" } });
     expect(window.localStorage.getItem("owc-draft-s1")).toBeNull();
+  });
+
+  it("镜像只写变化的草稿键，不重写其他会话", async () => {
+    installFetchMock([sessionB]);
+    renderApp();
+
+    // s1 输入草稿
+    const textarea = await screen.findByRole("combobox", { name: /消息输入框/ });
+    fireEvent.change(textarea, { target: { value: "一" } });
+    expect(window.localStorage.getItem("owc-draft-s1")).toBe(JSON.stringify("一"));
+
+    // 切到 s2 输入草稿
+    fireEvent.click([...document.querySelectorAll<HTMLButtonElement>(".session-link")].find((link) => link.textContent?.includes("另一个作业"))!);
+    const textareaB = await screen.findByRole("combobox", { name: /消息输入框/ });
+    await waitFor(() => expect(textareaB).toHaveValue(""));
+    fireEvent.change(textareaB, { target: { value: "二" } });
+    expect(window.localStorage.getItem("owc-draft-s2")).toBe(JSON.stringify("二"));
+
+    // 切回 s1，再打一键：只重写 s1 的草稿键
+    fireEvent.click([...document.querySelectorAll<HTMLButtonElement>(".session-link")].find((link) => link.textContent?.includes("草稿测试作业"))!);
+    const textareaA = await screen.findByRole("combobox", { name: /消息输入框/ });
+    await waitFor(() => expect(textareaA).toHaveValue("一"));
+    const spy = vi.spyOn(Storage.prototype, "setItem");
+    try {
+      fireEvent.change(textareaA, { target: { value: "一改" } });
+      const draftWrites = spy.mock.calls.filter(([key]) => String(key).startsWith("owc-draft-"));
+      expect(draftWrites).toEqual([["owc-draft-s1", JSON.stringify("一改")]]);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(window.localStorage.getItem("owc-draft-s2")).toBe(JSON.stringify("二"));
   });
 });

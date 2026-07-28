@@ -60,7 +60,15 @@ export function PermissionCard({ permission, sessionId, onDone, onError }: {
 
   const summary = summarizeToolInput(permission.input);
   return (
-    <article className="permission-card" role="alertdialog" aria-labelledby={titleId}>
+    <article
+      className="permission-card"
+      role="alertdialog"
+      aria-labelledby={titleId}
+      onKeyDown={(event) => {
+        // Esc 退出「总是允许」的 3 秒确认态；非确认态下是无害空操作
+        if (event.key === "Escape") cancelConfirm();
+      }}
+    >
       <span className="track-node" aria-hidden />
       <div className="message-meta">{t("需要你的确认", "Your confirmation is required")}</div>
       <h2 id={titleId}>{t("允许执行", "Allow")} <b className="mono">{permission.tool}</b>{t(" 吗？", "?")}</h2>

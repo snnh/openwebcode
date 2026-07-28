@@ -225,4 +225,30 @@ describe("ExecutionTrack virtualization", () => {
     expect(track.scrollTop).toBe(100);
     expect(screen.getByText("回到底部")).toBeInTheDocument();
   });
+
+  it("对话面板隐藏时暂停吸底滚动，恢复可见时重新贴底", () => {
+    const messages = makeMessages(6);
+    const renderProps = (msgs: ChatMessage[], visible: boolean) => (
+      <ExecutionTrack
+        session={{ ...session, messages: msgs }}
+        streamText=""
+        permissions={[]}
+        onPermissionDone={() => undefined}
+        trackVisible={visible}
+      />
+    );
+    const { container, rerender } = render(renderProps(messages, false));
+    const track = container.querySelector<HTMLElement>(".execution-track")!;
+    const geometry = { scrollHeight: 10_000, clientHeight: 500 };
+    stubScrollGeometry(track, geometry);
+
+    // 隐藏期间新消息到达：不执行滚动（scrollHeight 在真实浏览器 hidden 时为 0，会重置位置）
+    geometry.scrollHeight = 10_500;
+    rerender(renderProps([...messages, ...makeMessages(1).map((m) => ({ ...m, id: "new" }))], false));
+    expect(track.scrollTop).toBe(0);
+
+    // 恢复可见：pinned 状态下重新贴底
+    rerender(renderProps([...messages, ...makeMessages(1).map((m) => ({ ...m, id: "new" }))], true));
+    expect(track.scrollTop).toBe(10_500);
+  });
 });

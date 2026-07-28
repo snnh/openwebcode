@@ -34,7 +34,16 @@ export function useSessionEventStream({ sessionId, onEvent, onDisconnect }: Sess
     let retry = 0;
     let socket: WebSocket | undefined;
     let timer: number | undefined;
+    let bannerTimer: number | undefined;
     let disposed = false;
+    // 重连横幅防抖：断开持续约 1 秒才亮横幅（短暂抖动不打扰）；握手成功立即清除
+    const clearBanner = (): void => {
+      if (bannerTimer !== undefined) {
+        window.clearTimeout(bannerTimer);
+        bannerTimer = undefined;
+      }
+      setReconnecting(false);
+    };
     const connect = (): void => {
       if (disposed) return;
       // 会话级订阅按该会话的 sessionSeq 续传；全局订阅（不传 sessionId）
@@ -43,7 +52,9 @@ export function useSessionEventStream({ sessionId, onEvent, onDisconnect }: Sess
       const query = new URLSearchParams({ after: String(after), ...(sessionId ? { sessionId } : {}) });
       socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/events?${query}`);
       socket.onopen = () => {
-        if (!disposed) setReconnecting(false);
+        // 握手成功：退避重置，下次断线从短间隔重新开始
+        retry = 0;
+        if (!disposed) clearBanner();
       };
       socket.onmessage = (message) => {
         let event: AppEvent;
@@ -72,13 +83,19 @@ export function useSessionEventStream({ sessionId, onEvent, onDisconnect }: Sess
       };
       socket.onclose = () => {
         if (disposed) return;
-        setReconnecting(true);
+        if (bannerTimer === undefined) {
+          bannerTimer = window.setTimeout(() => {
+            bannerTimer = undefined;
+            if (!disposed) setReconnecting(true);
+          }, 1_000);
+        }
         timer = window.setTimeout(connect, Math.min(10_000, 500 * 2 ** retry++));
       };
     };
     connect();
     return () => {
       disposed = true;
+      if (bannerTimer !== undefined) window.clearTimeout(bannerTimer);
       setReconnecting(false);
       if (socket) {
         socket.onopen = null;
