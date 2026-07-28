@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
-import type { ChatMessage, ExtensionInfo, LiveSubagentRun, SessionDetail } from "../lib/contracts";
+import type { AgentErrorPayload, ChatMessage, ExtensionInfo, LiveSubagentRun, SessionDetail } from "../lib/contracts";
+import { agentErrorGuidance } from "../lib/agent-error";
 import type { DiffSpec } from "./editor/DiffPane";
 import { Icon } from "./Icon";
 import { Markdown } from "./Markdown";
@@ -70,13 +71,13 @@ function liveRunsForMessage(message: ChatMessage, liveSubagents?: Record<string,
   return runs.length > 0 ? runs : undefined;
 }
 
-export function ExecutionTrack({ session, cleared, streamText, thinkingText, runError, permissions, onPermissionDone, onPermissionError, onSendToAgent, contentLens, onNotice, onOpenDiff, hasMoreMessages, onLoadMore, loadingMore, liveSubagents }: {
+export function ExecutionTrack({ session, cleared, streamText, thinkingText, runError, permissions, onPermissionDone, onPermissionError, onSendToAgent, contentLens, onNotice, onOpenDiff, onOpenSettings, onRetryRun, hasMoreMessages, onLoadMore, loadingMore, liveSubagents }: {
   session: SessionDetail;
   cleared?: { uptoIndex: number; at: string };
   streamText: string;
   thinkingText?: string;
-  /** 服务端本轮在工具/Provider/运行基础设施上失败时的持久可见说明。 */
-  runError?: string;
+  /** 服务端本轮在工具/Provider/运行基础设施上失败时的持久可见说明（含分类 kind 与 retryable）。 */
+  runError?: AgentErrorPayload;
   permissions: PermissionRequest[];
   onPermissionDone(requestId: string): void;
   onPermissionError?(message: string): void;
@@ -85,6 +86,10 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, run
   onNotice?(message: string, kind?: "info" | "error"): void;
   /** 0.5.0 Phase 1b：write_file/edit_file 工具卡的文件变化一键在统一 diff 视图打开 */
   onOpenDiff?(spec: DiffSpec): void;
+  /** 错误卡深链：打开设置对话框的指定页签 */
+  onOpenSettings?(tab: "server" | "models"): void;
+  /** 错误卡「重试」：重发本会话最近一条用户消息（仅会话空闲且存在用户消息时下发） */
+  onRetryRun?(): void;
   /** 0.5.0 Phase 2：历史消息分页——是否有更早的消息可加载 */
   hasMoreMessages?: boolean;
   /** 0.5.0 Phase 2：加载更早消息的回调 */
@@ -187,12 +192,37 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, run
         {cleared && Math.min(cleared.uptoIndex, session.messages.length) === session.messages.length && (
           <div className="context-cleared-divider" role="separator">{t("上下文已清空（历史保留）", "Context cleared (history retained)")}</div>
         )}
-        {runError && (
-          <section className="tool-result error run-error" role="alert">
-            <span className="tool-result-label">{t("本轮执行失败", "Run failed")}</span>
-            <pre className="mono">{runError}</pre>
-          </section>
-        )}
+        {runError && (() => {
+          const guidance = agentErrorGuidance(runError, t);
+          // 原始错误保留可见但弱化：超长 JSON blob 默认折叠
+          const longMessage = runError.message.length > 280;
+          return (
+            <section className="tool-result error run-error" role="alert">
+              <span className="tool-result-label">{t("本轮执行失败", "Run failed")}</span>
+              {guidance.hint && <p className="run-error-hint">{guidance.hint}</p>}
+              {longMessage ? (
+                <details className="run-error-details">
+                  <summary>{t("原始错误信息", "Raw error message")}</summary>
+                  <pre className="mono">{runError.message}</pre>
+                </details>
+              ) : (
+                <pre className="mono run-error-message">{runError.message}</pre>
+              )}
+              {(guidance.settingsTab || (guidance.retryable && onRetryRun)) && (
+                <div className="run-error-actions">
+                  {guidance.settingsTab && (
+                    <button type="button" className="btn small" onClick={() => onOpenSettings?.(guidance.settingsTab!)}>
+                      {guidance.settingsTab === "models" ? t("打开模型设置", "Open model settings") : t("打开服务设置", "Open server settings")}
+                    </button>
+                  )}
+                  {guidance.retryable && onRetryRun && (
+                    <button type="button" className="btn small" onClick={onRetryRun}>{t("重试", "Retry")}</button>
+                  )}
+                </div>
+              )}
+            </section>
+          );
+        })()}
         {(streamText || thinkingText) && (
           <article className="message assistant live">
             <span className="track-node" aria-hidden />

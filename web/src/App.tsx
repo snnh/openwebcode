@@ -2,7 +2,8 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./lib/api";
 import { extractAttachmentPaths, toAttachments } from "./lib/attachments";
-import type { AppEvent, BackgroundTaskInfo, ChatMessage, ContextUsage, ContextWatermark, SessionDetail, TodoItem, WorkspaceIndexStatus } from "./lib/contracts";
+import type { AgentErrorPayload, AppEvent, BackgroundTaskInfo, ChatMessage, ContextUsage, ContextWatermark, SessionDetail, TodoItem, WorkspaceIndexStatus } from "./lib/contracts";
+import { agentErrorToastText } from "./lib/agent-error";
 import { deriveWindowInfo } from "./lib/context-window";
 import { formatCurrency } from "./lib/format";
 import { loadSendKey, loadSessionDefaults, saveSendKey, saveSessionDefaults, type SendKey, type SessionDefaults } from "./lib/prefs";
@@ -116,7 +117,7 @@ export function App(): ReactElement {
   // agent 完成检测（通知中心）：记录每个会话上一状态，busy→idle 视为一轮任务完成
   const lastStatesRef = useRef<Record<string, string>>({});
   // agent.error 除了短暂 toast，也保留在当前会话的轨道中；下一次真正开始运行时再清除。
-  const [runFailures, setRunFailures] = useState<Record<string, string>>({});
+  const [runFailures, setRunFailures] = useState<Record<string, AgentErrorPayload>>({});
   // 子代理运行状态：sessionId → taskId → run；终态保留（子代理面板需要会话级历史），按会话封顶
   const { liveSubagents, applyEvent: applySubagentEvent, removeSession: removeSubagentSession } = useLiveSubagents({ dropOnToolEnd: false });
   // Problems 视图角标：diagnostics.updated 到达时记录未查看失败数，打开 Problems 视图清除
@@ -141,6 +142,9 @@ export function App(): ReactElement {
   const skills = useQuery({ queryKey: queryKeys.skills(currentId ?? ""), queryFn: () => api.skills(currentId!), enabled: Boolean(currentId) });
   const todos = useQuery({ queryKey: ["todos", currentId], queryFn: () => api.todos(currentId!), enabled: Boolean(currentId) });
   const extensions = useQuery({ queryKey: ["extensions"], queryFn: api.extensions });
+  // 服务设置与更新检查：用于启动后一次性提示新版本（与 SettingsDialog 共用缓存键；retry:false 避免 501 重试）
+  const serverSettings = useQuery({ queryKey: ["settings"], queryFn: api.settings, staleTime: 5 * 60_000 });
+  const updateCheck = useQuery({ queryKey: ["update-check"], queryFn: api.updateCheck, staleTime: 5 * 60_000, retry: false });
   // 符号索引状态（Phase 2）：server 未启用索引时 501，保持隐藏（retry:false）
   const indexStatus = useQuery({ queryKey: ["index-status", currentId], queryFn: () => api.indexStatus(currentId!), enabled: Boolean(currentId), retry: false });
   // 待确认权限以服务端为准（刷新后可恢复），WS 事件只作即时补充
@@ -150,6 +154,22 @@ export function App(): ReactElement {
   useEffect(() => {
     if (!currentId && sessions.data?.[0]) setCurrentId(sessions.data[0].id);
   }, [currentId, sessions.data]);
+
+  // 新版本提示（0.7.x）：更新检查启用且发现更新版本时通知中心提示一次（按版本去重，点击跳转 设置 → 服务信息）
+  const notifiedUpdateVersionsRef = useRef(new Set<string>());
+  useEffect(() => {
+    const enabled = serverSettings.data?.groups.some((group) =>
+      group.fields.some((field) => field.key === "updateCheckEnabled" && field.value === true)) === true;
+    const snapshot = updateCheck.data?.snapshot;
+    if (!enabled || !snapshot?.isNewer) return;
+    if (notifiedUpdateVersionsRef.current.has(snapshot.latestVersion)) return;
+    notifiedUpdateVersionsRef.current.add(snapshot.latestVersion);
+    pushEventNotification(
+      t(`发现新版本 v${snapshot.latestVersion}，前往 设置 → 服务信息 更新`, `New version v${snapshot.latestVersion} available — go to Settings → Server info to update`),
+      "info",
+      { settingsTab: "info" },
+    );
+  }, [serverSettings.data, updateCheck.data, pushEventNotification, t]);
 
   const handleSessionEvent = useCallback((event: AppEvent): void => {
         applyRunEvent(event);
@@ -228,8 +248,15 @@ export function App(): ReactElement {
           pushEventNotification(t("源代码管理状态已更新", "Source control state updated"), "info", { sessionId: event.sessionId, view: "scm" });
         }
         if (event.type === "agent.error" && event.sessionId) {
-          const message = (event.payload as { message?: string }).message ?? t("未知错误", "unknown error");
-          setRunFailures((previous) => ({ ...previous, [event.sessionId!]: message }));
+          const payload = event.payload as Partial<AgentErrorPayload>;
+          setRunFailures((previous) => ({
+            ...previous,
+            [event.sessionId!]: {
+              message: payload.message ?? t("未知错误", "unknown error"),
+              ...(payload.kind ? { kind: payload.kind } : {}),
+              retryable: payload.retryable === true,
+            },
+          }));
         }
         // 全局配置/目录事件无 sessionId，必须在按会话过滤之前处理。
         if (event.type === "server.settings_updated") {
@@ -274,8 +301,8 @@ export function App(): ReactElement {
           ), "error");
         }
         if (event.type === "agent.error") {
-          const message = (event.payload as { message?: string }).message ?? t("未知错误", "unknown error");
-          notify(t(`任务失败：${message}`, `Task failed: ${message}`), "error");
+          // toast 只给一句话摘要（按 kind 分类），原始错误细节留在轨道上的错误卡中
+          notify(agentErrorToastText(event.payload as Partial<AgentErrorPayload>, t), "error");
         }
         if (event.type === "todos.updated") {
           queryClient.setQueryData<TodoItem[]>(["todos", event.sessionId], (event.payload as { items?: TodoItem[] }).items ?? []);
@@ -499,6 +526,32 @@ export function App(): ReactElement {
     });
   }, [currentId, drafts, attachmentsBySession, running, send]);
 
+  // 错误卡「重试」：重发本会话最近一条用户消息（限流/过载等 retryable 失败后的快捷恢复）
+  const lastUserMessageText = useMemo(() => {
+    const messages = displaySession?.messages ?? [];
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index]!;
+      if (message.role !== "user") continue;
+      const text = message.content
+        .filter((block) => block.type === "text")
+        .map((block) => block.text ?? "")
+        .join("\n")
+        .trim();
+      if (text) return text;
+    }
+    return undefined;
+  }, [displaySession]);
+  const retryRun = useCallback((): void => {
+    if (!currentId || !lastUserMessageText || running) return;
+    send.mutate({
+      sessionId: currentId,
+      text: lastUserMessageText,
+      images: [],
+      pathAttachments: toAttachments(extractAttachmentPaths(lastUserMessageText)),
+      behavior: "start",
+    });
+  }, [currentId, lastUserMessageText, running, send]);
+
   // 托管工作区的镜像盘快照必须由用户显式触发；服务端仍会拒绝运行中或同步中的会话。
   const manualSnapshot = useMutation({
     mutationFn: (sessionId: string) => api.createCheckpoint(sessionId, t("手动虚拟磁盘快照", "Manual virtual disk snapshot")),
@@ -694,7 +747,9 @@ export function App(): ReactElement {
     setNotificationsOpen(false);
     if (item.target?.sessionId) setCurrentId(item.target.sessionId);
     if (item.target?.view) showWorkbenchView(item.target.view);
-  }, [showWorkbenchView]);
+    // 设置深链（如新版本提示 → 服务信息页签）
+    if (item.target?.settingsTab) openSettings(item.target.settingsTab as SettingsTab);
+  }, [showWorkbenchView, openSettings]);
 
   // 移动端抽屉：选中会话后收起侧栏（桌面端行为不变）
   const selectSession = useCallback((id: string): void => {
@@ -800,6 +855,8 @@ export function App(): ReactElement {
                   runError={runFailures[current.id]}
                   permissions={mergedPermissions}
                   onSendToAgent={sendShellToAgent}
+                  onOpenSettings={openSettings}
+                  {...(lastUserMessageText && !running ? { onRetryRun: retryRun } : {})}
                   onPermissionDone={(requestId) => {
                     setPendingPermissions((prev) => prev.filter((item) => item.requestId !== requestId));
                     queryClient.invalidateQueries({ queryKey: ["permissions", current.id] });
