@@ -34,8 +34,10 @@ import type { SearchProvider, WebFetchProvider } from "../web-tools.js";
 import type { BackgroundTaskRegistry } from "./background-tasks.js";
 import type { HookEvent, HookPayload, HookRunner } from "../hooks.js";
 import type { ExtensionManager } from "../extensions/extension-manager.js";
+import type { PromptHookResult } from "../extensions/types.js";
 import { decodeProcessOutputChunks } from "./output-decoder.js";
 import { buildSystemPrompt } from "./prompts/prompt-builder.js";
+import { PI_BASE_SYSTEM_PROMPT } from "./prompts/pi-base.js";
 import { loadPromptOverride, type PromptOverride } from "./prompts/prompt-overrides.js";
 import { RunStore, type AgentRunSnapshot, type AgentRunState } from "./run-store.js";
 import { MessageQueue, type QueueItem } from "./message-queue.js";
@@ -571,6 +573,8 @@ export class AgentRunner {
   private readonly mcpWarningSignatures = new Map<string, string>();
   /** 可编辑提示词覆盖：按 cwd 缓存一次，避免每轮 IO；首次构建时读取。 */
   private readonly promptOverrideCache = new Map<string, PromptOverride>();
+  /** 工具形态别名反向映射（sessionId → alias → 内置名），每轮随工具表重建，run 结束清理。 */
+  private readonly toolAliases = new Map<string, Map<string, string>>();
   private readonly todos = new Map<string, TodoItem[]>();
   private readonly permissions: PermissionCoordinator;
   private readonly repoMap: RepoMapGenerator;
@@ -600,6 +604,11 @@ export class AgentRunner {
   /** 提示词覆盖更新后清空缓存，下次构建提示词时重新读取覆盖文件。 */
   refreshPromptOverride(): void {
     this.promptOverrideCache.clear();
+  }
+
+  /** 工具形态别名 → 内置名解析；无映射时原样返回（权限/门禁/分发统一按内置名）。 */
+  private resolveBuiltinToolName(sessionId: string, name: string): string {
+    return this.toolAliases.get(sessionId)?.get(name) ?? name;
   }
 
   private searchProvider: SearchProvider | undefined;
@@ -932,15 +941,35 @@ export class AgentRunner {
         // 仅含已启用扩展；host 断线时注册表已清空，本轮自然不注入。
         const extensionTools = toolsEnabled && this.extensions ? this.extensions.registeredTools() : [];
 
+        // 工具形态（env-sim 等官方扩展）：隐藏内置工具 + 别名重命名。反向映射按轮重建——
+        // 形态由实时扩展配置驱动，不可跨 run 缓存；执行/权限/门禁经 resolveBuiltinToolName 归一。
+        const builtIns = builtInTools({
+          skillsAvailable: skillCatalog.length > 0,
+          backgroundTasksEnabled: Boolean(this.backgroundTasks),
+          fetchAvailable: Boolean(this.webFetchProvider),
+          searchAvailable: Boolean(this.searchProvider),
+          shellBackend: session.shellBackend ?? "default",
+        });
+        const shaping = toolsEnabled && this.extensions
+          ? await this.extensions.activeToolShaping(builtIns.map((tool) => tool.name))
+          : undefined;
+        const aliasMap = new Map<string, string>();
+        let shapedBuiltIns = builtIns;
+        if (shaping) {
+          shapedBuiltIns = builtIns.filter((tool) => !shaping.hideBuiltIns.has(tool.name));
+          for (const [as, spec] of shaping.aliases) {
+            const index = shapedBuiltIns.findIndex((tool) => tool.name === spec.from);
+            if (index < 0) continue;
+            const source = shapedBuiltIns[index]!;
+            shapedBuiltIns[index] = { name: as, description: spec.description ?? source.description, inputSchema: spec.inputSchema ?? source.inputSchema };
+            aliasMap.set(as, spec.from);
+          }
+        }
+        this.toolAliases.set(sessionId, aliasMap);
+
         const tools = toolsEnabled
           ? [
-              ...builtInTools({
-                skillsAvailable: skillCatalog.length > 0,
-                backgroundTasksEnabled: Boolean(this.backgroundTasks),
-                fetchAvailable: Boolean(this.webFetchProvider),
-                searchAvailable: Boolean(this.searchProvider),
-                shellBackend: session.shellBackend ?? "default",
-              }),
+              ...shapedBuiltIns,
               ...mcpBinding.tools,
               ...extensionTools,
             ]
@@ -971,18 +1000,36 @@ export class AgentRunner {
         const bgNotices = toolsEnabled ? (this.backgroundTasks?.drainNotices(sessionId) ?? []) : [];
         const bgNoticeSection = bgNotices.length > 0 ? `\n\n${bgNotices.join("\n")}` : "";
 
+        const baseProductSections = [
+          workDisciplineSection(availableToolNames),
+          communicationSection(this.defaultLanguage),
+          session.agentMode === "plan" ? planModeSection(toolsEnabled) : "",
+        ];
+
+        // prompt.beforeBuild 钩子（env-sim 等）：不缓存——结果依赖实时扩展配置，
+        // 逐轮叠加在文件覆盖之上。finalConstraints/安全边界由核心追加，钩子无法移除。
+        let promptTransform: PromptHookResult = {};
+        if (this.extensions) {
+          promptTransform = await this.extensions.transformPrompt({
+            sessionId,
+            cwd: session.cwd,
+            identity: `You are OpenWebCode. The workspace is ${session.cwd}.`,
+            basePrompt: promptOverride?.baseOverride?.trim() || PI_BASE_SYSTEM_PROMPT,
+            productSections: baseProductSections,
+          });
+        }
+        const effectiveBaseOverride = promptTransform.basePromptOverride ?? promptOverride?.baseOverride;
+
         const system = buildSystemPrompt({
           cwd: session.cwd,
           tools,
-          productSections: [
-            workDisciplineSection(availableToolNames),
-            communicationSection(this.defaultLanguage),
-            session.agentMode === "plan" ? planModeSection(toolsEnabled) : "",
-          ],
+          ...(promptTransform.identity ? { identity: promptTransform.identity } : {}),
+          productSections: [...(promptTransform.prependSections ?? []), ...(promptTransform.productSections ?? baseProductSections)],
           finalConstraints: [SAFETY_BOUNDARY_SECTION],
           skillsSection: `${skillSection}${agentSection}`,
           projectContext: memorySection ? [{ path: "workspace instructions and memory", content: memorySection }] : [],
-          ...(promptOverride ? { basePromptOverride: promptOverride.baseOverride, customAppend: promptOverride.customAppend } : {}),
+          ...(effectiveBaseOverride ? { basePromptOverride: effectiveBaseOverride } : {}),
+          ...(promptOverride?.customAppend ? { customAppend: promptOverride.customAppend } : {}),
         });
         await this.state(sessionId, "streaming");
         const providerCallStart = performance.now();
@@ -1136,8 +1183,8 @@ export class AgentRunner {
             }
           }
           await this.sessions.appendMessage(sessionId, "tool", [result], this.messageLineage(sessionId));
-          // PostToolUse 钩子：仅写类工具成功后触发（format-on-write 等），不阻断
-          if (!result.isError && ["write_file", "edit_file", "bash"].includes(call.name)) {
+          // PostToolUse 钩子：仅写类工具成功后触发（format-on-write 等），不阻断；别名按内置名判定
+          if (!result.isError && ["write_file", "edit_file", "bash"].includes(this.resolveBuiltinToolName(sessionId, call.name))) {
             const summary = result.content.slice(0, 300);
             await this.runNotificationHook("PostToolUse", { sessionId, cwd: session.cwd, tool: call.name, input: effectiveInput, result: { summary } });
           }
@@ -1183,6 +1230,7 @@ export class AgentRunner {
       this.settling.delete(sessionId);
       this.running.delete(sessionId);
       this.repeatedCalls.delete(sessionId);
+      this.toolAliases.delete(sessionId);
       // abort 与正常结束都保留未消费队列；queue.json 是用户可恢复状态。
       this.todos.delete(sessionId);
       this.events.publish({ source: "agent", type: "todos.updated", sessionId, payload: { items: [] } });
@@ -1489,6 +1537,8 @@ export class AgentRunner {
   private async authorizeTool(sessionId: string, tool: string, input: Record<string, unknown>, signal: AbortSignal): Promise<{ allowed: boolean; reason?: string }> {
     const session = await this.sessions.get(sessionId);
     if (!session) return { allowed: false, reason: "Session not found" };
+    // 工具形态别名按原内置工具的权限类处理（不降级为 external）
+    tool = this.resolveBuiltinToolName(sessionId, tool);
     // Plan 模式门禁：只读工具放行，其余一律拦截
     const PLAN_READONLY = new Set(["read_file", "glob", "grep", "read_artifact", "load_skill", "spawn_task", "spawn_swarm", "todo_write", "web_fetch", "web_search", "task_output", "repo_map", "code_search", "git_status", "git_diff"]);
     if (session.agentMode === "plan") {
@@ -1602,6 +1652,8 @@ export class AgentRunner {
     input: Record<string, unknown>,
     signal: AbortSignal,
   ): Promise<MessageContent & { type: "tool_result" }> {
+    // 工具形态别名回调到内置实现：权限分级/事件/分发统一按内置名。
+    name = this.resolveBuiltinToolName(sessionId, name);
     const execution = executionClass(name);
     this.events.publish({ source: "agent", type: "tool.scheduling", sessionId, payload: { toolCallId, name, execution, parallelEligible: execution === "read_only" } });
     if (name.startsWith("mcp__")) {
@@ -1680,7 +1732,8 @@ export class AgentRunner {
         const definition = agentName && this.agents ? await this.agents.find(session.cwd, agentName) : undefined;
         if (agentName && !definition) throw new Error(`Unknown sub-agent: ${agentName}`);
         const requestedTools = definition?.tools ?? (Array.isArray(input.tools) ? input.tools.map((item) => String(item)) : [...SUB_AGENT_TOOL_NAMES]);
-        const toolNames = requestedTools.filter((tool) => (SUB_AGENT_TOOL_NAMES as readonly string[]).includes(tool));
+        // allowlist 以内置名为准：先把可能的工具形态别名解析回内置名再过滤
+        const toolNames = requestedTools.map((tool) => this.resolveBuiltinToolName(sessionId, tool)).filter((tool) => (SUB_AGENT_TOOL_NAMES as readonly string[]).includes(tool));
         // 子代理期间不发布 message.delta/thinking_delta，避免污染主聊天流；
         // 子代理 token 经 onUsage 复用主循环记账路径，计入会话成本
         const subUsageContext = new ContextManager(this.sessions.contextRoot(sessionId));
@@ -1795,7 +1848,7 @@ export class AgentRunner {
           itemDefinitions.set(index, found);
         }
         const requestedTools = definition?.tools ?? [...SUB_AGENT_TOOL_NAMES];
-        const toolNames = requestedTools.filter((tool) => (SUB_AGENT_TOOL_NAMES as readonly string[]).includes(tool));
+        const toolNames = requestedTools.map((tool) => this.resolveBuiltinToolName(sessionId, tool)).filter((tool) => (SUB_AGENT_TOOL_NAMES as readonly string[]).includes(tool));
         const subUsageContext = new ContextManager(this.sessions.contextRoot(sessionId));
         const contextRoot = this.sessions.contextRoot(sessionId);
         interface SwarmItemOutcome { ok: boolean; conclusion?: string; error?: string }
@@ -1803,7 +1856,7 @@ export class AgentRunner {
           const swarm = { index: index + 1, total: prompts.length };
           const effective = itemDefinitions.get(index) ?? definition;
           const effectiveTools = effective?.tools
-            ? effective.tools.filter((tool) => (SUB_AGENT_TOOL_NAMES as readonly string[]).includes(tool))
+            ? effective.tools.map((tool) => this.resolveBuiltinToolName(sessionId, tool)).filter((tool) => (SUB_AGENT_TOOL_NAMES as readonly string[]).includes(tool))
             : toolNames;
           let taskId = "";
           try {

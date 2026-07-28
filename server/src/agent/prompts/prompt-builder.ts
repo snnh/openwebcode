@@ -9,6 +9,8 @@ export interface PromptContextFile {
 export interface PromptBuilderOptions {
   cwd: string;
   tools: readonly ProviderTool[];
+  /** Opening identity line; undefined falls back to the OpenWebCode default. */
+  identity?: string;
   /** Product-owned guidance emitted before project context. */
   productSections?: readonly string[];
   /** Non-negotiable constraints emitted after untrusted project context. */
@@ -45,7 +47,7 @@ export function buildSystemPrompt(options: PromptBuilderOptions): string {
     ? options.tools.map((tool) => `- ${tool.name}: ${toolSnippet(tool)}`).join("\n")
     : "(none)";
   const sections = [
-    `You are OpenWebCode. The workspace is ${options.cwd}.`,
+    options.identity?.trim() || `You are OpenWebCode. The workspace is ${options.cwd}.`,
     options.basePromptOverride?.trim() || PI_BASE_SYSTEM_PROMPT,
     `Available tools:\n\n${toolsList}`,
   ];

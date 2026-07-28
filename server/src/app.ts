@@ -46,6 +46,7 @@ import type { Compactor } from "./context/compactor.js";
 import type { ContextPolicyUpdate } from "./context/context-manager.js";
 import type { UsageLog } from "./usage-log.js";
 import type { ExtensionManager } from "./extensions/extension-manager.js";
+import { validateConfigAgainstSchema } from "./extensions/config-schema.js";
 import type { ContentLensService } from "./extensions/content-lens.js";
 import { ProviderProfilesValidationError, normalizeModel, type ProviderProfilesService, type WebCapability } from "./provider-profiles.js";
 import { testModelProviderConnection } from "./provider-connection-test.js";
@@ -664,7 +665,16 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   }
   app.get("/api/extensions", async (_request, reply) => {
     if (!dependencies.extensions) return reply.code(501).send({ error: "Extension Host is not configured" });
-    return dependencies.extensions.list();
+    const list = dependencies.extensions.list();
+    // env-sim：附加可选预设列表供 UI 下拉（内置 + 用户目录发现）
+    const envSim = list.find((item) => item.id === "env-sim");
+    if (envSim) envSim.availablePersonas = (await dependencies.extensions.listEnvSimPersonas()).personas;
+    return list;
+  });
+  app.get("/api/extensions/env-sim/personas", async (_request, reply) => {
+    if (!dependencies.extensions) return reply.code(501).send({ error: "Extension Host is not configured" });
+    // 预设清单 + 用户预设目录绝对路径（UI 提示用户把分享的预设 JSON 放进来）
+    return dependencies.extensions.listEnvSimPersonas();
   });
   app.post<{ Body: { action?: string; id?: string; enabled?: boolean; config?: Record<string, unknown>; path?: string } }>("/api/extensions", async (request, reply) => {
     const extensions = dependencies.extensions;
@@ -678,6 +688,14 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       if (typeof body.id !== "string" || !body.id) return reply.code(400).send({ error: "id is required" });
       if (body.enabled !== undefined && typeof body.enabled !== "boolean") return reply.code(400).send({ error: "enabled must be a boolean" });
       if (body.config !== undefined && (!body.config || typeof body.config !== "object" || Array.isArray(body.config))) return reply.code(400).send({ error: "config must be an object" });
+      // manifest 声明了 configSchema 时做松散校验（类型/枚举/未知键）
+      if (body.config !== undefined) {
+        const schema = extensions.configSchemaFor(body.id);
+        if (schema) {
+          const problem = validateConfigAgainstSchema(schema, body.config);
+          if (problem) return reply.code(400).send({ error: problem });
+        }
+      }
       return await extensions.configure(body.id, { ...(body.enabled === undefined ? {} : { enabled: body.enabled }), ...(body.config ? { config: body.config } : {}) });
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });

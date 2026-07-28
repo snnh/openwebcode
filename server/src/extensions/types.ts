@@ -11,7 +11,21 @@ export type ExtensionPermission =
   | "ui:messageAttachment"
   | "network:fetch";
 
-export type ExtensionHook = "context.beforeBuild" | "tool.beforeExecute" | "message.beforeSend";
+export type ExtensionHook = "context.beforeBuild" | "tool.beforeExecute" | "message.beforeSend" | "prompt.beforeBuild";
+
+/** 工具形态别名：把内置工具 from 以新名字 as 暴露给模型。 */
+export interface ToolShapingAlias {
+  from: string;
+  as: string;
+  description?: string;
+  inputSchema?: Record<string, unknown>;
+}
+
+/** 工具形态声明（仅官方扩展可用）：隐藏内置工具 + 别名重命名。 */
+export interface ToolShapingSpec {
+  hideBuiltIns?: string[];
+  aliases?: ToolShapingAlias[];
+}
 
 export interface ExtensionManifest {
   id: string;
@@ -23,6 +37,10 @@ export interface ExtensionManifest {
   official?: boolean;
   defaultEnabled?: boolean;
   entry?: string;
+  /** 配置表单的 JSON Schema 子集（type/properties/required/enum/default），供 UI 渲染与松散校验。 */
+  configSchema?: Record<string, unknown>;
+  /** 仅官方扩展可声明；第三方 manifest 携带时直接拒绝（防止伪装内置工具）。 */
+  toolShaping?: ToolShapingSpec;
 }
 
 export interface ExtensionState {
@@ -36,6 +54,8 @@ export interface ExtensionInfo extends ExtensionManifest {
   status: "running" | "disabled" | "error";
   config: Record<string, unknown>;
   error?: string;
+  /** env-sim 专用：可选预设列表（内置 + 用户目录发现），供 UI 下拉渲染。 */
+  availablePersonas?: Array<{ id: string; name: string; builtin: boolean }>;
 }
 
 export interface ContextHookPayload {
@@ -65,6 +85,23 @@ export interface ToolHookResult {
   input?: Record<string, unknown>;
   blocked?: boolean;
   reason?: string;
+}
+
+/** prompt.beforeBuild 载荷：basePrompt 是文件覆盖解析之后的基线。 */
+export interface PromptHookPayload {
+  sessionId: string;
+  cwd: string;
+  identity: string;
+  basePrompt: string;
+  productSections: string[];
+}
+
+/** prompt.beforeBuild 结果：字段缺省表示保持不变；finalConstraints/安全边界由核心追加，不可经此移除。 */
+export interface PromptHookResult {
+  identity?: string;
+  basePromptOverride?: string;
+  productSections?: string[];
+  prependSections?: string[];
 }
 
 export interface HostRequest {

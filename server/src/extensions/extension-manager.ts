@@ -8,8 +8,17 @@ import type { ProviderTool } from "../providers/provider.js";
 import type { ChatMessage, SessionDetail, SessionMeta } from "../sessions/types.js";
 import type { SessionStore } from "../sessions/session-store.js";
 import { ContextManager } from "../context/context-manager.js";
-import { EXTENSION_API_VERSION, isExtensionEventAllowed, type ApiRequest, type ApiResponse, type ContextHookPayload, type EventMessage, type ExtensionApiMethod, type ExtensionHook, type ExtensionInfo, type ExtensionManifest, type ExtensionPermission, type ExtensionState, type ExtensionToolResult, type ExtensionToolSpec, type HostRequest, type HostResponse, type ToolHookPayload } from "./types.js";
+import { EXTENSION_API_VERSION, isExtensionEventAllowed, type ApiRequest, type ApiResponse, type ContextHookPayload, type EventMessage, type ExtensionApiMethod, type ExtensionHook, type ExtensionInfo, type ExtensionManifest, type ExtensionPermission, type ExtensionState, type ExtensionToolResult, type ExtensionToolSpec, type HostRequest, type HostResponse, type PromptHookPayload, type PromptHookResult, type ToolHookPayload, type ToolShapingAlias, type ToolShapingSpec } from "./types.js";
 import { OFFICIAL_DEFAULT_CONFIG, OFFICIAL_EXTENSIONS } from "./official.js";
+import { listPersonas, resolvePersona, personasDir, type PersonaSummary } from "./env-sim/index.js";
+
+/** activeToolShaping 聚合结果：hideBuiltIns 按内置名隐藏，aliases 以新名（as）为键。 */
+export interface ActiveToolShaping {
+  hideBuiltIns: Set<string>;
+  aliases: Map<string, { from: string; description?: string; inputSchema?: Record<string, unknown> }>;
+}
+
+const ALIAS_NAME_PATTERN = /^[a-zA-Z][a-zA-Z0-9_]{0,63}$/;
 
 interface StoredConfig { version: 1; extensions: Record<string, ExtensionState> }
 type DiscoveredManifest = ExtensionManifest & { directory?: string };
@@ -58,8 +67,10 @@ export class ExtensionManager {
   /** 扩展的事件订阅（extensionId → 类型集合），host 断线时清空。 */
   private readonly eventSubscriptions = new Map<string, Set<string>>();
   private busListenerAttached = false;
+  /** 已发出的工具形态警告（去重，避免每轮重复刷事件）。 */
+  private readonly shapingWarningsIssued = new Set<string>();
 
-  constructor(dataDir: string, private readonly events?: EventBus, private readonly deps: { sessions?: SessionStore } = {}) {
+  constructor(private readonly dataDir: string, private readonly events?: EventBus, private readonly deps: { sessions?: SessionStore } = {}) {
     this.root = path.join(dataDir, "extensions");
     this.configPath = path.join(this.root, "extensions.json");
   }
@@ -164,6 +175,95 @@ export class ExtensionManager {
 
   async beforeTool(payload: ToolHookPayload): Promise<ToolHookPayload & { blocked?: boolean; reason?: string }> {
     return this.hook("tool.beforeExecute", payload) as Promise<ToolHookPayload & { blocked?: boolean; reason?: string }>;
+  }
+
+  /**
+   * prompt.beforeBuild 变换：先走 host 的通用 hook 扇出（第三方扩展），再叠加 env-sim。
+   * env-sim 的提示词变换在 server 侧直接合成——内置预设与用户预设目录都是 server 本地
+   * 状态，经 Extension Host IPC 传递反而是多余一跳（与工具形态同为 server 侧内建行为）。
+   */
+  async transformPrompt(payload: PromptHookPayload): Promise<PromptHookResult> {
+    const hostResult = await this.hook("prompt.beforeBuild", payload) as Partial<PromptHookResult>;
+    const result: PromptHookResult = {
+      ...(typeof hostResult.identity === "string" ? { identity: hostResult.identity } : {}),
+      ...(typeof hostResult.basePromptOverride === "string" ? { basePromptOverride: hostResult.basePromptOverride } : {}),
+      ...(Array.isArray(hostResult.productSections) ? { productSections: hostResult.productSections.filter((item): item is string => typeof item === "string") } : {}),
+      ...(Array.isArray(hostResult.prependSections) ? { prependSections: hostResult.prependSections.filter((item): item is string => typeof item === "string") } : {}),
+    };
+    const envSim = this.manifests.find((item) => item.id === "env-sim");
+    if (envSim && this.stateFor(envSim).enabled) {
+      const persona = await resolvePersona(this.dataDir, this.stateFor(envSim).config, (message) => this.warnShaping(message));
+      if (persona) {
+        result.identity = persona.identity;
+        result.basePromptOverride = persona.basePrompt;
+        result.productSections = persona.productSections;
+      }
+    }
+    return result;
+  }
+
+  /**
+   * 聚合所有已启用官方扩展的工具形态（静态 manifest toolShaping + env-sim 活跃预设）。
+   * builtInNames 传入本轮实际内置工具表（含条件项），据此完成 from 存在性与命名冲突校验；
+   * 无效条目记警告并跳过。无形态生效时返回 undefined。
+   */
+  async activeToolShaping(builtInNames: readonly string[]): Promise<ActiveToolShaping | undefined> {
+    const shaping: ActiveToolShaping = { hideBuiltIns: new Set(), aliases: new Map() };
+    for (const manifest of this.manifests) {
+      if (!manifest.toolShaping || manifest.official !== true || !this.isEnabled(manifest.id)) continue;
+      this.applyShapingSpec(manifest.id, manifest.toolShaping, builtInNames, shaping);
+    }
+    const envSim = this.manifests.find((item) => item.id === "env-sim");
+    if (envSim && this.stateFor(envSim).enabled) {
+      // env-sim 的形态由 config.persona 驱动（动态预设），不走静态 manifest toolShaping。
+      const persona = await resolvePersona(this.dataDir, this.stateFor(envSim).config, (message) => this.warnShaping(message));
+      if (persona) this.applyShapingSpec("env-sim", { hideBuiltIns: persona.hideBuiltIns, aliases: persona.aliases }, builtInNames, shaping);
+    }
+    return shaping.hideBuiltIns.size === 0 && shaping.aliases.size === 0 ? undefined : shaping;
+  }
+
+  private applyShapingSpec(owner: string, spec: ToolShapingSpec, builtInNames: readonly string[], shaping: ActiveToolShaping): void {
+    for (const name of spec.hideBuiltIns ?? []) {
+      if (typeof name === "string" && name) shaping.hideBuiltIns.add(name);
+    }
+    for (const alias of spec.aliases ?? []) {
+      this.applyShapingAlias(owner, alias, builtInNames, shaping);
+    }
+  }
+
+  private applyShapingAlias(owner: string, alias: ToolShapingAlias, builtInNames: readonly string[], shaping: ActiveToolShaping): void {
+    const invalid = (reason: string): void => this.warnShaping(`${owner}: tool alias "${String(alias?.as ?? "")}" skipped (${reason})`);
+    if (!alias || typeof alias.from !== "string" || typeof alias.as !== "string") return invalid("from/as must be non-empty strings");
+    if (!ALIAS_NAME_PATTERN.test(alias.as)) return invalid("as must match [a-zA-Z][a-zA-Z0-9_]{0,63}");
+    if (alias.as.startsWith("ext__") || alias.as.startsWith("mcp__")) return invalid("as must not use the ext__/mcp__ prefixes");
+    if (!builtInNames.includes(alias.from)) return invalid(`unknown built-in tool "${alias.from}"`);
+    if (shaping.hideBuiltIns.has(alias.from)) return; // 隐藏工具不可再被别名引出
+    if (shaping.aliases.has(alias.as)) return invalid(`alias name "${alias.as}" is already taken`);
+    if (builtInNames.includes(alias.as) && !shaping.hideBuiltIns.has(alias.as)) return invalid(`"${alias.as}" collides with a non-hidden built-in tool`);
+    shaping.aliases.set(alias.as, {
+      from: alias.from,
+      ...(typeof alias.description === "string" ? { description: alias.description } : {}),
+      ...(alias.inputSchema && typeof alias.inputSchema === "object" ? { inputSchema: alias.inputSchema } : {}),
+    });
+  }
+
+  private warnShaping(message: string): void {
+    if (this.shapingWarningsIssued.has(message)) return;
+    this.shapingWarningsIssued.add(message);
+    this.events?.publish({ source: "server", type: "extension.warning", payload: { message } });
+  }
+
+  /** manifest 声明的 configSchema（无则 undefined），供 REST 层做松散校验。 */
+  configSchemaFor(id: string): Record<string, unknown> | undefined {
+    return this.manifests.find((item) => item.id === id)?.configSchema;
+  }
+
+  /** env-sim 预设清单 + 用户预设目录绝对路径（UI 展示「把分享的预设 JSON 放到这里」）。 */
+  async listEnvSimPersonas(): Promise<{ personas: PersonaSummary[]; directory: string }> {
+    return {
+      personas: await listPersonas(this.dataDir, (message) => this.warnShaping(message)),
+      directory: personasDir(this.dataDir),
+    };
   }
 
   /** 已启用扩展注册的工具表（ext__<extensionId>__<name>），供 agent 工具注入；同步读注册表。 */
@@ -461,6 +561,11 @@ async function readManifest(directory: string): Promise<ExtensionManifest> {
   if (!Array.isArray(raw.permissions) || raw.permissions.some((permission) => typeof permission !== "string" || !allowedPermissions.has(permission))) throw new Error("manifest.permissions contains an unsupported permission");
   const entry = raw.entry ?? "index.js";
   if (path.isAbsolute(entry) || entry.split(/[\\/]/).includes("..")) throw new Error("manifest.entry must stay inside the extension directory");
+  // 工具形态只允许官方扩展声明（此处只处理第三方 manifest，官方列表为内置硬编码）；
+  // 第三方携带即拒绝，防止伪装成内置工具名。
+  if (raw.toolShaping !== undefined && raw.official !== true) throw new Error("manifest.toolShaping is only allowed for official extensions");
+  if (raw.toolShaping !== undefined) validateToolShaping(raw.toolShaping);
+  if (raw.configSchema !== undefined && (!raw.configSchema || typeof raw.configSchema !== "object" || Array.isArray(raw.configSchema))) throw new Error("manifest.configSchema must be an object");
   return {
     id: raw.id,
     name: raw.name,
@@ -470,5 +575,17 @@ async function readManifest(directory: string): Promise<ExtensionManifest> {
     permissions: raw.permissions,
     entry,
     defaultEnabled: false,
+    ...(raw.configSchema ? { configSchema: raw.configSchema } : {}),
+    ...(raw.toolShaping ? { toolShaping: raw.toolShaping } : {}),
   };
+}
+
+function validateToolShaping(spec: ToolShapingSpec): void {
+  if (!spec || typeof spec !== "object" || Array.isArray(spec)) throw new Error("manifest.toolShaping must be an object");
+  if (spec.hideBuiltIns !== undefined && (!Array.isArray(spec.hideBuiltIns) || spec.hideBuiltIns.some((name) => typeof name !== "string"))) {
+    throw new Error("manifest.toolShaping.hideBuiltIns must be an array of tool names");
+  }
+  if (spec.aliases !== undefined && (!Array.isArray(spec.aliases) || spec.aliases.some((alias) => !alias || typeof alias.from !== "string" || typeof alias.as !== "string"))) {
+    throw new Error("manifest.toolShaping.aliases entries require string from/as");
+  }
 }

@@ -4,6 +4,7 @@ import { api } from "../lib/api";
 import type { ExtensionInfo, ModelInterfaceType, ModelProfile, ModelProviderProfileView, PermissionMode, PricingDocument, SettingsField, SettingsTab, SettingValue, UpdateApplyState, WebCapability, WebProviderProfileView, WebProviderType } from "../lib/contracts";
 import { formatCurrency } from "../lib/format";
 import { Icon, type IconName } from "./Icon";
+import { ExtensionConfigForm, parseConfigSchema } from "./settings/ExtensionConfigForm";
 import { ModelCapabilityBadges } from "./ModelCapabilityBadges";
 import type { SendKey, SessionDefaults } from "../lib/prefs";
 import type { ThemePreference, AccentPreference } from "../theme";
@@ -177,6 +178,7 @@ const OFFICIAL_EXTENSION_EN: Record<string, { name: string; description: string 
   "attention-optimizer": { name: "Attention Optimizer", description: "Copies critical constraints and the current task into a context anchor to reduce lost-in-the-middle effects." },
   "content-lens": { name: "Content Lens", description: "Translates messages and explains selected text without adding content to the model context." },
   "pdf-to-image": { name: "PDF to Image", description: "Converts PDF pages into image attachments for models that support image input." },
+  "env-sim": { name: "Environment Simulation", description: "Mimic another coding agent's system-prompt style and default tool shapes via a selectable preset." },
 };
 
 interface PricingForm {
@@ -1604,7 +1606,7 @@ function SkillsSection(): ReactElement {
   );
 }
 
-function ExtensionRow({ extension }: { extension: ExtensionInfo }): ReactElement {
+export function ExtensionRow({ extension }: { extension: ExtensionInfo }): ReactElement {
   const { t, language } = useI18n();
   const queryClient = useQueryClient();
   const [json, setJson] = useState(() => JSON.stringify(extension.config, null, 2));
@@ -1612,6 +1614,7 @@ function ExtensionRow({ extension }: { extension: ExtensionInfo }): ReactElement
   const [error, setError] = useState<string>();
   const displayName = language === "en" ? (OFFICIAL_EXTENSION_EN[extension.id]?.name ?? extension.name) : extension.name;
   const displayDescription = language === "en" ? (OFFICIAL_EXTENSION_EN[extension.id]?.description ?? extension.description) : extension.description;
+  const configFields = parseConfigSchema(extension.configSchema);
 
   useEffect(() => setJson(JSON.stringify(extension.config, null, 2)), [extension.config]);
 
@@ -1653,11 +1656,18 @@ function ExtensionRow({ extension }: { extension: ExtensionInfo }): ReactElement
         {extension.permissions.map((permission) => <span key={permission}>{permission}</span>)}
       </div>
       {extension.id === "context-manager" && <p className="settings-note">{t("驱逐、回写和压缩策略按会话配置，请在底部“上下文”面板中调整。", "Eviction, writeback, and compaction policies are configured per session in the Context panel.")}</p>}
-      {extension.id !== "context-manager" && <details>
-        <summary>{t("配置 JSON", "Configuration JSON")}</summary>
-        <textarea className="extension-json mono" rows={7} value={json} disabled={busy} onChange={(event) => setJson(event.target.value)} spellCheck={false} />
-        <button className="btn small" disabled={busy} onClick={saveConfig}>{busy ? t("保存中…", "Saving…") : t("保存配置", "Save configuration")}</button>
-      </details>}
+      {extension.id !== "context-manager" && (configFields ? (
+        <details>
+          <summary>{t("配置", "Configuration")}</summary>
+          <ExtensionConfigForm extension={extension} fields={configFields} busy={busy} onSave={(config) => update({ config })} />
+        </details>
+      ) : (
+        <details>
+          <summary>{t("配置 JSON", "Configuration JSON")}</summary>
+          <textarea className="extension-json mono" rows={7} value={json} disabled={busy} onChange={(event) => setJson(event.target.value)} spellCheck={false} />
+          <button className="btn small" disabled={busy} onClick={saveConfig}>{busy ? t("保存中…", "Saving…") : t("保存配置", "Save configuration")}</button>
+        </details>
+      ))}
       {!extension.builtIn && (
         <button className="btn small danger" disabled={busy} onClick={() => {
           if (!window.confirm(t(`卸载扩展 ${displayName}？其配置会一并删除。`, `Uninstall ${displayName}? Its configuration will also be deleted.`))) return;

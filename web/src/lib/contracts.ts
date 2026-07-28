@@ -355,6 +355,10 @@ export interface ExtensionInfo {
   builtIn: boolean;
   status: "running" | "disabled" | "error";
   config: Record<string, unknown>;
+  /** JSON Schema 子集（object + string/number/boolean 属性）；存在时设置界面渲染类型化表单 */
+  configSchema?: Record<string, unknown>;
+  /** 可选人格预设清单（目前仅 env-sim 提供） */
+  availablePersonas?: Array<{ id: string; name: string; builtin: boolean }>;
   error?: string;
 }
 
