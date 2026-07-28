@@ -495,9 +495,18 @@ export function App(): ReactElement {
     if (currentId) setDrafts((prev) => ({ ...prev, [currentId]: value }));
   };
 
-  // 草稿持久化（localStorage `owc-draft-<id>`）：内存 drafts 的全量镜像，发送后清空条目
+  // 草稿持久化（localStorage `owc-draft-<id>`）：内存 drafts 的镜像，发送后清空条目。
+  // 用 ref 记录上次写入值，每次只写变化的键（含删除），避免逐键全量重写 localStorage。
+  const draftMirrorRef = useRef<Record<string, string>>({});
   useEffect(() => {
-    for (const [sessionId, value] of Object.entries(drafts)) saveDraft(sessionId, value);
+    const previous = draftMirrorRef.current;
+    for (const [sessionId, value] of Object.entries(drafts)) {
+      if (previous[sessionId] !== value) saveDraft(sessionId, value);
+    }
+    for (const sessionId of Object.keys(previous)) {
+      if (!(sessionId in drafts)) saveDraft(sessionId, "");
+    }
+    draftMirrorRef.current = { ...drafts };
   }, [drafts]);
   // 选中会话时：内存无草稿则从 localStorage 恢复（刷新/重开不丢未发送内容）
   useEffect(() => {
@@ -911,6 +920,7 @@ export function App(): ReactElement {
                 <div className="main-tab-panel" role="tabpanel" aria-label={t("对话", "Chat")} hidden={selectedSubagentTab !== undefined}>
                 <ExecutionTrack
                   session={displaySession ?? current}
+                  trackVisible={selectedSubagentTab === undefined}
                   contentLens={extensions.data?.find((extension) => extension.id === "content-lens" && extension.enabled)}
                   onNotice={notify}
                   liveSubagents={liveSubagents[current.id] ?? {}}

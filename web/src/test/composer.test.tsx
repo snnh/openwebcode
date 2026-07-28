@@ -663,4 +663,16 @@ describe("Composer 输入历史回查", () => {
     fireEvent.keyDown(textarea, { key: "ArrowUp" });
     expect(textarea.value).toBe("保持原样");
   });
+
+  it("输入法组合中（isComposing）↑/↓ 不触发历史回查", () => {
+    const { textarea } = renderComposer({ onSend: vi.fn(), history });
+    // 组合中 ↑：IME 用于移动候选，不得回查历史
+    fireEvent.keyDown(textarea, { key: "ArrowUp", isComposing: true });
+    expect(textarea.value).toBe("");
+    // 先正常回查一条，组合中 ↓ 不得前进/退出回查
+    fireEvent.keyDown(textarea, { key: "ArrowUp" });
+    expect(textarea.value).toBe("最新一条");
+    fireEvent.keyDown(textarea, { key: "ArrowDown", isComposing: true });
+    expect(textarea.value).toBe("最新一条");
+  });
 });

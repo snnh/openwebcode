@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { SubagentStartedEvent } from "../lib/contracts";
 
 /**
@@ -19,9 +19,9 @@ export interface UseSubagentTabsResult {
   tabsBySession: Record<string, SubagentTab[]>;
   /** 会话当前选中标签的 toolCallId；缺省表示「对话」标签 */
   selectedBySession: Record<string, string>;
-  /** subagent.started 自动开标签：同 toolCallId 已存在则跳过；不抢焦点（停留在对话） */
+  /** subagent.started 自动开标签：同 toolCallId 已存在或已被用户关闭（dismissed）则跳过；不抢焦点（停留在对话） */
   openFromStarted(sessionId: string, payload: SubagentStartedEvent): void;
-  /** 手动打开（子代理面板「在标签中打开」）：不存在则创建，并聚焦该标签 */
+  /** 手动打开（子代理面板「在标签中打开」）：不存在则创建并聚焦该标签，同时清除关闭标记 */
   openTab(sessionId: string, tab: SubagentTab): void;
   /** 选中标签；缺省（undefined）回到「对话」 */
   selectTab(sessionId: string, toolCallId?: string): void;
@@ -43,8 +43,11 @@ function fromStartedPayload(payload: SubagentStartedEvent): SubagentTab {
 export function useSubagentTabs(): UseSubagentTabsResult {
   const [tabsBySession, setTabsBySession] = useState<Record<string, SubagentTab[]>>({});
   const [selectedBySession, setSelectedBySession] = useState<Record<string, string>>({});
+  // 用户主动关闭过的 toolCallId（按会话）：swarm 后续 started 事件不得重开已关标签；不参与渲染，用 ref 即可
+  const dismissedRef = useRef<Record<string, Set<string>>>({});
 
   const openFromStarted = useCallback((sessionId: string, payload: SubagentStartedEvent): void => {
+    if (dismissedRef.current[sessionId]?.has(payload.toolCallId)) return;
     setTabsBySession((previous) => {
       const tabs = previous[sessionId] ?? [];
       if (tabs.some((tab) => tab.toolCallId === payload.toolCallId)) return previous;
@@ -53,6 +56,8 @@ export function useSubagentTabs(): UseSubagentTabsResult {
   }, []);
 
   const openTab = useCallback((sessionId: string, tab: SubagentTab): void => {
+    // 手动打开（子代理面板）视为撤销关闭标记，允许后续 started 再次自动开标签
+    dismissedRef.current[sessionId]?.delete(tab.toolCallId);
     setTabsBySession((previous) => {
       const tabs = previous[sessionId] ?? [];
       if (tabs.some((entry) => entry.toolCallId === tab.toolCallId)) return previous;
@@ -73,6 +78,7 @@ export function useSubagentTabs(): UseSubagentTabsResult {
   }, []);
 
   const closeTab = useCallback((sessionId: string, toolCallId: string): void => {
+    (dismissedRef.current[sessionId] ??= new Set()).add(toolCallId);
     setTabsBySession((previous) => {
       const tabs = previous[sessionId];
       if (!tabs?.some((tab) => tab.toolCallId === toolCallId)) return previous;
@@ -87,6 +93,7 @@ export function useSubagentTabs(): UseSubagentTabsResult {
   }, []);
 
   const removeSession = useCallback((sessionId: string): void => {
+    delete dismissedRef.current[sessionId];
     setTabsBySession((previous) => {
       if (!(sessionId in previous)) return previous;
       const { [sessionId]: _removed, ...remaining } = previous;

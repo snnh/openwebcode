@@ -910,6 +910,10 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   opacity: 0;
 }
 .code-block-wrap:hover .code-copy-btn, .code-copy-btn:focus-visible { opacity: 1; }
+/* 触屏设备无悬停：复制按钮常显 */
+@media (hover: none) {
+  .code-copy-btn { opacity: 1; }
+}
 .code-copy-btn:hover { background: var(--panel-2); color: var(--accent); }
 /* 事件流断线重连横幅：顶部细条，仅提示不阻塞交互 */
 .connection-banner {
