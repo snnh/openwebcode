@@ -2,12 +2,14 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./lib/api";
 import { extractAttachmentPaths, toAttachments } from "./lib/attachments";
-import type { AppEvent, BackgroundTaskInfo, ChatMessage, ContextUsage, ContextWatermark, LiveSubagentRun, SessionDetail, SubagentFinishedEvent, SubagentProgressEvent, SubagentStartedEvent, TodoItem, WorkspaceIndexStatus } from "./lib/contracts";
+import type { AppEvent, BackgroundTaskInfo, ChatMessage, ContextUsage, ContextWatermark, SessionDetail, TodoItem, WorkspaceIndexStatus } from "./lib/contracts";
 import { deriveWindowInfo } from "./lib/context-window";
 import { formatCurrency } from "./lib/format";
 import { loadSendKey, loadSessionDefaults, saveSendKey, saveSessionDefaults, type SendKey, type SessionDefaults } from "./lib/prefs";
 import { useTheme } from "./theme";
 import { useAgentRun } from "./hooks/use-agent-run";
+import { useLiveSubagents } from "./hooks/use-live-subagents";
+import { deriveSubagentRunsFromMessages, mergeSubagentRuns } from "./lib/subagent-runs";
 import { useSessionEventStream } from "./hooks/use-session-event-stream";
 import { useStreamBuffers } from "./hooks/use-stream-buffers";
 import { applyDiagnosticsBadgeUpdate, clearDiagnosticsBadge } from "./lib/diagnostics";
@@ -107,8 +109,8 @@ export function App(): ReactElement {
   const lastStatesRef = useRef<Record<string, string>>({});
   // agent.error 除了短暂 toast，也保留在当前会话的轨道中；下一次真正开始运行时再清除。
   const [runFailures, setRunFailures] = useState<Record<string, string>>({});
-  // 子代理实时运行状态：sessionId → taskId → run；tool.end 到达后清除，由持久化 tool_result 接管渲染
-  const [liveSubagents, setLiveSubagents] = useState<Record<string, Record<string, LiveSubagentRun>>>({});
+  // 子代理运行状态：sessionId → taskId → run；终态保留（子代理面板需要会话级历史），按会话封顶
+  const { liveSubagents, applyEvent: applySubagentEvent, removeSession: removeSubagentSession } = useLiveSubagents({ dropOnToolEnd: false });
   // Problems 视图角标：diagnostics.updated 到达时记录未查看失败数，打开 Problems 视图清除
   const [problemsBadges, setProblemsBadges] = useState<Record<string, number>>({});
   const [notice, setNotice] = useState<Notice>();
@@ -192,69 +194,8 @@ export function App(): ReactElement {
         if (event.type === "context.usage" && event.sessionId) {
           setUsages((previous) => ({ ...previous, [event.sessionId!]: event.payload as ContextUsage }));
         }
-        // 子代理生命周期跨会话跟踪：驱动消息轨道中 spawn_task/spawn_swarm 的实时卡片
-        if (event.type === "subagent.started" && event.sessionId) {
-          const payload = event.payload as SubagentStartedEvent;
-          setLiveSubagents((previous) => ({
-            ...previous,
-            [event.sessionId!]: {
-              ...previous[event.sessionId!],
-              [payload.taskId]: {
-                taskId: payload.taskId,
-                toolCallId: payload.toolCallId,
-                prompt: payload.prompt,
-                ...(payload.agent ? { agent: payload.agent } : {}),
-                ...(payload.swarm ? { swarm: payload.swarm } : {}),
-                status: "running",
-                turns: 0,
-                toolsUsed: [],
-              },
-            },
-          }));
-        }
-        if (event.type === "subagent.progress" && event.sessionId) {
-          const payload = event.payload as SubagentProgressEvent;
-          setLiveSubagents((previous) => {
-            const sessionRuns = previous[event.sessionId!];
-            const run = sessionRuns?.[payload.taskId];
-            if (!sessionRuns || !run) return previous;
-            return { ...previous, [event.sessionId!]: { ...sessionRuns, [payload.taskId]: { ...run, turns: payload.turns, toolsUsed: payload.toolsUsed } } };
-          });
-        }
-        if (event.type === "subagent.finished" && event.sessionId) {
-          const payload = event.payload as SubagentFinishedEvent;
-          setLiveSubagents((previous) => {
-            const sessionRuns = previous[event.sessionId!];
-            const run = sessionRuns?.[payload.taskId];
-            if (!sessionRuns || !run) return previous;
-            return {
-              ...previous,
-              [event.sessionId!]: {
-                ...sessionRuns,
-                [payload.taskId]: {
-                  ...run,
-                  status: payload.status,
-                  ...(payload.turns !== undefined ? { turns: payload.turns } : {}),
-                  ...(payload.toolsUsed ? { toolsUsed: payload.toolsUsed } : {}),
-                  ...(payload.error ? { error: payload.error } : {}),
-                },
-              },
-            };
-          });
-        }
-        // spawn 工具的 tool.end 到达后移除其实时条目：持久化 tool_result（含转录链接）接管渲染
-        if (event.type === "tool.end" && event.sessionId) {
-          const toolCallId = (event.payload as { toolCallId?: string }).toolCallId;
-          if (toolCallId) {
-            setLiveSubagents((previous) => {
-              const sessionRuns = previous[event.sessionId!];
-              if (!sessionRuns) return previous;
-              const remaining = Object.fromEntries(Object.entries(sessionRuns).filter(([, run]) => run.toolCallId !== toolCallId));
-              if (Object.keys(remaining).length === Object.keys(sessionRuns).length) return previous;
-              return { ...previous, [event.sessionId!]: remaining };
-            });
-          }
-        }
+        // 子代理生命周期跨会话跟踪：驱动消息轨道实时卡片与子代理面板（终态保留）
+        applySubagentEvent(event);
         if (event.type === "run.accepted" && event.sessionId) {
           setRunFailures((previous) => {
             if (!(event.sessionId! in previous)) return previous;
@@ -373,7 +314,7 @@ export function App(): ReactElement {
             void detailRefresh.finally(() => clearStream(event.sessionId!));
           }
         }
-  }, [applyRunEvent, clearStream, currentId, flushStreamBuffers, notify, pushEventNotification, queryClient, queueStreamDelta, sessions.data, t]);
+  }, [applyRunEvent, applySubagentEvent, clearStream, currentId, flushStreamBuffers, notify, pushEventNotification, queryClient, queueStreamDelta, sessions.data, t]);
   // 全局订阅：服务端在未传 sessionId 时全量推送，handler 按 event.sessionId 分发。
   useSessionEventStream({ onEvent: handleSessionEvent, onDisconnect: finishBufferedStreams });
 
@@ -384,6 +325,11 @@ export function App(): ReactElement {
     if (olderMessages.length === 0) return current;
     return { ...current, messages: [...olderMessages, ...current.messages] };
   }, [current, olderMessages]);
+  // 子代理面板数据：实时运行（终态保留）+ 从已加载消息推导的历史运行，实时条目优先
+  const subagentRuns = useMemo(
+    () => mergeSubagentRuns(currentId ? liveSubagents[currentId] ?? {} : {}, deriveSubagentRunsFromMessages(displaySession?.messages ?? [])),
+    [currentId, liveSubagents, displaySession],
+  );
   const currentState = currentRun?.state ?? (currentId ? agentStates[currentId] : undefined);
   const running = Boolean(stream[currentId ?? ""]) || isBusyState(currentState);
   const runningIds = useMemo(
@@ -583,7 +529,7 @@ export function App(): ReactElement {
         setWatermarks(removeKey);
         setUsages(removeKey);
         setRunFailures(removeKey);
-        setLiveSubagents(removeKey);
+        removeSubagentSession(id);
         setProblemsBadges(removeKey);
         delete lastStatesRef.current[id];
         discardStream(id);
@@ -913,6 +859,7 @@ export function App(): ReactElement {
             session={current}
             running={running}
             windowUsage={windowInfo}
+            subagentRuns={subagentRuns}
             {...(latestUsage ? { latestUsage } : {})}
             evalEnabled={extensions.data?.some((extension) => extension.id === "owc-eval" && extension.enabled) === true}
             onNotice={notify}
