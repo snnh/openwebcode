@@ -1,11 +1,27 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, rm, writeFile, appendFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, stat, writeFile, appendFile } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
 import { parseSessionImport, serializeSession } from "./session-transfer.js";
 import { defaultSandboxPolicy } from "./default-sandbox.js";
 import { readMessagesTail, readMessagesBefore, checkRecovery, DEFAULT_PAGE_SIZE } from "./message-reader.js";
 import type { ChatMessage, ManagedWorkspaceMeta, MessageContent, MessageRole, MessagesPage, SandboxMode, SessionDetail, SessionMeta } from "./types.js";
+
+/** readMessages 整表缓存条数上限（与 message-reader 的索引缓存同一 LRU 纪律）。 */
+const MAX_CACHED_MESSAGE_LISTS = 32;
+
+/**
+ * 单会话消息整表缓存：size+mtime+ctime 指纹校验（同 message-reader），
+ * 命中时免去整份 messages.jsonl 的 read+全量 JSON.parse。
+ * appendMessage 追加穿透（尺寸吻合才增量，否则失效），rewrite/删除一律失效。
+ */
+interface MessagesCacheEntry {
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+  messages: ChatMessage[];
+  recovery?: NonNullable<SessionMeta["recovery"]>;
+}
 
 export interface CreateSessionInput {
   cwd: string;
@@ -25,6 +41,9 @@ export interface CreateSessionInput {
 export class SessionStore {
   /** 首条用户消息派生标题时回调（"New session" → 派生标题）；由装配层接线为 session.updated 事件 */
   onDerivedTitle?: (meta: SessionMeta) => void;
+
+  /** 按会话 id 的 LRU 消息整表缓存；agent loop 每轮 get() 不再整份重解析。 */
+  private readonly messagesCache = new Map<string, MessagesCacheEntry>();
 
   constructor(private readonly root: string) {}
 
@@ -56,6 +75,7 @@ export class SessionStore {
     await mkdir(this.sessionPath(meta.id), { recursive: false });
     await this.writeMeta(meta);
     await writeFile(this.messagesPath(meta.id), "", { encoding: "utf8", flag: "wx" });
+    this.messagesCache.delete(meta.id);
     return meta;
   }
 
@@ -151,7 +171,9 @@ export class SessionStore {
       ...(lineage?.runId ? { runId: lineage.runId } : {}),
       ...(lineage?.turnId ? { turnId: lineage.turnId } : {}),
     };
-    await appendFile(this.messagesPath(sessionId), `${JSON.stringify(message)}\n`, "utf8");
+    const appendedLine = `${JSON.stringify(message)}\n`;
+    await appendFile(this.messagesPath(sessionId), appendedLine, "utf8");
+    await this.noteAppendedMessage(sessionId, message, Buffer.byteLength(appendedLine, "utf8"));
     meta.updatedAt = now;
     meta.activeLeafId = message.id;
     let titleDerived = false;
@@ -222,6 +244,7 @@ export class SessionStore {
     if (!detail) throw new Error("Session not found");
     const messages = detail.messages.slice(0, count);
     await writeFile(this.messagesPath(id), messages.map((message) => JSON.stringify(message)).join("\n") + (messages.length ? "\n" : ""), "utf8");
+    this.messagesCache.delete(id);
     const meta = await this.readMeta(id);
     meta.updatedAt = new Date().toISOString();
     await this.writeMeta(meta);
@@ -304,6 +327,7 @@ export class SessionStore {
   }
 
   async delete(id: string): Promise<boolean> {
+    this.messagesCache.delete(id);
     try {
       await rm(this.sessionPath(id), { recursive: true, force: false });
       return true;
@@ -343,6 +367,7 @@ export class SessionStore {
       parsed.messages.map((message) => JSON.stringify(message)).join("\n") + (parsed.messages.length ? "\n" : ""),
       "utf8",
     );
+    this.messagesCache.delete(id);
     return meta;
   }
 
@@ -380,11 +405,27 @@ export class SessionStore {
    * explicit instead of making the complete session disappear from list().
    */
   private async readMessages(id: string): Promise<{ messages: ChatMessage[]; recovery?: NonNullable<SessionMeta["recovery"]> }> {
-    let raw: string;
+    const filePath = this.messagesPath(id);
+    let info: Awaited<ReturnType<typeof stat>>;
     try {
-      raw = await readFile(this.messagesPath(id), "utf8");
+      info = await stat(filePath);
     } catch (error) {
       if (!isMissing(error)) throw error;
+      this.messagesCache.delete(id);
+      return { messages: [], recovery: { state: "needs_repair", message: "messages.jsonl is missing" } };
+    }
+    const cached = this.messagesCache.get(id);
+    if (cached && cached.size === info.size && cached.mtimeMs === info.mtimeMs && cached.ctimeMs === info.ctimeMs) {
+      this.touchMessagesCache(id, cached);
+      // 浅拷贝返回：调用方不得改动缓存数组本身（消息对象语义上只读）。
+      return { messages: cached.messages.slice(), ...(cached.recovery ? { recovery: cached.recovery } : {}) };
+    }
+    let raw: string;
+    try {
+      raw = await readFile(filePath, "utf8");
+    } catch (error) {
+      if (!isMissing(error)) throw error;
+      this.messagesCache.delete(id);
       return { messages: [], recovery: { state: "needs_repair", message: "messages.jsonl is missing" } };
     }
     const lines = raw.split("\n");
@@ -407,13 +448,46 @@ export class SessionStore {
         else corruptMiddle = true;
       }
     }
-    if (corruptMiddle) {
-      return { messages, recovery: { state: "needs_repair", message: "messages.jsonl contains corrupt non-tail records" } };
+    let recovery: MessagesCacheEntry["recovery"];
+    if (corruptMiddle) recovery = { state: "needs_repair", message: "messages.jsonl contains corrupt non-tail records" };
+    else if (corruptTail) recovery = { state: "recovered", message: "Ignored a corrupt trailing messages.jsonl record" };
+    this.touchMessagesCache(id, { size: info.size, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs, messages, ...(recovery ? { recovery } : {}) });
+    return { messages: messages.slice(), ...(recovery ? { recovery } : {}) };
+  }
+
+  /** LRU 接触：移到最新位并逐出超限旧条目。 */
+  private touchMessagesCache(id: string, entry: MessagesCacheEntry): void {
+    this.messagesCache.delete(id);
+    this.messagesCache.set(id, entry);
+    while (this.messagesCache.size > MAX_CACHED_MESSAGE_LISTS) this.messagesCache.delete(this.messagesCache.keys().next().value!);
+  }
+
+  /**
+   * appendMessage 后的缓存穿透：仅当文件尺寸恰好增长本次追加字节数时才增量
+   * push（任何并发/外部写入导致的尺寸不符都降级为整表失效，下次读取重建）。
+   * recovery 状态不做增量（损坏尾行被追加后性质变化），直接失效。
+   */
+  private async noteAppendedMessage(id: string, message: ChatMessage, appendedBytes: number): Promise<void> {
+    const cached = this.messagesCache.get(id);
+    if (!cached) return;
+    if (cached.recovery) {
+      this.messagesCache.delete(id);
+      return;
     }
-    if (corruptTail) {
-      return { messages, recovery: { state: "recovered", message: "Ignored a corrupt trailing messages.jsonl record" } };
+    try {
+      const info = await stat(this.messagesPath(id));
+      if (info.size !== cached.size + appendedBytes) {
+        this.messagesCache.delete(id);
+        return;
+      }
+      cached.messages.push(message);
+      cached.size = info.size;
+      cached.mtimeMs = info.mtimeMs;
+      cached.ctimeMs = info.ctimeMs;
+      this.touchMessagesCache(id, cached);
+    } catch {
+      this.messagesCache.delete(id);
     }
-    return { messages };
   }
 
   private async writeMeta(meta: SessionMeta): Promise<void> {
