@@ -130,9 +130,6 @@ export interface GlobJobStartRequest {
   maxNodes?: number;
   maxMs?: number;
 }
-export interface GrepJobEntry { path: string; line: number; text: string }
-export interface GlobJobEntry { path: string }
-export interface SearchJobSummary { matches?: number; entries?: number; truncated: boolean; reason: "nodes" | "depth" | "time" | "list" | "matches" | null }
 /**
  * index.extract job：对 Node 侧 manifest diff 算出的变化文件集做符号提取。
  * 提取规则是原 server 侧 symbols.ts（已删除）的 C 移植（core/src/symbol_extract.c），

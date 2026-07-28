@@ -6,6 +6,7 @@ import { countBySeverity, filterGroupsBySeverity, groupFailuresByFile, severityO
 import { CodeView } from "../editor/CodeView";
 import { Icon } from "../Icon";
 import { useI18n } from "../../i18n";
+import { formatDuration } from "../../lib/format";
 
 // 与 FilesPanel 一致的扩展名 → shiki 语言映射（仅用于代码视图高亮，不支持时回退纯文本）
 const EXT_LANGS: Record<string, string> = {
@@ -15,10 +16,6 @@ const EXT_LANGS: Record<string, string> = {
 };
 
 const SEVERITY_TABS: SeverityFilter[] = ["all", "error", "warning"];
-
-function formatDuration(ms: number): string {
-  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
-}
 
 export function ProblemsPanel({ sessionId, onOpenInEditor }: {
   sessionId?: string;

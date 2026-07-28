@@ -3,10 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useI18n } from "../../i18n";
 import { api } from "../../lib/api";
 import type { EvalRunComparison, EvalRunReport } from "../../lib/contracts";
-
-function formatDuration(ms: number): string {
-  return ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : `${Math.round(ms)}ms`;
-}
+import { formatDuration } from "../../lib/format";
 
 function downloadJson(value: unknown, filename: string): void {
   const blob = new Blob([`${JSON.stringify(value, null, 2)}\n`], { type: "application/json" });
