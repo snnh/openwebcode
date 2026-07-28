@@ -117,6 +117,8 @@ export interface SessionMeta {
   /** 托管工作区：cwd 指向稀疏镜像盘挂载点，originCwd 为创建时的复制来源（plan §6.4） */
   workspace?: ManagedWorkspaceMeta;
   title: string;
+  /** 会话列表置顶；缺省/undefined = 不置顶。 */
+  pinned?: boolean;
   createdAt: string;
   updatedAt: string;
   /** Current history leaf; absent means a legacy linear session. */

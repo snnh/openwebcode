@@ -181,3 +181,29 @@ describe("headless CLI（owc run）", () => {
     }
   }, 40_000);
 });
+
+describe("CLI --help", () => {
+  it("owc --help / -h：打印双语帮助，退出码 0，无需 server", async () => {
+    for (const flag of ["--help", "-h"]) {
+      const result = await runCli([flag], 10_000);
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain("用法");
+      expect(result.stdout).toContain("owc run");
+      expect(result.stdout).toContain("--yolo");
+      expect(result.stdout).toContain("Exit codes");
+      expect(result.stdout).toContain("OWC_ACCESS_TOKEN");
+    }
+  }, 30_000);
+
+  it("owc run --help：打印帮助，退出码 0", async () => {
+    const result = await runCli(["run", "--help"], 10_000);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("--session");
+  }, 30_000);
+
+  it("未知命令：帮助写 stderr，退出码 1", async () => {
+    const result = await runCli(["frobnicate"], 10_000);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("用法");
+  }, 30_000);
+});

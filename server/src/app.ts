@@ -947,6 +947,28 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     if (!session) return reply.code(404).send({ error: "Session not found" });
     return session;
   });
+  /** 会话显示属性：重命名（title ≤120 字符，空串清除覆盖回落派生标题）与置顶（pinned）。 */
+  app.patch<{ Params: { id: string }; Body: { title?: string; pinned?: boolean } }>("/api/sessions/:id", async (request, reply) => {
+    if (!request.body || (request.body.title === undefined && request.body.pinned === undefined)) {
+      return reply.code(400).send({ error: "title or pinned is required" });
+    }
+    if (request.body.title !== undefined && typeof request.body.title !== "string") {
+      return reply.code(400).send({ error: "title must be a string" });
+    }
+    if (request.body.pinned !== undefined && typeof request.body.pinned !== "boolean") {
+      return reply.code(400).send({ error: "pinned must be a boolean" });
+    }
+    try {
+      const updated = await sessions.updateDisplay(request.params.id, request.body);
+      events.publish({ source: "session", type: "session.updated", sessionId: updated.id, payload: updated });
+      return updated;
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+        return reply.code(404).send({ error: "Session not found" });
+      }
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
   /**
    * 0.5.0 Phase 2: paginated message history — load older messages before a given message ID.
    * Used by the frontend "load more" when scrolling up in long conversations.
