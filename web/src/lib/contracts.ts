@@ -537,6 +537,9 @@ export interface SettingsView {
   groups: SettingsGroup[];
 }
 
+/** 设置对话框页签（定义在 contracts 供 lib 层引用；SettingsDialog 再导出） */
+export type SettingsTab = "appearance" | "general" | "defaults" | "shortcuts" | "remote" | "models" | "skills" | "extensions" | "pricing" | "prompt" | "info";
+
 export type ModelInterfaceType = "anthropic-messages" | "openai-chat-completions";
 export type WebCapability = "search" | "fetch";
 export type WebProviderType = "jina" | "brave" | "tavily" | "custom";

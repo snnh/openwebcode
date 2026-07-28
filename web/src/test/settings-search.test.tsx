@@ -61,9 +61,9 @@ const settingsView: SettingsView = {
   ],
 };
 
-function renderDialog() {
+function renderDialog(view: SettingsView = settingsView) {
   // 字段标签经 api.settings 异步拉取（SettingsDialog 打开时）
-  vi.spyOn(api, "settings").mockResolvedValue(settingsView);
+  vi.spyOn(api, "settings").mockResolvedValue(view);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
@@ -168,5 +168,20 @@ describe("设置搜索", () => {
     renderDialog();
     expect(document.querySelector('[data-settings-tab="server"]')).toBeNull();
     expect(visibleTabs()).not.toContain("服务设置");
+  });
+
+  it("未识别分组的字段不进搜索结果（没有可渲染的归属页签）", async () => {
+    renderDialog({
+      groups: [{
+        id: "mystery",
+        label: "神秘分组",
+        fields: [
+          { key: "mysteryField", label: "神秘字段", type: "text", value: "x", hasValue: true, source: "default", editable: true, restartRequired: false, nullable: false },
+        ],
+      }],
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: "搜索设置" }), { target: { value: "神秘字段" } });
+    await waitFor(() => expect(screen.getByText("无匹配")).toBeInTheDocument());
+    expect(visibleTabs()).toEqual([]);
   });
 });
