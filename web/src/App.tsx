@@ -8,6 +8,7 @@ import { deriveWindowInfo } from "./lib/context-window";
 import { formatCurrency } from "./lib/format";
 import { loadSendKey, loadSessionDefaults, saveSendKey, saveSessionDefaults, type SendKey, type SessionDefaults } from "./lib/prefs";
 import { loadDraft, pruneDrafts, saveDraft } from "./lib/drafts";
+import { writeClipboard } from "./lib/clipboard";
 import { deriveInputHistory } from "./lib/input-history";
 import { useTheme } from "./theme";
 import { useAgentRun } from "./hooks/use-agent-run";
@@ -25,6 +26,7 @@ import { EmptyState } from "./components/EmptyState";
 import { ExecutionTrack } from "./components/ExecutionTrack";
 import { isBusyState, JobHeader } from "./components/JobHeader";
 import { NewSessionDialog, type NewSessionValues } from "./components/NewSessionDialog";
+import { ConfirmDeleteDialog } from "./components/ConfirmDeleteDialog";
 import type { PermissionRequest } from "./components/PermissionCard";
 import { SessionRail } from "./components/SessionRail";
 import { SettingsDialog, type SettingsTab } from "./components/SettingsDialog";
@@ -328,6 +330,11 @@ export function App(): ReactElement {
           queryClient.invalidateQueries({ queryKey: ["queue", event.sessionId] });
         }
         if (event.type.startsWith("interaction.")) queryClient.invalidateQueries({ queryKey: ["interactions", event.sessionId] });
+        // 会话显示属性变更（重命名/置顶，可能来自其他客户端）：刷新列表与详情标题
+        if (event.type === "session.updated") {
+          queryClient.invalidateQueries({ queryKey: queryKeys.sessions });
+          queryClient.invalidateQueries({ queryKey: queryKeys.detail(event.sessionId) });
+        }
         // 后台任务完成通知：刷新任务列表
         if (event.type === "task.finished") {
           const task = event.payload as BackgroundTaskInfo;
@@ -517,6 +524,12 @@ export function App(): ReactElement {
     if (!currentId) return;
     const text = (drafts[currentId] ?? "").trim();
     if (!text) return;
+    // /help 是纯客户端内置命令：打开快捷键速查（同 Shift+?），不进 agent run
+    if (text === "/help") {
+      setDrafts((previous) => ({ ...previous, [currentId]: "" }));
+      setShortcutsOpen(true);
+      return;
+    }
     send.mutate({
       sessionId: currentId,
       text,
@@ -591,10 +604,13 @@ export function App(): ReactElement {
     onError: (error) => notify(error instanceof Error ? error.message : t("创建会话失败", "Could not create session"), "error"),
   });
 
-  const removeSession = (id: string): void => {
-    const target = sessions.data?.find((session) => session.id === id);
-    const runningPrefix = runningIds.has(id) ? t("该会话正在运行，", "This session is running. ") : "";
-    if (!window.confirm(t(`${runningPrefix}删除会话「${target?.title ?? id}」？该操作不可撤销。`, `${runningPrefix}Delete session “${target?.title ?? id}”? This cannot be undone.`))) return;
+  // 删除确认对话框（替代原生 window.confirm）：点删除只打开确认，确认后才真正 DELETE
+  const [deleteTarget, setDeleteTarget] = useState<string | undefined>();
+  const removeSession = (id: string): void => setDeleteTarget(id);
+  const confirmDelete = (): void => {
+    const id = deleteTarget;
+    setDeleteTarget(undefined);
+    if (!id) return;
     api.deleteSession(id)
       .then(() => {
         if (currentId === id) setCurrentId(sessions.data?.find((session) => session.id !== id)?.id);
@@ -618,6 +634,16 @@ export function App(): ReactElement {
       })
       .catch((error: unknown) => notify(error instanceof Error ? error.message : t("删除会话失败", "Could not delete session"), "error"));
   };
+
+  // 会话显示属性（重命名/置顶）：PATCH 后刷新列表；当前会话同步刷新详情（标题展示在作业头）
+  const patchSession = useMutation({
+    mutationFn: (input: { id: string; body: { title?: string; pinned?: boolean } }) => api.patchSession(input.id, input.body),
+    onSuccess: (_updated, input) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.sessions });
+      if (input.id === currentId) void queryClient.invalidateQueries({ queryKey: queryKeys.detail(input.id) });
+    },
+    onError: (error) => notify(error instanceof Error ? error.message : t("更新会话失败", "Could not update session"), "error"),
+  });
 
   const importSession = (file: File): void => {
     file.text()
@@ -769,6 +795,8 @@ export function App(): ReactElement {
         onSelect={selectSession}
         onCreate={() => setDialogOpen(true)}
         onDelete={removeSession}
+        onRename={(id, title) => patchSession.mutate({ id, body: { title } })}
+        onTogglePin={(id, pinned) => patchSession.mutate({ id, body: { pinned } })}
         onImport={importSession}
         onToggleTheme={toggleTheme}
         onToggleCollapsed={layout.toggleSidebar}
@@ -908,7 +936,19 @@ export function App(): ReactElement {
                 />
               </>
             ) : (
-              <EmptyState sessions={sessions.data ?? []} providers={providers.data} onSelect={selectSession} onCreate={() => setDialogOpen(true)} onOpenSettings={openSettings} />
+              <EmptyState
+                sessions={sessions.data ?? []}
+                providers={providers.data}
+                onSelect={selectSession}
+                onCreate={() => setDialogOpen(true)}
+                onOpenSettings={openSettings}
+                onExample={(text) => {
+                  void writeClipboard(text).then((ok) => notify(
+                    ok ? t("已复制到剪贴板，粘贴进会话输入框发送", "Copied to clipboard — paste into the composer to send") : t("复制失败", "Copy failed"),
+                    ok ? "info" : "error",
+                  ));
+                }}
+              />
             )}
             </section>
             {editorPane && currentId && !isMobile && (
@@ -1003,6 +1043,13 @@ export function App(): ReactElement {
         models={models.data ?? []}
         onResetLayout={resetLayout}
         onClose={() => setSettingsOpen(false)}
+      />
+      <ConfirmDeleteDialog
+        open={deleteTarget !== undefined}
+        title={sessions.data?.find((session) => session.id === deleteTarget)?.title ?? deleteTarget ?? ""}
+        running={deleteTarget !== undefined && runningIds.has(deleteTarget)}
+        onCancel={() => setDeleteTarget(undefined)}
+        onConfirm={confirmDelete}
       />
       <Suspense fallback={null}>
         {paletteOpen && <CommandPalette open={paletteOpen} context={whenContext} onClose={() => setPaletteOpen(false)} />}

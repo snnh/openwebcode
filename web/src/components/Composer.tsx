@@ -228,6 +228,7 @@ export function Composer({ current, model, models, providers = [], pdfToImageExt
     { name: "clear", description: t("清空上下文（历史保留，可回滚）", "Clear context (retain history; reversible)"), source: "global", builtin: true },
     { name: "compact", description: t("压缩上下文（/compact tools 为规则压缩）", "Compact context (/compact tools uses rule-based compaction)"), source: "global", builtin: true },
     { name: "init", description: t("分析代码库并生成/更新 AGENTS.md", "Analyze the codebase and generate/update AGENTS.md"), source: "global", builtin: true },
+    { name: "help", description: t("打开快捷键与命令速查", "Open the keyboard shortcuts and commands reference"), source: "global", builtin: true },
   ];
   const suggestions: Suggestion[] = command && !dismissed
     ? [...builtinCommands, ...skills].filter((skill) => skill.name.toLowerCase().startsWith(command[1]!.toLowerCase()))

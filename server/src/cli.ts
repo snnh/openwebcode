@@ -24,12 +24,43 @@ interface StreamEvent {
   payload?: unknown;
 }
 
-function usage(): never {
-  process.stderr.write(
+function helpText(): string {
+  return (
     `openwebcode ${getServerVersion()}\n` +
-    '用法: OWC_ACCESS_TOKEN=… owc run "prompt" [--cwd .] [--provider X] [--model Y] [--json] [--yolo] [--server http://127.0.0.1:3000] [--session ID]\n',
+    "\n" +
+    "用法: owc <命令> [选项]  Usage: owc <command> [options]\n" +
+    "\n" +
+    "命令 Commands:\n" +
+    '  run "prompt"    非交互执行一次编码任务（面向 CI）  Run a coding task non-interactively (CI-friendly)\n' +
+    "  --help, -h      显示本帮助  Show this help\n" +
+    "  --version, -V   显示版本号  Show version\n" +
+    "\n" +
+    "owc run 选项 Options:\n" +
+    "  --cwd DIR       工作目录（默认当前目录）  Working directory (default: current directory)\n" +
+    "  --provider ID   服务商  Provider\n" +
+    "  --model ID      模型  Model\n" +
+    "  --server URL    服务地址（默认 http://127.0.0.1:3000）  Server URL (default http://127.0.0.1:3000)\n" +
+    "  --session ID    复用已有会话（缺省新建）  Reuse an existing session (a new one is created otherwise)\n" +
+    "  --json          以 NDJSON 输出事件流  Emit the event stream as NDJSON\n" +
+    "  --yolo          自动批准权限请求  Auto-approve permission requests\n" +
+    "\n" +
+    "退出码 Exit codes:\n" +
+    "  0  任务完成  Completed\n" +
+    "  1  agent 错误或连接失败  Agent error or connection failure\n" +
+    "  2  遇到权限请求且未带 --yolo  Permission requested without --yolo\n" +
+    "\n" +
+    "环境变量 Environment variables:\n" +
+    "  OWC_ACCESS_TOKEN  访问令牌（server 启用认证时必填）  Access token (required when server auth is enabled)\n"
   );
-  process.exit(2);
+}
+
+function printHelpAndExit(stream: "stdout" | "stderr", code: number): never {
+  (stream === "stdout" ? process.stdout : process.stderr).write(helpText());
+  process.exit(code);
+}
+
+function usage(): never {
+  printHelpAndExit("stderr", 1);
 }
 
 function parseArgs(argv: string[]): CliOptions {
@@ -37,6 +68,7 @@ function parseArgs(argv: string[]): CliOptions {
   const options: CliOptions = { prompt: "", cwd: process.cwd(), server: "http://127.0.0.1:3000", json: false, yolo: false, accessToken: process.env.OWC_ACCESS_TOKEN };
   for (let i = 1; i < argv.length; i++) {
     const arg = argv[i]!;
+    if (arg === "--help" || arg === "-h") printHelpAndExit("stdout", 0);
     if (arg === "--json") {
       options.json = true;
     } else if (arg === "--yolo") {
@@ -77,6 +109,8 @@ async function main(): Promise<void> {
     process.stdout.write(`openwebcode ${getServerVersion()}\n`);
     return;
   }
+  // --help / -h：打印双语帮助后退出 0，不连接 server
+  if (argv.length === 1 && (argv[0] === "--help" || argv[0] === "-h")) printHelpAndExit("stdout", 0);
   const options = parseArgs(argv);
   const server = options.server.replace(/\/+$/, "");
 

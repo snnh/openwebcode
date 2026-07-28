@@ -18,6 +18,8 @@ export const REST_ACTION_COMMANDS: ReadonlyArray<{ action: ApiAction; command: s
   { action: "deleteSession", command: COMMAND_IDS.deleteSession },
   { action: "importSession", command: COMMAND_IDS.importSession },
   { action: "updateSession", command: COMMAND_IDS.openSettings },
+  // 重命名/置顶在会话栏完成，归入会话视图命令
+  { action: "patchSession", command: COMMAND_IDS.showSessionsView },
   // 对话主链路
   { action: "sendMessage", command: COMMAND_IDS.send },
   { action: "runShell", command: COMMAND_IDS.send },

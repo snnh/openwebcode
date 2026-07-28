@@ -1636,8 +1636,23 @@ export function SettingsDialog({ open, initialTab, preference, setPreference, ac
   const dialogRef = useRef<HTMLDialogElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const [activeTab, setActiveTab] = useState<SettingsTab>("appearance");
+  // 左侧导航搜索：匹配页签标题/描述、分组名与服务设置字段标签（中英文）
+  const [navQuery, setNavQuery] = useState("");
+  // 字段标签在打开时经 api.settings 拉取（不经 react-query，i18n 等无 Provider 的渲染也能工作）；失败按无字段匹配处理
+  const [fieldLabels, setFieldLabels] = useState<Array<{ key: string; label: string }>>([]);
   // 服务设置的未保存改动由 ServerSettingsSection 上报
   const serverDirtyRef = useRef(false);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    api.settings()
+      .then((view) => {
+        if (!cancelled) setFieldLabels(view.groups.flatMap((group) => group.fields.map((field) => ({ key: field.key, label: field.label }))));
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [open]);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -1649,9 +1664,26 @@ export function SettingsDialog({ open, initialTab, preference, setPreference, ac
   // 深链：带 initialTab 打开时定位到对应页签
   useEffect(() => {
     if (open && initialTab) setActiveTab(initialTab);
+    if (open) setNavQuery("");
   }, [open, initialTab]);
 
   if (!open) return null;
+
+  const query = navQuery.trim().toLowerCase();
+  const fieldHit = query !== "" && fieldLabels
+    .some((field) => field.label.toLowerCase().includes(query) || (SETTINGS_FIELD_EN[field.key]?.label ?? "").toLowerCase().includes(query));
+  const tabMatches = (tab: SettingsTabMeta, group: { zh: string; en: string }): boolean => {
+    if (!query) return true;
+    if (tab.zh.toLowerCase().includes(query) || tab.en.toLowerCase().includes(query)) return true;
+    if (tab.descriptionZh.toLowerCase().includes(query) || tab.descriptionEn.toLowerCase().includes(query)) return true;
+    if (group.zh.toLowerCase().includes(query) || group.en.toLowerCase().includes(query)) return true;
+    // 服务设置的字段都挂在 server 页签下
+    if (tab.id === "server" && fieldHit) return true;
+    return false;
+  };
+  const visibleGroups = SETTINGS_GROUPS
+    .map((group) => ({ group, tabs: group.tabs.filter((tab) => tabMatches(tab, group)) }))
+    .filter((entry) => entry.tabs.length > 0);
 
   // 统一关闭入口：有未保存的服务设置改动时先确认
   const requestClose = (): void => {
@@ -1695,10 +1727,23 @@ export function SettingsDialog({ open, initialTab, preference, setPreference, ac
         </header>
         <div className="settings-layout">
           <nav className="settings-nav" aria-label={t("设置分类", "Settings categories")}>
-            {SETTINGS_GROUPS.map((group) => (
+            <span className="settings-search-wrap">
+              <Icon name="search" size={13} />
+              <input
+                className="settings-search"
+                value={navQuery}
+                onChange={(event) => setNavQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") setNavQuery("");
+                }}
+                placeholder={t("搜索设置", "Search settings")}
+                aria-label={t("搜索设置", "Search settings")}
+              />
+            </span>
+            {visibleGroups.map(({ group, tabs }) => (
               <div className="settings-nav-group" key={group.id}>
                 <span className="settings-nav-label">{t(group.zh, group.en)}</span>
-                {group.tabs.map((tab) => (
+                {tabs.map((tab) => (
                   <button
                     key={tab.id}
                     type="button"
@@ -1722,6 +1767,7 @@ export function SettingsDialog({ open, initialTab, preference, setPreference, ac
                 ))}
               </div>
             ))}
+            {query && visibleGroups.length === 0 && <p className="settings-nav-empty">{t("无匹配", "No matches")}</p>}
           </nav>
           <main className="settings-content">
             <header className="settings-content-header">

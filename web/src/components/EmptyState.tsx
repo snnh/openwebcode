@@ -2,7 +2,7 @@ import type { ReactElement } from "react";
 import type { Session } from "../lib/contracts";
 import { useI18n } from "../i18n";
 
-export function EmptyState({ sessions, providers, onSelect, onCreate, onOpenSettings }: {
+export function EmptyState({ sessions, providers, onSelect, onCreate, onOpenSettings, onExample }: {
   sessions: Session[];
   /** 已启用服务商列表；undefined 表示仍在加载（加载期间不显示快速开始引导） */
   providers?: string[] | undefined;
@@ -10,9 +10,16 @@ export function EmptyState({ sessions, providers, onSelect, onCreate, onOpenSett
   onCreate(): void;
   /** 深链到设置页签（服务设置 server / 模型目录 models） */
   onOpenSettings?(tab: "server" | "models"): void;
+  /** 示例任务 chip 点击：把文案交给调用方（复制到剪贴板），由用户粘贴进新会话输入框 */
+  onExample?(text: string): void;
 }): ReactElement {
   const { t } = useI18n();
   const showGuide = providers !== undefined && providers.length === 0;
+  const examples: Array<{ zh: string; en: string }> = [
+    { zh: "解释这个仓库的结构", en: "Explain the structure of this repository" },
+    { zh: "修一个 failing test 并给出原因", en: "Fix a failing test and explain the cause" },
+    { zh: "给一个模块补充单元测试", en: "Add unit tests for a module" },
+  ];
   return (
     <section className="empty-state">
       <div className="empty-card">
@@ -45,6 +52,24 @@ export function EmptyState({ sessions, providers, onSelect, onCreate, onOpenSett
           </div>
         )}
         <button className="btn primary" onClick={onCreate}>{t("新建会话", "New session")}</button>
+        {onExample && (
+          <div className="empty-examples">
+            <h2>{t("试试这些任务", "Try these tasks")}</h2>
+            <div className="empty-example-chips">
+              {examples.map((example) => (
+                <button
+                  key={example.zh}
+                  type="button"
+                  className="empty-example-chip"
+                  title={t("复制到剪贴板，粘贴进新会话输入框", "Copy to clipboard, then paste into the composer of a new session")}
+                  onClick={() => onExample(t(example.zh, example.en))}
+                >
+                  {t(example.zh, example.en)}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
       {sessions.length > 0 && (
         <div className="empty-recent">

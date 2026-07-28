@@ -8,7 +8,7 @@ export const RAIL_MIN_WIDTH = 200;
 export const RAIL_MAX_WIDTH = 380;
 export const clampRailWidth = (value: number): number => Math.min(RAIL_MAX_WIDTH, Math.max(RAIL_MIN_WIDTH, value));
 
-export function SessionRail({ sessions, currentId, runningIds, theme, collapsed, width, onSelect, onCreate, onDelete, onImport, onToggleTheme, onToggleCollapsed, onOpenSettings, onResize }: {
+export function SessionRail({ sessions, currentId, runningIds, theme, collapsed, width, onSelect, onCreate, onDelete, onRename, onTogglePin, onImport, onToggleTheme, onToggleCollapsed, onOpenSettings, onResize }: {
   sessions?: Session[];
   currentId?: string;
   runningIds: Set<string>;
@@ -18,6 +18,9 @@ export function SessionRail({ sessions, currentId, runningIds, theme, collapsed,
   onSelect(id: string): void;
   onCreate(): void;
   onDelete(id: string): void;
+  /** 重命名提交（仅在新标题非空且有变化时调用） */
+  onRename(id: string, title: string): void;
+  onTogglePin(id: string, pinned: boolean): void;
   onImport(file: File): void;
   onToggleTheme(): void;
   onToggleCollapsed(): void;
@@ -26,10 +29,14 @@ export function SessionRail({ sessions, currentId, runningIds, theme, collapsed,
 }): ReactElement {
   const { language, t } = useI18n();
   const [filter, setFilter] = useState("");
+  const [renamingId, setRenamingId] = useState<string | undefined>();
+  const [renameDraft, setRenameDraft] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
   const keyword = filter.trim().toLowerCase();
   const filtered = sessions?.filter((session) =>
     !keyword || `${session.title} ${session.provider} ${session.model}`.toLowerCase().includes(keyword));
+  // 置顶优先，组内保持服务端 updatedAt 降序（稳定排序）
+  const ordered = filtered && [...filtered].sort((a, b) => Number(b.pinned ?? false) - Number(a.pinned ?? false));
 
   // 右缘拖拽调宽；键盘 ArrowLeft/Right 每次 16px
   const startDrag = (event: ReactMouseEvent): void => {
@@ -43,6 +50,16 @@ export function SessionRail({ sessions, currentId, runningIds, theme, collapsed,
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
+  };
+
+  const startRename = (session: Session): void => {
+    setRenamingId(session.id);
+    setRenameDraft(session.title);
+  };
+  const commitRename = (session: Session): void => {
+    const title = renameDraft.trim();
+    setRenamingId(undefined);
+    if (title && title !== session.title) onRename(session.id, title);
   };
 
   return (
@@ -92,34 +109,74 @@ export function SessionRail({ sessions, currentId, runningIds, theme, collapsed,
       )}
       {!collapsed && (
         <nav>
-          {filtered?.map((session) => (
+          {ordered?.map((session) => (
             <div key={session.id} className={`session-item${session.id === currentId ? " active" : ""}`}>
-              <button className="session-link" onClick={() => onSelect(session.id)}>
-                <span className="session-title">{session.title}</span>
-                <span className="session-meta">{session.provider} · {session.model}</span>
-              </button>
-              {runningIds.has(session.id) && <span className="running-dot" role="status" aria-label={t("运行中", "Running")} title={t("运行中", "Running")} />}
-              <button
-                className="session-export"
-                aria-label={t(`导出分享页 ${session.title}`, `Export share page for ${session.title}`)}
-                title={t("导出分享页（HTML）", "Export share page (HTML)")}
-                onClick={() => window.open(`/api/sessions/${session.id}/export.html?lang=${language}`, "_blank")}
-              >
-                <Icon name="download" size={13} />
-              </button>
-              <button
-                className="session-delete"
-                aria-label={t(`删除会话 ${session.title}`, `Delete session ${session.title}`)}
-                title={t("删除会话", "Delete session")}
-                onClick={() => onDelete(session.id)}
-              >
-                <Icon name="trash" size={13} />
-              </button>
+              {renamingId === session.id ? (
+                <input
+                  className="session-rename"
+                  value={renameDraft}
+                  maxLength={120}
+                  autoFocus
+                  aria-label={t("重命名会话", "Rename session")}
+                  onChange={(event) => setRenameDraft(event.target.value)}
+                  onBlur={() => commitRename(session)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") commitRename(session);
+                    if (event.key === "Escape") setRenamingId(undefined);
+                  }}
+                />
+              ) : (
+                <>
+                  <button
+                    className="session-link"
+                    onClick={() => onSelect(session.id)}
+                    onDoubleClick={() => startRename(session)}
+                    title={session.title}
+                  >
+                    <span className="session-title">{session.title}</span>
+                    <span className="session-meta">{session.provider} · {session.model}</span>
+                  </button>
+                  {runningIds.has(session.id) && <span className="running-dot" role="status" aria-label={t("运行中", "Running")} title={t("运行中", "Running")} />}
+                  <button
+                    className={`session-pin${session.pinned ? " active" : ""}`}
+                    aria-label={session.pinned ? t(`取消置顶 ${session.title}`, `Unpin ${session.title}`) : t(`置顶 ${session.title}`, `Pin ${session.title}`)}
+                    aria-pressed={session.pinned ?? false}
+                    title={session.pinned ? t("取消置顶", "Unpin") : t("置顶", "Pin")}
+                    onClick={() => onTogglePin(session.id, !(session.pinned ?? false))}
+                  >
+                    <Icon name="pin" size={13} />
+                  </button>
+                  <button
+                    className="session-rename-btn"
+                    aria-label={t(`重命名 ${session.title}`, `Rename ${session.title}`)}
+                    title={t("重命名", "Rename")}
+                    onClick={() => startRename(session)}
+                  >
+                    <Icon name="edit" size={13} />
+                  </button>
+                  <button
+                    className="session-export"
+                    aria-label={t(`导出分享页 ${session.title}`, `Export share page for ${session.title}`)}
+                    title={t("导出分享页（HTML）", "Export share page (HTML)")}
+                    onClick={() => window.open(`/api/sessions/${session.id}/export.html?lang=${language}`, "_blank")}
+                  >
+                    <Icon name="download" size={13} />
+                  </button>
+                  <button
+                    className="session-delete"
+                    aria-label={t(`删除会话 ${session.title}`, `Delete session ${session.title}`)}
+                    title={t("删除会话", "Delete session")}
+                    onClick={() => onDelete(session.id)}
+                  >
+                    <Icon name="trash" size={13} />
+                  </button>
+                </>
+              )}
             </div>
           ))}
           {sessions === undefined && <p className="rail-empty">{t("加载中…", "Loading…")}</p>}
           {sessions && sessions.length === 0 && <p className="rail-empty">{t("还没有会话", "No sessions yet")}</p>}
-          {sessions && sessions.length > 0 && filtered?.length === 0 && <p className="rail-empty">{t("无匹配会话", "No matching sessions")}</p>}
+          {sessions && sessions.length > 0 && ordered?.length === 0 && <p className="rail-empty">{t("无匹配会话", "No matching sessions")}</p>}
         </nav>
       )}
       <footer>

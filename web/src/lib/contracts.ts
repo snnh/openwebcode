@@ -178,6 +178,8 @@ export interface Session {
   };
   workspace?: ManagedWorkspace;
   title: string;
+  /** 会话列表置顶（PATCH /api/sessions/:id）。 */
+  pinned?: boolean;
   createdAt: string;
   updatedAt: string;
 }
