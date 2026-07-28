@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ServerSettingsSection } from "../components/SettingsDialog";
+import { ModelAccessSection } from "../components/SettingsDialog";
 import { api } from "../lib/api";
 import type { SettingsView } from "../lib/contracts";
 
@@ -23,12 +23,12 @@ function renderSettings(): ReturnType<typeof render> {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <ServerSettingsSection />
+      <ModelAccessSection />
     </QueryClientProvider>,
   );
 }
 
-describe("ServerSettingsSection fast model", () => {
+describe("ModelAccessSection fast model", () => {
   afterEach(() => vi.restoreAllMocks());
 
   it("selects a catalog model and saves its thinking, effort, and output parameters", async () => {

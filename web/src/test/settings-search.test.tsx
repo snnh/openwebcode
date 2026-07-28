@@ -25,9 +25,37 @@ const settingsView: SettingsView = {
     },
     {
       id: "service",
-      label: "服务",
+      label: "存储",
       fields: [
         { key: "dataDir", label: "数据目录", type: "text", value: "../.openwebcode", hasValue: true, source: "default", editable: true, restartRequired: true, nullable: false },
+      ],
+    },
+    {
+      id: "models",
+      label: "模型接入",
+      fields: [
+        { key: "catalogSyncUrl", label: "远程模型目录 URL", type: "text", value: null, hasValue: false, source: "default", editable: true, restartRequired: false, nullable: true },
+      ],
+    },
+    {
+      id: "general",
+      label: "语言与货币",
+      fields: [
+        { key: "defaultCurrency", label: "默认货币", type: "select", options: [{ value: "USD", label: "USD" }, { value: "CNY", label: "CNY" }], value: "CNY", hasValue: true, source: "default", editable: true, restartRequired: false, nullable: false },
+      ],
+    },
+    {
+      id: "exchangeRate",
+      label: "汇率",
+      fields: [
+        { key: "fixedUsdCnyRate", label: "固定美元汇率", type: "text", value: null, hasValue: false, source: "default", editable: true, restartRequired: true, nullable: true },
+      ],
+    },
+    {
+      id: "updateCheck",
+      label: "更新检查",
+      fields: [
+        { key: "updateCheckUrl", label: "更新检查 URL", type: "text", value: "https://example.com/releases", hasValue: true, source: "default", editable: true, restartRequired: false, nullable: false },
       ],
     },
   ],
@@ -72,10 +100,40 @@ describe("设置搜索", () => {
     expect(await screen.findByRole("heading", { name: "键盘快捷方式", level: 3 })).toBeInTheDocument();
   });
 
-  it("匹配服务设置字段中文标签 → 服务设置页签", async () => {
+  it("匹配存储分组字段中文标签（数据目录）→ 服务信息页签", async () => {
     renderDialog();
     fireEvent.change(screen.getByRole("textbox", { name: "搜索设置" }), { target: { value: "数据目录" } });
-    await waitFor(() => expect(visibleTabs()).toEqual(["服务设置"]));
+    await waitFor(() => expect(visibleTabs()).toEqual(["服务信息"]));
+  });
+
+  it("匹配模型接入分组字段中文标签 → 模型目录页签", async () => {
+    renderDialog();
+    fireEvent.change(screen.getByRole("textbox", { name: "搜索设置" }), { target: { value: "远程模型目录" } });
+    await waitFor(() => expect(visibleTabs()).toEqual(["模型目录"]));
+  });
+
+  it("匹配语言与货币分组字段中文标签 → 通用页签", async () => {
+    renderDialog();
+    fireEvent.change(screen.getByRole("textbox", { name: "搜索设置" }), { target: { value: "默认货币" } });
+    await waitFor(() => expect(visibleTabs()).toEqual(["通用"]));
+  });
+
+  it("匹配汇率分组字段中文标签 → 模型定价页签", async () => {
+    renderDialog();
+    fireEvent.change(screen.getByRole("textbox", { name: "搜索设置" }), { target: { value: "固定美元汇率" } });
+    await waitFor(() => expect(visibleTabs()).toEqual(["模型定价"]));
+  });
+
+  it("匹配字段英文标签（SETTINGS_FIELD_EN）→ 模型定价页签", async () => {
+    renderDialog();
+    fireEvent.change(screen.getByRole("textbox", { name: "搜索设置" }), { target: { value: "Fixed USD/CNY rate" } });
+    await waitFor(() => expect(visibleTabs()).toEqual(["模型定价"]));
+  });
+
+  it("匹配更新检查分组字段中文标签 → 服务信息页签", async () => {
+    renderDialog();
+    fireEvent.change(screen.getByRole("textbox", { name: "搜索设置" }), { target: { value: "更新检查 URL" } });
+    await waitFor(() => expect(visibleTabs()).toEqual(["服务信息"]));
   });
 
   it("匹配 network 分组字段中文标签（监听端口）→ 远程访问页签", async () => {
@@ -103,6 +161,12 @@ describe("设置搜索", () => {
     expect(visibleTabs()).toEqual([]);
     expect(screen.getByText("无匹配")).toBeInTheDocument();
     fireEvent.keyDown(search, { key: "Escape" });
-    expect(visibleTabs().length).toBe(12);
+    expect(visibleTabs().length).toBe(11);
+  });
+
+  it("导航中不再包含服务设置页签", () => {
+    renderDialog();
+    expect(document.querySelector('[data-settings-tab="server"]')).toBeNull();
+    expect(visibleTabs()).not.toContain("服务设置");
   });
 });

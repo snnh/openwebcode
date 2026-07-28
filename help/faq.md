@@ -59,7 +59,7 @@ Windows：重新下载 MSI 双击安装（major upgrade 原地升级，用户数
 
 ### Q: 为什么没有 `web_fetch` 或 `web_search`？
 
-联网工具不会默认注入，避免模型在未配置服务时反复调用必然失败的工具。先在「设置 → 服务设置 → 联网服务商」保存一个或多个配置；每项声明 Search / Fetch 能力，再分别选择当前配置。Jina 和 Tavily 支持两项能力（Tavily Fetch 使用 Extract API），Brave 仅支持 Search，Custom 可自行声明能力且 Fetch URL 必须含 `{url}`。未选择对应能力时不会提供该工具或提示词，不影响普通对话。
+联网工具不会默认注入，避免模型在未配置服务时反复调用必然失败的工具。先在「设置 → 模型目录 → 联网服务商」保存一个或多个配置；每项声明 Search / Fetch 能力，再分别选择当前配置。Jina 和 Tavily 支持两项能力（Tavily Fetch 使用 Extract API），Brave 仅支持 Search，Custom 可自行声明能力且 Fetch URL 必须含 `{url}`。未选择对应能力时不会提供该工具或提示词，不影响普通对话。
 
 `https://mcp.tavily.com/mcp/?tavilyApiKey=...` 是 Tavily 的远程 MCP 地址；如需直接使用 Tavily MCP 的完整工具集，请把它写到 `<业务数据目录>/mcp.json`，不要填进搜索 Base URL。
 

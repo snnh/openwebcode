@@ -39,6 +39,9 @@ function stubCapabilitiesFetch(): void {
 function renderSettings(initialTab?: SettingsTab): ReturnType<typeof render> {
   vi.spyOn(api, "providerProfiles").mockResolvedValue(emptyProfiles);
   vi.spyOn(api, "settings").mockResolvedValue(emptySettings);
+  // 模型目录页签会同时挂载 ProviderProfilesSection / ModelAccessSection / ModelCatalogSection
+  vi.spyOn(api, "models").mockResolvedValue([]);
+  vi.spyOn(api, "modelSyncStatus").mockResolvedValue({ count: 0 });
   return withClient(
     <SettingsDialog
       open
@@ -66,22 +69,22 @@ describe("SettingsDialog 深链 initialTab", () => {
     expect(screen.getByRole("button", { name: /外观/ })).toHaveAttribute("aria-current", "page");
   });
 
-  it("initialTab=server 时打开服务设置页签", async () => {
-    renderSettings("server");
-    await waitFor(() => expect(document.getElementById("settings-section-title")).toHaveTextContent("服务设置"));
-    expect(screen.getByRole("button", { name: /^服务设置$/ })).toHaveAttribute("aria-current", "page");
+  it("initialTab=models 时打开模型目录页签", async () => {
+    renderSettings("models");
+    await waitFor(() => expect(document.getElementById("settings-section-title")).toHaveTextContent("模型目录"));
+    expect(screen.getByRole("button", { name: /^模型目录$/ })).toHaveAttribute("aria-current", "page");
   });
 });
 
 describe("NewSessionDialog 引导跳转", () => {
-  it("无 provider 提示带跳转按钮，点击回调 server 页签", async () => {
+  it("无 provider 提示带跳转按钮，点击回调 models 页签", async () => {
     stubCapabilitiesFetch();
     const onOpenSettings = vi.fn();
     render(
       <NewSessionDialog open providers={[]} models={[]} onClose={() => undefined} onCreate={() => undefined} onOpenSettings={onOpenSettings} />,
     );
     fireEvent.click(await screen.findByRole("button", { name: /前往配置/ }));
-    expect(onOpenSettings).toHaveBeenCalledWith("server");
+    expect(onOpenSettings).toHaveBeenCalledWith("models");
   });
 
   it("无模型提示带跳转按钮，点击回调 models 页签", async () => {
@@ -115,7 +118,7 @@ describe("EmptyState 快速开始引导", () => {
     expect(guide).not.toBeNull();
     const steps = within(guide as HTMLElement);
     fireEvent.click(steps.getByRole("button", { name: /配置服务商与 API Key/ }));
-    expect(onOpenSettings).toHaveBeenCalledWith("server");
+    expect(onOpenSettings).toHaveBeenCalledWith("models");
     fireEvent.click(steps.getByRole("button", { name: /刷新模型目录/ }));
     expect(onOpenSettings).toHaveBeenCalledWith("models");
     fireEvent.click(steps.getByRole("button", { name: /新建会话/ }));
