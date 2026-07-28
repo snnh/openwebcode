@@ -122,4 +122,30 @@ describe("SubagentsPanel", () => {
 
     expect(container.querySelector(".panel-empty")).toHaveTextContent("还没有子代理运行记录");
   });
+
+  it("onOpenInTab 提供时在行/组头渲染「在标签中打开」并按 toolCallId 回调；缺省不渲染", () => {
+    const onOpenInTab = vi.fn();
+    const { container } = renderPanel(
+      <SubagentsPanel
+        sessionId="s-1"
+        onOpenInTab={onOpenInTab}
+        runs={{
+          "t-1": run({ taskId: "t-1", toolCallId: "call-1", status: "running", prompt: "独立任务" }),
+          "t-2": run({ taskId: "t-2", toolCallId: "call-2", status: "running", swarm: { index: 1, total: 2 }, prompt: "a.ts" }),
+          "t-3": run({ taskId: "t-3", toolCallId: "call-2", status: "running", swarm: { index: 2, total: 2 }, prompt: "b.ts" }),
+        }}
+      />,
+    );
+
+    const buttons = container.querySelectorAll<HTMLButtonElement>(".subagents-open-tab");
+    // 单行组在行内、swarm 组在组头各一个（swarm 行不重复渲染）
+    expect(buttons).toHaveLength(2);
+    fireEvent.click(buttons[0]!);
+    expect(onOpenInTab).toHaveBeenCalledWith("call-2");
+    fireEvent.click(buttons[1]!);
+    expect(onOpenInTab).toHaveBeenCalledWith("call-1");
+
+    const without = renderPanel(<SubagentsPanel sessionId="s-1" runs={{ "task-1": run({ status: "done" }) }} />);
+    expect(without.container.querySelector(".subagents-open-tab")).toBeNull();
+  });
 });
