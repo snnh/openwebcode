@@ -1,29 +1,11 @@
 import type { ReactElement } from "react";
 import type { LiveSubagentRun } from "../lib/contracts";
+import { snippet, swarmItems } from "../lib/subagent-runs";
 import { Icon } from "./Icon";
 import { SubagentTranscriptDetails } from "./MessageCard";
 import { useI18n } from "../i18n";
 
-/** spawn_swarm items 的两种形态：纯字符串或 { task, agent? }（与 server 端解析一致） */
-function swarmItems(input?: Record<string, unknown>): Array<{ task: string; agent?: string }> {
-  if (!Array.isArray(input?.items)) return [];
-  return input.items.map((raw) => {
-    if (typeof raw === "string") return { task: raw };
-    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-      const record = raw as Record<string, unknown>;
-      const agent = typeof record.agent === "string" && record.agent.trim() ? record.agent.trim() : undefined;
-      return { task: String(record.task ?? ""), ...(agent ? { agent } : {}) };
-    }
-    return { task: String(raw) };
-  });
-}
-
-function snippet(text: string, limit = 160): string {
-  const collapsed = text.replace(/\s+/g, " ").trim();
-  return collapsed.length <= limit ? collapsed : `${collapsed.slice(0, limit)}…`;
-}
-
-function StatusChip({ status }: { status: "pending" | LiveSubagentRun["status"] }): ReactElement {
+export function SubagentStatusChip({ status }: { status: "pending" | LiveSubagentRun["status"] }): ReactElement {
   const { t } = useI18n();
   const labels: Record<string, string> = {
     pending: t("排队中", "Queued"),
@@ -39,7 +21,7 @@ function StatusChip({ status }: { status: "pending" | LiveSubagentRun["status"] 
   );
 }
 
-function RunStats({ run }: { run: LiveSubagentRun }): ReactElement {
+export function SubagentRunStats({ run }: { run: LiveSubagentRun }): ReactElement {
   const { t } = useI18n();
   if (run.status === "failed") return <span className="subagent-run-error">{run.error ?? t("未知错误", "unknown error")}</span>;
   const tools = run.toolsUsed.length > 0 ? run.toolsUsed.join(", ") : undefined;
@@ -52,7 +34,7 @@ function RunStats({ run }: { run: LiveSubagentRun }): ReactElement {
   );
 }
 
-/** spawn_task / spawn_swarm 工具调用的专用卡片：运行期间展示实时进度，结束后由持久化 tool_result 接管 */
+/** spawn_task / spawn_swarm 工具调用的专用卡片：运行期间展示实时进度，结束后保留终态（含转录链接） */
 export function SubagentRunCard({ name, input, sessionId, live }: {
   name: string;
   input?: Record<string, unknown>;
@@ -90,8 +72,8 @@ export function SubagentRunCard({ name, input, sessionId, live }: {
                   <span className="subagent-run-index mono">{index + 1}/{total}</span>
                   {agent && <span className="subagent-run-agent mono">{agent}</span>}
                   {task && <span className="subagent-run-task" title={task}>{snippet(task, 80)}</span>}
-                  {run ? <StatusChip status={run.status} /> : live && live.length > 0 ? <StatusChip status="pending" /> : null}
-                  {run && <RunStats run={run} />}
+                  {run ? <SubagentStatusChip status={run.status} /> : live && live.length > 0 ? <SubagentStatusChip status="pending" /> : null}
+                  {run && <SubagentRunStats run={run} />}
                   {run && run.status === "done" && sessionId && (
                     <SubagentTranscriptDetails sessionId={sessionId} taskId={run.taskId} index={index + 1} />
                   )}
@@ -114,10 +96,10 @@ export function SubagentRunCard({ name, input, sessionId, live }: {
         <b className="mono">spawn_task</b>
         <span className="subagent-run-label">{t("子代理", "Subagent")}</span>
         {agent && <span className="subagent-run-agent mono">{agent}</span>}
-        {run && <StatusChip status={run.status} />}
+        {run && <SubagentStatusChip status={run.status} />}
       </header>
       {prompt && <p className="tool-summary" title={prompt}>{snippet(prompt)}</p>}
-      {run && <RunStats run={run} />}
+      {run && <SubagentRunStats run={run} />}
       {run && run.status === "done" && sessionId && <SubagentTranscriptDetails sessionId={sessionId} taskId={run.taskId} />}
     </section>
   );
