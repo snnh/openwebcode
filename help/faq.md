@@ -26,7 +26,7 @@ Windows：重新下载 MSI 双击安装（major upgrade 原地升级，用户数
 
 ### Q: 怎么知道有没有新版本？
 
-设置 → **服务信息** 会显示当前 Server/Core 版本。开启设置 → **更新检查** 后，服务会周期性查询 GitHub Releases 并在「服务信息」静默提示最新版本与下载链接（默认关闭，不发起外部请求）；发现新版本时通知中心也会出现按版本去重的提醒条目，点击直达服务信息。命令行可用 `owc --version` 查看服务版本。发现新版本后可直接在设置页一键在线更新；Linux 也可用一行命令完成安装/更新：`curl -fsSL https://raw.githubusercontent.com/snnh/openwebcode/main/packaging/install-online.sh | bash`。
+设置 → **服务信息** 会显示当前 Server/Core 版本。启用设置 → **服务信息 → 更新检查** 后，服务会周期性查询 GitHub Releases 并在「服务信息」静默提示最新版本与下载链接（默认关闭，不发起外部请求）；发现新版本时通知中心也会出现按版本去重的提醒条目，点击直达服务信息。命令行可用 `owc --version` 查看服务版本。发现新版本后可直接在设置页一键在线更新；Linux 也可用一行命令完成安装/更新：`curl -fsSL https://raw.githubusercontent.com/snnh/openwebcode/main/packaging/install-online.sh | bash`。
 
 ### Q: 能自定义系统提示词吗？
 
@@ -35,6 +35,14 @@ Windows：重新下载 MSI 双击安装（major upgrade 原地升级，用户数
 ### Q: 升级后我的设置会被覆盖吗？
 
 不会。默认配置随安装目录 `config/defaults.json` 更新，数据目录的 `server-settings.json` 只保存你改过的项；启动时按「环境变量 > 你的覆盖 > 安装默认」自动组合。你没改过的项会采用新默认，改过的项保留；若某项的安装默认发生变化，设置页会提示「采纳新默认」。
+
+### Q: 如何分叉或重新生成一段对话？
+
+会话历史是树形存储，旧分支消息始终保留。悬停任意一条用户消息会出现三个操作：**编辑重发**（内容回填输入框，发送后从该处另起分支）、**重新生成**（直接回退到该条重跑）、**分叉**（复制到该条为止的对话进新会话）。时间线面板顶部的会话树展示全部消息节点（非活动分支淡化），悬停节点也可「从此处继续」或「分叉」为新会话。详见 [usage.md 的右侧面板一节](./usage.md#右侧面板)。
+
+### Q: 下载的发布包怎么校验完整性？
+
+每个 GitHub Release 附带 `SHA256SUMS.txt`（MSI 与 tar.gz 的 SHA-256 校验和）。Linux：`sha256sum --check SHA256SUMS.txt`；Windows：`Get-FileHash <msi> -Algorithm SHA256` 后与文件内对应值比对。一行在线安装脚本（`install-online.sh`）会自动下载并校验，失败即中止。详见 [usage.md 的版本号与更新检查](./usage.md#版本号与更新检查) 与 [packaging/README.md](../packaging/README.md#在线安装与更新)。
 
 ## 模型与 Provider
 
@@ -159,19 +167,28 @@ Windows：会话创建选 `WSB` 沙盒模式——一会话一 VM，关闭即蒸
 
 ## 子代理与扩展
 
-### Q: 五个官方扩展分别做什么？
+### Q: 六个官方扩展分别做什么？
 
 - `context-manager` 默认启用，承载滚动驱逐与上下文管理界面
 - `attention-optimizer` 默认关闭，通过复制关键引用建立注意力锚区，不移动原消息
 - `content-lens` 默认关闭，提供旁路翻译与划词解析；需要快速模型，结果不会进入上下文账本
 - `pdf-to-image` 默认启用，Web 选择的 PDF 会先保存到当前工作区 `.owc/uploads/`，再将最多 4 页以 150 DPI、最长边 2048px 转为图片附件；停用后仅把这个工作区相对路径引用发送给主代理
 - `owc-eval` 默认关闭，提供内置回归评测面板；固定 mock 任务在隔离工作区回放，运行报告和基线/候选对比均可归档为 JSON，不使用用户的模型 API Key
+- `env-sim`（环境模拟）默认关闭，启用并选择预设后系统提示词与内置工具命名切换为该产品风格（如 `Read`/`Bash`/`Edit`），底层仍走原工具实现与权限链；内置 `claude-code`/`kimi-code`/`zcode`/`codex` 四档预设
 
 它们可在「设置 → 扩展」启停和编辑配置。Extension Host 是独立子进程，单个钩子最多运行 5 秒。第三方 v1 扩展不是安全沙盒，只有信任其代码和权限声明时才安装。
 
 ### Q: 子代理能写文件吗？
 
-v1 不能。`SUB_AGENT_TOOL_NAMES` 只放行 `read_file/glob/grep/read_artifact` 四件只读工具。自定义子代理 frontmatter 声明的写工具会被忽略并在清单附注。这是有意限制——子代理是探索用途，写操作回主循环走完整权限链。
+分类型。内置 `explore`（默认）与自定义 markdown 子代理是只读的，只放行 `read_file/glob/grep/read_artifact`；内置 `general` 是可写通用子代理——文件读写、bash、test_runner 都可用，但每次工具调用仍走与主代理相同的权限链与沙盒（`spawn_task agent=general prompt="..."`）。自定义子代理 frontmatter 声明的写工具会被忽略并在清单附注。详见 [usage.md 的子代理一节](./usage.md#自定义扩展点)。
+
+### Q: 怎么手动启动一个子代理？explore 和 general 选哪个？
+
+底部面板「子代理」标签页顶部可手动启动：填任务描述并选择类型。选 `explore`（默认）做只读探索——查代码、找引用、总结结构，不会动任何文件；选 `general` 派发可写任务——能改文件、跑 bash，但每次操作仍弹权限卡（ask 模式下）并受沙盒约束。主窗口的子代理标签页以与主对话相同的渲染展示完整转录；中断 agent 会同时取消手动启动的子代理。详见 [usage.md 的子代理一节](./usage.md#自定义扩展点)。
+
+### Q: 环境模拟（env-sim）预设怎么用？能自制吗？
+
+设置 → **扩展** 启用 `env-sim` 并在其配置里选择预设：系统提示词与内置工具的命名/描述即切换为该产品风格，底层实现与权限链不变。自制预设：把预设 JSON（必填 `id`/`name`/`identity`/`basePrompt`，可选 `productSections`/`hideBuiltIns`/`aliases`）放入 `<业务数据目录>/env-sim/personas/`，一个文件一个预设，即出现在预设下拉里，拷给他人也可用。详见 [usage.md 的官方扩展一节](./usage.md#extension-host-与官方扩展)。
 
 ### Q: Hooks 安全吗？
 
@@ -212,7 +229,7 @@ owc run "跑测试并修复失败的用例" --cwd . --yolo --json | tee events.n
   --data-dir "$HOME/.local/share/openwebcode" --host 127.0.0.1
 ```
 
-`--prefix`、`--data-dir` 必须是绝对路径，端口必须在 1–65535。`--use-system-node` 会在安装时校验 PATH 中的 Node.js 20+；运行时 `OWC_PORT`、`OWC_DATA_DIR`、`OWC_HOST` 可覆盖安装时默认值。非回环 `--host` 要求启动时提供 `OWC_ACCESS_TOKEN`（≥32 字符），仍建议只在受信网络或认证反向代理后使用。
+`--prefix`、`--data-dir` 必须是绝对路径，端口必须在 1–65535。`--use-system-node` 会在安装时校验 PATH 中的 Node.js 24+；运行时 `OWC_PORT`、`OWC_DATA_DIR`、`OWC_HOST` 可覆盖安装时默认值。非回环 `--host` 要求启动时提供 `OWC_ACCESS_TOKEN`（≥32 字符），仍建议只在受信网络或认证反向代理后使用。
 
 ### Q: 启动后浏览器打不开 / 连接被拒？
 
@@ -226,7 +243,11 @@ owc run "跑测试并修复失败的用例" --cwd . --yolo --json | tee events.n
 
 ### Q: 命令面板和快捷键有哪些？
 
-`Ctrl/Cmd+Shift+P` 打开命令面板（全部命令可搜索），`Ctrl/Cmd+P` Quick Open 直达文件（`#` 前缀搜符号），`Shift+?` 查看快捷键速查。默认集对齐 VSCode 习惯（`mod+B` 侧栏、`` mod+` `` 底部面板、`mod+,` 设置、`F6` 区域轮换等），完整清单在设置 → 快捷键；0.4.0 暂不支持自定义键位。
+`Ctrl/Cmd+Shift+P` 打开命令面板（全部命令可搜索），`Ctrl/Cmd+P` Quick Open 直达文件（`#` 前缀搜符号），`Shift+?` 查看快捷键速查。默认集对齐 VSCode 习惯（`mod+B` 侧栏、`` mod+` `` 底部面板、`mod+,` 设置、`F6` 区域轮换等），完整清单在设置 → 快捷键；暂不支持自定义键位。
+
+### Q: 怎么在对话里搜索内容、快速换模型？
+
+`Ctrl/Cmd+F` 打开会话内搜索：浮动搜索条显示命中计数，`↑`/`↓` 在命中间跳转并高亮，可勾选「仅搜索已加载消息」。输入框聚焦时按 `Ctrl+P` 在最近使用的模型间循环切换（最近模型列表随本机保存）。详见 [usage.md 的工作台布局与快捷键](./usage.md#工作台布局与快捷键)。
 
 ### Q: agent 提交 git 提交需要我确认吗？
 

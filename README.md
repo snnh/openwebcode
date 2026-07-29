@@ -2,7 +2,7 @@
 
 [English](./README.en.md) | 简体中文
 
-浏览器打开即用的 AI 编码工作台。原生支持 Windows / Linux，自带沙盒、快照回滚与上下文管理。
+浏览器打开即用的 AI 编码工作台，界面中英双语。原生支持 Windows / Linux，自带沙盒、快照回滚与上下文管理。
 
 ```
 浏览器 (React)  ──HTTP/WebSocket──►  Node 服务层 (Agent 循环、工具调度)  ──JSON-RPC──►  C 执行器 (命令/文件/沙盒/快照)
@@ -22,7 +22,7 @@
 
 ### Windows
 
-1. 从 Releases 下载 `openwebcode-<version>-windows-x64.msi` 双击安装（需管理员权限）；在 “Shell integration” 页按需保留桌面快捷方式和“添加到 PATH”选项
+1. 从 [Releases](https://github.com/snnh/openwebcode/releases) 下载 `openwebcode-<version>-windows-x64.msi` 双击安装（需管理员权限）；在 “Shell integration” 页按需保留桌面快捷方式和“添加到 PATH”选项
 2. 若勾选 PATH，重新打开终端后运行 `owc`；否则从安装目录的 `bin\owc.cmd` 启动
 3. 浏览器打开 <http://127.0.0.1:3000>
 
@@ -71,7 +71,7 @@ cd openwebcode
 
 ## 主要能力
 
-**Agent 工具集**：bash（含后台任务）、文件读写/编辑、glob/grep、`spawn_task`（隔离上下文子代理）、`remember`（长期记忆）、`todo_write`（任务清单实时展示）、`web_fetch`/`web_search`（SSRF 防护）、MCP 注入工具。工具 schema、工具提示和 MCP 只会下发给模型目录中标为支持 tools 的模型；不支持时会以普通对话运行。联网工具通过统一的具名服务商注册表配置，每项声明 Search/Fetch 能力，再分别选择当前配置；没有选中对应能力时不会下发该工具或提示词。
+**Agent 工具集**：bash（含后台任务）、文件读写/编辑、glob/grep、`repo_map`/`code_search`（工作区符号索引）、`test_runner`（结构化诊断）、`spawn_task`/`spawn_swarm`（隔离上下文子代理，后者一次并行派发多项任务）、`remember`（长期记忆）、`todo_write`（任务清单实时展示）、`web_fetch`/`web_search`（SSRF 防护）、MCP 与扩展注入工具。工具 schema、工具提示和 MCP 只会下发给模型目录中标为支持 tools 的模型；不支持时会以普通对话运行。联网工具通过统一的具名服务商注册表配置，每项声明 Search/Fetch 能力，再分别选择当前配置；没有选中对应能力时不会下发该工具或提示词。
 
 **自定义扩展**（项目 `.owc/` + 全局两级，项目同名覆盖全局）：
 - `agents/*.md` — 专职子代理（frontmatter 声明工具集与模型，`spawn_task agent=<name>` 调用）
@@ -88,9 +88,17 @@ cd openwebcode
 
 **快照回滚**：每轮用户消息前自动检查点，也可切为「仅手动」；后端自动探测 Btrfs/ZFS/ReFS，兜底 git 影子仓库；可选「托管工作区」（项目活在 VHDX/qcow2 镜像盘上，差分链快照毫秒级、可分支）。托管工作区会在顶部提供「手动快照」，空闲时可随时立即生成镜像盘检查点。它不会在关闭或删除会话时自动覆盖源目录；可随时在「文件」面板生成三方差异，确认后只回写无冲突的改动。
 
-**上下文管理**：token 预算账本、滚动驱逐 + 占位符回写、快速模型两种压缩、85% 水位强制概览压缩。前端始终看全量历史，驱逐只影响 LLM 视图。
+**上下文管理**：token 预算账本、滚动驱逐 + 占位符回写、快速模型两种压缩、85% 水位强制概览压缩。会话头部实时显示上下文窗口占用与缓存命中，上下文面板给出分段 token 归因与水位提示。前端始终看全量历史，驱逐只影响 LLM 视图。
 
-**扩展系统**：独立 Extension Host 子进程（IPC、5 秒钩子保护、manifest 权限与持久化管理）。内置 context-manager、attention-optimizer、content-lens、pdf-to-image，以及默认关闭的 `owc-eval` 评测服务；可在设置页启停、调参并从本地目录安装第三方 `owc-ext-*` 扩展。
+**子代理**：内置 `explore`（只读探索）与 `general`（通用读写，走与主代理相同的权限链与同配置沙盒）两种类型，另可自定义子代理；`spawn_swarm` 按模板一次派发 2–16 项任务（并发上限 4，超出排队）。聊天内实时卡片、主窗口标签页与底部「子代理」面板实时监视进度与转录，面板顶部可手动启动子代理。
+
+**多会话与会话树**：会话历史树形存储——用户消息可「编辑重发 / 重新生成 / 分叉」，旧分支始终保留，时间线面板可从任意节点「从此处继续」；侧栏管理多个会话（重命名、置顶）。
+
+**索引、诊断与 SCM**：符号索引由 core 侧提取，为 `repo_map`/`code_search` 供数；`test_runner` 跑测试/构建/lint 后结构化诊断进「问题」面板，按文件分组、点击跳转行列；「SCM」面板展示分支与变更 diff、生成提交信息（提交始终需确认，yolo 也不例外）、两步确认管理 worktree。
+
+**WebUI 在线更新**：设置页发现新版本后可一键更新——Windows 下载 MSI 并启动安装程序覆盖升级；Linux 替换安装目录内容后重启。发布资产均附 SHA256SUMS.txt，在线安装/更新流程强制校验；启动器、systemd unit 与数据目录不受影响。
+
+**扩展系统**：独立 Extension Host 子进程（IPC、5 秒钩子保护、manifest 权限与持久化管理）。内置六项官方扩展：context-manager、attention-optimizer、content-lens、pdf-to-image、env-sim（环境模拟，切换产品风格提示词与工具形态）与 owc-eval 评测服务；默认仅启用 context-manager 与 pdf-to-image，其余在设置页按需启停、调参，并可从本地目录安装第三方 `owc-ext-*` 扩展。
 
 **会话生命周期**：关浏览器不停 agent；断线重连自动补拉；权限请求挂起等你 respond（**无超时**，长任务记得回来确认）。
 
@@ -115,7 +123,7 @@ owc run "给 main.ts 加个单元测试" --cwd . --json --yolo
 
 | 路径 | 用途 |
 |---|---|
-| `<启动/设置目录>/server-settings.json` | 设置页保存的服务设置 |
+| `<启动/设置目录>/server-settings.json` | 设置页保存的用户覆盖（默认值随发布内置，此处只存覆盖项） |
 | `<业务数据目录>/provider-profiles.json` | 多模型/联网服务商配置与密钥 |
 | `<业务数据目录>/sessions/<id>/` | 会话数据（meta + messages.jsonl + ledger + artifacts） |
 | `<业务数据目录>/{agents,commands,skills}/` | 全局自定义扩展点 |
