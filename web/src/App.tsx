@@ -942,7 +942,6 @@ export function App(): ReactElement {
         onTogglePin={(id, pinned) => patchSession.mutate({ id, body: { pinned } })}
         onImport={importSession}
         onToggleTheme={toggleTheme}
-        onToggleCollapsed={layout.toggleSidebar}
         onOpenSettings={() => openSettings()}
         onResize={layout.setSidebarWidth}
       />
@@ -972,6 +971,7 @@ export function App(): ReactElement {
             problemsBadge={currentId ? problemsBadges[currentId] ?? 0 : 0}
             notificationsBadge={unreadCount(notifications)}
             onShowView={showWorkbenchView}
+            onToggleSidebar={layout.toggleSidebar}
             onShowHelp={() => setShortcutsOpen(true)}
             onShowNotifications={openNotifications}
             onOpenTerminal={openTerminalTab}

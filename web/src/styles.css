@@ -342,10 +342,10 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   border-top: 1px solid var(--border);
 }
 .session-rail footer .icon-btn:first-child { margin-right: auto; }
-/* 收起按钮只在侧栏悬浮/键盘聚焦时显示（opacity 隐藏保持布局稳定；移动端原有 display:none 规则不变） */
-.collapse-btn { opacity: 0; transition: opacity 0.15s ease; }
-.wb-sidebar:hover .collapse-btn,
-.collapse-btn:focus-visible { opacity: 1; }
+/* 展开/收起按钮在活动栏中段居中，只在活动栏悬浮/键盘聚焦时显示（opacity 隐藏保持布局稳定） */
+.activity-collapse-btn { margin-block: auto; opacity: 0; transition: opacity 0.15s ease; }
+.wb-activity:hover .activity-collapse-btn,
+.activity-collapse-btn:focus-visible { opacity: 1; }
 .session-rail.collapsed header { justify-content: center; padding: 12px 0; }
 .session-rail.collapsed footer { flex-direction: column; align-items: center; gap: 2px; margin-top: auto; padding: 8px 0; }
 .rail-mobile-title { display: none; font-size: 14px; font-weight: 650; }
@@ -2014,7 +2014,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   .wb-sidebar .rail-search-wrap { display: flex; margin: 12px 14px 6px; }
   .wb-sidebar .session-rail nav { display: block; position: static; flex: 1; overflow-y: auto; padding: 8px 10px 12px; }
   .wb-sidebar .session-rail footer { border-top: 1px solid var(--border); }
-  .wb-sidebar .collapse-btn { display: none; }
+  .wb-activity .activity-collapse-btn { display: none; }
   .session-rail {
     flex-direction: row;
     align-items: center;
@@ -2027,7 +2027,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   .session-rail header { padding: 8px 6px 8px 14px; flex: 1; }
   .session-rail nav { display: none; }
   .session-rail footer { border-top: 0; padding: 8px 10px; }
-  .rail-resize, .rail-menu-btn, .collapse-btn { display: none; }
+  .rail-resize, .rail-menu-btn { display: none; }
   .wb-main { flex: 1 1 0; min-height: 0; }
   .wb-main > .wb-main-split { flex: 1 1 0; min-height: 0; height: 100%; }
   .wb-bottom, .wb-status { flex: 0 0 auto; }
