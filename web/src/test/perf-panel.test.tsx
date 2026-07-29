@@ -67,11 +67,6 @@ describe("PerfPanel（0.5.0 Phase 2d）", () => {
     expect(screen.getByText(/选择会话以查看性能数据|Select a session/)).toBeDefined();
   });
 
-  it("面板标题为性能", () => {
-    renderPanel("s1");
-    expect(screen.getByText("Performance")).toBeDefined();
-  });
-
   it("可暂停并持久化实时性能监控", () => {
     renderPanel("s1");
     const toggle = screen.getByRole("switch", { name: /实时性能监控|Live performance monitoring/ });

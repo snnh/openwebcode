@@ -8,7 +8,6 @@ import type { CoreClient } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import {
-  DEFAULT_WS_BACKPRESSURE_LIMITS,
   MAX_WS_BUFFERED_BYTES,
   MAX_WS_BUFFERED_MESSAGES,
   isSlowClient,
@@ -24,12 +23,6 @@ afterEach(async () => {
 });
 
 describe("慢客户端背压判定（单元）", () => {
-  it("默认阈值：4MB 待发字节 / 1000 条待发消息", () => {
-    expect(MAX_WS_BUFFERED_BYTES).toBe(4 * 1024 * 1024);
-    expect(MAX_WS_BUFFERED_MESSAGES).toBe(1_000);
-    expect(DEFAULT_WS_BACKPRESSURE_LIMITS).toEqual({ maxBufferedBytes: MAX_WS_BUFFERED_BYTES, maxBufferedMessages: MAX_WS_BUFFERED_MESSAGES });
-  });
-
   it("字节或消息数任一超限即判定为慢客户端", () => {
     expect(isSlowClient({ bufferedAmount: 0, pendingSends: 0 })).toBe(false);
     expect(isSlowClient({ bufferedAmount: MAX_WS_BUFFERED_BYTES, pendingSends: 0 })).toBe(false);

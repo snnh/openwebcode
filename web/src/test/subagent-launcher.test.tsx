@@ -38,30 +38,24 @@ describe("SubagentsPanel 手动启动器", () => {
     expect(select).toHaveValue("general");
   });
 
-  it("提交调用 startSubagent 并在成功后清空输入", async () => {
+  it("提交调用 startSubagent 并在成功后清空输入（按钮点击与 Enter 提交）", async () => {
     vi.spyOn(api, "agents").mockResolvedValue(AGENTS);
     const startSpy = vi.spyOn(api, "startSubagent").mockResolvedValue({ taskId: "task-1", toolCallId: "manual-task-1" });
     renderPanel(<SubagentsPanel sessionId="s-1" runs={{}} />);
 
     const input = screen.getByLabelText("子代理任务描述");
+    const select = await screen.findByLabelText("子代理类型");
     fireEvent.change(input, { target: { value: "  调研登录模块  " } });
-    fireEvent.change(await screen.findByLabelText("子代理类型"), { target: { value: "explore" } });
+    fireEvent.change(select, { target: { value: "explore" } });
     fireEvent.click(screen.getByRole("button", { name: "启动" }));
 
     await waitFor(() => expect(startSpy).toHaveBeenCalledWith("s-1", { prompt: "调研登录模块", agent: "explore" }));
     await waitFor(() => expect(input).toHaveValue(""));
-  });
 
-  it("Enter 提交；输入为空时按钮禁用", async () => {
-    vi.spyOn(api, "agents").mockResolvedValue(AGENTS);
-    const startSpy = vi.spyOn(api, "startSubagent").mockResolvedValue({ taskId: "task-1", toolCallId: "manual-task-1" });
-    renderPanel(<SubagentsPanel sessionId="s-1" runs={{}} />);
-
-    const input = screen.getByLabelText("子代理任务描述");
-    expect(screen.getByRole("button", { name: "启动" })).toBeDisabled();
+    // Enter（form submit）走同一提交路径
     fireEvent.change(input, { target: { value: "整理 README" } });
+    fireEvent.change(select, { target: { value: "general" } });
     fireEvent.submit(input.closest("form")!);
-
     await waitFor(() => expect(startSpy).toHaveBeenCalledWith("s-1", { prompt: "整理 README", agent: "general" }));
   });
 

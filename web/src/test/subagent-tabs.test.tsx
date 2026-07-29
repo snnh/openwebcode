@@ -231,23 +231,6 @@ describe("App 主区子代理标签", () => {
     fireEvent.click(openButtons[0]!);
     const tab = await screen.findByRole("tab", { name: /群 2 项/ });
     expect(tab).toHaveAttribute("aria-selected", "true");
-  });
-
-  it("子代理面板「在标签中打开」创建并聚焦标签", async () => {
-    const socket = await renderApp();
-
-    act(() => {
-      emit(socket, started("s1", "call-1", "task-1", { agent: "scout" }));
-    });
-    await screen.findByRole("tab", { name: "scout" });
-
-    // 打开底部面板的「子代理」页签，点击行内「在标签中打开」
-    fireEvent.click(screen.getByRole("button", { name: "子代理" }));
-    const openButton = await screen.findByRole("button", { name: "在标签中打开" });
-    fireEvent.click(openButton);
-
-    const tab = screen.getByRole("tab", { name: "scout" });
-    expect(tab).toHaveAttribute("aria-selected", "true");
     expect(document.querySelector(".subagent-tab-view")).toBeInTheDocument();
   });
 

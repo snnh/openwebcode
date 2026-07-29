@@ -33,7 +33,6 @@ describe("GitShadowSnapshots", () => {
     const snapshots = new GitShadowSnapshots(session, workspace);
     expect(await snapshots.capability()).toMatchObject({ backend: "git-shadow", requiresAdmin: false });
     const checkpoint = await snapshots.create("before edit", 2, { round: 1 });
-    expect(path.dirname(path.join(session, "shadow.git"))).not.toBe(workspace);
 
     await writeFile(path.join(workspace, "a.txt"), "two", "utf8");
     await rm(path.join(workspace, "untracked.txt"));

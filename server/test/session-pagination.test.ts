@@ -128,21 +128,13 @@ describe("session pagination (0.5.0 Phase 2)", () => {
     expect(page).toBeUndefined();
   });
 
-  it("list() does not parse all messages — only checks tail corruption", async () => {
-    const store = await storeAt(await tempDir());
-    const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
-    await seedMessages(store, session.id, 100);
-
-    const list = await store.list();
-    const found = list.find((item) => item.id === session.id);
-    expect(found).toBeDefined();
-    expect(found!.recovery).toBeUndefined();
-  });
-
   it("list() detects tail corruption via lightweight check", async () => {
     const store = await storeAt(await tempDir());
     const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
     await store.appendMessage(session.id, "user", [{ type: "text", text: "valid" }]);
+    // 健康会话：list() 不解析全部消息，仅做尾部轻量检查
+    const healthy = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
+    await seedMessages(store, healthy.id, 100);
 
     // Corrupt the tail
     const storeRoot = (store as unknown as { root: string }).root;
@@ -156,6 +148,9 @@ describe("session pagination (0.5.0 Phase 2)", () => {
     const list = await store.list();
     const found = list.find((item) => item.id === session.id);
     expect(found?.recovery).toMatchObject({ state: "recovered" });
+    const healthyFound = list.find((item) => item.id === healthy.id);
+    expect(healthyFound).toBeDefined();
+    expect(healthyFound!.recovery).toBeUndefined();
   });
 
   it("full pagination flow: tail → load more → load more → no more", async () => {

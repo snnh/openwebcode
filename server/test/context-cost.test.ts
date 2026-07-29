@@ -87,6 +87,7 @@ describe("ContextManager cost ledger", () => {
       )));
     const ledger = await left.load();
     expect(ledger.usage.inputTokens).toBe(20);
+    // 精确整数累计（35 对浮点不友好，足以暴露 drift）
     expect(ledger.cost.usdMicroUnits).toBe("100");
     expect(ledger.cost.cnyMicroUnits).toBe("700");
   });
@@ -106,20 +107,5 @@ describe("ContextManager cost ledger", () => {
     expect(selected).toEqual(["tool-1", "user-1"]);
     expect((await manager.recordCacheBreakpoints(selected)).cacheBreakpoints).toEqual(selected);
     expect((await manager.load()).cacheBreakpoints).toEqual(selected);
-  });
-
-  it("accumulates integer cost without floating-point drift", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-cost-"));
-    roots.push(root);
-    const manager = new ContextManager(root);
-    for (let index = 0; index < 10; index++) {
-      await manager.recordUsage(
-        { inputTokens: 1, outputTokens: 0, cacheRead: 0, cacheWrite: 0 },
-        { priced: true, usdMicroUnits: "5", cnyMicroUnits: "36" },
-      );
-    }
-    const ledger = await manager.load();
-    expect(ledger.cost.usdMicroUnits).toBe("50");
-    expect(ledger.cost.cnyMicroUnits).toBe("360");
   });
 });

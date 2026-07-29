@@ -26,6 +26,9 @@ describe("perf-sampler（0.5.0 Phase 2d）", () => {
 
     startFrameSampler();
     expect(isSamplerActive()).toBe(true);
+    // 重复调用不会创建多个实例
+    startFrameSampler();
+    expect(isSamplerActive()).toBe(true);
 
     // 模拟几帧
     expect(rafCallback).not.toBeNull();
@@ -37,17 +40,6 @@ describe("perf-sampler（0.5.0 Phase 2d）", () => {
     expect(stats.sampleCount).toBe(2); // 两帧间隔
     expect(stats.fps50).toBeGreaterThan(0);
 
-    stopFrameSampler();
-    expect(isSamplerActive()).toBe(false);
-  });
-
-  it("重复调用 startFrameSampler 不会创建多个实例", () => {
-    vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 1);
-    vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
-
-    startFrameSampler();
-    startFrameSampler();
-    expect(isSamplerActive()).toBe(true);
     stopFrameSampler();
     expect(isSamplerActive()).toBe(false);
   });

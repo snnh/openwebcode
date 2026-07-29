@@ -183,7 +183,7 @@ describe("App 编辑重发 / 重新生成 / 分叉", () => {
     );
   }
 
-  it("编辑重发：进入编辑态灌入原文，发送走 retry 接口并携带 editedContent", async () => {
+  it("编辑重发：进入编辑态灌入原文，按钮/Esc 取消恢复草稿，发送走 retry 接口并携带 editedContent", async () => {
     renderApp();
     const textarea = await screen.findByRole("combobox", { name: /消息输入框/ });
     // 先留一个草稿，验证编辑期间不被混淆、取消后可恢复
@@ -198,6 +198,14 @@ describe("App 编辑重发 / 重新生成 / 分叉", () => {
     expect(textarea).toHaveValue("未发送的草稿");
     expect(screen.queryByText("正在编辑早前消息")).toBeNull();
 
+    // Esc 触发同样的取消恢复，且不会误发 retry
+    fireEvent.click(screen.getByRole("button", { name: /编辑重发/ }));
+    expect(textarea).toHaveValue("原始问题");
+    fireEvent.keyDown(textarea, { key: "Escape" });
+    expect(textarea).toHaveValue("未发送的草稿");
+    expect(screen.queryByText("正在编辑早前消息")).toBeNull();
+    expect(calls.some((call) => call.url.includes("/retry"))).toBe(false);
+
     // 再次进入并发送：走 retry 而非普通消息 POST，发送后退出编辑态并清空草稿
     fireEvent.click(screen.getByRole("button", { name: /编辑重发/ }));
     fireEvent.change(textarea, { target: { value: "改写过的问题" } });
@@ -210,19 +218,6 @@ describe("App 编辑重发 / 重新生成 / 分叉", () => {
     expect(calls.some((call) => call.url.match(/\/api\/sessions\/s1\/messages$/) && call.method === "POST")).toBe(false);
     await waitFor(() => expect(textarea).toHaveValue(""));
     expect(screen.queryByText("正在编辑早前消息")).toBeNull();
-  });
-
-  it("编辑重发中 Esc 取消并恢复草稿", async () => {
-    renderApp();
-    const textarea = await screen.findByRole("combobox", { name: /消息输入框/ });
-    fireEvent.change(textarea, { target: { value: "Esc 前的草稿" } });
-
-    fireEvent.click(await screen.findByRole("button", { name: /编辑重发/ }));
-    expect(textarea).toHaveValue("原始问题");
-    fireEvent.keyDown(textarea, { key: "Escape" });
-    expect(textarea).toHaveValue("Esc 前的草稿");
-    expect(screen.queryByText("正在编辑早前消息")).toBeNull();
-    expect(calls.some((call) => call.url.includes("/retry"))).toBe(false);
   });
 
   it("重新生成：直接调 retry 接口且不附带 editedContent", async () => {

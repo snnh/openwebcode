@@ -10,9 +10,7 @@ afterEach(() => {
 describe("http user-agent", () => {
   it("builds UA in the owc/openwebcode{version} format", () => {
     expect(buildUserAgent("0.5.2")).toBe("owc/openwebcode0.5.2");
-  });
-
-  it("reflects the resolved server version", () => {
+    // 同一 UA 契约：getUserAgent 反映已解析的 server 版本（全局态路径）
     setServerVersion("9.9.9");
     expect(getUserAgent()).toBe("owc/openwebcode9.9.9");
   });

@@ -21,25 +21,3 @@ exports[`buildWsbConfig > generates mapped folders, logon command and networking
 </Configuration>
 "
 `;
-
-exports[`buildWsbConfig > inlines setupScript into the logon command and escapes XML 1`] = `
-"<Configuration>
-  <MappedFolders>
-    <MappedFolder>
-      <HostFolder>D:\\dev\\a&amp;b&lt;c&gt;</HostFolder>
-      <SandboxFolder>C:\\owc-workspace</SandboxFolder>
-      <ReadOnly>false</ReadOnly>
-    </MappedFolder>
-    <MappedFolder>
-      <HostFolder>D:\\owc\\dist</HostFolder>
-      <SandboxFolder>C:\\owc</SandboxFolder>
-      <ReadOnly>true</ReadOnly>
-    </MappedFolder>
-  </MappedFolders>
-  <LogonCommand>
-    <Command>cmd /c "set A=1&amp;&amp; echo ready &amp;&amp; C:\\owc\\owc-exec.exe --connect 10.0.0.2:1"</Command>
-  </LogonCommand>
-  <Networking>Enable</Networking>
-</Configuration>
-"
-`;

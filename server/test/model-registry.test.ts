@@ -447,7 +447,7 @@ describe("models API", () => {
     }
   });
 
-  it("lists builtin models with source and refreshes via provider credentials", async () => {
+  it("starts with an empty catalog and refreshes models with source via provider credentials", async () => {
     const { app, observed } = await fixture([
       { match: "https://api.anthropic.com/v1/models", body: { data: [{ id: "claude-future-9", display_name: "Claude Future 9" }], has_more: false } },
       { match: "https://openai.test/models", body: { data: [{ id: "gpt-4o" }] } },
@@ -455,7 +455,6 @@ describe("models API", () => {
     try {
       const before = (await app.inject({ method: "GET", url: "/api/models" })).json<CatalogModel[]>();
       expect(before).toEqual([]);
-      expect(before.some((model) => model.id === "gpt-4o")).toBe(false);
 
       const refresh = await app.inject({ method: "POST", url: "/api/models/refresh" });
       expect(refresh.statusCode).toBe(200);

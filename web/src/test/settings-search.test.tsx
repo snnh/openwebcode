@@ -100,52 +100,19 @@ describe("设置搜索", () => {
     expect(await screen.findByRole("heading", { name: "键盘快捷方式", level: 3 })).toBeInTheDocument();
   });
 
-  it("匹配存储分组字段中文标签（数据目录）→ 服务信息页签", async () => {
+  it.each([
+    { query: "数据目录", tab: "服务信息" },
+    { query: "远程模型目录", tab: "模型目录" },
+    { query: "默认货币", tab: "通用" },
+    { query: "固定美元汇率", tab: "模型定价" },
+    { query: "Fixed USD/CNY rate", tab: "模型定价" },
+    { query: "更新检查 URL", tab: "服务信息" },
+    { query: "监听端口", tab: "远程访问" },
+    { query: "Listen Port", tab: "远程访问" },
+  ])("匹配字段标签（$query）→ $tab 页签", async ({ query, tab }) => {
     renderDialog();
-    fireEvent.change(screen.getByRole("textbox", { name: "搜索设置" }), { target: { value: "数据目录" } });
-    await waitFor(() => expect(visibleTabs()).toEqual(["服务信息"]));
-  });
-
-  it("匹配模型接入分组字段中文标签 → 模型目录页签", async () => {
-    renderDialog();
-    fireEvent.change(screen.getByRole("textbox", { name: "搜索设置" }), { target: { value: "远程模型目录" } });
-    await waitFor(() => expect(visibleTabs()).toEqual(["模型目录"]));
-  });
-
-  it("匹配语言与货币分组字段中文标签 → 通用页签", async () => {
-    renderDialog();
-    fireEvent.change(screen.getByRole("textbox", { name: "搜索设置" }), { target: { value: "默认货币" } });
-    await waitFor(() => expect(visibleTabs()).toEqual(["通用"]));
-  });
-
-  it("匹配汇率分组字段中文标签 → 模型定价页签", async () => {
-    renderDialog();
-    fireEvent.change(screen.getByRole("textbox", { name: "搜索设置" }), { target: { value: "固定美元汇率" } });
-    await waitFor(() => expect(visibleTabs()).toEqual(["模型定价"]));
-  });
-
-  it("匹配字段英文标签（SETTINGS_FIELD_EN）→ 模型定价页签", async () => {
-    renderDialog();
-    fireEvent.change(screen.getByRole("textbox", { name: "搜索设置" }), { target: { value: "Fixed USD/CNY rate" } });
-    await waitFor(() => expect(visibleTabs()).toEqual(["模型定价"]));
-  });
-
-  it("匹配更新检查分组字段中文标签 → 服务信息页签", async () => {
-    renderDialog();
-    fireEvent.change(screen.getByRole("textbox", { name: "搜索设置" }), { target: { value: "更新检查 URL" } });
-    await waitFor(() => expect(visibleTabs()).toEqual(["服务信息"]));
-  });
-
-  it("匹配 network 分组字段中文标签（监听端口）→ 远程访问页签", async () => {
-    renderDialog();
-    fireEvent.change(screen.getByRole("textbox", { name: "搜索设置" }), { target: { value: "监听端口" } });
-    await waitFor(() => expect(visibleTabs()).toEqual(["远程访问"]));
-  });
-
-  it("匹配字段英文标签（SETTINGS_FIELD_EN）→ 远程访问页签", async () => {
-    renderDialog();
-    fireEvent.change(screen.getByRole("textbox", { name: "搜索设置" }), { target: { value: "Listen Port" } });
-    await waitFor(() => expect(visibleTabs()).toEqual(["远程访问"]));
+    fireEvent.change(screen.getByRole("textbox", { name: "搜索设置" }), { target: { value: query } });
+    await waitFor(() => expect(visibleTabs()).toEqual([tab]));
   });
 
   it("匹配分组名时该分组全部页签保留", () => {

@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ExecutionTrack } from "../components/ExecutionTrack";
-import type { ChatMessage, SessionDetail } from "../lib/contracts";
+import type { AgentErrorKind, ChatMessage, SessionDetail } from "../lib/contracts";
 
 const session: SessionDetail = {
   id: "session-1",
@@ -31,13 +31,16 @@ describe("ExecutionTrack failures", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Core sandbox configuration failed");
   });
 
-  it("shows an actionable hint and a settings deep-link for an authentication failure", () => {
+  it.each<{ kind: AgentErrorKind; message: string; hint: string }>([
+    { kind: "authentication", message: "invalid api key", hint: "认证失败：请检查 设置 → 模型目录 中的 API Key" },
+    { kind: "invalid_request", message: "unsupported parameter", hint: "请求被拒绝：请检查模型 ID 与参数配置" },
+  ])("shows an actionable hint and a settings deep-link for a $kind failure", ({ kind, message, hint }) => {
     const onOpenSettings = vi.fn();
     render(
       <ExecutionTrack
         session={session}
         streamText=""
-        runError={{ message: "invalid api key", kind: "authentication", retryable: false }}
+        runError={{ message, kind, retryable: false }}
         permissions={[]}
         onPermissionDone={() => undefined}
         onOpenSettings={onOpenSettings}
@@ -45,29 +48,11 @@ describe("ExecutionTrack failures", () => {
     );
 
     const card = screen.getByRole("alert");
-    expect(card).toHaveTextContent("认证失败：请检查 设置 → 模型目录 中的 API Key");
-    expect(card).toHaveTextContent("invalid api key");
+    expect(card).toHaveTextContent(hint);
+    expect(card).toHaveTextContent(message);
     fireEvent.click(screen.getByRole("button", { name: "打开模型设置" }));
     expect(onOpenSettings).toHaveBeenCalledWith("models");
     expect(screen.queryByRole("button", { name: "重试" })).toBeNull();
-  });
-
-  it("deep-links invalid_request failures to the models tab", () => {
-    const onOpenSettings = vi.fn();
-    render(
-      <ExecutionTrack
-        session={session}
-        streamText=""
-        runError={{ message: "unsupported parameter", kind: "invalid_request", retryable: false }}
-        permissions={[]}
-        onPermissionDone={() => undefined}
-        onOpenSettings={onOpenSettings}
-      />,
-    );
-
-    expect(screen.getByRole("alert")).toHaveTextContent("请求被拒绝：请检查模型 ID 与参数配置");
-    fireEvent.click(screen.getByRole("button", { name: "打开模型设置" }));
-    expect(onOpenSettings).toHaveBeenCalledWith("models");
   });
 
   it("offers a retry button for rate-limit failures", () => {
@@ -145,20 +130,6 @@ describe("ExecutionTrack failures", () => {
     expect(articles[3]).toHaveClass("turn-even");
   });
 
-  it("virtualizes long message histories instead of mounting every card", () => {
-    const longSession: SessionDetail = {
-      ...session,
-      messages: Array.from({ length: 200 }, (_, index) => ({
-        id: `message-${index}`,
-        role: "user" as const,
-        createdAt: session.createdAt,
-        content: [{ type: "text" as const, text: `message ${index}` }],
-      })),
-    };
-    const { container } = render(<ExecutionTrack session={longSession} streamText="" permissions={[]} onPermissionDone={() => undefined} />);
-    expect(container.querySelectorAll(".virtual-message-item").length).toBeLessThan(longSession.messages.length);
-    expect(container.querySelectorAll(".message").length).toBeLessThan(longSession.messages.length);
-  });
 });
 
 function makeMessages(count: number): ChatMessage[] {

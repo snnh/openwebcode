@@ -108,24 +108,18 @@ describe("设置：在线更新（update apply）", () => {
     expect(await view.findByRole("button", { name: "下载中" })).toBeDisabled();
   });
 
-  it("restarting 状态提示刷新页面", async () => {
+  it.each<{ status: UpdateApplyState["status"]; hint: RegExp }>([
+    { status: "restarting", hint: /服务即将重启，更新后请刷新页面/ },
+    { status: "done", hint: /更新已应用，请手动重启服务后刷新页面/ },
+  ])("$status 状态提示对应文案", async ({ status, hint }) => {
     stubBaseQueries(true);
     vi.spyOn(api, "updateApplyStart")
-      .mockResolvedValue({ state: makeState({ status: "restarting" }) });
+      .mockResolvedValue({ state: makeState({ status }) });
     vi.spyOn(api, "updateApplyStatus")
-      .mockResolvedValue({ state: makeState({ status: "restarting" }) });
+      .mockResolvedValue({ state: makeState({ status }) });
     const view = withClient(<ServerInfoSection providers={[]} models={[]} />);
     fireEvent.click(await view.findByRole("button", { name: "立即更新" }));
-    expect(await view.findByText(/服务即将重启，更新后请刷新页面/)).toBeInTheDocument();
-  });
-
-  it("done 状态提示手动重启服务", async () => {
-    stubBaseQueries(true);
-    vi.spyOn(api, "updateApplyStart")
-      .mockResolvedValue({ state: makeState({ status: "done" }) });
-    const view = withClient(<ServerInfoSection providers={[]} models={[]} />);
-    fireEvent.click(await view.findByRole("button", { name: "立即更新" }));
-    expect(await view.findByText(/更新已应用，请手动重启服务后刷新页面/)).toBeInTheDocument();
+    expect(await view.findByText(hint)).toBeInTheDocument();
   });
 
   it("POST 被拒绝（400/409/501）时展示错误", async () => {

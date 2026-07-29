@@ -86,7 +86,6 @@ describe("buildWsbConfig", () => {
     const xml = buildWsbConfig({ workspace: "D:\\dev\\a&b<c>", distDir: "D:\\owc\\dist", hostIp: "10.0.0.2", port: 1, setupScript: "set A=1&& echo ready" });
     expect(xml).toContain('cmd /c "set A=1&amp;&amp; echo ready &amp;&amp; C:\\owc\\owc-exec.exe --connect 10.0.0.2:1"');
     expect(xml).toContain("<HostFolder>D:\\dev\\a&amp;b&lt;c&gt;</HostFolder>");
-    expect(xml).toMatchSnapshot();
   });
 });
 

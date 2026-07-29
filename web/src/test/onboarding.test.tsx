@@ -77,23 +77,16 @@ describe("SettingsDialog 深链 initialTab", () => {
 });
 
 describe("NewSessionDialog 引导跳转", () => {
-  it("无 provider 提示带跳转按钮，点击回调 models 页签", async () => {
+  it.each<{ label: string; providers: string[]; button: RegExp }>([
+    { label: "无 provider", providers: [], button: /前往配置/ },
+    { label: "无模型", providers: ["test-stub"], button: /前往模型目录/ },
+  ])("$label 提示带跳转按钮，点击回调 models 页签", async ({ providers, button }) => {
     stubCapabilitiesFetch();
     const onOpenSettings = vi.fn();
     render(
-      <NewSessionDialog open providers={[]} models={[]} onClose={() => undefined} onCreate={() => undefined} onOpenSettings={onOpenSettings} />,
+      <NewSessionDialog open providers={providers} models={[]} onClose={() => undefined} onCreate={() => undefined} onOpenSettings={onOpenSettings} />,
     );
-    fireEvent.click(await screen.findByRole("button", { name: /前往配置/ }));
-    expect(onOpenSettings).toHaveBeenCalledWith("models");
-  });
-
-  it("无模型提示带跳转按钮，点击回调 models 页签", async () => {
-    stubCapabilitiesFetch();
-    const onOpenSettings = vi.fn();
-    render(
-      <NewSessionDialog open providers={["test-stub"]} models={[]} onClose={() => undefined} onCreate={() => undefined} onOpenSettings={onOpenSettings} />,
-    );
-    fireEvent.click(await screen.findByRole("button", { name: /前往模型目录/ }));
+    fireEvent.click(await screen.findByRole("button", { name: button }));
     expect(onOpenSettings).toHaveBeenCalledWith("models");
   });
 
@@ -125,19 +118,15 @@ describe("EmptyState 快速开始引导", () => {
     expect(onCreate).toHaveBeenCalledTimes(1);
   });
 
-  it("已有 provider 时不显示引导", () => {
+  it.each<{ label: string; providers: string[] | undefined }>([
+    { label: "已有 provider", providers: ["test-stub"] },
+    { label: "provider 列表加载中（undefined）", providers: undefined },
+  ])("$label 时不显示引导", ({ providers }) => {
     render(
-      <EmptyState sessions={[]} providers={["test-stub"]} onSelect={() => undefined} onCreate={() => undefined} onOpenSettings={() => undefined} />,
+      <EmptyState sessions={[]} providers={providers} onSelect={() => undefined} onCreate={() => undefined} onOpenSettings={() => undefined} />,
     );
     expect(screen.queryByText("快速开始")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "新建会话" })).toBeInTheDocument();
-  });
-
-  it("provider 列表加载中（undefined）时不显示引导", () => {
-    render(
-      <EmptyState sessions={[]} providers={undefined} onSelect={() => undefined} onCreate={() => undefined} onOpenSettings={() => undefined} />,
-    );
-    expect(screen.queryByText("快速开始")).not.toBeInTheDocument();
   });
 });
 

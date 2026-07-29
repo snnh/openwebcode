@@ -123,8 +123,9 @@ describe("ask_user 工具", () => {
     }
   });
 
-  it("multi_select：工具结果返回选中项 label 数组", async () => {
-    const harness = await setup({
+  it.each([
+    {
+      name: "multi_select：工具结果返回选中项 label 数组",
       input: {
         questions: [{
           question: "选择要迁移的模块",
@@ -133,33 +134,32 @@ describe("ask_user 工具", () => {
           options: [{ label: "core" }, { label: "server", description: "Node 服务层" }, { label: "web" }],
         }],
       },
-    });
+      answer: ["opt-0", "opt-2"] as unknown,
+      expectedAnswer: ["core", "web"] as unknown,
+      expectedTitle: "模块选择",
+      expectedLabels: ["core", "server", "web"] as string[] | undefined,
+    },
+    {
+      name: "text：工具结果返回字符串答案",
+      input: { questions: [{ question: "目标分支名？", type: "text" }] },
+      answer: "feature/export" as unknown,
+      expectedAnswer: "feature/export" as unknown,
+      expectedTitle: undefined as string | undefined,
+      expectedLabels: undefined as string[] | undefined,
+    },
+  ])("$name", async ({ input, answer, expectedAnswer, expectedTitle, expectedLabels }) => {
+    const harness = await setup({ input });
     try {
       const run = harness.agent.run(harness.session.id, "先问我");
       const pending = await waitForPendingInteraction(harness.agent, harness.sessions, harness.session.id);
-      expect(pending.title).toBe("模块选择");
-      expect(pending.options?.map((option) => option.label)).toEqual(["core", "server", "web"]);
-      const res = await harness.app.inject({ method: "POST", url: `/api/sessions/${harness.session.id}/interactions/${pending.id}/respond`, payload: { answer: ["opt-0", "opt-2"] } });
+      if (expectedTitle !== undefined) expect(pending.title).toBe(expectedTitle);
+      if (expectedLabels !== undefined) expect(pending.options?.map((option) => option.label)).toEqual(expectedLabels);
+      const res = await harness.app.inject({ method: "POST", url: `/api/sessions/${harness.session.id}/interactions/${pending.id}/respond`, payload: { answer } });
       expect(res.statusCode, res.body).toBe(200);
       await run;
       const result = toolResultOf(await harness.sessions.get(harness.session.id), "ask-1");
       const parsed = JSON.parse((result as { content: string }).content) as Array<{ answer: unknown }>;
-      expect(parsed[0]?.answer).toEqual(["core", "web"]);
-    } finally {
-      await harness.app.close();
-    }
-  });
-
-  it("text：工具结果返回字符串答案", async () => {
-    const harness = await setup({ input: { questions: [{ question: "目标分支名？", type: "text" }] } });
-    try {
-      const run = harness.agent.run(harness.session.id, "先问我");
-      const pending = await waitForPendingInteraction(harness.agent, harness.sessions, harness.session.id);
-      await harness.app.inject({ method: "POST", url: `/api/sessions/${harness.session.id}/interactions/${pending.id}/respond`, payload: { answer: "feature/export" } });
-      await run;
-      const result = toolResultOf(await harness.sessions.get(harness.session.id), "ask-1");
-      const parsed = JSON.parse((result as { content: string }).content) as Array<{ answer: unknown }>;
-      expect(parsed[0]?.answer).toBe("feature/export");
+      expect(parsed[0]?.answer).toEqual(expectedAnswer);
     } finally {
       await harness.app.close();
     }

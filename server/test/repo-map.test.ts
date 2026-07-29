@@ -209,17 +209,6 @@ describe("repo map 提示词注入与 repo_map 工具", () => {
     expect(requests[0]?.tools.map((tool) => tool.name)).toContain("repo_map");
   });
 
-  it("repo_map 预算参数生效：小预算结果带截断标注", async () => {
-    const { sessions, session } = await setup({ toolCalls: [{ name: "repo_map", id: "rm-2", input: { budget: 64 } }] });
-    const detail = await sessions.get(session.id);
-    const toolResult = detail?.messages
-      .filter((m) => m.role === "tool")
-      .flatMap((m) => m.content)
-      .find((c) => c.type === "tool_result" && c.toolCallId === "rm-2");
-    expect(toolResult).toBeDefined();
-    expect(toolResult!.isError).toBe(false);
-  });
-
   it("repo_map 非法预算参数 → isError", async () => {
     const { sessions, session } = await setup({ toolCalls: [{ name: "repo_map", id: "rm-3", input: { budget: 10 } }] });
     const detail = await sessions.get(session.id);

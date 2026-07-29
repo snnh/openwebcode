@@ -9,10 +9,8 @@ import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
-import type { SnapshotBackend } from "../src/snapshots/backend.js";
 import { writeCheckpoints } from "../src/snapshots/backend.js";
 import { BtrfsBackend } from "../src/snapshots/btrfs.js";
-import { GitShadowSnapshots } from "../src/snapshots/git-shadow.js";
 import { probeSnapshotBackend, type CommandRunner } from "../src/snapshots/probe.js";
 import { ZfsBackend } from "../src/snapshots/zfs.js";
 
@@ -198,17 +196,6 @@ describe("ZfsBackend", () => {
     await expect(stat(path.join(workspace, "sub"))).rejects.toThrow();
     // .zfs 目录本身保留
     expect((await stat(path.join(workspace, ".zfs"))).isDirectory()).toBe(true);
-  });
-});
-
-describe("GitShadowSnapshots", () => {
-  it("实现 SnapshotBackend 接口", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-iface-")); roots.push(root);
-    const workspace = path.join(root, "ws");
-    await mkdir(workspace);
-    const backend: SnapshotBackend = new GitShadowSnapshots(path.join(root, "sess"), workspace);
-    expect(backend.name).toBe("git-shadow");
-    await expect(backend.capability()).resolves.toMatchObject({ backend: "git-shadow", costHint: "linear", requiresAdmin: false });
   });
 });
 

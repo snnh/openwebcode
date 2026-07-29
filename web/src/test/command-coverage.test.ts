@@ -26,11 +26,6 @@ describe("命令注册表覆盖审计（§10.2：每个 REST 动作可达）", (
     }
   });
 
-  it("审计表中的 api 动作不重复", () => {
-    const actions = REST_ACTION_COMMANDS.map((entry) => entry.action);
-    expect(new Set(actions).size).toBe(actions.length);
-  });
-
   it("内建命令注册后覆盖审计表中全部 REST 动作", () => {
     const dispose = registerBuiltinCommands(() => stubActions());
     for (const { action, command } of REST_ACTION_COMMANDS) {

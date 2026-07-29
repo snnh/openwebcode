@@ -55,33 +55,50 @@ const CMD = {
 };
 
 describe("matchesMatcher", () => {
-  it("精确名：bash 命中 bash，不命中 read_file", () => {
-    expect(matchesMatcher("bash", "bash")).toBe(true);
-    expect(matchesMatcher("bash", "read_file")).toBe(false);
-  });
-
-  it("前缀 bash* 命中 bash，不命中 read_file", () => {
-    expect(matchesMatcher("bash*", "bash")).toBe(true);
-    expect(matchesMatcher("bash*", "read_file")).toBe(false);
-  });
-
-  it("前缀 mcp__* 命中任意 mcp__ 工具，不命中 bash", () => {
-    expect(matchesMatcher("mcp__*", "mcp__filesystem_read")).toBe(true);
-    expect(matchesMatcher("mcp__*", "mcp__any_tool")).toBe(true);
-    expect(matchesMatcher("mcp__*", "bash")).toBe(false);
-  });
-
-  it("'*' 全中（任意工具名）", () => {
-    expect(matchesMatcher("*", "bash")).toBe(true);
-    expect(matchesMatcher("*", "read_file")).toBe(true);
-    expect(matchesMatcher("*", "mcp__anything")).toBe(true);
-  });
-
-  it("无 tool 时仅 '*' 命中（UserPromptSubmit/Stop/SessionStart 语义）", () => {
-    expect(matchesMatcher("*", undefined)).toBe(true);
-    expect(matchesMatcher("bash", undefined)).toBe(false);
-    expect(matchesMatcher("bash*", undefined)).toBe(false);
-    expect(matchesMatcher("mcp__*", undefined)).toBe(false);
+  it.each([
+    {
+      name: "精确名：bash 命中 bash，不命中 read_file",
+      checks: [
+        { matcher: "bash", tool: "bash", expected: true },
+        { matcher: "bash", tool: "read_file", expected: false },
+      ],
+    },
+    {
+      name: "前缀 bash* 命中 bash，不命中 read_file",
+      checks: [
+        { matcher: "bash*", tool: "bash", expected: true },
+        { matcher: "bash*", tool: "read_file", expected: false },
+      ],
+    },
+    {
+      name: "前缀 mcp__* 命中任意 mcp__ 工具，不命中 bash",
+      checks: [
+        { matcher: "mcp__*", tool: "mcp__filesystem_read", expected: true },
+        { matcher: "mcp__*", tool: "mcp__any_tool", expected: true },
+        { matcher: "mcp__*", tool: "bash", expected: false },
+      ],
+    },
+    {
+      name: "'*' 全中（任意工具名）",
+      checks: [
+        { matcher: "*", tool: "bash", expected: true },
+        { matcher: "*", tool: "read_file", expected: true },
+        { matcher: "*", tool: "mcp__anything", expected: true },
+      ],
+    },
+    {
+      name: "无 tool 时仅 '*' 命中（UserPromptSubmit/Stop/SessionStart 语义）",
+      checks: [
+        { matcher: "*", tool: undefined, expected: true },
+        { matcher: "bash", tool: undefined, expected: false },
+        { matcher: "bash*", tool: undefined, expected: false },
+        { matcher: "mcp__*", tool: undefined, expected: false },
+      ],
+    },
+  ])("$name", ({ checks }) => {
+    for (const check of checks) {
+      expect(matchesMatcher(check.matcher, check.tool), `${check.matcher} vs ${check.tool}`).toBe(check.expected);
+    }
   });
 });
 
@@ -101,7 +118,7 @@ describe("normalizeHooksConfig", () => {
     expect(config.SessionStart).toEqual([{ matcher: "*", command: "echo ss" }]);
   });
 
-  it("空 matcher / 空 command 条目丢弃", () => {
+  it("非法条目丢弃：空 matcher / 空 command / null / 非对象", () => {
     const config = normalizeHooksConfig({
       PreToolUse: [
         { matcher: "bash", command: "echo ok" },
@@ -110,13 +127,10 @@ describe("normalizeHooksConfig", () => {
       ],
     });
     expect(config.PreToolUse).toEqual([{ matcher: "bash", command: "echo ok" }]);
-  });
-
-  it("null / 非对象条目丢弃", () => {
-    const config = normalizeHooksConfig({
+    const junk = normalizeHooksConfig({
       PreToolUse: [null, undefined, "string", 42, { matcher: "bash", command: "echo ok" }],
     });
-    expect(config.PreToolUse).toEqual([{ matcher: "bash", command: "echo ok" }]);
+    expect(junk.PreToolUse).toEqual([{ matcher: "bash", command: "echo ok" }]);
   });
 
   it("非白名单事件名（如 Unknown）丢弃", () => {
@@ -323,28 +337,19 @@ describe("PreToolUse hook via AgentRunner (e2e)", () => {
     return { detail, writeFileCalls, bashRunCalls, requests };
   }
 
-  it("PreToolUse hook 阻断 write_file -> tool_result isError + stderr 文本，无副作用", async () => {
-    const { detail, writeFileCalls } = await setup({ name: "write_file", id: "wf-1", input: { path: "test.txt", content: "hello" } });
-    const toolResult = detail?.messages
+  it.each([
+    { tool: { name: "write_file", id: "wf-1", input: { path: "test.txt", content: "hello" } }, callsKey: "writeFileCalls" as const },
+    { tool: { name: "bash", id: "bash-1", input: { cmd: "echo hi" } }, callsKey: "bashRunCalls" as const },
+  ])("PreToolUse hook 阻断 $tool.name -> tool_result isError + stderr 文本，无副作用", async ({ tool, callsKey }) => {
+    const result = await setup(tool);
+    const toolResult = result.detail?.messages
       .filter((m) => m.role === "tool")
       .flatMap((m) => m.content)
-      .find((c) => c.type === "tool_result" && c.toolCallId === "wf-1");
+      .find((c) => c.type === "tool_result" && c.toolCallId === tool.id);
     expect(toolResult).toBeDefined();
     expect(toolResult!.isError).toBe(true);
     expect((toolResult as { content: string }).content).toContain("denied-by-e2e-hook");
     // 工具未真正执行副作用
-    expect(writeFileCalls).toHaveLength(0);
-  });
-
-  it("PreToolUse hook 阻断 bash -> tool_result isError + stderr 文本，无副作用", async () => {
-    const { detail, bashRunCalls } = await setup({ name: "bash", id: "bash-1", input: { cmd: "echo hi" } });
-    const toolResult = detail?.messages
-      .filter((m) => m.role === "tool")
-      .flatMap((m) => m.content)
-      .find((c) => c.type === "tool_result" && c.toolCallId === "bash-1");
-    expect(toolResult).toBeDefined();
-    expect(toolResult!.isError).toBe(true);
-    expect((toolResult as { content: string }).content).toContain("denied-by-e2e-hook");
-    expect(bashRunCalls).toHaveLength(0);
+    expect(result[callsKey]).toHaveLength(0);
   });
 });
