@@ -83,7 +83,7 @@ Messages sent while a job is running enter the Steering queue and are injected o
 
 **Permissions**: ask / acceptEdits / yolo. "Allow once" approves only the current call, which starts after the response is delivered; "always allow" creates a persistent rule. Neither "always allow" nor yolo disables the sandbox — the two mechanisms are orthogonal.
 
-**Sandbox** (on by default): Windows AppContainer (Job Object compatibility fallback), Windows Sandbox (one ephemeral VM per session, for untrusted code), and Linux Landlock. Capability probes report honestly (enforced/partial/advisory). The path policy applies `denyPaths > writeRoots > readRoots`.
+**Sandbox** (on by default): Windows AppContainer (Job Object compatibility fallback), Windows Sandbox (one ephemeral VM per session, for untrusted code), and Linux Landlock. Capability probes report the actual enforcement level (enforced/partial/advisory). The path policy applies `denyPaths > writeRoots > readRoots`.
 
 **Snapshots and rollback**: automatic checkpoint before every user turn, or switch to manual-only. Native Btrfs, ZFS, and ReFS backends are auto-detected, with a git shadow repository as the fallback. Managed workspaces keep the project on a VHDX/qcow2 image disk, where differential-chain snapshots are near-instant and can branch; **Snapshot now** in the header creates an image checkpoint whenever the session is idle. They never overwrite the source directory when a session closes or is deleted: the Files panel can generate a three-way diff at any time, and confirmation writes back only conflict-free changes.
 
@@ -107,7 +107,7 @@ Messages sent while a job is running enter the Steering queue and are injected o
 
 **Session lifecycle**: closing the browser does not stop the agent; reconnecting replays missed events; permission requests stay suspended until you respond (**no timeout** — on long tasks, remember to come back and confirm).
 
-**Misc**: multimodal image input (paste/drag), GFM Markdown with KaTeX equations, collapsed reasoning blocks, session export/import (JSONL), session sharing (a self-contained read-only `export.html`), headless CLI (`owc run`), and storage GC.
+**Misc**: multimodal image input (paste/drag), session export/import (JSONL), session sharing (a self-contained read-only `export.html`), and storage GC.
 
 ## Headless CLI
 

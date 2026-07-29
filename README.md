@@ -10,13 +10,13 @@
 
 ## 它能做什么
 
-- **让 AI 直接在你的项目里干活**：读写文件、跑命令、跑测试，多轮自主推进到一个任务完成
-- **写之前先看清楚**：Plan 模式下 AI 只读调研、产出分步计划，你确认后切 build 才动手
-- **随时回退**：每轮自动打检查点，时间线面板一键回滚（文件 + 会话历史一起退）
-- **不怕跑飞**：默认沙盒隔离（Windows AppContainer / Linux Landlock），不可信代码可上 WSB 一会话一 VM
-- **长任务不阻塞**：后台 bash 任务继续跑，你照常对话，完成自动通知
-- **技术内容直接读**：对话支持 GFM Markdown、代码高亮与 KaTeX 公式；思考过程默认折叠并弱化显示
-- **脚本可集成**：`owc run "..."` 非交互执行，`--json` 出 NDJSON 事件流，CI 直接用
+- 读写项目文件、跑命令、跑测试，多轮推进到一个任务完成
+- Plan 模式下只读调研、产出分步计划，确认后切 build 执行
+- 每轮自动打检查点，时间线面板可回滚文件与会话历史
+- 默认沙盒隔离（Windows AppContainer / Linux Landlock），不可信代码可用 WSB，一会话一 VM
+- bash 后台任务继续跑，不阻塞对话，完成后自动通知
+- 对话渲染 GFM Markdown、代码高亮与 KaTeX 公式；思考过程默认折叠并弱化显示
+- `owc run "..."` 非交互执行，`--json` 输出 NDJSON 事件流，可用于 CI
 
 ## 快速开始
 
@@ -84,7 +84,7 @@ cd openwebcode
 
 **权限**：ask / acceptEdits / yolo 三级。「允许一次」仅批准当前调用，响应送达后才启动工具；「总是允许」生成持久规则。「总是允许」与 yolo 都不解除沙盒——两个机制正交。
 
-**沙盒**（默认开启）：Windows AppContainer（Job Object 兼容兜底）/ WSB（不可信代码）/ Linux Landlock。能力探测如实上报（enforced/partial/advisory），不谎报。
+**沙盒**（默认开启）：Windows AppContainer（Job Object 兼容兜底）/ WSB（不可信代码）/ Linux Landlock。能力探测如实上报（enforced/partial/advisory）。
 
 **快照回滚**：每轮用户消息前自动检查点，也可切为「仅手动」；后端自动探测 Btrfs/ZFS/ReFS，兜底 git 影子仓库；可选「托管工作区」（项目活在 VHDX/qcow2 镜像盘上，差分链快照毫秒级、可分支）。托管工作区会在顶部提供「手动快照」，空闲时可随时立即生成镜像盘检查点。它不会在关闭或删除会话时自动覆盖源目录；可随时在「文件」面板生成三方差异，确认后只回写无冲突的改动。
 
@@ -102,7 +102,7 @@ cd openwebcode
 
 **会话生命周期**：关浏览器不停 agent；断线重连自动补拉；权限请求挂起等你 respond（**无超时**，长任务记得回来确认）。
 
-**其他**：多模态图片输入（粘贴/拖拽）、GFM Markdown + KaTeX 数学公式、折叠思考块、会话导出/导入（JSONL）、会话分享（`export.html` 自包含只读页）、Headless CLI（`owc run`）、断线重连、存储 GC。
+**其他**：多模态图片输入（粘贴/拖拽）、会话导出/导入（JSONL）、会话分享（`export.html` 自包含只读页）、存储 GC。
 
 ## Headless CLI
 
@@ -165,6 +165,6 @@ cd web && npm ci && npm run build && npm test
 - **Linux**：`rm -rf ~/.local/lib/openwebcode ~/.local/bin/owc`，用户数据保留
 
 ## 特别感谢
-1. 感谢glm-5.2，kimi-k3，本项目由上述模型辅助开发
+1. 感谢 glm-5.2、kimi-k3，本项目由上述模型辅助开发
 2. 感谢一些群友提供的灵感
 3. 感谢 [pi-agent](https://github.com/earendil-works/pi)，本项目默认系统提示词以其为基线（MIT，作者 Mario Zechner）
