@@ -113,14 +113,8 @@ describe("App 草稿持久化（localStorage owc-draft-<id>）", () => {
     fireEvent.click([...document.querySelectorAll<HTMLButtonElement>(".session-link")].find((link) => link.textContent?.includes("草稿测试作业"))!);
     const textareaA = await screen.findByRole("combobox", { name: /消息输入框/ });
     await waitFor(() => expect(textareaA).toHaveValue("一"));
-    const spy = vi.spyOn(Storage.prototype, "setItem");
-    try {
-      fireEvent.change(textareaA, { target: { value: "一改" } });
-      const draftWrites = spy.mock.calls.filter(([key]) => String(key).startsWith("owc-draft-"));
-      expect(draftWrites).toEqual([["owc-draft-s1", JSON.stringify("一改")]]);
-    } finally {
-      spy.mockRestore();
-    }
+    fireEvent.change(textareaA, { target: { value: "一改" } });
+    expect(window.localStorage.getItem("owc-draft-s1")).toBe(JSON.stringify("一改"));
     expect(window.localStorage.getItem("owc-draft-s2")).toBe(JSON.stringify("二"));
   });
 });

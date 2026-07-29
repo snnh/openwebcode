@@ -6,7 +6,7 @@
  * - 检查点摘要后端降级；agent write_file 只读；Esc 回对话。
  * Monaco 本体用 fake（helpers/fake-monaco.ts），api 层 mock。
  */
-import { act, fireEvent, render, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../lib/api";
@@ -98,7 +98,7 @@ describe("DiffPane：SCM 来源", () => {
     expect(await view.findByText(/全部 hunk 已处理/)).toBeInTheDocument();
   });
 
-  it("拒绝 hunk：内容写回走 api.writeFile（server 权限链），成功后标记并更新新侧", async () => {
+  it("拒绝 hunk：内容写回走 api.writeFile（server 权限链），成功后标记并更新新侧（按钮与 actionsRef.reject 双触发）", async () => {
     const fake = createFakeMonaco();
     loadMonacoMock.mockResolvedValue(fake.monaco);
     const { view, onNotice } = renderPane(spec);
@@ -107,6 +107,18 @@ describe("DiffPane：SCM 来源", () => {
     await waitFor(() => expect(writeFile).toHaveBeenCalledWith("s1", "src/a.ts", ORIGINAL, REVISION));
     expect(await view.findByText("已拒绝")).toBeInTheDocument();
     await waitFor(() => expect(onNotice.mock.calls.some(([message]) => String(message).includes("写回"))).toBe(true));
+
+    // 命令动作面 actionsRef.reject 作用于首个待处理 hunk，走同一写回路径
+    const fake2 = createFakeMonaco();
+    loadMonacoMock.mockResolvedValue(fake2.monaco);
+    const { view: view2, actionsRef } = renderPane(spec);
+    const pane2 = within(view2.container);
+    await waitFor(() => expect(fake2.diffEditors).toHaveLength(1));
+    const writesBefore = writeFile.mock.calls.length;
+    act(() => actionsRef.current.reject?.());
+    await waitFor(() => expect(writeFile.mock.calls.length).toBeGreaterThan(writesBefore));
+    expect(writeFile).toHaveBeenLastCalledWith("s1", "src/a.ts", ORIGINAL, REVISION);
+    expect(await pane2.findByText("已拒绝")).toBeInTheDocument();
   });
 
   it("写回被 server 拒绝（plan/权限 403）：hunk 保持待处理并提示错误", async () => {
@@ -139,15 +151,6 @@ describe("DiffPane：SCM 来源", () => {
     expect(view.queryByRole("button", { name: "接受" })).toBeNull();
   });
 
-  it("命令动作面：accept/reject 作用于首个待处理 hunk", async () => {
-    const fake = createFakeMonaco();
-    loadMonacoMock.mockResolvedValue(fake.monaco);
-    const { view, actionsRef } = renderPane(spec);
-    await waitFor(() => expect(fake.diffEditors).toHaveLength(1));
-    act(() => actionsRef.current.reject?.());
-    await waitFor(() => expect(writeFile).toHaveBeenCalledWith("s1", "src/a.ts", ORIGINAL, REVISION));
-    expect(await view.findByText("已拒绝")).toBeInTheDocument();
-  });
 });
 
 describe("DiffPane：检查点来源", () => {

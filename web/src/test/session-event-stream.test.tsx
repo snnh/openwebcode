@@ -85,6 +85,9 @@ describe("useSessionEventStream", () => {
     expect(second).toBeDefined();
     act(() => second.onopen?.());
     expect(status()).toBe("false");
+    // 握手成功后也不会迟发亮横幅
+    act(() => vi.advanceTimersByTime(5_000));
+    expect(status()).toBe("false");
   });
 
   it("握手成功后退避重置：再次断线仍从短间隔开始重连", () => {
@@ -103,20 +106,5 @@ describe("useSessionEventStream", () => {
     act(() => second.onclose?.());
     act(() => vi.advanceTimersByTime(500));
     expect(StubWebSocket.instances).toHaveLength(3);
-  });
-
-  it("1 秒内快速重连成功不亮重连横幅", () => {
-    vi.useFakeTimers();
-    vi.stubGlobal("WebSocket", StubWebSocket as unknown as typeof WebSocket);
-    render(<Probe sessionId="s1" onEvent={() => undefined} />);
-    const status = (): string | null => screen.getByTestId("reconnecting").textContent;
-
-    const first = StubWebSocket.instances[0]!;
-    act(() => first.onclose?.());
-    act(() => vi.advanceTimersByTime(500));
-    const second = StubWebSocket.instances[1]!;
-    act(() => second.onopen?.());
-    act(() => vi.advanceTimersByTime(5_000));
-    expect(status()).toBe("false");
   });
 });

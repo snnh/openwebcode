@@ -113,18 +113,14 @@ describe("SubagentsPanel", () => {
     expect(details?.querySelector(".subagent-transcript-meta")).toHaveTextContent("2 轮");
   });
 
-  it("shows the empty state when there are no runs", () => {
+  it("shows the empty state when there are no runs or no session", () => {
     const { container } = renderPanel(<SubagentsPanel sessionId="s-1" runs={{}} />);
-
     expect(container.querySelector(".panel-empty")).toHaveTextContent("还没有子代理运行记录");
-  });
 
-  it("shows the empty state without a session", () => {
-    const { container } = renderPanel(
+    const { container: noSession } = renderPanel(
       <SubagentsPanel runs={{ "task-1": run({ status: "done" }) }} />,
     );
-
-    expect(container.querySelector(".panel-empty")).toHaveTextContent("还没有子代理运行记录");
+    expect(noSession.querySelector(".panel-empty")).toHaveTextContent("还没有子代理运行记录");
   });
 
   it("onOpenInTab 提供时在行/组头渲染「在标签中打开」并按 toolCallId 回调；缺省不渲染", () => {

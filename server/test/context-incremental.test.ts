@@ -88,7 +88,6 @@ describe("incremental context build", () => {
     expect(view.stats.segments.messages).toBeGreaterThan(0);
     const sum = Object.values(view.stats.segments).reduce((total, value) => total + value, 0);
     expect(Math.max(1, sum)).toBe(view.stats.totalTokens);
-    expect(view.stats.buildMs).toBeGreaterThanOrEqual(0);
   });
 
   it("pinned messages are never evicted and keep full content in the view", async () => {

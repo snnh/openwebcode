@@ -30,16 +30,12 @@ describe("MessageCard", () => {
     expect(container.querySelectorAll(".markdown")).toHaveLength(2);
   });
 
-  it("adds a turn banding class when turn is provided", () => {
+  it("adds a turn banding class when turn is provided, omits it otherwise", () => {
     const { container } = render(<MessageCard message={message("assistant", ["回答"])} turn={1} />);
-
     expect(container.querySelector("article.message")).toHaveClass("turn-odd");
-  });
 
-  it("omits turn banding classes when turn is not provided", () => {
-    const { container } = render(<MessageCard message={message("assistant", ["回答"])} />);
-
-    expect(container.querySelector("article.message")!.className).not.toMatch(/turn-(even|odd)/);
+    const { container: noTurn } = render(<MessageCard message={message("assistant", ["回答"])} />);
+    expect(noTurn.querySelector("article.message")!.className).not.toMatch(/turn-(even|odd)/);
   });
 
   it("shows markdown-capable thinking in a collapsed, separate block", async () => {

@@ -104,22 +104,9 @@ describe("Esc 中断键位（session.abort）", () => {
     expect(abort).not.toHaveBeenCalled();
   });
 
-  it("浮层打开（dialogOpen）时不抢 Esc", () => {
+  it.each(["dialogOpen", "editorOpen", "diffOpen", "permissionPending"])("上下文 %s 打开/待决时不抢 Esc", (key) => {
     const abort = registerAbort();
-    expect(dispatchKeybinding(keyEvent({ key: "Escape" }), DEFAULT_KEYBINDINGS, { ...runningContext, dialogOpen: true })).toBeUndefined();
-    expect(abort).not.toHaveBeenCalled();
-  });
-
-  it("编辑器/diff 分栏打开时不抢 Esc", () => {
-    const abort = registerAbort();
-    expect(dispatchKeybinding(keyEvent({ key: "Escape" }), DEFAULT_KEYBINDINGS, { ...runningContext, editorOpen: true })).toBeUndefined();
-    expect(dispatchKeybinding(keyEvent({ key: "Escape" }), DEFAULT_KEYBINDINGS, { ...runningContext, diffOpen: true })).toBeUndefined();
-    expect(abort).not.toHaveBeenCalled();
-  });
-
-  it("权限卡待决（permissionPending）时不抢 Esc", () => {
-    const abort = registerAbort();
-    expect(dispatchKeybinding(keyEvent({ key: "Escape" }), DEFAULT_KEYBINDINGS, { ...runningContext, permissionPending: true })).toBeUndefined();
+    expect(dispatchKeybinding(keyEvent({ key: "Escape" }), DEFAULT_KEYBINDINGS, { ...runningContext, [key]: true })).toBeUndefined();
     expect(abort).not.toHaveBeenCalled();
   });
 

@@ -479,14 +479,11 @@ describe("Composer", () => {
     const option = screen.getByRole("option", { name: /\/clear/ });
     expect(option).toHaveTextContent("内置");
     expect(screen.queryByRole("option", { name: /\/compact/ })).not.toBeInTheDocument();
-  });
 
-  it("/init 出现在内置命令补全中", () => {
-    const { textarea } = renderComposer({ onSend: vi.fn() });
     fireEvent.change(textarea, { target: { value: "/in" } });
-    const option = screen.getByRole("option", { name: /\/init/ });
-    expect(option).toHaveTextContent("内置");
-    expect(option).toHaveTextContent("AGENTS.md");
+    const initOption = screen.getByRole("option", { name: /\/init/ });
+    expect(initOption).toHaveTextContent("内置");
+    expect(initOption).toHaveTextContent("AGENTS.md");
   });
 
   it("技能补全无匹配时 Enter 关闭弹层而不发送", () => {
