@@ -31,8 +31,9 @@ import { getSnapshotBackend } from "./snapshots/index.js";
 import type { ManagedProvisionResult, ManagedWorkspaceLike } from "./snapshots/managed-disk.js";
 import { ManagedWorkspaceSyncError, type ManagedWorkspaceSyncApplyInput } from "./snapshots/managed-sync.js";
 import { SessionTransferError } from "./sessions/session-transfer.js";
+import { activePathMessages } from "./sessions/session-tree.js";
 import { defaultSandboxDenyPaths } from "./sessions/default-sandbox.js";
-import type { PermissionMode, SandboxMode, ShellBackend, SnapshotMode } from "./sessions/types.js";
+import type { PermissionMode, SandboxMode, ShellBackend, SnapshotMode, TextContent } from "./sessions/types.js";
 import type { SessionStore } from "./sessions/session-store.js";
 import { SettingsValidationError, type SettingsService } from "./settings-service.js";
 import { getServerVersion, GITHUB_REPO } from "./version.js";
@@ -1005,16 +1006,20 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     if (!page) return reply.code(404).send({ error: "Session not found" });
     return page;
   });
-  /** Read-only tree projection. Legacy sessions remain a single derived path. */
+  /** Read-only tree projection covering ALL nodes (including old branches after checkout/retry). Legacy sessions remain a single derived path. */
   app.get<{ Params: { id: string } }>("/api/sessions/:id/timeline", async (request, reply) => {
     const session = await sessions.get(request.params.id);
     if (!session) return reply.code(404).send({ error: "Session not found" });
+    const activeLeafId = session.activeLeafId ?? session.messages.at(-1)?.id;
+    // onActivePath 标记当前活动路径（根→活动叶子）上的节点；条目按时间排序（文件追加序本即时间序，稳定排序保持之）。
+    const onPath = new Set(activePathMessages(session.messages, activeLeafId).map((message) => message.id));
     return {
-      activeLeafId: session.activeLeafId ?? session.messages.at(-1)?.id,
-      entries: session.messages.map((message) => ({
+      activeLeafId,
+      entries: [...session.messages].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).map((message) => ({
         id: message.id, parentId: message.parentId,
         runId: message.runId, turnId: message.turnId,
         role: message.role, createdAt: message.createdAt,
+        onActivePath: onPath.has(message.id),
       })),
     };
   });
@@ -1026,6 +1031,94 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       events.publish({ source: "session", type: "branch.cloned", sessionId: cloned.id, payload: { sourceSessionId: request.params.id, mode: "conversation_only" } });
       return reply.code(201).send({ ...cloned, branchMode: "conversation_only" });
     } catch (error) { return reply.code(error instanceof Error && error.message === "Session not found" ? 404 : 409).send({ error: error instanceof Error ? error.message : String(error) }); }
+  });
+
+  /**
+   * 会话树 checkout：移动活动叶子到任意消息节点（user/assistant/tool 均可）。
+   * 仅改 meta（activeLeafId），不动 messages.jsonl；后续 append 以该节点为父，旧分支保留在树中。
+   */
+  app.post<{ Params: { id: string }; Body: { messageId?: string } }>("/api/sessions/:id/checkout", async (request, reply) => {
+    const session = await sessions.get(request.params.id);
+    if (!session) return reply.code(404).send({ error: "Session not found" });
+    const messageId = request.body?.messageId;
+    if (typeof messageId !== "string" || !messageId) return reply.code(400).send({ error: "messageId must be a non-empty string" });
+    if (!session.messages.some((message) => message.id === messageId)) return reply.code(400).send({ error: "Message not found in this session" });
+    if (agent.isRunning(session.id)) return reply.code(409).send({ error: "Session is running; wait for it to become idle before checkout" });
+    const meta = await sessions.setActiveLeaf(session.id, messageId);
+    events.publish({ source: "session", type: "session.updated", sessionId: meta.id, payload: meta });
+    return { ok: true, activeLeafId: meta.activeLeafId };
+  });
+
+  /**
+   * 会话内分支（fork）：同 cwd 新会话，复制根到 messageId（缺省为当前活动叶子）的
+   * 活动路径消息与会话配置；不带 ledger/快照/artifact。源会话运行中也允许（只读复制）。
+   */
+  app.post<{ Params: { id: string }; Body: { messageId?: string } }>("/api/sessions/:id/fork", async (request, reply) => {
+    const messageId = request.body?.messageId;
+    if (messageId !== undefined && (typeof messageId !== "string" || !messageId)) return reply.code(400).send({ error: "messageId must be a non-empty string" });
+    try {
+      const forked = await sessions.fork(request.params.id, messageId);
+      events.publish({ source: "session", type: "session.created", sessionId: forked.id, payload: forked });
+      return reply.code(201).send({ sessionId: forked.id });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return reply.code(message === "Session not found" ? 404 : 400).send({ error: message });
+    }
+  });
+
+  /**
+   * retry：checkout 到目标用户消息的父节点，可选先改写内容，随后按正常消息 start 路径
+   * 重新起跑（同一 lease/预算检查/agent.run 与事件流）。旧分支保留在树中。
+   */
+  app.post<{ Params: { id: string; messageId: string }; Body: { editedContent?: string } }>("/api/sessions/:id/messages/:messageId/retry", async (request, reply) => {
+    const session = await sessions.get(request.params.id);
+    if (!session) return reply.code(404).send({ error: "Session not found" });
+    const target = session.messages.find((message) => message.id === request.params.messageId);
+    if (!target) return reply.code(400).send({ error: "Message not found in this session" });
+    if (target.role !== "user") return reply.code(400).send({ error: "Only user messages can be retried" });
+    if (!target.parentId) return reply.code(400).send({ error: "The first user message cannot be retried" });
+    const editedContent = request.body?.editedContent;
+    if (editedContent !== undefined && typeof editedContent !== "string") return reply.code(400).send({ error: "editedContent must be a string" });
+    if (agent.isRunning(session.id)) return reply.code(409).send({ error: "Session is running; wait for it to become idle before retrying" });
+    if (managedSyncingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace sync is in progress" });
+    if (managedCheckpointingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace checkpoint is in progress" });
+    if (isShellPending(session.id)) return reply.code(409).send({ error: "shell 命令挂起中，请先回应权限请求或等待其完成" });
+    // retry 仅携带文本：原消息的图片/附件块不随 retry 重放（editedContent 同理为纯文本）
+    const text = editedContent?.trim()
+      ? editedContent
+      : target.content.filter((block): block is TextContent => block.type === "text").map((block) => block.text).join("\n");
+    if (!text.trim()) return reply.code(400).send({ error: "Message has no text content to retry" });
+    const automaticSnapshotRequested = (session.snapshotMode ?? "auto") === "auto";
+    const workspaceLease = acquireManagedWorkspaceRun(session, automaticSnapshotRequested && !hasRunningBackgroundTask(session.id));
+    if (!workspaceLease) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
+    try {
+      const budget = await new ContextManager(sessions.contextRoot(session.id)).budgetStatus();
+      if (budget.paused) {
+        workspaceLease.release();
+        return reply.code(409).send({
+          error: budget.cost.paused ? "Session cost budget is exhausted or unavailable" : "Session token budget is exhausted",
+          budget,
+        });
+      }
+      // checkout 到目标父节点：agent.run 追加的新用户消息以其为父（编辑内容时即为改写后的新消息）
+      const meta = await sessions.setActiveLeaf(session.id, target.parentId);
+      events.publish({ source: "session", type: "session.updated", sessionId: meta.id, payload: meta });
+      void agent.run(session.id, text, {
+        managedWorkspace: {
+          automaticSnapshotAllowed: workspaceLease.automaticSnapshotAllowed,
+          ...(workspaceLease.downgradeAfterAutomaticSnapshot
+            ? { downgradeAfterAutomaticSnapshot: workspaceLease.downgradeAfterAutomaticSnapshot }
+            : {}),
+        },
+      }).catch((error: unknown) => {
+        // 浏览器已收到 202，详细失败留在 server 日志与 AgentRunner 的 agent.error 事件中。
+        request.log.error({ err: error, sessionId: session.id }, "Agent run failed after accepting retry");
+      }).finally(workspaceLease.release);
+      return reply.code(202).send({ ok: true });
+    } catch (error) {
+      workspaceLease.release();
+      throw error;
+    }
   });
 
   /** 只读预览允许在 agent 运行时调用；apply 会在下方单独拒绝运行中会话。 */

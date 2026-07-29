@@ -79,6 +79,13 @@ export const api = {
     request<{ accepted: boolean; queued?: boolean; position?: number; compacted?: boolean; behavior?: string; reused?: boolean }>(`/api/sessions/${id}/messages`, { method: "POST", body: JSON.stringify({ content, behavior, ...(images?.length ? { images } : {}), ...(attachments?.length ? { attachments } : {}) }) }),
   interactions: (id: string) => request<import("./contracts").InteractionRequest[]>(`/api/sessions/${id}/interactions`),
   timeline: (id: string) => request<import("./contracts").SessionTimeline>(`/api/sessions/${id}/timeline`),
+  // 会话树：检出到任意节点（409=运行中）；分叉为新会话（运行中允许）；重试=检出到父节点并可附带编辑后的用户消息重启（202）
+  checkoutSession: (id: string, messageId: string) =>
+    request<{ ok: boolean; activeLeafId: string }>(`/api/sessions/${encodeURIComponent(id)}/checkout`, { method: "POST", body: JSON.stringify({ messageId }) }),
+  forkSession: (id: string, body: { messageId?: string } = {}) =>
+    request<{ sessionId: string }>(`/api/sessions/${encodeURIComponent(id)}/fork`, { method: "POST", body: JSON.stringify(body) }),
+  retryMessage: (id: string, messageId: string, body: { editedContent?: string }) =>
+    request<{ ok: boolean }>(`/api/sessions/${encodeURIComponent(id)}/messages/${encodeURIComponent(messageId)}/retry`, { method: "POST", body: JSON.stringify(body) }),
   queue: (id: string) => request<import("./contracts").QueueItem[]>(`/api/sessions/${id}/queue`),
   updateQueue: (id: string, itemId: string, body: { content?: string; kind?: "steer" | "follow_up" }) => request<import("./contracts").QueueItem>(`/api/sessions/${id}/queue/${itemId}`, { method: "PATCH", body: JSON.stringify(body) }),
   removeQueue: (id: string, itemId: string) => request<void>(`/api/sessions/${id}/queue/${itemId}`, { method: "DELETE" }),

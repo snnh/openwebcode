@@ -236,7 +236,7 @@ export function coalesceAssistantText(content: MessageContent[]): MessageContent
 
 const ROLE_LABELS: Record<string, [string, string]> = { user: ["你", "You"], assistant: ["OpenWebCode", "OpenWebCode"], tool: ["工具", "Tool"] };
 
-export function MessageCard({ message, sessionId, contentLens, liveSubagents, onNotice, onOpenDiff }: { message: ChatMessage; sessionId?: string; contentLens?: ExtensionInfo; /** 本消息内 spawn 工具调用关联的实时子代理运行（已由 ExecutionTrack 按 toolCallId 过滤） */ liveSubagents?: LiveSubagentRun[] | undefined; onNotice?(message: string, kind?: "info" | "error"): void; onOpenDiff?(spec: DiffSpec): void }): ReactElement {
+export function MessageCard({ message, sessionId, contentLens, liveSubagents, running = false, onNotice, onOpenDiff, onEditMessage, onRegenerate, onFork }: { message: ChatMessage; sessionId?: string; contentLens?: ExtensionInfo; /** 本消息内 spawn 工具调用关联的实时子代理运行（已由 ExecutionTrack 按 toolCallId 过滤） */ liveSubagents?: LiveSubagentRun[] | undefined; /** 会话运行中：编辑重发/重新生成不可用（分叉允许） */ running?: boolean; onNotice?(message: string, kind?: "info" | "error"): void; onOpenDiff?(spec: DiffSpec): void; /** 会话树操作（仅 user 消息展示）：编辑重发 / 重新生成 / 分叉 */ onEditMessage?(message: ChatMessage): void; onRegenerate?(message: ChatMessage): void; onFork?(message: ChatMessage): void }): ReactElement {
   const { t, locale } = useI18n();
   const createdAt = new Date(message.createdAt);
   const articleRef = useRef<HTMLElement>(null);
@@ -314,6 +314,38 @@ export function MessageCard({ message, sessionId, contentLens, liveSubagents, on
             }}>{t("解析选中", "Explain selection")}</button>
           </>
         )}
+        {message.role === "user" && sessionId && text && onEditMessage && (
+          <button
+            className="copy-btn"
+            disabled={running}
+            title={running ? t("运行中不可用", "Unavailable while running") : t("编辑该消息并重新发送", "Edit this message and resend")}
+            onClick={() => onEditMessage(message)}
+          >
+            <Icon name="edit" size={12} />
+            {t("编辑重发", "Edit & resend")}
+          </button>
+        )}
+        {message.role === "user" && sessionId && text && onRegenerate && (
+          <button
+            className="copy-btn"
+            disabled={running}
+            title={running ? t("运行中不可用", "Unavailable while running") : t("检出到该消息之前并重新生成回复", "Check out to before this message and regenerate the reply")}
+            onClick={() => onRegenerate(message)}
+          >
+            <Icon name="history" size={12} />
+            {t("重新生成", "Regenerate")}
+          </button>
+        )}
+        {message.role === "user" && sessionId && onFork && (
+          <button
+            className="copy-btn"
+            title={t("从该消息分叉为新会话", "Fork a new session from this message")}
+            onClick={() => onFork(message)}
+          >
+            <Icon name="git" size={12} />
+            {t("分叉", "Fork")}
+          </button>
+        )}
       </div>
       {content.map((block, index) => <ContentBlock key={index} block={block} sessionId={sessionId} liveSubagents={liveSubagents} onOpenDiff={onOpenDiff} />)}
       {translation && <details className="content-lens-result" open><summary>{t("译文", "Translation")}</summary><Markdown>{translation}</Markdown></details>}
@@ -338,8 +370,12 @@ function sameContent(previous: MessageContent[], next: MessageContent[]): boolea
 export const MemoMessageCard = memo(MessageCard, (previous, next) =>
   previous.contentLens === next.contentLens
   && previous.sessionId === next.sessionId
+  && previous.running === next.running
   && previous.onNotice === next.onNotice
   && previous.onOpenDiff === next.onOpenDiff
+  && previous.onEditMessage === next.onEditMessage
+  && previous.onRegenerate === next.onRegenerate
+  && previous.onFork === next.onFork
   // 实时子代理状态字段有限且不含函数，JSON 比较足够（仅含本消息相关条目，通常为空）
   && JSON.stringify(previous.liveSubagents ?? null) === JSON.stringify(next.liveSubagents ?? null)
   && previous.message.id === next.message.id
