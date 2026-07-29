@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import type { AppEvent } from "../lib/contracts";
-import { INACTIVE_STATES } from "../components/StatusBar";
+import { INACTIVE_STATES } from "../lib/agent-state";
 
 /** 会话实时活动快照（LiveActivity 组件与 ExecutionTrack prop 的契约） */
 export interface LiveActivityInfo {

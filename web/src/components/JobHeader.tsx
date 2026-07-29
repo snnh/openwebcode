@@ -3,25 +3,11 @@ import { useQuery } from "@tanstack/react-query";
 import type { SessionDetail, BackgroundTaskInfo, ContextUsage, SandboxMode, ShellBackend, SnapshotMode } from "../lib/contracts";
 import { api } from "../lib/api";
 import { formatTokens, formatTokensShort } from "../lib/format";
+import { isBusyState, STATE_LABELS } from "../lib/agent-state";
 import { cacheHitRate } from "../lib/cache-stats";
 import { windowLevel, type ContextWindowInfo } from "../lib/context-window";
 import { Icon } from "./Icon";
 import { useI18n } from "../i18n";
-
-const STATE_LABELS: Record<string, [string, string]> = {
-  thinking: ["思考中", "Thinking"],
-  tool_running: ["执行工具", "Running tool"],
-  waiting_permission: ["等待确认", "Waiting for approval"],
-  budget_paused: ["预算暂停", "Budget paused"],
-  completed: ["已完成", "Completed"],
-  failed: ["失败", "Failed"],
-  aborted: ["已中断", "Aborted"],
-  error: ["错误", "Error"],
-};
-
-export function isBusyState(state?: string): boolean {
-  return state !== undefined && !["idle", "error", "completed", "failed", "aborted"].includes(state);
-}
 
 export interface CostSummary {
   tokens: number;

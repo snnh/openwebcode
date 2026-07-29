@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
+import { isMissing } from "../fs-utils.js";
 import type { CoreClientLike } from "../core-client.js";
 import type { EventBus } from "../events/event-bus.js";
 import type { SessionStore } from "../sessions/session-store.js";
@@ -34,10 +35,6 @@ const POLL_INTERVAL_MS = 50;
 const SAFE_NAME = /^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,127}$/;
 /** 相对路径白名单：普通空格由 quoteArg 安全引用；拒绝控制符与 shell 元字符。 */
 const UNSAFE_PATH_CHARS = /[\r\n\t"'%&|;<>`$\\]/;
-
-function isMissing(error: unknown): boolean {
-  return error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT";
-}
 
 export function validateRef(ref: string, what = "ref"): string {
   const trimmed = ref.trim();
