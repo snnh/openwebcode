@@ -16,17 +16,20 @@ openwebcode/
 │   │   ├── path_policy.c # 沙盒路径校验（denyPaths > writeRoots > readRoots）
 │   │   └── platform/     # 平台代码分文件：exec_{posix,win}.c / fs_{posix,win}.c /
 │   │                     #             path_{posix,win}.c / sandbox_{posix,win}.c
-│   ├── tests/            # Python 脚本喂 RPC + C 单测（path-policy、sandbox-capability）
+│   ├── tests/            # Python 脚本喂 RPC（protocol/fs/index_scan/index_extract/search_job）
+│   │                     #   + C 单测（path-policy、sandbox-capability）
 │   └── vendor/cJSON/     # 唯一第三方依赖（源码内置）
 ├── server/               # Node.js 服务层（TypeScript，ESM）
 │   ├── src/
 │   │   ├── index.ts      # 全局单例装配 + buildServer({...})
 │   │   ├── app.ts        # Fastify HTTP/WS、REST 路由、buildServer(deps) 注入面
 │   │   ├── core-client.ts# C 子进程管理 + RPC 客户端（崩溃自动重启）
-│   │   ├── agent/        # agent loop、工具调度、权限、状态机、护栏、子代理、后台任务
+│   │   ├── agent/        # agent loop、工具调度、权限、状态机、护栏、子代理、后台任务、消息队列
+│   │   │   ├── tool-schemas.ts # 内置工具 schema 单一来源（agent-runner 与 sub-agent 共用）
+│   │   │   └── sub-agent.ts    # 内置类型注册表：explore（只读，缺省）/ general（可写，走权限链）
 │   │   ├── providers/    # anthropic / openai + 统一流式接口
 │   │   ├── context/      # 账本、buildView、驱逐、artifact、压缩
-│   │   ├── sessions/     # 多会话管理、JSONL 持久化
+│   │   ├── sessions/     # 多会话管理、JSONL 持久化、session-tree.ts（activePathMessages 等树导航辅助）
 │   │   ├── cost/         # 定价目录、汇率、成本核算
 │   │   ├── events/       # EventBus（EventEmitter 子类）
 │   │   ├── snapshots/    # 快照后端探测链、git 影子、托管工作区
@@ -35,6 +38,10 @@ openwebcode/
 │   │   ├── index/        # 符号提取、索引存储、code_search/repo_map 供数（0.4.0）
 │   │   ├── diagnostics/  # test_runner 检测、四类生态解析器、DiagnosticSet（0.4.0）
 │   │   ├── scm/          # git status/diff/commit 编排、worktree 生命周期（0.4.0）
+│   │   ├── extensions/   # Extension Host 子进程、扩展 API、官方扩展（含 env-sim/：环境模拟，
+│   │   │                 #   builtin-personas/preset-store/index）；config-schema.ts 做 configSchema 松散校验
+│   │   ├── eval/         # owc-eval 评测服务（默认关闭）
+│   │   ├── export-markdown.ts / export-html.ts # 会话导出（活动路径 Markdown / 自包含分享页）
 │   │   ├── config/       # defaults.json：安装默认配置（随发布更新，构建进 dist/config/）
 │   │   └── rpc/          # C RPC 类型定义
 │   ├── test/             # vitest 测试（单元、HTTP、真实 core 端到端）
@@ -45,10 +52,14 @@ openwebcode/
 │   │   ├── workbench/    # 五区布局外壳、活动栏、布局持久化（0.4.0）
 │   │   ├── commands/     # 命令注册表、keybindings 注册表与默认集、覆盖审计（0.4.0）
 │   │   ├── components/   # Composer / ExecutionTrack / MessageCard / JobHeader /
-│   │   │                 #   CommandPalette / QuickOpen / ShortcutsDialog 等
+│   │   │                 #   CommandPalette / QuickOpen / ShortcutsDialog /
+│   │   │                 #   LiveActivity / SessionSkeleton / ConversationSearch 等
 │   │   │   ├── editor/   # 只读 CodeView、Monaco 编辑器、DiffPane（0.5.0）
-│   │   │   └── panels/   # Context / Cost / Files / Problems / Sandbox / Scm / Timeline / Perf
-│   │   ├── lib/          # api.ts（REST 客户端）、contracts.ts（类型契约）、perf-sampler.ts（帧率采样）
+│   │   │   ├── panels/   # Context / Cost / Files / Problems / Sandbox / Scm / Timeline / Perf
+│   │   │   └── settings/ # SettingsDialog 按页签拆成 16 个分区组件 + shared.ts，
+│   │   │                 #   外壳只剩导航/脏状态/深链
+│   │   ├── lib/          # api.ts（REST 客户端）、contracts.ts（类型契约）、recent-models.ts
+│   │   │                 #   （输入框 Ctrl+P 模型循环）、perf-sampler.ts（帧率采样）
 │   │   └── styles.css    # 全部样式（含窄窗口 ≤1024px 响应式）
 │   └── src/test/         # vitest + jsdom + Testing Library + axe
 ├── packaging/            # 分发布局、安装脚本、owc.cmd、CI 发布流水线
@@ -66,7 +77,7 @@ openwebcode/
 
 ### 1. core（C 执行器）
 
-依赖：CMake ≥ 3.16、C11 编译器（Windows MSVC / Linux gcc/clang）、Python 3（跑协议测试）。
+依赖：CMake ≥ 3.19、C11 编译器（Windows MSVC / Linux gcc/clang）、Python 3（跑协议测试）。
 
 ```sh
 cmake -S core -B build
@@ -170,17 +181,17 @@ provider；它支持 `run: <cmd>` 的工具调用回放与 `tool_result` 回包�
 
 ### core（ctest）
 
-- `test_protocol.py` / `test_fs.py`：Python 脚本喂 JSON-RPC 给编译出的 owc-exec，断言回包
+- `test_protocol.py` / `test_fs.py` / `test_index_scan.py` / `test_index_extract.py` / `test_search_job.py`：Python 脚本喂 JSON-RPC 给编译出的 owc-exec，断言回包
 - `test_path_policy.c` / `test_sandbox.c`：纯 C 单测
 
 ## 二次开发切入点
 
 ### 加一个内置工具
 
-1. 在 `agent-runner.ts` 顶部工具 schema 常量区定义 `XXX_TOOL`（follow 现有 `TODO_WRITE_TOOL` 模式），注册进 `builtInTools()` 与 `TOOL_EXECUTION_CLASS`
+1. 在 `agent/tool-schemas.ts` 定义 `XXX_TOOL`（内置工具 schema 的单一来源，agent-runner 与 sub-agent 共用），并在 `agent-runner.ts` 注册进 `builtInTools()` 与 `TOOL_EXECUTION_CLASS`
 2. `executeTool()` 的 if 链加分支（或抽 `executeBash` 那样的私有方法）
 3. 想自动放行：加到 `permission-coordinator.ts` 的只读白名单首行
-4. 想进子代理只读集：加到 `sub-agent.ts` 的 `SUB_AGENT_TOOL_NAMES`
+4. 想进子代理：只读工具加到 `sub-agent.ts` 的 `SUB_AGENT_TOOL_NAMES`（explore/自定义类型）；可写通用集另见 `GENERAL_AGENT_TOOL_NAMES`（general 类型，工具经会话权限链执行）
 5. 想进 plan 模式白名单：加到 `agent-runner.ts` 的 `PLAN_READONLY`
 6. web 端如要专门渲染：`MessageCard.tsx` 的 `ContentBlock` switch
 7. 测试：端到端用 fake provider 回放工具调用 + 真实 `executeTool`，断言 tool_result
@@ -223,7 +234,7 @@ v1 扩展运行于独立 Extension Host 子进程（可信代码，安全级别 
 
 ### 改上下文策略
 
-- 驱逐策略：`context/context-manager.ts` 的 `evictionPlan(ledger, strategy)` 纯账本运算
+- 驱逐策略：`context/context-manager.ts` 的 `evict()`——按账本 policy（lag/interval/off）计算可驱逐集，纯账本运算
 - 压缩：`fast-model.ts` + `context/compactor.ts`
 - 新增占位/回写状态：改 `ContextLedger` 接口 + `normalizeLedger` 兼容 + `buildView` 渲染 + `replaceLedger` 回滚
 - 前端始终用全量历史，驱逐只影响 LLM 视图——改策略不会破坏 UI

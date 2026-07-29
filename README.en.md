@@ -73,25 +73,41 @@ Closing the browser tab does not stop an active agent. The server continues the 
 
 Messages sent while a job is running enter the Steering queue and are injected on the next turn. The default shortcut is Enter to send and Shift+Enter for a new line; it can be changed under Settings.
 
-## Security and recovery
+## Key capabilities
 
-Permission mode and sandbox mode are independent. `yolo` skips interactive approval but never disables the sandbox. The path policy applies `denyPaths > writeRoots > readRoots`. Use Windows Sandbox for untrusted code; it runs one ephemeral VM per session.
+**Agent tools**: bash (including background tasks), file read/write/edit, glob/grep, `repo_map`/`code_search` (workspace symbol index), `test_runner` (structured diagnostics), `spawn_task`/`spawn_swarm` (isolated-context sub-agents; the swarm fans out several tasks in parallel), `remember` (long-term memory), `todo_write` (live task list), and `web_fetch`/`web_search` (SSRF-guarded), plus tools injected by MCP servers and extensions. Tool schemas, tool-specific prompt guidance, and MCP discovery are sent only to models whose catalog capability enables tools; other models continue as normal chat. Web tools are configured through a shared registry of named provider profiles, each declaring its Search/Fetch capabilities, with the active profile chosen per capability; a tool and its prompt guidance are omitted when no profile with the required capability is selected.
 
-Tool schemas, tool-specific prompt guidance, and MCP discovery are sent only to models whose catalog capability enables tools; other models continue as normal chat. Search and Fetch share one registry of named web-provider profiles. Each profile declares its capabilities, and users independently select the active profile for Search and Fetch. A tool and its prompt guidance are omitted when no profile with the required capability is selected.
+**Sub-agents**: built-in `explore` (read-only exploration) and `general` (read/write, running under the same permission chain and identically configured sandbox as the main agent) types, plus custom sub-agent definitions; `spawn_swarm` dispatches 2–16 templated tasks at once (concurrency cap 4, excess queued). Live cards in the chat track, main-window tabs, and the Subagents panel monitor progress and transcripts in real time, and the panel can also launch sub-agents manually.
 
-Automatic snapshot mode creates a checkpoint before every user turn and can be switched to manual only. Native Btrfs, ZFS, and ReFS backends are detected when available, with a git shadow repository as the fallback. Managed workspaces use VHDX or qcow2 differential images for low-cost snapshots and expose **Snapshot now** in the header whenever the session is idle. They never overwrite the source directory when a session closes or is deleted: the Files panel can generate a three-way diff at any time, and confirmation writes back only conflict-free changes by default.
+**Sessions and the session tree**: conversation history is stored as a tree — a user message offers Edit & resend, Regenerate, and Fork (old branches are always kept), and the Timeline panel can continue from any node. The sidebar manages multiple sessions with rename and pin.
 
-## Extension points
+**Permissions**: ask / acceptEdits / yolo. "Allow once" approves only the current call, which starts after the response is delivered; "always allow" creates a persistent rule. Neither "always allow" nor yolo disables the sandbox — the two mechanisms are orthogonal.
 
-Project configuration lives under `<workspace>/.owc/` and overrides matching global entries under the data directory:
+**Sandbox** (on by default): Windows AppContainer (Job Object compatibility fallback), Windows Sandbox (one ephemeral VM per session, for untrusted code), and Linux Landlock. Capability probes report honestly (enforced/partial/advisory). The path policy applies `denyPaths > writeRoots > readRoots`.
 
-- `agents/*.md` — named sub-agent definitions;
-- `commands/*.md` — slash-command templates;
-- `skills/*/SKILL.md` — on-demand skills;
-- `hooks.json` — lifecycle shell hooks;
-- `mcp.json` — stdio or HTTP MCP servers.
+**Snapshots and rollback**: automatic checkpoint before every user turn, or switch to manual-only. Native Btrfs, ZFS, and ReFS backends are auto-detected, with a git shadow repository as the fallback. Managed workspaces keep the project on a VHDX/qcow2 image disk, where differential-chain snapshots are near-instant and can branch; **Snapshot now** in the header creates an image checkpoint whenever the session is idle. They never overwrite the source directory when a session closes or is deleted: the Files panel can generate a three-way diff at any time, and confirmation writes back only conflict-free changes.
 
-The independent Extension Host also manages installable `owc-ext-*` packages. Five official extensions are included: Context Manager, Attention Optimizer, Content Lens, PDF to Image, and the default-off `owc-eval` regression harness. When enabled, its built-in panel replays deterministic mock-provider tasks in isolated workspaces, persists baseline/candidate comparisons with regression and improvement summaries, and exports self-contained JSON reports.
+**Context management**: token-budget ledger, rolling eviction with placeholder restoration, two fast-model compaction modes, and forced overview compaction at the 85% watermark. The session header shows live context-window usage and the cache-hit rate; the Context panel breaks token attribution down per segment with watermark hints. The frontend always shows full history; eviction only affects the LLM view.
+
+**Models**: multiple named providers can be saved and enabled independently, each pulling or manually maintaining its model list; identically named models coexist per provider. Hot-swap models from the unified list mid-session, with thinking levels, cache-breakpoint optimization, and per-provider cost reports.
+
+**Custom extension points** (project `.owc/` plus a global level; project entries override same-named global ones):
+
+- `agents/*.md` — dedicated sub-agents (frontmatter declares the toolset and model; invoked via `spawn_task agent=<name>`);
+- `commands/*.md` — slash-command templates (`$ARGUMENTS` / `$1..$9` substitution);
+- `hooks.json` — PreToolUse / PostToolUse / UserPromptSubmit / Stop / SessionStart shell hooks; PreToolUse exit 2 vetoes a tool call;
+- `skills/` — skills triggered by `/name`, with the body loaded on demand;
+- `mcp.json` — MCP client configuration (stdio and HTTP transports).
+
+**Extension Host**: an independent child process (IPC, 5-second hook guard, manifest permissions and persistence management). Six official extensions ship built in: context-manager, attention-optimizer, content-lens, pdf-to-image, env-sim (persona simulation, switching the prompt style and tool shapes to another product's conventions), and the owc-eval regression harness. Only context-manager and pdf-to-image are enabled by default; the rest are toggled and tuned in Settings, and third-party `owc-ext-*` packages can be installed from a local directory. When enabled, the owc-eval panel replays deterministic mock-provider tasks in isolated workspaces, persists baseline/candidate comparisons with regression and improvement summaries, and exports self-contained JSON reports.
+
+**Index, diagnostics, and SCM**: the symbol index is extracted on the core side and feeds `repo_map`/`code_search`; after `test_runner` runs tests, builds, or lints, structured diagnostics land in the Problems panel grouped by file with click-to-line navigation; the SCM panel shows the branch and change diffs, generates commit messages (committing always requires confirmation, even under yolo), and manages worktrees with two-step confirmation.
+
+**Online update from the WebUI**: when Settings finds a new version, one click updates in place — Windows downloads the MSI and launches the installer for an overwrite upgrade; Linux replaces the install directory and restarts. Release assets ship with SHA256SUMS.txt, and the online install/update flows enforce the checksum; the launcher, systemd unit, and data directory are preserved.
+
+**Session lifecycle**: closing the browser does not stop the agent; reconnecting replays missed events; permission requests stay suspended until you respond (**no timeout** — on long tasks, remember to come back and confirm).
+
+**Misc**: multimodal image input (paste/drag), GFM Markdown with KaTeX equations, collapsed reasoning blocks, session export/import (JSONL), session sharing (a self-contained read-only `export.html`), headless CLI (`owc run`), and storage GC.
 
 ## Headless CLI
 
@@ -144,7 +160,12 @@ The boot/settings directory is chosen by the launch path: an explicitly set `OWC
 
 The Settings page is persisted as `<boot/settings directory>/server-settings.json`. When `OWC_DATA_DIR` is not set, its saved Data directory value selects the business data directory on the next launch; the settings file itself remains in the boot/settings directory. Without that saved override, both directories are the same.
 
-Session data includes metadata, append-only message JSONL, context ledgers, artifacts, sub-agent state, and checkpoints. Uninstalling the application does not delete user data automatically.
+Session data includes metadata, append-only message JSONL, context ledgers, artifacts, sub-agent state, and checkpoints. Other files under the business data directory include `provider-profiles.json` (provider and web-search profiles with keys), the global `{agents,commands,skills}/` extension points, `hooks.json` (**same trust level as yolo**), `mcp.json`, and `extensions/`; `<cwd>/.owc/` holds project-level overrides.
+
+## Uninstall
+
+- **Windows**: uninstall from Settings → Apps. The default data directory `%LOCALAPPDATA%\openwebcode` is kept, and so is any data directory chosen through `OWC_DATA_DIR`.
+- **Linux**: `rm -rf ~/.local/lib/openwebcode ~/.local/bin/owc`; user data is kept.
 
 ## Acknowledgments
 

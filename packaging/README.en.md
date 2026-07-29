@@ -24,7 +24,7 @@ Windows MSI packaging requires CMake 3.19 or newer (for CPack's WiX custom-names
 Every distributable follows the same sequence:
 
 1. Install the locked Server and Web dependencies.
-2. Build a Debug core and run Server tests against the real `owc-exec` binary.
+2. Build a Debug core, run the core ctest suite, and run Server tests against the real `owc-exec` binary.
 3. Build and test the Web UI.
 4. Prune Server dependencies to production-only.
 5. Build the Release core.
@@ -71,8 +71,8 @@ Run `./install.sh` from the unpacked Linux tarball in a terminal to configure th
 
 - `--prefix <absolute-dir>` installs under `<prefix>/lib/openwebcode` and writes `<prefix>/bin/owc`. The script creates and physically canonicalizes it, then rejects `/`.
 - `--port <1-65535>`, `--data-dir <absolute-dir>`, and `--host <address>` become launcher defaults. Runtime `OWC_PORT`, `OWC_DATA_DIR`, and `OWC_HOST` still override them.
-- A non-loopback `--host` requires `OWC_ACCESS_TOKEN` with at least 32 characters or the server refuses to start. Use the one-time `/?token=...` bootstrap URL to obtain an HttpOnly cookie; keep the service on a trusted network or behind an authenticated reverse proxy.
-- `--use-system-node` skips bundled `node/` and requires an absolute executable Node.js 20+ on `PATH` at install time. If the bundle is missing, the installer switches to that validated mode.
+- A non-loopback `--host` makes the installer generate an `OWC_ACCESS_TOKEN` and write it into the launcher defaults. The server refuses to start on a non-loopback listen unless it gets an `OWC_ACCESS_TOKEN` of at least 32 characters **and** `OWC_ALLOWED_ORIGINS` (comma-separated http(s) origins); open the one-time `/?token=...` bootstrap URL to obtain an HttpOnly cookie. Keep the service on a trusted network or behind an authenticated reverse proxy.
+- `--use-system-node` skips bundled `node/` and requires an absolute executable Node.js **24+** on `PATH` at install time. If the bundle is missing, the installer switches to that validated mode.
 - `--with-systemd` writes a user unit only and never runs `systemctl`; follow the printed `systemctl --user daemon-reload && systemctl --user enable --now openwebcode` command.
 - `--system` and `--with-desktop-entry` are deliberately not implemented: the installer fails explicitly instead of claiming system-wide installation or desktop integration.
 
@@ -119,4 +119,11 @@ git tag -a v0.5.2 -m "OpenWebCode v0.5.2"
 git push origin v0.5.2
 ```
 
-The workflow can also be dispatched manually with a `v*` tag. By default, the benchmark job is a hard release dependency: a regression over 15% fails the workflow, and normalized `bench-results-*.json` files ship as release assets for the next baseline. A manual dispatch may explicitly set `skip_performance_tests` for an emergency release; tag-triggered releases cannot skip benchmarks, and a skipped run publishes no benchmark JSON. The release still requires both platform jobs, installation checks, and the `/api/health` smoke checks to pass.
+The workflow can also be dispatched manually with a `v*` tag (created from the current commit if it does not exist). The pipeline enforces:
+
+- **Version consistency** (tag-triggered runs only): the tag without its leading `v` must equal both `server/package.json`'s `version` and `core/CMakeLists.txt`'s `project(VERSION)`; a mismatch fails both platform jobs at their first step.
+- **Test gate**: each platform job (Windows and Linux) runs the core ctest suite, the Server tests against the real `owc-exec`, and the Web build and tests. Publishing requires both platform jobs to be green.
+- **Bundled Node verification**: the pinned Node 24 runtime (`env.NODE_DIST_VERSION`, currently 24.18.0) is downloaded from nodejs.org and verified against the official `SHASUMS256.txt`; no hash is hardcoded.
+- **Install smoke checks**: the Windows MSI is verified with `verify-wix-options.ps1`, silently installed, health-checked at `/api/health`, and uninstalled; the Linux tarball is installed with `./install.sh --yes` into a temporary prefix and health-checked.
+- **Benchmarks**: the benchmark job is a hard release dependency by default, but regression comparison is warning-level — a regression over 15% only warns and does not block the release, while a current build that fails to produce every benchmark scenario result fails the job. A missing or undownloadable previous-release baseline also skips comparison with a warning, unless `bootstrap_benchmark_baseline` is explicitly enabled for the first baseline. Normalized `bench-results-*.json` files ship as release assets for the next baseline. A manual dispatch may explicitly set `skip_performance_tests` for an emergency release; tag-triggered releases cannot skip benchmarks, and a skipped run publishes no benchmark JSON.
+- **Release notes**: the GitHub Release body is extracted from the matching `## [version]` section of `CHANGELOG.md`; a missing or empty section blocks the release. `SHA256SUMS.txt` is generated for both archives and self-checked before upload.
