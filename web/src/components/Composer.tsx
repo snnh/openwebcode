@@ -1028,7 +1028,7 @@ const mentionHasMatches = mentionItems.length > 0;
       <div className="config-row" aria-label={t("会话配置", "Session configuration")}>
         <div className="composer-config-main">
           <label>
-            {t("模式", "Mode")}
+            <span className="field-label">{t("模式", "Mode")}</span>
             <select
               value={current.agentMode ?? "build"}
               disabled={running}
@@ -1039,7 +1039,7 @@ const mentionHasMatches = mentionItems.length > 0;
             </select>
           </label>
           <label className="composer-model-field">
-            {t("模型", "Model")}
+            <span className="field-label">{t("模型", "Model")}</span>
             <select value={modelSelection} disabled={running} onChange={(event) => {
               const next = selectableModels.find((item) => JSON.stringify([item.provider, item.id]) === event.target.value || item.id === event.target.value);
               if (next) {
@@ -1066,7 +1066,7 @@ const mentionHasMatches = mentionItems.length > 0;
             </select>
           </label>
           <label className="composer-thinking-field">
-            {t("思考", "Thinking")}
+            <span className="field-label">{t("思考", "Thinking")}</span>
             <select
               value={thinkingSelection}
               disabled={running || (selectedModel !== undefined && !thinkingControlSupported)}
@@ -1095,7 +1095,7 @@ const mentionHasMatches = mentionItems.length > 0;
             </select>
           </label>
           <label>
-            {t("权限", "Permissions")}
+            <span className="field-label">{t("权限", "Permissions")}</span>
             <select
               value={current.permissionMode ?? "ask"}
               disabled={running}
@@ -1114,7 +1114,7 @@ const mentionHasMatches = mentionItems.length > 0;
             onClick={() => setAdvancedConfigOpen((value) => !value)}
           >
             <Icon name="settings" size={13} />
-            {t("高级设置", "Advanced")}
+            <span className="field-label">{t("高级设置", "Advanced")}</span>
             <Icon name={advancedConfigOpen ? "chevron-up" : "chevron-down"} size={12} />
           </button>
         </div>
