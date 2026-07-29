@@ -206,3 +206,20 @@ describe("JobHeader 缓存命中 badge", () => {
     expect(screen.queryByTestId("cache-usage")).toBeNull();
   });
 });
+
+describe("JobHeader 导出", () => {
+  it("包含指向 /api/sessions/<id>/export.md 的「导出 Markdown」链接", () => {
+    vi.spyOn(api, "tasks").mockResolvedValue([]);
+    vi.spyOn(api, "sandboxCapabilities").mockResolvedValue({ appcontainer: true, jobobject: true, off: true, wsb: { available: false, reason: "测试" } });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <JobHeader session={session} agentState="idle" onAbort={() => undefined} onConfig={async () => undefined} />
+      </QueryClientProvider>,
+    );
+
+    const link = screen.getByRole("link", { name: "导出 Markdown" });
+    expect(link).toHaveAttribute("href", "/api/sessions/session-1/export.md");
+    expect(link).toHaveAttribute("download");
+  });
+});

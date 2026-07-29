@@ -234,6 +234,15 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
         >
           <Icon name="download" size={14} />
         </a>
+        <a
+          className="icon-btn"
+          href={`/api/sessions/${session.id}/export.md`}
+          download
+          aria-label={t("导出 Markdown", "Export Markdown")}
+          title={t("导出会话为 Markdown 文档", "Export session as a Markdown document")}
+        >
+          <Icon name="file" size={14} />
+        </a>
         {busy && (
           <button className="btn danger-outline" onClick={onAbort}>{t("中断", "Stop")}</button>
         )}
