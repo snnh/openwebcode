@@ -1,6 +1,7 @@
 /**
  * 活动栏（VSCode 风格左侧窄图标栏，0.4.0 Phase 5a）：
- * 上部为侧栏视图切换（会话/文件/SCM/问题），下部为命令面板与设置入口。
+ * 上部为侧栏视图切换（会话/文件/SCM/问题），下部为帮助/通知/终端/设置入口。
+ * 命令面板不走活动栏，仅保留 Ctrl+Shift+P 快捷键。
  */
 import type { ReactElement } from "react";
 import { Icon, type IconName } from "../components/Icon";
@@ -14,16 +15,21 @@ const VIEW_META: Record<SidebarView, { zh: string; en: string; icon: IconName }>
   problems: { zh: "问题", en: "Problems", icon: "alert" },
 };
 
-export function ActivityBar({ activeView, sidebarVisible, problemsBadge = 0, notificationsBadge = 0, onShowView, onShowCommands, onShowNotifications, onOpenSettings }: {
+export function ActivityBar({ activeView, sidebarVisible, problemsBadge = 0, notificationsBadge = 0, terminalDisabled = false, onShowView, onShowHelp, onShowNotifications, onOpenTerminal, onOpenSettings }: {
   activeView: SidebarView;
   sidebarVisible: boolean;
   /** 未查看的诊断失败数角标（diagnostics.updated，不弹窗不打断） */
   problemsBadge?: number;
   /** 未读通知数角标（0.4.0 Phase 5b 通知中心） */
   notificationsBadge?: number;
+  /** 无当前会话时禁用终端入口 */
+  terminalDisabled?: boolean;
   onShowView(view: SidebarView): void;
-  onShowCommands(): void;
+  /** 帮助与快捷键（打开快捷键速查对话框） */
+  onShowHelp(): void;
   onShowNotifications(): void;
+  /** 打开并选中当前会话的终端标签 */
+  onOpenTerminal(): void;
   onOpenSettings(): void;
 }): ReactElement {
   const { t } = useI18n();
@@ -54,6 +60,14 @@ export function ActivityBar({ activeView, sidebarVisible, problemsBadge = 0, not
       <div className="activity-bar-bottom">
         <button
           className="activity-btn"
+          aria-label={t("帮助与快捷键", "Help & keyboard shortcuts")}
+          title={t("帮助与快捷键", "Help & keyboard shortcuts")}
+          onClick={onShowHelp}
+        >
+          <Icon name="help" size={20} />
+        </button>
+        <button
+          className="activity-btn"
           aria-label={notificationsBadge > 0 ? t(`通知中心（${notificationsBadge} 条未读）`, `Notifications (${notificationsBadge} unread)`) : t("通知中心", "Notifications")}
           title={t("通知中心", "Notifications")}
           onClick={onShowNotifications}
@@ -63,7 +77,13 @@ export function ActivityBar({ activeView, sidebarVisible, problemsBadge = 0, not
             <span className="activity-badge" aria-hidden>{notificationsBadge > 99 ? "99+" : notificationsBadge}</span>
           )}
         </button>
-        <button className="activity-btn" aria-label={t("命令面板", "Command Palette")} title={t("命令面板（Ctrl+Shift+P）", "Command Palette (Ctrl+Shift+P)")} onClick={onShowCommands}>
+        <button
+          className="activity-btn"
+          aria-label={t("终端", "Terminal")}
+          title={t("终端", "Terminal")}
+          disabled={terminalDisabled}
+          onClick={onOpenTerminal}
+        >
           <Icon name="terminal" size={20} />
         </button>
         <button className="activity-btn" aria-label={t("设置", "Settings")} title={t("设置（Ctrl+,）", "Settings (Ctrl+,)")} onClick={onOpenSettings}>

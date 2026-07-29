@@ -15,6 +15,7 @@ import { useAgentRun } from "./hooks/use-agent-run";
 import { useLiveActivity, type LiveActivityInfo } from "./hooks/use-live-activity";
 import { useLiveSubagents } from "./hooks/use-live-subagents";
 import { useSubagentTabs } from "./hooks/use-subagent-tabs";
+import { useTerminalTabs } from "./hooks/use-terminal-tabs";
 import { deriveSubagentRunsFromMessages, mergeSubagentRuns } from "./lib/subagent-runs";
 import { useSessionEventStream } from "./hooks/use-session-event-stream";
 import { useStreamBuffers } from "./hooks/use-stream-buffers";
@@ -30,6 +31,7 @@ import { ExecutionTrack } from "./components/ExecutionTrack";
 import { CONVERSATION_SEARCH_EVENT } from "./components/ConversationSearch";
 import { SubagentTabStrip } from "./components/SubagentTabStrip";
 import { SubagentTabView } from "./components/SubagentTabView";
+import { TerminalView } from "./components/TerminalView";
 import { JobHeader } from "./components/JobHeader";
 import { isBusyState, INACTIVE_STATES } from "./lib/agent-state";
 import { NewSessionDialog, type NewSessionValues } from "./components/NewSessionDialog";
@@ -129,6 +131,8 @@ export function App(): ReactElement {
   const [runFailures, setRunFailures] = useState<Record<string, AgentErrorPayload>>({});
   // 主区子代理标签（0.7.x）：按会话键控，subagent.started 自动创建（不抢焦点）
   const { tabsBySession: subagentTabs, selectedBySession: selectedSubagentTabs, openFromStarted: openSubagentTabFromStarted, openTab: focusSubagentTab, selectTab: selectSubagentTab, closeTab: closeSubagentTab, removeSession: removeSubagentTabsSession } = useSubagentTabs();
+  // 主区终端标签：每会话一个，开/关与选中态按会话键控；选中与子代理标签互斥
+  const { openBySession: terminalTabsOpen, selectedBySession: terminalTabsSelected, openTerminal, setTerminalSelected, closeTerminal, removeSession: removeTerminalTabsSession } = useTerminalTabs();
   // 子代理运行状态：sessionId → taskId → run；终态保留（子代理面板需要会话级历史），按会话封顶
   const { liveSubagents, applyEvent: applySubagentEvent, removeSession: removeSubagentSession } = useLiveSubagents({ dropOnToolEnd: false, onStarted: openSubagentTabFromStarted });
   // Problems 视图角标：diagnostics.updated 到达时记录未查看失败数，打开 Problems 视图清除
@@ -389,9 +393,12 @@ export function App(): ReactElement {
     () => mergeSubagentRuns(currentId ? liveSubagents[currentId] ?? {} : {}, derivedSubagentRuns),
     [currentId, liveSubagents, derivedSubagentRuns],
   );
-  // 当前会话选中的子代理标签（undefined = 「对话」）；标签列表按会话隔离，切换会话自动回对话
+  // 当前会话选中的子代理标签（undefined = 「主对话」或终端）；标签列表按会话隔离，切换会话自动回主对话
   const currentSubagentTabs = currentId ? subagentTabs[currentId] ?? [] : [];
   const selectedSubagentTab = currentId ? selectedSubagentTabs[currentId] : undefined;
+  // 当前会话终端标签：open 渲染标签与面板（保持挂载），selected 决定内容互换
+  const terminalOpen = currentId ? terminalTabsOpen[currentId] === true : false;
+  const terminalSelected = terminalOpen && currentId ? terminalTabsSelected[currentId] === true : false;
   // 子代理面板「在标签中打开」：从合并运行记录取标签字段，创建并聚焦（关闭不影响运行本身）
   const openSubagentTab = useCallback((toolCallId: string): void => {
     if (!currentId) return;
@@ -403,7 +410,15 @@ export function App(): ReactElement {
       ...(run.agent ? { agent: run.agent } : {}),
       ...(run.swarm ? { swarmTotal: run.swarm.total } : {}),
     });
-  }, [currentId, subagentRuns, focusSubagentTab]);
+    // 选中互斥：聚焦子代理标签时取消终端选中
+    setTerminalSelected(currentId, false);
+  }, [currentId, subagentRuns, focusSubagentTab, setTerminalSelected]);
+  // 活动栏终端入口：打开并选中当前会话终端标签（同时清除子代理选中，保证互斥）
+  const openTerminalTab = useCallback((): void => {
+    if (!currentId) return;
+    openTerminal(currentId);
+    selectSubagentTab(currentId, undefined);
+  }, [currentId, openTerminal, selectSubagentTab]);
   const currentState = currentRun?.state ?? (currentId ? agentStates[currentId] : undefined);
   const running = Boolean(stream[currentId ?? ""]) || isBusyState(currentState);
   // 对话区底部实时活动条：WS 工具事件优先，状态/起始时间回退到 run 快照（刷新页面后首个事件前可用）
@@ -752,6 +767,7 @@ export function App(): ReactElement {
         setRunFailures(removeKey);
         removeSubagentSession(id);
         removeSubagentTabsSession(id);
+        removeTerminalTabsSession(id);
         setProblemsBadges(removeKey);
         delete lastStatesRef.current[id];
         discardStream(id);
@@ -956,8 +972,10 @@ export function App(): ReactElement {
             problemsBadge={currentId ? problemsBadges[currentId] ?? 0 : 0}
             notificationsBadge={unreadCount(notifications)}
             onShowView={showWorkbenchView}
-            onShowCommands={() => setPaletteOpen(true)}
+            onShowHelp={() => setShortcutsOpen(true)}
             onShowNotifications={openNotifications}
+            onOpenTerminal={openTerminalTab}
+            terminalDisabled={!current}
             onOpenSettings={() => openSettings()}
           />
         }
@@ -993,8 +1011,18 @@ export function App(): ReactElement {
                     tabs={currentSubagentTabs}
                     runs={subagentRuns}
                     selected={selectedSubagentTab}
-                    onSelect={(toolCallId) => selectSubagentTab(current.id, toolCallId)}
+                    {...(terminalOpen ? { terminal: { selected: terminalSelected } } : {})}
+                    onSelect={(toolCallId) => {
+                      selectSubagentTab(current.id, toolCallId);
+                      // 选中互斥：选主对话/子代理标签时取消终端选中
+                      setTerminalSelected(current.id, false);
+                    }}
                     onClose={(toolCallId) => closeSubagentTab(current.id, toolCallId)}
+                    onSelectTerminal={() => {
+                      selectSubagentTab(current.id, undefined);
+                      setTerminalSelected(current.id, true);
+                    }}
+                    onCloseTerminal={() => closeTerminal(current.id)}
                   />
                 )}
                 {todos.data && todos.data.length > 0 && (
@@ -1008,11 +1036,11 @@ export function App(): ReactElement {
                     ))}</ul>
                   </details>
                 )}
-                {/* 对话/子代理标签内容互换：ExecutionTrack 保持挂载（hidden 隐藏），滚动与展开状态不丢 */}
-                <div className="main-tab-panel" role="tabpanel" aria-label={t("对话", "Chat")} hidden={selectedSubagentTab !== undefined}>
+                {/* 主对话/终端/子代理标签内容互换：ExecutionTrack 保持挂载（hidden 隐藏），滚动与展开状态不丢 */}
+                <div className="main-tab-panel" role="tabpanel" aria-label={t("主对话", "Main")} hidden={selectedSubagentTab !== undefined || terminalSelected}>
                 <ExecutionTrack
                   session={displaySession ?? current}
-                  trackVisible={selectedSubagentTab === undefined}
+                  trackVisible={selectedSubagentTab === undefined && !terminalSelected}
                   contentLens={extensions.data?.find((extension) => extension.id === "content-lens" && extension.enabled)}
                   onNotice={notify}
                   liveSubagents={liveSubagents[current.id] ?? {}}
@@ -1041,6 +1069,11 @@ export function App(): ReactElement {
                   liveActivity={liveActivity}
                 />
                 </div>
+                {terminalOpen && (
+                  <div className="main-tab-panel" role="tabpanel" aria-label={t("终端", "Terminal")} hidden={!terminalSelected}>
+                    <TerminalView session={displaySession ?? current} onNotice={notify} />
+                  </div>
+                )}
                 {selectedSubagentTab !== undefined && (
                   <div className="main-tab-panel" role="tabpanel" aria-label={t("子代理", "Subagent")}>
                     <SubagentTabView sessionId={current.id} toolCallId={selectedSubagentTab} runs={subagentRuns} />

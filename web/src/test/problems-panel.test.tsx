@@ -99,8 +99,9 @@ describe("Problems 角标（0.4.0 Phase 5a：角标迁至活动栏）", () => {
         sidebarVisible={sidebarVisible}
         problemsBadge={badge}
         onShowView={onShowView}
-        onShowCommands={() => undefined}
+        onShowHelp={() => undefined}
         onShowNotifications={() => undefined}
+        onOpenTerminal={() => undefined}
         onOpenSettings={() => undefined}
       />,
     );
@@ -114,12 +115,12 @@ describe("Problems 角标（0.4.0 Phase 5a：角标迁至活动栏）", () => {
 
   it("角标为 0 或问题视图已激活时不显示", () => {
     const first = render(
-      <ActivityBar activeView="sessions" sidebarVisible problemsBadge={0} onShowView={() => undefined} onShowCommands={() => undefined} onShowNotifications={() => undefined} onOpenSettings={() => undefined} />,
+      <ActivityBar activeView="sessions" sidebarVisible problemsBadge={0} onShowView={() => undefined} onShowHelp={() => undefined} onShowNotifications={() => undefined} onOpenTerminal={() => undefined} onOpenSettings={() => undefined} />,
     );
     expect(screen.queryByLabelText(/个新问题/)).not.toBeInTheDocument();
     first.unmount();
     render(
-      <ActivityBar activeView="problems" sidebarVisible problemsBadge={2} onShowView={() => undefined} onShowCommands={() => undefined} onShowNotifications={() => undefined} onOpenSettings={() => undefined} />,
+      <ActivityBar activeView="problems" sidebarVisible problemsBadge={2} onShowView={() => undefined} onShowHelp={() => undefined} onShowNotifications={() => undefined} onOpenTerminal={() => undefined} onOpenSettings={() => undefined} />,
     );
     expect(screen.queryByLabelText(/个新问题/)).not.toBeInTheDocument();
   });
