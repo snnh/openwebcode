@@ -139,8 +139,8 @@ describe("App 主区子代理标签", () => {
     });
 
     const tab = await screen.findByRole("tab", { name: "scout" });
-    // 不抢焦点：仍停留在「对话」
-    expect(screen.getByRole("tab", { name: "对话" })).toHaveAttribute("aria-selected", "true");
+    // 不抢焦点：仍停留在「主对话」
+    expect(screen.getByRole("tab", { name: "主对话" })).toHaveAttribute("aria-selected", "true");
     expect(tab).toHaveAttribute("aria-selected", "false");
     // 运行中：琥珀 spinner + 未选中注意样式
     expect(tab.querySelector(".subagent-run-spinner")).toBeInTheDocument();
@@ -200,7 +200,7 @@ describe("App 主区子代理标签", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "关闭标签 scout" }));
     expect(screen.queryByRole("tab", { name: "scout" })).toBeNull();
-    expect(screen.getByRole("tab", { name: "对话" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "主对话" })).toHaveAttribute("aria-selected", "true");
     expect(document.querySelector(".subagent-tab-view")).toBeNull();
     expect(document.querySelector(".main-tab-panel[hidden]")).toBeNull();
   });
@@ -247,7 +247,7 @@ describe("App 主区子代理标签", () => {
     fireEvent.click(link2);
     await screen.findByText(s2Text);
     expect(screen.queryByRole("tab", { name: "scout" })).toBeNull();
-    expect(screen.getByRole("tab", { name: "对话" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "主对话" })).toBeInTheDocument();
 
     // s2 自己的 started 只开 s2 的标签
     act(() => {

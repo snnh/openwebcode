@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import type { AgentErrorPayload, ChatMessage, ExtensionInfo, LiveSubagentRun, SessionDetail } from "../lib/contracts";
 import { agentErrorGuidance } from "../lib/agent-error";
+import { shellCommandOf, toolResultOf } from "../lib/shell-messages";
 import type { DiffSpec } from "./editor/DiffPane";
 import { Icon } from "./Icon";
 import { LiveActivity } from "./LiveActivity";
@@ -10,26 +11,6 @@ import { MemoMessageCard, ThinkingBlock } from "./MessageCard";
 import { CONVERSATION_SEARCH_EVENT, ConversationSearch, findMatches, highlightArticle, unwrapSearchMarks } from "./ConversationSearch";
 import { PermissionCard, type PermissionRequest } from "./PermissionCard";
 import { useI18n } from "../i18n";
-
-/** 用户消息若以 `!` 开头则是 shell 快捷命令，返回命令文本；否则 undefined */
-function shellCommandOf(message?: ChatMessage): string | undefined {
-  if (!message || message.role !== "user") return undefined;
-  const text = message.content
-    .filter((block) => block.type === "text")
-    .map((block) => block.text ?? "")
-    .join("\n")
-    .trim();
-  return text.startsWith("!") ? text : undefined;
-}
-
-/** 工具消息的 tool_result 文本（shell 输出/错误） */
-function toolResultOf(message?: ChatMessage): string {
-  if (!message || message.role !== "tool") return "";
-  return message.content
-    .filter((block) => block.type === "tool_result")
-    .map((block) => block.content ?? "")
-    .join("\n");
-}
 
 const VIRTUALIZE_AFTER = 80;
 const ESTIMATED_MESSAGE_HEIGHT = 180;
