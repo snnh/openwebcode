@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wchar.h>
 
 static volatile LONG sandbox_run_counter = 0;
 
@@ -127,6 +128,46 @@ static char *build_shell_command(const wchar_t *shell_path, const char *argument
     return full;
 }
 
+/* Under AppContainer the real user profile is not granted, so pwsh fails its
+   FileSystem InitializeDefaultDrives at engine start and prints a spurious
+   error to stderr on every command (agents then mistake it for a failed
+   command and retry). Redirect the profile variables into the workspace,
+   which the AppContainer profile always grants. Returns NULL to fall back to
+   inheriting the parent environment. */
+static wchar_t *build_powershell_environment(const wchar_t *cwd) {
+    LPWCH parent, entry;
+    wchar_t *block, *dst;
+    size_t total = 1, length;
+    parent = GetEnvironmentStringsW();
+    if (!parent) return NULL;
+    for (entry = parent; *entry; entry += wcslen(entry) + 1) {
+        if (_wcsnicmp(entry, L"USERPROFILE=", 12) == 0) continue;
+        if (_wcsnicmp(entry, L"HOME=", 5) == 0) continue;
+        total += wcslen(entry) + 1;
+    }
+    total += 12 + wcslen(cwd) + 1 + 5 + wcslen(cwd) + 1;
+    block = (wchar_t *)malloc(total * sizeof(*block));
+    if (!block) { FreeEnvironmentStringsW(parent); return NULL; }
+    dst = block;
+    for (entry = parent; *entry; entry += length + 1) {
+        length = wcslen(entry);
+        if (_wcsnicmp(entry, L"USERPROFILE=", 12) == 0) continue;
+        if (_wcsnicmp(entry, L"HOME=", 5) == 0) continue;
+        (void)memcpy(dst, entry, (length + 1) * sizeof(*dst));
+        dst += length + 1;
+    }
+    (void)memcpy(dst, L"USERPROFILE=", 12 * sizeof(*dst)); dst += 12;
+    length = wcslen(cwd);
+    (void)memcpy(dst, cwd, length * sizeof(*dst)); dst += length;
+    *dst++ = L'\0';
+    (void)memcpy(dst, L"HOME=", 5 * sizeof(*dst)); dst += 5;
+    (void)memcpy(dst, cwd, length * sizeof(*dst)); dst += length;
+    *dst++ = L'\0';
+    *dst = L'\0';
+    FreeEnvironmentStringsW(parent);
+    return block;
+}
+
 int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *result) {
     SECURITY_ATTRIBUTES security={sizeof(security),NULL,TRUE};
     HANDLE out_read=NULL,out_write=NULL,err_read=NULL,err_write=NULL,input=NULL,job=NULL;
@@ -135,7 +176,7 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits={0};
     LPPROC_THREAD_ATTRIBUTE_LIST attributes=NULL;
     SIZE_T attribute_size=0;
-    wchar_t *cwd=NULL,*command=NULL; wchar_t shell_path[MAX_PATH]; char *full_command=NULL;
+    wchar_t *cwd=NULL,*command=NULL,*env_block=NULL; wchar_t shell_path[MAX_PATH]; char *full_command=NULL;
     owc_sandbox *sandbox=NULL; owc_sandbox_options sandbox_options={0};
     char sandbox_identity[96];
     char *write_roots[17]={0}; size_t write_root_count=0,write_root_index;
@@ -178,6 +219,7 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
         if(request->sandbox_enabled) sandbox=owc_sandbox_create(&sandbox_options,result->sandbox_reason,sizeof(result->sandbox_reason));
         result->sandbox_status=sandbox?(int)owc_sandbox_get_status(sandbox):(int)OWC_SANDBOX_ADVISORY;
     }
+    if(sandbox&&powershell)env_block=build_powershell_environment(cwd);
     (void)InitializeProcThreadAttributeList(NULL,sandbox?2:1,0,&attribute_size);
     if(!attribute_size) goto cleanup;
     attributes=(LPPROC_THREAD_ATTRIBUTE_LIST)malloc(attribute_size); if(!attributes) goto cleanup;
@@ -188,7 +230,7 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
 
     if(!CreateProcessW(shell_path,command,NULL,NULL,TRUE,
                        CREATE_NO_WINDOW|CREATE_SUSPENDED|EXTENDED_STARTUPINFO_PRESENT,
-                       NULL,cwd,&startup.StartupInfo,&process)) {
+                       env_block,cwd,&startup.StartupInfo,&process)) {
         DWORD appcontainer_error=GetLastError();
         if(!sandbox) goto cleanup;
         owc_sandbox_destroy(sandbox);sandbox=NULL;result->sandbox_status=(int)OWC_SANDBOX_PARTIAL;
@@ -255,5 +297,5 @@ cleanup:
     if(attributes) DeleteProcThreadAttributeList(attributes); free(attributes);
     owc_sandbox_destroy(sandbox);
     for(write_root_index=0;write_root_index<write_root_count;write_root_index++)free(write_roots[write_root_index]);
-    free(cwd); free(command); free(full_command); return ok;
+    free(cwd); free(command); free(full_command); free(env_block); return ok;
 }
