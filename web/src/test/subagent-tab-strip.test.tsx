@@ -34,7 +34,7 @@ describe("SubagentTabStrip", () => {
     expect(tab).toHaveClass("attention");
     // 低饱和着色与 spinner 样式挂接的类名钩子（不断言具体颜色）
     expect(tab!.querySelector(".subagent-tab-spinner")).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "对话" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "主对话" })).toHaveAttribute("aria-selected", "true");
   });
 
   it("选中的运行中标签不加 attention；终态标签渲染状态圆点", () => {
