@@ -44,14 +44,17 @@ jobs:
           set -euo pipefail
           TAG="${{ inputs.tag || github.ref_name }}"
           VERSION="${TAG#v}"
+          # 预发布 tag（如 v1.0.0-beta.1）：package.json 存完整版本号，CMake
+          # project(VERSION) 只能存数值基版本，故 core 侧与 BASE_VERSION 比对
+          BASE_VERSION="${VERSION%%-*}"
           PKG_VERSION="$(node -p "require('./server/package.json').version")"
           CORE_VERSION="$(sed -n 's/^project(openwebcode_core VERSION \([0-9][0-9.]*\).*/\1/p' core/CMakeLists.txt | head -n 1)"
           if [ -z "$PKG_VERSION" ] || [ -z "$CORE_VERSION" ]; then
             echo "::error::无法解析仓库内版本号：package.json='$PKG_VERSION' CMakeLists.txt='$CORE_VERSION'"
             exit 1
           fi
-          if [ "$VERSION" != "$PKG_VERSION" ] || [ "$VERSION" != "$CORE_VERSION" ]; then
-            echo "::error::tag 版本 ($VERSION) 与 server/package.json ($PKG_VERSION)、core/CMakeLists.txt ($CORE_VERSION) 不一致，请先对齐再发版"
+          if [ "$VERSION" != "$PKG_VERSION" ] || [ "$BASE_VERSION" != "$CORE_VERSION" ]; then
+            echo "::error::tag 版本 ($VERSION，基版本 $BASE_VERSION) 与 server/package.json ($PKG_VERSION)、core/CMakeLists.txt ($CORE_VERSION) 不一致，请先对齐再发版"
             exit 1
           fi
       - uses: actions/setup-node@v4
@@ -66,7 +69,9 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${{ inputs.tag || github.ref_name }}"
-          echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+          VERSION="${TAG#v}"
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "BASE_VERSION=${VERSION%%-*}" >> "$GITHUB_ENV"
       - name: Build server
         shell: bash
         run: |
@@ -120,7 +125,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cmake -S core -B build -A x64 -DCPACK_PACKAGE_VERSION="$VERSION"
+          cmake -S core -B build -A x64 -DCPACK_PACKAGE_VERSION="$BASE_VERSION" -DCPACK_FULL_VERSION="$VERSION"
           cmake --build build --config Release --target owc-exec
       - name: Stage runtime into build/stage
         shell: bash
@@ -234,14 +239,17 @@ jobs:
           set -euo pipefail
           TAG="${{ inputs.tag || github.ref_name }}"
           VERSION="${TAG#v}"
+          # 预发布 tag（如 v1.0.0-beta.1）：package.json 存完整版本号，CMake
+          # project(VERSION) 只能存数值基版本，故 core 侧与 BASE_VERSION 比对
+          BASE_VERSION="${VERSION%%-*}"
           PKG_VERSION="$(node -p "require('./server/package.json').version")"
           CORE_VERSION="$(sed -n 's/^project(openwebcode_core VERSION \([0-9][0-9.]*\).*/\1/p' core/CMakeLists.txt | head -n 1)"
           if [ -z "$PKG_VERSION" ] || [ -z "$CORE_VERSION" ]; then
             echo "::error::无法解析仓库内版本号：package.json='$PKG_VERSION' CMakeLists.txt='$CORE_VERSION'"
             exit 1
           fi
-          if [ "$VERSION" != "$PKG_VERSION" ] || [ "$VERSION" != "$CORE_VERSION" ]; then
-            echo "::error::tag 版本 ($VERSION) 与 server/package.json ($PKG_VERSION)、core/CMakeLists.txt ($CORE_VERSION) 不一致，请先对齐再发版"
+          if [ "$VERSION" != "$PKG_VERSION" ] || [ "$BASE_VERSION" != "$CORE_VERSION" ]; then
+            echo "::error::tag 版本 ($VERSION，基版本 $BASE_VERSION) 与 server/package.json ($PKG_VERSION)、core/CMakeLists.txt ($CORE_VERSION) 不一致，请先对齐再发版"
             exit 1
           fi
       - uses: actions/setup-node@v4
@@ -256,7 +264,9 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${{ inputs.tag || github.ref_name }}"
-          echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+          VERSION="${TAG#v}"
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "BASE_VERSION=${VERSION%%-*}" >> "$GITHUB_ENV"
       - name: Build server
         run: |
           set -euo pipefail
@@ -300,7 +310,7 @@ jobs:
       - name: Build core (Release)
         run: |
           set -euo pipefail
-          cmake -S core -B build -DCMAKE_BUILD_TYPE=Release -DCPACK_PACKAGE_VERSION="$VERSION"
+          cmake -S core -B build -DCMAKE_BUILD_TYPE=Release -DCPACK_PACKAGE_VERSION="$BASE_VERSION" -DCPACK_FULL_VERSION="$VERSION"
           cmake --build build --target owc-exec --parallel
       - name: Stage runtime into build/stage
         run: |
@@ -458,6 +468,8 @@ jobs:
           tag_name: v${{ env.VERSION }}
           body_path: RELEASE_NOTES.md
           draft: false
+          # 版本号带预发布后缀（如 1.0.0-beta.1）时标记为 Pre-release
+          prerelease: ${{ contains(env.VERSION, '-') }}
           fail_on_unmatched_files: true
           # On workflow_dispatch, a new tag must point at the commit that
           # started this run instead of GitHub's default branch implicitly.
