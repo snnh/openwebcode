@@ -2,7 +2,6 @@ import { lazy, Suspense, useEffect, useState, type MouseEvent as ReactMouseEvent
 import type { ContextUsage, LiveSubagentRun, SessionDetail } from "../lib/contracts";
 import type { ContextWindowInfo } from "../lib/context-window";
 import type { DiffSpec } from "./editor/DiffPane";
-import { formatTokensShort } from "../lib/format";
 import { Icon, type IconName } from "./Icon";
 import { INACTIVE_STATES, stateLabel } from "./StatusBar";
 
@@ -152,9 +151,7 @@ export function BottomPanel({ sessionId, session, running, evalEnabled = false, 
             </span>
             <span>{session.agentMode ?? "build"}</span>
             <span title={`${session.provider}/${session.model}`}>{session.model}</span>
-            {status.tokens !== undefined && <span className="status-optional">{formatTokensShort(status.tokens)} tokens</span>}
             {status.windowPercent !== undefined && <span className="status-optional" title={t("上下文窗口占用", "Context window usage")}>{t("窗口", "ctx")} {status.windowPercent}%</span>}
-            {status.costLabel && <span className="status-optional">{status.costLabel}</span>}
           </div>
         )}
         <button
