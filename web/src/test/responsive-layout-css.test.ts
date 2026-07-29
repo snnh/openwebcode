@@ -25,8 +25,10 @@ describe("窄窗口布局 CSS 回归", () => {
 
   it("会话配置控件缩短并始终一行，窄窗口模型框先收缩", () => {
     expect(css).toMatch(/\.composer-config-main\s*\{[^}]*flex-wrap:\s*nowrap;/s);
-    expect(css).toMatch(/\.composer-model-field\s*\{[^}]*flex:\s*1 1 180px;[^}]*max-width:\s*240px;/s);
-    expect(narrowCss).toMatch(/\.composer-model-field\s*\{[^}]*flex:\s*1 1 160px;[^}]*max-width:\s*240px;/s);
+    expect(css).toMatch(/\.composer-thinking-field\s*\{[^}]*margin-left:\s*auto;/s);
+    expect(css).toMatch(/\.composer-model-field\s*\{[^}]*flex:\s*0 1 220px;[^}]*max-width:\s*220px;/s);
+    expect(narrowCss).toMatch(/\.composer-model-field\s*\{[^}]*flex:\s*0 1 160px;[^}]*max-width:\s*160px;/s);
+    expect(narrowCss).toMatch(/\.composer-config-main \.field-label\s*\{[^}]*display:\s*none;/s);
     expect(narrowCss).toMatch(/\.composer-config-toggle\s*\{[^}]*margin-left:\s*0;/s);
   });
 });

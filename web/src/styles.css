@@ -1015,8 +1015,9 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   gap: 8px 12px;
   min-width: 0;
 }
-/* 配置控件始终一行（≤480px 断点恢复换行堆叠）：模型字段先收缩，其余控件按内容宽度 */
-.composer-config-main { justify-content: flex-end; flex-wrap: nowrap; }
+/* 配置控件始终一行（≤480px 断点恢复换行堆叠）：模式/模型靠左，思考/权限/高级设置靠右，模型字段先收缩 */
+.composer-config-main { flex-wrap: nowrap; }
+.composer-thinking-field { margin-left: auto; }
 .config-row label {
   display: flex;
   flex-direction: row;
@@ -1035,7 +1036,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   font-size: 12px;
   max-width: 220px;
 }
-.composer-model-field { flex: 1 1 180px; min-width: 96px; max-width: 240px; }
+.composer-model-field { flex: 0 1 220px; min-width: 96px; max-width: 220px; }
 .composer-model-field select { flex: 1; min-width: 0; width: auto; max-width: none; }
 .composer-thinking-field { flex: 0 0 auto; }
 .composer-thinking-field select { min-width: 64px; }
@@ -2037,7 +2038,8 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
     display: flex;
     align-items: center;
   }
-  .composer-model-field { flex: 1 1 160px; min-width: 96px; max-width: 240px; }
+  .composer-model-field { flex: 0 1 160px; min-width: 80px; max-width: 160px; }
+  .composer-config-main .field-label { display: none; }
   .composer-config-toggle { width: auto; margin-left: 0; justify-content: center; }
   .composer-config-advanced { display: flex; }
   .settings-dialog {
@@ -2090,6 +2092,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   .wb-activity .activity-mobile-brand { display: none; }
   .wb-sidebar { width: 100vw; }
   .composer-config-main { flex-wrap: wrap; }
+  .composer-config-main .field-label { display: inline; }
   .composer-config-main label,
   .composer-config-advanced label { flex: 1 1 100%; }
   .composer-config-main select,
