@@ -133,9 +133,9 @@ jobs:
           cp -r server/dist server/package.json server/node_modules server/assets build/stage/server/
           cp -r web/dist build/stage/web/
           curl -fsSLo node.zip "https://nodejs.org/dist/v${NODE_DIST_VERSION}/node-v${NODE_DIST_VERSION}-win-x64.zip"
-          # 对照官方 SHASUMS.txt 校验下载的 bundled Node（防截断/镜像损坏），不硬编码哈希
-          curl -fsSLo SHASUMS.txt "https://nodejs.org/dist/v${NODE_DIST_VERSION}/SHASUMS.txt"
-          EXPECTED_SHA="$(grep "node-v${NODE_DIST_VERSION}-win-x64\.zip\$" SHASUMS.txt | awk '{print $1}')"
+          # 对照官方 SHASUMS256.txt 校验下载的 bundled Node（防截断/镜像损坏），不硬编码哈希
+          curl -fsSLo SHASUMS256.txt "https://nodejs.org/dist/v${NODE_DIST_VERSION}/SHASUMS256.txt"
+          EXPECTED_SHA="$(grep "node-v${NODE_DIST_VERSION}-win-x64\.zip\$" SHASUMS256.txt | awk '{print $1}')"
           test -n "$EXPECTED_SHA"
           ACTUAL_SHA="$(certutil -hashfile node.zip SHA256 | sed -n '2p' | tr -d ' \r' | tr 'A-F' 'a-f')"
           if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
@@ -313,9 +313,9 @@ jobs:
           cp -r web/dist build/stage/web/
           NODE_ARCHIVE="node-v${NODE_DIST_VERSION}-linux-x64.tar.gz"
           curl -fsSLo "$NODE_ARCHIVE" "https://nodejs.org/dist/v${NODE_DIST_VERSION}/${NODE_ARCHIVE}"
-          # 对照官方 SHASUMS.txt 校验下载的 bundled Node（防截断/镜像损坏），不硬编码哈希
-          curl -fsSLo SHASUMS.txt "https://nodejs.org/dist/v${NODE_DIST_VERSION}/SHASUMS.txt"
-          grep "${NODE_ARCHIVE}\$" SHASUMS.txt | sha256sum --check
+          # 对照官方 SHASUMS256.txt 校验下载的 bundled Node（防截断/镜像损坏），不硬编码哈希
+          curl -fsSLo SHASUMS256.txt "https://nodejs.org/dist/v${NODE_DIST_VERSION}/SHASUMS256.txt"
+          grep "${NODE_ARCHIVE}\$" SHASUMS256.txt | sha256sum --check
           tar -xzf "$NODE_ARCHIVE" -C build/stage/node --strip-components=1
           test -x build/stage/node/bin/node
       - name: Pack tar.gz (install.sh at archive top level)
