@@ -1008,6 +1008,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
   gap: 8px 12px;
   min-width: 0;
 }
+.composer-config-main { justify-content: flex-end; }
 .config-row label {
   display: flex;
   flex-direction: row;
@@ -1032,7 +1033,6 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .composer-thinking-field select { min-width: 82px; }
 .composer-config-toggle {
   min-height: 32px;
-  margin-left: auto;
   padding: 0 10px;
   display: inline-flex;
   align-items: center;
