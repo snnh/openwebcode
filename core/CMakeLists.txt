@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(openwebcode_core VERSION 0.9.0 LANGUAGES C)
+project(openwebcode_core VERSION 1.0.0 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -103,6 +103,9 @@ set(CPACK_PACKAGE_VENDOR "OpenWebCode")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "OpenWebCode: web-based agentic coding environment")
 # 版本默认与 project(VERSION) 一致；CI 用 -DCPACK_PACKAGE_VERSION=x.y.z 注入 tag 版本
 set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}" CACHE STRING "Package version (x.y.z)")
+# MSI ProductVersion 只能是数值 x.y.z；预发布（如 1.0.0-beta.1）的完整版本号
+# 由 CI 用 -DCPACK_FULL_VERSION 注入，仅用于产物文件名
+set(CPACK_FULL_VERSION "${CPACK_PACKAGE_VERSION}" CACHE STRING "Full version incl. prerelease for artifact names")
 # WiX accepts .rtf directly and converts .txt to RTF, but rejects a license
 # path without an extension. Keep the repository's canonical LICENSE intact
 # and give the configured copy the extension required by the generator.
@@ -112,7 +115,7 @@ set(CPACK_PACKAGE_INSTALL_DIRECTORY "openwebcode")
 if(WIN32)
     set(CPACK_GENERATOR "WIX")
     # 产物名固定为 openwebcode-<version>-windows-x64.msi（Linux tar.gz 由 CI 直接 tar，不经 CPack）
-    set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION}-windows-x64")
+    set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}-${CPACK_FULL_VERSION}-windows-x64")
 else()
     set(CPACK_GENERATOR "TGZ")
 endif()

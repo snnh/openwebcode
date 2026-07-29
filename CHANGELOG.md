@@ -2,6 +2,33 @@
 
 本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前版本的用户可感知变化。日期以 Git 标签发布日期为准。
 
+## [1.0.0-beta.1] - 2026-07-29
+
+首个 1.0 预览版：会话树导航与结构化提问补齐核心交互，文档全面对齐实现。
+
+### 新增
+
+- 会话树导航：任意一条用户消息可分叉（branch）、编辑后重发、对 assistant 回复重新生成；会话从线性历史升级为树，UI 提供分叉点切换与路径指示。
+- `ask_user` 结构化提问工具：agent 运行中可向用户发起带选项的结构化提问（单选/多选/自定义输入），回答注入后续轮次。
+- 消息导出增加 Markdown 格式（`session-<id>.md`），与既有 HTML/JSONL 并列，导出菜单统一入口。
+
+### 界面与体验
+
+- 对话内搜索：会话内按关键词定位消息并跳转。
+- `Ctrl+P` 快速切换模型（循环候选列表）。
+
+### 文档
+
+- 用户文档全面校对：`help/usage.md` 加锚点目录并纠正 10 处与实现不符的描述；`help/development.md` 同步新模块（tool-schemas、session-tree、env-sim、设置拆分）；`help/faq.md` 修正过时答案并新增 5 条 FAQ；README 中英对齐；packaging README 补发布工程说明。
+
+### 发布工程
+
+- release.yml 支持预发布版本：tag 可为 `vX.Y.Z-beta.N`（`package.json` 存完整版本号，`core/CMakeLists.txt` 存数值基版本，一致性检查按基版本比对）；MSI 的 ProductVersion 保持数值、产物文件名携带完整预发布号；带预发布后缀的 Release 自动标记为 Pre-release。
+
+### 升级说明
+
+- 与 0.9.0 相同：Windows MSI 未做 Authenticode 签名，首次安装/升级可能被 SmartScreen 提示；发布资产（MSI/tar.gz）带 SHA256SUMS.txt，安装与在线更新流程均强制校验。
+
 ## [0.9.0] - 2026-07-29
 
 ### 新增
