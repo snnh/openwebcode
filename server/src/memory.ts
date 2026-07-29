@@ -1,5 +1,6 @@
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { isMissing } from "./fs-utils.js";
 
 /**
  * 长期记忆（plan §2.3/§7.5）：
@@ -90,8 +91,4 @@ export function parseSedimentSections(summary: string): string[] {
     }
   }
   return collected;
-}
-
-function isMissing(error: unknown): boolean {
-  return error instanceof Error && "code" in error && error.code === "ENOENT";
 }

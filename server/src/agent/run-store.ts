@@ -1,6 +1,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
+import { isMissing } from "../fs-utils.js";
 
 export type AgentRunState =
   | "accepted"
@@ -27,10 +28,6 @@ export interface AgentRunSnapshot {
   since: string;
   settledAt?: string;
   error?: { code: string; message: string; retryable: boolean };
-}
-
-function isMissing(error: unknown): boolean {
-  return error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT";
 }
 
 /**

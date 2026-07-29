@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
+import { isMissing } from "../fs-utils.js";
 import type { ChatMessage, MessageContent } from "../sessions/types.js";
 import { estimateTokens, IMAGE_TOKEN_ESTIMATE, type Currency } from "./model-profile.js";
 
@@ -853,8 +854,4 @@ function integerString(value: unknown): string {
 function addIntegers(left: string, right: string): string {
   if (!/^\d+$/.test(right)) throw new Error("Cost must be a non-negative integer string");
   return (BigInt(left) + BigInt(right)).toString();
-}
-
-function isMissing(error: unknown): boolean {
-  return error instanceof Error && "code" in error && error.code === "ENOENT";
 }

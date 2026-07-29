@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactElement } from "react";
 import { formatDuration } from "../lib/format";
 import { useI18n } from "../i18n";
 import type { LiveActivityInfo } from "../hooks/use-live-activity";
-import { INACTIVE_STATES, stateLabel } from "./StatusBar";
+import { INACTIVE_STATES, stateLabel } from "../lib/agent-state";
 
 /**
  * 实时活动指示（0.7.x UX 批次）：对话滚动区底部吸底条——
