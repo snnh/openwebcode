@@ -488,6 +488,60 @@ export function App(): ReactElement {
     setDiffPane(undefined);
     focusComposer();
   }, [focusComposer]);
+  // 编辑重发状态：进入时暂存当前草稿并把目标 user 消息文本灌入 Composer；取消/Esc/切换会话恢复暂存
+  const [editingMessage, setEditingMessage] = useState<{ sessionId: string; messageId: string; hadAttachments: boolean } | undefined>();
+  const editingRef = useRef(editingMessage);
+  useEffect(() => { editingRef.current = editingMessage; }, [editingMessage]);
+  const editStashRef = useRef("");
+  const cancelEdit = useCallback((restoreDraft = true): void => {
+    const target = editingRef.current;
+    if (!target) return;
+    if (restoreDraft) setDrafts((previous) => ({ ...previous, [target.sessionId]: editStashRef.current }));
+    setEditingMessage(undefined);
+  }, []);
+  const startEditMessage = useCallback((message: ChatMessage): void => {
+    if (!currentId || running) return;
+    const text = message.content
+      .filter((block) => block.type === "text")
+      .map((block) => block.text ?? "")
+      .join("\n")
+      .trim();
+    if (!text) return;
+    setEditingMessage({ sessionId: currentId, messageId: message.id, hadAttachments: message.content.some((block) => block.type !== "text") });
+    setDrafts((previous) => {
+      // updater 内暂存旧草稿：StrictMode 双调拿到同一 previous，结果一致
+      editStashRef.current = previous[currentId] ?? "";
+      return { ...previous, [currentId]: text };
+    });
+    focusComposer();
+  }, [currentId, running, focusComposer]);
+  // 会话切换：退出编辑态并把暂存草稿还给原会话
+  useEffect(() => {
+    const target = editingRef.current;
+    if (target && target.sessionId !== currentId) cancelEdit();
+  }, [currentId, cancelEdit]);
+  // 重新生成：检出到该 user 消息的父节点并重跑（服务端 202 起新 run）
+  const regenerateMessage = useCallback((message: ChatMessage): void => {
+    if (!currentId || running) return;
+    api.retryMessage(currentId, message.id, {})
+      .then(() => {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.detail(currentId) });
+        void queryClient.invalidateQueries({ queryKey: ["timeline", currentId] });
+      })
+      .catch((error: unknown) => notify(error instanceof Error ? error.message : t("重新生成失败", "Regeneration failed"), "error"));
+  }, [currentId, running, queryClient, notify, t]);
+  // 分叉：复制到该节点为止的对话为新会话并切换过去（运行中允许）
+  const forkConversation = useCallback((messageId?: string): void => {
+    if (!currentId) return;
+    api.forkSession(currentId, messageId ? { messageId } : {})
+      .then(({ sessionId: newId }) => {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.sessions });
+        setCurrentId(newId);
+        notify(t("已分叉到新会话", "Forked into a new session"));
+      })
+      .catch((error: unknown) => notify(error instanceof Error ? error.message : t("分叉失败", "Fork failed"), "error"));
+  }, [currentId, queryClient, notify, t]);
+  const forkMessage = useCallback((message: ChatMessage): void => forkConversation(message.id), [forkConversation]);
   // 打开 Problems 侧栏视图即视为已查看，清除角标（原底部面板语义平移）
   useEffect(() => {
     if (layout.sidebarView === "problems" && sidebarVisible && currentId) {
@@ -577,6 +631,20 @@ export function App(): ReactElement {
     if (!currentId) return;
     const text = (drafts[currentId] ?? "").trim();
     if (!text) return;
+    // 编辑重发：走 retry（检出到父节点 + 附带编辑后的 user 消息重跑），不走普通消息 POST
+    if (editingMessage && editingMessage.sessionId === currentId) {
+      const target = editingMessage;
+      cancelEdit(false);
+      api.retryMessage(currentId, target.messageId, { editedContent: text })
+        .then(() => {
+          setDrafts((previous) => ({ ...previous, [currentId]: "" }));
+          setAttachmentsBySession((previous) => ({ ...previous, [currentId]: [] }));
+          void queryClient.invalidateQueries({ queryKey: queryKeys.detail(currentId) });
+          void queryClient.invalidateQueries({ queryKey: ["timeline", currentId] });
+        })
+        .catch((error: unknown) => notify(error instanceof Error ? error.message : t("重发失败", "Resend failed"), "error"));
+      return;
+    }
     // /help 是纯客户端内置命令：打开快捷键速查（同 Shift+?），不进 agent run
     if (text === "/help") {
       setDrafts((previous) => ({ ...previous, [currentId]: "" }));
@@ -590,7 +658,7 @@ export function App(): ReactElement {
       pathAttachments: toAttachments(extractAttachmentPaths(text)),
       behavior: behavior ?? (running ? "steer" : "start"),
     });
-  }, [currentId, drafts, attachmentsBySession, running, send]);
+  }, [currentId, drafts, attachmentsBySession, running, send, editingMessage, cancelEdit, queryClient, notify, t]);
 
   // 错误卡「重试」：重发本会话最近一条用户消息（限流/过载等 retryable 失败后的快捷恢复）
   const lastUserMessageText = useMemo(() => {
@@ -959,6 +1027,10 @@ export function App(): ReactElement {
                   }}
                   onPermissionError={(message) => notify(message, "error")}
                   onOpenDiff={openDiff}
+                  running={running}
+                  onEditMessage={startEditMessage}
+                  onRegenerate={regenerateMessage}
+                  onFork={forkMessage}
                   hasMoreMessages={hasMoreOlder}
                   onLoadMore={loadMoreMessages}
                   loadingMore={loadingMore}
@@ -1008,6 +1080,8 @@ export function App(): ReactElement {
                   setAttachments={setAttachments}
                   supportsImages={supportsImages}
                   onNotice={(message, kind = "info") => notify(message, kind)}
+                  editingMessage={editingMessage && editingMessage.sessionId === current.id ? { messageId: editingMessage.messageId, hadAttachments: editingMessage.hadAttachments } : undefined}
+                  onCancelEdit={() => cancelEdit()}
                 />
               </>
             ) : currentId && detail.isLoading ? (
@@ -1080,6 +1154,7 @@ export function App(): ReactElement {
             open={layout.bottomOpen}
             onOpenChange={layout.setBottomOpen}
             onOpenDiff={openDiff}
+            onForkSession={(newSessionId) => setCurrentId(newSessionId)}
             {...(!isMobile ? { onOpenSubagentTab: openSubagentTab } : {})}
           />
         }

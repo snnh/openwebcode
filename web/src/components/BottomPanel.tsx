@@ -58,7 +58,7 @@ export interface PanelStatusInfo {
   windowPercent?: number | undefined;
 }
 
-export function BottomPanel({ sessionId, session, running, evalEnabled = false, windowUsage, latestUsage, subagentRuns, status, onNotice, open, onOpenChange, onOpenDiff, onOpenSubagentTab }: {
+export function BottomPanel({ sessionId, session, running, evalEnabled = false, windowUsage, latestUsage, subagentRuns, status, onNotice, open, onOpenChange, onOpenDiff, onOpenSubagentTab, onForkSession }: {
   sessionId?: string;
   session?: SessionDetail;
   running: boolean;
@@ -79,6 +79,8 @@ export function BottomPanel({ sessionId, session, running, evalEnabled = false, 
   onOpenDiff?(spec: DiffSpec): void;
   /** 桌面端子代理「在标签中打开」：按 toolCallId 在主区开标签并聚焦（移动端不传） */
   onOpenSubagentTab?: ((toolCallId: string) => void) | undefined;
+  /** 时间线分叉成功后切换到新会话（App 注入；不传时仅刷新会话列表） */
+  onForkSession?: ((newSessionId: string) => void) | undefined;
 }): ReactElement {
   const { t } = useI18n();
   const [tab, setTab] = useState<PanelTab>(() => {
@@ -167,7 +169,7 @@ export function BottomPanel({ sessionId, session, running, evalEnabled = false, 
         <div className="panel-content" style={{ height }}>
           <Suspense fallback={<div className="panel-loading">{t("加载中…", "Loading…")}</div>}>
           {tab === "context" && <ContextPanel sessionId={sessionId} session={session} running={running} windowUsage={windowUsage} latestUsage={latestUsage} onNotice={onNotice} />}
-          {tab === "timeline" && <TimelinePanel sessionId={sessionId} running={running} onNotice={onNotice} onOpenDiff={onOpenDiff} />}
+          {tab === "timeline" && <TimelinePanel sessionId={sessionId} running={running} onNotice={onNotice} onOpenDiff={onOpenDiff} onForkSession={onForkSession} />}
           {tab === "subagents" && <SubagentsPanel sessionId={sessionId} runs={subagentRuns ?? {}} {...(onOpenSubagentTab ? { onOpenInTab: onOpenSubagentTab } : {})} />}
           {tab === "sandbox" && <SandboxPanel session={session} />}
           {tab === "cost" && <CostPanel />}
