@@ -23,9 +23,10 @@ describe("窄窗口布局 CSS 回归", () => {
     expect(narrowCss).not.toContain("calc(100dvh - 53px)");
   });
 
-  it("会话配置限制模型框宽度，窄窗口不再让高级设置单独靠右", () => {
-    expect(css).toMatch(/\.composer-model-field\s*\{[^}]*flex:\s*0 1 320px;[^}]*max-width:\s*320px;/s);
-    expect(narrowCss).toMatch(/\.composer-model-field\s*\{[^}]*flex:\s*0 1 300px;[^}]*max-width:\s*300px;/s);
+  it("会话配置控件缩短并始终一行，窄窗口模型框先收缩", () => {
+    expect(css).toMatch(/\.composer-config-main\s*\{[^}]*flex-wrap:\s*nowrap;/s);
+    expect(css).toMatch(/\.composer-model-field\s*\{[^}]*flex:\s*1 1 180px;[^}]*max-width:\s*240px;/s);
+    expect(narrowCss).toMatch(/\.composer-model-field\s*\{[^}]*flex:\s*1 1 160px;[^}]*max-width:\s*240px;/s);
     expect(narrowCss).toMatch(/\.composer-config-toggle\s*\{[^}]*margin-left:\s*0;/s);
   });
 });
