@@ -190,6 +190,23 @@ export function Composer({ current, model, models, providers = [], pdfToImageExt
   const modelCycleTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const cycleBaseRef = useRef<{ provider: string; model: string } | null>(null);
   const pdfToImageEnabled = pdfToImageExtension?.enabled === true;
+  // PDF 提示可关闭：签名含扩展状态/启用位，状态变化后签名不同，提示重新出现
+  const pdfHintSignature = `${pdfToImageStatus}.${pdfToImageEnabled ? "enabled" : "disabled"}`;
+  const [pdfHintDismissed, setPdfHintDismissed] = useState<string | null>(() => {
+    try {
+      return window.localStorage.getItem("owc.pdf-hint-dismissed");
+    } catch {
+      return null;
+    }
+  });
+  const dismissPdfHint = (): void => {
+    setPdfHintDismissed(pdfHintSignature);
+    try {
+      window.localStorage.setItem("owc.pdf-hint-dismissed", pdfHintSignature);
+    } catch {
+      // 持久化失败不影响使用
+    }
+  };
 
   useEffect(() => () => clearTimeout(modelCycleTimerRef.current), []);
 
@@ -986,16 +1003,25 @@ const mentionHasMatches = mentionItems.length > 0;
             : t(`正在保存 PDF${pdfProgress?.fileName ? `「${pdfProgress.fileName}」` : ""}到工作区…`, `Saving PDF${pdfProgress?.fileName ? ` “${pdfProgress.fileName}”` : ""} to the workspace…`)}
         </div>
       )}
-      {pdfToImageStatus !== "ready" ? (
-        <div className="composer-hint">{t(
-          pdfToImageStatus === "loading" ? "PDF 扩展状态加载中；图片可正常添加，PDF 请稍候重试。" : "PDF 扩展状态不可用；图片可正常添加，PDF 暂不能添加。",
-          pdfToImageStatus === "loading" ? "PDF extension status is loading; images can still be added, but please retry PDFs shortly." : "PDF extension status is unavailable; images can still be added, but PDFs are unavailable for now.",
-        )}</div>
+      {pdfHintDismissed !== pdfHintSignature && (pdfToImageStatus !== "ready" ? (
+        <div className="composer-hint">
+          <span className="composer-hint-text">{t(
+            pdfToImageStatus === "loading" ? "PDF 扩展状态加载中；图片可正常添加，PDF 请稍候重试。" : "PDF 扩展状态不可用；图片可正常添加，PDF 暂不能添加。",
+            pdfToImageStatus === "loading" ? "PDF extension status is loading; images can still be added, but please retry PDFs shortly." : "PDF extension status is unavailable; images can still be added, but PDFs are unavailable for now.",
+          )}</span>
+          <button type="button" className="composer-hint-dismiss" aria-label={t("关闭提示", "Dismiss hint")} onClick={dismissPdfHint}>×</button>
+        </div>
       ) : pdfToImageEnabled ? (
-        supportsImages && <div className="composer-hint">{t("支持添加、粘贴或拖拽图片/PDF（≤4 张图片，每张 ≤5MB）；PDF 会转为图片；输入 @ 引用工作区文件", "Add, paste, or drop images/PDFs (up to 4 images, 5 MB each); PDFs are converted to images; type @ to reference workspace files")}</div>
+        supportsImages && <div className="composer-hint">
+          <span className="composer-hint-text">{t("支持添加、粘贴或拖拽图片/PDF（≤4 张图片，每张 ≤5MB）；PDF 会转为图片；输入 @ 引用工作区文件", "Add, paste, or drop images/PDFs (up to 4 images, 5 MB each); PDFs are converted to images; type @ to reference workspace files")}</span>
+          <button type="button" className="composer-hint-dismiss" aria-label={t("关闭提示", "Dismiss hint")} onClick={dismissPdfHint}>×</button>
+        </div>
       ) : (
-        <div className="composer-hint">{t("PDF 转图片扩展未启用；PDF 会先保存到工作区，再插入其路径引用。", "The PDF-to-image extension is disabled; PDFs are saved to the workspace and inserted as path references.")}</div>
-      )}
+        <div className="composer-hint">
+          <span className="composer-hint-text">{t("PDF 转图片扩展未启用；PDF 会先保存到工作区，再插入其路径引用。", "The PDF-to-image extension is disabled; PDFs are saved to the workspace and inserted as path references.")}</span>
+          <button type="button" className="composer-hint-dismiss" aria-label={t("关闭提示", "Dismiss hint")} onClick={dismissPdfHint}>×</button>
+        </div>
+      ))}
       {modelCycleHint && (
         <div className="composer-hint composer-model-cycle" role="status">{modelCycleHint}</div>
       )}

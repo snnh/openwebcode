@@ -21,10 +21,17 @@ function SubagentTabTranscript({ sessionId, run }: { sessionId: string; run: Liv
   if (transcript.isError) {
     return <p className="subagent-transcript-status">{t("转录加载失败", "Failed to load transcript")}</p>;
   }
+  // 与主对话一致的轮次编号（user 消息开启一轮），保持子代理标签与「对话」标签的轮次深浅一致
+  const turnOf: number[] = [];
+  let turn = 0;
+  for (const message of transcript.data.messages) {
+    if (message.role === "user") turn += 1;
+    turnOf.push(turn);
+  }
   return (
     <div className="subagent-tab-messages">
-      {transcript.data.messages.map((message) => (
-        <MemoMessageCard key={message.id} message={message} sessionId={sessionId} />
+      {transcript.data.messages.map((message, index) => (
+        <MemoMessageCard key={message.id} message={message} sessionId={sessionId} turn={turnOf[index]} />
       ))}
     </div>
   );

@@ -236,7 +236,7 @@ export function coalesceAssistantText(content: MessageContent[]): MessageContent
 
 const ROLE_LABELS: Record<string, [string, string]> = { user: ["你", "You"], assistant: ["OpenWebCode", "OpenWebCode"], tool: ["工具", "Tool"] };
 
-export function MessageCard({ message, sessionId, contentLens, liveSubagents, running = false, onNotice, onOpenDiff, onEditMessage, onRegenerate, onFork }: { message: ChatMessage; sessionId?: string; contentLens?: ExtensionInfo; /** 本消息内 spawn 工具调用关联的实时子代理运行（已由 ExecutionTrack 按 toolCallId 过滤） */ liveSubagents?: LiveSubagentRun[] | undefined; /** 会话运行中：编辑重发/重新生成不可用（分叉允许） */ running?: boolean; onNotice?(message: string, kind?: "info" | "error"): void; onOpenDiff?(spec: DiffSpec): void; /** 会话树操作（仅 user 消息展示）：编辑重发 / 重新生成 / 分叉 */ onEditMessage?(message: ChatMessage): void; onRegenerate?(message: ChatMessage): void; onFork?(message: ChatMessage): void }): ReactElement {
+export function MessageCard({ message, sessionId, turn, contentLens, liveSubagents, running = false, onNotice, onOpenDiff, onEditMessage, onRegenerate, onFork }: { message: ChatMessage; sessionId?: string; /** 轮次编号（user 消息开启一轮）：偶数/奇数轮 assistant/tool 消息底色深浅交替 */ turn?: number | undefined; contentLens?: ExtensionInfo; /** 本消息内 spawn 工具调用关联的实时子代理运行（已由 ExecutionTrack 按 toolCallId 过滤） */ liveSubagents?: LiveSubagentRun[] | undefined; /** 会话运行中：编辑重发/重新生成不可用（分叉允许） */ running?: boolean; onNotice?(message: string, kind?: "info" | "error"): void; onOpenDiff?(spec: DiffSpec): void; /** 会话树操作（仅 user 消息展示）：编辑重发 / 重新生成 / 分叉 */ onEditMessage?(message: ChatMessage): void; onRegenerate?(message: ChatMessage): void; onFork?(message: ChatMessage): void }): ReactElement {
   const { t, locale } = useI18n();
   const createdAt = new Date(message.createdAt);
   const articleRef = useRef<HTMLElement>(null);
@@ -271,7 +271,7 @@ export function MessageCard({ message, sessionId, contentLens, liveSubagents, ru
       .finally(() => setLensBusy(false));
   }, [contentLens?.enabled, glossary, message.id, onNotice, sessionId, targetLanguage, text, translateMode]);
   return (
-    <article className={`message ${message.role}`} ref={articleRef} data-message-id={message.id}>
+    <article className={`message ${message.role}${turn !== undefined ? ` turn-${turn % 2 === 0 ? "even" : "odd"}` : ""}`} ref={articleRef} data-message-id={message.id}>
       <span className="track-node" aria-hidden />
       <div className="message-meta">
         <span className="message-author">{ROLE_LABELS[message.role] ? t(...ROLE_LABELS[message.role]!) : message.role}</span>
@@ -370,6 +370,7 @@ function sameContent(previous: MessageContent[], next: MessageContent[]): boolea
 export const MemoMessageCard = memo(MessageCard, (previous, next) =>
   previous.contentLens === next.contentLens
   && previous.sessionId === next.sessionId
+  && previous.turn === next.turn
   && previous.running === next.running
   && previous.onNotice === next.onNotice
   && previous.onOpenDiff === next.onOpenDiff

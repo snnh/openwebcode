@@ -125,6 +125,26 @@ describe("ExecutionTrack failures", () => {
     expect(details).toHaveTextContent(blob);
   });
 
+  it("assigns incrementing turn banding classes per user message", () => {
+    const bandingSession: SessionDetail = {
+      ...session,
+      messages: [
+        { id: "user-1", role: "user", createdAt: session.createdAt, content: [{ type: "text", text: "任务一" }] },
+        { id: "assistant-1", role: "assistant", createdAt: session.createdAt, content: [{ type: "text", text: "回复一" }] },
+        { id: "user-2", role: "user", createdAt: session.createdAt, content: [{ type: "text", text: "任务二" }] },
+        { id: "assistant-2", role: "assistant", createdAt: session.createdAt, content: [{ type: "text", text: "回复二" }] },
+      ],
+    };
+    const { container } = render(<ExecutionTrack session={bandingSession} streamText="" permissions={[]} onPermissionDone={() => undefined} />);
+
+    const articles = container.querySelectorAll("article.message");
+    expect(articles).toHaveLength(4);
+    expect(articles[0]).toHaveClass("turn-odd");
+    expect(articles[1]).toHaveClass("turn-odd");
+    expect(articles[2]).toHaveClass("turn-even");
+    expect(articles[3]).toHaveClass("turn-even");
+  });
+
   it("virtualizes long message histories instead of mounting every card", () => {
     const longSession: SessionDetail = {
       ...session,
