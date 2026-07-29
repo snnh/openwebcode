@@ -93,11 +93,12 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
 
   return (
     <header className="job-header">
-      <div className="job-title">
-        <h1>{session.title}</h1>
-        <p className="job-cwd mono" title={session.cwd}>{session.cwd}</p>
-      </div>
-      <div className="job-actions">
+      <div className="job-header-info">
+        <div className="job-title">
+          <h1>{session.title}</h1>
+          <p className="job-cwd mono" title={session.cwd}>{session.cwd}</p>
+        </div>
+        <div className="job-info">
         {costSummary && (
           <span
             className={`cost-summary${costSummary.paused ? " paused" : ""}`}
@@ -153,6 +154,9 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
         {agentState && agentState !== "idle" && (
           <span className={`state-badge state-${agentState}`}>{STATE_LABELS[agentState] ? t(...STATE_LABELS[agentState]!) : agentState}</span>
         )}
+        </div>
+      </div>
+      <div className="job-actions">
         <label className={`mode-switch sandbox-mode-switch ${(session.sandboxMode ?? "appcontainer") === "off" ? "advisory" : "enforced"}`} title={t("切换当前会话的命令执行沙盒", "Change the command sandbox for this session")}>
           <Icon name="shield" size={11} />
           <span>{t("沙盒", "Sandbox")}</span>
