@@ -15,7 +15,7 @@ const VIEW_META: Record<SidebarView, { zh: string; en: string; icon: IconName }>
   problems: { zh: "问题", en: "Problems", icon: "alert" },
 };
 
-export function ActivityBar({ activeView, sidebarVisible, problemsBadge = 0, notificationsBadge = 0, terminalDisabled = false, onShowView, onShowHelp, onShowNotifications, onOpenTerminal, onOpenSettings }: {
+export function ActivityBar({ activeView, sidebarVisible, problemsBadge = 0, notificationsBadge = 0, terminalDisabled = false, onShowView, onToggleSidebar, onShowHelp, onShowNotifications, onOpenTerminal, onOpenSettings }: {
   activeView: SidebarView;
   sidebarVisible: boolean;
   /** 未查看的诊断失败数角标（diagnostics.updated，不弹窗不打断） */
@@ -25,6 +25,8 @@ export function ActivityBar({ activeView, sidebarVisible, problemsBadge = 0, not
   /** 无当前会话时禁用终端入口 */
   terminalDisabled?: boolean;
   onShowView(view: SidebarView): void;
+  /** 展开/收起侧边栏（按钮在活动栏中段，悬浮/聚焦才显示） */
+  onToggleSidebar(): void;
   /** 帮助与快捷键（打开快捷键速查对话框） */
   onShowHelp(): void;
   onShowNotifications(): void;
@@ -57,6 +59,14 @@ export function ActivityBar({ activeView, sidebarVisible, problemsBadge = 0, not
           );
         })}
       </div>
+      <button
+        className="activity-btn activity-collapse-btn"
+        aria-label={sidebarVisible ? t("收起侧边栏", "Collapse sidebar") : t("展开侧边栏", "Expand sidebar")}
+        title={sidebarVisible ? t("收起侧边栏（Ctrl+B）", "Collapse sidebar (Ctrl+B)") : t("展开侧边栏（Ctrl+B）", "Expand sidebar (Ctrl+B)")}
+        onClick={onToggleSidebar}
+      >
+        <Icon name={sidebarVisible ? "chevrons-left" : "chevrons-right"} size={20} />
+      </button>
       <div className="activity-bar-bottom">
         <button
           className="activity-btn"

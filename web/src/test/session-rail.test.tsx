@@ -30,7 +30,6 @@ function renderRail(sessions: Session[], overrides: Partial<Parameters<typeof Se
     onTogglePin: vi.fn(),
     onImport: vi.fn(),
     onToggleTheme: vi.fn(),
-    onToggleCollapsed: vi.fn(),
     onOpenSettings: vi.fn(),
     onResize: vi.fn(),
     ...overrides,
