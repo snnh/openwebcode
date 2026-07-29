@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
+import { isMissing } from "../fs-utils.js";
 import type { CoreClientLike } from "../core-client.js";
 import type { EventBus } from "../events/event-bus.js";
 import type { SessionStore } from "../sessions/session-store.js";
@@ -17,10 +18,6 @@ export const MAX_FEEDBACK_FIELD_CHARS = 500;
 export const REPEATED_SIGNATURE_HINT_THRESHOLD = 2;
 const TEST_JOB_TIMEOUT_MS = 10 * 60_000;
 const POLL_INTERVAL_MS = 50;
-
-function isMissing(error: unknown): boolean {
-  return error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT";
-}
 
 /** 失败签名：failures 的 name+file+line 稳定哈希（顺序敏感，消息内容不参与）。 */
 export function failureSignature(diagnostics: DiagnosticSet): string {

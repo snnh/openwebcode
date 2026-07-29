@@ -7,13 +7,7 @@ import { CodeView } from "../editor/CodeView";
 import { Icon } from "../Icon";
 import { useI18n } from "../../i18n";
 import { formatDuration } from "../../lib/format";
-
-// 与 FilesPanel 一致的扩展名 → shiki 语言映射（仅用于代码视图高亮，不支持时回退纯文本）
-const EXT_LANGS: Record<string, string> = {
-  ts: "typescript", tsx: "tsx", js: "javascript", jsx: "jsx", mjs: "javascript", cjs: "javascript",
-  json: "json", css: "css", html: "html", htm: "html", md: "markdown", markdown: "markdown",
-  py: "python", sh: "bash", bash: "bash", yml: "yaml", yaml: "yaml", diff: "diff", patch: "diff",
-};
+import { EXT_LANGS } from "../../lib/file-langs";
 
 const SEVERITY_TABS: SeverityFilter[] = ["all", "error", "warning"];
 

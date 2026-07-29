@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
+import { isMissing } from "../fs-utils.js";
 
 export type QueueKind = "steer" | "follow_up";
 export type QueueStatus = "queued" | "consuming" | "applied" | "cancelled";
@@ -21,10 +22,6 @@ export interface QueueItem {
 interface QueueDocument {
   version: 1;
   items: QueueItem[];
-}
-
-function missing(error: unknown): boolean {
-  return error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT";
 }
 
 /** Small mutable queue state. All mutations are serialized per session and
@@ -128,7 +125,7 @@ export class MessageQueue {
       if (document.version !== 1 || !Array.isArray(document.items)) throw new Error("Invalid queue.json");
       return document.items.map(clone);
     } catch (error) {
-      if (missing(error)) return [];
+      if (isMissing(error)) return [];
       throw error;
     }
   }

@@ -1,6 +1,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
+import { isMissing } from "../fs-utils.js";
 import { getUserAgent } from "../http.js";
 import defaultCatalog from "./default-model-pricing.json" with { type: "json" };
 import type { Currency, ModelPricing } from "../context/model-profile.js";
@@ -243,10 +244,6 @@ function nonEmpty(value: unknown, name: string): string {
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Pricing document must be an object");
   return value as Record<string, unknown>;
-}
-
-function isMissing(error: unknown): boolean {
-  return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
 
 function syncErrorMessage(error: unknown): string {

@@ -17,6 +17,7 @@ import { ContextManager, isPathExcluded, type BudgetUpdate } from "./context/con
 import { renderSessionHtml } from "./export-html.js";
 import { renderSessionMarkdown } from "./export-markdown.js";
 import { boundToolResult } from "./context/tool-result-budget.js";
+import { errorMessage } from "./error-utils.js";
 import type { ServerConfig } from "./config.js";
 import { isLoopbackHost } from "./config.js";
 import { getModelProfile, listModelProfiles, type Currency, type EffortLevel, type ModelModality, type ModelPricing, type ModelProfile, type ThinkingMode } from "./context/model-profile.js";
@@ -592,7 +593,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     } catch (error) {
       // UpdateApplyError 携带语义化 statusCode（400 已是最新/平台不支持，409 已有进行中的更新）
       if (error instanceof UpdateApplyError) return reply.code(error.statusCode).send({ error: error.message });
-      return reply.code(500).send({ error: error instanceof Error ? error.message : String(error) });
+      return reply.code(500).send({ error: errorMessage(error) });
     }
   });
   app.get<{ Querystring: { cwd?: string } }>("/api/prompt", async (request, reply) => {
@@ -619,7 +620,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       dependencies.agent.refreshPromptOverride();
       return { ok: true };
     } catch (error) {
-      return reply.code(500).send({ error: error instanceof Error ? error.message : String(error) });
+      return reply.code(500).send({ error: errorMessage(error) });
     }
   });
   app.get("/api/sandbox/capabilities", async () => ({ appcontainer: true, jobobject: true, off: true, wsb: detectWsb() }));
@@ -635,7 +636,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     const profiles = dependencies.providerProfiles;
     const profileFailure = (reply: FastifyReply, error: unknown) => reply
       .code(error instanceof ProviderProfilesValidationError ? 400 : 500)
-      .send({ error: error instanceof Error ? error.message : String(error) });
+      .send({ error: errorMessage(error) });
     app.get("/api/provider-profiles", async () => profiles.view());
     // 候选配置连接测试：不落盘，直接对表单值做最小化认证请求
     app.post<{ Body: Record<string, unknown> }>("/api/provider-profiles/test", async (request, reply) => {
@@ -702,7 +703,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       }
       return await extensions.configure(body.id, { ...(body.enabled === undefined ? {} : { enabled: body.enabled }), ...(body.config ? { config: body.config } : {}) });
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return reply.code(400).send({ error: errorMessage(error) });
     }
   });
   app.delete<{ Params: { id: string } }>("/api/extensions/:id", async (request, reply) => {
@@ -711,7 +712,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       await dependencies.extensions.uninstall(request.params.id);
       return reply.code(204).send();
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return reply.code(400).send({ error: errorMessage(error) });
     }
   });
   // 模型目录：registry（api/manual/builtin 三向合并）缺省时回退静态档案
@@ -897,7 +898,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     try {
       provisioned = await managed.provision({ sessionId, originCwd: body.cwd, backend: candidate.backend });
     } catch (error) {
-      return reply.code(500).send({ error: error instanceof Error ? error.message : String(error) });
+      return reply.code(500).send({ error: errorMessage(error) });
     }
     const workspace = {
       mode: "managed" as const,
@@ -992,7 +993,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       if (error instanceof Error && "code" in error && error.code === "ENOENT") {
         return reply.code(404).send({ error: "Session not found" });
       }
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return reply.code(400).send({ error: errorMessage(error) });
     }
   });
   /**
@@ -1031,7 +1032,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       const cloned = await sessions.cloneCurrent(request.params.id, request.body.cwd, request.body.title);
       events.publish({ source: "session", type: "branch.cloned", sessionId: cloned.id, payload: { sourceSessionId: request.params.id, mode: "conversation_only" } });
       return reply.code(201).send({ ...cloned, branchMode: "conversation_only" });
-    } catch (error) { return reply.code(error instanceof Error && error.message === "Session not found" ? 404 : 409).send({ error: error instanceof Error ? error.message : String(error) }); }
+    } catch (error) { return reply.code(error instanceof Error && error.message === "Session not found" ? 404 : 409).send({ error: errorMessage(error) }); }
   });
 
   /**
@@ -1062,7 +1063,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       events.publish({ source: "session", type: "session.created", sessionId: forked.id, payload: forked });
       return reply.code(201).send({ sessionId: forked.id });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       return reply.code(message === "Session not found" ? 404 : 400).send({ error: message });
     }
   });
@@ -1359,7 +1360,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
           microUnits: parseDecimalToScaled(requestedCost.amount, 1_000_000n).toString(),
         };
       } catch (error) {
-        return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+        return reply.code(400).send({ error: errorMessage(error) });
       }
     }
     const manager = new ContextManager(sessions.contextRoot(request.params.id));
@@ -1379,7 +1380,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       events.publish({ source: "session", type: "context.policy_updated", sessionId: request.params.id, payload: ledger.policy });
       return ledger;
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return reply.code(400).send({ error: errorMessage(error) });
     }
   });
   app.put<{ Params: { id: string }; Body: { pins?: string[]; excludes?: string[] } }>("/api/sessions/:id/context/selection", async (request, reply) => {
@@ -1391,7 +1392,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       events.publish({ source: "session", type: "context.selection_updated", sessionId: request.params.id, payload: selection });
       return selection;
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return reply.code(400).send({ error: errorMessage(error) });
     }
   });
   app.put<{ Params: { id: string }; Body: { enabled?: boolean; budget?: number | null } }>("/api/sessions/:id/context/repo-map", async (request, reply) => {
@@ -1412,7 +1413,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       events.publish({ source: "session", type: "context.repo_map_updated", sessionId: request.params.id, payload: settings });
       return settings;
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return reply.code(400).send({ error: errorMessage(error) });
     }
   });
   // ---- 符号索引（0.4.0 Phase 2 §7.2）：状态 / 显式重建（job，可取消）/ 符号查询 ----
@@ -1522,7 +1523,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       });
       return { record, feedback };
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return reply.code(400).send({ error: errorMessage(error) });
     }
   });
   app.get<{ Params: { id: string } }>("/api/sessions/:id/diagnostics/latest", async (request, reply) => {
@@ -1551,7 +1552,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     try {
       return await scm.status(session.id, session.cwd, { shellBackend: session.shellBackend ?? "default" });
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return reply.code(400).send({ error: errorMessage(error) });
     } finally {
       releaseWorkspace();
     }
@@ -1573,7 +1574,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
         ...(typeof request.query.file === "string" && request.query.file.trim() ? { file: request.query.file.trim() } : {}),
       }, { shellBackend: session.shellBackend ?? "default" });
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return reply.code(400).send({ error: errorMessage(error) });
     } finally {
       releaseWorkspace();
     }
@@ -1599,7 +1600,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       }, { shellBackend: session.shellBackend ?? "default" });
       return entry;
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return reply.code(400).send({ error: errorMessage(error) });
     } finally {
       releaseWorkspace();
     }
@@ -1616,7 +1617,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
         force: request.query.force === "true" || request.query.force === "1",
       }, { shellBackend: session.shellBackend ?? "default" });
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return reply.code(400).send({ error: errorMessage(error) });
     } finally {
       releaseWorkspace();
     }
@@ -1634,7 +1635,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
         strategy: request.body?.strategy === "cherry-pick" ? "cherry-pick" : "merge",
       }, { shellBackend: session.shellBackend ?? "default" });
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return reply.code(400).send({ error: errorMessage(error) });
     } finally {
       releaseWorkspace();
     }
@@ -1653,7 +1654,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       events.publish({ source: "session", type: "context.restored", sessionId: request.params.id, payload: { messageId: request.body.messageId } });
       return ledger;
     } catch (error) {
-      return reply.code(409).send({ error: error instanceof Error ? error.message : String(error) });
+      return reply.code(409).send({ error: errorMessage(error) });
     }
   });
   app.post<{ Params: { id: string; messageId: string }; Body: { action?: string } }>("/api/sessions/:id/context/entries/:messageId", async (request, reply) => {
@@ -1674,7 +1675,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       events.publish({ source: "session", type: "context.entry_updated", sessionId: request.params.id, payload: { messageId: request.params.messageId, action } });
       return ledger;
     } catch (error) {
-      return reply.code(409).send({ error: error instanceof Error ? error.message : String(error) });
+      return reply.code(409).send({ error: errorMessage(error) });
     }
   });
   app.get<{ Params: { id: string; artifactId: string }; Querystring: { offset?: string; limit?: string } }>("/api/sessions/:id/context/artifacts/:artifactId", async (request, reply) => {
@@ -1684,7 +1685,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     try {
       return { content: await new ContextManager(sessions.contextRoot(request.params.id)).readArtifact(request.params.artifactId, offset, limit) };
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return reply.code(400).send({ error: errorMessage(error) });
     }
   });
 
@@ -1697,14 +1698,14 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       return reply.code(400).send({ error: "glossary must contain at most 200 short string pairs" });
     }
     try { return await dependencies.contentLens.translate(request.params.id, request.body.messageId, request.body.targetLanguage, glossary ?? {}); }
-    catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) }); }
+    catch (error) { return reply.code(400).send({ error: errorMessage(error) }); }
   });
   app.post<{ Params: { id: string }; Body: { text?: string; targetLanguage?: string } }>("/api/sessions/:id/content-lens/explain", async (request, reply) => {
     if (!dependencies.extensions?.isEnabled("content-lens")) return reply.code(409).send({ error: "content-lens extension is disabled" });
     if (!dependencies.contentLens) return reply.code(503).send({ error: "content-lens service is unavailable" });
     if (typeof request.body?.text !== "string" || (request.body.targetLanguage !== undefined && (typeof request.body.targetLanguage !== "string" || !request.body.targetLanguage.trim() || request.body.targetLanguage.length > 64))) return reply.code(400).send({ error: "text and a valid targetLanguage are required" });
     try { return await dependencies.contentLens.explain(request.params.id, request.body.text, request.body.targetLanguage ?? "zh-CN"); }
-    catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) }); }
+    catch (error) { return reply.code(400).send({ error: errorMessage(error) }); }
   });
 
   app.get<{ Params: { id: string }; Querystring: { path?: string } }>("/api/sessions/:id/files", async (request, reply) => {
@@ -1966,7 +1967,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     try {
       return await runCompact(request.params.id, mode);
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return reply.code(400).send({ error: errorMessage(error) });
     }
   });
 
@@ -2075,7 +2076,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
           const result = await runCompact(request.params.id, compactCommand[1] ? "toolcalls" : "overview");
           return reply.code(200).send({ accepted: true, compacted: result.changed, result });
         } catch (error) {
-          return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+          return reply.code(400).send({ error: errorMessage(error) });
         }
       }
       // /init：展开为内置探查提示词后继续走正常 agent.run() 路径（写 AGENTS.md 经权限链与快照）
@@ -2094,7 +2095,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
           const code = error instanceof SteeringError
             ? (error.code === "full" ? 429 : error.code === "too_long" ? 413 : 409)
             : 409;
-          return reply.code(code).send({ error: error instanceof Error ? error.message : String(error) });
+          return reply.code(code).send({ error: errorMessage(error) });
         }
       }
       if (request.body.behavior === "steer" || request.body.behavior === "follow_up") {
@@ -2140,7 +2141,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
               const bounded = await boundToolResult(contextRoot, "read_file", result.content);
               attachmentBlocks.push({ text: `[Attachment ${attachmentPath}]\n${bounded.content}` });
             } catch (error) {
-              const reason = error instanceof Error ? error.message : String(error);
+              const reason = errorMessage(error);
               attachmentBlocks.push({ text: `[Attachment ${attachmentPath}]\n错误：路径越界或不可读（${reason}）` });
             }
           }
@@ -2248,7 +2249,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       } catch (error) {
         if (error instanceof WorkspaceWriteDeniedError) return reply.code(403).send({ error: error.message });
         if (error instanceof CoreRpcError && error.code === -32004) return reply.code(409).send({ error: error.message });
-        return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+        return reply.code(400).send({ error: errorMessage(error) });
       } finally {
         releaseWorkspace();
       }
@@ -2366,7 +2367,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       const report = await dependencies.evalEvaluator.runTasks(taskIds);
       return reply.code(200).send(report);
     } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+      return reply.code(400).send({ error: errorMessage(error) });
     }
   });
   app.get<{ Params: { runId: string } }>("/api/eval/runs/:runId", async (request, reply) => {

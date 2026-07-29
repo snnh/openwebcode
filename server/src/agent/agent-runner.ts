@@ -7,6 +7,7 @@ import type { EventBus } from "../events/event-bus.js";
 import { ContextManager, selectCacheBreakpoints } from "../context/context-manager.js";
 import type { Compactor } from "../context/compactor.js";
 import { boundToolResult } from "../context/tool-result-budget.js";
+import { errorMessage } from "../error-utils.js";
 import { RepoMapGenerator, DEFAULT_REPO_MAP_BUDGET } from "../context/repo-map.js";
 import { IndexManager, IndexUnavailableError } from "../index/index-manager.js";
 import type { DiagnosticsService } from "../diagnostics/service.js";
@@ -782,7 +783,7 @@ export class AgentRunner {
             source: "session",
             type: "checkpoint.failed",
             sessionId,
-            payload: { message: error instanceof Error ? error.message : String(error) },
+            payload: { message: errorMessage(error) },
           });
         } finally {
           // 物理换叶已经结束（成功或已由 backend 回滚），后续 provider/tool 回合
@@ -873,7 +874,7 @@ export class AgentRunner {
             view.stats.segments.repoMap = map.tokens;
             repoMapSection = `## Repository map (workspace structure; budget-bounded; key files carry symbol summaries when the index is available)\n${map.text}`;
           } catch (error) {
-            this.events.publish({ source: "agent", type: "context.repo_map_failed", sessionId, payload: { message: error instanceof Error ? error.message : String(error) } });
+            this.events.publish({ source: "agent", type: "context.repo_map_failed", sessionId, payload: { message: errorMessage(error) } });
           }
         }
         // 增量构建的 token 估算与 estimateMessageTokens 同规则；等价性由 server 测试断言。
@@ -894,7 +895,7 @@ export class AgentRunner {
             }
           } catch (error) {
             // 压缩失败不阻断运行：记录后按未压缩视图继续
-            this.events.publish({ source: "agent", type: "context.compact_failed", sessionId, payload: { message: error instanceof Error ? error.message : String(error) } });
+            this.events.publish({ source: "agent", type: "context.compact_failed", sessionId, payload: { message: errorMessage(error) } });
           }
         }
         const provider = this.providers.get(session.provider);
@@ -918,7 +919,7 @@ export class AgentRunner {
           } catch (error) {
             mcpBinding = {
               tools: [],
-              warnings: [`MCP 工具发现失败，未注入：${error instanceof Error ? error.message : String(error)}`],
+              warnings: [`MCP 工具发现失败，未注入：${errorMessage(error)}`],
             };
           }
         }
@@ -1174,7 +1175,7 @@ export class AgentRunner {
               // Abort 仍按原语义结束整个 run；其他前置工具失败必须回填给 provider，
               // 否则已落盘的 tool_call 会永久没有对应 tool_result。
               if (controller.signal.aborted) throw error;
-              const content = error instanceof Error ? error.message : String(error);
+              const content = errorMessage(error);
               this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId: call.id, error: content } });
               result = { type: "tool_result", toolCallId: call.id, content, isError: true };
             }
@@ -1213,7 +1214,7 @@ export class AgentRunner {
         await this.finishRun(sessionId, "aborted", { code: "aborted", message: "Agent run aborted", retryable: false });
         throw error;
       }
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       // Provider 错误（重试耗尽后抛出 ProviderError）携带分类 kind 与 retryable，
       // 供前端给出可操作的提示（检查 API Key / 限流稍后重试等）；非 provider 路径省略 kind。
       const providerError = error instanceof ProviderError ? error : undefined;
@@ -1347,7 +1348,7 @@ export class AgentRunner {
     try {
       resolved = await this.resolveSubAgent(session.cwd, sessionId, agentName, undefined);
     } catch (error) {
-      throw new SubAgentLaunchError(error instanceof Error ? error.message : String(error), "invalid_agent");
+      throw new SubAgentLaunchError(errorMessage(error), "invalid_agent");
     }
     const provider = this.providers.get(session.provider);
     if (!provider) throw new SubAgentLaunchError(`Provider ${session.provider} is not configured`, "invalid_agent");
@@ -1446,7 +1447,7 @@ export class AgentRunner {
         payload: { toolCallId, taskId: result.taskId, status: "done", turns: result.turns, toolsUsed: result.toolsUsed },
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       this.events.publish({ source: "agent", type: "subagent.finished", sessionId, payload: { toolCallId, taskId, status: "failed", error: message } });
     }
   }
@@ -1464,7 +1465,7 @@ export class AgentRunner {
       return await this.dispatchSubAgentTool(sessionId, name, input, signal);
     } catch (error) {
       if (signal.aborted) throw error;
-      return { content: error instanceof Error ? error.message : String(error), isError: true };
+      return { content: errorMessage(error), isError: true };
     }
   }
 
@@ -1616,7 +1617,7 @@ export class AgentRunner {
         await this.runNotificationHook("PostToolUse", { sessionId, cwd: session.cwd, tool: "bash", input: { cmd }, result: { summary } });
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       // runShell 不经过 provider，payload 不带 kind；retryable 恒为 false
       this.events.publish({ source: "agent", type: "agent.error", sessionId, payload: { message, retryable: false } });
       // 尽力落盘错误 tool_result 防止丢失（appendMessage 自身失败则忽略）
@@ -1807,7 +1808,7 @@ export class AgentRunner {
       return true;
     } catch (error) {
       await this.messageQueue.requeue(sessionId, item.id);
-      this.events.publish({ source: "agent", type: "queue.apply_failed", sessionId, payload: { id: item.id, kind: item.kind, message: error instanceof Error ? error.message : String(error) } });
+      this.events.publish({ source: "agent", type: "queue.apply_failed", sessionId, payload: { id: item.id, kind: item.kind, message: errorMessage(error) } });
       return false;
     }
   }
@@ -1825,7 +1826,7 @@ export class AgentRunner {
         source: "agent",
         type: "queue.run_failed",
         sessionId,
-        payload: { id: item.id, kind: item.kind, message: error instanceof Error ? error.message : String(error) },
+        payload: { id: item.id, kind: item.kind, message: errorMessage(error) },
       });
     });
   }
@@ -1864,7 +1865,7 @@ export class AgentRunner {
         source: "server",
         type: "hook.failed",
         sessionId: payload.sessionId,
-        payload: { event, message: error instanceof Error ? error.message : String(error) },
+        payload: { event, message: errorMessage(error) },
       });
     }
   }
@@ -1935,7 +1936,7 @@ export class AgentRunner {
       });
       return { type: "tool_result", toolCallId, content: bounded.content, isError };
     } catch (error) {
-      const content = error instanceof Error ? error.message : String(error);
+      const content = errorMessage(error);
       this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
       return { type: "tool_result", toolCallId, content, isError: true };
     }
@@ -1989,7 +1990,7 @@ export class AgentRunner {
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: toolEventResult(bounded) } });
         return { type: "tool_result", toolCallId, content: bounded.content, isError: false };
       } catch (error) {
-        const content = error instanceof Error ? error.message : String(error);
+        const content = errorMessage(error);
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
         return { type: "tool_result", toolCallId, content, isError: true };
       }
@@ -2007,7 +2008,7 @@ export class AgentRunner {
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: { name: skill.name, source: skill.source }, truncated: bounded.truncated, ...(bounded.artifactId ? { artifactId: bounded.artifactId } : {}) } });
         return { type: "tool_result", toolCallId, content: bounded.content, isError: false };
       } catch (error) {
-        const content = error instanceof Error ? error.message : String(error);
+        const content = errorMessage(error);
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
         return { type: "tool_result", toolCallId, content, isError: true };
       }
@@ -2088,7 +2089,7 @@ export class AgentRunner {
           subagentTasks: [{ taskId: result.taskId, index: 0, status: "done" }],
         };
       } catch (error) {
-        const content = error instanceof Error ? error.message : String(error);
+        const content = errorMessage(error);
         // 子代理已启动后失败（含中断）：补发 finished，与 spawn_swarm 单项失败语义一致
         if (taskId) {
           this.events.publish({ source: "agent", type: "subagent.finished", sessionId, payload: { toolCallId, taskId, status: "failed", error: content } });
@@ -2143,7 +2144,7 @@ export class AgentRunner {
           try {
             itemResolutions.set(index, await this.resolveSubAgent(session.cwd, sessionId, item.agent, undefined));
           } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
+            const message = errorMessage(error);
             throw new Error(`${message} (item ${index + 1})`);
           }
         }
@@ -2202,7 +2203,7 @@ export class AgentRunner {
             subagentTasks.push({ taskId, index, status: "done" });
             return { ok: true, conclusion: result.conclusion };
           } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
+            const message = errorMessage(error);
             this.events.publish({
               source: "agent",
               type: "subagent.finished",
@@ -2249,7 +2250,7 @@ export class AgentRunner {
           subagentTasks: [...subagentTasks].sort((a, b) => a.index - b.index),
         };
       } catch (error) {
-        const content = error instanceof Error ? error.message : String(error);
+        const content = errorMessage(error);
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
         // 中断/整体失败仍回报已启动子代理的 taskId 与逐项终态，页面刷新后历史可还原
         const ids = subagentTaskIds.filter((id): id is string => typeof id === "string" && id.length > 0);
@@ -2281,7 +2282,7 @@ export class AgentRunner {
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: { count: items.length } } });
         return { type: "tool_result", toolCallId, content: `Task list replaced (${items.length} item(s)).`, isError: false };
       } catch (error) {
-        const content = error instanceof Error ? error.message : String(error);
+        const content = errorMessage(error);
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
         return { type: "tool_result", toolCallId, content, isError: true };
       }
@@ -2307,7 +2308,7 @@ export class AgentRunner {
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: { scope, path: target, appended } } });
         return { type: "tool_result", toolCallId, content, isError: false };
       } catch (error) {
-        const content = error instanceof Error ? error.message : String(error);
+        const content = errorMessage(error);
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
         return { type: "tool_result", toolCallId, content, isError: true };
       }
@@ -2343,7 +2344,7 @@ export class AgentRunner {
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: { answered: results.length } } });
         return { type: "tool_result", toolCallId, content: JSON.stringify(results), isError: false };
       } catch (error) {
-        const content = error instanceof Error ? error.message : String(error);
+        const content = errorMessage(error);
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
         return { type: "tool_result", toolCallId, content, isError: true };
       }
@@ -2360,7 +2361,7 @@ export class AgentRunner {
         );
         return { type: "tool_result", toolCallId, content, isError: false };
       } catch (error) {
-        return { type: "tool_result", toolCallId, content: error instanceof Error ? error.message : String(error), isError: true };
+        return { type: "tool_result", toolCallId, content: errorMessage(error), isError: true };
       }
     }
     if (name === "repo_map") {
@@ -2384,7 +2385,7 @@ export class AgentRunner {
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: toolEventResult(bounded), truncated: map.truncated || bounded.truncated } });
         return { type: "tool_result", toolCallId, content: bounded.content, isError: false };
       } catch (error) {
-        const content = error instanceof Error ? error.message : String(error);
+        const content = errorMessage(error);
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
         return { type: "tool_result", toolCallId, content, isError: true };
       }
@@ -2414,7 +2415,7 @@ export class AgentRunner {
         return { type: "tool_result", toolCallId, content: feedback, isError: false };
       } catch (error) {
         if (signal.aborted) throw error;
-        const content = error instanceof Error ? error.message : String(error);
+        const content = errorMessage(error);
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
         return { type: "tool_result", toolCallId, content, isError: true };
       }
@@ -2492,7 +2493,7 @@ export class AgentRunner {
         return { type: "tool_result", toolCallId, content: text, isError: false };
       } catch (error) {
         if (signal.aborted) throw error;
-        const content = error instanceof Error ? error.message : String(error);
+        const content = errorMessage(error);
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
         return { type: "tool_result", toolCallId, content, isError: true };
       }
@@ -2520,7 +2521,7 @@ export class AgentRunner {
         // 索引未建/损坏：明确指引 agent 退回 grep/glob，不自动触发重建（重建是显式动作）
         const content = error instanceof IndexUnavailableError
           ? `${error.message} Fall back to grep/glob for navigation.`
-          : error instanceof Error ? error.message : String(error);
+          : errorMessage(error);
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
         return { type: "tool_result", toolCallId, content, isError: true };
       }
@@ -2536,7 +2537,7 @@ export class AgentRunner {
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: toolEventResult(bounded) } });
         return { type: "tool_result", toolCallId, content: bounded.content, isError: false };
       } catch (error) {
-        const content = error instanceof Error ? error.message : String(error);
+        const content = errorMessage(error);
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
         return { type: "tool_result", toolCallId, content, isError: true };
       }
@@ -2571,7 +2572,7 @@ export class AgentRunner {
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: toolEventResult(bounded) } });
         return { type: "tool_result", toolCallId, content: bounded.content, isError: false };
       } catch (error) {
-        const content = error instanceof Error ? error.message : String(error);
+        const content = errorMessage(error);
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
         return { type: "tool_result", toolCallId, content, isError: true };
       }
@@ -2587,7 +2588,7 @@ export class AgentRunner {
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: { stopped } } });
         return { type: "tool_result", toolCallId, content: JSON.stringify({ stopped }), isError: false };
       } catch (error) {
-        const content = error instanceof Error ? error.message : String(error);
+        const content = errorMessage(error);
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
         return { type: "tool_result", toolCallId, content, isError: true };
       }
@@ -2620,7 +2621,7 @@ export class AgentRunner {
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result } });
         return { type: "tool_result", toolCallId, content: JSON.stringify(result), isError: false };
       } catch (error) {
-        const content = error instanceof Error ? error.message : String(error);
+        const content = errorMessage(error);
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
         return { type: "tool_result", toolCallId, content, isError: true };
       }
@@ -2699,7 +2700,7 @@ export class AgentRunner {
       return { content: bounded.content, isError: false };
     } catch (error) {
       if (signal.aborted) throw error;
-      const content = error instanceof Error ? error.message : String(error);
+      const content = errorMessage(error);
       if (!quiet) this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
       return { content, isError: true };
     } finally {
@@ -2745,7 +2746,7 @@ export class AgentRunner {
       ...(usageCost.usd ? { usdMicroUnits: usageCost.usd.microUnits.toString() } : {}),
       ...(usageCost.cny ? { cnyMicroUnits: usageCost.cny.microUnits.toString() } : {}),
     }).catch((error: unknown) => {
-      process.stderr.write(`[usage-log] 写入失败：${error instanceof Error ? error.message : String(error)}\n`);
+      process.stderr.write(`[usage-log] 写入失败：${errorMessage(error)}\n`);
     });
     this.events.publish({
       source: "agent",
@@ -2833,7 +2834,7 @@ export class AgentRunner {
         type: "run.persistence_failed",
         sessionId,
         runId: run.id,
-        payload: { message: error instanceof Error ? error.message : String(error) },
+        payload: { message: errorMessage(error) },
       });
     });
     return write;
@@ -2867,7 +2868,7 @@ export class AgentRunner {
         type: "run.persistence_failed",
         sessionId,
         runId: run.id,
-        payload: { message: error instanceof Error ? error.message : String(error) },
+        payload: { message: errorMessage(error) },
       });
     });
   }

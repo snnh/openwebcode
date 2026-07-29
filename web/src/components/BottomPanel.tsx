@@ -3,7 +3,7 @@ import type { ContextUsage, LiveSubagentRun, SessionDetail } from "../lib/contra
 import type { ContextWindowInfo } from "../lib/context-window";
 import type { DiffSpec } from "./editor/DiffPane";
 import { Icon, type IconName } from "./Icon";
-import { INACTIVE_STATES, stateLabel } from "./StatusBar";
+import { INACTIVE_STATES, stateLabel } from "../lib/agent-state";
 
 // 底部面板标签各自独立 chunk，仅在打开对应标签页时加载；
 // 文件/源代码管理/问题视图已迁至侧边栏（0.4.0 Phase 5a 五区布局）

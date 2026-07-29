@@ -1,4 +1,5 @@
 import type { HighlighterCore } from "shiki/core";
+import { EXT_LANGS } from "./lib/file-langs";
 
 // 高亮器按需异步加载（独立 chunk），首个代码块出现时才下载 shiki 核心与主题
 const SUPPORTED = new Set([
@@ -6,18 +7,8 @@ const SUPPORTED = new Set([
   "python", "css", "html", "diff", "markdown", "yaml",
 ]);
 
-const LANG_ALIASES: Record<string, string> = {
-  ts: "typescript",
-  js: "javascript",
-  mjs: "javascript",
-  cjs: "javascript",
-  sh: "bash",
-  shell: "bash",
-  zsh: "bash",
-  py: "python",
-  yml: "yaml",
-  md: "markdown",
-};
+// 代码块语言别名：扩展名映射（lib/file-langs 单一来源）+ 仅围栏语言出现的别名
+const LANG_ALIASES: Record<string, string> = { ...EXT_LANGS, shell: "bash", zsh: "bash" };
 
 // 语言 grammar 静态映射表：动态 import 必须是字面量路径，vite 才能正确分包。
 // 每种语言独立 chunk，首次遇到该语言代码块时才下载。

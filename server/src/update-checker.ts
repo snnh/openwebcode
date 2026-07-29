@@ -1,6 +1,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "./atomic-file.js";
+import { isMissing } from "./fs-utils.js";
 import { getUserAgent } from "./http.js";
 import { getServerVersion } from "./version.js";
 
@@ -183,8 +184,4 @@ function validateSnapshot(value: unknown): UpdateCheckSnapshot | undefined {
     publishedAt: record.publishedAt,
     checkedAt: record.checkedAt,
   };
-}
-
-function isMissing(error: unknown): boolean {
-  return error instanceof Error && "code" in error && error.code === "ENOENT";
 }

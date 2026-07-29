@@ -3,6 +3,7 @@ import { chmod, lstat, mkdir, open, readFile, readdir, rename, rm, writeFile } f
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
+import { isMissing } from "../fs-utils.js";
 
 /** 这些目录在创建托管工作区时不会复制，因此也绝不能在同步回源时带回。 */
 export const MANAGED_WORKSPACE_COPY_EXCLUDES = new Set(["node_modules", ".owc", ".openwebcode"]);
@@ -847,8 +848,4 @@ function validateNode(value: unknown): ManagedWorkspaceSyncNode {
   }
   if (node.kind === "directory" || node.kind === "symlink" || node.kind === "other") return { kind: node.kind };
   throw new Error("invalid node kind");
-}
-
-function isMissing(error: unknown): boolean {
-  return error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT";
 }

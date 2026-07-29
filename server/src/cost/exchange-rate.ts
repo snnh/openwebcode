@@ -1,6 +1,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
+import { isMissing } from "../fs-utils.js";
 import { getUserAgent } from "../http.js";
 
 export const RATE_SCALE = 1_000_000n;
@@ -182,8 +183,4 @@ function stringValue(value: unknown): string | undefined {
 
 function today(): string {
   return new Date().toISOString().slice(0, 10);
-}
-
-function isMissing(error: unknown): boolean {
-  return error instanceof Error && "code" in error && error.code === "ENOENT";
 }

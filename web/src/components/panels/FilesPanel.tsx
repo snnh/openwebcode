@@ -5,20 +5,10 @@ import type { FileEntry, ManagedWorkspaceSyncChange, ManagedWorkspaceSyncPreview
 import { Icon } from "../Icon";
 import { CodeBlock } from "../Markdown";
 import { useI18n } from "../../i18n";
+import { EXT_LANGS } from "../../lib/file-langs";
+import { formatBytes } from "../../lib/format";
 
 const joinPath = (base: string, name: string): string => (base === "." ? name : `${base}/${name}`);
-
-const EXT_LANGS: Record<string, string> = {
-  ts: "typescript", tsx: "tsx", js: "javascript", jsx: "jsx", mjs: "javascript", cjs: "javascript",
-  json: "json", css: "css", html: "html", htm: "html", md: "markdown", markdown: "markdown",
-  py: "python", sh: "bash", bash: "bash", yml: "yaml", yaml: "yaml", diff: "diff", patch: "diff",
-};
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
 
 function sortEntries(entries: FileEntry[]): FileEntry[] {
   return [...entries].sort((a, b) => {
@@ -67,7 +57,7 @@ function DirChildren({ sessionId, path, depth, selectedFile, onSelect }: {
             title={joinPath(path, entry.name)}
           >
             <span className="file-name">{entry.name}</span>
-            <small>{formatSize(entry.size)}</small>
+            <small>{formatBytes(entry.size)}</small>
           </button>
         ),
       )}

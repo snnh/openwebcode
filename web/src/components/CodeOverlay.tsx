@@ -8,14 +8,9 @@ import { api } from "../lib/api";
 import { useI18n } from "../i18n";
 import { CodeView } from "./editor/CodeView";
 import { Icon } from "./Icon";
+import { langFromPath } from "../lib/file-langs";
 
-/** 从文件扩展名推断 shiki 语言 ID；支持集之外自动回退纯文本（见 highlight.ts） */
-export function langFromPath(path: string): string | undefined {
-  const ext = path.split(".").pop()?.toLowerCase();
-  if (!ext || ext === path) return undefined;
-  const aliases: Record<string, string> = { tsx: "tsx", ts: "typescript", js: "javascript", mjs: "javascript", cjs: "javascript", py: "python", rs: "rust", md: "markdown", yml: "yaml", h: "c", hpp: "cpp" };
-  return aliases[ext] ?? ext;
-}
+export { langFromPath };
 
 export function CodeOverlay({ sessionId, path, onEdit, onClose }: {
   sessionId: string;
