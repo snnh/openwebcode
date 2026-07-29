@@ -8,7 +8,7 @@ export const RAIL_MIN_WIDTH = 200;
 export const RAIL_MAX_WIDTH = 380;
 export const clampRailWidth = (value: number): number => Math.min(RAIL_MAX_WIDTH, Math.max(RAIL_MIN_WIDTH, value));
 
-export function SessionRail({ sessions, currentId, runningIds, theme, collapsed, width, onSelect, onCreate, onDelete, onRename, onTogglePin, onImport, onToggleTheme, onToggleCollapsed, onOpenSettings, onResize }: {
+export function SessionRail({ sessions, currentId, runningIds, theme, collapsed, width, onSelect, onCreate, onDelete, onRename, onTogglePin, onImport, onToggleTheme, onOpenSettings, onResize }: {
   sessions?: Session[];
   currentId?: string;
   runningIds: Set<string>;
@@ -23,7 +23,6 @@ export function SessionRail({ sessions, currentId, runningIds, theme, collapsed,
   onTogglePin(id: string, pinned: boolean): void;
   onImport(file: File): void;
   onToggleTheme(): void;
-  onToggleCollapsed(): void;
   onOpenSettings(): void;
   onResize(width: number): void;
 }): ReactElement {
@@ -191,14 +190,6 @@ export function SessionRail({ sessions, currentId, runningIds, theme, collapsed,
           <Icon name={theme === "dark" ? "sun" : "moon"} size={15} />
         </button>
         <button className="icon-btn" onClick={onOpenSettings} aria-label={t("设置", "Settings")} title={t("设置", "Settings")}><Icon name="settings" size={15} /></button>
-        <button
-          className="icon-btn collapse-btn"
-          onClick={onToggleCollapsed}
-          aria-label={collapsed ? t("展开会话栏", "Expand session rail") : t("收起会话栏", "Collapse session rail")}
-          title={collapsed ? t("展开会话栏", "Expand session rail") : t("收起会话栏", "Collapse session rail")}
-        >
-          <Icon name={collapsed ? "chevrons-right" : "chevrons-left"} size={15} />
-        </button>
       </footer>
     </aside>
   );
