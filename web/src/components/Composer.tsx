@@ -1034,8 +1034,8 @@ const mentionHasMatches = mentionItems.length > 0;
               disabled={running}
               onChange={(event) => onConfig({ agentMode: event.target.value === "build" ? null : "plan" })}
             >
-              <option value="build">{t("构建模式（Build）", "Build")}</option>
-              <option value="plan">{t("计划模式（Plan）", "Plan")}</option>
+              <option value="build">{t("构建", "Build")}</option>
+              <option value="plan">{t("计划", "Plan")}</option>
             </select>
           </label>
           <label className="composer-model-field">
