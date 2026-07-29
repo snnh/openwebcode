@@ -15,6 +15,7 @@ import type { DiagnosticsService } from "./diagnostics/service.js";
 import type { ScmService } from "./scm/service.js";
 import { ContextManager, isPathExcluded, type BudgetUpdate } from "./context/context-manager.js";
 import { renderSessionHtml } from "./export-html.js";
+import { renderSessionMarkdown } from "./export-markdown.js";
 import { boundToolResult } from "./context/tool-result-budget.js";
 import type { ServerConfig } from "./config.js";
 import { isLoopbackHost } from "./config.js";
@@ -1204,6 +1205,15 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       .type("text/html; charset=utf-8")
       .header("content-disposition", `attachment; filename="session-${request.params.id}.html"`)
       .send(renderSessionHtml(detail, request.query.lang === "en" ? "en" : "zh-CN"));
+  });
+
+  app.get<{ Params: { id: string } }>("/api/sessions/:id/export.md", async (request, reply) => {
+    const detail = await sessions.get(request.params.id);
+    if (!detail) return reply.code(404).send({ error: "Session not found" });
+    return reply
+      .type("text/markdown; charset=utf-8")
+      .header("content-disposition", `attachment; filename="session-${request.params.id}.md"`)
+      .send(renderSessionMarkdown(detail));
   });
 
   app.post("/api/sessions/import", { bodyLimit: 50 * 1024 * 1024 }, async (request, reply) => {

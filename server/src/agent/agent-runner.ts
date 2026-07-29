@@ -29,6 +29,7 @@ import {
 } from "./sub-agent.js";
 import {
   bashTool,
+  ASK_USER_TOOL,
   CODE_SEARCH_TOOL,
   FILE_TOOLS,
   READ_ARTIFACT_TOOL,
@@ -366,6 +367,7 @@ function builtInTools(options: {
     SPAWN_SWARM_TOOL,
     TODO_WRITE_TOOL,
     REMEMBER_TOOL,
+    ASK_USER_TOOL,
     ...(options.fetchAvailable ? [WEB_FETCH_TOOL] : []),
     ...(options.backgroundTasksEnabled ? [TASK_OUTPUT_TOOL, TASK_STOP_TOOL] : []),
     ...(options.searchAvailable ? [WEB_SEARCH_TOOL] : []),
@@ -378,12 +380,71 @@ const MAX_STEERING_LENGTH = 8_000;
 export type ToolExecutionClass = "read_only" | "workspace_write" | "process" | "external";
 const TOOL_EXECUTION_CLASS: Readonly<Record<string, ToolExecutionClass>> = {
   read_file: "read_only", glob: "read_only", grep: "read_only", read_artifact: "read_only", load_skill: "read_only", repo_map: "read_only", code_search: "read_only",
-  git_status: "read_only", git_diff: "read_only",
+  git_status: "read_only", git_diff: "read_only", ask_user: "read_only",
   web_fetch: "external", web_search: "external", write_file: "workspace_write", edit_file: "workspace_write",
   bash: "process", task_output: "read_only", task_stop: "process", todo_write: "workspace_write", remember: "workspace_write", spawn_task: "process", spawn_swarm: "process", test_runner: "process",
   git_commit: "process", git_worktree_create: "process", git_worktree_remove: "process", git_worktree_merge: "process",
 };
 function executionClass(name: string): ToolExecutionClass { return name.startsWith("mcp__") || name.startsWith("ext__") ? "external" : TOOL_EXECUTION_CLASS[name] ?? "workspace_write"; }
+
+/** ask_user 校验后的单题规格（options 已确认 2-4 项、label 非空）。 */
+interface AskUserQuestionSpec {
+  question: string;
+  header?: string;
+  type: InteractionKind;
+  options?: Array<{ label: string; description?: string }>;
+}
+
+/** ask_user 输入校验：1-4 题；select 类型必须 2-4 个非空 label 选项；confirm/text 不得携带 options（拒绝而非忽略，避免歧义）。 */
+function parseAskUserQuestions(input: Record<string, unknown>): AskUserQuestionSpec[] {
+  const raw = input.questions;
+  if (!Array.isArray(raw) || raw.length < 1 || raw.length > 4) throw new Error("ask_user requires 1-4 questions");
+  return raw.map((entry, index) => {
+    const at = `questions[${index}]`;
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error(`ask_user ${at} must be an object`);
+    const record = entry as Record<string, unknown>;
+    const question = typeof record.question === "string" ? record.question.trim() : "";
+    if (!question) throw new Error(`ask_user ${at} requires a non-empty question`);
+    const type = record.type;
+    if (type !== "confirm" && type !== "single_select" && type !== "multi_select" && type !== "text") {
+      throw new Error(`ask_user ${at} type must be confirm|single_select|multi_select|text`);
+    }
+    if (record.header !== undefined && typeof record.header !== "string") throw new Error(`ask_user ${at} header must be a string`);
+    const header = record.header === undefined ? {} : { header: record.header as string };
+    const select = type === "single_select" || type === "multi_select";
+    if (!select) {
+      if (record.options !== undefined) throw new Error(`ask_user ${at} of type ${type} must not carry options`);
+      return { question, type, ...header };
+    }
+    if (!Array.isArray(record.options) || record.options.length < 2 || record.options.length > 4) {
+      throw new Error(`ask_user ${at} of type ${type} requires 2-4 options`);
+    }
+    const options = record.options.map((option, optionIndex) => {
+      if (!option || typeof option !== "object" || Array.isArray(option)) throw new Error(`ask_user ${at} options[${optionIndex}] must be an object`);
+      const recordOption = option as Record<string, unknown>;
+      const label = typeof recordOption.label === "string" ? recordOption.label.trim() : "";
+      if (!label) throw new Error(`ask_user ${at} options[${optionIndex}] requires a non-empty label`);
+      if (recordOption.description !== undefined && typeof recordOption.description !== "string") throw new Error(`ask_user ${at} options[${optionIndex}] description must be a string`);
+      return recordOption.description === undefined ? { label } : { label, description: recordOption.description as string };
+    });
+    return { question, type, ...header, options };
+  });
+}
+
+/** 交互原始回答 → 工具结果：confirm 布尔；select 为选中项 label 数组（web 提交 opt-<index> id，REST 直提 label 亦可）；text 字符串。 */
+function normalizeAskUserAnswer(spec: AskUserQuestionSpec, answer: unknown): unknown {
+  if (spec.type === "confirm") return answer === true;
+  if (spec.type === "text") return typeof answer === "string" ? answer : "";
+  const ids = Array.isArray(answer) ? answer : typeof answer === "string" ? [answer] : [];
+  const labels: string[] = [];
+  for (const id of ids) {
+    if (typeof id !== "string") continue;
+    const match = /^opt-(\d+)$/.exec(id);
+    const option = match ? spec.options?.[Number(match[1])] : undefined;
+    labels.push(option ? option.label : id);
+  }
+  return labels;
+}
 /** 系统提示中单个记忆/约定小节的字符上限 */
 const MEMORY_SECTION_LIMIT = 8_000;
 
@@ -498,6 +559,8 @@ export class AgentRunner {
   private readonly workspaceWrites = new Map<string, AbortController>();
   private readonly messageQueue: MessageQueue;
   private readonly interactions: InteractionCoordinator;
+  /** ask_user 挂起等待：interactionId → waiter；respondInteraction 解析，run abort 经 signal 监听器解析为 cancelled。 */
+  private readonly interactionWaiters = new Map<string, { resolve: (answer: unknown) => void; signal: AbortSignal; abort: () => void }>();
   private readonly repeatedCalls = new Map<string, { signature: string; count: number }>();
   private readonly mcpWarningSignatures = new Map<string, string>();
   /** 可编辑提示词覆盖：按 cwd 缓存一次，避免每轮 IO；首次构建时读取。 */
@@ -1690,8 +1753,38 @@ export class AgentRunner {
   }
   async respondInteraction(sessionId: string, id: string, answer: unknown): Promise<InteractionRequest | undefined> {
     const item = await this.interactions.answer(sessionId, id, answer);
-    if (item) this.events.publish({ source: "agent", type: "interaction.answered", sessionId, payload: item });
+    if (item) {
+      this.events.publish({ source: "agent", type: "interaction.answered", sessionId, payload: item });
+      // ask_user 工具挂起等待：回答到达即恢复工具执行（镜像权限 respond 语义）
+      const waiter = this.interactionWaiters.get(id);
+      if (waiter) {
+        this.interactionWaiters.delete(id);
+        waiter.signal.removeEventListener("abort", waiter.abort);
+        waiter.resolve(item.answer);
+      }
+    }
     return item;
+  }
+
+  /**
+   * 等待 ask_user 交互被回答；run abort 或交互已取消时解析为 { cancelled: true }，
+   * 工具结果按 { cancelled: true } 返回（非错误），agent 可自行决定继续或收尾。
+   */
+  private async waitForInteractionAnswer(sessionId: string, interactionId: string, signal: AbortSignal): Promise<{ cancelled: true } | { cancelled: false; answer: unknown }> {
+    if (signal.aborted) return { cancelled: true };
+    // 竞态防护：REST respond 可能先于 waiter 注册完成（事件发布与注册之间存在微任务窗口）
+    const existing = (await this.interactions.list(sessionId)).find((item) => item.id === interactionId);
+    if (existing && existing.status !== "pending") {
+      return existing.status === "cancelled" ? { cancelled: true } : { cancelled: false, answer: existing.answer };
+    }
+    return new Promise((resolve) => {
+      const abort = () => {
+        this.interactionWaiters.delete(interactionId);
+        resolve({ cancelled: true });
+      };
+      this.interactionWaiters.set(interactionId, { resolve: (answer) => resolve({ cancelled: false, answer }), signal, abort });
+      signal.addEventListener("abort", abort, { once: true });
+    });
   }
 
   async removeSteering(sessionId: string, id: string): Promise<boolean> {
@@ -1743,7 +1836,7 @@ export class AgentRunner {
     // 工具形态别名按原内置工具的权限类处理（不降级为 external）
     tool = this.resolveBuiltinToolName(sessionId, tool);
     // Plan 模式门禁：只读工具放行，其余一律拦截
-    const PLAN_READONLY = new Set(["read_file", "glob", "grep", "read_artifact", "load_skill", "spawn_task", "spawn_swarm", "todo_write", "web_fetch", "web_search", "task_output", "repo_map", "code_search", "git_status", "git_diff"]);
+    const PLAN_READONLY = new Set(["read_file", "glob", "grep", "read_artifact", "load_skill", "spawn_task", "spawn_swarm", "todo_write", "web_fetch", "web_search", "task_output", "repo_map", "code_search", "git_status", "git_diff", "ask_user"]);
     if (session.agentMode === "plan") {
       if (tool.startsWith("mcp__")) return { allowed: false, reason: `Plan 模式为只读：MCP 工具 ${tool} 被拦截（无法判定读写）。请输出实施计划并请用户切换到 build 模式执行。` };
       if (tool.startsWith("ext__")) return { allowed: false, reason: `Plan 模式为只读：扩展工具 ${tool} 被拦截（无法判定读写）。请输出实施计划并请用户切换到 build 模式执行。` };
@@ -2213,6 +2306,42 @@ export class AgentRunner {
           : `Fact already present in ${scope} memory (${target}); nothing appended.`;
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: { scope, path: target, appended } } });
         return { type: "tool_result", toolCallId, content, isError: false };
+      } catch (error) {
+        const content = error instanceof Error ? error.message : String(error);
+        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
+        return { type: "tool_result", toolCallId, content, isError: true };
+      }
+    }
+    if (name === "ask_user") {
+      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+      this.state(sessionId, "tool_running");
+      try {
+        const questions = parseAskUserQuestions(input);
+        const runId = this.runs.get(sessionId)?.id ?? "";
+        const results: Array<{ question: string; type: InteractionKind; answer: unknown }> = [];
+        for (const spec of questions) {
+          // 逐题串行发问：每题经 InteractionCoordinator 落盘 + interaction.requested 事件，REST respond 恢复
+          const interaction = await this.createInteraction(sessionId, {
+            runId,
+            toolCallId,
+            kind: spec.type,
+            title: spec.header ?? spec.question,
+            prompt: spec.question,
+            ...(spec.options
+              ? { options: spec.options.map((option, index) => ({ id: `opt-${index}`, label: option.label, ...(option.description === undefined ? {} : { description: option.description }) })) }
+              : {}),
+          });
+          this.state(sessionId, "waiting_permission");
+          const outcome = await this.waitForInteractionAnswer(sessionId, interaction.id, signal);
+          this.state(sessionId, "tool_running");
+          if (outcome.cancelled) {
+            this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: { cancelled: true } } });
+            return { type: "tool_result", toolCallId, content: JSON.stringify({ cancelled: true }), isError: false };
+          }
+          results.push({ question: spec.question, type: spec.type, answer: normalizeAskUserAnswer(spec, outcome.answer) });
+        }
+        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: { answered: results.length } } });
+        return { type: "tool_result", toolCallId, content: JSON.stringify(results), isError: false };
       } catch (error) {
         const content = error instanceof Error ? error.message : String(error);
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });

@@ -100,6 +100,50 @@ export const TEST_RUNNER_TOOL: ProviderTool = {
   },
 };
 
+export const ASK_USER_TOOL: ProviderTool = {
+  name: "ask_user",
+  description:
+    "Ask the user structured questions mid-run and wait for the answers. Use when a decision or missing detail " +
+    "materially changes the work. 1-4 questions, asked sequentially; select types require 2-4 options. " +
+    "Returns an array of { question, type, answer } (answer: boolean for confirm, selected option labels for select types, string for text), or { cancelled: true }.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      questions: {
+        type: "array",
+        minItems: 1,
+        maxItems: 4,
+        items: {
+          type: "object",
+          properties: {
+            question: { type: "string" },
+            header: { type: "string", description: "Short label shown on the question card." },
+            type: { type: "string", enum: ["confirm", "single_select", "multi_select", "text"] },
+            options: {
+              type: "array",
+              minItems: 2,
+              maxItems: 4,
+              items: {
+                type: "object",
+                properties: {
+                  label: { type: "string" },
+                  description: { type: "string" },
+                },
+                required: ["label"],
+                additionalProperties: false,
+              },
+            },
+          },
+          required: ["question", "type"],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ["questions"],
+    additionalProperties: false,
+  },
+};
+
 export const WEB_FETCH_TOOL: ProviderTool = {
   name: "web_fetch",
   description: "Fetch a public http/https URL and return bounded readable text.",
