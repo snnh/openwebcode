@@ -3,6 +3,7 @@ import { mkdir, readFile, readdir, rm, stat, writeFile, appendFile } from "node:
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
 import { parseSessionImport, serializeSession } from "./session-transfer.js";
+import { activePathMessages } from "./session-tree.js";
 import { defaultSandboxPolicy } from "./default-sandbox.js";
 import { readMessagesTail, readMessagesBefore, checkRecovery, DEFAULT_PAGE_SIZE } from "./message-reader.js";
 import type { ChatMessage, ManagedWorkspaceMeta, MessageContent, MessageRole, MessagesPage, SandboxMode, SessionDetail, SessionMeta } from "./types.js";
@@ -396,6 +397,40 @@ export class SessionStore {
     const meta = await this.create({ cwd, provider: source.provider, model: source.model, title: title ?? `${source.title} (clone)`, ...(source.agentMode ? { agentMode: source.agentMode } : {}), ...(source.sandboxMode ? { sandboxMode: source.sandboxMode } : {}), ...(source.setupScript ? { setupScript: source.setupScript } : {}) });
     if (source.thinking !== undefined || source.effort !== undefined || source.snapshotMode !== undefined || source.shellBackend !== undefined) await this.updateConfig(meta.id, { provider: source.provider, model: source.model, ...(source.thinking ? { thinking: source.thinking } : {}), ...(source.effort ? { effort: source.effort } : {}), ...(source.agentMode ? { agentMode: source.agentMode } : {}), ...(source.snapshotMode ? { snapshotMode: source.snapshotMode } : {}), ...(source.shellBackend ? { shellBackend: source.shellBackend } : {}) });
     for (const message of source.messages) await this.appendMessage(meta.id, message.role, message.content, { ...(message.runId ? { runId: message.runId } : {}), ...(message.turnId ? { turnId: message.turnId } : {}) });
+    return (await this.get(meta.id))!;
+  }
+
+  /**
+   * checkout：仅更新活动叶子（meta-only，不触碰 messages.jsonl，
+   * 消息整表缓存的 stat 指纹保持有效）。调用方负责校验 messageId 在树中。
+   */
+  async setActiveLeaf(id: string, messageId: string): Promise<SessionMeta> {
+    const meta = await this.readMeta(id);
+    meta.activeLeafId = messageId;
+    meta.updatedAt = new Date().toISOString();
+    await this.writeMeta(meta);
+    return meta;
+  }
+
+  /**
+   * 会话内分支（fork）：同 cwd 新建会话，复制根到 leaf 的活动路径消息
+   * （不含 messageId 时到当前活动叶子；对话 only，不带 ledger/快照/artifact），
+   * 配置（provider/model/thinking/effort/agentMode/sandboxMode/setupScript/
+   * snapshotMode/shellBackend）随 meta 复制。源会话运行中也允许（纯读复制）。
+   * 复制经 create+appendMessage 走正常落盘与缓存穿透路径，消息获得新 id，
+   * 父链沿路径线性重建，新会话活动叶子落在最后一条复制消息上。
+   */
+  async fork(id: string, messageId?: string): Promise<SessionDetail> {
+    const source = await this.get(id);
+    if (!source) throw new Error("Session not found");
+    if (messageId !== undefined && !source.messages.some((message) => message.id === messageId)) {
+      throw new Error("Message not found");
+    }
+    const leafId = messageId ?? source.activeLeafId ?? source.messages.at(-1)?.id;
+    const activePath = leafId ? activePathMessages(source.messages, leafId) : [];
+    const meta = await this.create({ cwd: source.cwd, provider: source.provider, model: source.model, title: `${source.title} (分支)`, ...(source.agentMode ? { agentMode: source.agentMode } : {}), ...(source.sandboxMode ? { sandboxMode: source.sandboxMode } : {}), ...(source.setupScript ? { setupScript: source.setupScript } : {}) });
+    if (source.thinking !== undefined || source.effort !== undefined || source.snapshotMode !== undefined || source.shellBackend !== undefined) await this.updateConfig(meta.id, { provider: source.provider, model: source.model, ...(source.thinking ? { thinking: source.thinking } : {}), ...(source.effort ? { effort: source.effort } : {}), ...(source.agentMode ? { agentMode: source.agentMode } : {}), ...(source.snapshotMode ? { snapshotMode: source.snapshotMode } : {}), ...(source.shellBackend ? { shellBackend: source.shellBackend } : {}) });
+    for (const message of activePath) await this.appendMessage(meta.id, message.role, message.content, { ...(message.runId ? { runId: message.runId } : {}), ...(message.turnId ? { turnId: message.turnId } : {}) });
     return (await this.get(meta.id))!;
   }
 

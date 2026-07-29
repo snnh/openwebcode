@@ -73,7 +73,7 @@ function liveRunsForMessage(message: ChatMessage, liveSubagents?: Record<string,
   return runs.length > 0 ? runs : undefined;
 }
 
-export function ExecutionTrack({ session, cleared, streamText, thinkingText, runError, permissions, onPermissionDone, onPermissionError, onSendToAgent, contentLens, onNotice, onOpenDiff, onOpenSettings, onRetryRun, retryPending, hasMoreMessages, onLoadMore, loadingMore, liveSubagents, liveActivity, trackVisible = true }: {
+export function ExecutionTrack({ session, cleared, streamText, thinkingText, runError, permissions, onPermissionDone, onPermissionError, onSendToAgent, contentLens, onNotice, onOpenDiff, onOpenSettings, onRetryRun, retryPending, hasMoreMessages, onLoadMore, loadingMore, liveSubagents, liveActivity, trackVisible = true, running = false, onEditMessage, onRegenerate, onFork }: {
   session: SessionDetail;
   cleared?: { uptoIndex: number; at: string };
   streamText: string;
@@ -106,6 +106,12 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, run
   trackVisible?: boolean;
   /** 实时活动（agent.state + 未结束工具）：有值时在滚动区底部渲染吸底活动条 */
   liveActivity?: LiveActivityInfo | undefined;
+  /** 会话运行中：用户消息的编辑重发/重新生成按钮禁用（分叉允许） */
+  running?: boolean;
+  /** 会话树操作：编辑重发 / 重新生成 / 分叉（仅 user 消息卡片使用） */
+  onEditMessage?(message: ChatMessage): void;
+  onRegenerate?(message: ChatMessage): void;
+  onFork?(message: ChatMessage): void;
 }): ReactElement {
   const { t } = useI18n();
   const trackRef = useRef<HTMLDivElement>(null);
@@ -186,7 +192,7 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, run
               {cleared && Math.min(cleared.uptoIndex, session.messages.length) === index && (
                 <div className="context-cleared-divider" role="separator">{t("上下文已清空（历史保留）", "Context cleared (history retained)")}</div>
               )}
-              <MemoMessageCard message={message} sessionId={session.id} contentLens={contentLens} liveSubagents={liveRunsForMessage(message, liveSubagents)} onNotice={onNotice} onOpenDiff={onOpenDiff} />
+              <MemoMessageCard message={message} sessionId={session.id} contentLens={contentLens} liveSubagents={liveRunsForMessage(message, liveSubagents)} running={running} onNotice={onNotice} onOpenDiff={onOpenDiff} onEditMessage={onEditMessage} onRegenerate={onRegenerate} onFork={onFork} />
               {shellCmd && onSendToAgent && (
                 <button
                   className="send-to-agent"

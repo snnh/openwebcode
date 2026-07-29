@@ -233,7 +233,8 @@ export interface InteractionRequest {
   status: "pending" | "answered" | "cancelled"; createdAt: string; answer?: unknown; answeredAt?: string;
 }
 
-export interface SessionTimeline { activeLeafId?: string; entries: Array<{ id: string; parentId?: string; runId?: string; turnId?: string; role: "user" | "assistant" | "tool"; createdAt: string }>; }
+// 会话树节点：entries 含全部树节点（按时间排序），onActivePath 标记是否在当前活动路径上（分叉/检出后为非活动分支）
+export interface SessionTimeline { activeLeafId?: string; entries: Array<{ id: string; parentId?: string; runId?: string; turnId?: string; role: "user" | "assistant" | "tool"; createdAt: string; onActivePath?: boolean }>; }
 export interface QueueItem { id: string; sessionId: string; kind: "steer" | "follow_up"; content: string; status: "queued" | "consuming" | "applied" | "cancelled"; createdAt: string; updatedAt: string; }
 
 export interface AppEvent {

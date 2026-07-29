@@ -1,4 +1,4 @@
-import { useState, type ReactElement } from "react";
+import { useEffect, useRef, useState, type ReactElement } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../lib/api";
 import type { DiffSpec } from "../editor/DiffPane";
@@ -6,12 +6,17 @@ import { Icon } from "../Icon";
 import { CodeBlock } from "../Markdown";
 import { useI18n } from "../../i18n";
 
-export function TimelinePanel({ sessionId, running, onNotice, onOpenDiff }: {
+/** 会话树节点展示上限（超出时只保留最新 N 个，滚动查看；当前叶节点打开时滚动可见） */
+const TIMELINE_TREE_LIMIT = 50;
+
+export function TimelinePanel({ sessionId, running, onNotice, onOpenDiff, onForkSession }: {
   sessionId?: string;
   running: boolean;
   onNotice(message: string, kind?: "info" | "error"): void;
   /** 0.5.0 Phase 1b：检查点对比一键在统一 diff 视图中打开（hunk 级"恢复到此 hunk"） */
   onOpenDiff?(spec: DiffSpec): void;
+  /** 分叉成功后切换到新会话（App 注入；不传时仅刷新会话列表） */
+  onForkSession?: ((newSessionId: string) => void) | undefined;
 }): ReactElement {
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
@@ -32,12 +37,42 @@ export function TimelinePanel({ sessionId, running, onNotice, onOpenDiff }: {
     queryFn: () => api.checkpointDiff(sessionId!, selectedCheckpoint!),
     enabled: Boolean(sessionId && selectedCheckpoint),
   });
+  const treeRef = useRef<HTMLDivElement>(null);
+  const activeLeafId = timeline.data?.activeLeafId;
+  const treeEntryCount = timeline.data?.entries.length ?? 0;
+  // 会话树加载/检出后，滚动让当前叶节点可见（jsdom 无 scrollIntoView 时跳过）
+  useEffect(() => {
+    const active = treeRef.current?.querySelector(".timeline-node.active");
+    if (active && typeof active.scrollIntoView === "function") active.scrollIntoView({ block: "nearest" });
+  }, [activeLeafId, treeEntryCount]);
 
   if (!sessionId) return <div className="inspector-body"><p className="panel-empty">{t("选择会话以查看检查点。", "Select a session to view checkpoints.")}</p></div>;
 
   const refresh = (): void => {
     void queryClient.invalidateQueries({ queryKey: ["checkpoints", sessionId] });
     void queryClient.invalidateQueries({ queryKey: ["session", sessionId] });
+  };
+
+  // 检出到任意树节点并从那里继续（运行中 409，由按钮禁用拦截；服务端兜底错误进 toast）
+  const checkout = (messageId: string): void => {
+    api.checkoutSession(sessionId, messageId)
+      .then(() => {
+        void queryClient.invalidateQueries({ queryKey: ["timeline", sessionId] });
+        void queryClient.invalidateQueries({ queryKey: ["session", sessionId] });
+        onNotice(t("已检出到该节点", "Checked out to this node"));
+      })
+      .catch((error: unknown) => onNotice(error instanceof Error ? error.message : t("检出失败", "Checkout failed"), "error"));
+  };
+
+  // 从任意树节点分叉为新会话（运行中允许），成功后切换过去
+  const fork = (messageId: string): void => {
+    api.forkSession(sessionId, { messageId })
+      .then(({ sessionId: newSessionId }) => {
+        void queryClient.invalidateQueries({ queryKey: ["sessions"] });
+        onNotice(t("已分叉到新会话", "Forked into a new session"));
+        onForkSession?.(newSessionId);
+      })
+      .catch((error: unknown) => onNotice(error instanceof Error ? error.message : t("分叉失败", "Fork failed"), "error"));
   };
 
   return (
@@ -58,11 +93,39 @@ export function TimelinePanel({ sessionId, running, onNotice, onOpenDiff }: {
         </button>
       </div>
       {timeline.data && (
-        <div className="timeline-summary" aria-label={t("对话路径", "Conversation path")}>
-          <small>{t(`活动路径 · ${timeline.data.entries.length} 个节点`, `Active path · ${timeline.data.entries.length} nodes`)}</small>
-          {timeline.data.entries.slice(-8).map((entry) => <div key={entry.id} className={entry.id === timeline.data?.activeLeafId ? "active" : ""}>
-            <span>{entry.role}</span>{entry.runId && <code>{entry.turnId ?? entry.runId}</code>}{entry.id === timeline.data?.activeLeafId && <b>{t("当前", "Current")}</b>}
-          </div>)}
+        <div className="timeline-summary" aria-label={t("会话树", "Conversation tree")}>
+          <small>{t(`会话树 · ${timeline.data.entries.length} 个节点`, `Conversation tree · ${timeline.data.entries.length} nodes`)}</small>
+          <div className="timeline-tree" ref={treeRef}>
+            {timeline.data.entries.slice(-TIMELINE_TREE_LIMIT).map((entry) => (
+              <div
+                key={entry.id}
+                className={`timeline-node${entry.id === activeLeafId ? " active" : ""}${entry.onActivePath === false ? " off-path" : ""}`}
+              >
+                <span>{entry.role}</span>
+                {entry.runId && <code>{entry.turnId ?? entry.runId}</code>}
+                {entry.id === activeLeafId && <b>{t("当前", "Current")}</b>}
+                <span className="timeline-node-actions">
+                  <button
+                    type="button"
+                    className="copy-btn"
+                    disabled={running || entry.id === activeLeafId}
+                    title={running ? t("运行中不可用", "Unavailable while running") : t("检出到该节点并从这里继续", "Check out this node and continue from here")}
+                    onClick={() => checkout(entry.id)}
+                  >
+                    {t("继续", "Continue")}
+                  </button>
+                  <button
+                    type="button"
+                    className="copy-btn"
+                    title={t("从该节点分叉为新会话", "Fork a new session from this node")}
+                    onClick={() => fork(entry.id)}
+                  >
+                    {t("分叉", "Fork")}
+                  </button>
+                </span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
       {capability.data && (

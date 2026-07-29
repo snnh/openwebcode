@@ -123,7 +123,7 @@ const EFFORT_LABEL: Record<string, [string, string]> = {
   max: ["最大", "Maximum"],
 };
 
-export function Composer({ current, model, models, providers = [], pdfToImageExtension, pdfToImageStatus = "ready", imageCapabilitiesReady = true, draft, setDraft, onSend, onConfig, running, sendKey, skills, attachments, setAttachments, supportsImages, onNotice, sendPending = false, history = [] }: {
+export function Composer({ current, model, models, providers = [], pdfToImageExtension, pdfToImageStatus = "ready", imageCapabilitiesReady = true, draft, setDraft, onSend, onConfig, running, sendKey, skills, attachments, setAttachments, supportsImages, onNotice, sendPending = false, history = [], editingMessage, onCancelEdit }: {
   current: SessionDetail;
   model?: ModelProfile;
   models: ModelProfile[];
@@ -149,6 +149,9 @@ export function Composer({ current, model, models, providers = [], pdfToImageExt
   onNotice(message: string, kind?: NoticeKind): void;
   /** 输入历史（本会话已发送的用户消息，最新在前）：↑/↓ 回查，弹层打开时弹层优先 */
   history?: string[];
+  /** 编辑重发状态（App 持有）：展示横幅，Esc/取消回调退出并恢复草稿；hadAttachments 提示附件不会随重发 */
+  editingMessage?: { messageId: string; hadAttachments: boolean } | undefined;
+  onCancelEdit?(): void;
 }): ReactElement {
   const { t } = useI18n();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -659,6 +662,18 @@ const mentionHasMatches = mentionItems.length > 0;
           ))}
         </div>
       )}
+      {editingMessage && (
+        <div className="composer-editing-banner" role="status">
+          <Icon name="edit" size={12} />
+          <span className="composer-editing-text">
+            {t("正在编辑早前消息", "Editing an earlier message")}
+            {editingMessage.hadAttachments ? t("（原消息的附件不会重发，仅发送文本）", " (attachments from the original message will not be resent; text only)") : ""}
+          </span>
+          <button type="button" className="btn small" onClick={() => onCancelEdit?.()}>
+            {t("取消", "Cancel")}
+          </button>
+        </div>
+      )}
       <div className="composer-input">
         {popupOpen && (
           <ul id="skill-listbox" className="skill-popup" role="listbox" aria-label={t("技能建议", "Skill suggestions")}>
@@ -852,6 +867,12 @@ const mentionHasMatches = mentionItems.length > 0;
                 return;
               }
             }
+            // 编辑重发中 Esc 取消（补全弹层的 Esc 已在上方拦截返回，不冲突）
+            if (editingMessage && event.key === "Escape") {
+              event.preventDefault();
+              onCancelEdit?.();
+              return;
+            }
             // 输入法组合中的 Enter 不触发发送；发送键可在设置中切换
             if (event.nativeEvent.isComposing || event.key !== "Enter") return;
             const shouldSend = sendKey === "enter"
@@ -895,7 +916,7 @@ const mentionHasMatches = mentionItems.length > 0;
           onClick={() => onSend(running ? queuedBehavior : "start")}
         >
           <Icon name="send" size={13} />
-          {draft.trimStart().startsWith("!") ? t("运行", "Run") : running ? queuedBehavior === "follow_up" ? t("完成后续跑", "Run after") : t("加入队列", "Queue") : t("发送", "Send")}
+          {editingMessage ? t("重发", "Resend") : draft.trimStart().startsWith("!") ? t("运行", "Run") : running ? queuedBehavior === "follow_up" ? t("完成后续跑", "Run after") : t("加入队列", "Queue") : t("发送", "Send")}
         </button>
       </div>
       {mentionedPaths.length > 0 && (

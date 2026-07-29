@@ -39,6 +39,7 @@ import {
 } from "./tool-schemas.js";
 import { getSnapshotBackend } from "../snapshots/index.js";
 import type { MessageContent, ShellBackend } from "../sessions/types.js";
+import { activePathMessages } from "../sessions/session-tree.js";
 import type { SessionStore } from "../sessions/session-store.js";
 import { defaultSandboxPolicy } from "../sessions/default-sandbox.js";
 import { parseSkillCommand, type SkillRegistry } from "../skills.js";
@@ -748,7 +749,8 @@ export class AgentRunner {
         // 选择性上下文（§4.4）：pin 不被驱逐、排除不进组装；配置持久化在会话 meta。
         const contextSelection = { pins: session.contextPins ?? [], excludes: session.contextExcludes ?? [] };
         const ctxBuildStart = performance.now();
-        const view = await context.buildView(session.messages, { selection: contextSelection });
+        // 消息树：上下文只组装活动路径（根→活动叶子），checkout/retry 出的旧分支不进 provider 历史。
+        const view = await context.buildView(activePathMessages(session.messages, session.activeLeafId), { selection: contextSelection });
         perfContextBuildMs += performance.now() - ctxBuildStart;
         if (this.extensions) {
           const transformed = await this.extensions.transformContext({
@@ -1128,7 +1130,8 @@ export class AgentRunner {
         const afterTools = await this.sessions.get(sessionId);
         if (afterTools && (!this.extensions || this.extensions.isEnabled("context-manager"))) {
           // evict 的返回值就是落盘后的 ledger（serial 队列保证期间无其他写入），不必再 load 一次。
-          const evictedLedger = await context.evict(afterTools.messages, new Set(afterTools.contextPins ?? []));
+          // 与 buildView 一致只按活动路径记账，避免旧分支消息污染 ledger。
+          const evictedLedger = await context.evict(activePathMessages(afterTools.messages, afterTools.activeLeafId), new Set(afterTools.contextPins ?? []));
           this.events.publish({ source: "agent", type: "context.evicted", sessionId, payload: evictedLedger.entries });
         }
         await this.applySteering(sessionId);

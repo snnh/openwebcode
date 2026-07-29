@@ -480,6 +480,13 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .timeline-summary > div { display: flex; gap: 8px; padding: 3px 0; }
 .timeline-summary > div.active { color: var(--accent); font-weight: 600; }
 .timeline-summary code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.timeline-summary .timeline-tree { flex-direction: column; gap: 2px; max-height: 260px; overflow-y: auto; margin-top: 6px; padding: 0; }
+.timeline-node { display: flex; align-items: center; gap: 8px; padding: 2px 4px; border-radius: var(--radius-s); }
+.timeline-node.active { color: var(--accent); font-weight: 600; }
+.timeline-node.off-path { opacity: 0.45; }
+.timeline-node-actions { margin-left: auto; display: inline-flex; gap: 4px; }
+.timeline-node .copy-btn { opacity: 0; }
+.timeline-node:hover .copy-btn, .timeline-node .copy-btn:focus-visible { opacity: 1; }
 
 /* ================= 后台任务 ================= */
 .task-badge {
@@ -1058,6 +1065,8 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .composer-input { display: flex; gap: 10px; align-items: flex-end; position: relative; }
 .queue-behavior { max-width: 148px; min-height: 34px; padding: 0 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel); color: var(--text); font-size: 12px; }
 .composer-hint { margin-top: 6px; color: var(--text-3); font-size: 11px; }
+.composer-editing-banner { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius-s); background: var(--panel-2); color: var(--text-2); font-size: 12px; }
+.composer-editing-text { flex: 1; }
 .composer-conversion { margin-top: 6px; color: var(--accent); font-size: 12px; }
 .attachment-strip { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
 .attachment { position: relative; display: inline-flex; }
