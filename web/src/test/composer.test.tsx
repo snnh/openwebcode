@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Composer, type PendingImage } from "../components/Composer";
 import type { ModelProfile, SessionDetail, SkillInfo } from "../lib/contracts";
 import { api } from "../lib/api";
+import { readRecentModels, recordRecentModel } from "../lib/recent-models";
 import { renderPdfToImages } from "../lib/pdf-to-images";
 
 vi.mock("../lib/pdf-to-images", () => ({ renderPdfToImages: vi.fn() }));
@@ -674,5 +675,116 @@ describe("Composer 输入历史回查", () => {
     expect(textarea.value).toBe("最新一条");
     fireEvent.keyDown(textarea, { key: "ArrowDown", isComposing: true });
     expect(textarea.value).toBe("最新一条");
+  });
+});
+
+describe("Composer 模型循环（Ctrl+P）", () => {
+  const cycleModels: ModelProfile[] = [{
+    id: "claude-opus-4-8",
+    provider: "anthropic",
+    contextWindow: 1_000_000,
+    maxOutput: 128_000,
+    capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true },
+  }, {
+    id: "gpt-4o-mini",
+    provider: "openai",
+    contextWindow: 128_000,
+    maxOutput: 16_384,
+    capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true },
+  }, {
+    id: "deepseek-v3",
+    provider: "deepseek",
+    contextWindow: 64_000,
+    maxOutput: 8_192,
+    capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true },
+  }];
+  const cycleProviders = ["anthropic", "openai", "deepseek"];
+
+  function seedRecent(entries: Array<{ provider: string; model: string }>): void {
+    localStorage.setItem("owc-recent-models", JSON.stringify(entries));
+  }
+
+  beforeEach(() => {
+    window.HTMLElement.prototype.scrollIntoView = vi.fn();
+    localStorage.clear();
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("下拉切换模型写入 localStorage：去重置前", () => {
+    render(<Harness onSend={vi.fn()} onConfig={vi.fn()} providers={cycleProviders} models={cycleModels} />);
+    const select = screen.getByLabelText("模型");
+    fireEvent.change(select, { target: { value: JSON.stringify(["openai", "gpt-4o-mini"]) } });
+    fireEvent.change(select, { target: { value: JSON.stringify(["deepseek", "deepseek-v3"]) } });
+    fireEvent.change(select, { target: { value: JSON.stringify(["openai", "gpt-4o-mini"]) } });
+    expect(JSON.parse(localStorage.getItem("owc-recent-models")!)).toEqual([
+      { provider: "openai", model: "gpt-4o-mini" },
+      { provider: "deepseek", model: "deepseek-v3" },
+    ]);
+  });
+
+  it("最近列表上限 5 条，最早记录被截断", () => {
+    for (let index = 0; index < 6; index += 1) {
+      recordRecentModel("p", `m${index}`);
+    }
+    expect(readRecentModels()).toEqual([
+      { provider: "p", model: "m5" },
+      { provider: "p", model: "m4" },
+      { provider: "p", model: "m3" },
+      { provider: "p", model: "m2" },
+      { provider: "p", model: "m1" },
+    ]);
+  });
+
+  it("Ctrl+P 按最近列表顺序循环，调用 onConfig 并给出提示", () => {
+    seedRecent([
+      { provider: "anthropic", model: "claude-opus-4-8" },
+      { provider: "openai", model: "gpt-4o-mini" },
+      { provider: "deepseek", model: "deepseek-v3" },
+    ]);
+    const onConfig = vi.fn();
+    const { textarea } = renderComposer({ onSend: vi.fn(), onConfig, providers: cycleProviders, models: cycleModels });
+
+    // 当前模型是列表首条 → 切到第二条（按键被拦截，浏览器默认被阻止）
+    expect(fireEvent.keyDown(textarea, { key: "p", ctrlKey: true })).toBe(false);
+    expect(onConfig).toHaveBeenLastCalledWith({ provider: "openai", model: "gpt-4o-mini" });
+    // 配置生效前连续按：基于上次循环目标继续前进
+    fireEvent.keyDown(textarea, { key: "p", ctrlKey: true });
+    expect(onConfig).toHaveBeenLastCalledWith({ provider: "deepseek", model: "deepseek-v3" });
+    // 到底后回到顶部
+    fireEvent.keyDown(textarea, { key: "p", ctrlKey: true });
+    expect(onConfig).toHaveBeenLastCalledWith({ provider: "anthropic", model: "claude-opus-4-8" });
+    expect(screen.getByRole("status")).toHaveTextContent("已切换模型");
+  });
+
+  it("当前模型不在最近列表时从最新一条开始", () => {
+    seedRecent([
+      { provider: "openai", model: "gpt-4o-mini" },
+      { provider: "deepseek", model: "deepseek-v3" },
+    ]);
+    const onConfig = vi.fn();
+    const { textarea } = renderComposer({ onSend: vi.fn(), onConfig, providers: cycleProviders, models: cycleModels });
+    fireEvent.keyDown(textarea, { key: "p", ctrlKey: true });
+    expect(onConfig).toHaveBeenLastCalledWith({ provider: "openai", model: "gpt-4o-mini" });
+  });
+
+  it("最近列表不足 2 条时 Ctrl+P 为 no-op，不拦截浏览器默认行为", () => {
+    seedRecent([{ provider: "anthropic", model: "claude-opus-4-8" }]);
+    const onConfig = vi.fn();
+    const { textarea } = renderComposer({ onSend: vi.fn(), onConfig });
+    // fireEvent 返回 true 表示未调用 preventDefault
+    expect(fireEvent.keyDown(textarea, { key: "p", ctrlKey: true })).toBe(true);
+    expect(onConfig).not.toHaveBeenCalled();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("输入法组合中（isComposing）忽略 Ctrl+P", () => {
+    seedRecent([
+      { provider: "anthropic", model: "claude-opus-4-8" },
+      { provider: "openai", model: "gpt-4o-mini" },
+    ]);
+    const onConfig = vi.fn();
+    const { textarea } = renderComposer({ onSend: vi.fn(), onConfig });
+    expect(fireEvent.keyDown(textarea, { key: "p", ctrlKey: true, isComposing: true })).toBe(true);
+    expect(onConfig).not.toHaveBeenCalled();
   });
 });

@@ -271,7 +271,7 @@ export function MessageCard({ message, sessionId, contentLens, liveSubagents, ru
       .finally(() => setLensBusy(false));
   }, [contentLens?.enabled, glossary, message.id, onNotice, sessionId, targetLanguage, text, translateMode]);
   return (
-    <article className={`message ${message.role}`} ref={articleRef}>
+    <article className={`message ${message.role}`} ref={articleRef} data-message-id={message.id}>
       <span className="track-node" aria-hidden />
       <div className="message-meta">
         <span className="message-author">{ROLE_LABELS[message.role] ? t(...ROLE_LABELS[message.role]!) : message.role}</span>

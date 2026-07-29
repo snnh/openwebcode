@@ -103,6 +103,8 @@ export const DEFAULT_KEYBINDINGS: readonly Keybinding[] = [
   { command: "workbench.action.previousSession", key: "mod+pageup", global: true },
   { command: "workbench.action.keyboardShortcuts", key: "shift+?" },
   { command: "workbench.action.cycleZone", key: "f6", global: true },
+  // 会话内搜索：非 global——输入框/可编辑聚焦（Composer、Monaco、搜索条自身）不抢，浏览器/编辑器原生查找照常
+  { command: "workbench.action.findInConversation", key: "mod+f", when: "sessionActive !dialogOpen" },
   // 编辑器分栏（0.5.0 Phase 1a）：global 使 Monaco 聚焦时同样生效
   { command: "workbench.action.saveEditorFile", key: "mod+s", global: true, when: "editorOpen" },
   { command: "workbench.action.toggleEditorSplit", key: "mod+\\", global: true, when: "editorOpen" },

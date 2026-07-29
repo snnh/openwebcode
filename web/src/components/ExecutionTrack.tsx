@@ -7,6 +7,7 @@ import { LiveActivity } from "./LiveActivity";
 import type { LiveActivityInfo } from "../hooks/use-live-activity";
 import { Markdown } from "./Markdown";
 import { MemoMessageCard, ThinkingBlock } from "./MessageCard";
+import { CONVERSATION_SEARCH_EVENT, ConversationSearch, findMatches, highlightArticle, unwrapSearchMarks } from "./ConversationSearch";
 import { PermissionCard, type PermissionRequest } from "./PermissionCard";
 import { useI18n } from "../i18n";
 
@@ -140,6 +141,89 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, run
     setLayoutVersion((value) => value + 1);
   }, [session.messages]);
 
+  // ===== 会话内搜索（Ctrl+F）：状态留在本层，与消息/滚动容器同层 =====
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [activeMatch, setActiveMatch] = useState(0);
+  const [focusSignal, setFocusSignal] = useState(0);
+
+  // 命令动作经 window 事件打开（命令体系不感知 React 状态；已打开时递增 focusSignal 重新聚焦）
+  useEffect(() => {
+    const open = (): void => {
+      setSearchOpen(true);
+      setFocusSignal((value) => value + 1);
+    };
+    window.addEventListener(CONVERSATION_SEARCH_EVENT, open);
+    return () => window.removeEventListener(CONVERSATION_SEARCH_EVENT, open);
+  }, []);
+
+  // 切换会话时重置搜索
+  useEffect(() => {
+    setSearchOpen(false);
+    setQuery("");
+    setActiveMatch(0);
+  }, [session.id]);
+
+  const matches = useMemo(() => findMatches(session.messages, query), [session.messages, query]);
+  const currentMatch = matches.length === 0 ? 0 : Math.min(activeMatch, matches.length - 1);
+
+  // 高亮：不动 React 渲染，layout effect 内对文本节点包/拆 <mark>。
+  // MutationObserver 兜底：Markdown 懒加载换壳（fallback 纯文本 → 渲染树）或虚拟化
+  // 挂载新文章时重挂高亮；自身包/拆 mark 的变动被过滤，不会自激。
+  // scrollIntoView 仅在「查询或当前命中变化」时执行（scrollKeyRef 去重），用户手动滚动不被拽回。
+  const scrollKeyRef = useRef("");
+  useLayoutEffect(() => {
+    const root = trackRef.current;
+    if (!root) return;
+    const applyHighlights = (): void => {
+      unwrapSearchMarks(root);
+      for (const element of Array.from(root.querySelectorAll(".conv-search-active"))) element.classList.remove("conv-search-active");
+      if (!searchOpen || !query || matches.length === 0) return;
+      const articleByMessageId = new Map<string, Element>();
+      for (const element of Array.from(root.querySelectorAll("article[data-message-id]"))) {
+        const id = element.getAttribute("data-message-id");
+        if (id) articleByMessageId.set(id, element);
+      }
+      const active = matches[currentMatch];
+      const activeByMessage = new Map<string, number>();
+      for (const match of matches) if (!activeByMessage.has(match.messageId)) activeByMessage.set(match.messageId, -1);
+      if (active) activeByMessage.set(active.messageId, active.occurrence);
+      for (const [messageId, activeOccurrence] of activeByMessage) {
+        const article = articleByMessageId.get(messageId);
+        if (!article) continue;
+        highlightArticle(article, query, activeOccurrence);
+        if (activeOccurrence >= 0) article.classList.add("conv-search-active");
+      }
+    };
+    applyHighlights();
+    if (!searchOpen || !query || matches.length === 0) return;
+    const active = matches[currentMatch];
+    if (active) {
+      const scrollKey = `${query}#${currentMatch}`;
+      if (scrollKeyRef.current !== scrollKey) {
+        scrollKeyRef.current = scrollKey;
+        const target = root.querySelector(`article[data-message-id="${active.messageId}"]`);
+        if (target) {
+          // jsdom 无 scrollIntoView，测试环境跳过
+          if (typeof target.scrollIntoView === "function") target.scrollIntoView({ block: "center" });
+        } else {
+          // 虚拟化未挂载：先按估算偏移跳滚动，挂载后 observer/依赖变化补高亮
+          const index = session.messages.findIndex((message) => message.id === active.messageId);
+          if (index >= 0 && (index < firstVisible || index >= lastVisible)) {
+            root.scrollTop = Math.max(0, (offsets[index] ?? 0) - viewport.height / 2);
+          }
+        }
+      }
+    }
+    const observer = new MutationObserver((records) => {
+      const foreign = records.some((record) =>
+        Array.from(record.addedNodes).some((node) => node instanceof HTMLElement && !node.matches("mark.conv-search-hit")));
+      if (foreign) applyHighlights();
+    });
+    observer.observe(root, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [searchOpen, query, matches, currentMatch, firstVisible, lastVisible, offsets, viewport.height, session.messages]);
+
   // jsdom 无 Element.scrollTo，测试环境回退到 scrollTop
   const scrollToBottom = (smooth = false): void => {
     const element = trackRef.current;
@@ -263,6 +347,29 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, run
         ))}
         {liveActivity && <LiveActivity activity={liveActivity} />}
       </div>
+      {searchOpen && (
+        <ConversationSearch
+          query={query}
+          onQueryChange={(value) => {
+            setQuery(value);
+            setActiveMatch(0);
+          }}
+          current={currentMatch}
+          total={matches.length}
+          onNext={() => {
+            if (matches.length > 0) setActiveMatch((currentMatch + 1) % matches.length);
+          }}
+          onPrev={() => {
+            if (matches.length > 0) setActiveMatch((currentMatch - 1 + matches.length) % matches.length);
+          }}
+          onClose={() => {
+            scrollKeyRef.current = "";
+            setSearchOpen(false);
+          }}
+          focusSignal={focusSignal}
+          {...(hasMoreMessages ? { loadedOnly: true } : {})}
+        />
+      )}
       {!pinned && (
         <button
           className="scroll-bottom"

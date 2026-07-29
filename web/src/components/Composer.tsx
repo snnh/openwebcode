@@ -4,6 +4,7 @@ import { api, ApiError } from "../lib/api";
 import { extractAttachmentPaths } from "../lib/attachments";
 import type { PdfRenderOptions } from "../lib/pdf-to-images";
 import type { SendKey } from "../lib/prefs";
+import { nextRecentModel, recordRecentModel } from "../lib/recent-models";
 import { Icon } from "./Icon";
 import { ModelCapabilityBadges } from "./ModelCapabilityBadges";
 import { useI18n } from "../i18n";
@@ -183,7 +184,14 @@ export function Composer({ current, model, models, providers = [], pdfToImageExt
   // 输入历史回查：null = 未在回查；进入回查时把当前草稿暂存，回查到底（最新之后）恢复
   const [historyIndex, setHistoryIndex] = useState<number | null>(null);
   const historyStashRef = useRef("");
+  // Ctrl+P 模型循环：提示文本短暂显示后由定时器移除；cycleBase 记录上次循环目标，
+  // 使配置生效前连续按 Ctrl+P 仍能按列表顺序前进（外部改模型时以 props 为准并清空）
+  const [modelCycleHint, setModelCycleHint] = useState<string | null>(null);
+  const modelCycleTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const cycleBaseRef = useRef<{ provider: string; model: string } | null>(null);
   const pdfToImageEnabled = pdfToImageExtension?.enabled === true;
+
+  useEffect(() => () => clearTimeout(modelCycleTimerRef.current), []);
 
   useEffect(() => { draftRef.current = draft; }, [draft]);
   useEffect(() => { attachmentsRef.current = attachments; }, [attachments]);
@@ -633,6 +641,34 @@ const mentionHasMatches = mentionItems.length > 0;
   const thinkingControlSupported = hasActiveThinkingMode || efforts.length > 0;
   const selectionUnavailable = current.provider !== "" && !selectableModels.some((item) => item.provider === current.provider && item.id === current.model);
 
+  // props 里的模型实际变化（下拉选择/会话切换/配置生效）时，循环基准回到 props；
+  // 配置生效前的重渲染（如提示文本更新）不清空基准，保证连续 Ctrl+P 按列表顺序前进
+  const propsModelRef = useRef({ provider: current.provider, model: current.model });
+  if (propsModelRef.current.provider !== current.provider || propsModelRef.current.model !== current.model) {
+    propsModelRef.current = { provider: current.provider, model: current.model };
+    cycleBaseRef.current = null;
+  }
+
+  /** Ctrl+P 在最近使用的模型间循环（pi-agent 风格）。返回 false 表示不拦截按键（列表不足 2 条）。 */
+  const cycleModel = (): boolean => {
+    const base = cycleBaseRef.current ?? { provider: current.provider, model: current.model };
+    const next = nextRecentModel(base);
+    if (!next) return false;
+    cycleBaseRef.current = next;
+    const profile = selectableModels.find((item) => item.provider === next.provider && item.id === next.model);
+    const config: Record<string, unknown> = { provider: next.provider, model: next.model };
+    // 与下拉切换一致：目标模型不支持当前 thinking/effort 时在同一请求中清除
+    if (profile) {
+      if (current.thinking && !profile.capabilities.thinking.includes(current.thinking)) config.thinking = null;
+      if (current.effort && !profile.capabilities.effort.includes(current.effort)) config.effort = null;
+    }
+    onConfig(config);
+    clearTimeout(modelCycleTimerRef.current);
+    setModelCycleHint(t(`已切换模型：${next.model}【${next.provider}】`, `Switched model: ${next.model}【${next.provider}】`));
+    modelCycleTimerRef.current = setTimeout(() => setModelCycleHint(null), 2000);
+    return true;
+  };
+
   return (
     <footer className="composer" onDrop={onDrop} onDragOver={(event) => event.preventDefault()}>
       <input
@@ -873,6 +909,12 @@ const mentionHasMatches = mentionItems.length > 0;
               onCancelEdit?.();
               return;
             }
+            // Ctrl+P 在最近使用的模型间循环；输入法组合中忽略；列表不足 2 条时放行浏览器默认行为
+            if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && (event.key === "p" || event.key === "P")) {
+              if (event.nativeEvent.isComposing) return;
+              if (cycleModel()) event.preventDefault();
+              return;
+            }
             // 输入法组合中的 Enter 不触发发送；发送键可在设置中切换
             if (event.nativeEvent.isComposing || event.key !== "Enter") return;
             const shouldSend = sendKey === "enter"
@@ -954,6 +996,9 @@ const mentionHasMatches = mentionItems.length > 0;
       ) : (
         <div className="composer-hint">{t("PDF 转图片扩展未启用；PDF 会先保存到工作区，再插入其路径引用。", "The PDF-to-image extension is disabled; PDFs are saved to the workspace and inserted as path references.")}</div>
       )}
+      {modelCycleHint && (
+        <div className="composer-hint composer-model-cycle" role="status">{modelCycleHint}</div>
+      )}
       <div className="config-row" aria-label={t("会话配置", "Session configuration")}>
         <div className="composer-config-main">
           <label>
@@ -972,6 +1017,7 @@ const mentionHasMatches = mentionItems.length > 0;
             <select value={modelSelection} disabled={running} onChange={(event) => {
               const next = selectableModels.find((item) => JSON.stringify([item.provider, item.id]) === event.target.value || item.id === event.target.value);
               if (next) {
+                recordRecentModel(next.provider, next.id);
                 const config: Record<string, unknown> = { provider: next.provider, model: next.id };
                 // Submit the target model and any required reasoning cleanup in
                 // one request.  This avoids a rejected intermediate state when

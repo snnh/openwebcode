@@ -27,6 +27,7 @@ import type { PendingImage } from "./components/Composer";
 import { EmptyState } from "./components/EmptyState";
 import { SessionSkeleton } from "./components/SessionSkeleton";
 import { ExecutionTrack } from "./components/ExecutionTrack";
+import { CONVERSATION_SEARCH_EVENT } from "./components/ConversationSearch";
 import { SubagentTabStrip } from "./components/SubagentTabStrip";
 import { SubagentTabView } from "./components/SubagentTabView";
 import { isBusyState, JobHeader } from "./components/JobHeader";
@@ -876,6 +877,8 @@ export function App(): ReactElement {
     // 统一 diff 视图（0.5.0 Phase 1b）：接受/拒绝当前（首个待处理）hunk，写回走权限链
     diffAcceptHunk: () => diffActionsRef.current.accept?.(),
     diffRejectHunk: () => diffActionsRef.current.reject?.(),
+    // 会话内搜索：状态在 ExecutionTrack，经 window 事件桥接（同 cycleZone 模式）
+    findInConversation: () => window.dispatchEvent(new CustomEvent(CONVERSATION_SEARCH_EVENT)),
   };
   useEffect(() => registerBuiltinCommands(() => actionsRef.current), []);
   useGlobalKeybindings(whenContext);

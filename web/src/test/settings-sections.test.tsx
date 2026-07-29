@@ -17,6 +17,7 @@ function stubActions(): CommandActions {
     showKeyboardShortcuts: vi.fn(), cycleZone: vi.fn(), showNotifications: vi.fn(),
     saveEditorFile: vi.fn(), toggleEditorSplit: vi.fn(),
     diffAcceptHunk: vi.fn(), diffRejectHunk: vi.fn(),
+    findInConversation: vi.fn(),
   };
 }
 

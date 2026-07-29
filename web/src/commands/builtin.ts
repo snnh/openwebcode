@@ -31,6 +31,7 @@ export const COMMAND_IDS = {
   toggleEditorSplit: "workbench.action.toggleEditorSplit",
   diffAcceptHunk: "workbench.action.diffAcceptHunk",
   diffRejectHunk: "workbench.action.diffRejectHunk",
+  findInConversation: "workbench.action.findInConversation",
 } as const;
 
 /** App 提供给命令的动作面；全部保持已绑定的回调，注册表不感知 React 状态 */
@@ -59,6 +60,8 @@ export interface CommandActions {
   /** 统一 diff 视图（0.5.0 Phase 1b）：接受/拒绝当前（首个待处理）hunk，写回走权限链 */
   diffAcceptHunk(): void;
   diffRejectHunk(): void;
+  /** 会话内搜索（Ctrl+F）：打开对话搜索条（经 window 事件通知 ExecutionTrack） */
+  findInConversation(): void;
 }
 
 export function registerBuiltinCommands(getActions: () => CommandActions): () => void {
@@ -90,6 +93,8 @@ export function registerBuiltinCommands(getActions: () => CommandActions): () =>
     // 统一 diff 视图（0.5.0 Phase 1b）：仅 diff 打开时可用；接受=保留改动，拒绝=写回还原（走权限链）
     registerCommand({ id: COMMAND_IDS.diffAcceptHunk, title: { zh: "接受当前 hunk", en: "Accept Current Hunk" }, when: "diffOpen", handler: () => getActions().diffAcceptHunk() }),
     registerCommand({ id: COMMAND_IDS.diffRejectHunk, title: { zh: "拒绝当前 hunk", en: "Reject Current Hunk" }, when: "diffOpen", handler: () => getActions().diffRejectHunk() }),
+    // 会话内搜索：键位层再加 "!dialogOpen"；非 global，输入框聚焦（Composer/Monaco/搜索条自身）不抢浏览器/编辑器查找
+    registerCommand({ id: COMMAND_IDS.findInConversation, title: { zh: "在对话中搜索", en: "Find in Conversation" }, when: "sessionActive", handler: () => getActions().findInConversation() }),
   ];
   return () => {
     for (const cleanup of cleanups) cleanup();
