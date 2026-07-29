@@ -141,6 +141,17 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, run
     setLayoutVersion((value) => value + 1);
   }, [session.messages]);
 
+  // 轮次编号：一条 user 消息开启一轮，其后的 assistant/tool 归属该轮（首条 user 前为 0），用于轮次深浅底色
+  const turnOf = useMemo(() => {
+    const values: number[] = [];
+    let turn = 0;
+    for (const message of session.messages) {
+      if (message.role === "user") turn += 1;
+      values.push(turn);
+    }
+    return values;
+  }, [session.messages]);
+
   // ===== 会话内搜索（Ctrl+F）：状态留在本层，与消息/滚动容器同层 =====
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -276,7 +287,7 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, run
               {cleared && Math.min(cleared.uptoIndex, session.messages.length) === index && (
                 <div className="context-cleared-divider" role="separator">{t("上下文已清空（历史保留）", "Context cleared (history retained)")}</div>
               )}
-              <MemoMessageCard message={message} sessionId={session.id} contentLens={contentLens} liveSubagents={liveRunsForMessage(message, liveSubagents)} running={running} onNotice={onNotice} onOpenDiff={onOpenDiff} onEditMessage={onEditMessage} onRegenerate={onRegenerate} onFork={onFork} />
+              <MemoMessageCard message={message} sessionId={session.id} turn={turnOf[index]} contentLens={contentLens} liveSubagents={liveRunsForMessage(message, liveSubagents)} running={running} onNotice={onNotice} onOpenDiff={onOpenDiff} onEditMessage={onEditMessage} onRegenerate={onRegenerate} onFork={onFork} />
               {shellCmd && onSendToAgent && (
                 <button
                   className="send-to-agent"
@@ -331,7 +342,7 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, run
           );
         })()}
         {(streamText || thinkingText) && (
-          <article className="message assistant live">
+          <article className={`message assistant live turn-${(turnOf.at(-1) ?? 0) % 2 === 0 ? "even" : "odd"}`}>
             <span className="track-node" aria-hidden />
             <div className="message-meta">
               <span className="message-author">OpenWebCode</span>

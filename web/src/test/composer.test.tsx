@@ -788,3 +788,36 @@ describe("Composer 模型循环（Ctrl+P）", () => {
     expect(onConfig).not.toHaveBeenCalled();
   });
 });
+
+
+describe("PDF 提示关闭", () => {
+  beforeEach(() => {
+    window.localStorage.removeItem("owc.pdf-hint-dismissed");
+  });
+  afterEach(() => {
+    window.localStorage.removeItem("owc.pdf-hint-dismissed");
+  });
+
+  it("点击关闭按钮后提示不再渲染，签名写入 localStorage", () => {
+    render(<Harness onSend={vi.fn()} pdfToImageExtension={{ enabled: false, config: {} }} />);
+    expect(document.querySelector(".composer-hint")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "关闭提示" }));
+
+    expect(document.querySelector(".composer-hint")).not.toBeInTheDocument();
+    expect(window.localStorage.getItem("owc.pdf-hint-dismissed")).toBe("ready.disabled");
+  });
+
+  it("扩展状态变化后签名不同，提示重新出现", () => {
+    window.localStorage.setItem("owc.pdf-hint-dismissed", "unavailable.disabled");
+    render(<Harness onSend={vi.fn()} pdfToImageExtension={{ enabled: false, config: {} }} />);
+    // 当前签名 ready.disabled ≠ 已关闭签名 → 提示仍然显示
+    expect(document.querySelector(".composer-hint")).toBeInTheDocument();
+  });
+
+  it("同一签名已关闭时提示不渲染", () => {
+    window.localStorage.setItem("owc.pdf-hint-dismissed", "ready.disabled");
+    render(<Harness onSend={vi.fn()} pdfToImageExtension={{ enabled: false, config: {} }} />);
+    expect(document.querySelector(".composer-hint")).not.toBeInTheDocument();
+  });
+});
