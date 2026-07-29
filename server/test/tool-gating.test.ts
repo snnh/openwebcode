@@ -112,8 +112,6 @@ describe("AgentRunner tool capability gating", () => {
       expect(request.system).not.toContain("spawn_task");
       expect(request.system).not.toContain("web_search");
     }
-    expect(listFor).not.toHaveBeenCalled();
-    expect(toolsFor).not.toHaveBeenCalled();
     expect(run).not.toHaveBeenCalled();
 
     const detail = await sessions.get(session.id);

@@ -157,21 +157,6 @@ describe("EvalEvaluator（0.5.0 Phase 3a）", () => {
     }
   });
 
-  it("断言通过判定正确（toolUsed + fileContains 匹配）", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-eval-"));
-    roots.push(root);
-    const evaluator = new EvalEvaluator(root, makeEvalCore());
-    const report = await evaluator.runTasks(["create-file"]);
-    const result = report.taskResults[0];
-    expect(result.status).toBe("pass");
-    const toolResult = result.assertions.find((a) => a.name.startsWith("toolUsed"));
-    expect(toolResult).toBeDefined();
-    expect(toolResult!.passed).toBe(true);
-    const fileContainsResult = result.assertions.find((a) => a.name.startsWith("fileContains"));
-    expect(fileContainsResult).toBeDefined();
-    expect(fileContainsResult!.passed).toBe(true);
-  });
-
   it("评测数据目录隔离：不写入用户 sessions 目录", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "owc-eval-"));
     roots.push(root);
@@ -200,6 +185,13 @@ describe("EvalEvaluator（0.5.0 Phase 3a）", () => {
     expect(result.taskName).toBe("创建文件");
     expect(result.status).toBe("pass");
     expect(result.assertions).toBeInstanceOf(Array);
+    // 断言判定正确：toolUsed + fileContains 匹配均通过
+    const toolUsedResult = result.assertions.find((a) => a.name.startsWith("toolUsed"));
+    expect(toolUsedResult).toBeDefined();
+    expect(toolUsedResult!.passed).toBe(true);
+    const fileContainsResult = result.assertions.find((a) => a.name.startsWith("fileContains"));
+    expect(fileContainsResult).toBeDefined();
+    expect(fileContainsResult!.passed).toBe(true);
     expect(result.turns).toBeGreaterThanOrEqual(0);
     expect(result.toolsUsed).toBeInstanceOf(Array);
     expect(result.toolCalls).toEqual(["write_file"]);
@@ -345,30 +337,31 @@ describe("eval REST 端点（0.5.0 Phase 3a）", () => {
     expect(unknown.statusCode).toBe(404);
   });
 
-  it("扩展禁用时所有 eval 端点返回 503", async () => {
-    const { app } = await buildEvalApp({ extensionsEnabled: false, withEvaluator: true });
-    const endpoints = [
-      { method: "GET" as const, url: "/api/eval/tasks" },
-      { method: "POST" as const, url: "/api/eval/run", payload: {} },
-      { method: "GET" as const, url: "/api/eval/runs/test" },
-      { method: "GET" as const, url: "/api/eval/runs" },
-      { method: "POST" as const, url: "/api/eval/compare", payload: { baselineRunId: "a", candidateRunId: "b" } },
-      { method: "GET" as const, url: "/api/eval/comparisons" },
-    ];
-    for (const ep of endpoints) {
-      const res = await app.inject(ep);
-      expect(res.statusCode).toBe(503);
-    }
-  });
-
-  it("未注入 evalEvaluator 时所有 eval 端点返回 503", async () => {
-    const { app } = await buildEvalApp({ extensionsEnabled: true, withEvaluator: false });
-    const endpoints = [
-      { method: "GET" as const, url: "/api/eval/tasks" },
-      { method: "POST" as const, url: "/api/eval/run", payload: {} },
-      { method: "GET" as const, url: "/api/eval/runs" },
-      { method: "GET" as const, url: "/api/eval/comparisons" },
-    ];
+  it.each([
+    {
+      name: "扩展禁用时所有 eval 端点返回 503",
+      options: { extensionsEnabled: false, withEvaluator: true },
+      endpoints: [
+        { method: "GET" as const, url: "/api/eval/tasks" },
+        { method: "POST" as const, url: "/api/eval/run", payload: {} },
+        { method: "GET" as const, url: "/api/eval/runs/test" },
+        { method: "GET" as const, url: "/api/eval/runs" },
+        { method: "POST" as const, url: "/api/eval/compare", payload: { baselineRunId: "a", candidateRunId: "b" } },
+        { method: "GET" as const, url: "/api/eval/comparisons" },
+      ],
+    },
+    {
+      name: "未注入 evalEvaluator 时所有 eval 端点返回 503",
+      options: { extensionsEnabled: true, withEvaluator: false },
+      endpoints: [
+        { method: "GET" as const, url: "/api/eval/tasks" },
+        { method: "POST" as const, url: "/api/eval/run", payload: {} },
+        { method: "GET" as const, url: "/api/eval/runs" },
+        { method: "GET" as const, url: "/api/eval/comparisons" },
+      ],
+    },
+  ])("$name", async ({ options, endpoints }) => {
+    const { app } = await buildEvalApp(options);
     for (const ep of endpoints) {
       const res = await app.inject(ep);
       expect(res.statusCode).toBe(503);

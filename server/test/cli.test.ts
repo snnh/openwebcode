@@ -193,12 +193,10 @@ describe("CLI --help", () => {
       expect(result.stdout).toContain("Exit codes");
       expect(result.stdout).toContain("OWC_ACCESS_TOKEN");
     }
-  }, 30_000);
-
-  it("owc run --help：打印帮助，退出码 0", async () => {
-    const result = await runCli(["run", "--help"], 10_000);
-    expect(result.code).toBe(0);
-    expect(result.stdout).toContain("--session");
+    // owc run --help 同样打印帮助，退出码 0
+    const runHelp = await runCli(["run", "--help"], 10_000);
+    expect(runHelp.code).toBe(0);
+    expect(runHelp.stdout).toContain("--session");
   }, 30_000);
 
   it("未知命令：帮助写 stderr，退出码 1", async () => {

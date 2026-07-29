@@ -181,6 +181,9 @@ describe("UpdateApplier", () => {
     // 解压使用了系统 tar
     expect(spawn.calls.some((call) => call.command === "tar" && call.args[0] === "-xzf")).toBe(true);
     expect(exitCalls).toBe(0);
+    // 资产保留在 dataDir/updates 且长度正确
+    const downloaded = await readFile(path.join(fixture.dataDir, "updates", TARGET_VERSION, assetNameFor("linux")));
+    expect(downloaded.length).toBe(Buffer.from("fake-linux-payload").length);
   });
 
   it("linux 有 systemd user unit 时 restarting，spawn systemctl 且调用 exitImpl", async () => {
@@ -302,26 +305,6 @@ describe("UpdateApplier", () => {
       expect(state.status).toBe("done");
     });
   });
-
-  it("下载完成后资产落盘且内容完整", async () => {
-    const spawn = makeSpawn();
-    const assetBytes = Buffer.alloc(4096, 1);
-    const fixture = await makeApplier({
-      platform: "linux",
-      fetchImpl: makeFetch({ platform: "linux", assetBytes }),
-      spawnImpl: spawn.impl,
-      exitImpl: () => undefined,
-    });
-    const configHome = await tempRoot();
-    await withConfigHome(configHome, async () => {
-      const state = await fixture.applier.apply();
-      expect(state.status).toBe("done");
-    });
-    // 下载完成后资产落盘且哈希通过即说明下载/校验流程正确（done 后 progress 为 null）
-    expect(existsSync(path.join(fixture.installRoot, "server", "dist", "index.js"))).toBe(true);
-    const downloaded = await readFile(path.join(fixture.dataDir, "updates", TARGET_VERSION, assetNameFor("linux")));
-    expect(downloaded.length).toBe(assetBytes.length);
-  });
 });
 
 const FAKE_CORE_INFO: CoreInfo = {
@@ -409,31 +392,19 @@ describe("/api/update/apply", () => {
     }
   });
 
-  it("POST 已是最新返回 400", async () => {
+  it.each([
+    { name: "POST 已是最新返回 400", statusCode: 400, message: "已是最新版本" },
+    { name: "POST 已有进行中的更新返回 409", statusCode: 409, message: "已有进行中的更新" },
+  ])("$name", async ({ statusCode, message }) => {
     const applier = {
       state: () => null,
-      apply: async () => { throw new UpdateApplyError(400, "已是最新版本"); },
+      apply: async () => { throw new UpdateApplyError(statusCode, message); },
     } as unknown as UpdateApplier;
     const app = await setupApp(applier);
     try {
       const response = await app.inject({ method: "POST", url: "/api/update/apply" });
-      expect(response.statusCode).toBe(400);
-      expect(response.json<{ error: string }>().error).toContain("已是最新版本");
-    } finally {
-      await app.close();
-    }
-  });
-
-  it("POST 已有进行中的更新返回 409", async () => {
-    const applier = {
-      state: () => null,
-      apply: async () => { throw new UpdateApplyError(409, "已有进行中的更新"); },
-    } as unknown as UpdateApplier;
-    const app = await setupApp(applier);
-    try {
-      const response = await app.inject({ method: "POST", url: "/api/update/apply" });
-      expect(response.statusCode).toBe(409);
-      expect(response.json<{ error: string }>().error).toContain("已有进行中的更新");
+      expect(response.statusCode).toBe(statusCode);
+      expect(response.json<{ error: string }>().error).toContain(message);
     } finally {
       await app.close();
     }

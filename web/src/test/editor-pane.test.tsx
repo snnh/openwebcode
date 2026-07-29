@@ -4,7 +4,7 @@
  * plan 模式只读门禁；面包屑路径 + 光标符号。
  * Monaco 本体用 fake（见 helpers/fake-monaco.ts），api 层 mock 断言请求参数。
  */
-import { act, fireEvent, render, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../lib/api";
@@ -78,7 +78,7 @@ describe("EditorPane：Monaco 加载失败降级", () => {
 });
 
 describe("EditorPane：保存走权限链", () => {
-  it("修改后点保存 → api.writeFile（server 端权限/路径策略/plan 门禁入口），成功清脏并提示", async () => {
+  it("修改后点保存 → api.writeFile（server 端权限/路径策略/plan 门禁入口），成功清脏并提示（按钮与 actionsRef.save 双触发）", async () => {
     const fake = createFakeMonaco();
     loadMonacoMock.mockResolvedValue(fake.monaco);
     const { view, onNotice } = renderPane();
@@ -97,6 +97,21 @@ describe("EditorPane：保存走权限链", () => {
     await waitFor(() => expect(writeFile).toHaveBeenCalledWith("s1", "src/a.ts", "export function foo() {\n  return 2;\n}\n", REVISION));
     await waitFor(() => expect(onNotice.mock.calls.some(([message]) => String(message).includes("已保存"))).toBe(true));
     await waitFor(() => expect(view.getByRole("button", { name: "保存" })).toBeDisabled());
+
+    // App 命令动作面 actionsRef.save 触发同一保存路径
+    const fake2 = createFakeMonaco();
+    loadMonacoMock.mockResolvedValue(fake2.monaco);
+    const { view: view2, actionsRef } = renderPane();
+    await within(view2.container).findByTestId("monaco-host");
+    await waitFor(() => expect(fake2.editors).toHaveLength(1));
+    act(() => {
+      fake2.editors[0].value = "via-command";
+      fake2.editors[0].__emitContent();
+    });
+    const writesBefore = writeFile.mock.calls.length;
+    act(() => actionsRef.current.save?.());
+    await waitFor(() => expect(writeFile.mock.calls.length).toBeGreaterThan(writesBefore));
+    expect(writeFile).toHaveBeenLastCalledWith("s1", "src/a.ts", "via-command", REVISION);
   });
 
   it("保存失败 → 错误提示，脏标记保留", async () => {
@@ -115,19 +130,6 @@ describe("EditorPane：保存走权限链", () => {
     expect(view.getByRole("button", { name: "保存" })).toBeEnabled();
   });
 
-  it("App 命令动作面：actionsRef.save 触发同一保存路径", async () => {
-    const fake = createFakeMonaco();
-    loadMonacoMock.mockResolvedValue(fake.monaco);
-    const { view, actionsRef } = renderPane();
-    await view.findByTestId("monaco-host");
-    await waitFor(() => expect(fake.editors).toHaveLength(1));
-    act(() => {
-      fake.editors[0].value = "via-command";
-      fake.editors[0].__emitContent();
-    });
-    act(() => actionsRef.current.save?.());
-    await waitFor(() => expect(writeFile).toHaveBeenCalledWith("s1", "src/a.ts", "via-command", REVISION));
-  });
 });
 
 describe("EditorPane：plan 模式与截断文件", () => {

@@ -135,6 +135,8 @@ describe("BackgroundTaskRegistry", () => {
     expect(info.startedAt).toBeTruthy();
     expect(info.finishedAt).toBeUndefined();
     expect(factory).toHaveBeenCalledTimes(1);
+    // start 不 await run 完成（fake core 的 run 始终挂起）：entry 仍处于 running
+    expect(registry.get("task-001")?.status).toBe("running");
   });
 
   it("get 返回任务信息与输出", async () => {
@@ -151,6 +153,9 @@ describe("BackgroundTaskRegistry", () => {
       cmd: "echo hello",
       cwd: root,
     });
+
+    // release 前先读取——应该是 running
+    expect(registry.get("task-001")?.status).toBe("running");
 
     // 推送输出
     core.emitExecOutput("hello world\n");
@@ -187,38 +192,6 @@ describe("BackgroundTaskRegistry", () => {
 
     expect(registry.get("task-gbk")?.output).toBe("中文");
     core.release({ exitCode: 0, durationMs: 1, truncated: false });
-  });
-
-  it("task_output 读取输出；block=true 等到终态", async () => {
-    const root = await tempRoot();
-    const core = createControllableCore();
-    const registry = new BackgroundTaskRegistry(
-      () => core.client,
-      async () => undefined,
-    );
-
-    await registry.start({
-      sessionId: "s1",
-      taskId: "task-001",
-      cmd: "sleep 1",
-      cwd: root,
-    });
-
-    // 先读取非阻塞——应该是 running
-    const before = registry.get("task-001");
-    expect(before?.status).toBe("running");
-
-    // 完成
-    core.release({ exitCode: 0, durationMs: 100, truncated: false });
-
-    // 再读——应该是 done
-    await vi.waitFor(() => {
-      const entry = registry.get("task-001");
-      expect(entry?.status).toBe("done");
-    });
-
-    const after = registry.get("task-001");
-    expect(after?.exitCode).toBe(0);
   });
 
   it("task_stop 调 client.stop()，status=stopped", async () => {
@@ -484,37 +457,6 @@ describe("BackgroundTaskRegistry", () => {
 
     const result = await registry.stop("nonexistent");
     expect(result).toBe(false);
-  });
-});
-
-describe("BackgroundTaskRegistry — agent-runner integration", () => {
-  it("fake core 的 run 不挂起主循环", async () => {
-    const root = await tempRoot();
-    const core = createControllableCore();
-    const registry = new BackgroundTaskRegistry(
-      () => core.client,
-      async () => undefined,
-    );
-
-    // start 应当快速返回（status=running），不等 run 完成
-    const startTime = Date.now();
-    const info = await registry.start({
-      sessionId: "s1",
-      taskId: "task-001",
-      cmd: "long running",
-      cwd: root,
-    });
-    const elapsed = Date.now() - startTime;
-
-    expect(info.status).toBe("running");
-
-    // 如果需要很长时间才返回，说明 await 了 run 的完成
-    // 即使 run 未 resolve，start 也应在合理时间内返回（< 5s）
-    expect(elapsed).toBeLessThan(5000);
-
-    // 确认 run 确实尚未完成
-    const entry = registry.get("task-001");
-    expect(entry?.status).toBe("running");
   });
 });
 

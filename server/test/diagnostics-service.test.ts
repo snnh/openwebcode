@@ -3,8 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { CoreClientLike } from "../src/core-client.js";
-import { DiagnosticsService, MAX_FEEDBACK_FAILURES, MAX_FEEDBACK_FIELD_CHARS, buildAgentFeedback, failureSignature } from "../src/diagnostics/service.js";
-import type { DiagnosticRun } from "../src/diagnostics/types.js";
+import { DiagnosticsService, MAX_FEEDBACK_FAILURES, MAX_FEEDBACK_FIELD_CHARS, failureSignature } from "../src/diagnostics/service.js";
 import { EventBus } from "../src/events/event-bus.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 
@@ -77,6 +76,8 @@ describe("DiagnosticsService（0.4.0 Phase 3a）", () => {
     const latest = await service.latest(session.id);
     expect(latest?.outputTail).toBe(record.outputTail);
     expect(feedback).toContain("could not be parsed");
+    // parseFallback 记录不列 failure，也不触发用户介入提示
+    expect(feedback).not.toContain("请用户介入");
   });
 
   it("大输出有界回授：>20 条 failure 截断、字段 ≤500 字符，完整结果只在 artifact", async () => {
@@ -119,17 +120,6 @@ describe("DiagnosticsService（0.4.0 Phase 3a）", () => {
     const c = failureSignature({ ...base, failures: [{ name: "t", file: "f.py", line: 2, message: "one" }] });
     expect(a).toBe(b);
     expect(a).not.toBe(c);
-  });
-
-  it("buildAgentFeedback 对 parseFallback 记录不列 failure", () => {
-    const record: DiagnosticRun = {
-      runId: "r1", sessionId: "s1", command: "x", cwd: "/w", startedAt: "", finishedAt: "",
-      diagnostics: { tool: "unknown", summary: { passed: 0, failed: 0, skipped: 0, durationMs: 0 }, failures: [] },
-      parseFallback: true, outputTail: "tail", signature: "sig", repeatedSignatureCount: 1,
-    };
-    const feedback = buildAgentFeedback(record);
-    expect(feedback).toContain("could not be parsed");
-    expect(feedback).not.toContain("请用户介入");
   });
 
   it("未检测到测试命令且无覆盖时报错", async () => {

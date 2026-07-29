@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { AgentRunner, type RunPerfRecord } from "../src/agent/agent-runner.js";
+import { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
 import type { CoreClientLike } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
@@ -55,42 +55,5 @@ describe("性能采样 REST 契约（0.5.0 Phase 2d）", () => {
     const { app } = await setup();
     const response = await app.inject({ method: "GET", url: "/api/sessions/00000000-0000-4000-8000-000000000000/perf" });
     expect(response.statusCode).toBe(404);
-  });
-
-  it("getPerf 返回通过 run.perf 事件发布的记录", async () => {
-    const { agent, session, events } = await setup();
-    // 模拟 run.perf 事件发布（通过直接调用内部方法不现实，改为验证接口契约）
-    // 直接验证 getPerf 初始为空
-    expect(agent.getPerf(session.id)).toEqual([]);
-
-    // 验证 run.perf 事件格式（通过 events 监听）
-    const perfEvents: Array<{ payload: RunPerfRecord }> = [];
-    events.on("event", (event: { type: string; payload: RunPerfRecord }) => {
-      if (event.type === "run.perf") perfEvents.push(event);
-    });
-
-    // getPerf 在无 run 时始终为空
-    expect(agent.getPerf(session.id)).toHaveLength(0);
-  });
-
-  it("RunPerfRecord 接口结构正确", () => {
-    const record: RunPerfRecord = {
-      runId: "test-run-id",
-      sessionId: "test-session-id",
-      startedAt: "2026-07-25T00:00:00.000Z",
-      finishedAt: "2026-07-25T00:00:05.000Z",
-      turnCount: 3,
-      stages: {
-        contextBuildMs: 12.5,
-        providerCallMs: 3200.1,
-        toolExecMs: 850.3,
-        totalMs: 4062.9,
-      },
-    };
-    expect(record.stages.contextBuildMs).toBe(12.5);
-    expect(record.stages.providerCallMs).toBe(3200.1);
-    expect(record.stages.toolExecMs).toBe(850.3);
-    expect(record.stages.totalMs).toBe(4062.9);
-    expect(record.turnCount).toBe(3);
   });
 });

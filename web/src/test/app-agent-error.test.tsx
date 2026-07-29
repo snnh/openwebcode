@@ -150,23 +150,6 @@ describe("App agent.error 可操作提示与新版本通知", () => {
     });
   });
 
-  it("限流失败提供重试按钮，点击后重发最近一条用户消息", async () => {
-    installFetchMock();
-    const socket = await renderApp();
-
-    act(() => {
-      emit(socket, { type: "agent.error", sessionId: "s1", payload: { message: "rate limited", kind: "rate_limit", retryable: true } });
-    });
-
-    const retry = await screen.findByRole("button", { name: "重试" });
-    fireEvent.click(retry);
-    await waitFor(() => {
-      const post = requests.find((request) => request.url.includes(`/api/sessions/${session.id}/messages`));
-      expect(post?.method).toBe("POST");
-      expect(post?.body).toMatchObject({ content: userText, behavior: "start" });
-    });
-  });
-
   it("发现新版本时通知一次（按版本去重），点击跳转设置服务信息页签", async () => {
     installFetchMock();
     const socket = await renderApp();

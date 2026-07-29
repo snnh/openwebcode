@@ -280,13 +280,11 @@ describe("spawn_task agent=general", () => {
     expect(h.core.writeFileCalls).toHaveLength(0);
     const subRequest = requests.find((request) => request.system.includes(EXPLORE_MARKER));
     expect(subRequest?.tools.map((tool) => tool.name).sort()).toEqual(["glob", "grep", "read_artifact", "read_file"]);
-    const lastMessage = requests.find(isSubRequest)?.messages.at(-1);
     // 第二个子代理请求里带 write_file 被拒绝的错误 tool_result
     const subSecond = requests.filter((request) => request.system.includes(EXPLORE_MARKER))[1];
     const denial = subSecond?.messages.at(-1)?.content.find((block) => block.type === "tool_result");
     expect(denial).toMatchObject({ isError: true });
     expect((denial as { content: string }).content).toContain("not available");
-    expect(lastMessage).toBeDefined();
   });
 
   it("tools 参数与 general 允许集求交（编排工具被过滤）", async () => {
