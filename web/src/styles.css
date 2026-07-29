@@ -396,8 +396,9 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 }
 /* 顶栏两行布局：上排标题+信息展示，下排交互控件；标题与路径字号放大 */
 .job-header { flex-direction: column; align-items: stretch; gap: 8px; }
-.job-header-info { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
-.job-info { flex: 1 1 680px; min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.job-header-info { display: flex; align-items: center; gap: 24px; }
+.job-header-info .job-title { flex: 0 1 auto; }
+.job-info { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .job-header > .job-actions { flex: none; }
 .job-header h1 { font-size: 20px; }
 .job-cwd { font-size: 13px; }
@@ -1316,7 +1317,7 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 }
 .panel-tabs button:hover { color: var(--text); }
 .panel-tabs button.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
-.panel-fold { margin-left: auto; color: var(--text-3); font-size: 13px; padding: 4px 8px; position: sticky; right: 0; flex: none; background: var(--panel); }
+.panel-fold { margin-left: 0; color: var(--text-3); font-size: 13px; padding: 4px 8px; position: sticky; right: 0; flex: none; background: var(--panel); }
 .panel-fold:hover { color: var(--text); }
 .panel-content { overflow: hidden; }
 .panel-content .inspector-body { height: 100%; overflow-y: auto; }
