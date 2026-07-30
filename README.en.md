@@ -156,7 +156,7 @@ The server serves `web/dist`. Distribution layout, clean staging, local packagin
 
 ## Data locations
 
-The boot/settings directory is chosen by the launch path: an explicitly set `OWC_DATA_DIR` wins; otherwise the installed launcher injects `%LOCALAPPDATA%\openwebcode` on Windows or `${XDG_DATA_HOME:-~/.local/share}/openwebcode` on Linux. Only a direct `node server/dist/index.js` run that bypasses the launcher uses the `../.openwebcode` fallback relative to the `server` directory. Use absolute paths for `OWC_DATA_DIR` and the Settings page’s Data directory to avoid server-directory-relative resolution.
+The boot/settings directory is chosen by the launch path: an explicitly set `OWC_DATA_DIR` wins; otherwise the installed launcher injects `%USERPROFILE%\openwebcode` on Windows or `${XDG_DATA_HOME:-~/.local/share}/openwebcode` on Linux. Only a direct `node server/dist/index.js` run that bypasses the launcher uses the `../.openwebcode` fallback relative to the `server` directory. Use absolute paths for `OWC_DATA_DIR` and the Settings page’s Data directory to avoid server-directory-relative resolution.
 
 The Settings page is persisted as `<boot/settings directory>/server-settings.json`. When `OWC_DATA_DIR` is not set, its saved Data directory value selects the business data directory on the next launch; the settings file itself remains in the boot/settings directory. Without that saved override, both directories are the same.
 
@@ -164,7 +164,7 @@ Session data includes metadata, append-only message JSONL, context ledgers, arti
 
 ## Uninstall
 
-- **Windows**: uninstall from Settings → Apps. The default data directory `%LOCALAPPDATA%\openwebcode` is kept, and so is any data directory chosen through `OWC_DATA_DIR`.
+- **Windows**: uninstall from Settings → Apps. The default data directory `%USERPROFILE%\openwebcode` is kept, and so is any data directory chosen through `OWC_DATA_DIR`.
 - **Linux**: `rm -rf ~/.local/lib/openwebcode ~/.local/bin/owc`; user data is kept.
 
 ## Acknowledgments
