@@ -35,7 +35,7 @@ import { ManagedWorkspaceSyncError, type ManagedWorkspaceSyncApplyInput } from "
 import { SessionTransferError } from "./sessions/session-transfer.js";
 import { activePathMessages } from "./sessions/session-tree.js";
 import { defaultSandboxDenyPaths } from "./sessions/default-sandbox.js";
-import type { PermissionMode, SandboxMode, ShellBackend, SnapshotMode, TextContent } from "./sessions/types.js";
+import type { PermissionMode, PythonEnv, SandboxMode, ShellBackend, SnapshotMode, TextContent } from "./sessions/types.js";
 import type { SessionStore } from "./sessions/session-store.js";
 import { SettingsValidationError, type SettingsService } from "./settings-service.js";
 import { getServerVersion, GITHUB_REPO } from "./version.js";
@@ -95,6 +95,7 @@ interface SessionConfigBody {
   setupScript?: string;
   snapshotMode?: SnapshotMode;
   shellBackend?: ShellBackend;
+  pythonEnv?: PythonEnv;
 }
 
 interface BudgetBody {
@@ -1304,6 +1305,10 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     if (shellBackend !== undefined && !["default", "pwsh"].includes(shellBackend)) {
       return reply.code(400).send({ error: 'shellBackend must be "default" or "pwsh"' });
     }
+    const pythonEnv = request.body && "pythonEnv" in request.body ? request.body.pythonEnv ?? undefined : session.pythonEnv;
+    if (pythonEnv !== undefined && !["global", "uv-workspace", "uv-config"].includes(pythonEnv)) {
+      return reply.code(400).send({ error: 'pythonEnv must be "global", "uv-workspace", or "uv-config"' });
+    }
     const permissionMode = request.body?.permissionMode ?? session.permissionMode ?? "ask";
     if (!["ask", "acceptEdits", "yolo"].includes(permissionMode)) return reply.code(400).send({ error: "permissionMode must be ask, acceptEdits, or yolo" });
     const touchesSandbox = Boolean(request.body && ("sandboxMode" in request.body || "setupScript" in request.body));
@@ -1318,7 +1323,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       // WSB 的启动脚本和模式只在虚拟机启动时生效，切换前先释放旧实例。
       await core.release?.(session.id);
     }
-    await sessions.updateConfig(request.params.id, { provider, model, ...(thinking ? { thinking } : {}), ...(effort ? { effort } : {}), ...(agentMode ? { agentMode } : {}), ...(snapshotMode ? { snapshotMode } : {}), ...(shellBackend ? { shellBackend } : {}) });
+    await sessions.updateConfig(request.params.id, { provider, model, ...(thinking ? { thinking } : {}), ...(effort ? { effort } : {}), ...(agentMode ? { agentMode } : {}), ...(snapshotMode ? { snapshotMode } : {}), ...(shellBackend ? { shellBackend } : {}), ...(pythonEnv ? { pythonEnv } : {}) });
     let updated = await sessions.updatePermissions(request.params.id, permissionMode, session.permissionRules ?? []);
     if (touchesSandbox) {
       updated = await sessions.updateSandboxMode(request.params.id, request.body?.sandboxMode, request.body?.setupScript);

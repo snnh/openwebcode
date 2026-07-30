@@ -55,10 +55,16 @@ describe("session model config", () => {
       expect(invalidSnapshot.statusCode).toBe(400);
       const invalidShell = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { shellBackend: "powershell" } });
       expect(invalidShell.statusCode).toBe(400);
-      const modes = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { sandboxMode: "off", snapshotMode: "manual", shellBackend: "pwsh" } });
+      const invalidPythonEnv = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { pythonEnv: "conda" } });
+      expect(invalidPythonEnv.statusCode).toBe(400);
+      const modes = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { sandboxMode: "off", snapshotMode: "manual", shellBackend: "pwsh", pythonEnv: "uv-workspace" } });
       expect(modes.statusCode).toBe(200);
-      expect(modes.json()).toMatchObject({ sandboxMode: "off", snapshotMode: "manual", shellBackend: "pwsh" });
-      expect(await sessions.get(session.id)).toMatchObject({ sandboxMode: "off", snapshotMode: "manual", shellBackend: "pwsh" });
+      expect(modes.json()).toMatchObject({ sandboxMode: "off", snapshotMode: "manual", shellBackend: "pwsh", pythonEnv: "uv-workspace" });
+      expect(await sessions.get(session.id)).toMatchObject({ sandboxMode: "off", snapshotMode: "manual", shellBackend: "pwsh", pythonEnv: "uv-workspace" });
+      // 回退本机环境：pythonEnv 置回 global 时从会话元数据中清除
+      const cleared = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { pythonEnv: "global" } });
+      expect(cleared.statusCode).toBe(200);
+      expect(await sessions.get(session.id)).not.toHaveProperty("pythonEnv");
       const first = await sessions.appendMessage(session.id, "user", [{ type: "text", text: "timeline" }]);
       const second = await sessions.appendMessage(session.id, "assistant", [{ type: "text", text: "node" }], { runId: "run-test", turnId: "run-test:0" });
       const timeline = await app.inject({ method: "GET", url: `/api/sessions/${session.id}/timeline` });

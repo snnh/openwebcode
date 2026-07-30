@@ -12,6 +12,7 @@ import type { FastModelClient } from "./fast-model.js";
 import type { ProviderProfilesService } from "./provider-profiles.js";
 import type { ModelRegistry } from "./context/model-registry.js";
 import type { UpdateChecker } from "./update-checker.js";
+import type { PythonEnv } from "./sessions/types.js";
 import installDefaultsDocument from "./config/defaults.json" with { type: "json" };
 
 export class SettingsValidationError extends Error {
@@ -96,6 +97,7 @@ const GROUPS = [
 ];
 
 const LANGUAGE_OPTIONS = ["zh-CN", "en-US", "zh-TW", "ja-JP", "ko-KR", "fr-FR", "de-DE", "es-ES", "ru-RU"];
+const PYTHON_ENV_OPTIONS = ["global", "uv-workspace", "uv-config"];
 const THINKING_OPTIONS = ["disabled", "adaptive", "enabled"];
 const EFFORT_OPTIONS = ["none", "low", "medium", "high", "xhigh", "max"];
 
@@ -233,6 +235,7 @@ const FIELDS: FieldSpec[] = [
   { key: "corePath", group: "executor", label: "执行器路径", type: "text", env: "OWC_CORE_PATH", defaultValue: "../build/Debug/owc-exec.exe", restartRequired: true, validate: requireNonEmpty },
   { key: "coreRequestTimeoutMs", group: "executor", label: "执行器请求超时 (ms)", type: "number", env: "OWC_CORE_REQUEST_TIMEOUT_MS", defaultValue: 130_000, restartRequired: false, fromEnv: envNumber },
   { key: "sandboxAllowPaths", group: "executor", label: "AppContainer 额外允许目录", type: "pathList", env: "OWC_SANDBOX_ALLOW_PATHS", defaultValue: [], restartRequired: true, fromEnv: envPathList, validate: requirePathList, description: "每行一个目录，最多 16 个；执行时与会话工作目录合并并去重" },
+  { key: "pythonEnv", group: "executor", label: "Python 环境", type: "select", env: "OWC_PYTHON_ENV", defaultValue: "global", restartRequired: false, options: PYTHON_ENV_OPTIONS, description: "全局默认：bash 工具的 python 运行环境。global = 本机已有环境；uv-workspace = 在项目工作区 .owc/venv 创建 uv 虚拟环境；uv-config = 在数据目录 venvs/ 创建 uv 虚拟环境。会话可在顶栏单独覆盖" },
   // Job Object 资源限制（仅 Windows，重启生效）：注入 CoreRouter 全局下发，留空由 core 用默认值
   { key: "jobObjectMemoryMB", group: "executor", label: "Job 内存上限 (MB)", type: "number", env: "OWC_JOB_MEMORY_MB", defaultValue: null, restartRequired: true, fromEnv: envNumber, validate: requireJobMemoryMB, description: "Job Object 提交内存上限，缺省 4096" },
   { key: "jobObjectMaxProcesses", group: "executor", label: "Job 进程数上限", type: "number", env: "OWC_JOB_MAX_PROCESSES", defaultValue: null, restartRequired: true, fromEnv: envNumber, validate: requireJobMaxProcesses, description: "Job Object 活跃进程上限，缺省 64" },
@@ -411,6 +414,7 @@ export class SettingsService {
       gcMaxBytes: value("gcMaxBytes") as number,
       defaultLanguage: value("defaultLanguage") as string,
       defaultCurrency: value("defaultCurrency") as "USD" | "CNY",
+      pythonEnv: value("pythonEnv") as PythonEnv,
       exchangeRate: {
         ...(typeof exchangeRateUrl === "string" ? { url: exchangeRateUrl } : {}),
         timeoutMs: value("exchangeRateTimeoutMs") as number,

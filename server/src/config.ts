@@ -1,6 +1,7 @@
 import path from "node:path";
 import { MAX_SYNC_INTERVAL_MINUTES } from "./remote-sync-scheduler.js";
 import type { FastModelConfig } from "./fast-model.js";
+import type { PythonEnv } from "./sessions/types.js";
 
 export interface ServerConfig {
   host: string;
@@ -15,6 +16,8 @@ export interface ServerConfig {
   gcMaxBytes: number;
   defaultLanguage: string;
   defaultCurrency: "USD" | "CNY";
+  /** bash 工具 python 运行环境的全局默认（会话可覆盖）；global = 本机环境。 */
+  pythonEnv: PythonEnv;
   exchangeRate: {
     url?: string;
     timeoutMs: number;
@@ -64,6 +67,12 @@ function currency(value: string | undefined): "USD" | "CNY" {
   if (normalized === "RMB") return "CNY";
   if (normalized === "USD" || normalized === "CNY") return normalized;
   throw new Error(`Expected USD, CNY, or RMB, received ${value}`);
+}
+
+function pythonEnv(value: string | undefined): PythonEnv {
+  if (value === undefined || value === "global") return "global";
+  if (value === "uv-workspace" || value === "uv-config") return value;
+  throw new Error(`Expected global, uv-workspace, or uv-config, received ${value}`);
 }
 
 function boundedNonNegativeInteger(value: string | undefined, fallback: number, maximum: number): number {
@@ -151,6 +160,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     gcMaxBytes: positiveInteger(env.OWC_GC_MAX_BYTES, 2_147_483_648),
     defaultLanguage: env.OWC_DEFAULT_LANGUAGE ?? "zh-CN",
     defaultCurrency: currency(env.OWC_DEFAULT_CURRENCY),
+    pythonEnv: pythonEnv(env.OWC_PYTHON_ENV),
     exchangeRate: {
       ...(env.OWC_EXCHANGE_RATE_URL ? { url: env.OWC_EXCHANGE_RATE_URL } : {}),
       timeoutMs: positiveInteger(env.OWC_EXCHANGE_RATE_TIMEOUT_MS, 5_000),
