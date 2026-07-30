@@ -1,4 +1,4 @@
-import { Fragment, lazy, memo, Suspense, useMemo, type ReactElement } from "react";
+import { Fragment, lazy, memo, Suspense, useMemo, useRef, type ReactElement } from "react";
 import { splitMarkdownBlocks } from "./markdown-split";
 
 // 分块渲染单元：与整篇渲染同一条 react-markdown/katex 管线，只是不带 .markdown 外壳
@@ -16,9 +16,23 @@ export { CodeBlock } from "./CodeBlock";
  * Markdown 按需加载（react-markdown/katex 独立 chunk），加载期间先渲染纯文本，不阻塞流式输出。
  * 文本按空行切分为块（围栏代码/$$ 数学块内部不拆分）：除末尾块外均为稳定块，
  * 流式增长或父组件重渲染时只有内容变化的块会重新走 markdown 管线。
+ * 切分本身也是增量的：追加文本不会改变前缀块的边界（围栏/数学状态由前缀唯一决定），
+ * 因此缓存上一次结果，append-only 增长时只重切「末尾块 + 新增文本」，避免每帧全量扫描。
  */
 export function Markdown({ children }: { children: string }): ReactElement {
-  const blocks = useMemo(() => splitMarkdownBlocks(children), [children]);
+  const cacheRef = useRef<{ text: string; blocks: string[] } | undefined>(undefined);
+  const blocks = useMemo(() => {
+    const cache = cacheRef.current;
+    let next: { text: string; blocks: string[] };
+    if (cache && cache.blocks.length > 1 && children.length > cache.text.length && children.startsWith(cache.text)) {
+      const tail = cache.blocks[cache.blocks.length - 1]! + children.slice(cache.text.length);
+      next = { text: children, blocks: [...cache.blocks.slice(0, -1), ...splitMarkdownBlocks(tail)] };
+    } else {
+      next = { text: children, blocks: splitMarkdownBlocks(children) };
+    }
+    cacheRef.current = next;
+    return next.blocks;
+  }, [children]);
   return (
     <Suspense fallback={<div className="markdown">{children}</div>}>
       <div className="markdown">

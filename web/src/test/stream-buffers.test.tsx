@@ -36,7 +36,7 @@ describe("useStreamBuffers", () => {
 
   it("同一帧内的多个 delta 只造成一次状态提交", () => {
     const frames = stubAnimationFrame();
-    const committed: Array<Record<string, string>> = [];
+    const committed: Array<Record<string, string[]>> = [];
     const { result } = renderHook(() => {
       const buffers = useStreamBuffers();
       committed.push(buffers.stream);
@@ -53,7 +53,7 @@ describe("useStreamBuffers", () => {
     expect(result.current.stream).toEqual({});
 
     act(() => frames.runFrame());
-    expect(result.current.stream).toEqual({ s1: "你好。" });
+    expect(result.current.stream).toEqual({ s1: ["你好。"] });
     // 包含 s1 的状态对象只出现一次，即整帧 delta 合并为一次提交
     expect(committed.filter((stream) => "s1" in stream)).toHaveLength(1);
   });
@@ -66,7 +66,7 @@ describe("useStreamBuffers", () => {
     act(() => frames.runFrame());
     act(() => result.current.queueDelta("s1", "第二"));
     act(() => frames.runFrame());
-    expect(result.current.stream).toEqual({ s1: "第一第二" });
+    expect(result.current.stream).toEqual({ s1: ["第一", "第二"] });
   });
 
   it("思考流与正文流分键合批", () => {
@@ -78,8 +78,8 @@ describe("useStreamBuffers", () => {
       result.current.queueDelta("s1", "思考", true);
     });
     act(() => frames.runFrame());
-    expect(result.current.stream).toEqual({ s1: "正文" });
-    expect(result.current.thinkingStream).toEqual({ s1: "思考" });
+    expect(result.current.stream).toEqual({ s1: ["正文"] });
+    expect(result.current.thinkingStream).toEqual({ s1: ["思考"] });
   });
 
   it("finish 取消挂起的帧并立即提交（卸载/断线不丢尾部 token）", () => {
@@ -89,10 +89,10 @@ describe("useStreamBuffers", () => {
     act(() => result.current.queueDelta("s1", "尾部"));
     act(() => result.current.finish());
     expect(frames.cancel).toHaveBeenCalledTimes(1);
-    expect(result.current.stream).toEqual({ s1: "尾部" });
+    expect(result.current.stream).toEqual({ s1: ["尾部"] });
     // 被取消的帧不会再触发
     act(() => frames.runFrame());
-    expect(result.current.stream).toEqual({ s1: "尾部" });
+    expect(result.current.stream).toEqual({ s1: ["尾部"] });
   });
 
   it("discard 丢弃已提交状态与未提交缓冲", () => {
@@ -117,7 +117,7 @@ describe("useStreamBuffers", () => {
     act(() => result.current.queueDelta("s1", "内容"));
     act(() => frames.runFrame());
     act(() => result.current.clear("s1"));
-    expect(result.current.stream).toEqual({ s1: "" });
+    expect(result.current.stream).toEqual({ s1: [] });
   });
 
   it("无 rAF 的环境退化为 80ms 定时器合批", () => {
@@ -134,6 +134,6 @@ describe("useStreamBuffers", () => {
     act(() => {
       vi.advanceTimersByTime(80);
     });
-    expect(result.current.stream).toEqual({ s1: "ab" });
+    expect(result.current.stream).toEqual({ s1: ["ab"] });
   });
 });
