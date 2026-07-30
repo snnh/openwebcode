@@ -112,6 +112,8 @@ export interface SessionMeta {
   shellBackend?: ShellBackend;
   /** Python 运行环境；undefined = 跟随全局默认（settings 的 pythonEnv，缺省本机环境）。 */
   pythonEnv?: PythonEnv;
+  /** env-sim 人格预设 id（会话级覆盖）；undefined = 跟随扩展全局 config.persona。 */
+  persona?: string;
   /** 选择性上下文（§4.4）：pin 的消息 id/文件路径（不被驱逐）。 */
   contextPins?: string[];
   /** 上下文排除路径 glob（不进上下文组装/repo map/索引；不是安全边界）。 */

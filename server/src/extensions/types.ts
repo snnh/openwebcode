@@ -19,6 +19,8 @@ export interface ToolShapingAlias {
   as: string;
   description?: string;
   inputSchema?: Record<string, unknown>;
+  /** 参数名归一：模型侧参数名 -> 内置工具参数名（配合 inputSchema 拟态外部产品参数形态）。 */
+  argMap?: Record<string, string>;
 }
 
 /** 工具形态声明（仅官方扩展可用）：隐藏内置工具 + 别名重命名。 */

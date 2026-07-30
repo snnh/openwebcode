@@ -10,15 +10,16 @@ import type { SessionStore } from "../sessions/session-store.js";
 import { ContextManager } from "../context/context-manager.js";
 import { EXTENSION_API_VERSION, isExtensionEventAllowed, type ApiRequest, type ApiResponse, type ContextHookPayload, type EventMessage, type ExtensionApiMethod, type ExtensionHook, type ExtensionInfo, type ExtensionManifest, type ExtensionPermission, type ExtensionState, type ExtensionToolResult, type ExtensionToolSpec, type HostRequest, type HostResponse, type PromptHookPayload, type PromptHookResult, type ToolHookPayload, type ToolShapingAlias, type ToolShapingSpec } from "./types.js";
 import { OFFICIAL_DEFAULT_CONFIG, OFFICIAL_EXTENSIONS } from "./official.js";
-import { listPersonas, resolvePersona, personasDir, type PersonaSummary } from "./env-sim/index.js";
+import { BUILTIN_PERSONAS, getPersona, listPersonas, resolvePersona, personasDir, type PersonaDetail, type PersonaSummary } from "./env-sim/index.js";
 
 /** activeToolShaping 聚合结果：hideBuiltIns 按内置名隐藏，aliases 以新名（as）为键。 */
 export interface ActiveToolShaping {
   hideBuiltIns: Set<string>;
-  aliases: Map<string, { from: string; description?: string; inputSchema?: Record<string, unknown> }>;
+  aliases: Map<string, { from: string; description?: string; inputSchema?: Record<string, unknown>; argMap?: Record<string, string> }>;
 }
 
 const ALIAS_NAME_PATTERN = /^[a-zA-Z][a-zA-Z0-9_]{0,63}$/;
+const BUILTIN_PERSONA_IDS = new Set(BUILTIN_PERSONAS.map((preset) => preset.id));
 
 interface StoredConfig { version: 1; extensions: Record<string, ExtensionState> }
 type DiscoveredManifest = ExtensionManifest & { directory?: string };
@@ -182,7 +183,7 @@ export class ExtensionManager {
    * env-sim 的提示词变换在 server 侧直接合成——内置预设与用户预设目录都是 server 本地
    * 状态，经 Extension Host IPC 传递反而是多余一跳（与工具形态同为 server 侧内建行为）。
    */
-  async transformPrompt(payload: PromptHookPayload): Promise<PromptHookResult> {
+  async transformPrompt(payload: PromptHookPayload, sessionPersona?: string): Promise<PromptHookResult> {
     const hostResult = await this.hook("prompt.beforeBuild", payload) as Partial<PromptHookResult>;
     const result: PromptHookResult = {
       ...(typeof hostResult.identity === "string" ? { identity: hostResult.identity } : {}),
@@ -192,7 +193,8 @@ export class ExtensionManager {
     };
     const envSim = this.manifests.find((item) => item.id === "env-sim");
     if (envSim && this.stateFor(envSim).enabled) {
-      const persona = await resolvePersona(this.dataDir, this.stateFor(envSim).config, (message) => this.warnShaping(message));
+      // 会话级 persona（SessionMeta.persona）优先于扩展全局 config.persona
+      const persona = await resolvePersona(this.dataDir, this.stateFor(envSim).config, (message) => this.warnShaping(message), sessionPersona);
       if (persona) {
         result.identity = persona.identity;
         result.basePromptOverride = persona.basePrompt;
@@ -207,7 +209,7 @@ export class ExtensionManager {
    * builtInNames 传入本轮实际内置工具表（含条件项），据此完成 from 存在性与命名冲突校验；
    * 无效条目记警告并跳过。无形态生效时返回 undefined。
    */
-  async activeToolShaping(builtInNames: readonly string[]): Promise<ActiveToolShaping | undefined> {
+  async activeToolShaping(builtInNames: readonly string[], sessionPersona?: string): Promise<ActiveToolShaping | undefined> {
     const shaping: ActiveToolShaping = { hideBuiltIns: new Set(), aliases: new Map() };
     for (const manifest of this.manifests) {
       if (!manifest.toolShaping || manifest.official !== true || !this.isEnabled(manifest.id)) continue;
@@ -215,8 +217,9 @@ export class ExtensionManager {
     }
     const envSim = this.manifests.find((item) => item.id === "env-sim");
     if (envSim && this.stateFor(envSim).enabled) {
-      // env-sim 的形态由 config.persona 驱动（动态预设），不走静态 manifest toolShaping。
-      const persona = await resolvePersona(this.dataDir, this.stateFor(envSim).config, (message) => this.warnShaping(message));
+      // env-sim 的形态由 config.persona 驱动（动态预设），不走静态 manifest toolShaping；
+      // 会话级 persona 覆盖与 transformPrompt 同源。
+      const persona = await resolvePersona(this.dataDir, this.stateFor(envSim).config, (message) => this.warnShaping(message), sessionPersona);
       if (persona) this.applyShapingSpec("env-sim", { hideBuiltIns: persona.hideBuiltIns, aliases: persona.aliases }, builtInNames, shaping);
     }
     return shaping.hideBuiltIns.size === 0 && shaping.aliases.size === 0 ? undefined : shaping;
@@ -244,6 +247,7 @@ export class ExtensionManager {
       from: alias.from,
       ...(typeof alias.description === "string" ? { description: alias.description } : {}),
       ...(alias.inputSchema && typeof alias.inputSchema === "object" ? { inputSchema: alias.inputSchema } : {}),
+      ...(alias.argMap && typeof alias.argMap === "object" && Object.values(alias.argMap).every((value) => typeof value === "string") ? { argMap: alias.argMap } : {}),
     });
   }
 
@@ -264,6 +268,21 @@ export class ExtensionManager {
       personas: await listPersonas(this.dataDir, (message) => this.warnShaping(message)),
       directory: personasDir(this.dataDir),
     };
+  }
+
+  /** env-sim 预设详情（选前预览端点）；未命中返回 null。 */
+  async envSimPersonaDetail(id: string): Promise<PersonaDetail | null> {
+    return getPersona(this.dataDir, id, (message) => this.warnShaping(message));
+  }
+
+  /** 当前生效的 env-sim 预设（会话级覆盖优先于扩展全局配置）；未启用/未设置/未知返回 null。 */
+  async activeEnvSimPersona(sessionPersona?: string): Promise<PersonaSummary | null> {
+    const envSim = this.manifests.find((item) => item.id === "env-sim");
+    if (!envSim || !this.stateFor(envSim).enabled) return null;
+    const persona = await resolvePersona(this.dataDir, this.stateFor(envSim).config, (message) => this.warnShaping(message), sessionPersona);
+    if (!persona) return null;
+    const builtin = BUILTIN_PERSONA_IDS.has(persona.id);
+    return { id: persona.id, name: persona.name, builtin };
   }
 
   /** 已启用扩展注册的工具表（ext__<extensionId>__<name>），供 agent 工具注入；同步读注册表。 */
@@ -585,7 +604,8 @@ function validateToolShaping(spec: ToolShapingSpec): void {
   if (spec.hideBuiltIns !== undefined && (!Array.isArray(spec.hideBuiltIns) || spec.hideBuiltIns.some((name) => typeof name !== "string"))) {
     throw new Error("manifest.toolShaping.hideBuiltIns must be an array of tool names");
   }
-  if (spec.aliases !== undefined && (!Array.isArray(spec.aliases) || spec.aliases.some((alias) => !alias || typeof alias.from !== "string" || typeof alias.as !== "string"))) {
-    throw new Error("manifest.toolShaping.aliases entries require string from/as");
+  if (spec.aliases !== undefined && (!Array.isArray(spec.aliases) || spec.aliases.some((alias) => !alias || typeof alias.from !== "string" || typeof alias.as !== "string"
+    || (alias.argMap !== undefined && (!alias.argMap || typeof alias.argMap !== "object" || Array.isArray(alias.argMap) || Object.values(alias.argMap).some((value) => typeof value !== "string")))))) {
+    throw new Error("manifest.toolShaping.aliases entries require string from/as and an optional string-valued argMap");
   }
 }

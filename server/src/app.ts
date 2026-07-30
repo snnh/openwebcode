@@ -96,6 +96,8 @@ interface SessionConfigBody {
   snapshotMode?: SnapshotMode;
   shellBackend?: ShellBackend;
   pythonEnv?: PythonEnv;
+  /** env-sim 人格预设 id（会话级覆盖）；空串清除。 */
+  persona?: string;
 }
 
 interface BudgetBody {
@@ -682,6 +684,13 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     // 预设清单 + 用户预设目录绝对路径（UI 提示用户把分享的预设 JSON 放进来）
     return dependencies.extensions.listEnvSimPersonas();
   });
+  app.get<{ Params: { id: string } }>("/api/extensions/env-sim/personas/:id", async (request, reply) => {
+    if (!dependencies.extensions) return reply.code(501).send({ error: "Extension Host is not configured" });
+    // 完整预设详情：UI 选前预览（identity/basePrompt/productSections/hideBuiltIns/aliases）
+    const detail = await dependencies.extensions.envSimPersonaDetail(request.params.id);
+    if (!detail) return reply.code(404).send({ error: "Persona not found" });
+    return detail;
+  });
   app.post<{ Body: { action?: string; id?: string; enabled?: boolean; config?: Record<string, unknown>; path?: string } }>("/api/extensions", async (request, reply) => {
     const extensions = dependencies.extensions;
     if (!extensions) return reply.code(501).send({ error: "Extension Host is not configured" });
@@ -973,7 +982,9 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     }
     const session = await sessions.get(request.params.id);
     if (!session) return reply.code(404).send({ error: "Session not found" });
-    return session;
+    // 当前生效的 env-sim 人格预设（会话级覆盖优先；扩展未启用/未配置为 null）
+    const activePersona = dependencies.extensions ? await dependencies.extensions.activeEnvSimPersona(session.persona) : null;
+    return { ...session, activePersona };
   });
   /** 会话显示属性：重命名（title ≤120 字符，空串清除覆盖回落派生标题）与置顶（pinned）。 */
   app.patch<{ Params: { id: string }; Body: { title?: string; pinned?: boolean } }>("/api/sessions/:id", async (request, reply) => {
@@ -1309,6 +1320,16 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     if (pythonEnv !== undefined && !["global", "uv-workspace", "uv-config"].includes(pythonEnv)) {
       return reply.code(400).send({ error: 'pythonEnv must be "global", "uv-workspace", or "uv-config"' });
     }
+    // env-sim 人格预设（会话级覆盖）：空串清除；非空必须是已知预设 id（扩展宿主不可用时只做类型校验）
+    const persona = request.body && "persona" in request.body ? request.body.persona ?? undefined : session.persona;
+    if (persona !== undefined) {
+      if (typeof persona !== "string") return reply.code(400).send({ error: "persona must be a string" });
+      const trimmed = persona.trim();
+      if (trimmed && dependencies.extensions) {
+        const known = (await dependencies.extensions.listEnvSimPersonas()).personas;
+        if (!known.some((item) => item.id === trimmed)) return reply.code(400).send({ error: `unknown persona "${trimmed}"` });
+      }
+    }
     const permissionMode = request.body?.permissionMode ?? session.permissionMode ?? "ask";
     if (!["ask", "acceptEdits", "yolo"].includes(permissionMode)) return reply.code(400).send({ error: "permissionMode must be ask, acceptEdits, or yolo" });
     const touchesSandbox = Boolean(request.body && ("sandboxMode" in request.body || "setupScript" in request.body));
@@ -1323,7 +1344,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       // WSB 的启动脚本和模式只在虚拟机启动时生效，切换前先释放旧实例。
       await core.release?.(session.id);
     }
-    await sessions.updateConfig(request.params.id, { provider, model, ...(thinking ? { thinking } : {}), ...(effort ? { effort } : {}), ...(agentMode ? { agentMode } : {}), ...(snapshotMode ? { snapshotMode } : {}), ...(shellBackend ? { shellBackend } : {}), ...(pythonEnv ? { pythonEnv } : {}) });
+    await sessions.updateConfig(request.params.id, { provider, model, ...(thinking ? { thinking } : {}), ...(effort ? { effort } : {}), ...(agentMode ? { agentMode } : {}), ...(snapshotMode ? { snapshotMode } : {}), ...(shellBackend ? { shellBackend } : {}), ...(pythonEnv ? { pythonEnv } : {}), ...(persona !== undefined ? { persona: persona.trim() } : {}) });
     let updated = await sessions.updatePermissions(request.params.id, permissionMode, session.permissionRules ?? []);
     if (touchesSandbox) {
       updated = await sessions.updateSandboxMode(request.params.id, request.body?.sandboxMode, request.body?.setupScript);

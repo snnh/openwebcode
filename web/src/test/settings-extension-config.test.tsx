@@ -93,6 +93,45 @@ describe("扩展类型化配置表单", () => {
     await vi.waitFor(() => expect(configure).toHaveBeenCalledWith("env-sim", { config: { persona: "my-preset" } }));
   });
 
+  it("env-sim：选中预设后展示详情预览（身份行 + 工具形态摘要）", async () => {
+    vi.spyOn(api, "envSimPersonas").mockResolvedValue({
+      personas: [{ id: "claude", name: "Claude 风格", builtin: true }],
+      directory: "D:\\data\\env-sim\\personas",
+    });
+    const personaQuery = vi.spyOn(api, "envSimPersona").mockResolvedValue({
+      id: "claude",
+      name: "Claude 风格",
+      builtin: true,
+      identity: "You are Claude Code, Anthropic's agentic coding tool.",
+      basePrompt: "base body",
+      productSections: [],
+      hideBuiltIns: ["remember", "spawn_swarm"],
+      aliases: [
+        { from: "bash", as: "Bash" },
+        { from: "read_file", as: "Read" },
+      ],
+    });
+    const extension = extensionFixture({
+      id: "env-sim",
+      configSchema: {
+        type: "object",
+        properties: { persona: { type: "string", title: "人格预设" } },
+      },
+      config: {},
+    });
+    const view = withClient(<ExtensionRow extension={extension} />);
+    await view.findByRole("option", { name: "Claude 风格" });
+
+    // 未选中时没有预览
+    expect(view.queryByTestId("persona-preview")).toBeNull();
+    fireEvent.change(view.getByLabelText("人格预设"), { target: { value: "claude" } });
+    await vi.waitFor(() => expect(personaQuery).toHaveBeenCalledWith("claude"));
+    const preview = await view.findByTestId("persona-preview");
+    expect(preview).toHaveTextContent("You are Claude Code");
+    expect(preview).toHaveTextContent(/Bash/);
+    expect(preview).toHaveTextContent(/2 个内置工具/);
+  });
+
   it("无 configSchema 时回退到原始 JSON 编辑", () => {
     const extension = extensionFixture({ config: { a: 1 } });
     const view = withClient(<ExtensionRow extension={extension} />);
