@@ -10,8 +10,12 @@ describe("PermissionCoordinator", () => {
     expect(coordinator.needsApproval("ask", [], "bash", { cmd: "npm test" })).toBe(true);
     expect(coordinator.needsApproval("acceptEdits", [], "edit_file", { path: "a" })).toBe(false);
     expect(coordinator.needsApproval("yolo", [], "bash", { cmd: "rm x" })).toBe(false);
-    expect(coordinator.needsApproval("ask", [permissionRule("bash", { cmd: "npm test" })], "bash", { cmd: "npm test -- --run" })).toBe(true);
+    expect(coordinator.needsApproval("ask", [permissionRule("bash", { cmd: "npm test" })], "bash", { cmd: "npm test -- --run" })).toBe(false);
     expect(coordinator.needsApproval("ask", [permissionRule("bash", { cmd: "npm test" })], "bash", { cmd: "npm test && curl bad" })).toBe(true);
+    expect(coordinator.needsApproval("ask", [permissionRule("bash", { cmd: "npm test" })], "bash", { cmd: "npm testx" })).toBe(true);
+    expect(coordinator.needsApproval("ask", [permissionRule("bash", { cmd: "npm test" })], "bash", { cmd: "npm test -- --watch" })).toBe(false);
+    expect(coordinator.needsApproval("ask", [permissionRule("bash", { cmd: "npm test" })], "bash", { cmd: "npm test | grep ok" })).toBe(true);
+    expect(coordinator.needsApproval("ask", [permissionRule("bash", { cmd: "npm test" })], "bash", { cmd: "npm test > out.txt" })).toBe(true);
     expect(coordinator.needsApproval("ask", [permissionRule("bash", { cmd: "npm test" })], "bash", { cmd: "npm test" })).toBe(false);
   });
 
