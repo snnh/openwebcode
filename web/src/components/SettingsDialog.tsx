@@ -91,7 +91,7 @@ const SETTINGS_GROUPS: Array<{ id: string; zh: string; en: string; tabs: Setting
 
 const TAB_META = SETTINGS_GROUPS.flatMap((group) => group.tabs);
 
-export function SettingsDialog({ open, initialTab, initialTabAt, preference, setPreference, accent, setAccent, sendKey, setSendKey, defaults, setDefaults, providers, models, onResetLayout, onClose }: {
+export function SettingsDialog({ open, initialTab, initialTabAt, preference, setPreference, accent, setAccent, sendKey, setSendKey, desktopNotify, setDesktopNotify, defaults, setDefaults, providers, models, onResetLayout, onClose }: {
   open: boolean;
   /** 深链入口：打开时定位到指定页签；不传则保持上次使用的页签 */
   initialTab?: SettingsTab;
@@ -103,6 +103,8 @@ export function SettingsDialog({ open, initialTab, initialTabAt, preference, set
   setAccent(value: AccentPreference): void;
   sendKey: SendKey;
   setSendKey(value: SendKey): void;
+  desktopNotify: boolean;
+  setDesktopNotify(value: boolean): void;
   defaults: SessionDefaults;
   setDefaults(value: SessionDefaults): void;
   providers: string[];
@@ -281,7 +283,7 @@ export function SettingsDialog({ open, initialTab, initialTabAt, preference, set
           )}
           {activeTab === "general" && (
             <section>
-              <GeneralSection sendKey={sendKey} setSendKey={setSendKey} onResetLayout={onResetLayout} onDirtyChange={(dirty) => { serverDirtyRef.current = dirty; }} />
+              <GeneralSection sendKey={sendKey} setSendKey={setSendKey} desktopNotify={desktopNotify} setDesktopNotify={setDesktopNotify} onResetLayout={onResetLayout} onDirtyChange={(dirty) => { serverDirtyRef.current = dirty; }} />
             </section>
           )}
           {activeTab === "defaults" && (

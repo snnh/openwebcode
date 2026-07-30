@@ -120,8 +120,8 @@ export interface SubAgentOptions {
   swarm?: { boardPath: string; member?: string };
   /** 每次 LLM 用量事件回调（由调用方记账，子代理 token 计入会话成本）。 */
   onUsage?: (usage: Extract<ProviderEvent, { type: "usage" }>) => void | Promise<void>;
-  /** taskId 生成后立即回调（用于发布 subagent.started；转录文件名即 <taskId>.json）。 */
-  onStart?: (taskId: string) => void;
+  /** taskId 生成后立即回调（用于发布 subagent.started；转录文件名即 <taskId>.json）。支持异步（回调完成后子代理才开始，保证 SubagentStart 先于 Stop）。 */
+  onStart?: (taskId: string) => void | Promise<void>;
   /** 每轮 provider 调用结束与每批工具执行结束后回调（仅元数据，不含文本；用于发布 subagent.progress）。 */
   onProgress?: (progress: { turns: number; toolsUsed: string[] }) => void;
 }
@@ -171,7 +171,7 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
   // 发帖署名缺省回落 taskId（taskId 生成后才能确定）
   if (options.swarm && !options.swarm.member) options.swarm.member = taskId;
   const startedAt = new Date().toISOString();
-  options.onStart?.(taskId);
+  await options.onStart?.(taskId);
   const messages: ChatMessage[] = [subMessage("user", [{ type: "text", text: options.prompt }])];
   const toolsUsed: string[] = [];
   let turns = 0;

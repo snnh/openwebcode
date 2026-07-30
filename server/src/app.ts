@@ -2023,6 +2023,8 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
           return reply.code(500).send({ error: "Managed workspace teardown failed; the session was retained for recovery" });
         }
       }
+      // SessionEnd 钩子：删除前尽力触发（仅通知不阻断；服务停止不做复杂生命周期）
+      if (dependencies.hooks) await dependencies.hooks.run("SessionEnd", { sessionId: request.params.id, cwd: detail.cwd });
       if (!(await sessions.delete(request.params.id))) return reply.code(404).send({ error: "Session not found" });
       return reply.code(204).send();
     } finally {
