@@ -62,7 +62,7 @@ install.sh              Linux 安装脚本（仅 tar.gz，位于包顶层）
 
 ```powershell
 $ErrorActionPreference = "Stop"
-$Version = "0.5.2"
+$Version = "1.0.0"
 $NodeVersion = "24.18.0"
 
 npm --prefix server ci
@@ -86,6 +86,9 @@ npm --prefix web test
 npm --prefix server prune --omit=dev
 Remove-Item server\node_modules\@fastify\send\test -Recurse -Force -ErrorAction SilentlyContinue
 
+# 预发布版本（如 1.0.0-beta.3）需同时设置 CPACK_FULL_VERSION，使 MSI 文件名含完整 tag；
+# 数值基版本进 CPACK_PACKAGE_VERSION（MSI ProductVersion 只接受数值）。
+# 正式版（如 1.0.0）只需 CPACK_PACKAGE_VERSION 即可。
 cmake -S core -B build -A x64 -DCPACK_PACKAGE_VERSION=$Version
 cmake --build build --config Release --target owc-exec --parallel
 
@@ -156,13 +159,13 @@ Get-FileHash "openwebcode-$Version-windows-x64.msi" -Algorithm SHA256
 
 - 双击安装，默认装到 `C:\Program Files\openwebcode\`（需要管理员权限；升级码固定，可覆盖升级）。
 - 安装会始终创建“开始”菜单的 **OpenWebCode** 快捷方式（启动 `bin\owc.cmd`）。在“Shell integration”页可勾选创建桌面快捷方式，以及将 `<安装目录>\bin` 添加到**运行安装程序的用户**的 `PATH`；两个选项默认勾选，重新打开终端后可直接运行 `owc`。不勾选 PATH 时仍可从安装目录运行 `bin\owc.cmd`。
-- 卸载默认保留 `%LOCALAPPDATA%\openwebcode`。如确认要删除**默认**用户数据，可在拥有 MSI 文件时显式执行：
+- 卸载默认保留 `%USERPROFILE%\openwebcode`（以及旧版默认目录 `%LOCALAPPDATA%\openwebcode`）。如确认要删除**默认**用户数据，可在拥有 MSI 文件时显式执行：
 
   ```powershell
   msiexec /x "openwebcode-<version>-windows-x64.msi" PURGE_DATA=1
   ```
 
-  此选项不会删除通过 `OWC_DATA_DIR` 指定的其他数据目录，也不会删除任意工作区中的 `.owc/`（包括 PDF 上传文件）。升级安装不会触发清理。目前安装器没有“删除数据”图形复选框，避免误导用户以为未实现的 UI 能控制该破坏性操作。
+  此选项会同时清理新旧两个默认数据目录；不会删除通过 `OWC_DATA_DIR` 指定的其他数据目录，也不会删除任意工作区中的 `.owc/`（包括 PDF 上传文件）。升级安装不会触发清理。目前安装器没有“删除数据”图形复选框，避免误导用户以为未实现的 UI 能控制该破坏性操作。
 
   维护时不要给 `WixRemoveFoldersEx` 追加第二个 WiX 排序条目：WiX v3 的 `RemoveFolderEx` 已自行在 `CostInitialize` 前排程。`wix-patch.xml` 仅在它之前按条件把私有目录属性从保留的惰性路径替换为默认数据目录，以保持默认卸载不清理数据。
 
@@ -187,6 +190,7 @@ npm --prefix web test
 npm --prefix server prune --omit=dev
 rm -rf server/node_modules/@fastify/send/test
 
+# 预发布版本需额外 -DCPACK_FULL_VERSION="$VERSION" 使文件名含完整 tag。
 cmake -S core -B build -DCMAKE_BUILD_TYPE=Release -DCPACK_PACKAGE_VERSION="$VERSION"
 cmake --build build --target owc-exec --parallel
 
@@ -279,7 +283,7 @@ curl -fsSL https://raw.githubusercontent.com/snnh/openwebcode/main/packaging/ins
 1. `export OWC_CORE_PATH=<包内 owc-exec>`——server 默认按源码树相对位置找 core，安装布局必须显式指定；
 2. 端口与监听地址：显式 `OWC_PORT`/`OWC_HOST` 已设则沿用，否则使用安装时选择的默认值（初始为 **3000** / `127.0.0.1`；server 自身端口兜底是 3210，见 `server/src/config.ts`）；
 3. 数据目录：显式 `OWC_DATA_DIR` 优先；未设置时，Linux 启动器使用安装时选择的默认值（初始为
-   `${XDG_DATA_HOME:-~/.local/share}/openwebcode`），Windows 启动器注入 `%LOCALAPPDATA%\openwebcode`。只有不经启动脚本
+   `${XDG_DATA_HOME:-~/.local/share}/openwebcode`），Windows 启动器注入 `%USERPROFILE%\openwebcode`。只有不经启动脚本
    直接运行 `node server/dist/index.js` 时，才用相对 server 目录的 `../.openwebcode` 作为启动/设置目录兜底。
    `server-settings.json` 固定保留在该目录；环境变量未设时，其中保存的 `dataDir` 会在重启后选择业务数据目录。
    `OWC_DATA_DIR` 与 `dataDir` 建议使用绝对路径。
