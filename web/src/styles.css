@@ -980,20 +980,19 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .subagent-tab-run-header .subagent-run-stats,
 .subagent-tab-run-header .subagent-run-error { margin-top: 0; }
 .subagent-tab-hint { margin: 0; font-size: 12px; color: var(--text-3); }
-/* 终端标签：每会话一个 shell 控制台（历史派生自 user `!cmd` + tool_result 配对） */
+/* 终端标签：每会话一个真 PTY（xterm.js 经 WS 连 server 终端端点，提交⑦） */
 .terminal-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.terminal-cwd { flex: none; padding: 6px 16px; font-size: 11px; color: var(--text-3); border-bottom: 1px solid var(--border); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.terminal-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 16px; display: flex; flex-direction: column; gap: 10px; }
-.terminal-empty { margin: 0; font-size: 12px; color: var(--text-3); }
-.terminal-entry { display: flex; flex-direction: column; gap: 3px; }
-.terminal-cmd { font-size: 12.5px; color: var(--accent); white-space: pre-wrap; word-break: break-all; }
-.terminal-pending { margin: 0; font-size: 12px; color: var(--text-3); }
-.terminal-output { margin: 0; padding: 6px 10px; font-size: 12px; line-height: 1.55; white-space: pre-wrap; word-break: break-all; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-s); color: var(--text-2); max-height: 320px; overflow-y: auto; }
-.terminal-output.error { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
-.terminal-input-row { flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 16px; border-top: 1px solid var(--border); }
-.terminal-prompt { color: var(--accent); font-size: 12.5px; }
-.terminal-input { flex: 1; min-width: 0; font-size: 12.5px; color: var(--text); background: transparent; }
-.terminal-input:disabled { opacity: 0.6; }
+.terminal-cwd { flex: none; padding: 6px 16px; font-size: 11px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.terminal-badge { flex: none; padding: 4px 16px; font-size: 11px; color: var(--text-3); background: var(--panel); border-bottom: 1px solid var(--border); }
+.terminal-note { margin: 12px 16px; font-size: 12px; color: var(--text-3); }
+.terminal-gate { margin: 12px 16px; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius-s); background: var(--panel); }
+.terminal-gate-title { margin: 0 0 8px; font-size: 12.5px; color: var(--text-2); }
+.terminal-gate .totp-gate-list { margin: 0 0 10px; }
+.terminal-pty { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.terminal-pty-host { flex: 1; min-height: 0; padding: 4px 8px; background: var(--panel); }
+.terminal-pty-host .xterm { height: 100%; }
+.terminal-pty-status { flex: none; display: flex; align-items: center; gap: 10px; padding: 6px 16px; font-size: 12px; color: var(--text-3); border-top: 1px solid var(--border); }
+.terminal-pty-status.error { color: var(--danger); }
 .thinking {
   background: var(--panel-2);
   background: color-mix(in srgb, var(--panel-2) 58%, transparent);

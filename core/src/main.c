@@ -18,12 +18,14 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include "platform/exec_platform.h"
+#include "pty.h"
 
 /* Spawned jobs run in their own process groups; a core that exits (loop end
  * or fatal signal) must not leave them orphaned.  The handler re-raises with
  * the default disposition so the exit status still reflects the signal. */
 static void on_fatal_signal(int sig) {
     owc_platform_exec_terminate_all();
+    owc_pty_terminate_all();
     (void)signal(sig,SIG_DFL);
     (void)raise(sig);
 }
@@ -171,12 +173,14 @@ int main(int argc, char **argv) {
         if(status<0) { fprintf(stderr,"owc-exec: invalid RPC frame\n"); free(body);
 #ifndef _WIN32
             owc_platform_exec_terminate_all();
+            owc_pty_terminate_all();
 #endif
             return 2; }
         (void)owc_rpc_dispatch(&rpc,body,length); free(body);
     }
 #ifndef _WIN32
     owc_platform_exec_terminate_all();
+    owc_pty_terminate_all();
 #endif
     if (input) fclose(input);
     if (output) fclose(output);
