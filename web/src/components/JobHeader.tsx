@@ -1,6 +1,6 @@
-import { useState, type ReactElement } from "react";
+import { useState, useEffect, type ReactElement } from "react";
 import { useQuery } from "@tanstack/react-query";
-import type { SessionDetail, BackgroundTaskInfo, ContextUsage, SandboxMode, ShellBackend, SnapshotMode } from "../lib/contracts";
+import type { SessionDetail, BackgroundTaskInfo, ContextUsage, PythonEnv, SandboxMode, ShellBackend, SnapshotMode } from "../lib/contracts";
 import { api } from "../lib/api";
 import { formatTokens, formatTokensShort } from "../lib/format";
 import { isBusyState, STATE_LABELS } from "../lib/agent-state";
@@ -55,6 +55,7 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
   const [tasksOpen, setTasksOpen] = useState(false);
   const [expandedTask, setExpandedTask] = useState<string | null>(null);
   const [configPending, setConfigPending] = useState(false);
+  const [headerCollapsed, setHeaderCollapsed] = useState(() => localStorage.getItem("owc-header-collapsed") === "1");
   // 任务列表路由不含 output（避免载荷过大），展开时按 taskId 拉详情缓存于此
   const [taskDetails, setTaskDetails] = useState<Record<string, BackgroundTaskInfo>>({});
   const tasks = useQuery({
@@ -69,6 +70,8 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
   });
   const runningTasks = tasks.data?.filter((t) => t.status === "running") ?? [];
   const allTasks = tasks.data ?? [];
+
+  useEffect(() => { localStorage.setItem("owc-header-collapsed", headerCollapsed ? "1" : "0"); }, [headerCollapsed]);
 
   const openTask = (taskId: string): void => {
     if (expandedTask === taskId) {
@@ -92,11 +95,11 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
   };
 
   return (
-    <header className="job-header">
+    <header className={`job-header${headerCollapsed ? " compact" : ""}`}>
       <div className="job-header-info">
         <div className="job-title">
           <h1>{session.title}</h1>
-          <p className="job-cwd mono" title={session.cwd}>{session.cwd}</p>
+          {!headerCollapsed && <p className="job-cwd mono" title={session.cwd}>{session.cwd}</p>}
         </div>
         <div className="job-info">
         {costSummary && (
@@ -154,9 +157,27 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
         {agentState && agentState !== "idle" && (
           <span className={`state-badge state-${agentState}`}>{STATE_LABELS[agentState] ? t(...STATE_LABELS[agentState]!) : agentState}</span>
         )}
+        {session.activePersona && (
+          <span
+            className="persona-badge"
+            title={t(`env-sim 人格模拟生效：${session.activePersona.name}`, `env-sim persona active: ${session.activePersona.name}`)}
+          >
+            <Icon name="layers" size={11} />
+            {session.activePersona.name}
+          </span>
+        )}
         </div>
+        <button
+          type="button"
+          className="job-header-toggle"
+          aria-label={headerCollapsed ? t("展开顶栏", "Expand header") : t("收起顶栏", "Collapse header")}
+          title={headerCollapsed ? t("展开顶栏", "Expand header") : t("收起顶栏", "Collapse header")}
+          onClick={() => setHeaderCollapsed((v) => !v)}
+        >
+          <Icon name={headerCollapsed ? "chevron-down" : "chevron-up"} size={12} />
+        </button>
       </div>
-      <div className="job-actions">
+      {!headerCollapsed && <div className="job-actions">
         <label className={`mode-switch sandbox-mode-switch ${(session.sandboxMode ?? "appcontainer") === "off" ? "advisory" : "enforced"}`} title={t("切换当前会话的命令执行沙盒", "Change the command sandbox for this session")}>
           <Icon name="shield" size={11} />
           <span>{t("沙盒", "Sandbox")}</span>
@@ -184,6 +205,20 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
           >
             <option value="default">{t("默认", "Default")}</option>
             <option value="pwsh">PowerShell 7</option>
+          </select>
+        </label>
+        <label className="mode-switch python-env-switch" title={t("选择当前会话 bash 的 python 运行环境", "Choose the python environment for bash in this session")}>
+          <Icon name="terminal" size={11} />
+          <span>Python</span>
+          <select
+            aria-label={t("Python 环境", "Python environment")}
+            value={session.pythonEnv ?? "global"}
+            disabled={busy || configPending}
+            onChange={(event) => updateMode({ pythonEnv: event.target.value as PythonEnv })}
+          >
+            <option value="global">{t("本机环境", "Host")}</option>
+            <option value="uv-workspace">{t("uv·工作区", "uv · workspace")}</option>
+            <option value="uv-config">{t("uv·配置目录", "uv · config dir")}</option>
           </select>
         </label>
         <label className="mode-switch snapshot-mode-switch" title={t("自动模式会在每轮用户消息前创建检查点", "Automatic mode creates a checkpoint before each user turn")}>
@@ -236,12 +271,12 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
         {busy && (
           <button className="btn danger-outline" onClick={onAbort}>{t("中断", "Stop")}</button>
         )}
-      </div>
+      </div>}
       {tasksOpen && allTasks.length > 0 && (
         <div className="task-dropdown">
           {allTasks.map((task) => (
             <div key={task.taskId} className={`task-item task-${task.status}`}>
-              <div className="task-item-header" onClick={() => openTask(task.taskId)}>
+              <div className="task-item-header" role="button" tabIndex={0} onClick={() => openTask(task.taskId)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openTask(task.taskId); } }}>
                 <span className={`task-status-dot task-${task.status}`} />
                 <span className="task-id mono">{task.taskId}</span>
                 <span className="task-status-label">{STATUS_LABELS[task.status] ? t(...STATUS_LABELS[task.status]!) : task.status}</span>

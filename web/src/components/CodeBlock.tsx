@@ -1,4 +1,4 @@
-import { Children, isValidElement, useEffect, useState, type ReactElement, type ReactNode } from "react";
+import { Children, isValidElement, useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { highlightCode } from "../highlight";
 import { writeClipboard } from "../lib/clipboard";
 import { Icon } from "./Icon";
@@ -9,6 +9,7 @@ export function CodeBlock({ lang, code }: { lang?: string; code: string }): Reac
   const { t } = useI18n();
   const [html, setHtml] = useState<string>();
   const [copied, setCopied] = useState(false);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => {
     let alive = true;
     setHtml(undefined);
@@ -17,6 +18,7 @@ export function CodeBlock({ lang, code }: { lang?: string; code: string }): Reac
     });
     return () => { alive = false; };
   }, [code, lang]);
+  useEffect(() => () => { if (copyTimerRef.current) clearTimeout(copyTimerRef.current); }, []);
   return (
     <div className="code-block-wrap">
       {html
@@ -30,7 +32,8 @@ export function CodeBlock({ lang, code }: { lang?: string; code: string }): Reac
           void writeClipboard(code).then((ok) => {
             if (!ok) return;
             setCopied(true);
-            window.setTimeout(() => setCopied(false), 1500);
+            if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+            copyTimerRef.current = setTimeout(() => setCopied(false), 1500);
           });
         }}
       >

@@ -157,6 +157,7 @@ export function App(): ReactElement {
   const skills = useQuery({ queryKey: queryKeys.skills(currentId ?? ""), queryFn: () => api.skills(currentId!), enabled: Boolean(currentId) });
   const todos = useQuery({ queryKey: ["todos", currentId], queryFn: () => api.todos(currentId!), enabled: Boolean(currentId) });
   const extensions = useQuery({ queryKey: ["extensions"], queryFn: api.extensions });
+  const contentLens = useMemo(() => extensions.data?.find((extension) => extension.id === "content-lens" && extension.enabled), [extensions.data]);
   // 服务设置与更新检查：用于启动后一次性提示新版本（与 SettingsDialog 共用缓存键；retry:false 避免 501 重试）
   const serverSettings = useQuery({ queryKey: ["settings"], queryFn: api.settings, staleTime: 5 * 60_000 });
   const updateCheck = useQuery({ queryKey: ["update-check"], queryFn: api.updateCheck, staleTime: 5 * 60_000, retry: false });
@@ -1041,7 +1042,7 @@ export function App(): ReactElement {
                 <ExecutionTrack
                   session={displaySession ?? current}
                   trackVisible={selectedSubagentTab === undefined && !terminalSelected}
-                  contentLens={extensions.data?.find((extension) => extension.id === "content-lens" && extension.enabled)}
+                  contentLens={contentLens}
                   onNotice={notify}
                   liveSubagents={liveSubagents[current.id] ?? {}}
                   {...(contextView.data?.ledger.cleared ? { cleared: contextView.data.ledger.cleared } : {})}
@@ -1119,6 +1120,7 @@ export function App(): ReactElement {
                   onNotice={(message, kind = "info") => notify(message, kind)}
                   editingMessage={editingMessage && editingMessage.sessionId === current.id ? { messageId: editingMessage.messageId, hadAttachments: editingMessage.hadAttachments } : undefined}
                   onCancelEdit={() => cancelEdit()}
+                  onOpenModelSettings={() => openSettings("models")}
                 />
               </>
             ) : currentId && detail.isLoading ? (

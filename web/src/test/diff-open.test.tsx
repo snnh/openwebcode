@@ -120,6 +120,8 @@ describe("统一 diff 视图：入口与布局回归", () => {
     await view.findByRole("heading", { name: "会话一" });
     // 默认纯对话：无 diff 视图
     expect(view.container.querySelector(".diff-pane")).toBeNull();
+    // 工具行默认折叠：先展开，diff 入口在展开区内
+    fireEvent.click(view.getByRole("button", { name: /write_file/ }));
     fireEvent.click(await view.findByRole("button", { name: "在 diff 视图中打开该文件变化" }));
     // diff 分栏打开（agent-write 只读展示写入结果），Monaco 懒加载被触发
     await waitFor(() => expect(view.container.querySelector(".diff-pane")).not.toBeNull());
@@ -132,6 +134,8 @@ describe("统一 diff 视图：入口与布局回归", () => {
   it("Esc 关闭 diff 回对话，焦点回 Composer", async () => {
     const view = renderApp();
     await view.findByRole("heading", { name: "会话一" });
+    // 工具行默认折叠：先展开，diff 入口在展开区内
+    fireEvent.click(view.getByRole("button", { name: /write_file/ }));
     fireEvent.click(await view.findByRole("button", { name: "在 diff 视图中打开该文件变化" }));
     await waitFor(() => expect(view.container.querySelector(".diff-pane")).not.toBeNull());
     fireEvent.keyDown(window, { key: "Escape" });
@@ -143,7 +147,9 @@ describe("统一 diff 视图：入口与布局回归", () => {
     const view = renderApp();
     await view.findByRole("heading", { name: "会话一" });
     fireEvent.click(view.getByRole("button", { name: "源代码管理" }));
-    fireEvent.click(await view.findByRole("button", { name: /src\/a\.ts/ }));
+    // 会话里 write_file 工具行摘要同样含 src/a.ts：等 SCM 文件行出现并精确点击它
+    await waitFor(() => expect(view.container.querySelector(".problems-item")).not.toBeNull());
+    fireEvent.click(view.container.querySelector(".problems-item")!);
     fireEvent.click(await view.findByRole("button", { name: "在 diff 视图中打开（支持 hunk 接受/拒绝）" }));
     // SCM 来源：hunk 操作条出现
     await view.findByRole("list", { name: "hunk 列表" });
@@ -164,7 +170,9 @@ describe("统一 diff 视图：入口与布局回归", () => {
     const view = renderApp();
     await view.findByRole("heading", { name: "会话一" });
     fireEvent.click(view.getByRole("button", { name: "源代码管理" }));
-    fireEvent.click(await view.findByRole("button", { name: /src\/a\.ts/ }));
+    // 会话里 write_file 工具行摘要同样含 src/a.ts：等 SCM 文件行出现并精确点击它
+    await waitFor(() => expect(view.container.querySelector(".problems-item")).not.toBeNull());
+    fireEvent.click(view.container.querySelector(".problems-item")!);
     fireEvent.click(await view.findByRole("button", { name: "在 diff 视图中打开（支持 hunk 接受/拒绝）" }));
     await view.findByRole("list", { name: "hunk 列表" });
     fireEvent.keyDown(window, { key: "r", ctrlKey: true, altKey: true });
@@ -175,6 +183,8 @@ describe("统一 diff 视图：入口与布局回归", () => {
     mobileMatches = true;
     const view = renderApp();
     await view.findByRole("heading", { name: "会话一" });
+    // 工具行默认折叠：先展开，diff 入口在展开区内
+    fireEvent.click(view.getByRole("button", { name: /write_file/ }));
     fireEvent.click(await view.findByRole("button", { name: "在 diff 视图中打开该文件变化" }));
     await view.findByRole("dialog", { name: "变更摘要" });
     expect(view.container.querySelector(".editor-pane.diff-pane")).toBeNull();
