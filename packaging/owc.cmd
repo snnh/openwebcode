@@ -6,7 +6,21 @@ setlocal
 set "OWC_HOME=%~dp0.."
 set "OWC_CORE_PATH=%OWC_HOME%\bin\owc-exec.exe"
 if not defined OWC_PORT set "OWC_PORT=3000"
-if not defined OWC_DATA_DIR set "OWC_DATA_DIR=%LOCALAPPDATA%\openwebcode"
+rem One-time migration of the legacy default data directory.  Runs only when
+rem OWC_DATA_DIR is not set explicitly, the legacy dir exists, and the new
+rem default dir does not.  Never blocks startup.
+if not defined OWC_DATA_DIR (
+    if exist "%LOCALAPPDATA%\openwebcode" if not exist "%USERPROFILE%\openwebcode" (
+        move "%LOCALAPPDATA%\openwebcode" "%USERPROFILE%\openwebcode" >nul 2>&1
+        if errorlevel 1 robocopy "%LOCALAPPDATA%\openwebcode" "%USERPROFILE%\openwebcode" /E /MOVE >nul 2>&1
+        if exist "%USERPROFILE%\openwebcode" (
+            echo migrated from %LOCALAPPDATA%\openwebcode> "%USERPROFILE%\openwebcode\.migrated-from-localappdata"
+        ) else (
+            echo owc.cmd: warning: could not migrate data from "%LOCALAPPDATA%\openwebcode" to "%USERPROFILE%\openwebcode"; starting with a fresh data directory. 1>&2
+        )
+    )
+    set "OWC_DATA_DIR=%USERPROFILE%\openwebcode"
+)
 if exist "%OWC_HOME%\node\node.exe" (set "OWC_NODE=%OWC_HOME%\node\node.exe") else (
     echo owc.cmd: warning: bundled node.exe not found under "%OWC_HOME%\node", falling back to Node.js from PATH. 1>&2
     set "OWC_NODE=node"

@@ -58,7 +58,7 @@ The copied WiX `InstallDir` dialog flow in [`openwebcode-ui.wxs`](./openwebcode-
 
 ## Data directory
 
-An explicitly set `OWC_DATA_DIR` always takes precedence. If it is not set, the Windows launcher injects `%LOCALAPPDATA%\openwebcode`; the Linux launcher uses the data-directory default selected during installation (initially `${XDG_DATA_HOME:-~/.local/share}/openwebcode`). Only a direct `node server/dist/index.js` run that bypasses the launcher uses `../.openwebcode` relative to the `server` directory as its boot/settings-directory fallback. The settings file remains `server-settings.json` in that boot directory; with no `OWC_DATA_DIR`, a saved `dataDir` selects the business data directory after restart. Use absolute paths for either override.
+An explicitly set `OWC_DATA_DIR` always takes precedence. If it is not set, the Windows launcher injects `%USERPROFILE%\openwebcode`; the Linux launcher uses the data-directory default selected during installation (initially `${XDG_DATA_HOME:-~/.local/share}/openwebcode`). Only a direct `node server/dist/index.js` run that bypasses the launcher uses `../.openwebcode` relative to the `server` directory as its boot/settings-directory fallback. The settings file remains `server-settings.json` in that boot directory; with no `OWC_DATA_DIR`, a saved `dataDir` selects the business data directory after restart. Use absolute paths for either override.
 
 ## Linux installer options
 

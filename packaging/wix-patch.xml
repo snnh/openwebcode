@@ -36,9 +36,16 @@
          WiX runs its table action on every install/uninstall, so its default
          is a reserved inert path, never the application's data directory. -->
     <Property Id="OwcDefaultDataDir"
-              Value="%LOCALAPPDATA%\OpenWebCode--PurgeDisabled--7F3A2C1E-9B4D-4E6F-A1C8-2D5B7E9F0C3A" />
+              Value="%USERPROFILE%\OpenWebCode--PurgeDisabled--7F3A2C1E-9B4D-4E6F-A1C8-2D5B7E9F0C3A" />
     <CustomAction Id="SetOwcDefaultDataDir"
                   Property="OwcDefaultDataDir"
+                  Value="%USERPROFILE%\openwebcode" />
+    <!-- Legacy default location (pre-1.0 installs kept data under
+         LOCALAPPDATA); purged alongside the new default on opt-in. -->
+    <Property Id="OwcLegacyDataDir"
+              Value="%LOCALAPPDATA%\OpenWebCode--PurgeDisabled--8A4B3D2F-1C5E-4F7B-B2D9-3E6C8F1A4D7B" />
+    <CustomAction Id="SetOwcLegacyDataDir"
+                  Property="OwcLegacyDataDir"
                   Value="%LOCALAPPDATA%\openwebcode" />
     <!-- WiX v3's RemoveFolderEx has no Condition attribute and its supplied
          custom action is sequenced by the Util extension.  Replacing the
@@ -46,16 +53,21 @@
          without creating a second, conflicting sequence entry. -->
     <InstallExecuteSequence>
       <Custom Action="SetOwcDefaultDataDir" Before="WixRemoveFoldersEx">NOT UPGRADINGPRODUCTCODE AND PURGE_DATA=1 AND REMOVE=&quot;ALL&quot;</Custom>
+      <Custom Action="SetOwcLegacyDataDir" Before="WixRemoveFoldersEx">NOT UPGRADINGPRODUCTCODE AND PURGE_DATA=1 AND REMOVE=&quot;ALL&quot;</Custom>
     </InstallExecuteSequence>
   </CPackWiXFragment>
 
   <CPackWiXFragment Id="CM_CP_bin.owc.cmd">
     <!-- The conditional property assignment above means this affects only
-         opt-in full uninstalls of the launcher's default LOCALAPPDATA
-         location; custom OWC_DATA_DIR values and workspace .owc directories
-         are intentionally outside this action. -->
+         opt-in full uninstalls of the launcher's default USERPROFILE data
+         location and the legacy LOCALAPPDATA location; custom OWC_DATA_DIR
+         values and workspace .owc directories are intentionally outside
+         this action. -->
     <util:RemoveFolderEx Id="PurgeOpenWebCodeDefaultData"
                          Property="OwcDefaultDataDir"
+                         On="uninstall" />
+    <util:RemoveFolderEx Id="PurgeOpenWebCodeLegacyData"
+                         Property="OwcLegacyDataDir"
                          On="uninstall" />
   </CPackWiXFragment>
 

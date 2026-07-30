@@ -18,7 +18,7 @@ Windows 与 Linux 原生支持（沙盒分别走 AppContainer/Landlock）。macO
 
 ### Q: 数据存在哪里？
 
-用户显式设置的 `OWC_DATA_DIR` 优先。未设置时，安装版启动器会注入默认目录（Windows `%LOCALAPPDATA%\openwebcode`；Linux `${XDG_DATA_HOME:-~/.local/share}/openwebcode`）；只有绕过启动器直接运行 `node server/dist/index.js` 时，才以相对 `server` 目录的 `../.openwebcode` 作为启动/设置目录兜底。设置文件为 `<启动/设置目录>/server-settings.json`；其中保存的“数据目录”会在未设置 `OWC_DATA_DIR` 时于下次启动后决定业务数据目录。会话在 `<业务数据目录>/sessions/<id>/`；自定义路径建议使用绝对路径。详见 [usage.md 的配置文件位置表](./usage.md#配置文件位置)。
+用户显式设置的 `OWC_DATA_DIR` 优先。未设置时，安装版启动器会注入默认目录（Windows `%USERPROFILE%\openwebcode`；Linux `${XDG_DATA_HOME:-~/.local/share}/openwebcode`）；只有绕过启动器直接运行 `node server/dist/index.js` 时，才以相对 `server` 目录的 `../.openwebcode` 作为启动/设置目录兜底。设置文件为 `<启动/设置目录>/server-settings.json`；其中保存的“数据目录”会在未设置 `OWC_DATA_DIR` 时于下次启动后决定业务数据目录。会话在 `<业务数据目录>/sessions/<id>/`；自定义路径建议使用绝对路径。详见 [usage.md 的配置文件位置表](./usage.md#配置文件位置)。
 
 ### Q: 如何升级？
 
