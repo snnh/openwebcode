@@ -20,6 +20,8 @@ import type { Provider, ProviderRegistry, ProviderTool, ProviderEvent } from "..
 import { ProviderError } from "../providers/provider-error.js";
 import { collectProviderTurn } from "../providers/retry.js";
 import { PermissionCoordinator, permissionRule, type PermissionDecision } from "./permission-coordinator.js";
+import { buildReviewMessages, completeWithProvider, parseVerdict, type ReviewOutcome } from "./permission-review.js";
+import type { FastModelClient } from "../fast-model.js";
 import {
   BUILTIN_SUB_AGENTS,
   GENERAL_AGENT_TOOL_NAMES,
@@ -602,6 +604,13 @@ export class AgentRunner {
   /** Phase 4a：注入 SCM 服务，启用 git_status/git_diff/git_commit/git_worktree_* 工具。 */
   setScm(scm: ScmService): void {
     this.scm = scm;
+  }
+
+  private fastModel?: FastModelClient;
+
+  /** 注入快速模型客户端：review 权限模式的 fast 审核通道（未注入时 review 一律转人工）。 */
+  setFastModel(fastModel: FastModelClient): void {
+    this.fastModel = fastModel;
   }
 
   /** 提示词覆盖更新后清空缓存，下次构建提示词时重新读取覆盖文件。 */
@@ -1890,10 +1899,46 @@ export class AgentRunner {
       } catch { /* 回退原始路径 */ }
     }
     if (!this.permissions.needsApproval(mode, rules, tool, input)) return { allowed: true };
+    // 模型审核（review 模式）：需要人工确认的调用先由审核模型评判风险；git_commit 永远直接人工。
+    // 审核期间不置 waiting_permission（仍视为工具运行中）；LOW 自动放行，其余照旧走人工流程。
+    if (mode === "review" && tool !== "git_commit") {
+      const reviewed = await this.reviewToolCall(session, tool, input, signal);
+      this.events.publish({ source: "agent", type: "permission.reviewed", sessionId, payload: { tool, input, verdict: reviewed.verdict, rationale: reviewed.rationale, model: reviewed.model } });
+      if (reviewed.verdict === "low") return { allowed: true };
+    }
     this.state(sessionId, "waiting_permission");
     const result = await this.permissions.request(sessionId, tool, input, signal);
     this.state(sessionId, "tool_running");
     return { allowed: result.allowed, ...(result.reason ? { reason: result.reason } : {}) };
+  }
+
+  /**
+   * review 模式的审核门：fast = FastModelClient（未配置直接转人工）；main = 会话当前
+   * provider/model 的一次性补全。30s 超时并尊重 run 的 AbortSignal；调用失败、超时或
+   * 结果无法解析一律按 HIGH 转人工——审核通道故障不得放大权限。
+   */
+  private async reviewToolCall(session: SessionMeta, tool: string, input: Record<string, unknown>, signal: AbortSignal): Promise<ReviewOutcome & { model: string }> {
+    const reviewModel = session.reviewModel ?? "fast";
+    if (reviewModel === "fast" && !this.fastModel?.configured) {
+      return { verdict: "high", rationale: "快速模型未配置，无法自动审核", model: "fast" };
+    }
+    const { system, prompt } = buildReviewMessages(tool, input);
+    const combined = AbortSignal.any([signal, AbortSignal.timeout(30_000)]);
+    const model = reviewModel === "fast" ? `fast:${this.fastModel?.model ?? ""}` : `${session.provider}/${session.model}`;
+    try {
+      let text: string;
+      if (reviewModel === "fast") {
+        // FastModelClient.complete 不接受外部 signal，用竞速实现超时/中止（底层请求会自行收尾）
+        text = (await raceAbort(this.fastModel!.complete({ system, prompt, maxTokens: 256 }), combined)).text;
+      } else {
+        const provider = this.providers.get(session.provider);
+        if (!provider) return { verdict: "high", rationale: "当前服务商不可用，无法自动审核", model };
+        text = await completeWithProvider(provider, { model: session.model, system, prompt, maxTokens: 256, signal: combined });
+      }
+      return { ...parseVerdict(text), model };
+    } catch (error) {
+      return { verdict: "high", rationale: `审核调用失败：${errorMessage(error)}`, model };
+    }
   }
 
   /** 非拦截型 Hook（用户提交、工具后、正常结束）绝不能让已接受的会话卡住。 */
@@ -2961,4 +3006,17 @@ function stableStringify(value: unknown): string {
       .join(",")}}`;
   }
   return JSON.stringify(value);
+}
+
+/** 给不支持外部 signal 的 Promise 套上中止/超时竞速（review 模式的 fast 审核通道用）。 */
+function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new Error("审核已中止"));
+      return;
+    }
+    const onAbort = (): void => reject(new Error(signal.reason === undefined ? "审核已中止" : "审核超时或已中止"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
 }

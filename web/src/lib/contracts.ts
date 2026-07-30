@@ -4,7 +4,7 @@ export interface TodoItem {
   activeForm?: string;
 }
 
-export type PermissionMode = "ask" | "acceptEdits" | "yolo";
+export type PermissionMode = "ask" | "acceptEdits" | "review" | "yolo";
 export type SandboxCapability = "advisory" | "partial" | "enforced";
 export type SandboxMode = "appcontainer" | "wsb" | "jobobject" | "off";
 export type SnapshotMode = "auto" | "manual";
