@@ -30,7 +30,7 @@ export interface CreateSessionInput {
   provider?: string;
   model?: string;
   title?: string;
-  agentMode?: "plan" | "build";
+  agentMode?: "plan" | "build" | "goal";
   sandboxMode?: SandboxMode;
   setupScript?: string;
   /** 托管工作区：调用方预分配 id（镜像/挂载路径按 id 推导，必须先于 create 准备） */
@@ -73,7 +73,7 @@ export class SessionStore {
     // appcontainer 为默认不落盘；setupScript 仅非空时保留
     if (input.sandboxMode && input.sandboxMode !== "appcontainer") meta.sandboxMode = input.sandboxMode;
     if (input.setupScript?.trim()) meta.setupScript = input.setupScript;
-    if (input.agentMode === "plan") meta.agentMode = "plan";
+    if (input.agentMode === "plan" || input.agentMode === "goal") meta.agentMode = input.agentMode;
     await mkdir(this.sessionPath(meta.id), { recursive: false });
     await this.writeMeta(meta);
     await writeFile(this.messagesPath(meta.id), "", { encoding: "utf8", flag: "wx" });
