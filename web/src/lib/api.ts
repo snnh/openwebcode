@@ -1,4 +1,4 @@
-import type { AgentListResponse, AgentRun, BackgroundTaskInfo, CatalogSyncStatus, Checkpoint, CompletePathResponse, ContextView, CostReport, ExtensionInfo, FileEntry, ManagedWorkspaceCapability, ManagedWorkspaceSyncPreview, ManagedWorkspaceSyncResult, MessageAttachment, MessagesPage, ModelProfile, PendingPermission, PricingDocument, ProviderConcurrencyStats, ProviderConnectionTestResult, ProviderProfilesView, SandboxCapabilities, SandboxMode, Session, SessionDetail, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo, StartSubagentResponse, SubagentTranscript, SyncResult, TodoItem, WebCapability } from "./contracts";
+import type { AgentListResponse, AgentRun, BackgroundTaskInfo, CatalogSyncStatus, Checkpoint, CompletePathResponse, ContextView, CostReport, ExtensionInfo, FileEntry, ManagedWorkspaceCapability, ManagedWorkspaceSyncPreview, ManagedWorkspaceSyncResult, MessageAttachment, MessagesPage, ModelProfile, PendingPermission, PersonaDetail, PricingDocument, ProviderConcurrencyStats, ProviderConnectionTestResult, ProviderProfilesView, SandboxCapabilities, SandboxMode, Session, SessionDetail, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo, StartSubagentResponse, SubagentTranscript, SyncResult, TodoItem, WebCapability } from "./contracts";
 
 export class ApiError extends Error {
   constructor(readonly status: number, message: string) {
@@ -226,6 +226,7 @@ export const api = {
     request<ExtensionInfo>("/api/extensions", { method: "POST", body: JSON.stringify({ id, ...body }) }),
   installExtension: (path: string) => request<ExtensionInfo>("/api/extensions", { method: "POST", body: JSON.stringify({ action: "install", path }) }),
   envSimPersonas: () => request<{ personas: Array<{ id: string; name: string; builtin: boolean }>; directory: string }>("/api/extensions/env-sim/personas"),
+  envSimPersona: (id: string) => request<PersonaDetail>(`/api/extensions/env-sim/personas/${encodeURIComponent(id)}`),
   uninstallExtension: (id: string) => request<void>(`/api/extensions/${encodeURIComponent(id)}`, { method: "DELETE" }),
   translateMessage: (sessionId: string, messageId: string, targetLanguage: string, glossary?: Record<string, string>) =>
     request<{ text: string; cached: boolean }>(`/api/sessions/${sessionId}/content-lens/translate`, { method: "POST", body: JSON.stringify({ messageId, targetLanguage, ...(glossary ? { glossary } : {}) }) }),

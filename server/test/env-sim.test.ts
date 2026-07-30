@@ -174,6 +174,21 @@ describe("env-sim prompt.beforeBuild", () => {
       await persona.manager.close();
     }
   }, 30_000);
+  it("session-level persona overrides the extension-wide config", async () => {
+    const { agent, session, sessions, requests, manager } = await setup({ enableEnvSim: true, persona: "codex" });
+    try {
+      await sessions.updateConfig(session.id, { provider: "fake", model: "model", persona: "claude-code" });
+      await agent.run(session.id, "你好");
+      const system = requests[0]!.system;
+      expect(system).toContain("You are Claude Code, Anthropic's agentic coding tool.");
+      const names = (requests[0]!.tools ?? []).map((tool) => tool.name);
+      // 工具形态也跟随会话级 persona（cc 形态而非 codex 形态）
+      expect(names).toContain("TodoWrite");
+      expect(names).not.toContain("apply_patch");
+    } finally {
+      await manager.close();
+    }
+  }, 20_000);
 });
 
 describe("env-sim tool shaping", () => {
@@ -289,6 +304,30 @@ describe("env-sim tool shaping", () => {
     }
   }, 20_000);
 
+  it("translates persona-shaped arguments back to built-in parameters (argMap)", async () => {
+    const { agent, session, sessions, requests, runCalls, manager } = await setup({
+      enableEnvSim: true,
+      persona: "claude-code",
+      script: [[
+        { id: "call-1", name: "Bash", input: { command: "echo hi", description: "greet" } },
+        { id: "call-2", name: "Edit", input: { file_path: "a.txt", old_string: "a", new_string: "b", replace_all: true } },
+      ]],
+    });
+    try {
+      await agent.run(session.id, "跑命令再改文件");
+      // cc 形态 schema 出现在 provider 请求中
+      const bashTool = (requests[0]!.tools ?? []).find((tool) => tool.name === "Bash");
+      expect(bashTool?.inputSchema).toMatchObject({ required: ["command"] });
+      // command -> cmd 归一后进入 core
+      expect(runCalls[0]).toMatchObject({ cmd: "echo hi" });
+      const results = toolResults(await sessions.get(session.id));
+      // file_path/old_string/new_string/replace_all 归一为内置 edit_file 参数后执行成功
+      expect(results.find((item) => item.toolCallId === "call-2")).toMatchObject({ isError: false });
+    } finally {
+      await manager.close();
+    }
+  }, 20_000);
+
   it("rejects third-party manifests carrying toolShaping", async () => {
     const { manager, root } = await setup();
     try {
@@ -351,17 +390,44 @@ describe("env-sim preset store", () => {
     expect((await resolvePersona(root, { persona: "claude-code" }))?.name).toBe("Claude Code");
     expect((await listPersonas(root)).filter((item) => item.id === "claude-code")).toHaveLength(1);
   });
+
+  it("keeps alias inputSchema/argMap when loading user presets", async () => {
+    const root = await tempRoot();
+    await mkdir(personasDir(root), { recursive: true });
+    await writeFile(path.join(personasDir(root), "shaped.json"), JSON.stringify({
+      id: "shaped",
+      name: "Shaped",
+      identity: "You are Shaped.",
+      basePrompt: "shaped base",
+      aliases: [{
+        from: "bash",
+        as: "Terminal",
+        inputSchema: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
+        argMap: { command: "cmd" },
+      }],
+    }), "utf8");
+    const preset = (await loadUserPresets(root)).find((item) => item.id === "shaped");
+    expect(preset?.aliases[0]).toMatchObject({
+      from: "bash",
+      as: "Terminal",
+      inputSchema: { required: ["command"] },
+      argMap: { command: "cmd" },
+    });
+  });
 });
 
 describe("env-sim REST contract", () => {
   async function setupRest(presetFiles?: Array<{ filename: string; content: string }>) {
     const harness = await setup({ presetFiles });
+    // PUT /sessions/:id/config 会按注册表校验会话 provider/model，需与 harness 同源注册
+    const providers = new ProviderRegistry();
+    providers.register(scriptProvider([], []));
     const app = await buildServer({
       core: fakeCore([]),
       sessions: harness.sessions,
       agent: harness.agent,
       events: harness.events,
-      providers: new ProviderRegistry(),
+      providers,
       pricing: new PricingCatalog(path.join(harness.root, "pricing2.json")),
       extensions: harness.manager,
     });
@@ -416,6 +482,55 @@ describe("env-sim REST contract", () => {
       expect(body.personas.at(-1)).toMatchObject({ id: "shared", builtin: false });
       expect(path.isAbsolute(body.directory)).toBe(true);
       expect(body.directory).toBe(personasDir(dataDir));
+    } finally {
+      await app.close();
+      await manager.close();
+    }
+  }, 20_000);
+
+  it("serves full persona details for preview and 404s unknown ids", async () => {
+    const { app, manager } = await setupRest();
+    try {
+      const detail = await app.inject({ method: "GET", url: "/api/extensions/env-sim/personas/claude-code" });
+      expect(detail.statusCode).toBe(200);
+      const body = detail.json() as Record<string, unknown>;
+      expect(body).toMatchObject({ id: "claude-code", name: "Claude Code", builtin: true });
+      expect(typeof body.identity).toBe("string");
+      expect(typeof body.basePrompt).toBe("string");
+      const aliases = body.aliases as Array<Record<string, unknown>>;
+      const read = aliases.find((alias) => alias.as === "Read");
+      // 详情含拟态参数形态（供 UI 预览与外部消费）
+      expect(read).toMatchObject({ from: "read_file", argMap: { file_path: "path" } });
+      expect(read?.inputSchema).toMatchObject({ required: ["file_path"] });
+      const missing = await app.inject({ method: "GET", url: "/api/extensions/env-sim/personas/nope" });
+      expect(missing.statusCode).toBe(404);
+    } finally {
+      await app.close();
+      await manager.close();
+    }
+  }, 20_000);
+
+  it("validates and persists session-level persona via PUT config, exposing activePersona on detail", async () => {
+    const { app, manager, sessions, session } = await setupRest();
+    try {
+      await manager.configure("env-sim", { enabled: true, config: { persona: "codex" } });
+      const unknown = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { persona: "no-such-persona" } });
+      expect(unknown.statusCode).toBe(400);
+      const invalidType = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { persona: 42 } });
+      expect(invalidType.statusCode).toBe(400);
+      const set = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { persona: "kimi-code" } });
+      expect(set.statusCode).toBe(200);
+      expect(await sessions.get(session.id)).toMatchObject({ persona: "kimi-code" });
+      // 会话详情暴露当前生效 persona（会话级覆盖优先于扩展全局 codex）
+      const detail = await app.inject({ method: "GET", url: `/api/sessions/${session.id}` });
+      expect(detail.statusCode).toBe(200);
+      expect(detail.json()).toMatchObject({ persona: "kimi-code", activePersona: { id: "kimi-code", name: "Kimi Code", builtin: true } });
+      // 空串清除会话级覆盖，回落到扩展全局配置
+      const cleared = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { persona: "" } });
+      expect(cleared.statusCode).toBe(200);
+      expect(await sessions.get(session.id)).not.toHaveProperty("persona");
+      const fallback = await app.inject({ method: "GET", url: `/api/sessions/${session.id}` });
+      expect(fallback.json()).toMatchObject({ activePersona: { id: "codex" } });
     } finally {
       await app.close();
       await manager.close();

@@ -14,10 +14,19 @@ function parseAlias(raw: unknown): PersonaAlias | undefined {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
   const record = raw as Record<string, unknown>;
   if (typeof record.from !== "string" || typeof record.as !== "string" || !record.from || !record.as) return undefined;
+  const inputSchema = record.inputSchema && typeof record.inputSchema === "object" && !Array.isArray(record.inputSchema)
+    ? record.inputSchema as Record<string, unknown>
+    : undefined;
+  const argMap = record.argMap && typeof record.argMap === "object" && !Array.isArray(record.argMap)
+    && Object.values(record.argMap as Record<string, unknown>).every((value) => typeof value === "string")
+    ? record.argMap as Record<string, string>
+    : undefined;
   return {
     from: record.from,
     as: record.as,
     ...(typeof record.description === "string" ? { description: record.description } : {}),
+    ...(inputSchema ? { inputSchema } : {}),
+    ...(argMap ? { argMap } : {}),
   };
 }
 

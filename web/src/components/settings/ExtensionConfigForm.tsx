@@ -113,11 +113,12 @@ export function ExtensionConfigForm({ extension, fields, busy, onSave }: {
       const list = personas.data?.personas ?? [];
       const builtin = list.filter((persona) => persona.builtin);
       const custom = list.filter((persona) => !persona.builtin);
+      const selected = typeof values[field.key] === "string" ? values[field.key] as string : "";
       return (
         <div key={field.key} className="extension-config-field">
           <label>
             {label}
-            <select value={typeof values[field.key] === "string" ? values[field.key] as string : ""} disabled={busy} onChange={(event) => setValue(field.key, event.target.value)}>
+            <select value={selected} disabled={busy} onChange={(event) => setValue(field.key, event.target.value)}>
               <option value="">{t("（不模拟）", "(No simulation)")}</option>
               {builtin.length > 0 && (
                 <optgroup label={t("内置", "Built-in")}>
@@ -132,6 +133,7 @@ export function ExtensionConfigForm({ extension, fields, busy, onSave }: {
             </select>
           </label>
           {description}
+          {selected && <PersonaPreview id={selected} />}
           {personas.data && (
             <p className="settings-note">{t(
               `自定义预设从 ${personas.data.directory} 加载，可将共享的预设 .json 文件放入该目录。`,
@@ -184,6 +186,29 @@ export function ExtensionConfigForm({ extension, fields, busy, onSave }: {
       <div>
         <button className="btn small" disabled={busy} onClick={save}>{busy ? t("保存中…", "Saving…") : t("保存配置", "Save configuration")}</button>
       </div>
+    </div>
+  );
+}
+
+/** env-sim 预设「选前预览」：身份行 + 工具形态摘要（别名/隐藏），由详情端点供数。 */
+function PersonaPreview({ id }: { id: string }): ReactElement | null {
+  const { t } = useI18n();
+  const detail = useQuery({
+    queryKey: ["env-sim-persona", id],
+    queryFn: () => api.envSimPersona(id),
+  });
+  if (!detail.data) return null;
+  const persona = detail.data;
+  return (
+    <div className="persona-preview" data-testid="persona-preview">
+      <p className="persona-preview-identity mono">{persona.identity}</p>
+      <p className="settings-note">
+        {persona.aliases.length > 0 && t(
+          `工具形态：${persona.aliases.map((alias) => alias.as).join("、")}`,
+          `Tool shapes: ${persona.aliases.map((alias) => alias.as).join(", ")}`,
+        )}
+        {persona.hideBuiltIns.length > 0 && ` · ${t(`隐藏 ${persona.hideBuiltIns.length} 个内置工具`, `${persona.hideBuiltIns.length} built-in tools hidden`)}`}
+      </p>
     </div>
   );
 }

@@ -188,6 +188,8 @@ export interface Session {
   snapshotMode?: SnapshotMode;
   shellBackend?: ShellBackend;
   pythonEnv?: PythonEnv;
+  /** env-sim 人格预设 id（会话级覆盖）；undefined = 跟随扩展全局配置。 */
+  persona?: string;
   setupScript?: string;
   /** 选择性上下文：pin 的消息 id/文件路径（不被驱逐）。 */
   contextPins?: string[];
@@ -214,6 +216,24 @@ export interface SessionDetail extends Session {
   messageCount?: number;
   /** Whether older messages exist beyond the returned page */
   hasMoreMessages?: boolean;
+  /** 当前生效的 env-sim 人格预设（会话级覆盖优先；扩展未启用/未配置为 null）。 */
+  activePersona?: PersonaSummary | null;
+}
+
+/** env-sim 人格预设摘要（清单/生效标识）。 */
+export interface PersonaSummary {
+  id: string;
+  name: string;
+  builtin: boolean;
+}
+
+/** env-sim 人格预设完整详情（选前预览）。 */
+export interface PersonaDetail extends PersonaSummary {
+  identity: string;
+  basePrompt: string;
+  productSections: string[];
+  hideBuiltIns: string[];
+  aliases: Array<{ from: string; as: string; description?: string }>;
 }
 
 /** 0.5.0 Phase 2: paginated message page from GET /api/sessions/:id/messages */
