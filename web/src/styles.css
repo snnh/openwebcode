@@ -1169,6 +1169,38 @@ button.chip-row:hover { background: var(--accent-soft); }
 .chip-row-status[data-status="running"] { color: var(--accent); }
 .chip-row-status[data-status="failed"] { color: var(--danger); }
 .chip-list-empty { padding: 8px 10px; font-size: 12px; color: var(--text-3); }
+/* 定时芯片：任务行内的 cron 原文、删除按钮与添加表单 */
+.chip-cron-raw { color: var(--text-3); font-family: var(--font-mono); font-size: 11px; }
+.chip-cron-delete {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-3);
+  padding: 2px;
+  border-radius: var(--radius-s);
+}
+.chip-cron-delete:hover { color: var(--danger); background: var(--panel-2); }
+.chip-form { display: grid; gap: 6px; margin-top: 6px; padding: 8px 8px 2px; border-top: 1px solid var(--border); min-width: 260px; }
+.chip-form input[type="text"] {
+  font-size: 12px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: var(--bg);
+  color: var(--text);
+}
+.chip-form input[type="text"]:focus { outline: none; border-color: var(--accent); }
+.chip-form-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.chip-form-recurring { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-3); }
+.chip-form-submit {
+  font-size: 12px;
+  padding: 3px 12px;
+  border-radius: var(--radius-s);
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+}
+.chip-form-submit:disabled { opacity: 0.5; cursor: default; }
+.chip-form-error { font-size: 11px; color: var(--danger); }
 /* 输入区大圆角卡片：textarea 融入其中，底栏一行排布 */
 .composer-card {
   border: 1px solid var(--border);

@@ -34,6 +34,9 @@ import {
   bashTool,
   ASK_USER_TOOL,
   CODE_SEARCH_TOOL,
+  CRON_CREATE_TOOL,
+  CRON_DELETE_TOOL,
+  CRON_LIST_TOOL,
   EXIT_PLAN_MODE_TOOL,
   FILE_TOOLS,
   READ_ARTIFACT_TOOL,
@@ -42,6 +45,7 @@ import {
   WEB_FETCH_TOOL,
   WEB_SEARCH_TOOL,
 } from "./tool-schemas.js";
+import type { CronScheduler } from "../cron-scheduler.js";
 import { getSnapshotBackend } from "../snapshots/index.js";
 import { digestSwarmBoard, swarmBoardPath } from "./swarm-board.js";
 import type { MessageContent, PythonEnv, SessionMeta, ShellBackend } from "../sessions/types.js";
@@ -359,6 +363,8 @@ function builtInTools(options: {
   pythonEnv: PythonEnv;
   /** 并行子代理（spawn_swarm）开关：会话级，默认关闭。 */
   swarmEnabled: boolean;
+  /** cron 定时任务（提交⑫）：调度器注入后下发 cron_create/cron_list/cron_delete。 */
+  cronEnabled: boolean;
 }): ProviderTool[] {
   return [
     bashTool(options.backgroundTasksEnabled, options.shellBackend, options.pythonEnv),
@@ -382,6 +388,7 @@ function builtInTools(options: {
     ...(options.fetchAvailable ? [WEB_FETCH_TOOL] : []),
     ...(options.backgroundTasksEnabled ? [TASK_OUTPUT_TOOL, TASK_STOP_TOOL] : []),
     ...(options.searchAvailable ? [WEB_SEARCH_TOOL] : []),
+    ...(options.cronEnabled ? [CRON_CREATE_TOOL, CRON_LIST_TOOL, CRON_DELETE_TOOL] : []),
   ];
 }
 
@@ -395,6 +402,7 @@ const TOOL_EXECUTION_CLASS: Readonly<Record<string, ToolExecutionClass>> = {
   web_fetch: "external", web_search: "external", write_file: "workspace_write", edit_file: "workspace_write",
   bash: "process", task_output: "read_only", task_stop: "process", todo_write: "workspace_write", remember: "workspace_write", spawn_task: "process", spawn_swarm: "process", test_runner: "process",
   swarm_board_post: "read_only", swarm_board_read: "read_only",
+  cron_create: "read_only", cron_list: "read_only", cron_delete: "read_only",
   git_commit: "process", git_worktree_create: "process", git_worktree_remove: "process", git_worktree_merge: "process",
 };
 function executionClass(name: string): ToolExecutionClass { return name.startsWith("mcp__") || name.startsWith("ext__") ? "external" : TOOL_EXECUTION_CLASS[name] ?? "workspace_write"; }
@@ -636,6 +644,13 @@ export class AgentRunner {
   /** Phase 4a：注入 SCM 服务，启用 git_status/git_diff/git_commit/git_worktree_* 工具。 */
   setScm(scm: ScmService): void {
     this.scm = scm;
+  }
+
+  private cronScheduler?: CronScheduler;
+
+  /** 提交⑫：注入 cron 调度器，启用 cron_create/cron_list/cron_delete 工具。 */
+  setCronScheduler(cronScheduler: CronScheduler): void {
+    this.cronScheduler = cronScheduler;
   }
 
   private fastModel?: FastModelClient;
@@ -1017,6 +1032,7 @@ export class AgentRunner {
           shellBackend: session.shellBackend ?? "default",
           pythonEnv: effectivePythonEnv(session.pythonEnv, this.getPythonEnvDefault()),
           swarmEnabled: session.swarmEnabled === true,
+          cronEnabled: Boolean(this.cronScheduler),
         });
         const shaping = toolsEnabled && this.extensions
           ? await this.extensions.activeToolShaping(builtIns.map((tool) => tool.name), session.persona)
@@ -1823,6 +1839,25 @@ export class AgentRunner {
     return { id: queued.item.id, position: queued.position, reused: queued.reused };
   }
 
+  /**
+   * cron 触发注入（提交⑫）：与 enqueueFollowUp 不同，不要求会话 running——
+   * 运行中自然排队（run 收尾的 startFollowUp 消费），空闲/settling 由这里立即补一轮。
+   * 队列项标记 source:"cron" 随 queue.json 持久化。
+   */
+  async fireCronFollowUp(sessionId: string, content: string): Promise<{ id: string; position: number }> {
+    if (content.length > MAX_STEERING_LENGTH) throw new SteeringError(`Cron prompt exceeds ${MAX_STEERING_LENGTH} characters`, "too_long");
+    const queuedItems = await this.messageQueue.list(sessionId, "follow_up");
+    if (queuedItems.filter((item) => item.status === "queued").length >= MAX_STEERING_ITEMS) throw new SteeringError("Follow-up queue is full", "full");
+    const queued = await this.messageQueue.enqueue(sessionId, "follow_up", content, undefined, "cron");
+    const payload = { ...queued.item, position: queued.position, reused: queued.reused };
+    this.events.publish({ source: "agent", type: "queue.queued", sessionId, payload });
+    // 运行中/settling 由 run 收尾的 startFollowUp 兜底；全空闲时这里立即启动
+    if (!this.running.has(sessionId) && !this.settling.has(sessionId)) {
+      void this.startFollowUp(sessionId).catch(() => { /* follow-up 失败经 queue.run_failed 事件记录 */ });
+    }
+    return { id: queued.item.id, position: queued.position };
+  }
+
   async listSteering(sessionId: string): Promise<QueueItem[]> {
     return (await this.messageQueue.list(sessionId, "steer")).filter((item) => item.status === "queued");
   }
@@ -2003,7 +2038,7 @@ export class AgentRunner {
     // 工具形态别名按原内置工具的权限类处理（不降级为 external）
     tool = this.resolveBuiltinToolName(sessionId, tool);
     // Plan 模式门禁：只读工具放行，其余一律拦截
-    const PLAN_READONLY = new Set(["read_file", "glob", "grep", "read_artifact", "load_skill", "spawn_task", "spawn_swarm", "todo_write", "web_fetch", "web_search", "task_output", "repo_map", "code_search", "git_status", "git_diff", "ask_user", "exit_plan_mode"]);
+    const PLAN_READONLY = new Set(["read_file", "glob", "grep", "read_artifact", "load_skill", "spawn_task", "spawn_swarm", "todo_write", "web_fetch", "web_search", "task_output", "repo_map", "code_search", "git_status", "git_diff", "ask_user", "exit_plan_mode", "cron_list"]);
     if (session.agentMode === "plan") {
       if (tool.startsWith("mcp__")) return { allowed: false, reason: `Plan 模式为只读：MCP 工具 ${tool} 被拦截（无法判定读写）。请输出实施计划并请用户切换到 build 模式执行。` };
       if (tool.startsWith("ext__")) return { allowed: false, reason: `Plan 模式为只读：扩展工具 ${tool} 被拦截（无法判定读写）。请输出实施计划并请用户切换到 build 模式执行。` };
@@ -2564,6 +2599,37 @@ export class AgentRunner {
           ? `Remembered in ${scope} memory (${target}): ${appended} fact(s) appended.`
           : `Fact already present in ${scope} memory (${target}); nothing appended.`;
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: { scope, path: target, appended } } });
+        return { type: "tool_result", toolCallId, content, isError: false };
+      } catch (error) {
+        const content = errorMessage(error);
+        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
+        return { type: "tool_result", toolCallId, content, isError: true };
+      }
+    }
+    if (name === "cron_create" || name === "cron_list" || name === "cron_delete") {
+      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+      this.state(sessionId, "tool_running");
+      try {
+        if (!this.cronScheduler) throw new Error("Cron scheduler is not enabled");
+        let payload: unknown;
+        if (name === "cron_create") {
+          const cron = typeof input.cron === "string" ? input.cron : "";
+          const prompt = typeof input.prompt === "string" ? input.prompt : "";
+          payload = await this.cronScheduler.create(sessionId, {
+            cron,
+            prompt,
+            ...(input.recurring === undefined ? {} : { recurring: Boolean(input.recurring) }),
+          });
+        } else if (name === "cron_list") {
+          payload = await this.cronScheduler.list(sessionId);
+        } else {
+          const id = typeof input.id === "string" ? input.id : "";
+          if (!id) throw new Error("cron_delete requires a job id");
+          if (!(await this.cronScheduler.delete(sessionId, id))) throw new Error(`Cron job not found: ${id}`);
+          payload = { deleted: id };
+        }
+        const content = JSON.stringify(payload);
+        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: { cron: name } } });
         return { type: "tool_result", toolCallId, content, isError: false };
       } catch (error) {
         const content = errorMessage(error);

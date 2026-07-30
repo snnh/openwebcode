@@ -171,6 +171,44 @@ export const EXIT_PLAN_MODE_TOOL: ProviderTool = {
   },
 };
 
+/** cron 定时任务（提交⑫）：到点经 follow-up 队列向本会话注入提示词。仅主 agent 下发；子代理不下发。 */
+export const CRON_CREATE_TOOL: ProviderTool = {
+  name: "cron_create",
+  description:
+    "Schedule a prompt to be injected into this session as a follow-up message on a cron schedule. " +
+    "The expression has 5 fields (minute hour day-of-month month day-of-week, server local timezone) and supports " +
+    "*, */n, ranges a-b, lists a,b and single values, e.g. \"*/30 * * * *\" or \"0 9 * * 1-5\". " +
+    "Recurring jobs (the default) expire 7 days after creation with one final run and are then deleted; " +
+    "recurring=false creates a one-shot job that deletes itself after firing. At most 50 jobs per session.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      cron: { type: "string", description: "5-field cron expression (minute hour day-of-month month day-of-week)." },
+      prompt: { type: "string", description: "The prompt injected into the session when the job fires." },
+      recurring: { type: "boolean", description: "Defaults to true. false = fire once, then auto-delete." },
+    },
+    required: ["cron", "prompt"],
+    additionalProperties: false,
+  },
+};
+
+export const CRON_LIST_TOOL: ProviderTool = {
+  name: "cron_list",
+  description: "List this session's scheduled cron jobs with their next fire time and stale (final-run) marker.",
+  inputSchema: { type: "object", additionalProperties: false },
+};
+
+export const CRON_DELETE_TOOL: ProviderTool = {
+  name: "cron_delete",
+  description: "Delete one of this session's cron jobs by id (ids come from cron_create/cron_list).",
+  inputSchema: {
+    type: "object",
+    properties: { id: { type: "string", description: "The cron job id to delete." } },
+    required: ["id"],
+    additionalProperties: false,
+  },
+};
+
 export const WEB_FETCH_TOOL: ProviderTool = {
   name: "web_fetch",
   description: "Fetch a public http/https URL and return bounded readable text.",
