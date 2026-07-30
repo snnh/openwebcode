@@ -108,9 +108,9 @@ function ModeToggle({ icon, label, description, checked, disabled, onChange, bad
   );
 }
 
-/** 4b：「模式」弹层——计划（现有 agentMode）、Swarm（会话级 spawn_swarm 开关）、目标（占位禁用）。 */
+/** 4b：「模式」弹层——计划 / 目标（互斥的单值 agentMode）、Swarm（会话级 spawn_swarm 独立开关）。 */
 export function AgentModeMenu({ agentMode, swarmEnabled, disabled, onConfig }: {
-  agentMode: "plan" | "build" | undefined;
+  agentMode: "plan" | "build" | "goal" | undefined;
   swarmEnabled: boolean;
   disabled: boolean;
   onConfig(body: Record<string, unknown>): void;
@@ -118,7 +118,8 @@ export function AgentModeMenu({ agentMode, swarmEnabled, disabled, onConfig }: {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const planActive = agentMode === "plan";
-  const activeBadges = [planActive ? t("计划", "Plan") : undefined, swarmEnabled ? "Swarm" : undefined].filter(Boolean).join(" · ");
+  const goalActive = agentMode === "goal";
+  const activeBadges = [planActive ? t("计划", "Plan") : undefined, goalActive ? t("目标", "Goal") : undefined, swarmEnabled ? "Swarm" : undefined].filter(Boolean).join(" · ");
   return (
     <div className="composer-menu">
       <button
@@ -152,10 +153,9 @@ export function AgentModeMenu({ agentMode, swarmEnabled, disabled, onConfig }: {
         <ModeToggle
           icon="pin"
           label={t("目标", "Goal")}
-          description={t("持续跟踪一个目标，直到任务完成", "Keep tracking a goal until the task is done")}
-          checked={false}
-          disabled
-          badge={t("即将推出", "Soon")}
+          description={t("持续跟踪一个目标，主模型自评未完成时自动续跑（最多 10 次）", "Keep tracking a goal; auto-continue on incomplete self-evaluation (up to 10 times)")}
+          checked={goalActive}
+          onChange={(checked) => onConfig({ agentMode: checked ? "goal" : null })}
         />
       </Popover>
     </div>

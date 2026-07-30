@@ -97,7 +97,7 @@ export function parseSessionImport(text: string): ParsedSessionImport {
       updatedAt: typeof session.updatedAt === "string" && session.updatedAt !== "" ? session.updatedAt : now,
       ...(session.thinking === "adaptive" || session.thinking === "enabled" || session.thinking === "disabled" ? { thinking: session.thinking } : {}),
       ...(session.effort === "low" || session.effort === "medium" || session.effort === "high" || session.effort === "xhigh" || session.effort === "max" ? { effort: session.effort } : {}),
-      ...(session.agentMode === "plan" || session.agentMode === "build" ? { agentMode: session.agentMode } : {}),
+      ...(session.agentMode === "plan" || session.agentMode === "build" || session.agentMode === "goal" ? { agentMode: session.agentMode } : {}),
       ...(typeof session.snapshotBackend === "string" ? { snapshotBackend: session.snapshotBackend } : {}),
       ...(session.snapshotMode === "auto" || session.snapshotMode === "manual" ? { snapshotMode: session.snapshotMode } : {}),
       ...(session.shellBackend === "default" || session.shellBackend === "pwsh" ? { shellBackend: session.shellBackend } : {}),

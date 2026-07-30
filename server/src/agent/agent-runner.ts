@@ -481,6 +481,19 @@ function planModeSection(enabled: boolean): string {
   return "\n\nYou are in PLAN mode. Assess the available conversation context, output a step-by-step implementation plan, and ask the user to switch to build mode to execute it.";
 }
 
+/** goal 模式提示词段：全能力模式（无 plan 的只读门禁），要求每轮末行输出目标自评标记。 */
+function goalModeSection(): string {
+  return [
+    "\n\n你处于 GOAL 模式：用户在持续追踪一个目标。",
+    "- 每轮结束时，必须在消息的最后一行输出自评标记：目标已完全达成输出 GOAL_COMPLETE；未达成输出 GOAL_INCOMPLETE: <一句剩余工作>。",
+    "- 标记必须独占一行；除该标记外，不要在正文中提及这套自评机制。",
+  ].join("\n");
+}
+
+/** goal 模式：自动续跑次数上限与续跑消息前缀（消息落盘即持久化，重启后计数自然恢复）。 */
+const GOAL_MAX_CONTINUATIONS = 10;
+const GOAL_CONTINUATION_PREFIX = "[goal-continuation]";
+
 function communicationSection(defaultLanguage: string): string {
   return [
     "\n\n## Communication",
@@ -1042,6 +1055,7 @@ export class AgentRunner {
           workDisciplineSection(availableToolNames),
           communicationSection(this.defaultLanguage),
           session.agentMode === "plan" ? planModeSection(toolsEnabled) : "",
+          session.agentMode === "goal" ? goalModeSection() : "",
           availableToolNames.has("spawn_swarm")
             ? "## Parallel exploration\nspawn_swarm is enabled for this session: when a task fans out into many independent subtasks of the same kind (e.g. reviewing several files or endpoints), prefer one spawn_swarm call over serial spawn_task calls."
             : "",
@@ -1270,6 +1284,14 @@ export class AgentRunner {
       await this.finishRun(sessionId, "failed", { code: "run_failed", message, retryable: providerError?.retryable ?? false });
       throw error;
     } finally {
+      // goal 模式自动续跑：仅 run 正常结束（scheduleFollowUp 为 true 即未走 catch 的
+      // abort/failed 路径）才按末条 assistant 消息的自评标记决定是否续跑。必须排在
+      // running.delete 之前——enqueueFollowUp 要求会话仍处于 running 状态。
+      if (scheduleFollowUp && !controller.signal.aborted) {
+        try {
+          await this.maybeScheduleGoalContinuation(sessionId);
+        } catch { /* 续跑调度失败不掩盖 run 结果；队列事件已由 enqueueFollowUp 发布 */ }
+      }
       this.settling.delete(sessionId);
       this.running.delete(sessionId);
       this.repeatedCalls.delete(sessionId);
@@ -1855,6 +1877,49 @@ export class AgentRunner {
       this.events.publish({ source: "agent", type: "queue.apply_failed", sessionId, payload: { id: item.id, kind: item.kind, message: errorMessage(error) } });
       return false;
     }
+  }
+
+  /**
+   * goal 模式自动续跑：run 正常结束且末条 assistant 消息含独占行 GOAL_INCOMPLETE 时，
+   * 经 follow_up 队列自动追加一轮（队列机制负责 startFollowUp）。续跑上限 10 次，
+   * 计数自最近一条普通用户消息之后、以 [goal-continuation] 前缀的 user 消息数；
+   * 消息落盘即持久化，重启后计数自然恢复。GOAL_COMPLETE 或无标记不续跑。
+   */
+  private async maybeScheduleGoalContinuation(sessionId: string): Promise<void> {
+    const session = await this.sessions.get(sessionId);
+    if (!session || session.agentMode !== "goal") return;
+    // 队列中已有（用户手动排队的）follow_up 时不追加，避免插队
+    if ((await this.messageQueue.list(sessionId, "follow_up")).some((item) => item.status === "queued")) return;
+    const messages = activePathMessages(session.messages, session.activeLeafId);
+    let lastAssistantText = "";
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const message = messages[i];
+      if (message?.role !== "assistant") continue;
+      lastAssistantText = message.content
+        .filter((block) => block.type === "text")
+        .map((block) => (block.type === "text" ? block.text : ""))
+        .join("\n");
+      break;
+    }
+    // 独占行 GOAL_INCOMPLETE（容忍前后空白，允许行尾冒号 + 一句理由）
+    const incomplete = /^[ \t]*GOAL_INCOMPLETE[ \t]*(?::[ \t]*(.+?))?[ \t\r]*$/m.exec(lastAssistantText);
+    if (!incomplete) return;
+    let continuations = 0;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const message = messages[i];
+      if (message?.role !== "user") continue;
+      const textBlock = message.content.find((block) => block.type === "text");
+      const text = textBlock?.type === "text" ? textBlock.text : "";
+      // 遇到最近的普通用户消息即停止：更早的续跑属于上一个目标
+      if (!text.startsWith(GOAL_CONTINUATION_PREFIX)) break;
+      continuations++;
+    }
+    if (continuations >= GOAL_MAX_CONTINUATIONS) {
+      this.events.publish({ source: "agent", type: "goal.stopped", sessionId, payload: { reason: "max_continuations", count: GOAL_MAX_CONTINUATIONS } });
+      return;
+    }
+    const reason = incomplete[1]?.trim() || "无说明";
+    await this.enqueueFollowUp(sessionId, `${GOAL_CONTINUATION_PREFIX} 目标自评未完成（${reason}）。请继续完成剩余工作。`);
   }
 
   private async startFollowUp(sessionId: string): Promise<void> {

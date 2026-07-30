@@ -61,7 +61,7 @@ interface CreateSessionBody {
   provider?: string;
   model?: string;
   title?: string;
-  agentMode?: "plan" | "build";
+  agentMode?: "plan" | "build" | "goal";
   sandboxMode?: SandboxMode;
   setupScript?: string;
   /** 缺省为直接模式；"managed" = 托管工作区（稀疏镜像盘挂载点作为会话 cwd） */
@@ -89,7 +89,7 @@ interface SessionConfigBody {
   model?: string;
   thinking?: ThinkingMode | null;
   effort?: EffortLevel | null;
-  agentMode?: "plan" | "build";
+  agentMode?: "plan" | "build" | "goal";
   permissionMode?: PermissionMode;
   sandboxMode?: SandboxMode;
   setupScript?: string;
@@ -956,8 +956,8 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     const model = request.body.model ?? resolveDefaultModel(provider, dependencies.models);
     const sandboxModeError = validateSandboxMode(request.body.sandboxMode);
     if (sandboxModeError) return reply.code(400).send({ error: sandboxModeError });
-    if (request.body.agentMode !== undefined && !["plan", "build"].includes(request.body.agentMode)) {
-      return reply.code(400).send({ error: 'agentMode must be "plan" or "build"' });
+    if (request.body.agentMode !== undefined && !["plan", "build", "goal"].includes(request.body.agentMode)) {
+      return reply.code(400).send({ error: 'agentMode must be "plan", "build", or "goal"' });
     }
     if (request.body.setupScript !== undefined && typeof request.body.setupScript !== "string") {
       return reply.code(400).send({ error: "setupScript must be a string" });
@@ -1309,8 +1309,8 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       ? requestedEffort
       : undefined;
     const agentMode = request.body && "agentMode" in request.body ? request.body.agentMode ?? undefined : session.agentMode;
-    if (agentMode !== undefined && !["plan", "build"].includes(agentMode)) {
-      return reply.code(400).send({ error: 'agentMode must be "plan" or "build"' });
+    if (agentMode !== undefined && !["plan", "build", "goal"].includes(agentMode)) {
+      return reply.code(400).send({ error: 'agentMode must be "plan", "build", or "goal"' });
     }
     const snapshotMode = request.body && "snapshotMode" in request.body ? request.body.snapshotMode ?? undefined : session.snapshotMode;
     if (snapshotMode !== undefined && !["auto", "manual"].includes(snapshotMode)) {
