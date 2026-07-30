@@ -1082,7 +1082,7 @@ export function App(): ReactElement {
                 </div>
                 {terminalOpen && (
                   <div className="main-tab-panel" role="tabpanel" aria-label={t("终端", "Terminal")} hidden={!terminalSelected}>
-                    <TerminalView session={displaySession ?? current} onNotice={notify} />
+                    <TerminalView session={displaySession ?? current} onNotice={notify} onOpenSettings={() => openSettings("remote")} />
                   </div>
                 )}
                 {selectedSubagentTab !== undefined && (

@@ -2508,6 +2508,104 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     socket.on("close", () => clients.delete(client));
   });
 
+  // ---- 人类终端 PTY 桥（提交⑦）----
+  // 与 /api/events 并列的 WS 通道：握手复用 token/origin/host 三重校验（TOTP 启用时
+  // bearer 或票据 cookie），再叠加终端门槛（TOTP 已启用 + 回环/局域网监听）。
+  // 终端独立于 agent run：中断会话不影响终端；页面关闭（WS 断）即关 pty。
+  app.get<{ Params: { id: string } }>("/api/sessions/:id/terminal", { websocket: true }, (socket, request) => {
+    const origin = typeof request.headers.origin === "string" ? request.headers.origin : undefined;
+    const nativeClient = request.headers["x-openwebcode-client"] === "cli";
+    const credentialOk = totpGateEnabled()
+      ? bearerAuthorized(request, true) || totpAuthenticated(request)
+      : isAuthorized(request, true);
+    if (!credentialOk || !originAllowed(origin, nativeClient) || !hostAllowed(request.headers.host)) {
+      socket.close(1008, "Unauthorized origin or token");
+      return;
+    }
+    // 终端门槛：未通过时任何已认证页面都拿不到属主 shell
+    if (!totpGateEnabled() || !isLoopbackOrLAN(listenHost)) {
+      socket.close(1008, "Terminal is unavailable");
+      return;
+    }
+    if (!core.openPty || !core.inputPty || !core.resizePty || !core.closePty || !core.ptyEvents) {
+      socket.close(1011, "Terminal backend is unavailable");
+      return;
+    }
+    const sessionId = request.params.id;
+    const sessionPromise = sessions.get(sessionId).catch(() => undefined);
+    let ptyId: number | undefined;
+    const send = (frame: Record<string, unknown>) => {
+      if (socket.readyState === 1) socket.send(JSON.stringify(frame));
+    };
+    const closePty = () => {
+      if (ptyId === undefined) return;
+      const toClose = ptyId;
+      ptyId = undefined;
+      core.removePtyEvents?.(toClose);
+      core.closePty?.({ ptyId: toClose }).catch(() => undefined);
+    };
+    socket.on("close", closePty);
+    const dimension = (value: unknown): number | undefined =>
+      typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 512 ? value : undefined;
+    socket.on("message", (raw: unknown) => {
+      let frame: { type?: unknown; cols?: unknown; rows?: unknown; shell?: unknown; data?: unknown };
+      try { frame = JSON.parse(String(raw)); } catch { send({ type: "error", message: "Invalid JSON frame" }); return; }
+      void (async () => {
+        try {
+          if (frame.type === "open") {
+            if (ptyId !== undefined) { send({ type: "error", message: "Terminal is already open" }); return; }
+            const cols = dimension(frame.cols);
+            const rows = dimension(frame.rows);
+            if (cols === undefined || rows === undefined) { send({ type: "error", message: "open requires integer cols/rows from 1 to 512" }); return; }
+            const shell = frame.shell === undefined
+              ? (process.platform === "win32" ? "cmd.exe" : (typeof process.env.SHELL === "string" && process.env.SHELL.trim() ? process.env.SHELL : "/bin/sh"))
+              : (typeof frame.shell === "string" && frame.shell.trim() ? frame.shell : undefined);
+            if (shell === undefined) { send({ type: "error", message: "shell must be a non-empty string" }); return; }
+            const session = await sessionPromise;
+            if (!session) { send({ type: "error", message: "Session not found" }); socket.close(1008, "Session not found"); return; }
+            // 人类终端通道：sandbox 强制 false（应用属主身份），cwd 取会话根
+            const opened = await core.openPty!({ session: sessionId, cwd: session.cwd, cols, rows, sandbox: false, shell });
+            ptyId = opened.ptyId;
+            send({ type: "opened" });
+            const emitter = core.ptyEvents!(opened.ptyId);
+            emitter.on("output", (params: { data?: unknown }) => {
+              if (params && typeof params.data === "string") send({ type: "out", data: params.data });
+            });
+            emitter.on("exit", (params: { exitCode?: unknown }) => {
+              const code = params && typeof params.exitCode === "number" ? params.exitCode : undefined;
+              send({ type: "exit", ...(code !== undefined ? { code } : {}) });
+              closePty();
+            });
+            return;
+          }
+          if (frame.type === "in") {
+            if (ptyId === undefined) { send({ type: "error", message: "Terminal is not open" }); return; }
+            // core 侧还会再做规范 base64 + 解码后 ≤8KB 校验，这里只做形状预检
+            if (typeof frame.data !== "string" || frame.data.length === 0 || frame.data.length > 16384) { send({ type: "error", message: "in requires non-empty base64 data" }); return; }
+            await core.inputPty!({ ptyId, data: frame.data });
+            return;
+          }
+          if (frame.type === "resize") {
+            if (ptyId === undefined) { send({ type: "error", message: "Terminal is not open" }); return; }
+            const cols = dimension(frame.cols);
+            const rows = dimension(frame.rows);
+            if (cols === undefined || rows === undefined) { send({ type: "error", message: "resize requires integer cols/rows from 1 to 512" }); return; }
+            await core.resizePty!({ ptyId, cols, rows });
+            return;
+          }
+          if (frame.type === "close") {
+            closePty();
+            socket.close(1000, "Terminal closed");
+            return;
+          }
+          send({ type: "error", message: "Unknown frame type" });
+        } catch (error) {
+          send({ type: "error", message: errorMessage(error) });
+        }
+      })();
+    });
+  });
+
   // ---- 评测 harness（0.5.0 Phase 3a）----
   app.get("/api/eval/tasks", async (request, reply) => {
     if (!dependencies.extensions?.isEnabled("owc-eval")) return reply.code(503).send({ error: "owc-eval extension is disabled" });
