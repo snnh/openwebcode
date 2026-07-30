@@ -171,3 +171,30 @@ export const WEB_SEARCH_TOOL: ProviderTool = {
     additionalProperties: false,
   },
 };
+
+/** swarm 成员专属：向本次 spawn_swarm 的共享讨论板追加一条发现/问题。仅 swarm 子代理可见。 */
+export const SWARM_BOARD_POST_TOOL: ProviderTool = {
+  name: "swarm_board_post",
+  description:
+    "Post a finding or question to this swarm's shared discussion board so other members can see it. " +
+    "Keep it short (truncated at 500 characters).",
+  inputSchema: {
+    type: "object",
+    properties: { text: { type: "string", description: "The finding or question to share with the swarm." } },
+    required: ["text"],
+    additionalProperties: false,
+  },
+};
+
+/** swarm 成员专属：读共享讨论板（可选 since 行偏移增量读）。仅 swarm 子代理可见。 */
+export const SWARM_BOARD_READ_TOOL: ProviderTool = {
+  name: "swarm_board_read",
+  description:
+    "Read this swarm's shared discussion board (entries posted by all members, bounded to the most recent ones). " +
+    "Pass since=<offset from a previous read> to get only new entries.",
+  inputSchema: {
+    type: "object",
+    properties: { since: { type: "integer", minimum: 0, description: "Line offset from a previous read; only entries after it are returned." } },
+    additionalProperties: false,
+  },
+};
