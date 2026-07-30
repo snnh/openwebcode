@@ -42,6 +42,7 @@ import {
   WEB_SEARCH_TOOL,
 } from "./tool-schemas.js";
 import { getSnapshotBackend } from "../snapshots/index.js";
+import { digestSwarmBoard, swarmBoardPath } from "./swarm-board.js";
 import type { MessageContent, PythonEnv, SessionMeta, ShellBackend } from "../sessions/types.js";
 import { effectivePythonEnv, UvPythonEnvironments, uvVenvDir, wrapCommandWithNote, wrapCommandWithVenv } from "../python-env.js";
 import { activePathMessages } from "../sessions/session-tree.js";
@@ -241,7 +242,8 @@ const SPAWN_SWARM_TOOL: ProviderTool = {
     "The {{item}} placeholder in prompt_template is replaced with each item's task value; each item launches one independent sub-agent with an isolated context. " +
     "Use when many independent tasks of the same kind should run in parallel (e.g. reviewing several files or endpoints). " +
     "For a single task use spawn_task instead. Built-in agent types: explore (default; read-only) and general (write-capable, via the session permission chain); custom sub-agents are read-only. " +
-    "Only each sub-agent's final conclusion (at most 2000 characters) is returned, aggregated as numbered results.",
+    "Members of one swarm share a discussion board (swarm_board_post/swarm_board_read) so they can exchange findings while running. " +
+    "Only each sub-agent's final conclusion (at most 2000 characters) is returned, aggregated as numbered results with a board digest.",
   inputSchema: {
     type: "object",
     properties: {
@@ -390,6 +392,7 @@ const TOOL_EXECUTION_CLASS: Readonly<Record<string, ToolExecutionClass>> = {
   git_status: "read_only", git_diff: "read_only", ask_user: "read_only",
   web_fetch: "external", web_search: "external", write_file: "workspace_write", edit_file: "workspace_write",
   bash: "process", task_output: "read_only", task_stop: "process", todo_write: "workspace_write", remember: "workspace_write", spawn_task: "process", spawn_swarm: "process", test_runner: "process",
+  swarm_board_post: "read_only", swarm_board_read: "read_only",
   git_commit: "process", git_worktree_create: "process", git_worktree_remove: "process", git_worktree_merge: "process",
 };
 function executionClass(name: string): ToolExecutionClass { return name.startsWith("mcp__") || name.startsWith("ext__") ? "external" : TOOL_EXECUTION_CLASS[name] ?? "workspace_write"; }
@@ -1057,7 +1060,7 @@ export class AgentRunner {
           session.agentMode === "plan" ? planModeSection(toolsEnabled) : "",
           session.agentMode === "goal" ? goalModeSection() : "",
           availableToolNames.has("spawn_swarm")
-            ? "## Parallel exploration\nspawn_swarm is enabled for this session: when a task fans out into many independent subtasks of the same kind (e.g. reviewing several files or endpoints), prefer one spawn_swarm call over serial spawn_task calls."
+            ? "## Parallel exploration\nspawn_swarm is enabled for this session: when a task fans out into many independent subtasks of the same kind (e.g. reviewing several files or endpoints), prefer one spawn_swarm call over serial spawn_task calls. Members of one swarm can coordinate through a shared discussion board (swarm_board_post/swarm_board_read)."
             : "",
         ];
 
@@ -2304,6 +2307,10 @@ export class AgentRunner {
         }
         const subUsageContext = new ContextManager(this.sessions.contextRoot(sessionId));
         const contextRoot = this.sessions.contextRoot(sessionId);
+        // 本次 swarm 的共享讨论板（<sessionDir>/subagents/swarm-<swarmId>-board.jsonl）：
+        // swarmId 取 toolCallId，含文件名异字符时回落 uuid
+        const swarmId = /^[\w-]+$/.test(toolCallId) ? toolCallId : randomUUID();
+        const boardPath = swarmBoardPath(contextRoot, swarmId);
         interface SwarmItemOutcome { ok: boolean; conclusion?: string; error?: string }
         const runOne = async (prompt: string, index: number): Promise<SwarmItemOutcome> => {
           const swarm = { index: index + 1, total: prompts.length };
@@ -2327,6 +2334,8 @@ export class AgentRunner {
               cwd: session.cwd,
               contextRoot,
               signal,
+              // swarm 成员共享讨论板：member 缺省由子代理回落 taskId
+              swarm: { boardPath, ...(effective.name ? { member: effective.name } : {}) },
               onStart: (id) => {
                 taskId = id;
                 subagentTaskIds[index] = id;
@@ -2388,7 +2397,10 @@ export class AgentRunner {
             ? `[${index + 1}/${outcomes.length}] ${outcome.conclusion ?? ""}`
             : `[${index + 1}/${outcomes.length}] FAILED: ${outcome.error ?? "unknown error"}`)
           .join("\n\n");
-        const bounded = await boundToolResult(contextRoot, name, aggregated);
+        // 讨论板摘要：路径、总条数、各成员发帖数、最后几条；板为空/读取失败时省略（digestSwarmBoard 内部已降级）
+        const boardDigest = await digestSwarmBoard(boardPath);
+        const summary = boardDigest ? `${aggregated}\n\n---\nBoard digest\n${boardDigest}` : aggregated;
+        const bounded = await boundToolResult(contextRoot, name, summary);
         this.events.publish({
           source: "agent",
           type: "tool.end",

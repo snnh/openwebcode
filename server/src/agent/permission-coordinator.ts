@@ -21,7 +21,7 @@ export class PermissionCoordinator {
   needsApproval(mode: PermissionMode, rules: PermissionRule[], tool: string, input: Record<string, unknown>): boolean {
     // 只读工具 + remember 自动放行：remember 是 agent 写自身长期记忆（低风险），
     // 写入路径固定为 <cwd>/.owc/memory.md 或 <dataDir>/memory.md，不接受任意路径
-    if (["read_file", "glob", "grep", "read_artifact", "load_skill", "spawn_task", "spawn_swarm", "todo_write", "remember", "task_output", "repo_map", "code_search", "git_status", "git_diff", "ask_user"].includes(tool)) return false;
+    if (["read_file", "glob", "grep", "read_artifact", "load_skill", "spawn_task", "spawn_swarm", "todo_write", "remember", "task_output", "repo_map", "code_search", "git_status", "git_diff", "ask_user", "swarm_board_post", "swarm_board_read"].includes(tool)) return false;
     // git_commit 默认不开放给 agent 自动执行：yolo 也不隐含提交授权（plan §4.3），
     // 只有用户对 git_commit 显式 allow_always（按会话授权）后才跳过确认。
     if (tool === "git_commit") return !rules.some((rule) => matchesRule(rule, tool, input));
