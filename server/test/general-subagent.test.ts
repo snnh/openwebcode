@@ -323,6 +323,8 @@ describe("spawn_task agent=general", () => {
 describe("spawn_swarm 逐项 general", () => {
   it("单项 agent=general 可写文件，默认项保持只读", async () => {
     const h = await setupRunner({ permissionMode: "yolo" });
+    // spawn_swarm 为会话级开关（默认关）：显式开启
+    await h.sessions.updateConfig(h.session.id, { provider: "fake", model: "test-model", swarmEnabled: true });
     let mainTurn = 0;
     const provider: Provider = {
       name: "fake",

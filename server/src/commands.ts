@@ -1,5 +1,6 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { parseFrontmatter } from "./frontmatter.js";
 
 export interface CommandDefinition {
   name: string;
@@ -13,19 +14,12 @@ export function parseCommandMarkdown(
   fallbackName: string,
   source: "project" | "global",
 ): CommandDefinition | undefined {
-  let body = text;
-  let description: string | undefined;
-  const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
-  if (text.startsWith("---") && !match) return undefined;
-  if (match) {
-    for (const line of match[1]!.split(/\r?\n/)) {
-      const kv = line.match(/^([A-Za-z][\w-]*)\s*:\s*(.*)$/);
-      if (kv?.[1]?.toLowerCase() === "description" && kv[2]!.trim() !== "") description = kv[2]!.trim();
-    }
-    body = match[2]!;
-  }
-  if (body.trim() === "") return undefined;
-  return { name: fallbackName, ...(description ? { description } : {}), body: body.trim(), source };
+  const { meta, body: rawBody } = parseFrontmatter(text);
+  if (text.startsWith("---") && rawBody === text) return undefined;
+  const description = meta.description?.trim() || undefined;
+  const body = rawBody.trim();
+  if (body === "") return undefined;
+  return { name: fallbackName, ...(description ? { description } : {}), body, source };
 }
 
 export function renderCommand(body: string, args: string): string {

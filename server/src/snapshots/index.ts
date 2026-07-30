@@ -25,7 +25,7 @@ export async function getSnapshotBackend(sessions: SessionStore, session: Sessio
   const probed = await probeSnapshotBackend(sessionRoot, session.cwd, { runner: createExecFileRunner() });
   try {
     await sessions.updateSnapshotBackend(session.id, probed instanceof ZfsBackend ? `zfs:${probed.dataset}` : probed.name);
-  } catch { /* 落盘失败不影响本次使用 */ }
+  } catch (persistError) { process.stderr.write(`[snapshots] failed to persist probed backend: ${persistError instanceof Error ? persistError.message : String(persistError)}\n`); }
   return probed;
 }
 

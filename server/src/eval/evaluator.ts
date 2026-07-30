@@ -253,6 +253,10 @@ export class EvalEvaluator {
       const scopedCore = makeScopedCore(this.core);
       disposeCoreListeners = scopedCore.dispose;
       const runner = new AgentRunner(sessions, providers, scopedCore.core, events, pricing);
+      // Eval services implement only the methods the runner calls during
+      // evaluation (Pick<IndexManager, ...>). The double cast widens the
+      // partial mock to the full interface expected by the setter; the Pick
+      // return type already provides compile-time checking for those methods.
       if (task.features?.includes("index")) runner.setIndexManager(createEvalIndexService() as unknown as IndexManager);
       if (task.features?.includes("diagnostics")) runner.setDiagnostics(createEvalDiagnosticsService() as unknown as DiagnosticsService);
       if (task.features?.includes("scm")) runner.setScm(createEvalScmService() as unknown as ScmService);

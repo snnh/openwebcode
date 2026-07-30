@@ -40,7 +40,8 @@ import {
   WEB_SEARCH_TOOL,
 } from "./tool-schemas.js";
 import { getSnapshotBackend } from "../snapshots/index.js";
-import type { MessageContent, ShellBackend } from "../sessions/types.js";
+import type { MessageContent, PythonEnv, SessionMeta, ShellBackend } from "../sessions/types.js";
+import { effectivePythonEnv, UvPythonEnvironments, uvVenvDir, wrapCommandWithNote, wrapCommandWithVenv } from "../python-env.js";
 import { activePathMessages } from "../sessions/session-tree.js";
 import type { SessionStore } from "../sessions/session-store.js";
 import { defaultSandboxPolicy } from "../sessions/default-sandbox.js";
@@ -349,9 +350,12 @@ function builtInTools(options: {
   fetchAvailable: boolean;
   searchAvailable: boolean;
   shellBackend: ShellBackend;
+  pythonEnv: PythonEnv;
+  /** 并行子代理（spawn_swarm）开关：会话级，默认关闭。 */
+  swarmEnabled: boolean;
 }): ProviderTool[] {
   return [
-    bashTool(options.backgroundTasksEnabled, options.shellBackend),
+    bashTool(options.backgroundTasksEnabled, options.shellBackend, options.pythonEnv),
     ...FILE_TOOLS,
     READ_ARTIFACT_TOOL,
     REPO_MAP_TOOL,
@@ -365,7 +369,7 @@ function builtInTools(options: {
     GIT_WORKTREE_MERGE_TOOL,
     ...(options.skillsAvailable ? [LOAD_SKILL_TOOL] : []),
     SPAWN_TASK_TOOL,
-    SPAWN_SWARM_TOOL,
+    ...(options.swarmEnabled ? [SPAWN_SWARM_TOOL] : []),
     TODO_WRITE_TOOL,
     REMEMBER_TOOL,
     ASK_USER_TOOL,
@@ -568,6 +572,8 @@ export class AgentRunner {
   private readonly promptOverrideCache = new Map<string, PromptOverride>();
   /** 工具形态别名反向映射（sessionId → alias → 内置名），每轮随工具表重建，run 结束清理。 */
   private readonly toolAliases = new Map<string, Map<string, string>>();
+  /** 会话级别名参数归一表：模型侧工具名 -> (模型侧参数名 -> 内置参数名)。 */
+  private readonly toolAliasArgMaps = new Map<string, Map<string, Record<string, string>>>();
   private readonly todos = new Map<string, TodoItem[]>();
   private readonly permissions: PermissionCoordinator;
   /** 手动启动（REST）子代理：sessionId → 在途 taskId 集（并发上限见 MAX_MANUAL_SUBAGENTS）。 */
@@ -608,8 +614,23 @@ export class AgentRunner {
     return this.toolAliases.get(sessionId)?.get(name) ?? name;
   }
 
+  /**
+   * 别名工具的参数名归一（env-sim 拟态外部产品参数形态）：模型侧参数名按 argMap
+   * 改回内置参数名，未列出的键原样透传。归一发生在权限/门禁/执行之前，
+   * 下游链路只看到内置工具的标准参数。
+   */
+  private translateAliasInput(sessionId: string, name: string, input: Record<string, unknown>): Record<string, unknown> {
+    const argMap = this.toolAliasArgMaps.get(sessionId)?.get(name);
+    if (!argMap) return input;
+    const translated: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(input)) translated[argMap[key] ?? key] = value;
+    return translated;
+  }
+
   private searchProvider: SearchProvider | undefined;
   private webFetchProvider: WebFetchProvider | undefined;
+  private readonly pythonEnvManager = new UvPythonEnvironments();
+  private getPythonEnvDefault: () => PythonEnv = () => "global";
 
   constructor(
     private readonly sessions: SessionStore,
@@ -667,6 +688,11 @@ export class AgentRunner {
 
   setDefaultLanguage(language: string): void {
     this.defaultLanguage = language;
+  }
+
+  /** pythonEnv 全局默认的懒读取（settings 热生效，无需热应用回调）。 */
+  setPythonEnvDefault(getter: () => PythonEnv): void {
+    this.getPythonEnvDefault = getter;
   }
 
   /** Enables/disables web_fetch for future turns without restarting the server. */
@@ -947,11 +973,14 @@ export class AgentRunner {
           fetchAvailable: Boolean(this.webFetchProvider),
           searchAvailable: Boolean(this.searchProvider),
           shellBackend: session.shellBackend ?? "default",
+          pythonEnv: effectivePythonEnv(session.pythonEnv, this.getPythonEnvDefault()),
+          swarmEnabled: session.swarmEnabled === true,
         });
         const shaping = toolsEnabled && this.extensions
-          ? await this.extensions.activeToolShaping(builtIns.map((tool) => tool.name))
+          ? await this.extensions.activeToolShaping(builtIns.map((tool) => tool.name), session.persona)
           : undefined;
         const aliasMap = new Map<string, string>();
+        const aliasArgMaps = new Map<string, Record<string, string>>();
         let shapedBuiltIns = builtIns;
         if (shaping) {
           shapedBuiltIns = builtIns.filter((tool) => !shaping.hideBuiltIns.has(tool.name));
@@ -961,9 +990,11 @@ export class AgentRunner {
             const source = shapedBuiltIns[index]!;
             shapedBuiltIns[index] = { name: as, description: spec.description ?? source.description, inputSchema: spec.inputSchema ?? source.inputSchema };
             aliasMap.set(as, spec.from);
+            if (spec.argMap && Object.keys(spec.argMap).length > 0) aliasArgMaps.set(as, spec.argMap);
           }
         }
         this.toolAliases.set(sessionId, aliasMap);
+        this.toolAliasArgMaps.set(sessionId, aliasArgMaps);
 
         const tools = toolsEnabled
           ? [
@@ -1002,6 +1033,9 @@ export class AgentRunner {
           workDisciplineSection(availableToolNames),
           communicationSection(this.defaultLanguage),
           session.agentMode === "plan" ? planModeSection(toolsEnabled) : "",
+          availableToolNames.has("spawn_swarm")
+            ? "## Parallel exploration\nspawn_swarm is enabled for this session: when a task fans out into many independent subtasks of the same kind (e.g. reviewing several files or endpoints), prefer one spawn_swarm call over serial spawn_task calls."
+            : "",
         ];
 
         // prompt.beforeBuild 钩子（env-sim 等）：不缓存——结果依赖实时扩展配置，
@@ -1014,7 +1048,7 @@ export class AgentRunner {
             identity: `You are OpenWebCode. The workspace is ${session.cwd}.`,
             basePrompt: promptOverride?.baseOverride?.trim() || PI_BASE_SYSTEM_PROMPT,
             productSections: baseProductSections,
-          });
+          }, session.persona);
         }
         const effectiveBaseOverride = promptTransform.basePromptOverride ?? promptOverride?.baseOverride;
 
@@ -1150,7 +1184,7 @@ export class AgentRunner {
               if (extensionOutcome.blocked) {
                 result = { type: "tool_result", toolCallId: call.id, content: extensionOutcome.reason ?? "Blocked by extension", isError: true };
               } else {
-                effectiveInput = extensionOutcome.input;
+                effectiveInput = this.translateAliasInput(sessionId, call.name, extensionOutcome.input);
                 const repeated = this.recordToolCall(sessionId, call.name, effectiveInput);
                 if (repeated >= 3) {
                   const content = `Tool call blocked: ${call.name} was requested with identical arguments ${repeated} consecutive times.`;
@@ -1231,6 +1265,7 @@ export class AgentRunner {
       this.running.delete(sessionId);
       this.repeatedCalls.delete(sessionId);
       this.toolAliases.delete(sessionId);
+      this.toolAliasArgMaps.delete(sessionId);
       // abort 与正常结束都保留未消费队列；queue.json 是用户可恢复状态。
       this.todos.delete(sessionId);
       this.events.publish({ source: "agent", type: "todos.updated", sessionId, payload: { items: [] } });
@@ -1258,7 +1293,7 @@ export class AgentRunner {
         this.perfRecords.set(sessionId, ring);
       }
       if (this.runs.has(sessionId)) await this.finishRun(sessionId, "completed");
-      if (scheduleFollowUp && !controller.signal.aborted) void this.startFollowUp(sessionId);
+      if (scheduleFollowUp && !controller.signal.aborted) void this.startFollowUp(sessionId).catch(() => { /* follow-up failures are logged via queue.run_failed */ });
     }
   }
 
@@ -1845,6 +1880,15 @@ export class AgentRunner {
     }
     const mode = session.permissionMode ?? "ask";
     const rules = session.permissionRules ?? [];
+    // 权限规则键与确认卡片统一使用 core path.normalize 归一化后的 canonical
+    // path（路径处理归一在 core C 层）：src/a.ts、./src/a.ts 与根内绝对路径
+    // 命中同一条 allow-always 规则。normalize 不可用/失败时回退原始字符串。
+    if ((tool === "write_file" || tool === "edit_file") && typeof input.path === "string" && this.core.normalizePath) {
+      try {
+        const normalized = await this.core.normalizePath({ sessionId, path: input.path, purpose: "write" });
+        input = { ...input, path: normalized.path };
+      } catch { /* 回退原始路径 */ }
+    }
     if (!this.permissions.needsApproval(mode, rules, tool, input)) return { allowed: true };
     this.state(sessionId, "waiting_permission");
     const result = await this.permissions.request(sessionId, tool, input, signal);
@@ -2656,6 +2700,7 @@ export class AgentRunner {
     try {
       const session = await this.sessions.get(sessionId);
       if (!session) throw new Error("Session not found");
+      cmd = await this.wrapForPythonEnv(session, cmd);
       if (await this.coreGateway.supports("jobControl")) {
         const jobId = `job-${randomUUID()}`;
         const output: Array<{ stream: "stdout" | "stderr"; data: string; seq: number }> = [];
@@ -2706,6 +2751,20 @@ export class AgentRunner {
     } finally {
       this.executions.delete(execId);
     }
+  }
+
+  /**
+   * pythonEnv=uv-* 时把会话 bash 包装进 uv 管理的 venv（PATH 前置，懒创建）；
+   * global（本机环境）原样返回。uv 缺失/建环境失败回退本机环境并在输出中说明。
+   */
+  private async wrapForPythonEnv(session: SessionMeta, cmd: string): Promise<string> {
+    const mode = effectivePythonEnv(session.pythonEnv, this.getPythonEnvDefault());
+    if (mode === "global") return cmd;
+    const venvDir = uvVenvDir(mode, session.cwd, this.dataDir);
+    if (!venvDir) return cmd;
+    const ensured = await this.pythonEnvManager.ensure(venvDir);
+    if (!ensured.ok) return wrapCommandWithNote(cmd, ensured.note ?? "uv environment unavailable; using the host python environment");
+    return wrapCommandWithVenv(cmd, venvDir, session.shellBackend ?? "default");
   }
 
   // 用量记账：主循环与 spawn_task 子代理共用同一 ledger/用量日志/事件路径

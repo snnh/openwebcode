@@ -1,5 +1,6 @@
 import { lstat, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { parseFrontmatter } from "./frontmatter.js";
 
 export interface AgentDefinition {
   name: string;
@@ -16,30 +17,10 @@ export function parseAgentMarkdown(
   source: "project" | "global",
 ): AgentDefinition | undefined {
   if (text.startsWith("---") && !/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.test(text)) return undefined;
-  const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
-  if (!match) return undefined;
-
-  const meta: Record<string, string> = {};
-  const listMeta: Record<string, string[]> = {};
-  let listKey: string | undefined;
-  for (const line of match[1]!.split(/\r?\n/)) {
-    const item = line.match(/^\s*-\s*(.+?)\s*$/);
-    if (item && listKey) {
-      listMeta[listKey]!.push(item[1]!.replace(/^['"]|['"]$/g, ""));
-      continue;
-    }
-    const kv = line.match(/^([A-Za-z][\w-]*)\s*:\s*(.*)$/);
-    if (!kv) {
-      listKey = undefined;
-      continue;
-    }
-    const key = kv[1]!.toLowerCase();
-    meta[key] = kv[2]!.trim();
-    listKey = meta[key] === "" ? key : undefined;
-    if (listKey) listMeta[listKey] = [];
-  }
+  const { meta, listMeta, body: rawBody } = parseFrontmatter(text);
+  if (rawBody === text) return undefined;
   const description = meta.description?.trim();
-  const body = match[2]!.trim();
+  const body = rawBody.trim();
   if (!description || !body) return undefined;
 
   const rawTools = meta.tools?.trim();
