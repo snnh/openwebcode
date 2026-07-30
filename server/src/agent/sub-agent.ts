@@ -13,10 +13,13 @@ import {
   FILE_TOOLS,
   READ_ARTIFACT_TOOL,
   REPO_MAP_TOOL,
+  SWARM_BOARD_POST_TOOL,
+  SWARM_BOARD_READ_TOOL,
   TEST_RUNNER_TOOL,
   WEB_FETCH_TOOL,
   WEB_SEARCH_TOOL,
 } from "./tool-schemas.js";
+import { appendSwarmBoard, readSwarmBoard } from "./swarm-board.js";
 
 /**
  * 子代理允许使用的只读工具全集（构造上只读；spawn_task 不在其中，子代理不可再派生）。
@@ -109,6 +112,12 @@ export interface SubAgentOptions {
    * 同一沙盒配置执行。explore/自定义类型不注入，保持本地只读执行。
    */
   executeTool?: SubAgentToolExecutor;
+  /**
+   * swarm 成员上下文（仅 spawn_swarm 派发时注入）：boardPath 为本次 swarm 的共享讨论板
+   * （<sessionDir>/subagents/swarm-<swarmId>-board.jsonl），member 为发帖署名（成员名，
+   * 缺省回落 taskId）。注入后子代理额外获得 swarm_board_post / swarm_board_read 两个工具。
+   */
+  swarm?: { boardPath: string; member?: string };
   /** 每次 LLM 用量事件回调（由调用方记账，子代理 token 计入会话成本）。 */
   onUsage?: (usage: Extract<ProviderEvent, { type: "usage" }>) => void | Promise<void>;
   /** taskId 生成后立即回调（用于发布 subagent.started；转录文件名即 <taskId>.json）。 */
@@ -146,9 +155,21 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
   const maxTurns = options.maxTurns ?? builtin.maxTurns;
   const allowed = new Set(options.toolNames.filter((name) => builtin.toolNames.includes(name)));
   const tools = SUB_AGENT_TOOL_SCHEMAS.filter((tool) => allowed.has(tool.name));
-  const system = systemPrompt(kind, options.cwd, options.systemExtra);
+  let system = systemPrompt(kind, options.cwd, options.systemExtra);
+  if (options.swarm) {
+    // swarm 成员专属工具：会话内通信，不走类型允许集/权限链（本地板文件读写，失败静默降级）
+    allowed.add(SWARM_BOARD_POST_TOOL.name);
+    allowed.add(SWARM_BOARD_READ_TOOL.name);
+    tools.push(SWARM_BOARD_POST_TOOL, SWARM_BOARD_READ_TOOL);
+    system += "\n\n## Shared discussion board\n" +
+      "You are one member of a parallel swarm working on sibling subtasks. Members share a discussion board: " +
+      "use swarm_board_read at the start to see what others have already found, swarm_board_post to share key findings or questions as you reach them, " +
+      "and swarm_board_read once more before finishing to fold in anything new. Keep posts short and factual.";
+  }
 
   const taskId = options.taskId ?? randomUUID();
+  // 发帖署名缺省回落 taskId（taskId 生成后才能确定）
+  if (options.swarm && !options.swarm.member) options.swarm.member = taskId;
   const startedAt = new Date().toISOString();
   options.onStart?.(taskId);
   const messages: ChatMessage[] = [subMessage("user", [{ type: "text", text: options.prompt }])];
@@ -237,6 +258,24 @@ async function executeSubTool(
   if (!allowed.has(name)) {
     const list = [...allowed].join(", ") || "(none)";
     return { content: `Tool not available to this sub-agent: ${name}. Allowed tools: ${list}`, isError: true };
+  }
+  // swarm 讨论板：本地板文件读写，不经权限链；读写失败静默降级为提示文本，不拖垮子代理
+  if (name === "swarm_board_post" || name === "swarm_board_read") {
+    const swarm = options.swarm;
+    if (!swarm) return { content: `${name} is only available to swarm members`, isError: true };
+    if (name === "swarm_board_post") {
+      const text = typeof input.text === "string" ? input.text.trim() : "";
+      if (!text) return { content: "swarm_board_post requires a non-empty text", isError: true };
+      const ok = await appendSwarmBoard(swarm.boardPath, swarm.member ?? "unknown", text);
+      return { content: ok ? "ok" : "ok (board unavailable; post dropped)", isError: false };
+    }
+    const since = input.since === undefined ? 0 : Number(input.since);
+    const board = await readSwarmBoard(swarm.boardPath, Number.isInteger(since) && since > 0 ? since : 0);
+    if (board.entries.length === 0) {
+      return { content: board.total === 0 ? "(board is empty)" : `(no new entries; offset=${board.offset})`, isError: false };
+    }
+    const lines = board.entries.map((entry) => `[${entry.ts}] ${entry.from}: ${entry.text}`);
+    return { content: `${lines.join("\n")}\n(offset=${board.offset}, total=${board.total})`, isError: false };
   }
   // general 类型：全部工具（含只读）统一经调用方注入的权限链执行入口
   if (options.executeTool) {
