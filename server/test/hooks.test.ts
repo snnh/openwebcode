@@ -265,6 +265,53 @@ describe("HookRunner.run 语义", () => {
   });
 });
 
+describe("新事件集（提交⑪）", () => {
+  it("normalizeHooksConfig 接受全部新事件名", () => {
+    const config = normalizeHooksConfig({
+      PreCompact: [{ matcher: "*", command: "echo pre-compact" }],
+      PostCompact: [{ matcher: "*", command: "echo post-compact" }],
+      SessionEnd: [{ matcher: "*", command: "echo end" }],
+      Notification: [{ matcher: "*", command: "echo notify" }],
+      SubagentStart: [{ matcher: "*", command: "echo start" }],
+      SubagentStop: [{ matcher: "*", command: "echo stop" }],
+    });
+    expect(config.PreCompact).toHaveLength(1);
+    expect(config.PostCompact).toHaveLength(1);
+    expect(config.SessionEnd).toHaveLength(1);
+    expect(config.Notification).toHaveLength(1);
+    expect(config.SubagentStart).toHaveLength(1);
+    expect(config.SubagentStop).toHaveLength(1);
+  });
+
+  it("PreCompact exit 2 -> blocked（Pre* 类阻断语义）", async () => {
+    const cwd = await tempRoot();
+    await writeProjectHooks(cwd, {
+      PreCompact: [{ matcher: "*", command: CMD.exit2Stderr("no-compact") }],
+    });
+    const runner = new HookRunner(path.join(cwd, "nonexistent-global.json"), new EventBus());
+    const outcome = await runner.run("PreCompact", { sessionId: "s1", cwd, compact: { strategy: "overview", forced: true } });
+    expect(outcome.blocked).toBe(true);
+    expect(outcome.reason).toContain("no-compact");
+  });
+
+  it.each(["PostCompact", "SessionEnd", "Notification", "SubagentStart", "SubagentStop"] as const)(
+    "%s exit 2 -> 不阻断（仅 Pre* 类有 blocked 语义），发 hook.failed",
+    async (event) => {
+      const cwd = await tempRoot();
+      await writeProjectHooks(cwd, {
+        [event]: [{ matcher: "*", command: CMD.exit2Stderr("ignored") }],
+      });
+      const events = new EventBus();
+      const captured: AppEvent[] = [];
+      events.on("event", (e: AppEvent) => captured.push(e));
+      const runner = new HookRunner(path.join(cwd, "nonexistent-global.json"), events);
+      const outcome = await runner.run(event, { sessionId: "s1", cwd });
+      expect(outcome).toEqual({});
+      expect(captured.some((e) => e.type === "hook.failed")).toBe(true);
+    },
+  );
+});
+
 describe("PreToolUse hook via AgentRunner (e2e)", () => {
   async function setup(toolCall: { name: string; id: string; input: Record<string, unknown> }) {
     const root = await tempRoot();

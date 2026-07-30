@@ -7,6 +7,7 @@ import { agentErrorToastText } from "./lib/agent-error";
 import { deriveWindowInfo } from "./lib/context-window";
 import { formatCurrency } from "./lib/format";
 import { loadSendKey, loadSessionDefaults, saveSendKey, saveSessionDefaults, type SendKey, type SessionDefaults } from "./lib/prefs";
+import { loadDesktopNotifyEnabled, maybeDesktopNotify, saveDesktopNotifyEnabled } from "./lib/desktop-notify";
 import { loadDraft, pruneDrafts, saveDraft } from "./lib/drafts";
 import { writeClipboard } from "./lib/clipboard";
 import { deriveInputHistory } from "./lib/input-history";
@@ -111,8 +112,10 @@ export function App(): ReactElement {
     if (!isMobile) setMobileSidebarOpen(false);
   }, [isMobile]);
   const [sendKey, setSendKeyState] = useState<SendKey>(loadSendKey);
+  const [desktopNotify, setDesktopNotifyState] = useState<boolean>(loadDesktopNotifyEnabled);
   const [sessionDefaults, setSessionDefaultsState] = useState<SessionDefaults>(loadSessionDefaults);
   const setSendKey = (value: SendKey): void => { setSendKeyState(value); saveSendKey(value); };
+  const setDesktopNotify = (value: boolean): void => { setDesktopNotifyState(value); saveDesktopNotifyEnabled(value); };
   const setSessionDefaults = (value: SessionDefaults): void => { setSessionDefaultsState(value); saveSessionDefaults(value); };
   // 草稿按会话保留，切换会话不丢
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -234,6 +237,30 @@ export function App(): ReactElement {
               });
             }
           }
+        }
+        // 桌面通知（提交⑪）：页面失焦时，权限待批/交互待答/run 终态弹系统通知（跨会话）；
+        // 点击聚焦窗口并跳到对应会话。失焦门控与权限检查在 maybeDesktopNotify 内
+        if (event.sessionId && ["permission.request", "interaction.requested", "run.completed", "run.failed"].includes(event.type)) {
+          const sessionTitle = sessions.data?.find((session) => session.id === event.sessionId)?.title ?? event.sessionId;
+          let title: string;
+          let body = sessionTitle;
+          if (event.type === "permission.request") {
+            const tool = (event.payload as { tool?: string }).tool ?? "";
+            title = t("权限待批准", "Permission needed");
+            body = `${sessionTitle}：${tool}`;
+          } else if (event.type === "interaction.requested") {
+            const interactionTitle = (event.payload as { title?: string }).title ?? "";
+            title = t("等待你的回复", "Input needed");
+            body = `${sessionTitle}：${interactionTitle}`;
+          } else if (event.type === "run.completed") {
+            title = t("任务完成", "Run completed");
+          } else {
+            title = t("任务失败", "Run failed");
+            const message = (event.payload as { error?: { message?: string } }).error?.message;
+            body = message ? `${sessionTitle}：${message}` : sessionTitle;
+          }
+          const targetSessionId = event.sessionId;
+          maybeDesktopNotify(desktopNotify, { title, body, onClick: () => setCurrentId(targetSessionId) });
         }
         // 上下文窗口水位跨会话跟踪：驱动 JobHeader 与上下文面板的占用 meter
         if (event.type === "context.watermark" && event.sessionId) {
@@ -381,7 +408,7 @@ export function App(): ReactElement {
             void detailRefresh.finally(() => clearStream(event.sessionId!));
           }
         }
-  }, [applyRunEvent, applyActivityEvent, applySubagentEvent, clearStream, currentId, flushStreamBuffers, notify, pushEventNotification, queryClient, queueStreamDelta, sessions.data, t]);
+  }, [applyRunEvent, applyActivityEvent, applySubagentEvent, clearStream, currentId, desktopNotify, flushStreamBuffers, notify, pushEventNotification, queryClient, queueStreamDelta, sessions.data, t]);
   // 全局订阅：服务端在未传 sessionId 时全量推送，handler 按 event.sessionId 分发。
   const { reconnecting } = useSessionEventStream({ onEvent: handleSessionEvent, onDisconnect: finishBufferedStreams });
 
@@ -1256,6 +1283,8 @@ export function App(): ReactElement {
         setAccent={setAccent}
         sendKey={sendKey}
         setSendKey={setSendKey}
+        desktopNotify={desktopNotify}
+        setDesktopNotify={setDesktopNotify}
         defaults={sessionDefaults}
         setDefaults={setSessionDefaults}
         providers={providers.data ?? []}

@@ -4,6 +4,7 @@ import { calculateUsageCost } from "../cost/cost-calculator.js";
 import type { PricingCatalog } from "../cost/pricing-catalog.js";
 import { appendMemory, parseSedimentSections } from "../memory.js";
 import type { FastModelClient } from "../fast-model.js";
+import type { HookRunner } from "../hooks.js";
 import type { ChatMessage, MessageContent } from "../sessions/types.js";
 import type { SessionStore } from "../sessions/session-store.js";
 import type { UsageLog } from "../usage-log.js";
@@ -109,7 +110,7 @@ export class Compactor {
   constructor(
     private readonly sessions: SessionStore,
     private readonly fastModel: FastModelClient,
-    private readonly deps: { usageLog?: UsageLog; pricing?: PricingCatalog; exchangeRates?: ExchangeRateService } = {},
+    private readonly deps: { usageLog?: UsageLog; pricing?: PricingCatalog; exchangeRates?: ExchangeRateService; hooks?: HookRunner } = {},
     private readonly keepTail = 10,
   ) {}
 
@@ -127,6 +128,11 @@ export class Compactor {
     }
     const span = session.messages.slice(previousUpto, uptoIndex);
     const forced = options.forced === true;
+    // PreCompact 钩子：exit 2 阻断本次压缩（Pre* 类阻断语义，同 PreToolUse）
+    if (this.deps.hooks) {
+      const outcome = await this.deps.hooks.run("PreCompact", { sessionId, cwd: session.cwd, compact: { strategy: mode, forced } });
+      if (outcome.blocked) return { changed: false, mode, reason: outcome.reason ?? "压缩被 hook 阻断" };
+    }
     let finalMode: CompactionRecord["mode"] = mode;
     let summary: string;
     let instructions = !ledger.cleared || compactedUpto > clearedUpto ? (ledger.compacted?.instructions ?? []) : [];
@@ -170,6 +176,10 @@ export class Compactor {
       } catch (error) {
         process.stderr.write(`[memory] 沉淀失败：${error instanceof Error ? error.message : String(error)}\n`);
       }
+    }
+    // PostCompact 钩子：仅通知不阻断（含降级后的 finalMode 与 uptoIndex）
+    if (this.deps.hooks) {
+      await this.deps.hooks.run("PostCompact", { sessionId, cwd: session.cwd, compact: { strategy: mode, forced, changed: true, finalMode, uptoIndex } });
     }
     return { changed: true, mode: finalMode, uptoIndex, summary };
   }

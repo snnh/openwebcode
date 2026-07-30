@@ -75,6 +75,8 @@ function renderDialog(view: SettingsView = settingsView) {
         setAccent={() => undefined}
         sendKey="enter"
         setSendKey={() => undefined}
+        desktopNotify={false}
+        setDesktopNotify={() => undefined}
         defaults={{}}
         setDefaults={() => undefined}
         providers={[]}
