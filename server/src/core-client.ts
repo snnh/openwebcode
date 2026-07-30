@@ -42,6 +42,11 @@ export interface ExecResult {
 }
 
 export interface FsPathRequest { sessionId: string; path: string }
+/** path.normalize：纯词法归一化 + 策略判定（无 IO）。allowed=false 时仍返回
+ * canonical path 并带 reason；遍历/UNC/盘符相对等无法归一化的形态由 core 以
+ * -32602 拒绝，调用方应回退原始字符串。 */
+export interface PathNormalizeRequest extends FsPathRequest { purpose?: "read" | "write" }
+export interface PathNormalizeResult { path: string; allowed: boolean; root: string; reason?: string }
 export interface FsReadRequest extends FsPathRequest { offset?: number; limit?: number }
 export interface FsWriteRequest extends FsPathRequest { content: string; createDirs?: boolean; /** Reject if the current file no longer has this digest. */ expectedSha256?: string }
 /** Internal binary ingress only. data must be canonical base64; agent-facing
@@ -211,6 +216,8 @@ export interface CoreClientLike {
   listFiles(request: FsPathRequest): Promise<FsListResult>;
   globFiles(request: FsSearchRequest): Promise<FsGlobResult>;
   grepFiles(request: FsSearchRequest): Promise<FsGrepResult>;
+  /** path.normalize（可选）：旧 core 二进制无此能力时缺省，调用方回退原始路径。 */
+  normalizePath?(request: PathNormalizeRequest): Promise<PathNormalizeResult>;
   setRequestTimeoutMs(timeoutMs: number): void;
   on(eventName: string, listener: (...args: any[]) => void): unknown;
   release?(sessionId: string): Promise<void>;
@@ -320,6 +327,7 @@ export class CoreClient extends EventEmitter {
   listFiles(request: FsPathRequest): Promise<FsListResult> { return this.call("fs.list", request); }
   globFiles(request: FsSearchRequest): Promise<FsGlobResult> { return this.call("fs.glob", request); }
   grepFiles(request: FsSearchRequest): Promise<FsGrepResult> { return this.call("fs.grep", request); }
+  normalizePath(request: PathNormalizeRequest): Promise<PathNormalizeResult> { return this.call("path.normalize", request); }
 
   private async spawnAndHandshake(generation: number): Promise<CoreInfo> {
     const connection = this.connectionFactory ? await this.connectionFactory() : this.spawnStdio();

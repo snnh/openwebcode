@@ -45,12 +45,20 @@ export const READ_ARTIFACT_TOOL: ProviderTool = {
   },
 };
 
+/** 文件工具的 path 参数：模型可传相对会话根的路径或根内绝对路径（含 .、..
+ * 点分量与两种分隔符），归一化与路径策略校验全部由执行层（core C）完成，
+ * 模型无需自行解析或判断权限。 */
+const PATH_SCHEMA = {
+  type: "string",
+  description: "Workspace path: relative to the session root, or absolute inside it (dot segments and either separator accepted). Normalization and path policy are enforced by the executor; pass the path as-is.",
+} as const;
+
 export const FILE_TOOLS: ProviderTool[] = [
-  { name: "read_file", description: "Read UTF-8 lines from a workspace file.", inputSchema: { type: "object", properties: { path: { type: "string" }, offset: { type: "integer" }, limit: { type: "integer" } }, required: ["path"], additionalProperties: false } },
-  { name: "write_file", description: "Atomically write a UTF-8 workspace file.", inputSchema: { type: "object", properties: { path: { type: "string" }, content: { type: "string" }, createDirs: { type: "boolean" } }, required: ["path", "content"], additionalProperties: false } },
-  { name: "edit_file", description: "Replace exact text in a UTF-8 workspace file.", inputSchema: { type: "object", properties: { path: { type: "string" }, oldText: { type: "string" }, newText: { type: "string" }, replaceAll: { type: "boolean" } }, required: ["path", "oldText", "newText"], additionalProperties: false } },
-  { name: "glob", description: "Recursively match workspace paths using * and ? wildcards.", inputSchema: { type: "object", properties: { path: { type: "string" }, pattern: { type: "string" } }, required: ["path", "pattern"], additionalProperties: false } },
-  { name: "grep", description: "Recursively search UTF-8 workspace files for literal text.", inputSchema: { type: "object", properties: { path: { type: "string" }, pattern: { type: "string" } }, required: ["path", "pattern"], additionalProperties: false } },
+  { name: "read_file", description: "Read UTF-8 lines from a workspace file.", inputSchema: { type: "object", properties: { path: PATH_SCHEMA, offset: { type: "integer" }, limit: { type: "integer" } }, required: ["path"], additionalProperties: false } },
+  { name: "write_file", description: "Atomically write a UTF-8 workspace file.", inputSchema: { type: "object", properties: { path: PATH_SCHEMA, content: { type: "string" }, createDirs: { type: "boolean" } }, required: ["path", "content"], additionalProperties: false } },
+  { name: "edit_file", description: "Replace exact text in a UTF-8 workspace file.", inputSchema: { type: "object", properties: { path: PATH_SCHEMA, oldText: { type: "string" }, newText: { type: "string" }, replaceAll: { type: "boolean" } }, required: ["path", "oldText", "newText"], additionalProperties: false } },
+  { name: "glob", description: "Recursively match workspace paths using * and ? wildcards.", inputSchema: { type: "object", properties: { path: PATH_SCHEMA, pattern: { type: "string" } }, required: ["path", "pattern"], additionalProperties: false } },
+  { name: "grep", description: "Recursively search UTF-8 workspace files for literal text.", inputSchema: { type: "object", properties: { path: PATH_SCHEMA, pattern: { type: "string" } }, required: ["path", "pattern"], additionalProperties: false } },
 ];
 
 export const REPO_MAP_TOOL: ProviderTool = {

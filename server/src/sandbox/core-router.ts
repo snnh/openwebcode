@@ -31,6 +31,8 @@ import type {
   FsStatManyResult,
   FsWriteBase64Request,
   FsWriteRequest,
+  PathNormalizeRequest,
+  PathNormalizeResult,
 } from "../core-client.js";
 import type { SessionStore } from "../sessions/session-store.js";
 import { defaultSandboxPolicy } from "../sessions/default-sandbox.js";
@@ -52,10 +54,11 @@ export function toSandboxPath(hostPath: string, workspace: string): string {
   return hostPath;
 }
 
-/** wsb 会话的请求路径翻译；其余会话原样返回 */
-function translatePath<T extends { path: string }>(request: T, meta: SessionMeta | undefined): T {
-  if (meta?.sandboxMode !== "wsb" || !meta.cwd) return request;
-  return { ...request, path: toSandboxPath(request.path, meta.cwd) };
+/** wsb 会话的请求路径翻译；其余会话原样返回。host 绝对路径或带点分量的路径
+ * 先经宿主机 core 的 path.normalize 归一化（路径处理归一在 core C 层完成），
+ * 再做 host→guest 挂载映射；normalize 失败回退原始字符串。 */
+function needsHostNormalize(path: string): boolean {
+  return path.includes("..") || path.startsWith("/") || path.startsWith("\\") || /^[A-Za-z]:/.test(path);
 }
 
 /**
@@ -77,6 +80,8 @@ export class CoreRouter extends EventEmitter {
   private readonly desiredConfigs = new Map<string, { sessionId: string; cwd: string; sandbox: SandboxPolicy }>();
   private readonly configuredClients = new Map<string, CoreClientLike>();
   private readonly configuring = new Map<string, { client: CoreClientLike; promise: Promise<void> }>();
+  /** wsb 会话在宿主机 core 上的旁路配置（仅供 path.normalize 取 host canonical 路径）。 */
+  private readonly hostNormalizeConfigs = new Set<string>();
 
   constructor(
     private readonly shared: CoreClientLike,
@@ -105,6 +110,7 @@ export class CoreRouter extends EventEmitter {
   }
 
   private invalidateClient(client: CoreClientLike, sessionId?: string): void {
+    if (client === this.shared) this.hostNormalizeConfigs.clear();
     if (sessionId && this.configuredClients.get(sessionId) === client) this.configuredClients.delete(sessionId);
     for (const [id, configured] of this.configuredClients) {
       if (configured === client) this.configuredClients.delete(id);
@@ -225,16 +231,53 @@ export class CoreRouter extends EventEmitter {
       // 不为清理而启动虚拟机；沙盒 core 存在才通知（虚拟机整体由 release 回收）
       const client = this.wsb.peek(sessionId);
       if (client) await client.cleanupSession(sessionId).catch(() => undefined);
+      if (this.hostNormalizeConfigs.delete(sessionId)) await this.shared.cleanupSession(sessionId).catch(() => undefined);
       this.desiredConfigs.delete(sessionId);
       this.configuredClients.delete(sessionId);
       this.configuring.delete(sessionId);
       return { ok: true };
     }
     const result = await this.shared.cleanupSession(sessionId);
+    this.hostNormalizeConfigs.delete(sessionId);
     this.desiredConfigs.delete(sessionId);
     this.configuredClients.delete(sessionId);
     this.configuring.delete(sessionId);
     return result;
+  }
+
+  /**
+   * path.normalize：非 wsb 会话按正常路由；wsb 会话的 canonical host 路径只能由
+   * 宿主机 core 归一化（guest core 的 cwd 是挂载点），为此在宿主机 core 上做一份
+   * 旁路 session 配置（仅服务于 normalize，不参与 fs 路由）。
+   */
+  async normalizePath(request: PathNormalizeRequest): Promise<PathNormalizeResult> {
+    const { client, meta } = await this.ensureConfigured(request.sessionId);
+    if (meta?.sandboxMode === "wsb") return this.normalizeOnHost(request.sessionId, request.path, request.purpose, meta);
+    if (!client.normalizePath) throw new Error("Core path.normalize support is unavailable");
+    return client.normalizePath(request);
+  }
+
+  private async normalizeOnHost(sessionId: string, path: string, purpose: "read" | "write" | undefined, meta: SessionMeta | undefined): Promise<PathNormalizeResult> {
+    if (!this.shared.normalizePath) throw new Error("Core path.normalize support is unavailable");
+    if (!this.hostNormalizeConfigs.has(sessionId)) {
+      const desired = this.desiredConfigs.get(sessionId) ?? (meta ? this.defaultConfig(meta) : undefined);
+      if (!desired) throw new Error("session was not configured");
+      await this.shared.start();
+      await this.shared.configureSession(desired);
+      this.hostNormalizeConfigs.add(sessionId);
+    }
+    return this.shared.normalizePath({ sessionId, path, ...(purpose ? { purpose } : {}) });
+  }
+
+  private async translatePath<T extends { sessionId: string; path: string }>(request: T, meta: SessionMeta | undefined): Promise<T> {
+    if (meta?.sandboxMode !== "wsb" || !meta.cwd) return request;
+    let path = request.path;
+    if (needsHostNormalize(path)) {
+      try {
+        path = (await this.normalizeOnHost(request.sessionId, path, undefined, meta)).path;
+      } catch { /* normalize 不可用/失败：回退原始字符串，guest core 会按策略拒绝越界 */ }
+    }
+    return { ...request, path: toSandboxPath(path, meta.cwd) };
   }
 
   async run(request: ExecRequest): Promise<ExecResult> {
@@ -245,51 +288,49 @@ export class CoreRouter extends EventEmitter {
 
   async readFile(request: FsReadRequest): Promise<FsReadResult> {
     const { client, meta } = await this.ensureConfigured(request.sessionId);
-    return client.readFile(translatePath(request, meta));
+    return client.readFile(await this.translatePath(request, meta));
   }
 
   async writeFile(request: FsWriteRequest): Promise<{ ok: true }> {
     const { client, meta } = await this.ensureConfigured(request.sessionId);
-    return client.writeFile(translatePath(request, meta));
+    return client.writeFile(await this.translatePath(request, meta));
   }
 
   async writeFileBase64(request: FsWriteBase64Request): Promise<{ ok: true }> {
     const { client, meta } = await this.ensureConfigured(request.sessionId);
     if (!client.writeFileBase64) throw new Error("Core binary upload support is unavailable");
-    return client.writeFileBase64(translatePath(request, meta));
+    return client.writeFileBase64(await this.translatePath(request, meta));
   }
 
   async editFile(request: FsEditRequest): Promise<{ matches: number }> {
     const { client, meta } = await this.ensureConfigured(request.sessionId);
-    return client.editFile(translatePath(request, meta));
+    return client.editFile(await this.translatePath(request, meta));
   }
 
   async statFile(request: FsPathRequest): Promise<FsStatResult> {
     const { client, meta } = await this.ensureConfigured(request.sessionId);
-    return client.statFile(translatePath(request, meta));
+    return client.statFile(await this.translatePath(request, meta));
   }
 
   async statFiles(request: FsStatManyRequest): Promise<FsStatManyResult> {
     const { client, meta } = await this.ensureConfigured(request.sessionId);
-    return client.statFiles({
-      ...request,
-      paths: request.paths.map((path) => translatePath({ sessionId: request.sessionId, path }, meta).path),
-    });
+    const translated = await Promise.all(request.paths.map((path) => this.translatePath({ sessionId: request.sessionId, path }, meta)));
+    return client.statFiles({ ...request, paths: translated.map((entry) => entry.path) });
   }
 
   async hashFile(request: FsPathRequest): Promise<FsHashResult> {
     const { client, meta } = await this.ensureConfigured(request.sessionId);
-    return client.hashFile(translatePath(request, meta));
+    return client.hashFile(await this.translatePath(request, meta));
   }
 
   async scanFiles(request: FsScanRequest): Promise<FsScanResult> {
     const { client, meta } = await this.ensureConfigured(request.sessionId);
-    return client.scanFiles(translatePath(request, meta));
+    return client.scanFiles(await this.translatePath(request, meta));
   }
 
   async watchFiles(request: FsWatchRequest): Promise<{ watchId: number }> {
     const { client, meta } = await this.ensureConfigured(request.sessionId);
-    return client.watchFiles(translatePath(request, meta));
+    return client.watchFiles(await this.translatePath(request, meta));
   }
 
   async pollWatch(request: FsWatchPollRequest): Promise<FsWatchPollResult> {
@@ -311,25 +352,25 @@ export class CoreRouter extends EventEmitter {
   async startIndexScan(request: IndexScanStartRequest): Promise<JobStatus> {
     const { client, meta } = await this.ensureConfigured(request.sessionId);
     const cwd = meta?.sandboxMode === "wsb" && meta.cwd ? toSandboxPath(request.cwd, meta.cwd) : request.cwd;
-    return client.startIndexScan(translatePath({ ...request, cwd }, meta));
+    return client.startIndexScan(await this.translatePath({ ...request, cwd }, meta));
   }
 
   async startGrepJob(request: GrepJobStartRequest): Promise<JobStatus> {
     const { client, meta } = await this.ensureConfigured(request.sessionId);
     const cwd = meta?.sandboxMode === "wsb" && meta.cwd ? toSandboxPath(request.cwd, meta.cwd) : request.cwd;
-    return client.startGrepJob(translatePath({ ...request, cwd }, meta));
+    return client.startGrepJob(await this.translatePath({ ...request, cwd }, meta));
   }
 
   async startGlobJob(request: GlobJobStartRequest): Promise<JobStatus> {
     const { client, meta } = await this.ensureConfigured(request.sessionId);
     const cwd = meta?.sandboxMode === "wsb" && meta.cwd ? toSandboxPath(request.cwd, meta.cwd) : request.cwd;
-    return client.startGlobJob(translatePath({ ...request, cwd }, meta));
+    return client.startGlobJob(await this.translatePath({ ...request, cwd }, meta));
   }
 
   async startIndexExtract(request: IndexExtractStartRequest): Promise<JobStatus> {
     const { client, meta } = await this.ensureConfigured(request.sessionId);
     const cwd = meta?.sandboxMode === "wsb" && meta.cwd ? toSandboxPath(request.cwd, meta.cwd) : request.cwd;
-    return client.startIndexExtract(translatePath({ ...request, cwd }, meta));
+    return client.startIndexExtract(await this.translatePath({ ...request, cwd }, meta));
   }
 
   async cancelJob(request: { sessionId: string; jobId: string }): Promise<{ jobId: string; accepted: true }> {
@@ -349,17 +390,17 @@ export class CoreRouter extends EventEmitter {
 
   async listFiles(request: FsPathRequest): Promise<FsListResult> {
     const { client, meta } = await this.ensureConfigured(request.sessionId);
-    return client.listFiles(translatePath(request, meta));
+    return client.listFiles(await this.translatePath(request, meta));
   }
 
   async globFiles(request: FsSearchRequest): Promise<FsGlobResult> {
     const { client, meta } = await this.ensureConfigured(request.sessionId);
-    return client.globFiles(translatePath(request, meta));
+    return client.globFiles(await this.translatePath(request, meta));
   }
 
   async grepFiles(request: FsSearchRequest): Promise<FsGrepResult> {
     const { client, meta } = await this.ensureConfigured(request.sessionId);
-    return client.grepFiles(translatePath(request, meta));
+    return client.grepFiles(await this.translatePath(request, meta));
   }
 }
 
