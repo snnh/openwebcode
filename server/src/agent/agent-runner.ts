@@ -65,6 +65,7 @@ import { buildSystemPrompt } from "./prompts/prompt-builder.js";
 import { PI_BASE_SYSTEM_PROMPT } from "./prompts/pi-base.js";
 import { loadPromptOverride, type PromptOverride } from "./prompts/prompt-overrides.js";
 import { RunStore, type AgentRunSnapshot, type AgentRunState } from "./run-store.js";
+import { PersistentShellManager, PersistentShellUnavailableError } from "./persistent-shell.js";
 import { MessageQueue, type QueueItem } from "./message-queue.js";
 import { InteractionCoordinator, type InteractionKind, type InteractionRequest } from "./interaction-coordinator.js";
 
@@ -584,6 +585,8 @@ const PERF_RING_SIZE = 20;
 export class AgentRunner {
   private readonly running = new Map<string, AbortController>();
   private readonly coreGateway: CoreGateway;
+  /** 提交⑩：agent bash 持久 shell（pty 可用时）；cwd/env 跨调用保持。 */
+  private readonly persistentShells: PersistentShellManager;
   /** Active Run snapshots. Historical/latest snapshots live under sessions/<id>/runs/. */
   private readonly runs = new Map<string, AgentRunSnapshot>();
   /** Serialize per-run snapshots so a later state cannot overtake an earlier one on disk. */
@@ -695,6 +698,7 @@ export class AgentRunner {
     webFetchProvider?: WebFetchProvider,
   ) {
     this.coreGateway = new CoreGateway(core);
+    this.persistentShells = new PersistentShellManager(core, this.pythonEnvManager, () => this.getPythonEnvDefault(), dataDir);
     this.messageQueue = new MessageQueue((sessionId) => this.sessions.contextRoot(sessionId));
     this.interactions = new InteractionCoordinator((sessionId) => this.sessions.contextRoot(sessionId));
     this.permissions = new PermissionCoordinator(events);
@@ -2903,6 +2907,9 @@ export class AgentRunner {
     try {
       const session = await this.sessions.get(sessionId);
       if (!session) throw new Error("Session not found");
+      // 提交⑩：默认走持久 shell（同一会话 cwd/env 跨调用保持）；pty 不可用（旧 core）时回退一次性 exec 路径
+      const persistent = await this.tryPersistentBash(session, cmd, toolCallId, signal, quiet);
+      if (persistent) return persistent;
       cmd = await this.wrapForPythonEnv(session, cmd);
       if (await this.coreGateway.supports("jobControl")) {
         const jobId = `job-${randomUUID()}`;
@@ -2954,6 +2961,46 @@ export class AgentRunner {
     } finally {
       this.executions.delete(execId);
     }
+  }
+
+  /**
+   * 持久 shell 执行（提交⑩）：成功返回结果；pty 不可用返回 null 由调用方回退一次性 exec.run；
+   * 命令级失败（超时/shell 退出/输入失败）转成 isError=true，与一次性路径一致不抛错。
+   * pythonEnv 在 shell 启动层激活（PATH 前置一次），不再逐命令包装。
+   */
+  private async tryPersistentBash(
+    session: SessionMeta,
+    cmd: string,
+    toolCallId: string,
+    signal: AbortSignal,
+    quiet: boolean,
+  ): Promise<{ content: string; isError: boolean } | null> {
+    let result;
+    try {
+      result = await this.persistentShells.run(session, cmd, signal);
+    } catch (error) {
+      if (error instanceof PersistentShellUnavailableError) return null;
+      if (signal.aborted) throw error;
+      const content = errorMessage(error);
+      if (!quiet) this.events.publish({ source: "agent", type: "tool.end", sessionId: session.id, payload: { toolCallId, error: content } });
+      return { content, isError: true };
+    }
+    const rawContent = JSON.stringify({
+      exitCode: result.exitCode,
+      durationMs: result.durationMs,
+      truncated: result.truncated,
+      ...(result.sandboxCapability !== undefined ? { sandboxCapability: result.sandboxCapability } : {}),
+      ...(result.sandboxReason !== undefined ? { sandboxReason: result.sandboxReason } : {}),
+      output: result.output,
+    });
+    const bounded = await boundToolResult(this.sessions.contextRoot(session.id), "bash", rawContent);
+    if (!quiet) this.events.publish({ source: "agent", type: "tool.end", sessionId: session.id, payload: { toolCallId, result: toolEventResult(bounded) } });
+    return { content: bounded.content, isError: false };
+  }
+
+  /** 会话删除时回收该会话的持久 shell（挂在 app.ts 会话删除路由的清理链上）。 */
+  async disposePersistentShells(sessionId: string): Promise<void> {
+    this.persistentShells.disposeSession(sessionId);
   }
 
   /**

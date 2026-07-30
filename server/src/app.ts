@@ -2008,6 +2008,8 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     try {
       // 停止该会话的后台任务
       await dependencies.backgroundTasks?.stopForSession(request.params.id).catch(() => undefined);
+      // 回收该会话的持久 shell（提交⑩）；测试里注入的部分 agent 可能未实现该方法
+      await agent.disposePersistentShells?.(request.params.id).catch(() => undefined);
       await core.cleanupSession(request.params.id).catch(() => undefined);
       // 释放会话持有的沙盒 core（WSB 虚拟机蒸发）；裸 CoreClient 无 release，为 no-op
       await core.release?.(request.params.id).catch(() => undefined);
