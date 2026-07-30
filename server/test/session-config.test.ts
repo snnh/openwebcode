@@ -57,6 +57,8 @@ describe("session model config", () => {
       expect(invalidShell.statusCode).toBe(400);
       const invalidPythonEnv = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { pythonEnv: "conda" } });
       expect(invalidPythonEnv.statusCode).toBe(400);
+      const invalidSwarm = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { swarmEnabled: "yes" } });
+      expect(invalidSwarm.statusCode).toBe(400);
       const modes = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { sandboxMode: "off", snapshotMode: "manual", shellBackend: "pwsh", pythonEnv: "uv-workspace" } });
       expect(modes.statusCode).toBe(200);
       expect(modes.json()).toMatchObject({ sandboxMode: "off", snapshotMode: "manual", shellBackend: "pwsh", pythonEnv: "uv-workspace" });
@@ -65,6 +67,13 @@ describe("session model config", () => {
       const cleared = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { pythonEnv: "global" } });
       expect(cleared.statusCode).toBe(200);
       expect(await sessions.get(session.id)).not.toHaveProperty("pythonEnv");
+      // 并行子代理开关：true 持久化，false 从元数据清除
+      const swarmOn = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { swarmEnabled: true } });
+      expect(swarmOn.statusCode).toBe(200);
+      expect(await sessions.get(session.id)).toMatchObject({ swarmEnabled: true });
+      const swarmOff = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { swarmEnabled: false } });
+      expect(swarmOff.statusCode).toBe(200);
+      expect(await sessions.get(session.id)).not.toHaveProperty("swarmEnabled");
       const first = await sessions.appendMessage(session.id, "user", [{ type: "text", text: "timeline" }]);
       const second = await sessions.appendMessage(session.id, "assistant", [{ type: "text", text: "node" }], { runId: "run-test", turnId: "run-test:0" });
       const timeline = await app.inject({ method: "GET", url: `/api/sessions/${session.id}/timeline` });

@@ -495,7 +495,7 @@ describe("Composer", () => {
     expect(screen.queryByRole("listbox", { name: "技能建议" })).not.toBeInTheDocument();
   });
 
-  it("单一模型选择器同时切换 provider 与模型", () => {
+  it("模型弹层选择模型同时切换 provider 与模型", () => {
     const onConfig = vi.fn();
     const models: ModelProfile[] = [{
       id: "gpt-4o-mini",
@@ -505,7 +505,8 @@ describe("Composer", () => {
       capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true },
     }];
     render(<Harness onSend={vi.fn()} onConfig={onConfig} providers={["openai"]} models={models} />);
-    fireEvent.change(screen.getByLabelText("模型"), { target: { value: JSON.stringify(["openai", "gpt-4o-mini"]) } });
+    fireEvent.click(screen.getByRole("button", { name: "模型与思考程度" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /gpt-4o-mini/ }));
     expect(onConfig).toHaveBeenCalledWith({ provider: "openai", model: "gpt-4o-mini" });
   });
 
@@ -534,7 +535,8 @@ describe("Composer", () => {
       />,
     );
 
-    fireEvent.change(screen.getByLabelText("模型"), { target: { value: JSON.stringify(["openai", "gpt-4o-mini"]) } });
+    fireEvent.click(screen.getByRole("button", { name: "模型与思考程度" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /gpt-4o-mini/ }));
     expect(onConfig).toHaveBeenCalledWith({
       provider: "openai",
       model: "gpt-4o-mini",
@@ -543,7 +545,7 @@ describe("Composer", () => {
     });
   });
 
-  it("思考移到主配置行，并用单一选择器合并开关与强度", () => {
+  it("思考合并在模型弹层内，用分段按钮合并开关与强度", () => {
     const onConfig = vi.fn();
     const models: ModelProfile[] = [{
       id: "claude-opus-4-8",
@@ -568,15 +570,19 @@ describe("Composer", () => {
       />,
     );
 
-    const thinking = screen.getByLabelText("思考");
-    expect(thinking.closest(".composer-config-main")).not.toBeNull();
+    const trigger = screen.getByRole("button", { name: "模型与思考程度" });
+    expect(trigger.closest(".composer-config-main")).not.toBeNull();
     expect(screen.queryByLabelText("力度")).not.toBeInTheDocument();
-    expect(thinking).toHaveValue("mode:disabled");
 
-    fireEvent.change(thinking, { target: { value: "effort:xhigh" } });
+    fireEvent.click(trigger);
+    // 当前为关闭档：「关闭」模式按钮处于激活态
+    const offButton = screen.getByRole("button", { name: "关闭" });
+    expect(offButton.className).toContain("active");
+
+    fireEvent.click(screen.getByRole("button", { name: "xhigh" }));
     expect(onConfig).toHaveBeenLastCalledWith({ thinking: "adaptive", effort: "xhigh" });
 
-    fireEvent.change(thinking, { target: { value: "mode:disabled" } });
+    fireEvent.click(offButton);
     expect(onConfig).toHaveBeenLastCalledWith({ thinking: null, effort: null });
   });
 
@@ -595,6 +601,32 @@ describe("Composer", () => {
     expect(screen.getByText("图片输入")).toBeInTheDocument();
     expect(screen.getByText("视频输入")).toBeInTheDocument();
     expect(screen.getByText("图片输出")).toBeInTheDocument();
+  });
+
+  it("权限弹层：三档选项带描述，选择写入 permissionMode", () => {
+    const onConfig = vi.fn();
+    render(<Harness onSend={vi.fn()} onConfig={onConfig} />);
+    fireEvent.click(screen.getByRole("button", { name: "权限模式" }));
+    // 三档：逐条确认（默认勾选）/ 自动通过 / 完全自主，均带描述
+    expect(screen.getByRole("menuitemradio", { name: /逐条确认/ })).toBeInTheDocument();
+    expect(screen.getByRole("menuitemradio", { name: /自动通过/ })).toBeInTheDocument();
+    const yolo = screen.getByRole("menuitemradio", { name: /完全自主/ });
+    expect(yolo).toHaveTextContent("不再询问");
+    fireEvent.click(yolo);
+    expect(onConfig).toHaveBeenCalledWith({ permissionMode: "yolo" });
+  });
+
+  it("模式弹层：Swarm 开关写入会话配置，计划开关切换 agentMode，目标档禁用", () => {
+    const onConfig = vi.fn();
+    render(<Harness onSend={vi.fn()} onConfig={onConfig} />);
+    fireEvent.click(screen.getByRole("button", { name: "模式" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Swarm" }));
+    expect(onConfig).toHaveBeenCalledWith({ swarmEnabled: true });
+    fireEvent.click(screen.getByRole("checkbox", { name: "计划" }));
+    expect(onConfig).toHaveBeenCalledWith({ agentMode: "plan" });
+    // 目标为占位：开关禁用且带「即将推出」标记
+    expect(screen.getByRole("checkbox", { name: "目标" })).toBeDisabled();
+    expect(screen.getByText("即将推出")).toBeInTheDocument();
   });
 });
 
@@ -707,12 +739,16 @@ describe("Composer 模型循环（Ctrl+P）", () => {
   });
   afterEach(() => vi.unstubAllGlobals());
 
-  it("下拉切换模型写入 localStorage：去重置前", () => {
+  it("弹层切换模型写入 localStorage：去重置前", () => {
     render(<Harness onSend={vi.fn()} onConfig={vi.fn()} providers={cycleProviders} models={cycleModels} />);
-    const select = screen.getByLabelText("模型");
-    fireEvent.change(select, { target: { value: JSON.stringify(["openai", "gpt-4o-mini"]) } });
-    fireEvent.change(select, { target: { value: JSON.stringify(["deepseek", "deepseek-v3"]) } });
-    fireEvent.change(select, { target: { value: JSON.stringify(["openai", "gpt-4o-mini"]) } });
+    const trigger = screen.getByRole("button", { name: "模型与思考程度" });
+    const pick = (name: RegExp): void => {
+      fireEvent.click(trigger);
+      fireEvent.click(screen.getByRole("menuitemradio", { name }));
+    };
+    pick(/gpt-4o-mini/);
+    pick(/deepseek-v3/);
+    pick(/gpt-4o-mini/);
     expect(JSON.parse(localStorage.getItem("owc-recent-models")!)).toEqual([
       { provider: "openai", model: "gpt-4o-mini" },
       { provider: "deepseek", model: "deepseek-v3" },

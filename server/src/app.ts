@@ -98,6 +98,8 @@ interface SessionConfigBody {
   pythonEnv?: PythonEnv;
   /** env-sim 人格预设 id（会话级覆盖）；空串清除。 */
   persona?: string;
+  /** 并行子代理（spawn_swarm）开关。 */
+  swarmEnabled?: boolean;
 }
 
 interface BudgetBody {
@@ -1330,6 +1332,11 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
         if (!known.some((item) => item.id === trimmed)) return reply.code(400).send({ error: `unknown persona "${trimmed}"` });
       }
     }
+    // 并行子代理开关：布尔校验；显式 false 与未设置等价（关闭）
+    const swarmEnabled = request.body && "swarmEnabled" in request.body ? request.body.swarmEnabled ?? undefined : session.swarmEnabled;
+    if (swarmEnabled !== undefined && typeof swarmEnabled !== "boolean") {
+      return reply.code(400).send({ error: "swarmEnabled must be a boolean" });
+    }
     const permissionMode = request.body?.permissionMode ?? session.permissionMode ?? "ask";
     if (!["ask", "acceptEdits", "yolo"].includes(permissionMode)) return reply.code(400).send({ error: "permissionMode must be ask, acceptEdits, or yolo" });
     const touchesSandbox = Boolean(request.body && ("sandboxMode" in request.body || "setupScript" in request.body));
@@ -1344,7 +1351,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       // WSB 的启动脚本和模式只在虚拟机启动时生效，切换前先释放旧实例。
       await core.release?.(session.id);
     }
-    await sessions.updateConfig(request.params.id, { provider, model, ...(thinking ? { thinking } : {}), ...(effort ? { effort } : {}), ...(agentMode ? { agentMode } : {}), ...(snapshotMode ? { snapshotMode } : {}), ...(shellBackend ? { shellBackend } : {}), ...(pythonEnv ? { pythonEnv } : {}), ...(persona !== undefined ? { persona: persona.trim() } : {}) });
+    await sessions.updateConfig(request.params.id, { provider, model, ...(thinking ? { thinking } : {}), ...(effort ? { effort } : {}), ...(agentMode ? { agentMode } : {}), ...(snapshotMode ? { snapshotMode } : {}), ...(shellBackend ? { shellBackend } : {}), ...(pythonEnv ? { pythonEnv } : {}), ...(persona !== undefined ? { persona: persona.trim() } : {}), ...(swarmEnabled === true ? { swarmEnabled: true } : {}) });
     let updated = await sessions.updatePermissions(request.params.id, permissionMode, session.permissionRules ?? []);
     if (touchesSandbox) {
       updated = await sessions.updateSandboxMode(request.params.id, request.body?.sandboxMode, request.body?.setupScript);
