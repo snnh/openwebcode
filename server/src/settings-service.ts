@@ -249,7 +249,7 @@ const FIELDS: FieldSpec[] = [
     defaultValue: "../.openwebcode",
     restartRequired: true,
     validate: requireNonEmpty,
-    description: "显式 OWC_DATA_DIR 优先；安装启动器未设置时注入 Windows %LOCALAPPDATA%\\openwebcode 或 Linux ${XDG_DATA_HOME:-~/.local/share}/openwebcode。仅直接运行 server/dist/index.js 才以相对 server 目录的 ../.openwebcode 作为启动/设置目录；环境变量未设时，此处保存的值会在重启后决定业务数据目录。建议填写绝对路径。",
+    description: "显式 OWC_DATA_DIR 优先；安装启动器未设置时注入 Windows %USERPROFILE%\\openwebcode 或 Linux ${XDG_DATA_HOME:-~/.local/share}/openwebcode。仅直接运行 server/dist/index.js 才以相对 server 目录的 ../.openwebcode 作为启动/设置目录；环境变量未设时，此处保存的值会在重启后决定业务数据目录。建议填写绝对路径。",
   },
   // 汇率（重启生效）
   { key: "exchangeRateUrl", group: "exchangeRate", label: "汇率接口 URL", type: "text", env: "OWC_EXCHANGE_RATE_URL", defaultValue: null, restartRequired: true, validate: requireHttpUrl },

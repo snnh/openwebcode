@@ -147,7 +147,7 @@ cd web && npm run dev    # Vite 默认 5173，proxy 到 server 3000
 
 ### 数据目录解析
 
-用户显式设置的 `OWC_DATA_DIR` 优先。未设置时，安装版启动器会注入平台默认值（Windows `%LOCALAPPDATA%\openwebcode`；Linux `${XDG_DATA_HOME:-~/.local/share}/openwebcode`）；只有绕过启动器直接运行 `node server/dist/index.js` 时，才以相对 `server` 目录的 `../.openwebcode` 作为启动/设置目录兜底。设置文件固定在 `<启动/设置目录>/server-settings.json`；其已保存的 `dataDir` 会在未设置 `OWC_DATA_DIR` 时、下次启动后选择 `<业务数据目录>`，但不会移动设置文件。未保存覆盖时两者相同。默认配置随安装目录分发：`server/src/config/defaults.json`（构建进 `dist/config/`）是默认来源，`server-settings.json` 只存用户覆盖，生效值按 env > 用户覆盖 > 安装默认 > 代码兜底（`FIELDS.defaultValue`）组合，两处默认由 `test/defaults-sync.test.ts` 强制一致。为避免相对路径按 `server` 目录解析，建议两处都使用绝对路径；源码联调若想隔离数据，可显式设置 `OWC_DATA_DIR`。
+用户显式设置的 `OWC_DATA_DIR` 优先。未设置时，安装版启动器会注入平台默认值（Windows `%USERPROFILE%\openwebcode`；Linux `${XDG_DATA_HOME:-~/.local/share}/openwebcode`）；只有绕过启动器直接运行 `node server/dist/index.js` 时，才以相对 `server` 目录的 `../.openwebcode` 作为启动/设置目录兜底。设置文件固定在 `<启动/设置目录>/server-settings.json`；其已保存的 `dataDir` 会在未设置 `OWC_DATA_DIR` 时、下次启动后选择 `<业务数据目录>`，但不会移动设置文件。未保存覆盖时两者相同。默认配置随安装目录分发：`server/src/config/defaults.json`（构建进 `dist/config/`）是默认来源，`server-settings.json` 只存用户覆盖，生效值按 env > 用户覆盖 > 安装默认 > 代码兜底（`FIELDS.defaultValue`）组合，两处默认由 `test/defaults-sync.test.ts` 强制一致。为避免相对路径按 `server` 目录解析，建议两处都使用绝对路径；源码联调若想隔离数据，可显式设置 `OWC_DATA_DIR`。
 
 ### B. 测试用 provider（无需真实 LLM）
 
