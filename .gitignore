@@ -22,6 +22,7 @@
 # Kernel Module Compile Results
 *.mod*
 *.cmd
+!packaging/owc.cmd
 .tmp_versions/
 modules.order
 Module.symvers
