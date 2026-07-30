@@ -871,6 +871,25 @@ export interface VersionInfo {
   };
 }
 
+/** TOTP 全局登录认证（提交⑥）：/api/auth/status 返回 */
+export interface AuthStatus {
+  totpEnabled: boolean;
+  authenticated: boolean;
+  /** 终端门槛（提交⑦预埋）：TOTP 已开启且监听地址回环或局域网 */
+  terminalAvailable: boolean;
+  gateReasons: string[];
+}
+
+export interface TotpSetupResponse {
+  secret: string;
+  otpauthUrl: string;
+}
+
+export interface TotpConfirmResponse {
+  /** 恢复码明文仅此一次返回 */
+  recoveryCodes: string[];
+}
+
 export interface UpdateCheckSnapshot {
   latestVersion: string;
   isNewer: boolean;

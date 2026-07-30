@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
 import { useI18n } from "../../i18n";
 import { ServerSettingsFields } from "./ServerSettingsFields";
+import { TotpSection } from "./TotpSection";
 import { NETWORK_SETTINGS_GROUP } from "./shared";
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
@@ -43,6 +44,7 @@ export function RemoteAccessSection({ onDirtyChange }: { onDirtyChange?(dirty: b
         "移动端/局域网访问：将上方监听地址改为 0.0.0.0（需重启），并在服务端环境变量中配置 OWC_ACCESS_TOKEN（≥32 字符）与 OWC_ALLOWED_ORIGINS。浏览器首次用 ?token= 打开后会写入 HttpOnly Cookie。修改监听地址后重启服务生效。",
         "Mobile/LAN access: set the listen address above to 0.0.0.0 (restart required), and configure OWC_ACCESS_TOKEN (at least 32 characters) plus OWC_ALLOWED_ORIGINS as server environment variables. Opening the page once with ?token= stores an HttpOnly cookie. Restart the server after changing the listen address.",
       )}</p>
+      <TotpSection />
     </>
   );
 }

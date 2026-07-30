@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { AgentRunner } from "./agent/agent-runner.js";
 import { BackgroundTaskRegistry } from "./agent/background-tasks.js";
 import { buildServer } from "./app.js";
+import { TotpAuthService } from "./auth-totp.js";
 import { loadConfig } from "./config.js";
 import { ModelRegistry } from "./context/model-registry.js";
 import { CoreClient } from "./core-client.js";
@@ -194,6 +195,9 @@ const gcTimer = setInterval(() => {
   void gc.collect().catch((error: unknown) => process.stderr.write(`[gc] collect failed: ${error instanceof Error ? error.message : String(error)}\n`));
 }, 3_600_000);
 gcTimer.unref();
+// TOTP 全局登录认证（提交⑥）：启动时加载凭据；文件缺失视为关闭，门禁不生效
+const totp = new TotpAuthService(path.join(dataDir, "totp.json"));
+await totp.load();
 const app = await buildServer({
   core,
   sessions,
@@ -222,6 +226,9 @@ const app = await buildServer({
   updateChecker,
   updateApplier,
   dataDir,
+  // TOTP 全局登录认证（提交⑥）：凭据 <dataDir>/totp.json（0600），票据仅内存
+  totp,
+  listenHost: config.host,
   ...(config.accessToken ? { auth: { accessToken: config.accessToken, allowedOrigins: config.allowedOrigins } } : {}),
   getPreferences: () => {
     const effective = settings.effective();

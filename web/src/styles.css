@@ -2956,3 +2956,87 @@ button.chip-row:hover { background: var(--accent-soft); }
 mark.conv-search-hit { background: color-mix(in srgb, var(--accent) 30%, transparent); color: inherit; border-radius: 2px; }
 mark.conv-search-hit.active { background: var(--accent); color: var(--bg); }
 article.message.conv-search-active { outline: 2px solid color-mix(in srgb, var(--accent) 65%, transparent); outline-offset: 1px; }
+
+/* ---- TOTP 全局登录（提交⑥）---- */
+.login-page {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  padding: 20px;
+}
+.login-card {
+  width: 100%;
+  max-width: 340px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 28px 26px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+.login-title { margin: 0; font-size: 18px; font-weight: 650; text-align: center; }
+.login-subtitle { margin: 0 0 6px; font-size: 12.5px; color: var(--text-2); text-align: center; }
+.login-label { font-size: 12px; color: var(--text-3); }
+.login-input {
+  font-size: 20px;
+  letter-spacing: 6px;
+  text-align: center;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-s);
+  background: var(--bg);
+  color: var(--text);
+}
+.login-input:focus { outline: 2px solid color-mix(in srgb, var(--accent) 65%, transparent); outline-offset: 1px; }
+.login-error { margin: 0; font-size: 12px; color: var(--danger); }
+.login-submit {
+  margin-top: 4px;
+  padding: 9px 12px;
+  border: none;
+  border-radius: var(--radius-s);
+  background: var(--accent);
+  color: var(--bg);
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.login-submit:disabled { opacity: 0.5; cursor: default; }
+.login-switch {
+  background: none;
+  border: none;
+  padding: 2px;
+  font-size: 12px;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.login-switch:hover { filter: brightness(1.15); }
+
+/* 设置 → 远程访问：TOTP 向导与终端门槛 */
+.totp-wizard { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+.totp-qr { align-self: flex-start; padding: 8px; background: #fff; border-radius: var(--radius-s); line-height: 0; }
+.totp-qr svg { width: 180px; height: 180px; }
+.totp-code-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.totp-code-row input {
+  width: 140px;
+  padding: 6px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-s);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+}
+.totp-recovery-list {
+  margin: 0;
+  padding-left: 22px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 18px;
+  font-size: 13px;
+}
+.totp-gate-list { margin: 0 0 8px; padding-left: 4px; list-style: none; font-size: 12.5px; display: flex; flex-direction: column; gap: 4px; }
