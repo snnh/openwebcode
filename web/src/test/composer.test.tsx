@@ -625,7 +625,7 @@ describe("Composer", () => {
     expect(onConfig).toHaveBeenCalledWith({ permissionMode: "yolo" });
   });
 
-  it("模式弹层：Swarm 开关写入会话配置，计划开关切换 agentMode，目标档禁用", () => {
+  it("模式弹层：Swarm 开关写入会话配置，计划/目标开关切换互斥的 agentMode", () => {
     const onConfig = vi.fn();
     render(<Harness onSend={vi.fn()} onConfig={onConfig} />);
     fireEvent.click(screen.getByRole("button", { name: "模式" }));
@@ -633,9 +633,21 @@ describe("Composer", () => {
     expect(onConfig).toHaveBeenCalledWith({ swarmEnabled: true });
     fireEvent.click(screen.getByRole("checkbox", { name: "计划" }));
     expect(onConfig).toHaveBeenCalledWith({ agentMode: "plan" });
-    // 目标为占位：开关禁用且带「即将推出」标记
-    expect(screen.getByRole("checkbox", { name: "目标" })).toBeDisabled();
-    expect(screen.getByText("即将推出")).toBeInTheDocument();
+    // 目标开关已启用：不再禁用、无「即将推出」标记，勾选写入 agentMode: "goal"
+    const goal = screen.getByRole("checkbox", { name: "目标" });
+    expect(goal).toBeEnabled();
+    expect(screen.queryByText("即将推出")).not.toBeInTheDocument();
+    fireEvent.click(goal);
+    expect(onConfig).toHaveBeenCalledWith({ agentMode: "goal" });
+  });
+
+  it("模式弹层：agentMode 为 goal 时目标开关开、计划开关关（后端单值存储天然互斥）", () => {
+    render(<Harness onSend={vi.fn()} current={{ ...session, agentMode: "goal" }} />);
+    fireEvent.click(screen.getByRole("button", { name: "模式" }));
+    expect(screen.getByRole("checkbox", { name: "目标" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "计划" })).not.toBeChecked();
+    // 触发按钮徽标展示当前模式
+    expect(screen.getByRole("button", { name: "模式" })).toHaveTextContent("目标");
   });
 });
 

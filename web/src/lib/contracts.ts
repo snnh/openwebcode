@@ -182,7 +182,7 @@ export interface Session {
   model: string;
   thinking?: "adaptive" | "enabled" | "disabled";
   effort?: "low" | "medium" | "high" | "xhigh" | "max";
-  agentMode?: "plan" | "build";
+  agentMode?: "plan" | "build" | "goal";
   permissionMode?: PermissionMode;
   sandboxMode?: SandboxMode;
   snapshotMode?: SnapshotMode;
