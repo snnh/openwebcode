@@ -107,8 +107,13 @@ static int socket_streams(intptr_t socket_handle, FILE **input, FILE **output) {
     *output=fdopen(duplicate,"w");
 #endif
     if (!*input || !*output) {
-        if (*input) fclose(*input);
-        if (*output) fclose(*output);
+#ifdef _WIN32
+        if (*input) fclose(*input); else _close(fd);
+        if (*output) fclose(*output); else _close(duplicate);
+#else
+        if (*input) fclose(*input); else close((int)socket_handle);
+        if (*output) fclose(*output); else close(duplicate);
+#endif
         return 0;
     }
     /* Responses must reach the host immediately; stdio defaults to full buffering on pipes/sockets. */

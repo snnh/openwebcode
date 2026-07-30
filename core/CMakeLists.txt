@@ -44,6 +44,7 @@ if(BUILD_TESTING)
     add_test(NAME fs COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_fs.py $<TARGET_FILE:owc-exec>)
     add_test(NAME index-scan COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_index_scan.py $<TARGET_FILE:owc-exec>)
     add_test(NAME search-job COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_search_job.py $<TARGET_FILE:owc-exec>)
+    add_test(NAME abs-path COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_abs_path.py $<TARGET_FILE:owc-exec>)
     add_test(NAME index-extract COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_index_extract.py $<TARGET_FILE:owc-exec>)
 
     add_executable(test-path-policy tests/test_path_policy.c src/path_policy.c)
