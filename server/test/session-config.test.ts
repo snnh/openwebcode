@@ -82,4 +82,33 @@ describe("session model config", () => {
       expect(timeline.json().entries).toEqual(expect.arrayContaining([expect.objectContaining({ id: second.id, parentId: first.id, runId: "run-test", turnId: "run-test:0" })]));
     } finally { await app.close(); }
   });
+
+  it("accepts review permission mode, persists reviewModel, rejects invalid values", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-session-review-")); roots.push(root);
+    const sessions = new SessionStore(path.join(root, "sessions")); await sessions.initialize();
+    const provider: Provider = { name: "anthropic", async *streamChat() { yield { type: "done", stopReason: "end_turn" }; } };
+    const providers = new ProviderRegistry(); providers.register(provider);
+    const pricing = new PricingCatalog(path.join(root, "pricing.json")); await pricing.initialize();
+    const agent = { isRunning: () => false } as AgentRunner;
+    const app = await buildServer({ core: {} as CoreClient, sessions, agent, events: new EventBus(), providers, pricing });
+    try {
+      const session = await sessions.create({ cwd: root, provider: "anthropic", model: "deepseek-chat" });
+      const ok = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { permissionMode: "review", reviewModel: "fast" } });
+      expect(ok.statusCode).toBe(200);
+      expect(ok.json()).toMatchObject({ permissionMode: "review", reviewModel: "fast" });
+      expect(await sessions.get(session.id)).toMatchObject({ permissionMode: "review", reviewModel: "fast" });
+      // 无清除语义：后续 PUT 不带 reviewModel 时保留旧值
+      const main = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { reviewModel: "main" } });
+      expect(main.statusCode).toBe(200);
+      const inherit = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { permissionMode: "ask" } });
+      expect(inherit.statusCode).toBe(200);
+      expect(await sessions.get(session.id)).toMatchObject({ permissionMode: "ask", reviewModel: "main" });
+      const badMode = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { permissionMode: "auto" } });
+      expect(badMode.statusCode).toBe(400);
+      expect(badMode.json().error).toContain("review");
+      const badReviewModel = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { reviewModel: "slow" } });
+      expect(badReviewModel.statusCode).toBe(400);
+      expect(badReviewModel.json().error).toBe('reviewModel must be "fast" or "main"');
+    } finally { await app.close(); }
+  });
 });

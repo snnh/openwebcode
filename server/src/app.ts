@@ -100,6 +100,8 @@ interface SessionConfigBody {
   persona?: string;
   /** 并行子代理（spawn_swarm）开关。 */
   swarmEnabled?: boolean;
+  /** review 权限模式的审核模型来源；仅显式提供时更新。 */
+  reviewModel?: "fast" | "main";
 }
 
 interface BudgetBody {
@@ -1338,7 +1340,12 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       return reply.code(400).send({ error: "swarmEnabled must be a boolean" });
     }
     const permissionMode = request.body?.permissionMode ?? session.permissionMode ?? "ask";
-    if (!["ask", "acceptEdits", "yolo"].includes(permissionMode)) return reply.code(400).send({ error: "permissionMode must be ask, acceptEdits, or yolo" });
+    if (!["ask", "acceptEdits", "review", "yolo"].includes(permissionMode)) return reply.code(400).send({ error: "permissionMode must be ask, acceptEdits, review, or yolo" });
+    // review 模式的审核模型来源：仅显式提供时更新（无清除语义）
+    const reviewModel = request.body && "reviewModel" in request.body ? request.body.reviewModel ?? undefined : session.reviewModel;
+    if (reviewModel !== undefined && !["fast", "main"].includes(reviewModel)) {
+      return reply.code(400).send({ error: 'reviewModel must be "fast" or "main"' });
+    }
     const touchesSandbox = Boolean(request.body && ("sandboxMode" in request.body || "setupScript" in request.body));
     if (touchesSandbox) {
       const sandboxModeError = validateSandboxMode(request.body?.sandboxMode);
@@ -1351,7 +1358,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       // WSB 的启动脚本和模式只在虚拟机启动时生效，切换前先释放旧实例。
       await core.release?.(session.id);
     }
-    await sessions.updateConfig(request.params.id, { provider, model, ...(thinking ? { thinking } : {}), ...(effort ? { effort } : {}), ...(agentMode ? { agentMode } : {}), ...(snapshotMode ? { snapshotMode } : {}), ...(shellBackend ? { shellBackend } : {}), ...(pythonEnv ? { pythonEnv } : {}), ...(persona !== undefined ? { persona: persona.trim() } : {}), ...(swarmEnabled === true ? { swarmEnabled: true } : {}) });
+    await sessions.updateConfig(request.params.id, { provider, model, ...(thinking ? { thinking } : {}), ...(effort ? { effort } : {}), ...(agentMode ? { agentMode } : {}), ...(snapshotMode ? { snapshotMode } : {}), ...(shellBackend ? { shellBackend } : {}), ...(pythonEnv ? { pythonEnv } : {}), ...(persona !== undefined ? { persona: persona.trim() } : {}), ...(swarmEnabled === true ? { swarmEnabled: true } : {}), ...(reviewModel ? { reviewModel } : {}) });
     let updated = await sessions.updatePermissions(request.params.id, permissionMode, session.permissionRules ?? []);
     if (touchesSandbox) {
       updated = await sessions.updateSandboxMode(request.params.id, request.body?.sandboxMode, request.body?.setupScript);

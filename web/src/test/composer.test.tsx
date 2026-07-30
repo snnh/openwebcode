@@ -606,16 +606,22 @@ describe("Composer", () => {
     expect(screen.getByText("图片输出")).toBeInTheDocument();
   });
 
-  it("权限弹层：三档选项带描述，选择写入 permissionMode", () => {
+  it("权限弹层：四档选项带描述，选择写入 permissionMode", () => {
     const onConfig = vi.fn();
     render(<Harness onSend={vi.fn()} onConfig={onConfig} />);
     fireEvent.click(screen.getByRole("button", { name: "权限模式" }));
-    // 三档：逐条确认（默认勾选）/ 自动通过 / 完全自主，均带描述
+    // 四档：逐条确认（默认勾选）/ 自动通过 / 模型审核 / 完全自主，均带描述
     expect(screen.getByRole("menuitemradio", { name: /逐条确认/ })).toBeInTheDocument();
-    expect(screen.getByRole("menuitemradio", { name: /自动通过/ })).toBeInTheDocument();
+    expect(screen.getByRole("menuitemradio", { name: /^自动通过/ })).toBeInTheDocument();
+    const review = screen.getByRole("menuitemradio", { name: /模型审核/ });
+    expect(review).toHaveTextContent("低风险操作由快速模型自动通过");
     const yolo = screen.getByRole("menuitemradio", { name: /完全自主/ });
     expect(yolo).toHaveTextContent("不再询问");
-    fireEvent.click(yolo);
+    fireEvent.click(review);
+    expect(onConfig).toHaveBeenCalledWith({ permissionMode: "review" });
+    // 选中后弹层关闭，重新打开再选完全自主
+    fireEvent.click(screen.getByRole("button", { name: "权限模式" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /完全自主/ }));
     expect(onConfig).toHaveBeenCalledWith({ permissionMode: "yolo" });
   });
 
