@@ -17,6 +17,8 @@ export interface QueueItem {
   updatedAt: string;
   requestId?: string;
   appliedMessageId?: string;
+  /** 注入来源标记（提交⑫ cron 定时任务）；旧 queue.json 无此字段，读取容忍 undefined。 */
+  source?: "cron";
 }
 
 interface QueueDocument {
@@ -31,14 +33,14 @@ export class MessageQueue {
 
   constructor(private readonly contextRoot: (sessionId: string) => string) {}
 
-  async enqueue(sessionId: string, kind: QueueKind, content: string, requestId?: string): Promise<{ item: QueueItem; position: number; reused: boolean }> {
+  async enqueue(sessionId: string, kind: QueueKind, content: string, requestId?: string, source?: "cron"): Promise<{ item: QueueItem; position: number; reused: boolean }> {
     return this.mutate(sessionId, (items) => {
       const existing = requestId ? items.find((item) => item.kind === kind && item.requestId === requestId) : undefined;
       if (existing) {
         return { item: clone(existing), position: items.filter((entry) => entry.kind === kind && entry.status === "queued").findIndex((entry) => entry.id === existing.id) + 1, reused: true };
       }
       const now = new Date().toISOString();
-      const item: QueueItem = { id: randomUUID(), sessionId, kind, content, status: "queued", createdAt: now, updatedAt: now, ...(requestId ? { requestId } : {}) };
+      const item: QueueItem = { id: randomUUID(), sessionId, kind, content, status: "queued", createdAt: now, updatedAt: now, ...(requestId ? { requestId } : {}), ...(source ? { source } : {}) };
       items.push(item);
       return { item: clone(item), position: items.filter((entry) => entry.kind === kind && entry.status === "queued").length, reused: false };
     });

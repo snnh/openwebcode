@@ -38,6 +38,7 @@ import { activePathMessages } from "./sessions/session-tree.js";
 import { defaultSandboxDenyPaths } from "./sessions/default-sandbox.js";
 import type { PermissionMode, PythonEnv, SandboxMode, ShellBackend, SnapshotMode, TextContent } from "./sessions/types.js";
 import type { SessionStore } from "./sessions/session-store.js";
+import type { CronScheduler } from "./cron-scheduler.js";
 import { SettingsValidationError, type SettingsService } from "./settings-service.js";
 import { getServerVersion, GITHUB_REPO } from "./version.js";
 import type { UpdateChecker } from "./update-checker.js";
@@ -201,6 +202,8 @@ export interface ServerDependencies {
   totp?: TotpAuthService;
   /** 监听地址（/api/auth/status 的终端门槛判定用）；缺省按 127.0.0.1 */
   listenHost?: string;
+  /** cron 定时任务调度器（提交⑫）；未注入时 /api/sessions/:id/cron 路由 501 */
+  cron?: CronScheduler;
 }
 
 function parseCookies(value: string | undefined): Map<string, string> {
@@ -2025,6 +2028,8 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       }
       // SessionEnd 钩子：删除前尽力触发（仅通知不阻断；服务停止不做复杂生命周期）
       if (dependencies.hooks) await dependencies.hooks.run("SessionEnd", { sessionId: request.params.id, cwd: detail.cwd });
+      // cron 定时任务级联删除（提交⑫）
+      await dependencies.cron?.deleteForSession(request.params.id).catch(() => undefined);
       if (!(await sessions.delete(request.params.id))) return reply.code(404).send({ error: "Session not found" });
       return reply.code(204).send();
     } finally {
@@ -2454,6 +2459,37 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   app.delete<{ Params: { id: string; steeringId: string } }>("/api/sessions/:id/steering/:steeringId", async (request, reply) => {
     if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
     if (!(await agent.removeSteering(request.params.id, request.params.steeringId))) return reply.code(404).send({ error: "Steering item not found" });
+    return reply.code(204).send();
+  });
+
+  // cron 定时任务（提交⑫）：调度/持久化在 CronScheduler，触发经 follow-up 队列注入
+  app.get<{ Params: { id: string } }>("/api/sessions/:id/cron", async (request, reply) => {
+    if (!dependencies.cron) return reply.code(501).send({ error: "Cron scheduler is not configured" });
+    if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
+    return dependencies.cron.list(request.params.id);
+  });
+  app.post<{ Params: { id: string }; Body: { cron?: string; prompt?: string; recurring?: boolean } }>("/api/sessions/:id/cron", async (request, reply) => {
+    if (!dependencies.cron) return reply.code(501).send({ error: "Cron scheduler is not configured" });
+    if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
+    const body = request.body;
+    if (!body || typeof body.cron !== "string" || typeof body.prompt !== "string" || (body.recurring !== undefined && typeof body.recurring !== "boolean")) {
+      return reply.code(400).send({ error: "cron (string) and prompt (string) are required; recurring must be a boolean" });
+    }
+    try {
+      const job = await dependencies.cron.create(request.params.id, {
+        cron: body.cron,
+        prompt: body.prompt,
+        ...(body.recurring === undefined ? {} : { recurring: body.recurring }),
+      });
+      return reply.code(201).send(job);
+    } catch (error) {
+      return reply.code(400).send({ error: errorMessage(error) });
+    }
+  });
+  app.delete<{ Params: { id: string; jobId: string } }>("/api/sessions/:id/cron/:jobId", async (request, reply) => {
+    if (!dependencies.cron) return reply.code(501).send({ error: "Cron scheduler is not configured" });
+    if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
+    if (!(await dependencies.cron.delete(request.params.id, request.params.jobId))) return reply.code(404).send({ error: "Cron job not found" });
     return reply.code(204).send();
   });
 
