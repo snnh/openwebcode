@@ -96,7 +96,6 @@ void owc_fs_platform_set_deny_roots(const char *const *roots,size_t count){
 }
 static int final_path_denied(const wchar_t *final){size_t i;char *resolved;const wchar_t *bare=final;if(wcsncmp(final,L"\\\\?\\",4)==0)bare=final+4;resolved=utf8(bare);if(!resolved)return 0;for(i=0;i<deny_root_count;i++)if(owc_path_is_within(resolved,deny_roots[i])){free(resolved);return 1;}free(resolved);return 0;}
 static int prefix(const wchar_t*p,const wchar_t*r){size_t n=wcslen(r);return _wcsnicmp(p,r,n)==0&&(p[n]==0||p[n]==L'\\');}
-static wchar_t *last_separator(wchar_t *path){wchar_t *back=wcsrchr(path,L'\\'),*forward=wcsrchr(path,L'/');if(!back)return forward;if(!forward)return back;return forward>back?forward:back;}
 static void trim_canonical_separator(wchar_t *path){
     size_t n=wcslen(path);
     while(n&&(path[n-1]==L'\\'||path[n-1]==L'/'))path[--n]=0;
@@ -147,19 +146,19 @@ static owc_fs_error canonical_root(wchar_t **root){
     CloseHandle(h);free(*root);*root=final;
     return OWC_FS_OK;
 }
-static owc_fs_error paths(const char *root,const char *path,wchar_t **rw,wchar_t **pw){wchar_t *r=wide(root),*p=wide(path),*full;DWORD n;owc_fs_error e;if(!r||!p){free(r);free(p);return OWC_FS_INVALID_UTF8;}if(wcsstr(p,L"..")||p[0]==L'\\'||(p[0]&&p[1]==L':')){free(r);free(p);return OWC_FS_OUTSIDE_ROOT;}n=GetFullPathNameW(r,0,NULL,NULL);full=(wchar_t*)malloc(((size_t)n+1)*sizeof(*full));if(!full||!GetFullPathNameW(r,n+1,full,NULL)){free(r);free(p);free(full);return OWC_FS_IO_ERROR;}free(r);r=full;
+static owc_fs_error paths(const char *root,const char *path,wchar_t **rw,wchar_t **pw){wchar_t *r=wide(root),*p=wide(path),*full;DWORD n;owc_fs_error e;int absolute;if(!r||!p){free(r);free(p);return OWC_FS_INVALID_UTF8;}absolute=p[0]&&p[1]==L':'&&p[2]&&(p[2]==L'\\'||p[2]==L'/');if(wcsstr(p,L"..")||p[0]==L'\\'||(p[0]&&p[1]==L':'&&!absolute)){free(r);free(p);return OWC_FS_OUTSIDE_ROOT;}n=GetFullPathNameW(r,0,NULL,NULL);full=(wchar_t*)malloc(((size_t)n+1)*sizeof(*full));if(!full||!GetFullPathNameW(r,n+1,full,NULL)){free(r);free(p);free(full);return OWC_FS_IO_ERROR;}free(r);r=full;
     /* GetFinalPathNameByHandleW expands 8.3 components (for example
        C:\\Users\\RUNNER~1 on GitHub runners).  Expand the configured root as
        well before comparing the two paths, otherwise a valid child is
        incorrectly reported as escaping the workspace. */
-    full=(wchar_t*)malloc((wcslen(r)+wcslen(p)+2)*sizeof(*full));if(!full){free(r);free(p);return OWC_FS_NO_MEMORY;}wcscpy(full,r);wcscat(full,L"\\");wcscat(full,p);free(p);
+    /* Absolute paths were already checked against the session roots by the RPC layer; skip the root join and let the handle-canonical prefix check below enforce the boundary. */full=absolute?_wcsdup(p):(wchar_t*)malloc((wcslen(r)+wcslen(p)+2)*sizeof(*full));if(!full){free(r);free(p);return OWC_FS_NO_MEMORY;}if(!absolute){wcscpy(full,r);wcscat(full,L"\\");wcscat(full,p);}free(p);
     /* FILE_FLAG_OPEN_REPARSE_POINT on the final open guards only the leaf:
        reject reparse points in intermediate components below the root as
        well, otherwise a junction such as root\link would silently redirect
        the open outside the verified directory tree.  The walk starts past
        the root itself: canonical_root below owns the root reparse verdict
        (a genuine volume mount point is admitted there). */
-    {wchar_t *cursor=full+wcslen(r)+1;
+    {wchar_t *cursor=full+(absolute?3:wcslen(r)+1);
      for(;*cursor;cursor++){if(*cursor!=L'\\'&&*cursor!=L'/')continue;{HANDLE component;DWORD attr=0;*cursor=0;
         component=CreateFileW(full,0,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,NULL,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT|FILE_FLAG_BACKUP_SEMANTICS,NULL);
         if(component==INVALID_HANDLE_VALUE){*cursor=L'\\';break;}

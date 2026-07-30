@@ -110,7 +110,7 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
     child = fork();
     if (child < 0) {
         result->system_error = (unsigned long)errno;
-        close_fd(&out_pipe[0]); close_fd(&out_pipe[1]); close_fd(&err_pipe[0]); close_fd(&err_pipe[1]);
+        close_fd(&out_pipe[0]); close_fd(&out_pipe[1]); close_fd(&err_pipe[0]); close_fd(&err_pipe[1]); close_fd(&sandbox_pipe[0]); close_fd(&sandbox_pipe[1]);
         return 0;
     }
     if (child == 0) {

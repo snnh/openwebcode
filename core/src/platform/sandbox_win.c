@@ -189,6 +189,7 @@ static int grant_temporary(owc_sandbox *sandbox, const wchar_t *path,
     return 1;
 }
 
+#ifndef OWC_SANDBOX_TEST_SKIP_ANCESTORS
 static int grant_ancestor_traverse(owc_sandbox *sandbox, const char *root) {
     wchar_t *path = utf8_to_wide(root);
     size_t length;
@@ -219,6 +220,7 @@ static int grant_ancestor_traverse(owc_sandbox *sandbox, const char *root) {
     free(path);
     return ok;
 }
+#endif
 
 static int grant_write_roots(owc_sandbox *sandbox,
                              const owc_sandbox_options *options,
