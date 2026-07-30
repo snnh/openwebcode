@@ -46,6 +46,8 @@ async function setupSwarm(input: Record<string, unknown>, failOn?: string, optio
   const sessions = new SessionStore(path.join(root, "sessions"));
   await sessions.initialize();
   const session = await sessions.create({ cwd: root, provider: "fake", model: "test-model" });
+  // spawn_swarm 为会话级开关（默认关）：本套 fixture 全部显式开启
+  await sessions.updateConfig(session.id, { provider: "fake", model: "test-model", swarmEnabled: true });
   const pricing = new PricingCatalog(path.join(root, "pricing.json"));
   await pricing.initialize();
   const events = new EventBus();
@@ -262,5 +264,25 @@ describe("spawn_swarm via AgentRunner", () => {
     expect(tasks).toHaveLength(4);
     expect(tasks?.map((task) => task.index).sort()).toEqual([0, 1, 2, 3]);
     expect(tasks?.every((task) => task.status === "failed")).toBe(true);
+  });
+
+  it("is gated by the session swarm switch: hidden by default, advertised with guidance when enabled", async () => {
+    // 默认关：工具不出现在 provider 请求中，调用按「本轮不可用」回绝
+    const off = await setupSwarm({ prompt_template: "评审 {{item}}", items: ["a"] });
+    await off.sessions.updateConfig(off.sessionId, { provider: "fake", model: "test-model" });
+    await off.runner.run(off.sessionId, "试试 swarm");
+    const offTools = (off.requests.find((request) => !request.system.includes("exploration sub-agent"))?.tools ?? []).map((tool) => tool.name);
+    expect(offTools).not.toContain("spawn_swarm");
+    const offResult = await swarmToolResult(off);
+    expect(offResult).toMatchObject({ isError: true });
+    expect((offResult as { content: string }).content).toContain("Tool is not available in this turn");
+
+    // 开启：工具注入且系统提示含并行探索鼓励段落
+    const on = await setupSwarm({ prompt_template: "评审 {{item}}", items: ["a", "b"] });
+    await on.runner.run(on.sessionId, "试试 swarm");
+    const main = on.requests.find((request) => !request.system.includes("exploration sub-agent"));
+    expect((main?.tools ?? []).map((tool) => tool.name)).toContain("spawn_swarm");
+    expect(main?.system).toContain("Parallel exploration");
+    expect((await swarmToolResult(on))).toMatchObject({ isError: false });
   });
 });

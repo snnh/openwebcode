@@ -38,7 +38,7 @@ export class McpManager {
   private readonly sweeper: NodeJS.Timeout;
 
   constructor(private readonly dataDir: string, private readonly options: { idleMs?: number; timeoutMs?: number; sweepMs?: number } = {}) {
-    this.sweeper = setInterval(() => void this.sweepIdle(), this.options.sweepMs ?? 60_000);
+    this.sweeper = setInterval(() => void this.sweepIdle().catch(() => { /* idle sweep errors are non-fatal */ }), this.options.sweepMs ?? 60_000);
     this.sweeper.unref();
   }
 
@@ -50,7 +50,7 @@ export class McpManager {
     const workspaceEntries = this.entriesByCwd.get(canonicalCwd);
     for (const [name, entry] of workspaceEntries ?? []) {
       if (!servers[name]) {
-        void entry.client?.close();
+        void entry.client?.close().catch(() => { /* close errors are non-fatal during cleanup */ });
         workspaceEntries!.delete(name);
       }
     }

@@ -1,11 +1,11 @@
 /**
  * Shared HTTP helpers for outbound requests. All outbound network stays in the
  * Node layer (per the project boundary rules); this module injects the project
- * User-Agent consistently and centralizes a small JSON-fetch wrapper.
+ * User-Agent consistently.
  *
  * This does NOT replace SSRF / redirect / response-size boundaries -- those
  * remain enforced at each call site (notably `web-tools.ts`). It only adds the
- * UA header and an optional timeout so every outbound request identifies itself.
+ * UA header so every outbound request identifies itself.
  */
 import { buildUserAgent, getServerVersion } from "./version.js";
 

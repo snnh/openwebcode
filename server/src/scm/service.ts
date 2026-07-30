@@ -233,7 +233,7 @@ export class ScmService {
     try {
       await this.core.startJob({ sessionId: context.sessionId, jobId, kind: "exec", cmd, cwd, timeoutMs: GIT_JOB_TIMEOUT_MS, shellBackend: context.shellBackend });
       for (;;) {
-        const page = await this.core.jobOutput({ sessionId: context.sessionId, jobId, afterSeq, limit: 256 });
+        const page = await this.core.jobOutput({ sessionId: context.sessionId, jobId, afterSeq, limit: 128 });
         output.push(...page.chunks);
         afterSeq = page.nextSeq;
         const status = await this.core.jobStatus({ sessionId: context.sessionId, jobId });
@@ -241,7 +241,7 @@ export class ScmService {
           await new Promise<void>((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
           continue;
         }
-        const tail = await this.core.jobOutput({ sessionId: context.sessionId, jobId, afterSeq, limit: 256 });
+        const tail = await this.core.jobOutput({ sessionId: context.sessionId, jobId, afterSeq, limit: 128 });
         output.push(...tail.chunks);
         if (status.state === "cancelled" || status.state === "timed_out") {
           throw new Error(status.error ?? `git job ${status.state}`);
