@@ -69,7 +69,6 @@ export function PermissionCard({ permission, sessionId, onDone, onError }: {
         if (event.key === "Escape") cancelConfirm();
       }}
     >
-      <span className="track-node" aria-hidden />
       <div className="message-meta">{t("需要你的确认", "Your confirmation is required")}</div>
       <h2 id={titleId}>{t("允许执行", "Allow")} <b className="mono">{permission.tool}</b>{t(" 吗？", "?")}</h2>
       {summary && <p className="tool-summary mono" title={summary}>{summary}</p>}

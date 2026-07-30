@@ -9,6 +9,9 @@ import { TimelinePanel } from "../components/panels/TimelinePanel";
 import { api } from "../lib/api";
 import type { ChatMessage, SessionDetail, SessionTimeline } from "../lib/contracts";
 
+// ComposerChips 走 react-query；直接渲染 Composer 的用例不需要真实芯片
+vi.mock("../components/ComposerChips", () => ({ ComposerChips: () => null }));
+
 function textMessage(id: string, role: ChatMessage["role"], text: string): ChatMessage {
   return { id, role, createdAt: "2026-07-20T00:00:00.000Z", content: [{ type: "text", text }] };
 }
