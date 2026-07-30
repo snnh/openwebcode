@@ -87,6 +87,8 @@ describe("MessageCard", () => {
       </QueryClientProvider>,
     );
 
+    // 工具结果默认折叠为单行：先展开工具行，转录查看器在展开区内
+    fireEvent.click(container.querySelector(".tool-row-header")!);
     const details = container.querySelector("details.subagent-transcript");
     expect(details).toBeInTheDocument();
     expect(spy).not.toHaveBeenCalled();
@@ -134,6 +136,8 @@ describe("MessageCard", () => {
       </QueryClientProvider>,
     );
 
+    // 工具结果默认折叠为单行：先展开工具行，转录查看器在展开区内
+    fireEvent.click(container.querySelector(".tool-row-header")!);
     const details = container.querySelector("details.subagent-transcript")!;
     (details as HTMLDetailsElement).open = true;
     fireEvent(details, new Event("toggle"));
