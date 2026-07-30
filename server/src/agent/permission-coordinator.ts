@@ -99,6 +99,19 @@ export function permissionRule(tool: string, input: Record<string, unknown>): Pe
   return { tool };
 }
 
+/**
+ * bash 规则的词边界前缀匹配（提交⑨）：`npm test` 规则放行 `npm test -- --watch`，
+ * 不放行 `npm testx`。前缀之后的剩余串若含 shell 控制元字符（管道/连接/重定向/
+ * 命令替换/换行）则不适用前缀语义，回退整串精确——否则「总是允许 npm test」会
+ * 连带放行 `npm test && curl evil`。
+ */
+const SHELL_CONTROL_CHARS = /[&|;><`\n]|\$\(/;
+function matchesBashRule(prefix: string, value: string): boolean {
+  if (value === prefix) return true;
+  if (!value.startsWith(`${prefix} `)) return false;
+  return !SHELL_CONTROL_CHARS.test(value.slice(prefix.length + 1));
+}
+
 function matchesRule(rule: PermissionRule, tool: string, input: Record<string, unknown>): boolean {
   if (rule.tool !== tool) return false;
   if (rule.argumentPrefix === undefined) return true;
@@ -108,6 +121,6 @@ function matchesRule(rule: PermissionRule, tool: string, input: Record<string, u
   }
   const value = tool === "bash" ? input.cmd : input.path;
   if (typeof value !== "string") return false;
-  if (tool === "bash") return value === rule.argumentPrefix;
+  if (tool === "bash") return matchesBashRule(rule.argumentPrefix, value);
   return value === rule.argumentPrefix || value.startsWith(`${rule.argumentPrefix}/`);
 }

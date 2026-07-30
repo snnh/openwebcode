@@ -84,7 +84,8 @@ export function PermissionCard({ permission, sessionId, onDone, onError }: {
       />
       <div className="permission-actions">
         <button ref={allowOnceRef} className="btn primary" disabled={pending} onClick={() => { cancelConfirm(); decide("allow"); }}>{t("允许一次", "Allow once")}</button>
-        <button className={`btn${confirmAlways ? " danger" : ""}`} disabled={pending} onClick={clickAllowAlways}>
+        <button className={`btn${confirmAlways ? " danger" : ""}`} disabled={pending} onClick={clickAllowAlways}
+          {...(permission.tool === "bash" ? { title: t("对 bash 命令按词边界前缀生效：允许「npm test」将同时放行「npm test -- --watch」等追加参数的调用", "For bash this applies as a word-boundary prefix: allowing \"npm test\" also allows calls with extra arguments like \"npm test -- --watch\"") } : {})}>
           {confirmAlways ? t("确认总是允许？", "Confirm always allow?") : t("总是允许", "Always allow")}
         </button>
         <button className="btn danger" disabled={pending} onClick={() => { cancelConfirm(); decide("deny"); }}>{t("拒绝", "Deny")}</button>
