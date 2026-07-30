@@ -81,8 +81,10 @@ export function useSessionEventStream({ sessionId, onEvent, onDisconnect }: Sess
         }
         onEventRef.current(event);
       };
-      socket.onclose = () => {
+      socket.onclose = (event) => {
         if (disposed) return;
+        // 1008 = 服务端拒绝握手（如 TOTP 登录失效）：停止退避重连，交由 API 401 拦截统一回落登录页
+        if (event?.code === 1008) return;
         if (bannerTimer === undefined) {
           bannerTimer = window.setTimeout(() => {
             bannerTimer = undefined;

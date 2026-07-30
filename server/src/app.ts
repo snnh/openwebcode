@@ -20,6 +20,7 @@ import { boundToolResult } from "./context/tool-result-budget.js";
 import { errorMessage } from "./error-utils.js";
 import type { ServerConfig } from "./config.js";
 import { isLoopbackHost } from "./config.js";
+import { TotpAuthService, TOTP_TICKET_TTL_MS, isLoopbackOrLAN } from "./auth-totp.js";
 import { getModelProfile, listModelProfiles, type Currency, type EffortLevel, type ModelModality, type ModelPricing, type ModelProfile, type ThinkingMode } from "./context/model-profile.js";
 import { lookupModelMetadata } from "./context/model-metadata.js";
 import type { CatalogModel, ModelRegistry } from "./context/model-registry.js";
@@ -196,6 +197,10 @@ export interface ServerDependencies {
   updateApplier?: UpdateApplier;
   /** 数据目录（提示词覆盖 REST 读写需要）；未注入时 /api/prompt 返回 501 */
   dataDir?: string;
+  /** TOTP 全局登录认证（提交⑥）；未注入或默认关闭时门禁完全不生效 */
+  totp?: TotpAuthService;
+  /** 监听地址（/api/auth/status 的终端门槛判定用）；缺省按 127.0.0.1 */
+  listenHost?: string;
 }
 
 function parseCookies(value: string | undefined): Map<string, string> {
@@ -362,6 +367,19 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   });
   const auth = dependencies.auth;
   const isAuthorized = (request: { headers: Record<string, string | string[] | undefined>; query?: unknown }, allowQueryToken = false) => !auth || safeTokenEqual(auth.accessToken, requestToken(request, allowQueryToken));
+  // TOTP 全局登录（提交⑥）：与 OWC_ACCESS_TOKEN 并存。bearer 通道仅在配置了 access token 时存在；
+  // totpEnabled 时 /api/** 与 WS 要求有效 TOTP 票据 cookie 或有效 bearer token。
+  const totp = dependencies.totp;
+  const listenHost = dependencies.listenHost ?? "127.0.0.1";
+  const totpGateEnabled = (): boolean => totp !== undefined && totp.enabled();
+  const bearerAuthorized = (request: { headers: Record<string, string | string[] | undefined>; query?: unknown }, allowQueryToken = false): boolean =>
+    auth !== undefined && safeTokenEqual(auth.accessToken, requestToken(request, allowQueryToken));
+  const totpTicketOf = (request: { headers: Record<string, string | string[] | undefined> }): string | undefined =>
+    parseCookies(typeof request.headers.cookie === "string" ? request.headers.cookie : undefined).get("owc_totp_session");
+  const totpAuthenticated = (request: { headers: Record<string, string | string[] | undefined> }): boolean =>
+    totp !== undefined && totp.validateTicket(totpTicketOf(request));
+  const totpCookieHeader = (token: string): string =>
+    `owc_totp_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${Math.floor(TOTP_TICKET_TTL_MS / 1_000)}`;
   const originAllowed = (origin: string | undefined, nativeClient: boolean) => {
     if (auth) return origin ? auth.allowedOrigins.includes(origin) : nativeClient;
     // 无认证（loopback 监听）模式：浏览器 Origin 必须指向本机，否则任意网页可跨域 WS 读取全部会话事件；
@@ -409,9 +427,34 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
         return;
       }
       if (isAuthorized(request)) return;
+      // TOTP 已启用：/api/auth/* 匿名可达（登录入口）；有效 TOTP 票据与 bearer 并存放行
+      if (totpGateEnabled()) {
+        const pathname = request.url.split("?", 1)[0] ?? "";
+        if (pathname.startsWith("/api/auth/")) return;
+        if (totpAuthenticated(request)) return;
+      }
       return reply.code(401).send({ error: "Authentication required" });
     });
   }
+  // TOTP 全局登录门禁：除 /api/auth/*、/api/health 与静态资源外，/api/** 一律要求有效
+  // TOTP 票据 cookie 或有效 bearer token；未启用（默认）时完全不生效。WS 升级不在此拦截，
+  // 由 /api/events 路由守卫以 1008 关闭（与既有 origin/token 拒绝一致）。
+  app.addHook("onRequest", async (request, reply) => {
+    if (!totpGateEnabled()) return;
+    if (!request.url.startsWith("/api/")) return;
+    const upgrade = Array.isArray(request.headers.upgrade) ? request.headers.upgrade[0] : request.headers.upgrade;
+    if (upgrade?.toLowerCase() === "websocket") return;
+    const pathname = request.url.split("?", 1)[0] ?? "";
+    if (pathname === "/api/health" || pathname.startsWith("/api/auth/")) return;
+    if (bearerAuthorized(request)) return;
+    if (totpAuthenticated(request)) {
+      // 滑动续期：同步刷新 cookie Max-Age
+      const ticket = totpTicketOf(request);
+      if (ticket) reply.header("set-cookie", totpCookieHeader(ticket));
+      return;
+    }
+    return reply.code(401).send({ error: "Authentication required" });
+  });
   // 会话导入走 ndjson/纯文本原文，不经 JSON 解析
   app.addContentTypeParser(["application/x-ndjson", "text/plain"], { parseAs: "string" }, (_request, body, done) => done(null, body));
   await app.register(websocket);
@@ -560,6 +603,74 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   });
 
   app.get("/api/health", async () => ({ status: "ok" }));
+
+  // ---- TOTP 全局登录认证（提交⑥）：/api/auth/* 全组匿名可达（门禁豁免），登录限流在服务端内存 ----
+  app.get("/api/auth/status", async (request) => {
+    const enabled = totpGateEnabled();
+    const lanOrLoopback = isLoopbackOrLAN(listenHost);
+    const gateReasons: string[] = [];
+    if (!enabled) gateReasons.push("totp_disabled");
+    if (!lanOrLoopback) gateReasons.push("host_not_loopback_or_lan");
+    return {
+      totpEnabled: enabled,
+      authenticated: enabled ? totpAuthenticated(request) || bearerAuthorized(request) : true,
+      // 终端门槛（提交⑦预埋，本提交只暴露状态）：TOTP 已开启 且 监听地址回环或局域网
+      terminalAvailable: enabled && lanOrLoopback,
+      gateReasons,
+    };
+  });
+  app.post("/api/auth/totp/setup", async (request, reply) => {
+    if (!totp) return reply.code(501).send({ error: "TOTP is unavailable" });
+    // 已启用时重设必须先通过现有认证（票据或 bearer），避免被匿名重置后顶替登录
+    if (totp.enabled() && !totpAuthenticated(request) && !bearerAuthorized(request)) {
+      return reply.code(401).send({ error: "Authentication required" });
+    }
+    return totp.beginSetup();
+  });
+  app.post<{ Body: { code?: string } }>("/api/auth/totp/confirm", async (request, reply) => {
+    if (!totp) return reply.code(501).send({ error: "TOTP is unavailable" });
+    if (totp.enabled() && !totpAuthenticated(request) && !bearerAuthorized(request)) {
+      return reply.code(401).send({ error: "Authentication required" });
+    }
+    const code = request.body?.code;
+    if (typeof code !== "string") return reply.code(400).send({ error: "code is required" });
+    const recoveryCodes = await totp.confirmSetup(code);
+    if (!recoveryCodes) return reply.code(400).send({ error: "Invalid code" });
+    // 恢复码明文仅此一次返回
+    return { recoveryCodes };
+  });
+  app.post<{ Body: { code?: string } }>("/api/auth/totp/disable", async (request, reply) => {
+    if (!totp || !totp.enabled()) return reply.code(400).send({ error: "TOTP is not enabled" });
+    if (!totpAuthenticated(request) && !bearerAuthorized(request)) {
+      return reply.code(401).send({ error: "Authentication required" });
+    }
+    const code = request.body?.code;
+    if (typeof code !== "string") return reply.code(400).send({ error: "code is required" });
+    if (!(await totp.disable(code))) return reply.code(400).send({ error: "Invalid code" });
+    return { ok: true };
+  });
+  app.post<{ Body: { code?: string } }>("/api/auth/login", async (request, reply) => {
+    if (!totp || !totp.enabled()) return reply.code(400).send({ error: "TOTP is not enabled" });
+    const lockedSeconds = totp.loginLockedSeconds(request.ip);
+    if (lockedSeconds > 0) return reply.code(429).send({ error: "Too many attempts", retryAfterSeconds: lockedSeconds });
+    const code = request.body?.code;
+    if (typeof code !== "string" || code.trim() === "") return reply.code(400).send({ error: "code is required" });
+    if (!(await totp.verifyLogin(code))) {
+      totp.recordLoginFailure(request.ip);
+      const nowLocked = totp.loginLockedSeconds(request.ip);
+      return reply.code(401).send({ error: "Invalid code", ...(nowLocked > 0 ? { retryAfterSeconds: nowLocked } : {}) });
+    }
+    totp.recordLoginSuccess(request.ip);
+    const ticket = totp.issueTicket();
+    reply.header("set-cookie", totpCookieHeader(ticket));
+    return { ok: true };
+  });
+  app.post("/api/auth/logout", async (request, reply) => {
+    totp?.revokeTicket(totpTicketOf(request));
+    reply.header("set-cookie", "owc_totp_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0");
+    return { ok: true };
+  });
+
   app.get("/api/metrics", async () => ({ events: events.stats(), websocket: { clients: clients.size, slowClientDisconnects, failedClientSends } }));
   app.get("/api/core", async () => core.ping());
   app.get("/api/version", async () => {
@@ -2350,7 +2461,11 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   app.get<{ Querystring: { after?: string; sessionId?: string } }>("/api/events", { websocket: true }, (socket, request) => {
     const origin = typeof request.headers.origin === "string" ? request.headers.origin : undefined;
     const nativeClient = request.headers["x-openwebcode-client"] === "cli";
-    if (!isAuthorized(request, true) || !originAllowed(origin, nativeClient) || !hostAllowed(request.headers.host)) {
+    // TOTP 已启用：有效票据 cookie 或 bearer 均可；未启用时保持既有判定
+    const credentialOk = totpGateEnabled()
+      ? bearerAuthorized(request, true) || totpAuthenticated(request)
+      : isAuthorized(request, true);
+    if (!credentialOk || !originAllowed(origin, nativeClient) || !hostAllowed(request.headers.host)) {
       socket.close(1008, "Unauthorized origin or token");
       return;
     }
