@@ -9,6 +9,8 @@ export type SandboxCapability = "advisory" | "partial" | "enforced";
 export type SandboxMode = "appcontainer" | "wsb" | "jobobject" | "off";
 export type SnapshotMode = "auto" | "manual";
 export type ShellBackend = "default" | "pwsh";
+/** Python 运行环境：global = 本机环境；uv-workspace/uv-config = uv 临时虚拟环境（工作区/配置目录）。 */
+export type PythonEnv = "global" | "uv-workspace" | "uv-config";
 
 export interface SandboxCapabilities {
   appcontainer: boolean;
@@ -185,6 +187,7 @@ export interface Session {
   sandboxMode?: SandboxMode;
   snapshotMode?: SnapshotMode;
   shellBackend?: ShellBackend;
+  pythonEnv?: PythonEnv;
   setupScript?: string;
   /** 选择性上下文：pin 的消息 id/文件路径（不被驱逐）。 */
   contextPins?: string[];

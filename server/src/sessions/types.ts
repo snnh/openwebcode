@@ -68,6 +68,8 @@ export type SandboxMode = "appcontainer" | "wsb" | "jobobject" | "off";
 export type SnapshotMode = "auto" | "manual";
 /** 命令解释器后端；default 使用平台默认 shell，pwsh 强制使用 PowerShell 7。 */
 export type ShellBackend = "default" | "pwsh";
+/** Python 运行环境：global = 本机已有环境（默认）；uv-workspace / uv-config = uv 管理的临时虚拟环境（项目工作区 / 配置目录）。 */
+export type PythonEnv = "global" | "uv-workspace" | "uv-config";
 /** 全局 Job Object 资源限制（仅 Windows；字段缺省时 core 用内置默认值 4096 MB / 64 进程） */
 export interface JobObjectLimits {
   memoryMB?: number;
@@ -108,6 +110,8 @@ export interface SessionMeta {
   snapshotMode?: SnapshotMode;
   /** 命令解释器；undefined 为向后兼容的 default。 */
   shellBackend?: ShellBackend;
+  /** Python 运行环境；undefined = 跟随全局默认（settings 的 pythonEnv，缺省本机环境）。 */
+  pythonEnv?: PythonEnv;
   /** 选择性上下文（§4.4）：pin 的消息 id/文件路径（不被驱逐）。 */
   contextPins?: string[];
   /** 上下文排除路径 glob（不进上下文组装/repo map/索引；不是安全边界）。 */

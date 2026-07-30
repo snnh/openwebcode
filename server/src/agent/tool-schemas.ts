@@ -1,17 +1,20 @@
 import type { ProviderTool } from "../providers/provider.js";
-import type { ShellBackend } from "../sessions/types.js";
+import type { PythonEnv, ShellBackend } from "../sessions/types.js";
 
 /**
  * 主循环与子代理共用的内置工具 schema（单一来源，避免两处字面量漂移）。
  * 子代理（sub-agent.ts）按内置名过滤本表生成自己的工具集；执行/权限始终在 agent-runner。
  */
-export function bashTool(backgroundTasksEnabled: boolean, shellBackend: ShellBackend): ProviderTool {
+export function bashTool(backgroundTasksEnabled: boolean, shellBackend: ShellBackend, pythonEnv: PythonEnv = "global"): ProviderTool {
   const shellGuidance = shellBackend === "pwsh"
     ? "Commands run under PowerShell 7 (pwsh): use PowerShell syntax and cmdlets (for example Get-ChildItem, Get-Content, Get-Command, and ;). "
     : "On Windows sandbox sessions commands run under cmd.exe: use cmd syntax (for example dir, type, where, and &&), and do not use PowerShell cmdlets or POSIX commands unless explicitly invoking an available shell. ";
+  const envGuidance = pythonEnv === "global"
+    ? "Python and Node.js run from the host environment. "
+    : "Python runs in an isolated uv-managed virtual environment that is created on demand (its directory is prepended to PATH); install packages with 'uv pip install'. Node.js still uses the host environment. ";
   return {
     name: "bash",
-    description: "Execute a shell command in the session workspace. Call this when command-line execution is required. " + shellGuidance +
+    description: "Execute a shell command in the session workspace. Call this when command-line execution is required. " + shellGuidance + envGuidance +
       (backgroundTasksEnabled
         ? " Set run_in_background=true to run the command asynchronously; the agent loop continues immediately and you can check " +
           "the result later with task_output (or wait with block=true)."
