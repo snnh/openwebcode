@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
 
-export type InteractionKind = "confirm" | "single_select" | "multi_select" | "text";
+export type InteractionKind = "confirm" | "single_select" | "multi_select" | "text" | "plan_approval";
 export type InteractionStatus = "pending" | "answered" | "cancelled";
 export interface InteractionRequest {
   id: string; sessionId: string; runId: string; toolCallId?: string; kind: InteractionKind;
