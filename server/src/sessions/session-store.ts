@@ -191,7 +191,7 @@ export class SessionStore {
     return message;
   }
 
-  async updateConfig(id: string, update: Pick<SessionMeta, "provider" | "model"> & Partial<Pick<SessionMeta, "thinking" | "effort" | "agentMode" | "snapshotMode" | "shellBackend" | "pythonEnv" | "persona" | "swarmEnabled">>): Promise<SessionMeta> {
+  async updateConfig(id: string, update: Pick<SessionMeta, "provider" | "model"> & Partial<Pick<SessionMeta, "thinking" | "effort" | "agentMode" | "snapshotMode" | "shellBackend" | "pythonEnv" | "persona" | "swarmEnabled" | "reviewModel">>): Promise<SessionMeta> {
     const meta = await this.readMeta(id);
     meta.provider = update.provider;
     meta.model = update.model;
@@ -211,6 +211,8 @@ export class SessionStore {
     else meta.persona = update.persona;
     if (update.swarmEnabled !== true) delete meta.swarmEnabled;
     else meta.swarmEnabled = true;
+    // reviewModel 不做清除语义：仅显式提供时更新
+    if (update.reviewModel !== undefined) meta.reviewModel = update.reviewModel;
     meta.updatedAt = new Date().toISOString();
     await this.writeMeta(meta);
     return meta;
@@ -402,7 +404,7 @@ export class SessionStore {
     if (!source) throw new Error("Session not found");
     if (path.resolve(cwd) === source.cwd) throw new Error("A cloned session requires a different workspace directory");
     const meta = await this.create({ cwd, provider: source.provider, model: source.model, title: title ?? `${source.title} (clone)`, ...(source.agentMode ? { agentMode: source.agentMode } : {}), ...(source.sandboxMode ? { sandboxMode: source.sandboxMode } : {}), ...(source.setupScript ? { setupScript: source.setupScript } : {}) });
-    if (source.thinking !== undefined || source.effort !== undefined || source.snapshotMode !== undefined || source.shellBackend !== undefined) await this.updateConfig(meta.id, { provider: source.provider, model: source.model, ...(source.thinking ? { thinking: source.thinking } : {}), ...(source.effort ? { effort: source.effort } : {}), ...(source.agentMode ? { agentMode: source.agentMode } : {}), ...(source.snapshotMode ? { snapshotMode: source.snapshotMode } : {}), ...(source.shellBackend ? { shellBackend: source.shellBackend } : {}) });
+    if (source.thinking !== undefined || source.effort !== undefined || source.snapshotMode !== undefined || source.shellBackend !== undefined || source.pythonEnv !== undefined || source.persona !== undefined || source.swarmEnabled !== undefined || source.reviewModel !== undefined) await this.updateConfig(meta.id, { provider: source.provider, model: source.model, ...(source.thinking ? { thinking: source.thinking } : {}), ...(source.effort ? { effort: source.effort } : {}), ...(source.agentMode ? { agentMode: source.agentMode } : {}), ...(source.snapshotMode ? { snapshotMode: source.snapshotMode } : {}), ...(source.shellBackend ? { shellBackend: source.shellBackend } : {}), ...(source.pythonEnv ? { pythonEnv: source.pythonEnv } : {}), ...(source.persona ? { persona: source.persona } : {}), ...(source.swarmEnabled ? { swarmEnabled: true } : {}), ...(source.reviewModel ? { reviewModel: source.reviewModel } : {}) });
     for (const message of source.messages) await this.appendMessage(meta.id, message.role, message.content, { ...(message.runId ? { runId: message.runId } : {}), ...(message.turnId ? { turnId: message.turnId } : {}) });
     return (await this.get(meta.id))!;
   }
@@ -436,7 +438,7 @@ export class SessionStore {
     const leafId = messageId ?? source.activeLeafId ?? source.messages.at(-1)?.id;
     const activePath = leafId ? activePathMessages(source.messages, leafId) : [];
     const meta = await this.create({ cwd: source.cwd, provider: source.provider, model: source.model, title: `${source.title} (分支)`, ...(source.agentMode ? { agentMode: source.agentMode } : {}), ...(source.sandboxMode ? { sandboxMode: source.sandboxMode } : {}), ...(source.setupScript ? { setupScript: source.setupScript } : {}) });
-    if (source.thinking !== undefined || source.effort !== undefined || source.snapshotMode !== undefined || source.shellBackend !== undefined) await this.updateConfig(meta.id, { provider: source.provider, model: source.model, ...(source.thinking ? { thinking: source.thinking } : {}), ...(source.effort ? { effort: source.effort } : {}), ...(source.agentMode ? { agentMode: source.agentMode } : {}), ...(source.snapshotMode ? { snapshotMode: source.snapshotMode } : {}), ...(source.shellBackend ? { shellBackend: source.shellBackend } : {}) });
+    if (source.thinking !== undefined || source.effort !== undefined || source.snapshotMode !== undefined || source.shellBackend !== undefined || source.pythonEnv !== undefined || source.persona !== undefined || source.swarmEnabled !== undefined || source.reviewModel !== undefined) await this.updateConfig(meta.id, { provider: source.provider, model: source.model, ...(source.thinking ? { thinking: source.thinking } : {}), ...(source.effort ? { effort: source.effort } : {}), ...(source.agentMode ? { agentMode: source.agentMode } : {}), ...(source.snapshotMode ? { snapshotMode: source.snapshotMode } : {}), ...(source.shellBackend ? { shellBackend: source.shellBackend } : {}), ...(source.pythonEnv ? { pythonEnv: source.pythonEnv } : {}), ...(source.persona ? { persona: source.persona } : {}), ...(source.swarmEnabled ? { swarmEnabled: true } : {}), ...(source.reviewModel ? { reviewModel: source.reviewModel } : {}) });
     for (const message of activePath) await this.appendMessage(meta.id, message.role, message.content, { ...(message.runId ? { runId: message.runId } : {}), ...(message.turnId ? { turnId: message.turnId } : {}) });
     return (await this.get(meta.id))!;
   }

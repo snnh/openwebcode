@@ -348,6 +348,13 @@ export function App(): ReactElement {
           setPendingPermissions((prev) => [...prev.filter((item) => item.requestId !== req.requestId), req]);
           queryClient.invalidateQueries({ queryKey: ["permissions", event.sessionId] });
         }
+        // 模型审核（review 模式）：低风险自动通过的通知进通知流，不弹 toast
+        if (event.type === "permission.reviewed") {
+          const reviewed = event.payload as { tool?: string; verdict?: string };
+          if (reviewed.verdict === "low") {
+            pushEventNotification(t(`${reviewed.tool ?? ""} 经模型审核自动通过`, `${reviewed.tool ?? ""} auto-approved by model review`), "info");
+          }
+        }
         if (event.type.startsWith("queue.") || event.type.startsWith("steering.")) {
           queryClient.invalidateQueries({ queryKey: ["queue", event.sessionId] });
         }

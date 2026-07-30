@@ -50,7 +50,9 @@ export interface ChatMessage {
   turnId?: string;
 }
 
-export type PermissionMode = "ask" | "acceptEdits" | "yolo";
+export type PermissionMode = "ask" | "acceptEdits" | "review" | "yolo";
+/** review 权限模式的审核模型来源：fast = 快速模型；main = 会话当前 provider/model。 */
+export type ReviewModel = "fast" | "main";
 export interface PermissionRule { tool: string; argumentPrefix?: string }
 /** 托管工作区元数据：会话项目目录活在稀疏镜像盘（VHDX/qcow2）挂载点上 */
 export interface ManagedWorkspaceMeta {
@@ -98,6 +100,8 @@ export interface SessionMeta {
   effort?: "low" | "medium" | "high" | "xhigh" | "max";
   agentMode?: "plan" | "build";
   permissionMode?: PermissionMode;
+  /** review 模式的审核模型来源；undefined = fast。 */
+  reviewModel?: ReviewModel;
   permissionRules?: PermissionRule[];
   sandbox?: SandboxPolicy;
   /** 用户选择的沙盒模式；undefined = appcontainer（现状默认） */
