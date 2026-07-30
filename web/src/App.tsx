@@ -23,6 +23,7 @@ import { applyDiagnosticsBadgeUpdate, clearDiagnosticsBadge } from "./lib/diagno
 import { BottomPanel } from "./components/BottomPanel";
 import { StatusBar } from "./components/StatusBar";
 import { InteractionCard } from "./components/InteractionCard";
+import { PlanApprovalCard } from "./components/PlanApprovalCard";
 import { Composer } from "./components/Composer";
 import type { PendingImage } from "./components/Composer";
 import { EmptyState } from "./components/EmptyState";
@@ -1099,9 +1100,14 @@ export function App(): ReactElement {
                   />
                 )}
                 {interactions.data?.filter((item) => item.status === "pending").map((item) => (
-                  <InteractionCard key={item.id} item={item} onRespond={(answer) => api.respondInteraction(current.id, item.id, answer)
-                    .then(() => interactions.refetch())
-                    .catch((error: unknown) => notify(error instanceof Error ? error.message : t("提交回答失败", "Could not submit answer"), "error"))} />
+                  item.kind === "plan_approval"
+                    ? <PlanApprovalCard key={item.id} item={item} onRespond={(answer) => api.respondInteraction(current.id, item.id, answer)
+                      // 批准后 server 侧已切 build：除事件驱动的 detail 刷新外，本地立即失效会话配置查询
+                      .then(() => { interactions.refetch(); queryClient.invalidateQueries({ queryKey: queryKeys.detail(current.id) }); })
+                      .catch((error: unknown) => notify(error instanceof Error ? error.message : t("提交回答失败", "Could not submit answer"), "error"))} />
+                    : <InteractionCard key={item.id} item={item} onRespond={(answer) => api.respondInteraction(current.id, item.id, answer)
+                      .then(() => interactions.refetch())
+                      .catch((error: unknown) => notify(error instanceof Error ? error.message : t("提交回答失败", "Could not submit answer"), "error"))} />
                 ))}
                 <Composer
                   current={current}

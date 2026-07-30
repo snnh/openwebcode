@@ -34,6 +34,7 @@ import {
   bashTool,
   ASK_USER_TOOL,
   CODE_SEARCH_TOOL,
+  EXIT_PLAN_MODE_TOOL,
   FILE_TOOLS,
   READ_ARTIFACT_TOOL,
   REPO_MAP_TOOL,
@@ -389,7 +390,7 @@ const MAX_STEERING_LENGTH = 8_000;
 export type ToolExecutionClass = "read_only" | "workspace_write" | "process" | "external";
 const TOOL_EXECUTION_CLASS: Readonly<Record<string, ToolExecutionClass>> = {
   read_file: "read_only", glob: "read_only", grep: "read_only", read_artifact: "read_only", load_skill: "read_only", repo_map: "read_only", code_search: "read_only",
-  git_status: "read_only", git_diff: "read_only", ask_user: "read_only",
+  git_status: "read_only", git_diff: "read_only", ask_user: "read_only", exit_plan_mode: "read_only",
   web_fetch: "external", web_search: "external", write_file: "workspace_write", edit_file: "workspace_write",
   bash: "process", task_output: "read_only", task_stop: "process", todo_write: "workspace_write", remember: "workspace_write", spawn_task: "process", spawn_swarm: "process", test_runner: "process",
   swarm_board_post: "read_only", swarm_board_read: "read_only",
@@ -458,6 +459,18 @@ function normalizeAskUserAnswer(spec: AskUserQuestionSpec, answer: unknown): unk
 /** 系统提示中单个记忆/约定小节的字符上限 */
 const MEMORY_SECTION_LIMIT = 8_000;
 
+/** exit_plan_mode 交互回答 → 决定：approve（按原文执行）/ edit（按用户改后文本执行）/ reject（附意见保持 plan 模式）。 */
+type PlanApprovalDecision = { kind: "approve" } | { kind: "edit"; plan: string } | { kind: "reject"; feedback: string };
+/** 无法解析的回答一律按 reject 处理：计划批准是人工确认门，绝不因响应畸形而自动放行。 */
+function parsePlanApprovalDecision(answer: unknown): PlanApprovalDecision {
+  if (!answer || typeof answer !== "object" || Array.isArray(answer)) return { kind: "reject", feedback: "响应无法解析" };
+  const record = answer as Record<string, unknown>;
+  if (record.decision === "approve") return { kind: "approve" };
+  if (record.decision === "edit" && typeof record.plan === "string" && record.plan.trim()) return { kind: "edit", plan: record.plan };
+  if (record.decision === "reject") return { kind: "reject", feedback: typeof record.feedback === "string" ? record.feedback.trim() : "" };
+  return { kind: "reject", feedback: "响应无法解析" };
+}
+
 function workDisciplineSection(toolNames: ReadonlySet<string>): string {
   if (toolNames.size === 0) return "";
   const lines = [
@@ -479,9 +492,9 @@ function workDisciplineSection(toolNames: ReadonlySet<string>): string {
 
 function planModeSection(enabled: boolean): string {
   if (enabled) {
-    return "\n\nYou are in PLAN mode (read-only). Investigate with read-only tools, then output a step-by-step implementation plan and ask the user to switch to build mode to execute it.";
+    return "\n\nYou are in PLAN mode (read-only). Investigate with read-only tools, write a step-by-step implementation plan, then call exit_plan_mode exactly once with the full plan to request user approval. Only after approval may you execute it.";
   }
-  return "\n\nYou are in PLAN mode. Assess the available conversation context, output a step-by-step implementation plan, and ask the user to switch to build mode to execute it.";
+  return "\n\nYou are in PLAN mode. Assess the available conversation context and output a step-by-step implementation plan for the user to review before execution.";
 }
 
 /** goal 模式提示词段：全能力模式（无 plan 的只读门禁），要求每轮末行输出目标自评标记。 */
@@ -1024,6 +1037,8 @@ export class AgentRunner {
         const tools = toolsEnabled
           ? [
               ...shapedBuiltIns,
+              // plan 模式专属批准出口：仅主 agent、仅 plan 模式下发（子代理工具集由 SUB_AGENT_TOOL_NAMES 过滤，不含此项）
+              ...(session.agentMode === "plan" ? [EXIT_PLAN_MODE_TOOL] : []),
               ...mcpBinding.tools,
               ...extensionTools,
             ]
@@ -1857,6 +1872,31 @@ export class AgentRunner {
     });
   }
 
+  /**
+   * exit_plan_mode 批准后切回 build 并持久化（沿用 PUT config 的 updateConfig 语义：
+   * build 不落盘，其余配置项原样透传避免被清除）。计划批准独立于权限档，
+   * 不经 permission-coordinator，yolo/自动批准不会跳过。完成后发 session.config_updated
+   * 事件，web 端沿用既有刷新链路更新会话配置。
+   */
+  private async switchToBuildMode(sessionId: string): Promise<void> {
+    const session = await this.sessions.get(sessionId);
+    if (!session || session.agentMode !== "plan") return;
+    const updated = await this.sessions.updateConfig(sessionId, {
+      provider: session.provider,
+      model: session.model,
+      agentMode: "build",
+      ...(session.thinking ? { thinking: session.thinking } : {}),
+      ...(session.effort ? { effort: session.effort } : {}),
+      ...(session.snapshotMode ? { snapshotMode: session.snapshotMode } : {}),
+      ...(session.shellBackend ? { shellBackend: session.shellBackend } : {}),
+      ...(session.pythonEnv ? { pythonEnv: session.pythonEnv } : {}),
+      ...(session.persona ? { persona: session.persona } : {}),
+      ...(session.swarmEnabled ? { swarmEnabled: true } : {}),
+      ...(session.reviewModel ? { reviewModel: session.reviewModel } : {}),
+    });
+    this.events.publish({ source: "session", type: "session.config_updated", sessionId, payload: updated });
+  }
+
   async removeSteering(sessionId: string, id: string): Promise<boolean> {
     const item = await this.messageQueue.cancel(sessionId, id);
     if (!item) return false;
@@ -1949,7 +1989,7 @@ export class AgentRunner {
     // 工具形态别名按原内置工具的权限类处理（不降级为 external）
     tool = this.resolveBuiltinToolName(sessionId, tool);
     // Plan 模式门禁：只读工具放行，其余一律拦截
-    const PLAN_READONLY = new Set(["read_file", "glob", "grep", "read_artifact", "load_skill", "spawn_task", "spawn_swarm", "todo_write", "web_fetch", "web_search", "task_output", "repo_map", "code_search", "git_status", "git_diff", "ask_user"]);
+    const PLAN_READONLY = new Set(["read_file", "glob", "grep", "read_artifact", "load_skill", "spawn_task", "spawn_swarm", "todo_write", "web_fetch", "web_search", "task_output", "repo_map", "code_search", "git_status", "git_diff", "ask_user", "exit_plan_mode"]);
     if (session.agentMode === "plan") {
       if (tool.startsWith("mcp__")) return { allowed: false, reason: `Plan 模式为只读：MCP 工具 ${tool} 被拦截（无法判定读写）。请输出实施计划并请用户切换到 build 模式执行。` };
       if (tool.startsWith("ext__")) return { allowed: false, reason: `Plan 模式为只读：扩展工具 ${tool} 被拦截（无法判定读写）。请输出实施计划并请用户切换到 build 模式执行。` };
@@ -2509,6 +2549,47 @@ export class AgentRunner {
         }
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: { answered: results.length } } });
         return { type: "tool_result", toolCallId, content: JSON.stringify(results), isError: false };
+      } catch (error) {
+        const content = errorMessage(error);
+        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
+        return { type: "tool_result", toolCallId, content, isError: true };
+      }
+    }
+    if (name === "exit_plan_mode") {
+      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+      this.state(sessionId, "tool_running");
+      try {
+        const plan = typeof input.plan === "string" ? input.plan.trim() : "";
+        if (!plan) throw new Error("exit_plan_mode requires a non-empty plan");
+        const runId = this.runs.get(sessionId)?.id ?? "";
+        // 计划批准走 InteractionCoordinator 落盘（kind=plan_approval，prompt 即计划全文），
+        // 语义同 ask_user：持久 pending，重启后可恢复；REST respond 恢复工具执行。
+        const interaction = await this.createInteraction(sessionId, {
+          runId,
+          toolCallId,
+          kind: "plan_approval",
+          title: "计划批准",
+          prompt: plan,
+        });
+        this.state(sessionId, "waiting_permission");
+        const outcome = await this.waitForInteractionAnswer(sessionId, interaction.id, signal);
+        this.state(sessionId, "tool_running");
+        if (outcome.cancelled) {
+          this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: { cancelled: true } } });
+          return { type: "tool_result", toolCallId, content: JSON.stringify({ cancelled: true }), isError: false };
+        }
+        const decision = parsePlanApprovalDecision(outcome.answer);
+        let content: string;
+        if (decision.kind === "reject") {
+          // 拒绝：保持 plan 模式，意见回注给 run 继续研究
+          content = `计划被拒绝${decision.feedback ? `，意见：${decision.feedback}` : "（未附意见）"}。保持 plan 模式，请根据意见继续研究并修订计划，完成后再次调用 exit_plan_mode。`;
+        } else {
+          const finalPlan = decision.kind === "edit" ? decision.plan.trim() : plan;
+          await this.switchToBuildMode(sessionId);
+          content = `计划已批准，已切换到 build 模式。请按计划执行：\n\n${finalPlan}`;
+        }
+        this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: { decision: decision.kind } } });
+        return { type: "tool_result", toolCallId, content, isError: false };
       } catch (error) {
         const content = errorMessage(error);
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });

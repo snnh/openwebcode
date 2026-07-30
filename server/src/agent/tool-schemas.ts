@@ -155,6 +155,21 @@ export const ASK_USER_TOOL: ProviderTool = {
   },
 };
 
+/** plan 模式专属：提交完整实施计划请求用户批准（仅主 agent、仅 plan 模式下发；子代理不可见）。 */
+export const EXIT_PLAN_MODE_TOOL: ProviderTool = {
+  name: "exit_plan_mode",
+  description:
+    "Submit the finished implementation plan for user approval and exit plan mode. Call exactly once when the plan is complete. " +
+    "The user may approve it, approve an edited version, or reject it with feedback; the tool result carries the decision. " +
+    "Do not call any write tool before the plan is approved.",
+  inputSchema: {
+    type: "object",
+    properties: { plan: { type: "string", description: "The full implementation plan in Markdown." } },
+    required: ["plan"],
+    additionalProperties: false,
+  },
+};
+
 export const WEB_FETCH_TOOL: ProviderTool = {
   name: "web_fetch",
   description: "Fetch a public http/https URL and return bounded readable text.",
