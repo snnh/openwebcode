@@ -253,10 +253,13 @@ export interface PendingPermission {
 
 export interface InteractionRequest {
   id: string; sessionId: string; runId: string; toolCallId?: string;
-  kind: "confirm" | "single_select" | "multi_select" | "text";
+  kind: "confirm" | "single_select" | "multi_select" | "text" | "plan_approval";
   title: string; prompt: string; options?: Array<{ id: string; label: string; description?: string }>;
   status: "pending" | "answered" | "cancelled"; createdAt: string; answer?: unknown; answeredAt?: string;
 }
+
+/** plan_approval 交互的回答体：approve 按计划原文执行；edit 带用户改后文本；reject 附意见保持 plan 模式。 */
+export type PlanApprovalAnswer = { decision: "approve" } | { decision: "edit"; plan: string } | { decision: "reject"; feedback: string };
 
 // 会话树节点：entries 含全部树节点（按时间排序），onActivePath 标记是否在当前活动路径上（分叉/检出后为非活动分支）
 export interface SessionTimeline { activeLeafId?: string; entries: Array<{ id: string; parentId?: string; runId?: string; turnId?: string; role: "user" | "assistant" | "tool"; createdAt: string; onActivePath?: boolean }>; }
