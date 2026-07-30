@@ -421,7 +421,10 @@ export function App(): ReactElement {
     selectSubagentTab(currentId, undefined);
   }, [currentId, openTerminal, selectSubagentTab]);
   const currentState = currentRun?.state ?? (currentId ? agentStates[currentId] : undefined);
-  const running = Boolean(stream[currentId ?? ""]) || isBusyState(currentState);
+  const running = (stream[currentId ?? ""]?.length ?? 0) > 0 || isBusyState(currentState);
+  // append-only 分片渲染前 join 一次；无新 delta 时数组引用不变，join 跳过
+  const streamText = useMemo(() => stream[currentId ?? ""]?.join("") ?? "", [stream, currentId]);
+  const thinkingText = useMemo(() => thinkingStream[currentId ?? ""]?.join("") ?? "", [thinkingStream, currentId]);
   // 对话区底部实时活动条：WS 工具事件优先，状态/起始时间回退到 run 快照（刷新页面后首个事件前可用）
   const liveActivity = useMemo<LiveActivityInfo | undefined>(() => {
     if (!currentId) return undefined;
@@ -1046,8 +1049,8 @@ export function App(): ReactElement {
                   onNotice={notify}
                   liveSubagents={liveSubagents[current.id] ?? {}}
                   {...(contextView.data?.ledger.cleared ? { cleared: contextView.data.ledger.cleared } : {})}
-                  streamText={stream[current.id] ?? ""}
-                  thinkingText={thinkingStream[current.id] ?? ""}
+                  streamText={streamText}
+                  thinkingText={thinkingText}
                   runError={runFailures[current.id]}
                   permissions={mergedPermissions}
                   onSendToAgent={sendShellToAgent}

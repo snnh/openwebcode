@@ -1,10 +1,10 @@
 import { useCallback, useRef, useState } from "react";
 
 export interface StreamBuffers {
-  /** 已提交的流式正文（按会话键控） */
-  stream: Record<string, string>;
-  /** 已提交的流式思考内容（按会话键控） */
-  thinkingStream: Record<string, string>;
+  /** 已提交的流式正文（按会话键控；append-only 分片，消费方 join 后渲染） */
+  stream: Record<string, string[]>;
+  /** 已提交的流式思考内容（按会话键控；append-only 分片） */
+  thinkingStream: Record<string, string[]>;
   /** 追加一个 token delta；同一帧内的多个 delta 只提交一次状态 */
   queueDelta(sessionId: string, text: string, thinking?: boolean): void;
   /** 立即提交缓冲区中尚未落状态的 delta */
@@ -19,12 +19,14 @@ export interface StreamBuffers {
 
 /**
  * WebSocket 的 token delta 往往是很小的分片，逐片进 React 状态会导致每个 token
- * 一次整页渲染（外加一次累计字符串拷贝）。这里把 delta 缓冲在 React 之外，
- * 每个动画帧最多提交一次；无 rAF 的环境（测试/SSR）退化为 80ms 定时器。
+ * 一次整页渲染。这里把 delta 缓冲在 React 之外，每个动画帧最多提交一次；
+ * 无 rAF 的环境（测试/SSR）退化为 80ms 定时器。
+ * 状态保持 append-only 分片数组：每帧只追加入帧文本，不再复制累计全串
+ * （旧实现每帧 `${prev}${delta}` 全量拷贝，长流下是 O(n²) 的分配 churn）。
  */
 export function useStreamBuffers(): StreamBuffers {
-  const [stream, setStream] = useState<Record<string, string>>({});
-  const [thinkingStream, setThinkingStream] = useState<Record<string, string>>({});
+  const [stream, setStream] = useState<Record<string, string[]>>({});
+  const [thinkingStream, setThinkingStream] = useState<Record<string, string[]>>({});
   const streamBuffers = useRef<Record<string, string[]>>({});
   const thinkingBuffers = useRef<Record<string, string[]>>({});
   const flushHandle = useRef<number | undefined>(undefined);
@@ -38,14 +40,14 @@ export function useStreamBuffers(): StreamBuffers {
     if (Object.keys(text).length) {
       setStream((previous) => {
         const next = { ...previous };
-        for (const [id, chunks] of Object.entries(text)) next[id] = `${next[id] ?? ""}${chunks.join("")}`;
+        for (const [id, chunks] of Object.entries(text)) next[id] = [...(next[id] ?? []), chunks.join("")];
         return next;
       });
     }
     if (Object.keys(thinking).length) {
       setThinkingStream((previous) => {
         const next = { ...previous };
-        for (const [id, chunks] of Object.entries(thinking)) next[id] = `${next[id] ?? ""}${chunks.join("")}`;
+        for (const [id, chunks] of Object.entries(thinking)) next[id] = [...(next[id] ?? []), chunks.join("")];
         return next;
       });
     }
@@ -69,8 +71,8 @@ export function useStreamBuffers(): StreamBuffers {
   }, [flush]);
 
   const clear = useCallback((sessionId: string): void => {
-    setStream((value) => ({ ...value, [sessionId]: "" }));
-    setThinkingStream((value) => ({ ...value, [sessionId]: "" }));
+    setStream((value) => ({ ...value, [sessionId]: [] }));
+    setThinkingStream((value) => ({ ...value, [sessionId]: [] }));
   }, []);
 
   const discard = useCallback((sessionId: string): void => {
