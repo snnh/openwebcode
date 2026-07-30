@@ -112,6 +112,7 @@ const backgroundTasks = new BackgroundTaskRegistry(
 // Hooks（可信配置，等同 yolo 级别）：全局 <dataDir>/hooks.json，项目 <cwd>/.owc/hooks.json 现读覆盖
 const hooks = new HookRunner(path.join(dataDir, "hooks.json"), events);
 const agent = new AgentRunner(sessions, providers, core, events, pricing, exchangeRates, config.defaultLanguage, 50, (model, provider) => models.get(model, provider), usageLog, skills, mcp, compactor, dataDir, agents, commands, search, undefined, backgroundTasks, hooks, extensions, webFetch);
+agent.setPythonEnvDefault(() => settings.effective().pythonEnv);
 // 符号索引（0.4.0 Phase 2）：数据目录 index/ 下，按 workspace-hash 分桶；不进会话历史、不导出
 const indexManager = new IndexManager(core, path.join(dataDir, "index"), events);
 agent.setIndexManager(indexManager);
@@ -142,7 +143,7 @@ settings.bind({ providers, core, agent, events, gc, fastModel, profiles: provide
 providerProfilesRuntime.start();
 
 core.on("diagnostic", (text: string) => process.stderr.write(`[owc-exec] ${text}`));
-core.on("error", (error: Error) => console.error("Core error:", error));
+core.on("error", (error: Error) => process.stderr.write(`[owc-exec] core error: ${error}\n`));
 
 await sessions.initialize();
 await pricing.initialize();
@@ -187,9 +188,9 @@ events.on("event", (event) => {
 remoteSyncScheduler.start();
 await core.start();
 // 存储 GC：启动时一次（含托管挂载孤儿清理）+ 每小时周期清理（失败仅记日志）
-void gc.startup().catch((error: unknown) => console.error("Storage GC failed:", error));
+void gc.startup().catch((error: unknown) => process.stderr.write(`[gc] startup failed: ${error instanceof Error ? error.message : String(error)}\n`));
 const gcTimer = setInterval(() => {
-  void gc.collect().catch((error: unknown) => console.error("Storage GC failed:", error));
+  void gc.collect().catch((error: unknown) => process.stderr.write(`[gc] collect failed: ${error instanceof Error ? error.message : String(error)}\n`));
 }, 3_600_000);
 gcTimer.unref();
 const app = await buildServer({

@@ -1,5 +1,6 @@
 import { lstat, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { parseFrontmatter } from "./frontmatter.js";
 
 export interface Skill {
   name: string;
@@ -14,21 +15,13 @@ export interface Skill {
  * name 缺省回退为目录名；正文为空视为无效技能。
  */
 export function parseSkillMarkdown(text: string, fallbackName: string, source: "global" | "project", filePath: string): Skill | undefined {
-  let body = text;
-  const meta: Record<string, string> = {};
-  const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
-  if (match) {
-    for (const line of match[1]!.split(/\r?\n/)) {
-      const kv = line.match(/^([A-Za-z][\w-]*)\s*:\s*(.*)$/);
-      if (kv) meta[kv[1]!.toLowerCase()] = kv[2]!.trim();
-    }
-    body = match[2]!;
-  }
-  if (body.trim() === "") return undefined;
+  const { meta, body: rawBody } = parseFrontmatter(text);
+  const body = rawBody.trim();
+  if (body === "") return undefined;
   return {
     name: meta.name && meta.name !== "" ? meta.name : fallbackName,
     description: meta.description ?? "",
-    body: body.trim(),
+    body,
     source,
     path: filePath,
   };
