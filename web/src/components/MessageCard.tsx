@@ -30,32 +30,55 @@ export function diffSpecForTool(name: string, input?: Record<string, unknown>): 
   return undefined;
 }
 
-export function ToolCallCard({ name, input, onOpenDiff }: { name: string; input?: Record<string, unknown>; onOpenDiff?(spec: DiffSpec): void }): ReactElement {
+/** 工具调用终态（由配对的 tool_result 推导；无结果且会话运行中为 running）。 */
+export type ToolCallStatus = "running" | "done" | "error";
+
+export function ToolCallCard({ name, input, status, onOpenDiff }: { name: string; input?: Record<string, unknown>; status?: ToolCallStatus | undefined; onOpenDiff?(spec: DiffSpec): void }): ReactElement {
   const { t } = useI18n();
+  const [open, setOpen] = useState(false);
   const summary = summarizeToolInput(input);
   const json = JSON.stringify(input ?? {}, null, 2);
   const diffSpec = diffSpecForTool(name, input);
+  const toggle = (): void => setOpen((value) => !value);
   return (
-    <section className="tool-card">
-      <header>
-        <span className="tool-icon" aria-hidden><Icon name="wrench" size={13} /></span>
-        <b className="mono">{name}</b>
-        {diffSpec && onOpenDiff && (
-          <button
-            className="btn small tool-diff-open"
-            onClick={() => onOpenDiff(diffSpec)}
-            aria-label={t("在 diff 视图中打开该文件变化", "Open this file change in the diff view")}
-          >
-            {t("在 diff 中打开", "Open in diff")}
-          </button>
-        )}
-      </header>
-      {summary && <p className="tool-summary mono" title={summary}>{summary}</p>}
-      {json !== "{}" && (
-        <details className="tool-detail">
-          <summary>{t("参数", "Parameters")}</summary>
-          <CodeBlock lang="json" code={json} />
-        </details>
+    <section className={`tool-row${open ? " open" : ""}${status === "error" ? " error" : ""}`}>
+      <div
+        className="tool-row-header"
+        role="button"
+        tabIndex={0}
+        aria-expanded={open}
+        onClick={toggle}
+        onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggle(); } }}
+      >
+        <span className={`tool-row-status ${status ?? "idle"}`} aria-hidden>
+          {status === "running"
+            ? <span className="tool-row-spinner" />
+            : status === "error"
+              ? <Icon name="x" size={12} />
+              : status === "done"
+                ? <Icon name="check" size={12} />
+                : <Icon name="wrench" size={12} />}
+        </span>
+        <b className="mono tool-row-name">{name}</b>
+        {summary && <span className="tool-row-summary mono" title={summary}>{summary}</span>}
+        <span className="tool-row-actions">
+          <button type="button" className="tool-row-view" onClick={(event) => { event.stopPropagation(); toggle(); }}>{t("查看", "View")}</button>
+          <Icon name={open ? "chevron-down" : "chevron-right"} size={12} />
+        </span>
+      </div>
+      {open && (
+        <div className="tool-row-body">
+          {diffSpec && onOpenDiff && (
+            <button
+              className="btn small tool-diff-open"
+              onClick={() => onOpenDiff(diffSpec)}
+              aria-label={t("在 diff 视图中打开该文件变化", "Open this file change in the diff view")}
+            >
+              {t("在 diff 中打开", "Open in diff")}
+            </button>
+          )}
+          {json !== "{}" ? <CodeBlock lang="json" code={json} /> : <p className="tool-row-empty">{t("（无参数）", "(No parameters)")}</p>}
+        </div>
       )}
     </section>
   );
@@ -154,9 +177,53 @@ export function SubagentTranscriptDetails({ sessionId, taskId, index }: { sessio
   );
 }
 
+/** 尝试将工具结果 JSON 解析为可读格式；解析失败返回 undefined 回退原始文本。 */
+function formatToolContent(content: string): { summary: string; body: string } | undefined {
+  try {
+    const parsed = JSON.parse(content) as Record<string, unknown>;
+    // bash 工具结果：提取 exitCode/stdout/stderr
+    if (typeof parsed.exitCode === "number" && Array.isArray(parsed.output)) {
+      const stdout = (parsed.output as Array<{ stream: string; data: string }>).filter((c) => c.stream === "stdout").map((c) => c.data).join("");
+      const stderr = (parsed.output as Array<{ stream: string; data: string }>).filter((c) => c.stream === "stderr").map((c) => c.data).join("");
+      const parts: string[] = [];
+      if (stdout) parts.push(stdout);
+      if (stderr) parts.push(`[stderr]\n${stderr}`);
+      return {
+        summary: `exit ${parsed.exitCode}${parsed.durationMs ? ` · ${parsed.durationMs}ms` : ""}`,
+        body: parts.join("\n") || "(no output)",
+      };
+    }
+    // read_file 结果：直接展示内容
+    if (typeof parsed.content === "string" && typeof parsed.totalLines === "number") {
+      return { summary: `${parsed.totalLines} lines`, body: parsed.content };
+    }
+    // glob 结果：展示路径列表
+    if (Array.isArray(parsed.paths)) {
+      const paths = parsed.paths as string[];
+      return { summary: `${paths.length} files`, body: paths.join("\n") || "(no matches)" };
+    }
+    // write_file / edit_file：简单成功
+    if (parsed.ok === true) return { summary: "ok", body: "" };
+    if (typeof parsed.matches === "number") return { summary: `${parsed.matches} matches`, body: "" };
+    // grep 结果：展示匹配行
+    if (Array.isArray(parsed.matches)) {
+      const matches = parsed.matches as Array<{ path: string; line: number; text: string }>;
+      const body = matches.map((m) => `${m.path}:${m.line}: ${m.text}`).join("\n");
+      return { summary: `${matches.length} matches`, body: body || "(no matches)" };
+    }
+    // 其他 JSON：pretty-print
+    return { summary: "", body: JSON.stringify(parsed, null, 2) };
+  } catch {
+    return undefined;
+  }
+}
+
 export function ToolResultCard({ content, error, sessionId, subagentTaskIds }: { content: string; error: boolean; sessionId?: string | undefined; subagentTaskIds?: string[] | undefined }): ReactElement {
   const { t } = useI18n();
-  const collapsible = error || content.length > 400 || content.includes("\n");
+  const [open, setOpen] = useState(false);
+  const formatted = error ? undefined : formatToolContent(content);
+  const displayBody = formatted ? formatted.body : content;
+  const displaySummary = formatted?.summary;
   const transcripts = sessionId && subagentTaskIds && subagentTaskIds.length > 0
     ? (
       <div className="subagent-transcripts">
@@ -166,22 +233,34 @@ export function ToolResultCard({ content, error, sessionId, subagentTaskIds }: {
       </div>
     )
     : null;
-  if (!collapsible) {
-    return (
-      <section className={`tool-result${error ? " error" : ""}`}>
-        <span className="tool-result-label">{t("结果", "Result")}</span>
-        <p className="mono">{content}</p>
-        {transcripts}
-      </section>
-    );
-  }
+  const toggle = (): void => setOpen((value) => !value);
   return (
-    <section className={`tool-result${error ? " error" : ""}`}>
-      <details open={error}>
-        <summary>{error ? t("执行失败", "Execution failed") : t(`执行结果（${content.length} 字符）`, `Result (${content.length} characters)`)}</summary>
-        <pre className="mono">{content}</pre>
-      </details>
-      {transcripts}
+    <section className={`tool-row tool-result-row${open ? " open" : ""}${error ? " error" : ""}`}>
+      <div
+        className="tool-row-header"
+        role="button"
+        tabIndex={0}
+        aria-expanded={open}
+        onClick={toggle}
+        onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); toggle(); } }}
+      >
+        <span className={`tool-row-status ${error ? "error" : "done"}`} aria-hidden>
+          <Icon name={error ? "x" : "check"} size={12} />
+        </span>
+        <b className="tool-row-name">{error ? t("执行失败", "Execution failed") : t("执行结果", "Result")}</b>
+        {displaySummary && <span className="tool-row-summary mono" title={displaySummary}>{displaySummary}</span>}
+        {!displaySummary && !error && <span className="tool-row-summary mono">{t(`${displayBody.length} 字符`, `${displayBody.length} characters`)}</span>}
+        <span className="tool-row-actions">
+          <button type="button" className="tool-row-view" onClick={(event) => { event.stopPropagation(); toggle(); }}>{t("查看", "View")}</button>
+          <Icon name={open ? "chevron-down" : "chevron-right"} size={12} />
+        </span>
+      </div>
+      {open && (
+        <div className="tool-row-body">
+          <pre className="mono">{displayBody || displaySummary || content}</pre>
+          {transcripts}
+        </div>
+      )}
     </section>
   );
 }
@@ -196,7 +275,7 @@ export function ThinkingBlock({ text, streaming = false }: { text: string; strea
   );
 }
 
-function ContentBlock({ block, sessionId, liveSubagents, onOpenDiff }: { block: MessageContent; sessionId?: string | undefined; liveSubagents?: LiveSubagentRun[] | undefined; onOpenDiff?(spec: DiffSpec): void }): ReactElement | null {
+function ContentBlock({ block, sessionId, liveSubagents, toolResults, running, onOpenDiff }: { block: MessageContent; sessionId?: string | undefined; liveSubagents?: LiveSubagentRun[] | undefined; /** 全会话 toolCallId → isError 配对表（ExecutionTrack 构建）；用于推导工具行状态图标 */ toolResults?: Record<string, boolean> | undefined; running?: boolean; onOpenDiff?(spec: DiffSpec): void }): ReactElement | null {
   const { t } = useI18n();
   switch (block.type) {
     case "text":
@@ -209,7 +288,12 @@ function ContentBlock({ block, sessionId, liveSubagents, onOpenDiff }: { block: 
         const live = liveSubagents?.filter((run) => run.toolCallId === block.id);
         return <SubagentRunCard name={block.name} input={block.input} sessionId={sessionId} live={live} />;
       }
-      return <ToolCallCard name={block.name ?? "tool"} input={block.input} onOpenDiff={onOpenDiff} />;
+      const status: ToolCallStatus | undefined = block.id && toolResults
+        ? block.id in toolResults
+          ? toolResults[block.id] ? "error" : "done"
+          : running ? "running" : undefined
+        : undefined;
+      return <ToolCallCard name={block.name ?? "tool"} input={block.input} status={status} onOpenDiff={onOpenDiff} />;
     }
     case "tool_result":
       return <ToolResultCard content={block.content ?? ""} error={Boolean(block.isError)} sessionId={sessionId} subagentTaskIds={block.subagentTaskIds} />;
@@ -236,11 +320,12 @@ export function coalesceAssistantText(content: MessageContent[]): MessageContent
 
 const ROLE_LABELS: Record<string, [string, string]> = { user: ["你", "You"], assistant: ["OpenWebCode", "OpenWebCode"], tool: ["工具", "Tool"] };
 
-export function MessageCard({ message, sessionId, turn, contentLens, liveSubagents, running = false, onNotice, onOpenDiff, onEditMessage, onRegenerate, onFork }: { message: ChatMessage; sessionId?: string; /** 轮次编号（user 消息开启一轮）：偶数/奇数轮 assistant/tool 消息底色深浅交替 */ turn?: number | undefined; contentLens?: ExtensionInfo; /** 本消息内 spawn 工具调用关联的实时子代理运行（已由 ExecutionTrack 按 toolCallId 过滤） */ liveSubagents?: LiveSubagentRun[] | undefined; /** 会话运行中：编辑重发/重新生成不可用（分叉允许） */ running?: boolean; onNotice?(message: string, kind?: "info" | "error"): void; onOpenDiff?(spec: DiffSpec): void; /** 会话树操作（仅 user 消息展示）：编辑重发 / 重新生成 / 分叉 */ onEditMessage?(message: ChatMessage): void; onRegenerate?(message: ChatMessage): void; onFork?(message: ChatMessage): void }): ReactElement {
+export function MessageCard({ message, sessionId, turn, contentLens, liveSubagents, toolResults, running = false, onNotice, onOpenDiff, onEditMessage, onRegenerate, onFork }: { message: ChatMessage; sessionId?: string; /** 轮次编号（user 消息开启一轮）：偶数/奇数轮 assistant/tool 消息底色深浅交替 */ turn?: number | undefined; contentLens?: ExtensionInfo; /** 本消息内 spawn 工具调用关联的实时子代理运行（已由 ExecutionTrack 按 toolCallId 过滤） */ liveSubagents?: LiveSubagentRun[] | undefined; /** 全会话 toolCallId → isError 配对表；驱动工具调用行的状态图标 */ toolResults?: Record<string, boolean> | undefined; /** 会话运行中：编辑重发/重新生成不可用（分叉允许） */ running?: boolean; onNotice?(message: string, kind?: "info" | "error"): void; onOpenDiff?(spec: DiffSpec): void; /** 会话树操作（仅 user 消息展示）：编辑重发 / 重新生成 / 分叉 */ onEditMessage?(message: ChatMessage): void; onRegenerate?(message: ChatMessage): void; onFork?(message: ChatMessage): void }): ReactElement {
   const { t, locale } = useI18n();
   const createdAt = new Date(message.createdAt);
   const articleRef = useRef<HTMLElement>(null);
   const [copied, setCopied] = useState(false);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const [lensBusy, setLensBusy] = useState(false);
   const [translation, setTranslation] = useState<string>();
   const [explanation, setExplanation] = useState<{ selection: string; text: string }>();
@@ -283,7 +368,8 @@ export function MessageCard({ message, sessionId, turn, contentLens, liveSubagen
               void writeClipboard(text).then((ok) => {
                 if (!ok) return;
                 setCopied(true);
-                window.setTimeout(() => setCopied(false), 1500);
+                if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+                copyTimerRef.current = setTimeout(() => setCopied(false), 1500);
               });
             }}
           >
@@ -347,7 +433,7 @@ export function MessageCard({ message, sessionId, turn, contentLens, liveSubagen
           </button>
         )}
       </div>
-      {content.map((block, index) => <ContentBlock key={index} block={block} sessionId={sessionId} liveSubagents={liveSubagents} onOpenDiff={onOpenDiff} />)}
+      {content.map((block, index) => <ContentBlock key={index} block={block} sessionId={sessionId} liveSubagents={liveSubagents} toolResults={toolResults} running={running} onOpenDiff={onOpenDiff} />)}
       {translation && <details className="content-lens-result" open><summary>{t("译文", "Translation")}</summary><Markdown>{translation}</Markdown></details>}
       {explanation && <details className="content-lens-result" open><summary>{t("解析：", "Explanation: ")}{explanation.selection}</summary><Markdown>{explanation.text}</Markdown></details>}
     </article>
@@ -377,6 +463,8 @@ export const MemoMessageCard = memo(MessageCard, (previous, next) =>
   && previous.onEditMessage === next.onEditMessage
   && previous.onRegenerate === next.onRegenerate
   && previous.onFork === next.onFork
+  // 配对表由 ExecutionTrack 用 useMemo 维护，引用变化即内容变化
+  && previous.toolResults === next.toolResults
   // 实时子代理状态字段有限且不含函数，JSON 比较足够（仅含本消息相关条目，通常为空）
   && JSON.stringify(previous.liveSubagents ?? null) === JSON.stringify(next.liveSubagents ?? null)
   && previous.message.id === next.message.id

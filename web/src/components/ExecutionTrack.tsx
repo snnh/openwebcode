@@ -55,6 +55,17 @@ function liveRunsForMessage(message: ChatMessage, liveSubagents?: Record<string,
   return runs.length > 0 ? runs : undefined;
 }
 
+/** 全会话工具结果配对表：toolCallId → isError（工具调用行的状态图标数据源）。 */
+function buildToolResultStatus(messages: ChatMessage[]): Record<string, boolean> {
+  const map: Record<string, boolean> = {};
+  for (const message of messages) {
+    for (const block of message.content) {
+      if (block.type === "tool_result" && block.toolCallId) map[block.toolCallId] = Boolean(block.isError);
+    }
+  }
+  return map;
+}
+
 export function ExecutionTrack({ session, cleared, streamText, thinkingText, runError, permissions, onPermissionDone, onPermissionError, onSendToAgent, contentLens, onNotice, onOpenDiff, onOpenSettings, onRetryRun, retryPending, hasMoreMessages, onLoadMore, loadingMore, liveSubagents, liveActivity, trackVisible = true, running = false, onEditMessage, onRegenerate, onFork }: {
   session: SessionDetail;
   cleared?: { uptoIndex: number; at: string };
@@ -132,6 +143,9 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, run
     }
     return values;
   }, [session.messages]);
+
+  // 工具调用行状态：toolCallId → isError 配对表（引用稳定，消息变化才重建）
+  const toolResultStatus = useMemo(() => buildToolResultStatus(session.messages), [session.messages]);
 
   // ===== 会话内搜索（Ctrl+F）：状态留在本层，与消息/滚动容器同层 =====
   const [searchOpen, setSearchOpen] = useState(false);
@@ -268,7 +282,7 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, run
               {cleared && Math.min(cleared.uptoIndex, session.messages.length) === index && (
                 <div className="context-cleared-divider" role="separator">{t("上下文已清空（历史保留）", "Context cleared (history retained)")}</div>
               )}
-              <MemoMessageCard message={message} sessionId={session.id} turn={turnOf[index]} contentLens={contentLens} liveSubagents={liveRunsForMessage(message, liveSubagents)} running={running} onNotice={onNotice} onOpenDiff={onOpenDiff} onEditMessage={onEditMessage} onRegenerate={onRegenerate} onFork={onFork} />
+              <MemoMessageCard message={message} sessionId={session.id} turn={turnOf[index]} contentLens={contentLens} liveSubagents={liveRunsForMessage(message, liveSubagents)} toolResults={toolResultStatus} running={running} onNotice={onNotice} onOpenDiff={onOpenDiff} onEditMessage={onEditMessage} onRegenerate={onRegenerate} onFork={onFork} />
               {shellCmd && onSendToAgent && (
                 <button
                   className="send-to-agent"
