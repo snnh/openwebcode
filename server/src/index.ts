@@ -38,6 +38,7 @@ import { ProviderProfilesRuntime } from "./provider-profiles-runtime.js";
 import { ExtensionManager } from "./extensions/extension-manager.js";
 import { ContentLensService } from "./extensions/content-lens.js";
 import { RemoteSyncScheduler } from "./remote-sync-scheduler.js";
+import { CronScheduler } from "./cron-scheduler.js";
 import { EvalEvaluator } from "./eval/evaluator.js";
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -125,6 +126,19 @@ agent.setDiagnostics(diagnostics);
 // Git 集成（0.4.0 Phase 4a）：git_status/diff/commit 工具、git/* REST、worktree 生命周期（<dataDir>/worktrees）、scm.updated 事件共用
 const scm = new ScmService(core, sessions, events, { worktreeRoot: path.join(dataDir, "worktrees") });
 agent.setScm(scm);
+// cron 定时任务（提交⑫）：<dataDir>/cron.json 持久化，单 timer 调度；触发经 follow-up 队列注入
+// （极简 [cron] 前缀标记来源，stale 为 7 天保留期到期的最后一次触发）。会话已删时自愈级联。
+const cron = new CronScheduler({
+  file: path.join(dataDir, "cron.json"),
+  fire: async (sessionId, prompt, meta) => {
+    if (!(await sessions.get(sessionId))) {
+      await cron.deleteForSession(sessionId);
+      return;
+    }
+    await agent.fireCronFollowUp(sessionId, meta.stale ? `[cron] 到期最后一次触发：${prompt}` : `[cron] ${prompt}`);
+  },
+});
+agent.setCronScheduler(cron);
 const providerProfilesRuntime = new ProviderProfilesRuntime(providerProfiles, providers, agent, models, events);
 // 托管工作区（plan §6.4）：镜像/挂载点位于 dataDir 下；孤儿挂载清理挂在 GC 启动扫描上
 const managed = new ManagedWorkspaceManager({ dataDir });
@@ -190,6 +204,8 @@ events.on("event", (event) => {
 });
 remoteSyncScheduler.start();
 await core.start();
+// cron 恢复需在 sessions/core 就绪之后：load 会 coalesce 补发停机期间错过的触发（经 follow-up 队列起 run）
+await cron.load();
 // 存储 GC：启动时一次（含托管挂载孤儿清理）+ 每小时周期清理（失败仅记日志）
 void gc.startup().catch((error: unknown) => process.stderr.write(`[gc] startup failed: ${error instanceof Error ? error.message : String(error)}\n`));
 const gcTimer = setInterval(() => {
@@ -227,6 +243,7 @@ const app = await buildServer({
   updateChecker,
   updateApplier,
   dataDir,
+  cron,
   // TOTP 全局登录认证（提交⑥）：凭据 <dataDir>/totp.json（0600），票据仅内存
   totp,
   listenHost: config.host,
@@ -239,6 +256,7 @@ const app = await buildServer({
 
 async function shutdown(): Promise<void> {
   clearInterval(gcTimer);
+  cron.stop();
   indexManager.stop();
   remoteSyncScheduler.stop();
   providerProfilesRuntime.stop();

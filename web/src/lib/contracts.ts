@@ -4,6 +4,18 @@ export interface TodoItem {
   activeForm?: string;
 }
 
+/** cron 定时任务（提交⑫）：GET/POST /api/sessions/:id/cron 的返回形状。 */
+export interface CronJobInfo {
+  id: string;
+  cron: string;
+  prompt: string;
+  recurring: boolean;
+  createdAt: string;
+  /** ISO 时间；stale（待最后一次触发）时为 null。 */
+  nextFireAt: string | null;
+  stale: boolean;
+}
+
 export type PermissionMode = "ask" | "acceptEdits" | "review" | "yolo";
 export type SandboxCapability = "advisory" | "partial" | "enforced";
 export type SandboxMode = "appcontainer" | "wsb" | "jobobject" | "off";

@@ -1,4 +1,4 @@
-import type { AgentListResponse, AgentRun, BackgroundTaskInfo, CatalogSyncStatus, Checkpoint, CompletePathResponse, ContextView, CostReport, ExtensionInfo, FileEntry, ManagedWorkspaceCapability, ManagedWorkspaceSyncPreview, ManagedWorkspaceSyncResult, MessageAttachment, MessagesPage, ModelProfile, PendingPermission, PersonaDetail, PricingDocument, ProviderConcurrencyStats, ProviderConnectionTestResult, ProviderProfilesView, SandboxCapabilities, SandboxMode, Session, SessionDetail, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo, StartSubagentResponse, SubagentTranscript, SyncResult, TodoItem, WebCapability } from "./contracts";
+import type { AgentListResponse, AgentRun, BackgroundTaskInfo, CatalogSyncStatus, Checkpoint, CompletePathResponse, ContextView, CostReport, CronJobInfo, ExtensionInfo, FileEntry, ManagedWorkspaceCapability, ManagedWorkspaceSyncPreview, ManagedWorkspaceSyncResult, MessageAttachment, MessagesPage, ModelProfile, PendingPermission, PersonaDetail, PricingDocument, ProviderConcurrencyStats, ProviderConnectionTestResult, ProviderProfilesView, SandboxCapabilities, SandboxMode, Session, SessionDetail, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo, StartSubagentResponse, SubagentTranscript, SyncResult, TodoItem, WebCapability } from "./contracts";
 
 export class ApiError extends Error {
   constructor(readonly status: number, message: string) {
@@ -128,6 +128,11 @@ export const api = {
     request<{ accepted: boolean }>(`/api/sessions/${id}/permissions/respond`, { method: "POST", body: JSON.stringify(body) }),
   pendingPermissions: (id: string) => request<PendingPermission[]>(`/api/sessions/${id}/permissions`),
   todos: (id: string) => request<TodoItem[]>(`/api/sessions/${id}/todos`),
+  cronJobs: (id: string) => request<CronJobInfo[]>(`/api/sessions/${id}/cron`),
+  createCronJob: (id: string, body: { cron: string; prompt: string; recurring: boolean }) =>
+    request<CronJobInfo>(`/api/sessions/${id}/cron`, { method: "POST", body: JSON.stringify(body) }),
+  deleteCronJob: (id: string, jobId: string) =>
+    request<void>(`/api/sessions/${id}/cron/${jobId}`, { method: "DELETE" }),
   updateSession: (id: string, body: Record<string, unknown>) =>
     request<Session>(`/api/sessions/${id}/config`, { method: "PUT", body: JSON.stringify(body) }),
   context: (id: string) => request<ContextView>(`/api/sessions/${id}/context`),
