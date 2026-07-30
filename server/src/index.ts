@@ -91,7 +91,9 @@ const agents = new AgentRegistry(path.join(dataDir, "agents"));
 const commands = new CommandRegistry(path.join(dataDir, "commands"));
 const mcp = new McpManager(dataDir);
 const fastModel = new FastModelClient(providers, config.fastModel);
-const compactor = new Compactor(sessions, fastModel, { usageLog, pricing, exchangeRates });
+// Hooks（可信配置，等同 yolo 级别）：全局 <dataDir>/hooks.json，项目 <cwd>/.owc/hooks.json 现读覆盖
+const hooks = new HookRunner(path.join(dataDir, "hooks.json"), events);
+const compactor = new Compactor(sessions, fastModel, { usageLog, pricing, exchangeRates, hooks });
 const extensions = new ExtensionManager(dataDir, events, { sessions });
 await extensions.initialize();
 const contentLens = new ContentLensService(sessions, fastModel);
@@ -110,8 +112,7 @@ const backgroundTasks = new BackgroundTaskRegistry(
   },
   (info) => events.publish({ source: "agent", type: "task.finished", sessionId: info.sessionId, payload: info }),
 );
-// Hooks（可信配置，等同 yolo 级别）：全局 <dataDir>/hooks.json，项目 <cwd>/.owc/hooks.json 现读覆盖
-const hooks = new HookRunner(path.join(dataDir, "hooks.json"), events);
+// Hooks 已在上方（compactor 之前）创建，此处直接注入 agent
 const agent = new AgentRunner(sessions, providers, core, events, pricing, exchangeRates, config.defaultLanguage, 50, (model, provider) => models.get(model, provider), usageLog, skills, mcp, compactor, dataDir, agents, commands, search, undefined, backgroundTasks, hooks, extensions, webFetch);
 agent.setPythonEnvDefault(() => settings.effective().pythonEnv);
 agent.setFastModel(fastModel);

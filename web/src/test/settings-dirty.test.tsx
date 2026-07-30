@@ -62,6 +62,8 @@ function renderDialog(withI18n = false): void {
       setAccent={() => undefined}
       sendKey="enter"
       setSendKey={() => undefined}
+      desktopNotify={false}
+      setDesktopNotify={() => undefined}
       defaults={{}}
       setDefaults={() => undefined}
       providers={[]}

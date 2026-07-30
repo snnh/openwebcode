@@ -52,6 +52,8 @@ function renderSettings(initialTab?: SettingsTab): ReturnType<typeof render> {
       setAccent={() => undefined}
       sendKey="enter"
       setSendKey={() => undefined}
+      desktopNotify={false}
+      setDesktopNotify={() => undefined}
       defaults={{}}
       setDefaults={() => undefined}
       providers={[]}

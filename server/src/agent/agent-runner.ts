@@ -1510,13 +1510,14 @@ export class AgentRunner {
         contextRoot: this.sessions.contextRoot(sessionId),
         signal,
         taskId,
-        onStart: (id) => {
+        onStart: async (id) => {
           this.events.publish({
             source: "agent",
             type: "subagent.started",
             sessionId,
             payload: { toolCallId, taskId: id, prompt: prompt.slice(0, 200), manual: true, ...(resolved.name ? { agent: resolved.name } : {}) },
           });
+          await this.runSubagentHook("SubagentStart", sessionId, session.cwd, { taskId: id, agent: resolved.name, kind: resolved.kind, prompt: prompt.slice(0, 200) });
         },
         onProgress: (progress) => {
           this.events.publish({
@@ -1534,9 +1535,13 @@ export class AgentRunner {
         sessionId,
         payload: { toolCallId, taskId: result.taskId, status: "done", turns: result.turns, toolsUsed: result.toolsUsed },
       });
+      await this.runSubagentHook("SubagentStop", sessionId, session.cwd, { taskId: result.taskId, agent: resolved.name, kind: resolved.kind, status: "done" });
     } catch (error) {
       const message = errorMessage(error);
       this.events.publish({ source: "agent", type: "subagent.finished", sessionId, payload: { toolCallId, taskId, status: "failed", error: message } });
+      // SubagentStop 尽力触发：会话已不可读时跳过（此时子代理多半未真正启动）
+      const session = await this.sessions.get(sessionId).catch(() => undefined);
+      if (session) await this.runSubagentHook("SubagentStop", sessionId, session.cwd, { taskId, agent: resolved.name, kind: resolved.kind, status: "failed", error: message });
     }
   }
 
@@ -1838,6 +1843,11 @@ export class AgentRunner {
   async createInteraction(sessionId: string, input: { runId: string; toolCallId?: string; kind: InteractionKind; title: string; prompt: string; options?: Array<{ id: string; label: string; description?: string }> }): Promise<InteractionRequest> {
     const item = await this.interactions.create(sessionId, input);
     this.events.publish({ source: "agent", type: "interaction.requested", sessionId, runId: item.runId, payload: item });
+    // Notification 钩子：交互待答（仅通知不阻断）
+    const session = await this.sessions.get(sessionId);
+    if (session) {
+      await this.runNotificationHook("Notification", { sessionId, cwd: session.cwd, notification: { kind: "interaction", summary: input.title } });
+    }
     return item;
   }
   async respondInteraction(sessionId: string, id: string, answer: unknown): Promise<InteractionRequest | undefined> {
@@ -2019,6 +2029,8 @@ export class AgentRunner {
       if (reviewed.verdict === "low") return { allowed: true };
     }
     this.state(sessionId, "waiting_permission");
+    // Notification 钩子：权限待批（仅通知不阻断，桌面通知/IM 机器人等外接提醒的挂点）
+    await this.runNotificationHook("Notification", { sessionId, cwd: session.cwd, tool, input, notification: { kind: "permission", summary: summarizeToolInput(tool, input) } });
     const result = await this.permissions.request(sessionId, tool, input, signal);
     this.state(sessionId, "tool_running");
     return { allowed: result.allowed, ...(result.reason ? { reason: result.reason } : {}) };
@@ -2053,9 +2065,35 @@ export class AgentRunner {
     }
   }
 
-  /** 非拦截型 Hook（用户提交、工具后、正常结束）绝不能让已接受的会话卡住。 */
+  /**
+   * SubagentStart/SubagentStop 钩子：仅通知不阻断。payload 带 taskId、agent 类型
+   * （内置 explore/general 或自定义名）、swarm 成员位置与终态（Stop）。
+   */
+  private async runSubagentHook(
+    event: "SubagentStart" | "SubagentStop",
+    sessionId: string,
+    cwd: string,
+    info: {
+      taskId: string;
+      agent?: string | undefined;
+      kind?: string | undefined;
+      swarm?: { index: number; total: number } | undefined;
+      prompt?: string | undefined;
+      status?: "done" | "failed" | undefined;
+      error?: string | undefined;
+    },
+  ): Promise<void> {
+    await this.runNotificationHook(event, {
+      sessionId,
+      cwd,
+      ...(info.prompt !== undefined ? { prompt: info.prompt } : {}),
+      subagent: { taskId: info.taskId, agent: info.agent, kind: info.kind, swarm: info.swarm, status: info.status, error: info.error },
+    });
+  }
+
+  /** 非拦截型 Hook（用户提交、工具后、正常结束、通知/子代理/压缩后等）绝不能让已接受的会话卡住。 */
   private async runNotificationHook(
-    event: Exclude<HookEvent, "PreToolUse" | "SessionStart">,
+    event: Exclude<HookEvent, "PreToolUse" | "PreCompact" | "SessionStart">,
     payload: HookPayload,
   ): Promise<void> {
     if (!this.hooks) return;
@@ -2219,6 +2257,8 @@ export class AgentRunner {
       this.state(sessionId, "tool_running");
       // catch 分支需引用（子代理启动后失败补发 subagent.finished），声明在 try 之外
       let taskId = "";
+      // SubagentStop 钩子在 catch 也需引用（cwd/agent 类型），与 taskId 同步声明
+      let hookContext: { cwd: string; agent?: string | undefined; kind?: string | undefined } | undefined;
       try {
         const session = await this.sessions.get(sessionId);
         if (!session) throw new Error("Session not found");
@@ -2229,6 +2269,7 @@ export class AgentRunner {
         const agentName = typeof input.agent === "string" ? input.agent.trim() : "";
         const requestedTools = Array.isArray(input.tools) ? input.tools.map((item) => String(item)) : undefined;
         const resolved = await this.resolveSubAgent(session.cwd, sessionId, agentName, requestedTools);
+        hookContext = { cwd: session.cwd, agent: resolved.name, kind: resolved.kind };
         // 子代理期间不发布 message.delta/thinking_delta，避免污染主聊天流；
         // 子代理 token 经 onUsage 复用主循环记账路径，计入会话成本
         const subUsageContext = new ContextManager(this.sessions.contextRoot(sessionId));
@@ -2249,7 +2290,7 @@ export class AgentRunner {
           cwd: session.cwd,
           contextRoot: this.sessions.contextRoot(sessionId),
           signal,
-          onStart: (id) => {
+          onStart: async (id) => {
             taskId = id;
             this.events.publish({
               source: "agent",
@@ -2257,6 +2298,7 @@ export class AgentRunner {
               sessionId,
               payload: { toolCallId, taskId: id, prompt: prompt.slice(0, 200), ...(resolved.name ? { agent: resolved.name } : {}) },
             });
+            await this.runSubagentHook("SubagentStart", sessionId, session.cwd, { taskId: id, agent: resolved.name, kind: resolved.kind, prompt: prompt.slice(0, 200) });
           },
           onProgress: (progress) => {
             if (!taskId) return;
@@ -2275,6 +2317,7 @@ export class AgentRunner {
           sessionId,
           payload: { toolCallId, taskId: result.taskId, status: "done", turns: result.turns, toolsUsed: result.toolsUsed },
         });
+        await this.runSubagentHook("SubagentStop", sessionId, session.cwd, { taskId: result.taskId, agent: resolved.name, kind: resolved.kind, status: "done" });
         this.events.publish({
           source: "agent",
           type: "tool.end",
@@ -2294,6 +2337,7 @@ export class AgentRunner {
         // 子代理已启动后失败（含中断）：补发 finished，与 spawn_swarm 单项失败语义一致
         if (taskId) {
           this.events.publish({ source: "agent", type: "subagent.finished", sessionId, payload: { toolCallId, taskId, status: "failed", error: content } });
+          if (hookContext) await this.runSubagentHook("SubagentStop", sessionId, hookContext.cwd, { taskId, agent: hookContext.agent, kind: hookContext.kind, status: "failed", error: content });
         }
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, error: content } });
         // 子代理已启动：保留 taskId 与逐项终态，页面刷新后历史可还原（转录已落盘）
@@ -2380,7 +2424,7 @@ export class AgentRunner {
               signal,
               // swarm 成员共享讨论板：member 缺省由子代理回落 taskId
               swarm: { boardPath, ...(effective.name ? { member: effective.name } : {}) },
-              onStart: (id) => {
+              onStart: async (id) => {
                 taskId = id;
                 subagentTaskIds[index] = id;
                 this.events.publish({
@@ -2389,6 +2433,7 @@ export class AgentRunner {
                   sessionId,
                   payload: { toolCallId, taskId: id, prompt: prompt.slice(0, 200), swarm, ...(effective.name ? { agent: effective.name } : {}) },
                 });
+                await this.runSubagentHook("SubagentStart", sessionId, session.cwd, { taskId: id, agent: effective.name, kind: effective.kind, swarm, prompt: prompt.slice(0, 200) });
               },
               onProgress: (progress) => {
                 if (!taskId) return;
@@ -2407,6 +2452,7 @@ export class AgentRunner {
               sessionId,
               payload: { toolCallId, taskId: result.taskId, status: "done", turns: result.turns, toolsUsed: result.toolsUsed, swarm },
             });
+            await this.runSubagentHook("SubagentStop", sessionId, session.cwd, { taskId: result.taskId, agent: effective.name, kind: effective.kind, swarm, status: "done" });
             subagentTasks.push({ taskId, index, status: "done" });
             return { ok: true, conclusion: result.conclusion };
           } catch (error) {
@@ -2417,6 +2463,8 @@ export class AgentRunner {
               sessionId,
               payload: { toolCallId, taskId, status: "failed", error: message, swarm },
             });
+            // 仅真正启动过的成员补 SubagentStop（与逐项终态口径一致）
+            if (taskId) await this.runSubagentHook("SubagentStop", sessionId, session.cwd, { taskId, agent: effective.name, kind: effective.kind, swarm, status: "failed", error: message });
             // 启动前失败的项没有 taskId/转录，不进入逐项终态
             if (taskId) subagentTasks.push({ taskId, index, status: "failed", error: message });
             return { ok: false, error: message };
@@ -3200,6 +3248,15 @@ export class AgentRunner {
     this.runWrites.set(sessionId, write);
     await write;
   }
+}
+
+/** Notification(permission) 的待批摘要：工具名 + 关键参数（cmd/path/url，截断 200 字符）。 */
+function summarizeToolInput(tool: string, input: Record<string, unknown>): string {
+  const detail = typeof input.cmd === "string" ? input.cmd
+    : typeof input.path === "string" ? input.path
+      : typeof input.url === "string" ? input.url
+        : "";
+  return detail ? `${tool}: ${detail.slice(0, 200)}` : tool;
 }
 
 function stableStringify(value: unknown): string {
