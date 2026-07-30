@@ -191,7 +191,7 @@ export class SessionStore {
     return message;
   }
 
-  async updateConfig(id: string, update: Pick<SessionMeta, "provider" | "model"> & Partial<Pick<SessionMeta, "thinking" | "effort" | "agentMode" | "snapshotMode" | "shellBackend" | "pythonEnv">>): Promise<SessionMeta> {
+  async updateConfig(id: string, update: Pick<SessionMeta, "provider" | "model"> & Partial<Pick<SessionMeta, "thinking" | "effort" | "agentMode" | "snapshotMode" | "shellBackend" | "pythonEnv" | "persona">>): Promise<SessionMeta> {
     const meta = await this.readMeta(id);
     meta.provider = update.provider;
     meta.model = update.model;
@@ -207,6 +207,8 @@ export class SessionStore {
     else meta.shellBackend = update.shellBackend;
     if (update.pythonEnv === undefined || update.pythonEnv === "global") delete meta.pythonEnv;
     else meta.pythonEnv = update.pythonEnv;
+    if (update.persona === undefined || update.persona === "") delete meta.persona;
+    else meta.persona = update.persona;
     meta.updatedAt = new Date().toISOString();
     await this.writeMeta(meta);
     return meta;
