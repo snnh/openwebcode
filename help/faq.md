@@ -44,6 +44,10 @@ Windows：重新下载 MSI 双击安装（major upgrade 原地升级，用户数
 
 每个 GitHub Release 附带 `SHA256SUMS.txt`（MSI 与 tar.gz 的 SHA-256 校验和）。Linux：`sha256sum --check SHA256SUMS.txt`；Windows：`Get-FileHash <msi> -Algorithm SHA256` 后与文件内对应值比对。一行在线安装脚本（`install-online.sh`）会自动下载并校验，失败即中止。详见 [usage.md 的版本号与更新检查](./usage.md#版本号与更新检查) 与 [packaging/README.md](../packaging/README.md#在线安装与更新)。
 
+### Q: cron 定时任务在重启 server 后还在吗？
+
+在。任务持久化在 `<业务数据目录>/cron.json`，重启后自动恢复并重排下次触发；停机期间错过的多次触发只补一次。recurring 任务创建 7 天后触发最后一次（stale）即自动删除，one-shot 触发一次即删；删除会话会级联删掉它的全部任务。每会话上限 50 个。详见 [usage.md 的定时任务一节](./usage.md#定时任务cron)。
+
 ## 模型与 Provider
 
 ### Q: 支持哪些 LLM provider？
@@ -89,19 +93,24 @@ Anthropic 显式 `cache_control` 断点（系统提示词后、驱逐边界后�
 
 ## 权限与沙盒
 
-### Q: ask / acceptEdits / yolo 有什么区别？
+### Q: ask / acceptEdits / review / yolo 有什么区别？
 
 - `ask`（默认）：每个写操作弹权限卡片，你逐个 allow/deny
 - `acceptEdits`：文件编辑类自动放行，bash 等仍需确认
+- `review`（模型审核）：需确认的调用先由审核模型评判——快速模型（fast，未配置则一律转人工）或会话当前模型（main）输出 LOW/HIGH；LOW 自动放行并留 `permission.reviewed` 审计事件，HIGH、审核失败或输出无法解析一律转人工；`git_commit` 永远强制人工
 - `yolo`：全部自动放行——**但沙盒仍生效**（yolo 与沙盒是两个正交机制）
 
-`总是允许` 会生成持久规则（如精确的 `bash(npm test)`），随会话保存。
+`总是允许` 会生成持久规则（如 `bash(npm test)`），随会话保存。bash 规则按词边界前缀匹配：`npm test -- --watch` 放行、`npm testx` 不放行；规则后追加的参数里若含管道、连接、重定向等 shell 控制字符，则回退精确匹配不放行。
 
 ### Q: 「允许一次」和「总是允许」有什么区别？
 
 「允许一次」只恢复当前这一项工具调用，不写权限规则；「总是允许」需要二次确认，并把当前工具及参数规则保存到会话。两者都会先完成批准接口响应，再开始工具执行，避免浏览器等待审批响应时被长命令拖住。
 
 Windows 默认 AppContainer 会话使用 `cmd.exe`。如果批准后立即出现“不是内部或外部命令”，通常是模型生成了 PowerShell/POSIX 语法；可在会话头部把命令后端切到 `PowerShell 7`（需安装 `pwsh`），或改用 `dir`、`type`、`where` 等 cmd 命令。
+
+### Q: agent 的 bash 是每次新开一个 shell 吗？
+
+不是。默认每会话维护一个持久 shell（沙盒内 pty）：`cd` 切换的目录、`export`/`set` 设置的环境变量在后续 bash 调用中保持。pty 不可用（如旧版 core）时自动回退一次性执行，功能不变，只是不再保持状态。两个例外：`run_in_background` 的后台任务始终走一次性 job；Windows 上 `pwsh` 后端在 AppContainer 沙盒下暂不可用持久 shell，同样回退一次性执行（cmd 后端不受影响）。
 
 ### Q: yolo 了还会被沙盒拦吗？
 
@@ -236,6 +245,14 @@ owc run "跑测试并修复失败的用例" --cwd . --yolo --json | tee events.n
 - 确认 `owc` 进程在跑（`ps aux | grep owc` 或任务管理器）
 - 确认端口未被占用、未被防火墙拦
 - 默认监听 `127.0.0.1`；远程/局域网访问需设置 `OWC_HOST=0.0.0.0` 且**必须**同时设置 `OWC_ACCESS_TOKEN`（≥32 字符），否则 server 拒绝启动。浏览器首次用 `http://<主机>:<端口>/?token=<token>` 换取 HttpOnly Cookie；`owc run` 用 `OWC_ACCESS_TOKEN` 环境变量走 Bearer 头
+
+### Q: 为什么看不到终端页签 / 终端不可用？
+
+真终端有两条启用门槛，需同时满足：已开启 TOTP 全局登录（设置 → 远程访问的 TOTP 向导）；且 server 监听地址为回环或局域网字面量（如 `127.0.0.1`、`192.168.x.x`；`0.0.0.0` / `::` 通配监听不满足）。注意终端在宿主机以应用身份运行、**不经沙盒**，与输入框 `!` 命令走的权限链通道是严格分开的两条路。详见 [usage.md 的真终端一节](./usage.md#真终端)。
+
+### Q: TOTP 丢了（换手机 / 卸载认证器）怎么办？
+
+用启用向导时展示的 10 个一次性恢复码之一登录（每个只能用一次）。恢复码也丢了：在服务器本机删除 `<业务数据目录>/totp.json` 并重启 server，即回到未启用状态，再重新走向导。`owc run` 等机器通道使用 `OWC_ACCESS_TOKEN` Bearer 头，不受 TOTP 影响。
 
 ### Q: 手机上能用吗？
 
