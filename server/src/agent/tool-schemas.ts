@@ -14,7 +14,8 @@ export function bashTool(backgroundTasksEnabled: boolean, shellBackend: ShellBac
     : "Python runs in an isolated uv-managed virtual environment that is created on demand (its directory is prepended to PATH); install packages with 'uv pip install'. Node.js still uses the host environment. ";
   return {
     name: "bash",
-    description: "Execute a shell command in the session workspace. Call this when command-line execution is required. " + shellGuidance + envGuidance +
+    description: "Execute a shell command in the session workspace. Call this when command-line execution is required. " +
+      "The shell is persistent: the working directory and environment variables set by one call carry over to later calls in the same session. " + shellGuidance + envGuidance +
       (backgroundTasksEnabled
         ? " Set run_in_background=true to run the command asynchronously; the agent loop continues immediately and you can check " +
           "the result later with task_output (or wait with block=true)."
