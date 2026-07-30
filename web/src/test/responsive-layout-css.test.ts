@@ -23,12 +23,14 @@ describe("窄窗口布局 CSS 回归", () => {
     expect(narrowCss).not.toContain("calc(100dvh - 53px)");
   });
 
-  it("会话配置控件缩短并始终一行，窄窗口模型框先收缩", () => {
-    expect(css).toMatch(/\.composer-config-main\s*\{[^}]*flex-wrap:\s*nowrap;/s);
-    expect(css).toMatch(/\.composer-thinking-field\s*\{[^}]*margin-left:\s*auto;/s);
-    expect(css).toMatch(/\.composer-model-field\s*\{[^}]*flex:\s*0 1 220px;[^}]*max-width:\s*220px;/s);
-    expect(narrowCss).toMatch(/\.composer-model-field\s*\{[^}]*flex:\s*0 1 160px;[^}]*max-width:\s*160px;/s);
-    expect(narrowCss).toMatch(/\.composer-config-main \.field-label\s*\{[^}]*display:\s*none;/s);
-    expect(narrowCss).toMatch(/\.composer-config-toggle\s*\{[^}]*margin-left:\s*0;/s);
+  it("会话配置收进输入卡片底栏，窄窗口允许换行且芯片行可横滚", () => {
+    expect(css).toMatch(/\.composer-toolbar\s*\{[^}]*flex-wrap:\s*nowrap;/s);
+    expect(css).toMatch(/\.composer-toolbar-spacer\s*\{\s*flex:\s*1 1 auto;/s);
+    expect(css).toMatch(/\.composer-menu-right \.popover-menu\s*\{[^}]*right:\s*0;/s);
+    expect(narrowCss).toMatch(/\.composer\s*\{[^}]*position:\s*sticky;/s);
+    expect(narrowCss).toMatch(/\.composer-menu-badge\s*\{\s*display:\s*none;/s);
+    const tinyCss = css.slice(css.indexOf("@media (max-width: 480px)"));
+    expect(tinyCss).toMatch(/\.composer-toolbar\s*\{\s*flex-wrap:\s*wrap;/s);
+    expect(tinyCss).toMatch(/\.composer-chips\s*\{[^}]*overflow-x:\s*auto;/s);
   });
 });

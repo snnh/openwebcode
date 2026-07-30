@@ -172,6 +172,8 @@ describe("MessageCard", () => {
     expect(container.querySelector(".subagent-run")).toBeInTheDocument();
     expect(container.querySelector(".tool-detail")).not.toBeInTheDocument();
     expect(container.querySelector(".subagent-run-status")).toHaveTextContent("运行中");
+    // 轮次统计在展开后的正文里
+    fireEvent.click(container.querySelector(".subagent-run-header")!);
     expect(container.querySelector(".subagent-run-stats")).toHaveTextContent("第 4 轮 · 已用 grep");
   });
 });

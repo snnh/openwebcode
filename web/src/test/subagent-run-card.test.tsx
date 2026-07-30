@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render } from "@testing-library/react";
+import { fireEvent, render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { SubagentRunCard } from "../components/SubagentRunCard";
 import type { LiveSubagentRun } from "../lib/contracts";
@@ -8,6 +8,11 @@ import type { ReactElement } from "react";
 function renderWithClient(node: ReactElement) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(<QueryClientProvider client={client}>{node}</QueryClientProvider>);
+}
+
+/** 折叠行默认只显示行头；统计/错误/转录在展开后的正文里 */
+function expand(container: HTMLElement): void {
+  fireEvent.click(container.querySelector(".subagent-run-header")!);
 }
 
 function run(overrides: Partial<LiveSubagentRun>): LiveSubagentRun {
@@ -35,6 +40,7 @@ describe("SubagentRunCard", () => {
     expect(container.querySelector(".subagent-run")).toBeInTheDocument();
     expect(container.querySelector(".subagent-run-status")).toHaveTextContent("运行中");
     expect(container.querySelector(".subagent-run-spinner")).toBeInTheDocument();
+    expand(container);
     expect(container.querySelector(".subagent-run-stats")).toHaveTextContent("第 2 轮 · 已用 read_file");
   });
 
@@ -50,6 +56,7 @@ describe("SubagentRunCard", () => {
 
     expect(container.querySelector(".subagent-run-agent")).toHaveTextContent("reviewer");
     expect(container.querySelector(".subagent-run-status")).toHaveTextContent("完成");
+    expand(container);
     expect(container.querySelector(".subagent-run-stats")).toHaveTextContent("3 轮 · read_file, grep");
     // 完成后提供转录链接（懒加载，展开前不拉取）
     expect(container.querySelector("details.subagent-transcript")).toBeInTheDocument();
@@ -65,6 +72,7 @@ describe("SubagentRunCard", () => {
     );
 
     expect(container.querySelector(".subagent-run-status")).toHaveTextContent("失败");
+    expand(container);
     expect(container.querySelector(".subagent-run-error")).toHaveTextContent("provider boom");
   });
 
@@ -77,6 +85,7 @@ describe("SubagentRunCard", () => {
       />,
     );
 
+    expand(container);
     expect(container.querySelector(".subagent-run-stats")).toBeNull();
     expect(container.textContent).not.toContain("0 轮");
   });
@@ -90,6 +99,7 @@ describe("SubagentRunCard", () => {
       />,
     );
 
+    expand(container);
     expect(container.querySelector(".subagent-run-stats")).toHaveTextContent("read_file");
     expect(container.querySelector(".subagent-run-stats")).not.toHaveTextContent("0 轮");
   });
@@ -105,6 +115,7 @@ describe("SubagentRunCard", () => {
     );
 
     // 错误行保留，同时提供转录折叠（懒加载）
+    expand(container);
     expect(container.querySelector(".subagent-run-error")).toHaveTextContent("provider boom");
     expect(container.querySelector("details.subagent-transcript")).toBeInTheDocument();
   });
@@ -121,6 +132,7 @@ describe("SubagentRunCard", () => {
       />,
     );
 
+    expand(container);
     const items = container.querySelectorAll(".subagent-run-item");
     expect(items).toHaveLength(3);
     // 第 1 项：完成，agent 覆盖为 reviewer
@@ -146,6 +158,7 @@ describe("SubagentRunCard", () => {
       />,
     );
 
+    expand(container);
     const items = container.querySelectorAll(".subagent-run-item");
     expect(items).toHaveLength(2);
     expect(container.querySelector(".subagent-run-status")).not.toBeInTheDocument();

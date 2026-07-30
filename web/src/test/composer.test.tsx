@@ -9,6 +9,9 @@ import { renderPdfToImages } from "../lib/pdf-to-images";
 
 vi.mock("../lib/pdf-to-images", () => ({ renderPdfToImages: vi.fn() }));
 
+// ComposerChips 走 react-query，本套件聚焦 Composer 本体，芯片由 composer-chips.test.tsx 覆盖
+vi.mock("../components/ComposerChips", () => ({ ComposerChips: () => null }));
+
 const renderPdfToImagesMock = vi.mocked(renderPdfToImages);
 const uploadPdfMock = vi.spyOn(api, "uploadPdf");
 
@@ -571,7 +574,7 @@ describe("Composer", () => {
     );
 
     const trigger = screen.getByRole("button", { name: "模型与思考程度" });
-    expect(trigger.closest(".composer-config-main")).not.toBeNull();
+    expect(trigger.closest(".composer-toolbar")).not.toBeNull();
     expect(screen.queryByLabelText("力度")).not.toBeInTheDocument();
 
     fireEvent.click(trigger);
@@ -597,7 +600,7 @@ describe("Composer", () => {
     renderComposer({ onSend: vi.fn(), providers: ["anthropic"], models });
 
     expect(screen.queryByText("图片输入")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "高级设置" }));
+    fireEvent.click(screen.getByRole("button", { name: "模型与思考程度" }));
     expect(screen.getByText("图片输入")).toBeInTheDocument();
     expect(screen.getByText("视频输入")).toBeInTheDocument();
     expect(screen.getByText("图片输出")).toBeInTheDocument();

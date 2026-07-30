@@ -52,7 +52,7 @@ export function ToolCallCard({ name, input, status, onOpenDiff }: { name: string
       >
         <span className={`tool-row-status ${status ?? "idle"}`} aria-hidden>
           {status === "running"
-            ? <span className="tool-row-spinner" />
+            ? <span className="tool-row-dot" />
             : status === "error"
               ? <Icon name="x" size={12} />
               : status === "done"
@@ -355,87 +355,91 @@ export function MessageCard({ message, sessionId, turn, contentLens, liveSubagen
       .catch((error: unknown) => onNotice?.(error instanceof Error ? error.message : t("自动翻译失败", "Automatic translation failed"), "error"))
       .finally(() => setLensBusy(false));
   }, [contentLens?.enabled, glossary, message.id, onNotice, sessionId, targetLanguage, text, translateMode]);
+  // 元信息行：assistant/tool 在正文上方；user 放到气泡外下方（右对齐，hover/触屏显示）
+  const meta = (
+    <div className="message-meta">
+      {message.role !== "user" && <span className="message-author">{ROLE_LABELS[message.role] ? t(...ROLE_LABELS[message.role]!) : message.role}</span>}
+      <time dateTime={message.createdAt} title={createdAt.toLocaleString(locale)}>{createdAt.toLocaleTimeString(locale)}</time>
+      {text && (
+        <button
+          className="copy-btn"
+          onClick={() => {
+            void writeClipboard(text).then((ok) => {
+              if (!ok) return;
+              setCopied(true);
+              if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+              copyTimerRef.current = setTimeout(() => setCopied(false), 1500);
+            });
+          }}
+        >
+          <Icon name={copied ? "check" : "copy"} size={12} />
+          {copied ? t("已复制", "Copied") : t("复制", "Copy")}
+        </button>
+      )}
+      {text && sessionId && contentLens?.enabled && (
+        <>
+          {translateMode !== "off" && <button className="copy-btn" disabled={lensBusy} onClick={() => {
+            setLensBusy(true);
+            api.translateMessage(sessionId, message.id, targetLanguage, glossary)
+              .then((value) => setTranslation(value.text))
+              .catch((error: unknown) => onNotice?.(error instanceof Error ? error.message : t("翻译失败", "Translation failed"), "error"))
+              .finally(() => setLensBusy(false));
+          }}>{translateMode === "auto" && translation ? t("重译", "Translate again") : t("译", "Translate")}</button>}
+          <button className="copy-btn" disabled={lensBusy} title={t("先在本条消息中选择不超过 200 字符", "Select up to 200 characters in this message first")} onClick={() => {
+            const selection = window.getSelection();
+            const selected = selection?.toString().trim() ?? "";
+            if (!selected || selected.length > 200 || !articleRef.current?.contains(selection?.anchorNode ?? null) || !articleRef.current?.contains(selection?.focusNode ?? null)) {
+              onNotice?.(t("请先在本条消息中选择 1–200 个字符", "Select 1–200 characters in this message first"), "error"); return;
+            }
+            setLensBusy(true);
+            api.explainSelection(sessionId, selected, targetLanguage)
+              .then((value) => setExplanation({ selection: selected, text: value.text }))
+              .catch((error: unknown) => onNotice?.(error instanceof Error ? error.message : t("解析失败", "Explanation failed"), "error"))
+              .finally(() => setLensBusy(false));
+          }}>{t("解析选中", "Explain selection")}</button>
+        </>
+      )}
+      {message.role === "user" && sessionId && text && onEditMessage && (
+        <button
+          className="copy-btn"
+          disabled={running}
+          title={running ? t("运行中不可用", "Unavailable while running") : t("编辑该消息并重新发送", "Edit this message and resend")}
+          onClick={() => onEditMessage(message)}
+        >
+          <Icon name="edit" size={12} />
+          {t("编辑重发", "Edit & resend")}
+        </button>
+      )}
+      {message.role === "user" && sessionId && text && onRegenerate && (
+        <button
+          className="copy-btn"
+          disabled={running}
+          title={running ? t("运行中不可用", "Unavailable while running") : t("检出到该消息之前并重新生成回复", "Check out to before this message and regenerate the reply")}
+          onClick={() => onRegenerate(message)}
+        >
+          <Icon name="history" size={12} />
+          {t("重新生成", "Regenerate")}
+        </button>
+      )}
+      {message.role === "user" && sessionId && onFork && (
+        <button
+          className="copy-btn"
+          title={t("从该消息分叉为新会话", "Fork a new session from this message")}
+          onClick={() => onFork(message)}
+        >
+          <Icon name="git" size={12} />
+          {t("分叉", "Fork")}
+        </button>
+      )}
+    </div>
+  );
   return (
     <article className={`message ${message.role}${turn !== undefined ? ` turn-${turn % 2 === 0 ? "even" : "odd"}` : ""}`} ref={articleRef} data-message-id={message.id}>
-      <span className="track-node" aria-hidden />
-      <div className="message-meta">
-        <span className="message-author">{ROLE_LABELS[message.role] ? t(...ROLE_LABELS[message.role]!) : message.role}</span>
-        <time dateTime={message.createdAt} title={createdAt.toLocaleString(locale)}>{createdAt.toLocaleTimeString(locale)}</time>
-        {text && (
-          <button
-            className="copy-btn"
-            onClick={() => {
-              void writeClipboard(text).then((ok) => {
-                if (!ok) return;
-                setCopied(true);
-                if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
-                copyTimerRef.current = setTimeout(() => setCopied(false), 1500);
-              });
-            }}
-          >
-            <Icon name={copied ? "check" : "copy"} size={12} />
-            {copied ? t("已复制", "Copied") : t("复制", "Copy")}
-          </button>
-        )}
-        {text && sessionId && contentLens?.enabled && (
-          <>
-            {translateMode !== "off" && <button className="copy-btn" disabled={lensBusy} onClick={() => {
-              setLensBusy(true);
-              api.translateMessage(sessionId, message.id, targetLanguage, glossary)
-                .then((value) => setTranslation(value.text))
-                .catch((error: unknown) => onNotice?.(error instanceof Error ? error.message : t("翻译失败", "Translation failed"), "error"))
-                .finally(() => setLensBusy(false));
-            }}>{translateMode === "auto" && translation ? t("重译", "Translate again") : t("译", "Translate")}</button>}
-            <button className="copy-btn" disabled={lensBusy} title={t("先在本条消息中选择不超过 200 字符", "Select up to 200 characters in this message first")} onClick={() => {
-              const selection = window.getSelection();
-              const selected = selection?.toString().trim() ?? "";
-              if (!selected || selected.length > 200 || !articleRef.current?.contains(selection?.anchorNode ?? null) || !articleRef.current?.contains(selection?.focusNode ?? null)) {
-                onNotice?.(t("请先在本条消息中选择 1–200 个字符", "Select 1–200 characters in this message first"), "error"); return;
-              }
-              setLensBusy(true);
-              api.explainSelection(sessionId, selected, targetLanguage)
-                .then((value) => setExplanation({ selection: selected, text: value.text }))
-                .catch((error: unknown) => onNotice?.(error instanceof Error ? error.message : t("解析失败", "Explanation failed"), "error"))
-                .finally(() => setLensBusy(false));
-            }}>{t("解析选中", "Explain selection")}</button>
-          </>
-        )}
-        {message.role === "user" && sessionId && text && onEditMessage && (
-          <button
-            className="copy-btn"
-            disabled={running}
-            title={running ? t("运行中不可用", "Unavailable while running") : t("编辑该消息并重新发送", "Edit this message and resend")}
-            onClick={() => onEditMessage(message)}
-          >
-            <Icon name="edit" size={12} />
-            {t("编辑重发", "Edit & resend")}
-          </button>
-        )}
-        {message.role === "user" && sessionId && text && onRegenerate && (
-          <button
-            className="copy-btn"
-            disabled={running}
-            title={running ? t("运行中不可用", "Unavailable while running") : t("检出到该消息之前并重新生成回复", "Check out to before this message and regenerate the reply")}
-            onClick={() => onRegenerate(message)}
-          >
-            <Icon name="history" size={12} />
-            {t("重新生成", "Regenerate")}
-          </button>
-        )}
-        {message.role === "user" && sessionId && onFork && (
-          <button
-            className="copy-btn"
-            title={t("从该消息分叉为新会话", "Fork a new session from this message")}
-            onClick={() => onFork(message)}
-          >
-            <Icon name="git" size={12} />
-            {t("分叉", "Fork")}
-          </button>
-        )}
-      </div>
+      {message.role !== "user" && meta}
       {content.map((block, index) => <ContentBlock key={index} block={block} sessionId={sessionId} liveSubagents={liveSubagents} toolResults={toolResults} running={running} onOpenDiff={onOpenDiff} />)}
       {translation && <details className="content-lens-result" open><summary>{t("译文", "Translation")}</summary><Markdown>{translation}</Markdown></details>}
       {explanation && <details className="content-lens-result" open><summary>{t("解析：", "Explanation: ")}{explanation.selection}</summary><Markdown>{explanation.text}</Markdown></details>}
+      {message.role === "user" && meta}
     </article>
   );
 }
