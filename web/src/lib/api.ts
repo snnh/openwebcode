@@ -6,6 +6,13 @@ export class ApiError extends Error {
   }
 }
 
+/** 任意非 /api/auth/* 请求 401 时通知（登录页兜底：服务端重启票据失效等场景） */
+const unauthorizedListeners = new Set<() => void>();
+export function onUnauthorized(listener: () => void): () => void {
+  unauthorizedListeners.add(listener);
+  return () => { unauthorizedListeners.delete(listener); };
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers: Record<string, string> = { ...(init?.headers as Record<string, string> | undefined) };
   // 仅有 body 时声明 content-type，避免 Fastify 对空 body 的 POST 报校验错误
@@ -18,6 +25,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({ error: response.statusText })) as { error?: string };
+    if (response.status === 401 && !path.startsWith("/api/auth/")) {
+      for (const listener of unauthorizedListeners) listener();
+    }
     throw new ApiError(response.status, body.error ?? response.statusText);
   }
   if (response.status === 204) return undefined as T;
@@ -49,6 +59,13 @@ function readFileAsBase64(file: File): Promise<string> {
 export const api = {
   sessions: () => request<Session[]>("/api/sessions"),
   health: () => request<{ status: string }>("/api/health"),
+  // TOTP 全局登录认证（提交⑥）
+  authStatus: () => request<import("./contracts").AuthStatus>("/api/auth/status"),
+  totpSetup: () => request<import("./contracts").TotpSetupResponse>("/api/auth/totp/setup", { method: "POST" }),
+  totpConfirm: (code: string) => request<import("./contracts").TotpConfirmResponse>("/api/auth/totp/confirm", { method: "POST", body: JSON.stringify({ code }) }),
+  totpDisable: (code: string) => request<{ ok: true }>("/api/auth/totp/disable", { method: "POST", body: JSON.stringify({ code }) }),
+  login: (code: string) => request<{ ok: true }>("/api/auth/login", { method: "POST", body: JSON.stringify({ code }) }),
+  logout: () => request<{ ok: true }>("/api/auth/logout", { method: "POST" }),
   version: () => request<import("./contracts").VersionInfo>("/api/version"),
   updateCheck: () => request<import("./contracts").UpdateCheckResponse>("/api/update-check"),
   refreshUpdateCheck: () => request<import("./contracts").UpdateCheckResponse>("/api/update-check/refresh", { method: "POST" }),

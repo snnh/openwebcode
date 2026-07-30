@@ -107,4 +107,17 @@ describe("useSessionEventStream", () => {
     act(() => vi.advanceTimersByTime(500));
     expect(StubWebSocket.instances).toHaveLength(3);
   });
+
+  it("1008 关闭（登录失效）停止退避重连", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("WebSocket", StubWebSocket as unknown as typeof WebSocket);
+    render(<Probe sessionId="s1" onEvent={() => undefined} />);
+
+    const first = StubWebSocket.instances[0]!;
+    act(() => (first.onclose as ((event?: { code: number }) => void) | null)?.({ code: 1008 }));
+    act(() => vi.advanceTimersByTime(30_000));
+    // 不再建立新 socket，也不亮重连横幅（统一交由 API 401 拦截回登录页）
+    expect(StubWebSocket.instances).toHaveLength(1);
+    expect(screen.getByTestId("reconnecting").textContent).toBe("false");
+  });
 });
