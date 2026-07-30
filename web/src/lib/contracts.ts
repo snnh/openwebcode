@@ -190,6 +190,8 @@ export interface Session {
   pythonEnv?: PythonEnv;
   /** env-sim 人格预设 id（会话级覆盖）；undefined = 跟随扩展全局配置。 */
   persona?: string;
+  /** 并行子代理（spawn_swarm）开关；undefined/false = 关闭。 */
+  swarmEnabled?: boolean;
   setupScript?: string;
   /** 选择性上下文：pin 的消息 id/文件路径（不被驱逐）。 */
   contextPins?: string[];
