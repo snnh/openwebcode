@@ -166,6 +166,16 @@ export interface IndexExtractSummary { files: number; symbols: number; truncated
 export interface JobStatus { jobId: string; state: "running" | "completed" | "failed" | "cancelled" | "timed_out"; exitCode?: number; durationMs?: number; truncated?: boolean; error?: string }
 export interface JobOutputRequest { sessionId: string; jobId: string; afterSeq: number; limit?: number }
 export interface JobOutputResult { chunks: Array<{ seq: number; stream: "stdout" | "stderr"; data: string }>; nextSeq: number; truncated: boolean }
+/** pty.open：session 为已配置会话 id，cwd 必须等于会话根；sandbox 由调用方决定
+ * （人类终端通道强制 false；sandbox=true 供后续 agent 持久 shell 复用会话策略）。 */
+export interface PtyOpenRequest { session: string; cwd: string; cols: number; rows: number; sandbox: boolean; shell?: string }
+export interface PtyOpenResult { ptyId: number; sandboxCapability?: string; sandboxReason?: string }
+export interface PtyInputRequest { ptyId: number; data: string }
+export interface PtyResizeRequest { ptyId: number; cols: number; rows: number }
+/** pty.output 通知载荷（data 为 base64，seq 在单 pty 内从 0 递增） */
+export interface PtyOutputEvent { ptyId: number; seq: number; data: string }
+/** pty.exit 通知载荷：子进程退出时恰好一次，记录保留到显式 pty.close */
+export interface PtyExitEvent { ptyId: number; exitCode?: number }
 export interface FsReadResult { content: string; totalLines: number; encoding: "utf-8"; truncated: boolean }
 export interface FsListResult { entries: Array<{ name: string; type: "file" | "directory" | "other"; size: number }>; truncated: boolean }
 export interface FsGlobResult { paths: string[]; truncated: boolean }
@@ -218,6 +228,14 @@ export interface CoreClientLike {
   grepFiles(request: FsSearchRequest): Promise<FsGrepResult>;
   /** path.normalize（可选）：旧 core 二进制无此能力时缺省，调用方回退原始路径。 */
   normalizePath?(request: PathNormalizeRequest): Promise<PathNormalizeResult>;
+  /** pty.*（可选）：旧 core 二进制无 features.pty 时缺省，终端通道应报不可用。 */
+  openPty?(request: PtyOpenRequest): Promise<PtyOpenResult>;
+  inputPty?(request: PtyInputRequest): Promise<{ ok: true }>;
+  resizePty?(request: PtyResizeRequest): Promise<{ ok: true }>;
+  closePty?(request: { ptyId: number }): Promise<{ ok: true; exitCode?: number }>;
+  /** per-pty 事件通道（exec.output 的 emitter 先例按 ptyId 细分）：output/exit */
+  ptyEvents?(ptyId: number): EventEmitter;
+  removePtyEvents?(ptyId: number): void;
   setRequestTimeoutMs(timeoutMs: number): void;
   on(eventName: string, listener: (...args: any[]) => void): unknown;
   release?(sessionId: string): Promise<void>;
@@ -241,6 +259,8 @@ export class CoreClient extends EventEmitter {
   private transport: RpcTransport | undefined;
   private child: ChildProcessWithoutNullStreams | undefined;
   private readonly pending = new Map<number, PendingRequest>();
+  private readonly ptyEmitters = new Map<number, EventEmitter>();
+  private readonly pendingPtyEvents = new Map<number, Array<{ type: "output" | "exit"; params: unknown }>>();
   private nextId = 1;
   private stopping = false;
   private restartCount = 0;
@@ -328,6 +348,34 @@ export class CoreClient extends EventEmitter {
   globFiles(request: FsSearchRequest): Promise<FsGlobResult> { return this.call("fs.glob", request); }
   grepFiles(request: FsSearchRequest): Promise<FsGrepResult> { return this.call("fs.grep", request); }
   normalizePath(request: PathNormalizeRequest): Promise<PathNormalizeResult> { return this.call("path.normalize", request); }
+  openPty(request: PtyOpenRequest): Promise<PtyOpenResult> { return this.call("pty.open", request); }
+  inputPty(request: PtyInputRequest): Promise<{ ok: true }> { return this.call("pty.input", request); }
+  resizePty(request: PtyResizeRequest): Promise<{ ok: true }> { return this.call("pty.resize", request); }
+  closePty(request: { ptyId: number }): Promise<{ ok: true; exitCode?: number }> { return this.call("pty.close", request); }
+
+  /** per-pty 事件通道：pty.open 响应到达前 core 可能已经推 output（shell banner），
+   * 无订阅者的通知先缓冲（上限 256 条），首个 listener 挂载时回放。 */
+  ptyEvents(ptyId: number): EventEmitter {
+    let emitter = this.ptyEmitters.get(ptyId);
+    if (!emitter) {
+      emitter = new EventEmitter();
+      const buffered = this.pendingPtyEvents.get(ptyId) ?? [];
+      this.pendingPtyEvents.delete(ptyId);
+      if (buffered.length > 0) {
+        const target = emitter;
+        target.once("newListener", () => {
+          for (const event of buffered) target.emit(event.type, event.params);
+        });
+      }
+      this.ptyEmitters.set(ptyId, emitter);
+    }
+    return emitter;
+  }
+
+  removePtyEvents(ptyId: number): void {
+    this.ptyEmitters.delete(ptyId);
+    this.pendingPtyEvents.delete(ptyId);
+  }
 
   private async spawnAndHandshake(generation: number): Promise<CoreInfo> {
     const connection = this.connectionFactory ? await this.connectionFactory() : this.spawnStdio();
@@ -384,6 +432,22 @@ export class CoreClient extends EventEmitter {
         this.failConnection(generation, new Error("Malformed RPC notification"));
         return;
       }
+      if (notification.method === "pty.output" || notification.method === "pty.exit") {
+        const params = notification.params as { ptyId?: unknown } | undefined;
+        const ptyId = params && typeof params.ptyId === "number" ? params.ptyId : undefined;
+        if (ptyId !== undefined) {
+          const type = notification.method === "pty.output" ? "output" : "exit";
+          const emitter = this.ptyEmitters.get(ptyId);
+          if (emitter) emitter.emit(type, notification.params);
+          else {
+            const buffered = this.pendingPtyEvents.get(ptyId) ?? [];
+            if (buffered.length < 256) {
+              buffered.push({ type, params: notification.params });
+              this.pendingPtyEvents.set(ptyId, buffered);
+            }
+          }
+        }
+      }
       this.emitEvent(notification.method, notification.params);
       return;
     }
@@ -420,6 +484,10 @@ export class CoreClient extends EventEmitter {
       this.pending.delete(id);
     }
     if (child && child.exitCode === null) child.kill();
+    // core 重启/退出意味着全部 pty 已死：通知每个 per-pty 通道退出并清表
+    for (const emitter of this.ptyEmitters.values()) emitter.emit("exit", {});
+    this.ptyEmitters.clear();
+    this.pendingPtyEvents.clear();
     this.emitEvent("core.exit", details ?? { message: error.message });
     if (this.stopping || !restart || this.restartCount >= 3 || this.connectionFactory) return;
     const delay = 250 * 2 ** this.restartCount++;

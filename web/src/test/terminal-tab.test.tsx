@@ -27,8 +27,6 @@ const models: ModelProfile[] = [
   { id: "claude-opus-4-8", provider: "anthropic", displayName: "Claude Opus 4.8", contextWindow: 128_000, maxOutput: 8_000, capabilities: { thinking: ["adaptive", "disabled"], effort: ["low", "high"], modalities: ["text"], imageOutput: false, tools: true } },
 ];
 
-const shellCalls: Array<{ url: string; body: unknown }> = [];
-
 function installFetchMock(): void {
   const handler = vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = typeof input === "string" ? input : input.toString();
@@ -41,10 +39,7 @@ function installFetchMock(): void {
     if (url.endsWith("/api/settings")) return json({ groups: [] });
     if (url.endsWith("/api/update-check")) return json({ snapshot: { latestVersion: "0.7.0", isNewer: false, htmlUrl: "", publishedAt: "", checkedAt: "" } });
     if (url.endsWith("/api/health")) return json({ status: "ok" });
-    if (url.endsWith("/shell")) {
-      shellCalls.push({ url, body: init?.body ? JSON.parse(String(init.body)) : undefined });
-      return json({ accepted: true }, 202);
-    }
+    if (url.endsWith("/api/auth/status")) return json({ totpEnabled: false, authenticated: true, terminalAvailable: true, gateReasons: [] });
     const detail = sessions.find((entry) => url.match(new RegExp(`/api/sessions/${entry.id}(\\?.*)?$`)));
     if (detail) return json(detail);
     return json({ error: "not mocked" }, 404);
@@ -53,10 +48,35 @@ function installFetchMock(): void {
 }
 
 interface StubSocket {
+  url?: string;
   readyState: number;
+  sent: string[];
+  onopen: ((ev: Event) => void) | null;
   onmessage: ((ev: MessageEvent) => void) | null;
   onclose: (() => void) | null;
 }
+
+/** jsdom 无真实布局，xterm 以最小假实现替代（终端标签测试只关心 WS 连接建立） */
+class FakeTerminal {
+  cols = 80;
+  rows = 24;
+  options: Record<string, unknown>;
+  constructor(options: Record<string, unknown>) { this.options = options; }
+  loadAddon(): void { /* no-op */ }
+  open(): void { /* no-op */ }
+  write(): void { /* no-op */ }
+  onData(): { dispose(): void } { return { dispose: () => undefined }; }
+  onResize(): { dispose(): void } { return { dispose: () => undefined }; }
+  dispose(): void { /* no-op */ }
+}
+
+class FakeFitAddon {
+  fit = vi.fn();
+}
+
+vi.mock("../components/xterm-loader", () => ({
+  loadXterm: () => Promise.resolve({ Terminal: FakeTerminal, FitAddon: FakeFitAddon }),
+}));
 
 const sockets: StubSocket[] = [];
 let eventSeq = 0;
@@ -96,18 +116,18 @@ describe("App 终端标签", () => {
   beforeEach(() => {
     window.localStorage.clear();
     sockets.length = 0;
-    shellCalls.length = 0;
     eventSeq = 0;
     originalWebSocket = globalThis.WebSocket;
     class StubWebSocket implements StubSocket {
       readyState = 1;
+      sent: string[] = [];
       onopen: ((ev: Event) => void) | null = null;
       onmessage: ((ev: MessageEvent) => void) | null = null;
       onclose: (() => void) | null = null;
       onerror: ((ev: Event) => void) | null = null;
-      constructor() { sockets.push(this); }
+      constructor(readonly url?: string) { sockets.push(this); }
       close(): void { this.readyState = 3; }
-      send(): void { /* no-op */ }
+      send(data?: string): void { if (data !== undefined) this.sent.push(String(data)); }
       addEventListener(): void { /* no-op */ }
       removeEventListener(): void { /* no-op */ }
     }
@@ -173,16 +193,18 @@ describe("App 终端标签", () => {
     expect(document.querySelector(".terminal-view")).toBeInTheDocument();
   });
 
-  it("终端输入行 Enter 提交命中 /shell 接口", async () => {
+  it("终端标签打开后建立 PTY WebSocket 并上行 open 帧", async () => {
     await renderApp();
 
     fireEvent.click(screen.getByRole("button", { name: "终端" }));
-    const input = await screen.findByLabelText("终端命令输入");
-    fireEvent.change(input, { target: { value: "git status" } });
-    fireEvent.keyDown(input, { key: "Enter" });
+    await screen.findByRole("tab", { name: "终端" });
 
-    await waitFor(() => expect(shellCalls).toHaveLength(1));
-    expect(shellCalls[0]!.url).toContain("/api/sessions/s1/shell");
-    expect(shellCalls[0]!.body).toEqual({ cmd: "git status" });
+    await waitFor(() => expect(sockets.some((socket) => socket.url?.includes("/api/sessions/s1/terminal"))).toBe(true));
+    const pty = sockets.find((socket) => socket.url?.includes("/terminal"))!;
+    await waitFor(() => expect(pty.onopen).not.toBeNull());
+    act(() => pty.onopen?.({} as Event));
+
+    await waitFor(() => expect(pty.sent.length).toBeGreaterThan(0));
+    expect(JSON.parse(pty.sent[0]!)).toEqual({ type: "open", cols: 80, rows: 24 });
   });
 });

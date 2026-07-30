@@ -33,6 +33,10 @@ import type {
   FsWriteRequest,
   PathNormalizeRequest,
   PathNormalizeResult,
+  PtyInputRequest,
+  PtyOpenRequest,
+  PtyOpenResult,
+  PtyResizeRequest,
 } from "../core-client.js";
 import type { SessionStore } from "../sessions/session-store.js";
 import { defaultSandboxPolicy } from "../sessions/default-sandbox.js";
@@ -82,6 +86,8 @@ export class CoreRouter extends EventEmitter {
   private readonly configuring = new Map<string, { client: CoreClientLike; promise: Promise<void> }>();
   /** wsb 会话在宿主机 core 上的旁路配置（仅供 path.normalize 取 host canonical 路径）。 */
   private readonly hostNormalizeConfigs = new Set<string>();
+  /** ptyId → 开出该 pty 的 core 客户端（各 core 独立编号，openPty 时登记）。 */
+  private readonly ptyOwners = new Map<number, CoreClientLike>();
 
   constructor(
     private readonly shared: CoreClientLike,
@@ -117,6 +123,9 @@ export class CoreRouter extends EventEmitter {
     }
     for (const [id, pending] of this.configuring) {
       if (pending.client === client) this.configuring.delete(id);
+    }
+    for (const [ptyId, owner] of this.ptyOwners) {
+      if (owner === client) this.ptyOwners.delete(ptyId);
     }
   }
 
@@ -198,6 +207,7 @@ export class CoreRouter extends EventEmitter {
     await this.shared.stop();
     this.configuredClients.clear();
     this.configuring.clear();
+    this.ptyOwners.clear();
   }
 
   ping(): Promise<CoreInfo> {
@@ -401,6 +411,50 @@ export class CoreRouter extends EventEmitter {
   async grepFiles(request: FsSearchRequest): Promise<FsGrepResult> {
     const { client, meta } = await this.ensureConfigured(request.sessionId);
     return client.grepFiles(await this.translatePath(request, meta));
+  }
+
+  /**
+   * pty.*：路由到会话所属 core（wsb 会话在 VM 内的 core 上开终端，cwd 做挂载翻译）。
+   * ptyId 由各 core 独立编号，ptyOwners 记录归属；两个 core 并发开出同一 id 时
+   * 后开者覆盖归属（人类终端并发量极低，注释存档该限制）。
+   */
+  async openPty(request: PtyOpenRequest): Promise<PtyOpenResult> {
+    const { client, meta } = await this.ensureConfigured(request.session);
+    if (!client.openPty) throw new Error("Core pty support is unavailable");
+    const cwd = meta?.sandboxMode === "wsb" && meta.cwd ? toSandboxPath(request.cwd, meta.cwd) : request.cwd;
+    const result = await client.openPty({ ...request, cwd });
+    this.ptyOwners.set(result.ptyId, client);
+    return result;
+  }
+
+  async inputPty(request: PtyInputRequest): Promise<{ ok: true }> {
+    const client = this.ptyOwners.get(request.ptyId) ?? this.shared;
+    if (!client.inputPty) throw new Error("Core pty support is unavailable");
+    return client.inputPty(request);
+  }
+
+  async resizePty(request: PtyResizeRequest): Promise<{ ok: true }> {
+    const client = this.ptyOwners.get(request.ptyId) ?? this.shared;
+    if (!client.resizePty) throw new Error("Core pty support is unavailable");
+    return client.resizePty(request);
+  }
+
+  async closePty(request: { ptyId: number }): Promise<{ ok: true; exitCode?: number }> {
+    const client = this.ptyOwners.get(request.ptyId) ?? this.shared;
+    this.ptyOwners.delete(request.ptyId);
+    if (!client.closePty) throw new Error("Core pty support is unavailable");
+    return client.closePty(request);
+  }
+
+  ptyEvents(ptyId: number): EventEmitter {
+    const client = this.ptyOwners.get(ptyId) ?? this.shared;
+    if (!client.ptyEvents) throw new Error("Core pty support is unavailable");
+    return client.ptyEvents(ptyId);
+  }
+
+  removePtyEvents(ptyId: number): void {
+    this.ptyOwners.delete(ptyId);
+    this.shared.removePtyEvents?.(ptyId);
   }
 }
 
