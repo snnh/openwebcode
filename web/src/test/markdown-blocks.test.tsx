@@ -101,4 +101,23 @@ describe("Markdown 分块增量渲染", () => {
     rerender(<Markdown>{text}</Markdown>);
     expect(renderCounts).toEqual(snapshot);
   });
+
+  it("append-only 增量切分与全量切分结果一致（含空行边界与未闭合围栏）", async () => {
+    renderCounts.clear();
+    const steps = [
+      "# 标题\n\n第一段",
+      "# 标题\n\n第一段\n\n```js\nconst a = 1;",
+      "# 标题\n\n第一段\n\n```js\nconst a = 1;\n\nconst b = 2;\n```",
+      "# 标题\n\n第一段\n\n```js\nconst a = 1;\n\nconst b = 2;\n```\n\n收尾",
+    ];
+    const { rerender, container } = render(<Markdown>{steps[0]!}</Markdown>);
+    for (const step of steps.slice(1)) {
+      rerender(<Markdown>{step}</Markdown>);
+      await act(async () => {});
+    }
+    await waitFor(() => {
+      const texts = [...container.querySelectorAll("[data-testid=block]")].map((el) => el.textContent);
+      expect(texts).toEqual(splitMarkdownBlocks(steps.at(-1)!));
+    });
+  });
 });
