@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactElement, type ReactNode } from "react";
-import type { ModelProfile, PermissionMode } from "../lib/contracts";
+import type { ModelCapabilities, ModelProfile, PermissionMode } from "../lib/contracts";
 import { Icon } from "./Icon";
+import { ModelCapabilityBadges } from "./ModelCapabilityBadges";
 import { useI18n } from "../i18n";
 
 /**
@@ -9,7 +10,7 @@ import { useI18n } from "../i18n";
  */
 
 /** 通用弹层：透明遮罩点击 / Esc 关闭；菜单绝对定位于触发按钮上方。 */
-function Popover({ open, onClose, children }: { open: boolean; onClose(): void; children: ReactNode }): ReactElement | null {
+export function Popover({ open, onClose, children }: { open: boolean; onClose(): void; children: ReactNode }): ReactElement | null {
   useEffect(() => {
     if (!open) return;
     const onKey = (event: KeyboardEvent): void => { if (event.key === "Escape") onClose(); };
@@ -168,7 +169,7 @@ export interface ThinkingChoice {
 const EFFORT_TIERS = ["low", "medium", "high", "xhigh", "max"] as const;
 
 /** 4c：模型 + 思考程度合并弹层。 */
-export function ModelMenu({ current, selectableModels, selectionUnavailable, thinkingChoices, thinkingSelection, efforts, thinkingControlSupported, disabled, onSelectModel, onSelectThinking, onOpenModelSettings }: {
+export function ModelMenu({ current, selectableModels, selectionUnavailable, thinkingChoices, thinkingSelection, efforts, thinkingControlSupported, disabled, onSelectModel, onSelectThinking, onOpenModelSettings, capabilities }: {
   current: { provider: string; model: string };
   selectableModels: ModelProfile[];
   selectionUnavailable: boolean;
@@ -181,6 +182,8 @@ export function ModelMenu({ current, selectableModels, selectionUnavailable, thi
   onSelectModel(item: ModelProfile): void;
   onSelectThinking(value: string): void;
   onOpenModelSettings?(): void;
+  /** 选中模型的能力徽章（原「高级设置」区块迁入弹层底部）。 */
+  capabilities?: ModelCapabilities | undefined;
 }): ReactElement {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
@@ -198,7 +201,7 @@ export function ModelMenu({ current, selectableModels, selectionUnavailable, thi
       >
         <span className="model-menu-btn-label">
           {current.model || t("未选择模型", "No model")}
-          {thinkingBadge && <span className="composer-menu-badge">{t(...thinkingBadge)}</span>}
+          {thinkingBadge && <span className="model-menu-btn-thinking"> · {t(...thinkingBadge)}</span>}
         </span>
         <Icon name="chevron-up" size={11} />
       </button>
@@ -274,6 +277,12 @@ export function ModelMenu({ current, selectableModels, selectionUnavailable, thi
             "Note: switching the model or thinking level invalidates the existing prompt cache. Start a new session to avoid extra token usage.",
           )}</p>
         </div>
+        {capabilities && (
+          <div className="popover-section">
+            <span className="popover-section-label">{t("模型能力", "Model capabilities")}</span>
+            <div className="popover-capabilities"><ModelCapabilityBadges capabilities={capabilities} /></div>
+          </div>
+        )}
         {onOpenModelSettings && (
           <div className="popover-section popover-footer">
             <button type="button" className="popover-more" onClick={() => { onOpenModelSettings(); setOpen(false); }}>

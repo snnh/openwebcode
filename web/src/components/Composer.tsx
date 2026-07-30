@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent as ReactDragEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactElement } from "react";
-import type { ExtensionInfo, ModelProfile, SessionDetail, SkillInfo } from "../lib/contracts";
+import type { ExtensionInfo, LiveSubagentRun, ModelProfile, SessionDetail, SkillInfo } from "../lib/contracts";
 import { api, ApiError } from "../lib/api";
 import { extractAttachmentPaths } from "../lib/attachments";
 import type { PdfRenderOptions } from "../lib/pdf-to-images";
 import type { SendKey } from "../lib/prefs";
 import { nextRecentModel, recordRecentModel } from "../lib/recent-models";
 import { Icon } from "./Icon";
-import { ModelCapabilityBadges } from "./ModelCapabilityBadges";
-import { AgentModeMenu, ModelMenu, PermissionModeMenu } from "./ComposerPopovers";
+import { AgentModeMenu, ModelMenu, PermissionModeMenu, Popover } from "./ComposerPopovers";
+import { ComposerChips } from "./ComposerChips";
 import { useI18n } from "../i18n";
 
 export interface PendingImage {
@@ -125,7 +125,7 @@ const EFFORT_LABEL: Record<string, [string, string]> = {
   max: ["最大", "Maximum"],
 };
 
-export function Composer({ current, model, models, providers = [], pdfToImageExtension, pdfToImageStatus = "ready", imageCapabilitiesReady = true, draft, setDraft, onSend, onConfig, running, sendKey, skills, attachments, setAttachments, supportsImages, onNotice, sendPending = false, history = [], editingMessage, onCancelEdit, onOpenModelSettings }: {
+export function Composer({ current, model, models, providers = [], pdfToImageExtension, pdfToImageStatus = "ready", imageCapabilitiesReady = true, draft, setDraft, onSend, onConfig, running, sendKey, skills, attachments, setAttachments, supportsImages, onNotice, sendPending = false, history = [], editingMessage, onCancelEdit, onOpenModelSettings, subagents }: {
   current: SessionDetail;
   model?: ModelProfile;
   models: ModelProfile[];
@@ -156,6 +156,8 @@ export function Composer({ current, model, models, providers = [], pdfToImageExt
   onCancelEdit?(): void;
   /** 「更多模型…」入口：打开设置对话框的模型目录区。 */
   onOpenModelSettings?(): void;
+  /** 当前会话的子代理实时运行态（App 的 liveSubagents 切片），供状态芯片计数与速览。 */
+  subagents?: Record<string, LiveSubagentRun> | undefined;
 }): ReactElement {
   const { t } = useI18n();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -183,7 +185,7 @@ export function Composer({ current, model, models, providers = [], pdfToImageExt
   const [pdfJobs, setPdfJobs] = useState(0);
   const [pdfProgress, setPdfProgress] = useState<PdfProgress | null>(null);
   const [queuedBehavior, setQueuedBehavior] = useState<"steer" | "follow_up">("steer");
-  const [advancedConfigOpen, setAdvancedConfigOpen] = useState(false);
+  const [queueMenuOpen, setQueueMenuOpen] = useState(false);
   // 输入历史回查：null = 未在回查；进入回查时把当前草稿暂存，回查到底（最新之后）恢复
   const [historyIndex, setHistoryIndex] = useState<number | null>(null);
   const historyStashRef = useRef("");
@@ -720,6 +722,8 @@ const mentionHasMatches = mentionItems.length > 0;
 
   return (
     <footer className="composer" onDrop={onDrop} onDragOver={(event) => event.preventDefault()}>
+      <ComposerChips sessionId={current.id} subagents={subagents} />
+      <div className="composer-card">
       <input
         ref={fileInputRef}
         type="file"
@@ -979,36 +983,6 @@ const mentionHasMatches = mentionItems.length > 0;
             ? t("向正在执行的作业补充指令…", "Add instructions to the running job…")
             : sendKey === "enter" ? t("描述要完成的编码任务…（Enter 发送，Shift+Enter 换行，@ 引用文件）", "Describe a coding task… (Enter to send, Shift+Enter for a new line, @ to reference files)") : t("描述要完成的编码任务…（Ctrl+Enter 发送，@ 引用文件）", "Describe a coding task… (Ctrl+Enter to send, @ to reference files)")}
         />
-        <button
-          type="button"
-          className="icon-btn composer-attach"
-          disabled={processingPdf}
-          aria-label={t("添加图片或 PDF", "Add image or PDF")}
-          title={t("添加图片或 PDF", "Add image or PDF")}
-          onClick={() => fileInputRef.current?.click()}
-        >
-          <Icon name="upload" size={14} />
-        </button>
-        {running && (
-          <select
-            className="queue-behavior"
-            value={queuedBehavior}
-            onChange={(event) => setQueuedBehavior(event.target.value as "steer" | "follow_up")}
-            aria-label={t("运行中消息行为", "Message behavior while running")}
-          >
-            <option value="steer">{t("本轮补充", "Steer current run")}</option>
-            <option value="follow_up">{t("完成后续跑", "Run after completion")}</option>
-          </select>
-        )}
-        <button
-          className="btn primary send"
-          disabled={!draft.trim() || sendPending || processingPdf}
-          title={processingPdf ? t("正在处理 PDF…", "Processing PDF…") : sendPending ? t("发送中…", "Sending…") : undefined}
-          onClick={() => onSend(running ? queuedBehavior : "start")}
-        >
-          <Icon name="send" size={13} />
-          {editingMessage ? t("重发", "Resend") : draft.trimStart().startsWith("!") ? t("运行", "Run") : running ? queuedBehavior === "follow_up" ? t("完成后续跑", "Run after") : t("加入队列", "Queue") : t("发送", "Send")}
-        </button>
       </div>
       {mentionedPaths.length > 0 && (
         <div className="mention-strip" aria-label={t("文件引用", "File references")}>
@@ -1057,19 +1031,34 @@ const mentionHasMatches = mentionItems.length > 0;
       {modelCycleHint && (
         <div className="composer-hint composer-model-cycle" role="status">{modelCycleHint}</div>
       )}
-      <div className="config-row" aria-label={t("会话配置", "Session configuration")}>
-        <div className="composer-config-main">
+      <div className="composer-toolbar" aria-label={t("会话配置", "Session configuration")}>
+        <button
+          type="button"
+          className="icon-btn composer-attach"
+          disabled={processingPdf}
+          aria-label={t("添加图片或 PDF", "Add image or PDF")}
+          title={t("添加图片或 PDF", "Add image or PDF")}
+          onClick={() => fileInputRef.current?.click()}
+        >
+          <Icon name="paperclip" size={14} />
+        </button>
+        <span className="composer-permission">
           <PermissionModeMenu
             value={current.permissionMode ?? "ask"}
             disabled={running}
             onChange={(mode) => onConfig({ permissionMode: mode })}
           />
-          <AgentModeMenu
-            agentMode={current.agentMode}
-            swarmEnabled={current.swarmEnabled === true}
-            disabled={running}
-            onConfig={onConfig}
-          />
+        </span>
+        <AgentModeMenu
+          agentMode={current.agentMode}
+          swarmEnabled={current.swarmEnabled === true}
+          disabled={running}
+          onConfig={onConfig}
+        />
+        <span className="composer-toolbar-spacer" />
+        {running && <span className="steering-hint">{t("运行中 · 发送将进入 Steering 队列", "Running · new messages enter the Steering queue")}</span>}
+        {running && <span className="composer-running-dot" aria-hidden />}
+        <span className="composer-menu-right">
           <ModelMenu
             current={{ provider: current.provider, model: current.model }}
             selectableModels={selectableModels}
@@ -1081,31 +1070,58 @@ const mentionHasMatches = mentionItems.length > 0;
             disabled={running}
             onSelectModel={selectModel}
             onSelectThinking={selectThinking}
+            capabilities={selectedModel?.capabilities}
             {...(onOpenModelSettings ? { onOpenModelSettings } : {})}
           />
-          <button
-            type="button"
-            className={`composer-config-toggle${advancedConfigOpen ? " open" : ""}`}
-            aria-expanded={advancedConfigOpen}
-            aria-controls="composer-advanced-config"
-            onClick={() => setAdvancedConfigOpen((value) => !value)}
-          >
-            <Icon name="settings" size={13} />
-            <span className="field-label">{t("高级设置", "Advanced")}</span>
-            <Icon name={advancedConfigOpen ? "chevron-up" : "chevron-down"} size={12} />
-          </button>
-        </div>
-        {advancedConfigOpen && (
-          <div id="composer-advanced-config" className="composer-config-advanced">
-            {selectedModel && (
-              <div className="model-capability-summary" aria-label={t("所选模型能力", "Selected model capabilities")}>
-                <span className="model-capability-summary-label">{t("模型能力", "Model capabilities")}</span>
-                <ModelCapabilityBadges capabilities={selectedModel.capabilities} />
-              </div>
-            )}
-          </div>
+        </span>
+        {running && (
+          <span className="composer-menu-right">
+            <span className="composer-menu">
+              <button
+                type="button"
+                className="icon-btn queue-caret"
+                aria-haspopup="menu"
+                aria-expanded={queueMenuOpen}
+                aria-label={t("运行中消息行为", "Message behavior while running")}
+                title={queuedBehavior === "steer" ? t("本轮补充：立即插入正在运行的回合", "Steer: insert into the running turn right away") : t("完成后续跑：当前运行结束后再执行", "Follow-up: run after the current run finishes")}
+                onClick={() => setQueueMenuOpen((value) => !value)}
+              >
+                <Icon name="chevron-up" size={12} />
+              </button>
+              <Popover open={queueMenuOpen} onClose={() => setQueueMenuOpen(false)}>
+                {([
+                  { value: "steer" as const, label: ["本轮补充", "Steer current run"] as [string, string], description: ["立即插入正在运行的回合", "Insert into the running turn right away"] as [string, string] },
+                  { value: "follow_up" as const, label: ["完成后续跑", "Run after completion"] as [string, string], description: ["当前运行结束后自动执行", "Runs automatically once the current run finishes"] as [string, string] },
+                ]).map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={queuedBehavior === option.value}
+                    className={`popover-item${queuedBehavior === option.value ? " selected" : ""}`}
+                    onClick={() => { setQueuedBehavior(option.value); setQueueMenuOpen(false); }}
+                  >
+                    <span className="popover-item-check" aria-hidden>{queuedBehavior === option.value ? <Icon name="check" size={13} /> : null}</span>
+                    <span className="popover-item-text">
+                      <span className="popover-item-label">{t(...option.label)}</span>
+                      <span className="popover-item-desc">{t(...option.description)}</span>
+                    </span>
+                  </button>
+                ))}
+              </Popover>
+            </span>
+          </span>
         )}
-        {running && <span className="steering-hint">{t("运行中 · 发送将进入 Steering 队列", "Running · new messages enter the Steering queue")}</span>}
+        <button
+          className="composer-send"
+          disabled={!draft.trim() || sendPending || processingPdf}
+          aria-label={editingMessage ? t("重发", "Resend") : draft.trimStart().startsWith("!") ? t("运行", "Run") : running ? queuedBehavior === "follow_up" ? t("完成后续跑", "Run after") : t("加入队列", "Queue") : t("发送", "Send")}
+          title={processingPdf ? t("正在处理 PDF…", "Processing PDF…") : sendPending ? t("发送中…", "Sending…") : undefined}
+          onClick={() => onSend(running ? queuedBehavior : "start")}
+        >
+          <Icon name="arrow-up" size={15} />
+        </button>
+      </div>
       </div>
     </footer>
   );

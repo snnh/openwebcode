@@ -338,7 +338,6 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, run
         })()}
         {(streamText || thinkingText) && (
           <article className={`message assistant live turn-${(turnOf.at(-1) ?? 0) % 2 === 0 ? "even" : "odd"}`}>
-            <span className="track-node" aria-hidden />
             <div className="message-meta">
               <span className="message-author">OpenWebCode</span>
               <span>{t("正在输出", "Responding")}</span>

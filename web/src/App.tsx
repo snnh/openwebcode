@@ -1121,6 +1121,7 @@ export function App(): ReactElement {
                   editingMessage={editingMessage && editingMessage.sessionId === current.id ? { messageId: editingMessage.messageId, hadAttachments: editingMessage.hadAttachments } : undefined}
                   onCancelEdit={() => cancelEdit()}
                   onOpenModelSettings={() => openSettings("models")}
+                  subagents={liveSubagents[current.id]}
                 />
               </>
             ) : currentId && detail.isLoading ? (

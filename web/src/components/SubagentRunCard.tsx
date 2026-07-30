@@ -1,4 +1,4 @@
-import type { ReactElement } from "react";
+import { useState, type ReactElement, type ReactNode } from "react";
 import type { LiveSubagentRun } from "../lib/contracts";
 import { snippet, swarmItems } from "../lib/subagent-runs";
 import { Icon } from "./Icon";
@@ -38,7 +38,28 @@ export function SubagentRunStats({ run }: { run: LiveSubagentRun }): ReactElemen
   );
 }
 
-/** spawn_task / spawn_swarm 工具调用的专用卡片：运行期间展示实时进度，结束后保留终态（含转录链接） */
+/** 与 tool-row 同款的行头：图标 + 名称 + 摘要 + 右侧「查看」+ chevron */
+function RowHeader({ open, onToggle, children }: { open: boolean; onToggle(): void; children: ReactNode }): ReactElement {
+  const { t } = useI18n();
+  return (
+    <div
+      className="subagent-run-header"
+      role="button"
+      tabIndex={0}
+      aria-expanded={open}
+      onClick={onToggle}
+      onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onToggle(); } }}
+    >
+      {children}
+      <span className="tool-row-actions">
+        <button type="button" className="tool-row-view" onClick={(event) => { event.stopPropagation(); onToggle(); }}>{t("查看", "View")}</button>
+        <Icon name={open ? "chevron-down" : "chevron-right"} size={12} />
+      </span>
+    </div>
+  );
+}
+
+/** spawn_task / spawn_swarm 工具调用的紧凑折叠行：行头常驻，统计/逐项状态/转录链接展开后显示 */
 export function SubagentRunCard({ name, input, sessionId, live }: {
   name: string;
   input?: Record<string, unknown>;
@@ -47,44 +68,47 @@ export function SubagentRunCard({ name, input, sessionId, live }: {
   live?: LiveSubagentRun[] | undefined;
 }): ReactElement {
   const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const toggle = (): void => setOpen((value) => !value);
   const callAgent = typeof input?.agent === "string" && input.agent.trim() ? input.agent.trim() : undefined;
 
   if (name === "spawn_swarm") {
     const items = swarmItems(input);
     const liveTotal = live?.find((run) => run.swarm)?.swarm?.total ?? 0;
     const total = Math.max(items.length, liveTotal);
+    const template = typeof input?.prompt_template === "string" ? input.prompt_template : "";
     return (
-      <section className="tool-card subagent-run">
-        <header>
-          <span className="tool-icon" aria-hidden><Icon name="layers" size={13} /></span>
+      <section className={`subagent-run${open ? " open" : ""}`}>
+        <RowHeader open={open} onToggle={toggle}>
+          <span className="subagent-run-icon" aria-hidden><Icon name="layers" size={13} /></span>
           <b className="mono">spawn_swarm</b>
           <span className="subagent-run-label">{t("子代理组", "Subagent swarm")}</span>
           {total > 0 && <span className="subagent-run-count">{t(`${total} 项`, `${total} items`)}</span>}
-        </header>
-        {typeof input?.prompt_template === "string" && input.prompt_template && (
-          <p className="tool-summary" title={input.prompt_template}>{snippet(input.prompt_template)}</p>
-        )}
-        {total > 0 && (
-          <ul className="subagent-run-items">
-            {Array.from({ length: total }, (_, index) => {
-              const run = live?.find((entry) => entry.swarm?.index === index + 1);
-              const item = items[index];
-              const agent = run?.agent ?? item?.agent ?? callAgent;
-              const task = run?.prompt ?? item?.task ?? "";
-              return (
-                <li key={index} className="subagent-run-item" data-status={run?.status ?? (live && live.length > 0 ? "pending" : undefined)}>
-                  <span className="subagent-run-index mono">{index + 1}/{total}</span>
-                  {agent && <span className="subagent-run-agent mono">{agent}</span>}
-                  {task && <span className="subagent-run-task" title={task}>{snippet(task, 80)}</span>}
-                  {run ? <SubagentStatusChip status={run.status} /> : live && live.length > 0 ? <SubagentStatusChip status="pending" /> : null}
-                  {run && <SubagentRunStats run={run} />}
-                  {run && (run.status === "done" || run.status === "failed") && sessionId && (
-                    <SubagentTranscriptDetails sessionId={sessionId} taskId={run.taskId} index={index + 1} />
-                  )}
-                </li>
-              );
-            })}
-          </ul>
+          {template && <span className="subagent-run-summary mono" title={template}>{snippet(template)}</span>}
+        </RowHeader>
+        {open && total > 0 && (
+          <div className="subagent-run-body">
+            <ul className="subagent-run-items">
+              {Array.from({ length: total }, (_, index) => {
+                const run = live?.find((entry) => entry.swarm?.index === index + 1);
+                const item = items[index];
+                const agent = run?.agent ?? item?.agent ?? callAgent;
+                const task = run?.prompt ?? item?.task ?? "";
+                return (
+                  <li key={index} className="subagent-run-item" data-status={run?.status ?? (live && live.length > 0 ? "pending" : undefined)}>
+                    <span className="subagent-run-index mono">{index + 1}/{total}</span>
+                    {agent && <span className="subagent-run-agent mono">{agent}</span>}
+                    {task && <span className="subagent-run-task" title={task}>{snippet(task, 80)}</span>}
+                    {run ? <SubagentStatusChip status={run.status} /> : live && live.length > 0 ? <SubagentStatusChip status="pending" /> : null}
+                    {run && <SubagentRunStats run={run} />}
+                    {run && (run.status === "done" || run.status === "failed") && sessionId && (
+                      <SubagentTranscriptDetails sessionId={sessionId} taskId={run.taskId} index={index + 1} />
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
         )}
       </section>
     );
@@ -94,17 +118,22 @@ export function SubagentRunCard({ name, input, sessionId, live }: {
   const prompt = run?.prompt ?? (typeof input?.prompt === "string" ? input.prompt : "");
   const agent = run?.agent ?? callAgent;
   return (
-    <section className="tool-card subagent-run">
-      <header>
-        <span className="tool-icon" aria-hidden><Icon name="layers" size={13} /></span>
+    <section className={`subagent-run${open ? " open" : ""}`}>
+      <RowHeader open={open} onToggle={toggle}>
+        <span className="subagent-run-icon" aria-hidden><Icon name="layers" size={13} /></span>
         <b className="mono">spawn_task</b>
         <span className="subagent-run-label">{t("子代理", "Subagent")}</span>
         {agent && <span className="subagent-run-agent mono">{agent}</span>}
+        {prompt && <span className="subagent-run-summary mono" title={prompt}>{snippet(prompt)}</span>}
         {run && <SubagentStatusChip status={run.status} />}
-      </header>
-      {prompt && <p className="tool-summary" title={prompt}>{snippet(prompt)}</p>}
-      {run && <SubagentRunStats run={run} />}
-      {run && (run.status === "done" || run.status === "failed") && sessionId && <SubagentTranscriptDetails sessionId={sessionId} taskId={run.taskId} />}
+      </RowHeader>
+      {open && (run || prompt) && (
+        <div className="subagent-run-body">
+          <p className="subagent-run-fullprompt">{prompt}</p>
+          {run && <SubagentRunStats run={run} />}
+          {run && (run.status === "done" || run.status === "failed") && sessionId && <SubagentTranscriptDetails sessionId={sessionId} taskId={run.taskId} />}
+        </div>
+      )}
     </section>
   );
 }
