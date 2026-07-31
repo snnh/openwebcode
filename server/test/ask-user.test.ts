@@ -1,41 +1,17 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { AgentRunner } from "../src/agent/agent-runner.js";
-import { buildServer } from "../src/app.js";
+import { describe, expect, it } from "vitest";
 import type { CoreClientLike } from "../src/core-client.js";
-import { PricingCatalog } from "../src/cost/pricing-catalog.js";
-import { EventBus } from "../src/events/event-bus.js";
-import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
-import { SessionStore } from "../src/sessions/session-store.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
-
-async function tempRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-ask-user-"));
-  roots.push(root);
-  return root;
-}
+import type { Provider, StreamChatRequest } from "../src/providers/provider.js";
+import { makeAgentHarness, toolResultOf, waitForPendingInteraction } from "./helpers/agent-harness.js";
+import { makeFakeCore } from "./helpers/fake-core.js";
 
 function createFakeCore(): CoreClientLike {
-  return {
-    on() { return this; },
-    async configureSession() { return { sandboxCapability: "advisory" }; },
+  return makeFakeCore({
     async readFile() { return { content: "file content" }; },
     async globFiles() { return { matches: [] }; },
     async grepFiles() { return { matches: [] }; },
-    async writeFile() { return { ok: true }; },
     async editFile() { return { matches: 1 }; },
     async run() { return { exitCode: 0, stdout: "", stderr: "" }; },
-    async cleanupSession() { return { ok: true }; },
-    setRequestTimeoutMs() {},
-    start() { return Promise.resolve({ version: "0.0.0", platform: "test" }); },
-    stop() { return Promise.resolve(); },
-    ping() { return Promise.resolve({ version: "0.0.0", platform: "test" }); },
-    listFiles() { return Promise.resolve({ entries: [], truncated: false }); },
-  } as unknown as CoreClientLike;
+  } as unknown as Partial<CoreClientLike>);
 }
 
 interface AskSetup {
@@ -45,14 +21,6 @@ interface AskSetup {
 }
 
 async function setup(options: AskSetup) {
-  const root = await tempRoot();
-  const sessions = new SessionStore(path.join(root, "sessions"));
-  await sessions.initialize();
-  const session = await sessions.create({ cwd: root, provider: "fake", model: "model" });
-  if (options.agentMode) await sessions.updateConfig(session.id, { provider: "fake", model: "model", agentMode: options.agentMode });
-  const pricing = new PricingCatalog(path.join(root, "pricing.json"));
-  await pricing.initialize();
-  const events = new EventBus();
   const toolCallId = options.toolCallId ?? "ask-1";
   // 首轮固定调用 ask_user；看到 tool_result 后输出文本收尾
   const provider: Provider = {
@@ -68,27 +36,13 @@ async function setup(options: AskSetup) {
       }
     },
   };
-  const providers = new ProviderRegistry();
-  providers.register(provider);
-  const core = createFakeCore();
-  const agent = new AgentRunner(sessions, providers, core, events, pricing);
-  const app = await buildServer({ core, sessions, agent, events, providers, pricing });
-  return { root, sessions, session, events, agent, app };
-}
-
-async function waitForPendingInteraction(agent: AgentRunner, sessions: SessionStore, sessionId: string) {
-  await vi.waitFor(async () => {
-    const list = await agent.listInteractions(sessionId);
-    expect(list.some((item) => item.status === "pending")).toBe(true);
-  }, { timeout: 5000 });
-  return (await agent.listInteractions(sessionId)).find((item) => item.status === "pending")!;
-}
-
-function toolResultOf(detail: Awaited<ReturnType<SessionStore["get"]>>, toolCallId: string) {
-  return detail?.messages
-    .filter((message) => message.role === "tool")
-    .flatMap((message) => message.content)
-    .find((block) => block.type === "tool_result" && block.toolCallId === toolCallId);
+  return makeAgentHarness({
+    provider,
+    core: createFakeCore(),
+    model: "model",
+    tempPrefix: "owc-ask-user-",
+    ...(options.agentMode ? { agentMode: options.agentMode } : {}),
+  });
 }
 
 describe("ask_user 工具", () => {
@@ -96,7 +50,7 @@ describe("ask_user 工具", () => {
     const harness = await setup({ input: { questions: [{ question: "继续执行吗？", type: "confirm" }] } });
     try {
       const run = harness.agent.run(harness.session.id, "先问我");
-      const pending = await waitForPendingInteraction(harness.agent, harness.sessions, harness.session.id);
+      const pending = await waitForPendingInteraction(harness.agent, harness.session.id);
       expect(pending.kind).toBe("confirm");
       expect(pending.prompt).toBe("继续执行吗？");
       // interaction.requested 已发布到事件流
@@ -151,7 +105,7 @@ describe("ask_user 工具", () => {
     const harness = await setup({ input });
     try {
       const run = harness.agent.run(harness.session.id, "先问我");
-      const pending = await waitForPendingInteraction(harness.agent, harness.sessions, harness.session.id);
+      const pending = await waitForPendingInteraction(harness.agent, harness.session.id);
       if (expectedTitle !== undefined) expect(pending.title).toBe(expectedTitle);
       if (expectedLabels !== undefined) expect(pending.options?.map((option) => option.label)).toEqual(expectedLabels);
       const res = await harness.app.inject({ method: "POST", url: `/api/sessions/${harness.session.id}/interactions/${pending.id}/respond`, payload: { answer } });
@@ -169,7 +123,7 @@ describe("ask_user 工具", () => {
     const harness = await setup({ agentMode: "plan", input: { questions: [{ question: "计划是否可行？", type: "confirm" }] } });
     try {
       const run = harness.agent.run(harness.session.id, "先问我");
-      const pending = await waitForPendingInteraction(harness.agent, harness.sessions, harness.session.id);
+      const pending = await waitForPendingInteraction(harness.agent, harness.session.id);
       await harness.app.inject({ method: "POST", url: `/api/sessions/${harness.session.id}/interactions/${pending.id}/respond`, payload: { answer: false } });
       await run;
       const result = toolResultOf(await harness.sessions.get(harness.session.id), "ask-1");
@@ -186,7 +140,7 @@ describe("ask_user 工具", () => {
     const harness = await setup({ input: { questions: [{ question: "继续？", type: "confirm" }] } });
     try {
       const run = harness.agent.run(harness.session.id, "先问我");
-      await waitForPendingInteraction(harness.agent, harness.sessions, harness.session.id);
+      await waitForPendingInteraction(harness.agent, harness.session.id);
       const res = await harness.app.inject({ method: "POST", url: `/api/sessions/${harness.session.id}/abort` });
       expect(res.statusCode).toBe(202);
       // abort 路径 run() 会 rethrow（agent.aborted 语义），工具结果仍已落盘

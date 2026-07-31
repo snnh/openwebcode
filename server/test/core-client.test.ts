@@ -1,9 +1,10 @@
 import { fileURLToPath } from "node:url";
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CoreClient, type CoreEvent, type IndexScanEntry, type IndexScanSummary } from "../src/core-client.js";
+import { CoreClient, sanitizedCoreEnv, type CoreEvent, type IndexScanEntry, type IndexScanSummary } from "../src/core-client.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const corePath = process.env.OWC_CORE_PATH ?? path.resolve(
@@ -15,6 +16,26 @@ let client: CoreClient | undefined;
 afterEach(async () => {
   await client?.stop();
   client = undefined;
+});
+
+describe("sanitizedCoreEnv", () => {
+  it("Windows 前置 System32（去重），其他平台返回 undefined", () => {
+    const env = sanitizedCoreEnv();
+    if (process.platform !== "win32") {
+      expect(env).toBeUndefined();
+      return;
+    }
+    const key = Object.keys(env!).find((candidate) => candidate.toLowerCase() === "path")!;
+    const entries = env![key]!.split(";").filter((entry) => entry.length > 0);
+    const systemRoot = (process.env.SystemRoot ?? "C:\\Windows").toLowerCase();
+    // 前三位固定为 System32 / 系统根 / Wbem，保证 find/sort 等解析为 Windows 版本
+    expect(entries[0]!.toLowerCase()).toBe(path.join(systemRoot, "system32"));
+    expect(entries[1]!.toLowerCase()).toBe(systemRoot);
+    expect(entries[2]!.toLowerCase()).toBe(path.join(systemRoot, "system32", "wbem"));
+    // 不重复前置；原有条目保留（MSYS usr\bin 仍在，只是排在 System32 之后）
+    expect(entries.filter((entry) => entry.toLowerCase() === entries[0]!.toLowerCase())).toHaveLength(1);
+    expect(entries.length).toBeGreaterThan(3);
+  });
 });
 
 describe.skipIf(!existsSync(corePath))("CoreClient", () => {
@@ -87,7 +108,7 @@ describe.skipIf(!existsSync(corePath))("CoreClient", () => {
     const info = await client.start();
     expect(info.features?.indexScan).toBe(true);
 
-    const workspace = mkdtempSync(path.join(tmpdir(), "owc-index-scan-"));
+    const workspace = await tempRoot("owc-index-scan-");
     mkdirSync(path.join(workspace, "src"));
     writeFileSync(path.join(workspace, "src", "a.ts"), "export const a = 1;\n");
     writeFileSync(path.join(workspace, "b.md"), "# b\n");
@@ -132,14 +153,14 @@ describe.skipIf(!existsSync(corePath))("CoreClient", () => {
     expect(entries[1].modifiedMs).toBeGreaterThan(0);
   }, 30_000);
 
-  /** 0.5.0 Phase 2c：通过真实 CoreClient 驱动 startGrepJob/startGlobJob（Node->core 真链路）。 */
+  /** 通过真实 CoreClient 驱动 startGrepJob/startGlobJob（Node->core 真链路）。 */
   it("runs grep/glob jobs through the real core with determinism, budgets and cancellation", async () => {
     client = new CoreClient(corePath);
     const info = await client.start();
     expect(info.features?.grepJob).toBe(true);
     expect(info.features?.globJob).toBe(true);
 
-    const workspace = mkdtempSync(path.join(tmpdir(), "owc-search-job-"));
+    const workspace = await tempRoot("owc-search-job-");
     mkdirSync(path.join(workspace, "src"));
     writeFileSync(path.join(workspace, "src", "main.ts"), "export const main = 1;\nconst beta = 2;\n");
     writeFileSync(path.join(workspace, "src", "util.ts"), "export const util = 2;\nconst beta = 3;\n");

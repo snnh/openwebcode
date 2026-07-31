@@ -1,64 +1,35 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { EventEmitter } from "node:events";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
-import { CoreRpcError, type CoreClientLike, type CoreInfo, type FsWriteRequest } from "../src/core-client.js";
+import { CoreRpcError, type CoreClientLike, type FsWriteRequest } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
+import { makeFakeCore } from "./helpers/fake-core.js";
 import { makeStubProvider } from "./helpers/stub-provider.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
-
-async function tempRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-editor-save-"));
-  roots.push(root);
-  return root;
-}
+import { tempRoot } from "./helpers/temp-roots.js";
 
 const echoProvider = makeStubProvider("test-stub", async function* () {
   yield { type: "done", stopReason: "end_turn" };
 });
 
-const FAKE_CORE_INFO: CoreInfo = {
-  version: "0.5.0-test", protocolVersion: "1.0", platform: "windows", sandboxCapability: "advisory",
-  features: { fsStat: true, fsStatMany: true, fsWriteBase64: true, jobControl: false, fsHash: true, fsScanPagination: true, fsWatch: true },
-  limits: { maxFrameBytes: 33_554_432, maxWriteBase64Bytes: 20_971_520, maxHashBytes: 16_777_216, maxStatManyPaths: 128, maxStatManyPathBytes: 262_144, maxScanEntries: 256, maxScanDepth: 16, maxScanNodes: 2_048, maxWatches: 16, maxWatchEvents: 128, maxConcurrentJobs: 4, maxJobOutputBytes: 524_288 },
-};
-
 /** 记录 writeFile 调用的 fake CoreClient（其余原语空实现）。 */
 function createFakeCore(): { client: CoreClientLike; writeCalls: FsWriteRequest[] } {
   const writeCalls: FsWriteRequest[] = [];
-  const emitter = new EventEmitter();
-  const client = {
-    on(eventName: string, listener: (...args: unknown[]) => void) { emitter.on(eventName, listener); return client; },
-    async start() { return FAKE_CORE_INFO; },
-    async stop() { /* noop */ },
-    async configureSession() { return { sandboxCapability: "advisory" as const }; },
-    async ping() { return FAKE_CORE_INFO; },
-    async cleanupSession() { return { ok: true as const }; },
-    async readFile() { return { content: "", totalLines: 0, encoding: "utf-8" as const, truncated: false }; },
-    async writeFile(request: FsWriteRequest) {
+  const client = makeFakeCore({
+    async writeFile(request) {
       if (request.expectedSha256 === "f".repeat(64)) throw new CoreRpcError(-32004, "file changed since it was read");
       writeCalls.push({ ...request });
       return { ok: true as const };
     },
-    async editFile() { return { matches: 0 }; },
-    async listFiles() { return { entries: [], truncated: false }; },
-    async globFiles() { return { paths: [], truncated: false }; },
-    async grepFiles() { return { matches: [], truncated: false }; },
-    setRequestTimeoutMs() { /* noop */ },
-  } as unknown as CoreClientLike;
+  });
   return { client, writeCalls };
 }
 
 async function setup(options?: { permissionMode?: "ask" | "acceptEdits" | "yolo"; agentMode?: "plan" | "code" }) {
-  const root = await tempRoot();
+  const root = await tempRoot("owc-editor-save-");
   const sessions = new SessionStore(path.join(root, "sessions"));
   await sessions.initialize();
   const session = await sessions.create({ cwd: root, provider: "test-stub", model: "deterministic-tool-loop", title: "Editor save test" });

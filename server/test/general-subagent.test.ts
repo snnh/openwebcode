@@ -1,7 +1,6 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AgentRunner, MAX_MANUAL_SUBAGENTS } from "../src/agent/agent-runner.js";
 import { AgentRegistry } from "../src/agents.js";
 import { buildServer } from "../src/app.js";
@@ -11,15 +10,8 @@ import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { defaultSandboxPolicy } from "../src/sessions/default-sandbox.js";
 import { SessionStore } from "../src/sessions/session-store.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
-
-async function tempRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-general-sub-"));
-  roots.push(root);
-  return root;
-}
+import { toolResultOf } from "./helpers/agent-harness.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
 const FAKE_CORE_INFO: CoreInfo = {
   version: "0.8.0-test", protocolVersion: "1.0", platform: "windows", sandboxCapability: "advisory",
@@ -73,7 +65,7 @@ function isSubRequest(request: StreamChatRequest): boolean {
 }
 
 async function setupRunner(options?: { permissionMode?: "ask" | "yolo"; agents?: AgentRegistry }) {
-  const root = await tempRoot();
+  const root = await tempRoot("owc-general-sub-");
   const sessions = new SessionStore(path.join(root, "sessions"));
   await sessions.initialize();
   const session = await sessions.create({ cwd: root, provider: "fake", model: "test-model" });
@@ -86,13 +78,6 @@ async function setupRunner(options?: { permissionMode?: "ask" | "yolo"; agents?:
   events.on("event", (event: AppEvent) => captured.push(event));
   const core = createFakeCore();
   return { root, sessions, session, pricing, events, captured, core, agents: options?.agents };
-}
-
-function toolResultOf(detail: Awaited<ReturnType<SessionStore["get"]>>, toolCallId: string) {
-  return detail?.messages
-    .filter((message) => message.role === "tool")
-    .flatMap((message) => message.content)
-    .find((block) => block.type === "tool_result" && block.toolCallId === toolCallId);
 }
 
 describe("spawn_task agent=general", () => {

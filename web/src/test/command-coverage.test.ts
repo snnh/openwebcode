@@ -1,21 +1,9 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { api } from "../lib/api";
 import { getCommand, registerCommand, resetCommands } from "../commands/registry";
-import { registerBuiltinCommands, type CommandActions } from "../commands/builtin";
+import { registerBuiltinCommands } from "../commands/builtin";
 import { REST_ACTION_COMMANDS } from "../commands/audit";
-
-function stubActions(): CommandActions {
-  return {
-    showCommands: vi.fn(), quickOpen: vi.fn(), toggleSidebar: vi.fn(), toggleBottomPanel: vi.fn(),
-    showView: vi.fn(), openSettings: vi.fn(), newSession: vi.fn(), importSession: vi.fn(),
-    deleteCurrentSession: vi.fn(), sendDraft: vi.fn(), abortRun: vi.fn(), toggleTheme: vi.fn(),
-    focusComposer: vi.fn(), nextSession: vi.fn(), previousSession: vi.fn(),
-    showKeyboardShortcuts: vi.fn(), cycleZone: vi.fn(), showNotifications: vi.fn(),
-    saveEditorFile: vi.fn(), toggleEditorSplit: vi.fn(),
-    diffAcceptHunk: vi.fn(), diffRejectHunk: vi.fn(),
-    findInConversation: vi.fn(),
-  };
-}
+import { stubActions } from "./helpers/stub-actions";
 
 afterEach(() => resetCommands());
 

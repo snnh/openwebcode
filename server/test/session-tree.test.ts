@@ -1,8 +1,6 @@
-import { mkdtemp, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
 import type { CoreClientLike } from "../src/core-client.js";
@@ -12,20 +10,7 @@ import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import type { ChatMessage, TextContent } from "../src/sessions/types.js";
 import { makeStubProvider, type StubProviderHandler } from "./helpers/stub-provider.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, {
-  recursive: true,
-  force: true,
-  maxRetries: 10,
-  retryDelay: 100,
-}))));
-
-async function tempRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-tree-"));
-  roots.push(root);
-  return root;
-}
+import { tempRoot } from "./helpers/temp-roots.js";
 
 function createFakeCore(): CoreClientLike {
   return {
@@ -54,7 +39,7 @@ interface Rig {
 }
 
 async function makeRig(handler?: StubProviderHandler): Promise<Rig> {
-  const root = await tempRoot();
+  const root = await tempRoot("owc-tree-");
   const sessions = new SessionStore(path.join(root, "sessions"));
   await sessions.initialize();
   const pricing = new PricingCatalog(path.join(root, "pricing.json"));
@@ -113,25 +98,6 @@ describe("POST /api/sessions/:id/checkout", () => {
       for (let i = 1; i < body.entries.length; i++) {
         expect(body.entries[i]!.createdAt >= body.entries[i - 1]!.createdAt).toBe(true);
       }
-    } finally {
-      await rig.app.close();
-    }
-  });
-
-  it("rejects missing/unknown messageId and unknown sessions", async () => {
-    const rig = await makeRig();
-    try {
-      const session = await rig.sessions.create({ cwd: rig.root, provider: "test-stub", model: "deterministic-tool-loop", title: "Tree" });
-      await appendText(rig.sessions, session.id, "user", "u1");
-
-      const missing = await rig.app.inject({ method: "POST", url: `/api/sessions/${session.id}/checkout`, payload: {} });
-      expect(missing.statusCode, missing.body).toBe(400);
-
-      const unknownMessage = await rig.app.inject({ method: "POST", url: `/api/sessions/${session.id}/checkout`, payload: { messageId: randomUUID() } });
-      expect(unknownMessage.statusCode, unknownMessage.body).toBe(400);
-
-      const unknownSession = await rig.app.inject({ method: "POST", url: `/api/sessions/${randomUUID()}/checkout`, payload: { messageId: randomUUID() } });
-      expect(unknownSession.statusCode, unknownSession.body).toBe(404);
     } finally {
       await rig.app.close();
     }
@@ -198,22 +164,6 @@ describe("POST /api/sessions/:id/fork", () => {
       const forked = await rig.sessions.get(sessionId);
       expect(forked!.messages.map(messageText)).toEqual(["u1", "a1"]);
       expect(forked!.activeLeafId).toBe(forked!.messages.at(-1)!.id);
-    } finally {
-      await rig.app.close();
-    }
-  });
-
-  it("rejects unknown sessions and unknown messageId", async () => {
-    const rig = await makeRig();
-    try {
-      const session = await rig.sessions.create({ cwd: rig.root, provider: "test-stub", model: "deterministic-tool-loop", title: "Origin" });
-      await appendText(rig.sessions, session.id, "user", "u1");
-
-      const unknownSession = await rig.app.inject({ method: "POST", url: `/api/sessions/${randomUUID()}/fork`, payload: {} });
-      expect(unknownSession.statusCode, unknownSession.body).toBe(404);
-
-      const unknownMessage = await rig.app.inject({ method: "POST", url: `/api/sessions/${session.id}/fork`, payload: { messageId: randomUUID() } });
-      expect(unknownMessage.statusCode, unknownMessage.body).toBe(400);
     } finally {
       await rig.app.close();
     }
@@ -308,29 +258,6 @@ describe("POST /api/sessions/:id/messages/:messageId/retry", () => {
     }
   });
 
-  it("rejects unknown messages, non-user targets and the root user message", async () => {
-    const rig = await makeRig();
-    try {
-      const session = await rig.sessions.create({ cwd: rig.root, provider: "test-stub", model: "deterministic-tool-loop", title: "Retry" });
-      const u1 = await appendText(rig.sessions, session.id, "user", "u1");
-      const a1 = await appendText(rig.sessions, session.id, "assistant", "a1");
-
-      const unknownMessage = await rig.app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages/${randomUUID()}/retry`, payload: {} });
-      expect(unknownMessage.statusCode, unknownMessage.body).toBe(400);
-
-      const nonUser = await rig.app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages/${a1.id}/retry`, payload: {} });
-      expect(nonUser.statusCode, nonUser.body).toBe(400);
-
-      const rootUser = await rig.app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages/${u1.id}/retry`, payload: {} });
-      expect(rootUser.statusCode, rootUser.body).toBe(400);
-
-      const unknownSession = await rig.app.inject({ method: "POST", url: `/api/sessions/${randomUUID()}/messages/${u1.id}/retry`, payload: {} });
-      expect(unknownSession.statusCode, unknownSession.body).toBe(404);
-    } finally {
-      await rig.app.close();
-    }
-  });
-
   it("returns 409 for checkout and retry while the session is running", async () => {
     let releaseGate!: () => void;
     const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
@@ -357,6 +284,40 @@ describe("POST /api/sessions/:id/messages/:messageId/retry", () => {
 
       releaseGate();
       await vi.waitFor(() => expect(rig.agent.isRunning(session.id)).toBe(false), { timeout: 10000 });
+    } finally {
+      await rig.app.close();
+    }
+  });
+});
+
+
+describe("session tree routes reject invalid parameters", () => {
+  interface RejectCase {
+    name: string;
+    url: (sessionId: string, ids: { u1: string; a1: string }) => string;
+    payload: Record<string, unknown>;
+    status: number;
+  }
+  const cases: RejectCase[] = [
+    { name: "checkout: missing messageId", url: (id) => `/api/sessions/${id}/checkout`, payload: {}, status: 400 },
+    { name: "checkout: unknown messageId", url: (id) => `/api/sessions/${id}/checkout`, payload: { messageId: randomUUID() }, status: 400 },
+    { name: "checkout: unknown session", url: () => `/api/sessions/${randomUUID()}/checkout`, payload: { messageId: randomUUID() }, status: 404 },
+    { name: "fork: unknown session", url: () => `/api/sessions/${randomUUID()}/fork`, payload: {}, status: 404 },
+    { name: "fork: unknown messageId", url: (id) => `/api/sessions/${id}/fork`, payload: { messageId: randomUUID() }, status: 400 },
+    { name: "retry: unknown message", url: (id) => `/api/sessions/${id}/messages/${randomUUID()}/retry`, payload: {}, status: 400 },
+    { name: "retry: non-user target", url: (id, ids) => `/api/sessions/${id}/messages/${ids.a1}/retry`, payload: {}, status: 400 },
+    { name: "retry: root user message", url: (id, ids) => `/api/sessions/${id}/messages/${ids.u1}/retry`, payload: {}, status: 400 },
+    { name: "retry: unknown session", url: (_id, ids) => `/api/sessions/${randomUUID()}/messages/${ids.u1}/retry`, payload: {}, status: 404 },
+  ];
+
+  it.each(cases)("$name -> $status", async ({ url, payload, status }) => {
+    const rig = await makeRig();
+    try {
+      const session = await rig.sessions.create({ cwd: rig.root, provider: "test-stub", model: "deterministic-tool-loop", title: "Reject" });
+      const u1 = await appendText(rig.sessions, session.id, "user", "u1");
+      const a1 = await appendText(rig.sessions, session.id, "assistant", "a1");
+      const res = await rig.app.inject({ method: "POST", url: url(session.id, { u1: u1.id, a1: a1.id }), payload });
+      expect(res.statusCode, res.body).toBe(status);
     } finally {
       await rig.app.close();
     }

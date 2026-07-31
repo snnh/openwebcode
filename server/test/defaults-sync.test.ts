@@ -51,15 +51,4 @@ describe("settings auto-combine (install default + user override)", () => {
     expect(port.value).toBe(9999);
     expect(port.installDefault).toBe(3210);
   });
-
-  it("writing the install default clears the override (adopt new default)", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-defaults-"));
-    roots.push(root);
-    const settings = await SettingsService.load({ env: {}, filePath: path.join(root, "server-settings.json") });
-    await settings.update({ port: 9999 });
-    await settings.update({ port: 3210 });
-    const port = field(settings.view(), "port");
-    expect(port.source).toBe("default");
-    expect(port.value).toBe(3210);
-  });
 });

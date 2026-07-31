@@ -1,25 +1,14 @@
-import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { SessionStore } from "../src/sessions/session-store.js";
 import type { ChatMessage } from "../src/sessions/types.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
 // readMessages 整表缓存的等价性测试：缓存路径的 get() 必须与全新实例
 // （空缓存、纯磁盘读取）的 get() 深度一致，覆盖追加穿透、外部写入失效、
 // steering 插入、truncate、recovery 与 parentId 派生等全部语义。
-
-const roots: string[] = [];
-
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-});
-
-async function tempDir(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-msgcache-"));
-  roots.push(root);
-  return root;
-}
 
 async function storeAt(root: string): Promise<SessionStore> {
   const store = new SessionStore(path.join(root, "sessions"));
@@ -47,7 +36,7 @@ async function seedMessages(store: SessionStore, sessionId: string, count: numbe
 
 describe("session messages cache (readMessages whole-list cache)", () => {
   it("cached get() equals fresh read after seeding", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-msgcache-");
     const store = await storeAt(root);
     const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
     await seedMessages(store, session.id, 20);
@@ -61,7 +50,7 @@ describe("session messages cache (readMessages whole-list cache)", () => {
   });
 
   it("append-through keeps cached get() equal to fresh read (run-style appends)", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-msgcache-");
     const store = await storeAt(root);
     const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
     await seedMessages(store, session.id, 10);
@@ -86,7 +75,7 @@ describe("session messages cache (readMessages whole-list cache)", () => {
   });
 
   it("steering-style insert with explicit lineage parentId stays equivalent", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-msgcache-");
     const store = await storeAt(root);
     const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
     const seeded = await seedMessages(store, session.id, 5);
@@ -105,7 +94,7 @@ describe("session messages cache (readMessages whole-list cache)", () => {
   });
 
   it("external append (bypassing SessionStore) invalidates the cache", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-msgcache-");
     const store = await storeAt(root);
     const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
     await seedMessages(store, session.id, 5);
@@ -128,7 +117,7 @@ describe("session messages cache (readMessages whole-list cache)", () => {
   });
 
   it("truncateMessages invalidates the cache", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-msgcache-");
     const store = await storeAt(root);
     const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
     await seedMessages(store, session.id, 10);
@@ -142,7 +131,7 @@ describe("session messages cache (readMessages whole-list cache)", () => {
   });
 
   it("derives parentId for old linear logs and keeps it stable across cache hits", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-msgcache-");
     const store = await storeAt(root);
     const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
     const lines = ["a", "b", "c"].map((text, i) => JSON.stringify({
@@ -164,7 +153,7 @@ describe("session messages cache (readMessages whole-list cache)", () => {
   });
 
   it("corrupt tail: cached get() reports recovered and equals fresh read", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-msgcache-");
     const store = await storeAt(root);
     const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
     await seedMessages(store, session.id, 5);
@@ -180,7 +169,7 @@ describe("session messages cache (readMessages whole-list cache)", () => {
   });
 
   it("append after a corrupt tail escalates to needs_repair and equals fresh read", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-msgcache-");
     const store = await storeAt(root);
     const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
     await seedMessages(store, session.id, 5);
@@ -197,7 +186,7 @@ describe("session messages cache (readMessages whole-list cache)", () => {
   });
 
   it("corrupt middle record: needs_repair, equals fresh read", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-msgcache-");
     const store = await storeAt(root);
     const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
     await seedMessages(store, session.id, 5);
@@ -220,7 +209,7 @@ describe("session messages cache (readMessages whole-list cache)", () => {
   });
 
   it("missing messages.jsonl: needs_repair, and recovery after external recreate", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-msgcache-");
     const store = await storeAt(root);
     const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
     const { rm: rmFile } = await import("node:fs/promises");
@@ -239,7 +228,7 @@ describe("session messages cache (readMessages whole-list cache)", () => {
   });
 
   it("concurrent sessions do not cross-contaminate the cache", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-msgcache-");
     const store = await storeAt(root);
     const a = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
     const b = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
@@ -258,7 +247,7 @@ describe("session messages cache (readMessages whole-list cache)", () => {
   });
 
   it("mutating the returned array does not poison the cache", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-msgcache-");
     const store = await storeAt(root);
     const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
     await seedMessages(store, session.id, 5);

@@ -1,7 +1,5 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { buildServer } from "../src/app.js";
 import type { AgentRunner } from "../src/agent/agent-runner.js";
 import type { CoreClient } from "../src/core-client.js";
@@ -9,13 +7,10 @@ import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
+import { tempRoot } from "./helpers/temp-roots.js";
 
 async function setup() {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-session-display-"));
-  roots.push(root);
+  const root = await tempRoot("owc-session-display-");
   const sessions = new SessionStore(path.join(root, "sessions"));
   await sessions.initialize();
   const providers = new ProviderRegistry();
@@ -131,8 +126,7 @@ describe("派生标题（首条用户消息）", () => {
   });
 
   it("派生标题时触发 onDerivedTitle 回调一次；非首条/非用户消息不触发", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-derived-title-"));
-    roots.push(root);
+    const root = await tempRoot("owc-derived-title-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const derived: Array<{ id: string; title: string }> = [];

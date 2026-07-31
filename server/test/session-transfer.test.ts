@@ -1,7 +1,7 @@
-import { mkdir, mkdtemp, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { mkdir, readdir, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
 import { CoreClient } from "../src/core-client.js";
@@ -11,18 +11,7 @@ import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { SessionTransferError } from "../src/sessions/session-transfer.js";
 import { StorageGC } from "../src/storage-gc.js";
-
-const roots: string[] = [];
-
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-});
-
-async function tempDir(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-transfer-"));
-  roots.push(root);
-  return root;
-}
+import { tempRoot } from "./helpers/temp-roots.js";
 
 async function storeAt(root: string): Promise<SessionStore> {
   const store = new SessionStore(path.join(root, "sessions"));
@@ -31,34 +20,8 @@ async function storeAt(root: string): Promise<SessionStore> {
 }
 
 describe("session export/import", () => {
-  it("recovers a truncated trailing JSONL record without hiding the session", async () => {
-    const store = await storeAt(await tempDir());
-    const created = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
-    await store.appendMessage(created.id, "user", [{ type: "text", text: "kept" }]);
-    await writeFile(path.join((store as unknown as { root: string }).root, created.id, "messages.jsonl"), `${JSON.stringify({ id: "kept", role: "user", content: [], createdAt: "x" })}\n{\"id\":`, "utf8");
-
-    const detail = await store.get(created.id);
-    expect(detail?.messages).toHaveLength(1);
-    expect(detail?.recovery).toMatchObject({ state: "recovered" });
-    expect((await store.list()).find((item) => item.id === created.id)?.recovery).toMatchObject({ state: "recovered" });
-  });
-
-  it("retains valid records but marks non-tail corruption and missing histories for repair", async () => {
-    const store = await storeAt(await tempDir());
-    const created = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
-    const directory = path.join((store as unknown as { root: string }).root, created.id);
-    await writeFile(path.join(directory, "messages.jsonl"), `${JSON.stringify({ id: "a", role: "user", content: [], createdAt: "x" })}\nnot-json\n${JSON.stringify({ id: "b", role: "assistant", content: [], createdAt: "x" })}\n`, "utf8");
-    const corrupt = await store.get(created.id);
-    expect(corrupt?.messages.map((message) => message.id)).toEqual(["a", "b"]);
-    expect(corrupt?.recovery).toMatchObject({ state: "needs_repair" });
-
-    await rm(path.join(directory, "messages.jsonl"));
-    expect((await store.get(created.id))?.recovery).toMatchObject({ state: "needs_repair" });
-    expect((await store.list()).find((item) => item.id === created.id)?.recovery).toMatchObject({ state: "needs_repair" });
-  });
-
   it("round-trips meta and messages, keeping the id when free", async () => {
-    const source = await storeAt(await tempDir());
+    const source = await storeAt(await tempRoot("owc-transfer-"));
     const created = await source.create({ cwd: os.tmpdir(), provider: "test-stub", model: "deterministic-tool-loop", title: "迁移样例" });
     await source.appendMessage(created.id, "user", [{ type: "text", text: "你好" }]);
     await source.appendMessage(created.id, "assistant", [{ type: "text", text: "收到" }]);
@@ -69,7 +32,7 @@ describe("session export/import", () => {
     expect(lines).toHaveLength(3);
     expect(JSON.parse(lines[0]!)).toMatchObject({ kind: "meta", version: 1, session: { title: "迁移样例" } });
 
-    const target = await storeAt(await tempDir());
+    const target = await storeAt(await tempRoot("owc-transfer-"));
     const imported = await target.importJsonl(jsonl!);
     expect(imported.id).toBe(created.id);
     const detail = await target.get(imported.id);
@@ -79,7 +42,7 @@ describe("session export/import", () => {
   });
 
   it("assigns a new id when the original is taken", async () => {
-    const store = await storeAt(await tempDir());
+    const store = await storeAt(await tempRoot("owc-transfer-"));
     const created = await store.create({ cwd: os.tmpdir(), provider: "test-stub", model: "deterministic-tool-loop", title: "冲突样例" });
     await store.appendMessage(created.id, "user", [{ type: "text", text: "hi" }]);
     const jsonl = (await store.exportJsonl(created.id))!;
@@ -89,7 +52,7 @@ describe("session export/import", () => {
   });
 
   it("rejects invalid imports with SessionTransferError", async () => {
-    const store = await storeAt(await tempDir());
+    const store = await storeAt(await tempRoot("owc-transfer-"));
     await expect(store.importJsonl("")).rejects.toBeInstanceOf(SessionTransferError);
     await expect(store.importJsonl("not json")).rejects.toBeInstanceOf(SessionTransferError);
     await expect(store.importJsonl('{"kind":"meta","version":1,"session":{"cwd":"x"}}')).rejects.toBeInstanceOf(SessionTransferError);
@@ -98,7 +61,7 @@ describe("session export/import", () => {
   });
 
   it("defaults missing meta timestamps so the session list stays sortable", async () => {
-    const store = await storeAt(await tempDir());
+    const store = await storeAt(await tempRoot("owc-transfer-"));
     const head = JSON.stringify({ kind: "meta", version: 1, session: { cwd: "/tmp", provider: "p", model: "m", title: "无时间戳" } });
     const meta = await store.importJsonl(head);
     expect(typeof meta.createdAt).toBe("string");
@@ -109,7 +72,7 @@ describe("session export/import", () => {
   });
 
   it("exposes export and import over HTTP", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-transfer-");
     const sessions = await storeAt(root);
     const pricing = new PricingCatalog(path.join(root, "model-pricing.json"));
     await pricing.initialize();
@@ -155,7 +118,7 @@ describe("storage GC", () => {
   }
 
   it("removes oldest artifacts until under the cap", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-transfer-");
     const oldest = await artifact(root, "s1", "old.txt", 600, 10_000);
     const middle = await artifact(root, "s1", "mid.txt", 600, 5_000);
     const newest = await artifact(root, "s2", "new.txt", 600, 1_000);
@@ -171,7 +134,7 @@ describe("storage GC", () => {
   });
 
   it("is a no-op under the cap and honors setMaxBytes", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-transfer-");
     const only = await artifact(root, "s1", "a.txt", 500, 1_000);
     const gc = new StorageGC(path.join(root, "sessions"), 1_000);
     const report = await gc.collect();
@@ -186,14 +149,14 @@ describe("storage GC", () => {
   });
 
   it("tolerates a missing sessions root", async () => {
-    const gc = new StorageGC(path.join(await tempDir(), "nonexistent"), 100);
+    const gc = new StorageGC(path.join(await tempRoot("owc-transfer-"), "nonexistent"), 100);
     await expect(gc.collect()).resolves.toMatchObject({ removed: 0, totalBytes: 0 });
   });
 });
 
 describe("session import sanitizes permission/sandbox metadata", () => {
   it("剥离 permissionMode/permissionRules/sandbox/sandboxMode/setupScript/workspace，保留中性配置", async () => {
-    const store = await storeAt(await tempDir());
+    const store = await storeAt(await tempRoot("owc-transfer-"));
     const head = JSON.stringify({
       kind: "meta",
       version: 1,

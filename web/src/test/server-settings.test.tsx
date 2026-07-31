@@ -1,9 +1,9 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, waitFor } from "@testing-library/react";
+import { fireEvent, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ModelAccessSection } from "../components/SettingsDialog";
 import { api } from "../lib/api";
 import type { SettingsView } from "../lib/contracts";
+import { renderWithClient } from "./helpers/with-client";
 
 const selected = JSON.stringify(["主服务", "fast-1"]);
 const settings: SettingsView = {
@@ -19,13 +19,8 @@ const settings: SettingsView = {
   }],
 };
 
-function renderSettings(): ReturnType<typeof render> {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={client}>
-      <ModelAccessSection />
-    </QueryClientProvider>,
-  );
+function renderSettings(): ReturnType<typeof renderWithClient> {
+  return renderWithClient(<ModelAccessSection />);
 }
 
 describe("ModelAccessSection fast model", () => {

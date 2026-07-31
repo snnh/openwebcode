@@ -1,50 +1,16 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ReactElement } from "react";
 import { TerminalView } from "../components/TerminalView";
 import type { AuthStatus, SessionDetail } from "../lib/contracts";
 import { api } from "../lib/api";
+import { FakeFitAddon, FakeTerminal } from "./helpers/fake-xterm";
+import { renderWithClient } from "./helpers/with-client";
 
 vi.mock("../lib/api", () => ({
   api: { authStatus: vi.fn() },
 }));
 
 const authStatus = vi.mocked(api.authStatus);
-
-/** jsdom 无真实布局，xterm 以最小假实现替代（接口对齐本组件用到的面） */
-class FakeTerminal {
-  static instances: FakeTerminal[] = [];
-  cols = 80;
-  rows = 24;
-  options: Record<string, unknown>;
-  written: string[] = [];
-  disposed = false;
-  private dataHandlers: Array<(data: string) => void> = [];
-  private resizeHandlers: Array<(size: { cols: number; rows: number }) => void> = [];
-  constructor(options: Record<string, unknown>) {
-    this.options = options;
-    FakeTerminal.instances.push(this);
-  }
-  loadAddon(): void { /* no-op */ }
-  open(): void { /* no-op */ }
-  write(data: Uint8Array): void { this.written.push(new TextDecoder().decode(data)); }
-  onData(handler: (data: string) => void): { dispose(): void } {
-    this.dataHandlers.push(handler);
-    return { dispose: () => undefined };
-  }
-  onResize(handler: (size: { cols: number; rows: number }) => void): { dispose(): void } {
-    this.resizeHandlers.push(handler);
-    return { dispose: () => undefined };
-  }
-  emitData(data: string): void { for (const handler of this.dataHandlers) handler(data); }
-  emitResize(cols: number, rows: number): void { for (const handler of this.resizeHandlers) handler({ cols, rows }); }
-  dispose(): void { this.disposed = true; }
-}
-
-class FakeFitAddon {
-  fit = vi.fn();
-}
 
 vi.mock("../components/xterm-loader", () => ({
   loadXterm: () => Promise.resolve({ Terminal: FakeTerminal, FitAddon: FakeFitAddon }),
@@ -81,11 +47,6 @@ function gate(partial: Partial<AuthStatus>): AuthStatus {
   return { totpEnabled: true, authenticated: true, terminalAvailable: true, gateReasons: [], ...partial };
 }
 
-function renderTerminal(node: ReactElement): ReturnType<typeof render> {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={client}>{node}</QueryClientProvider>);
-}
-
 async function connectedPty(): Promise<{ socket: StubSocket; term: FakeTerminal }> {
   await waitFor(() => expect(StubSocket.instances).toHaveLength(1));
   const socket = StubSocket.instances[0]!;
@@ -108,7 +69,7 @@ describe("TerminalView（真 PTY，提交⑦）", () => {
 
   it("生命周期：open → out 写入 xterm → in/resize 上行 → 卸载发送 close 并关 WS", async () => {
     authStatus.mockResolvedValue(gate({}));
-    const view = renderTerminal(<TerminalView session={session} />);
+    const view = renderWithClient(<TerminalView session={session} />);
 
     // 徽章如实标注宿主机终端语义
     expect(await screen.findByText(/宿主机终端 · 以应用身份运行 · 不经沙盒/)).toBeInTheDocument();
@@ -142,7 +103,7 @@ describe("TerminalView（真 PTY，提交⑦）", () => {
   it("门槛不满足：渲染两条门槛状态与设置深链，不建 WS 不渲染 xterm", async () => {
     authStatus.mockResolvedValue(gate({ totpEnabled: false, terminalAvailable: false, gateReasons: ["totp_disabled", "host_not_loopback_or_lan"] }));
     const onOpenSettings = vi.fn();
-    renderTerminal(<TerminalView session={session} onOpenSettings={onOpenSettings} />);
+    renderWithClient(<TerminalView session={session} onOpenSettings={onOpenSettings} />);
 
     expect(await screen.findByText(/终端功能暂不可用/)).toBeInTheDocument();
     expect(screen.getByText(/TOTP 已开启/).textContent).toContain("❌");
@@ -157,7 +118,7 @@ describe("TerminalView（真 PTY，提交⑦）", () => {
 
   it("exit 帧：显示进程已退出提示（含退出码）", async () => {
     authStatus.mockResolvedValue(gate({}));
-    renderTerminal(<TerminalView session={session} />);
+    renderWithClient(<TerminalView session={session} />);
     const { socket } = await connectedPty();
 
     act(() => socket.emit({ type: "exit", code: 3 }));
@@ -166,7 +127,7 @@ describe("TerminalView（真 PTY，提交⑦）", () => {
 
   it("连接断开（非主动关闭）显示重连提示；重连发起新 PTY", async () => {
     authStatus.mockResolvedValue(gate({}));
-    renderTerminal(<TerminalView session={session} />);
+    renderWithClient(<TerminalView session={session} />);
     const { socket } = await connectedPty();
 
     act(() => socket.onclose?.());

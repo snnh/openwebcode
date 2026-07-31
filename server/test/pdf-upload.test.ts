@@ -1,7 +1,6 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
 import type { CoreClient, FsWriteBase64Request } from "../src/core-client.js";
@@ -9,9 +8,7 @@ import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
+import { tempRoot } from "./helpers/temp-roots.js";
 
 function workspacePath(root: string, relativePath: string): string {
   return path.join(root, ...relativePath.split("/"));
@@ -23,8 +20,7 @@ async function createApp(options: { agentRunning?: boolean } = {}): Promise<{
   app: Awaited<ReturnType<typeof buildServer>>;
   core: { configureSession: ReturnType<typeof vi.fn>; writeFileBase64: ReturnType<typeof vi.fn> };
 }> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-pdf-upload-"));
-  roots.push(root);
+  const root = await tempRoot("owc-pdf-upload-");
   const sessions = new SessionStore(path.join(root, "sessions"));
   await sessions.initialize();
   const pricing = new PricingCatalog(path.join(root, "pricing.json"));

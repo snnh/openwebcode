@@ -1,21 +1,10 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { AgentRunner } from "../src/agent/agent-runner.js";
-import { buildServer } from "../src/app.js";
+import { describe, expect, it } from "vitest";
 import { CoreClient } from "../src/core-client.js";
 import { ContextManager } from "../src/context/context-manager.js";
 import { PricingCatalog, type PricingDocument } from "../src/cost/pricing-catalog.js";
-import { EventBus, type AppEvent } from "../src/events/event-bus.js";
-import { ProviderRegistry, type Provider } from "../src/providers/provider.js";
-import { SessionStore } from "../src/sessions/session-store.js";
-
-const roots: string[] = [];
-
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-});
+import type { Provider } from "../src/providers/provider.js";
+import { makeTestApp } from "./helpers/test-app.js";
 
 function pricing(input: string): PricingDocument {
   return {
@@ -34,31 +23,28 @@ function pricing(input: string): PricingDocument {
   };
 }
 
+const testProvider: Provider = {
+  name: "test",
+  async *streamChat() {
+    yield { type: "usage", inputTokens: 1, outputTokens: 0, cacheRead: 0, cacheWrite: 0 };
+    yield { type: "done", stopReason: "end_turn" };
+  },
+};
+
 async function fixture(catalogFactory?: (file: string) => PricingCatalog) {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-app-pricing-"));
-  roots.push(root);
-  const sessions = new SessionStore(path.join(root, "sessions"));
-  await sessions.initialize();
-  const catalog = catalogFactory?.(path.join(root, "model-pricing.json"))
-    ?? new PricingCatalog(path.join(root, "model-pricing.json"));
-  await catalog.initialize();
-  const providers = new ProviderRegistry();
-  const provider: Provider = {
-    name: "test",
-    async *streamChat() {
-      yield { type: "usage", inputTokens: 1, outputTokens: 0, cacheRead: 0, cacheWrite: 0 };
-      yield { type: "done", stopReason: "end_turn" };
+  const setup = await makeTestApp({
+    tempPrefix: "owc-app-pricing-",
+    pricing: (root) => catalogFactory?.(path.join(root, "model-pricing.json"))
+      ?? new PricingCatalog(path.join(root, "model-pricing.json")),
+    agent: "real",
+    core: (root) => {
+      const core = new CoreClient(path.join(root, "unused-core"));
+      core.configureSession = async () => ({ sandboxCapability: "advisory" });
+      return core;
     },
-  };
-  providers.register(provider);
-  const events = new EventBus();
-  const observed: AppEvent[] = [];
-  events.on("event", (event: AppEvent) => observed.push(event));
-  const core = new CoreClient(path.join(root, "unused-core"));
-  core.configureSession = async () => ({ sandboxCapability: "advisory" });
-  const agent = new AgentRunner(sessions, providers, core, events, catalog);
-  const app = await buildServer({ core, sessions, agent, events, providers, pricing: catalog });
-  return { root, sessions, catalog, events: observed, agent, app };
+    configureProviders: (providers) => providers.register(testProvider),
+  });
+  return { root: setup.root, sessions: setup.sessions, catalog: setup.pricing, events: setup.observed, agent: setup.agent, app: setup.app };
 }
 
 describe("model pricing API", () => {

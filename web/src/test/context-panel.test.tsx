@@ -1,10 +1,10 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ContextPanel } from "../components/panels/ContextPanel";
 import { api } from "../lib/api";
 import type { ContextWindowInfo } from "../lib/context-window";
 import type { ContextView, ContextUsage, ModelProfile, SessionDetail } from "../lib/contracts";
+import { renderWithClient } from "./helpers/with-client";
 
 const session: SessionDetail = {
   id: "s-1",
@@ -37,11 +37,8 @@ function contextView(selection: { pins: string[]; excludes: string[] }): Context
 }
 
 function renderPanel(windowUsage?: ContextWindowInfo, latestUsage?: ContextUsage): void {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(
-    <QueryClientProvider client={client}>
-      <ContextPanel sessionId={session.id} session={session} running={false} {...(windowUsage ? { windowUsage } : {})} {...(latestUsage ? { latestUsage } : {})} onNotice={() => undefined} />
-    </QueryClientProvider>,
+  renderWithClient(
+    <ContextPanel sessionId={session.id} session={session} running={false} {...(windowUsage ? { windowUsage } : {})} {...(latestUsage ? { latestUsage } : {})} onNotice={() => undefined} />,
   );
 }
 

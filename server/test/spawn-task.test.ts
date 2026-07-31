@@ -1,7 +1,6 @@
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
-import os from "node:os";
+import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { runSubAgent, SUB_AGENT_CONCLUSION_LIMIT, type SubAgentOptions } from "../src/agent/sub-agent.js";
 import type { CoreClientLike } from "../src/core-client.js";
@@ -10,15 +9,8 @@ import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
-
-async function tempRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-spawn-task-"));
-  roots.push(root);
-  return root;
-}
+import { toolResultOf } from "./helpers/agent-harness.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
 function createFakeCore(handlers: {
   readFile?: (request: { sessionId: string; path: string }) => Promise<unknown>;
@@ -61,7 +53,7 @@ function subAgentOptions(provider: Provider, core: CoreClientLike, contextRoot: 
 
 describe("spawn_task via AgentRunner", () => {
   it("exposes spawn_task and returns the sub-agent conclusion as the tool result", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-spawn-task-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const session = await sessions.create({ cwd: root, provider: "fake", model: "test-model" });
@@ -118,11 +110,7 @@ describe("spawn_task via AgentRunner", () => {
     expect(subRequest?.tools.map((tool) => tool.name).sort()).toEqual(["glob", "grep", "read_artifact", "read_file"]);
 
     expect(readFileCalls).toBe(1);
-    const detail = await sessions.get(session.id);
-    const toolResult = detail?.messages
-      .filter((message) => message.role === "tool")
-      .flatMap((message) => message.content)
-      .find((block) => block.type === "tool_result" && block.toolCallId === "spawn-1");
+    const toolResult = toolResultOf(await sessions.get(session.id), "spawn-1");
     expect(toolResult).toMatchObject({ type: "tool_result", content: "结论：一切正常", isError: false });
 
     const toolEnd = captured.find((event) =>
@@ -161,7 +149,7 @@ describe("spawn_task via AgentRunner", () => {
   });
 
   it("keeps the started subagent taskId and per-item status in the tool result when the subagent fails", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-spawn-task-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const session = await sessions.create({ cwd: root, provider: "fake", model: "test-model" });
@@ -195,11 +183,7 @@ describe("spawn_task via AgentRunner", () => {
     await runner.run(session.id, "派生一个会失败的子代理");
 
     // 启动后失败的 tool_result 仍携带 taskId 与逐项终态，页面刷新后历史可还原
-    const detail = await sessions.get(session.id);
-    const toolResult = detail?.messages
-      .filter((message) => message.role === "tool")
-      .flatMap((message) => message.content)
-      .find((block) => block.type === "tool_result" && block.toolCallId === "spawn-1");
+    const toolResult = toolResultOf(await sessions.get(session.id), "spawn-1");
     expect(toolResult).toMatchObject({ isError: true });
     expect((toolResult as { content: string }).content).toContain("provider boom");
     const taskId = (toolResult as { subagentTaskIds?: string[] }).subagentTaskIds?.[0];
@@ -221,7 +205,7 @@ describe("spawn_task via AgentRunner", () => {
 
 describe("runSubAgent", () => {
   it("reports progress after each provider turn and after tool execution", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-spawn-task-");
     const core = createFakeCore({
       async globFiles() { return { matches: ["a.ts"] }; },
     });
@@ -252,7 +236,7 @@ describe("runSubAgent", () => {
   });
 
   it("truncates a conclusion longer than 2000 characters", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-spawn-task-");
     const provider: Provider = {
       name: "fake",
       async *streamChat() {
@@ -267,7 +251,7 @@ describe("runSubAgent", () => {
   });
 
   it("rejects tools narrowed out by the tools option and keeps going", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-spawn-task-");
     let readFileCalls = 0;
     const core = createFakeCore({
       async readFile() {
@@ -306,7 +290,7 @@ describe("runSubAgent", () => {
   });
 
   it("wraps up with a max-turns note when the turn budget is exhausted", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-spawn-task-");
     const core = createFakeCore({
       async globFiles() { return { matches: [] }; },
     });
@@ -329,7 +313,7 @@ describe("runSubAgent", () => {
   });
 
   it("writes a transcript with prompt and conclusion under subagents/", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-spawn-task-");
     const provider: Provider = {
       name: "fake",
       async *streamChat() {

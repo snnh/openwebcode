@@ -1,7 +1,5 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { ContextManager, isPathExcluded } from "../src/context/context-manager.js";
 import { estimateMessageTokens } from "../src/context/model-profile.js";
 import type { ChatMessage } from "../src/sessions/types.js";
@@ -12,9 +10,7 @@ import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
-
-const temporary: string[] = [];
-afterEach(async () => Promise.all(temporary.splice(0).map((directory) => rm(directory, { recursive: true, force: true }))));
+import { tempRoot } from "./helpers/temp-roots.js";
 
 let sequence = 0;
 function message(role: ChatMessage["role"], content: ChatMessage["content"]): ChatMessage {
@@ -28,8 +24,7 @@ function toolResult(value: string): ChatMessage {
 
 describe("incremental context build", () => {
   it("produces byte-identical views for incremental and forced full rebuilds across turns, eviction, and compaction", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-incremental-"));
-    temporary.push(root);
+    const root = await tempRoot("owc-incremental-");
     const manager = new ContextManager(root);
     const messages: ChatMessage[] = [
       text("请修复这个 bug"),
@@ -52,6 +47,8 @@ describe("incremental context build", () => {
     expect(incremental.stats.totalTokens).toBe(estimateMessageTokens(forced.messages));
 
     // 驱逐改变 ledger：缓存键失效自动全量；随后的增量仍与全量一致
+    // （lag: 0 显式关闭 lag 窗口：默认 lag=3 下两条工具结果都在保留窗口内，不会被驱逐）
+    await manager.updatePolicy({ lag: 0 });
     await manager.evict(messages);
     const afterEvict = await manager.buildView(messages);
     expect(afterEvict.stats.incremental).toBe(false);
@@ -79,8 +76,7 @@ describe("incremental context build", () => {
   });
 
   it("attributes tokens by segment", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-segments-"));
-    temporary.push(root);
+    const root = await tempRoot("owc-segments-");
     const manager = new ContextManager(root);
     const messages = [text("hello"), toolResult("z".repeat(400)), message("assistant", [{ type: "text", text: "done" }])];
     const view = await manager.buildView(messages);
@@ -91,12 +87,12 @@ describe("incremental context build", () => {
   });
 
   it("pinned messages are never evicted and keep full content in the view", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-pin-"));
-    temporary.push(root);
+    const root = await tempRoot("owc-pin-");
     const manager = new ContextManager(root);
     await manager.updatePolicy({ lag: 0 });
-    const pinned = toolResult("pinned-full-content");
-    const other = toolResult("other-content");
+    const pinnedBody = `pinned-full-content ${"p".repeat(2000)}`;
+    const pinned = toolResult(pinnedBody);
+    const other = toolResult(`other-content ${"o".repeat(2000)}`);
     const messages = [text("start"), pinned, other, text("next")];
     // evict 显式传 pin 集：pin 的消息不产生驱逐条目
     const ledger = await manager.evict(messages, new Set([pinned.id]));
@@ -106,7 +102,7 @@ describe("incremental context build", () => {
     await manager.evictMessage(messages, pinned.id);
     const view = await manager.buildView(messages, { selection: { pins: [pinned.id], excludes: [] } });
     const pinnedView = view.messages.find((item) => item.id === pinned.id)!;
-    expect(pinnedView.content[0]).toMatchObject({ content: "pinned-full-content" });
+    expect(pinnedView.content[0]).toMatchObject({ content: pinnedBody });
     expect(view.stats.pinnedTokens).toBeGreaterThan(0);
     // 未 pin 的视图仍是占位文本
     const unpinned = await manager.buildView(messages, { selection: { pins: [], excludes: [] }, forceFullRebuild: true });
@@ -124,8 +120,7 @@ describe("incremental context build", () => {
   });
 
   it("does not pollute the cached view when callers replace returned messages/content arrays", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-view-isolation-"));
-    temporary.push(root);
+    const root = await tempRoot("owc-view-isolation-");
     const manager = new ContextManager(root);
     const messages = [text("hello"), toolResult("world")];
     const first = await manager.buildView(messages);
@@ -147,8 +142,7 @@ describe("incremental context build", () => {
 
 describe("context selection REST", () => {
   it("persists pins/excludes in session config and rejects updates while running", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-selection-"));
-    temporary.push(root);
+    const root = await tempRoot("owc-selection-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const provider: Provider = { name: "anthropic", async *streamChat() { yield { type: "done", stopReason: "end_turn" }; } };

@@ -1,5 +1,3 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
@@ -11,14 +9,13 @@ import { IndexManager } from "../src/index/index-manager.js";
 import type { SymbolRecord } from "../src/index/index-store.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
-const roots: string[] = [];
 const apps: Array<{ close(): Promise<unknown> }> = [];
 const managers: IndexManager[] = [];
 afterEach(async () => {
   for (const manager of managers.splice(0)) manager.stop();
   await Promise.all(apps.splice(0).map((app) => app.close()));
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
 const UTIL_TS = "export function getTopSymbols(): string {\n  return \"x\";\n}\n";
@@ -64,8 +61,7 @@ function createFakeScanCore(): CoreClientLike {
 }
 
 async function setup() {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-index-api-"));
-  roots.push(root);
+  const root = await tempRoot("owc-index-api-");
   const sessions = new SessionStore(path.join(root, "sessions"));
   await sessions.initialize();
   const session = await sessions.create({ cwd: root, provider: "fake", model: "fake-model" });
@@ -165,8 +161,7 @@ describe("索引 REST 契约（§7.2）", () => {
   });
 
   it("未注入 indexManager 时四个端点 501", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-index-501-"));
-    roots.push(root);
+    const root = await tempRoot("owc-index-501-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const session = await sessions.create({ cwd: root, provider: "fake", model: "fake-model" });

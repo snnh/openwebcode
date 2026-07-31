@@ -1,41 +1,21 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
-import { buildServer } from "../src/app.js";
 import type { CoreClientLike } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
-import { SessionStore } from "../src/sessions/session-store.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
-
-async function tempRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-plan-approval-"));
-  roots.push(root);
-  return root;
-}
+import { makeAgentHarness, toolResultOf, waitForPendingInteraction } from "./helpers/agent-harness.js";
+import { makeFakeCore } from "./helpers/fake-core.js";
 
 function createFakeCore(): CoreClientLike {
-  return {
-    on() { return this; },
-    async configureSession() { return { sandboxCapability: "advisory" }; },
+  return makeFakeCore({
     async readFile() { return { content: "file content" }; },
     async globFiles() { return { matches: [] }; },
     async grepFiles() { return { matches: [] }; },
-    async writeFile() { return { ok: true }; },
     async editFile() { return { matches: 1 }; },
     async run() { return { exitCode: 0, stdout: "", stderr: "" }; },
-    async cleanupSession() { return { ok: true }; },
-    setRequestTimeoutMs() {},
-    start() { return Promise.resolve({ version: "0.0.0", platform: "test" }); },
-    stop() { return Promise.resolve(); },
-    ping() { return Promise.resolve({ version: "0.0.0", platform: "test" }); },
-    listFiles() { return Promise.resolve({ entries: [], truncated: false }); },
-  } as unknown as CoreClientLike;
+  } as unknown as Partial<CoreClientLike>);
 }
 
 const PLAN = "# 实施计划\n\n1. 改 A\n2. 改 B";
@@ -48,15 +28,6 @@ interface SetupOptions {
 }
 
 async function setup(options: SetupOptions = {}) {
-  const root = await tempRoot();
-  const sessions = new SessionStore(path.join(root, "sessions"));
-  await sessions.initialize();
-  const session = await sessions.create({ cwd: root, provider: "fake", model: "model" });
-  if (options.agentMode) await sessions.updateConfig(session.id, { provider: "fake", model: "model", agentMode: options.agentMode });
-  if (options.permissionMode) await sessions.updatePermissions(session.id, options.permissionMode, []);
-  const pricing = new PricingCatalog(path.join(root, "pricing.json"));
-  await pricing.initialize();
-  const events = new EventBus();
   const requests: StreamChatRequest[] = [];
   const toolCallId = options.toolCallId ?? "epm-1";
   const input = options.input ?? { plan: PLAN };
@@ -75,27 +46,15 @@ async function setup(options: SetupOptions = {}) {
       }
     },
   };
-  const providers = new ProviderRegistry();
-  providers.register(provider);
-  const core = createFakeCore();
-  const agent = new AgentRunner(sessions, providers, core, events, pricing);
-  const app = await buildServer({ core, sessions, agent, events, providers, pricing });
-  return { root, sessions, session, events, agent, app, requests };
-}
-
-async function waitForPendingInteraction(agent: AgentRunner, sessionId: string) {
-  await vi.waitFor(async () => {
-    const list = await agent.listInteractions(sessionId);
-    expect(list.some((item) => item.status === "pending")).toBe(true);
-  }, { timeout: 5000 });
-  return (await agent.listInteractions(sessionId)).find((item) => item.status === "pending")!;
-}
-
-function toolResultOf(detail: Awaited<ReturnType<SessionStore["get"]>>, toolCallId: string) {
-  return detail?.messages
-    .filter((message) => message.role === "tool")
-    .flatMap((message) => message.content)
-    .find((block) => block.type === "tool_result" && block.toolCallId === toolCallId);
+  const harness = await makeAgentHarness({
+    provider,
+    core: createFakeCore(),
+    model: "model",
+    tempPrefix: "owc-plan-approval-",
+    ...(options.agentMode ? { agentMode: options.agentMode } : {}),
+    ...(options.permissionMode ? { permissionMode: options.permissionMode } : {}),
+  });
+  return { ...harness, requests };
 }
 
 describe("exit_plan_mode 工具下发", () => {

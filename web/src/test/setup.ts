@@ -9,3 +9,8 @@ configure({ asyncUtilTimeout: 3000 });
 afterEach(() => {
   cleanup();
 });
+
+// jsdom 对 HTMLDialogElement.showModal/close 的实现不完整：全局打桩为 open 属性开关
+//（此前各测试文件各自 beforeEach 打桩，此处幂等统一；直接赋值，不受 vi.restoreAllMocks 影响）
+HTMLDialogElement.prototype.showModal = function showModal(this: HTMLDialogElement) { this.open = true; };
+HTMLDialogElement.prototype.close = function close(this: HTMLDialogElement) { this.open = false; };

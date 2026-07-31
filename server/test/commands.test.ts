@@ -1,7 +1,6 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { CommandRegistry, renderCommand } from "../src/commands.js";
 import type { CoreClientLike } from "../src/core-client.js";
@@ -10,15 +9,7 @@ import { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { SkillRegistry } from "../src/skills.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
-
-async function tempRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-commands-"));
-  roots.push(root);
-  return root;
-}
+import { tempRoot } from "./helpers/temp-roots.js";
 
 async function writeDefinition(dir: string, name: string, text: string): Promise<void> {
   await mkdir(dir, { recursive: true });
@@ -48,7 +39,7 @@ describe("renderCommand", () => {
 
 describe("CommandRegistry", () => {
   it("parses definitions and lets project commands override global commands", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-commands-");
     const globalDir = path.join(root, "global");
     const workspace = path.join(root, "workspace");
     await writeDefinition(globalDir, "review", "---\ndescription: global\n---\nGlobal $ARGUMENTS");
@@ -64,7 +55,7 @@ describe("CommandRegistry", () => {
 
 describe("custom slash commands", () => {
   async function runWithDefinitions(options: { command?: string; skill?: string; text: string }): Promise<string> {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-commands-");
     const workspace = path.join(root, "workspace");
     const commandDir = path.join(root, "commands");
     const skillDir = path.join(root, "skills");

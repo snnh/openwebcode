@@ -1,52 +1,18 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
-import type { CoreClientLike, CoreInfo } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { ExtensionManager } from "../src/extensions/extension-manager.js";
 import type { ExtensionPermission } from "../src/extensions/types.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
+import { makeFakeCore } from "./helpers/fake-core.js";
 import { makeStubProvider } from "./helpers/stub-provider.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
-
-async function tempRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-extapi-"));
-  roots.push(root);
-  return root;
-}
-
-const FAKE_CORE_INFO: CoreInfo = {
-  version: "0.2.4-test", protocolVersion: "1.0", platform: "windows", sandboxCapability: "advisory",
-  features: { fsStat: true, fsStatMany: true, fsWriteBase64: true, jobControl: false, fsHash: true, fsScanPagination: true, fsWatch: true },
-  limits: { maxFrameBytes: 33_554_432, maxWriteBase64Bytes: 20_971_520, maxHashBytes: 16_777_216, maxStatManyPaths: 128, maxStatManyPathBytes: 262_144, maxScanEntries: 256, maxScanDepth: 16, maxScanNodes: 2_048, maxWatches: 16, maxWatchEvents: 128, maxConcurrentJobs: 4, maxJobOutputBytes: 524_288 },
-};
-
-/** ext__ 工具链路不需要真实 core；提供最小 CoreClientLike 让 buildServer/AgentRunner 可装配。 */
-function fakeCore(): CoreClientLike {
-  return {
-    on() { return this; },
-    async start() { return FAKE_CORE_INFO; },
-    async stop() { return undefined; },
-    async configureSession() { return { sandboxCapability: "advisory" as const }; },
-    async run() { return { exitCode: 0, durationMs: 1, truncated: false }; },
-    async ping() { return FAKE_CORE_INFO; },
-    async cleanupSession() { return { ok: true as const }; },
-    async readFile() { return { content: "", totalLines: 0, encoding: "utf-8" as const, truncated: false }; },
-    async writeFile() { return { ok: true as const }; },
-    async editFile() { return { matches: 0 }; },
-    async listFiles() { return { entries: [], truncated: false }; },
-    async globFiles() { return { paths: [], truncated: false }; },
-    async grepFiles() { return { matches: [], truncated: false }; },
-    setRequestTimeoutMs() {},
-  } as unknown as CoreClientLike;
-}
+import { tempRoot } from "./helpers/temp-roots.js";
+import { waitForEvent } from "./helpers/wait-event.js";
 
 /** 全功能 fixture：echo/hang 工具 + sessions:read 派生工具 + 事件订阅记录（经 seen 工具回读）。 */
 const FULL_ENTRY = `
@@ -73,7 +39,7 @@ async function installFixture(manager: ExtensionManager, root: string, options: 
 }
 
 async function setupManager(options: { permissions: ExtensionPermission[]; entry?: string }) {
-  const root = await tempRoot();
+  const root = await tempRoot("owc-extapi-");
   const events = new EventBus();
   const sessions = new SessionStore(path.join(root, "sessions"));
   await sessions.initialize();
@@ -81,18 +47,6 @@ async function setupManager(options: { permissions: ExtensionPermission[]; entry
   await manager.initialize();
   await installFixture(manager, root, options);
   return { root, events, sessions, manager };
-}
-
-function waitForEvent(events: EventBus, type: string, match?: (event: AppEvent) => boolean): Promise<AppEvent> {
-  return new Promise((resolve) => {
-    const listener = (event: AppEvent): void => {
-      if (event.type !== type) return;
-      if (match && !match(event)) return;
-      events.removeListener("event", listener);
-      resolve(event);
-    };
-    events.on("event", listener);
-  });
 }
 
 describe("extension tools:register over host IPC", () => {
@@ -242,7 +196,7 @@ const extToolProvider = makeStubProvider("test-stub", async function* (request) 
 });
 
 async function setupAgent(permissionMode: "ask" | "yolo") {
-  const root = await tempRoot();
+  const root = await tempRoot("owc-extapi-");
   const sessions = new SessionStore(path.join(root, "sessions"));
   await sessions.initialize();
   const session = await sessions.create({ cwd: root, provider: "test-stub", model: "deterministic-tool-loop", title: "ext tool" });
@@ -252,7 +206,8 @@ async function setupAgent(permissionMode: "ask" | "yolo") {
   const events = new EventBus();
   const providers = new ProviderRegistry();
   providers.register(extToolProvider);
-  const core = fakeCore();
+  // ext__ 工具链路不需要真实 core；空实现即可装配 buildServer/AgentRunner
+  const core = makeFakeCore();
   const manager = new ExtensionManager(path.join(root, "data"), events, { sessions });
   await manager.initialize();
   await installFixture(manager, root, { permissions: ["tools:register", "sessions:read"] });
@@ -267,7 +222,7 @@ async function setupAgent(permissionMode: "ask" | "yolo") {
 }
 
 async function waitIdle(events: EventBus, agent: AgentRunner, sessionId: string): Promise<void> {
-  const idle = waitForEvent(events, "agent.state", (event) => event.sessionId === sessionId && (event.payload as { state?: string }).state === "idle");
+  const idle = waitForEvent(events, "agent.state", { sessionId, match: (event) => (event.payload as { state?: string }).state === "idle" });
   if (!agent.isRunning(sessionId)) return;
   await idle;
 }
@@ -277,7 +232,7 @@ describe("ext__ tool permission chain", () => {
     const harness = await setupAgent("ask");
     const { app, events, sessions, session, agent, manager } = harness;
     try {
-      const permissionEvent = waitForEvent(events, "permission.request", (event) => event.sessionId === session.id);
+      const permissionEvent = waitForEvent(events, "permission.request", { sessionId: session.id });
       const accepted = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "go" } });
       expect(accepted.statusCode).toBe(202);
       const request = await permissionEvent;
@@ -299,7 +254,7 @@ describe("ext__ tool permission chain", () => {
     const harness = await setupAgent("ask");
     const { app, events, sessions, session, agent, manager } = harness;
     try {
-      const permissionEvent = waitForEvent(events, "permission.request", (event) => event.sessionId === session.id);
+      const permissionEvent = waitForEvent(events, "permission.request", { sessionId: session.id });
       const accepted = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "go" } });
       expect(accepted.statusCode).toBe(202);
       const requestId = ((await permissionEvent).payload as { requestId: string }).requestId;
@@ -320,7 +275,7 @@ describe("ext__ tool permission chain", () => {
     const harness = await setupAgent("ask");
     const { app, events, sessions, session, agent, manager } = harness;
     try {
-      const permissionEvent = waitForEvent(events, "permission.request", (event) => event.sessionId === session.id);
+      const permissionEvent = waitForEvent(events, "permission.request", { sessionId: session.id });
       expect((await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "go" } })).statusCode).toBe(202);
       const requestId = ((await permissionEvent).payload as { requestId: string }).requestId;
       expect((await app.inject({ method: "POST", url: `/api/sessions/${session.id}/permissions/respond`, payload: { requestId, decision: "allow_always" } })).statusCode).toBe(200);

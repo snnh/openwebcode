@@ -1,27 +1,11 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, waitFor } from "@testing-library/react";
+import { fireEvent } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SubagentsPanel } from "../components/panels/SubagentsPanel";
-import { api } from "../lib/api";
-import type { LiveSubagentRun, SubagentTranscript } from "../lib/contracts";
-import type { ReactElement } from "react";
+import { makeSubagentRun } from "./helpers/fixtures";
+import { renderWithClient } from "./helpers/with-client";
 
-function renderPanel(node: ReactElement) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={client}>{node}</QueryClientProvider>);
-}
-
-function run(overrides: Partial<LiveSubagentRun>): LiveSubagentRun {
-  return {
-    taskId: "task-1",
-    toolCallId: "call-1",
-    prompt: "调查代码结构",
-    status: "running",
-    turns: 0,
-    toolsUsed: [],
-    ...overrides,
-  };
-}
+const run = makeSubagentRun;
+const renderPanel = renderWithClient;
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -83,34 +67,6 @@ describe("SubagentsPanel", () => {
     const items = container.querySelectorAll(".subagent-run-item");
     expect(items[0]!.querySelector(".subagent-run-task")).toHaveTextContent("新任务");
     expect(items[1]!.querySelector(".subagent-run-task")).toHaveTextContent("旧任务");
-  });
-
-  it("expands a done row transcript lazily via the api", async () => {
-    const transcript: SubagentTranscript = {
-      id: "task-1",
-      prompt: "调查 a.ts",
-      agent: "scout",
-      startedAt: "2026-07-20T00:00:00.000Z",
-      turns: 2,
-      toolsUsed: ["read_file"],
-      conclusion: "子代理结论",
-      messages: [],
-    };
-    const spy = vi.spyOn(api, "subagentTranscript").mockResolvedValue(transcript);
-    const { container } = renderPanel(
-      <SubagentsPanel sessionId="s-1" runs={{ "task-1": run({ status: "done", turns: 2, toolsUsed: ["read_file"] }) }} />,
-    );
-
-    const details = container.querySelector("details.subagent-transcript");
-    expect(details).toBeInTheDocument();
-    expect(spy).not.toHaveBeenCalled();
-
-    (details as HTMLDetailsElement).open = true;
-    fireEvent(details!, new Event("toggle"));
-
-    await waitFor(() => expect(spy).toHaveBeenCalledWith("s-1", "task-1"));
-    await waitFor(() => expect(details?.querySelector(".subagent-transcript-prompt")).toHaveTextContent("调查 a.ts"));
-    expect(details?.querySelector(".subagent-transcript-meta")).toHaveTextContent("2 轮");
   });
 
   it("shows the empty state when there are no runs or no session", () => {

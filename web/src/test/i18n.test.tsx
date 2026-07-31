@@ -1,15 +1,9 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
 import { I18nProvider, useI18n } from "../i18n";
 import { EmptyState } from "../components/EmptyState";
 import { SettingsDialog } from "../components/SettingsDialog";
-
-function withClient(node: React.ReactNode): React.ReactElement {
-  // 通用页签挂载服务端字段（api.settings），需要 QueryClient；失败按加载失败展示即可
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return <QueryClientProvider client={client}>{node}</QueryClientProvider>;
-}
+import { renderWithClient } from "./helpers/with-client";
 
 function Fixture() {
   const { language, setLanguage, t } = useI18n();
@@ -24,8 +18,6 @@ function Fixture() {
 describe("interface localization", () => {
   beforeEach(() => {
     window.localStorage.clear();
-    HTMLDialogElement.prototype.showModal = function showModal(this: HTMLDialogElement) { this.open = true; };
-    HTMLDialogElement.prototype.close = function close(this: HTMLDialogElement) { this.open = false; };
     HTMLElement.prototype.scrollTo = () => undefined;
   });
 
@@ -52,7 +44,7 @@ describe("interface localization", () => {
 
   it("switches languages from the settings UI and persists the choice", () => {
     window.localStorage.setItem("owc-language", "zh-CN");
-    render(withClient(
+    renderWithClient(
       <I18nProvider>
         <SettingsDialog
           open
@@ -72,7 +64,7 @@ describe("interface localization", () => {
           onClose={() => undefined}
         />
       </I18nProvider>,
-    ));
+    );
 
     fireEvent.change(screen.getByLabelText("界面语言"), { target: { value: "en" } });
     expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();

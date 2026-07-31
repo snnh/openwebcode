@@ -4,12 +4,12 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
-import type { CoreClientLike } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { DiagnosticsService } from "../src/diagnostics/service.js";
 import { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
+import { makeJobReplayCore } from "./helpers/fake-job-core.js";
 
 const roots: string[] = [];
 const apps: Array<{ close(): Promise<unknown> }> = [];
@@ -24,24 +24,6 @@ const PYTEST_OUTPUT = [
   "========================= 1 failed, 1 passed in 0.42s ==========================",
 ].join("\n");
 
-function fakeCore(output: string, exitCode = 0): CoreClientLike {
-  let served = false;
-  const core = {
-    on() { return core; },
-    async startJob() { served = false; return { jobId: "j", state: "running" as const }; },
-    async jobStatus() { return { jobId: "j", state: "completed" as const, exitCode, durationMs: 420 }; },
-    async jobOutput(request: { afterSeq: number }) {
-      if (request.afterSeq === 0 && !served) {
-        served = true;
-        return { chunks: [{ seq: 1, stream: "stdout" as const, data: output }], nextSeq: 2, truncated: false };
-      }
-      return { chunks: [], nextSeq: request.afterSeq, truncated: false };
-    },
-    async cancelJob(request: { jobId: string }) { return { jobId: request.jobId, accepted: true as const }; },
-  } as unknown as CoreClientLike;
-  return core;
-}
-
 async function setup(options: { withDiagnostics?: boolean; output?: string; exitCode?: number } = {}) {
   const { withDiagnostics = true, output = PYTEST_OUTPUT, exitCode = 1 } = options;
   const root = await mkdtemp(path.join(os.tmpdir(), "owc-diag-api-"));
@@ -52,7 +34,7 @@ async function setup(options: { withDiagnostics?: boolean; output?: string; exit
   const pricing = new PricingCatalog(path.join(root, "pricing.json"));
   await pricing.initialize();
   const providers = new ProviderRegistry();
-  const core = fakeCore(output, exitCode);
+  const core = makeJobReplayCore(output, { exitCode, durationMs: 420 });
   const events = new EventBus();
   const published: Array<{ type: string; sessionId?: string; payload: unknown }> = [];
   events.on("event", (event: { type: string; sessionId?: string; payload: unknown }) => published.push(event));
@@ -72,15 +54,14 @@ describe("诊断 REST 契约（0.4.0 Phase 3a）", () => {
     const run = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/tests/run`, payload: { command: "pytest" } });
     expect(run.statusCode).toBe(200);
     const body = run.json();
+    // record 结构（pytest 解析细节由 diagnostics-parsers golden 覆盖）
     expect(body.record).toMatchObject({
       sessionId: session.id,
       command: "pytest",
       exitCode: 1,
       parseFallback: false,
-      diagnostics: { tool: "pytest", summary: { passed: 1, failed: 1, skipped: 0, durationMs: 420 } },
+      diagnostics: { tool: "pytest" },
     });
-    expect(body.record.diagnostics.failures).toHaveLength(1);
-    expect(body.record.diagnostics.failures[0]).toMatchObject({ name: "tests/test_math.py::test_divides" });
     expect(body.feedback).toContain("1 passed, 1 failed");
     // WS 广播事件（含 sessionId、runId、summary）
     const update = published.find((event) => event.type === "diagnostics.updated");

@@ -1,7 +1,5 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
 import { ContextManager } from "../src/context/context-manager.js";
@@ -15,20 +13,7 @@ import { ProviderRegistry, type StreamChatRequest } from "../src/providers/provi
 import { SessionStore } from "../src/sessions/session-store.js";
 import type { ChatMessage } from "../src/sessions/types.js";
 import { makeStubProvider } from "./helpers/stub-provider.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, {
-  recursive: true,
-  force: true,
-  maxRetries: 5,
-  retryDelay: 100,
-}))));
-
-async function tempDir(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-mm-"));
-  roots.push(root);
-  return root;
-}
+import { tempRoot } from "./helpers/temp-roots.js";
 
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
@@ -97,7 +82,7 @@ describe("image token estimation and LRU budget", () => {
   });
 
   it("drops older images beyond the budget from the LLM view", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-mm-");
     const context = new ContextManager(root);
     const messages: ChatMessage[] = Array.from({ length: 6 }, (_, index) => ({
       id: `u${index}`,
@@ -117,7 +102,7 @@ describe("image token estimation and LRU budget", () => {
 
 describe("messages route with images", () => {
   it("validates images and modality support", { timeout: 20_000 }, async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-mm-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));

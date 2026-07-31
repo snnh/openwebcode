@@ -1,7 +1,6 @@
-import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
 import { Compactor, extractInstructions } from "../src/context/compactor.js";
@@ -13,28 +12,8 @@ import type { FastModelClient } from "../src/fast-model.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { UsageLog } from "../src/usage-log.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
-
-async function tempDir(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-compact-"));
-  roots.push(root);
-  return root;
-}
-
-function fakeFastModel(text: string, calls: Array<{ system: string; prompt: string }>): FastModelClient {
-  return {
-    configured: true,
-    provider: "fast-provider",
-    model: "fake-cheap-model",
-    setConfig() { /* noop */ },
-    async complete(input: { system: string; prompt: string }) {
-      calls.push(input);
-      return { text, usage: { inputTokens: 120, outputTokens: 30 } };
-    },
-  } as unknown as FastModelClient;
-}
+import { makeFakeFastModel } from "./helpers/fake-fast-model.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
 const EMPTY_FAST_MODEL = { configured: false, provider: undefined, model: undefined, setConfig() { /* noop */ } } as unknown as FastModelClient;
 
@@ -56,26 +35,26 @@ describe("extractInstructions", () => {
 
 describe("Compactor", () => {
   it("does not summarize messages hidden by a newer clear boundary", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-compact-");
     const store = new SessionStore(path.join(root, "sessions"));
     await store.initialize();
     const id = await sessionWithMessages(store, 10);
     await new ContextManager(store.contextRoot(id)).markCleared(5);
     const calls: Array<{ system: string; prompt: string }> = [];
-    const compactor = new Compactor(store, fakeFastModel("目标：\n- 新上下文", calls), {}, 2);
+    const compactor = new Compactor(store, makeFakeFastModel("目标：\n- 新上下文", calls), {}, 2);
     await compactor.compact(id, "overview");
     expect(calls[0]!.prompt).not.toContain("消息 1\n");
     expect(calls[0]!.prompt).toContain("消息 6");
   });
 
   it("overview compacts the prefix and pins accumulated instructions in the view", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-compact-");
     const store = new SessionStore(path.join(root, "sessions"));
     await store.initialize();
     const id = await sessionWithMessages(store, 15);
     const calls: Array<{ system: string; prompt: string }> = [];
     const usageLog = new UsageLog(root);
-    const compactor = new Compactor(store, fakeFastModel("目标：\n- 测试\n用户明确指令：\n- 用中文\n", calls), { usageLog }, 10);
+    const compactor = new Compactor(store, makeFakeFastModel("目标：\n- 测试\n用户明确指令：\n- 用中文\n", calls), { usageLog }, 10);
 
     const result = await compactor.compact(id, "overview");
     expect(result).toMatchObject({ changed: true, mode: "overview", uptoIndex: 5 });
@@ -102,7 +81,7 @@ describe("Compactor", () => {
   });
 
   it("falls back to rule-based toolcalls without a fast model; overview requires it unless forced", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-compact-");
     const store = new SessionStore(path.join(root, "sessions"));
     await store.initialize();
     const session = await store.create({ cwd: os.tmpdir(), provider: "test-stub", title: "压缩样例" });
@@ -129,7 +108,7 @@ describe("Compactor", () => {
   });
 
   it("forced overview without a fast model degrades to truncated and clears pins", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-compact-");
     const store = new SessionStore(path.join(root, "sessions"));
     await store.initialize();
     const id = await sessionWithMessages(store, 15);
@@ -147,7 +126,7 @@ describe("Compactor", () => {
 
 describe("85% watermark forced compaction", () => {
   it("force-compacts before the provider call when utilization hits 0.85", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-compact-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));
@@ -166,7 +145,7 @@ describe("85% watermark forced compaction", () => {
     const published: AppEvent[] = [];
     events.on("event", (event: AppEvent) => published.push(event));
     const core = { on() { return core; }, async configureSession() { return { sandboxCapability: "advisory" }; } } as unknown as CoreClient;
-    const compactor = new Compactor(sessions, fakeFastModel("概览：\n- 早段已压缩\n", []), {}, 2);
+    const compactor = new Compactor(sessions, makeFakeFastModel("概览：\n- 早段已压缩\n", []), {}, 2);
     const tinyWindow = () => ({ contextWindow: 100, maxOutput: 10, capabilities: { thinking: ["disabled"], effort: [] } }) as never;
     const runner = new AgentRunner(sessions, providers, core, events, pricing, undefined, "zh-CN", 50, tinyWindow, undefined, undefined, undefined, compactor);
     const session = await sessions.create({ cwd: root, provider: "anthropic", model: "tiny" });
@@ -185,7 +164,7 @@ describe("85% watermark forced compaction", () => {
 
 describe("compact HTTP routes", () => {
   it("serves POST /compact and the /compact composer command", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-compact-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));

@@ -1,7 +1,6 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import type { CoreClientLike } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
@@ -9,36 +8,9 @@ import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { HookRunner, matchesMatcher, normalizeHooksConfig } from "../src/hooks.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
+import { tempRootRetry, writeProjectHooks } from "./helpers/temp-dir.js";
 
-const roots: string[] = [];
-
-/** rm 带重试：HookRunner 超时测试会留下孤儿 node 子进程（cmd.exe 被 SIGKILL 后子进程变孤儿），
- * 其 cwd 锁住临时目录，需等 node 自行退出后再删。 */
-async function rmWithRetry(target: string, retries = 15, delayMs = 500): Promise<void> {
-  for (let i = 0; i < retries; i++) {
-    try {
-      await rm(target, { recursive: true, force: true });
-      return;
-    } catch (error) {
-      if (i === retries - 1) throw error;
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-    }
-  }
-}
-
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rmWithRetry(root))));
-
-async function tempRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-hooks-"));
-  roots.push(root);
-  return root;
-}
-
-/** 写项目级 <cwd>/.owc/hooks.json */
-async function writeProjectHooks(cwd: string, config: unknown): Promise<void> {
-  await mkdir(path.join(cwd, ".owc"), { recursive: true });
-  await writeFile(path.join(cwd, ".owc", "hooks.json"), JSON.stringify(config), "utf8");
-}
+const tempRoot = (): Promise<string> => tempRootRetry("owc-hooks-");
 
 /**
  * 跨平台 shell 命令策略：HookRunner 在 win32 用 cmd.exe、否则 sh。命令统一用

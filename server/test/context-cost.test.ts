@@ -1,19 +1,12 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { ContextManager, selectCacheBreakpoints } from "../src/context/context-manager.js";
-
-const roots: string[] = [];
-
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-});
+import { tempRoot } from "./helpers/temp-roots.js";
 
 describe("ContextManager cost ledger", () => {
   it("upgrades a version-one token-only ledger", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-ledger-"));
-    roots.push(root);
+    const root = await tempRoot("owc-ledger-");
     await writeFile(path.join(root, "ledger.json"), JSON.stringify({
       version: 1,
       round: 2,
@@ -34,8 +27,7 @@ describe("ContextManager cost ledger", () => {
   });
 
   it("pauses a hard currency budget when prior usage cannot be priced", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-budget-"));
-    roots.push(root);
+    const root = await tempRoot("owc-budget-");
     const manager = new ContextManager(root);
     await manager.recordUsage({ inputTokens: 10, outputTokens: 0, cacheRead: 0, cacheWrite: 0 }, { priced: false });
     await manager.setBudget(undefined, { currency: "USD", microUnits: "1000000" });
@@ -46,8 +38,7 @@ describe("ContextManager cost ledger", () => {
   });
 
   it("merges concurrent partial budget updates", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-concurrent-budget-"));
-    roots.push(root);
+    const root = await tempRoot("owc-concurrent-budget-");
     const left = new ContextManager(root);
     const right = new ContextManager(root);
     await Promise.all([
@@ -60,8 +51,7 @@ describe("ContextManager cost ledger", () => {
   });
 
   it("serializes round and usage writes for one session", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-round-usage-"));
-    roots.push(root);
+    const root = await tempRoot("owc-round-usage-");
     const manager = new ContextManager(root);
     await Promise.all([
       manager.advanceRound(),
@@ -76,8 +66,7 @@ describe("ContextManager cost ledger", () => {
   });
 
   it("serializes concurrent usage updates for one session", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-concurrent-cost-"));
-    roots.push(root);
+    const root = await tempRoot("owc-concurrent-cost-");
     const left = new ContextManager(root);
     const right = new ContextManager(root);
     await Promise.all(Array.from({ length: 20 }, (_, index) =>
@@ -93,8 +82,7 @@ describe("ContextManager cost ledger", () => {
   });
 
   it("selects and persists stable cache breakpoints", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-cache-breakpoints-"));
-    roots.push(root);
+    const root = await tempRoot("owc-cache-breakpoints-");
     const manager = new ContextManager(root);
     const messages = [
       { id: "user-1", role: "user" as const, content: [{ type: "text" as const, text: "one" }], createdAt: "2026-01-01T00:00:00Z" },

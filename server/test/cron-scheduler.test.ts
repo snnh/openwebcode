@@ -1,18 +1,8 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { CRON_MAX_JOBS_PER_SESSION, CronScheduler, nextCronFire, parseCronExpression } from "../src/cron-scheduler.js";
 import { MessageQueue } from "../src/agent/message-queue.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
-
-async function tempDir(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-cron-"));
-  roots.push(root);
-  return root;
-}
+import { tempRoot } from "./helpers/temp-roots.js";
 
 /** 本地时区固定基准：2026-07-30 10:00:00（周四）。 */
 const T0 = new Date(2026, 6, 30, 10, 0, 0).getTime();
@@ -105,7 +95,7 @@ describe("nextCronFire（本地时区）", () => {
 
 describe("CronScheduler", () => {
   it("fire 经回调注入 follow-up 队列并标记 source:cron（随 queue.json 持久化）", async () => {
-    const dir = await tempDir();
+    const dir = await tempRoot("owc-cron-");
     const queue = new MessageQueue(() => dir);
     let nowMs = T0;
     const scheduler = new CronScheduler({
@@ -127,7 +117,7 @@ describe("CronScheduler", () => {
   });
 
   it("coalesce：错过多个理想触发点只补一次", async () => {
-    const dir = await tempDir();
+    const dir = await tempRoot("owc-cron-");
     const fires: FireRecord[] = [];
     let nowMs = T0;
     const scheduler = makeScheduler(path.join(dir, "cron.json"), () => nowMs, fires);
@@ -143,7 +133,7 @@ describe("CronScheduler", () => {
   });
 
   it("one-shot 触发一次后自动删除", async () => {
-    const dir = await tempDir();
+    const dir = await tempRoot("owc-cron-");
     const fires: FireRecord[] = [];
     let nowMs = T0;
     const scheduler = makeScheduler(path.join(dir, "cron.json"), () => nowMs, fires);
@@ -160,7 +150,7 @@ describe("CronScheduler", () => {
   });
 
   it("recurring 7 天到期：stale 触发最后一次并自动删除", async () => {
-    const dir = await tempDir();
+    const dir = await tempRoot("owc-cron-");
     const fires: FireRecord[] = [];
     let nowMs = T0;
     const scheduler = makeScheduler(path.join(dir, "cron.json"), () => nowMs, fires);
@@ -179,7 +169,7 @@ describe("CronScheduler", () => {
   });
 
   it("list 视图：nextFireAt 与 stale 标记", async () => {
-    const dir = await tempDir();
+    const dir = await tempRoot("owc-cron-");
     let nowMs = T0;
     const scheduler = makeScheduler(path.join(dir, "cron.json"), () => nowMs, []);
 
@@ -200,7 +190,7 @@ describe("CronScheduler", () => {
   });
 
   it("每会话上限 50 条", async () => {
-    const dir = await tempDir();
+    const dir = await tempRoot("owc-cron-");
     const scheduler = makeScheduler(path.join(dir, "cron.json"), () => T0, []);
     for (let index = 0; index < CRON_MAX_JOBS_PER_SESSION; index += 1) {
       await scheduler.create("s1", { cron: "0 9 * * *", prompt: `任务 ${index}` });
@@ -212,7 +202,7 @@ describe("CronScheduler", () => {
   });
 
   it("创建时拒绝非法表达式与空提示词", async () => {
-    const dir = await tempDir();
+    const dir = await tempRoot("owc-cron-");
     const scheduler = makeScheduler(path.join(dir, "cron.json"), () => T0, []);
     await expect(scheduler.create("s1", { cron: "61 * * * *", prompt: "x" })).rejects.toThrow(/out of range/);
     await expect(scheduler.create("s1", { cron: "0 9 * * *", prompt: "  " })).rejects.toThrow(/non-empty prompt/);
@@ -220,7 +210,7 @@ describe("CronScheduler", () => {
   });
 
   it("delete 与 deleteForSession 级联", async () => {
-    const dir = await tempDir();
+    const dir = await tempRoot("owc-cron-");
     const scheduler = makeScheduler(path.join(dir, "cron.json"), () => T0, []);
     const a = await scheduler.create("s1", { cron: "0 9 * * *", prompt: "a" });
     await scheduler.create("s1", { cron: "0 10 * * *", prompt: "b" });
@@ -236,7 +226,7 @@ describe("CronScheduler", () => {
   });
 
   it("重启恢复：重建调度器读 cron.json，停机期间错过的触发 coalesce 补一次", async () => {
-    const dir = await tempDir();
+    const dir = await tempRoot("owc-cron-");
     const file = path.join(dir, "cron.json");
     let nowMs = T0;
     const first = makeScheduler(file, () => nowMs, []);
