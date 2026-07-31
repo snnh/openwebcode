@@ -36,21 +36,34 @@ describe("session model config", () => {
     const app = await buildServer({ core: {} as CoreClient, sessions, agent, events: new EventBus(), providers, pricing });
     try {
       const session = await sessions.create({ cwd: root, provider: "anthropic", model: "deepseek-chat" });
-      // deepseek-chat 无 effort 能力 -> 设置 effort 被拒
-      const invalid = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { effort: "high" } });
-      expect(invalid.statusCode).toBe(400);
-      // deepseek-reasoner 支持 thinking -> 切换模型并设置 thinking 通过
+      // 未声明（capabilities 空数组）= 全部可选：合法枚举放行，含 ultra 档；非法枚举仍 400
+      const undeclared = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { effort: "high" } });
+      expect(undeclared.statusCode).toBe(200);
+      expect(await sessions.get(session.id)).toMatchObject({ effort: "high" });
+      const ultra = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { effort: "ultra" } });
+      expect(ultra.statusCode).toBe(200);
+      expect(await sessions.get(session.id)).toMatchObject({ effort: "ultra" });
+      const invalidEnum = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { effort: "extreme" } });
+      expect(invalidEnum.statusCode).toBe(400);
+      // 已声明白名单维持 400：gpt-5 只声明 low/medium/high
+      const declaredInvalid = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { model: "gpt-5", effort: "xhigh" } });
+      expect(declaredInvalid.statusCode).toBe(400);
+      // 切到已声明且不含继承值的模型时原子清除（gpt-5 不含 ultra），而不是要求用户先单独关闭再切模型
+      const switched = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { model: "gpt-5" } });
+      expect(switched.statusCode).toBe(200);
+      expect(switched.json()).toMatchObject({ model: "gpt-5" });
+      expect(switched.json()).not.toHaveProperty("effort");
+      expect(await sessions.get(session.id)).not.toHaveProperty("effort");
+      // deepseek-reasoner 声明 thinking ["enabled","disabled"]：enabled 通过，adaptive 被拒
       const response = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { model: "deepseek-reasoner", thinking: "enabled" } });
       expect(response.statusCode).toBe(200);
       expect(response.json()).toMatchObject({ model: "deepseek-reasoner", thinking: "enabled" });
-      expect(await sessions.get(session.id)).toMatchObject({ model: "deepseek-reasoner", thinking: "enabled" });
-      // 切到不支持旧思考设置的模型时应原子清除旧值，而不是要求用户先
-      // 单独关闭思考再切模型。
-      const switched = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { model: "deepseek-chat" } });
-      expect(switched.statusCode).toBe(200);
-      expect(switched.json()).toMatchObject({ model: "deepseek-chat" });
-      expect(switched.json()).not.toHaveProperty("thinking");
-      expect(await sessions.get(session.id)).not.toHaveProperty("thinking");
+      const adaptive = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { thinking: "adaptive" } });
+      expect(adaptive.statusCode).toBe(400);
+      // 切回未声明模型（deepseek-chat）：继承的 thinking 保留（未声明 = 全部兼容）
+      const kept = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { model: "deepseek-chat" } });
+      expect(kept.statusCode).toBe(200);
+      expect(await sessions.get(session.id)).toMatchObject({ model: "deepseek-chat", thinking: "enabled" });
       const invalidSnapshot = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { snapshotMode: "sometimes" } });
       expect(invalidSnapshot.statusCode).toBe(400);
       const invalidShell = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { shellBackend: "powershell" } });

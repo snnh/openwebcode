@@ -73,7 +73,7 @@ interface SnapshotFile {
 const ANTHROPIC_MODELS_URL = "https://api.anthropic.com";
 const MODEL_MODALITIES: readonly ModelModality[] = ["text", "image", "video"];
 const THINKING_MODES: readonly ThinkingMode[] = ["adaptive", "enabled", "disabled"];
-const EFFORT_LEVELS: readonly EffortLevel[] = ["low", "medium", "high", "xhigh", "max"];
+const EFFORT_LEVELS: readonly EffortLevel[] = ["low", "medium", "high", "xhigh", "max", "ultra"];
 const ISO_8601_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
 
 function modelKey(provider: string, id: string): string {

@@ -84,4 +84,43 @@ describe("provider reasoning parameters", () => {
     expect(anthropicBodies[0]).not.toHaveProperty("tools");
     expect(openAiBodies[0]).not.toHaveProperty("tools");
   });
+
+  it("replays same-provider thinking blocks as reasoning_content (思维链保留回传)", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetch = async (_input: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response("data: [DONE]\n\n", { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+    const messages: StreamChatRequest["messages"] = [
+      { id: "u1", role: "user", content: [{ type: "text", text: "q" }], createdAt: "2026-01-01T00:00:00.000Z" },
+      {
+        id: "a1", role: "assistant", createdAt: "2026-01-01T00:00:01.000Z",
+        content: [
+          { type: "thinking", text: "先想第一步", provider: "zijian" },
+          { type: "thinking", text: "再想想", provider: "zijian" },
+          { type: "thinking", text: "异源思考", provider: "anthropic" },
+          { type: "text", text: "答" },
+          { type: "tool_call", id: "tc1", name: "bash", input: { cmd: "ls" } },
+        ],
+      },
+      { id: "t1", role: "tool", content: [{ type: "tool_result", toolCallId: "tc1", content: "ok", isError: false }], createdAt: "2026-01-01T00:00:02.000Z" },
+    ];
+    const make = (options: Record<string, unknown> = {}) =>
+      new OpenAICompatibleProvider({ baseURL: "https://example.invalid/v1", name: "zijian", fetch: fetch as typeof globalThis.fetch, ...options });
+
+    // 默认开启：同源 thinking 回放 reasoning_content（含 tool_calls 消息），异源不回带
+    await drain(make().streamChat(request({ messages })));
+    const assistant = (bodies[0]!.messages as Array<Record<string, unknown>>)[2]!;
+    expect(assistant.reasoning_content).toBe("先想第一步\n再想想");
+    expect(assistant.tool_calls).toHaveLength(1);
+
+    // reasoningContent: false 关闭回传，消息形态与旧版一致
+    await drain(make({ reasoningContent: false }).streamChat(request({ messages })));
+    const legacy = (bodies[1]!.messages as Array<Record<string, unknown>>)[2]!;
+    expect(legacy).not.toHaveProperty("reasoning_content");
+
+    // 无异名 thinking 块时消息形态不变（回归）
+    await drain(make().streamChat(request()));
+    expect((bodies[2]!.messages as Array<Record<string, unknown>>)[0]).not.toHaveProperty("reasoning_content");
+  });
 });

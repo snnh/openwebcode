@@ -1,4 +1,4 @@
-import type { ChatMessage } from "../sessions/types.js";
+import type { ChatMessage, ThinkingContent } from "../sessions/types.js";
 import { getUserAgent } from "../http.js";
 import { classifyHttpError, normalizeProviderError, parseRetryAfter } from "./provider-error.js";
 import type { Provider, ProviderEvent, StreamChatRequest } from "./provider.js";
@@ -9,6 +9,9 @@ export interface OpenAICompatibleProviderOptions {
   baseURL: string;
   maxTokens?: number;
   reasoningEffort?: boolean;
+  /** 思维链保留回传：历史 assistant 消息中的同源 thinking 块以 reasoning_content 回带
+   * （deepseek/qwen/glm/kimi 等新模型要求；端点不识别该字段时可显式 false 关闭）。 */
+  reasoningContent?: boolean;
   fetch?: typeof fetch;
 }
 
@@ -45,7 +48,7 @@ export class OpenAICompatibleProvider implements Provider {
         stream_options: { include_usage: true },
         max_tokens: request.maxTokens ?? this.maxTokens,
         ...(this.options.reasoningEffort !== false && request.effort ? { reasoning_effort: request.effort } : {}),
-        messages: toOpenAIMessages(request.system, request.messages),
+        messages: toOpenAIMessages(request.system, request.messages, this.name, this.options.reasoningContent !== false),
         ...(request.tools.length > 0
           ? {
               tools: request.tools.map((tool) => ({
@@ -152,7 +155,7 @@ async function* readSseData(body: ReadableStream<Uint8Array>): AsyncIterable<str
   }
 }
 
-function toOpenAIMessages(system: string, messages: ChatMessage[]): Array<Record<string, unknown>> {
+function toOpenAIMessages(system: string, messages: ChatMessage[], providerName?: string, reasoningContent = true): Array<Record<string, unknown>> {
   const result: Array<Record<string, unknown>> = [{ role: "system", content: system }];
   for (const message of messages) {
     if (message.role === "user") {
@@ -179,12 +182,21 @@ function toOpenAIMessages(system: string, messages: ChatMessage[]): Array<Record
           type: "function",
           function: { name: block.name, arguments: JSON.stringify(block.input) },
         }));
+      // 思维链保留回传：只回带同源 provider 的 thinking 块（Anthropic 走自己的签名回放，
+      // 异 provider 的 thinking 对当前端点无意义），含 tool_calls 的消息同样回带。
+      const reasoning = reasoningContent && providerName
+        ? message.content
+            .filter((block): block is ThinkingContent => block.type === "thinking" && block.provider === providerName)
+            .map((block) => block.text)
+            .join("\n")
+        : "";
       result.push({
         role: "assistant",
         content: message.content
           .filter((block) => block.type === "text")
           .map((block) => block.text)
           .join("") || null,
+        ...(reasoning ? { reasoning_content: reasoning } : {}),
         ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
       });
     } else {

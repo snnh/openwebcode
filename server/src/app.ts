@@ -63,7 +63,7 @@ interface CreateSessionBody {
   provider?: string;
   model?: string;
   title?: string;
-  agentMode?: "plan" | "build" | "goal";
+  agentMode?: "plan" | "code" | "goal";
   sandboxMode?: SandboxMode;
   setupScript?: string;
   /** 缺省为直接模式；"managed" = 托管工作区（稀疏镜像盘挂载点作为会话 cwd） */
@@ -91,7 +91,7 @@ interface SessionConfigBody {
   model?: string;
   thinking?: ThinkingMode | null;
   effort?: EffortLevel | null;
-  agentMode?: "plan" | "build" | "goal";
+  agentMode?: "plan" | "code" | "goal";
   permissionMode?: PermissionMode;
   sandboxMode?: SandboxMode;
   setupScript?: string;
@@ -113,7 +113,7 @@ interface BudgetBody {
 
 const MODEL_MODALITIES: readonly ModelModality[] = ["text", "image", "video"];
 const THINKING_MODES: readonly ThinkingMode[] = ["adaptive", "enabled", "disabled"];
-const EFFORT_LEVELS: readonly EffortLevel[] = ["low", "medium", "high", "xhigh", "max"];
+const EFFORT_LEVELS: readonly EffortLevel[] = ["low", "medium", "high", "xhigh", "max", "ultra"];
 /**
  * The global Fastify cap remains 1 MiB.  This route alone needs room for the
  * four allowed image inputs (up to 7,000,000 base64 characters each), which is
@@ -1070,8 +1070,8 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     const model = request.body.model ?? resolveDefaultModel(provider, dependencies.models);
     const sandboxModeError = validateSandboxMode(request.body.sandboxMode);
     if (sandboxModeError) return reply.code(400).send({ error: sandboxModeError });
-    if (request.body.agentMode !== undefined && !["plan", "build", "goal"].includes(request.body.agentMode)) {
-      return reply.code(400).send({ error: 'agentMode must be "plan", "build", or "goal"' });
+    if (request.body.agentMode !== undefined && !["plan", "code", "goal"].includes(request.body.agentMode)) {
+      return reply.code(400).send({ error: 'agentMode must be "plan", "code", or "goal"' });
     }
     if (request.body.setupScript !== undefined && typeof request.body.setupScript !== "string") {
       return reply.code(400).send({ error: "setupScript must be a string" });
@@ -1406,25 +1406,36 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     const effortExplicit = Boolean(request.body && Object.prototype.hasOwnProperty.call(request.body, "effort"));
     const requestedThinking = thinkingExplicit ? request.body.thinking ?? undefined : session.thinking;
     const requestedEffort = effortExplicit ? request.body.effort ?? undefined : session.effort;
-    if (thinkingExplicit && requestedThinking !== undefined && !profile.capabilities.thinking.includes(requestedThinking)) {
+    // 能力数组为空 = 未声明：放行全部合法枚举（新模型默认支持思考，UI 全开可选）；
+    // 数组非空 = 已声明：维持白名单 400。非法枚举值一律 400。
+    const thinkingDeclared = profile.capabilities.thinking.length > 0;
+    const effortDeclared = profile.capabilities.effort.length > 0;
+    if (requestedThinking !== undefined && !THINKING_MODES.includes(requestedThinking)) {
+      return reply.code(400).send({ error: `Unknown thinking mode ${requestedThinking}` });
+    }
+    if (requestedEffort !== undefined && !EFFORT_LEVELS.includes(requestedEffort)) {
+      return reply.code(400).send({ error: `Unknown effort level ${requestedEffort}` });
+    }
+    if (thinkingExplicit && requestedThinking !== undefined && thinkingDeclared && !profile.capabilities.thinking.includes(requestedThinking)) {
       return reply.code(400).send({ error: `Model ${model} does not support thinking mode ${requestedThinking}` });
     }
-    if (effortExplicit && requestedEffort !== undefined && !profile.capabilities.effort.includes(requestedEffort)) {
+    if (effortExplicit && requestedEffort !== undefined && effortDeclared && !profile.capabilities.effort.includes(requestedEffort)) {
       return reply.code(400).send({ error: `Model ${model} does not support effort ${requestedEffort}` });
     }
     // A model/provider switch is atomic from the UI's perspective.  Preserve
     // compatible inherited reasoning settings, and automatically clear stale
     // values that the target profile cannot accept.  Explicit invalid values
     // remain a 400 above so callers still receive useful validation feedback.
-    const thinking = requestedThinking !== undefined && profile.capabilities.thinking.includes(requestedThinking)
+    // 未声明（空数组）视为全部兼容，继承值保留。
+    const thinking = requestedThinking !== undefined && (!thinkingDeclared || profile.capabilities.thinking.includes(requestedThinking))
       ? requestedThinking
       : undefined;
-    const effort = requestedEffort !== undefined && profile.capabilities.effort.includes(requestedEffort)
+    const effort = requestedEffort !== undefined && (!effortDeclared || profile.capabilities.effort.includes(requestedEffort))
       ? requestedEffort
       : undefined;
     const agentMode = request.body && "agentMode" in request.body ? request.body.agentMode ?? undefined : session.agentMode;
-    if (agentMode !== undefined && !["plan", "build", "goal"].includes(agentMode)) {
-      return reply.code(400).send({ error: 'agentMode must be "plan", "build", or "goal"' });
+    if (agentMode !== undefined && !["plan", "code", "goal"].includes(agentMode)) {
+      return reply.code(400).send({ error: 'agentMode must be "plan", "code", or "goal"' });
     }
     const snapshotMode = request.body && "snapshotMode" in request.body ? request.body.snapshotMode ?? undefined : session.snapshotMode;
     if (snapshotMode !== undefined && !["auto", "manual"].includes(snapshotMode)) {
