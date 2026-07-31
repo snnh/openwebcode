@@ -60,4 +60,25 @@ describe("ProviderProfilesSection", () => {
       apiKey: "local-key",
     })));
   });
+
+  it("sends parsed extraBody JSON and blocks invalid JSON", async () => {
+    vi.spyOn(api, "providerProfiles").mockResolvedValue({ modelProviders: [], webProviders: [], activeWeb: {} });
+    const create = vi.spyOn(api, "createModelProvider").mockResolvedValue(profiles);
+    const view = renderProfiles();
+
+    fireEvent.change(await view.findByPlaceholderText("服务商名称"), { target: { value: "qwen" } });
+    fireEvent.change(view.getByPlaceholderText(/自定义请求体/), { target: { value: '{"temperature": 0.7, "max_tokens": 8192}' } });
+    fireEvent.click(view.getAllByRole("button", { name: "保存服务商" })[0]!);
+    await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      id: "qwen",
+      extraBody: { temperature: 0.7, max_tokens: 8192 },
+    })));
+
+    create.mockClear();
+    fireEvent.change(await view.findByPlaceholderText("服务商名称"), { target: { value: "bad" } });
+    fireEvent.change(view.getByPlaceholderText(/自定义请求体/), { target: { value: "{not json" } });
+    fireEvent.click(view.getAllByRole("button", { name: "保存服务商" })[0]!);
+    expect(await view.findByText("自定义请求体不是合法的 JSON 对象")).toBeInTheDocument();
+    expect(create).not.toHaveBeenCalled();
+  });
 });

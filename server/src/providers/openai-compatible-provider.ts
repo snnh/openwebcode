@@ -7,7 +7,10 @@ export interface OpenAICompatibleProviderOptions {
   name?: string;
   apiKey?: string;
   baseURL: string;
+  /** 显式设置才发送 max_tokens；缺省不限制输出长度（端点自行决定）。 */
   maxTokens?: number;
+  /** 自定义请求体：浅合并进 chat/completions 请求体，核心字段（model/messages/stream/tools 等）优先。 */
+  extraBody?: Record<string, unknown>;
   reasoningEffort?: boolean;
   /** 思维链保留回传：历史 assistant 消息中的同源 thinking 块以 reasoning_content 回带
    * （deepseek/qwen/glm/kimi 等新模型要求；端点不识别该字段时可显式 false 关闭）。 */
@@ -24,16 +27,17 @@ interface ToolAccumulator {
 export class OpenAICompatibleProvider implements Provider {
   readonly name: string;
   private readonly fetch: typeof fetch;
-  private readonly maxTokens: number;
+  private readonly maxTokens: number | undefined;
 
   constructor(private readonly options: OpenAICompatibleProviderOptions) {
     this.name = options.name ?? "openai";
     this.fetch = options.fetch ?? globalThis.fetch;
-    this.maxTokens = options.maxTokens ?? 64_000;
+    this.maxTokens = options.maxTokens;
   }
 
   async *streamChat(request: StreamChatRequest): AsyncIterable<ProviderEvent> {
     let response: Response;
+    const maxTokens = request.maxTokens ?? this.maxTokens;
     try {
       response = await this.fetch(`${this.options.baseURL.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
@@ -43,10 +47,12 @@ export class OpenAICompatibleProvider implements Provider {
         ...(this.options.apiKey ? { authorization: `Bearer ${this.options.apiKey}` } : {}),
       },
       body: JSON.stringify({
+        ...this.options.extraBody,
         model: request.model,
         stream: true,
         stream_options: { include_usage: true },
-        max_tokens: request.maxTokens ?? this.maxTokens,
+        // 未显式配置则不发送 max_tokens：不限制输出长度
+        ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}),
         ...(this.options.reasoningEffort !== false && request.effort ? { reasoning_effort: request.effort } : {}),
         messages: toOpenAIMessages(request.system, request.messages, this.name, this.options.reasoningContent !== false),
         ...(request.tools.length > 0

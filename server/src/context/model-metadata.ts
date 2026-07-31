@@ -33,7 +33,7 @@ const PREFIXES: Array<[string, ModelMetadata]> = [
 ];
 
 export const FALLBACK_METADATA: ModelMetadata = {
-  contextWindow: 128_000,
+  contextWindow: 256_000,
   maxOutput: 16_000,
   capabilities: caps(),
 };

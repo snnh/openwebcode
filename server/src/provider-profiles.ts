@@ -14,6 +14,9 @@ export interface ModelProviderProfile {
   apiKey?: string;
   baseURL?: string;
   promptCaching?: boolean;
+  /** 自定义请求体：浅合并进每次模型请求 body（如 temperature/top_p/max_tokens），
+   * 核心字段（model/messages/stream/tools）由 server 强制，不允许覆盖。 */
+  extraBody?: Record<string, unknown>;
 }
 
 export interface WebProviderProfile {
@@ -102,6 +105,24 @@ function capabilitiesFor(provider: WebProviderType, requested?: unknown): WebCap
   return uniqueCapabilities(requested);
 }
 
+/** 自定义请求体禁止覆盖的字段：这些由 server 按协议语义强制构造。 */
+const RESERVED_BODY_KEYS = new Set(["model", "messages", "stream", "tools", "system"]);
+
+function optionalExtraBody(value: unknown): Record<string, unknown> | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new ProviderProfilesValidationError("自定义请求体必须是 JSON 对象");
+  }
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length === 0) return undefined;
+  for (const [key] of entries) {
+    if (RESERVED_BODY_KEYS.has(key)) {
+      throw new ProviderProfilesValidationError(`自定义请求体不允许覆盖核心字段：${key}`);
+    }
+  }
+  return Object.fromEntries(entries);
+}
+
 export function normalizeModel(value: unknown): ModelProviderProfile {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new ProviderProfilesValidationError("模型服务商配置必须是对象");
   const raw = value as Record<string, unknown>;
@@ -118,6 +139,7 @@ export function normalizeModel(value: unknown): ModelProviderProfile {
   if (raw.promptCaching !== undefined && typeof raw.promptCaching !== "boolean") {
     throw new ProviderProfilesValidationError("promptCaching 必须是布尔值");
   }
+  const extraBody = optionalExtraBody(raw.extraBody);
   return {
     id,
     enabled,
@@ -125,6 +147,7 @@ export function normalizeModel(value: unknown): ModelProviderProfile {
     ...(apiKey ? { apiKey } : {}),
     ...(baseURL ? { baseURL } : {}),
     ...(raw.interfaceType === "anthropic-messages" ? { promptCaching: raw.promptCaching !== false } : {}),
+    ...(extraBody ? { extraBody } : {}),
   };
 }
 

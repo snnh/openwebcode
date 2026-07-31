@@ -229,7 +229,7 @@ describe("server settings API", () => {
         { fastModel: "fast-1" },
         { fastModel: encodeFastModelSelection("未启用服务", "fast-1") },
         { fastModelThinking: "sometimes" },
-        { fastModelEffort: "ultra" },
+        { fastModelEffort: "extreme" },
         { fastModelMaxTokens: 64_001 },
         { coreRequestTimeoutMs: -5 },
         { exchangeRateUrl: "ftp://example.com" },

@@ -80,7 +80,7 @@ describe("ModelRegistry", () => {
     // claude-opus-4-8 不再内置，经 API 拉取后按 metadata 前缀匹配成档
     const opus = list.find((model) => model.id === "claude-opus-4-8");
     expect(opus?.source).toBe("api");
-    expect(opus?.contextWindow).toBe(128_000);
+    expect(opus?.contextWindow).toBe(256_000);
     const future = list.find((model) => model.id === "claude-future-9");
     expect(future).toMatchObject({ source: "api", provider: "anthropic", displayName: "Claude Future 9" });
     expect(future?.capabilities.modalities).toEqual(["text"]);
@@ -485,7 +485,7 @@ describe("models API", () => {
       // capabilities 数组元素枚举校验：modalities/thinking/effort 越界一律 400
       const badEnum = { modalities: ["audio"], imageOutput: false, thinking: ["sometimes"], effort: ["ultra"], tools: true };
       expect((await app.inject({ method: "PUT", url: "/api/models/my-custom", payload: { capabilities: badEnum } })).statusCode).toBe(400);
-      expect((await app.inject({ method: "PUT", url: "/api/models/my-custom", payload: { capabilities: { modalities: ["text"], imageOutput: false, thinking: [], effort: ["ultra"], tools: true } } })).statusCode).toBe(400);
+      expect((await app.inject({ method: "PUT", url: "/api/models/my-custom", payload: { capabilities: { modalities: ["text"], imageOutput: false, thinking: [], effort: ["extreme"], tools: true } } })).statusCode).toBe(400);
       expect((await app.inject({ method: "PUT", url: "/api/models/my-custom", payload: { capabilities: { modalities: ["text"], imageOutput: "yes", thinking: [], effort: [], tools: true } } })).statusCode).toBe(400);
       expect((await app.inject({ method: "PUT", url: "/api/models/my-custom", payload: { capabilities: { modalities: ["text"], thinking: [], effort: [], tools: true } } })).statusCode).toBe(400);
       // 合法 capabilities 持久化（含 thinking/effort 覆盖）；未知的

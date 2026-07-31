@@ -12,6 +12,7 @@ interface ModelProviderForm {
   baseURL: string;
   apiKey: string;
   promptCaching: boolean;
+  extraBody: string;
   clearApiKey: boolean;
 }
 
@@ -22,6 +23,7 @@ const emptyModelProvider = (): ModelProviderForm => ({
   baseURL: "",
   apiKey: "",
   promptCaching: true,
+  extraBody: "",
   clearApiKey: false,
 });
 
@@ -85,18 +87,32 @@ export function ProviderProfilesSection(): ReactElement {
       baseURL: profile.baseURL ?? "",
       apiKey: "",
       promptCaching: profile.promptCaching !== false,
+      extraBody: profile.extraBody ? JSON.stringify(profile.extraBody, null, 2) : "",
       clearApiKey: false,
     });
   };
   const saveModelProvider = (): void => {
     const id = modelForm.id.trim();
     if (!id) { setError(t("模型服务商名称不能为空", "Model provider name is required")); return; }
+    let extraBody: Record<string, unknown> | null = null;
+    const extraBodyText = modelForm.extraBody.trim();
+    if (extraBodyText) {
+      try {
+        const parsed: unknown = JSON.parse(extraBodyText);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
+        extraBody = parsed as Record<string, unknown>;
+      } catch {
+        setError(t("自定义请求体不是合法的 JSON 对象", "Custom request body is not a valid JSON object"));
+        return;
+      }
+    }
     const body: Record<string, unknown> = {
       id,
       enabled: modelForm.enabled,
       interfaceType: modelForm.interfaceType,
       ...(modelForm.baseURL.trim() ? { baseURL: modelForm.baseURL.trim() } : { baseURL: null }),
       ...(modelForm.interfaceType === "anthropic-messages" ? { promptCaching: modelForm.promptCaching } : {}),
+      extraBody,
       ...(modelForm.clearApiKey ? { apiKey: null } : modelForm.apiKey.trim() ? { apiKey: modelForm.apiKey.trim() } : {}),
     };
     run(modelForm.originalId ? api.saveModelProvider(modelForm.originalId, body) : api.createModelProvider(body), () => setModelForm(emptyModelProvider()));
@@ -191,6 +207,14 @@ export function ProviderProfilesSection(): ReactElement {
             <input value={modelForm.baseURL} placeholder={t("Base URL（留空使用官方地址）", "Base URL (blank for official endpoint)")} onChange={(event) => updateModelForm({ baseURL: event.target.value })} spellCheck={false} />
             <input type="password" value={modelForm.apiKey} placeholder={modelForm.originalId ? t("API Key（留空保留）", "API Key (blank keeps current)") : "API Key"} onChange={(event) => updateModelForm({ apiKey: event.target.value, clearApiKey: false })} autoComplete="off" />
           </div>
+          <textarea
+            className="extra-body-input"
+            value={modelForm.extraBody}
+            placeholder={t('自定义请求体（JSON，如 {"temperature": 0.7, "max_tokens": 8192}；留空不附加）', 'Custom request body (JSON, e.g. {"temperature": 0.7, "max_tokens": 8192}; blank to omit)')}
+            onChange={(event) => updateModelForm({ extraBody: event.target.value })}
+            spellCheck={false}
+            rows={3}
+          />
           <div className="settings-row">
             <label className="theme-option"><input type="checkbox" checked={modelForm.enabled} onChange={(event) => updateModelForm({ enabled: event.target.checked })} />{t("启用", "Enabled")}</label>
             {modelForm.interfaceType === "anthropic-messages" && <label className="theme-option"><input type="checkbox" checked={modelForm.promptCaching} onChange={(event) => updateModelForm({ promptCaching: event.target.checked })} />Prompt caching</label>}
