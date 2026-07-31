@@ -5,7 +5,6 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
-#include <pty.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,6 +14,11 @@
 #include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
+
+/* The system <pty.h> is shadowed by this project's own src/pty.h (src is on
+ * the include path via -I), so forkpty cannot be declared through it. Declare
+ * it directly; the ABI is stable across glibc and musl. */
+extern int forkpty(int *amaster, char *name, const struct termios *termp, const struct winsize *winp);
 
 struct owc_pty {
     int master;
