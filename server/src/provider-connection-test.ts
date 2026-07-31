@@ -3,7 +3,7 @@
  *
  * 对表单中的候选配置（未持久化）做一次最小化认证请求，用于在保存前验证
  * Base URL 与 API Key 是否可用：
- * - openai-chat-completions：GET {baseURL}/models（免费端点）
+ * - openai-chat-completions / openai-responses：GET {baseURL}/models（免费端点）
  * - anthropic-messages：GET {baseURL}/v1/models?limit=1（免费端点；
  *   不做 POST /v1/messages 的 1-token ping，避免产生计费 token）
  *
@@ -23,6 +23,7 @@ export type ProviderConnectionTestResult =
 const DEFAULT_BASE_URL: Record<ModelProviderProfile["interfaceType"], string> = {
   "anthropic-messages": "https://api.anthropic.com",
   "openai-chat-completions": "https://api.openai.com/v1",
+  "openai-responses": "https://api.openai.com/v1",
 };
 
 export async function testModelProviderConnection(

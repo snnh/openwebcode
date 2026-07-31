@@ -136,7 +136,12 @@ export function ProviderProfilesSection(): ReactElement {
       setConnectionTest({ status: "fail", error: reason instanceof Error ? reason.message : t("连接测试失败", "Connection test failed") });
     });
   };
-  const modelLabel = (profile: ModelProviderProfileView): string => profile.interfaceType === "anthropic-messages" ? "Anthropic Messages" : "OpenAI Chat Completions";
+  const INTERFACE_LABELS: Record<ModelInterfaceType, string> = {
+    "anthropic-messages": "Anthropic Messages",
+    "openai-chat-completions": "OpenAI Chat Completions",
+    "openai-responses": "OpenAI Responses",
+  };
+  const modelLabel = (profile: ModelProviderProfileView): string => INTERFACE_LABELS[profile.interfaceType];
 
   // 表单字段变动后，之前的连接测试结果不再对应，重置为 idle
   const updateModelForm = (patch: Partial<ModelProviderForm>): void => {
@@ -202,6 +207,7 @@ export function ProviderProfilesSection(): ReactElement {
             <input value={modelForm.id} disabled={Boolean(modelForm.originalId)} placeholder={t("服务商名称", "Provider name")} onChange={(event) => updateModelForm({ id: event.target.value })} />
             <select value={modelForm.interfaceType} onChange={(event) => updateModelForm({ interfaceType: event.target.value as ModelInterfaceType })}>
               <option value="openai-chat-completions">OpenAI Chat Completions</option>
+              <option value="openai-responses">OpenAI Responses</option>
               <option value="anthropic-messages">Anthropic Messages</option>
             </select>
             <input value={modelForm.baseURL} placeholder={t("Base URL（留空使用官方地址）", "Base URL (blank for official endpoint)")} onChange={(event) => updateModelForm({ baseURL: event.target.value })} spellCheck={false} />
