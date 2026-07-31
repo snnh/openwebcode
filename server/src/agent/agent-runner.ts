@@ -1666,7 +1666,9 @@ export class AgentRunner {
 
   /** FILE_TOOLS 各分支共用的 core 调用分发（主循环与 general 子代理共用）。 */
   private async callCoreFileTool(sessionId: string, name: string, input: Record<string, unknown>): Promise<string> {
-    const path = typeof input.path === "string" ? input.path : "";
+    // glob/grep 的 path 可选（schema 未列入 required），缺省从会话根开始；
+    // read/write/edit 必须显式给出文件路径。
+    const path = typeof input.path === "string" && input.path ? input.path : (name === "glob" || name === "grep" ? "." : "");
     if (!path) throw new Error(`${name} requires a non-empty path`);
     let value: unknown;
     if (name === "read_file") value = await this.core.readFile({ sessionId, path, ...(input.offset === undefined ? {} : { offset: Number(input.offset) }), ...(input.limit === undefined ? {} : { limit: Number(input.limit) }) });
