@@ -30,7 +30,7 @@ export interface CreateSessionInput {
   provider?: string;
   model?: string;
   title?: string;
-  agentMode?: "plan" | "build" | "goal";
+  agentMode?: "plan" | "code" | "goal";
   sandboxMode?: SandboxMode;
   setupScript?: string;
   /** 托管工作区：调用方预分配 id（镜像/挂载路径按 id 推导，必须先于 create 准备） */
@@ -199,7 +199,7 @@ export class SessionStore {
     else meta.thinking = update.thinking;
     if (update.effort === undefined) delete meta.effort;
     else meta.effort = update.effort;
-    if (update.agentMode === undefined || update.agentMode === "build") delete meta.agentMode;
+    if (update.agentMode === undefined || update.agentMode === "code") delete meta.agentMode;
     else meta.agentMode = update.agentMode;
     if (update.snapshotMode === undefined || update.snapshotMode === "auto") delete meta.snapshotMode;
     else meta.snapshotMode = update.snapshotMode;

@@ -171,7 +171,7 @@ describe("goal mode — REST 校验", () => {
 
     const invalid = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { agentMode: "invalid" } });
     expect(invalid.statusCode).toBe(400);
-    expect(JSON.parse(invalid.body).error).toBe('agentMode must be "plan", "build", or "goal"');
+    expect(JSON.parse(invalid.body).error).toBe('agentMode must be "plan", "code", or "goal"');
 
     const goal = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { agentMode: "goal" } });
     expect(goal.statusCode).toBe(200);
@@ -187,6 +187,6 @@ describe("goal mode — REST 校验", () => {
     expect(goal.json<{ agentMode?: string }>().agentMode).toBe("goal");
     const invalid = await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: root, provider: "test-stub", model: "model", agentMode: "study" } });
     expect(invalid.statusCode).toBe(400);
-    expect(JSON.parse(invalid.body).error).toBe('agentMode must be "plan", "build", or "goal"');
+    expect(JSON.parse(invalid.body).error).toBe('agentMode must be "plan", "code", or "goal"');
   });
 });

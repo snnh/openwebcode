@@ -149,7 +149,7 @@ export function BottomPanel({ sessionId, session, running, evalEnabled = false, 
             <span className={`status-live status-${liveStatus}`}>
               <i aria-hidden /> {liveStatus === "idle" ? t("空闲", "Idle") : t(...stateLabel(liveStatus))}
             </span>
-            <span>{session.agentMode ?? "build"}</span>
+            <span>{session.agentMode ?? "code"}</span>
             <span title={`${session.provider}/${session.model}`}>{session.model}</span>
             {status.windowPercent !== undefined && <span className="status-optional" title={t("上下文窗口占用", "Context window usage")}>{t("窗口", "ctx")} {status.windowPercent}%</span>}
           </div>
