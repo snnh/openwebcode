@@ -513,7 +513,7 @@ describe("Composer", () => {
     expect(onConfig).toHaveBeenCalledWith({ provider: "openai", model: "gpt-4o-mini" });
   });
 
-  it("切换模型时在同一次配置请求中清除目标不支持的思考设置", () => {
+  it("切换模型：目标已声明且不兼容时同请求清除思考设置，未声明时保留", () => {
     const onConfig = vi.fn();
     const models: ModelProfile[] = [{
       id: "claude-opus-4-8",
@@ -521,6 +521,12 @@ describe("Composer", () => {
       contextWindow: 1_000_000,
       maxOutput: 128_000,
       capabilities: { thinking: ["adaptive"], effort: ["xhigh"], modalities: ["text"], imageOutput: false, tools: true },
+    }, {
+      id: "claude-haiku-4-5",
+      provider: "anthropic",
+      contextWindow: 200_000,
+      maxOutput: 64_000,
+      capabilities: { thinking: ["adaptive"], effort: ["low"], modalities: ["text"], imageOutput: false, tools: true },
     }, {
       id: "gpt-4o-mini",
       provider: "openai",
@@ -538,17 +544,47 @@ describe("Composer", () => {
       />,
     );
 
+    // 已声明（effort 只有 low，不含 xhigh）：同请求清除不兼容的 effort，thinking 兼容保留
     fireEvent.click(screen.getByRole("button", { name: "模型与思考程度" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /claude-haiku-4-5/ }));
+    expect(onConfig).toHaveBeenLastCalledWith({ provider: "anthropic", model: "claude-haiku-4-5", effort: null });
+
+    // 未声明（capabilities 空）：继承的 thinking/effort 全部保留，不再清除
+    fireEvent.click(screen.getByRole("button", { name: "模型与思考程度" }));
+    // openai 组默认收起，先展开分组
+    fireEvent.click(screen.getByRole("button", { name: /openai/ }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: /gpt-4o-mini/ }));
-    expect(onConfig).toHaveBeenCalledWith({
-      provider: "openai",
-      model: "gpt-4o-mini",
-      thinking: null,
-      effort: null,
-    });
+    expect(onConfig).toHaveBeenLastCalledWith({ provider: "openai", model: "gpt-4o-mini" });
   });
 
-  it("思考合并在模型弹层内，用分段按钮合并开关与强度", () => {
+  it("模型按供应商分组：异供应商组默认收起，点击组头展开；模型行不再显示供应商小字", () => {
+    const models: ModelProfile[] = [{
+      id: "claude-opus-4-8",
+      provider: "anthropic",
+      contextWindow: 1_000_000,
+      maxOutput: 128_000,
+      capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true },
+    }, {
+      id: "gpt-4o-mini",
+      provider: "openai",
+      contextWindow: 128_000,
+      maxOutput: 16_384,
+      capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true },
+    }];
+    render(<Harness onSend={vi.fn()} providers={["anthropic", "openai"]} models={models} />);
+    fireEvent.click(screen.getByRole("button", { name: "模型与思考程度" }));
+    // anthropic 组（含当前模型）默认展开；openai 组收起：模型不可见，组头可见且带计数
+    expect(screen.getByRole("menuitemradio", { name: /claude-opus-4-8/ })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitemradio", { name: /gpt-4o-mini/ })).not.toBeInTheDocument();
+    const header = screen.getByRole("button", { name: /openai/ });
+    expect(header).toHaveTextContent("1");
+    fireEvent.click(header);
+    const item = screen.getByRole("menuitemradio", { name: /gpt-4o-mini/ });
+    expect(item).toBeInTheDocument();
+    expect(item).not.toHaveTextContent("openai");
+  });
+
+  it("思考合并在模型弹层底部固定区：胶囊开关 + 程度滑块（默认/低/高/极高）", () => {
     const onConfig = vi.fn();
     const models: ModelProfile[] = [{
       id: "claude-opus-4-8",
@@ -575,18 +611,66 @@ describe("Composer", () => {
 
     const trigger = screen.getByRole("button", { name: "模型与思考程度" });
     expect(trigger.closest(".composer-toolbar")).not.toBeNull();
-    expect(screen.queryByLabelText("力度")).not.toBeInTheDocument();
+    // 有 effort 即视为开：chip 显示当前档位
+    expect(trigger).toHaveTextContent("高");
 
     fireEvent.click(trigger);
-    // 当前为关闭档：「关闭」模式按钮处于激活态
-    const offButton = screen.getByRole("button", { name: "关闭" });
-    expect(offButton.className).toContain("active");
+    // 缓存失效提示已移除
+    expect(screen.queryByText(/提示：切换模型或思考程度/)).not.toBeInTheDocument();
+    // 胶囊开关开（effort=high 视为开）；格子强度条当前档为「高」（档位=默认+low/high/xhigh 共 4 格）
+    const toggle = screen.getByRole("checkbox", { name: "思考" });
+    expect(toggle).toBeChecked();
+    const cells = screen.getByRole("group", { name: "思考程度" });
+    expect(cells).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "高" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText("更快")).toBeInTheDocument();
+    expect(screen.getByText("更聪明")).toBeInTheDocument();
+    // 只显示当前档位文本：右端显示「高」，其余档位无可见文本（格子仅 aria-label）
+    const current = document.querySelector(".thinking-slider-current");
+    expect(current).toHaveTextContent("高");
 
-    fireEvent.click(screen.getByRole("button", { name: "xhigh" }));
+    // 点最右格「极高」：写入 effort:xhigh（thinking 自动补齐 adaptive）
+    fireEvent.click(screen.getByRole("button", { name: "极高" }));
     expect(onConfig).toHaveBeenLastCalledWith({ thinking: "adaptive", effort: "xhigh" });
-
-    fireEvent.click(offButton);
+    // 点首格「默认」：thinking=adaptive、不带 effort
+    fireEvent.click(screen.getByRole("button", { name: "默认" }));
+    expect(onConfig).toHaveBeenLastCalledWith({ thinking: "adaptive", effort: null });
+    // 胶囊开关关：双 null
+    fireEvent.click(toggle);
     expect(onConfig).toHaveBeenLastCalledWith({ thinking: null, effort: null });
+  });
+
+  it("未声明思考能力的模型：滑块给全部档位（默认 低 中 高 极高 max ultra），开关默认关", () => {
+    const onConfig = vi.fn();
+    const models: ModelProfile[] = [{
+      id: "qwen3.8-max-preview",
+      provider: "zijian",
+      contextWindow: 1_000_000,
+      maxOutput: 16_384,
+      capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true },
+    }];
+    render(
+      <Harness
+        onSend={vi.fn()}
+        onConfig={onConfig}
+        current={{ ...session, provider: "zijian", model: "qwen3.8-max-preview" }}
+        providers={["zijian"]}
+        models={models}
+      />,
+    );
+    const trigger = screen.getByRole("button", { name: "模型与思考程度" });
+    // 开关默认关：chip 徽标「关」
+    expect(trigger).toHaveTextContent("关");
+    fireEvent.click(trigger);
+    const toggle = screen.getByRole("checkbox", { name: "思考" });
+    expect(toggle).not.toBeChecked();
+    // 未声明：格子 = 默认 + 全部六档，max/ultra 均在（格子只有 aria-label，无可见文本）
+    for (const label of ["默认", "低", "中", "高", "极高", "max", "ultra"]) {
+      expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
+    }
+    // 开关打开（无 effort 时走 mode:enabled，未声明模型服务端放行）
+    fireEvent.click(toggle);
+    expect(onConfig).toHaveBeenLastCalledWith({ thinking: "enabled", effort: null });
   });
 
   it("在模型选择器旁显示当前模型的图片、视频输入和图片输出能力", () => {
@@ -648,6 +732,22 @@ describe("Composer", () => {
     expect(screen.getByRole("checkbox", { name: "计划" })).not.toBeChecked();
     // 触发按钮徽标展示当前模式
     expect(screen.getByRole("button", { name: "模式" })).toHaveTextContent("目标");
+  });
+
+  it("模式弹层：Swarm 可与任一模式叠加（plan + swarm 组合写入互不干扰）", () => {
+    const onConfig = vi.fn();
+    render(<Harness onSend={vi.fn()} onConfig={onConfig} current={{ ...session, agentMode: "plan", swarmEnabled: true }} />);
+    fireEvent.click(screen.getByRole("button", { name: "模式" }));
+    // plan 与 Swarm 同时勾选共存；触发徽标并列展示
+    expect(screen.getByRole("checkbox", { name: "计划" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Swarm" })).toBeChecked();
+    expect(screen.getByRole("button", { name: "模式" })).toHaveTextContent("计划 · Swarm");
+    // 关闭 Swarm 只写 swarmEnabled，不动 agentMode
+    fireEvent.click(screen.getByRole("checkbox", { name: "Swarm" }));
+    expect(onConfig).toHaveBeenLastCalledWith({ swarmEnabled: false });
+    // 关闭计划只写 agentMode，不动 swarmEnabled
+    fireEvent.click(screen.getByRole("checkbox", { name: "计划" }));
+    expect(onConfig).toHaveBeenLastCalledWith({ agentMode: null });
   });
 });
 
@@ -765,6 +865,10 @@ describe("Composer 模型循环（Ctrl+P）", () => {
     const trigger = screen.getByRole("button", { name: "模型与思考程度" });
     const pick = (name: RegExp): void => {
       fireEvent.click(trigger);
+      // 非当前供应商的分组默认收起：先展开全部组再点模型（折叠状态跨开合保留，只需展开一次）
+      for (const header of screen.queryAllByRole("button", { name: /^(anthropic|openai|deepseek)/ })) {
+        if (header.getAttribute("aria-expanded") === "false") fireEvent.click(header);
+      }
       fireEvent.click(screen.getByRole("menuitemradio", { name }));
     };
     pick(/gpt-4o-mini/);
