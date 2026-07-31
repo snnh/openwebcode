@@ -14,6 +14,9 @@ export interface ProviderRetryOptions {
   baseDelayMs?: number;
   maxDelayMs?: number;
   onRetry?: (info: RetryInfo) => void;
+  /** 事件到达即回调（流式显示）；重试时新 attempt 的事件会再次从头推送，
+   * 消费方应按 onRetry 丢弃上一 attempt 的增量。 */
+  onEvent?: (event: ProviderEvent) => void;
 }
 
 export async function collectProviderTurn(
@@ -30,7 +33,10 @@ export async function collectProviderTurn(
     const attemptId = randomUUID();
     const events: ProviderEvent[] = [];
     try {
-      for await (const event of provider.streamChat(request)) events.push(event);
+      for await (const event of provider.streamChat(request)) {
+        events.push(event);
+        options.onEvent?.(event);
+      }
       return { attemptId, events };
     } catch (error) {
       const normalized = normalizeProviderError(error, events.length > 0);

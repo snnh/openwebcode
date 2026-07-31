@@ -66,11 +66,13 @@ function buildToolResultStatus(messages: ChatMessage[]): Record<string, boolean>
   return map;
 }
 
-export function ExecutionTrack({ session, cleared, streamText, thinkingText, runError, permissions, onPermissionDone, onPermissionError, onSendToAgent, contentLens, onNotice, onOpenDiff, onOpenSettings, onRetryRun, retryPending, hasMoreMessages, onLoadMore, loadingMore, liveSubagents, liveActivity, trackVisible = true, running = false, onEditMessage, onRegenerate, onFork }: {
+export function ExecutionTrack({ session, cleared, streamText, thinkingText, streamToolCalls, runError, permissions, onPermissionDone, onPermissionError, onSendToAgent, contentLens, onNotice, onOpenDiff, onOpenSettings, onRetryRun, retryPending, hasMoreMessages, onLoadMore, loadingMore, liveSubagents, liveActivity, trackVisible = true, running = false, onEditMessage, onRegenerate, onFork }: {
   session: SessionDetail;
   cleared?: { uptoIndex: number; at: string };
   streamText: string;
   thinkingText?: string;
+  /** 流式中的工具调用（参数 JSON 分片实时拼接）；仅当前 attempt 有效，run 结束即清空 */
+  streamToolCalls?: Array<{ id: string; name?: string; text: string }>;
   /** 服务端本轮在工具/Provider/运行基础设施上失败时的持久可见说明（含分类 kind 与 retryable）。 */
   runError?: AgentErrorPayload;
   permissions: PermissionRequest[];
@@ -336,7 +338,7 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, run
             </section>
           );
         })()}
-        {(streamText || thinkingText) && (
+        {(streamText || thinkingText || (streamToolCalls && streamToolCalls.length > 0)) && (
           <article className={`message assistant live turn-${(turnOf.at(-1) ?? 0) % 2 === 0 ? "even" : "odd"}`}>
             <div className="message-meta">
               <span className="message-author">OpenWebCode</span>
@@ -344,6 +346,12 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, run
             </div>
             {thinkingText && <ThinkingBlock text={thinkingText} streaming />}
             {streamText && <Markdown>{streamText}</Markdown>}
+            {streamToolCalls?.map((call) => (
+              <div className="tool-stream-card" key={call.id}>
+                <span className="tool-stream-name mono">{call.name ?? t("工具调用", "tool call")}</span>
+                {call.text && <pre className="tool-stream-args mono">{call.text}</pre>}
+              </div>
+            ))}
             <span className="cursor" aria-hidden />
           </article>
         )}

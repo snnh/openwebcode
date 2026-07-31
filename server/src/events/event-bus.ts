@@ -31,8 +31,9 @@ export interface ReplayResult {
  */
 export const DELTA_BATCH_WINDOW_MS = 16;
 
-/** 允许合批的事件类型：同一 (sessionId, type) 键下的 text 可直接拼接。 */
-const BATCHABLE_DELTA_TYPES = new Set(["message.delta", "message.thinking_delta"]);
+/** 允许合批的事件类型：同一 (sessionId, type, id) 键下的 text 可直接拼接。
+ * message.tool_call_delta 的 payload.id 区分并行工具调用，合批键必须带 id 防串线。 */
+const BATCHABLE_DELTA_TYPES = new Set(["message.delta", "message.thinking_delta", "message.tool_call_delta"]);
 
 interface PendingDelta {
   input: AppEventInput;
@@ -94,7 +95,7 @@ export class EventBus extends EventEmitter {
    * 不再复制累计文本（避免长流下每个 delta 都构造一次携带完整缓冲的新对象）。
    */
   private bufferDelta(input: AppEventInput): AppEvent {
-    const key = `${input.sessionId ?? ""}${input.type}`;
+    const key = `${input.sessionId ?? ""}${input.type} ${(input.payload as { id?: string }).id ?? ""}`;
     const text = (input.payload as { text: string }).text;
     const pending = this.pendingDeltas.get(key);
     if (pending) pending.text += text;

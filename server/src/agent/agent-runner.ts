@@ -1147,12 +1147,24 @@ export class AgentRunner {
           },
           {
             onRetry: ({ attemptId, attempt, delayMs, error }) => {
+              // 重试会从头重推 delta：先让前端丢弃上一 attempt 的增量，避免重复文本
+              this.events.publish({ source: "agent", type: "message.stream_reset", sessionId, payload: {} });
               this.events.publish({
                 source: "agent",
                 type: "provider.retry",
                 sessionId,
                 payload: { attemptId, attempt, delayMs, kind: error.kind, message: error.message },
               });
+            },
+            // 流式显示：事件到达即发布，不再等整轮收集完毕后补发
+            onEvent: (event) => {
+              if (event.type === "text_delta") {
+                this.events.publish({ source: "agent", type: "message.delta", sessionId, payload: { text: event.text } });
+              } else if (event.type === "thinking_delta") {
+                this.events.publish({ source: "agent", type: "message.thinking_delta", sessionId, payload: { text: event.text } });
+              } else if (event.type === "tool_call_delta") {
+                this.events.publish({ source: "agent", type: "message.tool_call_delta", sessionId, payload: { id: event.id, ...(event.name ? { name: event.name } : {}), text: event.argumentsDelta } });
+              }
             },
           },
         );
@@ -1165,10 +1177,10 @@ export class AgentRunner {
           if (event.type === "text_delta") {
             // Provider 文本以 token/chunk 形式流入。相邻分片属于同一段正文，
             // 落盘前合并，避免前端把每个分片当成独立块而逐词换行。
+            // （前端的流式显示由 collectProviderTurn 的 onEvent 实时发布，此处只落盘。）
             const previous = assistantContent.at(-1);
             if (previous?.type === "text") previous.text = `${previous.text ?? ""}${event.text}`;
             else assistantContent.push({ type: "text", text: event.text });
-            this.events.publish({ source: "agent", type: "message.delta", sessionId, payload: { text: event.text } });
           } else if (event.type === "thinking_delta") {
             const activeThinking = activeThinkingIndex === undefined ? undefined : assistantContent[activeThinkingIndex];
             if (activeThinking?.type === "thinking") {
@@ -1177,7 +1189,6 @@ export class AgentRunner {
               assistantContent.push({ type: "thinking", text: event.text, provider: provider.name });
               activeThinkingIndex = assistantContent.length - 1;
             }
-            this.events.publish({ source: "agent", type: "message.thinking_delta", sessionId, payload: { text: event.text } });
           } else if (event.type === "thinking_end") {
             const completedThinking: MessageContent = {
               type: "thinking",
@@ -1188,6 +1199,8 @@ export class AgentRunner {
             if (activeThinkingIndex === undefined) assistantContent.push(completedThinking);
             else assistantContent[activeThinkingIndex] = completedThinking;
             activeThinkingIndex = undefined;
+          } else if (event.type === "tool_call_delta") {
+            // 流式分片仅用于实时显示，无落盘内容（完整 tool_call 事件随后到达）
           } else if (event.type === "tool_call") {
             assistantContent.push({ type: "tool_call", id: event.id, name: event.name, input: event.input });
           } else if (event.type === "usage") {

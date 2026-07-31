@@ -117,6 +117,15 @@ export class OpenAICompatibleProvider implements Provider {
             if (call.function?.name) current.name += call.function.name;
             if (call.function?.arguments) current.arguments += call.function.arguments;
             tools.set(call.index, current);
+            // 参数流式分片：id 就绪后上报（首个分片通常即携带 id/name）
+            if (current.id) {
+              yield {
+                type: "tool_call_delta",
+                id: current.id,
+                ...(current.name ? { name: current.name } : {}),
+                argumentsDelta: call.function?.arguments ?? "",
+              };
+            }
           }
         }
       }
