@@ -6,7 +6,7 @@ import type { PdfRenderOptions } from "../lib/pdf-to-images";
 import type { SendKey } from "../lib/prefs";
 import { nextRecentModel, recordRecentModel } from "../lib/recent-models";
 import { Icon } from "./Icon";
-import { AgentModeMenu, ModelMenu, PermissionModeMenu, Popover } from "./ComposerPopovers";
+import { AgentModeMenu, EFFORT_LABEL, ModelMenu, PermissionModeMenu, Popover, THINKING_LABEL } from "./ComposerPopovers";
 import { ComposerChips } from "./ComposerChips";
 import { useI18n } from "../i18n";
 
@@ -115,15 +115,8 @@ async function loadMentionItems(sessionId: string, q: string): Promise<{ items: 
   }
 }
 
-/** 思考模式下拉的中文标签；value 保持英文枚举不变 */
-const THINKING_LABEL: Record<string, [string, string]> = { adaptive: ["自适应", "Adaptive"], enabled: ["开启", "Enabled"], disabled: ["关闭", "Disabled"] };
-const EFFORT_LABEL: Record<string, [string, string]> = {
-  low: ["低", "Low"],
-  medium: ["中", "Medium"],
-  high: ["高", "High"],
-  xhigh: ["极高", "Extra high"],
-  max: ["最大", "Maximum"],
-};
+/** 全部 effort 档位（未声明模型的滑块全集；max/ultra 不翻译）。标签表见 ComposerPopovers。 */
+const EFFORT_ALL = ["low", "medium", "high", "xhigh", "max", "ultra"];
 
 export function Composer({ current, model, models, providers = [], pdfToImageExtension, pdfToImageStatus = "ready", imageCapabilitiesReady = true, draft, setDraft, onSend, onConfig, running, sendKey, skills, attachments, setAttachments, supportsImages, onNotice, sendPending = false, history = [], editingMessage, onCancelEdit, onOpenModelSettings, subagents }: {
   current: SessionDetail;
@@ -637,37 +630,35 @@ const mentionHasMatches = mentionItems.length > 0;
   const selectableModels = models.filter((item) => providers.includes(item.provider));
   const selectedModel = selectableModels.find((item) => item.provider === current.provider && item.id === current.model) ?? model;
   const supportedThinking = selectedModel?.capabilities.thinking ?? [];
-  const efforts = selectedModel?.capabilities.effort ?? [];
-  // 思考模式和力度合为一个选择器。无 thinking 枚举但支持 effort 的模型以「默认」
-  // 表示不显式下发 reasoning_effort；完全不支持时退化为禁用的「关闭」。
-  const thinkingChoices: Array<{ value: string; label: [string, string] }> = [];
-  if (supportedThinking.includes("disabled")) thinkingChoices.push({ value: "mode:disabled", label: THINKING_LABEL.disabled! });
-  if (supportedThinking.length === 0 && efforts.length > 0) thinkingChoices.push({ value: "default", label: ["默认", "Default"] });
-  for (const mode of supportedThinking) {
-    if (mode !== "disabled") thinkingChoices.push({ value: `mode:${mode}`, label: THINKING_LABEL[mode] ?? [mode, mode] });
-  }
-  for (const effort of efforts) thinkingChoices.push({ value: `effort:${effort}`, label: EFFORT_LABEL[effort] ?? [effort, effort] });
-  if (thinkingChoices.length === 0) thinkingChoices.push({ value: "mode:disabled", label: THINKING_LABEL.disabled! });
+  const declaredEfforts = selectedModel?.capabilities.effort ?? [];
+  // 未声明（两数组均空）= 全部可选：滑块给全部六档，服务端同样放行合法枚举。
+  const thinkingUndeclared = supportedThinking.length === 0 && declaredEfforts.length === 0;
+  // 已声明档位按强度规范序重排（声明顺序可能乱序，滑块必须 默认→低→…→ultra 递增）
+  const effortLevels = declaredEfforts.length > 0
+    ? EFFORT_ALL.filter((tier) => (declaredEfforts as readonly string[]).includes(tier))
+    : EFFORT_ALL;
   const hasActiveThinkingMode = supportedThinking.some((mode) => mode !== "disabled");
-  const thinkingExplicitlyOff = hasActiveThinkingMode
-    && supportedThinking.includes("disabled")
-    && (!current.thinking || current.thinking === "disabled");
-  const thinkingSelection = thinkingExplicitlyOff
-    ? "mode:disabled"
-    : current.effort && efforts.includes(current.effort)
-      ? `effort:${current.effort}`
-      : current.thinking && supportedThinking.includes(current.thinking)
-        ? `mode:${current.thinking}`
-        : thinkingChoices[0]!.value;
-  const thinkingControlSupported = hasActiveThinkingMode || efforts.length > 0;
+  const thinkingControlSupported = thinkingUndeclared || hasActiveThinkingMode || declaredEfforts.length > 0;
+  const currentEffort = current.effort && effortLevels.includes(current.effort) ? current.effort : undefined;
+  const thinkingOn = thinkingControlSupported && Boolean(
+    (current.thinking && current.thinking !== "disabled" && (supportedThinking.length === 0 || supportedThinking.includes(current.thinking)))
+    || currentEffort,
+  );
+  // 滑块左端点（默认）与开关 on 的无 effort 取值：优先 enabled，只声明 adaptive 时用 adaptive
+  const defaultOnValue = supportedThinking.includes("adaptive") && !supportedThinking.includes("enabled") ? "mode:adaptive" : "mode:enabled";
+  const thinkingBadge: [string, string] = !thinkingOn
+    ? THINKING_LABEL.disabled!
+    : currentEffort
+      ? (EFFORT_LABEL[currentEffort] ?? [currentEffort, currentEffort])
+      : THINKING_LABEL.enabled!;
   const selectionUnavailable = current.provider !== "" && !selectableModels.some((item) => item.provider === current.provider && item.id === current.model);
 
   /** 模型弹层选择：与原下拉同一链路——目标模型不支持当前 thinking/effort 时在同一请求中清除。 */
   const selectModel = (next: ModelProfile): void => {
     recordRecentModel(next.provider, next.id);
     const config: Record<string, unknown> = { provider: next.provider, model: next.id };
-    if (current.thinking && !next.capabilities.thinking.includes(current.thinking)) config.thinking = null;
-    if (current.effort && !next.capabilities.effort.includes(current.effort)) config.effort = null;
+    if (current.thinking && next.capabilities.thinking.length > 0 && !next.capabilities.thinking.includes(current.thinking)) config.thinking = null;
+    if (current.effort && next.capabilities.effort.length > 0 && !next.capabilities.effort.includes(current.effort)) config.effort = null;
     onConfig(config);
   };
 
@@ -710,8 +701,8 @@ const mentionHasMatches = mentionItems.length > 0;
     const config: Record<string, unknown> = { provider: next.provider, model: next.model };
     // 与下拉切换一致：目标模型不支持当前 thinking/effort 时在同一请求中清除
     if (profile) {
-      if (current.thinking && !profile.capabilities.thinking.includes(current.thinking)) config.thinking = null;
-      if (current.effort && !profile.capabilities.effort.includes(current.effort)) config.effort = null;
+      if (current.thinking && profile.capabilities.thinking.length > 0 && !profile.capabilities.thinking.includes(current.thinking)) config.thinking = null;
+      if (current.effort && profile.capabilities.effort.length > 0 && !profile.capabilities.effort.includes(current.effort)) config.effort = null;
     }
     onConfig(config);
     clearTimeout(modelCycleTimerRef.current);
@@ -1063,9 +1054,11 @@ const mentionHasMatches = mentionItems.length > 0;
             current={{ provider: current.provider, model: current.model }}
             selectableModels={selectableModels}
             selectionUnavailable={selectionUnavailable}
-            thinkingChoices={thinkingChoices}
-            thinkingSelection={thinkingSelection}
-            efforts={efforts}
+            effortLevels={effortLevels}
+            thinkingOn={thinkingOn}
+            currentEffort={currentEffort}
+            defaultOnValue={defaultOnValue}
+            thinkingBadge={thinkingBadge}
             thinkingControlSupported={selectedModel === undefined || thinkingControlSupported}
             disabled={running}
             onSelectModel={selectModel}
