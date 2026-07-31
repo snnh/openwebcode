@@ -1,7 +1,5 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import type { CoreClientLike } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
@@ -9,39 +7,23 @@ import { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { buildServer } from "../src/app.js";
+import { makeFakeCore } from "./helpers/fake-core.js";
 import { makeStubProvider } from "./helpers/stub-provider.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
-
-async function tempRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-plan-"));
-  roots.push(root);
-  return root;
-}
+import { tempRoot } from "./helpers/temp-roots.js";
 
 describe("plan mode — agent-runner level", () => {
   function createFakeCore(): CoreClientLike {
-    return {
-      on() { return this; },
-      async configureSession() { return { sandboxCapability: "advisory" }; },
+    return makeFakeCore({
       async readFile() { return { content: "file content" }; },
       async globFiles() { return { matches: [] }; },
       async grepFiles() { return { matches: [] }; },
-      async writeFile() { return { ok: true }; },
       async editFile() { return { matches: 1 }; },
       async run() { return { exitCode: 0, stdout: "", stderr: "" }; },
-      async cleanupSession() { return { ok: true }; },
-      setRequestTimeoutMs() {},
-      start() { return Promise.resolve({ version: "0.0.0", platform: "test" }); },
-      stop() { return Promise.resolve(); },
-      ping() { return Promise.resolve({ version: "0.0.0", platform: "test" }); },
-      listFiles() { return Promise.resolve({ entries: [], truncated: false }); },
-    } as unknown as CoreClientLike;
+    } as unknown as Partial<CoreClientLike>);
   }
 
   async function setup(agentMode: "plan" | "code", toolCalls: Array<{ name: string; id: string; input: Record<string, unknown> }>) {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-plan-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const session = await sessions.create({ cwd: root, provider: "fake", model: "model" });
@@ -79,92 +61,23 @@ describe("plan mode — agent-runner level", () => {
     return { runner, session, sessions, requests, detail, events };
   }
 
-  it("plan 模式下 write_file 被门禁 → tool_result isError", async () => {
-    const { detail } = await setup("plan", [
-      { name: "write_file", id: "wf-1", input: { path: "test.txt", content: "hello" } },
-    ]);
+  it.each([
+    { name: "write_file", id: "wf-1", input: { path: "test.txt", content: "hello" }, blocked: true },
+    { name: "bash", id: "bash-1", input: { cmd: "echo hi" }, blocked: true },
+    { name: "edit_file", id: "ef-1", input: { path: "test.txt", oldText: "a", newText: "b" }, blocked: true },
+    { name: "read_file", id: "rf-1", input: { path: "test.txt" }, blocked: false },
+    { name: "glob", id: "glob-1", input: { path: ".", pattern: "*.ts" }, blocked: false },
+    { name: "grep", id: "grep-1", input: { path: ".", pattern: "TODO" }, blocked: false },
+    { name: "mcp__filesystem_read", id: "mcp-1", input: { path: "/test" }, blocked: true },
+  ])("plan 模式下 $name 门禁 blocked=$blocked", async ({ name, id, input, blocked }) => {
+    const { detail } = await setup("plan", [{ name, id, input }]);
     const toolResult = detail?.messages
       .filter((m) => m.role === "tool")
       .flatMap((m) => m.content)
-      .find((c) => c.type === "tool_result" && c.toolCallId === "wf-1");
+      .find((c) => c.type === "tool_result" && c.toolCallId === id);
     expect(toolResult).toBeDefined();
-    expect(toolResult!.isError).toBe(true);
-    expect((toolResult as { content: string }).content).toContain("Plan 模式为只读");
-  });
-
-  it("plan 模式下 bash 被门禁 → tool_result isError", async () => {
-    const { detail } = await setup("plan", [
-      { name: "bash", id: "bash-1", input: { cmd: "echo hi" } },
-    ]);
-    const toolResult = detail?.messages
-      .filter((m) => m.role === "tool")
-      .flatMap((m) => m.content)
-      .find((c) => c.type === "tool_result" && c.toolCallId === "bash-1");
-    expect(toolResult).toBeDefined();
-    expect(toolResult!.isError).toBe(true);
-    expect((toolResult as { content: string }).content).toContain("Plan 模式为只读");
-  });
-
-  it("plan 模式下 edit_file 被门禁 → tool_result isError", async () => {
-    const { detail } = await setup("plan", [
-      { name: "edit_file", id: "ef-1", input: { path: "test.txt", oldText: "a", newText: "b" } },
-    ]);
-    const toolResult = detail?.messages
-      .filter((m) => m.role === "tool")
-      .flatMap((m) => m.content)
-      .find((c) => c.type === "tool_result" && c.toolCallId === "ef-1");
-    expect(toolResult).toBeDefined();
-    expect(toolResult!.isError).toBe(true);
-    expect((toolResult as { content: string }).content).toContain("Plan 模式为只读");
-  });
-
-  it("plan 模式下 read_file 放行", async () => {
-    const { detail } = await setup("plan", [
-      { name: "read_file", id: "rf-1", input: { path: "test.txt" } },
-    ]);
-    const toolResult = detail?.messages
-      .filter((m) => m.role === "tool")
-      .flatMap((m) => m.content)
-      .find((c) => c.type === "tool_result" && c.toolCallId === "rf-1");
-    expect(toolResult).toBeDefined();
-    expect(toolResult!.isError).toBe(false);
-  });
-
-  it("plan 模式下 glob 放行", async () => {
-    const { detail } = await setup("plan", [
-      { name: "glob", id: "glob-1", input: { path: ".", pattern: "*.ts" } },
-    ]);
-    const toolResult = detail?.messages
-      .filter((m) => m.role === "tool")
-      .flatMap((m) => m.content)
-      .find((c) => c.type === "tool_result" && c.toolCallId === "glob-1");
-    expect(toolResult).toBeDefined();
-    expect(toolResult!.isError).toBe(false);
-  });
-
-  it("plan 模式下 grep 放行", async () => {
-    const { detail } = await setup("plan", [
-      { name: "grep", id: "grep-1", input: { path: ".", pattern: "TODO" } },
-    ]);
-    const toolResult = detail?.messages
-      .filter((m) => m.role === "tool")
-      .flatMap((m) => m.content)
-      .find((c) => c.type === "tool_result" && c.toolCallId === "grep-1");
-    expect(toolResult).toBeDefined();
-    expect(toolResult!.isError).toBe(false);
-  });
-
-  it("mcp__ 前缀工具在 plan 模式被拦截", async () => {
-    const { detail } = await setup("plan", [
-      { name: "mcp__filesystem_read", id: "mcp-1", input: { path: "/test" } },
-    ]);
-    const toolResult = detail?.messages
-      .filter((m) => m.role === "tool")
-      .flatMap((m) => m.content)
-      .find((c) => c.type === "tool_result" && c.toolCallId === "mcp-1");
-    expect(toolResult).toBeDefined();
-    expect(toolResult!.isError).toBe(true);
-    expect((toolResult as { content: string }).content).toContain("Plan 模式为只读");
+    expect(toolResult!.isError).toBe(blocked);
+    if (blocked) expect((toolResult as { content: string }).content).toContain("Plan 模式为只读");
   });
 
   it("code 模式下 write_file 不被 plan 门禁拦截", { timeout: 15_000 }, async () => {
@@ -208,7 +121,7 @@ describe("plan mode — agent-runner level", () => {
   });
 
   it("PUT config agentMode 非法值 → 400", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-plan-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     // 用 test-only provider 创建，验证 PUT 行为不依赖运行时 provider
@@ -226,7 +139,7 @@ describe("plan mode — agent-runner level", () => {
     const res1 = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { agentMode: "invalid" } });
     expect(res1.statusCode).toBe(400);
     const body1 = JSON.parse(res1.body);
-    expect(body1.error).toContain("agentMode");
+    expect(body1.error).toBe('agentMode must be "plan", "code", or "goal"');
 
     // "plan" 合法
     const res2 = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { agentMode: "plan" } });
@@ -250,7 +163,7 @@ describe("plan mode — agent-runner level", () => {
   });
 
   it("创建会话时 agentMode=plan 落盘，缺省不落盘，非法值 400", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-plan-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));

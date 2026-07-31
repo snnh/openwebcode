@@ -1,37 +1,19 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
-import type { CoreClientLike } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { buildServer } from "../src/app.js";
+import { makeAbortPendingProvider } from "./helpers/agent-harness.js";
+import { makeFakeCore } from "./helpers/fake-core.js";
 import { makeStubProvider } from "./helpers/stub-provider.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
-
-async function tempRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-goal-"));
-  roots.push(root);
-  return root;
-}
-
-function createFakeCore(): CoreClientLike {
-  return {
-    on() { return this; },
-    async configureSession() { return { sandboxCapability: "advisory" }; },
-    async cleanupSession() { return { ok: true }; },
-    setRequestTimeoutMs() {},
-  } as unknown as CoreClientLike;
-}
+import { tempRoot } from "./helpers/temp-roots.js";
 
 /** goal 会话 + 按轮次脚本化回复的 provider：第 N 次请求回复 texts[min(N, len-1)]。 */
 async function setupGoal(texts: string[]) {
-  const root = await tempRoot();
+  const root = await tempRoot("owc-goal-");
   const sessions = new SessionStore(path.join(root, "sessions"));
   await sessions.initialize();
   const session = await sessions.create({ cwd: root, provider: "goal-stub", model: "model", agentMode: "goal" });
@@ -52,7 +34,7 @@ async function setupGoal(texts: string[]) {
   };
   const providers = new ProviderRegistry();
   providers.register(provider);
-  const runner = new AgentRunner(sessions, providers, createFakeCore(), events, pricing);
+  const runner = new AgentRunner(sessions, providers, makeFakeCore(), events, pricing);
   return { sessions, session, runner, requests, published };
 }
 
@@ -112,30 +94,16 @@ describe("goal mode — 自动续跑", () => {
   });
 
   it("abort 的 run → 不续跑", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-goal-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const session = await sessions.create({ cwd: root, provider: "goal-stub", model: "model", agentMode: "goal" });
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));
     await pricing.initialize();
-    let entered!: () => void;
-    const firstEntered = new Promise<void>((resolve) => { entered = resolve; });
-    const provider: Provider = {
-      name: "goal-stub",
-      async *streamChat(request: StreamChatRequest) {
-        entered();
-        // 模拟真实 provider 响应 abort：在信号触发前一直挂起
-        await new Promise<void>((resolve) => {
-          request.signal.addEventListener("abort", () => resolve(), { once: true });
-        });
-        if (request.signal.aborted) throw request.signal.reason instanceof Error ? request.signal.reason : new Error("aborted");
-        yield { type: "text_delta", text: "GOAL_INCOMPLETE: 被中断" };
-        yield { type: "done", stopReason: "end_turn" };
-      },
-    };
+    const { provider, entered: firstEntered } = makeAbortPendingProvider("goal-stub");
     const providers = new ProviderRegistry();
     providers.register(provider);
-    const runner = new AgentRunner(sessions, providers, createFakeCore(), new EventBus(), pricing);
+    const runner = new AgentRunner(sessions, providers, makeFakeCore(), new EventBus(), pricing);
 
     const running = runner.run(session.id, "实现功能 X");
     await firstEntered;
@@ -151,7 +119,7 @@ describe("goal mode — 自动续跑", () => {
 
 describe("goal mode — REST 校验", () => {
   async function setupApp() {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-goal-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));
@@ -159,19 +127,16 @@ describe("goal mode — REST 校验", () => {
     const events = new EventBus();
     const providers = new ProviderRegistry();
     providers.register(makeStubProvider("test-stub", async function* () { yield { type: "done", stopReason: "end_turn" }; }));
-    const core = createFakeCore();
+    const core = makeFakeCore();
     const agent = new AgentRunner(sessions, providers, core, events, pricing);
     const app = await buildServer({ core, sessions, agent, events, providers, pricing });
     return { app, sessions, root };
   }
 
-  it("PUT config 接受 goal、拒绝非法值", async () => {
+  // 非法 agentMode → 400 由 plan-mode.test.ts 覆盖，此处只验 goal 特有行为（接受/落盘）
+  it("PUT config 接受 goal 并落盘", async () => {
     const { app, sessions, root } = await setupApp();
     const session = await sessions.create({ cwd: root, provider: "test-stub", model: "model" });
-
-    const invalid = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { agentMode: "invalid" } });
-    expect(invalid.statusCode).toBe(400);
-    expect(JSON.parse(invalid.body).error).toBe('agentMode must be "plan", "code", or "goal"');
 
     const goal = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { agentMode: "goal" } });
     expect(goal.statusCode).toBe(200);
@@ -180,13 +145,10 @@ describe("goal mode — REST 校验", () => {
     expect((await sessions.get(session.id))?.agentMode).toBe("goal");
   });
 
-  it("POST /api/sessions 接受 goal、拒绝非法值", async () => {
+  it("POST /api/sessions 接受 goal", async () => {
     const { app, root } = await setupApp();
     const goal = await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: root, provider: "test-stub", model: "model", agentMode: "goal" } });
     expect(goal.statusCode).toBe(201);
     expect(goal.json<{ agentMode?: string }>().agentMode).toBe("goal");
-    const invalid = await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: root, provider: "test-stub", model: "model", agentMode: "study" } });
-    expect(invalid.statusCode).toBe(400);
-    expect(JSON.parse(invalid.body).error).toBe('agentMode must be "plan", "code", or "goal"');
   });
 });

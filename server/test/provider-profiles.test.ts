@@ -1,20 +1,16 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AgentRunner } from "../src/agent/agent-runner.js";
 import { ModelRegistry } from "../src/context/model-registry.js";
 import { EventBus } from "../src/events/event-bus.js";
 import { ProviderProfilesRuntime } from "../src/provider-profiles-runtime.js";
 import { ProviderProfilesService, ProviderProfilesValidationError } from "../src/provider-profiles.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
+import { tempRoot } from "./helpers/temp-roots.js";
 
 async function fixture() {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-provider-profiles-"));
-  roots.push(root);
+  const root = await tempRoot("owc-provider-profiles-");
   const filePath = path.join(root, "provider-profiles.json");
   return { root, filePath, service: await ProviderProfilesService.load({ filePath }) };
 }

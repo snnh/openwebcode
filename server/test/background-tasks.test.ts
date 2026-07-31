@@ -1,120 +1,21 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { EventEmitter } from "node:events";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { BackgroundTaskRegistry } from "../src/agent/background-tasks.js";
 import { buildServer } from "../src/app.js";
-import type { CoreClientLike, ExecResult, CoreEvent } from "../src/core-client.js";
+import type { CoreClientLike } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import type { SandboxMode } from "../src/sessions/types.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
-
-async function tempRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-bg-"));
-  roots.push(root);
-  return root;
-}
-
-/**
- * 可控制的 fake CoreClient，用于测试后台任务生命周期。
- * - run() 返回一个可控的 Promise（通过 release 方法 resolve 或 reject）
- * - on("event") 注册的 listener 可通过 emitExecOutput 触发
- * - stop() 记录调用
- */
-function createControllableCore(): {
-  client: CoreClientLike;
-  release: (result: ExecResult) => void;
-  rejectRun: (error: Error) => void;
-  emitExecOutput: (data: string | Buffer) => void;
-  stopCalled: () => boolean;
-} {
-  let runResolve: ((result: ExecResult) => void) | undefined;
-  let runReject: ((error: Error) => void) | undefined;
-  let stopped = false;
-  let eventListener: ((event: CoreEvent) => void) | undefined;
-  let sequence = 0;
-
-  const emitter = new EventEmitter();
-  const client: CoreClientLike = {
-    on(eventName: string, listener: (...args: unknown[]) => void) {
-      if (eventName === "event") {
-        eventListener = listener as (event: CoreEvent) => void;
-      }
-      emitter.on(eventName, listener);
-      return client;
-    },
-    async start() { return { version: "0.0.0", platform: "test" as const }; },
-    async stop() {
-      stopped = true;
-      if (runReject) {
-        runReject(new Error("Core stopped"));
-        runReject = undefined;
-        runResolve = undefined;
-      }
-    },
-    async configureSession() { return { sandboxCapability: "advisory" as const }; },
-    async run() {
-      return new Promise<ExecResult>((resolve, reject) => {
-        runResolve = resolve;
-        runReject = reject;
-      });
-    },
-    async ping() { return { version: "0.0.0", platform: "test" as const }; },
-    async cleanupSession() { return { ok: true as const }; },
-    async readFile() { return { content: "", totalLines: 0, encoding: "utf-8" as const, truncated: false }; },
-    async writeFile() { return { ok: true as const }; },
-    async editFile() { return { matches: 0 }; },
-    async listFiles() { return { entries: [], truncated: false }; },
-    async globFiles() { return { paths: [], truncated: false }; },
-    async grepFiles() { return { matches: [], truncated: false }; },
-    setRequestTimeoutMs() {},
-  } as unknown as CoreClientLike;
-
-  return {
-    client,
-    release: (result: ExecResult) => {
-      if (runResolve) {
-        runResolve(result);
-        runResolve = undefined;
-        runReject = undefined;
-      }
-    },
-    rejectRun: (error: Error) => {
-      if (runReject) {
-        runReject(error);
-        runReject = undefined;
-        runResolve = undefined;
-      }
-    },
-    emitExecOutput: (data: string | Buffer) => {
-      if (eventListener) {
-        eventListener({
-          source: "core",
-          type: "exec.output",
-          payload: {
-            execId: "test",
-            stream: "stdout",
-            data: Buffer.from(data).toString("base64"),
-            seq: sequence++,
-          },
-        });
-      }
-    },
-    stopCalled: () => stopped,
-  };
-}
+import { makeControllableCore, type ControllableCore } from "./helpers/fake-core.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
 describe("BackgroundTaskRegistry", () => {
   it("start 返回 taskId 和 status started", async () => {
-    const root = await tempRoot();
-    const factory = vi.fn(() => createControllableCore().client);
+    const root = await tempRoot("owc-bg-");
+    const factory = vi.fn(() => makeControllableCore().client);
     const registry = new BackgroundTaskRegistry(
       factory,
       async () => undefined,
@@ -140,8 +41,8 @@ describe("BackgroundTaskRegistry", () => {
   });
 
   it("get 返回任务信息与输出", async () => {
-    const root = await tempRoot();
-    const core = createControllableCore();
+    const root = await tempRoot("owc-bg-");
+    const core = makeControllableCore();
     const registry = new BackgroundTaskRegistry(
       () => core.client,
       async () => undefined,
@@ -178,8 +79,8 @@ describe("BackgroundTaskRegistry", () => {
   });
 
   it("后台任务将相邻 pipe 分片合并后再解码", async () => {
-    const root = await tempRoot();
-    const core = createControllableCore();
+    const root = await tempRoot("owc-bg-");
+    const core = makeControllableCore();
     const registry = new BackgroundTaskRegistry(
       () => core.client,
       async () => undefined,
@@ -187,16 +88,16 @@ describe("BackgroundTaskRegistry", () => {
 
     await registry.start({ sessionId: "s1", taskId: "task-gbk", cmd: "echo 中文", cwd: root });
     // UTF-8 的“中文”被刻意拆在两个 pipe 通知中。
-    core.emitExecOutput(Buffer.from([0xe4, 0xb8]));
-    core.emitExecOutput(Buffer.from([0xad, 0xe6, 0x96, 0x87]));
+    core.emitExecOutput(Buffer.from([0xe4, 0xb8]) as unknown as string);
+    core.emitExecOutput(Buffer.from([0xad, 0xe6, 0x96, 0x87]) as unknown as string);
 
     expect(registry.get("task-gbk")?.output).toBe("中文");
     core.release({ exitCode: 0, durationMs: 1, truncated: false });
   });
 
   it("task_stop 调 client.stop()，status=stopped", async () => {
-    const root = await tempRoot();
-    const core = createControllableCore();
+    const root = await tempRoot("owc-bg-");
+    const core = makeControllableCore();
     const registry = new BackgroundTaskRegistry(
       () => core.client,
       async () => undefined,
@@ -216,12 +117,12 @@ describe("BackgroundTaskRegistry", () => {
     const entry = registry.get("task-001");
     expect(entry?.status).toBe("stopped");
     expect(entry?.finishedAt).toBeTruthy();
-    expect(core.stopCalled()).toBe(true);
+    expect(core.stopped()).toBe(true);
   });
 
   it("任务完成后下一轮 system 含完成提示，再下一轮不含（读后即清）", async () => {
-    const root = await tempRoot();
-    const core = createControllableCore();
+    const root = await tempRoot("owc-bg-");
+    const core = makeControllableCore();
     const registry = new BackgroundTaskRegistry(
       () => core.client,
       async () => undefined,
@@ -253,8 +154,8 @@ describe("BackgroundTaskRegistry", () => {
   });
 
   it("run reject → status=failed", async () => {
-    const root = await tempRoot();
-    const core = createControllableCore();
+    const root = await tempRoot("owc-bg-");
+    const core = makeControllableCore();
     const registry = new BackgroundTaskRegistry(
       () => core.client,
       async () => undefined,
@@ -281,9 +182,9 @@ describe("BackgroundTaskRegistry", () => {
   });
 
   it("listForSession 返回该会话的任务列表", async () => {
-    const root = await tempRoot();
-    const core1 = createControllableCore();
-    const core2 = createControllableCore();
+    const root = await tempRoot("owc-bg-");
+    const core1 = makeControllableCore();
+    const core2 = makeControllableCore();
     let callCount = 0;
     const registry = new BackgroundTaskRegistry(
       () => {
@@ -309,9 +210,9 @@ describe("BackgroundTaskRegistry", () => {
   });
 
   it("stopForSession 停止该会话所有任务", async () => {
-    const root = await tempRoot();
-    const core1 = createControllableCore();
-    const core2 = createControllableCore();
+    const root = await tempRoot("owc-bg-");
+    const core1 = makeControllableCore();
+    const core2 = makeControllableCore();
     let callCount = 0;
     const registry = new BackgroundTaskRegistry(
       () => {
@@ -332,9 +233,9 @@ describe("BackgroundTaskRegistry", () => {
   });
 
   it("shutdown 清理所有任务", async () => {
-    const root = await tempRoot();
-    const core1 = createControllableCore();
-    const core2 = createControllableCore();
+    const root = await tempRoot("owc-bg-");
+    const core1 = makeControllableCore();
+    const core2 = makeControllableCore();
     let callCount = 0;
     const registry = new BackgroundTaskRegistry(
       () => {
@@ -351,13 +252,13 @@ describe("BackgroundTaskRegistry", () => {
 
     expect(registry.listForSession("s1")).toHaveLength(0);
     expect(registry.listForSession("s2")).toHaveLength(0);
-    expect(core1.stopCalled()).toBe(true);
-    expect(core2.stopCalled()).toBe(true);
+    expect(core1.stopped()).toBe(true);
+    expect(core2.stopped()).toBe(true);
   });
 
   it("环形缓冲截断：推送 >256KB 输出，get 返回 truncated", async () => {
-    const root = await tempRoot();
-    const core = createControllableCore();
+    const root = await tempRoot("owc-bg-");
+    const core = makeControllableCore();
     const registry = new BackgroundTaskRegistry(
       () => core.client,
       async () => undefined,
@@ -387,8 +288,8 @@ describe("BackgroundTaskRegistry", () => {
   });
 
   it("onFinished 回调在任务完成时触发", async () => {
-    const root = await tempRoot();
-    const core = createControllableCore();
+    const root = await tempRoot("owc-bg-");
+    const core = makeControllableCore();
     const onFinished = vi.fn();
     const registry = new BackgroundTaskRegistry(
       () => core.client,
@@ -419,8 +320,8 @@ describe("BackgroundTaskRegistry", () => {
   });
 
   it("已完成任务 stop 返回 true 但不改变状态", async () => {
-    const root = await tempRoot();
-    const core = createControllableCore();
+    const root = await tempRoot("owc-bg-");
+    const core = makeControllableCore();
     const registry = new BackgroundTaskRegistry(
       () => core.client,
       async () => undefined,
@@ -460,23 +361,9 @@ describe("BackgroundTaskRegistry", () => {
   });
 });
 
-/** 轮询断言直到通过或超时（后台任务终态由外部 release 驱动） */
-async function until(assertion: () => void, timeoutMs = 5000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    try {
-      assertion();
-      return;
-    } catch (error) {
-      if (Date.now() >= deadline) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-  }
-}
-
 describe("background bash — executeTool 与 REST 路径", () => {
   async function setupE2E(options?: { sandboxMode?: SandboxMode; withoutRegistry?: boolean }) {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-bg-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const session = await sessions.create({
@@ -489,10 +376,10 @@ describe("background bash — executeTool 与 REST 路径", () => {
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));
     await pricing.initialize();
     const events = new EventBus();
-    const cores: Array<ReturnType<typeof createControllableCore>> = [];
+    const cores: ControllableCore[] = [];
     const registry = new BackgroundTaskRegistry(
       () => {
-        const controllable = createControllableCore();
+        const controllable = makeControllableCore();
         cores.push(controllable);
         return controllable.client;
       },
@@ -511,7 +398,7 @@ describe("background bash — executeTool 与 REST 路径", () => {
     };
     const providers = new ProviderRegistry();
     providers.register(provider);
-    const mainCore = createControllableCore().client;
+    const mainCore = makeControllableCore().client;
     const agent = new AgentRunner(
       sessions, providers, mainCore, events, pricing,
       undefined, "zh-CN", 50, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
@@ -599,7 +486,7 @@ describe("background bash — executeTool 与 REST 路径", () => {
 
 describe("BackgroundTaskRegistry — 启动失败与超时", () => {
   it("core 启动/配置失败：移除 entry、stop client 并抛错，不泄漏任务", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-bg-");
     let stopped = false;
     const failingClient = {
       on() { return failingClient; },
@@ -620,8 +507,8 @@ describe("BackgroundTaskRegistry — 启动失败与超时", () => {
   });
 
   it("configureSession 失败同样清理 entry 与 client", async () => {
-    const root = await tempRoot();
-    const core = createControllableCore();
+    const root = await tempRoot("owc-bg-");
+    const core = makeControllableCore();
     const registry = new BackgroundTaskRegistry(
       () => core.client,
       async () => { throw new Error("configure failed"); },
@@ -630,13 +517,13 @@ describe("BackgroundTaskRegistry — 启动失败与超时", () => {
     await expect(registry.start({ sessionId: "s1", taskId: "task-bad", cmd: "x", cwd: root }))
       .rejects.toThrow("configure failed");
     expect(registry.get("task-bad")).toBeUndefined();
-    expect(core.stopCalled()).toBe(true);
+    expect(core.stopped()).toBe(true);
   });
 
   it("start 的 timeoutMs 透传到 core run（后台任务长超时不被默认 RPC 超时杀连接）", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-bg-");
     const requests: Array<{ timeoutMs?: number }> = [];
-    const core = createControllableCore();
+    const core = makeControllableCore();
     const runClient = {
       ...core.client,
       async run(request: { timeoutMs?: number }) {

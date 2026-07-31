@@ -1,36 +1,10 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { AgentRunner } from "../src/agent/agent-runner.js";
-import { buildServer } from "../src/app.js";
+import { describe, expect, it } from "vitest";
 import { ModelRegistry } from "../src/context/model-registry.js";
-import { CoreClient } from "../src/core-client.js";
 import { PricingCatalog, type SyncResult } from "../src/cost/pricing-catalog.js";
-import { EventBus, type AppEvent } from "../src/events/event-bus.js";
-import { ProviderRegistry } from "../src/providers/provider.js";
-import { SessionStore } from "../src/sessions/session-store.js";
-import { SettingsService } from "../src/settings-service.js";
 import type { ProviderProfilesRuntime } from "../src/provider-profiles-runtime.js";
-
-const roots: string[] = [];
-
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-});
-
-type FetchRoute = { match: string; body: unknown };
-
-function fetchStub(routes: FetchRoute[], seen: string[] = []): typeof fetch {
-  return (async (input: RequestInfo | URL) => {
-    const url = String(input);
-    seen.push(url);
-    const route = routes.find((candidate) => url.startsWith(candidate.match));
-    return route
-      ? new Response(JSON.stringify(route.body), { headers: { "content-type": "application/json" } })
-      : new Response("not found", { status: 404 });
-  }) as typeof fetch;
-}
+import { fetchStub, type FetchRoute } from "./helpers/fetch-stub.js";
+import { makeTestApp } from "./helpers/test-app.js";
 
 class StubSyncPricingCatalog extends PricingCatalog {
   readonly syncedUrls: string[] = [];
@@ -51,40 +25,30 @@ async function fixture(options: {
   fetchRoutes?: FetchRoute[];
   pricingResult?: SyncResult;
 } = {}) {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-model-sync-api-"));
-  roots.push(root);
-  const sessions = new SessionStore(path.join(root, "sessions"));
-  await sessions.initialize();
-  const pricing = new StubSyncPricingCatalog(
-    path.join(root, "model-pricing.json"),
-    options.pricingResult ?? { ok: true, count: 2, updatedAt: "2026-07-21T12:00:00.000Z" },
-  );
-  await pricing.initialize();
-  const providers = new ProviderRegistry();
-  const events = new EventBus();
-  const observed: AppEvent[] = [];
-  events.on("event", (event: AppEvent) => observed.push(event));
-  const core = new CoreClient(path.join(root, "unused-core"));
-  const agent = new AgentRunner(sessions, providers, core, events, pricing);
-  const settings = await SettingsService.load({
-    env: {
+  const seen: string[] = [];
+  const setup = await makeTestApp({
+    tempPrefix: "owc-model-sync-api-",
+    pricing: (root) => new StubSyncPricingCatalog(
+      path.join(root, "model-pricing.json"),
+      options.pricingResult ?? { ok: true, count: 2, updatedAt: "2026-07-21T12:00:00.000Z" },
+    ),
+    agent: "real",
+    core: "real",
+    settingsEnv: {
       ...(options.catalogSyncUrl ? { OWC_MODELS_CATALOG_SYNC_URL: options.catalogSyncUrl } : {}),
       ...(options.pricingSyncUrl ? { OWC_MODELS_PRICING_SYNC_URL: options.pricingSyncUrl } : {}),
     },
-    filePath: path.join(root, "server-settings.json"),
+    models: (root, events) => ModelRegistry.load({
+      snapshotPath: path.join(root, "models.json"),
+      manualPath: path.join(root, "models.manual.json"),
+      fetchImpl: fetchStub(options.fetchRoutes ?? [], seen),
+      onUpdated: () => events.publish({ source: "server", type: "models.updated", payload: {} }),
+    }),
+    providerProfilesRuntime: (models) => ({
+      refreshModels: () => models!.refresh({ providers: [{ provider: "anthropic", interfaceType: "anthropic-messages", apiKey: "sk-route-test" }] }),
+    }) as unknown as ProviderProfilesRuntime,
   });
-  const seen: string[] = [];
-  const models = await ModelRegistry.load({
-    snapshotPath: path.join(root, "models.json"),
-    manualPath: path.join(root, "models.manual.json"),
-    fetchImpl: fetchStub(options.fetchRoutes ?? [], seen),
-    onUpdated: () => events.publish({ source: "server", type: "models.updated", payload: {} }),
-  });
-  const providerProfilesRuntime = {
-    refreshModels: () => models.refresh({ providers: [{ provider: "anthropic", interfaceType: "anthropic-messages", apiKey: "sk-route-test" }] }),
-  } as unknown as ProviderProfilesRuntime;
-  const app = await buildServer({ core, sessions, agent, events, providers, pricing, settings, models, providerProfilesRuntime });
-  return { app, models, pricing, observed, seen };
+  return { app: setup.app, models: setup.models!, pricing: setup.pricing, observed: setup.observed, seen };
 }
 
 describe("model sync API", () => {

@@ -1,10 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { EvalPanel } from "../components/panels/EvalPanel";
 import { BottomPanel } from "../components/BottomPanel";
 import { I18nProvider } from "../i18n";
 import { api } from "../lib/api";
+import { renderWithClient } from "./helpers/with-client";
 
 const { report } = vi.hoisted(() => ({ report: {
   runId: "eval-11111111-1111-4111-8111-111111111111",
@@ -37,8 +37,7 @@ vi.mock("../lib/api", () => ({
 }));
 
 function wrapper(children: React.ReactNode) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={client}><I18nProvider>{children}</I18nProvider></QueryClientProvider>);
+  return renderWithClient(<I18nProvider>{children}</I18nProvider>);
 }
 
 describe("EvalPanel（0.5.0 Phase 3）", () => {

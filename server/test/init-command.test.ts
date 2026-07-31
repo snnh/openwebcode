@@ -1,7 +1,5 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { INIT_COMMAND_PROMPT } from "../src/agent/prompts/init-prompt.js";
 import { buildServer } from "../src/app.js";
@@ -11,30 +9,9 @@ import { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { makeStubProvider } from "./helpers/stub-provider.js";
+import { tempRootRetry } from "./helpers/temp-dir.js";
 
-const roots: string[] = [];
-
-/** rm 带重试：agent 首轮落盘（sessions/<id>/runs/）可能与 afterEach 清理竞态，
- * Windows 上文件句柄释放滞后导致 ENOTEMPTY，需等写完后重试（同 hooks.test.ts）。 */
-async function rmWithRetry(target: string, retries = 15, delayMs = 500): Promise<void> {
-  for (let i = 0; i < retries; i++) {
-    try {
-      await rm(target, { recursive: true, force: true });
-      return;
-    } catch (error) {
-      if (i === retries - 1) throw error;
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-    }
-  }
-}
-
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rmWithRetry(root))));
-
-async function tempRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-init-"));
-  roots.push(root);
-  return root;
-}
+const tempRoot = (): Promise<string> => tempRootRetry("owc-init-");
 
 async function waitForUserMessage(sessions: SessionStore, id: string, timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;

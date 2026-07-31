@@ -1,11 +1,8 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import os from "node:os";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { PricingCatalog, type PricingDocument } from "../src/cost/pricing-catalog.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
+import { tempRoot } from "./helpers/temp-roots.js";
 
 function document(entries: PricingDocument["entries"]): PricingDocument {
   return { version: 1, updatedAt: "2026-07-14T00:00:00.000Z", entries };
@@ -33,8 +30,7 @@ function deferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => voi
 
 describe("PricingCatalog", () => {
   it("seeds JSON and switches pricing by effective interval", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-pricing-"));
-    roots.push(root);
+    const root = await tempRoot("owc-pricing-");
     const file = path.join(root, "model-pricing.json");
     const catalog = new PricingCatalog(file);
     await catalog.initialize();
@@ -53,8 +49,7 @@ describe("PricingCatalog", () => {
   });
 
   it("isolates pricing by provider and hot-replaces future lookups", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-pricing-"));
-    roots.push(root);
+    const root = await tempRoot("owc-pricing-");
     const catalog = new PricingCatalog(path.join(root, "model-pricing.json"));
     await catalog.initialize();
     expect(catalog.get("openai", "claude-opus-4-8")).toBeUndefined();
@@ -66,8 +61,7 @@ describe("PricingCatalog", () => {
   });
 
   it("falls back to built-in pricing when the persisted JSON is damaged", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-pricing-"));
-    roots.push(root);
+    const root = await tempRoot("owc-pricing-");
     const file = path.join(root, "model-pricing.json");
     await import("node:fs/promises").then(({ writeFile }) => writeFile(file, "{broken", "utf8"));
     const catalog = new PricingCatalog(file);
@@ -76,16 +70,14 @@ describe("PricingCatalog", () => {
   });
 
   it("rejects normalized but nonexistent calendar dates", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-pricing-"));
-    roots.push(root);
+    const root = await tempRoot("owc-pricing-");
     const catalog = new PricingCatalog(path.join(root, "model-pricing.json"));
     await catalog.initialize();
     await expect(catalog.replace(document([entry("anthropic", "x", "2026-02-30")]))).rejects.toThrow("valid YYYY-MM-DD");
   });
 
   it("rejects overlapping intervals without replacing the active catalog", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-pricing-"));
-    roots.push(root);
+    const root = await tempRoot("owc-pricing-");
     const catalog = new PricingCatalog(path.join(root, "model-pricing.json"));
     await catalog.initialize();
     const before = catalog.list();
@@ -98,8 +90,7 @@ describe("PricingCatalog", () => {
   });
 
   it("syncs a valid remote pricing document atomically", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-pricing-"));
-    roots.push(root);
+    const root = await tempRoot("owc-pricing-");
     const catalog = new PricingCatalog(path.join(root, "model-pricing.json"));
     await catalog.initialize();
     const remote = {
@@ -132,8 +123,7 @@ describe("PricingCatalog", () => {
       entry("anthropic", "x", "2026-09-01"),
     ]))), "overlap"],
   ])("does not replace the active catalog when remote data has %s", async (_name, response, message) => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-pricing-"));
-    roots.push(root);
+    const root = await tempRoot("owc-pricing-");
     const catalog = new PricingCatalog(path.join(root, "model-pricing.json"));
     await catalog.initialize();
     const before = catalog.list();
@@ -151,8 +141,7 @@ describe("PricingCatalog", () => {
   });
 
   it("does not replace the active catalog when the remote request fails", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-pricing-"));
-    roots.push(root);
+    const root = await tempRoot("owc-pricing-");
     const catalog = new PricingCatalog(path.join(root, "model-pricing.json"));
     await catalog.initialize();
     const before = catalog.list();
@@ -166,8 +155,7 @@ describe("PricingCatalog", () => {
   });
 
   it("serializes concurrent remote syncs so the later invocation wins", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-pricing-"));
-    roots.push(root);
+    const root = await tempRoot("owc-pricing-");
     const catalog = new PricingCatalog(path.join(root, "model-pricing.json"));
     await catalog.initialize();
     const firstStarted = deferred();

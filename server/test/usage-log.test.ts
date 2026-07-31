@@ -1,7 +1,7 @@
-import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
 import { CoreClient } from "../src/core-client.js";
@@ -10,18 +10,7 @@ import { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { UsageLog, type UsageEventRecord } from "../src/usage-log.js";
-
-const roots: string[] = [];
-
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-});
-
-async function tempDir(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-usage-"));
-  roots.push(root);
-  return root;
-}
+import { tempRoot } from "./helpers/temp-roots.js";
 
 /** 用本地时间构造，保证报表的本地日期分桶与测试环境时区无关。 */
 function eventAt(local: Date, overrides: Partial<UsageEventRecord> = {}): UsageEventRecord {
@@ -43,7 +32,7 @@ function eventAt(local: Date, overrides: Partial<UsageEventRecord> = {}): UsageE
 
 describe("usage log cost report", () => {
   it("aggregates per-day, per-session and per-provider breakdowns", async () => {
-    const log = new UsageLog(await tempDir());
+    const log = new UsageLog(await tempRoot("owc-usage-"));
     const day1 = new Date(2026, 6, 10, 9, 0, 0);
     const day2 = new Date(2026, 6, 11, 9, 0, 0);
     await log.record(eventAt(day1));
@@ -76,7 +65,7 @@ describe("usage log cost report", () => {
   });
 
   it("filters by inclusive local date range", async () => {
-    const log = new UsageLog(await tempDir());
+    const log = new UsageLog(await tempRoot("owc-usage-"));
     const inside = new Date(2026, 6, 10, 12, 0, 0);
     const outside = new Date(2026, 6, 20, 12, 0, 0);
     await log.record(eventAt(inside));
@@ -92,7 +81,7 @@ describe("usage log cost report", () => {
   });
 
   it("skips corrupt lines and returns an empty report without a file", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-usage-");
     const missing = new UsageLog(path.join(root, "nothing"));
     const empty = await missing.report();
     expect(empty.totals.runs).toBe(0);
@@ -106,7 +95,7 @@ describe("usage log cost report", () => {
   });
 
   it("keeps recording after a transient write failure", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-usage-");
     const blocker = path.join(root, "blocked");
     // 用文件占据数据目录路径，使第一次 appendFile 必失败（ENOTDIR）
     await writeFile(blocker, "x", "utf8");
@@ -119,7 +108,7 @@ describe("usage log cost report", () => {
   });
 
   it("serves the report over HTTP with session titles and currency preference", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-usage-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const pricing = new PricingCatalog(path.join(root, "model-pricing.json"));

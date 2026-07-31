@@ -1,6 +1,5 @@
 import { createServer, type Server } from "node:http";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
@@ -12,20 +11,13 @@ import { connectMcpServer, MCP_ENV_PASSTHROUGH, minimalChildEnv } from "../src/m
 import { McpManager } from "../src/mcp/manager.js";
 import { ProviderRegistry, type Provider } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
-const roots: string[] = [];
 const servers: Server[] = [];
 
 afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
   await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
 });
-
-async function tempDir(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-mcp-"));
-  roots.push(root);
-  return root;
-}
 
 const FIXTURE = path.join(__dirname, "fixtures", "fake-mcp-server.mjs");
 const ENV_FIXTURE = path.join(__dirname, "fixtures", "fake-mcp-env.mjs");
@@ -39,7 +31,7 @@ async function writeConfig(dir: string, relative: string, config: unknown): Prom
 
 describe("MCP config loading", () => {
   it("merges global and project configs, project wins; invalid entries are skipped", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-mcp-");
     const cwd = path.join(root, "work");
     await writeConfig(root, "mcp.json", { mcpServers: { alpha: STDIO_CONFIG, shared: STDIO_CONFIG, broken: { nonsense: 1 } } });
     await writeConfig(cwd, path.join(".owc", "mcp.json"), { mcpServers: { shared: { url: "http://127.0.0.1:9/mcp" } } });
@@ -124,7 +116,7 @@ describe("MCP streamable HTTP client", () => {
 
 describe("McpManager", () => {
   it("injects namespaced tools, degrades failed servers and routes calls", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-mcp-");
     await writeConfig(root, "mcp.json", {
       mcpServers: {
         fake: STDIO_CONFIG,
@@ -149,7 +141,7 @@ describe("McpManager", () => {
   });
 
   it("keeps tool bindings across concurrent cwds", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-mcp-");
     const cwdA = path.join(root, "a");
     const cwdB = path.join(root, "b");
     await writeConfig(cwdA, path.join(".owc", "mcp.json"), { mcpServers: { fake: STDIO_CONFIG } });
@@ -168,7 +160,7 @@ describe("McpManager", () => {
   });
 
   it("does not confuse adjacent workspace paths when one configuration is reloaded", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-mcp-");
     const cwd = path.join(root, "repo");
     const adjacent = path.join(root, "repo-old");
     await writeConfig(cwd, path.join(".owc", "mcp.json"), { mcpServers: { current: STDIO_CONFIG } });
@@ -186,7 +178,7 @@ describe("McpManager", () => {
   });
 
   it("reconnects after config change and after idle sweep", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-mcp-");
     await writeConfig(root, "mcp.json", { mcpServers: { fake: STDIO_CONFIG } });
     const manager = new McpManager(root, { timeoutMs: 10_000, idleMs: 50, sweepMs: 25 });
     try {
@@ -212,7 +204,7 @@ describe("McpManager", () => {
 
 describe("MCP tools in agent runs", () => {
   it("injects mcp tools into the provider call and executes them end to end", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-mcp-");
     await writeConfig(root, "mcp.json", { mcpServers: { fake: STDIO_CONFIG } });
     const sessions = new SessionStore(path.join(root, "store", "sessions"));
     await sessions.initialize();
@@ -252,7 +244,7 @@ describe("MCP tools in agent runs", () => {
   });
 
   it("publishes mcp.degraded once per distinct warning set", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-mcp-");
     await writeConfig(root, "mcp.json", { mcpServers: { ghost: { command: "definitely-not-a-real-binary-owc" } } });
     const sessions = new SessionStore(path.join(root, "store", "sessions"));
     await sessions.initialize();

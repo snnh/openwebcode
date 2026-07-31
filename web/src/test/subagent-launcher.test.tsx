@@ -1,14 +1,10 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SubagentsPanel } from "../components/panels/SubagentsPanel";
 import { api, ApiError } from "../lib/api";
-import type { ReactElement } from "react";
+import { renderWithClient } from "./helpers/with-client";
 
-function renderPanel(node: ReactElement) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(<QueryClientProvider client={client}>{node}</QueryClientProvider>);
-}
+const renderPanel = renderWithClient;
 
 const AGENTS = {
   agents: [

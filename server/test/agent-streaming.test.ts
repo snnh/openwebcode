@@ -1,32 +1,25 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
-import type { CoreClient } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
+import { makeFakeCore } from "./helpers/fake-core.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
 describe("AgentRunner live streaming", () => {
   it("publishes deltas during the stream with tool_call_delta and a reset on retry", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-agent-live-"));
-    roots.push(root);
+    const root = await tempRoot("owc-agent-live-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const session = await sessions.create({ cwd: root, provider: "live", model: "claude-opus-4-8" });
     await sessions.updatePermissions(session.id, "yolo", []);
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));
     await pricing.initialize();
-    const core = {
-      on() { return core; },
-      async configureSession() { return { sandboxCapability: "advisory" }; },
-      async readFile() { return { content: "file", totalLines: 1, encoding: "utf-8", truncated: false }; },
-    } as unknown as CoreClient;
+    const core = makeFakeCore({
+      async readFile() { return { content: "file", totalLines: 1, encoding: "utf-8" as const, truncated: false }; },
+    });
 
     let attempt = 0;
     const provider: Provider = {

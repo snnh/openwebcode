@@ -1,7 +1,6 @@
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   applyManagedWorkspaceSync,
   createManagedWorkspaceSyncBaseline,
@@ -9,13 +8,10 @@ import {
   previewManagedWorkspaceSync,
   type ManagedWorkspaceSyncRoots,
 } from "../src/snapshots/managed-sync.js";
-
-const rootsToRemove: string[] = [];
-afterEach(async () => Promise.all(rootsToRemove.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
+import { tempRoot } from "./helpers/temp-roots.js";
 
 async function fixture(): Promise<ManagedWorkspaceSyncRoots> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-managed-sync-"));
-  rootsToRemove.push(root);
+  const root = await tempRoot("owc-managed-sync-");
   const originCwd = path.join(root, "origin");
   const workspaceRoot = path.join(root, "workspaces", "sync-session");
   const mountPoint = path.join(root, "mnt", "sync-session");

@@ -1,20 +1,12 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { App } from "../App";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { EmptyState } from "../components/EmptyState";
-import type { SessionDetail } from "../lib/contracts";
+import { installAppFetchMock } from "./helpers/app-fetch-mock";
+import { makeSession } from "./helpers/fixtures";
+import { setupStubWebSocket } from "./helpers/stub-websocket";
+import { renderApp } from "./helpers/with-client";
 
-const session: SessionDetail = {
-  id: "s1",
-  cwd: "/workspace/project",
-  provider: "anthropic",
-  model: "claude-opus-4-8",
-  title: "测试作业",
-  createdAt: "2026-07-17T00:00:00.000Z",
-  updatedAt: "2026-07-17T00:00:00.000Z",
-  messages: [],
-};
+const session = makeSession();
 
 interface RecordedCall { url: string; method: string }
 
@@ -22,56 +14,26 @@ const calls: RecordedCall[] = [];
 
 function installFetchMock(): void {
   calls.length = 0;
-  const handler = vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+  installAppFetchMock({ session, models: [] });
+  // 包一层记录 method（DELETE/POST 断言需要）；GET/DELETE 路由仍走标准 mock
+  const inner = globalThis.fetch;
+  vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = typeof input === "string" ? input : input.toString();
-    const method = init?.method ?? "GET";
-    calls.push({ url, method });
-    const json = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-    if (url.endsWith("/api/sessions") && method === "GET") return json([{ id: session.id, cwd: session.cwd, provider: session.provider, model: session.model, title: session.title, createdAt: session.createdAt, updatedAt: session.updatedAt }]);
-    if (url.endsWith("/api/models")) return json([]);
-    if (url.endsWith("/api/providers")) return json(["anthropic"]);
-    if (url.includes("/api/sessions/s1/steering")) return json([]);
-    if (url.includes("/api/sessions/s1/permissions")) return json([]);
-    if (url.match(/\/api\/sessions\/s1(\?.*)?$/) && method === "DELETE") return json({}, 200);
-    if (url.match(/\/api\/sessions\/s1(\?.*)?$/)) return json(session);
-    return json({}, 404);
+    calls.push({ url, method: init?.method ?? "GET" });
+    return inner(input, init);
   });
-  vi.stubGlobal("fetch", handler);
 }
 
+setupStubWebSocket();
+
 describe("App 会话操作与 /help", () => {
-  let originalWebSocket: typeof WebSocket;
   beforeEach(() => {
     window.localStorage.clear();
-    originalWebSocket = globalThis.WebSocket;
-    class StubWebSocket {
-      onopen: (() => void) | null = null;
-      onmessage: ((ev: MessageEvent) => void) | null = null;
-      onclose: (() => void) | null = null;
-      close(): void { /* no-op */ }
-    }
-    vi.stubGlobal("WebSocket", StubWebSocket);
-    if (!window.matchMedia) {
-      window.matchMedia = ((query: string) => ({ matches: false, media: query, onchange: null, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {}, dispatchEvent() { return false; } })) as unknown as typeof window.matchMedia;
-    }
     HTMLDialogElement.prototype.showModal = function showModal(this: HTMLDialogElement) { this.open = true; };
     HTMLDialogElement.prototype.close = function close(this: HTMLDialogElement) { this.open = false; };
     // jsdom 无布局：Composer 弹层/轨道的滚动定位打桩
     Element.prototype.scrollIntoView = function scrollIntoView() { /* no-op */ };
   });
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    globalThis.WebSocket = originalWebSocket;
-  });
-
-  function renderApp(): void {
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
-    render(
-      <QueryClientProvider client={client}>
-        <App />
-      </QueryClientProvider>,
-    );
-  }
 
   it("/help：打开快捷键速查、清空草稿、不发送消息", async () => {
     installFetchMock();

@@ -1,50 +1,32 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { App } from "../App";
-import type { ModelProfile, SessionDetail } from "../lib/contracts";
+import { installAppFetchMock } from "./helpers/app-fetch-mock";
+import { FakeFitAddon, FakeTerminal } from "./helpers/fake-xterm";
+import { makeSession } from "./helpers/fixtures";
+import { renderApp } from "./helpers/with-client";
+
+vi.mock("../components/xterm-loader", () => ({
+  loadXterm: () => Promise.resolve({ Terminal: FakeTerminal, FitAddon: FakeFitAddon }),
+}));
 
 const s1Text = "处理第一个任务";
 
-function makeSession(id: string, title: string, text: string): SessionDetail {
-  return {
-    id,
-    cwd: "/workspace/project",
-    provider: "anthropic",
-    model: "claude-opus-4-8",
-    title,
-    createdAt: "2026-07-28T00:00:00.000Z",
-    updatedAt: "2026-07-28T00:00:00.000Z",
-    sandbox: { enabled: true, readRoots: ["/workspace/project"], writeRoots: ["/workspace/project"], denyPaths: [], network: "deny" },
-    messages: [{ id: `user-${id}`, role: "user", createdAt: "2026-07-28T00:00:00.000Z", content: [{ type: "text", text }] }],
-  };
-}
-
-const session1 = makeSession("s1", "终端标签作业", s1Text);
-const sessions = [session1];
-
-const models: ModelProfile[] = [
-  { id: "claude-opus-4-8", provider: "anthropic", displayName: "Claude Opus 4.8", contextWindow: 128_000, maxOutput: 8_000, capabilities: { thinking: ["adaptive", "disabled"], effort: ["low", "high"], modalities: ["text"], imageOutput: false, tools: true } },
-];
+const session1 = makeSession({
+  id: "s1",
+  title: "终端标签作业",
+  createdAt: "2026-07-28T00:00:00.000Z",
+  updatedAt: "2026-07-28T00:00:00.000Z",
+  messages: [{ id: "user-s1", role: "user", createdAt: "2026-07-28T00:00:00.000Z", content: [{ type: "text", text: s1Text }] }],
+});
 
 function installFetchMock(): void {
-  const handler = vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const url = typeof input === "string" ? input : input.toString();
-    const json = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-    if (url.endsWith("/api/sessions")) return json(sessions.map(({ messages: _messages, sandbox: _sandbox, ...summary }) => summary));
-    if (url.includes("/context")) return json({ ledger: { usage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0 }, cost: { usdMicroUnits: "0", cnyMicroUnits: "0", unpricedTokens: 0 }, entries: [] }, preferences: { language: "zh-CN", currency: "CNY", currencyLabel: "￥" } });
-    if (url.endsWith("/api/models")) return json(models);
-    if (url.endsWith("/api/providers")) return json(["anthropic"]);
-    if (url.endsWith("/api/extensions")) return json([]);
-    if (url.endsWith("/api/settings")) return json({ groups: [] });
-    if (url.endsWith("/api/update-check")) return json({ snapshot: { latestVersion: "0.7.0", isNewer: false, htmlUrl: "", publishedAt: "", checkedAt: "" } });
-    if (url.endsWith("/api/health")) return json({ status: "ok" });
-    if (url.endsWith("/api/auth/status")) return json({ totpEnabled: false, authenticated: true, terminalAvailable: true, gateReasons: [] });
-    const detail = sessions.find((entry) => url.match(new RegExp(`/api/sessions/${entry.id}(\\?.*)?$`)));
-    if (detail) return json(detail);
-    return json({ error: "not mocked" }, 404);
+  installAppFetchMock({
+    session: session1,
+    extra: (url, json) => {
+      if (url.endsWith("/api/auth/status")) return json({ totpEnabled: false, authenticated: true, terminalAvailable: true, gateReasons: [] });
+      return undefined;
+    },
   });
-  vi.stubGlobal("fetch", handler);
 }
 
 interface StubSocket {
@@ -55,28 +37,6 @@ interface StubSocket {
   onmessage: ((ev: MessageEvent) => void) | null;
   onclose: (() => void) | null;
 }
-
-/** jsdom 无真实布局，xterm 以最小假实现替代（终端标签测试只关心 WS 连接建立） */
-class FakeTerminal {
-  cols = 80;
-  rows = 24;
-  options: Record<string, unknown>;
-  constructor(options: Record<string, unknown>) { this.options = options; }
-  loadAddon(): void { /* no-op */ }
-  open(): void { /* no-op */ }
-  write(): void { /* no-op */ }
-  onData(): { dispose(): void } { return { dispose: () => undefined }; }
-  onResize(): { dispose(): void } { return { dispose: () => undefined }; }
-  dispose(): void { /* no-op */ }
-}
-
-class FakeFitAddon {
-  fit = vi.fn();
-}
-
-vi.mock("../components/xterm-loader", () => ({
-  loadXterm: () => Promise.resolve({ Terminal: FakeTerminal, FitAddon: FakeFitAddon }),
-}));
 
 const sockets: StubSocket[] = [];
 let eventSeq = 0;
@@ -99,16 +59,12 @@ function stubMatchMedia(matches: boolean): void {
     matches,
     media: query,
     onchange: null,
-    addListener() {},
-    removeListener() {},
-    addEventListener() {},
-    removeEventListener() {},
+    addListener() { /* no-op */ },
+    removeListener() { /* no-op */ },
+    addEventListener() { /* no-op */ },
+    removeEventListener() { /* no-op */ },
     dispatchEvent() { return false; },
   })) as unknown as typeof window.matchMedia;
-}
-
-function makeClient(): QueryClient {
-  return new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
 }
 
 describe("App 终端标签", () => {
@@ -118,6 +74,7 @@ describe("App 终端标签", () => {
     sockets.length = 0;
     eventSeq = 0;
     originalWebSocket = globalThis.WebSocket;
+    // 需要追踪 url/sent（PTY 帧断言），公共 stub-websocket 不覆盖，保留本地实现
     class StubWebSocket implements StubSocket {
       readyState = 1;
       sent: string[] = [];
@@ -139,15 +96,15 @@ describe("App 终端标签", () => {
     globalThis.WebSocket = originalWebSocket;
   });
 
-  async function renderApp(): Promise<StubSocket> {
+  async function launchApp(): Promise<StubSocket> {
     installFetchMock();
-    render(<QueryClientProvider client={makeClient()}><App /></QueryClientProvider>);
+    renderApp();
     await screen.findByText(s1Text);
     return sockets[sockets.length - 1]!;
   }
 
   it("活动栏终端按钮打开并选中终端标签；关闭标签回主对话", async () => {
-    await renderApp();
+    await launchApp();
 
     fireEvent.click(screen.getByRole("button", { name: "终端" }));
     const tab = await screen.findByRole("tab", { name: "终端" });
@@ -171,7 +128,7 @@ describe("App 终端标签", () => {
   });
 
   it("选中互斥：subagent.started 后选子代理标签取消终端选中，再选终端清除子代理选中", async () => {
-    const socket = await renderApp();
+    const socket = await launchApp();
 
     fireEvent.click(screen.getByRole("button", { name: "终端" }));
     await screen.findByRole("tab", { name: "终端" });
@@ -194,7 +151,7 @@ describe("App 终端标签", () => {
   });
 
   it("终端标签打开后建立 PTY WebSocket 并上行 open 帧", async () => {
-    await renderApp();
+    await launchApp();
 
     fireEvent.click(screen.getByRole("button", { name: "终端" }));
     await screen.findByRole("tab", { name: "终端" });

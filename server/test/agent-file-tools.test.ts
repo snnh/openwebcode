@@ -1,22 +1,17 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
-import type { CoreClient } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { GitShadowSnapshots } from "../src/snapshots/git-shadow.js";
 import { SessionStore } from "../src/sessions/session-store.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
+import { makeFakeCore } from "./helpers/fake-core.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
 describe("AgentRunner file tools", () => {
   it("exposes and executes dedicated file tools through CoreClient", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-agent-fs-"));
-    roots.push(root);
+    const root = await tempRoot("owc-agent-fs-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const session = await sessions.create({ cwd: root, provider: "files", model: "claude-opus-4-8" });
@@ -24,11 +19,9 @@ describe("AgentRunner file tools", () => {
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));
     await pricing.initialize();
     const calls: Array<{ sessionId: string; path: string; oldText: string; newText: string }> = [];
-    const core = {
-      on() { return core; },
-      async configureSession() { return { sandboxCapability: "advisory" }; },
+    const core = makeFakeCore({
       async editFile(request: { sessionId: string; path: string; oldText: string; newText: string }) { calls.push(request); return { matches: 1 }; },
-    } as unknown as CoreClient;
+    });
     let turn = 0;
     const requests: StreamChatRequest[] = [];
     const provider: Provider = {
@@ -57,8 +50,7 @@ describe("AgentRunner file tools", () => {
   });
 
   it("defaults glob/grep path to the session root when omitted", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-agent-glob-"));
-    roots.push(root);
+    const root = await tempRoot("owc-agent-glob-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const session = await sessions.create({ cwd: root, provider: "files", model: "claude-opus-4-8" });
@@ -66,11 +58,9 @@ describe("AgentRunner file tools", () => {
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));
     await pricing.initialize();
     const calls: Array<{ sessionId: string; path: string; pattern: string }> = [];
-    const core = {
-      on() { return core; },
-      async configureSession() { return { sandboxCapability: "advisory" }; },
+    const core = makeFakeCore({
       async globFiles(request: { sessionId: string; path: string; pattern: string }) { calls.push(request); return { paths: ["a.ts"], truncated: false }; },
-    } as unknown as CoreClient;
+    });
     let turn = 0;
     const requests: StreamChatRequest[] = [];
     const provider: Provider = {

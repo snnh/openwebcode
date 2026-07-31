@@ -1,8 +1,6 @@
 import { EventEmitter } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import type { FastifyInstance } from "fastify";
 import type { AgentRunner } from "../src/agent/agent-runner.js";
@@ -13,9 +11,7 @@ import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
+import { tempRoot } from "./helpers/temp-roots.js";
 
 /** 造一个已启用 TOTP 的服务（setup→confirm 全程走真实校验） */
 async function makeEnabledTotp(root: string): Promise<TotpAuthService> {
@@ -123,10 +119,24 @@ function nextFrame(socket: WebSocket): Promise<Record<string, unknown>> {
   });
 }
 
+/** 连接终端 WS 并完成 open 握手（send open → expect opened），返回可用 socket */
+async function openTerminal(
+  port: number,
+  sessionId: string,
+  headers: Record<string, string>,
+  size: { cols: number; rows: number } = { cols: 80, rows: 24 },
+): Promise<WebSocket> {
+  const { socket, closeCode } = await connectTerminal(`ws://127.0.0.1:${port}/api/sessions/${sessionId}/terminal`, headers);
+  expect(closeCode).toBeUndefined();
+  const openedFrame = nextFrame(socket);
+  socket.send(JSON.stringify({ type: "open", ...size }));
+  expect(await openedFrame).toEqual({ type: "opened" });
+  return socket;
+}
+
 describe("terminal WS 桥（/api/sessions/:id/terminal）", () => {
   it("TOTP 未开启时拒绝（1008 Terminal is unavailable）", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-terminal-"));
-    roots.push(root);
+    const root = await tempRoot("owc-terminal-");
     const { app, sessions } = await buildTerminalApp(root, { core: makeFakeCore().core });
     try {
       const session = await sessions.create({ cwd: root });
@@ -140,8 +150,7 @@ describe("terminal WS 桥（/api/sessions/:id/terminal）", () => {
   });
 
   it("非回环/局域网监听地址拒绝（1008），即使凭据有效", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-terminal-"));
-    roots.push(root);
+    const root = await tempRoot("owc-terminal-");
     const totp = await makeEnabledTotp(root);
     const { app, sessions } = await buildTerminalApp(root, { totp, listenHost: "0.0.0.0", core: makeFakeCore().core });
     try {
@@ -157,8 +166,7 @@ describe("terminal WS 桥（/api/sessions/:id/terminal）", () => {
   });
 
   it("TOTP 启用后无凭据拒绝（1008 Unauthorized）", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-terminal-"));
-    roots.push(root);
+    const root = await tempRoot("owc-terminal-");
     const totp = await makeEnabledTotp(root);
     const { app, sessions } = await buildTerminalApp(root, { totp, core: makeFakeCore().core });
     try {
@@ -172,23 +180,49 @@ describe("terminal WS 桥（/api/sessions/:id/terminal）", () => {
     }
   });
 
-  it("TOTP cookie 通道：open/in/resize/exit 全链路，sandbox 强制 false 且 cwd 取会话根", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-terminal-"));
-    roots.push(root);
+  it("bearer 通道（accessToken + 合法 Origin）同样可以开终端", async () => {
+    const root = await tempRoot("owc-terminal-");
     const totp = await makeEnabledTotp(root);
+    const accessToken = "a".repeat(32);
     const fake = makeFakeCore();
-    const { app, sessions } = await buildTerminalApp(root, { totp, core: fake.core });
+    const { app, sessions } = await buildTerminalApp(root, { totp, accessToken, core: fake.core });
     try {
       const session = await sessions.create({ cwd: root });
       const port = await listenPort(app);
-      const cookie = `owc_totp_session=${encodeURIComponent(totp.issueTicket())}`;
-      const { socket, closeCode } = await connectTerminal(`ws://127.0.0.1:${port}/api/sessions/${session.id}/terminal`, { cookie });
-      expect(closeCode).toBeUndefined();
+      const headers = { authorization: `Bearer ${accessToken}`, origin: "https://owc.example.test" };
+      const socket = await openTerminal(port, session.id, headers);
+      expect(fake.calls.open).toHaveLength(1);
+      socket.close();
+    } finally {
+      await app.close();
+    }
+  });
 
-      // open → opened，openPty 参数校验
-      const openedFrame = nextFrame(socket);
-      socket.send(JSON.stringify({ type: "open", cols: 80, rows: 24 }));
-      expect(await openedFrame).toEqual({ type: "opened" });
+  describe("TOTP cookie 通道", () => {
+    let root: string;
+    let fake: FakeCore;
+    let app: FastifyInstance;
+    let session: { id: string; cwd: string };
+    let port: number;
+    let cookie: string;
+
+    beforeEach(async () => {
+      root = await tempRoot("owc-terminal-");
+      const totp = await makeEnabledTotp(root);
+      fake = makeFakeCore();
+      let sessions: SessionStore;
+      ({ app, sessions } = await buildTerminalApp(root, { totp, core: fake.core }));
+      session = await sessions.create({ cwd: root });
+      port = await listenPort(app);
+      cookie = `owc_totp_session=${encodeURIComponent(totp.issueTicket())}`;
+    });
+
+    afterEach(async () => {
+      await app.close();
+    });
+
+    it("open/in/resize/exit 全链路，sandbox 强制 false 且 cwd 取会话根", async () => {
+      const socket = await openTerminal(port, session.id, { cookie });
       expect(fake.calls.open).toHaveLength(1);
       const openRequest = fake.calls.open[0]!;
       expect(openRequest.session).toBe(session.id);
@@ -226,96 +260,37 @@ describe("terminal WS 桥（/api/sessions/:id/terminal）", () => {
       expect(await exitFrame).toEqual({ type: "exit", code: 0 });
       await vi.waitFor(() => expect(fake.calls.close).toEqual([ptyId]));
       socket.close();
-    } finally {
-      await app.close();
-    }
-  });
+    });
 
-  it("bearer 通道（accessToken + 合法 Origin）同样可以开终端", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-terminal-"));
-    roots.push(root);
-    const totp = await makeEnabledTotp(root);
-    const accessToken = "a".repeat(32);
-    const fake = makeFakeCore();
-    const { app, sessions } = await buildTerminalApp(root, { totp, accessToken, core: fake.core });
-    try {
-      const session = await sessions.create({ cwd: root });
-      const port = await listenPort(app);
-      const headers = { authorization: `Bearer ${accessToken}`, origin: "https://owc.example.test" };
-      const { socket, closeCode } = await connectTerminal(`ws://127.0.0.1:${port}/api/sessions/${session.id}/terminal`, headers);
-      expect(closeCode).toBeUndefined();
-      const openedFrame = nextFrame(socket);
-      socket.send(JSON.stringify({ type: "open", cols: 80, rows: 24 }));
-      expect(await openedFrame).toEqual({ type: "opened" });
-      expect(fake.calls.open).toHaveLength(1);
-      socket.close();
-    } finally {
-      await app.close();
-    }
-  });
-
-  it("WS 断开即回收 pty（closePty + removePtyEvents）", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-terminal-"));
-    roots.push(root);
-    const totp = await makeEnabledTotp(root);
-    const fake = makeFakeCore();
-    const { app, sessions } = await buildTerminalApp(root, { totp, core: fake.core });
-    try {
-      const session = await sessions.create({ cwd: root });
-      const port = await listenPort(app);
-      const cookie = `owc_totp_session=${encodeURIComponent(totp.issueTicket())}`;
-      const { socket } = await connectTerminal(`ws://127.0.0.1:${port}/api/sessions/${session.id}/terminal`, { cookie });
-      const openedFrame = nextFrame(socket);
-      socket.send(JSON.stringify({ type: "open", cols: 80, rows: 24 }));
-      expect(await openedFrame).toEqual({ type: "opened" });
+    it("WS 断开即回收 pty（closePty + removePtyEvents）", async () => {
+      const socket = await openTerminal(port, session.id, { cookie });
       socket.close();
       await vi.waitFor(() => {
         expect(fake.calls.close).toEqual([1]);
         expect(fake.calls.removed).toEqual([1]);
       });
-    } finally {
-      await app.close();
-    }
-  });
+    });
 
-  it("两个并发终端各自独立：output 路由到各自 socket，互不影响", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-terminal-"));
-    roots.push(root);
-    const totp = await makeEnabledTotp(root);
-    const fake = makeFakeCore();
-    const { app, sessions } = await buildTerminalApp(root, { totp, core: fake.core });
-    try {
-      const session = await sessions.create({ cwd: root });
-      const port = await listenPort(app);
-      const cookie = `owc_totp_session=${encodeURIComponent(totp.issueTicket())}`;
-      const url = `ws://127.0.0.1:${port}/api/sessions/${session.id}/terminal`;
-      const first = await connectTerminal(url, { cookie });
-      const second = await connectTerminal(url, { cookie });
-      const firstOpened = nextFrame(first.socket);
-      const secondOpened = nextFrame(second.socket);
-      first.socket.send(JSON.stringify({ type: "open", cols: 80, rows: 24 }));
-      second.socket.send(JSON.stringify({ type: "open", cols: 100, rows: 30 }));
-      expect(await firstOpened).toEqual({ type: "opened" });
-      expect(await secondOpened).toEqual({ type: "opened" });
+    it("两个并发终端各自独立：output 路由到各自 socket，互不影响", async () => {
+      const first = await openTerminal(port, session.id, { cookie });
+      const second = await openTerminal(port, session.id, { cookie }, { cols: 100, rows: 30 });
       expect(fake.calls.open).toHaveLength(2);
 
       // pty 2 的 output 只到达第二个 socket
-      const secondOut = nextFrame(second.socket);
+      const secondOut = nextFrame(second);
       fake.emitters.get(2)!.emit("output", { data: "dHdv" });
       expect(await secondOut).toEqual({ type: "out", data: "dHdv" });
-      const firstOut = nextFrame(first.socket);
+      const firstOut = nextFrame(first);
       fake.emitters.get(1)!.emit("output", { data: "b25l" });
       expect(await firstOut).toEqual({ type: "out", data: "b25l" });
 
       // 关掉第一个不影响第二个
-      first.socket.close();
+      first.close();
       await vi.waitFor(() => expect(fake.calls.close).toEqual([1]));
-      const secondOut2 = nextFrame(second.socket);
+      const secondOut2 = nextFrame(second);
       fake.emitters.get(2)!.emit("output", { data: "c3RpbGxhbGl2ZQ==" });
       expect(await secondOut2).toEqual({ type: "out", data: "c3RpbGxhbGl2ZQ==" });
-      second.socket.close();
-    } finally {
-      await app.close();
-    }
+      second.close();
+    });
   });
 });

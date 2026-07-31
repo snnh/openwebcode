@@ -1,27 +1,12 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, waitFor } from "@testing-library/react";
+import { waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SubagentTabView } from "../components/SubagentTabView";
 import { api } from "../lib/api";
-import type { ChatMessage, LiveSubagentRun, SubagentTranscript } from "../lib/contracts";
-import type { ReactElement } from "react";
+import type { ChatMessage, SubagentTranscript } from "../lib/contracts";
+import { makeSubagentRun } from "./helpers/fixtures";
+import { renderWithClient } from "./helpers/with-client";
 
-function renderView(node: ReactElement) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={client}>{node}</QueryClientProvider>);
-}
-
-function run(overrides: Partial<LiveSubagentRun>): LiveSubagentRun {
-  return {
-    taskId: "task-1",
-    toolCallId: "call-1",
-    prompt: "调查代码结构",
-    status: "running",
-    turns: 0,
-    toolsUsed: [],
-    ...overrides,
-  };
-}
+const run = makeSubagentRun;
 
 function transcriptOf(taskId: string, text: string): SubagentTranscript {
   const messages: ChatMessage[] = [
@@ -38,7 +23,7 @@ afterEach(() => {
 describe("SubagentTabView", () => {
   it("终态子代理标签拉取转录并用主对话同款 MessageCard 渲染消息", async () => {
     const spy = vi.spyOn(api, "subagentTranscript").mockResolvedValue(transcriptOf("task-1", "这是子代理的回答"));
-    const { container } = renderView(
+    const { container } = renderWithClient(
       <SubagentTabView sessionId="s-1" toolCallId="call-1" runs={{ "task-1": run({ status: "done", turns: 2, toolsUsed: ["read_file"] }) }} />,
     );
 
@@ -54,7 +39,7 @@ describe("SubagentTabView", () => {
 
   it("运行中的标签显示实时状态行与提示，不拉取转录", () => {
     const spy = vi.spyOn(api, "subagentTranscript");
-    const { container } = renderView(
+    const { container } = renderWithClient(
       <SubagentTabView sessionId="s-1" toolCallId="call-1" runs={{ "task-1": run({ status: "running", turns: 1 }) }} />,
     );
 
@@ -68,7 +53,7 @@ describe("SubagentTabView", () => {
     const spy = vi.spyOn(api, "subagentTranscript").mockImplementation((_sessionId: string, taskId: string) =>
       Promise.resolve(transcriptOf(taskId, `回答 ${taskId}`)),
     );
-    const { container } = renderView(
+    const { container } = renderWithClient(
       <SubagentTabView
         sessionId="s-1"
         toolCallId="call-9"
@@ -93,7 +78,7 @@ describe("SubagentTabView", () => {
 
   it("转录加载失败时显示错误提示", async () => {
     vi.spyOn(api, "subagentTranscript").mockRejectedValue(new Error("boom"));
-    const { container } = renderView(
+    const { container } = renderWithClient(
       <SubagentTabView sessionId="s-1" toolCallId="call-1" runs={{ "task-1": run({ status: "done" }) }} />,
     );
 
@@ -101,7 +86,7 @@ describe("SubagentTabView", () => {
   });
 
   it("标签对应的运行不在记录中时显示空态", () => {
-    const { container } = renderView(<SubagentTabView sessionId="s-1" toolCallId="call-x" runs={{}} />);
+    const { container } = renderWithClient(<SubagentTabView sessionId="s-1" toolCallId="call-x" runs={{}} />);
 
     expect(container.querySelector(".subagent-tab-empty")).toHaveTextContent("该标签对应的子代理运行已不在记录中。");
   });

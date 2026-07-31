@@ -1,15 +1,12 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsDialog } from "../components/SettingsDialog";
 import { api } from "../lib/api";
 import type { SettingsView } from "../lib/contracts";
+import { renderWithClient } from "./helpers/with-client";
 
-// jsdom 对 HTMLDialogElement.showModal/close 的实现不完整：打桩为 open 属性开关
+// jsdom 无布局：selectTab 的滚动复位打桩
 beforeEach(() => {
-  HTMLDialogElement.prototype.showModal = function showModal(this: HTMLDialogElement) { this.open = true; };
-  HTMLDialogElement.prototype.close = function close(this: HTMLDialogElement) { this.open = false; };
-  // jsdom 无布局：selectTab 的滚动复位打桩
   Element.prototype.scrollTo = function scrollTo() { /* no-op */ } as typeof Element.prototype.scrollTo;
 });
 
@@ -64,27 +61,24 @@ const settingsView: SettingsView = {
 function renderDialog(view: SettingsView = settingsView) {
   // 字段标签经 api.settings 异步拉取（SettingsDialog 打开时）
   vi.spyOn(api, "settings").mockResolvedValue(view);
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(
-    <QueryClientProvider client={client}>
-      <SettingsDialog
-        open
-        preference="system"
-        setPreference={() => undefined}
-        accent="teal"
-        setAccent={() => undefined}
-        sendKey="enter"
-        setSendKey={() => undefined}
-        desktopNotify={false}
-        setDesktopNotify={() => undefined}
-        defaults={{}}
-        setDefaults={() => undefined}
-        providers={[]}
-        models={[]}
-        onResetLayout={() => undefined}
-        onClose={() => undefined}
-      />
-    </QueryClientProvider>,
+  renderWithClient(
+    <SettingsDialog
+      open
+      preference="system"
+      setPreference={() => undefined}
+      accent="teal"
+      setAccent={() => undefined}
+      sendKey="enter"
+      setSendKey={() => undefined}
+      desktopNotify={false}
+      setDesktopNotify={() => undefined}
+      defaults={{}}
+      setDefaults={() => undefined}
+      providers={[]}
+      models={[]}
+      onResetLayout={() => undefined}
+      onClose={() => undefined}
+    />,
   );
 }
 

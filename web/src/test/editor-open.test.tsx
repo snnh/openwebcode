@@ -5,10 +5,10 @@
  * Monaco 本体用 fake；isMobile 经 use-media-query mock 控制。
  */
 import { fireEvent, render, waitFor } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { App } from "../App";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createFakeMonaco } from "./helpers/fake-monaco";
+import { setupStubWebSocket } from "./helpers/stub-websocket";
+import { renderApp } from "./helpers/with-client";
 import type { MonacoApi } from "../components/editor/monaco-loader";
 
 let mobileMatches = false;
@@ -55,15 +55,6 @@ function installFetchMock(): void {
   vi.stubGlobal("fetch", handler);
 }
 
-function renderApp(): ReturnType<typeof render> {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
-  return render(
-    <QueryClientProvider client={client}>
-      <App />
-    </QueryClientProvider>,
-  );
-}
-
 /** Ctrl+P 打开 Quick Open，输入触发查询，等待文件条目出现 */
 async function openQuickOpen(view: ReturnType<typeof render>): Promise<HTMLElement> {
   fireEvent.keyDown(window, { key: "p", ctrlKey: true });
@@ -74,29 +65,12 @@ async function openQuickOpen(view: ReturnType<typeof render>): Promise<HTMLEleme
 }
 
 describe("编辑器分栏：布局回归", () => {
-  let originalWebSocket: typeof WebSocket;
+  setupStubWebSocket();
   beforeEach(() => {
     mobileMatches = false;
     window.localStorage.clear();
     loadMonacoMock.mockClear();
-    originalWebSocket = globalThis.WebSocket;
-    class StubWebSocket {
-      readyState = 0;
-      onopen: ((ev: Event) => void) | null = null;
-      onmessage: ((ev: MessageEvent) => void) | null = null;
-      onclose: ((ev: CloseEvent) => void) | null = null;
-      onerror: ((ev: Event) => void) | null = null;
-      close(): void { this.readyState = 3; }
-      send(): void { /* no-op */ }
-      addEventListener(): void { /* no-op */ }
-      removeEventListener(): void { /* no-op */ }
-    }
-    vi.stubGlobal("WebSocket", StubWebSocket);
     installFetchMock();
-  });
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    globalThis.WebSocket = originalWebSocket;
   });
 
   it("默认纯对话（无编辑器分栏）；Quick Open Ctrl+Enter 打开编辑器；切换会话后回到纯对话", async () => {

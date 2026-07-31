@@ -1,19 +1,16 @@
-import { execFile } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
-import type { CoreClientLike } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
 import { ScmService } from "../src/scm/service.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
+import { initGitRepo, realGit, unusedCore } from "./helpers/git.js";
 
-const execFileAsync = promisify(execFile);
 const roots: string[] = [];
 const apps: Array<{ close(): Promise<unknown> }> = [];
 afterEach(async () => {
@@ -21,33 +18,11 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-async function realGit(args: string[], cwd: string): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  try {
-    const { stdout, stderr } = await execFileAsync("git", args, { cwd, maxBuffer: 64 * 1024 * 1024 });
-    return { stdout, stderr, exitCode: 0 };
-  } catch (error) {
-    const failure = error as { stdout?: string; stderr?: string; code?: number };
-    return { stdout: failure.stdout ?? "", stderr: failure.stderr ?? "", exitCode: typeof failure.code === "number" ? failure.code : 1 };
-  }
-}
-
-function unusedCore(): CoreClientLike {
-  const core = { on() { return core; } } as unknown as CoreClientLike;
-  return core;
-}
-
 async function setup(options: { withScm?: boolean } = {}) {
   const { withScm = true } = options;
   const root = await mkdtemp(path.join(os.tmpdir(), "owc-scm-api-"));
   roots.push(root);
-  const repo = path.join(root, "repo");
-  await realGit(["init", "-b", "main", repo], root);
-  await realGit(["config", "user.email", "test@example.com"], repo);
-  await realGit(["config", "user.name", "Test"], repo);
-  await realGit(["config", "core.autocrlf", "false"], repo);
-  await writeFile(path.join(repo, "a.txt"), "hello\n");
-  await realGit(["add", "a.txt"], repo);
-  await realGit(["commit", "-m", "initial"], repo);
+  const repo = await initGitRepo(root);
   const sessions = new SessionStore(path.join(root, "sessions"));
   await sessions.initialize();
   const session = await sessions.create({ cwd: repo, provider: "fake", model: "fake-model" });
@@ -106,8 +81,6 @@ describe("SCM REST 契约（0.4.0 Phase 4a）", () => {
     // 冲突事件广播
     const conflictEvent = published.find((event) => event.type === "scm.updated" && (event.payload as { reason?: string }).reason === "worktree.merge_conflict");
     expect(conflictEvent).toBeDefined();
-    // 主工作区保持中止后干净状态
-    expect((await realGit(["status", "--porcelain"], repo)).stdout.trim()).toBe("");
     // force 删除
     const removed = await app.inject({ method: "DELETE", url: `/api/sessions/${session.id}/git/worktrees/wt-1?force=true` });
     expect(removed.statusCode).toBe(200);

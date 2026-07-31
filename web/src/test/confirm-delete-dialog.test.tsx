@@ -1,12 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ConfirmDeleteDialog } from "../components/ConfirmDeleteDialog";
-
-// jsdom 对 HTMLDialogElement.showModal/close 的实现不完整：打桩为 open 属性开关
-beforeEach(() => {
-  HTMLDialogElement.prototype.showModal = function showModal(this: HTMLDialogElement) { this.open = true; };
-  HTMLDialogElement.prototype.close = function close(this: HTMLDialogElement) { this.open = false; };
-});
 
 describe("删除会话确认对话框", () => {
   it("展示会话标题与不可恢复警示，初始焦点在取消按钮", () => {

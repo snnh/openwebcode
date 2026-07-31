@@ -1,20 +1,10 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { SubagentTabStrip } from "../components/SubagentTabStrip";
-import type { LiveSubagentRun } from "../lib/contracts";
 import type { SubagentTab } from "../hooks/use-subagent-tabs";
+import { makeSubagentRun } from "./helpers/fixtures";
 
-function run(overrides: Partial<LiveSubagentRun>): LiveSubagentRun {
-  return {
-    taskId: "task-1",
-    toolCallId: "call-1",
-    prompt: "调查代码结构",
-    status: "running",
-    turns: 0,
-    toolsUsed: [],
-    ...overrides,
-  };
-}
+const run = makeSubagentRun;
 
 describe("SubagentTabStrip", () => {
   it("运行中标签带 data-status 钩子与标签内 spinner，未选中时加 attention 类", () => {

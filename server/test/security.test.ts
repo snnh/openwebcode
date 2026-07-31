@@ -1,7 +1,5 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import type { FastifyInstance } from "fastify";
 import type { AgentRunner } from "../src/agent/agent-runner.js";
@@ -13,9 +11,7 @@ import { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { defaultSandboxPolicy } from "../src/sessions/default-sandbox.js";
 import { SessionStore } from "../src/sessions/session-store.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
+import { tempRoot } from "./helpers/temp-roots.js";
 
 function connectWebSocket(url: string, headers: Record<string, string>): Promise<{ socket: WebSocket; connected?: unknown; closeCode?: number }> {
   return new Promise((resolve, reject) => {
@@ -38,8 +34,7 @@ describe("remote listener security", () => {
   });
 
   it("requires the configured token for every API route", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-security-"));
-    roots.push(root);
+    const root = await tempRoot("owc-security-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));
@@ -86,8 +81,7 @@ describe("remote listener security", () => {
 
 describe("default sandbox denyPaths", () => {
   it("新建会话默认拒绝覆写 .env 与 .owc/hooks.json、.owc/mcp.json（宿主执行入口）", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-security-"));
-    roots.push(root);
+    const root = await tempRoot("owc-security-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const cwd = path.join(root, "work");
@@ -104,8 +98,7 @@ describe("default sandbox denyPaths", () => {
 
 describe("no-auth loopback WebSocket origin policy", () => {
   async function buildNoAuthApp(): Promise<FastifyInstance> {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-security-"));
-    roots.push(root);
+    const root = await tempRoot("owc-security-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));

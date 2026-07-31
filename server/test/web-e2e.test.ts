@@ -11,6 +11,7 @@ import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
+import { waitForEvent } from "./helpers/wait-event.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const corePath = process.env.OWC_CORE_PATH ?? path.resolve(
@@ -82,17 +83,6 @@ async function setup(provider: Provider): Promise<Harness> {
   return { app, sessions, events, core, root };
 }
 
-function waitForEvent(events: EventBus, sessionId: string, type: string, predicate: (event: AppEvent) => boolean = () => true): Promise<AppEvent> {
-  return new Promise((resolve) => {
-    const listener = (event: AppEvent): void => {
-      if (event.sessionId !== sessionId || event.type !== type || !predicate(event)) return;
-      events.off("event", listener);
-      resolve(event);
-    };
-    events.on("event", listener);
-  });
-}
-
 function requestId(event: AppEvent): string {
   return (event.payload as { requestId: string }).requestId;
 }
@@ -137,9 +127,9 @@ describe.skipIf(!coreAvailable)("stage 4 web E2E", () => {
     expect(created.statusCode).toBe(201);
     const sessionId = created.json<{ id: string }>().id;
 
-    const idle = waitForEvent(events, sessionId, "agent.state", (e) => (e.payload as { state?: string }).state === "idle");
+    const idle = waitForEvent(events, "agent.state", { sessionId, match: (e) => (e.payload as { state?: string }).state === "idle" });
     // 先订阅 permission.request 再 inject，避免错过事件导致挂起（与 stage3-e2e 一致）
-    const permissionEvent = waitForEvent(events, sessionId, "permission.request");
+    const permissionEvent = waitForEvent(events, "permission.request", { sessionId });
     const accepted = await app.inject({ method: "POST", url: `/api/sessions/${sessionId}/messages`, payload: { content: "write: result.txt hello-stage4" } });
     expect(accepted.statusCode).toBe(202);
     const req = requestId(await permissionEvent);
@@ -184,7 +174,7 @@ describe.skipIf(!coreAvailable)("stage 4 web E2E", () => {
     const { app, events, root } = harness;
     const session = (await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: root, provider: "anthropic", model: "claude-opus-4-8" } })).json<{ id: string }>();
 
-    const runningIdle = waitForEvent(events, session.id, "agent.state", (e) => (e.payload as { state?: string }).state === "idle");
+    const runningIdle = waitForEvent(events, "agent.state", { sessionId: session.id, match: (e) => (e.payload as { state?: string }).state === "idle" });
     const running = app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "初始任务" } });
     await firstEntered;
     const queued = (await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "补充指令" } })).json<{ accepted: boolean; queued: boolean; position: number }>();
@@ -205,12 +195,12 @@ describe.skipIf(!coreAvailable)("stage 4 web E2E", () => {
     const { app, events, root } = harness;
     const session = (await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: root, provider: "anthropic", model: "claude-haiku-4-5" } })).json<{ id: string }>();
 
-    const firstIdle = waitForEvent(events, session.id, "agent.state", (e) => (e.payload as { state?: string }).state === "idle");
+    const firstIdle = waitForEvent(events, "agent.state", { sessionId: session.id, match: (e) => (e.payload as { state?: string }).state === "idle" });
     expect((await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "第一轮" } })).statusCode).toBe(202);
     await firstIdle;
     const updated = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { model: "deepseek-reasoner", thinking: "enabled" } });
     expect(updated.statusCode).toBe(200);
-    const secondIdle = waitForEvent(events, session.id, "agent.state", (e) => (e.payload as { state?: string }).state === "idle");
+    const secondIdle = waitForEvent(events, "agent.state", { sessionId: session.id, match: (e) => (e.payload as { state?: string }).state === "idle" });
     expect((await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "第二轮" } })).statusCode).toBe(202);
     await secondIdle;
 
@@ -224,8 +214,8 @@ describe.skipIf(!coreAvailable)("stage 4 web E2E", () => {
     const { app, events, root } = harness;
     const session = (await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: root, provider: "anthropic", model: "claude-opus-4-8" } })).json<{ id: string }>();
 
-    const firstIdle = waitForEvent(events, session.id, "agent.state", (e) => (e.payload as { state?: string }).state === "idle");
-    const firstPerm = waitForEvent(events, session.id, "permission.request");
+    const firstIdle = waitForEvent(events, "agent.state", { sessionId: session.id, match: (e) => (e.payload as { state?: string }).state === "idle" });
+    const firstPerm = waitForEvent(events, "permission.request", { sessionId: session.id });
     await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "write: keep.txt kept" } });
     const firstReq = requestId(await firstPerm);
     await app.inject({ method: "POST", url: `/api/sessions/${session.id}/permissions/respond`, payload: { requestId: firstReq, decision: "allow" } });
@@ -236,8 +226,8 @@ describe.skipIf(!coreAvailable)("stage 4 web E2E", () => {
     // agent.run 开头的自动检查点创建于首条用户消息之前（messageCount=0），无区分度。
     const manual = (await app.inject({ method: "POST", url: `/api/sessions/${session.id}/checkpoints`, payload: { label: "after-keep" } })).json<{ id: string; messageCount: number }>();
     expect(manual.messageCount).toBeGreaterThan(0);
-    const secondIdle = waitForEvent(events, session.id, "agent.state", (e) => (e.payload as { state?: string }).state === "idle");
-    const secondPerm = waitForEvent(events, session.id, "permission.request");
+    const secondIdle = waitForEvent(events, "agent.state", { sessionId: session.id, match: (e) => (e.payload as { state?: string }).state === "idle" });
+    const secondPerm = waitForEvent(events, "permission.request", { sessionId: session.id });
     await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "write: gone.txt temporary" } });
     const secondReq = requestId(await secondPerm);
     await app.inject({ method: "POST", url: `/api/sessions/${session.id}/permissions/respond`, payload: { requestId: secondReq, decision: "allow" } });

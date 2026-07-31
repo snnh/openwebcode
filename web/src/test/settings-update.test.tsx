@@ -1,14 +1,9 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render } from "@testing-library/react";
+import { act, fireEvent } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ServerInfoSection } from "../components/SettingsDialog";
 import { api } from "../lib/api";
 import type { UpdateApplyState, VersionInfo } from "../lib/contracts";
-
-function withClient(node: React.ReactNode): ReturnType<typeof render> {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={client}>{node}</QueryClientProvider>);
-}
+import { renderWithClient } from "./helpers/with-client";
 
 function makeState(partial: Partial<UpdateApplyState>): UpdateApplyState {
   return {
@@ -51,13 +46,13 @@ afterEach(() => {
 describe("设置：在线更新（update apply）", () => {
   it("有新版本时显示「立即更新」按钮", async () => {
     stubBaseQueries(true);
-    const view = withClient(<ServerInfoSection providers={[]} models={[]} />);
+    const view = renderWithClient(<ServerInfoSection providers={[]} models={[]} />);
     expect(await view.findByRole("button", { name: "立即更新" })).toBeInTheDocument();
   });
 
   it("已是最新时不显示「立即更新」按钮", async () => {
     stubBaseQueries(false);
-    const view = withClient(<ServerInfoSection providers={[]} models={[]} />);
+    const view = renderWithClient(<ServerInfoSection providers={[]} models={[]} />);
     expect(await view.findByText(/已是最新/)).toBeInTheDocument();
     expect(view.queryByRole("button", { name: "立即更新" })).toBeNull();
   });
@@ -67,7 +62,7 @@ describe("设置：在线更新（update apply）", () => {
     const start = vi.spyOn(api, "updateApplyStart")
       .mockResolvedValue({ state: makeState({ status: "downloading", progress: 0.4 }) });
     vi.spyOn(api, "updateApplyStatus").mockResolvedValue({ state: makeState({ status: "downloading", progress: 0.4 }) });
-    const view = withClient(<ServerInfoSection providers={[]} models={[]} />);
+    const view = renderWithClient(<ServerInfoSection providers={[]} models={[]} />);
     fireEvent.click(await view.findByRole("button", { name: "立即更新" }));
     expect(start).toHaveBeenCalledTimes(1);
     const button = await view.findByRole("button", { name: /下载中 40%/ });
@@ -82,7 +77,7 @@ describe("设置：在线更新（update apply）", () => {
       .mockResolvedValue({ state: makeState({ status: "downloading", progress: null }) });
     vi.spyOn(api, "updateApplyStatus")
       .mockResolvedValue({ state: makeState({ status: "verifying" }) });
-    const view = withClient(<ServerInfoSection providers={[]} models={[]} />);
+    const view = renderWithClient(<ServerInfoSection providers={[]} models={[]} />);
     const button = await view.findByRole("button", { name: "立即更新" });
     // 初始查询就绪后再切 fake timers，仅接管轮询 interval
     vi.useFakeTimers();
@@ -98,7 +93,7 @@ describe("设置：在线更新（update apply）", () => {
     const start = vi.spyOn(api, "updateApplyStart")
       .mockResolvedValueOnce({ state: makeState({ status: "error", error: "签名不匹配" }) })
       .mockResolvedValueOnce({ state: makeState({ status: "downloading", progress: null }) });
-    const view = withClient(<ServerInfoSection providers={[]} models={[]} />);
+    const view = renderWithClient(<ServerInfoSection providers={[]} models={[]} />);
     fireEvent.click(await view.findByRole("button", { name: "立即更新" }));
     expect(await view.findByRole("alert")).toHaveTextContent("签名不匹配");
     const retry = view.getByRole("button", { name: "重试" });
@@ -117,7 +112,7 @@ describe("设置：在线更新（update apply）", () => {
       .mockResolvedValue({ state: makeState({ status }) });
     vi.spyOn(api, "updateApplyStatus")
       .mockResolvedValue({ state: makeState({ status }) });
-    const view = withClient(<ServerInfoSection providers={[]} models={[]} />);
+    const view = renderWithClient(<ServerInfoSection providers={[]} models={[]} />);
     fireEvent.click(await view.findByRole("button", { name: "立即更新" }));
     expect(await view.findByText(hint)).toBeInTheDocument();
   });
@@ -125,7 +120,7 @@ describe("设置：在线更新（update apply）", () => {
   it("POST 被拒绝（400/409/501）时展示错误", async () => {
     stubBaseQueries(true);
     vi.spyOn(api, "updateApplyStart").mockRejectedValue(new Error("已有更新进行中"));
-    const view = withClient(<ServerInfoSection providers={[]} models={[]} />);
+    const view = renderWithClient(<ServerInfoSection providers={[]} models={[]} />);
     fireEvent.click(await view.findByRole("button", { name: "立即更新" }));
     expect(await view.findByRole("alert")).toHaveTextContent("已有更新进行中");
   });

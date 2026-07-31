@@ -1,5 +1,3 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentRunner } from "../src/agent/agent-runner.js";
@@ -14,12 +12,11 @@ import {
 } from "../src/events/ws-backpressure.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
-const roots: string[] = [];
 const apps: Array<{ close: () => Promise<unknown> }> = [];
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
 describe("慢客户端背压判定（单元）", () => {
@@ -40,8 +37,7 @@ describe("慢 WS 客户端背压 enforcement（集成）", () => {
   it("会话订阅的实时过滤与回放一致，不混入其他会话的运行状态", async () => {
     const { WebSocket } = await import("ws");
     const stubCore = { on() { return stubCore; } } as unknown as CoreClient;
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-ws-scope-"));
-    roots.push(root);
+    const root = await tempRoot("owc-ws-scope-");
     const sessions = new SessionStore(path.join(root, ".sessions"));
     await sessions.initialize();
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));
@@ -86,8 +82,7 @@ describe("慢 WS 客户端背压 enforcement（集成）", () => {
   it("慢客户端被补发 resync.required 后以 1013 断连，健康客户端照常收事件", async () => {
     const { WebSocket } = await import("ws");
     const stubCore = { on() { return stubCore; } } as unknown as CoreClient;
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-ws-bp-"));
-    roots.push(root);
+    const root = await tempRoot("owc-ws-bp-");
     const sessions = new SessionStore(path.join(root, ".sessions"));
     await sessions.initialize();
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));

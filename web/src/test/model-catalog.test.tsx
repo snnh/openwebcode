@@ -1,9 +1,9 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ModelCatalogSection } from "../components/SettingsDialog";
 import { api } from "../lib/api";
 import type { ModelProfile } from "../lib/contracts";
+import { renderWithClient } from "./helpers/with-client";
 
 const multimodalModel: ModelProfile = {
   id: "multimodal-model",
@@ -21,13 +21,8 @@ const multimodalModel: ModelProfile = {
   },
 };
 
-function renderCatalog(): ReturnType<typeof render> {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(
-    <QueryClientProvider client={client}>
-      <ModelCatalogSection />
-    </QueryClientProvider>,
-  );
+function renderCatalog(): ReturnType<typeof renderWithClient> {
+  return renderWithClient(<ModelCatalogSection />);
 }
 
 describe("ModelCatalogSection capabilities", () => {

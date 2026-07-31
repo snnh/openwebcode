@@ -1,10 +1,10 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProblemsPanel } from "../components/panels/ProblemsPanel";
 import { ActivityBar } from "../workbench/ActivityBar";
 import { api, ApiError } from "../lib/api";
 import type { DiagnosticSet } from "../lib/contracts";
+import { renderWithClient } from "./helpers/with-client";
 
 const diagnostics: DiagnosticSet = {
   tool: "vitest",
@@ -18,12 +18,7 @@ const diagnostics: DiagnosticSet = {
 };
 
 function renderPanel(): void {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(
-    <QueryClientProvider client={client}>
-      <ProblemsPanel sessionId="s1" />
-    </QueryClientProvider>,
-  );
+  renderWithClient(<ProblemsPanel sessionId="s1" />);
 }
 
 describe("ProblemsPanel", () => {

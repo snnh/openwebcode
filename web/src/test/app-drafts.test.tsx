@@ -1,77 +1,39 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { App } from "../App";
-import type { SessionDetail } from "../lib/contracts";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it } from "vitest";
+import { installAppFetchMock } from "./helpers/app-fetch-mock";
+import { makeSession } from "./helpers/fixtures";
+import { setupStubWebSocket } from "./helpers/stub-websocket";
+import { renderApp } from "./helpers/with-client";
 
-const session: SessionDetail = {
-  id: "s1",
-  cwd: "/workspace/project",
-  provider: "anthropic",
-  model: "claude-opus-4-8",
-  title: "草稿测试作业",
-  createdAt: "2026-07-17T00:00:00.000Z",
-  updatedAt: "2026-07-17T00:00:00.000Z",
-  messages: [],
-};
+const session = makeSession({ title: "草稿测试作业" });
 
-const sessionB: SessionDetail = {
-  ...session,
-  id: "s2",
-  title: "另一个作业",
-};
+const sessionB = makeSession({ id: "s2", title: "另一个作业" });
 
-function installFetchMock(extraSessions: SessionDetail[] = []): void {
-  const all = [session, ...extraSessions];
-  const handler = vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
-    const url = typeof input === "string" ? input : input.toString();
-    const json = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-    if (url.endsWith("/api/sessions")) return json(all.map(({ id, cwd, provider, model, title, createdAt, updatedAt }) => ({ id, cwd, provider, model, title, createdAt, updatedAt })));
-    if (url.endsWith("/api/models")) return json([]);
-    if (url.endsWith("/api/providers")) return json(["anthropic"]);
-    if (url.includes("/steering")) return json([]);
-    if (url.includes("/permissions")) return json([]);
-    const detail = all.find((entry) => url.match(new RegExp(`/api/sessions/${entry.id}(\\?.*)?$`)));
-    if (detail) return json(detail);
-    return json({}, 404);
+function installFetchMock(extraSessions: boolean): void {
+  const all = extraSessions ? [session, sessionB] : [session];
+  installAppFetchMock({
+    session,
+    models: [],
+    extra: (url, json) => {
+      if (url.endsWith("/api/sessions")) return json(all.map(({ id, cwd, provider, model, title, createdAt, updatedAt }) => ({ id, cwd, provider, model, title, createdAt, updatedAt })));
+      const detail = all.find((entry) => url.match(new RegExp(`/api/sessions/${entry.id}(\\?.*)?$`)));
+      if (detail) return json(detail);
+      return undefined;
+    },
   });
-  vi.stubGlobal("fetch", handler);
 }
 
+setupStubWebSocket();
+
 describe("App 草稿持久化（localStorage owc-draft-<id>）", () => {
-  let originalWebSocket: typeof WebSocket;
   beforeEach(() => {
     window.localStorage.clear();
-    originalWebSocket = globalThis.WebSocket;
-    class StubWebSocket {
-      onopen: (() => void) | null = null;
-      onmessage: ((ev: MessageEvent) => void) | null = null;
-      onclose: (() => void) | null = null;
-      close(): void { /* no-op */ }
-    }
-    vi.stubGlobal("WebSocket", StubWebSocket);
-    if (!window.matchMedia) {
-      window.matchMedia = ((query: string) => ({ matches: false, media: query, onchange: null, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {}, dispatchEvent() { return false; } })) as unknown as typeof window.matchMedia;
-    }
   });
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    globalThis.WebSocket = originalWebSocket;
-  });
-
-  function renderApp(): void {
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
-    render(
-      <QueryClientProvider client={client}>
-        <App />
-      </QueryClientProvider>,
-    );
-  }
 
   it("选中会话时从 localStorage 恢复草稿，并修剪已删除会话的草稿键", async () => {
     window.localStorage.setItem("owc-draft-s1", JSON.stringify("刷新前未发送"));
     window.localStorage.setItem("owc-draft-gone", JSON.stringify("已删会话残留"));
-    installFetchMock();
+    installFetchMock(false);
     renderApp();
 
     const textarea = await screen.findByRole("combobox", { name: /消息输入框/ });
@@ -82,7 +44,7 @@ describe("App 草稿持久化（localStorage owc-draft-<id>）", () => {
   });
 
   it("输入实时镜像到 localStorage，清空时删除条目", async () => {
-    installFetchMock();
+    installFetchMock(false);
     renderApp();
 
     const textarea = await screen.findByRole("combobox", { name: /消息输入框/ });
@@ -94,7 +56,7 @@ describe("App 草稿持久化（localStorage owc-draft-<id>）", () => {
   });
 
   it("镜像只写变化的草稿键，不重写其他会话", async () => {
-    installFetchMock([sessionB]);
+    installFetchMock(true);
     renderApp();
 
     // s1 输入草稿

@@ -1,7 +1,6 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
 import type { CoreClientLike } from "../src/core-client.js";
@@ -12,15 +11,10 @@ import { listPersonas, resolvePersona } from "../src/extensions/env-sim/index.js
 import { loadUserPresets, personasDir } from "../src/extensions/env-sim/preset-store.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
+import { makeFakeCore } from "./helpers/fake-core.js";
+import { tempRoot as tempRootHelper } from "./helpers/temp-roots.js";
 
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
-
-async function tempRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-envsim-"));
-  roots.push(root);
-  return root;
-}
+const tempRoot = (): Promise<string> => tempRootHelper("owc-envsim-");
 
 interface ToolCallSpec { id: string; name: string; input: Record<string, unknown> }
 
@@ -45,29 +39,11 @@ function scriptProvider(requests: StreamChatRequest[], script: ToolCallSpec[][])
   };
 }
 
-const FAKE_CORE_INFO = {
-  version: "0.0.0-test", protocolVersion: "1.0", platform: "windows", sandboxCapability: "advisory",
-  features: { fsStat: true, fsStatMany: true, fsWriteBase64: true, jobControl: false, fsHash: true, fsScanPagination: true, fsWatch: true },
-  limits: { maxFrameBytes: 33_554_432, maxWriteBase64Bytes: 20_971_520, maxHashBytes: 16_777_216, maxStatManyPaths: 128, maxStatManyPathBytes: 262_144, maxScanEntries: 256, maxScanDepth: 16, maxScanNodes: 2_048, maxWatches: 16, maxWatchEvents: 128, maxConcurrentJobs: 4, maxJobOutputBytes: 524_288 },
-} as const;
-
 function fakeCore(runCalls: Array<Record<string, unknown>>): CoreClientLike {
-  return {
-    on() { return this; },
-    async configureSession() { return { sandboxCapability: "advisory" }; },
-    async readFile() { return { content: "file content" }; },
-    async globFiles() { return { matches: [] }; },
-    async grepFiles() { return { matches: [] }; },
-    async writeFile() { return { ok: true }; },
-    async editFile() { return { matches: 1 }; },
-    async run(request: Record<string, unknown>) { runCalls.push(request); return { exitCode: 0, stdout: "ok", stderr: "" }; },
-    async cleanupSession() { return { ok: true }; },
-    setRequestTimeoutMs() {},
-    start() { return Promise.resolve(FAKE_CORE_INFO); },
-    stop() { return Promise.resolve(); },
-    ping() { return Promise.resolve(FAKE_CORE_INFO); },
-    listFiles() { return Promise.resolve({ entries: [], truncated: false }); },
-  } as unknown as CoreClientLike;
+  return makeFakeCore({
+    async readFile() { return { content: "file content", totalLines: 1, encoding: "utf-8" as const, truncated: false }; },
+    async run(request) { runCalls.push({ ...request }); return { exitCode: 0, durationMs: 0, truncated: false }; },
+  });
 }
 
 interface HarnessOptions {

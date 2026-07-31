@@ -2,34 +2,15 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { CoreClientLike } from "../src/core-client.js";
 import { DiagnosticsService, MAX_FEEDBACK_FAILURES, MAX_FEEDBACK_FIELD_CHARS, failureSignature } from "../src/diagnostics/service.js";
 import { EventBus } from "../src/events/event-bus.js";
 import { SessionStore } from "../src/sessions/session-store.js";
+import { makeJobReplayCore } from "./helpers/fake-job-core.js";
 
 const roots: string[] = [];
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
-
-/** 假 core：job 输出一次性返回给定文本，状态 completed。 */
-function fakeCore(output: string, exitCode = 0): CoreClientLike {
-  let served = false;
-  const core = {
-    on() { return core; },
-    async startJob() { served = false; return { jobId: "j", state: "running" as const }; },
-    async jobStatus() { return { jobId: "j", state: "completed" as const, exitCode, durationMs: 7 }; },
-    async jobOutput(request: { afterSeq: number }) {
-      if (request.afterSeq === 0 && !served) {
-        served = true;
-        return { chunks: [{ seq: 1, stream: "stdout" as const, data: output }], nextSeq: 2, truncated: false };
-      }
-      return { chunks: [], nextSeq: request.afterSeq, truncated: false };
-    },
-    async cancelJob(request: { jobId: string }) { return { jobId: request.jobId, accepted: true as const }; },
-  } as unknown as CoreClientLike;
-  return core;
-}
 
 async function setup(output: string, exitCode = 0) {
   const root = await mkdtemp(path.join(os.tmpdir(), "owc-diag-"));
@@ -40,7 +21,7 @@ async function setup(output: string, exitCode = 0) {
   const events = new EventBus();
   const published: Array<{ type: string; payload: unknown }> = [];
   events.on("event", (event: { type: string; payload: unknown }) => published.push(event));
-  const service = new DiagnosticsService(fakeCore(output, exitCode), sessions, events);
+  const service = new DiagnosticsService(makeJobReplayCore(output, { exitCode }), sessions, events);
   return { root, sessions, session, events, published, service };
 }
 

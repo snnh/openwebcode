@@ -1,7 +1,5 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildServer } from "../src/app.js";
 import type { AgentRunner } from "../src/agent/agent-runner.js";
 import type { CoreClient } from "../src/core-client.js";
@@ -9,13 +7,11 @@ import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
+import { tempRoot } from "./helpers/temp-roots.js";
 
 describe("session model config", () => {
   it("persists append-only message lineage and reconstructs legacy parents on reload", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-session-lineage-")); roots.push(root);
+    const root = await tempRoot("owc-session-lineage-");
     const sessions = new SessionStore(path.join(root, "sessions")); await sessions.initialize();
     const session = await sessions.create({ cwd: root, provider: "test", model: "test" });
     const first = await sessions.appendMessage(session.id, "user", [{ type: "text", text: "first" }]);
@@ -26,15 +22,29 @@ describe("session model config", () => {
     expect(detail?.messages).toMatchObject([{ id: first.id }, { id: second.id, parentId: first.id, runId: "run-1", turnId: "run-1:0" }]);
   });
 
-  it("validates and persists idle model thinking and effort updates", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-session-config-")); roots.push(root);
-    const sessions = new SessionStore(path.join(root, "sessions")); await sessions.initialize();
-    const provider: Provider = { name: "anthropic", async *streamChat() { yield { type: "done", stopReason: "end_turn" }; } };
-    const providers = new ProviderRegistry(); providers.register(provider);
-    const pricing = new PricingCatalog(path.join(root, "pricing.json")); await pricing.initialize();
-    const agent = { isRunning: () => false } as AgentRunner;
-    const app = await buildServer({ core: {} as CoreClient, sessions, agent, events: new EventBus(), providers, pricing });
-    try {
+  describe("PUT /config", () => {
+    let root: string;
+    let sessions: SessionStore;
+    let app: Awaited<ReturnType<typeof buildServer>>;
+
+    beforeEach(async () => {
+      root = await tempRoot("owc-session-config-");
+      sessions = new SessionStore(path.join(root, "sessions"));
+      await sessions.initialize();
+      const provider: Provider = { name: "anthropic", async *streamChat() { yield { type: "done", stopReason: "end_turn" }; } };
+      const providers = new ProviderRegistry();
+      providers.register(provider);
+      const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+      await pricing.initialize();
+      const agent = { isRunning: () => false } as AgentRunner;
+      app = await buildServer({ core: {} as CoreClient, sessions, agent, events: new EventBus(), providers, pricing });
+    });
+
+    afterEach(async () => {
+      await app.close();
+    });
+
+    it("validates and persists idle model thinking and effort updates", async () => {
       const session = await sessions.create({ cwd: root, provider: "anthropic", model: "deepseek-chat" });
       // 未声明（capabilities 空数组）= 全部可选：合法枚举放行，含 ultra 档；非法枚举仍 400
       const undeclared = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { effort: "high" } });
@@ -93,18 +103,9 @@ describe("session model config", () => {
       expect(timeline.statusCode).toBe(200);
       expect(timeline.json().activeLeafId).toBe(second.id);
       expect(timeline.json().entries).toEqual(expect.arrayContaining([expect.objectContaining({ id: second.id, parentId: first.id, runId: "run-test", turnId: "run-test:0" })]));
-    } finally { await app.close(); }
-  });
+    });
 
-  it("accepts review permission mode, persists reviewModel, rejects invalid values", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-session-review-")); roots.push(root);
-    const sessions = new SessionStore(path.join(root, "sessions")); await sessions.initialize();
-    const provider: Provider = { name: "anthropic", async *streamChat() { yield { type: "done", stopReason: "end_turn" }; } };
-    const providers = new ProviderRegistry(); providers.register(provider);
-    const pricing = new PricingCatalog(path.join(root, "pricing.json")); await pricing.initialize();
-    const agent = { isRunning: () => false } as AgentRunner;
-    const app = await buildServer({ core: {} as CoreClient, sessions, agent, events: new EventBus(), providers, pricing });
-    try {
+    it("accepts review permission mode, persists reviewModel, rejects invalid values", async () => {
       const session = await sessions.create({ cwd: root, provider: "anthropic", model: "deepseek-chat" });
       const ok = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { permissionMode: "review", reviewModel: "fast" } });
       expect(ok.statusCode).toBe(200);
@@ -122,6 +123,6 @@ describe("session model config", () => {
       const badReviewModel = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { reviewModel: "slow" } });
       expect(badReviewModel.statusCode).toBe(400);
       expect(badReviewModel.json().error).toBe('reviewModel must be "fast" or "main"');
-    } finally { await app.close(); }
+    });
   });
 });

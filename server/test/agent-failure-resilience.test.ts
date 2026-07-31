@@ -1,29 +1,16 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
-import type { CoreClientLike } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
 import type { HookRunner } from "../src/hooks.js";
 import { ProviderRegistry, type Provider } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
-
-function makeCore(configureSession: () => Promise<unknown> = async () => ({ sandboxCapability: "advisory" })): CoreClientLike {
-  const client = {
-    on() { return client; },
-    configureSession,
-  };
-  return client as unknown as CoreClientLike;
-}
+import { makeFakeCore } from "./helpers/fake-core.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
 async function setup(provider = "test"): Promise<{ root: string; sessions: SessionStore; sessionId: string; pricing: PricingCatalog; providers: ProviderRegistry; events: EventBus }> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-agent-failure-"));
-  roots.push(root);
+  const root = await tempRoot("owc-agent-failure-");
   const sessions = new SessionStore(path.join(root, "sessions"));
   await sessions.initialize();
   const session = await sessions.create({ cwd: root, provider, model: "test-model" });
@@ -42,7 +29,7 @@ describe("AgentRunner failure resilience", () => {
     const runner = new AgentRunner(
       harness.sessions,
       harness.providers,
-      makeCore(async () => { throw new Error("sandbox configuration denied"); }),
+      makeFakeCore({ configureSession: async () => { throw new Error("sandbox configuration denied"); } }),
       harness.events,
       harness.pricing,
     );
@@ -76,7 +63,7 @@ describe("AgentRunner failure resilience", () => {
     });
     const observed: Array<{ type: string; payload: unknown }> = [];
     harness.events.on("event", (event) => observed.push(event));
-    const runner = new AgentRunner(harness.sessions, harness.providers, makeCore(), harness.events, harness.pricing);
+    const runner = new AgentRunner(harness.sessions, harness.providers, makeFakeCore(), harness.events, harness.pricing);
 
     await expect(runner.run(harness.sessionId, "Provider 出错后仍应保留")).rejects.toThrow("provider unavailable");
 
@@ -100,7 +87,7 @@ describe("AgentRunner failure resilience", () => {
     });
     const observed: Array<{ type: string; payload: unknown }> = [];
     harness.events.on("event", (event) => observed.push(event));
-    const runner = new AgentRunner(harness.sessions, harness.providers, makeCore(), harness.events, harness.pricing);
+    const runner = new AgentRunner(harness.sessions, harness.providers, makeFakeCore(), harness.events, harness.pricing);
 
     await expect(runner.run(harness.sessionId, "401 需要分类提示")).rejects.toThrow("invalid api key");
 
@@ -128,7 +115,7 @@ describe("AgentRunner failure resilience", () => {
     });
     const observed: Array<{ type: string; payload: unknown }> = [];
     harness.events.on("event", (event) => observed.push(event));
-    const runner = new AgentRunner(harness.sessions, harness.providers, makeCore(), harness.events, harness.pricing);
+    const runner = new AgentRunner(harness.sessions, harness.providers, makeFakeCore(), harness.events, harness.pricing);
 
     await expect(runner.run(harness.sessionId, "限流耗尽后标记可重试")).rejects.toThrow("rate limited");
 
@@ -172,7 +159,7 @@ describe("AgentRunner failure resilience", () => {
     const runner = new AgentRunner(
       harness.sessions,
       harness.providers,
-      makeCore(),
+      makeFakeCore(),
       harness.events,
       harness.pricing,
       undefined, // exchange rates
@@ -213,7 +200,7 @@ describe("AgentRunner failure resilience", () => {
     const runner = new AgentRunner(
       harness.sessions,
       harness.providers,
-      makeCore(async () => { throw new Error("shell sandbox unavailable"); }),
+      makeFakeCore({ configureSession: async () => { throw new Error("shell sandbox unavailable"); } }),
       harness.events,
       harness.pricing,
     );

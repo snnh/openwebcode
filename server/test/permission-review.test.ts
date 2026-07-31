@@ -1,67 +1,10 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
-import { EventEmitter } from "node:events";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { AgentRunner } from "../src/agent/agent-runner.js";
+import { describe, expect, it, vi } from "vitest";
 import { buildReviewMessages, parseVerdict } from "../src/agent/permission-review.js";
-import { buildServer } from "../src/app.js";
-import type { CoreClientLike, CoreEvent, CoreInfo, ExecRequest, ExecResult } from "../src/core-client.js";
-import { PricingCatalog } from "../src/cost/pricing-catalog.js";
-import { EventBus, type AppEvent } from "../src/events/event-bus.js";
+import type { AppEvent } from "../src/events/event-bus.js";
 import type { FastModelClient } from "../src/fast-model.js";
-import { ProviderRegistry, type Provider } from "../src/providers/provider.js";
-import { SessionStore } from "../src/sessions/session-store.js";
-import { makeStubProvider } from "./helpers/stub-provider.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
-
-async function tempRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-perm-review-"));
-  roots.push(root);
-  return root;
-}
-
-const FAKE_CORE_INFO: CoreInfo = {
-  version: "0.2.4-test", protocolVersion: "1.0", platform: "windows", sandboxCapability: "advisory",
-  features: { fsStat: true, fsStatMany: true, fsWriteBase64: true, jobControl: false, fsHash: true, fsScanPagination: true, fsWatch: true },
-  limits: { maxFrameBytes: 33_554_432, maxWriteBase64Bytes: 20_971_520, maxHashBytes: 16_777_216, maxStatManyPaths: 128, maxStatManyPathBytes: 262_144, maxScanEntries: 256, maxScanDepth: 16, maxScanNodes: 2_048, maxWatches: 16, maxWatchEvents: 128, maxConcurrentJobs: 4, maxJobOutputBytes: 524_288 },
-};
-
-/** 挂起式 fake core：run() 挂起，release() 驱动完成（同 shell.test.ts 玩法）。 */
-function createControllableCore(): { client: CoreClientLike; release: (result: ExecResult) => void; runCalls: ExecRequest[] } {
-  let runResolve: ((result: ExecResult) => void) | undefined;
-  const emitter = new EventEmitter();
-  const runCalls: ExecRequest[] = [];
-  const client: CoreClientLike = {
-    on(eventName: string, listener: (...args: unknown[]) => void) {
-      emitter.on(eventName, listener);
-      return client;
-    },
-    async start() { return FAKE_CORE_INFO; },
-    async stop() { if (runResolve) { runResolve({ exitCode: 1, durationMs: 0, truncated: false }); runResolve = undefined; } },
-    async configureSession() { return { sandboxCapability: "advisory" as const }; },
-    async run(request) {
-      runCalls.push({ ...request });
-      return new Promise<ExecResult>((resolve) => { runResolve = resolve; });
-    },
-    async ping() { return FAKE_CORE_INFO; },
-    async cleanupSession() { return { ok: true as const }; },
-    async readFile() { return { content: "", totalLines: 0, encoding: "utf-8" as const, truncated: false }; },
-    async writeFile() { return { ok: true as const }; },
-    async editFile() { return { matches: 0 }; },
-    async listFiles() { return { entries: [], truncated: false }; },
-    async globFiles() { return { paths: [], truncated: false }; },
-    async grepFiles() { return { matches: [], truncated: false }; },
-    setRequestTimeoutMs() {},
-  } as unknown as CoreClientLike;
-  return {
-    client,
-    release: (result) => { if (runResolve) { runResolve(result); runResolve = undefined; } },
-    runCalls,
-  };
-}
+import type { Provider } from "../src/providers/provider.js";
+import { makeControllableCore } from "./helpers/fake-core.js";
+import { makeAgentHarness, waitForToolMessage } from "./helpers/agent-harness.js";
 
 /** fake FastModelClient：只有 complete/configured 两个面被审核门使用。 */
 function makeFakeFastModel(text: string | undefined, options?: { configured?: boolean; throwError?: string }): FastModelClient {
@@ -77,36 +20,21 @@ function makeFakeFastModel(text: string | undefined, options?: { configured?: bo
   } as unknown as FastModelClient;
 }
 
-const echoProvider = makeStubProvider("test-stub", async function* () {
-  yield { type: "done", stopReason: "end_turn" };
-});
-
 async function setup(options?: { fastModel?: FastModelClient; provider?: Provider; reviewModel?: "fast" | "main" }) {
-  const root = await tempRoot();
-  const sessions = new SessionStore(path.join(root, "sessions"));
-  await sessions.initialize();
-  const session = await sessions.create({ cwd: root, provider: "test-stub", model: "deterministic-tool-loop", title: "Review test" });
-  await sessions.updatePermissions(session.id, "review", []);
-  if (options?.reviewModel) await sessions.updateConfig(session.id, { provider: session.provider, model: session.model, reviewModel: options.reviewModel });
-  const pricing = new PricingCatalog(path.join(root, "pricing.json"));
-  await pricing.initialize();
-  const events = new EventBus();
+  // stopResolves:true：app.close() 触发的 core.stop() 以 exitCode 1 完成挂起 run（而非 reject）
+  const core = makeControllableCore({ stopResolves: true });
+  const harness = await makeAgentHarness({
+    core: core.client,
+    ...(options?.provider ? { provider: options.provider } : {}),
+    permissionMode: "review",
+    ...(options?.reviewModel ? { sessionConfig: { reviewModel: options.reviewModel } } : {}),
+    title: "Review test",
+    tempPrefix: "owc-perm-review-",
+  });
   const observed: AppEvent[] = [];
-  events.on("event", (event: AppEvent) => observed.push(event));
-  const providers = new ProviderRegistry();
-  providers.register(options?.provider ?? echoProvider);
-  const core = createControllableCore();
-  const agent = new AgentRunner(sessions, providers, core.client, events, pricing);
-  if (options?.fastModel) agent.setFastModel(options.fastModel);
-  const app = await buildServer({ core: core.client, sessions, agent, events, providers, pricing });
-  return { root, sessions, session, core, agent, events, observed, app };
-}
-
-async function waitForToolMessage(sessions: SessionStore, id: string): Promise<void> {
-  await vi.waitFor(async () => {
-    const detail = await sessions.get(id);
-    if (!detail?.messages.some((m) => m.role === "tool")) throw new Error("no tool message yet");
-  }, { timeout: 5_000 });
+  harness.events.on("event", (event: AppEvent) => observed.push(event));
+  if (options?.fastModel) harness.agent.setFastModel(options.fastModel);
+  return { ...harness, core, observed };
 }
 
 async function finishShell(harness: Awaited<ReturnType<typeof setup>>): Promise<void> {

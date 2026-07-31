@@ -1,9 +1,9 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ScmPanel } from "../components/panels/ScmPanel";
 import { api, ApiError } from "../lib/api";
 import type { ScmDiff, ScmStatus, ScmWorktree } from "../lib/contracts";
+import { renderWithClient } from "./helpers/with-client";
 
 const status: ScmStatus = {
   isRepo: true,
@@ -31,12 +31,7 @@ const diff: ScmDiff = {
 const worktrees: ScmWorktree[] = [{ name: "wt-feature", path: "/tmp/wt-feature", branch: "feature", createdAt: "2026-07-25T00:00:00.000Z", exists: true }];
 
 function renderPanel(onNotice = vi.fn()): { onNotice: ReturnType<typeof vi.fn> } {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(
-    <QueryClientProvider client={client}>
-      <ScmPanel sessionId="s1" onNotice={onNotice} />
-    </QueryClientProvider>,
-  );
+  renderWithClient(<ScmPanel sessionId="s1" onNotice={onNotice} />);
   return { onNotice };
 }
 

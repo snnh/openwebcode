@@ -1,16 +1,12 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { MessageQueue } from "../src/agent/message-queue.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
+import { tempRoot } from "./helpers/temp-roots.js";
 
 describe("MessageQueue", () => {
   it("persists queue state across instances and records the applied chat message", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-message-queue-"));
-    roots.push(root);
+    const root = await tempRoot("owc-message-queue-");
     const sessionRoot = path.join(root, "session-a");
     await mkdir(sessionRoot, { recursive: true });
     const first = new MessageQueue(() => sessionRoot);
@@ -26,8 +22,7 @@ describe("MessageQueue", () => {
   });
 
   it("serializes concurrent writes and can return a failed claim to queued", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-message-queue-"));
-    roots.push(root);
+    const root = await tempRoot("owc-message-queue-");
     const sessionRoot = path.join(root, "session-b");
     await mkdir(sessionRoot, { recursive: true });
     const queue = new MessageQueue(() => sessionRoot);

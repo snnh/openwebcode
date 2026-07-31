@@ -6,12 +6,12 @@
  * - 检查点摘要后端降级；agent write_file 只读；Esc 回对话。
  * Monaco 本体用 fake（helpers/fake-monaco.ts），api 层 mock。
  */
-import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, fireEvent, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../lib/api";
 import { DiffPane, type DiffSpec } from "../components/editor/DiffPane";
 import { createFakeMonaco } from "./helpers/fake-monaco";
+import { renderWithClient } from "./helpers/with-client";
 import type { MonacoApi } from "../components/editor/monaco-loader";
 
 vi.mock("../lib/api", async (importOriginal) => {
@@ -53,22 +53,19 @@ const SCM_DIFF_TEXT = [
 ].join("\n");
 
 function renderPane(spec: DiffSpec, props: Partial<Parameters<typeof DiffPane>[0]> = {}) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   const onClose = vi.fn();
   const onNotice = vi.fn();
   const actionsRef: { current: { accept?(): void; reject?(): void; focus?(): void } } = { current: {} };
-  const view = render(
-    <QueryClientProvider client={client}>
-      <DiffPane
-        sessionId="s1"
-        spec={spec}
-        dark
-        actionsRef={actionsRef}
-        onClose={onClose}
-        onNotice={onNotice}
-        {...props}
-      />
-    </QueryClientProvider>,
+  const view = renderWithClient(
+    <DiffPane
+      sessionId="s1"
+      spec={spec}
+      dark
+      actionsRef={actionsRef}
+      onClose={onClose}
+      onNotice={onNotice}
+      {...props}
+    />,
   );
   return { view, onClose, onNotice, actionsRef };
 }

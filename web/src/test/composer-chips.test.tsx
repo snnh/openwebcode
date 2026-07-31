@@ -1,9 +1,8 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import type { ReactElement } from "react";
 import { ComposerChips } from "../components/ComposerChips";
 import type { BackgroundTaskInfo, LiveSubagentRun, TodoItem } from "../lib/contracts";
+import { makeTestClient, renderWithClient } from "./helpers/with-client";
 
 function task(overrides: Partial<BackgroundTaskInfo>): BackgroundTaskInfo {
   return {
@@ -33,12 +32,11 @@ function renderChips({ tasks = [], todos = [], subagents }: {
   tasks?: BackgroundTaskInfo[];
   todos?: TodoItem[];
   subagents?: Record<string, LiveSubagentRun>;
-}): ReturnType<typeof render> {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+}): ReturnType<typeof renderWithClient> {
+  const client = makeTestClient();
   client.setQueryData(["tasks", "s1"], tasks);
   client.setQueryData(["todos", "s1"], todos);
-  const node: ReactElement = <ComposerChips sessionId="s1" subagents={subagents} />;
-  return render(<QueryClientProvider client={client}>{node}</QueryClientProvider>);
+  return renderWithClient(<ComposerChips sessionId="s1" subagents={subagents} />, client);
 }
 
 describe("ComposerChips", () => {

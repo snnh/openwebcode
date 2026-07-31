@@ -1,14 +1,9 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render } from "@testing-library/react";
+import { fireEvent } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ExtensionRow } from "../components/SettingsDialog";
 import { api } from "../lib/api";
 import type { ExtensionInfo } from "../lib/contracts";
-
-function withClient(node: React.ReactNode): ReturnType<typeof render> {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={client}>{node}</QueryClientProvider>);
-}
+import { renderWithClient } from "./helpers/with-client";
 
 function extensionFixture(overrides: Partial<ExtensionInfo>): ExtensionInfo {
   return {
@@ -46,7 +41,7 @@ describe("扩展类型化配置表单", () => {
       configSchema: typedSchema,
       config: { mode: "fast", verbose: true, limit: 5, extra: "keep" },
     });
-    const view = withClient(<ExtensionRow extension={extension} />);
+    const view = renderWithClient(<ExtensionRow extension={extension} />);
 
     const modeSelect = view.getByLabelText("模式");
     expect(modeSelect.tagName).toBe("SELECT");
@@ -79,7 +74,7 @@ describe("扩展类型化配置表单", () => {
       },
       config: {},
     });
-    const view = withClient(<ExtensionRow extension={extension} />);
+    const view = renderWithClient(<ExtensionRow extension={extension} />);
 
     // 空选项 + 内置/自定义预设
     await view.findByRole("option", { name: "Claude 风格" });
@@ -119,7 +114,7 @@ describe("扩展类型化配置表单", () => {
       },
       config: {},
     });
-    const view = withClient(<ExtensionRow extension={extension} />);
+    const view = renderWithClient(<ExtensionRow extension={extension} />);
     await view.findByRole("option", { name: "Claude 风格" });
 
     // 未选中时没有预览
@@ -134,7 +129,7 @@ describe("扩展类型化配置表单", () => {
 
   it("无 configSchema 时回退到原始 JSON 编辑", () => {
     const extension = extensionFixture({ config: { a: 1 } });
-    const view = withClient(<ExtensionRow extension={extension} />);
+    const view = renderWithClient(<ExtensionRow extension={extension} />);
     expect(view.getByText("配置 JSON")).toBeInTheDocument();
     const textarea = view.container.querySelector("textarea.extension-json");
     expect(textarea).not.toBeNull();

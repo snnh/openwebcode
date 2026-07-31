@@ -1,7 +1,6 @@
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { buildServer } from "../src/app.js";
 import type { AgentRunner } from "../src/agent/agent-runner.js";
 import type { CoreClient } from "../src/core-client.js";
@@ -14,26 +13,8 @@ import { BtrfsBackend } from "../src/snapshots/btrfs.js";
 import { probeSnapshotBackend, type CommandRunner } from "../src/snapshots/probe.js";
 import { ZfsBackend } from "../src/snapshots/zfs.js";
 
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
-
-/** 记录调用并按 handler 返回结果的 mock runner。 */
-function recordingRunner(handler: (cmd: string, args: string[]) => { stdout?: string; code?: number }) {
-  const calls: Array<{ cmd: string; args: string[] }> = [];
-  const runner: CommandRunner = {
-    run: async (cmd, args) => {
-      calls.push({ cmd, args });
-      const result = handler(cmd, args);
-      return { stdout: result.stdout ?? "", code: result.code ?? 0 };
-    },
-  };
-  return { runner, calls };
-}
-
-/** 按完整命令行查表；未命中返回 code 1（模拟命令失败/不存在）。 */
-function tableRunner(responses: Record<string, { stdout?: string; code?: number }>) {
-  return recordingRunner((cmd, args) => responses[[cmd, ...args].join(" ")] ?? { code: 1 });
-}
+import { recordingRunner, tableRunner } from "./helpers/recording-runner.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
 describe("probeSnapshotBackend", () => {
   it("linux: btrfs 命中", async () => {
@@ -95,7 +76,7 @@ describe("probeSnapshotBackend", () => {
 
 describe("BtrfsBackend", () => {
   it("create/list/delete 维护元数据并发出正确命令序列", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-btrfs-")); roots.push(root);
+    const root = await tempRoot("owc-btrfs-");
     const workspace = path.join(root, "ws");
     await mkdir(workspace);
     const snapRoot = path.join(root, ".owc-snapshots", "ws");
@@ -117,7 +98,7 @@ describe("BtrfsBackend", () => {
   });
 
   it("restore 先 delete 工作区再 snapshot 回来；delete 失败则中止", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-btrfs-")); roots.push(root);
+    const root = await tempRoot("owc-btrfs-");
     const workspace = path.join(root, "ws");
     await mkdir(workspace);
     const snapRoot = path.join(root, ".owc-snapshots", "ws");
@@ -139,7 +120,7 @@ describe("BtrfsBackend", () => {
   });
 
   it("diff 退出码 1 视为有差异返回文本，>1 抛错", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-btrfs-")); roots.push(root);
+    const root = await tempRoot("owc-btrfs-");
     const workspace = path.join(root, "ws");
     await mkdir(workspace);
     const differ = recordingRunner(() => ({ stdout: "Files a and b differ\n", code: 1 }));
@@ -152,7 +133,7 @@ describe("BtrfsBackend", () => {
 
 describe("ZfsBackend", () => {
   it("create/diff/delete 命令与元数据正确", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-zfs-")); roots.push(root);
+    const root = await tempRoot("owc-zfs-");
     const sessionRoot = path.join(root, "sess");
     const workspace = path.join(root, "ws");
     await mkdir(workspace);
@@ -174,7 +155,7 @@ describe("ZfsBackend", () => {
   });
 
   it("restore 清空工作区（跳过 .zfs）并从只读快照复制回写", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-zfs-")); roots.push(root);
+    const root = await tempRoot("owc-zfs-");
     const sessionRoot = path.join(root, "sess");
     const workspace = path.join(root, "ws");
     await mkdir(workspace, { recursive: true });
@@ -201,7 +182,7 @@ describe("ZfsBackend", () => {
 
 describe("snapshot routes", () => {
   it("GET snapshot-capability 返回 git-shadow 并落盘 meta；DELETE checkpoint 生效并发布事件", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-snaproute-")); roots.push(root);
+    const root = await tempRoot("owc-snaproute-");
     const workspace = path.join(root, "ws");
     await mkdir(workspace);
     await writeFile(path.join(workspace, "a.txt"), "one", "utf8");

@@ -1,13 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { NewSessionDialog } from "../components/NewSessionDialog";
 import type { ModelProfile } from "../lib/contracts";
-
-// jsdom 对 HTMLDialogElement.showModal/close 的实现不完整：打桩为 open 属性开关
-beforeEach(() => {
-  HTMLDialogElement.prototype.showModal = function showModal(this: HTMLDialogElement) { this.open = true; };
-  HTMLDialogElement.prototype.close = function close(this: HTMLDialogElement) { this.open = false; };
-});
 
 afterEach(() => {
   vi.unstubAllGlobals();

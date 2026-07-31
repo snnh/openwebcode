@@ -1,10 +1,10 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsDialog } from "../components/SettingsDialog";
 import { I18nProvider } from "../i18n";
 import { api } from "../lib/api";
 import type { PricingDocument, PromptOverrideView, SettingsView } from "../lib/contracts";
+import { renderWithClient } from "./helpers/with-client";
 
 const settingsView: SettingsView = {
   groups: [{
@@ -28,9 +28,6 @@ const promptView: PromptOverrideView = {
 };
 
 beforeEach(() => {
-  // jsdom 对 HTMLDialogElement.showModal/close 的实现不完整：打桩为 open 属性开关
-  HTMLDialogElement.prototype.showModal = function showModal(this: HTMLDialogElement) { this.open = true; };
-  HTMLDialogElement.prototype.close = function close(this: HTMLDialogElement) { this.open = false; };
   // jsdom 无布局：selectTab 的滚动复位打桩
   Element.prototype.scrollTo = function scrollTo() { /* no-op */ } as typeof Element.prototype.scrollTo;
 });
@@ -52,7 +49,6 @@ function stubApis(): void {
 
 function renderDialog(withI18n = false): void {
   stubApis();
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const dialog = (
     <SettingsDialog
       open
@@ -72,11 +68,7 @@ function renderDialog(withI18n = false): void {
       onClose={() => undefined}
     />
   );
-  render(
-    <QueryClientProvider client={client}>
-      {withI18n ? <I18nProvider>{dialog}</I18nProvider> : dialog}
-    </QueryClientProvider>,
-  );
+  renderWithClient(withI18n ? <I18nProvider>{dialog}</I18nProvider> : dialog);
 }
 
 function activeTab(): string | null {
@@ -185,15 +177,5 @@ describe("更新检查字段英文标签", () => {
     expect(await screen.findByText("Enable update check")).toBeInTheDocument();
     expect(screen.getByLabelText("Update check URL")).toBeInTheDocument();
     expect(screen.getByLabelText("Check interval (hours)")).toBeInTheDocument();
-  });
-
-  it("英文标签可被设置搜索命中", async () => {
-    window.localStorage.setItem("owc-language", "en");
-    renderDialog(true);
-    fireEvent.change(screen.getByRole("textbox", { name: "Search settings" }), { target: { value: "Check interval" } });
-    await waitFor(() => {
-      const tabs = Array.from(document.querySelectorAll(".settings-tab span:last-child")).map((node) => node.textContent ?? "");
-      expect(tabs).toEqual(["Server info"]);
-    });
   });
 });

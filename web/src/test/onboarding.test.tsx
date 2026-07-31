@@ -1,4 +1,3 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EmptyState } from "../components/EmptyState";
@@ -6,6 +5,7 @@ import { NewSessionDialog } from "../components/NewSessionDialog";
 import { ProviderProfilesSection, SettingsDialog, type SettingsTab } from "../components/SettingsDialog";
 import { api } from "../lib/api";
 import type { ProviderProfilesView, SettingsView } from "../lib/contracts";
+import { renderWithClient } from "./helpers/with-client";
 
 const emptyProfiles: ProviderProfilesView = { modelProviders: [], webProviders: [], activeWeb: {} };
 const emptySettings: SettingsView = { groups: [] };
@@ -20,11 +20,6 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
-
-function withClient(node: React.ReactNode): ReturnType<typeof render> {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={client}>{node}</QueryClientProvider>);
-}
 
 function stubCapabilitiesFetch(): void {
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
@@ -42,7 +37,7 @@ function renderSettings(initialTab?: SettingsTab): ReturnType<typeof render> {
   // 模型目录页签会同时挂载 ProviderProfilesSection / ModelAccessSection / ModelCatalogSection
   vi.spyOn(api, "models").mockResolvedValue([]);
   vi.spyOn(api, "modelSyncStatus").mockResolvedValue({ count: 0 });
-  return withClient(
+  return renderWithClient(
     <SettingsDialog
       open
       {...(initialTab !== undefined ? { initialTab } : {})}
@@ -135,7 +130,7 @@ describe("EmptyState 快速开始引导", () => {
 describe("ProviderProfilesSection 测试连接", () => {
   function renderProfiles(): ReturnType<typeof render> {
     vi.spyOn(api, "providerProfiles").mockResolvedValue(emptyProfiles);
-    return withClient(<ProviderProfilesSection />);
+    return renderWithClient(<ProviderProfilesSection />);
   }
 
   it("成功：显示绿色结果与延迟，请求体取表单当前值", async () => {

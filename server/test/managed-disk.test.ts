@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { buildServer } from "../src/app.js";
 import type { AgentRunner } from "../src/agent/agent-runner.js";
 import type { CoreClient } from "../src/core-client.js";
@@ -24,27 +24,8 @@ import type { CommandRunner } from "../src/snapshots/probe.js";
 import { ManagedWorkspaceSyncError, type ManagedWorkspaceSyncApplyInput, type ManagedWorkspaceSyncApplyResult, type ManagedWorkspaceSyncPreview } from "../src/snapshots/managed-sync.js";
 import { StorageGC } from "../src/storage-gc.js";
 import { makeStubProvider } from "./helpers/stub-provider.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
-
-/** 记录调用并按 handler 返回结果的 mock runner（同 snapshot-backends.test.ts 套路）。 */
-function recordingRunner(handler: (cmd: string, args: string[]) => { stdout?: string; code?: number }) {
-  const calls: Array<{ cmd: string; args: string[] }> = [];
-  const runner: CommandRunner = {
-    run: async (cmd, args) => {
-      calls.push({ cmd, args });
-      const result = handler(cmd, args);
-      return { stdout: result.stdout ?? "", code: result.code ?? 0 };
-    },
-  };
-  return { runner, calls, lines: () => calls.map(({ cmd, args }) => [cmd, ...args].join(" ")) };
-}
-
-/** 按完整命令行查表；未命中返回 code 1（模拟命令失败/不存在）。 */
-function tableRunner(responses: Record<string, { stdout?: string; code?: number }>) {
-  return recordingRunner((cmd, args) => responses[[cmd, ...args].join(" ")] ?? { code: 1 });
-}
+import { recordingRunner, tableRunner } from "./helpers/recording-runner.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
 interface TestChainState {
   active: { file: string; parentFile: string | null };
@@ -62,7 +43,7 @@ describe("managed VHDX sibling mount path", () => {
   });
 
   it("provisions Windows VHDX beside the source and persists the cleanup path", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
+    const root = await tempRoot("owc-md-");
     const dataDir = path.join(root, "data");
     const origin = path.join(root, "projects", "work");
     await mkdir(origin, { recursive: true });
@@ -79,7 +60,7 @@ describe("managed VHDX sibling mount path", () => {
   });
 
   it("does not touch an existing sibling and removes its private staging directory", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
+    const root = await tempRoot("owc-md-");
     const dataDir = path.join(root, "data");
     const origin = path.join(root, "work");
     const mountPoint = managedVhdxMountPoint(origin, "session-2");
@@ -203,7 +184,7 @@ describe("managed-disk.ps1", () => {
 
 describe("ManagedDiskBackend", () => {
   it("qcow2 create：建差分叶子+换叶命令序列正确，chain.json 记录 file=旧叶子", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
+    const root = await tempRoot("owc-md-");
     const workspaceRoot = path.join(root, "workspaces", "s1");
     const mountPoint = path.join(root, "mnt", "s1");
     const base = path.join(workspaceRoot, "base.qcow2");
@@ -228,7 +209,7 @@ describe("ManagedDiskBackend", () => {
   });
 
   it("vhdx create：单个可恢复 fork-swap 脚本事务，链状态只在成功后更新", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
+    const root = await tempRoot("owc-md-");
     const workspaceRoot = path.join(root, "workspaces", "s1");
     const mountPoint = vhdxSiblingMount(root);
     const base = path.join(workspaceRoot, "base.vhdx");
@@ -248,7 +229,7 @@ describe("ManagedDiskBackend", () => {
   });
 
   it("VHDX 创建后 chain.json 落盘失败会回滚到旧叶，保留旧状态", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
+    const root = await tempRoot("owc-md-");
     const workspaceRoot = path.join(root, "workspaces", "s1");
     const mountPoint = vhdxSiblingMount(root);
     const base = path.join(workspaceRoot, "base.vhdx");
@@ -267,7 +248,7 @@ describe("ManagedDiskBackend", () => {
   });
 
   it("VHDX 恢复时先持久化新 active，失败不会删除原叶", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
+    const root = await tempRoot("owc-md-");
     const workspaceRoot = path.join(root, "workspaces", "s1");
     const mountPoint = vhdxSiblingMount(root);
     const base = path.join(workspaceRoot, "base.vhdx");
@@ -292,7 +273,7 @@ describe("ManagedDiskBackend", () => {
   });
 
   it("跨请求构造的 backend 也会串行换叶，避免双击读取同一条 chain", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
+    const root = await tempRoot("owc-md-");
     const workspaceRoot = path.join(root, "workspaces", "s1");
     const mountPoint = path.join(root, "mnt", "s1");
     const base = path.join(workspaceRoot, "base.qcow2");
@@ -332,7 +313,7 @@ describe("ManagedDiskBackend", () => {
   });
 
   it("qcow2 restore：从检查点盘文件拉新分支叶子，检查点文件不被覆写", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
+    const root = await tempRoot("owc-md-");
     const workspaceRoot = path.join(root, "workspaces", "s1");
     const mountPoint = path.join(root, "mnt", "s1");
     const base = path.join(workspaceRoot, "base.qcow2");
@@ -369,7 +350,7 @@ describe("ManagedDiskBackend", () => {
   });
 
   it.each(["qcow2", "vhdx"] as const)("达到 32 个检查点时拒绝新建 %s，避免合并挂载中的祖先链", async (kind) => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
+    const root = await tempRoot("owc-md-");
     const workspaceRoot = path.join(root, "workspaces", "s1");
     const mountPoint = kind === "vhdx" ? vhdxSiblingMount(root) : path.join(root, "mnt", "s1");
     const base = path.join(workspaceRoot, `base.${kind}`);
@@ -389,7 +370,7 @@ describe("ManagedDiskBackend", () => {
   });
 
   it("delete 抛明确错误：链式后端不支持逐段删除", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
+    const root = await tempRoot("owc-md-");
     const workspaceRoot = path.join(root, "workspaces", "s1");
     const { runner } = recordingRunner(() => ({ code: 0 }));
     const backend = new ManagedDiskBackend({ kind: "qcow2", workspaceRoot, mountPoint: path.join(root, "mnt", "s1"), runner });
@@ -397,7 +378,7 @@ describe("ManagedDiskBackend", () => {
   });
 
   it("diff 报告链中位置与载体文件信息，并如实说明无内容级 diff", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
+    const root = await tempRoot("owc-md-");
     const workspaceRoot = path.join(root, "workspaces", "s1");
     const mountPoint = path.join(root, "mnt", "s1");
     const base = path.join(workspaceRoot, "base.qcow2");
@@ -420,7 +401,7 @@ describe("ManagedDiskBackend", () => {
 
 describe("getSnapshotBackend 免探测构造", () => {
   it("meta.snapshotBackend=vhdx-chain/qcow2-chain 时按名构造 ManagedDiskBackend", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
+    const root = await tempRoot("owc-md-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const qcow2 = await sessions.create({ cwd: path.join(root, "mnt", "a") });
@@ -452,7 +433,7 @@ describe("getSnapshotBackend 免探测构造", () => {
 
 describe("sweepOrphans 孤儿挂载清理", () => {
   it("meta 缺失 → 卸载并删空目录；meta 在镜像缺失 → 只删目录；正常 → 跳过", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
+    const root = await tempRoot("owc-md-");
     // case1：meta 缺失 + qcow2 镜像（device 记录 /dev/nbd3）
     await mkdir(path.join(root, "mnt", "orphan1"), { recursive: true });
     await mkdir(path.join(root, "workspaces", "orphan1"), { recursive: true });
@@ -485,7 +466,7 @@ describe("sweepOrphans 孤儿挂载清理", () => {
   });
 
   it("teardown 优先卸载 chain.json 记录的 active VHDX 叶子，而非旧 base", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
+    const root = await tempRoot("owc-md-");
     const dataDir = path.join(root, "data");
     const id = "active-leaf";
     const origin = path.join(root, "work");
@@ -514,7 +495,7 @@ describe("sweepOrphans 孤儿挂载清理", () => {
   });
 
   it("meta 缺失时按 chain.json 清理工作目录旁的 VHDX 挂载点", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
+    const root = await tempRoot("owc-md-");
     const dataDir = path.join(root, "data");
     const id = "sibling-orphan";
     const workspaceRoot = path.join(dataDir, "workspaces", id);
@@ -537,7 +518,7 @@ describe("sweepOrphans 孤儿挂载清理", () => {
   });
 
   it("teardown 卸载失败会保留工作区，供用户恢复", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
+    const root = await tempRoot("owc-md-");
     const dataDir = path.join(root, "data");
     const id = "teardown-fails";
     const origin = path.join(root, "work");
@@ -558,7 +539,7 @@ describe("sweepOrphans 孤儿挂载清理", () => {
 
 describe("StorageGC.startup", () => {
   it("启动扫描先执行附加清理再做常规 GC", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
+    const root = await tempRoot("owc-md-");
     const order: string[] = [];
     const gc = new StorageGC(path.join(root, "sessions"), 1024, async () => { order.push("sweep"); });
     const report = await gc.startup();
@@ -612,7 +593,7 @@ describe("managed workspace REST", () => {
   }
 
   it("GET /api/managed-workspace/capability 返回后端能力", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
+    const root = await tempRoot("owc-md-");
     const { app } = await buildApp(root, fakeManaged(root, {}));
     try {
       const response = await app.inject({ method: "GET", url: "/api/managed-workspace/capability" });
@@ -624,7 +605,7 @@ describe("managed workspace REST", () => {
   });
 
   it("POST /api/sessions workspaceMode=managed → 201，cwd=挂载点、meta.workspace 与 snapshotBackend 正确", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
+    const root = await tempRoot("owc-md-");
     const origin = path.join(root, "origin-project");
     await mkdir(origin);
     const spies: { provision: ManagedProvisionInput[] } = { provision: [] };
@@ -656,7 +637,7 @@ describe("managed workspace REST", () => {
   });
 
   it("自动快照遇到正在读取的托管工作区时传入 shared lease，并安全跳过", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-managed-message-gate-")); roots.push(root);
+    const root = await tempRoot("owc-managed-message-gate-");
     const mountPoint = path.join(root, "mnt", "message-gate");
     await mkdir(mountPoint, { recursive: true });
     const sessions = new SessionStore(path.join(root, "sessions"));
@@ -730,7 +711,7 @@ describe("managed workspace REST", () => {
   });
 
   it("workspace sync REST：预览可在运行中读取，apply 要求 idle+confirm+fingerprint，并对同会话加锁", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
+    const root = await tempRoot("owc-md-");
     const origin = path.join(root, "origin-project");
     await mkdir(origin);
     const spies: { preview: string[]; apply: Array<{ sessionId: string; input: ManagedWorkspaceSyncApplyInput }> } = { preview: [], apply: [] };
@@ -798,7 +779,7 @@ describe("managed workspace REST", () => {
   });
 
   it("能力不可用时 POST managed → 400 并报明确原因", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
+    const root = await tempRoot("owc-md-");
     const origin = path.join(root, "origin-project");
     await mkdir(origin);
     const unavailable: ManagedWorkspaceLike = {
@@ -817,7 +798,7 @@ describe("managed workspace REST", () => {
   });
 
   it("非法 workspaceMode → 400；managed 源目录不存在 → 400", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
+    const root = await tempRoot("owc-md-");
     const { app } = await buildApp(root, fakeManaged(root, {}));
     try {
       const invalid = await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: root, provider: "test-stub", model: "deterministic-tool-loop", workspaceMode: "weird" } });
@@ -831,7 +812,7 @@ describe("managed workspace REST", () => {
   });
 
   it("DELETE /api/sessions：managed 会话先 teardown（卸载+删目录）再删会话", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-md-")); roots.push(root);
+    const root = await tempRoot("owc-md-");
     const origin = path.join(root, "origin-project");
     await mkdir(origin);
     const spies: { teardown: string[] } = { teardown: [] };

@@ -4,11 +4,11 @@
  * - 对话为主约束：默认无 diff、切换会话即关闭、Esc 回对话且焦点回 Composer、移动端降级只读摘要（不加载 Monaco）。
  * Monaco 本体用 fake；isMobile 经 use-media-query mock 控制。
  */
-import { fireEvent, render, waitFor } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { App } from "../App";
+import { fireEvent, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createFakeMonaco } from "./helpers/fake-monaco";
+import { setupStubWebSocket } from "./helpers/stub-websocket";
+import { renderApp } from "./helpers/with-client";
 import type { MonacoApi } from "../components/editor/monaco-loader";
 
 let mobileMatches = false;
@@ -79,40 +79,14 @@ function installFetchMock(): void {
   vi.stubGlobal("fetch", handler);
 }
 
-function renderApp(): ReturnType<typeof render> {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
-  return render(
-    <QueryClientProvider client={client}>
-      <App />
-    </QueryClientProvider>,
-  );
-}
-
 describe("统一 diff 视图：入口与布局回归", () => {
-  let originalWebSocket: typeof WebSocket;
+  setupStubWebSocket();
   beforeEach(() => {
     mobileMatches = false;
     window.localStorage.clear();
     loadMonacoMock.mockClear();
     fake.diffEditors.length = 0;
-    originalWebSocket = globalThis.WebSocket;
-    class StubWebSocket {
-      readyState = 0;
-      onopen: ((ev: Event) => void) | null = null;
-      onmessage: ((ev: MessageEvent) => void) | null = null;
-      onclose: ((ev: CloseEvent) => void) | null = null;
-      onerror: ((ev: Event) => void) | null = null;
-      close(): void { this.readyState = 3; }
-      send(): void { /* no-op */ }
-      addEventListener(): void { /* no-op */ }
-      removeEventListener(): void { /* no-op */ }
-    }
-    vi.stubGlobal("WebSocket", StubWebSocket);
     installFetchMock();
-  });
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    globalThis.WebSocket = originalWebSocket;
   });
 
   it("工具卡一键打开 diff（agent 来源）；切换会话即关闭回到纯对话", async () => {

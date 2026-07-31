@@ -1,8 +1,7 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
 import { TOOL_RESULT_BUDGETS } from "../src/context/tool-result-budget.js";
@@ -12,20 +11,7 @@ import { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { makeStubProvider } from "./helpers/stub-provider.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, {
-  recursive: true,
-  force: true,
-  maxRetries: 10,
-  retryDelay: 100,
-}))));
-
-async function tempRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-att-"));
-  roots.push(root);
-  return root;
-}
+import { tempRoot } from "./helpers/temp-roots.js";
 
 /** 注入 readFile/globFiles 的 fake core；readFile 按 path 表查，未命中抛错模拟沙盒越界 */
 function createFakeCore(opts: {
@@ -67,26 +53,35 @@ async function waitForUserMessage(sessions: SessionStore, id: string, timeoutMs 
   }
 }
 
+/** 标准 rig：临时目录 + SessionStore + buildServer；coreOpts 注入 fake core 的 readFile/glob 行为 */
+async function setup(options: { title: string; coreOpts?: Parameters<typeof createFakeCore>[0] }) {
+  const root = await tempRoot("owc-att-");
+  const sessions = new SessionStore(path.join(root, "sessions"));
+  await sessions.initialize();
+  const session = await sessions.create({ cwd: root, provider: "test-stub", model: "deterministic-tool-loop", title: options.title });
+  const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+  await pricing.initialize();
+  const providers = new ProviderRegistry();
+  providers.register(echoProvider);
+  const events = new EventBus();
+  const core = createFakeCore(options.coreOpts);
+  const agent = new AgentRunner(sessions, providers, core, events, pricing);
+  const app = await buildServer({ core, sessions, agent, events, providers, pricing });
+  return { root, sessions, session, core, app };
+}
+
 describe("POST /messages attachments - injection order", () => {
   it("attachment text blocks precede the user body within the same user message content array", async () => {
-    const root = await tempRoot();
-    const sessions = new SessionStore(path.join(root, "sessions"));
-    await sessions.initialize();
-    const session = await sessions.create({ cwd: root, provider: "test-stub", model: "deterministic-tool-loop", title: "Att order" });
-    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
-    await pricing.initialize();
-    const providers = new ProviderRegistry();
-    providers.register(echoProvider);
-    const events = new EventBus();
-    const core = createFakeCore({
-      readFileImpl: async (req) => {
-        if (req.path === "a.txt") return "AAA";
-        if (req.path === "b.txt") return "BBB";
-        throw new Error(`unexpected path ${req.path}`);
+    const { sessions, session, app } = await setup({
+      title: "Att order",
+      coreOpts: {
+        readFileImpl: async (req) => {
+          if (req.path === "a.txt") return "AAA";
+          if (req.path === "b.txt") return "BBB";
+          throw new Error(`unexpected path ${req.path}`);
+        },
       },
     });
-    const agent = new AgentRunner(sessions, providers, core, events, pricing);
-    const app = await buildServer({ core, sessions, agent, events, providers, pricing });
     try {
       const res = await app.inject({
         method: "POST",
@@ -112,24 +107,16 @@ describe("POST /messages attachments - injection order", () => {
 
 describe("POST /messages attachments - sandbox violation", () => {
   it("an out-of-sandbox path degrades to an error block without blocking other attachments or the body", async () => {
-    const root = await tempRoot();
-    const sessions = new SessionStore(path.join(root, "sessions"));
-    await sessions.initialize();
-    const session = await sessions.create({ cwd: root, provider: "test-stub", model: "deterministic-tool-loop", title: "Att oob" });
-    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
-    await pricing.initialize();
-    const providers = new ProviderRegistry();
-    providers.register(echoProvider);
-    const events = new EventBus();
-    const core = createFakeCore({
-      readFileImpl: async (req) => {
-        if (req.path === "../secret.txt") throw new Error("path outside sandbox read roots");
-        if (req.path === "ok.txt") return "OK";
-        throw new Error(`unexpected path ${req.path}`);
+    const { sessions, session, app } = await setup({
+      title: "Att oob",
+      coreOpts: {
+        readFileImpl: async (req) => {
+          if (req.path === "../secret.txt") throw new Error("path outside sandbox read roots");
+          if (req.path === "ok.txt") return "OK";
+          throw new Error(`unexpected path ${req.path}`);
+        },
       },
     });
-    const agent = new AgentRunner(sessions, providers, core, events, pricing);
-    const app = await buildServer({ core, sessions, agent, events, providers, pricing });
     try {
       const res = await app.inject({
         method: "POST",
@@ -157,27 +144,19 @@ describe("POST /messages attachments - sandbox violation", () => {
 
 describe("POST /messages attachments - large file truncation", () => {
   it("content over the read_file budget is truncated and an artifact pointer is embedded", async () => {
-    const root = await tempRoot();
-    const sessions = new SessionStore(path.join(root, "sessions"));
-    await sessions.initialize();
-    const session = await sessions.create({ cwd: root, provider: "test-stub", model: "deterministic-tool-loop", title: "Att big" });
-    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
-    await pricing.initialize();
-    const providers = new ProviderRegistry();
-    providers.register(echoProvider);
-    const events = new EventBus();
     // read_file 预算 16000 tokens -> 64000 字符为截断阈值；造一个 70000 字符的文件
     const budget = TOOL_RESULT_BUDGETS.read_file!;
     const thresholdChars = budget * 4;
     const bigContent = "A".repeat(thresholdChars + 5_000);
-    const core = createFakeCore({
-      readFileImpl: async (req) => {
-        if (req.path === "big.txt") return bigContent;
-        throw new Error(`unexpected path ${req.path}`);
+    const { sessions, session, app } = await setup({
+      title: "Att big",
+      coreOpts: {
+        readFileImpl: async (req) => {
+          if (req.path === "big.txt") return bigContent;
+          throw new Error(`unexpected path ${req.path}`);
+        },
       },
     });
-    const agent = new AgentRunner(sessions, providers, core, events, pricing);
-    const app = await buildServer({ core, sessions, agent, events, providers, pricing });
     try {
       const res = await app.inject({
         method: "POST",
@@ -213,20 +192,9 @@ describe("POST /messages attachments - large file truncation", () => {
 
 describe("GET /api/sessions/:id/complete-path", () => {
   it("returns up to 20 matches via core.globFiles with pattern *q*", async () => {
-    const root = await tempRoot();
-    const sessions = new SessionStore(path.join(root, "sessions"));
-    await sessions.initialize();
-    const session = await sessions.create({ cwd: root, provider: "test-stub", model: "deterministic-tool-loop", title: "Complete" });
-    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
-    await pricing.initialize();
-    const providers = new ProviderRegistry();
-    providers.register(echoProvider);
-    const events = new EventBus();
+    const { session, core, app } = await setup({ title: "Complete", coreOpts: { globPaths: ["src/a.ts", "src/b.ts", "readme.md"] } });
     const globSpy = vi.fn(async () => ({ paths: ["src/a.ts", "src/b.ts", "readme.md"], truncated: false }));
-    const core = createFakeCore({ globPaths: ["src/a.ts", "src/b.ts", "readme.md"] });
     (core as unknown as { globFiles: typeof globSpy }).globFiles = globSpy;
-    const agent = new AgentRunner(sessions, providers, core, events, pricing);
-    const app = await buildServer({ core, sessions, agent, events, providers, pricing });
     try {
       const res = await app.inject({ method: "GET", url: `/api/sessions/${session.id}/complete-path?q=ts` });
       expect(res.statusCode, res.body).toBe(200);
@@ -238,19 +206,8 @@ describe("GET /api/sessions/:id/complete-path", () => {
   });
 
   it("caps the result list at 20 entries", async () => {
-    const root = await tempRoot();
-    const sessions = new SessionStore(path.join(root, "sessions"));
-    await sessions.initialize();
-    const session = await sessions.create({ cwd: root, provider: "test-stub", model: "deterministic-tool-loop", title: "Complete cap" });
-    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
-    await pricing.initialize();
-    const providers = new ProviderRegistry();
-    providers.register(echoProvider);
-    const events = new EventBus();
     const many = Array.from({ length: 25 }, (_, i) => `file${i}.ts`);
-    const core = createFakeCore({ globPaths: many });
-    const agent = new AgentRunner(sessions, providers, core, events, pricing);
-    const app = await buildServer({ core, sessions, agent, events, providers, pricing });
+    const { session, app } = await setup({ title: "Complete cap", coreOpts: { globPaths: many } });
     try {
       const res = await app.inject({ method: "GET", url: `/api/sessions/${session.id}/complete-path?q=file` });
       expect(res.statusCode).toBe(200);
@@ -262,20 +219,9 @@ describe("GET /api/sessions/:id/complete-path", () => {
   });
 
   it("returns an empty array when q is empty", async () => {
-    const root = await tempRoot();
-    const sessions = new SessionStore(path.join(root, "sessions"));
-    await sessions.initialize();
-    const session = await sessions.create({ cwd: root, provider: "test-stub", model: "deterministic-tool-loop", title: "Complete empty q" });
-    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
-    await pricing.initialize();
-    const providers = new ProviderRegistry();
-    providers.register(echoProvider);
-    const events = new EventBus();
+    const { session, core, app } = await setup({ title: "Complete empty q" });
     const globSpy = vi.fn(async () => ({ paths: ["should-not-be-called.ts"], truncated: false }));
-    const core = createFakeCore();
     (core as unknown as { globFiles: typeof globSpy }).globFiles = globSpy;
-    const agent = new AgentRunner(sessions, providers, core, events, pricing);
-    const app = await buildServer({ core, sessions, agent, events, providers, pricing });
     try {
       const res = await app.inject({ method: "GET", url: `/api/sessions/${session.id}/complete-path?q=` });
       expect(res.statusCode).toBe(200);
@@ -287,17 +233,7 @@ describe("GET /api/sessions/:id/complete-path", () => {
   });
 
   it("returns 404 when the session does not exist", async () => {
-    const root = await tempRoot();
-    const sessions = new SessionStore(path.join(root, "sessions"));
-    await sessions.initialize();
-    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
-    await pricing.initialize();
-    const providers = new ProviderRegistry();
-    providers.register(echoProvider);
-    const events = new EventBus();
-    const core = createFakeCore();
-    const agent = new AgentRunner(sessions, providers, core, events, pricing);
-    const app = await buildServer({ core, sessions, agent, events, providers, pricing });
+    const { app } = await setup({ title: "Complete 404" });
     try {
       const res = await app.inject({ method: "GET", url: `/api/sessions/${randomUUID()}/complete-path?q=x` });
       expect(res.statusCode).toBe(404);
@@ -309,18 +245,7 @@ describe("GET /api/sessions/:id/complete-path", () => {
 
 describe("POST /messages attachments - validation", () => {
   it("rejects more than 10 attachments", async () => {
-    const root = await tempRoot();
-    const sessions = new SessionStore(path.join(root, "sessions"));
-    await sessions.initialize();
-    const session = await sessions.create({ cwd: root, provider: "test-stub", model: "deterministic-tool-loop", title: "Att too many" });
-    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
-    await pricing.initialize();
-    const providers = new ProviderRegistry();
-    providers.register(echoProvider);
-    const events = new EventBus();
-    const core = createFakeCore();
-    const agent = new AgentRunner(sessions, providers, core, events, pricing);
-    const app = await buildServer({ core, sessions, agent, events, providers, pricing });
+    const { session, app } = await setup({ title: "Att too many" });
     try {
       const res = await app.inject({
         method: "POST",
@@ -335,18 +260,7 @@ describe("POST /messages attachments - validation", () => {
   });
 
   it("rejects empty path strings", async () => {
-    const root = await tempRoot();
-    const sessions = new SessionStore(path.join(root, "sessions"));
-    await sessions.initialize();
-    const session = await sessions.create({ cwd: root, provider: "test-stub", model: "deterministic-tool-loop", title: "Att empty path" });
-    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
-    await pricing.initialize();
-    const providers = new ProviderRegistry();
-    providers.register(echoProvider);
-    const events = new EventBus();
-    const core = createFakeCore();
-    const agent = new AgentRunner(sessions, providers, core, events, pricing);
-    const app = await buildServer({ core, sessions, agent, events, providers, pricing });
+    const { session, app } = await setup({ title: "Att empty path" });
     try {
       const res = await app.inject({
         method: "POST",
@@ -360,19 +274,8 @@ describe("POST /messages attachments - validation", () => {
   });
 
   it("attachments do not bypass /clear short-circuit", async () => {
-    const root = await tempRoot();
-    const sessions = new SessionStore(path.join(root, "sessions"));
-    await sessions.initialize();
-    const session = await sessions.create({ cwd: root, provider: "test-stub", model: "deterministic-tool-loop", title: "Att clear" });
-    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
-    await pricing.initialize();
-    const providers = new ProviderRegistry();
-    providers.register(echoProvider);
-    const events = new EventBus();
     const readFileSpy = vi.fn(async () => "should-not-be-called");
-    const core = createFakeCore({ readFileImpl: readFileSpy });
-    const agent = new AgentRunner(sessions, providers, core, events, pricing);
-    const app = await buildServer({ core, sessions, agent, events, providers, pricing });
+    const { session, app } = await setup({ title: "Att clear", coreOpts: { readFileImpl: readFileSpy } });
     try {
       const res = await app.inject({
         method: "POST",

@@ -1,13 +1,13 @@
 import { useState } from "react";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { App } from "../App";
 import { Composer } from "../components/Composer";
 import { MessageCard } from "../components/MessageCard";
 import { TimelinePanel } from "../components/panels/TimelinePanel";
 import { api } from "../lib/api";
 import type { ChatMessage, SessionDetail, SessionTimeline } from "../lib/contracts";
+import { setupStubWebSocket } from "./helpers/stub-websocket";
+import { renderApp as renderAppBase, renderWithClient } from "./helpers/with-client";
 
 // ComposerChips 走 react-query；直接渲染 Composer 的用例不需要真实芯片
 vi.mock("../components/ComposerChips", () => ({ ComposerChips: () => null }));
@@ -152,38 +152,16 @@ function installFetchMock(calls: RecordedCall[]): void {
 }
 
 describe("App 编辑重发 / 重新生成 / 分叉", () => {
+  setupStubWebSocket();
   const calls: RecordedCall[] = [];
-  let originalWebSocket: typeof WebSocket;
   beforeEach(() => {
     window.localStorage.clear();
-    originalWebSocket = globalThis.WebSocket;
-    class StubWebSocket {
-      onopen: (() => void) | null = null;
-      onmessage: ((ev: MessageEvent) => void) | null = null;
-      onclose: (() => void) | null = null;
-      close(): void { /* no-op */ }
-    }
-    vi.stubGlobal("WebSocket", StubWebSocket);
-    if (!window.matchMedia) {
-      window.matchMedia = ((query: string) => ({ matches: false, media: query, onchange: null, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {}, dispatchEvent() { return false; } })) as unknown as typeof window.matchMedia;
-    }
-    HTMLDialogElement.prototype.showModal = function showModal(this: HTMLDialogElement) { this.open = true; };
-    HTMLDialogElement.prototype.close = function close(this: HTMLDialogElement) { this.open = false; };
     Element.prototype.scrollIntoView = function scrollIntoView() { /* no-op */ };
-  });
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    globalThis.WebSocket = originalWebSocket;
   });
 
   function renderApp(): void {
     installFetchMock(calls);
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
-    render(
-      <QueryClientProvider client={client}>
-        <App />
-      </QueryClientProvider>,
-    );
+    renderAppBase();
   }
 
   it("编辑重发：进入编辑态灌入原文，按钮/Esc 取消恢复草稿，发送走 retry 接口并携带 editedContent", async () => {
@@ -267,11 +245,8 @@ describe("TimelinePanel 会话树", () => {
     vi.spyOn(api, "timeline").mockResolvedValue(timelineData);
     vi.spyOn(api, "checkpoints").mockResolvedValue([]);
     vi.spyOn(api, "snapshotCapability").mockResolvedValue({ backend: "git-shadow", costHint: "instant", requiresAdmin: false });
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const { container } = render(
-      <QueryClientProvider client={client}>
-        <TimelinePanel sessionId="s1" running={running} onNotice={() => {}} {...(onForkSession ? { onForkSession } : {})} />
-      </QueryClientProvider>,
+    const { container } = renderWithClient(
+      <TimelinePanel sessionId="s1" running={running} onNotice={() => {}} {...(onForkSession ? { onForkSession } : {})} />,
     );
     return { container };
   }

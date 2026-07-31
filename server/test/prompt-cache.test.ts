@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { AnthropicProvider } from "../src/providers/anthropic-provider.js";
 import type { StreamChatRequest } from "../src/providers/provider.js";
 import type { ChatMessage } from "../src/sessions/types.js";
+import { injectMockStream } from "./helpers/anthropic-mock.js";
 
 function message(id: string, role: ChatMessage["role"], text: string): ChatMessage {
   return { id, role, createdAt: "2026-01-01T00:00:00.000Z", content: [{ type: "text", text }] };
@@ -16,24 +17,8 @@ const TOOLS = [
   { name: "bash", description: "Run a command", inputSchema: { type: "object" } },
 ];
 
-type Usage = Record<string, unknown>;
-
-/** 捕获请求体的 mock stream；usage 可注入 cache 字段。 */
-function mockStream(bodies: Array<Record<string, unknown>>, usage: Usage = { input_tokens: 10, output_tokens: 5 }) {
-  return (body: Record<string, unknown>) => {
-    bodies.push(body);
-    return {
-      async *[Symbol.asyncIterator]() {},
-      async finalMessage() {
-        return { content: [{ type: "text", text: "ok" }], usage, stop_reason: "end_turn" };
-      },
-    };
-  };
-}
-
-function inject(provider: AnthropicProvider, stream: ReturnType<typeof mockStream>): void {
-  (provider as unknown as { client: { messages: { stream: typeof stream } } }).client.messages.stream = stream;
-}
+/** 默认 finalMessage：文本 "ok" + 基础 usage；cache 字段经 usage 覆盖注入。 */
+const OK_MESSAGE = { usage: { input_tokens: 10, output_tokens: 5 }, content: [{ type: "text", text: "ok" }] };
 
 async function collect(iterable: AsyncIterable<{ type: string }>): Promise<Array<{ type: string }>> {
   const events: Array<{ type: string }> = [];
@@ -61,7 +46,7 @@ describe("Anthropic prompt cache 断点", () => {
   it("在 system 稳定块、末位工具与消息前缀上打断点，动态尾部不打", async () => {
     const provider = new AnthropicProvider({ apiKey: "test" });
     const bodies: Array<Record<string, unknown>> = [];
-    inject(provider, mockStream(bodies));
+    injectMockStream(provider, bodies, OK_MESSAGE);
     await collect(provider.streamChat(request({
       systemSuffix: "background task finished",
       tools: TOOLS,
@@ -91,7 +76,7 @@ describe("Anthropic prompt cache 断点", () => {
   it("消息级断点超出预算时按 ≤4 总额截断（保留最前者）", async () => {
     const provider = new AnthropicProvider({ apiKey: "test" });
     const bodies: Array<Record<string, unknown>> = [];
-    inject(provider, mockStream(bodies));
+    injectMockStream(provider, bodies, OK_MESSAGE);
     await collect(provider.streamChat(request({
       tools: TOOLS,
       messages: ["m1", "m2", "m3", "m4"].map((id) => message(id, "user", id)),
@@ -108,7 +93,7 @@ describe("Anthropic prompt cache 断点", () => {
   it("连续两 turn 稳定前缀逐字节一致，只有尾部变化", async () => {
     const provider = new AnthropicProvider({ apiKey: "test" });
     const bodies: Array<Record<string, unknown>> = [];
-    inject(provider, mockStream(bodies));
+    injectMockStream(provider, bodies, OK_MESSAGE);
     const history = [message("u1", "user", "first"), message("a1", "assistant", "reply")];
     const turn1 = request({
       systemSuffix: "notice one",
@@ -138,7 +123,7 @@ describe("Anthropic prompt cache 断点", () => {
     for (const init of [{ apiKey: "test", promptCaching: false }, { apiKey: "test" }] as const) {
       const provider = new AnthropicProvider(init);
       const bodies: Array<Record<string, unknown>> = [];
-      inject(provider, mockStream(bodies));
+      injectMockStream(provider, bodies, OK_MESSAGE);
       await collect(provider.streamChat(request({
         ...(init.promptCaching === false ? {} : { promptCaching: false }),
         systemSuffix: "tail",
@@ -156,17 +141,20 @@ describe("Anthropic prompt cache 断点", () => {
   it("usage 映射 cache 读写字段；旧响应缺失字段按 0 处理", async () => {
     const provider = new AnthropicProvider({ apiKey: "test" });
     const bodies: Array<Record<string, unknown>> = [];
-    inject(provider, mockStream(bodies, {
-      input_tokens: 100,
-      output_tokens: 20,
-      cache_read_input_tokens: 800,
-      cache_creation_input_tokens: 1500,
-    }));
+    injectMockStream(provider, bodies, {
+      ...OK_MESSAGE,
+      usage: {
+        input_tokens: 100,
+        output_tokens: 20,
+        cache_read_input_tokens: 800,
+        cache_creation_input_tokens: 1500,
+      },
+    });
     const events = await collect(provider.streamChat(request()));
     const usage = events.find((event) => event.type === "usage") as unknown as { cacheRead: number; cacheWrite: number; inputTokens: number };
     expect(usage).toMatchObject({ inputTokens: 100, cacheRead: 800, cacheWrite: 1500 });
 
-    inject(provider, mockStream(bodies, { input_tokens: 7, output_tokens: 3 }));
+    injectMockStream(provider, bodies, { ...OK_MESSAGE, usage: { input_tokens: 7, output_tokens: 3 } });
     const legacy = await collect(provider.streamChat(request()));
     const legacyUsage = legacy.find((event) => event.type === "usage") as unknown as { cacheRead: number; cacheWrite: number };
     expect(legacyUsage).toMatchObject({ cacheRead: 0, cacheWrite: 0 });

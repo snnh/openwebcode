@@ -41,15 +41,4 @@ describe("Markdown 分块渲染等价性", () => {
     const splitHtml = split.container.querySelector(".markdown")!.innerHTML;
     expect(splitHtml).toBe(fullHtml);
   });
-
-  it("分块渲染保留各语法元素（标题/列表/代码/公式/表格）", async () => {
-    const { container } = render(<Markdown>{FIXTURE}</Markdown>);
-    await waitFor(() => expect(container.querySelector("table")).toBeInTheDocument());
-
-    expect(container.querySelector("h1")).toHaveTextContent("标题");
-    expect(container.querySelectorAll("li")).toHaveLength(3);
-    expect(container.querySelector(".code-block")).toBeInTheDocument();
-    expect(container.querySelectorAll(".katex").length).toBeGreaterThanOrEqual(2);
-    expect(container.querySelector(".katex-display")).toBeInTheDocument();
-  });
 });

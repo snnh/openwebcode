@@ -1,21 +1,26 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import type { CoreClientLike, PathNormalizeRequest } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
-
-async function tempRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-pathnorm-"));
-  roots.push(root);
-  return root;
+/** 轮询 captured 等 permission.request 事件并取其 requestId（5s 超时）。 */
+function waitForPermissionRequest(captured: AppEvent[]): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("no permission.request within 5s")), 5_000);
+    const check = (): void => {
+      const req = captured.find((event) => event.type === "permission.request");
+      if (req) {
+        clearTimeout(timer);
+        resolve((req.payload as { requestId: string }).requestId);
+      } else setTimeout(check, 20);
+    };
+    check();
+  });
 }
 
 /** 仿 core path.normalize 的确定性 canonicalize：相对拼 cwd、去 ./ 与重复分隔符、
@@ -86,7 +91,7 @@ describe("path.normalize — 权限规则键 canonical 化", () => {
   }
 
   it("write_file 的 ./ 与绝对路径拼写归一为同一条 allow-always 规则", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-pathnorm-");
     const core = createCore(root);
     const absOut = path.join(root, "out.txt");
     const { runner, session, sessions, captured } = await setup(root, core, [
@@ -97,17 +102,7 @@ describe("path.normalize — 权限规则键 canonical 化", () => {
 
     const runPromise = runner.run(session.id, "go");
     // 第一个调用挂起审批；allow_always 后规则落库
-    const requestId = await new Promise<string>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("no permission.request within 5s")), 5_000);
-      const check = (): void => {
-        const req = captured.find((event) => event.type === "permission.request");
-        if (req) {
-          clearTimeout(timer);
-          resolve((req.payload as { requestId: string }).requestId);
-        } else setTimeout(check, 20);
-      };
-      check();
-    });
+    const requestId = await waitForPermissionRequest(captured);
     const complete = await runner.preparePermissionResponse(session.id, requestId, "allow_always");
     expect(complete).toBeDefined();
     complete!();
@@ -127,24 +122,14 @@ describe("path.normalize — 权限规则键 canonical 化", () => {
   }, 15_000);
 
   it("normalizePath 抛错时回退原始路径作为规则键", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-pathnorm-");
     const core = createCore(root, { normalizeThrows: true });
     const { runner, session, sessions, captured } = await setup(root, core, [
       { name: "write_file", id: "wf-1", input: { path: "out.txt", content: "a" } },
     ]);
 
     const runPromise = runner.run(session.id, "go");
-    const requestId = await new Promise<string>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("no permission.request within 5s")), 5_000);
-      const check = (): void => {
-        const req = captured.find((event) => event.type === "permission.request");
-        if (req) {
-          clearTimeout(timer);
-          resolve((req.payload as { requestId: string }).requestId);
-        } else setTimeout(check, 20);
-      };
-      check();
-    });
+    const requestId = await waitForPermissionRequest(captured);
     const complete = await runner.preparePermissionResponse(session.id, requestId, "allow_always");
     complete!();
     await runPromise;

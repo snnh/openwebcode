@@ -1,9 +1,9 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, waitFor } from "@testing-library/react";
+import { fireEvent, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PricingSection } from "../components/SettingsDialog";
 import { api } from "../lib/api";
 import type { PricingDocument } from "../lib/contracts";
+import { renderWithClient } from "./helpers/with-client";
 
 const catalog: PricingDocument = {
   version: 1,
@@ -11,13 +11,8 @@ const catalog: PricingDocument = {
   entries: [],
 };
 
-function renderSection(): ReturnType<typeof render> {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(
-    <QueryClientProvider client={client}>
-      <PricingSection />
-    </QueryClientProvider>,
-  );
+function renderSection(): ReturnType<typeof renderWithClient> {
+  return renderWithClient(<PricingSection />);
 }
 
 describe("PricingSection", () => {

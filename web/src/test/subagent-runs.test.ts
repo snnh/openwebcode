@@ -1,18 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { capLiveSubagentRuns, deriveSubagentRunsFromMessages, LIVE_SUBAGENT_CAP, mergeSubagentRuns } from "../lib/subagent-runs";
 import type { ChatMessage, LiveSubagentRun } from "../lib/contracts";
+import { makeSubagentRun } from "./helpers/fixtures";
 
-function run(overrides: Partial<LiveSubagentRun>): LiveSubagentRun {
-  return {
-    taskId: "task-1",
-    toolCallId: "call-1",
-    prompt: "调查代码结构",
-    status: "running",
-    turns: 0,
-    toolsUsed: [],
-    ...overrides,
-  };
-}
+const run = makeSubagentRun;
 
 function message(id: string, role: ChatMessage["role"], content: ChatMessage["content"]): ChatMessage {
   return { id, role, content, createdAt: "2026-07-20T00:00:00.000Z" };

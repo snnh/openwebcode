@@ -1,21 +1,9 @@
-import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { SessionStore } from "../src/sessions/session-store.js";
 import type { ChatMessage } from "../src/sessions/types.js";
-
-const roots: string[] = [];
-
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-});
-
-async function tempDir(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-page-"));
-  roots.push(root);
-  return root;
-}
+import { tempRoot } from "./helpers/temp-roots.js";
 
 async function storeAt(root: string): Promise<SessionStore> {
   const store = new SessionStore(path.join(root, "sessions"));
@@ -34,7 +22,7 @@ async function seedMessages(store: SessionStore, sessionId: string, count: numbe
 
 describe("session pagination (0.5.0 Phase 2)", () => {
   it("getTail returns only the last N messages with pagination metadata", async () => {
-    const store = await storeAt(await tempDir());
+    const store = await storeAt(await tempRoot("owc-page-"));
     const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
     const all = await seedMessages(store, session.id, 250);
 
@@ -48,7 +36,7 @@ describe("session pagination (0.5.0 Phase 2)", () => {
   });
 
   it("cached tail index extends correctly after append-only growth", async () => {
-    const store = await storeAt(await tempDir());
+    const store = await storeAt(await tempRoot("owc-page-"));
     const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
     await seedMessages(store, session.id, 250);
     const before = await store.getTail(session.id, 100);
@@ -62,7 +50,7 @@ describe("session pagination (0.5.0 Phase 2)", () => {
   });
 
   it("getTail returns all messages when fewer than limit", async () => {
-    const store = await storeAt(await tempDir());
+    const store = await storeAt(await tempRoot("owc-page-"));
     const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
     const all = await seedMessages(store, session.id, 30);
 
@@ -73,7 +61,7 @@ describe("session pagination (0.5.0 Phase 2)", () => {
   });
 
   it("getTail returns empty for new session", async () => {
-    const store = await storeAt(await tempDir());
+    const store = await storeAt(await tempRoot("owc-page-"));
     const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
 
     const tail = await store.getTail(session.id, 100);
@@ -83,7 +71,7 @@ describe("session pagination (0.5.0 Phase 2)", () => {
   });
 
   it("getMessagesBefore returns older messages before a given message ID", async () => {
-    const store = await storeAt(await tempDir());
+    const store = await storeAt(await tempRoot("owc-page-"));
     const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
     const all = await seedMessages(store, session.id, 250);
 
@@ -99,7 +87,7 @@ describe("session pagination (0.5.0 Phase 2)", () => {
   });
 
   it("getMessagesBefore returns fewer messages near the beginning", async () => {
-    const store = await storeAt(await tempDir());
+    const store = await storeAt(await tempRoot("owc-page-"));
     const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
     const all = await seedMessages(store, session.id, 250);
 
@@ -112,7 +100,7 @@ describe("session pagination (0.5.0 Phase 2)", () => {
   });
 
   it("getMessagesBefore returns empty when beforeId not found", async () => {
-    const store = await storeAt(await tempDir());
+    const store = await storeAt(await tempRoot("owc-page-"));
     const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
     await seedMessages(store, session.id, 10);
 
@@ -122,14 +110,14 @@ describe("session pagination (0.5.0 Phase 2)", () => {
   });
 
   it("getMessagesBefore returns undefined for nonexistent session", async () => {
-    const store = await storeAt(await tempDir());
+    const store = await storeAt(await tempRoot("owc-page-"));
     // Use a valid UUID format that doesn't exist
     const page = await store.getMessagesBefore("00000000-0000-4000-8000-000000000000", "some-msg-id", 50);
     expect(page).toBeUndefined();
   });
 
-  it("list() detects tail corruption via lightweight check", async () => {
-    const store = await storeAt(await tempDir());
+  it("list() surfaces recovery state (tail corruption, missing history, healthy)", async () => {
+    const store = await storeAt(await tempRoot("owc-page-"));
     const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
     await store.appendMessage(session.id, "user", [{ type: "text", text: "valid" }]);
     // 健康会话：list() 不解析全部消息，仅做尾部轻量检查
@@ -138,7 +126,7 @@ describe("session pagination (0.5.0 Phase 2)", () => {
 
     // Corrupt the tail
     const storeRoot = (store as unknown as { root: string }).root;
-    const { writeFile } = await import("node:fs/promises");
+    const { writeFile, rm: rmFile } = await import("node:fs/promises");
     await writeFile(
       path.join(storeRoot, session.id, "messages.jsonl"),
       `${JSON.stringify({ id: "valid", role: "user", content: [], createdAt: "x" })}\n{corrupt`,
@@ -151,10 +139,14 @@ describe("session pagination (0.5.0 Phase 2)", () => {
     const healthyFound = list.find((item) => item.id === healthy.id);
     expect(healthyFound).toBeDefined();
     expect(healthyFound!.recovery).toBeUndefined();
+
+    // messages.jsonl 整体缺失：list() 标记 needs_repair
+    await rmFile(path.join(storeRoot, session.id, "messages.jsonl"));
+    expect((await store.list()).find((item) => item.id === session.id)?.recovery).toMatchObject({ state: "needs_repair" });
   });
 
   it("full pagination flow: tail → load more → load more → no more", async () => {
-    const store = await storeAt(await tempDir());
+    const store = await storeAt(await tempRoot("owc-page-"));
     const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
     const all = await seedMessages(store, session.id, 250);
 

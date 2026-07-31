@@ -1,10 +1,10 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { fireEvent, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../i18n";
 import { PerfPanel } from "../components/panels/PerfPanel";
 import { startFrameSampler, stopFrameSampler } from "../lib/perf-sampler";
 import { api } from "../lib/api";
+import { renderWithClient } from "./helpers/with-client";
 
 // mock perf-sampler 避免 jsdom 中 requestAnimationFrame 问题
 vi.mock("../lib/perf-sampler", () => ({
@@ -40,13 +40,10 @@ vi.mock("../lib/api", () => ({
 }));
 
 function renderPanel(sessionId?: string) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={client}>
-      <I18nProvider>
-        <PerfPanel sessionId={sessionId} />
-      </I18nProvider>
-    </QueryClientProvider>,
+  return renderWithClient(
+    <I18nProvider>
+      <PerfPanel sessionId={sessionId} />
+    </I18nProvider>,
   );
 }
 

@@ -1,33 +1,21 @@
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { AgentRegistry, parseAgentMarkdown } from "../src/agents.js";
 import { AgentRunner } from "../src/agent/agent-runner.js";
-import type { CoreClientLike } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
-
-async function tempRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-agents-"));
-  roots.push(root);
-  return root;
-}
+import { makeFakeCore } from "./helpers/fake-core.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
 async function writeAgent(dir: string, name: string, text: string): Promise<void> {
   await mkdir(dir, { recursive: true });
   await writeFile(path.join(dir, `${name}.md`), text, "utf8");
 }
 
-const core = {
-  on() { return core; },
-  async configureSession() { return { sandboxCapability: "advisory" }; },
-} as unknown as CoreClientLike;
+const core = makeFakeCore();
 
 describe("AgentRegistry", () => {
   it("parses arrays, comma-separated tools and omitted optional fields", () => {
@@ -42,7 +30,7 @@ describe("AgentRegistry", () => {
   });
 
   it("lets project definitions override global definitions and skips malformed files", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-agents-");
     const globalDir = path.join(root, "global");
     const projectDir = path.join(root, "workspace", ".owc", "agents");
     await writeAgent(globalDir, "reviewer", "---\ndescription: global\n---\nGlobal body");
@@ -55,7 +43,7 @@ describe("AgentRegistry", () => {
   });
 
   it("invalidates a cached scan when an agent definition changes", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-agents-");
     const globalDir = path.join(root, "agents");
     await writeAgent(globalDir, "reviewer", "---\ndescription: first\n---\nFirst body");
     const registry = new AgentRegistry(globalDir);
@@ -67,7 +55,7 @@ describe("AgentRegistry", () => {
 
 describe("custom spawn_task agents", () => {
   it("injects the catalog and applies body, model, tool allowlist and transcript agent", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-agents-");
     const workspace = path.join(root, "workspace");
     const globalDir = path.join(root, "agents");
     await mkdir(workspace, { recursive: true });
@@ -113,7 +101,7 @@ describe("custom spawn_task agents", () => {
   });
 
   it("omits the catalog section when no agents are configured", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-agents-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const session = await sessions.create({ cwd: root, provider: "fake", model: "main-model" });

@@ -1,7 +1,6 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
 import { Compactor } from "../src/context/compactor.js";
@@ -9,38 +8,13 @@ import type { CoreClientLike } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
 import type { FastModelClient } from "../src/fast-model.js";
-import { HookRunner, type HooksConfig } from "../src/hooks.js";
+import { HookRunner } from "../src/hooks.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
+import { makeFakeCore } from "./helpers/fake-core.js";
+import { tempRootRetry, writeProjectHooks } from "./helpers/temp-dir.js";
 
-const roots: string[] = [];
-
-/** rm 带重试：hook 子进程（cmd.exe 被 SIGKILL 后 node 变孤儿）的 cwd 锁住临时目录，需等其退出后再删。 */
-async function rmWithRetry(target: string, retries = 15, delayMs = 500): Promise<void> {
-  for (let i = 0; i < retries; i++) {
-    try {
-      await rm(target, { recursive: true, force: true });
-      return;
-    } catch (error) {
-      if (i === retries - 1) throw error;
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-    }
-  }
-}
-
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rmWithRetry(root))));
-
-async function tempRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-hooks-events-"));
-  roots.push(root);
-  return root;
-}
-
-/** 写项目级 <cwd>/.owc/hooks.json */
-async function writeProjectHooks(cwd: string, config: HooksConfig): Promise<void> {
-  await mkdir(path.join(cwd, ".owc"), { recursive: true });
-  await writeFile(path.join(cwd, ".owc", "hooks.json"), JSON.stringify(config), "utf8");
-}
+const tempRoot = (): Promise<string> => tempRootRetry("owc-hooks-events-");
 
 /** 把 hook 的 stdin JSON 负载追加到 marker 文件（条间以 ;;; 分隔）；路径统一正斜杠避免 cmd 转义问题 */
 function appendMarkerCommand(file: string): string {
@@ -64,22 +38,9 @@ async function waitForMarker(file: string): Promise<Array<Record<string, unknown
 }
 
 function createFakeCore(): CoreClientLike {
-  return {
-    on() { return this; },
-    async configureSession() { return { sandboxCapability: "advisory" }; },
-    async readFile() { return { content: "file content" }; },
-    async globFiles() { return { matches: [] }; },
-    async grepFiles() { return { matches: [] }; },
-    async writeFile() { return { ok: true }; },
-    async editFile() { return { matches: 1 }; },
-    async run() { return { exitCode: 0, stdout: "", stderr: "" }; },
-    async cleanupSession() { return { ok: true }; },
-    setRequestTimeoutMs() {},
-    start() { return Promise.resolve({ version: "0.0.0", platform: "test" }); },
-    stop() { return Promise.resolve(); },
-    ping() { return Promise.resolve({ version: "0.0.0", platform: "test" }); },
-    listFiles() { return Promise.resolve({ entries: [], truncated: false }); },
-  } as unknown as CoreClientLike;
+  return makeFakeCore({
+    async readFile() { return { content: "file content", totalLines: 1, encoding: "utf-8" as const, truncated: false }; },
+  });
 }
 
 /**

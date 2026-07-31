@@ -6,6 +6,7 @@ import type { ModelProfile, SessionDetail, SkillInfo } from "../lib/contracts";
 import { api } from "../lib/api";
 import { readRecentModels, recordRecentModel } from "../lib/recent-models";
 import { renderPdfToImages } from "../lib/pdf-to-images";
+import { makeSession } from "./helpers/fixtures";
 
 vi.mock("../lib/pdf-to-images", () => ({ renderPdfToImages: vi.fn() }));
 
@@ -15,16 +16,7 @@ vi.mock("../components/ComposerChips", () => ({ ComposerChips: () => null }));
 const renderPdfToImagesMock = vi.mocked(renderPdfToImages);
 const uploadPdfMock = vi.spyOn(api, "uploadPdf");
 
-const session: SessionDetail = {
-  id: "s1",
-  cwd: "/workspace/project",
-  provider: "anthropic",
-  model: "claude-opus-4-8",
-  title: "测试作业",
-  createdAt: "2026-07-17T00:00:00.000Z",
-  updatedAt: "2026-07-17T00:00:00.000Z",
-  messages: [],
-};
+const session = makeSession();
 
 const secondSession: SessionDetail = {
   ...session,
@@ -37,6 +29,13 @@ const skills: SkillInfo[] = [
   { name: "review", description: "代码审查", source: "project" },
   { name: "run", description: "运行", source: "global" },
 ];
+
+const EMPTY_CAPS: ModelProfile["capabilities"] = { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true };
+
+/** 模型弹层测试用 ModelProfile 工厂（contextWindow/maxOutput 不被 Composer 消费，取固定值）。 */
+function model(id: string, provider: string, capabilities: ModelProfile["capabilities"] = EMPTY_CAPS): ModelProfile {
+  return { id, provider, contextWindow: 128_000, maxOutput: 16_384, capabilities };
+}
 
 function Harness({ onSend, onConfig = () => {}, current = session, sendPending = false, initialDraft = "", initialAttachments = [], history = [], withSkills = skills, providers = [], models = [], supportsImages = true, pdfToImageExtension, pdfToImageStatus, imageCapabilitiesReady, onNotice = () => {} }: {
   onSend(): void;
@@ -500,13 +499,7 @@ describe("Composer", () => {
 
   it("模型弹层选择模型同时切换 provider 与模型", () => {
     const onConfig = vi.fn();
-    const models: ModelProfile[] = [{
-      id: "gpt-4o-mini",
-      provider: "openai",
-      contextWindow: 128_000,
-      maxOutput: 16_384,
-      capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true },
-    }];
+    const models = [model("gpt-4o-mini", "openai")];
     render(<Harness onSend={vi.fn()} onConfig={onConfig} providers={["openai"]} models={models} />);
     fireEvent.click(screen.getByRole("button", { name: "模型与思考程度" }));
     fireEvent.click(screen.getByRole("menuitemradio", { name: /gpt-4o-mini/ }));
@@ -515,25 +508,11 @@ describe("Composer", () => {
 
   it("切换模型：目标已声明且不兼容时同请求清除思考设置，未声明时保留", () => {
     const onConfig = vi.fn();
-    const models: ModelProfile[] = [{
-      id: "claude-opus-4-8",
-      provider: "anthropic",
-      contextWindow: 1_000_000,
-      maxOutput: 128_000,
-      capabilities: { thinking: ["adaptive"], effort: ["xhigh"], modalities: ["text"], imageOutput: false, tools: true },
-    }, {
-      id: "claude-haiku-4-5",
-      provider: "anthropic",
-      contextWindow: 200_000,
-      maxOutput: 64_000,
-      capabilities: { thinking: ["adaptive"], effort: ["low"], modalities: ["text"], imageOutput: false, tools: true },
-    }, {
-      id: "gpt-4o-mini",
-      provider: "openai",
-      contextWindow: 128_000,
-      maxOutput: 16_384,
-      capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true },
-    }];
+    const models = [
+      model("claude-opus-4-8", "anthropic", { thinking: ["adaptive"], effort: ["xhigh"], modalities: ["text"], imageOutput: false, tools: true }),
+      model("claude-haiku-4-5", "anthropic", { thinking: ["adaptive"], effort: ["low"], modalities: ["text"], imageOutput: false, tools: true }),
+      model("gpt-4o-mini", "openai"),
+    ];
     render(
       <Harness
         onSend={vi.fn()}
@@ -558,19 +537,7 @@ describe("Composer", () => {
   });
 
   it("模型按供应商分组：异供应商组默认收起，点击组头展开；模型行不再显示供应商小字", () => {
-    const models: ModelProfile[] = [{
-      id: "claude-opus-4-8",
-      provider: "anthropic",
-      contextWindow: 1_000_000,
-      maxOutput: 128_000,
-      capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true },
-    }, {
-      id: "gpt-4o-mini",
-      provider: "openai",
-      contextWindow: 128_000,
-      maxOutput: 16_384,
-      capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true },
-    }];
+    const models = [model("claude-opus-4-8", "anthropic"), model("gpt-4o-mini", "openai")];
     render(<Harness onSend={vi.fn()} providers={["anthropic", "openai"]} models={models} />);
     fireEvent.click(screen.getByRole("button", { name: "模型与思考程度" }));
     // anthropic 组（含当前模型）默认展开；openai 组收起：模型不可见，组头可见且带计数
@@ -586,19 +553,13 @@ describe("Composer", () => {
 
   it("思考合并在模型弹层底部固定区：胶囊开关 + 程度滑块（默认/低/高/极高）", () => {
     const onConfig = vi.fn();
-    const models: ModelProfile[] = [{
-      id: "claude-opus-4-8",
-      provider: "anthropic",
-      contextWindow: 1_000_000,
-      maxOutput: 128_000,
-      capabilities: {
-        thinking: ["adaptive", "disabled"],
-        effort: ["low", "high", "xhigh"],
-        modalities: ["text", "image"],
-        imageOutput: false,
-        tools: true,
-      },
-    }];
+    const models = [model("claude-opus-4-8", "anthropic", {
+      thinking: ["adaptive", "disabled"],
+      effort: ["low", "high", "xhigh"],
+      modalities: ["text", "image"],
+      imageOutput: false,
+      tools: true,
+    })];
     render(
       <Harness
         onSend={vi.fn()}
@@ -642,13 +603,7 @@ describe("Composer", () => {
 
   it("未声明思考能力的模型：滑块给全部档位（默认 低 中 高 极高 max ultra），开关默认关", () => {
     const onConfig = vi.fn();
-    const models: ModelProfile[] = [{
-      id: "qwen3.8-max-preview",
-      provider: "zijian",
-      contextWindow: 1_000_000,
-      maxOutput: 16_384,
-      capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true },
-    }];
+    const models = [model("qwen3.8-max-preview", "zijian")];
     render(
       <Harness
         onSend={vi.fn()}
@@ -674,13 +629,7 @@ describe("Composer", () => {
   });
 
   it("在模型选择器旁显示当前模型的图片、视频输入和图片输出能力", () => {
-    const models: ModelProfile[] = [{
-      id: "claude-opus-4-8",
-      provider: "anthropic",
-      contextWindow: 1_000_000,
-      maxOutput: 128_000,
-      capabilities: { thinking: [], effort: [], modalities: ["text", "image", "video"], imageOutput: true, tools: true },
-    }];
+    const models = [model("claude-opus-4-8", "anthropic", { thinking: [], effort: [], modalities: ["text", "image", "video"], imageOutput: true, tools: true })];
     renderComposer({ onSend: vi.fn(), providers: ["anthropic"], models });
 
     expect(screen.queryByText("图片输入")).not.toBeInTheDocument();
@@ -829,25 +778,11 @@ describe("Composer 输入历史回查", () => {
 });
 
 describe("Composer 模型循环（Ctrl+P）", () => {
-  const cycleModels: ModelProfile[] = [{
-    id: "claude-opus-4-8",
-    provider: "anthropic",
-    contextWindow: 1_000_000,
-    maxOutput: 128_000,
-    capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true },
-  }, {
-    id: "gpt-4o-mini",
-    provider: "openai",
-    contextWindow: 128_000,
-    maxOutput: 16_384,
-    capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true },
-  }, {
-    id: "deepseek-v3",
-    provider: "deepseek",
-    contextWindow: 64_000,
-    maxOutput: 8_192,
-    capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true },
-  }];
+  const cycleModels = [
+    model("claude-opus-4-8", "anthropic"),
+    model("gpt-4o-mini", "openai"),
+    model("deepseek-v3", "deepseek"),
+  ];
   const cycleProviders = ["anthropic", "openai", "deepseek"];
 
   function seedRecent(entries: Array<{ provider: string; model: string }>): void {

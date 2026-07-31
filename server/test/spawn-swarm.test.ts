@@ -1,34 +1,14 @@
-import { mkdtemp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AgentRegistry } from "../src/agents.js";
 import { AgentRunner, SPAWN_SWARM_MAX_ITEMS } from "../src/agent/agent-runner.js";
-import type { CoreClientLike } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
-
-async function tempRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-swarm-"));
-  roots.push(root);
-  return root;
-}
-
-function createFakeCore(): CoreClientLike {
-  const core = {
-    on() { return core; },
-    async configureSession() { return { sandboxCapability: "advisory" }; },
-    async readFile() { return { content: "文件内容" }; },
-    async globFiles() { return { matches: [] }; },
-    async grepFiles() { return { matches: [] }; },
-  };
-  return core as unknown as CoreClientLike;
-}
+import { makeFakeCore } from "./helpers/fake-core.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
 interface SwarmFixture {
   sessions: SessionStore;
@@ -42,7 +22,7 @@ interface SwarmFixture {
 
 /** 主循环第一轮调用 spawn_swarm；子代理按用户消息里的 item 回结论；failOn 命中的 item 抛错；hang 时子代理挂起直到中断 */
 async function setupSwarm(input: Record<string, unknown>, failOn?: string, options?: { registry?: AgentRegistry; hang?: boolean }): Promise<SwarmFixture> {
-  const root = await tempRoot();
+  const root = await tempRoot("owc-swarm-");
   const sessions = new SessionStore(path.join(root, "sessions"));
   await sessions.initialize();
   const session = await sessions.create({ cwd: root, provider: "fake", model: "test-model" });
@@ -91,8 +71,8 @@ async function setupSwarm(input: Record<string, unknown>, failOn?: string, optio
   const providers = new ProviderRegistry();
   providers.register(provider);
   const runner = options?.registry
-    ? new AgentRunner(sessions, providers, createFakeCore(), events, pricing, undefined, "zh-CN", 50, undefined, undefined, undefined, undefined, undefined, undefined, options.registry)
-    : new AgentRunner(sessions, providers, createFakeCore(), events, pricing);
+    ? new AgentRunner(sessions, providers, makeFakeCore(), events, pricing, undefined, "zh-CN", 50, undefined, undefined, undefined, undefined, undefined, undefined, options.registry)
+    : new AgentRunner(sessions, providers, makeFakeCore(), events, pricing);
   return { sessions, runner, captured, requests, sessionId: session.id, startedSub };
 }
 
@@ -187,7 +167,7 @@ describe("spawn_swarm via AgentRunner", () => {
   });
 
   it("lets an item override the call-level agent and reports the effective agent in started events", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-swarm-");
     const globalDir = path.join(root, "agents");
     await mkdir(globalDir, { recursive: true });
     await writeFile(path.join(globalDir, "reviewer.md"), "---\ndescription: Reviews code\n---\nREVIEWER BODY", "utf8");
@@ -223,7 +203,7 @@ describe("spawn_swarm via AgentRunner", () => {
   });
 
   it("rejects an unknown per-item agent before launching anything", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-swarm-");
     const globalDir = path.join(root, "agents");
     await mkdir(globalDir, { recursive: true });
     const registry = new AgentRegistry(globalDir);

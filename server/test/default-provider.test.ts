@@ -1,44 +1,20 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import type { AgentRunner } from "../src/agent/agent-runner.js";
-import { buildServer } from "../src/app.js";
+import { describe, expect, it } from "vitest";
 import { lookupModelMetadata } from "../src/context/model-metadata.js";
 import { ModelRegistry } from "../src/context/model-registry.js";
-import type { CoreClient } from "../src/core-client.js";
-import { PricingCatalog } from "../src/cost/pricing-catalog.js";
-import { EventBus } from "../src/events/event-bus.js";
-import { ProviderRegistry } from "../src/providers/provider.js";
-import { SessionStore } from "../src/sessions/session-store.js";
-import { SettingsService } from "../src/settings-service.js";
 import { makeStubProvider } from "./helpers/stub-provider.js";
-
-const roots: string[] = [];
-
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-});
+import { makeTestApp } from "./helpers/test-app.js";
 
 async function fixture(env: NodeJS.ProcessEnv = {}) {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-default-provider-"));
-  roots.push(root);
-  const sessions = new SessionStore(path.join(root, "sessions"));
-  await sessions.initialize();
-  const pricing = new PricingCatalog(path.join(root, "pricing.json"));
-  await pricing.initialize();
-  const providers = new ProviderRegistry();
-  const events = new EventBus();
-  const settings = await SettingsService.load({ env, filePath: path.join(root, "server-settings.json") });
-  const agent = { isRunning: () => false } as AgentRunner;
-  const core = {} as CoreClient;
-  settings.bind({ providers, core, agent, events });
-  const models = await ModelRegistry.load({
-    snapshotPath: path.join(root, "models.json"),
-    manualPath: path.join(root, "models.manual.json"),
+  const setup = await makeTestApp({
+    tempPrefix: "owc-default-provider-",
+    settingsEnv: env,
+    models: (root) => ModelRegistry.load({
+      snapshotPath: path.join(root, "models.json"),
+      manualPath: path.join(root, "models.manual.json"),
+    }),
   });
-  const app = await buildServer({ core, sessions, agent, events, providers, pricing, settings, models });
-  return { root, sessions, providers, settings, models, app };
+  return { root: setup.root, sessions: setup.sessions, providers: setup.providers, settings: setup.settings!, models: setup.models!, app: setup.app };
 }
 
 describe("default session provider", () => {
