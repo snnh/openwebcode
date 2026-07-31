@@ -124,7 +124,8 @@ export interface SubAgentOptions {
   onStart?: (taskId: string) => void | Promise<void>;
   /** 每轮 provider 调用结束与每批工具执行结束后回调（仅元数据，不含文本；用于发布 subagent.progress）。 */
   onProgress?: (progress: { turns: number; toolsUsed: string[] }) => void;
-  /** 思维链回传（仅 OpenAI 兼容接口生效）：由调用方按会话模型能力声明下发。 */
+  /** 思维链回传（仅 OpenAI 兼容接口生效）：由调用方按实际请求模型（modelOverride ?? model）的能力声明下发。
+   * 注：子代理当前不把 thinking 块写入对话历史，该管道暂无实际回带行为，为后续保留 thinking 预留。 */
   reasoningContent?: boolean;
 }
 

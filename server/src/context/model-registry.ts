@@ -122,11 +122,15 @@ function normalizeCatalogModel(model: CatalogModel, source: ModelSource): Catalo
       thinking: filterKnownValues(raw?.thinking, fallback.thinking, THINKING_MODES),
       effort: filterKnownValues(raw?.effort, fallback.effort, EFFORT_LEVELS),
       tools: typeof raw?.tools === "boolean" ? raw.tools : fallback.tools,
-      ...(typeof (raw?.reasoningContent ?? fallback.reasoningContent) === "boolean"
-        ? { reasoningContent: raw?.reasoningContent ?? fallback.reasoningContent! }
-        : {}),
+      ...materializeReasoningContent(raw?.reasoningContent, fallback.reasoningContent),
     },
   };
+}
+
+/** 声明优先、缺省回落元数据默认；两者皆非布尔时省略该键（exactOptionalPropertyTypes）。 */
+function materializeReasoningContent(value: unknown, fallback: boolean | undefined): { reasoningContent?: boolean } {
+  const merged = typeof value === "boolean" ? value : fallback;
+  return typeof merged === "boolean" ? { reasoningContent: merged } : {};
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -176,9 +180,7 @@ function normalizeSyncedCapabilities(value: unknown, fallback: ModelCapabilities
     thinking: strictKnownValues(value.thinking, "thinking", fallback.thinking, THINKING_MODES),
     effort: strictKnownValues(value.effort, "effort", fallback.effort, EFFORT_LEVELS),
     tools: typeof value.tools === "boolean" ? value.tools : fallback.tools,
-    ...(typeof (value.reasoningContent ?? fallback.reasoningContent) === "boolean"
-      ? { reasoningContent: value.reasoningContent ?? fallback.reasoningContent! }
-      : {}),
+    ...materializeReasoningContent(value.reasoningContent, fallback.reasoningContent),
   };
 }
 

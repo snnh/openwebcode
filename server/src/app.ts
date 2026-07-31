@@ -893,7 +893,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       const inRange = value.modalities.every((item) => MODEL_MODALITIES.includes(item as ModelModality))
         && value.thinking.every((item) => THINKING_MODES.includes(item as ThinkingMode))
         && value.effort.every((item) => EFFORT_LEVELS.includes(item as EffortLevel));
-      if (!inRange) return reply.code(400).send({ error: "capabilities values out of range (modalities: text/image/video; thinking: adaptive/enabled/disabled; effort: low/medium/high/xhigh/max)" });
+      if (!inRange) return reply.code(400).send({ error: "capabilities values out of range (modalities: text/image/video; thinking: adaptive/enabled/disabled; effort: low/medium/high/xhigh/max/ultra)" });
     }
     for (const key of ["contextWindow", "maxOutput"] as const) {
       if (body[key] !== undefined && (!Number.isSafeInteger(body[key]) || (body[key] as number) < 1)) {
