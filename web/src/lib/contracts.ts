@@ -432,6 +432,8 @@ export interface ModelCapabilities {
   thinking: Array<"adaptive" | "enabled" | "disabled">;
   effort: Array<"low" | "medium" | "high" | "xhigh" | "max" | "ultra">;
   tools: boolean;
+  /** 思维链回传（reasoning_content）；缺省按模型族：gpt/claude 关闭，其余开启。 */
+  reasoningContent?: boolean;
 }
 
 export interface ModelProfile {

@@ -122,6 +122,9 @@ function normalizeCatalogModel(model: CatalogModel, source: ModelSource): Catalo
       thinking: filterKnownValues(raw?.thinking, fallback.thinking, THINKING_MODES),
       effort: filterKnownValues(raw?.effort, fallback.effort, EFFORT_LEVELS),
       tools: typeof raw?.tools === "boolean" ? raw.tools : fallback.tools,
+      ...(typeof (raw?.reasoningContent ?? fallback.reasoningContent) === "boolean"
+        ? { reasoningContent: raw?.reasoningContent ?? fallback.reasoningContent! }
+        : {}),
     },
   };
 }
@@ -163,6 +166,9 @@ function normalizeSyncedCapabilities(value: unknown, fallback: ModelCapabilities
   if (value.tools !== undefined && typeof value.tools !== "boolean") {
     throw new Error("Invalid catalog capabilities.tools");
   }
+  if (value.reasoningContent !== undefined && typeof value.reasoningContent !== "boolean") {
+    throw new Error("Invalid catalog capabilities.reasoningContent");
+  }
   return {
     modalities: strictKnownValues(value.modalities, "modalities", fallback.modalities, MODEL_MODALITIES),
     // Legacy and partial remote catalogs deliberately default to the metadata fallback (currently false).
@@ -170,6 +176,9 @@ function normalizeSyncedCapabilities(value: unknown, fallback: ModelCapabilities
     thinking: strictKnownValues(value.thinking, "thinking", fallback.thinking, THINKING_MODES),
     effort: strictKnownValues(value.effort, "effort", fallback.effort, EFFORT_LEVELS),
     tools: typeof value.tools === "boolean" ? value.tools : fallback.tools,
+    ...(typeof (value.reasoningContent ?? fallback.reasoningContent) === "boolean"
+      ? { reasoningContent: value.reasoningContent ?? fallback.reasoningContent! }
+      : {}),
   };
 }
 

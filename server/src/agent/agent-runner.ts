@@ -1132,6 +1132,8 @@ export class AgentRunner {
             model: session.model,
             ...(session.thinking ? { thinking: session.thinking } : {}),
             ...(session.effort ? { effort: session.effort } : {}),
+            // 思维链回传按模型能力声明下发（未声明 = 默认开；gpt/claude 前缀元数据已声明关）
+            reasoningContent: profile.capabilities.reasoningContent !== false,
             system,
             // 动态尾块（repo map 段 + 后台任务完成提示）独立于稳定 system 前缀下发，
             // 其逐 turn 变化不会污染稳定前缀的缓存断点。
@@ -1511,6 +1513,7 @@ export class AgentRunner {
       const result = await runSubAgent({
         provider: context.provider,
         model: session.model,
+        reasoningContent: this.getProfile(session.model, session.provider).capabilities.reasoningContent !== false,
         ...(resolved.modelOverride ? { modelOverride: resolved.modelOverride } : {}),
         ...(resolved.systemExtra ? { systemExtra: resolved.systemExtra } : {}),
         ...(resolved.name ? { agent: resolved.name } : {}),
@@ -2311,6 +2314,7 @@ export class AgentRunner {
         const result = await runSubAgent({
           provider,
           model: session.model,
+          reasoningContent: this.getProfile(session.model, session.provider).capabilities.reasoningContent !== false,
           ...(resolved.modelOverride ? { modelOverride: resolved.modelOverride } : {}),
           ...(resolved.systemExtra ? { systemExtra: resolved.systemExtra } : {}),
           ...(resolved.name ? { agent: resolved.name } : {}),
@@ -2443,6 +2447,7 @@ export class AgentRunner {
             const result = await runSubAgent({
               provider,
               model: session.model,
+              reasoningContent: this.getProfile(session.model, session.provider).capabilities.reasoningContent !== false,
               ...(effective.modelOverride ? { modelOverride: effective.modelOverride } : {}),
               ...(effective.systemExtra ? { systemExtra: effective.systemExtra } : {}),
               ...(effective.name ? { agent: effective.name } : {}),

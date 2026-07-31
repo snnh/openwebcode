@@ -123,6 +123,30 @@ describe("provider reasoning parameters", () => {
     await drain(make().streamChat(request()));
     expect((bodies[2]!.messages as Array<Record<string, unknown>>)[0]).not.toHaveProperty("reasoning_content");
   });
+
+  it("request-level reasoningContent overrides the provider-level default", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetch = async (_input: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response("data: [DONE]\n\n", { status: 200, headers: { "content-type": "text/event-stream" } });
+    };
+    const messages: StreamChatRequest["messages"] = [
+      {
+        id: "a1", role: "assistant", createdAt: "2026-01-01T00:00:01.000Z",
+        content: [{ type: "thinking", text: "想一下", provider: "zijian" }, { type: "text", text: "答" }],
+      },
+    ];
+    const make = (options: Record<string, unknown> = {}) =>
+      new OpenAICompatibleProvider({ baseURL: "https://example.invalid/v1", name: "zijian", fetch: fetch as typeof globalThis.fetch, ...options });
+
+    // 请求级 false：即使 provider 默认开也不回带（gpt/claude 前缀模型走此路径）
+    await drain(make().streamChat(request({ messages, reasoningContent: false })));
+    expect((bodies[0]!.messages as Array<Record<string, unknown>>)[1]).not.toHaveProperty("reasoning_content");
+
+    // 请求级 true：盖过 provider 级 reasoningContent:false
+    await drain(make({ reasoningContent: false }).streamChat(request({ messages, reasoningContent: true })));
+    expect((bodies[1]!.messages as Array<Record<string, unknown>>)[1]).toMatchObject({ reasoning_content: "想一下" });
+  });
 });
 
 

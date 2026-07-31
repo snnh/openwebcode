@@ -20,6 +20,9 @@ export interface StreamChatRequest {
   systemSuffix?: string;
   /** prompt cache 开关（请求级，默认开）；关闭时不打任何显式断点。 */
   promptCaching?: boolean;
+  /** 思维链回传（请求级，仅 OpenAI 兼容接口生效）：按模型能力声明由 agent 循环下发；
+   * undefined 时回落 provider 级配置（默认开）。 */
+  reasoningContent?: boolean;
   messages: ChatMessage[];
   /** 消息级断点（消息 id 列表）；Provider 按 API 断点上限（Anthropic ≤4，含 tools/system）截断。 */
   cacheBreakpoints?: string[];

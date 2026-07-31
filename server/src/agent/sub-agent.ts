@@ -124,6 +124,8 @@ export interface SubAgentOptions {
   onStart?: (taskId: string) => void | Promise<void>;
   /** 每轮 provider 调用结束与每批工具执行结束后回调（仅元数据，不含文本；用于发布 subagent.progress）。 */
   onProgress?: (progress: { turns: number; toolsUsed: string[] }) => void;
+  /** 思维链回传（仅 OpenAI 兼容接口生效）：由调用方按会话模型能力声明下发。 */
+  reasoningContent?: boolean;
 }
 
 export interface SubAgentResult {
@@ -187,6 +189,7 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
         messages,
         tools,
         signal: options.signal,
+        ...(options.reasoningContent !== undefined ? { reasoningContent: options.reasoningContent } : {}),
       });
       turns += 1;
       const assistantContent: MessageContent[] = [];

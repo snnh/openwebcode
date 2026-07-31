@@ -22,6 +22,9 @@ export interface ModelCapabilities {
   thinking: readonly ThinkingMode[];
   effort: readonly EffortLevel[];
   tools: boolean;
+  /** 思维链回传：历史 thinking 块以 reasoning_content 回带（仅 OpenAI 兼容接口生效；
+   * Anthropic 走签名回放，不受此开关影响）。缺省按模型族：gpt/claude 关闭，其余开启。 */
+  reasoningContent?: boolean;
 }
 
 export interface ModelProfile {

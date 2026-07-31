@@ -887,8 +887,9 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       const value = body.capabilities;
       const valid = Boolean(value) && typeof value === "object"
         && Array.isArray(value.modalities) && Array.isArray(value.thinking) && Array.isArray(value.effort)
-        && typeof value.imageOutput === "boolean" && typeof value.tools === "boolean";
-      if (!valid) return reply.code(400).send({ error: "capabilities must include modalities/thinking/effort arrays plus imageOutput and tools booleans" });
+        && typeof value.imageOutput === "boolean" && typeof value.tools === "boolean"
+        && (value.reasoningContent === undefined || typeof value.reasoningContent === "boolean");
+      if (!valid) return reply.code(400).send({ error: "capabilities must include modalities/thinking/effort arrays plus imageOutput and tools booleans (reasoningContent optional boolean)" });
       const inRange = value.modalities.every((item) => MODEL_MODALITIES.includes(item as ModelModality))
         && value.thinking.every((item) => THINKING_MODES.includes(item as ThinkingMode))
         && value.effort.every((item) => EFFORT_LEVELS.includes(item as EffortLevel));
