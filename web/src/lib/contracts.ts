@@ -20,7 +20,7 @@ export type PermissionMode = "ask" | "acceptEdits" | "review" | "yolo";
 export type SandboxCapability = "advisory" | "partial" | "enforced";
 export type SandboxMode = "appcontainer" | "wsb" | "jobobject" | "off";
 export type SnapshotMode = "auto" | "manual";
-export type ShellBackend = "default" | "pwsh";
+export type ShellBackend = "default" | "pwsh" | "bash" | "cmd";
 /** Python 运行环境：global = 本机环境；uv-workspace/uv-config = uv 临时虚拟环境（工作区/配置目录）。 */
 export type PythonEnv = "global" | "uv-workspace" | "uv-config";
 
@@ -215,6 +215,8 @@ export interface Session {
     writeRoots: string[];
     denyPaths: string[];
     network: "allow" | "deny";
+    /** 可选 Bind Link 目录绑定（Windows 11 24H2+；仅显式配置时存在）。 */
+    bindLinks?: { virtPath: string; backingPath: string; readOnly?: boolean }[];
   };
   workspace?: ManagedWorkspace;
   title: string;
@@ -385,8 +387,11 @@ export interface ContextView {
     policy?: {
       enabled: boolean;
       strategy: "lag" | "interval" | "off";
+      evictionMode: "placeholder" | "process";
       lag: number;
       interval: number;
+      minRetainTokens: number;
+      readKeepLines: number;
       pinExemptRounds: number;
       restoreBudget: number;
       maxSessionTokens?: number;
@@ -606,7 +611,7 @@ export interface SettingsView {
 /** 设置对话框页签（定义在 contracts 供 lib 层引用；SettingsDialog 再导出） */
 export type SettingsTab = "appearance" | "general" | "defaults" | "shortcuts" | "remote" | "models" | "skills" | "extensions" | "pricing" | "prompt" | "info";
 
-export type ModelInterfaceType = "anthropic-messages" | "openai-chat-completions";
+export type ModelInterfaceType = "anthropic-messages" | "openai-chat-completions" | "openai-responses";
 export type WebCapability = "search" | "fetch";
 export type WebProviderType = "jina" | "brave" | "tavily" | "custom";
 
