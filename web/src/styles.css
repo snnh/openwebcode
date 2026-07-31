@@ -1290,13 +1290,19 @@ button.chip-row:hover { background: var(--accent-soft); }
   min-width: 240px;
   max-width: min(360px, 90vw);
   max-height: 60vh;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
   padding: 6px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--panel);
   box-shadow: 0 8px 28px rgb(0 0 0 / 0.22);
 }
+/* 模型弹层：上滚动（分组列表）+ 下固定（能力/思考/更多） */
+.popover-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.popover-fixed { flex: 0 0 auto; border-top: 1px solid var(--border); margin-top: 4px; padding-top: 2px; }
+.popover-fixed > .popover-section:first-child { margin-top: 0; padding-top: 0; border-top: none; }
+.popover-fixed > .popover-section:first-child:last-child { padding-bottom: 0; }
 .popover-item {
   display: flex;
   align-items: flex-start;
@@ -1343,6 +1349,7 @@ button.chip-row:hover { background: var(--accent-soft); }
 .toggle-switch input:disabled { cursor: default; }
 .toggle-switch .toggle-knob {
   position: relative;
+  pointer-events: none;
   width: 30px;
   height: 17px;
   border-radius: 999px;
@@ -1363,20 +1370,50 @@ button.chip-row:hover { background: var(--accent-soft); }
 }
 .toggle-switch.on .toggle-knob { background: var(--accent); border-color: var(--accent); }
 .toggle-switch.on .toggle-knob::after { transform: translateX(13px); background: #fff; }
-.thinking-modes, .thinking-efforts { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 8px; }
-.thinking-efforts { margin-top: 6px; }
-.segmented-btn {
-  padding: 3px 10px;
-  border: 1px solid var(--border);
+/* 供应商分组（模型弹层） */
+.popover-group + .popover-group { margin-top: 2px; }
+.popover-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
   border-radius: var(--radius-s);
-  background: var(--bg);
+  background: transparent;
   color: var(--text-2);
   font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
 }
-.segmented-btn:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
-.segmented-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
-.segmented-btn:disabled { opacity: 0.45; cursor: default; }
-.popover-hint { margin: 8px; }
+.popover-group-header:hover { background: var(--accent-soft); }
+.popover-group-chevron { display: inline-flex; transition: transform 0.15s ease; }
+.popover-group-chevron.collapsed { transform: rotate(-90deg); }
+.popover-group-name { flex: 1; text-align: left; }
+.popover-group-count { color: var(--text-3); font-weight: 400; }
+/* 思考开关行与程度滑块（模型弹层底部固定区） */
+.popover-thinking-row { display: flex; align-items: center; justify-content: space-between; padding: 0 8px; }
+.popover-thinking-row .popover-section-label { margin: 2px 0 4px; }
+.thinking-slider { padding: 0 8px 6px; }
+.thinking-slider.disabled { opacity: 0.5; }
+.thinking-slider-row { display: flex; align-items: center; gap: 8px; }
+.thinking-slider-end { flex: 0 0 auto; font-size: 10.5px; color: var(--text-3); }
+.thinking-cells { flex: 1; min-width: 0; display: flex; gap: 3px; align-items: center; }
+.thinking-cell {
+  flex: 1 1 0;
+  height: 10px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--panel-2);
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.thinking-cell:hover:not(:disabled) { border-color: var(--accent); }
+.thinking-cell.filled { background: var(--accent); border-color: var(--accent); }
+.thinking-cell:disabled { cursor: default; }
+.thinking-slider-current { flex: 0 0 auto; min-width: 34px; text-align: right; font-size: 11.5px; color: var(--text-3); }
+.thinking-slider-current.active { color: var(--accent); font-weight: 600; }
 .popover-footer { padding: 2px 4px; }
 .popover-more {
   border: none;

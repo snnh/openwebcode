@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactElement, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactElement, type ReactNode } from "react";
 import type { ModelCapabilities, ModelProfile, PermissionMode } from "../lib/contracts";
 import { Icon } from "./Icon";
 import { ModelCapabilityBadges } from "./ModelCapabilityBadges";
@@ -110,7 +110,7 @@ function ModeToggle({ icon, label, description, checked, disabled, onChange, bad
 
 /** 4b：「模式」弹层——计划 / 目标（互斥的单值 agentMode）、Swarm（会话级 spawn_swarm 独立开关）。 */
 export function AgentModeMenu({ agentMode, swarmEnabled, disabled, onConfig }: {
-  agentMode: "plan" | "build" | "goal" | undefined;
+  agentMode: "plan" | "code" | "goal" | undefined;
   swarmEnabled: boolean;
   disabled: boolean;
   onConfig(body: Record<string, unknown>): void;
@@ -162,33 +162,55 @@ export function AgentModeMenu({ agentMode, swarmEnabled, disabled, onConfig }: {
   );
 }
 
-export interface ThinkingChoice {
-  value: string;
-  label: [string, string];
-}
+/** 思考档标签：关/默认/自适应 + 六档 effort（max/ultra 不翻译）。Composer 徽标与滑块共用。 */
+export const THINKING_LABEL: Record<string, [string, string]> = { adaptive: ["自适应", "Adaptive"], enabled: ["默认", "Default"], disabled: ["关", "Off"] };
+export const EFFORT_LABEL: Record<string, [string, string]> = {
+  low: ["低", "Low"],
+  medium: ["中", "Medium"],
+  high: ["高", "High"],
+  xhigh: ["极高", "Extra high"],
+  max: ["max", "max"],
+  ultra: ["ultra", "ultra"],
+};
 
-const EFFORT_TIERS = ["low", "medium", "high", "xhigh", "max"] as const;
-
-/** 4c：模型 + 思考程度合并弹层。 */
-export function ModelMenu({ current, selectableModels, selectionUnavailable, thinkingChoices, thinkingSelection, efforts, thinkingControlSupported, disabled, onSelectModel, onSelectThinking, onOpenModelSettings, capabilities }: {
+/** 4c：模型 + 思考程度合并弹层。模型按供应商分组（可折叠）；底部固定区为模型能力徽章 +
+ * 思考开关（胶囊）与思考程度滑块（默认 低 中 高 极高 max ultra），不随列表滚动。 */
+export function ModelMenu({ current, selectableModels, selectionUnavailable, effortLevels, thinkingOn, currentEffort, defaultOnValue, thinkingBadge, thinkingControlSupported, disabled, onSelectModel, onSelectThinking, onOpenModelSettings, capabilities }: {
   current: { provider: string; model: string };
   selectableModels: ModelProfile[];
   selectionUnavailable: boolean;
-  thinkingChoices: ThinkingChoice[];
-  thinkingSelection: string;
-  /** 当前模型支持的 effort 枚举（五档分段中不支持的灰显）。 */
-  efforts: string[];
+  /** 有效 effort 档位（当前模型已声明子集；未声明时全部六档）。滑块档位 = [默认, ...effortLevels]。 */
+  effortLevels: string[];
+  thinkingOn: boolean;
+  currentEffort?: string | undefined;
+  /** 滑块左端点（默认）与开关 on 的无 effort 取值（mode:enabled 或 mode:adaptive）。 */
+  defaultOnValue: string;
+  thinkingBadge?: [string, string] | undefined;
   thinkingControlSupported: boolean;
   disabled: boolean;
   onSelectModel(item: ModelProfile): void;
   onSelectThinking(value: string): void;
   onOpenModelSettings?(): void;
-  /** 选中模型的能力徽章（原「高级设置」区块迁入弹层底部）。 */
+  /** 选中模型的能力徽章（底部固定区）。 */
   capabilities?: ModelCapabilities | undefined;
 }): ReactElement {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
-  const thinkingBadge = thinkingChoices.find((choice) => choice.value === thinkingSelection)?.label;
+  // 分组折叠：默认只展开当前模型所在供应商组，其余收起
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const groups = useMemo(() => {
+    const map = new Map<string, ModelProfile[]>();
+    for (const item of selectableModels) {
+      const list = map.get(item.provider) ?? [];
+      list.push(item);
+      map.set(item.provider, list);
+    }
+    return [...map.entries()];
+  }, [selectableModels]);
+  const stops = [THINKING_LABEL.enabled!, ...effortLevels.map((tier) => EFFORT_LABEL[tier] ?? [tier, tier])] as Array<[string, string]>;
+  const sliderIndex = thinkingOn && currentEffort ? effortLevels.indexOf(currentEffort) + 1 : 0;
+  const sliderDisabled = !thinkingControlSupported || !thinkingOn;
+  const currentLevelText = !thinkingOn ? t(...THINKING_LABEL.disabled!) : t(...stops[sliderIndex]!);
   return (
     <div className="composer-menu">
       <button
@@ -207,90 +229,109 @@ export function ModelMenu({ current, selectableModels, selectionUnavailable, thi
         <Icon name="chevron-up" size={11} />
       </button>
       <Popover open={open} onClose={() => setOpen(false)}>
-        <div className="popover-section">
-          {selectionUnavailable && current.model && (
-            <div className="popover-item selected">
-              <span className="popover-item-check" aria-hidden><Icon name="check" size={13} /></span>
-              <span className="popover-item-text">
-                <span className="popover-item-label mono">{current.model}【{current.provider}】</span>
-                <span className="popover-item-desc">{t("当前模型不在可用清单中", "Current model is not in the available list")}</span>
-              </span>
-            </div>
-          )}
-          {selectableModels.length === 0 && !current.model && (
-            <div className="popover-item disabled"><span className="popover-item-label">{t("暂无可用模型", "No model available")}</span></div>
-          )}
-          {selectableModels.map((item) => {
-            const selected = item.provider === current.provider && item.id === current.model;
-            return (
-              <button
-                key={`${item.provider}/${item.id}`}
-                type="button"
-                role="menuitemradio"
-                aria-checked={selected}
-                className={`popover-item${selected ? " selected" : ""}`}
-                onClick={() => { onSelectModel(item); setOpen(false); }}
-              >
-                <span className="popover-item-check" aria-hidden>{selected ? <Icon name="check" size={13} /> : null}</span>
+        <div className="popover-scroll">
+          <div className="popover-section">
+            {selectionUnavailable && current.model && (
+              <div className="popover-item selected">
+                <span className="popover-item-check" aria-hidden><Icon name="check" size={13} /></span>
                 <span className="popover-item-text">
-                  <span className="popover-item-label mono">{item.id}</span>
-                  <span className="popover-item-desc">{item.provider}</span>
+                  <span className="popover-item-label mono">{current.model}【{current.provider}】</span>
+                  <span className="popover-item-desc">{t("当前模型不在可用清单中", "Current model is not in the available list")}</span>
                 </span>
-              </button>
-            );
-          })}
-        </div>
-        <div className="popover-section popover-thinking">
-          <span className="popover-section-label">{t("思考", "Thinking")}</span>
-          <div className="thinking-modes">
-            {thinkingChoices.filter((choice) => !choice.value.startsWith("effort:")).map((choice) => (
-              <button
-                key={choice.value}
-                type="button"
-                className={`segmented-btn${thinkingSelection === choice.value ? " active" : ""}`}
-                disabled={!thinkingControlSupported}
-                onClick={() => onSelectThinking(choice.value)}
-              >
-                {t(...choice.label)}
-              </button>
-            ))}
-          </div>
-          <div className="thinking-efforts" role="group" aria-label={t("思考程度", "Thinking effort")}>
-            {EFFORT_TIERS.map((tier) => {
-              const supported = efforts.includes(tier);
-              const value = `effort:${tier}`;
+              </div>
+            )}
+            {selectableModels.length === 0 && !current.model && (
+              <div className="popover-item disabled"><span className="popover-item-label">{t("暂无可用模型", "No model available")}</span></div>
+            )}
+            {groups.map(([provider, items]) => {
+              // 默认展开：单组、或包含当前模型的组；其余收起（用户可手动展开/收起）
+              const isCollapsed = collapsed[provider] ?? (groups.length > 1 && !items.some((item) => item.provider === current.provider && item.id === current.model));
               return (
-                <button
-                  key={tier}
-                  type="button"
-                  className={`segmented-btn${thinkingSelection === value ? " active" : ""}`}
-                  disabled={!supported}
-                  title={supported ? undefined : t("当前模型不支持该档位", "Not supported by the current model")}
-                  onClick={() => onSelectThinking(value)}
-                >
-                  {tier}
-                </button>
+                <div className="popover-group" key={provider}>
+                  <button
+                    type="button"
+                    className="popover-group-header"
+                    aria-expanded={!isCollapsed}
+                    onClick={() => setCollapsed((prev) => ({ ...prev, [provider]: !isCollapsed }))}
+                  >
+                    <span className={`popover-group-chevron${isCollapsed ? " collapsed" : ""}`} aria-hidden><Icon name="chevron-down" size={12} /></span>
+                    <span className="popover-group-name">{provider}</span>
+                    <span className="popover-group-count">{items.length}</span>
+                  </button>
+                  {!isCollapsed && items.map((item) => {
+                    const selected = item.provider === current.provider && item.id === current.model;
+                    return (
+                      <button
+                        key={`${item.provider}/${item.id}`}
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={selected}
+                        className={`popover-item${selected ? " selected" : ""}`}
+                        onClick={() => { onSelectModel(item); setOpen(false); }}
+                      >
+                        <span className="popover-item-check" aria-hidden>{selected ? <Icon name="check" size={13} /> : null}</span>
+                        <span className="popover-item-text">
+                          <span className="popover-item-label mono">{item.id}</span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
               );
             })}
           </div>
-          <p className="popover-item-desc popover-hint">{t(
-            "提示：切换模型或思考程度会使已有的提示词缓存失效。建议新建对话，避免额外的 token 消耗。",
-            "Note: switching the model or thinking level invalidates the existing prompt cache. Start a new session to avoid extra token usage.",
-          )}</p>
         </div>
-        {capabilities && (
-          <div className="popover-section">
-            <span className="popover-section-label">{t("模型能力", "Model capabilities")}</span>
-            <div className="popover-capabilities"><ModelCapabilityBadges capabilities={capabilities} /></div>
+        <div className="popover-fixed">
+          {capabilities && (
+            <div className="popover-section">
+              <span className="popover-section-label">{t("模型能力", "Model capabilities")}</span>
+              <div className="popover-capabilities"><ModelCapabilityBadges capabilities={capabilities} /></div>
+            </div>
+          )}
+          <div className="popover-section popover-thinking">
+            <div className="popover-thinking-row">
+              <span className="popover-section-label">{t("思考", "Thinking")}</span>
+              <span className={`toggle-switch${thinkingOn ? " on" : ""}`}>
+                <input
+                  type="checkbox"
+                  checked={thinkingOn}
+                  disabled={!thinkingControlSupported}
+                  aria-label={t("思考", "Thinking")}
+                  onChange={(event) => onSelectThinking(event.target.checked ? (currentEffort ? `effort:${currentEffort}` : defaultOnValue) : "default")}
+                />
+                <span className="toggle-knob" aria-hidden />
+              </span>
+            </div>
+            <div className={`thinking-slider${sliderDisabled ? " disabled" : ""}`} role="group" aria-label={t("思考程度", "Thinking effort")}>
+              <div className="thinking-slider-row">
+                <span className="thinking-slider-end">{t("更快", "Faster")}</span>
+                <div className="thinking-cells">
+                  {stops.map((label, index) => (
+                    <button
+                      key={label[1]}
+                      type="button"
+                      className={`thinking-cell${index <= sliderIndex && !sliderDisabled ? " filled" : ""}${index === sliderIndex && !sliderDisabled ? " current" : ""}`}
+                      disabled={sliderDisabled}
+                      aria-label={t(...label)}
+                      aria-pressed={index === sliderIndex}
+                      title={t(...label)}
+                      onClick={() => onSelectThinking(index === 0 ? defaultOnValue : `effort:${effortLevels[index - 1]}`)}
+                    />
+                  ))}
+                </div>
+                <span className="thinking-slider-end">{t("更聪明", "Smarter")}</span>
+                <span className={`thinking-slider-current${thinkingOn ? " active" : ""}`}>{currentLevelText}</span>
+              </div>
+            </div>
           </div>
-        )}
-        {onOpenModelSettings && (
-          <div className="popover-section popover-footer">
-            <button type="button" className="popover-more" onClick={() => { onOpenModelSettings(); setOpen(false); }}>
-              {t("更多模型…", "More models…")}
-            </button>
-          </div>
-        )}
+          {onOpenModelSettings && (
+            <div className="popover-section popover-footer">
+              <button type="button" className="popover-more" onClick={() => { onOpenModelSettings(); setOpen(false); }}>
+                {t("更多模型…", "More models…")}
+              </button>
+            </div>
+          )}
+        </div>
       </Popover>
     </div>
   );
