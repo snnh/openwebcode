@@ -145,7 +145,7 @@ export class OpenAICompatibleProvider implements Provider {
   }
 }
 
-async function* readSseData(body: ReadableStream<Uint8Array>): AsyncIterable<string> {
+export async function* readSseData(body: ReadableStream<Uint8Array>): AsyncIterable<string> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
