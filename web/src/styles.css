@@ -2162,6 +2162,20 @@ button.chip-row:hover { background: var(--accent-soft); }
   font-size: 12px;
 }
 .catalog-form input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.extra-body-input {
+  width: 100%;
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: var(--bg);
+  color: var(--text);
+  padding: 6px 9px;
+  font-size: 12px;
+  font-family: var(--mono, monospace);
+  resize: vertical;
+  box-sizing: border-box;
+}
+.extra-body-input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .catalog-edit-form { margin-top: 10px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel-2); }
 .catalog-edit-form h4 { margin: 0 0 4px; font-size: 13px; font-weight: 650; }
 .catalog-edit-form .catalog-form { margin-top: 8px; }
