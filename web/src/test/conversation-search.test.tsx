@@ -1,11 +1,12 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { ExecutionTrack } from "../components/ExecutionTrack";
 import { CONVERSATION_SEARCH_EVENT } from "../components/ConversationSearch";
-import { registerBuiltinCommands, type CommandActions } from "../commands/builtin";
+import { registerBuiltinCommands } from "../commands/builtin";
 import { resetCommands } from "../commands/registry";
 import { useGlobalKeybindings } from "../commands/useKeybindings";
 import type { ChatMessage, SessionDetail } from "../lib/contracts";
+import { stubActions } from "./helpers/stub-actions";
 
 const baseSession: SessionDetail = {
   id: "session-1",
@@ -28,25 +29,15 @@ const messages: ChatMessage[] = [
   { id: "m4", role: "assistant", createdAt: baseSession.createdAt, content: [{ type: "thinking", text: "hello in thought" }, { type: "text", text: "nothing here" }] },
 ];
 
-function stubActions(): CommandActions {
-  return {
-    showCommands: vi.fn(), quickOpen: vi.fn(), toggleSidebar: vi.fn(), toggleBottomPanel: vi.fn(),
-    showView: vi.fn(), openSettings: vi.fn(), newSession: vi.fn(), importSession: vi.fn(),
-    deleteCurrentSession: vi.fn(), sendDraft: vi.fn(), abortRun: vi.fn(), toggleTheme: vi.fn(),
-    focusComposer: vi.fn(), nextSession: vi.fn(), previousSession: vi.fn(),
-    showKeyboardShortcuts: vi.fn(), cycleZone: vi.fn(), showNotifications: vi.fn(),
-    saveEditorFile: vi.fn(), toggleEditorSplit: vi.fn(),
-    diffAcceptHunk: vi.fn(), diffRejectHunk: vi.fn(),
-    // 与 App 动作面一致：经 window 事件桥接 ExecutionTrack
-    findInConversation: () => window.dispatchEvent(new CustomEvent(CONVERSATION_SEARCH_EVENT)),
-  };
+// 与 App 动作面一致：findInConversation 经 window 事件桥接 ExecutionTrack
+function stubTrackActions() {
+  return stubActions({ findInConversation: () => window.dispatchEvent(new CustomEvent(CONVERSATION_SEARCH_EVENT)) });
 }
 
 function renderTrack(props: Partial<Parameters<typeof ExecutionTrack>[0]> = {}) {
   return render(
     <ExecutionTrack
       session={{ ...baseSession, messages }}
-      streamText=""
       permissions={[]}
       onPermissionDone={() => undefined}
       {...props}
@@ -57,7 +48,7 @@ function renderTrack(props: Partial<Parameters<typeof ExecutionTrack>[0]> = {}) 
 /** 完整链路：window keydown → 默认键位 → 内建命令 → window 事件 → ExecutionTrack 打开 */
 function Harness() {
   useGlobalKeybindings({ sessionActive: true });
-  return <ExecutionTrack session={{ ...baseSession, messages }} streamText="" permissions={[]} onPermissionDone={() => undefined} />;
+  return <ExecutionTrack session={{ ...baseSession, messages }} permissions={[]} onPermissionDone={() => undefined} />;
 }
 
 function openSearch(): HTMLElement {
@@ -79,7 +70,7 @@ afterEach(() => resetCommands());
 
 describe("会话内搜索：Ctrl+F 打开", () => {
   it("Ctrl+F 打开搜索条并聚焦输入框", () => {
-    registerBuiltinCommands(() => stubActions());
+    registerBuiltinCommands(() => stubTrackActions());
     render(<Harness />);
     fireEvent.keyDown(window, { key: "f", ctrlKey: true });
     expect(screen.getByRole("search")).toBeInTheDocument();
@@ -87,10 +78,10 @@ describe("会话内搜索：Ctrl+F 打开", () => {
   });
 
   it("浮层打开（dialogOpen）时 Ctrl+F 不打开", () => {
-    registerBuiltinCommands(() => stubActions());
+    registerBuiltinCommands(() => stubTrackActions());
     function DialogHarness() {
       useGlobalKeybindings({ sessionActive: true, dialogOpen: true });
-      return <ExecutionTrack session={{ ...baseSession, messages }} streamText="" permissions={[]} onPermissionDone={() => undefined} />;
+      return <ExecutionTrack session={{ ...baseSession, messages }} permissions={[]} onPermissionDone={() => undefined} />;
     }
     render(<DialogHarness />);
     fireEvent.keyDown(window, { key: "f", ctrlKey: true });
@@ -98,7 +89,7 @@ describe("会话内搜索：Ctrl+F 打开", () => {
   });
 
   it("输入框（Composer）聚焦时 Ctrl+F 不打开", () => {
-    registerBuiltinCommands(() => stubActions());
+    registerBuiltinCommands(() => stubTrackActions());
     render(
       <>
         <input aria-label="composer" />
