@@ -99,7 +99,7 @@ const GROUPS = [
 const LANGUAGE_OPTIONS = ["zh-CN", "en-US", "zh-TW", "ja-JP", "ko-KR", "fr-FR", "de-DE", "es-ES", "ru-RU"];
 const PYTHON_ENV_OPTIONS = ["global", "uv-workspace", "uv-config"];
 const THINKING_OPTIONS = ["disabled", "adaptive", "enabled"];
-const EFFORT_OPTIONS = ["none", "low", "medium", "high", "xhigh", "max"];
+const EFFORT_OPTIONS = ["none", "low", "medium", "high", "xhigh", "max", "ultra"];
 
 export function encodeFastModelSelection(provider: string, model: string): string {
   return JSON.stringify([provider, model]);
@@ -451,7 +451,7 @@ export class SettingsService {
               ...(fastModelThinking === "adaptive" || fastModelThinking === "enabled" || fastModelThinking === "disabled"
                 ? { thinking: fastModelThinking }
                 : {}),
-              ...(fastModelEffort === "low" || fastModelEffort === "medium" || fastModelEffort === "high" || fastModelEffort === "xhigh" || fastModelEffort === "max"
+              ...(fastModelEffort === "low" || fastModelEffort === "medium" || fastModelEffort === "high" || fastModelEffort === "xhigh" || fastModelEffort === "max" || fastModelEffort === "ultra"
                 ? { effort: fastModelEffort }
                 : {}),
               maxTokens: value("fastModelMaxTokens") as number,
