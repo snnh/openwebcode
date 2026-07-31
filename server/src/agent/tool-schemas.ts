@@ -14,7 +14,10 @@ export function bashTool(backgroundTasksEnabled: boolean, shellBackend: ShellBac
     : "Python runs in an isolated uv-managed virtual environment that is created on demand (its directory is prepended to PATH); install packages with 'uv pip install'. Node.js still uses the host environment. ";
   return {
     name: "bash",
-    description: "Execute a shell command in the session workspace. Call this when command-line execution is required. " +
+    description: "Execute a shell command in the session workspace. Call this when command-line execution is required (build, test, package managers, git, running programs). " +
+      "For reading, writing, editing, listing or searching files, prefer the dedicated file tools (read_file/write_file/edit_file/glob/grep) over shell equivalents " +
+      "(dir, type, findstr, cat, echo-redirects): they are sandbox-native, return structured results, and do not depend on shell quirks. " +
+      "A non-zero exit code is a normal signal, not a tool failure: read the stderr/stdout in the result and adjust the command instead of retrying it unchanged. " +
       "The shell is persistent: the working directory and environment variables set by one call carry over to later calls in the same session. " + shellGuidance + envGuidance +
       (backgroundTasksEnabled
         ? " Set run_in_background=true to run the command asynchronously; the agent loop continues immediately and you can check " +
@@ -57,12 +60,18 @@ const PATH_SCHEMA = {
   description: "Workspace path: relative to the session root, or absolute inside it (dot segments and either separator accepted). Normalization and path policy are enforced by the executor; pass the path as-is.",
 } as const;
 
+/** glob/grep 的 path：可选，缺省从会话根开始。 */
+const OPTIONAL_PATH_SCHEMA = {
+  type: "string",
+  description: "Start directory inside the workspace; omit to use the session root.",
+} as const;
+
 export const FILE_TOOLS: ProviderTool[] = [
-  { name: "read_file", description: "Read UTF-8 lines from a workspace file.", inputSchema: { type: "object", properties: { path: PATH_SCHEMA, offset: { type: "integer" }, limit: { type: "integer" } }, required: ["path"], additionalProperties: false } },
+  { name: "read_file", description: "Read UTF-8 lines from a workspace file. offset is the 1-based start line (default 1) and limit the max line count; long or binary content is truncated into an artifact reference you can page with read_artifact.", inputSchema: { type: "object", properties: { path: PATH_SCHEMA, offset: { type: "integer" }, limit: { type: "integer" } }, required: ["path"], additionalProperties: false } },
   { name: "write_file", description: "Atomically write a UTF-8 workspace file.", inputSchema: { type: "object", properties: { path: PATH_SCHEMA, content: { type: "string" }, createDirs: { type: "boolean" } }, required: ["path", "content"], additionalProperties: false } },
-  { name: "edit_file", description: "Replace exact text in a UTF-8 workspace file.", inputSchema: { type: "object", properties: { path: PATH_SCHEMA, oldText: { type: "string" }, newText: { type: "string" }, replaceAll: { type: "boolean" } }, required: ["path", "oldText", "newText"], additionalProperties: false } },
-  { name: "glob", description: "Recursively match workspace paths using * and ? wildcards.", inputSchema: { type: "object", properties: { path: PATH_SCHEMA, pattern: { type: "string" } }, required: ["path", "pattern"], additionalProperties: false } },
-  { name: "grep", description: "Recursively search UTF-8 workspace files for literal text.", inputSchema: { type: "object", properties: { path: PATH_SCHEMA, pattern: { type: "string" } }, required: ["path", "pattern"], additionalProperties: false } },
+  { name: "edit_file", description: "Replace exact text in a UTF-8 workspace file. oldText must match the file content byte-for-byte (including indentation and line endings) and occur exactly once unless replaceAll is true; include enough surrounding context to make it unique.", inputSchema: { type: "object", properties: { path: PATH_SCHEMA, oldText: { type: "string" }, newText: { type: "string" }, replaceAll: { type: "boolean" } }, required: ["path", "oldText", "newText"], additionalProperties: false } },
+  { name: "glob", description: "List workspace files matching a wildcard pattern (* within one level, ** spans levels, e.g. \"**/*.ts\" or \"src/*.json\"). Returns matching paths, newest first; use it instead of shell dir/ls to explore the workspace.", inputSchema: { type: "object", properties: { path: OPTIONAL_PATH_SCHEMA, pattern: { type: "string", description: "Wildcard pattern, e.g. \"**/*.py\" or \"*\" (top level only)." } }, required: ["pattern"], additionalProperties: false } },
+  { name: "grep", description: "Recursively search UTF-8 workspace files for literal text (not regex). Returns matching lines with file:line locations; use code_search for symbol-level queries.", inputSchema: { type: "object", properties: { path: OPTIONAL_PATH_SCHEMA, pattern: { type: "string", description: "Literal text to search for." } }, required: ["pattern"], additionalProperties: false } },
 ];
 
 export const REPO_MAP_TOOL: ProviderTool = {
