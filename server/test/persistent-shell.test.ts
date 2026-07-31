@@ -12,6 +12,7 @@ import {
   PersistentShellManager,
   PersistentShellUnavailableError,
   SentinelParser,
+  repairShellOutput,
   errorlevelResetLine,
   sentinelLine,
   shellInitLines,
@@ -162,8 +163,8 @@ describe("SentinelParser（纯单测）", () => {
     expect(venvActivationCommand("pwsh", "C:\\v", "win32")).toBe("$env:Path = 'C:\\v\\Scripts;' + $env:Path");
   });
 
-  it("shellInitLines：cmd 无 init（pty 已在 cwd）；pwsh 带落点校验；posix 归一 cd", () => {
-    expect(shellInitLines("default", "C:\\w", "win32")).toEqual([]);
+  it("shellInitLines：cmd 仅 chcp 65001（pty 已在 cwd）；pwsh 带落点校验；posix 归一 cd", () => {
+    expect(shellInitLines("default", "C:\\w", "win32")).toEqual(["chcp 65001"]);
     expect(shellInitLines("default", "/w", "linux")).toEqual(["cd '/w'"]);
     const pwsh = shellInitLines("pwsh", "C:\\w", "win32");
     expect(pwsh[0]).toContain("HistorySaveStyle SaveNothing");
@@ -176,6 +177,28 @@ describe("SentinelParser（纯单测）", () => {
     expect(errorlevelResetLine("default", "win32")).toBe("(call )");
     expect(errorlevelResetLine("default", "linux")).toBeNull();
     expect(errorlevelResetLine("pwsh", "win32")).toBeNull();
+  });
+});
+
+describe("repairShellOutput（代码页修复）", () => {
+  const GBK_DENIED = Buffer.from([0xBE, 0xDC, 0xBE, 0xF8, 0xB7, 0xC3, 0xCE, 0xCA, 0xA1, 0xA3]); // GBK: 拒绝访问。
+
+  it("lossy UTF-8 乱码按 GBK 重解码", () => {
+    const rand = "a1b2c3d4e5f6";
+    // 完整一轮：命令回显 + GBK 错误输出 + sentinel（ASCII 与 GBK 兼容）
+    const raw = Buffer.concat([
+      Buffer.from("D:\\work>dir\r\n", "ascii"),
+      GBK_DENIED,
+      Buffer.from("\r\n__OWC_DONE_a1b2c3d4e5f6_0__\r\n", "ascii"),
+    ]);
+    const lossy = raw.toString("utf8");
+    expect(lossy).toContain("\uFFFD");
+    expect(repairShellOutput(lossy, [raw], rand, ["dir"])).toContain("拒绝访问。");
+  });
+
+  it("正常 UTF-8 输出原样返回；空 raw 不重解码", () => {
+    expect(repairShellOutput("正常输出", [], "a1b2c3d4e5f6", ["echo"])).toBe("正常输出");
+    expect(repairShellOutput("含�但无原始字节", [], "a1b2c3d4e5f6", ["echo"])).toBe("含�但无原始字节");
   });
 });
 
@@ -292,6 +315,54 @@ describe("PersistentShellManager（fake core）", () => {
     await drive(fake); // cmd-two sentinel
     const secondResult = await second;
     expect(secondResult.output).toBe("two-out");
+  });
+
+  it("GBK（CP936）输出乱码时按原始字节重解码", async () => {
+    const fake = makeFakePtyCore();
+    const manager = newManager(fake.core);
+    const session = fakeSession("s1");
+    const run = manager.run(session, "dir", new AbortController().signal);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    await drive(fake); // init
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // GBK 编码的"拒绝访问。"（cmd 中文错误的典型形态）
+    fake.emitter.emit("output", { data: Buffer.from([0xBE, 0xDC, 0xBE, 0xF8, 0xB7, 0xC3, 0xCE, 0xCA, 0xA1, 0xA3, 0x0D, 0x0A]).toString("base64") });
+    await drive(fake); // dir sentinel
+    const result = await run;
+    expect(result.output).toContain("拒绝访问。");
+    expect(result.output).not.toContain("�");
+  });
+
+  it("core 重启后 pty not found：销毁重建并重试同一命令", async () => {
+    const fake = makeFakePtyCore();
+    const manager = newManager(fake.core);
+    const session = fakeSession("s1");
+    const first = manager.run(session, "echo one", new AbortController().signal);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    await drive(fake);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    emitOutput(fake, "one\n");
+    await drive(fake);
+    await first;
+    expect(fake.openCalls).toHaveLength(1);
+
+    // 模拟 core 重启：旧 ptyId 失效，下一次 input 报 pty not found（仅失败一次）
+    let failures = 1;
+    (fake.core as unknown as { inputPty: (request: PtyInputRequest) => Promise<{ ok: true }> }).inputPty =
+      async (request: PtyInputRequest) => {
+        fake.inputCalls.push(request);
+        if (failures-- > 0) throw new CoreRpcError(-32003, "pty not found");
+        return { ok: true as const };
+      };
+    const second = manager.run(session, "echo two", new AbortController().signal);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    await drive(fake); // 新 shell init
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    emitOutput(fake, "two\n");
+    await drive(fake); // echo two sentinel
+    const result = await second;
+    expect(result.output).toBe("two");
+    expect(fake.openCalls).toHaveLength(2);
   });
 
   it("pty.exit 后在途命令报错；下一条命令透明重建（再次 openPty）", async () => {
