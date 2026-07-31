@@ -95,6 +95,47 @@ void owc_fs_platform_set_deny_roots(const char *const *roots,size_t count){
     for(i=0;i<count;i++){char *c=canonical_deny_root(roots[i]);if(c)deny_roots[deny_root_count++]=c;}
 }
 static int final_path_denied(const wchar_t *final){size_t i;char *resolved;const wchar_t *bare=final;if(wcsncmp(final,L"\\\\?\\",4)==0)bare=final+4;resolved=utf8(bare);if(!resolved)return 0;for(i=0;i<deny_root_count;i++)if(owc_path_is_within(resolved,deny_roots[i])){free(resolved);return 1;}free(resolved);return 0;}
+/* Session bind links, published alongside the deny roots above (same
+ * thread-local ownership rules).  A bind link is a user-configured mapping
+ * from a virt path inside the session write roots to an outside backing
+ * directory, created through the Windows Bind Link API.  It is not an on-disk
+ * reparse point, but depending on how bindflt resolves the open the checks
+ * below can still observe redirection semantics; the configured pairs are
+ * therefore admitted explicitly.  An empty list (the default) changes no
+ * behavior. */
+static OWC_THREAD_LOCAL wchar_t **bind_virts=NULL;
+static OWC_THREAD_LOCAL wchar_t **bind_backings=NULL;
+static OWC_THREAD_LOCAL size_t bind_link_count=0;
+/* Canonicalize a configured path to a wide DOS path.  handle_resolve uses
+ * GetFinalPathNameByHandleW, which follows bindflt redirection - right for
+ * backing paths (compared against resolved final paths) but wrong for virt
+ * paths, whose redirected handle would resolve to the backing path. */
+static wchar_t *canonical_bind_path(const char *path,int handle_resolve){
+    wchar_t *w=wide(path),*buf;wchar_t *out=NULL;
+    if(!w)return NULL;
+    buf=(wchar_t*)malloc(32768*sizeof(*buf));
+    if(buf){
+        DWORD n=0;
+        if(handle_resolve){HANDLE h=CreateFileW(w,FILE_READ_ATTRIBUTES,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,NULL,OPEN_EXISTING,FILE_FLAG_BACKUP_SEMANTICS,NULL);
+            if(h!=INVALID_HANDLE_VALUE){n=GetFinalPathNameByHandleW(h,buf,32768,VOLUME_NAME_DOS);CloseHandle(h);}}
+        if(!n)n=GetLongPathNameW(w,buf,32768);
+        if(n>0&&n<32768){const wchar_t *bare=buf;if(wcsncmp(buf,L"\\\\?\\",4)==0)bare=buf+4;out=_wcsdup(bare);}
+    }
+    free(buf);free(w);return out;
+}
+void owc_fs_platform_set_bind_links(const char *const *virt_paths,const char *const *backing_paths,size_t count){
+    size_t i;
+    for(i=0;i<bind_link_count;i++){free(bind_virts[i]);free(bind_backings[i]);}
+    free(bind_virts);free(bind_backings);bind_virts=NULL;bind_backings=NULL;bind_link_count=0;
+    if(!virt_paths||!backing_paths||!count) return;
+    bind_virts=(wchar_t**)calloc(count,sizeof(*bind_virts));
+    bind_backings=(wchar_t**)calloc(count,sizeof(*bind_backings));
+    if(!bind_virts||!bind_backings) return;
+    for(i=0;i<count;i++){wchar_t *virt=canonical_bind_path(virt_paths[i],0);wchar_t *backing=canonical_bind_path(backing_paths[i],1);if(!virt||!backing){free(virt);free(backing);continue;}bind_virts[bind_link_count]=virt;bind_backings[bind_link_count]=backing;bind_link_count++;}
+}
+static int within_wide(const wchar_t *path,const wchar_t *root){size_t n=wcslen(root);return _wcsnicmp(path,root,n)==0&&(path[n]==0||path[n]==L'\\'||path[n]==L'/');}
+static int bind_link_virt_match(const wchar_t *path){size_t i;for(i=0;i<bind_link_count;i++)if(within_wide(path,bind_virts[i]))return 1;return 0;}
+static int bind_link_backing_match(const wchar_t *final){size_t i;const wchar_t *bare=final;if(wcsncmp(final,L"\\\\?\\",4)==0)bare=final+4;for(i=0;i<bind_link_count;i++)if(within_wide(bare,bind_backings[i]))return 1;return 0;}
 static int prefix(const wchar_t*p,const wchar_t*r){size_t n=wcslen(r);return _wcsnicmp(p,r,n)==0&&(p[n]==0||p[n]==L'\\');}
 static void trim_canonical_separator(wchar_t *path){
     size_t n=wcslen(path);
@@ -159,16 +200,19 @@ static owc_fs_error paths(const char *root,const char *path,wchar_t **rw,wchar_t
        the root itself: canonical_root below owns the root reparse verdict
        (a genuine volume mount point is admitted there). */
     {wchar_t *cursor=full+(absolute?3:wcslen(r)+1);
-     for(;*cursor;cursor++){if(*cursor!=L'\\'&&*cursor!=L'/')continue;{HANDLE component;DWORD attr=0;*cursor=0;
+     for(;*cursor;cursor++){if(*cursor!=L'\\'&&*cursor!=L'/')continue;{HANDLE component;DWORD attr=0;int bound=0;*cursor=0;
         component=CreateFileW(full,0,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,NULL,OPEN_EXISTING,FILE_FLAG_OPEN_REPARSE_POINT|FILE_FLAG_BACKUP_SEMANTICS,NULL);
         if(component==INVALID_HANDLE_VALUE){*cursor=L'\\';break;}
         {BY_HANDLE_FILE_INFORMATION component_info;if(GetFileInformationByHandle(component,&component_info))attr=component_info.dwFileAttributes;CloseHandle(component);}
+        /* A configured bind link virt path is an explicit session mapping,
+           not an attacker-controlled reparse point; admit it here. */
+        bound=bind_link_virt_match(full);
         *cursor=L'\\';
-        if(attr&FILE_ATTRIBUTE_REPARSE_POINT){free(r);free(full);return OWC_FS_OUTSIDE_ROOT;}}}}
+        if((attr&FILE_ATTRIBUTE_REPARSE_POINT)&&!bound){free(r);free(full);return OWC_FS_OUTSIDE_ROOT;}}}}
     /* Keep the ordinary DOS path above for file operations; use the handle-
        canonical path only for the workspace-boundary comparison. */
     e=canonical_root(&r);if(e){free(r);free(full);return e;}*rw=r;*pw=full;return OWC_FS_OK;}
-static owc_fs_error checked_open_mode(const char*root,const char*path,DWORD access,DWORD create,DWORD extra_flags,HANDLE*h,wchar_t**name){wchar_t*r,*p,*final;DWORD n;BY_HANDLE_FILE_INFORMATION info;owc_fs_error e=paths(root,path,&r,&p);if(e)return e;*h=CreateFileW(p,access,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,NULL,create,FILE_FLAG_OPEN_REPARSE_POINT|FILE_FLAG_BACKUP_SEMANTICS|extra_flags,NULL);if(*h==INVALID_HANDLE_VALUE){e=winerr();free(r);free(p);return e;}if(!GetFileInformationByHandle(*h,&info)){CloseHandle(*h);free(r);free(p);return winerr();}/* Windows reports the configured mounted-folder root as a reparse point when it is addressed as root\\.; canonical_root already verified that one exact root. */if((info.dwFileAttributes&FILE_ATTRIBUTE_REPARSE_POINT)&&!is_configured_root_path(path)){CloseHandle(*h);free(r);free(p);return OWC_FS_OUTSIDE_ROOT;}n=GetFinalPathNameByHandleW(*h,NULL,0,FILE_NAME_NORMALIZED);final=(wchar_t*)malloc(((size_t)n+1)*sizeof(*final));if(!final||!GetFinalPathNameByHandleW(*h,final,n+1,FILE_NAME_NORMALIZED)){CloseHandle(*h);free(final);free(r);free(p);return OWC_FS_IO_ERROR;}if(!prefix(final,r)&&!(wcslen(final)>4&&prefix(final+4,r))){CloseHandle(*h);free(final);free(r);free(p);return OWC_FS_OUTSIDE_ROOT;}if(final_path_denied(final)){CloseHandle(*h);free(final);free(r);free(p);return OWC_FS_OUTSIDE_ROOT;}free(final);free(r);if(name)*name=p;else free(p);return OWC_FS_OK;}
+static owc_fs_error checked_open_mode(const char*root,const char*path,DWORD access,DWORD create,DWORD extra_flags,HANDLE*h,wchar_t**name){wchar_t*r,*p,*final;DWORD n;BY_HANDLE_FILE_INFORMATION info;owc_fs_error e=paths(root,path,&r,&p);if(e)return e;*h=CreateFileW(p,access,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,NULL,create,FILE_FLAG_OPEN_REPARSE_POINT|FILE_FLAG_BACKUP_SEMANTICS|extra_flags,NULL);if(*h==INVALID_HANDLE_VALUE){e=winerr();free(r);free(p);return e;}if(!GetFileInformationByHandle(*h,&info)){CloseHandle(*h);free(r);free(p);return winerr();}/* Windows reports the configured mounted-folder root as a reparse point when it is addressed as root\\.; canonical_root already verified that one exact root. */if((info.dwFileAttributes&FILE_ATTRIBUTE_REPARSE_POINT)&&!is_configured_root_path(path)&&!bind_link_virt_match(p)){CloseHandle(*h);free(r);free(p);return OWC_FS_OUTSIDE_ROOT;}n=GetFinalPathNameByHandleW(*h,NULL,0,FILE_NAME_NORMALIZED);final=(wchar_t*)malloc(((size_t)n+1)*sizeof(*final));if(!final||!GetFinalPathNameByHandleW(*h,final,n+1,FILE_NAME_NORMALIZED)){CloseHandle(*h);free(final);free(r);free(p);return OWC_FS_IO_ERROR;}if(!prefix(final,r)&&!(wcslen(final)>4&&prefix(final+4,r))&&!bind_link_backing_match(final)){CloseHandle(*h);free(final);free(r);free(p);return OWC_FS_OUTSIDE_ROOT;}if(final_path_denied(final)){CloseHandle(*h);free(final);free(r);free(p);return OWC_FS_OUTSIDE_ROOT;}free(final);free(r);if(name)*name=p;else free(p);return OWC_FS_OK;}
 static owc_fs_error checked_open(const char*root,const char*path,DWORD access,DWORD create,HANDLE*h,wchar_t**name){return checked_open_mode(root,path,access,create,0,h,name);}
 static owc_fs_error ensure_parents(const char *root,const char *path){char *copy,*cursor;size_t n=strlen(path);copy=(char*)malloc(n+1);if(!copy)return OWC_FS_NO_MEMORY;memcpy(copy,path,n+1);for(cursor=copy;*cursor;cursor++){if(*cursor=='/'||*cursor=='\\'){HANDLE h;owc_fs_error e;wchar_t *r,*p;char saved=*cursor;*cursor='\0';if(!copy[0]){free(copy);return OWC_FS_OUTSIDE_ROOT;}e=checked_open(root,copy,0,OPEN_EXISTING,&h,NULL);if(e==OWC_FS_NOT_FOUND){e=paths(root,copy,&r,&p);if(!e){if(!CreateDirectoryW(p,NULL)&&GetLastError()!=ERROR_ALREADY_EXISTS)e=winerr();free(r);free(p);}if(!e)e=checked_open(root,copy,0,OPEN_EXISTING,&h,NULL);}if(!e)CloseHandle(h);*cursor=saved;if(e){free(copy);return e;}}}free(copy);return OWC_FS_OK;}
 owc_fs_error owc_fs_platform_read(const char*root,const char*path,owc_fs_bytes*b){HANDLE h;LARGE_INTEGER z;DWORD got;size_t done=0;owc_fs_error e=checked_open(root,path,GENERIC_READ,OPEN_EXISTING,&h,NULL);if(e)return e;if(!GetFileSizeEx(h,&z)||z.QuadPart<0||(unsigned long long)z.QuadPart>OWC_FS_MAX_FILE_SIZE){CloseHandle(h);return OWC_FS_IO_ERROR;}b->length=(size_t)z.QuadPart;b->data=(unsigned char*)malloc(b->length+1);if(!b->data){CloseHandle(h);return OWC_FS_NO_MEMORY;}while(done<b->length){DWORD ask=(DWORD)((b->length-done)>0x40000000?0x40000000:(b->length-done));if(!ReadFile(h,b->data+done,ask,&got,NULL)||!got){free(b->data);CloseHandle(h);return OWC_FS_IO_ERROR;}done+=got;}b->data[b->length]=0;CloseHandle(h);return OWC_FS_OK;}
@@ -196,7 +240,7 @@ end:
     if(h!=INVALID_HANDLE_VALUE)CloseHandle(h);if(parent!=INVALID_HANDLE_VALUE)CloseHandle(parent);free(tmp);free(leaf);return e;
 }
 static void info(const BY_HANDLE_FILE_INFORMATION*i,owc_fs_stat_result*r){ULARGE_INTEGER z,t;z.HighPart=i->nFileSizeHigh;z.LowPart=i->nFileSizeLow;t.HighPart=i->ftLastWriteTime.dwHighDateTime;t.LowPart=i->ftLastWriteTime.dwLowDateTime;r->type=(i->dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY)?OWC_FS_TYPE_DIRECTORY:OWC_FS_TYPE_FILE;r->size=z.QuadPart;r->modified_ms=(long long)(t.QuadPart/10000ULL-11644473600000ULL);}
-owc_fs_error owc_fs_platform_stat(const char*root,const char*path,owc_fs_stat_result*r){HANDLE h;BY_HANDLE_FILE_INFORMATION i;owc_fs_error e=checked_open(root,path,0,OPEN_EXISTING,&h,NULL);if(e)return e;if(!GetFileInformationByHandle(h,&i)){CloseHandle(h);return winerr();}if((i.dwFileAttributes&FILE_ATTRIBUTE_REPARSE_POINT)&&!is_configured_root_path(path)){CloseHandle(h);return OWC_FS_OUTSIDE_ROOT;}info(&i,r);CloseHandle(h);return OWC_FS_OK;}
+owc_fs_error owc_fs_platform_stat(const char*root,const char*path,owc_fs_stat_result*r){HANDLE h;BY_HANDLE_FILE_INFORMATION i;owc_fs_error e=checked_open(root,path,0,OPEN_EXISTING,&h,NULL);if(e)return e;if(!GetFileInformationByHandle(h,&i)){CloseHandle(h);return winerr();}if((i.dwFileAttributes&FILE_ATTRIBUTE_REPARSE_POINT)&&!is_configured_root_path(path)){/* checked_open already admitted configured bind links; mirror that verdict here from the handle's resolved path. */wchar_t resolved[32768];DWORD rn=GetFinalPathNameByHandleW(h,resolved,32768,FILE_NAME_NORMALIZED);int admitted=0;if(rn>0&&rn<32768){const wchar_t *bare=resolved;if(wcsncmp(resolved,L"\\\\?\\",4)==0)bare=resolved+4;admitted=bind_link_backing_match(resolved)||bind_link_virt_match(bare);}if(!admitted){CloseHandle(h);return OWC_FS_OUTSIDE_ROOT;}}info(&i,r);CloseHandle(h);return OWC_FS_OK;}
 owc_fs_error owc_fs_platform_list(const char*root,const char*path,owc_fs_list_result*r){HANDLE h,find;wchar_t*p,*pattern;WIN32_FIND_DATAW d;owc_fs_error e=checked_open(root,path,0,OPEN_EXISTING,&h,&p);if(e)return e;CloseHandle(h);pattern=(wchar_t*)malloc((wcslen(p)+3)*sizeof(*pattern));if(!pattern){free(p);return OWC_FS_NO_MEMORY;}wcscpy(pattern,p);wcscat(pattern,L"\\*");find=FindFirstFileW(pattern,&d);free(pattern);free(p);if(find==INVALID_HANDLE_VALUE)return winerr();do{owc_fs_entry*q;if(!wcscmp(d.cFileName,L".")||!wcscmp(d.cFileName,L"..")||(d.dwFileAttributes&FILE_ATTRIBUTE_REPARSE_POINT))continue;if(r->count>=OWC_FS_MAX_LIST_ENTRIES){r->truncated=1;break;}q=(owc_fs_entry*)realloc(r->entries,(r->count+1)*sizeof(*q));if(!q){FindClose(find);owc_fs_list_free(r);return OWC_FS_NO_MEMORY;}r->entries=q;r->entries[r->count].name=utf8(d.cFileName);if(!r->entries[r->count].name){FindClose(find);owc_fs_list_free(r);return OWC_FS_INVALID_UTF8;}r->entries[r->count].type=(d.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY)?OWC_FS_TYPE_DIRECTORY:OWC_FS_TYPE_FILE;r->entries[r->count].size=((unsigned long long)d.nFileSizeHigh<<32)|d.nFileSizeLow;r->count++;}while(FindNextFileW(find,&d));FindClose(find);return OWC_FS_OK;}
 
 /* FindFirstChangeNotificationW is a kernel notification handle rather than a

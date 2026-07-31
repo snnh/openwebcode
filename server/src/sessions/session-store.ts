@@ -7,7 +7,7 @@ import { parseSessionImport, serializeSession } from "./session-transfer.js";
 import { activePathMessages } from "./session-tree.js";
 import { defaultSandboxPolicy } from "./default-sandbox.js";
 import { readMessagesTail, readMessagesBefore, checkRecovery, DEFAULT_PAGE_SIZE } from "./message-reader.js";
-import type { ChatMessage, ManagedWorkspaceMeta, MessageContent, MessageRole, MessagesPage, SandboxMode, SessionDetail, SessionMeta } from "./types.js";
+import type { BindLinkSpec, ChatMessage, ManagedWorkspaceMeta, MessageContent, MessageRole, MessagesPage, SandboxMode, SessionDetail, SessionMeta } from "./types.js";
 
 /** readMessages 整表缓存条数上限（与 message-reader 的索引缓存同一 LRU 纪律）。 */
 const MAX_CACHED_MESSAGE_LISTS = 32;
@@ -33,6 +33,8 @@ export interface CreateSessionInput {
   agentMode?: "plan" | "code" | "goal";
   sandboxMode?: SandboxMode;
   setupScript?: string;
+  /** 可选 Bind Link 目录绑定（Windows 11 24H2+；非空时并入默认沙盒策略持久化）。 */
+  bindLinks?: BindLinkSpec[];
   /** 托管工作区：调用方预分配 id（镜像/挂载路径按 id 推导，必须先于 create 准备） */
   id?: string;
   workspace?: ManagedWorkspaceMeta;
@@ -63,15 +65,15 @@ export class SessionStore {
       // Keep direct store use neutral rather than choosing an implicit provider.
       provider: input.provider ?? "",
       model: input.model ?? "",
-      sandbox: defaultSandboxPolicy(resolvedCwd),
+      sandbox: input.bindLinks?.length ? { ...defaultSandboxPolicy(resolvedCwd), bindLinks: input.bindLinks } : defaultSandboxPolicy(resolvedCwd),
       title: input.title ?? "New session",
       createdAt: now,
       updatedAt: now,
       ...(input.workspace ? { workspace: input.workspace } : {}),
       ...(input.snapshotBackend ? { snapshotBackend: input.snapshotBackend } : {}),
     };
-    // appcontainer 为默认不落盘；setupScript 仅非空时保留
-    if (input.sandboxMode && input.sandboxMode !== "appcontainer") meta.sandboxMode = input.sandboxMode;
+    // jobobject 为默认不落盘；setupScript 仅非空时保留
+    if (input.sandboxMode && input.sandboxMode !== "jobobject") meta.sandboxMode = input.sandboxMode;
     if (input.setupScript?.trim()) meta.setupScript = input.setupScript;
     if (input.agentMode === "plan" || input.agentMode === "goal") meta.agentMode = input.agentMode;
     await mkdir(this.sessionPath(meta.id), { recursive: false });
@@ -270,10 +272,10 @@ export class SessionStore {
     return meta;
   }
 
-  /** 更新沙盒模式；appcontainer/空 setupScript 视为缺省（从 meta 删除） */
+  /** 更新沙盒模式；jobobject/空 setupScript 视为缺省（从 meta 删除） */
   async updateSandboxMode(id: string, sandboxMode: SandboxMode | undefined, setupScript: string | undefined): Promise<SessionMeta> {
     const meta = await this.readMeta(id);
-    if (!sandboxMode || sandboxMode === "appcontainer") delete meta.sandboxMode;
+    if (!sandboxMode || sandboxMode === "jobobject") delete meta.sandboxMode;
     else meta.sandboxMode = sandboxMode;
     if (!setupScript?.trim()) delete meta.setupScript;
     else meta.setupScript = setupScript;

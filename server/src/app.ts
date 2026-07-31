@@ -36,7 +36,7 @@ import { ManagedWorkspaceSyncError, type ManagedWorkspaceSyncApplyInput } from "
 import { SessionTransferError } from "./sessions/session-transfer.js";
 import { activePathMessages } from "./sessions/session-tree.js";
 import { defaultSandboxDenyPaths } from "./sessions/default-sandbox.js";
-import type { PermissionMode, PythonEnv, SandboxMode, ShellBackend, SnapshotMode, TextContent } from "./sessions/types.js";
+import type { BindLinkSpec, PermissionMode, PythonEnv, SandboxMode, ShellBackend, SnapshotMode, TextContent } from "./sessions/types.js";
 import type { SessionStore } from "./sessions/session-store.js";
 import type { CronScheduler } from "./cron-scheduler.js";
 import { SettingsValidationError, type SettingsService } from "./settings-service.js";
@@ -66,6 +66,8 @@ interface CreateSessionBody {
   agentMode?: "plan" | "code" | "goal";
   sandboxMode?: SandboxMode;
   setupScript?: string;
+  /** 可选 Bind Link 目录绑定（Windows 11 24H2+，需 core 上报 features.bindLink 且以管理员权限运行）。 */
+  bindLinks?: BindLinkSpec[];
   /** 缺省为直接模式；"managed" = 托管工作区（稀疏镜像盘挂载点作为会话 cwd） */
   workspaceMode?: "managed";
 }
@@ -582,6 +584,20 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     }
     return undefined;
   };
+  /** bindLinks 形状校验：≤16 项，元素仅含 virtPath/backingPath/readOnly。返回错误文案；合法或缺省返回 undefined */
+  const validateBindLinks = (value: unknown): string | undefined => {
+    if (value === undefined) return undefined;
+    if (!Array.isArray(value) || value.length > 16) return "bindLinks must be an array of at most 16 entries";
+    for (const entry of value) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return "bindLinks entries must be objects";
+      const record = entry as Record<string, unknown>;
+      if (Object.keys(record).some((key) => !["virtPath", "backingPath", "readOnly"].includes(key))) return "bindLinks entries allow only virtPath, backingPath, and readOnly";
+      if (typeof record.virtPath !== "string" || !record.virtPath) return "bindLinks.virtPath must be a non-empty string";
+      if (typeof record.backingPath !== "string" || !record.backingPath) return "bindLinks.backingPath must be a non-empty string";
+      if (record.readOnly !== undefined && typeof record.readOnly !== "boolean") return "bindLinks.readOnly must be a boolean";
+    }
+    return undefined;
+  };
 
   events.on("event", (event: AppEvent, published?: string) => {
     // EventBus 发布时已序列化一次（字节预算/历史留存），fan-out 直接复用；
@@ -1071,6 +1087,13 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     const model = request.body.model ?? resolveDefaultModel(provider, dependencies.models);
     const sandboxModeError = validateSandboxMode(request.body.sandboxMode);
     if (sandboxModeError) return reply.code(400).send({ error: sandboxModeError });
+    const bindLinksError = validateBindLinks(request.body.bindLinks);
+    if (bindLinksError) return reply.code(400).send({ error: bindLinksError });
+    if (request.body.bindLinks?.length) {
+      if (request.body.sandboxMode === "wsb") return reply.code(400).send({ error: "bindLinks 不支持 wsb 沙盒模式（宿主路径在 VM 内无效）" });
+      const info = await core.ping().catch(() => undefined);
+      if (!info?.features?.bindLink) return reply.code(400).send({ error: "bindLinks 不可用：当前平台 core 未提供 Bind Link 能力（需要 Windows 11 24H2+ 的 bindflt；创建绑定还需以管理员权限运行）" });
+    }
     if (request.body.agentMode !== undefined && !["plan", "code", "goal"].includes(request.body.agentMode)) {
       return reply.code(400).send({ error: 'agentMode must be "plan", "code", or "goal"' });
     }
@@ -1443,8 +1466,8 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       return reply.code(400).send({ error: 'snapshotMode must be "auto" or "manual"' });
     }
     const shellBackend = request.body && "shellBackend" in request.body ? request.body.shellBackend ?? undefined : session.shellBackend;
-    if (shellBackend !== undefined && !["default", "pwsh"].includes(shellBackend)) {
-      return reply.code(400).send({ error: 'shellBackend must be "default" or "pwsh"' });
+    if (shellBackend !== undefined && !["default", "pwsh", "bash", "cmd"].includes(shellBackend)) {
+      return reply.code(400).send({ error: 'shellBackend must be "default", "pwsh", "bash", or "cmd"' });
     }
     const pythonEnv = request.body && "pythonEnv" in request.body ? request.body.pythonEnv ?? undefined : session.pythonEnv;
     if (pythonEnv !== undefined && !["global", "uv-workspace", "uv-config"].includes(pythonEnv)) {

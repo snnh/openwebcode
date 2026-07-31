@@ -2,12 +2,30 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { SandboxPolicy, ShellBackend } from "./sessions/types.js";
+import type { CoreShellBackend, SandboxPolicy } from "./sessions/types.js";
 import { StdioTransport, type RpcTransport } from "./rpc/transport.js";
 
 interface RpcErrorBody {
   code: number;
   message: string;
+}
+
+/**
+ * Windows 下为 core（及其 pty/exec 派生的 cmd/pwsh 子进程）把 System32 前置到 PATH：
+ * server 从 Git Bash/MSYS 环境启动时 PATH 里 usr\bin 先于 System32，find/sort/fc 等会被
+ * 解析成 MSYS 版本（语义截然不同，如 `find /c` 变成递归遍历目录）。前置后内置伴随命令
+ * 恢复 Windows 语义，其余 PATH 条目保持不变（显式调用 bash 等仍可用）。
+ */
+export function sanitizedCoreEnv(): NodeJS.ProcessEnv | undefined {
+  if (process.platform !== "win32") return undefined;
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
+  const systemRoot = env.SystemRoot ?? env.windir ?? "C:\\Windows";
+  const prefixes = [path.join(systemRoot, "System32"), systemRoot, path.join(systemRoot, "System32", "Wbem")];
+  const seen = new Set(prefixes.map((entry) => entry.toLowerCase()));
+  const rest = (env[pathKey] ?? "").split(";").filter((entry) => entry.length > 0 && !seen.has(entry.toLowerCase()));
+  env[pathKey] = [...prefixes, ...rest].join(";");
+  return env;
 }
 
 interface RpcResponse {
@@ -22,7 +40,7 @@ export interface CoreInfo {
   protocolVersion?: string;
   platform: "windows" | "linux";
   sandboxCapability: string;
-  features?: { fsStat: boolean; fsStatMany: boolean; fsWriteBase64: boolean; jobControl: boolean; fsHash: boolean; fsScanPagination: boolean; fsWatch: boolean; indexScan?: boolean; indexExtract?: boolean };
+  features?: { fsStat: boolean; fsStatMany: boolean; fsWriteBase64: boolean; jobControl: boolean; fsHash: boolean; fsScanPagination: boolean; fsWatch: boolean; indexScan?: boolean; indexExtract?: boolean; shellBash?: boolean; bindLink?: boolean };
   limits?: { maxFrameBytes: number; maxWriteBase64Bytes: number; maxHashBytes: number; maxStatManyPaths: number; maxStatManyPathBytes: number; maxScanEntries?: number; maxScanDepth?: number; maxScanNodes?: number; maxWatches?: number; maxWatchEvents?: number; maxConcurrentJobs?: number; maxJobOutputBytes?: number; maxIndexScanNodes?: number; maxIndexScanDepth?: number; maxIndexScanBytes?: number; maxIndexScanMs?: number; maxIndexExtractFiles?: number; maxIndexExtractBytes?: number; maxIndexExtractMs?: number; indexExtractDefaultSymbolsPerFile?: number; maxIndexExtractSymbolsPerFile?: number };
 }
 
@@ -32,7 +50,9 @@ export interface ExecRequest {
   cmd: string;
   cwd: string;
   timeoutMs?: number;
-  shellBackend?: ShellBackend;
+  shellBackend?: CoreShellBackend;
+  /** 显式 shell 可执行路径（host 探测的绝对路径，如 Git Bash）；存在时优先于 core 的后端默认搜索。 */
+  shellPath?: string;
 }
 
 export interface ExecResult {
@@ -65,7 +85,7 @@ export interface FsScanResult { entries: Array<{ path: string; type: "file" | "d
 export interface FsWatchRequest extends FsPathRequest { recursive?: boolean }
 export interface FsWatchPollRequest { sessionId: string; watchId: number; limit?: number }
 export interface FsWatchPollResult { events: Array<{ path: string; kind: "created" | "changed" | "deleted" | "renamed" }>; overflow: boolean }
-export interface JobStartRequest { sessionId: string; jobId: string; kind: "exec"; cmd: string; cwd: string; timeoutMs?: number; shellBackend?: ShellBackend }
+export interface JobStartRequest { sessionId: string; jobId: string; kind: "exec"; cmd: string; cwd: string; timeoutMs?: number; shellBackend?: CoreShellBackend; shellPath?: string }
 /**
  * index.scan job（0.4.0 Phase 2）：按 glob 规则产出完整文件清单。
  * 输出是 job.output 上的 JSONL 流（stdout 流），每行一个条目：
@@ -395,7 +415,8 @@ export class CoreClient extends EventEmitter {
 
   private spawnStdio(): CoreConnection {
     const executable = this.resolveCorePath();
-    const child = spawn(executable, [], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    const env = sanitizedCoreEnv();
+    const child = spawn(executable, [], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true, ...(env ? { env } : {}) });
     return { transport: new StdioTransport(child), child };
   }
 

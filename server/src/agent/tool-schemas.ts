@@ -1,22 +1,43 @@
 import type { ProviderTool } from "../providers/provider.js";
-import type { PythonEnv, ShellBackend } from "../sessions/types.js";
+import type { PythonEnv } from "../sessions/types.js";
+import type { ResolvedShell } from "./shell-detect.js";
 
 /**
  * 主循环与子代理共用的内置工具 schema（单一来源，避免两处字面量漂移）。
  * 子代理（sub-agent.ts）按内置名过滤本表生成自己的工具集；执行/权限始终在 agent-runner。
  */
-export function bashTool(backgroundTasksEnabled: boolean, shellBackend: ShellBackend, pythonEnv: PythonEnv = "global"): ProviderTool {
-  const shellGuidance = shellBackend === "pwsh"
-    ? "Commands run under PowerShell 7 (pwsh): use PowerShell syntax and cmdlets (for example Get-ChildItem, Get-Content, Get-Command, and ;). "
-    : "On Windows sandbox sessions commands run under cmd.exe: use cmd syntax (for example dir, type, where, and &&), and do not use PowerShell cmdlets or POSIX commands unless explicitly invoking an available shell. ";
+export function bashTool(backgroundTasksEnabled: boolean, shell: ResolvedShell, pythonEnv: PythonEnv = "global", platform: NodeJS.Platform = process.platform): ProviderTool {
+  const osName = platform === "win32" ? "Windows" : platform === "darwin" ? "macOS" : "Linux";
+  let shellGuidance: string;
+  switch (shell.kind) {
+    case "pwsh":
+      shellGuidance = `Commands run under PowerShell 7 (pwsh) on ${osName}: use PowerShell syntax and cmdlets (for example Get-ChildItem, Get-Content, Get-Command, and ;). `;
+      break;
+    case "git-bash":
+      shellGuidance = "Commands run under Git Bash (MSYS) on Windows: use POSIX shell syntax, and Unix utilities (ls, grep, sed, cat; find is Unix find) are available. " +
+        "Use forward slashes in paths (C:/work or /c/work); backslash Windows paths must be quoted. Native Windows programs remain available on PATH. ";
+      break;
+    case "cmd":
+      shellGuidance = "On Windows sandbox sessions commands run under cmd.exe: use cmd syntax (for example dir, type, where, and &&), and do not use PowerShell cmdlets or POSIX commands unless explicitly invoking an available shell. " +
+        "Prefer findstr over find, and note that tools sharing names with POSIX utilities (find, sort) may come from MSYS/Git installations with different semantics. ";
+      break;
+    case "bash":
+      shellGuidance = `Commands run under bash on ${osName}: use POSIX shell syntax and standard Unix utilities (ls, grep, sed, find). `;
+      break;
+    default:
+      shellGuidance = `Commands run under ${shell.executable} on ${osName}: use POSIX sh syntax and standard Unix utilities. `;
+      break;
+  }
   const envGuidance = pythonEnv === "global"
     ? "Python and Node.js run from the host environment. "
     : "Python runs in an isolated uv-managed virtual environment that is created on demand (its directory is prepended to PATH); install packages with 'uv pip install'. Node.js still uses the host environment. ";
+  // 文件工具的 shell 对照例句按语法族给出（findstr 仅 cmd 有）
+  const fileToolExamples = shell.flavor === "cmd" ? "(dir, type, findstr, cat, echo-redirects)" : "(ls, cat, echo-redirects)";
   return {
     name: "bash",
     description: "Execute a shell command in the session workspace. Call this when command-line execution is required (build, test, package managers, git, running programs). " +
       "For reading, writing, editing, listing or searching files, prefer the dedicated file tools (read_file/write_file/edit_file/glob/grep) over shell equivalents " +
-      "(dir, type, findstr, cat, echo-redirects): they are sandbox-native, return structured results, and do not depend on shell quirks. " +
+      fileToolExamples + ": they are sandbox-native, return structured results, and do not depend on shell quirks. " +
       "A non-zero exit code is a normal signal, not a tool failure: read the stderr/stdout in the result and adjust the command instead of retrying it unchanged. " +
       "The shell is persistent: the working directory and environment variables set by one call carry over to later calls in the same session. " + shellGuidance + envGuidance +
       (backgroundTasksEnabled

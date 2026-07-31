@@ -17,5 +17,11 @@ void owc_fs_platform_watch_close(owc_fs_watch *watch);
  * borrowed, not copied: callers refresh it before each filesystem operation
  * (the RPC dispatch loop is single-threaded for filesystem calls). */
 void owc_fs_platform_set_deny_roots(const char *const *roots, size_t count);
+/* Session bind links (Windows Bind Link API): virt paths inside the session
+ * write roots that the user explicitly mapped to outside backing directories.
+ * The fs layer uses the list to admit those controlled redirections in the
+ * reparse and canonical-path checks; an empty list (the default) changes no
+ * behavior.  Same ownership/threading rules as the deny roots above. */
+void owc_fs_platform_set_bind_links(const char *const *virt_paths, const char *const *backing_paths, size_t count);
 
 #endif

@@ -26,8 +26,13 @@ describe("python-env helpers", () => {
   });
 
   it("wraps commands for cmd on Windows by prepending the venv Scripts dir", () => {
-    expect(wrapCommandWithVenv("pytest", "C:\\repo\\.owc\\venv", "default", "win32"))
+    expect(wrapCommandWithVenv("pytest", "C:\\repo\\.owc\\venv", "cmd", "win32"))
       .toBe('set "PATH=C:\\repo\\.owc\\venv\\Scripts;%PATH%" && pytest');
+  });
+
+  it("wraps commands for Git Bash on Windows (Scripts dir, forward slashes)", () => {
+    expect(wrapCommandWithVenv("pytest", "C:\\repo\\.owc\\venv", "sh", "win32"))
+      .toBe("export PATH='C:/repo/.owc/venv/Scripts':$PATH; pytest");
   });
 
   it("wraps commands for pwsh on Windows", () => {
@@ -36,7 +41,7 @@ describe("python-env helpers", () => {
   });
 
   it("wraps commands for POSIX shells", () => {
-    expect(wrapCommandWithVenv("pytest", "/repo/.owc/venv", "default", "linux"))
+    expect(wrapCommandWithVenv("pytest", "/repo/.owc/venv", "sh", "linux"))
       .toBe("export PATH='/repo/.owc/venv/bin':$PATH; pytest");
   });
 

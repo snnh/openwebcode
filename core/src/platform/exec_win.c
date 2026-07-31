@@ -67,24 +67,55 @@ static void drain_pipe(HANDLE pipe, const char *stream, const owc_exec_request *
     }
 }
 
+/* Command-line argument style of the selected interpreter. */
+#define OWC_SHELL_ARGS_CMD 0
+#define OWC_SHELL_ARGS_PWSH 1
+#define OWC_SHELL_ARGS_BASH 2
+
 static int select_shell(wchar_t *path, size_t count, int shell_backend,
-                        int *powershell) {
+                        const char *explicit_path, int *arg_style) {
     DWORD length;
-    if (shell_backend == (int)OWC_SHELL_PWSH) {
-        length = SearchPathW(NULL, L"pwsh.exe", NULL, (DWORD)count, path, NULL);
-        if (length > 0 && length < count) {
-            *powershell = 1;
-            return 1;
-        }
-        if (shell_backend == (int)OWC_SHELL_PWSH) {
+    if (explicit_path && explicit_path[0]) {
+        /* Explicit executable from the host detection layer (e.g. a Git Bash
+           absolute path): use as-is, the argument style follows the backend. */
+        if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, explicit_path, -1, path, (int)count) <= 0) {
             SetLastError(ERROR_FILE_NOT_FOUND);
             return 0;
         }
+        *arg_style = shell_backend == (int)OWC_SHELL_PWSH ? OWC_SHELL_ARGS_PWSH
+            : shell_backend == (int)OWC_SHELL_BASH ? OWC_SHELL_ARGS_BASH : OWC_SHELL_ARGS_CMD;
+        return 1;
+    }
+    if (shell_backend == (int)OWC_SHELL_PWSH) {
+        length = SearchPathW(NULL, L"pwsh.exe", NULL, (DWORD)count, path, NULL);
+        if (length > 0 && length < count) {
+            *arg_style = OWC_SHELL_ARGS_PWSH;
+            return 1;
+        }
+        SetLastError(ERROR_FILE_NOT_FOUND);
+        return 0;
+    }
+    if (shell_backend == (int)OWC_SHELL_BASH) {
+        wchar_t system_dir[MAX_PATH];
+        size_t system_dir_length;
+        length = SearchPathW(NULL, L"bash.exe", NULL, (DWORD)count, path, NULL);
+        if (length > 0 && length < count) {
+            /* System32ash.exe is the WSL launcher, not Git/MSYS bash. */
+            system_dir_length = GetSystemDirectoryW(system_dir, (UINT)ARRAYSIZE(system_dir));
+            if (system_dir_length && _wcsnicmp(path, system_dir, system_dir_length) == 0) {
+                SetLastError(ERROR_FILE_NOT_FOUND);
+                return 0;
+            }
+            *arg_style = OWC_SHELL_ARGS_BASH;
+            return 1;
+        }
+        SetLastError(ERROR_FILE_NOT_FOUND);
+        return 0;
     }
     length = GetSystemDirectoryW(path, (UINT)count);
     if (!length || length >= count - 8) return 0;
     if (wcscat_s(path, count, L"\\cmd.exe") != 0) return 0;
-    *powershell = 0;
+    *arg_style = OWC_SHELL_ARGS_CMD;
     return 1;
 }
 
@@ -93,7 +124,7 @@ static int select_shell(wchar_t *path, size_t count, int shell_backend,
  * token: mixing a linked medium token with SECURITY_CAPABILITIES can leave
  * shells stalled during initialization on split-token Windows accounts. */
 static char *build_shell_command(const wchar_t *shell_path, const char *arguments,
-                                 const char *cwd, const char *user_command, int powershell) {
+                                 const char *cwd, const char *user_command, int arg_style) {
     /* Under AppContainer, pwsh's FileSystem provider init fails (the profile
        home is not granted) and its location falls back to C:\; and even a
        plain Set-Location fails when an ancestor directory is not readable by
@@ -105,11 +136,29 @@ static char *build_shell_command(const wchar_t *shell_path, const char *argument
     char *escaped, *dst, *full;
     size_t extra = 0, n;
     int length;
-    if (!powershell) {
+    if (arg_style == OWC_SHELL_ARGS_CMD) {
         length = snprintf(NULL, 0, "\"%ls\" %s \"%s\"", shell_path, arguments, user_command);
         if (length < 0) return NULL;
         full = (char *)malloc((size_t)length + 1);
         if (full) (void)snprintf(full, (size_t)length + 1, "\"%ls\" %s \"%s\"", shell_path, arguments, user_command);
+        return full;
+    }
+    if (arg_style == OWC_SHELL_ARGS_BASH) {
+        /* MSYS/CRT command-line decoding inside the wrapped "..." argument:
+           backslashes and quotes must be escaped so the shell receives the
+           command text byte-for-byte. */
+        for (src = user_command; *src; src++) if (*src == '\\' || *src == '"') extra++;
+        escaped = (char *)malloc(strlen(user_command) + extra + 1);
+        if (!escaped) return NULL;
+        dst = escaped;
+        for (src = user_command; *src; src++) { if (*src == '\\' || *src == '"') *dst++ = '\\'; *dst++ = *src; }
+        *dst = '\0';
+        length = snprintf(NULL, 0, "\"%ls\" %s \"%s\"", shell_path, arguments, escaped);
+        if (length >= 0) {
+            full = (char *)malloc((size_t)length + 1);
+            if (full) (void)snprintf(full, (size_t)length + 1, "\"%ls\" %s \"%s\"", shell_path, arguments, escaped);
+        } else full = NULL;
+        free(escaped);
         return full;
     }
     for (src = cwd; *src; src++) if (*src == '\'') extra++;
@@ -181,7 +230,7 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
     char sandbox_identity[96];
     char *write_roots[17]={0}; size_t write_root_count=0,write_root_index;
     ULONGLONG started=GetTickCount64(); size_t forwarded=0; unsigned sequence=0;
-    DWORD wait_result,exit_code=1; int ok=0,powershell=0;
+    DWORD wait_result,exit_code=1; int ok=0,arg_style=0;
 
     if(!CreatePipe(&out_read,&out_write,&security,0) || !CreatePipe(&err_read,&err_write,&security,0)) goto cleanup;
     if(!SetHandleInformation(out_read,HANDLE_FLAG_INHERIT,0) || !SetHandleInformation(err_read,HANDLE_FLAG_INHERIT,0)) goto cleanup;
@@ -190,9 +239,9 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
     cwd=utf8_to_wide(request->cwd);
     {
         const char *arguments;
-        if(!select_shell(shell_path,ARRAYSIZE(shell_path),request->shell_backend,&powershell)){if(request->shell_backend==(int)OWC_SHELL_PWSH)result->shell_unavailable=1;goto cleanup;}
-        arguments=powershell?"-NoLogo -NoProfile -NonInteractive -Command":"/d /s /c";
-        full_command=build_shell_command(shell_path,arguments,request->cwd,request->command,powershell);
+        if(!select_shell(shell_path,ARRAYSIZE(shell_path),request->shell_backend,request->shell_path,&arg_style)){if(request->shell_backend==(int)OWC_SHELL_PWSH||request->shell_backend==(int)OWC_SHELL_BASH)result->shell_unavailable=1;goto cleanup;}
+        arguments=arg_style==OWC_SHELL_ARGS_PWSH?"-NoLogo -NoProfile -NonInteractive -Command":arg_style==OWC_SHELL_ARGS_BASH?"-c":"/d /s /c";
+        full_command=build_shell_command(shell_path,arguments,request->cwd,request->command,arg_style);
         if(!full_command) goto cleanup;
     }
     if(!cwd) goto cleanup;
@@ -219,7 +268,7 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
         if(request->sandbox_enabled) sandbox=owc_sandbox_create(&sandbox_options,result->sandbox_reason,sizeof(result->sandbox_reason));
         result->sandbox_status=sandbox?(int)owc_sandbox_get_status(sandbox):(int)OWC_SANDBOX_ADVISORY;
     }
-    if(sandbox&&powershell)env_block=build_powershell_environment(cwd);
+    if(sandbox&&arg_style==OWC_SHELL_ARGS_PWSH)env_block=build_powershell_environment(cwd);
     (void)InitializeProcThreadAttributeList(NULL,sandbox?2:1,0,&attribute_size);
     if(!attribute_size) goto cleanup;
     attributes=(LPPROC_THREAD_ATTRIBUTE_LIST)malloc(attribute_size); if(!attributes) goto cleanup;

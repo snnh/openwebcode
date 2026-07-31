@@ -43,4 +43,7 @@ void owc_fs_platform_watch_close(owc_fs_watch *watch){if(!watch)return;if(watch-
  * from the textual path the policy layer already compared.  There is no
  * resolved-path deny check to perform here. */
 void owc_fs_platform_set_deny_roots(const char *const *roots,size_t count){(void)roots;(void)count;}
+/* Bind links are a Windows-only feature; no redirection exemption is ever
+ * needed on POSIX. */
+void owc_fs_platform_set_bind_links(const char *const *virt_paths,const char *const *backing_paths,size_t count){(void)virt_paths;(void)backing_paths;(void)count;}
 #endif
