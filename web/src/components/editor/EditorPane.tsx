@@ -229,7 +229,7 @@ export function EditorPane({ sessionId, path, line, column, readOnly = false, da
         </div>
       </header>
       {readOnly && (
-        <p className="editor-pane-note">{t("Plan 模式为只读：编辑器已锁定，切换到 build 模式后可保存。", "Plan mode is read-only: the editor is locked. Switch to build mode to save.")}</p>
+        <p className="editor-pane-note">{t("Plan 模式为只读：编辑器已锁定，切换到 code 模式后可保存。", "Plan mode is read-only: the editor is locked. Switch to code mode to save.")}</p>
       )}
       {content.data?.truncated && (
         <p className="editor-pane-note">{t("文件过大，仅加载了截断内容，保存已禁用。", "File is too large; only truncated content was loaded and saving is disabled.")}</p>

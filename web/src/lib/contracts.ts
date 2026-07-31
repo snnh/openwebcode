@@ -193,8 +193,8 @@ export interface Session {
   provider: string;
   model: string;
   thinking?: "adaptive" | "enabled" | "disabled";
-  effort?: "low" | "medium" | "high" | "xhigh" | "max";
-  agentMode?: "plan" | "build" | "goal";
+  effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+  agentMode?: "plan" | "code" | "goal";
   permissionMode?: PermissionMode;
   sandboxMode?: SandboxMode;
   snapshotMode?: SnapshotMode;
@@ -430,7 +430,7 @@ export interface ModelCapabilities {
   /** Whether the model can return image content. */
   imageOutput: boolean;
   thinking: Array<"adaptive" | "enabled" | "disabled">;
-  effort: Array<"low" | "medium" | "high" | "xhigh" | "max">;
+  effort: Array<"low" | "medium" | "high" | "xhigh" | "max" | "ultra">;
   tools: boolean;
 }
 

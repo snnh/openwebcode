@@ -378,7 +378,7 @@ export function DiffPane({ sessionId, spec, readOnly = false, dark, summaryOnly 
     <section className="editor-pane diff-pane" aria-label={t(`diff：${title}`, `Diff: ${title}`)}>
       {header}
       {readOnly && (
-        <p className="editor-pane-note">{t("Plan 模式为只读：hunk 接受/拒绝已锁定，切换到 build 模式后可写回。", "Plan mode is read-only: hunk accept/reject is locked. Switch to build mode to write back.")}</p>
+        <p className="editor-pane-note">{t("Plan 模式为只读：hunk 接受/拒绝已锁定，切换到 code 模式后可写回。", "Plan mode is read-only: hunk accept/reject is locked. Switch to code mode to write back.")}</p>
       )}
       {model.note && <p className="editor-pane-note">{t(...model.note)}</p>}
       {model.mode === "hunks" && activeFile && (
