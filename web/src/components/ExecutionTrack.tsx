@@ -1,5 +1,7 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import type { AgentErrorPayload, ChatMessage, ExtensionInfo, LiveSubagentRun, SessionDetail } from "../lib/contracts";
+import type { StreamBlock } from "../hooks/use-stream-buffers";
+import { summarizeToolInput } from "../lib/tool-format";
 import { agentErrorGuidance } from "../lib/agent-error";
 import { shellCommandOf, toolResultOf } from "../lib/shell-messages";
 import type { DiffSpec } from "./editor/DiffPane";
@@ -8,6 +10,7 @@ import { LiveActivity } from "./LiveActivity";
 import type { LiveActivityInfo } from "../hooks/use-live-activity";
 import { Markdown } from "./Markdown";
 import { MemoMessageCard, ThinkingBlock } from "./MessageCard";
+import { ToolCallGroupRow, ToolCallListGroup, type ToolGroupCall } from "./ToolCallListGroup";
 import { CONVERSATION_SEARCH_EVENT, ConversationSearch, findMatches, highlightArticle, unwrapSearchMarks } from "./ConversationSearch";
 import { PermissionCard, type PermissionRequest } from "./PermissionCard";
 import { useI18n } from "../i18n";
@@ -66,13 +69,23 @@ function buildToolResultStatus(messages: ChatMessage[]): Record<string, boolean>
   return map;
 }
 
-export function ExecutionTrack({ session, cleared, streamText, thinkingText, streamToolCalls, runError, permissions, onPermissionDone, onPermissionError, onSendToAgent, contentLens, onNotice, onOpenDiff, onOpenSettings, onRetryRun, retryPending, hasMoreMessages, onLoadMore, loadingMore, liveSubagents, liveActivity, trackVisible = true, running = false, onEditMessage, onRegenerate, onFork }: {
+/** 流式工具调用块 → 组内行：参数增量原文在行内展开区展示；增量构成合法 JSON 时给出参数摘要 */
+function streamGroupCall(block: StreamBlock, t: (chinese: string, english: string) => string): ToolGroupCall {
+  const argsText = block.parts.join("");
+  let summary: string | undefined;
+  try {
+    summary = summarizeToolInput(JSON.parse(argsText) as Record<string, unknown>);
+  } catch {
+    // 参数增量尚未构成合法 JSON：流式期间省略摘要
+  }
+  return { id: block.id, name: block.name ?? t("工具调用", "tool call"), status: "running", summary, argsText, argsStreaming: true };
+}
+
+export function ExecutionTrack({ session, cleared, streamBlocks, runError, permissions, onPermissionDone, onPermissionError, onSendToAgent, contentLens, onNotice, onOpenDiff, onOpenSettings, onRetryRun, retryPending, hasMoreMessages, onLoadMore, loadingMore, liveSubagents, liveActivity, trackVisible = true, running = false, onEditMessage, onRegenerate, onFork }: {
   session: SessionDetail;
   cleared?: { uptoIndex: number; at: string };
-  streamText: string;
-  thinkingText?: string;
-  /** 流式中的工具调用（参数 JSON 分片实时拼接）；仅当前 attempt 有效，run 结束即清空 */
-  streamToolCalls?: Array<{ id: string; name?: string; text: string }>;
+  /** 流式中的有序块（text/thinking/tool 按 delta 到达顺序）；仅当前 attempt 有效，run 结束即清空 */
+  streamBlocks?: StreamBlock[];
   /** 服务端本轮在工具/Provider/运行基础设施上失败时的持久可见说明（含分类 kind 与 retryable）。 */
   runError?: AgentErrorPayload;
   permissions: PermissionRequest[];
@@ -249,7 +262,32 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, str
     // 面板隐藏时暂停吸底；trackVisible 翻回 true 时本 effect 重跑，pinned 状态下重新贴底
     if (!pinned || !trackVisible) return;
     scrollToBottom();
-  }, [pinned, trackVisible, session.messages.length, streamText, thinkingText, permissions.length]);
+  }, [pinned, trackVisible, session.messages.length, streamBlocks, permissions.length]);
+
+  // 流式有序块 → 渲染节点：text/thinking 原位渲染，相邻 tool（≥2）实时聚合为展开的工具调用组
+  const liveItems: ReactNode[] = [];
+  if (streamBlocks) {
+    for (let index = 0; index < streamBlocks.length; ) {
+      const block = streamBlocks[index]!;
+      if (block.kind === "tool") {
+        const group: StreamBlock[] = [];
+        while (index < streamBlocks.length && streamBlocks[index]!.kind === "tool") {
+          group.push(streamBlocks[index]!);
+          index += 1;
+        }
+        const calls = group.map((tool) => streamGroupCall(tool, t));
+        liveItems.push(calls.length >= 2
+          ? <ToolCallListGroup key={calls[0]!.id} calls={calls} defaultOpen />
+          : <ToolCallGroupRow key={calls[0]!.id} call={calls[0]!} />);
+      } else if (block.kind === "thinking") {
+        liveItems.push(<ThinkingBlock key={block.id} text={block.parts.join("")} streaming />);
+        index += 1;
+      } else {
+        liveItems.push(<Markdown key={block.id}>{block.parts.join("")}</Markdown>);
+        index += 1;
+      }
+    }
+  }
 
   return (
     <div className="execution-track-wrap">
@@ -271,7 +309,7 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, str
             </button>
           </div>
         )}
-        {session.messages.length === 0 && !streamText && (
+        {session.messages.length === 0 && liveItems.length === 0 && (
           <p className="track-empty">{t("还没有消息。在下方描述要完成的任务，开始第一项作业。", "No messages yet. Describe a task below to start your first job.")}</p>
         )}
         {virtual && <div aria-hidden style={{ height: offsets[firstVisible] ?? 0 }} />}
@@ -338,20 +376,13 @@ export function ExecutionTrack({ session, cleared, streamText, thinkingText, str
             </section>
           );
         })()}
-        {(streamText || thinkingText || (streamToolCalls && streamToolCalls.length > 0)) && (
+        {liveItems.length > 0 && (
           <article className={`message assistant live turn-${(turnOf.at(-1) ?? 0) % 2 === 0 ? "even" : "odd"}`}>
             <div className="message-meta">
               <span className="message-author">OpenWebCode</span>
               <span>{t("正在输出", "Responding")}</span>
             </div>
-            {thinkingText && <ThinkingBlock text={thinkingText} streaming />}
-            {streamText && <Markdown>{streamText}</Markdown>}
-            {streamToolCalls?.map((call) => (
-              <div className="tool-stream-card" key={call.id}>
-                <span className="tool-stream-name mono">{call.name ?? t("工具调用", "tool call")}</span>
-                {call.text && <pre className="tool-stream-args mono">{call.text}</pre>}
-              </div>
-            ))}
+            {liveItems}
             <span className="cursor" aria-hidden />
           </article>
         )}
