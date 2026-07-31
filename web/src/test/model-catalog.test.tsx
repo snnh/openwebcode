@@ -56,15 +56,19 @@ describe("ModelCatalogSection capabilities", () => {
     expect(screen.getByRole("checkbox", { name: "图片" })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: "视频" })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: "图片输出" })).toBeChecked();
+    // 思维链回传：未声明时默认开（非 gpt/claude）
+    expect(screen.getByRole("checkbox", { name: "思维链回传" })).toBeChecked();
 
     fireEvent.click(screen.getByRole("checkbox", { name: "视频" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "图片输出" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "思维链回传" }));
     fireEvent.click(screen.getByRole("button", { name: "保存模型" }));
 
     await waitFor(() => expect(save).toHaveBeenCalledWith("multimodal-model", expect.objectContaining({
       capabilities: expect.objectContaining({
         modalities: ["text", "image"],
         imageOutput: false,
+        reasoningContent: false,
       }),
     })));
   });
