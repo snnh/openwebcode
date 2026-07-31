@@ -3,6 +3,7 @@ import type { ModelRegistry, ModelProviderCredentials, RefreshReport } from "./c
 import type { EventBus } from "./events/event-bus.js";
 import { AnthropicProvider } from "./providers/anthropic-provider.js";
 import { OpenAICompatibleProvider } from "./providers/openai-compatible-provider.js";
+import { OpenAIResponsesProvider } from "./providers/openai-responses-provider.js";
 import type { ProviderRegistry } from "./providers/provider.js";
 import type { ProviderProfilesService } from "./provider-profiles.js";
 import { createProfileSearchProvider, createProfileWebFetchProvider } from "./web-tools.js";
@@ -67,6 +68,13 @@ export class ProviderProfilesRuntime {
             ...(profile.apiKey ? { apiKey: profile.apiKey } : {}),
             ...(profile.baseURL ? { baseURL: profile.baseURL } : {}),
             promptCaching: profile.promptCaching !== false,
+            ...(profile.extraBody ? { extraBody: profile.extraBody } : {}),
+          }));
+        } else if (profile.interfaceType === "openai-responses") {
+          this.providers.register(new OpenAIResponsesProvider({
+            name: profile.id,
+            baseURL: profile.baseURL ?? "https://api.openai.com/v1",
+            ...(profile.apiKey ? { apiKey: profile.apiKey } : {}),
             ...(profile.extraBody ? { extraBody: profile.extraBody } : {}),
           }));
         } else {

@@ -26,7 +26,7 @@ export interface ModelCredentials {
 
 export interface ModelProviderCredentials {
   provider: string;
-  interfaceType: "anthropic-messages" | "openai-chat-completions";
+  interfaceType: "anthropic-messages" | "openai-chat-completions" | "openai-responses";
   apiKey?: string;
   baseURL?: string;
 }
@@ -357,7 +357,7 @@ export class ModelRegistry {
             })
             .catch((error: unknown) => { errors.push(`${entry.provider}: ${error instanceof Error ? error.message : String(error)}`); }),
       );
-      } else if (entry.interfaceType === "openai-chat-completions") {
+      } else if (entry.interfaceType === "openai-chat-completions" || entry.interfaceType === "openai-responses") {
       tasks.push(
           this.fetchOpenAIModels({ ...entry, baseURL: entry.baseURL ?? "https://api.openai.com/v1" }, entry.provider)
             .then((models) => {
