@@ -1,21 +1,17 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import type { CoreClient } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
+import { makeAbortPendingProvider } from "./helpers/agent-harness.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
 describe("AgentRunner steering", () => {
   it("starts one durable follow-up after the current run reaches a natural stop", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-follow-up-"));
-    roots.push(root);
+    const root = await tempRoot("owc-follow-up-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const session = await sessions.create({ cwd: root, provider: "steering", model: "claude-opus-4-8" });
@@ -58,8 +54,7 @@ describe("AgentRunner steering", () => {
   });
 
   it("queues messages during a provider turn and applies them at the next safe boundary", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-steering-"));
-    roots.push(root);
+    const root = await tempRoot("owc-steering-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const session = await sessions.create({ cwd: root, provider: "steering", model: "claude-opus-4-8" });
@@ -109,8 +104,7 @@ describe("AgentRunner steering", () => {
   });
 
   it("removes a queued message before it is applied", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-steering-remove-"));
-    roots.push(root);
+    const root = await tempRoot("owc-steering-remove-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const session = await sessions.create({ cwd: root, provider: "steering", model: "claude-opus-4-8" });
@@ -136,27 +130,13 @@ describe("AgentRunner steering", () => {
   });
 
   it("preserves the unapplied steering queue when the run is aborted", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-steering-abort-"));
-    roots.push(root);
+    const root = await tempRoot("owc-steering-abort-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const session = await sessions.create({ cwd: root, provider: "steering", model: "claude-opus-4-8" });
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));
     await pricing.initialize();
-    let entered!: () => void;
-    const firstEntered = new Promise<void>((resolve) => { entered = resolve; });
-    const provider: Provider = {
-      name: "steering",
-      async *streamChat(request) {
-        entered();
-        // 模拟真实 provider 响应 abort：在信号触发前一直挂起
-        await new Promise<void>((resolve) => {
-          request.signal.addEventListener("abort", () => resolve(), { once: true });
-        });
-        if (request.signal.aborted) throw request.signal.reason instanceof Error ? request.signal.reason : new Error("aborted");
-        yield { type: "done", stopReason: "end_turn" };
-      },
-    };
+    const { provider, entered: firstEntered } = makeAbortPendingProvider("steering");
     const providers = new ProviderRegistry(); providers.register(provider);
     const core = { on() { return core; }, async configureSession() { return { sandboxCapability: "advisory" }; } } as unknown as CoreClient;
     const runner = new AgentRunner(sessions, providers, core, new EventBus(), pricing);
@@ -171,8 +151,7 @@ describe("AgentRunner steering", () => {
   });
 
   it("rejects an over-long steering message with a too_long error", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-steering-long-"));
-    roots.push(root);
+    const root = await tempRoot("owc-steering-long-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const session = await sessions.create({ cwd: root, provider: "steering", model: "claude-opus-4-8" });

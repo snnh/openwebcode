@@ -1,52 +1,20 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
-import { AgentRunner } from "../src/agent/agent-runner.js";
-import { buildServer } from "../src/app.js";
+import { describe, expect, it } from "vitest";
 import { FALLBACK_METADATA, lookupModelMetadata } from "../src/context/model-metadata.js";
 import { ModelRegistry, type CatalogModel } from "../src/context/model-registry.js";
-import { CoreClient } from "../src/core-client.js";
-import { PricingCatalog } from "../src/cost/pricing-catalog.js";
-import { EventBus, type AppEvent } from "../src/events/event-bus.js";
-import { ProviderRegistry } from "../src/providers/provider.js";
 import type { ProviderProfilesRuntime } from "../src/provider-profiles-runtime.js";
-import { SessionStore } from "../src/sessions/session-store.js";
-import { SettingsService } from "../src/settings-service.js";
+import { fetchStub, type FetchRoute } from "./helpers/fetch-stub.js";
+import { tempRoot } from "./helpers/temp-roots.js";
+import { makeTestApp } from "./helpers/test-app.js";
 
-const roots: string[] = [];
-
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-});
-
-async function tempDir(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-models-"));
-  roots.push(root);
-  return root;
-}
+const tempDir = () => tempRoot("owc-models-");
 
 function paths(root: string) {
   return { snapshotPath: path.join(root, "models.json"), manualPath: path.join(root, "models.manual.json") };
 }
 
 const syncedPath = (root: string) => path.join(root, "models.synced.json");
-
-type FetchRoute = { match: string | RegExp; body: unknown; status?: number };
-
-function fetchStub(routes: FetchRoute[], seen?: string[]): typeof fetch {
-  return (async (input: RequestInfo | URL) => {
-    const url = String(input);
-    seen?.push(url);
-    for (const route of routes) {
-      const hit = typeof route.match === "string" ? url.startsWith(route.match) : route.match.test(url);
-      if (hit) {
-        return new Response(JSON.stringify(route.body), { status: route.status ?? 200, headers: { "content-type": "application/json" } });
-      }
-    }
-    return new Response("not found", { status: 404 });
-  }) as unknown as typeof fetch;
-}
 
 describe("model metadata lookup", () => {
   it("matches prefix, then conservative fallback", () => {
@@ -397,31 +365,24 @@ describe("ModelRegistry", () => {
 
 describe("models API", () => {
   async function fixture(routes: FetchRoute[]) {
-    const root = await tempDir();
-    const sessions = new SessionStore(path.join(root, "sessions"));
-    await sessions.initialize();
-    const pricing = new PricingCatalog(path.join(root, "model-pricing.json"));
-    await pricing.initialize();
-    const providers = new ProviderRegistry();
-    const events = new EventBus();
-    const observed: AppEvent[] = [];
-    events.on("event", (event: AppEvent) => observed.push(event));
-    const core = new CoreClient(path.join(root, "unused-core"));
-    const agent = new AgentRunner(sessions, providers, core, events, pricing);
-    const settings = await SettingsService.load({ env: {}, filePath: path.join(root, "server-settings.json") });
-    const models = await ModelRegistry.load({
-      ...paths(root),
-      fetchImpl: fetchStub(routes),
-      onUpdated: () => events.publish({ source: "server", type: "models.updated", payload: {} }),
+    const setup = await makeTestApp({
+      tempPrefix: "owc-models-",
+      agent: "real",
+      core: "real",
+      settingsEnv: {},
+      models: (root, events) => ModelRegistry.load({
+        ...paths(root),
+        fetchImpl: fetchStub(routes),
+        onUpdated: () => events.publish({ source: "server", type: "models.updated", payload: {} }),
+      }),
+      providerProfilesRuntime: (models) => ({
+        refreshModels: () => models!.refresh({ providers: [
+          { provider: "anthropic", interfaceType: "anthropic-messages", apiKey: "sk-ant" },
+          { provider: "openai", interfaceType: "openai-chat-completions", baseURL: "https://openai.test" },
+        ] }),
+      }) as unknown as ProviderProfilesRuntime,
     });
-    const providerProfilesRuntime = {
-      refreshModels: () => models.refresh({ providers: [
-        { provider: "anthropic", interfaceType: "anthropic-messages", apiKey: "sk-ant" },
-        { provider: "openai", interfaceType: "openai-chat-completions", baseURL: "https://openai.test" },
-      ] }),
-    } as unknown as ProviderProfilesRuntime;
-    const app = await buildServer({ core, sessions, agent, events, providers, pricing, settings, models, providerProfilesRuntime });
-    return { app, models, observed };
+    return { app: setup.app, models: setup.models!, observed: setup.observed };
   }
 
   it("exposes the persisted remote catalog sync status", async () => {

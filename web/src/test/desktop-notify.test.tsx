@@ -1,5 +1,4 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render } from "@testing-library/react";
+import { cleanup, fireEvent } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../lib/api";
 import type { SettingsView } from "../lib/contracts";
@@ -11,6 +10,7 @@ import {
   saveDesktopNotifyEnabled,
 } from "../lib/desktop-notify";
 import { GeneralSection } from "../components/settings/GeneralSection";
+import { renderWithClient } from "./helpers/with-client";
 
 /** 可控的 Notification 假实现：静态 permission/requestPermission + 实例记录 */
 class FakeNotification {
@@ -28,11 +28,6 @@ function stubNotification(permission: NotificationPermission): void {
   FakeNotification.instances = [];
   FakeNotification.requestPermission = vi.fn(async () => FakeNotification.permission);
   vi.stubGlobal("Notification", FakeNotification);
-}
-
-function withClient(node: React.ReactNode): ReturnType<typeof render> {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={client}>{node}</QueryClientProvider>);
 }
 
 beforeEach(() => {
@@ -122,7 +117,7 @@ describe("maybeDesktopNotify 失焦门控", () => {
 describe("通用设置：桌面通知开关", () => {
   function renderSection(overrides: { desktopNotify?: boolean; setDesktopNotify?: (value: boolean) => void } = {}) {
     vi.spyOn(api, "settings").mockResolvedValue({ groups: [] } as unknown as SettingsView);
-    return withClient(
+    return renderWithClient(
       <GeneralSection
         sendKey="enter"
         setSendKey={() => undefined}

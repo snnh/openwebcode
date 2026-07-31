@@ -1,5 +1,3 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
@@ -11,14 +9,27 @@ import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import type { ChatMessage } from "../src/sessions/types.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
+const apps: Array<{ close(): Promise<unknown> }> = [];
+afterEach(async () => Promise.all(apps.splice(0).map((app) => app.close())));
 
 async function manager(): Promise<ContextManager> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-clear-"));
-  roots.push(root);
-  return new ContextManager(root);
+  return new ContextManager(await tempRoot("owc-clear-"));
+}
+
+async function clearApp(rootPrefix = "owc-clear-http-") {
+  const root = await tempRoot(rootPrefix);
+  const sessions = new SessionStore(path.join(root, "sessions")); await sessions.initialize();
+  const pricing = new PricingCatalog(path.join(root, "pricing.json")); await pricing.initialize();
+  const providers = new ProviderRegistry();
+  const events = new EventBus(); const observed: AppEvent[] = [];
+  events.on("event", (event: AppEvent) => observed.push(event));
+  const core = { on() { return core; } } as unknown as CoreClient;
+  const agent = new AgentRunner(sessions, providers, core, events, pricing);
+  const app = await buildServer({ core, sessions, agent, events, providers, pricing });
+  apps.push(app);
+  return { root, sessions, agent, app, observed };
 }
 
 function messages(count: number): ChatMessage[] {
@@ -69,69 +80,45 @@ describe("ContextManager clear boundary", () => {
 
 describe("/clear checkpoint restore", () => {
   it("restoring a checkpoint taken before /clear rewinds the clear boundary", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-clear-restore-")); roots.push(root);
-    const workspace = await mkdtemp(path.join(os.tmpdir(), "owc-clear-ws-")); roots.push(workspace);
-    const sessions = new SessionStore(path.join(root, "sessions")); await sessions.initialize();
-    const pricing = new PricingCatalog(path.join(root, "pricing.json")); await pricing.initialize();
-    const providers = new ProviderRegistry();
-    const events = new EventBus(); const observed: AppEvent[] = [];
-    events.on("event", (event: AppEvent) => observed.push(event));
-    const core = { on() { return core; } } as unknown as CoreClient;
-    const agent = new AgentRunner(sessions, providers, core, events, pricing);
-    const app = await buildServer({ core, sessions, agent, events, providers, pricing });
-    try {
-      const session = await sessions.create({ cwd: workspace, title: "Clear restore" });
-      await sessions.appendMessage(session.id, "user", [{ type: "text", text: "old question" }]);
-      await sessions.appendMessage(session.id, "assistant", [{ type: "text", text: "old answer" }]);
-      const checkpoint = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/checkpoints`, payload: { label: "pre-clear" } });
-      expect(checkpoint.statusCode).toBe(201);
-      const checkpointId = checkpoint.json<{ id: string }>().id;
+    const { sessions, app, observed } = await clearApp("owc-clear-restore-");
+    const workspace = await tempRoot("owc-clear-ws-");
+    const session = await sessions.create({ cwd: workspace, title: "Clear restore" });
+    await sessions.appendMessage(session.id, "user", [{ type: "text", text: "old question" }]);
+    await sessions.appendMessage(session.id, "assistant", [{ type: "text", text: "old answer" }]);
+    const checkpoint = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/checkpoints`, payload: { label: "pre-clear" } });
+    expect(checkpoint.statusCode).toBe(201);
+    const checkpointId = checkpoint.json<{ id: string }>().id;
 
-      const cleared = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "/clear" } });
-      expect(cleared.statusCode).toBe(200);
-      const history = (await sessions.get(session.id))!.messages;
-      expect((await new ContextManager(sessions.contextRoot(session.id)).buildView(history)).messages).toEqual([]);
+    const cleared = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "/clear" } });
+    expect(cleared.statusCode).toBe(200);
+    const history = (await sessions.get(session.id))!.messages;
+    expect((await new ContextManager(sessions.contextRoot(session.id)).buildView(history)).messages).toEqual([]);
 
-      const restored = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/checkpoints/${checkpointId}/restore`, payload: { confirm: true } });
-      expect(restored.statusCode, restored.body).toBe(200);
-      const ledger = await new ContextManager(sessions.contextRoot(session.id)).load();
-      expect(ledger.cleared).toBeUndefined();
-      const view = await new ContextManager(sessions.contextRoot(session.id)).buildView(history);
-      expect(view.messages.map((message) => message.id)).toEqual(history.map((message) => message.id));
-      expect(observed.some((event) => event.type === "checkpoint.restored")).toBe(true);
-    } finally {
-      await app.close();
-    }
+    const restored = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/checkpoints/${checkpointId}/restore`, payload: { confirm: true } });
+    expect(restored.statusCode, restored.body).toBe(200);
+    const ledger = await new ContextManager(sessions.contextRoot(session.id)).load();
+    expect(ledger.cleared).toBeUndefined();
+    const view = await new ContextManager(sessions.contextRoot(session.id)).buildView(history);
+    expect(view.messages.map((message) => message.id)).toEqual(history.map((message) => message.id));
+    expect(observed.some((event) => event.type === "checkpoint.restored")).toBe(true);
   }, 30_000);
 });
 
 describe("/clear composer command", () => {
   it("marks the current message boundary without changing history or starting the agent", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-clear-http-")); roots.push(root);
-    const sessions = new SessionStore(path.join(root, "sessions")); await sessions.initialize();
-    const pricing = new PricingCatalog(path.join(root, "pricing.json")); await pricing.initialize();
-    const providers = new ProviderRegistry();
-    const events = new EventBus(); const observed: AppEvent[] = [];
-    events.on("event", (event: AppEvent) => observed.push(event));
-    const core = { on() { return core; } } as unknown as CoreClient;
-    const agent = new AgentRunner(sessions, providers, core, events, pricing);
-    const app = await buildServer({ core, sessions, agent, events, providers, pricing });
-    try {
-      const session = await sessions.create({ cwd: root, title: "Clear route" });
-      await sessions.appendMessage(session.id, "user", [{ type: "text", text: "keep me" }]);
-      const before = (await sessions.get(session.id))!.messages;
-      const response = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "/clear" } });
-      expect(response.statusCode).toBe(200);
-      expect(response.json()).toMatchObject({ accepted: true, cleared: true, uptoIndex: 1 });
-      expect((await sessions.get(session.id))!.messages).toEqual(before);
-      expect(agent.isRunning(session.id)).toBe(false);
-      expect(observed.find((event) => event.type === "context.cleared")?.payload).toMatchObject({ uptoIndex: 1 });
-      expect((await new ContextManager(sessions.contextRoot(session.id)).buildView(before)).messages).toEqual([]);
-      vi.spyOn(agent, "isRunning").mockReturnValue(true);
-      const running = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "/clear" } });
-      expect(running.statusCode).toBe(409);
-    } finally {
-      await app.close();
-    }
+    const { root, sessions, agent, app, observed } = await clearApp();
+    const session = await sessions.create({ cwd: root, title: "Clear route" });
+    await sessions.appendMessage(session.id, "user", [{ type: "text", text: "keep me" }]);
+    const before = (await sessions.get(session.id))!.messages;
+    const response = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "/clear" } });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ accepted: true, cleared: true, uptoIndex: 1 });
+    expect((await sessions.get(session.id))!.messages).toEqual(before);
+    expect(agent.isRunning(session.id)).toBe(false);
+    expect(observed.find((event) => event.type === "context.cleared")?.payload).toMatchObject({ uptoIndex: 1 });
+    expect((await new ContextManager(sessions.contextRoot(session.id)).buildView(before)).messages).toEqual([]);
+    vi.spyOn(agent, "isRunning").mockReturnValue(true);
+    const running = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "/clear" } });
+    expect(running.statusCode).toBe(409);
   });
 });

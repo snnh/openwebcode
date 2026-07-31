@@ -1,7 +1,5 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
 import type { CoreClientLike } from "../src/core-client.js";
@@ -10,12 +8,10 @@ import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { makeStubProvider } from "./helpers/stub-provider.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
+import { tempRoot } from "./helpers/temp-roots.js";
 
 async function setup(input: Record<string, unknown>) {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-todos-")); roots.push(root);
+  const root = await tempRoot("owc-todos-");
   const sessions = new SessionStore(path.join(root, "sessions")); await sessions.initialize();
   const session = await sessions.create({ cwd: root, provider: "fake", model: "model" });
   const pricing = new PricingCatalog(path.join(root, "pricing.json")); await pricing.initialize();
@@ -62,7 +58,7 @@ describe("todo_write", () => {
 // A3 验收补：REST 路由 GET /api/sessions/:id/todos 行为（含 404）
 describe("GET /api/sessions/:id/todos", () => {
   it("返回当前快照（与 agent.listTodos 一致）；404 on missing session", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-todos-rest-")); roots.push(root);
+    const root = await tempRoot("owc-todos-rest-");
     const sessions = new SessionStore(path.join(root, "sessions")); await sessions.initialize();
     const session = await sessions.create({ cwd: root, provider: "test-stub", model: "deterministic-tool-loop" });
     const pricing = new PricingCatalog(path.join(root, "pricing.json")); await pricing.initialize();

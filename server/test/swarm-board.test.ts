@@ -1,38 +1,18 @@
-import { appendFile, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
-import os from "node:os";
+import { appendFile, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { appendSwarmBoard, digestSwarmBoard, readSwarmBoard, swarmBoardPath } from "../src/agent/swarm-board.js";
-import type { CoreClientLike } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
-
-async function tempRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-swarm-board-"));
-  roots.push(root);
-  return root;
-}
-
-function createFakeCore(): CoreClientLike {
-  const core = {
-    on() { return core; },
-    async configureSession() { return { sandboxCapability: "advisory" }; },
-    async readFile() { return { content: "文件内容" }; },
-    async globFiles() { return { matches: [] }; },
-    async grepFiles() { return { matches: [] }; },
-  };
-  return core as unknown as CoreClientLike;
-}
+import { makeFakeCore } from "./helpers/fake-core.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
 describe("swarm-board 模块", () => {
   it("post/read 往返与 since 增量读", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-swarm-board-");
     const board = swarmBoardPath(root, "s1");
     expect(board).toBe(path.join(root, "subagents", "swarm-s1-board.jsonl"));
 
@@ -63,7 +43,7 @@ describe("swarm-board 模块", () => {
   });
 
   it("超长文本截断、损坏行跳过、空板 digest 省略", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-swarm-board-");
     const board = swarmBoardPath(root, "s2");
     expect(await digestSwarmBoard(board)).toBeUndefined();
 
@@ -90,7 +70,7 @@ interface SwarmBoardFixture {
  * spawn_task 子代理直接回结论。记录子代理 read 到的板内容。
  */
 async function setupSwarmBoard(mainCall: { name: string; input: Record<string, unknown> }): Promise<SwarmBoardFixture> {
-  const root = await tempRoot();
+  const root = await tempRoot("owc-swarm-board-");
   const sessions = new SessionStore(path.join(root, "sessions"));
   await sessions.initialize();
   const session = await sessions.create({ cwd: root, provider: "fake", model: "test-model" });
@@ -149,7 +129,7 @@ async function setupSwarmBoard(mainCall: { name: string; input: Record<string, u
   };
   const providers = new ProviderRegistry();
   providers.register(provider);
-  const runner = new AgentRunner(sessions, providers, createFakeCore(), events, pricing);
+  const runner = new AgentRunner(sessions, providers, makeFakeCore(), events, pricing);
   return { sessions, runner, requests, sessionId: session.id, boardReads };
 }
 

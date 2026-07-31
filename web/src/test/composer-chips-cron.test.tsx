@@ -1,10 +1,9 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import type { ReactElement } from "react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ComposerChips } from "../components/ComposerChips";
 import { api } from "../lib/api";
 import type { CronJobInfo } from "../lib/contracts";
+import { renderWithClient } from "./helpers/with-client";
 
 vi.mock("../lib/api", () => ({
   api: {
@@ -31,10 +30,8 @@ function job(overrides: Partial<CronJobInfo>): CronJobInfo {
   };
 }
 
-function renderChips(): ReturnType<typeof render> {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const node: ReactElement = <ComposerChips sessionId="s1" />;
-  return render(<QueryClientProvider client={client}>{node}</QueryClientProvider>);
+function renderChips(): ReturnType<typeof renderWithClient> {
+  return renderWithClient(<ComposerChips sessionId="s1" />);
 }
 
 describe("ComposerChips 定时芯片", () => {

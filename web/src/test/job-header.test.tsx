@@ -1,12 +1,13 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { JobHeader } from "../components/JobHeader";
 import { api } from "../lib/api";
 import type { ContextWindowInfo } from "../lib/context-window";
-import type { SessionDetail, ContextUsage } from "../lib/contracts";
+import type { ContextUsage, SessionDetail } from "../lib/contracts";
+import { makeSession } from "./helpers/fixtures";
+import { renderWithClient } from "./helpers/with-client";
 
-const session: SessionDetail = {
+const session = makeSession({
   id: "session-1",
   cwd: "C:\\workspace",
   provider: "openai",
@@ -15,23 +16,41 @@ const session: SessionDetail = {
   createdAt: "2026-07-20T00:00:00.000Z",
   updatedAt: "2026-07-20T00:00:00.000Z",
   sandbox: { enabled: true, readRoots: ["C:\\workspace"], writeRoots: ["C:\\workspace"], denyPaths: [], network: "allow" },
-  messages: [],
-};
+});
+
+beforeEach(() => {
+  vi.spyOn(api, "tasks").mockResolvedValue([]);
+  vi.spyOn(api, "sandboxCapabilities").mockResolvedValue({ appcontainer: true, jobobject: true, off: true, wsb: { available: false, reason: "测试" } });
+});
 
 afterEach(() => vi.restoreAllMocks());
 
+/** 覆盖 beforeEach 的默认 capabilities：WSB 可用 */
+function mockWsbAvailable(): void {
+  vi.mocked(api.sandboxCapabilities).mockResolvedValue({ appcontainer: true, jobobject: true, off: true, wsb: { available: true } });
+}
+
+/** 渲染 idle 状态的 JobHeader（windowUsage/latestUsage 按需传入） */
+function renderHeader(props: { windowUsage?: ContextWindowInfo; latestUsage?: ContextUsage } = {}): void {
+  renderWithClient(
+    <JobHeader
+      session={session}
+      agentState="idle"
+      {...(props.windowUsage ? { windowUsage: props.windowUsage } : {})}
+      {...(props.latestUsage ? { latestUsage: props.latestUsage } : {})}
+      onAbort={() => undefined}
+      onConfig={async () => undefined}
+    />,
+  );
+}
+
 describe("JobHeader mode switches", () => {
   it("updates sandbox, shell, and snapshot modes while idle", async () => {
-    vi.spyOn(api, "tasks").mockResolvedValue([]);
-    vi.spyOn(api, "sandboxCapabilities").mockResolvedValue({ appcontainer: true, jobobject: true, off: true, wsb: { available: false, reason: "未启用" } });
     vi.spyOn(window, "confirm").mockReturnValue(true);
     const onConfig = vi.fn(async () => undefined);
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
-    render(
-      <QueryClientProvider client={client}>
-        <JobHeader session={session} agentState="idle" onAbort={() => undefined} onConfig={onConfig} />
-      </QueryClientProvider>,
+    renderWithClient(
+      <JobHeader session={session} agentState="idle" onAbort={() => undefined} onConfig={onConfig} />,
     );
 
     await waitFor(() => expect(api.sandboxCapabilities).toHaveBeenCalled());
@@ -45,14 +64,9 @@ describe("JobHeader mode switches", () => {
   });
 
   it("disables both switches while the agent is running", () => {
-    vi.spyOn(api, "tasks").mockResolvedValue([]);
-    vi.spyOn(api, "sandboxCapabilities").mockResolvedValue({ appcontainer: true, jobobject: true, off: true, wsb: { available: true } });
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-
-    render(
-      <QueryClientProvider client={client}>
-        <JobHeader session={session} agentState="thinking" onAbort={() => undefined} onConfig={async () => undefined} />
-      </QueryClientProvider>,
+    mockWsbAvailable();
+    renderWithClient(
+      <JobHeader session={session} agentState="thinking" onAbort={() => undefined} onConfig={async () => undefined} />,
     );
 
     expect(screen.getByLabelText("沙盒模式")).toBeDisabled();
@@ -61,10 +75,8 @@ describe("JobHeader mode switches", () => {
   });
 
   it("offers an explicit manual snapshot action for an idle managed disk workspace", async () => {
-    vi.spyOn(api, "tasks").mockResolvedValue([]);
-    vi.spyOn(api, "sandboxCapabilities").mockResolvedValue({ appcontainer: true, jobobject: true, off: true, wsb: { available: true } });
+    mockWsbAvailable();
     const onCreateCheckpoint = vi.fn();
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const managedSession: SessionDetail = {
       ...session,
       workspace: {
@@ -76,16 +88,14 @@ describe("JobHeader mode switches", () => {
       },
     };
 
-    render(
-      <QueryClientProvider client={client}>
-        <JobHeader
-          session={managedSession}
-          agentState="idle"
-          onAbort={() => undefined}
-          onConfig={async () => undefined}
-          onCreateCheckpoint={onCreateCheckpoint}
-        />
-      </QueryClientProvider>,
+    renderWithClient(
+      <JobHeader
+        session={managedSession}
+        agentState="idle"
+        onAbort={() => undefined}
+        onConfig={async () => undefined}
+        onCreateCheckpoint={onCreateCheckpoint}
+      />,
     );
 
     const button = screen.getByRole("button", { name: "创建虚拟磁盘快照" });
@@ -95,9 +105,7 @@ describe("JobHeader mode switches", () => {
   });
 
   it("keeps the managed-disk snapshot action disabled while the session is running", () => {
-    vi.spyOn(api, "tasks").mockResolvedValue([]);
-    vi.spyOn(api, "sandboxCapabilities").mockResolvedValue({ appcontainer: true, jobobject: true, off: true, wsb: { available: true } });
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockWsbAvailable();
     const managedSession: SessionDetail = {
       ...session,
       workspace: {
@@ -109,17 +117,15 @@ describe("JobHeader mode switches", () => {
       },
     };
 
-    render(
-      <QueryClientProvider client={client}>
-        <JobHeader
-          session={managedSession}
-          agentState="idle"
-          running
-          onAbort={() => undefined}
-          onConfig={async () => undefined}
-          onCreateCheckpoint={() => undefined}
-        />
-      </QueryClientProvider>,
+    renderWithClient(
+      <JobHeader
+        session={managedSession}
+        agentState="idle"
+        running
+        onAbort={() => undefined}
+        onConfig={async () => undefined}
+        onCreateCheckpoint={() => undefined}
+      />,
     );
 
     expect(screen.getByRole("button", { name: "创建虚拟磁盘快照" })).toBeDisabled();
@@ -127,17 +133,6 @@ describe("JobHeader mode switches", () => {
 });
 
 describe("JobHeader 上下文窗口 meter", () => {
-  function renderHeader(windowUsage: ContextWindowInfo): void {
-    vi.spyOn(api, "tasks").mockResolvedValue([]);
-    vi.spyOn(api, "sandboxCapabilities").mockResolvedValue({ appcontainer: true, jobobject: true, off: true, wsb: { available: false, reason: "测试" } });
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    render(
-      <QueryClientProvider client={client}>
-        <JobHeader session={session} agentState="idle" windowUsage={windowUsage} onAbort={() => undefined} onConfig={async () => undefined} />
-      </QueryClientProvider>,
-    );
-  }
-
   const base: ContextWindowInfo = {
     estimatedTokens: 45_000,
     contextWindow: 128_000,
@@ -148,15 +143,15 @@ describe("JobHeader 上下文窗口 meter", () => {
   };
 
   it("显示 45k/128k · 38% 与 normal 水位", () => {
-    renderHeader(base);
+    renderHeader({ windowUsage: base });
     const meter = screen.getByTestId("window-usage");
     expect(meter.textContent).toContain("45k/128k · 38%");
     expect(meter.dataset.level).toBe("normal");
   });
 
   it("≥70% 标记 warn，≥85% 标记 danger", () => {
-    renderHeader({ ...base, utilization: 0.72 });
-    renderHeader({ ...base, utilization: 0.9 });
+    renderHeader({ windowUsage: { ...base, utilization: 0.72 } });
+    renderHeader({ windowUsage: { ...base, utilization: 0.9 } });
     const meters = screen.getAllByTestId("window-usage");
     expect(meters[0]!.dataset.level).toBe("warn");
     expect(meters[1]!.dataset.level).toBe("danger");
@@ -164,7 +159,7 @@ describe("JobHeader 上下文窗口 meter", () => {
   });
 
   it("窗口未知时仅显示估算 tokens，不显示百分比", () => {
-    renderHeader({ estimatedTokens: 45_000, segments: base.segments, pinnedTokens: 0 });
+    renderHeader({ windowUsage: { estimatedTokens: 45_000, segments: base.segments, pinnedTokens: 0 } });
     const meter = screen.getByTestId("window-usage");
     expect(meter.textContent).toContain("45k");
     expect(meter.textContent).not.toContain("%");
@@ -173,21 +168,10 @@ describe("JobHeader 上下文窗口 meter", () => {
 });
 
 describe("JobHeader 缓存命中 badge", () => {
-  function renderHeader(latestUsage?: ContextUsage): void {
-    vi.spyOn(api, "tasks").mockResolvedValue([]);
-    vi.spyOn(api, "sandboxCapabilities").mockResolvedValue({ appcontainer: true, jobobject: true, off: true, wsb: { available: false, reason: "测试" } });
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    render(
-      <QueryClientProvider client={client}>
-        <JobHeader session={session} agentState="idle" {...(latestUsage ? { latestUsage } : {})} onAbort={() => undefined} onConfig={async () => undefined} />
-      </QueryClientProvider>,
-    );
-  }
-
   const usage: ContextUsage = { inputTokens: 21_000, outputTokens: 500, cacheRead: 98_000, cacheWrite: 12_000 };
 
   it("显示最近一轮命中率与 tooltip 明细", () => {
-    renderHeader(usage);
+    renderHeader({ latestUsage: usage });
     const badge = screen.getByTestId("cache-usage");
     // 98k / (21k + 98k) ≈ 82%
     expect(badge.textContent).toBe("缓存 82%");
@@ -202,21 +186,14 @@ describe("JobHeader 缓存命中 badge", () => {
   });
 
   it("总输入为 0（rate null）时隐藏 badge", () => {
-    renderHeader({ inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0 });
+    renderHeader({ latestUsage: { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheWrite: 0 } });
     expect(screen.queryByTestId("cache-usage")).toBeNull();
   });
 });
 
 describe("JobHeader 导出", () => {
   it("包含指向 /api/sessions/<id>/export.md 的「导出 Markdown」链接", () => {
-    vi.spyOn(api, "tasks").mockResolvedValue([]);
-    vi.spyOn(api, "sandboxCapabilities").mockResolvedValue({ appcontainer: true, jobobject: true, off: true, wsb: { available: false, reason: "测试" } });
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    render(
-      <QueryClientProvider client={client}>
-        <JobHeader session={session} agentState="idle" onAbort={() => undefined} onConfig={async () => undefined} />
-      </QueryClientProvider>,
-    );
+    renderHeader();
 
     const link = screen.getByRole("link", { name: "导出 Markdown" });
     expect(link).toHaveAttribute("href", "/api/sessions/session-1/export.md");

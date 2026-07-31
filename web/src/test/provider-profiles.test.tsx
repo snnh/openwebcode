@@ -1,9 +1,9 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, waitFor } from "@testing-library/react";
+import { fireEvent, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProviderProfilesSection } from "../components/SettingsDialog";
 import { api } from "../lib/api";
 import type { ProviderProfilesView } from "../lib/contracts";
+import { renderWithClient } from "./helpers/with-client";
 
 const profiles: ProviderProfilesView = {
   modelProviders: [
@@ -18,13 +18,8 @@ const profiles: ProviderProfilesView = {
   activeWeb: { search: "Brave 搜索", fetch: "Jina" },
 };
 
-function renderProfiles(): ReturnType<typeof render> {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={client}>
-      <ProviderProfilesSection />
-    </QueryClientProvider>,
-  );
+function renderProfiles(): ReturnType<typeof renderWithClient> {
+  return renderWithClient(<ProviderProfilesSection />);
 }
 
 describe("ProviderProfilesSection", () => {

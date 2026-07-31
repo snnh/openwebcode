@@ -1,127 +1,28 @@
-import { mkdtemp, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import os from "node:os";
-import path from "node:path";
-import { EventEmitter } from "node:events";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { AgentRunner } from "../src/agent/agent-runner.js";
-import { buildServer } from "../src/app.js";
-import type { CoreClientLike, CoreEvent, CoreInfo, ExecRequest, ExecResult, JobStartRequest, JobStatus } from "../src/core-client.js";
-import { PricingCatalog } from "../src/cost/pricing-catalog.js";
-import { EventBus, type AppEvent } from "../src/events/event-bus.js";
-import { ProviderRegistry } from "../src/providers/provider.js";
-import { SessionStore } from "../src/sessions/session-store.js";
-import { makeStubProvider } from "./helpers/stub-provider.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
-
-async function tempRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-shell-"));
-  roots.push(root);
-  return root;
-}
-
-const echoProvider = makeStubProvider("test-stub", async function* () {
-  yield { type: "done", stopReason: "end_turn" };
-});
-
-const FAKE_CORE_INFO: CoreInfo = {
-  version: "0.2.4-test", protocolVersion: "1.0", platform: "windows", sandboxCapability: "advisory",
-  features: { fsStat: true, fsStatMany: true, fsWriteBase64: true, jobControl: false, fsHash: true, fsScanPagination: true, fsWatch: true },
-  limits: { maxFrameBytes: 33_554_432, maxWriteBase64Bytes: 20_971_520, maxHashBytes: 16_777_216, maxStatManyPaths: 128, maxStatManyPathBytes: 262_144, maxScanEntries: 256, maxScanDepth: 16, maxScanNodes: 2_048, maxWatches: 16, maxWatchEvents: 128, maxConcurrentJobs: 4, maxJobOutputBytes: 524_288 },
-};
-
-/**
- * 可控 fake CoreClient：run() 返回挂起 Promise，由 release() 驱动 resolve；
- * on("event") 注册的 listener 可经 emitExecOutput 推 exec.output 帧。
- * 用于权限挂起 + core.run 异步完成两个场景。
- */
-function createControllableCore(): {
-  client: CoreClientLike;
-  release: (result: ExecResult) => void;
-  rejectRun: (error: Error) => void;
-  emitExecOutput: (data: string, stream?: string) => void;
-  runCalls: ExecRequest[];
-} {
-  let runResolve: ((result: ExecResult) => void) | undefined;
-  let runReject: ((error: Error) => void) | undefined;
-  let eventListener: ((event: CoreEvent) => void) | undefined;
-  const emitter = new EventEmitter();
-  const runCalls: ExecRequest[] = [];
-  const client: CoreClientLike = {
-    on(eventName: string, listener: (...args: unknown[]) => void) {
-      if (eventName === "event") eventListener = listener as (event: CoreEvent) => void;
-      emitter.on(eventName, listener);
-      return client;
-    },
-    async start() { return FAKE_CORE_INFO; },
-    async stop() {
-      if (runReject) { runReject(new Error("Core stopped")); runReject = undefined; runResolve = undefined; }
-    },
-    async configureSession() { return { sandboxCapability: "advisory" as const }; },
-    async run(request) {
-      runCalls.push({ ...request });
-      return new Promise<ExecResult>((resolve, reject) => { runResolve = resolve; runReject = reject; });
-    },
-    async ping() { return FAKE_CORE_INFO; },
-    async cleanupSession() { return { ok: true as const }; },
-    async readFile() { return { content: "", totalLines: 0, encoding: "utf-8" as const, truncated: false }; },
-    async writeFile() { return { ok: true as const }; },
-    async editFile() { return { matches: 0 }; },
-    async listFiles() { return { entries: [], truncated: false }; },
-    async globFiles() { return { paths: [], truncated: false }; },
-    async grepFiles() { return { matches: [], truncated: false }; },
-    setRequestTimeoutMs() {},
-  } as unknown as CoreClientLike;
-
-  return {
-    client,
-    release: (result: ExecResult) => {
-      if (runResolve) { runResolve(result); runResolve = undefined; runReject = undefined; }
-    },
-    rejectRun: (error: Error) => {
-      if (runReject) { runReject(error); runReject = undefined; runResolve = undefined; }
-    },
-    emitExecOutput: (data: string, stream = "stdout") => {
-      if (eventListener) {
-        const execId = runCalls[0]?.execId ?? "test";
-        eventListener({
-          source: "core",
-          type: "exec.output",
-          payload: { execId, stream, data: Buffer.from(data).toString("base64"), seq: 1 },
-        });
-      }
-    },
-    runCalls,
-  };
-}
+import { describe, expect, it, vi } from "vitest";
+import type { CoreClientLike, CoreInfo, JobStartRequest, JobStatus } from "../src/core-client.js";
+import type { AppEvent } from "../src/events/event-bus.js";
+import { FAKE_CORE_INFO, makeControllableCore, makeFakeCore } from "./helpers/fake-core.js";
+import { makeAgentHarness, waitForToolMessage } from "./helpers/agent-harness.js";
 
 async function setup(options?: { permissionMode?: "ask" | "acceptEdits" | "yolo" }) {
-  const root = await tempRoot();
-  const sessions = new SessionStore(path.join(root, "sessions"));
-  await sessions.initialize();
-  const session = await sessions.create({ cwd: root, provider: "test-stub", model: "deterministic-tool-loop", title: "Shell test" });
-  await sessions.updatePermissions(session.id, options?.permissionMode ?? "yolo", []);
-  const pricing = new PricingCatalog(path.join(root, "pricing.json"));
-  await pricing.initialize();
-  const events = new EventBus();
-  const providers = new ProviderRegistry();
-  providers.register(echoProvider);
-  const core = createControllableCore();
-  const agent = new AgentRunner(sessions, providers, core.client, events, pricing);
-  const app = await buildServer({ core: core.client, sessions, agent, events, providers, pricing });
-  return { root, sessions, session, core, agent, events, app };
+  const core = makeControllableCore();
+  const harness = await makeAgentHarness({
+    core: core.client,
+    permissionMode: options?.permissionMode ?? "yolo",
+    title: "Shell test",
+    tempPrefix: "owc-shell-",
+  });
+  return { ...harness, core };
 }
 
-/** 等到 sessions 落盘出现至少 count 条 role=tool 消息（或超时） */
-async function waitForToolMessage(sessions: SessionStore, id: string, timeoutMs = 5_000, count = 1): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const detail = await sessions.get(id);
-    if (detail && detail.messages.filter((m) => m.role === "tool").length >= count) return;
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
+/** 等 permission.request 事件并取 requestId（ask 模式挂起用） */
+async function waitForPermissionRequest(events: AppEvent[]): Promise<string> {
+  return vi.waitFor(() => {
+    const req = events.find((e) => e.type === "permission.request");
+    if (!req) throw new Error("no permission.request event");
+    return (req.payload as { requestId: string }).requestId;
+  });
 }
 
 describe("POST /api/sessions/:id/shell - yolo 执行", () => {
@@ -203,11 +104,7 @@ describe("POST /api/sessions/:id/shell - 权限挂起（ask 模式）", () => {
       });
       expect(res.statusCode).toBe(202);
       // 等待 permission.request 事件
-      const requestId = await vi.waitFor(() => {
-        const req = events.find((e) => e.type === "permission.request");
-        if (!req) throw new Error("no permission.request event");
-        return (req.payload as { requestId: string }).requestId;
-      });
+      const requestId = await waitForPermissionRequest(events);
       // 此时 agent.isShellPending 应为 true；agent.isRunning 仍为 false
       expect(harness.agent.isShellPending(harness.session.id)).toBe(true);
       expect(harness.agent.isRunning(harness.session.id)).toBe(false);
@@ -247,11 +144,7 @@ describe("POST /api/sessions/:id/shell - 权限挂起（ask 模式）", () => {
         payload: { cmd: "rm -rf /" },
       });
       expect(res.statusCode).toBe(202);
-      const requestId = await vi.waitFor(() => {
-        const req = events.find((e) => e.type === "permission.request");
-        if (!req) throw new Error("no permission.request event");
-        return (req.payload as { requestId: string }).requestId;
-      });
+      const requestId = await waitForPermissionRequest(events);
       const deny = await harness.app.inject({
         method: "POST",
         url: `/api/sessions/${harness.session.id}/permissions/respond`,
@@ -287,11 +180,7 @@ describe("POST /api/sessions/:id/shell - 权限挂起（ask 模式）", () => {
         payload: { cmd: "npm test" },
       });
       expect(res.statusCode).toBe(202);
-      const requestId = await vi.waitFor(() => {
-        const req = events.find((e) => e.type === "permission.request");
-        if (!req) throw new Error("no permission.request event");
-        return (req.payload as { requestId: string }).requestId;
-      });
+      const requestId = await waitForPermissionRequest(events);
       const persist = await harness.app.inject({
         method: "POST",
         url: `/api/sessions/${harness.session.id}/permissions/respond`,
@@ -317,7 +206,7 @@ describe("POST /api/sessions/:id/shell - 权限挂起（ask 模式）", () => {
       expect(events.some((e) => e.type === "permission.request")).toBe(false);
       harness.core.release({ exitCode: 0, durationMs: 1, truncated: false });
       // 等第二轮 tool_result 落盘完再退出，避免 afterEach 清理与异步落盘竞态（Windows ENOTEMPTY）
-      await waitForToolMessage(harness.sessions, harness.session.id, 5_000, 2);
+      await waitForToolMessage(harness.sessions, harness.session.id, 2);
       await vi.waitFor(() => expect(harness.agent.isShellPending(harness.session.id)).toBe(false), { timeout: 5_000 });
     } finally {
       await harness.app.close();
@@ -326,44 +215,20 @@ describe("POST /api/sessions/:id/shell - 权限挂起（ask 模式）", () => {
 });
 
 describe("POST /api/sessions/:id/shell - 路由校验", () => {
-  it("cmd 缺失 -> 400", async () => {
+  it.each([
+    { name: "cmd 缺失", foreignSession: false, payload: {}, status: 400, errorContains: "cmd" },
+    { name: "cmd 空字符串", foreignSession: false, payload: { cmd: "   " }, status: 400, errorContains: "" },
+    { name: "会话不存在", foreignSession: true, payload: { cmd: "echo hi" }, status: 404, errorContains: "" },
+  ])("$name -> $status", async ({ foreignSession, payload, status, errorContains }) => {
     const harness = await setup();
     try {
       const res = await harness.app.inject({
         method: "POST",
-        url: `/api/sessions/${harness.session.id}/shell`,
-        payload: {},
+        url: `/api/sessions/${foreignSession ? randomUUID() : harness.session.id}/shell`,
+        payload,
       });
-      expect(res.statusCode).toBe(400);
-      expect(res.json<{ error: string }>().error).toContain("cmd");
-    } finally {
-      await harness.app.close();
-    }
-  });
-
-  it("cmd 空字符串 -> 400", async () => {
-    const harness = await setup();
-    try {
-      const res = await harness.app.inject({
-        method: "POST",
-        url: `/api/sessions/${harness.session.id}/shell`,
-        payload: { cmd: "   " },
-      });
-      expect(res.statusCode).toBe(400);
-    } finally {
-      await harness.app.close();
-    }
-  });
-
-  it("会话不存在 -> 404", async () => {
-    const harness = await setup();
-    try {
-      const res = await harness.app.inject({
-        method: "POST",
-        url: `/api/sessions/${randomUUID()}/shell`,
-        payload: { cmd: "echo hi" },
-      });
-      expect(res.statusCode).toBe(404);
+      expect(res.statusCode).toBe(status);
+      if (errorContains) expect(res.json<{ error: string }>().error).toContain(errorContains);
     } finally {
       await harness.app.close();
     }
@@ -451,17 +316,10 @@ describe("POST /api/sessions/:id/shell - jobControl 路径超时", () => {
 
   /** jobControl fake core：startJob 记录请求，jobStatus 直接回终态 */
   function createJobCore(finalStatus: JobStatus): { client: CoreClientLike; startJobCalls: JobStartRequest[] } {
-    const emitter = new EventEmitter();
     const startJobCalls: JobStartRequest[] = [];
-    const client: CoreClientLike = {
-      on(eventName: string, listener: (...args: unknown[]) => void) {
-        emitter.on(eventName, listener);
-        return client;
-      },
+    const client = makeFakeCore({
       async start() { return JOB_CORE_INFO; },
-      async stop() { /* 无挂起 run */ },
       async ping() { return JOB_CORE_INFO; },
-      async configureSession() { return { sandboxCapability: "advisory" as const }; },
       async startJob(request: JobStartRequest) {
         startJobCalls.push({ ...request });
         return { jobId: request.jobId, state: "running" as const };
@@ -470,33 +328,19 @@ describe("POST /api/sessions/:id/shell - jobControl 路径超时", () => {
       async jobOutput() { return { chunks: [], nextSeq: 0, truncated: false }; },
       async cancelJob() { return { jobId: finalStatus.jobId, accepted: true as const }; },
       async run() { throw new Error("jobControl 路径不应走 exec.run"); },
-      async cleanupSession() { return { ok: true as const }; },
-      async readFile() { return { content: "", totalLines: 0, encoding: "utf-8" as const, truncated: false }; },
-      async writeFile() { return { ok: true as const }; },
-      async editFile() { return { matches: 0 }; },
-      async listFiles() { return { entries: [], truncated: false }; },
-      async globFiles() { return { paths: [], truncated: false }; },
-      async grepFiles() { return { matches: [], truncated: false }; },
-      setRequestTimeoutMs() {},
-    } as unknown as CoreClientLike;
+    } as Partial<CoreClientLike>);
     return { client, startJobCalls };
   }
 
   async function setupJob(finalStatus: JobStatus) {
-    const root = await tempRoot();
-    const sessions = new SessionStore(path.join(root, "sessions"));
-    await sessions.initialize();
-    const session = await sessions.create({ cwd: root, provider: "test-stub", model: "deterministic-tool-loop", title: "Job shell" });
-    await sessions.updatePermissions(session.id, "yolo", []);
-    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
-    await pricing.initialize();
-    const events = new EventBus();
-    const providers = new ProviderRegistry();
-    providers.register(echoProvider);
     const core = createJobCore(finalStatus);
-    const agent = new AgentRunner(sessions, providers, core.client, events, pricing);
-    const app = await buildServer({ core: core.client, sessions, agent, events, providers, pricing });
-    return { root, sessions, session, core, agent, app };
+    const harness = await makeAgentHarness({
+      core: core.client,
+      permissionMode: "yolo",
+      title: "Job shell",
+      tempPrefix: "owc-shell-job-",
+    });
+    return { ...harness, core };
   }
 
   it("startJob 带默认 timeoutMs（10 分钟），completed 正常收尾", async () => {

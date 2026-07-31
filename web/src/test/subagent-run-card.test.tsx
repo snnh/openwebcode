@@ -1,31 +1,15 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render } from "@testing-library/react";
+import { fireEvent } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { SubagentRunCard } from "../components/SubagentRunCard";
-import type { LiveSubagentRun } from "../lib/contracts";
-import type { ReactElement } from "react";
-
-function renderWithClient(node: ReactElement) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={client}>{node}</QueryClientProvider>);
-}
+import { makeSubagentRun } from "./helpers/fixtures";
+import { renderWithClient } from "./helpers/with-client";
 
 /** 折叠行默认只显示行头；统计/错误/转录在展开后的正文里 */
 function expand(container: HTMLElement): void {
   fireEvent.click(container.querySelector(".subagent-run-header")!);
 }
 
-function run(overrides: Partial<LiveSubagentRun>): LiveSubagentRun {
-  return {
-    taskId: "task-1",
-    toolCallId: "call-1",
-    prompt: "调查代码结构",
-    status: "running",
-    turns: 0,
-    toolsUsed: [],
-    ...overrides,
-  };
-}
+const run = makeSubagentRun;
 
 describe("SubagentRunCard", () => {
   it("shows live turn and tool progress for a running spawn_task", () => {

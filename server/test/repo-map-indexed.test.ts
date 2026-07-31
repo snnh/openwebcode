@@ -1,48 +1,23 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { RepoMapGenerator } from "../src/context/repo-map.js";
-import type { CoreClientLike, FsScanResult, FsStatResult, IndexScanEntry } from "../src/core-client.js";
+import type { CoreClientLike, IndexScanEntry } from "../src/core-client.js";
 import { EventBus } from "../src/events/event-bus.js";
 import { IndexManager } from "../src/index/index-manager.js";
 import type { RepoMapSymbolFile } from "../src/index/index-manager.js";
+import { makeFakeScanCore } from "./helpers/fake-scan-core.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
-const roots: string[] = [];
 const managers: IndexManager[] = [];
-afterEach(async () => {
+afterEach(() => {
   for (const manager of managers.splice(0)) manager.stop();
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
-
-/** repo map 静态树 fake core（与 repo-map.test.ts 同款）。 */
-function createTreeCore(files: string[]): CoreClientLike {
-  const entries = [
-    ...files.map((p) => ({ path: p, type: "file" as const, size: p.length })),
-    ...[...new Set(files.flatMap((p) => {
-      const parts = p.split("/");
-      return parts.slice(0, -1).map((_, i) => parts.slice(0, i + 1).join("/"));
-    }))].map((p) => ({ path: p, type: "directory" as const, size: 0 })),
-  ].sort((a, b) => a.path.localeCompare(b.path));
-  return {
-    on() { return this; },
-    setRequestTimeoutMs() {},
-    async statFile(): Promise<FsStatResult> { return { type: "directory", size: 0, modifiedMs: 1 }; },
-    async scanFiles(request: { cursor?: number; limit?: number }): Promise<FsScanResult> {
-      const start = request.cursor ?? 0;
-      const limit = request.limit ?? 1000;
-      const page = entries.slice(start, start + limit);
-      const next = start + limit < entries.length ? start + limit : undefined;
-      return { entries: page, truncated: false, ...(next === undefined ? {} : { nextCursor: next }) };
-    },
-  } as unknown as CoreClientLike;
-}
 
 const FILES = ["package.json", "src/app.ts", "src/util.ts", "docs/guide.md"];
 
 describe("repo_map 索引形态（Phase 2 §4.1）", () => {
   it("索引可用：关键文件附符号摘要，按最近修改优先", async () => {
-    const generator = new RepoMapGenerator(createTreeCore(FILES));
+    const generator = new RepoMapGenerator(makeFakeScanCore(FILES));
     const symbolFiles: RepoMapSymbolFile[] = [
       { path: "src/util.ts", modifiedMs: 100, symbols: [{ name: "helperFn", kind: "function" }] },
       { path: "src/app.ts", modifiedMs: 200, symbols: [{ name: "bootstrap", kind: "function" }, { name: "App", kind: "class" }] },
@@ -61,7 +36,7 @@ describe("repo_map 索引形态（Phase 2 §4.1）", () => {
   });
 
   it("索引不可用（undefined）：保持纯静态树降级", async () => {
-    const generator = new RepoMapGenerator(createTreeCore(FILES));
+    const generator = new RepoMapGenerator(makeFakeScanCore(FILES));
     generator.setSymbolProvider(() => Promise.resolve(undefined));
     const result = await generator.generate({ sessionId: "s1", cwd: "/repo" });
     expect(result.text).not.toContain("Key files with symbols");
@@ -69,7 +44,7 @@ describe("repo_map 索引形态（Phase 2 §4.1）", () => {
   });
 
   it("索引查询抛错：同样降级静态树，不阻断生成", async () => {
-    const generator = new RepoMapGenerator(createTreeCore(FILES));
+    const generator = new RepoMapGenerator(makeFakeScanCore(FILES));
     generator.setSymbolProvider(() => Promise.reject(new Error("index broken")));
     const result = await generator.generate({ sessionId: "s1", cwd: "/repo" });
     expect(result.text).not.toContain("Key files with symbols");
@@ -77,8 +52,7 @@ describe("repo_map 索引形态（Phase 2 §4.1）", () => {
   });
 
   it("端到端：真实 IndexManager 建索引后 repo map 带符号，未建时降级", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-repomap-idx-"));
-    roots.push(root);
+    const root = await tempRoot("owc-repomap-idx-");
     const utilTs = "export function helperFn(): void {\n}\n";
     const manifest: IndexScanEntry[] = [{ path: "src/util.ts", size: utilTs.length, modifiedMs: 100, sha256: "u1" }];
     const jsonl = manifest.map((entry) => JSON.stringify(entry)).join("\n") + "\n"
@@ -88,7 +62,7 @@ describe("repo_map 索引形态（Phase 2 §4.1）", () => {
       symbols: [{ name: "helperFn", kind: "function", startLine: 1, endLine: 2, signature: "export function helperFn(): void {" }],
     }) + "\n" + JSON.stringify({ summary: { files: 1, symbols: 1, truncated: false, reason: null } }) + "\n";
     const servedJobs = new Set<string>();
-    const treeCore = createTreeCore(FILES);
+    const treeCore = makeFakeScanCore(FILES);
     const core = {
       ...treeCore,
       on() { return this; },

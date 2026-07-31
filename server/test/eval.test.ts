@@ -1,10 +1,8 @@
-import { mkdtemp, readdir, rm } from "node:fs/promises";
-import os from "node:os";
+import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
-import type { CoreClientLike } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
@@ -15,56 +13,22 @@ import { EVAL_TASKS } from "../src/eval/tasks.js";
 import { usage } from "../src/eval/mock-provider.js";
 import type { EvalTask } from "../src/eval/types.js";
 import { makeEvalCore } from "../src/eval/eval-core.js";
+import { makeFakeCore } from "./helpers/fake-core.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
-const roots: string[] = [];
 const apps: Array<{ close(): Promise<unknown> }> = [];
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-function makeStubCore(): CoreClientLike {
-  return {
-    on() { return this; },
-    setRequestTimeoutMs() {},
-    async start() { return { version: "stub", platform: "linux", sandboxCapability: "advisory" }; },
-    async stop() {},
-    async ping() { return { version: "stub", platform: "linux", sandboxCapability: "advisory" }; },
-    async configureSession() { return { sandboxCapability: "advisory" }; },
-    async cleanupSession() { return { ok: true }; },
-    async run() { return { exitCode: 0, durationMs: 0, truncated: false }; },
-    async readFile() { return { content: "", totalLines: 0, encoding: "utf-8", truncated: false }; },
-    async writeFile() { return { ok: true }; },
-    async editFile() { return { matches: 0 }; },
-    async statFile() { return { type: "file", size: 0, modifiedMs: 0 }; },
-    async statFiles() { return { entries: [] }; },
-    async hashFile() { return { sha256: "", size: 0 }; },
-    async scanFiles() { return { entries: [], truncated: false }; },
-    async watchFiles() { return { watchId: 0 }; },
-    async pollWatch() { return { events: [], overflow: false }; },
-    async cancelWatch() { return { ok: true }; },
-    async listFiles() { return { entries: [], truncated: false }; },
-    async globFiles() { return { paths: [], truncated: false }; },
-    async grepFiles() { return { matches: [], truncated: false }; },
-    async startJob() { return { jobId: "", state: "completed", durationMs: 0, truncated: false }; },
-    async startIndexScan() { return { jobId: "", state: "completed", durationMs: 0, truncated: false }; },
-    async startGrepJob() { return { jobId: "", state: "completed", durationMs: 0, truncated: false }; },
-    async startGlobJob() { return { jobId: "", state: "completed", durationMs: 0, truncated: false }; },
-    async cancelJob() { return { jobId: "", accepted: true }; },
-    async jobStatus() { return { jobId: "", state: "completed", durationMs: 0, truncated: false }; },
-    async jobOutput() { return { chunks: [], nextSeq: 0, truncated: false }; },
-  } as unknown as CoreClientLike;
-}
-
 async function buildEvalApp(opts: { extensionsEnabled: boolean; withEvaluator: boolean }) {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-eval-api-"));
-  roots.push(root);
+  const root = await tempRoot("owc-eval-api-");
   const sessions = new SessionStore(path.join(root, "sessions"));
   await sessions.initialize();
   const pricing = new PricingCatalog(path.join(root, "pricing.json"));
   await pricing.initialize();
   const providers = new ProviderRegistry();
-  const core = makeStubCore();
+  const core = makeFakeCore();
   const events = new EventBus();
   const agent = new AgentRunner(sessions, providers, core, events, pricing);
   const extensions = { isEnabled: () => opts.extensionsEnabled } as unknown as ExtensionManager;
@@ -76,8 +40,8 @@ async function buildEvalApp(opts: { extensionsEnabled: boolean; withEvaluator: b
 }
 
 describe("EvalEvaluator（0.5.0 Phase 3a）", () => {
-  it("listTasks 返回全部内置任务且不含 script", () => {
-    const root = roots[0] ?? os.tmpdir();
+  it("listTasks 返回全部内置任务且不含 script", async () => {
+    const root = await tempRoot("owc-eval-");
     const evaluator = new EvalEvaluator(root, makeEvalCore());
     const tasks = evaluator.listTasks();
     expect(tasks.length).toBeGreaterThanOrEqual(3);
@@ -90,8 +54,7 @@ describe("EvalEvaluator（0.5.0 Phase 3a）", () => {
   });
 
   it("runTasks 执行全部任务并全部通过", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-eval-"));
-    roots.push(root);
+    const root = await tempRoot("owc-eval-");
     const evaluator = new EvalEvaluator(root, makeEvalCore());
     const report = await evaluator.runTasks();
     expect(report.summary.total).toBeGreaterThanOrEqual(3);
@@ -107,8 +70,7 @@ describe("EvalEvaluator（0.5.0 Phase 3a）", () => {
   });
 
   it("runTasks 指定单个任务执行", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-eval-"));
-    roots.push(root);
+    const root = await tempRoot("owc-eval-");
     const evaluator = new EvalEvaluator(root, makeEvalCore());
     const report = await evaluator.runTasks(["create-file"]);
     expect(report.summary.total).toBe(1);
@@ -118,15 +80,13 @@ describe("EvalEvaluator（0.5.0 Phase 3a）", () => {
   });
 
   it("runTasks 未知任务 ID 抛错", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-eval-"));
-    roots.push(root);
+    const root = await tempRoot("owc-eval-");
     const evaluator = new EvalEvaluator(root, makeEvalCore());
     await expect(evaluator.runTasks(["nonexistent"])).rejects.toThrow("Unknown eval task");
   });
 
   it("断言失败判定正确（fileExists 不匹配 -> status=fail）", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-eval-"));
-    roots.push(root);
+    const root = await tempRoot("owc-eval-");
     const badTask: EvalTask = {
       id: "test-fail-case",
       name: "失败判定测试",
@@ -158,8 +118,7 @@ describe("EvalEvaluator（0.5.0 Phase 3a）", () => {
   });
 
   it("评测数据目录隔离：不写入用户 sessions 目录", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-eval-"));
-    roots.push(root);
+    const root = await tempRoot("owc-eval-");
     const userSessionsDir = path.join(root, "user-sessions");
     // 确认用户 sessions 目录初始为空
     let entries = await readdir(userSessionsDir).catch(() => []);
@@ -172,8 +131,7 @@ describe("EvalEvaluator（0.5.0 Phase 3a）", () => {
   });
 
   it("报告 JSON 结构正确并可持久化读取", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-eval-"));
-    roots.push(root);
+    const root = await tempRoot("owc-eval-");
     const evaluator = new EvalEvaluator(root, makeEvalCore());
     const report = await evaluator.runTasks(["create-file"]);
     expect(report.runId).toMatch(/^eval-/);
@@ -210,16 +168,14 @@ describe("EvalEvaluator（0.5.0 Phase 3a）", () => {
   });
 
   it("getRun 不存在的 runId 返回 undefined", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-eval-"));
-    roots.push(root);
+    const root = await tempRoot("owc-eval-");
     const evaluator = new EvalEvaluator(root, makeEvalCore());
     expect(await evaluator.getRun("nonexistent")).toBeUndefined();
     expect(await evaluator.getRun("../sessions/secret")).toBeUndefined();
   });
 
   it("同一 evaluator 只允许一个评测运行，避免并发耗尽 Core 与临时工作区资源", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-eval-"));
-    roots.push(root);
+    const root = await tempRoot("owc-eval-");
     const evaluator = new EvalEvaluator(root, makeEvalCore());
     const first = evaluator.runTasks(["use-grep"]);
     await expect(evaluator.runTasks(["create-file"])).rejects.toThrow("already in progress");
@@ -227,8 +183,7 @@ describe("EvalEvaluator（0.5.0 Phase 3a）", () => {
   });
 
   it("归档基线/候选对比并识别状态、工具、token 与耗时差异", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-eval-compare-"));
-    roots.push(root);
+    const root = await tempRoot("owc-eval-compare-");
     const evaluator = new EvalEvaluator(root, makeEvalCore());
     const task = EVAL_TASKS.find((item) => item.id === "create-file")!;
     const originalAssertions = task.assertions;
@@ -251,8 +206,7 @@ describe("EvalEvaluator（0.5.0 Phase 3a）", () => {
   });
 
   it("测试用 mock core 拒绝逃逸隔离工作区", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-eval-core-"));
-    roots.push(root);
+    const root = await tempRoot("owc-eval-core-");
     const core = makeEvalCore();
     await core.configureSession({ sessionId: "s1", cwd: root, sandbox: { enabled: true, readRoots: [root], writeRoots: [root], denyPaths: [], network: "deny" } });
     await expect(core.writeFile({ sessionId: "s1", path: "../escape.txt", content: "no" })).rejects.toThrow("escapes evaluation workspace");

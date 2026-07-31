@@ -11,6 +11,7 @@ import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
+import { waitForEvent } from "./helpers/wait-event.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const corePath = process.env.OWC_CORE_PATH ?? path.resolve(
@@ -92,9 +93,9 @@ describe("stage 3 vertical acceptance", () => {
         expect(created.statusCode).toBe(201);
         const sessionId = created.json<{ id: string }>().id;
 
-        const firstIdle = waitForEvent(events, sessionId, "agent.state", (event) =>
-          (event.payload as { state?: string }).state === "idle");
-        const firstPermission = waitForEvent(events, sessionId, "permission.request");
+        const firstIdle = waitForEvent(events, "agent.state", { sessionId, match: (event) =>
+          (event.payload as { state?: string }).state === "idle" });
+        const firstPermission = waitForEvent(events, "permission.request", { sessionId });
         const accepted = await app.inject({ method: "POST", url: `/api/sessions/${sessionId}/messages`, payload: { content: "创建阶段三验收文件" } });
         expect(accepted.statusCode).toBe(202);
         const permission = await firstPermission;
@@ -132,9 +133,9 @@ describe("stage 3 vertical acceptance", () => {
         await expect(readFile(path.join(root, "src/result.txt"), "utf8")).rejects.toThrow();
         expect((await sessions.get(sessionId))?.messages).toHaveLength(0);
 
-        const secondIdle = waitForEvent(events, sessionId, "agent.state", (event) =>
-          (event.payload as { state?: string }).state === "idle");
-        const secondPermission = waitForEvent(events, sessionId, "permission.request");
+        const secondIdle = waitForEvent(events, "agent.state", { sessionId, match: (event) =>
+          (event.payload as { state?: string }).state === "idle" });
+        const secondPermission = waitForEvent(events, "permission.request", { sessionId });
         expect((await app.inject({ method: "POST", url: `/api/sessions/${sessionId}/messages`, payload: { content: "尝试写入但等待拒绝" } })).statusCode).toBe(202);
         const deniedRequestId = ((await secondPermission).payload as { requestId: string }).requestId;
         expect((await app.inject({
@@ -154,19 +155,3 @@ describe("stage 3 vertical acceptance", () => {
     30_000,
   );
 });
-
-function waitForEvent(
-  events: EventBus,
-  sessionId: string,
-  type: string,
-  predicate: (event: AppEvent) => boolean = () => true,
-): Promise<AppEvent> {
-  return new Promise((resolve) => {
-    const listener = (event: AppEvent): void => {
-      if (event.sessionId !== sessionId || event.type !== type || !predicate(event)) return;
-      events.off("event", listener);
-      resolve(event);
-    };
-    events.on("event", listener);
-  });
-}

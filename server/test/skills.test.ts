@@ -1,7 +1,6 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
 import type { CoreClient } from "../src/core-client.js";
@@ -10,15 +9,7 @@ import { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { parseSkillCommand, parseSkillMarkdown, SkillRegistry } from "../src/skills.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
-
-async function tempDir(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-skills-"));
-  roots.push(root);
-  return root;
-}
+import { tempRoot } from "./helpers/temp-roots.js";
 
 async function writeSkill(dir: string, name: string, markdown: string): Promise<void> {
   const skillDir = path.join(dir, name);
@@ -47,7 +38,7 @@ describe("skill markdown parsing", () => {
 
 describe("SkillRegistry", () => {
   it("merges global and project skills, project wins on name collision", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-skills-");
     const globalDir = path.join(root, "global-skills");
     const cwd = path.join(root, "work");
     await writeSkill(globalDir, "alpha", "---\ndescription: 全局 alpha\n---\nalpha body\n");
@@ -63,7 +54,7 @@ describe("SkillRegistry", () => {
   });
 
   it("invalidates a cached scan when a skill file changes", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-skills-");
     const globalDir = path.join(root, "global-skills");
     await writeSkill(globalDir, "alpha", "first");
     const registry = new SkillRegistry(globalDir);
@@ -100,7 +91,7 @@ describe("skills in agent runs", () => {
   }
 
   it("injects the skill catalog into the system prompt and serves load_skill", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-skills-");
     const cwd = path.join(root, "work");
     const registry = new SkillRegistry(path.join(root, "global-skills"));
     await writeSkill(path.join(cwd, ".owc", "skills"), "greet", "---\ndescription: 问候技能\n---\n用中文问候用户。\n");
@@ -117,7 +108,7 @@ describe("skills in agent runs", () => {
   });
 
   it("expands a /skill composer command into skill body plus user input", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-skills-");
     const cwd = path.join(root, "work");
     const registry = new SkillRegistry(path.join(root, "global-skills"));
     await writeSkill(path.join(cwd, ".owc", "skills"), "greet", "用中文问候用户。\n");
@@ -143,7 +134,7 @@ describe("skills in agent runs", () => {
 
 describe("skills HTTP routes", () => {
   it("lists global skills and session-scoped skills", async () => {
-    const root = await tempDir();
+    const root = await tempRoot("owc-skills-");
     const globalDir = path.join(root, "global-skills");
     const cwd = path.join(root, "work");
     await writeSkill(globalDir, "alpha", "---\ndescription: 全局 alpha\n---\nalpha body\n");

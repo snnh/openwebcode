@@ -1,14 +1,9 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, waitFor } from "@testing-library/react";
+import { fireEvent, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TotpSection } from "../components/settings/TotpSection";
 import { api, ApiError } from "../lib/api";
 import type { AuthStatus } from "../lib/contracts";
-
-function withClient(node: React.ReactNode): ReturnType<typeof render> {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(<QueryClientProvider client={client}>{node}</QueryClientProvider>);
-}
+import { renderWithClient } from "./helpers/with-client";
 
 function authStatus(partial: Partial<AuthStatus>): AuthStatus {
   return { totpEnabled: false, authenticated: true, terminalAvailable: false, gateReasons: ["totp_disabled"], ...partial };
@@ -25,7 +20,7 @@ describe("设置 → 远程访问：TOTP 向导（提交⑥）", () => {
     vi.spyOn(api, "authStatus").mockResolvedValue(authStatus({}));
     const setup = vi.spyOn(api, "totpSetup").mockResolvedValue({ secret: "JBSWY3DPEHPK3PXP", otpauthUrl: "otpauth://totp/OpenWebCode?secret=JBSWY3DPEHPK3PXP" });
     const confirm = vi.spyOn(api, "totpConfirm").mockResolvedValue({ recoveryCodes: RECOVERY_CODES });
-    const view = withClient(<TotpSection />);
+    const view = renderWithClient(<TotpSection />);
     // 门槛状态：TOTP ❌，监听地址 ✅（gateReasons 无 host_not_loopback_or_lan）
     expect(await view.findByText("启用两步验证")).toBeInTheDocument();
     expect(view.getByText(/TOTP 已开启/).textContent).toContain("❌");
@@ -53,7 +48,7 @@ describe("设置 → 远程访问：TOTP 向导（提交⑥）", () => {
     vi.spyOn(api, "authStatus").mockResolvedValue(authStatus({}));
     vi.spyOn(api, "totpSetup").mockResolvedValue({ secret: "JBSWY3DPEHPK3PXP", otpauthUrl: "otpauth://totp/OpenWebCode?secret=JBSWY3DPEHPK3PXP" });
     vi.spyOn(api, "totpConfirm").mockRejectedValue(new ApiError(400, "Invalid code"));
-    const view = withClient(<TotpSection />);
+    const view = renderWithClient(<TotpSection />);
     fireEvent.click(await view.findByRole("button", { name: "启用两步验证" }));
     fireEvent.change(await view.findByLabelText("动态码"), { target: { value: "000000" } });
     fireEvent.click(view.getByRole("button", { name: "确认启用" }));
@@ -63,7 +58,7 @@ describe("设置 → 远程访问：TOTP 向导（提交⑥）", () => {
   it("已启用：展示禁用入口（需输码）与终端门槛全满足状态", async () => {
     vi.spyOn(api, "authStatus").mockResolvedValue(authStatus({ totpEnabled: true, terminalAvailable: true, gateReasons: [] }));
     const disable = vi.spyOn(api, "totpDisable").mockResolvedValue({ ok: true });
-    const view = withClient(<TotpSection />);
+    const view = renderWithClient(<TotpSection />);
     expect(await view.findByText(/两步验证已启用/)).toBeInTheDocument();
     expect(view.getByText(/TOTP 已开启/).textContent).toContain("✅");
     expect(view.getByText(/监听地址为回环或局域网/).textContent).toContain("✅");
@@ -77,7 +72,7 @@ describe("设置 → 远程访问：TOTP 向导（提交⑥）", () => {
 
   it("非回环/局域网监听：门槛第二项为 ❌", async () => {
     vi.spyOn(api, "authStatus").mockResolvedValue(authStatus({ totpEnabled: true, gateReasons: ["host_not_loopback_or_lan"] }));
-    const view = withClient(<TotpSection />);
+    const view = renderWithClient(<TotpSection />);
     expect((await view.findByText(/监听地址为回环或局域网/)).textContent).toContain("❌");
     expect(view.getByText(/终端功能暂不可用/)).toBeInTheDocument();
   });

@@ -1,32 +1,23 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { buildSystemPrompt } from "../src/agent/prompts/prompt-builder.js";
 import { PI_BASE_SYSTEM_PROMPT } from "../src/agent/prompts/pi-base.js";
 import { loadPromptOverride, writeGlobalPromptOverride } from "../src/agent/prompts/prompt-overrides.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
-
-async function tempRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-prompt-"));
-  roots.push(root);
-  return root;
-}
+import { tempRoot } from "./helpers/temp-roots.js";
 
 describe("loadPromptOverride", () => {
   it("returns empty when no override files exist", async () => {
-    const dataDir = await tempRoot();
-    const cwd = await tempRoot();
+    const dataDir = await tempRoot("owc-prompt-");
+    const cwd = await tempRoot("owc-prompt-");
     const override = await loadPromptOverride(dataDir, cwd);
     expect(override.baseOverride).toBeUndefined();
     expect(override.customAppend).toBeUndefined();
   });
 
   it("loads the global base override and append", async () => {
-    const dataDir = await tempRoot();
-    const cwd = await tempRoot();
+    const dataDir = await tempRoot("owc-prompt-");
+    const cwd = await tempRoot("owc-prompt-");
     await writeFile(path.join(dataDir, "system-prompt.md"), "custom base body\n", "utf8");
     await writeFile(path.join(dataDir, "system-prompt-append.md"), "always be terse\n", "utf8");
     const override = await loadPromptOverride(dataDir, cwd);
@@ -35,8 +26,8 @@ describe("loadPromptOverride", () => {
   });
 
   it("project-level files override global ones", async () => {
-    const dataDir = await tempRoot();
-    const cwd = await tempRoot();
+    const dataDir = await tempRoot("owc-prompt-");
+    const cwd = await tempRoot("owc-prompt-");
     await writeFile(path.join(dataDir, "system-prompt.md"), "global base\n", "utf8");
     await mkdir(path.join(cwd, ".owc"), { recursive: true });
     await writeFile(path.join(cwd, ".owc", "system-prompt.md"), "project base\n", "utf8");
@@ -47,8 +38,8 @@ describe("loadPromptOverride", () => {
 
 describe("writeGlobalPromptOverride", () => {
   it("writes base and append files, and removes them when emptied", async () => {
-    const dataDir = await tempRoot();
-    const cwd = await tempRoot();
+    const dataDir = await tempRoot("owc-prompt-");
+    const cwd = await tempRoot("owc-prompt-");
     await writeGlobalPromptOverride(dataDir, { baseOverride: "my base", customAppend: "my append" });
     let override = await loadPromptOverride(dataDir, cwd);
     expect(override.baseOverride).toBe("my base");

@@ -1,7 +1,5 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import type { CoreClientLike } from "../src/core-client.js";
 import type { ModelProfile } from "../src/context/model-profile.js";
@@ -12,9 +10,7 @@ import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/
 import { SessionStore } from "../src/sessions/session-store.js";
 import type { SkillRegistry } from "../src/skills.js";
 import type { SearchProvider } from "../src/web-tools.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
+import { tempRoot } from "./helpers/temp-roots.js";
 
 const noToolsProfile: ModelProfile = {
   id: "no-tools-model",
@@ -32,8 +28,7 @@ const noToolsProfile: ModelProfile = {
 
 describe("AgentRunner tool capability gating", () => {
   it("does not inject tools or tool prompts for a tools=false model, and persists a rejected unexpected tool call", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-tool-gating-"));
-    roots.push(root);
+    const root = await tempRoot("owc-tool-gating-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const session = await sessions.create({ cwd: root, provider: "fake", model: noToolsProfile.id });
@@ -127,8 +122,7 @@ describe("AgentRunner tool capability gating", () => {
   });
 
   it("degrades an unavailable MCP service without advertising its schema or aborting the dialogue", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-tool-gating-"));
-    roots.push(root);
+    const root = await tempRoot("owc-tool-gating-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const session = await sessions.create({ cwd: root, provider: "fake", model: "tools-model" });

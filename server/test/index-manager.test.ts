@@ -1,5 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
@@ -10,19 +9,12 @@ import { IndexManager, IndexUnavailableError } from "../src/index/index-manager.
 import { languageForPath, workspaceHash, type SymbolRecord } from "../src/index/index-store.js";
 import { ProviderRegistry, type Provider } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
-const roots: string[] = [];
 const managers: IndexManager[] = [];
 afterEach(async () => {
   for (const manager of managers.splice(0)) manager.stop();
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
-
-async function tempRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-index-"));
-  roots.push(root);
-  return root;
-}
 
 const CWD = "/repo";
 const UTIL_TS = `export function getTopSymbols(list: string[]): string {\n  return list[0] ?? "";\n}\n\nexport class Helper {\n  private static createDefault() {\n    return new Helper();\n  }\n}\n`;
@@ -171,7 +163,7 @@ const BASE_SYMBOLS: Record<string, SymbolRecord[]> = {
 
 describe("IndexManager", () => {
   it("rebuild 建立索引：manifest 入库、符号可搜、状态 fresh、事件齐全", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-index-");
     const events = new EventBus();
     const seen: AppEvent[] = [];
     events.on("event", (event: AppEvent) => { if (event.type === "index.status") seen.push(event); });
@@ -206,7 +198,7 @@ describe("IndexManager", () => {
   });
 
   it("增量重建只对变化文件重提符号，删除文件的符号被清除", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-index-");
     const { core, state } = createFakeScanCore({ manifest: BASE_MANIFEST, symbols: BASE_SYMBOLS, watchMode: "fail" });
     const manager = createManager(core, path.join(root, "index"), new EventBus());
     await manager.rebuild("s1", CWD);
@@ -237,7 +229,7 @@ describe("IndexManager", () => {
   });
 
   it("未建索引时 searchSymbols 拒绝并指引显式重建", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-index-");
     const { core } = createFakeScanCore({ manifest: [], symbols: {}, watchMode: "fail" });
     const manager = createManager(core, path.join(root, "index"), new EventBus());
     await expect(manager.searchSymbols(CWD, "x")).rejects.toThrow(IndexUnavailableError);
@@ -245,7 +237,7 @@ describe("IndexManager", () => {
   });
 
   it("重建进行中再次 rebuild 报 INDEX_BUILDING", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-index-");
     const { core } = createFakeScanCore({ manifest: BASE_MANIFEST, symbols: BASE_SYMBOLS, watchMode: "fail", neverFinish: true });
     const manager = createManager(core, path.join(root, "index"), new EventBus());
     await manager.rebuild("s1", CWD);
@@ -254,7 +246,7 @@ describe("IndexManager", () => {
   });
 
   it("取消重建：保留旧状态、如实标滞后（cancelled）", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-index-");
     const { core, state } = createFakeScanCore({ manifest: BASE_MANIFEST, symbols: BASE_SYMBOLS, watchMode: "fail", neverFinish: true });
     const manager = createManager(core, path.join(root, "index"), new EventBus());
     await manager.rebuild("s1", CWD);
@@ -268,7 +260,7 @@ describe("IndexManager", () => {
   });
 
   it("索引损坏（JSONL 解析失败）整体作废，可显式重建恢复", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-index-");
     const { core } = createFakeScanCore({ manifest: BASE_MANIFEST, symbols: BASE_SYMBOLS, watchMode: "fail" });
     const indexRoot = path.join(root, "index");
     const first = createManager(core, indexRoot, new EventBus());
@@ -291,7 +283,7 @@ describe("IndexManager", () => {
   });
 
   it("watch 不可用时降级 turn 边界 mtime 抽样：样本变化标滞后", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-index-");
     const stats = new Map(BASE_MANIFEST.map((entry) => [entry.path, { size: entry.size, modifiedMs: entry.modifiedMs }]));
     const { core } = createFakeScanCore({ manifest: BASE_MANIFEST, symbols: BASE_SYMBOLS, watchMode: "fail", stats });
     const manager = createManager(core, path.join(root, "index"), new EventBus());
@@ -310,7 +302,7 @@ describe("IndexManager", () => {
   });
 
   it("watch 激活时 watch 事件驱动标滞后", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-index-");
     const { core, state } = createFakeScanCore({ manifest: BASE_MANIFEST, symbols: BASE_SYMBOLS, watchMode: "active" });
     const manager = createManager(core, path.join(root, "index"), new EventBus(), { watchPollMs: 5 });
     await manager.rebuild("s1", CWD);
@@ -323,7 +315,7 @@ describe("IndexManager", () => {
   });
 
   it("extract 截断（summary.truncated）时未输出文件保留旧符号并打 warn，不静默清空", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-index-");
     // 本地 manifest/symbols：避免与其他用例共享可变的 BASE_* 全局
     const manifest: IndexScanEntry[] = [
       { path: "src/util.ts", size: UTIL_TS.length, modifiedMs: 100, sha256: "u1" },
@@ -372,7 +364,7 @@ describe("IndexManager", () => {
   });
 
   it("jobOutput truncated（core 输出 ring 溢出）：runScan 走 error/stale 而非静默成功", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-index-");
     const { core, state } = createFakeScanCore({ manifest: BASE_MANIFEST, symbols: BASE_SYMBOLS, watchMode: "fail" });
     state.outputTruncated = true;
     const manager = createManager(core, path.join(root, "index"), new EventBus());
@@ -386,7 +378,7 @@ describe("IndexManager", () => {
 
 describe("code_search 工具（agent 级）", () => {
   async function setup(withIndex: boolean) {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-index-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const session = await sessions.create({ cwd: root, provider: "fake", model: "fake-model" });

@@ -1,10 +1,10 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FilesPanel } from "../components/panels/FilesPanel";
 import { api } from "../lib/api";
 import type { ManagedWorkspaceSyncPreview, ManagedWorkspaceSyncResult, SessionDetail } from "../lib/contracts";
+import { renderWithClient } from "./helpers/with-client";
 
 const session: SessionDetail = {
   id: "managed-session",
@@ -36,12 +36,7 @@ const preview: ManagedWorkspaceSyncPreview = {
 };
 
 function renderPanel(props: Partial<ComponentProps<typeof FilesPanel>> = {}): void {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(
-    <QueryClientProvider client={client}>
-      <FilesPanel sessionId={session.id} session={session} onNotice={() => undefined} {...props} />
-    </QueryClientProvider>,
-  );
+  renderWithClient(<FilesPanel sessionId={session.id} session={session} onNotice={() => undefined} {...props} />);
 }
 
 describe("FilesPanel managed workspace sync", () => {

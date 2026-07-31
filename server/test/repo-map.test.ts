@@ -1,53 +1,13 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { RepoMapGenerator, DEFAULT_REPO_MAP_BUDGET } from "../src/context/repo-map.js";
-import type { CoreClientLike, FsScanResult, FsStatResult } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
-
-async function tempRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-repomap-"));
-  roots.push(root);
-  return root;
-}
-
-/** 虚拟工作区 fake core：scanFiles 由给定路径清单分页返回，statFile 的 mtime 可控。 */
-function createFakeCore(files: string[], state: { mtime: number; scanCalls: number }): CoreClientLike {
-  const entries = [
-    ...files.map((p) => ({ path: p, type: "file" as const, size: p.length })),
-    // 目录条目（从文件路径推导）
-    ...[...new Set(files.flatMap((p) => {
-      const parts = p.split("/");
-      return parts.slice(0, -1).map((_, i) => parts.slice(0, i + 1).join("/"));
-    }))].map((p) => ({ path: p, type: "directory" as const, size: 0 })),
-  ].sort((a, b) => a.path.localeCompare(b.path));
-  return {
-    on() { return this; },
-    async configureSession() { return { sandboxCapability: "advisory" }; },
-    async cleanupSession() { return { ok: true }; },
-    setRequestTimeoutMs() {},
-    start() { return Promise.resolve({ version: "0.0.0", platform: "test" }); },
-    stop() { return Promise.resolve(); },
-    ping() { return Promise.resolve({ version: "0.0.0", platform: "test" }); },
-    async statFile(): Promise<FsStatResult> { return { type: "directory", size: 0, modifiedMs: state.mtime }; },
-    async scanFiles(request: { cursor?: number; limit?: number }): Promise<FsScanResult> {
-      state.scanCalls += 1;
-      const start = request.cursor ?? 0;
-      const limit = request.limit ?? 1000;
-      const page = entries.slice(start, start + limit);
-      const next = start + limit < entries.length ? start + limit : undefined;
-      return { entries: page, truncated: false, ...(next === undefined ? {} : { nextCursor: next }) };
-    },
-  } as unknown as CoreClientLike;
-}
+import { makeFakeScanCore } from "./helpers/fake-scan-core.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
 const SAMPLE_FILES = [
   "README.md", "package.json", "tsconfig.json",
@@ -60,7 +20,7 @@ const SAMPLE_FILES = [
 describe("RepoMapGenerator", () => {
   it("生成目录树与关键文件提示，token 归因与文本一致", async () => {
     const state = { mtime: 1, scanCalls: 0 };
-    const generator = new RepoMapGenerator(createFakeCore(SAMPLE_FILES, state));
+    const generator = new RepoMapGenerator(makeFakeScanCore(SAMPLE_FILES, state));
     const result = await generator.generate({ sessionId: "s1", cwd: "/repo" });
     expect(result.text).toContain("Key files: package.json, README.md, tsconfig.json");
     expect(result.text).toContain("src/");
@@ -72,7 +32,7 @@ describe("RepoMapGenerator", () => {
 
   it("默认排除 node_modules/.git/dist，会话 excludes 叠加生效", async () => {
     const state = { mtime: 1, scanCalls: 0 };
-    const generator = new RepoMapGenerator(createFakeCore([...SAMPLE_FILES, "secret/private.txt"], state));
+    const generator = new RepoMapGenerator(makeFakeScanCore([...SAMPLE_FILES, "secret/private.txt"], state));
     const result = await generator.generate({ sessionId: "s1", cwd: "/repo", excludes: ["secret"] });
     expect(result.text).not.toContain("node_modules");
     expect(result.text).not.toContain("bundle.js");
@@ -85,7 +45,7 @@ describe("RepoMapGenerator", () => {
   it("超预算时收缩深度并如实标注 truncated", async () => {
     const many = Array.from({ length: 400 }, (_, i) => `src/mod${i % 20}/sub/file${i}.ts`);
     const state = { mtime: 1, scanCalls: 0 };
-    const generator = new RepoMapGenerator(createFakeCore(many, state));
+    const generator = new RepoMapGenerator(makeFakeScanCore(many, state));
     const full = await generator.generate({ sessionId: "s1", cwd: "/repo", budget: 100_000 });
     const bounded = await generator.generate({ sessionId: "s1", cwd: "/repo", budget: 200 });
     expect(bounded.truncated).toBe(true);
@@ -98,7 +58,7 @@ describe("RepoMapGenerator", () => {
   it("极小预算硬截断仍不超预算且带标注", async () => {
     const many = Array.from({ length: 2000 }, (_, i) => `a${i % 50}/b${i % 30}/c${i % 10}/f${i}.ts`);
     const state = { mtime: 1, scanCalls: 0 };
-    const generator = new RepoMapGenerator(createFakeCore(many, state));
+    const generator = new RepoMapGenerator(makeFakeScanCore(many, state));
     const result = await generator.generate({ sessionId: "s1", cwd: "/repo", budget: 64 });
     expect(result.truncated).toBe(true);
     expect(result.text).toContain("[repo map truncated");
@@ -107,7 +67,7 @@ describe("RepoMapGenerator", () => {
 
   it("缓存：根目录 mtime 未变且 TTL 内不重扫；mtime 变化后重扫", async () => {
     const state = { mtime: 1, scanCalls: 0 };
-    const generator = new RepoMapGenerator(createFakeCore(SAMPLE_FILES, state));
+    const generator = new RepoMapGenerator(makeFakeScanCore(SAMPLE_FILES, state));
     const first = await generator.generate({ sessionId: "s1", cwd: "/repo" });
     expect(first.cached).toBe(false);
     const scansAfterFirst = state.scanCalls;
@@ -125,7 +85,7 @@ describe("RepoMapGenerator", () => {
 
   it("空工作区返回空树而不报错", async () => {
     const state = { mtime: 1, scanCalls: 0 };
-    const generator = new RepoMapGenerator(createFakeCore([], state));
+    const generator = new RepoMapGenerator(makeFakeScanCore([], state));
     const result = await generator.generate({ sessionId: "s1", cwd: "/repo" });
     expect(result.truncated).toBe(false);
     expect(result.entryCount).toBe(0);
@@ -134,7 +94,7 @@ describe("RepoMapGenerator", () => {
 
 describe("repo map 提示词注入与 repo_map 工具", () => {
   async function setup(options?: { repoMapEnabled?: boolean; agentMode?: "plan" | "code"; toolCalls?: Array<{ name: string; id: string; input: Record<string, unknown> }> }) {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-repomap-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const session = await sessions.create({ cwd: root, provider: "fake", model: "model" });
@@ -167,7 +127,7 @@ describe("repo map 提示词注入与 repo_map 工具", () => {
     const providers = new ProviderRegistry();
     providers.register(provider);
     const state = { mtime: 1, scanCalls: 0 };
-    const core = createFakeCore(SAMPLE_FILES, state);
+    const core = makeFakeScanCore(SAMPLE_FILES, state);
     const runner = new AgentRunner(sessions, providers, core, events, pricing);
     await runner.run(session.id, "hello");
     return { session, sessions, requests, published, state };

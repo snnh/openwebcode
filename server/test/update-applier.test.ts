@@ -2,29 +2,18 @@ import { EventEmitter } from "node:events";
 import type { ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
-import type { CoreClientLike, CoreInfo } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { UpdateApplier, UpdateApplyError, type UpdateApplyState } from "../src/update-applier.js";
-
-const roots: string[] = [];
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-});
-
-async function tempRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-update-apply-"));
-  roots.push(root);
-  return root;
-}
+import { makeFakeCore } from "./helpers/fake-core.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
 const RELEASE_URL = "https://api.github.com/repos/snnh/openwebcode/releases/latest";
 const ASSET_BASE = "https://github.com/snnh/openwebcode/releases/download/v0.6.0";
@@ -129,8 +118,8 @@ async function makeApplier(overrides: {
   exitImpl: () => void;
   currentVersion?: string;
 }): Promise<ApplierFixture> {
-  const dataDir = await tempRoot();
-  const installRoot = path.join(await tempRoot(), "owc-home");
+  const dataDir = await tempRoot("owc-update-apply-");
+  const installRoot = path.join(await tempRoot("owc-update-apply-"), "owc-home");
   await mkdir(installRoot, { recursive: true });
   const applier = new UpdateApplier({
     dataDir,
@@ -166,7 +155,7 @@ describe("UpdateApplier", () => {
       spawnImpl: spawn.impl,
       exitImpl: () => { exitCalls += 1; },
     });
-    const configHome = await tempRoot();
+    const configHome = await tempRoot("owc-update-apply-");
     await withConfigHome(configHome, async () => {
       const state = await fixture.applier.apply();
       expect(state.status).toBe("done");
@@ -195,7 +184,7 @@ describe("UpdateApplier", () => {
       spawnImpl: spawn.impl,
       exitImpl: () => { exitCalls += 1; },
     });
-    const configHome = await tempRoot();
+    const configHome = await tempRoot("owc-update-apply-");
     await mkdir(path.join(configHome, "systemd", "user"), { recursive: true });
     await writeFile(path.join(configHome, "systemd", "user", "openwebcode.service"), "[Unit]\n", "utf8");
     await withConfigHome(configHome, async () => {
@@ -293,7 +282,7 @@ describe("UpdateApplier", () => {
       spawnImpl: spawn.impl,
       exitImpl: () => undefined,
     });
-    const configHome = await tempRoot();
+    const configHome = await tempRoot("owc-update-apply-");
     await withConfigHome(configHome, async () => {
       const first = fixture.applier.apply();
       await vi.waitFor(() => expect(fixture.applier.state()?.status).toBe("downloading"), { timeout: 5000 });
@@ -307,33 +296,15 @@ describe("UpdateApplier", () => {
   });
 });
 
-const FAKE_CORE_INFO: CoreInfo = {
-  version: "0.5.2", protocolVersion: "1.0", platform: "windows", sandboxCapability: "advisory",
-  features: { fsStat: true, fsStatMany: true, fsWriteBase64: true, jobControl: false, fsHash: true, fsScanPagination: true, fsWatch: true },
-  limits: { maxFrameBytes: 33_554_432, maxWriteBase64Bytes: 20_971_520, maxHashBytes: 16_777_216, maxStatManyPaths: 128, maxStatManyPathBytes: 262_144, maxScanEntries: 256, maxScanDepth: 16, maxScanNodes: 2_048, maxWatches: 16, maxWatchEvents: 128, maxConcurrentJobs: 4, maxJobOutputBytes: 524_288 },
-};
-
-function fakeCore(): CoreClientLike {
-  const emitter = new EventEmitter();
-  const client = {
-    on(eventName: string, listener: (...args: unknown[]) => void) { emitter.on(eventName, listener); return client; },
-    async start() { return FAKE_CORE_INFO; },
-    async stop() { return; },
-    async ping() { return FAKE_CORE_INFO; },
-    setRequestTimeoutMs() {},
-  } as unknown as CoreClientLike;
-  return client;
-}
-
 async function setupApp(updateApplier?: UpdateApplier) {
-  const root = await tempRoot();
+  const root = await tempRoot("owc-update-apply-");
   const sessions = new SessionStore(path.join(root, "sessions"));
   await sessions.initialize();
   const pricing = new PricingCatalog(path.join(root, "model-pricing.json"));
   await pricing.initialize();
   const providers = new ProviderRegistry();
   const events = new EventBus();
-  const core = fakeCore();
+  const core = makeFakeCore();
   const agent = new AgentRunner(sessions, providers, core, events, pricing);
   const app = await buildServer({ core, sessions, agent, events, providers, pricing, ...(updateApplier ? { updateApplier } : {}) });
   return app;

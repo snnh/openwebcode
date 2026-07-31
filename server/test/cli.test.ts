@@ -1,28 +1,17 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { EventEmitter } from "node:events";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
-import type { CoreClientLike, CoreEvent, CoreInfo, ExecResult } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { makeStubProvider } from "./helpers/stub-provider.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
-
-async function tempRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-cli-"));
-  roots.push(root);
-  return root;
-}
+import { makeControllableCore } from "./helpers/fake-core.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
 const cliPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist/cli.js");
 
@@ -44,52 +33,8 @@ const bashProvider = makeStubProvider("test-stub", async function* (request) {
   yield { type: "done", stopReason: "tool_use" };
 });
 
-const FAKE_CORE_INFO: CoreInfo = {
-  version: "0.2.4-test", protocolVersion: "1.0", platform: "windows", sandboxCapability: "advisory",
-  features: { fsStat: true, fsStatMany: true, fsWriteBase64: true, jobControl: false, fsHash: true, fsScanPagination: true, fsWatch: true },
-  limits: { maxFrameBytes: 33_554_432, maxWriteBase64Bytes: 20_971_520, maxHashBytes: 16_777_216, maxStatManyPaths: 128, maxStatManyPathBytes: 262_144, maxScanEntries: 256, maxScanDepth: 16, maxScanNodes: 2_048, maxWatches: 16, maxWatchEvents: 128, maxConcurrentJobs: 4, maxJobOutputBytes: 524_288 },
-};
-
-/** 可控 fake CoreClient（同 shell.test.ts）：run() 挂起，由 release() 驱动 resolve */
-function createControllableCore(): {
-  client: CoreClientLike;
-  release: (result: ExecResult) => void;
-  runCalls: Array<{ sessionId: string; execId: string; cmd: string; cwd: string }>;
-} {
-  let runResolve: ((result: ExecResult) => void) | undefined;
-  const emitter = new EventEmitter();
-  const runCalls: Array<{ sessionId: string; execId: string; cmd: string; cwd: string }> = [];
-  const client: CoreClientLike = {
-    on(eventName: string, listener: (...args: unknown[]) => void) {
-      emitter.on(eventName, listener);
-      return client;
-    },
-    async start() { return FAKE_CORE_INFO; },
-    async stop() { return; },
-    async configureSession() { return { sandboxCapability: "advisory" as const }; },
-    async run(request) {
-      runCalls.push({ sessionId: request.sessionId, execId: request.execId, cmd: request.cmd, cwd: request.cwd });
-      return new Promise<ExecResult>((resolve) => { runResolve = resolve; });
-    },
-    async ping() { return FAKE_CORE_INFO; },
-    async cleanupSession() { return { ok: true as const }; },
-    async readFile() { return { content: "", totalLines: 0, encoding: "utf-8" as const, truncated: false }; },
-    async writeFile() { return { ok: true as const }; },
-    async editFile() { return { matches: 0 }; },
-    async listFiles() { return { entries: [], truncated: false }; },
-    async globFiles() { return { paths: [], truncated: false }; },
-    async grepFiles() { return { matches: [], truncated: false }; },
-    setRequestTimeoutMs() {},
-  } as unknown as CoreClientLike;
-  return {
-    client,
-    release: (result) => { if (runResolve) { runResolve(result); runResolve = undefined; } },
-    runCalls,
-  };
-}
-
 async function setup(provider: Provider) {
-  const root = await tempRoot();
+  const root = await tempRoot("owc-cli-");
   const sessions = new SessionStore(path.join(root, "sessions"));
   await sessions.initialize();
   const pricing = new PricingCatalog(path.join(root, "pricing.json"));
@@ -97,7 +42,7 @@ async function setup(provider: Provider) {
   const events = new EventBus();
   const providers = new ProviderRegistry();
   providers.register(provider);
-  const core = createControllableCore();
+  const core = makeControllableCore();
   const agent = new AgentRunner(sessions, providers, core.client, events, pricing);
   const app = await buildServer({ core: core.client, sessions, agent, events, providers, pricing });
   // 真监听随机端口：cli 是独立子进程，只能走 TCP/WS

@@ -1,18 +1,13 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { ExtensionManager } from "../src/extensions/extension-manager.js";
 import { ContentLensService } from "../src/extensions/content-lens.js";
 import { optimizeAttention } from "../src/extensions/official.js";
 import type { FastModelClient } from "../src/fast-model.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import type { ChatMessage } from "../src/sessions/types.js";
-
-const temporary: string[] = [];
-afterEach(async () => {
-  await Promise.all(temporary.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
-});
+import { tempRoot } from "./helpers/temp-roots.js";
 
 function message(id: string, role: ChatMessage["role"], text: string): ChatMessage {
   return { id, role, createdAt: "2026-07-20T00:00:00.000Z", content: [{ type: "text", text }] };
@@ -28,8 +23,7 @@ describe("official extensions", () => {
   });
 
   it("runs official hooks in a separate host and persists enable/config state", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-ext-"));
-    temporary.push(root);
+    const root = await tempRoot("owc-ext-");
     const manager = new ExtensionManager(root);
     await manager.initialize();
     try {
@@ -68,8 +62,7 @@ describe("official extensions", () => {
   }, 15_000);
 
   it("keeps content-lens output outside message history and reuses its translation cache", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-lens-"));
-    temporary.push(root);
+    const root = await tempRoot("owc-lens-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const session = await sessions.create({ cwd: root, provider: "test-stub", model: "test-stub" });

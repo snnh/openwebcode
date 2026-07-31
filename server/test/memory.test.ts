@@ -1,8 +1,7 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { Compactor } from "../src/context/compactor.js";
 import type { CoreClientLike } from "../src/core-client.js";
@@ -12,15 +11,8 @@ import type { FastModelClient } from "../src/fast-model.js";
 import { appendMemory, parseSedimentSections, readGlobalMemory, readProjectMemory } from "../src/memory.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
-
-async function tempRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-memory-"));
-  roots.push(root);
-  return root;
-}
+import { makeFakeFastModel } from "./helpers/fake-fast-model.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
 function createFakeCore(): CoreClientLike {
   const core = {
@@ -49,7 +41,7 @@ async function createRunner(root: string, provider: Provider, dataDir?: string) 
 
 describe("appendMemory", () => {
   it("creates a project memory file with header and appends bullets", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-memory-");
     const file = path.join(root, ".owc", "memory.md");
     const result = await appendMemory(file, ["用户偏好中文回复", " 构建命令是 npm run build "]);
     expect(result).toEqual({ appended: 2 });
@@ -57,7 +49,7 @@ describe("appendMemory", () => {
   });
 
   it("uses the global header outside .owc and appends to an existing file", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-memory-");
     const file = path.join(root, "memory.md");
     await appendMemory(file, ["全局事实"]);
     const result = await appendMemory(file, ["又一条"]);
@@ -66,7 +58,7 @@ describe("appendMemory", () => {
   });
 
   it("deduplicates facts already present (trim-insensitive)", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-memory-");
     const file = path.join(root, ".owc", "memory.md");
     await appendMemory(file, ["用户偏好中文回复", "构建命令是 npm run build"]);
     const before = await readFile(file, "utf8");
@@ -79,7 +71,7 @@ describe("appendMemory", () => {
   });
 
   it("reads missing memory files as empty strings", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-memory-");
     expect(await readProjectMemory(root)).toBe("");
     expect(await readGlobalMemory(root)).toBe("");
     await appendMemory(path.join(root, ".owc", "memory.md"), ["项目事实"]);
@@ -148,7 +140,7 @@ describe("remember via AgentRunner", () => {
   }
 
   it("writes project memory and is auto-approved under ask mode", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-memory-");
     const cwd = path.join(root, "ws");
     await mkdir(cwd, { recursive: true });
     const requests: StreamChatRequest[] = [];
@@ -177,7 +169,7 @@ describe("remember via AgentRunner", () => {
   });
 
   it("writes global memory to the data root when scope is global", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-memory-");
     const cwd = path.join(root, "ws");
     const dataDir = path.join(root, "data");
     await mkdir(cwd, { recursive: true });
@@ -206,7 +198,7 @@ describe("system prompt memory injection", () => {
   }
 
   it("injects CLAUDE.md, AGENTS.md, project and global memory when present", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-memory-");
     const cwd = path.join(root, "ws");
     const dataDir = path.join(root, "data");
     await mkdir(path.join(cwd, ".owc"), { recursive: true });
@@ -232,7 +224,7 @@ describe("system prompt memory injection", () => {
   });
 
   it("adds no memory sections when nothing exists", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-memory-");
     const cwd = path.join(root, "ws");
     await mkdir(cwd, { recursive: true });
     const requests: StreamChatRequest[] = [];
@@ -258,7 +250,7 @@ describe("system prompt memory injection", () => {
   });
 
   it("truncates a section beyond 8000 characters", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-memory-");
     const cwd = path.join(root, "ws");
     await mkdir(cwd, { recursive: true });
     await writeFile(path.join(cwd, "AGENTS.md"), "长".repeat(9_000), "utf8");
@@ -274,20 +266,8 @@ describe("system prompt memory injection", () => {
 });
 
 describe("overview compaction sediment", () => {
-  function fakeFastModel(text: string): FastModelClient {
-    return {
-      configured: true,
-      provider: "fast-provider",
-      model: "fake-cheap-model",
-      setConfig() { /* noop */ },
-      async complete() {
-        return { text, usage: { inputTokens: 10, outputTokens: 5 } };
-      },
-    } as unknown as FastModelClient;
-  }
-
   it("sediments 关键发现/未决事项 into project memory and dedups on repeat compaction", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-memory-");
     const cwd = path.join(root, "ws");
     await mkdir(cwd, { recursive: true });
     const store = new SessionStore(path.join(root, "sessions"));
@@ -306,7 +286,7 @@ describe("overview compaction sediment", () => {
       "用户明确指令：",
       "- 不要提交",
     ].join("\n");
-    const compactor = new Compactor(store, fakeFastModel(summary), {}, 10);
+    const compactor = new Compactor(store, makeFakeFastModel(summary), {}, 10);
 
     const result = await compactor.compact(session.id, "overview");
     expect(result.changed).toBe(true);
@@ -321,7 +301,7 @@ describe("overview compaction sediment", () => {
   });
 
   it("skips sediment when overview falls back to truncated (fast model unconfigured)", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-memory-");
     const cwd = path.join(root, "ws");
     await mkdir(cwd, { recursive: true });
     const store = new SessionStore(path.join(root, "sessions"));

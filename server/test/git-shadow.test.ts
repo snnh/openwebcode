@@ -1,15 +1,12 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { GitShadowSnapshots } from "../src/snapshots/git-shadow.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
+import { tempRoot } from "./helpers/temp-roots.js";
 
 describe("GitShadowSnapshots", () => {
   it("restores an empty-tree checkpoint by clearing the workspace", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-shadow-empty-")); roots.push(root);
+    const root = await tempRoot("owc-shadow-empty-");
     const workspace = path.join(root, "workspace");
     const session = path.join(root, "session");
     await mkdir(workspace);
@@ -22,7 +19,7 @@ describe("GitShadowSnapshots", () => {
   });
 
   it("captures tracked and untracked files outside the workspace and restores them", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-shadow-")); roots.push(root);
+    const root = await tempRoot("owc-shadow-");
     const workspace = path.join(root, "workspace");
     const session = path.join(root, "session");
     await mkdir(workspace);
@@ -39,7 +36,7 @@ describe("GitShadowSnapshots", () => {
     await writeFile(path.join(workspace, "new.txt"), "new", "utf8");
     await writeFile(path.join(workspace, "new.cache"), "ignored", "utf8");
     await writeFile(path.join(workspace, "saved.cache"), "changed", "utf8");
-    // 0.5.0 Phase 1b：diff 返回 stat 摘要 + 完整 unified diff（供 Web diff 视图 hunk 解析）
+    // diff 返回 stat 摘要 + 完整 unified diff（供 Web diff 视图 hunk 解析）
     const diffText = await snapshots.diff(checkpoint.id);
     expect(diffText).toContain("a.txt");
     expect(diffText).toContain("diff --git a/a.txt b/a.txt");

@@ -1,29 +1,19 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
-import type { CoreClientLike, CoreInfo } from "../src/core-client.js";
+import type { CoreClientLike } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { UpdateChecker } from "../src/update-checker.js";
 import { setServerVersion } from "../src/version.js";
+import { FAKE_CORE_INFO } from "./helpers/fake-core.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
-const roots: string[] = [];
-afterEach(async () => {
-  setServerVersion("0.0.0");
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-});
-
-const FAKE_CORE_INFO: CoreInfo = {
-  version: "0.5.2", protocolVersion: "1.0", platform: "windows", sandboxCapability: "advisory",
-  features: { fsStat: true, fsStatMany: true, fsWriteBase64: true, jobControl: false, fsHash: true, fsScanPagination: true, fsWatch: true },
-  limits: { maxFrameBytes: 33_554_432, maxWriteBase64Bytes: 20_971_520, maxHashBytes: 16_777_216, maxStatManyPaths: 128, maxStatManyPathBytes: 262_144, maxScanEntries: 256, maxScanDepth: 16, maxScanNodes: 2_048, maxWatches: 16, maxWatchEvents: 128, maxConcurrentJobs: 4, maxJobOutputBytes: 524_288 },
-};
+afterEach(() => setServerVersion("0.0.0"));
 
 function fakeCore(): CoreClientLike {
   const emitter = new EventEmitter();
@@ -38,8 +28,7 @@ function fakeCore(): CoreClientLike {
 }
 
 async function setup(updateChecker?: UpdateChecker) {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-version-"));
-  roots.push(root);
+  const root = await tempRoot("owc-version-");
   const sessions = new SessionStore(path.join(root, "sessions"));
   await sessions.initialize();
   const pricing = new PricingCatalog(path.join(root, "model-pricing.json"));
@@ -61,7 +50,7 @@ describe("/api/version", () => {
       expect(response.statusCode).toBe(200);
       const body = response.json<{ server: string; core: string; protocolVersion: string; githubRepo: string }>();
       expect(body.server).toBe("0.5.2");
-      expect(body.core).toBe("0.5.2");
+      expect(body.core).toBe(FAKE_CORE_INFO.version);
       expect(body.protocolVersion).toBe("1.0");
       expect(body.githubRepo).toBe("snnh/openwebcode");
     } finally {
@@ -83,8 +72,7 @@ describe("/api/update-check", () => {
 
   it("returns the checker snapshot and refreshes on demand", async () => {
     setServerVersion("0.5.2");
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-version-uc-"));
-    roots.push(root);
+    const root = await tempRoot("owc-version-uc-");
     const checker = new UpdateChecker({
       cachePath: path.join(root, "update-check.json"),
       defaultUrl: "https://api.github.com/repos/snnh/openwebcode/releases/latest",

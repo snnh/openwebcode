@@ -1,11 +1,8 @@
-import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import { PermissionCoordinator } from "../src/agent/permission-coordinator.js";
-import type { CoreClientLike } from "../src/core-client.js";
 import { EventBus } from "../src/events/event-bus.js";
 import {
   MAX_STATUS_ENTRIES_PER_GROUP,
@@ -17,42 +14,17 @@ import {
   parseStatusPorcelainZ,
 } from "../src/scm/service.js";
 import { SessionStore } from "../src/sessions/session-store.js";
+import { initGitRepo, realGit, unusedCore } from "./helpers/git.js";
 
-const execFileAsync = promisify(execFile);
 const roots: string[] = [];
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-/** 真实 git 执行器（注入 ScmService.exec；生产默认走 Core job）。 */
-async function realGit(args: string[], cwd: string): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  try {
-    const { stdout, stderr } = await execFileAsync("git", args, { cwd, maxBuffer: 64 * 1024 * 1024 });
-    return { stdout, stderr, exitCode: 0 };
-  } catch (error) {
-    const failure = error as { stdout?: string; stderr?: string; code?: number };
-    return { stdout: failure.stdout ?? "", stderr: failure.stderr ?? "", exitCode: typeof failure.code === "number" ? failure.code : 1 };
-  }
-}
-
-/** 假 core：仅用于未注入 exec 时的构造路径，这里所有用例都注入真实 git。 */
-function unusedCore(): CoreClientLike {
-  const core = { on() { return core; } } as unknown as CoreClientLike;
-  return core;
-}
-
 async function setup() {
   const root = await mkdtemp(path.join(os.tmpdir(), "owc-scm-"));
   roots.push(root);
-  const repo = path.join(root, "repo");
-  await realGit(["init", "-b", "main", repo], root);
-  await realGit(["config", "user.email", "test@example.com"], repo);
-  await realGit(["config", "user.name", "Test"], repo);
-  await realGit(["config", "commit.gpgsign", "false"], repo);
-  await realGit(["config", "core.autocrlf", "false"], repo);
-  await writeFile(path.join(repo, "a.txt"), "hello\n");
-  await realGit(["add", "a.txt"], repo);
-  await realGit(["commit", "-m", "initial"], repo);
+  const repo = await initGitRepo(root);
   const sessions = new SessionStore(path.join(root, "sessions"));
   await sessions.initialize();
   const session = await sessions.create({ cwd: repo, provider: "fake", model: "fake-model" });

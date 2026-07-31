@@ -274,12 +274,11 @@ describe("TOTP 门禁与登录 REST", () => {
       const locked = await app.inject({ method: "POST", url: "/api/auth/login", payload: { code: totpAt(base32Decode(secret), now()) } });
       expect(locked.statusCode).toBe(429);
       expect((locked.json() as { retryAfterSeconds: number }).retryAfterSeconds).toBeGreaterThan(0);
-      // 另一个 IP 不受锁定影响：用恢复码登录成功，且该恢复码不可复用
-      const recoveryLogin = await app.inject({ method: "POST", url: "/api/auth/login", remoteAddress: "10.0.0.2", payload: { code: recoveryCodes[0]! } });
-      expect(recoveryLogin.statusCode).toBe(200);
-      expect((await app.inject({ method: "POST", url: "/api/auth/login", remoteAddress: "10.0.0.3", payload: { code: recoveryCodes[0]! } })).statusCode).toBe(401);
+      // 另一个 IP 不受锁定影响（恢复码一次性语义由 TotpAuthService 单测覆盖）
+      const otherIpLogin = await app.inject({ method: "POST", url: "/api/auth/login", remoteAddress: "10.0.0.2", payload: { code: totpAt(base32Decode(secret), now()) } });
+      expect(otherIpLogin.statusCode).toBe(200);
       // disable：错误码 400，正确码禁用并清文件，status 回落关闭态
-      const cookie = String(recoveryLogin.headers["set-cookie"]).split(";", 1)[0];
+      const cookie = String(otherIpLogin.headers["set-cookie"]).split(";", 1)[0];
       expect((await app.inject({ method: "POST", url: "/api/auth/totp/disable", headers: { cookie }, payload: { code: "000000" } })).statusCode).toBe(400);
       expect((await app.inject({ method: "POST", url: "/api/auth/totp/disable", headers: { cookie }, payload: { code: totpAt(base32Decode(secret), now()) } })).statusCode).toBe(200);
       const status = await app.inject({ method: "GET", url: "/api/auth/status" });

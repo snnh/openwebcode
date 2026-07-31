@@ -1,21 +1,10 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { compareSemver, stripVersionPrefix, UpdateChecker } from "../src/update-checker.js";
 import { setServerVersion } from "../src/version.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
-const roots: string[] = [];
-afterEach(async () => {
-  setServerVersion("0.0.0");
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-});
-
-async function tempRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-update-"));
-  roots.push(root);
-  return root;
-}
+afterEach(() => setServerVersion("0.0.0"));
 
 function githubResponse(tag: string): Response {
   return new Response(JSON.stringify({
@@ -41,7 +30,7 @@ describe("semver helpers", () => {
 
 describe("UpdateChecker", () => {
   it("does not fetch when disabled", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-update-");
     let calls = 0;
     const checker = new UpdateChecker({
       cachePath: path.join(root, "update-check.json"),
@@ -57,7 +46,7 @@ describe("UpdateChecker", () => {
   });
 
   it("reports a newer release and caches it", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-update-");
     setServerVersion("0.5.2");
     let calls = 0;
     const cachePath = path.join(root, "update-check.json");
@@ -93,7 +82,7 @@ describe("UpdateChecker", () => {
   });
 
   it("marks same version as not newer", async () => {
-    const root = await tempRoot();
+    const root = await tempRoot("owc-update-");
     setServerVersion("0.5.2");
     const checker = new UpdateChecker({
       cachePath: path.join(root, "update-check.json"),
