@@ -30,11 +30,19 @@ export interface CostLedger {
 
 export type ToolEvictionStrategy = "lag" | "interval" | "off";
 
+/** 驱逐形态：placeholder = 默认节省（占位符替换结果正文）；process = 超级节省（整轮工具过程连同思维链出视图）。 */
+export type EvictionMode = "placeholder" | "process";
+
 export interface ContextPolicy {
   enabled: boolean;
   strategy: ToolEvictionStrategy;
+  evictionMode: EvictionMode;
   lag: number;
   interval: number;
+  /** 结果估算 token 低于该值始终保留（小结果驱逐省不了多少，反而搅动缓存前缀）。 */
+  minRetainTokens: number;
+  /** read_file 结果被逐时头/尾各保留的行数（保住文件结构认知）。 */
+  readKeepLines: number;
   pinExemptRounds: number;
   restoreBudget: number;
   maxSessionTokens?: number;
@@ -49,6 +57,14 @@ export interface LedgerEntry {
   createdRound: number;
   pinnedUntilRound: number;
   restoredAt?: string;
+  /** 驱逐时记录的工具名与结果字节数，供占位符给出可操作的语义摘要（旧账本缺省，占位符相应降级）。 */
+  toolName?: string;
+  sizeBytes?: number;
+  /** 结果是否为错误（exit ≠ 0 / isError），供超级节省的轮次摘要行标注。 */
+  isError?: boolean;
+  /** read_file 专属：头 readKeepLines 行 + 尾 readKeepLines 行的摘录（驱逐时烧入，写入后不可变）。
+   *  带摘录的条目在两种模式下都保留配对留在视图，只替换正文。 */
+  excerpt?: string;
 }
 
 /** 压缩记录：messages[0..uptoIndex) 由 summary 取代注入视图；instructions 为用户明确指令跨段累积。 */
@@ -87,7 +103,7 @@ export interface BudgetUpdate {
   maxSessionCost?: { currency: Currency; microUnits: string } | undefined;
 }
 
-export type ContextPolicyUpdate = Partial<Pick<ContextPolicy, "enabled" | "strategy" | "lag" | "interval" | "pinExemptRounds" | "restoreBudget">>;
+export type ContextPolicyUpdate = Partial<Pick<ContextPolicy, "enabled" | "strategy" | "evictionMode" | "lag" | "interval" | "minRetainTokens" | "readKeepLines" | "pinExemptRounds" | "restoreBudget">>;
 
 /**
  * 选择性上下文（§4.4）：pins 为消息 id 或文件路径（pin 的消息不被驱逐）；
@@ -135,11 +151,21 @@ export interface BuildViewOptions {
 const DEFAULT_POLICY: ContextPolicy = {
   enabled: true,
   strategy: "lag",
-  lag: 1,
+  evictionMode: "placeholder",
+  // lag=2：当轮（尾部批次，始终保护）+ 最近 2 个已完成轮的工具结果保留全文；
+  // 更早的按 evictionMode 逐出为 artifact（占位符含 read_artifact 指引）。
+  lag: 2,
   interval: 5,
+  minRetainTokens: 256,
+  readKeepLines: 50,
   pinExemptRounds: 5,
   restoreBudget: 20_000,
 };
+
+/** read_file 结果行数不超过该值时始终保留（与 token 下限并列的独立豁免：10 行是完整的文件结构认知）。 */
+const READ_ALWAYS_RETAIN_LINES = 10;
+/** read 头尾摘录的总字符上限：minified 长行文件兜住，超出仍走 artifact。 */
+const READ_EXCERPT_MAX_CHARS = 8000;
 
 /** 视图中一条消息的构建片段：最终注入形态（驱逐占位/图像预算已应用）+ 预估算 tokens。 */
 interface ViewFragment {
@@ -183,8 +209,69 @@ function computeLedgerKey(ledger: ContextLedger): string {
   return JSON.stringify({
     compacted: ledger.compacted ?? null,
     cleared: ledger.cleared ?? null,
+    // evictionMode 改变视图渲染（结构后处理），必须参与缓存键
+    mode: ledger.policy.evictionMode,
     entries: ledger.entries.map((entry) => [entry.messageId, entry.artifactId, entry.state]),
   });
+}
+
+/**
+ * 按轮计算保留集：一轮 = 一批连续的 tool 消息（对应一次 assistant tool_call 批次的全部结果）。
+ * 保留最近 max(lag, 1) 轮——活动路径以 tool 批次结尾时该批是当轮（模型尚未看到），始终保护；
+ * 路径以非 tool 消息结尾时严格保留最近 lag 轮。
+ */
+function retainedToolIds(messages: ChatMessage[], lag: number): ReadonlySet<string> {
+  const retained = new Set<string>();
+  const endsWithToolBatch = messages.length > 0 && messages[messages.length - 1]!.role === "tool";
+  const keepRounds = Math.max(lag, endsWithToolBatch ? 1 : 0);
+  let rounds = 0;
+  let index = messages.length - 1;
+  while (index >= 0 && rounds < keepRounds) {
+    if (messages[index]!.role !== "tool") {
+      index -= 1;
+      continue;
+    }
+    rounds += 1;
+    while (index >= 0 && messages[index]!.role === "tool") {
+      retained.add(messages[index]!.id);
+      index -= 1;
+    }
+  }
+  return retained;
+}
+
+/** toolCallId → 工具名（来自 assistant 消息的 tool_call 块），供驱逐条目记录语义摘要。 */
+function toolNameByCallId(messages: ChatMessage[]): Map<string, string> {
+  const names = new Map<string, string>();
+  for (const message of messages) {
+    if (message.role !== "assistant") continue;
+    for (const block of message.content) {
+      if (block.type === "tool_call") names.set(block.id, block.name);
+    }
+  }
+  return names;
+}
+
+/** 驱逐占位符：给模型可操作的摘要（工具名/大小）与自助恢复路径（read_artifact）。 */
+function evictionPlaceholder(entry: LedgerEntry): string {
+  const tool = entry.toolName ?? "unknown tool";
+  const size = entry.sizeBytes !== undefined ? `, ${entry.sizeBytes} bytes` : "";
+  return `[tool result evicted (${tool}${size}); artifact:${entry.artifactId}; call read_artifact with artifactId "${entry.artifactId}", offset and limit to re-read a slice]`;
+}
+
+/** read_file 被逐时的头尾摘录：头/尾各 keepLines 行 + 中间省略注记；总字符超上限时砍头部保尾部。 */
+function buildReadExcerpt(content: string, keepLines: number, artifactId: string): string {
+  const lines = content.split("\n");
+  if (lines.length <= keepLines * 2 + 1) return content;
+  const head = lines.slice(0, keepLines);
+  const tail = lines.slice(-keepLines);
+  const omission = `[... ${lines.length - keepLines * 2} lines elided; artifact:${artifactId}; call read_artifact with artifactId "${artifactId}", offset and limit to re-read a slice ...]`;
+  let excerpt = [...head, omission, ...tail].join("\n");
+  if (excerpt.length > READ_EXCERPT_MAX_CHARS) {
+    const budget = Math.max(0, READ_EXCERPT_MAX_CHARS - (omission.length + tail.join("\n").length + 64));
+    excerpt = `${head.join("\n").slice(0, budget)}\n[... head truncated ...]\n${omission}\n${tail.join("\n")}`;
+  }
+  return excerpt;
 }
 
 /** 构建单条消息片段：深克隆 + 驱逐占位替换（pin 的消息跳过替换）。 */
@@ -199,7 +286,7 @@ function buildFragment(message: ChatMessage, byMessage: Map<string, LedgerEntry>
         if (!evictResult || block.type !== "tool_result") return { ...block };
         return {
           ...block,
-          content: `[tool result evicted; artifact:${entry.artifactId}; use the UI restore action to reinsert full text]`,
+          content: entry.excerpt ?? evictionPlaceholder(entry),
         };
       }),
     },
@@ -219,6 +306,79 @@ function estimateFragmentTokens(message: ChatMessage): number {
     else if (block.type === "text" || block.type === "thinking") total += estimateTokens(block.text);
   }
   return total;
+}
+
+/** 驱逐摘要消息 id 前缀：按轮一条，由该轮 assistant 消息 id 派生，确定且写入后不可变（缓存断点锚定用）。 */
+const EVICTED_SUMMARY_PREFIX = "evicted:";
+
+/** 超级节省轮次摘要行：列出被逐调用（含出错标记）与 artifact 恢复指引；内容仅由账本条目派生，不可变。 */
+function renderEvictedRoundSummary(entries: LedgerEntry[]): string {
+  const calls = entries.map((entry) => `${entry.toolName ?? "tool"}${entry.isError ? "(error)" : ""}`).join(", ");
+  const artifacts = entries.map((entry) => entry.artifactId).join(", ");
+  return `[${entries.length} tool call(s) evicted: ${calls}; artifacts: ${artifacts}; call read_artifact with an artifactId, offset and limit to re-read a slice]`;
+}
+
+/**
+ * 超级节省（process）结构后处理：非保留轮的整轮工具过程出视图。
+ * - read_file（带 excerpt 的条目）：配对保留，正文已被 buildFragment 换成头尾摘录，不动结构；
+ * - 其余被逐结果：tool 消息整条移除，assistant 里对应 tool_call 块剥离；
+ * - assistant 的 tool_call 被全部剥离时思维链一并移除（与工具过程同生共死），消息变空则整条丢弃；
+ * - 每轮在原 assistant 位置后注入一条不可变摘要消息（id 由该轮 assistant 消息派生）。
+ * 配对不变量：被删 tool 消息的 tool_call 一定同时被剥离，反之亦然（pin/restore/excerpt 两侧都保留）。
+ */
+function applyProcessEviction(view: ChatMessage[], ledger: ContextLedger, pinnedIds: ReadonlySet<string>): ChatMessage[] {
+  const entriesByMessage = new Map(
+    ledger.entries
+      .filter((entry) => entry.state !== "full" && entry.state !== "restored")
+      .map((entry) => [entry.messageId, entry]),
+  );
+  if (entriesByMessage.size === 0) return view;
+  const removedMessages = new Set<string>();
+  const entryByCallId = new Map<string, LedgerEntry>();
+  for (const message of view) {
+    if (message.role !== "tool" || pinnedIds.has(message.id)) continue;
+    const entry = entriesByMessage.get(message.id);
+    if (!entry || entry.excerpt !== undefined) continue;
+    const result = message.content.find((block) => block.type === "tool_result");
+    if (!result || result.type !== "tool_result") continue;
+    removedMessages.add(message.id);
+    entryByCallId.set(result.toolCallId, entry);
+  }
+  if (removedMessages.size === 0) return view;
+
+  const output: ChatMessage[] = [];
+  for (const message of view) {
+    if (removedMessages.has(message.id)) continue;
+    if (message.role !== "assistant") {
+      output.push(message);
+      continue;
+    }
+    const removedEntries: LedgerEntry[] = [];
+    for (const block of message.content) {
+      if (block.type !== "tool_call") continue;
+      const entry = entryByCallId.get(block.id);
+      if (entry) removedEntries.push(entry);
+    }
+    if (removedEntries.length === 0) {
+      output.push(message);
+      continue;
+    }
+    const hasSurvivingCall = message.content.some((block) => block.type === "tool_call" && !entryByCallId.has(block.id));
+    // 思维链随整轮移除：该消息的 tool_call 全部出视图时才删 thinking；部分存活的轮保持原样
+    const content = message.content.filter((block) => {
+      if (block.type === "tool_call") return !entryByCallId.has(block.id);
+      if (block.type === "thinking") return hasSurvivingCall;
+      return true;
+    });
+    if (content.length > 0) output.push({ ...message, content });
+    output.push({
+      id: `${EVICTED_SUMMARY_PREFIX}${message.id}`,
+      role: "user",
+      createdAt: message.createdAt,
+      content: [{ type: "text", text: renderEvictedRoundSummary(removedEntries) }],
+    });
+  }
+  return output;
 }
 
 /** glob → RegExp 编译缓存：pattern 来自会话配置（≤200 条/会话），小 Map 足够；FIFO 逐出兜底防膨胀。 */
@@ -439,7 +599,25 @@ export class ContextManager {
     // 返回按消息/内容数组浅拷：调用方（扩展 transform 等）可替换消息或内容数组而不污染
     // 缓存主本；内容块按不可变数据共享（现有调用方均为整体替换或 IPC 序列化，无原地改写）。
     const view = master!.map((message) => ({ ...message, content: [...message.content] }));
-    return { messages: view, ledger, stats };
+    if (ledger.policy.evictionMode !== "process") return { messages: view, ledger, stats };
+    // 超级节省：结构后处理（整轮过程出视图）在缓存主本之外应用，产出确定；结构变化后
+    // 按最终视图重算 token 归因，保证 85% 水位依据的是真实注入量。
+    const processed = applyProcessEviction(view, ledger, pinnedIds);
+    if (processed === view) return { messages: view, ledger, stats };
+    const processedSegments: ContextSegmentBreakdown = { system: 0, compactionSummary: 0, toolResults: 0, messages: 0, repoMap: 0, other: 0 };
+    let processedTotal = 0;
+    let processedPinned = 0;
+    for (const message of processed) {
+      const tokens = estimateFragmentTokens(message);
+      processedTotal += tokens;
+      processedSegments[message.role === "tool" ? "toolResults" : message.id.startsWith("compaction:") ? "compactionSummary" : "messages"] += tokens;
+      if (pinnedIds.has(message.id)) processedPinned += tokens;
+    }
+    return {
+      messages: processed,
+      ledger,
+      stats: { ...stats, totalTokens: Math.max(1, processedTotal), segments: processedSegments, pinnedTokens: processedPinned },
+    };
   }
 
   async budgetStatus(): Promise<{
@@ -505,7 +683,11 @@ export class ContextManager {
         if (!["lag", "interval", "off"].includes(update.strategy)) throw new Error("strategy must be lag, interval, or off");
         ledger.policy.strategy = update.strategy;
       }
-      for (const key of ["lag", "interval", "pinExemptRounds", "restoreBudget"] as const) {
+      if (update.evictionMode !== undefined) {
+        if (!["placeholder", "process"].includes(update.evictionMode)) throw new Error("evictionMode must be placeholder or process");
+        ledger.policy.evictionMode = update.evictionMode;
+      }
+      for (const key of ["lag", "interval", "minRetainTokens", "readKeepLines", "pinExemptRounds", "restoreBudget"] as const) {
         const value = update[key];
         if (value === undefined) continue;
         const minimum = key === "interval" || key === "restoreBudget" ? 1 : 0;
@@ -607,11 +789,15 @@ export class ContextManager {
       const ledger = await this.load();
       const toolMessages = messages.filter((message) => message.role === "tool");
       if (!ledger.policy.enabled || ledger.policy.strategy === "off") return ledger;
+      // lag 按轮计（一轮 = 一批连续 tool 消息，即一次 assistant tool_call 批次的全部结果）；
+      // 当轮（尾部批次）始终保护，保证任何结果至少在紧随其后的模型调用中完整出现一次。
+      const retained = retainedToolIds(messages, ledger.policy.lag);
       const eligible = ledger.policy.strategy === "lag"
-        ? toolMessages.slice(0, Math.max(0, toolMessages.length - ledger.policy.lag))
+        ? toolMessages.filter((message) => !retained.has(message.id))
         : ledger.policy.strategy === "interval" && ledger.round % Math.max(1, ledger.policy.interval) === 0
-          ? toolMessages.slice(0, Math.max(0, toolMessages.length - ledger.policy.lag))
+          ? toolMessages.filter((message) => !retained.has(message.id))
           : [];
+      const toolNames = toolNameByCallId(messages);
       // Ledger entries grow with the session. Index them once so eviction stays
       // linear in the newly eligible tool messages instead of O(T×E).
       const entriesByMessage = new Map(ledger.entries.map((entry) => [entry.messageId, entry]));
@@ -633,13 +819,28 @@ export class ContextManager {
         }
         const result = message.content.find((block) => block.type === "tool_result");
         if (!result || result.type !== "tool_result") continue;
+        const toolName = toolNames.get(result.toolCallId);
+        // 豁免下限：小结果驱逐收益微乎其微，反而搅动缓存前缀；read ≤10 行是完整的文件结构认知
+        if (estimateTokens(result.content) < ledger.policy.minRetainTokens) continue;
+        if (toolName === "read_file" && result.content.split("\n").length <= READ_ALWAYS_RETAIN_LINES) continue;
         const artifactId = `artifact-${randomUUID()}`;
         if (!artifactsDirReady) {
           await mkdir(path.join(this.sessionRoot, "artifacts"), { recursive: true });
           artifactsDirReady = true;
         }
         await writeFile(path.join(this.sessionRoot, "artifacts", `${artifactId}.txt`), result.content, "utf8");
-        const entry: LedgerEntry = { messageId: message.id, kind: "tool_result", artifactId, state: "evicted", createdRound: ledger.round, pinnedUntilRound: 0 };
+        const entry: LedgerEntry = {
+          messageId: message.id,
+          kind: "tool_result",
+          artifactId,
+          state: "evicted",
+          createdRound: ledger.round,
+          pinnedUntilRound: 0,
+          ...(toolName ? { toolName } : {}),
+          sizeBytes: Buffer.byteLength(result.content, "utf8"),
+          ...(result.isError ? { isError: true } : {}),
+          ...(toolName === "read_file" ? { excerpt: buildReadExcerpt(result.content, ledger.policy.readKeepLines, artifactId) } : {}),
+        };
         ledger.entries.push(entry);
         entriesByMessage.set(entry.messageId, entry);
         mutated = true;
@@ -666,7 +867,19 @@ export class ContextManager {
         const artifactId = `artifact-${randomUUID()}`;
         await mkdir(path.join(this.sessionRoot, "artifacts"), { recursive: true });
         await writeFile(path.join(this.sessionRoot, "artifacts", `${artifactId}.txt`), result.content, "utf8");
-        ledger.entries.push({ messageId, kind: "tool_result", artifactId, state: "evicted", createdRound: ledger.round, pinnedUntilRound: 0 });
+        const toolName = toolNameByCallId(messages).get(result.toolCallId);
+        ledger.entries.push({
+          messageId,
+          kind: "tool_result",
+          artifactId,
+          state: "evicted",
+          createdRound: ledger.round,
+          pinnedUntilRound: 0,
+          ...(toolName ? { toolName } : {}),
+          sizeBytes: Buffer.byteLength(result.content, "utf8"),
+          ...(result.isError ? { isError: true } : {}),
+          ...(toolName === "read_file" ? { excerpt: buildReadExcerpt(result.content, ledger.policy.readKeepLines, artifactId) } : {}),
+        });
       }
       await this.save(ledger);
       return ledger;
@@ -744,6 +957,10 @@ export class ContextManager {
 
 function normalizePolicy(value: ContextPolicy | undefined): ContextPolicy {
   const policy: ContextPolicy = { ...DEFAULT_POLICY, ...(value ?? {}) };
+  if (policy.evictionMode !== "placeholder" && policy.evictionMode !== "process") policy.evictionMode = DEFAULT_POLICY.evictionMode;
+  for (const key of ["minRetainTokens", "readKeepLines"] as const) {
+    if (!Number.isSafeInteger(policy[key]) || policy[key] < 0) policy[key] = DEFAULT_POLICY[key];
+  }
   const cost = value?.maxSessionCost;
   if (cost && (cost.currency === "USD" || cost.currency === "CNY") && /^[1-9]\d*$/.test(cost.microUnits)) {
     policy.maxSessionCost = { ...cost };
@@ -836,9 +1053,19 @@ function normalizeLedger(value: Partial<ContextLedger>): ContextLedger {
 
 export function selectCacheBreakpoints(messages: ChatMessage[], ledger: ContextLedger): string[] {
   const selected: string[] = [];
+  const ids = new Set(messages.map((message) => message.id));
   const lastEvicted = [...ledger.entries].reverse().find((entry) => entry.state === "evicted");
-  if (lastEvicted) selected.push(lastEvicted.messageId);
-  const users = messages.filter((message) => message.role === "user");
+  if (lastEvicted) {
+    if (ids.has(lastEvicted.messageId)) {
+      selected.push(lastEvicted.messageId);
+    } else {
+      // 超级节省：被逐 tool 消息已出视图，锚到最新的驱逐摘要消息（同样位于稳定前缀边界）
+      const summary = [...messages].reverse().find((message) => message.id.startsWith(EVICTED_SUMMARY_PREFIX));
+      if (summary) selected.push(summary.id);
+    }
+  }
+  // 驱逐摘要消息是合成 user 消息，不参与"倒数第二条用户消息"断点
+  const users = messages.filter((message) => message.role === "user" && !message.id.startsWith(EVICTED_SUMMARY_PREFIX));
   if (users.length >= 2) selected.push(users[users.length - 2]!.id);
   return [...new Set(selected)].slice(-3);
 }

@@ -31,21 +31,24 @@ function PolicySection({ sessionId, running, onNotice }: { sessionId: string; ru
   const queryClient = useQueryClient();
   const context = useQuery({ queryKey: ["context", sessionId], queryFn: () => api.context(sessionId) });
   const policy = context.data?.ledger.policy;
-  const [form, setForm] = useState({ enabled: true, strategy: "lag" as "lag" | "interval" | "off", lag: "1", interval: "5", pinExemptRounds: "5", restoreBudget: "20000" });
+  const [form, setForm] = useState({ enabled: true, strategy: "lag" as "lag" | "interval" | "off", evictionMode: "placeholder" as "placeholder" | "process", lag: "2", interval: "5", minRetainTokens: "256", readKeepLines: "50", pinExemptRounds: "5", restoreBudget: "20000" });
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     if (!policy) return;
-    setForm({ enabled: policy.enabled, strategy: policy.strategy, lag: String(policy.lag), interval: String(policy.interval), pinExemptRounds: String(policy.pinExemptRounds), restoreBudget: String(policy.restoreBudget) });
+    setForm({ enabled: policy.enabled, strategy: policy.strategy, evictionMode: policy.evictionMode, lag: String(policy.lag), interval: String(policy.interval), minRetainTokens: String(policy.minRetainTokens), readKeepLines: String(policy.readKeepLines), pinExemptRounds: String(policy.pinExemptRounds), restoreBudget: String(policy.restoreBudget) });
   }, [policy]);
   const save = (): void => {
-    const values = [form.lag, form.interval, form.pinExemptRounds, form.restoreBudget];
+    const values = [form.lag, form.interval, form.minRetainTokens, form.readKeepLines, form.pinExemptRounds, form.restoreBudget];
     if (values.some((value) => !/^\d+$/.test(value))) { onNotice(t("上下文策略数值必须为非负整数", "Context policy values must be non-negative integers"), "error"); return; }
     setBusy(true);
     api.updateContextPolicy(sessionId, {
       enabled: form.enabled,
       strategy: form.strategy,
+      evictionMode: form.evictionMode,
       lag: Number(form.lag),
       interval: Number(form.interval),
+      minRetainTokens: Number(form.minRetainTokens),
+      readKeepLines: Number(form.readKeepLines),
       pinExemptRounds: Number(form.pinExemptRounds),
       restoreBudget: Number(form.restoreBudget),
     }).then(() => {
@@ -67,7 +70,10 @@ function PolicySection({ sessionId, running, onNotice }: { sessionId: string; ru
       <div className="context-policy-form">
         <label><input type="checkbox" checked={form.enabled} disabled={running || busy} onChange={(event) => setForm((value) => ({ ...value, enabled: event.target.checked }))} /> {t("启用自动驱逐", "Enable automatic eviction")}</label>
         <label>{t("策略", "Strategy")}<select value={form.strategy} disabled={running || busy} onChange={(event) => setForm((value) => ({ ...value, strategy: event.target.value as typeof value.strategy }))}><option value="lag">{t("滚动 lag", "Rolling lag")}</option><option value="interval">{t("定期 interval", "Periodic interval")}</option><option value="off">{t("仅手动", "Manual only")}</option></select></label>
+        <label>{t("驱逐模式", "Eviction mode")}<select value={form.evictionMode} disabled={running || busy} onChange={(event) => setForm((value) => ({ ...value, evictionMode: event.target.value as typeof value.evictionMode }))}><option value="placeholder">{t("默认节省（占位符）", "Default saver (placeholder)")}</option><option value="process">{t("超级节省（整轮过程驱逐）", "Super saver (whole-round eviction)")}</option></select></label>
         <label>{t("保留最近轮数", "Recent rounds to retain")}<input value={form.lag} disabled={running || busy} inputMode="numeric" onChange={(event) => setForm((value) => ({ ...value, lag: event.target.value }))} /></label>
+        <label>{t("结果保留下限 tokens", "Min result tokens to retain")}<input value={form.minRetainTokens} disabled={running || busy} inputMode="numeric" onChange={(event) => setForm((value) => ({ ...value, minRetainTokens: event.target.value }))} /></label>
+        <label>{t("read 头尾保留行数", "Read head/tail lines to keep")}<input value={form.readKeepLines} disabled={running || busy} inputMode="numeric" onChange={(event) => setForm((value) => ({ ...value, readKeepLines: event.target.value }))} /></label>
         <label>{t("批量间隔", "Batch interval")}<input value={form.interval} disabled={running || busy} inputMode="numeric" onChange={(event) => setForm((value) => ({ ...value, interval: event.target.value }))} /></label>
         <label>{t("回写保护轮数", "Restore protection rounds")}<input value={form.pinExemptRounds} disabled={running || busy} inputMode="numeric" onChange={(event) => setForm((value) => ({ ...value, pinExemptRounds: event.target.value }))} /></label>
         <label>{t("回写预算 tokens", "Restore budget (tokens)")}<input value={form.restoreBudget} disabled={running || busy} inputMode="numeric" onChange={(event) => setForm((value) => ({ ...value, restoreBudget: event.target.value }))} /></label>

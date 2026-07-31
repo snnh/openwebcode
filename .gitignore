@@ -56,3 +56,4 @@ _CPack_Packages/
 /release-assets/
 protocol-upload-*.bin
 devopenwebcodesandbox-write-probe.txt
+.tmp-pty-repro/
