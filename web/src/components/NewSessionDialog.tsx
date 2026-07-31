@@ -10,7 +10,7 @@ export interface NewSessionValues {
   title?: string;
   provider: string;
   model: string;
-  agentMode?: "plan" | "build";
+  agentMode?: "plan" | "code";
   permissionMode?: PermissionMode;
   sandboxMode?: SandboxMode;
   setupScript?: string;
@@ -46,7 +46,7 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
   const [setupScript, setSetupScript] = useState("");
   const [sandboxCaps, setSandboxCaps] = useState<SandboxCapabilities | undefined>();
   const [workspaceMode, setWorkspaceMode] = useState<"direct" | "managed">("direct");
-  const [agentMode, setAgentMode] = useState<"plan" | "build">("build");
+  const [agentMode, setAgentMode] = useState<"plan" | "code">("code");
   const [managedCaps, setManagedCaps] = useState<ManagedWorkspaceCapability | undefined>();
 
   const dialogModels = models.filter((item) => providers.includes(item.provider));
@@ -190,8 +190,8 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
         )}
         <label>
           {t("模式", "Mode")}
-          <select value={agentMode} onChange={(event) => setAgentMode(event.target.value as "plan" | "build")}>
-            <option value="build">{t("构建模式（Build）", "Build")}</option>
+          <select value={agentMode} onChange={(event) => setAgentMode(event.target.value as "plan" | "code")}>
+            <option value="code">{t("代码模式（Code）", "Code")}</option>
             <option value="plan">{t("计划模式（Plan）", "Plan")}</option>
           </select>
         </label>

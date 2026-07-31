@@ -18,7 +18,7 @@ export function StatusBar({ session, state, tokens, costLabel, indexStatus, wind
   return (
     <footer className="session-status-bar" aria-label={t("会话状态", "Session status")}>
       <span title={session.cwd}><Icon name="folder" size={12} /> <b>{session.cwd}</b></span>
-      <span><Icon name="history" size={12} /> {session.agentMode ?? "build"}</span>
+      <span><Icon name="history" size={12} /> {session.agentMode ?? "code"}</span>
       <span><Icon name="shield" size={12} /> {session.sandboxMode ?? "appcontainer"}</span>
       <span><Icon name="settings" size={12} /> {session.provider}/{session.model}</span>
       {session.thinking && <span className="status-optional">thinking: {session.thinking}</span>}

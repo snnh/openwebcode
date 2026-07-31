@@ -97,8 +97,8 @@ export interface SessionMeta {
   provider: string;
   model: string;
   thinking?: "adaptive" | "enabled" | "disabled";
-  effort?: "low" | "medium" | "high" | "xhigh" | "max";
-  agentMode?: "plan" | "build" | "goal";
+  effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+  agentMode?: "plan" | "code" | "goal";
   permissionMode?: PermissionMode;
   /** review 模式的审核模型来源；undefined = fast。 */
   reviewModel?: ReviewModel;

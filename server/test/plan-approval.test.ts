@@ -41,7 +41,7 @@ function createFakeCore(): CoreClientLike {
 const PLAN = "# 实施计划\n\n1. 改 A\n2. 改 B";
 
 interface SetupOptions {
-  agentMode?: "plan" | "build" | "goal";
+  agentMode?: "plan" | "code" | "goal";
   permissionMode?: "ask" | "yolo";
   input?: Record<string, unknown>;
   toolCallId?: string;
@@ -100,7 +100,7 @@ function toolResultOf(detail: Awaited<ReturnType<SessionStore["get"]>>, toolCall
 
 describe("exit_plan_mode 工具下发", () => {
   it.each([
-    { mode: "build" as const, expected: false },
+    { mode: "code" as const, expected: false },
     { mode: "goal" as const, expected: false },
     { mode: "plan" as const, expected: true },
   ])("agentMode=$mode 时下发=$expected", async ({ mode, expected }) => {
@@ -138,7 +138,7 @@ describe("exit_plan_mode 批准流", () => {
       const content = (result as { content: string }).content;
       expect(content).toContain("计划已批准");
       expect(content).toContain(PLAN);
-      // 后续轮次已是 build 模式提示词
+      // 后续轮次已是 code 模式提示词
       expect(harness.requests[1]?.system).not.toContain("PLAN mode");
       // web 端经 session.config_updated 事件刷新会话配置
       expect(harness.events.replay(0, harness.session.id).events.some((event) => event.type === "session.config_updated")).toBe(true);

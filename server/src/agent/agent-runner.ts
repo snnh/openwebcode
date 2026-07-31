@@ -1231,7 +1231,7 @@ export class AgentRunner {
             // unadvertised MCP name is still opaque and must be described as read/write unknown.
             const externalLabel = call.name.startsWith("mcp__") ? "MCP 工具" : call.name.startsWith("ext__") ? "扩展工具" : undefined;
             const content = session.agentMode === "plan" && externalLabel
-              ? `Plan 模式为只读：${externalLabel} ${call.name} 被拦截（无法判定读写）。请输出实施计划并请用户切换到 build 模式执行。`
+              ? `Plan 模式为只读：${externalLabel} ${call.name} 被拦截（无法判定读写）。请输出实施计划并请用户切换到 code 模式执行。`
               : toolsEnabled
                 ? `Tool is not available in this turn: ${call.name}`
                 : `Tool calls are disabled for the selected model: ${call.name}`;
@@ -1933,7 +1933,7 @@ export class AgentRunner {
     const updated = await this.sessions.updateConfig(sessionId, {
       provider: session.provider,
       model: session.model,
-      agentMode: "build",
+      agentMode: "code",
       ...(session.thinking ? { thinking: session.thinking } : {}),
       ...(session.effort ? { effort: session.effort } : {}),
       ...(session.snapshotMode ? { snapshotMode: session.snapshotMode } : {}),
@@ -2040,9 +2040,9 @@ export class AgentRunner {
     // Plan 模式门禁：只读工具放行，其余一律拦截
     const PLAN_READONLY = new Set(["read_file", "glob", "grep", "read_artifact", "load_skill", "spawn_task", "spawn_swarm", "todo_write", "web_fetch", "web_search", "task_output", "repo_map", "code_search", "git_status", "git_diff", "ask_user", "exit_plan_mode", "cron_list"]);
     if (session.agentMode === "plan") {
-      if (tool.startsWith("mcp__")) return { allowed: false, reason: `Plan 模式为只读：MCP 工具 ${tool} 被拦截（无法判定读写）。请输出实施计划并请用户切换到 build 模式执行。` };
-      if (tool.startsWith("ext__")) return { allowed: false, reason: `Plan 模式为只读：扩展工具 ${tool} 被拦截（无法判定读写）。请输出实施计划并请用户切换到 build 模式执行。` };
-      if (!PLAN_READONLY.has(tool)) return { allowed: false, reason: `Plan 模式为只读：${tool} 被拦截。请输出实施计划并请用户切换到 build 模式执行。` };
+      if (tool.startsWith("mcp__")) return { allowed: false, reason: `Plan 模式为只读：MCP 工具 ${tool} 被拦截（无法判定读写）。请输出实施计划并请用户切换到 code 模式执行。` };
+      if (tool.startsWith("ext__")) return { allowed: false, reason: `Plan 模式为只读：扩展工具 ${tool} 被拦截（无法判定读写）。请输出实施计划并请用户切换到 code 模式执行。` };
+      if (!PLAN_READONLY.has(tool)) return { allowed: false, reason: `Plan 模式为只读：${tool} 被拦截。请输出实施计划并请用户切换到 code 模式执行。` };
     }
     const mode = session.permissionMode ?? "ask";
     const rules = session.permissionRules ?? [];
@@ -2704,7 +2704,7 @@ export class AgentRunner {
         } else {
           const finalPlan = decision.kind === "edit" ? decision.plan.trim() : plan;
           await this.switchToBuildMode(sessionId);
-          content = `计划已批准，已切换到 build 模式。请按计划执行：\n\n${finalPlan}`;
+          content = `计划已批准，已切换到 code 模式。请按计划执行：\n\n${finalPlan}`;
         }
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: { decision: decision.kind } } });
         return { type: "tool_result", toolCallId, content, isError: false };

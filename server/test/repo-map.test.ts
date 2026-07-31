@@ -133,7 +133,7 @@ describe("RepoMapGenerator", () => {
 });
 
 describe("repo map 提示词注入与 repo_map 工具", () => {
-  async function setup(options?: { repoMapEnabled?: boolean; agentMode?: "plan" | "build"; toolCalls?: Array<{ name: string; id: string; input: Record<string, unknown> }> }) {
+  async function setup(options?: { repoMapEnabled?: boolean; agentMode?: "plan" | "code"; toolCalls?: Array<{ name: string; id: string; input: Record<string, unknown> }> }) {
     const root = await tempRoot();
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();

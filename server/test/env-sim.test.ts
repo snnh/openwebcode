@@ -73,7 +73,7 @@ function fakeCore(runCalls: Array<Record<string, unknown>>): CoreClientLike {
 interface HarnessOptions {
   enableEnvSim?: boolean;
   persona?: string;
-  agentMode?: "plan" | "build";
+  agentMode?: "plan" | "code";
   fileBaseOverride?: string;
   presetFiles?: Array<{ filename: string; content: string }>;
   script?: ToolCallSpec[][];
@@ -86,7 +86,7 @@ async function setup(options: HarnessOptions = {}) {
   await sessions.initialize();
   const session = await sessions.create({ cwd: root, provider: "fake", model: "model" });
   // yolo 直达 fake core；manual 避免无关的 GitShadow 检查点
-  await sessions.updateConfig(session.id, { provider: "fake", model: "model", agentMode: options.agentMode ?? "build", snapshotMode: "manual" });
+  await sessions.updateConfig(session.id, { provider: "fake", model: "model", agentMode: options.agentMode ?? "code", snapshotMode: "manual" });
   await sessions.updatePermissions(session.id, "yolo", []);
   const pricing = new PricingCatalog(path.join(root, "pricing.json"));
   await pricing.initialize();

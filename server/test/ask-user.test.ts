@@ -39,7 +39,7 @@ function createFakeCore(): CoreClientLike {
 }
 
 interface AskSetup {
-  agentMode?: "plan" | "build";
+  agentMode?: "plan" | "code";
   toolCallId?: string;
   input: Record<string, unknown>;
 }

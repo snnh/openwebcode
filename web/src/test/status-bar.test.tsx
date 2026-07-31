@@ -5,7 +5,7 @@ import { StatusBar } from "../components/StatusBar";
 import type { SessionDetail } from "../lib/contracts";
 
 const session: SessionDetail = {
-  id: "s1", title: "Status test", cwd: "D:/work/demo", provider: "openai", model: "gpt-5", agentMode: "build",
+  id: "s1", title: "Status test", cwd: "D:/work/demo", provider: "openai", model: "gpt-5", agentMode: "code",
   sandboxMode: "appcontainer", thinking: "adaptive", createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z", messages: [],
 };
 

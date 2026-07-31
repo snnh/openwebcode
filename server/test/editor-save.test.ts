@@ -57,7 +57,7 @@ function createFakeCore(): { client: CoreClientLike; writeCalls: FsWriteRequest[
   return { client, writeCalls };
 }
 
-async function setup(options?: { permissionMode?: "ask" | "acceptEdits" | "yolo"; agentMode?: "plan" | "build" }) {
+async function setup(options?: { permissionMode?: "ask" | "acceptEdits" | "yolo"; agentMode?: "plan" | "code" }) {
   const root = await tempRoot();
   const sessions = new SessionStore(path.join(root, "sessions"));
   await sessions.initialize();

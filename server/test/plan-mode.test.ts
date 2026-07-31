@@ -40,14 +40,14 @@ describe("plan mode — agent-runner level", () => {
     } as unknown as CoreClientLike;
   }
 
-  async function setup(agentMode: "plan" | "build", toolCalls: Array<{ name: string; id: string; input: Record<string, unknown> }>) {
+  async function setup(agentMode: "plan" | "code", toolCalls: Array<{ name: string; id: string; input: Record<string, unknown> }>) {
     const root = await tempRoot();
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const session = await sessions.create({ cwd: root, provider: "fake", model: "model" });
     // 创建后通过 updateConfig 设置 agentMode
     await sessions.updateConfig(session.id, { provider: "fake", model: "model", agentMode });
-    // yolo 放行写工具，使 build 模式用例直达 fake core 而非挂起在权限审批
+    // yolo 放行写工具，使 code 模式用例直达 fake core 而非挂起在权限审批
     await sessions.updatePermissions(session.id, "yolo", []);
 
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));
@@ -167,8 +167,8 @@ describe("plan mode — agent-runner level", () => {
     expect((toolResult as { content: string }).content).toContain("Plan 模式为只读");
   });
 
-  it("build 模式下 write_file 不被 plan 门禁拦截", { timeout: 15_000 }, async () => {
-    const { detail } = await setup("build", [
+  it("code 模式下 write_file 不被 plan 门禁拦截", { timeout: 15_000 }, async () => {
+    const { detail } = await setup("code", [
       { name: "write_file", id: "wf-2", input: { path: "test.txt", content: "hello" } },
     ]);
     const toolResult = detail?.messages
@@ -176,13 +176,13 @@ describe("plan mode — agent-runner level", () => {
       .flatMap((m) => m.content)
       .find((c) => c.type === "tool_result" && c.toolCallId === "wf-2");
     expect(toolResult).toBeDefined();
-    // build 模式下走到 core.writeFile，fake core 返回 ok:true
+    // code 模式下走到 core.writeFile，fake core 返回 ok:true
     // 关键是 error 消息不含 "Plan 模式为只读"
     expect((toolResult as { content: string }).content).not.toContain("Plan 模式为只读");
   });
 
-  it("build 模式下 bash 不被 plan 门禁拦截", { timeout: 15_000 }, async () => {
-    const { detail } = await setup("build", [
+  it("code 模式下 bash 不被 plan 门禁拦截", { timeout: 15_000 }, async () => {
+    const { detail } = await setup("code", [
       { name: "bash", id: "bash-2", input: { cmd: "echo hello" } },
     ]);
     const toolResult = detail?.messages
@@ -200,8 +200,8 @@ describe("plan mode — agent-runner level", () => {
     expect(requests[0]?.system).toContain("PLAN mode");
   });
 
-  it("build 模式 provider 收到的 system 不含 PLAN mode 指令", async () => {
-    const { requests } = await setup("build", [
+  it("code 模式 provider 收到的 system 不含 PLAN mode 指令", async () => {
+    const { requests } = await setup("code", [
       { name: "read_file", id: "rf-3", input: { path: "a.txt" } },
     ]);
     expect(requests[0]?.system).not.toContain("PLAN mode");
@@ -234,16 +234,16 @@ describe("plan mode — agent-runner level", () => {
     const body2 = JSON.parse(res2.body);
     expect(body2.agentMode).toBe("plan");
 
-    // "build" 合法（build 值不落盘）
-    const res3 = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { agentMode: "build" } });
+    // "code" 合法（code 值不落盘）
+    const res3 = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { agentMode: "code" } });
     expect(res3.statusCode).toBe(200);
     const body3 = JSON.parse(res3.body);
     expect(body3.agentMode).toBeUndefined();
 
-    // 恢复为 build（缺省不落盘）
+    // 恢复为 code（缺省不落盘）
     const res4 = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { agentMode: "plan" } });
     expect(res4.statusCode).toBe(200);
-    const res5 = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { agentMode: "build" } });
+    const res5 = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { agentMode: "code" } });
     expect(res5.statusCode).toBe(200);
     const body5 = JSON.parse(res5.body);
     expect(body5.agentMode).toBeUndefined();
