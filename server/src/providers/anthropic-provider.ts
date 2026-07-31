@@ -40,7 +40,8 @@ export class AnthropicProvider implements Provider {
           model: request.model,
           max_tokens: maxTokens,
           ...(anthropicThinking(request, maxTokens) ? { thinking: anthropicThinking(request, maxTokens)! } : {}),
-          ...(request.effort ? { output_config: { effort: request.effort } } : {}),
+          // ultra 超出 Anthropic 枚举（SDK 只声明到 max）：封顶 max 透传，其余原样
+          ...(request.effort ? { output_config: { effort: request.effort === "ultra" ? "max" as const : request.effort } } : {}),
           system: toAnthropicSystem(request, caching),
           messages: toAnthropicMessages(request.messages, messageBreakpoints(request, caching)),
           ...(request.tools.length > 0 ? { tools: toAnthropicTools(request.tools, caching) } : {}),

@@ -4,7 +4,7 @@ import { lookupModelMetadata } from "./model-metadata.js";
 export type Currency = "USD" | "CNY";
 export type ModelModality = "text" | "image" | "video";
 export type ThinkingMode = "adaptive" | "enabled" | "disabled";
-export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 
 /** Prices are integer micro-units of the source currency per million tokens. */
 export interface ModelPricing {
