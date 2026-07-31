@@ -34,6 +34,9 @@ export type ProviderEvent =
   | { type: "text_delta"; text: string }
   | { type: "thinking_delta"; text: string }
   | { type: "thinking_end"; text: string; signature?: string }
+  /** 工具调用参数流式分片：id 在首个分片就绪后稳定；name 仅在已知时携带；
+   * argumentsDelta 是参数 JSON 文本的增量片段（拼接后才是完整 JSON）。 */
+  | { type: "tool_call_delta"; id: string; name?: string; argumentsDelta: string }
   | { type: "tool_call"; id: string; name: string; input: Record<string, unknown> }
   | {
       type: "usage";

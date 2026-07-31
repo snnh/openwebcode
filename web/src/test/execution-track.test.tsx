@@ -16,6 +16,26 @@ const session: SessionDetail = {
 };
 
 describe("ExecutionTrack failures", () => {
+  it("renders streaming tool call cards with accumulating arguments", () => {
+    render(
+      <ExecutionTrack
+        session={session}
+        streamText=""
+        streamToolCalls={[
+          { id: "c1", name: "read_file", text: "{\"path\":\"a.ts\"}" },
+          { id: "c2", name: "glob", text: "{\"pattern\":" },
+        ]}
+        permissions={[]}
+        onPermissionDone={() => undefined}
+      />,
+    );
+
+    expect(screen.getByText("read_file")).toBeInTheDocument();
+    expect(screen.getByText("{\"path\":\"a.ts\"}")).toBeInTheDocument();
+    expect(screen.getByText("glob")).toBeInTheDocument();
+    expect(screen.getByText("{\"pattern\":")).toBeInTheDocument();
+  });
+
   it("keeps an agent failure visible in the conversation track", () => {
     render(
       <ExecutionTrack

@@ -196,3 +196,61 @@ describe("provider custom request body (extraBody)", () => {
     expect(bodies[1]).toMatchObject({ max_tokens: 256 });
   });
 });
+
+
+async function collect(iterable: AsyncIterable<unknown>): Promise<Array<Record<string, unknown>>> {
+  const events: Array<Record<string, unknown>> = [];
+  for await (const event of iterable) events.push(event as Record<string, unknown>);
+  return events;
+}
+
+describe("provider tool_call_delta streaming", () => {
+  it("openai emits argument fragments with the accumulated id and name", async () => {
+    const chunks = [
+      { choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "ba" } }] } }] },
+      { choices: [{ delta: { tool_calls: [{ index: 0, function: { name: "sh", arguments: "{\"cmd\":" } }] } }] },
+      { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: "\"ls\"}" } }] }, finish_reason: null }] },
+      { choices: [{ finish_reason: "tool_calls", delta: {} }] },
+    ];
+    const sse = chunks.map((chunk) => "data: " + JSON.stringify(chunk) + "\n\n").join("") + "data: [DONE]\n\n";
+    const fetch = async () => new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
+    const events = await collect(new OpenAICompatibleProvider({ baseURL: "https://example.invalid/v1", fetch: fetch as typeof globalThis.fetch }).streamChat(request()));
+
+    const deltas = events.filter((event) => event.type === "tool_call_delta");
+    expect(deltas).toEqual([
+      { type: "tool_call_delta", id: "call_1", name: "ba", argumentsDelta: "" },
+      { type: "tool_call_delta", id: "call_1", name: "bash", argumentsDelta: "{\"cmd\":" },
+      { type: "tool_call_delta", id: "call_1", name: "bash", argumentsDelta: "\"ls\"}" },
+    ]);
+    expect(events.filter((event) => event.type === "tool_call")).toEqual([{ type: "tool_call", id: "call_1", name: "bash", input: { cmd: "ls" } }]);
+  });
+
+  it("anthropic maps content_block_start and input_json_delta", async () => {
+    const provider = new AnthropicProvider({ apiKey: "test" });
+    const stream = () => ({
+      async *[Symbol.asyncIterator]() {
+        yield { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } };
+        yield { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "先看" } };
+        yield { type: "content_block_start", index: 1, content_block: { type: "tool_use", id: "tu_1", name: "read_file" } };
+        yield { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: "{\"path\":" } };
+        yield { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: "\"a.ts\"}" } };
+      },
+      async finalMessage() {
+        return {
+          content: [{ type: "tool_use", id: "tu_1", name: "read_file", input: { path: "a.ts" } }],
+          usage: { input_tokens: 0, output_tokens: 0 },
+          stop_reason: "tool_use",
+        };
+      },
+    });
+    (provider as unknown as { client: { messages: { stream: typeof stream } } }).client.messages.stream = stream;
+    const events = await collect(provider.streamChat(request()));
+
+    expect(events.filter((event) => event.type === "tool_call_delta")).toEqual([
+      { type: "tool_call_delta", id: "tu_1", name: "read_file", argumentsDelta: "" },
+      { type: "tool_call_delta", id: "tu_1", argumentsDelta: "{\"path\":" },
+      { type: "tool_call_delta", id: "tu_1", argumentsDelta: "\"a.ts\"}" },
+    ]);
+    expect(events.some((event) => event.type === "tool_call" && event.id === "tu_1")).toBe(true);
+  });
+});

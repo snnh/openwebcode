@@ -120,6 +120,31 @@ describe("useStreamBuffers", () => {
     expect(result.current.stream).toEqual({ s1: [] });
   });
 
+  it("工具调用分片按 id 分组合批，name 首片保留", () => {
+    const frames = stubAnimationFrame();
+    const { result } = renderHook(() => useStreamBuffers());
+
+    act(() => {
+      result.current.queueToolCallDelta("s1", "c1", "read_file", "");
+      result.current.queueToolCallDelta("s1", "c2", "glob", "{");
+      result.current.queueToolCallDelta("s1", "c1", undefined, "{\"path\"");
+    });
+    act(() => frames.runFrame());
+    // 同帧分片按 id 合并（parts 为 append-only 分片数组，渲染前 join）
+    expect(result.current.toolCallStream.s1?.c1?.name).toBe("read_file");
+    expect(result.current.toolCallStream.s1?.c1?.parts.join("")).toBe("{\"path\"");
+    expect(result.current.toolCallStream.s1?.c2?.name).toBe("glob");
+    expect(result.current.toolCallStream.s1?.c2?.parts.join("")).toBe("{");
+
+    // 跨帧追加合并到同一 id 之后，帧间不清空
+    act(() => result.current.queueToolCallDelta("s1", "c1", undefined, ":\"a.ts\"}"));
+    act(() => frames.runFrame());
+    expect(result.current.toolCallStream.s1?.c1?.parts.join("")).toBe("{\"path\":\"a.ts\"}");
+
+    act(() => result.current.clear("s1"));
+    expect(result.current.toolCallStream).toEqual({ s1: {} });
+  });
+
   it("无 rAF 的环境退化为 80ms 定时器合批", () => {
     vi.useFakeTimers();
     vi.stubGlobal("requestAnimationFrame", undefined);
