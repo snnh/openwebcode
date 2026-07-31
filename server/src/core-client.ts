@@ -498,7 +498,7 @@ export class CoreClient extends EventEmitter {
     const delay = Math.min(30_000, 250 * 2 ** this.restartCount++);
     this.restartTimer = setTimeout(() => {
       this.restartTimer = undefined;
-      this.start().catch((restartError: unknown) => this.emit("error", normalizeError(restartError)));
+      this.start().catch((restartError: unknown) => this.emitStartError(restartError));
     }, delay);
   }
 
@@ -509,7 +509,15 @@ export class CoreClient extends EventEmitter {
       clearTimeout(this.restartTimer);
       this.restartTimer = undefined;
     }
-    this.start().catch((error: unknown) => this.emit("error", normalizeError(error)));
+    this.start().catch((error: unknown) => this.emitStartError(error));
+  }
+
+  /** EventEmitter 的 "error" 事件无监听时会抛出（测试装配常不监听）；
+   * 有监听走 "error"（生产 index.ts 打 stderr），无监听降级为普通 core.error 事件。 */
+  private emitStartError(error: unknown): void {
+    const normalized = normalizeError(error);
+    if (this.listenerCount("error") > 0) this.emit("error", normalized);
+    else this.emitEvent("core.error", { message: normalized.message });
   }
 
   private emitEvent(type: string, payload: unknown): void {
