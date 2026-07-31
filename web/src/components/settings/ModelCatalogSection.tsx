@@ -8,7 +8,7 @@ import { useI18n } from "../../i18n";
 const SOURCE_LABEL: Record<string, [string, string]> = { builtin: ["内置", "Built-in"], api: ["API", "API"], synced: ["远程同步", "Synced"], manual: ["手动", "Manual"] };
 const THINKING_LABEL: Record<string, [string, string]> = { adaptive: ["自适应", "Adaptive"], enabled: ["开启", "Enabled"], disabled: ["关闭", "Disabled"] };
 const THINKING_OPTIONS = ["adaptive", "enabled", "disabled"] as const;
-const EFFORT_OPTIONS = ["low", "medium", "high", "xhigh", "max"] as const;
+const EFFORT_OPTIONS = ["low", "medium", "high", "xhigh", "max", "ultra"] as const;
 const MODALITY_OPTIONS = ["text", "image", "video"] as const;
 const MODALITY_LABEL: Record<string, [string, string]> = { text: ["文本", "Text"], image: ["图片", "Image"], video: ["视频", "Video"] };
 
@@ -17,12 +17,12 @@ interface ModelEditForm {
   provider: string;
   originalProvider: string;
   contextWindow: string;
-  maxOutput: string;
   thinking: string[];
   effort: string[];
   modalities: string[];
   imageOutput: boolean;
   tools: boolean;
+  reasoningContent: boolean;
 }
 
 export function ModelCatalogSection(): ReactElement {
@@ -122,13 +122,14 @@ export function ModelCatalogSection(): ReactElement {
       provider: model.provider,
       originalProvider: model.provider,
       contextWindow: String(model.contextWindow),
-      maxOutput: String(model.maxOutput),
       thinking: [...model.capabilities.thinking],
       effort: [...model.capabilities.effort],
       modalities: [...model.capabilities.modalities],
       // The fallback keeps the editor safe while an older local catalog is being upgraded.
       imageOutput: model.capabilities.imageOutput ?? false,
       tools: model.capabilities.tools,
+      // 未声明时按 server 默认（非 gpt/claude 回传开）
+      reasoningContent: model.capabilities.reasoningContent ?? true,
     });
   };
 
@@ -149,24 +150,19 @@ export function ModelCatalogSection(): ReactElement {
       setError(t("上下文窗口必须是正整数", "Context window must be a positive integer"));
       return;
     }
-    const maxOutput = editing.maxOutput.trim() ? Number(editing.maxOutput) : undefined;
-    if (maxOutput !== undefined && (!Number.isSafeInteger(maxOutput) || maxOutput < 1)) {
-      setError(t("最大输出必须是正整数", "Maximum output must be a positive integer"));
-      return;
-    }
     setBusy(true);
     setError(undefined);
     api.saveModel(editing.id, {
       ...(editing.provider.trim() ? { provider: editing.provider.trim() } : {}),
       originalProvider: editing.originalProvider,
       ...(contextWindow ? { contextWindow } : {}),
-      ...(maxOutput ? { maxOutput } : {}),
       capabilities: {
         thinking: editing.thinking as ModelProfile["capabilities"]["thinking"],
         effort: editing.effort as ModelProfile["capabilities"]["effort"],
         modalities: editing.modalities as ModelProfile["capabilities"]["modalities"],
         imageOutput: editing.imageOutput,
         tools: editing.tools,
+        reasoningContent: editing.reasoningContent,
       },
     })
       .then(() => {
@@ -245,13 +241,6 @@ export function ModelCatalogSection(): ReactElement {
               aria-label={t("上下文窗口", "Context window")}
               inputMode="numeric"
             />
-            <input
-              value={editing.maxOutput}
-              placeholder={t("最大输出", "Maximum output")}
-              onChange={(event) => setEditing((prev) => prev && { ...prev, maxOutput: event.target.value })}
-              aria-label={t("最大输出", "Maximum output")}
-              inputMode="numeric"
-            />
           </div>
           {renderCapGroup(t("思考", "Thinking"), THINKING_OPTIONS, editing.thinking, "thinking", THINKING_LABEL)}
           {renderCapGroup(t("力度", "Effort"), EFFORT_OPTIONS, editing.effort, "effort")}
@@ -277,6 +266,18 @@ export function ModelCatalogSection(): ReactElement {
                 onChange={(event) => setEditing((prev) => prev && { ...prev, tools: event.target.checked })}
               />
               {t("启用", "Enabled")}
+            </label>
+          </div>
+          <div className="capability-row">
+            <span className="capability-title">{t("思维链回传", "Reasoning replay")}</span>
+            <label>
+              <input
+                type="checkbox"
+                aria-label={t("思维链回传", "Reasoning replay")}
+                checked={editing.reasoningContent}
+                onChange={(event) => setEditing((prev) => prev && { ...prev, reasoningContent: event.target.checked })}
+              />
+              {t("回传 reasoning_content", "Replay reasoning_content")}
             </label>
           </div>
           <div className="dialog-actions">

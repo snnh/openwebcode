@@ -50,12 +50,21 @@ function fetchStub(routes: FetchRoute[], seen?: string[]): typeof fetch {
 
 describe("model metadata lookup", () => {
   it("matches prefix, then conservative fallback", () => {
-    expect(lookupModelMetadata("deepseek-reasoner").contextWindow).toBe(64_000);
+    expect(lookupModelMetadata("deepseek-reasoner").contextWindow).toBe(1_000_000);
+    // 思维链回传默认：gpt/claude 关闭，其余（含未知模型）开启
     expect(lookupModelMetadata("gpt-4o-2024-11-20").maxOutput).toBe(16_000);
     expect(lookupModelMetadata("gpt-4o-2024-11-20").capabilities.modalities).toContain("image");
     expect(lookupModelMetadata("gpt-4o-2024-11-20").capabilities.imageOutput).toBe(false);
     expect(lookupModelMetadata("some-random-model")).toEqual(FALLBACK_METADATA);
     expect(lookupModelMetadata("some-random-model").capabilities.tools).toBe(true);
+    expect(lookupModelMetadata("gpt-4o-2024-11-20").capabilities.reasoningContent).toBe(false);
+    expect(lookupModelMetadata("claude-opus-4-8").capabilities.reasoningContent).toBe(false);
+    // 供应商命名空间形态 id 同样命中前缀（openai/gpt-*、anthropic/claude-*）
+    expect(lookupModelMetadata("openai/gpt-5.6-sol").capabilities.reasoningContent).toBe(false);
+    expect(lookupModelMetadata("anthropic/claude-fable-5-free").capabilities.reasoningContent).toBe(false);
+    expect(lookupModelMetadata("z-ai/glm-5.2").capabilities.reasoningContent).toBe(true);
+    expect(lookupModelMetadata("qwen3-max").capabilities.reasoningContent).toBe(true);
+    expect(lookupModelMetadata("some-random-model").capabilities.reasoningContent).toBe(true);
   });
 });
 
@@ -298,6 +307,7 @@ describe("ModelRegistry", () => {
       thinking: ["enabled"],
       effort: ["high"],
       tools: false,
+      reasoningContent: true,
     });
 
     const snapshot = JSON.parse(await readFile(syncedPath(root), "utf8"));

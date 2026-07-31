@@ -38,6 +38,8 @@ export class OpenAICompatibleProvider implements Provider {
   async *streamChat(request: StreamChatRequest): AsyncIterable<ProviderEvent> {
     let response: Response;
     const maxTokens = request.maxTokens ?? this.maxTokens;
+    // 思维链回传：请求级（模型能力声明）优先，回落 provider 级配置（默认开）
+    const reasoningContent = request.reasoningContent ?? (this.options.reasoningContent !== false);
     try {
       response = await this.fetch(`${this.options.baseURL.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
@@ -54,7 +56,7 @@ export class OpenAICompatibleProvider implements Provider {
         // 未显式配置则不发送 max_tokens：不限制输出长度
         ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}),
         ...(this.options.reasoningEffort !== false && request.effort ? { reasoning_effort: request.effort } : {}),
-        messages: toOpenAIMessages(request.system, request.messages, this.name, this.options.reasoningContent !== false),
+        messages: toOpenAIMessages(request.system, request.messages, this.name, reasoningContent),
         ...(request.tools.length > 0
           ? {
               tools: request.tools.map((tool) => ({
