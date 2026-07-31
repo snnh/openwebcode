@@ -100,7 +100,7 @@ export function parseSessionImport(text: string): ParsedSessionImport {
       ...(session.agentMode === "plan" || session.agentMode === "code" || session.agentMode === "goal" ? { agentMode: session.agentMode } : {}),
       ...(typeof session.snapshotBackend === "string" ? { snapshotBackend: session.snapshotBackend } : {}),
       ...(session.snapshotMode === "auto" || session.snapshotMode === "manual" ? { snapshotMode: session.snapshotMode } : {}),
-      ...(session.shellBackend === "default" || session.shellBackend === "pwsh" ? { shellBackend: session.shellBackend } : {}),
+      ...(session.shellBackend !== undefined ? { shellBackend: session.shellBackend } : {}),
       ...(typeof session.activeLeafId === "string" ? { activeLeafId: session.activeLeafId } : {}),
       ...(id ? { id } : {}),
     },

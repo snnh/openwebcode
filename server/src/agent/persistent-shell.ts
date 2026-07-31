@@ -7,6 +7,7 @@ import { decodeChildProcessOutput } from "./output-decoder.js";
 import { effectivePythonEnv, uvVenvDir, type UvPythonEnvironments } from "../python-env.js";
 import { defaultSandboxPolicy } from "../sessions/default-sandbox.js";
 import type { PythonEnv, SessionMeta, ShellBackend } from "../sessions/types.js";
+import { resolveShell, type ResolvedShell, type ShellFlavor } from "./shell-detect.js";
 
 /**
  * 提交⑩：agent bash 的持久 shell。每会话每 shellBackend 懒建一个 pty（sandbox=true，
@@ -45,31 +46,35 @@ export interface PersistentShellResult {
 }
 
 /**
- * 三后端的 sentinel 输入行（独立成行发送，不回显进结果）：
+ * 三语法族的 sentinel 输入行（独立成行发送，不回显进结果）：
  * - cmd：%ERRORLEVEL% 在行解析期展开，同行 `& echo ...%ERRORLEVEL%...` 会拿到旧值
  *   （真机探针验证），必须放独立输入行——cmd 逐行读取执行，解析该行时才是新值。
  * - pwsh：$? 覆盖 cmdlet 成败，$LASTEXITCODE 保留原生命令退出码；每条命令后复位
  *   $LASTEXITCODE 防止 cmdlet 成功时读到上一条原生命令的陈旧值。
- * - sh：$? 在执行期展开，独立行即可。
+ * - sh（含 Windows Git Bash）：$? 在执行期展开，独立行即可。
  */
-export function sentinelLine(backend: ShellBackend, rand: string, platform: NodeJS.Platform = process.platform): string {
+export function sentinelLine(flavor: ShellFlavor, rand: string): string {
   const marker = `__OWC_DONE_${rand}_`;
-  if (backend === "pwsh") {
+  if (flavor === "pwsh") {
     return `echo "${marker}$(if ($?) { $LASTEXITCODE } elseif ($LASTEXITCODE -gt 0) { $LASTEXITCODE } else { 1 })__"; $global:LASTEXITCODE = 0`;
   }
-  if (platform === "win32") return `echo ${marker}%ERRORLEVEL%__`;
+  if (flavor === "cmd") return `echo ${marker}%ERRORLEVEL%__`;
   return `echo ${marker}$?__`;
 }
 
 /** pythonEnv=uv-* 的 venv 激活命令（PATH 前置一次，整个会话受益）；语法与 python-env.ts 的 wrapCommandWithVenv 对齐。 */
-export function venvActivationCommand(backend: ShellBackend, venvDir: string, platform: NodeJS.Platform = process.platform): string {
-  const join = platform === "win32" ? path.win32.join : path.posix.join;
-  const dir = join(venvDir, platform === "win32" ? "Scripts" : "bin");
-  if (backend === "pwsh") {
+export function venvActivationCommand(flavor: ShellFlavor, venvDir: string, platform: NodeJS.Platform = process.platform): string {
+  if (flavor === "pwsh") {
+    const join = platform === "win32" ? path.win32.join : path.posix.join;
+    const dir = join(venvDir, platform === "win32" ? "Scripts" : "bin");
     const separator = platform === "win32" ? ";" : ":";
     return `$env:Path = '${dir.replace(/'/g, "''")}${separator}' + $env:Path`;
   }
-  if (platform === "win32") return `set "PATH=${dir};%PATH%"`;
+  if (flavor === "cmd") return `set "PATH=${path.win32.join(venvDir, "Scripts")};%PATH%"`;
+  // sh：Windows Git Bash 下 venv 仍在 Scripts，反斜杠须换为正斜杠（bash 里 \ 是转义符）
+  const dir = platform === "win32"
+    ? path.win32.join(venvDir, "Scripts").replace(/\\/g, "/")
+    : path.posix.join(venvDir, "bin");
   return `export PATH='${dir.replace(/'/g, `'\\''`)}':$PATH`;
 }
 
@@ -217,7 +222,7 @@ interface ActiveCommand {
 interface ShellRecord {
   key: string;
   ptyId: number;
-  backend: ShellBackend;
+  shell: ResolvedShell;
   dead: boolean;
   active: ActiveCommand | null;
   /** uv 环境不可用时的说明：并入首条命令输出（对齐一次性路径 wrapCommandWithNote 的可见性）。 */
@@ -276,34 +281,35 @@ export class PersistentShellManager {
     signal.throwIfAborted();
     if (!this.supported) throw new PersistentShellUnavailableError("Core pty support is unavailable");
     if (this.initFailed.has(key)) throw new PersistentShellUnavailableError("Persistent shell initialization previously failed for this session backend");
+    const shell = resolveShell(backend);
     // core 重启后旧 ptyId 失效（"pty not found"）：销毁重建一次再执行，不把错误抛给模型
     for (let attempt = 0; attempt < 2; attempt++) {
-      const shell = await this.ensureShell(key, session, backend, signal);
+      const record = await this.ensureShell(key, session, shell, signal);
       const rand = randomBytes(6).toString("hex");
       const eol = process.platform === "win32" ? "\r" : "\n";
       const cmdLines = cmd.replace(/\r\n/g, "\n").split("\n");
-      const reset = errorlevelResetLine(backend);
-      const lines = [...(reset ? [reset] : []), ...cmdLines, sentinelLine(backend, rand)];
+      const reset = errorlevelResetLine(record.shell.flavor);
+      const lines = [...(reset ? [reset] : []), ...cmdLines, sentinelLine(record.shell.flavor, rand)];
       const parser = new SentinelParser(rand, lines);
       const started = Date.now();
       try {
-        const { code: exitCode, raw } = await this.execOnShell(shell, parser, lines.join(eol) + eol, signal);
+        const { code: exitCode, raw } = await this.execOnShell(record, parser, lines.join(eol) + eol, signal);
         let output = repairShellOutput(parser.output(), raw, rand, lines);
-        if (shell.pythonEnvNote) {
-          output = `[openwebcode] ${shell.pythonEnvNote}\n${output}`;
-          delete shell.pythonEnvNote;
+        if (record.pythonEnvNote) {
+          output = `[openwebcode] ${record.pythonEnvNote}\n${output}`;
+          delete record.pythonEnvNote;
         }
         return {
           exitCode,
           output,
           truncated: parser.truncated,
           durationMs: Date.now() - started,
-          ...(shell.sandboxCapability !== undefined ? { sandboxCapability: shell.sandboxCapability } : {}),
-          ...(shell.sandboxReason !== undefined ? { sandboxReason: shell.sandboxReason } : {}),
+          ...(record.sandboxCapability !== undefined ? { sandboxCapability: record.sandboxCapability } : {}),
+          ...(record.sandboxReason !== undefined ? { sandboxReason: record.sandboxReason } : {}),
         };
       } catch (error) {
         if (attempt === 0 && errorMessage(error).includes("pty not found")) {
-          this.destroy(shell);
+          this.destroy(record);
           continue;
         }
         throw error;
@@ -313,7 +319,7 @@ export class PersistentShellManager {
   }
 
   /** 懒建持久 shell：open -> 静默排干 -> pythonEnv 激活（首个用户命令前注入一次）。 */
-  private async ensureShell(key: string, session: SessionMeta, backend: ShellBackend, signal: AbortSignal): Promise<ShellRecord> {
+  private async ensureShell(key: string, session: SessionMeta, shell: ResolvedShell, signal: AbortSignal): Promise<ShellRecord> {
     const existing = this.shells.get(key);
     if (existing && !existing.dead) return existing;
     if (!this.core.openPty || !this.core.inputPty || !this.core.closePty || !this.core.ptyEvents) {
@@ -334,7 +340,7 @@ export class PersistentShellManager {
         cols: PERSISTENT_SHELL_COLS,
         rows: PERSISTENT_SHELL_ROWS,
         sandbox: true,
-        shell: shellExecutable(backend),
+        shell: shell.executable,
       });
     } catch (error) {
       if (error instanceof CoreRpcError && error.code === -32601) this.capabilityFailed = true;
@@ -343,7 +349,7 @@ export class PersistentShellManager {
     const record: ShellRecord = {
       key,
       ptyId: opened.ptyId,
-      backend,
+      shell,
       dead: false,
       active: null,
       ...(opened.sandboxCapability !== undefined ? { sandboxCapability: opened.sandboxCapability } : {}),
@@ -358,12 +364,12 @@ export class PersistentShellManager {
       // 启动初始化（见 shellInitLines 注释）：输出全部丢弃；与 pythonEnv 激活合并为
       // 一次 sentinel 往返。init exit code 非零 = shell 进不了会话 cwd（pwsh/AppContainer
       // 场景），销毁并回退一次性 exec.run，并缓存该 session:backend 不再重试。
-      const initLines = shellInitLines(backend, session.cwd);
+      const initLines = shellInitLines(shell.flavor, session.cwd);
       const activation = await this.pythonEnvActivation(record, session);
       const lines = [...initLines, ...(activation ? [activation] : [])];
       const rand = randomBytes(6).toString("hex");
       const eol = process.platform === "win32" ? "\r" : "\n";
-      lines.push(sentinelLine(backend, rand));
+      lines.push(sentinelLine(shell.flavor, rand));
       const { code: initCode } = await this.execOnShell(record, new SentinelParser(rand, lines), lines.join(eol) + eol, signal);
       if (initCode !== 0) {
         this.initFailed.add(key);
@@ -371,6 +377,12 @@ export class PersistentShellManager {
       }
     } catch (error) {
       this.destroy(record);
+      // init 期间 shell 死亡（如 MSYS bash 在 AppContainer 下 DLL 初始化失败）：与
+      // 开壳即死同等处理，统一回退一次性 exec，并缓存该 session:backend 不再重试
+      if (record.dead) {
+        this.initFailed.add(key);
+        throw new PersistentShellUnavailableError(`pty shell exited during initialization (${errorMessage(error)}); falling back to one-shot exec`);
+      }
       throw error;
     }
     return record;
@@ -387,7 +399,7 @@ export class PersistentShellManager {
       record.pythonEnvNote = ensured.note ?? "uv environment unavailable; using the host python environment";
       return null;
     }
-    return venvActivationCommand(record.backend, venvDir);
+    return venvActivationCommand(record.shell.flavor, venvDir);
   }
 
   /** 静默排干：等输出停止 DRAIN_QUIET_MS（上限 DRAIN_MAX_MS），期间输出全部丢弃。 */
@@ -430,7 +442,9 @@ export class PersistentShellManager {
         this.settle(shell, () => {
           // 超时的命令可能仍占着 shell：销毁重建，避免下条命令读到残流
           this.destroy(shell);
-          reject(new Error(`command timed out after ${PERSISTENT_COMMAND_TIMEOUT_MS}ms`));
+          // 附带已捕获输出的尾部：命令跑飞（如全盘遍历）时模型能看到现场并自我纠正
+          const tail = parser.output().slice(-2000).trim();
+          reject(new Error(`command timed out after ${PERSISTENT_COMMAND_TIMEOUT_MS}ms` + (tail ? `\ncaptured output before timeout (tail):\n${tail}` : "")));
         });
       }, PERSISTENT_COMMAND_TIMEOUT_MS);
       shell.active = { parser, resolve, reject, timer, signal, onAbort, raw: [], rawBytes: 0 };
@@ -515,14 +529,6 @@ export class PersistentShellManager {
   }
 }
 
-/** shellBackend → pty 启动的命令解释器（win default=cmd.exe，posix default=$SHELL||/bin/sh，pwsh 两平台同）。 */
-function shellExecutable(backend: ShellBackend): string {
-  if (backend === "pwsh") return "pwsh";
-  if (process.platform === "win32") return "cmd.exe";
-  const shell = process.env.SHELL;
-  return typeof shell === "string" && shell.trim() ? shell : "/bin/sh";
-}
-
 /**
  * 持久 shell 的启动初始化行（输出丢弃；init sentinel 的 exit code 非零视为建壳失败，回退一次性 exec）：
  * - cmd：pty 由 core 以会话 cwd 启动（真机探针验证提示符即工作区），无需再 cd——
@@ -538,11 +544,13 @@ function shellExecutable(backend: ShellBackend): string {
  *   显式 Set-Location 回会话 cwd 并关闭历史保存；末行校验落点——目录不可达（祖先
  *   ACL 非用户可写时 traverse 授权不生效）时把 $LASTEXITCODE 置 1，让 ensureShell
  *   识别并回退一次性 exec.run，而不是留一个卡在 C:\ 的坏 shell。
- * - sh：pty 正常落在 cwd，cd 一次做归一；$? 逐命令求值，无陈旧污染问题。
+ * - sh（POSIX 与 Windows Git Bash）：pty 正常落在 cwd，cd 一次做归一；$? 逐命令求值，
+ *   无陈旧污染问题。Git Bash 额外先发 `chcp.com 65001`（与 cmd 同理由：ConPTY 按控制台
+ *   代码页解析原生子进程输出），cwd 的反斜杠换为正斜杠（bash 里 \ 是转义符）。
  */
-export function shellInitLines(backend: ShellBackend, cwd: string, platform: NodeJS.Platform = process.platform): string[] {
+export function shellInitLines(flavor: ShellFlavor, cwd: string, platform: NodeJS.Platform = process.platform): string[] {
   const quoted = cwd.replace(/'/g, "''");
-  if (backend === "pwsh") {
+  if (flavor === "pwsh") {
     const eq = platform === "win32" ? "-ieq" : "-ceq";
     return [
       "try { Set-PSReadLineOption -HistorySaveStyle SaveNothing } catch {}",
@@ -550,7 +558,11 @@ export function shellInitLines(backend: ShellBackend, cwd: string, platform: Nod
       `$global:LASTEXITCODE = ($PWD.Path ${eq} '${quoted}') ? 0 : 1`,
     ];
   }
-  if (platform === "win32") return ["chcp 65001"];
+  if (flavor === "cmd") return ["chcp 65001"];
+  if (platform === "win32") {
+    const dir = cwd.replace(/\\/g, "/");
+    return ["chcp.com 65001", `cd '${dir.replace(/'/g, `'\\''`)}'`];
+  }
   return [`cd '${cwd.replace(/'/g, `'\\''`)}'`];
 }
 
@@ -560,6 +572,6 @@ export function shellInitLines(backend: ShellBackend, cwd: string, platform: Nod
  * `(call )`（带空格）置 ERRORLEVEL=0、无输出（真机探针验证；`(call)` 无空格反而置 1）。
  * 不能用 `>nul` 类重定向——AppContainer x ConPTY 下重定向 NUL 会被拒。
  */
-export function errorlevelResetLine(backend: ShellBackend, platform: NodeJS.Platform = process.platform): string | null {
-  return backend === "default" && platform === "win32" ? "(call )" : null;
+export function errorlevelResetLine(flavor: ShellFlavor, platform: NodeJS.Platform = process.platform): string | null {
+  return flavor === "cmd" && platform === "win32" ? "(call )" : null;
 }

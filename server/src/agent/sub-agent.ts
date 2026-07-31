@@ -20,6 +20,7 @@ import {
   WEB_SEARCH_TOOL,
 } from "./tool-schemas.js";
 import { appendSwarmBoard, readSwarmBoard } from "./swarm-board.js";
+import { resolveShell, type ResolvedShell } from "./shell-detect.js";
 
 /**
  * 子代理允许使用的只读工具全集（构造上只读；spawn_task 不在其中，子代理不可再派生）。
@@ -69,12 +70,11 @@ export function getBuiltinSubAgent(name: string): BuiltinSubAgent | undefined {
   return BUILTIN_SUB_AGENTS.find((agent) => agent.id === name);
 }
 
-/** 子代理工具 schema 总表：复用 tool-schemas 的内置 schema，按名字过滤出各类型允许集。 */
+/** 子代理工具 schema 总表：复用 tool-schemas 的内置 schema，按名字过滤出各类型允许集。
+ * bash 不在此静态表——其描述随会话实际 shell 生成（runSubAgent 的 shell 选项）。 */
 const SUB_AGENT_TOOL_SCHEMAS: readonly ProviderTool[] = [
   ...FILE_TOOLS,
   READ_ARTIFACT_TOOL,
-  // 子代理 bash 不开后台任务（run_in_background 依赖主循环的 BackgroundTaskRegistry）
-  bashTool(false, "default"),
   REPO_MAP_TOOL,
   CODE_SEARCH_TOOL,
   TEST_RUNNER_TOOL,
@@ -95,6 +95,8 @@ export interface SubAgentOptions {
   toolNames: string[];
   /** 内置类型：explore（默认，只读）或 general（可写，工具经 executeTool 走权限链）。 */
   agentKind?: BuiltinSubAgentKind;
+  /** 会话实际 shell（bash 工具描述按它生成；缺省按 default 探测）。 */
+  shell?: ResolvedShell;
   systemExtra?: string;
   modelOverride?: string;
   agent?: string;
@@ -158,6 +160,9 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
   const maxTurns = options.maxTurns ?? builtin.maxTurns;
   const allowed = new Set(options.toolNames.filter((name) => builtin.toolNames.includes(name)));
   const tools = SUB_AGENT_TOOL_SCHEMAS.filter((tool) => allowed.has(tool.name));
+  // 子代理 bash 不开后台任务（run_in_background 依赖主循环的 BackgroundTaskRegistry）；
+  // 描述随会话实际 shell（执行经 executeTool 回落到主循环同一路径）
+  if (allowed.has("bash")) tools.unshift(bashTool(false, options.shell ?? resolveShell("default")));
   let system = systemPrompt(kind, options.cwd, options.systemExtra);
   if (options.swarm) {
     // swarm 成员专属工具：会话内通信，不走类型允许集/权限链（本地板文件读写，失败静默降级）

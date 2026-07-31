@@ -14,5 +14,9 @@ typedef struct { FILE *input; FILE *output; int shutting_down; int suppress_resp
 int owc_rpc_read(owc_rpc *rpc, char **body, size_t *length);
 int owc_rpc_write(owc_rpc *rpc, const char *body, size_t length);
 int owc_rpc_dispatch(owc_rpc *rpc, const char *body, size_t length);
+/* Undo every session-owned bind link (Windows Bind Link API).  Call once on
+ * the normal process exit path; links are system-wide and otherwise survive
+ * the process until reboot. */
+void owc_rpc_release_sessions(void);
 
 #endif

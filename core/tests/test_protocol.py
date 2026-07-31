@@ -164,6 +164,7 @@ def main():
         assert response["result"]["features"]["globJob"] is True
         assert response["result"]["features"]["indexExtract"] is True
         assert response["result"]["features"]["jobControl"] is (os.name == "nt")
+        assert response["result"]["features"]["shellBash"] is True
         assert response["result"]["limits"] == {"maxFrameBytes": 32 * 1024 * 1024, "maxWriteBase64Bytes": 20 * 1024 * 1024, "maxHashBytes": 16 * 1024 * 1024, "maxStatManyPaths": 128, "maxStatManyPathBytes": 256 * 1024, "maxScanEntries": 256, "maxScanDepth": 16, "maxScanNodes": 2048, "maxWatches": 16, "maxWatchEvents": 128, "maxConcurrentJobs": 4, "maxJobOutputBytes": 512 * 1024, "maxIndexScanNodes": 1000000, "maxIndexScanDepth": 64, "maxIndexScanBytes": 16 * 1024 * 1024 * 1024, "maxIndexScanMs": 600000, "maxSearchNodes": 1000000, "maxSearchDepth": 64, "maxSearchMs": 300000, "maxIndexExtractFiles": 4096, "maxIndexExtractBytes": 1024 * 1024 * 1024, "maxIndexExtractMs": 300000, "indexExtractDefaultSymbolsPerFile": 200, "maxIndexExtractSymbolsPerFile": 10000, "maxConcurrentPtys": 16, "maxPtyOutputChunkBytes": 64 * 1024, "maxPtyInputBytes": 8 * 1024}
 
         request(proc, None, "core.ping")
@@ -303,6 +304,67 @@ def main():
                 assert b"pwsh executable was not found" in output, output
         else:
             print("SKIP: hosted CI can retain pwsh children past Core timeouts", file=sys.stderr)
+
+        # shellBackend=bash with an explicit shellPath (Git Bash on Windows,
+        # bash on POSIX).  Windows PATH hits in System32 (the WSL launcher)
+        # are excluded by both the host detection layer and the Core fallback.
+        bash_path = None
+        if os.name == "nt":
+            bash_candidates = []
+            path_bash = shutil.which("bash", path=environment.get("PATH"))
+            system32_dir = os.path.normcase(os.path.join(environment.get("SystemRoot", r"C:\Windows"), "System32"))
+            if path_bash and os.path.normcase(os.path.dirname(os.path.abspath(path_bash))) != system32_dir:
+                bash_candidates.append(path_bash)
+            bash_candidates.append("C:\\Program Files\\Git\\bin\\bash.exe")
+            if environment.get("LOCALAPPDATA"):
+                bash_candidates.append(os.path.join(environment["LOCALAPPDATA"], "Programs", "Git", "bin", "bash.exe"))
+            bash_path = next((candidate for candidate in bash_candidates if os.path.isfile(candidate)), None)
+        else:
+            bash_path = shutil.which("bash", path=environment.get("PATH"))
+        if bash_path:
+            request(proc, 310, "exec.run", {"sessionId": "s1", "execId": "bash", "cmd": "echo bash-ok; exit 5", "cwd": os.getcwd(), "timeoutMs": 15000, "shellBackend": "bash", "shellPath": bash_path})
+            response, notes = collect_until_response(proc, 310)
+            assert response.get("result", {}).get("exitCode") == 5, response
+            output = b"".join(base64.b64decode(n["params"]["data"]) for n in notes)
+            assert b"bash-ok" in output, output
+            # Quoting: double quotes and backslashes inside the command must
+            # survive the CRT/MSYS command-line decoding byte-for-byte (an
+            # unescaped \" would close the wrapped -c argument early, and the
+            # v="a b" assignment would then fail with a non-zero exit).
+            request(proc, 315, "exec.run", {"sessionId": "s1", "execId": "bash-quoting", "cmd": "v=\"a b\"; echo \"$v\"; echo \"a\\b\"; exit 0", "cwd": os.getcwd(), "timeoutMs": 15000, "shellBackend": "bash", "shellPath": bash_path})
+            response, notes = collect_until_response(proc, 315)
+            assert response.get("result", {}).get("exitCode") == 0, response
+            output = b"".join(base64.b64decode(n["params"]["data"]) for n in notes)
+            assert b"a b" in output, output
+            assert b"a\\b" in output, output
+        else:
+            print("SKIP: no bash found for shellBackend=bash integration", file=sys.stderr)
+
+        # exec.run rejects unknown fields.
+        request(proc, 312, "exec.run", {"sessionId": "s1", "execId": "unknown-field", "cmd": "echo no", "cwd": os.getcwd(), "bogus": 1})
+        response, _ = collect_until_response(proc, 312)
+        assert response.get("error", {}).get("code") == -32602, response
+
+        # shellPath is not part of the index.scan field whitelist.
+        request(proc, 314, "job.start", {"sessionId": "s1", "jobId": "scan-with-shell", "kind": "index.scan", "path": ".", "cwd": os.getcwd(), "shellPath": bash_path or "bash"})
+        response, _ = collect_until_response(proc, 314)
+        assert response.get("error", {}).get("code") == -32602, response
+
+        if os.name == "nt" and bash_path:
+            # job.start kind=exec accepts shellBackend=bash + shellPath.
+            request(proc, 316, "job.start", {"sessionId": "s1", "jobId": "bash-job", "kind": "exec", "cmd": "echo bash-job-ok; exit 3", "cwd": os.getcwd(), "timeoutMs": 15000, "shellBackend": "bash", "shellPath": bash_path})
+            response, _ = collect_until_response(proc, 316)
+            assert response["result"]["state"] == "running", response
+            for _ in range(60):
+                request(proc, 317, "job.status", {"sessionId": "s1", "jobId": "bash-job"})
+                response, _ = collect_until_response(proc, 317)
+                if response["result"]["state"] != "running": break
+                time.sleep(0.05)
+            assert response["result"]["state"] == "completed", response
+            assert response["result"]["exitCode"] == 3, response
+            request(proc, 318, "job.output", {"sessionId": "s1", "jobId": "bash-job", "afterSeq": 0})
+            response, _ = collect_until_response(proc, 318)
+            assert any(b"bash-job-ok" in base64.b64decode(chunk["data"]) for chunk in response["result"]["chunks"]), response
 
         request(proc, 303, "core.ping")
         response, _ = collect_until_response(proc, 303)

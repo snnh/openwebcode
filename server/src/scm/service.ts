@@ -7,6 +7,7 @@ import type { CoreClientLike } from "../core-client.js";
 import type { EventBus } from "../events/event-bus.js";
 import type { SessionStore } from "../sessions/session-store.js";
 import type { ShellBackend } from "../sessions/types.js";
+import { coreExecShell } from "../agent/shell-detect.js";
 import type {
   GitCommitInput,
   GitCommitResult,
@@ -231,7 +232,7 @@ export class ScmService {
     const cancel = () => { void this.core.cancelJob({ sessionId: context.sessionId, jobId }).catch(() => undefined); };
     context.signal?.addEventListener("abort", cancel, { once: true });
     try {
-      await this.core.startJob({ sessionId: context.sessionId, jobId, kind: "exec", cmd, cwd, timeoutMs: GIT_JOB_TIMEOUT_MS, shellBackend: context.shellBackend });
+      await this.core.startJob({ sessionId: context.sessionId, jobId, kind: "exec", cmd, cwd, timeoutMs: GIT_JOB_TIMEOUT_MS, ...coreExecShell(context.shellBackend) });
       for (;;) {
         const page = await this.core.jobOutput({ sessionId: context.sessionId, jobId, afterSeq, limit: 128 });
         output.push(...page.chunks);

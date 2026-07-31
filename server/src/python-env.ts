@@ -2,7 +2,8 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import type { PythonEnv, ShellBackend } from "./sessions/types.js";
+import type { ShellFlavor } from "./agent/shell-detect.js";
+import type { PythonEnv } from "./sessions/types.js";
 
 /** 会话值优先，全局默认其次，最终回退本机环境。 */
 export function effectivePythonEnv(sessionValue: PythonEnv | undefined, globalDefault: PythonEnv | undefined): PythonEnv {
@@ -21,16 +22,17 @@ export function uvVenvDir(mode: PythonEnv, cwd: string, dataDir: string | undefi
 
 /**
  * bash 命令包装：venv 的 Scripts/bin 前置 PATH。不走 activate 脚本——
- * cmd/pwsh/sh 三种 shell 语法一致且避开 pwsh 执行策略问题。
+ * cmd/pwsh/sh 三种语法族一致且避开 pwsh 执行策略问题。
  */
-export function wrapCommandWithVenv(cmd: string, venvDir: string, shellBackend: ShellBackend, platform: NodeJS.Platform = process.platform): string {
-  const join = platform === "win32" ? path.win32.join : path.posix.join;
+export function wrapCommandWithVenv(cmd: string, venvDir: string, flavor: ShellFlavor, platform: NodeJS.Platform = process.platform): string {
   if (platform === "win32") {
-    const scripts = join(venvDir, "Scripts");
-    if (shellBackend === "pwsh") return `$env:Path = '${scripts.replace(/'/g, "''")};' + $env:Path; ${cmd}`;
-    return `set "PATH=${scripts};%PATH%" && ${cmd}`;
+    const scripts = path.win32.join(venvDir, "Scripts");
+    if (flavor === "pwsh") return `$env:Path = '${scripts.replace(/'/g, "''")};' + $env:Path; ${cmd}`;
+    if (flavor === "cmd") return `set "PATH=${scripts};%PATH%" && ${cmd}`;
+    // Git Bash：反斜杠换正斜杠（bash 里 \ 是转义符）
+    return `export PATH='${scripts.replace(/\\/g, "/").replace(/'/g, `'\\''`)}':$PATH; ${cmd}`;
   }
-  const bin = join(venvDir, "bin");
+  const bin = path.posix.join(venvDir, "bin");
   return `export PATH='${bin.replace(/'/g, `'\\''`)}':$PATH; ${cmd}`;
 }
 
