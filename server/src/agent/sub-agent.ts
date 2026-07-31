@@ -296,7 +296,8 @@ async function executeSubTool(
       const manager = new ContextManager(options.contextRoot);
       raw = await manager.readArtifact(String(input.artifactId), Number(input.offset), Number(input.limit));
     } else {
-      const targetPath = typeof input.path === "string" ? input.path : "";
+      // 与主循环 callCoreFileTool 同规则：glob/grep 的 path 缺省会话根
+      const targetPath = typeof input.path === "string" && input.path ? input.path : (name === "glob" || name === "grep" ? "." : "");
       if (!targetPath) throw new Error(`${name} requires a non-empty path`);
       let value: unknown;
       if (name === "read_file") {

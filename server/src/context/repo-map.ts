@@ -16,8 +16,8 @@ import { estimateTokens } from "./model-profile.js";
 export const DEFAULT_REPO_MAP_BUDGET = 2_048;
 /** 单次扫描节点上限：分页拉取到此为止，超出如实标注 truncated。 */
 const SCAN_NODE_CAP = 6_000;
-/** fs.scan 单页条目数。 */
-const SCAN_PAGE_LIMIT = 1_000;
+/** fs.scan 单页条目数（core RPC 上限 256，见 rpc.c OWC_FS_SCAN_MAX_LIMIT）。 */
+const SCAN_PAGE_LIMIT = 256;
 /** 目录树最大深度（预算不足时会逐级收缩）。 */
 const DEFAULT_MAX_DEPTH = 6;
 /** 目录缓存 TTL：根目录 mtime 未变且未过期时不重扫（turn 间无变化零扫描）。 */
