@@ -314,4 +314,4 @@ v1 扩展运行于独立 Extension Host 子进程（可信代码，安全级别 
 - **看 artifacts**：`<业务数据目录>/sessions/<id>/artifacts/`
 - **看子代理转录**：`<业务数据目录>/sessions/<id>/subagents/<taskId>.json`
 - **强制单轮**：`maxTurnsPerMessage` 在 config 里可调，调试时设小
-- **断 core**：杀 owc-exec 进程，观察 core-client 自动重启（指数退避 ≤3 次）与运行中工具标记失败
+- **断 core**：杀 owc-exec 进程，观察 core-client 自动重启（指数退避封顶 30s，持续重试）与运行中工具标记失败

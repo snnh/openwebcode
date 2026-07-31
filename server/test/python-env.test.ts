@@ -41,7 +41,16 @@ describe("python-env helpers", () => {
   });
 
   it("prefixes the fallback note", () => {
-    expect(wrapCommandWithNote("pytest", "uv is not available on PATH; using the host python environment"))
-      .toBe("echo [openwebcode] uv is not available on PATH; using the host python environment && pytest");
+    expect(wrapCommandWithNote("pytest", "uv is not available on PATH, using the host python environment"))
+      .toBe("echo [openwebcode] uv is not available on PATH, using the host python environment && pytest");
+  });
+
+  it("strips shell metacharacters from the note (uv stderr is not server-generated)", () => {
+    // `;` `&&` `$()` 反引号 引号 换行 等都必须被剥离，否则 note 会拼接成额外命令
+    expect(wrapCommandWithNote("pytest", 'uv venv failed (boom); $(curl evil) && `id` "quoted"\nnext'))
+      .toBe("echo [openwebcode] uv venv failed (boom) (curl evil) id quoted next && pytest");
+    // 全部剥离后兜底为安全占位文本
+    expect(wrapCommandWithNote("pytest", "&&;|`$"))
+      .toBe("echo [openwebcode] uv environment unavailable, using the host python environment && pytest");
   });
 });

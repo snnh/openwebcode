@@ -36,10 +36,16 @@ export function wrapCommandWithVenv(cmd: string, venvDir: string, shellBackend: 
 
 /**
  * uv 不可用/建环境失败时的回退包装：命令仍在本机环境执行，输出前置一行说明。
- * note 由 server 生成（纯 ASCII，不含 shell 特殊字符），三种 shell 的 echo 行为一致。
+ * note 可能含 uv stderr 摘录（非 server 生成），拼进三种 shell 的命令行前必须
+ * 剥离 shell 元字符（$ ` & | ; < > " ' % 换行等），防注入与语法破坏。
  */
+function sanitizeNote(note: string): string {
+  const cleaned = note.replace(/[^A-Za-z0-9 _.,:/\\()[\]+\-]/g, " ").replace(/\s+/g, " ").trim();
+  return cleaned || "uv environment unavailable, using the host python environment";
+}
+
 export function wrapCommandWithNote(cmd: string, note: string): string {
-  return `echo [openwebcode] ${note} && ${cmd}`;
+  return `echo [openwebcode] ${sanitizeNote(note)} && ${cmd}`;
 }
 
 export interface UvEnsureResult {
@@ -107,13 +113,13 @@ export class UvPythonEnvironments {
 
   private async doEnsure(venvDir: string): Promise<UvEnsureResult> {
     const version = await runHost("uv", ["--version"], 15_000);
-    if (version.code !== 0) return { ok: false, note: "uv is not available on PATH; using the host python environment" };
+    if (version.code !== 0) return { ok: false, note: "uv is not available on PATH, using the host python environment" };
     const scriptsDir = process.platform === "win32" ? "Scripts" : "bin";
     const pythonExe = process.platform === "win32" ? "python.exe" : "python";
     if (existsSync(path.join(venvDir, scriptsDir, pythonExe))) return { ok: true };
     const created = await runHost("uv", ["venv", venvDir], 120_000);
     if (created.code !== 0 || !existsSync(path.join(venvDir, scriptsDir, pythonExe))) {
-      return { ok: false, note: `uv venv failed${created.stderr ? ` (${created.stderr.slice(0, 200)})` : ""}; using the host python environment` };
+      return { ok: false, note: `uv venv failed${created.stderr ? ` (${created.stderr.slice(0, 200)})` : ""}, using the host python environment` };
     }
     return { ok: true };
   }

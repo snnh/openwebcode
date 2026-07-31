@@ -288,7 +288,7 @@ owc run "跑测试并修复失败的用例" --cwd . --yolo --json | tee events.n
 
 ### Q: core（C 执行器）崩溃了怎么办？
 
-core-client 自动重启（指数退避，≤3 次），重启后广播 error 并标记运行中工具失败。频繁崩溃看 `<业务数据目录>/logs/` 里的 core stderr。
+core-client 自动重启（指数退避封顶 30s，持续重试不永久放弃），重启后广播 error 并标记运行中工具失败。频繁崩溃看 `<业务数据目录>/logs/` 里的 core stderr。
 
 ### Q: 沙盒导致某些命令失败？
 
