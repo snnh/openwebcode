@@ -2,6 +2,23 @@
 
 本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前版本的用户可感知变化。日期以 Git 标签发布日期为准。
 
+## [1.0.0-beta.5] - 未发布
+
+### 新增
+
+- Shell 后端探测与 Git Bash 支持：Windows 默认命令后端按 `pwsh > Git Bash > cmd.exe` 探测取首个可用项（Git Bash 解析为 Git for Windows 的 bash.exe 绝对路径，排除 WSL 的 `System32\bash.exe`），Linux 按 `bash > pwsh > $SHELL`（`/bin/sh` 兜底）；会话 `shellBackend` 意图扩展为 `default/pwsh/bash/cmd`（界面仍暴露「默认 / PowerShell 7」两档）。core `exec.run`/`job.start` 新增 `shellBackend:"bash"` 与 `shellPath`（host 探测到的显式解释器路径），`core.ping` 上报 `features.shellBash`；bash 工具描述按平台与实际解释器生成（Git Bash 下提示 POSIX 语义）。
+- OpenAI Responses 接口类型：模型服务商新增第三种接口（`POST {baseURL}/responses`，流式）；思维以 reasoning summary 流返回，历史思维链不回传（Responses 的思维回放依赖服务端 reasoning 机制）。
+- Bind Link 目录绑定（Windows 11 24H2+）：创建会话的 REST 入参 `bindLinks`（≤16 项，`virtPath`/`backingPath`/`readOnly?`）把会话工作区内的虚拟路径透明绑定到外部真实目录，面向共享依赖缓存；创建绑定需 server 以管理员权限运行，`core.ping` 上报 `features.bindLink`，wsb 模式不支持；绑定全系统可见，会话清理时撤销，异常退出最迟重启失效。
+
+### 界面与体验
+
+- 思考、正文与工具调用按真实产生顺序交织渲染；相邻的连续工具调用（≥2 个）自动合并为「N 个工具调用」折叠组，组内一调用一行。
+- 流式正文按增量平滑追加，长输出不再整段重排。
+
+### 文档
+
+- 根 README（中英）、`docs/`、`help/` 精简重写并同步本轮变化；删除空文件 `docs/review.md`。
+
 ## [1.0.0-beta.4] - 2026-07-31
 
 ### 新增
@@ -29,8 +46,15 @@
 - 输出长度默认不封顶：OpenAI 兼容接口不再默认发送 `max_tokens`；Anthropic 保留 API 强制默认值，可经自定义请求体覆盖。
 - 未声明模型默认上下文 256k；deepseek 前缀升至 1M（DeepSeek V4）；effort 档新增 ultra。
 
+### 变更
+
+- Windows 默认沙盒模式改为 Job Object（兼容模式）；AppContainer 仍需在会话中显式选择，既有未指定沙盒模式的会话按新默认执行。
+
 ### 修复
 
+- 工具结果滚动驱逐重构：lag 改为按轮计（一轮 = 一批连续工具结果）且默认 lag 1 → 2，当轮（模型尚未看到的批次）受保护不再被驱逐；新增驱逐豁免下限（<256 token 的小结果、≤10 行的文件读取始终保留）与 read_file 头 50 + 尾 50 行摘录降级；驱逐占位符改为语义摘要（工具名/大小）并指引模型用 `read_artifact` 自助恢复（原"UI restore action"指引模型无法执行）。以上阈值均可在上下文面板会话级热调。
+- 新增「超级节省」驱逐模式（上下文面板/REST 可选，默认仍为「默认节省」占位符模式）：非保留轮的整轮工具过程连同思维链出视图，只留一行不可变摘要（含 artifact 恢复指引），tool_call 大参数（write_file 全文等）不再滞留上下文；回写时双侧配对自动复活。
+- bash 工具调用长时间不结束：server 从 Git Bash/MSYS 环境启动时子进程 PATH 里 `usr/bin` 先于 System32，`find`/`sort` 被解析成 MSYS 版本（如 `find /c` 变递归扫盘）导致命令跑飞；现 Windows 下 core 子进程一律前置 System32 恢复内置命令语义，持久 shell 超时错误附带已捕获输出尾部供模型自我纠正。
 - 全局 review 修复：权限卡悬挂、幽灵运行态、core 崩溃恢复。
 - 子代理思维链回传档位按实际请求模型（modelOverride）取档。
 - bash 权限规则词边界前缀匹配。

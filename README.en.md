@@ -13,9 +13,9 @@ Browser (React) ── HTTP/WebSocket ──► Node service (agent loop and too
 - Let an agent inspect and edit project files, run commands and tests, and continue autonomously across multiple turns.
 - Use Plan mode for read-only investigation before switching to Build mode.
 - Create automatic or manual checkpoints and roll back files together with conversation history.
-- Run commands in Windows AppContainer, Windows Sandbox, Job Object, or Linux Landlock.
+- Run commands in Windows Job Object (default), AppContainer, Windows Sandbox, or Linux Landlock.
 - Keep background shell tasks running while continuing the conversation.
-- Render GFM Markdown, syntax-highlighted code, KaTeX equations, and collapsed reasoning blocks.
+- Render GFM Markdown, syntax-highlighted code, KaTeX equations, and collapsed reasoning blocks; reasoning and tool calls render in their true interleaved order, and adjacent tool calls collapse into a foldable group.
 - Control context eviction, restoration, compaction, token budgets, and cost budgets per session.
 - Extend the system with skills, commands, hooks, sub-agents, MCP servers, and Extension Host packages.
 - Automate jobs with the non-interactive `owc run` CLI and NDJSON event output.
@@ -54,7 +54,7 @@ Open <http://127.0.0.1:3000> after the service starts.
 
 The first visit follows the browser language: Chinese browsers use Simplified Chinese and other browsers use English. To change it later, open **Settings → Appearance → Language**. The selection takes effect immediately, is stored in local storage as `owc-language`, and updates the document language used by assistive technology.
 
-Then add and enable one or more named model providers under **Settings → Model Catalog**, choosing either the Anthropic Messages or OpenAI Chat Completions interface. Refresh the catalog; the unified picker shows each entry as `Model ID【Provider】`. Create a session from the **+** button, choose a workspace and model, and describe the task in the composer. A managed workspace first copies its source directory into a disk image; while the session is idle, use **Snapshot now** in the header to create a virtual-disk differential snapshot. Use **Sync back to source** in the Files panel to review changes and explicitly write them back.
+Then add and enable one or more named model providers under **Settings → Model Catalog**, choosing the Anthropic Messages, OpenAI Chat Completions, or OpenAI Responses interface. Refresh the catalog; the unified picker shows each entry as `Model ID【Provider】`. Create a session from the **+** button, choose a workspace and model, and describe the task in the composer. A managed workspace first copies its source directory into a disk image; while the session is idle, use **Snapshot now** in the header to create a virtual-disk differential snapshot. Use **Sync back to source** in the Files panel to review changes and explicitly write them back.
 
 Closing the browser tab does not stop an active agent. The server continues the job and persists its output. Reopen the UI and select the session to replay missed events. Use **Stop** when you want to cancel a job.
 
@@ -75,7 +75,7 @@ Messages sent while a job is running enter the Steering queue and are injected o
 
 ## Key capabilities
 
-**Agent tools**: bash (including background tasks), file read/write/edit, glob/grep, `repo_map`/`code_search` (workspace symbol index), `test_runner` (structured diagnostics), `spawn_task`/`spawn_swarm` (isolated-context sub-agents; the swarm fans out several tasks in parallel), `remember` (long-term memory), `todo_write` (live task list), and `web_fetch`/`web_search` (SSRF-guarded), plus tools injected by MCP servers and extensions. Tool schemas, tool-specific prompt guidance, and MCP discovery are sent only to models whose catalog capability enables tools; other models continue as normal chat. Web tools are configured through a shared registry of named provider profiles, each declaring its Search/Fetch capabilities, with the active profile chosen per capability; a tool and its prompt guidance are omitted when no profile with the required capability is selected.
+**Agent tools**: bash (including background tasks; the shell is probed per platform — Windows `pwsh > Git Bash > cmd`, Linux `bash > pwsh > $SHELL`, with pwsh enforceable per session), file read/write/edit, glob/grep, `repo_map`/`code_search` (workspace symbol index), `test_runner` (structured diagnostics), `spawn_task`/`spawn_swarm` (isolated-context sub-agents; the swarm fans out several tasks in parallel), `remember` (long-term memory), `todo_write` (live task list), and `web_fetch`/`web_search` (SSRF-guarded), plus tools injected by MCP servers and extensions. Tool schemas, tool-specific prompt guidance, and MCP discovery are sent only to models whose catalog capability enables tools; other models continue as normal chat. Web tools are configured through a shared registry of named provider profiles, each declaring its Search/Fetch capabilities, with the active profile chosen per capability; a tool and its prompt guidance are omitted when no profile with the required capability is selected.
 
 **Sub-agents**: built-in `explore` (read-only exploration) and `general` (read/write, running under the same permission chain and identically configured sandbox as the main agent) types, plus custom sub-agent definitions; `spawn_swarm` dispatches 2–16 templated tasks at once (concurrency cap 4, excess queued). Live cards in the chat track, main-window tabs, and the Subagents panel monitor progress and transcripts in real time, and the panel can also launch sub-agents manually.
 
@@ -83,7 +83,7 @@ Messages sent while a job is running enter the Steering queue and are injected o
 
 **Permissions**: ask / acceptEdits / yolo. "Allow once" approves only the current call, which starts after the response is delivered; "always allow" creates a persistent rule. Neither "always allow" nor yolo disables the sandbox — the two mechanisms are orthogonal.
 
-**Sandbox** (on by default): Windows AppContainer (Job Object compatibility fallback), Windows Sandbox (one ephemeral VM per session, for untrusted code), and Linux Landlock. Capability probes report the actual enforcement level (enforced/partial/advisory). The path policy applies `denyPaths > writeRoots > readRoots`.
+**Sandbox** (on by default): Windows Job Object (default, AppContainer optional), Windows Sandbox (one ephemeral VM per session, for untrusted code), and Linux Landlock. Capability probes report the actual enforcement level (enforced/partial/advisory). The path policy applies `denyPaths > writeRoots > readRoots`. On Windows 11 24H2+, optional Bind Link directory bindings (requires running as administrator) transparently map virtual paths inside the session workspace to real directories outside it — useful for shared dependency caches.
 
 **Snapshots and rollback**: automatic checkpoint before every user turn, or switch to manual-only. Native Btrfs, ZFS, and ReFS backends are auto-detected, with a git shadow repository as the fallback. Managed workspaces keep the project on a VHDX/qcow2 image disk, where differential-chain snapshots are near-instant and can branch; **Snapshot now** in the header creates an image checkpoint whenever the session is idle. They never overwrite the source directory when a session closes or is deleted: the Files panel can generate a three-way diff at any time, and confirmation writes back only conflict-free changes.
 
@@ -95,7 +95,7 @@ Messages sent while a job is running enter the Steering queue and are injected o
 
 - `agents/*.md` — dedicated sub-agents (frontmatter declares the toolset and model; invoked via `spawn_task agent=<name>`);
 - `commands/*.md` — slash-command templates (`$ARGUMENTS` / `$1..$9` substitution);
-- `hooks.json` — PreToolUse / PostToolUse / UserPromptSubmit / Stop / SessionStart shell hooks; PreToolUse exit 2 vetoes a tool call;
+- `hooks.json` — shell hooks for PreToolUse / PostToolUse / UserPromptSubmit / Stop / SessionStart / SessionEnd / PreCompact / PostCompact / Notification / SubagentStart / SubagentStop; Pre-class events veto on exit 2;
 - `skills/` — skills triggered by `/name`, with the body loaded on demand;
 - `mcp.json` — MCP client configuration (stdio and HTTP transports).
 
