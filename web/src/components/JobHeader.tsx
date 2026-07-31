@@ -178,12 +178,12 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
         </button>
       </div>
       {!headerCollapsed && <div className="job-actions">
-        <label className={`mode-switch sandbox-mode-switch ${(session.sandboxMode ?? "appcontainer") === "off" ? "advisory" : "enforced"}`} title={t("切换当前会话的命令执行沙盒", "Change the command sandbox for this session")}>
+        <label className={`mode-switch sandbox-mode-switch ${(session.sandboxMode ?? "jobobject") === "off" ? "advisory" : "enforced"}`} title={t("切换当前会话的命令执行沙盒", "Change the command sandbox for this session")}>
           <Icon name="shield" size={11} />
           <span>{t("沙盒", "Sandbox")}</span>
           <select
             aria-label={t("沙盒模式", "Sandbox mode")}
-            value={session.sandboxMode ?? "appcontainer"}
+            value={session.sandboxMode ?? "jobobject"}
             disabled={busy || configPending}
             onChange={(event) => changeSandbox(event.target.value as SandboxMode)}
           >

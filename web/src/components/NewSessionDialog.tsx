@@ -18,9 +18,9 @@ export interface NewSessionValues {
 }
 
 const SANDBOX_MODE_LABELS: Record<SandboxMode, [string, string]> = {
-  appcontainer: ["应用容器（AppContainer，默认）", "AppContainer (default)"],
+  appcontainer: ["应用容器（AppContainer）", "AppContainer"],
   wsb: ["Windows Sandbox（不可信代码）", "Windows Sandbox (untrusted code)"],
-  jobobject: ["兼容模式（Job Object）", "Compatibility (Job Object)"],
+  jobobject: ["兼容模式（Job Object，默认）", "Compatibility (Job Object, default)"],
   off: ["关闭沙盒", "Sandbox off"],
 };
 
@@ -42,7 +42,7 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
   const [provider, setProvider] = useState("");
   const [model, setModel] = useState("");
   const [permissionMode, setPermissionMode] = useState<PermissionMode>("ask");
-  const [sandboxMode, setSandboxMode] = useState<SandboxMode>("appcontainer");
+  const [sandboxMode, setSandboxMode] = useState<SandboxMode>("jobobject");
   const [setupScript, setSetupScript] = useState("");
   const [sandboxCaps, setSandboxCaps] = useState<SandboxCapabilities | undefined>();
   const [workspaceMode, setWorkspaceMode] = useState<"direct" | "managed">("direct");
@@ -119,8 +119,8 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
             model,
             agentMode,
             permissionMode,
-            // appcontainer 是缺省，不必显式提交；setupScript 仅 wsb 有意义
-            ...(sandboxMode !== "appcontainer" ? { sandboxMode } : {}),
+            // jobobject 是缺省，不必显式提交；setupScript 仅 wsb 有意义
+            ...(sandboxMode !== "jobobject" ? { sandboxMode } : {}),
             ...(sandboxMode === "wsb" && setupScript.trim() ? { setupScript: setupScript.trim() } : {}),
             ...(workspaceMode === "managed" ? { workspaceMode } : {}),
           });

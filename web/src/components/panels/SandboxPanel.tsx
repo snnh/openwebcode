@@ -14,13 +14,13 @@ export function SandboxPanel({ session }: { session?: SessionDetail }): ReactEle
   if (!session) return <div className="inspector-body"><p className="panel-empty">{t("选择会话以查看沙盒策略。", "Select a session to view its sandbox policy.")}</p></div>;
   if (!session.sandbox) return <div className="inspector-body"><p className="panel-empty">{t("未配置沙盒策略。", "No sandbox policy is configured.")}</p></div>;
   const { sandbox } = session;
-  const enabled = (session.sandboxMode ?? "appcontainer") !== "off" && sandbox.enabled;
+  const enabled = (session.sandboxMode ?? "jobobject") !== "off" && sandbox.enabled;
   return (
     <div className="inspector-body">
       <h2>{t("沙盒策略", "Sandbox policy")}</h2>
       <dl>
         <dt>{t("模式", "Mode")}</dt>
-        <dd>{t(...SANDBOX_MODE_LABELS[session.sandboxMode ?? "appcontainer"])}</dd>
+        <dd>{t(...SANDBOX_MODE_LABELS[session.sandboxMode ?? "jobobject"])}</dd>
         <dt>{t("状态", "Status")}</dt>
         <dd>{enabled ? t("已启用", "Enabled") : t("已关闭", "Off")}</dd>
         <dt>{t("网络", "Network")}</dt>
