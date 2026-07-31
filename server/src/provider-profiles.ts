@@ -120,6 +120,10 @@ function optionalExtraBody(value: unknown): Record<string, unknown> | undefined 
       throw new ProviderProfilesValidationError(`自定义请求体不允许覆盖核心字段：${key}`);
     }
   }
+  const maxTokens = (value as Record<string, unknown>).max_tokens;
+  if (maxTokens !== undefined && (!Number.isSafeInteger(maxTokens) || (maxTokens as number) < 1)) {
+    throw new ProviderProfilesValidationError("自定义请求体的 max_tokens 必须是正整数");
+  }
   return Object.fromEntries(entries);
 }
 
