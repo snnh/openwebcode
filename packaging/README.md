@@ -157,7 +157,7 @@ Get-FileHash "openwebcode-$Version-windows-x64.msi" -Algorithm SHA256
 
 ### 安装与卸载
 
-- 双击安装，默认装到 `C:\Program Files\openwebcode\`（需要管理员权限；升级码固定，可覆盖升级）。
+- 双击安装，默认装到 `C:\Program Files\openwebcode\`（需要管理员权限；升级码固定，可覆盖升级。例外：beta 与正式版 ProductVersion 同为数值基版本如 `1.0.0`，跨 beta↔正式直装可能提示“已安装另一版本”，需先卸载再装；属 WiX 已知限制，如需免卸载升级须调整 ProductVersion/ProductCode 策略）。
 - 安装会始终创建“开始”菜单的 **OpenWebCode** 快捷方式（启动 `bin\owc.cmd`）。在“Shell integration”页可勾选创建桌面快捷方式，以及将 `<安装目录>\bin` 添加到**运行安装程序的用户**的 `PATH`；两个选项默认勾选，重新打开终端后可直接运行 `owc`。不勾选 PATH 时仍可从安装目录运行 `bin\owc.cmd`。
 - 卸载默认保留 `%USERPROFILE%\openwebcode`（以及旧版默认目录 `%LOCALAPPDATA%\openwebcode`）。如确认要删除**默认**用户数据，可在拥有 MSI 文件时显式执行：
 

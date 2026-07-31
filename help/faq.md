@@ -1,10 +1,12 @@
 # 常见问题（FAQ）
 
+按主题组织的常见问题与故障排查。操作入口与逐步说明见 [`usage.md`](./usage.md)。
+
 ## 通用
 
-### Q: 关闭浏览器标签页后，agent 还在跑吗？
+### Q: 关闭浏览器标签页后，agent 还在运行吗？
 
-**在跑。** 服务器端继续执行，结果照常落盘。重新打开 UI 选回该会话，断线期间的事件自动补拉回来。
+**仍在运行。** 服务器端继续执行，结果照常落盘。重新打开 UI 选回该会话，断线期间的事件自动补拉回来。
 
 要主动停作业：顶部「中断」按钮，或 `POST /api/sessions/:id/abort`。只有退出 server 进程才收尾全部会话与后台任务。
 
@@ -14,7 +16,7 @@
 
 ### Q: 支持 Windows / Linux / macOS 吗？
 
-Windows 与 Linux 原生支持（沙盒分别走 AppContainer/Landlock）。macOS 暂不支持。
+Windows 与 Linux 原生支持（沙盒分别为 Job Object 默认、可选 AppContainer / WSB，与 Landlock）。macOS 暂不支持。
 
 ### Q: 数据存在哪里？
 
@@ -22,7 +24,7 @@ Windows 与 Linux 原生支持（沙盒分别走 AppContainer/Landlock）。macO
 
 ### Q: 如何升级？
 
-Windows：重新下载 MSI 双击安装（major upgrade 原地升级，用户数据保留）。Linux：重新解压 tar.gz 覆盖安装目录。卸载保留用户数据，可选全删。
+Windows：重新下载 MSI 双击安装（major upgrade 原地升级，用户数据保留）。例外：从 beta 跨到正式版时，两者 MSI ProductVersion 同为数值基版本（如 `1.0.0`），直装可能提示“已安装另一版本”，需先卸载旧包再装（卸载不影响用户数据）。Linux：重新解压 tar.gz 覆盖安装目录。卸载保留用户数据，可选全删。
 
 ### Q: 怎么知道有没有新版本？
 
@@ -38,7 +40,7 @@ Windows：重新下载 MSI 双击安装（major upgrade 原地升级，用户数
 
 ### Q: 如何分叉或重新生成一段对话？
 
-会话历史是树形存储，旧分支消息始终保留。悬停任意一条用户消息会出现三个操作：**编辑重发**（内容回填输入框，发送后从该处另起分支）、**重新生成**（直接回退到该条重跑）、**分叉**（复制到该条为止的对话进新会话）。时间线面板顶部的会话树展示全部消息节点（非活动分支淡化），悬停节点也可「从此处继续」或「分叉」为新会话。详见 [usage.md 的右侧面板一节](./usage.md#右侧面板)。
+会话历史是树形存储，旧分支消息始终保留。悬停任意一条用户消息会出现三个操作：**编辑重发**（内容回填输入框，发送后从该处另起分支）、**重新生成**（直接回退到该条重跑）、**分叉**（复制到该条为止的对话进新会话）。时间线面板顶部的会话树展示全部消息节点（非活动分支淡化），悬停节点也可「从此处继续」或「分叉」为新会话。详见 [usage.md 的面板与状态显示一节](./usage.md#面板与状态显示)。
 
 ### Q: 下载的发布包怎么校验完整性？
 
@@ -52,9 +54,9 @@ Windows：重新下载 MSI 双击安装（major upgrade 原地升级，用户数
 
 ### Q: 支持哪些 LLM provider？
 
-支持 Anthropic Messages 与 OpenAI Chat Completions 两种接口类型（DeepSeek/Qwen/Ollama/GLM 等兼容端点均可）。设置页可保存多个具名服务商配置，逐个选择接口类型、Base URL、API Key 和是否启用；每个已启用服务商的模型会合并显示为 `模型ID【服务商】`。
+支持三种接口类型：Anthropic Messages、OpenAI Chat Completions（DeepSeek/Qwen/Ollama/GLM 等兼容端点均可）与 OpenAI Responses（`POST /responses`；思维以 reasoning summary 流返回，历史思维链不回传——Responses 的思维回放依赖服务端 reasoning 机制）。设置页可保存多个具名服务商配置，逐个选择接口类型、Base URL、API Key 和是否启用；每个已启用服务商的模型会合并显示为 `模型ID【服务商】`。
 
-### Q: 模型列表是空的 / 刷新不出来？
+### Q: 模型列表为空或刷新失败？
 
 - 检查服务商是否已启用，以及接口类型、Base URL 与 API Key 是否正确
 - 用服务商表单里的「测试连接」按钮快速定位：错误会按认证失败、URL 错误、无法连接、限流分类给出中文提示（5 秒超时）
@@ -87,7 +89,7 @@ Windows：重新下载 MSI 双击安装（major upgrade 原地升级，用户数
 
 错误事件会分类为 authentication / permission / not_found / invalid_request / rate_limit / overloaded，运行错误卡按类型给出可操作提示，并附设置深链按钮（认证/接口问题直达「模型目录」）。限流、过载等可重试错误会提供「重试」按钮，一键重发上一条用户消息；toast 只显示一行摘要，完整信息看错误卡。
 
-### Q: 缓存命中省钱吗？
+### Q: 缓存命中能降低成本吗？
 
 Anthropic 显式 `cache_control` 断点（系统提示词后、驱逐边界后、倒数第二轮用户消息后），命中后 cacheRead 价格通常是输入价的 0.1 倍。OpenAI 系自动缓存，无需配置。成本报表里「缓存读」分项可见。
 
@@ -106,15 +108,15 @@ Anthropic 显式 `cache_control` 断点（系统提示词后、驱逐边界后�
 
 「允许一次」只恢复当前这一项工具调用，不写权限规则；「总是允许」需要二次确认，并把当前工具及参数规则保存到会话。两者都会先完成批准接口响应，再开始工具执行，避免浏览器等待审批响应时被长命令拖住。
 
-Windows 默认 AppContainer 会话使用 `cmd.exe`。如果批准后立即出现“不是内部或外部命令”，通常是模型生成了 PowerShell/POSIX 语法；可在会话头部把命令后端切到 `PowerShell 7`（需安装 `pwsh`），或改用 `dir`、`type`、`where` 等 cmd 命令。
+Windows 会话的默认命令后端按 `pwsh > Git Bash > cmd.exe` 探测取第一个可用项（Git Bash 是 Git for Windows 的 bash.exe，不含 WSL）。如果批准后立即出现“不是内部或外部命令”或语法错误，通常是模型生成了与当前解释器不匹配的语法；可在会话头部把命令后端切到 `PowerShell 7`（需安装 `pwsh`）强制统一，或改用与探测结果匹配的命令语法。
 
 ### Q: agent 的 bash 是每次新开一个 shell 吗？
 
-不是。默认每会话维护一个持久 shell（沙盒内 pty）：`cd` 切换的目录、`export`/`set` 设置的环境变量在后续 bash 调用中保持。pty 不可用（如旧版 core）时自动回退一次性执行，功能不变，只是不再保持状态。两个例外：`run_in_background` 的后台任务始终走一次性 job；Windows 上 `pwsh` 后端在 AppContainer 沙盒下暂不可用持久 shell，同样回退一次性执行（cmd 后端不受影响）。
+不是。默认每会话维护一个持久 shell（沙盒内 pty）：`cd` 切换的目录、`export`/`set` 设置的环境变量在后续 bash 调用中保持。pty 不可用（如旧版 core）时自动回退一次性执行，功能不变，只是不再保持状态。两个例外：`run_in_background` 的后台任务始终走一次性 job；Windows 上 `pwsh` 与 Git Bash 后端在 AppContainer 沙盒下暂不可用持久 shell，同样回退一次性执行（cmd 后端不受影响）。
 
 ### Q: yolo 了还会被沙盒拦吗？
 
-会。yolo 只跳过权限确认，沙盒（AppContainer/Landlock）照常约束文件读写与网络。要完全解除沙盒需在会话创建时将沙盒模式设为 `off`（不推荐）。
+会。yolo 只跳过权限确认，沙盒（Job Object/AppContainer/Landlock）照常约束文件读写与网络。要完全解除沙盒需在会话创建时将沙盒模式设为 `off`（不推荐）。
 
 ### Q: agent 要写沙盒外的路径怎么办？
 
@@ -131,14 +133,14 @@ Windows：会话创建选 `WSB` 沙盒模式——一会话一 VM，关闭即销
 会话头部实时显示窗口占用（`45k/128k · 38%`，≥70% 变黄、≥85% 变红）与缓存命中；上下文面板顶部「上下文窗口」区可查看分段 token 归因与水位提示。接近上限时三层防御自动介入：
 
 1. **结果预算截断**：bash 输出 8k、read 16k、grep 4k，超出截断 + artifact 指针
-2. **滚动驱逐**：默认 lag=1，每轮完成即把 N-1 轮的 toolcall 压成一行占位符（`[tool: bash "npm test" → exit 0, 2.1k tokens, artifact:a3f2]`），全量落盘 artifacts/
+2. **滚动驱逐**：默认 lag=2（当轮始终保护 + 最近 2 个已完成轮保留全文），更早的结果按驱逐模式处理——**默认节省**：压成一行语义占位符（工具名/大小/`read_artifact` 恢复指引），read_file 结果降级为头 50 + 尾 50 行摘录；**超级节省**：整轮工具过程连同思维链出视图，只留一行不可变摘要（含 artifact 恢复指引）。低于 256 token 的小结果与 ≤10 行的文件读取始终保留，全量落盘 artifacts/
 3. **85% 水位强制压缩**：快速模型做结构化概览摘要
 
 手动介入：`/compact`（概览摘要）/ `/compact tools`（toolcalls 精炼）/ `/clear`（清视图留历史）。
 
 ### Q: 驱逐掉的内容还能找回来吗？
 
-能。右侧「上下文用量」面板的条目列表中，已逐出条目旁有「恢复」按钮（或 `POST /api/sessions/:id/context/restore`），把 artifact 全文恢复到 LLM 视图。前端渲染始终用全量历史，不受驱逐影响。
+能。底部面板「上下文」标签页的条目列表中，已逐出条目旁有「恢复」按钮（或 `POST /api/sessions/:id/context/restore`），把 artifact 全文恢复到 LLM 视图。前端渲染始终用全量历史，不受驱逐影响。
 
 ### Q: `/clear` 会丢历史吗？
 
@@ -166,7 +168,7 @@ Windows：会话创建选 `WSB` 沙盒模式——一会话一 VM，关闭即销
 
 ### Q: 托管工作区是什么？什么时候用？
 
-项目活在 VHDX（Windows）/ qcow2（Linux）稀疏镜像盘挂载点上，快照走差分链——毫秒级、可再分支。Windows 的 VHDX 以不含点号的目录名挂载在源工作目录旁边（例如 `work-openwebcode-<会话ID>`），镜像文件和链状态仍保存在 OpenWebCode 私有数据目录。适合：
+项目位于 VHDX（Windows）/ qcow2（Linux）稀疏镜像盘挂载点上，快照走差分链——毫秒级、可再分支。Windows 的 VHDX 以不含点号的目录名挂载在源工作目录旁边（例如 `work-openwebcode-<会话ID>`），镜像文件和链状态仍保存在 OpenWebCode 私有数据目录。适合：
 
 - 频繁回滚、想分支试验
 - 不可信代码（配合 WSB 或容器）
@@ -242,7 +244,7 @@ owc run "跑测试并修复失败的用例" --cwd . --yolo --json | tee events.n
 
 ### Q: 启动后浏览器打不开 / 连接被拒？
 
-- 确认 `owc` 进程在跑（`ps aux | grep owc` 或任务管理器）
+- 确认 `owc` 进程在运行（`ps aux | grep owc` 或任务管理器）
 - 确认端口未被占用、未被防火墙拦
 - 默认监听 `127.0.0.1`；远程/局域网访问需设置 `OWC_HOST=0.0.0.0` 且**必须**同时设置 `OWC_ACCESS_TOKEN`（≥32 字符），否则 server 拒绝启动。浏览器首次用 `http://<主机>:<端口>/?token=<token>` 换取 HttpOnly Cookie；`owc run` 用 `OWC_ACCESS_TOKEN` 环境变量走 Bearer 头
 
@@ -256,7 +258,7 @@ owc run "跑测试并修复失败的用例" --cwd . --yolo --json | tee events.n
 
 ### Q: 手机上能用吗？
 
-可以。窄窗口（≤1024px）是单列布局：对话下发任务、看运行状态、处理权限卡与结构化交互、队列操作、启停 run、切换会话都完整可用；侧栏作为临时抽屉，不会改写桌面展开偏好。代码审查等重活建议回桌面。浏览器「安装到主屏」后有 PWA 壳；不做离线缓存。手机访问意味着非回环监听，必须先配好 `OWC_ACCESS_TOKEN`（见上一条）。
+可以。窄窗口（≤1024px）是单列布局：对话下发任务、看运行状态、处理权限卡与结构化交互、队列操作、启停 run、切换会话都完整可用；侧栏作为临时抽屉，不会改写桌面展开偏好。代码审查等复杂操作建议在桌面端进行。浏览器「安装到主屏」后有 PWA 壳；不做离线缓存。手机访问意味着非回环监听，必须先配好 `OWC_ACCESS_TOKEN`（配置步骤见 [usage.md 的远程访问与局域网](./usage.md#远程访问与局域网)）。
 
 ### Q: 命令面板和快捷键有哪些？
 
@@ -296,7 +298,7 @@ AppContainer 下 git 凭据管理器、部分 GUI 程序、需要特殊权限的
 
 ### Q: 后台任务在 Linux 上 kill 后子进程还在？
 
-已知限制。Windows Job Object `KILL_ON_JOB_CLOSE` 能杀尽孙进程树；Linux posix kill 后孙进程可能孤儿化（core 主进程被杀但孙进程未被进程组一起收掉）。建议后台任务用 `setsid` 或 `nohup` 包一层。
+已知限制。Windows Job Object `KILL_ON_JOB_CLOSE` 能杀尽孙进程树；Linux posix kill 后孙进程可能孤儿化（core 主进程被杀但孙进程未被进程组一起收掉）。建议后台任务用 `setsid` 或 `nohup` 包装一层。
 
 ## 反馈与贡献
 

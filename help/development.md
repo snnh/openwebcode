@@ -10,15 +10,20 @@ openwebcode/
 │   ├── CMakeLists.txt
 │   ├── src/
 │   │   ├── main.c        # stdio JSON-RPC 主循环
-│   │   ├── rpc.c/.h      # Content-Length 分帧
-│   │   ├── exec.c/.h     # 命令执行（超时、输出捕获、进程树 kill）
-│   │   ├── fs.c/.h       # read/write/edit/glob/grep
+│   │   ├── rpc.c/.h      # Content-Length 分帧、参数白名单、方法分发
+│   │   ├── json.c/.h     # 手写 JSON 解析/序列化（无第三方依赖）
+│   │   ├── exec.c/.h     # 命令执行（超时、输出捕获、进程树 kill、shell 后端）
+│   │   ├── fs.c/.h       # read/write/edit/glob/grep/scan/watch/hash
+│   │   ├── symbol_extract.c # index.extract job 的 9 语言行匹配符号提取
 │   │   ├── path_policy.c # 沙盒路径校验（denyPaths > writeRoots > readRoots）
-│   │   └── platform/     # 平台代码分文件：exec_{posix,win}.c / fs_{posix,win}.c /
-│   │                     #             path_{posix,win}.c / sandbox_{posix,win}.c
-│   ├── tests/            # Python 脚本喂 RPC（protocol/fs/index_scan/index_extract/search_job）
-│   │                     #   + C 单测（path-policy、sandbox-capability）
-│   └── vendor/cJSON/     # 唯一第三方依赖（源码内置）
+│   │   ├── pty.h         # PTY 抽象（pty.open/input/resize/close + 通知）
+│   │   ├── bindlink.h    # Windows Bind Link API 抽象（运行时探测 dll）
+│   │   ├── version.h.in  # 版本模板（configure_file 生成 version.h）
+│   │   └── platform/     # 平台代码分文件：exec/fs/path/sandbox/pty/bindlink
+│   │                     #   各分 {posix,win}.c
+│   └── tests/            # Python 脚本喂 RPC（protocol/fs/abs_path/index_scan/
+│                         #   index_extract/search_job/pty/bindlink）+ C 单测
+│                         #   （path-policy、sandbox-capability）
 ├── server/               # Node.js 服务层（TypeScript，ESM）
 │   ├── src/
 │   │   ├── index.ts      # 全局单例装配 + buildServer({...})
@@ -26,8 +31,10 @@ openwebcode/
 │   │   ├── core-client.ts# C 子进程管理 + RPC 客户端（崩溃自动重启）
 │   │   ├── agent/        # agent loop、工具调度、权限、状态机、护栏、子代理、后台任务、消息队列
 │   │   │   ├── tool-schemas.ts # 内置工具 schema 单一来源（agent-runner 与 sub-agent 共用）
+│   │   │   ├── shell-detect.ts # shell 探测/解析单一来源（pwsh/Git Bash/cmd/bash/$SHELL）
+│   │   │   ├── persistent-shell.ts # agent bash 持久 shell（沙盒内 pty，cd/env 跨调用保持）
 │   │   │   └── sub-agent.ts    # 内置类型注册表：explore（只读，缺省）/ general（可写，走权限链）
-│   │   ├── providers/    # anthropic / openai + 统一流式接口
+│   │   ├── providers/    # anthropic / openai-chat-completions / openai-responses + 统一流式接口
 │   │   ├── context/      # 账本、buildView、驱逐、artifact、压缩
 │   │   ├── sessions/     # 多会话管理、JSONL 持久化、session-tree.ts（activePathMessages 等树导航辅助）
 │   │   ├── cost/         # 定价目录、汇率、成本核算
@@ -87,7 +94,7 @@ ctest --test-dir build -C Debug --output-on-failure
 
 Windows MSVC 默认 `/W4 /WX`（警告即错误）。**C 源文件注释必须纯 ASCII**——GBK 代码页下 `/WX` 会把 C4819（非 ASCII 字符）当错误。
 
-`core/vendor/cJSON/` 是唯一第三方依赖，源码内置，无需装库。
+core 无第三方依赖：JSON 解析/序列化由 `core/src/json.c` 手写实现（递归下降解析器）。
 
 ### 2. server（Node 服务层）
 
@@ -124,7 +131,7 @@ web/dist 不入库——由 server 静态托管（server 解析 `server/dist/../
 
 ## 本地开发循环
 
-三种跑法，按需选：
+三种运行方式，按需选择：
 
 ### A. 全本地三件套联调
 
@@ -151,13 +158,9 @@ cd web && npm run dev    # Vite 默认 5173，proxy 到 server 3000
 
 ### B. 测试用 provider（无需真实 LLM）
 
-运行时不再内置模拟 provider。端到端和单元测试使用
-`server/test/helpers/stub-provider.ts` 的 `makeStubProvider()` 注入一个确定性
-provider；它支持 `run: <cmd>` 的工具调用回放与 `tool_result` 回包，因此测试无需
-消耗 token，也不会把开发用途的 provider 暴露给实际用户。
+运行时不再内置模拟 provider。端到端和单元测试使用 `server/test/helpers/stub-provider.ts` 的 `makeStubProvider()` 注入一个确定性 provider；它支持 `run: <cmd>` 的工具调用回放与 `tool_result` 回包，因此测试无需消耗 token，也不会把开发用途的 provider 暴露给实际用户。
 
-本地联调请在设置页添加并启用 Anthropic Messages 或 OpenAI Chat Completions 服务商配置，并刷新模型目录后
-创建会话。
+本地联调请在设置页添加并启用 Anthropic Messages、OpenAI Chat Completions 或 OpenAI Responses 服务商配置，刷新模型目录后创建会话。
 
 ### C. 真实 LLM + 本地三件套
 
@@ -172,7 +175,7 @@ provider；它支持 `run: <cmd>` 的工具调用回放与 `tool_result` 回包�
 - HTTP 层：`buildServer(deps)` 注入 fake provider/core 后 `app.inject({...})`，不起真实端口
 - 权限响应：`POST /permissions/respond` 必须先完成 HTTP 响应，再恢复挂起工具；测试需覆盖 allow / allow_always / deny 与响应后执行顺序
 - 外部命令：`recordingRunner` / `tableRunner`（参考 `test/snapshot-backends.test.ts`）
-- 异步落盘竞态：用 `vi.waitFor(() => expect(...), { timeout: 5000 })` 轮询，别在 `finally` 里直接 `app.close()` 配 `rm -rf`（Windows 会撞 ENOTEMPTY）
+- 异步落盘竞态：用 `vi.waitFor(() => expect(...), { timeout: 5000 })` 轮询，不要在 `finally` 里直接 `app.close()` 配 `rm -rf`（Windows 会撞 ENOTEMPTY）
 
 ### web（vitest + jsdom）
 
@@ -181,8 +184,9 @@ provider；它支持 `run: <cmd>` 的工具调用回放与 `tool_result` 回包�
 
 ### core（ctest）
 
-- `test_protocol.py` / `test_fs.py` / `test_index_scan.py` / `test_index_extract.py` / `test_search_job.py`：Python 脚本喂 JSON-RPC 给编译出的 owc-exec，断言回包
+- `test_protocol.py` / `test_fs.py` / `test_abs_path.py` / `test_index_scan.py` / `test_index_extract.py` / `test_search_job.py` / `test_pty.py` / `test_bindlink.py`：Python 脚本喂 JSON-RPC 给编译出的 owc-exec，断言回包
 - `test_path_policy.c` / `test_sandbox.c`：纯 C 单测
+- `repro_grep.py` / `stress_init.py` 是手动复现/压测脚本，不在 CTest 注册
 
 ## 二次开发切入点
 
@@ -198,23 +202,23 @@ provider；它支持 `run: <cmd>` 的工具调用回放与 `tool_result` 回包�
 
 ### 加一个 LLM provider
 
-1. `server/src/providers/xxx.ts` 实现 `Provider` 接口（`name` + `async *streamChat(req): AsyncIterable<ProviderEvent>`）
+1. `server/src/providers/xxx.ts` 实现 `Provider` 接口（`name` + `async *streamChat(req): AsyncIterable<ProviderEvent>`），参考 `anthropic-provider.ts` / `openai-compatible-provider.ts` / `openai-responses-provider.ts`
 2. `ProviderEvent` 类型见 `providers/provider.ts`：`text_delta` / `thinking_delta` / `tool_call` / `usage` / `done`
-3. `index.ts` 装配：`providers.register(new XxxProvider(...))`
+3. 装配：`provider-profiles-runtime.ts` 按服务商配置的 `interfaceType` 实例化并 `providers.register(...)`；新接口类型同时加入 `provider-profiles.ts` 的 `ModelInterfaceType` 校验与设置页下拉
 4. config 加配置项：参考 `config.ts` 现有 provider 结构 + `settings-service.ts` 的 `FIELDS` 声明式（group/label/env/validate/restartRequired）
 5. 缓存断点：Anthropic 用显式 `cache_control`，OpenAI 系自动缓存——按你 provider 能力选
 6. 测试：fake provider 参考现有点用例
 
 ### 加一个快照后端
 
-1. `server/src/snapshots/` 下加后端实现，follow 现有 `git-shadow.ts` / `btrfs.ts` 模式
+1. `server/src/snapshots/` 下加后端实现，参照现有 `git-shadow.ts` / `btrfs.ts` 模式
 2. 探测链在 `snapshots/index.ts`（或探测入口），按能力自上而下尝试
 3. RPC 方法走 core 侧 `snapshot.*`（如需 core 协助），以 `core/src/rpc.c` 和 `server/src/core-client.ts` 的当前实现为准
 4. 测试：`test/snapshot-backends.test.ts` 用 `recordingRunner` / `tableRunner`
 
 ### 加一个 MCP 客户端传输
 
-1. `server/src/mcp/` 现有 stdio + Streamable HTTP，加新传输 follow 同样抽象
+1. `server/src/mcp/` 现有 stdio + Streamable HTTP，加新传输参照同样抽象
 2. 配置在 `<业务数据目录>/mcp.json` 或 `<cwd>/.owc/mcp.json`
 3. 工具注入命名空间 `mcp__<server>__<tool>`，走与内置工具相同的权限链
 
@@ -234,7 +238,7 @@ v1 扩展运行于独立 Extension Host 子进程（可信代码，安全级别 
 
 ### 改上下文策略
 
-- 驱逐策略：`context/context-manager.ts` 的 `evict()`——按账本 policy（lag/interval/off）计算可驱逐集，纯账本运算
+- 驱逐策略：`context/context-manager.ts` 的 `evict()`——按账本 policy（lag/interval/off + evictionMode 占位符/超级节省 + 豁免下限）计算可驱逐集，纯账本运算；超级节省的结构后处理在 `buildView` 返回前应用（不改缓存主本）
 - 压缩：`fast-model.ts` + `context/compactor.ts`
 - 新增占位/回写状态：改 `ContextLedger` 接口 + `normalizeLedger` 兼容 + `buildView` 渲染 + `replaceLedger` 回滚
 - 前端始终用全量历史，驱逐只影响 LLM 视图——改策略不会破坏 UI
@@ -245,7 +249,7 @@ v1 扩展运行于独立 Extension Host 子进程（可信代码，安全级别 
 - 数据：`@tanstack/react-query`（`queryKeys` 集中定义）
 - WS 事件流：`App.tsx` 的 onmessage 分发到 state + react-query invalidate
 - 样式：单文件 `styles.css`，CSS 变量主题（亮/暗）
-- 新组件：`components/` 下独立文件，follow 现有命名（`JobHeader.tsx` / `MessageCard.tsx`）
+- 新组件：`components/` 下独立文件，参照现有命名（`JobHeader.tsx` / `MessageCard.tsx`）
 - 新命令/快捷键：在 `commands/builtin.ts` 注册命令（含 `when` 上下文），默认键位加到 `commands/keybindings.ts`；`command-coverage` 审计测试会校验每个 REST 动作都有对应命令
 - Markdown/LaTeX：统一改 `Markdown.tsx`，不要在正文、历史思考、流式思考分别维护解析器；思考块只负责折叠与弱化视觉层级
 
