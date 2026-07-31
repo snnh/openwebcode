@@ -3,6 +3,7 @@ import type { EventEmitter } from "node:events";
 import path from "node:path";
 import { CoreRpcError, type CoreClientLike, type PtyOpenResult } from "../core-client.js";
 import { errorMessage } from "../error-utils.js";
+import { decodeChildProcessOutput } from "./output-decoder.js";
 import { effectivePythonEnv, uvVenvDir, type UvPythonEnvironments } from "../python-env.js";
 import { defaultSandboxPolicy } from "../sessions/default-sandbox.js";
 import type { PythonEnv, SessionMeta, ShellBackend } from "../sessions/types.js";
@@ -190,13 +191,27 @@ export class SentinelParser {
   }
 }
 
+/** 持久 shell 命令输出的代码页修复：pty 输出按 lossy UTF-8 增量喂给 sentinel 解析
+ * （sentinel 为 ASCII，GBK/UTF-8 下位置一致），若结果含 U+FFFD 则用原始字节按
+ * UTF-8 严格 / GBK 回退整体重解码并重跑解析；仍乱码则保留原输出。 */
+export function repairShellOutput(output: string, raw: readonly Buffer[], rand: string, lines: readonly string[]): string {
+  if (!output.includes("�") || raw.length === 0) return output;
+  const reparsed = new SentinelParser(rand, [...lines]);
+  reparsed.feed(decodeChildProcessOutput(Buffer.concat(raw)));
+  const repaired = reparsed.output();
+  return repaired.includes("�") ? output : repaired;
+}
+
 interface ActiveCommand {
   parser: SentinelParser;
-  resolve: (code: number) => void;
+  resolve: (result: { code: number; raw: Buffer[] }) => void;
   reject: (error: Error) => void;
   timer: NodeJS.Timeout;
   signal: AbortSignal;
   onAbort: () => void;
+  /** 本命令的原始输出字节（base64 解码后）：lossy UTF-8 出现乱码时按代码页重解码。 */
+  raw: Buffer[];
+  rawBytes: number;
 }
 
 interface ShellRecord {
@@ -261,28 +276,40 @@ export class PersistentShellManager {
     signal.throwIfAborted();
     if (!this.supported) throw new PersistentShellUnavailableError("Core pty support is unavailable");
     if (this.initFailed.has(key)) throw new PersistentShellUnavailableError("Persistent shell initialization previously failed for this session backend");
-    const shell = await this.ensureShell(key, session, backend, signal);
-    const rand = randomBytes(6).toString("hex");
-    const eol = process.platform === "win32" ? "\r" : "\n";
-    const cmdLines = cmd.replace(/\r\n/g, "\n").split("\n");
-    const reset = errorlevelResetLine(backend);
-    const lines = [...(reset ? [reset] : []), ...cmdLines, sentinelLine(backend, rand)];
-    const parser = new SentinelParser(rand, lines);
-    const started = Date.now();
-    const exitCode = await this.execOnShell(shell, parser, lines.join(eol) + eol, signal);
-    let output = parser.output();
-    if (shell.pythonEnvNote) {
-      output = `[openwebcode] ${shell.pythonEnvNote}\n${output}`;
-      delete shell.pythonEnvNote;
+    // core 重启后旧 ptyId 失效（"pty not found"）：销毁重建一次再执行，不把错误抛给模型
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const shell = await this.ensureShell(key, session, backend, signal);
+      const rand = randomBytes(6).toString("hex");
+      const eol = process.platform === "win32" ? "\r" : "\n";
+      const cmdLines = cmd.replace(/\r\n/g, "\n").split("\n");
+      const reset = errorlevelResetLine(backend);
+      const lines = [...(reset ? [reset] : []), ...cmdLines, sentinelLine(backend, rand)];
+      const parser = new SentinelParser(rand, lines);
+      const started = Date.now();
+      try {
+        const { code: exitCode, raw } = await this.execOnShell(shell, parser, lines.join(eol) + eol, signal);
+        let output = repairShellOutput(parser.output(), raw, rand, lines);
+        if (shell.pythonEnvNote) {
+          output = `[openwebcode] ${shell.pythonEnvNote}\n${output}`;
+          delete shell.pythonEnvNote;
+        }
+        return {
+          exitCode,
+          output,
+          truncated: parser.truncated,
+          durationMs: Date.now() - started,
+          ...(shell.sandboxCapability !== undefined ? { sandboxCapability: shell.sandboxCapability } : {}),
+          ...(shell.sandboxReason !== undefined ? { sandboxReason: shell.sandboxReason } : {}),
+        };
+      } catch (error) {
+        if (attempt === 0 && errorMessage(error).includes("pty not found")) {
+          this.destroy(shell);
+          continue;
+        }
+        throw error;
+      }
     }
-    return {
-      exitCode,
-      output,
-      truncated: parser.truncated,
-      durationMs: Date.now() - started,
-      ...(shell.sandboxCapability !== undefined ? { sandboxCapability: shell.sandboxCapability } : {}),
-      ...(shell.sandboxReason !== undefined ? { sandboxReason: shell.sandboxReason } : {}),
-    };
+    throw new Error("unreachable");
   }
 
   /** 懒建持久 shell：open -> 静默排干 -> pythonEnv 激活（首个用户命令前注入一次）。 */
@@ -337,7 +364,7 @@ export class PersistentShellManager {
       const rand = randomBytes(6).toString("hex");
       const eol = process.platform === "win32" ? "\r" : "\n";
       lines.push(sentinelLine(backend, rand));
-      const initCode = await this.execOnShell(record, new SentinelParser(rand, lines), lines.join(eol) + eol, signal);
+      const { code: initCode } = await this.execOnShell(record, new SentinelParser(rand, lines), lines.join(eol) + eol, signal);
       if (initCode !== 0) {
         this.initFailed.add(key);
         throw new PersistentShellUnavailableError(`Persistent shell could not enter the session cwd (init code ${initCode}); falling back to one-shot exec`);
@@ -386,9 +413,9 @@ export class PersistentShellManager {
   }
 
   /** 在 shell 上执行一段输入（命令 + sentinel），解析到 sentinel 返回 exit code。 */
-  private execOnShell(shell: ShellRecord, parser: SentinelParser, payload: string, signal: AbortSignal): Promise<number> {
+  private execOnShell(shell: ShellRecord, parser: SentinelParser, payload: string, signal: AbortSignal): Promise<{ code: number; raw: Buffer[] }> {
     if (shell.dead) return Promise.reject(new Error("Persistent shell is not running"));
-    return new Promise<number>((resolve, reject) => {
+    return new Promise<{ code: number; raw: Buffer[] }>((resolve, reject) => {
       const onAbort = () => {
         this.settle(shell, () => {
           this.destroy(shell);
@@ -406,7 +433,7 @@ export class PersistentShellManager {
           reject(new Error(`command timed out after ${PERSISTENT_COMMAND_TIMEOUT_MS}ms`));
         });
       }, PERSISTENT_COMMAND_TIMEOUT_MS);
-      shell.active = { parser, resolve, reject, timer, signal, onAbort };
+      shell.active = { parser, resolve, reject, timer, signal, onAbort, raw: [], rawBytes: 0 };
       signal.addEventListener("abort", onAbort, { once: true });
       this.writeInput(shell, payload).catch((error: unknown) => {
         this.settle(shell, () => {
@@ -432,8 +459,14 @@ export class PersistentShellManager {
       const active = record.active;
       if (!active || record.dead) return;
       if (!params || typeof params.data !== "string") return;
-      const code = active.parser.feed(Buffer.from(params.data, "base64").toString("utf8"));
-      if (code !== null) this.settle(record, () => active.resolve(code));
+      const bytes = Buffer.from(params.data, "base64");
+      // 原始字节上限 2 MiB：超限后放弃代码页修复（输出仍走 lossy 路径）
+      if (active.rawBytes + bytes.length <= 2 * 1024 * 1024) {
+        active.raw.push(bytes);
+        active.rawBytes += bytes.length;
+      }
+      const code = active.parser.feed(bytes.toString("utf8"));
+      if (code !== null) this.settle(record, () => active.resolve({ code, raw: active.raw }));
     });
     // core 崩溃 / pty.exit：在途命令报错，记录移除；下条命令 ensureShell 透明重建
     emitter.on("exit", (params: { exitCode?: unknown }) => {
@@ -495,7 +528,11 @@ function shellExecutable(backend: ShellBackend): string {
  * - cmd：pty 由 core 以会话 cwd 启动（真机探针验证提示符即工作区），无需再 cd——
  *   且 core AppContainer 的 ACL 授权现状下"按路径打开目录"会被拒（exec.run 同样如此，
  *   文件读写正常），`cd /d` 必失败并把 ERRORLEVEL 污染为 1（cmd 内建命令不复位它），
- *   之后每条 sentinel 都会读到陈旧失败码。故 cmd 不做任何 init。
+ *   之后每条 sentinel 都会读到陈旧失败码。故 cmd 不做 cd 类 init。
+ *   唯一 init 是 `chcp 65001`：ConPTY 以控制台代码页解析输出，默认 936 时中文程序的
+ *   GBK 输出会被当作 UTF-8 解析，FFFD 直接烤进字节流（不可逆）；切到 UTF-8 代码页后
+ *   中文输出与中文输入双向正确。`>nul` 不能加（AppContainer x ConPTY 拒绝重定向 NUL），
+ *   其提示行随 init 输出一并丢弃。
  * - pwsh：AppContainer 下初始 cwd 落到 C:\（FileSystem provider 初始化失败回退），
  *   PSReadLine 历史文件在用户配置目录（非沙盒读根）每次提示符渲染都报拒绝访问。
  *   显式 Set-Location 回会话 cwd 并关闭历史保存；末行校验落点——目录不可达（祖先
@@ -513,7 +550,7 @@ export function shellInitLines(backend: ShellBackend, cwd: string, platform: Nod
       `$global:LASTEXITCODE = ($PWD.Path ${eq} '${quoted}') ? 0 : 1`,
     ];
   }
-  if (platform === "win32") return [];
+  if (platform === "win32") return ["chcp 65001"];
   return [`cd '${cwd.replace(/'/g, `'\\''`)}'`];
 }
 
