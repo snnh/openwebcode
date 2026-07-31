@@ -1,9 +1,10 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MessageCard } from "../components/MessageCard";
 import { api } from "../lib/api";
 import type { ChatMessage, SubagentTranscript } from "../lib/contracts";
+import { makeSubagentRun } from "./helpers/fixtures";
+import { renderWithClient } from "./helpers/with-client";
 
 function message(role: ChatMessage["role"], texts: string[]): ChatMessage {
   return {
@@ -12,6 +13,28 @@ function message(role: ChatMessage["role"], texts: string[]): ChatMessage {
     createdAt: "2026-07-20T00:00:00.000Z",
     content: texts.map((text) => ({ type: "text", text })),
   };
+}
+
+/** 渲染携带子代理转录的工具消息，并展开工具行露出转录查看器 */
+function renderToolMessageWithTranscript(content: ChatMessage["content"]): HTMLElement {
+  const toolMessage: ChatMessage = {
+    id: "m-tool",
+    role: "assistant",
+    createdAt: "2026-07-20T00:00:00.000Z",
+    content,
+  };
+  const { container } = renderWithClient(<MessageCard message={toolMessage} sessionId="s-1" />);
+  // 工具结果默认折叠为单行：先展开工具行，转录查看器在展开区内
+  fireEvent.click(container.querySelector(".tool-row-header")!);
+  return container;
+}
+
+/** 打开转录折叠（触发懒加载） */
+function openTranscript(container: HTMLElement): HTMLDetailsElement {
+  const details = container.querySelector("details.subagent-transcript")!;
+  (details as HTMLDetailsElement).open = true;
+  fireEvent(details, new Event("toggle"));
+  return details as HTMLDetailsElement;
 }
 
 describe("MessageCard", () => {
@@ -71,29 +94,15 @@ describe("MessageCard", () => {
       ],
     };
     const spy = vi.spyOn(api, "subagentTranscript").mockResolvedValue(transcript);
-    const toolMessage: ChatMessage = {
-      id: "m-tool",
-      role: "assistant",
-      createdAt: "2026-07-20T00:00:00.000Z",
-      content: [
-        { type: "tool_call", id: "call-1", name: "spawn_task", input: { prompt: "调查 a.ts" } },
-        { type: "tool_result", toolCallId: "call-1", content: "子代理结论", isError: false, subagentTaskIds: ["task-1"] },
-      ],
-    };
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const { container } = render(
-      <QueryClientProvider client={client}>
-        <MessageCard message={toolMessage} sessionId="s-1" />
-      </QueryClientProvider>,
-    );
+    const container = renderToolMessageWithTranscript([
+      { type: "tool_call", id: "call-1", name: "spawn_task", input: { prompt: "调查 a.ts" } },
+      { type: "tool_result", toolCallId: "call-1", content: "子代理结论", isError: false, subagentTaskIds: ["task-1"] },
+    ]);
 
-    // 工具结果默认折叠为单行：先展开工具行，转录查看器在展开区内
-    fireEvent.click(container.querySelector(".tool-row-header")!);
     const details = container.querySelector("details.subagent-transcript");
     expect(details).toBeInTheDocument();
     expect(spy).not.toHaveBeenCalled();
-    (details as HTMLDetailsElement).open = true;
-    fireEvent(details!, new Event("toggle"));
+    openTranscript(container);
     await waitFor(() => expect(spy).toHaveBeenCalledWith("s-1", "task-1"));
     await waitFor(() => expect(details?.querySelector(".subagent-transcript-prompt")).toHaveTextContent("调查 a.ts"));
     expect(details?.querySelector(".subagent-transcript-meta")).toHaveTextContent("2 轮");
@@ -123,24 +132,10 @@ describe("MessageCard", () => {
       })),
     };
     vi.spyOn(api, "subagentTranscript").mockResolvedValue(transcript);
-    const toolMessage: ChatMessage = {
-      id: "m-tool-long",
-      role: "assistant",
-      createdAt: "2026-07-20T00:00:00.000Z",
-      content: [{ type: "tool_result", toolCallId: "call-1", content: "结论", isError: false, subagentTaskIds: ["task-long"] }],
-    };
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const { container } = render(
-      <QueryClientProvider client={client}>
-        <MessageCard message={toolMessage} sessionId="s-1" />
-      </QueryClientProvider>,
-    );
-
-    // 工具结果默认折叠为单行：先展开工具行，转录查看器在展开区内
-    fireEvent.click(container.querySelector(".tool-row-header")!);
-    const details = container.querySelector("details.subagent-transcript")!;
-    (details as HTMLDetailsElement).open = true;
-    fireEvent(details, new Event("toggle"));
+    const container = renderToolMessageWithTranscript([
+      { type: "tool_result", toolCallId: "call-1", content: "结论", isError: false, subagentTaskIds: ["task-long"] },
+    ]);
+    const details = openTranscript(container);
     await waitFor(() => expect(details.querySelector(".subagent-transcript-messages")).toBeInTheDocument());
     expect(details.querySelectorAll(".subagent-transcript-message")).toHaveLength(20);
     expect(details.querySelector(".subagent-transcript-messages > .subagent-transcript-status")).toHaveTextContent("仅显示最近 20 条");
@@ -164,16 +159,12 @@ describe("MessageCard", () => {
       <MessageCard
         message={spawnMessage}
         sessionId="s-1"
-        liveSubagents={[{ taskId: "t-9", toolCallId: "call-9", prompt: "调查 b.ts", status: "running", turns: 4, toolsUsed: ["grep"] }]}
+        liveSubagents={[makeSubagentRun({ taskId: "t-9", toolCallId: "call-9", prompt: "调查 b.ts" })]}
       />,
     );
 
-    // 专用卡片取代通用 ToolCallCard：无参数 <details>，有实时状态
+    // 专用卡片取代通用 ToolCallCard：无参数 <details>（实时状态展示由 subagent-run-card 测试覆盖）
     expect(container.querySelector(".subagent-run")).toBeInTheDocument();
     expect(container.querySelector(".tool-detail")).not.toBeInTheDocument();
-    expect(container.querySelector(".subagent-run-status")).toHaveTextContent("运行中");
-    // 轮次统计在展开后的正文里
-    fireEvent.click(container.querySelector(".subagent-run-header")!);
-    expect(container.querySelector(".subagent-run-stats")).toHaveTextContent("第 4 轮 · 已用 grep");
   });
 });

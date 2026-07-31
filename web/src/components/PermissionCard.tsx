@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import { api } from "../lib/api";
 import { CodeBlock } from "./Markdown";
-import { summarizeToolInput } from "./MessageCard";
+import { summarizeToolInput } from "../lib/tool-format";
 import { useI18n } from "../i18n";
 
 export interface PermissionRequest {

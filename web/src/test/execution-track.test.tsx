@@ -2,8 +2,9 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ExecutionTrack } from "../components/ExecutionTrack";
 import type { AgentErrorKind, ChatMessage, SessionDetail } from "../lib/contracts";
+import { makeSession } from "./helpers/fixtures";
 
-const session: SessionDetail = {
+const session: SessionDetail = makeSession({
   id: "session-1",
   cwd: "C:\\workspace",
   provider: "openai",
@@ -13,34 +14,82 @@ const session: SessionDetail = {
   updatedAt: "2026-07-21T00:00:00.000Z",
   sandbox: { enabled: true, readRoots: ["C:\\workspace"], writeRoots: ["C:\\workspace"], denyPaths: [], network: "allow" },
   messages: [{ id: "user-1", role: "user", createdAt: "2026-07-21T00:00:00.000Z", content: [{ type: "text", text: "请处理这个任务" }] }],
-};
+});
 
 describe("ExecutionTrack failures", () => {
-  it("renders streaming tool call cards with accumulating arguments", () => {
-    render(
+  it("renders adjacent streaming tool calls aggregated in an expanded group", () => {
+    const { container } = render(
       <ExecutionTrack
         session={session}
-        streamText=""
-        streamToolCalls={[
-          { id: "c1", name: "read_file", text: "{\"path\":\"a.ts\"}" },
-          { id: "c2", name: "glob", text: "{\"pattern\":" },
+        streamBlocks={[
+          { id: "c1", kind: "tool", name: "read_file", parts: ["{\"path\":\"a.ts\"}"] },
+          { id: "c2", kind: "tool", name: "glob", parts: ["{\"pattern\":"] },
         ]}
         permissions={[]}
         onPermissionDone={() => undefined}
       />,
     );
 
+    // 相邻流式调用实时聚合：标题行「2 个工具调用 · 进行中」，流式期展开
+    expect(screen.getByText("2 个工具调用")).toBeInTheDocument();
+    expect(screen.getByText("· 进行中")).toBeInTheDocument();
     expect(screen.getByText("read_file")).toBeInTheDocument();
-    expect(screen.getByText("{\"path\":\"a.ts\"}")).toBeInTheDocument();
     expect(screen.getByText("glob")).toBeInTheDocument();
-    expect(screen.getByText("{\"pattern\":")).toBeInTheDocument();
+    // 参数增量在行内展开区追加，不再裸堆底部
+    const rows = container.querySelectorAll(".tool-group-row");
+    expect(rows).toHaveLength(2);
+    fireEvent.click(rows[0]!.querySelector(".tool-row-header")!);
+    expect(rows[0]!.querySelector("pre.tool-stream-args")).toHaveTextContent("{\"path\":\"a.ts\"}");
+    fireEvent.click(rows[1]!.querySelector(".tool-row-header")!);
+    expect(rows[1]!.querySelector("pre.tool-stream-args")).toHaveTextContent("{\"pattern\":");
+  });
+
+  it("renders a lone streaming tool call as a single-line card", () => {
+    const { container } = render(
+      <ExecutionTrack
+        session={session}
+        streamBlocks={[{ id: "c1", kind: "tool", name: "read_file", parts: ["{\"path\":\"a.ts\"}"] }]}
+        permissions={[]}
+        onPermissionDone={() => undefined}
+      />,
+    );
+
+    expect(container.querySelectorAll(".tool-group")).toHaveLength(0);
+    const row = container.querySelector("article.live > .tool-row")!;
+    expect(row).not.toBeNull();
+    expect(row.querySelector(".tool-row-name")).toHaveTextContent("read_file");
+    fireEvent.click(row.querySelector(".tool-row-header")!);
+    expect(row.querySelector("pre.tool-stream-args")).toHaveTextContent("{\"path\":\"a.ts\"}");
+  });
+
+  it("renders streaming blocks in arrival order (thinking/tool/text interleaved)", () => {
+    const { container } = render(
+      <ExecutionTrack
+        session={session}
+        streamBlocks={[
+          { id: "thinking:0", kind: "thinking", parts: ["先想一下"] },
+          { id: "text:1", kind: "text", parts: ["第一段"] },
+          { id: "c1", kind: "tool", name: "glob", parts: ["{}"] },
+          { id: "text:2", kind: "text", parts: ["第二段"] },
+        ]}
+        permissions={[]}
+        onPermissionDone={() => undefined}
+      />,
+    );
+
+    const article = container.querySelector("article.live")!;
+    const kinds = Array.from(article.children)
+      .filter((element) => element.matches("details.thinking, .markdown, .tool-row, .tool-group"))
+      .map((element) => element.className.split(" ")[0]);
+    expect(kinds).toEqual(["thinking", "markdown", "tool-row", "markdown"]);
+    // 思考块原位独立折叠、正文按段渲染
+    expect(article.querySelector("details.thinking")).toHaveTextContent("先想一下");
   });
 
   it("keeps an agent failure visible in the conversation track", () => {
     render(
       <ExecutionTrack
         session={session}
-        streamText=""
         runError={{ message: "Core sandbox configuration failed" }}
         permissions={[]}
         onPermissionDone={() => undefined}
@@ -59,7 +108,6 @@ describe("ExecutionTrack failures", () => {
     render(
       <ExecutionTrack
         session={session}
-        streamText=""
         runError={{ message, kind, retryable: false }}
         permissions={[]}
         onPermissionDone={() => undefined}
@@ -80,7 +128,6 @@ describe("ExecutionTrack failures", () => {
     render(
       <ExecutionTrack
         session={session}
-        streamText=""
         runError={{ message: "rate limited", kind: "rate_limit", retryable: true }}
         permissions={[]}
         onPermissionDone={() => undefined}
@@ -98,7 +145,6 @@ describe("ExecutionTrack failures", () => {
     render(
       <ExecutionTrack
         session={session}
-        streamText=""
         runError={{ message: "The server restarted before this run reached a terminal state", retryable: true }}
         permissions={[]}
         onPermissionDone={() => undefined}
@@ -116,7 +162,6 @@ describe("ExecutionTrack failures", () => {
     render(
       <ExecutionTrack
         session={session}
-        streamText=""
         runError={{ message: blob, kind: "authentication", retryable: false }}
         permissions={[]}
         onPermissionDone={() => undefined}
@@ -140,7 +185,7 @@ describe("ExecutionTrack failures", () => {
         { id: "assistant-2", role: "assistant", createdAt: session.createdAt, content: [{ type: "text", text: "回复二" }] },
       ],
     };
-    const { container } = render(<ExecutionTrack session={bandingSession} streamText="" permissions={[]} onPermissionDone={() => undefined} />);
+    const { container } = render(<ExecutionTrack session={bandingSession} permissions={[]} onPermissionDone={() => undefined} />);
 
     const articles = container.querySelectorAll("article.message");
     expect(articles).toHaveLength(4);
@@ -165,7 +210,6 @@ function renderTrack(messages: ChatMessage[]) {
   return render(
     <ExecutionTrack
       session={{ ...session, messages }}
-      streamText=""
       permissions={[]}
       onPermissionDone={() => undefined}
     />,
@@ -205,7 +249,6 @@ describe("ExecutionTrack virtualization", () => {
     rerender(
       <ExecutionTrack
         session={{ ...session, messages: [...messages, ...makeMessages(1).map((m) => ({ ...m, id: "new" }))] }}
-        streamText=""
         permissions={[]}
         onPermissionDone={() => undefined}
       />,
@@ -228,7 +271,6 @@ describe("ExecutionTrack virtualization", () => {
     rerender(
       <ExecutionTrack
         session={{ ...session, messages: [...messages, ...makeMessages(1).map((m) => ({ ...m, id: "new" }))] }}
-        streamText=""
         permissions={[]}
         onPermissionDone={() => undefined}
       />,
@@ -242,7 +284,6 @@ describe("ExecutionTrack virtualization", () => {
     const renderProps = (msgs: ChatMessage[], visible: boolean) => (
       <ExecutionTrack
         session={{ ...session, messages: msgs }}
-        streamText=""
         permissions={[]}
         onPermissionDone={() => undefined}
         trackVisible={visible}
