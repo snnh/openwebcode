@@ -1513,7 +1513,7 @@ export class AgentRunner {
       const result = await runSubAgent({
         provider: context.provider,
         model: session.model,
-        reasoningContent: this.getProfile(session.model, session.provider).capabilities.reasoningContent !== false,
+        reasoningContent: this.getProfile(resolved.modelOverride ?? session.model, session.provider).capabilities.reasoningContent !== false,
         ...(resolved.modelOverride ? { modelOverride: resolved.modelOverride } : {}),
         ...(resolved.systemExtra ? { systemExtra: resolved.systemExtra } : {}),
         ...(resolved.name ? { agent: resolved.name } : {}),
@@ -2314,7 +2314,7 @@ export class AgentRunner {
         const result = await runSubAgent({
           provider,
           model: session.model,
-          reasoningContent: this.getProfile(session.model, session.provider).capabilities.reasoningContent !== false,
+          reasoningContent: this.getProfile(resolved.modelOverride ?? session.model, session.provider).capabilities.reasoningContent !== false,
           ...(resolved.modelOverride ? { modelOverride: resolved.modelOverride } : {}),
           ...(resolved.systemExtra ? { systemExtra: resolved.systemExtra } : {}),
           ...(resolved.name ? { agent: resolved.name } : {}),
@@ -2447,7 +2447,7 @@ export class AgentRunner {
             const result = await runSubAgent({
               provider,
               model: session.model,
-              reasoningContent: this.getProfile(session.model, session.provider).capabilities.reasoningContent !== false,
+              reasoningContent: this.getProfile(effective.modelOverride ?? session.model, session.provider).capabilities.reasoningContent !== false,
               ...(effective.modelOverride ? { modelOverride: effective.modelOverride } : {}),
               ...(effective.systemExtra ? { systemExtra: effective.systemExtra } : {}),
               ...(effective.name ? { agent: effective.name } : {}),

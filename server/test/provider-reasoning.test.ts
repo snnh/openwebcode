@@ -190,5 +190,9 @@ describe("provider custom request body (extraBody)", () => {
     (provider as unknown as { client: { messages: { stream: typeof stream } } }).client.messages.stream = stream;
     await drain(provider.streamChat(request()));
     expect(bodies[0]).toMatchObject({ model: "claude-opus-4-8", temperature: 0.3, max_tokens: 128_000 });
+
+    // 优先级：request.maxTokens > extraBody.max_tokens > provider 默认
+    await drain(provider.streamChat(request({ maxTokens: 256 })));
+    expect(bodies[1]).toMatchObject({ max_tokens: 256 });
   });
 });
