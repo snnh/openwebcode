@@ -8,14 +8,14 @@
 浏览器 (React)  ──HTTP/WebSocket──►  Node 服务层 (Agent 循环、工具调度)  ──JSON-RPC──►  C 执行器 (命令/文件/沙盒/快照)
 ```
 
-## 它能做什么
+## 功能概览
 
 - 读写项目文件、跑命令、跑测试，多轮推进到一个任务完成
 - Plan 模式下只读调研、产出分步计划，确认后切 build 执行
 - 每轮自动打检查点，时间线面板可回滚文件与会话历史
-- 默认沙盒隔离（Windows AppContainer / Linux Landlock），不可信代码可用 WSB，一会话一 VM
+- 默认沙盒隔离（Windows Job Object / Linux Landlock，可显式切 AppContainer），不可信代码可用 WSB，一会话一 VM
 - bash 后台任务继续跑，不阻塞对话，完成后自动通知
-- 对话渲染 GFM Markdown、代码高亮与 KaTeX 公式；思考过程默认折叠并弱化显示
+- 对话渲染 GFM Markdown、代码高亮与 KaTeX 公式；思考过程默认折叠并弱化显示；思考与工具调用按真实顺序交织，相邻工具调用自动合并折叠
 - `owc run "..."` 非交互执行，`--json` 输出 NDJSON 事件流，可用于 CI
 
 ## 快速开始
@@ -48,7 +48,7 @@ cd openwebcode
 ### 首次使用
 
 1. 界面首次按浏览器语言选择中文或英文；可在 **设置 → 外观 → 语言** 随时切换，选择保存在本机并立即生效。
-2. 在 **设置 → 模型目录** 添加并启用一个或多个具名模型服务商，选择 Anthropic Messages 或 OpenAI Chat Completions 接口，再刷新模型目录。模型统一显示为 `模型ID【服务商】`。
+2. 在 **设置 → 模型目录** 添加并启用一个或多个具名模型服务商，选择 Anthropic Messages、OpenAI Chat Completions 或 OpenAI Responses 接口，再刷新模型目录。模型统一显示为 `模型ID【服务商】`。
 3. 侧栏 **+** 新建会话：选工作目录、provider/模型、沙盒模式、工作区模式。
 4. 输入框描述任务，回车发送。若选择「托管工作区」，源目录会先复制到镜像盘；会话空闲时可在顶部点「手动快照」立即创建虚拟磁盘差分链快照。需要回写时，在底部「文件」面板点「同步回源」，先核对差异再确认。
 
@@ -71,12 +71,12 @@ cd openwebcode
 
 ## 主要能力
 
-**Agent 工具集**：bash（含后台任务）、文件读写/编辑、glob/grep、`repo_map`/`code_search`（工作区符号索引）、`test_runner`（结构化诊断）、`spawn_task`/`spawn_swarm`（隔离上下文子代理，后者一次并行派发多项任务）、`remember`（长期记忆）、`todo_write`（任务清单实时展示）、`web_fetch`/`web_search`（SSRF 防护）、MCP 与扩展注入工具。工具 schema、工具提示和 MCP 只会下发给模型目录中标为支持 tools 的模型；不支持时会以普通对话运行。联网工具通过统一的具名服务商注册表配置，每项声明 Search/Fetch 能力，再分别选择当前配置；没有选中对应能力时不会下发该工具或提示词。
+**Agent 工具集**：bash（含后台任务；命令解释器按平台探测——Windows `pwsh > Git Bash > cmd`，Linux `bash > pwsh > $SHELL`，可按会话强制 pwsh）、文件读写/编辑、glob/grep、`repo_map`/`code_search`（工作区符号索引）、`test_runner`（结构化诊断）、`spawn_task`/`spawn_swarm`（隔离上下文子代理，后者一次并行派发多项任务）、`remember`（长期记忆）、`todo_write`（任务清单实时展示）、`web_fetch`/`web_search`（SSRF 防护）、MCP 与扩展注入工具。工具 schema、工具提示和 MCP 只会下发给模型目录中标为支持 tools 的模型；不支持时会以普通对话运行。联网工具通过统一的具名服务商注册表配置，每项声明 Search/Fetch 能力，再分别选择当前配置；没有选中对应能力时不会下发该工具或提示词。
 
 **自定义扩展**（项目 `.owc/` + 全局两级，项目同名覆盖全局）：
 - `agents/*.md` — 专职子代理（frontmatter 声明工具集与模型，`spawn_task agent=<name>` 调用）
 - `commands/*.md` — 斜杠命令模板（`$ARGUMENTS` / `$1..$9` 参数替换）
-- `hooks.json` — PreToolUse / PostToolUse / UserPromptSubmit / Stop / SessionStart 钩子，shell 命令执行，PreToolUse exit 2 可否决工具调用
+- `hooks.json` — PreToolUse / PostToolUse / UserPromptSubmit / Stop / SessionStart / SessionEnd / PreCompact / PostCompact / Notification / SubagentStart / SubagentStop 钩子，shell 命令执行，Pre 类事件 exit 2 可否决
 - `skills/` — Skills（`/name` 触发，正文按需加载）
 - `mcp.json` — MCP 客户端配置（stdio/HTTP 双传输）
 
@@ -84,9 +84,9 @@ cd openwebcode
 
 **权限**：ask / acceptEdits / yolo 三级。「允许一次」仅批准当前调用，响应送达后才启动工具；「总是允许」生成持久规则。「总是允许」与 yolo 都不解除沙盒——两个机制正交。
 
-**沙盒**（默认开启）：Windows AppContainer（Job Object 兼容兜底）/ WSB（不可信代码）/ Linux Landlock。能力探测如实上报（enforced/partial/advisory）。
+**沙盒**（默认开启）：Windows Job Object（默认，可切 AppContainer）/ WSB（不可信代码）/ Linux Landlock。能力探测如实上报（enforced/partial/advisory）。Windows 11 24H2+ 可选 Bind Link 目录绑定（需管理员运行）：把会话工作区内的虚拟路径透明映射到外部真实目录，面向共享依赖缓存等场景。
 
-**快照回滚**：每轮用户消息前自动检查点，也可切为「仅手动」；后端自动探测 Btrfs/ZFS/ReFS，兜底 git 影子仓库；可选「托管工作区」（项目活在 VHDX/qcow2 镜像盘上，差分链快照毫秒级、可分支）。托管工作区会在顶部提供「手动快照」，空闲时可随时立即生成镜像盘检查点。它不会在关闭或删除会话时自动覆盖源目录；可随时在「文件」面板生成三方差异，确认后只回写无冲突的改动。
+**快照回滚**：每轮用户消息前自动检查点，也可切为「仅手动」；后端自动探测 Btrfs/ZFS/ReFS，兜底 git 影子仓库；可选「托管工作区」（项目位于 VHDX/qcow2 镜像盘挂载点上，差分链快照毫秒级、可分支）。托管工作区会在顶部提供「手动快照」，空闲时可随时立即生成镜像盘检查点。它不会在关闭或删除会话时自动覆盖源目录；可随时在「文件」面板生成三方差异，确认后只回写无冲突的改动。
 
 **上下文管理**：token 预算账本、滚动驱逐 + 占位符回写、快速模型两种压缩、85% 水位强制概览压缩。会话头部实时显示上下文窗口占用与缓存命中，上下文面板给出分段 token 归因与水位提示。前端始终看全量历史，驱逐只影响 LLM 视图。
 
@@ -100,7 +100,7 @@ cd openwebcode
 
 **扩展系统**：独立 Extension Host 子进程（IPC、5 秒钩子保护、manifest 权限与持久化管理）。内置六项官方扩展：context-manager、attention-optimizer、content-lens、pdf-to-image、env-sim（环境模拟，切换产品风格提示词与工具形态）与 owc-eval 评测服务；默认仅启用 context-manager 与 pdf-to-image，其余在设置页按需启停、调参，并可从本地目录安装第三方 `owc-ext-*` 扩展。
 
-**会话生命周期**：关浏览器不停 agent；断线重连自动补拉；权限请求挂起等你 respond（**无超时**，长任务记得回来确认）。
+**会话生命周期**：关浏览器不停 agent；断线重连自动补拉；权限请求挂起等待响应（**无超时**，长任务需回来确认）。
 
 **其他**：多模态图片输入（粘贴/拖拽）、会话导出/导入（JSONL）、会话分享（`export.html` 自包含只读页）、存储 GC。
 
