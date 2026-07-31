@@ -36,6 +36,7 @@ export class PermissionCoordinator {
     return new Promise((resolve) => {
       const abort = () => {
         this.pending.delete(requestId);
+        this.publishResolved(sessionId, requestId);
         resolve({ allowed: false, reason: "Permission request aborted", persist: false });
       };
       this.pending.set(requestId, { sessionId, tool, input, resolve, signal, abort });
@@ -56,6 +57,7 @@ export class PermissionCoordinator {
     const pending = this.pending.get(requestId);
     if (!pending || pending.sessionId !== sessionId) return undefined;
     this.pending.delete(requestId);
+    this.publishResolved(sessionId, requestId);
     pending.signal.removeEventListener("abort", pending.abort);
     const persist = decision === "allow_always";
     return {
@@ -78,9 +80,15 @@ export class PermissionCoordinator {
     for (const [id, pending] of this.pending) {
       if (pending.sessionId !== sessionId) continue;
       this.pending.delete(id);
+      this.publishResolved(sessionId, id);
       pending.signal.removeEventListener("abort", pending.abort);
       pending.resolve({ allowed: false, reason: "Session stopped", persist: false });
     }
+  }
+
+  /** 挂起单消失（respond/abort/cancelSession 任一路径）广播一次，让其他客户端撤掉权限卡。 */
+  private publishResolved(sessionId: string, requestId: string): void {
+    this.events.publish({ source: "agent", type: "permission.resolved", sessionId, payload: { requestId } });
   }
 }
 

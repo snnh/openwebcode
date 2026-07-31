@@ -408,7 +408,10 @@ export class CoreClient extends EventEmitter {
   private call<T>(method: string, params: unknown, timeoutMs = this.requestTimeoutMs): Promise<T> {
     const transport = this.transport;
     const generation = this.generation;
-    if (!transport || this.failedGeneration === generation) return Promise.reject(new Error("Core is not running"));
+    if (!transport || this.failedGeneration === generation) {
+      this.kickRestart();
+      return Promise.reject(new Error("Core is not running"));
+    }
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -489,12 +492,24 @@ export class CoreClient extends EventEmitter {
     this.ptyEmitters.clear();
     this.pendingPtyEvents.clear();
     this.emitEvent("core.exit", details ?? { message: error.message });
-    if (this.stopping || !restart || this.restartCount >= 3 || this.connectionFactory) return;
-    const delay = 250 * 2 ** this.restartCount++;
+    // 崩溃恢复：指数退避封顶 30s 后持续慢速重试，不再永久放弃（旧逻辑 3 次即死，
+    // 需要整 server 重启才能恢复）；restartCount 在握手成功时清零（spawnAndHandshake）。
+    if (this.stopping || !restart || this.connectionFactory) return;
+    const delay = Math.min(30_000, 250 * 2 ** this.restartCount++);
     this.restartTimer = setTimeout(() => {
       this.restartTimer = undefined;
       this.start().catch((restartError: unknown) => this.emit("error", normalizeError(restartError)));
     }, delay);
+  }
+
+  /** 懒重启：core 已死且当前没有启动中时，有请求进来立即拉起（取消排程中的退避等待）。 */
+  private kickRestart(): void {
+    if (this.stopping || this.connectionFactory || this.startPromise) return;
+    if (this.restartTimer) {
+      clearTimeout(this.restartTimer);
+      this.restartTimer = undefined;
+    }
+    this.start().catch((error: unknown) => this.emit("error", normalizeError(error)));
   }
 
   private emitEvent(type: string, payload: unknown): void {

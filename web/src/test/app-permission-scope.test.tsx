@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
@@ -116,5 +116,39 @@ describe("App permission.request 按会话隔离", () => {
     const card = await screen.findByRole("alertdialog");
     expect(card).toHaveTextContent("run_command");
     expect(card).toHaveTextContent("echo own");
+  });
+
+  it("permission.resolved 撤掉权限卡（其他客户端响应 / 中断 abort 场景）", async () => {
+    const socket = await renderApp();
+    act(() => {
+      emit(socket, { type: "permission.request", sessionId: "s1", payload: { requestId: "req-own", tool: "run_command", input: { command: "echo own" } } });
+    });
+    const card = await screen.findByRole("alertdialog");
+    expect(card).toHaveTextContent("run_command");
+
+    // 服务端在挂起消失时广播 permission.resolved：本地即时权限卡必须随之撤掉，不得悬挂
+    act(() => {
+      emit(socket, { type: "permission.resolved", sessionId: "s1", payload: { requestId: "req-own" } });
+    });
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  });
+
+  it("resync.required 清空本地权限卡并以服务端真相对齐幽灵 busy 态", async () => {
+    const socket = await renderApp();
+    act(() => {
+      emit(socket, { type: "permission.request", sessionId: "s1", payload: { requestId: "req-stale", tool: "run_command", input: { command: "echo stale" } } });
+      emit(socket, { type: "agent.state", sessionId: "s1", payload: { state: "streaming" } });
+    });
+    await screen.findByRole("alertdialog");
+    // JobHeader 的 busy 徽章（多处 UI 都渲染状态文案，这里锁定 header 徽章）
+    await waitFor(() => expect(document.querySelector(".state-badge.state-streaming")).not.toBeNull());
+
+    // 事件缺口/服务端重启触发 resync：本地权限卡清空（由服务端列表重建）；
+    // /run 返回 404（服务端无活跃 run）时本地残留的 busy 态必须回落。
+    act(() => {
+      emit(socket, { type: "resync.required", sessionId: "s1", payload: { latestSeq: 0, reason: "slow_client" } });
+    });
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    await waitFor(() => expect(document.querySelector(".state-badge")).toBeNull());
   });
 });
