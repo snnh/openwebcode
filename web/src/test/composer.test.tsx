@@ -694,9 +694,9 @@ describe("Composer", () => {
     const onConfig = vi.fn();
     render(<Harness onSend={vi.fn()} onConfig={onConfig} />);
     fireEvent.click(screen.getByRole("button", { name: "权限模式" }));
-    // 四档：逐条确认（默认勾选）/ 自动通过 / 模型审核 / 完全自主，均带描述
-    expect(screen.getByRole("menuitemradio", { name: /逐条确认/ })).toBeInTheDocument();
-    expect(screen.getByRole("menuitemradio", { name: /^自动通过/ })).toBeInTheDocument();
+    // 四档：逐次确认（默认勾选）/ 接受编辑 / 模型审核 / 完全自主，均带描述
+    expect(screen.getByRole("menuitemradio", { name: /逐次确认/ })).toBeInTheDocument();
+    expect(screen.getByRole("menuitemradio", { name: /^接受编辑/ })).toBeInTheDocument();
     const review = screen.getByRole("menuitemradio", { name: /模型审核/ });
     expect(review).toHaveTextContent("低风险操作由快速模型自动通过");
     const yolo = screen.getByRole("menuitemradio", { name: /完全自主/ });
