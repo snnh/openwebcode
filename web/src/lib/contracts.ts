@@ -614,6 +614,7 @@ export interface ModelProviderProfileView {
   interfaceType: ModelInterfaceType;
   baseURL?: string;
   promptCaching?: boolean;
+  extraBody?: Record<string, unknown>;
   hasApiKey: boolean;
   maskedApiKey?: string;
 }

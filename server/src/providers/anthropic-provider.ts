@@ -10,17 +10,22 @@ export interface AnthropicProviderOptions {
   baseURL?: string;
   maxTokens?: number;
   promptCaching?: boolean;
+  /** 自定义请求体：浅合并进 messages 请求体，核心字段（model/messages/system/tools 等）优先；
+   * max_tokens 例外——extraBody 中的 max_tokens 可覆盖默认值（API 强制要求该字段，无法省略）。 */
+  extraBody?: Record<string, unknown>;
 }
 
 export class AnthropicProvider implements Provider {
   readonly name: string;
   private readonly client: Anthropic;
   private readonly maxTokens: number;
+  private readonly extraBody: Record<string, unknown> | undefined;
   readonly promptCaching: boolean;
 
   constructor(options: AnthropicProviderOptions = {}) {
     this.name = options.name ?? "anthropic";
     this.maxTokens = options.maxTokens ?? 64_000;
+    this.extraBody = options.extraBody;
     this.promptCaching = options.promptCaching ?? true;
     this.client = new Anthropic({
       ...(options.apiKey ? { apiKey: options.apiKey } : {}),
@@ -31,12 +36,15 @@ export class AnthropicProvider implements Provider {
 
   async *streamChat(request: StreamChatRequest): AsyncIterable<ProviderEvent> {
     let streamStarted = false;
-    const maxTokens = request.maxTokens ?? this.maxTokens;
+    // Anthropic API 强制要求 max_tokens（无法像 OpenAI 端那样省略）；extraBody 可覆盖默认值
+    const extraMaxTokens = this.extraBody?.["max_tokens"];
+    const maxTokens = request.maxTokens ?? (typeof extraMaxTokens === "number" ? extraMaxTokens : this.maxTokens);
     // 服务级（provider 配置）与请求级开关共同决定；任一关闭则不打任何显式断点。
     const caching = this.promptCaching && request.promptCaching !== false;
     try {
       const stream = this.client.messages.stream(
         {
+          ...this.extraBody,
           model: request.model,
           max_tokens: maxTokens,
           ...(anthropicThinking(request, maxTokens) ? { thinking: anthropicThinking(request, maxTokens)! } : {}),

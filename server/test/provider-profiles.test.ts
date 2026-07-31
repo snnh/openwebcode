@@ -79,6 +79,27 @@ describe("ProviderProfilesService", () => {
     await expect(setup.service.upsertWeb(undefined, { id: "custom", provider: "custom", capabilities: ["fetch"], fetchBaseURL: "https://reader.test/plain" })).rejects.toThrow(/{url}/);
   });
 
+  it("validates, persists, and clears extraBody custom request fields", async () => {
+    const setup = await fixture();
+    await setup.service.upsertModel(undefined, {
+      id: "qwen",
+      enabled: true,
+      interfaceType: "openai-chat-completions",
+      baseURL: "https://qwen.test/v1",
+      extraBody: { temperature: 0.7, max_tokens: 8192 },
+    });
+    expect(setup.service.view().modelProviders[0]?.extraBody).toEqual({ temperature: 0.7, max_tokens: 8192 });
+    const persisted = JSON.parse(await readFile(setup.filePath, "utf8")) as { models: Array<{ extraBody?: unknown }> };
+    expect(persisted.models[0]?.extraBody).toEqual({ temperature: 0.7, max_tokens: 8192 });
+
+    await expect(setup.service.upsertModel("qwen", { extraBody: [1, 2] })).rejects.toThrow(/JSON 对象/);
+    await expect(setup.service.upsertModel("qwen", { extraBody: { messages: [] } })).rejects.toThrow(/核心字段/);
+    await expect(setup.service.upsertModel("qwen", { extraBody: { stream: false } })).rejects.toThrow(/核心字段/);
+
+    await setup.service.upsertModel("qwen", { extraBody: null });
+    expect(setup.service.view().modelProviders[0]?.extraBody).toBeUndefined();
+  });
+
   it("rejects obsolete or malformed profile documents instead of replacing them", async () => {
     const setup = await fixture();
     await writeFile(setup.filePath, JSON.stringify({ anthropic: { apiKey: "old" }, search: { provider: "brave" } }));

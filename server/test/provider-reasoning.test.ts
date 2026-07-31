@@ -124,3 +124,47 @@ describe("provider reasoning parameters", () => {
     expect((bodies[2]!.messages as Array<Record<string, unknown>>)[0]).not.toHaveProperty("reasoning_content");
   });
 });
+
+
+describe("provider custom request body (extraBody)", () => {
+  const sseFetch = (bodies: Array<Record<string, unknown>>) => (async (_input: string | URL | Request, init?: RequestInit) => {
+    bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+    return new Response("data: [DONE]\n\n", { status: 200, headers: { "content-type": "text/event-stream" } });
+  }) as unknown as typeof globalThis.fetch;
+
+  it("omits max_tokens by default and merges extraBody under core fields", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    await drain(new OpenAICompatibleProvider({
+      baseURL: "https://example.invalid/v1",
+      extraBody: { temperature: 0.7, model: "evil-override", max_tokens: 8192 },
+      fetch: sseFetch(bodies),
+    }).streamChat(request()));
+    // 自定义字段透传；核心字段 model 不被 extraBody 覆盖；extraBody 可提供 max_tokens
+    expect(bodies[0]).toMatchObject({ model: "claude-opus-4-8", temperature: 0.7, max_tokens: 8192 });
+
+    // 缺省不发送 max_tokens（不限制输出长度）
+    const plain: Array<Record<string, unknown>> = [];
+    await drain(new OpenAICompatibleProvider({ baseURL: "https://example.invalid/v1", fetch: sseFetch(plain) }).streamChat(request()));
+    expect(plain[0]).not.toHaveProperty("max_tokens");
+
+    // 显式 maxTokens 仍生效
+    const limited: Array<Record<string, unknown>> = [];
+    await drain(new OpenAICompatibleProvider({ baseURL: "https://example.invalid/v1", maxTokens: 4096, fetch: sseFetch(limited) }).streamChat(request()));
+    expect(limited[0]).toMatchObject({ max_tokens: 4096 });
+  });
+
+  it("anthropic merges extraBody and lets extraBody.max_tokens override the default", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const stream = (body: Record<string, unknown>) => {
+      bodies.push(body);
+      return {
+        async *[Symbol.asyncIterator]() {},
+        async finalMessage() { return { content: [], usage: { input_tokens: 0, output_tokens: 0 }, stop_reason: "end_turn" }; },
+      };
+    };
+    const provider = new AnthropicProvider({ apiKey: "test", extraBody: { temperature: 0.3, max_tokens: 128_000 } });
+    (provider as unknown as { client: { messages: { stream: typeof stream } } }).client.messages.stream = stream;
+    await drain(provider.streamChat(request()));
+    expect(bodies[0]).toMatchObject({ model: "claude-opus-4-8", temperature: 0.3, max_tokens: 128_000 });
+  });
+});

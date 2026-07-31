@@ -67,12 +67,14 @@ export class ProviderProfilesRuntime {
             ...(profile.apiKey ? { apiKey: profile.apiKey } : {}),
             ...(profile.baseURL ? { baseURL: profile.baseURL } : {}),
             promptCaching: profile.promptCaching !== false,
+            ...(profile.extraBody ? { extraBody: profile.extraBody } : {}),
           }));
         } else {
           this.providers.register(new OpenAICompatibleProvider({
             name: profile.id,
             baseURL: profile.baseURL ?? "https://api.openai.com/v1",
             ...(profile.apiKey ? { apiKey: profile.apiKey } : {}),
+            ...(profile.extraBody ? { extraBody: profile.extraBody } : {}),
           }));
         }
         this.managedProviders.add(profile.id);
