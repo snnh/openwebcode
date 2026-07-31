@@ -16,7 +16,8 @@ typedef void (*owc_exec_output_fn)(void *user_data, const char *stream,
 
 typedef enum {
     OWC_SHELL_DEFAULT = 0,
-    OWC_SHELL_PWSH = 1
+    OWC_SHELL_PWSH = 1,
+    OWC_SHELL_BASH = 2
 } owc_shell_backend;
 
 typedef struct {
@@ -27,6 +28,12 @@ typedef struct {
     int allow_network;
     int sandbox_mode; /* owc_sandbox_mode; only meaningful when sandbox_enabled */
     int shell_backend; /* owc_shell_backend */
+    /* Optional explicit shell executable path from the host detection layer
+       (e.g. an absolute bash.exe path for Git Bash, which must not be
+       resolved to the WSL launcher in System32).  Takes precedence over the
+       per-backend executable search; the argument style still follows
+       shell_backend. */
+    const char *shell_path;
     /* Additional configured AppContainer write roots. The platform layer adds
        cwd, normalizes the combined list, and removes duplicates. */
     const char *const *allow_paths;

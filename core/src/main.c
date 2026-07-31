@@ -182,6 +182,7 @@ int main(int argc, char **argv) {
     owc_platform_exec_terminate_all();
     owc_pty_terminate_all();
 #endif
+    owc_rpc_release_sessions();
     if (input) fclose(input);
     if (output) fclose(output);
 #ifdef _WIN32

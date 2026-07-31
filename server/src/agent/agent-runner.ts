@@ -70,6 +70,7 @@ import { PI_BASE_SYSTEM_PROMPT } from "./prompts/pi-base.js";
 import { loadPromptOverride, type PromptOverride } from "./prompts/prompt-overrides.js";
 import { RunStore, type AgentRunSnapshot, type AgentRunState } from "./run-store.js";
 import { PersistentShellManager, PersistentShellUnavailableError } from "./persistent-shell.js";
+import { coreExecShell, resolveShell, type ResolvedShell } from "./shell-detect.js";
 import { MessageQueue, type QueueItem } from "./message-queue.js";
 import { InteractionCoordinator, type InteractionKind, type InteractionRequest } from "./interaction-coordinator.js";
 
@@ -359,7 +360,8 @@ function builtInTools(options: {
   backgroundTasksEnabled: boolean;
   fetchAvailable: boolean;
   searchAvailable: boolean;
-  shellBackend: ShellBackend;
+  /** 会话实际选中的 shell（探测后的具体解释器，描述按它生成）。 */
+  shell: ResolvedShell;
   pythonEnv: PythonEnv;
   /** 并行子代理（spawn_swarm）开关：会话级，默认关闭。 */
   swarmEnabled: boolean;
@@ -367,7 +369,7 @@ function builtInTools(options: {
   cronEnabled: boolean;
 }): ProviderTool[] {
   return [
-    bashTool(options.backgroundTasksEnabled, options.shellBackend, options.pythonEnv),
+    bashTool(options.backgroundTasksEnabled, options.shell, options.pythonEnv),
     ...FILE_TOOLS,
     READ_ARTIFACT_TOOL,
     REPO_MAP_TOOL,
@@ -1029,7 +1031,7 @@ export class AgentRunner {
           backgroundTasksEnabled: Boolean(this.backgroundTasks),
           fetchAvailable: Boolean(this.webFetchProvider),
           searchAvailable: Boolean(this.searchProvider),
-          shellBackend: session.shellBackend ?? "default",
+          shell: resolveShell(session.shellBackend ?? "default"),
           pythonEnv: effectivePythonEnv(session.pythonEnv, this.getPythonEnvDefault()),
           swarmEnabled: session.swarmEnabled === true,
           cronEnabled: Boolean(this.cronScheduler),
@@ -1534,6 +1536,7 @@ export class AgentRunner {
         prompt,
         toolNames: resolved.toolNames,
         ...(resolved.maxTurns ? { maxTurns: resolved.maxTurns } : {}),
+        shell: resolveShell(session.shellBackend ?? "default"),
         // general 类型：工具调用经会话权限链 + 主循环同一沙盒执行（见 executeSubAgentTool）
         ...(resolved.kind === "general" ? { executeTool: (call: { name: string; input: Record<string, unknown> }) => this.executeSubAgentTool(sessionId, call.name, call.input, signal) } : {}),
         core: this.core,
@@ -2337,6 +2340,7 @@ export class AgentRunner {
           prompt,
           toolNames: resolved.toolNames,
           ...(resolved.maxTurns ? { maxTurns: resolved.maxTurns } : {}),
+          shell: resolveShell(session.shellBackend ?? "default"),
           // general 类型：工具调用经会话权限链 + 主循环同一沙盒执行（见 executeSubAgentTool）
           ...(resolved.kind === "general" ? { executeTool: (call: { name: string; input: Record<string, unknown> }) => this.executeSubAgentTool(sessionId, call.name, call.input, signal) } : {}),
           core: this.core,
@@ -2470,6 +2474,7 @@ export class AgentRunner {
               prompt,
               toolNames: effective.toolNames,
               ...(effective.maxTurns ? { maxTurns: effective.maxTurns } : {}),
+              shell: resolveShell(session.shellBackend ?? "default"),
               // general 类型：工具调用经会话权限链 + 主循环同一沙盒执行（见 executeSubAgentTool）
               ...(effective.kind === "general" ? { executeTool: (call: { name: string; input: Record<string, unknown> }) => this.executeSubAgentTool(sessionId, call.name, call.input, signal) } : {}),
               core: this.core,
@@ -3053,7 +3058,7 @@ export class AgentRunner {
         signal.addEventListener("abort", cancel, { once: true });
         try {
           // jobControl 路径本身无 RPC 超时兜底：给 core 侧 10 分钟上限，轮询循环遇 timed_out 终止
-          await this.core.startJob({ sessionId, jobId, kind: "exec", cmd, cwd: session.cwd, timeoutMs: 10 * 60_000, shellBackend: session.shellBackend ?? "default" });
+          await this.core.startJob({ sessionId, jobId, kind: "exec", cmd, cwd: session.cwd, timeoutMs: 10 * 60_000, ...coreExecShell(session.shellBackend ?? "default") });
           for (;;) {
             const page = await this.core.jobOutput({ sessionId, jobId, afterSeq, limit: 128 });
             output.push(...page.chunks);
@@ -3080,7 +3085,7 @@ export class AgentRunner {
           signal.removeEventListener("abort", cancel);
         }
       }
-      const result = await this.core.run({ sessionId, execId, cmd, cwd: session.cwd, shellBackend: session.shellBackend ?? "default" });
+      const result = await this.core.run({ sessionId, execId, cmd, cwd: session.cwd, ...coreExecShell(session.shellBackend ?? "default") });
       const output = decodeProcessOutputChunks(execution.output);
       const rawContent = JSON.stringify({ ...result, output });
       const bounded = await boundToolResult(this.sessions.contextRoot(sessionId), "bash", rawContent);
@@ -3148,7 +3153,7 @@ export class AgentRunner {
     if (!venvDir) return cmd;
     const ensured = await this.pythonEnvManager.ensure(venvDir);
     if (!ensured.ok) return wrapCommandWithNote(cmd, ensured.note ?? "uv environment unavailable; using the host python environment");
-    return wrapCommandWithVenv(cmd, venvDir, session.shellBackend ?? "default");
+    return wrapCommandWithVenv(cmd, venvDir, resolveShell(session.shellBackend ?? "default").flavor);
   }
 
   // 用量记账：主循环与 spawn_task 子代理共用同一 ledger/用量日志/事件路径

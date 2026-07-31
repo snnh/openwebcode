@@ -124,7 +124,13 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
         if(!write_all(sandbox_pipe[1],&sandbox,sizeof(sandbox)))_exit(126);
         if(request->shell_backend==(int)OWC_SHELL_PWSH) {
             execlp("pwsh", "pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", request->command, (char *)NULL);
-            (void)dprintf(STDERR_FILENO,"pwsh executable was not found\n");
+            (void)dprintf(STDERR_FILENO,"pwsh executable was not found
+");
+        } else if(request->shell_backend==(int)OWC_SHELL_BASH) {
+            const char *shell=(request->shell_path&&request->shell_path[0])?request->shell_path:"bash";
+            execlp(shell, "bash", "-c", request->command, (char *)NULL);
+            (void)dprintf(STDERR_FILENO,"bash executable was not found
+");
         } else {
             execl("/bin/sh", "sh", "-c", request->command, (char *)NULL);
         }

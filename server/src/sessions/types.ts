@@ -64,18 +64,26 @@ export interface ManagedWorkspaceMeta {
 }
 /** 下发给 core 的 sandbox.mode（wsb 不下发，由 VM 充当边界） */
 export type SandboxBackendMode = "appcontainer" | "jobobject" | "off";
-/** 用户可选的沙盒模式；undefined = appcontainer（现状默认） */
+/** 用户可选的沙盒模式；undefined = jobobject（现状默认） */
 export type SandboxMode = "appcontainer" | "wsb" | "jobobject" | "off";
 /** 自动 = 每轮用户消息前创建检查点；手动 = 仅由用户显式创建检查点。 */
 export type SnapshotMode = "auto" | "manual";
-/** 命令解释器后端；default 使用平台默认 shell，pwsh 强制使用 PowerShell 7。 */
-export type ShellBackend = "default" | "pwsh";
+/** 命令解释器后端（用户选择）；default 按平台探测顺序解析：Windows pwsh > Git Bash > cmd，POSIX bash > pwsh > $SHELL。 */
+export type ShellBackend = "default" | "pwsh" | "bash" | "cmd";
+/** 下发 core exec.run / job.start 的 shellBackend（协议枚举；cmd 映射为 default，bash 另随 shellPath 传绝对路径）。 */
+export type CoreShellBackend = "default" | "pwsh" | "bash";
 /** Python 运行环境：global = 本机已有环境（默认）；uv-workspace / uv-config = uv 管理的临时虚拟环境（项目工作区 / 配置目录）。 */
 export type PythonEnv = "global" | "uv-workspace" | "uv-config";
 /** 全局 Job Object 资源限制（仅 Windows；字段缺省时 core 用内置默认值 4096 MB / 64 进程） */
 export interface JobObjectLimits {
   memoryMB?: number;
   maxProcesses?: number;
+}
+/** 会话级 Bind Link 目录绑定（Windows 11 24H2+，bindflt；virtPath 必须落在会话 writeRoots 内，backingPath 必须是已存在目录；创建需管理员权限）。仅显式配置时下发 core。 */
+export interface BindLinkSpec {
+  virtPath: string;
+  backingPath: string;
+  readOnly?: boolean;
 }
 export interface SandboxPolicy {
   enabled: boolean;
@@ -89,6 +97,8 @@ export interface SandboxPolicy {
   /** 可选 Job Object 覆盖（正整数，上限 1048576 MB / 4096 进程）；不下发时 core 用默认值 */
   jobMemoryMB?: number;
   jobMaxProcesses?: number;
+  /** 可选 Bind Link 目录绑定（面向 jobobject/appcontainer 模式；wsb 会话不下发，宿主路径在 VM 内无效）。 */
+  bindLinks?: BindLinkSpec[];
 }
 
 export interface SessionMeta {
@@ -104,7 +114,7 @@ export interface SessionMeta {
   reviewModel?: ReviewModel;
   permissionRules?: PermissionRule[];
   sandbox?: SandboxPolicy;
-  /** 用户选择的沙盒模式；undefined = appcontainer（现状默认） */
+  /** 用户选择的沙盒模式；undefined = jobobject（现状默认） */
   sandboxMode?: SandboxMode;
   /** WSB 会话初始化脚本，内联进 .wsb LogonCommand，先于 owc-exec 执行 */
   setupScript?: string;

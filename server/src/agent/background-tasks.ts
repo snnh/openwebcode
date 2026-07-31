@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { CoreClientLike, ExecResult } from "../core-client.js";
 import type { ShellBackend } from "../sessions/types.js";
 import { decodeProcessOutputChunks, type EncodedProcessOutput } from "./output-decoder.js";
+import { coreExecShell } from "./shell-detect.js";
 
 export interface BackgroundTaskInfo {
   taskId: string;
@@ -102,7 +103,7 @@ export class BackgroundTaskRegistry {
     }
 
     // 发起 run（不 await），完成后处理终态
-    void client.run({ sessionId, execId: taskId, cmd, cwd, ...(timeoutMs === undefined ? {} : { timeoutMs }), ...(shellBackend ? { shellBackend } : {}) })
+    void client.run({ sessionId, execId: taskId, cmd, cwd, ...(timeoutMs === undefined ? {} : { timeoutMs }), ...coreExecShell(shellBackend ?? "default") })
       .then((result: ExecResult) => this.finish(entry, "done", result.exitCode))
       .catch((error: Error) => {
         if (entry.settled) return; // 已由 stop 标记为 stopped

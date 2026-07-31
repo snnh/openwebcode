@@ -7,6 +7,7 @@ import type { CoreClientLike } from "../core-client.js";
 import type { EventBus } from "../events/event-bus.js";
 import type { SessionStore } from "../sessions/session-store.js";
 import type { ShellBackend } from "../sessions/types.js";
+import { coreExecShell } from "../agent/shell-detect.js";
 import { detectTestCommand } from "./detect.js";
 import { FALLBACK_TAIL_CHARS, fallbackDiagnosticSet, parseTestOutput } from "./parsers.js";
 import type { DiagnosticRun, DiagnosticSet } from "./types.js";
@@ -107,7 +108,7 @@ export class DiagnosticsService {
     let statusDurationMs: number | undefined;
     try {
       // 与 bash 工具同一路径：Core job 模型执行，继承会话权限沙盒；jobControl 无 RPC 超时兜底，core 侧给 10 分钟上限
-      await this.core.startJob({ sessionId, jobId, kind: "exec", cmd: detected.command, cwd, timeoutMs: TEST_JOB_TIMEOUT_MS, ...(options.shellBackend ? { shellBackend: options.shellBackend } : {}) });
+      await this.core.startJob({ sessionId, jobId, kind: "exec", cmd: detected.command, cwd, timeoutMs: TEST_JOB_TIMEOUT_MS, ...coreExecShell(options.shellBackend ?? "default") });
       for (;;) {
         const page = await this.core.jobOutput({ sessionId, jobId, afterSeq, limit: 256 });
         output.push(...page.chunks);

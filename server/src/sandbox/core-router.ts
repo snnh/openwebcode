@@ -129,17 +129,22 @@ export class CoreRouter extends EventEmitter {
     }
   }
 
-  /** sandboxMode → 下发给 core 的策略：wsb/off 由 VM/关闭充当边界；jobobject 下发兼容模式；jobObject 限制仅随启用路径下发 */
+  /** sandboxMode → 下发给 core 的策略：wsb/off 由 VM/关闭充当边界；缺省为 jobobject 兼容模式；appcontainer 需显式选择；jobObject 限制仅随启用路径下发 */
   static policyFor(meta: SessionMeta | undefined, sandbox: SandboxPolicy, jobObject?: JobObjectLimits, allowPaths?: string[]): SandboxPolicy {
     const mode = meta?.sandboxMode;
-    if (mode === "wsb" || mode === "off") return { ...sandbox, enabled: false };
+    // wsb 会话在 VM 内的 core 上配置：宿主侧 bindLinks 路径在 guest 无效，剥离（创建 REST 已拒绝 wsb+bindLinks，此为切换模式后的防御）
+    if (mode === "wsb") {
+      const { bindLinks: _stripped, ...rest } = sandbox;
+      return { ...rest, enabled: false };
+    }
+    if (mode === "off") return { ...sandbox, enabled: false };
     const limits = {
       ...(allowPaths && allowPaths.length > 0 ? { allowPaths } : {}),
       ...(jobObject?.memoryMB !== undefined ? { jobMemoryMB: jobObject.memoryMB } : {}),
       ...(jobObject?.maxProcesses !== undefined ? { jobMaxProcesses: jobObject.maxProcesses } : {}),
     };
-    if (mode === "jobobject") return { ...sandbox, ...limits, mode: "jobobject" };
-    return { ...sandbox, ...limits };
+    if (mode === "appcontainer") return { ...sandbox, ...limits, mode: "appcontainer" };
+    return { ...sandbox, ...limits, mode: "jobobject" };
   }
 
   private async metaFor(sessionId: string): Promise<SessionMeta | undefined> {
