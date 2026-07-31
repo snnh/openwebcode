@@ -60,4 +60,37 @@ describe("PermissionCoordinator", () => {
     response?.complete();
     expect(await pending).toEqual({ allowed: false, reason: "Permission request aborted", persist: false });
   });
+
+  it("publishes permission.resolved on respond, abort and cancelSession", async () => {
+    const events = new EventBus(); const observed: AppEvent[] = [];
+    events.on("event", (event: AppEvent) => observed.push(event));
+    const coordinator = new PermissionCoordinator(events);
+    const resolvedIds = (): string[] =>
+      observed.filter((e) => e.type === "permission.resolved").map((e) => (e.payload as { requestId: string }).requestId);
+    const lastRequestId = (): string =>
+      (observed.filter((e) => e.type === "permission.request").pop()?.payload as { requestId: string }).requestId;
+
+    // respond 路径：HTTP 响应完成、挂起单消失时广播
+    const controller = new AbortController();
+    const first = coordinator.request("session", "bash", { cmd: "a" }, controller.signal);
+    const firstId = lastRequestId();
+    coordinator.respond("session", firstId, "allow")?.complete();
+    await first;
+    expect(resolvedIds()).toContain(firstId);
+
+    // abort 路径：中断挂起中的请求同样广播（其他客户端才能撤卡）
+    const second = coordinator.request("session", "bash", { cmd: "b" }, controller.signal);
+    const secondId = lastRequestId();
+    controller.abort();
+    await second;
+    expect(resolvedIds()).toContain(secondId);
+
+    // cancelSession 路径：会话停止清掉全部挂起并逐一广播
+    const controller2 = new AbortController();
+    const third = coordinator.request("session", "bash", { cmd: "c" }, controller2.signal);
+    const thirdId = lastRequestId();
+    coordinator.cancelSession("session");
+    await third;
+    expect(resolvedIds()).toContain(thirdId);
+  });
 });

@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CoreClient, type CoreEvent, type IndexScanEntry, type IndexScanSummary } from "../src/core-client.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -223,5 +223,23 @@ describe.skipIf(!existsSync(corePath))("CoreClient", () => {
       status = await client.jobStatus({ sessionId: "search-session", jobId: "grep-cancel" });
     }
     expect(status.state).toBe("cancelled");
+  }, 30_000);
+});
+
+describe("CoreClient crash recovery", () => {
+  it("keeps retrying with capped backoff instead of giving up after 3 crashes, and kick-starts on demand", async () => {
+    const bogus = path.join(tmpdir(), `owc-missing-core-${process.pid}`);
+    const recovery = new CoreClient(bogus, 5_000);
+    recovery.on("error", () => { /* 重启失败以 error 事件上报，测试中吞掉 */ });
+    const exits: CoreEvent[] = [];
+    recovery.on("event", (event) => { if (event.type === "core.exit") exits.push(event); });
+    await expect(recovery.start()).rejects.toThrow();
+    // 旧逻辑 3 次退避后永久放弃（含首次共 4 次尝试）；新逻辑封顶退避持续重试。
+    await vi.waitFor(() => expect(exits.length).toBeGreaterThan(4), { timeout: 20_000 });
+    // 懒重启：core 已死时请求立即拒绝，并即时拉起一次重启（取消排程中的退避等待）
+    const before = exits.length;
+    await expect(recovery.ping()).rejects.toThrow("Core is not running");
+    await vi.waitFor(() => expect(exits.length).toBeGreaterThan(before), { timeout: 10_000 });
+    await recovery.stop();
   }, 30_000);
 });

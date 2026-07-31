@@ -12,7 +12,7 @@ import { loadDraft, pruneDrafts, saveDraft } from "./lib/drafts";
 import { writeClipboard } from "./lib/clipboard";
 import { deriveInputHistory } from "./lib/input-history";
 import { useTheme } from "./theme";
-import { useAgentRun } from "./hooks/use-agent-run";
+import { agentRunKey, useAgentRun } from "./hooks/use-agent-run";
 import { useLiveActivity, type LiveActivityInfo } from "./hooks/use-live-activity";
 import { useLiveSubagents } from "./hooks/use-live-subagents";
 import { useSubagentTabs } from "./hooks/use-subagent-tabs";
@@ -203,6 +203,8 @@ export function App(): ReactElement {
           if (targetId === currentId) {
             setOlderMessages([]);
             setHasMoreOlder(false);
+            // 本地即时权限卡一并清掉，由服务端待决列表（下方 invalidate 后重取）重建
+            setPendingPermissions([]);
           }
           queryClient.invalidateQueries({ queryKey: queryKeys.detail(targetId ?? "") });
           queryClient.invalidateQueries({ queryKey: ["context", targetId] });
@@ -212,7 +214,28 @@ export function App(): ReactElement {
           queryClient.invalidateQueries({ queryKey: ["diagnostics", targetId] });
           queryClient.invalidateQueries({ queryKey: ["scm-status", targetId] });
           queryClient.invalidateQueries({ queryKey: ["scm-worktrees", targetId] });
-          if (targetId) queryClient.invalidateQueries({ queryKey: ["run", targetId] });
+          queryClient.invalidateQueries({ queryKey: ["permissions", targetId] });
+          queryClient.invalidateQueries({ queryKey: ["interactions", targetId] });
+          queryClient.invalidateQueries({ queryKey: ["queue", targetId] });
+          if (targetId) {
+            queryClient.invalidateQueries({ queryKey: ["run", targetId] });
+            // 幽灵运行态修复：resync（事件缺口/服务端重启）后以服务端真相对齐本地
+            // agentStates 与 run 缓存；服务端无活跃 run（404）时清掉本地残留的 busy 态。
+            const reconcileId = targetId;
+            api.run(reconcileId)
+              .then((run) => {
+                queryClient.setQueryData(agentRunKey(reconcileId), run);
+                setAgentStates((prev) => ({ ...prev, [reconcileId]: run.state }));
+              })
+              .catch(() => {
+                queryClient.setQueryData(agentRunKey(reconcileId), undefined);
+                setAgentStates((prev) => {
+                  if (!isBusyState(prev[reconcileId])) return prev;
+                  const { [reconcileId]: _cleared, ...rest } = prev;
+                  return rest;
+                });
+              });
+          }
           return;
         }
         // agent.state 跨会话跟踪：驱动侧栏运行标记与头部状态徽章
@@ -343,6 +366,15 @@ export function App(): ReactElement {
         if (event.type === "session.updated" && event.sessionId) {
           queryClient.invalidateQueries({ queryKey: queryKeys.sessions });
           if (event.sessionId === currentId) queryClient.invalidateQueries({ queryKey: queryKeys.detail(event.sessionId) });
+        }
+        // 权限挂起消失（本客户端或其他客户端 respond / 中断 abort / 会话停止）：
+        // 撤掉本地即时权限卡并刷新服务端待决列表，避免权限卡悬挂。
+        if (event.type === "permission.resolved" && event.sessionId) {
+          const resolved = event.payload as { requestId?: string };
+          if (resolved.requestId) {
+            setPendingPermissions((prev) => prev.filter((item) => item.requestId !== resolved.requestId));
+          }
+          queryClient.invalidateQueries({ queryKey: ["permissions", event.sessionId] });
         }
         if (!event.sessionId || event.sessionId !== currentId) return;
         if (event.type === "checkpoint.failed") {
