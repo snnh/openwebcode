@@ -1,12 +1,22 @@
 import { useCallback, useRef, useState } from "react";
 
+/** 流式中的工具调用：id 稳定，name 首片携带，parts 为参数 JSON 增量片段（append-only）。 */
+export interface ToolCallStreamEntry {
+  name?: string;
+  parts: string[];
+}
+
 export interface StreamBuffers {
   /** 已提交的流式正文（按会话键控；append-only 分片，消费方 join 后渲染） */
   stream: Record<string, string[]>;
   /** 已提交的流式思考内容（按会话键控；append-only 分片） */
   thinkingStream: Record<string, string[]>;
+  /** 已提交的流式工具调用参数（按会话键控、按工具调用 id 分组；对象键序即出现顺序） */
+  toolCallStream: Record<string, Record<string, ToolCallStreamEntry>>;
   /** 追加一个 token delta；同一帧内的多个 delta 只提交一次状态 */
   queueDelta(sessionId: string, text: string, thinking?: boolean): void;
+  /** 追加一个工具调用参数分片；与 token delta 同一合批帧提交 */
+  queueToolCallDelta(sessionId: string, id: string, name: string | undefined, text: string): void;
   /** 立即提交缓冲区中尚未落状态的 delta */
   flush(): void;
   /** 取消挂起的合批帧并立即提交（卸载/断线前调用，避免丢尾部 token） */
@@ -27,16 +37,37 @@ export interface StreamBuffers {
 export function useStreamBuffers(): StreamBuffers {
   const [stream, setStream] = useState<Record<string, string[]>>({});
   const [thinkingStream, setThinkingStream] = useState<Record<string, string[]>>({});
+  const [toolCallStream, setToolCallStream] = useState<Record<string, Record<string, ToolCallStreamEntry>>>({});
   const streamBuffers = useRef<Record<string, string[]>>({});
   const thinkingBuffers = useRef<Record<string, string[]>>({});
+  const toolCallBuffers = useRef<Record<string, Record<string, ToolCallStreamEntry>>>({});
   const flushHandle = useRef<number | undefined>(undefined);
 
   const flush = useCallback((): void => {
     flushHandle.current = undefined;
     const text = streamBuffers.current;
     const thinking = thinkingBuffers.current;
+    const toolCalls = toolCallBuffers.current;
     streamBuffers.current = {};
     thinkingBuffers.current = {};
+    toolCallBuffers.current = {};
+    if (Object.keys(toolCalls).length) {
+      setToolCallStream((previous) => {
+        const next = { ...previous };
+        for (const [id, entries] of Object.entries(toolCalls)) {
+          const merged = { ...(next[id] ?? {}) };
+          for (const [callId, entry] of Object.entries(entries)) {
+            const existing = merged[callId];
+            merged[callId] = {
+              ...(entry.name !== undefined ? { name: entry.name } : existing?.name !== undefined ? { name: existing.name } : {}),
+              parts: [...(existing?.parts ?? []), entry.parts.join("")],
+            };
+          }
+          next[id] = merged;
+        }
+        return next;
+      });
+    }
     if (Object.keys(text).length) {
       setStream((previous) => {
         const next = { ...previous };
@@ -62,6 +93,17 @@ export function useStreamBuffers(): StreamBuffers {
       : window.setTimeout(flush, 80);
   }, [flush]);
 
+  const queueToolCallDelta = useCallback((sessionId: string, id: string, name: string | undefined, text: string): void => {
+    const entries = (toolCallBuffers.current[sessionId] ??= {});
+    const entry = (entries[id] ??= { parts: [] });
+    if (name !== undefined) entry.name = name;
+    entry.parts.push(text);
+    if (flushHandle.current !== undefined) return;
+    flushHandle.current = typeof window.requestAnimationFrame === "function"
+      ? window.requestAnimationFrame(flush)
+      : window.setTimeout(flush, 80);
+  }, [flush]);
+
   const finish = useCallback((): void => {
     if (flushHandle.current !== undefined) {
       if (typeof window.cancelAnimationFrame === "function") window.cancelAnimationFrame(flushHandle.current);
@@ -73,6 +115,8 @@ export function useStreamBuffers(): StreamBuffers {
   const clear = useCallback((sessionId: string): void => {
     setStream((value) => ({ ...value, [sessionId]: [] }));
     setThinkingStream((value) => ({ ...value, [sessionId]: [] }));
+    setToolCallStream((value) => ({ ...value, [sessionId]: {} }));
+    delete toolCallBuffers.current[sessionId];
   }, []);
 
   const discard = useCallback((sessionId: string): void => {
@@ -83,9 +127,11 @@ export function useStreamBuffers(): StreamBuffers {
     };
     setStream(removeKey);
     setThinkingStream(removeKey);
+    setToolCallStream(removeKey);
     delete streamBuffers.current[sessionId];
     delete thinkingBuffers.current[sessionId];
+    delete toolCallBuffers.current[sessionId];
   }, []);
 
-  return { stream, thinkingStream, queueDelta, flush, finish, clear, discard };
+  return { stream, thinkingStream, toolCallStream, queueDelta, queueToolCallDelta, flush, finish, clear, discard };
 }

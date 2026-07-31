@@ -58,10 +58,20 @@ export class AnthropicProvider implements Provider {
         { signal: request.signal },
       );
 
+      const toolBlockIds = new Map<number, string>();
       for await (const event of stream) {
         streamStarted = true;
+        // 工具调用参数流式分片：content_block_start 给 id/name，input_json_delta 逐片给 partial_json
+        if (event.type === "content_block_start" && event.content_block.type === "tool_use") {
+          toolBlockIds.set(event.index, event.content_block.id);
+          yield { type: "tool_call_delta", id: event.content_block.id, name: event.content_block.name, argumentsDelta: "" };
+          continue;
+        }
         if (event.type !== "content_block_delta") continue;
-        if (event.delta.type === "text_delta") {
+        if (event.delta.type === "input_json_delta") {
+          const id = toolBlockIds.get(event.index);
+          if (id) yield { type: "tool_call_delta", id, argumentsDelta: event.delta.partial_json };
+        } else if (event.delta.type === "text_delta") {
           yield { type: "text_delta", text: event.delta.text };
         } else if (event.delta.type === "thinking_delta") {
           yield { type: "thinking_delta", text: event.delta.thinking };

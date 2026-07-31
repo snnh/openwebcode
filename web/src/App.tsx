@@ -122,7 +122,7 @@ export function App(): ReactElement {
   // 草稿附件也按会话隔离；异步发送完成只能清理自己的源会话。
   const [attachmentsBySession, setAttachmentsBySession] = useState<Record<string, PendingImage[]>>({});
   // WebSocket token delta 在 React 之外缓冲、按动画帧合批提交（见 use-stream-buffers）
-  const { stream, thinkingStream, queueDelta: queueStreamDelta, flush: flushStreamBuffers, finish: finishBufferedStreams, clear: clearStream, discard: discardStream } = useStreamBuffers();
+  const { stream, thinkingStream, toolCallStream, queueDelta: queueStreamDelta, queueToolCallDelta, flush: flushStreamBuffers, finish: finishBufferedStreams, clear: clearStream, discard: discardStream } = useStreamBuffers();
   const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
   const [agentStates, setAgentStates] = useState<Record<string, string>>({});
   // 上下文窗口水位（context.watermark）：按会话保留最近一次，切换会话展示该会话最后已知水位
@@ -403,6 +403,14 @@ export function App(): ReactElement {
           const text = (event.payload as { text?: string }).text ?? "";
           queueStreamDelta(event.sessionId!, text, true);
         }
+        if (event.type === "message.tool_call_delta") {
+          const payload = event.payload as { id?: string; name?: string; text?: string };
+          if (payload.id) queueToolCallDelta(event.sessionId!, payload.id, payload.name, payload.text ?? "");
+        }
+        // provider 重试：上一 attempt 的增量作废，清空该会话的流式缓冲
+        if (event.type === "message.stream_reset" && event.sessionId) {
+          clearStream(event.sessionId);
+        }
         if (event.type === "permission.request") {
           const req = event.payload as PermissionRequest;
           setPendingPermissions((prev) => [...prev.filter((item) => item.requestId !== req.requestId), req]);
@@ -492,6 +500,11 @@ export function App(): ReactElement {
   // append-only 分片渲染前 join 一次；无新 delta 时数组引用不变，join 跳过
   const streamText = useMemo(() => stream[currentId ?? ""]?.join("") ?? "", [stream, currentId]);
   const thinkingText = useMemo(() => thinkingStream[currentId ?? ""]?.join("") ?? "", [thinkingStream, currentId]);
+  // 流式工具调用（对象键序即出现顺序）；无新分片时引用不变，join 跳过
+  const streamToolCalls = useMemo(
+    () => Object.entries(toolCallStream[currentId ?? ""] ?? {}).map(([id, entry]) => ({ id, ...(entry.name !== undefined ? { name: entry.name } : {}), text: entry.parts.join("") })),
+    [toolCallStream, currentId],
+  );
   // 对话区底部实时活动条：WS 工具事件优先，状态/起始时间回退到 run 快照（刷新页面后首个事件前可用）
   const liveActivity = useMemo<LiveActivityInfo | undefined>(() => {
     if (!currentId) return undefined;
@@ -1118,6 +1131,7 @@ export function App(): ReactElement {
                   {...(contextView.data?.ledger.cleared ? { cleared: contextView.data.ledger.cleared } : {})}
                   streamText={streamText}
                   thinkingText={thinkingText}
+                  streamToolCalls={streamToolCalls}
                   runError={runFailures[current.id]}
                   permissions={mergedPermissions}
                   onSendToAgent={sendShellToAgent}
