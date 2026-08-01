@@ -37,8 +37,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Verify tag matches repo versions
-        # 手动触发（ref 为分支）时跳过；tag 发布必须三方一致，尽早失败
-        if: startsWith(github.ref, 'refs/tags/')
+        # tag 推送与 workflow_dispatch（inputs.tag）都执行校验；发布必须四方一致，尽早失败
         shell: bash
         run: |
           set -euo pipefail
@@ -48,13 +47,14 @@ jobs:
           # project(VERSION) 只能存数值基版本，故 core 侧与 BASE_VERSION 比对
           BASE_VERSION="${VERSION%%-*}"
           PKG_VERSION="$(node -p "require('./server/package.json').version")"
+          WEB_VERSION="$(node -p "require('./web/package.json').version")"
           CORE_VERSION="$(sed -n 's/^project(openwebcode_core VERSION \([0-9][0-9.]*\).*/\1/p' core/CMakeLists.txt | head -n 1)"
-          if [ -z "$PKG_VERSION" ] || [ -z "$CORE_VERSION" ]; then
-            echo "::error::无法解析仓库内版本号：package.json='$PKG_VERSION' CMakeLists.txt='$CORE_VERSION'"
+          if [ -z "$PKG_VERSION" ] || [ -z "$WEB_VERSION" ] || [ -z "$CORE_VERSION" ]; then
+            echo "::error::无法解析仓库内版本号：server/package.json='$PKG_VERSION' web/package.json='$WEB_VERSION' CMakeLists.txt='$CORE_VERSION'"
             exit 1
           fi
-          if [ "$VERSION" != "$PKG_VERSION" ] || [ "$BASE_VERSION" != "$CORE_VERSION" ]; then
-            echo "::error::tag 版本 ($VERSION，基版本 $BASE_VERSION) 与 server/package.json ($PKG_VERSION)、core/CMakeLists.txt ($CORE_VERSION) 不一致，请先对齐再发版"
+          if [ "$VERSION" != "$PKG_VERSION" ] || [ "$VERSION" != "$WEB_VERSION" ] || [ "$BASE_VERSION" != "$CORE_VERSION" ]; then
+            echo "::error::tag 版本 ($VERSION，基版本 $BASE_VERSION) 与 server/package.json ($PKG_VERSION)、web/package.json ($WEB_VERSION)、core/CMakeLists.txt ($CORE_VERSION) 不一致，请先对齐再发版"
             exit 1
           fi
       - uses: actions/setup-node@v4
@@ -232,8 +232,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Verify tag matches repo versions
-        # 手动触发（ref 为分支）时跳过；tag 发布必须三方一致，尽早失败
-        if: startsWith(github.ref, 'refs/tags/')
+        # tag 推送与 workflow_dispatch（inputs.tag）都执行校验；发布必须四方一致，尽早失败
         shell: bash
         run: |
           set -euo pipefail
@@ -243,13 +242,14 @@ jobs:
           # project(VERSION) 只能存数值基版本，故 core 侧与 BASE_VERSION 比对
           BASE_VERSION="${VERSION%%-*}"
           PKG_VERSION="$(node -p "require('./server/package.json').version")"
+          WEB_VERSION="$(node -p "require('./web/package.json').version")"
           CORE_VERSION="$(sed -n 's/^project(openwebcode_core VERSION \([0-9][0-9.]*\).*/\1/p' core/CMakeLists.txt | head -n 1)"
-          if [ -z "$PKG_VERSION" ] || [ -z "$CORE_VERSION" ]; then
-            echo "::error::无法解析仓库内版本号：package.json='$PKG_VERSION' CMakeLists.txt='$CORE_VERSION'"
+          if [ -z "$PKG_VERSION" ] || [ -z "$WEB_VERSION" ] || [ -z "$CORE_VERSION" ]; then
+            echo "::error::无法解析仓库内版本号：server/package.json='$PKG_VERSION' web/package.json='$WEB_VERSION' CMakeLists.txt='$CORE_VERSION'"
             exit 1
           fi
-          if [ "$VERSION" != "$PKG_VERSION" ] || [ "$BASE_VERSION" != "$CORE_VERSION" ]; then
-            echo "::error::tag 版本 ($VERSION，基版本 $BASE_VERSION) 与 server/package.json ($PKG_VERSION)、core/CMakeLists.txt ($CORE_VERSION) 不一致，请先对齐再发版"
+          if [ "$VERSION" != "$PKG_VERSION" ] || [ "$VERSION" != "$WEB_VERSION" ] || [ "$BASE_VERSION" != "$CORE_VERSION" ]; then
+            echo "::error::tag 版本 ($VERSION，基版本 $BASE_VERSION) 与 server/package.json ($PKG_VERSION)、web/package.json ($WEB_VERSION)、core/CMakeLists.txt ($CORE_VERSION) 不一致，请先对齐再发版"
             exit 1
           fi
       - uses: actions/setup-node@v4
