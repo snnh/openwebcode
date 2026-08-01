@@ -199,10 +199,10 @@ export class SentinelParser {
 /** 持久 shell 命令输出的代码页修复：pty 输出按 lossy UTF-8 增量喂给 sentinel 解析
  * （sentinel 为 ASCII，GBK/UTF-8 下位置一致），若结果含 U+FFFD 则用原始字节按
  * UTF-8 严格 / GBK 回退整体重解码并重跑解析；仍乱码则保留原输出。 */
-export function repairShellOutput(output: string, raw: readonly Buffer[], rand: string, lines: readonly string[]): string {
+export function repairShellOutput(output: string, raw: readonly Buffer[], rand: string, lines: readonly string[], platform: NodeJS.Platform = process.platform): string {
   if (!output.includes("�") || raw.length === 0) return output;
   const reparsed = new SentinelParser(rand, [...lines]);
-  reparsed.feed(decodeChildProcessOutput(Buffer.concat(raw)));
+  reparsed.feed(decodeChildProcessOutput(Buffer.concat(raw), platform));
   const repaired = reparsed.output();
   return repaired.includes("�") ? output : repaired;
 }
