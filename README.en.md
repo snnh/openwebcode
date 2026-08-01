@@ -167,6 +167,10 @@ Session data includes metadata, append-only message JSONL, context ledgers, arti
 - **Windows**: uninstall from Settings → Apps. The default data directory `%USERPROFILE%\openwebcode` is kept, and so is any data directory chosen through `OWC_DATA_DIR`.
 - **Linux**: `rm -rf ~/.local/lib/openwebcode ~/.local/bin/owc`; user data is kept.
 
+## Sponsor
+
+OpenWebCode is an open-source project maintained by one person. If it helps your work, consider sponsoring via [donate.md](./donate.md) to support ongoing development.
+
 ## Acknowledgments
 
 1. Thanks to deepseek、kimi-k3、qwen for assisting development.
