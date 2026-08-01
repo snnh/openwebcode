@@ -7,6 +7,7 @@ const PERMISSION_OPTIONS: Array<{ value: PermissionMode | ""; zh: string; en: st
   { value: "", zh: "不预设", en: "Not set" },
   { value: "ask", zh: "每次确认", en: "Ask every time" },
   { value: "acceptEdits", zh: "接受编辑", en: "Accept edits" },
+  { value: "review", zh: "模型审核", en: "Model review" },
   { value: "yolo", zh: "YOLO", en: "YOLO" },
 ];
 

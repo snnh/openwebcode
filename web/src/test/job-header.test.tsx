@@ -20,14 +20,14 @@ const session = makeSession({
 
 beforeEach(() => {
   vi.spyOn(api, "tasks").mockResolvedValue([]);
-  vi.spyOn(api, "sandboxCapabilities").mockResolvedValue({ appcontainer: true, jobobject: true, off: true, wsb: { available: false, reason: "测试" } });
+  vi.spyOn(api, "sandboxCapabilities").mockResolvedValue({ appcontainer: true, jobobject: true, off: true, wsb: { available: false, reason: "测试" }, bindLink: { available: false, reason: "测试" } });
 });
 
 afterEach(() => vi.restoreAllMocks());
 
 /** 覆盖 beforeEach 的默认 capabilities：WSB 可用 */
 function mockWsbAvailable(): void {
-  vi.mocked(api.sandboxCapabilities).mockResolvedValue({ appcontainer: true, jobobject: true, off: true, wsb: { available: true } });
+  vi.mocked(api.sandboxCapabilities).mockResolvedValue({ appcontainer: true, jobobject: true, off: true, wsb: { available: true }, bindLink: { available: true } });
 }
 
 /** 渲染 idle 状态的 JobHeader（windowUsage/latestUsage 按需传入） */

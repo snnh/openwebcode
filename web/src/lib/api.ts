@@ -81,7 +81,7 @@ export const api = {
   session: (id: string, limit?: number) => request<SessionDetail>(`/api/sessions/${id}${limit ? `?limit=${limit}` : ""}`),
   messagesPage: (id: string, before: string, limit?: number) => request<MessagesPage>(`/api/sessions/${id}/messages?before=${encodeURIComponent(before)}${limit ? `&limit=${limit}` : ""}`),
   run: (id: string) => request<AgentRun>(`/api/sessions/${id}/run`),
-  createSession: (body: { cwd: string; provider: string; model: string; title?: string; agentMode?: "plan" | "code" | "goal"; sandboxMode?: SandboxMode; setupScript?: string; workspaceMode?: "managed" }) =>
+  createSession: (body: { cwd: string; provider: string; model: string; title?: string; agentMode?: "plan" | "code" | "goal"; sandboxMode?: SandboxMode; setupScript?: string; workspaceMode?: "managed"; bindLinks?: { virtPath: string; backingPath: string; readOnly?: boolean }[] }) =>
     request<Session>("/api/sessions", { method: "POST", body: JSON.stringify(body) }),
   sandboxCapabilities: () => request<SandboxCapabilities>("/api/sandbox/capabilities"),
   managedWorkspaceCapability: () => request<ManagedWorkspaceCapability>("/api/managed-workspace/capability"),
