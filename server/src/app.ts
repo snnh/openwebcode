@@ -465,6 +465,15 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   await app.register(websocket);
   if (dependencies.webDist && existsSync(dependencies.webDist)) {
     await app.register(fastifyStatic, { root: dependencies.webDist, prefix: "/" });
+    // WebUI 静态资源安全响应头。CSP 限同源；index.html 含内联主题引导脚本，
+    // 故 script-src 需 'unsafe-inline'（Monaco/KaTeX/shiki 均为打包本地资源，不需要 eval）。
+    // style-src 'unsafe-inline'：React 组件/Monaco 会写内联 style。WS 走同源 connect-src。
+    // 仅作用于非 /api 响应（JSON API 无渲染面，叠加 CSP 无意义）。
+    app.addHook("onSend", async (request, reply) => {
+      if (request.url.startsWith("/api/")) return;
+      reply.header("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ws: wss:; script-src 'self' 'unsafe-inline'");
+      reply.header("X-Content-Type-Options", "nosniff");
+    });
   }
   const clients = new Set<{ send(data: string): void; close(code?: number, reason?: string): void; readonly readyState: number; readonly bufferedAmount: number; pendingSends: number; sessionId?: string }>();
   // 慢客户端背压阈值：字节与消息数双上限（0.4.x §5.1），可用依赖覆盖便于测试。

@@ -17,6 +17,9 @@ describe("PermissionCoordinator", () => {
     expect(coordinator.needsApproval("ask", [permissionRule("bash", { cmd: "npm test" })], "bash", { cmd: "npm test | grep ok" })).toBe(true);
     expect(coordinator.needsApproval("ask", [permissionRule("bash", { cmd: "npm test" })], "bash", { cmd: "npm test > out.txt" })).toBe(true);
     expect(coordinator.needsApproval("ask", [permissionRule("bash", { cmd: "npm test" })], "bash", { cmd: "npm test" })).toBe(false);
+    // 孤立 \r 是 cmd.exe 的行终止符：前缀规则不得放行隐藏的第二条命令
+    expect(coordinator.needsApproval("ask", [permissionRule("bash", { cmd: "npm test" })], "bash", { cmd: "npm test \rwhoami" })).toBe(true);
+    expect(coordinator.needsApproval("ask", [permissionRule("bash", { cmd: "npm test" })], "bash", { cmd: "npm test\r\nwhoami" })).toBe(true);
   });
 
   it("scopes persistent web fetch permission to the exact origin", () => {

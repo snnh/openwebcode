@@ -19,6 +19,8 @@ const textResponse = (body: string, init: ResponseInit = {}) => new Response(bod
   ...init,
 });
 
+const publicLookup = async () => [{ address: "93.184.216.34", family: 4 }];
+
 describe("webFetch", () => {
   it.each([
     "http://localhost/", "http://sub.localhost/", "http://127.1.2.3/", "http://10.0.0.1/",
@@ -41,7 +43,7 @@ describe("webFetch", () => {
       seen.push(String(input));
       return new Response(null, { status: 302, headers: { location: "http://169.254.169.254/metadata" } });
     }) as typeof fetch;
-    await expect(webFetch("https://example.com/start", { fetchImpl })).rejects.toThrow(/private network/i);
+    await expect(webFetch("https://example.com/start", { fetchImpl, lookupImpl: publicLookup })).rejects.toThrow(/private network/i);
     expect(seen).toEqual(["https://example.com/start"]);
   });
 
@@ -49,14 +51,25 @@ describe("webFetch", () => {
     const fetchImpl = vi.fn(async (input: string | URL | Request) => String(input).endsWith("/start")
       ? new Response(null, { status: 302, headers: { location: "/final" } })
       : textResponse("<style>hide</style><h1>Hello &amp; world</h1><script>bad()</script>", { headers: { "content-type": "text/html; charset=utf-8" } })) as typeof fetch;
-    const result = await webFetch("https://example.com/start", { fetchImpl });
+    const result = await webFetch("https://example.com/start", { fetchImpl, lookupImpl: publicLookup });
     expect(result.finalUrl).toBe("https://example.com/final");
     expect(result.text).toBe("Hello & world");
   });
 
   it("rejects binary and oversized responses", async () => {
-    await expect(webFetch("https://example.com/image", { fetchImpl: (async () => new Response("x", { headers: { "content-type": "image/png" } })) as typeof fetch })).rejects.toThrow(/content type/i);
-    await expect(webFetch("https://example.com/large", { maxBytes: 3, fetchImpl: (async () => textResponse("four")) as typeof fetch })).rejects.toThrow(/byte limit/i);
+    await expect(webFetch("https://example.com/image", { lookupImpl: publicLookup, fetchImpl: (async () => new Response("x", { headers: { "content-type": "image/png" } })) as typeof fetch })).rejects.toThrow(/content type/i);
+    await expect(webFetch("https://example.com/large", { maxBytes: 3, lookupImpl: publicLookup, fetchImpl: (async () => textResponse("four")) as typeof fetch })).rejects.toThrow(/byte limit/i);
+  });
+
+  it("rejects domains that resolve to private addresses (DNS rebinding)", async () => {
+    const fetchImpl = vi.fn(async () => textResponse("ok")) as typeof fetch;
+    const internalLookup = async () => [{ address: "192.168.1.10", family: 4 }];
+    await expect(webFetch("https://rebinding.example/", { fetchImpl, lookupImpl: internalLookup })).rejects.toThrow(/private network/i);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    // 公网 + 内网混合解析：任一内网地址即拒绝
+    const mixedLookup = async () => [{ address: "93.184.216.34", family: 4 }, { address: "10.0.0.8", family: 4 }];
+    await expect(webFetch("https://rebinding.example/", { fetchImpl, lookupImpl: mixedLookup })).rejects.toThrow(/private network/i);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
 
@@ -83,6 +96,26 @@ describe("search providers", () => {
       headers: { Authorization: "Bearer tvly-secret", "Content-Type": "application/json" },
     });
     expect(JSON.parse(String(request?.body))).toMatchObject({ query: "query", max_results: 3 });
+  });
+
+
+  it("re-validates every search redirect against the configured origin", async () => {
+    const crossOrigin = vi.fn(async () => new Response(null, { status: 302, headers: { location: "http://169.254.169.254/latest/meta-data" } })) as typeof fetch;
+    const provider = createProfileSearchProvider({ id: "custom", provider: "custom", capabilities: ["search"], searchBaseURL: "https://search.example/api" }, crossOrigin)!;
+    await expect(provider.search("query", 5)).rejects.toThrow(/origin/i);
+    expect(crossOrigin).toHaveBeenCalledOnce();
+    expect(crossOrigin.mock.calls[0]?.[1]).toMatchObject({ redirect: "manual" });
+
+    const seen: string[] = [];
+    const sameOrigin = vi.fn(async (input: string | URL | Request) => {
+      seen.push(String(input));
+      return String(input).endsWith("/api?q=query&count=5")
+        ? new Response(null, { status: 302, headers: { location: "/api/v2?q=query&count=5" } })
+        : Response.json({ results: [{ title: "One", url: "https://one.test", description: "First" }] });
+    }) as typeof fetch;
+    const follower = createProfileSearchProvider({ id: "custom", provider: "custom", capabilities: ["search"], searchBaseURL: "https://search.example/api" }, sameOrigin)!;
+    await expect(follower.search("query", 5)).resolves.toEqual([{ title: "One", url: "https://one.test", snippet: "First" }]);
+    expect(seen).toEqual(["https://search.example/api?q=query&count=5", "https://search.example/api/v2?q=query&count=5"]);
   });
 
   it("cleans common HTML constructs", () => {
