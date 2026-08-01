@@ -2,7 +2,71 @@
 
 本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前版本的用户可感知变化。日期以 Git 标签发布日期为准。
 
-## [1.0.0-beta.5] - 未发布
+## [1.0.0] - 2026-08-01
+
+首个 1.0 正式版。本节汇总 0.9.0 以来的全部用户可感知变化（beta.1~beta.5 预发布内容与发布后修复轮）；各 beta 段的原始记录保留在下方供查阅。
+
+### 新增
+
+- 会话树导航：任意用户消息可分叉、编辑后重发、对 assistant 回复重新生成；会话从线性历史升级为树，UI 提供分叉点切换与路径指示。
+- `ask_user` 结构化提问工具：agent 运行中可向用户发起带选项的提问（单选/多选/自定义输入），回答注入后续轮次。
+- plan 模式结构化批准流：`exit_plan_mode` 提交计划，批准/编辑后批准/拒绝三分支，不经权限自动放行。
+- goal 目标模式：主模型每轮自评目标达成度，未达成自动续跑（最多 10 次）。
+- 模型审核权限模式（review）：低风险由审核模型自动放行并留审计，高风险与审核失败转人工；权限档由此齐备为逐次确认/接受编辑/模型审核/完全自主四级。
+- TOTP 全局登录认证：非回环监听场景的访问控制，凭据 `totp.json`（0600），票据滑动 12h。
+- core PTY RPC 与真终端面板：PTY 打开/输入/缩放/关闭与输出/退出通知，能力经 `core.ping` 上报。
+- agent bash 持久 shell：cd/env 跨调用保持（沙盒内 PTY）。
+- Shell 后端探测与 Git Bash 支持：Windows 默认命令后端按 `pwsh > Git Bash > cmd.exe` 探测取首个可用项（排除 WSL 的 `System32\bash.exe`），Linux 按 `bash > pwsh > $SHELL`（`/bin/sh` 兜底）；会话 `shellBackend` 支持 `default/pwsh/bash/cmd`，界面 Shell 下拉同步四档；core `exec.run`/`job.start` 新增 `shellBackend:"bash"` 与 `shellPath`，`core.ping` 上报 `features.shellBash`；POSIX 端缺失解释器时与 Windows 同样上报稳定的 shell_unavailable 错误。
+- OpenAI Responses 接口类型：模型服务商新增第三种接口（`POST {baseURL}/responses`，流式）；思维以 reasoning summary 流返回。
+- Bind Link 目录绑定（Windows 11 24H2+）：创建会话时把会话工作区内的虚拟路径透明绑定到外部真实目录（≤16 项，`virtPath`/`backingPath`/`readOnly?`），面向共享依赖缓存；新建会话对话框提供编辑器，沙盒能力接口如实上报可用性（创建绑定需 server 以管理员权限运行，wsb 模式不支持），沙盒面板展示已生效绑定；绑定全系统可见，会话清理时撤销，异常退出最迟重启失效。
+- 思维链保留回传：历史 thinking 块以 `reasoning_content` 回带给 OpenAI 兼容端点（同源 provider）；模型能力 `reasoningContent` 声明，gpt/o 系与 claude 默认关闭、其余默认开启，模型目录可逐模型覆盖。
+- swarm 成员共享讨论板：并行子代理经 JSONL 板面互相分享发现。
+- Hooks 事件补全与桌面通知：页面失焦时权限待批/交互待答/run 终态弹系统通知。
+- cron 定时任务：会话内 5 字段 cron，持久化并注入 follow-up 队列。
+- 消息导出增加 Markdown 格式（`session-<id>.md`），与既有 HTML/JSONL 并列，导出菜单统一入口。
+
+### 界面与体验
+
+- 思考、正文与工具调用按真实产生顺序交织渲染；相邻的连续工具调用（≥2 个）自动合并为「N 个工具调用」折叠组；流式正文按增量平滑追加，长输出不再整段重排。
+- 模型选择器重做：按供应商分组展开收起，底部固定区显示模型能力与思考控件；思考改为胶囊开关，强度改格子档滑动（只显示已声明档位）。
+- 模式弹层：code（默认）/plan/goal 与 Swarm 独立开关可叠加；新建会话对话框同步提供目标模式与模型审核档。
+- 会话配置控件重排：模式/模型靠左，思考/权限/高级设置靠右，始终一行，窄窗口自动收缩；≤480px 堆叠显示。
+- 对话轮次深浅成组与层级递进：user 消息开启一轮，奇偶轮底色交替，工具/结果卡同步加深；子代理转录同一规则；全部基于 CSS 变量 color-mix，亮暗主题自适应。
+- 对话内搜索（会话内按关键词定位并跳转）与 `Ctrl+P` 快速切换模型。
+- 细节修复：「回到底部」按钮不再遮挡正文；PDF 提示可关闭并按扩展状态签名记忆；消息操作按钮键盘聚焦可达、触屏常显；设置对话框头部副标题省略号截断。
+
+### 模型与服务商
+
+- 服务商自定义请求体（extraBody）：每次请求浅合并自定义 JSON 字段，保留字段禁止覆盖。
+- 输出长度默认不封顶：OpenAI 兼容接口不再默认发送 `max_tokens`；Anthropic 保留 API 强制默认值，可经自定义请求体覆盖。
+- 未声明模型默认上下文 256k；deepseek 前缀升至 1M（DeepSeek V4）；effort 档新增 ultra。
+
+### 变更
+
+- Windows 默认沙盒模式改为 Job Object（兼容模式）；AppContainer 仍需在会话中显式选择，既有未指定沙盒模式的会话按新默认执行。
+
+### 修复
+
+- 工具结果滚动驱逐重构：lag 改为按轮计（一轮 = 一批连续工具结果）且默认 1 → 2，当轮（模型尚未看到的批次）受保护不再被驱逐；新增驱逐豁免下限（<256 token 的小结果、≤10 行的文件读取始终保留）与 read_file 头 50 + 尾 50 行摘录降级；驱逐占位符改为语义摘要并指引模型用 `read_artifact` 自助恢复；阈值均可在上下文面板会话级热调。
+- 新增「超级节省」驱逐模式（上下文面板/REST 可选，默认仍为「默认节省」占位符模式）：非保留轮的整轮工具过程连同思维链出视图，只留一行不可变摘要；回写时双侧配对自动复活。
+- bash 工具调用长时间不结束：server 从 Git Bash/MSYS 环境启动时子进程 PATH 里 `usr/bin` 先于 System32，`find`/`sort` 被解析成 MSYS 版本导致命令跑飞；现 Windows 下 core 子进程一律前置 System32 恢复内置命令语义，持久 shell 超时错误附带已捕获输出尾部供模型自我纠正。
+- 权限与安全：bash 前缀规则控制字符类补 `\r`，封堵 cmd 后端用孤立 CR 拆命令绕过「总是允许」授权；联网工具 fetch 前逐 IP 复验 DNS 解析结果（防 DNS rebinding），search 端点改手动重定向逐跳复验；WebUI 静态页增加 CSP 与 nosniff 响应头。
+- core 协议健壮性：`job.start` 空 `cmd` 不再触发未初始化读取；sandbox 子对象与 `session.cleanup`/`core.ping`/`core.shutdown` 未知字段一律拒绝；同步 `fs.grep` 单行文本 512B 截断对齐 job 路径；`fs.glob`/`fs.grep` 目录递归加深度上限。
+- 全局 review 修复：权限卡悬挂、幽灵运行态、core 崩溃恢复；子代理思维链回传档位按实际请求模型取档；bash 权限规则词边界前缀匹配；流式渲染改 append-only 分片与增量 Markdown 切分（长会话性能）。
+- 界面：DiffPane 错误兜底文案双语化（英文界面不再显示中文）；use-stream-buffers flush 不再多提交空帧。
+
+### 发布工程
+
+- release.yml 支持预发布 tag（`vX.Y.Z-beta.N`：package.json 存完整版本号，CMake 存数值基版本，MSI ProductVersion 保持数值，Release 自动标记 Pre-release）；版本一致性校验纳入 web/package.json，手动触发（workflow_dispatch）同样执行校验。
+- 在线安装脚本 `install-online.sh` 版本校验放行预发布格式（beta 发布线 `curl | bash` 可正常安装）；含访问令牌的启动器权限收紧为 700。
+- 基准对比在两次运行环境不一致时输出失真警告；文档区分相对回归（>15% 仅警告）与绝对验收门禁（失败阻断发布）两层语义。
+
+### 升级说明
+
+- 从 0.9.0 或任一 1.0.0 beta 直接覆盖安装即可，数据目录与设置自动保留。
+- Windows MSI 未做 Authenticode 签名，首次安装/升级可能被 SmartScreen 提示；发布资产（MSI/tar.gz）带 SHA256SUMS.txt，安装与在线更新流程均强制校验。
+
+## [1.0.0-beta.5] - 未发布（已并入 1.0.0）
 
 ### 新增
 
