@@ -141,7 +141,12 @@ if ($null -eq $shellExecTarget -or -not $shellExecTarget.EndsWith('bin\owc-launc
 }
 Assert-MsiRow 'SELECT `Action` FROM `CustomAction` WHERE `Action` = ''LaunchOpenWebCode'' AND `Source` = ''WixCA'' AND `Target` = ''WixShellExec''' `
     "the launch custom action invokes WixShellExec"
-Assert-MsiRow 'SELECT `Dialog_` FROM `ControlEvent` WHERE `Dialog_` = ''ExitDialog'' AND `Control_` = ''Finish'' AND `Event` = ''DoAction'' AND `Argument` = ''LaunchOpenWebCode'' AND `Condition` LIKE ''%WIXUI_EXITDIALOGOPTIONALCHECKBOX%''' `
-    "the finish button launches only when the checkbox is selected"
+Assert-MsiRow 'SELECT `Dialog_` FROM `ControlEvent` WHERE `Dialog_` = ''ExitDialog'' AND `Control_` = ''Finish'' AND `Event` = ''DoAction'' AND `Argument` = ''LaunchOpenWebCode''' `
+    "the finish button can launch the application"
+# MSI SQL 不支持 LIKE 通配查询，条件文本在 PowerShell 侧匹配。
+$launchCondition = Get-MsiFirstString 'SELECT `Condition` FROM `ControlEvent` WHERE `Dialog_` = ''ExitDialog'' AND `Control_` = ''Finish'' AND `Event` = ''DoAction'' AND `Argument` = ''LaunchOpenWebCode'''
+if ($null -eq $launchCondition -or $launchCondition -notlike '*WIXUI_EXITDIALOGOPTIONALCHECKBOX*') {
+    throw "MSI validation failed: the launch action is not gated by the exit-dialog checkbox (got: $launchCondition)"
+}
 
 Write-Output "Verified MSI Shell integration controls: $resolvedMsi"
