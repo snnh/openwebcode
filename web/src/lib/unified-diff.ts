@@ -134,17 +134,30 @@ function locateBlock(lines: string[], block: string[], hint: number): number {
 }
 
 /**
+ * hunk 还原失败：稳定 code 供 UI 层映射为 i18n 文案（本模块不依赖 i18n）。
+ * message 只承载英文技术细节（下标 / @@ 头），不直接上屏。
+ */
+export class HunkRevertError extends Error {
+  readonly code: "invalid-hunk-index" | "hunk-content-mismatch";
+  constructor(code: "invalid-hunk-index" | "hunk-content-mismatch", detail: string) {
+    super(detail);
+    this.name = "HunkRevertError";
+    this.code = code;
+  }
+}
+
+/**
  * 把 file 中指定下标的 hunk 还原（新侧 → 旧侧），返回新的文件内容。
  * content 是"新侧"完整文件内容（当前磁盘内容）。多个 hunk 按行号自底向上应用，
  * 避免相互位移；hunk 定位优先用 newStart，与当前内容不符时全文精确匹配，
- * 仍不匹配则抛错（文件在 diff 生成后又被改动），由调用方提示并保留原状。
+ * 仍不匹配则抛 HunkRevertError（文件在 diff 生成后又被改动），由调用方按 code 映射提示并保留原状。
  */
 export function revertHunks(content: string, file: DiffFile, hunkIndexes: number[]): string {
   const lines = content.split("\n");
   const ordered = [...hunkIndexes].sort((a, b) => (file.hunks[b]?.newStart ?? 0) - (file.hunks[a]?.newStart ?? 0));
   for (const index of ordered) {
     const hunk = file.hunks[index];
-    if (!hunk) throw new Error(`无效的 hunk 下标：${index}`);
+    if (!hunk) throw new HunkRevertError("invalid-hunk-index", `invalid hunk index: ${index}`);
     const newText = hunkNewText(hunk);
     const oldText = hunkOldText(hunk);
     // newLines=0 的纯删除 hunk：按 unified diff 约定 newStart 是"删除点之前的行号"，插入点即其下标
@@ -154,7 +167,7 @@ export function revertHunks(content: string, file: DiffFile, hunkIndexes: number
       // 纯删除 hunk 无法用空块定位：按行号插入
       at = hint <= lines.length ? hint : -1;
     }
-    if (at < 0) throw new Error(`hunk 与当前文件内容不匹配（文件可能在 diff 生成后又被修改）：${hunk.header}`);
+    if (at < 0) throw new HunkRevertError("hunk-content-mismatch", `hunk does not match current file content: ${hunk.header}`);
     lines.splice(at, newText.length, ...oldText);
   }
   return lines.join("\n");

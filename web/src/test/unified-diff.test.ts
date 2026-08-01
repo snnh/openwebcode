@@ -4,7 +4,7 @@
  * reconstructOriginal 反推旧侧全文。
  */
 import { describe, expect, it } from "vitest";
-import { hunkNewText, hunkOldText, parseUnifiedDiff, reconstructOriginal, revertHunks } from "../lib/unified-diff";
+import { HunkRevertError, hunkNewText, hunkOldText, parseUnifiedDiff, reconstructOriginal, revertHunks } from "../lib/unified-diff";
 
 const SAMPLE = [
   "diff --git a/src/a.ts b/src/a.ts",
@@ -81,9 +81,29 @@ describe("revertHunks", () => {
     expect(next).toBe(["inserted", "line1", "line2 changed", "line3", "line4", "line5 added", "x", "y", "z", "w", "line10", "line11", "line12"].join("\n"));
   });
 
-  it("内容与 hunk 不匹配时抛错（不静默写坏文件）", () => {
+  it("内容与 hunk 不匹配时抛 HunkRevertError（code 供 UI 映射 i18n 文案，不静默写坏文件）", () => {
     const tampered = CURRENT_A.replace("line2 changed", "something else");
-    expect(() => revertHunks(tampered, file, [0])).toThrow(/不匹配/);
+    let caught: unknown;
+    try {
+      revertHunks(tampered, file, [0]);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(HunkRevertError);
+    expect((caught as HunkRevertError).code).toBe("hunk-content-mismatch");
+    // message 只承载英文技术细节，不含上屏中文
+    expect((caught as HunkRevertError).message).not.toMatch(/[一-鿿]/);
+  });
+
+  it("无效 hunk 下标抛 HunkRevertError（invalid-hunk-index）", () => {
+    let caught: unknown;
+    try {
+      revertHunks(CURRENT_A, file, [99]);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(HunkRevertError);
+    expect((caught as HunkRevertError).code).toBe("invalid-hunk-index");
   });
 
   it("reconstructOriginal 反推旧侧全文", () => {

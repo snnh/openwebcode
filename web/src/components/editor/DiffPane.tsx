@@ -13,7 +13,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
 import { useI18n } from "../../i18n";
 import { Icon } from "../Icon";
-import { parseUnifiedDiff, reconstructOriginal, revertHunks, type DiffFile } from "../../lib/unified-diff";
+import { HunkRevertError, parseUnifiedDiff, reconstructOriginal, revertHunks, type DiffFile } from "../../lib/unified-diff";
 import { loadMonaco, type MonacoApi } from "./monaco-loader";
 import { monacoLanguageForPath } from "./EditorPane";
 
@@ -249,7 +249,14 @@ export function DiffPane({ sessionId, spec, readOnly = false, dark, summaryOnly 
     try {
       next = revertHunks(modified, activeFile, [index]);
     } catch (error) {
-      onNotice(error instanceof Error ? error.message : "hunk 与当前文件内容不匹配", "error");
+      onNotice(
+        error instanceof HunkRevertError
+          ? error.code === "invalid-hunk-index"
+            ? t("无效的 hunk 下标", "Invalid hunk index")
+            : t("hunk 与当前文件内容不匹配（文件可能在 diff 生成后又被修改）", "Hunk does not match the current file content (the file may have been modified after the diff was generated)")
+          : error instanceof Error ? error.message : t("hunk 与当前文件内容不匹配", "Hunk does not match the current file content"),
+        "error",
+      );
       return;
     }
     if (!revision) return;

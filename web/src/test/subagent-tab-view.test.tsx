@@ -64,7 +64,7 @@ describe("SubagentTabView", () => {
       />,
     );
 
-    expect(container.querySelector(".subagents-group-header")).toHaveTextContent("群 2 项 · 完成 2 / 失败 0 / 运行中 0");
+    expect(container.querySelector(".subagents-group-header")).toHaveTextContent("Swarm 2 项 · 完成 2 / 失败 0 / 运行中 0");
     await waitFor(() => expect(container.querySelectorAll(".subagent-tab-run")).toHaveLength(2));
     const sections = container.querySelectorAll(".subagent-tab-run");
     expect(sections[0]!.querySelector(".subagent-tab-run-header")).toHaveTextContent("任务 1");

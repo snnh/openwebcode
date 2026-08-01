@@ -159,17 +159,22 @@ export function useStreamBuffers(): StreamBuffers {
     scheduleFrame();
   }, [scheduleFrame]);
 
+  /** 取消挂起的合批帧（flush/finish 同步提交前共用，避免下一帧多一次空回调） */
+  const cancelFrame = useCallback((): void => {
+    if (flushHandle.current === undefined) return;
+    if (typeof window.cancelAnimationFrame === "function") window.cancelAnimationFrame(flushHandle.current);
+    else window.clearTimeout(flushHandle.current);
+  }, []);
+
   const flush = useCallback((): void => {
+    cancelFrame();
     flushFrame(false);
-  }, [flushFrame]);
+  }, [cancelFrame, flushFrame]);
 
   const finish = useCallback((): void => {
-    if (flushHandle.current !== undefined) {
-      if (typeof window.cancelAnimationFrame === "function") window.cancelAnimationFrame(flushHandle.current);
-      else window.clearTimeout(flushHandle.current);
-    }
+    cancelFrame();
     flushFrame(true);
-  }, [flushFrame]);
+  }, [cancelFrame, flushFrame]);
 
   const clear = useCallback((sessionId: string): void => {
     delete pending.current[sessionId];

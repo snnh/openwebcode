@@ -178,7 +178,7 @@ export function SubagentsPanel({ sessionId, runs, onOpenInTab }: {
           <section key={group.toolCallId} className="subagents-group">
             <header className="subagents-group-header">
               {t(
-                `群 ${swarmSeq} 共 ${group.total} 项 · 完成 ${done} / 失败 ${failed} / 运行中 ${running}`,
+                `Swarm ${swarmSeq} 共 ${group.total} 项 · 完成 ${done} / 失败 ${failed} / 运行中 ${running}`,
                 `Swarm ${swarmSeq} · ${group.total} items · ${done} done / ${failed} failed / ${running} running`,
               )}
               {onOpenInTab && (
