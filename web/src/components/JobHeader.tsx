@@ -205,6 +205,8 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
           >
             <option value="default">{t("默认", "Default")}</option>
             <option value="pwsh">PowerShell 7</option>
+            <option value="bash">Bash</option>
+            <option value="cmd">CMD</option>
           </select>
         </label>
         <label className="mode-switch python-env-switch" title={t("选择当前会话 bash 的 python 运行环境", "Choose the python environment for bash in this session")}>
