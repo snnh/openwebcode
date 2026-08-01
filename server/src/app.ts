@@ -769,7 +769,20 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       return reply.code(500).send({ error: errorMessage(error) });
     }
   });
-  app.get("/api/sandbox/capabilities", async () => ({ appcontainer: true, jobobject: true, off: true, wsb: detectWsb() }));
+  app.get("/api/sandbox/capabilities", async () => {
+    const info = await core.ping().catch(() => undefined);
+    const bindLinkAvailable = info?.features?.bindLink === true;
+    return {
+      appcontainer: true,
+      jobobject: true,
+      off: true,
+      wsb: detectWsb(),
+      bindLink: {
+        available: bindLinkAvailable,
+        ...(bindLinkAvailable ? {} : { reason: "当前平台 core 未提供 Bind Link 能力（需要 Windows 11 24H2+ 的 bindflt；创建绑定还需以管理员权限运行）" }),
+      },
+    };
+  });
   app.get("/api/managed-workspace/capability", async (_request, reply) => {
     const managed = dependencies.managed;
     if (!managed) return reply.code(501).send({ error: "Managed workspace is not configured" });

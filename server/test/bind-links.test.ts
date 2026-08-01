@@ -92,6 +92,32 @@ describe("POST /api/sessions bindLinks", () => {
   });
 });
 
+describe("GET /api/sandbox/capabilities bindLink", () => {
+  it("core 上报 features.bindLink 时 available 为 true", async () => {
+    const setup = await fixture(true);
+    try {
+      const response = await setup.app.inject({ method: "GET", url: "/api/sandbox/capabilities" });
+      expect(response.statusCode).toBe(200);
+      expect(response.json<{ bindLink: { available: boolean } }>().bindLink.available).toBe(true);
+    } finally {
+      await setup.app.close();
+    }
+  });
+
+  it("core 未上报 features.bindLink 时 available 为 false 且带原因", async () => {
+    const setup = await fixture(false);
+    try {
+      const response = await setup.app.inject({ method: "GET", url: "/api/sandbox/capabilities" });
+      expect(response.statusCode).toBe(200);
+      const body = response.json<{ bindLink: { available: boolean; reason?: string } }>();
+      expect(body.bindLink.available).toBe(false);
+      expect(body.bindLink.reason).toContain("Bind Link");
+    } finally {
+      await setup.app.close();
+    }
+  });
+});
+
 describe("CoreRouter.policyFor bindLinks", () => {
   const policy: SandboxPolicy = {
     enabled: true,
