@@ -90,6 +90,15 @@ PATH="$SYSTEM_BIN:$PATH" HOME="$WORK_DIR/home" "$SYSTEM_PACKAGE/install.sh" \
 sh -n "$TOKEN_PREFIX/bin/owc"
 grep -E "OWC_DEFAULT_ACCESS_TOKEN='[0-9a-f]{64}'" "$TOKEN_PREFIX/bin/owc" >/dev/null || \
     fail "non-loopback install did not write an OWC_ACCESS_TOKEN default"
+# 启动器内含 token，必须为仅属主可读写执行（默认 umask 下 0644 会泄露给同机用户）。
+# Windows 上 chmod 由 MSYS 尽力模拟、stat 仍显示 755，无法校验真实权限，跳过。
+case $(uname -s) in
+    MINGW*|MSYS*|CYGWIN*) : ;;
+    *)
+        [ "$(stat -c %a "$TOKEN_PREFIX/bin/owc")" = "700" ] || \
+            fail "launcher containing OWC_ACCESS_TOKEN is not mode 700"
+        ;;
+esac
 grep -q 'OWC_ALLOWED_ORIGINS' "$WORK_DIR/token-install.out" || \
     fail "non-loopback install did not mention OWC_ALLOWED_ORIGINS"
 
@@ -105,6 +114,17 @@ fi
 if HOME="$WORK_DIR/home" "$PACKAGE/install.sh" --yes --prefix "$WORK_DIR/invalid-port" \
     --port 0 --data-dir "$DATA_DIR" --host 127.0.0.1 > /dev/null 2>&1; then
     fail "invalid port was accepted"
+fi
+
+# install-online.sh 的版本校验须接受 semver 预发布（当前发布线为
+# 1.0.0-beta.x，latest 查询路径剥 v 后也会得到该形态），同时拒绝明显非法
+# 输入。直接提取脚本中的 validate_version 函数测试，不经网络下载。
+sed -n '/^validate_version() {/,/^}/p' "$SCRIPT_DIR/install-online.sh" > "$WORK_DIR/validate.sh"
+[ -s "$WORK_DIR/validate.sh" ] || fail "could not extract validate_version from install-online.sh"
+(. "$WORK_DIR/validate.sh" && validate_version "1.0.0-beta.5") || fail "1.0.0-beta.5 was rejected"
+(. "$WORK_DIR/validate.sh" && validate_version "1.0.0") || fail "1.0.0 was rejected"
+if (. "$WORK_DIR/validate.sh" && validate_version "not a version"); then
+    fail "garbage version string was accepted"
 fi
 
 echo "install.sh smoke tests passed"
