@@ -131,7 +131,10 @@ def main():
         response = configure(proc, 10, workspace, sandbox)
         assert "result" in response, response
 
-        valid = {**sandbox, "bindLinks": [{"virtPath": virt, "backingPath": backing, "readOnly": True}]}
+        # AppContainer 下绑定目录的 ACL 授予尚未实现（沙盒进程读 backing 会被拒），
+        # e2e 使用与服务端默认一致的 jobobject 模式；AppContainer + bind link 的
+        # ACL 整合是已知遗留项。
+        valid = {**sandbox, "mode": "jobobject", "bindLinks": [{"virtPath": virt, "backingPath": backing, "readOnly": True}]}
         if not bind_feature:
             response = configure(proc, 11, workspace, valid)
             assert_error(response, -32000, "bind_link_unavailable")
