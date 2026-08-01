@@ -4,7 +4,8 @@ import { AgentRunner } from "./agent/agent-runner.js";
 import { BackgroundTaskRegistry } from "./agent/background-tasks.js";
 import { buildServer } from "./app.js";
 import { TotpAuthService } from "./auth-totp.js";
-import { loadConfig } from "./config.js";
+import { buildAccessUrls, listLanAddresses, regenerateAccessToken, resolveAccessToken } from "./access-token.js";
+import { isLoopbackHost, loadConfig } from "./config.js";
 import { ModelRegistry } from "./context/model-registry.js";
 import { CoreClient } from "./core-client.js";
 import { ExchangeRateService, HttpExchangeRateProvider } from "./cost/exchange-rate.js";
@@ -215,6 +216,17 @@ gcTimer.unref();
 // TOTP 全局登录认证（提交⑥）：启动时加载凭据；文件缺失视为关闭，门禁不生效
 const totp = new TotpAuthService(path.join(dataDir, "totp.json"));
 await totp.load();
+// 非回环监听：OWC_ACCESS_TOKEN 未显式设置时自动生成并持久化（<dataDir>/access-token，
+// 0600），「设置页改监听地址即可用」；token 与 origins 仍可被环境变量覆盖。
+// loopback + 显式 env token 保持既有行为（不读令牌文件、不校验长度）。
+const accessTokenFile = path.join(dataDir, "access-token");
+const resolvedAccessToken = !isLoopbackHost(config.host)
+  ? await resolveAccessToken({ envToken: config.accessToken, filePath: accessTokenFile })
+  : (config.accessToken ? { token: config.accessToken, source: "env" as const } : undefined);
+const authState = resolvedAccessToken
+  ? { accessToken: resolvedAccessToken.token, allowedOrigins: config.allowedOrigins, autoAllowSameOrigin: config.autoAllowSameOrigin ?? false }
+  : undefined;
+const lanAddresses = listLanAddresses();
 const app = await buildServer({
   core,
   sessions,
@@ -247,7 +259,26 @@ const app = await buildServer({
   // TOTP 全局登录认证（提交⑥）：凭据 <dataDir>/totp.json（0600），票据仅内存
   totp,
   listenHost: config.host,
-  ...(config.accessToken ? { auth: { accessToken: config.accessToken, allowedOrigins: config.allowedOrigins } } : {}),
+  ...(authState ? { auth: authState } : {}),
+  ...(resolvedAccessToken
+    ? {
+        remoteAccess: {
+          host: config.host,
+          port: config.port,
+          tokenSource: resolvedAccessToken.source,
+          lanAddresses,
+          ...(resolvedAccessToken.source === "generated"
+            ? {
+                regenerate: async () => {
+                  const token = await regenerateAccessToken(accessTokenFile);
+                  authState!.accessToken = token;
+                  return token;
+                },
+              }
+            : {}),
+        },
+      }
+    : {}),
   getPreferences: () => {
     const effective = settings.effective();
     return { currency: effective.defaultCurrency, language: effective.defaultLanguage };
@@ -273,3 +304,9 @@ process.once("SIGINT", () => void shutdown());
 process.once("SIGTERM", () => void shutdown());
 
 await app.listen({ host: config.host, port: config.port });
+// 非回环监听：启动后打印一次带 token 的访问链接（局域网/移动端直接打开即写入登录 Cookie）
+if (authState && !isLoopbackHost(config.host)) {
+  for (const url of buildAccessUrls(config.host, config.port, lanAddresses, authState.accessToken)) {
+    console.log(`openwebcode 访问链接: ${url}`);
+  }
+}

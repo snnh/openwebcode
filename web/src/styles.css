@@ -3147,6 +3147,10 @@ article.message.conv-search-active { outline: 2px solid color-mix(in srgb, var(-
 .login-switch:hover { filter: brightness(1.15); }
 
 /* 设置 → 远程访问：TOTP 向导与终端门槛 */
+.access-links { display: flex; flex-direction: column; gap: 8px; margin: 0 0 10px; }
+.access-link-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.access-link-row code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
+.access-links .totp-qr { align-self: flex-start; }
 .totp-wizard { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
 .totp-qr { align-self: flex-start; padding: 8px; background: #fff; border-radius: var(--radius-s); line-height: 0; }
 .totp-qr svg { width: 180px; height: 180px; }

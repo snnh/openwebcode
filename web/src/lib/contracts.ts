@@ -915,6 +915,24 @@ export interface TotpConfirmResponse {
   recoveryCodes: string[];
 }
 
+/** 远程访问（局域网/移动端）：GET /api/remote-access 返回 */
+export interface RemoteAccessInfo {
+  host: string;
+  port: number | null;
+  authEnabled: boolean;
+  tokenSource: "env" | "generated" | null;
+  maskedToken: string | null;
+  /** 带 ?token= 的一键访问链接；仅认证模式下非空 */
+  urls: string[];
+}
+
+/** POST /api/remote-access/regenerate-token 返回 */
+export interface RegenerateTokenResponse {
+  maskedToken: string;
+  urls: string[];
+  note: string;
+}
+
 export interface UpdateCheckSnapshot {
   latestVersion: string;
   isNewer: boolean;
