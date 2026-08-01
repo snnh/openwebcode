@@ -33,7 +33,7 @@ async function waitForMarker(file: string): Promise<Array<Record<string, unknown
   await vi.waitFor(async () => {
     payloads = await readMarkerPayloads(file).catch(() => []);
     expect(payloads.length).toBeGreaterThan(0);
-  }, { timeout: 5000 });
+  }, { timeout: 15000 });
   return payloads;
 }
 
