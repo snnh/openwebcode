@@ -83,6 +83,18 @@ def main():
         assert globbed=={"paths":["新/深/文件.txt"],"truncated":False},globbed
         matches=fs(103,"fs.grep",{"path":"新","pattern":"beta"})["result"]
         assert matches=={"matches":[{"path":"深/文件.txt","line":2,"text":"beta"}],"truncated":False},matches
+        # A matched line's text is capped at 512 bytes (same limit as the
+        # grep job) so one huge line cannot overflow the 32 MiB frame.  The
+        # match itself is still found beyond the cap; only the stored text
+        # is truncated.
+        long_line="x"*600+"needle"+"y"*600
+        assert fs(175,"fs.write",{"path":"long-line.txt","content":long_line})["result"]["ok"]
+        long_matches=fs(176,"fs.grep",{"path":"long-line.txt","pattern":"needle"})["result"]
+        assert long_matches["truncated"] is False and len(long_matches["matches"])==1,long_matches
+        long_text=long_matches["matches"][0]["text"]
+        assert len(long_text)==512 and "needle" not in long_text,long_matches
+        head_matches=fs(177,"fs.grep",{"path":"long-line.txt","pattern":"xxx"})["result"]
+        assert len(head_matches["matches"])==1 and head_matches["matches"][0]["text"]=="x"*512,head_matches
         r=fs(2,"fs.read",{"path":"目录/文件.txt","offset":1,"limit":1})["result"]
         assert r=={"content":"二\n","totalLines":3,"encoding":"utf-8","truncated":True},r
         assert fs(3,"fs.stat",{"path":"目录/文件.txt"})["result"]["type"]=="file"

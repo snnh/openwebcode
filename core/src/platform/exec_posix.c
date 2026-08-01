@@ -83,8 +83,16 @@ static int write_all(int descriptor, const void *data, size_t size) {
     return 1;
 }
 
+/* A failed exec is indistinguishable from a command exiting 127 unless the
+ * child says so: report the exec errno through a CLOEXEC pipe.  A successful
+ * exec closes the write end (the parent reads EOF); a failed one delivers
+ * the errno the attempt died with. */
+static void report_exec_failure(int descriptor, int error) {
+    (void)write_all(descriptor, &error, sizeof(error));
+}
+
 int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *result) {
-    int out_pipe[2] = {-1, -1}, err_pipe[2] = {-1, -1}, sandbox_pipe[2] = {-1, -1};
+    int out_pipe[2] = {-1, -1}, err_pipe[2] = {-1, -1}, sandbox_pipe[2] = {-1, -1}, exec_pipe[2] = {-1, -1};
     int status = 0, running = 1, ok = 0, saved_error = 0;
     pid_t child = -1;
     long long started = now_ms();
@@ -101,21 +109,21 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
         result->system_error = (unsigned long)errno;
         return 0;
     }
-    if (!make_pipe(err_pipe) || !make_pipe(sandbox_pipe)) {
+    if (!make_pipe(err_pipe) || !make_pipe(sandbox_pipe) || !make_pipe(exec_pipe)) {
         result->system_error = (unsigned long)errno;
-        close_fd(&out_pipe[0]); close_fd(&out_pipe[1]); close_fd(&err_pipe[0]); close_fd(&err_pipe[1]); close_fd(&sandbox_pipe[0]); close_fd(&sandbox_pipe[1]);
+        close_fd(&out_pipe[0]); close_fd(&out_pipe[1]); close_fd(&err_pipe[0]); close_fd(&err_pipe[1]); close_fd(&sandbox_pipe[0]); close_fd(&sandbox_pipe[1]); close_fd(&exec_pipe[0]); close_fd(&exec_pipe[1]);
         return 0;
     }
-    if(fcntl(sandbox_pipe[1],F_SETFD,FD_CLOEXEC)<0){result->system_error=(unsigned long)errno;close_fd(&out_pipe[0]);close_fd(&out_pipe[1]);close_fd(&err_pipe[0]);close_fd(&err_pipe[1]);close_fd(&sandbox_pipe[0]);close_fd(&sandbox_pipe[1]);return 0;}
+    if(fcntl(sandbox_pipe[1],F_SETFD,FD_CLOEXEC)<0||fcntl(exec_pipe[1],F_SETFD,FD_CLOEXEC)<0){result->system_error=(unsigned long)errno;close_fd(&out_pipe[0]);close_fd(&out_pipe[1]);close_fd(&err_pipe[0]);close_fd(&err_pipe[1]);close_fd(&sandbox_pipe[0]);close_fd(&sandbox_pipe[1]);close_fd(&exec_pipe[0]);close_fd(&exec_pipe[1]);return 0;}
     child = fork();
     if (child < 0) {
         result->system_error = (unsigned long)errno;
-        close_fd(&out_pipe[0]); close_fd(&out_pipe[1]); close_fd(&err_pipe[0]); close_fd(&err_pipe[1]); close_fd(&sandbox_pipe[0]); close_fd(&sandbox_pipe[1]);
+        close_fd(&out_pipe[0]); close_fd(&out_pipe[1]); close_fd(&err_pipe[0]); close_fd(&err_pipe[1]); close_fd(&sandbox_pipe[0]); close_fd(&sandbox_pipe[1]); close_fd(&exec_pipe[0]); close_fd(&exec_pipe[1]);
         return 0;
     }
     if (child == 0) {
         (void)setpgid(0, 0);
-        close(out_pipe[0]); close(err_pipe[0]); close(sandbox_pipe[0]);
+        close(out_pipe[0]); close(err_pipe[0]); close(sandbox_pipe[0]); close(exec_pipe[0]);
         if (dup2(out_pipe[1], STDOUT_FILENO) < 0 || dup2(err_pipe[1], STDERR_FILENO) < 0) _exit(126);
         close(out_pipe[1]); close(err_pipe[1]);
         if (chdir(request->cwd) != 0) _exit(126);
@@ -124,22 +132,23 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
         if(!write_all(sandbox_pipe[1],&sandbox,sizeof(sandbox)))_exit(126);
         if(request->shell_backend==(int)OWC_SHELL_PWSH) {
             execlp("pwsh", "pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", request->command, (char *)NULL);
-            (void)dprintf(STDERR_FILENO,"pwsh executable was not found
-");
+            report_exec_failure(exec_pipe[1], errno);
+            (void)dprintf(STDERR_FILENO,"pwsh executable was not found\n");
         } else if(request->shell_backend==(int)OWC_SHELL_BASH) {
             const char *shell=(request->shell_path&&request->shell_path[0])?request->shell_path:"bash";
             execlp(shell, "bash", "-c", request->command, (char *)NULL);
-            (void)dprintf(STDERR_FILENO,"bash executable was not found
-");
+            report_exec_failure(exec_pipe[1], errno);
+            (void)dprintf(STDERR_FILENO,"bash executable was not found\n");
         } else {
             execl("/bin/sh", "sh", "-c", request->command, (char *)NULL);
+            report_exec_failure(exec_pipe[1], errno);
         }
         _exit(127);
     }
 
     track_child(child);
     (void)setpgid(child, child);
-    close_fd(&out_pipe[1]); close_fd(&err_pipe[1]); close_fd(&sandbox_pipe[1]);
+    close_fd(&out_pipe[1]); close_fd(&err_pipe[1]); close_fd(&sandbox_pipe[1]); close_fd(&exec_pipe[1]);
     if (fcntl(out_pipe[0], F_SETFL, fcntl(out_pipe[0], F_GETFL) | O_NONBLOCK) < 0 ||
         fcntl(err_pipe[0], F_SETFL, fcntl(err_pipe[0], F_GETFL) | O_NONBLOCK) < 0) {
         saved_error = errno;
@@ -207,6 +216,19 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
         }
     }
     {ssize_t received;do{received=read(sandbox_pipe[0],&sandbox,sizeof(sandbox));}while(received<0&&errno==EINTR);if(received==(ssize_t)sizeof(sandbox)){result->sandbox_status=(int)sandbox.status;(void)snprintf(result->sandbox_reason,sizeof(result->sandbox_reason),"%s",sandbox.reason);}else{result->sandbox_status=(int)OWC_SANDBOX_ADVISORY;(void)snprintf(result->sandbox_reason,sizeof(result->sandbox_reason),"child did not report sandbox status");}}
+    {
+        int exec_error=0;ssize_t received;
+        do{received=read(exec_pipe[0],&exec_error,sizeof(exec_error));}while(received<0&&errno==EINTR);
+        if(received==(ssize_t)sizeof(exec_error)&&exec_error==ENOENT&&request->shell_backend!=(int)OWC_SHELL_DEFAULT){
+            /* Windows shell_unavailable parity: an explicitly selected
+             * pwsh/bash interpreter that does not exist is reported to the
+             * RPC layer instead of surfacing as a plain exit 127. */
+            result->shell_unavailable=1;
+            result->duration_ms=now_ms()-started;
+            saved_error=exec_error;
+            goto cleanup;
+        }
+    }
     result->duration_ms=now_ms()-started;
     if (WIFEXITED(status)) result->exit_code=WEXITSTATUS(status);
     else if (WIFSIGNALED(status)) result->exit_code=128+WTERMSIG(status);
@@ -218,7 +240,7 @@ cleanup:
         if (running) reap_child(child, &status);
         result->system_error=(unsigned long)(saved_error ? saved_error : EIO);
     }
-    close_fd(&out_pipe[0]); close_fd(&out_pipe[1]); close_fd(&err_pipe[0]); close_fd(&err_pipe[1]); close_fd(&sandbox_pipe[0]); close_fd(&sandbox_pipe[1]);
+    close_fd(&out_pipe[0]); close_fd(&out_pipe[1]); close_fd(&err_pipe[0]); close_fd(&err_pipe[1]); close_fd(&sandbox_pipe[0]); close_fd(&sandbox_pipe[1]); close_fd(&exec_pipe[0]); close_fd(&exec_pipe[1]);
     untrack_child(child);
     return ok;
 }
