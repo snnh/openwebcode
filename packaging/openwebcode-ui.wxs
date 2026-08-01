@@ -86,6 +86,10 @@
                Value="InvalidDirDlg" Order="4">
         NOT WIXUI_DONTVALIDATEPATH AND WIXUI_INSTALLDIR_VALID&lt;&gt;&quot;1&quot;
       </Publish>
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction"
+               Value="LaunchOpenWebCode" Order="1">
+        WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed
+      </Publish>
       <Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog"
                Value="Return" Order="999">1</Publish>
 

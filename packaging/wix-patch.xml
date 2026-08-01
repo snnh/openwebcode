@@ -28,6 +28,16 @@
                       Type="raw" />
     </Property>
 
+    <!-- Exit-dialog "Launch OpenWebCode" checkbox, checked by default.  The
+         target uses the directory-property form so it does not depend on
+         CPack's generated file-id sanitization for the dashed filename. -->
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT"
+              Value="Launch OpenWebCode (starts the server and opens the browser)" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <Property Id="WixShellExecTarget" Value="[INSTALL_ROOT]bin\owc-launch.cmd" />
+    <CustomAction Id="LaunchOpenWebCode" BinaryKey="WixCA"
+                  DllEntry="WixShellExec" Impersonate="yes" />
+
     <!-- Default is deliberately non-destructive.  PURGE_DATA is a public MSI
          property so a user can opt in with: msiexec /x package.msi PURGE_DATA=1 -->
     <Property Id="PURGE_DATA" Value="0" />

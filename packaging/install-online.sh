@@ -8,10 +8,11 @@
 # 参数:
 #   --version <x.y.z>    目标版本；缺省查询 GitHub Releases latest 的 tag_name
 #                        （用 sed/grep 解析，不依赖 jq）
-#   --prefix <dir>       安装前缀（绝对路径），默认 ~/.local；用于判定全新安装
-#                        还是更新，并透传给包内 install.sh
+#   --prefix <dir>       安装前缀（绝对路径），默认用户级 ~/.local、root /usr/local；
+#                        用于判定全新安装还是更新，并透传给包内 install.sh
 #   --yes / -y           非交互；透传给 install.sh
-#   --port/--host/--data-dir/--with-systemd/--use-system-node
+#   --port/--host/--lan/--data-dir/--system/--with-systemd/--enable-service/
+#   --open-firewall/--use-system-node
 #                        原样透传给包内 install.sh（仅全新安装时生效）
 #   -h, --help           显示本帮助
 #
@@ -61,9 +62,10 @@ usage() {
 用法: install-online.sh [--version <x.y.z>] [--prefix <dir>] [install.sh 选项...]
 
   --version <x.y.z>    目标版本，缺省查询 GitHub Releases latest
-  --prefix <dir>       安装前缀（绝对路径），默认 ~/.local
+  --prefix <dir>       安装前缀（绝对路径），默认用户级 ~/.local、root /usr/local
   --yes, -y            非交互（透传给 install.sh）
-  --port/--host/--data-dir/--with-systemd/--use-system-node
+  --port/--host/--lan/--data-dir/--system/--with-systemd/--enable-service/
+  --open-firewall/--use-system-node
                        原样透传给包内 install.sh（仅全新安装生效）
   -h, --help           显示本帮助
 
@@ -78,7 +80,12 @@ EOF
 [ -n "${HOME:-}" ] || die "HOME 未设置，无法选择默认安装前缀" 1
 
 VERSION=''
-PREFIX="$HOME/.local"
+if [ "$(id -u)" -eq 0 ]; then
+    # root 默认系统级前缀，与 install.sh 的 default_prefix 一致（更新模式探测依赖它）
+    PREFIX=/usr/local
+else
+    PREFIX="$HOME/.local"
+fi
 
 # 先完整扫描一遍参数，取出本脚本自己的 --version/--prefix（支持 --opt=value
 # 与 --opt value 两种形式）；其余参数保持原顺序原样透传给 install.sh。

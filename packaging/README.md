@@ -231,24 +231,44 @@ cd openwebcode
 
 | 选项 | 行为 |
 | --- | --- |
-| `--prefix <绝对路径>` | 安装前缀，默认 `$HOME/.local`。 |
+| `--prefix <绝对路径>` | 安装前缀，默认按 uid 分层：普通用户 `$HOME/.local`，root `/usr/local`。 |
 | `--port <1-65535>` | 写入启动器的 `OWC_PORT` 默认值；`04312` 会规范化为 `4312`。 |
-| `--data-dir <绝对路径>` | 写入启动器的 `OWC_DATA_DIR` 默认值；不能是 `/`。 |
-| `--host <地址>` | 写入 `OWC_HOST` 默认值，默认 `127.0.0.1`。非回环地址会告警并自动生成 `OWC_ACCESS_TOKEN` 写入启动器；server 对非回环监听强制要求 ≥32 字符的 `OWC_ACCESS_TOKEN` 与逗号分隔 http(s) 源的 `OWC_ALLOWED_ORIGINS`，否则拒绝启动。只应在受信网络或认证反向代理之后使用。 |
+| `--data-dir <绝对路径>` | 写入启动器的 `OWC_DATA_DIR` 默认值；不能是 `/`。默认普通用户 `${XDG_DATA_HOME:-$HOME/.local/share}/openwebcode`，root `/var/lib/openwebcode`。 |
+| `--host <地址>` | 写入 `OWC_HOST` 默认值，默认 `127.0.0.1`。非回环地址的访问令牌由 server 首次启动自动生成并持久化（`<数据目录>/access-token`，0600），`OWC_ACCESS_TOKEN`（≥32 字符）可显式覆盖；浏览器来源缺省同源自动放行，`OWC_ALLOWED_ORIGINS` 可显式限定。只应在受信网络或认证反向代理之后使用。 |
+| `--lan` | `--host 0.0.0.0` 的快捷方式（开启局域网访问；与 `--host` 互斥）。安装结尾若访问令牌已生成（如配合 `--enable-service`），直接打印一键访问链接。 |
+| `--system` | 显式系统级安装（需 root；root 运行时本就走系统级默认路径）。 |
 | `--use-system-node` | 不复制包内 `node/`，安装时要求 `PATH` 中存在绝对路径的 Node.js **24+**。包内 Node 缺失时也会安全地改走这一模式。 |
-| `--with-systemd` | 写用户级 `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/openwebcode.service`，不自动执行 `systemctl`。按提示运行 `systemctl --user daemon-reload && systemctl --user enable --now openwebcode` 后常驻。 |
+| `--with-systemd` | 写 systemd unit 但不启用：root 写 `/etc/systemd/system/openwebcode.service`，否则写用户级 `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/openwebcode.service`（可用 `OWC_SYSTEMD_UNIT_DIR` 覆盖目标目录）。 |
+| `--enable-service` | 隐含 `--with-systemd`，并执行 `systemctl daemon-reload && systemctl enable --now openwebcode`（用户级用 `systemctl --user`；开机自启需 `loginctl enable-linger $USER`）。 |
+| `--open-firewall` | 仅 root + 非回环监听可用：检测 firewalld/ufw 放行端口，未检测到则打印手动放行提示。 |
 | `--yes` / `-y` | 即使 stdin/stdout 是 TTY 也不提问；适用于 CI、重定向和脚本。 |
 
-未传 `--yes` 且 stdin/stdout 都是 TTY 时，脚本只询问没有由命令行指定的 prefix、port、data-dir、host、是否使用系统 Node.js 和是否写用户级 systemd unit；命令行选项优先。非 TTY 不会读取输入，因此不会卡住 CI。安装时生成的值只是默认值，运行时显式设置的 `OWC_PORT`、`OWC_DATA_DIR`、`OWC_HOST` 仍然优先。
+未传 `--yes` 且 stdin/stdout 都是 TTY 时，脚本只询问没有由命令行指定的 prefix、port、data-dir、是否开启局域网访问（或具体监听地址）、是否使用系统 Node.js、systemd（写入与立即启用，root 局域网时还有防火墙放行）；命令行选项优先。非 TTY 不会读取输入，因此不会卡住 CI。安装时生成的值只是默认值，运行时显式设置的 `OWC_PORT`、`OWC_DATA_DIR`、`OWC_HOST` 仍然优先。
 
 例如，自动化安装可写成：
 
 ```sh
 ./install.sh --yes --prefix "$HOME/.local" --port 3000 \
   --data-dir "$HOME/.local/share/openwebcode" --host 127.0.0.1
+
+# root 服务器一键安装：系统级路径 + 局域网访问 + 开机自启 + 防火墙放行
+sudo ./install.sh --yes --system --lan --enable-service --open-firewall
 ```
 
-`--system` 和 `--with-desktop-entry` 目前未实现，脚本会明确失败而不是伪装为完成系统级安装或桌面集成。卸载：`rm -rf <prefix>/lib/openwebcode <prefix>/bin/owc`（加 systemd unit 与数据目录，见 `install.sh` 头部注释）。
+`--with-desktop-entry` 目前未实现，脚本会明确失败而不是伪装为完成桌面集成。服务以 root 运行时 agent 执行的命令同样是 root 权限，请只运行可信任务。
+
+### 卸载
+
+安装时 `install.sh` 会把卸载器落盘为 `<prefix>/bin/owc-uninstall`（发行包根目录也带一份 `uninstall.sh`）。直接运行即可完整撤销安装：停止并禁用 systemd 服务、删除 unit（root 系统级 / 用户级均可）、删除 `<prefix>/lib/openwebcode` 与 `<prefix>/bin/owc`，最后删除卸载器自身。
+
+```sh
+~/.local/bin/owc-uninstall                    # 交互确认；数据目录默认保留
+~/.local/bin/owc-uninstall --yes              # 不交互
+~/.local/bin/owc-uninstall --yes --purge-data # 连同数据目录一起删除
+sudo /usr/local/bin/owc-uninstall --yes --purge-data --remove-firewall  # 系统级 + 移除防火墙规则
+```
+
+`--prefix` 缺省为卸载器自身所在安装，从发行包根目录运行时回退到按 uid 分层的默认前缀（用户级 `~/.local`、root `/usr/local`）。`--data-dir` 缺省同样按 uid 分层。手动启动（非 systemd）的 owc 进程不在管理范围，请先自行停止。
 
 ### 在线安装与更新
 
@@ -266,8 +286,8 @@ curl -fsSL https://raw.githubusercontent.com/snnh/openwebcode/main/packaging/ins
 | 选项 | 行为 |
 | --- | --- |
 | `--version <x.y.z>` | 目标版本；缺省查询 `https://api.github.com/repos/snnh/openwebcode/releases/latest` 的 `tag_name`（sed/grep 解析）。 |
-| `--prefix <绝对路径>` | 安装前缀，默认 `$HOME/.local`；用于判定全新安装还是更新，并透传给包内 `install.sh`。 |
-| `--yes` / `--port` / `--host` / `--data-dir` / `--with-systemd` / `--use-system-node` | 原样透传给包内 `install.sh`（仅全新安装时生效；更新模式不重建启动器，会提示这些参数被忽略）。 |
+| `--prefix <绝对路径>` | 安装前缀，默认普通用户 `$HOME/.local`、root `/usr/local`；用于判定全新安装还是更新，并透传给包内 `install.sh`。 |
+| `--yes` / `--port` / `--host` / `--lan` / `--data-dir` / `--system` / `--with-systemd` / `--enable-service` / `--open-firewall` / `--use-system-node` | 原样透传给包内 `install.sh`（仅全新安装时生效；更新模式不重建启动器，会提示这些参数被忽略）。 |
 
 两种模式：
 

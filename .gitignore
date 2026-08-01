@@ -23,6 +23,7 @@
 *.mod*
 *.cmd
 !packaging/owc.cmd
+!packaging/owc-launch.cmd
 .tmp_versions/
 modules.order
 Module.symvers

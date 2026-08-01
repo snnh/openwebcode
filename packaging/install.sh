@@ -3,33 +3,46 @@
 #
 # 用法（在解压后的包根目录执行）:
 #   ./install.sh [--prefix <dir>] [--port <n>] [--data-dir <dir>] \
-#     [--host <addr>] [--use-system-node] [--with-systemd] [--yes]
+#     [--host <addr> | --lan] [--system] [--use-system-node] \
+#     [--with-systemd] [--enable-service] [--open-firewall] [--yes]
 #
 # 未传 --yes 且 stdin/stdout 都是 TTY 时，会仅询问没有由命令行指定的选项。
 # 这让直接运行时可配置，也不会让 CI、重定向或管道安装阻塞。
 #
 # 参数:
-#   --prefix <dir>       安装前缀（绝对路径），默认 ~/.local
+#   --prefix <dir>       安装前缀（绝对路径），默认用户级 ~/.local，root 为 /usr/local
 #   --port <n>           启动器的 OWC_PORT 默认值（1-65535，默认 3000）
-#   --data-dir <dir>     启动器的 OWC_DATA_DIR 默认值（必须为绝对路径）
+#   --data-dir <dir>     启动器的 OWC_DATA_DIR 默认值（绝对路径；默认用户级
+#                        ${XDG_DATA_HOME:-~/.local/share}/openwebcode，root 为 /var/lib/openwebcode）
 #   --host <addr>        启动器的 OWC_HOST 默认值（默认 127.0.0.1）
+#   --lan                --host 0.0.0.0 的快捷方式（开启局域网访问；与 --host 互斥）
+#   --system             显式系统级安装（需要 root；root 运行时本就走系统级默认路径）
 #   --use-system-node    不复制包内 node/，安装时验证系统 Node.js >= 24
-#   --with-systemd       额外写入用户级 systemd unit（不主动执行 systemctl）
+#   --with-systemd       写入 systemd unit（root → /etc/systemd/system，否则用户级；
+#                        可用 OWC_SYSTEMD_UNIT_DIR 覆盖目标目录；不主动执行 systemctl）
+#   --enable-service     隐含 --with-systemd，并执行 systemctl daemon-reload + enable --now
+#   --open-firewall      非回环监听时放行防火墙端口（firewalld/ufw，仅 root）
 #   --yes                静默安装；即使在 TTY 也不提问
 #
-# --system 和 --with-desktop-entry 尚未实现；脚本会明确失败，绝不静默伪装为
-# 系统安装或桌面集成。
+# --with-desktop-entry 尚未实现；脚本会明确失败，绝不静默伪装为桌面集成。
 #
 # 动作:
 #   1. 把包内运行时（bin/ server/ web/，以及可选的 node/）复制到
 #      <prefix>/lib/openwebcode/（重跑整体覆盖，幂等）；
 #   2. 生成启动脚本 <prefix>/bin/owc；
-#   3. --with-systemd 时写用户级 systemd unit（仅写文件并打印启用提示）。
+#   3. --with-systemd 时写 systemd unit；--enable-service 时立即启用并启动；
+#   4. 非回环监听且访问令牌已生成（如服务已启动）时，打印一键访问链接。
 #
-# 卸载（以默认前缀为例）:
-#   rm -rf ~/.local/lib/openwebcode ~/.local/bin/owc
-#   rm -f  ~/.config/systemd/user/openwebcode.service
-#   rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/openwebcode"   # 用户数据，按需
+# 卸载：运行 <prefix>/bin/owc-uninstall（安装时由本脚本落盘），或发行包根目录的
+# ./uninstall.sh；可加 --purge-data 一并删除数据目录，--remove-firewall 移除
+# 防火墙规则（root）。手动卸载步骤:
+#   用户级: rm -rf ~/.local/lib/openwebcode ~/.local/bin/owc ~/.local/bin/owc-uninstall
+#           rm -f  ~/.config/systemd/user/openwebcode.service
+#           rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/openwebcode"   # 用户数据，按需
+#   系统级: systemctl disable --now openwebcode
+#           rm -f  /etc/systemd/system/openwebcode.service
+#           rm -rf /usr/local/lib/openwebcode /usr/local/bin/owc /usr/local/bin/owc-uninstall
+#           rm -rf /var/lib/openwebcode   # 用户数据，按需
 set -eu
 
 die() {
@@ -41,18 +54,23 @@ usage() {
     cat >&2 <<'EOF'
 用法: ./install.sh [选项]
 
-  --prefix <dir>       安装前缀（绝对路径），默认 ~/.local
+  --prefix <dir>       安装前缀（绝对路径），默认用户级 ~/.local，root 为 /usr/local
   --port <n>           启动器默认端口（1-65535，默认 3000）
   --data-dir <dir>     启动器默认数据目录（必须为绝对路径）
   --host <addr>        启动器默认监听地址（默认 127.0.0.1）
+  --lan                开启局域网访问（等价 --host 0.0.0.0；与 --host 互斥）
+  --system             显式系统级安装（需要 root）
   --use-system-node    使用系统 Node.js（安装时要求 >= 24）
-  --with-systemd       写入用户级 systemd unit，不自动启用
+  --with-systemd       写入 systemd 服务文件（root 写系统级，否则用户级），不自动启用
+  --enable-service     写入并立即启用、启动 systemd 服务（systemctl enable --now）
+  --open-firewall      非回环监听时放行防火墙端口（firewalld/ufw，仅 root）
   --yes, -y            不交互；适合 CI、脚本和重定向输入
   -h, --help           显示本帮助
 
 未传 --yes 且 stdin/stdout 都是 TTY 时，脚本只询问未由命令行指定的选项。
 命令行选项优先；生成的默认值仍可被运行时的 OWC_PORT、OWC_DATA_DIR、
-OWC_HOST 环境变量覆盖。
+OWC_HOST 环境变量覆盖。非回环监听的访问令牌由服务端首次启动时自动生成并
+持久化（<数据目录>/access-token，0600），可用 OWC_ACCESS_TOKEN 显式覆盖。
 EOF
 }
 
@@ -116,6 +134,32 @@ is_loopback_host() {
     esac
 }
 
+IS_ROOT=${OWC_INSTALL_IS_ROOT:-}
+if [ -z "$IS_ROOT" ]; then
+    # OWC_INSTALL_IS_ROOT 仅作测试钩子（非 root 环境覆盖 root 分支）；正常安装勿设
+    if [ "$(id -u)" -eq 0 ]; then IS_ROOT=1; else IS_ROOT=0; fi
+fi
+
+# 默认安装前缀/数据目录按 uid 分层：root 走系统级路径，普通用户走用户级路径。
+# 函数在调用时读取 IS_ROOT，测试可覆盖该变量直接断言两个分支。
+default_prefix() {
+    if [ "$IS_ROOT" -eq 1 ]; then
+        printf '%s\n' /usr/local
+    else
+        printf '%s\n' "$HOME/.local"
+    fi
+}
+
+default_data_dir() {
+    if [ "$IS_ROOT" -eq 1 ]; then
+        printf '%s\n' /var/lib/openwebcode
+    elif [ -n "${XDG_DATA_HOME:-}" ]; then
+        printf '%s\n' "$XDG_DATA_HOME/openwebcode"
+    else
+        printf '%s\n' "$HOME/.local/share/openwebcode"
+    fi
+}
+
 shell_quote() {
     # 生成器只对已校验、无控制字符的值调用此函数。单引号转义后可安全地
     # 写入 POSIX shell 启动器，即使路径中含空格或单引号。
@@ -177,23 +221,24 @@ ask_until_valid() {
 
 [ -n "${HOME:-}" ] || die "HOME 未设置，无法选择用户安装前缀" 1
 
-PREFIX="$HOME/.local"
+PREFIX=$(default_prefix)
 PORT=3000
 HOST=127.0.0.1
-if [ -n "${XDG_DATA_HOME:-}" ] && valid_data_dir "$XDG_DATA_HOME/openwebcode"; then
-    DATA_DIR="$XDG_DATA_HOME/openwebcode"
-else
-    DATA_DIR="$HOME/.local/share/openwebcode"
-fi
+DATA_DIR=$(default_data_dir)
 WITH_SYSTEMD=0
+ENABLE_SERVICE=0
+OPEN_FIREWALL=0
 USE_SYSTEM_NODE=0
 ASSUME_YES=0
+SYSTEM_INSTALL=0
 PREFIX_SET=0
 PORT_SET=0
 DATA_DIR_SET=0
 HOST_SET=0
+LAN_SET=0
 WITH_SYSTEMD_SET=0
 USE_SYSTEM_NODE_SET=0
+OPEN_FIREWALL_SET=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -232,13 +277,27 @@ while [ $# -gt 0 ]; do
             ;;
         --host)
             [ $# -ge 2 ] || die "--host 需要一个地址参数"
+            [ "$LAN_SET" -eq 0 ] || die "--lan 与 --host 互斥"
             HOST=$2
             HOST_SET=1
             shift 2
             ;;
         --host=*)
+            [ "$LAN_SET" -eq 0 ] || die "--lan 与 --host 互斥"
             HOST=${1#--host=}
             HOST_SET=1
+            shift
+            ;;
+        --lan)
+            [ "$HOST_SET" -eq 0 ] || die "--lan 与 --host 互斥"
+            HOST=0.0.0.0
+            HOST_SET=1
+            LAN_SET=1
+            shift
+            ;;
+        --system)
+            [ "$IS_ROOT" -eq 1 ] || die "--system 需要 root（或用 sudo）；非 root 请直接运行，即为用户级安装"
+            SYSTEM_INSTALL=1
             shift
             ;;
         --use-system-node)
@@ -251,12 +310,23 @@ while [ $# -gt 0 ]; do
             WITH_SYSTEMD_SET=1
             shift
             ;;
+        --enable-service)
+            ENABLE_SERVICE=1
+            WITH_SYSTEMD=1
+            WITH_SYSTEMD_SET=1
+            shift
+            ;;
+        --open-firewall)
+            OPEN_FIREWALL=1
+            OPEN_FIREWALL_SET=1
+            shift
+            ;;
         --yes|-y)
             ASSUME_YES=1
             shift
             ;;
-        --system|--with-desktop-entry)
-            die "$1 尚未实现；该 tar.gz 目前只支持用户级 prefix 与 --with-systemd，未静默执行系统级或桌面集成操作"
+        --with-desktop-entry)
+            die "$1 尚未实现；该 tar.gz 目前只支持 prefix 安装与 systemd 集成，未静默执行桌面集成操作"
             ;;
         -h|--help)
             usage
@@ -290,6 +360,14 @@ fi
 
 if [ "$INTERACTIVE" -eq 1 ]; then
     echo "OpenWebCode 安装配置（直接回车保留默认值；命令行传入的选项不会被询问）" >&2
+    if [ "$IS_ROOT" -eq 1 ] && [ "$PREFIX_SET" -eq 0 ] && [ "$SYSTEM_INSTALL" -eq 0 ]; then
+        ask_yes_no "检测到 root：进行系统级安装（默认 prefix /usr/local，服务以 root 运行）" yes
+        if [ "$REPLY" = yes ]; then
+            SYSTEM_INSTALL=1
+        else
+            die "已取消；如需自定义路径安装请显式传 --prefix/--data-dir" 1
+        fi
+    fi
     if [ "$PREFIX_SET" -eq 0 ]; then
         ask_until_valid "安装前缀" "$PREFIX" valid_prefix "请输入非根目录的绝对路径"
         PREFIX=$REPLY
@@ -303,14 +381,19 @@ if [ "$INTERACTIVE" -eq 1 ]; then
         DATA_DIR=$REPLY
     fi
     if [ "$HOST_SET" -eq 0 ]; then
-        while :; do
-            ask_until_valid "默认监听地址" "$HOST" valid_host "请输入 DNS 名、IPv4 或未加方括号的 IPv6 地址"
-            HOST=$REPLY
-            if is_loopback_host "$HOST"; then break; fi
-            echo "警告：非回环地址会把 OpenWebCode 暴露给网络；安装器会生成 OWC_ACCESS_TOKEN 写入启动器，但 OWC_ALLOWED_ORIGINS 需自行设置。" >&2
-            ask_yes_no "确认使用 $HOST（仅应在受信网络或认证反向代理后使用）" no
-            [ "$REPLY" = yes ] && break
-        done
+        ask_yes_no "开启局域网访问（监听 0.0.0.0；访问令牌由服务端首次启动自动生成）" no
+        if [ "$REPLY" = yes ]; then
+            HOST=0.0.0.0
+        else
+            while :; do
+                ask_until_valid "默认监听地址" "$HOST" valid_host "请输入 DNS 名、IPv4 或未加方括号的 IPv6 地址"
+                HOST=$REPLY
+                if is_loopback_host "$HOST"; then break; fi
+                echo "警告：非回环地址会把 OpenWebCode 暴露给网络；服务端会强制访问令牌认证（自动生成，OWC_ACCESS_TOKEN 可覆盖）。" >&2
+                ask_yes_no "确认使用 $HOST（仅应在受信网络或认证反向代理后使用）" no
+                [ "$REPLY" = yes ] && break
+            done
+        fi
     fi
     if [ "$USE_SYSTEM_NODE_SET" -eq 0 ]; then
         if [ "$BUNDLED_NODE" -eq 1 ]; then
@@ -322,8 +405,23 @@ if [ "$INTERACTIVE" -eq 1 ]; then
         fi
     fi
     if [ "$WITH_SYSTEMD_SET" -eq 0 ]; then
-        ask_yes_no "写入用户级 systemd 服务文件（不会自动启用）" no
-        [ "$REPLY" = yes ] && WITH_SYSTEMD=1 || WITH_SYSTEMD=0
+        if [ "$IS_ROOT" -eq 1 ]; then
+            systemd_kind="系统级 systemd 服务（/etc/systemd/system）"
+        else
+            systemd_kind="用户级 systemd 服务"
+        fi
+        ask_yes_no "写入 $systemd_kind 文件" no
+        if [ "$REPLY" = yes ]; then
+            WITH_SYSTEMD=1
+            ask_yes_no "立即启用并启动该服务（systemctl enable --now）" yes
+            [ "$REPLY" = yes ] && ENABLE_SERVICE=1
+        fi
+    fi
+    if [ "$IS_ROOT" -eq 1 ] && ! is_loopback_host "$HOST" && [ "$OPEN_FIREWALL_SET" -eq 0 ]; then
+        if command -v firewall-cmd >/dev/null 2>&1 || command -v ufw >/dev/null 2>&1; then
+            ask_yes_no "在防火墙放行端口 $PORT/tcp（firewalld/ufw）" yes
+            [ "$REPLY" = yes ] && OPEN_FIREWALL=1
+        fi
     fi
 fi
 
@@ -332,6 +430,13 @@ normalise_port "$PORT" || die "非法 port: $PORT（应为 1-65535 的十进制�
 PORT=$NORMALIZED_PORT
 valid_data_dir "$DATA_DIR" || die "非法 data-dir: $DATA_DIR（应为非根目录的绝对路径）"
 valid_host "$HOST" || die "非法 host: $HOST（应为 DNS 名、IPv4 或未加方括号的 IPv6）"
+if [ "$ENABLE_SERVICE" -eq 1 ]; then
+    command -v systemctl >/dev/null 2>&1 || die "--enable-service 需要 systemctl" 1
+fi
+if [ "$OPEN_FIREWALL" -eq 1 ]; then
+    [ "$IS_ROOT" -eq 1 ] || die "--open-firewall 需要 root" 1
+    is_loopback_host "$HOST" && die "--open-firewall 仅在非回环监听（--lan/--host）时有意义"
+fi
 
 # 先创建并物理解析 prefix；这既让 /tmp/..、符号链接等输入归一，也确保后续
 # rm -rf 的目标固定在解析后的 <prefix>/lib/openwebcode 下，而非调用者 CWD。
@@ -366,21 +471,11 @@ if [ "$USE_SYSTEM_NODE" -eq 1 ]; then
         die "系统 Node.js 版本必须 >= 24（当前 $SYSTEM_NODE_VERSION）" 1
 fi
 
-ACCESS_TOKEN=''
 if ! is_loopback_host "$HOST"; then
-    # server 对非回环监听强制要求 OWC_ACCESS_TOKEN（>=32 字符）与
-    # OWC_ALLOWED_ORIGINS（见 server/src/config.ts），否则拒绝启动；
-    # 安装器生成随机 token 写入启动器默认值，origins 仍需用户按需设置。
-    if command -v openssl >/dev/null 2>&1; then
-        ACCESS_TOKEN=$(openssl rand -hex 32)
-    elif [ -x "$SRC_DIR/node/bin/node" ]; then
-        ACCESS_TOKEN=$("$SRC_DIR/node/bin/node" -p 'require("node:crypto").randomBytes(32).toString("hex")')
-    elif [ -n "$SYSTEM_NODE" ]; then
-        ACCESS_TOKEN=$("$SYSTEM_NODE" -p 'require("node:crypto").randomBytes(32).toString("hex")')
-    else
-        die "非回环监听需要生成 OWC_ACCESS_TOKEN，但未找到 openssl 或可用的 node" 1
-    fi
-    echo "警告：OWC_HOST=$HOST 不是回环地址。已生成 OWC_ACCESS_TOKEN 并写入启动器默认值；仍需按需设置 OWC_ALLOWED_ORIGINS，并仅在受信网络或认证反向代理后使用。" >&2
+    # server 对非回环监听强制访问令牌认证：未显式 OWC_ACCESS_TOKEN 时，服务端
+    # 首次启动自动生成并持久化到 <数据目录>/access-token（0600），控制台与
+    # 设置页都会展示一键访问链接；OWC_ALLOWED_ORIGINS 缺省同源自动放行。
+    echo "提示：非回环监听（$HOST）。访问令牌由服务端首次启动自动生成；访问链接会打印在服务端控制台，也可在 设置 → 远程访问 查看/扫码。" >&2
 fi
 
 LIB_DIR="$PREFIX/lib/openwebcode"
@@ -411,14 +506,6 @@ OWC_DEFAULT_HOST=$Q_HOST
 : "\${OWC_HOST:=\$OWC_DEFAULT_HOST}"
 export OWC_PORT OWC_DATA_DIR OWC_HOST
 EOF
-if [ -n "$ACCESS_TOKEN" ]; then
-    Q_ACCESS_TOKEN=$(shell_quote "$ACCESS_TOKEN")
-    cat >> "$PREFIX/bin/owc" <<EOF
-OWC_DEFAULT_ACCESS_TOKEN=$Q_ACCESS_TOKEN
-: "\${OWC_ACCESS_TOKEN:=\$OWC_DEFAULT_ACCESS_TOKEN}"
-export OWC_ACCESS_TOKEN
-EOF
-fi
 if [ "$USE_SYSTEM_NODE" -eq 1 ]; then
     Q_SYSTEM_NODE=$(shell_quote "$SYSTEM_NODE")
     printf '%s\n' "OWC_NODE=$Q_SYSTEM_NODE" >> "$PREFIX/bin/owc"
@@ -434,20 +521,46 @@ if [ "${1:-}" = "run" ]; then
 fi
 exec "$OWC_NODE" "$OWC_HOME/server/dist/index.js" "$@"
 EOF
-# 非回环安装时启动器内含 OWC_ACCESS_TOKEN 默认值，权限收紧为仅属主可读写执行。
-chmod 700 "$PREFIX/bin/owc"
+chmod 755 "$PREFIX/bin/owc"
+
+# 卸载器随安装落盘为 <prefix>/bin/owc-uninstall（包内没有该文件时跳过）
+if [ -f "$SRC_DIR/uninstall.sh" ]; then
+    cp "$SRC_DIR/uninstall.sh" "$PREFIX/bin/owc-uninstall"
+    chmod 755 "$PREFIX/bin/owc-uninstall"
+fi
 
 if [ "$WITH_SYSTEMD" -eq 1 ]; then
-    # systemd ExecStart 的解析不与 shell 相同；对用户级 unit 限制为常见安全路径，
+    # systemd ExecStart 的解析不与 shell 相同；对 unit 限制为常见安全路径，
     # 避免空格/引号导致生成一个和安装路径不一致的服务。
     case "$PREFIX" in
         *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_@%+=:,./-]*)
             die "--with-systemd 要求 prefix 不含空格、引号或其他 systemd 特殊字符" 1
             ;;
     esac
-    UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+    if [ "$IS_ROOT" -eq 1 ]; then
+        UNIT_DIR=${OWC_SYSTEMD_UNIT_DIR:-/etc/systemd/system}
+        SYSTEMCTL="systemctl"
+    else
+        UNIT_DIR=${OWC_SYSTEMD_UNIT_DIR:-"${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"}
+        SYSTEMCTL="systemctl --user"
+    fi
     mkdir -p "$UNIT_DIR"
-    cat > "$UNIT_DIR/openwebcode.service" <<EOF
+    if [ "$IS_ROOT" -eq 1 ]; then
+        cat > "$UNIT_DIR/openwebcode.service" <<EOF
+[Unit]
+Description=OpenWebCode server
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+ExecStart=$PREFIX/bin/owc
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    else
+        cat > "$UNIT_DIR/openwebcode.service" <<EOF
 [Unit]
 Description=OpenWebCode server
 After=network-online.target
@@ -459,17 +572,85 @@ Restart=on-failure
 [Install]
 WantedBy=default.target
 EOF
+    fi
     echo "已写入 $UNIT_DIR/openwebcode.service"
-    echo "启用服务: systemctl --user daemon-reload && systemctl --user enable --now openwebcode"
+    if [ "$ENABLE_SERVICE" -eq 1 ]; then
+        # 启用并立即启动；服务启动后服务端会生成访问令牌（非回环时下方打印链接）
+        $SYSTEMCTL daemon-reload
+        $SYSTEMCTL enable --now openwebcode
+        echo "服务已启用并启动：$SYSTEMCTL status openwebcode 查看状态"
+        if [ "$IS_ROOT" -eq 0 ]; then
+            echo "提示：未登录也开机自启需执行 loginctl enable-linger $USER"
+        fi
+    else
+        echo "启用服务: $SYSTEMCTL daemon-reload && $SYSTEMCTL enable --now openwebcode"
+    fi
+fi
+
+if [ "$OPEN_FIREWALL" -eq 1 ]; then
+    if command -v firewall-cmd >/dev/null 2>&1; then
+        firewall-cmd --permanent --add-port="$PORT/tcp" >/dev/null
+        firewall-cmd --reload >/dev/null
+        echo "防火墙已放行（firewalld）：$PORT/tcp"
+    elif command -v ufw >/dev/null 2>&1; then
+        ufw allow "$PORT/tcp" >/dev/null
+        echo "防火墙已放行（ufw）：$PORT/tcp"
+    else
+        echo "未检测到 firewalld/ufw；请手动放行 $PORT/tcp。" >&2
+    fi
 fi
 
 case "$HOST" in
     *:*) DISPLAY_HOST="[$HOST]" ;;
     *) DISPLAY_HOST=$HOST ;;
 esac
+
+# 非回环监听：服务端首次启动会生成 <数据目录>/access-token。服务已随
+# --enable-service 启动时稍等其出现；拿到则直接打印一键访问链接。
+ACCESS_TOKEN=''
+if ! is_loopback_host "$HOST"; then
+    TOKEN_FILE="$DATA_DIR/access-token"
+    if [ "$ENABLE_SERVICE" -eq 1 ] && [ ! -f "$TOKEN_FILE" ]; then
+        tries=0
+        while [ "$tries" -lt 10 ] && [ ! -f "$TOKEN_FILE" ]; do
+            sleep 0.5 2>/dev/null || sleep 1
+            tries=$((tries + 1))
+        done
+    fi
+    if [ -f "$TOKEN_FILE" ]; then
+        candidate=$(tr -d '[:space:]' < "$TOKEN_FILE")
+        if [ "${#candidate}" -eq 64 ]; then
+            case "$candidate" in
+                *[!0-9a-f]*) ;;
+                *) ACCESS_TOKEN=$candidate ;;
+            esac
+        fi
+    fi
+fi
+
 echo "安装完成: $LIB_DIR"
 echo "启动:     $PREFIX/bin/owc  （浏览器打开 http://$DISPLAY_HOST:$PORT）"
-if [ -n "$ACCESS_TOKEN" ]; then
-    echo "访问令牌: OWC_ACCESS_TOKEN 已写入 $PREFIX/bin/owc 默认值（环境变量可覆盖）"
-    echo "注意:     非回环监听还需设置 OWC_ALLOWED_ORIGINS（逗号分隔的 http(s) 源），否则 server 拒绝启动"
+if ! is_loopback_host "$HOST"; then
+    if [ -n "$ACCESS_TOKEN" ]; then
+        case "$HOST" in
+            0.0.0.0|::)
+                LAN_IPS=$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || true)
+                if [ -z "$LAN_IPS" ] && command -v ip >/dev/null 2>&1; then
+                    LAN_IPS=$(ip -4 -o addr show scope global 2>/dev/null | awk '{split($4,a,"/"); print a[1]}' || true)
+                fi
+                if [ -n "$LAN_IPS" ]; then
+                    printf '%s\n' "$LAN_IPS" | while IFS= read -r ip; do
+                        echo "访问链接: http://$ip:$PORT/?token=$ACCESS_TOKEN"
+                    done
+                else
+                    echo "访问链接: http://<本机局域网IP>:$PORT/?token=$ACCESS_TOKEN"
+                fi
+                ;;
+            *)
+                echo "访问链接: http://$DISPLAY_HOST:$PORT/?token=$ACCESS_TOKEN"
+                ;;
+        esac
+    else
+        echo "访问令牌: 服务端首次启动时自动生成；访问链接见服务端控制台或 设置 → 远程访问。"
+    fi
 fi

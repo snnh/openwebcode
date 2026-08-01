@@ -240,13 +240,13 @@ owc run "跑测试并修复失败的用例" --cwd . --yolo --json | tee events.n
   --data-dir "$HOME/.local/share/openwebcode" --host 127.0.0.1
 ```
 
-`--prefix`、`--data-dir` 必须是绝对路径，端口必须在 1–65535。`--use-system-node` 会在安装时校验 PATH 中的 Node.js 24+；运行时 `OWC_PORT`、`OWC_DATA_DIR`、`OWC_HOST` 可覆盖安装时默认值。非回环 `--host` 要求启动时提供 `OWC_ACCESS_TOKEN`（≥32 字符），仍建议只在受信网络或认证反向代理后使用。
+`--prefix`、`--data-dir` 必须是绝对路径，端口必须在 1–65535。`--use-system-node` 会在安装时校验 PATH 中的 Node.js 24+；运行时 `OWC_PORT`、`OWC_DATA_DIR`、`OWC_HOST` 可覆盖安装时默认值。非回环 `--host`（或 `--lan`）的访问令牌由服务端首次启动自动生成（`OWC_ACCESS_TOKEN` 可显式覆盖），仍建议只在受信网络或认证反向代理后使用。
 
 ### Q: 启动后浏览器打不开 / 连接被拒？
 
 - 确认 `owc` 进程在运行（`ps aux | grep owc` 或任务管理器）
 - 确认端口未被占用、未被防火墙拦
-- 默认监听 `127.0.0.1`；远程/局域网访问需设置 `OWC_HOST=0.0.0.0` 且**必须**同时设置 `OWC_ACCESS_TOKEN`（≥32 字符），否则 server 拒绝启动。浏览器首次用 `http://<主机>:<端口>/?token=<token>` 换取 HttpOnly Cookie；`owc run` 用 `OWC_ACCESS_TOKEN` 环境变量走 Bearer 头
+- 默认监听 `127.0.0.1`；远程/局域网访问把监听地址改为 `0.0.0.0`（设置 → 远程访问，重启生效，或设 `OWC_HOST=0.0.0.0`）。访问令牌由服务端自动生成并持久化（`<业务数据目录>/access-token`），一键访问链接在设置 → 远程访问或服务端控制台可见；浏览器打开 `http://<主机>:<端口>/?token=<token>` 换取 HttpOnly Cookie，`owc run` 用 `OWC_ACCESS_TOKEN` 环境变量走 Bearer 头。显式 `OWC_ACCESS_TOKEN` / `OWC_ALLOWED_ORIGINS` 可覆盖自动行为
 
 ### Q: 为什么看不到终端页签 / 终端不可用？
 
@@ -258,7 +258,7 @@ owc run "跑测试并修复失败的用例" --cwd . --yolo --json | tee events.n
 
 ### Q: 手机上能用吗？
 
-可以。窄窗口（≤1024px）是单列布局：对话下发任务、看运行状态、处理权限卡与结构化交互、队列操作、启停 run、切换会话都完整可用；侧栏作为临时抽屉，不会改写桌面展开偏好。代码审查等复杂操作建议在桌面端进行。浏览器「安装到主屏」后有 PWA 壳；不做离线缓存。手机访问意味着非回环监听，必须先配好 `OWC_ACCESS_TOKEN`（配置步骤见 [usage.md 的远程访问与局域网](./usage.md#远程访问与局域网)）。
+可以。窄窗口（≤1024px）是单列布局：对话下发任务、看运行状态、处理权限卡与结构化交互、队列操作、启停 run、切换会话都完整可用；侧栏作为临时抽屉，不会改写桌面展开偏好。代码审查等复杂操作建议在桌面端进行。浏览器「安装到主屏」后有 PWA 壳；不做离线缓存。手机访问意味着非回环监听，访问令牌与一键访问链接见 [usage.md 的远程访问与局域网](./usage.md#远程访问与局域网)。
 
 ### Q: 命令面板和快捷键有哪些？
 

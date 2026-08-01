@@ -62,19 +62,36 @@ An explicitly set `OWC_DATA_DIR` always takes precedence. If it is not set, the 
 
 ## Linux installer options
 
-Run `./install.sh` from the unpacked Linux tarball in a terminal to configure the unspecified values interactively. It asks for the prefix, port, data directory, host, whether to use the system Node.js, and whether to write a user-systemd unit. A supplied flag always wins. With redirected stdin/stdout, or with `--yes`, it never prompts, so CI cannot block:
+Run `./install.sh` from the unpacked Linux tarball in a terminal to configure the unspecified values interactively. It asks for the prefix, port, data directory, whether to enable LAN access (or a specific host), whether to use the system Node.js, and the systemd service (write it, and enable+start it now; root with LAN access is also asked about the firewall port). A supplied flag always wins. With redirected stdin/stdout, or with `--yes`, it never prompts, so CI cannot block:
 
 ```sh
 ./install.sh --yes --prefix "$HOME/.local" --port 3000 \
   --data-dir "$HOME/.local/share/openwebcode" --host 127.0.0.1
+
+# One-shot server install (root): system paths + LAN access + autostart + firewall
+sudo ./install.sh --yes --system --lan --enable-service --open-firewall
 ```
 
-- `--prefix <absolute-dir>` installs under `<prefix>/lib/openwebcode` and writes `<prefix>/bin/owc`. The script creates and physically canonicalizes it, then rejects `/`.
-- `--port <1-65535>`, `--data-dir <absolute-dir>`, and `--host <address>` become launcher defaults. Runtime `OWC_PORT`, `OWC_DATA_DIR`, and `OWC_HOST` still override them.
-- A non-loopback `--host` makes the installer generate an `OWC_ACCESS_TOKEN` and write it into the launcher defaults. The server refuses to start on a non-loopback listen unless it gets an `OWC_ACCESS_TOKEN` of at least 32 characters **and** `OWC_ALLOWED_ORIGINS` (comma-separated http(s) origins); open the one-time `/?token=...` bootstrap URL to obtain an HttpOnly cookie. Keep the service on a trusted network or behind an authenticated reverse proxy.
+- `--prefix <absolute-dir>` installs under `<prefix>/lib/openwebcode` and writes `<prefix>/bin/owc`. The script creates and physically canonicalizes it, then rejects `/`. Defaults are per-user `$HOME/.local`, or `/usr/local` as root (likewise `${XDG_DATA_HOME:-~/.local/share}/openwebcode` vs `/var/lib/openwebcode` for `--data-dir`).
+- `--port <1-65535>`, `--data-dir <absolute-dir>`, and `--host <address>` become launcher defaults. Runtime `OWC_PORT`, `OWC_DATA_DIR`, and `OWC_HOST` still override them. `--lan` is shorthand for `--host 0.0.0.0` (mutually exclusive with `--host`).
+- A non-loopback listen requires token authentication: with no explicit `OWC_ACCESS_TOKEN` (32+ characters) the server auto-generates one on first start and persists it to `<data-dir>/access-token` (0600), then prints one-click `/?token=...` links to the console and to Settings → Remote access. Browser origins default to same-origin auto-allow; set `OWC_ALLOWED_ORIGINS` (comma-separated http(s) origins) to restrict explicitly. Keep the service on a trusted network or behind an authenticated reverse proxy.
 - `--use-system-node` skips bundled `node/` and requires an absolute executable Node.js **24+** on `PATH` at install time. If the bundle is missing, the installer switches to that validated mode.
-- `--with-systemd` writes a user unit only and never runs `systemctl`; follow the printed `systemctl --user daemon-reload && systemctl --user enable --now openwebcode` command.
-- `--system` and `--with-desktop-entry` are deliberately not implemented: the installer fails explicitly instead of claiming system-wide installation or desktop integration.
+- `--system` requests an explicit system-level install (requires root). `--with-systemd` writes a unit without enabling it (root: `/etc/systemd/system/openwebcode.service`; otherwise a user unit). `--enable-service` implies `--with-systemd` and runs `systemctl daemon-reload && systemctl enable --now openwebcode` (`systemctl --user` for user installs; boot persistence needs `loginctl enable-linger $USER`). `--open-firewall` (root + non-loopback only) opens the port via firewalld/ufw when available.
+- When the access token already exists at the end of a LAN install (e.g. the service was just enabled), the installer prints the one-click access links; otherwise it points at the server console and Settings → Remote access.
+- `--with-desktop-entry` is deliberately not implemented: the installer fails explicitly instead of claiming desktop integration. A root service runs agent-executed commands as root too — only run trusted tasks.
+
+### Uninstall
+
+The installer drops an uninstaller at `<prefix>/bin/owc-uninstall` (the tarball also ships `uninstall.sh` at its top level). Running it reverses the installation completely: stops and disables the systemd service, removes the unit (system-level as root, user-level otherwise), deletes `<prefix>/lib/openwebcode` and `<prefix>/bin/owc`, and finally removes itself.
+
+```sh
+~/.local/bin/owc-uninstall                    # interactive confirmation; data is kept by default
+~/.local/bin/owc-uninstall --yes              # non-interactive
+~/.local/bin/owc-uninstall --yes --purge-data # also delete the data directory
+sudo /usr/local/bin/owc-uninstall --yes --purge-data --remove-firewall  # system-level + firewall rule
+```
+
+`--prefix` defaults to the installation containing the uninstaller itself, falling back to the uid-based default (`~/.local`, or `/usr/local` as root) when run from the tarball. `--data-dir` follows the same uid-based defaults. Manually started (non-systemd) `owc` processes are out of scope — stop them first.
 
 Run `sh packaging/test-install.sh` from a checkout for the portable installer smoke tests; the test file is not shipped in the release tarball.
 
