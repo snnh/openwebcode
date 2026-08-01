@@ -16,14 +16,18 @@
 
 ### 远程访问与局域网
 
-默认只监听 `127.0.0.1`（回环）。要让手机或局域网其他机器访问：
+默认只监听 `127.0.0.1`（回环）。要让手机或局域网其他机器访问，把监听地址改为非回环即可——访问令牌由服务端首次启动时自动生成并持久化（`<业务数据目录>/access-token`，0600），无需手工配置：
 
-1. 设置 `OWC_HOST=0.0.0.0`（或其他非回环地址）；
-2. **必须**同时设置 `OWC_ACCESS_TOKEN`（至少 32 字符的随机串），否则 server 拒绝启动；
-3. 浏览器首次打开 `http://<主机>:<端口>/?token=<OWC_ACCESS_TOKEN>`，服务端校验后写入 HttpOnly Cookie，后续访问免带 token；
-4. `owc run` CLI 访问带 token 的实例时，把同一 token 放进 `OWC_ACCESS_TOKEN` 环境变量（走 Bearer 头）。
+- **Windows / 已装机**：设置 → **远程访问** 把监听地址改为 `0.0.0.0`（重启生效）；该分区随即展示带令牌的一键访问链接（可复制、可扫码），服务端启动时也会把链接打印到控制台。Windows 首次监听 `0.0.0.0` 时防火墙会弹窗，需选择允许。
+- **Linux 新装**：`./install.sh --lan`（等价 `--host 0.0.0.0`）；搭配 `--enable-service` 时安装结束会直接打印访问链接，root 系统级安装可再加 `--open-firewall` 自动放行防火墙端口（见下文「Linux 安装器交互与自动化」）。
 
-设置 → **远程访问** 分区展示当前监听地址、回环/非回环状态与 token 认证说明，监听地址/端口也在此修改（重启生效）；非回环监听期间持续展示风险提示。非回环 + token 只是准入门槛，仍建议只在受信网络使用。
+访问方式：
+
+1. 在局域网设备的浏览器打开访问链接 `http://<主机>:<端口>/?token=<令牌>`，服务端校验后写入 HttpOnly Cookie，后续访问免带令牌；
+2. `owc run` CLI 访问带令牌的实例时，把同一令牌放进 `OWC_ACCESS_TOKEN` 环境变量（走 Bearer 头）；
+3. 设置 → **远程访问** 可随时重新生成令牌（旧链接与已登录设备立即失效）；令牌由环境变量显式配置时不出现在该分区，需在环境中轮换。
+
+显式覆盖：`OWC_ACCESS_TOKEN`（≥32 字符）固定令牌；`OWC_ALLOWED_ORIGINS`（逗号分隔的 http(s) 源）限定浏览器来源，缺省放行与访问地址同源的请求。非回环 + 令牌只是准入门槛，仍建议只在受信网络使用。
 
 同一分区还提供 **TOTP 全局登录** 向导。启用后所有浏览器访问都需先输入认证器 App 的 6 位动态码（RFC 6238，30 秒步长）才能进入界面：
 
@@ -34,18 +38,26 @@
 
 ### Linux 安装器交互与自动化
 
-从 Linux tar.gz 解包后直接运行 `./install.sh`，且 stdin/stdout 都是终端时，安装器会依次询问未由命令行提供的安装前缀、端口、数据目录、监听地址、是否使用系统 Node.js，以及是否写用户级 systemd unit。直接回车保留默认值；命令行参数优先。
+从 Linux tar.gz 解包后直接运行 `./install.sh`，且 stdin/stdout 都是终端时，安装器会依次询问未由命令行提供的安装前缀、端口、数据目录、是否开启局域网访问、是否使用系统 Node.js，以及 systemd 服务（是否写入、是否立即启用启动；root 且开启局域网访问时还会询问是否放行防火墙端口）。直接回车保留默认值；命令行参数优先。
 
 ```sh
 # 自动化、CI、管道或重定向中：--yes 保证绝不读取交互输入。
 ./install.sh --yes --prefix "$HOME/.local" --port 3000 \
   --data-dir "$HOME/.local/share/openwebcode" --host 127.0.0.1
+
+# 服务器一键安装（root）：系统级路径 + 局域网访问 + systemd 开机自启 + 防火墙放行，
+# 安装结束直接打印带令牌的访问链接。
+sudo ./install.sh --yes --system --lan --enable-service --open-firewall
 ```
 
-- `--prefix` 与 `--data-dir` 必须是绝对路径；prefix 创建后会规范化并拒绝根目录。
-- `--port` 只接受 1–65535；`--host` 默认 `127.0.0.1`。非回环监听启动时强制要求 `OWC_ACCESS_TOKEN`（≥32 字符），并只应放在受信网络或认证反向代理后。
-- `--use-system-node` 不复制包内 `node/`，并在安装时验证 `PATH` 中的绝对路径 Node.js 为 24+；`--with-systemd` 仅写用户级 service 文件，不自动启用。
-- 运行时的 `OWC_PORT`、`OWC_DATA_DIR`、`OWC_HOST` 始终覆盖安装时写入的默认值。`--system` 与 `--with-desktop-entry` 目前会明确失败，尚未提供系统级/桌面集成。
+- `--prefix` 与 `--data-dir` 必须是绝对路径；prefix 创建后会规范化并拒绝根目录。默认按用户分层：普通用户 `~/.local` + `${XDG_DATA_HOME:-~/.local/share}/openwebcode`；root（或显式 `--system`，需 root）`/usr/local` + `/var/lib/openwebcode`。
+- `--port` 只接受 1–65535；`--host` 默认 `127.0.0.1`，`--lan` 是 `--host 0.0.0.0` 的快捷方式（互斥）。非回环监听只应放在受信网络或认证反向代理后。
+- `--with-systemd` 写服务文件但不启用（root 写 `/etc/systemd/system/openwebcode.service`，否则写用户级 unit）；`--enable-service` 隐含写入并立即 `systemctl enable --now`。用户级服务要开机自启（未登录也运行）需再执行 `loginctl enable-linger $USER`。
+- `--open-firewall` 仅在 root + 非回环监听时可用，检测 firewalld/ufw 放行端口；未检测到时打印手动放行提示。
+- `--use-system-node` 不复制包内 `node/`，并在安装时验证 `PATH` 中的绝对路径 Node.js 为 24+。
+- 运行时的 `OWC_PORT`、`OWC_DATA_DIR`、`OWC_HOST` 始终覆盖安装时写入的默认值。`--with-desktop-entry` 目前会明确失败，尚未提供桌面集成。
+- 服务以 root 运行时，agent 工具执行的命令同样是 root 权限（沙盒不降低这一风险），请只运行可信任务。
+- 卸载：运行安装时落盘的 `<prefix>/bin/owc-uninstall`（发行包根目录也有 `uninstall.sh`），会停止并移除 systemd 服务、删除运行时与启动器；数据目录默认保留，`--purge-data` 一并删除，`--remove-firewall`（root）移除防火墙规则。
 
 ## 界面语言
 
@@ -90,7 +102,7 @@
 
 - 浏览器「安装到主屏」（PWA manifest，standalone 模式）后可像应用一样打开；不做离线缓存——应用强依赖实时连接。
 - 窄窗口（≤1024px）为单列布局：活动栏变顶部横条、侧栏变临时抽屉、底部面板变全屏 sheet；核心操作（权限卡、结构化交互、队列、启停 run、切换会话）均可在 3 次点击内完成，按钮点击目标 ≥44px。
-- 移动端访问即非回环监听，必须先配置 `OWC_ACCESS_TOKEN`（见上文「远程访问与局域网」）。
+- 移动端访问即非回环监听，访问令牌与一键访问链接见上文「远程访问与局域网」。
 
 ## 创建会话
 
