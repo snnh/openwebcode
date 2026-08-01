@@ -25,7 +25,7 @@ function stubCapabilitiesFetch(): void {
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
     const url = typeof input === "string" ? input : input.toString();
     const json = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-    if (url.endsWith("/api/sandbox/capabilities")) return json({ appcontainer: true, jobobject: true, off: true, wsb: { available: false, reason: "未启用" } });
+    if (url.endsWith("/api/sandbox/capabilities")) return json({ appcontainer: true, jobobject: true, off: true, wsb: { available: false, reason: "未启用" }, bindLink: { available: false, reason: "未启用" } });
     if (url.endsWith("/api/managed-workspace/capability")) return json({ platform: "linux", backends: [] });
     return json({ error: "not mocked" }, 404);
   }));

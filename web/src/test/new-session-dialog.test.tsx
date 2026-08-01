@@ -7,11 +7,11 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function stubFetch(managed: { available: boolean; detail?: string }): void {
+function stubFetch(managed: { available: boolean; detail?: string }, bindLink: { available: boolean; reason?: string } = { available: false, reason: "未启用" }): void {
   const handler = vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
     const url = typeof input === "string" ? input : input.toString();
     const json = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-    if (url.endsWith("/api/sandbox/capabilities")) return json({ appcontainer: true, jobobject: true, off: true, wsb: { available: false, reason: "未启用" } });
+    if (url.endsWith("/api/sandbox/capabilities")) return json({ appcontainer: true, jobobject: true, off: true, wsb: { available: false, reason: "未启用" }, bindLink });
     if (url.endsWith("/api/managed-workspace/capability")) {
       return json({ platform: "linux", backends: [{ backend: "qcow2", available: managed.available, requiresAdmin: true, ...(managed.detail ? { detail: managed.detail } : {}) }] });
     }
@@ -58,6 +58,56 @@ describe("NewSessionDialog 工作区模式", () => {
     expect(await screen.findByText(/托管工作区不可用/)).toBeInTheDocument();
     // 默认仍是直接模式，cwd label 不变
     expect(screen.getByText("工作目录")).toBeInTheDocument();
+  });
+});
+
+describe("NewSessionDialog Bind Link", () => {
+  const model = { id: "m", provider: "test-stub", contextWindow: 1000, maxOutput: 100, capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true } } as ModelProfile;
+
+  it("添加绑定并随创建提交 bindLinks（未填完整的行被忽略）", async () => {
+    stubFetch({ available: true }, { available: true });
+    const onCreate = vi.fn();
+    render(<NewSessionDialog open providers={["test-stub"]} models={[model]} onClose={() => undefined} onCreate={onCreate} />);
+    fireEvent.change(await screen.findByLabelText("工作目录"), { target: { value: "D:\\work" } });
+
+    const addButton = await screen.findByRole("button", { name: "添加绑定" });
+    await waitFor(() => expect(addButton).toBeEnabled());
+    fireEvent.click(addButton); // 这一行留空，提交时应被忽略
+    fireEvent.click(addButton);
+    fireEvent.change(screen.getAllByLabelText("沙盒内路径")[1]!, { target: { value: " C:\\mnt\\shared " } });
+    fireEvent.change(screen.getAllByLabelText("宿主目录")[1]!, { target: { value: "D:\\shared" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "创建" }));
+    await waitFor(() => expect(onCreate).toHaveBeenCalled());
+    expect(onCreate.mock.calls[0]?.[0]).toMatchObject({
+      cwd: "D:\\work",
+      bindLinks: [{ virtPath: "C:\\mnt\\shared", backingPath: "D:\\shared", readOnly: true }],
+    });
+  });
+
+  it("能力不可用时添加按钮禁用并展示原因", async () => {
+    stubFetch({ available: true }, { available: false, reason: "需要 Windows 11 24H2+" });
+    render(<NewSessionDialog open providers={["test-stub"]} models={[model]} onClose={() => undefined} onCreate={() => undefined} />);
+    const addButton = await screen.findByRole("button", { name: "添加绑定" });
+    await waitFor(() => expect(addButton).toBeDisabled());
+    expect(await screen.findByText(/Bind Link 不可用/)).toBeInTheDocument();
+    expect(screen.getByText(/需要 Windows 11 24H2\+/)).toBeInTheDocument();
+  });
+
+  it("wsb 与关闭沙盒模式下不展示绑定编辑器", async () => {
+    stubFetch({ available: true }, { available: true });
+    render(<NewSessionDialog open providers={["test-stub"]} models={[model]} onClose={() => undefined} onCreate={() => undefined} />);
+    const sandboxLabel = await screen.findByText("沙盒模式");
+    const select = within(sandboxLabel.closest("label")!).getByRole("combobox");
+
+    fireEvent.change(select, { target: { value: "off" } });
+    await waitFor(() => expect(screen.queryByRole("button", { name: "添加绑定" })).not.toBeInTheDocument());
+
+    fireEvent.change(select, { target: { value: "wsb" } });
+    await waitFor(() => expect(screen.queryByRole("button", { name: "添加绑定" })).not.toBeInTheDocument());
+
+    fireEvent.change(select, { target: { value: "jobobject" } });
+    expect(await screen.findByRole("button", { name: "添加绑定" })).toBeInTheDocument();
   });
 });
 

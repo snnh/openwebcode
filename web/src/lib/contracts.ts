@@ -29,6 +29,8 @@ export interface SandboxCapabilities {
   jobobject: boolean;
   off: boolean;
   wsb: { available: boolean; reason?: string };
+  /** Bind Link 目录绑定能力（Windows 11 24H2+；创建绑定还需管理员权限）。 */
+  bindLink: { available: boolean; reason?: string };
 }
 
 /** 托管工作区平台能力（GET /api/managed-workspace/capability） */

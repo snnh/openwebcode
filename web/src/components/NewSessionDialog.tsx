@@ -10,11 +10,12 @@ export interface NewSessionValues {
   title?: string;
   provider: string;
   model: string;
-  agentMode?: "plan" | "code";
+  agentMode?: "plan" | "code" | "goal";
   permissionMode?: PermissionMode;
   sandboxMode?: SandboxMode;
   setupScript?: string;
   workspaceMode?: "managed";
+  bindLinks?: { virtPath: string; backingPath: string; readOnly?: boolean }[];
 }
 
 const SANDBOX_MODE_LABELS: Record<SandboxMode, [string, string]> = {
@@ -46,8 +47,9 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
   const [setupScript, setSetupScript] = useState("");
   const [sandboxCaps, setSandboxCaps] = useState<SandboxCapabilities | undefined>();
   const [workspaceMode, setWorkspaceMode] = useState<"direct" | "managed">("direct");
-  const [agentMode, setAgentMode] = useState<"plan" | "code">("code");
+  const [agentMode, setAgentMode] = useState<"plan" | "code" | "goal">("code");
   const [managedCaps, setManagedCaps] = useState<ManagedWorkspaceCapability | undefined>();
+  const [bindLinks, setBindLinks] = useState<{ virtPath: string; backingPath: string; readOnly: boolean }[]>([]);
 
   const dialogModels = models.filter((item) => providers.includes(item.provider));
   const selectedModel = dialogModels.find((item) => item.id === model && item.provider === provider);
@@ -90,6 +92,13 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
 
   if (!open) return null;
 
+  const bindLinkCap = sandboxCaps?.bindLink;
+  const bindLinkAvailable = bindLinkCap?.available ?? false;
+  // 只提交两个路径都填了的行；未填完整的行静默忽略
+  const validBindLinks = bindLinks
+    .map((link) => ({ virtPath: link.virtPath.trim(), backingPath: link.backingPath.trim(), ...(link.readOnly ? { readOnly: true as const } : {}) }))
+    .filter((link) => link.virtPath.length > 0 && link.backingPath.length > 0);
+
   const fallbackTitle = cwd.trim().split(/[\\/]/).filter(Boolean).pop() ?? "";
   const noProviders = providers.length === 0;
   const noModels = !noProviders && dialogModels.length === 0;
@@ -123,6 +132,7 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
             ...(sandboxMode !== "jobobject" ? { sandboxMode } : {}),
             ...(sandboxMode === "wsb" && setupScript.trim() ? { setupScript: setupScript.trim() } : {}),
             ...(workspaceMode === "managed" ? { workspaceMode } : {}),
+            ...(validBindLinks.length ? { bindLinks: validBindLinks } : {}),
           });
         }}
       >
@@ -190,9 +200,10 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
         )}
         <label>
           {t("模式", "Mode")}
-          <select value={agentMode} onChange={(event) => setAgentMode(event.target.value as "plan" | "code")}>
+          <select value={agentMode} onChange={(event) => setAgentMode(event.target.value as "plan" | "code" | "goal")}>
             <option value="code">{t("代码模式（Code）", "Code")}</option>
             <option value="plan">{t("计划模式（Plan）", "Plan")}</option>
+            <option value="goal">{t("目标模式（Goal）", "Goal")}</option>
           </select>
         </label>
         <label>
@@ -200,6 +211,7 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
           <select value={permissionMode} onChange={(event) => setPermissionMode(event.target.value as PermissionMode)}>
             <option value="ask">{t("每次确认", "Ask every time")}</option>
             <option value="acceptEdits">{t("接受编辑", "Accept edits")}</option>
+            <option value="review">{t("模型审核", "Model review")}</option>
             <option value="yolo">YOLO</option>
           </select>
         </label>
@@ -225,6 +237,52 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
               placeholder={t("沙盒启动后、agent 启动前执行的命令", "Command to run after the sandbox starts and before the agent starts")}
             />
           </label>
+        )}
+        {(sandboxMode === "jobobject" || sandboxMode === "appcontainer") && (
+          <div className="bindlink-editor">
+            <div className="bindlink-editor-header">
+              <span>{t("目录绑定（Bind Link，可选）", "Directory bindings (Bind Link, optional)")}</span>
+              <button
+                type="button"
+                className="btn"
+                disabled={bindLinks.length >= 16 || (sandboxCaps !== undefined && !bindLinkAvailable)}
+                onClick={() => setBindLinks([...bindLinks, { virtPath: "", backingPath: "", readOnly: true }])}
+              >
+                {t("添加绑定", "Add binding")}
+              </button>
+            </div>
+            {bindLinkCap && !bindLinkAvailable && (
+              <p className="dialog-hint">{t("Bind Link 不可用：", "Bind Link unavailable: ")}{bindLinkCap.reason ?? t("当前平台 core 未提供 Bind Link 能力", "Bind Link capability is not available on this platform")}</p>
+            )}
+            {bindLinks.map((link, index) => (
+              <div className="bindlink-row" key={index}>
+                <input
+                  value={link.virtPath}
+                  onChange={(event) => setBindLinks(bindLinks.map((item, i) => (i === index ? { ...item, virtPath: event.target.value } : item)))}
+                  placeholder={t("沙盒内路径，如 C:\\mnt\\shared", "In-sandbox path, such as C:\\mnt\\shared")}
+                  aria-label={t("沙盒内路径", "In-sandbox path")}
+                />
+                <input
+                  value={link.backingPath}
+                  onChange={(event) => setBindLinks(bindLinks.map((item, i) => (i === index ? { ...item, backingPath: event.target.value } : item)))}
+                  placeholder={t("宿主目录，如 D:\\shared", "Host directory, such as D:\\shared")}
+                  aria-label={t("宿主目录", "Host directory")}
+                />
+                <label className="bindlink-readonly">
+                  <input
+                    type="checkbox"
+                    checked={link.readOnly}
+                    onChange={(event) => setBindLinks(bindLinks.map((item, i) => (i === index ? { ...item, readOnly: event.target.checked } : item)))}
+                  />
+                  {t("只读", "Read-only")}
+                </label>
+                <button type="button" className="btn" onClick={() => setBindLinks(bindLinks.filter((_, i) => i !== index))}>{t("移除", "Remove")}</button>
+              </div>
+            ))}
+            {bindLinks.length > 0 && (
+              <p className="dialog-hint">{t("Bind Link 需要 Windows 11 24H2+ 且 server 以管理员权限运行；沙盒内路径是进程可见的挂载点，按只读/可写映射到宿主目录。", "Bind Link requires Windows 11 24H2+ and an elevated server; the in-sandbox path is the mount point processes see, mapped to the host directory with the chosen writability.")}</p>
+            )}
+          </div>
         )}
         <div className="dialog-actions">
           <button type="button" className="btn" onClick={onClose}>{t("取消", "Cancel")}</button>

@@ -31,6 +31,12 @@ export function SandboxPanel({ session }: { session?: SessionDetail }): ReactEle
         <dd>{sandbox.writeRoots.join("\n") || "—"}</dd>
         <dt>{t("拒绝路径", "Denied paths")}</dt>
         <dd>{sandbox.denyPaths.join("\n") || "—"}</dd>
+        {sandbox.bindLinks && sandbox.bindLinks.length > 0 && (
+          <>
+            <dt>{t("目录绑定", "Bind links")}</dt>
+            <dd>{sandbox.bindLinks.map((link) => `${link.virtPath} ← ${link.backingPath}${link.readOnly ? t("（只读）", " (read-only)") : ""}`).join("\n")}</dd>
+          </>
+        )}
       </dl>
     </div>
   );
