@@ -165,6 +165,6 @@ cd web && npm ci && npm run build && npm test
 - **Linux**：`rm -rf ~/.local/lib/openwebcode ~/.local/bin/owc`，用户数据保留
 
 ## 特别感谢
-1. 感谢 glm-5.2、kimi-k3，本项目由上述模型辅助开发
+1. 感谢 deepseek、kimi-k3、qwen，本项目由上述模型辅助开发
 2. 感谢一些群友提供的灵感
 3. 感谢 [pi-agent](https://github.com/earendil-works/pi)，本项目默认系统提示词以其为基线（MIT，作者 Mario Zechner）
