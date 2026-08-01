@@ -32,6 +32,14 @@ console.log(`candidate: ${candidate.scenario} @ ${candidate.timestamp} (${candid
 if (baseline.scenario !== candidate.scenario) {
   console.log(`${DIM}警告：场景不同，仅按指标名取交集对比${RESET}`);
 }
+const envKeys = ["commit", "cpu", "cpuCount", "node", "platform", "arch"];
+const envDiffs = envKeys.filter((k) => baseline.environment?.[k] !== candidate.environment?.[k]);
+if (envDiffs.length > 0) {
+  const detail = envDiffs
+    .map((k) => `${k}: ${baseline.environment?.[k] ?? "?"} → ${candidate.environment?.[k] ?? "?"}`)
+    .join("; ");
+  console.log(`${DIM}警告：两次运行环境不一致（${detail}），阈值对比可能失真${RESET}`);
+}
 console.log("");
 
 let regressions = 0;

@@ -1,9 +1,12 @@
 # OpenWebCode 基准体系（scripts/bench）
 
 0.4.x 计划 §5.4 的可重复基准。目标：用固定数据集、固定参数把关键性能路径量化成
-机器可读的 JSON，让“回归 > 15%”有据可查。已在 `release.yml` 的 benchmark job 中接入 CI：
-对比上一 release 的基准资产，任一可比指标回归超过 15% 记为警告（不阻断发布）；
-基准运行本身不完整（缺场景结果）则阻断。上一 release 基线缺失时跳过对比（不阻断），
+机器可读的 JSON，让“回归 > 15%”有据可查。已在 `release.yml` 的 benchmark job 中接入 CI，
+含两层判定：**相对回归**——`compare.mjs` 对比上一 release 的基准资产，任一可比指标回归
+超过 15% 记为警告（不阻断发布）；**绝对验收门禁**——各 bench 脚本内置的硬性下限
+（context-build 增量加速比 ≥ 2.0、browser-render 的 fps/输入延迟/内存增长、slow-client
+背压断言等），未通过即以非零码退出并阻断发布，属预期行为。
+基准运行本身不完整（缺场景结果）同样阻断。上一 release 基线缺失时跳过对比（不阻断），
 `workflow_dispatch` 可用 `bootstrap_benchmark_baseline` 显式建立首次基线；紧急手动发布可显式设置
 `skip_performance_tests` 跳过整个 benchmark job，tag 触发不可跳过，且跳过时不生成基准资产。
 
@@ -81,6 +84,10 @@ $TSX scripts/bench/compare.mjs results/baseline.json results/long-history.json
 | 多工具回合 | `bench-multi-tool.mjs` | 真实 server + WS，50 tool_call + 50 tool_result 事件流 | 端到端延迟 p50/p95、事件吞吐 events/s、内存增量 |
 | 上下文构建稳态 | `bench-context-build.mjs` | ContextManager 全量 vs 增量 buildView（5000 消息数据集） | 全量/增量 p50/p95、加速比、命中率 |
 | 浏览器渲染 | `browser/bench-browser-render.mjs` | Playwright + 真实 server，5000 消息会话 | 滚动 fps、输入回显延迟、内存增长 |
+| agent loop 热路径（本地专用，不进 CI） | `bench-agent-loop.mjs` | 复现 agent-runner 每轮 `SessionStore.get` + `buildView` 调用序列（long-history 数据集副本） | 每轮读取/构建耗时 p50/p95、内存增量 |
+
+`bench-agent-loop.mjs` 是本地专用场景：release.yml 的 benchmark job 运行的 6 个场景与
+基线对比均不含它，用于本地回归排查与优化验证。
 
 设计约束：
 
@@ -96,7 +103,10 @@ $TSX scripts/bench/compare.mjs results/baseline.json results/long-history.json
 
 对比脚本以 15% 为回归线（§5.4）：任一可比指标越线即标 `[回归]` 并以退出码 1
 结束，供 CI/脚本消费；release.yml 的 benchmark job 将该退出码降级为警告（不阻断发布），
-仅当基准运行本身不完整（缺场景结果）时阻断。长历史场景分别记录首次 byte-offset 索引构建、缓存分页和
+仅当基准运行本身不完整（缺场景结果）时阻断。该降级只针对 `compare.mjs` 的相对对比；
+各场景脚本内置的绝对验收门禁（加速比、fps、背压断言等）未通过时 benchmark job 直接失败
+并阻断发布，不降级为警告。前后两次运行环境（cpu/commit 等）不一致时 `compare.mjs`
+输出警告，提示阈值对比可能失真。长历史场景分别记录首次 byte-offset 索引构建、缓存分页和
 追加后增量扩展；`appendRefresh.p50/p95` 会使重新退化为每次全量建索引的实现触发告警。
 
 ## 后续场景 TODO（§5.4 全量清单）
