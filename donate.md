@@ -2,8 +2,13 @@
 
 OpenWebCode 是个人维护的开源项目。如果它对你的工作有帮助，可以通过以下方式支持持续开发：
 
+## 微信赞赏
+
+<img src="./assets/donate-wechat.png" alt="微信赞赏码" width="320">
+
+## 其它渠道
+
 - 爱发电：（待补充）
-- 微信支付：（待补充）
 - 支付宝：（待补充）
 - GitHub Sponsors：（待补充）
 
