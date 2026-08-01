@@ -1967,7 +1967,7 @@ button.chip-row:hover { background: var(--accent-soft); }
 .settings-nav-group { display: flex; flex-direction: column; gap: 3px; }
 .settings-search-wrap { position: relative; display: block; color: var(--text-3); }
 .settings-search-wrap svg { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); pointer-events: none; }
-.settings-search {
+.settings-dialog .settings-search {
   width: 100%;
   margin: 0;
   padding: 7px 10px 7px 28px;
@@ -1977,7 +1977,7 @@ button.chip-row:hover { background: var(--accent-soft); }
   color: var(--text);
   font-size: 12.5px;
 }
-.settings-search:focus { border-color: var(--accent); outline: none; }
+.settings-dialog .settings-search:focus { border-color: var(--accent); outline: none; }
 .settings-nav-empty { padding: 8px 10px; color: var(--text-3); font-size: 12px; }
 .settings-nav-group + .settings-nav-group { border-top: 1px solid var(--border); padding-top: 13px; }
 .settings-nav-label {
