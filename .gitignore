@@ -57,3 +57,13 @@ _CPack_Packages/
 protocol-upload-*.bin
 devopenwebcodesandbox-write-probe.txt
 .tmp-pty-repro/
+
+# Local environment files; keep templates tracked
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+!.env.*.example
+!.env.*.sample
+!.env.*.template
