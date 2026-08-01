@@ -201,7 +201,7 @@ describe("repairShellOutput（代码页修复）", () => {
     ]);
     const lossy = raw.toString("utf8");
     expect(lossy).toContain("\uFFFD");
-    expect(repairShellOutput(lossy, [raw], rand, ["dir"])).toContain("拒绝访问。");
+    expect(repairShellOutput(lossy, [raw], rand, ["dir"], "win32")).toContain("拒绝访问。");
   });
 
   it("正常 UTF-8 输出原样返回；空 raw 不重解码", () => {
@@ -336,7 +336,8 @@ describe("PersistentShellManager（fake core）", () => {
     expect(secondResult.output).toBe("two-out");
   });
 
-  it("GBK（CP936）输出乱码时按原始字节重解码", async () => {
+  // GBK 回退仅 Windows 生效（decodeChildProcessOutput 按平台门控），Linux 上无法重解码
+  it.skipIf(!isWindows)("GBK（CP936）输出乱码时按原始字节重解码", async () => {
     const fake = makeFakePtyCore();
     const manager = newManager(fake.core);
     const session = fakeSession("s1");
