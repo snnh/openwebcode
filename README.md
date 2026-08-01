@@ -167,6 +167,7 @@ cd web && npm ci && npm run build && npm test
 ## 赞助
 
 OpenWebCode 是个人维护的开源项目。如果它对你有帮助，欢迎通过 [donate.md](./donate.md) 赞助支持持续开发。
+
 <img src="./assets/donate-wechat.png" alt="微信赞赏码" width="240">
 
 ## 特别感谢
