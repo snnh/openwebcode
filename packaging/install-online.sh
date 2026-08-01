@@ -37,6 +37,25 @@ die() {
     exit "${2:-2}"
 }
 
+# 版本号须为 semver 形态：主版本为数字与点，可带一个 - 预发布后缀（字母数字
+# 与点），如 1.0.0 或 1.0.0-beta.4；拒绝空串、空白与其他字符。
+# test-install.sh 直接提取本函数做断言，修改时保持函数名与形态不变。
+validate_version() {
+    case $1 in
+        ''|*[!0-9A-Za-z.-]*) return 1 ;;
+    esac
+    case $1 in
+        *-*)
+            case ${1%%-*} in ''|*[!0-9.]*|.*|*.|*..*) return 1 ;; esac
+            case ${1#*-} in ''|*-*|*[!0-9A-Za-z.]*|.*|*.) return 1 ;; esac
+            ;;
+        *)
+            case $1 in ''|*[!0-9.]*|.*|*.|*..*) return 1 ;; esac
+            ;;
+    esac
+    return 0
+}
+
 usage() {
     cat >&2 <<'EOF'
 用法: install-online.sh [--version <x.y.z>] [--prefix <dir>] [install.sh 选项...]
@@ -151,9 +170,7 @@ if [ -z "$VERSION" ]; then
     [ -n "$TAG" ] || die "无法从 GitHub Releases 响应解析 tag_name" 1
     VERSION=${TAG#v}
 fi
-case "$VERSION" in
-    ''|*[!0123456789.]*) die "非法版本号: $VERSION" ;;
-esac
+validate_version "$VERSION" || die "非法版本号: $VERSION"
 
 BASE_URL=${OWC_INSTALL_BASE_URL:-"https://github.com/snnh/openwebcode/releases/download/v$VERSION"}
 TARBALL="openwebcode-$VERSION-linux-x64.tar.gz"

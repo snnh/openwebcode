@@ -434,7 +434,8 @@ if [ "${1:-}" = "run" ]; then
 fi
 exec "$OWC_NODE" "$OWC_HOME/server/dist/index.js" "$@"
 EOF
-chmod +x "$PREFIX/bin/owc"
+# 非回环安装时启动器内含 OWC_ACCESS_TOKEN 默认值，权限收紧为仅属主可读写执行。
+chmod 700 "$PREFIX/bin/owc"
 
 if [ "$WITH_SYSTEMD" -eq 1 ]; then
     # systemd ExecStart 的解析不与 shell 相同；对用户级 unit 限制为常见安全路径，
