@@ -169,6 +169,6 @@ Session data includes metadata, append-only message JSONL, context ledgers, arti
 
 ## Acknowledgments
 
-1. Thanks to glm-5.2 and kimi-k3 for assisting development.
+1. Thanks to deepseek、kimi-k3、qwen for assisting development.
 2. Thanks to community friends for inspiration.
 3. Thanks to [pi-agent](https://github.com/earendil-works/pi); the default system prompt is adapted from its baseline (MIT, by Mario Zechner).
