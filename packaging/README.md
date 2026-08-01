@@ -306,7 +306,7 @@ Server 模块在进程启动时加载，复制后必须重启 `build\stage\bin\o
 ## CI 发布流水线（release.yml）
 
 - 触发：`push: tags: ["v*"]`，或 `workflow_dispatch` 输入 tag（tag 不存在时基于当前提交创建）。手动触发可显式启用 `skip_performance_tests` 跳过性能基准；默认关闭，tag 触发不允许跳过。仅首次建立基线时可显式启用 `bootstrap_benchmark_baseline` 允许无上一版本基线。
-- **版本一致性检查**（仅 tag 触发）：tag 去掉前导 `v` 后必须同时等于 `server/package.json` 的 `version` 和 `core/CMakeLists.txt` 的 `project(VERSION)`，不一致即在两个平台 job 的第一步失败。
+- **版本一致性检查**（tag 推送与 `workflow_dispatch` 手动触发均执行）：tag（手动触发时取输入的 tag）去掉前导 `v` 后必须同时等于 `server/package.json` 与 `web/package.json` 的 `version`，且其数值基版本等于 `core/CMakeLists.txt` 的 `project(VERSION)`，不一致即在两个平台 job 的第一步失败。
 - **测试门禁**：Windows 与 Linux 两个平台 job 各自跑 core ctest、以真实 `owc-exec` 运行 Server 测试、Web 构建与测试；发布 job 要求两个平台全绿（加上 benchmark job，见下）才会执行。
 - Windows：构建测试通过后裁剪生产依赖 → CMake Release 构建 core → 按契约组装 `build/stage/`
   （下载固定版本 Node 24 win-x64 zip，对照官方 `SHASUMS256.txt` 校验后取 `node.exe`）→ `cpack -G WIX`
@@ -314,7 +314,7 @@ Server 模块在进程启动时加载，复制后必须重启 `build\stage\bin\o
 - Linux：同样构建测试后组装 `build/stage/`（Node 24 linux-x64 tar.gz 同样经 `SHASUMS256.txt` 校验后整树解入 `node/`），
   `tar -C stage . -C packaging install.sh` 打包 → 临时前缀 `./install.sh --yes` 安装并 `/api/health` 冒烟 → 上传 tar.gz。
 - bundled Node 版本固定在 workflow 的 `env.NODE_DIST_VERSION`（当前 24.18.0），升级时改这一个常量；下载一律对照 nodejs.org 官方 `SHASUMS256.txt` 校验，不硬编码哈希。
-- benchmark job 默认是 release 的依赖；回归对比为警告级（回归超 15% 只告警，不阻断发布），但当前构建必须产出全部基准场景结果，缺场景即失败。无上一 release 基线或基线资产下载失败时告警并跳过对比（不阻断），除非显式启用 `bootstrap_benchmark_baseline`。结果以 `bench-results-*.json` 同 MSI/tar.gz 一起发布，供下一版下载为基线。仅手动发布显式启用 `skip_performance_tests` 时允许跳过，且该次 release 不包含基准 JSON。
+- benchmark job 默认是 release 的依赖，含两层判定：相对回归对比为警告级（`compare.mjs` 回归超 15% 只告警，不阻断发布）；各 bench 脚本内置的绝对验收门禁（增量构建加速比 ≥ 2.0、渲染 fps/输入延迟/内存增长下限、慢客户端背压断言）未通过则 job 失败并阻断发布，属预期行为。当前构建必须产出全部基准场景结果，缺场景即失败。无上一 release 基线或基线资产下载失败时告警并跳过对比（不阻断），除非显式启用 `bootstrap_benchmark_baseline`。结果以 `bench-results-*.json` 同 MSI/tar.gz 一起发布，供下一版下载为基线。仅手动发布显式启用 `skip_performance_tests` 时允许跳过，且该次 release 不包含基准 JSON。
 - Release 由 `softprops/action-gh-release@v2` 创建/更新，发布说明取自 `CHANGELOG.md` 的 `## [版本]` 段落（缺失或为空会阻断发布），非草稿；同时生成 `SHA256SUMS.txt` 并自检。
 
 推荐发布方式是先推送已审核提交，再创建并推送语义化版本 tag：
