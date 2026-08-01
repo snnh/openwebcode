@@ -113,7 +113,8 @@ export function permissionRule(tool: string, input: Record<string, unknown>): Pe
  * 命令替换/换行）则不适用前缀语义，回退整串精确——否则「总是允许 npm test」会
  * 连带放行 `npm test && curl evil`。
  */
-const SHELL_CONTROL_CHARS = /[&|;><`\n]|\$\(/;
+// \r 必须在列：cmd.exe 把孤立 CR 当行终止符，「npm test \rwhoami」会执行两条命令
+const SHELL_CONTROL_CHARS = /[&|;><`\n\r]|\$\(/;
 function matchesBashRule(prefix: string, value: string): boolean {
   if (value === prefix) return true;
   if (!value.startsWith(`${prefix} `)) return false;

@@ -10,6 +10,8 @@ import { chmod, readFile, rm, writeFile } from "node:fs/promises";
 const TOTP_STEP_SECONDS = 30;
 const TOTP_DIGITS = 6;
 const TOTP_WINDOW = 1;
+/** 验证码形态校验（模块级常量，避免每次 verify 重建 RegExp） */
+const TOTP_CODE_PATTERN = new RegExp(`^\\d{${TOTP_DIGITS}}$`);
 const RECOVERY_CODE_COUNT = 10;
 /** 会话票据有效期；每次有效请求滑动重置 */
 export const TOTP_TICKET_TTL_MS = 12 * 60 * 60 * 1_000;
@@ -72,7 +74,7 @@ export function totpAt(secret: Buffer, timestampMs: number): string {
 
 export function verifyTotp(secret: Buffer, code: string, timestampMs: number, window = TOTP_WINDOW): boolean {
   const normalized = code.trim();
-  if (!new RegExp(`^\\d{${TOTP_DIGITS}}$`).test(normalized)) return false;
+  if (!TOTP_CODE_PATTERN.test(normalized)) return false;
   const counter = Math.floor(timestampMs / 1_000 / TOTP_STEP_SECONDS);
   const expected = Buffer.from(normalized);
   for (let step = -window; step <= window; step += 1) {
