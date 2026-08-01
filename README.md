@@ -164,6 +164,10 @@ cd web && npm ci && npm run build && npm test
 - **Windows**：「设置 → 应用」卸载，默认数据目录 `%USERPROFILE%\openwebcode` 保留；显式 `OWC_DATA_DIR` 指定的数据也不会自动删除
 - **Linux**：`rm -rf ~/.local/lib/openwebcode ~/.local/bin/owc`，用户数据保留
 
+## 赞助
+
+OpenWebCode 是个人维护的开源项目。如果它对你有帮助，欢迎通过 [donate.md](./donate.md) 赞助支持持续开发。
+
 ## 特别感谢
 1. 感谢 deepseek、kimi-k3、qwen，本项目由上述模型辅助开发
 2. 感谢一些群友提供的灵感
