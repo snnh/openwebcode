@@ -3,12 +3,25 @@ import base64
 import hashlib
 import json
 import os
+import pathlib
+import re
 import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
+
+
+def expected_version():
+    """The reported core version must follow project(VERSION) in CMakeLists."""
+    cmake = pathlib.Path(__file__).resolve().parent.parent / "CMakeLists.txt"
+    match = re.search(
+        r"project\s*\(\s*openwebcode_core\s+VERSION\s+([0-9]+\.[0-9]+\.[0-9]+)",
+        cmake.read_text(encoding="utf-8"),
+    )
+    assert match, "project(VERSION) not found in core/CMakeLists.txt"
+    return match.group(1)
 
 
 def send(proc, message):
@@ -135,6 +148,7 @@ def assert_posix_children_killed_on_core_exit(executable):
 
 def main():
     executable = sys.argv[1]
+    version = expected_version()
     environment = os.environ.copy()
     pwsh_available = shutil.which("pwsh", path=environment.get("PATH")) is not None
     hosted_ci = environment.get("GITHUB_ACTIONS", "").lower() == "true"
@@ -150,7 +164,7 @@ def main():
         request(proc, "ping-中文", "core.ping")
         response, notes = collect_until_response(proc, "ping-中文")
         assert not notes
-        assert response["result"]["version"] == "1.0.0"
+        assert response["result"]["version"] == version
         assert response["result"]["sandboxCapability"] in {"advisory", "partial", "enforced"}
         assert response["result"]["sandboxReason"]
         assert response["result"]["protocolVersion"] == "1.0"
@@ -171,13 +185,13 @@ def main():
         response, notes = collect_until_response(proc, None)
         assert not notes
         assert response["id"] is None
-        assert response["result"]["version"] == "1.0.0"
+        assert response["result"]["version"] == version
 
         send(proc, {"jsonrpc": "2.0", "method": "core.ping", "params": {}})
         request(proc, "after-notification", "core.ping")
         response, notes = collect_until_response(proc, "after-notification")
         assert not notes
-        assert response["result"]["version"] == "1.0.0"
+        assert response["result"]["version"] == version
 
         request(proc, 2, "missing.method")
         response, _ = collect_until_response(proc, 2)
@@ -295,13 +309,10 @@ def main():
             assert b"pwsh-ok" in output, output
         elif not pwsh_available:
             request(proc, 302, "exec.run", {"sessionId": "s1", "execId": "pwsh", "cmd": "Write-Output pwsh-ok; exit 9", "cwd": os.getcwd(), "timeoutMs": 5000, "shellBackend": "pwsh"})
-            response, notes = collect_until_response(proc, 302)
-            if os.name == "nt":
-                assert response.get("error", {}).get("message") == "pwsh executable was not found", response
-            else:
-                assert response.get("result", {}).get("exitCode") == 127, response
-                output = b"".join(base64.b64decode(n["params"]["data"]) for n in notes)
-                assert b"pwsh executable was not found" in output, output
+            response, _ = collect_until_response(proc, 302)
+            # Both platforms surface the same stable shell_unavailable error
+            # for an explicitly selected interpreter that is missing.
+            assert response.get("error", {}).get("message") == "pwsh executable was not found", response
         else:
             print("SKIP: hosted CI can retain pwsh children past Core timeouts", file=sys.stderr)
 
@@ -340,6 +351,26 @@ def main():
         else:
             print("SKIP: no bash found for shellBackend=bash integration", file=sys.stderr)
 
+        if os.name != "nt":
+            # POSIX parity: a shellPath pointing at a missing executable makes
+            # exec fail with ENOENT, which the platform layer reports as the
+            # same stable shell_unavailable error. Windows only flags its own
+            # PATH-search misses; an explicit path there fails process
+            # creation with a generic start error instead.
+            request(proc, 320, "exec.run", {"sessionId": "s1", "execId": "missing-bash-path", "cmd": "echo no", "cwd": os.getcwd(), "timeoutMs": 5000, "shellBackend": "bash", "shellPath": "/nonexistent/owc-missing-shell"})
+            response, _ = collect_until_response(proc, 320)
+            assert response.get("error", {}).get("message") == "bash executable was not found", response
+            request(proc, 321, "job.start", {"sessionId": "s1", "jobId": "missing-bash-path", "kind": "exec", "cmd": "echo no", "cwd": os.getcwd(), "timeoutMs": 5000, "shellBackend": "bash", "shellPath": "/nonexistent/owc-missing-shell"})
+            response, _ = collect_until_response(proc, 321)
+            assert response["result"]["state"] == "running", response
+            for _ in range(30):
+                request(proc, 322, "job.status", {"sessionId": "s1", "jobId": "missing-bash-path"})
+                response, _ = collect_until_response(proc, 322)
+                if response["result"]["state"] != "running": break
+                time.sleep(0.05)
+            assert response["result"]["state"] == "failed", response
+            assert response["result"]["error"] == "bash executable was not found", response
+
         # exec.run rejects unknown fields.
         request(proc, 312, "exec.run", {"sessionId": "s1", "execId": "unknown-field", "cmd": "echo no", "cwd": os.getcwd(), "bogus": 1})
         response, _ = collect_until_response(proc, 312)
@@ -348,6 +379,12 @@ def main():
         # shellPath is not part of the index.scan field whitelist.
         request(proc, 314, "job.start", {"sessionId": "s1", "jobId": "scan-with-shell", "kind": "index.scan", "path": ".", "cwd": os.getcwd(), "shellPath": bash_path or "bash"})
         response, _ = collect_until_response(proc, 314)
+        assert response.get("error", {}).get("code") == -32602, response
+
+        # job.start kind=exec rejects an empty cmd with a parameter error
+        # instead of running a no-op worker on an uninitialized result.
+        request(proc, 319, "job.start", {"sessionId": "s1", "jobId": "empty-cmd", "kind": "exec", "cmd": "", "cwd": os.getcwd()})
+        response, _ = collect_until_response(proc, 319)
         assert response.get("error", {}).get("code") == -32602, response
 
         if os.name == "nt" and bash_path:
@@ -369,6 +406,29 @@ def main():
         request(proc, 303, "core.ping")
         response, _ = collect_until_response(proc, 303)
         assert "result" in response, response
+
+        # Unknown params fields are rejected everywhere: parameterless
+        # methods, session.cleanup, and the sandbox sub-object.
+        request(proc, 305, "core.ping", {"bogus": 1})
+        response, _ = collect_until_response(proc, 305)
+        assert response.get("error", {}).get("code") == -32602, response
+        request(proc, 306, "core.shutdown", {"bogus": 1})
+        response, _ = collect_until_response(proc, 306)
+        assert response.get("error", {}).get("code") == -32602, response
+        request(proc, 307, "session.cleanup", {"sessionId": "s1", "bogus": 1})
+        response, _ = collect_until_response(proc, 307)
+        assert response.get("error", {}).get("code") == -32602, response
+        request(proc, 308, "session.configure", {"sessionId": "s1", "cwd": os.getcwd(), "sandbox": {"enabled": False, "bogus": 1}})
+        response, _ = collect_until_response(proc, 308)
+        assert response.get("error", {}).get("code") == -32602, response
+        # A rejected core.shutdown must not stop the core, and the rejected
+        # cleanup/configure must not disturb s1.
+        request(proc, 309, "core.ping")
+        response, _ = collect_until_response(proc, 309)
+        assert "result" in response, response
+        request(proc, 311, "exec.run", {"sessionId": "s1", "execId": "after-reject", "cmd": command, "cwd": os.getcwd(), "timeoutMs": 5000, **shell_params})
+        response, _ = collect_until_response(proc, 311)
+        assert response["result"]["exitCode"] == 7, response
 
         assert_landlock_filesystem_isolation_if_enforced(proc)
 
@@ -424,17 +484,19 @@ def main():
             response, _ = collect_until_response(proc, 51)
             assert response["result"]["accepted"] is True, response
 
-            if not pwsh_available:
-                request(proc, 47, "job.start", {"sessionId": "s1", "jobId": "missing-pwsh", "kind": "exec", "cmd": "Write-Output no", "cwd": os.getcwd(), "timeoutMs": 5000, "shellBackend": "pwsh"})
-                response, _ = collect_until_response(proc, 47)
-                assert response["result"]["state"] == "running", response
-                for _ in range(30):
-                    request(proc, 48, "job.status", {"sessionId": "s1", "jobId": "missing-pwsh"})
-                    response, _ = collect_until_response(proc, 48)
-                    if response["result"]["state"] != "running": break
-                    time.sleep(0.05)
-                assert response["result"]["state"] == "failed", response
-                assert response["result"]["error"] == "pwsh executable was not found", response
+        if not pwsh_available:
+            # job.status reports the same stable shell_unavailable error on
+            # both platforms when the selected interpreter is missing.
+            request(proc, 47, "job.start", {"sessionId": "s1", "jobId": "missing-pwsh", "kind": "exec", "cmd": "Write-Output no", "cwd": os.getcwd(), "timeoutMs": 5000, "shellBackend": "pwsh"})
+            response, _ = collect_until_response(proc, 47)
+            assert response["result"]["state"] == "running", response
+            for _ in range(30):
+                request(proc, 48, "job.status", {"sessionId": "s1", "jobId": "missing-pwsh"})
+                response, _ = collect_until_response(proc, 48)
+                if response["result"]["state"] != "running": break
+                time.sleep(0.05)
+            assert response["result"]["state"] == "failed", response
+            assert response["result"]["error"] == "pwsh executable was not found", response
 
         # jobobject 兼容模式：默认 Job Object 限制在回复中如实上报
         request(proc, 30, "session.configure", {"sessionId": "s2", "cwd": os.getcwd(), "sandbox": {"enabled": True, "mode": "jobobject"}})
