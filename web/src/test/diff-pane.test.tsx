@@ -9,6 +9,8 @@
 import { act, fireEvent, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../lib/api";
+import * as unifiedDiff from "../lib/unified-diff";
+import { I18nProvider } from "../i18n";
 import { DiffPane, type DiffSpec } from "../components/editor/DiffPane";
 import { createFakeMonaco } from "./helpers/fake-monaco";
 import { renderWithClient } from "./helpers/with-client";
@@ -127,6 +129,35 @@ describe("DiffPane：SCM 来源", () => {
     fireEvent.click(await view.findByRole("button", { name: "拒绝" }));
     await waitFor(() => expect(onNotice).toHaveBeenCalledWith(expect.stringContaining("Plan 模式为只读"), "error"));
     expect(view.getByText("待处理")).toBeInTheDocument();
+  });
+
+  it("hunk 还原失败（HunkRevertError）：英文界面提示为英文，不直出中文错误消息", async () => {
+    window.localStorage.setItem("owc-language", "en");
+    // 只拦截 UI 侧调用；模块内 reconstructOriginal 走的是内部引用，不受影响
+    const spy = vi.spyOn(unifiedDiff, "revertHunks").mockImplementation(() => {
+      throw new unifiedDiff.HunkRevertError("hunk-content-mismatch", "hunk does not match current file content: @@ -1,3 +1,3 @@");
+    });
+    try {
+      const fake = createFakeMonaco();
+      loadMonacoMock.mockResolvedValue(fake.monaco);
+      const onNotice = vi.fn();
+      const view = renderWithClient(
+        <I18nProvider>
+          <DiffPane sessionId="s1" spec={spec} dark onClose={vi.fn()} onNotice={onNotice} />
+        </I18nProvider>,
+      );
+      await waitFor(() => expect(fake.diffEditors).toHaveLength(1));
+      fireEvent.click(await view.findByRole("button", { name: "Reject" }));
+      await waitFor(() => expect(onNotice).toHaveBeenCalled());
+      expect(writeFile).not.toHaveBeenCalled();
+      for (const [message, kind] of onNotice.mock.calls) {
+        expect(kind).toBe("error");
+        expect(String(message)).not.toMatch(/[一-鿿]/);
+      }
+    } finally {
+      spy.mockRestore();
+      window.localStorage.removeItem("owc-language");
+    }
   });
 
   it("已暂存改动：只读并如实提示（内容写回无法触及索引）", async () => {

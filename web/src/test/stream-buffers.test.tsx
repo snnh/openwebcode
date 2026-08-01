@@ -155,6 +155,21 @@ describe("useStreamBuffers", () => {
     expect(joined(result.current.blocks.s1)).toBe(text);
   });
 
+  it("flush 取消挂起的帧再同步提交（下一帧不多跑一次空回调）", () => {
+    const { frames, result } = setup();
+
+    act(() => result.current.queueDelta("s1", "abcdef"));
+    act(() => result.current.flush());
+    // 挂起的合批帧被取消；flush 按预算同步提交一帧
+    expect(frames.cancel).toHaveBeenCalledTimes(1);
+    expect(joined(result.current.blocks.s1)).toBe("abc");
+    // 仍有积压：只续了一帧（被取消的旧帧不会再跑）
+    expect(frames.pending()).toBe(1);
+    act(() => frames.runFrame());
+    expect(joined(result.current.blocks.s1)).toBe("abcdef");
+    expect(frames.pending()).toBe(0);
+  });
+
   it("clear 清空已提交状态与未放出的平滑积压（stream_reset 语义）", () => {
     const { frames, result } = setup();
 

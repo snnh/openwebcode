@@ -94,7 +94,7 @@ export function SubagentTabView({ sessionId, toolCallId, runs }: {
       {group.swarm && (
         <header className="subagents-group-header">
           {t(
-            `群 ${group.total} 项 · 完成 ${done} / 失败 ${failed} / 运行中 ${running}`,
+            `Swarm ${group.total} 项 · 完成 ${done} / 失败 ${failed} / 运行中 ${running}`,
             `Swarm · ${group.total} items · ${done} done / ${failed} failed / ${running} running`,
           )}
         </header>

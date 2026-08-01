@@ -39,7 +39,7 @@ describe("SubagentsPanel", () => {
       />,
     );
 
-    expect(container.querySelector(".subagents-group-header")).toHaveTextContent("群 1 共 3 项 · 完成 1 / 失败 1 / 运行中 1");
+    expect(container.querySelector(".subagents-group-header")).toHaveTextContent("Swarm 1 共 3 项 · 完成 1 / 失败 1 / 运行中 1");
     const items = container.querySelectorAll(".subagent-run-item");
     expect(items).toHaveLength(3);
     expect(items[0]).toHaveAttribute("data-status", "done");
