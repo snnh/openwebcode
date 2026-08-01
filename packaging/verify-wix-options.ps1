@@ -131,4 +131,17 @@ foreach ($property in "OWC_CREATE_DESKTOP_SHORTCUT", "OWC_ADD_TO_PATH") {
     }
 }
 
+Assert-MsiRow 'SELECT `Property` FROM `Property` WHERE `Property` = ''WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT''' `
+    "the exit-dialog launch checkbox has a label"
+Assert-MsiRow 'SELECT `Property` FROM `Property` WHERE `Property` = ''WIXUI_EXITDIALOGOPTIONALCHECKBOX'' AND `Value` = ''1''' `
+    "the exit-dialog launch checkbox defaults to selected"
+$shellExecTarget = Get-MsiFirstString 'SELECT `Value` FROM `Property` WHERE `Property` = ''WixShellExecTarget'''
+if ($null -eq $shellExecTarget -or -not $shellExecTarget.EndsWith('bin\owc-launch.cmd')) {
+    throw "MSI validation failed: WixShellExecTarget does not point at bin\owc-launch.cmd (got: $shellExecTarget)"
+}
+Assert-MsiRow 'SELECT `Action` FROM `CustomAction` WHERE `Action` = ''LaunchOpenWebCode'' AND `Source` = ''WixCA'' AND `Target` = ''WixShellExec''' `
+    "the launch custom action invokes WixShellExec"
+Assert-MsiRow 'SELECT `Dialog_` FROM `ControlEvent` WHERE `Dialog_` = ''ExitDialog'' AND `Control_` = ''Finish'' AND `Event` = ''DoAction'' AND `Argument` = ''LaunchOpenWebCode'' AND `Condition` LIKE ''%WIXUI_EXITDIALOGOPTIONALCHECKBOX%''' `
+    "the finish button launches only when the checkbox is selected"
+
 Write-Output "Verified MSI Shell integration controls: $resolvedMsi"

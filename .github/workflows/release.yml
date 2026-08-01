@@ -154,6 +154,7 @@ jobs:
           test -f build/stage/node/node.exe
           # .cmd 需要 CRLF：先去已有 \r 再统一加（与 checkout 的 EOL 配置无关）
           sed 's/\r$//' packaging/owc.cmd | sed 's/$/\r/' > build/stage/bin/owc.cmd
+          sed 's/\r$//' packaging/owc-launch.cmd | sed 's/$/\r/' > build/stage/bin/owc-launch.cmd
           test -f build/stage/bin/owc-exec.exe
       - name: Ensure WiX toolset
         shell: bash
@@ -333,7 +334,7 @@ jobs:
           set -euo pipefail
           tar -czf "openwebcode-${VERSION}-linux-x64.tar.gz" \
             -C build/stage . \
-            -C "$GITHUB_WORKSPACE/packaging" install.sh
+            -C "$GITHUB_WORKSPACE/packaging" install.sh uninstall.sh
       - name: Smoke-test Linux tar.gz installation
         shell: bash
         run: |
@@ -353,9 +354,11 @@ jobs:
           mkdir "$work/pkg"
           tar -xzf "$archive" -C "$work/pkg"
           test -x "$work/pkg/install.sh"
+          test -f "$work/pkg/uninstall.sh"
           "$work/pkg/install.sh" --yes --prefix "$work/prefix"
 
           test -x "$work/prefix/bin/owc"
+          test -x "$work/prefix/bin/owc-uninstall"
           test -x "$work/prefix/lib/openwebcode/bin/owc-exec"
           test -x "$work/prefix/lib/openwebcode/node/bin/node"
           test -f "$work/prefix/lib/openwebcode/server/dist/index.js"
