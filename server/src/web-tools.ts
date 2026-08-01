@@ -1,3 +1,4 @@
+import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import type { WebProviderProfile } from "./provider-profiles.js";
 import { getUserAgent } from "./http.js";
@@ -123,6 +124,28 @@ export function assertSafeWebUrl(value: string): URL {
   return url;
 }
 
+/** dns.lookup({all:true}) 的可注入形态：测试用 stub 避免真实 DNS。 */
+export type LookupAll = (hostname: string) => Promise<Array<{ address: string; family: number }>>;
+
+const defaultLookup: LookupAll = (hostname) => dnsLookup(hostname, { all: true });
+
+/**
+ * 对非 IP 字面量的域名做 DNS 解析，逐地址套用与 assertSafeWebUrl 相同的私网/回环块表，
+ * 挡住「域名解析结果就是内网地址」的 SSRF（含 DNS 重绑定到内网的情形）。
+ * TOCTOU 残余：解析完成到 TCP 连接建立之间记录仍可能再变，彻底闭环需要在连接层
+ * 校验对端 IP；此处先兜住解析期即可判定的内网结果。
+ */
+async function assertPublicHostname(url: URL, lookup: LookupAll): Promise<void> {
+  const hostname = url.hostname.replace(/^\[|\]$/g, "").toLowerCase().replace(/\.$/, "");
+  if (isIP(hostname)) return; // IP 字面量已由 assertSafeWebUrl 筛查
+  const addresses = await lookup(hostname);
+  for (const { address, family } of addresses) {
+    if ((family === 4 && blockedIpv4(address)) || (family === 6 && blockedIpv6(address))) {
+      throw new Error("Local or private network URLs are not allowed");
+    }
+  }
+}
+
 function decodeEntities(value: string): string {
   const named: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
   return value.replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi, (match, entity: string) => {
@@ -177,14 +200,16 @@ function supportedContentType(value: string): boolean {
 
 export async function webFetch(
   value: string,
-  options: { timeoutMs?: number; maxBytes?: number; fetchImpl?: typeof fetch; signal?: AbortSignal } = {},
+  options: { timeoutMs?: number; maxBytes?: number; fetchImpl?: typeof fetch; lookupImpl?: LookupAll; signal?: AbortSignal } = {},
 ): Promise<WebFetchResult> {
   const requested = assertSafeWebUrl(value);
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+  const lookup = options.lookupImpl ?? defaultLookup;
   const signal = signalWithTimeout(options.signal, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   let current = requested;
   for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
     current = assertSafeWebUrl(current.href);
+    await assertPublicHostname(current, lookup);
     const response = await fetchImpl(current, { redirect: "manual", signal, headers: { "User-Agent": getUserAgent() } });
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get("location");
@@ -319,12 +344,28 @@ class HttpSearchProvider implements SearchProvider {
       if (this.authKind === "brave") headers["X-Subscription-Token"] = this.apiKey;
       else headers.Authorization = `Bearer ${this.apiKey}`;
     }
-    const response = await this.fetchImpl(url, {
-      headers,
-      signal: signalWithTimeout(options.signal),
-    });
-    if (!response.ok) throw new Error(`Search provider returned HTTP ${response.status}`);
-    return normalizeResults(await readLimitedJson(response), limit);
+    const signal = signalWithTimeout(options.signal);
+    // 与 reader 路径同一纪律：redirect 手动处理，逐跳复验不离开配置的 search origin，
+    // 否则被控/被劫持的 search 端点可用 302 把带凭据的请求引向任意主机（SSRF）。
+    const trustedOrigin = url.origin;
+    let current = url;
+    for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
+      const response = await this.fetchImpl(current, { redirect: "manual", headers, signal });
+      if (response.status >= 300 && response.status < 400) {
+        const location = response.headers.get("location");
+        if (!location) throw new Error(`Search provider redirect ${response.status} has no Location header`);
+        if (redirects === MAX_REDIRECTS) throw new Error("Search provider redirected too many times");
+        const next = new URL(location, current);
+        if ((next.protocol !== "http:" && next.protocol !== "https:") || next.origin !== trustedOrigin) {
+          throw new Error("Search provider redirect leaves the configured origin");
+        }
+        current = next;
+        continue;
+      }
+      if (!response.ok) throw new Error(`Search provider returned HTTP ${response.status}`);
+      return normalizeResults(await readLimitedJson(response), limit);
+    }
+    throw new Error("Search provider redirected too many times");
   }
 }
 

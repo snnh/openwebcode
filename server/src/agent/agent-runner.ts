@@ -2947,7 +2947,8 @@ export class AgentRunner {
             const entry = this.backgroundTasks!.get(taskId);
             if (!entry) throw new Error(`Task not found: ${taskId}`);
             if (entry.status !== "running") return entry;
-            if (Date.now() >= deadline) return entry;
+            // run 中止后立即返回当前状态，不再等满 timeoutMs
+            if (signal.aborted || Date.now() >= deadline) return entry;
             await new Promise((resolve) => setTimeout(resolve, 250));
             return poll();
           };

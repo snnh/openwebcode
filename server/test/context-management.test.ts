@@ -98,6 +98,21 @@ describe("context management controls", () => {
     expect(ledger.entries.map((entry) => entry.messageId)).toEqual(["t-d1", "t-d2", "t-d3"]);
   });
 
+
+  it("default policy counts the trailing unseen tool batch toward the lag window", async () => {
+    const root = await tempRoot("owc-context-lag-tail-");
+    const manager = new ContextManager(root);
+    // 默认 lag=2，路径以 tool 批次结尾：保留当轮 + 最近 1 个已完成轮（共 2 轮），
+    // 更早的轮次驱逐——与「当轮保护 + lag 窗口」语义一致
+    const messages: ChatMessage[] = [userText("start")];
+    for (let index = 1; index <= 3; index += 1) {
+      messages.push(toolResult(`d${index}`, `out ${index} ${"z".repeat(2000)}`), assistantText(`d${index}`, `ack ${index}`));
+    }
+    messages.push(toolResult("d4", `out 4 ${"z".repeat(2000)}`));
+    const ledger = await manager.evict(messages);
+    expect(ledger.entries.map((entry) => entry.messageId)).toEqual(["t-d1", "t-d2"]);
+  });
+
   it("exempts small results and short read_file results; large read_file degrades to head+tail excerpt", async () => {
     const root = await tempRoot("owc-context-floors-");
     const manager = new ContextManager(root);
