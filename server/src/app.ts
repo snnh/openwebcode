@@ -20,6 +20,7 @@ import { boundToolResult } from "./context/tool-result-budget.js";
 import { errorMessage } from "./error-utils.js";
 import type { ServerConfig } from "./config.js";
 import { isLoopbackHost } from "./config.js";
+import { buildAccessUrls } from "./access-token.js";
 import { TotpAuthService, TOTP_TICKET_TTL_MS, isLoopbackOrLAN } from "./auth-totp.js";
 import { getModelProfile, listModelProfiles, type Currency, type EffortLevel, type ModelModality, type ModelPricing, type ModelProfile, type ThinkingMode } from "./context/model-profile.js";
 import { lookupModelMetadata } from "./context/model-metadata.js";
@@ -183,7 +184,15 @@ export interface ServerDependencies {
   providerProfiles?: ProviderProfilesService;
   providerProfilesRuntime?: ProviderProfilesRuntime;
   /** Remote-listener protection. Omitted for the loopback-only development default. */
-  auth?: { accessToken: string; allowedOrigins: string[] };
+  auth?: { accessToken: string; allowedOrigins: string[]; autoAllowSameOrigin?: boolean };
+  /** 远程访问信息（/api/remote-access 供数）；regenerate 仅在 token 为自动生成时存在 */
+  remoteAccess?: {
+    host: string;
+    port: number;
+    tokenSource: "env" | "generated";
+    lanAddresses: string[];
+    regenerate?: () => Promise<string>;
+  };
   /** 慢 WS 客户端背压阈值覆盖（测试用）；缺省用 ws-backpressure 的常量。 */
   wsBackpressureLimits?: Partial<WsBackpressureLimits>;
   /** 符号索引管理器（0.4.0 Phase 2）；未注入时 /api/workspaces/index/* 与 symbols 路由 501 */
@@ -236,6 +245,11 @@ function safeTokenEqual(expected: string, actual: string | undefined): boolean {
   const left = Buffer.from(expected);
   const right = Buffer.from(actual);
   return left.length === right.length && timingSafeEqual(left, right);
+}
+
+function maskAccessToken(token: string): string {
+  if (token.length <= 12) return "••••••";
+  return `${token.slice(0, 7)}…${token.slice(-4)}`;
 }
 
 function requestToken(request: { headers: Record<string, string | string[] | undefined>; query?: unknown }, allowQueryToken = false): string | undefined {
@@ -385,8 +399,21 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     totp !== undefined && totp.validateTicket(totpTicketOf(request));
   const totpCookieHeader = (token: string): string =>
     `owc_totp_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${Math.floor(TOTP_TICKET_TTL_MS / 1_000)}`;
-  const originAllowed = (origin: string | undefined, nativeClient: boolean) => {
-    if (auth) return origin ? auth.allowedOrigins.includes(origin) : nativeClient;
+  const originAllowed = (origin: string | undefined, nativeClient: boolean, hostHeader?: string | undefined) => {
+    if (auth) {
+      if (!origin) return nativeClient;
+      if (auth.allowedOrigins.includes(origin)) return true;
+      // 未显式配置 origins 的非回环监听：放行与请求 Host 同源的浏览器 origin。
+      // bearer token 仍是唯一凭证（SameSite=Strict cookie 不跨站携带），不扩大攻击面。
+      if (auth.autoAllowSameOrigin && hostHeader) {
+        try {
+          return new URL(origin).host === hostHeader;
+        } catch {
+          return false;
+        }
+      }
+      return false;
+    }
     // 无认证（loopback 监听）模式：浏览器 Origin 必须指向本机，否则任意网页可跨域 WS 读取全部会话事件；
     // 不带 Origin 的非浏览器客户端（CLI 等）放行。
     if (origin === undefined) return true;
@@ -697,6 +724,32 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     totp?.revokeTicket(totpTicketOf(request));
     reply.header("set-cookie", "owc_totp_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0");
     return { ok: true };
+  });
+
+  // ---- 远程访问（局域网/移动端）：令牌状态与一键访问链接 ----
+  // 路由挂在 /api/ 下，自动进入既有 token/TOTP 认证链；完整链接只发给已认证请求。
+  app.get("/api/remote-access", async () => {
+    const remote = dependencies.remoteAccess;
+    return {
+      host: remote?.host ?? listenHost,
+      port: remote?.port ?? null,
+      authEnabled: auth !== undefined,
+      tokenSource: remote?.tokenSource ?? null,
+      maskedToken: auth ? maskAccessToken(auth.accessToken) : null,
+      urls: auth && remote ? buildAccessUrls(remote.host, remote.port, remote.lanAddresses, auth.accessToken) : [],
+    };
+  });
+  app.post("/api/remote-access/regenerate-token", async (_request, reply) => {
+    const remote = dependencies.remoteAccess;
+    if (!auth || !remote?.regenerate) {
+      return reply.code(409).send({ error: "访问令牌由 OWC_ACCESS_TOKEN 环境变量显式配置，请在服务端环境中轮换" });
+    }
+    const token = await remote.regenerate();
+    return {
+      maskedToken: maskAccessToken(token),
+      urls: buildAccessUrls(remote.host, remote.port, remote.lanAddresses, token),
+      note: "旧访问链接与已写入的登录 Cookie 已失效，请用新链接重新打开",
+    };
   });
 
   app.get("/api/metrics", async () => ({ events: events.stats(), websocket: { clients: clients.size, slowClientDisconnects, failedClientSends } }));
@@ -2562,7 +2615,8 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     const credentialOk = totpGateEnabled()
       ? bearerAuthorized(request, true) || totpAuthenticated(request)
       : isAuthorized(request, true);
-    if (!credentialOk || !originAllowed(origin, nativeClient) || !hostAllowed(request.headers.host)) {
+    const hostHeader = Array.isArray(request.headers.host) ? request.headers.host[0] : request.headers.host;
+    if (!credentialOk || !originAllowed(origin, nativeClient, hostHeader) || !hostAllowed(request.headers.host)) {
       socket.close(1008, "Unauthorized origin or token");
       return;
     }
@@ -2615,7 +2669,8 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     const credentialOk = totpGateEnabled()
       ? bearerAuthorized(request, true) || totpAuthenticated(request)
       : isAuthorized(request, true);
-    if (!credentialOk || !originAllowed(origin, nativeClient) || !hostAllowed(request.headers.host)) {
+    const hostHeader = Array.isArray(request.headers.host) ? request.headers.host[0] : request.headers.host;
+    if (!credentialOk || !originAllowed(origin, nativeClient, hostHeader) || !hostAllowed(request.headers.host)) {
       socket.close(1008, "Unauthorized origin or token");
       return;
     }

@@ -398,16 +398,19 @@ export class SettingsService {
     const catalogSyncUrl = value("catalogSyncUrl");
     const pricingSyncUrl = value("pricingSyncUrl");
     const host = value("host") as string;
-    // The listener address is editable in persisted settings, while the
-    // access token and allowed origins intentionally remain environment-only.
-    // Re-run their validation against the effective host so a saved remote
-    // address cannot bypass the startup guard in loadConfig().
+    // The listener address is editable in persisted settings. The access token
+    // stays environment-overridable but is auto-generated and persisted on
+    // non-loopback startup (access-token.ts); allowed origins fall back to
+    // same-origin auto-allow unless set explicitly. Re-run their validation
+    // against the effective host so a saved remote address cannot bypass the
+    // startup guard in loadConfig().
     const listenerSecurity = loadConfig({ ...this.env, OWC_HOST: host });
     return {
       host,
       port: value("port") as number,
       ...(listenerSecurity.accessToken ? { accessToken: listenerSecurity.accessToken } : {}),
       allowedOrigins: listenerSecurity.allowedOrigins,
+      ...(listenerSecurity.autoAllowSameOrigin ? { autoAllowSameOrigin: true } : {}),
       corePath: value("corePath") as string,
       dataDir: value("dataDir") as string,
       coreRequestTimeoutMs: value("coreRequestTimeoutMs") as number,

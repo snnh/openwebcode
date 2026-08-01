@@ -23,14 +23,21 @@ function connectWebSocket(url: string, headers: Record<string, string>): Promise
 }
 
 describe("remote listener security", () => {
-  it("refuses a non-loopback listener without a strong token and explicit origins", () => {
-    expect(() => loadConfig({ OWC_HOST: "0.0.0.0" })).toThrow(/OWC_ACCESS_TOKEN/);
-    expect(() => loadConfig({ OWC_HOST: "0.0.0.0", OWC_ACCESS_TOKEN: "a".repeat(32) })).toThrow(/OWC_ALLOWED_ORIGINS/);
-    expect(loadConfig({
+  it("非回环监听缺省自动生成令牌并同源放行；显式短 token 仍拒绝", () => {
+    // 未显式 token/origins：不再拒绝启动（启动流程自动生成 token），同源自动放行置位
+    const auto = loadConfig({ OWC_HOST: "0.0.0.0" });
+    expect(auto).toMatchObject({ host: "0.0.0.0", allowedOrigins: [], autoAllowSameOrigin: true });
+    expect(auto.accessToken).toBeUndefined();
+    // 显式短 token：仍拒绝
+    expect(() => loadConfig({ OWC_HOST: "0.0.0.0", OWC_ACCESS_TOKEN: "short" })).toThrow(/OWC_ACCESS_TOKEN/);
+    // 显式 origins：维持严格列表，不置同源放行
+    const strict = loadConfig({
       OWC_HOST: "0.0.0.0",
       OWC_ACCESS_TOKEN: "a".repeat(32),
       OWC_ALLOWED_ORIGINS: "https://owc.example.test",
-    })).toMatchObject({ host: "0.0.0.0", allowedOrigins: ["https://owc.example.test"] });
+    });
+    expect(strict).toMatchObject({ host: "0.0.0.0", allowedOrigins: ["https://owc.example.test"] });
+    expect(strict.autoAllowSameOrigin).toBeUndefined();
   });
 
   it("requires the configured token for every API route", async () => {
@@ -150,6 +157,147 @@ describe("no-auth loopback WebSocket origin policy", () => {
       const cli = await connectWebSocket(url, {});
       expect(cli.connected).toMatchObject({ type: "connected" });
       cli.socket.close();
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("same-origin auto-allow (autoAllowSameOrigin)", () => {
+  it("放行与请求 Host 同源的浏览器 Origin，拒绝不同源与伪造 Host", async () => {
+    const root = await tempRoot("owc-security-");
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const token = "s".repeat(32);
+    const app = await buildServer({
+      core: {} as CoreClient,
+      sessions,
+      agent: { isRunning: () => false } as AgentRunner,
+      events: new EventBus(),
+      providers: new ProviderRegistry(),
+      pricing,
+      auth: { accessToken: token, allowedOrigins: [], autoAllowSameOrigin: true },
+    });
+    try {
+      await app.listen({ host: "127.0.0.1", port: 0 });
+      const address = app.server.address();
+      if (!address || typeof address === "string") throw new Error("test server did not expose a TCP address");
+      const url = `ws://127.0.0.1:${address.port}/api/events`;
+
+      // 与请求 Host 同源的 Origin：放行
+      const sameOrigin = await connectWebSocket(url, { authorization: `Bearer ${token}`, origin: `http://127.0.0.1:${address.port}` });
+      expect(sameOrigin.connected).toMatchObject({ type: "connected" });
+      sameOrigin.socket.close();
+
+      // 端口不同即不同源：拒绝
+      const otherPort = await connectWebSocket(url, { authorization: `Bearer ${token}`, origin: "http://127.0.0.1:9999" });
+      expect(otherPort.closeCode).toBe(1008);
+
+      // 伪造 Host 使 Origin 与之不同源：拒绝
+      const spoofed = await connectWebSocket(url, { authorization: `Bearer ${token}`, origin: `http://127.0.0.1:${address.port}`, host: "evil.example.test" });
+      expect(spoofed.closeCode).toBe(1008);
+
+      // 显式列表关闭同源放行后，同源 Origin 也拒绝
+      const strict = await buildServer({
+        core: {} as CoreClient,
+        sessions,
+        agent: { isRunning: () => false } as AgentRunner,
+        events: new EventBus(),
+        providers: new ProviderRegistry(),
+        pricing,
+        auth: { accessToken: token, allowedOrigins: ["https://owc.example.test"] },
+      });
+      try {
+        await strict.listen({ host: "127.0.0.1", port: 0 });
+        const strictAddress = strict.server.address();
+        if (!strictAddress || typeof strictAddress === "string") throw new Error("test server did not expose a TCP address");
+        const denied = await connectWebSocket(`ws://127.0.0.1:${strictAddress.port}/api/events`, { authorization: `Bearer ${token}`, origin: `http://127.0.0.1:${strictAddress.port}` });
+        expect(denied.closeCode).toBe(1008);
+      } finally {
+        await strict.close();
+      }
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("/api/remote-access", () => {
+  async function buildRemoteAccessApp(options: { tokenSource: "env" | "generated"; withRegenerate?: boolean }) {
+    const root = await tempRoot("owc-security-");
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const token = "a".repeat(64);
+    const nextToken = "b".repeat(64);
+    const authState = { accessToken: token, allowedOrigins: [] as string[], autoAllowSameOrigin: true };
+    const state = { regenerateCalls: 0, token, nextToken };
+    const app = await buildServer({
+      core: {} as CoreClient,
+      sessions,
+      agent: { isRunning: () => false } as AgentRunner,
+      events: new EventBus(),
+      providers: new ProviderRegistry(),
+      pricing,
+      auth: authState,
+      remoteAccess: {
+        host: "0.0.0.0",
+        port: 3000,
+        tokenSource: options.tokenSource,
+        lanAddresses: ["192.168.1.5"],
+        ...(options.withRegenerate
+          ? {
+              regenerate: async () => {
+                state.regenerateCalls += 1;
+                authState.accessToken = nextToken;
+                return nextToken;
+              },
+            }
+          : {}),
+      },
+    });
+    return { app, state };
+  }
+
+  it("供数访问链接；自动生成令牌可再生成且旧令牌立即失效", async () => {
+    const { app, state } = await buildRemoteAccessApp({ tokenSource: "generated", withRegenerate: true });
+    try {
+      expect((await app.inject({ method: "GET", url: "/api/remote-access" })).statusCode).toBe(401);
+      const info = await app.inject({ method: "GET", url: "/api/remote-access", headers: { authorization: `Bearer ${state.token}` } });
+      expect(info.statusCode).toBe(200);
+      expect(info.json()).toEqual({
+        host: "0.0.0.0",
+        port: 3000,
+        authEnabled: true,
+        tokenSource: "generated",
+        maskedToken: `${state.token.slice(0, 7)}…${state.token.slice(-4)}`,
+        urls: [`http://192.168.1.5:3000/?token=${state.token}`],
+      });
+      const regenerated = await app.inject({ method: "POST", url: "/api/remote-access/regenerate-token", headers: { authorization: `Bearer ${state.token}` } });
+      expect(regenerated.statusCode).toBe(200);
+      expect(state.regenerateCalls).toBe(1);
+      expect(regenerated.json().urls).toEqual([`http://192.168.1.5:3000/?token=${state.nextToken}`]);
+      expect(regenerated.json().note).toContain("失效");
+      expect((await app.inject({ method: "GET", url: "/api/remote-access", headers: { authorization: `Bearer ${state.token}` } })).statusCode).toBe(401);
+      expect((await app.inject({ method: "GET", url: "/api/remote-access", headers: { authorization: `Bearer ${state.nextToken}` } })).statusCode).toBe(200);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("env 显式令牌不提供再生成（409），链接仍可供数", async () => {
+    const { app, state } = await buildRemoteAccessApp({ tokenSource: "env" });
+    try {
+      const info = await app.inject({ method: "GET", url: "/api/remote-access", headers: { authorization: `Bearer ${state.token}` } });
+      expect(info.statusCode).toBe(200);
+      expect(info.json().tokenSource).toBe("env");
+      expect(info.json().urls).toEqual([`http://192.168.1.5:3000/?token=${state.token}`]);
+      const regenerated = await app.inject({ method: "POST", url: "/api/remote-access/regenerate-token", headers: { authorization: `Bearer ${state.token}` } });
+      expect(regenerated.statusCode).toBe(409);
+      expect(state.regenerateCalls).toBe(0);
     } finally {
       await app.close();
     }

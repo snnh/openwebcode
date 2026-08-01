@@ -66,6 +66,9 @@ export const api = {
   totpDisable: (code: string) => request<{ ok: true }>("/api/auth/totp/disable", { method: "POST", body: JSON.stringify({ code }) }),
   login: (code: string) => request<{ ok: true }>("/api/auth/login", { method: "POST", body: JSON.stringify({ code }) }),
   logout: () => request<{ ok: true }>("/api/auth/logout", { method: "POST" }),
+  // 远程访问（局域网/移动端）：令牌状态、一键访问链接与自动生成令牌的再生成
+  remoteAccess: () => request<import("./contracts").RemoteAccessInfo>("/api/remote-access"),
+  regenerateToken: () => request<import("./contracts").RegenerateTokenResponse>("/api/remote-access/regenerate-token", { method: "POST" }),
   version: () => request<import("./contracts").VersionInfo>("/api/version"),
   updateCheck: () => request<import("./contracts").UpdateCheckResponse>("/api/update-check"),
   refreshUpdateCheck: () => request<import("./contracts").UpdateCheckResponse>("/api/update-check/refresh", { method: "POST" }),

@@ -10,6 +10,9 @@ export interface ServerConfig {
   accessToken?: string;
   /** Browser origins allowed to open the event WebSocket. */
   allowedOrigins: string[];
+  /** 非回环且未显式 OWC_ALLOWED_ORIGINS 时置位：放行与请求 Host 同源的浏览器
+   *  origin（bearer token 仍是唯一凭证）；显式 origins 时维持严格列表。 */
+  autoAllowSameOrigin?: boolean;
   corePath: string;
   dataDir: string;
   coreRequestTimeoutMs: number;
@@ -141,19 +144,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const host = env.OWC_HOST ?? "127.0.0.1";
   const accessToken = env.OWC_ACCESS_TOKEN?.trim() || undefined;
   const allowedOrigins = originList(env.OWC_ALLOWED_ORIGINS);
-  if (!isLoopbackHost(host)) {
-    if (!accessToken || accessToken.length < 32) {
-      throw new Error("Non-loopback OWC_HOST requires OWC_ACCESS_TOKEN with at least 32 characters");
-    }
-    if (allowedOrigins.length === 0) {
-      throw new Error("Non-loopback OWC_HOST requires OWC_ALLOWED_ORIGINS (comma-separated http(s) origins)");
-    }
+  // 非回环监听必须有认证：未显式设置时由启动流程自动生成并持久化（access-token.ts），
+  // 这里只拒绝「显式给了过短 token」的坏配置；origins 缺省走同源自动放行。
+  if (!isLoopbackHost(host) && accessToken && accessToken.length < 32) {
+    throw new Error("Non-loopback OWC_HOST requires OWC_ACCESS_TOKEN with at least 32 characters");
   }
   return {
     host,
     port: positiveInteger(env.OWC_PORT, 3210),
     ...(accessToken ? { accessToken } : {}),
     allowedOrigins,
+    ...(!isLoopbackHost(host) && allowedOrigins.length === 0 ? { autoAllowSameOrigin: true } : {}),
     corePath: env.OWC_CORE_PATH ?? "../build/Debug/owc-exec.exe",
     dataDir: env.OWC_DATA_DIR ?? "../.openwebcode",
     coreRequestTimeoutMs: positiveInteger(env.OWC_CORE_REQUEST_TIMEOUT_MS, 130_000),
