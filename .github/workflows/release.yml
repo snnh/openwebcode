@@ -57,7 +57,7 @@ jobs:
             echo "::error::tag 版本 ($VERSION，基版本 $BASE_VERSION) 与 server/package.json ($PKG_VERSION)、web/package.json ($WEB_VERSION)、core/CMakeLists.txt ($CORE_VERSION) 不一致，请先对齐再发版"
             exit 1
           fi
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -253,7 +253,7 @@ jobs:
             echo "::error::tag 版本 ($VERSION，基版本 $BASE_VERSION) 与 server/package.json ($PKG_VERSION)、web/package.json ($WEB_VERSION)、core/CMakeLists.txt ($CORE_VERSION) 不一致，请先对齐再发版"
             exit 1
           fi
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -492,7 +492,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
