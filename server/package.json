@@ -29,7 +29,7 @@
     "globals": "^17.8.0",
     "playwright": "^1.62.0",
     "tsx": "^4.20.6",
-    "typescript": "^5.9.3",
+    "typescript": "^7.0.2",
     "typescript-eslint": "^8.65.0",
     "vitest": "^4.0.8"
   }
