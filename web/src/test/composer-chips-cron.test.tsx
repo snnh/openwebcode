@@ -1,5 +1,5 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ComposerChips } from "../components/ComposerChips";
 import { api } from "../lib/api";
 import type { CronJobInfo } from "../lib/contracts";
@@ -97,5 +97,61 @@ describe("ComposerChips 定时芯片", () => {
     fireEvent.change(screen.getByLabelText("提示词"), { target: { value: "x" } });
     fireEvent.click(screen.getByRole("button", { name: "添加" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("out of range");
+  });
+});
+
+describe("ComposerChips 移动端 ≤768px", () => {
+  /** max-width 断点全部命中（移动端正判定），与 mobile-chrome.test.tsx 同款打桩。 */
+  function mockCompactMatchMedia(): void {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query.includes("max-width"),
+      media: query,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    }));
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    apiMock.cronJobs.mockResolvedValue([]);
+    mockCompactMatchMedia();
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("全部零计数时整行不渲染（含定时芯片）", async () => {
+    const { container } = renderChips();
+    // 三个查询都落定后行仍为空
+    await waitFor(() => {
+      expect(apiMock.tasks).toHaveBeenCalled();
+      expect(apiMock.todos).toHaveBeenCalled();
+      expect(apiMock.cronJobs).toHaveBeenCalled();
+    });
+    expect(container.querySelector(".composer-chips")).toBeNull();
+    expect(screen.queryByRole("button", { name: /定时/ })).toBeNull();
+  });
+
+  it("有定时任务时芯片出现，浮层仍可打开添加表单", async () => {
+    apiMock.cronJobs.mockResolvedValue([job({})]);
+    renderChips();
+    const chip = await screen.findByRole("button", { name: /定时/ });
+    expect(chip).toHaveTextContent("(1)");
+    fireEvent.click(chip);
+    expect(screen.getByLabelText("cron 表达式")).toBeInTheDocument();
+  });
+
+  it("有后台任务时行渲染，但零计数定时芯片不占位", async () => {
+    apiMock.tasks.mockResolvedValue([{
+      taskId: "task-abcdef01",
+      sessionId: "s1",
+      cmd: "npm test",
+      cwd: "/workspace",
+      status: "running",
+      startedAt: "2026-07-30T00:00:00.000Z",
+    }]);
+    const { container } = renderChips();
+    expect(await screen.findByRole("button", { name: /后台 Bash/ })).toHaveTextContent("(1)");
+    expect(container.querySelector(".composer-chips")).not.toBeNull();
+    expect(screen.queryByRole("button", { name: /定时/ })).toBeNull();
   });
 });

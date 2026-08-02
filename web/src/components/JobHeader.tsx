@@ -115,7 +115,9 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
               ? t(`Token 预算 ${formatTokensShort(costSummary.tokenBudget)}，已用 ${formatTokensShort(costSummary.tokens)}`, `Token budget ${formatTokensShort(costSummary.tokenBudget)}; ${formatTokensShort(costSummary.tokens)} used`)
               : t("本会话 tokens 与成本", "Tokens and cost for this session")}
           >
-            {formatTokensShort(costSummary.tokens)} tokens · {costSummary.costLabel}
+            <span className="cost-summary-text">
+              {formatTokensShort(costSummary.tokens)} tokens · {costSummary.costLabel}
+            </span>
             {budgetRatio !== undefined && (
               <i className="budget-bar" aria-hidden><i style={{ width: `${Math.round(budgetRatio * 100)}%` }} /></i>
             )}
@@ -130,9 +132,11 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
               ? t(`上下文窗口 ${formatTokens(windowUsage.estimatedTokens)} / ${formatTokens(windowUsage.contextWindow)} tokens（${windowPct ?? 0}%）`, `Context window ${formatTokens(windowUsage.estimatedTokens)} / ${formatTokens(windowUsage.contextWindow)} tokens (${windowPct ?? 0}%)`)
               : t(`当前上下文约 ${formatTokens(windowUsage.estimatedTokens)} tokens`, `Current context ≈ ${formatTokens(windowUsage.estimatedTokens)} tokens`)}
           >
-            {windowUsage.contextWindow && windowPct !== undefined
-              ? `${formatTokensShort(windowUsage.estimatedTokens)}/${formatTokensShort(windowUsage.contextWindow)} · ${windowPct}%`
-              : `${formatTokensShort(windowUsage.estimatedTokens)} ${t("上下文", "context")}`}
+            <span className="window-usage-text">
+              {windowUsage.contextWindow && windowPct !== undefined
+                ? `${formatTokensShort(windowUsage.estimatedTokens)}/${formatTokensShort(windowUsage.contextWindow)} · ${windowPct}%`
+                : `${formatTokensShort(windowUsage.estimatedTokens)} ${t("上下文", "context")}`}
+            </span>
             {windowPct !== undefined && (
               <i className={`budget-bar${windowState !== "normal" ? ` level-${windowState}` : ""}`} aria-hidden><i style={{ width: `${Math.min(100, windowPct)}%` }} /></i>
             )}
@@ -147,7 +151,7 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
               `Cache read ${formatTokensShort(cache.cacheRead)} · write ${formatTokensShort(cache.cacheWrite)} · uncached input ${formatTokensShort(latestUsage.inputTokens)}`,
             )}
           >
-            {t("缓存", "cache")} {Math.round(cache.rate * 100)}%
+            <span className="window-usage-text">{t("缓存", "cache")} {Math.round(cache.rate * 100)}%</span>
           </span>
         )}
         {runningTasks.length > 0 && (
