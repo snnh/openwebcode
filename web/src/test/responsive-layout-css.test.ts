@@ -33,4 +33,26 @@ describe("窄窗口布局 CSS 回归", () => {
     expect(tinyCss).toMatch(/\.composer-toolbar\s*\{\s*flex-wrap:\s*wrap;/s);
     expect(tinyCss).toMatch(/\.composer-chips\s*\{[^}]*overflow-x:\s*auto;/s);
   });
+
+  it("≤768px 密度优化：芯片行压扁、信息条单行收缩省略、表格降档、消息区收边", () => {
+    const compactStart = css.indexOf("@media (max-width: 768px)", narrowStart);
+    expect(compactStart).toBeGreaterThanOrEqual(0);
+    const compactCss = css.slice(compactStart, css.indexOf("@media (max-width: 480px)", compactStart));
+    expect(compactCss).toMatch(/\.composer-chips\s*\{[^}]*margin:\s*0 0 4px;/s);
+    expect(compactCss).toMatch(/\.job-info\s*\{[^}]*flex-wrap:\s*nowrap;/s);
+    expect(compactCss).toMatch(/\.budget-bar\s*\{[^}]*width:\s*28px;/s);
+    expect(compactCss).toMatch(/\.markdown th, \.markdown td\s*\{[^}]*padding:\s*3px 6px;/s);
+    expect(compactCss).toMatch(/\.execution-track\s*\{[^}]*padding-left:\s*12px;/s);
+  });
+
+  it("≤480px 控制行紧凑：按钮降档、长模型名收缩省略", () => {
+    const tinyCss = css.slice(css.indexOf("@media (max-width: 480px)"));
+    expect(tinyCss).toMatch(/\.composer-menu-btn\s*\{[^}]*min-height:\s*28px;/s);
+    expect(tinyCss).toMatch(/\.model-menu-btn-label\s*\{[^}]*max-width:\s*108px;/s);
+    expect(tinyCss).toMatch(/\.composer-send\s*\{[^}]*width:\s*30px;/s);
+  });
+
+  it("输入框默认无纵向滚动条轨道（溢出后由 JS 放开）", () => {
+    expect(css).toMatch(/\.composer textarea\s*\{[^}]*overflow-y:\s*hidden;/s);
+  });
 });
