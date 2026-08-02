@@ -209,6 +209,16 @@ cd web && npm run dev    # Vite 默认 5173，proxy 到 server 3000
 5. 缓存断点：Anthropic 用显式 `cache_control`，OpenAI 系自动缓存——按你 provider 能力选
 6. 测试：fake provider 参考现有点用例
 
+### 按角色路由模型（model-roles）
+
+四档角色 premium（极致）/ balanced（平衡）/ fast（快速）/ cheap（廉价）把「用途」映射到 `[provider, model]`：
+
+1. 配置面：`settings-service.ts` 的 `modelSelection` 组——`defaultModel`（会话默认）、`roleModelPremium` / `roleModelBalanced` / `roleModelCheap`，快速档即既有 `fastModel` 键；编码、选项、校验、热生效全部复用 fastModel 模式
+2. 解析面：`server/src/model-roles.ts` 的 `ModelRoleResolver`（index.ts 装配注入 AgentRunner）：`resolve(role)` 读当前映射；回落链 = 角色未配置 → balanced → 会话默认；provider 已注销按未配置处理
+3. 消费面：子代理派发（`resolveSubAgent` + 三个 `runSubAgent` 调用点）按「frontmatter provider/model > frontmatter role > 调用参数 role > 会话默认」解析生效 provider/model；`spawn_task`/`spawn_swarm` 的 `role` 参数与自定义子代理 frontmatter 的 `role:`/`provider:` 都汇到这一条链；用量记账传生效 provider 名即可（`recordUsageEvent` 已参数化）
+4. 加新角色档位：settings 加键 → resolver 加分支 → spawn schema 枚举与提示词目录段同步；`defaultModel` 只在会话创建（`resolveDefaultProvider`/`resolveDefaultModel`）消费
+5. 测试模板：`server/test/model-roles.test.ts`（回落链）、`agents.test.ts` 的 frontmatter 断言、`spawn-task.test.ts` 的双 provider stub
+
 ### 加一个快照后端
 
 1. `server/src/snapshots/` 下加后端实现，参照现有 `git-shadow.ts` / `btrfs.ts` 模式
