@@ -1332,6 +1332,7 @@ export function App(): ReactElement {
         setDefaults={setSessionDefaults}
         providers={providers.data ?? []}
         models={models.data ?? []}
+        sessionCwd={sessions.data?.find((s) => s.id === currentId)?.cwd}
         onResetLayout={resetLayout}
         onClose={() => setSettingsOpen(false)}
       />
