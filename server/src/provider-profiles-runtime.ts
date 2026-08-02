@@ -59,6 +59,9 @@ export class ProviderProfilesRuntime {
   private apply(): void {
     for (const id of this.managedProviders) this.providers.unregister(id);
     this.managedProviders.clear();
+    // SSE 流 idle 超时（半开连接兜底）：env 覆盖，缺省用 provider 内置 DEFAULT_STREAM_IDLE_TIMEOUT_MS
+    const streamIdleTimeoutMs = parseStreamIdleTimeout(process.env.OWC_PROVIDER_STREAM_IDLE_MS);
+    const idleOption = streamIdleTimeoutMs === undefined ? {} : { streamIdleTimeoutMs };
     for (const profile of this.profiles.modelProfiles()) {
       if (!profile.enabled) continue;
       try {
@@ -76,6 +79,7 @@ export class ProviderProfilesRuntime {
             baseURL: profile.baseURL ?? "https://api.openai.com/v1",
             ...(profile.apiKey ? { apiKey: profile.apiKey } : {}),
             ...(profile.extraBody ? { extraBody: profile.extraBody } : {}),
+            ...idleOption,
           }));
         } else {
           this.providers.register(new OpenAICompatibleProvider({
@@ -83,6 +87,7 @@ export class ProviderProfilesRuntime {
             baseURL: profile.baseURL ?? "https://api.openai.com/v1",
             ...(profile.apiKey ? { apiKey: profile.apiKey } : {}),
             ...(profile.extraBody ? { extraBody: profile.extraBody } : {}),
+            ...idleOption,
           }));
         }
         this.managedProviders.add(profile.id);
@@ -95,4 +100,11 @@ export class ProviderProfilesRuntime {
     this.agent.setWebFetchProvider(createProfileWebFetchProvider(selected.fetch));
     this.events.publish({ source: "server", type: "provider_profiles.updated", payload: this.profiles.view() });
   }
+}
+
+/** OWC_PROVIDER_STREAM_IDLE_MS：非负整数毫秒（0 = 关闭 idle 超时）；非法值回落内置默认。 */
+function parseStreamIdleTimeout(raw: string | undefined): number | undefined {
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined;
 }
