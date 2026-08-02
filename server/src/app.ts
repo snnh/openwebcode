@@ -46,7 +46,7 @@ import { SettingsValidationError, type SettingsService } from "./settings-servic
 import { getServerVersion, GITHUB_REPO } from "./version.js";
 import type { UpdateChecker } from "./update-checker.js";
 import { UpdateApplyError, type UpdateApplier } from "./update-applier.js";
-import { loadPromptOverride, writeGlobalPromptOverride } from "./agent/prompts/prompt-overrides.js";
+import { loadPromptOverride, loadScopedPromptOverride, writeGlobalPromptOverride, writeProjectPromptOverride, type PromptOverrideWriteBody } from "./agent/prompts/prompt-overrides.js";
 import { INIT_COMMAND_PROMPT } from "./agent/prompts/init-prompt.js";
 import { PI_BASE_SYSTEM_PROMPT, PI_PROMPT_VERSION } from "./agent/prompts/pi-base.js";
 import type { SkillRegistry } from "./skills.js";
@@ -835,27 +835,52 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       return reply.code(500).send({ error: errorMessage(error) });
     }
   });
-  app.get<{ Querystring: { cwd?: string } }>("/api/prompt", async (request, reply) => {
+  /** 项目作用域写入的 cwd 必须是一个已存在会话的工作目录（防任意路径写）。 */
+  const isKnownSessionCwd = async (cwd: string): Promise<boolean> => {
+    const target = path.resolve(cwd);
+    const list = await sessions.list();
+    return list.some((session) => path.resolve(session.cwd) === target);
+  };
+  const promptView = (override: Awaited<ReturnType<typeof loadPromptOverride>>) => ({
+    builtinBase: PI_BASE_SYSTEM_PROMPT,
+    promptVersion: PI_PROMPT_VERSION,
+    identityOverride: override.identityOverride ?? null,
+    baseOverride: override.baseOverride ?? null,
+    customAppend: override.customAppend ?? null,
+    subAgentAppend: override.subAgentAppend ?? null,
+  });
+  app.get<{ Querystring: { cwd?: string; scope?: string } }>("/api/prompt", async (request, reply) => {
     const dataDir = dependencies.dataDir;
     if (!dataDir) return reply.code(501).send({ error: "Prompt override is not configured" });
+    const scope = typeof request.query.scope === "string" ? request.query.scope : "";
     const cwd = typeof request.query.cwd === "string" ? request.query.cwd : "";
-    const override = await loadPromptOverride(dataDir, cwd);
-    return {
-      builtinBase: PI_BASE_SYSTEM_PROMPT,
-      promptVersion: PI_PROMPT_VERSION,
-      baseOverride: override.baseOverride ?? null,
-      customAppend: override.customAppend ?? null,
-    };
+    if (scope === "project") {
+      if (!cwd || !(await isKnownSessionCwd(cwd))) return reply.code(400).send({ error: "scope=project requires cwd of an existing session" });
+      return promptView(await loadScopedPromptOverride(path.join(cwd, ".owc")));
+    }
+    if (scope === "global") return promptView(await loadScopedPromptOverride(dataDir));
+    // 旧契约：不带 scope 时按 内置->全局->项目 合并读取（cwd 可缺省）
+    return promptView(await loadPromptOverride(dataDir, cwd));
   });
-  app.put<{ Body: { baseOverride?: string | null; customAppend?: string | null } }>("/api/prompt", async (request, reply) => {
+  app.put<{ Body: { scope?: string; cwd?: string; identityOverride?: string | null; baseOverride?: string | null; customAppend?: string | null; subAgentAppend?: string | null } }>("/api/prompt", async (request, reply) => {
     const dataDir = dependencies.dataDir;
     if (!dataDir) return reply.code(501).send({ error: "Prompt override is not configured" });
     const body = request.body ?? {};
+    // 全量替换语义：未以非空字符串给出的面一律删除对应文件（与恢复内置一致）
+    const writeBody: PromptOverrideWriteBody = {
+      ...(typeof body.identityOverride === "string" ? { identityOverride: body.identityOverride } : {}),
+      ...(typeof body.baseOverride === "string" ? { baseOverride: body.baseOverride } : {}),
+      ...(typeof body.customAppend === "string" ? { customAppend: body.customAppend } : {}),
+      ...(typeof body.subAgentAppend === "string" ? { subAgentAppend: body.subAgentAppend } : {}),
+    };
     try {
-      await writeGlobalPromptOverride(dataDir, {
-        ...(typeof body.baseOverride === "string" ? { baseOverride: body.baseOverride } : {}),
-        ...(typeof body.customAppend === "string" ? { customAppend: body.customAppend } : {}),
-      });
+      if (body.scope === "project") {
+        const cwd = typeof body.cwd === "string" ? body.cwd : "";
+        if (!cwd || !(await isKnownSessionCwd(cwd))) return reply.code(400).send({ error: "scope=project requires cwd of an existing session" });
+        await writeProjectPromptOverride(cwd, writeBody);
+      } else {
+        await writeGlobalPromptOverride(dataDir, writeBody);
+      }
       dependencies.agent.refreshPromptOverride();
       return { ok: true };
     } catch (error) {

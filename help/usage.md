@@ -243,7 +243,7 @@ agent 运行期间可用的状态指示与干预手段：
 
 - **模型服务商**：可保存并独立启用多个接口配置，接口类型三种——Anthropic Messages、OpenAI Chat Completions 与 OpenAI Responses（`POST /responses`，思维以 reasoning summary 流返回，历史思维链不回传）；每个服务商可自动拉取或手动添加自己的模型，同名模型互不覆盖。每个服务商可配**自定义请求体**（JSON，如 `{"temperature": 0.7, "max_tokens": 8192}`），浅合并进每次模型请求；`model`/`messages`/`stream`/`tools`/`system` 为保留字段不可覆盖
 - **会话中热切换模型**：统一列表显示为 `模型ID【服务商】`，下轮生效；账本按新窗口重算，模态不兼容的历史内容替换为占位描述
-- **快速模型**：直接从同一统一模型列表中选择，用于上下文压缩与内容透镜；接口、Base URL 和密钥复用所选服务商，可单独设置 thinking、effort 与最大输出上限
+- **快速模型**：直接从同一统一模型列表中选择，用于上下文压缩与内容透镜；接口、Base URL 和密钥复用所选服务商，可单独设置 thinking 与 effort
 - **会话默认模型与四档角色**（设置 → 模型接入 → 模型选择）：「会话默认」决定新建会话的模型（未设置时取第一个服务商的第一个模型）；「极致 / 平衡 / 快速 / 廉价」四档角色各指派一个模型——快速档即上面的快速模型。主代理派发子代理时可按任务选档（`spawn_task`/`spawn_swarm` 的 `role` 参数，或自定义子代理 frontmatter 的 `role:`/`provider:`）：难题用极致、常规执行用平衡、要速度用快速、批量轻活用廉价；未配置的角色回落平衡档，再回落会话当前模型；用量与成本按实际生效的服务商与模型归属
 - **模型选择器**：输入框下方常驻，模型按供应商分组（可展开收起）；底部固定区显示当前模型能力徽章与思考控件——胶囊开关切换思考，强度用格子档滑动切换（只显示模型声明的档位；未声明思考能力的模型开关默认关、未声明档位时全部可选）
 - **思维链回传**：模型能力新增 `reasoningContent` 声明（设置 → 模型目录双击模型编辑）。开启时历史 thinking 块以 `reasoning_content` 回带给 OpenAI 兼容端点（deepseek/qwen/glm/kimi 等新模型要求）；gpt/o 系与 claude 前缀默认关闭，其余默认开启；Anthropic 接口走签名回放不受此开关影响
@@ -290,20 +290,29 @@ owc run "给 main.ts 加个单元测试" --cwd . --json
 | `<业务数据目录>/mcp.json` | 全局 MCP 客户端配置 |
 | `<业务数据目录>/system-prompt.md` | 全局系统提示词基线覆盖（设置页「提示词」编辑） |
 | `<业务数据目录>/system-prompt-append.md` | 全局自定义追加指令 |
+| `<业务数据目录>/system-prompt-identity.md` | 全局身份行覆盖 |
+| `<业务数据目录>/system-prompt-subagent.md` | 全局子代理附加指令 |
 | `<业务数据目录>/update-check.json` | 更新检查缓存（最新版本与检查时间） |
 | `<业务数据目录>/extensions/` | Extension Host 配置与第三方 `owc-ext-*` 扩展 |
 | `<安装目录>/config/defaults.json` | 随发布更新的默认配置；数据目录只存用户覆盖，启动时自动组合 |
-| `<cwd>/.owc/agents/`、`.owc/commands/`、`.owc/skills/`、`.owc/hooks.json`、`.owc/mcp.json`、`.owc/memory.md`、`.owc/system-prompt.md`、`.owc/system-prompt-append.md` | 项目级（同名覆盖全局） |
+| `<cwd>/.owc/agents/`、`.owc/commands/`、`.owc/skills/`、`.owc/hooks.json`、`.owc/mcp.json`、`.owc/memory.md`、`.owc/system-prompt.md`、`.owc/system-prompt-append.md`、`.owc/system-prompt-identity.md`、`.owc/system-prompt-subagent.md` | 项目级（同名逐面覆盖全局） |
 
 ## 自定义系统提示词
 
-设置 → **提示词** 可覆盖内置系统提示词基线，并追加自定义指令：
+设置 → **提示词** 提供「全局 / 当前项目」两级作用域切换与四个配置面。项目作用域对应当前会话的工作目录（无会话时项目档不可用），保存后写入 `<cwd>/.owc/`；全局作用域写入 `<业务数据目录>/`。
 
-- **全局基线覆盖**：留空则使用内置 Pi 基线；填写后完整替换基线段落。
-- **全局追加指令**：追加到安全约束之后的自定义指令。
-- 项目级 `<cwd>/.owc/system-prompt.md` 与 `.owc/system-prompt-append.md` 存在时覆盖全局（手工维护）。
+四个配置面（留空即该面无覆盖）：
 
-> 提示词**不是安全边界**：plan 模式、权限与沙箱由服务独立强制，不受提示词覆盖影响。「恢复内置基线」按钮可一键清空全局覆盖。
+- **身份行**：覆盖系统提示词首行身份（`You are OpenWebCode...`）。
+- **基线覆盖**：完整替换内置 Pi 基线段落。
+- **追加指令**：追加到安全约束之后的自定义指令。
+- **子代理附加指令**：拼入所有子代理（explore/general/自定义）的系统提示，追加在自定义子代理 body 之后。
+
+落盘文件（一文件一面，全局与项目两级同名）：`system-prompt-identity.md`、`system-prompt.md`、`system-prompt-append.md`、`system-prompt-subagent.md`。
+
+生效优先级：**env-sim 人格身份 > 项目级 > 全局 > 内置**。两级按面独立合并——项目级某面存在时整面覆盖全局同面，其余面仍取全局；保存即热生效（无需重启会话）。
+
+> 提示词**不是安全边界**：plan 模式、权限与沙箱由服务独立强制，不受提示词覆盖影响。「恢复内置基线」按钮一键清空当前作用域的全部四面覆盖。
 
 ## 版本号与更新检查
 
