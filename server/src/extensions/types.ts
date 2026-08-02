@@ -9,7 +9,11 @@ export type ExtensionPermission =
   | "sessions:read"
   | "ui:panel"
   | "ui:messageAttachment"
-  | "network:fetch";
+  | "network:fetch"
+  | "http:route"
+  | "model:fast"
+  | "prompt:shape"
+  | "tools:shaping";
 
 export type ExtensionHook = "context.beforeBuild" | "tool.beforeExecute" | "message.beforeSend" | "prompt.beforeBuild";
 
@@ -23,10 +27,17 @@ export interface ToolShapingAlias {
   argMap?: Record<string, string>;
 }
 
-/** 工具形态声明（仅官方扩展可用）：隐藏内置工具 + 别名重命名。 */
+/** 工具形态声明：隐藏内置工具 + 别名重命名。官方扩展直接声明；第三方扩展需 tools:shaping 权限。 */
 export interface ToolShapingSpec {
   hideBuiltIns?: string[];
   aliases?: ToolShapingAlias[];
+}
+
+/** 扩展声明的私有 HTTP 路由（挂载在 /api/ext/<extensionId><path>）。 */
+export interface ExtensionRoute {
+  method: "GET" | "POST" | "DELETE";
+  /** 以 / 开头，不允许 .. 段；与请求路径精确匹配。 */
+  path: string;
 }
 
 export interface ExtensionManifest {
@@ -41,8 +52,10 @@ export interface ExtensionManifest {
   entry?: string;
   /** 配置表单的 JSON Schema 子集（type/properties/required/enum/default），供 UI 渲染与松散校验。 */
   configSchema?: Record<string, unknown>;
-  /** 仅官方扩展可声明；第三方 manifest 携带时直接拒绝（防止伪装内置工具）。 */
+  /** 官方扩展可直接声明；第三方扩展需 tools:shaping 权限，否则拒绝（防止伪装内置工具）。 */
   toolShaping?: ToolShapingSpec;
+  /** 私有 HTTP 路由表；声明时必须携带 http:route 权限。 */
+  routes?: ExtensionRoute[];
 }
 
 export interface ExtensionState {
@@ -96,6 +109,8 @@ export interface PromptHookPayload {
   identity: string;
   basePrompt: string;
   productSections: string[];
+  /** 会话级扩展状态（SessionMeta.extensionState，key=扩展 id），供扩展读取自己的会话级配置。 */
+  extensionState?: Record<string, Record<string, unknown>>;
 }
 
 /** prompt.beforeBuild 结果：字段缺省表示保持不变；finalConstraints/安全边界由核心追加，不可经此移除。 */
@@ -108,7 +123,7 @@ export interface PromptHookResult {
 
 export interface HostRequest {
   id: string;
-  method: "initialize" | "reload" | "hook" | "tool.invoke" | "shutdown";
+  method: "initialize" | "reload" | "hook" | "tool.invoke" | "http.request" | "shutdown";
   params?: Record<string, unknown>;
 }
 
@@ -119,7 +134,17 @@ export interface HostResponse {
 }
 
 /** 扩展可调用的 server 能力（host→server ApiRequest.api）。 */
-export type ExtensionApiMethod = "sessions.list" | "sessions.get" | "context.getView" | "context.readArtifact" | "events.subscribe";
+export type ExtensionApiMethod =
+  | "sessions.list"
+  | "sessions.get"
+  | "context.getView"
+  | "context.readArtifact"
+  | "events.subscribe"
+  | "storage.read"
+  | "storage.write"
+  | "storage.delete"
+  | "storage.list"
+  | "model.complete";
 
 /** host→server：扩展调用 server 能力。与 HostResponse 以 api+extensionId 字段区分。 */
 export interface ApiRequest {
