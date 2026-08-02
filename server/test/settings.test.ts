@@ -80,7 +80,7 @@ describe("server settings API", () => {
     const view = response.json<SettingsView>();
     expect(view.groups.map((group) => group.id)).toEqual(["models", "modelSelection", "general", "executor", "service", "network", "exchangeRate", "updateCheck"]);
     const fields = view.groups.flatMap((group) => group.fields);
-    expect(fields).toHaveLength(30);
+    expect(fields).toHaveLength(29);
     for (const item of fields) {
       expect(item.source).toBe("default");
       expect(item.editable).toBe(true);
@@ -110,7 +110,6 @@ describe("server settings API", () => {
         fastModel: selection,
         fastModelThinking: "enabled",
         fastModelEffort: "high",
-        fastModelMaxTokens: 2_048,
       } },
     });
     expect(response.statusCode).toBe(200);
@@ -118,13 +117,11 @@ describe("server settings API", () => {
     expect(field(view, "fastModel")).toMatchObject({ value: selection, source: "file" });
     expect(field(view, "fastModelThinking")).toMatchObject({ value: "enabled", source: "file" });
     expect(field(view, "fastModelEffort")).toMatchObject({ value: "high", source: "file" });
-    expect(field(view, "fastModelMaxTokens")).toMatchObject({ value: 2_048, source: "file" });
     expect(setup.settings.effective().fastModel).toEqual({
       provider: "主服务",
       model: "fast-1",
       thinking: "enabled",
       effort: "high",
-      maxTokens: 2_048,
     });
     expect(setup.fastModel).toMatchObject({ configured: true, provider: "主服务", model: "fast-1" });
   });
@@ -218,7 +215,6 @@ describe("server settings API", () => {
       { roleModelCheap: encodeFastModelSelection("未启用服务", "fast-1") },
       { fastModelThinking: "sometimes" },
       { fastModelEffort: "extreme" },
-      { fastModelMaxTokens: 64_001 },
       { coreRequestTimeoutMs: -5 },
       { exchangeRateUrl: "ftp://example.com" },
       { catalogSyncUrl: "ftp://example.com" },
@@ -344,7 +340,6 @@ describe("model selection settings (modelSelection group)", () => {
       "fastModel",
       "fastModelThinking",
       "fastModelEffort",
-      "fastModelMaxTokens",
       "roleModelCheap",
     ]);
     expect(groups.get("models")).toEqual(["catalogSyncUrl", "pricingSyncUrl", "syncIntervalMinutes"]);

@@ -171,7 +171,7 @@ export function ServerSettingsFields({ showGroup, note, onDirtyChange }: {
         type={field.type === "number" ? "number" : "text"}
         {...(field.type === "number" ? {
           min: ZERO_ALLOWED_NUMBER_KEYS.has(field.key) ? 0 : 1,
-          ...(field.key === "syncIntervalMinutes" ? { max: MAX_SYNC_INTERVAL_MINUTES } : field.key === "updateCheckIntervalHours" ? { max: MAX_UPDATE_CHECK_INTERVAL_HOURS } : field.key === "fastModelMaxTokens" ? { max: 64_000 } : {}),
+          ...(field.key === "syncIntervalMinutes" ? { max: MAX_SYNC_INTERVAL_MINUTES } : field.key === "updateCheckIntervalHours" ? { max: MAX_UPDATE_CHECK_INTERVAL_HOURS } : {}),
           step: 1,
         } : {})}
         value={resetting ? "" : value}
