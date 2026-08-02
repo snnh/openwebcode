@@ -1,6 +1,6 @@
 import type { ChatMessage } from "../sessions/types.js";
 import { getUserAgent } from "../http.js";
-import { readSseData } from "./openai-compatible-provider.js";
+import { readSseData, DEFAULT_STREAM_IDLE_TIMEOUT_MS } from "./openai-compatible-provider.js";
 import { classifyHttpError, normalizeProviderError, parseRetryAfter, ProviderError } from "./provider-error.js";
 import type { Provider, ProviderEvent, StreamChatRequest } from "./provider.js";
 
@@ -16,6 +16,8 @@ export interface OpenAIResponsesProviderOptions {
   /** 请求 reasoning summary 流（response.reasoning_summary_text.delta → thinking_delta）。
    * 端点不接受 reasoning.summary 字段时可显式 false 关闭。 */
   reasoningContent?: boolean;
+  /** SSE 流连续无 data 事件的最大毫秒数（心跳注释不计），超时判为半开连接断开并走重试；<=0 关闭。 */
+  streamIdleTimeoutMs?: number;
   fetch?: typeof fetch;
 }
 
@@ -107,7 +109,7 @@ export class OpenAIResponsesProvider implements Provider {
     let incompleteReason: string | null = null;
     let streamStarted = false;
     try {
-      for await (const data of readSseData(response.body)) {
+      for await (const data of readSseData(response.body, { idleTimeoutMs: this.options.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS })) {
         streamStarted = true;
         if (data === "[DONE]") break;
         const event = JSON.parse(data) as ResponsesStreamEvent;

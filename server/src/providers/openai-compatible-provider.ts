@@ -1,6 +1,6 @@
 import type { ChatMessage, ThinkingContent } from "../sessions/types.js";
 import { getUserAgent } from "../http.js";
-import { classifyHttpError, normalizeProviderError, parseRetryAfter } from "./provider-error.js";
+import { classifyHttpError, normalizeProviderError, parseRetryAfter, ProviderError } from "./provider-error.js";
 import type { Provider, ProviderEvent, StreamChatRequest } from "./provider.js";
 
 export interface OpenAICompatibleProviderOptions {
@@ -15,6 +15,8 @@ export interface OpenAICompatibleProviderOptions {
   /** 思维链保留回传：历史 assistant 消息中的同源 thinking 块以 reasoning_content 回带
    * （deepseek/qwen/glm/kimi 等新模型要求；端点不识别该字段时可显式 false 关闭）。 */
   reasoningContent?: boolean;
+  /** SSE 流连续无 data 事件的最大毫秒数（心跳注释不计），超时判为半开连接断开并走重试；<=0 关闭。 */
+  streamIdleTimeoutMs?: number;
   fetch?: typeof fetch;
 }
 
@@ -23,6 +25,10 @@ interface ToolAccumulator {
   name: string;
   arguments: string;
 }
+
+/** SSE 流 idle 默认上限：5 分钟无 data 事件判半开。思考型模型在端点缓冲思考时可能长时间静默，
+ * 该值需覆盖此类场景；代理/网关的心跳注释不会重置计时（见 readSseData）。 */
+export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000;
 
 export class OpenAICompatibleProvider implements Provider {
   readonly name: string;
@@ -88,7 +94,7 @@ export class OpenAICompatibleProvider implements Provider {
     let stopReason: string | null = null;
     let streamStarted = false;
     try {
-      for await (const data of readSseData(response.body)) {
+      for await (const data of readSseData(response.body, { idleTimeoutMs: this.options.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS })) {
         streamStarted = true;
         if (data === "[DONE]") break;
         const chunk = JSON.parse(data) as OpenAIChunk;
@@ -145,13 +151,38 @@ export class OpenAICompatibleProvider implements Provider {
   }
 }
 
-export async function* readSseData(body: ReadableStream<Uint8Array>): AsyncIterable<string> {
+export interface SseReadOptions {
+  /** 连续无 data 事件的最大毫秒数（心跳注释不重置计时），超时判为半开连接；<=0 关闭。 */
+  idleTimeoutMs?: number;
+}
+
+export async function* readSseData(body: ReadableStream<Uint8Array>, options?: SseReadOptions): AsyncIterable<string> {
+  const idleTimeoutMs = options?.idleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS;
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  // 计时只在产出 data 事件时重置：代理/网关的心跳注释（": ping"）会持续喂字节，
+  // 按字节或按 chunk 计时都会被心跳无限续命，半开连接永远暴露不出来
+  let idleDeadline = Date.now() + idleTimeoutMs;
+  const read = async (): Promise<ReadableStreamReadResult<Uint8Array>> => {
+    if (idleTimeoutMs <= 0) return reader.read();
+    const remaining = idleDeadline - Date.now();
+    if (remaining <= 0) throw idleTimeoutError(idleTimeoutMs);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        reader.read(),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(idleTimeoutError(idleTimeoutMs)), remaining);
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  };
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await read();
       buffer += decoder.decode(value, { stream: !done });
       while (true) {
         const match = /\r?\n\r?\n/.exec(buffer);
@@ -163,13 +194,26 @@ export async function* readSseData(body: ReadableStream<Uint8Array>): AsyncItera
           .filter((line) => line.startsWith("data:"))
           .map((line) => line.slice(5).trimStart())
           .join("\n");
-        if (data) yield data;
+        if (data) {
+          idleDeadline = Date.now() + idleTimeoutMs;
+          yield data;
+        }
       }
       if (done) break;
     }
   } finally {
+    // 超时/中断路径上读者可能还挂着 pending read：先 cancel 释放连接再 releaseLock
+    try { await reader.cancel(); } catch { /* 流已关闭时忽略 */ }
     reader.releaseLock();
   }
+}
+
+function idleTimeoutError(idleTimeoutMs: number): ProviderError {
+  return new ProviderError(
+    "stream_interrupted",
+    `SSE stream produced no data events for ${Math.round(idleTimeoutMs / 1000)}s (treating the connection as half-open)`,
+    true,
+  );
 }
 
 function toOpenAIMessages(system: string, messages: ChatMessage[], providerName?: string, reasoningContent = true): Array<Record<string, unknown>> {

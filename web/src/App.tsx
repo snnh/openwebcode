@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./lib/api";
 import { extractAttachmentPaths, toAttachments } from "./lib/attachments";
-import type { AgentErrorPayload, AppEvent, BackgroundTaskInfo, ChatMessage, ContextUsage, ContextWatermark, SessionDetail, TodoItem, WorkspaceIndexStatus } from "./lib/contracts";
+import type { AgentErrorPayload, AppEvent, BackgroundTaskInfo, ChatMessage, ContextUsage, ContextWatermark, SessionDetail, TodoItem } from "./lib/contracts";
 import { agentErrorToastText } from "./lib/agent-error";
 import { deriveWindowInfo } from "./lib/context-window";
 import { formatCurrency } from "./lib/format";
@@ -25,7 +25,6 @@ import { useStreamBuffers, type StreamBlock } from "./hooks/use-stream-buffers";
 const EMPTY_STREAM_BLOCKS: StreamBlock[] = [];
 import { applyDiagnosticsBadgeUpdate, clearDiagnosticsBadge } from "./lib/diagnostics";
 import { BottomPanel } from "./components/BottomPanel";
-import { StatusBar } from "./components/StatusBar";
 import { InteractionCard } from "./components/InteractionCard";
 import { PlanApprovalCard } from "./components/PlanApprovalCard";
 import { Composer } from "./components/Composer";
@@ -114,6 +113,13 @@ export function App(): ReactElement {
   useEffect(() => {
     if (!isMobile) setMobileSidebarOpen(false);
   }, [isMobile]);
+  // 移动端抽屉：Esc 关闭（点击遮罩关闭由 backdrop 的 onClick 承担）
+  useEffect(() => {
+    if (!isMobile || !sidebarVisible) return undefined;
+    const onKey = (event: KeyboardEvent): void => { if (event.key === "Escape") setMobileSidebarOpen(false); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [isMobile, sidebarVisible]);
   const [sendKey, setSendKeyState] = useState<SendKey>(loadSendKey);
   const [desktopNotify, setDesktopNotifyState] = useState<boolean>(loadDesktopNotifyEnabled);
   const [sessionDefaults, setSessionDefaultsState] = useState<SessionDefaults>(loadSessionDefaults);
@@ -168,8 +174,6 @@ export function App(): ReactElement {
   // 服务设置与更新检查：用于启动后一次性提示新版本（与 SettingsDialog 共用缓存键；retry:false 避免 501 重试）
   const serverSettings = useQuery({ queryKey: ["settings"], queryFn: api.settings, staleTime: 5 * 60_000 });
   const updateCheck = useQuery({ queryKey: ["update-check"], queryFn: api.updateCheck, staleTime: 5 * 60_000, retry: false });
-  // 符号索引状态（Phase 2）：server 未启用索引时 501，保持隐藏（retry:false）
-  const indexStatus = useQuery({ queryKey: ["index-status", currentId], queryFn: () => api.indexStatus(currentId!), enabled: Boolean(currentId), retry: false });
   // 待确认权限以服务端为准（刷新后可恢复），WS 事件只作即时补充
   const serverPermissions = useQuery({ queryKey: ["permissions", currentId], queryFn: () => api.pendingPermissions(currentId!), enabled: Boolean(currentId) });
   const { data: currentRun, applyEvent: applyRunEvent } = useAgentRun(currentId);
@@ -394,10 +398,6 @@ export function App(): ReactElement {
         if (event.type === "todos.updated") {
           queryClient.setQueryData<TodoItem[]>(["todos", event.sessionId], (event.payload as { items?: TodoItem[] }).items ?? []);
         }
-        // 索引状态事件（index.status）：payload 即完整状态对象，直接写缓存驱动状态栏
-        if (event.type === "index.status") {
-          queryClient.setQueryData<WorkspaceIndexStatus>(["index-status", event.sessionId], event.payload as WorkspaceIndexStatus);
-        }
         if (event.type === "message.delta") {
           const text = (event.payload as { text?: string }).text ?? "";
           queueStreamDelta(event.sessionId!, text);
@@ -445,6 +445,11 @@ export function App(): ReactElement {
             : Promise.resolve();
           if (refreshContext) queryClient.invalidateQueries({ queryKey: ["context", event.sessionId] });
           if (refreshCheckpoints) queryClient.invalidateQueries({ queryKey: ["checkpoints", event.sessionId] });
+          // 完整回滚会截断消息并替换账本：同时刷新消息列表与上下文视图，避免展示回退前的旧历史
+          if (event.type === "checkpoint.restored") {
+            void queryClient.invalidateQueries({ queryKey: queryKeys.detail(event.sessionId) });
+            void queryClient.invalidateQueries({ queryKey: ["context", event.sessionId] });
+          }
           if (event.type === "agent.state" && (event.payload as { state?: string }).state === "idle") {
             flushStreamBuffers();
             // 等持久化消息重新拉取完成后再撤掉临时流，避免思考/正文在切换到历史卡片时闪烁或消失。
@@ -1043,6 +1048,9 @@ export function App(): ReactElement {
 
   return (
     <>
+      {isMobile && sidebarVisible && (
+        <div className="wb-sidebar-backdrop" aria-hidden onClick={() => setMobileSidebarOpen(false)} />
+      )}
       <WorkbenchShell
         sidebarWidth={sidebarVisible ? layout.sidebarWidth : undefined}
         activityBar={
@@ -1265,13 +1273,16 @@ export function App(): ReactElement {
             windowUsage={windowInfo}
             subagentRuns={subagentRuns}
             {...(latestUsage ? { latestUsage } : {})}
-            {...(!isMobile && current ? {
-              status: {
-                state: currentState,
-                tokens: costSummary?.tokens,
-                costLabel: costSummary?.costLabel,
-                windowPercent: windowInfo?.utilization !== undefined ? Math.round(windowInfo.utilization * 100) : undefined,
-              },
+            {...(current ? {
+              // 桌面端并入完整状态项；移动端只给状态点（模式/模型由 BottomPanel 取自 session）
+              status: isMobile
+                ? { state: currentState }
+                : {
+                    state: currentState,
+                    tokens: costSummary?.tokens,
+                    costLabel: costSummary?.costLabel,
+                    windowPercent: windowInfo?.utilization !== undefined ? Math.round(windowInfo.utilization * 100) : undefined,
+                  },
             } : {})}
             evalEnabled={extensions.data?.some((extension) => extension.id === "owc-eval" && extension.enabled) === true}
             onNotice={notify}
@@ -1282,17 +1293,8 @@ export function App(): ReactElement {
             {...(!isMobile ? { onOpenSubagentTab: openSubagentTab } : {})}
           />
         }
-        // 桌面端状态项已并入 BottomPanel 标签条；状态栏仅移动端保留（底部面板在移动端为覆盖层）
-        statusBar={isMobile && current ? (
-          <StatusBar
-            session={current}
-            state={currentState}
-            tokens={costSummary?.tokens}
-            costLabel={costSummary?.costLabel}
-            indexStatus={indexStatus.data?.status}
-            {...(windowInfo?.utilization !== undefined ? { windowPercent: Math.round(windowInfo.utilization * 100) } : {})}
-          />
-        ) : null}
+        // 桌面端状态项并入 BottomPanel 标签条；移动端同样并入（精简版），不再渲染独立状态栏行
+        statusBar={null}
       />
       <input
         ref={importInput}
