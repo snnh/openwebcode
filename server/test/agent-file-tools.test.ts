@@ -49,6 +49,45 @@ describe("AgentRunner file tools", () => {
     expect(detail?.messages.some((message) => message.role === "tool" && message.content.some((block) => block.type === "tool_result" && block.content.includes('"matches":1')))).toBe(true);
   });
 
+  it("write_file/edit_file 成功后广播 scm.updated（SCM 面板自动刷新，阶段 2b）", async () => {
+    const root = await tempRoot("owc-agent-scm-event-");
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const session = await sessions.create({ cwd: root, provider: "files", model: "claude-opus-4-8" });
+    await sessions.updatePermissions(session.id, "acceptEdits", []);
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const core = makeFakeCore();
+    let turn = 0;
+    const provider: Provider = {
+      name: "files",
+      async *streamChat() {
+        if (turn++ === 0) {
+          yield { type: "tool_call", id: "write-1", name: "write_file", input: { path: "src/new.ts", content: "export {};\n" } };
+          yield { type: "tool_call", id: "edit-1", name: "edit_file", input: { path: "src/a.ts", oldText: "a", newText: "b" } };
+          yield { type: "tool_call", id: "read-1", name: "read_file", input: { path: "src/a.ts" } };
+          yield { type: "done", stopReason: "tool_use" };
+        } else {
+          yield { type: "done", stopReason: "end_turn" };
+        }
+      },
+    };
+    const providers = new ProviderRegistry();
+    providers.register(provider);
+    const events = new EventBus();
+    const published: Array<{ type: string; sessionId?: string; payload: unknown }> = [];
+    events.on("event", (event: { type: string; sessionId?: string; payload: unknown }) => published.push(event));
+    const runner = new AgentRunner(sessions, providers, core, events, pricing);
+
+    await runner.run(session.id, "write then edit");
+
+    const scmEvents = published.filter((event) => event.type === "scm.updated");
+    // write_file 与 edit_file 各发一次；read_file 不发
+    expect(scmEvents).toHaveLength(2);
+    expect(scmEvents[0]).toMatchObject({ sessionId: session.id, payload: { sessionId: session.id, reason: "file.write", path: "src/new.ts" } });
+    expect(scmEvents[1]).toMatchObject({ sessionId: session.id, payload: { sessionId: session.id, reason: "file.write", path: "src/a.ts" } });
+  });
+
   it("defaults glob/grep path to the session root when omitted", async () => {
     const root = await tempRoot("owc-agent-glob-");
     const sessions = new SessionStore(path.join(root, "sessions"));
