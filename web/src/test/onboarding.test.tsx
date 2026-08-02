@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EmptyState } from "../components/EmptyState";
 import { NewSessionDialog } from "../components/NewSessionDialog";
-import { ProviderProfilesSection, SettingsDialog, type SettingsTab } from "../components/SettingsDialog";
+import { ModelProvidersSection, SettingsDialog, type SettingsTab } from "../components/SettingsDialog";
 import { api } from "../lib/api";
 import type { ProviderProfilesView, SettingsView } from "../lib/contracts";
 import { renderWithClient } from "./helpers/with-client";
@@ -34,7 +34,7 @@ function stubCapabilitiesFetch(): void {
 function renderSettings(initialTab?: SettingsTab): ReturnType<typeof render> {
   vi.spyOn(api, "providerProfiles").mockResolvedValue(emptyProfiles);
   vi.spyOn(api, "settings").mockResolvedValue(emptySettings);
-  // 模型目录页签会同时挂载 ProviderProfilesSection / ModelAccessSection / ModelCatalogSection
+  // 模型目录页签会同时挂载 ModelProvidersSection / ModelCatalogSyncSection / ModelCatalogSection
   vi.spyOn(api, "models").mockResolvedValue([]);
   vi.spyOn(api, "modelSyncStatus").mockResolvedValue({ count: 0 });
   return renderWithClient(
@@ -70,6 +70,21 @@ describe("SettingsDialog 深链 initialTab", () => {
     renderSettings("models");
     await waitFor(() => expect(document.getElementById("settings-section-title")).toHaveTextContent("模型目录"));
     expect(screen.getByRole("button", { name: /^模型目录$/ })).toHaveAttribute("aria-current", "page");
+  });
+
+  it("initialTab=modelSelection 时打开模型选择页签", async () => {
+    renderSettings("modelSelection");
+    await waitFor(() => expect(document.getElementById("settings-section-title")).toHaveTextContent("模型选择"));
+    expect(screen.getByRole("button", { name: /^模型选择$/ })).toHaveAttribute("aria-current", "page");
+  });
+
+  it("initialTab=web 时打开联网服务页签", async () => {
+    renderSettings("web");
+    await waitFor(() => expect(document.getElementById("settings-section-title")).toHaveTextContent("联网服务"));
+    expect(screen.getByRole("button", { name: /^联网服务$/ })).toHaveAttribute("aria-current", "page");
+    // 联网服务商分区随页签挂载（含 search/fetch 当前配置选择）
+    expect(await screen.findByRole("heading", { name: "联网服务商", level: 4 })).toBeInTheDocument();
+    expect(screen.getByLabelText("Web Search")).toBeInTheDocument();
   });
 });
 
@@ -127,10 +142,10 @@ describe("EmptyState 快速开始引导", () => {
   });
 });
 
-describe("ProviderProfilesSection 测试连接", () => {
+describe("ModelProvidersSection 测试连接", () => {
   function renderProfiles(): ReturnType<typeof render> {
     vi.spyOn(api, "providerProfiles").mockResolvedValue(emptyProfiles);
-    return renderWithClient(<ProviderProfilesSection />);
+    return renderWithClient(<ModelProvidersSection />);
   }
 
   it("成功：显示绿色结果与延迟，请求体取表单当前值", async () => {
@@ -138,7 +153,7 @@ describe("ProviderProfilesSection 测试连接", () => {
     const view = renderProfiles();
     fireEvent.change(await view.findByPlaceholderText("服务商名称"), { target: { value: "测试服务" } });
     fireEvent.change(view.getByPlaceholderText(/Base URL/), { target: { value: "https://api.example.test/v1" } });
-    fireEvent.change(view.getAllByPlaceholderText("API Key")[0]!, { target: { value: "sk-test" } });
+    fireEvent.change(view.getByPlaceholderText("API Key"), { target: { value: "sk-test" } });
     fireEvent.click(view.getByRole("button", { name: "测试连接" }));
 
     expect(await view.findByText(/连接成功/)).toHaveTextContent("123 ms");

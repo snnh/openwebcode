@@ -33,11 +33,11 @@ export const NETWORK_SETTINGS_GROUP = "network";
 
 /**
  * 服务端设置分组 → 设置页签归属。分组 id 由服务端保持稳定（见 server/src/settings-service.ts），
- * web 端决定每个分组渲染在哪个页签：模型选择/模型目录与同步 → 模型目录，语言与货币 → 通用，
+ * web 端决定每个分组渲染在哪个页签：模型选择 → 模型选择，模型目录与同步 → 模型目录，语言与货币 → 通用，
  * 汇率 → 模型定价，执行器/存储/更新检查 → 服务信息，监听与端口 → 远程访问。
  */
 export const SETTING_GROUP_TAB: Record<string, SettingsTab> = {
-  modelSelection: "models",
+  modelSelection: "modelSelection",
   models: "models",
   general: "general",
   executor: "info",
@@ -47,8 +47,10 @@ export const SETTING_GROUP_TAB: Record<string, SettingsTab> = {
   updateCheck: "info",
 };
 
-/** 「模型目录」页签承载的设置分组（模型选择 + 模型目录与同步） */
-export const MODELS_TAB_GROUPS = new Set(["modelSelection", "models"]);
+/** 「模型选择」页签承载的设置分组（会话默认 + 四档角色 + 快速模型） */
+export const MODEL_SELECTION_GROUPS = new Set(["modelSelection"]);
+/** 「模型目录」页签承载的设置分组（模型目录与同步） */
+export const MODELS_TAB_GROUPS = new Set(["models"]);
 /** 「服务信息」页签承载的设置分组（执行器 + 存储 + 更新检查，系统级参数） */
 export const INFO_TAB_GROUPS = new Set(["executor", "service", "updateCheck"]);
 
@@ -59,7 +61,6 @@ export const SETTINGS_FIELD_EN: Record<string, { label: string; description?: st
   fastModel: { label: "Fast model", description: "Used for context compaction and Content Lens, and as the fast sub-agent role; models come from the unified catalog of enabled providers" },
   fastModelThinking: { label: "Thinking" },
   fastModelEffort: { label: "Effort" },
-  fastModelMaxTokens: { label: "Maximum output limit", description: "Hard output-token ceiling for internal tasks; individual tasks may use a smaller limit" },
   defaultModel: { label: "Session default model", description: "Default provider and model for new sessions; leave empty to fall back to the first catalog model of the first enabled provider" },
   roleModelPremium: { label: "Premium tier model", description: "Model for the premium sub-agent role: hard reasoning and deep review; falls back to the balanced tier when unset" },
   roleModelBalanced: { label: "Balanced tier model", description: "Model for the balanced sub-agent role: the default quality/cost trade-off; falls back to the session default when unset" },
