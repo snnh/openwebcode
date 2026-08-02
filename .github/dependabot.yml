@@ -7,6 +7,16 @@ updates:
     groups:
       minor-patch:
         update-types: ["minor", "patch"]
+    ignore:
+      # 刻意停留在 ESLint 9（flat config + typescript-eslint@8 已验证组合）
+      - dependency-name: eslint
+        update-types: ["version-update:semver-major"]
+      # 运行时固定 Node 24（CI 与 bundled Node），@types/node 跟随主版本
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      # TS 7 为原生预览线，toolchain（typescript-eslint/vite）未验证
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: npm
     directory: /web
     schedule:
@@ -14,6 +24,12 @@ updates:
     groups:
       minor-patch:
         update-types: ["minor", "patch"]
+    ignore:
+      # pdfjs-dist 精确锁定 4.10.38（PDF 管线按此版本验证）
+      - dependency-name: pdfjs-dist
+      # TS 7 为原生预览线，toolchain（typescript-eslint/vite）未验证
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
