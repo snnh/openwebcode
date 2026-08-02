@@ -8,6 +8,7 @@
   "fastModelMaxTokens": 4096,
   "defaultLanguage": "zh-CN",
   "defaultCurrency": "CNY",
+  "agentMaxTurns": 50,
   "corePath": "../build/Debug/owc-exec.exe",
   "coreRequestTimeoutMs": 130000,
   "sandboxAllowPaths": [],

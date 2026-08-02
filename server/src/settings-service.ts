@@ -179,6 +179,12 @@ function requireFastModelMaxTokens(value: SettingValue): void {
   }
 }
 
+function requireAgentMaxTurns(value: SettingValue): void {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > 1000) {
+    throw new SettingsValidationError("单条消息最大轮次需为 1–1000 的整数");
+  }
+}
+
 function requirePathList(value: SettingValue): void {
   if (!Array.isArray(value) || value.length > 16 || value.some((entry) => typeof entry !== "string" || entry.trim() === "")) {
     throw new SettingsValidationError("允许目录必须是最多 16 项的非空路径列表");
@@ -231,6 +237,7 @@ const FIELDS: FieldSpec[] = [
   // 通用（热生效）
   { key: "defaultLanguage", group: "general", label: "默认语言", type: "select", env: "OWC_DEFAULT_LANGUAGE", defaultValue: "zh-CN", restartRequired: false, options: LANGUAGE_OPTIONS },
   { key: "defaultCurrency", group: "general", label: "默认货币", type: "select", env: "OWC_DEFAULT_CURRENCY", defaultValue: "CNY", restartRequired: false, options: ["USD", "CNY"], fromEnv: envCurrency },
+  { key: "agentMaxTurns", group: "general", label: "单条消息最大轮次", type: "number", env: "OWC_AGENT_MAX_TURNS", defaultValue: 50, restartRequired: false, fromEnv: envNumber, validate: requireAgentMaxTurns, description: "每条用户消息允许的最大 agent 轮次，达到后当前任务以失败收尾；长任务可调大（1–1000）" },
   // 执行器
   { key: "corePath", group: "executor", label: "执行器路径", type: "text", env: "OWC_CORE_PATH", defaultValue: "../build/Debug/owc-exec.exe", restartRequired: true, validate: requireNonEmpty },
   { key: "coreRequestTimeoutMs", group: "executor", label: "执行器请求超时 (ms)", type: "number", env: "OWC_CORE_REQUEST_TIMEOUT_MS", defaultValue: 130_000, restartRequired: false, fromEnv: envNumber },
@@ -415,6 +422,7 @@ export class SettingsService {
       dataDir: value("dataDir") as string,
       coreRequestTimeoutMs: value("coreRequestTimeoutMs") as number,
       gcMaxBytes: value("gcMaxBytes") as number,
+      agentMaxTurns: value("agentMaxTurns") as number,
       defaultLanguage: value("defaultLanguage") as string,
       defaultCurrency: value("defaultCurrency") as "USD" | "CNY",
       pythonEnv: value("pythonEnv") as PythonEnv,
