@@ -26,6 +26,7 @@ typedef enum {
 typedef enum { OWC_FS_TYPE_FILE, OWC_FS_TYPE_DIRECTORY, OWC_FS_TYPE_OTHER } owc_fs_type;
 
 typedef struct { char *content; size_t total_lines; int truncated; } owc_fs_read_result;
+typedef struct { unsigned char *data; size_t size; int truncated; } owc_fs_binary_result;
 typedef struct { owc_fs_type type; unsigned long long size; long long modified_ms; } owc_fs_stat_result;
 typedef struct { char *name; owc_fs_type type; unsigned long long size; } owc_fs_entry;
 typedef struct { owc_fs_entry *entries; size_t count; int truncated; } owc_fs_list_result;
@@ -43,6 +44,10 @@ owc_fs_error owc_fs_write(const char *root, const char *path, const char *conten
  * platform implementation as fs.write. This is intentionally separate from
  * text writes so agent-facing fs.write remains UTF-8 only. */
 owc_fs_error owc_fs_write_binary(const char *root, const char *path, const unsigned char *content, size_t length, int create_dirs);
+/* Root-bound binary read through the same no-reparse platform path as
+ * fs.read/fs.hash.  At most OWC_FS_MAX_BINARY_FILE_SIZE bytes are returned;
+ * when the file is larger the prefix is returned with truncated set. */
+owc_fs_error owc_fs_read_binary(const char *root, const char *path, owc_fs_binary_result *result);
 owc_fs_error owc_fs_edit(const char *root, const char *path, const char *old_text, size_t old_length, const char *new_text, size_t new_length, int replace_all, size_t *matches);
 owc_fs_error owc_fs_stat(const char *root, const char *path, owc_fs_stat_result *result);
 /** SHA-256 of one regular, root-bound file. The existing 16 MiB read budget is enforced. */
@@ -59,6 +64,7 @@ owc_fs_error owc_fs_watch_poll(owc_fs_watch *watch, size_t maximum_events, owc_f
 void owc_fs_watch_close(owc_fs_watch *watch);
 void owc_fs_watch_result_free(owc_fs_watch_result *result);
 void owc_fs_read_free(owc_fs_read_result *result);
+void owc_fs_binary_free(owc_fs_binary_result *result);
 void owc_fs_list_free(owc_fs_list_result *result);
 void owc_fs_glob_free(owc_fs_glob_result *result);
 void owc_fs_grep_free(owc_fs_grep_result *result);

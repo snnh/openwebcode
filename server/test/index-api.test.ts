@@ -46,13 +46,14 @@ function createFakeScanCore(): CoreClientLike {
         return { chunks: [], nextSeq: request.afterSeq, truncated: false };
       }
       servedJobs.add(request.jobId);
+      // job.output 的 chunk.data 按真实 core 协议 base64 编码
       if (request.jobId.endsWith("-x")) {
         const files = extractFiles.get(request.jobId) ?? [];
         const extractJsonl = files.map((filePath) => JSON.stringify({ path: filePath, symbols: SYMBOLS[filePath] ?? [] })).join("\n") + "\n"
           + JSON.stringify({ summary: { files: files.length, symbols: 1, truncated: false, reason: null } }) + "\n";
-        return { chunks: [{ seq: 1, stream: "stdout" as const, data: extractJsonl }], nextSeq: 2, truncated: false };
+        return { chunks: [{ seq: 1, stream: "stdout" as const, data: Buffer.from(extractJsonl, "utf8").toString("base64") }], nextSeq: 2, truncated: false };
       }
-      return { chunks: [{ seq: 1, stream: "stdout" as const, data: jsonl }], nextSeq: 2, truncated: false };
+      return { chunks: [{ seq: 1, stream: "stdout" as const, data: Buffer.from(jsonl, "utf8").toString("base64") }], nextSeq: 2, truncated: false };
     },
     async cancelJob(request: { jobId: string }) { return { jobId: request.jobId, accepted: true as const }; },
     async watchFiles() { throw new Error("fs.watch unavailable"); },

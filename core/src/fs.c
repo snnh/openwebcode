@@ -66,6 +66,16 @@ owc_fs_error owc_fs_write_binary(const char *root,const char *path,const unsigne
     return owc_fs_platform_write(root,path,content,length,create_dirs);
 }
 
+owc_fs_error owc_fs_read_binary(const char *root,const char *path,owc_fs_binary_result *r) {
+    owc_fs_bytes b={0}; owc_fs_error e;
+    if(!r||!valid_path(root,path)) return OWC_FS_INVALID_ARGUMENT;
+    memset(r,0,sizeof(*r));
+    e=owc_fs_platform_read_binary(root,path,OWC_FS_MAX_BINARY_FILE_SIZE,&b,&r->truncated);
+    if(e) return e;
+    r->data=b.data; r->size=b.length; return OWC_FS_OK;
+}
+void owc_fs_binary_free(owc_fs_binary_result *r) { if(r) { free(r->data); memset(r,0,sizeof(*r)); } }
+
 owc_fs_error owc_fs_edit(const char *root,const char *path,const char *old_text,size_t oldn,const char *new_text,size_t newn,int replace_all,size_t *matches) {
     owc_fs_bytes b={0}; owc_fs_error e; size_t i,count=0,outn,read_at=0,write_at=0; unsigned char *out;
     if(matches) *matches=0;
