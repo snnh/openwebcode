@@ -236,6 +236,134 @@ describe("ScmService（0.4.0 Phase 4a，真实 git 集成）", () => {
   });
 });
 
+describe("stage / unstage / discard / log（阶段 2a/2f）", () => {
+  /** 录制型 fake GitExec：按命令前缀回放响应，断言 args 原样（未 shell 拼接）。 */
+  function fakeGit(responses: Array<{ match: (args: string[]) => boolean; stdout?: string; stderr?: string; exitCode?: number }>) {
+    const calls: string[][] = [];
+    const exec = async (args: string[]): Promise<{ stdout: string; stderr: string; exitCode: number }> => {
+      calls.push([...args]);
+      for (const response of responses) {
+        if (response.match(args)) return { stdout: response.stdout ?? "", stderr: response.stderr ?? "", exitCode: response.exitCode ?? 0 };
+      }
+      return { stdout: "", stderr: "", exitCode: 0 };
+    };
+    return { calls, exec };
+  }
+  const isRepo = { match: (args: string[]) => args[0] === "rev-parse", stdout: "true\n" };
+
+  async function setupWithExec(exec: (args: string[], cwd: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>) {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-scm-fake-"));
+    roots.push(root);
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const session = await sessions.create({ cwd: root, provider: "fake", model: "fake-model" });
+    const events = new EventBus();
+    const published: Array<{ type: string; payload: unknown }> = [];
+    events.on("event", (event: { type: string; payload: unknown }) => published.push(event));
+    const scm = new ScmService(unusedCore(), sessions, events, { worktreeRoot: path.join(root, "worktrees"), exec });
+    return { root, session, published, scm };
+  }
+
+  it("stage：git add -- <files>，参数逐项传递并广播 scm.updated", async () => {
+    const fake = fakeGit([isRepo]);
+    const { session, published, scm } = await setupWithExec(fake.exec);
+    const result = await scm.stage(session.id, "repo", ["a.txt", "dir/b.txt"]);
+    expect(result).toEqual({ ok: true });
+    expect(fake.calls).toEqual([["rev-parse", "--is-inside-work-tree"], ["add", "--", "a.txt", "dir/b.txt"]]);
+    const event = published.find((item) => item.type === "scm.updated");
+    expect(event?.payload).toMatchObject({ sessionId: session.id, reason: "stage" });
+    // 非法路径（绝对路径/../）在 exec 前被拒绝
+    await expect(scm.stage(session.id, "repo", ["../x"])).rejects.toThrow("Invalid relative path");
+    expect(fake.calls).toHaveLength(2);
+  });
+
+  it("unstage：git restore --staged -- <files>", async () => {
+    const fake = fakeGit([isRepo]);
+    const { session, scm } = await setupWithExec(fake.exec);
+    await scm.unstage(session.id, "repo", ["staged.txt"]);
+    expect(fake.calls[1]).toEqual(["restore", "--staged", "--", "staged.txt"]);
+  });
+
+  it("discard：status 分拣 tracked/untracked，restore + clean -f；缺 force 拒绝 untracked", async () => {
+    const fake = fakeGit([
+      isRepo,
+      { match: (args) => args[0] === "status", stdout: "## main\0 M tracked.txt\0?? new.txt\0?? newdir/\0" },
+    ]);
+    const { session, published, scm } = await setupWithExec(fake.exec);
+    // untracked 缺 force -> 拒绝，且不执行任何 restore/clean
+    await expect(scm.discard(session.id, "repo", ["tracked.txt", "new.txt"])).rejects.toThrow("force");
+    expect(fake.calls.filter((args) => args[0] === "restore" || args[0] === "clean")).toHaveLength(0);
+    // 带 force：tracked 走 restore，untracked（含未跟踪目录内文件）走 clean -f
+    const result = await scm.discard(session.id, "repo", ["tracked.txt", "new.txt", "newdir/inner.txt"], { force: true });
+    expect(result).toEqual({ ok: true });
+    expect(fake.calls.find((args) => args[0] === "restore")).toEqual(["restore", "--", "tracked.txt"]);
+    expect(fake.calls.find((args) => args[0] === "clean")).toEqual(["clean", "-f", "--", "new.txt", "newdir/inner.txt"]);
+    const event = published.find((item) => item.type === "scm.updated");
+    expect(event?.payload).toMatchObject({ sessionId: session.id, reason: "discard" });
+  });
+
+  it("log：\\x1f 分隔解析为结构化提交；limit 钳制 1-200", async () => {
+    const fake = fakeGit([
+      isRepo,
+      {
+        match: (args) => args[0] === "log",
+        stdout: "abc123def456\x1fabc123d\x1fAlice\x1f2 hours ago\x1ffeat: subject line\nbbb222\x1fbbb222\x1fBob\x1f3 days ago\x1finitial",
+      },
+    ]);
+    const { session, scm } = await setupWithExec(fake.exec);
+    const commits = await scm.log(session.id, "repo");
+    expect(commits).toEqual([
+      { hash: "abc123def456", shortHash: "abc123d", author: "Alice", relTime: "2 hours ago", subject: "feat: subject line" },
+      { hash: "bbb222", shortHash: "bbb222", author: "Bob", relTime: "3 days ago", subject: "initial" },
+    ]);
+    // 默认 -n 50
+    expect(fake.calls.find((args) => args[0] === "log")).toContain("50");
+    // 钳制：0 -> 1，9999 -> 200
+    fake.calls.length = 0;
+    await scm.log(session.id, "repo", 0);
+    await scm.log(session.id, "repo", 9999);
+    const logCalls = fake.calls.filter((args) => args[0] === "log");
+    expect(logCalls[0]).toContain("1");
+    expect(logCalls[1]).toContain("200");
+  });
+
+  it("log：空仓库（无提交）返回空数组而非报错", async () => {
+    const fake = fakeGit([
+      isRepo,
+      { match: (args) => args[0] === "log", stderr: "fatal: your current branch 'main' does not have any commits yet", exitCode: 128 },
+    ]);
+    const { session, scm } = await setupWithExec(fake.exec);
+    expect(await scm.log(session.id, "repo")).toEqual([]);
+    // 非空仓库的真实错误仍抛出
+    const failing = fakeGit([isRepo, { match: (args) => args[0] === "log", stderr: "fatal: bad object HEAD", exitCode: 128 }]);
+    const other = await setupWithExec(failing.exec);
+    await expect(other.scm.log(other.session.id, "repo")).rejects.toThrow("git log failed");
+  });
+
+  it("真实 git：stage/unstage/discard/log 端到端", async () => {
+    const { repo, session, scm } = await setup();
+    await writeFile(path.join(repo, "s.txt"), "staged\n");
+    await scm.stage(session.id, repo, ["s.txt"]);
+    let status = await scm.status(session.id, repo);
+    expect(status.staged.map((entry) => entry.path)).toEqual(["s.txt"]);
+    await scm.unstage(session.id, repo, ["s.txt"]);
+    status = await scm.status(session.id, repo);
+    expect(status.staged).toEqual([]);
+    expect(status.untracked.map((entry) => entry.path)).toEqual(["s.txt"]);
+    // tracked 修改 + untracked 新文件一起 discard
+    await writeFile(path.join(repo, "a.txt"), "changed\n");
+    await scm.discard(session.id, repo, ["a.txt", "s.txt"], { force: true });
+    expect(await readFile(path.join(repo, "a.txt"), "utf8")).toBe("hello\n");
+    status = await scm.status(session.id, repo);
+    expect(status.totals).toEqual({ staged: 0, unstaged: 0, untracked: 0 });
+    // log 含初始提交
+    const commits = await scm.log(session.id, repo);
+    expect(commits).toHaveLength(1);
+    expect(commits[0]).toMatchObject({ author: "Test", subject: "initial" });
+    expect(commits[0]!.hash).toMatch(/^[0-9a-f]{40}$/);
+  });
+});
+
 describe("git_commit 权限链（0.4.0 Phase 4a）", () => {
   const coordinator = new PermissionCoordinator(new EventBus());
   it("ask 模式默认需确认；yolo 不隐含提交授权；allow_always 规则按会话授权", () => {

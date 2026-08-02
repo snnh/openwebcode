@@ -165,4 +165,119 @@ describe("ScmPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "确认" }));
     await waitFor(() => expect(remove).toHaveBeenCalledWith("s1", "wt-feature", { force: true }));
   });
+
+  it("行内按钮：unstaged 组可暂存，staged 组可取消暂存，成功后刷新状态", async () => {
+    mockStatus();
+    const statusSpy = vi.spyOn(api, "scmStatus");
+    const stage = vi.spyOn(api, "scmStage").mockResolvedValue({ staged: ["src/app.ts"] });
+    const unstage = vi.spyOn(api, "scmUnstage").mockResolvedValue({ unstaged: ["src/staged.ts"] });
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "暂存 src/app.ts" }));
+    await waitFor(() => expect(stage).toHaveBeenCalledWith("s1", ["src/app.ts"]));
+    await waitFor(() => expect(statusSpy.mock.calls.length).toBeGreaterThan(1));
+
+    fireEvent.click(screen.getByRole("button", { name: "取消暂存 src/staged.ts" }));
+    await waitFor(() => expect(unstage).toHaveBeenCalledWith("s1", ["src/staged.ts"]));
+  });
+
+  it("放弃 tracked 更改需先确认，确认后调 discard（不带 force）", async () => {
+    mockStatus();
+    const discard = vi.spyOn(api, "scmDiscard").mockResolvedValue({ discarded: ["README.md"] });
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "放弃 README.md 的更改" }));
+    expect(screen.getByText("确认放弃更改？")).toBeInTheDocument();
+    expect(discard).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(discard).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "放弃 README.md 的更改" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认" }));
+    await waitFor(() => expect(discard).toHaveBeenCalledWith("s1", ["README.md"], false));
+  });
+
+  it("删除未跟踪文件需先确认，确认后调 discard 且 force=true", async () => {
+    mockStatus();
+    const discard = vi.spyOn(api, "scmDiscard").mockResolvedValue({ discarded: ["notes.txt"] });
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "删除未跟踪文件 notes.txt" }));
+    expect(screen.getByText("确认删除该未跟踪文件？")).toBeInTheDocument();
+    expect(discard).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "确认" }));
+    await waitFor(() => expect(discard).toHaveBeenCalledWith("s1", ["notes.txt"], true));
+  });
+
+  it("点击未跟踪条目改走文件内容预览（不调 diff），头部标注未跟踪", async () => {
+    mockStatus();
+    const readFile = vi.spyOn(api, "readFile").mockResolvedValue({ content: "hello notes", encoding: "utf8", truncated: false, revision: "r1" });
+    const scmDiff = vi.spyOn(api, "scmDiff");
+    renderPanel();
+
+    fireEvent.click(await screen.findByText("notes.txt"));
+    await waitFor(() => expect(readFile).toHaveBeenCalledWith("s1", "notes.txt"));
+    expect(await screen.findByLabelText("预览未跟踪文件 notes.txt")).toBeInTheDocument();
+    expect(screen.getByText(/（未跟踪）/)).toBeInTheDocument();
+    // CodeBlock 高亮就绪前渲染纯文本；高亮注入后可能拆成多个 token span，按 textContent 匹配
+    await waitFor(() => {
+      expect(document.querySelector(".code-block")?.textContent).toContain("hello notes");
+    });
+    expect(scmDiff).not.toHaveBeenCalled();
+  });
+
+  it("历史折叠区：展开后拉取 git log，一行式展示 shortHash/subject/author/relTime", async () => {
+    mockStatus();
+    const scmLog = vi.spyOn(api, "scmLog").mockResolvedValue({
+      commits: [{ hash: "abcdef1234567890", shortHash: "abcdef1", author: "Alice", relTime: "2 天前", subject: "feat: add panel" }],
+    });
+    renderPanel();
+
+    expect(scmLog).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole("button", { name: /历史/ }));
+    await waitFor(() => expect(scmLog).toHaveBeenCalledWith("s1", 50));
+    expect(await screen.findByText("abcdef1")).toBeInTheDocument();
+    expect(screen.getByText("feat: add panel")).toBeInTheDocument();
+    expect(screen.getByText("Alice · 2 天前")).toBeInTheDocument();
+  });
+
+  it("历史折叠区：空仓库显示空态文案", async () => {
+    mockStatus();
+    vi.spyOn(api, "scmLog").mockResolvedValue({ commits: [] });
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: /历史/ }));
+    expect(await screen.findByText("暂无提交记录。")).toBeInTheDocument();
+  });
+
+  it("合回 worktree 成功：提示并刷新 worktrees/status", async () => {
+    mockStatus();
+    const worktreesSpy = vi.spyOn(api, "scmWorktrees").mockResolvedValue(worktrees);
+    const merge = vi.spyOn(api, "scmMergeWorktree").mockResolvedValue({ merged: true, conflicts: [], strategy: "merge", branch: "main" });
+    const { onNotice } = renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "合回 worktree wt-feature" }));
+    await waitFor(() => expect(merge).toHaveBeenCalledWith("s1", "wt-feature"));
+    await waitFor(() => expect(onNotice).toHaveBeenCalledWith(expect.stringContaining("合回")));
+    await waitFor(() => expect(worktreesSpy.mock.calls.length).toBeGreaterThan(1));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("合回 worktree 冲突：展开展示结构化冲突文件列表", async () => {
+    mockStatus();
+    vi.spyOn(api, "scmWorktrees").mockResolvedValue(worktrees);
+    vi.spyOn(api, "scmMergeWorktree").mockResolvedValue({ merged: false, conflicts: ["src/a.ts", "src/b.ts"], strategy: "merge", branch: "main" });
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "合回 worktree wt-feature" }));
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(screen.getByText("src/a.ts")).toBeInTheDocument();
+    expect(screen.getByText("src/b.ts")).toBeInTheDocument();
+    expect(screen.getByText(/冲突文件（2）/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "关闭冲突列表" }));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
 });

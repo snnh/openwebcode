@@ -8,12 +8,14 @@ import type { EventBus } from "../events/event-bus.js";
 import type { SessionStore } from "../sessions/session-store.js";
 import type { ShellBackend } from "../sessions/types.js";
 import { coreExecShell } from "../agent/shell-detect.js";
+import { decodeProcessOutputChunks } from "../agent/output-decoder.js";
 import type {
   GitCommitInput,
   GitCommitResult,
   GitDiffOptions,
   GitDiffResult,
   GitExec,
+  GitLogEntry,
   GitStatusEntry,
   GitStatusResult,
   WorktreeEntry,
@@ -247,8 +249,10 @@ export class ScmService {
         if (status.state === "cancelled" || status.state === "timed_out") {
           throw new Error(status.error ?? `git job ${status.state}`);
         }
-        const stdout = output.filter((chunk) => chunk.stream === "stdout").sort((a, b) => a.seq - b.seq).map((chunk) => chunk.data).join("");
-        const stderr = output.filter((chunk) => chunk.stream === "stderr").sort((a, b) => a.seq - b.seq).map((chunk) => chunk.data).join("");
+        // job.output 的 chunk.data 是 base64：先整体解码再按流分拣（保持跨块多字节字符完整）
+        const decoded = decodeProcessOutputChunks(output);
+        const stdout = decoded.filter((chunk) => chunk.stream === "stdout").map((chunk) => chunk.data).join("");
+        const stderr = decoded.filter((chunk) => chunk.stream === "stderr").map((chunk) => chunk.data).join("");
         return { stdout, stderr, exitCode: status.exitCode ?? 1 };
       }
     } finally {
@@ -343,6 +347,77 @@ export class ScmService {
     const status = await this.status(sessionId, cwd, context);
     this.publish(sessionId, "commit", { commit: commit.slice(0, 12) });
     return { commit, subject: message.split("\n", 1)[0] ?? "", status };
+  }
+
+  // ---- stage / unstage / discard（阶段 2a）----
+
+  /** 暂存指定相对路径（git add -- <files>）。 */
+  async stage(sessionId: string, cwd: string, files: string[], context: { shellBackend?: ShellBackend; signal?: AbortSignal } = {}): Promise<{ ok: true }> {
+    const validated = validateFileList(files);
+    await this.requireRepo(sessionId, cwd, context);
+    const result = await this.git(sessionId, cwd, ["add", "--", ...validated], context);
+    if (result.exitCode !== 0) throw new Error(`git add failed: ${result.stderr.trim() || `exit ${result.exitCode}`}`);
+    this.publish(sessionId, "stage", { files: validated });
+    return { ok: true };
+  }
+
+  /** 取消暂存（git restore --staged -- <files>），工作区内容不变。 */
+  async unstage(sessionId: string, cwd: string, files: string[], context: { shellBackend?: ShellBackend; signal?: AbortSignal } = {}): Promise<{ ok: true }> {
+    const validated = validateFileList(files);
+    await this.requireRepo(sessionId, cwd, context);
+    const result = await this.git(sessionId, cwd, ["restore", "--staged", "--", ...validated], context);
+    if (result.exitCode !== 0) throw new Error(`git restore --staged failed: ${result.stderr.trim() || `exit ${result.exitCode}`}`);
+    this.publish(sessionId, "unstage", { files: validated });
+    return { ok: true };
+  }
+
+  /**
+   * 丢弃变更：先 status 分拣 tracked/untracked——tracked 用 git restore 还原工作区，
+   * untracked 用 git clean -f 删除（不可恢复，路由层要求带 force 双确认）。
+   */
+  async discard(sessionId: string, cwd: string, files: string[], options: { force?: boolean } = {}, context: { shellBackend?: ShellBackend; signal?: AbortSignal } = {}): Promise<{ ok: true }> {
+    const validated = validateFileList(files);
+    await this.requireRepo(sessionId, cwd, context);
+    const status = await this.status(sessionId, cwd, context);
+    const untrackedPaths = status.untracked.map((entry) => entry.path);
+    // porcelain 对整目录未跟踪只报 "dir/"；其内文件同样按 untracked 处理
+    const isUntracked = (file: string): boolean => untrackedPaths.some((entry) => entry === file || (entry.endsWith("/") && file.startsWith(entry)));
+    const untracked = validated.filter(isUntracked);
+    const tracked = validated.filter((file) => !isUntracked(file));
+    if (untracked.length > 0 && !options.force) {
+      throw new DiscardRequiresForceError(`Discarding untracked files requires force: ${untracked.join(", ")}`);
+    }
+    if (tracked.length > 0) {
+      const restored = await this.git(sessionId, cwd, ["restore", "--", ...tracked], context);
+      if (restored.exitCode !== 0) throw new Error(`git restore failed: ${restored.stderr.trim() || `exit ${restored.exitCode}`}`);
+    }
+    if (untracked.length > 0) {
+      const cleaned = await this.git(sessionId, cwd, ["clean", "-f", "--", ...untracked], context);
+      if (cleaned.exitCode !== 0) throw new Error(`git clean failed: ${cleaned.stderr.trim() || `exit ${cleaned.exitCode}`}`);
+    }
+    this.publish(sessionId, "discard", { files: validated });
+    return { ok: true };
+  }
+
+  // ---- 只读历史（阶段 2f）----
+
+  /** git log 只读历史；空仓库（无提交）返回空数组而非报错。limit 钳制 1-200。 */
+  async log(sessionId: string, cwd: string, limit = 50, context: { shellBackend?: ShellBackend; signal?: AbortSignal } = {}): Promise<GitLogEntry[]> {
+    const clamped = Number.isFinite(limit) ? Math.min(200, Math.max(1, Math.trunc(limit))) : 50;
+    await this.requireRepo(sessionId, cwd, context);
+    const result = await this.git(sessionId, cwd, ["log", "--pretty=format:%H%x1f%h%x1f%an%x1f%ar%x1f%s", "-n", String(clamped)], context);
+    if (result.exitCode !== 0) {
+      // 空仓库：stderr 文案随 git 版本/语言变化，宽松匹配
+      if (/does not have any commits|no commits yet|bad default revision|unknown revision|ambiguous argument/i.test(result.stderr)) return [];
+      throw new Error(`git log failed: ${result.stderr.trim() || `exit ${result.exitCode}`}`);
+    }
+    const commits: GitLogEntry[] = [];
+    for (const line of result.stdout.split("\n")) {
+      if (line.trim() === "") continue;
+      const [hash = "", shortHash = "", author = "", relTime = "", subject = ""] = line.split("\x1f");
+      commits.push({ hash, shortHash, author, relTime, subject });
+    }
+    return commits;
   }
 
   // ---- worktree 生命周期 ----
@@ -469,7 +544,21 @@ export class NotARepoError extends Error {
   }
 }
 
+/** discard 目标含 untracked 文件但未带 force：REST 映射 400（删除不可恢复，需双确认）。 */
+export class DiscardRequiresForceError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DiscardRequiresForceError";
+  }
+}
+
+/** 非空相对路径列表校验（stage/unstage/discard 共用）。 */
+function validateFileList(files: string[]): string[] {
+  if (!Array.isArray(files) || files.length === 0) throw new Error("files must be a non-empty array of relative paths");
+  return files.map(validateRelativePath);
+}
+
 /** 跨 cmd.exe / sh 的参数引用：白名单字符原样，其余用双引号包裹（参数先经严格校验，不含引号）。 */
 function quoteArg(arg: string): string {
-  return /^[a-zA-Z0-9._\/:@=+~^,-]+$/.test(arg) ? arg : `"${arg}"`;
+  return /^[a-zA-Z0-9._/:@=+~^,-]+$/.test(arg) ? arg : `"${arg}"`;
 }

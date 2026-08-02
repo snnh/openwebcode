@@ -1,10 +1,12 @@
-import { useEffect, useState, type ReactElement } from "react";
+import { useEffect, useState, type ReactElement, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../../lib/api";
 import type { ScmDiff, ScmStatusEntry } from "../../lib/contracts";
 import type { DiffSpec } from "../editor/DiffPane";
 import { Icon } from "../Icon";
+import { CodeBlock } from "../Markdown";
 import { useI18n } from "../../i18n";
+import { EXT_LANGS } from "../../lib/file-langs";
 
 /** diff 行按前缀着色：+ 新增、- 删除、\ 注释（如 No newline）、其余为上下文 */
 function diffLineClass(line: string): string {
@@ -44,12 +46,20 @@ function DiffView({ diff }: { diff: ScmDiff }): ReactElement {
   );
 }
 
-function StatusGroup({ title, entries, total, onOpen }: {
+function StatusGroup({ title, entries, total, onOpen, actions, confirmingPath, confirmLabel, onConfirmDiscard, onCancelDiscard }: {
   title: string;
   entries: ScmStatusEntry[];
   total?: number;
   onOpen(entry: ScmStatusEntry): void;
+  /** 行内操作按钮（hover 显示），按分组注入 stage/unstage/discard */
+  actions?(entry: ScmStatusEntry): ReactNode;
+  /** 正在等待二次确认 discard 的行路径（确认模式与 worktree 清理一致） */
+  confirmingPath?: string;
+  confirmLabel?: string;
+  onConfirmDiscard?(entry: ScmStatusEntry): void;
+  onCancelDiscard?(): void;
 }): ReactElement | null {
+  const { t } = useI18n();
   if (entries.length === 0) return null;
   return (
     <section className="problems-group">
@@ -59,11 +69,20 @@ function StatusGroup({ title, entries, total, onOpen }: {
       </h3>
       <ul className="problems-list">
         {entries.map((entry) => (
-          <li key={`${entry.code}:${entry.path}`}>
+          <li key={`${entry.code}:${entry.path}`} className="scm-status-row">
             <button className="problems-item" onClick={() => onOpen(entry)} title={entry.path}>
               <span className="scm-status-code" aria-label={entry.code}>{entry.code}</span>
               <span className="problems-name">{entry.path}</span>
             </button>
+            {confirmingPath === entry.path ? (
+              <span className="scm-confirm">
+                <span>{confirmLabel}</span>
+                <button className="btn small primary" onClick={() => onConfirmDiscard?.(entry)}>{t("确认", "Confirm")}</button>
+                <button className="btn small" onClick={() => onCancelDiscard?.()}>{t("取消", "Cancel")}</button>
+              </span>
+            ) : actions ? (
+              <span className="scm-row-actions">{actions(entry)}</span>
+            ) : null}
           </li>
         ))}
       </ul>
@@ -79,16 +98,22 @@ export function ScmPanel({ sessionId, onNotice, onOpenDiff }: {
 }): ReactElement {
   const { t } = useI18n();
   const queryClient = useQueryClient();
-  const [selected, setSelected] = useState<{ path: string; staged: boolean }>();
+  const [selected, setSelected] = useState<{ path: string; staged: boolean; untracked: boolean }>();
   const [commitMessage, setCommitMessage] = useState("");
   const [newBranch, setNewBranch] = useState("");
   const [confirming, setConfirming] = useState<string>();
+  const [confirmDiscard, setConfirmDiscard] = useState<{ path: string; untracked: boolean }>();
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [mergeConflicts, setMergeConflicts] = useState<{ name: string; conflicts: string[] }>();
 
   useEffect(() => {
     setSelected(undefined);
     setCommitMessage("");
     setNewBranch("");
     setConfirming(undefined);
+    setConfirmDiscard(undefined);
+    setHistoryOpen(false);
+    setMergeConflicts(undefined);
   }, [sessionId]);
 
   const status = useQuery({
@@ -100,7 +125,14 @@ export function ScmPanel({ sessionId, onNotice, onOpenDiff }: {
   const diff = useQuery({
     queryKey: ["scm-diff", sessionId, selected?.path, selected?.staged],
     queryFn: () => api.scmDiff(sessionId!, { staged: selected!.staged, file: selected!.path }),
-    enabled: Boolean(sessionId && selected),
+    enabled: Boolean(sessionId && selected && !selected.untracked),
+    retry: false,
+  });
+  // 未跟踪文件没有 diff 可言：直接读文件内容预览
+  const untrackedFile = useQuery({
+    queryKey: ["scm-file", sessionId, selected?.path],
+    queryFn: () => api.readFile(sessionId!, selected!.path),
+    enabled: Boolean(sessionId && selected?.untracked),
     retry: false,
   });
   const worktrees = useQuery({
@@ -109,12 +141,45 @@ export function ScmPanel({ sessionId, onNotice, onOpenDiff }: {
     enabled: Boolean(sessionId),
     retry: false,
   });
+  // 历史区：折叠时不拉取，展开后才请求
+  const log = useQuery({
+    queryKey: ["scm-log", sessionId],
+    queryFn: () => api.scmLog(sessionId!, 50),
+    enabled: Boolean(sessionId && historyOpen),
+    retry: false,
+  });
 
   const refresh = (): void => {
     queryClient.invalidateQueries({ queryKey: ["scm-status", sessionId] });
     queryClient.invalidateQueries({ queryKey: ["scm-worktrees", sessionId] });
     queryClient.invalidateQueries({ queryKey: ["scm-diff", sessionId] });
   };
+
+  const mutationError = (fallback: string) => (error: unknown) =>
+    onNotice?.(error instanceof Error ? error.message : fallback, "error");
+
+  // 行内写操作（阶段 2）：成功后在本地主动 invalidate 三个 scm query，不等 scm.updated 事件
+  const stage = useMutation({
+    mutationFn: (files: string[]) => api.scmStage(sessionId!, files),
+    onSuccess: () => refresh(),
+    onError: mutationError(t("暂存失败", "Failed to stage")),
+  });
+  const unstage = useMutation({
+    mutationFn: (files: string[]) => api.scmUnstage(sessionId!, files),
+    onSuccess: () => refresh(),
+    onError: mutationError(t("取消暂存失败", "Failed to unstage")),
+  });
+  const discard = useMutation({
+    mutationFn: (input: { files: string[]; force: boolean }) => api.scmDiscard(sessionId!, input.files, input.force),
+    onSuccess: () => {
+      setConfirmDiscard(undefined);
+      refresh();
+    },
+    onError: (error) => {
+      setConfirmDiscard(undefined);
+      mutationError(t("放弃更改失败", "Failed to discard changes"))(error);
+    },
+  });
 
   // 提交辅助：前端不直接调写接口，而是向会话下发一条请 agent 执行 git_commit 的消息，
   // 由 agent 走权限链并经用户确认后才真正提交
@@ -158,12 +223,83 @@ export function ScmPanel({ sessionId, onNotice, onOpenDiff }: {
     },
   });
 
+  // worktree 合回：冲突时不做自动解决，展开展示冲突文件列表
+  const mergeWorktree = useMutation({
+    mutationFn: (name: string) => api.scmMergeWorktree(sessionId!, name),
+    onSuccess: (result, name) => {
+      if (result.merged) {
+        setMergeConflicts(undefined);
+        queryClient.invalidateQueries({ queryKey: ["scm-worktrees", sessionId] });
+        queryClient.invalidateQueries({ queryKey: ["scm-status", sessionId] });
+        onNotice?.(t(`已将 ${name} 合回 ${result.branch}。`, `Merged ${name} back into ${result.branch}.`));
+      } else {
+        setMergeConflicts({ name, conflicts: result.conflicts });
+        onNotice?.(t(`合回 ${name} 存在 ${result.conflicts.length} 个冲突，请手动解决。`, `Merging ${name} produced ${result.conflicts.length} conflict(s); resolve them manually.`), "error");
+      }
+    },
+    onError: (error) => onNotice?.(error instanceof Error ? error.message : t("合回 worktree 失败", "Failed to merge worktree"), "error"),
+  });
+
   if (!sessionId) {
     return <div className="inspector-body"><p className="panel-empty">{t("选择会话以查看源代码管理。", "Select a session to view source control.")}</p></div>;
   }
 
   const data = status.data;
-  const openEntry = (entry: ScmStatusEntry, staged: boolean): void => setSelected({ path: entry.path, staged });
+  const openEntry = (entry: ScmStatusEntry, staged: boolean, untracked = false): void => setSelected({ path: entry.path, staged, untracked });
+
+  const stageActions = (entry: ScmStatusEntry): ReactNode => (
+    <>
+      <button
+        className="icon-btn"
+        title={t(`暂存 ${entry.path}`, `Stage ${entry.path}`)}
+        aria-label={t(`暂存 ${entry.path}`, `Stage ${entry.path}`)}
+        disabled={stage.isPending}
+        onClick={() => stage.mutate([entry.path])}
+      >
+        <Icon name="plus" size={12} />
+      </button>
+      <button
+        className="icon-btn"
+        title={t(`放弃 ${entry.path} 的更改`, `Discard changes in ${entry.path}`)}
+        aria-label={t(`放弃 ${entry.path} 的更改`, `Discard changes in ${entry.path}`)}
+        onClick={() => setConfirmDiscard({ path: entry.path, untracked: false })}
+      >
+        <Icon name="undo" size={12} />
+      </button>
+    </>
+  );
+  const unstageActions = (entry: ScmStatusEntry): ReactNode => (
+    <button
+      className="icon-btn"
+      title={t(`取消暂存 ${entry.path}`, `Unstage ${entry.path}`)}
+      aria-label={t(`取消暂存 ${entry.path}`, `Unstage ${entry.path}`)}
+      disabled={unstage.isPending}
+      onClick={() => unstage.mutate([entry.path])}
+    >
+      <Icon name="minus" size={12} />
+    </button>
+  );
+  const untrackedActions = (entry: ScmStatusEntry): ReactNode => (
+    <>
+      <button
+        className="icon-btn"
+        title={t(`暂存 ${entry.path}`, `Stage ${entry.path}`)}
+        aria-label={t(`暂存 ${entry.path}`, `Stage ${entry.path}`)}
+        disabled={stage.isPending}
+        onClick={() => stage.mutate([entry.path])}
+      >
+        <Icon name="plus" size={12} />
+      </button>
+      <button
+        className="icon-btn"
+        title={t(`删除未跟踪文件 ${entry.path}`, `Delete untracked file ${entry.path}`)}
+        aria-label={t(`删除未跟踪文件 ${entry.path}`, `Delete untracked file ${entry.path}`)}
+        onClick={() => setConfirmDiscard({ path: entry.path, untracked: true })}
+      >
+        <Icon name="undo" size={12} />
+      </button>
+    </>
+  );
 
   return (
     <div className="files-panel-wrap">
@@ -201,9 +337,35 @@ export function ScmPanel({ sessionId, onNotice, onOpenDiff }: {
               <p className="panel-empty">{t("工作区干净，没有变更。", "Working tree clean. No changes.")}</p>
             ) : (
               <>
-                <StatusGroup title={t("已暂存的更改", "Staged Changes")} entries={data.staged} total={data.totals.staged} onOpen={(entry) => openEntry(entry, true)} />
-                <StatusGroup title={t("更改", "Changes")} entries={data.unstaged} total={data.totals.unstaged} onOpen={(entry) => openEntry(entry, false)} />
-                <StatusGroup title={t("未跟踪的文件", "Untracked Files")} entries={data.untracked} total={data.totals.untracked} onOpen={(entry) => openEntry(entry, false)} />
+                <StatusGroup
+                  title={t("已暂存的更改", "Staged Changes")}
+                  entries={data.staged}
+                  total={data.totals.staged}
+                  onOpen={(entry) => openEntry(entry, true)}
+                  actions={unstageActions}
+                />
+                <StatusGroup
+                  title={t("更改", "Changes")}
+                  entries={data.unstaged}
+                  total={data.totals.unstaged}
+                  onOpen={(entry) => openEntry(entry, false)}
+                  actions={stageActions}
+                  confirmingPath={!confirmDiscard?.untracked ? confirmDiscard?.path : undefined}
+                  confirmLabel={t("确认放弃更改？", "Discard changes?")}
+                  onConfirmDiscard={(entry) => discard.mutate({ files: [entry.path], force: false })}
+                  onCancelDiscard={() => setConfirmDiscard(undefined)}
+                />
+                <StatusGroup
+                  title={t("未跟踪的文件", "Untracked Files")}
+                  entries={data.untracked}
+                  total={data.totals.untracked}
+                  onOpen={(entry) => openEntry(entry, false, true)}
+                  actions={untrackedActions}
+                  confirmingPath={confirmDiscard?.untracked ? confirmDiscard.path : undefined}
+                  confirmLabel={t("确认删除该未跟踪文件？", "Delete this untracked file?")}
+                  onConfirmDiscard={(entry) => discard.mutate({ files: [entry.path], force: true })}
+                  onCancelDiscard={() => setConfirmDiscard(undefined)}
+                />
               </>
             )}
             <section className="scm-commit">
@@ -226,6 +388,37 @@ export function ScmPanel({ sessionId, onNotice, onOpenDiff }: {
                 {commit.isPending ? t("下发中…", "Dispatching…") : t("提交（需确认）", "Commit (requires confirmation)")}
               </button>
             </section>
+            <section className="scm-history">
+              <h3 className="problems-file">
+                <button
+                  className="scm-history-toggle"
+                  aria-expanded={historyOpen}
+                  onClick={() => setHistoryOpen((value) => !value)}
+                >
+                  <Icon name={historyOpen ? "chevron-down" : "chevron-right"} size={12} />
+                  {t("历史", "History")}
+                </button>
+              </h3>
+              {historyOpen && (
+                log.isPending ? (
+                  <p className="panel-empty">{t("加载中…", "Loading…")}</p>
+                ) : log.isError ? (
+                  <p className="panel-empty">{t("暂无提交记录。", "No commits yet.")}</p>
+                ) : (log.data?.commits ?? []).length === 0 ? (
+                  <p className="panel-empty">{t("暂无提交记录。", "No commits yet.")}</p>
+                ) : (
+                  <ul className="problems-list scm-log-list">
+                    {(log.data?.commits ?? []).map((entry) => (
+                      <li key={entry.hash} className="scm-log-item" title={`${entry.hash}\n${entry.subject}`}>
+                        <span className="scm-log-hash">{entry.shortHash}</span>
+                        <span className="scm-log-subject">{entry.subject}</span>
+                        <span className="scm-log-meta">{entry.author} · {entry.relTime}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )
+              )}
+            </section>
           </>
           )
         ) : null}
@@ -246,6 +439,15 @@ export function ScmPanel({ sessionId, onNotice, onOpenDiff }: {
                   <span className="mono" title={worktree.path}>{worktree.name}</span>
                   <small className="mono">{worktree.branch}</small>
                   {!worktree.exists && <small>{t("（磁盘已缺失）", "(missing on disk)")}</small>}
+                  <button
+                    className="btn small scm-merge-btn"
+                    aria-label={t(`合回 worktree ${worktree.name}`, `Merge worktree ${worktree.name} back`)}
+                    disabled={!worktree.exists || mergeWorktree.isPending}
+                    onClick={() => mergeWorktree.mutate(worktree.name)}
+                  >
+                    <Icon name="git" size={12} />
+                    {t("合回", "Merge back")}
+                  </button>
                   {confirming === worktree.name ? (
                     <span className="scm-confirm">
                       <span>{t("确认清理？", "Confirm removal?")}</span>
@@ -270,6 +472,19 @@ export function ScmPanel({ sessionId, onNotice, onOpenDiff }: {
               ))}
             </ul>
           )}
+          {mergeConflicts && (
+            <div className="scm-merge-conflicts" role="alert">
+              <div className="scm-merge-conflicts-head">
+                <span>{t(`合回 ${mergeConflicts.name} 的冲突文件（${mergeConflicts.conflicts.length}）`, `Conflicts merging ${mergeConflicts.name} (${mergeConflicts.conflicts.length})`)}</span>
+                <button className="icon-btn" onClick={() => setMergeConflicts(undefined)} aria-label={t("关闭冲突列表", "Close conflict list")}><Icon name="x" size={14} /></button>
+              </div>
+              <ul className="problems-list">
+                {mergeConflicts.conflicts.map((path) => (
+                  <li key={path} className="scm-log-item"><code>{path}</code></li>
+                ))}
+              </ul>
+            </div>
+          )}
           <div className="scm-worktree-new">
             <input
               type="text"
@@ -290,12 +505,13 @@ export function ScmPanel({ sessionId, onNotice, onOpenDiff }: {
         </section>
       </div>
       {selected && (
-        <section className="file-preview" aria-label={t(`查看 ${selected.path} 的 diff`, `View diff of ${selected.path}`)}>
+        <section className="file-preview" aria-label={selected.untracked ? t(`预览未跟踪文件 ${selected.path}`, `Preview untracked file ${selected.path}`) : t(`查看 ${selected.path} 的 diff`, `View diff of ${selected.path}`)}>
           <header>
             <span className="mono" title={selected.path}>
-              {selected.path}{selected.staged ? t("（已暂存）", " (staged)") : ""}
+              {selected.path}
+              {selected.untracked ? t("（未跟踪）", " (untracked)") : selected.staged ? t("（已暂存）", " (staged)") : ""}
             </span>
-            {onOpenDiff && (
+            {!selected.untracked && onOpenDiff && (
               <button
                 className="btn small"
                 onClick={() => onOpenDiff({ source: "scm", path: selected.path, staged: selected.staged })}
@@ -304,9 +520,19 @@ export function ScmPanel({ sessionId, onNotice, onOpenDiff }: {
                 {t("在 diff 视图中打开", "Open in diff view")}
               </button>
             )}
-            <button className="icon-btn" onClick={() => setSelected(undefined)} aria-label={t("关闭 diff 视图", "Close diff view")}><Icon name="x" size={14} /></button>
+            <button className="icon-btn" onClick={() => setSelected(undefined)} aria-label={selected.untracked ? t("关闭预览", "Close preview") : t("关闭 diff 视图", "Close diff view")}><Icon name="x" size={14} /></button>
           </header>
-          {diff.isError ? (
+          {selected.untracked ? (
+            untrackedFile.isError ? (
+              <p className="preview-note">
+                {untrackedFile.error instanceof ApiError ? untrackedFile.error.message : t("无法读取该文件。", "Could not read this file.")}
+              </p>
+            ) : untrackedFile.data ? (
+              <CodeBlock lang={EXT_LANGS[selected.path.split(".").pop()?.toLowerCase() ?? ""]} code={untrackedFile.data.content} />
+            ) : (
+              <p className="preview-note">{t("加载中…", "Loading…")}</p>
+            )
+          ) : diff.isError ? (
             <p className="preview-note">
               {diff.error instanceof ApiError ? diff.error.message : t("无法读取 diff。", "Could not load the diff.")}
             </p>

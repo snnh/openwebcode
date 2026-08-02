@@ -3,12 +3,19 @@ import { useQuery } from "@tanstack/react-query";
 import { api, ApiError } from "../../lib/api";
 import type { FileEntry, ManagedWorkspaceSyncChange, ManagedWorkspaceSyncPreview, SessionDetail } from "../../lib/contracts";
 import { Icon } from "../Icon";
-import { CodeBlock } from "../Markdown";
+import { CodeBlock, Markdown } from "../Markdown";
 import { useI18n } from "../../i18n";
 import { EXT_LANGS } from "../../lib/file-langs";
 import { formatBytes } from "../../lib/format";
 
 const joinPath = (base: string, name: string): string => (base === "." ? name : `${base}/${name}`);
+
+/** 图片预览扩展名白名单（阶段 2e）：命中时走 files/raw 二进制接口而非文本 content */
+const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "ico", "bmp"]);
+/** 加载更多步长（行），与 core 默认读取上限对齐 */
+const LOAD_STEP = 2000;
+/** 实际行数：末尾换行不算一行 */
+const countLines = (text: string): number => (text.length === 0 ? 0 : text.split("\n").length - (text.endsWith("\n") ? 1 : 0));
 
 function sortEntries(entries: FileEntry[]): FileEntry[] {
   return [...entries].sort((a, b) => {
@@ -112,11 +119,14 @@ export function FilesPanel({
   session,
   running = false,
   onNotice,
+  onOpenInEditor,
 }: {
   sessionId?: string;
   session?: SessionDetail;
   running?: boolean;
   onNotice?(message: string, kind?: "info" | "error"): void;
+  /** 阶段 2g：预览头部"在编辑器中打开"；未提供时保持只读预览 */
+  onOpenInEditor?(file: string): void;
 }): ReactElement {
   const { t } = useI18n();
   const [selectedFile, setSelectedFile] = useState<string>();
@@ -125,7 +135,26 @@ export function FilesPanel({
   const [syncApplying, setSyncApplying] = useState(false);
   const [syncError, setSyncError] = useState<string>();
   const [overwriteConflicts, setOverwriteConflicts] = useState(false);
-  useEffect(() => setSelectedFile(undefined), [sessionId]);
+  // 加载更多（阶段 2c）：已追加的分页内容与截断状态；切换文件/会话时重置
+  const [appended, setAppended] = useState<{ content: string; truncated: boolean }>();
+  const [loadingMore, setLoadingMore] = useState(false);
+  // 图片加载失败回退（阶段 2e）
+  const [imageError, setImageError] = useState(false);
+  // Markdown 渲染/源码双态（阶段 2g）
+  const [mdMode, setMdMode] = useState<"source" | "render">("source");
+  useEffect(() => {
+    setSelectedFile(undefined);
+    setAppended(undefined);
+    setLoadingMore(false);
+    setImageError(false);
+    setMdMode("source");
+  }, [sessionId]);
+  useEffect(() => {
+    setAppended(undefined);
+    setLoadingMore(false);
+    setImageError(false);
+    setMdMode("source");
+  }, [selectedFile]);
   useEffect(() => {
     setSyncPreview(undefined);
     setSyncError(undefined);
@@ -133,10 +162,13 @@ export function FilesPanel({
     setSyncApplying(false);
     setOverwriteConflicts(false);
   }, [sessionId]);
+  const ext = selectedFile?.split(".").pop()?.toLowerCase() ?? "";
+  const isImage = Boolean(selectedFile) && IMAGE_EXTS.has(ext);
+  const isMarkdown = ext === "md" || ext === "markdown";
   const preview = useQuery({
     queryKey: ["file", sessionId, selectedFile],
     queryFn: () => api.readFile(sessionId!, selectedFile!),
-    enabled: Boolean(sessionId && selectedFile),
+    enabled: Boolean(sessionId && selectedFile && !isImage),
   });
 
   if (!sessionId) {
@@ -144,12 +176,25 @@ export function FilesPanel({
   }
 
   const managed = session?.workspace?.mode === "managed";
-  const ext = selectedFile?.split(".").pop()?.toLowerCase() ?? "";
   const previewLang = EXT_LANGS[ext];
   const visibleSyncChanges = syncPreview?.changes.filter((entry) => entry.action !== "none") ?? [];
   const safeChanges = syncPreview ? safeChangeCount(syncPreview) : 0;
   const conflictCount = syncPreview?.summary.conflicts ?? 0;
   const canApply = Boolean(syncPreview?.fingerprint) && !running && !syncApplying && (safeChanges > 0 || (overwriteConflicts && conflictCount > 0));
+
+  // 加载更多（阶段 2c）：按已加载行数作 offset 续拉并追加渲染
+  const previewContent = (preview.data?.content ?? "") + (appended?.content ?? "");
+  const previewTruncated = appended ? appended.truncated : (preview.data?.truncated ?? false);
+  const loadMore = (): void => {
+    if (!sessionId || !selectedFile || !preview.data || loadingMore) return;
+    setLoadingMore(true);
+    api.readFile(sessionId, selectedFile, { offset: countLines(previewContent), limit: LOAD_STEP })
+      .then((result) => setAppended({ content: (appended?.content ?? "") + result.content, truncated: result.truncated }))
+      .catch((error: unknown) => {
+        onNotice?.(error instanceof Error ? error.message : t("加载更多内容失败", "Failed to load more content"), "error");
+      })
+      .finally(() => setLoadingMore(false));
+  };
 
   const generateSyncPreview = (): void => {
     setSyncLoading(true);
@@ -270,9 +315,49 @@ export function FilesPanel({
         <section className="file-preview" aria-label={t(`预览 ${selectedFile}`, `Preview ${selectedFile}`)}>
           <header>
             <span className="mono" title={selectedFile}>{selectedFile}</span>
+            {isMarkdown && !isImage && (
+              <span className="md-toggle" role="group" aria-label={t("Markdown 预览模式", "Markdown preview mode")}>
+                <button
+                  className={`btn small${mdMode === "render" ? " primary" : ""}`}
+                  aria-pressed={mdMode === "render"}
+                  onClick={() => setMdMode("render")}
+                >
+                  {t("渲染", "Rendered")}
+                </button>
+                <button
+                  className={`btn small${mdMode === "source" ? " primary" : ""}`}
+                  aria-pressed={mdMode === "source"}
+                  onClick={() => setMdMode("source")}
+                >
+                  {t("源码", "Source")}
+                </button>
+              </span>
+            )}
+            {onOpenInEditor && (
+              <button
+                className="btn small"
+                onClick={() => onOpenInEditor(selectedFile)}
+                aria-label={t(`在编辑器中打开 ${selectedFile}`, `Open ${selectedFile} in editor`)}
+              >
+                <Icon name="edit" size={12} />
+                {t("在编辑器中打开", "Open in editor")}
+              </button>
+            )}
             <button className="icon-btn" onClick={() => setSelectedFile(undefined)} aria-label={t("关闭预览", "Close preview")}><Icon name="x" size={14} /></button>
           </header>
-          {preview.isError ? (
+          {isImage ? (
+            imageError ? (
+              <p className="preview-note">{t("无法预览该图片。", "Could not preview this image.")}</p>
+            ) : (
+              <img
+                className="file-preview-img"
+                loading="lazy"
+                src={api.fileRawUrl(sessionId, selectedFile)}
+                alt={selectedFile}
+                onError={() => setImageError(true)}
+              />
+            )
+          ) : preview.isError ? (
             <p className="preview-note">
               {preview.error instanceof ApiError && /UTF-8/i.test(preview.error.message)
                 ? t("该文件非 UTF-8 文本（可能为二进制），无法预览。", "This file is not UTF-8 text (it may be binary) and cannot be previewed.")
@@ -282,8 +367,19 @@ export function FilesPanel({
             </p>
           ) : preview.data ? (
             <>
-              <CodeBlock lang={previewLang} code={preview.data.content} />
-              {preview.data.truncated && <p className="preview-note">{t("内容过长，已截断。", "Content was truncated because it is too long.")}</p>}
+              {isMarkdown && mdMode === "render" ? (
+                <Markdown>{previewContent}</Markdown>
+              ) : (
+                <CodeBlock lang={previewLang} code={previewContent} />
+              )}
+              {previewTruncated ? (
+                <p className="preview-note">
+                  {t("内容过长，已截断。", "Content was truncated because it is too long.")}
+                  <button className="btn small" disabled={loadingMore} onClick={loadMore}>
+                    {loadingMore ? t("加载中…", "Loading…") : t("加载更多", "Load more")}
+                  </button>
+                </p>
+              ) : null}
             </>
           ) : (
             <p className="preview-note">{t("加载中…", "Loading…")}</p>

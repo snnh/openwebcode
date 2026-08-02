@@ -581,6 +581,24 @@ export interface ScmUpdatedEvent {
   [key: string]: unknown;
 }
 
+/** GET /api/sessions/:id/git/log 的单条提交（relTime 为服务端格式化的相对时间） */
+export interface ScmLogEntry {
+  hash: string;
+  shortHash: string;
+  author: string;
+  relTime: string;
+  subject: string;
+}
+
+/** POST /api/sessions/:id/git/worktrees/:name/merge 的响应；冲突时 merged=false 且如实报告冲突文件列表（与 server WorktreeMergeResult 对齐） */
+export interface ScmWorktreeMergeResult {
+  merged: boolean;
+  conflicts: string[];
+  strategy: "merge" | "cherry-pick";
+  branch: string;
+  message?: string;
+}
+
 export type SettingFieldType = "text" | "secret" | "number" | "boolean" | "select" | "pathList";
 export type SettingValue = string | number | boolean | string[];
 
@@ -729,20 +747,8 @@ export interface WorkspaceSymbolsResponse {
   indexStatus: WorkspaceIndexState;
 }
 
-/** GET /api/workspaces/index/status 响应（0.4.0 Phase 2 §7.2） */
+/** 索引新鲜度标记（0.4.0 Phase 2）：files/symbols 响应随带 */
 export type WorkspaceIndexState = "fresh" | "stale" | "building" | "missing";
-export interface WorkspaceIndexStatus {
-  status: WorkspaceIndexState;
-  workspace: string;
-  files: number;
-  symbols: number;
-  lastScanAt?: number;
-  scanTruncated?: boolean;
-  staleReason?: "watch" | "mtime" | "corrupt" | "cancelled" | "error";
-  watch: "active" | "fallback" | "none";
-  jobId?: string;
-  message?: string;
-}
 
 // ---- 性能采样（0.5.0 Phase 2d）：GET /api/sessions/:id/perf 的契约 ----
 

@@ -88,5 +88,14 @@ export interface WorktreeMergeResult {
   message?: string;
 }
 
+/** git log 单条提交（只读历史；relTime 为 git 的相对时间文案，如 "2 hours ago"）。 */
+export interface GitLogEntry {
+  hash: string;
+  shortHash: string;
+  author: string;
+  relTime: string;
+  subject: string;
+}
+
 /** 可注入的 git 执行器：默认经 Core job 执行（继承会话权限沙盒与 cwd 约束）；测试注入真实 git。 */
 export type GitExec = (args: string[], cwd: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>;

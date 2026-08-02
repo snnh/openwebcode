@@ -67,7 +67,7 @@ export function SidebarPanel({ view, width, onResize, sessionId, session, runnin
       <header className="sidebar-panel-header"><h2>{t(title[0], title[1])}</h2></header>
       <div className="sidebar-panel-body">
         <Suspense fallback={null}>
-          {view === "files" && <FilesPanel sessionId={sessionId} session={session} running={running} onNotice={onNotice} />}
+          {view === "files" && <FilesPanel sessionId={sessionId} session={session} running={running} onNotice={onNotice} onOpenInEditor={onOpenInEditor} />}
           {view === "scm" && <ScmPanel sessionId={sessionId} onNotice={onNotice} onOpenDiff={onOpenDiff} />}
           {view === "problems" && <ProblemsPanel sessionId={sessionId} onOpenInEditor={onOpenInEditor} />}
         </Suspense>

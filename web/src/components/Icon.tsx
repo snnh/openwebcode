@@ -8,6 +8,13 @@ const PATHS = {
       <path d="M5 12h14" />
     </>
   ),
+  minus: <path d="M5 12h14" />,
+  undo: (
+    <>
+      <path d="M3 7v6h6" />
+      <path d="M21 17a9 9 0 0 0-15-6.7L3 13" />
+    </>
+  ),
   x: (
     <>
       <path d="M18 6 6 18" />
