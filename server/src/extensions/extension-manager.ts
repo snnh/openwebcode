@@ -1,14 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { fork, type ChildProcess } from "node:child_process";
-import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AppEvent, EventBus } from "../events/event-bus.js";
+import type { FastModelClient } from "../fast-model.js";
 import type { ProviderTool } from "../providers/provider.js";
 import type { ChatMessage, SessionDetail, SessionMeta } from "../sessions/types.js";
 import type { SessionStore } from "../sessions/session-store.js";
 import { ContextManager } from "../context/context-manager.js";
-import { EXTENSION_API_VERSION, isExtensionEventAllowed, type ApiRequest, type ApiResponse, type ContextHookPayload, type EventMessage, type ExtensionApiMethod, type ExtensionHook, type ExtensionInfo, type ExtensionManifest, type ExtensionPermission, type ExtensionState, type ExtensionToolResult, type ExtensionToolSpec, type HostRequest, type HostResponse, type PromptHookPayload, type PromptHookResult, type ToolHookPayload, type ToolShapingAlias, type ToolShapingSpec } from "./types.js";
+import { EXTENSION_API_VERSION, isExtensionEventAllowed, type ApiRequest, type ApiResponse, type ContextHookPayload, type EventMessage, type ExtensionApiMethod, type ExtensionHook, type ExtensionInfo, type ExtensionManifest, type ExtensionPermission, type ExtensionRoute, type ExtensionState, type ExtensionToolResult, type ExtensionToolSpec, type HostRequest, type HostResponse, type PromptHookPayload, type PromptHookResult, type ToolHookPayload, type ToolShapingAlias, type ToolShapingSpec } from "./types.js";
 import { OFFICIAL_DEFAULT_CONFIG, OFFICIAL_EXTENSIONS } from "./official.js";
 import { BUILTIN_PERSONAS, getPersona, listPersonas, resolvePersona, personasDir, type PersonaDetail, type PersonaSummary } from "./env-sim/index.js";
 
@@ -18,19 +19,38 @@ export interface ActiveToolShaping {
   aliases: Map<string, { from: string; description?: string; inputSchema?: Record<string, unknown>; argMap?: Record<string, string> }>;
 }
 
+/** 扩展 HTTP 路由转发的错误：statusCode 直接映射为 REST 响应码。 */
+export class ExtensionRouteError extends Error {
+  constructor(readonly statusCode: number, message: string) {
+    super(message);
+  }
+}
+
 const ALIAS_NAME_PATTERN = /^[a-zA-Z][a-zA-Z0-9_]{0,63}$/;
 const BUILTIN_PERSONA_IDS = new Set(BUILTIN_PERSONAS.map((preset) => preset.id));
+/** 扩展私有存储配额：单文件 1 MiB、目录总量 50 MiB。 */
+const STORAGE_FILE_LIMIT = 1024 * 1024;
+const STORAGE_TOTAL_LIMIT = 50 * 1024 * 1024;
+/** model.complete 强制上限：prompt 32 KiB、maxTokens 4096。 */
+const MODEL_PROMPT_LIMIT = 32 * 1024;
+const MODEL_MAX_TOKENS_LIMIT = 4096;
+const MODEL_DEFAULT_MAX_TOKENS = 1024;
 
 interface StoredConfig { version: 1; extensions: Record<string, ExtensionState> }
 type DiscoveredManifest = ExtensionManifest & { directory?: string };
 
-/** 扩展 API 所需的权限映射；events.subscribe 挂 sessions:read。 */
-const API_PERMISSIONS: Record<ExtensionApiMethod, ExtensionPermission> = {
+/** 扩展 API 所需的权限映射；null = 无需权限（私有能力，如扩展私有存储）。events.subscribe 挂 sessions:read。 */
+const API_PERMISSIONS: Record<ExtensionApiMethod, ExtensionPermission | null> = {
   "sessions.list": "sessions:read",
   "sessions.get": "sessions:read",
   "context.getView": "context:read",
   "context.readArtifact": "context:read",
   "events.subscribe": "sessions:read",
+  "storage.read": null,
+  "storage.write": null,
+  "storage.delete": null,
+  "storage.list": null,
+  "model.complete": "model:fast",
 };
 
 /** sessions:read 只暴露元信息白名单字段；不落出沙盒路径/setupScript 等内部配置。 */
@@ -71,7 +91,7 @@ export class ExtensionManager {
   /** 已发出的工具形态警告（去重，避免每轮重复刷事件）。 */
   private readonly shapingWarningsIssued = new Set<string>();
 
-  constructor(private readonly dataDir: string, private readonly events?: EventBus, private readonly deps: { sessions?: SessionStore } = {}) {
+  constructor(private readonly dataDir: string, private readonly events?: EventBus, private readonly deps: { sessions?: SessionStore; fastModel?: FastModelClient; storageQuota?: { file: number; total: number } } = {}) {
     this.root = path.join(dataDir, "extensions");
     this.configPath = path.join(this.root, "extensions.json");
   }
@@ -123,6 +143,11 @@ export class ExtensionManager {
   isEnabled(id: string): boolean {
     const manifest = this.manifests.find((item) => item.id === id);
     return manifest ? this.stateFor(manifest).enabled : false;
+  }
+
+  /** 扩展 id 是否已知（官方或已安装的第三方）；供 REST 层做会话级扩展状态等校验。 */
+  hasExtension(id: string): boolean {
+    return this.manifests.some((item) => item.id === id);
   }
 
   async configure(id: string, update: { enabled?: boolean; config?: Record<string, unknown> }): Promise<ExtensionInfo> {
@@ -179,7 +204,7 @@ export class ExtensionManager {
   }
 
   /**
-   * prompt.beforeBuild 变换：先走 host 的通用 hook 扇出（第三方扩展），再叠加 env-sim。
+   * prompt.beforeBuild 变换：先走 host 的通用 hook 扇出（带 prompt:shape 权限的第三方扩展），再叠加 env-sim。
    * env-sim 的提示词变换在 server 侧直接合成——内置预设与用户预设目录都是 server 本地
    * 状态，经 Extension Host IPC 传递反而是多余一跳（与工具形态同为 server 侧内建行为）。
    */
@@ -205,14 +230,16 @@ export class ExtensionManager {
   }
 
   /**
-   * 聚合所有已启用官方扩展的工具形态（静态 manifest toolShaping + env-sim 活跃预设）。
+   * 聚合所有已启用且有权声明工具形态的扩展（静态 manifest toolShaping + env-sim 活跃预设）。
+   * 官方扩展直接声明；第三方扩展需 tools:shaping 权限（readManifest 已把关，此处纵深防御）。
    * builtInNames 传入本轮实际内置工具表（含条件项），据此完成 from 存在性与命名冲突校验；
    * 无效条目记警告并跳过。无形态生效时返回 undefined。
    */
   async activeToolShaping(builtInNames: readonly string[], sessionPersona?: string): Promise<ActiveToolShaping | undefined> {
     const shaping: ActiveToolShaping = { hideBuiltIns: new Set(), aliases: new Map() };
     for (const manifest of this.manifests) {
-      if (!manifest.toolShaping || manifest.official !== true || !this.isEnabled(manifest.id)) continue;
+      if (!manifest.toolShaping || !this.isEnabled(manifest.id)) continue;
+      if (manifest.official !== true && !manifest.permissions.includes("tools:shaping")) continue;
       this.applyShapingSpec(manifest.id, manifest.toolShaping, builtInNames, shaping);
     }
     const envSim = this.manifests.find((item) => item.id === "env-sim");
@@ -358,9 +385,9 @@ export class ExtensionManager {
   private async dispatchApi(request: ApiRequest): Promise<unknown> {
     const manifest = this.manifests.find((item) => item.id === request.extensionId);
     if (!manifest) throw new Error(`Unknown extension: ${request.extensionId}`);
+    if (!(request.api in API_PERMISSIONS)) throw new Error(`Unsupported extension api: ${request.api}`);
     const required = API_PERMISSIONS[request.api];
-    if (!required) throw new Error(`Unsupported extension api: ${request.api}`);
-    if (!manifest.permissions.includes(required)) throw new Error(`Extension ${manifest.id} lacks permission: ${required}`);
+    if (required && !manifest.permissions.includes(required)) throw new Error(`Extension ${manifest.id} lacks permission: ${required}`);
     const sessions = this.deps.sessions;
     const params = request.params ?? {};
     switch (request.api) {
@@ -401,7 +428,140 @@ export class ExtensionManager {
         this.attachBusListener();
         return { subscribed: allowed };
       }
+      case "storage.read": {
+        return this.storageRead(manifest.id, String(params.path ?? ""));
+      }
+      case "storage.write": {
+        return this.storageWrite(manifest.id, String(params.path ?? ""), params.content);
+      }
+      case "storage.delete": {
+        return this.storageDelete(manifest.id, String(params.path ?? ""));
+      }
+      case "storage.list": {
+        return this.storageList(manifest.id, typeof params.prefix === "string" ? params.prefix : "");
+      }
+      case "model.complete": {
+        return this.modelComplete(params);
+      }
     }
+  }
+
+  /** 扩展私有存储根：<dataDir>/extensions-data/<extensionId>/。无需权限——私有目录天然隔离。 */
+  private storageRoot(extensionId: string): string {
+    return path.join(this.dataDir, "extensions-data", extensionId);
+  }
+
+  /** 相对路径解析：禁绝对路径、禁 .. 逃逸，规范化后必须仍在扩展自己的目录内。 */
+  private storagePath(extensionId: string, relative: string): string {
+    if (!relative || path.isAbsolute(relative)) throw new Error("storage path must be a non-empty relative path");
+    const root = this.storageRoot(extensionId);
+    const resolved = path.resolve(root, relative);
+    if (resolved !== root && !resolved.startsWith(root + path.sep)) throw new Error("storage path escapes the extension directory");
+    return resolved;
+  }
+
+  private async storageRead(extensionId: string, relative: string): Promise<{ content: string | null }> {
+    const target = this.storagePath(extensionId, relative);
+    try {
+      const info = await stat(target);
+      if (!info.isFile()) return { content: null };
+      return { content: await readFile(target, "utf8") };
+    } catch {
+      return { content: null };
+    }
+  }
+
+  private async storageWrite(extensionId: string, relative: string, content: unknown): Promise<{ bytes: number }> {
+    if (typeof content !== "string") throw new Error("storage.write content must be a string");
+    const fileLimit = this.deps.storageQuota?.file ?? STORAGE_FILE_LIMIT;
+    const totalLimit = this.deps.storageQuota?.total ?? STORAGE_TOTAL_LIMIT;
+    const bytes = Buffer.byteLength(content, "utf8");
+    if (bytes > fileLimit) throw new Error(`storage.write exceeds the per-file limit of ${fileLimit} bytes`);
+    const target = this.storagePath(extensionId, relative);
+    const existing = await stat(target).catch(() => undefined);
+    const total = await this.storageUsage(extensionId);
+    const next = total - (existing?.isFile() ? existing.size : 0) + bytes;
+    if (next > totalLimit) throw new Error(`storage.write exceeds the total quota of ${totalLimit} bytes`);
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, content, "utf8");
+    return { bytes };
+  }
+
+  private async storageDelete(extensionId: string, relative: string): Promise<{ deleted: boolean }> {
+    const target = this.storagePath(extensionId, relative);
+    const existing = await stat(target).catch(() => undefined);
+    if (!existing) return { deleted: false };
+    await rm(target, { recursive: existing.isDirectory(), force: true });
+    return { deleted: true };
+  }
+
+  private async storageList(extensionId: string, prefix: string): Promise<{ files: string[] }> {
+    const root = this.storageRoot(extensionId);
+    const files: string[] = [];
+    const walk = async (directory: string): Promise<void> => {
+      for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
+        const full = path.join(directory, entry.name);
+        if (entry.isDirectory()) await walk(full);
+        else if (entry.isFile()) files.push(path.relative(root, full).split(path.sep).join("/"));
+      }
+    };
+    await walk(root);
+    files.sort();
+    return { files: prefix ? files.filter((file) => file.startsWith(prefix)) : files };
+  }
+
+  /** 目录总量（递归求和），供写前配额统计。 */
+  private async storageUsage(extensionId: string): Promise<number> {
+    const root = this.storageRoot(extensionId);
+    let total = 0;
+    const walk = async (directory: string): Promise<void> => {
+      for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
+        const full = path.join(directory, entry.name);
+        if (entry.isDirectory()) await walk(full);
+        else if (entry.isFile()) total += (await stat(full)).size;
+      }
+    };
+    await walk(root);
+    return total;
+  }
+
+  /** model.complete：快速模型通道。prompt ≤32 KiB、maxTokens ≤4096（缺省 1024）。 */
+  private async modelComplete(params: Record<string, unknown>): Promise<unknown> {
+    const fastModel = this.deps.fastModel;
+    if (!fastModel?.configured) throw new Error("Fast model is not configured");
+    const prompt = typeof params.prompt === "string" ? params.prompt : "";
+    if (!prompt) throw new Error("model.complete requires a non-empty prompt string");
+    if (Buffer.byteLength(prompt, "utf8") > MODEL_PROMPT_LIMIT) throw new Error(`model.complete prompt exceeds ${MODEL_PROMPT_LIMIT} bytes`);
+    let maxTokens = MODEL_DEFAULT_MAX_TOKENS;
+    if (params.maxTokens !== undefined) {
+      const value = Number(params.maxTokens);
+      if (!Number.isSafeInteger(value) || value < 1) throw new Error("model.complete maxTokens must be a positive integer");
+      maxTokens = Math.min(value, MODEL_MAX_TOKENS_LIMIT);
+    }
+    return fastModel.complete({ system: "You are a helper invoked by an openwebcode extension. Answer concisely.", prompt, maxTokens });
+  }
+
+  /**
+   * 扩展私有 HTTP 路由转发（/api/ext/<id><path>）：manifest 路由表精确匹配后经 IPC 转发 host，
+   * 5 秒超时沿用 hook/tool 调用模式。扩展未启用/未运行 → 503；路由未声明 → 404。
+   */
+  async routeHttpRequest(extensionId: string, method: string, requestPath: string, query: Record<string, unknown>, body: unknown): Promise<{ status: number; body: unknown }> {
+    const manifest = this.manifests.find((item) => item.id === extensionId);
+    if (!manifest) throw new ExtensionRouteError(404, `Unknown extension: ${extensionId}`);
+    const route = (manifest.routes ?? []).find((entry) => entry.method === method && entry.path === requestPath);
+    if (!route) throw new ExtensionRouteError(404, `Route not declared: ${method} ${requestPath}`);
+    if (!this.isEnabled(extensionId)) throw new ExtensionRouteError(503, `Extension ${extensionId} is disabled`);
+    if (!this.child?.connected) throw new ExtensionRouteError(503, "Extension Host is not connected");
+    let result: unknown;
+    try {
+      result = await this.request("http.request", { extensionId, method, path: requestPath, query, ...(body !== undefined ? { body } : {}) }, 5000);
+    } catch (error) {
+      throw new ExtensionRouteError(504, error instanceof Error ? error.message : String(error));
+    }
+    if (!result || typeof result !== "object") throw new ExtensionRouteError(502, "Extension returned an invalid route response");
+    const value = result as { status?: unknown; body?: unknown };
+    const status = typeof value.status === "number" && Number.isSafeInteger(value.status) && value.status >= 100 && value.status <= 599 ? value.status : 200;
+    return { status, body: value.body };
   }
 
   private publicSessionDetail(detail: SessionDetail): Record<string, unknown> {
@@ -576,14 +736,23 @@ async function readManifest(directory: string): Promise<ExtensionManifest> {
   if (!raw.id || !/^[a-z0-9][a-z0-9-]{1,63}$/.test(raw.id)) throw new Error("manifest.id is invalid");
   if (!raw.name || !raw.version || !raw.description) throw new Error("manifest requires name, version and description");
   if (raw.apiVersion !== EXTENSION_API_VERSION) throw new Error(`Unsupported apiVersion ${raw.apiVersion ?? "missing"}`);
-  const allowedPermissions = new Set(["context:read", "context:mutate", "tools:register", "sessions:read", "ui:panel", "ui:messageAttachment", "network:fetch"]);
+  const allowedPermissions = new Set(["context:read", "context:mutate", "tools:register", "sessions:read", "ui:panel", "ui:messageAttachment", "network:fetch", "http:route", "model:fast", "prompt:shape", "tools:shaping"]);
   if (!Array.isArray(raw.permissions) || raw.permissions.some((permission) => typeof permission !== "string" || !allowedPermissions.has(permission))) throw new Error("manifest.permissions contains an unsupported permission");
   const entry = raw.entry ?? "index.js";
   if (path.isAbsolute(entry) || entry.split(/[\\/]/).includes("..")) throw new Error("manifest.entry must stay inside the extension directory");
-  // 工具形态只允许官方扩展声明（此处只处理第三方 manifest，官方列表为内置硬编码）；
-  // 第三方携带即拒绝，防止伪装成内置工具名。
-  if (raw.toolShaping !== undefined && raw.official !== true) throw new Error("manifest.toolShaping is only allowed for official extensions");
+  // 工具形态：官方扩展直接声明（此处只处理第三方 manifest，官方列表为内置硬编码）；
+  // 第三方需 tools:shaping 权限，防止伪装成内置工具名。
+  if (raw.toolShaping !== undefined && raw.official !== true && !raw.permissions.includes("tools:shaping")) throw new Error("manifest.toolShaping requires the tools:shaping permission");
   if (raw.toolShaping !== undefined) validateToolShaping(raw.toolShaping);
+  // 私有 HTTP 路由：声明即要求 http:route 权限；path 以 / 开头且不允许 .. 段
+  if (raw.routes !== undefined) {
+    if (!raw.permissions.includes("http:route")) throw new Error("manifest.routes requires the http:route permission");
+    if (!Array.isArray(raw.routes)) throw new Error("manifest.routes must be an array");
+    for (const route of raw.routes) {
+      if (!route || (route.method !== "GET" && route.method !== "POST" && route.method !== "DELETE")) throw new Error("manifest.routes method must be GET, POST or DELETE");
+      if (typeof route.path !== "string" || !route.path.startsWith("/") || route.path.split("/").includes("..")) throw new Error("manifest.routes path must start with / and must not contain .. segments");
+    }
+  }
   if (raw.configSchema !== undefined && (!raw.configSchema || typeof raw.configSchema !== "object" || Array.isArray(raw.configSchema))) throw new Error("manifest.configSchema must be an object");
   return {
     id: raw.id,
@@ -596,6 +765,7 @@ async function readManifest(directory: string): Promise<ExtensionManifest> {
     defaultEnabled: false,
     ...(raw.configSchema ? { configSchema: raw.configSchema } : {}),
     ...(raw.toolShaping ? { toolShaping: raw.toolShaping } : {}),
+    ...(raw.routes ? { routes: raw.routes.map((route): ExtensionRoute => ({ method: route.method, path: route.path })) } : {}),
   };
 }
 

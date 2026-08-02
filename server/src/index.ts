@@ -96,7 +96,7 @@ const fastModel = new FastModelClient(providers, config.fastModel);
 // Hooks（可信配置，等同 yolo 级别）：全局 <dataDir>/hooks.json，项目 <cwd>/.owc/hooks.json 现读覆盖
 const hooks = new HookRunner(path.join(dataDir, "hooks.json"), events);
 const compactor = new Compactor(sessions, fastModel, { usageLog, pricing, exchangeRates, hooks });
-const extensions = new ExtensionManager(dataDir, events, { sessions });
+const extensions = new ExtensionManager(dataDir, events, { sessions, fastModel });
 await extensions.initialize();
 const contentLens = new ContentLensService(sessions, fastModel);
 // Production evaluations share the normal Core boundary, so workspace access
@@ -117,6 +117,7 @@ const backgroundTasks = new BackgroundTaskRegistry(
 // Hooks 已在上方（compactor 之前）创建，此处直接注入 agent
 const agent = new AgentRunner(sessions, providers, core, events, pricing, exchangeRates, config.defaultLanguage, 50, (model, provider) => models.get(model, provider), usageLog, skills, mcp, compactor, dataDir, agents, commands, search, undefined, backgroundTasks, hooks, extensions, webFetch);
 agent.setPythonEnvDefault(() => settings.effective().pythonEnv);
+agent.setMaxTurns(() => settings.effective().agentMaxTurns);
 agent.setFastModel(fastModel);
 // 符号索引（0.4.0 Phase 2）：数据目录 index/ 下，按 workspace-hash 分桶；不进会话历史、不导出
 const indexManager = new IndexManager(core, path.join(dataDir, "index"), events);

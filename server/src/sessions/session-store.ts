@@ -220,6 +220,21 @@ export class SessionStore {
     return meta;
   }
 
+  /** 会话级扩展状态补丁：key=扩展 id，value 为 JSON 对象（整体替换该扩展的状态）；null 清除该扩展的状态。 */
+  async updateExtensionState(id: string, patch: Record<string, Record<string, unknown> | null>): Promise<SessionMeta> {
+    const meta = await this.readMeta(id);
+    const next: Record<string, Record<string, unknown>> = { ...(meta.extensionState ?? {}) };
+    for (const [extensionId, value] of Object.entries(patch)) {
+      if (value === null) delete next[extensionId];
+      else next[extensionId] = value;
+    }
+    if (Object.keys(next).length === 0) delete meta.extensionState;
+    else meta.extensionState = next;
+    meta.updatedAt = new Date().toISOString();
+    await this.writeMeta(meta);
+    return meta;
+  }
+
   /** 会话显示属性：title 为用户覆盖（空串清除覆盖并回落到派生标题），pinned 控制列表置顶（false 从 meta 删除）。
    *  纯展示属性：不更新 updatedAt，避免重命名/置顶改变列表排序。 */
   async updateDisplay(id: string, update: { title?: string; pinned?: boolean }): Promise<SessionMeta> {
