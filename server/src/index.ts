@@ -27,6 +27,7 @@ import { CommandRegistry } from "./commands.js";
 import { McpManager } from "./mcp/manager.js";
 import { ManagedWorkspaceManager } from "./snapshots/managed-disk.js";
 import { FastModelClient } from "./fast-model.js";
+import { ModelRoleResolver } from "./model-roles.js";
 import { Compactor } from "./context/compactor.js";
 import { StorageGC } from "./storage-gc.js";
 import { UsageLog } from "./usage-log.js";
@@ -93,6 +94,8 @@ const agents = new AgentRegistry(path.join(dataDir, "agents"));
 const commands = new CommandRegistry(path.join(dataDir, "commands"));
 const mcp = new McpManager(dataDir);
 const fastModel = new FastModelClient(providers, config.fastModel);
+// 子代理角色档解析器（settings 热更新现读生效）：premium/balanced/fast/cheap → provider+model
+const modelRoles = new ModelRoleResolver(settings, providers);
 // Hooks（可信配置，等同 yolo 级别）：全局 <dataDir>/hooks.json，项目 <cwd>/.owc/hooks.json 现读覆盖
 const hooks = new HookRunner(path.join(dataDir, "hooks.json"), events);
 const compactor = new Compactor(sessions, fastModel, { usageLog, pricing, exchangeRates, hooks });
@@ -119,6 +122,7 @@ const agent = new AgentRunner(sessions, providers, core, events, pricing, exchan
 agent.setPythonEnvDefault(() => settings.effective().pythonEnv);
 agent.setMaxTurns(() => settings.effective().agentMaxTurns);
 agent.setFastModel(fastModel);
+agent.setModelRoleResolver(modelRoles);
 // 符号索引（0.4.0 Phase 2）：数据目录 index/ 下，按 workspace-hash 分桶；不进会话历史、不导出
 const indexManager = new IndexManager(core, path.join(dataDir, "index"), events);
 agent.setIndexManager(indexManager);

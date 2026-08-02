@@ -2,6 +2,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { lookupModelMetadata } from "../src/context/model-metadata.js";
 import { ModelRegistry } from "../src/context/model-registry.js";
+import { encodeFastModelSelection } from "../src/settings-service.js";
 import { makeStubProvider } from "./helpers/stub-provider.js";
 import { makeTestApp } from "./helpers/test-app.js";
 
@@ -81,6 +82,84 @@ describe("default session provider", () => {
       });
       expect(response.statusCode).toBe(201);
       expect(response.json()).toMatchObject({ provider: "test-stub", model: "explicit-model" });
+    } finally {
+      await setup.app.close();
+    }
+  });
+
+});
+
+describe("settings defaultModel for new sessions", () => {
+  it("uses settings defaultModel for implicit session creation when still valid", async () => {
+    const setup = await fixture({ OWC_DEFAULT_MODEL: encodeFastModelSelection("anthropic", "chosen-model") });
+    try {
+      const metadata = lookupModelMetadata("anthropic-default-test");
+      // aaa-first 排序在前：若 defaultModel 未生效会回落到它，以此证明选择来自 settings
+      for (const id of ["aaa-first", "chosen-model"]) {
+        await setup.models.upsertManual({
+          id,
+          provider: "anthropic",
+          source: "manual",
+          contextWindow: metadata.contextWindow,
+          maxOutput: metadata.maxOutput,
+          capabilities: metadata.capabilities,
+        });
+      }
+      setup.providers.register(makeStubProvider("anthropic"));
+      const response = await setup.app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: setup.root } });
+      expect(response.statusCode).toBe(201);
+      expect(response.json()).toMatchObject({ provider: "anthropic", model: "chosen-model" });
+    } finally {
+      await setup.app.close();
+    }
+  });
+
+  it("falls back when defaultModel's provider is unregistered or the model left the catalog", async () => {
+    const metadata = lookupModelMetadata("anthropic-default-test");
+    for (const selection of [
+      encodeFastModelSelection("ghost-provider", "chosen-model"),
+      encodeFastModelSelection("anthropic", "ghost-model"),
+    ]) {
+      const setup = await fixture({ OWC_DEFAULT_MODEL: selection });
+      try {
+        await setup.models.upsertManual({
+          id: "only-model",
+          provider: "anthropic",
+          source: "manual",
+          contextWindow: metadata.contextWindow,
+          maxOutput: metadata.maxOutput,
+          capabilities: metadata.capabilities,
+        });
+        setup.providers.register(makeStubProvider("anthropic"));
+        const response = await setup.app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: setup.root } });
+        expect(response.statusCode).toBe(201);
+        expect(response.json()).toMatchObject({ provider: "anthropic", model: "only-model" });
+      } finally {
+        await setup.app.close();
+      }
+    }
+  });
+
+  it("ignores defaultModel when provider or model is given explicitly", async () => {
+    const setup = await fixture({ OWC_DEFAULT_MODEL: encodeFastModelSelection("anthropic", "chosen-model") });
+    try {
+      const metadata = lookupModelMetadata("anthropic-default-test");
+      await setup.models.upsertManual({
+        id: "chosen-model",
+        provider: "anthropic",
+        source: "manual",
+        contextWindow: metadata.contextWindow,
+        maxOutput: metadata.maxOutput,
+        capabilities: metadata.capabilities,
+      });
+      setup.providers.register(makeStubProvider("anthropic"));
+      const response = await setup.app.inject({
+        method: "POST",
+        url: "/api/sessions",
+        payload: { cwd: setup.root, provider: "anthropic", model: "explicit-model" },
+      });
+      expect(response.statusCode).toBe(201);
+      expect(response.json()).toMatchObject({ provider: "anthropic", model: "explicit-model" });
     } finally {
       await setup.app.close();
     }

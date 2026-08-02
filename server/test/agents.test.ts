@@ -29,6 +29,16 @@ describe("AgentRegistry", () => {
       .toEqual({ name: "plain", description: "plain", body: "Prompt", source: "global" });
   });
 
+  it("parses provider/role frontmatter and silently ignores invalid role values", () => {
+    expect(parseAgentMarkdown("---\ndescription: review\nprovider: alt-provider\nmodel: model-x\nrole: premium\n---\nBody", "reviewer", "global"))
+      .toMatchObject({ provider: "alt-provider", model: "model-x", role: "premium" });
+    expect(parseAgentMarkdown("---\ndescription: review\nrole: cheap\n---\nBody", "reviewer", "global"))
+      .toEqual({ name: "reviewer", description: "review", role: "cheap", body: "Body", source: "global" });
+    // 非法 role：字段静默忽略，定义本身保留（与 tools 解析的宽松风格一致）
+    expect(parseAgentMarkdown("---\ndescription: review\nrole: bogus\n---\nBody", "reviewer", "global"))
+      .toEqual({ name: "reviewer", description: "review", body: "Body", source: "global" });
+  });
+
   it("lets project definitions override global definitions and skips malformed files", async () => {
     const root = await tempRoot("owc-agents-");
     const globalDir = path.join(root, "global");

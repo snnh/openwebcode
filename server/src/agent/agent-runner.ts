@@ -74,6 +74,7 @@ import { PersistentShellManager, PersistentShellUnavailableError } from "./persi
 import { coreExecShell, resolveShell, type ResolvedShell } from "./shell-detect.js";
 import { MessageQueue, type QueueItem } from "./message-queue.js";
 import { InteractionCoordinator, type InteractionKind, type InteractionRequest } from "./interaction-coordinator.js";
+import { ModelRoleResolver, MODEL_ROLES, isModelRole, type ModelRole } from "../model-roles.js";
 
 interface ExecutionContext {
   sessionId: string;
@@ -210,6 +211,11 @@ const SPAWN_TASK_TOOL: ProviderTool = {
         items: { type: "string", enum: [...GENERAL_AGENT_TOOL_NAMES] },
         description: "Subset of the resolved agent type's tool allowlist; names outside that allowlist are ignored. Defaults to the type's full allowlist (explore: read_file/glob/grep/read_artifact).",
       },
+      role: {
+        type: "string",
+        enum: [...MODEL_ROLES],
+        description: "Optional model tier for the sub-agent (see the sub-agent model-role mapping in the system prompt). Explicit provider:/model: in a custom agent's frontmatter takes precedence over any role.",
+      },
     },
     required: ["prompt"],
     additionalProperties: false,
@@ -220,6 +226,14 @@ const SPAWN_TASK_TOOL: ProviderTool = {
 export const SPAWN_SWARM_MAX_ITEMS = 16;
 /** 同时运行的子代理数；超出排队，与"launch 自动排队"语义一致。 */
 export const SPAWN_SWARM_CONCURRENCY = 4;
+
+/** 系统提示中四档角色的一句话语义（引导主模型按任务选档）。 */
+const SUB_AGENT_ROLE_GUIDANCE: Record<ModelRole, string> = {
+  premium: "highest quality; use for hard reasoning, deep review, or high-stakes tasks",
+  balanced: "default quality/cost trade-off; suitable for most tasks",
+  fast: "lowest latency; use for quick lookups and simple transformations",
+  cheap: "lowest cost; use for bulk or low-stakes fan-out work",
+};
 
 /** 手动启动（REST）子代理的每会话并发上限：与 SPAWN_SWARM_CONCURRENCY 对齐，超出直接 429。 */
 export const MAX_MANUAL_SUBAGENTS = 4;
@@ -239,6 +253,8 @@ interface ResolvedSubAgent {
   kind: "explore" | "general";
   systemExtra?: string;
   modelOverride?: string;
+  /** 角色档/frontmatter provider: 解析出的 provider 覆盖；缺省用会话 provider。 */
+  providerOverride?: string;
   toolNames: string[];
   maxTurns?: number;
 }
@@ -266,15 +282,21 @@ const SPAWN_SWARM_TOOL: ProviderTool = {
               properties: {
                 task: { type: "string", description: "Value used to fill {{item}} for this item." },
                 agent: { type: "string", description: "Optional built-in type (explore/general) or custom sub-agent name overriding the call-level agent for this item only." },
+                role: { type: "string", enum: [...MODEL_ROLES], description: "Optional model tier overriding the call-level role for this item only." },
               },
               required: ["task"],
               additionalProperties: false,
             },
           ],
         },
-        description: "Values used to fill {{item}}. Each item launches one sub-agent; 2-16 items, and the filled-in prompts must be distinct. An item may be a plain string or an object { task, agent? } to override the agent for that item.",
+        description: "Values used to fill {{item}}. Each item launches one sub-agent; 2-16 items, and the filled-in prompts must be distinct. An item may be a plain string or an object { task, agent?, role? } to override the agent or model tier for that item.",
       },
       agent: { type: "string", description: "Built-in sub-agent type (explore or general) or a custom sub-agent name from the system prompt catalog, applied to every launch unless an item overrides it." },
+      role: {
+        type: "string",
+        enum: [...MODEL_ROLES],
+        description: "Optional model tier applied to every launch unless an item overrides it (see the sub-agent model-role mapping in the system prompt). Explicit provider:/model: in a custom agent's frontmatter takes precedence over any role.",
+      },
     },
     required: ["prompt_template", "items"],
     additionalProperties: false,
@@ -661,6 +683,13 @@ export class AgentRunner {
   /** 注入快速模型客户端：review 权限模式的 fast 审核通道（未注入时 review 一律转人工）。 */
   setFastModel(fastModel: FastModelClient): void {
     this.fastModel = fastModel;
+  }
+
+  private modelRoles?: ModelRoleResolver;
+
+  /** 注入子代理角色档解析器：spawn_task/spawn_swarm 的 role 参数与提示词角色映射段（未注入时 role 输入仅校验不生效）。 */
+  setModelRoleResolver(modelRoles: ModelRoleResolver): void {
+    this.modelRoles = modelRoles;
   }
 
   /** 提示词覆盖更新后清空缓存，下次构建提示词时重新读取覆盖文件。 */
@@ -1085,6 +1114,19 @@ export class AgentRunner {
             return `- ${agent.name}: ${agent.description}${ignored.length > 0 ? ` (unsupported tools ignored: ${ignored.join(", ")})` : ""}`;
           }).join("\n")}`
           : "";
+        // 子代理角色档映射段：动态构建、随 settings 热更新（resolver 每轮现读 effective()）；
+        // 未配置的档标注回落目标，引导主模型按任务难度选档。
+        const roleSection = availableToolNames.has("spawn_task") && this.modelRoles
+          ? `\n\nSub-agent model roles (pass role=<tier> to spawn_task/spawn_swarm to route the sub-agent to the configured model tier; choose the tier that fits the task):\n${MODEL_ROLES.map((role) => {
+            const selection = this.modelRoles!.resolve(role);
+            const current = selection
+              ? `${selection.model} [${selection.provider}]`
+              : role === "balanced"
+                ? "not configured, falls back to the session model"
+                : "not configured, falls back to balanced";
+            return `- ${role}: ${SUB_AGENT_ROLE_GUIDANCE[role]} (current: ${current})`;
+          }).join("\n")}\nAn explicit provider:/model: in a custom sub-agent's frontmatter overrides any role; without a role, sub-agents run on the session model.`
+          : "";
 
         // 长期记忆注入（§2.3/§7.5）：CLAUDE.md/AGENTS.md + 项目/全局 memory.md，每轮现读
         const memorySection = await this.buildMemorySection(session.cwd);
@@ -1133,7 +1175,7 @@ export class AgentRunner {
           ...(promptTransform.identity ? { identity: promptTransform.identity } : {}),
           productSections: [...(promptTransform.prependSections ?? []), ...(promptTransform.productSections ?? baseProductSections)],
           finalConstraints: [SAFETY_BOUNDARY_SECTION],
-          skillsSection: `${skillSection}${agentSection}`,
+          skillsSection: `${skillSection}${agentSection}${roleSection}`,
           projectContext: memorySection ? [{ path: "workspace instructions and memory", content: memorySection }] : [],
           ...(effectiveBaseOverride ? { basePromptOverride: effectiveBaseOverride } : {}),
           ...(promptOverride?.customAppend ? { customAppend: promptOverride.customAppend } : {}),
@@ -1441,21 +1483,47 @@ export class AgentRunner {
    * 解析子代理引用：内置类型（explore/general）优先，其次自定义 markdown 子代理。
    * agentName 为空时返回默认 explore（不回显 name，保持历史行为）。
    * 自定义子代理维持只读子集；其 frontmatter tools 优先于调用方 tools 参数。
+   *
+   * 模型/provider 选择优先级（frontmatter 优先惯例）：
+   * frontmatter provider:/model: 显式值 > frontmatter role: > 调用参数 role > 会话默认。
+   * role 经 ModelRoleResolver 回落链解析（角色未配置 → balanced → 会话默认）；
+   * frontmatter 给出 provider: 或 model: 任一显式值时 role 整体不生效。
+   * requestedRole 非法值直接报错（与 Unknown sub-agent 同一显式风格）。
    */
-  private async resolveSubAgent(cwd: string, sessionId: string, agentName: string, requestedTools?: string[]): Promise<ResolvedSubAgent> {
+  private async resolveSubAgent(cwd: string, sessionId: string, agentName: string, requestedTools?: string[], requestedRole?: string): Promise<ResolvedSubAgent> {
+    if (requestedRole !== undefined && !isModelRole(requestedRole)) {
+      throw new Error(`Unknown model role: ${requestedRole} (expected one of ${MODEL_ROLES.join("/")})`);
+    }
+    /** 角色档解析为 provider+model 覆盖；会话默认由调用方 ?? 回落，这里留空。 */
+    const applyRole = (base: ResolvedSubAgent, role: ModelRole | undefined): ResolvedSubAgent => {
+      if (!role || !this.modelRoles) return base;
+      const selection = this.modelRoles.resolveWithFallback(role, undefined);
+      return selection ? { ...base, providerOverride: selection.provider, modelOverride: selection.model } : base;
+    };
     const builtin = agentName ? getBuiltinSubAgent(agentName) : undefined;
     if (builtin) {
       const requested = requestedTools ?? [...builtin.toolNames];
-      return { name: builtin.id, kind: builtin.id, toolNames: this.filterSubAgentTools(sessionId, requested, builtin), maxTurns: builtin.maxTurns };
+      return applyRole(
+        { name: builtin.id, kind: builtin.id, toolNames: this.filterSubAgentTools(sessionId, requested, builtin), maxTurns: builtin.maxTurns },
+        requestedRole as ModelRole | undefined,
+      );
     }
     const definition = agentName && this.agents ? await this.agents.find(cwd, agentName) : undefined;
     if (agentName && !definition) throw new Error(`Unknown sub-agent: ${agentName}`);
     const requested = definition?.tools ?? requestedTools ?? [...SUB_AGENT_TOOL_NAMES];
-    return {
-      ...(definition ? { name: definition.name, systemExtra: definition.body, ...(definition.model ? { modelOverride: definition.model } : {}) } : {}),
+    const explicit = definition?.provider !== undefined || definition?.model !== undefined;
+    const resolved: ResolvedSubAgent = {
+      ...(definition ? {
+        name: definition.name,
+        systemExtra: definition.body,
+        ...(definition.model ? { modelOverride: definition.model } : {}),
+        ...(definition.provider ? { providerOverride: definition.provider } : {}),
+      } : {}),
       kind: "explore",
       toolNames: this.filterSubAgentTools(sessionId, requested, undefined),
     };
+    // frontmatter 显式 provider:/model: 优先；否则 frontmatter role: > 调用参数 role
+    return explicit ? resolved : applyRole(resolved, definition?.role ?? (requestedRole as ModelRole | undefined));
   }
 
   /** allowlist 以内置名为准：先把可能的工具形态别名解析回内置名再过滤。 */
@@ -1487,8 +1555,9 @@ export class AgentRunner {
     } catch (error) {
       throw new SubAgentLaunchError(errorMessage(error), "invalid_agent");
     }
-    const provider = this.providers.get(session.provider);
-    if (!provider) throw new SubAgentLaunchError(`Provider ${session.provider} is not configured`, "invalid_agent");
+    const providerName = resolved.providerOverride ?? session.provider;
+    const provider = this.providers.get(providerName);
+    if (!provider) throw new SubAgentLaunchError(`Provider ${providerName} is not configured`, "invalid_agent");
     const running = this.manualSubagents.get(sessionId) ?? new Set<string>();
     if (running.size >= MAX_MANUAL_SUBAGENTS) {
       throw new SubAgentLaunchError(`已有 ${MAX_MANUAL_SUBAGENTS} 个手动子代理在运行，请等待其完成后再启动`, "busy");
@@ -1505,7 +1574,7 @@ export class AgentRunner {
       taskId,
       toolCallId,
       prompt: input.prompt,
-      providerName: session.provider,
+      providerName,
       provider,
       signal: controller.signal,
     }).finally(() => {
@@ -1544,7 +1613,7 @@ export class AgentRunner {
       const result = await runSubAgent({
         provider: context.provider,
         model: session.model,
-        reasoningContent: this.getProfile(resolved.modelOverride ?? session.model, session.provider).capabilities.reasoningContent !== false,
+        reasoningContent: this.getProfile(resolved.modelOverride ?? session.model, context.providerName).capabilities.reasoningContent !== false,
         ...(resolved.modelOverride ? { modelOverride: resolved.modelOverride } : {}),
         ...(resolved.systemExtra ? { systemExtra: resolved.systemExtra } : {}),
         ...(resolved.name ? { agent: resolved.name } : {}),
@@ -2349,21 +2418,25 @@ export class AgentRunner {
       try {
         const session = await this.sessions.get(sessionId);
         if (!session) throw new Error("Session not found");
-        const provider = this.providers.get(session.provider);
-        if (!provider) throw new Error(`Provider ${session.provider} is not configured`);
         const prompt = String(input.prompt ?? "");
         if (!prompt) throw new Error("spawn_task requires a non-empty prompt");
         const agentName = typeof input.agent === "string" ? input.agent.trim() : "";
         const requestedTools = Array.isArray(input.tools) ? input.tools.map((item) => String(item)) : undefined;
-        const resolved = await this.resolveSubAgent(session.cwd, sessionId, agentName, requestedTools);
+        const requestedRole = typeof input.role === "string" && input.role.trim() ? input.role.trim() : undefined;
+        const resolved = await this.resolveSubAgent(session.cwd, sessionId, agentName, requestedTools, requestedRole);
         hookContext = { cwd: session.cwd, agent: resolved.name, kind: resolved.kind };
+        // 生效 provider：角色档/frontmatter provider: 覆盖优先，缺省会话 provider
+        const providerName = resolved.providerOverride ?? session.provider;
+        const provider = this.providers.get(providerName);
+        if (!provider) throw new Error(`Provider ${providerName} is not configured`);
+        const effectiveModel = resolved.modelOverride ?? session.model;
         // 子代理期间不发布 message.delta/thinking_delta，避免污染主聊天流；
         // 子代理 token 经 onUsage 复用主循环记账路径，计入会话成本
         const subUsageContext = new ContextManager(this.sessions.contextRoot(sessionId));
         const result = await runSubAgent({
           provider,
           model: session.model,
-          reasoningContent: this.getProfile(resolved.modelOverride ?? session.model, session.provider).capabilities.reasoningContent !== false,
+          reasoningContent: this.getProfile(effectiveModel, providerName).capabilities.reasoningContent !== false,
           ...(resolved.modelOverride ? { modelOverride: resolved.modelOverride } : {}),
           ...(resolved.systemExtra ? { systemExtra: resolved.systemExtra } : {}),
           ...(resolved.name ? { agent: resolved.name } : {}),
@@ -2398,7 +2471,7 @@ export class AgentRunner {
               payload: { toolCallId, taskId, turns: progress.turns, toolsUsed: progress.toolsUsed },
             });
           },
-          onUsage: (usage) => this.recordUsageEvent(sessionId, subUsageContext, session.provider, resolved.modelOverride ?? session.model, usage),
+          onUsage: (usage) => this.recordUsageEvent(sessionId, subUsageContext, providerName, effectiveModel, usage),
         });
         this.events.publish({
           source: "agent",
@@ -2449,18 +2522,17 @@ export class AgentRunner {
       try {
         const session = await this.sessions.get(sessionId);
         if (!session) throw new Error("Session not found");
-        const provider = this.providers.get(session.provider);
-        if (!provider) throw new Error(`Provider ${session.provider} is not configured`);
         const template = String(input.prompt_template ?? "");
         if (!template.includes("{{item}}")) throw new Error("spawn_swarm requires prompt_template to contain the {{item}} placeholder");
-        // items 兼容两种形态：纯字符串，或 { task, agent? }（agent 覆盖本次调用的整体 agent）
-        interface SwarmItemSpec { task: string; agent?: string }
+        // items 兼容两种形态：纯字符串，或 { task, agent?, role? }（agent/role 覆盖本次调用的整体值）
+        interface SwarmItemSpec { task: string; agent?: string; role?: string }
         const items: SwarmItemSpec[] = (Array.isArray(input.items) ? input.items : []).map((raw) => {
           if (typeof raw === "string") return { task: raw };
           if (raw && typeof raw === "object" && !Array.isArray(raw)) {
             const record = raw as Record<string, unknown>;
             const agent = typeof record.agent === "string" ? record.agent.trim() : "";
-            return { task: String(record.task ?? ""), ...(agent ? { agent } : {}) };
+            const role = typeof record.role === "string" ? record.role.trim() : "";
+            return { task: String(record.task ?? ""), ...(agent ? { agent } : {}), ...(role ? { role } : {}) };
           }
           return { task: String(raw) };
         });
@@ -2470,13 +2542,14 @@ export class AgentRunner {
         const prompts = items.map((item) => template.split("{{item}}").join(item.task));
         if (new Set(prompts).size !== prompts.length) throw new Error("spawn_swarm items must produce distinct filled-in prompts");
         const agentName = typeof input.agent === "string" ? input.agent.trim() : "";
-        const resolvedDefault = await this.resolveSubAgent(session.cwd, sessionId, agentName, undefined);
-        // 预解析逐项 agent 覆盖：未知名称直接拒绝整次调用（与调用级 agent 一致）
+        const callRole = typeof input.role === "string" && input.role.trim() ? input.role.trim() : undefined;
+        const resolvedDefault = await this.resolveSubAgent(session.cwd, sessionId, agentName, undefined, callRole);
+        // 预解析逐项 agent/role 覆盖：未知名称或非法 role 直接拒绝整次调用（与调用级 agent 一致）
         const itemResolutions = new Map<number, ResolvedSubAgent>();
         for (const [index, item] of items.entries()) {
-          if (!item.agent) continue;
+          if (item.agent === undefined && item.role === undefined) continue;
           try {
-            itemResolutions.set(index, await this.resolveSubAgent(session.cwd, sessionId, item.agent, undefined));
+            itemResolutions.set(index, await this.resolveSubAgent(session.cwd, sessionId, item.agent ?? agentName, undefined, item.role ?? callRole));
           } catch (error) {
             const message = errorMessage(error);
             throw new Error(`${message} (item ${index + 1})`);
@@ -2494,10 +2567,15 @@ export class AgentRunner {
           const effective = itemResolutions.get(index) ?? resolvedDefault;
           let taskId = "";
           try {
+            // 生效 provider 按 effective resolution 逐项解析（角色档/frontmatter provider: 覆盖优先）
+            const providerName = effective.providerOverride ?? session.provider;
+            const provider = this.providers.get(providerName);
+            if (!provider) throw new Error(`Provider ${providerName} is not configured`);
+            const effectiveModel = effective.modelOverride ?? session.model;
             const result = await runSubAgent({
               provider,
               model: session.model,
-              reasoningContent: this.getProfile(effective.modelOverride ?? session.model, session.provider).capabilities.reasoningContent !== false,
+              reasoningContent: this.getProfile(effectiveModel, providerName).capabilities.reasoningContent !== false,
               ...(effective.modelOverride ? { modelOverride: effective.modelOverride } : {}),
               ...(effective.systemExtra ? { systemExtra: effective.systemExtra } : {}),
               ...(effective.name ? { agent: effective.name } : {}),
@@ -2535,7 +2613,7 @@ export class AgentRunner {
                   payload: { toolCallId, taskId, turns: progress.turns, toolsUsed: progress.toolsUsed, swarm },
                 });
               },
-              onUsage: (usage) => this.recordUsageEvent(sessionId, subUsageContext, session.provider, effective.modelOverride ?? session.model, usage),
+              onUsage: (usage) => this.recordUsageEvent(sessionId, subUsageContext, providerName, effectiveModel, usage),
             });
             this.events.publish({
               source: "agent",

@@ -119,17 +119,18 @@ describe("设置分组迁移（服务设置页签移除后）", () => {
         ],
       },
       {
-        id: "models",
-        label: "模型接入",
+        id: "modelSelection",
+        label: "模型选择",
         fields: [
-          { key: "catalogSyncUrl", label: "远程模型目录 URL", type: "text", value: null, hasValue: false, source: "default", editable: true, restartRequired: false, nullable: true },
+          { key: "defaultModel", label: "会话默认模型", type: "select", options: [{ value: "fast-1", label: "fast-1" }], value: null, hasValue: false, source: "default", editable: true, restartRequired: false, nullable: true },
+          { key: "fastModelMaxTokens", label: "最大输出上限", type: "number", value: 4_096, hasValue: true, source: "default", editable: true, restartRequired: false, nullable: false },
         ],
       },
       {
-        id: "fastModel",
-        label: "快速模型",
+        id: "models",
+        label: "模型目录与同步",
         fields: [
-          { key: "fastModelMaxTokens", label: "最大输出上限", type: "number", value: 4_096, hasValue: true, source: "default", editable: true, restartRequired: false, nullable: false },
+          { key: "catalogSyncUrl", label: "远程模型目录 URL", type: "text", value: null, hasValue: false, source: "default", editable: true, restartRequired: false, nullable: true },
         ],
       },
       {
@@ -187,11 +188,16 @@ describe("设置分组迁移（服务设置页签移除后）", () => {
     expect(view.getAllByText("重启后生效")).toHaveLength(2);
   });
 
-  it("模型接入/快速模型分组渲染在模型目录分区", async () => {
+  it("模型选择/模型目录与同步分组渲染在模型目录分区，模型选择在前", async () => {
     vi.spyOn(api, "settings").mockResolvedValue(mixed);
     const view = renderWithClient(<ModelAccessSection />);
-    expect(await view.findByLabelText("远程模型目录 URL")).toBeInTheDocument();
+    expect(await view.findByLabelText("会话默认模型")).toBeInTheDocument();
     expect(view.getByLabelText("最大输出上限")).toBeInTheDocument();
+    expect(view.getByLabelText("远程模型目录 URL")).toBeInTheDocument();
+    // 两组标题齐全，模型选择排在模型目录与同步之前
+    const headings = view.getAllByRole("heading", { level: 4 }).map((heading) => heading.textContent);
+    expect(headings).toEqual(["模型选择", "模型目录与同步"]);
+    // 其他分组不渲染
     expect(view.queryByLabelText("数据目录")).toBeNull();
     expect(view.queryByLabelText("监听地址")).toBeNull();
   });

@@ -8,8 +8,8 @@ import { renderWithClient } from "./helpers/with-client";
 const selected = JSON.stringify(["主服务", "fast-1"]);
 const settings: SettingsView = {
   groups: [{
-    id: "fastModel",
-    label: "快速模型",
+    id: "modelSelection",
+    label: "模型选择",
     fields: [
       { key: "fastModel", label: "快速模型", type: "select", options: [{ value: selected, label: "fast-1【主服务】" }], value: null, hasValue: false, source: "default", editable: true, restartRequired: false, nullable: true },
       { key: "fastModelThinking", label: "思考", type: "select", options: [{ value: "disabled", label: "disabled" }, { value: "enabled", label: "enabled" }], value: "disabled", hasValue: true, source: "default", editable: true, restartRequired: false, nullable: false },

@@ -18,8 +18,8 @@ export function formatSettingValue(value: SettingValue | null | undefined): stri
 }
 
 export const SETTINGS_GROUP_EN: Record<string, string> = {
-  models: "Model catalog sync",
-  fastModel: "Fast model",
+  modelSelection: "Model Selection",
+  models: "Model Catalog & Sync",
   general: "Language and currency",
   executor: "Executor",
   service: "Storage",
@@ -33,12 +33,12 @@ export const NETWORK_SETTINGS_GROUP = "network";
 
 /**
  * 服务端设置分组 → 设置页签归属。分组 id 由服务端保持稳定（见 server/src/settings-service.ts），
- * web 端决定每个分组渲染在哪个页签：模型接入/快速模型 → 模型目录，语言与货币 → 通用，
+ * web 端决定每个分组渲染在哪个页签：模型选择/模型目录与同步 → 模型目录，语言与货币 → 通用，
  * 汇率 → 模型定价，执行器/存储/更新检查 → 服务信息，监听与端口 → 远程访问。
  */
 export const SETTING_GROUP_TAB: Record<string, SettingsTab> = {
+  modelSelection: "models",
   models: "models",
-  fastModel: "models",
   general: "general",
   executor: "info",
   service: "info",
@@ -47,8 +47,8 @@ export const SETTING_GROUP_TAB: Record<string, SettingsTab> = {
   updateCheck: "info",
 };
 
-/** 「模型目录」页签承载的设置分组（模型接入 + 快速模型） */
-export const MODELS_TAB_GROUPS = new Set(["models", "fastModel"]);
+/** 「模型目录」页签承载的设置分组（模型选择 + 模型目录与同步） */
+export const MODELS_TAB_GROUPS = new Set(["modelSelection", "models"]);
 /** 「服务信息」页签承载的设置分组（执行器 + 存储 + 更新检查，系统级参数） */
 export const INFO_TAB_GROUPS = new Set(["executor", "service", "updateCheck"]);
 
@@ -56,10 +56,14 @@ export const SETTINGS_FIELD_EN: Record<string, { label: string; description?: st
   catalogSyncUrl: { label: "Remote model catalog URL", description: "Leave empty to disable remote model catalog sync" },
   pricingSyncUrl: { label: "Remote pricing catalog URL", description: "Leave empty to disable remote pricing sync" },
   syncIntervalMinutes: { label: "Remote sync interval (minutes)", description: "0 means manual sync only; a value above 0 enables periodic sync (maximum 35,791 minutes)" },
-  fastModel: { label: "Fast model", description: "Used for context compaction and Content Lens; models come from the unified catalog of enabled providers" },
+  fastModel: { label: "Fast model", description: "Used for context compaction and Content Lens, and as the fast sub-agent role; models come from the unified catalog of enabled providers" },
   fastModelThinking: { label: "Thinking" },
   fastModelEffort: { label: "Effort" },
   fastModelMaxTokens: { label: "Maximum output limit", description: "Hard output-token ceiling for internal tasks; individual tasks may use a smaller limit" },
+  defaultModel: { label: "Session default model", description: "Default provider and model for new sessions; leave empty to fall back to the first catalog model of the first enabled provider" },
+  roleModelPremium: { label: "Premium tier model", description: "Model for the premium sub-agent role: hard reasoning and deep review; falls back to the balanced tier when unset" },
+  roleModelBalanced: { label: "Balanced tier model", description: "Model for the balanced sub-agent role: the default quality/cost trade-off; falls back to the session default when unset" },
+  roleModelCheap: { label: "Cheap tier model", description: "Model for the cheap sub-agent role: bulk, low-stakes fan-out work; falls back to the balanced tier when unset" },
   defaultLanguage: { label: "Default model language" },
   defaultCurrency: { label: "Default currency" },
   corePath: { label: "Executor path" },
