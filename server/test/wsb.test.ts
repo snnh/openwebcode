@@ -242,6 +242,25 @@ describe("CoreRouter", () => {
     expect(shared.configureSession).toHaveBeenCalledWith({ sessionId: "s1", cwd: "D:\\work", sandbox: { ...policy, mode: "appcontainer", jobMaxProcesses: 16 } });
   });
 
+  it("searchJob delegates to client.searchJob with sandbox path translation for wsb sessions", async () => {
+    const metas = new Map([["s1", makeMeta("s1", "wsb")]]);
+    const { router, wsbClient } = makeRouter(metas);
+    wsbClient.searchJob = vi.fn(async () => ({ paths: [], truncated: false }));
+    await router.configureSession({ sessionId: "s1", cwd: "D:\\work", sandbox: policy });
+    await router.searchJob({ sessionId: "s1", cwd: "D:\\work", kind: "glob", path: "D:/work/src", pattern: "*.ts" });
+    expect(wsbClient.searchJob).toHaveBeenCalledWith({ sessionId: "s1", cwd: "C:\\owc-workspace", kind: "glob", path: "C:\\owc-workspace\\src", pattern: "*.ts" });
+    expect(wsbClient.globFiles).not.toHaveBeenCalled();
+  });
+
+  it("searchJob falls back to sync globFiles/grepFiles when the client lacks searchJob", async () => {
+    const metas = new Map([["s1", makeMeta("s1")]]);
+    const { router, shared } = makeRouter(metas);
+    await router.searchJob({ sessionId: "s1", cwd: "D:\\work", kind: "glob", path: ".", pattern: "*.ts" });
+    expect(shared.globFiles).toHaveBeenCalledWith({ sessionId: "s1", path: ".", pattern: "*.ts" });
+    await router.searchJob({ sessionId: "s1", cwd: "D:\\work", kind: "grep", path: "src", pattern: "beta" });
+    expect(shared.grepFiles).toHaveBeenCalledWith({ sessionId: "s1", path: "src", pattern: "beta" });
+  });
+
   it("cleanupSession on wsb sessions never boots a VM and skips the shared client", async () => {
     const metas = new Map([["s1", makeMeta("s1", "wsb")]]);
     const { router, shared, wsb, wsbClient } = makeRouter(metas);
