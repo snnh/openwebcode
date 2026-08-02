@@ -3,7 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildSystemPrompt } from "../src/agent/prompts/prompt-builder.js";
 import { PI_BASE_SYSTEM_PROMPT } from "../src/agent/prompts/pi-base.js";
-import { loadPromptOverride, writeGlobalPromptOverride } from "../src/agent/prompts/prompt-overrides.js";
+import { loadPromptOverride, loadScopedPromptOverride, writeGlobalPromptOverride, writeProjectPromptOverride } from "../src/agent/prompts/prompt-overrides.js";
 import { tempRoot } from "./helpers/temp-roots.js";
 
 describe("loadPromptOverride", () => {
@@ -49,6 +49,72 @@ describe("writeGlobalPromptOverride", () => {
     override = await loadPromptOverride(dataDir, cwd);
     expect(override.baseOverride).toBeUndefined();
     expect(override.customAppend).toBeUndefined();
+  });
+});
+
+describe("四个配置面与项目级读写", () => {
+  it("旧格式（仅 base/append 文件）不引入新面字段", async () => {
+    const dataDir = await tempRoot("owc-prompt-");
+    const cwd = await tempRoot("owc-prompt-");
+    await writeFile(path.join(dataDir, "system-prompt.md"), "legacy base\n", "utf8");
+    await writeFile(path.join(dataDir, "system-prompt-append.md"), "legacy append\n", "utf8");
+    const override = await loadPromptOverride(dataDir, cwd);
+    expect(override.baseOverride).toBe("legacy base");
+    expect(override.customAppend).toBe("legacy append");
+    expect(override.identityOverride).toBeUndefined();
+    expect(override.subAgentAppend).toBeUndefined();
+  });
+
+  it("loads identity and subAgentAppend faces from global files", async () => {
+    const dataDir = await tempRoot("owc-prompt-");
+    const cwd = await tempRoot("owc-prompt-");
+    await writeFile(path.join(dataDir, "system-prompt-identity.md"), "You are a careful reviewer.\n", "utf8");
+    await writeFile(path.join(dataDir, "system-prompt-subagent.md"), "Sub-agents stay terse.\n", "utf8");
+    const override = await loadPromptOverride(dataDir, cwd);
+    expect(override.identityOverride).toBe("You are a careful reviewer.");
+    expect(override.subAgentAppend).toBe("Sub-agents stay terse.");
+  });
+
+  it("逐面独立合并：项目级某面覆盖全局同面，其余面仍取全局", async () => {
+    const dataDir = await tempRoot("owc-prompt-");
+    const cwd = await tempRoot("owc-prompt-");
+    await writeFile(path.join(dataDir, "system-prompt-identity.md"), "global identity\n", "utf8");
+    await writeFile(path.join(dataDir, "system-prompt-subagent.md"), "global subagent\n", "utf8");
+    await mkdir(path.join(cwd, ".owc"), { recursive: true });
+    await writeFile(path.join(cwd, ".owc", "system-prompt-subagent.md"), "project subagent\n", "utf8");
+    const override = await loadPromptOverride(dataDir, cwd);
+    expect(override.identityOverride).toBe("global identity");
+    expect(override.subAgentAppend).toBe("project subagent");
+  });
+
+  it("writeProjectPromptOverride 写入 <cwd>/.owc 并在置空时删除对应文件", async () => {
+    const dataDir = await tempRoot("owc-prompt-");
+    const cwd = await tempRoot("owc-prompt-");
+    await writeProjectPromptOverride(cwd, { identityOverride: "project identity", subAgentAppend: "project subagent" });
+    let override = await loadPromptOverride(dataDir, cwd);
+    expect(override.identityOverride).toBe("project identity");
+    expect(override.subAgentAppend).toBe("project subagent");
+    // 全局不受影响
+    expect((await loadScopedPromptOverride(dataDir)).identityOverride).toBeUndefined();
+
+    await writeProjectPromptOverride(cwd, {});
+    override = await loadPromptOverride(dataDir, cwd);
+    expect(override.identityOverride).toBeUndefined();
+    expect(override.subAgentAppend).toBeUndefined();
+  });
+
+  it("loadScopedPromptOverride 只读单级目录，不做两级合并", async () => {
+    const dataDir = await tempRoot("owc-prompt-");
+    const cwd = await tempRoot("owc-prompt-");
+    await writeFile(path.join(dataDir, "system-prompt.md"), "global base\n", "utf8");
+    await mkdir(path.join(cwd, ".owc"), { recursive: true });
+    await writeFile(path.join(cwd, ".owc", "system-prompt-append.md"), "project append\n", "utf8");
+    const global = await loadScopedPromptOverride(dataDir);
+    expect(global.baseOverride).toBe("global base");
+    expect(global.customAppend).toBeUndefined();
+    const project = await loadScopedPromptOverride(path.join(cwd, ".owc"));
+    expect(project.customAppend).toBe("project append");
+    expect(project.baseOverride).toBeUndefined();
   });
 });
 

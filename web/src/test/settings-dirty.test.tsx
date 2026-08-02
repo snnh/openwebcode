@@ -126,7 +126,7 @@ describe("设置页签切换与未保存改动确认", () => {
   it("提示词文本框编辑计入 dirty：切换页签与关闭对话框都需确认", async () => {
     renderDialog();
     await openTab("提示词");
-    fireEvent.change(await screen.findByLabelText("全局追加指令"), { target: { value: "额外指令" } });
+    fireEvent.change(await screen.findByLabelText("追加指令"), { target: { value: "额外指令" } });
 
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
     fireEvent.click(screen.getByRole("button", { name: /快捷键/ }));
@@ -141,7 +141,7 @@ describe("设置页签切换与未保存改动确认", () => {
   it("提示词未编辑时关闭对话框不弹确认", async () => {
     renderDialog();
     await openTab("提示词");
-    await screen.findByLabelText("全局追加指令");
+    await screen.findByLabelText("追加指令");
     const confirmSpy = vi.spyOn(window, "confirm");
     fireEvent.click(screen.getByRole("button", { name: "完成" }));
     expect(confirmSpy).not.toHaveBeenCalled();

@@ -3,21 +3,41 @@ import path from "node:path";
 import { writeUtf8Atomically } from "../../atomic-file.js";
 
 /**
- * 可编辑的系统提示词覆盖（plan 提示词修改功能）：
- * - 全局基线覆盖：<dataDir>/system-prompt.md（完整覆盖内置 PI_BASE_SYSTEM_PROMPT）
- * - 项目级基线覆盖：<cwd>/.owc/system-prompt.md（存在时覆盖全局）
- * - 全局追加指令：<dataDir>/system-prompt-append.md（finalConstraints 之后插入）
- * - 项目级追加指令：<cwd>/.owc/system-prompt-append.md（存在时覆盖全局）
+ * 可编辑的系统提示词覆盖（plan 提示词修改功能），四个配置面：
+ * - 身份行 identity：<dir>/system-prompt-identity.md（覆盖首行 "You are OpenWebCode..."；
+ *   env-sim persona 身份优先于此覆盖）
+ * - 基线覆盖 base：<dir>/system-prompt.md（完整覆盖内置 PI_BASE_SYSTEM_PROMPT）
+ * - 追加指令 append：<dir>/system-prompt-append.md（finalConstraints 之后插入）
+ * - 子代理附加 subAgentAppend：<dir>/system-prompt-subagent.md（拼入所有子代理系统提示，
+ *   追加在自定义子代理 body 之后）
  *
- * 与 hooks/mcp/memory 的两级模式一致：项目同名覆盖全局。
+ * 每一面都有全局（<dataDir>/）与项目（<cwd>/.owc/）两级同名文件。
+ * 合并语义与 hooks/mcp/memory 的两级模式一致：逐面独立合并，项目级存在时整面覆盖全局
+ * （不是拼接）。字段缺省（文件不存在或为空）即无该面覆盖，旧格式（仅 base/append 文件）
+ * 自然兼容。
+ *
  * 提示词不是安全边界——plan-mode/权限/沙箱由 Node/Core 独立强制，不受此处覆盖影响。
  */
 export interface PromptOverride {
+  /** 覆盖首行身份行；undefined 表示沿用默认。 */
+  identityOverride?: string;
   /** 覆盖内置 Pi 基线的文本；undefined 表示沿用内置。 */
   baseOverride?: string;
   /** 追加到 finalConstraints 之后的自定义指令；undefined 表示无追加。 */
   customAppend?: string;
+  /** 拼入所有子代理系统提示的附加指令；undefined 表示无附加。 */
+  subAgentAppend?: string;
 }
+
+/** 四个配置面与落盘文件名的对应表（一文件一面，全局/项目两级同名）。 */
+const OVERRIDE_FACES = [
+  { key: "identityOverride", file: "system-prompt-identity.md" },
+  { key: "baseOverride", file: "system-prompt.md" },
+  { key: "customAppend", file: "system-prompt-append.md" },
+  { key: "subAgentAppend", file: "system-prompt-subagent.md" },
+] as const;
+
+type OverrideFaceKey = (typeof OVERRIDE_FACES)[number]["key"];
 
 /** 文件不存在的错误按 undefined 处理；其他读取错误同样不阻断 agent 循环。 */
 async function readFileIfExists(filePath: string): Promise<string | undefined> {
@@ -32,43 +52,55 @@ async function readFileIfExists(filePath: string): Promise<string | undefined> {
   }
 }
 
-/**
- * 按内置 -> 全局 -> 项目顺序解析当前生效的提示词覆盖。
- * 项目级存在时覆盖全局级；均不存在时返回空对象（沿用内置）。
- */
-export async function loadPromptOverride(dataDir: string, cwd: string): Promise<PromptOverride> {
-  const globalBase = await readFileIfExists(path.join(dataDir, "system-prompt.md"));
-  const projectBase = await readFileIfExists(path.join(cwd, ".owc", "system-prompt.md"));
-  const baseOverride = projectBase ?? globalBase;
-
-  const globalAppend = await readFileIfExists(path.join(dataDir, "system-prompt-append.md"));
-  const projectAppend = await readFileIfExists(path.join(cwd, ".owc", "system-prompt-append.md"));
-  const customAppend = projectAppend ?? globalAppend;
-
-  return {
-    ...(baseOverride ? { baseOverride } : {}),
-    ...(customAppend ? { customAppend } : {}),
-  };
+/** 只读单个目录下的四面覆盖文件（不做两级合并），供按作用域读取。 */
+export async function loadScopedPromptOverride(dir: string): Promise<PromptOverride> {
+  const override: Partial<Record<OverrideFaceKey, string>> = {};
+  for (const face of OVERRIDE_FACES) {
+    const value = await readFileIfExists(path.join(dir, face.file));
+    if (value) override[face.key] = value;
+  }
+  return override;
 }
 
-/** 写入全局级覆盖文件（项目级 .owc 文件由用户手工管理）。 */
-export async function writeGlobalPromptOverride(
-  dataDir: string,
-  body: { baseOverride?: string; customAppend?: string },
-): Promise<void> {
-  await mkdir(dataDir, { recursive: true });
-  const baseTarget = path.join(dataDir, "system-prompt.md");
-  const appendTarget = path.join(dataDir, "system-prompt-append.md");
-  if (body.baseOverride && body.baseOverride.trim() !== "") {
-    await writeUtf8Atomically(baseTarget, `${body.baseOverride.trim()}\n`);
-  } else {
-    await safeUnlink(baseTarget);
+/**
+ * 按内置 -> 全局 -> 项目顺序解析当前生效的提示词覆盖。
+ * 逐面独立合并：项目级某面存在时覆盖全局同面；均不存在时返回空对象（沿用内置）。
+ */
+export async function loadPromptOverride(dataDir: string, cwd: string): Promise<PromptOverride> {
+  const global = await loadScopedPromptOverride(dataDir);
+  const project = cwd ? await loadScopedPromptOverride(path.join(cwd, ".owc")) : {};
+  const merged: Partial<Record<OverrideFaceKey, string>> = {};
+  for (const face of OVERRIDE_FACES) {
+    const value = project[face.key] ?? global[face.key];
+    if (value) merged[face.key] = value;
   }
-  if (body.customAppend && body.customAppend.trim() !== "") {
-    await writeUtf8Atomically(appendTarget, `${body.customAppend.trim()}\n`);
-  } else {
-    await safeUnlink(appendTarget);
+  return merged;
+}
+
+export type PromptOverrideWriteBody = Partial<Record<OverrideFaceKey, string>>;
+
+/** 把四面覆盖写入指定目录：非空写入（trim + 末尾换行），空/缺省删除对应文件。 */
+async function writePromptOverrideTo(dir: string, body: PromptOverrideWriteBody): Promise<void> {
+  await mkdir(dir, { recursive: true });
+  for (const face of OVERRIDE_FACES) {
+    const target = path.join(dir, face.file);
+    const value = body[face.key];
+    if (value && value.trim() !== "") {
+      await writeUtf8Atomically(target, `${value.trim()}\n`);
+    } else {
+      await safeUnlink(target);
+    }
   }
+}
+
+/** 写入全局级（<dataDir>/）覆盖文件。 */
+export async function writeGlobalPromptOverride(dataDir: string, body: PromptOverrideWriteBody): Promise<void> {
+  await writePromptOverrideTo(dataDir, body);
+}
+
+/** 写入项目级（<cwd>/.owc/）覆盖文件；cwd 合法性由调用方（REST 层会话校验）保证。 */
+export async function writeProjectPromptOverride(cwd: string, body: PromptOverrideWriteBody): Promise<void> {
+  await writePromptOverrideTo(path.join(cwd, ".owc"), body);
 }
 
 async function safeUnlink(filePath: string): Promise<void> {

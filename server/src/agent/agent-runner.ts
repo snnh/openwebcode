@@ -697,6 +697,22 @@ export class AgentRunner {
     this.promptOverrideCache.clear();
   }
 
+  /**
+   * 生效的子代理附加指令（项目 > 全局逐面合并后的 subAgentAppend），拼入所有
+   * runSubAgent 的 systemExtra——追加在自定义子代理 body 之后。与主提示词覆盖
+   * 共用 promptOverrideCache，热更新走同一 refreshPromptOverride 失效路径。
+   */
+  private async withSubAgentAppend(cwd: string, systemExtra: string | undefined): Promise<string | undefined> {
+    let override = this.promptOverrideCache.get(cwd);
+    if (!override && this.dataDir) {
+      override = await loadPromptOverride(this.dataDir, cwd);
+      this.promptOverrideCache.set(cwd, override);
+    }
+    const append = override?.subAgentAppend;
+    if (!append) return systemExtra;
+    return systemExtra ? `${systemExtra}\n\n${append}` : append;
+  }
+
   /** 工具形态别名 → 内置名解析；无映射时原样返回（权限/门禁/分发统一按内置名）。 */
   private resolveBuiltinToolName(sessionId: string, name: string): string {
     return this.toolAliases.get(sessionId)?.get(name) ?? name;
@@ -1168,11 +1184,13 @@ export class AgentRunner {
           }, resolveSessionPersona(session));
         }
         const effectiveBaseOverride = promptTransform.basePromptOverride ?? promptOverride?.baseOverride;
+        // 身份行优先级：env-sim persona 身份（transformPrompt）> identity 覆盖文件 > 默认行
+        const effectiveIdentity = promptTransform.identity ?? promptOverride?.identityOverride;
 
         const system = buildSystemPrompt({
           cwd: session.cwd,
           tools,
-          ...(promptTransform.identity ? { identity: promptTransform.identity } : {}),
+          ...(effectiveIdentity ? { identity: effectiveIdentity } : {}),
           productSections: [...(promptTransform.prependSections ?? []), ...(promptTransform.productSections ?? baseProductSections)],
           finalConstraints: [SAFETY_BOUNDARY_SECTION],
           skillsSection: `${skillSection}${agentSection}${roleSection}`,
@@ -1610,12 +1628,13 @@ export class AgentRunner {
         sandbox: session.sandbox ?? defaultSandboxPolicy(session.cwd),
       });
       const subUsageContext = new ContextManager(this.sessions.contextRoot(sessionId));
+      const systemExtra = await this.withSubAgentAppend(session.cwd, resolved.systemExtra);
       const result = await runSubAgent({
         provider: context.provider,
         model: session.model,
         reasoningContent: this.getProfile(resolved.modelOverride ?? session.model, context.providerName).capabilities.reasoningContent !== false,
         ...(resolved.modelOverride ? { modelOverride: resolved.modelOverride } : {}),
-        ...(resolved.systemExtra ? { systemExtra: resolved.systemExtra } : {}),
+        ...(systemExtra ? { systemExtra } : {}),
         ...(resolved.name ? { agent: resolved.name } : {}),
         agentKind: resolved.kind,
         prompt,
@@ -2433,12 +2452,13 @@ export class AgentRunner {
         // 子代理期间不发布 message.delta/thinking_delta，避免污染主聊天流；
         // 子代理 token 经 onUsage 复用主循环记账路径，计入会话成本
         const subUsageContext = new ContextManager(this.sessions.contextRoot(sessionId));
+        const systemExtra = await this.withSubAgentAppend(session.cwd, resolved.systemExtra);
         const result = await runSubAgent({
           provider,
           model: session.model,
           reasoningContent: this.getProfile(effectiveModel, providerName).capabilities.reasoningContent !== false,
           ...(resolved.modelOverride ? { modelOverride: resolved.modelOverride } : {}),
-          ...(resolved.systemExtra ? { systemExtra: resolved.systemExtra } : {}),
+          ...(systemExtra ? { systemExtra } : {}),
           ...(resolved.name ? { agent: resolved.name } : {}),
           agentKind: resolved.kind,
           prompt,
@@ -2572,12 +2592,13 @@ export class AgentRunner {
             const provider = this.providers.get(providerName);
             if (!provider) throw new Error(`Provider ${providerName} is not configured`);
             const effectiveModel = effective.modelOverride ?? session.model;
+            const systemExtra = await this.withSubAgentAppend(session.cwd, effective.systemExtra);
             const result = await runSubAgent({
               provider,
               model: session.model,
               reasoningContent: this.getProfile(effectiveModel, providerName).capabilities.reasoningContent !== false,
               ...(effective.modelOverride ? { modelOverride: effective.modelOverride } : {}),
-              ...(effective.systemExtra ? { systemExtra: effective.systemExtra } : {}),
+              ...(systemExtra ? { systemExtra } : {}),
               ...(effective.name ? { agent: effective.name } : {}),
               agentKind: effective.kind,
               prompt,

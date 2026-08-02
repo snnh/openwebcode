@@ -75,8 +75,14 @@ export const api = {
   // 在线更新（应用内升级）：POST 202 返回初始状态；400=已是最新/平台不支持，409=已有更新进行中，501=未配置
   updateApplyStatus: () => request<{ state: import("./contracts").UpdateApplyState | null }>("/api/update/apply"),
   updateApplyStart: () => request<{ state: import("./contracts").UpdateApplyState }>("/api/update/apply", { method: "POST" }),
-  promptOverride: (cwd?: string) => request<import("./contracts").PromptOverrideView>(`/api/prompt${cwd ? `?cwd=${encodeURIComponent(cwd)}` : ""}`),
-  savePromptOverride: (body: { baseOverride?: string | null; customAppend?: string | null }) =>
+  promptOverride: (opts?: { cwd?: string; scope?: "global" | "project" }) => {
+    const params = new URLSearchParams();
+    if (opts?.scope) params.set("scope", opts.scope);
+    if (opts?.cwd) params.set("cwd", opts.cwd);
+    const query = params.toString();
+    return request<import("./contracts").PromptOverrideView>(`/api/prompt${query ? `?${query}` : ""}`);
+  },
+  savePromptOverride: (body: { scope?: "global" | "project"; cwd?: string; identityOverride?: string | null; baseOverride?: string | null; customAppend?: string | null; subAgentAppend?: string | null }) =>
     request<{ ok: boolean }>("/api/prompt", { method: "PUT", body: JSON.stringify(body) }),
   providerStats: () => request<Record<string, ProviderConcurrencyStats>>("/api/providers/stats"),
   rebuildIndex: (sessionId: string) => request<{ accepted: boolean; jobId: string }>("/api/workspaces/index/rebuild", { method: "POST", body: JSON.stringify({ sessionId }) }),
