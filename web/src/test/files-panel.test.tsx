@@ -89,3 +89,68 @@ describe("FilesPanel managed workspace sync", () => {
     expect(applyRequest).not.toHaveBeenCalled();
   });
 });
+
+describe("FilesPanel 预览增强（阶段 2）", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  function renderFiles(props: Partial<ComponentProps<typeof FilesPanel>> = {}): void {
+    renderWithClient(<FilesPanel sessionId="s1" onNotice={() => undefined} {...props} />);
+  }
+
+  it("截断时显示加载更多：按已加载行数作 offset 续拉并追加渲染", async () => {
+    vi.spyOn(api, "listFiles").mockResolvedValue({ entries: [{ name: "big.txt", type: "file", size: 10 }], truncated: false });
+    const readFile = vi.spyOn(api, "readFile")
+      .mockResolvedValueOnce({ content: "line1\nline2", encoding: "utf8", truncated: true, revision: "r1" })
+      .mockResolvedValueOnce({ content: "\nline3", encoding: "utf8", truncated: false, revision: "r2" });
+    renderFiles();
+
+    fireEvent.click(await screen.findByText("big.txt"));
+    fireEvent.click(await screen.findByRole("button", { name: "加载更多" }));
+    await waitFor(() => expect(readFile).toHaveBeenLastCalledWith("s1", "big.txt", { offset: 2, limit: 2000 }));
+    await waitFor(() => expect(document.querySelector(".code-block")?.textContent).toContain("line3"));
+    // 续拉结果不再截断后按钮消失
+    expect(screen.queryByRole("button", { name: "加载更多" })).not.toBeInTheDocument();
+  });
+
+  it("图片文件走 files/raw 渲染 <img>，不请求文本内容；加载失败回退提示", async () => {
+    vi.spyOn(api, "listFiles").mockResolvedValue({ entries: [{ name: "pic.png", type: "file", size: 10 }], truncated: false });
+    const readFile = vi.spyOn(api, "readFile");
+    renderFiles();
+
+    fireEvent.click(await screen.findByText("pic.png"));
+    const img = await screen.findByRole("img", { name: "pic.png" });
+    expect(img).toHaveAttribute("src", "/api/sessions/s1/files/raw?path=pic.png");
+    expect(img).toHaveAttribute("loading", "lazy");
+    expect(readFile).not.toHaveBeenCalled();
+
+    fireEvent.error(img);
+    expect(await screen.findByText("无法预览该图片。")).toBeInTheDocument();
+  });
+
+  it(".md 文件提供渲染/源码双态，渲染态复用 Markdown 组件", async () => {
+    vi.spyOn(api, "listFiles").mockResolvedValue({ entries: [{ name: "README.md", type: "file", size: 10 }], truncated: false });
+    vi.spyOn(api, "readFile").mockResolvedValue({ content: "# 标题\n\n正文", encoding: "utf8", truncated: false, revision: "r1" });
+    renderFiles();
+
+    fireEvent.click(await screen.findByText("README.md"));
+    const renderToggle = await screen.findByRole("button", { name: "渲染" });
+    expect(screen.getByRole("button", { name: "源码" })).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.click(renderToggle);
+    expect(renderToggle).toHaveAttribute("aria-pressed", "true");
+    await waitFor(() => expect(document.querySelector(".file-preview .markdown")).not.toBeNull());
+    // MarkdownImpl 懒加载完成后按 markdown 渲染出标题
+    expect(await screen.findByRole("heading", { name: "标题" })).toBeInTheDocument();
+  });
+
+  it("预览头部可在编辑器中打开当前文件", async () => {
+    vi.spyOn(api, "listFiles").mockResolvedValue({ entries: [{ name: "a.ts", type: "file", size: 5 }], truncated: false });
+    vi.spyOn(api, "readFile").mockResolvedValue({ content: "const a = 1;", encoding: "utf8", truncated: false, revision: "r1" });
+    const onOpenInEditor = vi.fn();
+    renderFiles({ onOpenInEditor });
+
+    fireEvent.click(await screen.findByText("a.ts"));
+    fireEvent.click(await screen.findByRole("button", { name: "在编辑器中打开 a.ts" }));
+    expect(onOpenInEditor).toHaveBeenCalledWith("a.ts");
+  });
+});

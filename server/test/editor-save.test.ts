@@ -148,6 +148,20 @@ describe("PUT /api/sessions/:id/files/content（编辑器保存，0.5.0 Phase 1a
     }
   });
 
+  it("保存成功后广播 scm.updated（SCM 面板自动刷新，阶段 2b）", async () => {
+    const harness = await setup();
+    try {
+      const events: AppEvent[] = [];
+      harness.events.on("event", (event: AppEvent) => events.push(event));
+      const res = await saveRequest(harness.app, harness.session.id, { path: "src/a.ts", content: "export const a = 1;\n" });
+      expect(res.statusCode, res.body).toBe(200);
+      const scmEvent = events.find((event) => event.type === "scm.updated");
+      expect(scmEvent).toMatchObject({ sessionId: harness.session.id, payload: { sessionId: harness.session.id, reason: "file.write", path: "src/a.ts" } });
+    } finally {
+      await harness.app.close();
+    }
+  });
+
   it("文件 revision 已变化时返回 409 且不覆盖内容", async () => {
     const harness = await setup();
     try {

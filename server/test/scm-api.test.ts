@@ -92,6 +92,55 @@ describe("SCM REST 契约（0.4.0 Phase 4a）", () => {
     expect((await app.inject({ method: "POST", url: `/api/sessions/${session.id}/git/worktrees`, payload: { name: "bad name" } })).statusCode).toBe(400);
   });
 
+  it("stage/unstage/discard 路由：校验、force 门禁与 scm.updated 广播", async () => {
+    const { app, session, repo, published } = await setup();
+    // 参数校验：缺 files / 空数组 / 非字符串项一律 400
+    for (const url of ["stage", "unstage", "discard"]) {
+      expect((await app.inject({ method: "POST", url: `/api/sessions/${session.id}/git/${url}`, payload: {} })).statusCode).toBe(400);
+      expect((await app.inject({ method: "POST", url: `/api/sessions/${session.id}/git/${url}`, payload: { files: [] } })).statusCode).toBe(400);
+      expect((await app.inject({ method: "POST", url: `/api/sessions/${session.id}/git/${url}`, payload: { files: ["../escape"] } })).statusCode).toBe(400);
+    }
+    // stage -> unstage
+    await writeFile(path.join(repo, "api.txt"), "api\n");
+    const staged = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/git/stage`, payload: { files: ["api.txt"] } });
+    expect(staged.statusCode).toBe(200);
+    expect(staged.json()).toEqual({ ok: true });
+    expect((await realGit(["status", "--porcelain"], repo)).stdout).toContain("A  api.txt");
+    const unstaged = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/git/unstage`, payload: { files: ["api.txt"] } });
+    expect(unstaged.statusCode).toBe(200);
+    expect((await realGit(["status", "--porcelain"], repo)).stdout).toContain("?? api.txt");
+    // discard：tracked 修改无需 force；untracked 缺 force -> 400 且不删除
+    await writeFile(path.join(repo, "a.txt"), "changed\n");
+    const trackedOnly = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/git/discard`, payload: { files: ["a.txt"] } });
+    expect(trackedOnly.statusCode).toBe(200);
+    expect((await realGit(["status", "--porcelain"], repo)).stdout).not.toContain("a.txt");
+    const noForce = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/git/discard`, payload: { files: ["api.txt"] } });
+    expect(noForce.statusCode).toBe(400);
+    expect((await realGit(["status", "--porcelain"], repo)).stdout).toContain("?? api.txt");
+    const forced = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/git/discard`, payload: { files: ["api.txt"], force: true } });
+    expect(forced.statusCode).toBe(200);
+    expect((await realGit(["status", "--porcelain"], repo)).stdout.trim()).toBe("");
+    // scm.updated 广播（reason 对齐）
+    const reasons = published.filter((event) => event.type === "scm.updated").map((event) => (event.payload as { reason?: string }).reason);
+    expect(reasons).toEqual(expect.arrayContaining(["stage", "unstage", "discard"]));
+  });
+
+  it("GET git/log：结构化提交列表 + limit 校验；未注入 scm 501", async () => {
+    const { app, session } = await setup();
+    const log = await app.inject({ method: "GET", url: `/api/sessions/${session.id}/git/log` });
+    expect(log.statusCode).toBe(200);
+    const body = log.json() as { commits: Array<{ hash: string; shortHash: string; author: string; relTime: string; subject: string }> };
+    expect(body.commits).toHaveLength(1);
+    expect(body.commits[0]).toMatchObject({ author: "Test", subject: "initial" });
+    expect(body.commits[0]!.hash).toMatch(/^[0-9a-f]{40}$/);
+    expect(body.commits[0]!.shortHash).toMatch(/^[0-9a-f]{7,}$/);
+    expect((await app.inject({ method: "GET", url: `/api/sessions/${session.id}/git/log?limit=0` })).statusCode).toBe(400);
+    expect((await app.inject({ method: "GET", url: `/api/sessions/${session.id}/git/log?limit=abc` })).statusCode).toBe(400);
+    const noService = await setup({ withScm: false });
+    expect((await noService.app.inject({ method: "GET", url: `/api/sessions/${noService.session.id}/git/log` })).statusCode).toBe(501);
+    expect((await noService.app.inject({ method: "POST", url: `/api/sessions/${noService.session.id}/git/stage`, payload: { files: ["a.txt"] } })).statusCode).toBe(501);
+  });
+
   it("未知会话 404；未注入 scm 501", async () => {
     const { app } = await setup();
     const missing = "/api/sessions/00000000-0000-4000-8000-000000000000/git/status";

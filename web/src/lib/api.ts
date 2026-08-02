@@ -79,7 +79,6 @@ export const api = {
   savePromptOverride: (body: { baseOverride?: string | null; customAppend?: string | null }) =>
     request<{ ok: boolean }>("/api/prompt", { method: "PUT", body: JSON.stringify(body) }),
   providerStats: () => request<Record<string, ProviderConcurrencyStats>>("/api/providers/stats"),
-  indexStatus: (sessionId: string) => request<import("./contracts").WorkspaceIndexStatus>(`/api/workspaces/index/status?sessionId=${encodeURIComponent(sessionId)}`),
   rebuildIndex: (sessionId: string) => request<{ accepted: boolean; jobId: string }>("/api/workspaces/index/rebuild", { method: "POST", body: JSON.stringify({ sessionId }) }),
   session: (id: string, limit?: number) => request<SessionDetail>(`/api/sessions/${id}${limit ? `?limit=${limit}` : ""}`),
   messagesPage: (id: string, before: string, limit?: number) => request<MessagesPage>(`/api/sessions/${id}/messages?before=${encodeURIComponent(before)}${limit ? `&limit=${limit}` : ""}`),
@@ -185,7 +184,15 @@ export const api = {
   saveModelPricing: (document: PricingDocument) =>
     request<PricingDocument>("/api/model-pricing", { method: "PUT", body: JSON.stringify(document) }),
   listFiles: (id: string, path = ".") => request<{ entries: FileEntry[]; truncated: boolean }>(`/api/sessions/${id}/files?path=${encodeURIComponent(path)}`),
-  readFile: (id: string, path: string) => request<{ content: string; encoding: string; truncated: boolean; revision: string }>(`/api/sessions/${id}/files/content?path=${encodeURIComponent(path)}`),
+  // 可选 offset/limit 按行分页（阶段 2 加载更多）；缺省时服务端按默认上限截断
+  readFile: (id: string, path: string, opts: { offset?: number; limit?: number } = {}) => {
+    const params = new URLSearchParams({ path });
+    if (opts.offset !== undefined) params.set("offset", String(opts.offset));
+    if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+    return request<{ content: string; encoding: string; truncated: boolean; revision: string; totalLines?: number }>(`/api/sessions/${id}/files/content?${params.toString()}`);
+  },
+  // 图片等二进制预览（阶段 2）：直接作为 <img> src 使用，不走 JSON
+  fileRawUrl: (id: string, path: string) => `/api/sessions/${encodeURIComponent(id)}/files/raw?path=${encodeURIComponent(path)}`,
   // 编辑器保存（0.5.0 Phase 1a）：走 server 端 write_file 同一权限链与 plan 只读门禁；
   // 审批挂起期间请求保持打开，403=权限/plan 拒绝
   writeFile: (id: string, path: string, content: string, expectedRevision: string) =>
@@ -213,6 +220,18 @@ export const api = {
     request<import("./contracts").ScmWorktree>(`/api/sessions/${encodeURIComponent(id)}/git/worktrees`, { method: "POST", body: JSON.stringify(body) }),
   scmDeleteWorktree: (id: string, name: string, opts: { force?: boolean } = {}) =>
     request<{ removed: true; name: string }>(`/api/sessions/${encodeURIComponent(id)}/git/worktrees/${encodeURIComponent(name)}${opts.force ? "?force=true" : ""}`, { method: "DELETE" }),
+  // SCM 写操作（阶段 2）：stage/unstage/discard 由面板直接调用；成功后服务端发 scm.updated，前端同步 invalidate
+  scmStage: (id: string, files: string[]) =>
+    request<{ staged: string[] }>(`/api/sessions/${encodeURIComponent(id)}/git/stage`, { method: "POST", body: JSON.stringify({ files }) }),
+  scmUnstage: (id: string, files: string[]) =>
+    request<{ unstaged: string[] }>(`/api/sessions/${encodeURIComponent(id)}/git/unstage`, { method: "POST", body: JSON.stringify({ files }) }),
+  // discard 含未跟踪文件时服务端要求 force=true（缺省 400）；tracked 放弃传 force=false
+  scmDiscard: (id: string, files: string[], force = false) =>
+    request<{ discarded: string[] }>(`/api/sessions/${encodeURIComponent(id)}/git/discard`, { method: "POST", body: JSON.stringify({ files, force }) }),
+  scmLog: (id: string, limit = 50) =>
+    request<{ commits: import("./contracts").ScmLogEntry[] }>(`/api/sessions/${encodeURIComponent(id)}/git/log?limit=${limit}`),
+  scmMergeWorktree: (id: string, name: string) =>
+    request<import("./contracts").ScmWorktreeMergeResult>(`/api/sessions/${encodeURIComponent(id)}/git/worktrees/${encodeURIComponent(name)}/merge`, { method: "POST", body: JSON.stringify({}) }),
   steering: (id: string) => request<Array<{ id: string; content: string; createdAt: string }>>(`/api/sessions/${id}/steering`),
   removeSteering: (id: string, itemId: string) => request<void>(`/api/sessions/${id}/steering/${itemId}`, { method: "DELETE" }),
   importSession: async (jsonl: string): Promise<Session> => {
