@@ -78,9 +78,9 @@ describe("server settings API", () => {
     const response = await setup.app.inject({ method: "GET", url: "/api/settings" });
     expect(response.statusCode).toBe(200);
     const view = response.json<SettingsView>();
-    expect(view.groups.map((group) => group.id)).toEqual(["models", "fastModel", "general", "executor", "service", "network", "exchangeRate", "updateCheck"]);
+    expect(view.groups.map((group) => group.id)).toEqual(["models", "modelSelection", "general", "executor", "service", "network", "exchangeRate", "updateCheck"]);
     const fields = view.groups.flatMap((group) => group.fields);
-    expect(fields).toHaveLength(26);
+    expect(fields).toHaveLength(30);
     for (const item of fields) {
       expect(item.source).toBe("default");
       expect(item.editable).toBe(true);
@@ -210,6 +210,12 @@ describe("server settings API", () => {
       { defaultCurrency: "EUR" },
       { fastModel: "fast-1" },
       { fastModel: encodeFastModelSelection("未启用服务", "fast-1") },
+      { defaultModel: "fast-1" },
+      { defaultModel: encodeFastModelSelection("未启用服务", "fast-1") },
+      { roleModelPremium: "fast-1" },
+      { roleModelPremium: encodeFastModelSelection("未启用服务", "fast-1") },
+      { roleModelBalanced: encodeFastModelSelection("主服务", "不存在的模型") },
+      { roleModelCheap: encodeFastModelSelection("未启用服务", "fast-1") },
       { fastModelThinking: "sometimes" },
       { fastModelEffort: "extreme" },
       { fastModelMaxTokens: 64_001 },
@@ -322,6 +328,90 @@ describe("server settings API", () => {
     expect(() => loadConfig({ OWC_MODELS_CATALOG_SYNC_URL: "ftp://example.com/models.json" })).toThrow(/http/i);
     expect(() => loadConfig({ OWC_MODELS_SYNC_INTERVAL_MINUTES: "-1" })).toThrow(/non-negative/i);
     expect(() => loadConfig({ OWC_MODELS_SYNC_INTERVAL_MINUTES: String(MAX_SYNC_INTERVAL_MINUTES + 1) })).toThrow(String(MAX_SYNC_INTERVAL_MINUTES));
+  });
+
+});
+
+describe("model selection settings (modelSelection group)", () => {
+  it("groups model-selection keys in order and keeps catalog sync keys under models", async () => {
+    const setup = await fixture();
+    const view = (await setup.app.inject({ method: "GET", url: "/api/settings" })).json<SettingsView>();
+    const groups = new Map(view.groups.map((group) => [group.id, group.fields.map((item) => item.key)]));
+    expect(groups.get("modelSelection")).toEqual([
+      "defaultModel",
+      "roleModelPremium",
+      "roleModelBalanced",
+      "fastModel",
+      "fastModelThinking",
+      "fastModelEffort",
+      "fastModelMaxTokens",
+      "roleModelCheap",
+    ]);
+    expect(groups.get("models")).toEqual(["catalogSyncUrl", "pricingSyncUrl", "syncIntervalMinutes"]);
+    for (const key of ["defaultModel", "roleModelPremium", "roleModelBalanced", "roleModelCheap"]) {
+      expect(field(view, key)).toMatchObject({
+        type: "select",
+        value: null,
+        nullable: true,
+        restartRequired: false,
+        options: [{ value: encodeFastModelSelection("主服务", "fast-1"), label: "fast-1【主服务】" }],
+      });
+    }
+  });
+
+  it("accepts encoded role/default selections, hot-applies them, and clears with null", async () => {
+    const setup = await fixture();
+    const selection = encodeFastModelSelection("主服务", "fast-1");
+    const response = await setup.app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: { overrides: {
+        defaultModel: selection,
+        roleModelPremium: selection,
+        roleModelBalanced: selection,
+        roleModelCheap: selection,
+      } },
+    });
+    expect(response.statusCode).toBe(200);
+    const view = response.json<SettingsView>();
+    for (const key of ["defaultModel", "roleModelPremium", "roleModelBalanced", "roleModelCheap"]) {
+      expect(field(view, key)).toMatchObject({ value: selection, source: "file" });
+    }
+    // 热生效：effective() 现读，无需重启
+    expect(setup.settings.effective().defaultModel).toEqual({ provider: "主服务", model: "fast-1" });
+    expect(setup.settings.effective().roleModels).toEqual({
+      premium: { provider: "主服务", model: "fast-1" },
+      balanced: { provider: "主服务", model: "fast-1" },
+      cheap: { provider: "主服务", model: "fast-1" },
+    });
+    expect(setup.events.some((event) =>
+      event.type === "server.settings_updated" &&
+      (event.payload as { keys?: string[] }).keys?.includes("defaultModel"))).toBe(true);
+
+    const cleared = await setup.app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: { overrides: { defaultModel: null, roleModelPremium: null, roleModelBalanced: null, roleModelCheap: null } },
+    });
+    expect(cleared.statusCode).toBe(200);
+    expect(setup.settings.effective().defaultModel).toBeUndefined();
+    expect(setup.settings.effective().roleModels).toBeUndefined();
+  });
+
+  it("honors env overrides for the new selection keys and locks them from UI writes", async () => {
+    const selection = encodeFastModelSelection("主服务", "fast-1");
+    const setup = await fixture({ OWC_DEFAULT_MODEL: selection, OWC_ROLE_MODEL_CHEAP: selection });
+    const view = (await setup.app.inject({ method: "GET", url: "/api/settings" })).json<SettingsView>();
+    expect(field(view, "defaultModel")).toMatchObject({ value: selection, source: "env", editable: false });
+    expect(field(view, "roleModelCheap")).toMatchObject({ value: selection, source: "env", editable: false });
+    expect(setup.settings.effective().defaultModel).toEqual({ provider: "主服务", model: "fast-1" });
+    expect(setup.settings.effective().roleModels?.cheap).toEqual({ provider: "主服务", model: "fast-1" });
+    const response = await setup.app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: { overrides: { defaultModel: selection } },
+    });
+    expect(response.statusCode).toBe(400);
   });
 
 });

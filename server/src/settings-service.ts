@@ -86,7 +86,7 @@ interface RuntimeDependencies {
 
 const GROUPS = [
   { id: "models", label: "模型接入" },
-  { id: "fastModel", label: "快速模型" },
+  { id: "modelSelection", label: "模型选择" },
   { id: "general", label: "语言与货币" },
   { id: "executor", label: "执行器" },
   { id: "service", label: "存储" },
@@ -115,6 +115,9 @@ export function decodeFastModelSelection(value: unknown): [provider: string, mod
     return [parsed[0], parsed[1]];
   } catch { return undefined; }
 }
+
+/** 编码为 [provider, model] JSON 串的模型选择键：共享 optionsFor 动态选项与 select 校验逻辑。 */
+const MODEL_SELECTION_KEYS = new Set(["fastModel", "defaultModel", "roleModelPremium", "roleModelBalanced", "roleModelCheap"]);
 
 function requireHttpUrl(value: SettingValue): void {
   let parsed: URL;
@@ -167,10 +170,6 @@ function requireJobMaxProcesses(value: SettingValue): void {
   if (typeof value !== "number" || value < 1 || value > 4096) {
     throw new SettingsValidationError("Job 进程数上限需为 1–4096");
   }
-}
-
-function requireFastModelSelection(value: SettingValue): void {
-  if (!decodeFastModelSelection(value)) throw new SettingsValidationError("快速模型选择无效");
 }
 
 function requireFastModelMaxTokens(value: SettingValue): void {
@@ -229,11 +228,17 @@ const FIELDS: FieldSpec[] = [
   { key: "catalogSyncUrl", group: "models", label: "远程模型目录 URL", type: "text", env: "OWC_MODELS_CATALOG_SYNC_URL", defaultValue: null, restartRequired: false, validate: requireHttpUrl, description: "留空则不从远程链接同步模型目录" },
   { key: "pricingSyncUrl", group: "models", label: "远程定价目录 URL", type: "text", env: "OWC_MODELS_PRICING_SYNC_URL", defaultValue: null, restartRequired: false, validate: requireHttpUrl, description: "留空则不从远程链接同步模型定价" },
   { key: "syncIntervalMinutes", group: "models", label: "远程同步间隔（分钟）", type: "number", env: "OWC_MODELS_SYNC_INTERVAL_MINUTES", defaultValue: 0, restartRequired: false, fromEnv: envSyncIntervalMinutes, validate: requireSyncIntervalMinutes, description: `0 表示仅手动同步；大于 0 时按此间隔自动同步，最大 ${MAX_SYNC_INTERVAL_MINUTES} 分钟` },
+  // 模型选择（modelSelection 组，顺序：会话默认 → 极致 → 平衡 → 快速 → 廉价）：
+  // 值统一为 [provider, model] 编码串，全部热生效；快速档直接复用既有 fastModel 键。
+  { key: "defaultModel", group: "modelSelection", label: "会话默认模型", type: "select", env: "OWC_DEFAULT_MODEL", defaultValue: null, restartRequired: false, description: "新建会话的默认服务商与模型；留空回落第一个已启用服务商的首个目录模型；模型来自已启用服务商的统一模型目录" },
+  { key: "roleModelPremium", group: "modelSelection", label: "极致档模型", type: "select", env: "OWC_ROLE_MODEL_PREMIUM", defaultValue: null, restartRequired: false, description: "子代理 premium（极致）角色使用的模型：高难度推理/深度评审；未配置时回落平衡档" },
+  { key: "roleModelBalanced", group: "modelSelection", label: "平衡档模型", type: "select", env: "OWC_ROLE_MODEL_BALANCED", defaultValue: null, restartRequired: false, description: "子代理 balanced（平衡）角色使用的模型：质量与成本的默认折中；未配置时回落会话默认" },
   // 内部低延迟任务复用已启用模型服务商，不维护第二套端点或密钥。
-  { key: "fastModel", group: "fastModel", label: "快速模型", type: "select", env: "OWC_FAST_MODEL", defaultValue: null, restartRequired: false, validate: requireFastModelSelection, description: "用于上下文压缩和内容透镜；模型来自已启用服务商的统一模型目录" },
-  { key: "fastModelThinking", group: "fastModel", label: "思考", type: "select", env: "OWC_FAST_MODEL_THINKING", defaultValue: "disabled", restartRequired: false, options: THINKING_OPTIONS },
-  { key: "fastModelEffort", group: "fastModel", label: "力度", type: "select", env: "OWC_FAST_MODEL_EFFORT", defaultValue: "none", restartRequired: false, options: EFFORT_OPTIONS },
-  { key: "fastModelMaxTokens", group: "fastModel", label: "最大输出上限", type: "number", env: "OWC_FAST_MODEL_MAX_TOKENS", defaultValue: 4_096, restartRequired: false, fromEnv: envNumber, validate: requireFastModelMaxTokens, description: "内部任务的输出 token 硬上限；具体任务可以使用更小上限" },
+  { key: "fastModel", group: "modelSelection", label: "快速模型", type: "select", env: "OWC_FAST_MODEL", defaultValue: null, restartRequired: false, description: "用于上下文压缩和内容透镜，同时作为子代理 fast（快速）角色；模型来自已启用服务商的统一模型目录" },
+  { key: "fastModelThinking", group: "modelSelection", label: "思考", type: "select", env: "OWC_FAST_MODEL_THINKING", defaultValue: "disabled", restartRequired: false, options: THINKING_OPTIONS },
+  { key: "fastModelEffort", group: "modelSelection", label: "力度", type: "select", env: "OWC_FAST_MODEL_EFFORT", defaultValue: "none", restartRequired: false, options: EFFORT_OPTIONS },
+  { key: "fastModelMaxTokens", group: "modelSelection", label: "最大输出上限", type: "number", env: "OWC_FAST_MODEL_MAX_TOKENS", defaultValue: 4_096, restartRequired: false, fromEnv: envNumber, validate: requireFastModelMaxTokens, description: "内部任务的输出 token 硬上限；具体任务可以使用更小上限" },
+  { key: "roleModelCheap", group: "modelSelection", label: "廉价档模型", type: "select", env: "OWC_ROLE_MODEL_CHEAP", defaultValue: null, restartRequired: false, description: "子代理 cheap（廉价）角色使用的模型：批量、低风险的分发任务；未配置时回落平衡档" },
   // 通用（热生效）
   { key: "defaultLanguage", group: "general", label: "默认语言", type: "select", env: "OWC_DEFAULT_LANGUAGE", defaultValue: "zh-CN", restartRequired: false, options: LANGUAGE_OPTIONS },
   { key: "defaultCurrency", group: "general", label: "默认货币", type: "select", env: "OWC_DEFAULT_CURRENCY", defaultValue: "CNY", restartRequired: false, options: ["USD", "CNY"], fromEnv: envCurrency },
@@ -371,7 +376,7 @@ export class SettingsService {
   }
 
   private optionsFor(field: FieldSpec): SettingOptionView[] | undefined {
-    if (field.key !== "fastModel") {
+    if (!MODEL_SELECTION_KEYS.has(field.key)) {
       return field.options?.map((value) => ({ value, label: value }));
     }
     const enabled = new Set(this.deps?.profiles?.modelProfiles()
@@ -397,6 +402,10 @@ export class SettingsService {
     const exchangeRateUrl = value("exchangeRateUrl");
     const fixedUsdCnyRate = value("fixedUsdCnyRate");
     const fastModelSelection = decodeFastModelSelection(value("fastModel"));
+    const defaultModelSelection = decodeFastModelSelection(value("defaultModel"));
+    const roleModelPremium = decodeFastModelSelection(value("roleModelPremium"));
+    const roleModelBalanced = decodeFastModelSelection(value("roleModelBalanced"));
+    const roleModelCheap = decodeFastModelSelection(value("roleModelCheap"));
     const fastModelThinking = value("fastModelThinking");
     const fastModelEffort = value("fastModelEffort");
     const jobObjectMemoryMB = value("jobObjectMemoryMB");
@@ -441,6 +450,18 @@ export class SettingsService {
         ...(typeof value("updateCheckUrl") === "string" ? { url: value("updateCheckUrl") as string } : {}),
         intervalHours: value("updateCheckIntervalHours") as number,
       },
+      ...(defaultModelSelection
+        ? { defaultModel: { provider: defaultModelSelection[0], model: defaultModelSelection[1] } }
+        : {}),
+      ...(roleModelPremium || roleModelBalanced || roleModelCheap
+        ? {
+            roleModels: {
+              ...(roleModelPremium ? { premium: { provider: roleModelPremium[0], model: roleModelPremium[1] } } : {}),
+              ...(roleModelBalanced ? { balanced: { provider: roleModelBalanced[0], model: roleModelBalanced[1] } } : {}),
+              ...(roleModelCheap ? { cheap: { provider: roleModelCheap[0], model: roleModelCheap[1] } } : {}),
+            },
+          }
+        : {}),
       ...(sandboxAllowPaths.length > 0 || typeof jobObjectMemoryMB === "number" || typeof jobObjectMaxProcesses === "number"
         ? {
             sandbox: {
@@ -592,10 +613,10 @@ export class SettingsService {
         break;
       case "select":
         if (typeof value !== "string") throw new SettingsValidationError(`${field.label} 必须是字符串`);
-        if (field.key === "fastModel") {
-          if (!decodeFastModelSelection(value)) throw new SettingsValidationError("快速模型选择无效");
+        if (MODEL_SELECTION_KEYS.has(field.key)) {
+          if (!decodeFastModelSelection(value)) throw new SettingsValidationError(`${field.label}选择无效`);
           if (this.deps && !this.optionsFor(field)?.some((option) => option.value === value)) {
-            throw new SettingsValidationError("快速模型必须来自已启用服务商的模型目录");
+            throw new SettingsValidationError(`${field.label}必须来自已启用服务商的模型目录`);
           }
         } else if (!field.options?.includes(value)) {
           throw new SettingsValidationError(`${field.label} 必须是 ${field.options?.join(" / ")} 之一`);

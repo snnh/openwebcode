@@ -306,6 +306,23 @@ function resolveDefaultModel(provider: string, models: ModelRegistry | undefined
 }
 
 /**
+ * settings 的 defaultModel（会话默认模型）：已配置、provider 仍启用且模型仍在目录中时，
+ * 作为隐式会话创建（body 未指定 provider/model）的 provider+model；
+ * 任一条件失效即回落"第一个已启用服务商 / 目录首模型"。只影响新会话创建。
+ */
+function resolveDefaultSelection(
+  settings: SettingsService | undefined,
+  providers: ProviderRegistry,
+  models: ModelRegistry | undefined,
+): { provider: string; model: string } | undefined {
+  const selection = settings?.effective().defaultModel;
+  if (!selection || !providers.get(selection.provider)) return undefined;
+  if (settings && !settings.configuredProviderNames().includes(selection.provider)) return undefined;
+  if (models && !models.list().some((model) => model.provider === selection.provider && model.id === selection.model)) return undefined;
+  return selection;
+}
+
+/**
  * Allow user-facing Unicode names, but never accept a pathname or a Windows
  * device name. The returned name is safe to join below .owc/uploads on every
  * supported host OS.
@@ -1200,14 +1217,18 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     if (!request.body || typeof request.body.cwd !== "string" || !request.body.cwd) {
       return reply.code(400).send({ error: "cwd must be a non-empty string" });
     }
-    const provider = request.body.provider ?? resolveDefaultProvider(dependencies.settings, providers);
+    // body 未显式指定 provider/model 时，settings 的 defaultModel 优先于"第一个 profile / 目录首模型"
+    const implicitSelection = request.body.provider === undefined && request.body.model === undefined
+      ? resolveDefaultSelection(dependencies.settings, providers, dependencies.models)
+      : undefined;
+    const provider = request.body.provider ?? implicitSelection?.provider ?? resolveDefaultProvider(dependencies.settings, providers);
     if (!provider) {
       return reply.code(400).send({ code: "NO_PROVIDER", message: NO_PROVIDER_MESSAGE, error: NO_PROVIDER_MESSAGE });
     }
     if (!providers.get(provider)) {
       return reply.code(400).send({ error: `Provider ${provider} is not configured` });
     }
-    const model = request.body.model ?? resolveDefaultModel(provider, dependencies.models);
+    const model = request.body.model ?? implicitSelection?.model ?? resolveDefaultModel(provider, dependencies.models);
     const sandboxModeError = validateSandboxMode(request.body.sandboxMode);
     if (sandboxModeError) return reply.code(400).send({ error: sandboxModeError });
     const bindLinksError = validateBindLinks(request.body.bindLinks);
