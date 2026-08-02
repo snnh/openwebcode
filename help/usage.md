@@ -95,7 +95,7 @@ sudo ./install.sh --yes --system --lan --enable-service --open-firewall
 ## 问题（Problems）与源代码管理（SCM）面板
 
 - **问题面板**：`test_runner` 工具跑测试/构建/lint 后，结构化诊断（vitest/jest、pytest、go test、dotnet test）按文件分组展示，可按严重度过滤、查看来源工具；点击条目跳转到只读代码视图的对应行列。agent 运行中产生新诊断时以角标提示，不打断当前操作。
-- **SCM 面板**：展示当前分支、ahead/behind 与变更文件分组；点击文件看只读 diff（大 diff 落 artifact，面板给出提示）；填写提交信息后点「提交（需确认）」会经对话下发 `git_commit` 工具，提交动作始终需要确认（yolo 也不例外）；无 git 仓库的会话面板会如实标注降级。worktree 创建一键执行、移除需两步确认。
+- **SCM 面板**：展示当前分支、ahead/behind 与变更文件分组（已暂存/更改/未跟踪）；每行悬停出现行内操作——未暂存组 `+` 暂存 / `↩` 放弃更改，已暂存组 `-` 移出暂存，未跟踪组 `+` 暂存 / 删除（二次确认）；点击文件看只读 diff（未跟踪文件直接显示内容，大 diff 落 artifact 并提示）；底部「历史」折叠区显示最近提交（短哈希 + 主题 + 作者 + 相对时间）；填写提交信息后点「提交（需确认）」会经对话下发 `git_commit` 工具，提交动作始终需要确认（yolo 也不例外）；worktree 创建一键执行、合回一键执行（冲突列表直接展示）、移除需两步确认。agent 写文件或编辑器保存后面板自动刷新；无 git 仓库的会话面板会如实标注降级。
 - **只读代码视图**：Shiki 高亮 + 行号 + 行列跳转的统一代码查看形态，从工具卡、问题面板、SCM diff 或 Quick Open 打开，`Esc`/关闭即回到对话。工具卡文件变化、Problems 跳转、SCM diff 还可打开 Monaco 编辑器/分栏 diff（随需加载，未打开不占用包体积），支持逐 hunk 接受/拒绝；加载失败或移动端降级为只读视图。
 
 ## 移动端与 PWA
@@ -227,7 +227,7 @@ agent 运行期间可用的状态指示与干预手段：
 
 运行状态与上下文信息分布在会话头部徽标、底部面板标签页与侧栏视图中：
 
-- **文件树**（侧栏「文件」视图）：懒加载，文件只读预览
+- **文件树**（侧栏「文件」视图）：懒加载；文件只读预览——超过 2000 行可点「加载更多」分页续读，图片（png/jpg/gif/webp/svg/ico/bmp）直接显示，Markdown 可切换「渲染/源码」双态，头部可一键「在编辑器中打开」
 - **上下文窗口**：会话头部实时显示窗口占用 `45k/128k · 38%`（≥70% 变黄、≥85% 变红）与缓存命中胶囊（悬停细分读取/写入/未缓存输入）；底部面板页签条同步显示 `窗口 N%`
 - **上下文用量**（底部面板「上下文」标签页）：顶部「上下文窗口」区给出大号占用表、按段（消息/工具结果/repoMap/压缩摘要/系统/其他）堆叠的 token 归因条、本轮/累计缓存命中与水位提示；下方为 token/成本/预算明细，支持 lag/interval/off 策略与驱逐模式（默认节省/超级节省）热调、工具调用/概览压缩、条目逐出/回写/pin，以及 artifact 原文查看
 - **子代理**（底部面板「子代理」标签页）：汇总本会话全部 `spawn_task`/`spawn_swarm`——按调用分组，swarm 显示完成/失败/运行中聚合计数与逐项实时进度，可内联展开转录；消息轨道里的子代理卡片也实时刷新（swarm 逐项状态、轮次、工具数），转录展示完整内部消息流（折叠到最近 20 条）；刷新页面后从历史恢复
@@ -244,6 +244,7 @@ agent 运行期间可用的状态指示与干预手段：
 - **模型服务商**：可保存并独立启用多个接口配置，接口类型三种——Anthropic Messages、OpenAI Chat Completions 与 OpenAI Responses（`POST /responses`，思维以 reasoning summary 流返回，历史思维链不回传）；每个服务商可自动拉取或手动添加自己的模型，同名模型互不覆盖。每个服务商可配**自定义请求体**（JSON，如 `{"temperature": 0.7, "max_tokens": 8192}`），浅合并进每次模型请求；`model`/`messages`/`stream`/`tools`/`system` 为保留字段不可覆盖
 - **会话中热切换模型**：统一列表显示为 `模型ID【服务商】`，下轮生效；账本按新窗口重算，模态不兼容的历史内容替换为占位描述
 - **快速模型**：直接从同一统一模型列表中选择，用于上下文压缩与内容透镜；接口、Base URL 和密钥复用所选服务商，可单独设置 thinking、effort 与最大输出上限
+- **会话默认模型与四档角色**（设置 → 模型接入 → 模型选择）：「会话默认」决定新建会话的模型（未设置时取第一个服务商的第一个模型）；「极致 / 平衡 / 快速 / 廉价」四档角色各指派一个模型——快速档即上面的快速模型。主代理派发子代理时可按任务选档（`spawn_task`/`spawn_swarm` 的 `role` 参数，或自定义子代理 frontmatter 的 `role:`/`provider:`）：难题用极致、常规执行用平衡、要速度用快速、批量轻活用廉价；未配置的角色回落平衡档，再回落会话当前模型；用量与成本按实际生效的服务商与模型归属
 - **模型选择器**：输入框下方常驻，模型按供应商分组（可展开收起）；底部固定区显示当前模型能力徽章与思考控件——胶囊开关切换思考，强度用格子档滑动切换（只显示模型声明的档位；未声明思考能力的模型开关默认关、未声明档位时全部可选）
 - **思维链回传**：模型能力新增 `reasoningContent` 声明（设置 → 模型目录双击模型编辑）。开启时历史 thinking 块以 `reasoning_content` 回带给 OpenAI 兼容端点（deepseek/qwen/glm/kimi 等新模型要求）；gpt/o 系与 claude 前缀默认关闭，其余默认开启；Anthropic 接口走签名回放不受此开关影响
 - **上下文与输出**：未声明的模型默认上下文 256k（deepseek 前缀为 1M）；输出长度默认不封顶（OpenAI 兼容接口不发送 `max_tokens`，需要时经自定义请求体显式设置；Anthropic 接口 `max_tokens` 为强制字段，默认 64k 同样可被自定义请求体覆盖）
@@ -332,7 +333,7 @@ owc run "给 main.ts 加个单元测试" --cwd . --json
 - `owc-eval`：默认关闭；启用后底部面板出现「评测」，可选择固定 mock-provider 示例与 0.4 工具契约任务，在独立临时工作区回放 AgentRunner。报告包含断言、工具、token 与耗时；可把历史运行设为基线，与当前运行生成持久化的回归/改善对比并导出自包含 JSON。评测服务内置于 server，不读取原始 API Key；生产运行仍走正常 Core 权限与沙盒边界
 - `env-sim`（环境模拟）：默认关闭；启用并选择预设后，系统提示词切换为该产品风格（身份行 + 工作方式），内置工具以该产品的命名/描述呈现（如 `Read`/`Bash`/`Edit`），底层仍走原工具实现与权限链。内置 `claude-code`/`kimi-code`/`zcode`/`codex` 四档预设；把自制预设 JSON（必填 `id`/`name`/`identity`/`basePrompt`，可选 `productSections`/`hideBuiltIns`/`aliases`）放入 `<业务数据目录>/env-sim/personas/` 即可添加并与他人分享，一个文件一个预设
 
-第三方扩展目录需包含 `manifest.json`（`apiVersion: "1"`）；入口默认为 `index.js`，可在 manifest 的 `entry` 字段另行指定。在设置页输入本地绝对路径即可安装。v1 扩展是可信代码，安装即信任其声明权限；单个钩子运行超时 5 秒会被跳过并记录日志。
+第三方扩展目录需包含 `manifest.json`（`apiVersion: "1"`）；入口默认为 `index.js`，可在 manifest 的 `entry` 字段另行指定。在设置页输入本地绝对路径即可安装。v1 扩展是可信代码，安装即信任其声明权限；单个钩子运行超时 5 秒会被跳过并记录日志。第三方扩展可用的 API 面与官方扩展看齐：注册工具、`sessions`/`context`/`events` 访问、提示词与上下文钩子、私有存储（`<数据目录>/extensions-data/<id>/`，单文件 1 MiB、总量 50 MiB）、REST 路由注册（`/api/ext/<id>/*`，需 `http:route` 权限）、模型调用通道（`model:fast` 权限）、提示词与工具塑形（`prompt:shape`/`tools:shaping` 权限）、会话级扩展状态（extensionState）。完整字段与权限语义见 `help/development.md` 的扩展开发章节，可运行的示例在 `examples/extensions/demo/`。
 
 ### 子代理（`.owc/agents/reviewer.md`）
 
@@ -344,6 +345,7 @@ name: reviewer
 description: 代码审查专家，只读不改
 tools: [read_file, glob, grep]
 model: claude-sonnet-4-5
+role: premium
 ---
 你是资深代码审查员。逐行核对 diff，指出：
 - 逻辑错误
@@ -352,7 +354,9 @@ model: claude-sonnet-4-5
 不要修改代码，只输出审查意见。
 ```
 
-调用：`spawn_task agent=reviewer prompt="审查 src/auth.ts 的最近改动"`
+frontmatter 模型声明（优先级从高到低）：`provider:` + `model:` 显式指定服务商与模型 > `role:` 指定四档角色（premium/balanced/fast/cheap，映射见「设置 → 模型接入 → 模型选择」）> 派发时的 `role` 参数 > 会话当前模型。
+
+调用：`spawn_task agent=reviewer prompt="审查 src/auth.ts 的最近改动"`；也可不指定 agent 直接按角色派发：`spawn_task prompt="..." role="cheap"`。
 
 多个独立的同类只读任务可用 `spawn_swarm` 并行（模板 + 逐项替换，2–16 项，并发上限 4，超出自动排队）：
 
@@ -360,7 +364,7 @@ model: claude-sonnet-4-5
 spawn_swarm prompt_template="审查 {{item}} 的最近改动，输出风险点" items=["src/auth.ts", "src/api.ts", "src/pay.ts"]
 ```
 
-`items` 也可逐项指定子代理：`items=[{"task": "审查 src/auth.ts", "agent": "reviewer"}, ...]`（字符串形式仍兼容，`agent` 也可填内置 `general`）。子代理结论按 `[序号/总数]` 聚合返回；派生过程在消息轨道渲染为实时卡片（swarm 逐项状态、轮次与工具数），底部面板「子代理」标签页按调用分组汇总，顶部还可手动启动子代理（任务描述 + 类型选择，`POST /api/sessions/:id/subagents`，并发上限 4，超限直接拒绝）；主窗口子代理标签页以与主对话相同的渲染展示完整转录。每次派生的完整转录存在会话数据目录 `subagents/<taskId>.json`。中断 agent 不会再启动排队中的 swarm 项，也会取消手动启动的子代理。
+`items` 也可逐项指定子代理与模型角色：`items=[{"task": "审查 src/auth.ts", "agent": "reviewer", "role": "cheap"}, ...]`（字符串形式仍兼容，`agent` 也可填内置 `general`；调用级 `role` 对未单独指定的项生效）。子代理结论按 `[序号/总数]` 聚合返回；派生过程在消息轨道渲染为实时卡片（swarm 逐项状态、轮次与工具数），底部面板「子代理」标签页按调用分组汇总，顶部还可手动启动子代理（任务描述 + 类型选择，`POST /api/sessions/:id/subagents`，并发上限 4，超限直接拒绝）；主窗口子代理标签页以与主对话相同的渲染展示完整转录。每次派生的完整转录存在会话数据目录 `subagents/<taskId>.json`。中断 agent 不会再启动排队中的 swarm 项，也会取消手动启动的子代理。
 
 同一次 `spawn_swarm` 的成员还拥有两个专属工具 `swarm_board_post` / `swarm_board_read`，经共享讨论板互相协调：板文件为会话数据目录下 `subagents/swarm-<id>-board.jsonl`（每行 `{ts, from, text}`，append-only），单次读取限最后 50 条 / 8KB；`spawn_swarm` 汇总时会在聚合结论后附 Board digest（板路径、各成员发帖数与最后几条）。
 
