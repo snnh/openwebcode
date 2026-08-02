@@ -19,6 +19,8 @@ export interface ServerConfig {
   gcMaxBytes: number;
   defaultLanguage: string;
   defaultCurrency: "USD" | "CNY";
+  /** 单条用户消息允许的最大 agent 轮次，达到后以失败收尾；设置页可调（热生效）。 */
+  agentMaxTurns: number;
   /** bash 工具 python 运行环境的全局默认（会话可覆盖）；global = 本机环境。 */
   pythonEnv: PythonEnv;
   exchangeRate: {
@@ -159,6 +161,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     dataDir: env.OWC_DATA_DIR ?? "../.openwebcode",
     coreRequestTimeoutMs: positiveInteger(env.OWC_CORE_REQUEST_TIMEOUT_MS, 130_000),
     gcMaxBytes: positiveInteger(env.OWC_GC_MAX_BYTES, 2_147_483_648),
+    agentMaxTurns: boundedInteger(env.OWC_AGENT_MAX_TURNS, 1000) ?? 50,
     defaultLanguage: env.OWC_DEFAULT_LANGUAGE ?? "zh-CN",
     defaultCurrency: currency(env.OWC_DEFAULT_CURRENCY),
     pythonEnv: pythonEnv(env.OWC_PYTHON_ENV),
