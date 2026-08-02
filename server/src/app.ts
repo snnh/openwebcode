@@ -32,12 +32,14 @@ import { DEFAULT_WS_BACKPRESSURE_LIMITS, isSlowClient, type WsBackpressureLimits
 import type { ProviderRegistry } from "./providers/provider.js";
 import { detectWsb } from "./sandbox/wsb.js";
 import { getSnapshotBackend } from "./snapshots/index.js";
+import type { SnapshotBackend } from "./snapshots/backend.js";
 import type { ManagedProvisionResult, ManagedWorkspaceLike } from "./snapshots/managed-disk.js";
 import { ManagedWorkspaceSyncError, type ManagedWorkspaceSyncApplyInput } from "./snapshots/managed-sync.js";
 import { SessionTransferError } from "./sessions/session-transfer.js";
 import { activePathMessages } from "./sessions/session-tree.js";
 import { defaultSandboxDenyPaths } from "./sessions/default-sandbox.js";
-import type { BindLinkSpec, PermissionMode, PythonEnv, SandboxMode, ShellBackend, SnapshotMode, TextContent } from "./sessions/types.js";
+import { resolveSessionPersona } from "./sessions/extension-state.js";
+import type { BindLinkSpec, PermissionMode, PythonEnv, SandboxMode, SessionMeta, ShellBackend, SnapshotMode, TextContent } from "./sessions/types.js";
 import type { SessionStore } from "./sessions/session-store.js";
 import type { CronScheduler } from "./cron-scheduler.js";
 import { SettingsValidationError, type SettingsService } from "./settings-service.js";
@@ -51,6 +53,7 @@ import type { SkillRegistry } from "./skills.js";
 import type { Compactor } from "./context/compactor.js";
 import type { ContextPolicyUpdate } from "./context/context-manager.js";
 import type { UsageLog } from "./usage-log.js";
+import { ExtensionRouteError } from "./extensions/extension-manager.js";
 import type { ExtensionManager } from "./extensions/extension-manager.js";
 import { validateConfigAgainstSchema } from "./extensions/config-schema.js";
 import type { ContentLensService } from "./extensions/content-lens.js";
@@ -103,6 +106,8 @@ interface SessionConfigBody {
   pythonEnv?: PythonEnv;
   /** env-sim 人格预设 id（会话级覆盖）；空串清除。 */
   persona?: string;
+  /** 会话级扩展状态补丁：key=扩展 id（必须已安装），value 为 JSON 对象（整体替换）或 null（清除）。 */
+  extensionState?: Record<string, Record<string, unknown> | null>;
   /** 并行子代理（spawn_swarm）开关。 */
   swarmEnabled?: boolean;
   /** review 权限模式的审核模型来源；仅显式提供时更新。 */
@@ -117,6 +122,17 @@ interface BudgetBody {
 const MODEL_MODALITIES: readonly ModelModality[] = ["text", "image", "video"];
 const THINKING_MODES: readonly ThinkingMode[] = ["adaptive", "enabled", "disabled"];
 const EFFORT_LEVELS: readonly EffortLevel[] = ["low", "medium", "high", "xhigh", "max", "ultra"];
+/** files/raw 预览的扩展名 -> MIME 白名单（其余 415）。 */
+const RAW_PREVIEW_MIME: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  svg: "image/svg+xml",
+  ico: "image/x-icon",
+  bmp: "image/bmp",
+};
 /**
  * The global Fastify cap remains 1 MiB.  This route alone needs room for the
  * four allowed image inputs (up to 7,000,000 base64 characters each), which is
@@ -215,6 +231,8 @@ export interface ServerDependencies {
   listenHost?: string;
   /** cron 定时任务调度器（提交⑫）；未注入时 /api/sessions/:id/cron 路由 501 */
   cron?: CronScheduler;
+  /** 快照后端解析（测试注入用）；缺省走 probe 链 getSnapshotBackend */
+  resolveSnapshotBackend?: (session: SessionMeta) => Promise<SnapshotBackend>;
 }
 
 function parseCookies(value: string | undefined): Map<string, string> {
@@ -300,6 +318,7 @@ function safePdfUploadName(value: unknown): string | undefined {
   // attachment reference (for example: "report @README.md.pdf").
   const name = value.normalize("NFC").replaceAll("@", "_");
   if (!name || name.length > MAX_PDF_UPLOAD_NAME_CHARACTERS || Buffer.byteLength(name, "utf8") > MAX_PDF_UPLOAD_NAME_BYTES || name.startsWith(".") || name.endsWith(".") || name.endsWith(" ")) return undefined;
+  // eslint-disable-next-line no-control-regex -- 文件名校验需显式排除 NUL 与控制字符
   if (!name.toLowerCase().endsWith(".pdf") || /[\\/\u0000-\u001f<>:"|?*]/.test(name)) return undefined;
   if (WINDOWS_RESERVED_BASENAME.test(name)) return undefined;
   return name;
@@ -516,6 +535,10 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   // VHDX/qcow2 换叶会短暂卸载工作区。用服务端互斥防止双击、双标签页或 restore
   // 与 create 并发改同一条 chain；后台/快捷 shell 也必须先结束，不能持有挂载目录。
   const managedCheckpointingSessions = new Set<string>();
+  // 快照回退全程持有（所有会话，不止 managed）：guard 检查到持有标记之间无 await，
+  // 消息路由在 agent.run 前同步检查，关闭「回退进行中 run 起跑、随后触发消息被截断」的竞态
+  const restoringSessions = new Set<string>();
+  const resolveSnapshotBackend = dependencies.resolveSnapshotBackend ?? ((session: SessionMeta) => getSnapshotBackend(sessions, session));
   // Shared/exclusive gate for managed mount points. A checkpoint/sync/teardown
   // takes the exclusive side; core filesystem/exec and agent work hold a shared
   // lease until their promise settles. This closes the check-then-await race
@@ -934,6 +957,31 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       return reply.code(400).send({ error: errorMessage(error) });
     }
   });
+  /**
+   * 扩展私有 HTTP 路由：manifest.routes 声明 + http:route 权限，按路由表精确匹配后经 IPC 转发 Extension Host。
+   * 扩展未启用/未运行 → 503；路由未声明 → 404；host 超时 → 504。host 返回 {status, body} 原样响应。
+   */
+  app.route<{ Params: { id: string; "*": string } }>({
+    method: ["GET", "POST", "DELETE"],
+    url: "/api/ext/:id/*",
+    handler: async (request, reply) => {
+      if (!dependencies.extensions) return reply.code(501).send({ error: "Extension Host is not configured" });
+      const rawPath = `/${request.params["*"] ?? ""}`.replace(/\/+$/, "") || "/";
+      try {
+        const result = await dependencies.extensions.routeHttpRequest(
+          request.params.id,
+          request.method,
+          rawPath,
+          (request.query ?? {}) as Record<string, unknown>,
+          request.method === "GET" ? undefined : request.body,
+        );
+        return reply.code(result.status).send(result.body);
+      } catch (error) {
+        if (error instanceof ExtensionRouteError) return reply.code(error.statusCode).send({ error: error.message });
+        return reply.code(500).send({ error: errorMessage(error) });
+      }
+    },
+  });
   // 模型目录：registry（api/manual/builtin 三向合并）缺省时回退静态档案
   const catalog = (): Array<ModelProfile | CatalogModel> =>
     dependencies.models?.list() ?? listModelProfiles().map((profile) => ({ ...profile, source: "builtin" as const }));
@@ -1199,8 +1247,8 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     }
     const session = await sessions.get(request.params.id);
     if (!session) return reply.code(404).send({ error: "Session not found" });
-    // 当前生效的 env-sim 人格预设（会话级覆盖优先；扩展未启用/未配置为 null）
-    const activePersona = dependencies.extensions ? await dependencies.extensions.activeEnvSimPersona(session.persona) : null;
+    // 当前生效的 env-sim 人格预设（会话级覆盖优先：extensionState["env-sim"].persona > 旧 persona 字段；扩展未启用/未配置为 null）
+    const activePersona = dependencies.extensions ? await dependencies.extensions.activeEnvSimPersona(resolveSessionPersona(session)) : null;
     return { ...session, activePersona };
   });
   /** 会话显示属性：重命名（title ≤120 字符，空串清除覆盖回落派生标题）与置顶（pinned）。 */
@@ -1563,6 +1611,19 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     if (swarmEnabled !== undefined && typeof swarmEnabled !== "boolean") {
       return reply.code(400).send({ error: "swarmEnabled must be a boolean" });
     }
+    // 会话级扩展状态补丁：key 必须是已安装的扩展 id，value 为 JSON 对象（整体替换）或 null（清除）
+    const extensionState = request.body && "extensionState" in request.body ? request.body.extensionState : undefined;
+    if (extensionState !== undefined) {
+      if (!extensionState || typeof extensionState !== "object" || Array.isArray(extensionState)) {
+        return reply.code(400).send({ error: "extensionState must be an object keyed by extension id" });
+      }
+      for (const [extensionId, value] of Object.entries(extensionState)) {
+        if (!dependencies.extensions?.hasExtension(extensionId)) return reply.code(400).send({ error: `unknown extension "${extensionId}"` });
+        if (value !== null && (!value || typeof value !== "object" || Array.isArray(value))) {
+          return reply.code(400).send({ error: `extensionState["${extensionId}"] must be a JSON object or null` });
+        }
+      }
+    }
     const permissionMode = request.body?.permissionMode ?? session.permissionMode ?? "ask";
     if (!["ask", "acceptEdits", "review", "yolo"].includes(permissionMode)) return reply.code(400).send({ error: "permissionMode must be ask, acceptEdits, review, or yolo" });
     // review 模式的审核模型来源：仅显式提供时更新（无清除语义）
@@ -1584,6 +1645,9 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     }
     await sessions.updateConfig(request.params.id, { provider, model, ...(thinking ? { thinking } : {}), ...(effort ? { effort } : {}), ...(agentMode ? { agentMode } : {}), ...(snapshotMode ? { snapshotMode } : {}), ...(shellBackend ? { shellBackend } : {}), ...(pythonEnv ? { pythonEnv } : {}), ...(persona !== undefined ? { persona: persona.trim() } : {}), ...(swarmEnabled === true ? { swarmEnabled: true } : {}), ...(reviewModel ? { reviewModel } : {}) });
     let updated = await sessions.updatePermissions(request.params.id, permissionMode, session.permissionRules ?? []);
+    if (extensionState !== undefined) {
+      updated = await sessions.updateExtensionState(request.params.id, extensionState);
+    }
     if (touchesSandbox) {
       updated = await sessions.updateSandboxMode(request.params.id, request.body?.sandboxMode, request.body?.setupScript);
       configuredSessions.delete(session.id);
@@ -1843,6 +1907,86 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       releaseWorkspace();
     }
   });
+  // ---- stage / unstage / discard（阶段 2a）：body {files: string[]} 非空；discard 含 untracked 必须 force:true ----
+  const parseFilesBody = (body: unknown): string[] | undefined => {
+    if (!body || typeof body !== "object") return undefined;
+    const files = (body as { files?: unknown }).files;
+    if (!Array.isArray(files) || files.length === 0 || files.some((file) => typeof file !== "string" || file.trim() === "")) return undefined;
+    return files as string[];
+  };
+  app.post<{ Params: { id: string }; Body: { files?: string[] } }>("/api/sessions/:id/git/stage", async (request, reply) => {
+    const scm = dependencies.scm;
+    if (!scm) return reply.code(501).send({ error: "SCM service is not enabled" });
+    const session = await sessions.get(request.params.id);
+    if (!session) return reply.code(404).send({ error: "Session not found" });
+    const files = parseFilesBody(request.body);
+    if (!files) return reply.code(400).send({ error: "files must be a non-empty array of relative paths" });
+    const releaseWorkspace = acquireManagedWorkspaceUse(session);
+    if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
+    try {
+      return await scm.stage(session.id, session.cwd, files, { shellBackend: session.shellBackend ?? "default" });
+    } catch (error) {
+      return reply.code(400).send({ error: errorMessage(error) });
+    } finally {
+      releaseWorkspace();
+    }
+  });
+  app.post<{ Params: { id: string }; Body: { files?: string[] } }>("/api/sessions/:id/git/unstage", async (request, reply) => {
+    const scm = dependencies.scm;
+    if (!scm) return reply.code(501).send({ error: "SCM service is not enabled" });
+    const session = await sessions.get(request.params.id);
+    if (!session) return reply.code(404).send({ error: "Session not found" });
+    const files = parseFilesBody(request.body);
+    if (!files) return reply.code(400).send({ error: "files must be a non-empty array of relative paths" });
+    const releaseWorkspace = acquireManagedWorkspaceUse(session);
+    if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
+    try {
+      return await scm.unstage(session.id, session.cwd, files, { shellBackend: session.shellBackend ?? "default" });
+    } catch (error) {
+      return reply.code(400).send({ error: errorMessage(error) });
+    } finally {
+      releaseWorkspace();
+    }
+  });
+  app.post<{ Params: { id: string }; Body: { files?: string[]; force?: boolean } }>("/api/sessions/:id/git/discard", async (request, reply) => {
+    const scm = dependencies.scm;
+    if (!scm) return reply.code(501).send({ error: "SCM service is not enabled" });
+    const session = await sessions.get(request.params.id);
+    if (!session) return reply.code(404).send({ error: "Session not found" });
+    const files = parseFilesBody(request.body);
+    if (!files) return reply.code(400).send({ error: "files must be a non-empty array of relative paths" });
+    const releaseWorkspace = acquireManagedWorkspaceUse(session);
+    if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
+    try {
+      return await scm.discard(session.id, session.cwd, files, { force: request.body?.force === true }, { shellBackend: session.shellBackend ?? "default" });
+    } catch (error) {
+      return reply.code(400).send({ error: errorMessage(error) });
+    } finally {
+      releaseWorkspace();
+    }
+  });
+  // 只读提交历史（阶段 2f）；空仓库返回空数组
+  app.get<{ Params: { id: string }; Querystring: { limit?: string } }>("/api/sessions/:id/git/log", async (request, reply) => {
+    const scm = dependencies.scm;
+    if (!scm) return reply.code(501).send({ error: "SCM service is not enabled" });
+    const session = await sessions.get(request.params.id);
+    if (!session) return reply.code(404).send({ error: "Session not found" });
+    let limit: number | undefined;
+    if (request.query.limit !== undefined) {
+      limit = Number(request.query.limit);
+      if (!Number.isInteger(limit) || limit < 1) return reply.code(400).send({ error: "limit must be a positive integer" });
+    }
+    const releaseWorkspace = acquireManagedWorkspaceUse(session);
+    if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
+    try {
+      const commits = await scm.log(session.id, session.cwd, limit ?? 50, { shellBackend: session.shellBackend ?? "default" });
+      return { commits };
+    } catch (error) {
+      return reply.code(400).send({ error: errorMessage(error) });
+    } finally {
+      releaseWorkspace();
+    }
+  });
   app.get<{ Params: { id: string } }>("/api/sessions/:id/git/worktrees", async (request, reply) => {
     const scm = dependencies.scm;
     if (!scm) return reply.code(501).send({ error: "SCM service is not enabled" });
@@ -1988,10 +2132,21 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       releaseWorkspace();
     }
   });
-  app.get<{ Params: { id: string }; Querystring: { path?: string } }>("/api/sessions/:id/files/content", async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { path?: string; offset?: string; limit?: string } }>("/api/sessions/:id/files/content", async (request, reply) => {
     const session = await sessions.get(request.params.id);
     if (!session) return reply.code(404).send({ error: "Session not found" });
     if (!request.query.path) return reply.code(400).send({ error: "path is required" });
+    // 行分页透传 core fs.read（原生支持 offset/limit）；缺省行为不变
+    let offset: number | undefined;
+    let limit: number | undefined;
+    if (request.query.offset !== undefined) {
+      offset = Number(request.query.offset);
+      if (!Number.isInteger(offset) || offset < 0) return reply.code(400).send({ error: "offset must be a non-negative integer" });
+    }
+    if (request.query.limit !== undefined) {
+      limit = Number(request.query.limit);
+      if (!Number.isInteger(limit) || limit < 0) return reply.code(400).send({ error: "limit must be a non-negative integer" });
+    }
     const releaseWorkspace = acquireManagedWorkspaceUse(session);
     if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
     try {
@@ -1999,8 +2154,39 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
         await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? defaultSandbox(session.cwd) });
         configuredSessions.add(session.id);
       }
-      const result = await core.readFile({ sessionId: request.params.id, path: request.query.path });
+      const result = await core.readFile({ sessionId: request.params.id, path: request.query.path, ...(offset === undefined ? {} : { offset }), ...(limit === undefined ? {} : { limit }) });
       return { ...result, revision: createHash("sha256").update(result.content, "utf8").digest("hex") };
+    } finally {
+      releaseWorkspace();
+    }
+  });
+  // 图片/二进制预览（阶段 2e）：core fs.readBase64 解码直出；扩展名白名单 + nosniff/attachment 防 svg XSS；
+  // 老 core 无 fs.readBase64 能力时 501；core 截断时仍返回前缀并以 X-Owc-Truncated 标记。
+  app.get<{ Params: { id: string }; Querystring: { path?: string } }>("/api/sessions/:id/files/raw", async (request, reply) => {
+    const session = await sessions.get(request.params.id);
+    if (!session) return reply.code(404).send({ error: "Session not found" });
+    const filePath = request.query.path;
+    if (!filePath) return reply.code(400).send({ error: "path is required" });
+    const extension = (/\.([a-zA-Z0-9]+)$/.exec(filePath.trim())?.[1] ?? "").toLowerCase();
+    const mime = RAW_PREVIEW_MIME[extension];
+    if (!mime) return reply.code(415).send({ error: `Unsupported preview type: ${extension || "unknown"}` });
+    if (typeof core.readFileBase64 !== "function") return reply.code(501).send({ error: "Binary preview is not supported by this core binary" });
+    const releaseWorkspace = acquireManagedWorkspaceUse(session);
+    if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
+    try {
+      if (!agent.isRunning(session.id) && !configuredSessions.has(session.id)) {
+        await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? defaultSandbox(session.cwd) });
+        configuredSessions.add(session.id);
+      }
+      const result = await core.readFileBase64({ sessionId: request.params.id, path: filePath });
+      void reply
+        .header("Content-Type", mime)
+        .header("X-Content-Type-Options", "nosniff")
+        .header("Content-Disposition", "attachment");
+      if (result.truncated) void reply.header("X-Owc-Truncated", "1");
+      return reply.send(Buffer.from(result.base64, "base64"));
+    } catch (error) {
+      return reply.code(400).send({ error: errorMessage(error) });
     } finally {
       releaseWorkspace();
     }
@@ -2030,7 +2216,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     const releaseWorkspace = acquireManagedWorkspaceUse(session);
     if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
     try {
-      const backend = await getSnapshotBackend(sessions, session);
+      const backend = await resolveSnapshotBackend(session);
       return { diff: await backend.diff(request.params.checkpointId) };
     } finally {
       releaseWorkspace();
@@ -2039,7 +2225,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
 
   app.get<{ Params: { id: string } }>("/api/sessions/:id/snapshot-capability", async (request, reply) => {
     const session = await sessions.get(request.params.id); if (!session) return reply.code(404).send({ error: "Session not found" });
-    return (await getSnapshotBackend(sessions, session)).capability();
+    return (await resolveSnapshotBackend(session)).capability();
   });
 
   app.get<{ Params: { id: string } }>("/api/sessions/:id/checkpoints", async (request, reply) => {
@@ -2047,7 +2233,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     const releaseWorkspace = acquireManagedWorkspaceUse(session);
     if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
     try {
-      return await (await getSnapshotBackend(sessions, session)).list();
+      return await (await resolveSnapshotBackend(session)).list();
     } finally {
       releaseWorkspace();
     }
@@ -2063,7 +2249,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace is in use or its checkpoint is already in progress" });
     try {
       const ledger = await new ContextManager(sessions.contextRoot(session.id)).load();
-      const backend = await getSnapshotBackend(sessions, session);
+      const backend = await resolveSnapshotBackend(session);
       const checkpoint = await backend.create(label, session.messages.length, ledger);
       events.publish({ source: "session", type: "checkpoint.created", sessionId: session.id, payload: checkpoint }); return reply.code(201).send(checkpoint);
     } finally {
@@ -2077,16 +2263,26 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     if (isShellPending(session.id)) return reply.code(409).send({ error: "A shell command is still using this session" });
     if (hasRunningBackgroundTask(session.id)) return reply.code(409).send({ error: "A background task is still using this session" });
     if (request.body?.confirm !== true) return reply.code(400).send({ error: "confirm must be true" });
+    // 回退全程持有互斥标记：上方 guard 与此处之间无 await，新 run 无法从缝隙起跑
+    restoringSessions.add(session.id);
     const releaseWorkspace = acquireManagedWorkspaceExclusive(session, "checkpoint");
-    if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace is in use or its checkpoint is already in progress" });
+    if (!releaseWorkspace) {
+      restoringSessions.delete(session.id);
+      return reply.code(409).send({ error: "Managed workspace is in use or its checkpoint is already in progress" });
+    }
     try {
-      const backend = await getSnapshotBackend(sessions, session);
+      const backend = await resolveSnapshotBackend(session);
       const checkpoint = (await backend.list()).find((item) => item.id === request.params.checkpointId);
       if (!checkpoint) return reply.code(404).send({ error: "Checkpoint not found" });
       await backend.restore(checkpoint.id);
       if (!request.body?.filesOnly) { await sessions.truncateMessages(session.id, checkpoint.messageCount); await new ContextManager(sessions.contextRoot(session.id)).replaceLedger(checkpoint.ledger); }
+      // 回退可能整体重建了工作区（btrfs 换子卷 / zfs 清空重写）：持久 shell 的 cwd 已失效，
+      // 回收避免后续命令落进幽灵目录；core 会话配置待下次用到时重建
+      await agent.disposePersistentShells?.(session.id).catch(() => undefined);
+      configuredSessions.delete(session.id);
       events.publish({ source: "session", type: "checkpoint.restored", sessionId: session.id, payload: { id: checkpoint.id, filesOnly: request.body?.filesOnly === true } }); return checkpoint;
     } finally {
+      restoringSessions.delete(session.id);
       releaseWorkspace();
     }
   });
@@ -2099,7 +2295,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     const releaseWorkspace = acquireManagedWorkspaceExclusive(session, "checkpoint");
     if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace is in use or its checkpoint is already in progress" });
     try {
-      const backend = await getSnapshotBackend(sessions, session);
+      const backend = await resolveSnapshotBackend(session);
       await backend.delete(request.params.checkpointId);
       events.publish({ source: "session", type: "checkpoint.deleted", sessionId: session.id, payload: { id: request.params.checkpointId } });
       return reply.code(204).send();
@@ -2415,6 +2611,12 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
               attachmentBlocks.push({ text: `[Attachment ${attachmentPath}]\n错误：路径越界或不可读（${reason}）` });
             }
           }
+        }
+        // 与回退互斥的最终关卡：检查后同步进入 agent.run（其首行即占位 running），
+        // 与 restore 路由的 guard 块原子交错——要么这里 409，要么 restore 端看到 running 拒绝
+        if (restoringSessions.has(request.params.id)) {
+          workspaceLease.release();
+          return reply.code(409).send({ error: "Session checkpoint restore is in progress" });
         }
         void agent.run(request.params.id, request.body.content, {
           ...(images?.length ? { images } : {}),

@@ -48,11 +48,12 @@ import {
 import type { CronScheduler } from "../cron-scheduler.js";
 import { getSnapshotBackend } from "../snapshots/index.js";
 import { digestSwarmBoard, swarmBoardPath } from "./swarm-board.js";
-import type { MessageContent, PythonEnv, SessionMeta, ShellBackend } from "../sessions/types.js";
+import type { MessageContent, PythonEnv, SessionMeta } from "../sessions/types.js";
 import { effectivePythonEnv, UvPythonEnvironments, uvVenvDir, wrapCommandWithNote, wrapCommandWithVenv } from "../python-env.js";
 import { activePathMessages } from "../sessions/session-tree.js";
 import type { SessionStore } from "../sessions/session-store.js";
 import { defaultSandboxPolicy } from "../sessions/default-sandbox.js";
+import { resolveSessionPersona } from "../sessions/extension-state.js";
 import { parseSkillCommand, type SkillRegistry } from "../skills.js";
 import type { AgentRegistry } from "../agents.js";
 import { renderCommand, type CommandRegistry } from "../commands.js";
@@ -689,6 +690,13 @@ export class AgentRunner {
   private webFetchProvider: WebFetchProvider | undefined;
   private readonly pythonEnvManager = new UvPythonEnvironments();
   private getPythonEnvDefault: () => PythonEnv = () => "global";
+  /** 单条消息轮次上限取值函数：默认读构造参数，setMaxTurns 注入后走设置热生效值 */
+  private maxTurnsLimit: () => number = () => this.maxTurns;
+
+  /** 注入轮次上限的实时取值函数（index.ts 装配：settings.effective().agentMaxTurns）。 */
+  setMaxTurns(get: () => number): void {
+    this.maxTurnsLimit = get;
+  }
 
   constructor(
     private readonly sessions: SessionStore,
@@ -883,7 +891,9 @@ export class AgentRunner {
       perfStartedAt = performance.now();
       perfStartedAtIso = new Date().toISOString();
       perfActive = true;
-      for (let turnIndex = 0; turnIndex < this.maxTurns; turnIndex++) {
+      // 轮次上限每次运行取一次当前生效值（设置页热生效），运行途中不随设置改变
+      const maxTurns = this.maxTurnsLimit();
+      for (let turnIndex = 0; turnIndex < maxTurns; turnIndex++) {
         controller.signal.throwIfAborted();
         this.setTurnIndex(sessionId, turnIndex);
         const session = await this.sessions.get(sessionId);
@@ -1037,7 +1047,7 @@ export class AgentRunner {
           cronEnabled: Boolean(this.cronScheduler),
         });
         const shaping = toolsEnabled && this.extensions
-          ? await this.extensions.activeToolShaping(builtIns.map((tool) => tool.name), session.persona)
+          ? await this.extensions.activeToolShaping(builtIns.map((tool) => tool.name), resolveSessionPersona(session))
           : undefined;
         const aliasMap = new Map<string, string>();
         const aliasArgMaps = new Map<string, Record<string, string>>();
@@ -1111,7 +1121,9 @@ export class AgentRunner {
             identity: `You are OpenWebCode. The workspace is ${session.cwd}.`,
             basePrompt: promptOverride?.baseOverride?.trim() || PI_BASE_SYSTEM_PROMPT,
             productSections: baseProductSections,
-          }, session.persona);
+            // 会话级扩展状态随载荷下发，扩展可在 prompt.beforeBuild 里读取自己的会话级配置
+            ...(session.extensionState ? { extensionState: session.extensionState } : {}),
+          }, resolveSessionPersona(session));
         }
         const effectiveBaseOverride = promptTransform.basePromptOverride ?? promptOverride?.baseOverride;
 
@@ -1298,6 +1310,10 @@ export class AgentRunner {
             const summary = result.content.slice(0, 300);
             await this.runNotificationHook("PostToolUse", { sessionId, cwd: session.cwd, tool: call.name, input: effectiveInput, result: { summary } });
           }
+          // agent 写文件成功后广播 scm.updated（与 ScmService.publish 同型），驱动 web 端 SCM 面板刷新
+          if (!result.isError && ["write_file", "edit_file"].includes(this.resolveBuiltinToolName(sessionId, call.name))) {
+            this.events.publish({ source: "agent", type: "scm.updated", sessionId, payload: { sessionId, reason: "file.write", ...(typeof effectiveInput.path === "string" ? { path: effectiveInput.path } : {}) } });
+          }
         }
         perfToolExecMs += performance.now() - toolExecStart;
         perfTurnCount++;
@@ -1313,7 +1329,7 @@ export class AgentRunner {
         await this.applySteering(sessionId);
         this.state(sessionId, "thinking");
       }
-      throw new Error(`Agent exceeded ${this.maxTurns} turns`);
+      throw new Error(`Agent exceeded ${maxTurns} turns`);
     } catch (error) {
       if (followUpQueueItemId) await this.messageQueue.requeue(sessionId, followUpQueueItemId);
       if (controller.signal.aborted) {
@@ -1601,7 +1617,7 @@ export class AgentRunner {
   private async dispatchSubAgentTool(sessionId: string, name: string, input: Record<string, unknown>, signal: AbortSignal): Promise<{ content: string; isError: boolean }> {
     const contextRoot = this.sessions.contextRoot(sessionId);
     if ((FILE_TOOLS as readonly ProviderTool[]).some((tool) => tool.name === name)) {
-      const raw = await this.callCoreFileTool(sessionId, name, input);
+      const raw = await this.callCoreFileTool(sessionId, name, input, signal);
       const bounded = await boundToolResult(contextRoot, name, raw);
       return { content: bounded.content, isError: false };
     }
@@ -1681,7 +1697,7 @@ export class AgentRunner {
   }
 
   /** FILE_TOOLS 各分支共用的 core 调用分发（主循环与 general 子代理共用）。 */
-  private async callCoreFileTool(sessionId: string, name: string, input: Record<string, unknown>): Promise<string> {
+  private async callCoreFileTool(sessionId: string, name: string, input: Record<string, unknown>, signal?: AbortSignal): Promise<string> {
     // glob/grep 的 path 可选（schema 未列入 required），缺省从会话根开始；
     // read/write/edit 必须显式给出文件路径。
     const path = typeof input.path === "string" && input.path ? input.path : (name === "glob" || name === "grep" ? "." : "");
@@ -1690,8 +1706,21 @@ export class AgentRunner {
     if (name === "read_file") value = await this.core.readFile({ sessionId, path, ...(input.offset === undefined ? {} : { offset: Number(input.offset) }), ...(input.limit === undefined ? {} : { limit: Number(input.limit) }) });
     else if (name === "write_file") value = await this.core.writeFile({ sessionId, path, content: String(input.content ?? ""), ...(input.createDirs === undefined ? {} : { createDirs: Boolean(input.createDirs) }) });
     else if (name === "edit_file") value = await this.core.editFile({ sessionId, path, oldText: String(input.oldText ?? ""), newText: String(input.newText ?? ""), ...(input.replaceAll === undefined ? {} : { replaceAll: Boolean(input.replaceAll) }) });
-    else if (name === "glob") value = await this.core.globFiles({ sessionId, path, pattern: String(input.pattern ?? "") });
-    else value = await this.core.grepFiles({ sessionId, path, pattern: String(input.pattern ?? "") });
+    else if (name === "glob" || name === "grep") {
+      const pattern = String(input.pattern ?? "");
+      // 优先走 core 并行 search job（4 工作线程，不阻塞 core 主循环）；core 无 searchJob
+      // 实现或 features 缺 grepJob/globJob 时在 CoreClient/CoreRouter 内回退同步 RPC。
+      // 两种路径返回形状一致，对模型透明。
+      if (this.core.searchJob) {
+        const session = await this.sessions.get(sessionId);
+        if (!session) throw new Error("Session not found");
+        const base = { sessionId, cwd: session.cwd, path, pattern, ...(signal ? { signal } : {}) };
+        value = name === "glob"
+          ? await this.core.searchJob({ ...base, kind: "glob" })
+          : await this.core.searchJob({ ...base, kind: "grep" });
+      } else if (name === "glob") value = await this.core.globFiles({ sessionId, path, pattern });
+      else value = await this.core.grepFiles({ sessionId, path, pattern });
+    }
     return JSON.stringify(value);
   }
 
@@ -1831,6 +1860,8 @@ export class AgentRunner {
       const permission = await this.authorizeTool(sessionId, "write_file", { path }, controller.signal);
       if (!permission.allowed) throw new WorkspaceWriteDeniedError(permission.reason ?? "File write permission denied");
       await this.core.writeFile({ sessionId, path, content, expectedSha256 });
+      // 编辑器/DiffPane 保存成功同样广播 scm.updated（与 ScmService.publish 同型）
+      this.events.publish({ source: "agent", type: "scm.updated", sessionId, payload: { sessionId, reason: "file.write", path } });
     } finally {
       this.workspaceWrites.delete(sessionId);
     }
@@ -2922,7 +2953,7 @@ export class AgentRunner {
       try {
         const session = await this.sessions.get(sessionId);
         if (!session) throw new Error("Session not found");
-        const raw = await this.callCoreFileTool(sessionId, name, input);
+        const raw = await this.callCoreFileTool(sessionId, name, input, signal);
         const bounded = await boundToolResult(this.sessions.contextRoot(sessionId), name, raw);
         this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: toolEventResult(bounded) } });
         return { type: "tool_result", toolCallId, content: bounded.content, isError: false };

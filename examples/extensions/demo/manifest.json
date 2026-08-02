@@ -1,0 +1,14 @@
+{
+  "id": "demo",
+  "name": "扩展示例",
+  "version": "1.0.0",
+  "description": "演示第三方扩展 API：私有存储、HTTP 路由、快速模型通道与提示词钩子。",
+  "apiVersion": "1",
+  "permissions": ["tools:register", "http:route", "model:fast", "prompt:shape"],
+  "entry": "index.js",
+  "routes": [
+    { "method": "GET", "path": "/notes" },
+    { "method": "POST", "path": "/notes" },
+    { "method": "DELETE", "path": "/notes" }
+  ]
+}

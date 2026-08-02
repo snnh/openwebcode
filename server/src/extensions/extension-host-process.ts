@@ -6,18 +6,23 @@ import { isExtensionEventAllowed, type ApiRequest, type ApiResponse, type Contex
 type Handler = (payload: unknown, config: Record<string, unknown>) => unknown | Promise<unknown>;
 type ToolHandler = (input: Record<string, unknown>, config: Record<string, unknown>) => unknown | Promise<unknown>;
 type EventHandler = (event: { type: string; sessionId?: string; payload: unknown }) => void;
+type RouteHandler = (request: { method: string; path: string; query: Record<string, unknown>; body?: unknown }, config: Record<string, unknown>) => unknown | Promise<unknown>;
 
 const states = new Map<string, ExtensionState>();
 const handlers = new Map<string, Map<ExtensionHook, Handler[]>>();
 const tools = new Map<string, Map<string, { spec: ExtensionToolSpec; handler: ToolHandler }>>();
 const eventSubscriptions = new Map<string, Array<{ types: string[]; handler: EventHandler }>>();
+/** 扩展私有 HTTP 路由（extensionId → "METHOD /path" → handler）；registerRoute 时与 manifest.routes 对表。 */
+const routes = new Map<string, Map<string, RouteHandler>>();
+/** 扩展 official 标志（initialize 时由 server 下发的 manifests 建立），用于 hook 执行顺序：官方优先。 */
+const officialFlags = new Map<string, boolean>();
 const apiPending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
 const HOOK_PERMISSIONS: Record<ExtensionHook, ExtensionPermission[]> = {
   "context.beforeBuild": ["context:read", "context:mutate"],
   "message.beforeSend": ["context:read", "context:mutate"],
   "tool.beforeExecute": ["tools:register"],
-  // prompt.beforeBuild 不暴露消息内容，仅提示词字段；无需权限（env-sim permissions 为空）。
-  "prompt.beforeBuild": [],
+  // prompt.beforeBuild 不暴露消息内容，仅提示词字段；1.1.0 起要求 prompt:shape 权限。
+  "prompt.beforeBuild": ["prompt:shape"],
 };
 const TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 
@@ -131,6 +136,36 @@ async function loadThirdParty(manifests: Array<ExtensionManifest & { directory?:
             });
           },
         },
+        /** 扩展私有存储（<dataDir>/extensions-data/<id>/ 下的相对路径）；私有目录天然隔离，无需权限。 */
+        storage: {
+          read: (relativePath: string): Promise<{ content: string | null }> =>
+            callApi(manifest.id, "storage.read", { path: relativePath }) as Promise<{ content: string | null }>,
+          write: (relativePath: string, content: string): Promise<{ bytes: number }> =>
+            callApi(manifest.id, "storage.write", { path: relativePath, content }) as Promise<{ bytes: number }>,
+          delete: (relativePath: string): Promise<{ deleted: boolean }> =>
+            callApi(manifest.id, "storage.delete", { path: relativePath }) as Promise<{ deleted: boolean }>,
+          list: (prefix?: string): Promise<{ files: string[] }> =>
+            callApi(manifest.id, "storage.list", { ...(prefix !== undefined ? { prefix } : {}) }) as Promise<{ files: string[] }>,
+        },
+        /** 快速模型通道（权限 model:fast；prompt/maxTokens 上限由 server 强制）。 */
+        model: {
+          complete: (input: { prompt: string; maxTokens?: number }): Promise<unknown> => {
+            requirePermission(manifest, "model:fast");
+            return callApi(manifest.id, "model.complete", { prompt: input?.prompt, ...(typeof input?.maxTokens === "number" ? { maxTokens: input.maxTokens } : {}) });
+          },
+        },
+        /** 注册 manifest.routes 已声明的私有 HTTP 路由（权限 http:route）；handler 返回 {status?, body?}。 */
+        registerRoute(method: unknown, routePath: unknown, handler: RouteHandler): void {
+          requirePermission(manifest, "http:route");
+          if (method !== "GET" && method !== "POST" && method !== "DELETE") throw new Error("registerRoute method must be GET, POST or DELETE");
+          if (typeof routePath !== "string" || !routePath.startsWith("/")) throw new Error("registerRoute path must start with /");
+          if (typeof handler !== "function") throw new Error("registerRoute requires a handler function");
+          const declared = (manifest.routes ?? []).some((route) => route.method === method && route.path === routePath);
+          if (!declared) throw new Error(`registerRoute route is not declared in manifest.routes: ${method} ${routePath}`);
+          const registered = routes.get(manifest.id) ?? new Map<string, RouteHandler>();
+          registered.set(`${method} ${routePath}`, handler);
+          routes.set(manifest.id, registered);
+        },
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -158,7 +193,8 @@ async function runHook(hook: ExtensionHook, original: unknown): Promise<unknown>
   // 顺序应用时后续 handler 看到已叠加前面结果的载荷。
   if (hook === "prompt.beforeBuild") {
     const result: PromptHookResult = {};
-    const ordered = ["env-sim", ...handlers.keys()].filter((id, index, all) => all.indexOf(id) === index);
+    // 官方扩展优先（稳定排序保持组内注册顺序），替代原先按 id 硬编码的特判。
+    const ordered = [...handlers.keys()].sort((left, right) => Number(officialFlags.get(right) === true) - Number(officialFlags.get(left) === true));
     for (const id of ordered) {
       const state = states.get(id);
       if (!state?.enabled) continue;
@@ -221,6 +257,23 @@ async function invokeTool(params: Record<string, unknown> | undefined): Promise<
   return normalizeToolResult(await registered.handler(input, states.get(extensionId)?.config ?? {}));
 }
 
+async function invokeRoute(params: Record<string, unknown> | undefined): Promise<{ status: number; body: unknown }> {
+  const extensionId = typeof params?.extensionId === "string" ? params.extensionId : "";
+  const method = typeof params?.method === "string" ? params.method : "";
+  const routePath = typeof params?.path === "string" ? params.path : "";
+  if (!states.get(extensionId)?.enabled) throw new Error(`Extension ${extensionId} is disabled`);
+  const handler = routes.get(extensionId)?.get(`${method} ${routePath}`);
+  if (!handler) throw new Error(`Route not registered: ${extensionId} ${method} ${routePath}`);
+  const query = params?.query && typeof params.query === "object" ? params.query as Record<string, unknown> : {};
+  const value = await withTimeout(Promise.resolve(handler({ method, path: routePath, query, ...(params?.body !== undefined ? { body: params.body } : {}) }, states.get(extensionId)?.config ?? {})));
+  if (value && typeof value === "object") {
+    const result = value as { status?: unknown; body?: unknown };
+    const status = typeof result.status === "number" && Number.isSafeInteger(result.status) && result.status >= 100 && result.status <= 599 ? result.status : 200;
+    return { status, body: result.body };
+  }
+  return { status: 200, body: value };
+}
+
 process.on("message", (message: HostRequest | EventMessage | ApiResponse) => {
   // server→host 事件推送：按订阅类型分发给扩展本地 handler，无应答。
   if ("event" in message) {
@@ -252,7 +305,13 @@ process.on("message", (message: HostRequest | EventMessage | ApiResponse) => {
     if (request.method === "initialize" || request.method === "reload") {
       states.clear();
       const rawStates = (request.params?.states ?? {}) as Record<string, ExtensionState>;
-      for (const manifest of OFFICIAL_EXTENSIONS) states.set(manifest.id, rawStates[manifest.id] ?? { enabled: manifest.defaultEnabled === true, config: {} });
+      for (const manifest of OFFICIAL_EXTENSIONS) {
+        officialFlags.set(manifest.id, true);
+        states.set(manifest.id, rawStates[manifest.id] ?? { enabled: manifest.defaultEnabled === true, config: {} });
+      }
+      for (const manifest of (request.params?.manifests ?? []) as Array<ExtensionManifest & { directory?: string }>) {
+        if (manifest?.id) officialFlags.set(manifest.id, manifest.official === true);
+      }
       for (const [id, state] of Object.entries(rawStates)) states.set(id, state);
       const errors = request.method === "initialize"
         ? await loadThirdParty((request.params?.manifests ?? []) as Array<ExtensionManifest & { directory?: string }>)
@@ -262,6 +321,8 @@ process.on("message", (message: HostRequest | EventMessage | ApiResponse) => {
       result = await runHook(request.params?.hook as ExtensionHook, request.params?.payload);
     } else if (request.method === "tool.invoke") {
       result = await invokeTool(request.params);
+    } else if (request.method === "http.request") {
+      result = await invokeRoute(request.params);
     } else if (request.method === "shutdown") {
       result = { stopped: true };
       process.send?.({ id: request.id, result } satisfies HostResponse);

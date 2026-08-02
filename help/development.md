@@ -224,17 +224,38 @@ cd web && npm run dev    # Vite 默认 5173，proxy 到 server 3000
 
 ### 写一个扩展（扩展 API）
 
-v1 扩展运行于独立 Extension Host 子进程（可信代码，安全级别 ≈ yolo），经 IPC 拿到注入的 `ctx`。manifest 声明权限，能力调用逐项校验，缺权限在 activate 时抛错并把扩展状态标为 error。
+v1 扩展运行于独立 Extension Host 子进程（可信代码，安全级别 ≈ yolo），经 IPC 拿到注入的 `ctx`。manifest 声明权限，能力调用逐项校验，缺权限在 activate 时抛错并把扩展状态标为 error。官方扩展（env-sim/content-lens 等）使用的内部能力已对第三方开放：第三方可以做出与官方扩展同类的扩展。完整可运行示例见 `examples/extensions/demo/`。
+
+**manifest 字段**：`id`（`[a-z0-9][a-z0-9-]{1,63}`）/ `name` / `version` / `description` / `apiVersion: "1"` / `permissions` / `entry`（缺省 `index.js`）必填；可选 `configSchema`、`routes`、`toolShaping`（后两个需对应权限，见下表）。
+
+**权限语义表**：
+
+| 权限 | 能力 |
+|---|---|
+| `tools:register` | `ctx.registerTool(...)`、`tool.beforeExecute` 钩子 |
+| `sessions:read` | `ctx.sessions.*`、`ctx.events.subscribe(...)` |
+| `context:read` / `context:mutate` | `ctx.context.*`；`context.beforeBuild` / `message.beforeSend` 钩子（两个都要） |
+| `http:route` | manifest `routes` 声明 + `ctx.registerRoute(...)` |
+| `model:fast` | `ctx.model.complete(...)` |
+| `prompt:shape` | `prompt.beforeBuild` 钩子 |
+| `tools:shaping` | manifest `toolShaping` 声明 |
+| `ui:panel` / `ui:messageAttachment` / `network:fetch` | 已声明、机制规划中（目前无对应能力面） |
+
+**能力一览**：
 
 - **注册 agent 工具**（权限 `tools:register`）：`ctx.registerTool({ name, description, inputSchema }, handler)`；工具以 `ext__<扩展id>__<name>` 注入 agent（仅扩展启用时），与 `mcp__` 工具共用权限链（ask / yolo / allow_always）、plan 模式拦截与 `executionClass: "external"`；server→host `tool.invoke` 单次 5 秒超时。
 - **只读会话**（权限 `sessions:read`）：`ctx.sessions.list()` 返回脱敏元信息（白名单字段，不含 sandbox/setupScript 等内部配置）；`ctx.sessions.get(id)` 附加完整消息历史。
 - **只读上下文**（权限 `context:read`）：`ctx.context.getView(sessionId)`（buildView 结果）、`ctx.context.readArtifact(sessionId, artifactId, offset?, limit?)`。
 - **订阅事件**（权限 `sessions:read`）：`ctx.events.subscribe(types, handler)`，类型白名单 `agent.state` / `tool.start` / `tool.end` / `context.*` / `checkpoint.*` / `subagent.*`，host 断线自动退订。
-- **提示词钩子** `prompt.beforeBuild`（0.9.0 起）：在系统提示词组装前回调，载荷 `{ sessionId, cwd, identity, basePrompt, productSections }`，可返回 `{ identity?, basePromptOverride?, productSections?, prependSections? }` 逐项覆盖；身份行、基线提示词均可替换，但安全约束段（SAFETY_BOUNDARY）始终由核心追加，扩展不可移除。文件级覆盖（`system-prompt.md`）先加载，钩子在其结果上再变换，钩子结果不跨 run 缓存。
-- **工具塑形** `toolShaping`（仅官方扩展，0.9.0 起）：manifest 声明 `{ hideBuiltIns?: string[], aliases?: [{ from, as, description?, inputSchema? }] }`，在 server 侧对每轮工具表做隐藏/重命名；别名工具保留原权限类别与 plan 门禁（不降级 external）。第三方 manifest 携带该字段直接拒绝。
+- **私有存储**（无需权限，1.1.0 起）：`ctx.storage.read(path)` / `write(path, content)` / `delete(path)` / `list(prefix?)`，映射 `<dataDir>/extensions-data/<扩展id>/` 下的相对路径。私有目录天然隔离所以不加 manifest 权限；路径禁绝对路径与 `..` 逃逸，配额单文件 ≤1 MiB、目录总量 ≤50 MiB（write 时统计）。content 为 UTF-8 字符串；read 未命中返回 `{ content: null }`。
+- **私有 HTTP 路由**（权限 `http:route`，1.1.0 起）：manifest 声明 `routes: [{ method: "GET"|"POST"|"DELETE", path: "/..." }]`（path 以 `/` 开头、禁 `..`），activate 里 `ctx.registerRoute(method, path, handler)`（必须与声明对表）；server 把 `/api/ext/<扩展id><path>` 按路由表精确匹配后经 IPC（`http.request`，5 秒超时）转发 host，handler 收 `{ method, path, query, body? }`、返回 `{ status?, body? }` 原样响应。扩展未启用/未运行 → 503；路由未声明 → 404；host 超时 → 504。
+- **快速模型通道**（权限 `model:fast`，1.1.0 起）：`ctx.model.complete({ prompt, maxTokens? })`，经 server 侧已配置的快速模型（FastModelClient）补全；强制上限 prompt ≤32 KiB、maxTokens ≤4096（缺省 1024），未配置快速模型时返回清晰错误。
+- **提示词钩子** `prompt.beforeBuild`（0.9.0 起；1.1.0 起要求 `prompt:shape` 权限）：在系统提示词组装前回调，载荷 `{ sessionId, cwd, identity, basePrompt, productSections, extensionState? }`，可返回 `{ identity?, basePromptOverride?, productSections?, prependSections? }` 逐项覆盖；身份行、基线提示词均可替换，但安全约束段（SAFETY_BOUNDARY）始终由核心追加，扩展不可移除。文件级覆盖（`system-prompt.md`）先加载，钩子在其结果上再变换，钩子结果不跨 run 缓存。多个扩展按「官方优先」顺序链式应用。
+- **工具塑形** `toolShaping`（0.9.0 起官方扩展；1.1.0 起第三方带 `tools:shaping` 权限可声明）：manifest 声明 `{ hideBuiltIns?: string[], aliases?: [{ from, as, description?, inputSchema?, argMap? }] }`，在 server 侧对每轮工具表做隐藏/重命名；别名工具保留原权限类别与 plan 门禁（不降级 external）。无权限的第三方 manifest 携带该字段直接拒绝。
+- **会话级扩展状态**（1.1.0 起）：`SessionMeta.extensionState` 为 `Record<扩展id, JSON对象>`，经 `PUT /api/sessions/:id/config` 的 `extensionState` 字段打补丁（key 必须是已安装扩展 id，value 为对象整体替换或 null 清除），GET 会话详情透出；同时随 `prompt.beforeBuild` 载荷下发，扩展可读取自己的会话级配置（env-sim 的会话级 persona 即经此通道，旧 `persona` 字段保留兼容）。
 - **配置表单** `configSchema`（0.9.0 起）：manifest 声明 JSON Schema 子集（type/properties/required/enum/default），设置页渲染 typed 表单（enum 下拉/数字/布尔），无 schema 回退原始 JSON 编辑；server 对配置更新做松散校验（类型/枚举/未知键）。
 
-实现参考：`extensions/types.ts`（协议与权限）、`extension-host-process.ts`（ctx 注入与 `tool.invoke` 处理）、`extension-manager.ts`（工具注册表 / API 分发 / 事件转发 / transformPrompt / activeToolShaping）、`extensions/env-sim/`（官方预设与 persona 加载范例）、`agent-runner.ts` 的 `ext__` 分支（与 `mcp__` 共用 `executeExternalTool`）。测试样例：`server/test/extension-api.test.ts`、`server/test/env-sim.test.ts`。
+实现参考：`extensions/types.ts`（协议与权限）、`extension-host-process.ts`（ctx 注入与 `tool.invoke`/`http.request` 处理）、`extension-manager.ts`（工具注册表 / API 分发 / 存储与模型通道 / 路由转发 / transformPrompt / activeToolShaping）、`extensions/env-sim/`（官方预设与 persona 加载范例）、`agent-runner.ts` 的 `ext__` 分支（与 `mcp__` 共用 `executeExternalTool`）。测试样例：`server/test/extension-api.test.ts`、`server/test/extension-public-api.test.ts`、`server/test/env-sim.test.ts`。
 
 ### 改上下文策略
 
@@ -317,5 +338,5 @@ v1 扩展运行于独立 Extension Host 子进程（可信代码，安全级别 
 - **看消息历史**：`<业务数据目录>/sessions/<id>/messages.jsonl`（每行一条）
 - **看 artifacts**：`<业务数据目录>/sessions/<id>/artifacts/`
 - **看子代理转录**：`<业务数据目录>/sessions/<id>/subagents/<taskId>.json`
-- **强制单轮**：`maxTurnsPerMessage` 在 config 里可调，调试时设小
+- **强制单轮**：`agentMaxTurns` 在设置页可调（或 `OWC_AGENT_MAX_TURNS`），调试时设小
 - **断 core**：杀 owc-exec 进程，观察 core-client 自动重启（指数退避封顶 30s，持续重试）与运行中工具标记失败

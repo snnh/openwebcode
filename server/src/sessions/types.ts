@@ -128,6 +128,8 @@ export interface SessionMeta {
   pythonEnv?: PythonEnv;
   /** env-sim 人格预设 id（会话级覆盖）；undefined = 跟随扩展全局 config.persona。 */
   persona?: string;
+  /** 会话级扩展状态（key=扩展 id，value 为该扩展自定义的 JSON 对象）；通用化替代官方扩展私货字段。 */
+  extensionState?: Record<string, Record<string, unknown>>;
   /** 并行子代理（spawn_swarm）开关；true = 注入工具与鼓励段落，undefined/false = 关闭。 */
   swarmEnabled?: boolean;
   /** 选择性上下文（§4.4）：pin 的消息 id/文件路径（不被驱逐）。 */
