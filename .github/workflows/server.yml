@@ -86,7 +86,7 @@ jobs:
           OWC_CORE_PATH: ${{ runner.workspace }}/openwebcode/build/${{ runner.os == 'Windows' && 'Debug/owc-exec.exe' || 'owc-exec' }}
       - name: Upload coverage
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: server-coverage-${{ matrix.os }}
           path: server/coverage/

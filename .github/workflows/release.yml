@@ -222,7 +222,7 @@ jobs:
             if ($uninstall.ExitCode -ne 0) { Write-Warning "msiexec uninstall returned $($uninstall.ExitCode)" }
           }
       - name: Upload MSI for release job
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-windows-msi
           if-no-files-found: error
@@ -386,7 +386,7 @@ jobs:
           done
           [ "$ready" -eq 1 ] || { cat "$work/owc.log"; exit 1; }
       - name: Upload tar.gz for release job
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-linux-tarball
           if-no-files-found: error
@@ -603,7 +603,7 @@ jobs:
             cp "$result" "benchmark-release/bench-results-$(basename "$result")"
           done
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bench-results-${{ env.VERSION }}
           if-no-files-found: error
