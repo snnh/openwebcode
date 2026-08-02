@@ -466,7 +466,7 @@ jobs:
             exit 1
           fi
       - name: Publish artifacts to GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ env.VERSION }}
           body_path: RELEASE_NOTES.md
