@@ -15,7 +15,7 @@ export function PlanApprovalCard({ item, onRespond }: { item: InteractionRequest
       ? <textarea value={draft} onChange={(event) => setDraft(event.target.value)} aria-label={t("编辑计划", "Edit plan")} rows={14} />
       : <Markdown>{item.prompt}</Markdown>}
     {mode === "reject" && <textarea value={feedback} onChange={(event) => setFeedback(event.target.value)} aria-label={t("拒绝意见", "Rejection feedback")} placeholder={t("告诉 agent 需要调整什么", "Tell the agent what to change")} />}
-    <div>
+    <div className="interaction-actions">
       {mode === "view" && <>
         <button className="btn small" onClick={() => onRespond({ decision: "approve" })}>{t("批准执行", "Approve and run")}</button>
         <button className="btn small" onClick={() => setMode("edit")}>{t("编辑后批准", "Edit and approve")}</button>
