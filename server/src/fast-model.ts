@@ -7,7 +7,6 @@ export interface FastModelConfig {
   model: string;
   thinking?: ThinkingMode;
   effort?: EffortLevel;
-  maxTokens: number;
 }
 
 export interface FastModelCompletion {
@@ -42,12 +41,13 @@ export class FastModelClient {
     return this.config?.model;
   }
 
-  async complete(input: { system: string; prompt: string; maxTokens?: number }): Promise<FastModelCompletion> {
+  async complete(input: { system: string; prompt: string; maxTokens: number }): Promise<FastModelCompletion> {
     const config = this.config;
     if (!config) throw new Error("快速模型未配置");
     const provider = this.providers.get(config.provider);
     if (!provider) throw new Error(`快速模型服务商不可用：${config.provider}`);
-    const maxTokens = Math.min(input.maxTokens ?? config.maxTokens, config.maxTokens);
+    // 无全局输出上限：maxTokens 由调用方按任务显式指定
+    const maxTokens = input.maxTokens;
     let text = "";
     let inputTokens = 0;
     let outputTokens = 0;

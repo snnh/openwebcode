@@ -224,7 +224,7 @@ describe("extension model.complete", () => {
       yield { type: "done", stopReason: "end_turn" };
     }));
     void root;
-    return new FastModelClient(providers, { provider: "test-stub", model: "fast-m", maxTokens: 4096 });
+    return new FastModelClient(providers, { provider: "test-stub", model: "fast-m" });
   }
 
   it("completes through the fast model and caps maxTokens at 4096", async () => {

@@ -172,12 +172,6 @@ function requireJobMaxProcesses(value: SettingValue): void {
   }
 }
 
-function requireFastModelMaxTokens(value: SettingValue): void {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > 64_000) {
-    throw new SettingsValidationError("快速模型最大输出需为 1–64000 的整数");
-  }
-}
-
 function requireAgentMaxTurns(value: SettingValue): void {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > 1000) {
     throw new SettingsValidationError("单条消息最大轮次需为 1–1000 的整数");
@@ -237,7 +231,6 @@ const FIELDS: FieldSpec[] = [
   { key: "fastModel", group: "modelSelection", label: "快速模型", type: "select", env: "OWC_FAST_MODEL", defaultValue: null, restartRequired: false, description: "用于上下文压缩和内容透镜，同时作为子代理 fast（快速）角色；模型来自已启用服务商的统一模型目录" },
   { key: "fastModelThinking", group: "modelSelection", label: "思考", type: "select", env: "OWC_FAST_MODEL_THINKING", defaultValue: "disabled", restartRequired: false, options: THINKING_OPTIONS },
   { key: "fastModelEffort", group: "modelSelection", label: "力度", type: "select", env: "OWC_FAST_MODEL_EFFORT", defaultValue: "none", restartRequired: false, options: EFFORT_OPTIONS },
-  { key: "fastModelMaxTokens", group: "modelSelection", label: "最大输出上限", type: "number", env: "OWC_FAST_MODEL_MAX_TOKENS", defaultValue: 4_096, restartRequired: false, fromEnv: envNumber, validate: requireFastModelMaxTokens, description: "内部任务的输出 token 硬上限；具体任务可以使用更小上限" },
   { key: "roleModelCheap", group: "modelSelection", label: "廉价档模型", type: "select", env: "OWC_ROLE_MODEL_CHEAP", defaultValue: null, restartRequired: false, description: "子代理 cheap（廉价）角色使用的模型：批量、低风险的分发任务；未配置时回落平衡档" },
   // 通用（热生效）
   { key: "defaultLanguage", group: "general", label: "默认语言", type: "select", env: "OWC_DEFAULT_LANGUAGE", defaultValue: "zh-CN", restartRequired: false, options: LANGUAGE_OPTIONS },
@@ -486,7 +479,6 @@ export class SettingsService {
               ...(fastModelEffort === "low" || fastModelEffort === "medium" || fastModelEffort === "high" || fastModelEffort === "xhigh" || fastModelEffort === "max" || fastModelEffort === "ultra"
                 ? { effort: fastModelEffort }
                 : {}),
-              maxTokens: value("fastModelMaxTokens") as number,
             },
         }
         : {}),

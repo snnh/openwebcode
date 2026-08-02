@@ -23,7 +23,6 @@ describe("FastModelClient", () => {
       model: "fast-1",
       thinking: "enabled",
       effort: "high",
-      maxTokens: 2_048,
     });
 
     await expect(client.complete({ system: "system", prompt: "prompt", maxTokens: 512 })).resolves.toEqual({
@@ -42,7 +41,7 @@ describe("FastModelClient", () => {
     });
   });
 
-  it("caps task output at the configured maximum and reports unavailable providers", async () => {
+  it("forwards the caller-required maxTokens without any config cap and reports unavailable providers", async () => {
     const requests: StreamChatRequest[] = [];
     const providers = new ProviderRegistry();
     providers.register({
@@ -53,11 +52,12 @@ describe("FastModelClient", () => {
         yield { type: "done", stopReason: "end_turn" };
       },
     });
-    const client = new FastModelClient(providers, { provider: "shared-provider", model: "fast-1", maxTokens: 256 });
-    await client.complete({ system: "system", prompt: "prompt", maxTokens: 1_024 });
-    expect(requests[0]?.maxTokens).toBe(256);
+    const client = new FastModelClient(providers, { provider: "shared-provider", model: "fast-1" });
+    // 无全局钳制：调用方给多少就透传多少
+    await client.complete({ system: "system", prompt: "prompt", maxTokens: 8_192 });
+    expect(requests[0]?.maxTokens).toBe(8_192);
 
-    client.setConfig({ provider: "disabled-provider", model: "fast-2", maxTokens: 256 });
-    await expect(client.complete({ system: "system", prompt: "prompt" })).rejects.toThrow("快速模型服务商不可用");
+    client.setConfig({ provider: "disabled-provider", model: "fast-2" });
+    await expect(client.complete({ system: "system", prompt: "prompt", maxTokens: 256 })).rejects.toThrow("快速模型服务商不可用");
   });
 });
