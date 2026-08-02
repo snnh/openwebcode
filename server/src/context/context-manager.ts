@@ -3,7 +3,7 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
 import { isMissing } from "../fs-utils.js";
-import type { ChatMessage, MessageContent } from "../sessions/types.js";
+import type { ChatMessage } from "../sessions/types.js";
 import { estimateTokens, IMAGE_TOKEN_ESTIMATE, type Currency } from "./model-profile.js";
 
 export interface RecordedCost {

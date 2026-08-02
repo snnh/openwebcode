@@ -326,8 +326,7 @@ export class EvalEvaluator {
 
 function makeScopedCore(core: CoreClientLike): { core: CoreClientLike; dispose(): void } {
   const listeners: Array<{ event: string; listener: (...args: unknown[]) => void }> = [];
-  let proxy: CoreClientLike;
-  proxy = new Proxy(core, {
+  const proxy: CoreClientLike = new Proxy(core, {
     get(target, property) {
       if (property === "on") {
         return (event: string, listener: (...args: unknown[]) => void) => {

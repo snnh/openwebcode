@@ -79,7 +79,7 @@ describe("TotpAuthService", () => {
   it("setup→confirm 落盘 0600，恢复码一次性用完即删", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "owc-totp-"));
     roots.push(root);
-    let currentTime = 1_700_000_000_000;
+    const currentTime = 1_700_000_000_000;
     const now = () => currentTime;
     const { service, secret, recoveryCodes } = await makeEnabledService(root, now);
     expect(service.enabled()).toBe(true);

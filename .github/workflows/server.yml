@@ -47,6 +47,27 @@ jobs:
       - name: Install
         run: npm ci
         working-directory: server
+      - name: Lint
+        run: npm run lint
+        working-directory: server
+      - name: Audit (non-blocking)
+        continue-on-error: true
+        run: npm audit --omit=dev --audit-level=high
+        working-directory: server
+      - name: Check ps1 UTF-8 BOM
+        # server/assets/*.ps1 必须 UTF-8 带 BOM（见 .gitattributes）；文件内容与
+        # 平台无关，仅在 Ubuntu 腿跑一次即可
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in server/assets/*.ps1; do
+            if [ "$(head -c 3 "$f" | od -An -tx1 | tr -d ' \n')" != "efbbbf" ]; then
+              echo "::error file=$f::missing UTF-8 BOM (EF BB BF)"
+              exit 1
+            fi
+          done
+          echo "All server/assets/*.ps1 files carry a UTF-8 BOM."
       - name: Build
         run: npm run build
         working-directory: server
@@ -57,3 +78,16 @@ jobs:
           # 让依赖真实 owc-exec 的测例（core-client / core-tcp / stage3-e2e / web-e2e）
           # 直接定位到上一步构建出的 Debug 二进制；缺失的仍由 skipIf 跳过
           OWC_CORE_PATH: ${{ runner.workspace }}/openwebcode/build/${{ runner.os == 'Windows' && 'Debug/owc-exec.exe' || 'owc-exec' }}
+      - name: Coverage (non-blocking)
+        continue-on-error: true
+        run: npm run test:coverage
+        working-directory: server
+        env:
+          OWC_CORE_PATH: ${{ runner.workspace }}/openwebcode/build/${{ runner.os == 'Windows' && 'Debug/owc-exec.exe' || 'owc-exec' }}
+      - name: Upload coverage
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-coverage-${{ matrix.os }}
+          path: server/coverage/
+          if-no-files-found: ignore

@@ -79,6 +79,7 @@ export function venvActivationCommand(flavor: ShellFlavor, venvDir: string, plat
 }
 
 /** CSI / OSC / 字符集等终端转义序列 + 裸 BEL/BS（PSReadLine 渲染会产生大量重绘序列）。 */
+// eslint-disable-next-line no-control-regex -- 匹配终端转义序列，控制字符（ESC/BEL/BS）本身就是匹配目标
 const ANSI_ESCAPE = /\x1b\[[0-9;:?>]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][0-9A-B]|\x1b[=>#@A-Z\\-_]|\x07|\x08/g;
 
 export function stripAnsi(text: string): string {
@@ -87,6 +88,7 @@ export function stripAnsi(text: string): string {
 
 /** chunk 末尾疑似半个转义序列的起始下标（ESC 开头但未成形的后缀）；无则返回 text.length。 */
 function danglingEscapeIndex(text: string): number {
+  // eslint-disable-next-line no-control-regex -- 匹配未成形终端转义序列后缀，ESC/BEL 是刻意目标
   const match = /\x1b(?:\[[0-9;:?>]*|\][^\x07\x1b]*|[()][0-9A-B]?)?$/.exec(text);
   return match && match[0].length > 0 ? match.index : text.length;
 }
@@ -95,6 +97,7 @@ function danglingEscapeIndex(text: string): number {
  * 光标定位序列（CUP）：ConPTY 常用它代替 \r\n 绘制下一行（命令输出后、提示符前），
  * 不做替换会把输出和提示符粘成一行。解析前统一换成 \n。
  */
+// eslint-disable-next-line no-control-regex -- 匹配 ConPTY 光标定位序列，ESC 是刻意目标
 const CURSOR_POSITION = /\x1b\[[0-9]*(?:;[0-9]*)?[Hf]/g;
 
 /**
