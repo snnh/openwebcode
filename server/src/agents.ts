@@ -1,12 +1,17 @@
 import { lstat, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { parseFrontmatter } from "./frontmatter.js";
+import { isModelRole, type ModelRole } from "./model-roles.js";
 
 export interface AgentDefinition {
   name: string;
   description: string;
   tools?: string[];
   model?: string;
+  /** 显式 provider 覆盖（frontmatter provider:；与 model: 一起优先于 role: 与调用级 role）。 */
+  provider?: string;
+  /** 模型角色档（frontmatter role:；仅 premium/balanced/fast/cheap，非法值静默忽略、保留定义本身——与 tools 解析的宽松风格一致）。 */
+  role?: ModelRole;
   body: string;
   source: "project" | "global";
 }
@@ -34,6 +39,8 @@ export function parseAgentMarkdown(
     description,
     ...(tools ? { tools } : {}),
     ...(meta.model ? { model: meta.model } : {}),
+    ...(meta.provider ? { provider: meta.provider } : {}),
+    ...(meta.role && isModelRole(meta.role) ? { role: meta.role } : {}),
     body,
     source,
   };

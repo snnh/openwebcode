@@ -46,6 +46,20 @@ export interface ServerConfig {
     intervalHours: number;
   };
   fastModel?: FastModelConfig;
+  /** 会话默认模型（settings defaultModel）：新建会话的隐式 provider+model。 */
+  defaultModel?: ModelSelection;
+  /** 子代理角色档模型映射（premium/balanced/cheap；fast 档直接读 fastModel）。 */
+  roleModels?: {
+    premium?: ModelSelection;
+    balanced?: ModelSelection;
+    cheap?: ModelSelection;
+  };
+}
+
+/** 一次模型选择：settings 的 select 编码值（[provider, model] JSON 串）解码产物。 */
+export interface ModelSelection {
+  provider: string;
+  model: string;
 }
 
 function positiveInteger(value: string | undefined, fallback: number): number {
