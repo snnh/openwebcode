@@ -35,7 +35,7 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify tag matches repo versions
         # tag 推送与 workflow_dispatch（inputs.tag）都执行校验；发布必须四方一致，尽早失败
         shell: bash
@@ -231,7 +231,7 @@ jobs:
   linux:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify tag matches repo versions
         # tag 推送与 workflow_dispatch（inputs.tag）都执行校验；发布必须四方一致，尽早失败
         shell: bash
@@ -411,7 +411,7 @@ jobs:
       }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Resolve version from tag
         shell: bash
         run: |
@@ -489,7 +489,7 @@ jobs:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.skip_performance_tests != true }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: actions/setup-node@v4
