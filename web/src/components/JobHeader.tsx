@@ -8,6 +8,7 @@ import { cacheHitRate } from "../lib/cache-stats";
 import { windowLevel, type ContextWindowInfo } from "../lib/context-window";
 import { Icon } from "./Icon";
 import { useI18n } from "../i18n";
+import { MOBILE_BREAKPOINT } from "../hooks/use-media-query";
 
 export interface CostSummary {
   tokens: number;
@@ -55,7 +56,12 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
   const [tasksOpen, setTasksOpen] = useState(false);
   const [expandedTask, setExpandedTask] = useState<string | null>(null);
   const [configPending, setConfigPending] = useState(false);
-  const [headerCollapsed, setHeaderCollapsed] = useState(() => localStorage.getItem("owc-header-collapsed") === "1");
+  // 移动端顶栏默认紧凑（下拉与导出收进展开区），本地已有记录时以用户选择为准
+  const [headerCollapsed, setHeaderCollapsed] = useState(() => {
+    const stored = localStorage.getItem("owc-header-collapsed");
+    if (stored === "1" || stored === "0") return stored === "1";
+    return typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia(MOBILE_BREAKPOINT).matches;
+  });
   // 任务列表路由不含 output（避免载荷过大），展开时按 taskId 拉详情缓存于此
   const [taskDetails, setTaskDetails] = useState<Record<string, BackgroundTaskInfo>>({});
   const tasks = useQuery({

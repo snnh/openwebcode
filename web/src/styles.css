@@ -499,10 +499,6 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 }
 .mode-switch select:disabled { cursor: not-allowed; opacity: 0.65; }
 .mode-switch option { color: var(--text); background: var(--panel); }
-.session-status-bar { display: flex; align-items: center; gap: 14px; min-height: 30px; padding: 5px 20px; border-top: 1px solid var(--border); background: var(--panel); color: var(--text-3); font: 11px var(--font-mono); overflow: hidden; }
-.session-status-bar > span { display: inline-flex; align-items: center; gap: 5px; min-width: 0; white-space: nowrap; }
-.session-status-bar > span:first-child { flex: 1; overflow: hidden; }
-.session-status-bar b { overflow: hidden; text-overflow: ellipsis; font-weight: 400; }
 .status-live { color: var(--text-2); }
 .status-live i { width: 7px; height: 7px; border-radius: 50%; background: var(--text-3); }
 .status-live:not(.status-idle) { color: var(--accent); }
@@ -511,7 +507,9 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 .interaction-card p { margin: 6px 0; color: var(--text-2); }
 .interaction-card label { display: block; margin: 6px 0; }
 .interaction-card textarea { width: 100%; min-height: 72px; margin: 6px 0; }
-.interaction-card > div { display: flex; gap: 8px; }
+/* 仅按钮行 flex：不能用 .interaction-card > div，PlanApprovalCard 里 Markdown 渲染的
+   div.markdown 也是直接子元素，误中会把每个 Markdown 块挤成竖排窄列 */
+.interaction-card > .interaction-actions { display: flex; gap: 8px; }
 .plan-approval-card .markdown { max-height: 320px; overflow-y: auto; margin: 6px 0; }
 .timeline-summary { margin: 0 0 12px; padding: 8px; border: 1px solid var(--border); border-radius: 7px; font: 11px var(--font-mono); color: var(--text-3); }
 .timeline-summary > div { display: flex; gap: 8px; padding: 3px 0; }
@@ -1338,6 +1336,11 @@ button.chip-row:hover { background: var(--accent-soft); }
   background: var(--panel);
   box-shadow: 0 8px 28px rgb(0 0 0 / 0.22);
 }
+/* 锚定态：JS 测量触发按钮位置后改 fixed，left/top 由内联样式给出；
+    specificity 与 .composer-menu-right .popover-menu 持平且位置更靠后，覆盖其 right:0 */
+.popover-menu.popover-menu-anchored { position: fixed; right: auto; bottom: auto; }
+/* 未测量首帧不闪旧位置（测量在打开当帧的 effect 内同步完成，正常不可见） */
+.popover-menu:not(.popover-menu-anchored) { visibility: hidden; }
 /* 模型弹层：上滚动（分组列表）+ 下固定（能力/思考/更多） */
 .popover-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 .popover-fixed { flex: 0 0 auto; border-top: 1px solid var(--border); margin-top: 4px; padding-top: 2px; }
@@ -1736,6 +1739,10 @@ button.chip-row:hover { background: var(--accent-soft); }
 }
 .file-preview header .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .preview-note { color: var(--text-3); font-size: 12.5px; }
+.preview-note .btn { margin-left: 8px; }
+/* 图片预览（阶段 2e）与 Markdown 渲染/源码双态（阶段 2g） */
+.file-preview-img { display: block; max-width: 100%; margin-top: 8px; border: 1px solid var(--border); border-radius: var(--radius); }
+.md-toggle { display: inline-flex; gap: 2px; flex: none; }
 
 /* 托管工作区：预览三方差异后才允许回写源目录。 */
 .workspace-sync-preview {
@@ -2408,6 +2415,10 @@ button.chip-row:hover { background: var(--accent-soft); }
   .wb-sidebar .rail-search-wrap { display: flex; margin: 12px 14px 6px; }
   .wb-sidebar .session-rail nav { display: block; position: static; flex: 1; overflow-y: auto; padding: 8px 10px 12px; }
   .wb-sidebar .session-rail footer { border-top: 1px solid var(--border); }
+  /* 抽屉遮罩：点击关闭（z-index 介于主区与抽屉 35 之间）；抽屉滑入动画 */
+  .wb-sidebar-backdrop { position: fixed; top: 53px; left: 0; right: 0; bottom: 0; z-index: 34; background: rgb(23 32 42 / 0.32); }
+  .wb-sidebar { animation: wb-drawer-in 0.18s ease; }
+  @keyframes wb-drawer-in { from { transform: translateX(-24px); opacity: 0; } }
   .wb-activity .activity-collapse-btn { display: none; }
   .session-rail {
     flex-direction: row;
@@ -2433,13 +2444,11 @@ button.chip-row:hover { background: var(--accent-soft); }
   .job-header h1 { font-size: 15px; }
   .job-title { flex: 1 1 100%; }
   .job-cwd { max-width: 100%; }
-  .job-actions { flex: 1 1 100%; justify-content: flex-start; gap: 6px; }
-  .job-info { flex: 1 1 100%; justify-content: flex-start; gap: 6px; }
+  .job-actions { flex: 1 1 100%; justify-content: flex-start; gap: 6px; flex-wrap: wrap; min-width: 0; }
+  .job-info { flex: 1 1 100%; justify-content: flex-start; gap: 6px; flex-wrap: wrap; min-width: 0; }
   .mode-switch > span { display: none; }
   .scroll-bottom { right: 16px; bottom: 14px; padding: 9px; }
   .scroll-bottom-label { display: none; }
-  .session-status-bar { gap: 9px; padding: 5px 12px; }
-  .session-status-bar .status-optional, .session-status-bar > span:nth-child(3) { display: none; }
   .execution-track { padding: 20px 16px 32px; }
   /* 权限/交互卡片：移动端大点击目标、不溢出（§6.8 最高优先场景） */
   .permission-card, .interaction-card { max-width: 100%; overflow-wrap: anywhere; }
@@ -2447,6 +2456,12 @@ button.chip-row:hover { background: var(--accent-soft); }
   .permission-actions .btn, .interaction-card .btn, .steering-queue .btn { min-height: 44px; }
   .composer { position: sticky; bottom: 0; padding: 8px 12px 10px; }
   .composer-menu-badge { display: none; }
+  /* 运行中换行可控：Steering 提示独占首行，发送按钮始终钉在行尾，不会被挤散孤立 */
+  .composer-toolbar { flex-wrap: wrap; row-gap: 6px; }
+  .composer-toolbar .steering-hint { order: -1; flex-basis: 100%; overflow: hidden; text-overflow: ellipsis; }
+  .composer-send { margin-left: auto; }
+  /* 零计数芯片（禁用态）移动端不占位；定时芯片永不禁用，始终保留 */
+  .composer-chips .composer-menu:has(> .composer-chip:disabled) { display: none; }
   .settings-dialog {
     width: calc(100vw - 16px);
     height: calc(100dvh - 16px);
@@ -2488,6 +2503,15 @@ button.chip-row:hover { background: var(--accent-soft); }
     z-index: 25;
   }
   .bottom-panel.open .panel-content { flex: 1; height: auto !important; }
+  /* 底部标签条紧凑化：首个标签不贴边被裁；并入的会话状态项压缩间距 */
+  .panel-tabs { padding: 0 4px; gap: 0; }
+  .panel-tabs button { padding: 8px 8px 7px; font-size: 12px; }
+  .panel-status { gap: 8px; padding-left: 8px; }
+  /* iOS：输入框字号 <16px 聚焦会自动放大页面 */
+  .composer textarea { font-size: 16px; }
+  /* 凹屏安全区：底部标签条避开 Home 指示条，输入卡片避开左右圆角 */
+  .panel-tabs { padding-bottom: env(safe-area-inset-bottom); }
+  .composer { padding-left: calc(12px + env(safe-area-inset-left)); padding-right: calc(12px + env(safe-area-inset-right)); }
   .toast { right: 12px; bottom: 12px; left: 12px; max-width: none; }
   /* 浮层移动端近全屏 */
   .wb-overlay { width: calc(100vw - 16px); max-height: 84vh; }
@@ -2591,6 +2615,44 @@ button.chip-row:hover { background: var(--accent-soft); }
   color: var(--text); background: var(--bg);
   border: 1px solid var(--border); border-radius: var(--radius);
 }
+
+/* SCM 行内操作（阶段 2a）：hover/聚焦行时显示 stage/unstage/discard 小图标按钮 */
+.scm-status-row { display: flex; align-items: center; }
+.scm-status-row .problems-item { flex: 1; min-width: 0; }
+.scm-row-actions { display: none; gap: 2px; margin-left: auto; flex: none; }
+.scm-status-row:hover .scm-row-actions,
+.scm-status-row:focus-within .scm-row-actions { display: inline-flex; }
+.scm-row-actions .icon-btn { padding: 2px; }
+.scm-status-row .scm-confirm { font-size: 11.5px; color: var(--text-3); }
+
+/* SCM 历史折叠区（阶段 2f）：一行式 shortHash + subject + author · relTime */
+.scm-history { margin-top: 12px; }
+.scm-history-toggle {
+  display: inline-flex; align-items: center; gap: 4px;
+  font: inherit; color: inherit;
+}
+.scm-log-item {
+  display: flex; align-items: baseline; gap: 6px;
+  padding: 3px 6px; font-size: 12.5px; color: var(--text-2);
+}
+.scm-log-hash { flex: none; font-family: var(--font-mono); font-size: 11.5px; color: var(--accent-hover); }
+.scm-log-subject { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.scm-log-meta { margin-left: auto; flex: none; color: var(--text-3); font-size: 11px; white-space: nowrap; }
+
+/* worktree 合回（阶段 2h）：合回按钮与冲突列表 */
+.scm-worktree-item .scm-merge-btn { margin-left: auto; }
+.scm-worktree-item .scm-merge-btn + .btn,
+.scm-worktree-item .scm-merge-btn + .scm-confirm { margin-left: 0; }
+.scm-merge-conflicts {
+  margin-top: 6px; padding: 8px;
+  border: 1px solid var(--danger); border-radius: var(--radius);
+  background: var(--panel-2); font-size: 12.5px;
+}
+.scm-merge-conflicts-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-bottom: 4px; color: var(--danger); font-weight: 600;
+}
+.scm-merge-conflicts code { font-family: var(--font-mono); font-size: 12px; color: var(--text-2); }
 
 /* 只读 unified diff 渲染：+/- 行着色 */
 .diff-view { font-family: var(--font-mono); font-size: 12px; }

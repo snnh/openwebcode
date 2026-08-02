@@ -65,4 +65,17 @@ describe("PlanApprovalCard", () => {
     fireEvent.click(screen.getByRole("button", { name: "确认拒绝" }));
     expect(onRespond).toHaveBeenCalledWith({ decision: "reject", feedback: "先调研替代方案" } satisfies PlanApprovalAnswer);
   });
+
+  it("Markdown 容器不带按钮行的 interaction-actions 类（防 .interaction-card > div flex 规则误伤）", async () => {
+    renderCard();
+    await screen.findByText(/实施计划/);
+    const card = document.querySelector(".plan-approval-card");
+    expect(card).not.toBeNull();
+    const markdownRoot = card!.querySelector(":scope > .markdown");
+    expect(markdownRoot).not.toBeNull();
+    expect(markdownRoot!.classList.contains("interaction-actions")).toBe(false);
+    // 按钮行才是唯一带 interaction-actions 的直接子元素
+    const actionRows = card!.querySelectorAll(":scope > .interaction-actions");
+    expect(actionRows).toHaveLength(1);
+  });
 });

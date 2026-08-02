@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactElement, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import type { ModelCapabilities, ModelProfile, PermissionMode } from "../lib/contracts";
 import { Icon } from "./Icon";
 import { ModelCapabilityBadges } from "./ModelCapabilityBadges";
@@ -9,19 +9,60 @@ import { useI18n } from "../i18n";
  * 模型与思考程度合并选择。数据链路不变——全部经 onConfig 走既有 PUT /api/sessions/:id/config。
  */
 
-/** 通用弹层：透明遮罩点击 / Esc 关闭；菜单绝对定位于触发按钮上方。 */
+/** 通用弹层：透明遮罩点击 / Esc 关闭；菜单 fixed 定位于触发按钮上方并 clamp 在视口内。 */
 export function Popover({ open, onClose, children }: { open: boolean; onClose(): void; children: ReactNode }): ReactElement | null {
+  const menuRef = useRef<HTMLDivElement>(null);
+  // 锚定后的视口坐标；null 表示尚未测量（首帧退回 CSS 默认定位，随即被测量值覆盖）
+  const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      setPosition(null);
+      return;
+    }
     const onKey = (event: KeyboardEvent): void => { if (event.key === "Escape") onClose(); };
     document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
+    // 以父容器（.composer-menu，包住触发按钮）为锚点，把菜单 clamp 进视口 8px 安全边距
+    const update = (): void => {
+      const menu = menuRef.current;
+      const anchor = menu?.parentElement;
+      if (!menu || !anchor) return;
+      const rect = anchor.getBoundingClientRect();
+      const margin = 8;
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const menuWidth = menu.offsetWidth || 320;
+      const menuHeight = menu.offsetHeight || 240;
+      const maxLeft = Math.max(margin, vw - menuWidth - margin);
+      const left = Math.min(Math.max(rect.left, margin), maxLeft);
+      // 默认锚在触发按钮上方；上方放不下时翻到下方，仍放不下则贴视口底
+      const aboveTop = rect.top - 6 - menuHeight;
+      const top = aboveTop >= margin
+        ? aboveTop
+        : Math.min(rect.bottom + 6, Math.max(margin, vh - menuHeight - margin));
+      setPosition({ left, top });
+    };
+    // 双帧测量：首帧内容（懒加载列表等）可能尚未撑开，第二帧再校正一次
+    update();
+    const raf = requestAnimationFrame(update);
+    window.addEventListener("resize", update);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", update);
+    };
   }, [open, onClose]);
   if (!open) return null;
   return (
     <>
       <div className="popover-overlay" aria-hidden onClick={onClose} />
-      <div className="popover-menu" role="menu">{children}</div>
+      <div
+        ref={menuRef}
+        className={`popover-menu${position ? " popover-menu-anchored" : ""}`}
+        role="menu"
+        style={position ? { left: position.left, top: position.top } : undefined}
+      >
+        {children}
+      </div>
     </>
   );
 }
