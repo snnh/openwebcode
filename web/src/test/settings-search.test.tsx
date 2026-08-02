@@ -28,6 +28,13 @@ const settingsView: SettingsView = {
       ],
     },
     {
+      id: "modelSelection",
+      label: "模型选择",
+      fields: [
+        { key: "defaultModel", label: "会话默认模型", type: "select", options: [{ value: "fast-1", label: "fast-1" }], value: null, hasValue: false, source: "default", editable: true, restartRequired: false, nullable: true },
+      ],
+    },
+    {
       id: "models",
       label: "模型接入",
       fields: [
@@ -99,6 +106,7 @@ describe("设置搜索", () => {
   it.each([
     { query: "数据目录", tab: "服务信息" },
     { query: "远程模型目录", tab: "模型目录" },
+    { query: "会话默认模型", tab: "模型选择" },
     { query: "默认货币", tab: "通用" },
     { query: "固定美元汇率", tab: "模型定价" },
     { query: "Fixed USD/CNY rate", tab: "模型定价" },
@@ -117,6 +125,12 @@ describe("设置搜索", () => {
     expect(visibleTabs()).toEqual(["外观", "通用", "会话默认", "快捷键"]);
   });
 
+  it("匹配 AI 与服务分组名时五个页签全部保留", () => {
+    renderDialog();
+    fireEvent.change(screen.getByRole("textbox", { name: "搜索设置" }), { target: { value: "AI 与服务" } });
+    expect(visibleTabs()).toEqual(["模型目录", "模型选择", "联网服务", "模型定价", "提示词"]);
+  });
+
   it("无匹配时展示空态；Esc 清空恢复全部页签", () => {
     renderDialog();
     const search = screen.getByRole("textbox", { name: "搜索设置" });
@@ -124,7 +138,7 @@ describe("设置搜索", () => {
     expect(visibleTabs()).toEqual([]);
     expect(screen.getByText("无匹配")).toBeInTheDocument();
     fireEvent.keyDown(search, { key: "Escape" });
-    expect(visibleTabs().length).toBe(11);
+    expect(visibleTabs().length).toBe(13);
   });
 
   it("导航中不再包含服务设置页签", () => {

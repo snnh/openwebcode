@@ -11,8 +11,8 @@ import { GeneralSection } from "./settings/GeneralSection";
 import { DefaultsSection } from "./settings/DefaultsSection";
 import { ShortcutsSection } from "./settings/ShortcutsSection";
 import { RemoteAccessSection } from "./settings/RemoteAccessSection";
-import { ProviderProfilesSection } from "./settings/ProviderProfilesSection";
-import { ModelAccessSection } from "./settings/ModelAccessSection";
+import { ModelProvidersSection, WebProvidersSection } from "./settings/ProviderProfilesSection";
+import { ModelSelectionSection, ModelCatalogSyncSection } from "./settings/ModelSelectionSection";
 import { ModelCatalogSection } from "./settings/ModelCatalogSection";
 import { SkillsSection } from "./settings/SkillsSection";
 import { ExtensionsSection } from "./settings/ExtensionsSection";
@@ -27,9 +27,11 @@ export type { SettingsTab } from "../lib/contracts";
 // 既有外部引用（测试与 App）从本模块导入这些分区组件，拆分后保持再导出
 export {
   PricingSection,
-  ProviderProfilesSection,
+  ModelProvidersSection,
+  WebProvidersSection,
   ServerSettingsFields,
-  ModelAccessSection,
+  ModelSelectionSection,
+  ModelCatalogSyncSection,
   SystemStorageSection,
   ModelCatalogSection,
   ShortcutsSection,
@@ -64,7 +66,9 @@ const SETTINGS_GROUPS: Array<{ id: string; zh: string; en: string; tabs: Setting
     zh: "AI 与服务",
     en: "AI & services",
     tabs: [
-      { id: "models", zh: "模型目录", en: "Models", descriptionZh: "服务商、模型接入与可用模型能力", descriptionEn: "Providers, model access, and model capabilities", icon: "layers" },
+      { id: "models", zh: "模型目录", en: "Models", descriptionZh: "模型服务商、目录同步与可用模型能力", descriptionEn: "Model providers, catalog sync, and model capabilities", icon: "layers" },
+      { id: "modelSelection", zh: "模型选择", en: "Model selection", descriptionZh: "会话默认、子代理角色与快速模型", descriptionEn: "Session default, sub-agent roles, and fast model", icon: "list" },
+      { id: "web", zh: "联网服务", en: "Web services", descriptionZh: "联网搜索与抓取服务商配置", descriptionEn: "Web search and fetch provider profiles", icon: "search" },
       { id: "pricing", zh: "模型定价", en: "Pricing", descriptionZh: "管理 token 价格、计费币种与汇率", descriptionEn: "Manage token prices, billing currencies, and exchange rates", icon: "chart" },
       { id: "prompt", zh: "提示词", en: "Prompt", descriptionZh: "覆盖系统提示词基线与追加自定义指令", descriptionEn: "Override the system prompt baseline and append custom instructions", icon: "wrench" },
     ],
@@ -91,7 +95,7 @@ const SETTINGS_GROUPS: Array<{ id: string; zh: string; en: string; tabs: Setting
 
 const TAB_META = SETTINGS_GROUPS.flatMap((group) => group.tabs);
 
-export function SettingsDialog({ open, initialTab, initialTabAt, preference, setPreference, accent, setAccent, sendKey, setSendKey, desktopNotify, setDesktopNotify, defaults, setDefaults, providers, models, onResetLayout, onClose }: {
+export function SettingsDialog({ open, initialTab, initialTabAt, preference, setPreference, accent, setAccent, sendKey, setSendKey, desktopNotify, setDesktopNotify, defaults, setDefaults, providers, models, sessionCwd, onResetLayout, onClose }: {
   open: boolean;
   /** 深链入口：打开时定位到指定页签；不传则保持上次使用的页签 */
   initialTab?: SettingsTab;
@@ -109,6 +113,8 @@ export function SettingsDialog({ open, initialTab, initialTabAt, preference, set
   setDefaults(value: SessionDefaults): void;
   providers: string[];
   models: ModelProfile[];
+  /** 当前会话工作目录：提示词页签的「当前项目」作用域指向它 */
+  sessionCwd?: string;
   onResetLayout(): void;
   onClose(): void;
 }): ReactElement | null {
@@ -119,7 +125,7 @@ export function SettingsDialog({ open, initialTab, initialTabAt, preference, set
   // 左侧导航搜索：匹配页签标题/描述、分组名与服务设置字段标签（中英文）
   const [navQuery, setNavQuery] = useState("");
   // 字段标签在打开时经 api.settings 拉取（不经 react-query，i18n 等无 Provider 的渲染也能工作）；失败按无字段匹配处理
-  // tab：按 SETTING_GROUP_TAB 归属到各页签（模型目录/通用/模型定价/服务信息/远程访问）
+  // tab：按 SETTING_GROUP_TAB 归属到各页签（模型目录/模型选择/通用/模型定价/服务信息/远程访问）
   const [fieldLabels, setFieldLabels] = useState<Array<{ key: string; label: string; tab: SettingsTab }>>([]);
   // 服务设置/定价 JSON/提示词的未保存改动由各页签内的分区组件上报
   const serverDirtyRef = useRef(false);
@@ -169,7 +175,7 @@ export function SettingsDialog({ open, initialTab, initialTabAt, preference, set
     if (tab.zh.toLowerCase().includes(query) || tab.en.toLowerCase().includes(query)) return true;
     if (tab.descriptionZh.toLowerCase().includes(query) || tab.descriptionEn.toLowerCase().includes(query)) return true;
     if (group.zh.toLowerCase().includes(query) || group.en.toLowerCase().includes(query)) return true;
-    // 服务设置字段按分组挂在各自页签下（模型目录/通用/模型定价/服务信息/远程访问）
+    // 服务设置字段按分组挂在各自页签下（模型目录/模型选择/通用/模型定价/服务信息/远程访问）
     if (fieldHit(tab.id)) return true;
     return false;
   };
@@ -308,9 +314,21 @@ export function SettingsDialog({ open, initialTab, initialTabAt, preference, set
           {activeTab === "models" && (
             <section>
               <h3>{t("模型目录", "Model catalog")}</h3>
-              <ProviderProfilesSection />
-              <ModelAccessSection onDirtyChange={(dirty) => { serverDirtyRef.current = dirty; }} />
+              <ModelProvidersSection />
               <ModelCatalogSection />
+              <ModelCatalogSyncSection onDirtyChange={(dirty) => { serverDirtyRef.current = dirty; }} />
+            </section>
+          )}
+          {activeTab === "modelSelection" && (
+            <section>
+              <h3>{t("模型选择", "Model selection")}</h3>
+              <ModelSelectionSection onDirtyChange={(dirty) => { serverDirtyRef.current = dirty; }} />
+            </section>
+          )}
+          {activeTab === "web" && (
+            <section>
+              <h3>{t("联网服务", "Web services")}</h3>
+              <WebProvidersSection />
             </section>
           )}
           {activeTab === "skills" && (
@@ -339,7 +357,7 @@ export function SettingsDialog({ open, initialTab, initialTabAt, preference, set
           {activeTab === "prompt" && (
             <section>
               <h3>{t("提示词", "System prompt")}</h3>
-              <PromptSection onDirtyChange={(dirty) => { serverDirtyRef.current = dirty; }} />
+              <PromptSection sessionCwd={sessionCwd} onDirtyChange={(dirty) => { serverDirtyRef.current = dirty; }} />
             </section>
           )}
           {activeTab === "info" && (
