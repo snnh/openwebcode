@@ -5,17 +5,21 @@ import { api } from "../lib/api";
 import { Icon, type IconName } from "./Icon";
 import { Popover } from "./ComposerPopovers";
 import { useI18n } from "../i18n";
+import { COMPACT_BREAKPOINT, useMediaQuery } from "../hooks/use-media-query";
 
 /**
  * 输入卡片上方的状态芯片行（参考 Kimi Code Web）：后台 Bash / 子 Agent / 待办 / 定时。
  * tasks/todos 与 JobHeader、App 同 react-query 键，零额外请求；子代理运行态由 App 传入。
  * 零计数芯片置灰不可点（定时芯片例外：零任务也要能打开添加表单）；点击弹小浮层列出条目。
+ * ≤768px 紧凑断点：零计数芯片整体隐藏（含定时，有计数才出现），全部为零时整行不渲染；
+ * 桌面端保持定时芯片零计数可点开添加表单。
  */
 export function ComposerChips({ sessionId, subagents }: {
   sessionId: string;
   subagents?: Record<string, LiveSubagentRun> | undefined;
-}): ReactElement {
+}): ReactElement | null {
   const { t } = useI18n();
+  const compact = useMediaQuery(COMPACT_BREAKPOINT);
   const tasks = useQuery({ queryKey: ["tasks", sessionId], queryFn: () => api.tasks(sessionId) });
   const todos = useQuery({ queryKey: ["todos", sessionId], queryFn: () => api.todos(sessionId) });
   // 定时任务变化不频繁：15s 轮询兜底（agent 侧 cron_create 也能刷到），手动增删后 invalidate 立即刷新
@@ -27,6 +31,11 @@ export function ComposerChips({ sessionId, subagents }: {
   const runningSubagents = subagentRuns.filter((run) => run.status === "running");
   const todoItems = todos.data ?? [];
   const doneTodos = todoItems.filter((item) => item.status === "done").length;
+
+  // ≤768px：零计数芯片（含定时）不占位；全部为零时整行不渲染，避免空行吃掉一屏高度
+  const hasActivity = taskItems.length > 0 || subagentRuns.length > 0 || todoItems.length > 0 || cronJobs.length > 0;
+  if (compact && !hasActivity) return null;
+  const showCronChip = !compact || cronJobs.length > 0;
 
   const taskStatusLabel = (status: string): string =>
     status === "running" ? t("运行中", "Running")
@@ -84,9 +93,11 @@ export function ComposerChips({ sessionId, subagents }: {
             </div>
           )}
       </Chip>
-      <Chip icon="bell" label={t("定时", "Cron")} count={`(${cronJobs.length})`} disabled={false}>
-        <CronPanel sessionId={sessionId} jobs={cronJobs} />
-      </Chip>
+      {showCronChip && (
+        <Chip icon="bell" label={t("定时", "Cron")} count={`(${cronJobs.length})`} disabled={false}>
+          <CronPanel sessionId={sessionId} jobs={cronJobs} />
+        </Chip>
+      )}
     </div>
   );
 }

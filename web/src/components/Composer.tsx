@@ -238,12 +238,14 @@ export function Composer({ current, model, models, providers = [], pdfToImageExt
     draftRef.current = value;
     setDraft(value);
   }, [setDraft]);
-  // 随内容自动增高，上限由 CSS max-height 控制
+  // 随内容自动增高，上限由 CSS max-height 控制；无溢出时隐藏纵向滚动条轨道，
+  // 达到 max-height 出现真实溢出（scrollHeight > clientHeight）后才放开滚动
   useEffect(() => {
     const element = textareaRef.current;
     if (element) {
       element.style.height = "auto";
       element.style.height = `${element.scrollHeight}px`;
+      element.style.overflowY = element.scrollHeight > element.clientHeight ? "auto" : "hidden";
     }
   }, [draft]);
 

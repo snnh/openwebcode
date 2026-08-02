@@ -1616,6 +1616,8 @@ button.chip-row:hover { background: var(--accent-soft); }
   line-height: 1.5;
   max-height: 200px;
   font-size: 14px;
+  /* 默认无纵向滚动条轨道；JS 自动增高检测到真实溢出（达 max-height）后改回 auto */
+  overflow-y: hidden;
 }
 .composer textarea:focus { outline: none; }
 
@@ -2460,7 +2462,7 @@ button.chip-row:hover { background: var(--accent-soft); }
   .composer-toolbar { flex-wrap: wrap; row-gap: 6px; }
   .composer-toolbar .steering-hint { order: -1; flex-basis: 100%; overflow: hidden; text-overflow: ellipsis; }
   .composer-send { margin-left: auto; }
-  /* 零计数芯片（禁用态）移动端不占位；定时芯片永不禁用，始终保留 */
+  /* 零计数芯片（禁用态）移动端不占位；≤768px 时定时芯片零任务也由 ComposerChips 整行隐藏 */
   .composer-chips .composer-menu:has(> .composer-chip:disabled) { display: none; }
   .settings-dialog {
     width: calc(100vw - 16px);
@@ -2517,12 +2519,40 @@ button.chip-row:hover { background: var(--accent-soft); }
   .wb-overlay { width: calc(100vw - 16px); max-height: 84vh; }
 }
 
+/* ================= ≤768px 密度优化（窄屏单列仍局促的二次压缩） ================= */
+@media (max-width: 768px) {
+  /* 芯片行更扁：零计数芯片（含定时）由 ComposerChips 整行隐藏，此处压缩有计数时的行高 */
+  .composer-chips { gap: 10px; margin: 0 0 4px; padding: 0 4px; }
+  .composer-chip { padding: 1px 3px; font-size: 11.5px; }
+  /* 会话信息条：单行不折行，pill 字号/内边距降一档，水位条缩短，过长收缩省略 */
+  .job-header { padding: 6px 12px; row-gap: 6px; }
+  .job-header h1 { font-size: 14px; }
+  .job-header-info { gap: 8px; }
+  .job-info { flex: 0 1 auto; flex-wrap: nowrap; gap: 4px; overflow: hidden; }
+  .job-info > * { flex: 0 1 auto; min-width: 0; }
+  .cost-summary, .window-usage { padding: 2px 8px; font-size: 11px; gap: 5px; }
+  .cost-summary-text, .window-usage-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .budget-bar { width: 28px; flex: none; }
+  .state-badge, .persona-badge { padding: 2px 8px; font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; }
+  /* Markdown 表格降一档，三列表格尽量不触发横滚（overflow-x: auto 兜底不变） */
+  .markdown th, .markdown td { padding: 3px 6px; font-size: 12px; }
+  /* 消息区左右各再收 4px，让给内容 */
+  .execution-track { padding-left: 12px; padding-right: 12px; }
+}
+
 @media (max-width: 480px) {
   .wb-activity .activity-mobile-brand { display: none; }
   .wb-sidebar { width: 100vw; }
-  .composer-toolbar { flex-wrap: wrap; }
+  .composer { padding: 6px calc(8px + env(safe-area-inset-right)) 8px calc(8px + env(safe-area-inset-left)); }
+  .composer-card { padding: 6px 10px 8px; }
+  .composer-toolbar { flex-wrap: wrap; gap: 4px; }
   .composer-toolbar-spacer { flex-basis: 100%; height: 0; }
   .composer-chips { gap: 10px; overflow-x: auto; }
+  /* 控制行紧凑化：按钮降一档，长模型名收缩省略（不顶爆布局、不折行溢出） */
+  .composer-menu-btn { min-height: 28px; padding: 0 7px; gap: 4px; font-size: 11.5px; }
+  .model-menu-btn-label { max-width: 108px; gap: 3px; }
+  .composer-attach.icon-btn { width: 26px; height: 26px; }
+  .composer-send { width: 30px; height: 30px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
