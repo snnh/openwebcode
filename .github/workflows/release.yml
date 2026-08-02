@@ -419,18 +419,18 @@ jobs:
           TAG="${{ inputs.tag || github.ref_name }}"
           echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
       - name: Download Windows MSI
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: release-windows-msi
           path: release-assets
       - name: Download Linux tar.gz
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: release-linux-tarball
           path: release-assets
       - name: Download benchmark baselines
         if: ${{ needs.benchmark.result == 'success' }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: bench-results-${{ env.VERSION }}
           path: release-assets/benchmarks
