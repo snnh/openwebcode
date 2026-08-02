@@ -453,7 +453,11 @@ export class ExtensionManager {
 
   /** 相对路径解析：禁绝对路径、禁 .. 逃逸，规范化后必须仍在扩展自己的目录内。 */
   private storagePath(extensionId: string, relative: string): string {
-    if (!relative || path.isAbsolute(relative)) throw new Error("storage path must be a non-empty relative path");
+    // Windows 绝对形态（盘符/UNC）必须在所有宿主 OS 上拒绝：
+    // POSIX 的 path.isAbsolute("C:/x") 为 false，会在私有目录里静默造出 "C:" 目录。
+    if (!relative || path.isAbsolute(relative) || /^[a-zA-Z]:[\\/]/.test(relative) || relative.startsWith("\\\\")) {
+      throw new Error("storage path must be a non-empty relative path");
+    }
     const root = this.storageRoot(extensionId);
     const resolved = path.resolve(root, relative);
     if (resolved !== root && !resolved.startsWith(root + path.sep)) throw new Error("storage path escapes the extension directory");

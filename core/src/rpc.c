@@ -1485,7 +1485,7 @@ static int handle_pty_input(owc_rpc *rpc,const owc_json *id,const owc_json *p){
     encoded=owc_json_get_string(owc_json_object_get(p,"data"));
     if(!encoded||!base64_decode_bounded(encoded,&decoded,&decoded_length))return reply_error(rpc,id,-32602,"pty.input data must be canonical base64");
     if(decoded_length>OWC_PTY_MAX_INPUT_BYTES){free(decoded);return reply_error(rpc,id,-32602,"pty.input data must decode to at most 8192 bytes");}
-    record=pty_find(pty_id);if(!record)return reply_error(rpc,id,-32003,"pty not found");
+    record=pty_find(pty_id);if(!record){free(decoded);return reply_error(rpc,id,-32003,"pty not found");}
     if(record->exited){free(decoded);return reply_error(rpc,id,-32000,"pty has exited");}
     if(!owc_pty_write(record->handle,decoded,decoded_length)){free(decoded);return reply_error(rpc,id,-32000,"failed to write to pty");}
     free(decoded);
