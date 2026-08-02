@@ -68,7 +68,7 @@ export function BottomPanel({ sessionId, session, running, evalEnabled = false, 
   latestUsage?: ContextUsage;
   /** 当前会话合并后的子代理运行（taskId → run）；仅子代理标签页使用。 */
   subagentRuns?: Record<string, LiveSubagentRun>;
-  /** 桌面端会话状态项：提供时在标签条右侧渲染（移动端由独立 StatusBar 承担，不下发） */
+  /** 会话状态项：提供时在标签条右侧渲染（桌面端下发完整项，移动端仅状态点） */
   status?: PanelStatusInfo | undefined;
   onNotice(message: string, kind?: "info" | "error"): void;
   /** 受控开合（布局持久化在 useWorkbenchLayout，Ctrl/Cmd+` 切换） */
