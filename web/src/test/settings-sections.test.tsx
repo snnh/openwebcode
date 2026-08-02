@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ModelAccessSection, RemoteAccessSection, ServerSettingsFields, ShortcutsSection, SystemStorageSection } from "../components/SettingsDialog";
+import { ModelCatalogSyncSection, ModelSelectionSection, RemoteAccessSection, ServerSettingsFields, ShortcutsSection, SystemStorageSection } from "../components/SettingsDialog";
 import { registerBuiltinCommands } from "../commands/builtin";
 import { resetCommands } from "../commands/registry";
 import { DEFAULT_KEYBINDINGS } from "../commands/keybindings";
@@ -123,7 +123,6 @@ describe("设置分组迁移（服务设置页签移除后）", () => {
         label: "模型选择",
         fields: [
           { key: "defaultModel", label: "会话默认模型", type: "select", options: [{ value: "fast-1", label: "fast-1" }], value: null, hasValue: false, source: "default", editable: true, restartRequired: false, nullable: true },
-          { key: "fastModelMaxTokens", label: "最大输出上限", type: "number", value: 4_096, hasValue: true, source: "default", editable: true, restartRequired: false, nullable: false },
         ],
       },
       {
@@ -188,16 +187,24 @@ describe("设置分组迁移（服务设置页签移除后）", () => {
     expect(view.getAllByText("重启后生效")).toHaveLength(2);
   });
 
-  it("模型选择/模型目录与同步分组渲染在模型目录分区，模型选择在前", async () => {
+  it("模型选择分组渲染在模型选择分区", async () => {
     vi.spyOn(api, "settings").mockResolvedValue(mixed);
-    const view = renderWithClient(<ModelAccessSection />);
+    const view = renderWithClient(<ModelSelectionSection />);
     expect(await view.findByLabelText("会话默认模型")).toBeInTheDocument();
-    expect(view.getByLabelText("最大输出上限")).toBeInTheDocument();
-    expect(view.getByLabelText("远程模型目录 URL")).toBeInTheDocument();
-    // 两组标题齐全，模型选择排在模型目录与同步之前
-    const headings = view.getAllByRole("heading", { level: 4 }).map((heading) => heading.textContent);
-    expect(headings).toEqual(["模型选择", "模型目录与同步"]);
+    expect(view.getByRole("heading", { name: "模型选择", level: 4 })).toBeInTheDocument();
     // 其他分组不渲染
+    expect(view.queryByLabelText("远程模型目录 URL")).toBeNull();
+    expect(view.queryByLabelText("数据目录")).toBeNull();
+    expect(view.queryByLabelText("监听地址")).toBeNull();
+  });
+
+  it("模型目录与同步分组渲染在模型目录分区", async () => {
+    vi.spyOn(api, "settings").mockResolvedValue(mixed);
+    const view = renderWithClient(<ModelCatalogSyncSection />);
+    expect(await view.findByLabelText("远程模型目录 URL")).toBeInTheDocument();
+    expect(view.getByRole("heading", { name: "模型目录与同步", level: 4 })).toBeInTheDocument();
+    // 其他分组不渲染
+    expect(view.queryByLabelText("会话默认模型")).toBeNull();
     expect(view.queryByLabelText("数据目录")).toBeNull();
     expect(view.queryByLabelText("监听地址")).toBeNull();
   });

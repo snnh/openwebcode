@@ -1,6 +1,6 @@
 import { fireEvent, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ProviderProfilesSection } from "../components/SettingsDialog";
+import { ModelProvidersSection, WebProvidersSection } from "../components/SettingsDialog";
 import { api } from "../lib/api";
 import type { ProviderProfilesView } from "../lib/contracts";
 import { renderWithClient } from "./helpers/with-client";
@@ -18,25 +18,24 @@ const profiles: ProviderProfilesView = {
   activeWeb: { search: "Brave 搜索", fetch: "Jina" },
 };
 
-function renderProfiles(): ReturnType<typeof renderWithClient> {
-  return renderWithClient(<ProviderProfilesSection />);
-}
+afterEach(() => vi.restoreAllMocks());
 
-describe("ProviderProfilesSection", () => {
-  afterEach(() => vi.restoreAllMocks());
+describe("ModelProvidersSection", () => {
+  function renderProfiles(): ReturnType<typeof renderWithClient> {
+    return renderWithClient(<ModelProvidersSection />);
+  }
 
-  it("shows multiple profiles with masked secrets and selects web capabilities independently", async () => {
+  it("shows multiple model profiles with masked secrets and no web provider section", async () => {
     vi.spyOn(api, "providerProfiles").mockResolvedValue(profiles);
-    const select = vi.spyOn(api, "selectWebProvider").mockResolvedValue({ ...profiles, activeWeb: { search: "Jina", fetch: "Jina" } });
     const view = renderProfiles();
 
     expect(await view.findByText("主服务")).toBeInTheDocument();
     expect(view.getByText("备用")).toBeInTheDocument();
     expect(view.getByText("sk-main…1234")).toBeInTheDocument();
     expect(view.queryByText(/secret/i)).not.toBeInTheDocument();
-
-    fireEvent.change(view.getByLabelText("Web Search"), { target: { value: "Jina" } });
-    await waitFor(() => expect(select).toHaveBeenCalledWith("search", "Jina"));
+    // 联网服务商不在本分区
+    expect(view.queryByText("联网服务商")).toBeNull();
+    expect(view.queryByLabelText("Web Search")).toBeNull();
   });
 
   it("creates a named model provider without combining it with a separate provider selector", async () => {
@@ -45,8 +44,8 @@ describe("ProviderProfilesSection", () => {
     const view = renderProfiles();
 
     fireEvent.change(await view.findByPlaceholderText("服务商名称"), { target: { value: "本地 Ollama" } });
-    fireEvent.change(view.getAllByPlaceholderText("API Key")[0]!, { target: { value: "local-key" } });
-    fireEvent.click(view.getAllByRole("button", { name: "保存服务商" })[0]!);
+    fireEvent.change(view.getByPlaceholderText("API Key"), { target: { value: "local-key" } });
+    fireEvent.click(view.getByRole("button", { name: "保存服务商" }));
 
     await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({
       id: "本地 Ollama",
@@ -63,7 +62,7 @@ describe("ProviderProfilesSection", () => {
 
     fireEvent.change(await view.findByPlaceholderText("服务商名称"), { target: { value: "qwen" } });
     fireEvent.change(view.getByPlaceholderText(/自定义请求体/), { target: { value: '{"temperature": 0.7, "max_tokens": 8192}' } });
-    fireEvent.click(view.getAllByRole("button", { name: "保存服务商" })[0]!);
+    fireEvent.click(view.getByRole("button", { name: "保存服务商" }));
     await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({
       id: "qwen",
       extraBody: { temperature: 0.7, max_tokens: 8192 },
@@ -72,8 +71,30 @@ describe("ProviderProfilesSection", () => {
     create.mockClear();
     fireEvent.change(await view.findByPlaceholderText("服务商名称"), { target: { value: "bad" } });
     fireEvent.change(view.getByPlaceholderText(/自定义请求体/), { target: { value: "{not json" } });
-    fireEvent.click(view.getAllByRole("button", { name: "保存服务商" })[0]!);
+    fireEvent.click(view.getByRole("button", { name: "保存服务商" }));
     expect(await view.findByText("自定义请求体不是合法的 JSON 对象")).toBeInTheDocument();
     expect(create).not.toHaveBeenCalled();
+  });
+});
+
+describe("WebProvidersSection", () => {
+  function renderProfiles(): ReturnType<typeof renderWithClient> {
+    return renderWithClient(<WebProvidersSection />);
+  }
+
+  it("shows web profiles and selects web capabilities independently", async () => {
+    vi.spyOn(api, "providerProfiles").mockResolvedValue(profiles);
+    const select = vi.spyOn(api, "selectWebProvider").mockResolvedValue({ ...profiles, activeWeb: { search: "Jina", fetch: "Jina" } });
+    const view = renderProfiles();
+
+    // 名称同时出现在表格与能力下拉选项中，用脱敏密钥确认表格行渲染
+    expect(await view.findByText("brave-…5678")).toBeInTheDocument();
+    expect(view.getByText("tvly-…1234")).toBeInTheDocument();
+    expect(view.getAllByText("Jina").length).toBeGreaterThan(0);
+    // 模型服务商不在本分区
+    expect(view.queryByText("模型服务商")).toBeNull();
+
+    fireEvent.change(view.getByLabelText("Web Search"), { target: { value: "Jina" } });
+    await waitFor(() => expect(select).toHaveBeenCalledWith("search", "Jina"));
   });
 });
