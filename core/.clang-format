@@ -1,0 +1,18 @@
+# openwebcode core C 代码格式化基线。
+# 从 fs.c / rpc.c / json.c 反推现有风格：4 空格缩进、附着大括号（K&R）、
+# 指针星号靠左贴变量名（char *key）。
+# ColumnLimit 0：存量代码有大量刻意的长行（sha256 常量表、单行小函数、
+# 压缩的条件链），强制断行会制造全库噪音，故不限列宽。
+# 本配置只约束新写/新改的代码，不做全库重排。
+BasedOnStyle: LLVM
+Language: Cpp
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+BreakBeforeBraces: Attach
+PointerAlignment: Left
+ColumnLimit: 0
+AllowShortFunctionsOnASingleLine: All
+AllowShortIfStatementsOnASingleLine: true
+AllowShortBlocksOnASingleLine: Always
+SpaceAfterCStyleCast: true

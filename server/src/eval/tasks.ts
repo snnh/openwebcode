@@ -1,4 +1,3 @@
-import type { ProviderEvent } from "../providers/provider.js";
 import type { EvalTask } from "./types.js";
 import { usage } from "./mock-provider.js";
 

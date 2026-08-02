@@ -45,3 +45,28 @@ jobs:
         run: cmake --build build --config Debug --parallel
       - name: Test
         run: ctest --test-dir build -C Debug --output-on-failure
+
+  clang-tidy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang-tidy
+        run: sudo apt-get update && sudo apt-get install -y clang-tidy
+      - name: Configure (compile_commands)
+        run: cmake -S core -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+      # 仅报告：不加 --warnings-as-errors，存量告警逐步收敛
+      - name: Run clang-tidy (report only)
+        run: clang-tidy -p build core/src/*.c
+
+  asan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure (ASan)
+        env:
+          CC: gcc
+        run: cmake -S core -B build-asan -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS="-fsanitize=address -fno-omit-frame-pointer" -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address"
+      - name: Build
+        run: cmake --build build-asan --parallel
+      - name: Test (ASan)
+        run: ctest --test-dir build-asan --output-on-failure

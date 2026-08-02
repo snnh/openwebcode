@@ -1,7 +1,7 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
-import { RepoMapGenerator, DEFAULT_REPO_MAP_BUDGET } from "../src/context/repo-map.js";
+import { RepoMapGenerator } from "../src/context/repo-map.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";

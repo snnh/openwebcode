@@ -1,5 +1,5 @@
 import { BUILTIN_PERSONAS } from "./builtin-personas.js";
-import { loadUserPresets, personasDir, type PresetWarn } from "./preset-store.js";
+import { loadUserPresets, type PresetWarn } from "./preset-store.js";
 import type { PersonaDetail, PersonaPreset, PersonaSummary } from "./types.js";
 
 export { BUILTIN_PERSONAS } from "./builtin-personas.js";

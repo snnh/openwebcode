@@ -49,7 +49,12 @@ node_modules/
 /web/dist/
 docs/
 tmp/
+.tmp/
+.npm-cache/
+.dev-null-backdoor
 _CPack_Packages/
+.devnull-*
+
 # Locally generated release artifacts; CI uploads these directly to Releases.
 /openwebcode-*-windows-x64.msi
 /openwebcode-*-linux-x64.tar.gz
@@ -70,3 +75,5 @@ core/tests/__pycache__/
 !.env.*.sample
 !.env.*.template
 
+/server/coverage/
+/web/coverage/

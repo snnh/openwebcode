@@ -1,4 +1,3 @@
-import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { ContextManager, selectCacheBreakpoints } from "../src/context/context-manager.js";
 import type { ChatMessage } from "../src/sessions/types.js";

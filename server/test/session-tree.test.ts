@@ -171,7 +171,7 @@ describe("POST /api/sessions/:id/fork", () => {
 });
 
 describe("POST /api/sessions/:id/messages/:messageId/retry", () => {
-  async function runTwoTurns(rig: Rig, captured: ChatMessage[][]): Promise<{ sessionId: string; secondUser: ChatMessage; secondAssistant: ChatMessage }> {
+  async function runTwoTurns(rig: Rig, _captured: ChatMessage[][]): Promise<{ sessionId: string; secondUser: ChatMessage; secondAssistant: ChatMessage }> {
     const session = await rig.sessions.create({ cwd: rig.root, provider: "test-stub", model: "deterministic-tool-loop", title: "Retry" });
     for (const content of ["first question", "second question"]) {
       const res = await rig.app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content } });
