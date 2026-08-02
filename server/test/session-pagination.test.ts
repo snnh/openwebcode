@@ -52,7 +52,7 @@ describe("session pagination (0.5.0 Phase 2)", () => {
   it("getTail returns all messages when fewer than limit", async () => {
     const store = await storeAt(await tempRoot("owc-page-"));
     const session = await store.create({ cwd: os.tmpdir(), provider: "p", model: "m" });
-    const all = await seedMessages(store, session.id, 30);
+    await seedMessages(store, session.id, 30);
 
     const tail = await store.getTail(session.id, 100);
     expect(tail!.messages).toHaveLength(30);

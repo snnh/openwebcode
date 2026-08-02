@@ -186,6 +186,7 @@ async function renderPagePng(page: PDFPageProxy, scale: number, maxDimension: nu
   } finally {
     const renderCleanupError = cleanupRenderTask(renderTask, renderFinished);
     releaseCanvas(canvas);
+    // eslint-disable-next-line no-unsafe-finally -- 仅当主流程无错时才抛清理错误，不掩盖原错误（renderError 守卫）
     if (renderError === undefined && renderCleanupError !== undefined) throw renderCleanupError;
   }
 }
@@ -254,6 +255,7 @@ export async function renderPdfToImages(
         const pageCleanupError = cleanupPage(page);
         // A rendering failure is the actionable error. Avoid hiding it behind
         // cleanup failures, while still surfacing cleanup failures on success.
+        // eslint-disable-next-line no-unsafe-finally -- pageError 守卫保证不掩盖渲染错误
         if (pageError === undefined && pageCleanupError !== undefined) throw pageCleanupError;
       }
     }
@@ -265,6 +267,7 @@ export async function renderPdfToImages(
   } finally {
     const cleanupError = await cleanupDocument(document, loadingTask);
     // Preserve the original parsing/rendering error if there was one.
+    // eslint-disable-next-line no-unsafe-finally -- operationError 守卫保证不掩盖解析/渲染错误
     if (operationError === undefined && cleanupError !== undefined) throw cleanupError;
   }
 }

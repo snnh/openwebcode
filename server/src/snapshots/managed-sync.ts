@@ -215,6 +215,7 @@ export async function applyManagedWorkspaceSync(input: ManagedWorkspaceSyncRoots
 }
 
 function normalizedRoots(input: ManagedWorkspaceSyncRoots): ManagedWorkspaceSyncRoots {
+  // eslint-disable-next-line no-control-regex -- 会话 ID 校验需显式排除 NUL
   if (!input.sessionId || /[\\/\u0000]/.test(input.sessionId)) throw new ManagedWorkspaceSyncError("unsafe_path", "Invalid managed workspace session id");
   const roots = {
     sessionId: input.sessionId,
@@ -742,7 +743,7 @@ async function assertDirectory(directory: string, allowReparse: boolean, label: 
   let info;
   try {
     info = await lstat(directory);
-  } catch (error) {
+  } catch {
     throw new ManagedWorkspaceSyncError("unsafe_path", `Missing ${label}`);
   }
   if (!info.isDirectory() || (!allowReparse && info.isSymbolicLink())) throw new ManagedWorkspaceSyncError("unsafe_path", `Unsafe ${label}`);
@@ -825,6 +826,7 @@ async function writeBaseline(workspaceRoot: string, manifest: ManagedWorkspaceSy
 function validateManifest(value: unknown): ManagedWorkspaceSyncManifest {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid manifest");
   const candidate = value as { version?: unknown; sessionId?: unknown; origin?: unknown; createdAt?: unknown; entries?: unknown };
+  // eslint-disable-next-line no-control-regex -- manifest 校验需显式排除 NUL
   if (candidate.version !== MANIFEST_VERSION || typeof candidate.sessionId !== "string" || !candidate.sessionId || /[\\/\u0000]/.test(candidate.sessionId) || typeof candidate.createdAt !== "string" || !candidate.createdAt || !candidate.entries || typeof candidate.entries !== "object" || Array.isArray(candidate.entries)) throw new Error("invalid manifest");
   if (!candidate.origin || typeof candidate.origin !== "object" || Array.isArray(candidate.origin)) throw new Error("invalid origin identity");
   const origin = candidate.origin as { path?: unknown; dev?: unknown; ino?: unknown };

@@ -18,10 +18,6 @@ import type {
   FsPathRequest,
   JobStatus,
   JobOutputResult,
-  JobStartRequest,
-  IndexScanStartRequest,
-  GrepJobStartRequest,
-  GlobJobStartRequest,
 } from "../core-client.js";
 import type { SandboxPolicy } from "../sessions/types.js";
 

@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type { CoreClientLike, ExecResult } from "../core-client.js";
 import type { ShellBackend } from "../sessions/types.js";
 import { decodeProcessOutputChunks, type EncodedProcessOutput } from "./output-decoder.js";
@@ -174,7 +173,7 @@ export class BackgroundTaskRegistry {
 
   async shutdown(): Promise<void> {
     const promises: Promise<void>[] = [];
-    for (const [taskId, entry] of this.tasks) {
+    for (const [, entry] of this.tasks) {
       if (!entry.settled) {
         entry.settled = true;
         promises.push(

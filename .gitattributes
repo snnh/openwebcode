@@ -1,0 +1,10 @@
+# Default: LF in repo, auto-detect text vs binary.
+* text=auto eol=lf
+
+# Windows launcher/batch scripts must keep CRLF (cmd.exe parsing).
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# PowerShell assets must keep CRLF; UTF-8 BOM requirement for
+# server/assets/*.ps1 is enforced by a CI check (see server.yml).
+*.ps1 text eol=crlf

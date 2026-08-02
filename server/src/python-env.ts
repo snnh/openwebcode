@@ -42,7 +42,7 @@ export function wrapCommandWithVenv(cmd: string, venvDir: string, flavor: ShellF
  * 剥离 shell 元字符（$ ` & | ; < > " ' % 换行等），防注入与语法破坏。
  */
 function sanitizeNote(note: string): string {
-  const cleaned = note.replace(/[^A-Za-z0-9 _.,:/\\()[\]+\-]/g, " ").replace(/\s+/g, " ").trim();
+  const cleaned = note.replace(/[^A-Za-z0-9 _.,:/\\()[\]+-]/g, " ").replace(/\s+/g, " ").trim();
   return cleaned || "uv environment unavailable, using the host python environment";
 }
 
