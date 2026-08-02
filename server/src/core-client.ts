@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -40,8 +41,8 @@ export interface CoreInfo {
   protocolVersion?: string;
   platform: "windows" | "linux";
   sandboxCapability: string;
-  features?: { fsStat: boolean; fsStatMany: boolean; fsWriteBase64: boolean; jobControl: boolean; fsHash: boolean; fsScanPagination: boolean; fsWatch: boolean; indexScan?: boolean; indexExtract?: boolean; grepJob?: boolean; globJob?: boolean; pathNormalize?: boolean; shellBash?: boolean; pty?: boolean; bindLink?: boolean };
-  limits?: { maxFrameBytes: number; maxWriteBase64Bytes: number; maxHashBytes: number; maxStatManyPaths: number; maxStatManyPathBytes: number; maxScanEntries?: number; maxScanDepth?: number; maxScanNodes?: number; maxWatches?: number; maxWatchEvents?: number; maxConcurrentJobs?: number; maxJobOutputBytes?: number; maxIndexScanNodes?: number; maxIndexScanDepth?: number; maxIndexScanBytes?: number; maxIndexScanMs?: number; maxSearchNodes?: number; maxSearchDepth?: number; maxSearchMs?: number; maxIndexExtractFiles?: number; maxIndexExtractBytes?: number; maxIndexExtractMs?: number; indexExtractDefaultSymbolsPerFile?: number; maxIndexExtractSymbolsPerFile?: number; maxConcurrentPtys?: number; maxPtyOutputChunkBytes?: number; maxPtyInputBytes?: number };
+  features?: { fsStat: boolean; fsStatMany: boolean; fsWriteBase64: boolean; jobControl: boolean; fsHash: boolean; fsScanPagination: boolean; fsWatch: boolean; indexScan?: boolean; indexExtract?: boolean; grepJob?: boolean; globJob?: boolean; pathNormalize?: boolean; shellBash?: boolean; pty?: boolean; bindLink?: boolean; fsReadBase64?: boolean };
+  limits?: { maxFrameBytes: number; maxWriteBase64Bytes: number; maxHashBytes: number; maxStatManyPaths: number; maxStatManyPathBytes: number; maxScanEntries?: number; maxScanDepth?: number; maxScanNodes?: number; maxWatches?: number; maxWatchEvents?: number; maxConcurrentJobs?: number; maxJobOutputBytes?: number; maxIndexScanNodes?: number; maxIndexScanDepth?: number; maxIndexScanBytes?: number; maxIndexScanMs?: number; maxSearchNodes?: number; maxSearchDepth?: number; maxSearchMs?: number; maxIndexExtractFiles?: number; maxIndexExtractBytes?: number; maxIndexExtractMs?: number; indexExtractDefaultSymbolsPerFile?: number; maxIndexExtractSymbolsPerFile?: number; maxConcurrentPtys?: number; maxPtyOutputChunkBytes?: number; maxPtyInputBytes?: number; maxReadBase64Bytes?: number };
 }
 
 export interface ExecRequest {
@@ -77,6 +78,8 @@ export interface FsEditRequest extends FsPathRequest { oldText: string; newText:
 export interface FsSearchRequest extends FsPathRequest { pattern: string }
 export interface FsStatResult { type: "file" | "directory" | "other"; size: number; modifiedMs: number }
 export interface FsHashResult { sha256: string; size: number }
+/** fs.readBase64：size 为本次返回（base64 编码前）的字节数；文件超过 core 上限时只含前缀且 truncated 为 true。 */
+export interface FsReadBase64Result { base64: string; size: number; truncated: boolean }
 export interface FsStatManyRequest { sessionId: string; paths: string[] }
 export interface FsStatManyResult { entries: Array<FsStatResult & { path: string }> }
 /** Bounded recursive scan. Paths in the result are relative to request.path. */
@@ -156,6 +159,14 @@ export interface GlobJobStartRequest {
   maxMs?: number;
 }
 /**
+ * searchJob：agent glob/grep 工具的搜索请求。core 上报 features.grepJob/globJob 时
+ * 实现方走 kind "grep"/"glob" 并行 job（不阻塞 core 主循环的单线程 RPC），否则回退
+ * 同步 fs.glob/fs.grep；两种路径的返回形状完全一致（FsGlobResult/FsGrepResult）。
+ * cwd 为会话根（job.start 要求与 session.configure 的 cwd 一致）；signal 中止时
+ * 尽力 job.cancel 后以错误结束。
+ */
+export interface SearchJobRequest { sessionId: string; cwd: string; path: string; pattern: string; signal?: AbortSignal }
+/**
  * index.extract job：对 Node 侧 manifest diff 算出的变化文件集做符号提取。
  * 提取规则是原 server 侧 symbols.ts（已删除）的 C 移植（core/src/symbol_extract.c），
  * 输出是 job.output 上的 JSONL 流（stdout 流）：
@@ -227,6 +238,8 @@ export interface CoreClientLike {
   readFile(request: FsReadRequest): Promise<FsReadResult>;
   writeFile(request: FsWriteRequest): Promise<{ ok: true }>;
   writeFileBase64?(request: FsWriteBase64Request): Promise<{ ok: true }>;
+  /** fs.readBase64（可选）：旧 core 二进制无 features.fsReadBase64 时缺省，图片预览等调用方应报不可用。 */
+  readFileBase64?(request: FsPathRequest): Promise<FsReadBase64Result>;
   editFile(request: FsEditRequest): Promise<{ matches: number }>;
   statFile(request: FsPathRequest): Promise<FsStatResult>;
   statFiles(request: FsStatManyRequest): Promise<FsStatManyResult>;
@@ -246,6 +259,9 @@ export interface CoreClientLike {
   listFiles(request: FsPathRequest): Promise<FsListResult>;
   globFiles(request: FsSearchRequest): Promise<FsGlobResult>;
   grepFiles(request: FsSearchRequest): Promise<FsGrepResult>;
+  /** searchJob（可选实现）：并行 grep/glob job + features 缺失时的同步回退，返回形状同 globFiles/grepFiles。 */
+  searchJob?(request: SearchJobRequest & { kind: "glob" }): Promise<FsGlobResult>;
+  searchJob?(request: SearchJobRequest & { kind: "grep" }): Promise<FsGrepResult>;
   /** path.normalize（可选）：旧 core 二进制无此能力时缺省，调用方回退原始路径。 */
   normalizePath?(request: PathNormalizeRequest): Promise<PathNormalizeResult>;
   /** pty.*（可选）：旧 core 二进制无 features.pty 时缺省，终端通道应报不可用。 */
@@ -257,6 +273,7 @@ export interface CoreClientLike {
   ptyEvents?(ptyId: number): EventEmitter;
   removePtyEvents?(ptyId: number): void;
   setRequestTimeoutMs(timeoutMs: number): void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 对齐 Node EventEmitter 的 on() 签名，any[] 才能让具体事件类型的 listener 可赋值
   on(eventName: string, listener: (...args: any[]) => void): unknown;
   release?(sessionId: string): Promise<void>;
 }
@@ -288,6 +305,8 @@ export class CoreClient extends EventEmitter {
   private startPromise: Promise<CoreInfo> | undefined;
   private generation = 0;
   private failedGeneration = 0;
+  /** 最近一次握手/ping 的能力记录（features 判定，如 grepJob/globJob 回退）；断连即失效。 */
+  private info: CoreInfo | undefined;
 
   constructor(
     private readonly corePath: string,
@@ -335,8 +354,10 @@ export class CoreClient extends EventEmitter {
     this.startPromise = undefined;
   }
 
-  ping(): Promise<CoreInfo> {
-    return this.call<CoreInfo>("core.ping", {});
+  async ping(): Promise<CoreInfo> {
+    const info = await this.call<CoreInfo>("core.ping", {});
+    this.info = info;
+    return info;
   }
 
   run(request: ExecRequest): Promise<ExecResult> {
@@ -348,6 +369,7 @@ export class CoreClient extends EventEmitter {
   readFile(request: FsReadRequest): Promise<FsReadResult> { return this.call("fs.read", request); }
   writeFile(request: FsWriteRequest): Promise<{ ok: true }> { return this.call("fs.write", request); }
   writeFileBase64(request: FsWriteBase64Request): Promise<{ ok: true }> { return this.call("fs.writeBase64", request); }
+  readFileBase64(request: FsPathRequest): Promise<FsReadBase64Result> { return this.call("fs.readBase64", request); }
   editFile(request: FsEditRequest): Promise<{ matches: number }> { return this.call("fs.edit", request); }
   statFile(request: FsPathRequest): Promise<FsStatResult> { return this.call("fs.stat", request); }
   statFiles(request: FsStatManyRequest): Promise<FsStatManyResult> { return this.call("fs.statMany", request); }
@@ -367,6 +389,71 @@ export class CoreClient extends EventEmitter {
   listFiles(request: FsPathRequest): Promise<FsListResult> { return this.call("fs.list", request); }
   globFiles(request: FsSearchRequest): Promise<FsGlobResult> { return this.call("fs.glob", request); }
   grepFiles(request: FsSearchRequest): Promise<FsGrepResult> { return this.call("fs.grep", request); }
+
+  searchJob(request: SearchJobRequest & { kind: "glob" }): Promise<FsGlobResult>;
+  searchJob(request: SearchJobRequest & { kind: "grep" }): Promise<FsGrepResult>;
+  async searchJob(request: SearchJobRequest & { kind: "grep" | "glob" }): Promise<FsGlobResult | FsGrepResult> {
+    const { sessionId, path, pattern, kind } = request;
+    // 能力回退：老 core（或尚未握手）无 grepJob/globJob 时走同步 fs.glob/fs.grep
+    const supported = kind === "grep" ? this.info?.features?.grepJob === true : this.info?.features?.globJob === true;
+    if (!supported) {
+      return kind === "glob" ? this.globFiles({ sessionId, path, pattern }) : this.grepFiles({ sessionId, path, pattern });
+    }
+    const jobId = `search-${randomUUID()}`;
+    if (kind === "grep") await this.startGrepJob({ sessionId, jobId, kind, cwd: request.cwd, path, pattern });
+    else await this.startGlobJob({ sessionId, jobId, kind, cwd: request.cwd, path, pattern });
+    const text = await this.collectSearchJobText(sessionId, jobId, kind, request.signal);
+    let truncated = false;
+    if (kind === "glob") {
+      const paths: string[] = [];
+      for (const record of parseSearchJobLines(text)) {
+        if (record.summary) truncated = (record.summary as { truncated?: unknown }).truncated === true;
+        else if (typeof record.path === "string") paths.push(record.path);
+      }
+      return { paths, truncated };
+    }
+    const matches: FsGrepResult["matches"] = [];
+    for (const record of parseSearchJobLines(text)) {
+      if (record.summary) truncated = (record.summary as { truncated?: unknown }).truncated === true;
+      else if (typeof record.path === "string" && typeof record.line === "number") {
+        matches.push({ path: record.path, line: record.line, text: typeof record.text === "string" ? record.text : "" });
+      }
+    }
+    return { matches, truncated };
+  }
+
+  /**
+   * 轮询 job 输出直到终态，返回 stdout 全量文本（JSONL）。分页 drain 对齐 index-manager
+   * 的 collectJobJsonLines：每轮（含终态）循环读到 nextSeq 不再前进；ring 溢出
+   * （truncated）与非 completed 终态显式抛错，不静默返回残缺结果。signal 中止时
+   * 尽力 job.cancel 后抛错。
+   */
+  private async collectSearchJobText(sessionId: string, jobId: string, kind: string, signal?: AbortSignal): Promise<string> {
+    let seq = 0;
+    const stdout: Buffer[] = [];
+    for (;;) {
+      if (signal?.aborted) {
+        await this.cancelJob({ sessionId, jobId }).catch(() => undefined);
+        throw new Error(`${kind} job cancelled`);
+      }
+      const status = await this.jobStatus({ sessionId, jobId });
+      let output = await this.jobOutput({ sessionId, jobId, afterSeq: seq, limit: 128 });
+      for (;;) {
+        if (output.truncated) throw new Error(`${kind} job output truncated by core ring buffer`);
+        for (const chunk of output.chunks) {
+          if (chunk.stream === "stdout") stdout.push(Buffer.from(chunk.data, "base64"));
+        }
+        if (output.nextSeq === seq || output.chunks.length === 0) break;
+        seq = output.nextSeq;
+        output = await this.jobOutput({ sessionId, jobId, afterSeq: seq, limit: 128 });
+      }
+      if (status.state !== "running") {
+        if (status.state === "completed") return Buffer.concat(stdout).toString("utf8");
+        throw new Error(`${kind} job ${status.state}${status.error ? `: ${status.error}` : ""}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, SEARCH_JOB_POLL_MS));
+    }
+  }
   normalizePath(request: PathNormalizeRequest): Promise<PathNormalizeResult> { return this.call("path.normalize", request); }
   openPty(request: PtyOpenRequest): Promise<PtyOpenResult> { return this.call("pty.open", request); }
   inputPty(request: PtyInputRequest): Promise<{ ok: true }> { return this.call("pty.input", request); }
@@ -501,6 +588,7 @@ export class CoreClient extends EventEmitter {
     this.transport = undefined;
     this.child = undefined;
     this.startPromise = undefined;
+    this.info = undefined;
     for (const [id, pending] of this.pending) {
       if (pending.generation !== generation) continue;
       clearTimeout(pending.timer);
@@ -545,6 +633,19 @@ export class CoreClient extends EventEmitter {
     const event: CoreEvent = { source: "core", type, payload };
     this.emit("event", event);
   }
+}
+
+/** searchJob 的 job.status 轮询间隔（对齐 index-manager 默认 pollMs）。 */
+const SEARCH_JOB_POLL_MS = 100;
+
+/** 解析 search job 的 stdout JSONL（去空白行）；末行 summary 也作为记录返回，由调用方分拣。 */
+function parseSearchJobLines(text: string): Array<Record<string, unknown>> {
+  const records: Array<Record<string, unknown>> = [];
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed) records.push(JSON.parse(trimmed) as Record<string, unknown>);
+  }
+  return records;
 }
 
 function isRpcError(value: unknown): value is RpcErrorBody {

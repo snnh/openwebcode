@@ -336,36 +336,34 @@ export class IndexManager {
     jobKind: string,
   ): Promise<{ lines: string[]; summary: Record<string, unknown> | undefined }> {
     let seq = 0;
-    let buffer = "";
-    const lines: string[] = [];
-    const drain = (flush: boolean): void => {
-      const part = flush ? buffer : buffer.slice(0, buffer.lastIndexOf("\n") + 1);
-      buffer = flush ? "" : buffer.slice(buffer.lastIndexOf("\n") + 1);
-      for (const line of part.split("\n")) {
-        const trimmed = line.trim();
-        if (trimmed) lines.push(trimmed);
-      }
-    };
+    // job.output 的 chunk.data 是 base64（docs/protocol.md §job.output）：按块解码后按字节
+    // 拼接，终态一次性 UTF-8 解码，避免多字节字符跨 4 KiB 块被截成 U+FFFD。
+    const stdout: Buffer[] = [];
     for (;;) {
       if (signal.aborted) throw new Error("cancelled");
       const status = await this.core.jobStatus({ sessionId, jobId });
-      // 每轮（含终态）循环 drain 直到 nextSeq 不再前进：单次 limit:512 可能读不完残留输出
-      let output = await this.core.jobOutput({ sessionId, jobId, afterSeq: seq, limit: 512 });
+      // 每轮（含终态）循环读取直到 nextSeq 不再前进：单次 limit:128（core 上限）可能读不完残留输出
+      let output = await this.core.jobOutput({ sessionId, jobId, afterSeq: seq, limit: 128 });
       for (;;) {
         // core 输出 ring 溢出意味着中间有行丢失：静默损坏不如显式失败（runScan 走 error/stale，可整体重建）
         if (output.truncated) throw new Error(`${jobKind} job output truncated by core ring buffer`);
         for (const chunk of output.chunks) {
-          if (chunk.stream === "stdout") buffer += chunk.data;
+          if (chunk.stream === "stdout") stdout.push(Buffer.from(chunk.data, "base64"));
         }
         if (output.nextSeq === seq || output.chunks.length === 0) break;
         seq = output.nextSeq;
-        drain(false);
-        output = await this.core.jobOutput({ sessionId, jobId, afterSeq: seq, limit: 512 });
+        output = await this.core.jobOutput({ sessionId, jobId, afterSeq: seq, limit: 128 });
       }
-      drain(status.state !== "running");
       if (status.state !== "running") {
-        if (status.state === "completed") return { lines, summary: trailingJobSummary(lines) };
-        throw new Error(`${jobKind} job ${status.state}${status.error ? `: ${status.error}` : ""}`);
+        if (status.state !== "completed") {
+          throw new Error(`${jobKind} job ${status.state}${status.error ? `: ${status.error}` : ""}`);
+        }
+        const lines: string[] = [];
+        for (const line of Buffer.concat(stdout).toString("utf8").split("\n")) {
+          const trimmed = line.trim();
+          if (trimmed) lines.push(trimmed);
+        }
+        return { lines, summary: trailingJobSummary(lines) };
       }
       await new Promise((resolve) => setTimeout(resolve, this.pollMs));
     }

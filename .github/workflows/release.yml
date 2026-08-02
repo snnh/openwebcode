@@ -531,6 +531,7 @@ jobs:
           $TSX scripts/bench/bench-slow-client.mjs
           $TSX scripts/bench/bench-multi-tool.mjs
           $TSX scripts/bench/bench-context-build.mjs
+          $TSX scripts/bench/bench-index-100k.mjs
       - name: Install Playwright Chromium
         shell: bash
         run: server/node_modules/.bin/playwright install chromium --with-deps
@@ -545,7 +546,7 @@ jobs:
           set -euo pipefail
           TSX=server/node_modules/.bin/tsx
           BOOTSTRAP="${{ inputs.bootstrap_benchmark_baseline || 'false' }}"
-          EXPECTED=(long-history long-stream multi-tool slow-client context-build browser-render)
+          EXPECTED=(long-history long-stream multi-tool slow-client context-build index-100k browser-render)
           # 排除当前目标 tag 后选择最新 release；兼容 tag push 与 workflow_dispatch。
           CURRENT_TAG="${{ inputs.tag || github.ref_name }}"
           PREV_TAG=$(git tag --sort=-v:refname | grep '^v' | grep -Fvx "$CURRENT_TAG" | head -n 1 || true)

@@ -9,6 +9,7 @@ import type {
   FsGrepResult,
   FsListResult,
   FsPathRequest,
+  FsReadBase64Result,
   FsReadRequest,
   FsReadResult,
   FsSearchRequest,
@@ -25,6 +26,7 @@ import type {
   GrepJobStartRequest,
   GlobJobStartRequest,
   IndexExtractStartRequest,
+  SearchJobRequest,
   FsHashResult,
   FsStatResult,
   FsStatManyRequest,
@@ -317,6 +319,12 @@ export class CoreRouter extends EventEmitter {
     return client.writeFileBase64(await this.translatePath(request, meta));
   }
 
+  async readFileBase64(request: FsPathRequest): Promise<FsReadBase64Result> {
+    const { client, meta } = await this.ensureConfigured(request.sessionId);
+    if (!client.readFileBase64) throw new Error("Core binary read support is unavailable");
+    return client.readFileBase64(await this.translatePath(request, meta));
+  }
+
   async editFile(request: FsEditRequest): Promise<{ matches: number }> {
     const { client, meta } = await this.ensureConfigured(request.sessionId);
     return client.editFile(await this.translatePath(request, meta));
@@ -416,6 +424,22 @@ export class CoreRouter extends EventEmitter {
   async grepFiles(request: FsSearchRequest): Promise<FsGrepResult> {
     const { client, meta } = await this.ensureConfigured(request.sessionId);
     return client.grepFiles(await this.translatePath(request, meta));
+  }
+
+  searchJob(request: SearchJobRequest & { kind: "glob" }): Promise<FsGlobResult>;
+  searchJob(request: SearchJobRequest & { kind: "grep" }): Promise<FsGrepResult>;
+  async searchJob(request: SearchJobRequest & { kind: "grep" | "glob" }): Promise<FsGlobResult | FsGrepResult> {
+    const { client, meta } = await this.ensureConfigured(request.sessionId);
+    const cwd = meta?.sandboxMode === "wsb" && meta.cwd ? toSandboxPath(request.cwd, meta.cwd) : request.cwd;
+    // 底层 client 无 searchJob 实现（fake/旧装配）时回退同步 fs.glob/fs.grep
+    if (request.kind === "glob") {
+      const translated = await this.translatePath({ ...request, cwd, kind: "glob" as const }, meta);
+      if (client.searchJob) return client.searchJob(translated);
+      return client.globFiles({ sessionId: translated.sessionId, path: translated.path, pattern: translated.pattern });
+    }
+    const translated = await this.translatePath({ ...request, cwd, kind: "grep" as const }, meta);
+    if (client.searchJob) return client.searchJob(translated);
+    return client.grepFiles({ sessionId: translated.sessionId, path: translated.path, pattern: translated.pattern });
   }
 
   /**

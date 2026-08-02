@@ -8,6 +8,7 @@ import type { EventBus } from "../events/event-bus.js";
 import type { SessionStore } from "../sessions/session-store.js";
 import type { ShellBackend } from "../sessions/types.js";
 import { coreExecShell } from "../agent/shell-detect.js";
+import { decodeProcessOutputChunks } from "../agent/output-decoder.js";
 import { detectTestCommand } from "./detect.js";
 import { FALLBACK_TAIL_CHARS, fallbackDiagnosticSet, parseTestOutput } from "./parsers.js";
 import type { DiagnosticRun, DiagnosticSet } from "./types.js";
@@ -132,7 +133,8 @@ export class DiagnosticsService {
     } finally {
       options.signal?.removeEventListener("abort", cancel);
     }
-    const text = output.sort((a, b) => a.seq - b.seq).map((chunk) => chunk.data).join("");
+    // job.output 的 chunk.data 是 base64：decodeProcessOutputChunks 按 seq 排序、合并同流相邻块后解码
+    const text = decodeProcessOutputChunks(output).map((chunk) => chunk.data).join("");
     let diagnostics = parseTestOutput(detected.command, text);
     let parseFallback = false;
     let outputTail: string | undefined;

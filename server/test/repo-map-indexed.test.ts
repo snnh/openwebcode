@@ -74,7 +74,9 @@ describe("repo_map 索引形态（Phase 2 §4.1）", () => {
           return { chunks: [], nextSeq: request.afterSeq, truncated: false };
         }
         servedJobs.add(request.jobId);
-        return { chunks: [{ seq: 1, stream: "stdout" as const, data: request.jobId.endsWith("-x") ? extractJsonl : jsonl }], nextSeq: 2, truncated: false };
+        // job.output 的 chunk.data 按真实 core 协议 base64 编码
+        const jsonlText = request.jobId.endsWith("-x") ? extractJsonl : jsonl;
+        return { chunks: [{ seq: 1, stream: "stdout" as const, data: Buffer.from(jsonlText, "utf8").toString("base64") }], nextSeq: 2, truncated: false };
       },
       async watchFiles() { throw new Error("fs.watch unavailable"); },
     } as unknown as CoreClientLike;

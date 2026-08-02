@@ -98,10 +98,11 @@ function createFakeScanCore(options: FakeScanCoreOptions) {
         return { chunks: [], nextSeq: request.afterSeq, truncated: false };
       }
       state.servedJobs.add(request.jobId);
+      // job.output 的 chunk.data 按真实 core 协议 base64 编码
       const data = request.jobId.endsWith("-x")
         ? extractJsonl((state.extractFilesByJob.get(request.jobId) ?? []).filter((file) => !state.skipExtractFiles.includes(file)), options.symbols, state.extractSummary)
         : manifestJsonl(options.manifest);
-      return { chunks: [{ seq: 1, stream: "stdout" as const, data }], nextSeq: 2, truncated: false };
+      return { chunks: [{ seq: 1, stream: "stdout" as const, data: Buffer.from(data, "utf8").toString("base64") }], nextSeq: 2, truncated: false };
     },
     async cancelJob(request: { jobId: string }) {
       state.cancelCalls.push(request.jobId);

@@ -35,7 +35,10 @@ $TSX scripts/bench/bench-multi-tool.mjs
 # 5. 上下文构建稳态（全量 vs 增量 buildView，验收 speedup >= 2x）
 $TSX scripts/bench/bench-context-build.mjs
 
-# 6. 浏览器渲染（Playwright，需先 npm run build --prefix web && npx playwright install chromium）
+# 6. 大仓库索引（10 万文件冷加载 + searchSymbols/searchFiles 温查询，无需预生成数据集）
+$TSX scripts/bench/bench-index-100k.mjs
+
+# 7. 浏览器渲染（Playwright，需先 npm run build --prefix web && npx playwright install chromium）
 $TSX scripts/bench/browser/bench-browser-render.mjs
 
 # 对比两份结果（回归 > 15% 标红、退出码 1）
@@ -83,11 +86,17 @@ $TSX scripts/bench/compare.mjs results/baseline.json results/long-history.json
 | 慢 WS 客户端 | `bench-slow-client.mjs` | 真实 server，慢客户端（socket pause）+ 正常客户端并发 | 慢客户端断连耗时/关闭码、正常客户端交付数/吞吐 |
 | 多工具回合 | `bench-multi-tool.mjs` | 真实 server + WS，50 tool_call + 50 tool_result 事件流 | 端到端延迟 p50/p95、事件吞吐 events/s、内存增量 |
 | 上下文构建稳态 | `bench-context-build.mjs` | ContextManager 全量 vs 增量 buildView（5000 消息数据集） | 全量/增量 p50/p95、加速比、命中率 |
+| 大仓库索引（10 万文件） | `bench-index-100k.mjs` | 临时目录构造压实形态索引快照（10 万文件 / ~21 万符号），`IndexStore.load()` replay + `IndexManager.searchSymbols/searchFiles` fuzzyScore 全扫 | 冷加载 replay、ensureLoaded 首次查询、各 query p50/p95、堆增量 |
 | 浏览器渲染 | `browser/bench-browser-render.mjs` | Playwright + 真实 server，5000 消息会话 | 滚动 fps、输入回显延迟、内存增长 |
 | agent loop 热路径（本地专用，不进 CI） | `bench-agent-loop.mjs` | 复现 agent-runner 每轮 `SessionStore.get` + `buildView` 调用序列（long-history 数据集副本） | 每轮读取/构建耗时 p50/p95、内存增量 |
 
-`bench-agent-loop.mjs` 是本地专用场景：release.yml 的 benchmark job 运行的 6 个场景与
+`bench-agent-loop.mjs` 是本地专用场景：release.yml 的 benchmark job 运行的 7 个场景与
 基线对比均不含它，用于本地回归排查与优化验证。
+
+`bench-index-100k.mjs` 是诊断型场景：数据集不预生成（seed 化生成器在脚本内构造到临时目录，
+跑完清理），用于决策 code_search/Quick Open 是否需要索引结构优化。其内置绝对门禁为
+**占位性质**（按 2026-08 开发机实测 + 约 6 倍余量设定，只拦截量级级劣化），待首个
+release 基线建立后应收紧。
 
 设计约束：
 
@@ -112,7 +121,7 @@ $TSX scripts/bench/compare.mjs results/baseline.json results/long-history.json
 ## 后续场景 TODO（§5.4 全量清单）
 
 - [x] 多工具回合（50 工具/run）：`bench-multi-tool.mjs`，测事件路径端到端延迟与吞吐
-- [ ] 大仓库索引与补全（10 万文件）：需固定文件树生成器 + 索引/补全入口基准
+- [x] 大仓库索引与补全（10 万文件）：`bench-index-100k.mjs`，压实形态索引快照冷加载 replay + searchSymbols/searchFiles 温查询 p50/p95（门禁占位，待基线收紧）
 - [x] 上下文构建稳态耗时：`bench-context-build.mjs`，全量 vs 增量 buildView 对比，验收加速比 >= 2.0x
 - [x] 浏览器渲染基准：`browser/bench-browser-render.mjs`，Playwright 真实浏览器三项指标
 - [x] CI 接入：release 流程默认跑基准并归档结果；基线缺失跳过对比、回归 > 15% 降级为警告、基准运行不完整则阻断，手动触发可显式跳过

@@ -169,6 +169,7 @@ def main():
         assert response["result"]["sandboxReason"]
         assert response["result"]["protocolVersion"] == "1.0"
         assert response["result"]["features"]["fsWriteBase64"] is True
+        assert response["result"]["features"]["fsReadBase64"] is True
         assert response["result"]["features"]["fsStatMany"] is True
         assert response["result"]["features"]["fsHash"] is True
         assert response["result"]["features"]["fsScanPagination"] is True
@@ -179,7 +180,7 @@ def main():
         assert response["result"]["features"]["indexExtract"] is True
         assert response["result"]["features"]["jobControl"] is (os.name == "nt")
         assert response["result"]["features"]["shellBash"] is True
-        assert response["result"]["limits"] == {"maxFrameBytes": 32 * 1024 * 1024, "maxWriteBase64Bytes": 20 * 1024 * 1024, "maxHashBytes": 16 * 1024 * 1024, "maxStatManyPaths": 128, "maxStatManyPathBytes": 256 * 1024, "maxScanEntries": 256, "maxScanDepth": 16, "maxScanNodes": 2048, "maxWatches": 16, "maxWatchEvents": 128, "maxConcurrentJobs": 4, "maxJobOutputBytes": 512 * 1024, "maxIndexScanNodes": 1000000, "maxIndexScanDepth": 64, "maxIndexScanBytes": 16 * 1024 * 1024 * 1024, "maxIndexScanMs": 600000, "maxSearchNodes": 1000000, "maxSearchDepth": 64, "maxSearchMs": 300000, "maxIndexExtractFiles": 4096, "maxIndexExtractBytes": 1024 * 1024 * 1024, "maxIndexExtractMs": 300000, "indexExtractDefaultSymbolsPerFile": 200, "maxIndexExtractSymbolsPerFile": 10000, "maxConcurrentPtys": 16, "maxPtyOutputChunkBytes": 64 * 1024, "maxPtyInputBytes": 8 * 1024}
+        assert response["result"]["limits"] == {"maxFrameBytes": 32 * 1024 * 1024, "maxWriteBase64Bytes": 20 * 1024 * 1024, "maxReadBase64Bytes": 20 * 1024 * 1024, "maxHashBytes": 16 * 1024 * 1024, "maxStatManyPaths": 128, "maxStatManyPathBytes": 256 * 1024, "maxScanEntries": 256, "maxScanDepth": 16, "maxScanNodes": 2048, "maxWatches": 16, "maxWatchEvents": 128, "maxConcurrentJobs": 4, "maxJobOutputBytes": 512 * 1024, "maxIndexScanNodes": 1000000, "maxIndexScanDepth": 64, "maxIndexScanBytes": 16 * 1024 * 1024 * 1024, "maxIndexScanMs": 600000, "maxSearchNodes": 1000000, "maxSearchDepth": 64, "maxSearchMs": 300000, "maxIndexExtractFiles": 4096, "maxIndexExtractBytes": 1024 * 1024 * 1024, "maxIndexExtractMs": 300000, "indexExtractDefaultSymbolsPerFile": 200, "maxIndexExtractSymbolsPerFile": 10000, "maxConcurrentPtys": 16, "maxPtyOutputChunkBytes": 64 * 1024, "maxPtyInputBytes": 8 * 1024}
 
         request(proc, None, "core.ping")
         response, notes = collect_until_response(proc, None)

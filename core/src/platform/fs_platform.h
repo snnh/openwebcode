@@ -5,6 +5,10 @@
 
 typedef struct { unsigned char *data; size_t length; } owc_fs_bytes;
 owc_fs_error owc_fs_platform_read(const char *root, const char *path, owc_fs_bytes *bytes);
+/* Like owc_fs_platform_read but with a caller-supplied byte budget: reads up
+ * to limit bytes of a regular root-bound file and sets *truncated when the
+ * file is larger, so binary previews return a prefix instead of an error. */
+owc_fs_error owc_fs_platform_read_binary(const char *root, const char *path, size_t limit, owc_fs_bytes *bytes, int *truncated);
 owc_fs_error owc_fs_platform_write(const char *root, const char *path, const unsigned char *data, size_t length, int create_dirs);
 owc_fs_error owc_fs_platform_stat(const char *root, const char *path, owc_fs_stat_result *result);
 owc_fs_error owc_fs_platform_list(const char *root, const char *path, owc_fs_list_result *result);
