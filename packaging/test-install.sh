@@ -137,7 +137,7 @@ fi
 sed -n '/^default_prefix() {/,/^}/p' "$SCRIPT_DIR/install.sh" > "$WORK_DIR/defaults.sh"
 sed -n '/^default_data_dir() {/,/^}/p' "$SCRIPT_DIR/install.sh" >> "$WORK_DIR/defaults.sh"
 [ -s "$WORK_DIR/defaults.sh" ] || fail "could not extract default_prefix/default_data_dir"
-DEFAULTS=$(IS_ROOT=0 HOME=/home/u XDG_DATA_HOME= . "$WORK_DIR/defaults.sh" && default_prefix && default_data_dir && IS_ROOT=1 && default_prefix && default_data_dir)
+DEFAULTS=$(. "$WORK_DIR/defaults.sh" && IS_ROOT=0 HOME=/home/u XDG_DATA_HOME= && default_prefix && default_data_dir && IS_ROOT=1 && default_prefix && default_data_dir)
 [ "$DEFAULTS" = "/home/u/.local
 /home/u/.local/share/openwebcode
 /usr/local
@@ -221,5 +221,96 @@ OWC_INSTALL_IS_ROOT=1 OWC_SYSTEMD_UNIT_DIR="$UNINST_UNITS" \
 if HOME="$WORK_DIR/home" "$SYSTEM_PACKAGE/uninstall.sh" --yes --prefix "$WORK_DIR/no-such-install" > /dev/null 2>&1; then
     fail "uninstall accepted a prefix without an installation"
 fi
+
+# ---- 既有安装检测：无 unit → 全新安装，非 TTY 仅打印检测状态 ----
+grep -q '未检测到既有 systemd 服务' "$WORK_DIR/install.out" || \
+    fail "fresh install did not print the detection status"
+# 安装结尾应给出 PATH 指引（测试 prefix 不在 PATH 中）
+grep -q '不在 PATH' "$WORK_DIR/install.out" || \
+    fail "install did not print the PATH hint"
+
+# ---- 重跑同路径安装（无 unit）：启动器变量保留为默认值，命令行参数仍优先 ----
+HOME="$WORK_DIR/home" "$PACKAGE/install.sh" --prefix "$PREFIX" \
+    < /dev/null > "$WORK_DIR/rerun.out" 2>&1
+grep -F "OWC_DEFAULT_PORT='4312'" "$PREFIX/bin/owc" >/dev/null || \
+    fail "rerun did not preserve the launcher port"
+grep -F "OWC_DEFAULT_DATA_DIR='$DATA_DIR'" "$PREFIX/bin/owc" >/dev/null || \
+    fail "rerun did not preserve the launcher data dir"
+grep -F "OWC_DEFAULT_HOST='localhost'" "$PREFIX/bin/owc" >/dev/null || \
+    fail "rerun did not preserve the launcher host"
+TEST_OUT="$WORK_DIR/rerun.env" "$PREFIX/bin/owc" run ignored
+IFS= read -r ACTUAL < "$WORK_DIR/rerun.env"
+[ "$ACTUAL" = "4312|$DATA_DIR|localhost" ] || fail "rerun launcher defaults changed: $ACTUAL"
+
+# 含单引号路径的变量保留：shell_quote 转义必须可逆
+QUOTE_DATA="$WORK_DIR/data 'q' dir"
+HOME="$WORK_DIR/home" "$PACKAGE/install.sh" --prefix "$PREFIX" --port 4600 \
+    --data-dir "$QUOTE_DATA" --host localhost < /dev/null > /dev/null 2>&1
+HOME="$WORK_DIR/home" "$PACKAGE/install.sh" --prefix "$PREFIX" < /dev/null > /dev/null 2>&1
+TEST_OUT="$WORK_DIR/quote.env" "$PREFIX/bin/owc" run ignored
+IFS= read -r ACTUAL < "$WORK_DIR/quote.env"
+[ "$ACTUAL" = "4600|$QUOTE_DATA|localhost" ] || \
+    fail "single-quoted data dir was not preserved: $ACTUAL"
+
+# ---- 更新判定：同路径既有安装（预置 unit + 自定义变量启动器）----
+UPD_PREFIX="$WORK_DIR/upd-prefix"
+UPD_UNITS="$WORK_DIR/upd-units"
+UPD_DATA="$WORK_DIR/upd-data"
+# 首次安装：自定义端口/数据目录/监听地址 + pin 系统 node + 系统级 unit（root 测试钩子）
+PATH="$SYSTEM_BIN:$PATH" HOME="$WORK_DIR/home" \
+OWC_INSTALL_IS_ROOT=1 OWC_SYSTEMD_UNIT_DIR="$UPD_UNITS" "$SYSTEM_PACKAGE/install.sh" \
+    --yes --prefix "$UPD_PREFIX" --port 4321 --data-dir "$UPD_DATA" \
+    --host 192.168.1.10 --use-system-node --with-systemd > "$WORK_DIR/upd-first.out" 2>&1
+grep -F "ExecStart=$UPD_PREFIX/bin/owc" "$UPD_UNITS/openwebcode.service" >/dev/null || \
+    fail "first install did not write the system unit"
+grep -q '^NoNewPrivileges=true$' "$UPD_UNITS/openwebcode.service" || \
+    fail "unit is missing NoNewPrivileges hardening"
+grep -q '^ProtectSystem=full$' "$UPD_UNITS/openwebcode.service" || \
+    fail "system unit is missing ProtectSystem=full"
+grep -F "ReadWritePaths=$UPD_DATA" "$UPD_UNITS/openwebcode.service" >/dev/null || \
+    fail "system unit does not keep the data directory writable"
+# 重跑同路径（不带任何值参数）→ 判定更新：保留旧启动器变量，unit 重写但配置不变
+PATH="$SYSTEM_BIN:$PATH" HOME="$WORK_DIR/home" \
+OWC_INSTALL_IS_ROOT=1 OWC_SYSTEMD_UNIT_DIR="$UPD_UNITS" "$SYSTEM_PACKAGE/install.sh" \
+    --yes --prefix "$UPD_PREFIX" > "$WORK_DIR/upd-second.out" 2>&1
+grep -q '检测到同路径既有安装' "$WORK_DIR/upd-second.out" || \
+    fail "same-path rerun was not detected as an update"
+grep -F "OWC_DEFAULT_PORT='4321'" "$UPD_PREFIX/bin/owc" >/dev/null || \
+    fail "update did not preserve the launcher port"
+grep -F "OWC_DEFAULT_DATA_DIR='$UPD_DATA'" "$UPD_PREFIX/bin/owc" >/dev/null || \
+    fail "update did not preserve the launcher data dir"
+grep -F "OWC_DEFAULT_HOST='192.168.1.10'" "$UPD_PREFIX/bin/owc" >/dev/null || \
+    fail "update did not preserve the launcher host"
+grep -F "OWC_NODE='$SYSTEM_BIN/node'" "$UPD_PREFIX/bin/owc" >/dev/null || \
+    fail "update did not preserve the pinned system node"
+grep -F "ExecStart=$UPD_PREFIX/bin/owc" "$UPD_UNITS/openwebcode.service" >/dev/null || \
+    fail "update changed the unit ExecStart"
+grep -q '^NoNewPrivileges=true$' "$UPD_UNITS/openwebcode.service" || \
+    fail "rewritten unit lost NoNewPrivileges"
+sh -n "$UPD_PREFIX/bin/owc"
+# 无可用 systemctl（或本机服务未启用/未运行）时不得胡乱 enable/restart
+if grep -q '服务已启用并启动\|服务已重启' "$WORK_DIR/upd-second.out"; then
+    fail "update touched the service state unexpectedly"
+fi
+# 命令行显式参数仍优先于保留值
+PATH="$SYSTEM_BIN:$PATH" HOME="$WORK_DIR/home" \
+OWC_INSTALL_IS_ROOT=1 OWC_SYSTEMD_UNIT_DIR="$UPD_UNITS" "$SYSTEM_PACKAGE/install.sh" \
+    --yes --prefix "$UPD_PREFIX" --port 5555 > "$WORK_DIR/upd-third.out" 2>&1
+grep -F "OWC_DEFAULT_PORT='5555'" "$UPD_PREFIX/bin/owc" >/dev/null || \
+    fail "explicit --port did not win over the preserved value"
+grep -F "OWC_DEFAULT_HOST='192.168.1.10'" "$UPD_PREFIX/bin/owc" >/dev/null || \
+    fail "explicit-arg rerun lost the preserved host"
+
+# ---- 更新判定：不同路径既有安装 → 非 TTY 默认仅装文件，不改动既有服务 ----
+NEW_PREFIX="$WORK_DIR/new-prefix"
+PATH="$SYSTEM_BIN:$PATH" HOME="$WORK_DIR/home" \
+OWC_INSTALL_IS_ROOT=1 OWC_SYSTEMD_UNIT_DIR="$UPD_UNITS" "$SYSTEM_PACKAGE/install.sh" \
+    --yes --prefix "$NEW_PREFIX" --port 3007 --data-dir "$WORK_DIR/new-data" \
+    --host 127.0.0.1 --use-system-node > "$WORK_DIR/new-install.out" 2>&1
+grep -q '仅安装文件' "$WORK_DIR/new-install.out" || \
+    fail "different-path install did not warn about the files-only default"
+grep -F "ExecStart=$UPD_PREFIX/bin/owc" "$UPD_UNITS/openwebcode.service" >/dev/null || \
+    fail "different-path install rewrote the existing unit"
+[ -x "$NEW_PREFIX/bin/owc" ] || fail "different-path install did not install files"
 
 echo "install.sh smoke tests passed"

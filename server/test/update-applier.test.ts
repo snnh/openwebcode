@@ -193,9 +193,47 @@ describe("UpdateApplier", () => {
       expect(state.message).toContain("自动重启");
     });
     const restartCall = spawn.calls.find((call) => call.command === "sh");
-    expect(restartCall?.args.join(" ")).toContain("systemctl --user try-restart openwebcode.service");
+    expect(restartCall?.args.join(" ")).toContain("systemctl --user restart openwebcode.service");
+    expect(restartCall?.args.join(" ")).not.toContain("try-restart");
     expect(exitCalls).toBe(1);
     expect(existsSync(path.join(fixture.installRoot, "server", "dist", "index.js"))).toBe(true);
+  });
+
+  it("linux 系统级 unit（root 安装）时用 systemctl restart 自动重启", async () => {
+    const spawn = makeSpawn();
+    let exitCalls = 0;
+    const dataDir = await tempRoot("owc-update-apply-");
+    const installRoot = path.join(await tempRoot("owc-update-apply-"), "owc-home");
+    await mkdir(installRoot, { recursive: true });
+    const systemUnitDir = await tempRoot("owc-update-apply-");
+    const systemUnitPath = path.join(systemUnitDir, "openwebcode.service");
+    await writeFile(systemUnitPath, "[Unit]\n", "utf8");
+    const applier = new UpdateApplier({
+      dataDir,
+      installRoot,
+      platform: "linux",
+      getReleaseUrl: () => RELEASE_URL,
+      getCurrentVersion: () => "0.5.2",
+      fetchImpl: makeFetch({ platform: "linux" }),
+      spawnImpl: spawn.impl,
+      exitImpl: () => { exitCalls += 1; },
+      getuidImpl: () => 0,
+      systemUnitPath,
+    });
+    // 用户级 unit 同时存在时系统级优先（root 安装下 server 即 root）
+    const configHome = await tempRoot("owc-update-apply-");
+    await mkdir(path.join(configHome, "systemd", "user"), { recursive: true });
+    await writeFile(path.join(configHome, "systemd", "user", "openwebcode.service"), "[Unit]\n", "utf8");
+    await withConfigHome(configHome, async () => {
+      const state = await applier.apply();
+      expect(state.status).toBe("restarting");
+      expect(state.message).toContain("自动重启");
+    });
+    const restartCall = spawn.calls.find((call) => call.command === "sh");
+    expect(restartCall?.args.join(" ")).toContain("systemctl restart openwebcode.service");
+    expect(restartCall?.args.join(" ")).not.toContain("--user");
+    expect(restartCall?.args.join(" ")).not.toContain("try-restart");
+    expect(exitCalls).toBe(1);
   });
 
   it("sha256 不匹配：error，不复制文件，状态保留", async () => {

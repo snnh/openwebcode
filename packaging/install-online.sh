@@ -28,7 +28,8 @@
 #   3. 解压到临时目录；
 #   4. 若 <prefix>/lib/openwebcode/server/dist/index.js 已存在 → 更新模式：
 #      整体替换 <prefix>/lib/openwebcode/ 内容为新版（保留 <prefix>/bin/owc
-#      启动器与已写好的 systemd unit 不动），并提示重启方式；
+#      启动器与已写好的 systemd unit 不动；启动器 pin 了系统 node 时跳过
+#      node/ 复制），并按实际 unit 位置（系统级/用户级）提示重启方式；
 #      否则 → 全新安装：调用包内 install.sh 并透传全部安装参数。
 #   工作目录由 trap 清理。
 set -eu
@@ -226,15 +227,37 @@ if [ -f "$LIB_DIR/server/dist/index.js" ]; then
     fi
     rm -rf "$LIB_DIR"
     mkdir -p "$LIB_DIR"
+    # 既有启动器 pin 了系统 node（OWC_NODE 非 $OWC_HOME 形式）时不再复制 node/
+    # （约 100MB 冗余）；lib 已整体重建，跳过复制同时也清掉旧的冗余 node/。
+    SKIP_NODE=0
+    if [ -f "$PREFIX/bin/owc" ]; then
+        node_line=$(sed -n 's/^OWC_NODE=//p' "$PREFIX/bin/owc" | head -n 1)
+        case "$node_line" in
+            ''|*OWC_HOME*) : ;;
+            *) SKIP_NODE=1 ;;
+        esac
+    fi
     for d in bin server web node; do
+        if [ "$d" = node ] && [ "$SKIP_NODE" -eq 1 ]; then
+            echo "既有启动器使用系统 Node.js，跳过复制包内 node/。"
+            continue
+        fi
         if [ -d "$EXTRACT_DIR/$d" ]; then
             cp -R "$EXTRACT_DIR/$d" "$LIB_DIR/"
         fi
     done
     chmod +x "$LIB_DIR/bin/owc-exec" 2>/dev/null || true
     echo "更新完成: $LIB_DIR"
-    UNIT="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/openwebcode.service"
-    if [ -f "$UNIT" ]; then
+    # 按实际 unit 位置给出重启提示（root 系统级 / 用户级），不再只看用户级
+    USER_UNIT="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/openwebcode.service"
+    SYSTEM_UNIT=/etc/systemd/system/openwebcode.service
+    if [ -f "$SYSTEM_UNIT" ]; then
+        if [ "$(id -u)" -eq 0 ]; then
+            echo "检测到 systemd 系统服务，重启生效: systemctl restart openwebcode"
+        else
+            echo "检测到 systemd 系统服务，重启生效: sudo systemctl restart openwebcode"
+        fi
+    elif [ -f "$USER_UNIT" ]; then
         echo "检测到 systemd 用户服务，重启生效: systemctl --user restart openwebcode"
     else
         echo "请重启正在运行的 owc 服务使新版本生效。"
