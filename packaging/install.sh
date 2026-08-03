@@ -29,9 +29,17 @@
 # 动作:
 #   1. 把包内运行时（bin/ server/ web/，以及可选的 node/）复制到
 #      <prefix>/lib/openwebcode/（重跑整体覆盖，幂等）；
-#   2. 生成启动脚本 <prefix>/bin/owc；
-#   3. --with-systemd 时写 systemd unit；--enable-service 时立即启用并启动；
-#   4. 非回环监听且访问令牌已生成（如服务已启动）时，打印一键访问链接。
+#   2. 生成启动脚本 <prefix>/bin/owc（已存在时提取既有变量作为本次默认值，
+#      命令行显式参数仍最优先）；
+#   3. 检测既有 systemd unit（root → /etc/systemd/system，否则用户级）：
+#      同路径判定为更新——重写 unit 保留 enabled 状态、服务在运行则完成后重启，
+#      交互模式只一次确认；不同路径交互三选（切换服务/仅装文件/中止），
+#      非 TTY 打印警告并默认仅装文件；
+#   4. --with-systemd 时写 systemd unit（含 NoNewPrivileges 加固，系统级再加
+#      ProtectSystem=full + ReadWritePaths=<数据目录>）；--enable-service 时
+#      立即启用并启动；交互模式仅当 systemd 真实可用才询问写服务；
+#   5. 非回环监听且访问令牌已生成（如服务已启动）时，打印一键访问链接；
+#      结尾检测 <prefix>/bin 是否在 PATH，不在则按用户 shell 给出 export 指引。
 #
 # 卸载：运行 <prefix>/bin/owc-uninstall（安装时由本脚本落盘），或发行包根目录的
 # ./uninstall.sh；可加 --purge-data 一并删除数据目录，--remove-firewall 移除
@@ -358,6 +366,8 @@ if [ "$ASSUME_YES" -eq 0 ] && [ -t 0 ] && [ -t 1 ]; then
     INTERACTIVE=1
 fi
 
+# 交互先只确定 prefix：既有安装检测（更新 vs 重装）要把 unit ExecStart 反推出的
+# 前缀与解析后的 PREFIX 比对，其余选项的提问放在检测之后。
 if [ "$INTERACTIVE" -eq 1 ]; then
     echo "OpenWebCode 安装配置（直接回车保留默认值；命令行传入的选项不会被询问）" >&2
     if [ "$IS_ROOT" -eq 1 ] && [ "$PREFIX_SET" -eq 0 ] && [ "$SYSTEM_INSTALL" -eq 0 ]; then
@@ -372,6 +382,144 @@ if [ "$INTERACTIVE" -eq 1 ]; then
         ask_until_valid "安装前缀" "$PREFIX" valid_prefix "请输入非根目录的绝对路径"
         PREFIX=$REPLY
     fi
+fi
+
+# 先创建并物理解析 prefix；这既让 /tmp/..、符号链接等输入归一，也确保后续
+# rm -rf 的目标固定在解析后的 <prefix>/lib/openwebcode 下，而非调用者 CWD。
+valid_prefix "$PREFIX" || die "非法 prefix: $PREFIX"
+mkdir -p "$PREFIX" || die "无法创建 prefix: $PREFIX" 1
+PREFIX=$(CDPATH= cd -P "$PREFIX" && pwd) || die "无法解析 prefix: $PREFIX" 1
+valid_prefix "$PREFIX" || die "解析后的 prefix 非法: $PREFIX" 1
+
+# ---- 既有安装检测（更新 vs 重装）----
+# 按 uid 定位既有 unit（root → 系统级，否则用户级；OWC_SYSTEMD_UNIT_DIR 仅作
+# 测试钩子覆盖目标目录），从 ExecStart=<prefix>/bin/owc 反推既有安装前缀。
+if [ "$IS_ROOT" -eq 1 ]; then
+    UNIT_DIR=${OWC_SYSTEMD_UNIT_DIR:-/etc/systemd/system}
+    SYSTEMCTL="systemctl"
+else
+    UNIT_DIR=${OWC_SYSTEMD_UNIT_DIR:-"${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"}
+    SYSTEMCTL="systemctl --user"
+fi
+EXISTING_UNIT=''
+EXISTING_PREFIX=''
+if [ -f "$UNIT_DIR/openwebcode.service" ]; then
+    EXISTING_UNIT="$UNIT_DIR/openwebcode.service"
+    exec_start=$(grep '^ExecStart=' "$EXISTING_UNIT" | head -n 1)
+    exec_start=${exec_start#ExecStart=}
+    case "$exec_start" in
+        */bin/owc) EXISTING_PREFIX=${exec_start%/bin/owc} ;;
+    esac
+    # 与 PREFIX 同样物理解析，避免符号链接路径被误判为另一处安装
+    if [ -n "$EXISTING_PREFIX" ] && [ -d "$EXISTING_PREFIX" ]; then
+        EXISTING_PREFIX=$(CDPATH= cd -P "$EXISTING_PREFIX" && pwd) || EXISTING_PREFIX=''
+    fi
+fi
+
+UPDATE_MODE=0
+SWITCH_SERVICE=0
+WAS_ENABLED=0
+WAS_ACTIVE=0
+if [ -n "$EXISTING_UNIT" ]; then
+    if command -v systemctl >/dev/null 2>&1; then
+        [ "$($SYSTEMCTL is-enabled openwebcode 2>/dev/null || true)" = "enabled" ] && WAS_ENABLED=1
+        [ "$($SYSTEMCTL is-active openwebcode 2>/dev/null || true)" = "active" ] && WAS_ACTIVE=1
+    fi
+    if [ -n "$EXISTING_PREFIX" ] && [ "$EXISTING_PREFIX" = "$PREFIX" ]; then
+        # 同路径 → 更新：保留旧启动器变量（见下），重写 unit 但保留启用状态，
+        # 服务在运行则安装完成后重启。非 TTY 不提问，只打印检测状态。
+        UPDATE_MODE=1
+        WITH_SYSTEMD=1
+        echo "检测到同路径既有安装（$EXISTING_UNIT），按更新处理：保留启动器变量与既有服务配置。"
+        if [ "$INTERACTIVE" -eq 1 ]; then
+            ask_yes_no "检测到同路径既有安装，更新？" yes
+            [ "$REPLY" = yes ] || die "已取消" 1
+        fi
+    elif [ "$INTERACTIVE" -eq 1 ]; then
+        # 不同路径 → 三选：切换服务到本次路径 / 仅装文件 / 中止
+        echo "检测到既有 systemd 服务指向其他安装路径: ${EXISTING_PREFIX:-未知}（$EXISTING_UNIT）" >&2
+        echo "  1) 切换服务到本次路径 $PREFIX（重写 unit + daemon-reload，旧服务在运行则重启）" >&2
+        echo "  2) 仅安装文件，不改动既有服务" >&2
+        echo "  3) 中止安装" >&2
+        while :; do
+            printf '请选择 [1/2/3，默认 2]: ' >&2
+            if ! IFS= read -r answer; then answer=2; fi
+            case "$answer" in
+                ''|2) break ;;
+                1) SWITCH_SERVICE=1; WITH_SYSTEMD=1; break ;;
+                3) die "已取消" 1 ;;
+                *) echo "请输入 1、2 或 3。" >&2 ;;
+            esac
+        done
+    elif [ "$WITH_SYSTEMD" -eq 0 ]; then
+        # 非 TTY 默认仅装文件；显式 --with-systemd/--enable-service 才把服务切到新路径
+        echo "警告：检测到既有 systemd 服务指向其他路径 ${EXISTING_PREFIX:-未知}，与本次前缀 $PREFIX 不同；默认仅安装文件，不改动既有服务（如需切换请显式传 --with-systemd）。" >&2
+    fi
+else
+    echo "未检测到既有 systemd 服务，按全新安装处理。"
+fi
+
+# ---- 更新保留启动脚本变量 ----
+# 启动器已存在时，提取既有 OWC_DEFAULT_PORT/OWC_DEFAULT_DATA_DIR/
+# OWC_DEFAULT_HOST/OWC_NODE 作为本次默认值；命令行显式参数（*_SET）仍最优先。
+launcher_var() {
+    raw=$(sed -n "s/^$1=//p" "$2" | head -n 1)
+    case "$raw" in
+        \'*\')
+            raw=${raw#\'}
+            raw=${raw%\'}
+            printf '%s' "$raw" | sed "s/'\\\\''/'/g"
+            ;;
+        \"*\")
+            raw=${raw#\"}
+            raw=${raw%\"}
+            printf '%s' "$raw"
+            ;;
+        *) printf '%s' "$raw" ;;
+    esac
+}
+
+SYSTEM_NODE=''
+LAUNCHER="$PREFIX/bin/owc"
+if [ -f "$LAUNCHER" ]; then
+    preserved=$(launcher_var OWC_DEFAULT_PORT "$LAUNCHER")
+    if [ "$PORT_SET" -eq 0 ] && [ -n "$preserved" ] && normalise_port "$preserved"; then
+        PORT=$NORMALIZED_PORT
+    fi
+    preserved=$(launcher_var OWC_DEFAULT_DATA_DIR "$LAUNCHER")
+    if [ "$DATA_DIR_SET" -eq 0 ] && [ -n "$preserved" ] && valid_data_dir "$preserved"; then
+        DATA_DIR=$preserved
+    fi
+    preserved=$(launcher_var OWC_DEFAULT_HOST "$LAUNCHER")
+    if [ "$HOST_SET" -eq 0 ] && [ -n "$preserved" ] && valid_host "$preserved"; then
+        HOST=$preserved
+    fi
+    if [ "$USE_SYSTEM_NODE_SET" -eq 0 ]; then
+        preserved=$(launcher_var OWC_NODE "$LAUNCHER")
+        case "$preserved" in
+            ''|*OWC_HOME*) : ;;  # 包内 node 形式（$OWC_HOME/node/bin/node），走默认逻辑
+            *)
+                if [ -x "$preserved" ]; then
+                    USE_SYSTEM_NODE=1
+                    SYSTEM_NODE=$preserved
+                fi
+                ;;
+        esac
+    fi
+fi
+
+# systemd 真实可用性：仅决定交互模式是否询问写服务；显式 --with-systemd 不受限。
+systemd_available() {
+    command -v systemctl >/dev/null 2>&1 || return 1
+    if [ "$IS_ROOT" -eq 1 ]; then
+        [ -d /run/systemd/system ]
+    else
+        systemctl --user show-environment >/dev/null 2>&1
+    fi
+}
+
+# 其余交互提问。同路径更新只有上面一次确认，不再逐项提问。
+if [ "$INTERACTIVE" -eq 1 ] && [ "$UPDATE_MODE" -eq 0 ]; then
     if [ "$PORT_SET" -eq 0 ]; then
         ask_until_valid "默认监听端口" "$PORT" normalise_port "端口必须是 1-65535 的十进制整数"
         PORT=$NORMALIZED_PORT
@@ -395,7 +543,7 @@ if [ "$INTERACTIVE" -eq 1 ]; then
             done
         fi
     fi
-    if [ "$USE_SYSTEM_NODE_SET" -eq 0 ]; then
+    if [ "$USE_SYSTEM_NODE_SET" -eq 0 ] && [ -z "$SYSTEM_NODE" ]; then
         if [ "$BUNDLED_NODE" -eq 1 ]; then
             ask_yes_no "使用系统 Node.js 而不复制包内运行时" no
             [ "$REPLY" = yes ] && USE_SYSTEM_NODE=1 || USE_SYSTEM_NODE=0
@@ -404,17 +552,21 @@ if [ "$INTERACTIVE" -eq 1 ]; then
             USE_SYSTEM_NODE=1
         fi
     fi
-    if [ "$WITH_SYSTEMD_SET" -eq 0 ]; then
-        if [ "$IS_ROOT" -eq 1 ]; then
-            systemd_kind="系统级 systemd 服务（/etc/systemd/system）"
+    if [ "$WITH_SYSTEMD_SET" -eq 0 ] && [ -z "$EXISTING_UNIT" ]; then
+        if systemd_available; then
+            if [ "$IS_ROOT" -eq 1 ]; then
+                systemd_kind="系统级 systemd 服务（/etc/systemd/system）"
+            else
+                systemd_kind="用户级 systemd 服务"
+            fi
+            ask_yes_no "写入 $systemd_kind 文件" no
+            if [ "$REPLY" = yes ]; then
+                WITH_SYSTEMD=1
+                ask_yes_no "立即启用并启动该服务（systemctl enable --now）" yes
+                [ "$REPLY" = yes ] && ENABLE_SERVICE=1
+            fi
         else
-            systemd_kind="用户级 systemd 服务"
-        fi
-        ask_yes_no "写入 $systemd_kind 文件" no
-        if [ "$REPLY" = yes ]; then
-            WITH_SYSTEMD=1
-            ask_yes_no "立即启用并启动该服务（systemctl enable --now）" yes
-            [ "$REPLY" = yes ] && ENABLE_SERVICE=1
+            echo "未检测到可用的 systemd，跳过服务安装提问（之后可用 --with-systemd 显式写入 unit）。"
         fi
     fi
     if [ "$IS_ROOT" -eq 1 ] && ! is_loopback_host "$HOST" && [ "$OPEN_FIREWALL_SET" -eq 0 ]; then
@@ -425,7 +577,6 @@ if [ "$INTERACTIVE" -eq 1 ]; then
     fi
 fi
 
-valid_prefix "$PREFIX" || die "非法 prefix: $PREFIX"
 normalise_port "$PORT" || die "非法 port: $PORT（应为 1-65535 的十进制整数）"
 PORT=$NORMALIZED_PORT
 valid_data_dir "$DATA_DIR" || die "非法 data-dir: $DATA_DIR（应为非根目录的绝对路径）"
@@ -438,19 +589,13 @@ if [ "$OPEN_FIREWALL" -eq 1 ]; then
     is_loopback_host "$HOST" && die "--open-firewall 仅在非回环监听（--lan/--host）时有意义"
 fi
 
-# 先创建并物理解析 prefix；这既让 /tmp/..、符号链接等输入归一，也确保后续
-# rm -rf 的目标固定在解析后的 <prefix>/lib/openwebcode 下，而非调用者 CWD。
-mkdir -p "$PREFIX" || die "无法创建 prefix: $PREFIX" 1
-PREFIX=$(CDPATH= cd -P "$PREFIX" && pwd) || die "无法解析 prefix: $PREFIX" 1
-valid_prefix "$PREFIX" || die "解析后的 prefix 非法: $PREFIX" 1
-
 if [ "$USE_SYSTEM_NODE" -eq 0 ] && [ "$BUNDLED_NODE" -eq 0 ]; then
     echo "install.sh: 包内没有可执行 node/bin/node；改用系统 Node.js。" >&2
     USE_SYSTEM_NODE=1
 fi
 
-SYSTEM_NODE=''
-if [ "$USE_SYSTEM_NODE" -eq 1 ]; then
+# SYSTEM_NODE 非空表示沿用旧启动器 pin 的系统 node（安装时已校验过，不再重复校验）。
+if [ "$USE_SYSTEM_NODE" -eq 1 ] && [ -z "$SYSTEM_NODE" ]; then
     SYSTEM_NODE=$(command -v node 2>/dev/null || true)
     case "$SYSTEM_NODE" in
         /*) [ -x "$SYSTEM_NODE" ] || die "系统 node 不可执行: $SYSTEM_NODE" 1 ;;
@@ -495,7 +640,7 @@ Q_DATA_DIR=$(shell_quote "$DATA_DIR")
 Q_HOST=$(shell_quote "$HOST")
 cat > "$PREFIX/bin/owc" <<EOF
 #!/bin/sh
-# OpenWebCode 启动脚本（由 packaging/install.sh 生成；重跑 install.sh 会覆盖）
+# OpenWebCode 启动脚本（由 packaging/install.sh 生成；重跑 install.sh 保留既有变量设置）
 OWC_HOME=$Q_LIB_DIR
 export OWC_CORE_PATH="\$OWC_HOME/bin/owc-exec"
 OWC_DEFAULT_PORT=$Q_PORT
@@ -531,22 +676,37 @@ fi
 
 if [ "$WITH_SYSTEMD" -eq 1 ]; then
     # systemd ExecStart 的解析不与 shell 相同；对 unit 限制为常见安全路径，
-    # 避免空格/引号导致生成一个和安装路径不一致的服务。
+    # 避免空格/引号导致生成一个和安装路径不一致的服务。更新/切换场景既有 unit
+    # 已指向该路径，写不动就保留旧 unit，不让整个安装失败。
     case "$PREFIX" in
         *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_@%+=:,./-]*)
-            die "--with-systemd 要求 prefix 不含空格、引号或其他 systemd 特殊字符" 1
+            if [ "$UPDATE_MODE" -eq 1 ] || [ "$SWITCH_SERVICE" -eq 1 ]; then
+                echo "警告：prefix 含空格或 systemd 特殊字符，跳过 unit 重写（既有 unit 保持不变）。" >&2
+                WITH_SYSTEMD=0
+            else
+                die "--with-systemd 要求 prefix 不含空格、引号或其他 systemd 特殊字符" 1
+            fi
             ;;
     esac
-    if [ "$IS_ROOT" -eq 1 ]; then
-        UNIT_DIR=${OWC_SYSTEMD_UNIT_DIR:-/etc/systemd/system}
-        SYSTEMCTL="systemctl"
-    else
-        UNIT_DIR=${OWC_SYSTEMD_UNIT_DIR:-"${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"}
-        SYSTEMCTL="systemctl --user"
-    fi
+fi
+if [ "$WITH_SYSTEMD" -eq 1 ]; then
     mkdir -p "$UNIT_DIR"
+    # 新写 unit 一律加 NoNewPrivileges；系统级再加 ProtectSystem=full，数据目录
+    # 经 ReadWritePaths 保持可写（data-dir 含特殊字符时退化为仅 NoNewPrivileges）。
+    SYSTEM_HARDENING=''
     if [ "$IS_ROOT" -eq 1 ]; then
-        cat > "$UNIT_DIR/openwebcode.service" <<EOF
+        case "$DATA_DIR" in
+            *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_@%+=:,./-]*)
+                echo "警告：data-dir 含 systemd 特殊字符，系统级 unit 仅启用 NoNewPrivileges。" >&2
+                ;;
+            *)
+                SYSTEM_HARDENING=$(printf 'ProtectSystem=full\nReadWritePaths=%s' "$DATA_DIR")
+                ;;
+        esac
+    fi
+    if [ "$IS_ROOT" -eq 1 ]; then
+        {
+            cat <<EOF
 [Unit]
 Description=OpenWebCode server
 Wants=network-online.target
@@ -555,10 +715,17 @@ After=network-online.target
 [Service]
 ExecStart=$PREFIX/bin/owc
 Restart=on-failure
+NoNewPrivileges=true
+EOF
+            if [ -n "$SYSTEM_HARDENING" ]; then
+                printf '%s\n' "$SYSTEM_HARDENING"
+            fi
+            cat <<EOF
 
 [Install]
 WantedBy=multi-user.target
 EOF
+        } > "$UNIT_DIR/openwebcode.service"
     else
         cat > "$UNIT_DIR/openwebcode.service" <<EOF
 [Unit]
@@ -568,13 +735,37 @@ After=network-online.target
 [Service]
 ExecStart=$PREFIX/bin/owc
 Restart=on-failure
+NoNewPrivileges=true
 
 [Install]
 WantedBy=default.target
 EOF
     fi
     echo "已写入 $UNIT_DIR/openwebcode.service"
-    if [ "$ENABLE_SERVICE" -eq 1 ]; then
+    if [ "$UPDATE_MODE" -eq 1 ] || [ "$SWITCH_SERVICE" -eq 1 ]; then
+        # 更新/切换：保留既有启用状态（仅原本 enabled 才重新 enable，不胡乱
+        # enable 未启用过的服务）；服务在运行则重启使新版本生效。
+        if command -v systemctl >/dev/null 2>&1; then
+            $SYSTEMCTL daemon-reload || echo "install.sh: 警告：daemon-reload 失败" >&2
+            if [ "$WAS_ENABLED" -eq 1 ] || [ "$ENABLE_SERVICE" -eq 1 ]; then
+                $SYSTEMCTL enable openwebcode || echo "install.sh: 警告：enable 失败" >&2
+            fi
+            if [ "$WAS_ACTIVE" -eq 1 ]; then
+                if $SYSTEMCTL restart openwebcode; then
+                    echo "服务已重启：$SYSTEMCTL status openwebcode 查看状态"
+                else
+                    echo "install.sh: 警告：服务重启失败，请手动执行 $SYSTEMCTL restart openwebcode" >&2
+                fi
+            elif [ "$ENABLE_SERVICE" -eq 1 ]; then
+                $SYSTEMCTL start openwebcode || echo "install.sh: 警告：服务启动失败" >&2
+                echo "服务已启动：$SYSTEMCTL status openwebcode 查看状态"
+            else
+                echo "服务未在运行，未触发重启；下次启动即使用新版本。"
+            fi
+        else
+            echo "未检测到 systemctl；unit 已更新，请在 systemd 环境执行 daemon-reload 后按需重启服务。"
+        fi
+    elif [ "$ENABLE_SERVICE" -eq 1 ]; then
         # 启用并立即启动；服务启动后服务端会生成访问令牌（非回环时下方打印链接）
         $SYSTEMCTL daemon-reload
         $SYSTEMCTL enable --now openwebcode
@@ -654,3 +845,20 @@ if ! is_loopback_host "$HOST"; then
         echo "访问令牌: 服务端首次启动时自动生成；访问链接见服务端控制台或 设置 → 远程访问。"
     fi
 fi
+
+# <prefix>/bin 不在 PATH 时，按用户 shell（$SHELL 推断 rc 文件）给出 export 指引
+case ":$PATH:" in
+    *":$PREFIX/bin:"*) : ;;
+    *)
+        echo "提示：$PREFIX/bin 不在 PATH 中，无法直接运行 owc。"
+        shell_name=${SHELL:-}
+        shell_name=${shell_name##*/}
+        rc_file='~/.profile'
+        case "$shell_name" in
+            bash) rc_file='~/.bashrc' ;;
+            zsh) rc_file='~/.zshrc' ;;
+        esac
+        echo "可将以下行加入 $rc_file 后重开终端："
+        echo "  export PATH=\"$PREFIX/bin:\$PATH\""
+        ;;
+esac
