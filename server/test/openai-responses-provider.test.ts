@@ -239,6 +239,27 @@ describe("OpenAIResponsesProvider request mapping", () => {
     expect(JSON.stringify(bodies[0]?.input)).not.toContain("历史思维不回传");
   });
 
+  it("repairs dangling tool_call (no result persisted after abort) and drops orphan tool_result", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const payload = sse([{ type: "response.completed", response: { status: "completed", output: [] } }]);
+    const messages: StreamChatRequest["messages"] = [
+      { id: "u1", role: "user", content: [{ type: "text", text: "继续" }], createdAt: "2026-01-01T00:00:00.000Z" },
+      {
+        id: "a1", role: "assistant", createdAt: "2026-01-01T00:00:01.000Z",
+        content: [{ type: "tool_call", id: "call_dangling", name: "bash", input: { cmd: "sleep 600" } }],
+      },
+      // 中断时结果未落盘：call_dangling 无对应 tool_result
+      { id: "t2", role: "tool", content: [{ type: "tool_result", toolCallId: "call_orphan", content: "orphan", isError: false }], createdAt: "2026-01-01T00:00:02.000Z" },
+    ];
+    await collect(makeProvider(sseFetch(bodies, payload)).streamChat(request({ messages })));
+
+    expect(bodies[0]?.input).toEqual([
+      { role: "user", content: "继续" },
+      { type: "function_call", call_id: "call_dangling", name: "bash", arguments: "{\"cmd\":\"sleep 600\"}" },
+      { type: "function_call_output", call_id: "call_dangling", output: expect.stringContaining("interrupted") },
+    ]);
+  });
+
   it("merges extraBody under core fields and omits max_output_tokens by default", async () => {
     const bodies: Array<Record<string, unknown>> = [];
     const payload = sse([{ type: "response.completed", response: { status: "completed", output: [] } }]);

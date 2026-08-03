@@ -18,12 +18,12 @@ export interface CompactResult {
   reason?: string;
 }
 
-const TOOLCALLS_SYSTEM = `你是上下文压缩器。把对话中的工具调用逐条压缩为一行语义占位符。
+export const COMPACT_TOOLCALLS_SYSTEM = `你是上下文压缩器。把对话中的工具调用逐条压缩为一行语义占位符。
 格式：- [工具] 名称(关键参数) → 结果要点（退出码/关键数字/错误原因）
 规则：用户消息也各压一行（- [用户] 要点）；assistant 的结论文本各压一行（- [助手] 要点）。
 只输出这些行，不要任何额外解释。保留 artifact: 引用不变。`;
 
-const OVERVIEW_SYSTEM = `你是上下文压缩器。把对话中段压缩为结构化概览，严格按以下小节输出：
+export const COMPACT_OVERVIEW_SYSTEM = `你是上下文压缩器。把对话中段压缩为结构化概览，严格按以下小节输出：
 目标：
 行动：
 修改文件：
@@ -114,7 +114,7 @@ export class Compactor {
     private readonly keepTail = 10,
   ) {}
 
-  async compact(sessionId: string, mode: "toolcalls" | "overview", options: { forced?: boolean } = {}): Promise<CompactResult> {
+  async compact(sessionId: string, mode: "toolcalls" | "overview", options: { forced?: boolean; promptOverrides?: { overview?: string; toolcalls?: string } } = {}): Promise<CompactResult> {
     const session = await this.sessions.get(sessionId);
     if (!session) throw new Error("Session not found");
     const context = new ContextManager(this.sessions.contextRoot(sessionId));
@@ -139,8 +139,13 @@ export class Compactor {
 
     if (this.fastModel.configured) {
       const transcript = renderSpan(span);
+      // 提示词覆盖（prompt-overrides 面 / env-sim persona，由调用方按优先级组装）：
+      // 压缩行为仍由 Node 强制（保留尾部、指令累积、降级链），覆盖只改模型侧文本。
+      const system = mode === "overview"
+        ? (options.promptOverrides?.overview ?? COMPACT_OVERVIEW_SYSTEM)
+        : (options.promptOverrides?.toolcalls ?? COMPACT_TOOLCALLS_SYSTEM);
       const completion = await this.fastModel.complete({
-        system: mode === "overview" ? OVERVIEW_SYSTEM : TOOLCALLS_SYSTEM,
+        system,
         prompt: mode === "overview" && instructions.length > 0
           ? `已有的用户明确指令（逐字保留并置顶）：\n${instructions.map((item) => `- ${item}`).join("\n")}\n\n待压缩对话：\n${transcript}`
           : `待压缩对话：\n${transcript}`,

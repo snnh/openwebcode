@@ -239,8 +239,20 @@ function rememberCall(
  * ChatMessage 历史 → Responses input items。
  * assistant 的 thinking 块不回传：Responses 的 reasoning 回放依赖服务端 reasoning item /
  * encrypted_content（store/previous_response_id 机制），裸文本回放无意义且多数实现不回传。
+ *
+ * 配对修复：历史可能残留无对应 function_call_output 的 function_call（中断/崩溃时结果
+ * 未落盘），Responses API 对此直接 400（"No tool output found for tool call"）；故先
+ * 收集 tool_result 映射，function_call 紧随其后内联对应 output，缺失时补占位 output。
+ * 游离 tool_result（对应调用在压缩边界外/旧分支）不产出 function_call，直接丢弃，
+ * 否则同样报 "No tool call found for function call output"。
  */
 function toResponsesInput(messages: ChatMessage[]): Array<Record<string, unknown>> {
+  const outputs = new Map<string, string>();
+  for (const message of messages) {
+    for (const block of message.content) {
+      if (block.type === "tool_result" && !outputs.has(block.toolCallId)) outputs.set(block.toolCallId, block.content);
+    }
+  }
   const result: Array<Record<string, unknown>> = [];
   for (const message of messages) {
     if (message.role === "user") {
@@ -273,15 +285,15 @@ function toResponsesInput(messages: ChatMessage[]): Array<Record<string, unknown
             name: block.name,
             arguments: JSON.stringify(block.input),
           });
-        }
-      }
-    } else {
-      for (const block of message.content) {
-        if (block.type === "tool_result") {
-          result.push({ type: "function_call_output", call_id: block.toolCallId, output: block.content });
+          result.push({
+            type: "function_call_output",
+            call_id: block.id,
+            output: outputs.get(block.id) ?? "The run was interrupted before this tool finished; no result was produced.",
+          });
         }
       }
     }
+    // tool 角色消息的 tool_result 已内联到对应 function_call 之后，游离者丢弃（见上文）
   }
   return result;
 }

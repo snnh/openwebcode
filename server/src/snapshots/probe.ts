@@ -57,8 +57,33 @@ export async function probeSnapshotBackend(
   return new GitShadowSnapshots(sessionRoot, workspace);
 }
 
-async function probeOverlayfs(sessionRoot: string, workspace: string, core: OverlayfsCore | undefined): Promise<SnapshotBackend | undefined> {
-  if (!core) return undefined;
+/**
+ * 单后端探测（设置偏好 snapshotBackend 的创建期校验）：只探测指定后端，
+ * 平台不符/不可用/未知名一律返回 undefined（调用方回落自动探测链），全程不 throw。
+ * git-shadow 是兜底后端，与探测链一致直接构造。
+ */
+export async function probeSnapshotBackendByName(
+  name: string,
+  sessionRoot: string,
+  workspace: string,
+  deps: { runner?: CommandRunner; platform?: NodeJS.Platform; core?: OverlayfsCore },
+): Promise<SnapshotBackend | undefined> {
+  const runner = deps.runner ?? createExecFileRunner();
+  const platform = deps.platform ?? process.platform;
+  try {
+    switch (name) {
+      case "btrfs": return platform === "linux" ? await probeBtrfs(workspace, runner) : undefined;
+      case "overlayfs": return platform === "linux" ? await probeOverlayfs(sessionRoot, workspace, deps.core) : undefined;
+      case "refs": return platform === "win32" ? await probeRefs(sessionRoot, workspace, runner) : undefined;
+      case "git-shadow": return new GitShadowSnapshots(sessionRoot, workspace);
+      default: return undefined;
+    }
+  } catch {
+    return undefined;
+  }
+}
+
+async function probeOverlayfs(sessionRoot: string, workspace: string, core: OverlayfsCore | undefined): Promise<SnapshotBackend | undefined> {  if (!core) return undefined;
   try {
     if (!(await probeOverlayfsSupport(core))) return undefined;
     return new OverlayfsBackend({ sessionRoot, originCwd: workspace, core });

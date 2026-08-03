@@ -19,10 +19,10 @@ const RELEASE_URL = "https://api.github.com/repos/snnh/openwebcode/releases/late
 const ASSET_BASE = "https://github.com/snnh/openwebcode/releases/download/v0.6.0";
 const TARGET_VERSION = "0.6.0";
 
-function assetNameFor(platform: "win32" | "linux"): string {
+function assetNameFor(platform: "win32" | "linux", arch = "x64"): string {
   return platform === "win32"
     ? `openwebcode-${TARGET_VERSION}-windows-x64.msi`
-    : `openwebcode-${TARGET_VERSION}-linux-x64.tar.gz`;
+    : `openwebcode-${TARGET_VERSION}-linux-${arch}.tar.gz`;
 }
 
 function sha256Hex(data: Buffer): string {
@@ -31,6 +31,8 @@ function sha256Hex(data: Buffer): string {
 
 interface FakeFetchOptions {
   platform: "win32" | "linux";
+  /** linux 资产名架构后缀（缺省 x64） */
+  arch?: string;
   tag?: string;
   assetBytes?: Buffer;
   /** 提供时 SHA256SUMS.txt 内容（缺省按 assetBytes 计算） */
@@ -43,7 +45,7 @@ interface FakeFetchOptions {
 
 function makeFetch(options: FakeFetchOptions): typeof fetch {
   const tag = options.tag ?? `v${TARGET_VERSION}`;
-  const assetName = assetNameFor(options.platform);
+  const assetName = assetNameFor(options.platform, options.arch);
   const assetBytes = options.assetBytes ?? Buffer.from(`fake-${options.platform}-payload`);
   const assetUrl = options.assetUrlOverride ?? `${ASSET_BASE}/${assetName}`;
   const sumsUrl = `${ASSET_BASE}/SHA256SUMS.txt`;
@@ -113,6 +115,7 @@ interface ApplierFixture {
 
 async function makeApplier(overrides: {
   platform: "win32" | "linux";
+  arch?: string;
   fetchImpl: typeof fetch;
   spawnImpl: typeof spawn;
   exitImpl: () => void;
@@ -125,6 +128,7 @@ async function makeApplier(overrides: {
     dataDir,
     installRoot,
     platform: overrides.platform,
+    ...(overrides.arch ? { arch: overrides.arch } : {}),
     getReleaseUrl: () => RELEASE_URL,
     getCurrentVersion: () => overrides.currentVersion ?? "0.5.2",
     fetchImpl: overrides.fetchImpl,
@@ -251,6 +255,41 @@ describe("UpdateApplier", () => {
     expect(existsSync(path.join(fixture.installRoot, "server"))).toBe(false);
     // 校验失败发生在解压之前
     expect(spawn.calls.some((call) => call.command === "tar")).toBe(false);
+  });
+
+  it("linux 资产名按架构映射：arm64 与 loong64（→loongarch64）", async () => {
+    for (const [nodeArch, assetArch] of [["arm64", "arm64"], ["loong64", "loongarch64"]] as const) {
+      const spawn = makeSpawn();
+      const fixture = await makeApplier({
+        platform: "linux",
+        arch: nodeArch,
+        fetchImpl: makeFetch({ platform: "linux", arch: assetArch }),
+        spawnImpl: spawn.impl,
+        exitImpl: () => undefined,
+      });
+      const configHome = await tempRoot("owc-update-apply-");
+      await withConfigHome(configHome, async () => {
+        const state = await fixture.applier.apply();
+        expect(state.status).toBe("done");
+      });
+      const downloaded = await readFile(path.join(fixture.dataDir, "updates", TARGET_VERSION, assetNameFor("linux", assetArch)));
+      expect(downloaded.length).toBe(Buffer.from("fake-linux-payload").length);
+    }
+  });
+
+  it("未映射的 linux 架构拒绝在线更新（400 语义）", async () => {
+    const spawn = makeSpawn();
+    const fixture = await makeApplier({
+      platform: "linux",
+      arch: "riscv64",
+      fetchImpl: makeFetch({ platform: "linux" }),
+      spawnImpl: spawn.impl,
+      exitImpl: () => undefined,
+    });
+    const error = await fixture.applier.apply().catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(UpdateApplyError);
+    expect((error as UpdateApplyError).statusCode).toBe(400);
+    expect((error as UpdateApplyError).message).toContain("riscv64");
   });
 
   it("非 github.com 的资产 URL 被拒绝（400 语义）", async () => {

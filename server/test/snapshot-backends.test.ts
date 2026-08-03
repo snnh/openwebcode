@@ -10,7 +10,7 @@ import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { writeCheckpoints } from "../src/snapshots/backend.js";
 import { BtrfsBackend } from "../src/snapshots/btrfs.js";
-import { probeSnapshotBackend, type CommandRunner } from "../src/snapshots/probe.js";
+import { probeSnapshotBackend, probeSnapshotBackendByName, type CommandRunner } from "../src/snapshots/probe.js";
 import type { OverlayfsCore } from "../src/snapshots/overlayfs.js";
 import type { CoreInfo } from "../src/core-client.js";
 import { ZfsBackend } from "../src/snapshots/zfs.js";
@@ -119,6 +119,43 @@ describe("probeSnapshotBackend", () => {
     const runner: CommandRunner = { run: async () => { throw new Error("spawn failed"); } };
     const backend = await probeSnapshotBackend("/data/sess", "/data/ws", { runner, platform: "linux" });
     expect(backend.name).toBe("git-shadow");
+  });
+});
+
+describe("probeSnapshotBackendByName（设置偏好的单后端探测）", () => {
+  it("linux: 指定 btrfs 且命中", async () => {
+    const { runner } = tableRunner({
+      "stat -f -c %T /data/ws": { stdout: "btrfs\n", code: 0 },
+      "btrfs subvolume show /data/ws": { code: 0 },
+    });
+    const backend = await probeSnapshotBackendByName("btrfs", "/data/sess", "/data/ws", { runner, platform: "linux" });
+    expect(backend?.name).toBe("btrfs");
+  });
+
+  it("指定 btrfs 但工作区不是 btrfs → undefined（不探测链回落）", async () => {
+    const { runner } = tableRunner({
+      "stat -f -c %T /data/ws": { stdout: "ext4\n", code: 0 },
+    });
+    const backend = await probeSnapshotBackendByName("btrfs", "/data/sess", "/data/ws", { runner, platform: "linux" });
+    expect(backend).toBeUndefined();
+  });
+
+  it("平台不符：win32 指定 btrfs / linux 指定 refs → undefined", async () => {
+    const { runner } = tableRunner({});
+    await expect(probeSnapshotBackendByName("btrfs", "C:\\owc\\sess", "C:\\data\\ws", { runner, platform: "win32" })).resolves.toBeUndefined();
+    await expect(probeSnapshotBackendByName("refs", "/data/sess", "/data/ws", { runner, platform: "linux" })).resolves.toBeUndefined();
+  });
+
+  it("linux: 指定 overlayfs 按 core 能力判定", async () => {
+    const { runner } = tableRunner({});
+    await expect(probeSnapshotBackendByName("overlayfs", "/data/sess", "/data/ws", { runner, platform: "linux", core: overlayCore(true) })).resolves.toMatchObject({ name: "overlayfs" });
+    await expect(probeSnapshotBackendByName("overlayfs", "/data/sess", "/data/ws", { runner, platform: "linux" })).resolves.toBeUndefined();
+  });
+
+  it("git-shadow 任意平台直接构造；未知名返回 undefined", async () => {
+    const { runner } = tableRunner({});
+    await expect(probeSnapshotBackendByName("git-shadow", "/data/sess", "/data/ws", { runner, platform: "linux" })).resolves.toMatchObject({ name: "git-shadow" });
+    await expect(probeSnapshotBackendByName("zfs-with-dataset", "/data/sess", "/data/ws", { runner, platform: "linux" })).resolves.toBeUndefined();
   });
 });
 

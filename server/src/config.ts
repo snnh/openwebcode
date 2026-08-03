@@ -1,6 +1,7 @@
 import path from "node:path";
 import { MAX_SYNC_INTERVAL_MINUTES } from "./remote-sync-scheduler.js";
 import type { FastModelConfig } from "./fast-model.js";
+import type { EffortLevel } from "./context/model-profile.js";
 import type { PythonEnv } from "./sessions/types.js";
 import type { ProxyConfig, ProxyMode } from "./proxy.js";
 
@@ -51,6 +52,12 @@ export interface ServerConfig {
   fastModel?: FastModelConfig;
   /** 会话默认模型（settings defaultModel）：新建会话的隐式 provider+model。 */
   defaultModel?: ModelSelection;
+  /** 新建会话的默认思考力度（settings defaultEffort）；缺省 = 不设置（跟随模型默认）。 */
+  defaultEffort?: EffortLevel;
+  /** 新建会话的默认快照方式（settings defaultSnapshotMode）；缺省 auto。 */
+  defaultSnapshotMode?: "auto" | "manual";
+  /** 新建会话的快照后端偏好（settings snapshotBackend）；缺省 auto（探测链自动选择）。 */
+  snapshotBackend?: "git-shadow" | "btrfs" | "overlayfs" | "refs";
   /** 子代理角色档模型映射（premium/balanced/cheap；fast 档直接读 fastModel）。 */
   roleModels?: {
     premium?: ModelSelection;

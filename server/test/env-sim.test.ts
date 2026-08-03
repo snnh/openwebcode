@@ -1,14 +1,16 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
 import type { CoreClientLike } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { ExtensionManager } from "../src/extensions/extension-manager.js";
-import { listPersonas, resolvePersona } from "../src/extensions/env-sim/index.js";
-import { loadUserPresets, personasDir } from "../src/extensions/env-sim/preset-store.js";
+import { BUILTIN_PERSONAS, listPersonas, resolvePersona } from "../src/extensions/env-sim/index.js";
+import { deleteUserPreset, loadUserPresets, personasDir, saveUserPreset } from "../src/extensions/env-sim/preset-store.js";
+import { Compactor } from "../src/context/compactor.js";
+import { makeFakeFastModel } from "./helpers/fake-fast-model.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { makeFakeCore } from "./helpers/fake-core.js";
@@ -390,6 +392,51 @@ describe("env-sim preset store", () => {
       argMap: { command: "cmd" },
     });
   });
+
+  it("parses the optional command-prompt fields of user presets", async () => {
+    const root = await tempRoot();
+    await mkdir(personasDir(root), { recursive: true });
+    await writeFile(path.join(personasDir(root), "prompted.json"), JSON.stringify({
+      id: "prompted",
+      name: "Prompted",
+      identity: "You are Prompted.",
+      basePrompt: "prompted base",
+      initPrompt: "custom init prompt",
+      compactOverviewPrompt: "custom overview",
+      compactToolcallsPrompt: "custom toolcalls",
+    }), "utf8");
+    const preset = (await loadUserPresets(root)).find((item) => item.id === "prompted");
+    expect(preset).toMatchObject({
+      initPrompt: "custom init prompt",
+      compactOverviewPrompt: "custom overview",
+      compactToolcallsPrompt: "custom toolcalls",
+    });
+  });
+
+  it("saveUserPreset/deleteUserPreset round-trip with validation", async () => {
+    const root = await tempRoot();
+    const saved = await saveUserPreset(root, {
+      id: "mine",
+      name: "Mine",
+      identity: "You are Mine.",
+      basePrompt: "mine base",
+      aliases: [{ from: "bash", as: "Shell" }],
+    });
+    expect(saved.id).toBe("mine");
+    expect((await listPersonas(root)).some((item) => item.id === "mine" && !item.builtin)).toBe(true);
+    // 同 id 覆盖即编辑
+    await saveUserPreset(root, { id: "mine", name: "Mine v2", identity: "You are Mine.", basePrompt: "v2 base" });
+    expect((await loadUserPresets(root)).find((item) => item.id === "mine")?.name).toBe("Mine v2");
+
+    await expect(saveUserPreset(root, { id: "claude-code", name: "Impostor", identity: "x", basePrompt: "y" })).rejects.toThrow(/built-in/);
+    await expect(saveUserPreset(root, { id: "Bad Id", name: "Bad", identity: "x", basePrompt: "y" })).rejects.toThrow(/invalid preset id/);
+    await expect(saveUserPreset(root, { id: "no-name", identity: "x", basePrompt: "y" })).rejects.toThrow(/invalid preset shape/);
+
+    await expect(deleteUserPreset(root, "claude-code")).rejects.toThrow(/built-in/);
+    expect(await deleteUserPreset(root, "missing")).toBe(false);
+    expect(await deleteUserPreset(root, "mine")).toBe(true);
+    expect((await listPersonas(root)).some((item) => item.id === "mine")).toBe(false);
+  });
 });
 
 describe("env-sim REST contract", () => {
@@ -507,6 +554,122 @@ describe("env-sim REST contract", () => {
       expect(await sessions.get(session.id)).not.toHaveProperty("persona");
       const fallback = await app.inject({ method: "GET", url: `/api/sessions/${session.id}` });
       expect(fallback.json()).toMatchObject({ activePersona: { id: "codex" } });
+    } finally {
+      await app.close();
+      await manager.close();
+    }
+  }, 20_000);
+});
+
+describe("env-sim command prompt shaping", () => {
+  async function setupWithApp(options: HarnessOptions = {}) {
+    const harness = await setup(options);
+    // buildServer 的 providers 仅用于 REST 校验；agent 实际走 harness 内部注册表（harness.requests 记录请求）
+    const providers = new ProviderRegistry();
+    providers.register(scriptProvider([], []));
+    const fastModelCalls: Array<{ system: string; prompt: string }> = [];
+    const compactor = new Compactor(harness.sessions, makeFakeFastModel("[压缩] bash", fastModelCalls), {}, 3);
+    const app = await buildServer({
+      core: fakeCore([]),
+      sessions: harness.sessions,
+      agent: harness.agent,
+      events: harness.events,
+      providers,
+      pricing: new PricingCatalog(path.join(harness.root, "pricing2.json")),
+      extensions: harness.manager,
+      compactor,
+      dataDir: harness.dataDir,
+    });
+    return { ...harness, app, fastModelCalls };
+  }
+
+  it("alias descriptions reach the provider tool list", async () => {
+    const { agent, session, requests, manager } = await setup({ enableEnvSim: true, persona: "claude-code" });
+    try {
+      await agent.run(session.id, "你好");
+      const tools = requests[0]!.tools ?? [];
+      expect(tools.find((tool) => tool.name === "Bash")?.description).toBe("Run a shell command in the workspace.");
+      expect(tools.find((tool) => tool.name === "Grep")?.description).toBe("Search file contents for a pattern.");
+    } finally {
+      await manager.close();
+    }
+  }, 20_000);
+
+  it("/init expands to the persona init prompt; user override wins over persona", async () => {
+    const cc = BUILTIN_PERSONAS.find((item) => item.id === "claude-code")!;
+    const { app, session, requests, manager, dataDir } = await setupWithApp({ enableEnvSim: true, persona: "claude-code" });
+    try {
+      const first = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "/init" } });
+      expect(first.statusCode, first.body).toBe(202);
+      await vi.waitFor(() => expect(requests.length).toBeGreaterThan(0), { timeout: 5_000 });
+      const seen = (): string[] => requests.map((request) => {
+        const last = request.messages.at(-1);
+        const text = last?.content.find((block) => block.type === "text");
+        return text?.type === "text" ? text.text : "";
+      });
+      expect(seen()).toContain(cc.initPrompt);
+
+      // 用户覆盖（prompt-overrides 面）优先于 persona
+      await writeFile(path.join(dataDir, "command-init-prompt.md"), "用户自定义 init 提示词\n", "utf8");
+      const second = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "/init" } });
+      expect(second.statusCode, second.body).toBe(202);
+      await vi.waitFor(() => expect(seen()).toContain("用户自定义 init 提示词"), { timeout: 5_000 });
+    } finally {
+      await app.close();
+      await manager.close();
+    }
+  }, 20_000);
+
+  it("/compact uses the persona compact prompt; user override wins over persona", async () => {
+    const cc = BUILTIN_PERSONAS.find((item) => item.id === "claude-code")!;
+    const { app, session, sessions, fastModelCalls, manager, dataDir } = await setupWithApp({ enableEnvSim: true, persona: "claude-code" });
+    try {
+      for (let index = 0; index < 5; index += 1) {
+        await sessions.appendMessage(session.id, "user", [{ type: "text", text: `消息 ${index + 1}` }]);
+      }
+      const first = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/compact`, payload: { mode: "toolcalls" } });
+      expect(first.statusCode, first.body).toBe(200);
+      expect(fastModelCalls[0]?.system).toBe(cc.compactToolcallsPrompt);
+
+      // 用户覆盖（prompt-overrides 面）优先于 persona
+      await writeFile(path.join(dataDir, "compact-prompt-toolcalls.md"), "用户自定义工具压缩指令\n", "utf8");
+      for (let index = 0; index < 4; index += 1) {
+        await sessions.appendMessage(session.id, "user", [{ type: "text", text: `追加 ${index + 1}` }]);
+      }
+      const second = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/compact`, payload: { mode: "toolcalls" } });
+      expect(second.statusCode, second.body).toBe(200);
+      expect(fastModelCalls.at(-1)?.system).toBe("用户自定义工具压缩指令");
+    } finally {
+      await app.close();
+      await manager.close();
+    }
+  }, 20_000);
+
+  it("creates, lists and deletes user personas over REST", async () => {
+    const { app, manager } = await setupWithApp();
+    try {
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/extensions/env-sim/personas",
+        payload: { id: "mine", name: "Mine", identity: "You are Mine.", basePrompt: "mine base", initPrompt: "mine init" },
+      });
+      expect(created.statusCode, created.body).toBe(201);
+      expect(created.json()).toMatchObject({ id: "mine", name: "Mine", builtin: false, initPrompt: "mine init" });
+
+      const list = await app.inject({ method: "GET", url: "/api/extensions/env-sim/personas" });
+      expect((list.json() as { personas: Array<{ id: string }> }).personas.map((item) => item.id)).toContain("mine");
+
+      const invalid = await app.inject({ method: "POST", url: "/api/extensions/env-sim/personas", payload: { id: "claude-code", name: "X", identity: "x", basePrompt: "y" } });
+      expect(invalid.statusCode).toBe(400);
+
+      const removeBuiltin = await app.inject({ method: "DELETE", url: "/api/extensions/env-sim/personas/claude-code" });
+      expect(removeBuiltin.statusCode).toBe(400);
+      const removeMissing = await app.inject({ method: "DELETE", url: "/api/extensions/env-sim/personas/nope" });
+      expect(removeMissing.statusCode).toBe(404);
+      const removed = await app.inject({ method: "DELETE", url: "/api/extensions/env-sim/personas/mine" });
+      expect(removed.statusCode).toBe(200);
+      const after = await app.inject({ method: "GET", url: "/api/extensions/env-sim/personas" });
+      expect((after.json() as { personas: Array<{ id: string }> }).personas.map((item) => item.id)).not.toContain("mine");
     } finally {
       await app.close();
       await manager.close();

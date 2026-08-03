@@ -3,7 +3,7 @@ import { loadUserPresets, type PresetWarn } from "./preset-store.js";
 import type { PersonaDetail, PersonaPreset, PersonaSummary } from "./types.js";
 
 export { BUILTIN_PERSONAS } from "./builtin-personas.js";
-export { personasDir } from "./preset-store.js";
+export { deleteUserPreset, personasDir, saveUserPreset } from "./preset-store.js";
 export type { PersonaAlias, PersonaDetail, PersonaPreset, PersonaSummary } from "./types.js";
 
 /** 预设清单（内置在前，用户目录发现的后缀），供 UI 下拉与 REST 契约。 */

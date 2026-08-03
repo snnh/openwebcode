@@ -116,6 +116,39 @@ describe("四个配置面与项目级读写", () => {
     expect(project.customAppend).toBe("project append");
     expect(project.baseOverride).toBeUndefined();
   });
+
+  it("init/compact 三个命令面：全局加载、逐面合并与置空删除", async () => {
+    const dataDir = await tempRoot("owc-prompt-");
+    const cwd = await tempRoot("owc-prompt-");
+    // 无文件时不引入新面字段
+    let override = await loadPromptOverride(dataDir, cwd);
+    expect(override.initOverride).toBeUndefined();
+    expect(override.compactOverviewOverride).toBeUndefined();
+    expect(override.compactToolcallsOverride).toBeUndefined();
+
+    await writeGlobalPromptOverride(dataDir, {
+      initOverride: "全局 init",
+      compactOverviewOverride: "全局概览压缩",
+      compactToolcallsOverride: "全局工具压缩",
+    });
+    override = await loadPromptOverride(dataDir, cwd);
+    expect(override.initOverride).toBe("全局 init");
+    expect(override.compactOverviewOverride).toBe("全局概览压缩");
+    expect(override.compactToolcallsOverride).toBe("全局工具压缩");
+
+    // 项目级整面覆盖全局同面，其余面仍取全局
+    await writeProjectPromptOverride(cwd, { compactOverviewOverride: "项目概览压缩" });
+    override = await loadPromptOverride(dataDir, cwd);
+    expect(override.initOverride).toBe("全局 init");
+    expect(override.compactOverviewOverride).toBe("项目概览压缩");
+    expect(override.compactToolcallsOverride).toBe("全局工具压缩");
+
+    // 置空删除对应文件
+    await writeGlobalPromptOverride(dataDir, {});
+    override = await loadPromptOverride(dataDir, cwd);
+    expect(override.initOverride).toBeUndefined();
+    expect(override.compactToolcallsOverride).toBeUndefined();
+  });
 });
 
 describe("buildSystemPrompt with overrides", () => {

@@ -3,13 +3,17 @@ import path from "node:path";
 import { writeUtf8Atomically } from "../../atomic-file.js";
 
 /**
- * 可编辑的系统提示词覆盖（plan 提示词修改功能），四个配置面：
+ * 可编辑的系统提示词覆盖（plan 提示词修改功能），七个配置面：
  * - 身份行 identity：<dir>/system-prompt-identity.md（覆盖首行 "You are OpenWebCode..."；
  *   env-sim persona 身份优先于此覆盖）
  * - 基线覆盖 base：<dir>/system-prompt.md（完整覆盖内置 PI_BASE_SYSTEM_PROMPT）
  * - 追加指令 append：<dir>/system-prompt-append.md（finalConstraints 之后插入）
  * - 子代理附加 subAgentAppend：<dir>/system-prompt-subagent.md（拼入所有子代理系统提示，
  *   追加在自定义子代理 body 之后）
+ * - /init 命令 init：<dir>/command-init-prompt.md（覆盖 /init 展开的内置探查提示词；
+ *   env-sim persona 的 initPrompt 次之、内置最后）
+ * - compact 概览 compactOverview：<dir>/compact-prompt-overview.md（覆盖 overview 压缩系统提示词）
+ * - compact 工具占位 compactToolcalls：<dir>/compact-prompt-toolcalls.md（覆盖 toolcalls 压缩系统提示词）
  *
  * 每一面都有全局（<dataDir>/）与项目（<cwd>/.owc/）两级同名文件。
  * 合并语义与 hooks/mcp/memory 的两级模式一致：逐面独立合并，项目级存在时整面覆盖全局
@@ -27,14 +31,23 @@ export interface PromptOverride {
   customAppend?: string;
   /** 拼入所有子代理系统提示的附加指令；undefined 表示无附加。 */
   subAgentAppend?: string;
+  /** 覆盖 /init 命令展开的内置探查提示词；undefined 表示沿用内置。 */
+  initOverride?: string;
+  /** 覆盖 overview 压缩系统提示词；undefined 表示沿用内置。 */
+  compactOverviewOverride?: string;
+  /** 覆盖 toolcalls 压缩系统提示词；undefined 表示沿用内置。 */
+  compactToolcallsOverride?: string;
 }
 
-/** 四个配置面与落盘文件名的对应表（一文件一面，全局/项目两级同名）。 */
+/** 七个配置面与落盘文件名的对应表（一文件一面，全局/项目两级同名）。 */
 const OVERRIDE_FACES = [
   { key: "identityOverride", file: "system-prompt-identity.md" },
   { key: "baseOverride", file: "system-prompt.md" },
   { key: "customAppend", file: "system-prompt-append.md" },
   { key: "subAgentAppend", file: "system-prompt-subagent.md" },
+  { key: "initOverride", file: "command-init-prompt.md" },
+  { key: "compactOverviewOverride", file: "compact-prompt-overview.md" },
+  { key: "compactToolcallsOverride", file: "compact-prompt-toolcalls.md" },
 ] as const;
 
 type OverrideFaceKey = (typeof OVERRIDE_FACES)[number]["key"];

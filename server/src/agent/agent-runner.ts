@@ -1028,7 +1028,17 @@ export class AgentRunner {
         if (utilization >= 0.85 && this.compactor && !forceCompacted) {
           forceCompacted = true;
           try {
-            const compacted = await this.compactor.compact(sessionId, "overview", { forced: true });
+            // 压缩提示词优先级：用户覆盖 > env-sim persona > 内置；用户覆盖与主提示词覆盖共用 promptOverrideCache
+            let override = this.promptOverrideCache.get(session.cwd);
+            if (!override && this.dataDir) {
+              override = await loadPromptOverride(this.dataDir, session.cwd);
+              this.promptOverrideCache.set(session.cwd, override);
+            }
+            const persona = this.extensions
+              ? await this.extensions.activeEnvSimPersonaPreset(resolveSessionPersona(session))
+              : null;
+            const overviewPrompt = override?.compactOverviewOverride ?? persona?.compactOverviewPrompt;
+            const compacted = await this.compactor.compact(sessionId, "overview", { forced: true, ...(overviewPrompt ? { promptOverrides: { overview: overviewPrompt } } : {}) });
             if (compacted.changed) {
               this.events.publish({ source: "agent", type: "context.compacted", sessionId, payload: { mode: compacted.mode, uptoIndex: compacted.uptoIndex ?? 0, forced: true } });
               continue;
@@ -1393,6 +1403,9 @@ export class AgentRunner {
     } catch (error) {
       if (followUpQueueItemId) await this.messageQueue.requeue(sessionId, followUpQueueItemId);
       if (controller.signal.aborted) {
+        // 中断可能留下已落盘 tool_call 但结果未落盘（executeTool 因 abort 抛出，
+        // 跳过循环内正常落盘）；不补齐则下一次请求被 provider 以非法历史形状拒绝。
+        await this.backfillAbortedToolResults(sessionId);
         this.events.publish({
           source: "agent",
           type: "agent.aborted",
@@ -3382,6 +3395,38 @@ export class AgentRunner {
   private messageLineage(sessionId: string): { runId?: string; turnId?: string } {
     const run = this.runs.get(sessionId);
     return run ? { runId: run.id, turnId: `${run.id}:${run.turnIndex}` } : {};
+  }
+
+  /**
+   * 中断收尾：为活动路径上没有对应 tool_result 的已落盘 tool_call 补写占位结果。
+   * 正常路径下每个 tool_call 紧随其后落盘结果；abort 在 executeTool 内抛出时循环内
+   * 落盘被跳过，历史形状非法会让下一次 provider 请求直接 400（Responses API 尤其严格）。
+   */
+  private async backfillAbortedToolResults(sessionId: string): Promise<void> {
+    try {
+      const session = await this.sessions.get(sessionId);
+      if (!session) return;
+      const active = activePathMessages(session.messages, session.activeLeafId);
+      const results = new Set(
+        active
+          .flatMap((message) => message.content)
+          .filter((block) => block.type === "tool_result")
+          .map((block) => block.toolCallId),
+      );
+      // 只补活动路径：旧分支的悬空调用不进入上下文视图，补写反而会以
+      // 无对应 function_call 的 output 污染活动路径。
+      for (const message of active) {
+        for (const block of message.content) {
+          if (block.type !== "tool_call" || results.has(block.id)) continue;
+          await this.sessions.appendMessage(sessionId, "tool", [
+            { type: "tool_result", toolCallId: block.id, content: "The run was interrupted before this tool finished; no result was produced.", isError: true },
+          ], this.messageLineage(sessionId));
+          results.add(block.id);
+        }
+      }
+    } catch {
+      // 补写失败不掩盖 abort 本身；provider 层仍有兜底修复
+    }
   }
 
   /** Map legacy transient names to the persisted Run state machine. */
