@@ -25,7 +25,7 @@ function stubCapabilitiesFetch(): void {
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
     const url = typeof input === "string" ? input : input.toString();
     const json = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-    if (url.endsWith("/api/sandbox/capabilities")) return json({ appcontainer: true, jobobject: true, off: true, wsb: { available: false, reason: "未启用" }, bindLink: { available: false, reason: "未启用" } });
+    if (url.endsWith("/api/sandbox/capabilities")) return json({ platform: "win32", appcontainer: true, jobobject: true, off: true, wsb: { available: false, reason: "未启用" }, bindLink: { available: false, reason: "未启用" } });
     if (url.endsWith("/api/managed-workspace/capability")) return json({ platform: "linux", backends: [] });
     return json({ error: "not mocked" }, 404);
   }));
@@ -95,7 +95,7 @@ describe("NewSessionDialog 引导跳转", () => {
   ])("$label 提示带跳转按钮，点击回调 models 页签", async ({ providers, button }) => {
     stubCapabilitiesFetch();
     const onOpenSettings = vi.fn();
-    render(
+    renderWithClient(
       <NewSessionDialog open providers={providers} models={[]} onClose={() => undefined} onCreate={() => undefined} onOpenSettings={onOpenSettings} />,
     );
     fireEvent.click(await screen.findByRole("button", { name: button }));
@@ -104,7 +104,7 @@ describe("NewSessionDialog 引导跳转", () => {
 
   it("未提供 onOpenSettings 时提示保持纯文本", async () => {
     stubCapabilitiesFetch();
-    render(
+    renderWithClient(
       <NewSessionDialog open providers={[]} models={[]} onClose={() => undefined} onCreate={() => undefined} />,
     );
     expect(await screen.findByText(/还没有可用的 Provider/)).toBeInTheDocument();

@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { JobHeader } from "../components/JobHeader";
 import { api } from "../lib/api";
@@ -20,14 +20,19 @@ const session = makeSession({
 
 beforeEach(() => {
   vi.spyOn(api, "tasks").mockResolvedValue([]);
-  vi.spyOn(api, "sandboxCapabilities").mockResolvedValue({ appcontainer: true, jobobject: true, off: true, wsb: { available: false, reason: "测试" }, bindLink: { available: false, reason: "测试" } });
+  vi.spyOn(api, "sandboxCapabilities").mockResolvedValue({ platform: "win32", appcontainer: true, jobobject: true, off: true, wsb: { available: false, reason: "测试" }, bindLink: { available: false, reason: "测试" } });
 });
 
 afterEach(() => vi.restoreAllMocks());
 
 /** 覆盖 beforeEach 的默认 capabilities：WSB 可用 */
 function mockWsbAvailable(): void {
-  vi.mocked(api.sandboxCapabilities).mockResolvedValue({ appcontainer: true, jobobject: true, off: true, wsb: { available: true }, bindLink: { available: true } });
+  vi.mocked(api.sandboxCapabilities).mockResolvedValue({ platform: "win32", appcontainer: true, jobobject: true, off: true, wsb: { available: true }, bindLink: { available: true } });
+}
+
+/** 覆盖 beforeEach 的默认 capabilities：Linux 平台 */
+function mockLinuxPlatform(): void {
+  vi.mocked(api.sandboxCapabilities).mockResolvedValue({ platform: "linux", appcontainer: false, jobobject: true, off: true, wsb: { available: false, reason: "仅 Windows" }, bindLink: { available: false, reason: "仅 Windows" } });
 }
 
 /** 渲染 idle 状态的 JobHeader（windowUsage/latestUsage 按需传入） */
@@ -198,5 +203,46 @@ describe("JobHeader 导出", () => {
     const link = screen.getByRole("link", { name: "导出 Markdown" });
     expect(link).toHaveAttribute("href", "/api/sessions/session-1/export.md");
     expect(link).toHaveAttribute("download");
+  });
+});
+
+describe("JobHeader 平台适配", () => {
+  it("win32：shell 选择器展示 PowerShell 7 与 CMD，沙盒默认档为 Job Object", async () => {
+    renderHeader();
+    await waitFor(() => expect(api.sandboxCapabilities).toHaveBeenCalled());
+
+    const shellSelect = screen.getByLabelText("Shell 后端");
+    await waitFor(() => expect(within(shellSelect).getByRole("option", { name: "CMD" })).toBeInTheDocument());
+    expect(within(shellSelect).getByRole("option", { name: "PowerShell 7" })).toBeInTheDocument();
+
+    const sandboxSelect = screen.getByLabelText("沙盒模式");
+    expect(within(sandboxSelect).getByRole("option", { name: "Job Object" })).toBeInTheDocument();
+    expect(within(sandboxSelect).getByRole("option", { name: "AppContainer" })).toBeInTheDocument();
+  });
+
+  it("linux：shell 选择器隐藏 CMD 与 PowerShell 7，沙盒默认档显示 Landlock 且不展示 Windows 专属模式", async () => {
+    mockLinuxPlatform();
+    renderHeader();
+
+    const shellSelect = screen.getByLabelText("Shell 后端");
+    await waitFor(() => expect(within(shellSelect).queryByRole("option", { name: "CMD" })).not.toBeInTheDocument());
+    expect(within(shellSelect).queryByRole("option", { name: "PowerShell 7" })).not.toBeInTheDocument();
+    expect(within(shellSelect).getByRole("option", { name: "Bash" })).toBeInTheDocument();
+
+    const sandboxSelect = screen.getByLabelText("沙盒模式");
+    await waitFor(() => expect(within(sandboxSelect).getByRole("option", { name: "Landlock" })).toBeInTheDocument());
+    expect(within(sandboxSelect).queryByRole("option", { name: "Windows Sandbox" })).not.toBeInTheDocument();
+    expect(within(sandboxSelect).queryByRole("option", { name: "AppContainer" })).not.toBeInTheDocument();
+  });
+
+  it("linux：会话已选中 pwsh 时保留该选项以免下拉落空", async () => {
+    mockLinuxPlatform();
+    renderWithClient(
+      <JobHeader session={{ ...session, shellBackend: "pwsh" }} agentState="idle" onAbort={() => undefined} onConfig={async () => undefined} />,
+    );
+
+    const shellSelect = screen.getByLabelText("Shell 后端");
+    await waitFor(() => expect(within(shellSelect).queryByRole("option", { name: "CMD" })).not.toBeInTheDocument());
+    expect(within(shellSelect).getByRole("option", { name: "PowerShell 7" })).toBeInTheDocument();
   });
 });

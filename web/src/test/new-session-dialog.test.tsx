@@ -1,17 +1,23 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NewSessionDialog } from "../components/NewSessionDialog";
 import type { ModelProfile } from "../lib/contracts";
+import { makeTestClient, renderWithClient } from "./helpers/with-client";
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function stubFetch(managed: { available: boolean; detail?: string }, bindLink: { available: boolean; reason?: string } = { available: false, reason: "未启用" }): void {
+function stubFetch(
+  managed: { available: boolean; detail?: string },
+  bindLink: { available: boolean; reason?: string } = { available: false, reason: "未启用" },
+  platform = "win32",
+): void {
   const handler = vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
     const url = typeof input === "string" ? input : input.toString();
     const json = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-    if (url.endsWith("/api/sandbox/capabilities")) return json({ appcontainer: true, jobobject: true, off: true, wsb: { available: false, reason: "未启用" }, bindLink });
+    if (url.endsWith("/api/sandbox/capabilities")) return json({ platform, appcontainer: true, jobobject: true, off: true, wsb: { available: false, reason: "未启用" }, bindLink });
     if (url.endsWith("/api/managed-workspace/capability")) {
       return json({ platform: "linux", backends: [{ backend: "qcow2", available: managed.available, requiresAdmin: true, ...(managed.detail ? { detail: managed.detail } : {}) }] });
     }
@@ -21,7 +27,7 @@ function stubFetch(managed: { available: boolean; detail?: string }, bindLink: {
 }
 
 function renderDialog(): void {
-  render(
+  renderWithClient(
     <NewSessionDialog
       open
       providers={["test-stub"]}
@@ -67,7 +73,7 @@ describe("NewSessionDialog Bind Link", () => {
   it("添加绑定并随创建提交 bindLinks（未填完整的行被忽略）", async () => {
     stubFetch({ available: true }, { available: true });
     const onCreate = vi.fn();
-    render(<NewSessionDialog open providers={["test-stub"]} models={[model]} onClose={() => undefined} onCreate={onCreate} />);
+    renderWithClient(<NewSessionDialog open providers={["test-stub"]} models={[model]} onClose={() => undefined} onCreate={onCreate} />);
     fireEvent.change(await screen.findByLabelText("工作目录"), { target: { value: "D:\\work" } });
 
     const addButton = await screen.findByRole("button", { name: "添加绑定" });
@@ -87,7 +93,7 @@ describe("NewSessionDialog Bind Link", () => {
 
   it("能力不可用时添加按钮禁用并展示原因", async () => {
     stubFetch({ available: true }, { available: false, reason: "需要 Windows 11 24H2+" });
-    render(<NewSessionDialog open providers={["test-stub"]} models={[model]} onClose={() => undefined} onCreate={() => undefined} />);
+    renderWithClient(<NewSessionDialog open providers={["test-stub"]} models={[model]} onClose={() => undefined} onCreate={() => undefined} />);
     const addButton = await screen.findByRole("button", { name: "添加绑定" });
     await waitFor(() => expect(addButton).toBeDisabled());
     expect(await screen.findByText(/Bind Link 不可用/)).toBeInTheDocument();
@@ -96,7 +102,7 @@ describe("NewSessionDialog Bind Link", () => {
 
   it("wsb 与关闭沙盒模式下不展示绑定编辑器", async () => {
     stubFetch({ available: true }, { available: true });
-    render(<NewSessionDialog open providers={["test-stub"]} models={[model]} onClose={() => undefined} onCreate={() => undefined} />);
+    renderWithClient(<NewSessionDialog open providers={["test-stub"]} models={[model]} onClose={() => undefined} onCreate={() => undefined} />);
     const sandboxLabel = await screen.findByText("沙盒模式");
     const select = within(sandboxLabel.closest("label")!).getByRole("combobox");
 
@@ -114,7 +120,7 @@ describe("NewSessionDialog Bind Link", () => {
 describe("NewSessionDialog provider 引导", () => {
   it("没有已配置 provider 时说明原因并禁用创建", async () => {
     stubFetch({ available: true });
-    render(
+    renderWithClient(
       <NewSessionDialog
         open
         providers={[]}
@@ -140,13 +146,17 @@ describe("NewSessionDialog provider 引导", () => {
     stubFetch({ available: true });
     const anthropic = { id: "claude", provider: "anthropic", contextWindow: 1000, maxOutput: 100, capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true } } as ModelProfile;
     const openai = { ...anthropic, id: "gpt", provider: "openai" };
-    const { rerender } = render(
+    const client = makeTestClient();
+    const { rerender } = renderWithClient(
       <NewSessionDialog open providers={["anthropic"]} models={[anthropic, openai]} onClose={() => undefined} onCreate={() => undefined} />,
+      client,
     );
     await waitFor(() => expect(screen.getByLabelText("模型")).toHaveValue(JSON.stringify(["anthropic", "claude"])));
 
     rerender(
-      <NewSessionDialog open providers={["openai"]} models={[anthropic, openai]} onClose={() => undefined} onCreate={() => undefined} />,
+      <QueryClientProvider client={client}>
+        <NewSessionDialog open providers={["openai"]} models={[anthropic, openai]} onClose={() => undefined} onCreate={() => undefined} />
+      </QueryClientProvider>,
     );
     await waitFor(() => expect(screen.getByLabelText("模型")).toHaveValue(JSON.stringify(["openai", "gpt"])));
   });
@@ -171,7 +181,7 @@ describe("NewSessionDialog provider 引导", () => {
         capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true },
       },
     ];
-    render(<NewSessionDialog open providers={["test-stub"]} models={models} onClose={() => undefined} onCreate={() => undefined} />);
+    renderWithClient(<NewSessionDialog open providers={["test-stub"]} models={models} onClose={() => undefined} onCreate={() => undefined} />);
 
     expect(await screen.findByText("图片输入")).toBeInTheDocument();
     expect(screen.getByText("视频输入")).toBeInTheDocument();
@@ -181,5 +191,39 @@ describe("NewSessionDialog provider 引导", () => {
     await waitFor(() => expect(screen.queryByText("图片输入")).not.toBeInTheDocument());
     expect(screen.queryByText("视频输入")).not.toBeInTheDocument();
     expect(screen.queryByText("图片输出")).not.toBeInTheDocument();
+  });
+});
+
+describe("NewSessionDialog 平台适配", () => {
+  const model = { id: "m", provider: "test-stub", contextWindow: 1000, maxOutput: 100, capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true } } as ModelProfile;
+
+  function sandboxSelect(): HTMLElement {
+    const label = screen.getByText("沙盒模式");
+    return within(label.closest("label")!).getByRole("combobox");
+  }
+
+  it("win32：默认档显示 Job Object 文案，展示 AppContainer/WSB 选项、WSB 不可用提示与 Bind Link 区块", async () => {
+    stubFetch({ available: true }, { available: true }, "win32");
+    renderWithClient(<NewSessionDialog open providers={["test-stub"]} models={[model]} onClose={() => undefined} onCreate={() => undefined} />);
+
+    const select = await screen.findByText("沙盒模式").then(sandboxSelect);
+    await waitFor(() => expect(within(select).getByRole("option", { name: /Job Object/ })).toBeInTheDocument());
+    expect(within(select).getByRole("option", { name: /AppContainer/ })).toBeInTheDocument();
+    expect(within(select).getByRole("option", { name: /Windows Sandbox/ })).toBeInTheDocument();
+    expect(await screen.findByText(/Windows Sandbox 不可用/)).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "添加绑定" })).toBeInTheDocument();
+  });
+
+  it("linux：默认档显示 Landlock 文案，隐藏 AppContainer/WSB 选项、WSB 提示与整个 Bind Link 区块", async () => {
+    stubFetch({ available: true }, { available: true }, "linux");
+    renderWithClient(<NewSessionDialog open providers={["test-stub"]} models={[model]} onClose={() => undefined} onCreate={() => undefined} />);
+
+    const select = await screen.findByText("沙盒模式").then(sandboxSelect);
+    await waitFor(() => expect(within(select).getByRole("option", { name: /Landlock/ })).toBeInTheDocument());
+    expect(within(select).queryByRole("option", { name: /AppContainer/ })).not.toBeInTheDocument();
+    expect(within(select).queryByRole("option", { name: /Windows Sandbox/ })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Windows Sandbox 不可用/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "添加绑定" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Bind Link/)).not.toBeInTheDocument();
   });
 });
