@@ -15,7 +15,7 @@ export { langFromPath };
 export function CodeOverlay({ sessionId, path, onEdit, onClose }: {
   sessionId: string;
   path: string;
-  /** 0.5.0 Phase 1a：升级为可编辑编辑器分栏；移动端/未提供时不显示入口 */
+  /** 0.5.0 Phase 1a：升级为可编辑编辑器分栏；未提供时不显示入口 */
   onEdit?(path: string): void;
   onClose(): void;
 }): ReactElement {

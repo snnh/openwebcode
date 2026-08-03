@@ -1,10 +1,10 @@
 /**
  * 编辑器入口与布局回归（0.5.0 Phase 1a 验收，App 级）：
  * - 新会话默认纯对话（无编辑器分栏）；切换会话关闭已打开的编辑器。
- * - 移动端不提供编辑器：入口降级为只读代码视图浮层，Monaco chunk 不加载。
+ * - 窄屏（≤1024px）同样提供编辑器：渲染层分流为全屏临时视图，Monaco 懒加载。
  * Monaco 本体用 fake；isMobile 经 use-media-query mock 控制。
  */
-import { fireEvent, render, waitFor } from "@testing-library/react";
+import { fireEvent, render, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createFakeMonaco } from "./helpers/fake-monaco";
 import { setupStubWebSocket } from "./helpers/stub-websocket";
@@ -91,16 +91,15 @@ describe("编辑器分栏：布局回归", () => {
     await waitFor(() => expect(view.container.querySelector(".editor-pane")).toBeNull());
   });
 
-  it("移动端：Ctrl+Enter 也降级为只读浮层，不加载 Monaco chunk", async () => {
+  it("移动端：Ctrl+Enter 同样打开编辑器（全屏临时视图），加载 Monaco", async () => {
     mobileMatches = true;
     const view = renderApp();
     await view.findByRole("heading", { name: "会话一" });
     const input = await openQuickOpen(view);
     fireEvent.keyDown(input, { key: "Enter", ctrlKey: true });
-    // 降级为只读代码视图浮层
-    await view.findByRole("dialog", { name: "src/a.ts" });
-    expect(view.container.querySelector(".editor-pane")).toBeNull();
-    expect(loadMonacoMock).not.toHaveBeenCalled();
+    // 窄屏不再降级只读浮层：编辑器打开，Monaco 懒加载被触发
+    await waitFor(() => expect(view.container.querySelector(".editor-pane")).not.toBeNull());
+    expect(loadMonacoMock).toHaveBeenCalledTimes(1);
   });
 
   it("窄窗口侧栏使用临时抽屉，不继承或改写桌面展开状态", async () => {
@@ -110,7 +109,9 @@ describe("编辑器分栏：布局回归", () => {
     await view.findByRole("heading", { name: "会话一" });
 
     expect(view.container.querySelector(".wb-sidebar")).toBeNull();
-    fireEvent.click(view.getByRole("button", { name: "会话" }));
+    // 经左上角导航菜单打开会话抽屉（两级抽屉）
+    fireEvent.click(view.getByRole("button", { name: "打开导航菜单" }));
+    fireEvent.click(within(await view.findByRole("navigation", { name: "导航菜单" })).getByRole("button", { name: "会话" }));
     expect(view.container.querySelector(".wb-sidebar")).not.toBeNull();
     expect(view.getByRole("textbox", { name: "搜索会话" })).toBeInTheDocument();
     expect(window.localStorage.getItem("owc-rail-collapsed")).toBe("1");

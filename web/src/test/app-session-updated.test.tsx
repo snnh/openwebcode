@@ -1,4 +1,4 @@
-import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SettingsView } from "../lib/contracts";
 import { installAppFetchMock } from "./helpers/app-fetch-mock";
@@ -169,7 +169,8 @@ describe("App 会话事件与重试行为", () => {
     await renderLoadedApp();
 
     const openNotifications = async (): Promise<void> => {
-      fireEvent.click(screen.getByRole("button", { name: /通知中心/ }));
+      // 设置打开时其内嵌导航轨也有「通知中心」入口：这里固定点活动栏上的那个
+      fireEvent.click(within(document.querySelector(".activity-bar") as HTMLElement).getByRole("button", { name: /通知中心/ }));
       await screen.findByText(/发现新版本 v9\.9\.9/);
     };
     const clickUpdateNotification = (): void => {

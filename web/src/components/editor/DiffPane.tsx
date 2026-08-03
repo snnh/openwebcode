@@ -6,7 +6,7 @@
  *   （server 端 write_file 同一权限链与 plan 只读门禁）；接受 = 保留改动，仅标记。
  *   SCM 已暂存改动在索引中，内容写回无法触及，按只读处理并如实提示；
  *   agent write_file 没有改动前内容，只读展示写入结果；检查点后端只给摘要时按摘要模式展示。
- * - 移动端（summaryOnly）：只读摘要，不加载 Monaco，不提供写操作。
+ * - 窄屏（≤1024px）不降级：同一完整视图由 CSS 分流为覆盖主区的全屏临时视图。
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -61,14 +61,12 @@ function diffLineClass(line: string): string {
   return "diff-line";
 }
 
-export function DiffPane({ sessionId, spec, readOnly = false, dark, summaryOnly = false, actionsRef, onClose, onNotice }: {
+export function DiffPane({ sessionId, spec, readOnly = false, dark, actionsRef, onClose, onNotice }: {
   sessionId: string;
   spec: DiffSpec;
   /** plan 模式：隐藏全部写操作（server 端门禁同样生效） */
   readOnly?: boolean;
   dark: boolean;
-  /** 移动端降级：只读摘要，不加载 Monaco、不写回 */
-  summaryOnly?: boolean;
   actionsRef?: { current: DiffPaneActions };
   onClose(): void;
   onNotice(message: string, kind?: "info" | "error"): void;
@@ -189,23 +187,22 @@ export function DiffPane({ sessionId, spec, readOnly = false, dark, summaryOnly 
     () => (activeFile ? activeFile.hunks.map((_, index) => index).filter((index) => !(index in decisions)) : []),
     [activeFile, decisions],
   );
-  // 写操作总开关：plan 只读 / 移动端摘要 / 非交互模式 都不提供
-  const canWrite = !readOnly && !summaryOnly && (model.mode === "hunks" || model.mode === "change");
+  // 写操作总开关：plan 只读 / 非交互模式 都不提供
+  const canWrite = !readOnly && (model.mode === "hunks" || model.mode === "change");
 
-  // Monaco 懒加载：移动端摘要不加载；失败仅降级可视化为文本 diff
+  // Monaco 懒加载：失败仅降级可视化为文本 diff
   useEffect(() => {
-    if (summaryOnly) return;
     let alive = true;
     loadMonaco().then(
       (api2) => { if (alive) setMonaco(api2); },
       () => { if (alive) setMonacoFailed(true); },
     );
     return () => { alive = false; };
-  }, [summaryOnly]);
+  }, []);
 
   // 创建/更新 DiffEditor：original/modified 变化时重建（拒绝 hunk 后内容整体更新）
   useEffect(() => {
-    if (!monaco || summaryOnly || model.original === undefined || modified === undefined || !hostRef.current) return;
+    if (!monaco || model.original === undefined || modified === undefined || !hostRef.current) return;
     if (model.mode !== "hunks" && model.mode !== "change" && model.mode !== "readonly") return;
     monaco.editor.setTheme(dark ? "vs-dark" : "vs");
     const language = monacoLanguageForPath(monaco, model.path ?? "");
@@ -231,7 +228,7 @@ export function DiffPane({ sessionId, spec, readOnly = false, dark, summaryOnly 
     };
     // onClose 变化不重建编辑器
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [monaco, summaryOnly, model.original, model.mode, model.path, modified, dark]);
+  }, [monaco, model.original, model.mode, model.path, modified, dark]);
 
   // 主题切换实时生效
   useEffect(() => {
@@ -358,28 +355,6 @@ export function DiffPane({ sessionId, spec, readOnly = false, dark, summaryOnly 
       </div>
     </header>
   );
-
-  // 移动端降级：只读摘要（不加载 Monaco、不写回）
-  if (summaryOnly) {
-    return (
-      <section className="diff-pane diff-pane-summary" aria-label={t(`变更摘要：${title}`, `Change summary: ${title}`)}>
-        {header}
-        <div className="editor-pane-body diff-summary-body">
-          {loading && <p className="wb-overlay-hint">{t("加载中…", "Loading…")}</p>}
-          {model.note && <p className="editor-pane-note">{t(...model.note)}</p>}
-          {model.mode === "hunks" || model.mode === "change" ? (
-            <p className="wb-overlay-hint">
-              {activeFile
-                ? t(`${activeFile.hunks.length} 个 hunk；在桌面端打开可逐个接受/拒绝。`, `${activeFile.hunks.length} hunk(s); open on desktop to accept or reject them individually.`)
-                : t("存在改动；在桌面端打开可查看并处理。", "Changes detected; open on desktop to review and resolve.")}
-            </p>
-          ) : (
-            <pre className="diff-lines">{model.rawText ?? ""}</pre>
-          )}
-        </div>
-      </section>
-    );
-  }
 
   return (
     <section className="editor-pane diff-pane" aria-label={t(`diff：${title}`, `Diff: ${title}`)}>

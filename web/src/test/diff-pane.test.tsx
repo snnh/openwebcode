@@ -254,11 +254,4 @@ describe("DiffPane：降级与关闭", () => {
     fireEvent.keyDown(window, { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
-
-  it("移动端 summaryOnly：只读摘要，不加载 Monaco、无写按钮", async () => {
-    const { view } = renderPane(spec, { summaryOnly: true });
-    expect(await view.findByText(/1 个 hunk/)).toBeInTheDocument();
-    expect(loadMonacoMock).not.toHaveBeenCalled();
-    expect(view.queryByRole("button", { name: "拒绝" })).toBeNull();
-  });
 });

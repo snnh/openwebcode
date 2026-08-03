@@ -53,6 +53,7 @@ import {
 import { MOBILE_BREAKPOINT, useMediaQuery } from "./hooks/use-media-query";
 // 0.4.0 Phase 5a：五区布局与命令体系
 import { ActivityBar } from "./workbench/ActivityBar";
+import { MobileNavMenu, MobileNavRail } from "./workbench/MobileNavMenu";
 import { SidebarPanel } from "./workbench/SidebarPanel";
 import { WorkbenchShell, CYCLE_ZONE_EVENT } from "./workbench/WorkbenchShell";
 import { LAYOUT_STORAGE_KEYS, useWorkbenchLayout, type SidebarView } from "./workbench/useWorkbenchLayout";
@@ -109,6 +110,8 @@ export function App(): ReactElement {
   const layout = useWorkbenchLayout();
   // 窄窗口抽屉只在当前视口内开合，不污染桌面侧栏的持久化展开状态。
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  // 移动端导航菜单（左上角 logo 触发，左侧滑出；两级抽屉：菜单收起后视图走侧栏抽屉）
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const sidebarVisible = isMobile ? mobileSidebarOpen : layout.sidebarVisible;
   useEffect(() => {
     if (!isMobile) setMobileSidebarOpen(false);
@@ -561,18 +564,14 @@ export function App(): ReactElement {
   const editorActionsRef = useRef<{ save?(): void; focus?(): void }>({});
   // diff 视图命令动作面：接受/拒绝当前 hunk（DiffPane 挂载时注册）
   const diffActionsRef = useRef<{ accept?(): void; reject?(): void; focus?(): void }>({});
-  // 打开编辑器分栏；移动端不提供编辑器，降级为只读代码视图浮层（§6.8 语义平移）
+  // 打开编辑器分栏；窄屏同样打开编辑器（渲染层分流为全屏临时视图，不再降级只读浮层）
   const openEditor = useCallback((path: string, position?: { line?: number; column?: number }): void => {
-    if (isMobile) {
-      setCodeOverlayPath(path);
-      return;
-    }
     setCodeOverlayPath(undefined);
     setQuickOpenOpen(false);
     setDiffPane(undefined);
     setEditorPane({ path, ...(position?.line !== undefined ? { line: position.line } : {}), ...(position?.column !== undefined ? { column: position.column } : {}) });
-  }, [isMobile]);
-  // 打开统一 diff 视图（0.5.0 Phase 1b）：桌面进分栏，移动端降级只读摘要浮层
+  }, []);
+  // 打开统一 diff 视图（0.5.0 Phase 1b）：桌面进分栏，窄屏为全屏临时视图
   const openDiff = useCallback((spec: DiffSpec): void => {
     setCodeOverlayPath(undefined);
     setQuickOpenOpen(false);
@@ -914,12 +913,12 @@ export function App(): ReactElement {
     // 浮层打开状态（含通知中心）：供命令 when 条件使用（如 "!dialogOpen"）
     dialogOpen: dialogOpen || settingsOpen || paletteOpen || quickOpenOpen || shortcutsOpen || notificationsOpen || Boolean(codeOverlayPath),
     // 编辑器分栏开合（0.5.0）：保存/焦点切换命令的 when 条件
-    editorOpen: Boolean(editorPane) && !isMobile,
+    editorOpen: Boolean(editorPane),
     // diff 视图开合（0.5.0 Phase 1b）：hunk 接受/拒绝命令的 when 条件
-    diffOpen: Boolean(diffPane) && !isMobile,
+    diffOpen: Boolean(diffPane),
     // 权限卡待决：Esc 中断等全局键位不抢占权限响应焦点
     permissionPending: mergedPermissions.length > 0,
-  }), [currentId, running, draft, sessions.data, dialogOpen, settingsOpen, paletteOpen, quickOpenOpen, shortcutsOpen, notificationsOpen, codeOverlayPath, editorPane, diffPane, isMobile, mergedPermissions]);
+  }), [currentId, running, draft, sessions.data, dialogOpen, settingsOpen, paletteOpen, quickOpenOpen, shortcutsOpen, notificationsOpen, codeOverlayPath, editorPane, diffPane, mergedPermissions]);
 
   const stepSession = useCallback((delta: number): void => {
     const list = sessions.data ?? [];
@@ -1040,7 +1039,7 @@ export function App(): ReactElement {
         session={current}
         running={running}
         onNotice={notify}
-        onOpenInEditor={isMobile ? undefined : (file, line, column) => openEditor(file, { ...(line !== undefined ? { line } : {}), ...(column !== undefined ? { column } : {}) })}
+        onOpenInEditor={(file, line, column) => openEditor(file, { ...(line !== undefined ? { line } : {}), ...(column !== undefined ? { column } : {}) })}
         onOpenDiff={openDiff}
       />
     )
@@ -1049,24 +1048,60 @@ export function App(): ReactElement {
   return (
     <>
       {isMobile && sidebarVisible && (
-        <div className="wb-sidebar-backdrop" aria-hidden onClick={() => setMobileSidebarOpen(false)} />
+        <>
+          <div className="wb-sidebar-backdrop" aria-hidden onClick={() => setMobileSidebarOpen(false)} />
+          {/* 面板模式图标栏：菜单点选视图后收缩为纯图标，右侧整屏展示面板 */}
+          <MobileNavRail
+            activeView={layout.sidebarView}
+            problemsBadge={currentId ? problemsBadges[currentId] ?? 0 : 0}
+            notificationsBadge={unreadCount(notifications)}
+            terminalDisabled={!current}
+            terminalActive={terminalSelected}
+            onShowView={showWorkbenchView}
+            onShowHelp={() => setShortcutsOpen(true)}
+            onShowNotifications={openNotifications}
+            onOpenTerminal={openTerminalTab}
+            onOpenSettings={() => openSettings()}
+            onClose={() => setMobileSidebarOpen(false)}
+          />
+        </>
+      )}
+      {isMobile && (
+        <MobileNavMenu
+          open={mobileNavOpen}
+          activeView={layout.sidebarView}
+          problemsBadge={currentId ? problemsBadges[currentId] ?? 0 : 0}
+          notificationsBadge={unreadCount(notifications)}
+          terminalDisabled={!current}
+          terminalActive={terminalSelected}
+          onShowView={showWorkbenchView}
+          onShowHelp={() => setShortcutsOpen(true)}
+          onShowNotifications={openNotifications}
+          onOpenTerminal={openTerminalTab}
+          onOpenSettings={() => openSettings()}
+          onClose={() => setMobileNavOpen(false)}
+        />
       )}
       <WorkbenchShell
         sidebarWidth={sidebarVisible ? layout.sidebarWidth : undefined}
         activityBar={
-          <ActivityBar
-            activeView={layout.sidebarView}
-            sidebarVisible={sidebarVisible}
-            problemsBadge={currentId ? problemsBadges[currentId] ?? 0 : 0}
-            notificationsBadge={unreadCount(notifications)}
-            onShowView={showWorkbenchView}
-            onToggleSidebar={layout.toggleSidebar}
-            onShowHelp={() => setShortcutsOpen(true)}
-            onShowNotifications={openNotifications}
-            onOpenTerminal={openTerminalTab}
-            terminalDisabled={!current}
-            onOpenSettings={() => openSettings()}
-          />
+          // 窄屏不渲染桌面活动栏：导航入口由左上角 logo 触发的左侧滑出菜单承担
+          isMobile ? null : (
+            <ActivityBar
+              activeView={layout.sidebarView}
+              sidebarVisible={sidebarVisible}
+              problemsBadge={currentId ? problemsBadges[currentId] ?? 0 : 0}
+              notificationsBadge={unreadCount(notifications)}
+              onShowView={showWorkbenchView}
+              onToggleSidebar={layout.toggleSidebar}
+              onShowHelp={() => setShortcutsOpen(true)}
+              onShowNotifications={openNotifications}
+              onOpenTerminal={openTerminalTab}
+              terminalDisabled={!current}
+              terminalActive={terminalSelected}
+              onOpenSettings={() => openSettings()}
+            />
+          )
         }
         sidebar={sidebar}
         main={
@@ -1094,26 +1129,25 @@ export function App(): ReactElement {
                   onCreateCheckpoint={() => manualSnapshot.mutate(current.id)}
                   checkpointPending={manualSnapshot.isPending}
                   running={running}
+                  {...(isMobile ? { onOpenNavMenu: () => setMobileNavOpen(true) } : {})}
                 />
-                {!isMobile && (
-                  <SubagentTabStrip
-                    tabs={currentSubagentTabs}
-                    runs={subagentRuns}
-                    selected={selectedSubagentTab}
-                    {...(terminalOpen ? { terminal: { selected: terminalSelected } } : {})}
-                    onSelect={(toolCallId) => {
-                      selectSubagentTab(current.id, toolCallId);
-                      // 选中互斥：选主对话/子代理标签时取消终端选中
-                      setTerminalSelected(current.id, false);
-                    }}
-                    onClose={(toolCallId) => closeSubagentTab(current.id, toolCallId)}
-                    onSelectTerminal={() => {
-                      selectSubagentTab(current.id, undefined);
-                      setTerminalSelected(current.id, true);
-                    }}
-                    onCloseTerminal={() => closeTerminal(current.id)}
-                  />
-                )}
+                <SubagentTabStrip
+                  tabs={currentSubagentTabs}
+                  runs={subagentRuns}
+                  selected={selectedSubagentTab}
+                  {...(terminalOpen ? { terminal: { selected: terminalSelected } } : {})}
+                  onSelect={(toolCallId) => {
+                    selectSubagentTab(current.id, toolCallId);
+                    // 选中互斥：选主对话/子代理标签时取消终端选中
+                    setTerminalSelected(current.id, false);
+                  }}
+                  onClose={(toolCallId) => closeSubagentTab(current.id, toolCallId)}
+                  onSelectTerminal={() => {
+                    selectSubagentTab(current.id, undefined);
+                    setTerminalSelected(current.id, true);
+                  }}
+                  onCloseTerminal={() => closeTerminal(current.id)}
+                />
                 {todos.data && todos.data.length > 0 && (
                   <details className="todo-panel" open>
                     <summary>{t("任务清单", "Task list")} · {todos.data.filter((item) => item.status === "done").length}/{todos.data.length}</summary>
@@ -1226,6 +1260,7 @@ export function App(): ReactElement {
                 onSelect={selectSession}
                 onCreate={() => setDialogOpen(true)}
                 onOpenSettings={openSettings}
+                {...(isMobile ? { onOpenNavMenu: () => setMobileNavOpen(true) } : {})}
                 onExample={(text) => {
                   void writeClipboard(text).then((ok) => notify(
                     ok ? t("已复制到剪贴板，粘贴进会话输入框发送", "Copied to clipboard — paste into the composer to send") : t("复制失败", "Copy failed"),
@@ -1235,7 +1270,7 @@ export function App(): ReactElement {
               />
             )}
             </section>
-            {editorPane && currentId && !isMobile && (
+            {editorPane && currentId && (
               <Suspense fallback={null}>
                 <EditorPane
                   sessionId={currentId}
@@ -1250,7 +1285,7 @@ export function App(): ReactElement {
                 />
               </Suspense>
             )}
-            {diffPane && currentId && !isMobile && (
+            {diffPane && currentId && (
               <Suspense fallback={null}>
                 <DiffPane
                   sessionId={currentId}
@@ -1290,7 +1325,8 @@ export function App(): ReactElement {
             onOpenChange={layout.setBottomOpen}
             onOpenDiff={openDiff}
             onForkSession={(newSessionId) => setCurrentId(newSessionId)}
-            {...(!isMobile ? { onOpenSubagentTab: openSubagentTab } : {})}
+            onOpenSubagentTab={openSubagentTab}
+            mobile={isMobile}
           />
         }
         // 桌面端状态项并入 BottomPanel 标签条；移动端同样并入（精简版），不再渲染独立状态栏行
@@ -1333,6 +1369,17 @@ export function App(): ReactElement {
         providers={providers.data ?? []}
         models={models.data ?? []}
         sessionCwd={sessions.data?.find((s) => s.id === currentId)?.cwd}
+        navRail={{
+          activeView: layout.sidebarView,
+          problemsBadge: currentId ? problemsBadges[currentId] ?? 0 : 0,
+          notificationsBadge: unreadCount(notifications),
+          terminalDisabled: !current,
+          terminalActive: terminalSelected,
+          onShowView: showWorkbenchView,
+          onShowHelp: () => setShortcutsOpen(true),
+          onShowNotifications: openNotifications,
+          onOpenTerminal: openTerminalTab,
+        }}
         onResetLayout={resetLayout}
         onClose={() => setSettingsOpen(false)}
       />
@@ -1350,7 +1397,7 @@ export function App(): ReactElement {
             open={quickOpenOpen}
             sessionId={currentId}
             onOpenFile={(path) => setCodeOverlayPath(path)}
-            onOpenInEditor={isMobile ? undefined : (path) => openEditor(path)}
+            onOpenInEditor={(path) => openEditor(path)}
             onClose={() => setQuickOpenOpen(false)}
           />
         )}
@@ -1369,24 +1416,9 @@ export function App(): ReactElement {
           <CodeOverlay
             sessionId={currentId}
             path={codeOverlayPath}
-            onEdit={isMobile ? undefined : (path) => openEditor(path)}
+            onEdit={(path) => openEditor(path)}
             onClose={() => setCodeOverlayPath(undefined)}
           />
-        )}
-        {/* 移动端 diff 降级：只读摘要浮层（不加载 Monaco、不写回），桌面端走编辑器区分栏 */}
-        {diffPane && currentId && isMobile && (
-          <div className="wb-overlay-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeDiff(); }}>
-            <div className="wb-overlay code-overlay" role="dialog" aria-modal="true" aria-label={t("变更摘要", "Change summary")}>
-              <DiffPane
-                sessionId={currentId}
-                spec={diffPane}
-                summaryOnly
-                dark={theme === "dark"}
-                onClose={closeDiff}
-                onNotice={notify}
-              />
-            </div>
-          </div>
         )}
       </Suspense>
       {notice && <Toast notice={notice} onDismiss={() => setNotice(undefined)} />}

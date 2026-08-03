@@ -1,7 +1,7 @@
 /**
  * 统一 diff 视图入口与布局回归（0.5.0 Phase 1b 验收，App 级）：
  * - 三种来源打开路径：Run 轨道工具卡（agent 工具改动）、SCM 面板、时间线检查点；
- * - 对话为主约束：默认无 diff、切换会话即关闭、Esc 回对话且焦点回 Composer、移动端降级只读摘要（不加载 Monaco）。
+ * - 对话为主约束：默认无 diff、切换会话即关闭、Esc 回对话且焦点回 Composer、窄屏为全屏完整视图。
  * Monaco 本体用 fake；isMobile 经 use-media-query mock 控制。
  */
 import { fireEvent, waitFor } from "@testing-library/react";
@@ -154,16 +154,15 @@ describe("统一 diff 视图：入口与布局回归", () => {
     expect(await view.findByText("已拒绝")).toBeInTheDocument();
   });
 
-  it("移动端：工具卡打开 diff 降级为只读摘要浮层，不加载 Monaco", async () => {
+  it("移动端：工具卡打开 diff 为全屏完整视图（加载 Monaco，可 hunk 操作）", async () => {
     mobileMatches = true;
     const view = renderApp();
     await view.findByRole("heading", { name: "会话一" });
     // 工具行默认折叠：先展开，diff 入口在展开区内
     fireEvent.click(view.getByRole("button", { name: /write_file/ }));
     fireEvent.click(await view.findByRole("button", { name: "在 diff 视图中打开该文件变化" }));
-    await view.findByRole("dialog", { name: "变更摘要" });
-    expect(view.container.querySelector(".editor-pane.diff-pane")).toBeNull();
-    expect(loadMonacoMock).not.toHaveBeenCalled();
-    expect(view.queryByRole("button", { name: "拒绝" })).toBeNull();
+    // 窄屏不再降级只读摘要：完整 diff 视图打开，Monaco 懒加载被触发
+    await waitFor(() => expect(view.container.querySelector(".diff-pane")).not.toBeNull());
+    expect(loadMonacoMock).toHaveBeenCalledTimes(1);
   });
 });
