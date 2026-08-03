@@ -255,6 +255,26 @@ export interface PersonaDetail extends PersonaSummary {
   productSections: string[];
   hideBuiltIns: string[];
   aliases: Array<{ from: string; as: string; description?: string }>;
+  /** /init 命令展开提示词拟态（可选）。 */
+  initPrompt?: string;
+  /** /compact（overview）压缩系统提示词拟态（可选）。 */
+  compactOverviewPrompt?: string;
+  /** /compact tools 压缩系统提示词拟态（可选）。 */
+  compactToolcallsPrompt?: string;
+}
+
+/** 新建/编辑 env-sim 用户预设的提交体（同 id 覆盖即编辑）。 */
+export interface PersonaPresetInput {
+  id: string;
+  name: string;
+  identity: string;
+  basePrompt: string;
+  productSections?: string[];
+  hideBuiltIns?: string[];
+  aliases?: Array<{ from: string; as: string; description?: string }>;
+  initPrompt?: string;
+  compactOverviewPrompt?: string;
+  compactToolcallsPrompt?: string;
 }
 
 /** 0.5.0 Phase 2: paginated message page from GET /api/sessions/:id/messages */
@@ -968,6 +988,10 @@ export interface UpdateApplyState {
 
 export interface PromptOverrideView {
   builtinBase: string;
+  /** 服务端始终返回；声明为可选以兼容旧的测试桩 */
+  builtinInitPrompt?: string;
+  builtinCompactOverviewPrompt?: string;
+  builtinCompactToolcallsPrompt?: string;
   promptVersion: string;
   /** 服务端始终返回；声明为可选以兼容旧的测试桩 */
   identityOverride?: string | null;
@@ -975,4 +999,8 @@ export interface PromptOverrideView {
   customAppend: string | null;
   /** 服务端始终返回；声明为可选以兼容旧的测试桩 */
   subAgentAppend?: string | null;
+  /** 服务端始终返回；声明为可选以兼容旧的测试桩 */
+  initOverride?: string | null;
+  compactOverviewOverride?: string | null;
+  compactToolcallsOverride?: string | null;
 }

@@ -26,7 +26,7 @@ export function QuickOpen({ open, sessionId, onOpenFile, onOpenInEditor, onClose
   open: boolean;
   sessionId?: string;
   onOpenFile(path: string): void;
-  /** 0.5.0 Phase 1a：Ctrl/Cmd+Enter 在编辑器分栏打开；移动端/未提供时无此入口 */
+  /** 0.5.0 Phase 1a：Ctrl/Cmd+Enter 在编辑器分栏打开；未提供时无此入口 */
   onOpenInEditor?(path: string): void;
   onClose(): void;
 }): ReactElement | null {

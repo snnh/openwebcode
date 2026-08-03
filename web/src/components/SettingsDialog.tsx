@@ -6,6 +6,9 @@ import type { SendKey, SessionDefaults } from "../lib/prefs";
 import type { ThemePreference, AccentPreference } from "../theme";
 import { useI18n } from "../i18n";
 import { SETTING_GROUP_TAB, SETTINGS_FIELD_EN } from "./settings/shared";
+import { MOBILE_BREAKPOINT, useMediaQuery } from "../hooks/use-media-query";
+import { MobileNavRail } from "../workbench/MobileNavMenu";
+import type { SidebarView } from "../workbench/useWorkbenchLayout";
 import { AppearanceSection } from "./settings/AppearanceSection";
 import { GeneralSection } from "./settings/GeneralSection";
 import { DefaultsSection } from "./settings/DefaultsSection";
@@ -95,7 +98,7 @@ const SETTINGS_GROUPS: Array<{ id: string; zh: string; en: string; tabs: Setting
 
 const TAB_META = SETTINGS_GROUPS.flatMap((group) => group.tabs);
 
-export function SettingsDialog({ open, initialTab, initialTabAt, preference, setPreference, accent, setAccent, sendKey, setSendKey, desktopNotify, setDesktopNotify, defaults, setDefaults, providers, models, sessionCwd, onResetLayout, onClose }: {
+export function SettingsDialog({ open, initialTab, initialTabAt, preference, setPreference, accent, setAccent, sendKey, setSendKey, desktopNotify, setDesktopNotify, defaults, setDefaults, providers, models, sessionCwd, navRail, onResetLayout, onClose }: {
   open: boolean;
   /** 深链入口：打开时定位到指定页签；不传则保持上次使用的页签 */
   initialTab?: SettingsTab;
@@ -115,6 +118,18 @@ export function SettingsDialog({ open, initialTab, initialTabAt, preference, set
   models: ModelProfile[];
   /** 当前会话工作目录：提示词页签的「当前项目」作用域指向它 */
   sessionCwd?: string;
+  /** 左侧应用导航轨（与移动端导航图标栏一致）：切视图/帮助/通知/终端；缺省不渲染 */
+  navRail?: {
+    activeView: SidebarView;
+    problemsBadge?: number;
+    notificationsBadge?: number;
+    terminalDisabled?: boolean;
+    terminalActive?: boolean;
+    onShowView(view: SidebarView): void;
+    onShowHelp(): void;
+    onShowNotifications(): void;
+    onOpenTerminal(): void;
+  };
   onResetLayout(): void;
   onClose(): void;
 }): ReactElement | null {
@@ -124,6 +139,9 @@ export function SettingsDialog({ open, initialTab, initialTabAt, preference, set
   const [activeTab, setActiveTab] = useState<SettingsTab>("appearance");
   // 左侧导航搜索：匹配页签标题/描述、分组名与服务设置字段标签（中英文）
   const [navQuery, setNavQuery] = useState("");
+  // 移动端钻取：点设置项进入详情视图（带返回），非移动端此态无视觉效果
+  const isMobile = useMediaQuery(MOBILE_BREAKPOINT);
+  const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
   // 字段标签在打开时经 api.settings 拉取（不经 react-query，i18n 等无 Provider 的渲染也能工作）；失败按无字段匹配处理
   // tab：按 SETTING_GROUP_TAB 归属到各页签（模型目录/模型选择/通用/模型定价/服务信息/远程访问）
   const [fieldLabels, setFieldLabels] = useState<Array<{ key: string; label: string; tab: SettingsTab }>>([]);
@@ -160,7 +178,11 @@ export function SettingsDialog({ open, initialTab, initialTabAt, preference, set
   // 深链：带 initialTab 打开时定位到对应页签；initialTabAt 变化表示同一页签被重复深链，重新定位
   useEffect(() => {
     if (open && initialTab) setActiveTab(initialTab);
-    if (open) setNavQuery("");
+    if (open) {
+      setNavQuery("");
+      // 深链直达详情（移动端钻取态）；普通打开从列表开始
+      setMobileDetailOpen(Boolean(initialTab));
+    }
   }, [open, initialTab, initialTabAt]);
 
   if (!open) return null;
@@ -193,10 +215,19 @@ export function SettingsDialog({ open, initialTab, initialTabAt, preference, set
     dialogRef.current?.close();
   };
 
+  // 导航轨动作：先确认未保存改动，再关设置并执行（切视图/帮助/通知/终端）
+  const railAction = (run: () => void) => (): void => {
+    if (!confirmDiscard()) return;
+    dialogRef.current?.close();
+    run();
+  };
+
   const selectTab = (tab: SettingsTab): void => {
     // 切换页签会卸载当前分区（key 重挂载），有未保存改动时先确认
     if (tab !== activeTab && !confirmDiscard()) return;
     setActiveTab(tab);
+    // 移动端点项钻取进详情
+    if (isMobile) setMobileDetailOpen(true);
     const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
     contentRef.current?.scrollTo({ top: 0, behavior: reduceMotion ? "auto" : "smooth" });
   };
@@ -229,7 +260,23 @@ export function SettingsDialog({ open, initialTab, initialTabAt, preference, set
             <Icon name="x" size={16} />
           </button>
         </header>
-        <div className="settings-layout">
+        <div className={`settings-layout${mobileDetailOpen ? " detail-open" : ""}`}>
+          {navRail && (
+            <MobileNavRail
+              activeView={navRail.activeView}
+              {...(navRail.problemsBadge !== undefined ? { problemsBadge: navRail.problemsBadge } : {})}
+              {...(navRail.notificationsBadge !== undefined ? { notificationsBadge: navRail.notificationsBadge } : {})}
+              {...(navRail.terminalDisabled !== undefined ? { terminalDisabled: navRail.terminalDisabled } : {})}
+              {...(navRail.terminalActive !== undefined ? { terminalActive: navRail.terminalActive } : {})}
+              settingsActive
+              onShowView={(view) => railAction(() => navRail.onShowView(view))()}
+              onShowHelp={railAction(navRail.onShowHelp)}
+              onShowNotifications={railAction(navRail.onShowNotifications)}
+              onOpenTerminal={railAction(navRail.onOpenTerminal)}
+              onOpenSettings={() => undefined}
+              onClose={() => undefined}
+            />
+          )}
           <nav className="settings-nav" aria-label={t("设置分类", "Settings categories")}>
             <span className="settings-search-wrap">
               <Icon name="search" size={13} />
@@ -275,6 +322,15 @@ export function SettingsDialog({ open, initialTab, initialTabAt, preference, set
           </nav>
           <main className="settings-content">
             <header className="settings-content-header">
+              <button
+                type="button"
+                className="icon-btn settings-back"
+                aria-label={t("返回设置列表", "Back to settings list")}
+                title={t("返回设置列表", "Back to settings list")}
+                onClick={() => setMobileDetailOpen(false)}
+              >
+                <Icon name="chevrons-left" size={16} />
+              </button>
               <span className="settings-section-icon"><Icon name={activeMeta.icon} size={18} /></span>
               <div>
                 <h3 id="settings-section-title">{t(activeMeta.zh, activeMeta.en)}</h3>

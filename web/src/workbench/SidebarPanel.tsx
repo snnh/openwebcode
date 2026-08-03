@@ -31,7 +31,7 @@ export function SidebarPanel({ view, width, onResize, sessionId, session, runnin
   session?: SessionDetail;
   running: boolean;
   onNotice(message: string, kind?: "info" | "error"): void;
-  /** 0.5.0 Phase 1a：Problems 跳转升级为编辑器分栏；移动端/未提供时面板保持只读预览 */
+  /** 0.5.0 Phase 1a：Problems 跳转升级为编辑器分栏；未提供时面板保持只读预览 */
   onOpenInEditor?(file: string, line?: number, column?: number): void;
   /** 0.5.0 Phase 1b：SCM 文件 diff 一键在统一 diff 视图中打开（hunk 级接受/拒绝） */
   onOpenDiff?(spec: DiffSpec): void;

@@ -1,8 +1,9 @@
 import type { ReactElement } from "react";
 import type { Session } from "../lib/contracts";
 import { useI18n } from "../i18n";
+import { MobileNavTrigger } from "../workbench/MobileNavMenu";
 
-export function EmptyState({ sessions, providers, onSelect, onCreate, onOpenSettings, onExample }: {
+export function EmptyState({ sessions, providers, onSelect, onCreate, onOpenSettings, onExample, onOpenNavMenu }: {
   sessions: Session[];
   /** 已启用服务商列表；undefined 表示仍在加载（加载期间不显示快速开始引导） */
   providers?: string[] | undefined;
@@ -12,6 +13,8 @@ export function EmptyState({ sessions, providers, onSelect, onCreate, onOpenSett
   onOpenSettings?(tab: "models"): void;
   /** 示例任务 chip 点击：把文案交给调用方（复制到剪贴板），由用户粘贴进新会话输入框 */
   onExample?(text: string): void;
+  /** 移动端导航菜单触发（≤1024px 渲染在卡片左上角；桌面端不渲染入口） */
+  onOpenNavMenu?(): void;
 }): ReactElement {
   const { t } = useI18n();
   const showGuide = providers !== undefined && providers.length === 0;
@@ -23,6 +26,7 @@ export function EmptyState({ sessions, providers, onSelect, onCreate, onOpenSett
   return (
     <section className="empty-state">
       <div className="empty-card">
+        {onOpenNavMenu && <MobileNavTrigger onOpen={onOpenNavMenu} />}
         <span className="brand-mark">OPENWEBCODE</span>
         <h1>{t("开始一项可回滚的编码作业", "Start a reversible coding job")}</h1>
         <p>{t("创建会话并选择工作目录后，每一次工具调用、权限确认与检查点都会记录在执行轨道上。", "Create a session and choose a workspace. Every tool call, permission decision, and checkpoint is recorded on the execution track.")}</p>

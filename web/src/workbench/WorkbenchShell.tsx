@@ -1,7 +1,9 @@
 /**
  * 五区 Workbench 布局壳（0.4.0 Phase 5a）：活动栏 / 侧边栏 / 主区 / 底部面板 / 状态栏。
- * 只负责栅格与 F6 区域焦点轮换；各区内容由 App 以插槽传入，
- * 移动端单列布局（Phase 5b）可在此处加媒体查询分支而不动各区组件。
+ * 只负责栅格与 F6 区域焦点轮换；各区内容由 App 以插槽传入。
+ * 窄屏（≤1024px）布局由 styles.css 媒体查询接管：flex 单列、桌面活动栏隐藏
+ * （导航改由左上角 logo 触发的左侧滑出菜单承担）、侧栏变抽屉、编辑器/diff 变全屏
+ * 临时视图——DOM 结构与桌面一致，此处不加分支。
  */
 import { useCallback, useEffect, useRef, type ReactElement, type ReactNode } from "react";
 import { useI18n } from "../i18n";

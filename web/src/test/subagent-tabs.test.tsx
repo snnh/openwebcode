@@ -206,16 +206,15 @@ describe("App 主区子代理标签", () => {
     expect(screen.queryByRole("tab", { name: "helper" })).toBeNull();
   });
 
-  it("移动端隐藏标签条（子代理仍走底部面板）", async () => {
+  it("移动端同样渲染标签条（子代理标签与底部面板并存）", async () => {
     stubMatchMedia(true);
     const socket = await launchApp();
 
     act(() => {
       started(socket, "s1", "call-1", "task-1", { agent: "scout" });
     });
-    // 等运行状态落库（底部面板数据）后仍无标签条
-    await screen.findByText(s1Text);
-    expect(screen.queryByRole("tablist")).toBeNull();
-    expect(screen.queryByRole("tab", { name: "scout" })).toBeNull();
+    // 窄屏不再隐藏标签条：started 自动创建标签（不抢焦点）
+    await screen.findByRole("tab", { name: "scout" });
+    expect(screen.getByRole("tablist")).toBeInTheDocument();
   });
 });

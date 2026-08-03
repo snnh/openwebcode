@@ -1,12 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
+import { deriveAccentVars } from "./lib/accent-color";
 
 export type Theme = "light" | "dark";
 export type ThemePreference = "light" | "dark" | "system";
-export type AccentPreference = "teal" | "violet" | "blue" | "orange" | "rose" | "green";
+/** 预设强调色 + 自定义任意 RGB（custom:#rrggbb）。graphite 为默认（对应 :root 内置灰阶变量） */
+export type AccentPreset = "graphite" | "teal" | "violet" | "blue" | "orange" | "rose" | "green";
+export type AccentPreference = AccentPreset | `custom:${string}`;
 
 const STORAGE_KEY = "owc-theme";
 const STORAGE_KEY_ACCENT = "owc-accent";
-const DEFAULT_ACCENT: AccentPreference = "teal";
+const DEFAULT_ACCENT: AccentPreference = "graphite";
+const CUSTOM_ACCENT_PATTERN = /^custom:#[0-9a-fA-F]{6}$/;
+
+const ACCENT_VAR_KEYS = ["--accent", "--accent-hover", "--on-accent", "--accent-soft"] as const;
 
 function readPreference(): ThemePreference {
   try {
@@ -18,15 +24,22 @@ function readPreference(): ThemePreference {
   return "system";
 }
 
-const VALID_ACCENTS: AccentPreference[] = ["teal", "violet", "blue", "orange", "rose", "green"];
+const VALID_PRESETS: AccentPreset[] = ["graphite", "teal", "violet", "blue", "orange", "rose", "green"];
+
+/** 解析持久化的强调色：预设名或 custom:#rrggbb；非法值回落默认 */
+export function parseAccent(stored: string | null): AccentPreference {
+  if (stored && (VALID_PRESETS as string[]).includes(stored)) return stored as AccentPreset;
+  if (stored && CUSTOM_ACCENT_PATTERN.test(stored)) return stored as AccentPreference;
+  return DEFAULT_ACCENT;
+}
+
 function readAccent(): AccentPreference {
   try {
-    const stored = window.localStorage.getItem(STORAGE_KEY_ACCENT) as AccentPreference | null;
-    if (stored && VALID_ACCENTS.includes(stored)) return stored;
+    return parseAccent(window.localStorage.getItem(STORAGE_KEY_ACCENT));
   } catch {
     // localStorage 不可用
+    return DEFAULT_ACCENT;
   }
-  return DEFAULT_ACCENT;
 }
 
 const systemPrefersDark = (): boolean => window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
@@ -58,9 +71,23 @@ export function useTheme(): {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
 
+  // 预设走 data-accent + CSS 规则；自定义任意 RGB 由内联变量注入（按亮/暗主题重新派生）
   useEffect(() => {
-    document.documentElement.dataset.accent = accent;
-  }, [accent]);
+    const root = document.documentElement;
+    if (accent.startsWith("custom:")) {
+      const vars = deriveAccentVars(accent.slice("custom:".length), theme);
+      root.dataset.accent = "custom";
+      if (vars) {
+        root.style.setProperty("--accent", vars.accent);
+        root.style.setProperty("--accent-hover", vars.accentHover);
+        root.style.setProperty("--on-accent", vars.onAccent);
+        root.style.setProperty("--accent-soft", vars.accentSoft);
+      }
+      return;
+    }
+    root.dataset.accent = accent;
+    for (const key of ACCENT_VAR_KEYS) root.style.removeProperty(key);
+  }, [accent, theme]);
 
   const setPreference = useCallback((value: ThemePreference): void => {
     setPreferenceState(value);
