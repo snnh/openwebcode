@@ -39,6 +39,8 @@ export interface UpdateApplierOptions {
   installRoot: string;
   /** 注入以便测试；缺省 process.platform */
   platform?: NodeJS.Platform;
+  /** 注入以便测试；缺省 process.arch（Linux 资产名按架构映射：x64/arm64/loongarch64） */
+  arch?: string;
   getReleaseUrl: () => string;
   getCurrentVersion: () => string;
   fetchImpl?: typeof fetch;
@@ -95,6 +97,10 @@ export class UpdateApplier {
     return this.options.platform ?? process.platform;
   }
 
+  private get arch(): string {
+    return this.options.arch ?? process.arch;
+  }
+
   private get fetchImpl(): typeof fetch {
     return this.options.fetchImpl ?? globalThis.fetch;
   }
@@ -142,9 +148,16 @@ export class UpdateApplier {
     if (platform !== "win32" && platform !== "linux") {
       throw new UpdateApplyError(400, "当前平台不支持在线更新");
     }
-    const assetName = platform === "win32"
-      ? `openwebcode-${version}-windows-x64.msi`
-      : `openwebcode-${version}-linux-x64.tar.gz`;
+    let assetName: string;
+    if (platform === "win32") {
+      assetName = `openwebcode-${version}-windows-x64.msi`;
+    } else {
+      // Linux 资产按架构区分（release.yml 矩阵产物）：aarch64 机器误下 x64 包会变砖
+      const archMap: Record<string, string> = { x64: "x64", arm64: "arm64", loong64: "loongarch64" };
+      const linuxArch = archMap[this.arch];
+      if (!linuxArch) throw new UpdateApplyError(400, `当前架构不支持在线更新: ${this.arch}`);
+      assetName = `openwebcode-${version}-linux-${linuxArch}.tar.gz`;
+    }
     const asset = release.assets.find((entry) => entry.name === assetName);
     if (!asset) throw new Error(`发布中未找到资产 ${assetName}`);
     const sums = release.assets.find((entry) => entry.name === "SHA256SUMS.txt");

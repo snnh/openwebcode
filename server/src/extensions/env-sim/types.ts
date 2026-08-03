@@ -1,4 +1,4 @@
-/** env-sim 预设：身份行 + 基线提示词 + 产品小节 + 工具形态（隐藏/别名）。 */
+/** env-sim 预设：身份行 + 基线提示词 + 产品小节 + 工具形态（隐藏/别名）+ 命令提示词拟态（/init、/compact）。 */
 export interface PersonaAlias {
   from: string;
   as: string;
@@ -17,6 +17,12 @@ export interface PersonaPreset {
   productSections: string[];
   hideBuiltIns: string[];
   aliases: PersonaAlias[];
+  /** /init 命令展开提示词拟态（如 cc 产物为 CLAUDE.md）；优先级：用户覆盖 > 本字段 > 内置。 */
+  initPrompt?: string;
+  /** /compact（overview）压缩系统提示词拟态；优先级同 initPrompt。 */
+  compactOverviewPrompt?: string;
+  /** /compact tools 压缩系统提示词拟态；优先级同 initPrompt。 */
+  compactToolcallsPrompt?: string;
 }
 
 export interface PersonaSummary {

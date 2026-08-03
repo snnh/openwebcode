@@ -11,7 +11,7 @@ import type { SessionStore } from "../sessions/session-store.js";
 import { ContextManager } from "../context/context-manager.js";
 import { EXTENSION_API_VERSION, isExtensionEventAllowed, type ApiRequest, type ApiResponse, type ContextHookPayload, type EventMessage, type ExtensionApiMethod, type ExtensionHook, type ExtensionInfo, type ExtensionManifest, type ExtensionPermission, type ExtensionRoute, type ExtensionState, type ExtensionToolResult, type ExtensionToolSpec, type HostRequest, type HostResponse, type PromptHookPayload, type PromptHookResult, type ToolHookPayload, type ToolShapingAlias, type ToolShapingSpec } from "./types.js";
 import { OFFICIAL_DEFAULT_CONFIG, OFFICIAL_EXTENSIONS } from "./official.js";
-import { BUILTIN_PERSONAS, getPersona, listPersonas, resolvePersona, personasDir, type PersonaDetail, type PersonaSummary } from "./env-sim/index.js";
+import { BUILTIN_PERSONAS, getPersona, listPersonas, resolvePersona, personasDir, saveUserPreset, deleteUserPreset, type PersonaDetail, type PersonaPreset, type PersonaSummary } from "./env-sim/index.js";
 
 /** activeToolShaping 聚合结果：hideBuiltIns 按内置名隐藏，aliases 以新名（as）为键。 */
 export interface ActiveToolShaping {
@@ -310,6 +310,24 @@ export class ExtensionManager {
     if (!persona) return null;
     const builtin = BUILTIN_PERSONA_IDS.has(persona.id);
     return { id: persona.id, name: persona.name, builtin };
+  }
+
+  /** 当前生效的 env-sim 完整预设（/init、/compact 命令提示词拟态消费用）；未启用/未设置/未知返回 null。 */
+  async activeEnvSimPersonaPreset(sessionPersona?: string): Promise<PersonaPreset | null> {
+    const envSim = this.manifests.find((item) => item.id === "env-sim");
+    if (!envSim || !this.stateFor(envSim).enabled) return null;
+    return resolvePersona(this.dataDir, this.stateFor(envSim).config, (message) => this.warnShaping(message), sessionPersona);
+  }
+
+  /** 新建/覆盖用户 env-sim 预设（内置 id 冲突与形状不合法抛错，REST 映射 400）。 */
+  async createEnvSimPersona(raw: unknown): Promise<PersonaDetail> {
+    const preset = await saveUserPreset(this.dataDir, raw);
+    return { ...preset, builtin: false };
+  }
+
+  /** 删除用户 env-sim 预设；内置 id 抛错，未命中返回 false（REST 映射 404）。 */
+  async deleteEnvSimPersona(id: string): Promise<boolean> {
+    return deleteUserPreset(this.dataDir, id);
   }
 
   /** 已启用扩展注册的工具表（ext__<extensionId>__<name>），供 agent 工具注入；同步读注册表。 */

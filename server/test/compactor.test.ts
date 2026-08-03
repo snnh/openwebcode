@@ -3,7 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
-import { Compactor, extractInstructions } from "../src/context/compactor.js";
+import { Compactor, COMPACT_OVERVIEW_SYSTEM, COMPACT_TOOLCALLS_SYSTEM, extractInstructions } from "../src/context/compactor.js";
 import { ContextManager } from "../src/context/context-manager.js";
 import type { CoreClient } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
@@ -121,6 +121,49 @@ describe("Compactor", () => {
     const result = await compactor.compact(id, "overview", { forced: true });
     expect(result.mode).toBe("truncated");
     expect((await context.load()).entries[0]?.pinnedUntilRound).toBe(0);
+  });
+
+  it("promptOverrides 注入覆盖压缩系统提示词，缺省回退内置", async () => {
+    const root = await tempRoot("owc-compact-");
+    const store = new SessionStore(path.join(root, "sessions"));
+    await store.initialize();
+    const id = await sessionWithMessages(store, 15);
+    const calls: Array<{ system: string; prompt: string }> = [];
+    const compactor = new Compactor(store, makeFakeFastModel("目标：\n- 测试\n", calls), {}, 10);
+
+    // 默认：使用内置 overview 系统提示
+    await compactor.compact(id, "overview");
+    expect(calls.at(-1)?.system).toBe(COMPACT_OVERVIEW_SYSTEM);
+
+    // 注入覆盖：overview 模式使用覆盖文本
+    await store.appendMessage(id, "user", [{ type: "text", text: "再来一条" }]);
+    await compactor.compact(id, "overview", { promptOverrides: { overview: "自定义概览压缩指令" } });
+    expect(calls.at(-1)?.system).toBe("自定义概览压缩指令");
+  });
+
+  it("toolcalls 模式的提示词覆盖只在配置了快速模型时生效", async () => {
+    const root = await tempRoot("owc-compact-");
+    const store = new SessionStore(path.join(root, "sessions"));
+    await store.initialize();
+    const session = await store.create({ cwd: os.tmpdir(), provider: "test-stub", title: "压缩样例" });
+    await store.appendMessage(session.id, "assistant", [
+      { type: "tool_call", id: "t1", name: "bash", input: { cmd: "npm test" } },
+    ]);
+    await store.appendMessage(session.id, "tool", [{ type: "tool_result", toolCallId: "t1", content: "ok" }]);
+    for (let index = 0; index < 15; index += 1) {
+      await store.appendMessage(session.id, index % 2 === 0 ? "user" : "assistant", [{ type: "text", text: `消息 ${index + 1}` }]);
+    }
+    const calls: Array<{ system: string; prompt: string }> = [];
+    const compactor = new Compactor(store, makeFakeFastModel("[压缩] bash", calls), {}, 10);
+
+    await compactor.compact(session.id, "toolcalls", { promptOverrides: { toolcalls: "自定义工具压缩指令" } });
+    expect(calls[0]?.system).toBe("自定义工具压缩指令");
+    // 未注入时回退内置
+    for (let index = 0; index < 12; index += 1) {
+      await store.appendMessage(session.id, "user", [{ type: "text", text: `追加 ${index + 1}` }]);
+    }
+    await compactor.compact(session.id, "toolcalls");
+    expect(calls.at(-1)?.system).toBe(COMPACT_TOOLCALLS_SYSTEM);
   });
 });
 
