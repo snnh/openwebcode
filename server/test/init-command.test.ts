@@ -1,4 +1,5 @@
 import path from "node:path";
+import { writeFile } from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { INIT_COMMAND_PROMPT } from "../src/agent/prompts/init-prompt.js";
@@ -64,6 +65,44 @@ describe("/init composer command", () => {
       vi.spyOn(agent, "isRunning").mockReturnValue(true);
       const running = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "/init" } });
       expect(running.statusCode).toBe(409);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("全局 initOverride 文件存在时优先于内置提示词", async () => {
+    const root = await tempRoot();
+    const dataDir = await tempRoot();
+    await writeFile(path.join(dataDir, "command-init-prompt.md"), "自定义 init 探查提示词\n", "utf8");
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const providers = new ProviderRegistry();
+    const seen: string[] = [];
+    providers.register(makeStubProvider("test-stub", async function* (request) {
+      const last = request.messages.at(-1);
+      const text = last?.content.find((block) => block.type === "text");
+      if (text?.type === "text") seen.push(text.text);
+      yield { type: "text_delta", text: "已生成 AGENTS.md" };
+      yield { type: "done", stopReason: "end_turn" };
+    }));
+    const events = new EventBus();
+    const core = {
+      on() { return core; },
+      async configureSession() { return { sandboxCapability: "advisory" }; },
+      async cleanupSession() { return { ok: true }; },
+      async ping() { return { version: "0.0.0", platform: "windows", sandboxCapability: "advisory" }; },
+      setRequestTimeoutMs() {},
+    } as unknown as CoreClientLike;
+    const agent = new AgentRunner(sessions, providers, core, events, pricing);
+    const app = await buildServer({ core, sessions, agent, events, providers, pricing, dataDir });
+    try {
+      const session = await sessions.create({ cwd: root, provider: "test-stub", model: "deterministic-tool-loop", title: "Init override" });
+      const response = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "/init" } });
+      expect(response.statusCode, response.body).toBe(202);
+      await vi.waitFor(() => expect(seen.length).toBeGreaterThan(0), { timeout: 5_000 });
+      expect(seen).toContain("自定义 init 探查提示词");
     } finally {
       await app.close();
     }

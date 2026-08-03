@@ -9,6 +9,10 @@ import type { PersonaPreset } from "./types.js";
  * argMap 把模型侧参数名归一回内置工具参数名，执行/权限链不受影响。schema 只保留
  * 本运行时可执行的参数（未映射的额外参数不会出现在 schema 中），因此嵌套结构与
  * 枚举值跟随内置实现（如 todo 项用 content/status，状态枚举 pending/in_progress/done）。
+ *
+ * initPrompt/compactOverviewPrompt/compactToolcallsPrompt 是命令提示词拟态：
+ * /init 与 /compact 在各产品都是斜杠命令而非工具，差异体现在产物文件与压缩风格。
+ * 消费优先级：用户提示词覆盖（prompt-overrides 面）> persona > 内置默认。
  */
 
 /** 待办清单条目（内置 todo_write 的嵌套结构，各 persona 共用）。 */
@@ -46,10 +50,33 @@ export const BUILTIN_PERSONAS: PersonaPreset[] = [
       "## Tool habits\n- Use Read, Glob and Grep for inspection; reserve Bash for commands that genuinely need a shell.\n- Batch independent read-only tool calls in a single turn.",
       "## Commits\n- Only create git commits when the user explicitly asks.",
     ],
+    initPrompt: `Analyze this codebase and create (or update) a CLAUDE.md file at the repository root. It is the memory file read by AI coding agents that start here with zero context.
+
+Procedure:
+1. Explore the repository: manifests and build files, directory layout, README/docs, CI configuration, and the main entry points. Sample enough to be accurate; do not read everything.
+2. If CLAUDE.md already exists, read it first: keep accurate hand-written content, fix outdated parts, and fill gaps.
+3. Write CLAUDE.md covering, each only as far as it is verifiable from the repository:
+   - What the project is and its architecture at one glance.
+   - Build, test, and lint commands, with prerequisites.
+   - Code organization: main directories and their responsibilities.
+   - Conventions and hard rules an agent must not break.
+4. Keep it short and factual — under 150 lines. Write in the language of the repository's existing documentation.
+5. Finish with one sentence on what you wrote or changed.`,
+    compactOverviewPrompt: `You are a context compactor. Compress the earlier part of this conversation into a terse structured summary with these sections:
+
+Goal:
+Progress:
+Key decisions:
+User instructions:
+Open items:
+
+Rules: be brief; keep file paths, command names and error strings verbatim; never invent facts that are not in the conversation.`,
+    compactToolcallsPrompt: `You are a context compactor. Rewrite each tool call in the conversation as a one-line semantic placeholder in the form "[ToolName] intent -> outcome". Keep file paths, commands and exit codes verbatim; drop output bodies.`,
     hideBuiltIns: ["read_artifact", "repo_map", "code_search", "load_skill", "spawn_swarm", "remember", "git_worktree_create", "git_worktree_remove", "git_worktree_merge"],
     aliases: [
       {
         from: "bash", as: "Bash",
+        description: "Run a shell command in the workspace.",
         inputSchema: {
           type: "object",
           properties: {
@@ -64,6 +91,7 @@ export const BUILTIN_PERSONAS: PersonaPreset[] = [
       },
       {
         from: "read_file", as: "Read",
+        description: "Read a text file from the workspace.",
         inputSchema: {
           type: "object",
           properties: {
@@ -78,6 +106,7 @@ export const BUILTIN_PERSONAS: PersonaPreset[] = [
       },
       {
         from: "write_file", as: "Write",
+        description: "Write a file, creating or overwriting it.",
         inputSchema: {
           type: "object",
           properties: {
@@ -91,6 +120,7 @@ export const BUILTIN_PERSONAS: PersonaPreset[] = [
       },
       {
         from: "edit_file", as: "Edit",
+        description: "Replace exact text in a file.",
         inputSchema: {
           type: "object",
           properties: {
@@ -106,6 +136,7 @@ export const BUILTIN_PERSONAS: PersonaPreset[] = [
       },
       {
         from: "glob", as: "Glob",
+        description: "Find files by name pattern.",
         inputSchema: {
           type: "object",
           properties: {
@@ -118,6 +149,7 @@ export const BUILTIN_PERSONAS: PersonaPreset[] = [
       },
       {
         from: "grep", as: "Grep",
+        description: "Search file contents for a pattern.",
         inputSchema: {
           type: "object",
           properties: {
@@ -130,6 +162,7 @@ export const BUILTIN_PERSONAS: PersonaPreset[] = [
       },
       {
         from: "todo_write", as: "TodoWrite",
+        description: "Track multi-step work as a checklist.",
         inputSchema: {
           type: "object",
           properties: { todos: { ...TODO_ITEMS, description: "The full task list, replacing the current one." } },
@@ -152,9 +185,10 @@ export const BUILTIN_PERSONAS: PersonaPreset[] = [
         },
         argMap: { subagent_type: "agent" },
       },
-      { from: "web_fetch", as: "WebFetch" },
+      { from: "web_fetch", as: "WebFetch", description: "Fetch content from a URL." },
       {
         from: "web_search", as: "WebSearch",
+        description: "Search the web for current information.",
         inputSchema: {
           type: "object",
           properties: { query: { type: "string" }, limit: { type: "integer", minimum: 1, maximum: 10 } },
@@ -182,10 +216,33 @@ export const BUILTIN_PERSONAS: PersonaPreset[] = [
       "## Communication\n- Short paragraphs and lists; cite code locations as path:line.\n- No flattery or filler — report the work, not enthusiasm.",
       "## Caution\n- Weigh reversibility before destructive or outward-facing actions and confirm first.",
     ],
+    initPrompt: `分析这个工作区，并在仓库根目录创建（或更新）AGENTS.md——供零上下文接入的 AI 编码代理阅读的工作区指南。全程使用用户的语言。
+
+步骤：
+1. 探查仓库：清单与构建文件（package.json、CMakeLists.txt、go.mod、pyproject.toml 等）、目录布局、README/文档、CI 配置与主要入口。抽样到足够准确即可，不要通读一切。
+2. AGENTS.md 已存在时先读它：保留准确的手写内容，更新过时部分，补齐缺口，不整体推倒。
+3. 按以下顺序写 AGENTS.md，每节只写可从仓库核实的内容：
+   - 项目概述：是什么、架构一瞥（一小段话或小图）。
+   - 构建与测试命令：各组件的确切命令，含工具链前提。
+   - 代码组织：主要目录/模块及其职责。
+   - 约定与边界：编码风格、测试约定、提交约定，以及代理不可突破的硬规则。
+4. 保持简洁、可核实——控制在 150 行以内，语言与仓库现有文档一致（默认随 README）。
+5. 最后用一小段话总结写了什么、改了什么。`,
+    compactOverviewPrompt: `你是上下文压缩器。把对话中段压缩为结构化概览，严格按以下小节输出：
+
+目标：
+进展：
+关键决定：
+用户明确指令：
+未决事项：
+
+要求：简洁；文件路径、命令名与报错原文逐字保留；不得编造对话中没有的事实。`,
+    compactToolcallsPrompt: `你是上下文压缩器。把对话中的工具调用逐条压缩为一行语义占位符，格式「[工具名] 意图 -> 结果」。文件路径、命令与退出码逐字保留；丢弃输出正文。`,
     hideBuiltIns: ["read_artifact", "repo_map", "code_search", "load_skill", "remember", "git_worktree_create", "git_worktree_remove", "git_worktree_merge"],
     aliases: [
       {
         from: "bash", as: "Bash",
+        description: "在工作区执行 shell 命令。",
         inputSchema: {
           type: "object",
           properties: {
@@ -200,6 +257,7 @@ export const BUILTIN_PERSONAS: PersonaPreset[] = [
       },
       {
         from: "read_file", as: "Read",
+        description: "读取工作区内的文本文件。",
         inputSchema: {
           type: "object",
           properties: {
@@ -214,6 +272,7 @@ export const BUILTIN_PERSONAS: PersonaPreset[] = [
       },
       {
         from: "write_file", as: "Write",
+        description: "创建或整体覆写文件。",
         inputSchema: {
           type: "object",
           properties: {
@@ -226,6 +285,7 @@ export const BUILTIN_PERSONAS: PersonaPreset[] = [
       },
       {
         from: "edit_file", as: "Edit",
+        description: "对文件做精确文本替换。",
         inputSchema: {
           type: "object",
           properties: {
@@ -241,6 +301,7 @@ export const BUILTIN_PERSONAS: PersonaPreset[] = [
       },
       {
         from: "glob", as: "Glob",
+        description: "按文件名模式查找文件。",
         inputSchema: {
           type: "object",
           properties: {
@@ -253,6 +314,7 @@ export const BUILTIN_PERSONAS: PersonaPreset[] = [
       },
       {
         from: "grep", as: "Grep",
+        description: "按正则搜索文件内容。",
         inputSchema: {
           type: "object",
           properties: {
@@ -265,6 +327,7 @@ export const BUILTIN_PERSONAS: PersonaPreset[] = [
       },
       {
         from: "todo_write", as: "TodoList",
+        description: "维护结构化的任务清单，跟踪多步工作。",
         inputSchema: {
           type: "object",
           properties: { todos: { ...TODO_ITEMS, description: "The full task list, replacing the current one." } },
@@ -304,6 +367,7 @@ export const BUILTIN_PERSONAS: PersonaPreset[] = [
       },
       {
         from: "web_search", as: "WebSearch",
+        description: "搜索互联网上的最新信息。",
         inputSchema: {
           type: "object",
           properties: { query: { type: "string" }, limit: { type: "integer", minimum: 1, maximum: 10 } },
@@ -311,7 +375,7 @@ export const BUILTIN_PERSONAS: PersonaPreset[] = [
           additionalProperties: false,
         },
       },
-      { from: "web_fetch", as: "FetchURL" },
+      { from: "web_fetch", as: "FetchURL", description: "抓取指定 URL 的页面内容。" },
     ],
   },
   {
@@ -331,10 +395,33 @@ export const BUILTIN_PERSONAS: PersonaPreset[] = [
       "## Editing\n- Prefer exact-match patch edits over rewriting whole files.\n- Match the surrounding style instead of importing your own defaults.",
       "## Exploration\n- Use view/search/find_files for navigation; shell is for builds, tests and git.",
     ],
+    initPrompt: `Survey this workspace and create (or update) an AGENTS.md at the repository root — an onboarding guide for AI agents that arrive with zero context.
+
+Procedure:
+1. Inspect the repository: build manifests, directory layout, README/docs, CI setup, and entry points. View enough to be accurate; do not read everything.
+2. If AGENTS.md exists, view it first and patch it: keep accurate content, replace what is outdated, add what is missing. Small diffs win.
+3. Cover, only as far as verifiable from the repository:
+   - Project overview and architecture at a glance.
+   - Exact build and test commands with prerequisites.
+   - Code organization: main directories and their responsibilities.
+   - Conventions and hard rules an agent must not break.
+4. Stay concise — under 150 lines, in the language of the repository's documentation.
+5. Report the diff you made in two sentences.`,
+    compactOverviewPrompt: `You are a context compactor. Reduce the earlier conversation to a minimal structured brief with these sections:
+
+Goal:
+Progress:
+Decisions:
+User instructions:
+Open items:
+
+Keep it small: short bullets only; file paths, commands and error text verbatim; nothing that was not said.`,
+    compactToolcallsPrompt: `You are a context compactor. Rewrite each tool call as a one-line placeholder "[tool] intent -> outcome". Paths, commands and exit codes verbatim; output bodies dropped.`,
     hideBuiltIns: ["read_artifact", "repo_map", "code_search", "load_skill", "spawn_swarm", "remember", "task_output", "task_stop", "git_worktree_create", "git_worktree_remove", "git_worktree_merge"],
     aliases: [
       {
         from: "bash", as: "shell",
+        description: "Run a shell command.",
         inputSchema: {
           type: "object",
           properties: { command: { type: "string", description: "The shell command to run." } },
@@ -345,6 +432,7 @@ export const BUILTIN_PERSONAS: PersonaPreset[] = [
       },
       {
         from: "read_file", as: "view",
+        description: "View a text file.",
         inputSchema: {
           type: "object",
           properties: {
@@ -358,6 +446,7 @@ export const BUILTIN_PERSONAS: PersonaPreset[] = [
       },
       {
         from: "write_file", as: "create",
+        description: "Create or overwrite a file.",
         inputSchema: {
           type: "object",
           properties: {
@@ -370,6 +459,7 @@ export const BUILTIN_PERSONAS: PersonaPreset[] = [
       },
       {
         from: "edit_file", as: "patch",
+        description: "Apply an exact-text patch to a file.",
         inputSchema: {
           type: "object",
           properties: {
@@ -384,6 +474,7 @@ export const BUILTIN_PERSONAS: PersonaPreset[] = [
       },
       {
         from: "glob", as: "find_files",
+        description: "Find files by name pattern.",
         inputSchema: {
           type: "object",
           properties: {
@@ -396,6 +487,7 @@ export const BUILTIN_PERSONAS: PersonaPreset[] = [
       },
       {
         from: "grep", as: "search",
+        description: "Search file contents for a pattern.",
         inputSchema: {
           type: "object",
           properties: {
@@ -408,6 +500,7 @@ export const BUILTIN_PERSONAS: PersonaPreset[] = [
       },
       {
         from: "todo_write", as: "plan_update",
+        description: "Update the working plan.",
         inputSchema: {
           type: "object",
           properties: { items: { ...TODO_ITEMS, description: "The full working plan, replacing the current one." } },
@@ -434,10 +527,33 @@ export const BUILTIN_PERSONAS: PersonaPreset[] = [
       "## Updates\n- Narrate progress briefly as you work; do not go silent for long stretches.",
       "## Boundaries\n- Stay inside the workspace; never touch the network, credentials, or files outside it unless the task requires it.",
     ],
+    initPrompt: `Explore this repository autonomously and create (or update) an AGENTS.md at the repository root — the instructions file for agents working in this workspace.
+
+Procedure:
+1. Inspect build manifests, directory layout, README/docs, CI configuration, and entry points. Gather enough to be accurate without reading everything.
+2. If AGENTS.md exists, update it in place: keep accurate content, fix what is stale, fill the gaps.
+3. Document, only what is verifiable from the repository:
+   - What the project is; architecture at a glance.
+   - Exact build and test commands, including toolchain prerequisites.
+   - Code organization: main directories and their responsibilities.
+   - Conventions and boundaries an agent must respect.
+4. Keep it under 150 lines, in the language of the repository's documentation.
+5. Give a two-sentence summary of the result when done.`,
+    compactOverviewPrompt: `You are a context compactor. Compress the earlier conversation into a structured brief with these sections:
+
+Goal:
+Progress:
+Decisions:
+User instructions:
+Open items:
+
+Stay factual and compact: file paths, commands and error strings verbatim; no facts beyond the conversation.`,
+    compactToolcallsPrompt: `You are a context compactor. Compress each tool call to a one-line placeholder "[tool] intent -> outcome". Keep paths, commands and exit codes verbatim; drop output bodies.`,
     hideBuiltIns: ["read_artifact", "repo_map", "code_search", "load_skill", "spawn_swarm", "remember", "task_output", "task_stop", "git_worktree_create", "git_worktree_remove", "git_worktree_merge"],
     aliases: [
       {
         from: "bash", as: "shell",
+        description: "Run a shell command.",
         inputSchema: {
           type: "object",
           properties: { command: { type: "string", description: "The shell command to execute." } },
@@ -463,6 +579,7 @@ export const BUILTIN_PERSONAS: PersonaPreset[] = [
       },
       {
         from: "glob", as: "list_files",
+        description: "List files matching a name pattern.",
         inputSchema: {
           type: "object",
           properties: {
@@ -475,6 +592,7 @@ export const BUILTIN_PERSONAS: PersonaPreset[] = [
       },
       {
         from: "grep", as: "search",
+        description: "Search file contents for a pattern.",
         inputSchema: {
           type: "object",
           properties: {
@@ -487,6 +605,7 @@ export const BUILTIN_PERSONAS: PersonaPreset[] = [
       },
       {
         from: "todo_write", as: "update_plan",
+        description: "Update the plan for the current task.",
         inputSchema: {
           type: "object",
           properties: { items: { ...TODO_ITEMS, description: "The full plan, replacing the current one." } },

@@ -32,7 +32,7 @@ import { DEFAULT_WS_BACKPRESSURE_LIMITS, isSlowClient, type WsBackpressureLimits
 import type { ProviderRegistry } from "./providers/provider.js";
 import { detectWsb } from "./sandbox/wsb.js";
 import { getSnapshotBackend } from "./snapshots/index.js";
-import { createExecFileRunner, probeSnapshotBackend } from "./snapshots/probe.js";
+import { createExecFileRunner, probeSnapshotBackend, probeSnapshotBackendByName } from "./snapshots/probe.js";
 import type { SnapshotBackend } from "./snapshots/backend.js";
 import type { ManagedProvisionResult, ManagedWorkspaceLike } from "./snapshots/managed-disk.js";
 import { ManagedWorkspaceSyncError, type ManagedWorkspaceSyncApplyInput } from "./snapshots/managed-sync.js";
@@ -51,7 +51,7 @@ import { loadPromptOverride, loadScopedPromptOverride, writeGlobalPromptOverride
 import { INIT_COMMAND_PROMPT } from "./agent/prompts/init-prompt.js";
 import { PI_BASE_SYSTEM_PROMPT, PI_PROMPT_VERSION } from "./agent/prompts/pi-base.js";
 import type { SkillRegistry } from "./skills.js";
-import type { Compactor } from "./context/compactor.js";
+import { COMPACT_OVERVIEW_SYSTEM, COMPACT_TOOLCALLS_SYSTEM, type Compactor } from "./context/compactor.js";
 import type { ContextPolicyUpdate } from "./context/context-manager.js";
 import type { UsageLog } from "./usage-log.js";
 import { ExtensionRouteError } from "./extensions/extension-manager.js";
@@ -847,11 +847,17 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   };
   const promptView = (override: Awaited<ReturnType<typeof loadPromptOverride>>) => ({
     builtinBase: PI_BASE_SYSTEM_PROMPT,
+    builtinInitPrompt: INIT_COMMAND_PROMPT,
+    builtinCompactOverviewPrompt: COMPACT_OVERVIEW_SYSTEM,
+    builtinCompactToolcallsPrompt: COMPACT_TOOLCALLS_SYSTEM,
     promptVersion: PI_PROMPT_VERSION,
     identityOverride: override.identityOverride ?? null,
     baseOverride: override.baseOverride ?? null,
     customAppend: override.customAppend ?? null,
     subAgentAppend: override.subAgentAppend ?? null,
+    initOverride: override.initOverride ?? null,
+    compactOverviewOverride: override.compactOverviewOverride ?? null,
+    compactToolcallsOverride: override.compactToolcallsOverride ?? null,
   });
   app.get<{ Querystring: { cwd?: string; scope?: string } }>("/api/prompt", async (request, reply) => {
     const dataDir = dependencies.dataDir;
@@ -866,7 +872,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     // 旧契约：不带 scope 时按 内置->全局->项目 合并读取（cwd 可缺省）
     return promptView(await loadPromptOverride(dataDir, cwd));
   });
-  app.put<{ Body: { scope?: string; cwd?: string; identityOverride?: string | null; baseOverride?: string | null; customAppend?: string | null; subAgentAppend?: string | null } }>("/api/prompt", async (request, reply) => {
+  app.put<{ Body: { scope?: string; cwd?: string; identityOverride?: string | null; baseOverride?: string | null; customAppend?: string | null; subAgentAppend?: string | null; initOverride?: string | null; compactOverviewOverride?: string | null; compactToolcallsOverride?: string | null } }>("/api/prompt", async (request, reply) => {
     const dataDir = dependencies.dataDir;
     if (!dataDir) return reply.code(501).send({ error: "Prompt override is not configured" });
     const body = request.body ?? {};
@@ -876,6 +882,9 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       ...(typeof body.baseOverride === "string" ? { baseOverride: body.baseOverride } : {}),
       ...(typeof body.customAppend === "string" ? { customAppend: body.customAppend } : {}),
       ...(typeof body.subAgentAppend === "string" ? { subAgentAppend: body.subAgentAppend } : {}),
+      ...(typeof body.initOverride === "string" ? { initOverride: body.initOverride } : {}),
+      ...(typeof body.compactOverviewOverride === "string" ? { compactOverviewOverride: body.compactOverviewOverride } : {}),
+      ...(typeof body.compactToolcallsOverride === "string" ? { compactToolcallsOverride: body.compactToolcallsOverride } : {}),
     };
     try {
       if (body.scope === "project") {
@@ -969,6 +978,25 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     const detail = await dependencies.extensions.envSimPersonaDetail(request.params.id);
     if (!detail) return reply.code(404).send({ error: "Persona not found" });
     return detail;
+  });
+  app.post("/api/extensions/env-sim/personas", async (request, reply) => {
+    if (!dependencies.extensions) return reply.code(501).send({ error: "Extension Host is not configured" });
+    // 新建/覆盖用户预设：形状/id 校验在 saveUserPreset（同 id 覆盖即编辑）
+    try {
+      return reply.code(201).send(await dependencies.extensions.createEnvSimPersona(request.body));
+    } catch (error) {
+      return reply.code(400).send({ error: errorMessage(error) });
+    }
+  });
+  app.delete<{ Params: { id: string } }>("/api/extensions/env-sim/personas/:id", async (request, reply) => {
+    if (!dependencies.extensions) return reply.code(501).send({ error: "Extension Host is not configured" });
+    try {
+      const deleted = await dependencies.extensions.deleteEnvSimPersona(request.params.id);
+      if (!deleted) return reply.code(404).send({ error: "Persona not found" });
+      return { ok: true };
+    } catch (error) {
+      return reply.code(400).send({ error: errorMessage(error) });
+    }
   });
   app.post<{ Body: { action?: string; id?: string; enabled?: boolean; config?: Record<string, unknown>; path?: string } }>("/api/extensions", async (request, reply) => {
     const extensions = dependencies.extensions;
@@ -1195,6 +1223,41 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     });
   }
 
+  /**
+   * 新建会话套用全局默认（settings defaultEffort / defaultSnapshotMode）。
+   * 力度做能力白名单校验：模型声明不支持的静默跳过（设置是全局偏好，不应阻断创建）；
+   * 非法枚举值（如 env 直写）同样静默跳过。
+   */
+  const applySessionDefaults = async (session: SessionMeta, provider: string, model: string): Promise<SessionMeta> => {
+    const config = dependencies.settings?.effective();
+    if (!config) return session;
+    const patch: { effort?: EffortLevel; snapshotMode?: SnapshotMode } = {};
+    if (config.defaultEffort && EFFORT_LEVELS.includes(config.defaultEffort)) {
+      const declared = profileOf(model, provider).capabilities.effort;
+      if (declared.length === 0 || declared.includes(config.defaultEffort)) patch.effort = config.defaultEffort;
+    }
+    if (config.defaultSnapshotMode === "manual") patch.snapshotMode = "manual";
+    let updated = patch.effort === undefined && patch.snapshotMode === undefined
+      ? session
+      : await sessions.updateConfig(session.id, { provider, model, ...patch });
+    // 快照后端偏好：非 auto 且非托管会话（托管后端由建盘流程预设）时单项探测，
+    // 可用则预设跳过探测链；不可用回落自动探测并如实告警，不阻断创建。
+    if (config.snapshotBackend && !updated.workspace) {
+      const probed = await probeSnapshotBackendByName(config.snapshotBackend, sessions.contextRoot(session.id), session.cwd, { runner: createExecFileRunner(), platform, core }).catch(() => undefined);
+      if (probed) {
+        updated = await sessions.updateSnapshotBackend(session.id, config.snapshotBackend);
+      } else {
+        events.publish({
+          source: "server",
+          type: "snapshot.backend_fallback",
+          sessionId: session.id,
+          payload: { preferred: config.snapshotBackend, message: `Snapshot backend "${config.snapshotBackend}" is not available for this workspace; falling back to auto probing` },
+        });
+      }
+    }
+    return updated;
+  };
+
   /** 托管工作区创建：能力检测 → 预分配 id 建盘挂载复制 → 落 meta（cwd=挂载点、snapshotBackend 预设）；失败清理半成品 */
   const createManagedSession = async (body: CreateSessionBody, provider: string, model: string, reply: FastifyReply) => {
     const managed = dependencies.managed;
@@ -1224,7 +1287,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     };
     try {
       const { workspaceMode: _ignored, ...rest } = body;
-      const session = await sessions.create({
+      const session = await applySessionDefaults(await sessions.create({
         ...rest,
         provider,
         model,
@@ -1232,7 +1295,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
         cwd: provisioned.mountPoint,
         workspace,
         snapshotBackend: `${provisioned.backend}-chain`,
-      });
+      }), provider, model);
       events.publish({ source: "session", type: "session.created", sessionId: session.id, payload: session });
       // SessionStart 钩子：仅通知不阻断
       if (dependencies.hooks) await dependencies.hooks.run("SessionStart", { sessionId: session.id, cwd: session.cwd });
@@ -1273,7 +1336,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     };
     try {
       const { workspaceMode: _ignored, ...rest } = body;
-      const session = await sessions.create({
+      const session = await applySessionDefaults(await sessions.create({
         ...rest,
         provider,
         model,
@@ -1281,7 +1344,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
         cwd: provisioned.mountPoint,
         workspace,
         snapshotBackend: "overlayfs",
-      });
+      }), provider, model);
       events.publish({ source: "session", type: "session.created", sessionId: session.id, payload: session });
       // SessionStart 钩子：仅通知不阻断
       if (dependencies.hooks) await dependencies.hooks.run("SessionStart", { sessionId: session.id, cwd: session.cwd });
@@ -1330,7 +1393,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     if (request.body.workspaceMode === "managed") return createManagedSession(request.body, provider, model, reply);
     // Linux 直接模式：core 支持 overlay 时自动升级为 overlayfs 托管会话（见上注释）
     if (platform === "linux" && await tryCreateOverlayfsSession(request.body, provider, model, reply)) return;
-    const session = await sessions.create({ ...request.body, provider, model });
+    const session = await applySessionDefaults(await sessions.create({ ...request.body, provider, model }), provider, model);
     events.publish({ source: "session", type: "session.created", sessionId: session.id, payload: session });
     // SessionStart 钩子：仅通知不阻断
     if (dependencies.hooks) await dependencies.hooks.run("SessionStart", { sessionId: session.id, cwd: session.cwd });
@@ -2509,7 +2572,24 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
 
   // 上下文压缩（§7.4）：/compact（overview）、/compact tools（toolcalls），以及协议 REST 路由
   const runCompact = async (sessionId: string, mode: "toolcalls" | "overview") => {
-    const result = await dependencies.compactor!.compact(sessionId, mode);
+    // 压缩提示词优先级：用户覆盖（prompt-overrides 面）> env-sim persona > 内置（内置回退在 Compactor 内）
+    let promptOverrides: { overview?: string; toolcalls?: string } | undefined;
+    const session = await sessions.get(sessionId);
+    if (session) {
+      const override = dependencies.dataDir ? await loadPromptOverride(dependencies.dataDir, session.cwd) : undefined;
+      const persona = dependencies.extensions
+        ? await dependencies.extensions.activeEnvSimPersonaPreset(resolveSessionPersona(session))
+        : null;
+      const overview = override?.compactOverviewOverride ?? persona?.compactOverviewPrompt;
+      const toolcalls = override?.compactToolcallsOverride ?? persona?.compactToolcallsPrompt;
+      if (overview || toolcalls) {
+        promptOverrides = {
+          ...(overview ? { overview } : {}),
+          ...(toolcalls ? { toolcalls } : {}),
+        };
+      }
+    }
+    const result = await dependencies.compactor!.compact(sessionId, mode, promptOverrides ? { promptOverrides } : undefined);
     if (result.changed) {
       events.publish({ source: "agent", type: "context.compacted", sessionId, payload: { mode: result.mode, uptoIndex: result.uptoIndex ?? 0, forced: false } });
     }
@@ -2648,10 +2728,14 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
           return reply.code(400).send({ error: errorMessage(error) });
         }
       }
-      // /init：展开为内置探查提示词后继续走正常 agent.run() 路径（写 AGENTS.md 经权限链与快照）
+      // /init：展开为探查提示词（用户覆盖 > env-sim persona > 内置）后继续走正常 agent.run() 路径（写 AGENTS.md 经权限链与快照）
       if (/^\/init\s*$/i.test(request.body.content)) {
         if (agent.isRunning(request.params.id)) return reply.code(409).send({ error: "会话运行中，请先等待完成或中断后再初始化" });
-        request.body.content = INIT_COMMAND_PROMPT;
+        const override = dependencies.dataDir ? await loadPromptOverride(dependencies.dataDir, session.cwd) : undefined;
+        const persona = dependencies.extensions
+          ? await dependencies.extensions.activeEnvSimPersonaPreset(resolveSessionPersona(session))
+          : null;
+        request.body.content = override?.initOverride ?? persona?.initPrompt ?? INIT_COMMAND_PROMPT;
       }
       if (agent.isRunning(request.params.id)) {
         try {
