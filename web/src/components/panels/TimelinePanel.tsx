@@ -136,6 +136,9 @@ export function TimelinePanel({ sessionId, running, onNotice, onOpenDiff, onFork
           </span>
         </p>
       )}
+      {capability.data?.backend === "overlayfs" && (
+        <p className="panel-empty">{t("源目录只读：改动在 merged 视图中进行，需在文件面板确认后手动同步回源。", "The source directory is read-only: changes live in the merged view and must be synced back manually from the Files panel.")}</p>
+      )}
       {checkpoints.isPending && <p className="panel-empty">{t("加载中…", "Loading…")}</p>}
       {checkpoints.data && checkpoints.data.length === 0 && <p className="panel-empty">{t("暂无检查点。", "No checkpoints yet.")}</p>}
       {checkpoints.data?.map((checkpoint) => (
