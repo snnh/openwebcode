@@ -2,6 +2,36 @@
 
 本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前版本的用户可感知变化。日期以 Git 标签发布日期为准。
 
+## [1.2.0] - 2026-08-03
+
+Linux 体验与功能专项：快照新增 overlayfs 后端（原语下沉 core C 层）、出站代理设置、安装器 systemd 更新/重装判定、沙盒能力误报修正与界面平台适配。
+
+### 快照
+
+- 新增 overlayfs 快照后端（Linux）：core 新增 `overlay.mount` / `overlay.checkpoint` / `overlay.restore` / `overlay.unmount` 原语（root 走内核 mount，rootless 走 fuse-overlayfs，检查点 reflink 复制优先），`core.ping` 上报 `features.overlay`。探测链变为 btrfs → zfs → overlayfs → git-shadow；ext4 用户不再只有线性成本的 git shadow。会话在 merged 视图中工作、源目录只读，改动在文件面板确认后手动同步回源（复用托管工作区同一套机制）；有运行中任务时回滚返回可读错误。
+
+### 网络
+
+- 新增出站代理设置：关闭 / 跟随环境变量（`HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`）/ 自定义三模式，自定义支持 HTTP、HTTPS 代理与例外列表（后缀/精确/通配匹配，回环默认绕过）。作用于模型 API、联网搜索/抓取、更新检测与在线更新；界面保存热生效，代理凭据脱敏不出服务端。亦可用 `OWC_PROXY_*` 环境变量配置。
+
+### 安装与更新（Linux）
+
+- 安装器解析既有 systemd unit 的启动路径：同路径判定为更新（保留服务启用状态与启动器变量，一次确认），不同路径提示「切换服务 / 仅装文件 / 中止」，防止双安装抢端口；未检测到可用的 systemd 时不再询问写服务。
+- 重跑 install.sh 保留启动器中已设置的端口、数据目录、监听地址与 pin 的系统 Node（命令行显式参数仍最优先）。
+- 在线更新修复重启竞态：`Restart=on-failure` 下 clean exit 不拉起、`try-restart` 对已停止服务无效，此前更新后服务可能停在停止状态；同时支持系统级 unit 自动重启。`--use-system-node` 安装更新不再重复复制约 100MB 的 Node 运行时。
+- 安装结束检测 `<prefix>/bin` 是否在 PATH 并给出 export 指引；新写 systemd unit 增加加固指令（`NoNewPrivileges` 等）；卸载提示 `loginctl disable-linger`。
+
+### 沙盒与界面平台适配
+
+- 修复 Linux 沙盒能力误报为「兼容模式（Job Object，无文件系统隔离）」——实际为 Landlock，界面与 capability 上报现已一致；界面按平台出文案：Linux 显示 Landlock 语义、隐藏 AppContainer / Windows Sandbox / Bind Link 选项与提示，shell 选择器隐藏 CMD / PowerShell。
+- Landlock 强制模式新增 `/tmp`、`/dev` 读写与 `/proc`、`/sys` 只读豁免：沙盒内 mktemp、编译器中间文件、测试框架不再批量 EACCES。
+- exec 的内存 / 进程数限制在 Linux 经 setrlimit 落地（此前被静默忽略）；`fs.stat` 修改时间在 Linux 提供毫秒精度。
+
+### 安全与其他
+
+- 数据目录 0700，服务商配置（明文 API Key）、设置文件、会话转录等敏感文件 0600（POSIX 新写入生效）；core stderr 归档 `<数据目录>/logs/core.log`（5MB 轮转，保留一代）。
+- 优雅退出加固：第二次 Ctrl+C 立即强制退出、shutdown 5 秒超时兜底、POSIX 接入 SIGHUP；默认 corePath 按平台区分（修复 Linux 手动启动默认指向 `.exe`）。
+
 ## [1.1.1] - 2026-08-02
 
 设置界面重组与提示词配置扩展：联网服务与模型选择独立成页，提示词支持全局/项目两级与更多配置面；移动端密度进一步优化。
