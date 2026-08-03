@@ -54,11 +54,13 @@ export type PermissionMode = "ask" | "acceptEdits" | "review" | "yolo";
 /** review 权限模式的审核模型来源：fast = 快速模型；main = 会话当前 provider/model。 */
 export type ReviewModel = "fast" | "main";
 export interface PermissionRule { tool: string; argumentPrefix?: string }
-/** 托管工作区元数据：会话项目目录活在稀疏镜像盘（VHDX/qcow2）挂载点上 */
+/** 托管工作区元数据：会话项目目录活在隔离视图（VHDX/qcow2 镜像盘挂载点 / overlayfs merged）上 */
 export interface ManagedWorkspaceMeta {
   mode: "managed";
-  backend: "vhdx" | "qcow2";
+  /** overlayfs = Linux merged 视图（lower=源目录只读，upper 捕获变更） */
+  backend: "vhdx" | "qcow2" | "overlayfs";
   originCwd: string;
+  /** vhdx/qcow2：基盘镜像路径；overlayfs：stateRoot（<sessionRoot>/overlay） */
   image: string;
   mountPoint: string;
 }

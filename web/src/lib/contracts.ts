@@ -25,6 +25,8 @@ export type ShellBackend = "default" | "pwsh" | "bash" | "cmd";
 export type PythonEnv = "global" | "uv-workspace" | "uv-config";
 
 export interface SandboxCapabilities {
+  /** server 运行平台（process.platform）；web 端平台相关 UI 统一以此为准。 */
+  platform: string;
   appcontainer: boolean;
   jobobject: boolean;
   off: boolean;
@@ -39,10 +41,11 @@ export interface ManagedWorkspaceCapability {
   backends: Array<{ backend: "vhdx" | "qcow2"; available: boolean; requiresAdmin: boolean; detail?: string }>;
 }
 
-/** 会话的镜像盘工作区元数据；源目录只会在用户确认手动同步时被写回。 */
+/** 会话的隔离视图工作区元数据；源目录只会在用户确认手动同步时被写回。 */
 export interface ManagedWorkspace {
   mode: "managed";
-  backend: "vhdx" | "qcow2";
+  /** vhdx/qcow2 = 稀疏镜像盘挂载点；overlayfs = Linux merged 视图（lower=源目录只读） */
+  backend: "vhdx" | "qcow2" | "overlayfs";
   originCwd: string;
   image: string;
   mountPoint: string;

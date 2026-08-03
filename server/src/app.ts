@@ -32,6 +32,7 @@ import { DEFAULT_WS_BACKPRESSURE_LIMITS, isSlowClient, type WsBackpressureLimits
 import type { ProviderRegistry } from "./providers/provider.js";
 import { detectWsb } from "./sandbox/wsb.js";
 import { getSnapshotBackend } from "./snapshots/index.js";
+import { createExecFileRunner, probeSnapshotBackend } from "./snapshots/probe.js";
 import type { SnapshotBackend } from "./snapshots/backend.js";
 import type { ManagedProvisionResult, ManagedWorkspaceLike } from "./snapshots/managed-disk.js";
 import { ManagedWorkspaceSyncError, type ManagedWorkspaceSyncApplyInput } from "./snapshots/managed-sync.js";
@@ -233,6 +234,8 @@ export interface ServerDependencies {
   cron?: CronScheduler;
   /** 快照后端解析（测试注入用）；缺省走 probe 链 getSnapshotBackend */
   resolveSnapshotBackend?: (session: SessionMeta) => Promise<SnapshotBackend>;
+  /** 平台覆盖（测试注入用）；缺省 process.platform。Linux 下会话创建会自动尝试 overlayfs 托管 */
+  platform?: NodeJS.Platform;
 }
 
 function parseCookies(value: string | undefined): Map<string, string> {
@@ -397,6 +400,7 @@ function pdfUploadPath(name: string): string {
 
 export async function buildServer(dependencies: ServerDependencies): Promise<FastifyInstance> {
   const { core, sessions, agent, events, providers, pricing } = dependencies;
+  const platform = dependencies.platform ?? process.platform;
   // 首条用户消息派生标题（"New session" → 派生）与 PATCH 重命名走同一 session.updated 事件，通知所有客户端刷新列表
   sessions.onDerivedTitle = (meta) => {
     events.publish({ source: "session", type: "session.updated", sessionId: meta.id, payload: meta });
@@ -555,7 +559,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   // 快照回退全程持有（所有会话，不止 managed）：guard 检查到持有标记之间无 await，
   // 消息路由在 agent.run 前同步检查，关闭「回退进行中 run 起跑、随后触发消息被截断」的竞态
   const restoringSessions = new Set<string>();
-  const resolveSnapshotBackend = dependencies.resolveSnapshotBackend ?? ((session: SessionMeta) => getSnapshotBackend(sessions, session));
+  const resolveSnapshotBackend = dependencies.resolveSnapshotBackend ?? ((session: SessionMeta) => getSnapshotBackend(sessions, session, { core }));
   // Shared/exclusive gate for managed mount points. A checkpoint/sync/teardown
   // takes the exclusive side; core filesystem/exec and agent work hold a shared
   // lease until their promise settles. This closes the check-then-await race
@@ -891,6 +895,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     const info = await core.ping().catch(() => undefined);
     const bindLinkAvailable = info?.features?.bindLink === true;
     return {
+      platform: process.platform,
       appcontainer: true,
       jobobject: true,
       off: true,
@@ -1238,6 +1243,56 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     }
   };
 
+  /**
+   * Linux 直接模式创建时的 overlayfs 自动升级：与快照探测链同优先级（btrfs/zfs 命中更优），
+   * core 上报 features.overlay.supported 且源目录可挂载时按托管语义创建会话
+   * （cwd=merged 视图、源目录只读、需手动同步回源）；任一环节不可用都静默回落直接模式，
+   * 由快照探测链懒回落 git-shadow。返回 true 表示已创建并回复，false 表示回落直接模式。
+   */
+  const tryCreateOverlayfsSession = async (body: CreateSessionBody, provider: string, model: string, reply: FastifyReply): Promise<boolean> => {
+    const managed = dependencies.managed;
+    if (!managed) return false;
+    const sessionId = randomUUID();
+    const probed = await probeSnapshotBackend(sessions.contextRoot(sessionId), body.cwd, { runner: createExecFileRunner(), platform, core }).catch(() => undefined);
+    if (!probed || probed.name !== "overlayfs") return false;
+    // 源目录必须存在（要作 lower 挂载）；直接模式本不校验 cwd，不可挂载即回落
+    const origin = await stat(body.cwd).catch(() => undefined);
+    if (!origin?.isDirectory()) return false;
+    let provisioned: ManagedProvisionResult;
+    try {
+      provisioned = await managed.provision({ sessionId, originCwd: body.cwd, backend: "overlayfs" });
+    } catch {
+      return false;
+    }
+    const workspace = {
+      mode: "managed" as const,
+      backend: "overlayfs" as const,
+      originCwd: path.resolve(body.cwd),
+      image: provisioned.image,
+      mountPoint: provisioned.mountPoint,
+    };
+    try {
+      const { workspaceMode: _ignored, ...rest } = body;
+      const session = await sessions.create({
+        ...rest,
+        provider,
+        model,
+        id: sessionId,
+        cwd: provisioned.mountPoint,
+        workspace,
+        snapshotBackend: "overlayfs",
+      });
+      events.publish({ source: "session", type: "session.created", sessionId: session.id, payload: session });
+      // SessionStart 钩子：仅通知不阻断
+      if (dependencies.hooks) await dependencies.hooks.run("SessionStart", { sessionId: session.id, cwd: session.cwd });
+      reply.code(201).send(session);
+      return true;
+    } catch (error) {
+      await managed.teardown({ id: sessionId, workspace }).catch(() => undefined);
+      throw error;
+    }
+  };
+
   app.post<{ Body: CreateSessionBody }>("/api/sessions", async (request, reply) => {
     if (!request.body || typeof request.body.cwd !== "string" || !request.body.cwd) {
       return reply.code(400).send({ error: "cwd must be a non-empty string" });
@@ -1273,6 +1328,8 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       return reply.code(400).send({ error: 'workspaceMode must be "managed"' });
     }
     if (request.body.workspaceMode === "managed") return createManagedSession(request.body, provider, model, reply);
+    // Linux 直接模式：core 支持 overlay 时自动升级为 overlayfs 托管会话（见上注释）
+    if (platform === "linux" && await tryCreateOverlayfsSession(request.body, provider, model, reply)) return;
     const session = await sessions.create({ ...request.body, provider, model });
     events.publish({ source: "session", type: "session.created", sessionId: session.id, payload: session });
     // SessionStart 钩子：仅通知不阻断

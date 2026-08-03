@@ -3,6 +3,7 @@
 #include "exec.h"
 #include "fs.h"
 #include "json.h"
+#include "overlay.h"
 #include "path_policy.h"
 #include "pty.h"
 #include "platform/fs_platform.h"
@@ -409,7 +410,14 @@ static int cleanup_session(const char *id){size_t i;remove_session_watches(id);r
  * links are system-wide and survive this process otherwise (until reboot). */
 void owc_rpc_release_sessions(void){size_t i;for(i=0;i<session_count;i++){remove_session_bind_links(&sessions[i]);sessions[i].bind_count=0;}}
 
-static int reply_session_capability(owc_rpc *rpc,const owc_json *id,const char *sid){session_config *session=session_find(sid);char reason[192],detail[192];char *escaped,*escaped_detail=NULL;owc_sandbox_status status;int ok;char result[4096];if(!session)return reply_error(rpc,id,-32000,"session was not configured");detail[0]='\0';if(!session->sandbox_enabled){status=OWC_SANDBOX_ADVISORY;(void)snprintf(reason,sizeof(reason),"sandbox disabled by session policy");}else if(session->sandbox_mode==(int)OWC_SANDBOX_MODE_JOBOBJECT){status=OWC_SANDBOX_PARTIAL;(void)snprintf(reason,sizeof(reason),"Job Object compatibility mode requested by session policy");(void)snprintf(detail,sizeof(detail),"Job Object limits active processes to %lu and committed memory to %lu MB; no filesystem or network isolation (requires AppContainer)",session->job_max_processes,session->job_memory_mb);}else{
+static int reply_session_capability(owc_rpc *rpc,const owc_json *id,const char *sid){session_config *session=session_find(sid);char reason[192],detail[192];char *escaped,*escaped_detail=NULL;owc_sandbox_status status;int ok;char result[4096];if(!session)return reply_error(rpc,id,-32000,"session was not configured");detail[0]='\0';if(!session->sandbox_enabled){status=OWC_SANDBOX_ADVISORY;(void)snprintf(reason,sizeof(reason),"sandbox disabled by session policy");}else if(session->sandbox_mode==(int)OWC_SANDBOX_MODE_JOBOBJECT){
+#ifdef _WIN32
+ status=OWC_SANDBOX_PARTIAL;(void)snprintf(reason,sizeof(reason),"Job Object compatibility mode requested by session policy");(void)snprintf(detail,sizeof(detail),"Job Object limits active processes to %lu and committed memory to %lu MB; no filesystem or network isolation (requires AppContainer)",session->job_max_processes,session->job_memory_mb);
+#else
+ /* POSIX ignores the requested mode (exec_posix.c applies Landlock as-is), so report the real Landlock capability instead of the Windows Job Object wording. */
+ {owc_sandbox_result probe;owc_landlock_probe(session->allow_network,&probe);status=probe.status;(void)snprintf(reason,sizeof(reason),"%s",probe.reason);}
+#endif
+}else{
 #ifdef _WIN32
  status=owc_sandbox_probe(reason,sizeof(reason));
 #else
@@ -1515,6 +1523,126 @@ static int handle_pty_close(owc_rpc *rpc,const owc_json *id,const owc_json *p){
     return reply_result(rpc,id,"{\"ok\":true}");
 }
 
+/* ------------------------------------------------------------------ */
+/* overlay.*: Linux overlayfs snapshot primitives for the server snapshot
+ * backend.  Trusted host-level operations (same trust boundary as pty.*):
+ * no session sandbox applies, so every path argument is validated here
+ * (absolute, no dot components, UTF-8, root-bound strictly below the
+ * caller-supplied stateRoot; lower only needs to exist as a directory),
+ * and the POSIX implementation re-resolves with realpath before touching
+ * the fs so symlink escapes are refused as well. */
+#define OWC_OVERLAY_MAX_PATH 4096u
+static int overlay_path_form(const char *path) {
+    /* Absolute POSIX path without any "." or ".." component.  Backslashes
+     * are refused outright: they are legitimate Linux filename bytes but
+     * never appear in state directories, and refusing them keeps
+     * Windows-style path tricks out of the trusted boundary. */
+    const char *cursor;
+    if(!path||path[0]!='/'||strlen(path)>OWC_OVERLAY_MAX_PATH||strchr(path,'\\')) return 0;
+    if(!owc_fs_utf8_valid(path,strlen(path))) return 0;
+    cursor=path;
+    while(*cursor) {
+        const char *end;size_t length;
+        while(*cursor=='/') cursor++;
+        if(!*cursor) break;
+        end=cursor;
+        while(*end&&*end!='/') end++;
+        length=(size_t)(end-cursor);
+        if((length==1&&cursor[0]=='.')||(length==2&&cursor[0]=='.'&&cursor[1]=='.')) return 0;
+        cursor=end;
+    }
+    return 1;
+}
+/* Strictly-below check on the lexical form (both inputs already passed
+ * overlay_path_form): path must sit under root and must not be root. */
+static int overlay_within_root(const char *path,const char *root) {
+    size_t root_length=strlen(root);
+    while(root_length>1&&root[root_length-1]=='/') root_length--;
+    if(root_length<strlen(root)){char buf[OWC_OVERLAY_MAX_PATH+1];if(root_length>=sizeof(buf))return 0;memcpy(buf,root,root_length);buf[root_length]='\0';root=buf;return overlay_within_root(path,root);}
+    if(!owc_path_is_within(path,root)) return 0;
+    return strlen(path)>root_length;
+}
+static int overlay_reply_supported(owc_rpc *rpc,const owc_json *id) {
+    if(owc_overlay_supported()) return 1;
+    (void)reply_error(rpc,id,-32000,"overlay snapshot primitives are not supported on this platform");
+    return 0;
+}
+static int handle_overlay_mount(owc_rpc *rpc,const owc_json *id,const owc_json *p){
+    static const char *keys[]={"stateRoot","lower","upper","work","merged"};
+    const char *state_root,*lower,*upper,*work,*merged;char err[256];int method=0;char result[64];
+    if(!p||p->type!=OWC_JSON_OBJECT||!allowed_keys(p,keys,5))return reply_error(rpc,id,-32602,"overlay.mount contains unknown fields");
+    state_root=owc_json_get_string(owc_json_object_get(p,"stateRoot"));
+    lower=owc_json_get_string(owc_json_object_get(p,"lower"));
+    upper=owc_json_get_string(owc_json_object_get(p,"upper"));
+    work=owc_json_get_string(owc_json_object_get(p,"work"));
+    merged=owc_json_get_string(owc_json_object_get(p,"merged"));
+    if(!overlay_path_form(state_root)||!overlay_path_form(lower)||!overlay_path_form(upper)||!overlay_path_form(work)||!overlay_path_form(merged))return reply_error(rpc,id,-32602,"overlay.mount paths must be absolute UTF-8 without dot components");
+    if(!overlay_within_root(upper,state_root)||!overlay_within_root(work,state_root)||!overlay_within_root(merged,state_root))return reply_error(rpc,id,-32002,"upper, work, and merged must be strictly below stateRoot");
+    if(!strcmp(lower,merged))return reply_error(rpc,id,-32602,"merged must differ from lower");
+    if(!overlay_reply_supported(rpc,id))return 1;
+    if(!owc_overlay_mount(state_root,lower,upper,work,merged,&method,err,sizeof(err)))return reply_error(rpc,id,-32000,err);
+    (void)snprintf(result,sizeof(result),"{\"ok\":true,\"method\":\"%s\"}",method==OWC_OVERLAY_METHOD_KERNEL?"kernel":"fuse");
+    return reply_result(rpc,id,result);
+}
+static int handle_overlay_checkpoint(owc_rpc *rpc,const owc_json *id,const owc_json *p){
+    static const char *keys[]={"stateRoot","upper","dest"};
+    const char *state_root,*upper,*dest;char err[256];owc_overlay_copy_summary summary;char result[128];
+    if(!p||p->type!=OWC_JSON_OBJECT||!allowed_keys(p,keys,3))return reply_error(rpc,id,-32602,"overlay.checkpoint contains unknown fields");
+    state_root=owc_json_get_string(owc_json_object_get(p,"stateRoot"));
+    upper=owc_json_get_string(owc_json_object_get(p,"upper"));
+    dest=owc_json_get_string(owc_json_object_get(p,"dest"));
+    if(!overlay_path_form(state_root)||!overlay_path_form(upper)||!overlay_path_form(dest))return reply_error(rpc,id,-32602,"overlay.checkpoint paths must be absolute UTF-8 without dot components");
+    if(!overlay_within_root(upper,state_root)||!overlay_within_root(dest,state_root))return reply_error(rpc,id,-32002,"upper and dest must be strictly below stateRoot");
+    if(!overlay_reply_supported(rpc,id))return 1;
+    if(!owc_overlay_copy_tree(state_root,upper,dest,&summary,err,sizeof(err)))return reply_error(rpc,id,-32000,err);
+    (void)snprintf(result,sizeof(result),"{\"ok\":true,\"files\":%llu,\"bytes\":%llu,\"skipped\":%llu}",summary.files,summary.bytes,summary.skipped);
+    return reply_result(rpc,id,result);
+}
+static int handle_overlay_restore(owc_rpc *rpc,const owc_json *id,const owc_json *p){
+    static const char *keys[]={"stateRoot","lower","upper","work","merged","sourceUpper"};
+    const char *state_root,*lower,*upper,*work,*merged,*source_upper;char err[256];owc_overlay_copy_summary summary;char result[128];size_t i;
+    if(!p||p->type!=OWC_JSON_OBJECT||!allowed_keys(p,keys,6))return reply_error(rpc,id,-32602,"overlay.restore contains unknown fields");
+    state_root=owc_json_get_string(owc_json_object_get(p,"stateRoot"));
+    lower=owc_json_get_string(owc_json_object_get(p,"lower"));
+    upper=owc_json_get_string(owc_json_object_get(p,"upper"));
+    work=owc_json_get_string(owc_json_object_get(p,"work"));
+    merged=owc_json_get_string(owc_json_object_get(p,"merged"));
+    source_upper=owc_json_get_string(owc_json_object_get(p,"sourceUpper"));
+    if(!overlay_path_form(state_root)||!overlay_path_form(lower)||!overlay_path_form(upper)||!overlay_path_form(work)||!overlay_path_form(merged)||!overlay_path_form(source_upper))return reply_error(rpc,id,-32602,"overlay.restore paths must be absolute UTF-8 without dot components");
+    if(!overlay_within_root(upper,state_root)||!overlay_within_root(work,state_root)||!overlay_within_root(merged,state_root)||!overlay_within_root(source_upper,state_root))return reply_error(rpc,id,-32002,"upper, work, merged, and sourceUpper must be strictly below stateRoot");
+    if(!strcmp(lower,merged))return reply_error(rpc,id,-32602,"merged must differ from lower");
+    if(!strcmp(source_upper,upper))return reply_error(rpc,id,-32602,"sourceUpper must differ from upper");
+    /* Restoring while a job (exec/index scan/search) still walks the tree
+     * would tear the fs under it.  Refuse with a stable conflict code. */
+    jobs_init();EnterCriticalSection(&jobs_mutex);
+    for(i=0;i<OWC_JOB_MAX_RUNNING&&jobs[i].state!=OWC_JOB_RUNNING;i++);
+    LeaveCriticalSection(&jobs_mutex);
+    if(i<OWC_JOB_MAX_RUNNING)return reply_error(rpc,id,-32005,"overlay.restore requires no running jobs");
+    if(!overlay_reply_supported(rpc,id))return 1;
+    if(!owc_overlay_unmount(merged,err,sizeof(err)))return reply_error(rpc,id,-32000,err);
+    /* Kernel/fuse overlayfs can leave artifacts in the work dir; it must be
+     * empty for the remount below.  Safe to clear only after the unmount. */
+    if(!owc_overlay_clear_dir(state_root,work,err,sizeof(err)))return reply_error(rpc,id,-32000,err);
+    if(!owc_overlay_clear_dir(state_root,upper,err,sizeof(err)))return reply_error(rpc,id,-32000,err);
+    if(!owc_overlay_copy_tree(state_root,source_upper,upper,&summary,err,sizeof(err)))return reply_error(rpc,id,-32000,err);
+    {int method=0;char mount_err[256];
+    if(!owc_overlay_mount(state_root,lower,upper,work,merged,&method,mount_err,sizeof(mount_err)))return reply_error(rpc,id,-32000,mount_err);
+    (void)snprintf(result,sizeof(result),"{\"ok\":true,\"files\":%llu,\"bytes\":%llu,\"skipped\":%llu,\"method\":\"%s\"}",summary.files,summary.bytes,summary.skipped,method==OWC_OVERLAY_METHOD_KERNEL?"kernel":"fuse");}
+    return reply_result(rpc,id,result);
+}
+static int handle_overlay_unmount(owc_rpc *rpc,const owc_json *id,const owc_json *p){
+    static const char *keys[]={"stateRoot","merged"};
+    const char *state_root,*merged;char err[256];
+    if(!p||p->type!=OWC_JSON_OBJECT||!allowed_keys(p,keys,2))return reply_error(rpc,id,-32602,"overlay.unmount contains unknown fields");
+    state_root=owc_json_get_string(owc_json_object_get(p,"stateRoot"));
+    merged=owc_json_get_string(owc_json_object_get(p,"merged"));
+    if(!overlay_path_form(state_root)||!overlay_path_form(merged))return reply_error(rpc,id,-32602,"overlay.unmount paths must be absolute UTF-8 without dot components");
+    if(!overlay_within_root(merged,state_root))return reply_error(rpc,id,-32002,"merged must be strictly below stateRoot");
+    if(!overlay_reply_supported(rpc,id))return 1;
+    if(!owc_overlay_unmount(merged,err,sizeof(err)))return reply_error(rpc,id,-32000,err);
+    return reply_result(rpc,id,"{\"ok\":true}");
+}
+
 static int handle_fs(owc_rpc *rpc,const owc_json *id,const char *method,const owc_json *p){
     const char *cwd,*path,*content,*old,*replacement,*session_id; owc_fs_error e; char *a,*b; char canon[4096]; size_t off=0,lim=OWC_FS_DEFAULT_READ_LINES,i,matches=0; int option;
     static const char *rp[]={"sessionId","path","offset","limit"},*wp[]={"sessionId","path","content","createDirs","expectedSha256"},*bp[]={"sessionId","path","data","createDirs"},*ep[]={"sessionId","path","oldText","newText","replaceAll"},*searchp[]={"sessionId","path","pattern"},*sp[]={"sessionId","path"};
@@ -1560,7 +1688,8 @@ int owc_rpc_dispatch(owc_rpc *rpc, const char *body, size_t length) {
         const char *job_control="false";
 #endif
         const char *pty_available=owc_pty_supported()?"true":"false";
-        escaped=owc_json_escape_string(reason);if(!escaped)(void)reply_error(rpc,id,-32000,"failed to encode sandbox capability");else{result_size=(size_t)snprintf(NULL,0,"{\"version\":\"%s\",\"protocolVersion\":\"1.0\",\"platform\":\"%s\",\"sandboxCapability\":\"%s\",\"sandboxReason\":%s,\"features\":{\"fsStat\":true,\"fsStatMany\":true,\"fsWriteBase64\":true,\"fsReadBase64\":true,\"jobControl\":%s,\"fsHash\":true,\"fsScanPagination\":true,\"fsWatch\":true,\"indexScan\":true,\"grepJob\":true,\"globJob\":true,\"indexExtract\":true,\"pathNormalize\":true,\"shellBash\":true,\"pty\":%s,\"bindLink\":%s},\"limits\":{\"maxFrameBytes\":33554432,\"maxWriteBase64Bytes\":20971520,\"maxReadBase64Bytes\":20971520,\"maxHashBytes\":16777216,\"maxStatManyPaths\":128,\"maxStatManyPathBytes\":262144,\"maxScanEntries\":256,\"maxScanDepth\":16,\"maxScanNodes\":2048,\"maxWatches\":16,\"maxWatchEvents\":128,\"maxConcurrentJobs\":4,\"maxJobOutputBytes\":524288,\"maxIndexScanNodes\":1000000,\"maxIndexScanDepth\":64,\"maxIndexScanBytes\":17179869184,\"maxIndexScanMs\":600000,\"maxSearchNodes\":1000000,\"maxSearchDepth\":64,\"maxSearchMs\":300000,\"maxIndexExtractFiles\":4096,\"maxIndexExtractBytes\":1073741824,\"maxIndexExtractMs\":300000,\"indexExtractDefaultSymbolsPerFile\":200,\"maxIndexExtractSymbolsPerFile\":10000,\"maxConcurrentPtys\":16,\"maxPtyOutputChunkBytes\":65536,\"maxPtyInputBytes\":8192}}",OWC_CORE_VERSION,platform,owc_sandbox_status_name(capability),escaped,job_control,pty_available,owc_bindlink_supported()?"true":"false");result=(char*)malloc(result_size+1);if(!result)(void)reply_error(rpc,id,-32000,"failed to encode core capabilities");else{(void)snprintf(result,result_size+1,"{\"version\":\"%s\",\"protocolVersion\":\"1.0\",\"platform\":\"%s\",\"sandboxCapability\":\"%s\",\"sandboxReason\":%s,\"features\":{\"fsStat\":true,\"fsStatMany\":true,\"fsWriteBase64\":true,\"fsReadBase64\":true,\"jobControl\":%s,\"fsHash\":true,\"fsScanPagination\":true,\"fsWatch\":true,\"indexScan\":true,\"grepJob\":true,\"globJob\":true,\"indexExtract\":true,\"pathNormalize\":true,\"shellBash\":true,\"pty\":%s,\"bindLink\":%s},\"limits\":{\"maxFrameBytes\":33554432,\"maxWriteBase64Bytes\":20971520,\"maxReadBase64Bytes\":20971520,\"maxHashBytes\":16777216,\"maxStatManyPaths\":128,\"maxStatManyPathBytes\":262144,\"maxScanEntries\":256,\"maxScanDepth\":16,\"maxScanNodes\":2048,\"maxWatches\":16,\"maxWatchEvents\":128,\"maxConcurrentJobs\":4,\"maxJobOutputBytes\":524288,\"maxIndexScanNodes\":1000000,\"maxIndexScanDepth\":64,\"maxIndexScanBytes\":17179869184,\"maxIndexScanMs\":600000,\"maxSearchNodes\":1000000,\"maxSearchDepth\":64,\"maxSearchMs\":300000,\"maxIndexExtractFiles\":4096,\"maxIndexExtractBytes\":1073741824,\"maxIndexExtractMs\":300000,\"indexExtractDefaultSymbolsPerFile\":200,\"maxIndexExtractSymbolsPerFile\":10000,\"maxConcurrentPtys\":16,\"maxPtyOutputChunkBytes\":65536,\"maxPtyInputBytes\":8192}}",OWC_CORE_VERSION,platform,owc_sandbox_status_name(capability),escaped,job_control,pty_available,owc_bindlink_supported()?"true":"false");(void)reply_result(rpc,id,result);free(result);}free(escaped);}}
+        owc_overlay_capabilities overlay_caps;owc_overlay_probe(&overlay_caps);
+        escaped=owc_json_escape_string(reason);if(!escaped)(void)reply_error(rpc,id,-32000,"failed to encode sandbox capability");else{result_size=(size_t)snprintf(NULL,0,"{\"version\":\"%s\",\"protocolVersion\":\"1.0\",\"platform\":\"%s\",\"sandboxCapability\":\"%s\",\"sandboxReason\":%s,\"features\":{\"fsStat\":true,\"fsStatMany\":true,\"fsWriteBase64\":true,\"fsReadBase64\":true,\"jobControl\":%s,\"fsHash\":true,\"fsScanPagination\":true,\"fsWatch\":true,\"indexScan\":true,\"grepJob\":true,\"globJob\":true,\"indexExtract\":true,\"pathNormalize\":true,\"shellBash\":true,\"pty\":%s,\"bindLink\":%s,\"overlay\":{\"supported\":%s,\"fuseOverlayfs\":%s,\"kernelMount\":%s}},\"limits\":{\"maxFrameBytes\":33554432,\"maxWriteBase64Bytes\":20971520,\"maxReadBase64Bytes\":20971520,\"maxHashBytes\":16777216,\"maxStatManyPaths\":128,\"maxStatManyPathBytes\":262144,\"maxScanEntries\":256,\"maxScanDepth\":16,\"maxScanNodes\":2048,\"maxWatches\":16,\"maxWatchEvents\":128,\"maxConcurrentJobs\":4,\"maxJobOutputBytes\":524288,\"maxIndexScanNodes\":1000000,\"maxIndexScanDepth\":64,\"maxIndexScanBytes\":17179869184,\"maxIndexScanMs\":600000,\"maxSearchNodes\":1000000,\"maxSearchDepth\":64,\"maxSearchMs\":300000,\"maxIndexExtractFiles\":4096,\"maxIndexExtractBytes\":1073741824,\"maxIndexExtractMs\":300000,\"indexExtractDefaultSymbolsPerFile\":200,\"maxIndexExtractSymbolsPerFile\":10000,\"maxConcurrentPtys\":16,\"maxPtyOutputChunkBytes\":65536,\"maxPtyInputBytes\":8192}}",OWC_CORE_VERSION,platform,owc_sandbox_status_name(capability),escaped,job_control,pty_available,owc_bindlink_supported()?"true":"false",overlay_caps.supported?"true":"false",overlay_caps.fuse_overlayfs?"true":"false",overlay_caps.kernel_mount?"true":"false");result=(char*)malloc(result_size+1);if(!result)(void)reply_error(rpc,id,-32000,"failed to encode core capabilities");else{(void)snprintf(result,result_size+1,"{\"version\":\"%s\",\"protocolVersion\":\"1.0\",\"platform\":\"%s\",\"sandboxCapability\":\"%s\",\"sandboxReason\":%s,\"features\":{\"fsStat\":true,\"fsStatMany\":true,\"fsWriteBase64\":true,\"fsReadBase64\":true,\"jobControl\":%s,\"fsHash\":true,\"fsScanPagination\":true,\"fsWatch\":true,\"indexScan\":true,\"grepJob\":true,\"globJob\":true,\"indexExtract\":true,\"pathNormalize\":true,\"shellBash\":true,\"pty\":%s,\"bindLink\":%s,\"overlay\":{\"supported\":%s,\"fuseOverlayfs\":%s,\"kernelMount\":%s}},\"limits\":{\"maxFrameBytes\":33554432,\"maxWriteBase64Bytes\":20971520,\"maxReadBase64Bytes\":20971520,\"maxHashBytes\":16777216,\"maxStatManyPaths\":128,\"maxStatManyPathBytes\":262144,\"maxScanEntries\":256,\"maxScanDepth\":16,\"maxScanNodes\":2048,\"maxWatches\":16,\"maxWatchEvents\":128,\"maxConcurrentJobs\":4,\"maxJobOutputBytes\":524288,\"maxIndexScanNodes\":1000000,\"maxIndexScanDepth\":64,\"maxIndexScanBytes\":17179869184,\"maxIndexScanMs\":600000,\"maxSearchNodes\":1000000,\"maxSearchDepth\":64,\"maxSearchMs\":300000,\"maxIndexExtractFiles\":4096,\"maxIndexExtractBytes\":1073741824,\"maxIndexExtractMs\":300000,\"indexExtractDefaultSymbolsPerFile\":200,\"maxIndexExtractSymbolsPerFile\":10000,\"maxConcurrentPtys\":16,\"maxPtyOutputChunkBytes\":65536,\"maxPtyInputBytes\":8192}}",OWC_CORE_VERSION,platform,owc_sandbox_status_name(capability),escaped,job_control,pty_available,owc_bindlink_supported()?"true":"false",overlay_caps.supported?"true":"false",overlay_caps.fuse_overlayfs?"true":"false",overlay_caps.kernel_mount?"true":"false");(void)reply_result(rpc,id,result);free(result);}free(escaped);}}
     } else if(strcmp(method,"core.shutdown")==0) { if(params&&!allowed_keys(params,NULL,0))(void)reply_error(rpc,id,-32602,"core.shutdown accepts no params fields");else{(void)reply_result(rpc,id,"{\"ok\":true}"); rpc->shutting_down=1;} }
     else if(strcmp(method,"session.configure")==0) { static const char *keys[]={"sessionId","cwd","sandbox"};const char *sid=owc_json_get_string(owc_json_object_get(params,"sessionId")),*cwd=owc_json_get_string(owc_json_object_get(params,"cwd"));char err[192];int code=-32000;if(params&&!allowed_keys(params,keys,3))(void)reply_error(rpc,id,-32602,"session.configure contains unknown fields");else if(!sid||!sid[0]||!cwd||!cwd[0])(void)reply_error(rpc,id,-32602,"session.configure requires sessionId and cwd");else{err[0]='\0';if(!configure_session(sid,cwd,owc_json_object_get(params,"sandbox"),err,sizeof(err),&code))(void)reply_error(rpc,id,code,err);else(void)reply_session_capability(rpc,id,sid);} }
     else if(strcmp(method,"session.cleanup")==0) { static const char *keys[]={"sessionId"};const char *sid=owc_json_get_string(owc_json_object_get(params,"sessionId"));if(params&&!allowed_keys(params,keys,1))(void)reply_error(rpc,id,-32602,"session.cleanup contains unknown fields");else if(!sid||!sid[0])(void)reply_error(rpc,id,-32602,"session.cleanup requires sessionId");else{(void)cleanup_session(sid);(void)reply_result(rpc,id,"{\"ok\":true}");} }
@@ -1580,6 +1709,10 @@ int owc_rpc_dispatch(owc_rpc *rpc, const char *body, size_t length) {
     else if(strcmp(method,"pty.input")==0) (void)handle_pty_input(rpc,id,params);
     else if(strcmp(method,"pty.resize")==0) (void)handle_pty_resize(rpc,id,params);
     else if(strcmp(method,"pty.close")==0) (void)handle_pty_close(rpc,id,params);
+    else if(strcmp(method,"overlay.mount")==0) (void)handle_overlay_mount(rpc,id,params);
+    else if(strcmp(method,"overlay.checkpoint")==0) (void)handle_overlay_checkpoint(rpc,id,params);
+    else if(strcmp(method,"overlay.restore")==0) (void)handle_overlay_restore(rpc,id,params);
+    else if(strcmp(method,"overlay.unmount")==0) (void)handle_overlay_unmount(rpc,id,params);
     else (void)reply_error(rpc,id,-32601,"method not found");
     rpc->suppress_responses=0; owc_json_free(root); return 1;
 }

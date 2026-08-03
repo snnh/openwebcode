@@ -176,6 +176,7 @@ export function FilesPanel({
   }
 
   const managed = session?.workspace?.mode === "managed";
+  const overlayfs = session?.workspace?.backend === "overlayfs";
   const previewLang = EXT_LANGS[ext];
   const visibleSyncChanges = syncPreview?.changes.filter((entry) => entry.action !== "none") ?? [];
   const safeChanges = syncPreview ? safeChangeCount(syncPreview) : 0;
@@ -276,7 +277,9 @@ export function FilesPanel({
               {syncPreview.summary.unsupported > 0 && <span className="warning">{t(`不支持 ${syncPreview.summary.unsupported}`, `Unsupported ${syncPreview.summary.unsupported}`)}</span>}
             </div>
             {visibleSyncChanges.length === 0 ? (
-              <p className="panel-empty">{t("镜像盘与源目录没有需要同步的差异。", "The disk image and source directory have no changes to sync.")}</p>
+              <p className="panel-empty">{overlayfs
+                ? t("merged 视图与源目录没有需要同步的差异。", "The merged view and the source directory have no changes to sync.")
+                : t("镜像盘与源目录没有需要同步的差异。", "The disk image and source directory have no changes to sync.")}</p>
             ) : (
               <ul className="workspace-sync-list">
                 {visibleSyncChanges.slice(0, 200).map((entry) => (
@@ -291,7 +294,9 @@ export function FilesPanel({
             {conflictCount > 0 && (
               <label className="workspace-sync-force">
                 <input type="checkbox" checked={overwriteConflicts} onChange={(event) => setOverwriteConflicts(event.target.checked)} />
-                {t("覆盖源目录冲突项（含无基线旧会话；将以镜像盘内容为准）", "Overwrite conflicting source items (including older sessions without a baseline; use disk-image contents)")}
+                {overlayfs
+                  ? t("覆盖源目录冲突项（含无基线旧会话；将以 merged 视图内容为准）", "Overwrite conflicting source items (including older sessions without a baseline; use merged-view contents)")
+                  : t("覆盖源目录冲突项（含无基线旧会话；将以镜像盘内容为准）", "Overwrite conflicting source items (including older sessions without a baseline; use disk-image contents)")}
               </label>
             )}
             <div className="dialog-actions workspace-sync-actions">

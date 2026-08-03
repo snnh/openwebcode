@@ -84,6 +84,10 @@ def assert_landlock_filesystem_isolation_if_enforced(proc):
         response, _ = collect_until_response(proc, 41)
         assert "result" in response, response
         capability = response["result"]["sandboxCapability"]
+        # Linux must never report the Windows Job Object wording: a default
+        # enabled session reflects the Landlock probe result.
+        assert "Job Object" not in response["result"].get("sandboxReason", ""), response
+        assert "Job Object" not in response["result"].get("sandboxDetail", ""), response
         if capability != "enforced":
             reason = response["result"].get("sandboxReason", "unknown reason")
             print(
@@ -180,6 +184,13 @@ def main():
         assert response["result"]["features"]["indexExtract"] is True
         assert response["result"]["features"]["jobControl"] is (os.name == "nt")
         assert response["result"]["features"]["shellBash"] is True
+        overlay_feature = response["result"]["features"].get("overlay")
+        assert isinstance(overlay_feature, dict), response["result"]["features"]
+        assert set(overlay_feature) == {"supported", "fuseOverlayfs", "kernelMount"}, overlay_feature
+        if os.name == "nt":
+            assert overlay_feature == {"supported": False, "fuseOverlayfs": False, "kernelMount": False}, overlay_feature
+        else:
+            assert all(isinstance(value, bool) for value in overlay_feature.values()), overlay_feature
         assert response["result"]["limits"] == {"maxFrameBytes": 32 * 1024 * 1024, "maxWriteBase64Bytes": 20 * 1024 * 1024, "maxReadBase64Bytes": 20 * 1024 * 1024, "maxHashBytes": 16 * 1024 * 1024, "maxStatManyPaths": 128, "maxStatManyPathBytes": 256 * 1024, "maxScanEntries": 256, "maxScanDepth": 16, "maxScanNodes": 2048, "maxWatches": 16, "maxWatchEvents": 128, "maxConcurrentJobs": 4, "maxJobOutputBytes": 512 * 1024, "maxIndexScanNodes": 1000000, "maxIndexScanDepth": 64, "maxIndexScanBytes": 16 * 1024 * 1024 * 1024, "maxIndexScanMs": 600000, "maxSearchNodes": 1000000, "maxSearchDepth": 64, "maxSearchMs": 300000, "maxIndexExtractFiles": 4096, "maxIndexExtractBytes": 1024 * 1024 * 1024, "maxIndexExtractMs": 300000, "indexExtractDefaultSymbolsPerFile": 200, "maxIndexExtractSymbolsPerFile": 10000, "maxConcurrentPtys": 16, "maxPtyOutputChunkBytes": 64 * 1024, "maxPtyInputBytes": 8 * 1024}
 
         request(proc, None, "core.ping")
@@ -499,20 +510,28 @@ def main():
             assert response["result"]["state"] == "failed", response
             assert response["result"]["error"] == "pwsh executable was not found", response
 
-        # jobobject 兼容模式：默认 Job Object 限制在回复中如实上报
-        request(proc, 30, "session.configure", {"sessionId": "s2", "cwd": os.getcwd(), "sandbox": {"enabled": True, "mode": "jobobject"}})
-        response, _ = collect_until_response(proc, 30)
-        assert response["result"]["sandboxCapability"] == "partial"
-        detail = response["result"]["sandboxDetail"]
-        assert "4096" in detail and "64" in detail
+        if os.name == "nt":
+            # jobobject 兼容模式：默认 Job Object 限制在回复中如实上报
+            request(proc, 30, "session.configure", {"sessionId": "s2", "cwd": os.getcwd(), "sandbox": {"enabled": True, "mode": "jobobject"}})
+            response, _ = collect_until_response(proc, 30)
+            assert response["result"]["sandboxCapability"] == "partial"
+            detail = response["result"]["sandboxDetail"]
+            assert "4096" in detail and "64" in detail
 
-        # 显式覆盖 jobMemoryMB / jobMaxProcesses
-        request(proc, 31, "session.configure", {"sessionId": "s2", "cwd": os.getcwd(), "sandbox": {"enabled": True, "mode": "jobobject", "jobMemoryMB": 2048, "jobMaxProcesses": 32}})
-        response, _ = collect_until_response(proc, 31)
-        detail = response["result"]["sandboxDetail"]
-        assert "2048" in detail and "32" in detail
+            # 显式覆盖 jobMemoryMB / jobMaxProcesses
+            request(proc, 31, "session.configure", {"sessionId": "s2", "cwd": os.getcwd(), "sandbox": {"enabled": True, "mode": "jobobject", "jobMemoryMB": 2048, "jobMaxProcesses": 32}})
+            response, _ = collect_until_response(proc, 31)
+            detail = response["result"]["sandboxDetail"]
+            assert "2048" in detail and "32" in detail
+        else:
+            # POSIX 忽略 mode，一律如实上报 Landlock 能力，不得出现 Windows Job Object 文案
+            request(proc, 30, "session.configure", {"sessionId": "s2", "cwd": os.getcwd(), "sandbox": {"enabled": True, "mode": "jobobject"}})
+            response, _ = collect_until_response(proc, 30)
+            assert response["result"]["sandboxCapability"] in {"advisory", "partial", "enforced"}
+            assert "Job Object" not in response["result"]["sandboxReason"]
+            assert "Job Object" not in response["result"].get("sandboxDetail", "")
 
-        # 非法值：0、超上限、非数字一律拒绝
+        # 非法值：0、超上限、非数字一律拒绝（平台无关的字段校验）
         for bad_id, field, value in [
             (32, "jobMemoryMB", 0), (33, "jobMemoryMB", 1048577), (34, "jobMemoryMB", "2048"),
             (35, "jobMaxProcesses", 0), (36, "jobMaxProcesses", 4097), (37, "jobMaxProcesses", "64"),
@@ -524,7 +543,11 @@ def main():
         # 上限边界值合法
         request(proc, 38, "session.configure", {"sessionId": "s2", "cwd": os.getcwd(), "sandbox": {"enabled": True, "mode": "jobobject", "jobMemoryMB": 1048576, "jobMaxProcesses": 4096}})
         response, _ = collect_until_response(proc, 38)
-        assert response["result"]["sandboxCapability"] == "partial"
+        if os.name == "nt":
+            assert response["result"]["sandboxCapability"] == "partial"
+        else:
+            assert response["result"]["sandboxCapability"] in {"advisory", "partial", "enforced"}
+            assert "Job Object" not in response["result"]["sandboxReason"]
 
         # jobobject 模式下 exec.run 正常工作（sandbox 启用时 shell 固定为 cmd.exe）
         job_command = "echo hello&& exit /b 7" if os.name == "nt" else "printf hello; exit 7"
