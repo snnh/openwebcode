@@ -8,9 +8,12 @@ import { buildAccessUrls, listLanAddresses, regenerateAccessToken, resolveAccess
 import { isLoopbackHost, loadConfig } from "./config.js";
 import { ModelRegistry } from "./context/model-registry.js";
 import { CoreClient } from "./core-client.js";
+import { CoreLogArchive } from "./core-log.js";
 import { ExchangeRateService, HttpExchangeRateProvider } from "./cost/exchange-rate.js";
 import { PricingCatalog } from "./cost/pricing-catalog.js";
 import { EventBus } from "./events/event-bus.js";
+import { ensureDirWithMode } from "./fs-utils.js";
+import { installGracefulShutdown } from "./shutdown.js";
 import { HookRunner } from "./hooks.js";
 import { IndexManager } from "./index/index-manager.js";
 import { DiagnosticsService } from "./diagnostics/service.js";
@@ -34,6 +37,7 @@ import { UsageLog } from "./usage-log.js";
 import { getServerVersion, readServerVersion, setServerVersion } from "./version.js";
 import { UpdateChecker } from "./update-checker.js";
 import { UpdateApplier } from "./update-applier.js";
+import { applyProxyConfig } from "./proxy.js";
 import { createProfileSearchProvider, createProfileWebFetchProvider } from "./web-tools.js";
 import { ProviderProfilesService } from "./provider-profiles.js";
 import { ProviderProfilesRuntime } from "./provider-profiles-runtime.js";
@@ -50,6 +54,8 @@ const resolveFromServer = (value: string) => (path.isAbsolute(value) ? value : p
 // 但不改变 settings 文件自身的位置（否则重启后会丢失配置入口）。
 const envConfig = loadConfig();
 const bootDataDir = resolveFromServer(envConfig.dataDir);
+// 设置目录含敏感文件（API Key、访问令牌）：POSIX 收紧 0700（Windows no-op）
+await ensureDirWithMode(bootDataDir, 0o700);
 // 解析服务版本并初始化全局 User-Agent（所有出站 HTTP 统一注入 UA）
 const serverVersion = await readServerVersion();
 setServerVersion(serverVersion);
@@ -61,6 +67,12 @@ const settings = await SettingsService.load({
 
 const config = settings.effective();
 const dataDir = resolveFromServer(config.dataDir);
+// 出站代理：按当前设置安装全局 dispatcher（off/env/custom），先于一切出站请求；
+// 设置保存后由 SettingsService.hotApply 热重应用
+const proxyDescription = applyProxyConfig(config.proxy);
+process.stderr.write(`[proxy] ${proxyDescription.summary}\n`);
+// 业务数据目录可与设置目录不同（settings dataDir 覆盖）：同样收紧 0700
+await ensureDirWithMode(dataDir, 0o700);
 // 共享宿主机 core；sandboxMode=="wsb" 的会话由 CoreRouter 路由到 WSB 沙盒内的 core
 const sharedCore = new CoreClient(config.corePath, config.coreRequestTimeoutMs);
 const sessions = new SessionStore(path.join(dataDir, "sessions"));
@@ -146,8 +158,9 @@ const cron = new CronScheduler({
 });
 agent.setCronScheduler(cron);
 const providerProfilesRuntime = new ProviderProfilesRuntime(providerProfiles, providers, agent, models, events);
-// 托管工作区（plan §6.4）：镜像/挂载点位于 dataDir 下；孤儿挂载清理挂在 GC 启动扫描上
-const managed = new ManagedWorkspaceManager({ dataDir });
+// 托管工作区（plan §6.4）：镜像/挂载点位于 dataDir 下；孤儿挂载清理挂在 GC 启动扫描上。
+// overlayfs 托管经宿主机 core 的 overlay.* 原语挂载 merged 视图（仅 Linux）。
+const managed = new ManagedWorkspaceManager({ dataDir, core: sharedCore });
 const gc = new StorageGC(path.join(dataDir, "sessions"), config.gcMaxBytes, () => managed.sweepOrphans());
 // 更新检查（默认关闭）：周期性查询 GitHub Releases 最新版本，结果仅在设置页静默展示
 const updateChecker = new UpdateChecker({
@@ -165,8 +178,17 @@ const updateApplier = new UpdateApplier({
 settings.bind({ providers, core, agent, events, gc, fastModel, profiles: providerProfiles, models, updateChecker });
 providerProfilesRuntime.start();
 
-core.on("diagnostic", (text: string) => process.stderr.write(`[owc-exec] ${text}`));
-core.on("error", (error: Error) => process.stderr.write(`[owc-exec] core error: ${error}\n`));
+// core stderr/diagnostic 双写：终端 + <dataDir>/logs/core.log（超 5MB 启动时轮转为 core.log.1，仅一代）
+const coreLog = new CoreLogArchive(path.join(dataDir, "logs"));
+await coreLog.initialize().catch((error: unknown) => process.stderr.write(`[core-log] 初始化失败：${error instanceof Error ? error.message : String(error)}\n`));
+core.on("diagnostic", (text: string) => {
+  process.stderr.write(`[owc-exec] ${text}`);
+  coreLog.append(text.endsWith("\n") ? `[owc-exec] ${text}` : `[owc-exec] ${text}\n`);
+});
+core.on("error", (error: Error) => {
+  process.stderr.write(`[owc-exec] core error: ${error}\n`);
+  coreLog.append(`[owc-exec] core error: ${error}\n`);
+});
 
 await sessions.initialize();
 await pricing.initialize();
@@ -305,8 +327,7 @@ async function shutdown(): Promise<void> {
   await core.stop();
 }
 
-process.once("SIGINT", () => void shutdown());
-process.once("SIGTERM", () => void shutdown());
+installGracefulShutdown({ shutdown });
 
 await app.listen({ host: config.host, port: config.port });
 // 非回环监听：启动后打印一次带 token 的访问链接（局域网/移动端直接打开即写入登录 Cookie）

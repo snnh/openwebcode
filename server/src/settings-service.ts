@@ -1,8 +1,9 @@
-import { mkdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "./atomic-file.js";
+import { ensureDirWithMode } from "./fs-utils.js";
 import type { AgentRunner } from "./agent/agent-runner.js";
-import { loadConfig, type ServerConfig } from "./config.js";
+import { loadConfig, defaultCorePath, type ServerConfig } from "./config.js";
 import { MAX_SYNC_INTERVAL_MINUTES } from "./remote-sync-scheduler.js";
 import type { CoreClientLike } from "./core-client.js";
 import type { EventBus } from "./events/event-bus.js";
@@ -13,6 +14,7 @@ import type { ProviderProfilesService } from "./provider-profiles.js";
 import type { ModelRegistry } from "./context/model-registry.js";
 import type { UpdateChecker } from "./update-checker.js";
 import type { PythonEnv } from "./sessions/types.js";
+import { applyProxyConfig, sanitizeProxyUrl, type ProxyApplyResult, type ProxyConfig, type ProxyMode } from "./proxy.js";
 import installDefaultsDocument from "./config/defaults.json" with { type: "json" };
 
 export class SettingsValidationError extends Error {
@@ -65,10 +67,14 @@ interface FieldSpec {
   type: SettingFieldType;
   env: string;
   defaultValue: SettingValue | null;
+  /** 运行时平台相关默认（如 corePath 的 POSIX 布局）；缺省回退安装默认/代码兜底。 */
+  runtimeDefault?: () => SettingValue;
   restartRequired: boolean;
   options?: string[];
   fromEnv?: (raw: string) => SettingValue | undefined;
   validate?: (value: SettingValue) => void;
+  /** secret 字段的自定义脱敏（如代理 URL 需隐去凭据但保留 host）；缺省用 maskSecret */
+  mask?: (value: string) => string;
   description?: string;
 }
 
@@ -82,6 +88,8 @@ interface RuntimeDependencies {
   profiles?: ProviderProfilesService;
   models?: ModelRegistry;
   updateChecker?: UpdateChecker;
+  /** 出站代理热应用；缺省 proxy.ts 的真实全局 dispatcher 安装，测试注入 fake */
+  applyProxy?: (config: ProxyConfig) => ProxyApplyResult;
 }
 
 const GROUPS = [
@@ -92,6 +100,8 @@ const GROUPS = [
   { id: "service", label: "存储" },
   // 监听地址/端口单独分组：Web 端在"远程访问"页签渲染；分组 id 保持稳定，渲染位置由 Web 端决定
   { id: "network", label: "监听与端口" },
+  // 出站代理：Web 端在"联网服务"页签由专门组件渲染（secret 字段按 mask 脱敏）
+  { id: "proxy", label: "出站代理" },
   { id: "exchangeRate", label: "汇率" },
   { id: "updateCheck", label: "更新检查" },
 ];
@@ -100,6 +110,7 @@ const LANGUAGE_OPTIONS = ["zh-CN", "en-US", "zh-TW", "ja-JP", "ko-KR", "fr-FR", 
 const PYTHON_ENV_OPTIONS = ["global", "uv-workspace", "uv-config"];
 const THINKING_OPTIONS = ["disabled", "adaptive", "enabled"];
 const EFFORT_OPTIONS = ["none", "low", "medium", "high", "xhigh", "max", "ultra"];
+const PROXY_MODE_OPTIONS = ["off", "env", "custom"];
 
 export function encodeFastModelSelection(provider: string, model: string): string {
   return JSON.stringify([provider, model]);
@@ -160,6 +171,14 @@ function requireUpdateCheckIntervalHours(value: SettingValue): void {
   }
 }
 
+function requireNoProxyList(value: SettingValue): void {
+  const entries = String(value).split(",").map((entry) => entry.trim()).filter(Boolean);
+  if (entries.length === 0 || entries.length > 64 ||
+      entries.some((entry) => entry !== "*" && !/^(\*\.)?\.?[a-z0-9_-]+(\.[a-z0-9_-]+)*(:\d+)?$/i.test(entry))) {
+    throw new SettingsValidationError("例外列表需为逗号分隔的主机名或域名后缀（最多 64 项）");
+  }
+}
+
 function requireJobMemoryMB(value: SettingValue): void {
   if (typeof value !== "number" || value < 1 || value > 1_048_576) {
     throw new SettingsValidationError("Job 内存上限需为 1–1048576 MB (1 TB)");
@@ -217,6 +236,10 @@ function envUpdateCheckIntervalHours(raw: string): SettingValue | undefined {
   return Number.isSafeInteger(parsed) && parsed >= 0 && parsed <= 24 * 30 ? parsed : undefined;
 }
 
+function envProxyMode(raw: string): SettingValue | undefined {
+  return raw === "off" || raw === "env" || raw === "custom" ? raw : undefined;
+}
+
 const FIELDS: FieldSpec[] = [
   // 模型目录同步；模型服务商连接由 provider-profiles.json 独立管理。
   { key: "catalogSyncUrl", group: "models", label: "远程模型目录 URL", type: "text", env: "OWC_MODELS_CATALOG_SYNC_URL", defaultValue: null, restartRequired: false, validate: requireHttpUrl, description: "留空则不从远程链接同步模型目录" },
@@ -237,13 +260,13 @@ const FIELDS: FieldSpec[] = [
   { key: "defaultCurrency", group: "general", label: "默认货币", type: "select", env: "OWC_DEFAULT_CURRENCY", defaultValue: "CNY", restartRequired: false, options: ["USD", "CNY"], fromEnv: envCurrency },
   { key: "agentMaxTurns", group: "general", label: "单条消息最大轮次", type: "number", env: "OWC_AGENT_MAX_TURNS", defaultValue: 50, restartRequired: false, fromEnv: envNumber, validate: requireAgentMaxTurns, description: "每条用户消息允许的最大 agent 轮次，达到后当前任务以失败收尾；长任务可调大（1–1000）" },
   // 执行器
-  { key: "corePath", group: "executor", label: "执行器路径", type: "text", env: "OWC_CORE_PATH", defaultValue: "../build/Debug/owc-exec.exe", restartRequired: true, validate: requireNonEmpty },
+  { key: "corePath", group: "executor", label: "执行器路径", type: "text", env: "OWC_CORE_PATH", defaultValue: "../build/Debug/owc-exec.exe", runtimeDefault: () => defaultCorePath(), restartRequired: true, validate: requireNonEmpty },
   { key: "coreRequestTimeoutMs", group: "executor", label: "执行器请求超时 (ms)", type: "number", env: "OWC_CORE_REQUEST_TIMEOUT_MS", defaultValue: 130_000, restartRequired: false, fromEnv: envNumber },
-  { key: "sandboxAllowPaths", group: "executor", label: "AppContainer 额外允许目录", type: "pathList", env: "OWC_SANDBOX_ALLOW_PATHS", defaultValue: [], restartRequired: true, fromEnv: envPathList, validate: requirePathList, description: "每行一个目录，最多 16 个；执行时与会话工作目录合并并去重" },
+  { key: "sandboxAllowPaths", group: "executor", label: "沙盒额外允许目录", type: "pathList", env: "OWC_SANDBOX_ALLOW_PATHS", defaultValue: [], restartRequired: true, fromEnv: envPathList, validate: requirePathList, description: "每行一个目录，最多 16 个；执行时与会话工作目录合并并去重" },
   { key: "pythonEnv", group: "executor", label: "Python 环境", type: "select", env: "OWC_PYTHON_ENV", defaultValue: "global", restartRequired: false, options: PYTHON_ENV_OPTIONS, description: "全局默认：bash 工具的 python 运行环境。global = 本机已有环境；uv-workspace = 在项目工作区 .owc/venv 创建 uv 虚拟环境；uv-config = 在数据目录 venvs/ 创建 uv 虚拟环境。会话可在顶栏单独覆盖" },
   // Job Object 资源限制（仅 Windows，重启生效）：注入 CoreRouter 全局下发，留空由 core 用默认值
-  { key: "jobObjectMemoryMB", group: "executor", label: "Job 内存上限 (MB)", type: "number", env: "OWC_JOB_MEMORY_MB", defaultValue: null, restartRequired: true, fromEnv: envNumber, validate: requireJobMemoryMB, description: "Job Object 提交内存上限，缺省 4096" },
-  { key: "jobObjectMaxProcesses", group: "executor", label: "Job 进程数上限", type: "number", env: "OWC_JOB_MAX_PROCESSES", defaultValue: null, restartRequired: true, fromEnv: envNumber, validate: requireJobMaxProcesses, description: "Job Object 活跃进程上限，缺省 64" },
+  { key: "jobObjectMemoryMB", group: "executor", label: "Job 内存上限 (MB)", type: "number", env: "OWC_JOB_MEMORY_MB", defaultValue: null, restartRequired: true, fromEnv: envNumber, validate: requireJobMemoryMB, description: "进程树提交内存上限，缺省 4096；仅 Windows（Job Object）生效" },
+  { key: "jobObjectMaxProcesses", group: "executor", label: "Job 进程数上限", type: "number", env: "OWC_JOB_MAX_PROCESSES", defaultValue: null, restartRequired: true, fromEnv: envNumber, validate: requireJobMaxProcesses, description: "进程树活跃进程上限，缺省 64；仅 Windows（Job Object）生效" },
   { key: "gcMaxBytes", group: "service", label: "存储上限 (字节)", type: "number", env: "OWC_GC_MAX_BYTES", defaultValue: 2_147_483_648, restartRequired: false, fromEnv: envNumber, description: "会话 artifacts 全局 LRU 上限，超出后从最旧开始清理" },
   // 监听（重启生效）；Web 端归入"远程访问"页签
   { key: "host", group: "network", label: "监听地址", type: "text", env: "OWC_HOST", defaultValue: "127.0.0.1", restartRequired: true, validate: requireNonEmpty },
@@ -267,6 +290,12 @@ const FIELDS: FieldSpec[] = [
   { key: "updateCheckEnabled", group: "updateCheck", label: "启用更新检查", type: "boolean", env: "OWC_UPDATE_CHECK_ENABLED", defaultValue: false, restartRequired: false, fromEnv: envBoolean, description: "默认关闭；启用后周期性查询 GitHub Releases 最新版本" },
   { key: "updateCheckUrl", group: "updateCheck", label: "更新检查 URL", type: "text", env: "OWC_UPDATE_CHECK_URL", defaultValue: "https://api.github.com/repos/snnh/openwebcode/releases/latest", restartRequired: false, validate: requireHttpUrl, description: "GitHub Releases API 端点" },
   { key: "updateCheckIntervalHours", group: "updateCheck", label: "检查间隔（小时）", type: "number", env: "OWC_UPDATE_CHECK_INTERVAL_HOURS", defaultValue: 24, restartRequired: false, fromEnv: envUpdateCheckIntervalHours, validate: requireUpdateCheckIntervalHours, description: "0 表示仅手动检查；最大 720 小时" },
+  // 出站代理（热生效）：作用于模型 API、联网搜索/抓取、更新检测与在线更新等全部 Node 侧出站请求。
+  // 代理 URL 可能含凭据，按 secret 处理（view 仅返回脱敏值，自定义 mask 保留 host 便于辨认）。
+  { key: "proxyMode", group: "proxy", label: "出站代理模式", type: "select", env: "OWC_PROXY_MODE", defaultValue: "env", restartRequired: false, options: PROXY_MODE_OPTIONS, fromEnv: envProxyMode, description: "off = 全部直连；env = 跟随 HTTPS_PROXY/HTTP_PROXY/NO_PROXY 环境变量；custom = 使用下方自定义代理地址" },
+  { key: "proxyHttp", group: "proxy", label: "HTTP 代理", type: "secret", env: "OWC_PROXY_HTTP", defaultValue: null, restartRequired: false, validate: requireHttpUrl, mask: sanitizeProxyUrl, description: "形如 http://127.0.0.1:7890，可含凭据；仅自定义模式生效；HTTPS 代理留空时兼作其回退" },
+  { key: "proxyHttps", group: "proxy", label: "HTTPS 代理", type: "secret", env: "OWC_PROXY_HTTPS", defaultValue: null, restartRequired: false, validate: requireHttpUrl, mask: sanitizeProxyUrl, description: "访问 https 目标时使用的代理；留空回退 HTTP 代理" },
+  { key: "proxyNoProxy", group: "proxy", label: "代理例外列表", type: "text", env: "OWC_PROXY_NO_PROXY", defaultValue: null, restartRequired: false, validate: requireNoProxyList, description: "逗号分隔的主机名或域名后缀（如 internal.example.com），这些地址跳过代理；本机回环地址始终跳过" },
 ];
 
 const FIELD_MAP = new Map(FIELDS.map((field) => [field.key, field]));
@@ -365,7 +394,7 @@ export class SettingsService {
     const fromEnv = this.envValue(field);
     if (fromEnv !== undefined) return fromEnv;
     if (field.key in this.overrides) return this.overrides[field.key]!;
-    return this.installDefault(field);
+    return field.runtimeDefault?.() ?? this.installDefault(field);
   }
 
   private optionsFor(field: FieldSpec): SettingOptionView[] | undefined {
@@ -406,6 +435,9 @@ export class SettingsService {
     const sandboxAllowPaths = value("sandboxAllowPaths") as string[];
     const catalogSyncUrl = value("catalogSyncUrl");
     const pricingSyncUrl = value("pricingSyncUrl");
+    const proxyHttp = value("proxyHttp");
+    const proxyHttps = value("proxyHttps");
+    const proxyNoProxy = value("proxyNoProxy");
     const host = value("host") as string;
     // The listener address is editable in persisted settings. The access token
     // stays environment-overridable but is auto-generated and persisted on
@@ -442,6 +474,12 @@ export class SettingsService {
         enabled: value("updateCheckEnabled") as boolean,
         ...(typeof value("updateCheckUrl") === "string" ? { url: value("updateCheckUrl") as string } : {}),
         intervalHours: value("updateCheckIntervalHours") as number,
+      },
+      proxy: {
+        mode: value("proxyMode") as ProxyMode,
+        ...(typeof proxyHttp === "string" ? { httpProxy: proxyHttp } : {}),
+        ...(typeof proxyHttps === "string" ? { httpsProxy: proxyHttps } : {}),
+        ...(typeof proxyNoProxy === "string" ? { noProxy: proxyNoProxy } : {}),
       },
       ...(defaultModelSelection
         ? { defaultModel: { provider: defaultModelSelection[0], model: defaultModelSelection[1] } }
@@ -507,7 +545,7 @@ export class SettingsService {
           } satisfies Omit<SettingsFieldView, "value" | "hasValue" | "masked">;
           if (field.type === "secret") {
             const hasValue = typeof value === "string" && value.length > 0;
-            return { ...base, value: null, hasValue, ...(hasValue ? { masked: maskSecret(value as string) } : {}) };
+            return { ...base, value: null, hasValue, ...(hasValue ? { masked: (field.mask ?? maskSecret)(value as string) } : {}) };
           }
           return { ...base, value, hasValue: value !== null };
         }),
@@ -545,6 +583,7 @@ export class SettingsService {
       }
     }
     if (changed.length === 0) return this.view();
+    this.validateProxyCombination(next);
     this.overrides = next;
     await this.persist();
     this.hotApply(changed);
@@ -581,7 +620,31 @@ export class SettingsService {
       this.deps.updateChecker.configure(cfg);
       if (cfg.enabled) void this.deps.updateChecker.refresh().catch(() => undefined);
     }
+    // 出站代理热重应用：全局 dispatcher 立即替换，摘要已脱敏可写日志
+    if (changed.some((key) => key.startsWith("proxy"))) {
+      try {
+        const description = (this.deps.applyProxy ?? applyProxyConfig)(this.effective().proxy);
+        process.stderr.write(`[proxy] ${description.summary}\n`);
+      } catch (error) {
+        process.stderr.write(`[proxy] 代理配置应用失败：${error instanceof Error ? error.message : String(error)}\n`);
+      }
+    }
     // defaultCurrency 无需主动推送：app 路由经 getPreferences 每次实时读取
+  }
+
+  /**
+   * 跨字段校验：自定义代理模式下 HTTP/HTTPS 代理至少一个非空。
+   * 按「env > 新覆盖 > 安装默认」计算保存后的生效值（overrides 尚未替换）。
+   */
+  private validateProxyCombination(next: Record<string, SettingValue>): void {
+    const modeField = FIELD_MAP.get("proxyMode")!;
+    const mode = this.envValue(modeField) ?? next["proxyMode"] ?? this.installDefault(modeField);
+    if (mode !== "custom") return;
+    const httpProxy = this.envValue(FIELD_MAP.get("proxyHttp")!) ?? next["proxyHttp"];
+    const httpsProxy = this.envValue(FIELD_MAP.get("proxyHttps")!) ?? next["proxyHttps"];
+    if (typeof httpProxy !== "string" && typeof httpsProxy !== "string") {
+      throw new SettingsValidationError("自定义代理模式下，HTTP/HTTPS 代理至少填写一个");
+    }
   }
 
   private validateValue(field: FieldSpec, value: unknown): void {
@@ -624,8 +687,9 @@ export class SettingsService {
   }
 
   private async persist(): Promise<void> {
-    await mkdir(path.dirname(this.filePath), { recursive: true });
+    // server-settings.json 可能含敏感覆盖：目录 0700、文件 0600（POSIX；Windows no-op）
+    await ensureDirWithMode(path.dirname(this.filePath), 0o700);
     const document = { version: 1, updatedAt: new Date().toISOString(), overrides: this.overrides };
-    await writeUtf8Atomically(this.filePath, `${JSON.stringify(document, null, 2)}\n`);
+    await writeUtf8Atomically(this.filePath, `${JSON.stringify(document, null, 2)}\n`, { mode: 0o600 });
   }
 }
