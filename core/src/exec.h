@@ -7,10 +7,15 @@ typedef void (*owc_exec_output_fn)(void *user_data, const char *stream,
                                    const unsigned char *data, size_t length,
                                    unsigned sequence);
 
-/* Job Object resource limit defaults (Windows; applied only when the sandbox is
-   enabled and no AppContainer profile is active - explicit jobobject mode,
+/* Job Object resource limit defaults.  Windows: applied only when the sandbox
+   is enabled and no AppContainer profile is active - explicit jobobject mode,
    AppContainer creation fallback, or advisory - i.e. where the Job Object is
-   the only enforcement). */
+   the only enforcement.  POSIX: applied via setrlimit in the child before
+   exec, likewise only when the sandbox is enabled; RLIMIT_AS approximates the
+   committed-memory limit and RLIMIT_NPROC the process limit.  Both are best
+   effort on POSIX: a failed setrlimit does not block the exec, and
+   RLIMIT_NPROC counts processes per real uid rather than per process tree,
+   so it is only a coarse ceiling. */
 #define OWC_JOB_DEFAULT_MEMORY_MB 4096ul
 #define OWC_JOB_DEFAULT_MAX_PROCESSES 64ul
 

@@ -243,6 +243,27 @@ int main(void) {
             }
         }
     }
+#else
+    {
+        /* The runtime exemption tables must keep system binaries, kernel
+         * pseudo filesystems, scratch space, and device nodes reachable
+         * under Landlock enforcement. */
+        static const char *const required_read_exec[] = {
+            "/usr", "/bin", "/lib", "/lib64", "/etc", "/proc", "/sys"
+        };
+        static const char *const required_full[] = {"/tmp", "/dev"};
+        size_t i, j;
+        for (i = 0; i < sizeof(required_read_exec) / sizeof(required_read_exec[0]); ++i) {
+            for (j = 0; j < owc_landlock_read_exec_path_count; ++j)
+                if (!strcmp(owc_landlock_read_exec_paths[j], required_read_exec[i])) break;
+            if (j == owc_landlock_read_exec_path_count) return 5;
+        }
+        for (i = 0; i < sizeof(required_full) / sizeof(required_full[0]); ++i) {
+            for (j = 0; j < owc_landlock_full_access_path_count; ++j)
+                if (!strcmp(owc_landlock_full_access_paths[j], required_full[i])) break;
+            if (j == owc_landlock_full_access_path_count) return 6;
+        }
+    }
 #endif
     (void)printf("status=%s reason=%s\n", name, reason);
     return 0;

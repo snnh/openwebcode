@@ -142,6 +142,21 @@ owc_sandbox_status owc_sandbox_probe(char *reason, size_t reason_size) {
     return result.status;
 }
 
+/* Runtime exemption tables: paths every Landlock-sandboxed process may reach
+ * in addition to the session cwd and allow paths.  read_exec entries are
+ * granted read+execute only (system binaries, configuration, kernel pseudo
+ * filesystems); full_access entries are granted the complete handled access
+ * set (scratch space and device nodes).  Non-static so test_sandbox can
+ * assert their contents. */
+const char *const owc_landlock_read_exec_paths[] = {
+    "/usr", "/bin", "/lib", "/lib64", "/etc", "/proc", "/sys"
+};
+const size_t owc_landlock_read_exec_path_count =
+    sizeof(owc_landlock_read_exec_paths) / sizeof(owc_landlock_read_exec_paths[0]);
+const char *const owc_landlock_full_access_paths[] = {"/tmp", "/dev"};
+const size_t owc_landlock_full_access_path_count =
+    sizeof(owc_landlock_full_access_paths) / sizeof(owc_landlock_full_access_paths[0]);
+
 int owc_landlock_apply(const char *cwd, const char *const *allow_paths,
                        size_t allow_path_count, int allow_network,
                        owc_sandbox_result *result) {
@@ -150,7 +165,6 @@ int owc_landlock_apply(const char *cwd, const char *const *allow_paths,
     unsigned long long read_exec;
     unsigned long long handled;
     int ruleset_fd;
-    static const char *const runtime_paths[] = {"/usr", "/bin", "/lib", "/lib64", "/etc"};
     size_t i;
 
     owc_landlock_probe(allow_network, result);
@@ -175,8 +189,11 @@ int owc_landlock_apply(const char *cwd, const char *const *allow_paths,
     for (i = 0; i < allow_path_count; ++i) {
         if (!add_path_rule(ruleset_fd, allow_paths[i], handled, 0, result)) goto fail;
     }
-    for (i = 0; i < sizeof(runtime_paths) / sizeof(runtime_paths[0]); ++i) {
-        if (!add_path_rule(ruleset_fd, runtime_paths[i], read_exec, 0, result)) goto fail;
+    for (i = 0; i < owc_landlock_read_exec_path_count; ++i) {
+        if (!add_path_rule(ruleset_fd, owc_landlock_read_exec_paths[i], read_exec, 0, result)) goto fail;
+    }
+    for (i = 0; i < owc_landlock_full_access_path_count; ++i) {
+        if (!add_path_rule(ruleset_fd, owc_landlock_full_access_paths[i], handled, 0, result)) goto fail;
     }
     if (prctl(PR_SET_NO_NEW_PRIVS, 1L, 0L, 0L, 0L) != 0) {
         set_result(result, OWC_SANDBOX_ADVISORY, result->abi, errno,

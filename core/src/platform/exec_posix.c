@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -127,6 +128,24 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
         if (dup2(out_pipe[1], STDOUT_FILENO) < 0 || dup2(err_pipe[1], STDERR_FILENO) < 0) _exit(126);
         close(out_pipe[1]); close(err_pipe[1]);
         if (chdir(request->cwd) != 0) _exit(126);
+        /* POSIX counterpart of the Windows Job Object resource limits, under
+         * the same gate (only where the sandbox is the enforcement layer).
+         * RLIMIT_AS approximates the committed-memory limit and RLIMIT_NPROC
+         * the process limit.  Best effort: a failed setrlimit must not block
+         * the exec. */
+        if (request->sandbox_enabled) {
+            struct rlimit limit;
+            if (request->job_memory_mb > 0) {
+                limit.rlim_cur = limit.rlim_max =
+                    (rlim_t)request->job_memory_mb * 1024u * 1024u;
+                (void)setrlimit(RLIMIT_AS, &limit);
+            }
+            if (request->job_max_processes > 0) {
+                limit.rlim_cur = limit.rlim_max =
+                    (rlim_t)request->job_max_processes;
+                (void)setrlimit(RLIMIT_NPROC, &limit);
+            }
+        }
         if(request->sandbox_enabled)(void)owc_landlock_apply(request->cwd,request->allow_paths,request->allow_path_count,request->allow_network,&sandbox);
         else{sandbox.status=OWC_SANDBOX_ADVISORY;(void)snprintf(sandbox.reason,sizeof(sandbox.reason),"sandbox disabled by session policy");}
         if(!write_all(sandbox_pipe[1],&sandbox,sizeof(sandbox)))_exit(126);

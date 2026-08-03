@@ -55,6 +55,12 @@ void owc_landlock_probe(int allow_network, owc_sandbox_result *result);
 int owc_landlock_apply(const char *cwd, const char *const *allow_paths,
                        size_t allow_path_count, int allow_network,
                        owc_sandbox_result *result);
+/* Runtime exemption tables applied by owc_landlock_apply (see
+ * sandbox_posix.c).  Exposed for test assertions. */
+extern const char *const owc_landlock_read_exec_paths[];
+extern const size_t owc_landlock_read_exec_path_count;
+extern const char *const owc_landlock_full_access_paths[];
+extern const size_t owc_landlock_full_access_path_count;
 #endif
 
 #endif
