@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rm, stat, writeFile, appendFile } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
-import { isMissing } from "../fs-utils.js";
+import { chmodPrivate, ensureDirWithMode, isMissing } from "../fs-utils.js";
 import { parseSessionImport, serializeSession } from "./session-transfer.js";
 import { activePathMessages } from "./session-tree.js";
 import { defaultSandboxPolicy } from "./default-sandbox.js";
@@ -52,7 +52,8 @@ export class SessionStore {
   constructor(private readonly root: string) {}
 
   async initialize(): Promise<void> {
-    await mkdir(this.root, { recursive: true });
+    // sessions 根目录含会话内容：POSIX 收紧为 0700（Windows no-op）
+    await ensureDirWithMode(this.root, 0o700);
   }
 
   async create(input: CreateSessionInput): Promise<SessionMeta> {
@@ -76,9 +77,12 @@ export class SessionStore {
     if (input.sandboxMode && input.sandboxMode !== "jobobject") meta.sandboxMode = input.sandboxMode;
     if (input.setupScript?.trim()) meta.setupScript = input.setupScript;
     if (input.agentMode === "plan" || input.agentMode === "goal") meta.agentMode = input.agentMode;
-    await mkdir(this.sessionPath(meta.id), { recursive: false });
+    // overlayfs 托管会话在 create 前已 provision（stateRoot 位于会话目录下），目录已存在属预期
+    await mkdir(this.sessionPath(meta.id), { recursive: input.workspace?.backend === "overlayfs" });
+    await chmodPrivate(this.sessionPath(meta.id), 0o700);
     await this.writeMeta(meta);
-    await writeFile(this.messagesPath(meta.id), "", { encoding: "utf8", flag: "wx" });
+    await writeFile(this.messagesPath(meta.id), "", { encoding: "utf8", flag: "wx", mode: 0o600 });
+    await chmodPrivate(this.messagesPath(meta.id), 0o600);
     this.messagesCache.delete(meta.id);
     return meta;
   }
@@ -386,14 +390,16 @@ export class SessionStore {
         throw error;
       }
     }
+    await chmodPrivate(this.sessionPath(id), 0o700);
     const { id: _ignored, ...restMeta } = parsed.meta;
     const meta: SessionMeta = { ...restMeta, id };
     await this.writeMeta(meta);
     await writeFile(
       this.messagesPath(id),
       parsed.messages.map((message) => JSON.stringify(message)).join("\n") + (parsed.messages.length ? "\n" : ""),
-      "utf8",
+      { encoding: "utf8", mode: 0o600 },
     );
+    await chmodPrivate(this.messagesPath(id), 0o600);
     this.messagesCache.delete(id);
     return meta;
   }
@@ -553,6 +559,6 @@ export class SessionStore {
 
   private async writeMeta(meta: SessionMeta): Promise<void> {
     const target = this.metaPath(meta.id);
-    await writeUtf8Atomically(target, `${JSON.stringify(meta, null, 2)}\n`);
+    await writeUtf8Atomically(target, `${JSON.stringify(meta, null, 2)}\n`, { mode: 0o600 });
   }
 }
