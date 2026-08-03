@@ -64,7 +64,9 @@ def assert_landlock_filesystem_isolation_if_enforced(proc):
     containers legitimately report advisory/partial.  Do not turn those into
     false failures, but once the configured session reports enforced, require
     the child process to be able to write its workspace and unable to write an
-    independent temporary directory.
+    independent directory.  /tmp is a deliberate runtime exemption, so the
+    "outside" directory must live under the user home (not exempt) rather
+    than the system temp dir.
     """
     if sys.platform != "linux":
         print("SKIP: Landlock integration test requires Linux", file=sys.stderr)
@@ -72,7 +74,7 @@ def assert_landlock_filesystem_isolation_if_enforced(proc):
 
     with tempfile.TemporaryDirectory(prefix="owc-landlock-workspace-") as workspace, \
          tempfile.TemporaryDirectory(prefix="owc-landlock-allowed-") as allowed, \
-         tempfile.TemporaryDirectory(prefix="owc-landlock-outside-") as outside:
+         tempfile.TemporaryDirectory(prefix="owc-landlock-outside-", dir=os.path.expanduser("~")) as outside:
         inside_path = os.path.join(workspace, "workspace-write.txt")
         allowed_path = os.path.join(allowed, "allowed-write.txt")
         outside_path = os.path.join(outside, "outside-write.txt")
