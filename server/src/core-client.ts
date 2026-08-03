@@ -41,7 +41,7 @@ export interface CoreInfo {
   protocolVersion?: string;
   platform: "windows" | "linux";
   sandboxCapability: string;
-  features?: { fsStat: boolean; fsStatMany: boolean; fsWriteBase64: boolean; jobControl: boolean; fsHash: boolean; fsScanPagination: boolean; fsWatch: boolean; indexScan?: boolean; indexExtract?: boolean; grepJob?: boolean; globJob?: boolean; pathNormalize?: boolean; shellBash?: boolean; pty?: boolean; bindLink?: boolean; fsReadBase64?: boolean };
+  features?: { fsStat: boolean; fsStatMany: boolean; fsWriteBase64: boolean; jobControl: boolean; fsHash: boolean; fsScanPagination: boolean; fsWatch: boolean; indexScan?: boolean; indexExtract?: boolean; grepJob?: boolean; globJob?: boolean; pathNormalize?: boolean; shellBash?: boolean; pty?: boolean; bindLink?: boolean; fsReadBase64?: boolean; overlay?: { supported: boolean; fuseOverlayfs: boolean; kernelMount: boolean } };
   limits?: { maxFrameBytes: number; maxWriteBase64Bytes: number; maxHashBytes: number; maxStatManyPaths: number; maxStatManyPathBytes: number; maxScanEntries?: number; maxScanDepth?: number; maxScanNodes?: number; maxWatches?: number; maxWatchEvents?: number; maxConcurrentJobs?: number; maxJobOutputBytes?: number; maxIndexScanNodes?: number; maxIndexScanDepth?: number; maxIndexScanBytes?: number; maxIndexScanMs?: number; maxSearchNodes?: number; maxSearchDepth?: number; maxSearchMs?: number; maxIndexExtractFiles?: number; maxIndexExtractBytes?: number; maxIndexExtractMs?: number; indexExtractDefaultSymbolsPerFile?: number; maxIndexExtractSymbolsPerFile?: number; maxConcurrentPtys?: number; maxPtyOutputChunkBytes?: number; maxPtyInputBytes?: number; maxReadBase64Bytes?: number };
 }
 
@@ -207,6 +207,20 @@ export interface PtyResizeRequest { ptyId: number; cols: number; rows: number }
 export interface PtyOutputEvent { ptyId: number; seq: number; data: string }
 /** pty.exit 通知载荷：子进程退出时恰好一次，记录保留到显式 pty.close */
 export interface PtyExitEvent { ptyId: number; exitCode?: number }
+/**
+ * overlay.*：Linux overlayfs 快照原语（信任边界同 pty.*，core 本身非沙盒进程）。
+ * stateRoot 为 core 侧根界：upper/work/merged/dest/sourceUpper 必须严格位于其下
+ * （绝对路径、无点分量，core 再做 realpath 符号链接逃逸复核）；lower 只要求存在且是目录。
+ * 仅在 core.ping 的 features.overlay.supported 为 true 时可用；restore 在有 running
+ * job 时返回稳定冲突错误码 -32005。
+ */
+export interface OverlayMountRequest { stateRoot: string; lower: string; upper: string; work: string; merged: string }
+export interface OverlayMountResult { ok: true; method: "kernel" | "fuse" }
+export interface OverlayCheckpointRequest { stateRoot: string; upper: string; dest: string }
+export interface OverlayCopyResult { ok: true; files: number; bytes: number; skipped: number }
+export interface OverlayRestoreRequest { stateRoot: string; lower: string; upper: string; work: string; merged: string; sourceUpper: string }
+export interface OverlayRestoreResult extends OverlayCopyResult { method: "kernel" | "fuse" }
+export interface OverlayUnmountRequest { stateRoot: string; merged: string }
 export interface FsReadResult { content: string; totalLines: number; encoding: "utf-8"; truncated: boolean }
 export interface FsListResult { entries: Array<{ name: string; type: "file" | "directory" | "other"; size: number }>; truncated: boolean }
 export interface FsGlobResult { paths: string[]; truncated: boolean }
@@ -272,6 +286,11 @@ export interface CoreClientLike {
   /** per-pty 事件通道（exec.output 的 emitter 先例按 ptyId 细分）：output/exit */
   ptyEvents?(ptyId: number): EventEmitter;
   removePtyEvents?(ptyId: number): void;
+  /** overlay.*（可选）：旧 core 二进制无 features.overlay 时缺省，快照后端应报不可用。 */
+  overlayMount?(request: OverlayMountRequest): Promise<OverlayMountResult>;
+  overlayCheckpoint?(request: OverlayCheckpointRequest): Promise<OverlayCopyResult>;
+  overlayRestore?(request: OverlayRestoreRequest): Promise<OverlayRestoreResult>;
+  overlayUnmount?(request: OverlayUnmountRequest): Promise<{ ok: true }>;
   setRequestTimeoutMs(timeoutMs: number): void;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 对齐 Node EventEmitter 的 on() 签名，any[] 才能让具体事件类型的 listener 可赋值
   on(eventName: string, listener: (...args: any[]) => void): unknown;
@@ -459,6 +478,10 @@ export class CoreClient extends EventEmitter {
   inputPty(request: PtyInputRequest): Promise<{ ok: true }> { return this.call("pty.input", request); }
   resizePty(request: PtyResizeRequest): Promise<{ ok: true }> { return this.call("pty.resize", request); }
   closePty(request: { ptyId: number }): Promise<{ ok: true; exitCode?: number }> { return this.call("pty.close", request); }
+  overlayMount(request: OverlayMountRequest): Promise<OverlayMountResult> { return this.call("overlay.mount", request); }
+  overlayCheckpoint(request: OverlayCheckpointRequest): Promise<OverlayCopyResult> { return this.call("overlay.checkpoint", request); }
+  overlayRestore(request: OverlayRestoreRequest): Promise<OverlayRestoreResult> { return this.call("overlay.restore", request); }
+  overlayUnmount(request: OverlayUnmountRequest): Promise<{ ok: true }> { return this.call("overlay.unmount", request); }
 
   /** per-pty 事件通道：pty.open 响应到达前 core 可能已经推 output（shell banner），
    * 无订阅者的通知先缓冲（上限 256 条），首个 listener 挂载时回放。 */

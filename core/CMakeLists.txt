@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(openwebcode_core VERSION 1.1.1 LANGUAGES C)
+project(openwebcode_core VERSION 1.2.0 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -19,11 +19,11 @@ add_executable(owc-exec
 )
 
 if(WIN32)
-    target_sources(owc-exec PRIVATE src/icon.rc src/platform/exec_win.c src/platform/path_win.c src/platform/fs_win.c src/platform/sandbox_win.c src/platform/pty_win.c src/platform/bindlink_win.c)
+    target_sources(owc-exec PRIVATE src/icon.rc src/platform/exec_win.c src/platform/path_win.c src/platform/fs_win.c src/platform/sandbox_win.c src/platform/pty_win.c src/platform/bindlink_win.c src/platform/overlay_win.c)
     target_compile_definitions(owc-exec PRIVATE WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
     target_link_libraries(owc-exec PRIVATE userenv advapi32)
 else()
-    target_sources(owc-exec PRIVATE src/platform/exec_posix.c src/platform/path_posix.c src/platform/fs_posix.c src/platform/sandbox_posix.c src/platform/pty_posix.c src/platform/bindlink_posix.c)
+    target_sources(owc-exec PRIVATE src/platform/exec_posix.c src/platform/path_posix.c src/platform/fs_posix.c src/platform/sandbox_posix.c src/platform/pty_posix.c src/platform/bindlink_posix.c src/platform/overlay_posix.c)
     target_compile_definitions(owc-exec PRIVATE _POSIX_C_SOURCE=200809L _GNU_SOURCE)
     find_package(Threads REQUIRED)
     # util: openpty/forkpty (glibc libutil)
@@ -50,6 +50,7 @@ if(BUILD_TESTING)
     add_test(NAME index-extract COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_index_extract.py $<TARGET_FILE:owc-exec>)
     add_test(NAME pty COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pty.py $<TARGET_FILE:owc-exec>)
     add_test(NAME bindlink COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_bindlink.py $<TARGET_FILE:owc-exec>)
+    add_test(NAME overlay COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_overlay.py $<TARGET_FILE:owc-exec>)
 
     add_executable(test-path-policy tests/test_path_policy.c src/path_policy.c)
     if(WIN32)

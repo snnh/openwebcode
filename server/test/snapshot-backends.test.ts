@@ -11,10 +11,24 @@ import { SessionStore } from "../src/sessions/session-store.js";
 import { writeCheckpoints } from "../src/snapshots/backend.js";
 import { BtrfsBackend } from "../src/snapshots/btrfs.js";
 import { probeSnapshotBackend, type CommandRunner } from "../src/snapshots/probe.js";
+import type { OverlayfsCore } from "../src/snapshots/overlayfs.js";
+import type { CoreInfo } from "../src/core-client.js";
 import { ZfsBackend } from "../src/snapshots/zfs.js";
 
+import { FAKE_CORE_INFO } from "./helpers/fake-core.js";
 import { recordingRunner, tableRunner } from "./helpers/recording-runner.js";
 import { tempRoot } from "./helpers/temp-roots.js";
+
+/** fake core：ping 按参数上报 features.overlay；linux 平台。 */
+function overlayCore(supported: boolean): OverlayfsCore {
+  return {
+    ping: async () => ({
+      ...FAKE_CORE_INFO,
+      platform: "linux",
+      features: { ...FAKE_CORE_INFO.features, overlay: { supported, fuseOverlayfs: true, kernelMount: false } },
+    }) as CoreInfo,
+  };
+}
 
 describe("probeSnapshotBackend", () => {
   it("linux: btrfs 命中", async () => {
@@ -65,6 +79,40 @@ describe("probeSnapshotBackend", () => {
     const backend = await probeSnapshotBackend("D:\\owc\\sess", "C:\\data\\ws", { runner, platform: "win32" });
     expect(backend.name).toBe("git-shadow");
     expect(calls).toHaveLength(0);
+  });
+
+  it("linux: btrfs/zfs 不命中且 core 支持 overlay 时命中 overlayfs", async () => {
+    const { runner } = tableRunner({});
+    const backend = await probeSnapshotBackend("/data/sess", "/data/ws", { runner, platform: "linux", core: overlayCore(true) });
+    expect(backend.name).toBe("overlayfs");
+  });
+
+  it("linux: btrfs 命中优先于 overlayfs（探测链位置）", async () => {
+    const { runner } = tableRunner({
+      "stat -f -c %T /data/ws": { stdout: "btrfs\n", code: 0 },
+      "btrfs subvolume show /data/ws": { code: 0 },
+    });
+    const backend = await probeSnapshotBackend("/data/sess", "/data/ws", { runner, platform: "linux", core: overlayCore(true) });
+    expect(backend.name).toBe("btrfs");
+  });
+
+  it("linux: core 不支持 overlay 或未注入 core 时回落 git-shadow", async () => {
+    const { runner } = tableRunner({});
+    await expect(probeSnapshotBackend("/data/sess", "/data/ws", { runner, platform: "linux", core: overlayCore(false) })).resolves.toMatchObject({ name: "git-shadow" });
+    await expect(probeSnapshotBackend("/data/sess", "/data/ws", { runner, platform: "linux" })).resolves.toMatchObject({ name: "git-shadow" });
+  });
+
+  it("win32: 即使 core 上报 overlay 也不命中 overlayfs", async () => {
+    const { runner } = tableRunner({});
+    const backend = await probeSnapshotBackend("C:\\owc\\sess", "C:\\data\\ws", { runner, platform: "win32", core: overlayCore(true) });
+    expect(backend.name).toBe("git-shadow");
+  });
+
+  it("linux: core.ping 异常时静默回落 git-shadow", async () => {
+    const { runner } = tableRunner({});
+    const broken: OverlayfsCore = { ping: async () => { throw new Error("core down"); } };
+    const backend = await probeSnapshotBackend("/data/sess", "/data/ws", { runner, platform: "linux", core: broken });
+    expect(backend.name).toBe("git-shadow");
   });
 
   it("探测命令异常时回落 git-shadow，全程不 throw", async () => {

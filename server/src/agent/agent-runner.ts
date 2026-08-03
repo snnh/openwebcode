@@ -913,7 +913,7 @@ export class AgentRunner {
         try {
           const prepared = await snapshotLedger!;
           if ("error" in prepared) throw prepared.error;
-          const checkpoint = await (await getSnapshotBackend(this.sessions, configuredSession))
+          const checkpoint = await (await getSnapshotBackend(this.sessions, configuredSession, { core: this.core }))
             .create(text.slice(0, 80) || "User message", snapshotMessageCount, prepared.ledger);
           this.events.publish({ source: "session", type: "checkpoint.created", sessionId, payload: checkpoint });
         } catch (error) {

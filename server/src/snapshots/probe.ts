@@ -4,6 +4,7 @@ import path from "node:path";
 import type { SnapshotBackend } from "./backend.js";
 import { BtrfsBackend } from "./btrfs.js";
 import { GitShadowSnapshots } from "./git-shadow.js";
+import { OverlayfsBackend, probeOverlayfsSupport, type OverlayfsCore } from "./overlayfs.js";
 import { RefsBackend, refsScriptPath } from "./refs.js";
 import { ZfsBackend } from "./zfs.js";
 
@@ -29,12 +30,14 @@ export function createExecFileRunner(): CommandRunner {
 
 /**
  * 探测快照后端。任何一步异常都吞掉继续向下；全程不 throw。
- * linux：btrfs → zfs → git shadow；win32：ReFS → git shadow；其他平台：git shadow。
+ * linux：btrfs → zfs → overlayfs（core features.overlay.supported）→ git shadow；
+ * win32：ReFS → git shadow；其他平台：git shadow。
+ * overlayfs 依赖 deps.core（core.ping 能力上报）；未注入或不支持时静默回落 git shadow。
  */
 export async function probeSnapshotBackend(
   sessionRoot: string,
   workspace: string,
-  deps: { runner?: CommandRunner; platform?: NodeJS.Platform },
+  deps: { runner?: CommandRunner; platform?: NodeJS.Platform; core?: OverlayfsCore },
 ): Promise<SnapshotBackend> {
   const runner = deps.runner ?? createExecFileRunner();
   const platform = deps.platform ?? process.platform;
@@ -44,12 +47,24 @@ export async function probeSnapshotBackend(
       if (btrfs) return btrfs;
       const zfs = await probeZfs(sessionRoot, workspace, runner);
       if (zfs) return zfs;
+      const overlay = await probeOverlayfs(sessionRoot, workspace, deps.core);
+      if (overlay) return overlay;
     } else if (platform === "win32") {
       const refs = await probeRefs(sessionRoot, workspace, runner);
       if (refs) return refs;
     }
   } catch { /* 继续回落 */ }
   return new GitShadowSnapshots(sessionRoot, workspace);
+}
+
+async function probeOverlayfs(sessionRoot: string, workspace: string, core: OverlayfsCore | undefined): Promise<SnapshotBackend | undefined> {
+  if (!core) return undefined;
+  try {
+    if (!(await probeOverlayfsSupport(core))) return undefined;
+    return new OverlayfsBackend({ sessionRoot, originCwd: workspace, core });
+  } catch {
+    return undefined;
+  }
 }
 
 async function probeBtrfs(workspace: string, runner: CommandRunner): Promise<SnapshotBackend | undefined> {

@@ -23,6 +23,12 @@ import {
   type ManagedWorkspaceSyncOperationOptions,
   type ManagedWorkspaceSyncPreview,
 } from "./managed-sync.js";
+import {
+  mountOverlayfsWorkspace,
+  overlayfsPaths,
+  unmountOverlayfsWorkspace,
+  type OverlayfsCore,
+} from "./overlayfs.js";
 import { createExecFileRunner, type CommandRunner } from "./probe.js";
 
 /** 稀疏基盘大小：20GB */
@@ -33,6 +39,8 @@ export const MANAGED_MAX_CHAIN = 32;
 const COPY_EXCLUDES = MANAGED_WORKSPACE_COPY_EXCLUDES;
 
 export type ManagedBackendKind = "vhdx" | "qcow2";
+/** provision/teardown 可处理的托管后端：镜像盘两种 + Linux overlayfs（merged 视图）。 */
+export type ManagedProvisionKind = ManagedBackendKind | "overlayfs";
 
 export interface ManagedBackendCapability {
   backend: ManagedBackendKind;
@@ -395,11 +403,12 @@ export class ManagedDiskBackend implements SnapshotBackend {
 export interface ManagedProvisionInput {
   sessionId: string;
   originCwd: string;
-  backend: ManagedBackendKind;
+  backend: ManagedProvisionKind;
 }
 
 export interface ManagedProvisionResult {
-  backend: ManagedBackendKind;
+  backend: ManagedProvisionKind;
+  /** vhdx/qcow2：基盘镜像路径；overlayfs：stateRoot（<dataDir>/sessions/<id>/overlay） */
   image: string;
   mountPoint: string;
 }
@@ -417,11 +426,13 @@ export interface ManagedWorkspaceLike {
 export class ManagedWorkspaceManager implements ManagedWorkspaceLike {
   private readonly runner: CommandRunner;
   private readonly platform: NodeJS.Platform;
+  private readonly core: OverlayfsCore | undefined;
   private readonly syncingSessions = new Set<string>();
 
-  constructor(private readonly options: { dataDir: string; runner?: CommandRunner; platform?: NodeJS.Platform }) {
+  constructor(private readonly options: { dataDir: string; runner?: CommandRunner; platform?: NodeJS.Platform; core?: OverlayfsCore }) {
     this.runner = options.runner ?? createExecFileRunner();
     this.platform = options.platform ?? process.platform;
+    this.core = options.core;
   }
 
   private get dataDir(): string { return this.options.dataDir; }
@@ -446,6 +457,7 @@ export class ManagedWorkspaceManager implements ManagedWorkspaceLike {
 
   /** 建 20GB 稀疏基盘 → 格式化挂载 → 复制源 cwd 内容（排除 node_modules/.owc/.openwebcode）。失败清理半成品。 */
   async provision(input: ManagedProvisionInput): Promise<ManagedProvisionResult> {
+    if (input.backend === "overlayfs") return this.provisionOverlayfs(input);
     const derived = managedWorkspacePaths(this.dataDir, input.sessionId);
     const workspaceRoot = derived.workspaceRoot;
     const mountPoint = input.backend === "vhdx" && this.platform === "win32"
@@ -485,8 +497,40 @@ export class ManagedWorkspaceManager implements ManagedWorkspaceLike {
     }
   }
 
+  /**
+   * overlayfs 托管工作区（Linux）：stateRoot = <dataDir>/sessions/<id>/overlay，
+   * lower=源目录（只读），会话 cwd=merged。无镜像复制，基线直接扫 merged 视图
+   * （upper 为空时 merged == 源目录内容）。失败清理已挂载状态。
+   */
+  private async provisionOverlayfs(input: ManagedProvisionInput): Promise<ManagedProvisionResult> {
+    if (!this.core) throw new Error("overlayfs 托管工作区需要 core 客户端（overlay.* 能力）");
+    const sessionRoot = path.join(this.dataDir, "sessions", input.sessionId);
+    const paths = overlayfsPaths(sessionRoot);
+    try {
+      await mountOverlayfsWorkspace(this.core, sessionRoot, input.originCwd);
+      // 基线取 merged 视图，与镜像盘同一三方比较契约；sidecar 位于服务端私有 stateRoot
+      await createManagedWorkspaceSyncBaseline({ sessionId: input.sessionId, workspaceRoot: paths.stateRoot, mountPoint: paths.merged, originCwd: input.originCwd });
+      return { backend: "overlayfs", image: paths.stateRoot, mountPoint: paths.merged };
+    } catch (error) {
+      await unmountOverlayfsWorkspace(this.core, sessionRoot).catch(() => undefined);
+      await rm(paths.stateRoot, { recursive: true, force: true }).catch(() => undefined);
+      await rmdir(sessionRoot).catch(() => undefined);
+      throw error;
+    }
+  }
+
   /** 删除 managed 会话：先卸载再删镜像目录与挂载点。 */
   async teardown(session: { id: string; workspace?: ManagedWorkspaceMeta }): Promise<void> {
+    if (session.workspace?.backend === "overlayfs") {
+      // 路径一律从 dataDir/session id 推导，不信任可导入的 meta
+      const sessionRoot = path.join(this.dataDir, "sessions", session.id);
+      if (this.core) {
+        const unmounted = await unmountOverlayfsWorkspace(this.core, sessionRoot).then(() => true).catch(() => false);
+        if (!unmounted) throw new Error("无法卸载 overlayfs 挂载；为保留恢复信息，未删除会话或状态数据");
+      }
+      await rm(overlayfsPaths(sessionRoot).stateRoot, { recursive: true, force: true });
+      return;
+    }
     const { workspaceRoot, mountPoint } = managedWorkspacePaths(this.dataDir, session.id);
     if (!await this.unmountBestEffort(session.id, session.workspace)) {
       throw new Error("无法卸载托管工作区镜像；为保留恢复信息，未删除会话或磁盘文件");
@@ -522,6 +566,33 @@ export class ManagedWorkspaceManager implements ManagedWorkspaceLike {
       } catch { /* 继续下一个 */ }
     }
     if (this.platform === "win32") await this.sweepSiblingVhdxOrphans();
+    await this.sweepOverlayfsOrphans();
+  }
+
+  /**
+   * overlayfs 孤儿清理：sessions/<id>/overlay 存在但 meta.json 已不在
+   * （会话数据被外部删除或创建失败残留）→ 卸载 merged 并删 stateRoot。单目录失败不阻断。
+   */
+  private async sweepOverlayfsOrphans(): Promise<void> {
+    if (!this.core?.overlayUnmount) return;
+    const sessionsRoot = path.join(this.dataDir, "sessions");
+    let entries: Dirent[];
+    try {
+      entries = await readdir(sessionsRoot, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      try {
+        const sessionRoot = path.join(sessionsRoot, entry.name);
+        if (existsSync(path.join(sessionRoot, "meta.json"))) continue;
+        const paths = overlayfsPaths(sessionRoot);
+        if (!existsSync(paths.stateRoot)) continue;
+        await unmountOverlayfsWorkspace(this.core, sessionRoot).catch(() => undefined);
+        await rm(paths.stateRoot, { recursive: true, force: true }).catch(() => undefined);
+      } catch { /* 继续下一个 */ }
+    }
   }
 
   /**
@@ -669,6 +740,14 @@ export class ManagedWorkspaceManager implements ManagedWorkspaceLike {
   private syncRoots(session: { id: string; workspace?: ManagedWorkspaceMeta }): { sessionId: string; workspaceRoot: string; mountPoint: string; originCwd: string } {
     const workspace = session.workspace;
     if (!workspace || workspace.mode !== "managed") throw new ManagedWorkspaceSyncError("unsafe_path", "Session does not use a managed workspace");
+    if (workspace.backend === "overlayfs") {
+      const paths = overlayfsPaths(path.join(this.dataDir, "sessions", session.id));
+      const workspaceRoot = path.resolve(paths.stateRoot);
+      const mountPoint = path.resolve(paths.merged);
+      if (path.resolve(workspace.mountPoint) !== mountPoint) throw new ManagedWorkspaceSyncError("unsafe_path", "Managed workspace metadata mount point does not match this server");
+      if (!existsSync(workspaceRoot)) throw new ManagedWorkspaceSyncError("unsafe_path", "Overlayfs workspace state is not owned by this server");
+      return { sessionId: session.id, workspaceRoot, mountPoint, originCwd: workspace.originCwd };
+    }
     const derived = managedWorkspacePaths(this.dataDir, session.id);
     const workspaceRoot = path.resolve(derived.workspaceRoot);
     const mountPoint = path.resolve(workspace.backend === "vhdx" && this.platform === "win32"
