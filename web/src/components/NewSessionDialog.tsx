@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactElement } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
-import type { ManagedWorkspaceCapability, ModelProfile, PermissionMode, SandboxCapabilities, SandboxMode } from "../lib/contracts";
+import type { ManagedWorkspaceCapability, ModelProfile, PermissionMode, SandboxMode } from "../lib/contracts";
 import type { SessionDefaults } from "../lib/prefs";
 import { useI18n } from "../i18n";
 import { ModelCapabilityBadges } from "./ModelCapabilityBadges";
@@ -25,6 +26,11 @@ const SANDBOX_MODE_LABELS: Record<SandboxMode, [string, string]> = {
   off: ["关闭沙盒", "Sandbox off"],
 };
 
+/** 非 Windows 平台默认档由 Landlock 强制，jobobject 枚举值不变、仅换文案。 */
+const SANDBOX_MODE_LABELS_LINUX: Partial<Record<SandboxMode, [string, string]>> = {
+  jobobject: ["强制模式（Landlock，默认）", "Enforced (Landlock, default)"],
+};
+
 export function NewSessionDialog({ open, providers, models, defaults, busy = false, onClose, onCreate, onOpenSettings }: {
   open: boolean;
   providers: string[];
@@ -45,7 +51,6 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
   const [permissionMode, setPermissionMode] = useState<PermissionMode>("ask");
   const [sandboxMode, setSandboxMode] = useState<SandboxMode>("jobobject");
   const [setupScript, setSetupScript] = useState("");
-  const [sandboxCaps, setSandboxCaps] = useState<SandboxCapabilities | undefined>();
   const [workspaceMode, setWorkspaceMode] = useState<"direct" | "managed">("direct");
   const [agentMode, setAgentMode] = useState<"plan" | "code" | "goal">("code");
   const [managedCaps, setManagedCaps] = useState<ManagedWorkspaceCapability | undefined>();
@@ -77,13 +82,19 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
     if (!open && dialog.open) dialog.close();
   }, [open]);
 
-  // 打开时并行拉取沙盒能力（WSB 不可用则禁用对应选项）与托管工作区能力；失败按不可用处理
+  // 沙盒能力走 React Query（与 JobHeader 共用 ["sandbox-capabilities"] 缓存）；失败按不可用处理
+  const sandboxCapsQuery = useQuery({
+    queryKey: ["sandbox-capabilities"],
+    queryFn: api.sandboxCapabilities,
+    staleTime: 60_000,
+    enabled: open,
+  });
+  const sandboxCaps = sandboxCapsQuery.data;
+
+  // 打开时拉取托管工作区能力；失败按不可用处理
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    api.sandboxCapabilities()
-      .then((caps) => { if (!cancelled) setSandboxCaps(caps); })
-      .catch(() => undefined);
     api.managedWorkspaceCapability()
       .then((caps) => { if (!cancelled) setManagedCaps(caps); })
       .catch(() => undefined);
@@ -94,6 +105,12 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
 
   const bindLinkCap = sandboxCaps?.bindLink;
   const bindLinkAvailable = bindLinkCap?.available ?? false;
+  // 平台来源统一为 server 上报的 capabilities.platform；未拿到前保持 Windows 行为（现状）
+  const isWindows = sandboxCaps?.platform === undefined || sandboxCaps.platform === "win32";
+  const sandboxModeOptions = (Object.keys(SANDBOX_MODE_LABELS) as SandboxMode[])
+    .filter((mode) => isWindows || (mode !== "appcontainer" && mode !== "wsb"));
+  const sandboxModeLabel = (mode: SandboxMode): [string, string] =>
+    (!isWindows && SANDBOX_MODE_LABELS_LINUX[mode]) || SANDBOX_MODE_LABELS[mode];
   // 只提交两个路径都填了的行；未填完整的行静默忽略
   const validBindLinks = bindLinks
     .map((link) => ({ virtPath: link.virtPath.trim(), backingPath: link.backingPath.trim(), ...(link.readOnly ? { readOnly: true as const } : {}) }))
@@ -218,14 +235,14 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
         <label>
           {t("沙盒模式", "Sandbox mode")}
           <select value={sandboxMode} onChange={(event) => setSandboxMode(event.target.value as SandboxMode)}>
-            {(Object.keys(SANDBOX_MODE_LABELS) as SandboxMode[]).map((mode) => (
+            {sandboxModeOptions.map((mode) => (
               <option key={mode} value={mode} disabled={mode === "wsb" && sandboxCaps !== undefined && !sandboxCaps.wsb.available}>
-                {t(...SANDBOX_MODE_LABELS[mode])}
+                {t(...sandboxModeLabel(mode))}
               </option>
             ))}
           </select>
         </label>
-        {sandboxCaps && !sandboxCaps.wsb.available && (
+        {isWindows && sandboxCaps && !sandboxCaps.wsb.available && (
           <p className="dialog-hint">{t("Windows Sandbox 不可用：", "Windows Sandbox unavailable: ")}{sandboxCaps.wsb.reason ?? t("未启用可选功能", "optional feature is not enabled")}</p>
         )}
         {sandboxMode === "wsb" && (
@@ -238,7 +255,7 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
             />
           </label>
         )}
-        {(sandboxMode === "jobobject" || sandboxMode === "appcontainer") && (
+        {isWindows && (sandboxMode === "jobobject" || sandboxMode === "appcontainer") && (
           <div className="bindlink-editor">
             <div className="bindlink-editor-header">
               <span>{t("目录绑定（Bind Link，可选）", "Directory bindings (Bind Link, optional)")}</span>

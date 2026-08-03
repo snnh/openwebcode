@@ -31,6 +31,11 @@ const SANDBOX_LABELS: Record<SandboxMode, [string, string]> = {
   off: ["关闭", "Off"],
 };
 
+/** 非 Windows 平台默认档由 Landlock 强制，jobobject 枚举值不变、仅换文案。 */
+const SANDBOX_LABELS_LINUX: Partial<Record<SandboxMode, [string, string]>> = {
+  jobobject: ["Landlock", "Landlock"],
+};
+
 export function JobHeader({ session, agentState, costSummary, windowUsage, latestUsage, onAbort, onConfig, onCreateCheckpoint, checkpointPending = false, running = false }: {
   session: SessionDetail;
   agentState?: string;
@@ -76,6 +81,20 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
   });
   const runningTasks = tasks.data?.filter((t) => t.status === "running") ?? [];
   const allTasks = tasks.data ?? [];
+  // 平台来源统一为 server 上报的 capabilities.platform；未拿到前保持 Windows 行为（现状）
+  const isWindows = sandboxCapabilities.data?.platform === undefined || sandboxCapabilities.data.platform === "win32";
+  const currentSandboxMode = session.sandboxMode ?? "jobobject";
+  const sandboxModeOptions = (Object.keys(SANDBOX_LABELS) as SandboxMode[])
+    .filter((mode) => isWindows || (mode !== "appcontainer" && mode !== "wsb"));
+  const sandboxModeLabel = (mode: SandboxMode): [string, string] =>
+    (!isWindows && SANDBOX_LABELS_LINUX[mode]) || SANDBOX_LABELS[mode];
+  // Linux 通常没有 CMD / pwsh：隐藏，但当前会话已选中时保留以免下拉落空
+  const shellOptions: { value: ShellBackend; label: [string, string] }[] = [
+    { value: "default", label: ["默认", "Default"] },
+    ...(isWindows || session.shellBackend === "pwsh" ? [{ value: "pwsh" as const, label: ["PowerShell 7", "PowerShell 7"] as [string, string] }] : []),
+    { value: "bash", label: ["Bash", "Bash"] },
+    ...(isWindows || session.shellBackend === "cmd" ? [{ value: "cmd" as const, label: ["CMD", "CMD"] as [string, string] }] : []),
+  ];
 
   useEffect(() => { localStorage.setItem("owc-header-collapsed", headerCollapsed ? "1" : "0"); }, [headerCollapsed]);
 
@@ -193,13 +212,13 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
           <span>{t("沙盒", "Sandbox")}</span>
           <select
             aria-label={t("沙盒模式", "Sandbox mode")}
-            value={session.sandboxMode ?? "jobobject"}
+            value={currentSandboxMode}
             disabled={busy || configPending}
             onChange={(event) => changeSandbox(event.target.value as SandboxMode)}
           >
-            {(Object.keys(SANDBOX_LABELS) as SandboxMode[]).map((mode) => (
+            {sandboxModeOptions.map((mode) => (
               <option key={mode} value={mode} disabled={mode === "wsb" && sandboxCapabilities.data !== undefined && !sandboxCapabilities.data.wsb.available}>
-                {t(...SANDBOX_LABELS[mode])}
+                {t(...sandboxModeLabel(mode))}
               </option>
             ))}
           </select>
@@ -213,10 +232,9 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
             disabled={busy || configPending}
             onChange={(event) => updateMode({ shellBackend: event.target.value as ShellBackend })}
           >
-            <option value="default">{t("默认", "Default")}</option>
-            <option value="pwsh">PowerShell 7</option>
-            <option value="bash">Bash</option>
-            <option value="cmd">CMD</option>
+            {shellOptions.map((option) => (
+              <option key={option.value} value={option.value}>{t(...option.label)}</option>
+            ))}
           </select>
         </label>
         <label className="mode-switch python-env-switch" title={t("选择当前会话 bash 的 python 运行环境", "Choose the python environment for bash in this session")}>

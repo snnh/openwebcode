@@ -93,6 +93,17 @@ describe("POST /api/sessions bindLinks", () => {
 });
 
 describe("GET /api/sandbox/capabilities bindLink", () => {
+  it("响应携带 server 运行平台 platform 字段", async () => {
+    const setup = await fixture(true);
+    try {
+      const response = await setup.app.inject({ method: "GET", url: "/api/sandbox/capabilities" });
+      expect(response.statusCode).toBe(200);
+      expect(response.json<{ platform: string }>().platform).toBe(process.platform);
+    } finally {
+      await setup.app.close();
+    }
+  });
+
   it("core 上报 features.bindLink 时 available 为 true", async () => {
     const setup = await fixture(true);
     try {
