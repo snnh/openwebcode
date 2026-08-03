@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "./atomic-file.js";
+import { ensureDirWithMode } from "./fs-utils.js";
 
 export type ModelInterfaceType = "anthropic-messages" | "openai-chat-completions" | "openai-responses";
 export type WebCapability = "search" | "fetch";
@@ -330,7 +331,8 @@ export class ProviderProfilesService {
   }
 
   private async persist(): Promise<void> {
-    await mkdir(path.dirname(this.filePath), { recursive: true });
-    await writeUtf8Atomically(this.filePath, `${JSON.stringify(this.document, null, 2)}\n`);
+    // provider-profiles.json 含明文 API Key：目录 0700、文件 0600（POSIX；Windows no-op）
+    await ensureDirWithMode(path.dirname(this.filePath), 0o700);
+    await writeUtf8Atomically(this.filePath, `${JSON.stringify(this.document, null, 2)}\n`, { mode: 0o600 });
   }
 }

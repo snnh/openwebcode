@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { rename, rm, writeFile } from "node:fs/promises";
+import { chmod, rename, rm, writeFile } from "node:fs/promises";
 
 /**
  * Windows does not allow an existing file to be atomically replaced while a
@@ -17,6 +17,10 @@ export interface AtomicReplaceOptions {
   retryDelaysMs?: readonly number[];
   renameFile?: (from: string, to: string) => Promise<void>;
   sleep?: (milliseconds: number) => Promise<void>;
+  /** 写后目标文件权限位（POSIX chmod，如 0o600）；Windows 无权限位语义，no-op。 */
+  mode?: number;
+  /** Injectable solely for focused tests. */
+  chmodFile?: (target: string, mode: number) => Promise<void>;
 }
 
 function isTransientWindowsRenameError(error: unknown): boolean {
@@ -49,6 +53,9 @@ export async function writeUtf8Atomically(target: string, content: string, optio
   try {
     await writeFile(temporary, content, "utf8");
     await replaceFileWithRetry(temporary, target, options);
+    if (options.mode !== undefined && (options.platform ?? process.platform) !== "win32") {
+      await (options.chmodFile ?? chmod)(target, options.mode);
+    }
   } finally {
     // rename removes the temporary name on success.  Cleanup is best effort so
     // a failed cleanup never hides the original write/rename error.

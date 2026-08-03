@@ -1,5 +1,8 @@
-import { describe, expect, it } from "vitest";
-import { replaceFileWithRetry } from "../src/atomic-file.js";
+import { mkdtemp, rm, stat } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { replaceFileWithRetry, writeUtf8Atomically } from "../src/atomic-file.js";
 
 function sharingViolation(code: "EPERM" | "EACCES" | "EBUSY" = "EPERM"): NodeJS.ErrnoException {
   return Object.assign(new Error("file is temporarily in use"), { code });
@@ -37,5 +40,50 @@ describe("replaceFileWithRetry", () => {
       sleep: async () => undefined,
     })).rejects.toMatchObject({ code: "EBUSY" });
     expect(attempts).toBe(1);
+  });
+});
+
+describe("writeUtf8Atomically mode", () => {
+  const roots: string[] = [];
+  afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
+
+  async function makeRoot(): Promise<string> {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-atomic-"));
+    roots.push(root);
+    return root;
+  }
+
+  it("POSIX 平台写后 chmod 目标文件", async () => {
+    const root = await makeRoot();
+    const target = path.join(root, "secret.json");
+    const chmodCalls: Array<{ target: string; mode: number }> = [];
+    await writeUtf8Atomically(target, "{}\n", {
+      platform: "linux",
+      mode: 0o600,
+      chmodFile: async (file, mode) => { chmodCalls.push({ target: file, mode }); },
+    });
+    expect(chmodCalls).toEqual([{ target, mode: 0o600 }]);
+  });
+
+  it("Windows 平台不 chmod（no-op）", async () => {
+    const root = await makeRoot();
+    const target = path.join(root, "secret.json");
+    let chmodCalled = false;
+    await writeUtf8Atomically(target, "{}\n", {
+      platform: "win32",
+      mode: 0o600,
+      chmodFile: async () => { chmodCalled = true; },
+    });
+    expect(chmodCalled).toBe(false);
+  });
+
+  it.skipIf(process.platform === "win32")("POSIX 实文件断言权限位 0600", async () => {
+    const root = await makeRoot();
+    const target = path.join(root, "secret.json");
+    await writeUtf8Atomically(target, "{}\n", { mode: 0o600 });
+    expect(stat(target).then((info) => info.mode & 0o777)).resolves.toBe(0o600);
+    // 复写已存在文件同样收紧（rename 保留临时文件权限，chmod 兜底）
+    await writeUtf8Atomically(target, "{\"a\":1}\n", { mode: 0o600 });
+    expect((await stat(target)).mode & 0o777).toBe(0o600);
   });
 });

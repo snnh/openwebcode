@@ -39,6 +39,13 @@ import type {
   PtyOpenRequest,
   PtyOpenResult,
   PtyResizeRequest,
+  OverlayMountRequest,
+  OverlayMountResult,
+  OverlayCheckpointRequest,
+  OverlayCopyResult,
+  OverlayRestoreRequest,
+  OverlayRestoreResult,
+  OverlayUnmountRequest,
 } from "../core-client.js";
 import type { SessionStore } from "../sessions/session-store.js";
 import { defaultSandboxPolicy } from "../sessions/default-sandbox.js";
@@ -131,8 +138,8 @@ export class CoreRouter extends EventEmitter {
     }
   }
 
-  /** sandboxMode → 下发给 core 的策略：wsb/off 由 VM/关闭充当边界；缺省为 jobobject 兼容模式；appcontainer 需显式选择；jobObject 限制仅随启用路径下发 */
-  static policyFor(meta: SessionMeta | undefined, sandbox: SandboxPolicy, jobObject?: JobObjectLimits, allowPaths?: string[]): SandboxPolicy {
+  /** sandboxMode → 下发给 core 的策略：wsb/off 由 VM/关闭充当边界；缺省为 jobobject 兼容模式（仅 Windows；POSIX core 无 mode 语义，未显式选择时不下发，避免 UI 展示 Windows 标签）；appcontainer 需显式选择；jobObject 限制仅随启用路径下发 */
+  static policyFor(meta: SessionMeta | undefined, sandbox: SandboxPolicy, jobObject?: JobObjectLimits, allowPaths?: string[], platform: NodeJS.Platform = process.platform): SandboxPolicy {
     const mode = meta?.sandboxMode;
     // wsb 会话在 VM 内的 core 上配置：宿主侧 bindLinks 路径在 guest 无效，剥离（创建 REST 已拒绝 wsb+bindLinks，此为切换模式后的防御）
     if (mode === "wsb") {
@@ -146,7 +153,9 @@ export class CoreRouter extends EventEmitter {
       ...(jobObject?.maxProcesses !== undefined ? { jobMaxProcesses: jobObject.maxProcesses } : {}),
     };
     if (mode === "appcontainer") return { ...sandbox, ...limits, mode: "appcontainer" };
-    return { ...sandbox, ...limits, mode: "jobobject" };
+    // 显式选择（含持久化里已存的 jobobject）原样下发；只有缺省决策按平台分流
+    if (mode === "jobobject" || platform === "win32") return { ...sandbox, ...limits, mode: "jobobject" };
+    return { ...sandbox, ...limits };
   }
 
   private async metaFor(sessionId: string): Promise<SessionMeta | undefined> {
@@ -219,6 +228,30 @@ export class CoreRouter extends EventEmitter {
 
   ping(): Promise<CoreInfo> {
     return this.shared.ping();
+  }
+
+  /**
+   * overlay.*：快照原语是会话无关的宿主机文件系统操作（stateRoot 根界），
+   * 一律落在宿主机 core——WSB guest 不持有宿主文件系统，无路由歧义。
+   */
+  async overlayMount(request: OverlayMountRequest): Promise<OverlayMountResult> {
+    if (!this.shared.overlayMount) throw new Error("Core overlay support is unavailable");
+    return this.shared.overlayMount(request);
+  }
+
+  async overlayCheckpoint(request: OverlayCheckpointRequest): Promise<OverlayCopyResult> {
+    if (!this.shared.overlayCheckpoint) throw new Error("Core overlay support is unavailable");
+    return this.shared.overlayCheckpoint(request);
+  }
+
+  async overlayRestore(request: OverlayRestoreRequest): Promise<OverlayRestoreResult> {
+    if (!this.shared.overlayRestore) throw new Error("Core overlay support is unavailable");
+    return this.shared.overlayRestore(request);
+  }
+
+  async overlayUnmount(request: OverlayUnmountRequest): Promise<{ ok: true }> {
+    if (!this.shared.overlayUnmount) throw new Error("Core overlay support is unavailable");
+    return this.shared.overlayUnmount(request);
   }
 
   setRequestTimeoutMs(timeoutMs: number): void {
