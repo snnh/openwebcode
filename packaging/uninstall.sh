@@ -227,6 +227,9 @@ if [ -f "$UNIT_DIR/openwebcode.service" ]; then
         $SYSTEMCTL daemon-reload 2>/dev/null || true
     fi
     echo "已移除 systemd 服务: $UNIT_DIR/openwebcode.service"
+    if [ "$IS_ROOT" -eq 0 ]; then
+        echo "提示：如曾执行 loginctl enable-linger 实现未登录自启，可运行 loginctl disable-linger ${USER:-$(id -un)} 关闭。"
+    fi
 fi
 
 # 2. 防火墙：仅在 --remove-firewall 时移除安装时放行的端口

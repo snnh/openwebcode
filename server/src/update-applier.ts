@@ -45,6 +45,10 @@ export interface UpdateApplierOptions {
   spawnImpl?: typeof spawn;
   /** 退出当前进程（默认延迟 800ms 让 202 响应先发出）；测试注入为空操作 */
   exitImpl?: () => void;
+  /** 注入以便测试；缺省 process.getuid（非 POSIX 平台视为 -1） */
+  getuidImpl?: () => number;
+  /** 注入以便测试；缺省 /etc/systemd/system/openwebcode.service */
+  systemUnitPath?: string;
   now?: () => Date;
 }
 
@@ -60,7 +64,8 @@ interface ReleaseAsset {
 /**
  * WebUI 在线更新（Windows/Linux）。流程：查询 GitHub Releases → 下载资产 +
  * SHA256SUMS → 校验哈希 → 按平台应用（Windows 交给 msiexec 退出后替换；
- * Linux 解压 tar.gz 直接覆盖 installRoot，有 systemd user unit 则自动重启）。
+ * Linux 解压 tar.gz 直接覆盖 installRoot，有 systemd unit（系统级/用户级）
+ * 则自动重启）。
  * 状态纯内存保存，供 GET 查询；进程退出后丢失属预期。
  */
 export class UpdateApplier {
@@ -212,13 +217,29 @@ export class UpdateApplier {
       if (entry.name === "install.sh") continue;
       await cp(path.join(extractDir, entry.name), path.join(installRoot, entry.name), { recursive: true, force: true });
     }
-    // 有 systemd user unit 则延迟 1 秒自动重启（先让 202 响应发出）；否则提示手动重启
+    // 有 systemd unit 则延迟 1 秒自动重启（先让 202 响应发出）；否则提示手动重启。
+    // 关键时序：unit 配置为 Restart=on-failure，本进程 clean exit 不会被拉起；
+    // try-restart 对 inactive 服务又是 no-op——两种时序下更新后服务都会停在
+    // down。因此一律用 restart（对 inactive 服务同样会启动），覆盖
+    // “先 restart 后退出”与“先退出后 restart”两种顺序。
+    // 系统级安装（root 经 install.sh --system 安装）下 server 进程即 root，
+    // 直接 systemctl restart；否则按用户级 unit 处理。
+    // 启动器 <prefix>/bin/owc 位于 installRoot（<prefix>/lib/openwebcode）之外，
+    // 本次覆盖更新不影响启动器及其中端口/数据目录等默认变量。
     const configHome = process.env.XDG_CONFIG_HOME && process.env.XDG_CONFIG_HOME.length > 0
       ? process.env.XDG_CONFIG_HOME
       : path.join(os.homedir(), ".config");
-    const unitPath = path.join(configHome, "systemd", "user", "openwebcode.service");
-    if (existsSync(unitPath)) {
-      const child = this.spawnImpl("sh", ["-c", "sleep 1; systemctl --user try-restart openwebcode.service"], { detached: true, stdio: "ignore" });
+    const userUnitPath = path.join(configHome, "systemd", "user", "openwebcode.service");
+    const systemUnitPath = this.options.systemUnitPath ?? "/etc/systemd/system/openwebcode.service";
+    const getuid = this.options.getuidImpl ?? (() => (typeof process.getuid === "function" ? process.getuid() : -1));
+    let restartCommand: string | null = null;
+    if (getuid() === 0 && existsSync(systemUnitPath)) {
+      restartCommand = "systemctl restart openwebcode.service";
+    } else if (existsSync(userUnitPath)) {
+      restartCommand = "systemctl --user restart openwebcode.service";
+    }
+    if (restartCommand) {
+      const child = this.spawnImpl("sh", ["-c", `sleep 1; ${restartCommand}`], { detached: true, stdio: "ignore" });
       child.unref();
       this.setState({ status: "restarting", message: "更新已应用，服务将自动重启" });
       this.exitImpl();

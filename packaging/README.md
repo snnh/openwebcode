@@ -28,6 +28,7 @@ server/assets/          运行时资产（refs-clone.ps1 等）
 web/dist/               前端静态资源（server 按 server/dist/../../web/dist 解析托管）
 node/                   固定版本 Node 24 运行时（Windows: node.exe；Linux: bin/node 及完整发行目录）
 install.sh              Linux 安装脚本（仅 tar.gz，位于包顶层）
+uninstall.sh            Linux 卸载脚本（仅 tar.gz，位于包顶层；安装时落盘为 <prefix>/bin/owc-uninstall）
 ```
 
 ## 打包流程总览
@@ -210,7 +211,7 @@ test -f build/stage/web/dist/index.html
 
 tar -czf "openwebcode-${VERSION}-linux-x64.tar.gz" \
   -C build/stage . \
-  -C "$PWD/packaging" install.sh
+  -C "$PWD/packaging" install.sh uninstall.sh
 sha256sum "openwebcode-${VERSION}-linux-x64.tar.gz"
 ```
 
@@ -228,6 +229,14 @@ cd openwebcode
 
 `install.sh` 把运行时树复制到 `<prefix>/lib/openwebcode/`（重跑整体覆盖，幂等），
 并生成启动脚本 `<prefix>/bin/owc`。安装前缀必须是绝对路径；脚本会在创建后以物理路径规范化，拒绝根目录，避免相对路径或符号链接把运行时树绑到不确定位置。
+
+重跑 `install.sh` 时的更新语义：
+
+- **既有安装判定**：安装早期按 uid 定位既有 systemd unit（root → `/etc/systemd/system/openwebcode.service`，否则用户级），从 `ExecStart` 反推既有安装前缀。同路径判定为**更新**——交互模式只一次确认，不再逐项提问；非 TTY 直接按更新处理并打印检测状态。不同路径时交互三选（切换服务到新路径 / 仅装文件不动服务 / 中止），非 TTY 打印警告并默认仅装文件（显式 `--with-systemd` 才切换）。
+- **启动器变量保留**：`<prefix>/bin/owc` 已存在时，提取既有 `OWC_DEFAULT_PORT`、`OWC_DEFAULT_DATA_DIR`、`OWC_DEFAULT_HOST`、`OWC_NODE` 作为本次默认值；命令行显式参数仍最优先。
+- **unit 重写**：更新/切换会重写 unit 但保留 enabled 状态（`systemctl is-enabled` 探测，不会给未启用过的服务补 enable）；服务在运行则安装完成后自动 `systemctl [--user] restart`。新写 unit 一律含 `NoNewPrivileges=true`；系统级再加 `ProtectSystem=full`，数据目录经 `ReadWritePaths=` 保持可写。
+- **systemd 可用性门控**：交互模式仅当 systemd 真实可用（root 看 `/run/systemd/system`，用户级看 `systemctl --user` 可用）才询问写服务，否则明确提示并跳过。
+- 安装结尾检测 `<prefix>/bin` 是否在 `PATH`，不在则按用户 shell（`$SHELL` 推断 rc 文件）打印 `export PATH` 指引。
 
 | 选项 | 行为 |
 | --- | --- |
@@ -259,7 +268,7 @@ sudo ./install.sh --yes --system --lan --enable-service --open-firewall
 
 ### 卸载
 
-安装时 `install.sh` 会把卸载器落盘为 `<prefix>/bin/owc-uninstall`（发行包根目录也带一份 `uninstall.sh`）。直接运行即可完整撤销安装：停止并禁用 systemd 服务、删除 unit（root 系统级 / 用户级均可）、删除 `<prefix>/lib/openwebcode` 与 `<prefix>/bin/owc`，最后删除卸载器自身。
+安装时 `install.sh` 会把卸载器落盘为 `<prefix>/bin/owc-uninstall`（发行包根目录也带一份 `uninstall.sh`）。直接运行即可完整撤销安装：停止并禁用 systemd 服务、删除 unit（root 系统级 / 用户级均可；用户级安装如曾 `loginctl enable-linger` 会提示对应的 `disable-linger`）、删除 `<prefix>/lib/openwebcode` 与 `<prefix>/bin/owc`，最后删除卸载器自身。
 
 ```sh
 ~/.local/bin/owc-uninstall                    # 交互确认；数据目录默认保留
@@ -292,7 +301,7 @@ curl -fsSL https://raw.githubusercontent.com/snnh/openwebcode/main/packaging/ins
 两种模式：
 
 - **全新安装**：调用解压出的 `install.sh`，行为与离线安装完全一致（生成 `<prefix>/bin/owc`、可选 `--with-systemd`）。
-- **更新**：`<prefix>/lib/openwebcode/server/dist/index.js` 已存在时进入更新模式——整体替换 `<prefix>/lib/openwebcode/` 内容为新版，保留 `<prefix>/bin/owc` 启动器与已写入的 systemd unit 不动，数据目录不受影响。目标目录不可写时会给出明确错误（可能需要 sudo 或修正权限）。完成后按提示重启：存在用户级 unit 时 `systemctl --user restart openwebcode`，否则手动重启正在运行的 `owc`。
+- **更新**：`<prefix>/lib/openwebcode/server/dist/index.js` 已存在时进入更新模式——整体替换 `<prefix>/lib/openwebcode/` 内容为新版，保留 `<prefix>/bin/owc` 启动器与已写入的 systemd unit 不动，数据目录不受影响；既有启动器 pin 了系统 Node.js（`OWC_NODE` 非包内形式）时跳过 `node/` 复制（约 100MB 冗余，同时清掉旧的冗余目录）。目标目录不可写时会给出明确错误（可能需要 sudo 或修正权限）。完成后按实际 unit 位置提示重启：系统级 unit 用 `systemctl restart openwebcode`（非 root 提示加 `sudo`），用户级 unit 用 `systemctl --user restart openwebcode`，否则手动重启正在运行的 `owc`。
 
 下载基址可用环境变量 `OWC_INSTALL_BASE_URL` 覆盖（默认 `https://github.com/snnh/openwebcode/releases/download/v<version>`），便于镜像或 `file://` 本地测试。
 

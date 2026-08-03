@@ -44,6 +44,7 @@ server/assets/
 web/dist/
 node/                       # pinned Node 24 runtime
 install.sh                  # archive top level, Linux only
+uninstall.sh                # archive top level, Linux only
 ```
 
 The pinned runtime version is `NODE_DIST_VERSION` in [`.github/workflows/release.yml`](../.github/workflows/release.yml). The exact PowerShell and shell commands, prerequisites, staging validation, smoke test, and troubleshooting notes are in the [canonical packaging guide](./README.md).
@@ -79,6 +80,7 @@ sudo ./install.sh --yes --system --lan --enable-service --open-firewall
 - `--system` requests an explicit system-level install (requires root). `--with-systemd` writes a unit without enabling it (root: `/etc/systemd/system/openwebcode.service`; otherwise a user unit). `--enable-service` implies `--with-systemd` and runs `systemctl daemon-reload && systemctl enable --now openwebcode` (`systemctl --user` for user installs; boot persistence needs `loginctl enable-linger $USER`). `--open-firewall` (root + non-loopback only) opens the port via firewalld/ufw when available.
 - When the access token already exists at the end of a LAN install (e.g. the service was just enabled), the installer prints the one-click access links; otherwise it points at the server console and Settings → Remote access.
 - `--with-desktop-entry` is deliberately not implemented: the installer fails explicitly instead of claiming desktop integration. A root service runs agent-executed commands as root too — only run trusted tasks.
+- Re-running `install.sh` over an existing installation behaves as an update: it locates any existing systemd unit by uid (system-level as root, user-level otherwise), derives the previous prefix from `ExecStart`, and for a same-path rerun asks for one confirmation instead of every item (non-TTY just prints the detection status). A unit pointing at a different prefix triggers an interactive three-way choice (switch the service here / install files only / abort); non-TTY warns and defaults to files-only unless `--with-systemd` is explicit. An existing `<prefix>/bin/owc` launcher donates its `OWC_DEFAULT_PORT`/`OWC_DEFAULT_DATA_DIR`/`OWC_DEFAULT_HOST`/`OWC_NODE` as this run's defaults (explicit flags still win). Update rewrites the unit but preserves its enabled state (probed via `systemctl is-enabled`) and restarts the service when it was active. Newly written units always set `NoNewPrivileges=true`; system-level units add `ProtectSystem=full` with `ReadWritePaths=` keeping the data directory writable. The interactive systemd question only appears when systemd is actually usable, and the installer ends with an `export PATH` hint (rc file inferred from `$SHELL`) when `<prefix>/bin` is not on `PATH`.
 
 ### Uninstall
 
@@ -110,7 +112,7 @@ It downloads `openwebcode-<version>-linux-x64.tar.gz` and `SHA256SUMS.txt` from 
 - `--version <x.y.z>` picks the release; without it the script queries the `tag_name` of the latest GitHub release.
 - `--prefix <absolute-dir>` (default `$HOME/.local`) selects the install prefix and decides the mode; `--yes`, `--port`, `--host`, `--data-dir`, `--with-systemd`, and `--use-system-node` pass through to the bundled `install.sh`.
 - **Fresh install**: delegates to the bundled `install.sh`, identical to an offline install.
-- **Update**: when `<prefix>/lib/openwebcode/server/dist/index.js` already exists, the script replaces the contents of `<prefix>/lib/openwebcode/` with the new version while keeping the `<prefix>/bin/owc` launcher and any user systemd unit untouched; the data directory is never affected. A non-writable target fails with a clear error (sudo or ownership fix may be required). Restart afterward: `systemctl --user restart openwebcode` when the user unit exists, otherwise restart the running `owc` manually.
+- **Update**: when `<prefix>/lib/openwebcode/server/dist/index.js` already exists, the script replaces the contents of `<prefix>/lib/openwebcode/` with the new version while keeping the `<prefix>/bin/owc` launcher and any systemd unit untouched; the data directory is never affected. When the existing launcher pins a system Node.js (`OWC_NODE` not in bundled form), the `node/` directory is not copied (about 100 MB of redundancy, and any stale copy is removed). A non-writable target fails with a clear error (sudo or ownership fix may be required). Restart afterward according to the actual unit location: `systemctl restart openwebcode` for the system unit (`sudo` is suggested when not root), `systemctl --user restart openwebcode` for the user unit, otherwise restart the running `owc` manually.
 
 Set `OWC_INSTALL_BASE_URL` to override the download base URL (default `https://github.com/snnh/openwebcode/releases/download/v<version>`), which is useful for mirrors or `file://` local testing.
 
