@@ -2,6 +2,7 @@ import path from "node:path";
 import { MAX_SYNC_INTERVAL_MINUTES } from "./remote-sync-scheduler.js";
 import type { FastModelConfig } from "./fast-model.js";
 import type { PythonEnv } from "./sessions/types.js";
+import type { ProxyConfig, ProxyMode } from "./proxy.js";
 
 export interface ServerConfig {
   host: string;
@@ -45,6 +46,8 @@ export interface ServerConfig {
     url?: string;
     intervalHours: number;
   };
+  /** 出站代理（proxy.ts 据此安装全局 dispatcher）；缺省 env（跟随环境变量）。 */
+  proxy: ProxyConfig;
   fastModel?: FastModelConfig;
   /** 会话默认模型（settings defaultModel）：新建会话的隐式 provider+model。 */
   defaultModel?: ModelSelection;
@@ -94,6 +97,12 @@ function pythonEnv(value: string | undefined): PythonEnv {
   throw new Error(`Expected global, uv-workspace, or uv-config, received ${value}`);
 }
 
+function proxyMode(value: string | undefined): ProxyMode {
+  if (value === undefined || value === "env") return "env";
+  if (value === "off" || value === "custom") return value;
+  throw new Error(`Expected off, env, or custom, received ${value}`);
+}
+
 function boundedNonNegativeInteger(value: string | undefined, fallback: number, maximum: number): number {
   if (value === undefined) return fallback;
   const parsed = Number(value);
@@ -124,6 +133,11 @@ export function isLoopbackHost(host: string): boolean {
   const normalized = host.trim().toLowerCase();
   return normalized === "localhost" || normalized === "::1" || normalized === "[::1]" ||
     normalized === "127.0.0.1" || normalized.startsWith("127.");
+}
+
+/** core 二进制默认路径：Windows 为 MSVC 多配置布局，POSIX 为单配置布局。 */
+export function defaultCorePath(platform: NodeJS.Platform = process.platform): string {
+  return platform === "win32" ? "../build/Debug/owc-exec.exe" : "../build/owc-exec";
 }
 
 function originList(value: string | undefined): string[] {
@@ -171,7 +185,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     ...(accessToken ? { accessToken } : {}),
     allowedOrigins,
     ...(!isLoopbackHost(host) && allowedOrigins.length === 0 ? { autoAllowSameOrigin: true } : {}),
-    corePath: env.OWC_CORE_PATH ?? "../build/Debug/owc-exec.exe",
+    corePath: env.OWC_CORE_PATH ?? defaultCorePath(),
     dataDir: env.OWC_DATA_DIR ?? "../.openwebcode",
     coreRequestTimeoutMs: positiveInteger(env.OWC_CORE_REQUEST_TIMEOUT_MS, 130_000),
     gcMaxBytes: positiveInteger(env.OWC_GC_MAX_BYTES, 2_147_483_648),
@@ -193,6 +207,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       enabled: env.OWC_UPDATE_CHECK_ENABLED === "1" || env.OWC_UPDATE_CHECK_ENABLED === "true",
       ...(env.OWC_UPDATE_CHECK_URL ? { url: env.OWC_UPDATE_CHECK_URL } : {}),
       intervalHours: boundedNonNegativeInteger(env.OWC_UPDATE_CHECK_INTERVAL_HOURS, 24, 24 * 30),
+    },
+    proxy: {
+      mode: proxyMode(env.OWC_PROXY_MODE),
+      ...(env.OWC_PROXY_HTTP ? { httpProxy: env.OWC_PROXY_HTTP } : {}),
+      ...(env.OWC_PROXY_HTTPS ? { httpsProxy: env.OWC_PROXY_HTTPS } : {}),
+      ...(env.OWC_PROXY_NO_PROXY ? { noProxy: env.OWC_PROXY_NO_PROXY } : {}),
     },
     ...(allowPaths !== undefined || jobMemoryMB !== undefined || jobMaxProcesses !== undefined
       ? {

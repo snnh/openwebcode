@@ -24,6 +24,7 @@ export const SETTINGS_GROUP_EN: Record<string, string> = {
   executor: "Executor",
   service: "Storage",
   network: "Listen address and port",
+  proxy: "Outbound proxy",
   exchangeRate: "Exchange rate",
   updateCheck: "Update check",
 };
@@ -34,7 +35,7 @@ export const NETWORK_SETTINGS_GROUP = "network";
 /**
  * 服务端设置分组 → 设置页签归属。分组 id 由服务端保持稳定（见 server/src/settings-service.ts），
  * web 端决定每个分组渲染在哪个页签：模型选择 → 模型选择，模型目录与同步 → 模型目录，语言与货币 → 通用，
- * 汇率 → 模型定价，执行器/存储/更新检查 → 服务信息，监听与端口 → 远程访问。
+ * 汇率 → 模型定价，执行器/存储/更新检查 → 服务信息，监听与端口 → 远程访问，出站代理 → 联网服务。
  */
 export const SETTING_GROUP_TAB: Record<string, SettingsTab> = {
   modelSelection: "modelSelection",
@@ -43,6 +44,7 @@ export const SETTING_GROUP_TAB: Record<string, SettingsTab> = {
   executor: "info",
   service: "info",
   network: "remote",
+  proxy: "web",
   exchangeRate: "pricing",
   updateCheck: "info",
 };
@@ -69,9 +71,9 @@ export const SETTINGS_FIELD_EN: Record<string, { label: string; description?: st
   defaultCurrency: { label: "Default currency" },
   corePath: { label: "Executor path" },
   coreRequestTimeoutMs: { label: "Executor request timeout (ms)" },
-  sandboxAllowPaths: { label: "Additional AppContainer directories", description: "One directory per line, up to 16; merged with the session working directory at execution time" },
-  jobObjectMemoryMB: { label: "Job memory limit (MB)", description: "Job Object commit-memory limit; defaults to 4096" },
-  jobObjectMaxProcesses: { label: "Job process limit", description: "Job Object active-process limit; defaults to 64" },
+  sandboxAllowPaths: { label: "Additional allowed directories", description: "One directory per line, up to 16; merged with the session working directory at execution time" },
+  jobObjectMemoryMB: { label: "Job memory limit (MB)", description: "Process-tree commit-memory limit; defaults to 4096; only applied on Windows (Job Object)" },
+  jobObjectMaxProcesses: { label: "Job process limit", description: "Process-tree active-process limit; defaults to 64; only applied on Windows (Job Object)" },
   gcMaxBytes: { label: "Storage limit (bytes)", description: "Global LRU limit for session artifacts; oldest data is removed first" },
   host: { label: "Listen address" },
   port: { label: "Listen port" },
@@ -82,6 +84,10 @@ export const SETTINGS_FIELD_EN: Record<string, { label: string; description?: st
   updateCheckEnabled: { label: "Enable update check", description: "Off by default; when enabled, periodically checks GitHub Releases for the latest version" },
   updateCheckUrl: { label: "Update check URL", description: "GitHub Releases API endpoint" },
   updateCheckIntervalHours: { label: "Check interval (hours)", description: "0 means manual checks only; maximum 720 hours" },
+  proxyMode: { label: "Proxy mode", description: "off = direct connections only; env = follow HTTPS_PROXY/HTTP_PROXY/NO_PROXY; custom = use the proxy addresses below" },
+  proxyHttp: { label: "HTTP proxy", description: "e.g. http://127.0.0.1:7890, credentials allowed; only used in custom mode; also the fallback when HTTPS proxy is blank" },
+  proxyHttps: { label: "HTTPS proxy", description: "Proxy used for https targets; falls back to the HTTP proxy when blank" },
+  proxyNoProxy: { label: "Proxy bypass list", description: "Comma-separated hostnames or domain suffixes (e.g. internal.example.com) that skip the proxy; loopback addresses always bypass" },
 };
 
 export const MAX_SYNC_INTERVAL_MINUTES = 35_791;
