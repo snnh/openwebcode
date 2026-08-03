@@ -9,6 +9,7 @@ import { windowLevel, type ContextWindowInfo } from "../lib/context-window";
 import { Icon } from "./Icon";
 import { useI18n } from "../i18n";
 import { MOBILE_BREAKPOINT } from "../hooks/use-media-query";
+import { MobileNavTrigger } from "../workbench/MobileNavMenu";
 
 export interface CostSummary {
   tokens: number;
@@ -36,7 +37,7 @@ const SANDBOX_LABELS_LINUX: Partial<Record<SandboxMode, [string, string]>> = {
   jobobject: ["Landlock", "Landlock"],
 };
 
-export function JobHeader({ session, agentState, costSummary, windowUsage, latestUsage, onAbort, onConfig, onCreateCheckpoint, checkpointPending = false, running = false }: {
+export function JobHeader({ session, agentState, costSummary, windowUsage, latestUsage, onAbort, onConfig, onCreateCheckpoint, checkpointPending = false, running = false, onOpenNavMenu }: {
   session: SessionDetail;
   agentState?: string;
   costSummary?: CostSummary;
@@ -51,6 +52,8 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
   checkpointPending?: boolean;
   /** 包含首个 agent.state 事件到达前的临时流，避免快照与运行中的会话竞态。 */
   running?: boolean;
+  /** 移动端导航菜单触发（≤1024px 渲染在标题左侧；桌面端不渲染入口） */
+  onOpenNavMenu?(): void;
 }): ReactElement {
   const { t } = useI18n();
   const busy = isBusyState(agentState) || running;
@@ -78,6 +81,14 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
     queryKey: ["sandbox-capabilities"],
     queryFn: api.sandboxCapabilities,
     staleTime: 60_000,
+  });
+  // env-sim 人格清单：仅人格生效时拉取（会话级覆盖下拉供数；扩展宿主不可用时静默为空）
+  const personas = useQuery({
+    queryKey: ["env-sim-personas"],
+    queryFn: api.envSimPersonas,
+    enabled: Boolean(session.activePersona),
+    staleTime: 60_000,
+    retry: false,
   });
   const runningTasks = tasks.data?.filter((t) => t.status === "running") ?? [];
   const allTasks = tasks.data ?? [];
@@ -122,6 +133,7 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
   return (
     <header className={`job-header${headerCollapsed ? " compact" : ""}`}>
       <div className="job-header-info">
+        {onOpenNavMenu && <MobileNavTrigger onOpen={onOpenNavMenu} />}
         <div className="job-title">
           <h1>{session.title}</h1>
           {!headerCollapsed && <p className="job-cwd mono" title={session.cwd}>{session.cwd}</p>}
@@ -187,13 +199,23 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
           <span className={`state-badge state-${agentState}`}>{STATE_LABELS[agentState] ? t(...STATE_LABELS[agentState]!) : agentState}</span>
         )}
         {session.activePersona && (
-          <span
-            className="persona-badge"
-            title={t(`env-sim 人格模拟生效：${session.activePersona.name}`, `env-sim persona active: ${session.activePersona.name}`)}
+          <label
+            className="mode-switch persona-switch"
+            title={t(`env-sim 人格模拟生效：${session.activePersona.name}（点击切换会话级人格）`, `env-sim persona active: ${session.activePersona.name} (click to override for this session)`)}
           >
             <Icon name="layers" size={11} />
-            {session.activePersona.name}
-          </span>
+            <select
+              aria-label={t("人格模拟", "Persona")}
+              value={session.persona ?? ""}
+              disabled={busy || configPending}
+              onChange={(event) => updateMode({ persona: event.target.value })}
+            >
+              <option value="">{t(`跟随扩展配置（${session.activePersona.name}）`, `Follow extension config (${session.activePersona.name})`)}</option>
+              {(personas.data?.personas ?? []).map((persona) => (
+                <option key={persona.id} value={persona.id}>{persona.name}</option>
+              ))}
+            </select>
+          </label>
         )}
         </div>
         <button

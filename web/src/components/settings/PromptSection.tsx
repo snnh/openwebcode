@@ -5,15 +5,26 @@ import { useI18n } from "../../i18n";
 
 type Scope = "global" | "project";
 
-/** 四个配置面的文本框值（空串 = 该面无覆盖）。 */
+/** 七个配置面的文本框值（空串 = 该面无覆盖）。 */
 interface FaceValues {
   identityOverride: string;
   baseOverride: string;
   customAppend: string;
   subAgentAppend: string;
+  initOverride: string;
+  compactOverviewOverride: string;
+  compactToolcallsOverride: string;
 }
 
-const EMPTY_FACES: FaceValues = { identityOverride: "", baseOverride: "", customAppend: "", subAgentAppend: "" };
+const EMPTY_FACES: FaceValues = {
+  identityOverride: "",
+  baseOverride: "",
+  customAppend: "",
+  subAgentAppend: "",
+  initOverride: "",
+  compactOverviewOverride: "",
+  compactToolcallsOverride: "",
+};
 
 export function PromptSection({ onDirtyChange, sessionCwd }: { onDirtyChange?(dirty: boolean): void; sessionCwd?: string }): ReactElement {
   const { t } = useI18n();
@@ -44,6 +55,9 @@ export function PromptSection({ onDirtyChange, sessionCwd }: { onDirtyChange?(di
       baseOverride: prompt.data.baseOverride ?? "",
       customAppend: prompt.data.customAppend ?? "",
       subAgentAppend: prompt.data.subAgentAppend ?? "",
+      initOverride: prompt.data.initOverride ?? "",
+      compactOverviewOverride: prompt.data.compactOverviewOverride ?? "",
+      compactToolcallsOverride: prompt.data.compactToolcallsOverride ?? "",
     };
     setFaces(loaded);
     setSavedBaseline(loaded);
@@ -68,6 +82,9 @@ export function PromptSection({ onDirtyChange, sessionCwd }: { onDirtyChange?(di
         baseOverride: nullable(values.baseOverride),
         customAppend: nullable(values.customAppend),
         subAgentAppend: nullable(values.subAgentAppend),
+        initOverride: nullable(values.initOverride),
+        compactOverviewOverride: nullable(values.compactOverviewOverride),
+        compactToolcallsOverride: nullable(values.compactToolcallsOverride),
       });
       void queryClient.invalidateQueries({ queryKey: ["prompt-override"] });
       setSavedBaseline(values);
@@ -149,6 +166,51 @@ export function PromptSection({ onDirtyChange, sessionCwd }: { onDirtyChange?(di
           onChange={setFace("subAgentAppend")}
         />
       </label>
+      <label className="settings-field">
+        <span>{t("/init 提示词", "/init prompt")}</span>
+        <textarea
+          rows={4}
+          value={faces.initOverride}
+          placeholder={t("留空则依次回退到 env-sim 人格提示词与内置 /init 探查提示词", "Leave empty to fall back to the env-sim persona prompt, then the built-in /init exploration prompt")}
+          onChange={setFace("initOverride")}
+        />
+      </label>
+      {data?.builtinInitPrompt ? (
+        <details className="prompt-builtin">
+          <summary>{t("内置 /init 提示词", "Built-in /init prompt")}</summary>
+          <pre className="prompt-builtin-text">{data.builtinInitPrompt}</pre>
+        </details>
+      ) : null}
+      <label className="settings-field">
+        <span>{t("压缩提示词（概览）", "Compaction prompt (overview)")}</span>
+        <textarea
+          rows={4}
+          value={faces.compactOverviewOverride}
+          placeholder={t("留空则使用内置概览压缩系统提示", "Leave empty for the built-in overview compaction system prompt")}
+          onChange={setFace("compactOverviewOverride")}
+        />
+      </label>
+      {data?.builtinCompactOverviewPrompt ? (
+        <details className="prompt-builtin">
+          <summary>{t("内置压缩提示词（概览）", "Built-in compaction prompt (overview)")}</summary>
+          <pre className="prompt-builtin-text">{data.builtinCompactOverviewPrompt}</pre>
+        </details>
+      ) : null}
+      <label className="settings-field">
+        <span>{t("压缩提示词（工具调用）", "Compaction prompt (tool calls)")}</span>
+        <textarea
+          rows={4}
+          value={faces.compactToolcallsOverride}
+          placeholder={t("留空则使用内置工具调用压缩系统提示", "Leave empty for the built-in tool-call compaction system prompt")}
+          onChange={setFace("compactToolcallsOverride")}
+        />
+      </label>
+      {data?.builtinCompactToolcallsPrompt ? (
+        <details className="prompt-builtin">
+          <summary>{t("内置压缩提示词（工具调用）", "Built-in compaction prompt (tool calls)")}</summary>
+          <pre className="prompt-builtin-text">{data.builtinCompactToolcallsPrompt}</pre>
+        </details>
+      ) : null}
       <div className="dialog-actions">
         <button className="btn primary" disabled={saving} onClick={() => void save(faces)}>
           {saving ? t("保存中…", "Saving…") : t("保存", "Save")}

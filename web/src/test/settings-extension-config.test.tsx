@@ -135,4 +135,94 @@ describe("扩展类型化配置表单", () => {
     expect(textarea).not.toBeNull();
     expect((textarea as HTMLTextAreaElement).value).toBe(JSON.stringify({ a: 1 }, null, 2));
   });
+
+  it("env-sim：新建预设表单提交结构化字段并选中新预设", async () => {
+    vi.spyOn(api, "envSimPersonas")
+      .mockResolvedValueOnce({
+        personas: [{ id: "claude", name: "Claude 风格", builtin: true }],
+        directory: "D:\\data\\env-sim\\personas",
+      })
+      .mockResolvedValue({
+        personas: [
+          { id: "claude", name: "Claude 风格", builtin: true },
+          { id: "my-persona", name: "我的人格", builtin: false },
+        ],
+        directory: "D:\\data\\env-sim\\personas",
+      });
+    const save = vi.spyOn(api, "saveEnvSimPersona").mockResolvedValue({
+      id: "my-persona",
+      name: "我的人格",
+      builtin: false,
+      identity: "You are Mine.",
+      basePrompt: "mine base",
+      productSections: [],
+      hideBuiltIns: [],
+      aliases: [],
+    });
+    const extension = extensionFixture({
+      id: "env-sim",
+      configSchema: { type: "object", properties: { persona: { type: "string", title: "人格预设" } } },
+      config: {},
+    });
+    const view = renderWithClient(<ExtensionRow extension={extension} />);
+    await view.findByRole("option", { name: "Claude 风格" });
+
+    fireEvent.click(view.getByRole("button", { name: "新建预设" }));
+    const creator = await view.findByTestId("persona-creator");
+    fireEvent.change(view.getByLabelText(/预设 id/), { target: { value: "my-persona" } });
+    fireEvent.change(view.getByLabelText("显示名称"), { target: { value: "我的人格" } });
+    fireEvent.change(view.getByLabelText("身份行"), { target: { value: "You are Mine." } });
+    fireEvent.change(view.getByLabelText("基线提示词"), { target: { value: "mine base" } });
+    // aliases 非法 JSON 先报错不上送
+    fireEvent.change(view.getByLabelText(/aliases/), { target: { value: "{ not json" } });
+    fireEvent.click(view.getByRole("button", { name: "保存预设" }));
+    await vi.waitFor(() => expect(creator).toHaveTextContent(/JSON/));
+    expect(save).not.toHaveBeenCalled();
+
+    fireEvent.change(view.getByLabelText(/aliases/), { target: { value: "[]" } });
+    fireEvent.click(view.getByRole("button", { name: "保存预设" }));
+    await vi.waitFor(() => expect(save).toHaveBeenCalledWith({
+      id: "my-persona",
+      name: "我的人格",
+      identity: "You are Mine.",
+      basePrompt: "mine base",
+      aliases: [],
+    }));
+    // 创建成功后自动选中新预设
+    await vi.waitFor(() => expect(view.getByLabelText("人格预设")).toHaveValue("my-persona"));
+  });
+
+  it("env-sim：自定义预设出现删除按钮，两段确认后调用删除接口", async () => {
+    vi.spyOn(api, "envSimPersonas").mockResolvedValue({
+      personas: [{ id: "my-preset", name: "我的预设", builtin: false }],
+      directory: "D:\\data\\env-sim\\personas",
+    });
+    vi.spyOn(api, "envSimPersona").mockResolvedValue({
+      id: "my-preset",
+      name: "我的预设",
+      builtin: false,
+      identity: "You are Mine.",
+      basePrompt: "mine base",
+      productSections: [],
+      hideBuiltIns: [],
+      aliases: [],
+    });
+    const remove = vi.spyOn(api, "deleteEnvSimPersona").mockResolvedValue({ ok: true });
+    const extension = extensionFixture({
+      id: "env-sim",
+      configSchema: { type: "object", properties: { persona: { type: "string", title: "人格预设" } } },
+      config: {},
+    });
+    const view = renderWithClient(<ExtensionRow extension={extension} />);
+    await view.findByRole("option", { name: "我的预设" });
+    fireEvent.change(view.getByLabelText("人格预设"), { target: { value: "my-preset" } });
+
+    const deleteButton = await view.findByRole("button", { name: "删除此自定义预设" });
+    fireEvent.click(deleteButton);
+    expect(remove).not.toHaveBeenCalled();
+    fireEvent.click(view.getByRole("button", { name: "再次点击确认删除" }));
+    await vi.waitFor(() => expect(remove).toHaveBeenCalledWith("my-preset"));
+    // 删除后选择回落到「不模拟」
+    await vi.waitFor(() => expect(view.getByLabelText("人格预设")).toHaveValue(""));
+  });
 });

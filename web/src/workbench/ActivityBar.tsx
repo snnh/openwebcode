@@ -4,18 +4,12 @@
  * 命令面板不走活动栏，仅保留 Ctrl+Shift+P 快捷键。
  */
 import type { ReactElement } from "react";
-import { Icon, type IconName } from "../components/Icon";
+import { Icon } from "../components/Icon";
 import { useI18n } from "../i18n";
 import type { SidebarView } from "./useWorkbenchLayout";
+import { VIEW_META } from "./view-meta";
 
-const VIEW_META: Record<SidebarView, { zh: string; en: string; icon: IconName }> = {
-  sessions: { zh: "会话", en: "Sessions", icon: "history" },
-  files: { zh: "文件", en: "Files", icon: "folder" },
-  scm: { zh: "源代码管理", en: "Source Control", icon: "git" },
-  problems: { zh: "问题", en: "Problems", icon: "alert" },
-};
-
-export function ActivityBar({ activeView, sidebarVisible, problemsBadge = 0, notificationsBadge = 0, terminalDisabled = false, onShowView, onToggleSidebar, onShowHelp, onShowNotifications, onOpenTerminal, onOpenSettings }: {
+export function ActivityBar({ activeView, sidebarVisible, problemsBadge = 0, notificationsBadge = 0, terminalDisabled = false, terminalActive = false, onShowView, onToggleSidebar, onShowHelp, onShowNotifications, onOpenTerminal, onOpenSettings }: {
   activeView: SidebarView;
   sidebarVisible: boolean;
   /** 未查看的诊断失败数角标（diagnostics.updated，不弹窗不打断） */
@@ -24,6 +18,8 @@ export function ActivityBar({ activeView, sidebarVisible, problemsBadge = 0, not
   notificationsBadge?: number;
   /** 无当前会话时禁用终端入口 */
   terminalDisabled?: boolean;
+  /** 终端标签选中态（窄屏底部导航高亮当前所在区） */
+  terminalActive?: boolean;
   onShowView(view: SidebarView): void;
   /** 展开/收起侧边栏（按钮在活动栏中段，悬浮/聚焦才显示） */
   onToggleSidebar(): void;
@@ -37,7 +33,6 @@ export function ActivityBar({ activeView, sidebarVisible, problemsBadge = 0, not
   const { t } = useI18n();
   return (
     <div className="activity-bar">
-      <span className="activity-mobile-brand" aria-hidden>Open<b>WebCode</b></span>
       <div className="activity-bar-top">
         {(Object.keys(VIEW_META) as SidebarView[]).map((view) => {
           const meta = VIEW_META[view];
@@ -88,8 +83,9 @@ export function ActivityBar({ activeView, sidebarVisible, problemsBadge = 0, not
           )}
         </button>
         <button
-          className="activity-btn"
+          className={`activity-btn${terminalActive ? " active" : ""}`}
           aria-label={t("终端", "Terminal")}
+          aria-pressed={terminalActive}
           title={t("终端", "Terminal")}
           disabled={terminalDisabled}
           onClick={onOpenTerminal}

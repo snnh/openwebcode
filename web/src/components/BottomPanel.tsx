@@ -18,6 +18,9 @@ import { useI18n } from "../i18n";
 
 export type PanelTab = "context" | "timeline" | "subagents" | "sandbox" | "cost" | "perf" | "eval";
 
+/** 移动端常驻标签（其余折叠进第二行，默认收起） */
+const PRIMARY_TABS: PanelTab[] = ["context", "timeline", "cost"];
+
 const TAB_META: Record<PanelTab, { zh: string; en: string; icon: IconName }> = {
   context: { zh: "上下文", en: "Context", icon: "layers" },
   timeline: { zh: "时间线", en: "Timeline", icon: "history" },
@@ -57,7 +60,7 @@ export interface PanelStatusInfo {
   windowPercent?: number | undefined;
 }
 
-export function BottomPanel({ sessionId, session, running, evalEnabled = false, windowUsage, latestUsage, subagentRuns, status, onNotice, open, onOpenChange, onOpenDiff, onOpenSubagentTab, onForkSession }: {
+export function BottomPanel({ sessionId, session, running, evalEnabled = false, windowUsage, latestUsage, subagentRuns, status, onNotice, open, onOpenChange, onOpenDiff, onOpenSubagentTab, onForkSession, mobile = false }: {
   sessionId?: string;
   session?: SessionDetail;
   running: boolean;
@@ -76,10 +79,12 @@ export function BottomPanel({ sessionId, session, running, evalEnabled = false, 
   onOpenChange(open: boolean): void;
   /** 0.5.0 Phase 1b：检查点对比一键在统一 diff 视图中打开（hunk 级恢复） */
   onOpenDiff?(spec: DiffSpec): void;
-  /** 桌面端子代理「在标签中打开」：按 toolCallId 在主区开标签并聚焦（移动端不传） */
+  /** 子代理「在标签中打开」：按 toolCallId 在主区开标签并聚焦 */
   onOpenSubagentTab?: ((toolCallId: string) => void) | undefined;
   /** 时间线分叉成功后切换到新会话（App 注入；不传时仅刷新会话列表） */
   onForkSession?: ((newSessionId: string) => void) | undefined;
+  /** 移动端（≤1024px）：标签两行折叠——常驻 上下文/时间线/成本，其余收进默认收起的第二行 */
+  mobile?: boolean;
 }): ReactElement {
   const { t } = useI18n();
   const [tab, setTab] = useState<PanelTab>(() => {
@@ -87,6 +92,13 @@ export function BottomPanel({ sessionId, session, running, evalEnabled = false, 
     return stored && stored in TAB_META ? (stored as PanelTab) : "context";
   });
   const [height, setHeight] = useState(() => clampHeight(Number(readStored("owc-panel-height")) || 260));
+  // 移动端第二行标签折叠：默认收起、不持久化；选中折叠区标签时本次保持展开
+  const [tabsExpanded, setTabsExpanded] = useState(false);
+
+  const allTabs = (Object.keys(TAB_META) as PanelTab[]).filter((item) => item !== "eval" || evalEnabled);
+  const primaryTabs = mobile ? allTabs.filter((item) => PRIMARY_TABS.includes(item)) : allTabs;
+  const secondaryTabs = mobile ? allTabs.filter((item) => !PRIMARY_TABS.includes(item)) : [];
+  const showSecondary = secondaryTabs.length > 0 && (tabsExpanded || secondaryTabs.includes(tab));
 
   useEffect(() => store("owc-panel-tab", tab), [tab]);
   useEffect(() => store("owc-panel-height", String(height)), [height]);
@@ -133,7 +145,7 @@ export function BottomPanel({ sessionId, session, running, evalEnabled = false, 
         />
       )}
       <div className="panel-tabs">
-        {(Object.keys(TAB_META) as PanelTab[]).filter((item) => item !== "eval" || evalEnabled).map((item) => (
+        {primaryTabs.map((item) => (
           <button
             key={item}
             className={tab === item && open ? "active" : ""}
@@ -144,13 +156,24 @@ export function BottomPanel({ sessionId, session, running, evalEnabled = false, 
             {t(TAB_META[item].zh, TAB_META[item].en)}
           </button>
         ))}
+        {secondaryTabs.length > 0 && (
+          <button
+            className={`panel-tabs-more${showSecondary ? " open" : ""}`}
+            aria-expanded={showSecondary}
+            aria-label={showSecondary ? t("收起更多面板标签", "Collapse more panel tabs") : t("更多面板标签", "More panel tabs")}
+            title={showSecondary ? t("收起更多面板标签", "Collapse more panel tabs") : t("更多面板标签（子代理 / 沙盒 / 性能）", "More panel tabs (Subagents / Sandbox / Perf)")}
+            onClick={() => setTabsExpanded((value) => !value)}
+          >
+            <Icon name={showSecondary ? "chevron-up" : "chevron-down"} size={13} />
+          </button>
+        )}
         {status && session && (
           <div className="panel-status" aria-label={t("会话状态", "Session status")}>
             <span className={`status-live status-${liveStatus}`}>
               <i aria-hidden /> {liveStatus === "idle" ? t("空闲", "Idle") : t(...stateLabel(liveStatus))}
             </span>
             <span>{session.agentMode ?? "code"}</span>
-            <span title={`${session.provider}/${session.model}`}>{session.model}</span>
+            <span className="panel-status-model" title={`${session.provider}/${session.model}`}>{session.model}</span>
             {status.windowPercent !== undefined && <span className="status-optional" title={t("上下文窗口占用", "Context window usage")}>{t("窗口", "ctx")} {status.windowPercent}%</span>}
           </div>
         )}
@@ -162,6 +185,22 @@ export function BottomPanel({ sessionId, session, running, evalEnabled = false, 
           <Icon name={open ? "chevron-down" : "chevron-up"} size={14} />
         </button>
       </div>
+      {/* 移动端第二行标签（默认收起）：子代理/沙盒/性能/评测 */}
+      {showSecondary && (
+        <div className="panel-tabs panel-tabs-secondary">
+          {secondaryTabs.map((item) => (
+            <button
+              key={item}
+              className={tab === item && open ? "active" : ""}
+              aria-pressed={tab === item && open}
+              onClick={() => selectTab(item)}
+            >
+              <Icon name={TAB_META[item].icon} size={13} />
+              {t(TAB_META[item].zh, TAB_META[item].en)}
+            </button>
+          ))}
+        </div>
+      )}
       {open && (
         <div className="panel-content" style={{ height }}>
           <Suspense fallback={<div className="panel-loading">{t("加载中…", "Loading…")}</div>}>

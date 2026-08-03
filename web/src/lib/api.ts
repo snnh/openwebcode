@@ -82,7 +82,7 @@ export const api = {
     const query = params.toString();
     return request<import("./contracts").PromptOverrideView>(`/api/prompt${query ? `?${query}` : ""}`);
   },
-  savePromptOverride: (body: { scope?: "global" | "project"; cwd?: string; identityOverride?: string | null; baseOverride?: string | null; customAppend?: string | null; subAgentAppend?: string | null }) =>
+  savePromptOverride: (body: { scope?: "global" | "project"; cwd?: string; identityOverride?: string | null; baseOverride?: string | null; customAppend?: string | null; subAgentAppend?: string | null; initOverride?: string | null; compactOverviewOverride?: string | null; compactToolcallsOverride?: string | null }) =>
     request<{ ok: boolean }>("/api/prompt", { method: "PUT", body: JSON.stringify(body) }),
   providerStats: () => request<Record<string, ProviderConcurrencyStats>>("/api/providers/stats"),
   rebuildIndex: (sessionId: string) => request<{ accepted: boolean; jobId: string }>("/api/workspaces/index/rebuild", { method: "POST", body: JSON.stringify({ sessionId }) }),
@@ -277,6 +277,10 @@ export const api = {
   installExtension: (path: string) => request<ExtensionInfo>("/api/extensions", { method: "POST", body: JSON.stringify({ action: "install", path }) }),
   envSimPersonas: () => request<{ personas: Array<{ id: string; name: string; builtin: boolean }>; directory: string }>("/api/extensions/env-sim/personas"),
   envSimPersona: (id: string) => request<PersonaDetail>(`/api/extensions/env-sim/personas/${encodeURIComponent(id)}`),
+  saveEnvSimPersona: (body: import("./contracts").PersonaPresetInput) =>
+    request<PersonaDetail>("/api/extensions/env-sim/personas", { method: "POST", body: JSON.stringify(body) }),
+  deleteEnvSimPersona: (id: string) =>
+    request<{ ok: boolean }>(`/api/extensions/env-sim/personas/${encodeURIComponent(id)}`, { method: "DELETE" }),
   uninstallExtension: (id: string) => request<void>(`/api/extensions/${encodeURIComponent(id)}`, { method: "DELETE" }),
   translateMessage: (sessionId: string, messageId: string, targetLanguage: string, glossary?: Record<string, string>) =>
     request<{ text: string; cached: boolean }>(`/api/sessions/${sessionId}/content-lens/translate`, { method: "POST", body: JSON.stringify({ messageId, targetLanguage, ...(glossary ? { glossary } : {}) }) }),

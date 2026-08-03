@@ -132,7 +132,7 @@ export function SubagentsPanel({ sessionId, runs, onOpenInTab }: {
   sessionId?: string;
   /** 当前会话合并后的子代理运行（taskId → run），App 下发 */
   runs: Record<string, LiveSubagentRun>;
-  /** 桌面端「在标签中打开」：按 toolCallId 在主区开标签并聚焦（移动端不传） */
+  /** 「在标签中打开」：按 toolCallId 在主区开标签并聚焦 */
   onOpenInTab?: ((toolCallId: string) => void) | undefined;
 }): ReactElement {
   const { t } = useI18n();
