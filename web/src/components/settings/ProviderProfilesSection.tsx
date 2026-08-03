@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../lib/api";
 import type { ModelInterfaceType, ModelProviderProfileView, ProviderProfilesView, WebCapability, WebProviderProfileView, WebProviderType } from "../../lib/contracts";
 import { useI18n } from "../../i18n";
+import { ProxySection } from "./ProxySection";
 
 interface ModelProviderForm {
   originalId?: string;
@@ -217,7 +218,7 @@ export function ModelProvidersSection(): ReactElement {
   );
 }
 
-/** 「联网服务」页签：联网服务商 CRUD + search/fetch 当前配置选择。 */
+/** 「联网服务」页签：联网服务商 CRUD + search/fetch 当前配置选择 + 出站代理子区。 */
 export function WebProvidersSection(): ReactElement {
   const { t } = useI18n();
   const profiles = useQuery(providerProfilesQuery);
@@ -262,6 +263,7 @@ export function WebProvidersSection(): ReactElement {
   }));
 
   return (
+    <>
     <div className="server-settings-group">
       <h4>{t("联网服务商", "Web providers")}</h4>
       <p className="settings-note">{t("Search 与 Fetch 合并管理；每个配置声明能力，再分别选择当前使用的配置。", "Search and Fetch share one registry. Each profile declares capabilities, then an active profile is selected for each capability.")}</p>
@@ -297,5 +299,7 @@ export function WebProvidersSection(): ReactElement {
       </div>
       {error && <p className="settings-error">{error}</p>}
     </div>
+    <ProxySection />
+    </>
   );
 }

@@ -27,5 +27,9 @@
   "fixedUsdCnyRate": null,
   "updateCheckEnabled": false,
   "updateCheckUrl": "https://api.github.com/repos/snnh/openwebcode/releases/latest",
-  "updateCheckIntervalHours": 24
+  "updateCheckIntervalHours": 24,
+  "proxyMode": "env",
+  "proxyHttp": null,
+  "proxyHttps": null,
+  "proxyNoProxy": null
 }
