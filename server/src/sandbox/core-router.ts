@@ -84,6 +84,8 @@ export class CoreRouter extends EventEmitter {
   private readonly jobObject: JobObjectLimits | undefined;
   /** AppContainer 额外可写目录；WSB 会话不映射宿主机目录。 */
   private readonly allowPaths: string[] | undefined;
+  /** 缺省沙盒模式的平台判定（policyFor 分流）；测试可注入固定平台。 */
+  private readonly platform: NodeJS.Platform;
   /**
    * Core keeps session policy in process memory. Remember the desired host-side
    * request and which concrete client currently has it, so a restarted shared
@@ -104,10 +106,12 @@ export class CoreRouter extends EventEmitter {
     private readonly wsb: WsbManager,
     jobObject?: JobObjectLimits,
     allowPaths?: string[],
+    platform?: NodeJS.Platform,
   ) {
     super();
     this.jobObject = jobObject;
     this.allowPaths = allowPaths;
+    this.platform = platform ?? process.platform;
     this.forwardClientEvents(shared);
     this.wsb.onClientCreated = (_sessionId, client) => {
       this.forwardClientEvents(client, _sessionId);
@@ -186,7 +190,7 @@ export class CoreRouter extends EventEmitter {
     // immediately, so do not leak a transient "Core is not running" failure.
     await client.start();
     const cwd = meta?.sandboxMode === "wsb" && meta.cwd ? toSandboxPath(request.cwd, meta.cwd) : request.cwd;
-    await client.configureSession({ ...request, cwd, sandbox: CoreRouter.policyFor(meta, request.sandbox, this.jobObject, this.allowPaths) });
+    await client.configureSession({ ...request, cwd, sandbox: CoreRouter.policyFor(meta, request.sandbox, this.jobObject, this.allowPaths, this.platform) });
     this.configuredClients.set(request.sessionId, client);
   }
 
@@ -268,7 +272,7 @@ export class CoreRouter extends EventEmitter {
   async configureSession(request: { sessionId: string; cwd: string; sandbox: SandboxPolicy }): Promise<{ sandboxCapability: string }> {
     const { client, meta } = await this.clientFor(request.sessionId);
     const cwd = meta?.sandboxMode === "wsb" && meta.cwd ? toSandboxPath(request.cwd, meta.cwd) : request.cwd;
-    const routed = { ...request, cwd, sandbox: CoreRouter.policyFor(meta, request.sandbox, this.jobObject, this.allowPaths) };
+    const routed = { ...request, cwd, sandbox: CoreRouter.policyFor(meta, request.sandbox, this.jobObject, this.allowPaths, this.platform) };
     const result = await client.configureSession(routed);
     this.desiredConfigs.set(request.sessionId, request);
     this.configuredClients.set(request.sessionId, client);
