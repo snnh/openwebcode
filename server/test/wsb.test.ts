@@ -71,8 +71,9 @@ function makeRouter(metas: Map<string, SessionMeta>, jobObject?: { memoryMB?: nu
     onClientCreated: undefined as undefined | ((sessionId: string, client: CoreClientLike) => void),
   };
   const sessions = { get: async (id: string) => metas.get(id) };
-  // CoreRouter 只用到 acquire/peek/release/releaseAll 与 onClientCreated 赋值
-  const router = new CoreRouter(shared, sessions, wsb as never, jobObject, allowPaths);
+  // CoreRouter 只用到 acquire/peek/release/releaseAll 与 onClientCreated 赋值；
+  // 用例全是 Windows 路径与 WSB 场景，固定平台为 win32（缺省模式断言 jobobject 不因 CI 平台漂移）
+  const router = new CoreRouter(shared, sessions, wsb as never, jobObject, allowPaths, "win32");
   return { router, shared, wsbClient, wsb };
 }
 
