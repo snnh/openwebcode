@@ -272,6 +272,44 @@ describe("OpenAIResponsesProvider request mapping", () => {
     // 空 messages 且无 tools 时省略 tools 字段
     expect(bodies[0]).not.toHaveProperty("tools");
   });
+
+  it("serverWebSearch: tools 附加服务端 web_search（无 function tools 也发送），web_search_call 事件映射 server_tool", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const payload = sse([
+      { type: "response.web_search_call.in_progress", item_id: "ws_1" },
+      { type: "response.web_search_call.searching", item_id: "ws_1" },
+      { type: "response.web_search_call.completed", item_id: "ws_1" },
+      { type: "response.output_text.delta", item_id: "msg_1", delta: "找到了" },
+      {
+        type: "response.completed",
+        response: { status: "completed", output: [{ id: "ws_1", type: "web_search_call" }], usage: { input_tokens: 10, output_tokens: 5 } },
+      },
+    ]);
+    const events = await collect(makeProvider(sseFetch(bodies, payload)).streamChat(request({ serverWebSearch: true })));
+
+    expect(bodies[0]?.tools).toEqual([{ type: "web_search" }]);
+    expect(events.filter((event) => event.type === "server_tool")).toEqual([
+      { type: "server_tool", tool: "web_search", phase: "start" },
+      { type: "server_tool", tool: "web_search", phase: "update" },
+      { type: "server_tool", tool: "web_search", phase: "end" },
+    ]);
+    // web_search_call 输出项不产出 tool_call、不影响 stopReason
+    expect(events.some((event) => event.type === "tool_call")).toBe(false);
+    expect(events.at(-1)).toEqual({ type: "done", stopReason: "end_turn" });
+  });
+
+  it("serverWebSearch 与 function tools 并存时 web_search 附加在末尾", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const payload = sse([{ type: "response.completed", response: { status: "completed", output: [] } }]);
+    await collect(makeProvider(sseFetch(bodies, payload)).streamChat(request({
+      serverWebSearch: true,
+      tools: [{ name: "bash", description: "run", inputSchema: { type: "object" } }],
+    })));
+    expect(bodies[0]?.tools).toEqual([
+      { type: "function", name: "bash", description: "run", parameters: { type: "object" } },
+      { type: "web_search" },
+    ]);
+  });
 });
 
 describe("ProviderProfilesRuntime openai-responses branch", () => {

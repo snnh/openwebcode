@@ -735,6 +735,8 @@ export class AgentRunner {
   private webFetchProvider: WebFetchProvider | undefined;
   private readonly pythonEnvManager = new UvPythonEnvironments();
   private getPythonEnvDefault: () => PythonEnv = () => "global";
+  /** 联网搜索模式懒读取（settings 热生效）：local = 本地 web_search；model-api = 模型服务端搜索。 */
+  private getWebSearchMode: () => "local" | "model-api" = () => "local";
   /** 单条消息轮次上限取值函数：默认读构造参数，setMaxTurns 注入后走设置热生效值 */
   private maxTurnsLimit: () => number = () => this.maxTurns;
 
@@ -805,6 +807,11 @@ export class AgentRunner {
   /** pythonEnv 全局默认的懒读取（settings 热生效，无需热应用回调）。 */
   setPythonEnvDefault(getter: () => PythonEnv): void {
     this.getPythonEnvDefault = getter;
+  }
+
+  /** 联网搜索模式的懒读取（settings 热生效，无需热应用回调）。 */
+  setWebSearchMode(getter: () => "local" | "model-api"): void {
+    this.getWebSearchMode = getter;
   }
 
   /** Enables/disables web_fetch for future turns without restarting the server. */
@@ -1095,7 +1102,8 @@ export class AgentRunner {
           skillsAvailable: skillCatalog.length > 0,
           backgroundTasksEnabled: Boolean(this.backgroundTasks),
           fetchAvailable: Boolean(this.webFetchProvider),
-          searchAvailable: Boolean(this.searchProvider),
+          // model-api 模式下本地 web_search 不注入（搜索由模型服务端执行）；web_fetch 不受影响
+          searchAvailable: this.getWebSearchMode() === "local" && Boolean(this.searchProvider),
           shell: resolveShell(session.shellBackend ?? "default"),
           pythonEnv: effectivePythonEnv(session.pythonEnv, this.getPythonEnvDefault()),
           swarmEnabled: session.swarmEnabled === true,
@@ -1218,6 +1226,8 @@ export class AgentRunner {
             ...(session.effort ? { effort: session.effort } : {}),
             // 思维链回传按模型能力声明下发（未声明 = 默认开；gpt/claude 前缀元数据已声明关）
             reasoningContent: profile.capabilities.reasoningContent !== false,
+            // 联网搜索模式：model-api 时下发请求级标记（仅 OpenAI Responses 接口消费，其他 provider 忽略）
+            serverWebSearch: this.getWebSearchMode() === "model-api",
             system,
             // 动态尾块（repo map 段 + 后台任务完成提示）独立于稳定 system 前缀下发，
             // 其逐 turn 变化不会污染稳定前缀的缓存断点。
@@ -1248,6 +1258,14 @@ export class AgentRunner {
                 this.events.publish({ source: "agent", type: "message.thinking_delta", sessionId, payload: { text: event.text } });
               } else if (event.type === "tool_call_delta") {
                 this.events.publish({ source: "agent", type: "message.tool_call_delta", sessionId, payload: { id: event.id, ...(event.name ? { name: event.name } : {}), text: event.argumentsDelta } });
+              } else if (event.type === "server_tool") {
+                // 服务端工具活动（如 DeepSeek web_search）：合成 tool.start/end 复用
+                // LiveActivity 现有链路展示，toolCallId 固定不入消息历史
+                if (event.phase === "start") {
+                  this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId: `server:${event.tool}`, name: event.tool } });
+                } else if (event.phase === "end") {
+                  this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId: `server:${event.tool}` } });
+                }
               }
             },
           },
@@ -1285,6 +1303,8 @@ export class AgentRunner {
             activeThinkingIndex = undefined;
           } else if (event.type === "tool_call_delta") {
             // 流式分片仅用于实时显示，无落盘内容（完整 tool_call 事件随后到达）
+          } else if (event.type === "server_tool") {
+            // 服务端工具活动：仅经 onEvent 实时展示，不落盘、不影响 stopReason
           } else if (event.type === "tool_call") {
             assistantContent.push({ type: "tool_call", id: event.id, name: event.name, input: event.input });
           } else if (event.type === "usage") {
@@ -1646,6 +1666,7 @@ export class AgentRunner {
         provider: context.provider,
         model: session.model,
         reasoningContent: this.getProfile(resolved.modelOverride ?? session.model, context.providerName).capabilities.reasoningContent !== false,
+        serverWebSearch: this.getWebSearchMode() === "model-api",
         ...(resolved.modelOverride ? { modelOverride: resolved.modelOverride } : {}),
         ...(systemExtra ? { systemExtra } : {}),
         ...(resolved.name ? { agent: resolved.name } : {}),
@@ -2470,6 +2491,7 @@ export class AgentRunner {
           provider,
           model: session.model,
           reasoningContent: this.getProfile(effectiveModel, providerName).capabilities.reasoningContent !== false,
+          serverWebSearch: this.getWebSearchMode() === "model-api",
           ...(resolved.modelOverride ? { modelOverride: resolved.modelOverride } : {}),
           ...(systemExtra ? { systemExtra } : {}),
           ...(resolved.name ? { agent: resolved.name } : {}),
@@ -2610,6 +2632,7 @@ export class AgentRunner {
               provider,
               model: session.model,
               reasoningContent: this.getProfile(effectiveModel, providerName).capabilities.reasoningContent !== false,
+              serverWebSearch: this.getWebSearchMode() === "model-api",
               ...(effective.modelOverride ? { modelOverride: effective.modelOverride } : {}),
               ...(systemExtra ? { systemExtra } : {}),
               ...(effective.name ? { agent: effective.name } : {}),

@@ -78,14 +78,15 @@ describe("server settings API", () => {
     const response = await setup.app.inject({ method: "GET", url: "/api/settings" });
     expect(response.statusCode).toBe(200);
     const view = response.json<SettingsView>();
-    expect(view.groups.map((group) => group.id)).toEqual(["models", "modelSelection", "general", "executor", "service", "network", "proxy", "exchangeRate", "updateCheck"]);
+    expect(view.groups.map((group) => group.id)).toEqual(["models", "modelSelection", "general", "executor", "service", "network", "proxy", "webSearch", "exchangeRate", "updateCheck"]);
     const fields = view.groups.flatMap((group) => group.fields);
-    expect(fields).toHaveLength(36);
+    expect(fields).toHaveLength(37);
     for (const item of fields) {
       expect(item.source).toBe("default");
       expect(item.editable).toBe(true);
     }
     expect(field(view, "port").value).toBe(3210);
+    expect(field(view, "webSearchMode")).toMatchObject({ type: "select", value: "local" });
     expect(field(view, "fastModel")).toMatchObject({
       type: "select",
       value: null,
