@@ -71,7 +71,7 @@ jobs:
         run: |
           set -euo pipefail
           # 防 toolchain 静默回落主机编译器：交叉产物必须是目标架构 ELF
-          file build-loong/owc-exec | grep -q 'loongarch64' || { echo "build-loong/owc-exec is not loongarch64 ELF"; file build-loong/owc-exec; exit 1; }
+          file build-loong/owc-exec | grep -qi 'loongarch' || { echo "build-loong/owc-exec is not loongarch64 ELF"; file build-loong/owc-exec; exit 1; }
 
   windows:
     runs-on: windows-latest
