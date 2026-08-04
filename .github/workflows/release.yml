@@ -327,7 +327,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ matrix.arch }}" = "loongarch64" ]; then
-            cmake -S core -B build --toolchain core/toolchains/loongarch64-linux-gnu.cmake \
+            cmake -S core -B build --toolchain "$PWD/core/toolchains/loongarch64-linux-gnu.cmake" \
               -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
               -DCPACK_PACKAGE_VERSION="$BASE_VERSION" -DCPACK_FULL_VERSION="$VERSION"
           else

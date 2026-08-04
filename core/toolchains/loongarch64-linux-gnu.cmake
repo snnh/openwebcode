@@ -1,7 +1,9 @@
 # LoongArch64 (Loongson) Linux cross-compile toolchain for owc-exec.
 # Used by release.yml/core.yml on x64 ubuntu runners:
 #   sudo apt-get install -y gcc-14-loongarch64-linux-gnu
-#   cmake -S core -B build --toolchain core/toolchains/loongarch64-linux-gnu.cmake
+#   cmake -S core -B build --toolchain "$PWD/core/toolchains/loongarch64-linux-gnu.cmake"
+# (cmake resolves a relative toolchain path against the build/source dirs, not the
+# repo root, so pass it absolute when -S/-B point elsewhere.)
 # No emulator is assumed: CI only compiles (ctest is skipped for this target).
 set(CMAKE_SYSTEM_NAME Linux)
 set(CMAKE_SYSTEM_PROCESSOR loongarch64)

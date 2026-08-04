@@ -64,7 +64,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-14-loongarch64-linux-gnu
       - name: Configure (cross)
-        run: cmake -S core -B build-loong --toolchain core/toolchains/loongarch64-linux-gnu.cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+        run: cmake -S core -B build-loong --toolchain "$PWD/core/toolchains/loongarch64-linux-gnu.cmake" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
       - name: Build (cross)
         run: cmake --build build-loong --parallel
       - name: Verify cross-built binary architecture
