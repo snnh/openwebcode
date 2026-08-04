@@ -185,7 +185,7 @@ validate_version "$VERSION" || die "非法版本号: $VERSION"
 ARCH=$(uname -m)
 case "$ARCH" in
     x86_64) ARCH=x64 ;;
-    aarch64|arm64) ARCH=arm64 ;;
+    aarch64) ARCH=arm64 ;;
     loongarch64) ARCH=loongarch64 ;;
     *) die "不支持的架构: $ARCH（支持 x86_64 / aarch64 / loongarch64）" 1 ;;
 esac
