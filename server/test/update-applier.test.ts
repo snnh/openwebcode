@@ -218,6 +218,8 @@ describe("UpdateApplier", () => {
       dataDir,
       installRoot,
       platform: "linux",
+      // 与宿主架构解耦（arm64 CI runner 上 process.arch 会让资产名错配）
+      arch: "x64",
       getReleaseUrl: () => RELEASE_URL,
       getCurrentVersion: () => "0.5.2",
       fetchImpl: makeFetch({ platform: "linux" }),
