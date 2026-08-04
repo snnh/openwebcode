@@ -86,12 +86,26 @@ export interface AccentVars {
   accentSoft: string;
 }
 
+const ON_ACCENT_DARK = "#1c2126";
+const ON_ACCENT_LIGHT = "#ffffff";
+
+/** WCAG 对比度（1~21）；两个亮度无大小假设 */
+function contrastRatio(a: number, b: number): number {
+  const [hi, lo] = a >= b ? [a, b] : [b, a];
+  return (hi + 0.05) / (lo + 0.05);
+}
+
 /** 由任意 hex 原色派生四变量组；非法输入返回 undefined（调用方保持现状不应用） */
 export function deriveAccentVars(hex: string, theme: AccentTheme): AccentVars | undefined {
   if (!isValidHexColor(hex)) return undefined;
   const rgb = hexToRgb(hex);
   const hover = shiftLightness(rgb, theme === "light" ? -0.09 : 0.09);
-  const onAccent = relativeLuminance(rgb) > 0.45 ? "#1c2126" : "#ffffff";
+  // on-accent 文字色按 WCAG 对比度二选一（黑/白谁对比高用谁），而非固定亮度阈值启发式
+  const luminance = relativeLuminance(rgb);
+  const darkLuminance = relativeLuminance(hexToRgb(ON_ACCENT_DARK));
+  const onAccent = contrastRatio(luminance, darkLuminance) >= contrastRatio(luminance, 1)
+    ? ON_ACCENT_DARK
+    : ON_ACCENT_LIGHT;
   const softAlpha = theme === "light" ? 0.12 : 0.24;
   return {
     accent: hex.toLowerCase(),
