@@ -239,7 +239,7 @@ describe("OpenAIResponsesProvider request mapping", () => {
     expect(JSON.stringify(bodies[0]?.input)).not.toContain("历史思维不回传");
   });
 
-  it("思维链回传开启时同源 thinking 块以 reasoning item 明文回传（DeepSeek reasoning_text），关闭或异源不回传", async () => {
+  it("思维链回传开启时同源 thinking 块以 reasoning item 明文回传（每个 function_call 前各一条），关闭或异源不回传", async () => {
     const bodies: Array<Record<string, unknown>> = [];
     const payload = sse([{ type: "response.completed", response: { status: "completed", output: [] } }]);
     const messages: StreamChatRequest["messages"] = [
@@ -248,30 +248,37 @@ describe("OpenAIResponsesProvider request mapping", () => {
         id: "a1", role: "assistant", createdAt: "2026-01-01T00:00:01.000Z",
         content: [
           { type: "thinking", text: "先分析", provider: "openai-responses" },
-          { type: "thinking", text: "再行动", provider: "openai-responses" },
           { type: "thinking", text: "异源思维", provider: "other-provider" },
-          { type: "text", text: "结论" },
+          { type: "text", text: "我查一下" },
+          { type: "tool_call", id: "call_1", name: "read_file", input: { path: "a" } },
+          { type: "tool_call", id: "call_2", name: "bash", input: { cmd: "ls" } },
         ],
       },
+      { id: "t1", role: "tool", content: [{ type: "tool_result", toolCallId: "call_1", content: "A", isError: false }], createdAt: "2026-01-01T00:00:02.000Z" },
+      { id: "t2", role: "tool", content: [{ type: "tool_result", toolCallId: "call_2", content: "B", isError: false }], createdAt: "2026-01-01T00:00:03.000Z" },
     ];
-    // 开启（缺省 reasoningContent=true）：reasoning item 置于 assistant 消息前，异源过滤
+    // 开启（缺省 reasoningContent=true）：DeepSeek 规则——每个 function_call 前各放一条完整
+    // reasoning item（output 打断关联链，多调用轮只在开头放一条必 400）；异源过滤
     await collect(makeProvider(sseFetch(bodies, payload)).streamChat(request({ messages })));
     expect(bodies[0]?.input).toEqual([
       { role: "user", content: "继续" },
-      {
-        type: "reasoning",
-        content: [
-          { type: "reasoning_text", text: "先分析" },
-          { type: "reasoning_text", text: "再行动" },
-        ],
-      },
-      { role: "assistant", content: "结论" },
+      { role: "assistant", content: "我查一下" },
+      { type: "reasoning", content: [{ type: "reasoning_text", text: "先分析" }] },
+      { type: "function_call", call_id: "call_1", name: "read_file", arguments: "{\"path\":\"a\"}" },
+      { type: "function_call_output", call_id: "call_1", output: "A" },
+      { type: "reasoning", content: [{ type: "reasoning_text", text: "先分析" }] },
+      { type: "function_call", call_id: "call_2", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
+      { type: "function_call_output", call_id: "call_2", output: "B" },
     ]);
     // 请求级关闭：不回传（与 openai-compatible 的 reasoningContent=false 同语义）
     await collect(makeProvider(sseFetch(bodies, payload)).streamChat(request({ messages, reasoningContent: false })));
     expect(bodies[1]?.input).toEqual([
       { role: "user", content: "继续" },
-      { role: "assistant", content: "结论" },
+      { role: "assistant", content: "我查一下" },
+      { type: "function_call", call_id: "call_1", name: "read_file", arguments: "{\"path\":\"a\"}" },
+      { type: "function_call_output", call_id: "call_1", output: "A" },
+      { type: "function_call", call_id: "call_2", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
+      { type: "function_call_output", call_id: "call_2", output: "B" },
     ]);
   });
 

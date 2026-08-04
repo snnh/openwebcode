@@ -6,7 +6,7 @@
 
 ### 修复
 
-- OpenAI Responses 接口遵循模型目录「思维链回传」设置：开启时历史同源 thinking 块以 reasoning item（`reasoning_text` 明文）回传——DeepSeek 思维模式（如 deepseek-v4-flash）强制要求回传，此前第二轮起必现 400「The `reasoning_text` in the thinking mode must be passed back to the API」；关闭或 OpenAI 官方端点（声明不回传）行为不变。
+- OpenAI Responses 接口遵循模型目录「思维链回传」设置：开启时历史同源 thinking 块以 reasoning item（`reasoning_text` 明文）回传，**每个 function_call 前各放一条**——DeepSeek 思维模式（如 deepseek-v4-flash）要求每个工具调用都有紧邻的完整思维链，function_call_output 会打断关联链，多工具调用轮只在开头放一条仍必 400「The `reasoning_text` in the thinking mode must be passed back to the API」（1.3.7 的初版修复因此不完整；摆放规则经真实端点探针逐项验证）；关闭或 OpenAI 官方端点（声明不回传）行为不变。
 
 ## [1.3.6] - 2026-08-04
 

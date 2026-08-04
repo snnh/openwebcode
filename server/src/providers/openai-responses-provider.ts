@@ -35,7 +35,8 @@ interface FunctionCallAccumulator {
  * （function_call / function_call_output）；思维以 reasoning summary / reasoning text 流返回；
  * usage 挂在 response.completed 事件上（input_tokens_details.cached_tokens → cacheRead）。
  * 思维链回传遵循模型能力声明（request.reasoningContent）：开启时历史同源 thinking 块以
- * reasoning item 明文回传（DeepSeek 思维模式强制要求；OpenAI 官方端点声明关闭，不受影响）。
+ * reasoning item 明文回传，置于每个 function_call 前（DeepSeek 思维模式强制，多调用轮
+ * 缺一即 400；OpenAI 官方端点声明关闭，不受影响）。
  *
  * prompt caching：Responses 只有自动前缀缓存，无显式断点机制——cacheBreakpoints 在此
  * 为 no-op（如实忽略，不伪造断点），cached_tokens 如实上报。
@@ -260,10 +261,13 @@ function rememberCall(
 /**
  * ChatMessage 历史 → Responses input items。
  * 思维链回传（replayReasoning，遵循模型目录「思维链回传」能力声明，与 openai-compatible
- * 的 reasoning_content 回带同一语义）：同源 thinking 块转为 reasoning item 置于对应
- * assistant 消息前。DeepSeek 思维模式强制要求 reasoning_text 回传（缺失直接 400），其
- * 明文 content 会被归并到相邻 assistant 消息；OpenAI 官方端点的模型元数据均声明关闭
- * 回传（走服务端 reasoning item / encrypted_content 机制），不受影响。
+ * 的 reasoning_content 回带同一语义）：同源 thinking 块转为 reasoning item。DeepSeek
+ * 思维模式的强制规则（真机探针验证）：每个 function_call 必须紧跟一条带完整
+ * reasoning_text 的 reasoning item——function_call_output 会打断关联链，只在开头放
+ * 一条在多调用轮必 400（The reasoning_text in the thinking mode must be passed back
+ * to the API）；空文本不算数；纯文本 assistant 消息与下一 user 轮不强制。OpenAI 官方
+ * 端点的模型元数据均声明关闭回传（走服务端 reasoning item / encrypted_content 机制），
+ * 不受影响。
  *
  * 配对修复：历史可能残留无对应 function_call_output 的 function_call（中断/崩溃时结果
  * 未落盘），Responses API 对此直接 400（"No tool output found for tool call"）；故先
@@ -300,14 +304,13 @@ function toResponsesInput(messages: ChatMessage[], providerName: string, replayR
             ],
       });
     } else if (message.role === "assistant") {
-      // 思维链回传：同源 thinking 块 → reasoning item（每块一个 reasoning_text content part），
-      // 置于 assistant 消息前（DeepSeek 明文 content 归并到相邻 assistant 消息）
-      if (replayReasoning) {
-        const thinkingParts = message.content
-          .filter((block): block is ThinkingContent => block.type === "thinking" && block.provider === providerName && block.text.trim() !== "")
-          .map((block) => ({ type: "reasoning_text", text: block.text }));
-        if (thinkingParts.length > 0) result.push({ type: "reasoning", content: thinkingParts });
-      } else if (!replaySuppressedLogged && message.content.some((block) => block.type === "thinking" && block.provider === providerName)) {
+      // 思维链回传素材：同源 thinking 块（每块一个 reasoning_text content part）
+      const thinkingParts = replayReasoning
+        ? message.content
+            .filter((block): block is ThinkingContent => block.type === "thinking" && block.provider === providerName && block.text.trim() !== "")
+            .map((block) => ({ type: "reasoning_text", text: block.text }))
+        : [];
+      if (!replayReasoning && !replaySuppressedLogged && message.content.some((block) => block.type === "thinking" && block.provider === providerName)) {
         // 回传被能力声明关闭但历史含同源 thinking 块：DeepSeek 思维模式会因此 400，留痕便于诊断（每进程一次）
         replaySuppressedLogged = true;
         process.stderr.write(`[openai-responses] 思维链回传已关闭（reasoningContent=false），历史 thinking 块不会回传；思维模式端点（如 DeepSeek）可能拒绝请求\n`);
@@ -323,6 +326,9 @@ function toResponsesInput(messages: ChatMessage[], providerName: string, replayR
           // 重复的 function_call/_output 对会被 Responses API 拒绝。
           if (emitted.has(block.id)) continue;
           emitted.add(block.id);
+          // DeepSeek 思维模式强制：每个 function_call 前紧跟一条完整 reasoning item
+          // （output 打断关联链；空文本不算数）；有 thinking 素材时才可发出
+          if (thinkingParts.length > 0) result.push({ type: "reasoning", content: thinkingParts });
           result.push({
             type: "function_call",
             call_id: block.id,
