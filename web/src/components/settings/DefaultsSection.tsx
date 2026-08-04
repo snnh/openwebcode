@@ -22,9 +22,10 @@ export function DefaultsSection({ defaults, setDefaults, providers, models }: {
   const selected = defaults.provider && defaults.model ? JSON.stringify([defaults.provider, defaults.model]) : "";
   return (
     <div className="settings-grid">
-      <label>
-        {t("默认模型", "Default model")}
+      <label className="settings-field">
+        <span>{t("默认模型", "Default model")}</span>
         <select
+          className="input"
           value={selected}
           onChange={(event) => {
             if (!event.target.value) setDefaults({ ...defaults, provider: undefined, model: undefined });
@@ -37,13 +38,14 @@ export function DefaultsSection({ defaults, setDefaults, providers, models }: {
           <option value="">{t("不预设", "Not set")}</option>
           {availableModels.map((item) => {
             const value = JSON.stringify([item.provider, item.id]);
-            return <option key={value} value={value}>{`${item.id}【${item.provider}】`}</option>;
+            return <option key={value} value={value}>{t(`${item.id}【${item.provider}】`, `${item.id} (${item.provider})`)}</option>;
           })}
         </select>
       </label>
-      <label>
-        {t("默认权限模式", "Default permission mode")}
+      <label className="settings-field">
+        <span>{t("默认权限模式", "Default permission mode")}</span>
         <select
+          className="input"
           value={defaults.permissionMode ?? ""}
           onChange={(event) => setDefaults({ ...defaults, permissionMode: (event.target.value || undefined) as PermissionMode | undefined })}
         >

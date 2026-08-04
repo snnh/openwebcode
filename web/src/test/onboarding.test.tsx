@@ -84,7 +84,7 @@ describe("SettingsDialog 深链 initialTab", () => {
     expect(screen.getByRole("button", { name: /^联网服务$/ })).toHaveAttribute("aria-current", "page");
     // 联网服务商分区随页签挂载（含 search/fetch 当前配置选择）
     expect(await screen.findByRole("heading", { name: "联网服务商", level: 4 })).toBeInTheDocument();
-    expect(screen.getByLabelText("Web Search")).toBeInTheDocument();
+    expect(screen.getByLabelText("联网搜索")).toBeInTheDocument();
   });
 });
 

@@ -51,7 +51,6 @@ function renderHeader(props: { windowUsage?: ContextWindowInfo; latestUsage?: Co
 
 describe("JobHeader mode switches", () => {
   it("updates sandbox, shell, and snapshot modes while idle", async () => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     const onConfig = vi.fn(async () => undefined);
 
     renderWithClient(
@@ -60,6 +59,8 @@ describe("JobHeader mode switches", () => {
 
     await waitFor(() => expect(api.sandboxCapabilities).toHaveBeenCalled());
     fireEvent.change(screen.getByLabelText("沙盒模式"), { target: { value: "off" } });
+    // 关闭沙盒需经确认对话框确认后才下发配置
+    fireEvent.click(within(await screen.findByRole("dialog", { name: "关闭沙盒" })).getByRole("button", { name: "关闭沙盒" }));
     await waitFor(() => expect(onConfig).toHaveBeenCalledWith({ sandboxMode: "off" }));
     fireEvent.change(screen.getByLabelText("Shell 后端"), { target: { value: "pwsh" } });
     await waitFor(() => expect(onConfig).toHaveBeenCalledWith({ shellBackend: "pwsh" }));

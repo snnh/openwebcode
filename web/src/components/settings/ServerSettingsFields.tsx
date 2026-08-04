@@ -31,8 +31,8 @@ export function ServerSettingsFields({ showGroup, note, onDirtyChange }: {
   // 向上汇报 dirty，供对话框关闭前确认
   useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
 
-  if (settings.isPending) return <p className="panel-empty">{t("加载中…", "Loading…")}</p>;
-  if (settings.isError || !settings.data) return <p className="panel-empty">{t("无法加载服务设置。", "Could not load server settings.")}</p>;
+  if (settings.isPending) return <p className="muted-empty panel-empty">{t("加载中…", "Loading…")}</p>;
+  if (settings.isError || !settings.data) return <p className="muted-empty panel-empty">{t("无法加载服务设置。", "Could not load server settings.")}</p>;
 
   const fields = new Map(settings.data.groups.flatMap((group) => group.fields.map((field) => [field.key, field] as const)));
   const fieldLabel = (field: SettingsField): string => language === "en" ? (SETTINGS_FIELD_EN[field.key]?.label ?? field.label) : field.label;
@@ -131,7 +131,7 @@ export function ServerSettingsFields({ showGroup, note, onDirtyChange }: {
     if (field.type === "select") {
       const value = typeof pending === "string" ? pending : String(field.value ?? "");
       return (
-        <select value={resetting ? "" : value} disabled={disabled} onChange={(event) => setField(field.key, event.target.value || (field.nullable ? null : ""))} aria-label={fieldLabel(field)}>
+        <select className="input" value={resetting ? "" : value} disabled={disabled} onChange={(event) => setField(field.key, event.target.value || (field.nullable ? null : ""))} aria-label={fieldLabel(field)}>
           {field.nullable && <option value="">{t("不启用", "Disabled")}</option>}
           {(field.options ?? []).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
         </select>
@@ -155,6 +155,7 @@ export function ServerSettingsFields({ showGroup, note, onDirtyChange }: {
       const value = typeof pending === "string" ? pending : Array.isArray(field.value) ? field.value.join("\n") : "";
       return (
         <textarea
+          className="input"
           rows={Math.max(2, Math.min(6, value.split("\n").length))}
           value={resetting ? "" : value}
           placeholder={resetting ? t("保存后重置为空", "Reset to empty on save") : t("每行一个绝对目录", "One absolute directory per line")}
@@ -168,6 +169,7 @@ export function ServerSettingsFields({ showGroup, note, onDirtyChange }: {
     const value = typeof pending === "string" ? pending : String(field.value ?? "");
     return (
       <input
+        className="input"
         type={field.type === "number" ? "number" : "text"}
         {...(field.type === "number" ? {
           min: ZERO_ALLOWED_NUMBER_KEYS.has(field.key) ? 0 : 1,
@@ -192,19 +194,19 @@ export function ServerSettingsFields({ showGroup, note, onDirtyChange }: {
         <div className="settings-field-head">
           <span>{fieldLabel(field)}</span>
           <span className="settings-badges">
-            {field.source === "env" && <span className="badge badge-env">{t("环境变量", "Environment")}</span>}
-            {field.source === "file" && <span className="badge badge-file">{t("已覆盖", "Overridden")}</span>}
-            {field.restartRequired && <span className="badge badge-restart">{t("重启后生效", "Restart required")}</span>}
-            {resetting && <span className="badge badge-dirty">{t("将重置", "Will reset")}</span>}
-            {!resetting && pending !== undefined && <span className="badge badge-dirty">{t("未保存", "Unsaved")}</span>}
+            {field.source === "env" && <span className="pill small accent">{t("环境变量", "Environment")}</span>}
+            {field.source === "file" && <span className="pill small ok">{t("已覆盖", "Overridden")}</span>}
+            {field.restartRequired && <span className="pill small">{t("重启后生效", "Restart required")}</span>}
+            {resetting && <span className="pill small danger">{t("将重置", "Will reset")}</span>}
+            {!resetting && pending !== undefined && <span className="pill small danger">{t("未保存", "Unsaved")}</span>}
             {resetting && (
-              <button className="badge badge-action" onClick={() => resetField(field.key)}>{t("撤销", "Undo")}</button>
+              <button className="btn small" onClick={() => resetField(field.key)}>{t("撤销", "Undo")}</button>
             )}
             {!resetting && field.editable && field.type === "secret" && field.hasValue && (
-              <button className="badge badge-action" onClick={() => setField(field.key, null)}>{t("清除", "Clear")}</button>
+              <button className="btn small" onClick={() => setField(field.key, null)}>{t("清除", "Clear")}</button>
             )}
             {!resetting && field.editable && field.type !== "secret" && field.source === "file" && (
-              <button className="badge badge-action" onClick={() => setField(field.key, null)}>{t("重置", "Reset")}</button>
+              <button className="btn small" onClick={() => setField(field.key, null)}>{t("重置", "Reset")}</button>
             )}
           </span>
         </div>

@@ -15,7 +15,7 @@ export function SubagentStatusChip({ status }: { status: "pending" | LiveSubagen
   };
   return (
     <span className="subagent-run-status" data-status={status}>
-      {status === "running" && <span className="subagent-run-spinner" aria-hidden />}
+      {status === "running" && <span className="subagent-run-pulse" aria-hidden />}
       {labels[status]}
     </span>
   );
@@ -43,7 +43,7 @@ function RowHeader({ open, onToggle, children }: { open: boolean; onToggle(): vo
   const { t } = useI18n();
   return (
     <div
-      className="subagent-run-header"
+      className="collapse-row subagent-run-header"
       role="button"
       tabIndex={0}
       aria-expanded={open}

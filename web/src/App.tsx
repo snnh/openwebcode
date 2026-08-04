@@ -24,6 +24,7 @@ import { useStreamBuffers, type StreamBlock } from "./hooks/use-stream-buffers";
 /** 无流式内容时的共享空数组（引用稳定，避免 memo 子树无谓重渲染） */
 const EMPTY_STREAM_BLOCKS: StreamBlock[] = [];
 import { applyDiagnosticsBadgeUpdate, clearDiagnosticsBadge } from "./lib/diagnostics";
+import { Icon } from "./components/Icon";
 import { BottomPanel } from "./components/BottomPanel";
 import { InteractionCard } from "./components/InteractionCard";
 import { PlanApprovalCard } from "./components/PlanApprovalCard";
@@ -1153,7 +1154,7 @@ export function App(): ReactElement {
                     <summary>{t("任务清单", "Task list")} · {todos.data.filter((item) => item.status === "done").length}/{todos.data.length}</summary>
                     <ul>{todos.data.map((item, index) => (
                       <li key={`${item.content}-${index}`} data-status={item.status}>
-                        <span>{item.status === "done" ? "✓" : item.status === "in_progress" ? "●" : "○"}</span>
+                        <span>{item.status === "done" ? <Icon name="check" size={12} /> : item.status === "in_progress" ? <Icon name="circle-filled" size={10} /> : <Icon name="circle" size={12} />}</span>
                         {item.status === "in_progress" && item.activeForm ? item.activeForm : item.content}
                       </li>
                     ))}</ul>

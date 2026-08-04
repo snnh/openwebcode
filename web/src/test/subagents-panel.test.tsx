@@ -22,7 +22,7 @@ describe("SubagentsPanel", () => {
 
     expect(container.querySelector(".subagent-run-agent")).toHaveTextContent("scout");
     expect(container.querySelector(".subagent-run-status")).toHaveTextContent("运行中");
-    expect(container.querySelector(".subagent-run-spinner")).toBeInTheDocument();
+    expect(container.querySelector(".subagent-run-pulse")).toBeInTheDocument();
     expect(container.querySelector(".subagent-run-stats")).toHaveTextContent("第 2 轮 · 已用 read_file");
     expect(container.querySelector(".subagent-run-task")).toHaveTextContent("调查代码结构");
   });

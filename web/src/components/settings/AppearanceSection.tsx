@@ -30,7 +30,10 @@ export function AppearanceSection({ preference, setPreference, accent, setAccent
   const colorInputRef = useRef<HTMLInputElement>(null);
   // hex 文本框草稿：合法（#rrggbb）即应用，非法保留草稿不打扰
   const [hexDraft, setHexDraft] = useState(customHex ?? "");
-  useEffect(() => setHexDraft(customHex ?? ""), [customHex]);
+  // 仅在实际值变化时同步草稿；忽略大小写差异，避免合法输入被应用为小写后草稿被瞬间改写
+  useEffect(() => {
+    setHexDraft((previous) => (previous.toLowerCase() === (customHex ?? "").toLowerCase() ? previous : (customHex ?? "")));
+  }, [customHex]);
   const applyHexDraft = (value: string): void => {
     setHexDraft(value);
     const normalized = value.startsWith("#") ? value : `#${value}`;
@@ -39,7 +42,7 @@ export function AppearanceSection({ preference, setPreference, accent, setAccent
   return (
     <>
       <h3>{t("语言", "Language")}</h3>
-      <select value={language} aria-label={t("界面语言", "Interface language")} onChange={(event) => setLanguage(event.target.value as Language)}>
+      <select className="input" value={language} aria-label={t("界面语言", "Interface language")} onChange={(event) => setLanguage(event.target.value as Language)}>
         <option value="zh-CN">简体中文</option>
         <option value="en">English</option>
       </select>
@@ -101,7 +104,7 @@ export function AppearanceSection({ preference, setPreference, accent, setAccent
         {customHex !== undefined && (
           <input
             type="text"
-            className="accent-hex-input mono"
+            className="input accent-hex-input mono"
             aria-label={t("强调色 hex 值（#rrggbb）", "Accent hex value (#rrggbb)")}
             value={hexDraft}
             onChange={(event) => applyHexDraft(event.target.value)}

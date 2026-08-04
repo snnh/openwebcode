@@ -50,8 +50,8 @@ export function RemoteAccessSection({ onDirtyChange }: { onDirtyChange?(dirty: b
     return qr.createSvgTag(4, 8);
   }, [remoteAccess.data]);
 
-  if (settings.isPending) return <p className="panel-empty">{t("加载中…", "Loading…")}</p>;
-  if (settings.isError || !settings.data) return <p className="panel-empty">{t("无法加载服务设置。", "Could not load server settings.")}</p>;
+  if (settings.isPending) return <p className="muted-empty panel-empty">{t("加载中…", "Loading…")}</p>;
+  if (settings.isError || !settings.data) return <p className="muted-empty panel-empty">{t("无法加载服务设置。", "Could not load server settings.")}</p>;
   const network = settings.data.groups.find((group) => group.id === NETWORK_SETTINGS_GROUP);
   const hostField = network?.fields.find((field) => field.key === "host");
   const portField = network?.fields.find((field) => field.key === "port");

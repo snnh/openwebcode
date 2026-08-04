@@ -10,6 +10,7 @@ import { Icon } from "./Icon";
 import { useI18n } from "../i18n";
 import { MOBILE_BREAKPOINT } from "../hooks/use-media-query";
 import { MobileNavTrigger } from "../workbench/MobileNavMenu";
+import { useConfirmDialog } from "./ConfirmDialog";
 
 export interface CostSummary {
   tokens: number;
@@ -125,9 +126,21 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
     void onConfig(body).finally(() => setConfigPending(false));
   };
 
+  const confirm = useConfirmDialog();
+
   const changeSandbox = (mode: SandboxMode): void => {
-    if (mode === "off" && !window.confirm(t("关闭沙盒后，命令可访问工作目录以外的文件。确定继续吗？", "With the sandbox off, commands can access files outside the workspace. Continue?"))) return;
-    updateMode({ sandboxMode: mode, ...(mode === "wsb" && session.setupScript ? { setupScript: session.setupScript } : {}) });
+    const apply = (): void => updateMode({ sandboxMode: mode, ...(mode === "wsb" && session.setupScript ? { setupScript: session.setupScript } : {}) });
+    if (mode === "off") {
+      confirm.ask({
+        title: t("关闭沙盒", "Turn off sandbox"),
+        body: t("关闭沙盒后，命令可访问工作目录以外的文件。确定继续吗？", "With the sandbox off, commands can access files outside the workspace. Continue?"),
+        confirmLabel: t("关闭沙盒", "Turn off sandbox"),
+        danger: false,
+        onConfirm: apply,
+      });
+      return;
+    }
+    apply();
   };
 
   return (
@@ -187,7 +200,7 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
         )}
         {runningTasks.length > 0 && (
           <button
-            className={`task-badge${tasksOpen ? " open" : ""}`}
+            className={`pill interactive accent${tasksOpen ? " open" : ""}`}
             onClick={() => setTasksOpen((v) => !v)}
             title={t(`${runningTasks.length} 个后台任务运行中`, `${runningTasks.length} background tasks running`)}
           >
@@ -196,7 +209,7 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
           </button>
         )}
         {agentState && agentState !== "idle" && (
-          <span className={`state-badge state-${agentState}`}>{STATE_LABELS[agentState] ? t(...STATE_LABELS[agentState]!) : agentState}</span>
+          <span className={`pill ${agentState === "error" || agentState === "failed" ? "danger" : agentState === "aborted" ? "amber" : "accent"}`}>{STATE_LABELS[agentState] ? t(...STATE_LABELS[agentState]!) : agentState}</span>
         )}
         {session.activePersona && (
           <label
@@ -328,12 +341,12 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
         <div className="task-dropdown">
           {allTasks.map((task) => (
             <div key={task.taskId} className={`task-item task-${task.status}`}>
-              <div className="task-item-header" role="button" tabIndex={0} onClick={() => openTask(task.taskId)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openTask(task.taskId); } }}>
+              <div className="task-item-header" role="button" tabIndex={0} aria-expanded={expandedTask === task.taskId} onClick={() => openTask(task.taskId)} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openTask(task.taskId); } }}>
                 <span className={`task-status-dot task-${task.status}`} />
                 <span className="task-id mono">{task.taskId}</span>
                 <span className="task-status-label">{STATUS_LABELS[task.status] ? t(...STATUS_LABELS[task.status]!) : task.status}</span>
                 {task.exitCode !== undefined && <span className="task-exit-code mono">exit {task.exitCode}</span>}
-                <span className="task-cmd">{task.cmd.length > 60 ? task.cmd.slice(0, 60) + "..." : task.cmd}</span>
+                <span className="task-cmd" title={task.cmd}>{task.cmd}</span>
               </div>
               {expandedTask === task.taskId && (
                 <pre className="task-output mono">
@@ -345,6 +358,7 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
           ))}
         </div>
       )}
+      {confirm.dialogElement}
     </header>
   );
 }

@@ -5,6 +5,7 @@ import type { DiffSpec } from "../editor/DiffPane";
 import { Icon } from "../Icon";
 import { CodeBlock } from "../Markdown";
 import { useI18n } from "../../i18n";
+import { useConfirmDialog } from "../ConfirmDialog";
 
 /** 会话树节点展示上限（超出时只保留最新 N 个，滚动查看；当前叶节点打开时滚动可见） */
 const TIMELINE_TREE_LIMIT = 50;
@@ -19,6 +20,7 @@ export function TimelinePanel({ sessionId, running, onNotice, onOpenDiff, onFork
   onForkSession?: ((newSessionId: string) => void) | undefined;
 }): ReactElement {
   const { t, locale } = useI18n();
+  const confirm = useConfirmDialog();
   const queryClient = useQueryClient();
   const [selectedCheckpoint, setSelectedCheckpoint] = useState<string>();
   const checkpoints = useQuery({
@@ -46,7 +48,7 @@ export function TimelinePanel({ sessionId, running, onNotice, onOpenDiff, onFork
     if (active && typeof active.scrollIntoView === "function") active.scrollIntoView({ block: "nearest" });
   }, [activeLeafId, treeEntryCount]);
 
-  if (!sessionId) return <div className="inspector-body"><p className="panel-empty">{t("选择会话以查看检查点。", "Select a session to view checkpoints.")}</p></div>;
+  if (!sessionId) return <div className="inspector-body"><p className="muted-empty panel-empty">{t("选择会话以查看检查点。", "Select a session to view checkpoints.")}</p></div>;
 
   const refresh = (): void => {
     void queryClient.invalidateQueries({ queryKey: ["checkpoints", sessionId] });
@@ -130,17 +132,17 @@ export function TimelinePanel({ sessionId, running, onNotice, onOpenDiff, onFork
       )}
       {capability.data && (
         <p className="backend-badge-row">
-          <span className="badge backend-badge" title={capability.data.detail ?? capability.data.backend}>
+          <span className="pill small accent" title={capability.data.detail ?? capability.data.backend}>
             {capability.data.backend} · {capability.data.costHint === "instant" ? t("即时 CoW", "Instant CoW") : t("线性拷贝", "Linear copy")}
             {capability.data.requiresAdmin ? t(" · 需管理员", " · Administrator required") : ""}
           </span>
         </p>
       )}
       {capability.data?.backend === "overlayfs" && (
-        <p className="panel-empty">{t("源目录只读：改动在 merged 视图中进行，需在文件面板确认后手动同步回源。", "The source directory is read-only: changes live in the merged view and must be synced back manually from the Files panel.")}</p>
+        <p className="muted-empty panel-empty">{t("源目录只读：改动在 merged 视图中进行，需在文件面板确认后手动同步回源。", "The source directory is read-only: changes live in the merged view and must be synced back manually from the Files panel.")}</p>
       )}
-      {checkpoints.isPending && <p className="panel-empty">{t("加载中…", "Loading…")}</p>}
-      {checkpoints.data && checkpoints.data.length === 0 && <p className="panel-empty">{t("暂无检查点。", "No checkpoints yet.")}</p>}
+      {checkpoints.isPending && <p className="muted-empty panel-empty">{t("加载中…", "Loading…")}</p>}
+      {checkpoints.data && checkpoints.data.length === 0 && <p className="muted-empty panel-empty">{t("暂无检查点。", "No checkpoints yet.")}</p>}
       {checkpoints.data?.map((checkpoint) => (
         <div className="checkpoint" key={checkpoint.id}>
           <button
@@ -154,26 +156,32 @@ export function TimelinePanel({ sessionId, running, onNotice, onOpenDiff, onFork
             <button
               className="btn small"
               disabled={running}
-              onClick={() => {
-                if (window.confirm(t(`完整回滚到「${checkpoint.label}」？文件和对话将同步恢复。`, `Fully roll back to “${checkpoint.label}”? Files and conversation will both be restored.`))) {
+              onClick={() => confirm.ask({
+                title: t("完整回滚", "Full rollback"),
+                body: t(`完整回滚到「${checkpoint.label}」？文件和对话将同步恢复。`, `Fully roll back to “${checkpoint.label}”? Files and conversation will both be restored.`),
+                confirmLabel: t("回滚", "Roll back"),
+                onConfirm: () => {
                   api.restoreCheckpoint(sessionId, checkpoint.id)
                     .then(() => { refresh(); onNotice(t("已完整恢复检查点", "Checkpoint fully restored")); })
                     .catch((error: unknown) => onNotice(error instanceof Error ? error.message : t("回滚失败", "Rollback failed"), "error"));
-                }
-              }}
+                },
+              })}
             >
               {t("完整回滚", "Full rollback")}
             </button>
             <button
               className="btn small"
               disabled={running}
-              onClick={() => {
-                if (window.confirm(t(`仅恢复「${checkpoint.label}」的文件？对话不会截断。`, `Restore only files from “${checkpoint.label}”? The conversation will not be truncated.`))) {
+              onClick={() => confirm.ask({
+                title: t("仅恢复文件", "Restore files only"),
+                body: t(`仅恢复「${checkpoint.label}」的文件？对话不会截断。`, `Restore only files from “${checkpoint.label}”? The conversation will not be truncated.`),
+                confirmLabel: t("恢复", "Restore"),
+                onConfirm: () => {
                   api.restoreCheckpoint(sessionId, checkpoint.id, true)
                     .then(() => { refresh(); onNotice(t("已仅恢复文件", "Files restored")); })
                     .catch((error: unknown) => onNotice(error instanceof Error ? error.message : t("回滚失败", "Rollback failed"), "error"));
-                }
-              }}
+                },
+              })}
             >
               {t("仅文件", "Files only")}
             </button>
@@ -181,8 +189,11 @@ export function TimelinePanel({ sessionId, running, onNotice, onOpenDiff, onFork
               className="btn small danger-outline"
               disabled={running}
               title={t("删除该检查点", "Delete this checkpoint")}
-              onClick={() => {
-                if (window.confirm(t(`删除检查点「${checkpoint.label}」？快照数据将一并移除。`, `Delete checkpoint “${checkpoint.label}”? Its snapshot data will also be removed.`))) {
+              onClick={() => confirm.ask({
+                title: t("删除检查点", "Delete checkpoint"),
+                body: t(`删除检查点「${checkpoint.label}」？快照数据将一并移除。`, `Delete checkpoint “${checkpoint.label}”? Its snapshot data will also be removed.`),
+                confirmLabel: t("删除", "Delete"),
+                onConfirm: () => {
                   api.deleteCheckpoint(sessionId, checkpoint.id)
                     .then(() => {
                       setSelectedCheckpoint((value) => (value === checkpoint.id ? undefined : value));
@@ -190,8 +201,8 @@ export function TimelinePanel({ sessionId, running, onNotice, onOpenDiff, onFork
                       onNotice(t("已删除检查点", "Checkpoint deleted"));
                     })
                     .catch((error: unknown) => onNotice(error instanceof Error ? error.message : t("删除检查点失败", "Could not delete checkpoint"), "error"));
-                }
-              }}
+                },
+              })}
             >
               <Icon name="trash" size={12} />
             </button>
@@ -207,11 +218,12 @@ export function TimelinePanel({ sessionId, running, onNotice, onOpenDiff, onFork
                   {t("在 diff 视图中打开", "Open in diff view")}
                 </button>
               )}
-              {diff.data ? <CodeBlock lang="diff" code={diff.data.diff || t("（无差异）", "(No differences)")} /> : <p className="panel-empty">{t("加载 diff…", "Loading diff…")}</p>}
+              {diff.data ? <CodeBlock lang="diff" code={diff.data.diff || t("（无差异）", "(No differences)")} /> : <p className="muted-empty panel-empty">{t("加载 diff…", "Loading diff…")}</p>}
             </>
           )}
         </div>
       ))}
+      {confirm.dialogElement}
     </div>
   );
 }

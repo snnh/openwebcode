@@ -5,6 +5,7 @@ import type { RunPerfRecord } from "../../lib/contracts";
 import { getFpsStats, startFrameSampler, stopFrameSampler, type FpsStats } from "../../lib/perf-sampler";
 import { useI18n } from "../../i18n";
 import { formatBytes, formatDuration } from "../../lib/format";
+import { Icon } from "../Icon";
 
 const MONITORING_STORAGE_KEY = "owc-perf-monitoring";
 
@@ -30,9 +31,9 @@ function StageBar({ record }: { record: RunPerfRecord }): ReactElement {
   const { stages } = record;
   const total = Math.max(1, stages.totalMs);
   const segments = [
-    { label: "ctx", ms: stages.contextBuildMs, color: "var(--accent, #4fc3f7)" },
-    { label: "llm", ms: stages.providerCallMs, color: "var(--success, #81c784)" },
-    { label: "tool", ms: stages.toolExecMs, color: "var(--warning, #ffb74d)" },
+    { label: "ctx", ms: stages.contextBuildMs, color: "var(--accent)" },
+    { label: "llm", ms: stages.providerCallMs, color: "var(--ok)" },
+    { label: "tool", ms: stages.toolExecMs, color: "var(--amber)" },
   ];
   return (
     <div className="perf-stage-bar" title={`total: ${formatDuration(stages.totalMs)}`}>
@@ -145,7 +146,7 @@ export function PerfPanel({ sessionId }: { sessionId?: string }): ReactElement {
             <span className="perf-value">{metrics.data.websocket.clients}</span>
           </div>
         ) : (
-          <p className="panel-empty">{t("加载中…", "Loading…")}</p>
+          <p className="muted-empty panel-empty">{t("加载中…", "Loading…")}</p>
         )}
       </section>
 
@@ -153,15 +154,15 @@ export function PerfPanel({ sessionId }: { sessionId?: string }): ReactElement {
       <section className="perf-section">
         <h3>{t("Turn 阶段耗时", "Turn Stage Latency")}</h3>
         {!sessionId ? (
-          <p className="panel-empty">{t("选择会话以查看性能数据。", "Select a session to view performance data.")}</p>
+          <p className="muted-empty panel-empty">{t("选择会话以查看性能数据。", "Select a session to view performance data.")}</p>
         ) : records.length === 0 ? (
-          <p className="panel-empty">{t("暂无性能记录。运行一次对话后数据将显示在此处。", "No performance records yet. Run a conversation to see data here.")}</p>
+          <p className="muted-empty panel-empty">{t("暂无性能记录。运行一次对话后数据将显示在此处。", "No performance records yet. Run a conversation to see data here.")}</p>
         ) : (
           <div className="perf-records">
             <div className="perf-legend">
-              <span style={{ color: "var(--accent, #4fc3f7)" }}>■ ctx</span>
-              <span style={{ color: "var(--success, #81c784)" }}>■ llm</span>
-              <span style={{ color: "var(--warning, #ffb74d)" }}>■ tool</span>
+              <span className="perf-legend-item ctx"><Icon name="square" size={10} /> ctx</span>
+              <span className="perf-legend-item llm"><Icon name="square" size={10} /> llm</span>
+              <span className="perf-legend-item tool"><Icon name="square" size={10} /> tool</span>
             </div>
             {records.slice().reverse().map((record) => (
               <div key={record.runId} className="perf-record-row">

@@ -4,6 +4,7 @@ import { api } from "../../lib/api";
 import type { ExtensionInfo } from "../../lib/contracts";
 import { useI18n } from "../../i18n";
 import { ExtensionConfigForm, parseConfigSchema } from "./ExtensionConfigForm";
+import { useConfirmDialog } from "../ConfirmDialog";
 
 const OFFICIAL_EXTENSION_EN: Record<string, { name: string; description: string }> = {
   "context-manager": { name: "Context Manager", description: "Rolling eviction, context compaction, writeback, and ledger views." },
@@ -22,6 +23,7 @@ export function ExtensionRow({ extension }: { extension: ExtensionInfo }): React
   const displayName = language === "en" ? (OFFICIAL_EXTENSION_EN[extension.id]?.name ?? extension.name) : extension.name;
   const displayDescription = language === "en" ? (OFFICIAL_EXTENSION_EN[extension.id]?.description ?? extension.description) : extension.description;
   const configFields = parseConfigSchema(extension.configSchema);
+  const confirm = useConfirmDialog();
 
   useEffect(() => setJson(JSON.stringify(extension.config, null, 2)), [extension.config]);
 
@@ -58,9 +60,9 @@ export function ExtensionRow({ extension }: { extension: ExtensionInfo }): React
       </header>
       <p>{displayDescription}</p>
       <div className="extension-badges">
-        {extension.builtIn && <span>{t("官方内置", "Official")}</span>}
-        <span className={`extension-status status-${extension.status}`}>{extension.status === "running" ? t("运行中", "Running") : extension.status === "disabled" ? t("已停用", "Disabled") : t("异常", "Error")}</span>
-        {extension.permissions.map((permission) => <span key={permission}>{permission}</span>)}
+        {extension.builtIn && <span className="pill small">{t("官方内置", "Official")}</span>}
+        <span className={`pill small${extension.status === "running" ? " ok" : extension.status === "error" ? " danger" : ""}`}>{extension.status === "running" ? t("运行中", "Running") : extension.status === "disabled" ? t("已停用", "Disabled") : t("异常", "Error")}</span>
+        {extension.permissions.map((permission) => <span key={permission} className="pill small">{permission}</span>)}
       </div>
       {extension.id === "context-manager" && <p className="settings-note">{t("驱逐、回写和压缩策略按会话配置，请在底部“上下文”面板中调整。", "Eviction, writeback, and compaction policies are configured per session in the Context panel.")}</p>}
       {extension.id !== "context-manager" && (configFields ? (
@@ -77,16 +79,23 @@ export function ExtensionRow({ extension }: { extension: ExtensionInfo }): React
       ))}
       {!extension.builtIn && (
         <button className="btn small danger" disabled={busy} onClick={() => {
-          if (!window.confirm(t(`卸载扩展 ${displayName}？其配置会一并删除。`, `Uninstall ${displayName}? Its configuration will also be deleted.`))) return;
-          setBusy(true); setError(undefined);
-          api.uninstallExtension(extension.id)
-            .then(() => void queryClient.invalidateQueries({ queryKey: ["extensions"] }))
-            .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : t("卸载失败", "Uninstall failed")))
-            .finally(() => setBusy(false));
+          confirm.ask({
+            title: t("卸载扩展", "Uninstall extension"),
+            body: t(`卸载扩展 ${displayName}？其配置会一并删除。`, `Uninstall ${displayName}? Its configuration will also be deleted.`),
+            confirmLabel: t("卸载", "Uninstall"),
+            onConfirm: () => {
+              setBusy(true); setError(undefined);
+              api.uninstallExtension(extension.id)
+                .then(() => void queryClient.invalidateQueries({ queryKey: ["extensions"] }))
+                .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : t("卸载失败", "Uninstall failed")))
+                .finally(() => setBusy(false));
+            },
+          });
         }}>{t("卸载扩展", "Uninstall extension")}</button>
       )}
       {extension.error && <p className="settings-error">{extension.error}</p>}
       {error && <p className="settings-error">{error}</p>}
+      {confirm.dialogElement}
     </article>
   );
 }
@@ -98,8 +107,9 @@ export function ExtensionsSection(): ReactElement {
   const [installPath, setInstallPath] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
-  if (extensions.isPending) return <p className="panel-empty">{t("正在连接 Extension Host…", "Connecting to Extension Host…")}</p>;
-  if (extensions.isError || !extensions.data) return <p className="panel-empty">{t("无法加载扩展清单。", "Could not load extensions.")}</p>;
+  const confirm = useConfirmDialog();
+  if (extensions.isPending) return <p className="muted-empty panel-empty">{t("正在连接 Extension Host…", "Connecting to Extension Host…")}</p>;
+  if (extensions.isError || !extensions.data) return <p className="muted-empty panel-empty">{t("无法加载扩展清单。", "Could not load extensions.")}</p>;
   return (
     <>
       <p className="settings-note">{t("扩展运行于独立 Extension Host 子进程；单个钩子超时 5 秒后跳过。v1 扩展是可信代码，安装即代表允许其 manifest 中声明的权限。", "Extensions run in a separate Extension Host process; hooks are skipped after a five-second timeout. v1 extensions are trusted code, and installation grants the permissions declared in their manifest.")}</p>
@@ -107,17 +117,25 @@ export function ExtensionsSection(): ReactElement {
       <h3>{t("安装本地扩展", "Install local extension")}</h3>
       <p className="settings-note">{t("选择包含 manifest.json 和 index.js 的绝对目录；安装后复制到数据目录 extensions/。", "Enter the absolute path to a directory containing manifest.json and index.js. It will be copied into the data directory's extensions folder.")}</p>
       <div className="settings-inline-form">
-        <input value={installPath} onChange={(event) => setInstallPath(event.target.value)} placeholder="D:\\path\\owc-ext-example" spellCheck={false} />
+        <input className="input" value={installPath} onChange={(event) => setInstallPath(event.target.value)} placeholder="D:\\path\\owc-ext-example" spellCheck={false} />
         <button className="btn small" disabled={busy || !installPath.trim()} onClick={() => {
-          if (!window.confirm(t("v1 扩展会作为可信代码在独立进程中运行。确认信任并安装此目录中的代码？", "v1 extensions run as trusted code in a separate process. Trust and install the code in this directory?"))) return;
-          setBusy(true); setError(undefined);
-          api.installExtension(installPath.trim())
-            .then(() => { setInstallPath(""); void queryClient.invalidateQueries({ queryKey: ["extensions"] }); })
-            .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : t("安装失败", "Installation failed")))
-            .finally(() => setBusy(false));
+          confirm.ask({
+            title: t("安装扩展", "Install extension"),
+            body: t("v1 扩展会作为可信代码在独立进程中运行。确认信任并安装此目录中的代码？", "v1 extensions run as trusted code in a separate process. Trust and install the code in this directory?"),
+            confirmLabel: t("安装", "Install"),
+            danger: false,
+            onConfirm: () => {
+              setBusy(true); setError(undefined);
+              api.installExtension(installPath.trim())
+                .then(() => { setInstallPath(""); void queryClient.invalidateQueries({ queryKey: ["extensions"] }); })
+                .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : t("安装失败", "Installation failed")))
+                .finally(() => setBusy(false));
+            },
+          });
         }}>{busy ? t("安装中…", "Installing…") : t("安装", "Install")}</button>
       </div>
       {error && <p className="settings-error">{error}</p>}
+      {confirm.dialogElement}
     </>
   );
 }

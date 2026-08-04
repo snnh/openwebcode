@@ -310,7 +310,7 @@ export function ExecutionTrack({ session, cleared, streamBlocks, runError, permi
           </div>
         )}
         {session.messages.length === 0 && liveItems.length === 0 && (
-          <p className="track-empty">{t("还没有消息。在下方描述要完成的任务，开始第一项作业。", "No messages yet. Describe a task below to start your first job.")}</p>
+          <p className="muted-empty track-empty">{t("还没有消息。在下方描述要完成的任务，开始第一项作业。", "No messages yet. Describe a task below to start your first job.")}</p>
         )}
         {virtual && <div aria-hidden style={{ height: offsets[firstVisible] ?? 0 }} />}
         {session.messages.slice(firstVisible, lastVisible).map((message, relativeIndex) => {

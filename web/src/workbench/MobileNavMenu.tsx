@@ -50,12 +50,36 @@ export function MobileNavMenu({ open, activeView, problemsBadge = 0, notificatio
   const { t } = useI18n();
   const navRef = useRef<HTMLElement>(null);
 
-  // 打开时焦点进菜单；Esc 关闭（遮罩点击由 backdrop onClick 承担）
+  // 打开时焦点进菜单；Esc 关闭（遮罩点击由 backdrop onClick 承担）；Tab 在菜单内循环（不逃到遮罩下的内容）
   useEffect(() => {
     if (!open) return undefined;
-    navRef.current?.focus();
+    const nav = navRef.current;
+    nav?.focus();
     const onKey = (event: KeyboardEvent): void => {
-      if (event.key !== "Escape") return;
+      if (event.key !== "Escape") {
+        // 焦点陷阱：Tab/Shift+Tab 在菜单内循环，阻止焦点逃到 aria-hidden 遮罩下的页面内容
+        if (event.key === "Tab" && nav) {
+          const focusables = nav.querySelectorAll<HTMLElement>(
+            'button:not([disabled]), a[href], input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+          );
+          if (focusables.length === 0) return;
+          const first = focusables[0];
+          const last = focusables[focusables.length - 1];
+          const active = document.activeElement;
+          if (event.shiftKey) {
+            if (active === first || !nav.contains(active)) {
+              event.preventDefault();
+              last.focus();
+            }
+          } else {
+            if (active === last || !nav.contains(active)) {
+              event.preventDefault();
+              first.focus();
+            }
+          }
+        }
+        return;
+      }
       event.stopPropagation();
       onClose();
     };

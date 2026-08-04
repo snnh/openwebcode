@@ -3,7 +3,9 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../lib/api";
 import type { ModelProfile } from "../../lib/contracts";
 import { ModelCapabilityBadges } from "../ModelCapabilityBadges";
+import { Icon } from "../Icon";
 import { useI18n } from "../../i18n";
+import { useConfirmDialog } from "../ConfirmDialog";
 
 const SOURCE_LABEL: Record<string, [string, string]> = { builtin: ["内置", "Built-in"], api: ["API", "API"], synced: ["远程同步", "Synced"], manual: ["手动", "Manual"] };
 const THINKING_LABEL: Record<string, [string, string]> = { adaptive: ["自适应", "Adaptive"], enabled: ["开启", "Enabled"], disabled: ["关闭", "Disabled"] };
@@ -100,17 +102,25 @@ export function ModelCatalogSection(): ReactElement {
       .finally(() => setBusy(false));
   };
 
+  const confirm = useConfirmDialog();
+
   const removeManual = (id: string, provider: string): void => {
-    if (!window.confirm(t(`删除手动模型「${id}【${provider}】」？`, `Delete manual model “${id}【${provider}】”?`))) return;
-    setBusy(true);
-    setError(undefined);
-    api.deleteModel(id, provider)
-      .then(() => {
-        setNotice(t(`已删除 ${id}`, `Deleted ${id}`));
-        invalidate();
-      })
-      .catch((removeError: unknown) => setError(removeError instanceof Error ? removeError.message : t("删除失败", "Delete failed")))
-      .finally(() => setBusy(false));
+    confirm.ask({
+      title: t("删除模型", "Delete model"),
+      body: t(`删除手动模型「${id}【${provider}】」？`, `Delete manual model “${id} (${provider})”?`),
+      confirmLabel: t("删除", "Delete"),
+      onConfirm: () => {
+        setBusy(true);
+        setError(undefined);
+        api.deleteModel(id, provider)
+          .then(() => {
+            setNotice(t(`已删除 ${id}`, `Deleted ${id}`));
+            invalidate();
+          })
+          .catch((removeError: unknown) => setError(removeError instanceof Error ? removeError.message : t("删除失败", "Delete failed")))
+          .finally(() => setBusy(false));
+      },
+    });
   };
 
   // 双击行进入编辑态：API/内置来源的模型保存后成为手动覆盖（list 合并时手动优先）
@@ -186,8 +196,8 @@ export function ModelCatalogSection(): ReactElement {
     </div>
   );
 
-  if (models.isPending) return <p className="panel-empty">{t("加载中…", "Loading…")}</p>;
-  if (models.isError || !models.data) return <p className="panel-empty">{t("无法加载模型目录。", "Could not load the model catalog.")}</p>;
+  if (models.isPending) return <p className="muted-empty panel-empty">{t("加载中…", "Loading…")}</p>;
+  if (models.isError || !models.data) return <p className="panel-error" role="alert">{t("无法加载模型目录。", "Could not load the model catalog.")}</p>;
 
   return (
     <>
@@ -201,22 +211,25 @@ export function ModelCatalogSection(): ReactElement {
         <button className="btn small" disabled={busy} onClick={refresh}>{busy ? t("处理中…", "Working…") : t("刷新模型目录", "Refresh catalog")}</button>
       </div>
       {notice && <p className="settings-note">{notice}</p>}
-      {error && <p className="settings-error">{error}</p>}
+      {error && <p className="settings-error" role="alert">{error}</p>}
       <table className="pricing-table catalog-table">
         <thead>
-          <tr><th>{t("模型", "Model")}</th><th>Provider</th><th>{t("来源", "Source")}</th><th>{t("上下文", "Context")}</th><th>{t("能力", "Capabilities")}</th><th>{t("思考", "Thinking")}</th><th>{t("力度", "Effort")}</th><th></th></tr>
+          <tr><th>{t("模型", "Model")}</th><th>{t("服务商", "Provider")}</th><th>{t("来源", "Source")}</th><th>{t("上下文", "Context")}</th><th>{t("能力", "Capabilities")}</th><th>{t("思考", "Thinking")}</th><th>{t("力度", "Effort")}</th><th></th></tr>
         </thead>
         <tbody>
           {models.data.map((model) => (
             <tr key={`${model.provider}\u0000${model.id}`} title={t("双击编辑", "Double-click to edit")} onDoubleClick={() => startEdit(model)}>
               <td className="mono">{model.displayName ?? model.id}</td>
               <td>{model.provider}</td>
-              <td><span className={`badge badge-source-${model.source ?? "builtin"}`}>{t(...(SOURCE_LABEL[model.source ?? "builtin"] ?? [model.source ?? "builtin", model.source ?? "builtin"]))}</span></td>
+              <td><span className={`pill small${model.source === "api" ? " accent" : model.source === "synced" ? " amber" : ""}`}>{t(...(SOURCE_LABEL[model.source ?? "builtin"] ?? [model.source ?? "builtin", model.source ?? "builtin"]))}</span></td>
               <td className="mono">{model.contextWindow.toLocaleString(locale)}</td>
               <td><ModelCapabilityBadges capabilities={model.capabilities} /></td>
               <td>{model.capabilities.thinking.length > 0 ? model.capabilities.thinking.map((item) => THINKING_LABEL[item] ? t(...THINKING_LABEL[item]!) : item).join(t("、", ", ")) : "—"}</td>
               <td>{model.capabilities.effort.length > 0 ? model.capabilities.effort.join(t("、", ", ")) : "—"}</td>
-              <td>{model.source === "manual" && <button className="badge badge-action" disabled={busy} onClick={() => removeManual(model.id, model.provider)}>{t("删除", "Delete")}</button>}</td>
+              <td>
+                <button className="icon-btn" aria-label={t("编辑", "Edit")} disabled={busy} onClick={() => startEdit(model)}><Icon name="edit" size={13} /></button>
+                {model.source === "manual" && <button className="btn small" disabled={busy} onClick={() => removeManual(model.id, model.provider)}>{t("删除", "Delete")}</button>}
+              </td>
             </tr>
           ))}
         </tbody>
@@ -225,8 +238,9 @@ export function ModelCatalogSection(): ReactElement {
         <div className="catalog-edit-form" onKeyDown={(event) => { if (event.key === "Escape") cancelEdit(); }}>
           <h4>{t("编辑模型", "Edit model")} <span className="mono">{editing.id}</span></h4>
           <div className="catalog-form">
-            <input value={editing.id} disabled aria-label={t("模型 id", "Model ID")} spellCheck={false} />
+            <input className="input" value={editing.id} disabled aria-label={t("模型 id", "Model ID")} spellCheck={false} />
             <select
+              className="input"
               value={editing.provider}
               onChange={(event) => setEditing((prev) => prev && { ...prev, provider: event.target.value })}
               aria-label="provider"
@@ -235,6 +249,7 @@ export function ModelCatalogSection(): ReactElement {
               {enabledProviders.map((provider) => <option key={provider} value={provider}>{provider}</option>)}
             </select>
             <input
+              className="input"
               value={editing.contextWindow}
               placeholder={t("上下文窗口", "Context window")}
               onChange={(event) => setEditing((prev) => prev && { ...prev, contextWindow: event.target.value })}
@@ -247,7 +262,7 @@ export function ModelCatalogSection(): ReactElement {
           {renderCapGroup(t("输入", "Input"), MODALITY_OPTIONS, editing.modalities, "modalities", MODALITY_LABEL)}
           <div className="capability-row">
             <span className="capability-title">{t("图片输出", "Image output")}</span>
-            <label>
+            <label className="theme-option">
               <input
                 type="checkbox"
                 aria-label={t("图片输出", "Image output")}
@@ -259,7 +274,7 @@ export function ModelCatalogSection(): ReactElement {
           </div>
           <div className="capability-row">
             <span className="capability-title">{t("工具", "Tools")}</span>
-            <label>
+            <label className="theme-option">
               <input
                 type="checkbox"
                 checked={editing.tools}
@@ -288,6 +303,7 @@ export function ModelCatalogSection(): ReactElement {
       ) : (
         <div className="catalog-form">
           <input
+            className="input"
             value={form.id}
             placeholder={t("模型 id（如 gpt-4o）", "Model ID (for example, gpt-4o)")}
             onChange={(event) => setForm((prev) => ({ ...prev, id: event.target.value }))}
@@ -295,6 +311,7 @@ export function ModelCatalogSection(): ReactElement {
             spellCheck={false}
           />
           <select
+            className="input"
             value={form.provider}
             onChange={(event) => setForm((prev) => ({ ...prev, provider: event.target.value }))}
             aria-label="provider"
@@ -303,6 +320,7 @@ export function ModelCatalogSection(): ReactElement {
             {enabledProviders.map((provider) => <option key={provider} value={provider}>{provider}</option>)}
           </select>
           <input
+            className="input"
             value={form.contextWindow}
             placeholder={t("上下文窗口（可选）", "Context window (optional)")}
             onChange={(event) => setForm((prev) => ({ ...prev, contextWindow: event.target.value }))}
@@ -312,6 +330,7 @@ export function ModelCatalogSection(): ReactElement {
           <button className="btn small" disabled={busy} onClick={addManual}>{t("添加手动模型", "Add manual model")}</button>
         </div>
       )}
+      {confirm.dialogElement}
     </>
   );
 }

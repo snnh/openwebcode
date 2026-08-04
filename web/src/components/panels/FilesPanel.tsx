@@ -7,6 +7,7 @@ import { CodeBlock, Markdown } from "../Markdown";
 import { useI18n } from "../../i18n";
 import { EXT_LANGS } from "../../lib/file-langs";
 import { formatBytes } from "../../lib/format";
+import { useConfirmDialog } from "../ConfirmDialog";
 
 const joinPath = (base: string, name: string): string => (base === "." ? name : `${base}/${name}`);
 
@@ -34,14 +35,14 @@ function DirChildren({ sessionId, path, depth, selectedFile, onSelect }: {
   const { t } = useI18n();
   const files = useQuery({ queryKey: ["files", sessionId, path], queryFn: () => api.listFiles(sessionId, path) });
   const indent = { paddingLeft: 10 + depth * 14 };
-  if (files.isPending) return <p className="tree-note" style={indent}>{t("加载中…", "Loading…")}</p>;
+  if (files.isPending) return <p className="muted-empty tree-note" style={indent}>{t("加载中…", "Loading…")}</p>;
   if (files.isError) return (
-    <p className="tree-note" style={indent}>
+    <p className="muted-empty tree-note" style={indent}>
       {t("无法读取目录", "Could not read directory")}
       {files.error instanceof ApiError ? `：${files.error.message}` : ""}
     </p>
   );
-  if (files.data.entries.length === 0) return <p className="tree-note" style={indent}>{t("（空目录）", "(Empty directory)")}</p>;
+  if (files.data.entries.length === 0) return <p className="muted-empty tree-note" style={indent}>{t("（空目录）", "(Empty directory)")}</p>;
   return (
     <>
       {sortEntries(files.data.entries).map((entry) =>
@@ -172,7 +173,7 @@ export function FilesPanel({
   });
 
   if (!sessionId) {
-    return <div className="inspector-body"><p className="panel-empty">{t("选择会话以浏览工作区文件。", "Select a session to browse workspace files.")}</p></div>;
+    return <div className="inspector-body"><p className="muted-empty panel-empty">{t("选择会话以浏览工作区文件。", "Select a session to browse workspace files.")}</p></div>;
   }
 
   const managed = session?.workspace?.mode === "managed";
@@ -211,13 +212,9 @@ export function FilesPanel({
       .finally(() => setSyncLoading(false));
   };
 
-  const applySync = (): void => {
-    const fingerprint = syncPreview?.fingerprint;
-    if (!fingerprint || !canApply) return;
-    if (overwriteConflicts && conflictCount > 0 && !window.confirm(t(
-      `将覆盖源目录中 ${conflictCount} 个冲突项。请确认已核对预览。`,
-      `This overwrites ${conflictCount} conflicting source item(s). Confirm that you reviewed the preview.`,
-    ))) return;
+  const confirm = useConfirmDialog();
+
+  const runApplySync = (fingerprint: string): void => {
     setSyncApplying(true);
     setSyncError(undefined);
     api.syncWorkspace(sessionId, { confirm: true, previewFingerprint: fingerprint, ...(overwriteConflicts ? { overwriteConflicts: true } : {}) })
@@ -235,6 +232,25 @@ export function FilesPanel({
         onNotice?.(message, "error");
       })
       .finally(() => setSyncApplying(false));
+  };
+
+  const applySync = (): void => {
+    const fingerprint = syncPreview?.fingerprint;
+    if (!fingerprint || !canApply) return;
+    if (overwriteConflicts && conflictCount > 0) {
+      confirm.ask({
+        title: t("覆盖冲突", "Overwrite conflicts"),
+        body: t(
+          `将覆盖源目录中 ${conflictCount} 个冲突项。请确认已核对预览。`,
+          `This overwrites ${conflictCount} conflicting source item(s). Confirm that you reviewed the preview.`,
+        ),
+        confirmLabel: t("确认覆盖", "Confirm overwrite"),
+        danger: false,
+        onConfirm: () => runApplySync(fingerprint),
+      });
+      return;
+    }
+    runApplySync(fingerprint);
   };
 
   return (
@@ -277,7 +293,7 @@ export function FilesPanel({
               {syncPreview.summary.unsupported > 0 && <span className="warning">{t(`不支持 ${syncPreview.summary.unsupported}`, `Unsupported ${syncPreview.summary.unsupported}`)}</span>}
             </div>
             {visibleSyncChanges.length === 0 ? (
-              <p className="panel-empty">{overlayfs
+              <p className="muted-empty panel-empty">{overlayfs
                 ? t("merged 视图与源目录没有需要同步的差异。", "The merged view and the source directory have no changes to sync.")
                 : t("镜像盘与源目录没有需要同步的差异。", "The disk image and source directory have no changes to sync.")}</p>
             ) : (
@@ -290,7 +306,7 @@ export function FilesPanel({
                 ))}
               </ul>
             )}
-            {visibleSyncChanges.length > 200 && <p className="panel-empty">{t(`仅显示前 200 项，共 ${visibleSyncChanges.length} 项。`, `Showing the first 200 of ${visibleSyncChanges.length} items.`)}</p>}
+            {visibleSyncChanges.length > 200 && <p className="muted-empty panel-empty">{t(`仅显示前 200 项，共 ${visibleSyncChanges.length} 项。`, `Showing the first 200 of ${visibleSyncChanges.length} items.`)}</p>}
             {conflictCount > 0 && (
               <label className="workspace-sync-force">
                 <input type="checkbox" checked={overwriteConflicts} onChange={(event) => setOverwriteConflicts(event.target.checked)} />
@@ -352,7 +368,7 @@ export function FilesPanel({
           </header>
           {isImage ? (
             imageError ? (
-              <p className="preview-note">{t("无法预览该图片。", "Could not preview this image.")}</p>
+              <p className="muted-empty preview-note">{t("无法预览该图片。", "Could not preview this image.")}</p>
             ) : (
               <img
                 className="file-preview-img"
@@ -363,7 +379,7 @@ export function FilesPanel({
               />
             )
           ) : preview.isError ? (
-            <p className="preview-note">
+            <p className="muted-empty preview-note">
               {preview.error instanceof ApiError && /UTF-8/i.test(preview.error.message)
                 ? t("该文件非 UTF-8 文本（可能为二进制），无法预览。", "This file is not UTF-8 text (it may be binary) and cannot be previewed.")
                 : preview.error instanceof ApiError
@@ -378,7 +394,7 @@ export function FilesPanel({
                 <CodeBlock lang={previewLang} code={previewContent} />
               )}
               {previewTruncated ? (
-                <p className="preview-note">
+                <p className="muted-empty preview-note">
                   {t("内容过长，已截断。", "Content was truncated because it is too long.")}
                   <button className="btn small" disabled={loadingMore} onClick={loadMore}>
                     {loadingMore ? t("加载中…", "Loading…") : t("加载更多", "Load more")}
@@ -387,10 +403,11 @@ export function FilesPanel({
               ) : null}
             </>
           ) : (
-            <p className="preview-note">{t("加载中…", "Loading…")}</p>
+            <p className="muted-empty preview-note">{t("加载中…", "Loading…")}</p>
           )}
         </section>
       )}
+      {confirm.dialogElement}
     </div>
   );
 }

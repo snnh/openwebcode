@@ -65,12 +65,15 @@ export interface DispatchResult {
 /**
  * 全局键盘分发：匹配键位 → 校验 when（键位级 + 命令级）→ 执行。
  * 返回执行的命令 id；未匹配/被 when 拦截/输入框抢键返回 undefined。
+ * 组件已 preventDefault 的事件（如 Composer 的 mod+p 循环模型）不再分发——
+ * window 冒泡阶段能看到 defaultPrevented，避免一键双触发。
  */
 export function dispatchKeybinding(
-  event: Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "altKey" | "shiftKey" | "target">,
+  event: Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "altKey" | "shiftKey" | "target" | "defaultPrevented">,
   keybindings: readonly Keybinding[],
   context: WhenContext,
 ): DispatchResult | undefined {
+  if (event.defaultPrevented) return undefined;
   const combo = comboFromEvent(event);
   if (!combo) return undefined;
   const editable = isEditableTarget(event.target ?? null);

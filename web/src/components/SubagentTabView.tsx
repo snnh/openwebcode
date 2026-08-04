@@ -80,7 +80,7 @@ export function SubagentTabView({ sessionId, toolCallId, runs }: {
 
   if (!group) {
     return (
-      <p className="panel-empty subagent-tab-empty">
+      <p className="muted-empty panel-empty subagent-tab-empty">
         {t("该标签对应的子代理运行已不在记录中。", "The subagent runs for this tab are no longer recorded.")}
       </p>
     );

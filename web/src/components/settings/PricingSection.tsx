@@ -4,6 +4,7 @@ import { api } from "../../lib/api";
 import type { PricingDocument } from "../../lib/contracts";
 import { formatCurrency } from "../../lib/format";
 import { useI18n } from "../../i18n";
+import { useConfirmDialog } from "../ConfirmDialog";
 
 interface PricingForm {
   provider: string;
@@ -139,17 +140,25 @@ export function PricingSection({ onDirtyChange }: { onDirtyChange?(dirty: boolea
     });
   };
 
+  const confirm = useConfirmDialog();
+
   const removeEntry = (index: number): void => {
-    if (!pricing.data) return;
-    const entry = pricing.data.entries[index];
-    if (!entry) return;
-    if (!window.confirm(t(`删除 ${entry.provider}/${entry.model} 的定价？`, `Delete pricing for ${entry.provider}/${entry.model}?`))) return;
-    const document: PricingDocument = {
-      ...pricing.data,
-      updatedAt: new Date().toISOString(),
-      entries: pricing.data.entries.filter((_, i) => i !== index),
-    };
-    void save(document);
+    const data = pricing.data;
+    const entry = data?.entries[index];
+    if (!data || !entry) return;
+    confirm.ask({
+      title: t("删除定价", "Delete pricing"),
+      body: t(`删除 ${entry.provider}/${entry.model} 的定价？`, `Delete pricing for ${entry.provider}/${entry.model}?`),
+      confirmLabel: t("删除", "Delete"),
+      onConfirm: () => {
+        const document: PricingDocument = {
+          ...data,
+          updatedAt: new Date().toISOString(),
+          entries: data.entries.filter((_, i) => i !== index),
+        };
+        void save(document);
+      },
+    });
   };
 
   const syncRemote = (): void => {
@@ -171,8 +180,8 @@ export function PricingSection({ onDirtyChange }: { onDirtyChange?(dirty: boolea
       .finally(() => setSaving(false));
   };
 
-  if (pricing.isPending) return <p className="panel-empty">{t("加载中…", "Loading…")}</p>;
-  if (pricing.isError || !pricing.data) return <p className="panel-empty">{t("无法加载定价目录。", "Could not load the pricing catalog.")}</p>;
+  if (pricing.isPending) return <p className="muted-empty panel-empty">{t("加载中…", "Loading…")}</p>;
+  if (pricing.isError || !pricing.data) return <p className="muted-empty panel-empty">{t("无法加载定价目录。", "Could not load the pricing catalog.")}</p>;
 
   const document = pricing.data;
   return (
@@ -189,17 +198,17 @@ export function PricingSection({ onDirtyChange }: { onDirtyChange?(dirty: boolea
           <h4>{t("添加定价条目", "Add pricing entry")}</h4>
           <p className="settings-note">{t("价格为每百万 tokens 单价（元/美元），保存时自动转 micro-units。", "Enter prices per million tokens (CNY/USD). Values are converted to micro-units when saved.")}</p>
           <div className="catalog-form">
-            <input value={form.provider} placeholder="provider" aria-label="provider" onChange={(e) => setForm((p) => ({ ...p, provider: e.target.value }))} spellCheck={false} />
-            <input value={form.model} placeholder={t("模型 id", "Model ID")} aria-label={t("模型 id", "Model ID")} onChange={(e) => setForm((p) => ({ ...p, model: e.target.value }))} spellCheck={false} />
-            <select value={form.currency} aria-label={t("币种", "Currency")} onChange={(e) => setForm((p) => ({ ...p, currency: e.target.value as PricingForm["currency"] }))}>
+            <input className="input" value={form.provider} placeholder="provider" aria-label="provider" onChange={(e) => setForm((p) => ({ ...p, provider: e.target.value }))} spellCheck={false} />
+            <input className="input" value={form.model} placeholder={t("模型 id", "Model ID")} aria-label={t("模型 id", "Model ID")} onChange={(e) => setForm((p) => ({ ...p, model: e.target.value }))} spellCheck={false} />
+            <select className="input" value={form.currency} aria-label={t("币种", "Currency")} onChange={(e) => setForm((p) => ({ ...p, currency: e.target.value as PricingForm["currency"] }))}>
               <option value="CNY">CNY</option>
               <option value="USD">USD</option>
             </select>
-            <input type="date" value={form.effectiveFrom} aria-label={t("生效日期", "Effective date")} title={t("生效日期", "Effective date")} onChange={(e) => setForm((p) => ({ ...p, effectiveFrom: e.target.value }))} />
-            <input type="number" min="0" step="any" value={form.input} placeholder={t("输入单价", "Input price")} aria-label={t("输入单价", "Input price")} inputMode="decimal" onChange={(e) => setForm((p) => ({ ...p, input: e.target.value }))} />
-            <input type="number" min="0" step="any" value={form.output} placeholder={t("输出单价", "Output price")} aria-label={t("输出单价", "Output price")} inputMode="decimal" onChange={(e) => setForm((p) => ({ ...p, output: e.target.value }))} />
-            <input type="number" min="0" step="any" value={form.cacheRead} placeholder={t("缓存读（可空）", "Cache read (optional)")} aria-label={t("缓存读", "Cache read")} inputMode="decimal" onChange={(e) => setForm((p) => ({ ...p, cacheRead: e.target.value }))} />
-            <input type="number" min="0" step="any" value={form.cacheWrite} placeholder={t("缓存写（可空）", "Cache write (optional)")} aria-label={t("缓存写", "Cache write")} inputMode="decimal" onChange={(e) => setForm((p) => ({ ...p, cacheWrite: e.target.value }))} />
+            <input className="input" type="date" value={form.effectiveFrom} aria-label={t("生效日期", "Effective date")} title={t("生效日期", "Effective date")} onChange={(e) => setForm((p) => ({ ...p, effectiveFrom: e.target.value }))} />
+            <input className="input" type="number" min="0" step="any" value={form.input} placeholder={t("输入单价", "Input price")} aria-label={t("输入单价", "Input price")} inputMode="decimal" onChange={(e) => setForm((p) => ({ ...p, input: e.target.value }))} />
+            <input className="input" type="number" min="0" step="any" value={form.output} placeholder={t("输出单价", "Output price")} aria-label={t("输出单价", "Output price")} inputMode="decimal" onChange={(e) => setForm((p) => ({ ...p, output: e.target.value }))} />
+            <input className="input" type="number" min="0" step="any" value={form.cacheRead} placeholder={t("缓存读（可空）", "Cache read (optional)")} aria-label={t("缓存读", "Cache read")} inputMode="decimal" onChange={(e) => setForm((p) => ({ ...p, cacheRead: e.target.value }))} />
+            <input className="input" type="number" min="0" step="any" value={form.cacheWrite} placeholder={t("缓存写（可空）", "Cache write (optional)")} aria-label={t("缓存写", "Cache write")} inputMode="decimal" onChange={(e) => setForm((p) => ({ ...p, cacheWrite: e.target.value }))} />
           </div>
           <div className="dialog-actions">
             <button className="btn" disabled={saving} onClick={() => { setAdding(false); setError(undefined); }}>{t("取消", "Cancel")}</button>
@@ -226,7 +235,7 @@ export function PricingSection({ onDirtyChange }: { onDirtyChange?(dirty: boolea
         <>
           <table className="pricing-table">
             <thead>
-              <tr><th>{t("模型", "Model")}</th><th>Provider</th><th>{t("币种", "Currency")}</th><th>{t("输入", "Input")}</th><th>{t("输出", "Output")}</th><th>{t("缓存读", "Cache read")}</th><th>{t("缓存写", "Cache write")}</th><th></th></tr>
+              <tr><th>{t("模型", "Model")}</th><th>{t("服务商", "Provider")}</th><th>{t("币种", "Currency")}</th><th>{t("输入", "Input")}</th><th>{t("输出", "Output")}</th><th>{t("缓存读", "Cache read")}</th><th>{t("缓存写", "Cache write")}</th><th></th></tr>
             </thead>
             <tbody>
               {document.entries.map((entry, index) => (
@@ -238,7 +247,7 @@ export function PricingSection({ onDirtyChange }: { onDirtyChange?(dirty: boolea
                   <td className="mono">{entry.output ? formatCurrency(entry.output, entry.currency) : "—"}</td>
                   <td className="mono">{entry.cacheRead ? formatCurrency(entry.cacheRead, entry.currency) : "—"}</td>
                   <td className="mono">{entry.cacheWrite ? formatCurrency(entry.cacheWrite, entry.currency) : "—"}</td>
-                  <td><button className="badge badge-action" disabled={saving} onClick={() => removeEntry(index)}>{t("删除", "Delete")}</button></td>
+                  <td><button className="btn small" disabled={saving} onClick={() => removeEntry(index)}>{t("删除", "Delete")}</button></td>
                 </tr>
               ))}
             </tbody>
@@ -246,6 +255,7 @@ export function PricingSection({ onDirtyChange }: { onDirtyChange?(dirty: boolea
           {error && <p className="settings-error">{error}</p>}
         </>
       )}
+      {confirm.dialogElement}
     </>
   );
 }

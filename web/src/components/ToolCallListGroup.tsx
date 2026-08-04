@@ -84,7 +84,7 @@ export function ToolCallGroupRow({ call, onOpenDiff }: { call: ToolGroupCall; on
   return (
     <section className={`tool-row tool-group-row${open ? " open" : ""}${status === "error" ? " error" : ""}`}>
       <div
-        className="tool-row-header"
+        className="collapse-row tool-row-header"
         role="button"
         tabIndex={0}
         aria-expanded={open}
@@ -155,7 +155,7 @@ export function ToolCallListGroup({ calls, defaultOpen = false, onOpenDiff }: { 
   return (
     <section className={`tool-group${open ? " open" : ""}${hasError ? " error" : ""}`}>
       <div
-        className="tool-row-header tool-group-header"
+        className="collapse-row tool-row-header tool-group-header"
         role="button"
         tabIndex={0}
         aria-expanded={open}

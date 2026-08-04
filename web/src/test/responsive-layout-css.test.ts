@@ -15,6 +15,9 @@ describe("窄窗口布局 CSS 回归", () => {
     expect(css).toMatch(/\.mobile-nav\s*\{[^}]*position:\s*fixed;[^}]*left:\s*0;/s);
     expect(css).toMatch(/\.mobile-nav-backdrop\s*\{[^}]*position:\s*fixed;/s);
     expect(css).toMatch(/\.mobile-nav-item\s*\{[^}]*min-height:\s*44px;/s);
+    // 触发钮是窄屏唯一导航入口，点击目标同样需 ≥44px
+    expect(css).toMatch(/\.mobile-nav-trigger\s*\{[^}]*min-height:\s*44px;/s);
+    expect(css).toMatch(/\.mobile-nav-trigger\s*\{[^}]*min-width:\s*44px;/s);
     // 触发钮只能显示不能隐藏：禁止出现 display: none（曾因此按钮被级联隐藏，裸 logo 不可见/不可点）
     expect(css).not.toMatch(/\.mobile-nav-trigger\s*\{[^}]*display:\s*none/);
     // 触发钮要有明确按钮外观（边框），裸 logo 没有可点击感
@@ -82,11 +85,11 @@ describe("窄窗口布局 CSS 回归", () => {
     expect(compactCss).toMatch(/\.execution-track\s*\{[^}]*padding-left:\s*12px;/s);
   });
 
-  it("≤480px 控制行紧凑：按钮降档、长模型名收缩省略", () => {
+  it("≤480px 控制行紧凑：菜单按钮降档、长模型名收缩省略，发送钮保持 44px 触达目标", () => {
     const tinyCss = css.slice(css.indexOf("@media (max-width: 480px)"));
     expect(tinyCss).toMatch(/\.composer-menu-btn\s*\{[^}]*min-height:\s*28px;/s);
     expect(tinyCss).toMatch(/\.model-menu-btn-label\s*\{[^}]*max-width:\s*108px;/s);
-    expect(tinyCss).toMatch(/\.composer-send\s*\{[^}]*width:\s*30px;/s);
+    expect(tinyCss).toMatch(/\.composer-send\s*\{[^}]*width:\s*44px;/s);
   });
 
   it("输入框默认无纵向滚动条轨道（溢出后由 JS 放开）", () => {

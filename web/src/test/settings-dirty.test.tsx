@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsDialog } from "../components/SettingsDialog";
 import { I18nProvider } from "../i18n";
@@ -87,13 +87,13 @@ describe("设置页签切换与未保存改动确认", () => {
     fireEvent.change(await screen.findByLabelText("检查间隔（小时）"), { target: { value: "48" } });
     await waitFor(() => expect(screen.getByText("未保存")).toBeInTheDocument());
 
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
     fireEvent.click(screen.getByRole("button", { name: /快捷键/ }));
-    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    // 弹出放弃更改确认对话框；取消后留在原页签
+    fireEvent.click(within(await screen.findByRole("dialog", { name: "放弃更改" })).getByRole("button", { name: "取消" }));
     expect(activeTab()).toBe("info");
 
-    confirmSpy.mockReturnValue(true);
     fireEvent.click(screen.getByRole("button", { name: /快捷键/ }));
+    fireEvent.click(within(await screen.findByRole("dialog", { name: "放弃更改" })).getByRole("button", { name: "放弃更改" }));
     await waitFor(() => expect(activeTab()).toBe("shortcuts"));
   });
 
@@ -101,10 +101,9 @@ describe("设置页签切换与未保存改动确认", () => {
     renderDialog();
     await openTab("服务信息");
     await screen.findByLabelText("检查间隔（小时）");
-    const confirmSpy = vi.spyOn(window, "confirm");
     fireEvent.click(screen.getByRole("button", { name: /快捷键/ }));
     await waitFor(() => expect(activeTab()).toBe("shortcuts"));
-    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog", { name: "放弃更改" })).toBeNull();
   });
 
   it("定价 JSON 编辑计入 dirty：切换页签需确认", async () => {
@@ -113,13 +112,12 @@ describe("设置页签切换与未保存改动确认", () => {
     fireEvent.click(await screen.findByRole("button", { name: "编辑 JSON" }));
     fireEvent.change(await screen.findByLabelText("定价目录 JSON"), { target: { value: "{}" } });
 
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
     fireEvent.click(screen.getByRole("button", { name: /快捷键/ }));
-    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    fireEvent.click(within(await screen.findByRole("dialog", { name: "放弃更改" })).getByRole("button", { name: "取消" }));
     expect(activeTab()).toBe("pricing");
 
-    confirmSpy.mockReturnValue(true);
     fireEvent.click(screen.getByRole("button", { name: /快捷键/ }));
+    fireEvent.click(within(await screen.findByRole("dialog", { name: "放弃更改" })).getByRole("button", { name: "放弃更改" }));
     await waitFor(() => expect(activeTab()).toBe("shortcuts"));
   });
 
@@ -128,23 +126,21 @@ describe("设置页签切换与未保存改动确认", () => {
     await openTab("提示词");
     fireEvent.change(await screen.findByLabelText("追加指令"), { target: { value: "额外指令" } });
 
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
     fireEvent.click(screen.getByRole("button", { name: /快捷键/ }));
-    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    fireEvent.click(within(await screen.findByRole("dialog", { name: "放弃更改" })).getByRole("button", { name: "取消" }));
     expect(activeTab()).toBe("prompt");
 
     // 关闭对话框（完成按钮）同样先确认
     fireEvent.click(screen.getByRole("button", { name: "完成" }));
-    expect(confirmSpy).toHaveBeenCalledTimes(2);
+    expect(await screen.findByRole("dialog", { name: "放弃更改" })).toBeInTheDocument();
   });
 
   it("提示词未编辑时关闭对话框不弹确认", async () => {
     renderDialog();
     await openTab("提示词");
     await screen.findByLabelText("追加指令");
-    const confirmSpy = vi.spyOn(window, "confirm");
     fireEvent.click(screen.getByRole("button", { name: "完成" }));
-    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog", { name: "放弃更改" })).toBeNull();
   });
 });
 

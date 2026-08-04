@@ -4,8 +4,8 @@ import { comboFromEvent, DEFAULT_KEYBINDINGS, dispatchKeybinding, formatCombo, t
 
 afterEach(() => resetCommands());
 
-function keyEvent(init: Partial<KeyboardEvent> & { target?: EventTarget | null }): Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "altKey" | "shiftKey" | "target"> {
-  return { key: "p", ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, target: null, ...init };
+function keyEvent(init: Partial<KeyboardEvent> & { target?: EventTarget | null }): Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "altKey" | "shiftKey" | "target" | "defaultPrevented"> {
+  return { key: "p", ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, target: null, defaultPrevented: false, ...init };
 }
 
 describe("comboFromEvent", () => {
@@ -61,6 +61,14 @@ describe("dispatchKeybinding", () => {
     const result = dispatchKeybinding(keyEvent({ key: "p", ctrlKey: true, shiftKey: true, target: textarea }), bindings, {});
     expect(result?.command).toBe("app.palette");
     expect(palette).toHaveBeenCalledTimes(1);
+  });
+
+  it("组件已 preventDefault 的事件不再分发（Composer mod+p 循环模型场景）", () => {
+    const { palette } = registerAll();
+    const textarea = document.createElement("textarea");
+    const result = dispatchKeybinding(keyEvent({ key: "p", ctrlKey: true, shiftKey: true, target: textarea, defaultPrevented: true }), bindings, {});
+    expect(result).toBeUndefined();
+    expect(palette).not.toHaveBeenCalled();
   });
 
   it("when 条件不满足时不执行（键位级与命令级）", () => {

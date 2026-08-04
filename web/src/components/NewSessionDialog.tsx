@@ -154,9 +154,9 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
         }}
       >
         <h2>{t("新建会话", "New session")}</h2>
-        <label>
-          {t("工作区模式", "Workspace mode")}
-          <select value={workspaceMode} onChange={(event) => setWorkspaceMode(event.target.value as "direct" | "managed")}>
+        <label className="settings-field">
+          <span>{t("工作区模式", "Workspace mode")}</span>
+          <select className="input" value={workspaceMode} onChange={(event) => setWorkspaceMode(event.target.value as "direct" | "managed")}>
             <option value="direct">{t("直接（默认）", "Direct (default)")}</option>
             <option value="managed" disabled={!managedAvailable} title={managedAvailable ? undefined : managedUnavailableReason}>
               {t("托管工作区（镜像盘隔离）", "Managed workspace (disk-image isolation)")}
@@ -164,14 +164,15 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
           </select>
         </label>
         {managedCaps && !managedAvailable && (
-          <p className="dialog-hint">{t("托管工作区不可用：", "Managed workspace unavailable: ")}{managedUnavailableReason}</p>
+          <p className="muted-empty dialog-hint">{t("托管工作区不可用：", "Managed workspace unavailable: ")}{managedUnavailableReason}</p>
         )}
         {workspaceMode === "managed" && (
-          <p className="dialog-hint">{t("将创建 20GB 稀疏镜像盘并挂载到数据根 mnt/ 目录，源目录内容（排除 node_modules 等）会复制进去；需要管理员（Hyper-V）或 root（qemu-nbd）权限。源目录不会在关闭或删除会话时自动覆盖；可在“文件”面板随时预览差异并确认同步回源。", "A 20 GB sparse disk image will be created and mounted under mnt/ in the data root. Source contents (excluding node_modules and similar paths) are copied into it. Administrator (Hyper-V) or root (qemu-nbd) access is required. Closing or deleting the session never overwrites the source directory automatically; use the Files panel to preview changes and explicitly sync them back at any time.")}</p>
+          <p className="muted-empty dialog-hint">{t("将创建 20GB 稀疏镜像盘并挂载到数据根 mnt/ 目录，源目录内容（排除 node_modules 等）会复制进去；需要管理员（Hyper-V）或 root（qemu-nbd）权限。源目录不会在关闭或删除会话时自动覆盖；可在“文件”面板随时预览差异并确认同步回源。", "A 20 GB sparse disk image will be created and mounted under mnt/ in the data root. Source contents (excluding node_modules and similar paths) are copied into it. Administrator (Hyper-V) or root (qemu-nbd) access is required. Closing or deleting the session never overwrites the source directory automatically; use the Files panel to preview changes and explicitly sync them back at any time.")}</p>
         )}
-        <label>
-          {workspaceMode === "managed" ? t("源目录（将复制进托管工作区）", "Source directory (copied into managed workspace)") : t("工作目录", "Working directory")}
+        <label className="settings-field">
+          <span>{workspaceMode === "managed" ? t("源目录（将复制进托管工作区）", "Source directory (copied into managed workspace)") : t("工作目录", "Working directory")}</span>
           <input
+            className="input"
             value={cwd}
             onChange={(event) => setCwd(event.target.value)}
             placeholder={t("绝对路径，如 D:\\projects\\demo 或 /home/me/demo", "Absolute path, such as D:\\projects\\demo or /home/me/demo")}
@@ -179,20 +180,21 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
             autoFocus
           />
         </label>
-        <label>
-          {t("标题（可选）", "Title (optional)")}
+        <label className="settings-field">
+          <span>{t("标题（可选）", "Title (optional)")}</span>
           <input
+            className="input"
             value={title}
             onChange={(event) => setTitle(event.target.value)}
             placeholder={fallbackTitle || t("默认为目录名", "Defaults to directory name")}
           />
         </label>
         {noProviders && (
-          <p className="dialog-hint">{t("还没有可用的 Provider，请先在 设置 → 模型目录 配置 Provider 和 API Key", "No providers are available. Configure a provider and API key under Settings → Models first.")}{onOpenSettings && <>{" "}<button type="button" className="dialog-hint-link" onClick={() => onOpenSettings("models")}>{t("前往配置 →", "Configure →")}</button></>}</p>
+          <p className="muted-empty dialog-hint">{t("还没有可用的 Provider，请先在 设置 → 模型目录 配置 Provider 和 API Key", "No providers are available. Configure a provider and API key under Settings → Models first.")}{onOpenSettings && <>{" "}<button type="button" className="dialog-hint-link" onClick={() => onOpenSettings("models")}>{t("前往配置 →", "Configure →")}</button></>}</p>
         )}
-        <label>
-          {t("模型", "Model")}
-          <select value={selection} disabled={noProviders || noModels} onChange={(event) => {
+        <label className="settings-field">
+          <span>{t("模型", "Model")}</span>
+          <select className="input" value={selection} disabled={noProviders || noModels} onChange={(event) => {
             const next = dialogModels.find((item) => JSON.stringify([item.provider, item.id]) === event.target.value || item.id === event.target.value);
             if (next) {
               setProvider(next.provider);
@@ -202,7 +204,7 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
             {noModels && <option value="">{t("暂无可用模型", "No model available")}</option>}
             {dialogModels.map((item) => {
               const value = JSON.stringify([item.provider, item.id]);
-              return <option key={value} value={value}>{`${item.id}【${item.provider}】`}</option>;
+              return <option key={value} value={value}>{t(`${item.id}【${item.provider}】`, `${item.id} (${item.provider})`)}</option>;
             })}
           </select>
         </label>
@@ -213,28 +215,28 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
           </div>
         )}
         {noModels && (
-          <p className="dialog-hint">{t("已启用的服务商尚无可用模型。请在设置中刷新模型列表，或为服务商手动添加模型。", "Enabled providers have no models. Refresh the model catalog or add a manual model for a provider in Settings.")}{onOpenSettings && <>{" "}<button type="button" className="dialog-hint-link" onClick={() => onOpenSettings("models")}>{t("前往模型目录 →", "Open catalog →")}</button></>}</p>
+          <p className="muted-empty dialog-hint">{t("已启用的服务商尚无可用模型。请在设置中刷新模型列表，或为服务商手动添加模型。", "Enabled providers have no models. Refresh the model catalog or add a manual model for a provider in Settings.")}{onOpenSettings && <>{" "}<button type="button" className="dialog-hint-link" onClick={() => onOpenSettings("models")}>{t("前往模型目录 →", "Open catalog →")}</button></>}</p>
         )}
-        <label>
-          {t("模式", "Mode")}
-          <select value={agentMode} onChange={(event) => setAgentMode(event.target.value as "plan" | "code" | "goal")}>
+        <label className="settings-field">
+          <span>{t("模式", "Mode")}</span>
+          <select className="input" value={agentMode} onChange={(event) => setAgentMode(event.target.value as "plan" | "code" | "goal")}>
             <option value="code">{t("代码模式（Code）", "Code")}</option>
             <option value="plan">{t("计划模式（Plan）", "Plan")}</option>
             <option value="goal">{t("目标模式（Goal）", "Goal")}</option>
           </select>
         </label>
-        <label>
-          {t("权限模式", "Permission mode")}
-          <select value={permissionMode} onChange={(event) => setPermissionMode(event.target.value as PermissionMode)}>
+        <label className="settings-field">
+          <span>{t("权限模式", "Permission mode")}</span>
+          <select className="input" value={permissionMode} onChange={(event) => setPermissionMode(event.target.value as PermissionMode)}>
             <option value="ask">{t("每次确认", "Ask every time")}</option>
             <option value="acceptEdits">{t("接受编辑", "Accept edits")}</option>
             <option value="review">{t("模型审核", "Model review")}</option>
             <option value="yolo">YOLO</option>
           </select>
         </label>
-        <label>
-          {t("沙盒模式", "Sandbox mode")}
-          <select value={sandboxMode} onChange={(event) => setSandboxMode(event.target.value as SandboxMode)}>
+        <label className="settings-field">
+          <span>{t("沙盒模式", "Sandbox mode")}</span>
+          <select className="input" value={sandboxMode} onChange={(event) => setSandboxMode(event.target.value as SandboxMode)}>
             {sandboxModeOptions.map((mode) => (
               <option key={mode} value={mode} disabled={mode === "wsb" && sandboxCaps !== undefined && !sandboxCaps.wsb.available}>
                 {t(...sandboxModeLabel(mode))}
@@ -243,12 +245,13 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
           </select>
         </label>
         {isWindows && sandboxCaps && !sandboxCaps.wsb.available && (
-          <p className="dialog-hint">{t("Windows Sandbox 不可用：", "Windows Sandbox unavailable: ")}{sandboxCaps.wsb.reason ?? t("未启用可选功能", "optional feature is not enabled")}</p>
+          <p className="muted-empty dialog-hint">{t("Windows Sandbox 不可用：", "Windows Sandbox unavailable: ")}{sandboxCaps.wsb.reason ?? t("未启用可选功能", "optional feature is not enabled")}</p>
         )}
         {sandboxMode === "wsb" && (
-          <label>
-            {t("初始化脚本（可选）", "Setup script (optional)")}
+          <label className="settings-field">
+            <span>{t("初始化脚本（可选）", "Setup script (optional)")}</span>
             <input
+              className="input"
               value={setupScript}
               onChange={(event) => setSetupScript(event.target.value)}
               placeholder={t("沙盒启动后、agent 启动前执行的命令", "Command to run after the sandbox starts and before the agent starts")}
@@ -269,17 +272,19 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
               </button>
             </div>
             {bindLinkCap && !bindLinkAvailable && (
-              <p className="dialog-hint">{t("Bind Link 不可用：", "Bind Link unavailable: ")}{bindLinkCap.reason ?? t("当前平台 core 未提供 Bind Link 能力", "Bind Link capability is not available on this platform")}</p>
+              <p className="muted-empty dialog-hint">{t("Bind Link 不可用：", "Bind Link unavailable: ")}{bindLinkCap.reason ?? t("当前平台 core 未提供 Bind Link 能力", "Bind Link capability is not available on this platform")}</p>
             )}
             {bindLinks.map((link, index) => (
               <div className="bindlink-row" key={index}>
                 <input
+                  className="input"
                   value={link.virtPath}
                   onChange={(event) => setBindLinks(bindLinks.map((item, i) => (i === index ? { ...item, virtPath: event.target.value } : item)))}
                   placeholder={t("沙盒内路径，如 C:\\mnt\\shared", "In-sandbox path, such as C:\\mnt\\shared")}
                   aria-label={t("沙盒内路径", "In-sandbox path")}
                 />
                 <input
+                  className="input"
                   value={link.backingPath}
                   onChange={(event) => setBindLinks(bindLinks.map((item, i) => (i === index ? { ...item, backingPath: event.target.value } : item)))}
                   placeholder={t("宿主目录，如 D:\\shared", "Host directory, such as D:\\shared")}
@@ -297,7 +302,7 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
               </div>
             ))}
             {bindLinks.length > 0 && (
-              <p className="dialog-hint">{t("Bind Link 需要 Windows 11 24H2+ 且 server 以管理员权限运行；沙盒内路径是进程可见的挂载点，按只读/可写映射到宿主目录。", "Bind Link requires Windows 11 24H2+ and an elevated server; the in-sandbox path is the mount point processes see, mapped to the host directory with the chosen writability.")}</p>
+              <p className="muted-empty dialog-hint">{t("Bind Link 需要 Windows 11 24H2+ 且 server 以管理员权限运行；沙盒内路径是进程可见的挂载点，按只读/可写映射到宿主目录。", "Bind Link requires Windows 11 24H2+ and an elevated server; the in-sandbox path is the mount point processes see, mapped to the host directory with the chosen writability.")}</p>
             )}
           </div>
         )}

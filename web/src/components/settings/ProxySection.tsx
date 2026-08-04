@@ -19,7 +19,7 @@ export function ProxySection(): ReactElement {
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
 
-  if (settings.isPending) return <p className="panel-empty">{t("加载中…", "Loading…")}</p>;
+  if (settings.isPending) return <p className="muted-empty panel-empty">{t("加载中…", "Loading…")}</p>;
   if (settings.isError || !settings.data) return <p className="settings-error">{t("无法加载服务设置。", "Could not load server settings.")}</p>;
 
   const fields = new Map(settings.data.groups.flatMap((group) => group.fields.map((field) => [field.key, field] as const)));
@@ -91,14 +91,15 @@ export function ProxySection(): ReactElement {
         <div className="settings-field-head">
           <span>{fieldLabel(field)}</span>
           <span className="settings-badges">
-            {field.source === "env" && <span className="badge badge-env">{t("环境变量", "Environment")}</span>}
-            {clearing && <span className="badge badge-dirty">{t("将清除", "Will clear")}</span>}
-            {!clearing && pending !== undefined && pending !== "" && <span className="badge badge-dirty">{t("未保存", "Unsaved")}</span>}
-            {clearing && <button className="badge badge-action" onClick={() => resetField(key)}>{t("撤销", "Undo")}</button>}
-            {!clearing && field.editable && field.hasValue && <button className="badge badge-action" onClick={() => setField(key, null)}>{t("清除", "Clear")}</button>}
+            {field.source === "env" && <span className="pill small accent">{t("环境变量", "Environment")}</span>}
+            {clearing && <span className="pill small danger">{t("将清除", "Will clear")}</span>}
+            {!clearing && pending !== undefined && pending !== "" && <span className="pill small danger">{t("未保存", "Unsaved")}</span>}
+            {clearing && <button className="btn small" onClick={() => resetField(key)}>{t("撤销", "Undo")}</button>}
+            {!clearing && field.editable && field.hasValue && <button className="btn small" onClick={() => setField(key, null)}>{t("清除", "Clear")}</button>}
           </span>
         </div>
         <input
+          className="input"
           type="password"
           value={clearing ? "" : (pending ?? "")}
           placeholder={clearing ? t("保存后清除", "Clear on save") : field.hasValue ? t(`当前：${field.masked ?? "已设置"}`, `Current: ${field.masked ?? "set"}`) : "http://127.0.0.1:7890"}
@@ -125,11 +126,12 @@ export function ProxySection(): ReactElement {
         <div className="settings-field-head">
           <span>{fieldLabel(modeField)}</span>
           <span className="settings-badges">
-            {modeField.source === "env" && <span className="badge badge-env">{t("环境变量", "Environment")}</span>}
-            {draft["proxyMode"] !== undefined && <span className="badge badge-dirty">{t("未保存", "Unsaved")}</span>}
+            {modeField.source === "env" && <span className="pill small accent">{t("环境变量", "Environment")}</span>}
+            {draft["proxyMode"] !== undefined && <span className="pill small danger">{t("未保存", "Unsaved")}</span>}
           </span>
         </div>
         <select
+          className="input"
           value={mode}
           disabled={!modeField.editable}
           onChange={(event) => setField("proxyMode", event.target.value)}
@@ -150,12 +152,13 @@ export function ProxySection(): ReactElement {
             <div className="settings-field-head">
               <span>{fieldLabel(noProxyField)}</span>
               <span className="settings-badges">
-                {noProxyField.source === "env" && <span className="badge badge-env">{t("环境变量", "Environment")}</span>}
-                {noProxyResetting && <span className="badge badge-dirty">{t("将重置", "Will reset")}</span>}
-                {!noProxyResetting && noProxyPending !== undefined && <span className="badge badge-dirty">{t("未保存", "Unsaved")}</span>}
+                {noProxyField.source === "env" && <span className="pill small accent">{t("环境变量", "Environment")}</span>}
+                {noProxyResetting && <span className="pill small danger">{t("将重置", "Will reset")}</span>}
+                {!noProxyResetting && noProxyPending !== undefined && <span className="pill small danger">{t("未保存", "Unsaved")}</span>}
               </span>
             </div>
             <input
+              className="input"
               type="text"
               value={noProxyResetting ? "" : (noProxyPending ?? String(noProxyField.value ?? ""))}
               placeholder={t("internal.example.com, .corp.local", "internal.example.com, .corp.local")}

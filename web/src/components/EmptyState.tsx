@@ -36,19 +36,19 @@ export function EmptyState({ sessions, providers, onSelect, onCreate, onOpenSett
             <ol className="empty-guide-steps">
               <li>
                 <button type="button" className="empty-guide-step" onClick={() => onOpenSettings?.("models")}>
-                  <span className="empty-guide-num">①</span>
+                  <span className="empty-guide-num" aria-hidden />
                   <span>{t("配置服务商与 API Key", "Configure a provider and API key")}</span>
                 </button>
               </li>
               <li>
                 <button type="button" className="empty-guide-step" onClick={() => onOpenSettings?.("models")}>
-                  <span className="empty-guide-num">②</span>
+                  <span className="empty-guide-num" aria-hidden />
                   <span>{t("刷新模型目录", "Refresh the model catalog")}</span>
                 </button>
               </li>
               <li>
                 <button type="button" className="empty-guide-step" onClick={onCreate}>
-                  <span className="empty-guide-num">③</span>
+                  <span className="empty-guide-num" aria-hidden />
                   <span>{t("新建会话", "Create a session")}</span>
                 </button>
               </li>

@@ -114,9 +114,9 @@ export function CostPanel(): ReactElement {
     refetchInterval: 30_000,
   });
 
-  if (report.isPending) return <div className="inspector-body"><p className="panel-empty">{t("加载成本报表…", "Loading cost report…")}</p></div>;
+  if (report.isPending) return <div className="inspector-body"><p className="muted-empty panel-empty">{t("加载成本报表…", "Loading cost report…")}</p></div>;
   if (report.isError) {
-    return <div className="inspector-body"><p className="panel-empty">{t("成本报表加载失败：", "Could not load cost report: ")}{report.error.message}</p></div>;
+    return <div className="inspector-body"><p className="panel-error" role="alert">{t("成本报表加载失败：", "Could not load cost report: ")}{report.error.message}</p></div>;
   }
   const data = report.data;
   const currency = data.preferences.currency;
@@ -137,7 +137,7 @@ export function CostPanel(): ReactElement {
         ))}
       </div>
       {data.totals.runs === 0 ? (
-        <p className="panel-empty">{t("所选范围内还没有模型调用记录。", "There are no model calls in the selected range.")}</p>
+        <p className="muted-empty panel-empty">{t("所选范围内还没有模型调用记录。", "There are no model calls in the selected range.")}</p>
       ) : (
         <>
           <div className="cost-cards">

@@ -7,7 +7,7 @@ import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const ENTRY_BUDGET_KB = 592; // 主入口 chunk 上限（minified，未压缩；提示词七面 + env-sim 预设管理/人格下拉后入口约 578 KB，预算留 ~2% 余量）
+const ENTRY_BUDGET_KB = 600; // 主入口 chunk 上限（minified，未压缩；Overlay/ConfirmDialog 基础组件与图标集扩充后入口约 593 KB，余量 ~1.2%，接近预算即应治理而非继续加码）
 const CHUNK_BUDGET_KB = 500; // 其他单个 JS chunk 上限
 const MONACO_BUDGET_KB = 4096; // Monaco 编辑器懒加载 chunk 上限（仅在打开编辑器时加载，不影响入口体积）
 const WORKER_BUDGET_KB = 7168; // Monaco 语言服务 worker chunk 上限（ts.worker 约 6.8MB，仅打开对应语言文件时按需加载）

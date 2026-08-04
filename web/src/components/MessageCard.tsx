@@ -25,7 +25,7 @@ export function ToolCallCard({ name, input, status, onOpenDiff }: { name: string
   return (
     <section className={`tool-row${open ? " open" : ""}${status === "error" ? " error" : ""}`}>
       <div
-        className="tool-row-header"
+        className="collapse-row tool-row-header"
         role="button"
         tabIndex={0}
         aria-expanded={open}
@@ -122,7 +122,7 @@ export function SubagentTranscriptDetails({ sessionId, taskId, index }: { sessio
     <details className="subagent-transcript" onToggle={(event) => setOpen(event.currentTarget.open)}>
       <summary>{label}</summary>
       {open && transcript.isPending && <p className="subagent-transcript-status">{t("加载中…", "Loading…")}</p>}
-      {open && transcript.isError && <p className="subagent-transcript-status">{t("转录加载失败", "Failed to load transcript")}</p>}
+      {open && transcript.isError && <p className="panel-error" role="alert">{t("转录加载失败", "Failed to load transcript")}</p>}
       {open && transcript.data && (
         <div className="subagent-transcript-body">
           <p className="subagent-transcript-meta mono">
@@ -178,7 +178,7 @@ export function ToolResultCard({ content, error, sessionId, subagentTaskIds }: {
   return (
     <section className={`tool-row tool-result-row${open ? " open" : ""}${error ? " error" : ""}`}>
       <div
-        className="tool-row-header"
+        className="collapse-row tool-row-header"
         role="button"
         tabIndex={0}
         aria-expanded={open}
