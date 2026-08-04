@@ -2,6 +2,26 @@
 
 本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前版本的用户可感知变化。日期以 Git 标签发布日期为准。
 
+## [1.3.0] - 2026-08-04
+
+界面设计语言统一专项：引入可复用交互基元（弹层、确认框、徽标、输入框、折叠行、空态/错误态），全面 token 化（字号、圆角、阴影、遮罩、diff 色、z-index），并修复一批界面瑕疵与可靠性问题。
+
+### 界面与体验
+
+- 新增设计基元：`Overlay` 弹层组件（Esc/背板关闭、焦点循环与归还）统一命令面板、Quick Open、快捷键速查、通知中心、代码视图五个弹层；`ConfirmDialog` + `useConfirmDialog` 取代全部原生 `window.confirm`；`.pill` 徽标、`.input` 输入框、`.collapse-row` 折叠行、`.composer-popup` 建议弹层、`.muted-empty` 空态、`.panel-error` 行内错误（带 `role="alert"`）六套样式基类收敛全站重复实现。
+- 视觉语言 token 化：字号半点值归入整数阶梯（新增 `--text-2xs`）、`font-weight` 统一 600、圆角收敛为 `--radius-s/--radius/--radius-l/--radius-xl` 四档、弹层阴影 `--shadow-lg` 与遮罩 `--backdrop` 按主题定义、diff 颜色（`--diff-add/del-bg/text`）亮暗分主题、z-index 归为 11 档分层变量、内容宽度 `--content-max`。
+- 可访问性：键盘可见焦点补齐五处缺口（模式下拉、弹层输入、会话内搜索、工作区区域、开关控件）；次级文字 `--text-3` 两主题对比度提升至 WCAG AA 档；Unicode 字符图标（✓✗●○■ 等）全部迁入描边 SVG 图标组件，EmptyState 步骤序号改 CSS 计数器。
+- 修复：快捷键 Ctrl+P 与浏览器默认冲突（`defaultPrevented` 检查）、触屏设备 hover 不可达的操作按钮兜底、通知/Toast 错误态样式、徽标在窄屏的截断、自定义强调色非法值残留（回落 graphite）、on-accent 文字色改 WCAG 对比度计算。
+
+### 服务端修复
+
+- 快照后端支持显式 pin zfs（此前仅 auto 探测链支持）；`defaultEffort` 存储前校验枚举，非法值（如环境变量直写）不再带进运行时。
+- 中断补写失败落 stderr 留痕（不再静默，provider 400 可诊断）；OpenAI Responses 接口同一 call_id 重复的 function_call 只内联一次（避免被 API 拒绝）。
+
+### CI 与打包
+
+- loongarch64 交叉构建产物强制校验目标架构 ELF（防 toolchain 静默回落主机编译器）；bundled Node 哈希校验左锚加固；手动下载示例改 `<arch>` 占位。
+
 ## [1.2.0] - 2026-08-03
 
 Linux 体验与功能专项：快照新增 overlayfs 后端（原语下沉 core C 层）、出站代理设置、安装器 systemd 更新/重装判定、沙盒能力误报修正与界面平台适配。
