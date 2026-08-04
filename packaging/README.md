@@ -202,11 +202,11 @@ mkdir -p build/stage/{bin,server,web,node}
 cp build/owc-exec build/stage/bin/
 cp -r server/dist server/package.json server/node_modules server/assets build/stage/server/
 cp -r web/dist build/stage/web/
+# arm64 原生构建时改为 node-v${NODE_VERSION}-linux-arm64.tar.gz；
+# loongarch64 无官方 Node 包，不创建 build/stage/node（install.sh 自动降级 --use-system-node）
 curl -fsSLo build/node.tar.gz \
   "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.gz"
 tar -xzf build/node.tar.gz -C build/stage/node --strip-components=1
-# arm64 原生构建时改为 node-v${NODE_VERSION}-linux-arm64.tar.gz；
-# loongarch64 无官方 Node 包，不创建 build/stage/node（install.sh 自动降级 --use-system-node）
 
 test -x build/stage/bin/owc-exec
 test -x build/stage/node/bin/node

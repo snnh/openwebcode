@@ -328,11 +328,18 @@ jobs:
           set -euo pipefail
           if [ "${{ matrix.arch }}" = "loongarch64" ]; then
             cmake -S core -B build --toolchain core/toolchains/loongarch64-linux-gnu.cmake \
-              -DCMAKE_BUILD_TYPE=Release -DCPACK_PACKAGE_VERSION="$BASE_VERSION" -DCPACK_FULL_VERSION="$VERSION"
+              -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+              -DCPACK_PACKAGE_VERSION="$BASE_VERSION" -DCPACK_FULL_VERSION="$VERSION"
           else
             cmake -S core -B build -DCMAKE_BUILD_TYPE=Release -DCPACK_PACKAGE_VERSION="$BASE_VERSION" -DCPACK_FULL_VERSION="$VERSION"
           fi
           cmake --build build --target owc-exec --parallel
+      - name: Verify cross-built binary architecture
+        if: ${{ matrix.arch == 'loongarch64' }}
+        run: |
+          set -euo pipefail
+          # 防 toolchain 静默回落主机编译器：交叉产物必须是目标架构 ELF
+          file build/owc-exec | grep -q 'loongarch64' || { echo "build/owc-exec is not loongarch64 ELF"; file build/owc-exec; exit 1; }
       - name: Stage runtime into build/stage
         run: |
           set -euo pipefail
@@ -349,7 +356,7 @@ jobs:
             curl -fsSLo "$NODE_ARCHIVE" "https://nodejs.org/dist/v${NODE_DIST_VERSION}/${NODE_ARCHIVE}"
             # 对照官方 SHASUMS256.txt 校验下载的 bundled Node（防截断/镜像损坏），不硬编码哈希
             curl -fsSLo SHASUMS256.txt "https://nodejs.org/dist/v${NODE_DIST_VERSION}/SHASUMS256.txt"
-            grep "${NODE_ARCHIVE}\$" SHASUMS256.txt | sha256sum --check
+            grep -E "^[0-9a-f]{64}  ${NODE_ARCHIVE}\$" SHASUMS256.txt | sha256sum --check
             tar -xzf "$NODE_ARCHIVE" -C build/stage/node --strip-components=1
             test -x build/stage/node/bin/node
           fi
