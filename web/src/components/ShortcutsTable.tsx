@@ -1,5 +1,5 @@
 /**
- * 键盘快捷方式表格：速查浮层（ShortcutsDialog）与设置页签（ShortcutsSection）共用的唯一实现，
+ * 键盘快捷方式表格：设置「快捷键」页签（ShortcutsSection）的唯一实现（原速查浮层已并入设置），
  * 键位与命令标题源自 commands/keybindings 注册表。0.4.0 不支持自定义键位，仅展示。
  */
 import { useMemo, type ReactElement } from "react";

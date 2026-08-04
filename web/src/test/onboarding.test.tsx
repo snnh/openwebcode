@@ -53,6 +53,11 @@ function renderSettings(initialTab?: SettingsTab): ReturnType<typeof render> {
       setDefaults={() => undefined}
       providers={[]}
       models={[]}
+      notifications={[]}
+      onActivateNotification={() => undefined}
+      onDismissNotification={() => undefined}
+      onClearAllNotifications={() => undefined}
+      onMarkAllRead={() => undefined}
       onResetLayout={() => undefined}
       onClose={() => undefined}
     />,

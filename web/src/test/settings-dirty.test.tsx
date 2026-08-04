@@ -64,6 +64,11 @@ function renderDialog(withI18n = false): void {
       setDefaults={() => undefined}
       providers={[]}
       models={[]}
+      notifications={[]}
+      onActivateNotification={() => undefined}
+      onDismissNotification={() => undefined}
+      onClearAllNotifications={() => undefined}
+      onMarkAllRead={() => undefined}
       onResetLayout={() => undefined}
       onClose={() => undefined}
     />
