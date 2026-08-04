@@ -133,6 +133,7 @@ export function PromptSection({ onDirtyChange, sessionCwd }: { onDirtyChange?(di
       <label className="settings-field">
         <span>{t("身份行", "Identity line")}</span>
         <textarea
+          className="input"
           rows={2}
           value={faces.identityOverride}
           placeholder={t("留空则使用默认身份行（env-sim 人格身份优先于此覆盖）", "Leave empty for the default identity line (an env-sim persona identity wins over this override)")}
@@ -142,6 +143,7 @@ export function PromptSection({ onDirtyChange, sessionCwd }: { onDirtyChange?(di
       <label className="settings-field">
         <span>{t("基线覆盖", "Baseline override")}</span>
         <textarea
+          className="input"
           rows={6}
           value={faces.baseOverride}
           placeholder={t("留空则使用内置基线", "Leave empty to use the built-in baseline")}
@@ -151,6 +153,7 @@ export function PromptSection({ onDirtyChange, sessionCwd }: { onDirtyChange?(di
       <label className="settings-field">
         <span>{t("追加指令", "Custom instructions")}</span>
         <textarea
+          className="input"
           rows={6}
           value={faces.customAppend}
           placeholder={t("追加到安全约束之后的自定义指令", "Custom instructions appended after safety constraints")}
@@ -160,6 +163,7 @@ export function PromptSection({ onDirtyChange, sessionCwd }: { onDirtyChange?(di
       <label className="settings-field">
         <span>{t("子代理附加指令", "Sub-agent instructions")}</span>
         <textarea
+          className="input"
           rows={4}
           value={faces.subAgentAppend}
           placeholder={t("拼入所有子代理系统提示的附加指令", "Extra instructions appended to every sub-agent system prompt")}
@@ -169,6 +173,7 @@ export function PromptSection({ onDirtyChange, sessionCwd }: { onDirtyChange?(di
       <label className="settings-field">
         <span>{t("/init 提示词", "/init prompt")}</span>
         <textarea
+          className="input"
           rows={4}
           value={faces.initOverride}
           placeholder={t("留空则依次回退到 env-sim 人格提示词与内置 /init 探查提示词", "Leave empty to fall back to the env-sim persona prompt, then the built-in /init exploration prompt")}
@@ -184,6 +189,7 @@ export function PromptSection({ onDirtyChange, sessionCwd }: { onDirtyChange?(di
       <label className="settings-field">
         <span>{t("压缩提示词（概览）", "Compaction prompt (overview)")}</span>
         <textarea
+          className="input"
           rows={4}
           value={faces.compactOverviewOverride}
           placeholder={t("留空则使用内置概览压缩系统提示", "Leave empty for the built-in overview compaction system prompt")}
@@ -199,6 +205,7 @@ export function PromptSection({ onDirtyChange, sessionCwd }: { onDirtyChange?(di
       <label className="settings-field">
         <span>{t("压缩提示词（工具调用）", "Compaction prompt (tool calls)")}</span>
         <textarea
+          className="input"
           rows={4}
           value={faces.compactToolcallsOverride}
           placeholder={t("留空则使用内置工具调用压缩系统提示", "Leave empty for the built-in tool-call compaction system prompt")}

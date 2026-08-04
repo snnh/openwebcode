@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import { api } from "../lib/api";
 import type { ModelProfile, SettingsTab } from "../lib/contracts";
 import { Icon, type IconName } from "./Icon";
@@ -24,6 +24,7 @@ import { ServerSettingsFields } from "./settings/ServerSettingsFields";
 import { PromptSection } from "./settings/PromptSection";
 import { ServerInfoSection } from "./settings/ServerInfoSection";
 import { SystemStorageSection } from "./settings/SystemStorageSection";
+import { useConfirmDialog } from "./ConfirmDialog";
 
 export type { SettingsTab } from "../lib/contracts";
 
@@ -147,6 +148,9 @@ export function SettingsDialog({ open, initialTab, initialTabAt, preference, set
   const [fieldLabels, setFieldLabels] = useState<Array<{ key: string; label: string; tab: SettingsTab }>>([]);
   // 服务设置/定价 JSON/提示词的未保存改动由各页签内的分区组件上报
   const serverDirtyRef = useRef(false);
+  // 稳定的 dirty 上报回调：内联箭头会让子分区 dirty effect 在对话框每次重渲染（如确认对话框开合）时重跑并互相覆盖 ref
+  const reportDirty = useCallback((dirty: boolean): void => { serverDirtyRef.current = dirty; }, []);
+  const { ask: askConfirm, dialogElement: confirmDialogElement } = useConfirmDialog();
 
   useEffect(() => {
     if (!open) return;
@@ -206,30 +210,49 @@ export function SettingsDialog({ open, initialTab, initialTabAt, preference, set
     .filter((entry) => entry.tabs.length > 0);
 
   // 放弃未保存改动前的统一确认（服务设置 / 定价 JSON / 提示词）
-  const confirmDiscard = (): boolean =>
-    !serverDirtyRef.current || window.confirm(t("有未保存的更改，确定放弃？", "There are unsaved changes. Discard them?"));
+  const confirmDiscard = (run: () => void): void => {
+    if (!serverDirtyRef.current) {
+      run();
+      return;
+    }
+    askConfirm({
+      title: t("放弃更改", "Discard changes"),
+      body: t("有未保存的更改，确定放弃？", "There are unsaved changes. Discard them?"),
+      confirmLabel: t("放弃更改", "Discard changes"),
+      danger: false,
+      onConfirm: run,
+    });
+  };
 
   // 统一关闭入口：有未保存改动时先确认
   const requestClose = (): void => {
-    if (!confirmDiscard()) return;
-    dialogRef.current?.close();
+    confirmDiscard(() => dialogRef.current?.close());
   };
 
   // 导航轨动作：先确认未保存改动，再关设置并执行（切视图/帮助/通知/终端）
   const railAction = (run: () => void) => (): void => {
-    if (!confirmDiscard()) return;
-    dialogRef.current?.close();
-    run();
+    confirmDiscard(() => {
+      dialogRef.current?.close();
+      run();
+    });
   };
 
-  const selectTab = (tab: SettingsTab): void => {
-    // 切换页签会卸载当前分区（key 重挂载），有未保存改动时先确认
-    if (tab !== activeTab && !confirmDiscard()) return;
+  const applySelectTab = (tab: SettingsTab): void => {
     setActiveTab(tab);
     // 移动端点项钻取进详情
     if (isMobile) setMobileDetailOpen(true);
     const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
-    contentRef.current?.scrollTo({ top: 0, behavior: reduceMotion ? "auto" : "smooth" });
+    // jsdom 无 scrollTo，用可选链避免抛错污染测试输出
+    contentRef.current?.scrollTo?.({ top: 0, behavior: reduceMotion ? "auto" : "smooth" });
+  };
+
+  const selectTab = (tab: SettingsTab): void => {
+    // 切换页签会卸载当前分区（key 重挂载），有未保存改动时先确认
+    if (tab !== activeTab) {
+      confirmDiscard(() => applySelectTab(tab));
+      return;
+    }
+    applySelectTab(tab);
   };
 
   const activeMeta = TAB_META.find((tab) => tab.id === activeTab) ?? TAB_META[0];
@@ -281,7 +304,7 @@ export function SettingsDialog({ open, initialTab, initialTabAt, preference, set
             <span className="settings-search-wrap">
               <Icon name="search" size={13} />
               <input
-                className="settings-search"
+                className="input settings-search"
                 value={navQuery}
                 onChange={(event) => setNavQuery(event.target.value)}
                 onKeyDown={(event) => {
@@ -318,7 +341,7 @@ export function SettingsDialog({ open, initialTab, initialTabAt, preference, set
                 ))}
               </div>
             ))}
-            {query && visibleGroups.length === 0 && <p className="settings-nav-empty">{t("无匹配", "No matches")}</p>}
+            {query && visibleGroups.length === 0 && <p className="muted-empty settings-nav-empty">{t("无匹配", "No matches")}</p>}
           </nav>
           <main className="settings-content">
             <header className="settings-content-header">
@@ -345,7 +368,7 @@ export function SettingsDialog({ open, initialTab, initialTabAt, preference, set
           )}
           {activeTab === "general" && (
             <section>
-              <GeneralSection sendKey={sendKey} setSendKey={setSendKey} desktopNotify={desktopNotify} setDesktopNotify={setDesktopNotify} onResetLayout={onResetLayout} onDirtyChange={(dirty) => { serverDirtyRef.current = dirty; }} />
+              <GeneralSection sendKey={sendKey} setSendKey={setSendKey} desktopNotify={desktopNotify} setDesktopNotify={setDesktopNotify} onResetLayout={onResetLayout} onDirtyChange={reportDirty} />
             </section>
           )}
           {activeTab === "defaults" && (
@@ -364,7 +387,7 @@ export function SettingsDialog({ open, initialTab, initialTabAt, preference, set
           {activeTab === "remote" && (
             <section>
               <h3>{t("远程访问", "Remote access")}</h3>
-              <RemoteAccessSection onDirtyChange={(dirty) => { serverDirtyRef.current = dirty; }} />
+              <RemoteAccessSection onDirtyChange={reportDirty} />
             </section>
           )}
           {activeTab === "models" && (
@@ -372,13 +395,13 @@ export function SettingsDialog({ open, initialTab, initialTabAt, preference, set
               <h3>{t("模型目录", "Model catalog")}</h3>
               <ModelProvidersSection />
               <ModelCatalogSection />
-              <ModelCatalogSyncSection onDirtyChange={(dirty) => { serverDirtyRef.current = dirty; }} />
+              <ModelCatalogSyncSection onDirtyChange={reportDirty} />
             </section>
           )}
           {activeTab === "modelSelection" && (
             <section>
               <h3>{t("模型选择", "Model selection")}</h3>
-              <ModelSelectionSection onDirtyChange={(dirty) => { serverDirtyRef.current = dirty; }} />
+              <ModelSelectionSection onDirtyChange={reportDirty} />
             </section>
           )}
           {activeTab === "web" && (
@@ -402,18 +425,18 @@ export function SettingsDialog({ open, initialTab, initialTabAt, preference, set
           {activeTab === "pricing" && (
             <section>
               <h3>{t("模型定价", "Model pricing")}</h3>
-              <PricingSection onDirtyChange={(dirty) => { serverDirtyRef.current = dirty; }} />
+              <PricingSection onDirtyChange={reportDirty} />
               <h3>{t("汇率", "Exchange rate")}</h3>
               <ServerSettingsFields
                 showGroup={(groupId) => groupId === "exchangeRate"}
-                onDirtyChange={(dirty) => { serverDirtyRef.current = dirty; }}
+                onDirtyChange={reportDirty}
               />
             </section>
           )}
           {activeTab === "prompt" && (
             <section>
               <h3>{t("提示词", "System prompt")}</h3>
-              <PromptSection sessionCwd={sessionCwd} onDirtyChange={(dirty) => { serverDirtyRef.current = dirty; }} />
+              <PromptSection sessionCwd={sessionCwd} onDirtyChange={reportDirty} />
             </section>
           )}
           {activeTab === "info" && (
@@ -421,7 +444,7 @@ export function SettingsDialog({ open, initialTab, initialTabAt, preference, set
               <h3>{t("服务信息", "Server information")}</h3>
               <ServerInfoSection providers={providers} models={models} />
               <h3>{t("系统与存储", "System and storage")}</h3>
-              <SystemStorageSection onDirtyChange={(dirty) => { serverDirtyRef.current = dirty; }} />
+              <SystemStorageSection onDirtyChange={reportDirty} />
             </section>
           )}
             </div>
@@ -431,6 +454,7 @@ export function SettingsDialog({ open, initialTab, initialTabAt, preference, set
           </main>
         </div>
       </div>
+      {confirmDialogElement}
     </dialog>
   );
 }

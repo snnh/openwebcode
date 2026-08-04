@@ -76,7 +76,6 @@ describe("FilesPanel managed workspace sync", () => {
     };
     vi.spyOn(api, "workspaceSyncPreview").mockResolvedValue(legacy);
     const applyRequest = vi.spyOn(api, "syncWorkspace").mockResolvedValue({ applied: [], conflicts: [], unsupported: [], nextPreview: legacy });
-    vi.spyOn(window, "confirm").mockReturnValue(false);
 
     renderPanel();
     fireEvent.click(screen.getByRole("button", { name: "同步回源" }));
@@ -85,8 +84,12 @@ describe("FilesPanel managed workspace sync", () => {
 
     fireEvent.click(screen.getByRole("checkbox"));
     fireEvent.click(screen.getByRole("button", { name: "确认并覆盖回写" }));
-    expect(window.confirm).toHaveBeenCalled();
+    // 弹出覆盖冲突确认对话框；确认前不发回写请求
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
     expect(applyRequest).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "确认覆盖" }));
+    await waitFor(() => expect(applyRequest).toHaveBeenCalledWith(session.id, { confirm: true, previewFingerprint: "legacy-1", overwriteConflicts: true }));
   });
 });
 

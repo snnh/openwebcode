@@ -16,9 +16,8 @@ export function Toast({ notice, onDismiss }: { notice: Notice; onDismiss(): void
   const isError = notice.kind === "error";
   return (
     <div
-      className="toast"
+      className={`toast${isError ? " error" : ""}`}
       role={isError ? "alert" : "status"}
-      style={isError ? { borderColor: "var(--danger-border)", color: "var(--danger)" } : undefined}
     >
       <span>{notice.text}</span>
       <button onClick={onDismiss} aria-label={t("关闭通知", "Dismiss notification")}><Icon name="x" size={14} /></button>

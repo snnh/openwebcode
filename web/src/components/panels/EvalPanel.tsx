@@ -4,6 +4,7 @@ import { useI18n } from "../../i18n";
 import { api } from "../../lib/api";
 import type { EvalRunComparison, EvalRunReport } from "../../lib/contracts";
 import { formatDuration } from "../../lib/format";
+import { Icon } from "../Icon";
 
 function downloadJson(value: unknown, filename: string): void {
   const blob = new Blob([`${JSON.stringify(value, null, 2)}\n`], { type: "application/json" });
@@ -94,7 +95,7 @@ export function EvalPanel({ onNotice }: { onNotice(message: string, kind?: "info
       <div className="panel-head">
         <div>
           <h2>{t("评测", "Evaluation")}</h2>
-          <p className="panel-empty">{t("在隔离工作区中用固定 mock provider 回放任务。", "Replay tasks with fixed mock providers in isolated workspaces.")}</p>
+          <p className="muted-empty panel-empty">{t("在隔离工作区中用固定 mock provider 回放任务。", "Replay tasks with fixed mock providers in isolated workspaces.")}</p>
         </div>
         <button className="primary-button" disabled={running || selected.size === 0} onClick={() => void run()}>
           {running ? t("运行中…", "Running…") : t("运行所选任务", "Run selected")}
@@ -103,8 +104,8 @@ export function EvalPanel({ onNotice }: { onNotice(message: string, kind?: "info
 
       <section className="eval-section" aria-label={t("任务集", "Task set")}>
         <h3>{t("任务集", "Task set")}</h3>
-        {tasks.isPending ? <p className="panel-empty">{t("加载中…", "Loading…")}</p> : tasks.isError ? (
-          <p className="panel-empty">{t("无法加载评测任务。", "Unable to load evaluation tasks.")}</p>
+        {tasks.isPending ? <p className="muted-empty panel-empty">{t("加载中…", "Loading…")}</p> : tasks.isError ? (
+          <p className="panel-error" role="alert">{t("无法加载评测任务。", "Unable to load evaluation tasks.")}</p>
         ) : (
           <div className="eval-task-list">
             {tasks.data?.tasks.map((task) => (
@@ -152,7 +153,7 @@ export function EvalPanel({ onNotice }: { onNotice(message: string, kind?: "info
                   <span>{result.status.toUpperCase()} · {formatDuration(result.durationMs)} · {result.usage.totalTokens} tokens</span>
                 </summary>
                 <p>{t("工具", "Tools")}: {result.toolsUsed.join(", ") || "—"} · {result.turns} turns</p>
-                <ul>{result.assertions.map((assertion) => <li key={assertion.name}>{assertion.passed ? "✓" : "✗"} {assertion.name}: {assertion.detail}</li>)}</ul>
+                <ul>{result.assertions.map((assertion) => <li key={assertion.name}><span className={`eval-assertion-icon ${assertion.passed ? "pass" : "fail"}`}><Icon name={assertion.passed ? "check" : "x"} size={12} /></span>{assertion.name}: {assertion.detail}</li>)}</ul>
                 {result.error && <p className="eval-error">{result.error}</p>}
               </details>
             ))}
@@ -199,7 +200,7 @@ export function EvalPanel({ onNotice }: { onNotice(message: string, kind?: "info
               </div>
             ))}
           </div>
-        ) : <p className="panel-empty">{t("暂无历史报告。", "No saved reports.")}</p>}
+        ) : <p className="muted-empty panel-empty">{t("暂无历史报告。", "No saved reports.")}</p>}
       </section>
       {comparisons.data?.comparisons.length ? (
         <section className="eval-section" aria-label={t("对比归档", "Comparison archive")}>

@@ -38,7 +38,7 @@ export function ProblemsPanel({ sessionId, onOpenInEditor }: {
   });
 
   if (!sessionId) {
-    return <div className="inspector-body"><p className="panel-empty">{t("选择会话以查看诊断问题。", "Select a session to view problems.")}</p></div>;
+    return <div className="inspector-body"><p className="muted-empty panel-empty">{t("选择会话以查看诊断问题。", "Select a session to view problems.")}</p></div>;
   }
 
   const notFound = diagnostics.error instanceof ApiError && diagnostics.error.status === 404;
@@ -79,14 +79,14 @@ export function ProblemsPanel({ sessionId, onOpenInEditor }: {
           )}
         </div>
         {diagnostics.isPending ? (
-          <p className="panel-empty">{t("加载中…", "Loading…")}</p>
+          <p className="muted-empty panel-empty">{t("加载中…", "Loading…")}</p>
         ) : diagnostics.isError && !notFound ? (
-          <p className="panel-empty">
+          <p className="muted-empty panel-empty">
             {t("无法读取诊断结果", "Could not load diagnostics")}
             {diagnostics.error instanceof ApiError ? `：${diagnostics.error.message}` : ""}
           </p>
         ) : !set || set.failures.length === 0 ? (
-          <p className="panel-empty">{t("暂无问题。最近一轮诊断未发现失败项。", "No problems. The latest diagnostics run reported no failures.")}</p>
+          <p className="muted-empty panel-empty">{t("暂无问题。最近一轮诊断未发现失败项。", "No problems. The latest diagnostics run reported no failures.")}</p>
         ) : (
           <>
             <p className="problems-summary">
@@ -98,7 +98,7 @@ export function ProblemsPanel({ sessionId, onOpenInEditor }: {
               )}
             </p>
             {groups.length === 0 ? (
-              <p className="panel-empty">{t("当前过滤条件下没有问题。", "No problems match the current filter.")}</p>
+              <p className="muted-empty panel-empty">{t("当前过滤条件下没有问题。", "No problems match the current filter.")}</p>
             ) : (
               groups.map((group) => (
                 <section key={group.file || "(unknown)"} className="problems-group">
@@ -154,7 +154,7 @@ export function ProblemsPanel({ sessionId, onOpenInEditor }: {
             <button className="icon-btn" onClick={() => setSelected(undefined)} aria-label={t("关闭代码视图", "Close code view")}><Icon name="x" size={14} /></button>
           </header>
           {preview.isError ? (
-            <p className="preview-note">
+            <p className="muted-empty preview-note">
               {preview.error instanceof ApiError ? preview.error.message : t("无法读取该文件。", "Could not read this file.")}
             </p>
           ) : preview.data ? (
@@ -165,10 +165,10 @@ export function ProblemsPanel({ sessionId, onOpenInEditor }: {
                 {...(selected.line !== undefined ? { targetLine: selected.line } : {})}
                 {...(selected.column !== undefined ? { targetColumn: selected.column } : {})}
               />
-              {preview.data.truncated && <p className="preview-note">{t("内容过长，已截断。", "Content was truncated because it is too long.")}</p>}
+              {preview.data.truncated && <p className="muted-empty preview-note">{t("内容过长，已截断。", "Content was truncated because it is too long.")}</p>}
             </>
           ) : (
-            <p className="preview-note">{t("加载中…", "Loading…")}</p>
+            <p className="muted-empty preview-note">{t("加载中…", "Loading…")}</p>
           )}
         </section>
       )}

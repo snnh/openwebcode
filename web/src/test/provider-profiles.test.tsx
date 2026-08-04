@@ -35,7 +35,7 @@ describe("ModelProvidersSection", () => {
     expect(view.queryByText(/secret/i)).not.toBeInTheDocument();
     // 联网服务商不在本分区
     expect(view.queryByText("联网服务商")).toBeNull();
-    expect(view.queryByLabelText("Web Search")).toBeNull();
+    expect(view.queryByLabelText("联网搜索")).toBeNull();
   });
 
   it("creates a named model provider without combining it with a separate provider selector", async () => {
@@ -94,7 +94,7 @@ describe("WebProvidersSection", () => {
     // 模型服务商不在本分区
     expect(view.queryByText("模型服务商")).toBeNull();
 
-    fireEvent.change(view.getByLabelText("Web Search"), { target: { value: "Jina" } });
+    fireEvent.change(view.getByLabelText("联网搜索"), { target: { value: "Jina" } });
     await waitFor(() => expect(select).toHaveBeenCalledWith("search", "Jina"));
   });
 });

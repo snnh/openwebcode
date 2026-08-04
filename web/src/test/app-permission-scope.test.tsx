@@ -81,7 +81,7 @@ describe("App permission.request 按会话隔离", () => {
     });
     await screen.findByRole("alertdialog");
     // JobHeader 的 busy 徽章（多处 UI 都渲染状态文案，这里锁定 header 徽章）
-    await waitFor(() => expect(document.querySelector(".state-badge.state-streaming")).not.toBeNull());
+    await waitFor(() => expect(document.querySelector(".job-header .pill.accent")).not.toBeNull());
 
     // 事件缺口/服务端重启触发 resync：本地权限卡清空（由服务端列表重建）；
     // /run 返回 404（服务端无活跃 run）时本地残留的 busy 态必须回落。
@@ -89,6 +89,6 @@ describe("App permission.request 按会话隔离", () => {
       emitEvent(socket, "resync.required", { latestSeq: 0, reason: "slow_client" });
     });
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
-    await waitFor(() => expect(document.querySelector(".state-badge")).toBeNull());
+    await waitFor(() => expect(document.querySelector(".job-header .pill")).toBeNull());
   });
 });

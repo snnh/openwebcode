@@ -135,7 +135,7 @@ export function ServerInfoSection({ providers, models }: {
       </dd>
       <dt>{t("API 状态", "API status")}</dt>
       <dd>{health.data?.status === "ok" ? t("在线", "Online") : health.isError ? t("不可达", "Unavailable") : t("检查中…", "Checking…")}</dd>
-      <dt>Providers</dt>
+      <dt>{t("服务商", "Providers")}</dt>
       <dd>{providers.length > 0 ? providers.join("、") : "-"}</dd>
       <dt>{t("模型档案", "Model profiles")}</dt>
       <dd>{t(`${models.length} 个`, `${models.length}`)}</dd>

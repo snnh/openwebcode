@@ -55,8 +55,8 @@ export function TotpSection(): ReactElement {
     return qr.createSvgTag(4, 8);
   }, [stage, setup]);
 
-  if (status.isPending) return <p className="panel-empty">{t("加载中…", "Loading…")}</p>;
-  if (status.isError || !status.data) return <p className="panel-empty">{t("无法加载认证状态。", "Could not load authentication status.")}</p>;
+  if (status.isPending) return <p className="muted-empty panel-empty">{t("加载中…", "Loading…")}</p>;
+  if (status.isError || !status.data) return <p className="muted-empty panel-empty">{t("无法加载认证状态。", "Could not load authentication status.")}</p>;
   const enabled = status.data.totpEnabled;
   const hostOk = !status.data.gateReasons.includes("host_not_loopback_or_lan");
 

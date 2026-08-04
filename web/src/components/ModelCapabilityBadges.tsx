@@ -13,7 +13,7 @@ export function ModelCapabilityBadges({ capabilities, empty = "dash" }: {
 
   if (capabilities.modalities.includes("image")) {
     badges.push(
-      <span className="capability-badge capability-badge-image" key="image-input" title={t("图片输入", "Image input")}>
+      <span className="pill small accent" key="image-input" title={t("图片输入", "Image input")}>
         <Icon name="image" size={11} />
         {t("图片输入", "Image in")}
       </span>,
@@ -21,7 +21,7 @@ export function ModelCapabilityBadges({ capabilities, empty = "dash" }: {
   }
   if (capabilities.modalities.includes("video")) {
     badges.push(
-      <span className="capability-badge capability-badge-video" key="video-input" title={t("视频输入", "Video input")}>
+      <span className="pill small ok" key="video-input" title={t("视频输入", "Video input")}>
         <Icon name="video" size={11} />
         {t("视频输入", "Video in")}
       </span>,
@@ -29,7 +29,7 @@ export function ModelCapabilityBadges({ capabilities, empty = "dash" }: {
   }
   if (capabilities.imageOutput) {
     badges.push(
-      <span className="capability-badge capability-badge-image-output" key="image-output" title={t("图片输出", "Image output")}>
+      <span className="pill small ok" key="image-output" title={t("图片输出", "Image output")}>
         <Icon name="image" size={11} />
         {t("图片输出", "Image out")}
       </span>,

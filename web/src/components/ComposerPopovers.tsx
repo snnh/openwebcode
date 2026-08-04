@@ -173,7 +173,7 @@ export function AgentModeMenu({ agentMode, swarmEnabled, disabled, onConfig }: {
         onClick={() => setOpen((v) => !v)}
       >
         {t("模式", "Mode")}
-        {activeBadges && <span className="composer-menu-badge">{activeBadges}</span>}
+        {activeBadges && <span className="pill small accent composer-menu-badge">{activeBadges}</span>}
         <Icon name="chevron-up" size={11} />
       </button>
       <Popover open={open} onClose={() => setOpen(false)}>
@@ -276,7 +276,7 @@ export function ModelMenu({ current, selectableModels, selectionUnavailable, eff
               <div className="popover-item selected">
                 <span className="popover-item-check" aria-hidden><Icon name="check" size={13} /></span>
                 <span className="popover-item-text">
-                  <span className="popover-item-label mono">{current.model}【{current.provider}】</span>
+                  <span className="popover-item-label mono">{t(`${current.model}【${current.provider}】`, `${current.model} (${current.provider})`)}</span>
                   <span className="popover-item-desc">{t("当前模型不在可用清单中", "Current model is not in the available list")}</span>
                 </span>
               </div>

@@ -708,7 +708,7 @@ const mentionHasMatches = mentionItems.length > 0;
     }
     onConfig(config);
     clearTimeout(modelCycleTimerRef.current);
-    setModelCycleHint(t(`已切换模型：${next.model}【${next.provider}】`, `Switched model: ${next.model}【${next.provider}】`));
+    setModelCycleHint(t(`已切换模型：${next.model}【${next.provider}】`, `Switched model: ${next.model} (${next.provider})`));
     modelCycleTimerRef.current = setTimeout(() => setModelCycleHint(null), 2000);
     return true;
   };
@@ -758,7 +758,7 @@ const mentionHasMatches = mentionItems.length > 0;
       )}
       <div className="composer-input">
         {popupOpen && (
-          <ul id="skill-listbox" className="skill-popup" role="listbox" aria-label={t("技能建议", "Skill suggestions")}>
+          <ul id="skill-listbox" className="composer-popup skill-popup" role="listbox" aria-label={t("技能建议", "Skill suggestions")}>
             {hasSuggestions ? suggestions.map((skill, index) => (
               <li key={skill.name}>
                 <button
@@ -783,7 +783,7 @@ const mentionHasMatches = mentionItems.length > 0;
           </ul>
         )}
         {mentionOpen && (
-          <ul id="mention-listbox" className="mention-popup" role="listbox" aria-label={t("文件引用建议", "File reference suggestions")}>
+          <ul id="mention-listbox" className="composer-popup mention-popup" role="listbox" aria-label={t("文件引用建议", "File reference suggestions")}>
             {mentionIndexStatus !== null && mentionIndexStatus !== "fresh" && (
               // 索引滞后/构建中/不可用（已回退实时搜索）的一行状态提示
               <li className="mention-status" aria-live="polite"><span>
@@ -1008,17 +1008,17 @@ const mentionHasMatches = mentionItems.length > 0;
             pdfToImageStatus === "loading" ? "PDF 扩展状态加载中；图片可正常添加，PDF 请稍候重试。" : "PDF 扩展状态不可用；图片可正常添加，PDF 暂不能添加。",
             pdfToImageStatus === "loading" ? "PDF extension status is loading; images can still be added, but please retry PDFs shortly." : "PDF extension status is unavailable; images can still be added, but PDFs are unavailable for now.",
           )}</span>
-          <button type="button" className="composer-hint-dismiss" aria-label={t("关闭提示", "Dismiss hint")} onClick={dismissPdfHint}>×</button>
+          <button type="button" className="composer-hint-dismiss" aria-label={t("关闭提示", "Dismiss hint")} onClick={dismissPdfHint}><Icon name="x" size={12} /></button>
         </div>
       ) : pdfToImageEnabled ? (
         supportsImages && <div className="composer-hint">
           <span className="composer-hint-text">{t("支持添加、粘贴或拖拽图片/PDF（≤4 张图片，每张 ≤5MB）；PDF 会转为图片；输入 @ 引用工作区文件", "Add, paste, or drop images/PDFs (up to 4 images, 5 MB each); PDFs are converted to images; type @ to reference workspace files")}</span>
-          <button type="button" className="composer-hint-dismiss" aria-label={t("关闭提示", "Dismiss hint")} onClick={dismissPdfHint}>×</button>
+          <button type="button" className="composer-hint-dismiss" aria-label={t("关闭提示", "Dismiss hint")} onClick={dismissPdfHint}><Icon name="x" size={12} /></button>
         </div>
       ) : (
         <div className="composer-hint">
           <span className="composer-hint-text">{t("PDF 转图片扩展未启用；PDF 会先保存到工作区，再插入其路径引用。", "The PDF-to-image extension is disabled; PDFs are saved to the workspace and inserted as path references.")}</span>
-          <button type="button" className="composer-hint-dismiss" aria-label={t("关闭提示", "Dismiss hint")} onClick={dismissPdfHint}>×</button>
+          <button type="button" className="composer-hint-dismiss" aria-label={t("关闭提示", "Dismiss hint")} onClick={dismissPdfHint}><Icon name="x" size={12} /></button>
         </div>
       ))}
       {modelCycleHint && (
