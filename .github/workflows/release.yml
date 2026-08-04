@@ -229,7 +229,13 @@ jobs:
           path: openwebcode-${{ env.VERSION }}-windows-x64.msi
 
   linux:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # x64/arm64 原生构建+完整测试+冒烟；loongarch64 在 x64 runner 交叉编译（无 runner，
+        # 跳过 ctest/server 测试与冒烟），包内不含 node/（install.sh 自动降级 --use-system-node）
+        arch: [x64, arm64, loongarch64]
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - name: Verify tag matches repo versions
@@ -275,15 +281,18 @@ jobs:
           npm ci
           npm run build
       - name: Build core (Debug, for tests)
+        if: ${{ matrix.arch != 'loongarch64' }}
         run: |
           set -euo pipefail
           cmake -S core -B build-debug -DCMAKE_BUILD_TYPE=Debug
           cmake --build build-debug --parallel
       - name: Test core
+        if: ${{ matrix.arch != 'loongarch64' }}
         run: |
           set -euo pipefail
           ctest --test-dir build-debug --output-on-failure --timeout 60
       - name: Test server
+        if: ${{ matrix.arch != 'loongarch64' }}
         env:
           OWC_CORE_PATH: ${{ runner.workspace }}/openwebcode/build-debug/owc-exec
         run: |
@@ -308,38 +317,54 @@ jobs:
           npm prune --omit=dev
           # Keep both platform bundles on the same production dependency tree.
           rm -rf node_modules/@fastify/send/test
+      - name: Install LoongArch64 cross toolchain
+        if: ${{ matrix.arch == 'loongarch64' }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y gcc-loongarch64-linux-gnu
       - name: Build core (Release)
         run: |
           set -euo pipefail
-          cmake -S core -B build -DCMAKE_BUILD_TYPE=Release -DCPACK_PACKAGE_VERSION="$BASE_VERSION" -DCPACK_FULL_VERSION="$VERSION"
+          if [ "${{ matrix.arch }}" = "loongarch64" ]; then
+            cmake -S core -B build --toolchain core/toolchains/loongarch64-linux-gnu.cmake \
+              -DCMAKE_BUILD_TYPE=Release -DCPACK_PACKAGE_VERSION="$BASE_VERSION" -DCPACK_FULL_VERSION="$VERSION"
+          else
+            cmake -S core -B build -DCMAKE_BUILD_TYPE=Release -DCPACK_PACKAGE_VERSION="$BASE_VERSION" -DCPACK_FULL_VERSION="$VERSION"
+          fi
           cmake --build build --target owc-exec --parallel
       - name: Stage runtime into build/stage
         run: |
           set -euo pipefail
           # staging 契约见 core/CMakeLists.txt 末尾注释
           rm -rf build/stage
-          mkdir -p build/stage/bin build/stage/server build/stage/web build/stage/node
+          mkdir -p build/stage/bin build/stage/server build/stage/web
           cp build/owc-exec build/stage/bin/
           cp -r server/dist server/package.json server/node_modules server/assets build/stage/server/
           cp -r web/dist build/stage/web/
-          NODE_ARCHIVE="node-v${NODE_DIST_VERSION}-linux-x64.tar.gz"
-          curl -fsSLo "$NODE_ARCHIVE" "https://nodejs.org/dist/v${NODE_DIST_VERSION}/${NODE_ARCHIVE}"
-          # 对照官方 SHASUMS256.txt 校验下载的 bundled Node（防截断/镜像损坏），不硬编码哈希
-          curl -fsSLo SHASUMS256.txt "https://nodejs.org/dist/v${NODE_DIST_VERSION}/SHASUMS256.txt"
-          grep "${NODE_ARCHIVE}\$" SHASUMS256.txt | sha256sum --check
-          tar -xzf "$NODE_ARCHIVE" -C build/stage/node --strip-components=1
-          test -x build/stage/node/bin/node
+          # loongarch64：nodejs.org 无官方包，不内置 node/（install.sh 自动降级 --use-system-node）
+          if [ "${{ matrix.arch }}" != "loongarch64" ]; then
+            mkdir -p build/stage/node
+            NODE_ARCHIVE="node-v${NODE_DIST_VERSION}-linux-${{ matrix.arch }}.tar.gz"
+            curl -fsSLo "$NODE_ARCHIVE" "https://nodejs.org/dist/v${NODE_DIST_VERSION}/${NODE_ARCHIVE}"
+            # 对照官方 SHASUMS256.txt 校验下载的 bundled Node（防截断/镜像损坏），不硬编码哈希
+            curl -fsSLo SHASUMS256.txt "https://nodejs.org/dist/v${NODE_DIST_VERSION}/SHASUMS256.txt"
+            grep "${NODE_ARCHIVE}\$" SHASUMS256.txt | sha256sum --check
+            tar -xzf "$NODE_ARCHIVE" -C build/stage/node --strip-components=1
+            test -x build/stage/node/bin/node
+          fi
       - name: Pack tar.gz (install.sh at archive top level)
         run: |
           set -euo pipefail
-          tar -czf "openwebcode-${VERSION}-linux-x64.tar.gz" \
+          tar -czf "openwebcode-${VERSION}-linux-${{ matrix.arch }}.tar.gz" \
             -C build/stage . \
             -C "$GITHUB_WORKSPACE/packaging" install.sh uninstall.sh
       - name: Smoke-test Linux tar.gz installation
+        if: ${{ matrix.arch != 'loongarch64' }}
         shell: bash
         run: |
           set -euo pipefail
-          archive="openwebcode-${VERSION}-linux-x64.tar.gz"
+          archive="openwebcode-${VERSION}-linux-${{ matrix.arch }}.tar.gz"
           work="$(mktemp -d)"
           pid=""
           cleanup() {
@@ -388,9 +413,9 @@ jobs:
       - name: Upload tar.gz for release job
         uses: actions/upload-artifact@v4
         with:
-          name: release-linux-tarball
+          name: release-linux-tarball-${{ matrix.arch }}
           if-no-files-found: error
-          path: openwebcode-${{ env.VERSION }}-linux-x64.tar.gz
+          path: openwebcode-${{ env.VERSION }}-linux-${{ matrix.arch }}.tar.gz
 
   release:
     name: Publish GitHub Release
@@ -423,11 +448,12 @@ jobs:
         with:
           name: release-windows-msi
           path: release-assets
-      - name: Download Linux tar.gz
+      - name: Download Linux tar.gz (all arches)
         uses: actions/download-artifact@v4
         with:
-          name: release-linux-tarball
+          pattern: release-linux-tarball-*
           path: release-assets
+          merge-multiple: true
       - name: Download benchmark baselines
         if: ${{ needs.benchmark.result == 'success' }}
         uses: actions/download-artifact@v4
@@ -439,7 +465,9 @@ jobs:
         run: |
           set -euo pipefail
           test -f "release-assets/openwebcode-${VERSION}-windows-x64.msi"
-          test -f "release-assets/openwebcode-${VERSION}-linux-x64.tar.gz"
+          for arch in x64 arm64 loongarch64; do
+            test -f "release-assets/openwebcode-${VERSION}-linux-${arch}.tar.gz"
+          done
       - name: Generate and verify SHA-256 checksums
         shell: bash
         run: |
@@ -447,7 +475,9 @@ jobs:
           (
             cd release-assets
             sha256sum "openwebcode-${VERSION}-windows-x64.msi" \
-              "openwebcode-${VERSION}-linux-x64.tar.gz" > SHA256SUMS.txt
+              "openwebcode-${VERSION}-linux-x64.tar.gz" \
+              "openwebcode-${VERSION}-linux-arm64.tar.gz" \
+              "openwebcode-${VERSION}-linux-loongarch64.tar.gz" > SHA256SUMS.txt
             sha256sum --check SHA256SUMS.txt
           )
       - name: Extract release notes from CHANGELOG
@@ -480,6 +510,8 @@ jobs:
           files: |
             release-assets/openwebcode-${{ env.VERSION }}-windows-x64.msi
             release-assets/openwebcode-${{ env.VERSION }}-linux-x64.tar.gz
+            release-assets/openwebcode-${{ env.VERSION }}-linux-arm64.tar.gz
+            release-assets/openwebcode-${{ env.VERSION }}-linux-loongarch64.tar.gz
             release-assets/SHA256SUMS.txt
             packaging/install-online.sh
             ${{ needs.benchmark.result == 'success' && 'release-assets/benchmarks/bench-results-*.json' || '' }}
