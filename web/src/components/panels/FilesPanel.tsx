@@ -143,6 +143,8 @@ export function FilesPanel({
   const [imageError, setImageError] = useState(false);
   // Markdown 渲染/源码双态（阶段 2g）
   const [mdMode, setMdMode] = useState<"source" | "render">("source");
+  // hook 必须在 early return 之前调用（rules-of-hooks）
+  const confirm = useConfirmDialog();
   useEffect(() => {
     setSelectedFile(undefined);
     setAppended(undefined);
@@ -211,8 +213,6 @@ export function FilesPanel({
       })
       .finally(() => setSyncLoading(false));
   };
-
-  const confirm = useConfirmDialog();
 
   const runApplySync = (fingerprint: string): void => {
     setSyncApplying(true);
