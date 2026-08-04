@@ -58,6 +58,8 @@ _CPack_Packages/
 # Locally generated release artifacts; CI uploads these directly to Releases.
 /openwebcode-*-windows-x64.msi
 /openwebcode-*-linux-x64.tar.gz
+/openwebcode-*-linux-arm64.tar.gz
+/openwebcode-*-linux-loongarch64.tar.gz
 /SHA256SUMS.txt
 /release-assets/
 protocol-upload-*.bin

@@ -299,7 +299,7 @@ v1 扩展运行于独立 Extension Host 子进程（可信代码，安全级别 
 
 | 工作流 | 触发 | 覆盖 |
 |---|---|---|
-| `core.yml` | 改 `core/**` | Linux gcc+clang / Windows MSVC：configure→build→ctest（C 单测 + Python 协议/fs 脚本） |
+| `core.yml` | 改 `core/**` | Linux gcc+clang（x64 与 `ubuntu-24.04-arm` 两个架构）/ 龙芯 loongarch64 交叉编译（x64 runner，仅编译门禁）/ Windows MSVC：configure→build→ctest（C 单测 + Python 协议/fs 脚本） |
 | `server.yml` | 改 `server/**` 或 `core/**` | Ubuntu + Windows：先构建 core Debug，再 `npm ci && npm run build && npm test`（含依赖真实 owc-exec 的 core-client / core-tcp / stage3-e2e / web-e2e——通过 `OWC_CORE_PATH` 注入路径） |
 | `web.yml` | 改 `web/**` | Ubuntu：`npm ci && npm run build && npm test`（vitest + jsdom + Testing Library + axe） |
 | `release.yml` | 打 `v*` tag 或手动触发 | 发布前先跑 server + web 全测试网关，再产 MSI / tar.gz；benchmark job（与 windows/linux 并行）跑全部 Node + Playwright 基准并归档结果，与上一 release 基线的对比仅产出警告（回归 >15% 或缺基线均不阻断发布；基准运行本身不完整仍失败）。手动触发可显式设置 `skip_performance_tests`，tag 发布不可跳过 |
@@ -314,15 +314,17 @@ v1 扩展运行于独立 Extension Host 子进程（可信代码，安全级别 
 
 ## 发布
 
-`release.yml` 在测试全绿后产两个分发物并上传到该 tag 的 GitHub Release：
+`release.yml` 在测试全绿后产以下分发物并上传到该 tag 的 GitHub Release：
 
 | 产物 | 平台 | 内容 |
 |---|---|---|
 | `openwebcode-<version>-windows-x64.msi` | Windows | CPack/WiX 安装包 |
-| `openwebcode-<version>-linux-x64.tar.gz` | Linux | tar.gz + 顶层 `install.sh` |
+| `openwebcode-<version>-linux-x64.tar.gz` | Linux x86_64 | tar.gz + 顶层 `install.sh` |
+| `openwebcode-<version>-linux-arm64.tar.gz` | Linux aarch64 | 同上（`ubuntu-24.04-arm` 原生构建） |
+| `openwebcode-<version>-linux-loongarch64.tar.gz` | Linux 龙芯 | 同上（x64 runner 交叉编译；不内置 Node.js，安装走 `--use-system-node`） |
 
 - Windows：`npm ci/build`（server+web）→ CMake Release 构建 core → 按 `core/CMakeLists.txt` 末尾契约组装 `build/stage/` → `cpack -G WIX`
-- Linux：同样构建后组装 `build/stage/` + 下载固定版本 Node 24 整树解入 `node/` → `tar` 打包
+- Linux：按 `arch: [x64, arm64, loongarch64]` 矩阵出包——x64/arm64（`ubuntu-24.04-arm` 原生 runner）同样构建后组装 `build/stage/` + 下载固定版本 Node 24 整树解入 `node/` → `tar` 打包；loongarch64 在 x64 runner 用 `gcc-loongarch64-linux-gnu` 交叉编译（`core/toolchains/loongarch64-linux-gnu.cmake`），不跑 ctest/冒烟，不内置 `node/`（安装自动走 `--use-system-node`）
 - bundled Node 版本固定在 workflow 的 `env.NODE_DIST_VERSION`，升级改这一个常量
 - Linux 安装器的 portable 回归可在 checkout 中运行 `sh packaging/test-install.sh`；它覆盖非 TTY 不提问、带空格/单引号路径、`--use-system-node`、uid 分层默认（root 系统级路径）、systemd unit 生成（root/用户级分支）、`--lan` 快捷方式与访问链接打印、严格参数校验。发布冒烟应使用 `./install.sh --yes --prefix <临时绝对路径>`，避免 CI 被交互式配置卡住。
 - staging 契约细节见 `core/CMakeLists.txt` 末尾注释；从干净源码执行测试门禁、组装 staging、本地生成 MSI/tar.gz、冒烟与发布检查的逐步命令见 [`../packaging/README.md`](../packaging/README.md)

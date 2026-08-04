@@ -313,4 +313,14 @@ grep -F "ExecStart=$UPD_PREFIX/bin/owc" "$UPD_UNITS/openwebcode.service" >/dev/n
     fail "different-path install rewrote the existing unit"
 [ -x "$NEW_PREFIX/bin/owc" ] || fail "different-path install did not install files"
 
+# ---- install-online.sh 架构映射：uname -m → release.yml 产物名后缀 ----
+grep -q 'x86_64) ARCH=x64' "$SCRIPT_DIR/install-online.sh" || \
+    fail "install-online.sh missing x86_64 -> x64 mapping"
+grep -q 'aarch64|arm64) ARCH=arm64' "$SCRIPT_DIR/install-online.sh" || \
+    fail "install-online.sh missing aarch64 -> arm64 mapping"
+grep -q 'loongarch64) ARCH=loongarch64' "$SCRIPT_DIR/install-online.sh" || \
+    fail "install-online.sh missing loongarch64 mapping"
+grep -q 'linux-\$ARCH\.tar\.gz' "$SCRIPT_DIR/install-online.sh" || \
+    fail "install-online.sh tarball name is not arch-parameterized"
+
 echo "install.sh smoke tests passed"

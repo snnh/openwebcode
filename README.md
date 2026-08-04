@@ -28,6 +28,14 @@
 
 ### Linux
 
+支持 x86_64、aarch64（arm64）与龙芯 loongarch64；在线安装脚本自动按架构选择包：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/snnh/openwebcode/main/packaging/install-online.sh | bash
+```
+
+或手动下载对应架构的 tar.gz（`linux-x64` / `linux-arm64` / `linux-loongarch64`）：
+
 ```sh
 mkdir openwebcode && tar -xzf openwebcode-<version>-linux-x64.tar.gz -C openwebcode
 cd openwebcode
@@ -35,6 +43,8 @@ cd openwebcode
 ./install.sh
 ~/.local/bin/owc                  # 浏览器打开 http://127.0.0.1:3000
 ```
+
+龙芯（loongarch64）包不内置 Node.js，安装时需系统 Node.js ≥ 24（`--use-system-node`，包内无 node/ 时安装脚本会自动走该路径）。
 
 脚本/CI 安装使用 `--yes` 避免提问，例如：
 
