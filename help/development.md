@@ -324,7 +324,7 @@ v1 扩展运行于独立 Extension Host 子进程（可信代码，安全级别 
 | `openwebcode-<version>-linux-loongarch64.tar.gz` | Linux 龙芯 | 同上（x64 runner 交叉编译；不内置 Node.js，安装走 `--use-system-node`） |
 
 - Windows：`npm ci/build`（server+web）→ CMake Release 构建 core → 按 `core/CMakeLists.txt` 末尾契约组装 `build/stage/` → `cpack -G WIX`
-- Linux：按 `arch: [x64, arm64, loongarch64]` 矩阵出包——x64/arm64（`ubuntu-24.04-arm` 原生 runner）同样构建后组装 `build/stage/` + 下载固定版本 Node 24 整树解入 `node/` → `tar` 打包；loongarch64 在 x64 runner 用 `gcc-loongarch64-linux-gnu` 交叉编译（`core/toolchains/loongarch64-linux-gnu.cmake`），不跑 ctest/冒烟，不内置 `node/`（安装自动走 `--use-system-node`）
+- Linux：按 `arch: [x64, arm64, loongarch64]` 矩阵出包——x64/arm64（`ubuntu-24.04-arm` 原生 runner）同样构建后组装 `build/stage/` + 下载固定版本 Node 24 整树解入 `node/` → `tar` 打包；loongarch64 在 x64 runner 用 `gcc-14-loongarch64-linux-gnu` 交叉编译（`core/toolchains/loongarch64-linux-gnu.cmake`），不跑 ctest/冒烟，不内置 `node/`（安装自动走 `--use-system-node`）
 - bundled Node 版本固定在 workflow 的 `env.NODE_DIST_VERSION`，升级改这一个常量
 - Linux 安装器的 portable 回归可在 checkout 中运行 `sh packaging/test-install.sh`；它覆盖非 TTY 不提问、带空格/单引号路径、`--use-system-node`、uid 分层默认（root 系统级路径）、systemd unit 生成（root/用户级分支）、`--lan` 快捷方式与访问链接打印、严格参数校验。发布冒烟应使用 `./install.sh --yes --prefix <临时绝对路径>`，避免 CI 被交互式配置卡住。
 - staging 契约细节见 `core/CMakeLists.txt` 末尾注释；从干净源码执行测试门禁、组装 staging、本地生成 MSI/tar.gz、冒烟与发布检查的逐步命令见 [`../packaging/README.md`](../packaging/README.md)

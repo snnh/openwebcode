@@ -346,7 +346,7 @@ Server 模块在进程启动时加载，复制后必须重启 `build\stage\bin\o
   → `verify-wix-options.ps1` 校验 Shell integration → `msiexec` 静默安装、`/api/health` 冒烟、卸载 → 上传 MSI。
 - Linux：按 `arch: [x64, arm64, loongarch64]` 矩阵出包——x64/arm64 原生构建测试后组装 `build/stage/`（Node 24 linux-<arch> tar.gz 同样经 `SHASUMS256.txt` 校验后整树解入 `node/`），
   `tar -C stage . -C packaging install.sh` 打包 → 临时前缀 `./install.sh --yes` 安装并 `/api/health` 冒烟 → 上传 tar.gz；
-  loongarch64 在 x64 runner 上用 `gcc-loongarch64-linux-gnu` 交叉编译（`core/toolchains/loongarch64-linux-gnu.cmake`），跳过 ctest/server 测试与冒烟，且不内置 `node/`（install.sh 自动降级 `--use-system-node`）。
+  loongarch64 在 x64 runner 上用 `gcc-14-loongarch64-linux-gnu` 交叉编译（`core/toolchains/loongarch64-linux-gnu.cmake`），跳过 ctest/server 测试与冒烟，且不内置 `node/`（install.sh 自动降级 `--use-system-node`）。
   arm64 使用 `ubuntu-24.04-arm` 原生 runner。
 - bundled Node 版本固定在 workflow 的 `env.NODE_DIST_VERSION`（当前 24.18.0），升级时改这一个常量；下载一律对照 nodejs.org 官方 `SHASUMS256.txt` 校验，不硬编码哈希。
 - benchmark job 默认是 release 的依赖，含两层判定：相对回归对比为警告级（`compare.mjs` 回归超 15% 只告警，不阻断发布）；各 bench 脚本内置的绝对验收门禁（增量构建加速比 ≥ 2.0、渲染 fps/输入延迟/内存增长下限、慢客户端背压断言）未通过则 job 失败并阻断发布，属预期行为。当前构建必须产出全部基准场景结果，缺场景即失败。无上一 release 基线或基线资产下载失败时告警并跳过对比（不阻断），除非显式启用 `bootstrap_benchmark_baseline`。结果以 `bench-results-*.json` 同 MSI/tar.gz 一起发布，供下一版下载为基线。仅手动发布显式启用 `skip_performance_tests` 时允许跳过，且该次 release 不包含基准 JSON。
