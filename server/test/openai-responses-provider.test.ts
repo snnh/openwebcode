@@ -235,8 +235,44 @@ describe("OpenAIResponsesProvider request mapping", () => {
       { type: "function_call", call_id: "call_1", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
       { type: "function_call_output", call_id: "call_1", output: "ok" },
     ]);
-    // thinking 块不回传（Responses 的 reasoning 回放依赖服务端 reasoning item 机制）
+    // 异源 thinking 块不回传（provider 不匹配；同源回传见下条用例）
     expect(JSON.stringify(bodies[0]?.input)).not.toContain("历史思维不回传");
+  });
+
+  it("思维链回传开启时同源 thinking 块以 reasoning item 明文回传（DeepSeek reasoning_text），关闭或异源不回传", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const payload = sse([{ type: "response.completed", response: { status: "completed", output: [] } }]);
+    const messages: StreamChatRequest["messages"] = [
+      { id: "u1", role: "user", content: [{ type: "text", text: "继续" }], createdAt: "2026-01-01T00:00:00.000Z" },
+      {
+        id: "a1", role: "assistant", createdAt: "2026-01-01T00:00:01.000Z",
+        content: [
+          { type: "thinking", text: "先分析", provider: "openai-responses" },
+          { type: "thinking", text: "再行动", provider: "openai-responses" },
+          { type: "thinking", text: "异源思维", provider: "other-provider" },
+          { type: "text", text: "结论" },
+        ],
+      },
+    ];
+    // 开启（缺省 reasoningContent=true）：reasoning item 置于 assistant 消息前，异源过滤
+    await collect(makeProvider(sseFetch(bodies, payload)).streamChat(request({ messages })));
+    expect(bodies[0]?.input).toEqual([
+      { role: "user", content: "继续" },
+      {
+        type: "reasoning",
+        content: [
+          { type: "reasoning_text", text: "先分析" },
+          { type: "reasoning_text", text: "再行动" },
+        ],
+      },
+      { role: "assistant", content: "结论" },
+    ]);
+    // 请求级关闭：不回传（与 openai-compatible 的 reasoningContent=false 同语义）
+    await collect(makeProvider(sseFetch(bodies, payload)).streamChat(request({ messages, reasoningContent: false })));
+    expect(bodies[1]?.input).toEqual([
+      { role: "user", content: "继续" },
+      { role: "assistant", content: "结论" },
+    ]);
   });
 
   it("repairs dangling tool_call (no result persisted after abort) and drops orphan tool_result", async () => {
