@@ -15,7 +15,7 @@
 - 每轮自动打检查点，时间线面板可回滚文件与会话历史；快照后端按探测链自动选择（Linux：btrfs / zfs / overlayfs → git shadow），也可显式指定
 - 默认沙盒隔离（Windows Job Object / Linux Landlock，可显式切 AppContainer），不可信代码可用 WSB，一会话一 VM
 - 全部出站请求（模型 API、联网搜索/抓取、更新检测）可走代理：关闭 / 跟随环境变量 / 自定义，保存即生效
-- 联网搜索可选本地服务商执行，或由模型服务端执行（OpenAI Responses 接口，如 DeepSeek）
+- 联网搜索可选本地服务商执行，或由模型服务端执行（OpenAI Responses 接口，如 DeepSeek） 用法见：[faq](https://github.com/snnh/openwebcode/blob/main/help/faq.md#q-%E5%A6%82%E4%BD%95%E4%BD%BF%E7%94%A8deepseek-api%E6%8F%90%E4%BE%9B%E7%9A%84web_search)
 - bash 后台任务继续跑，不阻塞对话，完成后自动通知
 - 对话渲染 GFM Markdown、代码高亮与 KaTeX 公式；思考过程默认折叠并弱化显示；思考与工具调用按真实顺序交织，相邻工具调用自动合并折叠
 - `owc run "..."` 非交互执行，`--json` 输出 NDJSON 事件流，可用于 CI
