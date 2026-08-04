@@ -2,6 +2,12 @@
 
 本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前版本的用户可感知变化。日期以 Git 标签发布日期为准。
 
+## [未发布]
+
+### 修复
+
+- OpenAI Responses 接口遵循模型目录「思维链回传」设置：开启时历史同源 thinking 块以 reasoning item（`reasoning_text` 明文）回传——DeepSeek 思维模式（如 deepseek-v4-flash）强制要求回传，此前第二轮起必现 400「The `reasoning_text` in the thinking mode must be passed back to the API」；关闭或 OpenAI 官方端点（声明不回传）行为不变。
+
 ## [1.3.6] - 2026-08-04
 
 ### 修复

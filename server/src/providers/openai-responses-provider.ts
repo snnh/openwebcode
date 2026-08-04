@@ -1,4 +1,4 @@
-import type { ChatMessage } from "../sessions/types.js";
+import type { ChatMessage, ThinkingContent } from "../sessions/types.js";
 import { getUserAgent } from "../http.js";
 import { readSseData, DEFAULT_STREAM_IDLE_TIMEOUT_MS } from "./openai-compatible-provider.js";
 import { classifyHttpError, normalizeProviderError, parseRetryAfter, ProviderError } from "./provider-error.js";
@@ -13,8 +13,9 @@ export interface OpenAIResponsesProviderOptions {
   /** 自定义请求体：浅合并进 responses 请求体，核心字段（model/input/stream/tools 等）优先。 */
   extraBody?: Record<string, unknown>;
   reasoningEffort?: boolean;
-  /** 请求 reasoning summary 流（response.reasoning_summary_text.delta → thinking_delta）。
-   * 端点不接受 reasoning.summary 字段时可显式 false 关闭。 */
+  /** 思维链开关（缺省开）：请求 reasoning summary 流（response.reasoning_summary_text.delta /
+   * response.reasoning_text.delta → thinking_delta），并控制历史同源 thinking 块的 reasoning
+   * item 回传（DeepSeek 思维模式强制要求回传）。端点不接受时可显式 false 关闭。 */
   reasoningContent?: boolean;
   /** SSE 流连续无 data 事件的最大毫秒数（心跳注释不计），超时判为半开连接断开并走重试；<=0 关闭。 */
   streamIdleTimeoutMs?: number;
@@ -31,8 +32,10 @@ interface FunctionCallAccumulator {
  * OpenAI Responses API（POST {baseURL}/responses，stream: true）。
  *
  * 与 chat/completions 的差异：tools 为扁平 function 结构；消息历史映射为 input items
- * （function_call / function_call_output）；思维以 reasoning summary 流返回；usage 挂在
- * response.completed 事件上（input_tokens_details.cached_tokens → cacheRead）。
+ * （function_call / function_call_output）；思维以 reasoning summary / reasoning text 流返回；
+ * usage 挂在 response.completed 事件上（input_tokens_details.cached_tokens → cacheRead）。
+ * 思维链回传遵循模型能力声明（request.reasoningContent）：开启时历史同源 thinking 块以
+ * reasoning item 明文回传（DeepSeek 思维模式强制要求；OpenAI 官方端点声明关闭，不受影响）。
  *
  * prompt caching：Responses 只有自动前缀缓存，无显式断点机制——cacheBreakpoints 在此
  * 为 no-op（如实忽略，不伪造断点），cached_tokens 如实上报。
@@ -77,7 +80,7 @@ export class OpenAIResponsesProvider implements Provider {
           model: request.model,
           stream: true,
           instructions,
-          input: toResponsesInput(request.messages),
+          input: toResponsesInput(request.messages, this.name, reasoningSummary),
           ...(maxTokens !== undefined ? { max_output_tokens: maxTokens } : {}),
           ...(Object.keys(reasoning).length > 0 ? { reasoning } : {}),
           ...(request.tools.length > 0 || request.serverWebSearch === true
@@ -256,8 +259,11 @@ function rememberCall(
 
 /**
  * ChatMessage 历史 → Responses input items。
- * assistant 的 thinking 块不回传：Responses 的 reasoning 回放依赖服务端 reasoning item /
- * encrypted_content（store/previous_response_id 机制），裸文本回放无意义且多数实现不回传。
+ * 思维链回传（replayReasoning，遵循模型目录「思维链回传」能力声明，与 openai-compatible
+ * 的 reasoning_content 回带同一语义）：同源 thinking 块转为 reasoning item 置于对应
+ * assistant 消息前。DeepSeek 思维模式强制要求 reasoning_text 回传（缺失直接 400），其
+ * 明文 content 会被归并到相邻 assistant 消息；OpenAI 官方端点的模型元数据均声明关闭
+ * 回传（走服务端 reasoning item / encrypted_content 机制），不受影响。
  *
  * 配对修复：历史可能残留无对应 function_call_output 的 function_call（中断/崩溃时结果
  * 未落盘），Responses API 对此直接 400（"No tool output found for tool call"）；故先
@@ -265,7 +271,7 @@ function rememberCall(
  * 游离 tool_result（对应调用在压缩边界外/旧分支）不产出 function_call，直接丢弃，
  * 否则同样报 "No tool call found for function call output"。
  */
-function toResponsesInput(messages: ChatMessage[]): Array<Record<string, unknown>> {
+function toResponsesInput(messages: ChatMessage[], providerName: string, replayReasoning: boolean): Array<Record<string, unknown>> {
   const outputs = new Map<string, string>();
   for (const message of messages) {
     for (const block of message.content) {
@@ -292,6 +298,14 @@ function toResponsesInput(messages: ChatMessage[]): Array<Record<string, unknown
             ],
       });
     } else if (message.role === "assistant") {
+      // 思维链回传：同源 thinking 块 → reasoning item（每块一个 reasoning_text content part），
+      // 置于 assistant 消息前（DeepSeek 明文 content 归并到相邻 assistant 消息）
+      if (replayReasoning) {
+        const thinkingParts = message.content
+          .filter((block): block is ThinkingContent => block.type === "thinking" && block.provider === providerName && block.text.trim() !== "")
+          .map((block) => ({ type: "reasoning_text", text: block.text }));
+        if (thinkingParts.length > 0) result.push({ type: "reasoning", content: thinkingParts });
+      }
       const text = message.content
         .filter((block) => block.type === "text")
         .map((block) => block.text)
