@@ -128,7 +128,9 @@ async function makeApplier(overrides: {
     dataDir,
     installRoot,
     platform: overrides.platform,
-    ...(overrides.arch ? { arch: overrides.arch } : {}),
+    // 与宿主架构解耦：缺省固定 x64（arm64 CI runner 上 process.arch 会让资产名错配）；
+    // 架构映射/不支持架构用例显式传 arch 覆盖
+    arch: overrides.arch ?? "x64",
     getReleaseUrl: () => RELEASE_URL,
     getCurrentVersion: () => overrides.currentVersion ?? "0.5.2",
     fetchImpl: overrides.fetchImpl,
