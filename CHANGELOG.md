@@ -2,11 +2,22 @@
 
 本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前版本的用户可感知变化。日期以 Git 标签发布日期为准。
 
+## [1.3.8] - 2026-08-04
+
+### 修复
+
+- 思维链回传摆放修正：reasoning item 改为**每个 function_call 前各放一条**——DeepSeek 思维模式要求每个工具调用都有紧邻的完整思维链，function_call_output 会打断关联链，1.3.7 只在 assistant 消息前放一条，多工具调用轮仍必 400「The `reasoning_text` in the thinking mode must be passed back to the API」（摆放规则经真实端点探针逐项验证）。
+- 思维链回传被能力声明关闭且历史含同源 thinking 块时，server 日志留一行提示（此前该配置下 DeepSeek 必 400 但无任何可诊断线索）。
+
+### 文档
+
+- 出站代理补充：systemd 服务不继承登录 shell 的代理环境变量（env 模式等于直连，更新检测失败最常见原因）；仅支持 http/https 代理（socks5 拒绝）；低于 1.2.0 无代理支持时的自举更新方法。
+
 ## [1.3.7] - 2026-08-04
 
 ### 修复
 
-- OpenAI Responses 接口遵循模型目录「思维链回传」设置：开启时历史同源 thinking 块以 reasoning item（`reasoning_text` 明文）回传，**每个 function_call 前各放一条**——DeepSeek 思维模式（如 deepseek-v4-flash）要求每个工具调用都有紧邻的完整思维链，function_call_output 会打断关联链，多工具调用轮只在开头放一条仍必 400「The `reasoning_text` in the thinking mode must be passed back to the API」（1.3.7 的初版修复因此不完整；摆放规则经真实端点探针逐项验证）；关闭或 OpenAI 官方端点（声明不回传）行为不变。
+- OpenAI Responses 接口遵循模型目录「思维链回传」设置：开启时历史同源 thinking 块以 reasoning item（`reasoning_text` 明文）回传——DeepSeek 思维模式（如 deepseek-v4-flash）强制要求回传，此前第二轮起必现 400「The `reasoning_text` in the thinking mode must be passed back to the API」；关闭或 OpenAI 官方端点（声明不回传）行为不变。
 
 ## [1.3.6] - 2026-08-04
 
