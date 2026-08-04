@@ -35,6 +35,39 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
+  # arm64 原生构建防回归（release.yml 同架构出包）
+  linux-arm64:
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        env:
+          CC: ${{ matrix.compiler }}
+        run: cmake -S core -B build -DCMAKE_BUILD_TYPE=Debug
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  # 龙芯（LoongArch64）无可用 runner：x64 上交叉编译，编译通过即门禁（不跑 ctest）
+  loongarch64-cross:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cross toolchain
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y gcc-loongarch64-linux-gnu
+      - name: Configure (cross)
+        run: cmake -S core -B build-loong --toolchain core/toolchains/loongarch64-linux-gnu.cmake -DCMAKE_BUILD_TYPE=Release
+      - name: Build (cross)
+        run: cmake --build build-loong --parallel
+
   windows:
     runs-on: windows-latest
     steps:

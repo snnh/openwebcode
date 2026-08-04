@@ -30,6 +30,14 @@ Browser (React) ── HTTP/WebSocket ──► Node service (agent loop and too
 
 ### Linux
 
+x86_64, aarch64 (arm64), and Loongson loongarch64 are supported; the online installer picks the right package for your architecture automatically:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/snnh/openwebcode/main/packaging/install-online.sh | bash
+```
+
+Or download the tar.gz for your architecture manually (`linux-x64` / `linux-arm64` / `linux-loongarch64`):
+
 ```sh
 mkdir openwebcode
 tar -xzf openwebcode-<version>-linux-x64.tar.gz -C openwebcode
@@ -38,6 +46,8 @@ cd openwebcode
 ./install.sh
 ~/.local/bin/owc
 ```
+
+The loongarch64 package ships no bundled Node.js and requires a system Node.js ≥ 24 (`--use-system-node`; when the package has no `node/` directory the installer takes that path automatically).
 
 For scripts and CI, use `--yes` to suppress prompts:
 

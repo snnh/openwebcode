@@ -3,14 +3,16 @@
 [中文](./README.md) | [English](./README.en.md)
 
 打 tag `v*`（或 Actions 手动触发 `release` 工作流并输入 tag）后，
-`.github/workflows/release.yml` 产出两个分发物并上传到该 tag 的 GitHub Release：
+`.github/workflows/release.yml` 产出以下分发物并上传到该 tag 的 GitHub Release：
 
 | 产物 | 平台 | 内容 |
 | --- | --- | --- |
 | `openwebcode-<version>-windows-x64.msi` | Windows | CPack/WiX 安装包 |
-| `openwebcode-<version>-linux-x64.tar.gz` | Linux | tar.gz + 顶层 `install.sh` |
-| `install-online.sh` | Linux | `curl \| bash` 在线安装/更新脚本 |
-| `SHA256SUMS.txt` | 全平台 | 两个发行包的 SHA-256 校验和 |
+| `openwebcode-<version>-linux-x64.tar.gz` | Linux x86_64 | tar.gz + 顶层 `install.sh` |
+| `openwebcode-<version>-linux-arm64.tar.gz` | Linux aarch64 | 同上（原生构建） |
+| `openwebcode-<version>-linux-loongarch64.tar.gz` | Linux 龙芯 | 同上（交叉编译；**不内置 Node.js**，安装走 `--use-system-node`） |
+| `install-online.sh` | Linux | `curl \| bash` 在线安装/更新脚本（按 `uname -m` 自动选架构） |
+| `SHA256SUMS.txt` | 全平台 | 全部发行包的 SHA-256 校验和 |
 
 `<version>` 为 tag 去掉前导 `v`（如 `v0.5.2` → `0.5.2`）。
 
@@ -203,6 +205,8 @@ cp -r web/dist build/stage/web/
 curl -fsSLo build/node.tar.gz \
   "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.gz"
 tar -xzf build/node.tar.gz -C build/stage/node --strip-components=1
+# arm64 原生构建时改为 node-v${NODE_VERSION}-linux-arm64.tar.gz；
+# loongarch64 无官方 Node 包，不创建 build/stage/node（install.sh 自动降级 --use-system-node）
 
 test -x build/stage/bin/owc-exec
 test -x build/stage/node/bin/node
@@ -290,7 +294,7 @@ curl -fsSL https://raw.githubusercontent.com/snnh/openwebcode/main/packaging/ins
   | bash -s -- --version 0.6.0 --prefix /opt/openwebcode --yes
 ```
 
-脚本从 GitHub Releases 下载 `openwebcode-<version>-linux-x64.tar.gz` 与 `SHA256SUMS.txt`，先用 `sha256sum --check`（只取目标行；无 `sha256sum` 时回落 `shasum -a 256`）校验，失败即中止，再解压到 `mktemp -d` 临时目录（退出时自动清理）。依赖仅为 curl 或 wget、tar、校验工具，不依赖 jq。
+脚本从 GitHub Releases 下载 `openwebcode-<version>-linux-<arch>.tar.gz`（`<arch>` 由 `uname -m` 映射：`x86_64→x64`、`aarch64→arm64`、`loongarch64→loongarch64`，未知架构明确报错）与 `SHA256SUMS.txt`，先用 `sha256sum --check`（只取目标行；无 `sha256sum` 时回落 `shasum -a 256`）校验，失败即中止，再解压到 `mktemp -d` 临时目录（退出时自动清理）。依赖仅为 curl 或 wget、tar、校验工具，不依赖 jq。
 
 | 选项 | 行为 |
 | --- | --- |
@@ -340,8 +344,10 @@ Server 模块在进程启动时加载，复制后必须重启 `build\stage\bin\o
 - Windows：构建测试通过后裁剪生产依赖 → CMake Release 构建 core → 按契约组装 `build/stage/`
   （下载固定版本 Node 24 win-x64 zip，对照官方 `SHASUMS256.txt` 校验后取 `node.exe`）→ `cpack -G WIX`
   → `verify-wix-options.ps1` 校验 Shell integration → `msiexec` 静默安装、`/api/health` 冒烟、卸载 → 上传 MSI。
-- Linux：同样构建测试后组装 `build/stage/`（Node 24 linux-x64 tar.gz 同样经 `SHASUMS256.txt` 校验后整树解入 `node/`），
-  `tar -C stage . -C packaging install.sh` 打包 → 临时前缀 `./install.sh --yes` 安装并 `/api/health` 冒烟 → 上传 tar.gz。
+- Linux：按 `arch: [x64, arm64, loongarch64]` 矩阵出包——x64/arm64 原生构建测试后组装 `build/stage/`（Node 24 linux-<arch> tar.gz 同样经 `SHASUMS256.txt` 校验后整树解入 `node/`），
+  `tar -C stage . -C packaging install.sh` 打包 → 临时前缀 `./install.sh --yes` 安装并 `/api/health` 冒烟 → 上传 tar.gz；
+  loongarch64 在 x64 runner 上用 `gcc-loongarch64-linux-gnu` 交叉编译（`core/toolchains/loongarch64-linux-gnu.cmake`），跳过 ctest/server 测试与冒烟，且不内置 `node/`（install.sh 自动降级 `--use-system-node`）。
+  arm64 使用 `ubuntu-24.04-arm` 原生 runner。
 - bundled Node 版本固定在 workflow 的 `env.NODE_DIST_VERSION`（当前 24.18.0），升级时改这一个常量；下载一律对照 nodejs.org 官方 `SHASUMS256.txt` 校验，不硬编码哈希。
 - benchmark job 默认是 release 的依赖，含两层判定：相对回归对比为警告级（`compare.mjs` 回归超 15% 只告警，不阻断发布）；各 bench 脚本内置的绝对验收门禁（增量构建加速比 ≥ 2.0、渲染 fps/输入延迟/内存增长下限、慢客户端背压断言）未通过则 job 失败并阻断发布，属预期行为。当前构建必须产出全部基准场景结果，缺场景即失败。无上一 release 基线或基线资产下载失败时告警并跳过对比（不阻断），除非显式启用 `bootstrap_benchmark_baseline`。结果以 `bench-results-*.json` 同 MSI/tar.gz 一起发布，供下一版下载为基线。仅手动发布显式启用 `skip_performance_tests` 时允许跳过，且该次 release 不包含基准 JSON。
 - Release 由 `softprops/action-gh-release@v2` 创建/更新，发布说明取自 `CHANGELOG.md` 的 `## [版本]` 段落（缺失或为空会阻断发布），非草稿；同时生成 `SHA256SUMS.txt` 并自检。

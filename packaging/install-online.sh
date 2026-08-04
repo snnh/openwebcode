@@ -23,7 +23,8 @@
 #
 # 行为:
 #   1. 检查依赖：curl 或 wget、tar、sha256sum（或 shasum -a 256）；
-#   2. 在 mktemp -d 工作目录下载 openwebcode-<version>-linux-x64.tar.gz 与
+#   2. 在 mktemp -d 工作目录下载 openwebcode-<version>-linux-<arch>.tar.gz（arch 由
+#      uname -m 映射：x86_64→x64、aarch64→arm64、loongarch64→loongarch64）与
 #      SHA256SUMS.txt，只取目标行做 sha256sum --check，失败即中止；
 #   3. 解压到临时目录；
 #   4. 若 <prefix>/lib/openwebcode/server/dist/index.js 已存在 → 更新模式：
@@ -180,8 +181,17 @@ if [ -z "$VERSION" ]; then
 fi
 validate_version "$VERSION" || die "非法版本号: $VERSION"
 
+# 架构映射到 release.yml 产物名后缀：x86_64→x64，aarch64→arm64，loongarch64→loongarch64
+ARCH=$(uname -m)
+case "$ARCH" in
+    x86_64) ARCH=x64 ;;
+    aarch64|arm64) ARCH=arm64 ;;
+    loongarch64) ARCH=loongarch64 ;;
+    *) die "不支持的架构: $ARCH（支持 x86_64 / aarch64 / loongarch64）" 1 ;;
+esac
+
 BASE_URL=${OWC_INSTALL_BASE_URL:-"https://github.com/snnh/openwebcode/releases/download/v$VERSION"}
-TARBALL="openwebcode-$VERSION-linux-x64.tar.gz"
+TARBALL="openwebcode-$VERSION-linux-$ARCH.tar.gz"
 
 echo "下载 OpenWebCode v$VERSION ..."
 fetch "$BASE_URL/$TARBALL" "$WORK_DIR/$TARBALL" || \
