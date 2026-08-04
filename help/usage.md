@@ -166,7 +166,9 @@ server 的全部出站请求（模型 API、联网搜索/抓取、更新检测�
 - **模式**：`关闭`（全部直连）/ `跟随环境变量`（默认，现读 `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` 及小写变体）/ `自定义`（使用下方地址）。
 - 自定义模式下填 **HTTP 代理** / **HTTPS 代理**（形如 `http://127.0.0.1:7890`，可含凭据；按目标 URL 协议选择，缺失时回退另一个，两者至少填一个），**例外列表** 为逗号分隔的主机名或域名后缀（如 `internal.example.com`），命中的地址跳过代理；本机回环地址始终跳过。
 - 代理地址按敏感字段处理：界面只显示脱敏值（凭据不外显），保存即热生效，无需重启。对应环境变量：`OWC_PROXY_MODE`、`OWC_PROXY_HTTP`、`OWC_PROXY_HTTPS`、`OWC_PROXY_NO_PROXY`。
-- 更新检测与在线更新同样经此代理；Linux 一行安装脚本 `packaging/install-online.sh` 用的是 curl，原生读取 `HTTPS_PROXY` 等环境变量，与界面设置无关。
+- **仅支持 http/https 代理**（`socks5://` 不被接受；Clash/v2ray 类工具请填其 HTTP 端口，如 7890，而非 SOCKS 端口，如 1080）。
+- **`跟随环境变量` 模式读的是 server 进程的环境**：systemd 服务不继承登录 shell 的 `HTTPS_PROXY`——服务化部署请在界面改用自定义代理，或在 unit 里加 `Environment=HTTPS_PROXY=...`，否则等于直连（更新检测失败的最常见原因）。
+- 更新检测与在线更新同样经此代理（1.2.0 起）；更早版本一律直连，在必须代理的网络里无法自举更新，请用一行安装脚本重装：`https_proxy=http://<代理地址> curl -fsSL https://raw.githubusercontent.com/snnh/openwebcode/main/packaging/install-online.sh | bash`（脚本用 curl，原生读取 `HTTPS_PROXY` 等环境变量，与界面设置无关）。
 
 ## 定时任务（cron）
 
