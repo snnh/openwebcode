@@ -96,7 +96,7 @@ export function SubagentTabStrip({ tabs, runs, selected, terminal, onSelect, onC
               title={tab.prompt || label}
               onClick={() => onSelect(tab.toolCallId)}
             >
-              {status === "running" && <span className="subagent-run-spinner subagent-tab-spinner" aria-hidden />}
+              {status === "running" && <span className="subagent-run-pulse subagent-tab-spinner" aria-hidden />}
               {status && status !== "running" && <span className="subagent-tab-dot" data-status={status} aria-hidden />}
               <span className="subagent-tab-label">{label}</span>
             </button>

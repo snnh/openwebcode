@@ -51,7 +51,7 @@ export function ComposerChips({ sessionId, subagents }: {
     <div className="composer-chips" aria-label={t("运行状态速览", "Activity overview")}>
       <Chip icon="clock" label={t("后台 Bash", "Background Bash")} count={`(${runningTasks.length})`} disabled={taskItems.length === 0}>
         {taskItems.length === 0
-          ? <div className="chip-list-empty">{t("暂无后台任务", "No background tasks")}</div>
+          ? <div className="muted-empty chip-list-empty">{t("暂无后台任务", "No background tasks")}</div>
           : (
             <div className="chip-list">
               {taskItems.slice(0, 20).map((task) => (
@@ -66,7 +66,7 @@ export function ComposerChips({ sessionId, subagents }: {
       </Chip>
       <Chip icon="layers" label={t("子 Agent", "Subagents")} count={`(${runningSubagents.length})`} disabled={subagentRuns.length === 0}>
         {subagentRuns.length === 0
-          ? <div className="chip-list-empty">{t("暂无子代理", "No subagents")}</div>
+          ? <div className="muted-empty chip-list-empty">{t("暂无子代理", "No subagents")}</div>
           : (
             <div className="chip-list">
               {subagentRuns.slice(0, 20).map((run) => (
@@ -81,7 +81,7 @@ export function ComposerChips({ sessionId, subagents }: {
       </Chip>
       <Chip icon="list" label={t("待办", "Todos")} count={`(${doneTodos}/${todoItems.length})`} disabled={todoItems.length === 0}>
         {todoItems.length === 0
-          ? <div className="chip-list-empty">{t("暂无待办", "No todos")}</div>
+          ? <div className="muted-empty chip-list-empty">{t("暂无待办", "No todos")}</div>
           : (
             <div className="chip-list">
               {todoItems.map((item, index) => (
@@ -178,7 +178,7 @@ function CronPanel({ sessionId, jobs }: { sessionId: string; jobs: CronJobInfo[]
   return (
     <div>
       {jobs.length === 0
-        ? <div className="chip-list-empty">{t("暂无定时任务", "No scheduled jobs")}</div>
+        ? <div className="muted-empty chip-list-empty">{t("暂无定时任务", "No scheduled jobs")}</div>
         : (
           <div className="chip-list">
             {jobs.map((job) => (
@@ -212,6 +212,7 @@ function CronPanel({ sessionId, jobs }: { sessionId: string; jobs: CronJobInfo[]
         }}
       >
         <input
+          className="input"
           type="text"
           value={expression}
           placeholder={t("cron 表达式，如 */30 * * * *", "cron expression, e.g. */30 * * * *")}
@@ -219,6 +220,7 @@ function CronPanel({ sessionId, jobs }: { sessionId: string; jobs: CronJobInfo[]
           onChange={(event) => setExpression(event.target.value)}
         />
         <input
+          className="input"
           type="text"
           value={prompt}
           placeholder={t("触发时注入的提示词", "Prompt injected when the job fires")}

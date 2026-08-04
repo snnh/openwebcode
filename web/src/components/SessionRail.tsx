@@ -102,7 +102,7 @@ export function SessionRail({ sessions, currentId, runningIds, theme, collapsed,
         <span className="rail-search-wrap">
           <Icon name="search" size={13} />
           <input
-            className="rail-search"
+            className="input rail-search"
             value={filter}
             onChange={(event) => setFilter(event.target.value)}
             onKeyDown={(event) => {
@@ -142,47 +142,49 @@ export function SessionRail({ sessions, currentId, runningIds, theme, collapsed,
                     <span className="session-title">{session.title}</span>
                     <span className="session-meta">{session.provider} · {session.model}</span>
                   </button>
-                  {runningIds.has(session.id) && <span className="running-dot" role="status" aria-label={t("运行中", "Running")} title={t("运行中", "Running")} />}
-                  <button
-                    className={`session-pin${session.pinned ? " active" : ""}`}
-                    aria-label={session.pinned ? t(`取消置顶 ${session.title}`, `Unpin ${session.title}`) : t(`置顶 ${session.title}`, `Pin ${session.title}`)}
-                    aria-pressed={session.pinned ?? false}
-                    title={session.pinned ? t("取消置顶", "Unpin") : t("置顶", "Pin")}
-                    onClick={() => onTogglePin(session.id, !(session.pinned ?? false))}
-                  >
-                    <Icon name="pin" size={13} />
-                  </button>
-                  <button
-                    className="session-rename-btn"
-                    aria-label={t(`重命名 ${session.title}`, `Rename ${session.title}`)}
-                    title={t("重命名", "Rename")}
-                    onClick={() => startRename(session)}
-                  >
-                    <Icon name="edit" size={13} />
-                  </button>
-                  <button
-                    className="session-export"
-                    aria-label={t(`导出分享页 ${session.title}`, `Export share page for ${session.title}`)}
-                    title={t("导出分享页（HTML）", "Export share page (HTML)")}
-                    onClick={() => window.open(`/api/sessions/${session.id}/export.html?lang=${language}`, "_blank")}
-                  >
-                    <Icon name="download" size={13} />
-                  </button>
-                  <button
-                    className="session-delete"
-                    aria-label={t(`删除会话 ${session.title}`, `Delete session ${session.title}`)}
-                    title={t("删除会话", "Delete session")}
-                    onClick={() => onDelete(session.id)}
-                  >
-                    <Icon name="trash" size={13} />
-                  </button>
+                  <div className="session-actions">
+                    {runningIds.has(session.id) && <span className="running-dot" role="status" aria-label={t("运行中", "Running")} title={t("运行中", "Running")} />}
+                    <button
+                      className={`session-pin${session.pinned ? " active" : ""}`}
+                      aria-label={session.pinned ? t(`取消置顶 ${session.title}`, `Unpin ${session.title}`) : t(`置顶 ${session.title}`, `Pin ${session.title}`)}
+                      aria-pressed={session.pinned ?? false}
+                      title={session.pinned ? t("取消置顶", "Unpin") : t("置顶", "Pin")}
+                      onClick={() => onTogglePin(session.id, !(session.pinned ?? false))}
+                    >
+                      <Icon name="pin" size={13} />
+                    </button>
+                    <button
+                      className="session-rename-btn"
+                      aria-label={t(`重命名 ${session.title}`, `Rename ${session.title}`)}
+                      title={t("重命名", "Rename")}
+                      onClick={() => startRename(session)}
+                    >
+                      <Icon name="edit" size={13} />
+                    </button>
+                    <button
+                      className="session-export"
+                      aria-label={t(`导出分享页 ${session.title}`, `Export share page for ${session.title}`)}
+                      title={t("导出分享页（HTML）", "Export share page (HTML)")}
+                      onClick={() => window.open(`/api/sessions/${session.id}/export.html?lang=${language}`, "_blank")}
+                    >
+                      <Icon name="download" size={13} />
+                    </button>
+                    <button
+                      className="session-delete"
+                      aria-label={t(`删除会话 ${session.title}`, `Delete session ${session.title}`)}
+                      title={t("删除会话", "Delete session")}
+                      onClick={() => onDelete(session.id)}
+                    >
+                      <Icon name="trash" size={13} />
+                    </button>
+                  </div>
                 </>
               )}
             </div>
           ))}
-          {sessions === undefined && <p className="rail-empty">{t("加载中…", "Loading…")}</p>}
-          {sessions && sessions.length === 0 && <p className="rail-empty">{t("还没有会话", "No sessions yet")}</p>}
-          {sessions && sessions.length > 0 && ordered?.length === 0 && <p className="rail-empty">{t("无匹配会话", "No matching sessions")}</p>}
+          {sessions === undefined && <p className="muted-empty rail-empty">{t("加载中…", "Loading…")}</p>}
+          {sessions && sessions.length === 0 && <p className="muted-empty rail-empty">{t("还没有会话", "No sessions yet")}</p>}
+          {sessions && sessions.length > 0 && ordered?.length === 0 && <p className="muted-empty rail-empty">{t("无匹配会话", "No matching sessions")}</p>}
         </nav>
       )}
       <footer>

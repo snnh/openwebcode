@@ -13,6 +13,7 @@ import { CodeView } from "./CodeView";
 import { Icon } from "../Icon";
 import { langFromPath } from "../CodeOverlay";
 import { loadMonaco, type MonacoApi } from "./monaco-loader";
+import { useConfirmDialog } from "../ConfirmDialog";
 
 /** App 侧命令（保存/聚焦）经此动作面触达编辑器；注册表不感知 React 状态 */
 export interface EditorPaneActions {
@@ -165,10 +166,20 @@ export function EditorPane({ sessionId, path, line, column, readOnly = false, da
   }, [actionsRef, save]);
 
   // 关闭前确认未保存修改
+  const { ask: askConfirm, dialogElement: confirmDialogElement } = useConfirmDialog();
   const requestClose = useCallback((): void => {
-    if (dirty && !window.confirm(t("有未保存的修改，确定关闭编辑器？", "You have unsaved changes. Close the editor anyway?"))) return;
-    onClose();
-  }, [dirty, onClose, t]);
+    if (!dirty) {
+      onClose();
+      return;
+    }
+    askConfirm({
+      title: t("关闭编辑器", "Close editor"),
+      body: t("有未保存的修改，确定关闭编辑器？", "You have unsaved changes. Close the editor anyway?"),
+      confirmLabel: t("关闭", "Close"),
+      danger: false,
+      onConfirm: onClose,
+    });
+  }, [dirty, onClose, askConfirm, t]);
 
   // Esc 回到对话（capture 兜底 Monaco 之外的焦点；Monaco 内由 addCommand 处理）
   useEffect(() => {
@@ -212,7 +223,7 @@ export function EditorPane({ sessionId, path, line, column, readOnly = false, da
           )}
         </nav>
         <div className="editor-pane-actions">
-          {dirty && <span className="editor-dirty" title={t("有未保存的修改", "Unsaved changes")}>●</span>}
+          {dirty && <span className="editor-dirty" title={t("有未保存的修改", "Unsaved changes")}><Icon name="circle-filled" size={10} /></span>}
           {!saveBlocked && (
             <button
               className="btn small"
@@ -247,6 +258,7 @@ export function EditorPane({ sessionId, path, line, column, readOnly = false, da
         )}
         {code !== undefined && !monacoFailed && <div ref={hostRef} className="editor-host" data-testid="monaco-host" />}
       </div>
+      {confirmDialogElement}
     </section>
   );
 }

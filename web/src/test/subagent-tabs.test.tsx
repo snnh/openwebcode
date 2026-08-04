@@ -86,14 +86,14 @@ describe("App 主区子代理标签", () => {
     expect(screen.getByRole("tab", { name: "主对话" })).toHaveAttribute("aria-selected", "true");
     expect(tab).toHaveAttribute("aria-selected", "false");
     // 运行中：琥珀 spinner + 未选中注意样式
-    expect(tab.querySelector(".subagent-run-spinner")).toBeInTheDocument();
+    expect(tab.querySelector(".subagent-run-pulse")).toBeInTheDocument();
     expect(tab.closest(".subagent-tab")).toHaveClass("attention");
 
     act(() => {
       finished(socket, "s1", "call-1", "task-1", "done");
     });
     await waitFor(() => {
-      expect(tab.querySelector(".subagent-run-spinner")).toBeNull();
+      expect(tab.querySelector(".subagent-run-pulse")).toBeNull();
       expect(tab.closest(".subagent-tab")).toHaveAttribute("data-status", "done");
     });
     expect(tab.closest(".subagent-tab")).not.toHaveClass("attention");

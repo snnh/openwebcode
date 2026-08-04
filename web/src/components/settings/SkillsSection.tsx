@@ -6,8 +6,8 @@ import { useI18n } from "../../i18n";
 export function SkillsSection(): ReactElement {
   const { t } = useI18n();
   const skills = useQuery({ queryKey: ["global-skills"], queryFn: api.globalSkills });
-  if (skills.isPending) return <p className="panel-empty">{t("加载中…", "Loading…")}</p>;
-  if (skills.isError) return <p className="panel-empty">{t("无法加载技能清单。", "Could not load skills.")}</p>;
+  if (skills.isPending) return <p className="muted-empty panel-empty">{t("加载中…", "Loading…")}</p>;
+  if (skills.isError) return <p className="muted-empty panel-empty">{t("无法加载技能清单。", "Could not load skills.")}</p>;
   return (
     <>
       <p className="settings-note">{t(
@@ -15,7 +15,7 @@ export function SkillsSection(): ReactElement {
         "Place global skills in skills/<name>/SKILL.md under the data directory, and project skills in <workspace>/.owc/skills/. Type / in chat for completion; models can also load them with load_skill.",
       )}</p>
       {skills.data.skills.length === 0 ? (
-        <p className="panel-empty">{t("还没有全局技能。", "No global skills installed.")}</p>
+        <p className="muted-empty panel-empty">{t("还没有全局技能。", "No global skills installed.")}</p>
       ) : (
         <table className="pricing-table catalog-table">
           <thead>

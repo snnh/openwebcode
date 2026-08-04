@@ -23,7 +23,7 @@ function DiffView({ diff }: { diff: ScmDiff }): ReactElement {
     return (
       <div className="diff-view">
         <pre className="diff-stat">{diff.stat}</pre>
-        <p className="preview-note">
+        <p className="muted-empty preview-note">
           {t("diff 过大已截断，仅显示统计；完整内容在 artifact", "Diff is too large and was truncated; only the stat is shown. Full content is in artifact")}
           {diff.artifactId ? <code>{diff.artifactId}</code> : null}
         </p>
@@ -33,7 +33,7 @@ function DiffView({ diff }: { diff: ScmDiff }): ReactElement {
   const lines = (diff.diff ?? "").split("\n");
   if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
   if (lines.length === 0) {
-    return <p className="panel-empty">{t("该文件没有可显示的 diff。", "No diff to display for this file.")}</p>;
+    return <p className="muted-empty panel-empty">{t("该文件没有可显示的 diff。", "No diff to display for this file.")}</p>;
   }
   return (
     <div className="diff-view">
@@ -241,7 +241,7 @@ export function ScmPanel({ sessionId, onNotice, onOpenDiff }: {
   });
 
   if (!sessionId) {
-    return <div className="inspector-body"><p className="panel-empty">{t("选择会话以查看源代码管理。", "Select a session to view source control.")}</p></div>;
+    return <div className="inspector-body"><p className="muted-empty panel-empty">{t("选择会话以查看源代码管理。", "Select a session to view source control.")}</p></div>;
   }
 
   const data = status.data;
@@ -312,15 +312,15 @@ export function ScmPanel({ sessionId, onNotice, onOpenDiff }: {
           </button>
         </div>
         {status.isPending ? (
-          <p className="panel-empty">{t("加载中…", "Loading…")}</p>
+          <p className="muted-empty panel-empty">{t("加载中…", "Loading…")}</p>
         ) : status.isError ? (
-          <p className="panel-empty">
+          <p className="muted-empty panel-empty">
             {t("无法读取 git 状态（该会话目录可能不是 git 仓库）", "Could not read git status (the session directory may not be a git repository)")}
             {status.error instanceof ApiError ? `：${status.error.message}` : ""}
           </p>
         ) : data ? (
           !data.isRepo ? (
-            <p className="panel-empty">{t("该会话目录不是 git 仓库。", "The session directory is not a git repository.")}</p>
+            <p className="muted-empty panel-empty">{t("该会话目录不是 git 仓库。", "The session directory is not a git repository.")}</p>
           ) : (
           <>
             <p className="scm-branch">
@@ -334,7 +334,7 @@ export function ScmPanel({ sessionId, onNotice, onOpenDiff }: {
               )}
             </p>
             {data.staged.length + data.unstaged.length + data.untracked.length === 0 ? (
-              <p className="panel-empty">{t("工作区干净，没有变更。", "Working tree clean. No changes.")}</p>
+              <p className="muted-empty panel-empty">{t("工作区干净，没有变更。", "Working tree clean. No changes.")}</p>
             ) : (
               <>
                 <StatusGroup
@@ -371,14 +371,14 @@ export function ScmPanel({ sessionId, onNotice, onOpenDiff }: {
             <section className="scm-commit">
               <h3 className="problems-file">{t("提交", "Commit")}</h3>
               <textarea
-                className="scm-commit-input"
+                className="input scm-commit-input"
                 rows={3}
                 value={commitMessage}
                 placeholder={t("输入提交信息…", "Enter a commit message…")}
                 aria-label={t("提交信息", "Commit message")}
                 onChange={(event) => setCommitMessage(event.target.value)}
               />
-              <p className="preview-note">{t("提交将下发给 agent 执行，需经你确认后才真正生效。", "The commit is dispatched to the agent and only takes effect after your confirmation.")}</p>
+              <p className="muted-empty preview-note">{t("提交将下发给 agent 执行，需经你确认后才真正生效。", "The commit is dispatched to the agent and only takes effect after your confirmation.")}</p>
               <button
                 className="btn primary small"
                 disabled={!commitMessage.trim() || commit.isPending}
@@ -401,11 +401,11 @@ export function ScmPanel({ sessionId, onNotice, onOpenDiff }: {
               </h3>
               {historyOpen && (
                 log.isPending ? (
-                  <p className="panel-empty">{t("加载中…", "Loading…")}</p>
+                  <p className="muted-empty panel-empty">{t("加载中…", "Loading…")}</p>
                 ) : log.isError ? (
-                  <p className="panel-empty">{t("暂无提交记录。", "No commits yet.")}</p>
+                  <p className="muted-empty panel-empty">{t("暂无提交记录。", "No commits yet.")}</p>
                 ) : (log.data?.commits ?? []).length === 0 ? (
-                  <p className="panel-empty">{t("暂无提交记录。", "No commits yet.")}</p>
+                  <p className="muted-empty panel-empty">{t("暂无提交记录。", "No commits yet.")}</p>
                 ) : (
                   <ul className="problems-list scm-log-list">
                     {(log.data?.commits ?? []).map((entry) => (
@@ -425,12 +425,12 @@ export function ScmPanel({ sessionId, onNotice, onOpenDiff }: {
         <section className="scm-worktrees">
           <h3 className="problems-file">{t("Worktrees", "Worktrees")}</h3>
           {worktrees.isError ? (
-            <p className="preview-note">
+            <p className="muted-empty preview-note">
               {t("无法读取 worktree 列表", "Could not load worktrees")}
               {worktrees.error instanceof ApiError ? `：${worktrees.error.message}` : ""}
             </p>
           ) : (worktrees.data ?? []).length === 0 ? (
-            <p className="panel-empty">{t("暂无 worktree。", "No worktrees.")}</p>
+            <p className="muted-empty panel-empty">{t("暂无 worktree。", "No worktrees.")}</p>
           ) : (
             <ul className="problems-list">
               {(worktrees.data ?? []).map((worktree) => (
@@ -487,6 +487,7 @@ export function ScmPanel({ sessionId, onNotice, onOpenDiff }: {
           )}
           <div className="scm-worktree-new">
             <input
+              className="input"
               type="text"
               value={newBranch}
               placeholder={t("新分支名…", "New branch name…")}
@@ -524,22 +525,22 @@ export function ScmPanel({ sessionId, onNotice, onOpenDiff }: {
           </header>
           {selected.untracked ? (
             untrackedFile.isError ? (
-              <p className="preview-note">
+              <p className="muted-empty preview-note">
                 {untrackedFile.error instanceof ApiError ? untrackedFile.error.message : t("无法读取该文件。", "Could not read this file.")}
               </p>
             ) : untrackedFile.data ? (
               <CodeBlock lang={EXT_LANGS[selected.path.split(".").pop()?.toLowerCase() ?? ""]} code={untrackedFile.data.content} />
             ) : (
-              <p className="preview-note">{t("加载中…", "Loading…")}</p>
+              <p className="muted-empty preview-note">{t("加载中…", "Loading…")}</p>
             )
           ) : diff.isError ? (
-            <p className="preview-note">
+            <p className="muted-empty preview-note">
               {diff.error instanceof ApiError ? diff.error.message : t("无法读取 diff。", "Could not load the diff.")}
             </p>
           ) : diff.data ? (
             <DiffView diff={diff.data} />
           ) : (
-            <p className="preview-note">{t("加载中…", "Loading…")}</p>
+            <p className="muted-empty preview-note">{t("加载中…", "Loading…")}</p>
           )}
         </section>
       )}

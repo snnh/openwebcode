@@ -23,8 +23,8 @@ export function SandboxPanel({ session }: { session?: SessionDetail }): ReactEle
     queryFn: api.sandboxCapabilities,
     staleTime: 60_000,
   });
-  if (!session) return <div className="inspector-body"><p className="panel-empty">{t("选择会话以查看沙盒策略。", "Select a session to view its sandbox policy.")}</p></div>;
-  if (!session.sandbox) return <div className="inspector-body"><p className="panel-empty">{t("未配置沙盒策略。", "No sandbox policy is configured.")}</p></div>;
+  if (!session) return <div className="inspector-body"><p className="muted-empty panel-empty">{t("选择会话以查看沙盒策略。", "Select a session to view its sandbox policy.")}</p></div>;
+  if (!session.sandbox) return <div className="inspector-body"><p className="muted-empty panel-empty">{t("未配置沙盒策略。", "No sandbox policy is configured.")}</p></div>;
   const { sandbox } = session;
   const enabled = (session.sandboxMode ?? "jobobject") !== "off" && sandbox.enabled;
   const isWindows = sandboxCaps.data?.platform === undefined || sandboxCaps.data.platform === "win32";

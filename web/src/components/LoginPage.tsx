@@ -53,11 +53,11 @@ export function LoginPage({ onAuthenticated }: { onAuthenticated(): void }): Rea
           autoFocus
         />
         {error && <p className="login-error" role="alert">{error}</p>}
-        <button className="login-submit" type="submit" disabled={login.isPending || code.trim() === ""}>
+        <button className="btn primary login-submit" type="submit" disabled={login.isPending || code.trim() === ""}>
           {login.isPending ? t("验证中…", "Verifying…") : t("登录", "Sign in")}
         </button>
         <button
-          className="login-switch"
+          className="btn login-switch"
           type="button"
           onClick={() => { setUseRecovery(!useRecovery); setCode(""); setError(undefined); }}
         >

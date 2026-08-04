@@ -217,6 +217,10 @@ const PATHS = {
       <path d="M3 18h.01" />
     </>
   ),
+  circle: <circle cx="12" cy="12" r="9" />,
+  // 实心圆点/方块用 fill（状态点、图例色块），viewBox 与描边图标一致
+  "circle-filled": <circle cx="12" cy="12" r="7" fill="currentColor" stroke="none" />,
+  square: <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none" />,
 } satisfies Record<string, ReactNode>;
 
 export type IconName = keyof typeof PATHS;

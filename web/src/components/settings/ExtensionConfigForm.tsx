@@ -119,7 +119,7 @@ export function ExtensionConfigForm({ extension, fields, busy, onSave }: {
         <div key={field.key} className="extension-config-field">
           <label>
             {label}
-            <select value={selected} disabled={busy} onChange={(event) => setValue(field.key, event.target.value)}>
+            <select className="input" value={selected} disabled={busy} onChange={(event) => setValue(field.key, event.target.value)}>
               <option value="">{t("（不模拟）", "(No simulation)")}</option>
               {builtin.length > 0 && (
                 <optgroup label={t("内置", "Built-in")}>
@@ -152,7 +152,7 @@ export function ExtensionConfigForm({ extension, fields, busy, onSave }: {
         <div key={field.key} className="extension-config-field">
           <label>
             {label}
-            <select value={current} disabled={busy} onChange={(event) => setValue(field.key, event.target.value)}>
+            <select className="input" value={current} disabled={busy} onChange={(event) => setValue(field.key, event.target.value)}>
               {!field.enum.includes(current) && <option value={current}>{current}</option>}
               {field.enum.map((option) => <option key={option} value={option}>{option}</option>)}
             </select>
@@ -166,7 +166,7 @@ export function ExtensionConfigForm({ extension, fields, busy, onSave }: {
         <div key={field.key} className="extension-config-field">
           <label>
             {label}
-            <input type="number" value={typeof values[field.key] === "string" ? values[field.key] as string : ""} disabled={busy} onChange={(event) => setValue(field.key, event.target.value)} />
+            <input className="input" type="number" value={typeof values[field.key] === "string" ? values[field.key] as string : ""} disabled={busy} onChange={(event) => setValue(field.key, event.target.value)} />
           </label>
           {description}
         </div>
@@ -176,7 +176,7 @@ export function ExtensionConfigForm({ extension, fields, busy, onSave }: {
       <div key={field.key} className="extension-config-field">
         <label>
           {label}
-          <input type="text" value={typeof values[field.key] === "string" ? values[field.key] as string : ""} disabled={busy} onChange={(event) => setValue(field.key, event.target.value)} spellCheck={false} />
+          <input className="input" type="text" value={typeof values[field.key] === "string" ? values[field.key] as string : ""} disabled={busy} onChange={(event) => setValue(field.key, event.target.value)} spellCheck={false} />
         </label>
         {description}
       </div>
@@ -202,10 +202,10 @@ function PersonaPreview({ id }: { id: string }): ReactElement | null {
   });
   if (!detail.data) return null;
   const persona = detail.data;
-  const commandShaping = [
+  const shapedCommands = [
     persona.initPrompt ? "/init" : "",
     persona.compactOverviewPrompt || persona.compactToolcallsPrompt ? "/compact" : "",
-  ].filter(Boolean).join(t("、", ", "));
+  ].filter(Boolean);
   return (
     <div className="persona-preview" data-testid="persona-preview">
       <p className="persona-preview-identity mono">{persona.identity}</p>
@@ -215,7 +215,7 @@ function PersonaPreview({ id }: { id: string }): ReactElement | null {
           `Tool shapes: ${persona.aliases.map((alias) => alias.as).join(", ")}`,
         )}
         {persona.hideBuiltIns.length > 0 && ` · ${t(`隐藏 ${persona.hideBuiltIns.length} 个内置工具`, `${persona.hideBuiltIns.length} built-in tools hidden`)}`}
-        {commandShaping && ` · ${t(`命令拟态：${commandShaping}`, `Command shaping: ${commandShaping}`)}`}
+        {shapedCommands.length > 0 && ` · ${t(`命令拟态：${shapedCommands.join("、")}`, `Command shaping: ${shapedCommands.join(", ")}`)}`}
       </p>
     </div>
   );
@@ -297,6 +297,17 @@ function PersonaCreator({ onCreated }: { onCreated(id: string): void }): ReactEl
     setDraft((previous) => ({ ...previous, [key]: event.target.value }));
 
   const save = async (): Promise<void> => {
+    // 与 server preset-store 的 PRESET_ID_PATTERN 保持一致，提前拦截不必等 400
+    const id = draft.id.trim();
+    const name = draft.name.trim();
+    if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(id)) {
+      setError(t("id 只能包含小写字母、数字、'-' 和 '_'，且以字母或数字开头", "ID may only contain lowercase letters, digits, '-' and '_', starting with a letter or digit"));
+      return;
+    }
+    if (!name) {
+      setError(t("名称不能为空", "Name is required"));
+      return;
+    }
     let aliases: unknown;
     try {
       aliases = JSON.parse(draft.aliasesText.trim() === "" ? "[]" : draft.aliasesText);
@@ -309,8 +320,8 @@ function PersonaCreator({ onCreated }: { onCreated(id: string): void }): ReactEl
     setError(undefined);
     try {
       const saved = await api.saveEnvSimPersona({
-        id: draft.id.trim(),
-        name: draft.name.trim(),
+        id,
+        name,
         identity: draft.identity,
         basePrompt: draft.basePrompt,
         aliases: aliases as Array<{ from: string; as: string; description?: string }>,
@@ -340,37 +351,37 @@ function PersonaCreator({ onCreated }: { onCreated(id: string): void }): ReactEl
     <div className="persona-preview" data-testid="persona-creator">
       <label className="settings-field">
         <span>{t("预设 id（小写字母/数字/-/_）", "Preset id (lowercase letters/digits/-/_)")}</span>
-        <input type="text" value={draft.id} spellCheck={false} onChange={setDraftField("id")} placeholder="my-persona" />
+        <input className="input" type="text" value={draft.id} spellCheck={false} onChange={setDraftField("id")} placeholder="my-persona" />
       </label>
       <label className="settings-field">
         <span>{t("显示名称", "Display name")}</span>
-        <input type="text" value={draft.name} onChange={setDraftField("name")} />
+        <input className="input" type="text" value={draft.name} onChange={setDraftField("name")} />
       </label>
       <label className="settings-field">
         <span>{t("身份行", "Identity line")}</span>
-        <textarea rows={2} value={draft.identity} onChange={setDraftField("identity")} placeholder="You are ..." />
+        <textarea className="input" rows={2} value={draft.identity} onChange={setDraftField("identity")} placeholder="You are ..." />
       </label>
       <label className="settings-field">
         <span>{t("基线提示词", "Base prompt")}</span>
-        <textarea rows={5} value={draft.basePrompt} onChange={setDraftField("basePrompt")} />
+        <textarea className="input" rows={5} value={draft.basePrompt} onChange={setDraftField("basePrompt")} />
       </label>
       <label className="settings-field">
         <span>{t("/init 提示词（可选）", "/init prompt (optional)")}</span>
-        <textarea rows={3} value={draft.initPrompt} onChange={setDraftField("initPrompt")} />
+        <textarea className="input" rows={3} value={draft.initPrompt} onChange={setDraftField("initPrompt")} />
       </label>
       <details>
         <summary>{t("高级：压缩提示词与工具形态", "Advanced: compaction prompts and tool shapes")}</summary>
         <label className="settings-field">
           <span>{t("压缩提示词（概览，可选）", "Compaction prompt (overview, optional)")}</span>
-          <textarea rows={3} value={draft.compactOverviewPrompt} onChange={setDraftField("compactOverviewPrompt")} />
+          <textarea className="input" rows={3} value={draft.compactOverviewPrompt} onChange={setDraftField("compactOverviewPrompt")} />
         </label>
         <label className="settings-field">
           <span>{t("压缩提示词（工具调用，可选）", "Compaction prompt (tool calls, optional)")}</span>
-          <textarea rows={3} value={draft.compactToolcallsPrompt} onChange={setDraftField("compactToolcallsPrompt")} />
+          <textarea className="input" rows={3} value={draft.compactToolcallsPrompt} onChange={setDraftField("compactToolcallsPrompt")} />
         </label>
         <label className="settings-field">
           <span>{t("aliases（JSON 数组）", "Aliases (JSON array)")}</span>
-          <textarea rows={4} className="mono" value={draft.aliasesText} spellCheck={false} onChange={setDraftField("aliasesText")} />
+          <textarea rows={4} className="input mono" value={draft.aliasesText} spellCheck={false} onChange={setDraftField("aliasesText")} />
         </label>
       </details>
       <div className="dialog-actions">

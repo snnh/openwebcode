@@ -97,7 +97,7 @@ function SubagentLauncher({ sessionId }: { sessionId: string }): ReactElement {
       }}
     >
       <input
-        className="subagent-launcher-input"
+        className="input subagent-launcher-input"
         value={prompt}
         placeholder={t("描述子代理任务…", "Describe the subagent task…")}
         aria-label={t("子代理任务描述", "Subagent task description")}
@@ -140,7 +140,7 @@ export function SubagentsPanel({ sessionId, runs, onOpenInTab }: {
 
   if (!sessionId) {
     return (
-      <p className="panel-empty subagents-panel-empty">
+      <p className="muted-empty panel-empty subagents-panel-empty">
         {t(
           "还没有子代理运行记录——agent 运行中可通过 spawn_task / spawn_swarm 派生子代理并行处理任务。",
           "No subagent runs yet — the agent can spawn subagents via spawn_task / spawn_swarm while running.",
@@ -154,7 +154,7 @@ export function SubagentsPanel({ sessionId, runs, onOpenInTab }: {
     <div className="subagents-panel">
       <SubagentLauncher sessionId={sessionId} />
       {groups.length === 0 && (
-        <p className="panel-empty subagents-panel-empty">
+        <p className="muted-empty panel-empty subagents-panel-empty">
           {t(
             "还没有子代理运行记录——agent 运行中可通过 spawn_task / spawn_swarm 派生子代理并行处理任务。",
             "No subagent runs yet — the agent can spawn subagents via spawn_task / spawn_swarm while running.",

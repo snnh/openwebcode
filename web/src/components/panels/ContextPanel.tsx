@@ -69,14 +69,14 @@ function PolicySection({ sessionId, running, onNotice }: { sessionId: string; ru
       </div>
       <div className="context-policy-form">
         <label><input type="checkbox" checked={form.enabled} disabled={running || busy} onChange={(event) => setForm((value) => ({ ...value, enabled: event.target.checked }))} /> {t("启用自动驱逐", "Enable automatic eviction")}</label>
-        <label>{t("策略", "Strategy")}<select value={form.strategy} disabled={running || busy} onChange={(event) => setForm((value) => ({ ...value, strategy: event.target.value as typeof value.strategy }))}><option value="lag">{t("滚动 lag", "Rolling lag")}</option><option value="interval">{t("定期 interval", "Periodic interval")}</option><option value="off">{t("仅手动", "Manual only")}</option></select></label>
-        <label>{t("驱逐模式", "Eviction mode")}<select value={form.evictionMode} disabled={running || busy} onChange={(event) => setForm((value) => ({ ...value, evictionMode: event.target.value as typeof value.evictionMode }))}><option value="placeholder">{t("默认节省（占位符）", "Default saver (placeholder)")}</option><option value="process">{t("超级节省（整轮过程驱逐）", "Super saver (whole-round eviction)")}</option></select></label>
-        <label>{t("保留最近轮数", "Recent rounds to retain")}<input value={form.lag} disabled={running || busy} inputMode="numeric" onChange={(event) => setForm((value) => ({ ...value, lag: event.target.value }))} /></label>
-        <label>{t("结果保留下限 tokens", "Min result tokens to retain")}<input value={form.minRetainTokens} disabled={running || busy} inputMode="numeric" onChange={(event) => setForm((value) => ({ ...value, minRetainTokens: event.target.value }))} /></label>
-        <label>{t("read 头尾保留行数", "Read head/tail lines to keep")}<input value={form.readKeepLines} disabled={running || busy} inputMode="numeric" onChange={(event) => setForm((value) => ({ ...value, readKeepLines: event.target.value }))} /></label>
-        <label>{t("批量间隔", "Batch interval")}<input value={form.interval} disabled={running || busy} inputMode="numeric" onChange={(event) => setForm((value) => ({ ...value, interval: event.target.value }))} /></label>
-        <label>{t("回写保护轮数", "Restore protection rounds")}<input value={form.pinExemptRounds} disabled={running || busy} inputMode="numeric" onChange={(event) => setForm((value) => ({ ...value, pinExemptRounds: event.target.value }))} /></label>
-        <label>{t("回写预算 tokens", "Restore budget (tokens)")}<input value={form.restoreBudget} disabled={running || busy} inputMode="numeric" onChange={(event) => setForm((value) => ({ ...value, restoreBudget: event.target.value }))} /></label>
+        <label>{t("策略", "Strategy")}<select className="input" value={form.strategy} disabled={running || busy} onChange={(event) => setForm((value) => ({ ...value, strategy: event.target.value as typeof value.strategy }))}><option value="lag">{t("滚动 lag", "Rolling lag")}</option><option value="interval">{t("定期 interval", "Periodic interval")}</option><option value="off">{t("仅手动", "Manual only")}</option></select></label>
+        <label>{t("驱逐模式", "Eviction mode")}<select className="input" value={form.evictionMode} disabled={running || busy} onChange={(event) => setForm((value) => ({ ...value, evictionMode: event.target.value as typeof value.evictionMode }))}><option value="placeholder">{t("默认节省（占位符）", "Default saver (placeholder)")}</option><option value="process">{t("超级节省（整轮过程驱逐）", "Super saver (whole-round eviction)")}</option></select></label>
+        <label>{t("保留最近轮数", "Recent rounds to retain")}<input className="input" value={form.lag} disabled={running || busy} inputMode="numeric" onChange={(event) => setForm((value) => ({ ...value, lag: event.target.value }))} /></label>
+        <label>{t("结果保留下限 tokens", "Min result tokens to retain")}<input className="input" value={form.minRetainTokens} disabled={running || busy} inputMode="numeric" onChange={(event) => setForm((value) => ({ ...value, minRetainTokens: event.target.value }))} /></label>
+        <label>{t("read 头尾保留行数", "Read head/tail lines to keep")}<input className="input" value={form.readKeepLines} disabled={running || busy} inputMode="numeric" onChange={(event) => setForm((value) => ({ ...value, readKeepLines: event.target.value }))} /></label>
+        <label>{t("批量间隔", "Batch interval")}<input className="input" value={form.interval} disabled={running || busy} inputMode="numeric" onChange={(event) => setForm((value) => ({ ...value, interval: event.target.value }))} /></label>
+        <label>{t("回写保护轮数", "Restore protection rounds")}<input className="input" value={form.pinExemptRounds} disabled={running || busy} inputMode="numeric" onChange={(event) => setForm((value) => ({ ...value, pinExemptRounds: event.target.value }))} /></label>
+        <label>{t("回写预算 tokens", "Restore budget (tokens)")}<input className="input" value={form.restoreBudget} disabled={running || busy} inputMode="numeric" onChange={(event) => setForm((value) => ({ ...value, restoreBudget: event.target.value }))} /></label>
         <button className="btn small" disabled={running || busy} onClick={save}>{busy ? t("处理中…", "Working…") : t("保存策略", "Save policy")}</button>
       </div>
     </>
@@ -257,7 +257,7 @@ function SelectionSection({ sessionId, running, onNotice }: { sessionId: string;
         {t("pin 的消息或文件不被自动驱逐；排除的路径不进入上下文组装、repo map 与索引。注意：排除不是安全边界——文件访问权限仍由路径策略与沙盒保证。", "Pinned messages or files are never auto-evicted; excluded paths stay out of the context, repo map, and index. Note: exclusion is not a security boundary — file access is still governed by path policy and the sandbox.")}
       </p>
       <h3>{t("已 pin", "Pinned")}</h3>
-      {selection.pins.length === 0 && <p className="panel-empty">{t("暂无 pin。", "No pins.")}</p>}
+      {selection.pins.length === 0 && <p className="muted-empty panel-empty">{t("暂无 pin。", "No pins.")}</p>}
       {selection.pins.map((pin) => (
         <div className="context-entry" key={pin}>
           <span className="entry-summary mono" title={pin}>{pin}</span>
@@ -275,7 +275,7 @@ function SelectionSection({ sessionId, running, onNotice }: { sessionId: string;
         <button className="btn small" disabled={disabled || !pinInput.trim()} onClick={addPin}>{t("添加 pin", "Add pin")}</button>
       </div>
       <h3>{t("排除路径", "Excluded paths")}</h3>
-      {selection.excludes.length === 0 && <p className="panel-empty">{t("暂无排除。", "No exclusions.")}</p>}
+      {selection.excludes.length === 0 && <p className="muted-empty panel-empty">{t("暂无排除。", "No exclusions.")}</p>}
       {selection.excludes.map((exclude) => (
         <div className="context-entry" key={exclude}>
           <span className="entry-summary mono" title={exclude}>{exclude}</span>
@@ -354,6 +354,7 @@ function BudgetSection({ sessionId, running, onNotice }: {
         <label>
           {t("Token 上限", "Token limit")}
           <input
+            className="input"
             value={tokenLimit}
             onChange={(event) => setTokenLimit(event.target.value)}
             placeholder={t("如 200000，留空清除", "For example 200000; leave empty to clear")}
@@ -365,6 +366,7 @@ function BudgetSection({ sessionId, running, onNotice }: {
           {t("成本上限", "Cost limit")}
           <span className="budget-cost-row">
             <input
+              className="input"
               value={costLimit}
               onChange={(event) => setCostLimit(event.target.value)}
               placeholder={t("如 5.00，留空清除", "For example 5.00; leave empty to clear")}
@@ -372,6 +374,7 @@ function BudgetSection({ sessionId, running, onNotice }: {
               disabled={running || saving}
             />
             <select
+              className="input"
               value={costCurrency}
               onChange={(event) => setCostCurrency(event.target.value as "CNY" | "USD")}
               disabled={running || saving}
@@ -411,9 +414,9 @@ export function ContextPanel({ sessionId, session, running, windowUsage, latestU
   });
   const models = useQuery({ queryKey: ["models"], queryFn: api.models });
 
-  if (!sessionId) return <div className="inspector-body"><p className="panel-empty">{t("选择会话以查看上下文。", "Select a session to view context.")}</p></div>;
-  if (context.isPending) return <div className="inspector-body"><p className="panel-empty">{t("加载中…", "Loading…")}</p></div>;
-  if (context.isError || !context.data) return <div className="inspector-body"><p className="panel-empty">{t("暂无用量数据。", "No usage data available.")}</p></div>;
+  if (!sessionId) return <div className="inspector-body"><p className="muted-empty panel-empty">{t("选择会话以查看上下文。", "Select a session to view context.")}</p></div>;
+  if (context.isPending) return <div className="inspector-body"><p className="muted-empty panel-empty">{t("加载中…", "Loading…")}</p></div>;
+  if (context.isError || !context.data) return <div className="inspector-body"><p className="muted-empty panel-empty">{t("暂无用量数据。", "No usage data available.")}</p></div>;
 
   const { usage, cost, entries } = context.data.ledger;
   const model = models.data?.find((item) => item.id === session?.model && item.provider === session?.provider);
@@ -436,7 +439,7 @@ export function ContextPanel({ sessionId, session, running, windowUsage, latestU
       </dl>
       <h2>{t("Prompt cache 断点", "Prompt cache breakpoints")}</h2>
       {(context.data.ledger.cacheBreakpoints ?? []).length === 0 ? (
-        <p className="panel-empty">{t("本回合还没有记录断点；Anthropic 兼容 Provider 会在工具定义、稳定系统段与消息前缀上打显式断点，OpenAI 兼容 Provider 由服务端自动缓存。", "No breakpoints recorded this run yet. Anthropic-compatible providers place explicit breakpoints on tool definitions, the stable system prefix, and message prefixes; OpenAI-compatible providers cache automatically server-side.")}</p>
+        <p className="muted-empty panel-empty">{t("本回合还没有记录断点；Anthropic 兼容 Provider 会在工具定义、稳定系统段与消息前缀上打显式断点，OpenAI 兼容 Provider 由服务端自动缓存。", "No breakpoints recorded this run yet. Anthropic-compatible providers place explicit breakpoints on tool definitions, the stable system prefix, and message prefixes; OpenAI-compatible providers cache automatically server-side.")}</p>
       ) : (
         <dl>
           <dt>{t("消息级断点数", "Message breakpoints")}</dt>
@@ -483,7 +486,7 @@ export function ContextPanel({ sessionId, session, running, windowUsage, latestU
         </>
       )}
       <h2>{t("上下文条目", "Context entries")}</h2>
-      {entries.length === 0 && !session?.messages.some((message) => message.role === "tool") && <p className="panel-empty">{t("暂无条目。", "No entries.")}</p>}
+      {entries.length === 0 && !session?.messages.some((message) => message.role === "tool") && <p className="muted-empty panel-empty">{t("暂无条目。", "No entries.")}</p>}
       {entries.map((entry) => (
         <div className="context-entry" key={`${entry.messageId}-${entry.artifactId}`}>
           <span className={`entry-state entry-${entry.state}`}>{STATE_LABELS[entry.state] ? t(...STATE_LABELS[entry.state]!) : entry.state}</span>
