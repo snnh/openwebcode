@@ -271,9 +271,11 @@ function rememberCall(
  * 游离 tool_result（对应调用在压缩边界外/旧分支）不产出 function_call，直接丢弃，
  * 否则同样报 "No tool call found for function call output"。
  */
+/** 回传被关的留痕限频（每进程一次，见 toResponsesInput）。 */
+let replaySuppressedLogged = false;
+
 function toResponsesInput(messages: ChatMessage[], providerName: string, replayReasoning: boolean): Array<Record<string, unknown>> {
-  const outputs = new Map<string, string>();
-  for (const message of messages) {
+  const outputs = new Map<string, string>();  for (const message of messages) {
     for (const block of message.content) {
       if (block.type === "tool_result" && !outputs.has(block.toolCallId)) outputs.set(block.toolCallId, block.content);
     }
@@ -305,6 +307,10 @@ function toResponsesInput(messages: ChatMessage[], providerName: string, replayR
           .filter((block): block is ThinkingContent => block.type === "thinking" && block.provider === providerName && block.text.trim() !== "")
           .map((block) => ({ type: "reasoning_text", text: block.text }));
         if (thinkingParts.length > 0) result.push({ type: "reasoning", content: thinkingParts });
+      } else if (!replaySuppressedLogged && message.content.some((block) => block.type === "thinking" && block.provider === providerName)) {
+        // 回传被能力声明关闭但历史含同源 thinking 块：DeepSeek 思维模式会因此 400，留痕便于诊断（每进程一次）
+        replaySuppressedLogged = true;
+        process.stderr.write(`[openai-responses] 思维链回传已关闭（reasoningContent=false），历史 thinking 块不会回传；思维模式端点（如 DeepSeek）可能拒绝请求\n`);
       }
       const text = message.content
         .filter((block) => block.type === "text")
