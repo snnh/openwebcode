@@ -103,6 +103,8 @@ const GROUPS = [
   { id: "network", label: "监听与端口" },
   // 出站代理：Web 端在"联网服务"页签由专门组件渲染（secret 字段按 mask 脱敏）
   { id: "proxy", label: "出站代理" },
+  // 联网搜索模式：Web 端在"联网服务"页签渲染
+  { id: "webSearch", label: "联网搜索" },
   { id: "exchangeRate", label: "汇率" },
   { id: "updateCheck", label: "更新检查" },
 ];
@@ -112,6 +114,7 @@ const PYTHON_ENV_OPTIONS = ["global", "uv-workspace", "uv-config"];
 const THINKING_OPTIONS = ["disabled", "adaptive", "enabled"];
 const EFFORT_OPTIONS = ["none", "low", "medium", "high", "xhigh", "max", "ultra"];
 const PROXY_MODE_OPTIONS = ["off", "env", "custom"];
+const WEB_SEARCH_MODE_OPTIONS = ["local", "model-api"];
 
 export function encodeFastModelSelection(provider: string, model: string): string {
   return JSON.stringify([provider, model]);
@@ -300,6 +303,10 @@ const FIELDS: FieldSpec[] = [
   { key: "proxyHttp", group: "proxy", label: "HTTP 代理", type: "secret", env: "OWC_PROXY_HTTP", defaultValue: null, restartRequired: false, validate: requireHttpUrl, mask: sanitizeProxyUrl, description: "形如 http://127.0.0.1:7890，可含凭据；仅自定义模式生效；HTTPS 代理留空时兼作其回退" },
   { key: "proxyHttps", group: "proxy", label: "HTTPS 代理", type: "secret", env: "OWC_PROXY_HTTPS", defaultValue: null, restartRequired: false, validate: requireHttpUrl, mask: sanitizeProxyUrl, description: "访问 https 目标时使用的代理；留空回退 HTTP 代理" },
   { key: "proxyNoProxy", group: "proxy", label: "代理例外列表", type: "text", env: "OWC_PROXY_NO_PROXY", defaultValue: null, restartRequired: false, validate: requireNoProxyList, description: "逗号分隔的主机名或域名后缀（如 internal.example.com），这些地址跳过代理；本机回环地址始终跳过" },
+  // 联网搜索模式（热生效）：local = 本地 web_search 工具经联网服务商执行；model-api = 由模型服务商在
+  // 服务端执行（请求级 serverWebSearch 标记，仅 OpenAI Responses 接口生效，此时本地 web_search 不再注入，
+  // 非 Responses 接口的会话将没有搜索能力）；web_fetch 两种模式均不受影响。
+  { key: "webSearchMode", group: "webSearch", label: "联网搜索模式", type: "select", env: "OWC_WEB_SEARCH_MODE", defaultValue: "local", restartRequired: false, options: WEB_SEARCH_MODE_OPTIONS, description: "local = 本地 web_search 工具经联网服务商执行；model-api = 由模型服务商在服务端执行（仅 OpenAI Responses 接口生效，此时本地 web_search 不再注入）；web_fetch 两种模式均可用" },
 ];
 
 const FIELD_MAP = new Map(FIELDS.map((field) => [field.key, field]));
@@ -500,6 +507,8 @@ export class SettingsService {
       ...(typeof snapshotBackend === "string" && (SNAPSHOT_BACKENDS as readonly string[]).includes(snapshotBackend)
         ? { snapshotBackend: snapshotBackend as SnapshotBackendName }
         : {}),
+      // 联网搜索模式（agent-runner 消费；仅枚举内合法值进 ServerConfig，非法值回落 local）
+      webSearchMode: value("webSearchMode") === "model-api" ? "model-api" : "local",
       ...(roleModelPremium || roleModelBalanced || roleModelCheap
         ? {
             roleModels: {

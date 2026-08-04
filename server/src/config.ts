@@ -62,6 +62,9 @@ export interface ServerConfig {
   defaultSnapshotMode?: "auto" | "manual";
   /** 新建会话的快照后端偏好（settings snapshotBackend）；缺省 auto（探测链自动选择）。 */
   snapshotBackend?: SnapshotBackendName;
+  /** 联网搜索模式（settings webSearchMode）：local = 本地 web_search 工具经联网服务商；
+   * model-api = 模型服务端搜索（请求级 serverWebSearch，仅 OpenAI Responses 接口生效）。 */
+  webSearchMode?: "local" | "model-api";
   /** 子代理角色档模型映射（premium/balanced/cheap；fast 档直接读 fastModel）。 */
   roleModels?: {
     premium?: ModelSelection;

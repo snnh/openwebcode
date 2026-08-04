@@ -36,6 +36,11 @@ interface FunctionCallAccumulator {
  *
  * prompt caching：Responses 只有自动前缀缓存，无显式断点机制——cacheBreakpoints 在此
  * 为 no-op（如实忽略，不伪造断点），cached_tokens 如实上报。
+ *
+ * 服务端联网搜索（request.serverWebSearch，请求级）：tools 附加 `{"type":"web_search"}`（DeepSeek 等
+ * 端点支持，其他类型内置工具忽略）；web_search_call 状态事件映射为 server_tool 活动
+ * （实时展示用，不落盘）。历史不回放 web_search_call 项——端点无状态，搜索结果由
+ * 模型在当轮重新获取，assistant 文本已含其结论。
  */
 export class OpenAIResponsesProvider implements Provider {
   readonly name: string;
@@ -75,15 +80,19 @@ export class OpenAIResponsesProvider implements Provider {
           input: toResponsesInput(request.messages),
           ...(maxTokens !== undefined ? { max_output_tokens: maxTokens } : {}),
           ...(Object.keys(reasoning).length > 0 ? { reasoning } : {}),
-          ...(request.tools.length > 0
+          ...(request.tools.length > 0 || request.serverWebSearch === true
             ? {
-                // Responses 扁平 function 结构（区别于 chat 的 nested function 格式）
-                tools: request.tools.map((tool) => ({
-                  type: "function",
-                  name: tool.name,
-                  description: tool.description,
-                  parameters: tool.inputSchema,
-                })),
+                tools: [
+                  // Responses 扁平 function 结构（区别于 chat 的 nested function 格式）
+                  ...request.tools.map((tool) => ({
+                    type: "function",
+                    name: tool.name,
+                    description: tool.description,
+                    parameters: tool.inputSchema,
+                  })),
+                  // 服务端联网搜索工具：DeepSeek 等端点在服务端执行并回传 web_search_call 项
+                  ...(request.serverWebSearch === true ? [{ type: "web_search" }] : []),
+                ],
               }
             : {}),
         }),
@@ -125,6 +134,16 @@ export class OpenAIResponsesProvider implements Provider {
           case "response.refusal.delta":
           case "response.refusal.done":
             sawRefusal = true;
+            break;
+          // 服务端联网搜索（DeepSeek 等）：状态更新映射为 server_tool 活动事件
+          case "response.web_search_call.in_progress":
+            yield { type: "server_tool", tool: "web_search", phase: "start" };
+            break;
+          case "response.web_search_call.searching":
+            yield { type: "server_tool", tool: "web_search", phase: "update" };
+            break;
+          case "response.web_search_call.completed":
+            yield { type: "server_tool", tool: "web_search", phase: "end" };
             break;
           case "response.output_item.added":
             if (event.item?.type === "function_call") {

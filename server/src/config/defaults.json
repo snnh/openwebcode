@@ -34,5 +34,6 @@
   "proxyMode": "env",
   "proxyHttp": null,
   "proxyHttps": null,
-  "proxyNoProxy": null
+  "proxyNoProxy": null,
+  "webSearchMode": "local"
 }
