@@ -179,6 +179,19 @@ const PATHS = {
       <path d="M12 19h8" />
     </>
   ),
+  keyboard: (
+    <>
+      <rect x="2" y="5" width="20" height="14" rx="2" />
+      <path d="M6 9h.01" />
+      <path d="M10 9h.01" />
+      <path d="M14 9h.01" />
+      <path d="M18 9h.01" />
+      <path d="M6 13h.01" />
+      <path d="M18 13h.01" />
+      <path d="M9 13h6" />
+      <path d="M9 17h6" />
+    </>
+  ),
   alert: (
     <>
       <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
