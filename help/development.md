@@ -59,11 +59,11 @@ openwebcode/
 │   │   ├── workbench/    # 五区布局外壳、活动栏、布局持久化（0.4.0）
 │   │   ├── commands/     # 命令注册表、keybindings 注册表与默认集、覆盖审计（0.4.0）
 │   │   ├── components/   # Composer / ExecutionTrack / MessageCard / JobHeader /
-│   │   │                 #   CommandPalette / QuickOpen / ShortcutsDialog /
+│   │   │                 #   CommandPalette / QuickOpen / CodeOverlay /
 │   │   │                 #   LiveActivity / SessionSkeleton / ConversationSearch 等
 │   │   │   ├── editor/   # 只读 CodeView、Monaco 编辑器、DiffPane（0.5.0）
 │   │   │   ├── panels/   # Context / Cost / Files / Problems / Sandbox / Scm / Timeline / Perf
-│   │   │   └── settings/ # SettingsDialog 按页签拆成 16 个分区组件 + shared.ts，
+│   │   │   └── settings/ # SettingsDialog 按页签拆成 17 个分区组件 + shared.ts，
 │   │   │                 #   外壳只剩导航/脏状态/深链
 │   │   ├── lib/          # api.ts（REST 客户端）、contracts.ts（类型契约）、recent-models.ts
 │   │   │                 #   （输入框 Ctrl+P 模型循环）、perf-sampler.ts（帧率采样）
@@ -147,7 +147,7 @@ OWC_CORE_PATH=./build/owc-exec node server/dist/index.js        # Linux
 cd server && npm run dev
 
 # 终端 3：web（HMR）
-cd web && npm run dev    # Vite 默认 5173，proxy 到 server 3000
+cd web && npm run dev    # Vite 默认 5173，proxy 到 server 3210
 ```
 
 `OWC_CORE_PATH` 指向编译出的 owc-exec，否则 server 按源码树相对位置找（开发态通常能找到）。
