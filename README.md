@@ -12,8 +12,10 @@
 
 - 读写项目文件、跑命令、跑测试，多轮推进到一个任务完成
 - Plan 模式下只读调研、产出分步计划，确认后切 build 执行
-- 每轮自动打检查点，时间线面板可回滚文件与会话历史
+- 每轮自动打检查点，时间线面板可回滚文件与会话历史；快照后端按探测链自动选择（Linux：btrfs / zfs / overlayfs → git shadow），也可显式指定
 - 默认沙盒隔离（Windows Job Object / Linux Landlock，可显式切 AppContainer），不可信代码可用 WSB，一会话一 VM
+- 全部出站请求（模型 API、联网搜索/抓取、更新检测）可走代理：关闭 / 跟随环境变量 / 自定义，保存即生效
+- 联网搜索可选本地服务商执行，或由模型服务端执行（OpenAI Responses 接口，如 DeepSeek）
 - bash 后台任务继续跑，不阻塞对话，完成后自动通知
 - 对话渲染 GFM Markdown、代码高亮与 KaTeX 公式；思考过程默认折叠并弱化显示；思考与工具调用按真实顺序交织，相邻工具调用自动合并折叠
 - `owc run "..."` 非交互执行，`--json` 输出 NDJSON 事件流，可用于 CI
@@ -24,7 +26,7 @@
 
 1. 从 [Releases](https://github.com/snnh/openwebcode/releases) 下载 `openwebcode-<version>-windows-x64.msi` 双击安装（需管理员权限）；在 “Shell integration” 页按需保留桌面快捷方式和“添加到 PATH”选项
 2. 若勾选 PATH，重新打开终端后运行 `owc`；否则从安装目录的 `bin\owc.cmd` 启动
-3. 浏览器打开 <http://127.0.0.1:3000>
+3. 浏览器打开 <http://127.0.0.1:3210>
 
 ### Linux
 
@@ -41,7 +43,7 @@ mkdir openwebcode && tar -xzf openwebcode-<version>-linux-<arch>.tar.gz -C openw
 cd openwebcode
 # 直接运行时会在 TTY 中询问安装前缀、端口、数据目录、监听地址和 Node 选择
 ./install.sh
-~/.local/bin/owc                  # 浏览器打开 http://127.0.0.1:3000
+~/.local/bin/owc                  # 浏览器打开 http://127.0.0.1:3210
 ```
 
 龙芯（loongarch64）包不内置 Node.js，安装时需系统 Node.js ≥ 24（`--use-system-node`，包内无 node/ 时安装脚本会自动走该路径）。
@@ -49,7 +51,7 @@ cd openwebcode
 脚本/CI 安装使用 `--yes` 避免提问，例如：
 
 ```sh
-./install.sh --yes --prefix "$HOME/.local" --port 3000 \
+./install.sh --yes --prefix "$HOME/.local" --port 3210 \
   --data-dir "$HOME/.local/share/openwebcode" --host 127.0.0.1
 ```
 

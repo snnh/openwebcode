@@ -39,7 +39,7 @@ function helpText(): string {
     "  --cwd DIR       工作目录（默认当前目录）  Working directory (default: current directory)\n" +
     "  --provider ID   服务商  Provider\n" +
     "  --model ID      模型  Model\n" +
-    "  --server URL    服务地址（默认 http://127.0.0.1:3000）  Server URL (default http://127.0.0.1:3000)\n" +
+    "  --server URL    服务地址（默认 http://127.0.0.1:3210）  Server URL (default http://127.0.0.1:3210)\n" +
     "  --session ID    复用已有会话（缺省新建）  Reuse an existing session (a new one is created otherwise)\n" +
     "  --json          以 NDJSON 输出事件流  Emit the event stream as NDJSON\n" +
     "  --yolo          自动批准权限请求  Auto-approve permission requests\n" +
@@ -65,7 +65,7 @@ function usage(): never {
 
 function parseArgs(argv: string[]): CliOptions {
   if (argv[0] !== "run") usage();
-  const options: CliOptions = { prompt: "", cwd: process.cwd(), server: "http://127.0.0.1:3000", json: false, yolo: false, accessToken: process.env.OWC_ACCESS_TOKEN };
+  const options: CliOptions = { prompt: "", cwd: process.cwd(), server: "http://127.0.0.1:3210", json: false, yolo: false, accessToken: process.env.OWC_ACCESS_TOKEN };
   for (let i = 1; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === "--help" || arg === "-h") printHelpAndExit("stdout", 0);

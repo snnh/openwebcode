@@ -12,8 +12,10 @@ Browser (React) ── HTTP/WebSocket ──► Node service (agent loop and too
 
 - Let an agent inspect and edit project files, run commands and tests, and continue autonomously across multiple turns.
 - Use Plan mode for read-only investigation before switching to Build mode.
-- Create automatic or manual checkpoints and roll back files together with conversation history.
+- Create automatic or manual checkpoints and roll back files together with conversation history; the snapshot backend is auto-probed (Linux: btrfs / zfs / overlayfs → git shadow) and can also be pinned explicitly.
 - Run commands in Windows Job Object (default), AppContainer, Windows Sandbox, or Linux Landlock.
+- Route all outbound requests (model APIs, web search/fetch, update checks) through a proxy: off / follow environment / custom, applied on save.
+- Choose where web search runs: locally via a configured search provider, or server-side by the model provider (OpenAI Responses API, e.g. DeepSeek).
 - Keep background shell tasks running while continuing the conversation.
 - Render GFM Markdown, syntax-highlighted code, KaTeX equations, and collapsed reasoning blocks; reasoning and tool calls render in their true interleaved order, and adjacent tool calls collapse into a foldable group.
 - Control context eviction, restoration, compaction, token budgets, and cost budgets per session.
@@ -26,7 +28,7 @@ Browser (React) ── HTTP/WebSocket ──► Node service (agent loop and too
 
 1. Download `openwebcode-<version>-windows-x64.msi` from [Releases](https://github.com/snnh/openwebcode/releases).
 2. Install it, then run `owc` from a terminal after adding the installed `bin` directory to `PATH`.
-3. Open <http://127.0.0.1:3000>.
+3. Open <http://127.0.0.1:3210>.
 
 ### Linux
 
@@ -52,13 +54,13 @@ The loongarch64 package ships no bundled Node.js and requires a system Node.js �
 For scripts and CI, use `--yes` to suppress prompts:
 
 ```sh
-./install.sh --yes --prefix "$HOME/.local" --port 3000 \
+./install.sh --yes --prefix "$HOME/.local" --port 3210 \
   --data-dir "$HOME/.local/share/openwebcode" --host 127.0.0.1
 ```
 
 See [`packaging/README.md`](./packaging/README.md) for every installer option, system Node.js, and user-systemd details.
 
-Open <http://127.0.0.1:3000> after the service starts.
+Open <http://127.0.0.1:3210> after the service starts.
 
 ## First run and interface language
 

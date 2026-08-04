@@ -146,7 +146,7 @@ $Required = @(
 $Missing = $Required | Where-Object { -not (Test-Path $_) }
 if ($Missing) { throw "staging 缺少：$($Missing -join ', ')" }
 
-# 可选冒烟：启动后访问 http://127.0.0.1:3000/api/health，确认成功再按 Ctrl+C。
+# 可选冒烟：启动后访问 http://127.0.0.1:3210/api/health，确认成功再按 Ctrl+C。
 $env:OWC_DATA_DIR = Join-Path $env:TEMP "openwebcode-package-smoke"
 & build\stage\bin\owc.cmd
 Remove-Item Env:OWC_DATA_DIR
@@ -261,7 +261,7 @@ cd openwebcode
 例如，自动化安装可写成：
 
 ```sh
-./install.sh --yes --prefix "$HOME/.local" --port 3000 \
+./install.sh --yes --prefix "$HOME/.local" --port 3210 \
   --data-dir "$HOME/.local/share/openwebcode" --host 127.0.0.1
 
 # root 服务器一键安装：系统级路径 + 局域网访问 + 开机自启 + 防火墙放行
@@ -314,7 +314,7 @@ curl -fsSL https://raw.githubusercontent.com/snnh/openwebcode/main/packaging/ins
 `owc`（Linux shell 脚本）/ `owc.cmd`（Windows）做三件事：
 
 1. `export OWC_CORE_PATH=<包内 owc-exec>`——server 默认按源码树相对位置找 core，安装布局必须显式指定；
-2. 端口与监听地址：显式 `OWC_PORT`/`OWC_HOST` 已设则沿用，否则使用安装时选择的默认值（初始为 **3000** / `127.0.0.1`；server 自身端口兜底是 3210，见 `server/src/config.ts`）；
+2. 端口与监听地址：显式 `OWC_PORT`/`OWC_HOST` 已设则沿用，否则使用安装时选择的默认值（1.3.x 起初始为 **3210** / `127.0.0.1`，与 server 自身兜底一致，见 `server/src/config.ts`）；
 3. 数据目录：显式 `OWC_DATA_DIR` 优先；未设置时，Linux 启动器使用安装时选择的默认值（初始为
    `${XDG_DATA_HOME:-~/.local/share}/openwebcode`），Windows 启动器注入 `%USERPROFILE%\openwebcode`。只有不经启动脚本
    直接运行 `node server/dist/index.js` 时，才用相对 server 目录的 `../.openwebcode` 作为启动/设置目录兜底。

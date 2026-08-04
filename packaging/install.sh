@@ -11,7 +11,7 @@
 #
 # 参数:
 #   --prefix <dir>       安装前缀（绝对路径），默认用户级 ~/.local，root 为 /usr/local
-#   --port <n>           启动器的 OWC_PORT 默认值（1-65535，默认 3000）
+#   --port <n>           启动器的 OWC_PORT 默认值（1-65535，默认 3210）
 #   --data-dir <dir>     启动器的 OWC_DATA_DIR 默认值（绝对路径；默认用户级
 #                        ${XDG_DATA_HOME:-~/.local/share}/openwebcode，root 为 /var/lib/openwebcode）
 #   --host <addr>        启动器的 OWC_HOST 默认值（默认 127.0.0.1）
@@ -63,7 +63,7 @@ usage() {
 用法: ./install.sh [选项]
 
   --prefix <dir>       安装前缀（绝对路径），默认用户级 ~/.local，root 为 /usr/local
-  --port <n>           启动器默认端口（1-65535，默认 3000）
+  --port <n>           启动器默认端口（1-65535，默认 3210）
   --data-dir <dir>     启动器默认数据目录（必须为绝对路径）
   --host <addr>        启动器默认监听地址（默认 127.0.0.1）
   --lan                开启局域网访问（等价 --host 0.0.0.0；与 --host 互斥）
@@ -230,7 +230,7 @@ ask_until_valid() {
 [ -n "${HOME:-}" ] || die "HOME 未设置，无法选择用户安装前缀" 1
 
 PREFIX=$(default_prefix)
-PORT=3000
+PORT=3210
 HOST=127.0.0.1
 DATA_DIR=$(default_data_dir)
 WITH_SYSTEMD=0

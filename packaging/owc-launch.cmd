@@ -5,7 +5,7 @@ rem default browser. Keep this file ASCII-only: cmd.exe parses batch files in
 rem the OEM codepage and non-ASCII bytes can break parsing. CI converts it to
 rem CRLF into bin\.
 setlocal
-if not defined OWC_PORT set "OWC_PORT=3000"
+if not defined OWC_PORT set "OWC_PORT=3210"
 start "" /min "%~dp0owc.cmd"
 rem Give the server a moment to bind the port before opening the browser.
 timeout /t 3 /nobreak >nul

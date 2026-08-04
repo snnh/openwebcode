@@ -7,12 +7,12 @@
 ## 启动
 
 1. 运行 `owc`（Windows：`owc.cmd`；Linux：安装器生成的 `<prefix>/bin/owc`）；
-2. 浏览器打开 <http://127.0.0.1:3000>；
+2. 浏览器打开 <http://127.0.0.1:3210>；
 3. 首次使用先到 **设置 → 模型目录 → 模型服务商** 添加一个或多个配置，选择接口类型、Base URL、API Key 并启用；随后在同一页签刷新模型列表。
 
 尚未配置任何服务商时，空会话页会显示三步快速上手引导，按钮直达设置对应分区；新建会话对话框里的「未配置服务商 / 无可用模型」提示也可点击跳转。服务商表单中的「测试连接」按钮可在保存前验证配置，认证失败、URL 错误、无法连接、限流会分类给出中文提示。
 
-如果端口被占用或想换端口：设置环境变量 `OWC_PORT=4000` 后启动 `owc`（launcher 脚本默认 3000，server 自身兜底 3210）。
+如果端口被占用或想换端口：设置环境变量 `OWC_PORT=4000` 后启动 `owc`（1.3.x 起 launcher 与 server 默认端口统一为 3210）。
 
 ### 远程访问与局域网
 
@@ -42,7 +42,7 @@
 
 ```sh
 # 自动化、CI、管道或重定向中：--yes 保证绝不读取交互输入。
-./install.sh --yes --prefix "$HOME/.local" --port 3000 \
+./install.sh --yes --prefix "$HOME/.local" --port 3210 \
   --data-dir "$HOME/.local/share/openwebcode" --host 127.0.0.1
 
 # 服务器一键安装（root）：系统级路径 + 局域网访问 + systemd 开机自启 + 防火墙放行，
@@ -89,7 +89,7 @@ sudo ./install.sh --yes --system --lan --enable-service --open-firewall
 | `Esc` | 中断正在运行的 agent（弹窗、对话框、权限卡、编辑器/diff 打开时不抢键） |
 | `mod+F` | 会话内搜索（命中计数，Enter / Shift+Enter 跳转高亮；仅搜索已加载消息） |
 | `Ctrl+P`（输入框内） | 在最近使用的模型间循环切换 |
-| `Shift+?` | 快捷键速查 |
+| `Shift+?` | 打开设置 → **快捷键** 页签 |
 
 完整键位见设置 → **快捷键** 分区；暂不支持自定义键位。输入框聚焦时全局快捷键不抢键。设置为整页布局（左侧应用导航轨 | 设置项列表 | 详情），列表带搜索框，按分区/分组/字段名（中英文）直接定位；界面各处的设置入口（如「前往模型目录」「打开模型设置」）会深链到对应分区。
 
@@ -138,7 +138,7 @@ sudo ./install.sh --yes --system --lan --enable-service --open-firewall
 | `/compact tools` | 规则压缩（toolcalls 占位精炼） |
 | `/clear` | 清空当前视图，**保留历史**（JSONL 全量在盘，可回滚） |
 | `/init` | 分析当前工作区并生成/更新根目录 `AGENTS.md`（写文件走权限链） |
-| `/help` | 打开快捷键速查 |
+| `/help` | 打开设置 → **快捷键** 页签 |
 | `@路径` | 引用工作区文件，内容随消息注入（大文件截断 + artifact 指针） |
 | `!命令` | shell 快捷前缀，走与 bash 工具相同的权限链执行，结果可一键「发给 agent」 |
 
@@ -151,8 +151,9 @@ sudo ./install.sh --yes --system --lan --enable-service --open-firewall
 
 ## 联网工具配置
 
-Web Search / Web Fetch 两个工具的数据来源在 **设置 → 模型目录 → 联网服务商** 配置：
+Web Search / Web Fetch 两个工具的数据来源在 **设置 → 联网服务** 页签配置：
 
+- **联网搜索模式**（页签顶部）：`local`（默认）= 本地 `web_search` 工具经下方联网服务商执行；`model-api` = 由模型服务商在服务端执行搜索（请求级下发，仅 **OpenAI Responses** 接口类型的服务商生效；此时本地 `web_search` 不再注入，使用其他接口类型的会话将没有搜索能力）。`web_fetch` 两种模式下都可用。对应环境变量：`OWC_WEB_SEARCH_MODE`。
 - Search 与 Fetch 使用同一套「联网服务商」配置。可以保存多个 Jina、Brave、Tavily 或 Custom 配置，每项声明 `search` / `fetch` 能力，再分别选择当前用于 Web Search 和 Web Fetch 的配置。
 - Jina 与 Tavily 同时支持 Search 与 Fetch（Tavily Fetch 使用 Extract API）；Brave 仅支持 Search；Custom 可自行声明能力。Custom Fetch URL 必须包含 `{url}` 占位符，Custom Search URL 接收 `q` 与 `count` 查询参数。
 - 未选中具备相应能力的配置时，对应工具不会注入模型。Tavily 的 API Key 由同一个联网服务商配置同时用于 Search 与 Fetch。
@@ -207,7 +208,7 @@ agent 运行期间可用的状态指示与干预手段：
   - `拒绝` —— 可附理由回填给 LLM
 - 会话头部可选择命令后端：`默认` 按平台探测顺序取第一个可用项——Windows 为 `pwsh > Git Bash > cmd.exe`（Git Bash 解析为 Git for Windows 的 bash.exe 绝对路径，不会命中 WSL 的 `System32\bash.exe`），Linux 为 `bash > pwsh > $SHELL`（`/bin/sh` 兜底）；`PowerShell 7` 强制使用 `pwsh`。该选择同时作用于前台命令、后台任务和 agent 的 bash 工具，并随会话保存。选择 `pwsh` 前需先安装 PowerShell 7。
 - **后台 bash 任务**：bash 工具带 `run_in_background=true` 时立即返回 taskId，头部徽标查看运行中任务、点开看输出、随时终止；完成自动通知下一轮
-- **通知中心**：活动栏铃铛汇总 toast 与后台事件（任务完成、诊断更新、SCM 更新、后台任务结束），未读角标、可逐条/全部清除、点击跳转相关会话与视图；权限请求与结构化交互不进入通知流，仍是一等卡片
+- **通知中心**：活动栏铃铛打开设置 → **通知** 页签，汇总 toast 与后台事件（任务完成、诊断更新、SCM 更新、后台任务结束），未读角标、进入页签即全部已读、可逐条/全部清除、点击跳转相关会话与视图；权限请求与结构化交互不进入通知流，仍是一等卡片
 - **结构化提问**：agent 可通过 `ask_user` 工具在运行中向你提问——确认、单选、多选、自由文本四种卡片（一次 1–4 问，选择题 2–4 个选项），挂在对话轨道中等待回答（agent 暂停在「等待确认」状态），回答后 agent 带着答案继续；中断运行自动取消未答问题
 - **plan 批准流**：plan 模式下 agent 通过 `exit_plan_mode` 提交完整计划，弹出计划批准卡，三分支——`批准`（按原文切回 build 执行）/ `编辑后批准`（按你改后的文本执行）/ `拒绝`（可附意见，保持 plan 模式继续研究修订）。计划批准不走权限自动放行，yolo 也不会跳过
 - **持久 shell**：agent 的 bash 工具默认复用每会话一个持久 shell（沙盒内 pty），`cd` 切换的目录、设置的环境变量跨调用保持；pty 不可用（如旧版 core）或 shell 起不来（如 AppContainer 沙盒下的 pwsh / Git Bash）时透明回退一次性执行，不报错。`run_in_background` 后台任务仍走一次性 job

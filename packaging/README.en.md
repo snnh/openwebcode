@@ -66,7 +66,7 @@ An explicitly set `OWC_DATA_DIR` always takes precedence. If it is not set, the 
 Run `./install.sh` from the unpacked Linux tarball in a terminal to configure the unspecified values interactively. It asks for the prefix, port, data directory, whether to enable LAN access (or a specific host), whether to use the system Node.js, and the systemd service (write it, and enable+start it now; root with LAN access is also asked about the firewall port). A supplied flag always wins. With redirected stdin/stdout, or with `--yes`, it never prompts, so CI cannot block:
 
 ```sh
-./install.sh --yes --prefix "$HOME/.local" --port 3000 \
+./install.sh --yes --prefix "$HOME/.local" --port 3210 \
   --data-dir "$HOME/.local/share/openwebcode" --host 127.0.0.1
 
 # One-shot server install (root): system paths + LAN access + autostart + firewall
