@@ -5,6 +5,10 @@ import type { EffortLevel } from "./context/model-profile.js";
 import type { PythonEnv } from "./sessions/types.js";
 import type { ProxyConfig, ProxyMode } from "./proxy.js";
 
+/** 可显式 pin 的快照后端名单（settings snapshotBackend 的非 auto 选项）；与探测链支持的后端保持一致。 */
+export const SNAPSHOT_BACKENDS = ["git-shadow", "btrfs", "zfs", "overlayfs", "refs"] as const;
+export type SnapshotBackendName = (typeof SNAPSHOT_BACKENDS)[number];
+
 export interface ServerConfig {
   host: string;
   port: number;
@@ -57,7 +61,7 @@ export interface ServerConfig {
   /** 新建会话的默认快照方式（settings defaultSnapshotMode）；缺省 auto。 */
   defaultSnapshotMode?: "auto" | "manual";
   /** 新建会话的快照后端偏好（settings snapshotBackend）；缺省 auto（探测链自动选择）。 */
-  snapshotBackend?: "git-shadow" | "btrfs" | "overlayfs" | "refs";
+  snapshotBackend?: SnapshotBackendName;
   /** 子代理角色档模型映射（premium/balanced/cheap；fast 档直接读 fastModel）。 */
   roleModels?: {
     premium?: ModelSelection;

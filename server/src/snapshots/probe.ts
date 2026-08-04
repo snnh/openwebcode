@@ -73,6 +73,7 @@ export async function probeSnapshotBackendByName(
   try {
     switch (name) {
       case "btrfs": return platform === "linux" ? await probeBtrfs(workspace, runner) : undefined;
+      case "zfs": return platform === "linux" ? await probeZfs(sessionRoot, workspace, runner) : undefined;
       case "overlayfs": return platform === "linux" ? await probeOverlayfs(sessionRoot, workspace, deps.core) : undefined;
       case "refs": return platform === "win32" ? await probeRefs(sessionRoot, workspace, runner) : undefined;
       case "git-shadow": return new GitShadowSnapshots(sessionRoot, workspace);
@@ -83,7 +84,8 @@ export async function probeSnapshotBackendByName(
   }
 }
 
-async function probeOverlayfs(sessionRoot: string, workspace: string, core: OverlayfsCore | undefined): Promise<SnapshotBackend | undefined> {  if (!core) return undefined;
+async function probeOverlayfs(sessionRoot: string, workspace: string, core: OverlayfsCore | undefined): Promise<SnapshotBackend | undefined> {
+  if (!core) return undefined;
   try {
     if (!(await probeOverlayfsSupport(core))) return undefined;
     return new OverlayfsBackend({ sessionRoot, originCwd: workspace, core });

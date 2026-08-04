@@ -3424,8 +3424,10 @@ export class AgentRunner {
           results.add(block.id);
         }
       }
-    } catch {
-      // 补写失败不掩盖 abort 本身；provider 层仍有兜底修复
+    } catch (error) {
+      // 补写失败不掩盖 abort 本身；provider 层仍有兜底修复。但必须留痕——
+      // 否则下一次请求撞 provider 400 时无法诊断历史形状为何仍非法。
+      process.stderr.write(`[agent-runner] backfillAbortedToolResults failed for session ${sessionId}: ${error instanceof Error ? error.message : String(error)}\n`);
     }
   }
 
