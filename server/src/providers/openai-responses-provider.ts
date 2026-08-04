@@ -254,6 +254,7 @@ function toResponsesInput(messages: ChatMessage[]): Array<Record<string, unknown
     }
   }
   const result: Array<Record<string, unknown>> = [];
+  const emitted = new Set<string>();
   for (const message of messages) {
     if (message.role === "user") {
       const images = message.content.filter((block) => block.type === "image");
@@ -279,6 +280,10 @@ function toResponsesInput(messages: ChatMessage[]): Array<Record<string, unknown
       if (text) result.push({ role: "assistant", content: text });
       for (const block of message.content) {
         if (block.type === "tool_call") {
+          // 同一 call_id 在多条 assistant 消息重复出现时只 inline 一次：
+          // 重复的 function_call/_output 对会被 Responses API 拒绝。
+          if (emitted.has(block.id)) continue;
+          emitted.add(block.id);
           result.push({
             type: "function_call",
             call_id: block.id,

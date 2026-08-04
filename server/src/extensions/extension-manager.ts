@@ -304,9 +304,7 @@ export class ExtensionManager {
 
   /** 当前生效的 env-sim 预设（会话级覆盖优先于扩展全局配置）；未启用/未设置/未知返回 null。 */
   async activeEnvSimPersona(sessionPersona?: string): Promise<PersonaSummary | null> {
-    const envSim = this.manifests.find((item) => item.id === "env-sim");
-    if (!envSim || !this.stateFor(envSim).enabled) return null;
-    const persona = await resolvePersona(this.dataDir, this.stateFor(envSim).config, (message) => this.warnShaping(message), sessionPersona);
+    const persona = await this.activeEnvSimPersonaPreset(sessionPersona);
     if (!persona) return null;
     const builtin = BUILTIN_PERSONA_IDS.has(persona.id);
     return { id: persona.id, name: persona.name, builtin };
