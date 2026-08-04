@@ -83,6 +83,11 @@ function renderDialog(view: SettingsView = settingsView) {
       setDefaults={() => undefined}
       providers={[]}
       models={[]}
+      notifications={[]}
+      onActivateNotification={() => undefined}
+      onDismissNotification={() => undefined}
+      onClearAllNotifications={() => undefined}
+      onMarkAllRead={() => undefined}
       onResetLayout={() => undefined}
       onClose={() => undefined}
     />,
@@ -138,7 +143,7 @@ describe("设置搜索", () => {
     expect(visibleTabs()).toEqual([]);
     expect(screen.getByText("无匹配")).toBeInTheDocument();
     fireEvent.keyDown(search, { key: "Escape" });
-    expect(visibleTabs().length).toBe(13);
+    expect(visibleTabs().length).toBe(14);
   });
 
   it("导航中不再包含服务设置页签", () => {

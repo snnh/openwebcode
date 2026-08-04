@@ -65,9 +65,7 @@ import { useGlobalKeybindings } from "./commands/useKeybindings";
 // 覆盖层各自独立 chunk，仅打开时加载，不占入口体积
 const CommandPalette = lazy(() => import("./components/CommandPalette").then((m) => ({ default: m.CommandPalette })));
 const QuickOpen = lazy(() => import("./components/QuickOpen").then((m) => ({ default: m.QuickOpen })));
-const ShortcutsDialog = lazy(() => import("./components/ShortcutsDialog").then((m) => ({ default: m.ShortcutsDialog })));
 const CodeOverlay = lazy(() => import("./components/CodeOverlay").then((m) => ({ default: m.CodeOverlay })));
-const NotificationsOverlay = lazy(() => import("./components/NotificationsOverlay").then((m) => ({ default: m.NotificationsOverlay })));
 // 编辑器分栏（0.5.0 Phase 1a）：组件自身懒加载；Monaco 在其内部再经 monaco-loader 动态 import（独立 chunk）
 const EditorPane = lazy(() => import("./components/editor/EditorPane").then((m) => ({ default: m.EditorPane })));
 // 统一 diff 视图（0.5.0 Phase 1b）：SCM/检查点/工具改动三来源同一组件，复用编辑器分栏机制
@@ -89,18 +87,16 @@ export function App(): ReactElement {
     setSettingsTab(tab === undefined ? undefined : { tab, at: Date.now() });
     setSettingsOpen(true);
   }, []);
-  // 覆盖层（Phase 5a）：命令面板 / Quick Open / 快捷键速查 / 只读代码视图浮层
+  // 覆盖层（Phase 5a）：命令面板 / Quick Open / 只读代码视图浮层（快捷键速查与通知中心已并入设置页签）
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [quickOpenOpen, setQuickOpenOpen] = useState(false);
-  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [codeOverlayPath, setCodeOverlayPath] = useState<string>();
   // 编辑器分栏（0.5.0 Phase 1a）：对话的辅助视图，随需打开、Esc 即回对话；不持久化，新会话默认无编辑器
   const [editorPane, setEditorPane] = useState<{ path: string; line?: number; column?: number }>();
   // 统一 diff 视图（0.5.0 Phase 1b）：与编辑器分栏互斥（同屏最多一个辅助视图），同样随需打开、切换会话即关闭
   const [diffPane, setDiffPane] = useState<DiffSpec>();
-  // 通知中心（Phase 5b §6.6）：toast 与后台事件汇总为可回看列表
+  // 通知中心（Phase 5b §6.6）：toast 与后台事件汇总为可回看列表（1.3.x 起在设置「通知」页签查看）
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
-  const [notificationsOpen, setNotificationsOpen] = useState(false);
   // 0.5.0 Phase 2：会话消息分页——在初始页之前加载的更早消息
   const [olderMessages, setOlderMessages] = useState<ChatMessage[]>([]);
   const [hasMoreOlder, setHasMoreOlder] = useState(false);
@@ -748,10 +744,10 @@ export function App(): ReactElement {
         .catch((error: unknown) => notify(error instanceof Error ? error.message : t("重发失败", "Resend failed"), "error"));
       return;
     }
-    // /help 是纯客户端内置命令：打开快捷键速查（同 Shift+?），不进 agent run
+    // /help 是纯客户端内置命令：打开设置「快捷键」页签（同 Shift+?），不进 agent run
     if (text === "/help") {
       setDrafts((previous) => ({ ...previous, [currentId]: "" }));
-      setShortcutsOpen(true);
+      openSettings("shortcuts");
       return;
     }
     send.mutate({
@@ -761,7 +757,7 @@ export function App(): ReactElement {
       pathAttachments: toAttachments(extractAttachmentPaths(text)),
       behavior: behavior ?? (running ? "steer" : "start"),
     });
-  }, [currentId, drafts, attachmentsBySession, running, send, editingMessage, cancelEdit, queryClient, notify, t]);
+  }, [currentId, drafts, attachmentsBySession, running, send, editingMessage, cancelEdit, queryClient, notify, t, openSettings]);
 
   // 错误卡「重试」：重发本会话最近一条用户消息（限流/过载等 retryable 失败后的快捷恢复）
   const lastUserMessageText = useMemo(() => {
@@ -911,15 +907,15 @@ export function App(): ReactElement {
     running,
     draftNonEmpty: Boolean(draft.trim()),
     multipleSessions: (sessions.data?.length ?? 0) > 1,
-    // 浮层打开状态（含通知中心）：供命令 when 条件使用（如 "!dialogOpen"）
-    dialogOpen: dialogOpen || settingsOpen || paletteOpen || quickOpenOpen || shortcutsOpen || notificationsOpen || Boolean(codeOverlayPath),
+    // 浮层打开状态：供命令 when 条件使用（如 "!dialogOpen"）
+    dialogOpen: dialogOpen || settingsOpen || paletteOpen || quickOpenOpen || Boolean(codeOverlayPath),
     // 编辑器分栏开合（0.5.0）：保存/焦点切换命令的 when 条件
     editorOpen: Boolean(editorPane),
     // diff 视图开合（0.5.0 Phase 1b）：hunk 接受/拒绝命令的 when 条件
     diffOpen: Boolean(diffPane),
     // 权限卡待决：Esc 中断等全局键位不抢占权限响应焦点
     permissionPending: mergedPermissions.length > 0,
-  }), [currentId, running, draft, sessions.data, dialogOpen, settingsOpen, paletteOpen, quickOpenOpen, shortcutsOpen, notificationsOpen, codeOverlayPath, editorPane, diffPane, mergedPermissions]);
+  }), [currentId, running, draft, sessions.data, dialogOpen, settingsOpen, paletteOpen, quickOpenOpen, codeOverlayPath, editorPane, diffPane, mergedPermissions]);
 
   const stepSession = useCallback((delta: number): void => {
     const list = sessions.data ?? [];
@@ -968,9 +964,9 @@ export function App(): ReactElement {
     focusComposer: () => document.getElementById("composer-input")?.focus(),
     nextSession: () => stepSession(1),
     previousSession: () => stepSession(-1),
-    showKeyboardShortcuts: () => setShortcutsOpen(true),
+    showKeyboardShortcuts: () => openSettings("shortcuts"),
     cycleZone: () => window.dispatchEvent(new CustomEvent(CYCLE_ZONE_EVENT)),
-    showNotifications: () => setNotificationsOpen(true),
+    showNotifications: () => openSettings("notifications"),
     saveEditorFile: () => editorActionsRef.current.save?.(),
     toggleEditorSplit: () => {
       const inEditor = document.activeElement instanceof HTMLElement && Boolean(document.activeElement.closest(".editor-pane"));
@@ -986,20 +982,19 @@ export function App(): ReactElement {
   useEffect(() => registerBuiltinCommands(() => actionsRef.current), []);
   useGlobalKeybindings(whenContext);
 
-  // 通知中心开合（在 actionsRef 之前声明，命令动作面引用）
+  // 通知中心入口（在 actionsRef 之前声明，命令动作面引用）：已并入设置「通知」页签
   const openNotifications = useCallback((): void => {
-    setNotificationsOpen(true);
-  }, []);
+    openSettings("notifications");
+  }, [openSettings]);
 
-  // 关闭时全部标记已读（角标清零；列表内未读高亮在打开期间可见）
-  const closeNotifications = useCallback((): void => {
-    setNotificationsOpen(false);
+  // 进入通知页签即全部标记已读（角标清零；NotificationsSection 挂载时触发）
+  const markAllNotificationsRead = useCallback((): void => {
     setNotifications((previous) => markAllRead(previous));
   }, []);
 
   const activateNotification = useCallback((item: AppNotification): void => {
     setNotifications((previous) => markRead(previous, item.id));
-    setNotificationsOpen(false);
+    setSettingsOpen(false);
     if (item.target?.sessionId) setCurrentId(item.target.sessionId);
     if (item.target?.view) showWorkbenchView(item.target.view);
     // 设置深链（如新版本提示 → 服务信息页签）
@@ -1059,7 +1054,7 @@ export function App(): ReactElement {
             terminalDisabled={!current}
             terminalActive={terminalSelected}
             onShowView={showWorkbenchView}
-            onShowHelp={() => setShortcutsOpen(true)}
+            onShowHelp={() => openSettings("shortcuts")}
             onShowNotifications={openNotifications}
             onOpenTerminal={openTerminalTab}
             onOpenSettings={() => openSettings()}
@@ -1076,7 +1071,7 @@ export function App(): ReactElement {
           terminalDisabled={!current}
           terminalActive={terminalSelected}
           onShowView={showWorkbenchView}
-          onShowHelp={() => setShortcutsOpen(true)}
+          onShowHelp={() => openSettings("shortcuts")}
           onShowNotifications={openNotifications}
           onOpenTerminal={openTerminalTab}
           onOpenSettings={() => openSettings()}
@@ -1095,7 +1090,7 @@ export function App(): ReactElement {
               notificationsBadge={unreadCount(notifications)}
               onShowView={showWorkbenchView}
               onToggleSidebar={layout.toggleSidebar}
-              onShowHelp={() => setShortcutsOpen(true)}
+              onShowHelp={() => openSettings("shortcuts")}
               onShowNotifications={openNotifications}
               onOpenTerminal={openTerminalTab}
               terminalDisabled={!current}
@@ -1370,6 +1365,11 @@ export function App(): ReactElement {
         providers={providers.data ?? []}
         models={models.data ?? []}
         sessionCwd={sessions.data?.find((s) => s.id === currentId)?.cwd}
+        notifications={notifications}
+        onActivateNotification={activateNotification}
+        onDismissNotification={(id) => setNotifications((previous) => removeNotification(previous, id))}
+        onClearAllNotifications={() => setNotifications(clearNotifications())}
+        onMarkAllRead={markAllNotificationsRead}
         navRail={{
           activeView: layout.sidebarView,
           problemsBadge: currentId ? problemsBadges[currentId] ?? 0 : 0,
@@ -1377,7 +1377,7 @@ export function App(): ReactElement {
           terminalDisabled: !current,
           terminalActive: terminalSelected,
           onShowView: showWorkbenchView,
-          onShowHelp: () => setShortcutsOpen(true),
+          onShowHelp: () => openSettings("shortcuts"),
           onShowNotifications: openNotifications,
           onOpenTerminal: openTerminalTab,
         }}
@@ -1400,17 +1400,6 @@ export function App(): ReactElement {
             onOpenFile={(path) => setCodeOverlayPath(path)}
             onOpenInEditor={(path) => openEditor(path)}
             onClose={() => setQuickOpenOpen(false)}
-          />
-        )}
-        {shortcutsOpen && <ShortcutsDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />}
-        {notificationsOpen && (
-          <NotificationsOverlay
-            open={notificationsOpen}
-            notifications={notifications}
-            onActivate={activateNotification}
-            onDismiss={(id) => setNotifications((previous) => removeNotification(previous, id))}
-            onClearAll={() => setNotifications(clearNotifications())}
-            onClose={closeNotifications}
           />
         )}
         {codeOverlayPath && currentId && (

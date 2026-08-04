@@ -652,7 +652,7 @@ export interface SettingsView {
 }
 
 /** 设置对话框页签（定义在 contracts 供 lib 层引用；SettingsDialog 再导出） */
-export type SettingsTab = "appearance" | "general" | "defaults" | "shortcuts" | "remote" | "models" | "modelSelection" | "web" | "skills" | "extensions" | "pricing" | "prompt" | "info";
+export type SettingsTab = "appearance" | "general" | "defaults" | "shortcuts" | "remote" | "models" | "modelSelection" | "web" | "skills" | "extensions" | "pricing" | "prompt" | "info" | "notifications";
 
 export type ModelInterfaceType = "anthropic-messages" | "openai-chat-completions" | "openai-responses";
 export type WebCapability = "search" | "fetch";

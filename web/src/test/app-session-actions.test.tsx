@@ -43,7 +43,7 @@ describe("App 会话操作与 /help", () => {
     // 第一次 Enter 采纳补全建议（写入 "/help "），第二次才真正发送
     fireEvent.keyDown(textarea, { key: "Enter" });
     fireEvent.keyDown(textarea, { key: "Enter" });
-    // 懒加载的 ShortcutsDialog 出现
+    // 设置对话框打开并定位到「快捷键」页签（速查浮层已并入设置）
     expect(await screen.findByText("键盘快捷方式")).toBeInTheDocument();
     expect(textarea).toHaveValue("");
     expect(calls.some((call) => call.url.includes("/api/sessions/s1/messages") && call.method === "POST")).toBe(false);

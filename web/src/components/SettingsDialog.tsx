@@ -24,7 +24,9 @@ import { ServerSettingsFields } from "./settings/ServerSettingsFields";
 import { PromptSection } from "./settings/PromptSection";
 import { ServerInfoSection } from "./settings/ServerInfoSection";
 import { SystemStorageSection } from "./settings/SystemStorageSection";
+import { NotificationsSection } from "./settings/NotificationsSection";
 import { useConfirmDialog } from "./ConfirmDialog";
+import type { AppNotification } from "../lib/notifications";
 
 export type { SettingsTab } from "../lib/contracts";
 
@@ -62,7 +64,7 @@ const SETTINGS_GROUPS: Array<{ id: string; zh: string; en: string; tabs: Setting
       { id: "appearance", zh: "外观", en: "Appearance", descriptionZh: "语言、主题与界面强调色", descriptionEn: "Language, theme, and interface accent", icon: "sun" },
       { id: "general", zh: "通用", en: "General", descriptionZh: "输入方式、模型语言货币与工作区布局", descriptionEn: "Input behavior, model language & currency, and workspace layout", icon: "settings" },
       { id: "defaults", zh: "会话默认", en: "Session defaults", descriptionZh: "新会话的模型与运行参数", descriptionEn: "Model and runtime defaults for new sessions", icon: "history" },
-      { id: "shortcuts", zh: "快捷键", en: "Shortcuts", descriptionZh: "查看可用的键盘操作", descriptionEn: "Browse available keyboard actions", icon: "terminal" },
+      { id: "shortcuts", zh: "快捷键", en: "Shortcuts", descriptionZh: "查看可用的键盘操作", descriptionEn: "Browse available keyboard actions", icon: "keyboard" },
     ],
   },
   {
@@ -92,6 +94,7 @@ const SETTINGS_GROUPS: Array<{ id: string; zh: string; en: string; tabs: Setting
     zh: "系统",
     en: "System",
     tabs: [
+      { id: "notifications", zh: "通知", en: "Notifications", descriptionZh: "后台任务、诊断与更新提醒", descriptionEn: "Background task, diagnostics, and update alerts", icon: "bell" },
       { id: "info", zh: "服务信息", en: "Server info", descriptionZh: "运行状态、版本、执行器与存储", descriptionEn: "Runtime status, version, executor, and storage", icon: "alert" },
     ],
   },
@@ -99,7 +102,7 @@ const SETTINGS_GROUPS: Array<{ id: string; zh: string; en: string; tabs: Setting
 
 const TAB_META = SETTINGS_GROUPS.flatMap((group) => group.tabs);
 
-export function SettingsDialog({ open, initialTab, initialTabAt, preference, setPreference, accent, setAccent, sendKey, setSendKey, desktopNotify, setDesktopNotify, defaults, setDefaults, providers, models, sessionCwd, navRail, onResetLayout, onClose }: {
+export function SettingsDialog({ open, initialTab, initialTabAt, preference, setPreference, accent, setAccent, sendKey, setSendKey, desktopNotify, setDesktopNotify, defaults, setDefaults, providers, models, sessionCwd, notifications, onActivateNotification, onDismissNotification, onClearAllNotifications, onMarkAllRead, navRail, onResetLayout, onClose }: {
   open: boolean;
   /** 深链入口：打开时定位到指定页签；不传则保持上次使用的页签 */
   initialTab?: SettingsTab;
@@ -119,6 +122,12 @@ export function SettingsDialog({ open, initialTab, initialTabAt, preference, set
   models: ModelProfile[];
   /** 当前会话工作目录：提示词页签的「当前项目」作用域指向它 */
   sessionCwd?: string;
+  /** 通知页签数据与回调（通知中心已并入设置；进入页签即全部已读） */
+  notifications: AppNotification[];
+  onActivateNotification(item: AppNotification): void;
+  onDismissNotification(id: string): void;
+  onClearAllNotifications(): void;
+  onMarkAllRead(): void;
   /** 左侧应用导航轨（与移动端导航图标栏一致）：切视图/帮助/通知/终端；缺省不渲染 */
   navRail?: {
     activeView: SidebarView;
@@ -407,6 +416,10 @@ export function SettingsDialog({ open, initialTab, initialTabAt, preference, set
           {activeTab === "web" && (
             <section>
               <h3>{t("联网服务", "Web services")}</h3>
+              <ServerSettingsFields
+                showGroup={(groupId) => groupId === "webSearch"}
+                onDirtyChange={reportDirty}
+              />
               <WebProvidersSection />
             </section>
           )}
@@ -437,6 +450,18 @@ export function SettingsDialog({ open, initialTab, initialTabAt, preference, set
             <section>
               <h3>{t("提示词", "System prompt")}</h3>
               <PromptSection sessionCwd={sessionCwd} onDirtyChange={reportDirty} />
+            </section>
+          )}
+          {activeTab === "notifications" && (
+            <section>
+              <h3>{t("通知中心", "Notifications")}</h3>
+              <NotificationsSection
+                notifications={notifications}
+                onActivate={onActivateNotification}
+                onDismiss={onDismissNotification}
+                onClearAll={onClearAllNotifications}
+                onMarkAllRead={onMarkAllRead}
+              />
             </section>
           )}
           {activeTab === "info" && (

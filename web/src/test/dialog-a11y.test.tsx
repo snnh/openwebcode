@@ -2,7 +2,7 @@ import * as axeCore from "axe-core";
 import { render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NewSessionDialog } from "../components/NewSessionDialog";
-import { NotificationsOverlay } from "../components/NotificationsOverlay";
+import { NotificationsSection } from "../components/settings/NotificationsSection";
 import { SettingsDialog } from "../components/SettingsDialog";
 import { ScmPanel } from "../components/panels/ScmPanel";
 import { api } from "../lib/api";
@@ -60,6 +60,11 @@ describe("SettingsDialog 打开态无障碍", () => {
         setDefaults={() => undefined}
         providers={[]}
         models={[]}
+        notifications={[]}
+        onActivateNotification={() => undefined}
+        onDismissNotification={() => undefined}
+        onClearAllNotifications={() => undefined}
+        onMarkAllRead={() => undefined}
         onResetLayout={() => undefined}
         onClose={() => undefined}
       />,
@@ -89,16 +94,16 @@ describe("NewSessionDialog 打开态无障碍", () => {
   });
 });
 
-describe("NotificationsOverlay 打开态无障碍", () => {
+describe("NotificationsSection 打开态无障碍", () => {
   it("有通知时无 axe 违规", async () => {
     const notifications: AppNotification[] = [
       { id: "n1", kind: "info", text: "后台任务已结束", at: Date.UTC(2026, 6, 25, 10, 30), read: false },
       { id: "n2", kind: "error", text: "诊断更新：2 项失败", at: Date.UTC(2026, 6, 25, 11, 0), read: true },
     ];
     const { container } = render(
-      <NotificationsOverlay open notifications={notifications} onActivate={vi.fn()} onDismiss={vi.fn()} onClearAll={vi.fn()} onClose={vi.fn()} />,
+      <NotificationsSection notifications={notifications} onActivate={vi.fn()} onDismiss={vi.fn()} onClearAll={vi.fn()} onMarkAllRead={vi.fn()} />,
     );
-    await screen.findByRole("dialog", { name: "通知中心" });
+    await screen.findByRole("region", { name: "通知中心" });
     await expectNoViolations(container);
   });
 });

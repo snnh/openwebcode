@@ -25,6 +25,7 @@ export const SETTINGS_GROUP_EN: Record<string, string> = {
   service: "Storage",
   network: "Listen address and port",
   proxy: "Outbound proxy",
+  webSearch: "Web search",
   exchangeRate: "Exchange rate",
   updateCheck: "Update check",
 };
@@ -35,7 +36,7 @@ export const NETWORK_SETTINGS_GROUP = "network";
 /**
  * 服务端设置分组 → 设置页签归属。分组 id 由服务端保持稳定（见 server/src/settings-service.ts），
  * web 端决定每个分组渲染在哪个页签：模型选择 → 模型选择，模型目录与同步 → 模型目录，语言与货币 → 通用，
- * 汇率 → 模型定价，执行器/存储/更新检查 → 服务信息，监听与端口 → 远程访问，出站代理 → 联网服务。
+ * 汇率 → 模型定价，执行器/存储/更新检查 → 服务信息，监听与端口 → 远程访问，出站代理/联网搜索 → 联网服务。
  */
 export const SETTING_GROUP_TAB: Record<string, SettingsTab> = {
   modelSelection: "modelSelection",
@@ -45,6 +46,7 @@ export const SETTING_GROUP_TAB: Record<string, SettingsTab> = {
   service: "info",
   network: "remote",
   proxy: "web",
+  webSearch: "web",
   exchangeRate: "pricing",
   updateCheck: "info",
 };
@@ -91,6 +93,7 @@ export const SETTINGS_FIELD_EN: Record<string, { label: string; description?: st
   proxyHttp: { label: "HTTP proxy", description: "e.g. http://127.0.0.1:7890, credentials allowed; only used in custom mode; also the fallback when HTTPS proxy is blank" },
   proxyHttps: { label: "HTTPS proxy", description: "Proxy used for https targets; falls back to the HTTP proxy when blank" },
   proxyNoProxy: { label: "Proxy bypass list", description: "Comma-separated hostnames or domain suffixes (e.g. internal.example.com) that skip the proxy; loopback addresses always bypass" },
+  webSearchMode: { label: "Web search mode", description: "local = the local web_search tool runs through the configured search provider; model-api = the model provider searches server-side (OpenAI Responses API only; the local web_search tool is then not injected); web_fetch works in both modes" },
 };
 
 export const MAX_SYNC_INTERVAL_MINUTES = 35_791;
