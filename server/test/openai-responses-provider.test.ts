@@ -17,6 +17,9 @@ function sse(events: Array<Record<string, unknown>>): string {
   return events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("");
 }
 
+/** 最小正常终态 payload（无输出项、无 usage）：只关心请求体的用例共用。 */
+const COMPLETED = sse([{ type: "response.completed", response: { status: "completed", output: [] } }]);
+
 function sseFetch(bodies: Array<Record<string, unknown>>, payload: string, status = 200) {
   return (async (_input: string | URL | Request, init?: RequestInit) => {
     bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
@@ -81,7 +84,7 @@ describe("OpenAIResponsesProvider streaming", () => {
   });
 
   it("gates reasoning summary and effort behind configuration flags", async () => {
-    const payload = sse([{ type: "response.completed", response: { status: "completed", output: [] } }]);
+    const payload = COMPLETED;
     const bodies: Array<Record<string, unknown>> = [];
     // provider 级关闭 summary 请求，请求级 reasoningContent: false 同样关闭
     await collect(makeProvider(sseFetch(bodies, payload), { reasoningContent: false }).streamChat(request({ effort: "low" })));
@@ -201,13 +204,12 @@ describe("OpenAIResponsesProvider streaming", () => {
 describe("OpenAIResponsesProvider request mapping", () => {
   it("maps messages to input items, joins instructions and flattens tools", async () => {
     const bodies: Array<Record<string, unknown>> = [];
-    const payload = sse([{ type: "response.completed", response: { status: "completed", output: [] } }]);
+    const payload = COMPLETED;
     const messages: StreamChatRequest["messages"] = [
       { id: "u1", role: "user", content: [{ type: "text", text: "看图" }, { type: "image", mediaType: "image/png", data: "aGk=" }], createdAt: "2026-01-01T00:00:00.000Z" },
       {
         id: "a1", role: "assistant", createdAt: "2026-01-01T00:00:01.000Z",
         content: [
-          { type: "thinking", text: "历史思维不回传", provider: "gpt" },
           { type: "text", text: "我查一下" },
           { type: "tool_call", id: "call_1", name: "bash", input: { cmd: "ls" } },
         ],
@@ -235,13 +237,11 @@ describe("OpenAIResponsesProvider request mapping", () => {
       { type: "function_call", call_id: "call_1", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
       { type: "function_call_output", call_id: "call_1", output: "ok" },
     ]);
-    // 异源 thinking 块不回传（provider 不匹配；同源回传见下条用例）
-    expect(JSON.stringify(bodies[0]?.input)).not.toContain("历史思维不回传");
   });
 
   it("思维链回传开启时同源 thinking 块以 reasoning item 明文回传（每个 function_call 前各一条），关闭或异源不回传", async () => {
     const bodies: Array<Record<string, unknown>> = [];
-    const payload = sse([{ type: "response.completed", response: { status: "completed", output: [] } }]);
+    const payload = COMPLETED;
     const messages: StreamChatRequest["messages"] = [
       { id: "u1", role: "user", content: [{ type: "text", text: "继续" }], createdAt: "2026-01-01T00:00:00.000Z" },
       {
@@ -284,7 +284,7 @@ describe("OpenAIResponsesProvider request mapping", () => {
 
   it("repairs dangling tool_call (no result persisted after abort) and drops orphan tool_result", async () => {
     const bodies: Array<Record<string, unknown>> = [];
-    const payload = sse([{ type: "response.completed", response: { status: "completed", output: [] } }]);
+    const payload = COMPLETED;
     const messages: StreamChatRequest["messages"] = [
       { id: "u1", role: "user", content: [{ type: "text", text: "继续" }], createdAt: "2026-01-01T00:00:00.000Z" },
       {
@@ -305,7 +305,7 @@ describe("OpenAIResponsesProvider request mapping", () => {
 
   it("merges extraBody under core fields and omits max_output_tokens by default", async () => {
     const bodies: Array<Record<string, unknown>> = [];
-    const payload = sse([{ type: "response.completed", response: { status: "completed", output: [] } }]);
+    const payload = COMPLETED;
     await collect(makeProvider(sseFetch(bodies, payload), {
       extraBody: { temperature: 0.7, model: "evil-override", store: false },
     }).streamChat(request()));
@@ -316,7 +316,7 @@ describe("OpenAIResponsesProvider request mapping", () => {
     expect(bodies[0]).not.toHaveProperty("tools");
   });
 
-  it("serverWebSearch: tools 附加服务端 web_search（无 function tools 也发送），web_search_call 事件映射 server_tool", async () => {
+  it("serverWebSearch: tools 附加服务端 web_search（附加在 function tools 末尾），web_search_call 事件映射 server_tool", async () => {
     const bodies: Array<Record<string, unknown>> = [];
     const payload = sse([
       { type: "response.web_search_call.in_progress", item_id: "ws_1" },
@@ -328,6 +328,7 @@ describe("OpenAIResponsesProvider request mapping", () => {
         response: { status: "completed", output: [{ id: "ws_1", type: "web_search_call" }], usage: { input_tokens: 10, output_tokens: 5 } },
       },
     ]);
+    // 无 function tools 也发送 tools 字段
     const events = await collect(makeProvider(sseFetch(bodies, payload)).streamChat(request({ serverWebSearch: true })));
 
     expect(bodies[0]?.tools).toEqual([{ type: "web_search" }]);
@@ -339,16 +340,13 @@ describe("OpenAIResponsesProvider request mapping", () => {
     // web_search_call 输出项不产出 tool_call、不影响 stopReason
     expect(events.some((event) => event.type === "tool_call")).toBe(false);
     expect(events.at(-1)).toEqual({ type: "done", stopReason: "end_turn" });
-  });
 
-  it("serverWebSearch 与 function tools 并存时 web_search 附加在末尾", async () => {
-    const bodies: Array<Record<string, unknown>> = [];
-    const payload = sse([{ type: "response.completed", response: { status: "completed", output: [] } }]);
-    await collect(makeProvider(sseFetch(bodies, payload)).streamChat(request({
+    // 与 function tools 并存时 web_search 附加在末尾
+    await collect(makeProvider(sseFetch(bodies, COMPLETED)).streamChat(request({
       serverWebSearch: true,
       tools: [{ name: "bash", description: "run", inputSchema: { type: "object" } }],
     })));
-    expect(bodies[0]?.tools).toEqual([
+    expect(bodies[1]?.tools).toEqual([
       { type: "function", name: "bash", description: "run", parameters: { type: "object" } },
       { type: "web_search" },
     ]);
