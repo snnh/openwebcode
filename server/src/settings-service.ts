@@ -3,7 +3,7 @@ import path from "node:path";
 import { writeUtf8Atomically } from "./atomic-file.js";
 import { ensureDirWithMode } from "./fs-utils.js";
 import type { AgentRunner } from "./agent/agent-runner.js";
-import { loadConfig, defaultCorePath, type ServerConfig } from "./config.js";
+import { loadConfig, defaultCorePath, SNAPSHOT_BACKENDS, type ServerConfig, type SnapshotBackendName } from "./config.js";
 import { MAX_SYNC_INTERVAL_MINUTES } from "./remote-sync-scheduler.js";
 import type { CoreClientLike } from "./core-client.js";
 import type { EventBus } from "./events/event-bus.js";
@@ -261,7 +261,7 @@ const FIELDS: FieldSpec[] = [
   { key: "defaultCurrency", group: "general", label: "默认货币", type: "select", env: "OWC_DEFAULT_CURRENCY", defaultValue: "CNY", restartRequired: false, options: ["USD", "CNY"], fromEnv: envCurrency },
   { key: "defaultEffort", group: "general", label: "默认思考力度", type: "select", env: "OWC_DEFAULT_EFFORT", defaultValue: "none", restartRequired: false, options: EFFORT_OPTIONS, description: "新建会话的思考力度；none 表示不设置（跟随模型默认），模型声明不支持所选力度时静默跳过" },
   { key: "defaultSnapshotMode", group: "general", label: "默认快照方式", type: "select", env: "OWC_DEFAULT_SNAPSHOT_MODE", defaultValue: "auto", restartRequired: false, options: ["auto", "manual"], description: "新建会话的检查点创建方式：auto = 每轮用户消息前自动创建；manual = 仅手动创建" },
-  { key: "snapshotBackend", group: "general", label: "快照后端", type: "select", env: "OWC_SNAPSHOT_BACKEND", defaultValue: "auto", restartRequired: false, options: ["auto", "git-shadow", "btrfs", "overlayfs", "refs"], description: "新建会话的快照后端偏好；auto = 按探测链自动选择（btrfs/zfs/overlayfs → git-shadow）；指定后端在当前工作区不可用时回落自动并告警" },
+  { key: "snapshotBackend", group: "general", label: "快照后端", type: "select", env: "OWC_SNAPSHOT_BACKEND", defaultValue: "auto", restartRequired: false, options: ["auto", ...SNAPSHOT_BACKENDS], description: "新建会话的快照后端偏好；auto = 按探测链自动选择（btrfs/zfs/overlayfs → git-shadow）；指定后端在当前工作区不可用时回落自动并告警" },
   { key: "agentMaxTurns", group: "general", label: "单条消息最大轮次", type: "number", env: "OWC_AGENT_MAX_TURNS", defaultValue: 50, restartRequired: false, fromEnv: envNumber, validate: requireAgentMaxTurns, description: "每条用户消息允许的最大 agent 轮次，达到后当前任务以失败收尾；长任务可调大（1–1000）" },
   // 执行器
   { key: "corePath", group: "executor", label: "执行器路径", type: "text", env: "OWC_CORE_PATH", defaultValue: "../build/Debug/owc-exec.exe", runtimeDefault: () => defaultCorePath(), restartRequired: true, validate: requireNonEmpty },
@@ -491,13 +491,14 @@ export class SettingsService {
         ? { defaultModel: { provider: defaultModelSelection[0], model: defaultModelSelection[1] } }
         : {}),
       // 新建会话默认（app.ts 创建路由消费；defaultEffort 的 none = 不设置，不进 ServerConfig）
-      ...(defaultEffort !== "none" && defaultEffort !== null
+      // 存储前校验：仅枚举内合法力度进 ServerConfig（非法值如 env 直写在此丢弃，app.ts 仍有兜底校验）
+      ...(typeof defaultEffort === "string" && defaultEffort !== "none" && EFFORT_OPTIONS.includes(defaultEffort)
         ? { defaultEffort: defaultEffort as EffortLevel }
         : {}),
       defaultSnapshotMode: value("defaultSnapshotMode") as "auto" | "manual",
       // 快照后端偏好（app.ts 创建路由消费；auto = 探测链自动选择，不进 ServerConfig）
-      ...(snapshotBackend !== "auto" && (snapshotBackend === "git-shadow" || snapshotBackend === "btrfs" || snapshotBackend === "overlayfs" || snapshotBackend === "refs")
-        ? { snapshotBackend }
+      ...(typeof snapshotBackend === "string" && (SNAPSHOT_BACKENDS as readonly string[]).includes(snapshotBackend)
+        ? { snapshotBackend: snapshotBackend as SnapshotBackendName }
         : {}),
       ...(roleModelPremium || roleModelBalanced || roleModelCheap
         ? {
