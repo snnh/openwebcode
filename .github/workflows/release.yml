@@ -339,7 +339,7 @@ jobs:
         run: |
           set -euo pipefail
           # 防 toolchain 静默回落主机编译器：交叉产物必须是目标架构 ELF
-          file build/owc-exec | grep -q 'loongarch64' || { echo "build/owc-exec is not loongarch64 ELF"; file build/owc-exec; exit 1; }
+          file build/owc-exec | grep -qi 'loongarch' || { echo "build/owc-exec is not loongarch64 ELF"; file build/owc-exec; exit 1; }
       - name: Stage runtime into build/stage
         run: |
           set -euo pipefail
