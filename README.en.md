@@ -40,7 +40,7 @@ Or download the tar.gz for your architecture manually (`linux-x64` / `linux-arm6
 
 ```sh
 mkdir openwebcode
-tar -xzf openwebcode-<version>-linux-x64.tar.gz -C openwebcode
+tar -xzf openwebcode-<version>-linux-<arch>.tar.gz -C openwebcode
 cd openwebcode
 # In a TTY, choose prefix, port, data directory, host, and Node.js interactively.
 ./install.sh

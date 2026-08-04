@@ -37,7 +37,7 @@ curl -fsSL https://raw.githubusercontent.com/snnh/openwebcode/main/packaging/ins
 或手动下载对应架构的 tar.gz（`linux-x64` / `linux-arm64` / `linux-loongarch64`）：
 
 ```sh
-mkdir openwebcode && tar -xzf openwebcode-<version>-linux-x64.tar.gz -C openwebcode
+mkdir openwebcode && tar -xzf openwebcode-<version>-linux-<arch>.tar.gz -C openwebcode
 cd openwebcode
 # 直接运行时会在 TTY 中询问安装前缀、端口、数据目录、监听地址和 Node 选择
 ./install.sh
