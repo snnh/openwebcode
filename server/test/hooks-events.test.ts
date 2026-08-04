@@ -99,8 +99,13 @@ describe("Notification 钩子触发点", () => {
     });
     expect((payloads[0]!.notification as { summary: string }).summary).toContain("write_file");
     expect((payloads[0]!.notification as { summary: string }).summary).toContain("a.txt");
-    // 放行挂起的权限请求让 run 收尾
-    const pending = agent.listPendingPermissions(session.id)[0]!;
+    // 放行挂起的权限请求让 run 收尾。Notification 钩子落盘与权限入队无顺序保证：
+    // 高负载 CI 上标记可能先到，需轮询等待 pending 出现（Windows runner 竞态实测复现）
+    const pending = await vi.waitFor(() => {
+      const item = agent.listPendingPermissions(session.id)[0];
+      expect(item).toBeDefined();
+      return item!;
+    }, { timeout: 5000 });
     const complete = await agent.preparePermissionResponse(session.id, pending.requestId, "deny");
     complete?.();
     await run;
