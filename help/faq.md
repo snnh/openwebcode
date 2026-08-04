@@ -85,6 +85,11 @@ Windows：重新下载 MSI 双击安装（major upgrade 原地升级，用户数
 
 `https://mcp.tavily.com/mcp/?tavilyApiKey=...` 是 Tavily 的远程 MCP 地址；如需直接使用 Tavily MCP 的完整工具集，请把它写到 `<业务数据目录>/mcp.json`，不要填进搜索 Base URL。
 
+### Q: 如何使用deepseek api提供的`web_search`？
+
+1. 使用Responses接口连接deepseek api
+2. 设置--联网服务--联网搜索模式选择`model-api`并保存
+
 ### Q: thinking / reasoning 模型怎么开？
 
 支持 reasoning 的模型在输入框下方有合并后的「思考」选择器，可直接选关闭、自适应或模型声明的强度。Anthropic 翻译为 `thinking.budget_tokens`，OpenAI 系翻译为 `reasoning_effort`。思考块默认折叠，完成后随消息持久化，思考 token 计入成本。
