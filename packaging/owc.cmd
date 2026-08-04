@@ -5,7 +5,7 @@ rem and non-ASCII bytes can break parsing. CI converts it to CRLF into bin\.
 setlocal
 set "OWC_HOME=%~dp0.."
 set "OWC_CORE_PATH=%OWC_HOME%\bin\owc-exec.exe"
-if not defined OWC_PORT set "OWC_PORT=3000"
+if not defined OWC_PORT set "OWC_PORT=3210"
 rem One-time migration of the legacy default data directory.  Runs only when
 rem OWC_DATA_DIR is not set explicitly, the legacy dir exists, and the new
 rem default dir does not.  Never blocks startup.

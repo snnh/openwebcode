@@ -18,9 +18,9 @@
 
 可以。回退全程服务端会拒绝新消息起跑（返回 409，稍等重试即可），回退完成后消息历史截回检查点、账本同步回滚，持久 shell 一并回收（工作区可能已整体重建，旧 shell 的目录已失效），随后正常发送即可继续。
 
-### Q: 端口 3000 被占用怎么办？
+### Q: 端口 3210 被占用怎么办？
 
-设置环境变量 `OWC_PORT=4000` 后启动 `owc`（launcher 脚本默认 3000，server 自身兜底 3210）。
+设置环境变量 `OWC_PORT=4000` 后启动 `owc`。1.3.x 起 launcher 脚本与 server 的默认端口统一为 **3210**（更早版本 launcher 默认 3000）。
 
 ### Q: 支持 Windows / Linux / macOS 吗？
 
@@ -244,7 +244,7 @@ owc run "跑测试并修复失败的用例" --cwd . --yolo --json | tee events.n
 不会。只有 stdin/stdout 都是 TTY 且没有传 `--yes` 时才会询问配置；重定向、管道和 CI 会直接使用默认值或命令行提供的值。自动化安装应显式传 `--yes`，例如：
 
 ```sh
-./install.sh --yes --prefix "$HOME/.local" --port 3000 \
+./install.sh --yes --prefix "$HOME/.local" --port 3210 \
   --data-dir "$HOME/.local/share/openwebcode" --host 127.0.0.1
 ```
 
@@ -270,7 +270,7 @@ owc run "跑测试并修复失败的用例" --cwd . --yolo --json | tee events.n
 
 ### Q: 命令面板和快捷键有哪些？
 
-`Ctrl/Cmd+Shift+P` 打开命令面板（全部命令可搜索），`Ctrl/Cmd+P` Quick Open 直达文件（`#` 前缀搜符号），`Shift+?` 查看快捷键速查。默认集对齐 VSCode 习惯（`mod+B` 侧栏、`` mod+` `` 底部面板、`mod+,` 设置、`F6` 区域轮换等），完整清单在设置 → 快捷键；暂不支持自定义键位。
+`Ctrl/Cmd+Shift+P` 打开命令面板（全部命令可搜索），`Ctrl/Cmd+P` Quick Open 直达文件（`#` 前缀搜符号），`Shift+?` 打开设置 → 快捷键页签。默认集对齐 VSCode 习惯（`mod+B` 侧栏、`` mod+` `` 底部面板、`mod+,` 设置、`F6` 区域轮换等），完整清单在设置 → 快捷键；暂不支持自定义键位。
 
 ### Q: 怎么在对话里搜索内容、快速换模型？
 
