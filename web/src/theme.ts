@@ -76,12 +76,16 @@ export function useTheme(): {
     const root = document.documentElement;
     if (accent.startsWith("custom:")) {
       const vars = deriveAccentVars(accent.slice("custom:".length), theme);
-      root.dataset.accent = "custom";
       if (vars) {
+        root.dataset.accent = "custom";
         root.style.setProperty("--accent", vars.accent);
         root.style.setProperty("--accent-hover", vars.accentHover);
         root.style.setProperty("--on-accent", vars.onAccent);
         root.style.setProperty("--accent-soft", vars.accentSoft);
+      } else {
+        // 非法 custom 值（hex 解析失败/损坏）：清残留内联变量并回落 graphite，避免沿用上次 custom 的颜色
+        root.dataset.accent = DEFAULT_ACCENT;
+        for (const key of ACCENT_VAR_KEYS) root.style.removeProperty(key);
       }
       return;
     }
