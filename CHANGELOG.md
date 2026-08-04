@@ -6,6 +6,10 @@
 
 界面设计语言统一专项：引入可复用交互基元（弹层、确认框、徽标、输入框、折叠行、空态/错误态），全面 token 化（字号、圆角、阴影、遮罩、diff 色、z-index），并修复一批界面瑕疵与可靠性问题。
 
+### 新增功能
+
+- 初步添加linux版对arm和龙芯的适配
+
 ### 界面与体验
 
 - 新增设计基元：`Overlay` 弹层组件（Esc/背板关闭、焦点循环与归还）统一命令面板、Quick Open、快捷键速查、通知中心、代码视图五个弹层；`ConfirmDialog` + `useConfirmDialog` 取代全部原生 `window.confirm`；`.pill` 徽标、`.input` 输入框、`.collapse-row` 折叠行、`.composer-popup` 建议弹层、`.muted-empty` 空态、`.panel-error` 行内错误（带 `role="alert"`）六套样式基类收敛全站重复实现。

@@ -23,6 +23,9 @@ export interface StreamChatRequest {
   /** 思维链回传（请求级，仅 OpenAI 兼容接口生效）：按模型能力声明由 agent 循环下发；
    * undefined 时回落 provider 级配置（默认开）。 */
   reasoningContent?: boolean;
+  /** 服务端联网搜索（请求级，仅 OpenAI Responses 接口生效）：true 时 Provider 在 tools 中
+   * 附加 `{"type":"web_search"}`，由模型服务端执行搜索并回传 server_tool 活动事件。 */
+  serverWebSearch?: boolean;
   messages: ChatMessage[];
   /** 消息级断点（消息 id 列表）；Provider 按 API 断点上限（Anthropic ≤4，含 tools/system）截断。 */
   cacheBreakpoints?: string[];
@@ -38,6 +41,9 @@ export type ProviderEvent =
    * argumentsDelta 是参数 JSON 文本的增量片段（拼接后才是完整 JSON）。 */
   | { type: "tool_call_delta"; id: string; name?: string; argumentsDelta: string }
   | { type: "tool_call"; id: string; name: string; input: Record<string, unknown> }
+  /** 服务端工具活动（如 Responses API 的 web_search_call）：工具由模型服务端执行，
+   * 无需本地调度；仅用于实时活动展示，不落盘、不参与 stopReason 判定。 */
+  | { type: "server_tool"; tool: string; phase: "start" | "update" | "end" }
   | {
       type: "usage";
       inputTokens: number;

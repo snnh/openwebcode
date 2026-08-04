@@ -129,6 +129,8 @@ export interface SubAgentOptions {
   /** 思维链回传（仅 OpenAI 兼容接口生效）：由调用方按实际请求模型（modelOverride ?? model）的能力声明下发。
    * 注：子代理当前不把 thinking 块写入对话历史，该管道暂无实际回带行为，为后续保留 thinking 预留。 */
   reasoningContent?: boolean;
+  /** 服务端联网搜索（请求级，仅 OpenAI Responses 接口生效）：model-api 模式下由调用方统一下发。 */
+  serverWebSearch?: boolean;
 }
 
 export interface SubAgentResult {
@@ -196,6 +198,7 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
         tools,
         signal: options.signal,
         ...(options.reasoningContent !== undefined ? { reasoningContent: options.reasoningContent } : {}),
+        ...(options.serverWebSearch !== undefined ? { serverWebSearch: options.serverWebSearch } : {}),
       });
       turns += 1;
       const assistantContent: MessageContent[] = [];

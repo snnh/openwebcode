@@ -207,7 +207,7 @@ describe("web fetch providers", () => {
 });
 
 describe("AgentRunner web tools", () => {
-  async function exposedTools(search?: SearchProvider, webFetchProvider?: WebFetchProvider): Promise<string[]> {
+  async function exposedRequest(search?: SearchProvider, webFetchProvider?: WebFetchProvider, webSearchMode: "local" | "model-api" = "local"): Promise<StreamChatRequest | undefined> {
     const root = await mkdtemp(path.join(os.tmpdir(), "owc-web-tools-")); roots.push(root);
     const sessions = new SessionStore(path.join(root, "sessions")); await sessions.initialize();
     const session = await sessions.create({ cwd: root, provider: "fake", model: "model" });
@@ -218,8 +218,13 @@ describe("AgentRunner web tools", () => {
     const providers = new ProviderRegistry(); providers.register(provider);
     const core = { on() { return core; }, async configureSession() { return { sandboxCapability: "advisory" }; } } as unknown as CoreClientLike;
     const runner = new AgentRunner(sessions, providers, core, new EventBus(), pricing, undefined, "zh-CN", 50, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, search, undefined, undefined, undefined, undefined, webFetchProvider);
+    runner.setWebSearchMode(() => webSearchMode);
     await runner.run(session.id, "check tools");
-    return requests[0]?.tools.map((tool) => tool.name) ?? [];
+    return requests[0];
+  }
+
+  async function exposedTools(search?: SearchProvider, webFetchProvider?: WebFetchProvider): Promise<string[]> {
+    return (await exposedRequest(search, webFetchProvider))?.tools.map((tool) => tool.name) ?? [];
   }
 
   it("only injects web tools whose service is configured", async () => {
@@ -235,5 +240,19 @@ describe("AgentRunner web tools", () => {
     expect(withFetch).toContain("web_fetch");
     expect(withFetch).not.toContain("web_search");
     expect(withBoth).toEqual(expect.arrayContaining(["web_fetch", "web_search"]));
+  }, 15_000);
+
+  it("model-api 模式：本地 web_search 不注入，请求级 serverWebSearch 置位，web_fetch 不受影响", async () => {
+    const search: SearchProvider = { name: "fake", async search() { return []; } };
+    const webFetchProvider: WebFetchProvider = { name: "fake-reader", async fetchUrl() { return { url: "https://example.com", finalUrl: "https://example.com", contentType: "text/plain", text: "ok" }; } };
+    const request = await exposedRequest(search, webFetchProvider, "model-api");
+    const names = request?.tools.map((tool) => tool.name) ?? [];
+    expect(names).not.toContain("web_search");
+    expect(names).toContain("web_fetch");
+    expect(request?.serverWebSearch).toBe(true);
+    // local 模式显式置 false
+    const localRequest = await exposedRequest(search, undefined, "local");
+    expect(localRequest?.serverWebSearch).toBe(false);
+    expect(localRequest?.tools.map((tool) => tool.name)).toContain("web_search");
   }, 15_000);
 });
