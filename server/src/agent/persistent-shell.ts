@@ -86,6 +86,18 @@ export function stripAnsi(text: string): string {
   return text.replace(ANSI_ESCAPE, "");
 }
 
+/**
+ * 输出清洗（对齐 pi 的 sanitizeBinaryOutput）：剥离控制字符（保留 \t \n；\r 由 feed 统一归一）、
+ * DEL 与 Unicode Format 字符（U+FFF9–FFFB，string-width 类库会崩）。ANSI 序列已由 stripAnsi 先行剥离。
+ * 防止二进制垃圾（如 cat 错文件、GBK 残留）原样进入工具结果与上下文账本。
+ */
+// eslint-disable-next-line no-control-regex -- 控制字符本身就是过滤目标
+const CONTROL_CHARS = /[\x00-\x08\x0b-\x1f\x7f\uFFF9-\uFFFB]/g;
+
+export function sanitizeShellOutput(text: string): string {
+  return text.replace(CONTROL_CHARS, "");
+}
+
 /** chunk 末尾疑似半个转义序列的起始下标（ESC 开头但未成形的后缀）；无则返回 text.length。 */
 function danglingEscapeIndex(text: string): number {
   // eslint-disable-next-line no-control-regex -- 匹配未成形终端转义序列后缀，ESC/BEL 是刻意目标
@@ -135,7 +147,9 @@ export class SentinelParser {
     const combined = this.rawTail + text;
     const splitAt = danglingEscapeIndex(combined);
     this.rawTail = combined.slice(splitAt);
-    this.buf += stripAnsi(combined.slice(0, splitAt).replace(CURSOR_POSITION, "\n"));
+    // 归一管线：CUP→\n（防输出与提示符粘连）→ stripAnsi → 控制字符清洗 → \r 全删
+    // （对齐 pi 的输出处理：进度条覆写帧直接拼接，不残留回车控制符）
+    this.buf += sanitizeShellOutput(stripAnsi(combined.slice(0, splitAt).replace(CURSOR_POSITION, "\n"))).replace(/\r/g, "");
     const match = this.sentinel.exec(this.buf);
     if (match) {
       // sentinel 之前可能粘着无换行的输出（如 printf 不带尾换行），一并成行处理
@@ -166,7 +180,7 @@ export class SentinelParser {
     const parts = text.split("\n");
     const last = final ? parts.length : parts.length - 1;
     for (let i = 0; i < last; i++) {
-      const line = parts[i]!.replace(/\r$/, "");
+      const line = parts[i]!;
       if (this.echoPhase) {
         // CUP 换行转换会制造空行：echo 阶段的空行跳过且不结束 echo 阶段
         if (line === "" || this.isEcho(line)) continue;
@@ -550,6 +564,9 @@ export class PersistentShellManager {
  * - sh（POSIX 与 Windows Git Bash）：pty 正常落在 cwd，cd 一次做归一；$? 逐命令求值，
  *   无陈旧污染问题。Git Bash 额外先发 `chcp.com 65001`（与 cmd 同理由：ConPTY 按控制台
  *   代码页解析原生子进程输出），cwd 的反斜杠换为正斜杠（bash 里 \ 是转义符）。
+ * - 三族统一屏蔽分页器：pty 是 TTY，`git log`/`gh` 等会启动 less 等待交互，agent 无法
+ *   应答导致命令挂到超时。PAGER/GIT_PAGER 置 cat 后输出直写 stdout（git 经其内嵌 sh
+ *   解析分页器命令，Windows 下 cat 同样可用）。人类真终端不经此 init，不受影响。
  */
 export function shellInitLines(flavor: ShellFlavor, cwd: string, platform: NodeJS.Platform = process.platform): string[] {
   const quoted = cwd.replace(/'/g, "''");
@@ -557,16 +574,17 @@ export function shellInitLines(flavor: ShellFlavor, cwd: string, platform: NodeJ
     const eq = platform === "win32" ? "-ieq" : "-ceq";
     return [
       "try { Set-PSReadLineOption -HistorySaveStyle SaveNothing } catch {}",
+      `$env:PAGER = 'cat'; $env:GIT_PAGER = 'cat'`,
       `try { Set-Location -LiteralPath '${quoted}' } catch {}`,
       `$global:LASTEXITCODE = ($PWD.Path ${eq} '${quoted}') ? 0 : 1`,
     ];
   }
-  if (flavor === "cmd") return ["chcp 65001"];
+  if (flavor === "cmd") return ["chcp 65001", `set "PAGER=cat"`, `set "GIT_PAGER=cat"`];
   if (platform === "win32") {
     const dir = cwd.replace(/\\/g, "/");
-    return ["chcp.com 65001", `cd '${dir.replace(/'/g, `'\\''`)}'`];
+    return ["chcp.com 65001", "export PAGER=cat GIT_PAGER=cat", `cd '${dir.replace(/'/g, `'\\''`)}'`];
   }
-  return [`cd '${cwd.replace(/'/g, `'\\''`)}'`];
+  return ["export PAGER=cat GIT_PAGER=cat", `cd '${cwd.replace(/'/g, `'\\''`)}'`];
 }
 
 /**

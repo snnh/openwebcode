@@ -14,6 +14,7 @@ import {
   SentinelParser,
   repairShellOutput,
   errorlevelResetLine,
+  sanitizeShellOutput,
   sentinelLine,
   shellInitLines,
   stripAnsi,
@@ -136,6 +137,14 @@ describe("SentinelParser（纯单测）", () => {
     expect(stripAnsi("\x1b]0;title\x07rest")).toBe("rest");
   });
 
+  it("输出清洗（对齐 pi）：\\r 覆写帧拼接、控制字符与 Unicode Format 字符剥离，\\t 保留", () => {
+    expect(sanitizeShellOutput("a\x00b\x7fc\uFFF9d\te\nf")).toBe("abcd\te\nf");
+    const { parser } = makeParser();
+    // 进度条覆写（\r 不回车换行）与夹杂的控制字符：\r 全删后帧直接拼接，控制字符剥离
+    expect(parser.feed(`${cmdLine}\r\nloading 10%\rloading 20%\x07done\x01!\r\n__OWC_DONE_${rand}_0__\r\n`)).toBe(0);
+    expect(parser.output()).toBe("loading 10%loading 20%done!");
+  });
+
   it("命中后余量清空：尾随的新提示符不污染下一条命令", () => {
     const { parser } = makeParser();
     expect(parser.feed(`${cmdLine}\nout\n__OWC_DONE_${rand}_0__\nD:\\work>`)).toBe(0);
@@ -169,15 +178,16 @@ describe("SentinelParser（纯单测）", () => {
     expect(venvActivationCommand("pwsh", "C:\\v", "win32")).toBe("$env:Path = 'C:\\v\\Scripts;' + $env:Path");
   });
 
-  it("shellInitLines：cmd 仅 chcp 65001（pty 已在 cwd）；pwsh 带落点校验；posix 归一 cd；Git Bash chcp.com + 正斜杠 cd", () => {
-    expect(shellInitLines("cmd", "C:\\w", "win32")).toEqual(["chcp 65001"]);
-    expect(shellInitLines("sh", "/w", "linux")).toEqual(["cd '/w'"]);
-    expect(shellInitLines("sh", "C:\\w", "win32")).toEqual(["chcp.com 65001", "cd 'C:/w'"]);
+  it("shellInitLines：cmd chcp + pager 屏蔽（pty 已在 cwd）；pwsh 带落点校验；posix 归一 cd；Git Bash chcp.com + 正斜杠 cd", () => {
+    expect(shellInitLines("cmd", "C:\\w", "win32")).toEqual(["chcp 65001", `set "PAGER=cat"`, `set "GIT_PAGER=cat"`]);
+    expect(shellInitLines("sh", "/w", "linux")).toEqual(["export PAGER=cat GIT_PAGER=cat", "cd '/w'"]);
+    expect(shellInitLines("sh", "C:\\w", "win32")).toEqual(["chcp.com 65001", "export PAGER=cat GIT_PAGER=cat", "cd 'C:/w'"]);
     const pwsh = shellInitLines("pwsh", "C:\\w", "win32");
     expect(pwsh[0]).toContain("HistorySaveStyle SaveNothing");
-    expect(pwsh[1]).toContain("Set-Location -LiteralPath 'C:\\w'");
-    expect(pwsh[2]).toContain("$PWD.Path -ieq 'C:\\w'");
-    expect(shellInitLines("pwsh", "/w", "linux")[2]).toContain("$PWD.Path -ceq '/w'");
+    expect(pwsh[1]).toContain("$env:PAGER = 'cat'; $env:GIT_PAGER = 'cat'");
+    expect(pwsh[2]).toContain("Set-Location -LiteralPath 'C:\\w'");
+    expect(pwsh[3]).toContain("$PWD.Path -ieq 'C:\\w'");
+    expect(shellInitLines("pwsh", "/w", "linux")[3]).toContain("$PWD.Path -ceq '/w'");
   });
 
   it("errorlevelResetLine：仅 win cmd 需要 (call ) 复位", () => {
