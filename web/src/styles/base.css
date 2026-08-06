@@ -1,0 +1,188 @@
+/* 基础样式：reset/表单基元/按钮/徽标/Toast/弹层基类，从 styles.css 原样抽取。 */
+/* 唯一改动：#root 高度链统一 100dvh（修移动端底部空白条，旧 100vh 无 dvh 覆盖）。 */
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  min-width: 320px;
+  font: 14px/1.55 var(--font-ui);
+  background: var(--bg);
+  color: var(--text);
+  font-synthesis: none;
+}
+#root { height: 100vh; height: 100dvh; }
+button, input, textarea, select { font: inherit; color: inherit; }
+button { cursor: pointer; background: none; border: 0; padding: 0; }
+button:disabled { cursor: not-allowed; opacity: 0.55; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mono { font-family: var(--font-mono); }
+
+/* 表单输入基类：边框/圆角/底色/聚焦统一；尺寸与布局由上下文类覆写。
+   置于文件前部，保证后续同优先级的上下文覆写（padding/font-size 等）能正常胜出。 */
+.input {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: var(--bg);
+  color: var(--text);
+  padding: 7px 9px;
+  font-size: 13px;
+}
+.input:focus { border-color: var(--accent); outline: none; }
+
+* { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ================= 按钮 ================= */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: var(--radius-s);
+  border: 1px solid var(--border-strong);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+}
+.btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+.btn.primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--on-accent); }
+.btn.danger { border-color: var(--danger-border); color: var(--danger); }
+.btn.danger:hover:not(:disabled) { background: var(--danger); border-color: var(--danger); color: var(--on-danger); }
+.btn.danger-outline { border-color: var(--danger-border); color: var(--danger); background: transparent; }
+.btn.danger-outline:hover:not(:disabled) { background: var(--danger-bg); }
+.btn.small { padding: 4px 10px; font-size: 12px; }
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-s);
+  color: var(--text-2);
+}
+.icon-btn:hover { background: var(--panel-2); color: var(--text); }
+.icon-btn svg, .btn svg { display: block; flex-shrink: 0; }
+
+/* 折叠行基类：工具调用/子代理运行等可展开卡片的头部行 */
+.collapse-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  min-height: 40px;
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+  min-width: 0;
+}
+.collapse-row:hover { color: var(--accent); }
+
+/* 事件流断线重连横幅：顶部细条，仅提示不阻塞交互 */
+.connection-banner {
+  position: fixed;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: var(--z-drawer);
+  pointer-events: none;
+  font-size: 12px;
+  color: var(--amber);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 14px;
+  box-shadow: var(--shadow);
+}
+
+/* Composer 上弹建议层基类：技能(/）与文件引用(@)建议共用；skill-popup/mention-popup 为语义钩子 */
+.composer-popup {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 6px);
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  min-width: min(320px, calc(100vw - 24px));
+  max-width: 100%;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  z-index: var(--z-overlay);
+}
+.composer-popup button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  padding: 7px 9px;
+  border-radius: var(--radius-s);
+  cursor: pointer;
+  text-align: left;
+  font-size: 13px;
+}
+.composer-popup button.active, .composer-popup button:hover { background: var(--panel-2); }
+
+.muted-empty { color: var(--text-3); font-size: 13px; }
+/* 面板错误态：加载失败/操作失败的行内错误提示（TSX 侧配 role="alert"） */
+.panel-error { color: var(--danger); font-size: 13px; }
+
+/* ================= 徽标（pill 统一基类 + 语义修饰） ================= */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+  background: var(--panel-2);
+  color: var(--text-2);
+}
+.pill.accent { background: var(--accent-soft); color: var(--accent); }
+.pill.ok { background: var(--ok-bg); color: var(--ok); }
+.pill.danger { background: var(--danger-bg); color: var(--danger); }
+.pill.amber { background: var(--amber-bg); color: var(--amber); }
+.pill.small { font-size: 10px; padding: 1px 6px; gap: 3px; }
+/* 可交互 pill（下拉触发钮）：边框常态透明，hover/open 描边 */
+.pill.interactive { border: 1px solid transparent; cursor: pointer; font-size: 12px; font-weight: 600; padding: 3px 10px; }
+.pill.interactive.open, .pill.interactive:hover { border-color: var(--accent); }
+
+/* ================= Toast ================= */
+.toast {
+  position: fixed;
+  z-index: var(--z-popover);
+  right: 22px;
+  bottom: 22px;
+  max-width: 360px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 11px 14px;
+  font-size: 13px;
+  animation: toast-in 0.18s ease;
+}
+.toast.error { border-color: var(--danger-border); color: var(--danger); }
+.toast button { color: var(--text-3); font-size: 15px; }
+.toast button:hover { color: var(--text); }
+
+/* ================= 动效 ================= */
+@keyframes blink { 50% { opacity: 0; } }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes toast-in { from { opacity: 0; transform: translateY(6px); } }
