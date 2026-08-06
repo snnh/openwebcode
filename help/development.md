@@ -163,7 +163,7 @@ core（ctest）：`test_protocol.py` / `test_fs.py` / `test_abs_path.py` / `test
 ### 改上下文策略
 
 - 驱逐：`context/context-manager.ts`，按账本 policy（lag/interval/off + evictionMode + 豁免下限）算可驱逐集，纯账本运算；视图渲染在 `buildView` 返回前应用，不改缓存主本。
-- 压缩：`fast-model.ts` + `context/compactor.ts` 两种策略。
+- 压缩：`fast-model.ts` + `context/compactor.ts` 两种策略；`extensions/compact-vault.ts` 是 compact-vault 官方扩展的 server 侧服务（归档完整上下文 + 快速模型整理 + 目录索引，host 侧 `extensions/compact-vault-host.ts` 提供 recall_memory 工具与索引回注）。
 - 新增条目状态要动一串地方：`ContextLedger` 接口、`normalizeLedger` 兼容、`buildView` 渲染、`replaceLedger` 回滚。
 - 前端始终拿全量历史，驱逐只影响发给 LLM 的视图——改策略不会破坏 UI。
 
@@ -177,7 +177,7 @@ core（ctest）：`test_protocol.py` / `test_fs.py` / `test_abs_path.py` / `test
 
 ### 写扩展
 
-v1 扩展跑在独立的 Extension Host 子进程，经 IPC 拿到注入的 `ctx`，manifest 声明权限、能力调用逐项校验。能注册 agent 工具、读会话和上下文、订阅事件、私有存储、私有 HTTP 路由、快速模型通道、提示词钩子、工具塑形等。权限与能力的完整对照表看 `server/src/extensions/types.ts`，可运行的完整示例在 `examples/extensions/demo/`。扩展是可信代码（安全级别 ≈ yolo），只装自己信得过的。
+v1 扩展跑在独立的 Extension Host 子进程，经 IPC 拿到注入的 `ctx`，manifest 声明权限、能力调用逐项校验。能注册 agent 工具、读会话和上下文（含只读会话 `compact/` 归档的 `context.readVaultFile`）、订阅事件、私有存储、私有 HTTP 路由、快速模型通道、提示词钩子、工具塑形等。权限与能力的完整对照表看 `server/src/extensions/types.ts`，可运行的完整示例在 `examples/extensions/demo/`。扩展是可信代码（安全级别 ≈ yolo），只装自己信得过的。
 
 ## 架构边界（改动前必读）
 

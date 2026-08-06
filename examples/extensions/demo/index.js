@@ -44,6 +44,17 @@ export function activate(ctx) {
     },
   );
 
+  // ---- 会话上下文（权限 context:read）：读取会话 compact/ 归档目录（档案库压缩产出）----
+  // readVaultFile(sessionId, relativePath) 只读、路径锁定在 <会话目录>/compact/ 内；
+  // 无归档或路径非法时返回 { content: null } 或拒绝。同样需要 tools:register 才能暴露为工具。
+  ctx.registerTool(
+    { name: "vault_peek", description: "Read a file from the session compact archive (compact-vault extension output)", inputSchema: { type: "object", properties: { sessionId: { type: "string" }, path: { type: "string" } }, required: ["sessionId", "path"] } },
+    async (input) => {
+      const result = await ctx.context.readVaultFile(String(input.sessionId), String(input.path));
+      return result.content ?? "(no archive or file missing)";
+    },
+  );
+
   // ---- 提示词钩子（权限 prompt:shape）：给系统提示词追加一段产品段落 ----
   // 载荷含 extensionState（会话级扩展状态），可读取 PUT /api/sessions/:id/config 写入的会话级配置。
   ctx.on("prompt.beforeBuild", (payload) => {

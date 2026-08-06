@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { OFFICIAL_EXTENSIONS, optimizeAttention } from "./official.js";
+import { RECALL_MEMORY_SPEC, recallMemory, reinjectVaultIndex, type VaultHostApi } from "./compact-vault-host.js";
 import { isExtensionEventAllowed, type ApiRequest, type ApiResponse, type ContextHookPayload, type ContextHookResult, type EventMessage, type ExtensionApiMethod, type ExtensionHook, type ExtensionManifest, type ExtensionPermission, type ExtensionState, type ExtensionToolResult, type ExtensionToolSpec, type HostRequest, type HostResponse, type PromptHookPayload, type PromptHookResult, type ToolHookPayload, type ToolHookResult } from "./types.js";
 
 type Handler = (payload: unknown, config: Record<string, unknown>) => unknown | Promise<unknown>;
-type ToolHandler = (input: Record<string, unknown>, config: Record<string, unknown>) => unknown | Promise<unknown>;
+type ToolHandler = (input: Record<string, unknown>, config: Record<string, unknown>, sessionId?: string) => unknown | Promise<unknown>;
 type EventHandler = (event: { type: string; sessionId?: string; payload: unknown }) => void;
 type RouteHandler = (request: { method: string; path: string; query: Record<string, unknown>; body?: unknown }, config: Record<string, unknown>) => unknown | Promise<unknown>;
 
@@ -33,6 +34,18 @@ function register(id: string, hook: ExtensionHook, handler: Handler): void {
 }
 
 register("attention-optimizer", "context.beforeBuild", (payload, config) => optimizeAttention(payload as ContextHookPayload, config));
+
+/** compact-vault 官方扩展：recall_memory 工具 + 索引回注钩子（host 侧自包含实现）。 */
+const vaultApi: VaultHostApi = {
+  readVaultFile: (sessionId, relative) =>
+    callApi("compact-vault", "context.readVaultFile", { sessionId, path: relative }) as Promise<{ content: string | null }>,
+  modelComplete: (input) =>
+    callApi("compact-vault", "model.complete", { prompt: input.prompt, ...(typeof input.maxTokens === "number" ? { maxTokens: input.maxTokens } : {}) }) as Promise<{ text: string }>,
+};
+tools.set("compact-vault", new Map([
+  ["recall_memory", { spec: RECALL_MEMORY_SPEC, handler: (input, config, sessionId) => recallMemory(vaultApi, input, config, sessionId) }],
+]));
+register("compact-vault", "context.beforeBuild", (payload) => reinjectVaultIndex(vaultApi, payload as ContextHookPayload));
 
 function requirePermission(manifest: ExtensionManifest, permission: ExtensionPermission): void {
   if (!manifest.permissions.includes(permission)) throw new Error(`Extension ${manifest.id} lacks permission: ${permission}`);
@@ -120,6 +133,10 @@ async function loadThirdParty(manifests: Array<ExtensionManifest & { directory?:
           readArtifact: (sessionId: string, artifactId: string, offset?: number, limit?: number): Promise<unknown> => {
             requirePermission(manifest, "context:read");
             return callApi(manifest.id, "context.readArtifact", { sessionId, artifactId, ...(offset !== undefined ? { offset } : {}), ...(limit !== undefined ? { limit } : {}) });
+          },
+          readVaultFile: (sessionId: string, relativePath: string): Promise<{ content: string | null }> => {
+            requirePermission(manifest, "context:read");
+            return callApi(manifest.id, "context.readVaultFile", { sessionId, path: relativePath }) as Promise<{ content: string | null }>;
           },
         },
         events: {
@@ -251,10 +268,11 @@ async function invokeTool(params: Record<string, unknown> | undefined): Promise<
   const extensionId = typeof params?.extensionId === "string" ? params.extensionId : "";
   const tool = typeof params?.tool === "string" ? params.tool : "";
   const input = params?.input && typeof params.input === "object" ? params.input as Record<string, unknown> : {};
+  const sessionId = typeof params?.sessionId === "string" ? params.sessionId : undefined;
   if (!states.get(extensionId)?.enabled) throw new Error(`Extension ${extensionId} is disabled`);
   const registered = tools.get(extensionId)?.get(tool);
   if (!registered) throw new Error(`Unknown extension tool: ${extensionId}/${tool}`);
-  return normalizeToolResult(await registered.handler(input, states.get(extensionId)?.config ?? {}));
+  return normalizeToolResult(await registered.handler(input, states.get(extensionId)?.config ?? {}, sessionId));
 }
 
 async function invokeRoute(params: Record<string, unknown> | undefined): Promise<{ status: number; body: unknown }> {

@@ -80,7 +80,7 @@ export interface ContextHookPayload {
   ledger: {
     round: number;
     entries: Array<{ messageId: string; state: string; pinnedUntilRound: number }>;
-    compacted?: { summary: string; instructions: string[] };
+    compacted?: { summary: string; instructions: string[]; mode?: string };
   };
 }
 
@@ -139,6 +139,7 @@ export type ExtensionApiMethod =
   | "sessions.get"
   | "context.getView"
   | "context.readArtifact"
+  | "context.readVaultFile"
   | "events.subscribe"
   | "storage.read"
   | "storage.write"

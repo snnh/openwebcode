@@ -70,7 +70,7 @@ export interface LedgerEntry {
 /** 压缩记录：messages[0..uptoIndex) 由 summary 取代注入视图；instructions 为用户明确指令跨段累积。 */
 export interface CompactionRecord {
   uptoIndex: number;
-  mode: "toolcalls" | "overview" | "truncated";
+  mode: "toolcalls" | "overview" | "truncated" | "vault";
   summary: string;
   instructions: string[];
   createdAt: string;
@@ -979,7 +979,7 @@ function isCompaction(value: unknown): value is CompactionRecord {
   if (!value || typeof value !== "object") return false;
   const record = value as Partial<CompactionRecord>;
   return Number.isSafeInteger(record.uptoIndex) && (record.uptoIndex ?? -1) >= 0 &&
-    typeof record.mode === "string" && ["toolcalls", "overview", "truncated"].includes(record.mode) &&
+    typeof record.mode === "string" && ["toolcalls", "overview", "truncated", "vault"].includes(record.mode) &&
     typeof record.summary === "string" &&
     Array.isArray(record.instructions) &&
     typeof record.createdAt === "string";

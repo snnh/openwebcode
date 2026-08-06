@@ -54,7 +54,8 @@ export function extractInstructions(text: string): string[] {
   return collected;
 }
 
-function mergeInstructions(previous: string[], extracted: string[]): string[] {
+/** 指令跨段累积（去重、保留顺序、只留最近 20 条）。 */
+export function mergeInstructions(previous: string[], extracted: string[]): string[] {
   const seen = new Set(previous);
   const merged = [...previous];
   for (const item of extracted) {

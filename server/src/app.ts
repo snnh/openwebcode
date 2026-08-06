@@ -58,6 +58,7 @@ import { ExtensionRouteError } from "./extensions/extension-manager.js";
 import type { ExtensionManager } from "./extensions/extension-manager.js";
 import { validateConfigAgainstSchema } from "./extensions/config-schema.js";
 import type { ContentLensService } from "./extensions/content-lens.js";
+import type { CompactVaultService } from "./extensions/compact-vault.js";
 import { ProviderProfilesValidationError, normalizeModel, type ProviderProfilesService, type WebCapability } from "./provider-profiles.js";
 import { testModelProviderConnection } from "./provider-connection-test.js";
 import type { ProviderProfilesRuntime } from "./provider-profiles-runtime.js";
@@ -205,6 +206,8 @@ export interface ServerDependencies {
   usageLog?: UsageLog;
   skills?: SkillRegistry;
   compactor?: Compactor;
+  /** 档案库压缩服务（compact-vault 官方扩展）；未注入且扩展启用时 /compact 走默认压缩 */
+  vaultService?: CompactVaultService;
   /** 托管工作区管理器（plan §6.4）；未注入时 managed 相关路由 501 */
   managed?: ManagedWorkspaceLike;
   getPreferences?: () => { currency: Currency; language: string };
@@ -2685,6 +2688,19 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
 
   // 上下文压缩（§7.4）：/compact（overview）、/compact tools（toolcalls），以及协议 REST 路由
   const runCompact = async (sessionId: string, mode: "toolcalls" | "overview") => {
+    // compact-vault 官方扩展启用时，压缩走档案库路径（归档完整上下文 + 目录索引 + 按需召回）；
+    // mode 参数不适用（vault 固定归档整理语义），提示词覆盖同样不适用（vault 自带整理提示词）
+    if (dependencies.vaultService && dependencies.extensions?.isEnabled("compact-vault")) {
+      const config = dependencies.extensions.list().find((item) => item.id === "compact-vault")?.config ?? {};
+      const vaultResult = await dependencies.vaultService.compact(sessionId, {
+        ...(Number.isSafeInteger(config.keepTail) ? { keepTail: config.keepTail as number } : {}),
+        ...(Number.isSafeInteger(config.chunkSize) ? { chunkSize: config.chunkSize as number } : {}),
+      });
+      if (vaultResult.changed) {
+        events.publish({ source: "agent", type: "context.compacted", sessionId, payload: { mode: vaultResult.mode, uptoIndex: vaultResult.uptoIndex ?? 0, forced: false } });
+      }
+      return vaultResult;
+    }
     // 压缩提示词优先级：用户覆盖（prompt-overrides 面）> env-sim persona > 内置（内置回退在 Compactor 内）
     let promptOverrides: { overview?: string; toolcalls?: string } | undefined;
     const session = await sessions.get(sessionId);
@@ -2722,7 +2738,9 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   };
 
   app.post<{ Params: { id: string }; Body: { mode?: string } }>("/api/sessions/:id/compact", async (request, reply) => {
-    if (!dependencies.compactor) return reply.code(503).send({ error: "Compactor not enabled" });
+    // compact-vault 扩展启用时走档案库压缩，不依赖 Compactor；否则要求压缩器已注入
+    const vaultEnabled = dependencies.vaultService !== undefined && dependencies.extensions?.isEnabled("compact-vault") === true;
+    if (!dependencies.compactor && !vaultEnabled) return reply.code(503).send({ error: "Compactor not enabled" });
     if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
     if (agent.isRunning(request.params.id)) return reply.code(409).send({ error: "Session is running" });
     const mode = request.body?.mode === "toolcalls" ? "toolcalls" : "overview";

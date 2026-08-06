@@ -363,7 +363,7 @@ export function App(): ReactElement {
         // 上下文压缩（手动/85% 强制）：刷新上下文面板并提示
         if (event.type === "context.compacted" && event.sessionId === currentId) {
           const payload = event.payload as { mode?: string; forced?: boolean };
-          const modeLabel = payload.mode === "overview" ? t("概览", "overview") : payload.mode === "toolcalls" ? t("工具调用", "tool calls") : t("规则截断", "rule-based truncation");
+          const modeLabel = payload.mode === "overview" ? t("概览", "overview") : payload.mode === "toolcalls" ? t("工具调用", "tool calls") : payload.mode === "vault" ? t("档案库", "vault") : t("规则截断", "rule-based truncation");
           notify(t(`已压缩上下文（${payload.forced ? "85% 水位强制 · " : ""}${modeLabel}）`, `Context compacted (${payload.forced ? "forced at 85% · " : ""}${modeLabel})`));
         }
         if (event.type === "context.compact_failed" && event.sessionId === currentId) {

@@ -79,6 +79,27 @@ export const OFFICIAL_EXTENSIONS: ExtensionManifest[] = [
       },
     },
   },
+  {
+    id: "compact-vault",
+    name: "上下文档案库",
+    version: "0.1.0",
+    description: "压缩时把完整上下文归档到会话 compact/ 目录，上下文只留目录式索引；主模型可按 key 经快速模型召回细节。",
+    apiVersion: "1",
+    // 归档与整理在 server 侧执行（CompactVaultService）；recall_memory 工具与索引回注在
+    // Extension Host 侧（context.readVaultFile 读归档文件，model.complete 走快速模型）。
+    permissions: ["context:read", "context:mutate", "tools:register", "model:fast"],
+    official: true,
+    defaultEnabled: false,
+    configSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        keepTail: { type: "integer", minimum: 0, title: "保留尾部消息数", default: 10 },
+        chunkSize: { type: "integer", minimum: 1, maximum: 200, title: "归档分块消息数", default: 25 },
+        recallMaxTokens: { type: "integer", minimum: 128, maximum: 4096, title: "召回输出上限（tokens）", default: 1500 },
+      },
+    },
+  },
 ];
 
 export const OFFICIAL_DEFAULT_CONFIG: Record<string, Record<string, unknown>> = {
@@ -92,6 +113,7 @@ export const OFFICIAL_DEFAULT_CONFIG: Record<string, Record<string, unknown>> = 
   "pdf-to-image": { maxPages: 4, dpi: 150, maxDimension: 2048 },
   "owc-eval": {},
   "env-sim": { persona: "" },
+  "compact-vault": { keepTail: 10, chunkSize: 25, recallMaxTokens: 1500 },
 };
 
 function textOf(message: ChatMessage): string {

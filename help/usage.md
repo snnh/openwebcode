@@ -371,7 +371,7 @@ CLI 等价写法：`owc run "..." --tools read_file,glob,grep`（= `toolsAllow`�
 
 ### Extension Host 与官方扩展
 
-设置 → **扩展** 可管理官方及第三方扩展。内置六项：
+设置 → **扩展** 可管理官方及第三方扩展。内置七项：
 
 - `context-manager`：默认启用，负责工具结果的滚动驱逐策略；停用后不会自动逐出工具结果，85% 核心水位安全网仍保留（「上下文」面板是核心 UI，不受扩展开关影响）
 - `attention-optimizer`：默认关闭，把关键约束/目标复制到上下文首尾锚区；`bottomOnly` 缓存影响较小，`full` 会增加输入 token
@@ -379,8 +379,9 @@ CLI 等价写法：`owc run "..." --tools read_file,glob,grep`（= `toolsAllow`�
 - `pdf-to-image`：默认启用；通过 Web 选择的 PDF 会先保存到当前工作区 `.owc/uploads/`，再将最多 4 页按 150 DPI、长边最大 2048px 转为图片附件，供支持图片输入的模型读取；停用时 Composer 仅把这个工作区相对路径引用交给主代理处理
 - `owc-eval`：默认关闭；启用后底部面板出现「评测」，可选择固定 mock-provider 示例与 0.4 工具契约任务，在独立临时工作区回放 AgentRunner。报告包含断言、工具、token 与耗时；可把历史运行设为基线，与当前运行生成持久化的回归/改善对比并导出自包含 JSON。评测服务内置于 server，不读取原始 API Key；生产运行仍走正常 Core 权限与沙盒边界
 - `env-sim`（环境模拟）：默认关闭；启用并选择预设后，系统提示词切换为该产品风格（身份行 + 工作方式），内置工具以该产品的命名/描述呈现（如 `Read`/`Bash`/`Edit`），底层仍走原工具实现与权限链。内置 `claude-code`/`kimi-code`/`zcode`/`codex` 四档预设；把自制预设 JSON（必填 `id`/`name`/`identity`/`basePrompt`，可选 `productSections`/`hideBuiltIns`/`aliases`）放入 `<业务数据目录>/env-sim/personas/` 即可添加并与他人分享，一个文件一个预设
+- `compact-vault`（上下文档案库）：默认关闭；启用且已配置快速模型后，`/compact` 从默认概览压缩切换为档案库压缩——完整上下文归档到会话目录 `compact/segments/`（真实内容全保留），主模型上下文只注入目录式索引（不保留任何工具调用细节）；快速模型两遍整理（分块提取条目 + 合并去重/删除过时内容）后生成索引。主模型可按索引里的 `key` 调用 `recall_memory` 工具，经快速模型按需提炼召回对应归档片段；`keepTail`/`chunkSize`/`recallMaxTokens` 可在扩展设置中调整。85% 水位强制自动压缩仍走默认概览压缩，但档案库索引会自动回注，`recall_memory` 始终可用
 
-第三方扩展目录需包含 `manifest.json`（`apiVersion: "1"`）；入口默认为 `index.js`，可在 manifest 的 `entry` 字段另行指定。在设置页输入本地绝对路径即可安装。v1 扩展是可信代码，安装即信任其声明权限；单个钩子运行超时 5 秒会被跳过并记录日志。第三方扩展可用的 API 面与官方扩展看齐：注册工具、`sessions`/`context`/`events` 访问、提示词与上下文钩子、私有存储（`<数据目录>/extensions-data/<id>/`，单文件 1 MiB、总量 50 MiB）、REST 路由注册（`/api/ext/<id>/*`，需 `http:route` 权限）、模型调用通道（`model:fast` 权限）、提示词与工具塑形（`prompt:shape`/`tools:shaping` 权限）、会话级扩展状态（extensionState）。完整字段与权限语义见 `help/development.md` 的扩展开发章节，可运行的示例在 `examples/extensions/demo/`。
+第三方扩展目录需包含 `manifest.json`（`apiVersion: "1"`）；入口默认为 `index.js`，可在 manifest 的 `entry` 字段另行指定。在设置页输入本地绝对路径即可安装。v1 扩展是可信代码，安装即信任其声明权限；单个钩子运行超时 5 秒会被跳过并记录日志。第三方扩展可用的 API 面与官方扩展看齐：注册工具、`sessions`/`context`/`events` 访问（`context.readVaultFile` 可只读会话 `compact/` 归档目录）、提示词与上下文钩子、私有存储（`<数据目录>/extensions-data/<id>/`，单文件 1 MiB、总量 50 MiB）、REST 路由注册（`/api/ext/<id>/*`，需 `http:route` 权限）、模型调用通道（`model:fast` 权限）、提示词与工具塑形（`prompt:shape`/`tools:shaping` 权限）、会话级扩展状态（extensionState）。完整字段与权限语义见 `help/development.md` 的扩展开发章节，可运行的示例在 `examples/extensions/demo/`。
 
 ### 子代理（`.owc/agents/reviewer.md`）
 

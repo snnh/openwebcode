@@ -1015,7 +1015,7 @@ export class AgentRunner {
             ledger: {
               round: view.ledger.round,
               entries: view.ledger.entries.map((entry) => ({ messageId: entry.messageId, state: entry.state, pinnedUntilRound: entry.pinnedUntilRound })),
-              ...(view.ledger.compacted ? { compacted: { summary: view.ledger.compacted.summary, instructions: view.ledger.compacted.instructions } } : {}),
+              ...(view.ledger.compacted ? { compacted: { summary: view.ledger.compacted.summary, instructions: view.ledger.compacted.instructions, mode: view.ledger.compacted.mode } } : {}),
             },
           });
           view.messages = transformed.messages;
@@ -1027,7 +1027,7 @@ export class AgentRunner {
             ledger: {
               round: view.ledger.round,
               entries: view.ledger.entries.map((entry) => ({ messageId: entry.messageId, state: entry.state, pinnedUntilRound: entry.pinnedUntilRound })),
-              ...(view.ledger.compacted ? { compacted: { summary: view.ledger.compacted.summary, instructions: view.ledger.compacted.instructions } } : {}),
+              ...(view.ledger.compacted ? { compacted: { summary: view.ledger.compacted.summary, instructions: view.ledger.compacted.instructions, mode: view.ledger.compacted.mode } } : {}),
             },
           });
           view.messages = beforeSend.messages;
@@ -2520,7 +2520,7 @@ export class AgentRunner {
       if (!extensions) {
         return { type: "tool_result", toolCallId, content: "Extension Host is not configured on this server", isError: true };
       }
-      return this.executeExternalTool(sessionId, name, toolCallId, input, () => extensions.invokeTool(name, input));
+      return this.executeExternalTool(sessionId, name, toolCallId, input, () => extensions.invokeTool(name, input, sessionId));
     }
     if (name === "web_fetch" || name === "web_search") {
       this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, ...boundToolEventInput(input) } });
