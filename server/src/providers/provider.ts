@@ -36,7 +36,7 @@ export interface StreamChatRequest {
 export type ProviderEvent =
   | { type: "text_delta"; text: string }
   | { type: "thinking_delta"; text: string }
-  | { type: "thinking_end"; text: string; signature?: string }
+  | { type: "thinking_end"; text: string; signature?: string; /** Anthropic redacted_thinking 的密文载荷（此时 text 为空）。 */ redacted?: string }
   /** 工具调用参数流式分片：id 在首个分片就绪后稳定；name 仅在已知时携带；
    * argumentsDelta 是参数 JSON 文本的增量片段（拼接后才是完整 JSON）。 */
   | { type: "tool_call_delta"; id: string; name?: string; argumentsDelta: string }
@@ -67,7 +67,9 @@ export class ProviderRegistry {
 
   /**
    * Register a provider.
-   * @param maxConcurrent 0.5.0 Phase 2: per-provider 并发上限（默认 3）；超出排队等待。
+   * @param maxConcurrent 0.5.0 Phase 2: per-provider 并发上限；超出排队等待。
+   *   生产注册路径（provider-profiles-runtime）统一按 DEFAULT_MAX_CONCURRENT（3）接线；
+   *   不显式传则不包装（测试/特殊通道用）。
    */
   register(provider: Provider, maxConcurrent?: number): void {
     if (this.providers.has(provider.name)) throw new Error(`Provider ${provider.name} is already registered`);

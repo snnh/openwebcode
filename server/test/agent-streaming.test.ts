@@ -1,6 +1,7 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
+import { ContextManager } from "../src/context/context-manager.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider } from "../src/providers/provider.js";
@@ -78,4 +79,40 @@ describe("AgentRunner live streaming", () => {
     const toolCalls = detail?.messages.flatMap((message) => message.content).filter((block) => block.type === "tool_call") ?? [];
     expect(toolCalls).toEqual([expect.objectContaining({ id: "c1", name: "read_file" })]);
   });
+
+  it("一轮内多个 usage chunk：WS 逐条实时转发，ledger 只记最后一条", async () => {
+    const root = await tempRoot("owc-agent-usage-");
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const session = await sessions.create({ cwd: root, provider: "live", model: "claude-opus-4-8" });
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const core = makeFakeCore();
+    const provider: Provider = {
+      name: "live",
+      async *streamChat() {
+        yield { type: "text_delta", text: "answer" };
+        // stream_options.include_usage 的端点可能逐 chunk 重复上报 usage
+        yield { type: "usage", inputTokens: 10, outputTokens: 2, cacheRead: 0, cacheWrite: 0 };
+        yield { type: "usage", inputTokens: 42, outputTokens: 7, cacheRead: 4, cacheWrite: 0 };
+        yield { type: "done", stopReason: "end_turn" };
+      },
+    };
+    const providers = new ProviderRegistry();
+    providers.register(provider);
+    const events = new EventBus();
+    const seen: Array<{ type: string; payload: unknown }> = [];
+    events.on("event", (event: { type: string; payload: unknown }) => seen.push({ type: event.type, payload: event.payload }));
+    const runner = new AgentRunner(sessions, providers, core, events, pricing);
+
+    await runner.run(session.id, "hi");
+
+    // WS 实时转发不变：两条 usage 都广播（UI 实时成本）
+    const usageEvents = seen.filter((event) => event.type === "context.usage");
+    expect(usageEvents).toHaveLength(2);
+    // ledger 只记最后一条，不逐 chunk 累加
+    const ledger = await new ContextManager(sessions.contextRoot(session.id)).load();
+    expect(ledger.usage).toMatchObject({ inputTokens: 42, outputTokens: 7, cacheRead: 4 });
+  });
+
 });

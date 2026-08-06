@@ -2,6 +2,7 @@ import type { AgentRunner } from "./agent/agent-runner.js";
 import type { ModelRegistry, ModelProviderCredentials, RefreshReport } from "./context/model-registry.js";
 import type { EventBus } from "./events/event-bus.js";
 import { AnthropicProvider } from "./providers/anthropic-provider.js";
+import { DEFAULT_MAX_CONCURRENT } from "./providers/concurrency-limiter.js";
 import { OpenAICompatibleProvider } from "./providers/openai-compatible-provider.js";
 import { OpenAIResponsesProvider } from "./providers/openai-responses-provider.js";
 import type { ProviderRegistry } from "./providers/provider.js";
@@ -65,6 +66,7 @@ export class ProviderProfilesRuntime {
     for (const profile of this.profiles.modelProfiles()) {
       if (!profile.enabled) continue;
       try {
+        // 生产注册路径统一按默认 3 并发接线（provider.ts 注释口径），超出排队
         if (profile.interfaceType === "anthropic-messages") {
           this.providers.register(new AnthropicProvider({
             name: profile.id,
@@ -72,7 +74,7 @@ export class ProviderProfilesRuntime {
             ...(profile.baseURL ? { baseURL: profile.baseURL } : {}),
             promptCaching: profile.promptCaching !== false,
             ...(profile.extraBody ? { extraBody: profile.extraBody } : {}),
-          }));
+          }), DEFAULT_MAX_CONCURRENT);
         } else if (profile.interfaceType === "openai-responses") {
           this.providers.register(new OpenAIResponsesProvider({
             name: profile.id,
@@ -80,7 +82,7 @@ export class ProviderProfilesRuntime {
             ...(profile.apiKey ? { apiKey: profile.apiKey } : {}),
             ...(profile.extraBody ? { extraBody: profile.extraBody } : {}),
             ...idleOption,
-          }));
+          }), DEFAULT_MAX_CONCURRENT);
         } else {
           this.providers.register(new OpenAICompatibleProvider({
             name: profile.id,
@@ -88,7 +90,7 @@ export class ProviderProfilesRuntime {
             ...(profile.apiKey ? { apiKey: profile.apiKey } : {}),
             ...(profile.extraBody ? { extraBody: profile.extraBody } : {}),
             ...idleOption,
-          }));
+          }), DEFAULT_MAX_CONCURRENT);
         }
         this.managedProviders.add(profile.id);
       } catch (error) {

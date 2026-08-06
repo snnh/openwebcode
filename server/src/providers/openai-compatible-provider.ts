@@ -1,6 +1,6 @@
 import type { ChatMessage, ThinkingContent } from "../sessions/types.js";
 import { getUserAgent } from "../http.js";
-import { classifyHttpError, normalizeProviderError, parseRetryAfter, ProviderError } from "./provider-error.js";
+import { classifyHttpError, normalizeProviderError, parseRetryAfter, ProviderError, truncateErrorDetail } from "./provider-error.js";
 import type { Provider, ProviderEvent, StreamChatRequest } from "./provider.js";
 
 export interface OpenAICompatibleProviderOptions {
@@ -29,6 +29,10 @@ interface ToolAccumulator {
 /** SSE 流 idle 默认上限：5 分钟无 data 事件判半开。思考型模型在端点缓冲思考时可能长时间静默，
  * 该值需覆盖此类场景；代理/网关的心跳注释不会重置计时（见 readSseData）。 */
 export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000;
+
+/** 单个 SSE 事件的字节上限：异常端点/代理可能持续喂字节却永不发送事件边界（空行），
+ * 无界 buffer 会拖垮内存；超限属确定性协议错误，按不可重试处理（见 readSseData）。 */
+export const MAX_SSE_EVENT_BYTES = 8 * 1024 * 1024;
 
 export class OpenAICompatibleProvider implements Provider {
   readonly name: string;
@@ -82,7 +86,8 @@ export class OpenAICompatibleProvider implements Provider {
       throw normalizeProviderError(error);
     }
     if (!response.ok || !response.body) {
-      const detail = await response.text();
+      // 错误体可能很大且会随错误消息广播进 WS 事件流：截断后再进消息
+      const detail = truncateErrorDetail(await response.text());
       throw classifyHttpError(
         response.status,
         `OpenAI-compatible provider returned ${response.status}: ${detail}`,
@@ -189,23 +194,42 @@ export async function* readSseData(body: ReadableStream<Uint8Array>, options?: S
         if (!match || match.index === undefined) break;
         const event = buffer.slice(0, match.index).replace(/\r/g, "");
         buffer = buffer.slice(match.index + match[0].length);
-        const data = event
-          .split("\n")
-          .filter((line) => line.startsWith("data:"))
-          .map((line) => line.slice(5).trimStart())
-          .join("\n");
+        const data = sseEventData(event);
         if (data) {
           idleDeadline = Date.now() + idleTimeoutMs;
           yield data;
         }
       }
-      if (done) break;
+      if (done) {
+        // 流末尾残留 buffer 可能无空行终止（端点提前关连接）：按最后一个事件再解析一次，
+        // 否则收尾事件（如 [DONE]）被静默丢弃，成功响应会因此判失败
+        const data = sseEventData(buffer.replace(/\r/g, ""));
+        if (data) yield data;
+        break;
+      }
+      // 单事件字节上限：buffer 持续增长却等不到事件边界，判确定性协议错误（不可重试）
+      if (Buffer.byteLength(buffer, "utf8") > MAX_SSE_EVENT_BYTES) {
+        throw new ProviderError(
+          "stream_interrupted",
+          `SSE event exceeded ${MAX_SSE_EVENT_BYTES} bytes without an event boundary`,
+          false,
+        );
+      }
     }
   } finally {
     // 超时/中断路径上读者可能还挂着 pending read：先 cancel 释放连接再 releaseLock
     try { await reader.cancel(); } catch { /* 流已关闭时忽略 */ }
     reader.releaseLock();
   }
+}
+
+/** 从一个 SSE 事件块（已去 \r）中提取 data 载荷：多行 data: 按 SSE 规范以 \n 拼接。 */
+function sseEventData(event: string): string {
+  return event
+    .split("\n")
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trimStart())
+    .join("\n");
 }
 
 function idleTimeoutError(idleTimeoutMs: number): ProviderError {
@@ -272,8 +296,23 @@ function toOpenAIMessages(system: string, messages: ChatMessage[], providerName?
 }
 
 function parseArguments(value: string): Record<string, unknown> {
-  const parsed: unknown = JSON.parse(value || "{}");
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Tool arguments must be an object");
+  // 参数 JSON 解析失败多为流被 max_tokens 截断：确定性错误，重试不会自愈，归不可重试
+  // （否则 collectProviderTurn 会按 stream_interrupted 白重试）
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value || "{}");
+  } catch (error) {
+    throw new ProviderError(
+      "invalid_request",
+      `Tool call arguments are not valid JSON (the stream may have been truncated): ${error instanceof Error ? error.message : String(error)}`,
+      false,
+      undefined,
+      { cause: error },
+    );
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new ProviderError("invalid_request", "Tool arguments must be an object", false);
+  }
   return parsed as Record<string, unknown>;
 }
 

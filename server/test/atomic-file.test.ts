@@ -1,4 +1,4 @@
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, rename, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -85,5 +85,20 @@ describe("writeUtf8Atomically mode", () => {
     // 复写已存在文件同样收紧（rename 保留临时文件权限，chmod 兜底）
     await writeUtf8Atomically(target, "{\"a\":1}\n", { mode: 0o600 });
     expect((await stat(target)).mode & 0o777).toBe(0o600);
+  });
+
+  it.skipIf(process.platform === "win32")("临时文件创建即带 0600（rename 前已无宽松 umask 可读窗口）", async () => {
+    const root = await makeRoot();
+    const target = path.join(root, "secret.json");
+    let tempModeAtRename: number | undefined;
+    await writeUtf8Atomically(target, "{}\n", {
+      mode: 0o600,
+      // 在 rename 前断言临时文件权限位：证明 mode 是创建时携带而非事后 chmod 兜底
+      renameFile: async (from, to) => {
+        tempModeAtRename = (await stat(from)).mode & 0o777;
+        await rename(from, to);
+      },
+    });
+    expect(tempModeAtRename).toBe(0o600);
   });
 });

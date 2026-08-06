@@ -30,6 +30,9 @@ export class AnthropicProvider implements Provider {
     this.client = new Anthropic({
       ...(options.apiKey ? { apiKey: options.apiKey } : {}),
       ...(options.baseURL ? { baseURL: options.baseURL } : {}),
+      // SDK 内建重试（默认 2 次）关闭：重试统一收口 collectProviderTurn/retry.ts，
+      // 避免与外层重试嵌套放大（2×3 次）
+      maxRetries: 0,
       defaultHeaders: { "User-Agent": getUserAgent() },
     });
   }
@@ -85,6 +88,13 @@ export class AnthropicProvider implements Provider {
             type: "thinking_end",
             text: block.thinking,
             signature: block.signature,
+          };
+        } else if (block.type === "redacted_thinking") {
+          // redacted_thinking 原样持久化（text 为空、载荷在 redacted）：下轮回传缺块会 400
+          yield {
+            type: "thinking_end",
+            text: "",
+            redacted: block.data,
           };
         } else if (block.type === "tool_use") {
           yield {
@@ -185,9 +195,17 @@ function toAnthropicMessages(messages: ChatMessage[], breakpoints: ReadonlySet<s
         if (block.type === "text") content.push({ type: "text", text: block.text });
         else if (block.type === "tool_call") {
           content.push({ type: "tool_use", id: block.id, name: block.name, input: block.input });
+        } else if (block.type === "thinking" && block.provider === "anthropic" && block.redacted) {
+          // redacted_thinking 原样回传（见 streamChat 的持久化）
+          content.push({ type: "redacted_thinking", data: block.redacted });
         } else if (block.type === "thinking" && block.provider === "anthropic" && block.signature) {
           content.push({ type: "thinking", thinking: block.text, signature: block.signature });
         }
+      }
+      if (content.length === 0) {
+        // 跨 provider 切换后 assistant 消息可能只剩异源 thinking 块（映射后为空）；
+        // Anthropic 拒绝空 content（400），补占位文本
+        content.push({ type: "text", text: "[context trimmed]" });
       }
       result = { role: "assistant", content };
     }

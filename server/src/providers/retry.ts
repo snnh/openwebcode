@@ -53,6 +53,8 @@ export async function collectProviderTurn(
 }
 
 function abortableDelay(delayMs: number, signal: AbortSignal): Promise<void> {
+  // 进入前先检查：signal 可能在上一次 await 期间已中止，否则还要白等整个 delay
+  signal.throwIfAborted();
   if (delayMs <= 0) return Promise.resolve();
   return new Promise((resolve, reject) => {
     const timer = setTimeout(done, delayMs);

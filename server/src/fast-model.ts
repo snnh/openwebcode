@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { EffortLevel, ThinkingMode } from "./context/model-profile.js";
 import type { ProviderRegistry } from "./providers/provider.js";
+import { collectProviderTurn } from "./providers/retry.js";
 
 export interface FastModelConfig {
   provider: string;
@@ -52,7 +53,8 @@ export class FastModelClient {
     let inputTokens = 0;
     let outputTokens = 0;
     try {
-      for await (const event of provider.streamChat({
+      // 与主循环同一条重试路径（小 maxAttempts）：瞬时限流/半开连接可自愈，不再一次失败即报错
+      const turn = await collectProviderTurn(provider, {
         model: config.model,
         ...(config.thinking ? { thinking: config.thinking } : {}),
         ...(config.effort ? { effort: config.effort } : {}),
@@ -66,7 +68,8 @@ export class FastModelClient {
         tools: [],
         maxTokens,
         signal: AbortSignal.timeout(60_000),
-      })) {
+      }, { maxAttempts: 2 });
+      for (const event of turn.events) {
         if (event.type === "text_delta") text += event.text;
         else if (event.type === "usage") {
           inputTokens += event.inputTokens;

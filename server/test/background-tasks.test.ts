@@ -227,9 +227,62 @@ describe("BackgroundTaskRegistry", () => {
 
     await registry.stopForSession("s1");
 
-    const tasks = registry.listForSession("s1");
-    expect(tasks.every((t) => t.status === "stopped")).toBe(true);
+    // stopForSession 同时 purge 该会话全部 entry（会话删除后输出缓冲不再驻留）
+    expect(registry.listForSession("s1")).toHaveLength(0);
+    expect(registry.get("task-001")).toBeUndefined();
+    expect(registry.get("task-002")).toBeUndefined();
     expect(registry.hasRunningForSession("s1")).toBe(false);
+  });
+
+  it("stopForSession purge 已完成任务的 entry 与通知", async () => {
+    const root = await tempRoot("owc-bg-");
+    const core = makeControllableCore();
+    const registry = new BackgroundTaskRegistry(
+      () => core.client,
+      async () => undefined,
+    );
+
+    await registry.start({ sessionId: "s1", taskId: "task-001", cmd: "cmd1", cwd: root });
+    core.release({ exitCode: 0, durationMs: 1, truncated: false });
+    await vi.waitFor(() => {
+      expect(registry.get("task-001")?.status).toBe("done");
+    });
+
+    await registry.stopForSession("s1");
+
+    expect(registry.get("task-001")).toBeUndefined();
+    expect(registry.listForSession("s1")).toHaveLength(0);
+    expect(registry.drainNotices("s1")).toEqual([]);
+  });
+
+  it("完成态 entry 按 TTL 到期自动驱逐（运行中不受影响）", async () => {
+    const root = await tempRoot("owc-bg-");
+    const core1 = makeControllableCore();
+    const core2 = makeControllableCore();
+    let callCount = 0;
+    const registry = new BackgroundTaskRegistry(
+      () => {
+        callCount++;
+        return callCount === 1 ? core1.client : core2.client;
+      },
+      async () => undefined,
+      undefined,
+      50, // 测试注入短 TTL
+    );
+
+    await registry.start({ sessionId: "s1", taskId: "task-done", cmd: "cmd1", cwd: root });
+    await registry.start({ sessionId: "s1", taskId: "task-running", cmd: "cmd2", cwd: root });
+    core1.release({ exitCode: 0, durationMs: 1, truncated: false });
+    await vi.waitFor(() => {
+      expect(registry.get("task-done")?.status).toBe("done");
+    });
+
+    // TTL 到期后完成态 entry 被驱逐，仍 running 的 entry 保留
+    await vi.waitFor(() => {
+      expect(registry.get("task-done")).toBeUndefined();
+    }, { timeout: 5000 });
+    expect(registry.get("task-running")?.status).toBe("running");
+    await registry.shutdown();
   });
 
   it("shutdown 清理所有任务", async () => {
@@ -405,7 +458,7 @@ describe("background bash — executeTool 与 REST 路径", () => {
       options?.withoutRegistry ? undefined : registry,
     );
     const app = await buildServer({ core: mainCore, sessions, agent, events, providers, pricing, ...(options?.withoutRegistry ? {} : { backgroundTasks: registry }) });
-    return { agent, session, cores, requests, queue, app };
+    return { agent, session, sessions, cores, requests, queue, app };
   }
 
   it("后台 bash 立即回执不阻塞主循环；终态后 REST 可查任务与输出", async () => {
@@ -442,6 +495,29 @@ describe("background bash — executeTool 与 REST 路径", () => {
       expect(detail.json<{ output: string }>().output).toBe("building...");
       const missing = await harness.app.inject({ method: "GET", url: `/api/sessions/${harness.session.id}/tasks/task-nope` });
       expect(missing.statusCode).toBe(404);
+    } finally {
+      await harness.app.close();
+    }
+  }, 30_000);
+
+  it("tasks/:taskId 校验任务归属：跨会话读取任务输出返回 404", async () => {
+    const harness = await setupE2E();
+    try {
+      harness.queue.push([
+        { type: "tool_call", id: "bg-1", name: "bash", input: { cmd: "echo owned", run_in_background: true } },
+        { type: "done", stopReason: "tool_use" },
+      ]);
+      harness.queue.push([{ type: "text_delta", text: "已启动" }, { type: "done", stopReason: "end_turn" }]);
+      await harness.agent.run(harness.session.id, "后台");
+      const list = await harness.app.inject({ method: "GET", url: `/api/sessions/${harness.session.id}/tasks` });
+      const taskId = list.json<Array<{ taskId: string }>>()[0]!.taskId;
+      // 所属会话可读
+      const own = await harness.app.inject({ method: "GET", url: `/api/sessions/${harness.session.id}/tasks/${taskId}` });
+      expect(own.statusCode).toBe(200);
+      // 其他会话（会话存在但任务不属于它）一律 404，不泄露任务存在性与输出
+      const other = await harness.sessions.create({ cwd: harness.session.cwd, provider: "fake", model: "model" });
+      const cross = await harness.app.inject({ method: "GET", url: `/api/sessions/${other.id}/tasks/${taskId}` });
+      expect(cross.statusCode).toBe(404);
     } finally {
       await harness.app.close();
     }
