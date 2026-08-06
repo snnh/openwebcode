@@ -13,8 +13,8 @@ export default tseslint.config(
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    // Node 侧脚本（MCP fixture 等 .mjs）需要 node 全局，否则 no-undef 误报
-    files: ["test/fixtures/*.mjs"],
+    // Node 侧脚本（MCP fixture 与沙盒 sidecar 等 .mjs）需要 node 全局，否则 no-undef 误报
+    files: ["test/fixtures/*.mjs", "assets/*.mjs"],
     languageOptions: {
       globals: globals.node,
     },
