@@ -97,6 +97,17 @@ static owc_json *parse_collection(parser *p, int depth, int object) {
         }
         child = parse_value(p, depth + 1); if (!child) { free(key); break; }
         child->key = key;
+        if (object) {
+            /* RFC 8259 allows duplicate keys but leaves their semantics
+             * undefined; silently keeping only the first would let callers
+             * misread the frame, so reject the whole object instead. */
+            size_t i;
+            for (i=0;i<value->value.children.count;i++) {
+                const char *existing = value->value.children.items[i]->key;
+                if (existing && strcmp(existing, key) == 0) break;
+            }
+            if (i < value->value.children.count) { owc_json_free(child); fail(p); break; }
+        }
         if (!add_child(value, child)) { owc_json_free(child); break; }
         skip_ws(p);
         if (p->cursor < p->end && *p->cursor == close) { p->cursor++; return value; }

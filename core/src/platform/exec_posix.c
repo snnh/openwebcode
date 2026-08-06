@@ -37,10 +37,12 @@ static void reap_child(pid_t child, int *status) {
     while (waitpid(child, status, 0) < 0 && errno == EINTR) {}
 }
 
-/* kill(-child) only reaches the whole tree once setpgid took effect; when
- * that raced or failed the group does not exist and the call fails with
- * ESRCH, silently sparing the child.  Fall back to signalling the child
- * directly and check the return value. */
+/* The group is established from both sides (the child setpgids itself first
+ * thing after fork, the parent repeats it right after fork returns), so by
+ * the time any kill is issued the child already leads its own group and
+ * kill(-child) reaches the whole tree, grandchildren included.  The only
+ * remaining ESRCH window is a child that already exited; then the group is
+ * empty anyway and the direct kill fallback is a harmless no-op. */
 static void signal_child_group(pid_t child, int sig) {
     if (kill(-child, sig) != 0) (void)kill(child, sig);
 }
@@ -116,7 +118,7 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
         close_fd(&out_pipe[0]); close_fd(&out_pipe[1]); close_fd(&err_pipe[0]); close_fd(&err_pipe[1]); close_fd(&sandbox_pipe[0]); close_fd(&sandbox_pipe[1]); close_fd(&exec_pipe[0]); close_fd(&exec_pipe[1]);
         return 0;
     }
-    if(fcntl(sandbox_pipe[1],F_SETFD,FD_CLOEXEC)<0||fcntl(exec_pipe[1],F_SETFD,FD_CLOEXEC)<0){result->system_error=(unsigned long)errno;close_fd(&out_pipe[0]);close_fd(&out_pipe[1]);close_fd(&err_pipe[0]);close_fd(&err_pipe[1]);close_fd(&sandbox_pipe[0]);close_fd(&sandbox_pipe[1]);close_fd(&exec_pipe[0]);close_fd(&exec_pipe[1]);return 0;}
+    if(fcntl(out_pipe[0],F_SETFD,FD_CLOEXEC)<0||fcntl(out_pipe[1],F_SETFD,FD_CLOEXEC)<0||fcntl(err_pipe[0],F_SETFD,FD_CLOEXEC)<0||fcntl(err_pipe[1],F_SETFD,FD_CLOEXEC)<0||fcntl(sandbox_pipe[0],F_SETFD,FD_CLOEXEC)<0||fcntl(sandbox_pipe[1],F_SETFD,FD_CLOEXEC)<0||fcntl(exec_pipe[0],F_SETFD,FD_CLOEXEC)<0||fcntl(exec_pipe[1],F_SETFD,FD_CLOEXEC)<0){result->system_error=(unsigned long)errno;close_fd(&out_pipe[0]);close_fd(&out_pipe[1]);close_fd(&err_pipe[0]);close_fd(&err_pipe[1]);close_fd(&sandbox_pipe[0]);close_fd(&sandbox_pipe[1]);close_fd(&exec_pipe[0]);close_fd(&exec_pipe[1]);return 0;}
     child = fork();
     if (child < 0) {
         result->system_error = (unsigned long)errno;

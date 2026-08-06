@@ -1123,6 +1123,7 @@ static DWORD WINAPI grep_file_worker(void *arg) {
                         for(j=0;j+plen<=llen;j++) if(!memcmp(bytes.data+start+j,ctx->pattern,plen)){found=1;break;}
                         if(found) {
                             size_t tlen=llen>OWC_SEARCH_TEXT_LIMIT?OWC_SEARCH_TEXT_LIMIT:llen;
+                            while(tlen>0&&(bytes.data[start+tlen]&0xC0)==0x80)tlen--;
                             char *text=(char*)malloc(tlen+1); char *path=copy_text(ctx->displays[idx]);
                             if(text&&path) {
                                 memcpy(text,bytes.data+start,tlen); text[tlen]=0;
