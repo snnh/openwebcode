@@ -22,6 +22,8 @@ interface TaskEntry {
   truncated: boolean;
   client: CoreClientLike;
   settled: boolean;
+  /** 完成态 TTL 驱逐定时器（unref，不拖住进程退出） */
+  evictTimer?: NodeJS.Timeout;
 }
 
 /**
@@ -31,6 +33,8 @@ interface TaskEntry {
  *
  * 输出环形缓冲：每任务原始字节总量上限 256KB，超限丢头部（记 truncated 标志）。
  * 保留字节至读取时再解码，避免多字节 UTF-8/GBK 字符恰好被 pipe 分片时变成替换字符。
+ * 终态 entry 不永久驻留：stopForSession（会话删除）purge 该会话全部 entry，其余终态
+ * entry 按 TTL（默认 1 小时）驱逐。
  * task_stop 即 kill 该任务专属 CoreClient 进程（Windows Job Object KILL_ON_JOB_CLOSE 保证
  *  kill core 进程即杀尽孙进程树）。posix 平台 kill 后孙进程可能孤儿化。
  */
@@ -42,6 +46,8 @@ export class BackgroundTaskRegistry {
     private readonly coreFactory: () => CoreClientLike,
     private readonly configureSession: (client: CoreClientLike, sessionId: string, cwd: string) => Promise<void>,
     private readonly onFinished?: (info: BackgroundTaskInfo) => void,
+    /** 完成态 entry 的驻留 TTL（测试可注入小值）；到期驱逐，防输出缓冲无限期占内存 */
+    private readonly finishedTtlMs = 60 * 60_000,
   ) {}
 
   async start(opts: {
@@ -151,6 +157,7 @@ export class BackgroundTaskRegistry {
     }
     this.pushNotice(entry.info.sessionId, `后台任务 ${taskId} 已停止`);
     this.onFinished?.(entry.info);
+    this.scheduleEviction(taskId, entry);
     return true;
   }
 
@@ -162,6 +169,13 @@ export class BackgroundTaskRegistry {
       }
     }
     await Promise.all(promises);
+    // 会话删除后该会话的任务 entry（含至多 256KB 输出缓冲）一并 purge，不再驻留内存
+    for (const [taskId, entry] of this.tasks) {
+      if (entry.info.sessionId !== sessionId) continue;
+      if (entry.evictTimer) clearTimeout(entry.evictTimer);
+      this.tasks.delete(taskId);
+    }
+    this.notices.delete(sessionId);
   }
 
   drainNotices(sessionId: string): string[] {
@@ -188,6 +202,9 @@ export class BackgroundTaskRegistry {
       }
     }
     await Promise.all(promises);
+    for (const [, entry] of this.tasks) {
+      if (entry.evictTimer) clearTimeout(entry.evictTimer);
+    }
     this.tasks.clear();
     this.notices.clear();
   }
@@ -209,6 +226,16 @@ export class BackgroundTaskRegistry {
     void entry.client.stop().catch(() => undefined);
 
     this.onFinished?.(entry.info);
+    this.scheduleEviction(entry.info.taskId, entry);
+  }
+
+  /** 完成态 entry 的 TTL 驱逐：输出缓冲不能无限期留在 Map 里；unref 防定时器拖住进程退出。 */
+  private scheduleEviction(taskId: string, entry: TaskEntry): void {
+    entry.evictTimer = setTimeout(() => {
+      // 仅驱逐仍处于终态的同一个 entry（防御 entry 被替换时误删）
+      if (this.tasks.get(taskId) === entry && entry.settled) this.tasks.delete(taskId);
+    }, this.finishedTtlMs);
+    entry.evictTimer.unref();
   }
 
   private pushNotice(sessionId: string, notice: string): void {

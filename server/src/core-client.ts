@@ -345,8 +345,9 @@ export class CoreClient extends EventEmitter {
   }
 
   start(): Promise<CoreInfo> {
+    // stop() 进行中/已完成后不再武装（含自动重启）：与 stop 竞态时不得把 stopping 复位
+    if (this.stopping) return Promise.reject(new Error("Core client is stopping"));
     if (this.startPromise) return this.startPromise;
-    this.stopping = false;
     const generation = ++this.generation;
     this.startPromise = this.spawnAndHandshake(generation).catch((error: unknown) => {
       this.failConnection(generation, error instanceof Error ? error : new Error(String(error)));
@@ -488,7 +489,7 @@ export class CoreClient extends EventEmitter {
   overlayUnmount(request: OverlayUnmountRequest): Promise<{ ok: true }> { return this.call("overlay.unmount", request); }
 
   /** per-pty 事件通道：pty.open 响应到达前 core 可能已经推 output（shell banner），
-   * 无订阅者的通知先缓冲（上限 256 条），首个 listener 挂载时回放。 */
+   * 无订阅者的通知先缓冲（上限 256 条），首个 listener 挂载后回放。 */
   ptyEvents(ptyId: number): EventEmitter {
     let emitter = this.ptyEmitters.get(ptyId);
     if (!emitter) {
@@ -498,7 +499,11 @@ export class CoreClient extends EventEmitter {
       if (buffered.length > 0) {
         const target = emitter;
         target.once("newListener", () => {
-          for (const event of buffered) target.emit(event.type, event.params);
+          // newListener 触发时回调尚未注册完成：延迟到微任务回放，
+          // 保证首个 on("output") 能收到缓冲的早期输出
+          queueMicrotask(() => {
+            for (const event of buffered) target.emit(event.type, event.params);
+          });
         });
       }
       this.ptyEmitters.set(ptyId, emitter);

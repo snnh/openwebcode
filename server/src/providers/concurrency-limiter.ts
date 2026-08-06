@@ -13,7 +13,7 @@ export interface ProviderConcurrencyStats {
   maxConcurrent: number;
 }
 
-const DEFAULT_MAX_CONCURRENT = 3;
+export const DEFAULT_MAX_CONCURRENT = 3;
 
 export class ConcurrencyLimitedProvider implements Provider {
   private active = 0;
@@ -69,13 +69,18 @@ export class ConcurrencyLimitedProvider implements Provider {
       // Close the enqueue/listener race if the signal aborted synchronously.
       if (signal.aborted) waiter.onAbort();
     });
-    this.active++;
+    // 槽位由 release 在 grant 前预占（active 已在移交时计好），这里不再自增，
+    // 否则 grant 与 waiter 继续执行之间的同步 acquire 会看到虚低 active 而瞬时超限
   }
 
   private release(): void {
-    this.active--;
     const next = this.queue.shift();
-    if (next) next.grant();
+    if (next) {
+      // 释放的槽位直接移交给队首 waiter（active 不变，相当于为其预占），FIFO 不变
+      next.grant();
+      return;
+    }
+    this.active--;
   }
 
   getStats(): ProviderConcurrencyStats {

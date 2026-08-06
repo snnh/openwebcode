@@ -11,6 +11,7 @@ import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import type { FastModelClient } from "../src/fast-model.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
+import { activePathMessages } from "../src/sessions/session-tree.js";
 import { UsageLog } from "../src/usage-log.js";
 import { makeFakeFastModel } from "./helpers/fake-fast-model.js";
 import { tempRoot } from "./helpers/temp-roots.js";
@@ -78,6 +79,45 @@ describe("Compactor", () => {
     expect(second.changed).toBe(true);
     const ledger = await context.load();
     expect(ledger.compacted?.instructions).toEqual(["用中文"]);
+  });
+
+  it("有分叉时按活动路径计算压缩区段：摘要不混入废弃分支，keepTail 保留活动路径尾部", async () => {
+    const root = await tempRoot("owc-compact-");
+    const store = new SessionStore(path.join(root, "sessions"));
+    await store.initialize();
+    const session = await store.create({ cwd: os.tmpdir(), provider: "test-stub", title: "分叉压缩" });
+    const m1 = await store.appendMessage(session.id, "user", [{ type: "text", text: "主线 1" }]);
+    await store.appendMessage(session.id, "assistant", [{ type: "text", text: "主线 2" }]);
+    await store.appendMessage(session.id, "user", [{ type: "text", text: "废弃分支 3" }]);
+    await store.appendMessage(session.id, "assistant", [{ type: "text", text: "废弃分支 4" }]);
+    // 回到「主线 1」分叉：活动路径 = 主线 1 + 分支 5..8（共 5 条），主线 2 与废弃 3/4 留在 jsonl 全量里
+    await store.setActiveLeaf(session.id, m1.id);
+    await store.appendMessage(session.id, "assistant", [{ type: "text", text: "分支 5" }]);
+    await store.appendMessage(session.id, "user", [{ type: "text", text: "分支 6" }]);
+    await store.appendMessage(session.id, "assistant", [{ type: "text", text: "分支 7" }]);
+    await store.appendMessage(session.id, "user", [{ type: "text", text: "分支 8" }]);
+
+    const calls: Array<{ system: string; prompt: string }> = [];
+    const compactor = new Compactor(store, makeFakeFastModel("目标：\n- 分叉摘要", calls), {}, 2);
+    const result = await compactor.compact(session.id, "overview");
+
+    // 活动路径 5 条，keepTail=2 → 压缩前 3 条（若按 jsonl 全量 8 条算会错位到 uptoIndex=6）
+    expect(result).toMatchObject({ changed: true, uptoIndex: 3 });
+    // 摘要只含活动路径区段，不混入废弃分支
+    expect(calls[0]!.prompt).toContain("主线 1");
+    expect(calls[0]!.prompt).toContain("分支 6");
+    expect(calls[0]!.prompt).not.toContain("废弃分支");
+    expect(calls[0]!.prompt).not.toContain("主线 2");
+
+    // buildView 应用到活动路径：keepTail 保护的尾部（含最后用户消息）必须保留
+    const detail = (await store.get(session.id))!;
+    const active = activePathMessages(detail.messages, detail.activeLeafId);
+    const view = await new ContextManager(store.contextRoot(session.id)).buildView(active);
+    expect(view.messages).toHaveLength(1 + 2);
+    const viewText = view.messages.map((message) => message.content.map((block) => (block.type === "text" ? block.text : "")).join("")).join("\n");
+    expect(viewText).toContain("分支 7");
+    expect(viewText).toContain("分支 8");
+    expect(viewText).not.toContain("废弃分支");
   });
 
   it("falls back to rule-based toolcalls without a fast model; overview requires it unless forced", async () => {

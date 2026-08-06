@@ -51,6 +51,14 @@ export function normalizeProviderError(error: unknown, streamStarted = false): P
   return new ProviderError("unknown", message, false, undefined, { cause: error });
 }
 
+/** 错误详情进错误消息前的截断上限（字符）：错误消息随后会经 agent-runner 广播进 WS 事件流，不能无界。 */
+export const ERROR_DETAIL_MAX_CHARS = 2_000;
+
+/** 截断 provider 错误体：超限部分以 … 收尾，两家 OpenAI 系 provider 口径一致。 */
+export function truncateErrorDetail(detail: string): string {
+  return detail.length > ERROR_DETAIL_MAX_CHARS ? `${detail.slice(0, ERROR_DETAIL_MAX_CHARS)}…` : detail;
+}
+
 export function parseRetryAfter(value: string | null): number | undefined {
   if (!value) return undefined;
   const seconds = Number(value);

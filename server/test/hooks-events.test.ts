@@ -7,6 +7,7 @@ import { Compactor } from "../src/context/compactor.js";
 import type { CoreClientLike } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
+import type { ExtensionManager } from "../src/extensions/extension-manager.js";
 import type { FastModelClient } from "../src/fast-model.js";
 import { HookRunner } from "../src/hooks.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
@@ -251,6 +252,71 @@ describe("PreCompact/PostCompact 钩子触发点", () => {
     expect(result.reason).toContain("no-compact");
     expect(calls).toHaveLength(0);
   });
+});
+
+describe("工具形态别名（env-sim）下的钩子 payload", () => {
+  it("PreToolUse/PostToolUse 的 tool 为内置名（matcher 按内置名命中），别名经 toolAlias 附带", async () => {
+    const root = await tempRoot();
+    const marker = path.join(root, "alias.jsonl");
+    // matcher 按内置名 bash 配置：payload.tool 若是别名 execute_command 则静默失配（本测试的回归点）
+    await writeProjectHooks(root, {
+      PreToolUse: [{ matcher: "bash", command: appendMarkerCommand(marker) }],
+      PostToolUse: [{ matcher: "bash", command: appendMarkerCommand(marker) }],
+    });
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const session = await sessions.create({ cwd: root, provider: "fake", model: "model" });
+    await sessions.updatePermissions(session.id, "yolo", []);
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const events = new EventBus();
+    let answered = false;
+    const provider: Provider = {
+      name: "fake",
+      async *streamChat() {
+        if (!answered) {
+          answered = true;
+          yield { type: "tool_call", id: "alias-1", name: "execute_command", input: { cmd: "echo hi" } };
+          yield { type: "done", stopReason: "tool_use" };
+        } else {
+          yield { type: "text_delta", text: "完成" };
+          yield { type: "done", stopReason: "end_turn" };
+        }
+      },
+    };
+    const providers = new ProviderRegistry();
+    providers.register(provider);
+    const core = createFakeCore();
+    const hooks = new HookRunner(path.join(root, "nonexistent-global.json"), events);
+    // env-sim 塑形 stub：bash 以别名 execute_command 下发给模型
+    const extensions = {
+      registeredTools: () => [],
+      isEnabled: () => false,
+      async beforeTool(input: unknown) { return input; },
+      async transformContext(input: { messages: unknown }) { return { messages: input.messages }; },
+      async beforeSend(input: { messages: unknown }) { return { messages: input.messages }; },
+      async transformPrompt() { return {}; },
+      async activeEnvSimPersonaPreset() { return null; },
+      async activeToolShaping() {
+        return { hideBuiltIns: new Set<string>(), aliases: new Map([["execute_command", { from: "bash" }]]) };
+      },
+    } as unknown as ExtensionManager;
+    const agent = new AgentRunner(
+      sessions, providers, core, events, pricing,
+      undefined, "zh-CN", 50, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      hooks,
+      extensions,
+    );
+
+    await agent.run(session.id, "跑个命令");
+
+    // Pre 与 Post 各一条：均按内置名命中 matcher，payload 附 toolAlias
+    const payloads = await readMarkerPayloads(marker);
+    expect(payloads).toHaveLength(2);
+    for (const payload of payloads) {
+      expect(payload).toMatchObject({ sessionId: session.id, tool: "bash", toolAlias: "execute_command" });
+    }
+  }, 15_000);
 });
 
 describe("SessionEnd 钩子触发点", () => {

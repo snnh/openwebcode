@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CoreClient, type CoreInfo } from "../src/core-client.js";
 import { RpcTransport } from "../src/rpc/transport.js";
 import { tempRoot } from "./helpers/temp-roots.js";
@@ -200,8 +200,48 @@ describe("CoreClient.searchJob (fake transport)", () => {
   });
 });
 
-// ---------- 真实 core 端到端：job 路径与同步路径结果一致 ----------
+// ---------- pty 事件缓冲回放与 start/stop 状态机（fake transport） ----------
 
+describe("CoreClient ptyEvents 缓冲回放", () => {
+  it("首个 on(\"output\") 能收到注册前缓冲的 pty.output（shell banner 不丢失）", async () => {
+    let transport: FakeTransport | undefined;
+    const client = new CoreClient("fake", 10_000, () => {
+      transport = new FakeTransport((request) => {
+        if (request.method === "core.ping") return pingInfo();
+        throw new Error(`unexpected method ${request.method}`);
+      });
+      return Promise.resolve({ transport });
+    });
+    unitClient = client;
+    await client.start();
+    // pty.open 响应到达前 core 推送的 output：无订阅者先缓冲（pendingPtyEvents）
+    transport!.emit("message", { jsonrpc: "2.0", method: "pty.output", params: { ptyId: 7, seq: 0, data: b64("banner$ ") } });
+    const received: Array<{ ptyId?: number; data?: string }> = [];
+    client.ptyEvents(7).on("output", (params: { ptyId?: number; data?: string }) => received.push(params));
+    // 首个 listener 注册后经微任务回放，缓冲事件必然送达
+    await vi.waitFor(() => expect(received).toHaveLength(1));
+    expect(Buffer.from(received[0]!.data!, "base64").toString("utf8")).toBe("banner$ ");
+  });
+});
+
+describe("CoreClient start/stop 竞态", () => {
+  it("stop 进行中与完成后 start 均拒绝，不再复位 stopping", async () => {
+    const { client } = makeClient((request) => {
+      if (request.method === "core.ping") return pingInfo();
+      if (request.method === "core.shutdown") return { ok: true };
+      throw new Error(`unexpected method ${request.method}`);
+    });
+    unitClient = client;
+    await client.start();
+    const stopping = client.stop();
+    // stop() 同步置位 stopping；此时 start 不得重新武装（含自动重启）
+    await expect(client.start()).rejects.toThrow("stopping");
+    await stopping;
+    await expect(client.start()).rejects.toThrow("stopping");
+  });
+});
+
+// ---------- 真实 core 端到端：job 路径与同步路径结果一致 ----------
 describe.skipIf(!existsSync(corePath))("CoreClient.searchJob (real core)", () => {
   let client: CoreClient | undefined;
 

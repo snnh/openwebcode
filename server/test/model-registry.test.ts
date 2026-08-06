@@ -18,7 +18,10 @@ const syncedPath = (root: string) => path.join(root, "models.synced.json");
 
 describe("model metadata lookup", () => {
   it("matches prefix, then conservative fallback", () => {
-    expect(lookupModelMetadata("deepseek-reasoner").contextWindow).toBe(1_000_000);
+    expect(lookupModelMetadata("deepseek-reasoner").contextWindow).toBe(128_000);
+    expect(lookupModelMetadata("deepseek-chat").contextWindow).toBe(128_000);
+    // 未知模型走保守兜底（128K，而非乐观的 256K）
+    expect(FALLBACK_METADATA.contextWindow).toBe(128_000);
     // 思维链回传默认：gpt/claude 关闭，其余（含未知模型）开启
     expect(lookupModelMetadata("gpt-4o-2024-11-20").maxOutput).toBe(16_000);
     expect(lookupModelMetadata("gpt-4o-2024-11-20").capabilities.modalities).toContain("image");

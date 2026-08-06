@@ -1,7 +1,7 @@
 import type { ChatMessage, ThinkingContent } from "../sessions/types.js";
 import { getUserAgent } from "../http.js";
 import { readSseData, DEFAULT_STREAM_IDLE_TIMEOUT_MS } from "./openai-compatible-provider.js";
-import { classifyHttpError, normalizeProviderError, parseRetryAfter, ProviderError } from "./provider-error.js";
+import { classifyHttpError, normalizeProviderError, parseRetryAfter, ProviderError, truncateErrorDetail } from "./provider-error.js";
 import type { Provider, ProviderEvent, StreamChatRequest } from "./provider.js";
 
 export interface OpenAIResponsesProviderOptions {
@@ -106,7 +106,8 @@ export class OpenAIResponsesProvider implements Provider {
       throw normalizeProviderError(error);
     }
     if (!response.ok || !response.body) {
-      const detail = await response.text();
+      // 错误体可能很大且会随错误消息广播进 WS 事件流：截断后再进消息
+      const detail = truncateErrorDetail(await response.text());
       throw classifyHttpError(
         response.status,
         `OpenAI Responses provider returned ${response.status}: ${detail}`,
@@ -214,14 +215,10 @@ export class OpenAIResponsesProvider implements Provider {
           case "response.failed": {
             finalStatus = "failed";
             const failure = event.response?.error;
-            throw new ProviderError(
-              "unknown",
-              `OpenAI Responses provider stream failed: ${failure?.message ?? event.message ?? "unknown error"}`,
-              false,
-            );
+            throw responsesStreamFailure("OpenAI Responses provider stream failed", failure?.code, failure?.message ?? event.message);
           }
           case "error":
-            throw new ProviderError("unknown", `OpenAI Responses provider stream error: ${event.message ?? "unknown error"}`, false);
+            throw responsesStreamFailure("OpenAI Responses provider stream error", event.code, event.message);
           default:
             break;
         }
@@ -349,9 +346,31 @@ function toResponsesInput(messages: ChatMessage[], providerName: string, replayR
 }
 
 function parseArguments(value: string): Record<string, unknown> {
-  const parsed: unknown = JSON.parse(value || "{}");
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Tool arguments must be an object");
+  // 参数 JSON 解析失败多为流被 max_output_tokens 截断：确定性错误，重试不会自愈，归不可重试
+  // （否则 collectProviderTurn 会按 stream_interrupted 白重试）
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value || "{}");
+  } catch (error) {
+    throw new ProviderError(
+      "invalid_request",
+      `Tool call arguments are not valid JSON (the stream may have been truncated): ${error instanceof Error ? error.message : String(error)}`,
+      false,
+      undefined,
+      { cause: error },
+    );
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new ProviderError("invalid_request", "Tool arguments must be an object", false);
+  }
   return parsed as Record<string, unknown>;
+}
+
+/** 流内失败事件按 code 区分可重试：服务端错误/过载/限流走重试，其余（如 invalid_request）为确定性失败。 */
+function responsesStreamFailure(prefix: string, code: string | undefined, message: string | undefined): ProviderError {
+  const retryable = code === "server_error" || code === "overloaded" || code === "rate_limit";
+  const kind = code === "rate_limit" ? "rate_limit" : retryable ? "overloaded" : "unknown";
+  return new ProviderError(kind, `${prefix}: ${message ?? "unknown error"}`, retryable);
 }
 
 function mapStopReason(
@@ -375,6 +394,8 @@ interface ResponsesStreamEvent {
   item_id?: string;
   arguments?: string;
   message?: string;
+  /** error 事件的失败码（response.failed 的码在 response.error.code 上）。 */
+  code?: string;
   item?: {
     id?: string;
     type?: string;

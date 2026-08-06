@@ -51,7 +51,9 @@ export async function replaceFileWithRetry(temporary: string, target: string, op
 export async function writeUtf8Atomically(target: string, content: string, options: AtomicReplaceOptions = {}): Promise<void> {
   const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    await writeFile(temporary, content, "utf8");
+    // mode 在创建临时文件时即生效（POSIX）：宽松 umask 下不留 rename 前的可读窗口；
+    // Windows 无权限位语义，由 Node 忽略（no-op）。rename 后的 chmod 保留作兜底。
+    await writeFile(temporary, content, { encoding: "utf8", ...(options.mode !== undefined ? { mode: options.mode } : {}) });
     await replaceFileWithRetry(temporary, target, options);
     if (options.mode !== undefined && (options.platform ?? process.platform) !== "win32") {
       await (options.chmodFile ?? chmod)(target, options.mode);

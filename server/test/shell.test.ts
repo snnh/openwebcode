@@ -385,3 +385,65 @@ describe("POST /api/sessions/:id/shell - jobControl 路径超时", () => {
     }
   }, 15_000);
 });
+
+describe("POST /api/sessions/:id/abort - 前台 shell（runShell）", () => {
+  it("abort 中止 runShell 的 controller：jobControl 路径收到 cancelJob，路由返回 202 而非 409", async () => {
+    let cancelled = false;
+    const startJobCalls: string[] = [];
+    const jobCoreInfo: CoreInfo = {
+      ...FAKE_CORE_INFO,
+      features: { ...FAKE_CORE_INFO.features!, jobControl: true },
+    };
+    // jobControl fake core：job 一直 running，直到 cancelJob 后回 cancelled 终态
+    const core = makeFakeCore({
+      async start() { return jobCoreInfo; },
+      async ping() { return jobCoreInfo; },
+      async startJob(request: JobStartRequest) {
+        startJobCalls.push(request.jobId);
+        return { jobId: request.jobId, state: "running" as const };
+      },
+      async jobStatus(request: { jobId: string }): Promise<JobStatus> {
+        return cancelled
+          ? { jobId: request.jobId, state: "cancelled", error: "Job cancelled" }
+          : { jobId: request.jobId, state: "running" };
+      },
+      async jobOutput() { return { chunks: [], nextSeq: 0, truncated: false }; },
+      async cancelJob(request: { jobId: string }) {
+        cancelled = true;
+        return { jobId: request.jobId, accepted: true as const };
+      },
+      async run() { throw new Error("jobControl 路径不应走 exec.run"); },
+    } as Partial<CoreClientLike>);
+    const harness = await makeAgentHarness({
+      core,
+      permissionMode: "yolo",
+      title: "Abort shell",
+      tempPrefix: "owc-shell-abort-",
+    });
+    try {
+      const res = await harness.app.inject({
+        method: "POST",
+        url: `/api/sessions/${harness.session.id}/shell`,
+        payload: { cmd: "sleep 9999" },
+      });
+      expect(res.statusCode).toBe(202);
+      await vi.waitFor(() => expect(harness.agent.isShellPending(harness.session.id)).toBe(true));
+      // 等 job 真正启动（进入轮询循环）后再 abort，否则中止发生在起 job 前、无 job 可取消
+      await vi.waitFor(() => expect(startJobCalls.length).toBe(1), { timeout: 5_000 });
+
+      const stop = await harness.app.inject({
+        method: "POST",
+        url: `/api/sessions/${harness.session.id}/abort`,
+      });
+      // runShell 挂起也算可中止状态（旧实现不进 running Map，abort 返回 false -> 409）
+      expect(stop.statusCode).toBe(202);
+      // controller abort 触发 jobControl 路径的 cancelJob
+      await vi.waitFor(() => expect(cancelled).toBe(true), { timeout: 5_000 });
+      // runShell 收尾：落盘错误 tool_result 且 shells Map 清空
+      await waitForToolMessage(harness.sessions, harness.session.id);
+      await vi.waitFor(() => expect(harness.agent.isShellPending(harness.session.id)).toBe(false), { timeout: 5_000 });
+    } finally {
+      await harness.app.close();
+    }
+  }, 15_000);
+});
