@@ -18,7 +18,7 @@
 | `SHA256SUMS.txt` | 全平台 | 四个发行包的 SHA-256 校验和 |
 | `bench-results-*.json` | 全平台 | 性能基准结果，供下一版做回归对比基线 |
 
-`<version>` 是 tag 去掉前导 `v`（`v1.3.9` → `1.3.9`）。预发布 tag（如 `v1.4.0-beta.1`）的产物文件名带完整版本号，GitHub Release 自动标记 Pre-release。
+`<version>` 是 tag 去掉前导 `v`（`v1.4.0` → `1.4.0`）。预发布 tag（如 `v1.4.0-beta.1`）的产物文件名带完整版本号，GitHub Release 自动标记 Pre-release。
 
 ## 包内布局
 
@@ -63,7 +63,7 @@ bundled Node 版本固定在 release.yml 的 `env.NODE_DIST_VERSION`（当前 24
 
 ```powershell
 $ErrorActionPreference = "Stop"
-$Version = "1.3.9"          # 完整版本号；预发布如 1.4.0-beta.1
+$Version = "1.4.0"          # 完整版本号；预发布如 1.4.0-beta.1
 $BaseVersion = ($Version -split "-")[0]
 $NodeVersion = "24.18.0"    # 与 release.yml 的 NODE_DIST_VERSION 一致
 
@@ -172,7 +172,7 @@ msiexec /x "openwebcode-<version>-windows-x64.msi" PURGE_DATA=1
 
 ```sh
 set -euo pipefail
-VERSION=1.3.9              # 完整版本号；预发布如 1.4.0-beta.1
+VERSION=1.4.0              # 完整版本号；预发布如 1.4.0-beta.1
 BASE_VERSION=${VERSION%%-*}
 NODE_VERSION=24.18.0
 
@@ -286,7 +286,7 @@ sudo /usr/local/bin/owc-uninstall --yes --purge-data --remove-firewall  # 系统
 curl -fsSL https://raw.githubusercontent.com/snnh/openwebcode/main/packaging/install-online.sh | bash
 # 指定版本和前缀，跳过交互：
 curl -fsSL https://raw.githubusercontent.com/snnh/openwebcode/main/packaging/install-online.sh \
-  | bash -s -- --version 1.3.9 --prefix /opt/openwebcode --yes
+  | bash -s -- --version 1.4.0 --prefix /opt/openwebcode --yes
 ```
 
 流程：检查依赖（curl 或 wget、tar、sha256sum 或 shasum，不依赖 jq）→ 在 `mktemp -d` 临时目录下载 `openwebcode-<version>-linux-<arch>.tar.gz` 和 `SHA256SUMS.txt` → 只取目标行做 `sha256sum --check`（没有 sha256sum 时回落 `shasum -a 256`），失败即中止 → 解压 → 按 `<prefix>/lib/openwebcode/server/dist/index.js` 是否存在分两种模式。临时目录退出时自动清理。
@@ -349,8 +349,8 @@ server 模块在进程启动时加载，复制后必须重启 `build\stage\bin\o
 先推已审核的提交，确认 `CHANGELOG.md` 有对应段落、版本号四方一致，然后：
 
 ```sh
-git tag -a v1.3.9 -m "OpenWebCode v1.3.9"
-git push origin v1.3.9
+git tag -a v1.4.0 -m "OpenWebCode v1.4.0"
+git push origin v1.4.0
 ```
 
-也可以在 Actions 里手动运行 `release` 输入 `v1.3.9`。发布后核对：Release 里的文件名和 `SHA256SUMS.txt`、MSI 安装/卸载、tar.gz 安装和 `/api/health`。
+也可以在 Actions 里手动运行 `release` 输入 `v1.4.0`。发布后核对：Release 里的文件名和 `SHA256SUMS.txt`、MSI 安装/卸载、tar.gz 安装和 `/api/health`。
