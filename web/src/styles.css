@@ -2270,6 +2270,10 @@ button.chip-row:hover { background: var(--accent-soft); }
 /* 模型目录 */
 .catalog-actions { margin: 6px 0; }
 .catalog-table { margin-top: 6px; }
+/* 操作列收紧贴内容；能力列（徽标+思考附行）给足宽度减少换行 */
+.catalog-table th:nth-child(1), .catalog-table td:nth-child(1) { width: 1%; white-space: nowrap; }
+.catalog-table th:nth-child(5), .catalog-table td:nth-child(5) { min-width: 170px; }
+.catalog-cap-sub { margin-top: 3px; color: var(--text-3); font-size: 10px; }
 .catalog-form { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; align-items: center; }
 .catalog-form input { flex: 1 1 160px; }
 .extra-body-input {
@@ -2551,6 +2555,10 @@ button.chip-row:hover { background: var(--accent-soft); }
   .settings-content-header p { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .settings-section-icon { width: 32px; height: 32px; }
   .settings-panel { padding: 16px 14px 14px; overflow-x: hidden; }
+  /* 目录表列多而窄屏面板禁止横滚：wrapper 作横向滚动容器，表格保持 display:table
+     并以最小宽度撑出真实溢出（table 块化加 overflow 无效：裁断的是表格自身） */
+  .settings-panel .catalog-table-wrap { overflow-x: auto; }
+  .settings-panel .catalog-table { min-width: 620px; }
   .settings-panel input, .settings-panel select, .settings-panel textarea { max-width: 100%; }
   .settings-inline-form { flex-wrap: wrap; }
   .settings-actions { padding: 10px 14px calc(10px + env(safe-area-inset-bottom)); }
