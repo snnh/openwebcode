@@ -96,17 +96,15 @@ export class FilteredProxyManager {
     return this.deps.log ?? ((line) => process.stderr.write(`[filtered-proxy] ${line}\n`));
   }
 
-  /** 目标平台路径语义（sidecar 命令行/readOnlyPaths 面向 core 所在平台；测试可注入异平台）。 */
-  private get platformPath(): typeof path.win32 | typeof path.posix {
-    return this.platform === "win32" ? path.win32 : path.posix;
-  }
-
+  /** 目标平台仅决定行为分支（cmd 环境变量语法、node 文件名）；文件路径一律用宿主
+   * path——core 是与 server 同机的子进程，投递/授权路径都落在宿主文件系统上，
+   * 测试在异平台注入 platform 时宿主路径语义不变。 */
   private get assetsDir(): string {
     return this.deps.assetsDir ?? path.resolve(moduleDirectory, "..", "..", "assets");
   }
 
   private scriptPath(): string {
-    return this.platformPath.join(this.assetsDir, "sandbox-proxy.mjs");
+    return path.join(this.assetsDir, "sandbox-proxy.mjs");
   }
 
   /** sidecar 的 node：release 布局 bundled node 优先，开发环境回落 process.execPath。 */
@@ -114,8 +112,8 @@ export class FilteredProxyManager {
     if (this.deps.nodeExe) return this.deps.nodeExe;
     const installRoot = this.deps.installRoot ?? path.resolve(moduleDirectory, "..", "..", "..");
     const bundled = this.platform === "win32"
-      ? this.platformPath.join(installRoot, "node", "node.exe")
-      : this.platformPath.join(installRoot, "node", "bin", "node");
+      ? path.join(installRoot, "node", "node.exe")
+      : path.join(installRoot, "node", "bin", "node");
     return existsSync(bundled) ? bundled : process.execPath;
   }
 
@@ -125,7 +123,7 @@ export class FilteredProxyManager {
    * Program Files 下的 node 路径会失败（普通用户无权改其 DACL），故不授源路径。
    */
   readOnlyPaths(): string[] {
-    return [this.platformPath.join(this.deps.dataDir, "proxy")];
+    return [path.join(this.deps.dataDir, "proxy")];
   }
 
   private runtimeDir(): string {
@@ -134,7 +132,7 @@ export class FilteredProxyManager {
 
   /**
    * 把 node 与 sidecar 脚本复制到 <dataDir>/proxy/runtime/（源 size/mtime 变化才重拷），
-   * 返回供 sidecar 命令行使用的目标平台路径。必须用真实副本而非硬链接：硬链接共享
+   * 返回供 sidecar 命令行使用的宿主路径（core 与 server 同机）。必须用真实副本而非硬链接：硬链接共享
    * 源文件的 DACL（Program Files 下不可授权），副本才是用户拥有、可授 ACL 的对象。
    */
   private async ensureRuntime(): Promise<{ nodeExe: string; script: string }> {
@@ -144,8 +142,8 @@ export class FilteredProxyManager {
     await this.stageFile(this.resolveNodeExe(), path.join(runtimeDir, nodeName));
     await this.stageFile(this.scriptPath(), path.join(runtimeDir, "sandbox-proxy.mjs"));
     return {
-      nodeExe: this.platformPath.join(this.deps.dataDir, "proxy", "runtime", nodeName),
-      script: this.platformPath.join(this.deps.dataDir, "proxy", "runtime", "sandbox-proxy.mjs"),
+      nodeExe: path.join(this.deps.dataDir, "proxy", "runtime", nodeName),
+      script: path.join(this.deps.dataDir, "proxy", "runtime", "sandbox-proxy.mjs"),
     };
   }
 
