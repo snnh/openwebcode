@@ -1,9 +1,19 @@
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import os, { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CoreClient, sanitizedCoreEnv, type CoreEvent, type IndexScanEntry, type IndexScanSummary } from "../src/core-client.js";
+import { AgentRunner } from "../src/agent/agent-runner.js";
+import { CORE_PROTOCOL_VERSION, CoreGateway, CoreProtocolError, negotiate } from "../src/core-gateway.js";
+import { CoreLogArchive } from "../src/core-log.js";
+import { CoreClient, sanitizedCoreEnv, type CoreEvent, type CoreInfo, type IndexScanEntry, type IndexScanSummary } from "../src/core-client.js";
+import { PricingCatalog } from "../src/cost/pricing-catalog.js";
+import { EventBus } from "../src/events/event-bus.js";
+import { ProviderRegistry } from "../src/providers/provider.js";
+import { encodeFrame, FrameDecoder } from "../src/rpc/frame-codec.js";
+import { SessionStore } from "../src/sessions/session-store.js";
+import { FAKE_CORE_INFO, makeFakeCore } from "./helpers/fake-core.js";
 import { tempRoot } from "./helpers/temp-roots.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -263,4 +273,226 @@ describe("CoreClient crash recovery", () => {
     await vi.waitFor(() => expect(exits.length).toBeGreaterThan(before), { timeout: 10_000 });
     await recovery.stop();
   }, 30_000);
+});
+
+// ---- frame-codec 组（合并） ----
+describe("FrameDecoder", () => {
+  it("decodes fragmented and adjacent UTF-8 frames", () => {
+    const decoder = new FrameDecoder();
+    const messages: unknown[] = [];
+    decoder.on("message", (message) => messages.push(message));
+    const first = encodeFrame({ text: "你好" });
+    const second = encodeFrame({ value: 2 });
+    const input = Buffer.concat([first, second]);
+    decoder.push(input.subarray(0, 7));
+    decoder.push(input.subarray(7, first.length + 3));
+    decoder.push(input.subarray(first.length + 3));
+    expect(messages).toEqual([{ text: "你好" }, { value: 2 }]);
+  });
+
+  it("rejects duplicate Content-Length headers", () => {
+    const decoder = new FrameDecoder();
+    const errors: Error[] = [];
+    decoder.on("error", (error) => errors.push(error));
+    decoder.push(Buffer.from("Content-Length: 2\r\nContent-Length: 2\r\n\r\n{}"));
+    expect(errors[0]?.message).toContain("Duplicate");
+  });
+
+  it("rejects a complete oversized header", () => {
+    const decoder = new FrameDecoder();
+    const errors: Error[] = [];
+    decoder.on("error", (error) => errors.push(error));
+    decoder.push(Buffer.from(`X-Fill: ${"x".repeat(8192)}\r\nContent-Length: 2\r\n\r\n{}`));
+    expect(errors[0]?.message).toContain("header exceeds");
+  });
+
+  it("keeps the 32 MiB core frame boundary and rejects larger declarations", () => {
+    const atLimit = new FrameDecoder();
+    const acceptedErrors: Error[] = [];
+    atLimit.on("error", (error) => acceptedErrors.push(error));
+    // No body yet: a legal maximum declaration remains buffered rather than
+    // rejected, which avoids allocating a synthetic 32 MiB test payload.
+    atLimit.push(Buffer.from("Content-Length: 33554432\r\n\r\n"));
+    expect(acceptedErrors).toEqual([]);
+
+    const overLimit = new FrameDecoder();
+    const errors: Error[] = [];
+    overLimit.on("error", (error) => errors.push(error));
+    overLimit.push(Buffer.from("Content-Length: 33554433\r\n\r\n"));
+    expect(errors[0]?.message).toContain("32 MiB");
+  });
+});
+
+// ---- core-gateway 组（合并） ----
+function coreInfo(overrides: Partial<CoreInfo> = {}): CoreInfo {
+  return {
+    version: "0.2.4",
+    protocolVersion: CORE_PROTOCOL_VERSION,
+    platform: "windows",
+    sandboxCapability: "enforced",
+    features: {
+      fsStat: true,
+      fsStatMany: true,
+      fsWriteBase64: true,
+      jobControl: true,
+      fsHash: true,
+      fsScanPagination: true,
+      fsWatch: true,
+    },
+    limits: {
+      maxFrameBytes: 33_554_432,
+      maxWriteBase64Bytes: 20_971_520,
+      maxHashBytes: 16_777_216,
+      maxStatManyPaths: 128,
+      maxStatManyPathBytes: 262_144,
+      maxScanEntries: 256,
+      maxScanDepth: 16,
+      maxScanNodes: 2_048,
+      maxWatches: 16,
+      maxWatchEvents: 128,
+      maxConcurrentJobs: 4,
+      maxJobOutputBytes: 524_288,
+    },
+    ...overrides,
+  };
+}
+
+describe("CoreGateway", () => {
+  it("negotiates once and only exposes explicitly advertised features", async () => {
+    const ping = vi.fn(async () => coreInfo({ features: { ...coreInfo().features!, jobControl: false } }));
+    const gateway = new CoreGateway({ ping });
+
+    await expect(gateway.supports("jobControl")).resolves.toBe(false);
+    await expect(gateway.supports("fsWatch")).resolves.toBe(true);
+    expect(ping).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects an incompatible protocol instead of falling back to probe calls", () => {
+    expect(() => negotiate(coreInfo({ protocolVersion: "0.9" }))).toThrow(CoreProtocolError);
+  });
+
+  it("rejects incomplete limits and feature records", () => {
+    expect(() => negotiate(coreInfo({ features: { ...coreInfo().features!, fsWatch: undefined as never } }))).toThrow("features.fsWatch");
+    expect(() => negotiate(coreInfo({ limits: { ...coreInfo().limits!, maxConcurrentJobs: 0 } }))).toThrow("limits.maxConcurrentJobs");
+  });
+
+  it("协商失败的 Promise 不缓存：下次调用重新 ping 并可成功", async () => {
+    let calls = 0;
+    const ping = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("core not ready");
+      return coreInfo();
+    });
+    const gateway = new CoreGateway({ ping });
+
+    await expect(gateway.info()).rejects.toThrow("core not ready");
+    // 失败后缓存已清空，第二次调用触发新一轮协商并成功
+    await expect(gateway.info()).resolves.toMatchObject({ protocolVersion: CORE_PROTOCOL_VERSION });
+    expect(ping).toHaveBeenCalledTimes(2);
+    // 成功结果被缓存，不再重复 ping
+    await gateway.info();
+    expect(ping).toHaveBeenCalledTimes(2);
+  });
+
+  it("invalidate 后重新协商（core 重启/ready 路径刷新能力快照）", async () => {
+    const ping = vi.fn(async () => coreInfo());
+    const gateway = new CoreGateway({ ping });
+
+    await gateway.info();
+    expect(ping).toHaveBeenCalledTimes(1);
+    gateway.invalidate();
+    await gateway.info();
+    expect(ping).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("CoreGateway 接线（AgentRunner core.ready）", () => {
+  it("core.ready 事件使协商缓存失效，下一次能力判定重新 ping", async () => {
+    const root = await tempRoot("owc-gw-ready-");
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const session = await sessions.create({ cwd: root, provider: "fake", model: "model" });
+    await sessions.updatePermissions(session.id, "yolo", []);
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const events = new EventBus();
+    const providers = new ProviderRegistry();
+    let listener: ((event: CoreEvent) => void) | undefined;
+    let pingCount = 0;
+    const core = makeFakeCore({
+      async ping() { pingCount += 1; return FAKE_CORE_INFO; },
+      on(eventName: string, eventListener: (...args: unknown[]) => void) {
+        if (eventName === "event") listener = eventListener as (event: CoreEvent) => void;
+        return core;
+      },
+    });
+    const agent = new AgentRunner(sessions, providers, core, events, pricing);
+
+    // runShell -> executeBash -> coreGateway.supports("jobControl")：首次协商
+    await agent.runShell(session.id, "echo one");
+    await agent.runShell(session.id, "echo two");
+    expect(pingCount).toBe(1); // 协商结果被缓存
+    // core 重启完成重新握手：能力快照失效，下次用到时重新协商
+    listener?.({ source: "core", type: "core.ready", payload: FAKE_CORE_INFO });
+    await agent.runShell(session.id, "echo three");
+    expect(pingCount).toBe(2);
+  }, 15_000);
+});
+
+// ---- core-log 组（合并） ----
+const coreLogRoots: string[] = [];
+afterEach(async () => Promise.all(coreLogRoots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
+
+async function coreLogRoot(): Promise<string> {
+  const root = await mkdtemp(path.join(os.tmpdir(), "owc-corelog-"));
+  coreLogRoots.push(root);
+  return root;
+}
+
+describe("CoreLogArchive", () => {
+  it("initialize 创建目录，append 追加写入 core.log", async () => {
+    const root = await coreLogRoot();
+    const archive = new CoreLogArchive(path.join(root, "logs"));
+    await archive.initialize();
+    archive.append("[owc-exec] first\n");
+    archive.append("[owc-exec] second\n");
+    await vi.waitFor(async () => {
+      expect(await readFile(path.join(root, "logs", "core.log"), "utf8")).toBe("[owc-exec] first\n[owc-exec] second\n");
+    });
+  });
+
+  it("超过阈值的 core.log 在 initialize 时轮转为 core.log.1（只保留一代）", async () => {
+    const root = await coreLogRoot();
+    const logDir = path.join(root, "logs");
+    const archive = new CoreLogArchive(logDir, 16);
+    await archive.initialize();
+    await writeFile(path.join(logDir, "core.log"), "x".repeat(32), "utf8");
+    await writeFile(path.join(logDir, "core.log.1"), "previous-generation", "utf8");
+    await archive.initialize();
+    expect(await readFile(path.join(logDir, "core.log.1"), "utf8")).toBe("x".repeat(32));
+    // core.log 已被轮转走，append 后重新创建
+    archive.append("fresh\n");
+    await vi.waitFor(async () => {
+      expect(await readFile(path.join(logDir, "core.log"), "utf8")).toBe("fresh\n");
+    });
+  });
+
+  it("未超阈值不轮转", async () => {
+    const root = await coreLogRoot();
+    const logDir = path.join(root, "logs");
+    const archive = new CoreLogArchive(logDir, 1024);
+    await archive.initialize();
+    await writeFile(path.join(logDir, "core.log"), "small\n", "utf8");
+    await archive.initialize();
+    expect(await readFile(path.join(logDir, "core.log"), "utf8")).toBe("small\n");
+    await expect(stat(path.join(logDir, "core.log.1"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("append 失败静默吞掉（未 initialize 目录不存在也不抛错）", async () => {
+    const root = await coreLogRoot();
+    const archive = new CoreLogArchive(path.join(root, "missing", "logs"));
+    archive.append("dropped\n");
+    // 不抛错即通过；给 appendFile 一个失败的机会
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  });
 });
