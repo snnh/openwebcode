@@ -50,6 +50,7 @@ import type {
 import type { SessionStore } from "../sessions/session-store.js";
 import { defaultSandboxPolicy } from "../sessions/default-sandbox.js";
 import type { JobObjectLimits, SandboxPolicy, SessionMeta } from "../sessions/types.js";
+import type { FilteredProxyManager } from "./filtered-proxy.js";
 import { WSB_WORKSPACE_MOUNT, type WsbManager } from "./wsb.js";
 
 /**
@@ -99,6 +100,8 @@ export class CoreRouter extends EventEmitter {
   private readonly hostNormalizeConfigs = new Set<string>();
   /** ptyId → 开出该 pty 的 core 客户端（各 core 独立编号，openPty 时登记）。 */
   private readonly ptyOwners = new Map<number, CoreClientLike>();
+  /** sessionId → 最近一次 configureSession 成功后 core 上报的执行级别（REST 透出用）。 */
+  private readonly sandboxStatus = new Map<string, { capability: string; reason?: string; at: number }>();
 
   constructor(
     private readonly shared: CoreClientLike,
@@ -107,6 +110,8 @@ export class CoreRouter extends EventEmitter {
     jobObject?: JobObjectLimits,
     allowPaths?: string[],
     platform?: NodeJS.Platform,
+    /** filtered 网络档 sidecar 编排；未注入时 filtered 按普通策略下发（core 自行过滤）。 */
+    private readonly filteredProxy?: FilteredProxyManager,
   ) {
     super();
     this.jobObject = jobObject;
@@ -157,6 +162,9 @@ export class CoreRouter extends EventEmitter {
       ...(jobObject?.maxProcesses !== undefined ? { jobMaxProcesses: jobObject.maxProcesses } : {}),
     };
     if (mode === "appcontainer") return { ...sandbox, ...limits, mode: "appcontainer" };
+    // bubblewrap 显式下发（POSIX 专用；Windows 上的取值由 REST 校验拦截，这里不防御）
+    if (mode === "bubblewrap") return { ...sandbox, ...limits, mode: "bubblewrap" };
+    // landlock 与 POSIX 缺省都不下发 mode：core 缺省后端即 bubblewrap（无 bwrap 自动回落 Landlock）
     // 显式选择（含持久化里已存的 jobobject）原样下发；只有缺省决策按平台分流
     if (mode === "jobobject" || platform === "win32") return { ...sandbox, ...limits, mode: "jobobject" };
     return { ...sandbox, ...limits };
@@ -168,7 +176,8 @@ export class CoreRouter extends EventEmitter {
 
   private async clientFor(sessionId: string): Promise<{ client: CoreClientLike; meta: SessionMeta | undefined }> {
     const meta = await this.metaFor(sessionId);
-    if (meta?.sandboxMode === "wsb") return { client: await this.wsb.acquire(sessionId, meta), meta };
+    // WSB 网络为 VM 启动参数（Networking Enable/Disable 二元）；会话策略 deny → 断网，其余（含未设置/filtered）保持联网
+    if (meta?.sandboxMode === "wsb") return { client: await this.wsb.acquire(sessionId, meta, meta.sandbox?.network === "deny" ? "deny" : "allow"), meta };
     return { client: this.shared, meta };
   }
 
@@ -190,8 +199,27 @@ export class CoreRouter extends EventEmitter {
     // immediately, so do not leak a transient "Core is not running" failure.
     await client.start();
     const cwd = meta?.sandboxMode === "wsb" && meta.cwd ? toSandboxPath(request.cwd, meta.cwd) : request.cwd;
-    await client.configureSession({ ...request, cwd, sandbox: CoreRouter.policyFor(meta, request.sandbox, this.jobObject, this.allowPaths, this.platform) });
+    await this.configureWithFiltered(client, request.sessionId, cwd, CoreRouter.policyFor(meta, request.sandbox, this.jobObject, this.allowPaths, this.platform));
     this.configuredClients.set(request.sessionId, client);
+  }
+
+  /**
+   * filtered 网络档两阶段下发：先下基础配置（sidecar job 需要已配置的会话上下文），
+   * ensureProxy 拿到端口后补发 proxyAddr + readOnlyPaths；其余模式一次下发。
+   * 仅宿主机 core 走 sidecar（REST 已门禁 wsb+filtered 组合）。
+   */
+  private async configureWithFiltered(
+    client: CoreClientLike,
+    sessionId: string,
+    cwd: string,
+    sandbox: SandboxPolicy,
+  ): Promise<{ sandboxCapability: string; sandboxReason?: string }> {
+    if (sandbox.network !== "filtered" || !this.filteredProxy || client !== this.shared) {
+      return client.configureSession({ sessionId, cwd, sandbox });
+    }
+    await client.configureSession({ sessionId, cwd, sandbox });
+    const { proxyAddr, readOnlyPaths } = await this.filteredProxy.ensureProxy(client, sessionId, cwd);
+    return client.configureSession({ sessionId, cwd, sandbox: { ...sandbox, proxyAddr, readOnlyPaths } });
   }
 
   private async ensureConfigured(
@@ -228,6 +256,7 @@ export class CoreRouter extends EventEmitter {
     this.configuredClients.clear();
     this.configuring.clear();
     this.ptyOwners.clear();
+    this.sandboxStatus.clear();
   }
 
   ping(): Promise<CoreInfo> {
@@ -262,21 +291,28 @@ export class CoreRouter extends EventEmitter {
     this.shared.setRequestTimeoutMs(timeoutMs);
   }
 
-  /** 释放会话持有的沙盒 core（WSB 虚拟机蒸发）；非 wsb 会话为 no-op。 */
+  /** 释放会话持有的沙盒 core（WSB 虚拟机蒸发）与 filtered sidecar；非 wsb/非 filtered 会话为 no-op。 */
   async release(sessionId: string): Promise<void> {
     this.configuredClients.delete(sessionId);
     this.configuring.delete(sessionId);
+    this.sandboxStatus.delete(sessionId);
+    if (this.filteredProxy) await this.filteredProxy.releaseProxy(this.shared, sessionId).catch(() => undefined);
     await this.wsb.release(sessionId);
   }
 
-  async configureSession(request: { sessionId: string; cwd: string; sandbox: SandboxPolicy }): Promise<{ sandboxCapability: string }> {
+  async configureSession(request: { sessionId: string; cwd: string; sandbox: SandboxPolicy }): Promise<{ sandboxCapability: string; sandboxReason?: string }> {
     const { client, meta } = await this.clientFor(request.sessionId);
     const cwd = meta?.sandboxMode === "wsb" && meta.cwd ? toSandboxPath(request.cwd, meta.cwd) : request.cwd;
-    const routed = { ...request, cwd, sandbox: CoreRouter.policyFor(meta, request.sandbox, this.jobObject, this.allowPaths, this.platform) };
-    const result = await client.configureSession(routed);
+    const result = await this.configureWithFiltered(client, request.sessionId, cwd, CoreRouter.policyFor(meta, request.sandbox, this.jobObject, this.allowPaths, this.platform));
     this.desiredConfigs.set(request.sessionId, request);
     this.configuredClients.set(request.sessionId, client);
+    this.sandboxStatus.set(request.sessionId, { capability: result.sandboxCapability, ...(result.sandboxReason !== undefined ? { reason: result.sandboxReason } : {}), at: Date.now() });
     return result;
+  }
+
+  /** 最近一次 configureSession 记录的会话执行级别；无记录（未配置/已释放）返回 undefined。 */
+  sandboxStatusFor(sessionId: string): { capability: string; reason?: string; at: number } | undefined {
+    return this.sandboxStatus.get(sessionId);
   }
 
   async cleanupSession(sessionId: string): Promise<{ ok: true }> {
@@ -289,13 +325,17 @@ export class CoreRouter extends EventEmitter {
       this.desiredConfigs.delete(sessionId);
       this.configuredClients.delete(sessionId);
       this.configuring.delete(sessionId);
+      this.sandboxStatus.delete(sessionId);
       return { ok: true };
     }
+    // filtered sidecar 随会话清理回收（cancel job + 删 deny 文件，best effort）
+    if (this.filteredProxy) await this.filteredProxy.releaseProxy(this.shared, sessionId).catch(() => undefined);
     const result = await this.shared.cleanupSession(sessionId);
     this.hostNormalizeConfigs.delete(sessionId);
     this.desiredConfigs.delete(sessionId);
     this.configuredClients.delete(sessionId);
     this.configuring.delete(sessionId);
+    this.sandboxStatus.delete(sessionId);
     return result;
   }
 

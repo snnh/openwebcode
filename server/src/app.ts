@@ -38,9 +38,9 @@ import type { ManagedProvisionResult, ManagedWorkspaceLike } from "./snapshots/m
 import { ManagedWorkspaceSyncError, type ManagedWorkspaceSyncApplyInput } from "./snapshots/managed-sync.js";
 import { SessionTransferError } from "./sessions/session-transfer.js";
 import { activePathMessages } from "./sessions/session-tree.js";
-import { defaultSandboxDenyPaths } from "./sessions/default-sandbox.js";
+import { defaultSandboxPolicy } from "./sessions/default-sandbox.js";
 import { resolveSessionPersona } from "./sessions/extension-state.js";
-import type { BindLinkSpec, PermissionMode, PythonEnv, SandboxMode, SessionMeta, ShellBackend, SnapshotMode, TextContent } from "./sessions/types.js";
+import type { BindLinkSpec, PermissionMode, PythonEnv, SandboxMode, SandboxNetwork, SessionMeta, ShellBackend, SnapshotMode, TextContent } from "./sessions/types.js";
 import type { SessionStore } from "./sessions/session-store.js";
 import type { CronScheduler } from "./cron-scheduler.js";
 import { SettingsValidationError, type SettingsService } from "./settings-service.js";
@@ -70,6 +70,8 @@ interface CreateSessionBody {
   title?: string;
   agentMode?: "plan" | "code" | "goal";
   sandboxMode?: SandboxMode;
+  /** 会话网络策略（缺省 allow；filtered 仅 Windows） */
+  network?: SandboxNetwork;
   setupScript?: string;
   /** 可选 Bind Link 目录绑定（Windows 11 24H2+，需 core 上报 features.bindLink 且以管理员权限运行）。 */
   bindLinks?: BindLinkSpec[];
@@ -101,6 +103,8 @@ interface SessionConfigBody {
   agentMode?: "plan" | "code" | "goal";
   permissionMode?: PermissionMode;
   sandboxMode?: SandboxMode;
+  /** 会话网络策略补丁（仅显式提供时更新；filtered 仅 Windows）。 */
+  network?: SandboxNetwork;
   setupScript?: string;
   snapshotMode?: SnapshotMode;
   shellBackend?: ShellBackend;
@@ -646,22 +650,28 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   const hasRunningBackgroundTask = (sessionId: string): boolean => dependencies.backgroundTasks?.hasRunningForSession(sessionId) ?? false;
   // Test/embedding shims predating shell shortcuts may only implement isRunning.
   const isShellPending = (sessionId: string): boolean => agent.isShellPending?.(sessionId) ?? false;
-  const defaultSandbox = (cwd: string) => ({
-    enabled: true,
-    readRoots: [cwd],
-    writeRoots: [cwd],
-    denyPaths: defaultSandboxDenyPaths(cwd),
-    network: "allow" as const,
-  });
-  const SANDBOX_MODES: readonly string[] = ["appcontainer", "wsb", "jobobject", "off"];
+  const SANDBOX_MODES: readonly string[] = ["appcontainer", "wsb", "jobobject", "landlock", "bubblewrap", "off"];
+  /** 平台门禁：win32 允许 appcontainer/jobobject/wsb/off；linux 允许 landlock/bubblewrap/off；其余平台仅 off */
+  const sandboxModesForPlatform = (): readonly string[] =>
+    platform === "win32" ? ["appcontainer", "wsb", "jobobject", "off"]
+      : platform === "linux" ? ["landlock", "bubblewrap", "off"]
+        : ["off"];
   /** 返回错误文案；合法或缺省返回 undefined。wsb 需本机 capability 可用 */
   const validateSandboxMode = (value: unknown): string | undefined => {
     if (value === undefined) return undefined;
-    if (typeof value !== "string" || !SANDBOX_MODES.includes(value)) return "sandboxMode must be appcontainer, wsb, jobobject, or off";
+    if (typeof value !== "string" || !SANDBOX_MODES.includes(value)) return "sandboxMode must be appcontainer, wsb, jobobject, landlock, bubblewrap, or off";
+    if (!sandboxModesForPlatform().includes(value)) return `sandboxMode ${value} is not supported on platform ${platform}`;
     if (value === "wsb") {
       const wsb = detectWsb();
       if (!wsb.available) return `sandboxMode wsb 不可用：${wsb.reason ?? "Windows Sandbox 不可用"}`;
     }
+    return undefined;
+  };
+  /** sandbox.network 校验：filtered 仅 Windows 接受（core 侧 Job Object 网络过滤）；合法或缺省返回 undefined */
+  const validateSandboxNetwork = (value: unknown): string | undefined => {
+    if (value === undefined) return undefined;
+    if (typeof value !== "string" || !["allow", "deny", "filtered"].includes(value)) return "network must be allow, deny, or filtered";
+    if (value === "filtered" && platform !== "win32") return `network filtered is not supported on platform ${platform}`;
     return undefined;
   };
   /** bindLinks 形状校验：≤16 项，元素仅含 virtPath/backingPath/readOnly。返回错误文案；合法或缺省返回 undefined */
@@ -903,6 +913,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   app.get("/api/sandbox/capabilities", async () => {
     const info = await core.ping().catch(() => undefined);
     const bindLinkAvailable = info?.features?.bindLink === true;
+    const bwrap = info?.features?.bwrap;
     return {
       platform: process.platform,
       appcontainer: true,
@@ -913,6 +924,10 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
         available: bindLinkAvailable,
         ...(bindLinkAvailable ? {} : { reason: "当前平台 core 未提供 Bind Link 能力（需要 Windows 11 24H2+ 的 bindflt；创建绑定还需以管理员权限运行）" }),
       },
+      // core 未上报 features.bwrap（旧二进制）视为不可用
+      bwrap: bwrap
+        ? { available: bwrap.available, ...(bwrap.reason !== undefined ? { reason: bwrap.reason } : {}) }
+        : { available: false },
     };
   });
   app.get("/api/managed-workspace/capability", async (_request, reply) => {
@@ -1374,6 +1389,12 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     const model = request.body.model ?? implicitSelection?.model ?? resolveDefaultModel(provider, dependencies.models);
     const sandboxModeError = validateSandboxMode(request.body.sandboxMode);
     if (sandboxModeError) return reply.code(400).send({ error: sandboxModeError });
+    const networkError = validateSandboxNetwork(request.body.network);
+    if (networkError) return reply.code(400).send({ error: networkError });
+    // filtered 依赖同 AppContainer 包内 sidecar 代理，wsb 模式下无此形态，组合拒绝
+    if (request.body.network === "filtered" && request.body.sandboxMode === "wsb") {
+      return reply.code(400).send({ error: "network filtered 不支持 wsb 沙盒模式" });
+    }
     const bindLinksError = validateBindLinks(request.body.bindLinks);
     if (bindLinksError) return reply.code(400).send({ error: bindLinksError });
     if (request.body.bindLinks?.length) {
@@ -1805,8 +1826,20 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
         return reply.code(400).send({ error: "setupScript must be a string" });
       }
     }
-    if (touchesSandbox && session.sandboxMode === "wsb") {
-      // WSB 的启动脚本和模式只在虚拟机启动时生效，切换前先释放旧实例。
+    // 网络策略补丁独立于 sandboxMode（network-only 更新不清除既有 sandboxMode）
+    const sandboxNetwork = request.body?.network;
+    if (sandboxNetwork !== undefined) {
+      const networkError = validateSandboxNetwork(sandboxNetwork);
+      if (networkError) return reply.code(400).send({ error: networkError });
+    }
+    // filtered 依赖同 AppContainer 包内 sidecar 代理，wsb 模式下无此形态，组合拒绝
+    const effectiveSandboxMode = request.body?.sandboxMode ?? session.sandboxMode;
+    const effectiveNetwork = sandboxNetwork ?? session.sandbox?.network;
+    if (effectiveNetwork === "filtered" && effectiveSandboxMode === "wsb") {
+      return reply.code(400).send({ error: "network filtered 不支持 wsb 沙盒模式" });
+    }
+    if ((touchesSandbox || sandboxNetwork !== undefined) && session.sandboxMode === "wsb") {
+      // WSB 的启动脚本/模式/网络只在虚拟机启动时生效，切换前先释放旧实例。
       await core.release?.(session.id);
     }
     await sessions.updateConfig(request.params.id, { provider, model, ...(thinking ? { thinking } : {}), ...(effort ? { effort } : {}), ...(agentMode ? { agentMode } : {}), ...(snapshotMode ? { snapshotMode } : {}), ...(shellBackend ? { shellBackend } : {}), ...(pythonEnv ? { pythonEnv } : {}), ...(persona !== undefined ? { persona: persona.trim() } : {}), ...(swarmEnabled === true ? { swarmEnabled: true } : {}), ...(reviewModel ? { reviewModel } : {}) });
@@ -1818,8 +1851,21 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       updated = await sessions.updateSandboxMode(request.params.id, request.body?.sandboxMode, request.body?.setupScript);
       configuredSessions.delete(session.id);
     }
+    if (sandboxNetwork !== undefined) {
+      updated = await sessions.updateSandboxNetwork(request.params.id, sandboxNetwork);
+      configuredSessions.delete(session.id);
+    }
     events.publish({ source: "session", type: "session.config_updated", sessionId: session.id, payload: updated });
     return updated;
+  });
+
+  /** 会话执行级别透出：最近一次 configureSession 时 core 上报的 sandboxCapability/sandboxReason；无记录返回空对象。 */
+  app.get<{ Params: { id: string } }>("/api/sessions/:id/sandbox-status", async (request, reply) => {
+    const session = await sessions.get(request.params.id);
+    if (!session) return reply.code(404).send({ error: "Session not found" });
+    const status = core.sandboxStatusFor?.(request.params.id);
+    if (!status) return {};
+    return { sandboxCapability: status.capability, ...(status.reason !== undefined ? { sandboxReason: status.reason } : {}) };
   });
 
   app.get<{ Params: { id: string } }>("/api/sessions/:id/context", async (request, reply) => {
@@ -2290,7 +2336,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     try {
       // 仅在 idle 且尚未配置时配置一次；运行中复用 agent 已配置的状态，避免竞态
       if (!agent.isRunning(session.id) && !configuredSessions.has(session.id)) {
-        await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? defaultSandbox(session.cwd) });
+        await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? defaultSandboxPolicy(session.cwd) });
         configuredSessions.add(session.id);
       }
       return await core.listFiles({ sessionId: request.params.id, path: request.query.path || "." });
@@ -2317,7 +2363,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
     try {
       if (!agent.isRunning(session.id) && !configuredSessions.has(session.id)) {
-        await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? defaultSandbox(session.cwd) });
+        await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? defaultSandboxPolicy(session.cwd) });
         configuredSessions.add(session.id);
       }
       const result = await core.readFile({ sessionId: request.params.id, path: request.query.path, ...(offset === undefined ? {} : { offset }), ...(limit === undefined ? {} : { limit }) });
@@ -2341,7 +2387,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
     try {
       if (!agent.isRunning(session.id) && !configuredSessions.has(session.id)) {
-        await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? defaultSandbox(session.cwd) });
+        await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? defaultSandboxPolicy(session.cwd) });
         configuredSessions.add(session.id);
       }
       const result = await core.readFileBase64({ sessionId: request.params.id, path: filePath });
@@ -2367,7 +2413,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
     try {
       if (!agent.isRunning(session.id) && !configuredSessions.has(session.id)) {
-        await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? defaultSandbox(session.cwd) });
+        await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? defaultSandboxPolicy(session.cwd) });
         configuredSessions.add(session.id);
       }
       const result = await core.globFiles({ sessionId: request.params.id, path: session.cwd, pattern: `*${q}*` });
@@ -2641,7 +2687,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
         // CoreRouter then maps the configured cwd for WSB and translates the
         // relative upload path to the session's sandbox filesystem.
         if (!configuredSessions.has(session.id)) {
-          await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? defaultSandbox(session.cwd) });
+          await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? defaultSandboxPolicy(session.cwd) });
           configuredSessions.add(session.id);
         }
         // An agent may have started while configuration awaited its core RPC.
@@ -2777,7 +2823,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
         const attachmentBlocks: Array<{ text: string }> = [];
         if (attachments && attachments.length > 0) {
           if (!agent.isRunning(session.id) && !configuredSessions.has(session.id)) {
-            await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? defaultSandbox(session.cwd) });
+            await core.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: session.sandbox ?? defaultSandboxPolicy(session.cwd) });
             configuredSessions.add(session.id);
           }
           const contextRoot = sessions.contextRoot(request.params.id);

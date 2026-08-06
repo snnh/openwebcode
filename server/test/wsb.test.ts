@@ -83,6 +83,14 @@ describe("buildWsbConfig", () => {
     expect(xml).toMatchSnapshot();
   });
 
+  it("network deny disables the virtual switch (default stays Enable)", () => {
+    const denied = buildWsbConfig({ workspace: "D:\\dev\\demo", distDir: "D:\\dev\\owc", hostIp: "192.168.1.10", port: 54321, network: "deny" });
+    expect(denied).toContain("<Networking>Disable</Networking>");
+    expect(denied).toMatchSnapshot();
+    const allowed = buildWsbConfig({ workspace: "D:\\dev\\demo", distDir: "D:\\dev\\owc", hostIp: "192.168.1.10", port: 54321, network: "allow" });
+    expect(allowed).toContain("<Networking>Enable</Networking>");
+  });
+
   it("inlines setupScript into the logon command and escapes XML", () => {
     const xml = buildWsbConfig({ workspace: "D:\\dev\\a&b<c>", distDir: "D:\\owc\\dist", hostIp: "10.0.0.2", port: 1, setupScript: "set A=1&& echo ready" });
     expect(xml).toContain('cmd /c "set A=1&amp;&amp; echo ready &amp;&amp; C:\\owc\\owc-exec.exe --connect 10.0.0.2:1"');
@@ -124,7 +132,7 @@ describe("CoreRouter", () => {
     const metas = new Map([["s1", makeMeta("s1", "wsb")]]);
     const { router, shared, wsbClient, wsb } = makeRouter(metas);
     await router.configureSession({ sessionId: "s1", cwd: "D:\\work", sandbox: policy });
-    expect(wsb.acquire).toHaveBeenCalledWith("s1", metas.get("s1"));
+    expect(wsb.acquire).toHaveBeenCalledWith("s1", metas.get("s1"), "allow");
     // 工作目录翻译为沙盒内挂载点，沙盒策略关闭（VM 即边界）
     expect(wsbClient.configureSession).toHaveBeenCalledWith({ sessionId: "s1", cwd: "C:\\owc-workspace", sandbox: { ...policy, enabled: false } });
     expect(shared.configureSession).not.toHaveBeenCalled();
@@ -278,5 +286,37 @@ describe("CoreRouter", () => {
     const { router, wsb } = makeRouter(new Map());
     await router.release("s1");
     expect(wsb.release).toHaveBeenCalledWith("s1");
+  });
+
+  it("passes the session network policy through to WsbManager.acquire (deny → VM networking off)", async () => {
+    const meta = makeMeta("s1", "wsb");
+    meta.sandbox = { ...policy, network: "deny" };
+    const { router, wsb } = makeRouter(new Map([["s1", meta]]));
+    await router.configureSession({ sessionId: "s1", cwd: "D:\\work", sandbox: meta.sandbox });
+    expect(wsb.acquire).toHaveBeenCalledWith("s1", meta, "deny");
+  });
+
+  it("records the configureSession sandbox capability and clears it on release", async () => {
+    const metas = new Map([["s1", makeMeta("s1")]]);
+    const { router, shared } = makeRouter(metas);
+    shared.configureSession = vi.fn(async () => ({ sandboxCapability: "enforced", sandboxReason: "job object limits applied" }));
+    expect(router.sandboxStatusFor("s1")).toBeUndefined();
+    await router.configureSession({ sessionId: "s1", cwd: "D:\\work", sandbox: policy });
+    const status = router.sandboxStatusFor("s1");
+    expect(status).toMatchObject({ capability: "enforced", reason: "job object limits applied" });
+    expect(status?.at).toBeTypeOf("number");
+    await router.release("s1");
+    expect(router.sandboxStatusFor("s1")).toBeUndefined();
+  });
+
+  it("omits the reason when the core does not report one and clears the record on cleanupSession", async () => {
+    const metas = new Map([["s1", makeMeta("s1")]]);
+    const { router } = makeRouter(metas);
+    await router.configureSession({ sessionId: "s1", cwd: "D:\\work", sandbox: policy });
+    const status = router.sandboxStatusFor("s1");
+    expect(status?.capability).toBe("advisory");
+    expect(status && "reason" in status).toBe(false);
+    await router.cleanupSession("s1");
+    expect(router.sandboxStatusFor("s1")).toBeUndefined();
   });
 });

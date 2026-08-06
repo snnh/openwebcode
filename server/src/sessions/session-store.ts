@@ -7,7 +7,7 @@ import { parseSessionImport, serializeSession } from "./session-transfer.js";
 import { activePathMessages } from "./session-tree.js";
 import { defaultSandboxPolicy } from "./default-sandbox.js";
 import { readMessagesTail, readMessagesBefore, checkRecovery, DEFAULT_PAGE_SIZE } from "./message-reader.js";
-import type { BindLinkSpec, ChatMessage, ManagedWorkspaceMeta, MessageContent, MessageRole, MessagesPage, SandboxMode, SessionDetail, SessionMeta } from "./types.js";
+import type { BindLinkSpec, ChatMessage, ManagedWorkspaceMeta, MessageContent, MessageRole, MessagesPage, SandboxMode, SandboxNetwork, SessionDetail, SessionMeta } from "./types.js";
 
 /** readMessages 整表缓存条数上限（与 message-reader 的索引缓存同一 LRU 纪律）。 */
 const MAX_CACHED_MESSAGE_LISTS = 32;
@@ -32,6 +32,8 @@ export interface CreateSessionInput {
   title?: string;
   agentMode?: "plan" | "code" | "goal";
   sandboxMode?: SandboxMode;
+  /** 会话网络策略（缺省 allow；并入默认沙盒策略持久化）。 */
+  network?: SandboxNetwork;
   setupScript?: string;
   /** 可选 Bind Link 目录绑定（Windows 11 24H2+；非空时并入默认沙盒策略持久化）。 */
   bindLinks?: BindLinkSpec[];
@@ -66,7 +68,11 @@ export class SessionStore {
       // Keep direct store use neutral rather than choosing an implicit provider.
       provider: input.provider ?? "",
       model: input.model ?? "",
-      sandbox: input.bindLinks?.length ? { ...defaultSandboxPolicy(resolvedCwd), bindLinks: input.bindLinks } : defaultSandboxPolicy(resolvedCwd),
+      sandbox: {
+        ...defaultSandboxPolicy(resolvedCwd),
+        ...(input.network ? { network: input.network } : {}),
+        ...(input.bindLinks?.length ? { bindLinks: input.bindLinks } : {}),
+      },
       title: input.title ?? "New session",
       createdAt: now,
       updatedAt: now,
@@ -298,6 +304,15 @@ export class SessionStore {
     else meta.sandboxMode = sandboxMode;
     if (!setupScript?.trim()) delete meta.setupScript;
     else meta.setupScript = setupScript;
+    meta.updatedAt = new Date().toISOString();
+    await this.writeMeta(meta);
+    return meta;
+  }
+
+  /** 更新沙盒网络策略（meta.sandbox 缺失时先补默认策略） */
+  async updateSandboxNetwork(id: string, network: SandboxNetwork): Promise<SessionMeta> {
+    const meta = await this.readMeta(id);
+    meta.sandbox = { ...(meta.sandbox ?? defaultSandboxPolicy(meta.cwd)), network };
     meta.updatedAt = new Date().toISOString();
     await this.writeMeta(meta);
     return meta;

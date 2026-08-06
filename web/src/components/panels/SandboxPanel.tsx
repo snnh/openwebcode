@@ -1,19 +1,28 @@
 import type { ReactElement } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
-import type { SandboxMode, SessionDetail } from "../../lib/contracts";
+import type { SandboxCapability, SandboxMode, SessionDetail } from "../../lib/contracts";
 import { useI18n } from "../../i18n";
 
 const SANDBOX_MODE_LABELS: Record<SandboxMode, [string, string]> = {
   appcontainer: ["应用容器（AppContainer）", "AppContainer"],
   wsb: ["Windows Sandbox", "Windows Sandbox"],
   jobobject: ["兼容模式（Job Object）", "Compatibility (Job Object)"],
+  landlock: ["强制模式（Landlock）", "Enforced (Landlock)"],
+  bubblewrap: ["隔离模式（bubblewrap）", "Isolated (bubblewrap)"],
   off: ["关闭", "Off"],
 };
 
-/** 非 Windows 平台默认档由 Landlock 强制，jobobject 枚举值不变、仅换文案。 */
-const SANDBOX_MODE_LABELS_LINUX: Partial<Record<SandboxMode, [string, string]>> = {
-  jobobject: ["强制模式（Landlock）", "Enforced (Landlock)"],
+const CAPABILITY_LABELS: Record<SandboxCapability, [string, string]> = {
+  enforced: ["已强制", "Enforced"],
+  partial: ["部分生效", "Partial"],
+  advisory: ["仅提示", "Advisory"],
+};
+
+const CAPABILITY_PILL_CLASS: Record<SandboxCapability, string> = {
+  enforced: "ok",
+  partial: "amber",
+  advisory: "danger",
 };
 
 export function SandboxPanel({ session }: { session?: SessionDetail }): ReactElement {
@@ -23,23 +32,41 @@ export function SandboxPanel({ session }: { session?: SessionDetail }): ReactEle
     queryFn: api.sandboxCapabilities,
     staleTime: 60_000,
   });
+  // 执行级别：最近一次 configureSession 时 core 上报的 capability/reason；无记录显示 —
+  const sandboxStatus = useQuery({
+    queryKey: ["sandbox-status", session?.id],
+    queryFn: () => api.sessionSandboxStatus(session!.id),
+    staleTime: 30_000,
+    enabled: Boolean(session?.sandbox),
+  });
   if (!session) return <div className="inspector-body"><p className="muted-empty panel-empty">{t("选择会话以查看沙盒策略。", "Select a session to view its sandbox policy.")}</p></div>;
   if (!session.sandbox) return <div className="inspector-body"><p className="muted-empty panel-empty">{t("未配置沙盒策略。", "No sandbox policy is configured.")}</p></div>;
   const { sandbox } = session;
   const enabled = (session.sandboxMode ?? "jobobject") !== "off" && sandbox.enabled;
   const isWindows = sandboxCaps.data?.platform === undefined || sandboxCaps.data.platform === "win32";
   const mode = session.sandboxMode ?? "jobobject";
-  const modeLabel = (!isWindows && SANDBOX_MODE_LABELS_LINUX[mode]) || SANDBOX_MODE_LABELS[mode];
+  // 存量 Linux 会话 meta.sandboxMode 可能是 jobobject，显示时按 landlock 处理（兼容映射）
+  const displayMode: SandboxMode = !isWindows && mode === "jobobject" ? "landlock" : mode;
+  const capability = sandboxStatus.data?.sandboxCapability;
   return (
     <div className="inspector-body">
       <h2>{t("沙盒策略", "Sandbox policy")}</h2>
       <dl>
         <dt>{t("模式", "Mode")}</dt>
-        <dd>{t(...modeLabel)}</dd>
+        <dd>{t(...SANDBOX_MODE_LABELS[displayMode])}</dd>
         <dt>{t("状态", "Status")}</dt>
         <dd>{enabled ? t("已启用", "Enabled") : t("已关闭", "Off")}</dd>
+        <dt>{t("执行级别", "Enforcement")}</dt>
+        <dd>
+          {capability ? (
+            <>
+              <span className={`pill ${CAPABILITY_PILL_CLASS[capability]}`}>{t(...CAPABILITY_LABELS[capability])}</span>
+              {sandboxStatus.data?.sandboxReason && <> <span className="muted-empty">{sandboxStatus.data.sandboxReason}</span></>}
+            </>
+          ) : "—"}
+        </dd>
         <dt>{t("网络", "Network")}</dt>
-        <dd>{sandbox.network === "allow" ? t("允许", "Allowed") : t("拒绝", "Denied")}</dd>
+        <dd>{sandbox.network === "allow" ? t("允许", "Allowed") : sandbox.network === "filtered" ? t("代理过滤（仅 Windows）", "Filtered via proxy (Windows only)") : t("拒绝", "Denied")}</dd>
         <dt>{t("读取根", "Read roots")}</dt>
         <dd>{sandbox.readRoots.join("\n") || "—"}</dd>
         <dt>{t("写入根", "Write roots")}</dt>

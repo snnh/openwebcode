@@ -80,7 +80,7 @@ describe("server settings API", () => {
     const view = response.json<SettingsView>();
     expect(view.groups.map((group) => group.id)).toEqual(["models", "modelSelection", "general", "executor", "service", "network", "proxy", "webSearch", "exchangeRate", "updateCheck"]);
     const fields = view.groups.flatMap((group) => group.fields);
-    expect(fields).toHaveLength(37);
+    expect(fields).toHaveLength(38);
     for (const item of fields) {
       expect(item.source).toBe("default");
       expect(item.editable).toBe(true);
@@ -96,6 +96,7 @@ describe("server settings API", () => {
     expect(field(view, "host").restartRequired).toBe(true);
     expect(field(view, "defaultLanguage").restartRequired).toBe(false);
     expect(field(view, "sandboxAllowPaths")).toMatchObject({ type: "pathList", value: [], restartRequired: true });
+    expect(field(view, "sandboxProxyDenyList")).toMatchObject({ type: "pathList", value: [], restartRequired: false });
     expect(field(view, "catalogSyncUrl")).toMatchObject({ value: null, nullable: true, restartRequired: false });
     expect(field(view, "pricingSyncUrl")).toMatchObject({ value: null, nullable: true, restartRequired: false });
     expect(field(view, "syncIntervalMinutes")).toMatchObject({ type: "number", value: 0, restartRequired: false });

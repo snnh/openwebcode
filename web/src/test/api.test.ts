@@ -23,3 +23,19 @@ describe("api.uploadPdf", () => {
     expect(JSON.parse(String(init?.body))).toEqual({ name: "report.pdf", data: "JVBERg==" });
   });
 });
+
+describe("api.sessionSandboxStatus", () => {
+  it("GETs the session sandbox-status endpoint", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ sandboxCapability: "enforced", sandboxReason: "ok" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.sessionSandboxStatus("session id")).resolves.toEqual({ sandboxCapability: "enforced", sandboxReason: "ok" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [path] = (fetchMock.mock.calls as unknown as Array<[string, RequestInit | undefined]>)[0]!;
+    expect(path).toBe("/api/sessions/session%20id/sandbox-status");
+  });
+});
