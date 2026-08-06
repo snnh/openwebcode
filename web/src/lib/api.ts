@@ -1,4 +1,4 @@
-import type { AgentListResponse, AgentRun, BackgroundTaskInfo, CatalogSyncStatus, Checkpoint, CompletePathResponse, ContextView, CostReport, CronJobInfo, ExtensionInfo, FileEntry, ManagedWorkspaceCapability, ManagedWorkspaceSyncPreview, ManagedWorkspaceSyncResult, MessageAttachment, MessagesPage, ModelProfile, PendingPermission, PersonaDetail, PricingDocument, ProviderConcurrencyStats, ProviderConnectionTestResult, ProviderProfilesView, SandboxCapabilities, SandboxMode, Session, SessionDetail, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo, StartSubagentResponse, SubagentTranscript, SyncResult, TodoItem, WebCapability } from "./contracts";
+import type { AgentListResponse, AgentRun, BackgroundTaskInfo, CatalogSyncStatus, Checkpoint, CompletePathResponse, ContextView, CostReport, CronJobInfo, ExtensionInfo, FileEntry, ManagedWorkspaceCapability, ManagedWorkspaceSyncPreview, ManagedWorkspaceSyncResult, MessageAttachment, MessagesPage, ModelProfile, PendingPermission, PersonaDetail, PricingDocument, ProviderConcurrencyStats, ProviderConnectionTestResult, ProviderProfilesView, SandboxCapabilities, SandboxMode, SandboxNetwork, Session, SessionDetail, SessionSandboxStatus, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo, StartSubagentResponse, SubagentTranscript, SyncResult, TodoItem, WebCapability } from "./contracts";
 
 export class ApiError extends Error {
   constructor(readonly status: number, message: string) {
@@ -89,9 +89,10 @@ export const api = {
   session: (id: string, limit?: number) => request<SessionDetail>(`/api/sessions/${id}${limit ? `?limit=${limit}` : ""}`),
   messagesPage: (id: string, before: string, limit?: number) => request<MessagesPage>(`/api/sessions/${id}/messages?before=${encodeURIComponent(before)}${limit ? `&limit=${limit}` : ""}`),
   run: (id: string) => request<AgentRun>(`/api/sessions/${id}/run`),
-  createSession: (body: { cwd: string; provider: string; model: string; title?: string; agentMode?: "plan" | "code" | "goal"; sandboxMode?: SandboxMode; setupScript?: string; workspaceMode?: "managed"; bindLinks?: { virtPath: string; backingPath: string; readOnly?: boolean }[] }) =>
+  createSession: (body: { cwd: string; provider: string; model: string; title?: string; agentMode?: "plan" | "code" | "goal"; sandboxMode?: SandboxMode; network?: SandboxNetwork; setupScript?: string; workspaceMode?: "managed"; bindLinks?: { virtPath: string; backingPath: string; readOnly?: boolean }[] }) =>
     request<Session>("/api/sessions", { method: "POST", body: JSON.stringify(body) }),
   sandboxCapabilities: () => request<SandboxCapabilities>("/api/sandbox/capabilities"),
+  sessionSandboxStatus: (sessionId: string) => request<SessionSandboxStatus>(`/api/sessions/${encodeURIComponent(sessionId)}/sandbox-status`),
   managedWorkspaceCapability: () => request<ManagedWorkspaceCapability>("/api/managed-workspace/capability"),
   workspaceSyncPreview: (id: string) => request<ManagedWorkspaceSyncPreview>(`/api/sessions/${encodeURIComponent(id)}/workspace/sync-preview`),
   syncWorkspace: (id: string, body: { confirm: true; previewFingerprint: string; overwriteConflicts?: boolean }) =>

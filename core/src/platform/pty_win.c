@@ -102,6 +102,54 @@ static int add_write_root(char **roots, size_t *count, size_t capacity, const ch
     return 1;
 }
 
+/* Filtered-network sessions route child traffic through the in-sandbox proxy
+ * sidecar: inherited proxy variables are stripped and HTTP_PROXY/HTTPS_PROXY
+ * (both casings) point at the sidecar with NO_PROXY emptied.  Same
+ * environment-block construction as exec_win.c build_child_environment,
+ * without the pwsh profile redirection a PTY does not need.  Returns NULL to
+ * fall back to inheriting the parent environment. */
+static wchar_t *build_proxy_environment(const wchar_t *proxy_addr) {
+    static const wchar_t *const proxy_names[6] = {
+        L"HTTP_PROXY=http://", L"HTTPS_PROXY=http://", L"NO_PROXY=",
+        L"http_proxy=http://", L"https_proxy=http://", L"no_proxy="
+    };
+    LPWCH parent, entry;
+    wchar_t *block, *dst;
+    size_t total = 1, length, proxy_length = wcslen(proxy_addr), name_index;
+    parent = GetEnvironmentStringsW();
+    if (!parent) return NULL;
+    for (entry = parent; *entry; entry += wcslen(entry) + 1) {
+        if (_wcsnicmp(entry, L"HTTP_PROXY=", 11) == 0) continue;
+        if (_wcsnicmp(entry, L"HTTPS_PROXY=", 12) == 0) continue;
+        if (_wcsnicmp(entry, L"NO_PROXY=", 9) == 0) continue;
+        total += wcslen(entry) + 1;
+    }
+    total += 2 * (18 + proxy_length + 1 + 19 + proxy_length + 1 + 9 + 1);
+    block = (wchar_t *)malloc(total * sizeof(*block));
+    if (!block) { FreeEnvironmentStringsW(parent); return NULL; }
+    dst = block;
+    for (entry = parent; *entry; entry += length + 1) {
+        length = wcslen(entry);
+        if (_wcsnicmp(entry, L"HTTP_PROXY=", 11) == 0) continue;
+        if (_wcsnicmp(entry, L"HTTPS_PROXY=", 12) == 0) continue;
+        if (_wcsnicmp(entry, L"NO_PROXY=", 9) == 0) continue;
+        (void)memcpy(dst, entry, (length + 1) * sizeof(*dst));
+        dst += length + 1;
+    }
+    for (name_index = 0; name_index < 6; ++name_index) {
+        length = wcslen(proxy_names[name_index]);
+        (void)memcpy(dst, proxy_names[name_index], length * sizeof(*dst)); dst += length;
+        if (name_index != 2 && name_index != 5) {
+            (void)memcpy(dst, proxy_addr, proxy_length * sizeof(*dst));
+            dst += proxy_length;
+        }
+        *dst++ = L'\0';
+    }
+    *dst = L'\0';
+    FreeEnvironmentStringsW(parent);
+    return block;
+}
+
 /* Poll model mirrors exec_win.c drain_pipe: PeekNamedPipe for available
  * console output, WaitForSingleObject on the child for exit.  After the
  * child exits, trailing console output is drained briefly before the exit
@@ -163,7 +211,7 @@ int owc_pty_open(const owc_pty_options *options,
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits;
     LPPROC_THREAD_ATTRIBUTE_LIST attributes = NULL;
     SIZE_T attribute_size = 0;
-    wchar_t *cwd = NULL, *command = NULL, *shell = NULL;
+    wchar_t *cwd = NULL, *command = NULL, *shell = NULL, *env_block = NULL;
     wchar_t default_shell[MAX_PATH];
     owc_sandbox_options sandbox_options;
     char sandbox_identity[96];
@@ -231,21 +279,51 @@ int owc_pty_open(const owc_pty_options *options,
         (void)snprintf(open_result->sandbox_reason, sizeof(open_result->sandbox_reason),
                        "Job Object compatibility mode requested by session policy");
     } else if (options->sandbox) {
-        (void)snprintf(sandbox_identity, sizeof(sandbox_identity), "Pty.%lu.%llu.%ld",
-                       (unsigned long)GetCurrentProcessId(),
-                       (unsigned long long)GetTickCount64(),
-                       (long)InterlockedIncrement(&pty_run_counter));
-        sandbox_options.session_id = sandbox_identity;
+        wchar_t *proxy_wide = NULL;
+        if (options->network_filtered) {
+            /* Filtered-network session: share the fixed session profile with
+               the in-sandbox proxy sidecar; the session grant owns the
+               profile and ACLs. */
+            sandbox_options.session_id = options->session_id;
+            sandbox_options.shared_profile = 1;
+        } else {
+            (void)snprintf(sandbox_identity, sizeof(sandbox_identity), "Pty.%lu.%llu.%ld",
+                           (unsigned long)GetCurrentProcessId(),
+                           (unsigned long long)GetTickCount64(),
+                           (long)InterlockedIncrement(&pty_run_counter));
+            sandbox_options.session_id = sandbox_identity;
+        }
         sandbox_options.allow_network = options->allow_network;
+        sandbox_options.private_network = options->allow_network && options->network_filtered;
+        sandbox_options.read_only_paths = options->read_only_paths;
+        sandbox_options.read_only_count = options->read_only_count;
         if (options->allow_path_count > 16
             || !add_write_root(write_roots, &write_root_count, ARRAYSIZE(write_roots), options->cwd)) goto cleanup;
         for (write_root_index = 0; write_root_index < options->allow_path_count; write_root_index++)
             if (!add_write_root(write_roots, &write_root_count, ARRAYSIZE(write_roots), options->allow_paths[write_root_index])) goto cleanup;
         sandbox_options.write_roots = (const char *const *)write_roots;
         sandbox_options.write_root_count = write_root_count;
+        sandbox_options.bind_backing = options->bind_backing;
+        sandbox_options.bind_read_only = options->bind_read_only;
+        sandbox_options.bind_count = options->bind_count;
         pty->sandbox = owc_sandbox_create(&sandbox_options, open_result->sandbox_reason, sizeof(open_result->sandbox_reason));
         open_result->sandbox_status = pty->sandbox
             ? (int)owc_sandbox_get_status(pty->sandbox) : (int)OWC_SANDBOX_ADVISORY;
+        if (pty->sandbox && options->network_filtered)
+            (void)snprintf(open_result->sandbox_reason, sizeof(open_result->sandbox_reason),
+                           options->allow_network
+                               ? "AppContainer enforced; network allowed by per-exec override (filtered session sidecar)"
+                               : "AppContainer enforced; network filtered via in-sandbox proxy");
+        /* Same rule as exec: only the capability-less business execution of
+           a filtered session gets the proxy environment. */
+        if (pty->sandbox && options->network_filtered && options->proxy_addr
+            && options->proxy_addr[0] && !options->allow_network) {
+            proxy_wide = utf8_to_wide(options->proxy_addr);
+            if (proxy_wide) {
+                env_block = build_proxy_environment(proxy_wide);
+                free(proxy_wide);
+            }
+        }
     } else {
         open_result->sandbox_status = (int)OWC_SANDBOX_ADVISORY;
         (void)snprintf(open_result->sandbox_reason, sizeof(open_result->sandbox_reason),
@@ -280,8 +358,8 @@ int owc_pty_open(const owc_pty_options *options,
     startup.StartupInfo.hStdOutput = nul;
     startup.StartupInfo.hStdError = nul;
     if (!CreateProcessW(NULL, command, NULL, NULL, FALSE,
-                        CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT,
-                        NULL, cwd, &startup.StartupInfo, &process)) {
+                        CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT | (env_block ? CREATE_UNICODE_ENVIRONMENT : 0),
+                        env_block, cwd, &startup.StartupInfo, &process)) {
         DWORD creation_error = GetLastError();
         if (!pty->sandbox) goto cleanup;
         /* AppContainer x ConPTY has known compatibility failures on some
@@ -369,6 +447,7 @@ cleanup:
     for (write_root_index = 0; write_root_index < write_root_count; write_root_index++) free(write_roots[write_root_index]);
     free(cwd);
     free(command);
+    free(env_block);
     if (shell && shell != default_shell) free(shell);
     return ok;
 }

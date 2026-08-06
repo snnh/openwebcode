@@ -131,10 +131,10 @@ def main():
         response = configure(proc, 10, workspace, sandbox)
         assert "result" in response, response
 
-        # AppContainer 下绑定目录的 ACL 授予尚未实现（沙盒进程读 backing 会被拒），
-        # e2e 使用与服务端默认一致的 jobobject 模式；AppContainer + bind link 的
-        # ACL 整合是已知遗留项。
-        valid = {**sandbox, "mode": "jobobject", "bindLinks": [{"virtPath": virt, "backingPath": backing, "readOnly": True}]}
+        # The backing ACL grant makes the bound tree reachable for
+        # AppContainer-sandboxed processes too; the e2e covers both
+        # enforcement modes.
+        valid = {**sandbox, "bindLinks": [{"virtPath": virt, "backingPath": backing, "readOnly": True}]}
         if not bind_feature:
             response = configure(proc, 11, workspace, valid)
             assert_error(response, -32000, "bind_link_unavailable")
@@ -144,7 +144,7 @@ def main():
             assert_error(response, -32000, "bind_link_unavailable")
             print("SKIP: not elevated; CreateBindLink requires Administrator, e2e not run", file=sys.stderr)
         else:
-            run_bind_link_e2e(proc, workspace, backing, virt, valid)
+            run_bind_link_e2e(proc, workspace, backing, virt, sandbox)
             link_created = False  # e2e cleans up its own link
         print("test_bindlink.py: ok")
     finally:
@@ -163,48 +163,73 @@ def main():
         shutil.rmtree(backing, ignore_errors=True)
 
 
-def run_bind_link_e2e(proc, workspace, backing, virt, sandbox):
+def run_bind_link_e2e(proc, workspace, backing, virt, base_sandbox):
     marker = os.path.join(backing, "hello.txt")
     with open(marker, "w", encoding="utf-8") as stored:
         stored.write("bind-link-ok")
 
-    response = configure(proc, 20, workspace, sandbox)
-    assert "result" in response, response
+    # Both enforcement modes must expose the bound tree to a sandboxed child;
+    # the appcontainer mode relies on the backing-path ACL grant.
+    request_id = 20
+    for mode in ("appcontainer", "jobobject"):
+        sandbox = {**base_sandbox, "mode": mode,
+                   "bindLinks": [{"virtPath": virt, "backingPath": backing, "readOnly": True}]}
+        response = configure(proc, request_id, workspace, sandbox)
+        request_id += 1
+        assert "result" in response, response
 
-    # The backing tree is visible through the virt path for plain processes.
-    assert os.path.exists(os.path.join(virt, "hello.txt")), virt
+        # The backing tree is visible through the virt path for plain processes.
+        via_virt = os.path.join(virt, "hello.txt")
+        assert os.path.exists(via_virt), virt
 
-    # Core fs primitives follow the controlled bind point as well (this is the
-    # fs_win reparse/canonical-path interaction the exemption list covers).
-    via_virt = os.path.join(virt, "hello.txt")
-    request(proc, 21, "fs.read", {"sessionId": "bind", "path": via_virt})
-    response, _ = collect_until_response(proc, 21)
-    assert "result" in response, response
-    assert "bind-link-ok" in response["result"]["content"], response
+        # Core fs primitives follow the controlled bind point as well (this is
+        # the fs_win reparse/canonical-path interaction the exemption list covers).
+        request(proc, request_id, "fs.read", {"sessionId": "bind", "path": via_virt})
+        response, _ = collect_until_response(proc, request_id)
+        request_id += 1
+        assert "result" in response, response
+        assert "bind-link-ok" in response["result"]["content"], response
 
-    # A sandboxed child process reads through the virt path transparently.
-    request(proc, 22, "exec.run", {
-        "sessionId": "bind",
-        "execId": "bind-read",
-        "cmd": f'type "{via_virt}"',
-        "cwd": workspace,
-        "timeoutMs": 10000,
-    })
-    response, notifications = collect_until_response(proc, 22)
-    assert "result" in response, response
-    assert response["result"]["exitCode"] == 0, response
-    output = "".join(
-        __import__("base64").b64decode(note["params"]["data"]).decode("utf-8", "replace")
-        for note in notifications
-        if note.get("method") == "exec.output"
-    )
-    assert "bind-link-ok" in output, output
+        # A sandboxed child process reads through the virt path transparently.
+        request(proc, request_id, "exec.run", {
+            "sessionId": "bind",
+            "execId": f"bind-read-{mode}",
+            "cmd": f'type "{via_virt}"',
+            "cwd": workspace,
+            "timeoutMs": 10000,
+        })
+        response, notifications = collect_until_response(proc, request_id)
+        request_id += 1
+        assert "result" in response, response
+        assert response["result"]["exitCode"] == 0, response
+        output = "".join(
+            __import__("base64").b64decode(note["params"]["data"]).decode("utf-8", "replace")
+            for note in notifications
+            if note.get("method") == "exec.output"
+        )
+        assert "bind-link-ok" in output, output
 
-    # session.cleanup removes the link; the virt path stops resolving.
-    request(proc, 23, "session.cleanup", {"sessionId": "bind"})
-    response, _ = collect_until_response(proc, 23)
-    assert "result" in response, response
-    assert not os.path.exists(via_virt), via_virt
+        # A read-only link refuses sandboxed writes through the virt path.
+        blocked = os.path.join(virt, "blocked.txt")
+        request(proc, request_id, "exec.run", {
+            "sessionId": "bind",
+            "execId": f"bind-write-{mode}",
+            "cmd": f'echo nope>"{blocked}"',
+            "cwd": workspace,
+            "timeoutMs": 10000,
+        })
+        response, _ = collect_until_response(proc, request_id)
+        request_id += 1
+        assert "result" in response, response
+        assert response["result"]["exitCode"] != 0, response
+        assert not os.path.exists(os.path.join(backing, "blocked.txt"))
+
+        # session.cleanup removes the link; the virt path stops resolving.
+        request(proc, request_id, "session.cleanup", {"sessionId": "bind"})
+        response, _ = collect_until_response(proc, request_id)
+        request_id += 1
+        assert "result" in response, response
+        assert not os.path.exists(via_virt), via_virt
 
 
 if __name__ == "__main__":

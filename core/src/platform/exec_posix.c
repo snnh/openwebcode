@@ -1,4 +1,5 @@
 #include "exec_platform.h"
+#include "bwrap.h"
 #include "sandbox.h"
 
 #include <errno.h>
@@ -146,8 +147,80 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
                 (void)setrlimit(RLIMIT_NPROC, &limit);
             }
         }
-        if(request->sandbox_enabled)(void)owc_landlock_apply(request->cwd,request->allow_paths,request->allow_path_count,request->allow_network,&sandbox);
-        else{sandbox.status=OWC_SANDBOX_ADVISORY;(void)snprintf(sandbox.reason,sizeof(sandbox.reason),"sandbox disabled by session policy");}
+        if (request->sandbox_enabled) {
+            /* Backend selection: an explicit landlock mode forces Landlock;
+             * every other mode (including the Windows appcontainer/jobobject
+             * values, which POSIX accepts but ignores) prefers bubblewrap
+             * and falls back to Landlock when bwrap is unusable. */
+            if (request->sandbox_mode != (int)OWC_SANDBOX_MODE_LANDLOCK) {
+                owc_sandbox_result bwrap;
+                owc_bwrap_probe(&bwrap);
+                if (bwrap.status == OWC_SANDBOX_ENFORCED) {
+                    /* bwrap keeps the child's process group (it does not
+                     * setpgid), so the whole tree stays reachable by the
+                     * kill(-pgid) process-tree termination above. */
+                    char *shell_argv[8];
+                    sandbox.status = OWC_SANDBOX_ENFORCED;
+                    (void)snprintf(sandbox.reason, sizeof(sandbox.reason),
+                                   "bubblewrap namespace isolation");
+                    if (!write_all(sandbox_pipe[1], &sandbox, sizeof(sandbox))) _exit(126);
+                    if (request->shell_backend == (int)OWC_SHELL_PWSH) {
+                        shell_argv[0] = (char *)"pwsh";
+                        shell_argv[1] = (char *)"-NoLogo";
+                        shell_argv[2] = (char *)"-NoProfile";
+                        shell_argv[3] = (char *)"-NonInteractive";
+                        shell_argv[4] = (char *)"-Command";
+                        shell_argv[5] = (char *)request->command;
+                        shell_argv[6] = NULL;
+                    } else if (request->shell_backend == (int)OWC_SHELL_BASH) {
+                        shell_argv[0] = (char *)((request->shell_path && request->shell_path[0]) ? request->shell_path : "bash");
+                        shell_argv[1] = (char *)"-c";
+                        shell_argv[2] = (char *)request->command;
+                        shell_argv[3] = NULL;
+                    } else {
+                        shell_argv[0] = (char *)"/bin/sh";
+                        shell_argv[1] = (char *)"-c";
+                        shell_argv[2] = (char *)request->command;
+                        shell_argv[3] = NULL;
+                    }
+                    {
+                        /* Only returns when the bwrap exec itself failed
+                         * (e.g. the binary raced away after the probe). */
+                        int bwrap_error = owc_bwrap_exec(request->cwd,
+                            request->read_roots, request->read_root_count,
+                            request->read_only_paths, request->read_only_count,
+                            request->write_roots, request->write_root_count,
+                            request->deny_paths, request->deny_path_count,
+                            request->allow_paths, request->allow_path_count,
+                            request->allow_network, shell_argv);
+                        report_exec_failure(exec_pipe[1], bwrap_error);
+                        (void)dprintf(STDERR_FILENO, "failed to exec bwrap: %s\n", strerror(bwrap_error));
+                    }
+                    _exit(127);
+                }
+                /* Honest fallback: bwrap was preferred but unusable, so a
+                 * working Landlock still reports partial with both reasons. */
+                (void)owc_landlock_apply(request->cwd, request->allow_paths, request->allow_path_count,
+                                         request->read_roots, request->read_root_count,
+                                         request->read_only_paths, request->read_only_count,
+                                         request->write_roots, request->write_root_count,
+                                         request->allow_network, &sandbox);
+                if (sandbox.status != OWC_SANDBOX_ADVISORY) {
+                    sandbox.status = OWC_SANDBOX_PARTIAL;
+                    (void)snprintf(sandbox.reason, sizeof(sandbox.reason),
+                                   "bubblewrap unavailable: %.150s; using Landlock", bwrap.reason);
+                }
+            } else {
+                (void)owc_landlock_apply(request->cwd, request->allow_paths, request->allow_path_count,
+                                         request->read_roots, request->read_root_count,
+                                         request->read_only_paths, request->read_only_count,
+                                         request->write_roots, request->write_root_count,
+                                         request->allow_network, &sandbox);
+            }
+        } else {
+            sandbox.status = OWC_SANDBOX_ADVISORY;
+            (void)snprintf(sandbox.reason, sizeof(sandbox.reason), "sandbox disabled by session policy");
+        }
         if(!write_all(sandbox_pipe[1],&sandbox,sizeof(sandbox)))_exit(126);
         if(request->shell_backend==(int)OWC_SHELL_PWSH) {
             execlp("pwsh", "pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", request->command, (char *)NULL);

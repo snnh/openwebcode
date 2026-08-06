@@ -17,7 +17,7 @@ function stubFetch(
   const handler = vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
     const url = typeof input === "string" ? input : input.toString();
     const json = (body: unknown, status = 200): Response => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-    if (url.endsWith("/api/sandbox/capabilities")) return json({ platform, appcontainer: true, jobobject: true, off: true, wsb: { available: false, reason: "未启用" }, bindLink });
+    if (url.endsWith("/api/sandbox/capabilities")) return json({ platform, appcontainer: true, jobobject: true, off: true, wsb: { available: false, reason: "未启用" }, bindLink, bwrap: { available: true } });
     if (url.endsWith("/api/managed-workspace/capability")) {
       return json({ platform: "linux", backends: [{ backend: "qcow2", available: managed.available, requiresAdmin: true, ...(managed.detail ? { detail: managed.detail } : {}) }] });
     }
@@ -214,16 +214,77 @@ describe("NewSessionDialog 平台适配", () => {
     expect(await screen.findByRole("button", { name: "添加绑定" })).toBeInTheDocument();
   });
 
-  it("linux：默认档显示 Landlock 文案，隐藏 AppContainer/WSB 选项、WSB 提示与整个 Bind Link 区块", async () => {
+  it("linux：沙盒选项为 landlock/bubblewrap/off 真值，默认选中 landlock；隐藏 AppContainer/WSB 选项、WSB 提示与整个 Bind Link 区块", async () => {
     stubFetch({ available: true }, { available: true }, "linux");
     renderWithClient(<NewSessionDialog open providers={["test-stub"]} models={[model]} onClose={() => undefined} onCreate={() => undefined} />);
 
     const select = await screen.findByText("沙盒模式").then(sandboxSelect);
     await waitFor(() => expect(within(select).getByRole("option", { name: /Landlock/ })).toBeInTheDocument());
+    expect(within(select).getByRole("option", { name: /bubblewrap/ })).toBeInTheDocument();
+    expect(select).toHaveValue("landlock");
     expect(within(select).queryByRole("option", { name: /AppContainer/ })).not.toBeInTheDocument();
     expect(within(select).queryByRole("option", { name: /Windows Sandbox/ })).not.toBeInTheDocument();
     expect(screen.queryByText(/Windows Sandbox 不可用/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "添加绑定" })).not.toBeInTheDocument();
     expect(screen.queryByText(/Bind Link/)).not.toBeInTheDocument();
+  });
+});
+
+describe("NewSessionDialog 网络策略", () => {
+  const model = { id: "m", provider: "test-stub", contextWindow: 1000, maxOutput: 100, capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true } } as ModelProfile;
+
+  function networkSelect(): HTMLElement {
+    const label = screen.getByText("网络");
+    return within(label.closest("label")!).getByRole("combobox");
+  }
+
+  it("win32：提供允许/拒绝/代理过滤选项；默认 allow 不提交 network", async () => {
+    stubFetch({ available: true }, { available: true }, "win32");
+    const onCreate = vi.fn();
+    renderWithClient(<NewSessionDialog open providers={["test-stub"]} models={[model]} onClose={() => undefined} onCreate={onCreate} />);
+    fireEvent.change(await screen.findByLabelText("工作目录"), { target: { value: "D:\\work" } });
+
+    const select = await screen.findByText("网络").then(networkSelect);
+    expect(within(select).getByRole("option", { name: /允许/ })).toBeInTheDocument();
+    expect(within(select).getByRole("option", { name: "拒绝" })).toBeInTheDocument();
+    expect(within(select).getByRole("option", { name: /代理过滤/ })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "创建" }));
+    await waitFor(() => expect(onCreate).toHaveBeenCalled());
+    expect(onCreate.mock.calls[0]?.[0]).not.toHaveProperty("network");
+  });
+
+  it("选择拒绝时随创建提交 network: deny", async () => {
+    stubFetch({ available: true }, { available: true }, "win32");
+    const onCreate = vi.fn();
+    renderWithClient(<NewSessionDialog open providers={["test-stub"]} models={[model]} onClose={() => undefined} onCreate={onCreate} />);
+    fireEvent.change(await screen.findByLabelText("工作目录"), { target: { value: "D:\\work" } });
+    fireEvent.change(await screen.findByText("网络").then(networkSelect), { target: { value: "deny" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "创建" }));
+    await waitFor(() => expect(onCreate).toHaveBeenCalled());
+    expect(onCreate.mock.calls[0]?.[0]).toMatchObject({ network: "deny" });
+  });
+
+  it("选择代理过滤时提交 network: filtered 并展示提示", async () => {
+    stubFetch({ available: true }, { available: true }, "win32");
+    const onCreate = vi.fn();
+    renderWithClient(<NewSessionDialog open providers={["test-stub"]} models={[model]} onClose={() => undefined} onCreate={onCreate} />);
+    fireEvent.change(await screen.findByLabelText("工作目录"), { target: { value: "D:\\work" } });
+    fireEvent.change(await screen.findByText("网络").then(networkSelect), { target: { value: "filtered" } });
+    expect(await screen.findByText(/经代理过滤出网/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "创建" }));
+    await waitFor(() => expect(onCreate).toHaveBeenCalled());
+    expect(onCreate.mock.calls[0]?.[0]).toMatchObject({ network: "filtered" });
+  });
+
+  it("linux：不提供代理过滤选项", async () => {
+    stubFetch({ available: true }, { available: true }, "linux");
+    renderWithClient(<NewSessionDialog open providers={["test-stub"]} models={[model]} onClose={() => undefined} onCreate={() => undefined} />);
+
+    const select = await screen.findByText("网络").then(networkSelect);
+    expect(within(select).queryByRole("option", { name: /代理过滤/ })).not.toBeInTheDocument();
+    expect(within(select).getByRole("option", { name: "拒绝" })).toBeInTheDocument();
   });
 });

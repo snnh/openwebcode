@@ -1,4 +1,5 @@
 #include "../pty.h"
+#include "../bwrap.h"
 #include "../sandbox.h"
 
 #include <errno.h>
@@ -190,20 +191,63 @@ int owc_pty_open(const owc_pty_options *options,
         const char *name;
         (void)close(sandbox_pipe[0]);
         if (chdir(options->cwd) != 0) _exit(126);
-        if (options->sandbox)
-            (void)owc_landlock_apply(options->cwd, options->allow_paths,
-                                     options->allow_path_count, options->allow_network, &sandbox);
-        else {
-            sandbox.status = OWC_SANDBOX_ADVISORY;
-            (void)snprintf(sandbox.reason, sizeof(sandbox.reason), "sandbox disabled by session policy");
-        }
-        (void)write_all(sandbox_pipe[1], &sandbox, sizeof(sandbox));
         if (!shell || !shell[0]) {
             shell = getenv("SHELL");
             if (!shell || !shell[0]) shell = "/bin/sh";
         }
         name = strrchr(shell, '/');
         name = name ? name + 1 : shell;
+        if (options->sandbox) {
+            /* Same backend selection as exec_posix.c: landlock mode forces
+             * Landlock; everything else prefers bubblewrap and falls back
+             * to Landlock.  bwrap keeps the child's process group (forkpty
+             * made it a session leader), so group-kill tree termination is
+             * unaffected. */
+            if (options->sandbox_mode != (int)OWC_SANDBOX_MODE_LANDLOCK) {
+                owc_sandbox_result bwrap;
+                owc_bwrap_probe(&bwrap);
+                if (bwrap.status == OWC_SANDBOX_ENFORCED) {
+                    char *shell_argv[2];
+                    sandbox.status = OWC_SANDBOX_ENFORCED;
+                    (void)snprintf(sandbox.reason, sizeof(sandbox.reason),
+                                   "bubblewrap namespace isolation");
+                    (void)write_all(sandbox_pipe[1], &sandbox, sizeof(sandbox));
+                    shell_argv[0] = (char *)shell;
+                    shell_argv[1] = NULL;
+                    /* Only returns when the bwrap exec itself failed. */
+                    (void)owc_bwrap_exec(options->cwd,
+                        options->read_roots, options->read_root_count,
+                        options->read_only_paths, options->read_only_count,
+                        options->write_roots, options->write_root_count,
+                        options->deny_paths, options->deny_path_count,
+                        options->allow_paths, options->allow_path_count,
+                        options->allow_network, shell_argv);
+                    _exit(127);
+                }
+                (void)owc_landlock_apply(options->cwd, options->allow_paths,
+                                         options->allow_path_count,
+                                         options->read_roots, options->read_root_count,
+                                         options->read_only_paths, options->read_only_count,
+                                         options->write_roots, options->write_root_count,
+                                         options->allow_network, &sandbox);
+                if (sandbox.status != OWC_SANDBOX_ADVISORY) {
+                    sandbox.status = OWC_SANDBOX_PARTIAL;
+                    (void)snprintf(sandbox.reason, sizeof(sandbox.reason),
+                                   "bubblewrap unavailable: %.150s; using Landlock", bwrap.reason);
+                }
+            } else {
+                (void)owc_landlock_apply(options->cwd, options->allow_paths,
+                                         options->allow_path_count,
+                                         options->read_roots, options->read_root_count,
+                                         options->read_only_paths, options->read_only_count,
+                                         options->write_roots, options->write_root_count,
+                                         options->allow_network, &sandbox);
+            }
+        } else {
+            sandbox.status = OWC_SANDBOX_ADVISORY;
+            (void)snprintf(sandbox.reason, sizeof(sandbox.reason), "sandbox disabled by session policy");
+        }
+        (void)write_all(sandbox_pipe[1], &sandbox, sizeof(sandbox));
         execlp(shell, name, (char *)NULL);
         _exit(127);
     }

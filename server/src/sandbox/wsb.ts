@@ -30,6 +30,8 @@ export interface WsbConfigInput {
   hostIp: string;
   port: number;
   setupScript?: string;
+  /** 沙盒虚拟交换机网络开关；缺省/"allow" 为 Enable，"deny" 为 Disable。 */
+  network?: "allow" | "deny";
 }
 
 /** 沙盒内工作目录挂载点（.wsb MappedFolder 的 SandboxFolder，与 CoreRouter 路径翻译共用）。 */
@@ -64,7 +66,7 @@ export function buildWsbConfig(input: WsbConfigInput): string {
     "  <LogonCommand>",
     `    <Command>${escapeXml(command)}</Command>`,
     "  </LogonCommand>",
-    "  <Networking>Enable</Networking>",
+    "  <Networking>" + (input.network === "deny" ? "Disable" : "Enable") + "</Networking>",
     "</Configuration>",
     "",
   ].join("\n");
@@ -89,6 +91,8 @@ export interface WsbSessionOptions {
   /** owc-exec.exe 所在目录，只读映射为 C:\owc */
   distDir: string;
   setupScript?: string;
+  /** 会话网络策略（"deny" → .wsb Networking Disable；WSB 只支持通断二元，filtered 由调用方折算） */
+  network?: "allow" | "deny";
   requestTimeoutMs?: number;
   /** 等待沙盒内 core 回连的超时，默认 120s（WSB 冷启动 5–15s，留足余量） */
   connectTimeoutMs?: number;
@@ -127,6 +131,7 @@ export class WsbSession {
       hostIp,
       port: address.port,
       ...(this.options.setupScript ? { setupScript: this.options.setupScript } : {}),
+      ...(this.options.network ? { network: this.options.network } : {}),
     }), "utf8");
     const spawnWsb = this.options.spawnWsb ?? ((wsbPath: string) =>
       spawn(wsbExePath(), [wsbPath], { windowsHide: true, stdio: "ignore" }));
@@ -210,7 +215,7 @@ export class WsbManager {
 
   constructor(private readonly options: WsbManagerOptions) {}
 
-  acquire(sessionId: string, session: SessionMeta): Promise<CoreClient> {
+  acquire(sessionId: string, session: SessionMeta, network?: "allow" | "deny"): Promise<CoreClient> {
     const existing = this.pending.get(sessionId);
     if (existing) return existing;
     const wsbSession = new WsbSession({
@@ -219,6 +224,7 @@ export class WsbManager {
       workspace: session.cwd,
       distDir: path.dirname(this.options.corePath),
       ...(session.setupScript ? { setupScript: session.setupScript } : {}),
+      ...(network ? { network } : {}),
       ...(this.options.requestTimeoutMs !== undefined ? { requestTimeoutMs: this.options.requestTimeoutMs } : {}),
       ...(this.options.connectTimeoutMs !== undefined ? { connectTimeoutMs: this.options.connectTimeoutMs } : {}),
       ...(this.options.spawnWsb ? { spawnWsb: this.options.spawnWsb } : {}),

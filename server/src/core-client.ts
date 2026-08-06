@@ -41,7 +41,7 @@ export interface CoreInfo {
   protocolVersion?: string;
   platform: "windows" | "linux";
   sandboxCapability: string;
-  features?: { fsStat: boolean; fsStatMany: boolean; fsWriteBase64: boolean; jobControl: boolean; fsHash: boolean; fsScanPagination: boolean; fsWatch: boolean; indexScan?: boolean; indexExtract?: boolean; grepJob?: boolean; globJob?: boolean; pathNormalize?: boolean; shellBash?: boolean; pty?: boolean; bindLink?: boolean; fsReadBase64?: boolean; overlay?: { supported: boolean; fuseOverlayfs: boolean; kernelMount: boolean } };
+  features?: { fsStat: boolean; fsStatMany: boolean; fsWriteBase64: boolean; jobControl: boolean; fsHash: boolean; fsScanPagination: boolean; fsWatch: boolean; indexScan?: boolean; indexExtract?: boolean; grepJob?: boolean; globJob?: boolean; pathNormalize?: boolean; shellBash?: boolean; pty?: boolean; bindLink?: boolean; fsReadBase64?: boolean; overlay?: { supported: boolean; fuseOverlayfs: boolean; kernelMount: boolean }; bwrap?: { available: boolean; reason?: string } };
   limits?: { maxFrameBytes: number; maxWriteBase64Bytes: number; maxHashBytes: number; maxStatManyPaths: number; maxStatManyPathBytes: number; maxScanEntries?: number; maxScanDepth?: number; maxScanNodes?: number; maxWatches?: number; maxWatchEvents?: number; maxConcurrentJobs?: number; maxJobOutputBytes?: number; maxIndexScanNodes?: number; maxIndexScanDepth?: number; maxIndexScanBytes?: number; maxIndexScanMs?: number; maxSearchNodes?: number; maxSearchDepth?: number; maxSearchMs?: number; maxIndexExtractFiles?: number; maxIndexExtractBytes?: number; maxIndexExtractMs?: number; indexExtractDefaultSymbolsPerFile?: number; maxIndexExtractSymbolsPerFile?: number; maxConcurrentPtys?: number; maxPtyOutputChunkBytes?: number; maxPtyInputBytes?: number; maxReadBase64Bytes?: number };
 }
 
@@ -54,6 +54,8 @@ export interface ExecRequest {
   shellBackend?: CoreShellBackend;
   /** 显式 shell 可执行路径（host 探测的绝对路径，如 Git Bash）；存在时优先于 core 的后端默认搜索。 */
   shellPath?: string;
+  /** 单次执行的网络覆盖（server 内部专用；filtered 会话里用于把 sidecar 提升为 allow）。 */
+  network?: "allow" | "deny";
 }
 
 export interface ExecResult {
@@ -88,7 +90,7 @@ export interface FsScanResult { entries: Array<{ path: string; type: "file" | "d
 export interface FsWatchRequest extends FsPathRequest { recursive?: boolean }
 export interface FsWatchPollRequest { sessionId: string; watchId: number; limit?: number }
 export interface FsWatchPollResult { events: Array<{ path: string; kind: "created" | "changed" | "deleted" | "renamed" }>; overflow: boolean }
-export interface JobStartRequest { sessionId: string; jobId: string; kind: "exec"; cmd: string; cwd: string; timeoutMs?: number; shellBackend?: CoreShellBackend; shellPath?: string }
+export interface JobStartRequest { sessionId: string; jobId: string; kind: "exec"; cmd: string; cwd: string; timeoutMs?: number; shellBackend?: CoreShellBackend; shellPath?: string; /** 单次 job 的网络覆盖（server 内部专用；filtered 会话的 sidecar 代理以 allow 启动）。 */ network?: "allow" | "deny" }
 /**
  * index.scan job（0.4.0 Phase 2）：按 glob 规则产出完整文件清单。
  * 输出是 job.output 上的 JSONL 流（stdout 流），每行一个条目：
@@ -247,7 +249,9 @@ export interface CoreClientLike {
   stop(): Promise<void>;
   ping(): Promise<CoreInfo>;
   run(request: ExecRequest): Promise<ExecResult>;
-  configureSession(request: { sessionId: string; cwd: string; sandbox: SandboxPolicy }): Promise<{ sandboxCapability: string }>;
+  configureSession(request: { sessionId: string; cwd: string; sandbox: SandboxPolicy }): Promise<{ sandboxCapability: string; sandboxReason?: string }>;
+  /** 最近一次 configureSession 记录的会话执行级别（仅 CoreRouter 提供）；无记录返回 undefined。 */
+  sandboxStatusFor?(sessionId: string): { capability: string; reason?: string; at: number } | undefined;
   cleanupSession(sessionId: string): Promise<{ ok: true }>;
   readFile(request: FsReadRequest): Promise<FsReadResult>;
   writeFile(request: FsWriteRequest): Promise<{ ok: true }>;
@@ -383,7 +387,7 @@ export class CoreClient extends EventEmitter {
     return this.call<ExecResult>("exec.run", request, (request.timeoutMs ?? 120_000) + 10_000);
   }
 
-  configureSession(request: { sessionId: string; cwd: string; sandbox: SandboxPolicy }): Promise<{ sandboxCapability: string }> { return this.call("session.configure", request); }
+  configureSession(request: { sessionId: string; cwd: string; sandbox: SandboxPolicy }): Promise<{ sandboxCapability: string; sandboxReason?: string }> { return this.call("session.configure", request); }
   cleanupSession(sessionId: string): Promise<{ ok: true }> { return this.call("session.cleanup", { sessionId }); }
   readFile(request: FsReadRequest): Promise<FsReadResult> { return this.call("fs.read", request); }
   writeFile(request: FsWriteRequest): Promise<{ ok: true }> { return this.call("fs.write", request); }
