@@ -214,6 +214,7 @@ agent 运行期间可用的状态指示与干预手段：
 - **结构化提问**：agent 可通过 `ask_user` 工具在运行中向你提问——确认、单选、多选、自由文本四种卡片（一次 1–4 问，选择题 2–4 个选项），挂在对话轨道中等待回答（agent 暂停在「等待确认」状态），回答后 agent 带着答案继续；中断运行自动取消未答问题
 - **plan 批准流**：plan 模式下 agent 通过 `exit_plan_mode` 提交完整计划，弹出计划批准卡，三分支——`批准`（按原文切回 build 执行）/ `编辑后批准`（按你改后的文本执行）/ `拒绝`（可附意见，保持 plan 模式继续研究修订）。计划批准不走权限自动放行，yolo 也不会跳过
 - **持久 shell**：agent 的 bash 工具默认复用每会话一个持久 shell（沙盒内 pty），`cd` 切换的目录、设置的环境变量跨调用保持；pty 不可用（如旧版 core）或 shell 起不来（如 AppContainer 沙盒下的 pwsh / Git Bash）时透明回退一次性执行，不报错。`run_in_background` 后台任务仍走一次性 job
+- **会话环境变量**：agent 的 bash 工具执行环境中自动注入四个会话元数据变量——`OWC_SESSION_ID`（会话 id）、`OWC_WORKSPACE`（会话工作目录）、`OWC_SANDBOX_MODE`（沙盒模式，如 `jobobject`）、`OWC_AGENT_MODE`（agent 模式，如 `code`/`plan`）；持久 shell 开壳时激活一次，一次性回退路径逐命令前置 export，脚本可依此感知会话上下文
 - **桌面通知**：设置 → 通用开启（默认关，首次需浏览器授权通知权限）；页面失焦时，权限待批、结构化交互待答与 run 终态会弹系统通知，点击跳回对应会话
 
 ## 真终端
@@ -266,6 +267,15 @@ agent 运行期间可用的状态指示与干预手段：
 - **模型定价**：设置 → 模型定价 → 添加条目。价格单位是“每百万 tokens 的元/美元”；输入、输出单价必填，缓存读/写可空（按 `0` 保存），生效日期默认当天并可修改
 - 同一 provider/model 的生效区间不能重叠；历史价格或复杂区间可用「编辑 JSON」维护 `effectiveFrom` / `effectiveUntil`
 
+## 备选模型（fallback）
+
+会话可为主模型配置最多 3 个备选模型，构成 fallback 链：
+
+- **配置入口**：新建会话对话框的「备选模型」区（最多 3 行，选项来自已启用的模型目录）；REST 为 `POST /api/sessions`、`PUT /api/sessions/:id/config` 的 `fallbackModels` 字段（`{provider, model}` 数组；`null` 或 `[]` 清除，缺省保持不变）；CLI 为 `owc run "..." --fallback-models provider/model,provider/model`（格式错误退出码 1）
+- **触发条件**：主模型在运行中因**可恢复错误**（限流 / 过载 / 超时 / 流中断 / 网络类）自动重试耗尽后，切到链上下一个备选模型继续当前任务；界面提示「模型已切换 A → B（原因）」。401 鉴权、400 参数错误等不可恢复错误不切换，直接报错
+- **链语义**：校验时剔除与主模型重复或彼此重复的项；每个候选每轮任务只尝试一次（未配置服务商的候选跳过）；链走完仍失败按原错误路径结束
+- **生效范围**：切换只影响本轮任务的后续 turn，不改会话模型字段；上下文窗口与能力按新模型重新解析（窗口变小由现有 85% 水位安全网兜底），用量与成本按实际生效的 provider/model 逐 turn 记账。子代理不继承 fallback 链（子代理走角色模型链）
+
 ## Headless CLI（脚本集成）
 
 ```sh
@@ -277,6 +287,17 @@ owc run "给 main.ts 加个单元测试" --cwd . --json
 - `--session <id>` 复用已有会话
 - `owc --help` / `owc run --help` 输出中英双语帮助
 - 退出码：`0` 完成 / `1` agent 错误或参数错误 / `2` 权限拒绝（非 `--yolo`）
+
+## 工具限制与只读模式
+
+会话可限制暴露给模型的**内置工具**（新建会话对话框的「工具白名单/黑名单」，或 `POST /api/sessions`、`PUT /api/sessions/:id/config` 的 `toolsAllow`/`toolsDeny` 字段，值为内置工具名数组，如 `read_file`/`glob`/`grep`/`bash`/`write_file`）：
+
+- `toolsAllow` 非空 = 仅暴露名单内内置工具；`toolsDeny` 在结果上再剔除；两者都只作用于内置工具，未知工具名静默忽略
+- 交互类工具（`ask_user` 等）始终保留；MCP 与扩展工具由用户显式配置，不受影响
+- 子代理（`spawn_task`/`spawn_swarm`）自动继承会话的工具限制
+- `PUT config` 传 `null` 或空数组清除限制；工具限制是提示面约束（模型看不到的工具即不可用），不替代沙盒与权限链
+
+CLI 等价写法：`owc run "..." --tools read_file,glob,grep`（= `toolsAllow`）、`--exclude-tools bash`（= `toolsDeny`）、`--read-only`（便捷旗标，等价于 `--tools` 只读集：read_file/glob/grep/read_artifact/repo_map/code_search/git_status/git_diff/load_skill/task_output；与 `--tools` 互斥，同给报错退出码 1）。
 
 ## 会话导出与分享
 
@@ -416,10 +437,11 @@ description: 审查当前改动
 ```
 
 - 事件：`PreToolUse` / `PostToolUse` / `UserPromptSubmit` / `Stop` / `SessionStart` / `SessionEnd` / `PreCompact` / `PostCompact` / `Notification` / `SubagentStart` / `SubagentStop`
-- `matcher`：精确工具名、`前缀*`、`*` 全匹配（无工具名的事件仅 `*` 命中）
+- `matcher`：精确工具名、`前缀*`、`*` 全匹配（无工具名的事件仅 `*` 命中）；工具形态别名（env-sim 拟态）激活时 matcher 仍按内置工具名匹配，payload 的 `tool` 为内置名、模型侧别名经 `toolAlias` 字段附带
 - exit 0 放行；exit 2 否决（仅 PreToolUse / PreCompact 两个 Pre 类事件，stderr 回填调用方）；其他非零/超时告警不阻断；Notification、Subagent 类、SessionEnd、PostCompact 等通知类事件的失败与退出码均不阻塞主流程
 - 5s 超时杀进程
 - **安全级别等同 yolo**：hooks.json 里的 command 由 server 直接 spawn 执行，不经沙盒与权限链。凡是能写 hooks 配置的人即拥有等同 yolo 的执行能力。
+- bash 工具的 `OWC_SESSION_ID` 等会话环境变量（见「会话环境变量」）不适用于 hooks——hooks 由 server 直接 spawn，不经过 bash 工具环境
 
 ## 常见问题
 

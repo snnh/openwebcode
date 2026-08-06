@@ -68,6 +68,8 @@ describe("JobHeader mode switches", () => {
     await waitFor(() => expect(onConfig).toHaveBeenCalledWith({ shellBackend: "pwsh" }));
     fireEvent.change(screen.getByLabelText("快照模式"), { target: { value: "manual" } });
     await waitFor(() => expect(onConfig).toHaveBeenCalledWith({ snapshotMode: "manual" }));
+    fireEvent.change(screen.getByLabelText("Node 环境"), { target: { value: "fnm" } });
+    await waitFor(() => expect(onConfig).toHaveBeenCalledWith({ nodeEnv: "fnm" }));
     expect(screen.getByRole("option", { name: "Windows Sandbox" })).toBeDisabled();
   });
 
