@@ -2,6 +2,7 @@ import { readFile, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import installDefaultsDocument from "../src/config/defaults.json" with { type: "json" };
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
 import { loadConfig } from "../src/config.js";
@@ -13,7 +14,7 @@ import { FastModelClient } from "../src/fast-model.js";
 import { ProviderProfilesService } from "../src/provider-profiles.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
-import { encodeFastModelSelection, SettingsService, type SettingsFieldView, type SettingsView } from "../src/settings-service.js";
+import { CODE_DEFAULTS, encodeFastModelSelection, SettingsService, type SettingsFieldView, type SettingsView } from "../src/settings-service.js";
 import { MAX_SYNC_INTERVAL_MINUTES } from "../src/remote-sync-scheduler.js";
 import type { UpdateChecker } from "../src/update-checker.js";
 
@@ -470,4 +471,53 @@ describe("model selection settings (modelSelection group)", () => {
     expect(response.statusCode).toBe(400);
   });
 
+});
+
+// ---- defaults-sync 组（合并） ----
+const defaultsRoots: string[] = [];
+afterEach(async () => Promise.all(defaultsRoots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
+
+function defaultsField(view: SettingsView, key: string): SettingsFieldView {
+  for (const group of view.groups) {
+    const found = group.fields.find((item) => item.key === key);
+    if (found) return found;
+  }
+  throw new Error(`Field ${key} not found`);
+}
+
+describe("install-dir defaults sync guard", () => {
+  it("config/defaults.json covers exactly the FIELDS keys with matching values", () => {
+    const fileDefaults = installDefaultsDocument as Record<string, unknown>;
+    const fileKeys = Object.keys(fileDefaults).sort();
+    const codeKeys = [...CODE_DEFAULTS.keys()].sort();
+    expect(fileKeys).toEqual(codeKeys);
+    for (const key of codeKeys) {
+      expect(fileDefaults[key], `default mismatch for ${key}`).toEqual(CODE_DEFAULTS.get(key));
+    }
+  });
+});
+
+describe("settings auto-combine (install default + user override)", () => {
+  it("serves install defaults when nothing is overridden", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-defaults-"));
+    defaultsRoots.push(root);
+    const settings = await SettingsService.load({ env: {}, filePath: path.join(root, "server-settings.json") });
+    const view = settings.view();
+    const port = defaultsField(view, "port");
+    expect(port.source).toBe("default");
+    expect(port.value).toBe(port.installDefault);
+    expect(port.installDefault).toBe(3210);
+  });
+
+  it("keeps the user override and exposes the differing install default", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-defaults-"));
+    defaultsRoots.push(root);
+    const settings = await SettingsService.load({ env: {}, filePath: path.join(root, "server-settings.json") });
+    await settings.update({ port: 9999 });
+    const view = settings.view();
+    const port = defaultsField(view, "port");
+    expect(port.source).toBe("file");
+    expect(port.value).toBe(9999);
+    expect(port.installDefault).toBe(3210);
+  });
 });
