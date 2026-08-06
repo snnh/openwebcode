@@ -2,6 +2,40 @@
 
 本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前版本的用户可感知变化。日期以 Git 标签发布日期为准。
 
+## [1.4.0] - 2026-08-06
+
+### 新增功能
+
+- Linux 沙盒默认后端切换为 bubblewrap（mount/net namespace 隔离），无 bwrap 环境自动回落 Landlock 并如实上报 `partial` 与原因；`sandbox.mode` 可显式强制 `landlock` / `bubblewrap`（POSIX 限定）。
+- Windows 新增 `filtered` 网络档：业务进程无网络 capability，经沙盒内 sidecar 代理出网；域名 deny 清单（`sandboxProxyDenyList`）保存即热生效。
+- 会话级 Python 环境（global / uv-workspace / uv-config）与 Node 环境（global / project / fnm / nvm）：解释器与版本管理器可用性懒检测，bash 工具自动注入激活片段，会话头部可随时切换，设置 → 服务信息可配全局默认。
+- 会话级备选模型链（fallback，最多 3 个）：主模型遇可恢复错误（限流 / 过载 / 超时 / 流中断）重试耗尽后自动切换备选继续本轮；401/400 等不可恢复错误不切换；子代理不继承。CLI 对应 `--fallback-models`。
+- 工具限制与只读模式：新建会话可配工具白名单 / 黑名单；CLI `owc run --tools` / `--exclude-tools` / `--read-only`。
+- 离线模式（设置 → 通用，`OWC_OFFLINE`，热生效）：关闭 server 自身周期性出站（更新检测、远程目录/定价同步、汇率刷新）；模型 API、联网工具、MCP 不受影响。
+- bash 工具注入会话元数据环境变量：`OWC_SESSION_ID` / `OWC_WORKSPACE` / `OWC_SANDBOX_MODE` / `OWC_AGENT_MODE`。
+
+### 界面与体验
+
+- 会话头部统一重排：会话环境（沙盒 / 终端 / 快照 / Python / Node）改为图标化选择器，信息行单行紧凑排布，窄屏与移动端布局同步适配。
+- 模型目录表格：窄屏可横向滑动；删除「来源」列；能力/思考/力度合并为单列，思考按「仅开关 / 强度调节（档位）/ 自适应」描述；操作列前置、删除改垃圾桶图标；双击进入编辑自动滚动到表单。
+
+### 修复
+
+- 模型链路与运行时专项审计（两批 20+ 项）：compactor 分叉会话索引错位、provider 错误体截断与 SSE 8MiB 上限、限流器预占并发、CJK token 加权、后台任务 TTL 驱逐、hook 内置名冲突、core 协商失败可重试、pty 回放时序等。
+- core：grep / 搜索文本截断回退到 UTF-8 字符边界，不再截出半个多字节序列；JSON 解析拒绝重复键对象（-32700 parse error），不再静默保留首个值。
+- TOTP 登录锁定到期后失败计数不清零（攻击者无法每轮锁定换满 5 次尝试）；MCP HTTP/SSE 响应体 8MiB 上限与非 JSON 明确报错；MCP 连接被空闲回收时给可重试的友好错误；task_output 阻塞轮询挂 abort 即时唤醒。
+
+### CI
+
+- 全部工作流 `npm ci --ignore-scripts`；新增每周依赖审计（audit.yml，`--audit-level=high`）。
+- server 测试文件按模块合并精简 149 → 117。
+
+### 文档
+
+- README 中英双语重写（hero + badges、一行式特性要点、最短快速开始）。
+- help 使用帮助 / FAQ / 开发指南全部重写并逐条对照代码核实（usage 补 Python/Node 环境、离线模式、备选模型、工具限制等新功能；FAQ 新增 5 条；开发指南修正 workflow 数量、探测链入口等过时内容）。
+- packaging README 双语对齐：英文版从摘要补齐为完整内容，install.sh 全选项表逐行对照脚本。
+
 ## [1.3.8] - 2026-08-04
 
 ### 修复
