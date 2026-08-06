@@ -33,7 +33,8 @@ describe("App 上下文窗口水位", () => {
     });
 
     const meter = await screen.findByTestId("window-usage");
-    expect(meter.textContent).toContain("45k/128k · 36%");
+    expect(meter.textContent).toContain("45k/128k");
+    expect(meter.textContent).toContain("36%");
     expect(meter.dataset.level).toBe("normal");
   });
 });

@@ -9,7 +9,7 @@ import { Icon } from "./Icon";
 import { LiveActivity } from "./LiveActivity";
 import type { LiveActivityInfo } from "../hooks/use-live-activity";
 import { Markdown } from "./Markdown";
-import { MemoMessageCard, ThinkingBlock } from "./MessageCard";
+import { MemoMessageCard, ThinkingBlock, coalesceAssistantText } from "./MessageCard";
 import { ToolCallGroupRow, ToolCallListGroup, type ToolGroupCall } from "./ToolCallListGroup";
 import { CONVERSATION_SEARCH_EVENT, ConversationSearch, findMatches, highlightArticle, unwrapSearchMarks } from "./ConversationSearch";
 import { PermissionCard, type PermissionRequest } from "./PermissionCard";
@@ -158,6 +158,20 @@ export function ExecutionTrack({ session, cleared, streamBlocks, runError, permi
     }
     return values;
   }, [session.messages]);
+
+  // clear 分隔线定位：ledger 记的 uptoIndex 是全量历史的绝对下标，session.messages 是分页尾部窗口，
+  // 需减去页偏移换算成窗口内下标；clear 点在未加载的早期历史里（< 0）时不渲染，加载更早消息后自然就位
+  const pageOffset = Math.max(0, (session.messageCount ?? session.messages.length) - session.messages.length);
+  const clearedLocal = cleared ? cleared.uptoIndex - pageOffset : undefined;
+
+  // 「过程消息」判定：tool 结果消息，或无正文 text 块的 assistant 消息（纯 thinking / 纯 tool_call）。
+  // 会话空闲时连续过程消息段整体折叠为一个 <details>，含正文的正式回复直接可见；运行中不折叠（流式过程照常可见）
+  const isProcess = useMemo(() => session.messages.map((message) => {
+    if (message.role === "tool") return true;
+    if (message.role !== "assistant") return false;
+    return !coalesceAssistantText(message.content).some((block) => block.type === "text" && (block.text ?? "").trim());
+  }), [session.messages]);
+  const foldProcess = !running;
 
   // 工具调用行状态：toolCallId → isError 配对表（引用稳定，消息变化才重建）
   const toolResultStatus = useMemo(() => buildToolResultStatus(session.messages), [session.messages]);
@@ -313,30 +327,71 @@ export function ExecutionTrack({ session, cleared, streamBlocks, runError, permi
           <p className="muted-empty track-empty">{t("还没有消息。在下方描述要完成的任务，开始第一项作业。", "No messages yet. Describe a task below to start your first job.")}</p>
         )}
         {virtual && <div aria-hidden style={{ height: offsets[firstVisible] ?? 0 }} />}
-        {session.messages.slice(firstVisible, lastVisible).map((message, relativeIndex) => {
-          const index = firstVisible + relativeIndex;
-          // shell 快捷命令的结果卡（user `!cmd` + tool_result 配对）附「发给 agent」按钮
-          const shellCmd = message.role === "tool" ? shellCommandOf(session.messages[index - 1]) : undefined;
-          const item = (
-            <Fragment key={message.id}>
-              {cleared && Math.min(cleared.uptoIndex, session.messages.length) === index && (
-                <div className="context-cleared-divider" role="separator">{t("上下文已清空（历史保留）", "Context cleared (history retained)")}</div>
-              )}
-              <MemoMessageCard message={message} sessionId={session.id} turn={turnOf[index]} contentLens={contentLens} liveSubagents={liveRunsForMessage(message, liveSubagents)} toolResults={toolResultStatus} running={running} onNotice={onNotice} onOpenDiff={onOpenDiff} onEditMessage={onEditMessage} onRegenerate={onRegenerate} onFork={onFork} />
-              {shellCmd && onSendToAgent && (
-                <button
-                  className="send-to-agent"
-                  onClick={() => onSendToAgent(shellCmd, toolResultOf(message))}
-                >
-                  <Icon name="send" size={11} /> {t("发给 agent", "Send to agent")}
-                </button>
-              )}
-            </Fragment>
-          );
-          return virtual ? <MeasuredItem key={message.id} index={index} onHeight={measure}>{item}</MeasuredItem> : item;
-        })}
+        {(() => {
+          // 单条消息渲染（clear 分隔线 + 消息卡 + shell 结果回发按钮）；showDivider 供过程段组头外置分隔线时抑制
+          const renderOne = (index: number, showDivider = true): ReactNode => {
+            const message = session.messages[index]!;
+            // shell 快捷命令的结果卡（user `!cmd` + tool_result 配对）附「发给 agent」按钮
+            const shellCmd = message.role === "tool" ? shellCommandOf(session.messages[index - 1]) : undefined;
+            const item = (
+              <Fragment key={message.id}>
+                {showDivider && clearedLocal !== undefined && clearedLocal >= 0 && clearedLocal === index && (
+                  <div className="context-cleared-divider" role="separator">{t("上下文已清空（历史保留）", "Context cleared (history retained)")}</div>
+                )}
+                <MemoMessageCard message={message} sessionId={session.id} turn={turnOf[index]} contentLens={contentLens} liveSubagents={liveRunsForMessage(message, liveSubagents)} toolResults={toolResultStatus} running={running} onNotice={onNotice} onOpenDiff={onOpenDiff} onEditMessage={onEditMessage} onRegenerate={onRegenerate} onFork={onFork} />
+                {shellCmd && onSendToAgent && (
+                  <button
+                    className="send-to-agent"
+                    onClick={() => onSendToAgent(shellCmd, toolResultOf(message))}
+                  >
+                    <Icon name="send" size={11} /> {t("发给 agent", "Send to agent")}
+                  </button>
+                )}
+              </Fragment>
+            );
+            return virtual ? <MeasuredItem key={message.id} index={index} onHeight={measure}>{item}</MeasuredItem> : item;
+          };
+          const nodes: ReactNode[] = [];
+          for (let index = firstVisible; index < lastVisible; ) {
+            if (!foldProcess || !isProcess[index]) {
+              nodes.push(renderOne(index));
+              index += 1;
+              continue;
+            }
+            // 连续过程消息段 → 单个默认折叠的 <details>（原生元素，内容常驻 DOM，会话内搜索不受影响）
+            let end = index + 1;
+            while (end < lastVisible && isProcess[end]) end += 1;
+            let toolCalls = 0;
+            let failed = false;
+            for (let i = index; i < end; i += 1) {
+              for (const block of session.messages[i]!.content) {
+                if (block.type === "tool_call") toolCalls += 1;
+                if (block.type === "tool_result" && block.isError) failed = true;
+              }
+            }
+            // 分页窗口恰好从过程段起步时，clear 分隔线可能落在段首：外置到 details 之前，避免折进折叠区不可见
+            if (clearedLocal !== undefined && clearedLocal >= 0 && clearedLocal === index) {
+              nodes.push(
+                <div key={`cleared-${index}`} className="context-cleared-divider" role="separator">{t("上下文已清空（历史保留）", "Context cleared (history retained)")}</div>,
+              );
+            }
+            nodes.push(
+              <details key={`turn-process-${session.messages[index]!.id}`} className={`turn-process${failed ? " danger" : ""}`}>
+                <summary>
+                  <Icon name="list" size={12} />
+                  {toolCalls > 0 ? t(`执行过程 · ${toolCalls} 个工具调用`, `Process · ${toolCalls} tool calls`) : t("执行过程 · 思考", "Process · reasoning")}
+                </summary>
+                <div className="turn-process-body">
+                  {Array.from({ length: end - index }, (_, offset) => renderOne(index + offset, clearedLocal !== index + offset))}
+                </div>
+              </details>,
+            );
+            index = end;
+          }
+          return nodes;
+        })()}
         {virtual && <div aria-hidden style={{ height: Math.max(0, totalMessageHeight - (offsets[lastVisible] ?? totalMessageHeight)) }} />}
-        {cleared && Math.min(cleared.uptoIndex, session.messages.length) === session.messages.length && (
+        {clearedLocal !== undefined && clearedLocal === session.messages.length && (
           <div className="context-cleared-divider" role="separator">{t("上下文已清空（历史保留）", "Context cleared (history retained)")}</div>
         )}
         {runError && (() => {
