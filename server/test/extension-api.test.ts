@@ -345,6 +345,7 @@ describe("official extensions", () => {
         ["pdf-to-image", true],
         ["owc-eval", false],
         ["env-sim", false],
+        ["compact-vault", false],
       ]);
       expect(manager.list().find((item) => item.id === "pdf-to-image")).toMatchObject({
         permissions: ["ui:messageAttachment"],

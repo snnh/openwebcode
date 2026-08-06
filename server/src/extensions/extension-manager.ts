@@ -12,6 +12,7 @@ import { ContextManager } from "../context/context-manager.js";
 import { EXTENSION_API_VERSION, isExtensionEventAllowed, type ApiRequest, type ApiResponse, type ContextHookPayload, type EventMessage, type ExtensionApiMethod, type ExtensionHook, type ExtensionInfo, type ExtensionManifest, type ExtensionPermission, type ExtensionRoute, type ExtensionState, type ExtensionToolResult, type ExtensionToolSpec, type HostRequest, type HostResponse, type PromptHookPayload, type PromptHookResult, type ToolHookPayload, type ToolShapingAlias, type ToolShapingSpec } from "./types.js";
 import { OFFICIAL_DEFAULT_CONFIG, OFFICIAL_EXTENSIONS } from "./official.js";
 import { BUILTIN_PERSONAS, getPersona, listPersonas, resolvePersona, personasDir, saveUserPreset, deleteUserPreset, type PersonaDetail, type PersonaPreset, type PersonaSummary } from "./env-sim/index.js";
+import type { CompactVaultService } from "./compact-vault.js";
 
 /** activeToolShaping 聚合结果：hideBuiltIns 按内置名隐藏，aliases 以新名（as）为键。 */
 export interface ActiveToolShaping {
@@ -45,6 +46,7 @@ const API_PERMISSIONS: Record<ExtensionApiMethod, ExtensionPermission | null> = 
   "sessions.get": "sessions:read",
   "context.getView": "context:read",
   "context.readArtifact": "context:read",
+  "context.readVaultFile": "context:read",
   "events.subscribe": "sessions:read",
   "storage.read": null,
   "storage.write": null,
@@ -91,7 +93,7 @@ export class ExtensionManager {
   /** 已发出的工具形态警告（去重，避免每轮重复刷事件）。 */
   private readonly shapingWarningsIssued = new Set<string>();
 
-  constructor(private readonly dataDir: string, private readonly events?: EventBus, private readonly deps: { sessions?: SessionStore; fastModel?: FastModelClient; storageQuota?: { file: number; total: number } } = {}) {
+  constructor(private readonly dataDir: string, private readonly events?: EventBus, private readonly deps: { sessions?: SessionStore; fastModel?: FastModelClient; storageQuota?: { file: number; total: number }; vaultService?: CompactVaultService } = {}) {
     this.root = path.join(dataDir, "extensions");
     this.configPath = path.join(this.root, "extensions.json");
   }
@@ -344,14 +346,14 @@ export class ExtensionManager {
     return result;
   }
 
-  /** 转发 agent 的 ext__ 工具调用到 Extension Host；5 秒超时按工具失败处理。 */
-  async invokeTool(namespaced: string, input: Record<string, unknown>): Promise<ExtensionToolResult> {
+  /** 转发 agent 的 ext__ 工具调用到 Extension Host；5 秒超时按工具失败处理。sessionId 透传给 host（recall_memory 等按会话归档定位）。 */
+  async invokeTool(namespaced: string, input: Record<string, unknown>, sessionId?: string): Promise<ExtensionToolResult> {
     const match = /^ext__([a-z0-9][a-z0-9-]{1,63})__([a-zA-Z0-9_-]{1,64})$/.exec(namespaced);
     const extensionId = match?.[1] ?? "";
     const tool = match?.[2] ?? "";
     if (!match || !this.extensionTools.get(extensionId)?.has(tool)) throw new Error(`Unknown extension tool: ${namespaced}`);
     if (!this.isEnabled(extensionId)) throw new Error(`Extension ${extensionId} is disabled`);
-    const result = await this.request("tool.invoke", { extensionId, tool, input }, 5000);
+    const result = await this.request("tool.invoke", { extensionId, tool, input, ...(typeof sessionId === "string" && sessionId ? { sessionId } : {}) }, 5000);
     if (!result || typeof result !== "object" || typeof (result as { content?: unknown }).content !== "string") {
       throw new Error(`Extension tool ${namespaced} returned an invalid result`);
     }
@@ -430,6 +432,11 @@ export class ExtensionManager {
         const offset = params.offset === undefined ? 0 : Number(params.offset);
         const limit = params.limit === undefined ? 64_000 : Number(params.limit);
         return new ContextManager(sessions.contextRoot(sessionId)).readArtifact(String(params.artifactId ?? ""), offset, limit);
+      }
+      case "context.readVaultFile": {
+        // 只读会话 compact/ 归档目录（路径锁定与配额由 CompactVaultService 把关）
+        if (!this.deps.vaultService) throw new Error("Compact vault service is not configured");
+        return { content: await this.deps.vaultService.readFile(String(params.sessionId ?? ""), String(params.path ?? "")) };
       }
       case "events.subscribe": {
         const requested = Array.isArray(params.types) ? params.types.filter((type): type is string => typeof type === "string") : [];
