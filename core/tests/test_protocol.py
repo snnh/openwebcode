@@ -214,6 +214,19 @@ def main():
         response, _ = collect_until_response(proc, 2)
         assert response["error"]["code"] == -32601
 
+        # Duplicate object keys are rejected as a parse error (-32700) instead
+        # of silently keeping only the first value; the connection must stay
+        # usable afterwards.  json.dumps cannot express duplicates, so the
+        # frame is written raw.
+        dup_body = b'{"jsonrpc":"2.0","id":"dup-key","method":"core.ping","params":{"version":1,"version":2}}'
+        proc.stdin.write(f"Content-Length: {len(dup_body)}\r\n\r\n".encode() + dup_body)
+        proc.stdin.flush()
+        response, _ = collect_until_response(proc, None)
+        assert response["error"]["code"] == -32700, response
+        request(proc, "after-dup-key", "core.ping")
+        response, _ = collect_until_response(proc, "after-dup-key")
+        assert response["result"]["version"] == version
+
         if use_pwsh_main_channel:
             command = "Write-Output hello; [Console]::Error.WriteLine('error'); exit 7"
             slow = "Start-Sleep -Seconds 5"

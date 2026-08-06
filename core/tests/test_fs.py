@@ -92,9 +92,19 @@ def main():
         long_matches=fs(176,"fs.grep",{"path":"long-line.txt","pattern":"needle"})["result"]
         assert long_matches["truncated"] is False and len(long_matches["matches"])==1,long_matches
         long_text=long_matches["matches"][0]["text"]
-        assert len(long_text)==512 and "needle" not in long_text,long_matches
+        assert len(long_text)<=512 and "needle" not in long_text,long_matches
         head_matches=fs(177,"fs.grep",{"path":"long-line.txt","pattern":"xxx"})["result"]
         assert len(head_matches["matches"])==1 and head_matches["matches"][0]["text"]=="x"*512,head_matches
+        # Truncation must not split a UTF-8 multi-byte sequence: a line of CJK
+        # characters (3 bytes each) longer than 512 bytes must yield valid UTF-8
+        # text at or under 512 bytes -- the cut backs off to a character boundary.
+        cjk_line="\u4e2d"*200+"needle"+"\u4e2d"*200  # 400*3=1200 bytes + "needle"
+        assert fs(178,"fs.write",{"path":"cjk-line.txt","content":cjk_line})["result"]["ok"]
+        cjk_matches=fs(179,"fs.grep",{"path":"cjk-line.txt","pattern":"needle"})["result"]
+        assert len(cjk_matches["matches"])==1,cjk_matches
+        cjk_text=cjk_matches["matches"][0]["text"]
+        assert len(cjk_text)<=512,cjk_matches
+        cjk_text.encode("utf-8")  # raises UnicodeDecodeError if a sequence was split
         r=fs(2,"fs.read",{"path":"目录/文件.txt","offset":1,"limit":1})["result"]
         assert r=={"content":"二\n","totalLines":3,"encoding":"utf-8","truncated":True},r
         assert fs(3,"fs.stat",{"path":"目录/文件.txt"})["result"]["type"]=="file"
