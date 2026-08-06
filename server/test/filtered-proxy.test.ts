@@ -218,10 +218,11 @@ describe("FilteredProxyManager 编排", () => {
     const { client, calls } = makeJobFakeCore();
     const manager = makeManager(root, { platform: "linux" });
     const handle = await manager.ensureProxy(client, "s1", "/work");
-    expect(handle.readOnlyPaths).toEqual([path.posix.join(root, "proxy")]);
+    // 路径一律为宿主语义（core 与 server 同机）；platform 只切换 cmd 的 env 语法
+    expect(handle.readOnlyPaths).toEqual([path.join(root, "proxy")]);
     const cmd = calls.startJob[0]!.cmd;
     expect(cmd).toMatch(/^OWC_PROXY_DENY_FILE='[^']+' /);
-    expect(cmd).toContain(`'${path.posix.join(root, "proxy", "runtime", "node")}' --preserve-symlinks-main '${path.posix.join(root, "proxy", "runtime", "sandbox-proxy.mjs")}'`);
+    expect(cmd).toContain(`'${path.join(root, "proxy", "runtime", "node")}' --preserve-symlinks-main '${path.join(root, "proxy", "runtime", "sandbox-proxy.mjs")}'`);
   });
 });
 
