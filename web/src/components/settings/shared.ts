@@ -74,6 +74,7 @@ export const SETTINGS_FIELD_EN: Record<string, { label: string; description?: st
   defaultEffort: { label: "Default thinking effort", description: "Thinking effort applied to new sessions; none means follow the model default; silently skipped when the model does not support the selected level" },
   defaultSnapshotMode: { label: "Default snapshot mode", description: "Checkpoint creation for new sessions: auto = before each user message; manual = only on demand" },
   snapshotBackend: { label: "Snapshot backend", description: "Preferred snapshot backend for new sessions; auto = probe chain (btrfs/zfs/overlayfs → git-shadow); falls back to auto with a warning when the selected backend is unavailable for the workspace" },
+  offlineMode: { label: "Offline mode", description: "Disables the server's own startup/periodic outbound requests: update checks, background remote model/pricing catalog sync, and online exchange-rate refresh; model APIs, web search/fetch, MCP, and extension networking are unaffected" },
   corePath: { label: "Executor path" },
   coreRequestTimeoutMs: { label: "Executor request timeout (ms)" },
   sandboxAllowPaths: { label: "Additional allowed directories", description: "One directory per line, up to 16; merged with the session working directory at execution time" },

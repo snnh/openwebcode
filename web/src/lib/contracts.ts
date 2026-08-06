@@ -26,6 +26,8 @@ export type SnapshotMode = "auto" | "manual";
 export type ShellBackend = "default" | "pwsh" | "bash" | "cmd";
 /** Python 运行环境：global = 本机环境；uv-workspace/uv-config = uv 临时虚拟环境（工作区/配置目录）。 */
 export type PythonEnv = "global" | "uv-workspace" | "uv-config";
+/** Node 运行环境：global = 本机环境；project = 工作区 node_modules/.bin 前置 PATH；fnm/nvm = 版本管理器激活。 */
+export type NodeEnv = "global" | "project" | "fnm" | "nvm";
 
 export interface SandboxCapabilities {
   /** server 运行平台（process.platform）；web 端平台相关 UI 统一以此为准。 */
@@ -216,10 +218,16 @@ export interface Session {
   snapshotMode?: SnapshotMode;
   shellBackend?: ShellBackend;
   pythonEnv?: PythonEnv;
+  nodeEnv?: NodeEnv;
   /** env-sim 人格预设 id（会话级覆盖）；undefined = 跟随扩展全局配置。 */
   persona?: string;
   /** 并行子代理（spawn_swarm）开关；undefined/false = 关闭。 */
   swarmEnabled?: boolean;
+  /** 会话级内置工具白名单/黑名单（仅内置工具名；undefined = 不限制）。 */
+  toolsAllow?: string[];
+  toolsDeny?: string[];
+  /** 会话级备选模型链（最多 3 个；主模型可恢复错误重试耗尽后按序切换）。 */
+  fallbackModels?: FallbackModelEntry[];
   setupScript?: string;
   /** 选择性上下文：pin 的消息 id/文件路径（不被驱逐）。 */
   contextPins?: string[];
@@ -351,6 +359,20 @@ export interface AgentErrorPayload {
   message: string;
   kind?: AgentErrorKind;
   retryable?: boolean;
+}
+
+/** 会话级备选模型（fallback 链）条目。 */
+export interface FallbackModelEntry {
+  provider: string;
+  model: string;
+}
+
+/** WS 事件 agent.model_fallback 的 payload：主模型可恢复错误重试耗尽后切换到备选模型。 */
+export interface ModelFallbackPayload {
+  from: FallbackModelEntry;
+  to: FallbackModelEntry;
+  kind?: AgentErrorKind;
+  message: string;
 }
 
 export type AgentRunState = "accepted" | "starting" | "snapshotting" | "preparing_context" | "streaming" | "executing_tools" | "waiting_permission" | "advancing_turn" | "settling" | "budget_paused" | "completed" | "failed" | "aborted";

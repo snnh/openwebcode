@@ -18,6 +18,11 @@ export interface NewSessionValues {
   setupScript?: string;
   workspaceMode?: "managed";
   bindLinks?: { virtPath: string; backingPath: string; readOnly?: boolean }[];
+  /** 会话级工具限制：逗号分隔的内置工具名（留空 = 不限制）。 */
+  toolsAllow?: string[];
+  toolsDeny?: string[];
+  /** 备选模型链（最多 3 条 provider/model；留空不提交）。 */
+  fallbackModels?: { provider: string; model: string }[];
 }
 
 const SANDBOX_MODE_LABELS: Record<SandboxMode, [string, string]> = {
@@ -54,6 +59,9 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
   const [agentMode, setAgentMode] = useState<"plan" | "code" | "goal">("code");
   const [managedCaps, setManagedCaps] = useState<ManagedWorkspaceCapability | undefined>();
   const [bindLinks, setBindLinks] = useState<{ virtPath: string; backingPath: string; readOnly: boolean }[]>([]);
+  const [toolsAllow, setToolsAllow] = useState("");
+  const [toolsDeny, setToolsDeny] = useState("");
+  const [fallbacks, setFallbacks] = useState<{ provider: string; model: string }[]>([]);
 
   const dialogModels = models.filter((item) => providers.includes(item.provider));
   const selectedModel = dialogModels.find((item) => item.id === model && item.provider === provider);
@@ -120,6 +128,17 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
   const validBindLinks = bindLinks
     .map((link) => ({ virtPath: link.virtPath.trim(), backingPath: link.backingPath.trim(), ...(link.readOnly ? { readOnly: true as const } : {}) }))
     .filter((link) => link.virtPath.length > 0 && link.backingPath.length > 0);
+  // 工具限制输入：逗号分隔、逐项 trim、空项丢弃；留空 = 不限制（不提交字段）
+  const parseToolList = (value: string): string[] => value.split(",").map((name) => name.trim()).filter((name) => name.length > 0);
+  const parsedToolsAllow = parseToolList(toolsAllow);
+  const parsedToolsDeny = parseToolList(toolsDeny);
+  // 备选模型：剔除与主模型重复及彼此重复的行（服务端校验同款规则兜底）；留空 = 不提交
+  const parsedFallbacks = fallbacks
+    .filter((entry) => entry.provider && entry.model && !(entry.provider === provider && entry.model === model))
+    .filter((entry, index, all) => all.findIndex((other) => other.provider === entry.provider && other.model === entry.model) === index)
+    .slice(0, 3);
+  // 备选模型可选项：排除当前主模型
+  const fallbackOptions = dialogModels.filter((item) => !(item.provider === provider && item.id === model));
 
   const fallbackTitle = cwd.trim().split(/[\\/]/).filter(Boolean).pop() ?? "";
   const noProviders = providers.length === 0;
@@ -156,6 +175,9 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
             ...(sandboxMode === "wsb" && setupScript.trim() ? { setupScript: setupScript.trim() } : {}),
             ...(workspaceMode === "managed" ? { workspaceMode } : {}),
             ...(validBindLinks.length ? { bindLinks: validBindLinks } : {}),
+            ...(parsedToolsAllow.length ? { toolsAllow: parsedToolsAllow } : {}),
+            ...(parsedToolsDeny.length ? { toolsDeny: parsedToolsDeny } : {}),
+            ...(parsedFallbacks.length ? { fallbackModels: parsedFallbacks } : {}),
           });
         }}
       >
@@ -223,6 +245,44 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
         {noModels && (
           <p className="muted-empty dialog-hint">{t("已启用的服务商尚无可用模型。请在设置中刷新模型列表，或为服务商手动添加模型。", "Enabled providers have no models. Refresh the model catalog or add a manual model for a provider in Settings.")}{onOpenSettings && <>{" "}<button type="button" className="dialog-hint-link" onClick={() => onOpenSettings("models")}>{t("前往模型目录 →", "Open catalog →")}</button></>}</p>
         )}
+        <div className="bindlink-editor">
+          <div className="bindlink-editor-header">
+            <span>{t("备选模型（可选）", "Fallback models (optional)")}</span>
+            <button
+              type="button"
+              className="btn"
+              disabled={fallbacks.length >= 3 || fallbackOptions.length === 0}
+              onClick={() => {
+                const first = fallbackOptions.find((item) => !fallbacks.some((entry) => entry.provider === item.provider && entry.model === item.id));
+                if (first) setFallbacks([...fallbacks, { provider: first.provider, model: first.id }]);
+              }}
+            >
+              {t("添加备选", "Add fallback")}
+            </button>
+          </div>
+          {fallbacks.map((entry, index) => (
+            <div className="bindlink-row" key={index}>
+              <select
+                className="input"
+                value={JSON.stringify([entry.provider, entry.model])}
+                aria-label={t("备选模型", "Fallback model")}
+                onChange={(event) => {
+                  const next = dialogModels.find((item) => JSON.stringify([item.provider, item.id]) === event.target.value);
+                  if (next) setFallbacks(fallbacks.map((item, i) => (i === index ? { provider: next.provider, model: next.id } : item)));
+                }}
+              >
+                {fallbackOptions.map((item) => {
+                  const value = JSON.stringify([item.provider, item.id]);
+                  return <option key={value} value={value}>{t(`${item.id}【${item.provider}】`, `${item.id} (${item.provider})`)}</option>;
+                })}
+              </select>
+              <button type="button" className="btn" onClick={() => setFallbacks(fallbacks.filter((_, i) => i !== index))}>{t("移除", "Remove")}</button>
+            </div>
+          ))}
+          {fallbacks.length > 0 && (
+            <p className="muted-empty dialog-hint">{t("主模型因限流/过载等可恢复错误重试耗尽后，按顺序切换到备选模型继续本轮任务（最多 3 个，每个只尝试一次）。", "If the primary model exhausts retries on a recoverable error (rate limit / overload etc.), the run continues on the next fallback model (up to 3, each tried once).")}</p>
+          )}
+        </div>
         <label className="settings-field">
           <span>{t("模式", "Mode")}</span>
           <select className="input" value={agentMode} onChange={(event) => setAgentMode(event.target.value as "plan" | "code" | "goal")}>
@@ -328,6 +388,24 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
             )}
           </div>
         )}
+        <label className="settings-field">
+          <span>{t("工具白名单（可选）", "Tool allowlist (optional)")}</span>
+          <input
+            className="input"
+            value={toolsAllow}
+            onChange={(event) => setToolsAllow(event.target.value)}
+            placeholder={t("逗号分隔内置工具名，如 read_file,glob,grep；留空 = 不限制", "Comma-separated built-in tool names, e.g. read_file,glob,grep; empty = no limit")}
+          />
+        </label>
+        <label className="settings-field">
+          <span>{t("工具黑名单（可选）", "Tool denylist (optional)")}</span>
+          <input
+            className="input"
+            value={toolsDeny}
+            onChange={(event) => setToolsDeny(event.target.value)}
+            placeholder={t("逗号分隔内置工具名，如 bash,write_file；在白名单结果上再剔除", "Comma-separated built-in tool names, e.g. bash,write_file; removed on top of the allowlist")}
+          />
+        </label>
         <div className="dialog-actions">
           <button type="button" className="btn" onClick={onClose}>{t("取消", "Cancel")}</button>
           <button type="submit" className="btn primary" disabled={busy || noProviders || noModels || !cwd.trim() || !model}>{busy ? t("创建中…", "Creating…") : t("创建", "Create")}</button>

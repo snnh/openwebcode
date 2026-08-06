@@ -144,6 +144,7 @@ describe("设置分组迁移（服务设置页签移除后）", () => {
         label: "语言与货币",
         fields: [
           { key: "defaultCurrency", label: "默认货币", type: "select", options: [{ value: "USD", label: "USD" }, { value: "CNY", label: "CNY" }], value: "CNY", hasValue: true, source: "default", editable: true, restartRequired: false, nullable: false },
+          { key: "offlineMode", label: "离线模式", type: "boolean", value: false, hasValue: true, source: "default", editable: true, restartRequired: false, nullable: false },
         ],
       },
       {
@@ -223,5 +224,16 @@ describe("设置分组迁移（服务设置页签移除后）", () => {
     expect(await view.findByLabelText("默认货币")).toBeInTheDocument();
     expect(view.getByRole("heading", { name: "语言与货币", level: 4 })).toBeInTheDocument();
     expect(view.queryByLabelText("数据目录")).toBeNull();
+  });
+
+  it("离线模式开关随通用分组渲染，镜像布尔字段写法", async () => {
+    vi.spyOn(api, "settings").mockResolvedValue(mixed);
+    const view = renderWithClient(<ServerSettingsFields showGroup={(groupId) => groupId === "general"} />);
+    expect(await view.findByText("离线模式")).toBeInTheDocument();
+    // 布尔字段渲染为 checkbox（无 aria-label，文案在字段头部），默认关
+    const toggle = view.getByRole("checkbox");
+    expect(toggle).not.toBeChecked();
+    expect(toggle).toBeEnabled();
+    expect(view.getByText("关闭")).toBeInTheDocument();
   });
 });

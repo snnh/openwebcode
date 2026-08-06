@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./lib/api";
 import { extractAttachmentPaths, toAttachments } from "./lib/attachments";
-import type { AgentErrorPayload, AppEvent, BackgroundTaskInfo, ChatMessage, ContextUsage, ContextWatermark, SessionDetail, TodoItem } from "./lib/contracts";
+import type { AgentErrorPayload, AppEvent, BackgroundTaskInfo, ChatMessage, ContextUsage, ContextWatermark, ModelFallbackPayload, SessionDetail, TodoItem } from "./lib/contracts";
 import { agentErrorToastText } from "./lib/agent-error";
 import { deriveWindowInfo } from "./lib/context-window";
 import { formatCurrency } from "./lib/format";
@@ -394,6 +394,14 @@ export function App(): ReactElement {
         if (event.type === "agent.error") {
           // toast 只给一句话摘要（按 kind 分类），原始错误细节留在轨道上的错误卡中
           notify(agentErrorToastText(event.payload as Partial<AgentErrorPayload>, t), "error");
+        }
+        // 模型 fallback 切换：run 继续，提示新生效模型与原因
+        if (event.type === "agent.model_fallback") {
+          const fallback = event.payload as ModelFallbackPayload;
+          notify(t(
+            `模型已切换：${fallback.from.provider}/${fallback.from.model} → ${fallback.to.provider}/${fallback.to.model}（${fallback.message}）`,
+            `Model switched: ${fallback.from.provider}/${fallback.from.model} → ${fallback.to.provider}/${fallback.to.model} (${fallback.message})`,
+          ));
         }
         if (event.type === "todos.updated") {
           queryClient.setQueryData<TodoItem[]>(["todos", event.sessionId], (event.payload as { items?: TodoItem[] }).items ?? []);
