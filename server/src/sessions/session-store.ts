@@ -7,7 +7,7 @@ import { parseSessionImport, serializeSession } from "./session-transfer.js";
 import { activePathMessages } from "./session-tree.js";
 import { defaultSandboxPolicy } from "./default-sandbox.js";
 import { readMessagesTail, readMessagesBefore, checkRecovery, DEFAULT_PAGE_SIZE } from "./message-reader.js";
-import type { BindLinkSpec, ChatMessage, ManagedWorkspaceMeta, MessageContent, MessageRole, MessagesPage, SandboxMode, SandboxNetwork, SessionDetail, SessionMeta } from "./types.js";
+import type { BindLinkSpec, ChatMessage, FallbackModelEntry, ManagedWorkspaceMeta, MessageContent, MessageRole, MessagesPage, SandboxMode, SandboxNetwork, SessionDetail, SessionMeta } from "./types.js";
 
 /** readMessages 整表缓存条数上限（与 message-reader 的索引缓存同一 LRU 纪律）。 */
 const MAX_CACHED_MESSAGE_LISTS = 32;
@@ -42,6 +42,11 @@ export interface CreateSessionInput {
   workspace?: ManagedWorkspaceMeta;
   /** 托管工作区预设快照后端名（vhdx-chain/qcow2-chain），跳过探测 */
   snapshotBackend?: string;
+  /** 会话级内置工具白名单/黑名单（非空才落盘；语义见 SessionMeta.toolsAllow）。 */
+  toolsAllow?: string[];
+  toolsDeny?: string[];
+  /** 会话级备选模型链（非空才落盘；语义见 SessionMeta.fallbackModels）。 */
+  fallbackModels?: FallbackModelEntry[];
 }
 
 export class SessionStore {
@@ -50,6 +55,9 @@ export class SessionStore {
 
   /** 按会话 id 的 LRU 消息整表缓存；agent loop 每轮 get() 不再整份重解析。 */
   private readonly messagesCache = new Map<string, MessagesCacheEntry>();
+
+  /** appendMessage 的每会话串行化链：并发追加大消息时底层多次 write 可能交织坏行。 */
+  private readonly appendChains = new Map<string, Promise<void>>();
 
   constructor(private readonly root: string) {}
 
@@ -83,6 +91,11 @@ export class SessionStore {
     if (input.sandboxMode && input.sandboxMode !== "jobobject") meta.sandboxMode = input.sandboxMode;
     if (input.setupScript?.trim()) meta.setupScript = input.setupScript;
     if (input.agentMode === "plan" || input.agentMode === "goal") meta.agentMode = input.agentMode;
+    // 工具白名单/黑名单：空数组等同未设置，不落盘
+    if (input.toolsAllow?.length) meta.toolsAllow = input.toolsAllow;
+    if (input.toolsDeny?.length) meta.toolsDeny = input.toolsDeny;
+    // 备选模型链：空数组等同未设置，不落盘
+    if (input.fallbackModels?.length) meta.fallbackModels = input.fallbackModels;
     // overlayfs 托管会话在 create 前已 provision（stateRoot 位于会话目录下），目录已存在属预期
     await mkdir(this.sessionPath(meta.id), { recursive: input.workspace?.backend === "overlayfs" });
     await chmodPrivate(this.sessionPath(meta.id), 0o700);
@@ -170,6 +183,23 @@ export class SessionStore {
     content: MessageContent[],
     lineage?: Pick<ChatMessage, "parentId" | "runId" | "turnId">,
   ): Promise<ChatMessage> {
+    // 每会话串行化：大消息并发追加时 appendFile 的多次 write 可能交织坏行（JSONL 破坏）
+    const run = (this.appendChains.get(sessionId) ?? Promise.resolve()).then(() => this.appendMessageSerialized(sessionId, role, content, lineage));
+    const tail = run.then(() => undefined, () => undefined);
+    this.appendChains.set(sessionId, tail);
+    // 链尾结算后自清，避免 Map 随会话数泄漏
+    void tail.then(() => {
+      if (this.appendChains.get(sessionId) === tail) this.appendChains.delete(sessionId);
+    });
+    return run;
+  }
+
+  private async appendMessageSerialized(
+    sessionId: string,
+    role: MessageRole,
+    content: MessageContent[],
+    lineage?: Pick<ChatMessage, "parentId" | "runId" | "turnId">,
+  ): Promise<ChatMessage> {
     const meta = await this.readMeta(sessionId);
     const existing = meta.activeLeafId ? undefined : await this.readMessages(sessionId);
     const parentId = lineage?.parentId ?? meta.activeLeafId ?? existing?.messages.at(-1)?.id;
@@ -203,7 +233,7 @@ export class SessionStore {
     return message;
   }
 
-  async updateConfig(id: string, update: Pick<SessionMeta, "provider" | "model"> & Partial<Pick<SessionMeta, "thinking" | "effort" | "agentMode" | "snapshotMode" | "shellBackend" | "pythonEnv" | "persona" | "swarmEnabled" | "reviewModel">>): Promise<SessionMeta> {
+  async updateConfig(id: string, update: Pick<SessionMeta, "provider" | "model"> & Partial<Pick<SessionMeta, "thinking" | "effort" | "agentMode" | "snapshotMode" | "shellBackend" | "pythonEnv" | "nodeEnv" | "persona" | "swarmEnabled" | "reviewModel" | "toolsAllow" | "toolsDeny" | "fallbackModels">>): Promise<SessionMeta> {
     const meta = await this.readMeta(id);
     meta.provider = update.provider;
     meta.model = update.model;
@@ -219,12 +249,22 @@ export class SessionStore {
     else meta.shellBackend = update.shellBackend;
     if (update.pythonEnv === undefined || update.pythonEnv === "global") delete meta.pythonEnv;
     else meta.pythonEnv = update.pythonEnv;
+    if (update.nodeEnv === undefined || update.nodeEnv === "global") delete meta.nodeEnv;
+    else meta.nodeEnv = update.nodeEnv;
     if (update.persona === undefined || update.persona === "") delete meta.persona;
     else meta.persona = update.persona;
     if (update.swarmEnabled !== true) delete meta.swarmEnabled;
     else meta.swarmEnabled = true;
     // reviewModel 不做清除语义：仅显式提供时更新
     if (update.reviewModel !== undefined) meta.reviewModel = update.reviewModel;
+    // 工具白名单/黑名单：undefined 或空数组 = 清除（与 nodeEnv 的 global 清除语义同款）
+    if (update.toolsAllow === undefined || update.toolsAllow.length === 0) delete meta.toolsAllow;
+    else meta.toolsAllow = update.toolsAllow;
+    if (update.toolsDeny === undefined || update.toolsDeny.length === 0) delete meta.toolsDeny;
+    else meta.toolsDeny = update.toolsDeny;
+    // 备选模型链：undefined 或空数组 = 清除（与 toolsAllow 同款语义）
+    if (update.fallbackModels === undefined || update.fallbackModels.length === 0) delete meta.fallbackModels;
+    else meta.fallbackModels = update.fallbackModels;
     meta.updatedAt = new Date().toISOString();
     await this.writeMeta(meta);
     return meta;
@@ -442,7 +482,7 @@ export class SessionStore {
     if (!source) throw new Error("Session not found");
     if (path.resolve(cwd) === source.cwd) throw new Error("A cloned session requires a different workspace directory");
     const meta = await this.create({ cwd, provider: source.provider, model: source.model, title: title ?? `${source.title} (clone)`, ...(source.agentMode ? { agentMode: source.agentMode } : {}), ...(source.sandboxMode ? { sandboxMode: source.sandboxMode } : {}), ...(source.setupScript ? { setupScript: source.setupScript } : {}) });
-    if (source.thinking !== undefined || source.effort !== undefined || source.snapshotMode !== undefined || source.shellBackend !== undefined || source.pythonEnv !== undefined || source.persona !== undefined || source.swarmEnabled !== undefined || source.reviewModel !== undefined) await this.updateConfig(meta.id, { provider: source.provider, model: source.model, ...(source.thinking ? { thinking: source.thinking } : {}), ...(source.effort ? { effort: source.effort } : {}), ...(source.agentMode ? { agentMode: source.agentMode } : {}), ...(source.snapshotMode ? { snapshotMode: source.snapshotMode } : {}), ...(source.shellBackend ? { shellBackend: source.shellBackend } : {}), ...(source.pythonEnv ? { pythonEnv: source.pythonEnv } : {}), ...(source.persona ? { persona: source.persona } : {}), ...(source.swarmEnabled ? { swarmEnabled: true } : {}), ...(source.reviewModel ? { reviewModel: source.reviewModel } : {}) });
+    if (source.thinking !== undefined || source.effort !== undefined || source.snapshotMode !== undefined || source.shellBackend !== undefined || source.pythonEnv !== undefined || source.nodeEnv !== undefined || source.persona !== undefined || source.swarmEnabled !== undefined || source.reviewModel !== undefined || source.toolsAllow !== undefined || source.toolsDeny !== undefined) await this.updateConfig(meta.id, { provider: source.provider, model: source.model, ...(source.thinking ? { thinking: source.thinking } : {}), ...(source.effort ? { effort: source.effort } : {}), ...(source.agentMode ? { agentMode: source.agentMode } : {}), ...(source.snapshotMode ? { snapshotMode: source.snapshotMode } : {}), ...(source.shellBackend ? { shellBackend: source.shellBackend } : {}), ...(source.pythonEnv ? { pythonEnv: source.pythonEnv } : {}), ...(source.nodeEnv ? { nodeEnv: source.nodeEnv } : {}), ...(source.persona ? { persona: source.persona } : {}), ...(source.swarmEnabled ? { swarmEnabled: true } : {}), ...(source.reviewModel ? { reviewModel: source.reviewModel } : {}), ...(source.toolsAllow?.length ? { toolsAllow: source.toolsAllow } : {}), ...(source.toolsDeny?.length ? { toolsDeny: source.toolsDeny } : {}) });
     for (const message of source.messages) await this.appendMessage(meta.id, message.role, message.content, { ...(message.runId ? { runId: message.runId } : {}), ...(message.turnId ? { turnId: message.turnId } : {}) });
     return (await this.get(meta.id))!;
   }
@@ -476,7 +516,7 @@ export class SessionStore {
     const leafId = messageId ?? source.activeLeafId ?? source.messages.at(-1)?.id;
     const activePath = leafId ? activePathMessages(source.messages, leafId) : [];
     const meta = await this.create({ cwd: source.cwd, provider: source.provider, model: source.model, title: `${source.title} (分支)`, ...(source.agentMode ? { agentMode: source.agentMode } : {}), ...(source.sandboxMode ? { sandboxMode: source.sandboxMode } : {}), ...(source.setupScript ? { setupScript: source.setupScript } : {}) });
-    if (source.thinking !== undefined || source.effort !== undefined || source.snapshotMode !== undefined || source.shellBackend !== undefined || source.pythonEnv !== undefined || source.persona !== undefined || source.swarmEnabled !== undefined || source.reviewModel !== undefined) await this.updateConfig(meta.id, { provider: source.provider, model: source.model, ...(source.thinking ? { thinking: source.thinking } : {}), ...(source.effort ? { effort: source.effort } : {}), ...(source.agentMode ? { agentMode: source.agentMode } : {}), ...(source.snapshotMode ? { snapshotMode: source.snapshotMode } : {}), ...(source.shellBackend ? { shellBackend: source.shellBackend } : {}), ...(source.pythonEnv ? { pythonEnv: source.pythonEnv } : {}), ...(source.persona ? { persona: source.persona } : {}), ...(source.swarmEnabled ? { swarmEnabled: true } : {}), ...(source.reviewModel ? { reviewModel: source.reviewModel } : {}) });
+    if (source.thinking !== undefined || source.effort !== undefined || source.snapshotMode !== undefined || source.shellBackend !== undefined || source.pythonEnv !== undefined || source.nodeEnv !== undefined || source.persona !== undefined || source.swarmEnabled !== undefined || source.reviewModel !== undefined || source.toolsAllow !== undefined || source.toolsDeny !== undefined) await this.updateConfig(meta.id, { provider: source.provider, model: source.model, ...(source.thinking ? { thinking: source.thinking } : {}), ...(source.effort ? { effort: source.effort } : {}), ...(source.agentMode ? { agentMode: source.agentMode } : {}), ...(source.snapshotMode ? { snapshotMode: source.snapshotMode } : {}), ...(source.shellBackend ? { shellBackend: source.shellBackend } : {}), ...(source.pythonEnv ? { pythonEnv: source.pythonEnv } : {}), ...(source.nodeEnv ? { nodeEnv: source.nodeEnv } : {}), ...(source.persona ? { persona: source.persona } : {}), ...(source.swarmEnabled ? { swarmEnabled: true } : {}), ...(source.reviewModel ? { reviewModel: source.reviewModel } : {}), ...(source.toolsAllow?.length ? { toolsAllow: source.toolsAllow } : {}), ...(source.toolsDeny?.length ? { toolsDeny: source.toolsDeny } : {}) });
     for (const message of activePath) await this.appendMessage(meta.id, message.role, message.content, { ...(message.runId ? { runId: message.runId } : {}), ...(message.turnId ? { turnId: message.turnId } : {}) });
     return (await this.get(meta.id))!;
   }

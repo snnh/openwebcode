@@ -21,6 +21,7 @@ import {
   venvActivationCommand,
 } from "../src/agent/persistent-shell.js";
 import { UvPythonEnvironments } from "../src/python-env.js";
+import { NodeEnvManagers } from "../src/node-env.js";
 import { detectHostShells } from "../src/agent/shell-detect.js";
 import { defaultSandboxPolicy } from "../src/sessions/default-sandbox.js";
 import { SessionStore } from "../src/sessions/session-store.js";
@@ -135,6 +136,14 @@ describe("SentinelParser（纯单测）", () => {
     expect(parser.feed(colored)).toBe(0);
     expect(parser.output()).toBe("hello");
     expect(stripAnsi("\x1b]0;title\x07rest")).toBe("rest");
+  });
+
+  it("rawTail 上限：未终结的超长 OSC 按普通文本放行，后续 sentinel 正常命中", () => {
+    const { parser } = makeParser();
+    // 未终结 OSC 超过 4KB：不设上限时残段会把后续每个 chunk（含 sentinel）一并吞进 rawTail
+    expect(parser.feed(`${cmdLine}\nout\n\x1b]${"A".repeat(10_000)}`)).toBeNull();
+    expect(parser.feed(`__OWC_DONE_${rand}_7__`)).toBe(7);
+    expect(parser.output()).toContain("out");
   });
 
   it("输出清洗（对齐 pi）：\\r 覆写帧拼接、控制字符与 Unicode Format 字符剥离，\\t 保留", () => {
@@ -275,7 +284,7 @@ function emitOutput(fake: FakePty, text: string): void {
 }
 
 describe("PersistentShellManager（fake core）", () => {
-  const newManager = (core: CoreClientLike) => new PersistentShellManager(core, new UvPythonEnvironments(), () => "global");
+  const newManager = (core: CoreClientLike) => new PersistentShellManager(core, new UvPythonEnvironments(), () => "global", new NodeEnvManagers(), () => "global");
 
   // ensureShell 现在有两次 sentinel 往返：init（cd/激活）+ 用户命令。应答输入流中所有尚未应答的 rand。
   const acked = new Set<string>();
@@ -321,6 +330,19 @@ describe("PersistentShellManager（fake core）", () => {
       expect(sent).toContain("cd 'D:\\work'"); // posix init 归一 cwd
     }
     expect(sent).toContain("echo hi");
+  });
+
+  it("开壳激活会话元数据环境变量（OWC_SESSION_ID/OWC_WORKSPACE 等随 init 注入一次）", async () => {
+    const fake = makeFakePtyCore();
+    const manager = newManager(fake.core);
+    const session = fakeSession("s1");
+    await runDriven(fake, manager, session, "echo hi");
+    const sent = decodeInputs(fake);
+    expect(sent).toContain("OWC_SESSION_ID");
+    expect(sent).toContain("s1");
+    expect(sent).toContain("OWC_WORKSPACE");
+    expect(sent).toContain("OWC_SANDBOX_MODE");
+    expect(sent).toContain("OWC_AGENT_MODE");
   });
 
   it("同会话 bash 调用串行化：第二条输入在第一条 sentinel 结算后才下发", async () => {
@@ -406,6 +428,19 @@ describe("PersistentShellManager（fake core）", () => {
     expect(fake.closeCalls).toEqual([1]);
   });
 
+  it("disposeSession 一并清理串行化队列条目（session:backend → Promise 不随会话数泄漏）", async () => {
+    // 不支持 pty 的 core：run 直接 Unavailable，但 session:backend 的队列条目已写入
+    const manager = newManager(makeFakeCore());
+    await expect(manager.run(fakeSession("s1"), "echo hi", new AbortController().signal))
+      .rejects.toBeInstanceOf(PersistentShellUnavailableError);
+    await expect(manager.run(fakeSession("s2"), "echo hi", new AbortController().signal))
+      .rejects.toBeInstanceOf(PersistentShellUnavailableError);
+    const queues = (manager as unknown as { queues: Map<string, Promise<unknown>> }).queues;
+    expect([...queues.keys()].sort()).toEqual(["s1:cmd", "s2:cmd"]);
+    manager.disposeSession("s1");
+    expect([...queues.keys()]).toEqual(["s2:cmd"]);
+  });
+
   it("init 非零（shell 进不了 cwd）抛 Unavailable 并缓存，后续直接回退不再开 pty", async () => {
     const fake = makeFakePtyCore();
     const manager = newManager(fake.core);
@@ -449,7 +484,7 @@ describe.skipIf(!hasCore)("PersistentShellManager（真 core）", () => {
     clients.push(client);
     await client.start();
     await client.configureSession({ sessionId: session.id, cwd: session.cwd, sandbox: meta.sandbox ?? defaultSandboxPolicy(session.cwd) });
-    const manager = new PersistentShellManager(client, new UvPythonEnvironments(), () => "global");
+    const manager = new PersistentShellManager(client, new UvPythonEnvironments(), () => "global", new NodeEnvManagers(), () => "global");
     const controller = new AbortController();
     const run = (cmd: string) => manager.run(meta, cmd, controller.signal);
     return { root, session, meta, client, manager, controller, run };

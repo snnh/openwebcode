@@ -127,6 +127,77 @@ describe("headless CLI（owc run）", () => {
   }, 40_000);
 });
 
+describe("CLI 工具限制旗标", () => {
+  it("--read-only 与 --tools 互斥：报错误退出码 1，不连接 server", async () => {
+    const result = await runCli(["run", "hi", "--read-only", "--tools", "read_file"], 10_000);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("互斥");
+  }, 30_000);
+
+  it("--tools / --exclude-tools 缺值：打印用法退出码 1", async () => {
+    for (const args of [["run", "hi", "--tools"], ["run", "hi", "--exclude-tools"]]) {
+      const result = await runCli(args, 10_000);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("用法");
+    }
+  }, 30_000);
+
+  it("--tools/--exclude-tools：新建会话携带 toolsAllow/toolsDeny 并持久化", async () => {
+    const harness = await setup(textProvider);
+    try {
+      const result = await runCli(["run", "say hi", "--cwd", harness.root, "--server", harness.baseUrl, "--tools", "read_file, grep ,", "--exclude-tools", "grep"], 40_000);
+      expect(result.code).toBe(0);
+      const created = (await harness.sessions.list()).find((session) => session.toolsAllow !== undefined);
+      expect(created).toMatchObject({ toolsAllow: ["read_file", "grep"], toolsDeny: ["grep"] });
+    } finally {
+      await harness.app.close();
+    }
+  }, 50_000);
+
+  it("--read-only：等价 toolsAllow=只读集（含 read_file，不含 bash/write_file）", async () => {
+    const harness = await setup(textProvider);
+    try {
+      const result = await runCli(["run", "say hi", "--cwd", harness.root, "--server", harness.baseUrl, "--read-only"], 40_000);
+      expect(result.code).toBe(0);
+      const created = (await harness.sessions.list()).find((session) => session.toolsAllow !== undefined);
+      expect(created?.toolsAllow).toContain("read_file");
+      expect(created?.toolsAllow).toContain("repo_map");
+      expect(created?.toolsAllow).not.toContain("bash");
+      expect(created?.toolsAllow).not.toContain("write_file");
+    } finally {
+      await harness.app.close();
+    }
+  }, 50_000);
+});
+
+describe("CLI --fallback-models", () => {
+  it("格式错误（缺 / 或空段）：报错误退出码 1，不连接 server", async () => {
+    for (const value of ["no-slash", "/model", "provider/"]) {
+      const result = await runCli(["run", "hi", "--fallback-models", value], 10_000);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("--fallback-models 格式错误");
+    }
+  }, 30_000);
+
+  it("超过 3 个：报错误退出码 1", async () => {
+    const result = await runCli(["run", "hi", "--fallback-models", "a/1,b/2,c/3,d/4"], 10_000);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("最多 3 个");
+  }, 30_000);
+
+  it("合法：新建会话携带 fallbackModels 并持久化（重复项被剔除）", async () => {
+    const harness = await setup(textProvider);
+    try {
+      const result = await runCli(["run", "say hi", "--cwd", harness.root, "--server", harness.baseUrl, "--fallback-models", "test-stub/m2, test-stub/m2"], 40_000);
+      expect(result.code).toBe(0);
+      const created = (await harness.sessions.list()).find((session) => session.fallbackModels !== undefined);
+      expect(created?.fallbackModels).toEqual([{ provider: "test-stub", model: "m2" }]);
+    } finally {
+      await harness.app.close();
+    }
+  }, 50_000);
+});
+
 describe("CLI --help", () => {
   it("owc --help / -h：打印双语帮助，退出码 0，无需 server", async () => {
     for (const flag of ["--help", "-h"]) {

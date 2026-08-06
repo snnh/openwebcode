@@ -9,6 +9,8 @@ export interface ThinkingContent {
   type: "thinking";
   text: string;
   signature?: string;
+  /** Anthropic redacted_thinking 块的密文载荷（此时 text 为空）：原样持久化并回传，缺块会 400。 */
+  redacted?: string;
   provider: string;
 }
 
@@ -78,6 +80,8 @@ export type ShellBackend = "default" | "pwsh" | "bash" | "cmd";
 export type CoreShellBackend = "default" | "pwsh" | "bash";
 /** Python 运行环境：global = 本机已有环境（默认）；uv-workspace / uv-config = uv 管理的临时虚拟环境（项目工作区 / 配置目录）。 */
 export type PythonEnv = "global" | "uv-workspace" | "uv-config";
+/** Node 运行环境：global = 本机已有环境（默认）；project = 工作区 node_modules/.bin 前置 PATH；fnm / nvm = 版本管理器激活。 */
+export type NodeEnv = "global" | "project" | "fnm" | "nvm";
 /** 全局 Job Object 资源限制（仅 Windows；字段缺省时 core 用内置默认值 4096 MB / 64 进程） */
 export interface JobObjectLimits {
   memoryMB?: number;
@@ -109,11 +113,19 @@ export interface SandboxPolicy {
   bindLinks?: BindLinkSpec[];
 }
 
+/** 会话级备选模型（fallback 链）条目：主模型在 run 中可恢复错误重试耗尽后按序切换。 */
+export interface FallbackModelEntry {
+  provider: string;
+  model: string;
+}
+
 export interface SessionMeta {
   id: string;
   cwd: string;
   provider: string;
   model: string;
+  /** 备选模型链（最多 3 个，校验时剔除与主模型重复或彼此重复项）；仅主循环 run 生效，子代理不继承（子代理走角色模型链）。 */
+  fallbackModels?: FallbackModelEntry[];
   thinking?: "adaptive" | "enabled" | "disabled";
   effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
   agentMode?: "plan" | "code" | "goal";
@@ -134,12 +146,18 @@ export interface SessionMeta {
   shellBackend?: ShellBackend;
   /** Python 运行环境；undefined = 跟随全局默认（settings 的 pythonEnv，缺省本机环境）。 */
   pythonEnv?: PythonEnv;
+  /** Node 运行环境；undefined = 跟随全局默认（settings 的 nodeEnv，缺省本机环境）。 */
+  nodeEnv?: NodeEnv;
   /** env-sim 人格预设 id（会话级覆盖）；undefined = 跟随扩展全局 config.persona。 */
   persona?: string;
   /** 会话级扩展状态（key=扩展 id，value 为该扩展自定义的 JSON 对象）；通用化替代官方扩展私货字段。 */
   extensionState?: Record<string, Record<string, unknown>>;
   /** 并行子代理（spawn_swarm）开关；true = 注入工具与鼓励段落，undefined/false = 关闭。 */
   swarmEnabled?: boolean;
+  /** 会话级内置工具白名单：非空 = 仅暴露名单内内置工具（交互类工具始终保留；未知名静默忽略）。 */
+  toolsAllow?: string[];
+  /** 会话级内置工具黑名单：在 toolsAllow 结果上再剔除（同样不触及交互类与 MCP/扩展工具）。 */
+  toolsDeny?: string[];
   /** 选择性上下文（§4.4）：pin 的消息 id/文件路径（不被驱逐）。 */
   contextPins?: string[];
   /** 上下文排除路径 glob（不进上下文组装/repo map/索引；不是安全边界）。 */

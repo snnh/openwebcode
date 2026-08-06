@@ -80,6 +80,8 @@ describe("session model config", () => {
       expect(invalidShell.statusCode).toBe(400);
       const invalidPythonEnv = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { pythonEnv: "conda" } });
       expect(invalidPythonEnv.statusCode).toBe(400);
+      const invalidNodeEnv = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { nodeEnv: "volta" } });
+      expect(invalidNodeEnv.statusCode).toBe(400);
       const invalidSwarm = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { swarmEnabled: "yes" } });
       expect(invalidSwarm.statusCode).toBe(400);
       const modes = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { sandboxMode: "off", snapshotMode: "manual", shellBackend: "pwsh", pythonEnv: "uv-workspace" } });
@@ -90,6 +92,14 @@ describe("session model config", () => {
       const cleared = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { pythonEnv: "global" } });
       expect(cleared.statusCode).toBe(200);
       expect(await sessions.get(session.id)).not.toHaveProperty("pythonEnv");
+      // nodeEnv 与 pythonEnv 同款：合法值持久化，global 置回时从元数据清除
+      const nodeSet = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { nodeEnv: "fnm" } });
+      expect(nodeSet.statusCode).toBe(200);
+      expect(nodeSet.json()).toMatchObject({ nodeEnv: "fnm" });
+      expect(await sessions.get(session.id)).toMatchObject({ nodeEnv: "fnm" });
+      const nodeCleared = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { nodeEnv: "global" } });
+      expect(nodeCleared.statusCode).toBe(200);
+      expect(await sessions.get(session.id)).not.toHaveProperty("nodeEnv");
       // 并行子代理开关：true 持久化，false 从元数据清除
       const swarmOn = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { swarmEnabled: true } });
       expect(swarmOn.statusCode).toBe(200);

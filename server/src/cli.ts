@@ -4,6 +4,7 @@
 
 import WebSocket from "ws";
 import { getServerVersion, readServerVersion } from "./version.js";
+import { READ_ONLY_TOOL_NAMES } from "./agent/tool-schemas.js";
 
 interface CliOptions {
   prompt: string;
@@ -15,6 +16,14 @@ interface CliOptions {
   json: boolean;
   yolo: boolean;
   accessToken?: string | undefined;
+  /** 会话级内置工具白名单（--tools；--read-only 时取 READ_ONLY_TOOL_NAMES）。 */
+  tools?: string[];
+  /** 会话级内置工具黑名单（--exclude-tools）。 */
+  excludeTools?: string[];
+  /** 便捷旗标：等价于 --tools <只读集>；与 --tools 互斥。 */
+  readOnly: boolean;
+  /** 会话级备选模型链（--fallback-models provider/model,...，最多 3 个）。 */
+  fallbackModels?: Array<{ provider: string; model: string }>;
 }
 
 interface StreamEvent {
@@ -43,6 +52,10 @@ function helpText(): string {
     "  --session ID    复用已有会话（缺省新建）  Reuse an existing session (a new one is created otherwise)\n" +
     "  --json          以 NDJSON 输出事件流  Emit the event stream as NDJSON\n" +
     "  --yolo          自动批准权限请求  Auto-approve permission requests\n" +
+    "  --tools LIST    仅暴露名单内内置工具（逗号分隔）  Only expose the listed built-in tools (comma-separated)\n" +
+    "  --exclude-tools LIST  再剔除名单内内置工具  Additionally exclude the listed built-in tools\n" +
+    "  --read-only     只读模式（等价于 --tools 只读集；与 --tools 互斥）  Read-only mode (equivalent to --tools with the read-only set; mutually exclusive with --tools)\n" +
+    "  --fallback-models LIST  备选模型链（provider/model 逗号分隔，最多 3 个）  Fallback model chain (provider/model pairs, comma-separated, at most 3)\n" +
     "\n" +
     "退出码 Exit codes:\n" +
     "  0  任务完成  Completed\n" +
@@ -65,7 +78,7 @@ function usage(): never {
 
 function parseArgs(argv: string[]): CliOptions {
   if (argv[0] !== "run") usage();
-  const options: CliOptions = { prompt: "", cwd: process.cwd(), server: "http://127.0.0.1:3210", json: false, yolo: false, accessToken: process.env.OWC_ACCESS_TOKEN };
+  const options: CliOptions = { prompt: "", cwd: process.cwd(), server: "http://127.0.0.1:3210", json: false, yolo: false, readOnly: false, accessToken: process.env.OWC_ACCESS_TOKEN };
   for (let i = 1; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === "--help" || arg === "-h") printHelpAndExit("stdout", 0);
@@ -73,14 +86,38 @@ function parseArgs(argv: string[]): CliOptions {
       options.json = true;
     } else if (arg === "--yolo") {
       options.yolo = true;
-    } else if (arg === "--cwd" || arg === "--provider" || arg === "--model" || arg === "--server" || arg === "--session") {
+    } else if (arg === "--read-only") {
+      options.readOnly = true;
+    } else if (arg === "--cwd" || arg === "--provider" || arg === "--model" || arg === "--server" || arg === "--session" || arg === "--tools" || arg === "--exclude-tools" || arg === "--fallback-models") {
       const value = argv[++i];
       if (!value) usage();
       if (arg === "--cwd") options.cwd = value;
       else if (arg === "--provider") options.provider = value;
       else if (arg === "--model") options.model = value;
       else if (arg === "--server") options.server = value;
-      else options.session = value;
+      else if (arg === "--session") options.session = value;
+      else if (arg === "--fallback-models") {
+        // provider/model 逗号分隔：按首个 "/" 切分（模型 id 自身可含 "/"）；逐项 trim，空项丢弃
+        const entries: Array<{ provider: string; model: string }> = [];
+        for (const item of value.split(",").map((entry) => entry.trim()).filter((entry) => entry.length > 0)) {
+          const slash = item.indexOf("/");
+          if (slash <= 0 || slash === item.length - 1) {
+            process.stderr.write(`--fallback-models 格式错误："${item}"，应为 provider/model  --fallback-models format error: "${item}", expected provider/model\n`);
+            process.exit(1);
+          }
+          entries.push({ provider: item.slice(0, slash), model: item.slice(slash + 1) });
+        }
+        if (entries.length > 3) {
+          process.stderr.write("--fallback-models 最多 3 个备选模型  --fallback-models allows at most 3 entries\n");
+          process.exit(1);
+        }
+        if (entries.length > 0) options.fallbackModels = entries;
+      } else {
+        // 逗号分隔工具名单：逐项 trim，空项丢弃
+        const names = value.split(",").map((name) => name.trim()).filter((name) => name.length > 0);
+        if (arg === "--tools") options.tools = names;
+        else options.excludeTools = names;
+      }
     } else if (arg.startsWith("--")) {
       usage();
     } else if (!options.prompt) {
@@ -88,6 +125,10 @@ function parseArgs(argv: string[]): CliOptions {
     } else {
       usage();
     }
+  }
+  if (options.readOnly && options.tools) {
+    process.stderr.write("--read-only 与 --tools 互斥，请只选一个  --read-only and --tools are mutually exclusive\n");
+    process.exit(1);
   }
   if (!options.prompt) usage();
   return options;
@@ -119,10 +160,15 @@ async function main(): Promise<void> {
   // 1. 会话：--session 复用，否则新建
   let sessionId = options.session;
   if (!sessionId) {
+    // --read-only 等价于 --tools <只读集>（解析期已保证与 --tools 互斥）
+    const toolsAllow = options.readOnly ? [...READ_ONLY_TOOL_NAMES] : options.tools;
     const created = await postJson(`${server}/api/sessions`, {
       cwd: options.cwd,
       ...(options.provider ? { provider: options.provider } : {}),
       ...(options.model ? { model: options.model } : {}),
+      ...(toolsAllow?.length ? { toolsAllow } : {}),
+      ...(options.excludeTools?.length ? { toolsDeny: options.excludeTools } : {}),
+      ...(options.fallbackModels?.length ? { fallbackModels: options.fallbackModels } : {}),
     }, options.accessToken);
     if (!created.ok) {
       process.stderr.write(`创建会话失败（HTTP ${created.status}）：${await created.text()}\n`);

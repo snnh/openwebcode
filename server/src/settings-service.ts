@@ -13,7 +13,7 @@ import type { FastModelClient } from "./fast-model.js";
 import type { ProviderProfilesService } from "./provider-profiles.js";
 import type { ModelRegistry } from "./context/model-registry.js";
 import type { UpdateChecker } from "./update-checker.js";
-import type { PythonEnv } from "./sessions/types.js";
+import type { NodeEnv, PythonEnv } from "./sessions/types.js";
 import type { EffortLevel } from "./context/model-profile.js";
 import { applyProxyConfig, sanitizeProxyUrl, type ProxyApplyResult, type ProxyConfig, type ProxyMode } from "./proxy.js";
 import installDefaultsDocument from "./config/defaults.json" with { type: "json" };
@@ -113,6 +113,7 @@ const GROUPS = [
 
 const LANGUAGE_OPTIONS = ["zh-CN", "en-US", "zh-TW", "ja-JP", "ko-KR", "fr-FR", "de-DE", "es-ES", "ru-RU"];
 const PYTHON_ENV_OPTIONS = ["global", "uv-workspace", "uv-config"];
+const NODE_ENV_OPTIONS = ["global", "project", "fnm", "nvm"];
 const THINKING_OPTIONS = ["disabled", "adaptive", "enabled"];
 const EFFORT_OPTIONS = ["none", "low", "medium", "high", "xhigh", "max", "ultra"];
 const PROXY_MODE_OPTIONS = ["off", "env", "custom"];
@@ -280,6 +281,9 @@ const FIELDS: FieldSpec[] = [
   { key: "defaultSnapshotMode", group: "general", label: "默认快照方式", type: "select", env: "OWC_DEFAULT_SNAPSHOT_MODE", defaultValue: "auto", restartRequired: false, options: ["auto", "manual"], description: "新建会话的检查点创建方式：auto = 每轮用户消息前自动创建；manual = 仅手动创建" },
   { key: "snapshotBackend", group: "general", label: "快照后端", type: "select", env: "OWC_SNAPSHOT_BACKEND", defaultValue: "auto", restartRequired: false, options: ["auto", ...SNAPSHOT_BACKENDS], description: "新建会话的快照后端偏好；auto = 按探测链自动选择（btrfs/zfs/overlayfs → git-shadow）；指定后端在当前工作区不可用时回落自动并告警" },
   { key: "agentMaxTurns", group: "general", label: "单条消息最大轮次", type: "number", env: "OWC_AGENT_MAX_TURNS", defaultValue: 50, restartRequired: false, fromEnv: envNumber, validate: requireAgentMaxTurns, description: "每条用户消息允许的最大 agent 轮次，达到后当前任务以失败收尾；长任务可调大（1–1000）" },
+  // 离线模式（热生效）：只关 server 自身的遥测/更新/同步类出站（更新检查、远程目录/定价后台同步、
+  // 汇率在线刷新）；provider API、web_search/web_fetch、MCP 与扩展联网等用户/agent 主动网络行为不受影响
+  { key: "offlineMode", group: "general", label: "离线模式", type: "boolean", env: "OWC_OFFLINE", defaultValue: false, restartRequired: false, fromEnv: envBoolean, description: "关闭 server 自身的启动期/周期性出站：更新检查、远程模型目录/定价后台同步、汇率在线刷新；不影响模型 API、联网搜索/抓取、MCP 与扩展联网" },
   // 执行器
   { key: "corePath", group: "executor", label: "执行器路径", type: "text", env: "OWC_CORE_PATH", defaultValue: "../build/Debug/owc-exec.exe", runtimeDefault: () => defaultCorePath(), restartRequired: true, validate: requireNonEmpty },
   { key: "coreRequestTimeoutMs", group: "executor", label: "执行器请求超时 (ms)", type: "number", env: "OWC_CORE_REQUEST_TIMEOUT_MS", defaultValue: 130_000, restartRequired: false, fromEnv: envNumber },
@@ -287,6 +291,7 @@ const FIELDS: FieldSpec[] = [
   // filtered 网络档（Windows AppContainer）的 sidecar 代理拦截清单：热生效，sidecar 按 mtime 自重读
   { key: "sandboxProxyDenyList", group: "executor", label: "沙盒代理拦截域名", type: "pathList", env: "OWC_SANDBOX_PROXY_DENY_LIST", defaultValue: [], restartRequired: false, fromEnv: envDomainList, validate: requireDomainList, description: "filtered 网络档生效：每行一个域名（如 example.com，含其子域名），最多 64 个；命中的请求被沙盒代理拒绝（403），保存后对活跃会话热生效" },
   { key: "pythonEnv", group: "executor", label: "Python 环境", type: "select", env: "OWC_PYTHON_ENV", defaultValue: "global", restartRequired: false, options: PYTHON_ENV_OPTIONS, description: "全局默认：bash 工具的 python 运行环境。global = 本机已有环境；uv-workspace = 在项目工作区 .owc/venv 创建 uv 虚拟环境；uv-config = 在数据目录 venvs/ 创建 uv 虚拟环境。会话可在顶栏单独覆盖" },
+  { key: "nodeEnv", group: "executor", label: "Node 环境", type: "select", env: "OWC_NODE_ENV", defaultValue: "global", restartRequired: false, options: NODE_ENV_OPTIONS, description: "全局默认：bash 工具的 node 运行环境。global = 本机已有环境；project = 工作区 node_modules/.bin 前置 PATH；fnm / nvm = 版本管理器激活（fnm 不支持 cmd；nvm 仅 POSIX bash/sh）。会话可在顶栏单独覆盖" },
   // Job Object 资源限制（仅 Windows，重启生效）：注入 CoreRouter 全局下发，留空由 core 用默认值
   { key: "jobObjectMemoryMB", group: "executor", label: "Job 内存上限 (MB)", type: "number", env: "OWC_JOB_MEMORY_MB", defaultValue: null, restartRequired: true, fromEnv: envNumber, validate: requireJobMemoryMB, description: "进程树提交内存上限，缺省 4096；仅 Windows（Job Object）生效" },
   { key: "jobObjectMaxProcesses", group: "executor", label: "Job 进程数上限", type: "number", env: "OWC_JOB_MAX_PROCESSES", defaultValue: null, restartRequired: true, fromEnv: envNumber, validate: requireJobMaxProcesses, description: "进程树活跃进程上限，缺省 64；仅 Windows（Job Object）生效" },
@@ -490,6 +495,7 @@ export class SettingsService {
       defaultLanguage: value("defaultLanguage") as string,
       defaultCurrency: value("defaultCurrency") as "USD" | "CNY",
       pythonEnv: value("pythonEnv") as PythonEnv,
+      nodeEnv: value("nodeEnv") as NodeEnv,
       exchangeRate: {
         ...(typeof exchangeRateUrl === "string" ? { url: exchangeRateUrl } : {}),
         timeoutMs: value("exchangeRateTimeoutMs") as number,
@@ -505,6 +511,7 @@ export class SettingsService {
         ...(typeof value("updateCheckUrl") === "string" ? { url: value("updateCheckUrl") as string } : {}),
         intervalHours: value("updateCheckIntervalHours") as number,
       },
+      offlineMode: value("offlineMode") as boolean,
       proxy: {
         mode: value("proxyMode") as ProxyMode,
         ...(typeof proxyHttp === "string" ? { httpProxy: proxyHttp } : {}),
@@ -659,10 +666,12 @@ export class SettingsService {
       gc.setMaxBytes(this.effective().gcMaxBytes);
       void gc.collect().catch((error: unknown) => process.stderr.write(`[settings] 存储 GC 失败：${error instanceof Error ? error.message : String(error)}\n`));
     }
-    if (changed.some((key) => key.startsWith("updateCheck")) && this.deps.updateChecker) {
+    // 更新检查热应用；离线模式下整体关闭（含手动 refresh——更新检查属纯遥测，无用户刚需入口）
+    if ((changed.some((key) => key.startsWith("updateCheck")) || changed.includes("offlineMode")) && this.deps.updateChecker) {
       const cfg = this.effective().updateCheck;
-      this.deps.updateChecker.configure(cfg);
-      if (cfg.enabled) void this.deps.updateChecker.refresh().catch(() => undefined);
+      const enabled = cfg.enabled && !this.effective().offlineMode;
+      this.deps.updateChecker.configure({ ...cfg, enabled });
+      if (enabled) void this.deps.updateChecker.refresh().catch(() => undefined);
     }
     // 出站代理热重应用：全局 dispatcher 立即替换，摘要已脱敏可写日志
     if (changed.some((key) => key.startsWith("proxy"))) {

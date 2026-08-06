@@ -39,17 +39,20 @@ import {
   CRON_LIST_TOOL,
   EXIT_PLAN_MODE_TOOL,
   FILE_TOOLS,
+  filterBuiltInTools,
   READ_ARTIFACT_TOOL,
   REPO_MAP_TOOL,
   TEST_RUNNER_TOOL,
+  toolAllowedBySession,
   WEB_FETCH_TOOL,
   WEB_SEARCH_TOOL,
 } from "./tool-schemas.js";
 import type { CronScheduler } from "../cron-scheduler.js";
 import { getSnapshotBackend } from "../snapshots/index.js";
 import { digestSwarmBoard, swarmBoardPath } from "./swarm-board.js";
-import type { MessageContent, PythonEnv, SessionMeta } from "../sessions/types.js";
+import type { MessageContent, NodeEnv, PythonEnv, SessionMeta } from "../sessions/types.js";
 import { effectivePythonEnv, UvPythonEnvironments, uvVenvDir, wrapCommandWithNote, wrapCommandWithVenv } from "../python-env.js";
+import { effectiveNodeEnv, NodeEnvManagers, wrapCommandWithNodeEnv } from "../node-env.js";
 import { activePathMessages } from "../sessions/session-tree.js";
 import type { SessionStore } from "../sessions/session-store.js";
 import { defaultSandboxPolicy } from "../sessions/default-sandbox.js";
@@ -72,9 +75,10 @@ import { loadPromptOverride, type PromptOverride } from "./prompts/prompt-overri
 import { RunStore, type AgentRunSnapshot, type AgentRunState } from "./run-store.js";
 import { PersistentShellManager, PersistentShellUnavailableError } from "./persistent-shell.js";
 import { coreExecShell, resolveShell, type ResolvedShell } from "./shell-detect.js";
+import { wrapCommandWithSessionEnv } from "./session-env.js";
 import { MessageQueue, type QueueItem } from "./message-queue.js";
 import { InteractionCoordinator, type InteractionKind, type InteractionRequest } from "./interaction-coordinator.js";
-import { ModelRoleResolver, MODEL_ROLES, isModelRole, type ModelRole } from "../model-roles.js";
+import { ModelRoleResolver, MODEL_ROLES, filterReasoningByCapabilities, isModelRole, type ModelRole } from "../model-roles.js";
 
 interface ExecutionContext {
   sessionId: string;
@@ -82,6 +86,8 @@ interface ExecutionContext {
 }
 
 const TOOL_EVENT_PREVIEW_CHARS = 1_024;
+/** 事件 payload 单字符串值上限：write_file 全量 content 这类大输入会把 MB 级帧推上 WS 热路径。 */
+const TOOL_EVENT_INPUT_VALUE_CHARS = 256 * 1024;
 
 /** Event replay is not the tool-result store. Keep payloads bounded and point
  * clients at the artifact/session detail path for complete output. */
@@ -92,6 +98,25 @@ function toolEventResult(bounded: Awaited<ReturnType<typeof boundToolResult>>) {
     truncated: bounded.truncated,
     ...(bounded.artifactId ? { artifactId: bounded.artifactId } : {}),
   };
+}
+
+/**
+ * 事件 payload 的 input 限长（tool.start / permission.reviewed / tool.repeated 等）：
+ * 逐值截断超长字符串并标记 inputTruncated。web 端这些事件只消费 toolCallId/name/verdict，
+ * 展示用 input 来自持久化消息；对齐结果侧 boundToolResult 的截断先例。
+ */
+export function boundToolEventInput(input: Record<string, unknown>): { input: Record<string, unknown>; inputTruncated?: true } {
+  let truncated = false;
+  const bounded: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (typeof value === "string" && value.length > TOOL_EVENT_INPUT_VALUE_CHARS) {
+      bounded[key] = `${value.slice(0, TOOL_EVENT_INPUT_VALUE_CHARS)}…[truncated ${value.length - TOOL_EVENT_INPUT_VALUE_CHARS} chars]`;
+      truncated = true;
+    } else {
+      bounded[key] = value;
+    }
+  }
+  return truncated ? { input: bounded, inputTruncated: true } : { input };
 }
 
 const GIT_STATUS_TOOL: ProviderTool = {
@@ -735,6 +760,8 @@ export class AgentRunner {
   private webFetchProvider: WebFetchProvider | undefined;
   private readonly pythonEnvManager = new UvPythonEnvironments();
   private getPythonEnvDefault: () => PythonEnv = () => "global";
+  private readonly nodeEnvManager = new NodeEnvManagers();
+  private getNodeEnvDefault: () => NodeEnv = () => "global";
   /** 联网搜索模式懒读取（settings 热生效）：local = 本地 web_search；model-api = 模型服务端搜索。 */
   private getWebSearchMode: () => "local" | "model-api" = () => "local";
   /** 单条消息轮次上限取值函数：默认读构造参数，setMaxTurns 注入后走设置热生效值 */
@@ -770,7 +797,7 @@ export class AgentRunner {
     webFetchProvider?: WebFetchProvider,
   ) {
     this.coreGateway = new CoreGateway(core);
-    this.persistentShells = new PersistentShellManager(core, this.pythonEnvManager, () => this.getPythonEnvDefault(), dataDir);
+    this.persistentShells = new PersistentShellManager(core, this.pythonEnvManager, () => this.getPythonEnvDefault(), this.nodeEnvManager, () => this.getNodeEnvDefault(), dataDir);
     this.messageQueue = new MessageQueue((sessionId) => this.sessions.contextRoot(sessionId));
     this.interactions = new InteractionCoordinator((sessionId) => this.sessions.contextRoot(sessionId));
     this.permissions = new PermissionCoordinator(events);
@@ -778,6 +805,9 @@ export class AgentRunner {
     this.searchProvider = search;
     this.webFetchProvider = webFetchProvider;
     core.on("event", (event: CoreEvent) => {
+      // core 崩溃自动重启重新握手后能力快照失效：下次用到时重新协商（崩溃期间的
+      // 失败 Promise 已由 CoreGateway 自身不缓存失败的语义覆盖）
+      if (event.type === "core.ready") this.coreGateway.invalidate();
       const payload = event.payload as
         | { execId?: string; stream?: string; data?: string; seq?: number }
         | undefined;
@@ -807,6 +837,11 @@ export class AgentRunner {
   /** pythonEnv 全局默认的懒读取（settings 热生效，无需热应用回调）。 */
   setPythonEnvDefault(getter: () => PythonEnv): void {
     this.getPythonEnvDefault = getter;
+  }
+
+  /** nodeEnv 全局默认的懒读取（settings 热生效，无需热应用回调）。 */
+  setNodeEnvDefault(getter: () => NodeEnv): void {
+    this.getNodeEnvDefault = getter;
   }
 
   /** 联网搜索模式的懒读取（settings 热生效，无需热应用回调）。 */
@@ -939,6 +974,12 @@ export class AgentRunner {
       await this.state(sessionId, "preparing_context");
       // 85% 水位强制概览压缩（§7.3 处理链⑤）：每次运行只触发一次
       let forceCompacted = false;
+      // 会话级模型 fallback（仅主循环）：主模型在 collectProviderTurn 重试耗尽后仍抛
+      // 可恢复 ProviderError 时，切到 fallbackModels 链下一个未尝试的候选重建本轮。
+      // 每个候选每 run 只尝试一次；链穷尽按原 agent.error 路径结束。切换只影响
+      // 本 run 的后续 turn，不写回会话主模型字段。
+      let modelOverride: { provider: string; model: string } | undefined;
+      const fallbackTried = new Set<string>();
       // 0.5.0 Phase 2d：性能采样初始化
       perfStartedAt = performance.now();
       perfStartedAtIso = new Date().toISOString();
@@ -950,6 +991,9 @@ export class AgentRunner {
         this.setTurnIndex(sessionId, turnIndex);
         const session = await this.sessions.get(sessionId);
         if (!session) throw new Error("Session not found");
+        // fallback 切换后的生效模型（未切换 = 会话主模型）；上下文窗口/能力按此重新解析
+        const effectiveProvider = modelOverride?.provider ?? session.provider;
+        const effectiveModel = modelOverride?.model ?? session.model;
         const context = new ContextManager(this.sessions.contextRoot(sessionId));
         const budget = await context.budgetStatus();
         if (budget.paused) {
@@ -997,12 +1041,12 @@ export class AgentRunner {
           type: "context.cache_strategy",
           sessionId,
           payload: {
-            provider: session.provider,
-            providerCaching: this.providers.get(session.provider)?.promptCaching ?? null,
+            provider: effectiveProvider,
+            providerCaching: this.providers.get(effectiveProvider)?.promptCaching ?? null,
             messageBreakpoints: cacheBreakpoints,
           },
         });
-        const profile = this.getProfile(session.model, session.provider);
+        const profile = this.getProfile(effectiveModel, effectiveProvider);
         // 索引新鲜度（Phase 2 §4.1）：turn 边界检查。watch 激活时零成本；
         // watch 不可用时 mtime 抽样标滞后。失败/缺失都不阻断运行。
         if (this.indexManager) void this.indexManager.noteTurnBoundary(sessionId, session.cwd).catch(() => undefined);
@@ -1055,8 +1099,8 @@ export class AgentRunner {
             this.events.publish({ source: "agent", type: "context.compact_failed", sessionId, payload: { message: errorMessage(error) } });
           }
         }
-        const provider = this.providers.get(session.provider);
-        if (!provider) throw new Error(`Provider ${session.provider} is not configured`);
+        const provider = this.providers.get(effectiveProvider);
+        if (!provider) throw new Error(`Provider ${effectiveProvider} is not configured`);
 
         // 模型不支持 function calling 时，绝不能下发工具 schema 或包含工具指令的系统提示。
         // 这不仅避免不支持 tools 的模型报错，也避免失真的 "可用工具" 提示诱导它返回 tool_call。
@@ -1098,7 +1142,8 @@ export class AgentRunner {
 
         // 工具形态（env-sim 等官方扩展）：隐藏内置工具 + 别名重命名。反向映射按轮重建——
         // 形态由实时扩展配置驱动，不可跨 run 缓存；执行/权限/门禁经 resolveBuiltinToolName 归一。
-        const builtIns = builtInTools({
+        // 会话级 toolsAllow/toolsDeny 先作用于内置工具表（交互类始终保留；MCP/扩展工具不受影响）。
+        const builtIns = filterBuiltInTools(builtInTools({
           skillsAvailable: skillCatalog.length > 0,
           backgroundTasksEnabled: Boolean(this.backgroundTasks),
           fetchAvailable: Boolean(this.webFetchProvider),
@@ -1108,7 +1153,7 @@ export class AgentRunner {
           pythonEnv: effectivePythonEnv(session.pythonEnv, this.getPythonEnvDefault()),
           swarmEnabled: session.swarmEnabled === true,
           cronEnabled: Boolean(this.cronScheduler),
-        });
+        }), session.toolsAllow, session.toolsDeny);
         const shaping = toolsEnabled && this.extensions
           ? await this.extensions.activeToolShaping(builtIns.map((tool) => tool.name), resolveSessionPersona(session))
           : undefined;
@@ -1218,63 +1263,101 @@ export class AgentRunner {
         });
         await this.state(sessionId, "streaming");
         const providerCallStart = performance.now();
-        const turn = await collectProviderTurn(
-          provider,
-          {
-            model: session.model,
-            ...(session.thinking ? { thinking: session.thinking } : {}),
-            ...(session.effort ? { effort: session.effort } : {}),
-            // 思维链回传按模型能力声明下发（未声明 = 默认开；gpt/claude 前缀元数据已声明关）
-            reasoningContent: profile.capabilities.reasoningContent !== false,
-            // 联网搜索模式：model-api 时下发请求级标记（仅 OpenAI Responses 接口消费，其他 provider 忽略）
-            serverWebSearch: this.getWebSearchMode() === "model-api",
-            system,
-            // 动态尾块（repo map 段 + 后台任务完成提示）独立于稳定 system 前缀下发，
-            // 其逐 turn 变化不会污染稳定前缀的缓存断点。
-            ...(repoMapSection || bgNoticeSection.trim()
-              ? { systemSuffix: [repoMapSection, bgNoticeSection.trim()].filter(Boolean).join("\n\n") }
-              : {}),
-            messages: view.messages,
-            cacheBreakpoints,
-            tools,
-            signal: controller.signal,
-          },
-          {
-            onRetry: ({ attemptId, attempt, delayMs, error }) => {
-              // 重试会从头重推 delta：先让前端丢弃上一 attempt 的增量，避免重复文本
+        // thinking/effort 按生效模型能力白名单过滤（fallback 模型能力可能与主模型不同；未声明 = 放行）
+        const reasoning = filterReasoningByCapabilities(profile, {
+          ...(session.thinking ? { thinking: session.thinking } : {}),
+          ...(session.effort ? { effort: session.effort } : {}),
+        });
+        let turn: { attemptId: string; events: ProviderEvent[] };
+        try {
+          turn = await collectProviderTurn(
+            provider,
+            {
+              model: effectiveModel,
+              ...(reasoning.thinking ? { thinking: reasoning.thinking } : {}),
+              ...(reasoning.effort ? { effort: reasoning.effort } : {}),
+              // 思维链回传按模型能力声明下发（未声明 = 默认开；gpt/claude 前缀元数据已声明关）
+              reasoningContent: profile.capabilities.reasoningContent !== false,
+              // 联网搜索模式：model-api 时下发请求级标记（仅 OpenAI Responses 接口消费，其他 provider 忽略）
+              serverWebSearch: this.getWebSearchMode() === "model-api",
+              system,
+              // 动态尾块（repo map 段 + 后台任务完成提示）独立于稳定 system 前缀下发，
+              // 其逐 turn 变化不会污染稳定前缀的缓存断点。
+              ...(repoMapSection || bgNoticeSection.trim()
+                ? { systemSuffix: [repoMapSection, bgNoticeSection.trim()].filter(Boolean).join("\n\n") }
+                : {}),
+              messages: view.messages,
+              cacheBreakpoints,
+              tools,
+              signal: controller.signal,
+            },
+            {
+              onRetry: ({ attemptId, attempt, delayMs, error }) => {
+                // 重试会从头重推 delta：先让前端丢弃上一 attempt 的增量，避免重复文本
+                this.events.publish({ source: "agent", type: "message.stream_reset", sessionId, payload: {} });
+                this.events.publish({
+                  source: "agent",
+                  type: "provider.retry",
+                  sessionId,
+                  payload: { attemptId, attempt, delayMs, kind: error.kind, message: error.message },
+                });
+              },
+              // 流式显示：事件到达即发布，不再等整轮收集完毕后补发
+              onEvent: (event) => {
+                if (event.type === "text_delta") {
+                  this.events.publish({ source: "agent", type: "message.delta", sessionId, payload: { text: event.text } });
+                } else if (event.type === "thinking_delta") {
+                  this.events.publish({ source: "agent", type: "message.thinking_delta", sessionId, payload: { text: event.text } });
+                } else if (event.type === "tool_call_delta") {
+                  this.events.publish({ source: "agent", type: "message.tool_call_delta", sessionId, payload: { id: event.id, ...(event.name ? { name: event.name } : {}), text: event.argumentsDelta } });
+                } else if (event.type === "server_tool") {
+                  // 服务端工具活动（如 DeepSeek web_search）：合成 tool.start/end 复用
+                  // LiveActivity 现有链路展示，toolCallId 固定不入消息历史
+                  if (event.phase === "start") {
+                    this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId: `server:${event.tool}`, name: event.tool } });
+                  } else if (event.phase === "end") {
+                    this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId: `server:${event.tool}` } });
+                  }
+                }
+              },
+            },
+          );
+        } catch (error) {
+          // 模型 fallback：可恢复 provider 错误（retryable：overloaded/rate_limit/network/
+          // stream_interrupted 等）经重试耗尽后仍失败 → 切到 fallbackModels 链下一个未尝试
+          // 且 provider 已配置的候选，重建本轮（消耗一个 turn 序号，上下文/工具按新模型重组）。
+          // 不可恢复错误（401 鉴权、400 invalid_request 等）与中断不切换，抛给原 catch。
+          if (!controller.signal.aborted && error instanceof ProviderError && error.retryable) {
+            fallbackTried.add(`${effectiveProvider} ${effectiveModel}`);
+            const chain = [{ provider: session.provider, model: session.model }, ...(session.fallbackModels ?? [])];
+            const next = chain.find((candidate) =>
+              !fallbackTried.has(`${candidate.provider} ${candidate.model}`) && this.providers.get(candidate.provider) !== undefined);
+            if (next) {
+              modelOverride = { provider: next.provider, model: next.model };
+              // 新模型重新推流：丢弃上一模型的增量（同 onRetry 的 stream_reset 语义）
               this.events.publish({ source: "agent", type: "message.stream_reset", sessionId, payload: {} });
               this.events.publish({
                 source: "agent",
-                type: "provider.retry",
+                type: "agent.model_fallback",
                 sessionId,
-                payload: { attemptId, attempt, delayMs, kind: error.kind, message: error.message },
+                payload: {
+                  from: { provider: effectiveProvider, model: effectiveModel },
+                  to: { provider: next.provider, model: next.model },
+                  kind: error.kind,
+                  message: error.message,
+                },
               });
-            },
-            // 流式显示：事件到达即发布，不再等整轮收集完毕后补发
-            onEvent: (event) => {
-              if (event.type === "text_delta") {
-                this.events.publish({ source: "agent", type: "message.delta", sessionId, payload: { text: event.text } });
-              } else if (event.type === "thinking_delta") {
-                this.events.publish({ source: "agent", type: "message.thinking_delta", sessionId, payload: { text: event.text } });
-              } else if (event.type === "tool_call_delta") {
-                this.events.publish({ source: "agent", type: "message.tool_call_delta", sessionId, payload: { id: event.id, ...(event.name ? { name: event.name } : {}), text: event.argumentsDelta } });
-              } else if (event.type === "server_tool") {
-                // 服务端工具活动（如 DeepSeek web_search）：合成 tool.start/end 复用
-                // LiveActivity 现有链路展示，toolCallId 固定不入消息历史
-                if (event.phase === "start") {
-                  this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId: `server:${event.tool}`, name: event.tool } });
-                } else if (event.phase === "end") {
-                  this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId: `server:${event.tool}` } });
-                }
-              }
-            },
-          },
-        );
+              continue;
+            }
+          }
+          throw error;
+        }
         this.events.publish({ source: "agent", type: "message.attempt", sessionId, payload: { attemptId: turn.attemptId } });
         perfProviderCallMs += performance.now() - providerCallStart;
         const assistantContent: MessageContent[] = [];
         let activeThinkingIndex: number | undefined;
         let stopReason: string | undefined;
+        let lastUsage: Extract<ProviderEvent, { type: "usage" }> | undefined;
         for (const event of turn.events) {
           if (event.type === "text_delta") {
             // Provider 文本以 token/chunk 形式流入。相邻分片属于同一段正文，
@@ -1296,6 +1379,7 @@ export class AgentRunner {
               type: "thinking",
               text: event.text,
               ...(event.signature ? { signature: event.signature } : {}),
+              ...(event.redacted ? { redacted: event.redacted } : {}),
               provider: provider.name,
             };
             if (activeThinkingIndex === undefined) assistantContent.push(completedThinking);
@@ -1308,11 +1392,15 @@ export class AgentRunner {
           } else if (event.type === "tool_call") {
             assistantContent.push({ type: "tool_call", id: event.id, name: event.name, input: event.input });
           } else if (event.type === "usage") {
-            await this.recordUsageEvent(sessionId, context, session.provider, session.model, event);
+            // usage 可能逐 chunk 多次到达（stream_options.include_usage）：每条都实时转发 WS
+            // （UI 实时成本不变），但 ledger/usageLog 只记本轮最后一条，避免逐 chunk 重复累加
+            if (lastUsage) await this.recordUsageEvent(sessionId, context, effectiveProvider, effectiveModel, lastUsage, { persist: false });
+            lastUsage = event;
           } else {
             stopReason = event.stopReason;
           }
         }
+        if (lastUsage) await this.recordUsageEvent(sessionId, context, effectiveProvider, effectiveModel, lastUsage);
         if (assistantContent.length > 0) {
           await this.sessions.appendMessage(sessionId, "assistant", assistantContent, this.messageLineage(sessionId));
         }
@@ -1368,16 +1456,19 @@ export class AgentRunner {
                 const repeated = this.recordToolCall(sessionId, call.name, effectiveInput);
                 if (repeated >= 3) {
                   const content = `Tool call blocked: ${call.name} was requested with identical arguments ${repeated} consecutive times.`;
-                  this.events.publish({ source: "agent", type: "tool.repeated", sessionId, payload: { name: call.name, input: effectiveInput, count: repeated } });
+                  this.events.publish({ source: "agent", type: "tool.repeated", sessionId, payload: { name: call.name, ...boundToolEventInput(effectiveInput), count: repeated } });
                   result = { type: "tool_result", toolCallId: call.id, content, isError: true };
                 } else {
                   const permission = await this.authorizeTool(sessionId, call.name, effectiveInput, controller.signal);
                   if (!permission.allowed) {
                     result = { type: "tool_result", toolCallId: call.id, content: permission.reason ?? "Tool permission denied", isError: true };
                   } else {
-                    // PreToolUse 钩子：exit 2 否决 → 工具不执行，stderr 回填 LLM
+                    // PreToolUse 钩子：exit 2 否决 → 工具不执行，stderr 回填 LLM。
+                    // tool 统一传内置名（与权限判定同名空间，matcher 按内置名配置）；
+                    // env-sim 别名激活时另附 toolAlias 供钩子需要时识别展示形态。
+                    const builtinName = this.resolveBuiltinToolName(sessionId, call.name);
                     const outcome = this.hooks
-                      ? await this.hooks.run("PreToolUse", { sessionId, cwd: session.cwd, tool: call.name, input: effectiveInput })
+                      ? await this.hooks.run("PreToolUse", { sessionId, cwd: session.cwd, tool: builtinName, input: effectiveInput, ...(builtinName !== call.name ? { toolAlias: call.name } : {}) })
                       : undefined;
                     result = outcome?.blocked
                       ? { type: "tool_result", toolCallId: call.id, content: outcome.reason ?? "Blocked by hook", isError: true }
@@ -1395,10 +1486,12 @@ export class AgentRunner {
             }
           }
           await this.sessions.appendMessage(sessionId, "tool", [result], this.messageLineage(sessionId));
-          // PostToolUse 钩子：仅写类工具成功后触发（format-on-write 等），不阻断；别名按内置名判定
-          if (!result.isError && ["write_file", "edit_file", "bash"].includes(this.resolveBuiltinToolName(sessionId, call.name))) {
+          // PostToolUse 钩子：仅写类工具成功后触发（format-on-write 等），不阻断；
+          // tool 按内置名判定与透传（matcher 与权限同名空间），别名经 toolAlias 附带
+          const builtinToolName = this.resolveBuiltinToolName(sessionId, call.name);
+          if (!result.isError && ["write_file", "edit_file", "bash"].includes(builtinToolName)) {
             const summary = result.content.slice(0, 300);
-            await this.runNotificationHook("PostToolUse", { sessionId, cwd: session.cwd, tool: call.name, input: effectiveInput, result: { summary } });
+            await this.runNotificationHook("PostToolUse", { sessionId, cwd: session.cwd, tool: builtinToolName, input: effectiveInput, result: { summary }, ...(builtinToolName !== call.name ? { toolAlias: call.name } : {}) });
           }
           // agent 写文件成功后广播 scm.updated（与 ScmService.publish 同型），驱动 web 端 SCM 面板刷新
           if (!result.isError && ["write_file", "edit_file"].includes(this.resolveBuiltinToolName(sessionId, call.name))) {
@@ -1524,7 +1617,10 @@ export class AgentRunner {
     // 手动子代理独立于主 run：无论主循环是否在跑都一并取消；其挂起的权限请求同样解除
     for (const sub of this.manualSubagentControllers.get(sessionId) ?? []) sub.abort();
     this.permissions.cancelSession(sessionId);
-    if (!controller) return false;
+    // 前台 `!cmd`（runShell）不进 running Map，其 controller 同样要响应停止
+    const shell = this.shells.get(sessionId);
+    shell?.abort();
+    if (!controller) return shell !== undefined;
     controller.abort();
     this.workspaceWrites.get(sessionId)?.abort();
     return true;
@@ -1540,11 +1636,17 @@ export class AgentRunner {
    * role 经 ModelRoleResolver 回落链解析（角色未配置 → balanced → 会话默认）；
    * frontmatter 给出 provider: 或 model: 任一显式值时 role 整体不生效。
    * requestedRole 非法值直接报错（与 Unknown sub-agent 同一显式风格）。
+   * 会话级 fallbackModels 不继承到子代理：fallback 是主循环 run 级机制，
+   * 子代理模型路由固定走上述角色链。
    */
   private async resolveSubAgent(cwd: string, sessionId: string, agentName: string, requestedTools?: string[], requestedRole?: string): Promise<ResolvedSubAgent> {
     if (requestedRole !== undefined && !isModelRole(requestedRole)) {
       throw new Error(`Unknown model role: ${requestedRole} (expected one of ${MODEL_ROLES.join("/")})`);
     }
+    // 会话级 toolsAllow/toolsDeny 由子代理自动继承（filterSubAgentTools 内套 toolAllowedBySession）
+    const session = await this.sessions.get(sessionId);
+    const toolsAllow = session?.toolsAllow;
+    const toolsDeny = session?.toolsDeny;
     /** 角色档解析为 provider+model 覆盖；会话默认由调用方 ?? 回落，这里留空。 */
     const applyRole = (base: ResolvedSubAgent, role: ModelRole | undefined): ResolvedSubAgent => {
       if (!role || !this.modelRoles) return base;
@@ -1555,7 +1657,7 @@ export class AgentRunner {
     if (builtin) {
       const requested = requestedTools ?? [...builtin.toolNames];
       return applyRole(
-        { name: builtin.id, kind: builtin.id, toolNames: this.filterSubAgentTools(sessionId, requested, builtin), maxTurns: builtin.maxTurns },
+        { name: builtin.id, kind: builtin.id, toolNames: this.filterSubAgentTools(sessionId, requested, builtin, toolsAllow, toolsDeny), maxTurns: builtin.maxTurns },
         requestedRole as ModelRole | undefined,
       );
     }
@@ -1571,16 +1673,18 @@ export class AgentRunner {
         ...(definition.provider ? { providerOverride: definition.provider } : {}),
       } : {}),
       kind: "explore",
-      toolNames: this.filterSubAgentTools(sessionId, requested, undefined),
+      toolNames: this.filterSubAgentTools(sessionId, requested, undefined, toolsAllow, toolsDeny),
     };
     // frontmatter 显式 provider:/model: 优先；否则 frontmatter role: > 调用参数 role
     return explicit ? resolved : applyRole(resolved, definition?.role ?? (requestedRole as ModelRole | undefined));
   }
 
-  /** allowlist 以内置名为准：先把可能的工具形态别名解析回内置名再过滤。 */
-  private filterSubAgentTools(sessionId: string, requested: string[], builtin: BuiltinSubAgent | undefined): string[] {
+  /** allowlist 以内置名为准：先把可能的工具形态别名解析回内置名再过滤；再套会话级 toolsAllow/toolsDeny。 */
+  private filterSubAgentTools(sessionId: string, requested: string[], builtin: BuiltinSubAgent | undefined, toolsAllow?: string[], toolsDeny?: string[]): string[] {
     const allowlist: readonly string[] = builtin ? builtin.toolNames : SUB_AGENT_TOOL_NAMES;
-    return requested.map((tool) => this.resolveBuiltinToolName(sessionId, tool)).filter((tool) => allowlist.includes(tool));
+    return requested
+      .map((tool) => this.resolveBuiltinToolName(sessionId, tool))
+      .filter((tool) => allowlist.includes(tool) && toolAllowedBySession(tool, toolsAllow, toolsDeny));
   }
 
   /** GET /api/agents：内置类型在前（description 为中文，前端按 id 做 i18n），随后自定义子代理。 */
@@ -1751,7 +1855,7 @@ export class AgentRunner {
     if (name === "bash") {
       const cmd = typeof input.cmd === "string" ? input.cmd : "";
       if (!cmd) throw new Error("bash requires a non-empty cmd");
-      return this.executeBash(sessionId, cmd, `subagent-${randomUUID().slice(0, 8)}`, signal, { quiet: true });
+      return this.executeBash(sessionId, cmd, `subagent-${randomUUID().slice(0, 8)}`, signal, { quiet: true, sessionEnv: true });
     }
     if (name === "repo_map") {
       const session = await this.sessions.get(sessionId);
@@ -2113,9 +2217,12 @@ export class AgentRunner {
       ...(session.snapshotMode ? { snapshotMode: session.snapshotMode } : {}),
       ...(session.shellBackend ? { shellBackend: session.shellBackend } : {}),
       ...(session.pythonEnv ? { pythonEnv: session.pythonEnv } : {}),
+      ...(session.nodeEnv ? { nodeEnv: session.nodeEnv } : {}),
       ...(session.persona ? { persona: session.persona } : {}),
       ...(session.swarmEnabled ? { swarmEnabled: true } : {}),
       ...(session.reviewModel ? { reviewModel: session.reviewModel } : {}),
+      ...(session.toolsAllow ? { toolsAllow: session.toolsAllow } : {}),
+      ...(session.toolsDeny ? { toolsDeny: session.toolsDeny } : {}),
     });
     this.events.publish({ source: "session", type: "session.config_updated", sessionId, payload: updated });
   }
@@ -2234,7 +2341,7 @@ export class AgentRunner {
     // 审核期间不置 waiting_permission（仍视为工具运行中）；LOW 自动放行，其余照旧走人工流程。
     if (mode === "review" && tool !== "git_commit") {
       const reviewed = await this.reviewToolCall(session, tool, input, signal);
-      this.events.publish({ source: "agent", type: "permission.reviewed", sessionId, payload: { tool, input, verdict: reviewed.verdict, rationale: reviewed.rationale, model: reviewed.model } });
+      this.events.publish({ source: "agent", type: "permission.reviewed", sessionId, payload: { tool, ...boundToolEventInput(input), verdict: reviewed.verdict, rationale: reviewed.rationale, model: reviewed.model } });
       if (reviewed.verdict === "low") return { allowed: true };
     }
     this.state(sessionId, "waiting_permission");
@@ -2368,7 +2475,7 @@ export class AgentRunner {
     input: Record<string, unknown>,
     call: (cwd: string) => Promise<{ content: string; isError?: boolean }>,
   ): Promise<MessageContent & { type: "tool_result" }> {
-    this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+    this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, ...boundToolEventInput(input) } });
     this.state(sessionId, "tool_running");
     try {
       const session = await this.sessions.get(sessionId);
@@ -2416,7 +2523,7 @@ export class AgentRunner {
       return this.executeExternalTool(sessionId, name, toolCallId, input, () => extensions.invokeTool(name, input));
     }
     if (name === "web_fetch" || name === "web_search") {
-      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, ...boundToolEventInput(input) } });
       this.state(sessionId, "tool_running");
       try {
         signal.throwIfAborted();
@@ -2444,7 +2551,7 @@ export class AgentRunner {
       }
     }
     if (name === "load_skill") {
-      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, ...boundToolEventInput(input) } });
       this.state(sessionId, "tool_running");
       try {
         const session = await this.sessions.get(sessionId);
@@ -2462,7 +2569,7 @@ export class AgentRunner {
       }
     }
     if (name === "spawn_task") {
-      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, ...boundToolEventInput(input) } });
       this.state(sessionId, "tool_running");
       // catch 分支需引用（子代理启动后失败补发 subagent.finished），声明在 try 之外
       let taskId = "";
@@ -2568,7 +2675,7 @@ export class AgentRunner {
       }
     }
     if (name === "spawn_swarm") {
-      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, ...boundToolEventInput(input) } });
       this.state(sessionId, "tool_running");
       // catch 分支需引用（中断/整体失败仍回报已启动项的 taskId 与逐项终态），声明在 try 之外
       interface SwarmTaskStatus { taskId: string; index: number; status: "done" | "failed"; error?: string }
@@ -2748,7 +2855,7 @@ export class AgentRunner {
       }
     }
     if (name === "todo_write") {
-      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, ...boundToolEventInput(input) } });
       this.state(sessionId, "tool_running");
       try {
         if (!Array.isArray(input.items)) throw new Error("todo_write requires an items array");
@@ -2772,7 +2879,7 @@ export class AgentRunner {
       }
     }
     if (name === "remember") {
-      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, ...boundToolEventInput(input) } });
       this.state(sessionId, "tool_running");
       try {
         const session = await this.sessions.get(sessionId);
@@ -2798,7 +2905,7 @@ export class AgentRunner {
       }
     }
     if (name === "cron_create" || name === "cron_list" || name === "cron_delete") {
-      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, ...boundToolEventInput(input) } });
       this.state(sessionId, "tool_running");
       try {
         if (!this.cronScheduler) throw new Error("Cron scheduler is not enabled");
@@ -2829,7 +2936,7 @@ export class AgentRunner {
       }
     }
     if (name === "ask_user") {
-      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, ...boundToolEventInput(input) } });
       this.state(sessionId, "tool_running");
       try {
         const questions = parseAskUserQuestions(input);
@@ -2865,7 +2972,7 @@ export class AgentRunner {
       }
     }
     if (name === "exit_plan_mode") {
-      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, ...boundToolEventInput(input) } });
       this.state(sessionId, "tool_running");
       try {
         const plan = typeof input.plan === "string" ? input.plan.trim() : "";
@@ -2921,7 +3028,7 @@ export class AgentRunner {
       }
     }
     if (name === "repo_map") {
-      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, ...boundToolEventInput(input) } });
       this.state(sessionId, "tool_running");
       try {
         const session = await this.sessions.get(sessionId);
@@ -2947,7 +3054,7 @@ export class AgentRunner {
       }
     }
     if (name === "test_runner") {
-      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, ...boundToolEventInput(input) } });
       this.state(sessionId, "tool_running");
       try {
         const session = await this.sessions.get(sessionId);
@@ -2977,7 +3084,7 @@ export class AgentRunner {
       }
     }
     if (name === "git_status" || name === "git_diff" || name === "git_commit" || name === "git_worktree_create" || name === "git_worktree_remove" || name === "git_worktree_merge") {
-      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, ...boundToolEventInput(input) } });
       this.state(sessionId, "tool_running");
       try {
         const session = await this.sessions.get(sessionId);
@@ -3055,7 +3162,7 @@ export class AgentRunner {
       }
     }
     if (name === "code_search") {
-      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, ...boundToolEventInput(input) } });
       this.state(sessionId, "tool_running");
       try {
         const session = await this.sessions.get(sessionId);
@@ -3083,7 +3190,7 @@ export class AgentRunner {
       }
     }
     if (FILE_TOOLS.some((tool) => tool.name === name)) {
-      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, ...boundToolEventInput(input) } });
       this.state(sessionId, "tool_running");
       try {
         const session = await this.sessions.get(sessionId);
@@ -3099,7 +3206,7 @@ export class AgentRunner {
       }
     }
     if (name === "task_output") {
-      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, ...boundToolEventInput(input) } });
       this.state(sessionId, "tool_running");
       try {
         const taskId = String(input.taskId ?? "");
@@ -3135,7 +3242,7 @@ export class AgentRunner {
       }
     }
     if (name === "task_stop") {
-      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, ...boundToolEventInput(input) } });
       this.state(sessionId, "tool_running");
       try {
         const taskId = String(input.taskId ?? "");
@@ -3156,7 +3263,7 @@ export class AgentRunner {
 
     // 后台 bash：独立 core 进程，不阻塞主循环
     if (input.run_in_background) {
-      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, input } });
+      this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, ...boundToolEventInput(input) } });
       this.state(sessionId, "tool_running");
       try {
         if (!this.backgroundTasks) throw new Error("后台任务未启用");
@@ -3184,7 +3291,7 @@ export class AgentRunner {
       }
     }
 
-    const bashResult = await this.executeBash(sessionId, input.cmd, toolCallId, signal);
+    const bashResult = await this.executeBash(sessionId, input.cmd, toolCallId, signal, { sessionEnv: true });
     return { type: "tool_result", toolCallId, content: bashResult.content, isError: bashResult.isError };
   }
 
@@ -3199,7 +3306,7 @@ export class AgentRunner {
     cmd: string,
     toolCallId: string,
     signal: AbortSignal,
-    options?: { quiet?: boolean },
+    options?: { quiet?: boolean; sessionEnv?: boolean },
   ): Promise<{ content: string; isError: boolean }> {
     const quiet = options?.quiet === true;
     signal.throwIfAborted();
@@ -3216,6 +3323,10 @@ export class AgentRunner {
       // 提交⑩：默认走持久 shell（同一会话 cwd/env 跨调用保持）；pty 不可用（旧 core）时回退一次性 exec 路径
       const persistent = await this.tryPersistentBash(session, cmd, toolCallId, signal, quiet);
       if (persistent) return persistent;
+      // 会话元数据环境变量（OWC_SESSION_ID 等，仅 agent bash 工具；人类 ! 命令不注入）：
+      // 最内层包装先拼上，随后被 node/python 环境包装包住，export 先对用户命令生效
+      if (options?.sessionEnv) cmd = wrapCommandWithSessionEnv(cmd, session, resolveShell(session.shellBackend ?? "default").flavor);
+      cmd = await this.wrapForNodeEnv(session, cmd);
       cmd = await this.wrapForPythonEnv(session, cmd);
       if (await this.coreGateway.supports("jobControl")) {
         const jobId = `job-${randomUUID()}`;
@@ -3310,6 +3421,21 @@ export class AgentRunner {
   }
 
   /**
+   * nodeEnv=project/fnm/nvm 时把会话 bash 包装进对应 node 环境（PATH 前置或版本管理器激活前缀）；
+   * global（本机环境）原样返回。管理器缺失/当前 shell 不支持时回退本机环境并在输出中说明。
+   */
+  private async wrapForNodeEnv(session: SessionMeta, cmd: string): Promise<string> {
+    const mode = effectiveNodeEnv(session.nodeEnv, this.getNodeEnvDefault());
+    if (mode === "global") return cmd;
+    const flavor = resolveShell(session.shellBackend ?? "default").flavor;
+    const ensured = await this.nodeEnvManager.ensure(mode, flavor);
+    if (!ensured.ok) return wrapCommandWithNote(cmd, ensured.note ?? "node environment unavailable; using the host node environment");
+    const wrapped = wrapCommandWithNodeEnv(cmd, mode, session.cwd, flavor);
+    if (wrapped === null) return wrapCommandWithNote(cmd, `${mode} activation is not supported for this shell, using the host node environment`);
+    return wrapped;
+  }
+
+  /**
    * pythonEnv=uv-* 时把会话 bash 包装进 uv 管理的 venv（PATH 前置，懒创建）；
    * global（本机环境）原样返回。uv 缺失/建环境失败回退本机环境并在输出中说明。
    */
@@ -3330,6 +3456,7 @@ export class AgentRunner {
     providerName: string,
     model: string,
     event: Extract<ProviderEvent, { type: "usage" }>,
+    options: { persist?: boolean } = {},
   ): Promise<void> {
     const usageCost = calculateUsageCost(event, this.pricing.get(providerName, model), this.exchangeRates?.current());
     const recordedCost = {
@@ -3346,23 +3473,28 @@ export class AgentRunner {
         },
       } : {}),
     };
-    const ledger = await context.recordUsage(event, recordedCost);
-    // 全局用量日志（成本报表数据源）：失败只记 stderr，不阻断会话
-    void this.usageLog?.record({
-      at: new Date().toISOString(),
-      sessionId,
-      provider: providerName,
-      model,
-      inputTokens: event.inputTokens,
-      outputTokens: event.outputTokens,
-      cacheRead: event.cacheRead,
-      cacheWrite: event.cacheWrite,
-      priced: usageCost.priced,
-      ...(usageCost.usd ? { usdMicroUnits: usageCost.usd.microUnits.toString() } : {}),
-      ...(usageCost.cny ? { cnyMicroUnits: usageCost.cny.microUnits.toString() } : {}),
-    }).catch((error: unknown) => {
-      process.stderr.write(`[usage-log] 写入失败：${errorMessage(error)}\n`);
-    });
+    // persist=false：仅实时转发 WS（逐 chunk 的 usage 中间帧），ledger/usageLog 不重复记账；
+    // sessionCost 取当前已记账累计，本轮最后一条（persist）才落账
+    const persist = options.persist !== false;
+    const ledger = persist ? await context.recordUsage(event, recordedCost) : await context.load();
+    if (persist) {
+      // 全局用量日志（成本报表数据源）：失败只记 stderr，不阻断会话
+      void this.usageLog?.record({
+        at: new Date().toISOString(),
+        sessionId,
+        provider: providerName,
+        model,
+        inputTokens: event.inputTokens,
+        outputTokens: event.outputTokens,
+        cacheRead: event.cacheRead,
+        cacheWrite: event.cacheWrite,
+        priced: usageCost.priced,
+        ...(usageCost.usd ? { usdMicroUnits: usageCost.usd.microUnits.toString() } : {}),
+        ...(usageCost.cny ? { cnyMicroUnits: usageCost.cny.microUnits.toString() } : {}),
+      }).catch((error: unknown) => {
+        process.stderr.write(`[usage-log] 写入失败：${errorMessage(error)}\n`);
+      });
+    }
     this.events.publish({
       source: "agent",
       type: "context.usage",
