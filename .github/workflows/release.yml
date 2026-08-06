@@ -77,7 +77,7 @@ jobs:
         run: |
           set -euo pipefail
           cd server
-          npm ci
+          npm ci --ignore-scripts
           npm run build
       - name: Build core (Debug, for tests)
         shell: bash
@@ -103,7 +103,7 @@ jobs:
         run: |
           set -euo pipefail
           cd web
-          npm ci
+          npm ci --ignore-scripts
           npm run build
       - name: Test web
         shell: bash
@@ -278,7 +278,7 @@ jobs:
         run: |
           set -euo pipefail
           cd server
-          npm ci
+          npm ci --ignore-scripts
           npm run build
       - name: Build core (Debug, for tests)
         if: ${{ matrix.arch != 'loongarch64' }}
@@ -303,7 +303,7 @@ jobs:
         run: |
           set -euo pipefail
           cd web
-          npm ci
+          npm ci --ignore-scripts
           npm run build
       - name: Test web
         run: |
@@ -548,8 +548,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cd server && npm ci
-          cd ../web && npm ci
+          cd server && npm ci --ignore-scripts
+          cd ../web && npm ci --ignore-scripts
       - name: Build web
         shell: bash
         run: |

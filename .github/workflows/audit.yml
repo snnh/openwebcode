@@ -1,0 +1,36 @@
+name: audit
+
+on:
+  schedule:
+    # 每周一 09:17 UTC（错开整点，避开 GitHub 定时任务高峰）
+    - cron: "17 9 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    strategy:
+      fail-fast: false
+      matrix:
+        layer: [server, web]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ${{ matrix.layer }}/package-lock.json
+      - name: Install
+        run: npm ci --ignore-scripts
+        working-directory: ${{ matrix.layer }}
+      - name: Audit production dependencies
+        # 高危（high 及以上）即失败；dev 依赖不纳入门槛
+        run: npm audit --omit=dev --audit-level=high
+        working-directory: ${{ matrix.layer }}
