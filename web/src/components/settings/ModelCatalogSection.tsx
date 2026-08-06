@@ -1,4 +1,4 @@
-import { useState, type ReactElement } from "react";
+import { useEffect, useRef, useState, type ReactElement } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../lib/api";
 import type { ModelProfile } from "../../lib/contracts";
@@ -7,7 +7,6 @@ import { Icon } from "../Icon";
 import { useI18n } from "../../i18n";
 import { useConfirmDialog } from "../ConfirmDialog";
 
-const SOURCE_LABEL: Record<string, [string, string]> = { builtin: ["内置", "Built-in"], api: ["API", "API"], synced: ["远程同步", "Synced"], manual: ["手动", "Manual"] };
 const THINKING_LABEL: Record<string, [string, string]> = { adaptive: ["自适应", "Adaptive"], enabled: ["开启", "Enabled"], disabled: ["关闭", "Disabled"] };
 const THINKING_OPTIONS = ["adaptive", "enabled", "disabled"] as const;
 const EFFORT_OPTIONS = ["low", "medium", "high", "xhigh", "max", "ultra"] as const;
@@ -39,6 +38,12 @@ export function ModelCatalogSection(): ReactElement {
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState({ id: "", provider: "", contextWindow: "" });
   const [editing, setEditing] = useState<ModelEditForm | null>(null);
+  const editFormRef = useRef<HTMLDivElement>(null);
+  const editingOpen = editing !== null;
+  useEffect(() => {
+    // 编辑表单位于长表格下方：进入编辑态时滚动到可见位置，否则窄屏钻取布局下双击看似无反应
+    if (editingOpen) editFormRef.current?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+  }, [editingOpen]);
 
   const invalidate = (): void => {
     void queryClient.invalidateQueries({ queryKey: ["models"] });
@@ -212,30 +217,46 @@ export function ModelCatalogSection(): ReactElement {
       </div>
       {notice && <p className="settings-note">{notice}</p>}
       {error && <p className="settings-error" role="alert">{error}</p>}
+      <div className="catalog-table-wrap">
       <table className="pricing-table catalog-table">
         <thead>
-          <tr><th>{t("模型", "Model")}</th><th>{t("服务商", "Provider")}</th><th>{t("来源", "Source")}</th><th>{t("上下文", "Context")}</th><th>{t("能力", "Capabilities")}</th><th>{t("思考", "Thinking")}</th><th>{t("力度", "Effort")}</th><th></th></tr>
+          <tr><th></th><th>{t("模型", "Model")}</th><th>{t("服务商", "Provider")}</th><th>{t("上下文", "Context")}</th><th>{t("能力", "Capabilities")}</th></tr>
         </thead>
         <tbody>
-          {models.data.map((model) => (
+          {models.data.map((model) => {
+            // 能力/思考/力度合并为一列：徽标为主，思考与力度以小字附行呈现
+            const hasBadges = model.capabilities.modalities.includes("image") || model.capabilities.modalities.includes("video") || Boolean(model.capabilities.imageOutput);
+            // 思考以控制类型描述：可开关 → 仅开关；带力度档位 → 强度调节（档位内联括号）；声明 adaptive → 自适应
+            const thinkingModes: string[] = [];
+            if (model.capabilities.thinking.includes("enabled") || model.capabilities.thinking.includes("disabled")) thinkingModes.push(t("仅开关", "Toggle only"));
+            if (model.capabilities.effort.length > 0) {
+              const levels = model.capabilities.effort.join(t("、", ", "));
+              thinkingModes.push(t(`强度调节（${levels}）`, `Effort control (${levels})`));
+            }
+            if (model.capabilities.thinking.includes("adaptive")) thinkingModes.push(t("自适应", "Adaptive"));
+            const thinkingText = thinkingModes.join(t("、", ", "));
+            return (
             <tr key={`${model.provider}\u0000${model.id}`} title={t("双击编辑", "Double-click to edit")} onDoubleClick={() => startEdit(model)}>
-              <td className="mono">{model.displayName ?? model.id}</td>
-              <td>{model.provider}</td>
-              <td><span className={`pill small${model.source === "api" ? " accent" : model.source === "synced" ? " amber" : ""}`}>{t(...(SOURCE_LABEL[model.source ?? "builtin"] ?? [model.source ?? "builtin", model.source ?? "builtin"]))}</span></td>
-              <td className="mono">{model.contextWindow.toLocaleString(locale)}</td>
-              <td><ModelCapabilityBadges capabilities={model.capabilities} /></td>
-              <td>{model.capabilities.thinking.length > 0 ? model.capabilities.thinking.map((item) => THINKING_LABEL[item] ? t(...THINKING_LABEL[item]!) : item).join(t("、", ", ")) : "—"}</td>
-              <td>{model.capabilities.effort.length > 0 ? model.capabilities.effort.join(t("、", ", ")) : "—"}</td>
               <td>
                 <button className="icon-btn" aria-label={t("编辑", "Edit")} disabled={busy} onClick={() => startEdit(model)}><Icon name="edit" size={13} /></button>
-                {model.source === "manual" && <button className="btn small" disabled={busy} onClick={() => removeManual(model.id, model.provider)}>{t("删除", "Delete")}</button>}
+                {model.source === "manual" && <button className="icon-btn" aria-label={t("删除", "Delete")} title={t("删除", "Delete")} disabled={busy} onClick={() => removeManual(model.id, model.provider)}><Icon name="trash" size={13} /></button>}
+              </td>
+              <td className="mono">{model.displayName ?? model.id}</td>
+              <td>{model.provider}</td>
+              <td className="mono">{model.contextWindow.toLocaleString(locale)}</td>
+              <td>
+                <ModelCapabilityBadges capabilities={model.capabilities} empty="hidden" />
+                {thinkingText && <div className="catalog-cap-sub">{t("思考：", "Thinking: ")}{thinkingText}</div>}
+                {!hasBadges && !thinkingText && <span className="capability-none">—</span>}
               </td>
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
+      </div>
       {editing ? (
-        <div className="catalog-edit-form" onKeyDown={(event) => { if (event.key === "Escape") cancelEdit(); }}>
+        <div className="catalog-edit-form" ref={editFormRef} onKeyDown={(event) => { if (event.key === "Escape") cancelEdit(); }}>
           <h4>{t("编辑模型", "Edit model")} <span className="mono">{editing.id}</span></h4>
           <div className="catalog-form">
             <input className="input" value={editing.id} disabled aria-label={t("模型 id", "Model ID")} spellCheck={false} />
