@@ -1,4 +1,4 @@
-import { useState, useEffect, type ReactElement } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, type ReactElement, type SelectHTMLAttributes } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { SessionDetail, BackgroundTaskInfo, ContextUsage, PythonEnv, SandboxMode, ShellBackend, SnapshotMode } from "../lib/contracts";
 import { api } from "../lib/api";
@@ -8,7 +8,7 @@ import { cacheHitRate } from "../lib/cache-stats";
 import { windowLevel, type ContextWindowInfo } from "../lib/context-window";
 import { Icon } from "./Icon";
 import { useI18n } from "../i18n";
-import { MOBILE_BREAKPOINT } from "../hooks/use-media-query";
+import { MOBILE_BREAKPOINT, useMediaQuery } from "../hooks/use-media-query";
 import { MobileNavTrigger } from "../workbench/MobileNavMenu";
 import { useConfirmDialog } from "./ConfirmDialog";
 
@@ -30,13 +30,48 @@ const SANDBOX_LABELS: Record<SandboxMode, [string, string]> = {
   appcontainer: ["AppContainer", "AppContainer"],
   wsb: ["Windows Sandbox", "Windows Sandbox"],
   jobobject: ["Job Object", "Job Object"],
+  landlock: ["Landlock", "Landlock"],
+  bubblewrap: ["bubblewrap", "bubblewrap"],
   off: ["关闭", "Off"],
 };
 
-/** 非 Windows 平台默认档由 Landlock 强制，jobobject 枚举值不变、仅换文案。 */
-const SANDBOX_LABELS_LINUX: Partial<Record<SandboxMode, [string, string]>> = {
-  jobobject: ["Landlock", "Landlock"],
-};
+/** 原生 select 按最长 option 撑宽，顶栏会留出大片空白；桌面端按选中项实测文本宽度收缩（+18px 箭头余量）。移动端由 CSS 百分比栏位铺满，清掉内联宽度 */
+let measureCanvas: HTMLCanvasElement | undefined;
+function fitSelectWidth(select: HTMLSelectElement): void {
+  if (typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia(MOBILE_BREAKPOINT).matches) {
+    select.style.width = "";
+    return;
+  }
+  const text = select.selectedOptions[0]?.textContent ?? "";
+  const context = (measureCanvas ??= document.createElement("canvas")).getContext("2d");
+  if (!context) return; // jsdom 等无 canvas 环境跳过
+  const style = getComputedStyle(select);
+  context.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+  select.style.width = `${Math.ceil(context.measureText(text).width) + 18}px`;
+}
+
+/** 宽度自适应选中项的 select：挂载/每次渲染后重测，onChange 时立即重测；appearance:none + 自带 chevron，规避原生箭头布局的平台差异 */
+function FitSelect({ children, ...props }: SelectHTMLAttributes<HTMLSelectElement>): ReactElement {
+  const ref = useRef<HTMLSelectElement>(null);
+  useLayoutEffect(() => {
+    if (ref.current) fitSelectWidth(ref.current);
+  });
+  return (
+    <span className="fit-select">
+      <select
+        ref={ref}
+        {...props}
+        onChange={(event) => {
+          fitSelectWidth(event.currentTarget);
+          props.onChange?.(event);
+        }}
+      >
+        {children}
+      </select>
+      <Icon name="chevron-down" size={10} />
+    </span>
+  );
+}
 
 export function JobHeader({ session, agentState, costSummary, windowUsage, latestUsage, onAbort, onConfig, onCreateCheckpoint, checkpointPending = false, running = false, onOpenNavMenu }: {
   session: SessionDetail;
@@ -44,7 +79,7 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
   costSummary?: CostSummary;
   /** 上下文窗口占用（WS 水位优先，REST stats 播种）；无时隐藏。 */
   windowUsage?: ContextWindowInfo;
-  /** 最近一轮 token 用量（WS context.usage）；驱动缓存命中率 pill，无时隐藏。 */
+  /** 最近一轮 token 用量（WS context.usage）；累计用量（ledger.usage）未加载时作为缓存命中率回退。 */
   latestUsage?: ContextUsage;
   onAbort(): void;
   onConfig(body: Record<string, unknown>): Promise<void>;
@@ -57,11 +92,17 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
   onOpenNavMenu?(): void;
 }): ReactElement {
   const { t } = useI18n();
+  const isMobile = useMediaQuery(MOBILE_BREAKPOINT);
   const busy = isBusyState(agentState) || running;
   const budgetRatio = costSummary?.tokenBudget ? Math.min(1, costSummary.tokens / costSummary.tokenBudget) : undefined;
   const windowState = windowLevel(windowUsage?.utilization);
   const windowPct = windowUsage?.utilization !== undefined ? Math.round((windowUsage?.utilization ?? 0) * 100) : undefined;
-  const cache = latestUsage ? cacheHitRate(latestUsage) : undefined;
+  // 会话累计用量（ledger.usage，与 ContextPanel 共缓存；App 在 context.usage 等事件时失效该键）：
+  // 顶栏缓存命中率用累计口径，查询未返回前回退到最近一轮（latestUsage）
+  const contextQuery = useQuery({ queryKey: ["context", session.id], queryFn: () => api.context(session.id) });
+  const cumulativeUsage = contextQuery.data?.ledger.usage;
+  const cacheSource = cumulativeUsage ?? latestUsage;
+  const cache = cacheSource ? cacheHitRate(cacheSource) : undefined;
   const [tasksOpen, setTasksOpen] = useState(false);
   const [expandedTask, setExpandedTask] = useState<string | null>(null);
   const [configPending, setConfigPending] = useState(false);
@@ -96,10 +137,18 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
   // 平台来源统一为 server 上报的 capabilities.platform；未拿到前保持 Windows 行为（现状）
   const isWindows = sandboxCapabilities.data?.platform === undefined || sandboxCapabilities.data.platform === "win32";
   const currentSandboxMode = session.sandboxMode ?? "jobobject";
-  const sandboxModeOptions = (Object.keys(SANDBOX_LABELS) as SandboxMode[])
-    .filter((mode) => isWindows || (mode !== "appcontainer" && mode !== "wsb"));
-  const sandboxModeLabel = (mode: SandboxMode): [string, string] =>
-    (!isWindows && SANDBOX_LABELS_LINUX[mode]) || SANDBOX_LABELS[mode];
+  // POSIX 真值选项：landlock（默认档）/ bubblewrap / off；Windows 维持 appcontainer/jobobject/wsb/off
+  const sandboxModeOptions: SandboxMode[] = isWindows
+    ? ["appcontainer", "wsb", "jobobject", "off"]
+    : ["landlock", "bubblewrap", "off"];
+  // 存量 Linux 会话 meta.sandboxMode 可能是 jobobject，选中项按 landlock 显示（切换时提交真值）
+  const selectedSandboxMode: SandboxMode = !isWindows && currentSandboxMode === "jobobject" ? "landlock" : currentSandboxMode;
+  // 异常存量值（如 Linux 会话存了 wsb）兜底保留，避免下拉落空
+  if (!sandboxModeOptions.includes(selectedSandboxMode)) sandboxModeOptions.push(selectedSandboxMode);
+  // bubblewrap 不可用时禁用该选项（旧 core 不上报 features.bwrap 时 server 按 unavailable 返回）
+  const bwrapUnavailableReason = !isWindows && sandboxCapabilities.data?.bwrap?.available === false
+    ? sandboxCapabilities.data.bwrap?.reason ?? t("当前环境未安装 bubblewrap", "bubblewrap is not available in this environment")
+    : undefined;
   // Linux 通常没有 CMD / pwsh：隐藏，但当前会话已选中时保留以免下拉落空
   const shellOptions: { value: ShellBackend; label: [string, string] }[] = [
     { value: "default", label: ["默认", "Default"] },
@@ -143,13 +192,33 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
     apply();
   };
 
+  // 运行状态项与展开/收起钮：桌面端在信息行/行1，移动端挪到 cwd 行（两行结构，信息行不折行）
+  const stateItem = agentState && agentState !== "idle" ? (
+    <span className={`job-info-state${agentState === "error" || agentState === "failed" ? " danger" : agentState === "aborted" ? " amber" : ""}`}>
+      <i className="info-dot" aria-hidden />
+      {STATE_LABELS[agentState] ? t(...STATE_LABELS[agentState]!) : agentState}
+    </span>
+  ) : null;
+  const toggleButton = (
+    <button
+      type="button"
+      className="job-header-toggle"
+      aria-label={headerCollapsed ? t("展开顶栏", "Expand header") : t("收起顶栏", "Collapse header")}
+      title={headerCollapsed ? t("展开顶栏", "Expand header") : t("收起顶栏", "Collapse header")}
+      onClick={() => setHeaderCollapsed((v) => !v)}
+    >
+      <Icon name={headerCollapsed ? "chevron-down" : "chevron-up"} size={12} />
+    </button>
+  );
+
   return (
     <header className={`job-header${headerCollapsed ? " compact" : ""}`}>
       <div className="job-header-info">
         {onOpenNavMenu && <MobileNavTrigger onOpen={onOpenNavMenu} />}
         <div className="job-title">
           <h1>{session.title}</h1>
-          {!headerCollapsed && <p className="job-cwd mono" title={session.cwd}>{session.cwd}</p>}
+          {/* 桌面端 cwd 在标题下（compact 由 CSS 隐藏）；移动端 cwd 在下方 job-header-sub 行 */}
+          {!isMobile && <p className="job-cwd mono" title={session.cwd}>{session.cwd}</p>}
         </div>
         <div className="job-info">
         {costSummary && (
@@ -160,7 +229,9 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
               : t("本会话 tokens 与成本", "Tokens and cost for this session")}
           >
             <span className="cost-summary-text">
-              {formatTokensShort(costSummary.tokens)} tokens · {costSummary.costLabel}
+              {formatTokensShort(costSummary.tokens)}
+              <span className="unit-full"> tokens</span><span className="unit-narrow"> tok</span>
+              <i className="dot-sep" aria-hidden />{costSummary.costLabel}
             </span>
             {budgetRatio !== undefined && (
               <i className="budget-bar" aria-hidden><i style={{ width: `${Math.round(budgetRatio * 100)}%` }} /></i>
@@ -178,46 +249,47 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
           >
             <span className="window-usage-text">
               {windowUsage.contextWindow && windowPct !== undefined
-                ? `${formatTokensShort(windowUsage.estimatedTokens)}/${formatTokensShort(windowUsage.contextWindow)} · ${windowPct}%`
+                ? <>{formatTokensShort(windowUsage.estimatedTokens)}/{formatTokensShort(windowUsage.contextWindow)}<i className="dot-sep" aria-hidden />{windowPct}%</>
                 : `${formatTokensShort(windowUsage.estimatedTokens)} ${t("上下文", "context")}`}
             </span>
-            {windowPct !== undefined && (
-              <i className={`budget-bar${windowState !== "normal" ? ` level-${windowState}` : ""}`} aria-hidden><i style={{ width: `${Math.min(100, windowPct)}%` }} /></i>
-            )}
           </span>
         )}
-        {latestUsage && cache && cache.rate !== null && (
+        {cache && cache.rate !== null && (cache.cacheRead > 0 || cache.cacheWrite > 0) && (
           <span
             className="window-usage cache-usage"
             data-testid="cache-usage"
-            title={t(
-              `缓存读取 ${formatTokensShort(cache.cacheRead)} · 写入 ${formatTokensShort(cache.cacheWrite)} · 未缓存输入 ${formatTokensShort(latestUsage.inputTokens)}`,
-              `Cache read ${formatTokensShort(cache.cacheRead)} · write ${formatTokensShort(cache.cacheWrite)} · uncached input ${formatTokensShort(latestUsage.inputTokens)}`,
-            )}
+            title={cumulativeUsage
+              ? t(
+                  `累计缓存读取 ${formatTokensShort(cache.cacheRead)} · 写入 ${formatTokensShort(cache.cacheWrite)}`,
+                  `Session cache read ${formatTokensShort(cache.cacheRead)} · write ${formatTokensShort(cache.cacheWrite)}`,
+                )
+              : t(
+                  `本轮缓存读取 ${formatTokensShort(cache.cacheRead)} · 写入 ${formatTokensShort(cache.cacheWrite)}`,
+                  `Last-call cache read ${formatTokensShort(cache.cacheRead)} · write ${formatTokensShort(cache.cacheWrite)}`,
+                )}
           >
             <span className="window-usage-text">{t("缓存", "cache")} {Math.round(cache.rate * 100)}%</span>
           </span>
         )}
         {runningTasks.length > 0 && (
           <button
-            className={`pill interactive accent${tasksOpen ? " open" : ""}`}
+            type="button"
+            className={`job-info-btn${tasksOpen ? " open" : ""}`}
             onClick={() => setTasksOpen((v) => !v)}
             title={t(`${runningTasks.length} 个后台任务运行中`, `${runningTasks.length} background tasks running`)}
           >
-            <Icon name="terminal" size={12} />
-            {runningTasks.length}
+            <i className="info-dot" aria-hidden />
+            {t("任务", "tasks")} {runningTasks.length}
           </button>
         )}
-        {agentState && agentState !== "idle" && (
-          <span className={`pill ${agentState === "error" || agentState === "failed" ? "danger" : agentState === "aborted" ? "amber" : "accent"}`}>{STATE_LABELS[agentState] ? t(...STATE_LABELS[agentState]!) : agentState}</span>
-        )}
+        {!isMobile && stateItem}
         {session.activePersona && (
           <label
             className="mode-switch persona-switch"
             title={t(`env-sim 人格模拟生效：${session.activePersona.name}（点击切换会话级人格）`, `env-sim persona active: ${session.activePersona.name} (click to override for this session)`)}
           >
             <Icon name="layers" size={11} />
-            <select
+            <FitSelect
               aria-label={t("人格模拟", "Persona")}
               value={session.persona ?? ""}
               disabled={busy || configPending}
@@ -227,41 +299,45 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
               {(personas.data?.personas ?? []).map((persona) => (
                 <option key={persona.id} value={persona.id}>{persona.name}</option>
               ))}
-            </select>
+            </FitSelect>
           </label>
         )}
         </div>
-        <button
-          type="button"
-          className="job-header-toggle"
-          aria-label={headerCollapsed ? t("展开顶栏", "Expand header") : t("收起顶栏", "Collapse header")}
-          title={headerCollapsed ? t("展开顶栏", "Expand header") : t("收起顶栏", "Collapse header")}
-          onClick={() => setHeaderCollapsed((v) => !v)}
-        >
-          <Icon name={headerCollapsed ? "chevron-down" : "chevron-up"} size={12} />
-        </button>
+        {!isMobile && toggleButton}
       </div>
+      {isMobile && (
+        <div className="job-header-sub">
+          <p className="job-cwd mono" title={session.cwd}>{session.cwd}</p>
+          {stateItem}
+          {toggleButton}
+        </div>
+      )}
       {!headerCollapsed && <div className="job-actions">
         <label className={`mode-switch sandbox-mode-switch ${(session.sandboxMode ?? "jobobject") === "off" ? "advisory" : "enforced"}`} title={t("切换当前会话的命令执行沙盒", "Change the command sandbox for this session")}>
-          <Icon name="shield" size={11} />
+          <Icon name="box" size={11} />
           <span>{t("沙盒", "Sandbox")}</span>
-          <select
+          <FitSelect
             aria-label={t("沙盒模式", "Sandbox mode")}
-            value={currentSandboxMode}
+            value={selectedSandboxMode}
             disabled={busy || configPending}
             onChange={(event) => changeSandbox(event.target.value as SandboxMode)}
           >
             {sandboxModeOptions.map((mode) => (
-              <option key={mode} value={mode} disabled={mode === "wsb" && sandboxCapabilities.data !== undefined && !sandboxCapabilities.data.wsb.available}>
-                {t(...sandboxModeLabel(mode))}
+              <option
+                key={mode}
+                value={mode}
+                disabled={(mode === "wsb" && sandboxCapabilities.data !== undefined && !sandboxCapabilities.data.wsb.available) || (mode === "bubblewrap" && bwrapUnavailableReason !== undefined)}
+                title={mode === "bubblewrap" ? bwrapUnavailableReason : undefined}
+              >
+                {t(...SANDBOX_LABELS[mode])}
               </option>
             ))}
-          </select>
+          </FitSelect>
         </label>
         <label className="mode-switch shell-backend-switch" title={t("选择当前会话命令使用的解释器", "Choose the command shell for this session")}>
           <Icon name="terminal" size={11} />
           <span>Shell</span>
-          <select
+          <FitSelect
             aria-label={t("Shell 后端", "Shell backend")}
             value={session.shellBackend ?? "default"}
             disabled={busy || configPending}
@@ -270,13 +346,13 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
             {shellOptions.map((option) => (
               <option key={option.value} value={option.value}>{t(...option.label)}</option>
             ))}
-          </select>
+          </FitSelect>
         </label>
-        <label className="mode-switch python-env-switch" title={t("选择当前会话 bash 的 python 运行环境", "Choose the python environment for bash in this session")}>
-          <Icon name="terminal" size={11} />
-          <span>Python</span>
-          <select
-            aria-label={t("Python 环境", "Python environment")}
+        <label className="mode-switch python-env-switch" title={t("选择当前会话 bash 的虚拟环境（Python）", "Choose the virtual environment (Python) for bash in this session")}>
+          <Icon name="layers" size={11} />
+          <span>{t("虚拟环境", "Env")}</span>
+          <FitSelect
+            aria-label={t("虚拟环境", "Virtual environment")}
             value={session.pythonEnv ?? "global"}
             disabled={busy || configPending}
             onChange={(event) => updateMode({ pythonEnv: event.target.value as PythonEnv })}
@@ -284,12 +360,12 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
             <option value="global">{t("本机环境", "Host")}</option>
             <option value="uv-workspace">{t("uv·工作区", "uv · workspace")}</option>
             <option value="uv-config">{t("uv·配置目录", "uv · config dir")}</option>
-          </select>
+          </FitSelect>
         </label>
         <label className="mode-switch snapshot-mode-switch" title={t("自动模式会在每轮用户消息前创建检查点", "Automatic mode creates a checkpoint before each user turn")}>
           <Icon name="history" size={11} />
           <span>{t("快照", "Snapshot")}</span>
-          <select
+          <FitSelect
             aria-label={t("快照模式", "Snapshot mode")}
             value={session.snapshotMode ?? "auto"}
             disabled={busy || configPending}
@@ -297,7 +373,7 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
           >
             <option value="auto">{t("每轮自动", "Automatic")}</option>
             <option value="manual">{t("仅手动", "Manual only")}</option>
-          </select>
+          </FitSelect>
         </label>
         {session.workspace?.mode === "managed" && onCreateCheckpoint && (
           <button

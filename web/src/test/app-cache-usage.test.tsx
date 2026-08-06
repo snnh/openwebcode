@@ -18,14 +18,18 @@ const context = makeContextView({
 setupStubWebSocket();
 
 describe("App 缓存命中率", () => {
-  it("context.usage 事件驱动 JobHeader 缓存命中 badge", async () => {
+  it("JobHeader 缓存命中 badge 显示账本会话累计命中率", async () => {
     installAppFetchMock({ session, context });
     renderApp();
 
-    // 会话加载完成前没有 badge（标题同时出现在会话列表与 JobHeader）
+    // 标题同时出现在会话列表与 JobHeader；badge 随账本查询到达而出现
     await screen.findAllByText("缓存测试作业");
-    expect(screen.queryByTestId("cache-usage")).toBeNull();
+    // 累计口径：74k / (26k + 74k) = 74%（来自 /context 账本，非单轮事件）
+    const badge = await screen.findByTestId("cache-usage");
+    expect(badge.textContent).toBe("缓存 74%");
+    expect(badge.title).toContain("累计缓存读取 74k");
 
+    // context.usage 事件失效账本查询后 badge 保持（重取同一账本）
     act(() => {
       emitEvent(lastSocket(), "context.usage", {
         inputTokens: 21_000,
@@ -36,8 +40,6 @@ describe("App 缓存命中率", () => {
         sessionCost: { usdMicroUnits: "0", cnyMicroUnits: "0", unpricedTokens: 0 },
       });
     });
-
-    // badge 出现即可；命中率文案与 tooltip 明细由 job-header.test.tsx 覆盖
     expect(await screen.findByTestId("cache-usage")).toBeTruthy();
   });
 });

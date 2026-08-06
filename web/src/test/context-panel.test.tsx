@@ -169,10 +169,10 @@ describe("ContextPanel 缓存命中", () => {
     renderPanel(windowUsage, { inputTokens: 21_000, outputTokens: 500, cacheRead: 98_000, cacheWrite: 12_000 });
 
     const row = await screen.findByTestId("ctx-cache");
-    expect(row.textContent).toContain("本轮缓存命中 82%");
-    expect(row.textContent).toContain("读取 98k");
-    expect(row.textContent).toContain("写入 12k");
-    expect(row.textContent).toContain("累计缓存命中 74%");
+    expect(row.textContent).toContain("本轮 82%");
+    expect(row.querySelector(".pill")!.getAttribute("title")).toContain("本轮缓存读取 98k");
+    expect(row.querySelector(".pill")!.getAttribute("title")).toContain("写入 12k");
+    expect(row.textContent).toContain("累计 74%");
   });
 
   it("本轮与累计读写全为 0 时不渲染缓存行", async () => {
@@ -190,7 +190,7 @@ describe("ContextPanel 缓存命中", () => {
     renderPanel(windowUsage);
 
     const row = await screen.findByTestId("ctx-cache");
-    expect(row.textContent).not.toContain("本轮缓存命中");
-    expect(row.textContent).toContain("累计缓存命中 74%");
+    expect(row.textContent).not.toContain("本轮");
+    expect(row.textContent).toContain("累计 74%");
   });
 });

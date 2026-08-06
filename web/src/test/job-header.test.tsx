@@ -4,7 +4,7 @@ import { JobHeader } from "../components/JobHeader";
 import { api } from "../lib/api";
 import type { ContextWindowInfo } from "../lib/context-window";
 import type { ContextUsage, SessionDetail } from "../lib/contracts";
-import { makeSession } from "./helpers/fixtures";
+import { makeContextView, makeSession } from "./helpers/fixtures";
 import { renderWithClient } from "./helpers/with-client";
 
 const session = makeSession({
@@ -21,6 +21,8 @@ const session = makeSession({
 beforeEach(() => {
   vi.spyOn(api, "tasks").mockResolvedValue([]);
   vi.spyOn(api, "sandboxCapabilities").mockResolvedValue({ platform: "win32", appcontainer: true, jobobject: true, off: true, wsb: { available: false, reason: "测试" }, bindLink: { available: false, reason: "测试" } });
+  // 顶栏缓存命中率以账本累计为准；默认无账本（走最近一轮 latestUsage 回退），累计场景在用例内覆盖
+  vi.spyOn(api, "context").mockRejectedValue(new Error("无账本"));
 });
 
 afterEach(() => vi.restoreAllMocks());
@@ -32,7 +34,7 @@ function mockWsbAvailable(): void {
 
 /** 覆盖 beforeEach 的默认 capabilities：Linux 平台 */
 function mockLinuxPlatform(): void {
-  vi.mocked(api.sandboxCapabilities).mockResolvedValue({ platform: "linux", appcontainer: false, jobobject: true, off: true, wsb: { available: false, reason: "仅 Windows" }, bindLink: { available: false, reason: "仅 Windows" } });
+  vi.mocked(api.sandboxCapabilities).mockResolvedValue({ platform: "linux", appcontainer: false, jobobject: true, off: true, wsb: { available: false, reason: "仅 Windows" }, bindLink: { available: false, reason: "仅 Windows" }, bwrap: { available: true } });
 }
 
 /** 渲染 idle 状态的 JobHeader（windowUsage/latestUsage 按需传入） */
@@ -151,7 +153,8 @@ describe("JobHeader 上下文窗口 meter", () => {
   it("显示 45k/128k · 38% 与 normal 水位", () => {
     renderHeader({ windowUsage: base });
     const meter = screen.getByTestId("window-usage");
-    expect(meter.textContent).toContain("45k/128k · 38%");
+    expect(meter.textContent).toContain("45k/128k");
+    expect(meter.textContent).toContain("38%");
     expect(meter.dataset.level).toBe("normal");
   });
 
@@ -161,7 +164,6 @@ describe("JobHeader 上下文窗口 meter", () => {
     const meters = screen.getAllByTestId("window-usage");
     expect(meters[0]!.dataset.level).toBe("warn");
     expect(meters[1]!.dataset.level).toBe("danger");
-    expect(meters[1]!.querySelector(".budget-bar")!.className).toContain("level-danger");
   });
 
   it("窗口未知时仅显示估算 tokens，不显示百分比", () => {
@@ -169,21 +171,36 @@ describe("JobHeader 上下文窗口 meter", () => {
     const meter = screen.getByTestId("window-usage");
     expect(meter.textContent).toContain("45k");
     expect(meter.textContent).not.toContain("%");
-    expect(meter.querySelector(".budget-bar")).toBeNull();
   });
 });
 
 describe("JobHeader 缓存命中 badge", () => {
   const usage: ContextUsage = { inputTokens: 21_000, outputTokens: 500, cacheRead: 98_000, cacheWrite: 12_000 };
 
-  it("显示最近一轮命中率与 tooltip 明细", () => {
+  it("账本未加载时回退显示最近一轮命中率与 tooltip 明细", () => {
     renderHeader({ latestUsage: usage });
     const badge = screen.getByTestId("cache-usage");
     // 98k / (21k + 98k) ≈ 82%
     expect(badge.textContent).toBe("缓存 82%");
-    expect(badge.title).toContain("缓存读取 98k");
+    expect(badge.title).toContain("本轮缓存读取 98k");
     expect(badge.title).toContain("写入 12k");
-    expect(badge.title).toContain("未缓存输入 21k");
+  });
+
+  it("账本加载后切换为会话累计命中率", async () => {
+    // 累计 74k / (26k + 74k) = 74%，优先于最近一轮的 82%
+    vi.mocked(api.context).mockResolvedValue(makeContextView({
+      ledger: {
+        usage: { inputTokens: 26_000, outputTokens: 80, cacheRead: 74_000, cacheWrite: 8_000 },
+        cost: { usdMicroUnits: "0", cnyMicroUnits: "0", unpricedTokens: 0 },
+        entries: [],
+      },
+    }));
+    renderHeader({ latestUsage: usage });
+
+    const badge = await screen.findByTestId("cache-usage");
+    await waitFor(() => expect(badge.textContent).toBe("缓存 74%"));
+    expect(badge.title).toContain("累计缓存读取 74k");
+    expect(badge.title).toContain("写入 8.0k");
   });
 
   it("无用量数据时隐藏 badge", () => {
@@ -221,7 +238,7 @@ describe("JobHeader 平台适配", () => {
     expect(within(sandboxSelect).getByRole("option", { name: "AppContainer" })).toBeInTheDocument();
   });
 
-  it("linux：shell 选择器隐藏 CMD 与 PowerShell 7，沙盒默认档显示 Landlock 且不展示 Windows 专属模式", async () => {
+  it("linux：shell 选择器隐藏 CMD 与 PowerShell 7，沙盒选项为 landlock/bubblewrap/off 真值", async () => {
     mockLinuxPlatform();
     renderHeader();
 
@@ -232,8 +249,33 @@ describe("JobHeader 平台适配", () => {
 
     const sandboxSelect = screen.getByLabelText("沙盒模式");
     await waitFor(() => expect(within(sandboxSelect).getByRole("option", { name: "Landlock" })).toBeInTheDocument());
+    expect(within(sandboxSelect).getByRole("option", { name: "bubblewrap" })).toBeInTheDocument();
     expect(within(sandboxSelect).queryByRole("option", { name: "Windows Sandbox" })).not.toBeInTheDocument();
     expect(within(sandboxSelect).queryByRole("option", { name: "AppContainer" })).not.toBeInTheDocument();
+    expect(within(sandboxSelect).queryByRole("option", { name: "Job Object" })).not.toBeInTheDocument();
+  });
+
+  it("linux：存量 jobobject 会话选中项映射为 landlock，切换时提交真值", async () => {
+    mockLinuxPlatform();
+    const onConfig = vi.fn(async () => undefined);
+    renderWithClient(
+      <JobHeader session={{ ...session, sandboxMode: "jobobject" }} agentState="idle" onAbort={() => undefined} onConfig={onConfig} />,
+    );
+
+    const sandboxSelect = screen.getByLabelText("沙盒模式");
+    await waitFor(() => expect(sandboxSelect).toHaveValue("landlock"));
+    fireEvent.change(sandboxSelect, { target: { value: "bubblewrap" } });
+    await waitFor(() => expect(onConfig).toHaveBeenCalledWith({ sandboxMode: "bubblewrap" }));
+  });
+
+  it("linux：bubblewrap 不可用时选项禁用并带原因 tooltip", async () => {
+    vi.mocked(api.sandboxCapabilities).mockResolvedValue({ platform: "linux", appcontainer: false, jobobject: true, off: true, wsb: { available: false, reason: "仅 Windows" }, bindLink: { available: false, reason: "仅 Windows" }, bwrap: { available: false, reason: "未安装 bwrap" } });
+    renderHeader();
+
+    const sandboxSelect = screen.getByLabelText("沙盒模式");
+    const option = await waitFor(() => within(sandboxSelect).getByRole("option", { name: "bubblewrap" }));
+    expect(option).toBeDisabled();
+    expect(option).toHaveAttribute("title", "未安装 bwrap");
   });
 
   it("linux：会话已选中 pwsh 时保留该选项以免下拉落空", async () => {

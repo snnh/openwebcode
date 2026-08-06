@@ -92,16 +92,19 @@ export function BottomPanel({ sessionId, session, running, evalEnabled = false, 
     return stored && stored in TAB_META ? (stored as PanelTab) : "context";
   });
   const [height, setHeight] = useState(() => clampHeight(Number(readStored("owc-panel-height")) || 260));
-  // 移动端第二行标签折叠：默认收起、不持久化；选中折叠区标签时本次保持展开
+  // 移动端第二行标签折叠：默认收起、不持久化；面板展开时自动展开，「收起」按钮始终可收回
   const [tabsExpanded, setTabsExpanded] = useState(false);
 
   const allTabs = (Object.keys(TAB_META) as PanelTab[]).filter((item) => item !== "eval" || evalEnabled);
   const primaryTabs = mobile ? allTabs.filter((item) => PRIMARY_TABS.includes(item)) : allTabs;
   const secondaryTabs = mobile ? allTabs.filter((item) => !PRIMARY_TABS.includes(item)) : [];
-  const showSecondary = secondaryTabs.length > 0 && (tabsExpanded || secondaryTabs.includes(tab));
+  // 第二行显隐只看 tabsExpanded：当前标签在折叠区也不强制展开，保证「收起」永远可用
+  const showSecondary = secondaryTabs.length > 0 && tabsExpanded;
 
   useEffect(() => store("owc-panel-tab", tab), [tab]);
   useEffect(() => store("owc-panel-height", String(height)), [height]);
+  // 面板展开时自动展开第二行标签（移动端），收起面板时恢复紧凑标签条
+  useEffect(() => { setTabsExpanded(open); }, [open]);
   useEffect(() => {
     if (!evalEnabled && tab === "eval") setTab("context");
   }, [evalEnabled, tab]);

@@ -20,8 +20,8 @@ describe("窄窗口布局 CSS 回归", () => {
     expect(css).toMatch(/\.mobile-nav-trigger\s*\{[^}]*min-width:\s*44px;/s);
     // 触发钮只能显示不能隐藏：禁止出现 display: none（曾因此按钮被级联隐藏，裸 logo 不可见/不可点）
     expect(css).not.toMatch(/\.mobile-nav-trigger\s*\{[^}]*display:\s*none/);
-    // 触发钮要有明确按钮外观（边框），裸 logo 没有可点击感
-    expect(css).toMatch(/\.mobile-nav-trigger\s*\{[^}]*border:\s*1px solid/s);
+    // 触发钮为无边框纯图标（顶栏纯文本语言），不挂胶囊外框
+    expect(css).toMatch(/\.mobile-nav-trigger\s*\{[^}]*border:\s*none;/s);
     // 面板模式：图标栏固定贴左，侧栏右移 52px 让位（图标栏 + 右侧整屏面板）
     expect(css).toMatch(/\.mobile-explorer-rail\s*\{[^}]*position:\s*fixed;[^}]*left:\s*0;/s);
     expect(narrowCss).toMatch(/\.wb-sidebar\s*\{[^}]*left:\s*52px;/s);
@@ -50,9 +50,12 @@ describe("窄窗口布局 CSS 回归", () => {
   it("窄屏底部标签条不横滚：常驻标签收缩、第二行折叠区独立成行", () => {
     expect(narrowCss).toMatch(/\.panel-tabs\s*\{[^}]*overflow-x:\s*hidden;/s);
     expect(narrowCss).toMatch(/\.panel-tabs-secondary\s*\{[^}]*border-top:/s);
-    // 顶栏两行结构：行1 信息区收缩省略、行2 选项单行胶囊缩短（均不横滚）
-    expect(narrowCss).toMatch(/\.job-info\s*\{[^}]*flex-wrap:\s*nowrap;[^}]*overflow:\s*hidden;/s);
+    // 顶栏两行结构：行1 不折行（nowrap），行2 为独立 .job-header-sub 容器（cwd+状态+展开钮）
+    expect(narrowCss).toMatch(/\.job-header-info\s*\{[^}]*flex-wrap:\s*nowrap;/s);
+    expect(narrowCss).toMatch(/\.job-header-sub\s*\{[^}]*display:\s*flex;/s);
+    expect(narrowCss).not.toMatch(/\.job-info\s*\{[^}]*overflow-x:\s*auto/s);
     expect(narrowCss).toMatch(/\.job-actions\s*\{[^}]*flex-wrap:\s*nowrap;/s);
+    expect(narrowCss).toMatch(/\.budget-bar\s*\{[^}]*width:\s*28px;/s);
   });
 
   it("主区、底部面板和状态栏共享同一纵向视口", () => {
@@ -63,24 +66,29 @@ describe("窄窗口布局 CSS 回归", () => {
     expect(narrowCss).not.toContain("calc(100dvh - 53px)");
   });
 
-  it("会话配置收进输入卡片底栏，窄窗口允许换行且芯片行可横滚", () => {
+  it("会话配置收进输入卡片底栏，窄窗口允许换行且芯片行折行不横滚", () => {
     expect(css).toMatch(/\.composer-toolbar\s*\{[^}]*flex-wrap:\s*nowrap;/s);
     expect(css).toMatch(/\.composer-toolbar-spacer\s*\{\s*flex:\s*1 1 auto;/s);
     expect(css).toMatch(/\.composer-menu-right \.popover-menu\s*\{[^}]*right:\s*0;/s);
     expect(narrowCss).toMatch(/\.composer\s*\{[^}]*position:\s*sticky;/s);
     expect(narrowCss).toMatch(/\.composer-menu-badge\s*\{\s*display:\s*none;/s);
+    // 控制条同排放下：菜单按钮降档、模型名收缩省略、spacer 吸剩余宽度
+    expect(narrowCss).toMatch(/\.composer-toolbar-spacer\s*\{[^}]*flex:\s*1 1 0;[^}]*min-width:\s*0;/s);
+    expect(narrowCss).toMatch(/\.model-menu-btn-label\s*\{[^}]*max-width:\s*34vw;/s);
     const tinyCss = css.slice(css.indexOf("@media (max-width: 480px)"));
     expect(tinyCss).toMatch(/\.composer-toolbar\s*\{\s*flex-wrap:\s*wrap;/s);
-    expect(tinyCss).toMatch(/\.composer-chips\s*\{[^}]*overflow-x:\s*auto;/s);
+    // 芯片行折行而非横滚（移动端禁横向滚动纪律）
+    expect(tinyCss).toMatch(/\.composer-chips\s*\{[^}]*flex-wrap:\s*wrap;/s);
+    expect(tinyCss).not.toMatch(/\.composer-chips\s*\{[^}]*overflow-x:\s*auto/s);
   });
 
-  it("≤768px 密度优化：芯片行压扁、信息条单行收缩省略、表格降档、消息区收边", () => {
+  it("≤768px 密度优化：芯片行压扁、信息条折行 + 单位缩写 tok、表格降档、消息区收边", () => {
     const compactStart = css.indexOf("@media (max-width: 768px)", narrowStart);
     expect(compactStart).toBeGreaterThanOrEqual(0);
     const compactCss = css.slice(compactStart, css.indexOf("@media (max-width: 480px)", compactStart));
     expect(compactCss).toMatch(/\.composer-chips\s*\{[^}]*margin:\s*0 0 4px;/s);
-    expect(compactCss).toMatch(/\.job-info\s*\{[^}]*flex-wrap:\s*nowrap;/s);
-    expect(compactCss).toMatch(/\.budget-bar\s*\{[^}]*width:\s*28px;/s);
+    expect(compactCss).toMatch(/\.unit-full\s*\{\s*display:\s*none;/s);
+    expect(compactCss).toMatch(/\.unit-narrow\s*\{\s*display:\s*inline;/s);
     expect(compactCss).toMatch(/\.markdown th, \.markdown td\s*\{[^}]*padding:\s*3px 6px;/s);
     expect(compactCss).toMatch(/\.execution-track\s*\{[^}]*padding-left:\s*12px;/s);
   });

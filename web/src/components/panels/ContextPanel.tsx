@@ -170,13 +170,19 @@ function WindowSection({ info, latestUsage, cumulativeUsage }: {
       {hasCacheActivity && (
         <p className="ctx-cache-row" data-testid="ctx-cache">
           {latestCache && latestCache.rate !== null && (latestCache.cacheRead > 0 || latestCache.cacheWrite > 0) && (
-            <span>{t("本轮缓存命中", "Last-call cache hit")} {Math.round(latestCache.rate * 100)}%{t(`（读取 ${formatTokensShort(latestCache.cacheRead)} · 写入 ${formatTokensShort(latestCache.cacheWrite)}）`, `(read ${formatTokensShort(latestCache.cacheRead)} · write ${formatTokensShort(latestCache.cacheWrite)})`)}</span>
+            <span
+              className="pill small"
+              title={t(`本轮缓存读取 ${formatTokensShort(latestCache.cacheRead)} · 写入 ${formatTokensShort(latestCache.cacheWrite)}`, `Last-call cache read ${formatTokensShort(latestCache.cacheRead)} · write ${formatTokensShort(latestCache.cacheWrite)}`)}
+            >
+              {t("本轮", "Last call")} {Math.round(latestCache.rate * 100)}%
+            </span>
           )}
           {cumulativeCache.rate !== null && (cumulativeCache.cacheRead > 0 || cumulativeCache.cacheWrite > 0) && (
             <span
+              className="pill small accent"
               title={t(`累计缓存读取 ${formatTokens(cumulativeCache.cacheRead)} · 写入 ${formatTokens(cumulativeCache.cacheWrite)}`, `Session cache read ${formatTokens(cumulativeCache.cacheRead)} · write ${formatTokens(cumulativeCache.cacheWrite)}`)}
             >
-              {t("累计缓存命中", "Session cache hit")} {Math.round(cumulativeCache.rate * 100)}%
+              {t("累计", "Session")} {Math.round(cumulativeCache.rate * 100)}%
             </span>
           )}
         </p>
@@ -445,7 +451,7 @@ export function ContextPanel({ sessionId, session, running, windowUsage, latestU
           <dt>{t("消息级断点数", "Message breakpoints")}</dt>
           <dd>{context.data.ledger.cacheBreakpoints!.length}</dd>
           {context.data.ledger.cacheBreakpoints!.map((id) => (
-            <dd key={id} className="mono" title={id}>{messageSummary(session, id, t)}</dd>
+            <dd key={id} className="mono kv-text" title={id}>{messageSummary(session, id, t)}</dd>
           ))}
         </dl>
       )}
@@ -479,7 +485,7 @@ export function ContextPanel({ sessionId, session, running, windowUsage, latestU
             {context.data.ledger.compacted.instructions.length > 0 && (
               <>
                 <dt>{t("用户明确指令（累积）", "Explicit user instructions (cumulative)")}</dt>
-                <dd>{context.data.ledger.compacted.instructions.map((item) => `· ${item}`).join("\n")}</dd>
+                <dd className="kv-text">{context.data.ledger.compacted.instructions.map((item) => `· ${item}`).join("\n")}</dd>
               </>
             )}
           </dl>
