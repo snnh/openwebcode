@@ -31,7 +31,15 @@ export class CoreGateway {
   constructor(private readonly core: Pick<CoreClientLike, "ping">) {}
 
   info(): Promise<NegotiatedCoreInfo> {
-    this.negotiated ??= this.core.ping().then(negotiate);
+    if (!this.negotiated) {
+      // 协商失败的 Promise 不缓存：瞬时失败（core 重启中/尚未就绪）允许下次调用重试，
+      // 否则一次失败后 bash 等工具永久报错直到 server 重启。
+      const pending = this.core.ping().then(negotiate);
+      pending.catch(() => {
+        if (this.negotiated === pending) this.negotiated = undefined;
+      });
+      this.negotiated = pending;
+    }
     return this.negotiated;
   }
 

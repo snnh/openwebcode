@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { ConcurrencyLimitedProvider } from "../src/providers/concurrency-limiter.js";
-import type { Provider, ProviderEvent, StreamChatRequest } from "../src/providers/provider.js";
+import { ConcurrencyLimitedProvider, DEFAULT_MAX_CONCURRENT } from "../src/providers/concurrency-limiter.js";
+import { ProviderRegistry, type Provider, type ProviderEvent, type StreamChatRequest } from "../src/providers/provider.js";
 
 /** A fake provider that yields events and tracks concurrent calls */
 function fakeProvider(name: string): { provider: Provider; getCurrentConcurrent: () => number; getMaxConcurrent: () => number } {
@@ -164,6 +164,43 @@ describe("ConcurrencyLimitedProvider (0.5.0 Phase 2)", () => {
     await Promise.all([p1, p2, p3]);
     expect(limited.getStats().active).toBe(0);
     expect(limited.getStats().queued).toBe(0);
+  });
+
+  it("release 为队首 waiter 预占槽位：grant 与 waiter 续跑之间 active 不虚降", async () => {
+    const { provider } = fakeProvider("test");
+    const limited = new ConcurrencyLimitedProvider(provider, 1);
+    // 白盒驱动 acquire/release，停在 grant 已发生、waiter 尚未续跑的同步窗口
+    const internals = limited as unknown as {
+      acquire(signal: AbortSignal): Promise<void>;
+      release(): void;
+    };
+    await internals.acquire(new AbortController().signal);
+    const granted = internals.acquire(new AbortController().signal);
+    expect(limited.getStats()).toMatchObject({ active: 1, queued: 1 });
+
+    internals.release();
+    // 同步窗口内（waiter 的 acquire 尚未 resolve）：槽位已移交，active 必须仍为 1，
+    // 否则此刻的同步 acquire 会看到虚低 active 而瞬时超限
+    expect(limited.getStats().active).toBe(1);
+    await granted;
+    expect(limited.getStats().active).toBe(1);
+
+    internals.release();
+    expect(limited.getStats()).toMatchObject({ active: 0, queued: 0 });
+  });
+
+  it("ProviderRegistry.register：不显式传 maxConcurrent 不包装，显式传 DEFAULT_MAX_CONCURRENT 按 3 限流", () => {
+    const registry = new ProviderRegistry();
+    const plain = fakeProvider("plain");
+    registry.register(plain.provider);
+    // 缺省不包装（测试/特殊通道）；生产路径由 provider-profiles-runtime 显式接线
+    expect(registry.concurrencyStats()).toEqual({});
+
+    const limited = fakeProvider("limited");
+    registry.register(limited.provider, DEFAULT_MAX_CONCURRENT);
+    expect(registry.concurrencyStats()["limited"]).toEqual({ active: 0, queued: 0, maxConcurrent: 3 });
+    // 包装透明：name 代理到底层 provider
+    expect(registry.get("limited")?.name).toBe("limited");
   });
 
   it("proxies name and promptCaching properties", () => {

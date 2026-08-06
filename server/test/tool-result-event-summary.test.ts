@@ -90,3 +90,52 @@ describe("工具结果事件只发摘要 + artifact 引用（enforcement）", ()
     expect(payload.result.preview as string).toContain("hello world");
   }, 15_000);
 });
+
+describe("工具事件 input 限长（tool.start payload）", () => {
+  it("write_file 全量 content 超 256KB：事件 input 截断并标记 inputTruncated；小 input 原样", async () => {
+    const root = await tempRoot("owc-tool-input-");
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const session = await sessions.create({ cwd: root, provider: "tool-input-stub", model: "claude-opus-4-8" });
+    await sessions.updatePermissions(session.id, "yolo", []);
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const events = new EventBus();
+    const published: AppEvent[] = [];
+    events.on("event", (event: AppEvent) => published.push(event));
+    const bigContent = "y".repeat(300_000);
+    let turn = 0;
+    const provider: Provider = {
+      name: "tool-input-stub",
+      async *streamChat() {
+        if (turn === 0) {
+          yield { type: "tool_call", id: "wf-big", name: "write_file", input: { path: "big.txt", content: bigContent } };
+          yield { type: "done", stopReason: "tool_use" };
+        } else if (turn === 1) {
+          yield { type: "tool_call", id: "wf-small", name: "write_file", input: { path: "small.txt", content: "small" } };
+          yield { type: "done", stopReason: "tool_use" };
+        } else {
+          yield { type: "done", stopReason: "end_turn" };
+        }
+        turn += 1;
+      },
+    };
+    const providers = new ProviderRegistry();
+    providers.register(provider);
+    const runner = new AgentRunner(sessions, providers, makeControllableCore().client, events, pricing);
+
+    await runner.run(session.id, "写两个文件");
+
+    const starts = published.filter((event) => event.type === "tool.start");
+    expect(starts).toHaveLength(2);
+    const bigPayload = starts[0]!.payload as { name: string; input: { content: string }; inputTruncated?: boolean };
+    expect(bigPayload.name).toBe("write_file");
+    expect(bigPayload.inputTruncated).toBe(true);
+    expect(bigPayload.input.content.length).toBeLessThanOrEqual(256 * 1024 + 64);
+    // 整帧远小于原始 input（300KB content 不再整帧上 WS）
+    expect(JSON.stringify(starts[0]!.payload).length).toBeLessThan(280_000);
+    const smallPayload = starts[1]!.payload as { input: { content: string }; inputTruncated?: boolean };
+    expect(smallPayload.inputTruncated).toBeUndefined();
+    expect(smallPayload.input.content).toBe("small");
+  }, 15_000);
+});

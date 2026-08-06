@@ -5,6 +5,7 @@ import type { PricingCatalog } from "../cost/pricing-catalog.js";
 import { appendMemory, parseSedimentSections } from "../memory.js";
 import type { FastModelClient } from "../fast-model.js";
 import type { HookRunner } from "../hooks.js";
+import { activePathMessages } from "../sessions/session-tree.js";
 import type { ChatMessage, MessageContent } from "../sessions/types.js";
 import type { SessionStore } from "../sessions/session-store.js";
 import type { UsageLog } from "../usage-log.js";
@@ -119,14 +120,20 @@ export class Compactor {
     if (!session) throw new Error("Session not found");
     const context = new ContextManager(this.sessions.contextRoot(sessionId));
     const ledger = await context.load();
-    const compactedUpto = Math.min(ledger.compacted?.uptoIndex ?? 0, session.messages.length);
-    const clearedUpto = Math.min(ledger.cleared?.uptoIndex ?? 0, session.messages.length);
+    // 区段边界一律按活动路径计算：ContextManager.buildView 也是把 uptoIndex 应用到
+    // activePathMessages 的结果上；用 messages.jsonl 全量（含分叉/编辑重发的废弃分支）
+    // 会在有分支时索引错位——摘要混入废弃分支，keepTail 保护的最近消息被裁掉。
+    // 注意：存量会话 ledger 里可能存着按全量长度算的旧 uptoIndex（>= 活动路径长度），
+    // 方向保守（少压缩、不丢上下文），不做迁移。
+    const activeMessages = activePathMessages(session.messages, session.activeLeafId);
+    const compactedUpto = Math.min(ledger.compacted?.uptoIndex ?? 0, activeMessages.length);
+    const clearedUpto = Math.min(ledger.cleared?.uptoIndex ?? 0, activeMessages.length);
     const previousUpto = Math.max(compactedUpto, clearedUpto);
-    const uptoIndex = Math.max(previousUpto, session.messages.length - this.keepTail);
+    const uptoIndex = Math.max(previousUpto, activeMessages.length - this.keepTail);
     if (uptoIndex <= previousUpto) {
       return { changed: false, mode, reason: `没有新的可压缩区段（保留最近 ${this.keepTail} 条消息）` };
     }
-    const span = session.messages.slice(previousUpto, uptoIndex);
+    const span = activeMessages.slice(previousUpto, uptoIndex);
     const forced = options.forced === true;
     // PreCompact 钩子：exit 2 阻断本次压缩（Pre* 类阻断语义，同 PreToolUse）
     if (this.deps.hooks) {

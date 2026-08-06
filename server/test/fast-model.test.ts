@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { FastModelClient } from "../src/fast-model.js";
+import { ProviderError } from "../src/providers/provider-error.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 
 describe("FastModelClient", () => {
@@ -59,5 +60,38 @@ describe("FastModelClient", () => {
 
     client.setConfig({ provider: "disabled-provider", model: "fast-2" });
     await expect(client.complete({ system: "system", prompt: "prompt", maxTokens: 256 })).rejects.toThrow("快速模型服务商不可用");
+  });
+
+  it("经 collectProviderTurn 重试：可重试失败第二次成功（maxAttempts=2）", async () => {
+    let attempts = 0;
+    const providers = new ProviderRegistry();
+    providers.register({
+      name: "shared-provider",
+      async *streamChat() {
+        attempts += 1;
+        if (attempts === 1) throw new ProviderError("overloaded", "瞬时限流", true);
+        yield { type: "text_delta", text: "重试成功" };
+        yield { type: "done", stopReason: "end_turn" };
+      },
+    });
+    const client = new FastModelClient(providers, { provider: "shared-provider", model: "fast-1" });
+    await expect(client.complete({ system: "system", prompt: "prompt", maxTokens: 256 }))
+      .resolves.toMatchObject({ text: "重试成功" });
+    expect(attempts).toBe(2);
+  });
+
+  it("不可重试失败不重试", async () => {
+    let attempts = 0;
+    const providers = new ProviderRegistry();
+    providers.register({
+      name: "shared-provider",
+      async *streamChat() {
+        attempts += 1;
+        throw new ProviderError("authentication", "bad key", false);
+      },
+    });
+    const client = new FastModelClient(providers, { provider: "shared-provider", model: "fast-1" });
+    await expect(client.complete({ system: "system", prompt: "prompt", maxTokens: 256 })).rejects.toThrow("快速模型请求失败");
+    expect(attempts).toBe(1);
   });
 });

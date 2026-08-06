@@ -4,6 +4,7 @@ import type { AgentRunner } from "../src/agent/agent-runner.js";
 import { EventBus } from "../src/events/event-bus.js";
 import { ProviderProfilesRuntime } from "../src/provider-profiles-runtime.js";
 import { ProviderProfilesService } from "../src/provider-profiles.js";
+import { ConcurrencyLimitedProvider, DEFAULT_MAX_CONCURRENT } from "../src/providers/concurrency-limiter.js";
 import { OpenAIResponsesProvider } from "../src/providers/openai-responses-provider.js";
 import { ProviderError } from "../src/providers/provider-error.js";
 import { ProviderRegistry, type ProviderEvent, type StreamChatRequest } from "../src/providers/provider.js";
@@ -372,7 +373,12 @@ describe("ProviderProfilesRuntime openai-responses branch", () => {
         baseURL: "https://api.openai.test/v1",
         apiKey: "sk-test",
       });
-      expect(providers.get("GPT")).toBeInstanceOf(OpenAIResponsesProvider);
+      // 生产注册路径按 DEFAULT_MAX_CONCURRENT（3）并发上限包装：get 返回限流包装器，
+      // 底层为 OpenAIResponsesProvider（stats 证明包装生效）
+      const registered = providers.get("GPT");
+      expect(registered).toBeInstanceOf(ConcurrencyLimitedProvider);
+      expect(registered?.name).toBe("GPT");
+      expect(providers.concurrencyStats()["GPT"]).toEqual({ active: 0, queued: 0, maxConcurrent: DEFAULT_MAX_CONCURRENT });
     } finally {
       runtime.stop();
     }

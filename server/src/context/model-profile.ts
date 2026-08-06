@@ -65,7 +65,13 @@ export function getModelProfile(model: string): ModelProfile {
 }
 
 export function estimateTokens(value: string): number {
-  return Math.max(1, Math.ceil(value.length / 4));
+  // ASCII 约 4 字符/token；非 ASCII（CJK 等）实际约 1~1.5 字符/token，
+  // 统一按 4 字符/token 会把中文会话低估 3-4 倍（85% 强制压缩不触发 → context-length 400）
+  let units = 0;
+  for (const char of value) {
+    units += char.charCodeAt(0) > 0x7f ? 1 / 1.5 : 1 / 4;
+  }
+  return Math.max(1, Math.ceil(units));
 }
 
 /** 图片按固定定额计入水位估算（典型 ~1.2k tokens/张），而非 base64 长度。 */
