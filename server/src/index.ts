@@ -44,6 +44,7 @@ import { ProviderProfilesService } from "./provider-profiles.js";
 import { ProviderProfilesRuntime } from "./provider-profiles-runtime.js";
 import { ExtensionManager } from "./extensions/extension-manager.js";
 import { ContentLensService } from "./extensions/content-lens.js";
+import { CompactVaultService } from "./extensions/compact-vault.js";
 import { RemoteSyncScheduler } from "./remote-sync-scheduler.js";
 import { CronScheduler } from "./cron-scheduler.js";
 import { EvalEvaluator } from "./eval/evaluator.js";
@@ -120,7 +121,9 @@ const modelRoles = new ModelRoleResolver(settings, providers);
 // Hooks（可信配置，等同 yolo 级别）：全局 <dataDir>/hooks.json，项目 <cwd>/.owc/hooks.json 现读覆盖
 const hooks = new HookRunner(path.join(dataDir, "hooks.json"), events);
 const compactor = new Compactor(sessions, fastModel, { usageLog, pricing, exchangeRates, hooks });
-const extensions = new ExtensionManager(dataDir, events, { sessions, fastModel });
+// 档案库压缩（compact-vault 官方扩展的 server 侧服务）：归档完整上下文 + 目录索引 + 按需召回
+const vaultService = new CompactVaultService(sessions, fastModel, { usageLog, pricing, exchangeRates, hooks });
+const extensions = new ExtensionManager(dataDir, events, { sessions, fastModel, vaultService });
 await extensions.initialize();
 const contentLens = new ContentLensService(sessions, fastModel);
 // Production evaluations share the normal Core boundary, so workspace access
