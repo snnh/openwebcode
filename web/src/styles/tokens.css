@@ -1,0 +1,163 @@
+/* 设计 token：从 styles.css 原样抽取（亮/暗主题色板 + 强调色预设），视觉零变化。 */
+:root {
+  color-scheme: light;
+  --font-ui: "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", "Cascadia Code", "Sarasa Mono SC", Consolas, monospace;
+
+  --bg: #f1f4f5;
+  --panel: #ffffff;
+  --panel-2: #e9eef0;
+  --border: #d9e1e4;
+  --border-strong: #b9c7cc;
+  --text: #17202a;
+  --text-2: #4c5f69;
+  --text-3: #67777f;
+  --accent: #3d444c;
+  --accent-hover: #2e343b;
+  --on-accent: #ffffff;
+  --accent-soft: #e3e6e9;
+  --amber: #c27a16;
+  --amber-bg: #fbf1de;
+  --amber-border: #e6c88a;
+  --danger: #b42332;
+  --danger-bg: #fcecee;
+  --danger-border: #eab3bb;
+  --on-danger: #ffffff;
+  --ok: #0f7b6c;
+  --ok-bg: #dff4f1;
+  --code-bg: #edf2f4;
+  --shadow: 0 1px 2px rgb(23 32 42 / 0.06), 0 8px 24px rgb(23 32 42 / 0.08);
+  /* 弹层级阴影（popover/composer 弹层/移动端抽屉/覆盖层）与遮罩，按主题覆写 */
+  --shadow-lg: 0 12px 40px rgb(0 0 0 / 0.16);
+  --backdrop: rgb(8 12 16 / 0.5);
+  /* diff 着色（行背景 + 增删计数文本） */
+  --diff-add-bg: rgb(46 160 67 / 0.15);
+  --diff-del-bg: rgb(248 81 73 / 0.15);
+  --diff-add-text: #0f7b6c;
+  --diff-del-text: #b42332;
+  --radius: 8px;
+  --radius-s: 6px;
+  --radius-l: 12px;
+  --radius-xl: 16px;
+  --gutter: clamp(20px, 3vw, 52px);
+  /* 对话内容列最大宽度（消息/输入卡片/实时活动条共用） */
+  --content-max: 1100px;
+  /* z-index 分层：近值同语义归一档（档值取档内最大值），保持原有层叠大小关系 */
+  --z-base: 3; /* 局部浮层：代码复制钮(原1)、面板/侧栏拖拽柄与文件预览(原2)、会话拖拽柄与实时活动条(原3) */
+  --z-sticky: 10; /* 吸顶小件：后台任务下拉(原10) */
+  --z-panel: 20; /* 面板级：窄屏会话轨吸顶、会话内搜索条(原20) */
+  --z-overlay: 30; /* 覆盖主区：composer 弹层、窄屏全屏编辑器(原30) */
+  --z-backdrop: 34; /* 抽屉遮罩（必须低于抽屉一档） */
+  --z-drawer: 36; /* 抽屉族：窄屏侧栏抽屉与断线横幅(原35)、面板图标栏(原36) */
+  --z-popover: 40; /* 弹层遮罩与 toast(原40) */
+  --z-menu: 41; /* 弹层菜单（必须高于弹层遮罩一档） */
+  --z-sheet: 45; /* 窄屏底部面板全屏 sheet（高于弹层菜单） */
+  --z-nav: 59; /* 移动导航遮罩（低于导航、高于 sheet） */
+  --z-top: 60; /* 最高层：移动导航与全局覆盖层(原60) */
+
+  /* 间距与字号阶梯：新增/调整的规则优先引用 token，避免散落 px 字面量 */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --text-2xs: 10px;
+  --text-xs: 11px;
+  --text-s: 12px;
+  --text-m: 13px;
+  --text-l: 15px;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0e1318;
+  --panel: #161d26;
+  --panel-2: #1e2833;
+  --border: #2b3745;
+  --border-strong: #415061;
+  --text: #d9e2ea;
+  --text-2: #96a8b5;
+  --text-3: #74899a;
+  --accent: #c9ced4;
+  --accent-hover: #dde1e6;
+  --on-accent: #1c2126;
+  --accent-soft: #333a41;
+  --amber: #e0a458;
+  --amber-bg: #2c2314;
+  --amber-border: #54401f;
+  --danger: #e06c75;
+  --danger-bg: #331f21;
+  --danger-border: #5a3336;
+  --on-danger: #1c2126;
+  --ok: #4fd1a5;
+  --ok-bg: #12312b;
+  --code-bg: #131b25;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.5), 0 8px 24px rgb(0 0 0 / 0.45);
+  --shadow-lg: 0 12px 40px rgb(0 0 0 / 0.4);
+  --backdrop: rgb(0 0 0 / 0.6);
+  --diff-add-bg: rgb(46 160 67 / 0.15);
+  --diff-del-bg: rgb(248 81 73 / 0.15);
+  --diff-add-text: #4fd1a5;
+  --diff-del-text: #e06c75;
+}
+
+/* ================= 主题强调色预设 ================= */
+/* graphite 为默认（:root/[data-theme=dark] 内置灰阶），以下仅覆盖 --accent 四变量组；
+   自定义任意 RGB 不走预设，由 theme.ts 内联注入同组变量 */
+
+/* — 青（原默认色，保留为预设） — */
+:root[data-accent="teal"] {
+  --accent: #0b7285; --accent-hover: #095f70;
+  --on-accent: #ffffff; --accent-soft: #dcedf0;
+}
+[data-theme="dark"][data-accent="teal"] {
+  --accent: #2bc7b9; --accent-hover: #4ad8cb;
+  --on-accent: #052e2b; --accent-soft: #153b3d;
+}
+
+/* — 紫罗兰 — */
+:root[data-accent="violet"] {
+  --accent: #6c5ce7; --accent-hover: #5b4cdb;
+  --on-accent: #ffffff; --accent-soft: #ebe8fb;
+}
+[data-theme="dark"][data-accent="violet"] {
+  --accent: #a29bfe; --accent-hover: #b6affc;
+  --on-accent: #1a1547; --accent-soft: #2a2350;
+}
+/* — 海蓝 — */
+:root[data-accent="blue"] {
+  --accent: #2563eb; --accent-hover: #1d50cf;
+  --on-accent: #ffffff; --accent-soft: #dbeafe;
+}
+[data-theme="dark"][data-accent="blue"] {
+  --accent: #60a5fa; --accent-hover: #7cb8fc;
+  --on-accent: #0d2240; --accent-soft: #1a334f;
+}
+/* — 活力橙 — */
+:root[data-accent="orange"] {
+  --accent: #e8590c; --accent-hover: #d2490a;
+  --on-accent: #ffffff; --accent-soft: #fde8d8;
+}
+[data-theme="dark"][data-accent="orange"] {
+  --accent: #fb8a3c; --accent-hover: #ffa05a;
+  --on-accent: #2a1300; --accent-soft: #3a2010;
+}
+/* — 玫红 — */
+:root[data-accent="rose"] {
+  --accent: #e1235c; --accent-hover: #c81350;
+  --on-accent: #ffffff; --accent-soft: #fce0e8;
+}
+[data-theme="dark"][data-accent="rose"] {
+  --accent: #f0628a; --accent-hover: #ff7da3;
+  --on-accent: #2d0a16; --accent-soft: #3a1827;
+}
+/* — 森绿 — */
+:root[data-accent="green"] {
+  --accent: #2f9e44; --accent-hover: #258538;
+  --on-accent: #ffffff; --accent-soft: #def3e2;
+}
+[data-theme="dark"][data-accent="green"] {
+  --accent: #51cf66; --accent-hover: #69db7c;
+  --on-accent: #0a2912; --accent-soft: #143020;
+}
