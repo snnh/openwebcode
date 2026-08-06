@@ -1,6 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useRef, type ReactElement, type SelectHTMLAttributes } from "react";
 import { useQuery } from "@tanstack/react-query";
-import type { SessionDetail, BackgroundTaskInfo, ContextUsage, PythonEnv, SandboxMode, ShellBackend, SnapshotMode } from "../lib/contracts";
+import type { SessionDetail, BackgroundTaskInfo, ContextUsage, NodeEnv, PythonEnv, SandboxMode, ShellBackend, SnapshotMode } from "../lib/contracts";
 import { api } from "../lib/api";
 import { formatTokens, formatTokensShort } from "../lib/format";
 import { isBusyState, STATE_LABELS } from "../lib/agent-state";
@@ -360,6 +360,21 @@ export function JobHeader({ session, agentState, costSummary, windowUsage, lates
             <option value="global">{t("本机环境", "Host")}</option>
             <option value="uv-workspace">{t("uv·工作区", "uv · workspace")}</option>
             <option value="uv-config">{t("uv·配置目录", "uv · config dir")}</option>
+          </FitSelect>
+        </label>
+        <label className="mode-switch node-env-switch" title={t("选择当前会话 bash 的 Node 环境", "Choose the Node environment for bash in this session")}>
+          <Icon name="layers" size={11} />
+          <span>{t("Node 环境", "Node")}</span>
+          <FitSelect
+            aria-label={t("Node 环境", "Node environment")}
+            value={session.nodeEnv ?? "global"}
+            disabled={busy || configPending}
+            onChange={(event) => updateMode({ nodeEnv: event.target.value as NodeEnv })}
+          >
+            <option value="global">{t("本机 global", "Host global")}</option>
+            <option value="project">{t("工作区 project", "Workspace project")}</option>
+            <option value="fnm">fnm</option>
+            <option value="nvm">nvm</option>
           </FitSelect>
         </label>
         <label className="mode-switch snapshot-mode-switch" title={t("自动模式会在每轮用户消息前创建检查点", "Automatic mode creates a checkpoint before each user turn")}>
