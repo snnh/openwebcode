@@ -221,7 +221,10 @@ describe("spawn_task agent=general", () => {
     await runner.run(h.session.id, "派生 general 子代理");
 
     expect(h.core.runCalls).toHaveLength(1);
-    expect(h.core.runCalls[0]).toMatchObject({ sessionId: h.session.id, cmd: "echo hi", cwd: h.session.cwd });
+    expect(h.core.runCalls[0]).toMatchObject({ sessionId: h.session.id, cwd: h.session.cwd });
+    // 子代理 bash 同样注入会话环境变量（最内层包装），用户命令在其后
+    expect(h.core.runCalls[0]?.cmd).toContain("OWC_SESSION_ID");
+    expect(h.core.runCalls[0]?.cmd).toContain("echo hi");
     // 沙盒配置与主循环同源（session.sandbox ?? defaultSandboxPolicy(cwd)）
     expect(h.core.configureCalls.length).toBeGreaterThan(0);
     expect(h.core.configureCalls[0]?.sandbox).toEqual(defaultSandboxPolicy(h.session.cwd));

@@ -191,7 +191,9 @@ describe("env-sim tool shaping", () => {
     try {
       await agent.run(session.id, "跑个命令");
       expect(runCalls).toHaveLength(1);
-      expect(runCalls[0]).toMatchObject({ cmd: "echo hi" });
+      // bash 一次性路径注入会话环境变量（最内层包装），用户命令在其后
+      expect(runCalls[0]?.cmd).toContain("OWC_SESSION_ID");
+      expect(runCalls[0]?.cmd).toContain("echo hi");
       const results = toolResults(await sessions.get(session.id));
       expect(results[0]).toMatchObject({ toolCallId: "call-1", isError: false });
     } finally {
@@ -296,8 +298,9 @@ describe("env-sim tool shaping", () => {
       // cc 形态 schema 出现在 provider 请求中
       const bashTool = (requests[0]!.tools ?? []).find((tool) => tool.name === "Bash");
       expect(bashTool?.inputSchema).toMatchObject({ required: ["command"] });
-      // command -> cmd 归一后进入 core
-      expect(runCalls[0]).toMatchObject({ cmd: "echo hi" });
+      // command -> cmd 归一后进入 core（bash 一次性路径会前置会话环境变量 export）
+      expect(runCalls[0]?.cmd).toContain("OWC_SESSION_ID");
+      expect(runCalls[0]?.cmd).toContain("echo hi");
       const results = toolResults(await sessions.get(session.id));
       // file_path/old_string/new_string/replace_all 归一为内置 edit_file 参数后执行成功
       expect(results.find((item) => item.toolCallId === "call-2")).toMatchObject({ isError: false });

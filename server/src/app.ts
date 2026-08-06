@@ -40,7 +40,7 @@ import { SessionTransferError } from "./sessions/session-transfer.js";
 import { activePathMessages } from "./sessions/session-tree.js";
 import { defaultSandboxPolicy } from "./sessions/default-sandbox.js";
 import { resolveSessionPersona } from "./sessions/extension-state.js";
-import type { BindLinkSpec, PermissionMode, PythonEnv, SandboxMode, SandboxNetwork, SessionMeta, ShellBackend, SnapshotMode, TextContent } from "./sessions/types.js";
+import type { BindLinkSpec, FallbackModelEntry, NodeEnv, PermissionMode, PythonEnv, SandboxMode, SandboxNetwork, SessionMeta, ShellBackend, SnapshotMode, TextContent } from "./sessions/types.js";
 import type { SessionStore } from "./sessions/session-store.js";
 import type { CronScheduler } from "./cron-scheduler.js";
 import { SettingsValidationError, type SettingsService } from "./settings-service.js";
@@ -77,6 +77,11 @@ interface CreateSessionBody {
   bindLinks?: BindLinkSpec[];
   /** 缺省为直接模式；"managed" = 托管工作区（稀疏镜像盘挂载点作为会话 cwd） */
   workspaceMode?: "managed";
+  /** 会话级内置工具白名单/黑名单（仅内置工具名；留空/缺省 = 不限制）。 */
+  toolsAllow?: string[];
+  toolsDeny?: string[];
+  /** 会话级备选模型链（最多 3 个 provider/model 对；与主模型重复或彼此重复的项剔除）。 */
+  fallbackModels?: FallbackModelEntry[];
 }
 
 interface MessageBody {
@@ -109,6 +114,7 @@ interface SessionConfigBody {
   snapshotMode?: SnapshotMode;
   shellBackend?: ShellBackend;
   pythonEnv?: PythonEnv;
+  nodeEnv?: NodeEnv;
   /** env-sim 人格预设 id（会话级覆盖）；空串清除。 */
   persona?: string;
   /** 会话级扩展状态补丁：key=扩展 id（必须已安装），value 为 JSON 对象（整体替换）或 null（清除）。 */
@@ -117,6 +123,11 @@ interface SessionConfigBody {
   swarmEnabled?: boolean;
   /** review 权限模式的审核模型来源；仅显式提供时更新。 */
   reviewModel?: "fast" | "main";
+  /** 会话级内置工具白名单/黑名单补丁；null 或空数组清除，缺省保持不变。 */
+  toolsAllow?: string[] | null;
+  toolsDeny?: string[] | null;
+  /** 会话级备选模型链补丁；null 或空数组清除，缺省保持不变（语义同 toolsAllow）。 */
+  fallbackModels?: FallbackModelEntry[] | null;
 }
 
 interface BudgetBody {
@@ -688,6 +699,36 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     }
     return undefined;
   };
+  /** 会话级工具名单（toolsAllow/toolsDeny）形状校验：字符串数组；未知工具名不报错（过滤时静默忽略）。返回错误文案；合法或缺省返回 undefined */
+  const validateToolNameList = (value: unknown, field: string): string | undefined => {
+    if (value === undefined || value === null) return undefined;
+    if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) return `${field} must be an array of tool names`;
+    return undefined;
+  };
+  /**
+   * 备选模型链（fallbackModels）校验+归一化：形状校验（仅 provider/model 两键、非空字符串）；
+   * 剔除与主模型重复或彼此重复的项；归一化后上限 3 个。fallback provider 未注册不报错
+   * （运行期跳过未配置的候选，与角色链回落语义一致）。
+   */
+  const normalizeFallbackModels = (value: unknown, primary: { provider: string; model: string }): { entries?: FallbackModelEntry[]; error?: string } => {
+    if (value === undefined || value === null) return {};
+    if (!Array.isArray(value)) return { error: "fallbackModels must be an array of { provider, model }" };
+    const seen = new Set<string>([`${primary.provider} ${primary.model}`]);
+    const entries: FallbackModelEntry[] = [];
+    for (const item of value) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return { error: "fallbackModels entries must be objects with provider and model" };
+      const record = item as Record<string, unknown>;
+      if (Object.keys(record).some((key) => !["provider", "model"].includes(key))) return { error: "fallbackModels entries allow only provider and model" };
+      if (typeof record.provider !== "string" || !record.provider.trim()) return { error: "fallbackModels.provider must be a non-empty string" };
+      if (typeof record.model !== "string" || !record.model.trim()) return { error: "fallbackModels.model must be a non-empty string" };
+      const key = `${record.provider} ${record.model}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      entries.push({ provider: record.provider, model: record.model });
+    }
+    if (entries.length > 3) return { error: "fallbackModels allows at most 3 entries" };
+    return { entries };
+  };
 
   events.on("event", (event: AppEvent, published?: string) => {
     // EventBus 发布时已序列化一次（字节预算/历史留存），fan-out 直接复用；
@@ -1254,7 +1295,8 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     if (config.defaultSnapshotMode === "manual") patch.snapshotMode = "manual";
     let updated = patch.effort === undefined && patch.snapshotMode === undefined
       ? session
-      : await sessions.updateConfig(session.id, { provider, model, ...patch });
+      // updateConfig 的 undefined=清除语义：create 刚落的 toolsAllow/toolsDeny/fallbackModels 需原样透传
+      : await sessions.updateConfig(session.id, { provider, model, ...patch, ...(session.toolsAllow ? { toolsAllow: session.toolsAllow } : {}), ...(session.toolsDeny ? { toolsDeny: session.toolsDeny } : {}), ...(session.fallbackModels ? { fallbackModels: session.fallbackModels } : {}) });
     // 快照后端偏好：非 auto 且非托管会话（托管后端由建盘流程预设）时单项探测，
     // 可用则预设跳过探测链；不可用回落自动探测并如实告警，不阻断创建。
     if (config.snapshotBackend && !updated.workspace) {
@@ -1405,6 +1447,14 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     if (request.body.agentMode !== undefined && !["plan", "code", "goal"].includes(request.body.agentMode)) {
       return reply.code(400).send({ error: 'agentMode must be "plan", "code", or "goal"' });
     }
+    const toolsAllowError = validateToolNameList(request.body.toolsAllow, "toolsAllow");
+    if (toolsAllowError) return reply.code(400).send({ error: toolsAllowError });
+    const toolsDenyError = validateToolNameList(request.body.toolsDeny, "toolsDeny");
+    if (toolsDenyError) return reply.code(400).send({ error: toolsDenyError });
+    // 备选模型链：校验+归一化后回写 body，下游直接/托管/overlayfs 创建路径都带归一化结果
+    const fallbackResult = normalizeFallbackModels(request.body.fallbackModels, { provider, model });
+    if (fallbackResult.error) return reply.code(400).send({ error: fallbackResult.error });
+    if (fallbackResult.entries) request.body.fallbackModels = fallbackResult.entries;
     if (request.body.setupScript !== undefined && typeof request.body.setupScript !== "string") {
       return reply.code(400).send({ error: "setupScript must be a string" });
     }
@@ -1783,6 +1833,10 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     if (pythonEnv !== undefined && !["global", "uv-workspace", "uv-config"].includes(pythonEnv)) {
       return reply.code(400).send({ error: 'pythonEnv must be "global", "uv-workspace", or "uv-config"' });
     }
+    const nodeEnv = request.body && "nodeEnv" in request.body ? request.body.nodeEnv ?? undefined : session.nodeEnv;
+    if (nodeEnv !== undefined && !["global", "project", "fnm", "nvm"].includes(nodeEnv)) {
+      return reply.code(400).send({ error: 'nodeEnv must be "global", "project", "fnm", or "nvm"' });
+    }
     // env-sim 人格预设（会话级覆盖）：空串清除；非空必须是已知预设 id（扩展宿主不可用时只做类型校验）
     const persona = request.body && "persona" in request.body ? request.body.persona ?? undefined : session.persona;
     if (persona !== undefined) {
@@ -1798,6 +1852,18 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     if (swarmEnabled !== undefined && typeof swarmEnabled !== "boolean") {
       return reply.code(400).send({ error: "swarmEnabled must be a boolean" });
     }
+    // 会话级工具白名单/黑名单：缺省保持不变；null 或空数组清除；未知名静默忽略（过滤时无效果）
+    const toolsAllow = request.body && "toolsAllow" in request.body ? request.body.toolsAllow ?? undefined : session.toolsAllow;
+    const toolsAllowError = validateToolNameList(toolsAllow, "toolsAllow");
+    if (toolsAllowError) return reply.code(400).send({ error: toolsAllowError });
+    const toolsDeny = request.body && "toolsDeny" in request.body ? request.body.toolsDeny ?? undefined : session.toolsDeny;
+    const toolsDenyError = validateToolNameList(toolsDeny, "toolsDeny");
+    if (toolsDenyError) return reply.code(400).send({ error: toolsDenyError });
+    // 备选模型链：缺省保持不变；null 或空数组清除；按生效主模型归一化（去重/剔除同主模型项）
+    const fallbackModelsRaw = request.body && "fallbackModels" in request.body ? request.body.fallbackModels ?? undefined : session.fallbackModels;
+    const fallbackResult = normalizeFallbackModels(fallbackModelsRaw, { provider, model });
+    if (fallbackResult.error) return reply.code(400).send({ error: fallbackResult.error });
+    const fallbackModels = fallbackResult.entries;
     // 会话级扩展状态补丁：key 必须是已安装的扩展 id，value 为 JSON 对象（整体替换）或 null（清除）
     const extensionState = request.body && "extensionState" in request.body ? request.body.extensionState : undefined;
     if (extensionState !== undefined) {
@@ -1842,7 +1908,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       // WSB 的启动脚本/模式/网络只在虚拟机启动时生效，切换前先释放旧实例。
       await core.release?.(session.id);
     }
-    await sessions.updateConfig(request.params.id, { provider, model, ...(thinking ? { thinking } : {}), ...(effort ? { effort } : {}), ...(agentMode ? { agentMode } : {}), ...(snapshotMode ? { snapshotMode } : {}), ...(shellBackend ? { shellBackend } : {}), ...(pythonEnv ? { pythonEnv } : {}), ...(persona !== undefined ? { persona: persona.trim() } : {}), ...(swarmEnabled === true ? { swarmEnabled: true } : {}), ...(reviewModel ? { reviewModel } : {}) });
+    await sessions.updateConfig(request.params.id, { provider, model, ...(thinking ? { thinking } : {}), ...(effort ? { effort } : {}), ...(agentMode ? { agentMode } : {}), ...(snapshotMode ? { snapshotMode } : {}), ...(shellBackend ? { shellBackend } : {}), ...(pythonEnv ? { pythonEnv } : {}), ...(nodeEnv ? { nodeEnv } : {}), ...(persona !== undefined ? { persona: persona.trim() } : {}), ...(swarmEnabled === true ? { swarmEnabled: true } : {}), ...(reviewModel ? { reviewModel } : {}), ...(toolsAllow?.length ? { toolsAllow } : {}), ...(toolsDeny?.length ? { toolsDeny } : {}), ...(fallbackModels?.length ? { fallbackModels } : {}) });
     let updated = await sessions.updatePermissions(request.params.id, permissionMode, session.permissionRules ?? []);
     if (extensionState !== undefined) {
       updated = await sessions.updateExtensionState(request.params.id, extensionState);
@@ -2566,7 +2632,8 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
     if (!dependencies.backgroundTasks) return reply.code(501).send({ error: "Background tasks are not enabled" });
     if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
     const task = dependencies.backgroundTasks.get(request.params.taskId);
-    if (!task) return reply.code(404).send({ error: "Task not found" });
+    // 校验任务归属：taskId 熵低，不校验即可跨会话读任务输出
+    if (!task || task.sessionId !== request.params.id) return reply.code(404).send({ error: "Task not found" });
     return task;
   });
 

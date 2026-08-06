@@ -57,6 +57,9 @@ export interface ExchangeRateServiceOptions {
   provider?: ExchangeRateProvider;
   timeoutMs?: number;
   fixedUsdCnyRate?: string;
+  /** 离线模式判定（settings offlineMode，现读热生效）：为 true 时跳过一切在线拉取，
+   * 沿用既有回落链（缓存快照 → 固定汇率 → 无汇率）。 */
+  isOffline?: () => boolean;
 }
 
 export class ExchangeRateService {
@@ -102,6 +105,8 @@ export class ExchangeRateService {
 
   private async refreshOnce(): Promise<ExchangeRateSnapshot | undefined> {
     if (!this.options.provider) return this.current();
+    // 离线模式：跳过在线拉取（启动首拉与每小时定时刷新共用此闸门），保持缓存/固定汇率回落
+    if (this.options.isOffline?.()) return this.current();
     const now = Date.now();
     if (this.lastSuccessfulRefresh > 0 && now - this.lastSuccessfulRefresh < 24 * 60 * 60 * 1_000) return this.current();
     const controller = new AbortController();
