@@ -97,6 +97,8 @@ const exchangeRates = new ExchangeRateService({
   ...(config.exchangeRate.url ? { provider: new HttpExchangeRateProvider(config.exchangeRate.url) } : {}),
   timeoutMs: config.exchangeRate.timeoutMs,
   ...(config.exchangeRate.fixedUsdCnyRate ? { fixedUsdCnyRate: config.exchangeRate.fixedUsdCnyRate } : {}),
+  // 离线模式（热生效，现读 settings）：跳过在线汇率拉取，回落缓存/固定汇率
+  isOffline: () => settings.effective().offlineMode,
 });
 const models = await ModelRegistry.load({
   snapshotPath: path.join(dataDir, "models.json"),
@@ -139,6 +141,7 @@ const backgroundTasks = new BackgroundTaskRegistry(
 // Hooks 已在上方（compactor 之前）创建，此处直接注入 agent
 const agent = new AgentRunner(sessions, providers, core, events, pricing, exchangeRates, config.defaultLanguage, 50, (model, provider) => models.get(model, provider), usageLog, skills, mcp, compactor, dataDir, agents, commands, search, undefined, backgroundTasks, hooks, extensions, webFetch);
 agent.setPythonEnvDefault(() => settings.effective().pythonEnv);
+agent.setNodeEnvDefault(() => settings.effective().nodeEnv);
 agent.setMaxTurns(() => settings.effective().agentMaxTurns);
 agent.setWebSearchMode(() => settings.effective().webSearchMode ?? "local");
 agent.setFastModel(fastModel);
@@ -175,7 +178,8 @@ const updateChecker = new UpdateChecker({
   cachePath: path.join(dataDir, "update-check.json"),
   defaultUrl: config.updateCheck.url ?? "https://api.github.com/repos/snnh/openwebcode/releases/latest",
 });
-updateChecker.configure(config.updateCheck);
+// 离线模式：启动期检测与定时调度一并关闭（settings 变更的热生效在 SettingsService.hotApply 同样把关）
+updateChecker.configure({ ...config.updateCheck, enabled: config.updateCheck.enabled && !config.offlineMode });
 // 在线更新：installRoot 在 dist 下解析为 OWC_HOME（server/dist/../..）；tsx dev 时为 server/ 上一级，仅开发场景
 const updateApplier = new UpdateApplier({
   dataDir,
@@ -206,6 +210,8 @@ await updateChecker.initialize();
 /** Remote model/pricing catalogs share settings but fail independently: one bad endpoint never
  * prevents the other catalog from refreshing, nor does it replace a validated local snapshot. */
 const syncRemoteCatalogs = async (): Promise<void> => {
+  // 离线模式：后台自动同步整体跳过（手动入口 /api/models/sync、/api/models/refresh 不经过这里，仍可用）
+  if (settings.effective().offlineMode) return;
   const remote = settings.effective().models;
   if (remote.catalogSyncUrl) {
     try {
@@ -229,13 +235,15 @@ const syncRemoteCatalogs = async (): Promise<void> => {
   }
 };
 const remoteSyncScheduler = new RemoteSyncScheduler({
-  getIntervalMinutes: () => settings.effective().models.syncIntervalMinutes,
+  // 离线模式视同间隔 0：不建立定时器（sync 内还有一道闸门，双保险）
+  getIntervalMinutes: () => settings.effective().offlineMode ? 0 : settings.effective().models.syncIntervalMinutes,
   sync: syncRemoteCatalogs,
 });
 events.on("event", (event) => {
   if (event.type !== "server.settings_updated" || !event.payload || typeof event.payload !== "object") return;
   const keys = (event.payload as { keys?: unknown }).keys;
-  if (!Array.isArray(keys) || !keys.some((key) => key === "catalogSyncUrl" || key === "pricingSyncUrl" || key === "syncIntervalMinutes")) return;
+  // offlineMode 切换也要重排定时器（开 → 停，关 → 按当前间隔恢复）
+  if (!Array.isArray(keys) || !keys.some((key) => key === "catalogSyncUrl" || key === "pricingSyncUrl" || key === "syncIntervalMinutes" || key === "offlineMode")) return;
   remoteSyncScheduler.refreshAfterSettingsChange();
 });
 remoteSyncScheduler.start();

@@ -15,6 +15,7 @@ import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { encodeFastModelSelection, SettingsService, type SettingsFieldView, type SettingsView } from "../src/settings-service.js";
 import { MAX_SYNC_INTERVAL_MINUTES } from "../src/remote-sync-scheduler.js";
+import type { UpdateChecker } from "../src/update-checker.js";
 
 const roots: string[] = [];
 const apps: Array<{ close(): Promise<unknown> }> = [];
@@ -58,10 +59,16 @@ async function fixture(env: NodeJS.ProcessEnv = {}) {
   });
   const fastModel = new FastModelClient(providers);
   const settings = await SettingsService.load({ env, filePath: path.join(root, "server-settings.json") });
-  settings.bind({ providers, core, agent, events, fastModel, profiles, models });
+  // fake updateChecker：记录热应用下发的 configure 入参（离线模式断言用），不发真实请求
+  const updateCheckConfigs: Array<{ enabled: boolean }> = [];
+  const updateChecker = {
+    configure: (cfg: { enabled: boolean }) => { updateCheckConfigs.push(cfg); },
+    refresh: () => Promise.resolve(undefined),
+  };
+  settings.bind({ providers, core, agent, events, fastModel, profiles, models, updateChecker: updateChecker as unknown as UpdateChecker });
   const app = await buildServer({ core, sessions, agent, events, providers, pricing, settings });
   apps.push(app);
-  return { root, providers, events: observed, app, settings, fastModel };
+  return { root, providers, events: observed, app, settings, fastModel, updateCheckConfigs };
 }
 
 function field(view: SettingsView, key: string): SettingsFieldView {
@@ -80,12 +87,14 @@ describe("server settings API", () => {
     const view = response.json<SettingsView>();
     expect(view.groups.map((group) => group.id)).toEqual(["models", "modelSelection", "general", "executor", "service", "network", "proxy", "webSearch", "exchangeRate", "updateCheck"]);
     const fields = view.groups.flatMap((group) => group.fields);
-    expect(fields).toHaveLength(38);
+    expect(fields).toHaveLength(40);
     for (const item of fields) {
       expect(item.source).toBe("default");
       expect(item.editable).toBe(true);
     }
     expect(field(view, "port").value).toBe(3210);
+    expect(field(view, "nodeEnv")).toMatchObject({ type: "select", value: "global" });
+    expect(field(view, "nodeEnv").options?.map((option) => option.value)).toEqual(["global", "project", "fnm", "nvm"]);
     expect(field(view, "webSearchMode")).toMatchObject({ type: "select", value: "local" });
     expect(field(view, "fastModel")).toMatchObject({
       type: "select",
@@ -326,6 +335,56 @@ describe("server settings API", () => {
     expect(() => loadConfig({ OWC_MODELS_CATALOG_SYNC_URL: "ftp://example.com/models.json" })).toThrow(/http/i);
     expect(() => loadConfig({ OWC_MODELS_SYNC_INTERVAL_MINUTES: "-1" })).toThrow(/non-negative/i);
     expect(() => loadConfig({ OWC_MODELS_SYNC_INTERVAL_MINUTES: String(MAX_SYNC_INTERVAL_MINUTES + 1) })).toThrow(String(MAX_SYNC_INTERVAL_MINUTES));
+  });
+
+  it("offlineMode 默认关闭，可经界面覆盖并热生效，env OWC_OFFLINE 锁定", async () => {
+    const setup = await fixture();
+    const view = (await setup.app.inject({ method: "GET", url: "/api/settings" })).json<SettingsView>();
+    expect(field(view, "offlineMode")).toMatchObject({ type: "boolean", value: false, source: "default", restartRequired: false });
+    expect(setup.settings.effective().offlineMode).toBe(false);
+
+    const enabled = await setup.app.inject({ method: "PUT", url: "/api/settings", payload: { overrides: { offlineMode: true } } });
+    expect(enabled.statusCode).toBe(200);
+    expect(field(enabled.json<SettingsView>(), "offlineMode")).toMatchObject({ value: true, source: "file" });
+    expect(setup.settings.effective().offlineMode).toBe(true);
+
+    const envLocked = await fixture({ OWC_OFFLINE: "1" });
+    const envView = (await envLocked.app.inject({ method: "GET", url: "/api/settings" })).json<SettingsView>();
+    expect(field(envView, "offlineMode")).toMatchObject({ value: true, source: "env", editable: false });
+    expect(envLocked.settings.effective().offlineMode).toBe(true);
+    const rejected = await envLocked.app.inject({ method: "PUT", url: "/api/settings", payload: { overrides: { offlineMode: false } } });
+    expect(rejected.statusCode).toBe(400);
+  });
+
+  it("loads OWC_OFFLINE into ServerConfig", () => {
+    expect(loadConfig({}).offlineMode).toBe(false);
+    expect(loadConfig({ OWC_OFFLINE: "1" }).offlineMode).toBe(true);
+    expect(loadConfig({ OWC_OFFLINE: "true" }).offlineMode).toBe(true);
+    expect(loadConfig({ OWC_OFFLINE: "0" }).offlineMode).toBe(false);
+  });
+
+  it("离线模式下更新检查整体关闭（热生效把关）", async () => {
+    const setup = await fixture();
+    const put = (overrides: Record<string, unknown>) =>
+      setup.app.inject({ method: "PUT", url: "/api/settings", payload: { overrides } });
+
+    // 先开更新检查：configure 收到 enabled=true
+    expect((await put({ updateCheckEnabled: true })).statusCode).toBe(200);
+    expect(setup.updateCheckConfigs.at(-1)).toMatchObject({ enabled: true });
+
+    // 开离线模式：configure 被重新下发且 enabled 压成 false
+    expect((await put({ offlineMode: true })).statusCode).toBe(200);
+    expect(setup.updateCheckConfigs.at(-1)).toMatchObject({ enabled: false });
+
+    // 离线期间拨动更新检查开关也不会启用
+    expect((await put({ updateCheckEnabled: false })).statusCode).toBe(200);
+    expect(setup.updateCheckConfigs.at(-1)).toMatchObject({ enabled: false });
+    expect((await put({ updateCheckEnabled: true })).statusCode).toBe(200);
+    expect(setup.updateCheckConfigs.at(-1)).toMatchObject({ enabled: false });
+
+    // 关离线模式：按 updateCheckEnabled 恢复
+    expect((await put({ offlineMode: false })).statusCode).toBe(200);
+    expect(setup.updateCheckConfigs.at(-1)).toMatchObject({ enabled: true });
   });
 
 });

@@ -2,7 +2,7 @@ import path from "node:path";
 import { MAX_SYNC_INTERVAL_MINUTES } from "./remote-sync-scheduler.js";
 import type { FastModelConfig } from "./fast-model.js";
 import type { EffortLevel } from "./context/model-profile.js";
-import type { PythonEnv } from "./sessions/types.js";
+import type { NodeEnv, PythonEnv } from "./sessions/types.js";
 import type { ProxyConfig, ProxyMode } from "./proxy.js";
 
 /** 可显式 pin 的快照后端名单（settings snapshotBackend 的非 auto 选项）；与探测链支持的后端保持一致。 */
@@ -29,6 +29,8 @@ export interface ServerConfig {
   agentMaxTurns: number;
   /** bash 工具 python 运行环境的全局默认（会话可覆盖）；global = 本机环境。 */
   pythonEnv: PythonEnv;
+  /** bash 工具 node 运行环境的全局默认（会话可覆盖）；global = 本机环境。 */
+  nodeEnv: NodeEnv;
   exchangeRate: {
     url?: string;
     timeoutMs: number;
@@ -53,6 +55,10 @@ export interface ServerConfig {
     url?: string;
     intervalHours: number;
   };
+  /** 离线模式（settings offlineMode / OWC_OFFLINE，热生效）：关闭 server 自身启动期/周期性的
+   * 出站操作（更新检查、远程模型目录/定价的后台同步、汇率在线刷新）。不管用户/agent 主动的
+   * 网络行为——provider API、web_search/web_fetch、MCP 与扩展联网均不受此开关影响。 */
+  offlineMode: boolean;
   /** 出站代理（proxy.ts 据此安装全局 dispatcher）；缺省 env（跟随环境变量）。 */
   proxy: ProxyConfig;
   fastModel?: FastModelConfig;
@@ -111,6 +117,12 @@ function pythonEnv(value: string | undefined): PythonEnv {
   if (value === undefined || value === "global") return "global";
   if (value === "uv-workspace" || value === "uv-config") return value;
   throw new Error(`Expected global, uv-workspace, or uv-config, received ${value}`);
+}
+
+function nodeEnv(value: string | undefined): NodeEnv {
+  if (value === undefined || value === "global") return "global";
+  if (value === "project" || value === "fnm" || value === "nvm") return value;
+  throw new Error(`Expected global, project, fnm, or nvm, received ${value}`);
 }
 
 function proxyMode(value: string | undefined): ProxyMode {
@@ -209,6 +221,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     defaultLanguage: env.OWC_DEFAULT_LANGUAGE ?? "zh-CN",
     defaultCurrency: currency(env.OWC_DEFAULT_CURRENCY),
     pythonEnv: pythonEnv(env.OWC_PYTHON_ENV),
+    nodeEnv: nodeEnv(env.OWC_NODE_ENV),
     exchangeRate: {
       ...(env.OWC_EXCHANGE_RATE_URL ? { url: env.OWC_EXCHANGE_RATE_URL } : {}),
       timeoutMs: positiveInteger(env.OWC_EXCHANGE_RATE_TIMEOUT_MS, 5_000),
@@ -224,6 +237,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       ...(env.OWC_UPDATE_CHECK_URL ? { url: env.OWC_UPDATE_CHECK_URL } : {}),
       intervalHours: boundedNonNegativeInteger(env.OWC_UPDATE_CHECK_INTERVAL_HOURS, 24, 24 * 30),
     },
+    offlineMode: env.OWC_OFFLINE === "1" || env.OWC_OFFLINE === "true",
     proxy: {
       mode: proxyMode(env.OWC_PROXY_MODE),
       ...(env.OWC_PROXY_HTTP ? { httpProxy: env.OWC_PROXY_HTTP } : {}),

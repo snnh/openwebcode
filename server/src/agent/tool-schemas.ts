@@ -282,3 +282,33 @@ export const SWARM_BOARD_READ_TOOL: ProviderTool = {
     additionalProperties: false,
   },
 };
+
+/**
+ * 交互类工具：会话 toolsAllow/toolsDeny 始终保留（agent 需能发问/提交计划，否则会话会卡死）。
+ * exit_plan_mode 由 agent-runner 在 plan 模式单独下发，不经内置工具表，这里列出仅为语义完备。
+ */
+const INTERACTION_TOOL_NAMES: ReadonlySet<string> = new Set(["ask_user", "exit_plan_mode"]);
+
+/** 只读内置工具名单：`owc run --read-only` 的 toolsAllow 等价集（按本文件实际存在的工具维护）。 */
+export const READ_ONLY_TOOL_NAMES: readonly string[] = [
+  "read_file", "glob", "grep", "read_artifact", "repo_map", "code_search",
+  "git_status", "git_diff", "load_skill", "task_output",
+];
+
+/**
+ * 会话级工具过滤（单一来源，主循环与子代理共用）：toolsAllow 非空 = 仅放行名单内内置工具，
+ * toolsDeny 再剔除。只作用于内置工具（MCP/扩展工具由用户显式配置，不受影响）；
+ * 交互类工具始终放行；未知名静默忽略（名单里没有即不产生效果）。
+ */
+export function toolAllowedBySession(name: string, allow?: string[], deny?: string[]): boolean {
+  if (INTERACTION_TOOL_NAMES.has(name)) return true;
+  if (allow !== undefined && allow.length > 0 && !allow.includes(name)) return false;
+  if (deny !== undefined && deny.includes(name)) return false;
+  return true;
+}
+
+/** filterBuiltInTools：toolAllowedBySession 的数组形态（内置工具表过滤入口）。 */
+export function filterBuiltInTools(tools: ProviderTool[], allow?: string[], deny?: string[]): ProviderTool[] {
+  if ((allow === undefined || allow.length === 0) && (deny === undefined || deny.length === 0)) return tools;
+  return tools.filter((tool) => toolAllowedBySession(tool.name, allow, deny));
+}

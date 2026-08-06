@@ -47,7 +47,10 @@ function sanitizeNote(note: string): string {
 }
 
 export function wrapCommandWithNote(cmd: string, note: string): string {
-  return `echo [openwebcode] ${sanitizeNote(note)} && ${cmd}`;
+  const prefix = "echo [openwebcode] ";
+  // 叠加多个环境回退说明（如 nodeEnv + pythonEnv 同时不可用）时合并进同一条 echo，避免 echo && echo 串联
+  if (cmd.startsWith(prefix)) return `${prefix}${sanitizeNote(note)}; ${cmd.slice(prefix.length)}`;
+  return `${prefix}${sanitizeNote(note)} && ${cmd}`;
 }
 
 export interface UvEnsureResult {
@@ -55,7 +58,8 @@ export interface UvEnsureResult {
   note?: string;
 }
 
-function runHost(command: string, args: string[], timeoutMs: number): Promise<{ code: number | null; stderr: string }> {
+/** host 侧命令探测（uv/fnm 等版本管理器可用性检测共用；命令完全由 server 生成，不含模型输入）。 */
+export function runHost(command: string, args: string[], timeoutMs: number): Promise<{ code: number | null; stderr: string }> {
   return new Promise((resolve) => {
     let settled = false;
     const finish = (code: number | null, stderr: string): void => {

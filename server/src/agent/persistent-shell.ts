@@ -5,9 +5,11 @@ import { CoreRpcError, type CoreClientLike, type PtyOpenResult } from "../core-c
 import { errorMessage } from "../error-utils.js";
 import { decodeChildProcessOutput } from "./output-decoder.js";
 import { effectivePythonEnv, uvVenvDir, type UvPythonEnvironments } from "../python-env.js";
+import { effectiveNodeEnv, nodeEnvActivationCommand, type NodeEnvManagers } from "../node-env.js";
 import { defaultSandboxPolicy } from "../sessions/default-sandbox.js";
-import type { PythonEnv, SessionMeta, ShellBackend } from "../sessions/types.js";
+import type { NodeEnv, PythonEnv, SessionMeta, ShellBackend } from "../sessions/types.js";
 import { resolveShell, type ResolvedShell, type ShellFlavor } from "./shell-detect.js";
+import { sessionEnvActivationCommand } from "./session-env.js";
 
 /**
  * 提交⑩：agent bash 的持久 shell。每会话每 shellBackend 懒建一个 pty（sandbox=true，
@@ -24,6 +26,9 @@ export const PERSISTENT_COMMAND_TIMEOUT_MS = 10 * 60_000;
 export const MAX_SHELL_OUTPUT_CHARS = 1_000_000;
 /** core pty.input 单帧解码后 ≤8KB，按字符边界切块发送。 */
 const INPUT_CHUNK_BYTES = 4096;
+/** rawTail（chunk 末尾未成形转义序列残段）上限：恶意超长 OSC 无终结符时每个 chunk 都会
+ * 全量重扫残段（O(n²)），超限直接把残段按普通文本放行（ESC 等控制字符由清洗管线剥离）。 */
+const MAX_RAW_TAIL_CHARS = 4096;
 /** 开 shell 后的初始静默排干：丢弃 banner / profile 输出，避免污染首条命令的解析。 */
 const DRAIN_QUIET_MS = 250;
 const DRAIN_MAX_MS = 5_000;
@@ -145,7 +150,9 @@ export class SentinelParser {
   /** 喂入解码文本；命中 sentinel 返回 exit code（空码按 0，pwsh 首个命令前 $LASTEXITCODE 为 $null），否则 null。 */
   feed(text: string): number | null {
     const combined = this.rawTail + text;
-    const splitAt = danglingEscapeIndex(combined);
+    let splitAt = danglingEscapeIndex(combined);
+    // rawTail 超上限：未终结的转义残段不再保留，整段按普通文本进清洗管线
+    if (combined.length - splitAt > MAX_RAW_TAIL_CHARS) splitAt = combined.length;
     this.rawTail = combined.slice(splitAt);
     // 归一管线：CUP→\n（防输出与提示符粘连）→ stripAnsi → 控制字符清洗 → \r 全删
     // （对齐 pi 的输出处理：进度条覆写帧直接拼接，不残留回车控制符）
@@ -244,6 +251,8 @@ interface ShellRecord {
   active: ActiveCommand | null;
   /** uv 环境不可用时的说明：并入首条命令输出（对齐一次性路径 wrapCommandWithNote 的可见性）。 */
   pythonEnvNote?: string;
+  /** node 版本管理器不可用时的说明：与 pythonEnvNote 合并进首条命令输出。 */
+  nodeEnvNote?: string;
   sandboxCapability?: string;
   sandboxReason?: string;
 }
@@ -261,6 +270,8 @@ export class PersistentShellManager {
     private readonly core: CoreClientLike,
     private readonly pythonEnv: UvPythonEnvironments,
     private readonly getPythonEnvDefault: () => PythonEnv,
+    private readonly nodeEnv: NodeEnvManagers,
+    private readonly getNodeEnvDefault: () => NodeEnv,
     private readonly dataDir?: string,
   ) {}
 
@@ -281,6 +292,11 @@ export class PersistentShellManager {
     const prefix = `${sessionId}:`;
     for (const [key, shell] of [...this.shells]) {
       if (key.startsWith(prefix)) this.destroy(shell);
+    }
+    // 串行化队列条目一并清理（条目永不删除会随会话数泄漏；在途命令的链上 Promise 已由
+    // destroy 的 exit/abort 路径结算，删除条目不影响其收尾）
+    for (const key of [...this.queues.keys()]) {
+      if (key.startsWith(prefix)) this.queues.delete(key);
     }
   }
 
@@ -312,9 +328,11 @@ export class PersistentShellManager {
       try {
         const { code: exitCode, raw } = await this.execOnShell(record, parser, lines.join(eol) + eol, signal);
         let output = repairShellOutput(parser.output(), raw, rand, lines);
-        if (record.pythonEnvNote) {
-          output = `[openwebcode] ${record.pythonEnvNote}\n${output}`;
+        if (record.pythonEnvNote || record.nodeEnvNote) {
+          const note = [record.pythonEnvNote, record.nodeEnvNote].filter((n) => n).join("; ");
+          output = `[openwebcode] ${note}\n${output}`;
           delete record.pythonEnvNote;
+          delete record.nodeEnvNote;
         }
         return {
           exitCode,
@@ -335,7 +353,7 @@ export class PersistentShellManager {
     throw new Error("unreachable");
   }
 
-  /** 懒建持久 shell：open -> 静默排干 -> pythonEnv 激活（首个用户命令前注入一次）。 */
+  /** 懒建持久 shell：open -> 静默排干 -> 会话环境变量/pythonEnv/nodeEnv 激活（首个用户命令前注入一次）。 */
   private async ensureShell(key: string, session: SessionMeta, shell: ResolvedShell, signal: AbortSignal): Promise<ShellRecord> {
     const existing = this.shells.get(key);
     if (existing && !existing.dead) return existing;
@@ -382,8 +400,11 @@ export class PersistentShellManager {
       // 一次 sentinel 往返。init exit code 非零 = shell 进不了会话 cwd（pwsh/AppContainer
       // 场景），销毁并回退一次性 exec.run，并缓存该 session:backend 不再重试。
       const initLines = shellInitLines(shell.flavor, session.cwd);
+      // 会话元数据环境变量（OWC_SESSION_ID 等）：开壳激活一次，整个会话受益
+      const sessionEnv = sessionEnvActivationCommand(session, shell.flavor);
       const activation = await this.pythonEnvActivation(record, session);
-      const lines = [...initLines, ...(activation ? [activation] : [])];
+      const nodeActivation = await this.nodeEnvActivation(record, session);
+      const lines = [...initLines, sessionEnv, ...(activation ? [activation] : []), ...(nodeActivation ? [nodeActivation] : [])];
       const rand = randomBytes(6).toString("hex");
       const eol = process.platform === "win32" ? "\r" : "\n";
       lines.push(sentinelLine(shell.flavor, rand));
@@ -417,6 +438,20 @@ export class PersistentShellManager {
       return null;
     }
     return venvActivationCommand(record.shell.flavor, venvDir);
+  }
+
+  /** fnm/nvm 模式：先做可用性检测（host 侧，结果缓存），返回 shell 内激活命令；失败记 note 返回 null。project 模式直接 PATH 前置，无需检测。 */
+  private async nodeEnvActivation(record: ShellRecord, session: SessionMeta): Promise<string | null> {
+    const mode = effectiveNodeEnv(session.nodeEnv, this.getNodeEnvDefault());
+    if (mode === "global") return null;
+    if (mode !== "project") {
+      const ensured = await this.nodeEnv.ensure(mode, record.shell.flavor);
+      if (!ensured.ok) {
+        record.nodeEnvNote = ensured.note ?? "node environment unavailable; using the host node environment";
+        return null;
+      }
+    }
+    return nodeEnvActivationCommand(record.shell.flavor, mode, session.cwd);
   }
 
   /** 静默排干：等输出停止 DRAIN_QUIET_MS（上限 DRAIN_MAX_MS），期间输出全部丢弃。 */
