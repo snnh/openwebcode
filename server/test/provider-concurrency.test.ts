@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { ConcurrencyLimitedProvider, DEFAULT_MAX_CONCURRENT } from "../src/providers/concurrency-limiter.js";
+import { ProviderError } from "../src/providers/provider-error.js";
 import { ProviderRegistry, type Provider, type ProviderEvent, type StreamChatRequest } from "../src/providers/provider.js";
+import { collectProviderTurn } from "../src/providers/retry.js";
 
 /** A fake provider that yields events and tracks concurrent calls */
 function fakeProvider(name: string): { provider: Provider; getCurrentConcurrent: () => number; getMaxConcurrent: () => number } {
@@ -214,5 +216,60 @@ describe("ConcurrencyLimitedProvider (0.5.0 Phase 2)", () => {
     const limited = new ConcurrencyLimitedProvider(provider, 3);
     expect(limited.name).toBe("test-provider");
     expect(limited.promptCaching).toBe(true);
+  });
+});
+
+// ---- provider-retry 组（合并） ----
+function retryRequest(signal: AbortSignal): StreamChatRequest {
+  return { model: "test", system: "", messages: [], tools: [], signal };
+}
+
+describe("collectProviderTurn", () => {
+  it("可重试错误按 maxAttempts 重试后成功", async () => {
+    let attempts = 0;
+    const provider: Provider = {
+      name: "flaky",
+      async *streamChat() {
+        attempts += 1;
+        if (attempts === 1) throw new ProviderError("overloaded", "boom", true);
+        yield { type: "text_delta", text: "ok" };
+        yield { type: "done", stopReason: "end_turn" };
+      },
+    };
+    const turn = await collectProviderTurn(provider, retryRequest(new AbortController().signal), { baseDelayMs: 1 });
+    expect(attempts).toBe(2);
+    expect(turn.events.at(-1)).toEqual({ type: "done", stopReason: "end_turn" });
+  });
+
+  it("abortableDelay 进入前检查 signal：重试等待期间已中止则立即抛出，不白等", async () => {
+    const controller = new AbortController();
+    const provider: Provider = {
+      name: "always-failing",
+      async *streamChat() {
+        throw new ProviderError("overloaded", "boom", true);
+      },
+    };
+    const startedAt = Date.now();
+    // 首次失败进入退避前中止：abortableDelay 开头 throwIfAborted，不再等满 30s
+    await expect(collectProviderTurn(provider, retryRequest(controller.signal), {
+      maxAttempts: 3,
+      baseDelayMs: 30_000,
+      onRetry: () => controller.abort(new DOMException("cancelled", "AbortError")),
+    })).rejects.toMatchObject({ name: "AbortError" });
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
+  });
+
+  it("不可重试错误立即抛出", async () => {
+    let attempts = 0;
+    const provider: Provider = {
+      name: "deterministic",
+      async *streamChat() {
+        attempts += 1;
+        throw new ProviderError("invalid_request", "bad args", false);
+      },
+    };
+    await expect(collectProviderTurn(provider, retryRequest(new AbortController().signal), { baseDelayMs: 1 }))
+      .rejects.toMatchObject({ kind: "invalid_request", retryable: false });
+    expect(attempts).toBe(1);
   });
 });

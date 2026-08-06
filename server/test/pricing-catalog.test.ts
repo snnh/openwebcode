@@ -1,8 +1,16 @@
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { ContextManager } from "../src/context/context-manager.js";
+import type { ModelPricing } from "../src/context/model-profile.js";
+import { CoreClient } from "../src/core-client.js";
+import { calculateUsageCost } from "../src/cost/cost-calculator.js";
+import { ExchangeRateService, RATE_SCALE, parseDecimalToScaled, type ExchangeRateProvider, type ExchangeRateSnapshot } from "../src/cost/exchange-rate.js";
 import { PricingCatalog, type PricingDocument } from "../src/cost/pricing-catalog.js";
+import type { Provider } from "../src/providers/provider.js";
 import { tempRoot } from "./helpers/temp-roots.js";
+import { makeTestApp } from "./helpers/test-app.js";
 
 function document(entries: PricingDocument["entries"]): PricingDocument {
   return { version: 1, updatedAt: "2026-07-14T00:00:00.000Z", entries };
@@ -191,5 +199,256 @@ describe("PricingCatalog", () => {
     expect(calls).toBe(2);
     expect(catalog.list()).toEqual(newer);
     expect(catalog.get("openai", "gpt-future")?.input).toBe(9_000_000n);
+  });
+});
+
+// ---- cost 组（合并） ----
+const PRICING: ModelPricing = {
+  currency: "USD",
+  input: 5_000_000n,
+  output: 25_000_000n,
+  cacheRead: 500_000n,
+  cacheWrite: 6_250_000n,
+};
+
+describe("cost accounting", () => {
+  it("prices all four Anthropic token classes with fixed-point arithmetic", () => {
+    const pricing = PRICING;
+    const rate = {
+      base: "USD" as const,
+      quote: "CNY" as const,
+      rate: 7_250_000n,
+      source: "test",
+      effectiveDate: "2026-07-14",
+      fetchedAt: "2026-07-14T00:00:00.000Z",
+    };
+    const cost = calculateUsageCost({
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+      cacheRead: 1_000_000,
+      cacheWrite: 1_000_000,
+    }, pricing, rate);
+
+    expect(cost.source?.amount).toBe("36.75");
+    expect(cost.usd?.amount).toBe("36.75");
+    expect(cost.cny?.amount).toBe("266.4375");
+  });
+
+  it("retains native USD cost when exchange rates are unavailable", () => {
+    const cost = calculateUsageCost(
+      { inputTokens: 1, outputTokens: 0, cacheRead: 0, cacheWrite: 0 },
+      PRICING,
+      undefined,
+    );
+    expect(cost.priced).toBe(true);
+    expect(cost.usd?.microUnits).toBe(5n);
+    expect(cost.cny).toBeUndefined();
+  });
+
+  it("rejects over-precise exchange rates", () => {
+    expect(parseDecimalToScaled("7.123456", RATE_SCALE)).toBe(7_123_456n);
+    expect(() => parseDecimalToScaled("7.1234567", RATE_SCALE)).toThrow("fractional digits");
+  });
+});
+
+// ---- exchange-rate 组（合并） ----
+const fxRoots: string[] = [];
+afterEach(async () => Promise.all(fxRoots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
+
+function remoteSnapshot(): ExchangeRateSnapshot {
+  return {
+    base: "USD",
+    quote: "CNY",
+    rate: 7_200_000n,
+    source: "https://example.test/rates",
+    effectiveDate: "2026-01-01",
+    fetchedAt: new Date().toISOString(),
+  };
+}
+
+function countingProvider(counter: { fetches: number }): ExchangeRateProvider {
+  return {
+    fetch: () => {
+      counter.fetches += 1;
+      return Promise.resolve(remoteSnapshot());
+    },
+  };
+}
+
+describe("ExchangeRateService 离线模式", () => {
+  it("离线时跳过在线拉取（启动首拉与手动 refresh），回落固定汇率", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-fx-"));
+    fxRoots.push(root);
+    const counter = { fetches: 0 };
+    const service = new ExchangeRateService({
+      cachePath: path.join(root, "exchange-rate.json"),
+      provider: countingProvider(counter),
+      fixedUsdCnyRate: "7.10",
+      isOffline: () => true,
+    });
+    await service.initialize();
+    expect(counter.fetches).toBe(0);
+    expect(service.current()?.source).toBe("configuration");
+    await service.refresh();
+    expect(counter.fetches).toBe(0);
+    service.close();
+  });
+
+  it("离线且无缓存/固定汇率时保持无汇率，不发请求", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-fx-"));
+    fxRoots.push(root);
+    const counter = { fetches: 0 };
+    const service = new ExchangeRateService({
+      cachePath: path.join(root, "exchange-rate.json"),
+      provider: countingProvider(counter),
+      isOffline: () => true,
+    });
+    await service.initialize();
+    expect(counter.fetches).toBe(0);
+    expect(service.current()).toBeUndefined();
+    service.close();
+  });
+
+  it("离线解除后恢复在线拉取（isOffline 现读热生效）", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "owc-fx-"));
+    fxRoots.push(root);
+    const counter = { fetches: 0 };
+    let offline = true;
+    const service = new ExchangeRateService({
+      cachePath: path.join(root, "exchange-rate.json"),
+      provider: countingProvider(counter),
+      isOffline: () => offline,
+    });
+    await service.initialize();
+    expect(counter.fetches).toBe(0);
+    offline = false;
+    const snapshot = await service.refresh();
+    expect(counter.fetches).toBe(1);
+    expect(snapshot?.source).toBe("https://example.test/rates");
+    service.close();
+  });
+});
+
+// ---- app-pricing 组（合并） ----
+function appPricing(input: string): PricingDocument {
+  return {
+    version: 1,
+    updatedAt: "2026-07-14T00:00:00.000Z",
+    entries: [{
+      provider: "test",
+      model: "claude-opus-4-8",
+      currency: "USD",
+      effectiveFrom: "2020-01-01",
+      input,
+      output: "0",
+      cacheRead: "0",
+      cacheWrite: "0",
+    }],
+  };
+}
+
+const testProvider: Provider = {
+  name: "test",
+  async *streamChat() {
+    yield { type: "usage", inputTokens: 1, outputTokens: 0, cacheRead: 0, cacheWrite: 0 };
+    yield { type: "done", stopReason: "end_turn" };
+  },
+};
+
+async function appFixture(catalogFactory?: (file: string) => PricingCatalog) {
+  const setup = await makeTestApp({
+    tempPrefix: "owc-app-pricing-",
+    pricing: (root) => catalogFactory?.(path.join(root, "model-pricing.json"))
+      ?? new PricingCatalog(path.join(root, "model-pricing.json")),
+    agent: "real",
+    core: (root) => {
+      const core = new CoreClient(path.join(root, "unused-core"));
+      core.configureSession = async () => ({ sandboxCapability: "advisory" });
+      return core;
+    },
+    configureProviders: (providers) => providers.register(testProvider),
+  });
+  return { root: setup.root, sessions: setup.sessions, catalog: setup.pricing, events: setup.observed, agent: setup.agent, app: setup.app };
+}
+
+describe("model pricing API", () => {
+  it("applies a hot update only to subsequent usage", async () => {
+    const setup = await appFixture();
+    try {
+      await setup.catalog.replace(appPricing("2000000"));
+      const session = await setup.sessions.create({
+        cwd: setup.root,
+        provider: "test",
+        model: "claude-opus-4-8",
+      });
+      const manager = new ContextManager(setup.sessions.contextRoot(session.id));
+
+      await setup.agent.run(session.id, "first");
+      expect((await manager.load()).cost.usdMicroUnits).toBe("2");
+
+      const response = await setup.app.inject({
+        method: "PUT",
+        url: "/api/model-pricing",
+        payload: appPricing("5000000"),
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json<PricingDocument>().entries[0]?.input).toBe("5000000");
+      expect((await manager.load()).cost.usdMicroUnits).toBe("2");
+
+      await setup.agent.run(session.id, "second");
+      const ledger = await manager.load();
+      expect(ledger.cost.usdMicroUnits).toBe("7");
+
+      const updates = setup.events.filter((event) => event.type === "model.pricing_updated");
+      expect(updates).toHaveLength(1);
+      const usage = setup.events.filter((event) => event.type === "context.usage");
+      expect(usage).toHaveLength(2);
+      expect(usage[1]?.payload).toMatchObject({
+        cost: { priced: true, source: { currency: "USD", amount: "0.000005" }, usd: "0.000005" },
+        sessionCost: { usdMicroUnits: "7" },
+      });
+    } finally {
+      await setup.app.close();
+    }
+  });
+
+  it("returns 400 for invalid pricing without changing the active catalog", async () => {
+    const setup = await appFixture();
+    try {
+      await setup.catalog.replace(appPricing("2000000"));
+      const invalid = appPricing("5000000");
+      invalid.entries[0]!.effectiveFrom = "2026-02-30";
+      const response = await setup.app.inject({ method: "PUT", url: "/api/model-pricing", payload: invalid });
+
+      expect(response.statusCode).toBe(400);
+      expect(setup.catalog.get("test", "claude-opus-4-8")?.input).toBe(2_000_000n);
+      expect(setup.events.filter((event) => event.type === "model.pricing_updated")).toHaveLength(0);
+    } finally {
+      await setup.app.close();
+    }
+  });
+
+  it("returns a sanitized 500 when pricing persistence fails", async () => {
+    class FailingCatalog extends PricingCatalog {
+      override async replace(_value: unknown): Promise<PricingDocument> {
+        throw new Error("EACCES: D:/secret/model-pricing.json");
+      }
+    }
+
+    const setup = await appFixture((file) => new FailingCatalog(file));
+    try {
+      const response = await setup.app.inject({
+        method: "PUT",
+        url: "/api/model-pricing",
+        payload: appPricing("5000000"),
+      });
+
+      expect(response.statusCode).toBe(500);
+      expect(response.json()).toEqual({ error: "Failed to persist model pricing" });
+      expect(response.body).not.toContain("secret");
+      expect(setup.events.filter((event) => event.type === "model.pricing_updated")).toHaveLength(0);
+    } finally {
+      await setup.app.close();
+    }
   });
 });

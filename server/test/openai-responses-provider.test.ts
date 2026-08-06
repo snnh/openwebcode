@@ -5,9 +5,12 @@ import { EventBus } from "../src/events/event-bus.js";
 import { ProviderProfilesRuntime } from "../src/provider-profiles-runtime.js";
 import { ProviderProfilesService } from "../src/provider-profiles.js";
 import { ConcurrencyLimitedProvider, DEFAULT_MAX_CONCURRENT } from "../src/providers/concurrency-limiter.js";
+import { AnthropicProvider } from "../src/providers/anthropic-provider.js";
+import { OpenAICompatibleProvider, MAX_SSE_EVENT_BYTES, readSseData } from "../src/providers/openai-compatible-provider.js";
 import { OpenAIResponsesProvider } from "../src/providers/openai-responses-provider.js";
 import { ProviderError } from "../src/providers/provider-error.js";
 import { ProviderRegistry, type ProviderEvent, type StreamChatRequest } from "../src/providers/provider.js";
+import { injectMockStream } from "./helpers/anthropic-mock.js";
 import { tempRoot } from "./helpers/temp-roots.js";
 
 function request(overrides: Partial<StreamChatRequest> = {}): StreamChatRequest {
@@ -36,6 +39,69 @@ async function collect(iterable: AsyncIterable<ProviderEvent>): Promise<Provider
   const events: ProviderEvent[] = [];
   for await (const event of iterable) events.push(event);
   return events;
+}
+
+// ---- provider-reasoning 组（合并） ----
+function reasoningRequest(overrides: Partial<StreamChatRequest> = {}): StreamChatRequest {
+  return { model: "claude-opus-4-8", system: "system", messages: [], tools: [], signal: new AbortController().signal, ...overrides };
+}
+
+async function drain(iterable: AsyncIterable<unknown>): Promise<void> { for await (const _ of iterable) { /* drain */ } }
+
+const reasoningSseFetch = (bodies: Array<Record<string, unknown>>) => (async (_input: string | URL | Request, init?: RequestInit) => {
+  bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+  return new Response("data: [DONE]\n\n", { status: 200, headers: { "content-type": "text/event-stream" } });
+}) as unknown as typeof globalThis.fetch;
+
+async function reasoningCollect(iterable: AsyncIterable<unknown>): Promise<Array<Record<string, unknown>>> {
+  const events: Array<Record<string, unknown>> = [];
+  for await (const event of iterable) events.push(event as Record<string, unknown>);
+  return events;
+}
+
+// ---- provider-stream-idle 组（合并） ----
+function idleRequest(): StreamChatRequest {
+  return { model: "test-model", system: "system", messages: [], tools: [], signal: new AbortController().signal };
+}
+
+const idleEncoder = new TextEncoder();
+const idleChunk = (text: string): Uint8Array => idleEncoder.encode(text);
+
+function idleSseResponse(pump: (controller: ReadableStreamDefaultController<Uint8Array>) => void): Response {
+  const stream = new ReadableStream<Uint8Array>({ start(controller) { pump(controller); } });
+  return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+}
+
+const idleDataEvent = (payload: Record<string, unknown>): string => `data: ${JSON.stringify(payload)}\n\n`;
+
+// ---- provider-error-handling 组（合并） ----
+function errorRequest(): StreamChatRequest {
+  return { model: "test-model", system: "system", messages: [], tools: [], signal: new AbortController().signal };
+}
+
+const errorEncoder = new TextEncoder();
+const errorChunk = (text: string): Uint8Array => errorEncoder.encode(text);
+
+function errorFetchWith(body: string, status = 200): typeof globalThis.fetch {
+  const contentType = status === 200 ? "text/event-stream" : "application/json";
+  return (async () => new Response(body, { status, headers: { "content-type": contentType } })) as unknown as typeof globalThis.fetch;
+}
+
+async function errorCollect(iterable: AsyncIterable<ProviderEvent>): Promise<ProviderEvent[]> {
+  const events: ProviderEvent[] = [];
+  for await (const event of iterable) events.push(event);
+  return events;
+}
+
+async function expectProviderError(iterable: AsyncIterable<ProviderEvent>): Promise<ProviderError> {
+  let caught: unknown;
+  try {
+    await errorCollect(iterable);
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toBeInstanceOf(ProviderError);
+  return caught as ProviderError;
 }
 
 describe("OpenAIResponsesProvider streaming", () => {
@@ -382,5 +448,397 @@ describe("ProviderProfilesRuntime openai-responses branch", () => {
     } finally {
       runtime.stop();
     }
+  });
+});
+
+describe("provider reasoning parameters", () => {
+  it("translates Anthropic thinking and effort without hard-coded defaults", async () => {
+    const provider = new AnthropicProvider({ apiKey: "test" });
+    const bodies: Array<Record<string, unknown>> = [];
+    injectMockStream(provider, bodies);
+
+    await drain(provider.streamChat(reasoningRequest({ thinking: "adaptive", effort: "xhigh" })));
+    await drain(provider.streamChat(reasoningRequest({ thinking: "disabled" })));
+    await drain(provider.streamChat(reasoningRequest({ thinking: "enabled" })));
+    await drain(provider.streamChat(reasoningRequest({
+      messages: [
+        { id: "u1", role: "user", content: [{ type: "text", text: "cached" }], createdAt: "2026-01-01T00:00:00.000Z" },
+        { id: "u2", role: "user", content: [{ type: "text", text: "tail" }], createdAt: "2026-01-01T00:00:01.000Z" },
+      ],
+      cacheBreakpoints: ["u1"],
+    })));
+
+    expect(bodies[0]).toMatchObject({ thinking: { type: "adaptive" }, output_config: { effort: "xhigh" } });
+    expect(bodies[1]).not.toHaveProperty("thinking");
+    expect(bodies[1]).not.toHaveProperty("output_config");
+    expect(bodies[2]).toMatchObject({ thinking: { type: "enabled", budget_tokens: 16000 } });
+    const limited = new AnthropicProvider({ apiKey: "test", maxTokens: 8000 });
+    injectMockStream(limited, bodies);
+    await drain(limited.streamChat(reasoningRequest({ thinking: "enabled" })));
+    expect(bodies[4]).toMatchObject({ max_tokens: 8000, thinking: { type: "enabled", budget_tokens: 7999 } });
+    expect(bodies[3]).toMatchObject({
+      messages: [
+        { content: [{ text: "cached", cache_control: { type: "ephemeral" } }] },
+        { content: [{ text: "tail" }] },
+      ],
+    });
+  });
+
+  it("sends OpenAI reasoning_effort only when enabled", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetch = reasoningSseFetch(bodies);
+    await drain(new OpenAICompatibleProvider({ baseURL: "https://example.invalid/v1", fetch }).streamChat(reasoningRequest({ effort: "high" })));
+    await drain(new OpenAICompatibleProvider({ baseURL: "https://example.invalid/v1", reasoningEffort: false, fetch }).streamChat(reasoningRequest({ effort: "high" })));
+    expect(bodies[0]).toMatchObject({ reasoning_effort: "high" });
+    expect(bodies[1]).not.toHaveProperty("reasoning_effort");
+  });
+
+  it("omits an empty tools field instead of advertising an unavailable tool schema", async () => {
+    const anthropicBodies: Array<Record<string, unknown>> = [];
+    const anthropic = new AnthropicProvider({ apiKey: "test" });
+    injectMockStream(anthropic, anthropicBodies);
+    await drain(anthropic.streamChat(reasoningRequest()));
+
+    const openAiBodies: Array<Record<string, unknown>> = [];
+    const fetch = reasoningSseFetch(openAiBodies);
+    await drain(new OpenAICompatibleProvider({ baseURL: "https://example.invalid/v1", fetch }).streamChat(reasoningRequest()));
+
+    expect(anthropicBodies[0]).not.toHaveProperty("tools");
+    expect(openAiBodies[0]).not.toHaveProperty("tools");
+  });
+
+  it("replays same-provider thinking blocks as reasoning_content (思维链保留回传)", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetch = reasoningSseFetch(bodies);
+    const messages: StreamChatRequest["messages"] = [
+      { id: "u1", role: "user", content: [{ type: "text", text: "q" }], createdAt: "2026-01-01T00:00:00.000Z" },
+      {
+        id: "a1", role: "assistant", createdAt: "2026-01-01T00:00:01.000Z",
+        content: [
+          { type: "thinking", text: "先想第一步", provider: "zijian" },
+          { type: "thinking", text: "再想想", provider: "zijian" },
+          { type: "thinking", text: "异源思考", provider: "anthropic" },
+          { type: "text", text: "答" },
+          { type: "tool_call", id: "tc1", name: "bash", input: { cmd: "ls" } },
+        ],
+      },
+      { id: "t1", role: "tool", content: [{ type: "tool_result", toolCallId: "tc1", content: "ok", isError: false }], createdAt: "2026-01-01T00:00:02.000Z" },
+    ];
+    const make = (options: Record<string, unknown> = {}) =>
+      new OpenAICompatibleProvider({ baseURL: "https://example.invalid/v1", name: "zijian", fetch, ...options });
+
+    // 默认开启：同源 thinking 回放 reasoning_content（含 tool_calls 消息），异源不回带
+    await drain(make().streamChat(reasoningRequest({ messages })));
+    const assistant = (bodies[0]!.messages as Array<Record<string, unknown>>)[2]!;
+    expect(assistant.reasoning_content).toBe("先想第一步\n再想想");
+    expect(assistant.tool_calls).toHaveLength(1);
+
+    // reasoningContent: false 关闭回传，消息形态与旧版一致
+    await drain(make({ reasoningContent: false }).streamChat(reasoningRequest({ messages })));
+    const legacy = (bodies[1]!.messages as Array<Record<string, unknown>>)[2]!;
+    expect(legacy).not.toHaveProperty("reasoning_content");
+
+    // 无异名 thinking 块时消息形态不变（回归）
+    await drain(make().streamChat(reasoningRequest()));
+    expect((bodies[2]!.messages as Array<Record<string, unknown>>)[0]).not.toHaveProperty("reasoning_content");
+  });
+
+  it("request-level reasoningContent overrides the provider-level default", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetch = reasoningSseFetch(bodies);
+    const messages: StreamChatRequest["messages"] = [
+      {
+        id: "a1", role: "assistant", createdAt: "2026-01-01T00:00:01.000Z",
+        content: [{ type: "thinking", text: "想一下", provider: "zijian" }, { type: "text", text: "答" }],
+      },
+    ];
+    const make = (options: Record<string, unknown> = {}) =>
+      new OpenAICompatibleProvider({ baseURL: "https://example.invalid/v1", name: "zijian", fetch, ...options });
+
+    // 请求级 false：即使 provider 默认开也不回带（gpt/claude 前缀模型走此路径）
+    await drain(make().streamChat(reasoningRequest({ messages, reasoningContent: false })));
+    expect((bodies[0]!.messages as Array<Record<string, unknown>>)[1]).not.toHaveProperty("reasoning_content");
+
+    // 请求级 true：盖过 provider 级 reasoningContent:false
+    await drain(make({ reasoningContent: false }).streamChat(reasoningRequest({ messages, reasoningContent: true })));
+    expect((bodies[1]!.messages as Array<Record<string, unknown>>)[1]).toMatchObject({ reasoning_content: "想一下" });
+  });
+});
+
+describe("provider custom request body (extraBody)", () => {
+  it("omits max_tokens by default and merges extraBody under core fields", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    await drain(new OpenAICompatibleProvider({
+      baseURL: "https://example.invalid/v1",
+      extraBody: { temperature: 0.7, model: "evil-override", max_tokens: 8192 },
+      fetch: reasoningSseFetch(bodies),
+    }).streamChat(reasoningRequest()));
+    // 自定义字段透传；核心字段 model 不被 extraBody 覆盖；extraBody 可提供 max_tokens
+    expect(bodies[0]).toMatchObject({ model: "claude-opus-4-8", temperature: 0.7, max_tokens: 8192 });
+
+    // 缺省不发送 max_tokens（不限制输出长度）
+    const plain: Array<Record<string, unknown>> = [];
+    await drain(new OpenAICompatibleProvider({ baseURL: "https://example.invalid/v1", fetch: reasoningSseFetch(plain) }).streamChat(reasoningRequest()));
+    expect(plain[0]).not.toHaveProperty("max_tokens");
+
+    // 显式 maxTokens 仍生效
+    const limited: Array<Record<string, unknown>> = [];
+    await drain(new OpenAICompatibleProvider({ baseURL: "https://example.invalid/v1", maxTokens: 4096, fetch: reasoningSseFetch(limited) }).streamChat(reasoningRequest()));
+    expect(limited[0]).toMatchObject({ max_tokens: 4096 });
+  });
+
+  it("anthropic merges extraBody and lets extraBody.max_tokens override the default", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const provider = new AnthropicProvider({ apiKey: "test", extraBody: { temperature: 0.3, max_tokens: 128_000 } });
+    injectMockStream(provider, bodies);
+    await drain(provider.streamChat(reasoningRequest()));
+    expect(bodies[0]).toMatchObject({ model: "claude-opus-4-8", temperature: 0.3, max_tokens: 128_000 });
+
+    // 优先级：request.maxTokens > extraBody.max_tokens > provider 默认
+    await drain(provider.streamChat(reasoningRequest({ maxTokens: 256 })));
+    expect(bodies[1]).toMatchObject({ max_tokens: 256 });
+  });
+});
+
+describe("provider tool_call_delta streaming", () => {
+  it("openai emits argument fragments with the accumulated id and name", async () => {
+    const chunks = [
+      { choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "ba" } }] } }] },
+      { choices: [{ delta: { tool_calls: [{ index: 0, function: { name: "sh", arguments: "{\"cmd\":" } }] } }] },
+      { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: "\"ls\"}" } }] }, finish_reason: null }] },
+      { choices: [{ finish_reason: "tool_calls", delta: {} }] },
+    ];
+    const sse = chunks.map((chunk) => "data: " + JSON.stringify(chunk) + "\n\n").join("") + "data: [DONE]\n\n";
+    const fetch = async () => new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
+    const events = await reasoningCollect(new OpenAICompatibleProvider({ baseURL: "https://example.invalid/v1", fetch: fetch as typeof globalThis.fetch }).streamChat(reasoningRequest()));
+
+    const deltas = events.filter((event) => event.type === "tool_call_delta");
+    expect(deltas).toEqual([
+      { type: "tool_call_delta", id: "call_1", name: "ba", argumentsDelta: "" },
+      { type: "tool_call_delta", id: "call_1", name: "bash", argumentsDelta: "{\"cmd\":" },
+      { type: "tool_call_delta", id: "call_1", name: "bash", argumentsDelta: "\"ls\"}" },
+    ]);
+    expect(events.filter((event) => event.type === "tool_call")).toEqual([{ type: "tool_call", id: "call_1", name: "bash", input: { cmd: "ls" } }]);
+  });
+
+  it("anthropic maps content_block_start and input_json_delta", async () => {
+    const provider = new AnthropicProvider({ apiKey: "test" });
+    const stream = () => ({
+      async *[Symbol.asyncIterator]() {
+        yield { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } };
+        yield { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "先看" } };
+        yield { type: "content_block_start", index: 1, content_block: { type: "tool_use", id: "tu_1", name: "read_file" } };
+        yield { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: "{\"path\":" } };
+        yield { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: "\"a.ts\"}" } };
+      },
+      async finalMessage() {
+        return {
+          content: [{ type: "tool_use", id: "tu_1", name: "read_file", input: { path: "a.ts" } }],
+          usage: { input_tokens: 0, output_tokens: 0 },
+          stop_reason: "tool_use",
+        };
+      },
+    });
+    (provider as unknown as { client: { messages: { stream: typeof stream } } }).client.messages.stream = stream;
+    const events = await reasoningCollect(provider.streamChat(reasoningRequest()));
+
+    expect(events.filter((event) => event.type === "tool_call_delta")).toEqual([
+      { type: "tool_call_delta", id: "tu_1", name: "read_file", argumentsDelta: "" },
+      { type: "tool_call_delta", id: "tu_1", argumentsDelta: "{\"path\":" },
+      { type: "tool_call_delta", id: "tu_1", argumentsDelta: "\"a.ts\"}" },
+    ]);
+    expect(events.some((event) => event.type === "tool_call" && event.id === "tu_1")).toBe(true);
+  });
+});
+
+describe("SSE stream idle timeout", () => {
+  it("心跳注释续命但无 data 事件：判半开连接，抛 stream_interrupted（可重试）", async () => {
+    const fetch = (async () => idleSseResponse((controller) => {
+      controller.enqueue(idleChunk(idleDataEvent({ choices: [{ delta: { content: "hi" } }] })));
+      const timer = setInterval(() => {
+        try { controller.enqueue(idleChunk(": ping\n\n")); } catch { clearInterval(timer); }
+      }, 20);
+    })) as unknown as typeof globalThis.fetch;
+    const provider = new OpenAICompatibleProvider({ baseURL: "https://example.invalid/v1", fetch, streamIdleTimeoutMs: 100 });
+
+    let caught: unknown;
+    try {
+      for await (const _ of provider.streamChat(idleRequest())) { /* drain */ }
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ProviderError);
+    expect((caught as ProviderError).kind).toBe("stream_interrupted");
+    expect((caught as ProviderError).retryable).toBe(true);
+    expect((caught as Error).message).toMatch(/half-open/);
+  });
+
+  it("持续产出 data 事件会重置计时：慢速流不被误杀", async () => {
+    const fetch = (async () => idleSseResponse((controller) => {
+      let step = 0;
+      const timer = setInterval(() => {
+        step += 1;
+        try {
+          if (step <= 5) controller.enqueue(idleChunk(idleDataEvent({ choices: [{ delta: { content: `t${step}` } }] })));
+          else if (step === 6) controller.enqueue(idleChunk(idleDataEvent({ choices: [{ delta: {}, finish_reason: "stop" }] })));
+          else {
+            controller.enqueue(idleChunk("data: [DONE]\n\n"));
+            controller.close();
+            clearInterval(timer);
+          }
+        } catch { clearInterval(timer); }
+      }, 40);
+    })) as unknown as typeof globalThis.fetch;
+    // 间隔 40ms < idle 上限 200ms：流虽慢但持续有 data，不应触发超时
+    const provider = new OpenAICompatibleProvider({ baseURL: "https://example.invalid/v1", fetch, streamIdleTimeoutMs: 200 });
+
+    const events: ProviderEvent[] = [];
+    for await (const event of provider.streamChat(idleRequest())) events.push(event);
+    expect(events.filter((event) => event.type === "text_delta")).toHaveLength(5);
+    expect(events.at(-1)).toEqual({ type: "done", stopReason: "end_turn" });
+  });
+
+  it("streamIdleTimeoutMs=0 关闭超时：完全静默的流挂到调用方中止", async () => {
+    const fetch = (async (_input: unknown, init?: RequestInit) => idleSseResponse((controller) => {
+      controller.enqueue(idleChunk(idleDataEvent({ choices: [{ delta: { content: "hi" } }] })));
+      // 真实 fetch 会把 signal 中止传导到响应体；假流这里手动复现
+      init?.signal?.addEventListener("abort", () => {
+        try { controller.error(new DOMException("The operation was aborted", "AbortError")); } catch { /* 已关闭 */ }
+      });
+    })) as unknown as typeof globalThis.fetch;
+    const provider = new OpenAICompatibleProvider({ baseURL: "https://example.invalid/v1", fetch, streamIdleTimeoutMs: 0 });
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 80);
+    await expect(async () => {
+      for await (const _ of provider.streamChat({ ...idleRequest(), signal: controller.signal })) { /* drain */ }
+    }).rejects.toThrow();
+  });
+});
+
+describe("provider 错误体截断", () => {
+  it("openai-compatible：超限错误体截断为 2000 字符 + …", async () => {
+    const detail = `{"error":"${"x".repeat(5000)}"}`;
+    const provider = new OpenAICompatibleProvider({ baseURL: "https://example.invalid/v1", fetch: errorFetchWith(detail, 500) });
+    const error = await expectProviderError(provider.streamChat(errorRequest()));
+    expect(error.retryable).toBe(true);
+    expect(error.message).toContain("…");
+    expect(error.message.length).toBeLessThan(2_100);
+    expect(error.message).not.toContain(detail.slice(-20));
+  });
+
+  it("openai-responses：超限错误体同样截断，两家口径一致", async () => {
+    const detail = `{"error":"${"y".repeat(5000)}"}`;
+    const provider = new OpenAIResponsesProvider({ baseURL: "https://example.invalid/v1", fetch: errorFetchWith(detail, 400) });
+    const error = await expectProviderError(provider.streamChat(errorRequest()));
+    expect(error.kind).toBe("invalid_request");
+    expect(error.retryable).toBe(false);
+    expect(error.message).toContain("…");
+    expect(error.message.length).toBeLessThan(2_100);
+  });
+
+  it("未超限的错误体原样保留", async () => {
+    const provider = new OpenAICompatibleProvider({ baseURL: "https://example.invalid/v1", fetch: errorFetchWith("short detail", 500) });
+    const error = await expectProviderError(provider.streamChat(errorRequest()));
+    expect(error.message).toContain("short detail");
+    expect(error.message).not.toContain("…");
+  });
+});
+
+describe("readSseData 边界", () => {
+  it("单事件超过字节上限：判确定性协议错误（不可重试）", async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        // 持续喂字节却永不发送事件边界（空行）
+        controller.enqueue(errorChunk(`data: ${"x".repeat(MAX_SSE_EVENT_BYTES)}`));
+      },
+    });
+    const error = await expectProviderError(readSseData(stream, { idleTimeoutMs: 0 }) as AsyncIterable<ProviderEvent>);
+    expect(error.kind).toBe("stream_interrupted");
+    expect(error.retryable).toBe(false);
+    expect(error.message).toMatch(/exceeded/);
+  });
+
+  it("流尾残留 buffer 无空行终止：仍按最后一个事件解析", async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(errorChunk("data: first\n\ndata: tail-without-terminator"));
+        controller.close();
+      },
+    });
+    const events: string[] = [];
+    for await (const data of readSseData(stream, { idleTimeoutMs: 0 })) events.push(data);
+    expect(events).toEqual(["first", "tail-without-terminator"]);
+  });
+
+  it("provider 级回归：收尾 chunk 无空行终止的成功响应不再判失败", async () => {
+    // 唯一的 data 事件无 \n\n 结尾（端点提前关连接）：旧实现会静默丢弃 → stopReason 误判 error
+    const body = `data: ${JSON.stringify({ choices: [{ delta: { content: "hi" }, finish_reason: "stop" }] })}`;
+    const provider = new OpenAICompatibleProvider({ baseURL: "https://example.invalid/v1", fetch: errorFetchWith(body) });
+    const events = await errorCollect(provider.streamChat(errorRequest()));
+    expect(events).toEqual([
+      { type: "text_delta", text: "hi" },
+      { type: "done", stopReason: "end_turn" },
+    ]);
+  });
+});
+
+describe("工具参数 JSON 解析失败归不可重试", () => {
+  it("openai-compatible：流被 max_tokens 截断的参数 JSON → invalid_request（不可重试）", async () => {
+    const chunks = [
+      { choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "bash", arguments: "{\"cmd\":" } }] } }] },
+      { choices: [{ finish_reason: "length", delta: {} }] },
+    ];
+    const body = chunks.map((value) => `data: ${JSON.stringify(value)}\n\n`).join("") + "data: [DONE]\n\n";
+    const provider = new OpenAICompatibleProvider({ baseURL: "https://example.invalid/v1", fetch: errorFetchWith(body) });
+    const error = await expectProviderError(provider.streamChat(errorRequest()));
+    expect(error.kind).toBe("invalid_request");
+    expect(error.retryable).toBe(false);
+  });
+
+  it("openai-responses：function_call 参数截断 → invalid_request（不可重试）", async () => {
+    const body = [
+      { type: "response.output_item.done", item_id: "fc_1", item: { id: "fc_1", type: "function_call", call_id: "call_1", name: "bash", arguments: "{\"cmd\":" } },
+      { type: "response.completed", response: { status: "completed", output: [], usage: { input_tokens: 1, output_tokens: 1 } } },
+    ].map((value) => `data: ${JSON.stringify(value)}\n\n`).join("");
+    const provider = new OpenAIResponsesProvider({ baseURL: "https://example.invalid/v1", fetch: errorFetchWith(body) });
+    const error = await expectProviderError(provider.streamChat(errorRequest()));
+    expect(error.kind).toBe("invalid_request");
+    expect(error.retryable).toBe(false);
+  });
+});
+
+describe("Responses response.failed/error 按 failure code 区分可重试", () => {
+  function failedBody(event: Record<string, unknown>): string {
+    return `data: ${JSON.stringify(event)}\n\n`;
+  }
+
+  it("server_error → 可重试（overloaded）", async () => {
+    const body = failedBody({ type: "response.failed", response: { status: "failed", error: { code: "server_error", message: "boom" } } });
+    const provider = new OpenAIResponsesProvider({ baseURL: "https://example.invalid/v1", fetch: errorFetchWith(body) });
+    const error = await expectProviderError(provider.streamChat(errorRequest()));
+    expect(error.kind).toBe("overloaded");
+    expect(error.retryable).toBe(true);
+  });
+
+  it("error 事件的 rate_limit → 可重试（rate_limit）", async () => {
+    const body = failedBody({ type: "error", code: "rate_limit", message: "slow down" });
+    const provider = new OpenAIResponsesProvider({ baseURL: "https://example.invalid/v1", fetch: errorFetchWith(body) });
+    const error = await expectProviderError(provider.streamChat(errorRequest()));
+    expect(error.kind).toBe("rate_limit");
+    expect(error.retryable).toBe(true);
+  });
+
+  it("无 code / 确定性 code → 不可重试", async () => {
+    const invalid = new OpenAIResponsesProvider({
+      baseURL: "https://example.invalid/v1",
+      fetch: errorFetchWith(failedBody({ type: "response.failed", response: { status: "failed", error: { code: "invalid_request", message: "bad" } } })),
+    });
+    expect((await expectProviderError(invalid.streamChat(errorRequest()))).retryable).toBe(false);
+
+    const noCode = new OpenAIResponsesProvider({
+      baseURL: "https://example.invalid/v1",
+      fetch: errorFetchWith(failedBody({ type: "response.failed", response: { status: "failed", error: { message: "bad" } } })),
+    });
+    expect((await expectProviderError(noCode.streamChat(errorRequest()))).retryable).toBe(false);
   });
 });
