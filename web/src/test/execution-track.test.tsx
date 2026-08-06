@@ -197,6 +197,75 @@ describe("ExecutionTrack failures", () => {
 
 });
 
+describe("ExecutionTrack 过程折叠", () => {
+  const processSession: SessionDetail = {
+    ...session,
+    messages: [
+      { id: "u1", role: "user", createdAt: session.createdAt, content: [{ type: "text", text: "任务" }] },
+      { id: "a1", role: "assistant", createdAt: session.createdAt, content: [{ type: "thinking", text: "先想一下" }, { type: "tool_call", id: "c1", name: "bash", input: { cmd: "ls" } }] },
+      { id: "t1", role: "tool", createdAt: session.createdAt, content: [{ type: "tool_result", toolCallId: "c1", content: "ok" }] },
+      { id: "a2", role: "assistant", createdAt: session.createdAt, content: [{ type: "text", text: "正式回复" }] },
+    ],
+  };
+
+  it("空闲时连续过程消息折叠为单个 details，正式回复留在折叠区外", () => {
+    const { container } = render(<ExecutionTrack session={processSession} permissions={[]} onPermissionDone={() => undefined} />);
+
+    const fold = container.querySelector("details.turn-process")!;
+    expect(fold).not.toBeNull();
+    expect(fold).not.toHaveAttribute("open");
+    expect(fold.querySelector("summary")).toHaveTextContent("执行过程 · 1 个工具调用");
+    // 段内两条过程消息（assistant 无正文 + tool 结果）收进折叠区
+    expect(fold.querySelectorAll("article.message")).toHaveLength(2);
+    // 正式回复与用户消息在折叠区外
+    const reply = screen.getByText("正式回复").closest("article.message")!;
+    expect(fold.contains(reply)).toBe(false);
+    expect(screen.getByText("任务").closest("article.message")).not.toBeNull();
+  });
+
+  it("运行中不折叠（流式过程照常可见）", () => {
+    const { container } = render(<ExecutionTrack session={processSession} running permissions={[]} onPermissionDone={() => undefined} />);
+    expect(container.querySelector("details.turn-process")).toBeNull();
+    expect(container.querySelectorAll("article.message")).toHaveLength(4);
+  });
+});
+
+describe("ExecutionTrack clear 分隔线分页定位", () => {
+  // 尾部窗口 4 条（第 8-11 条），全量 12 条 → 页偏移 8
+  const pagedSession: SessionDetail = {
+    ...session,
+    messageCount: 12,
+    hasMoreMessages: true,
+    messages: makeMessages(4),
+  };
+
+  it("clear 点落在窗口内：分隔线出现在 clear 后的第一条消息前", () => {
+    const { container } = render(
+      <ExecutionTrack session={pagedSession} cleared={{ uptoIndex: 10, at: "2026-07-21T00:00:01.000Z" }} permissions={[]} onPermissionDone={() => undefined} />,
+    );
+    // clearedLocal = 10 - 8 = 2 → 分隔线在「第 2 条消息」前
+    const divider = container.querySelector(".context-cleared-divider")!;
+    expect(divider).not.toBeNull();
+    expect(divider.nextElementSibling).toHaveTextContent("第 2 条消息");
+  });
+
+  it("clear 点恰为最新：分隔线落在底部", () => {
+    const { container } = render(
+      <ExecutionTrack session={pagedSession} cleared={{ uptoIndex: 12, at: "2026-07-21T00:00:01.000Z" }} permissions={[]} onPermissionDone={() => undefined} />,
+    );
+    const divider = container.querySelector(".context-cleared-divider")!;
+    expect(divider).not.toBeNull();
+    expect(divider.previousElementSibling).toHaveTextContent("第 3 条消息");
+  });
+
+  it("clear 点在未加载的早期历史：不渲染，待加载更早消息后就位", () => {
+    const { container } = render(
+      <ExecutionTrack session={pagedSession} cleared={{ uptoIndex: 5, at: "2026-07-21T00:00:01.000Z" }} permissions={[]} onPermissionDone={() => undefined} />,
+    );
+    expect(container.querySelector(".context-cleared-divider")).toBeNull();
+  });
+});
+
 function makeMessages(count: number): ChatMessage[] {
   return Array.from({ length: count }, (_, index) => ({
     id: `message-${index}`,

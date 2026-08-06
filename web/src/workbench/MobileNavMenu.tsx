@@ -39,7 +39,7 @@ export function MobileNavTrigger({ onOpen }: { onOpen(): void }): ReactElement {
       title={t("导航菜单", "Navigation menu")}
       onClick={onOpen}
     >
-      <Icon name="panel-left" size={16} />
+      <Icon name="panel-left" size={20} />
     </button>
   );
 }
