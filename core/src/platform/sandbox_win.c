@@ -26,14 +26,15 @@ enum owc_acl_access_kind {
 
 struct owc_sandbox {
     PSID appcontainer_sid;
-    PSID capability_sid;
-    SID_AND_ATTRIBUTES capability;
+    PSID capability_sids[2];
+    SID_AND_ATTRIBUTES capabilities[2];
     SECURITY_CAPABILITIES security_capabilities;
     wchar_t *profile_name;
     struct owc_acl_grant *grants;
     size_t grant_count;
     int profile_created;
     int attribute_applied;
+    int shared_profile;
     owc_sandbox_status status;
 };
 
@@ -281,6 +282,100 @@ static void revoke_write_roots(owc_sandbox *sandbox) {
     free(sandbox->grants);
 }
 
+/* Bind Link backing directories sit outside the write roots, so a sandboxed
+ * process reaching them through the virtPath needs its own grant on the
+ * backing tree.  Same mechanics as the write-root grants (recorded and
+ * revoked symmetrically by revoke_write_roots, reparse points handled on
+ * both the point and its target); read-only links get the
+ * read/traverse/execute tier, writable links the write-root tier. */
+static int grant_bind_backings(owc_sandbox *sandbox,
+                               const owc_sandbox_options *options,
+                               char *reason, size_t reason_size) {
+    size_t i;
+    for (i = 0; i < options->bind_count; ++i) {
+        wchar_t *path = utf8_to_wide(options->bind_backing[i]);
+        DWORD attributes;
+        int read_only = options->bind_read_only ? options->bind_read_only[i] : 0;
+        if (!path) {
+            set_reason(reason, reason_size, "bind backing path is not valid UTF-8");
+            return 0;
+        }
+        attributes = GetFileAttributesW(path);
+        if (attributes != INVALID_FILE_ATTRIBUTES &&
+            (attributes & FILE_ATTRIBUTE_REPARSE_POINT) &&
+            !grant_temporary(sandbox, path,
+                             FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                             NO_INHERITANCE, OWC_ACL_REPARSE_POINT)) {
+            free(path);
+            set_reason(reason, reason_size, "bind backing mount-point ACL grant failed");
+            return 0;
+        }
+        if (!grant_temporary(sandbox, path,
+                             read_only
+                                 ? FILE_GENERIC_READ | FILE_GENERIC_EXECUTE | FILE_TRAVERSE
+                                 : FILE_GENERIC_READ | FILE_GENERIC_WRITE |
+                                       FILE_GENERIC_EXECUTE | DELETE,
+                             SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+                             (attributes != INVALID_FILE_ATTRIBUTES &&
+                              (attributes & FILE_ATTRIBUTE_REPARSE_POINT))
+                                 ? OWC_ACL_REPARSE_TARGET
+                                 : OWC_ACL_NAMED_PATH)) {
+            free(path);
+            set_reason(reason, reason_size, "bind backing ACL grant failed");
+            return 0;
+        }
+        free(path);
+    }
+    /* Same best-effort ancestor traverse as the write roots: the backing
+       tree is reached by traversing its ancestors, which the AppContainer
+       may not own. */
+#ifndef OWC_SANDBOX_TEST_SKIP_ANCESTORS
+    for (i = 0; i < options->bind_count; ++i)
+        (void)grant_ancestor_traverse(sandbox, options->bind_backing[i]);
+#endif
+    return 1;
+}
+
+/* readOnlyPaths get the same read/traverse/execute tier as a read-only
+ * Bind Link backing: generic read grants for tools and data the sandboxed
+ * process may consume but never modify.  Grants are purely additive, so a
+ * path whose DACL this process cannot edit (for example a machine-wide tool
+ * install owned by Administrators) is skipped best-effort - failing to add
+ * access is already fail-closed and must not sink the whole configure.
+ * Recorded and revoked through the same grant list as the write roots. */
+static int grant_read_only_paths(owc_sandbox *sandbox,
+                                 const owc_sandbox_options *options,
+                                 char *reason, size_t reason_size) {
+    size_t i;
+    for (i = 0; i < options->read_only_count; ++i) {
+        wchar_t *path = utf8_to_wide(options->read_only_paths[i]);
+        DWORD attributes;
+        if (!path) {
+            set_reason(reason, reason_size, "readOnlyPaths entry is not valid UTF-8");
+            return 0;
+        }
+        attributes = GetFileAttributesW(path);
+        if (attributes != INVALID_FILE_ATTRIBUTES &&
+            (attributes & FILE_ATTRIBUTE_REPARSE_POINT))
+            (void)grant_temporary(sandbox, path,
+                                  FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                                  NO_INHERITANCE, OWC_ACL_REPARSE_POINT);
+        (void)grant_temporary(sandbox, path,
+                              FILE_GENERIC_READ | FILE_GENERIC_EXECUTE | FILE_TRAVERSE,
+                              SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+                              (attributes != INVALID_FILE_ATTRIBUTES &&
+                               (attributes & FILE_ATTRIBUTE_REPARSE_POINT))
+                                  ? OWC_ACL_REPARSE_TARGET
+                                  : OWC_ACL_NAMED_PATH);
+        free(path);
+    }
+#ifndef OWC_SANDBOX_TEST_SKIP_ANCESTORS
+    for (i = 0; i < options->read_only_count; ++i)
+        (void)grant_ancestor_traverse(sandbox, options->read_only_paths[i]);
+#endif
+    return 1;
+}
+
 static wchar_t *make_profile_name(const char *session_id) {
     static const wchar_t prefix[] = L"OpenWebCode.";
     size_t input_length = strlen(session_id), i, prefix_length = ARRAYSIZE(prefix) - 1;
@@ -299,6 +394,92 @@ static wchar_t *make_profile_name(const char *session_id) {
 static INIT_ONCE sandbox_probe_once = INIT_ONCE_STATIC_INIT;
 static owc_sandbox_status sandbox_probe_status = OWC_SANDBOX_ADVISORY;
 static char sandbox_probe_reason[192];
+
+/* The probe launches a one-time verification process on first use: profile
+ * creation alone only proves the API exists, not that the security
+ * capabilities process attribute is honored end to end.  A successful
+ * "cmd.exe /c exit 0" under PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES
+ * upgrades the reported capability from partial to enforced; any failure
+ * keeps partial with the real failure point recorded. */
+static void probe_process_attribute(PSID sid) {
+    wchar_t system_dir[MAX_PATH];
+    wchar_t command[MAX_PATH + 16];
+    SECURITY_CAPABILITIES capabilities;
+    STARTUPINFOEXW startup;
+    PROCESS_INFORMATION process;
+    LPPROC_THREAD_ATTRIBUTE_LIST attributes = NULL;
+    SIZE_T attribute_size = 0;
+    DWORD length, error, exit_code = 1, wait_result;
+    memset(&capabilities, 0, sizeof(capabilities));
+    memset(&startup, 0, sizeof(startup));
+    memset(&process, 0, sizeof(process));
+    length = GetSystemDirectoryW(system_dir, (UINT)ARRAYSIZE(system_dir));
+    if (!length || length >= ARRAYSIZE(system_dir) - 8 ||
+        wcscat_s(system_dir, ARRAYSIZE(system_dir), L"\\cmd.exe") != 0 ||
+        swprintf_s(command, ARRAYSIZE(command), L"\"%ls\" /c exit 0",
+                   system_dir) < 0) {
+        set_reason(sandbox_probe_reason, sizeof(sandbox_probe_reason),
+                   "AppContainer probe command construction failed; per-process enforcement is unverified");
+        return;
+    }
+    capabilities.AppContainerSid = sid;
+    (void)InitializeProcThreadAttributeList(NULL, 1, 0, &attribute_size);
+    if (!attribute_size) {
+        set_reason(sandbox_probe_reason, sizeof(sandbox_probe_reason),
+                   "AppContainer probe attribute list sizing failed; per-process enforcement is unverified");
+        return;
+    }
+    attributes = (LPPROC_THREAD_ATTRIBUTE_LIST)malloc(attribute_size);
+    if (!attributes ||
+        !InitializeProcThreadAttributeList(attributes, 1, 0, &attribute_size)) {
+        free(attributes);
+        set_reason(sandbox_probe_reason, sizeof(sandbox_probe_reason),
+                   "AppContainer probe attribute list initialization failed; per-process enforcement is unverified");
+        return;
+    }
+    if (!UpdateProcThreadAttribute(attributes, 0,
+                                   PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES,
+                                   &capabilities, sizeof(capabilities),
+                                   NULL, NULL)) {
+        error = GetLastError();
+        (void)snprintf(sandbox_probe_reason, sizeof(sandbox_probe_reason),
+                       "AppContainer probe security capabilities attribute failed (error=%lu)",
+                       (unsigned long)error);
+        goto done;
+    }
+    startup.StartupInfo.cb = sizeof(startup);
+    startup.lpAttributeList = attributes;
+    if (!CreateProcessW(NULL, command, NULL, NULL, FALSE,
+                        CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT,
+                        NULL, NULL, &startup.StartupInfo, &process)) {
+        error = GetLastError();
+        (void)snprintf(sandbox_probe_reason, sizeof(sandbox_probe_reason),
+                       "AppContainer probe process creation failed (error=%lu); per-process enforcement is unverified",
+                       (unsigned long)error);
+        goto done;
+    }
+    wait_result = WaitForSingleObject(process.hProcess, 10000);
+    if (wait_result != WAIT_OBJECT_0) {
+        (void)TerminateProcess(process.hProcess, 1);
+        (void)WaitForSingleObject(process.hProcess, 2000);
+        (void)snprintf(sandbox_probe_reason, sizeof(sandbox_probe_reason),
+                       "AppContainer probe process did not exit in time (wait=%lu)",
+                       (unsigned long)wait_result);
+    } else if (!GetExitCodeProcess(process.hProcess, &exit_code) || exit_code != 0) {
+        (void)snprintf(sandbox_probe_reason, sizeof(sandbox_probe_reason),
+                       "AppContainer probe process exited with code %lu",
+                       (unsigned long)exit_code);
+    } else {
+        sandbox_probe_status = OWC_SANDBOX_ENFORCED;
+        set_reason(sandbox_probe_reason, sizeof(sandbox_probe_reason),
+                   "AppContainer verified end-to-end (profile + process attribute)");
+    }
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+done:
+    DeleteProcThreadAttributeList(attributes);
+    free(attributes);
+}
 
 static BOOL CALLBACK sandbox_probe_init(PINIT_ONCE once, PVOID param,
                                         PVOID *context) {
@@ -323,12 +504,20 @@ static BOOL CALLBACK sandbox_probe_init(PINIT_ONCE once, PVOID param,
     } else {
         profile_available = SUCCEEDED(hr);
     }
-    if (profile_available) {
-        if (sid) FreeSid(sid);
-        (void)DeleteAppContainerProfile(profile_name);
+    if (profile_available && sid) {
         sandbox_probe_status = OWC_SANDBOX_PARTIAL;
         set_reason(sandbox_probe_reason, sizeof(sandbox_probe_reason),
                    "AppContainer profile creation is available; per-process enforcement has not yet been verified");
+        probe_process_attribute(sid);
+        FreeSid(sid);
+        (void)DeleteAppContainerProfile(profile_name);
+        return TRUE;
+    }
+    if (profile_available) {
+        (void)DeleteAppContainerProfile(profile_name);
+        sandbox_probe_status = OWC_SANDBOX_PARTIAL;
+        set_reason(sandbox_probe_reason, sizeof(sandbox_probe_reason),
+                   "AppContainer profile creation returned no SID; per-process enforcement is unverified");
         return TRUE;
     }
     if (sid) FreeSid(sid);
@@ -371,11 +560,42 @@ owc_sandbox *owc_sandbox_create(const owc_sandbox_options *options,
         return NULL;
     }
     sandbox->status = OWC_SANDBOX_PARTIAL;
+    sandbox->shared_profile = options->shared_profile ? 1 : 0;
     sandbox->profile_name = make_profile_name(options->session_id);
     if (!sandbox->profile_name) goto fail;
 
+    /* Convert the requested capability SIDs BEFORE profile creation: a
+       process can only receive SECURITY_CAPABILITIES entries that its
+       profile carries, and a profile created with zero capabilities
+       silently drops every requested capability (CreateProcess still
+       succeeds).  The same SID set therefore goes to both the profile and
+       the per-process attribute. */
+    if (options->allow_network) {
+        size_t capability_count = 0;
+        if (!ConvertStringSidToSidW(L"S-1-15-3-1", &sandbox->capability_sids[capability_count])) {
+            set_reason(reason, reason_size, "internetClient capability SID creation failed");
+            goto fail;
+        }
+        sandbox->capabilities[capability_count].Sid = sandbox->capability_sids[capability_count];
+        sandbox->capabilities[capability_count].Attributes = SE_GROUP_ENABLED;
+        capability_count++;
+        if (options->private_network) {
+            if (!ConvertStringSidToSidW(L"S-1-15-3-3", &sandbox->capability_sids[capability_count])) {
+                set_reason(reason, reason_size, "privateNetworkClientServer capability SID creation failed");
+                goto fail;
+            }
+            sandbox->capabilities[capability_count].Sid = sandbox->capability_sids[capability_count];
+            sandbox->capabilities[capability_count].Attributes = SE_GROUP_ENABLED;
+            capability_count++;
+        }
+        sandbox->security_capabilities.Capabilities = sandbox->capabilities;
+        sandbox->security_capabilities.CapabilityCount = (DWORD)capability_count;
+    }
+
     hr = CreateAppContainerProfile(sandbox->profile_name, sandbox->profile_name,
-                                   L"OpenWebCode command session", NULL, 0,
+                                   L"OpenWebCode command session",
+                                   sandbox->security_capabilities.Capabilities,
+                                   sandbox->security_capabilities.CapabilityCount,
                                    &sandbox->appcontainer_sid);
     if (hr == HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS)) {
         hr = DeriveAppContainerSidFromAppContainerName(sandbox->profile_name,
@@ -391,23 +611,20 @@ owc_sandbox *owc_sandbox_create(const owc_sandbox_options *options,
                            (unsigned long)hr);
         goto fail;
     } else {
-        sandbox->profile_created = 1;
+        /* A shared profile belongs to the session grant: even when this
+           per-command create happened to win the creation race, destroy must
+           never delete it. */
+        sandbox->profile_created = sandbox->shared_profile ? 0 : 1;
     }
 
-    if (options->allow_network) {
-        if (!ConvertStringSidToSidW(L"S-1-15-3-1", &sandbox->capability_sid)) {
-            set_reason(reason, reason_size, "internetClient capability SID creation failed");
-            goto fail;
-        }
-        sandbox->capability.Sid = sandbox->capability_sid;
-        sandbox->capability.Attributes = SE_GROUP_ENABLED;
-        sandbox->security_capabilities.Capabilities = &sandbox->capability;
-        sandbox->security_capabilities.CapabilityCount = 1;
-    }
     sandbox->security_capabilities.AppContainerSid = sandbox->appcontainer_sid;
     sandbox->security_capabilities.Reserved = 0;
 
-    if (!grant_write_roots(sandbox, options, reason, reason_size)) goto fail;
+    if (!sandbox->shared_profile) {
+        if (!grant_write_roots(sandbox, options, reason, reason_size)) goto fail;
+        if (!grant_read_only_paths(sandbox, options, reason, reason_size)) goto fail;
+        if (!grant_bind_backings(sandbox, options, reason, reason_size)) goto fail;
+    }
     sandbox->status = OWC_SANDBOX_ENFORCED;
     set_reason(reason, reason_size, "AppContainer prepared; enforcement begins only after process creation uses its attribute");
     return sandbox;
@@ -438,12 +655,123 @@ owc_sandbox_status owc_sandbox_get_status(const owc_sandbox *sandbox) {
 }
 
 void owc_sandbox_destroy(owc_sandbox *sandbox) {
+    size_t i;
     if (!sandbox) return;
     revoke_write_roots(sandbox);
-    if (sandbox->capability_sid) LocalFree(sandbox->capability_sid);
+    for (i = 0; i < ARRAYSIZE(sandbox->capability_sids); ++i)
+        if (sandbox->capability_sids[i]) LocalFree(sandbox->capability_sids[i]);
     if (sandbox->appcontainer_sid) FreeSid(sandbox->appcontainer_sid);
     if (sandbox->profile_created && sandbox->profile_name)
         (void)DeleteAppContainerProfile(sandbox->profile_name);
     free(sandbox->profile_name);
     free(sandbox);
+}
+
+/* Session-scoped registry for filtered-network sessions: the fixed
+ * OpenWebCode.<session-id> profile and its ACL grants live from configure to
+ * cleanup/reconfigure/exit so the business processes and the in-sandbox
+ * proxy sidecar share one package identity (same-package loopback is the
+ * mechanism that lets the capability-less business process reach the
+ * sidecar).  Bounded and mutex-guarded like the ACL RMW above. */
+#define OWC_SANDBOX_MAX_SESSION_GRANTS 16u
+static INIT_ONCE session_grant_once = INIT_ONCE_STATIC_INIT;
+static CRITICAL_SECTION session_grant_mutex;
+static struct {
+    char *session_id;
+    owc_sandbox *sandbox;
+} session_grants[OWC_SANDBOX_MAX_SESSION_GRANTS];
+static size_t session_grant_count = 0;
+
+static BOOL CALLBACK session_grant_mutex_init(PINIT_ONCE once, PVOID param,
+                                              PVOID *context) {
+    (void)once; (void)param; (void)context;
+    InitializeCriticalSection(&session_grant_mutex);
+    return TRUE;
+}
+
+static size_t session_grant_find(const char *session_id) {
+    size_t i;
+    for (i = 0; i < session_grant_count; ++i)
+        if (!strcmp(session_grants[i].session_id, session_id)) return i;
+    return session_grant_count;
+}
+
+static void session_grant_remove(size_t index) {
+    owc_sandbox_destroy(session_grants[index].sandbox);
+    free(session_grants[index].session_id);
+    if (index != session_grant_count - 1)
+        session_grants[index] = session_grants[session_grant_count - 1];
+    session_grant_count--;
+}
+
+int owc_sandbox_session_grant(const char *session_id,
+                              const owc_sandbox_options *options,
+                              char *reason, size_t reason_size) {
+    owc_sandbox *sandbox;
+    char *id_copy;
+    size_t index;
+    if (!session_id || !session_id[0] || !options) {
+        set_reason(reason, reason_size, "sandbox session grant requires a non-empty session id");
+        return 0;
+    }
+    (void)InitOnceExecuteOnce(&session_grant_once, session_grant_mutex_init,
+                              NULL, NULL);
+    /* Idempotent re-grant: revoke the previous grant first, because creating
+       the replacement would derive the still-registered profile and the old
+       grant's destroy would then delete it under the new SID. */
+    EnterCriticalSection(&session_grant_mutex);
+    index = session_grant_find(session_id);
+    if (index < session_grant_count) session_grant_remove(index);
+    LeaveCriticalSection(&session_grant_mutex);
+    /* Stale profiles from crashed or older cores may carry the wrong
+       capability set; recreate so the grant always owns a fresh profile.
+       Best effort: deletion fails while a process still uses the profile. */
+    {
+        wchar_t *stale = make_profile_name(session_id);
+        if (stale) {
+            (void)DeleteAppContainerProfile(stale);
+            free(stale);
+        }
+    }
+    sandbox = owc_sandbox_create(options, reason, reason_size);
+    if (!sandbox) return 0;
+    id_copy = (char *)malloc(strlen(session_id) + 1);
+    if (!id_copy) {
+        owc_sandbox_destroy(sandbox);
+        set_reason(reason, reason_size, "sandbox session grant allocation failed");
+        return 0;
+    }
+    (void)strcpy(id_copy, session_id);
+    EnterCriticalSection(&session_grant_mutex);
+    if (session_grant_count >= OWC_SANDBOX_MAX_SESSION_GRANTS) {
+        LeaveCriticalSection(&session_grant_mutex);
+        free(id_copy);
+        owc_sandbox_destroy(sandbox);
+        set_reason(reason, reason_size, "sandbox session grant limit reached");
+        return 0;
+    }
+    session_grants[session_grant_count].session_id = id_copy;
+    session_grants[session_grant_count].sandbox = sandbox;
+    session_grant_count++;
+    LeaveCriticalSection(&session_grant_mutex);
+    return 1;
+}
+
+void owc_sandbox_session_revoke(const char *session_id) {
+    size_t index;
+    if (!session_id) return;
+    (void)InitOnceExecuteOnce(&session_grant_once, session_grant_mutex_init,
+                              NULL, NULL);
+    EnterCriticalSection(&session_grant_mutex);
+    index = session_grant_find(session_id);
+    if (index < session_grant_count) session_grant_remove(index);
+    LeaveCriticalSection(&session_grant_mutex);
+}
+
+void owc_sandbox_session_revoke_all(void) {
+    (void)InitOnceExecuteOnce(&session_grant_once, session_grant_mutex_init,
+                              NULL, NULL);
+    EnterCriticalSection(&session_grant_mutex);
+    while (session_grant_count) session_grant_remove(session_grant_count - 1);
+    LeaveCriticalSection(&session_grant_mutex);
 }

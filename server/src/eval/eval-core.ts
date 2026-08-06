@@ -90,10 +90,11 @@ export function makeEvalCore(): CoreClientLike & { setWorkspace(sessionId: strin
     async stop(): Promise<void> { /* no-op */ },
     async ping(): Promise<CoreInfo> { return CORE_INFO; },
 
-    async configureSession(request: { sessionId: string; cwd: string; sandbox: SandboxPolicy }): Promise<{ sandboxCapability: string }> {
+    async configureSession(request: { sessionId: string; cwd: string; sandbox: SandboxPolicy }): Promise<{ sandboxCapability: string; sandboxReason?: string }> {
       workspaces.set(request.sessionId, request.cwd);
       return { sandboxCapability: "advisory" };
     },
+    sandboxStatusFor(): undefined { return undefined; },
     async cleanupSession(): Promise<{ ok: true }> { return { ok: true }; },
 
     async run(): Promise<ExecResult> { return { exitCode: 0, durationMs: 0, truncated: false }; },

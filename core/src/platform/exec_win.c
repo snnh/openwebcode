@@ -181,37 +181,72 @@ static char *build_shell_command(const wchar_t *shell_path, const char *argument
    FileSystem InitializeDefaultDrives at engine start and prints a spurious
    error to stderr on every command (agents then mistake it for a failed
    command and retry). Redirect the profile variables into the workspace,
-   which the AppContainer profile always grants. Returns NULL to fall back to
-   inheriting the parent environment. */
-static wchar_t *build_powershell_environment(const wchar_t *cwd) {
+   which the AppContainer profile always grants.
+   Filtered-network sessions additionally route child traffic through the
+   in-sandbox proxy sidecar: inherited proxy variables are stripped and
+   HTTP_PROXY/HTTPS_PROXY (both casings) point at the sidecar with NO_PROXY
+   emptied.  Returns NULL to fall back to inheriting the parent
+   environment. */
+static wchar_t *build_child_environment(const wchar_t *cwd, const wchar_t *proxy_addr) {
     LPWCH parent, entry;
     wchar_t *block, *dst;
-    size_t total = 1, length;
+    size_t total = 1, length, proxy_length = proxy_addr ? wcslen(proxy_addr) : 0;
     parent = GetEnvironmentStringsW();
     if (!parent) return NULL;
     for (entry = parent; *entry; entry += wcslen(entry) + 1) {
-        if (_wcsnicmp(entry, L"USERPROFILE=", 12) == 0) continue;
-        if (_wcsnicmp(entry, L"HOME=", 5) == 0) continue;
+        if (cwd && _wcsnicmp(entry, L"USERPROFILE=", 12) == 0) continue;
+        if (cwd && _wcsnicmp(entry, L"HOME=", 5) == 0) continue;
+        if (proxy_addr && _wcsnicmp(entry, L"HTTP_PROXY=", 11) == 0) continue;
+        if (proxy_addr && _wcsnicmp(entry, L"HTTPS_PROXY=", 12) == 0) continue;
+        if (proxy_addr && _wcsnicmp(entry, L"NO_PROXY=", 9) == 0) continue;
         total += wcslen(entry) + 1;
     }
-    total += 12 + wcslen(cwd) + 1 + 5 + wcslen(cwd) + 1;
+    if (cwd) total += 12 + wcslen(cwd) + 1 + 5 + wcslen(cwd) + 1;
+    if (proxy_addr) {
+        /* "HTTP_PROXY=http://" (18) + "HTTPS_PROXY=http://" (19) +
+           "NO_PROXY=" (9) plus the same three names in lowercase, each with
+           its terminator. */
+        total += 18 + proxy_length + 1 + 19 + proxy_length + 1 + 9 + 1;
+        total += 18 + proxy_length + 1 + 19 + proxy_length + 1 + 9 + 1;
+    }
     block = (wchar_t *)malloc(total * sizeof(*block));
     if (!block) { FreeEnvironmentStringsW(parent); return NULL; }
     dst = block;
     for (entry = parent; *entry; entry += length + 1) {
         length = wcslen(entry);
-        if (_wcsnicmp(entry, L"USERPROFILE=", 12) == 0) continue;
-        if (_wcsnicmp(entry, L"HOME=", 5) == 0) continue;
+        if (cwd && _wcsnicmp(entry, L"USERPROFILE=", 12) == 0) continue;
+        if (cwd && _wcsnicmp(entry, L"HOME=", 5) == 0) continue;
+        if (proxy_addr && _wcsnicmp(entry, L"HTTP_PROXY=", 11) == 0) continue;
+        if (proxy_addr && _wcsnicmp(entry, L"HTTPS_PROXY=", 12) == 0) continue;
+        if (proxy_addr && _wcsnicmp(entry, L"NO_PROXY=", 9) == 0) continue;
         (void)memcpy(dst, entry, (length + 1) * sizeof(*dst));
         dst += length + 1;
     }
-    (void)memcpy(dst, L"USERPROFILE=", 12 * sizeof(*dst)); dst += 12;
-    length = wcslen(cwd);
-    (void)memcpy(dst, cwd, length * sizeof(*dst)); dst += length;
-    *dst++ = L'\0';
-    (void)memcpy(dst, L"HOME=", 5 * sizeof(*dst)); dst += 5;
-    (void)memcpy(dst, cwd, length * sizeof(*dst)); dst += length;
-    *dst++ = L'\0';
+    if (cwd) {
+        (void)memcpy(dst, L"USERPROFILE=", 12 * sizeof(*dst)); dst += 12;
+        length = wcslen(cwd);
+        (void)memcpy(dst, cwd, length * sizeof(*dst)); dst += length;
+        *dst++ = L'\0';
+        (void)memcpy(dst, L"HOME=", 5 * sizeof(*dst)); dst += 5;
+        (void)memcpy(dst, cwd, length * sizeof(*dst)); dst += length;
+        *dst++ = L'\0';
+    }
+    if (proxy_addr) {
+        static const wchar_t *const proxy_names[6] = {
+            L"HTTP_PROXY=http://", L"HTTPS_PROXY=http://", L"NO_PROXY=",
+            L"http_proxy=http://", L"https_proxy=http://", L"no_proxy="
+        };
+        size_t name_index;
+        for (name_index = 0; name_index < 6; ++name_index) {
+            length = wcslen(proxy_names[name_index]);
+            (void)memcpy(dst, proxy_names[name_index], length * sizeof(*dst)); dst += length;
+            if (name_index != 2 && name_index != 5) {
+                (void)memcpy(dst, proxy_addr, proxy_length * sizeof(*dst));
+                dst += proxy_length;
+            }
+            *dst++ = L'\0';
+        }
+    }
     *dst = L'\0';
     FreeEnvironmentStringsW(parent);
     return block;
@@ -250,15 +285,32 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
     startup.StartupInfo.cb=sizeof(startup); startup.StartupInfo.dwFlags=STARTF_USESTDHANDLES;
     startup.StartupInfo.hStdOutput=out_write; startup.StartupInfo.hStdError=err_write; startup.StartupInfo.hStdInput=input;
     inherited[0]=out_write; inherited[1]=err_write; inherited[2]=input;
-    (void)snprintf(sandbox_identity,sizeof(sandbox_identity),"Run.%lu.%llu.%ld",
-                   (unsigned long)GetCurrentProcessId(),
-                   (unsigned long long)GetTickCount64(),
-                   (long)InterlockedIncrement(&sandbox_run_counter));
-    sandbox_options.session_id=sandbox_identity; sandbox_options.allow_network=request->allow_network;
+    if(request->network_filtered) {
+        /* Filtered-network session: share the fixed session profile
+           (OpenWebCode.<session-id>) with the in-sandbox proxy sidecar so
+           same-package loopback reaches it; profile and ACLs are owned by
+           the session grant, not by this command. */
+        sandbox_options.session_id=request->session_id;
+        sandbox_options.shared_profile=1;
+    } else {
+        (void)snprintf(sandbox_identity,sizeof(sandbox_identity),"Run.%lu.%llu.%ld",
+                       (unsigned long)GetCurrentProcessId(),
+                       (unsigned long long)GetTickCount64(),
+                       (long)InterlockedIncrement(&sandbox_run_counter));
+        sandbox_options.session_id=sandbox_identity;
+    }
+    sandbox_options.allow_network=request->allow_network;
+    /* The filtered sidecar (per-exec network allow override) also needs
+       privateNetworkClientServer to reach an upstream proxy on a LAN
+       address; a filtered business execution gets no capability SID at all,
+       so direct networking is cut. */
+    sandbox_options.private_network=request->allow_network&&request->network_filtered;
+    sandbox_options.read_only_paths=request->read_only_paths; sandbox_options.read_only_count=request->read_only_count;
     if(request->allow_path_count>16||!add_write_root(write_roots,&write_root_count,ARRAYSIZE(write_roots),request->cwd))goto cleanup;
     for(write_root_index=0;write_root_index<request->allow_path_count;write_root_index++)
         if(!add_write_root(write_roots,&write_root_count,ARRAYSIZE(write_roots),request->allow_paths[write_root_index]))goto cleanup;
     sandbox_options.write_roots=(const char *const *)write_roots; sandbox_options.write_root_count=write_root_count;
+    sandbox_options.bind_backing=request->bind_backing; sandbox_options.bind_read_only=request->bind_read_only; sandbox_options.bind_count=request->bind_count;
     if(request->sandbox_enabled && request->sandbox_mode==(int)OWC_SANDBOX_MODE_JOBOBJECT) {
         /* Session explicitly asked for compatibility mode: skip the AppContainer
            profile and process attribute, keep only the Job Object below. */
@@ -267,8 +319,23 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
     } else {
         if(request->sandbox_enabled) sandbox=owc_sandbox_create(&sandbox_options,result->sandbox_reason,sizeof(result->sandbox_reason));
         result->sandbox_status=sandbox?(int)owc_sandbox_get_status(sandbox):(int)OWC_SANDBOX_ADVISORY;
+        if(sandbox&&request->network_filtered)
+            (void)snprintf(result->sandbox_reason,sizeof(result->sandbox_reason),
+                           request->allow_network
+                               ?"AppContainer enforced; network allowed by per-exec override (filtered session sidecar)"
+                               :"AppContainer enforced; network filtered via in-sandbox proxy");
     }
-    if(sandbox&&arg_style==OWC_SHELL_ARGS_PWSH)env_block=build_powershell_environment(cwd);
+    {
+        /* Proxy injection only for the capability-less business execution of
+           a filtered session (never for the sidecar itself); only meaningful
+           while an AppContainer actually enforces. */
+        int inject_proxy=sandbox&&request->network_filtered&&request->proxy_addr&&request->proxy_addr[0]&&!request->allow_network;
+        if(sandbox&&(arg_style==OWC_SHELL_ARGS_PWSH||inject_proxy)) {
+            wchar_t *proxy_wide=inject_proxy?utf8_to_wide(request->proxy_addr):NULL;
+            env_block=build_child_environment(arg_style==OWC_SHELL_ARGS_PWSH?cwd:NULL,proxy_wide);
+            free(proxy_wide);
+        }
+    }
     (void)InitializeProcThreadAttributeList(NULL,sandbox?2:1,0,&attribute_size);
     if(!attribute_size) goto cleanup;
     attributes=(LPPROC_THREAD_ATTRIBUTE_LIST)malloc(attribute_size); if(!attributes) goto cleanup;
@@ -278,7 +345,7 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
     if(sandbox&&!owc_sandbox_add_process_attribute(sandbox,attributes,result->sandbox_reason,sizeof(result->sandbox_reason))){result->sandbox_status=(int)OWC_SANDBOX_PARTIAL;goto cleanup;}
 
     if(!CreateProcessW(shell_path,command,NULL,NULL,TRUE,
-                       CREATE_NO_WINDOW|CREATE_SUSPENDED|EXTENDED_STARTUPINFO_PRESENT,
+                       CREATE_NO_WINDOW|CREATE_SUSPENDED|EXTENDED_STARTUPINFO_PRESENT|(env_block?CREATE_UNICODE_ENVIRONMENT:0),
                        env_block,cwd,&startup.StartupInfo,&process)) {
         DWORD appcontainer_error=GetLastError();
         if(!sandbox) goto cleanup;

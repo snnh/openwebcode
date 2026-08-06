@@ -91,6 +91,8 @@ interface RuntimeDependencies {
   updateChecker?: UpdateChecker;
   /** 出站代理热应用；缺省 proxy.ts 的真实全局 dispatcher 安装，测试注入 fake */
   applyProxy?: (config: ProxyConfig) => ProxyApplyResult;
+  /** filtered 网络档 sidecar 编排；sandboxProxyDenyList 变更时重写活跃会话的 deny 文件 */
+  sandboxProxy?: { refreshDenyFiles(): Promise<void> };
 }
 
 const GROUPS = [
@@ -207,6 +209,13 @@ function requirePathList(value: SettingValue): void {
   }
 }
 
+function requireDomainList(value: SettingValue): void {
+  if (!Array.isArray(value) || value.length > 64 ||
+      value.some((entry) => typeof entry !== "string" || !/^\.?[a-z0-9_-]+(\.[a-z0-9_-]+)*$/i.test(entry.trim()))) {
+    throw new SettingsValidationError("拦截域名必须是最多 64 项的域名列表（如 example.com）");
+  }
+}
+
 function envNumber(raw: string): SettingValue | undefined {
   const parsed = Number(raw);
   return Number.isSafeInteger(parsed) && parsed >= 1 ? parsed : undefined;
@@ -220,6 +229,11 @@ function envSyncIntervalMinutes(raw: string): SettingValue | undefined {
 function envPathList(raw: string): SettingValue | undefined {
   const values = raw.split(path.delimiter).map((entry) => entry.trim()).filter(Boolean);
   return values.length > 0 && values.length <= 16 ? values : undefined;
+}
+
+function envDomainList(raw: string): SettingValue | undefined {
+  const values = raw.split(/[,\n]/).map((entry) => entry.trim().toLowerCase()).filter(Boolean);
+  return values.length > 0 && values.length <= 64 ? values : undefined;
 }
 
 function envCurrency(raw: string): SettingValue | undefined {
@@ -270,6 +284,8 @@ const FIELDS: FieldSpec[] = [
   { key: "corePath", group: "executor", label: "执行器路径", type: "text", env: "OWC_CORE_PATH", defaultValue: "../build/Debug/owc-exec.exe", runtimeDefault: () => defaultCorePath(), restartRequired: true, validate: requireNonEmpty },
   { key: "coreRequestTimeoutMs", group: "executor", label: "执行器请求超时 (ms)", type: "number", env: "OWC_CORE_REQUEST_TIMEOUT_MS", defaultValue: 130_000, restartRequired: false, fromEnv: envNumber },
   { key: "sandboxAllowPaths", group: "executor", label: "沙盒额外允许目录", type: "pathList", env: "OWC_SANDBOX_ALLOW_PATHS", defaultValue: [], restartRequired: true, fromEnv: envPathList, validate: requirePathList, description: "每行一个目录，最多 16 个；执行时与会话工作目录合并并去重" },
+  // filtered 网络档（Windows AppContainer）的 sidecar 代理拦截清单：热生效，sidecar 按 mtime 自重读
+  { key: "sandboxProxyDenyList", group: "executor", label: "沙盒代理拦截域名", type: "pathList", env: "OWC_SANDBOX_PROXY_DENY_LIST", defaultValue: [], restartRequired: false, fromEnv: envDomainList, validate: requireDomainList, description: "filtered 网络档生效：每行一个域名（如 example.com，含其子域名），最多 64 个；命中的请求被沙盒代理拒绝（403），保存后对活跃会话热生效" },
   { key: "pythonEnv", group: "executor", label: "Python 环境", type: "select", env: "OWC_PYTHON_ENV", defaultValue: "global", restartRequired: false, options: PYTHON_ENV_OPTIONS, description: "全局默认：bash 工具的 python 运行环境。global = 本机已有环境；uv-workspace = 在项目工作区 .owc/venv 创建 uv 虚拟环境；uv-config = 在数据目录 venvs/ 创建 uv 虚拟环境。会话可在顶栏单独覆盖" },
   // Job Object 资源限制（仅 Windows，重启生效）：注入 CoreRouter 全局下发，留空由 core 用默认值
   { key: "jobObjectMemoryMB", group: "executor", label: "Job 内存上限 (MB)", type: "number", env: "OWC_JOB_MEMORY_MB", defaultValue: null, restartRequired: true, fromEnv: envNumber, validate: requireJobMemoryMB, description: "进程树提交内存上限，缺省 4096；仅 Windows（Job Object）生效" },
@@ -446,6 +462,7 @@ export class SettingsService {
     const jobObjectMemoryMB = value("jobObjectMemoryMB");
     const jobObjectMaxProcesses = value("jobObjectMaxProcesses");
     const sandboxAllowPaths = value("sandboxAllowPaths") as string[];
+    const sandboxProxyDenyList = (value("sandboxProxyDenyList") as string[]).map((entry) => entry.trim().toLowerCase()).filter(Boolean);
     const catalogSyncUrl = value("catalogSyncUrl");
     const pricingSyncUrl = value("pricingSyncUrl");
     const proxyHttp = value("proxyHttp");
@@ -531,6 +548,8 @@ export class SettingsService {
             },
           }
         : {}),
+      // filtered 网络档 sidecar 拦截清单（filtered-proxy 管理器现读；空表不进 ServerConfig）
+      ...(sandboxProxyDenyList.length > 0 ? { sandboxProxyDenyList } : {}),
       ...(fastModelSelection
         ? {
             fastModel: {
@@ -653,6 +672,10 @@ export class SettingsService {
       } catch (error) {
         process.stderr.write(`[proxy] 代理配置应用失败：${error instanceof Error ? error.message : String(error)}\n`);
       }
+    }
+    // filtered 拦截清单热生效：重写所有活跃 filtered 会话的 deny 文件（sidecar 按 mtime 自重读）
+    if (changed.includes("sandboxProxyDenyList") && this.deps.sandboxProxy) {
+      void this.deps.sandboxProxy.refreshDenyFiles().catch((error: unknown) => process.stderr.write(`[settings] 沙盒代理拦截清单热更新失败：${error instanceof Error ? error.message : String(error)}\n`));
     }
     // defaultCurrency 无需主动推送：app 路由经 getPreferences 每次实时读取
   }

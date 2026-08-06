@@ -60,13 +60,16 @@ def collect_until_response(proc, request_id):
 def assert_landlock_filesystem_isolation_if_enforced(proc):
     """Exercise the real exec path only where Landlock is usable.
 
-    The capability reply is a probe: unsupported kernels and constrained CI
-    containers legitimately report advisory/partial.  Do not turn those into
-    false failures, but once the configured session reports enforced, require
-    the child process to be able to write its workspace and unable to write an
-    independent directory.  /tmp is a deliberate runtime exemption, so the
-    "outside" directory must live under the user home (not exempt) rather
-    than the system temp dir.
+    The session pins mode "landlock" so the case exercises the Landlock
+    backend regardless of the platform default (bubblewrap is the default
+    backend where usable).  The capability reply is a probe: unsupported
+    kernels and constrained CI containers legitimately report
+    advisory/partial.  Do not turn those into false failures, but once the
+    configured session reports enforced, require the child process to be
+    able to write its workspace and unable to write an independent
+    directory.  /tmp is a deliberate runtime exemption, so the "outside"
+    directory must live under the user home (not exempt) rather than the
+    system temp dir.
     """
     if sys.platform != "linux":
         print("SKIP: Landlock integration test requires Linux", file=sys.stderr)
@@ -81,7 +84,7 @@ def assert_landlock_filesystem_isolation_if_enforced(proc):
         request(proc, 41, "session.configure", {
             "sessionId": "landlock",
             "cwd": workspace,
-            "sandbox": {"enabled": True, "network": "allow", "allowPaths": [allowed]},
+            "sandbox": {"enabled": True, "network": "allow", "mode": "landlock", "allowPaths": [allowed]},
         })
         response, _ = collect_until_response(proc, 41)
         assert "result" in response, response

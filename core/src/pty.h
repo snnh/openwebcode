@@ -29,6 +29,25 @@ typedef struct {
     /* Additional configured sandbox write roots (same semantics as exec). */
     const char *const *allow_paths;
     size_t allow_path_count;
+    /* Session read/write/deny roots (same semantics as exec; borrowed
+       pointers valid for the call). */
+    const char *const *read_roots;
+    size_t read_root_count;
+    const char *const *write_roots;
+    size_t write_root_count;
+    const char *const *deny_paths;
+    size_t deny_path_count;
+    /* Session Bind Link backing directories (same semantics as exec;
+       borrowed pointers valid for the call). */
+    const char *const *bind_backing;
+    const int *bind_read_only;
+    size_t bind_count;
+    /* Filtered-network session state and generic read-only grants (same
+       semantics as exec; borrowed pointers valid for the call). */
+    int network_filtered;
+    const char *proxy_addr;
+    const char *const *read_only_paths;
+    size_t read_only_count;
     unsigned long job_memory_mb;     /* Windows Job Object fallback limits; 0 = default */
     unsigned long job_max_processes; /* 0 = default */
 } owc_pty_options;

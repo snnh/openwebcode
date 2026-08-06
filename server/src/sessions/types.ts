@@ -64,10 +64,12 @@ export interface ManagedWorkspaceMeta {
   image: string;
   mountPoint: string;
 }
-/** 下发给 core 的 sandbox.mode（wsb 不下发，由 VM 充当边界） */
-export type SandboxBackendMode = "appcontainer" | "jobobject" | "off";
-/** 用户可选的沙盒模式；undefined = jobobject（现状默认） */
-export type SandboxMode = "appcontainer" | "wsb" | "jobobject" | "off";
+/** 下发给 core 的 sandbox.mode（wsb 不下发，由 VM 充当边界；landlock 为 POSIX 默认语义，不下发 mode） */
+export type SandboxBackendMode = "appcontainer" | "jobobject" | "landlock" | "bubblewrap" | "off";
+/** 用户可选的沙盒模式；undefined = jobobject（Windows 现状默认）/ landlock（POSIX 现状默认） */
+export type SandboxMode = "appcontainer" | "wsb" | "jobobject" | "landlock" | "bubblewrap" | "off";
+/** 沙盒网络策略：filtered = core 侧按规则过滤（仅 Windows；Landlock 无网络语义） */
+export type SandboxNetwork = "allow" | "deny" | "filtered";
 /** 自动 = 每轮用户消息前创建检查点；手动 = 仅由用户显式创建检查点。 */
 export type SnapshotMode = "auto" | "manual";
 /** 命令解释器后端（用户选择）；default 按平台探测顺序解析：Windows pwsh > Git Bash > cmd，POSIX bash > pwsh > $SHELL。 */
@@ -94,7 +96,11 @@ export interface SandboxPolicy {
   /** AppContainer 额外可写目录；core 会与 cwd 合并、规范化并去重。 */
   allowPaths?: string[];
   denyPaths: string[];
-  network: "allow" | "deny";
+  network: SandboxNetwork;
+  /** filtered 网络档：sidecar 代理地址（host:port），由 server 编排层在 configure 时补发。 */
+  proxyAddr?: string;
+  /** 通用只读授予（≤16；Windows 只读 ACL / Linux 只读规则），filtered 档用于放行 node/sidecar 脚本目录。 */
+  readOnlyPaths?: string[];
   mode?: SandboxBackendMode;
   /** 可选 Job Object 覆盖（正整数，上限 1048576 MB / 4096 进程）；不下发时 core 用默认值 */
   jobMemoryMB?: number;

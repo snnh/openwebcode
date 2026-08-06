@@ -78,7 +78,14 @@ static int add_path_rule(int ruleset_fd, const char *path,
     struct landlock_path_beneath_attr rule;
     int fd = open(path, O_PATH | O_CLOEXEC);
     if (fd < 0) {
-        if (!required && errno == ENOENT) return 1;
+        if (!required && errno == ENOENT) {
+            /* A missing optional root is skipped, but say so: core stderr is
+             * archived by the server, which makes a silently narrowed policy
+             * debuggable. */
+            (void)dprintf(STDERR_FILENO,
+                          "owc-exec: sandbox rule path skipped (ENOENT): %s\n", path);
+            return 1;
+        }
         set_result(result, OWC_SANDBOX_ADVISORY, result->abi, errno,
                    "failed to open sandbox rule path");
         return 0;
@@ -158,7 +165,12 @@ const size_t owc_landlock_full_access_path_count =
     sizeof(owc_landlock_full_access_paths) / sizeof(owc_landlock_full_access_paths[0]);
 
 int owc_landlock_apply(const char *cwd, const char *const *allow_paths,
-                       size_t allow_path_count, int allow_network,
+                       size_t allow_path_count,
+                       const char *const *read_roots, size_t read_root_count,
+                       const char *const *read_only_paths,
+                       size_t read_only_count,
+                       const char *const *write_roots, size_t write_root_count,
+                       int allow_network,
                        owc_sandbox_result *result) {
 #if defined(OWC_HAVE_LANDLOCK_SYSCALLS)
     struct landlock_ruleset_attr ruleset;
@@ -186,8 +198,24 @@ int owc_landlock_apply(const char *cwd, const char *const *allow_paths,
     read_exec = LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE |
                 LANDLOCK_ACCESS_FS_READ_DIR;
     if (!add_path_rule(ruleset_fd, cwd, handled, 1, result)) goto fail;
+    /* Session write roots beyond the cwd get the full read/write rule set,
+     * read roots read+execute only.  Landlock rules are additive, so a root
+     * listed in both sets (the cwd by default) ends up writable.  denyPaths
+     * cannot be expressed in additive rules and stay enforced at the fs.*
+     * RPC layer. */
+    for (i = 0; i < write_root_count; ++i) {
+        if (!add_path_rule(ruleset_fd, write_roots[i], handled, 0, result)) goto fail;
+    }
     for (i = 0; i < allow_path_count; ++i) {
         if (!add_path_rule(ruleset_fd, allow_paths[i], handled, 0, result)) goto fail;
+    }
+    for (i = 0; i < read_root_count; ++i) {
+        if (!add_path_rule(ruleset_fd, read_roots[i], read_exec, 0, result)) goto fail;
+    }
+    /* Generic read-only grants (sandbox.readOnlyPaths): same read+execute
+       tier as the read roots. */
+    for (i = 0; i < read_only_count; ++i) {
+        if (!add_path_rule(ruleset_fd, read_only_paths[i], read_exec, 0, result)) goto fail;
     }
     for (i = 0; i < owc_landlock_read_exec_path_count; ++i) {
         if (!add_path_rule(ruleset_fd, owc_landlock_read_exec_paths[i], read_exec, 0, result)) goto fail;
@@ -214,6 +242,12 @@ fail:
     (void)cwd;
     (void)allow_paths;
     (void)allow_path_count;
+    (void)read_roots;
+    (void)read_root_count;
+    (void)read_only_paths;
+    (void)read_only_count;
+    (void)write_roots;
+    (void)write_root_count;
     owc_landlock_probe(allow_network, result);
     return 0;
 #endif

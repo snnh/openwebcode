@@ -18,7 +18,10 @@ export interface CronJobInfo {
 
 export type PermissionMode = "ask" | "acceptEdits" | "review" | "yolo";
 export type SandboxCapability = "advisory" | "partial" | "enforced";
-export type SandboxMode = "appcontainer" | "wsb" | "jobobject" | "off";
+/** landlock/bubblewrap 为 POSIX 专用真值；存量 Linux 会话 meta 可能是 jobobject，显示时按 landlock 处理。 */
+export type SandboxMode = "appcontainer" | "wsb" | "jobobject" | "landlock" | "bubblewrap" | "off";
+/** 沙盒网络策略：filtered = 经代理过滤出网（仅 Windows；Linux 创建/更新会被 server 400）。 */
+export type SandboxNetwork = "allow" | "deny" | "filtered";
 export type SnapshotMode = "auto" | "manual";
 export type ShellBackend = "default" | "pwsh" | "bash" | "cmd";
 /** Python 运行环境：global = 本机环境；uv-workspace/uv-config = uv 临时虚拟环境（工作区/配置目录）。 */
@@ -33,6 +36,14 @@ export interface SandboxCapabilities {
   wsb: { available: boolean; reason?: string };
   /** Bind Link 目录绑定能力（Windows 11 24H2+；创建绑定还需管理员权限）。 */
   bindLink: { available: boolean; reason?: string };
+  /** bubblewrap 可用性（POSIX；旧 core 二进制不上报时 server 按不可用返回）。 */
+  bwrap?: { available: boolean; reason?: string };
+}
+
+/** GET /api/sessions/:id/sandbox-status：最近一次 configureSession 时 core 上报的执行级别；无记录返回 {}。 */
+export interface SessionSandboxStatus {
+  sandboxCapability?: SandboxCapability;
+  sandboxReason?: string;
 }
 
 /** 托管工作区平台能力（GET /api/managed-workspace/capability） */
@@ -218,8 +229,15 @@ export interface Session {
     enabled: boolean;
     readRoots: string[];
     writeRoots: string[];
+    /** AppContainer 额外可写目录（仅显式配置时存在）。 */
+    allowPaths?: string[];
     denyPaths: string[];
-    network: "allow" | "deny";
+    network: SandboxNetwork;
+    /** 下发给 core 的沙盒后端模式（仅显式配置时存在）。 */
+    mode?: string;
+    /** 可选 Job Object 覆盖（仅显式配置时存在）。 */
+    jobMemoryMB?: number;
+    jobMaxProcesses?: number;
     /** 可选 Bind Link 目录绑定（Windows 11 24H2+；仅显式配置时存在）。 */
     bindLinks?: { virtPath: string; backingPath: string; readOnly?: boolean }[];
   };

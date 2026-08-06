@@ -49,4 +49,18 @@ describe("CoreRouter.policyFor 平台分支", () => {
     expect(wsb.bindLinks).toBeUndefined();
     expect(CoreRouter.policyFor(meta("off"), policy, undefined, undefined, "linux").enabled).toBe(false);
   });
+
+  it("POSIX 显式 landlock 不下发 mode（与缺省同语义）", () => {
+    for (const platform of ["linux", "darwin"] as const) {
+      const routed = CoreRouter.policyFor(meta("landlock"), policy, undefined, undefined, platform);
+      expect(routed.mode).toBeUndefined();
+      expect(routed.enabled).toBe(true);
+    }
+  });
+
+  it("POSIX 显式 bubblewrap 下发 mode: bubblewrap", () => {
+    const routed = CoreRouter.policyFor(meta("bubblewrap"), policy, undefined, undefined, "linux");
+    expect(routed.mode).toBe("bubblewrap");
+    expect(routed.enabled).toBe(true);
+  });
 });

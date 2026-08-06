@@ -1,5 +1,6 @@
 #include "rpc.h"
 #include "bindlink.h"
+#include "bwrap.h"
 #include "exec.h"
 #include "fs.h"
 #include "json.h"
@@ -203,11 +204,25 @@ static int parse_job_limit(const owc_json *value, unsigned long maximum, unsigne
     *result=(unsigned long)number; return 1;
 }
 
-static int session_exec_policy(const char *id,const char *cwd,int *enabled,int *allow_network,int *mode,const char *const **allow_paths,size_t *allow_path_count,unsigned long *job_memory_mb,unsigned long *job_max_processes);
+static int session_exec_policy(const char *id,const char *cwd,int *enabled,int *allow_network,int *mode,const char *const **allow_paths,size_t *allow_path_count,unsigned long *job_memory_mb,unsigned long *job_max_processes,const char *const **bind_backing,const int **bind_read_only,size_t *bind_count,const char *const **read_roots,size_t *read_root_count,const char *const **write_roots,size_t *write_root_count,const char *const **deny_paths,size_t *deny_path_count,int *network_filtered,const char **proxy_addr,const char *const **read_only_paths,size_t *read_only_count);
 static int allowed_keys(const owc_json *p,const char *const *keys,size_t count);
 static void remove_session_watches(const char *session_id);
 static void remove_session_ptys(const char *session_id);
 static void cancel_session_jobs(const char *session_id);
+
+/* Per-exec network override (exec.run / job.start): "allow" or "deny"
+ * replaces the session's allow_network for this one execution - the
+ * filtered-mode proxy sidecar uses "allow" to obtain outbound capability
+ * inside the shared AppContainer profile. */
+static int parse_network_override(const owc_json *params,int *allow_network) {
+    const owc_json *value=owc_json_object_get(params,"network");
+    const char *name;
+    if(!value)return 1;
+    name=owc_json_get_string(value);
+    if(!name||(strcmp(name,"allow")&&strcmp(name,"deny")))return 0;
+    *allow_network=!strcmp(name,"allow");
+    return 1;
+}
 
 static int parse_shell_backend(const owc_json *params, int *backend) {
     const owc_json *value=owc_json_object_get(params,"shellBackend");
@@ -247,16 +262,18 @@ static int handle_exec_run(owc_rpc *rpc,const owc_json *id,const owc_json *param
     const char *cwd=owc_json_get_string(owc_json_object_get(params,"cwd"));
     const char *exec_id=owc_json_get_string(owc_json_object_get(params,"execId"));
     const char *session_id=owc_json_get_string(owc_json_object_get(params,"sessionId"));
-    static const char *keys[]={"sessionId","execId","cmd","cwd","timeoutMs","shellBackend","shellPath"};
-    owc_exec_request request; owc_exec_result result; output_context context; int sandbox_enabled,allow_network,sandbox_mode; unsigned long job_memory_mb,job_max_processes;
+    static const char *keys[]={"sessionId","execId","cmd","cwd","timeoutMs","shellBackend","shellPath","network"};
+    owc_exec_request request; owc_exec_result result; output_context context; int sandbox_enabled,allow_network,sandbox_mode; unsigned long job_memory_mb,job_max_processes; const char *const *bind_backing; const int *bind_read_only; size_t bind_count;
     if(!params || params->type!=OWC_JSON_OBJECT || !command || !cwd || !exec_id || !session_id || !command[0] || !cwd[0] || !exec_id[0] || !session_id[0]) return reply_error(rpc,id,-32602,"exec.run requires non-empty string sessionId, execId, cmd, and cwd");
-    if(!allowed_keys(params,keys,7))return reply_error(rpc,id,-32602,"exec.run contains unknown fields");
+    if(!allowed_keys(params,keys,8))return reply_error(rpc,id,-32602,"exec.run contains unknown fields");
     memset(&request,0,sizeof(request)); context.rpc=rpc; context.exec_id=exec_id;
     if(!parse_shell_backend(params,&request.shell_backend))return reply_error(rpc,id,-32602,"shellBackend must be default, pwsh, or bash");
     if(!parse_shell_path(params,&request.shell_path))return reply_error(rpc,id,-32602,"shellPath must be a non-empty string of at most 1024 bytes");
-    if(!session_exec_policy(session_id,cwd,&sandbox_enabled,&allow_network,&sandbox_mode,&request.allow_paths,&request.allow_path_count,&job_memory_mb,&job_max_processes))return reply_error(rpc,id,-32002,"session cwd is not configured");
+    if(!session_exec_policy(session_id,cwd,&sandbox_enabled,&allow_network,&sandbox_mode,&request.allow_paths,&request.allow_path_count,&job_memory_mb,&job_max_processes,&bind_backing,&bind_read_only,&bind_count,&request.read_roots,&request.read_root_count,&request.write_roots,&request.write_root_count,&request.deny_paths,&request.deny_path_count,&request.network_filtered,&request.proxy_addr,&request.read_only_paths,&request.read_only_count))return reply_error(rpc,id,-32002,"session cwd is not configured");
+    if(!parse_network_override(params,&allow_network))return reply_error(rpc,id,-32602,"network must be \"allow\" or \"deny\"");
     request.command=command; request.cwd=cwd; request.session_id=session_id;request.sandbox_enabled=sandbox_enabled;request.allow_network=allow_network;request.sandbox_mode=sandbox_mode;
     request.job_memory_mb=job_memory_mb; request.job_max_processes=job_max_processes;
+    request.bind_backing=bind_backing; request.bind_read_only=bind_read_only; request.bind_count=bind_count;
     if(!parse_timeout(owc_json_object_get(params,"timeoutMs"),&request.timeout_ms)) return reply_error(rpc,id,-32602,"timeoutMs must be a positive integer");
     /* A synchronous exec.run blocks the entire RPC loop until the command
      * finishes, so an effectively unbounded timeout (parse_timeout accepts
@@ -275,7 +292,7 @@ static int handle_exec_run(owc_rpc *rpc,const owc_json *id,const owc_json *param
     }
 }
 
-typedef struct { char *session_id; char *cwd; char *deny_paths[16]; size_t deny_count; char *read_roots[16]; size_t read_root_count; char *write_roots[16]; size_t write_root_count; char *allow_paths[16]; size_t allow_count; int sandbox_enabled; int allow_network; int sandbox_mode; unsigned long job_memory_mb; unsigned long job_max_processes; char *bind_virt[16]; char *bind_backing[16]; int bind_read_only[16]; size_t bind_count; } session_config;
+typedef struct { char *session_id; char *cwd; char *deny_paths[16]; size_t deny_count; char *read_roots[16]; size_t read_root_count; char *write_roots[16]; size_t write_root_count; char *allow_paths[16]; size_t allow_count; int sandbox_enabled; int allow_network; int sandbox_mode; unsigned long job_memory_mb; unsigned long job_max_processes; char *bind_virt[16]; char *bind_backing[16]; int bind_read_only[16]; size_t bind_count; int network_filtered; char proxy_addr[144]; char *read_only_paths[16]; size_t read_only_count; } session_config;
 static session_config sessions[64];
 static size_t session_count=0;
 static char *copy_text(const char *value){size_t n=strlen(value)+1;char *copy=(char*)malloc(n);if(copy)memcpy(copy,value,n);return copy;}
@@ -286,7 +303,7 @@ static int policy_path_equal(const char *left,const char *right){while(*left&&*r
  if(a=='\\')a='/';if(b=='\\')b='/';a=(char)tolower((unsigned char)a);b=(char)tolower((unsigned char)b);
 #endif
  if(a!=b)return 0;}return *left=='\0'&&*right=='\0';}
-static int session_exec_policy(const char *id,const char *cwd,int *enabled,int *allow_network,int *mode,const char *const **allow_paths,size_t *allow_path_count,unsigned long *job_memory_mb,unsigned long *job_max_processes){session_config *session=session_find(id);if(!session||!policy_path_equal(session->cwd,cwd))return 0;*enabled=session->sandbox_enabled;*allow_network=session->allow_network;*mode=session->sandbox_mode;*allow_paths=(const char *const *)session->allow_paths;*allow_path_count=session->allow_count;*job_memory_mb=session->job_memory_mb;*job_max_processes=session->job_max_processes;return 1;}
+static int session_exec_policy(const char *id,const char *cwd,int *enabled,int *allow_network,int *mode,const char *const **allow_paths,size_t *allow_path_count,unsigned long *job_memory_mb,unsigned long *job_max_processes,const char *const **bind_backing,const int **bind_read_only,size_t *bind_count,const char *const **read_roots,size_t *read_root_count,const char *const **write_roots,size_t *write_root_count,const char *const **deny_paths,size_t *deny_path_count,int *network_filtered,const char **proxy_addr,const char *const **read_only_paths,size_t *read_only_count){session_config *session=session_find(id);if(!session||!policy_path_equal(session->cwd,cwd))return 0;*enabled=session->sandbox_enabled;*allow_network=session->allow_network;*mode=session->sandbox_mode;*allow_paths=(const char *const *)session->allow_paths;*allow_path_count=session->allow_count;*job_memory_mb=session->job_memory_mb;*job_max_processes=session->job_max_processes;*bind_backing=(const char *const *)session->bind_backing;*bind_read_only=(const int *)session->bind_read_only;*bind_count=session->bind_count;*read_roots=(const char *const *)session->read_roots;*read_root_count=session->read_root_count;*write_roots=(const char *const *)session->write_roots;*write_root_count=session->write_root_count;*deny_paths=(const char *const *)session->deny_paths;*deny_path_count=session->deny_count;*network_filtered=session->network_filtered;*proxy_addr=session->proxy_addr[0]?session->proxy_addr:NULL;*read_only_paths=(const char *const *)session->read_only_paths;*read_only_count=session->read_only_count;return 1;}
 /* Filesystem primitives accept workspace-relative paths.  Normalize those
  * paths before comparing policy roots so cosmetic forms such as ./private do
  * not bypass an absolute deny root.  Traversal and absolute paths are denied
@@ -346,7 +363,7 @@ static void clear_bind_links(session_config *session){size_t i;for(i=0;i<session
  * re-configure, and process exit all funnel through here).  Best effort:
  * removal failures are ignored, matching the documented reboot lifetime. */
 static void remove_session_bind_links(session_config *session){size_t i;for(i=0;i<session->bind_count;i++)owc_bindlink_remove(session->bind_virt[i]);}
-static void clear_session_config(session_config *session){if(!session)return;remove_session_bind_links(session);clear_bind_links(session);clear_denies(session);clear_allows(session);clear_roots(session->read_roots,&session->read_root_count);clear_roots(session->write_roots,&session->write_root_count);free(session->session_id);free(session->cwd);memset(session,0,sizeof(*session));}
+static void clear_session_config(session_config *session){if(!session)return;remove_session_bind_links(session);clear_bind_links(session);clear_denies(session);clear_allows(session);clear_roots(session->read_roots,&session->read_root_count);clear_roots(session->write_roots,&session->write_root_count);clear_roots(session->read_only_paths,&session->read_only_count);free(session->session_id);free(session->cwd);memset(session,0,sizeof(*session));}
 static int copy_string_array(const owc_json *array,char **values,size_t *count){size_t i;if(!array)return 1;if(array->type!=OWC_JSON_ARRAY||array->value.children.count>16)return 0;for(i=0;i<array->value.children.count;i++){const char *value=owc_json_get_string(array->value.children.items[i]);if(!value||!value[0])return 0;values[*count]=copy_text(value);if(!values[*count])return 0;(*count)++;}return 1;}
 /* sandbox.bindLinks: optional directory bindings created through the Windows
  * Bind Link API before the session's first process starts.  Parse errors are
@@ -384,7 +401,26 @@ static int validate_bind_links(session_config *session,char *err,size_t err_size
     }
     return 1;
 }
-static int configure_policy(session_config *session,const owc_json *sandbox,char *err,size_t err_size){const owc_json *denies,*allows,*reads,*writes,*enabled,*network,*mode,*job_memory,*job_processes;if(!session)return 0;session->sandbox_enabled=1;session->allow_network=1;session->sandbox_mode=(int)OWC_SANDBOX_MODE_APPCONTAINER;session->job_memory_mb=OWC_JOB_DEFAULT_MEMORY_MB;session->job_max_processes=OWC_JOB_DEFAULT_MAX_PROCESSES;if(!sandbox)return (session->read_roots[session->read_root_count++]=copy_text(session->cwd))!=NULL&&(session->write_roots[session->write_root_count++]=copy_text(session->cwd))!=NULL;if(sandbox->type!=OWC_JSON_OBJECT)return 0;{static const char *sandbox_keys[]={"enabled","network","mode","jobMemoryMB","jobMaxProcesses","allowPaths","denyPaths","readRoots","writeRoots","bindLinks"};if(!allowed_keys(sandbox,sandbox_keys,sizeof(sandbox_keys)/sizeof(sandbox_keys[0]))){(void)snprintf(err,err_size,"sandbox contains unknown fields");return 0;}}enabled=owc_json_object_get(sandbox,"enabled");network=owc_json_object_get(sandbox,"network");mode=owc_json_object_get(sandbox,"mode");if(enabled){if(enabled->type!=OWC_JSON_BOOL)return 0;session->sandbox_enabled=enabled->value.boolean;}if(network){const char *value=owc_json_get_string(network);if(!value||(strcmp(value,"allow")&&strcmp(value,"deny")))return 0;session->allow_network=!strcmp(value,"allow");}if(mode){const char *value=owc_json_get_string(mode);if(!value)return 0;if(!strcmp(value,"appcontainer"))session->sandbox_mode=(int)OWC_SANDBOX_MODE_APPCONTAINER;else if(!strcmp(value,"jobobject"))session->sandbox_mode=(int)OWC_SANDBOX_MODE_JOBOBJECT;else if(!strcmp(value,"off"))session->sandbox_mode=(int)OWC_SANDBOX_MODE_OFF;else return 0;if(session->sandbox_mode==(int)OWC_SANDBOX_MODE_OFF)session->sandbox_enabled=0;}job_memory=owc_json_object_get(sandbox,"jobMemoryMB");if(job_memory&&!parse_job_limit(job_memory,1048576ul,&session->job_memory_mb))return 0;job_processes=owc_json_object_get(sandbox,"jobMaxProcesses");if(job_processes&&!parse_job_limit(job_processes,4096ul,&session->job_max_processes))return 0;allows=owc_json_object_get(sandbox,"allowPaths");denies=owc_json_object_get(sandbox,"denyPaths");reads=owc_json_object_get(sandbox,"readRoots");writes=owc_json_object_get(sandbox,"writeRoots");if(!reads){session->read_roots[session->read_root_count++]=copy_text(session->cwd);if(!session->read_roots[0])return 0;}if(!writes){session->write_roots[session->write_root_count++]=copy_text(session->cwd);if(!session->write_roots[0])return 0;}if(!copy_string_array(allows,session->allow_paths,&session->allow_count)||!copy_string_array(denies,session->deny_paths,&session->deny_count)||!copy_string_array(reads,session->read_roots,&session->read_root_count)||!copy_string_array(writes,session->write_roots,&session->write_root_count))return 0;return parse_bind_links(session,owc_json_object_get(sandbox,"bindLinks"),err,err_size);}
+/* sandbox.proxyAddr lexical shape: a "host:port" token - non-empty, at most
+ * 128 bytes, contains a colon, and carries no whitespace or control
+ * characters.  Whether anything listens there is the sidecar's concern. */
+static int valid_proxy_addr(const char *value){size_t i,n;int colon=0;if(!value)return 0;n=strlen(value);if(!n||n>128)return 0;for(i=0;i<n;i++){unsigned char c=(unsigned char)value[i];if(c<=' '||c==0x7f)return 0;if(c==':')colon=1;}return colon;}
+static int configure_policy(session_config *session,const owc_json *sandbox,char *err,size_t err_size){const owc_json *denies,*allows,*reads,*writes,*enabled,*network,*mode,*job_memory,*job_processes;if(!session)return 0;session->sandbox_enabled=1;session->allow_network=1;session->sandbox_mode=(int)OWC_SANDBOX_MODE_APPCONTAINER;session->job_memory_mb=OWC_JOB_DEFAULT_MEMORY_MB;session->job_max_processes=OWC_JOB_DEFAULT_MAX_PROCESSES;if(!sandbox)return (session->read_roots[session->read_root_count++]=copy_text(session->cwd))!=NULL&&(session->write_roots[session->write_root_count++]=copy_text(session->cwd))!=NULL;if(sandbox->type!=OWC_JSON_OBJECT)return 0;{static const char *sandbox_keys[]={"enabled","network","mode","jobMemoryMB","jobMaxProcesses","allowPaths","denyPaths","readRoots","writeRoots","bindLinks","proxyAddr","readOnlyPaths"};if(!allowed_keys(sandbox,sandbox_keys,sizeof(sandbox_keys)/sizeof(sandbox_keys[0]))){(void)snprintf(err,err_size,"sandbox contains unknown fields");return 0;}}enabled=owc_json_object_get(sandbox,"enabled");network=owc_json_object_get(sandbox,"network");mode=owc_json_object_get(sandbox,"mode");if(enabled){if(enabled->type!=OWC_JSON_BOOL)return 0;session->sandbox_enabled=enabled->value.boolean;}if(network){const char *value=owc_json_get_string(network);if(!value||(strcmp(value,"allow")&&strcmp(value,"deny")&&strcmp(value,"filtered")))return 0;if(!strcmp(value,"filtered")){
+#ifndef _WIN32
+ (void)snprintf(err,err_size,"network \"filtered\" is only supported on Windows");return 0;
+#else
+ /* Filtered: the business executions get no network capability at all and
+    reach the network only through the in-sandbox proxy sidecar, which runs
+    with a per-exec network "allow" override inside the shared profile. */
+ session->allow_network=0;session->network_filtered=1;
+#endif
+ }else session->allow_network=!strcmp(value,"allow");}if(mode){const char *value=owc_json_get_string(mode);if(!value)return 0;if(!strcmp(value,"appcontainer"))session->sandbox_mode=(int)OWC_SANDBOX_MODE_APPCONTAINER;else if(!strcmp(value,"jobobject"))session->sandbox_mode=(int)OWC_SANDBOX_MODE_JOBOBJECT;else if(!strcmp(value,"off"))session->sandbox_mode=(int)OWC_SANDBOX_MODE_OFF;else if(!strcmp(value,"landlock")||!strcmp(value,"bubblewrap")){
+#ifdef _WIN32
+ (void)snprintf(err,err_size,"sandbox mode \"%s\" is only supported on POSIX builds",value);return 0;
+#else
+ session->sandbox_mode=!strcmp(value,"landlock")?(int)OWC_SANDBOX_MODE_LANDLOCK:(int)OWC_SANDBOX_MODE_BUBBLEWRAP;
+#endif
+}else return 0;/* POSIX accepts but ignores the Windows appcontainer/jobobject values: both select the default backend (bubblewrap preferred, Landlock fallback). */if(session->sandbox_mode==(int)OWC_SANDBOX_MODE_OFF)session->sandbox_enabled=0;}job_memory=owc_json_object_get(sandbox,"jobMemoryMB");if(job_memory&&!parse_job_limit(job_memory,1048576ul,&session->job_memory_mb))return 0;job_processes=owc_json_object_get(sandbox,"jobMaxProcesses");if(job_processes&&!parse_job_limit(job_processes,4096ul,&session->job_max_processes))return 0;allows=owc_json_object_get(sandbox,"allowPaths");denies=owc_json_object_get(sandbox,"denyPaths");reads=owc_json_object_get(sandbox,"readRoots");writes=owc_json_object_get(sandbox,"writeRoots");if(!reads){session->read_roots[session->read_root_count++]=copy_text(session->cwd);if(!session->read_roots[0])return 0;}if(!writes){session->write_roots[session->write_root_count++]=copy_text(session->cwd);if(!session->write_roots[0])return 0;}if(!copy_string_array(allows,session->allow_paths,&session->allow_count)||!copy_string_array(denies,session->deny_paths,&session->deny_count)||!copy_string_array(reads,session->read_roots,&session->read_root_count)||!copy_string_array(writes,session->write_roots,&session->write_root_count))return 0;{const owc_json *proxy=owc_json_object_get(sandbox,"proxyAddr");const char *proxy_value=proxy?owc_json_get_string(proxy):NULL;if(proxy&&!valid_proxy_addr(proxy_value)){(void)snprintf(err,err_size,"sandbox.proxyAddr must be a \"host:port\" string of at most 128 bytes without whitespace");return 0;}if(proxy_value)(void)snprintf(session->proxy_addr,sizeof(session->proxy_addr),"%s",proxy_value);}{const owc_json *read_only=owc_json_object_get(sandbox,"readOnlyPaths");if(read_only){size_t k;if(read_only->type!=OWC_JSON_ARRAY||read_only->value.children.count>16){(void)snprintf(err,err_size,"sandbox.readOnlyPaths must be an array of at most 16 entries");return 0;}for(k=0;k<read_only->value.children.count;k++){const char *entry=owc_json_get_string(read_only->value.children.items[k]);if(!entry||!entry[0]){(void)snprintf(err,err_size,"sandbox.readOnlyPaths entries must be non-empty strings");return 0;}}if(!copy_string_array(read_only,session->read_only_paths,&session->read_only_count))return 0;}}return parse_bind_links(session,owc_json_object_get(sandbox,"bindLinks"),err,err_size);}
 /* Build and validate the complete replacement before touching the live slot.
  * Failed configurations therefore preserve an existing session and cannot
  * consume one of the bounded session slots.  Bind link creation failures are
@@ -403,25 +439,79 @@ static int configure_session(const char *id,const char *cwd,const owc_json *sand
     if(i==session_count&&session_count>=sizeof(sessions)/sizeof(sessions[0])){clear_session_config(&candidate);(void)snprintf(err,err_size,"failed to configure session");*code=-32000;return 0;}
     if(i<session_count){remove_session_watches(id);remove_session_ptys(id);remove_session_bind_links(&sessions[i]);sessions[i].bind_count=0;}
     if(candidate.bind_count){size_t created=0;for(;created<candidate.bind_count;created++){char link_err[160];if(!owc_bindlink_create(candidate.bind_virt[created],candidate.bind_backing[created],candidate.bind_read_only[created],link_err,sizeof(link_err))){while(created)owc_bindlink_remove(candidate.bind_virt[--created]);(void)snprintf(err,err_size,"bind_link_unavailable: %s",link_err);*code=-32000;clear_session_config(&candidate);if(i<session_count){size_t last=session_count-1;clear_session_config(&sessions[i]);if(i!=last)sessions[i]=sessions[last];memset(&sessions[last],0,sizeof(sessions[last]));session_count--;}return 0;}}}
+#ifdef _WIN32
+    /* A filtered session holds one fixed AppContainer profile plus its ACL
+       grants for the whole session (shared with the proxy sidecar).  A
+       reconfigure away from filtered revokes the old grant first; a grant
+       failure keeps the previous session slot (the old grant itself is
+       already revoked by the idempotent re-grant, matching the bindLinks
+       failure precedent). */
+    if(i<session_count&&sessions[i].network_filtered&&!candidate.network_filtered)owc_sandbox_session_revoke(id);
+    if(candidate.network_filtered){
+        owc_sandbox_options grant_options;const char *grant_writes[32];size_t grant_write_count=0,g;char grant_reason[192];
+        memset(&grant_options,0,sizeof(grant_options));
+        /* The shared profile must carry both network capabilities even
+           though business executions request none: a process can only claim
+           capabilities its profile was created with, and a zero-capability
+           profile silently drops every request.  The sidecar claims
+           internetClient + privateNetworkClientServer through its per-exec
+           allow override; the grant object itself never spawns a process. */
+        grant_options.allow_network=1;grant_options.private_network=1;
+        /* allowPaths are configured write roots too: with per-command grants
+           skipped under the shared profile, the session grant must cover
+           them or filtered sessions would silently lose that write tier. */
+        for(g=0;g<candidate.write_root_count;g++)grant_writes[grant_write_count++]=candidate.write_roots[g];
+        for(g=0;g<candidate.allow_count;g++)grant_writes[grant_write_count++]=candidate.allow_paths[g];
+        grant_options.session_id=id;
+        grant_options.write_roots=grant_writes;grant_options.write_root_count=grant_write_count;
+        grant_options.read_only_paths=(const char *const *)candidate.read_only_paths;grant_options.read_only_count=candidate.read_only_count;
+        grant_options.bind_backing=(const char *const *)candidate.bind_backing;grant_options.bind_read_only=(const int *)candidate.bind_read_only;grant_options.bind_count=candidate.bind_count;
+        if(!owc_sandbox_session_grant(id,&grant_options,grant_reason,sizeof(grant_reason))){(void)snprintf(err,err_size,"%s",grant_reason);*code=-32000;clear_session_config(&candidate);return 0;}
+    }
+#endif
     if(i<session_count){clear_session_config(&sessions[i]);sessions[i]=candidate;}else sessions[session_count++]=candidate;return 1;
 }
-static int cleanup_session(const char *id){size_t i;remove_session_watches(id);remove_session_ptys(id);cancel_session_jobs(id);for(i=0;i<session_count;i++)if(!strcmp(sessions[i].session_id,id)){size_t last=session_count-1;clear_session_config(&sessions[i]);if(i!=last)sessions[i]=sessions[last];memset(&sessions[last],0,sizeof(sessions[last]));session_count--;return 1;}return 0;}
-/* Process exit path: undo every bind link still owned by a session.  Bind
- * links are system-wide and survive this process otherwise (until reboot). */
-void owc_rpc_release_sessions(void){size_t i;for(i=0;i<session_count;i++){remove_session_bind_links(&sessions[i]);sessions[i].bind_count=0;}}
+static int cleanup_session(const char *id){size_t i;remove_session_watches(id);remove_session_ptys(id);cancel_session_jobs(id);for(i=0;i<session_count;i++)if(!strcmp(sessions[i].session_id,id)){size_t last=session_count-1;
+#ifdef _WIN32
+ if(sessions[i].network_filtered)owc_sandbox_session_revoke(id);
+#endif
+ clear_session_config(&sessions[i]);if(i!=last)sessions[i]=sessions[last];memset(&sessions[last],0,sizeof(sessions[last]));session_count--;return 1;}return 0;}
+/* Process exit path: undo every bind link and filtered-session AppContainer
+ * grant still owned by a session.  Bind links are system-wide and survive
+ * this process otherwise (until reboot); the session profiles and their ACL
+ * grants would likewise outlive the process. */
+void owc_rpc_release_sessions(void){size_t i;
+#ifdef _WIN32
+ owc_sandbox_session_revoke_all();
+#endif
+ for(i=0;i<session_count;i++){remove_session_bind_links(&sessions[i]);sessions[i].bind_count=0;}}
 
+#ifndef _WIN32
+/* The backend a POSIX session will actually run under: an explicit landlock
+ * mode forces Landlock; every other mode prefers bubblewrap and reports its
+ * probe when usable, else the Landlock probe (the exec/pty children fall
+ * back the same way).  The bwrap probe is one-shot cached, so this is cheap. */
+static void session_posix_capability(const session_config *session,owc_sandbox_result *probe){if(session->sandbox_mode!=(int)OWC_SANDBOX_MODE_LANDLOCK){owc_bwrap_probe(probe);if(probe->status==OWC_SANDBOX_ENFORCED)return;}owc_landlock_probe(session->allow_network,probe);}
+#endif
 static int reply_session_capability(owc_rpc *rpc,const owc_json *id,const char *sid){session_config *session=session_find(sid);char reason[192],detail[192];char *escaped,*escaped_detail=NULL;owc_sandbox_status status;int ok;char result[4096];if(!session)return reply_error(rpc,id,-32000,"session was not configured");detail[0]='\0';if(!session->sandbox_enabled){status=OWC_SANDBOX_ADVISORY;(void)snprintf(reason,sizeof(reason),"sandbox disabled by session policy");}else if(session->sandbox_mode==(int)OWC_SANDBOX_MODE_JOBOBJECT){
 #ifdef _WIN32
  status=OWC_SANDBOX_PARTIAL;(void)snprintf(reason,sizeof(reason),"Job Object compatibility mode requested by session policy");(void)snprintf(detail,sizeof(detail),"Job Object limits active processes to %lu and committed memory to %lu MB; no filesystem or network isolation (requires AppContainer)",session->job_max_processes,session->job_memory_mb);
 #else
- /* POSIX ignores the requested mode (exec_posix.c applies Landlock as-is), so report the real Landlock capability instead of the Windows Job Object wording. */
- {owc_sandbox_result probe;owc_landlock_probe(session->allow_network,&probe);status=probe.status;(void)snprintf(reason,sizeof(reason),"%s",probe.reason);}
+ /* POSIX ignores the requested Windows mode, so report the real backend
+  * capability instead of the Windows Job Object wording. */
+ {owc_sandbox_result probe;session_posix_capability(session,&probe);status=probe.status;(void)snprintf(reason,sizeof(reason),"%s",probe.reason);}
 #endif
+}else if(session->network_filtered){
+ /* Only reachable on Windows (POSIX rejects "filtered" at configure): the
+    session grant succeeded or configure would have failed, so the fixed
+    profile is in place and business executions run capability-less behind
+    the in-sandbox proxy. */
+ status=OWC_SANDBOX_ENFORCED;(void)snprintf(reason,sizeof(reason),"AppContainer enforced; network filtered via in-sandbox proxy");if(session->proxy_addr[0])(void)snprintf(detail,sizeof(detail),"network filtered; in-sandbox proxy at %s",session->proxy_addr);
 }else{
 #ifdef _WIN32
  status=owc_sandbox_probe(reason,sizeof(reason));
 #else
- owc_sandbox_result probe;owc_landlock_probe(session->allow_network,&probe);status=probe.status;(void)snprintf(reason,sizeof(reason),"%s",probe.reason);
+ owc_sandbox_result probe;session_posix_capability(session,&probe);status=probe.status;(void)snprintf(reason,sizeof(reason),"%s",probe.reason);
 #endif
 }escaped=owc_json_escape_string(reason);if(escaped&&detail[0])escaped_detail=owc_json_escape_string(detail);if(!escaped||(detail[0]&&!escaped_detail)){free(escaped);free(escaped_detail);return reply_error(rpc,id,-32000,"failed to encode sandbox capability");}if(escaped_detail)(void)snprintf(result,sizeof(result),"{\"sandboxCapability\":\"%s\",\"sandboxReason\":%s,\"sandboxDetail\":%s}",owc_sandbox_status_name(status),escaped,escaped_detail);else(void)snprintf(result,sizeof(result),"{\"sandboxCapability\":\"%s\",\"sandboxReason\":%s}",owc_sandbox_status_name(status),escaped);free(escaped);free(escaped_detail);ok=reply_result(rpc,id,result);return ok;}
 
@@ -714,10 +804,10 @@ typedef enum { OWC_JOB_EMPTY,OWC_JOB_RUNNING,OWC_JOB_COMPLETED,OWC_JOB_FAILED,OW
 typedef enum { OWC_JOB_EXEC,OWC_JOB_INDEX_SCAN,OWC_JOB_GREP,OWC_JOB_GLOB,OWC_JOB_INDEX_EXTRACT } owc_job_kind;
 typedef struct {unsigned sequence;char stream[7];size_t length;unsigned char data[OWC_JOB_OUTPUT_CHUNK_BYTES];} owc_job_chunk;
 #define OWC_INDEX_MAX_PATTERNS 64u
-typedef struct {char *id,*session,*cmd,*cwd;char *allow_paths[16];size_t allow_path_count;int sandbox_enabled,allow_network,sandbox_mode,shell_backend;unsigned long memory,processes;int timeout;volatile int cancel;owc_job_state state;owc_job_kind kind;owc_exec_result result;HANDLE thread;owc_job_chunk output[OWC_JOB_OUTPUT_CHUNKS];size_t output_start,output_count;unsigned next_output_sequence;int output_truncated;char *scan_path;char *scan_include[OWC_INDEX_MAX_PATTERNS];size_t scan_include_count;char *scan_exclude[OWC_INDEX_MAX_PATTERNS];size_t scan_exclude_count;unsigned long scan_max_nodes,scan_max_depth;unsigned long long scan_max_bytes;int scan_max_ms;char *search_pattern;char *shell_path;char **extract_files;size_t extract_file_count;unsigned long extract_max_symbols;char *scan_read_roots[16];size_t scan_read_root_count;char *scan_deny_roots[16];size_t scan_deny_root_count;} owc_job;
+typedef struct {char *id,*session,*cmd,*cwd;char *allow_paths[16];size_t allow_path_count;char *bind_backing[16];int bind_read_only[16];size_t bind_count;char *read_roots[16];size_t read_root_count;char *write_roots[16];size_t write_root_count;char *deny_paths[16];size_t deny_path_count;int network_filtered;char proxy_addr[144];char *read_only_paths[16];size_t read_only_count;int sandbox_enabled,allow_network,sandbox_mode,shell_backend;unsigned long memory,processes;int timeout;volatile int cancel;owc_job_state state;owc_job_kind kind;owc_exec_result result;HANDLE thread;owc_job_chunk output[OWC_JOB_OUTPUT_CHUNKS];size_t output_start,output_count;unsigned next_output_sequence;int output_truncated;char *scan_path;char *scan_include[OWC_INDEX_MAX_PATTERNS];size_t scan_include_count;char *scan_exclude[OWC_INDEX_MAX_PATTERNS];size_t scan_exclude_count;unsigned long scan_max_nodes,scan_max_depth;unsigned long long scan_max_bytes;int scan_max_ms;char *search_pattern;char *shell_path;char **extract_files;size_t extract_file_count;unsigned long extract_max_symbols;char *scan_read_roots[16];size_t scan_read_root_count;char *scan_deny_roots[16];size_t scan_deny_root_count;} owc_job;
 static owc_job jobs[OWC_JOB_MAX_RUNNING];static CRITICAL_SECTION jobs_mutex;static int jobs_ready=0;
 static void jobs_init(void){if(!jobs_ready){InitializeCriticalSection(&jobs_mutex);jobs_ready=1;}}
-static void job_free(owc_job *job){size_t i;if(job->thread)CloseHandle(job->thread);free(job->id);free(job->session);free(job->cmd);free(job->cwd);free(job->scan_path);free(job->search_pattern);free(job->shell_path);for(i=0;i<job->allow_path_count;i++)free(job->allow_paths[i]);for(i=0;i<job->scan_include_count;i++)free(job->scan_include[i]);for(i=0;i<job->scan_exclude_count;i++)free(job->scan_exclude[i]);for(i=0;i<job->scan_read_root_count;i++)free(job->scan_read_roots[i]);for(i=0;i<job->scan_deny_root_count;i++)free(job->scan_deny_roots[i]);for(i=0;i<job->extract_file_count;i++)free(job->extract_files[i]);free(job->extract_files);memset(job,0,sizeof(*job));}
+static void job_free(owc_job *job){size_t i;if(job->thread)CloseHandle(job->thread);free(job->id);free(job->session);free(job->cmd);free(job->cwd);free(job->scan_path);free(job->search_pattern);free(job->shell_path);for(i=0;i<job->allow_path_count;i++)free(job->allow_paths[i]);for(i=0;i<job->bind_count;i++)free(job->bind_backing[i]);for(i=0;i<job->read_root_count;i++)free(job->read_roots[i]);for(i=0;i<job->write_root_count;i++)free(job->write_roots[i]);for(i=0;i<job->deny_path_count;i++)free(job->deny_paths[i]);for(i=0;i<job->read_only_count;i++)free(job->read_only_paths[i]);for(i=0;i<job->scan_include_count;i++)free(job->scan_include[i]);for(i=0;i<job->scan_exclude_count;i++)free(job->scan_exclude[i]);for(i=0;i<job->scan_read_root_count;i++)free(job->scan_read_roots[i]);for(i=0;i<job->scan_deny_root_count;i++)free(job->scan_deny_roots[i]);for(i=0;i<job->extract_file_count;i++)free(job->extract_files[i]);free(job->extract_files);memset(job,0,sizeof(*job));}
 static void job_output(void *data,const char *stream,const unsigned char *bytes,size_t length,unsigned sequence){owc_job *job=(owc_job*)data;size_t offset=0;(void)sequence;EnterCriticalSection(&jobs_mutex);while(offset<length){owc_job_chunk *chunk;size_t take=length-offset,index;if(job->output_count==OWC_JOB_OUTPUT_CHUNKS){job->output_start=(job->output_start+1u)%OWC_JOB_OUTPUT_CHUNKS;job->output_count--;job->output_truncated=1;}if(take>OWC_JOB_OUTPUT_CHUNK_BYTES)take=OWC_JOB_OUTPUT_CHUNK_BYTES;index=(job->output_start+job->output_count)%OWC_JOB_OUTPUT_CHUNKS;chunk=&job->output[index];chunk->sequence=++job->next_output_sequence;(void)snprintf(chunk->stream,sizeof(chunk->stream),"%s",stream);memcpy(chunk->data,bytes+offset,take);chunk->length=take;job->output_count++;offset+=take;}LeaveCriticalSection(&jobs_mutex);}
 /* ------------------------------------------------------------------ */
 /* index.scan: bounded, cancellable workspace file-manifest scan.
@@ -1275,7 +1365,7 @@ static DWORD WINAPI index_extract_worker(void *data){
     return 0;
 }
 
-static DWORD WINAPI job_worker(void *data){owc_job *job=(owc_job*)data;owc_exec_request request;owc_exec_result result;if(job->kind==OWC_JOB_INDEX_SCAN||job->kind==OWC_JOB_GREP||job->kind==OWC_JOB_GLOB||job->kind==OWC_JOB_INDEX_EXTRACT){DWORD worker_result;owc_fs_platform_set_deny_roots((const char *const *)job->scan_deny_roots,job->scan_deny_root_count);if(job->kind==OWC_JOB_INDEX_SCAN)worker_result=index_scan_worker(job);else if(job->kind==OWC_JOB_GREP)worker_result=grep_job_worker(job);else if(job->kind==OWC_JOB_INDEX_EXTRACT)worker_result=index_extract_worker(job);else worker_result=glob_job_worker(job);owc_fs_platform_set_deny_roots(NULL,0);return worker_result;}memset(&request,0,sizeof(request));request.command=job->cmd;request.cwd=job->cwd;request.session_id=job->session;request.allow_paths=(const char *const *)job->allow_paths;request.allow_path_count=job->allow_path_count;request.sandbox_enabled=job->sandbox_enabled;request.allow_network=job->allow_network;request.sandbox_mode=job->sandbox_mode;request.shell_backend=job->shell_backend;request.shell_path=job->shell_path;request.job_memory_mb=job->memory;request.job_max_processes=job->processes;request.timeout_ms=job->timeout;request.output_limit=1024u*1024u;request.cancel_requested=&job->cancel;request.on_output=job_output;request.user_data=job;(void)owc_exec_run(&request,&result);EnterCriticalSection(&jobs_mutex);job->result=result;if(result.cancelled)job->state=OWC_JOB_CANCELLED;else if(result.timed_out)job->state=OWC_JOB_TIMED_OUT;else if(!result.system_error)job->state=OWC_JOB_COMPLETED;else job->state=OWC_JOB_FAILED;LeaveCriticalSection(&jobs_mutex);return 0;}
+static DWORD WINAPI job_worker(void *data){owc_job *job=(owc_job*)data;owc_exec_request request;owc_exec_result result;if(job->kind==OWC_JOB_INDEX_SCAN||job->kind==OWC_JOB_GREP||job->kind==OWC_JOB_GLOB||job->kind==OWC_JOB_INDEX_EXTRACT){DWORD worker_result;owc_fs_platform_set_deny_roots((const char *const *)job->scan_deny_roots,job->scan_deny_root_count);if(job->kind==OWC_JOB_INDEX_SCAN)worker_result=index_scan_worker(job);else if(job->kind==OWC_JOB_GREP)worker_result=grep_job_worker(job);else if(job->kind==OWC_JOB_INDEX_EXTRACT)worker_result=index_extract_worker(job);else worker_result=glob_job_worker(job);owc_fs_platform_set_deny_roots(NULL,0);return worker_result;}memset(&request,0,sizeof(request));request.command=job->cmd;request.cwd=job->cwd;request.session_id=job->session;request.allow_paths=(const char *const *)job->allow_paths;request.allow_path_count=job->allow_path_count;request.bind_backing=(const char *const *)job->bind_backing;request.bind_read_only=job->bind_read_only;request.bind_count=job->bind_count;request.read_roots=(const char *const *)job->read_roots;request.read_root_count=job->read_root_count;request.write_roots=(const char *const *)job->write_roots;request.write_root_count=job->write_root_count;request.deny_paths=(const char *const *)job->deny_paths;request.deny_path_count=job->deny_path_count;request.network_filtered=job->network_filtered;request.proxy_addr=job->proxy_addr[0]?job->proxy_addr:NULL;request.read_only_paths=(const char *const *)job->read_only_paths;request.read_only_count=job->read_only_count;request.sandbox_enabled=job->sandbox_enabled;request.allow_network=job->allow_network;request.sandbox_mode=job->sandbox_mode;request.shell_backend=job->shell_backend;request.shell_path=job->shell_path;request.job_memory_mb=job->memory;request.job_max_processes=job->processes;request.timeout_ms=job->timeout;request.output_limit=1024u*1024u;request.cancel_requested=&job->cancel;request.on_output=job_output;request.user_data=job;(void)owc_exec_run(&request,&result);EnterCriticalSection(&jobs_mutex);job->result=result;if(result.cancelled)job->state=OWC_JOB_CANCELLED;else if(result.timed_out)job->state=OWC_JOB_TIMED_OUT;else if(!result.system_error)job->state=OWC_JOB_COMPLETED;else job->state=OWC_JOB_FAILED;LeaveCriticalSection(&jobs_mutex);return 0;}
 static const char *job_state_name(owc_job_state state){return state==OWC_JOB_RUNNING?"running":state==OWC_JOB_COMPLETED?"completed":state==OWC_JOB_CANCELLED?"cancelled":state==OWC_JOB_TIMED_OUT?"timed_out":"failed";}
 static owc_job *find_job(const char *session,const char *id){size_t i;for(i=0;i<OWC_JOB_MAX_RUNNING;i++)if(jobs[i].state!=OWC_JOB_EMPTY&&!strcmp(jobs[i].session,session)&&!strcmp(jobs[i].id,id))return &jobs[i];return NULL;}
 static void cancel_session_jobs(const char *session_id){size_t i;if(!jobs_ready)return;EnterCriticalSection(&jobs_mutex);for(i=0;i<OWC_JOB_MAX_RUNNING;i++)if(jobs[i].state==OWC_JOB_RUNNING&&!strcmp(jobs[i].session,session_id))jobs[i].cancel=1;LeaveCriticalSection(&jobs_mutex);}
@@ -1293,14 +1383,17 @@ static int copy_patterns(const owc_json *array,char **values,size_t *count){
     return 1;
 }
 static int handle_job_start(owc_rpc *rpc,const owc_json *id,const owc_json *p){
-    static const char *exec_keys[]={"sessionId","jobId","kind","cmd","cwd","timeoutMs","shellBackend","shellPath"};
+    static const char *exec_keys[]={"sessionId","jobId","kind","cmd","cwd","timeoutMs","shellBackend","shellPath","network"};
     static const char *scan_keys[]={"sessionId","jobId","kind","cwd","path","include","exclude","maxDepth","maxNodes","maxBytes","maxMs","timeoutMs"};
     static const char *search_keys[]={"sessionId","jobId","kind","cwd","path","pattern","include","exclude","maxDepth","maxNodes","maxMs","timeoutMs"};
     static const char *extract_keys[]={"sessionId","jobId","kind","cwd","path","files","maxBytes","maxMs","maxSymbolsPerFile","timeoutMs"};
-    const char *session,*job_id,*kind,*cmd,*cwd,*shell_path,*const *allow_paths;
-    int enabled,network,mode,shell_backend,is_scan,is_search,is_extract;
+    const char *session,*job_id,*kind,*cmd,*cwd,*shell_path,*const *allow_paths,*const *bind_backing;
+    const int *bind_read_only;
+    const char *const *read_roots,*const *write_roots,*const *deny_paths;
+    const char *proxy_addr,*const *read_only_paths;
+    int enabled,network,mode,shell_backend,is_scan,is_search,is_extract,network_filtered;
     unsigned long memory,processes;
-    size_t allow_count,i;
+    size_t allow_count,bind_count,read_root_count,write_root_count,deny_path_count,read_only_count,i;
     owc_job *job=NULL;
     session=owc_json_get_string(owc_json_object_get(p,"sessionId"));
     job_id=owc_json_get_string(owc_json_object_get(p,"jobId"));
@@ -1322,7 +1415,8 @@ static int handle_job_start(owc_rpc *rpc,const owc_json *id,const owc_json *p){
     if(!is_scan&&!is_search&&!is_extract&&(!cmd||!cmd[0]))return reply_error(rpc,id,-32602,"job.start kind exec requires a non-empty cmd");
     if(!parse_shell_backend(p,&shell_backend))return reply_error(rpc,id,-32602,"shellBackend must be default, pwsh, or bash");
     if(!parse_shell_path(p,&shell_path))return reply_error(rpc,id,-32602,"shellPath must be a non-empty string of at most 1024 bytes");
-    if(!session_exec_policy(session,cwd,&enabled,&network,&mode,&allow_paths,&allow_count,&memory,&processes))return reply_error(rpc,id,-32002,"session cwd is not configured");
+    if(!session_exec_policy(session,cwd,&enabled,&network,&mode,&allow_paths,&allow_count,&memory,&processes,&bind_backing,&bind_read_only,&bind_count,&read_roots,&read_root_count,&write_roots,&write_root_count,&deny_paths,&deny_path_count,&network_filtered,&proxy_addr,&read_only_paths,&read_only_count))return reply_error(rpc,id,-32002,"session cwd is not configured");
+    if(!parse_network_override(p,&network))return reply_error(rpc,id,-32602,"network must be \"allow\" or \"deny\"");
     jobs_init();EnterCriticalSection(&jobs_mutex);
     if(find_job(session,job_id)){LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32602,"jobId already exists in this session");}
     for(i=0;i<OWC_JOB_MAX_RUNNING;i++)if(jobs[i].state!=OWC_JOB_RUNNING)break;
@@ -1389,8 +1483,18 @@ static int handle_job_start(owc_rpc *rpc,const owc_json *id,const owc_json *p){
     } else {
         job->cmd=copy_text(cmd);if(shell_path)job->shell_path=copy_text(shell_path);
         for(i=0;i<allow_count;i++){job->allow_paths[i]=copy_text(allow_paths[i]);if(!job->allow_paths[i]){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32000,"out of memory");}job->allow_path_count++;}
+        /* Same copy_text snapshot as allow_paths: the worker must never
+         * dereference the live session_config after this handler returns. */
+        for(i=0;i<bind_count;i++){job->bind_backing[i]=copy_text(bind_backing[i]);if(!job->bind_backing[i]){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32000,"out of memory");}job->bind_read_only[i]=bind_read_only[i];job->bind_count++;}
+        for(i=0;i<read_root_count;i++){job->read_roots[i]=copy_text(read_roots[i]);if(!job->read_roots[i]){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32000,"out of memory");}job->read_root_count++;}
+        for(i=0;i<write_root_count;i++){job->write_roots[i]=copy_text(write_roots[i]);if(!job->write_roots[i]){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32000,"out of memory");}job->write_root_count++;}
+        for(i=0;i<deny_path_count;i++){job->deny_paths[i]=copy_text(deny_paths[i]);if(!job->deny_paths[i]){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32000,"out of memory");}job->deny_path_count++;}
+        /* Filtered-session state snapshots for the worker, same copy_text
+           discipline as the roots above. */
+        for(i=0;i<read_only_count;i++){job->read_only_paths[i]=copy_text(read_only_paths[i]);if(!job->read_only_paths[i]){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32000,"out of memory");}job->read_only_count++;}
+        if(proxy_addr)(void)snprintf(job->proxy_addr,sizeof(job->proxy_addr),"%s",proxy_addr);
     }
-    job->sandbox_enabled=enabled;job->allow_network=network;job->sandbox_mode=mode;job->shell_backend=shell_backend;job->memory=memory;job->processes=processes;
+    job->sandbox_enabled=enabled;job->allow_network=network;job->sandbox_mode=mode;job->shell_backend=shell_backend;job->memory=memory;job->processes=processes;job->network_filtered=network_filtered;
     job->timeout=120000;{const owc_json *timeout=owc_json_object_get(p,"timeoutMs");if(timeout&&!parse_timeout(timeout,&job->timeout)){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32602,"timeoutMs must be a positive integer");}}
     if(!job->id||!job->session||!job->cwd||(!is_scan&&!is_search&&!is_extract&&!job->cmd)||((is_scan||is_search||is_extract)&&!job->scan_path)||(is_search&&!job->search_pattern)||(is_extract&&!job->extract_files)){job_free(job);LeaveCriticalSection(&jobs_mutex);return reply_error(rpc,id,-32000,"out of memory");}
     job->state=OWC_JOB_RUNNING;
@@ -1440,8 +1544,10 @@ static void pty_exit_callback(void *user_data,int exit_code){
 static int handle_pty_open(owc_rpc *rpc,const owc_json *id,const owc_json *p){
     static const char *keys[]={"session","shell","cwd","cols","rows","sandbox"};
     const char *session,*shell=NULL,*cwd;const owc_json *value;
-    size_t cols,rows,i;int sandbox_requested,enabled,network,mode;
-    const char *const *allow_paths;size_t allow_count;unsigned long memory,processes,system_error=0;
+    size_t cols,rows,i;int sandbox_requested,enabled,network,mode,network_filtered;
+    const char *const *allow_paths,*const *bind_backing;const int *bind_read_only;size_t allow_count,bind_count;unsigned long memory,processes,system_error=0;
+    const char *const *read_roots,*const *write_roots,*const *deny_paths;size_t read_root_count,write_root_count,deny_path_count;
+    const char *proxy_addr,*const *read_only_paths;size_t read_only_count;
     owc_pty_options options;owc_pty_open_result open_result;owc_pty *handle=NULL;
     pty_record *record;
     if(!allowed_keys(p,keys,6))return reply_error(rpc,id,-32602,"pty.open contains unknown fields");
@@ -1455,7 +1561,7 @@ static int handle_pty_open(owc_rpc *rpc,const owc_json *id,const owc_json *p){
     sandbox_requested=value->value.boolean;
     /* cwd must be the configured session root: the session path policy owns
      * what a PTY may start in, same gate as exec.run. */
-    if(!session_exec_policy(session,cwd,&enabled,&network,&mode,&allow_paths,&allow_count,&memory,&processes))return reply_error(rpc,id,-32002,"session cwd is not configured");
+    if(!session_exec_policy(session,cwd,&enabled,&network,&mode,&allow_paths,&allow_count,&memory,&processes,&bind_backing,&bind_read_only,&bind_count,&read_roots,&read_root_count,&write_roots,&write_root_count,&deny_paths,&deny_path_count,&network_filtered,&proxy_addr,&read_only_paths,&read_only_count))return reply_error(rpc,id,-32002,"session cwd is not configured");
     if(!owc_pty_supported())return reply_error(rpc,id,-32000,"pty is not supported on this platform");
     for(i=0;i<OWC_PTY_MAX_CONCURRENT;i++)if(!ptys[i].handle)break;
     if(i==OWC_PTY_MAX_CONCURRENT)return reply_error(rpc,id,-32000,"pty limit reached");
@@ -1473,6 +1579,12 @@ static int handle_pty_open(owc_rpc *rpc,const owc_json *id,const owc_json *p){
     options.sandbox=sandbox_requested;
     options.allow_network=network;options.sandbox_mode=mode;
     options.allow_paths=allow_paths;options.allow_path_count=allow_count;
+    options.read_roots=read_roots;options.read_root_count=read_root_count;
+    options.write_roots=write_roots;options.write_root_count=write_root_count;
+    options.deny_paths=deny_paths;options.deny_path_count=deny_path_count;
+    options.bind_backing=bind_backing;options.bind_read_only=bind_read_only;options.bind_count=bind_count;
+    options.network_filtered=network_filtered;options.proxy_addr=proxy_addr;
+    options.read_only_paths=read_only_paths;options.read_only_count=read_only_count;
     options.job_memory_mb=memory;options.job_max_processes=processes;
     if(!owc_pty_open(&options,pty_output_callback,pty_exit_callback,record,&handle,&open_result,&system_error)){
         char message[96];(void)snprintf(message,sizeof(message),"failed to open pty (system error %lu)",system_error);
@@ -1689,7 +1801,9 @@ int owc_rpc_dispatch(owc_rpc *rpc, const char *body, size_t length) {
 #endif
         const char *pty_available=owc_pty_supported()?"true":"false";
         owc_overlay_capabilities overlay_caps;owc_overlay_probe(&overlay_caps);
-        escaped=owc_json_escape_string(reason);if(!escaped)(void)reply_error(rpc,id,-32000,"failed to encode sandbox capability");else{result_size=(size_t)snprintf(NULL,0,"{\"version\":\"%s\",\"protocolVersion\":\"1.0\",\"platform\":\"%s\",\"sandboxCapability\":\"%s\",\"sandboxReason\":%s,\"features\":{\"fsStat\":true,\"fsStatMany\":true,\"fsWriteBase64\":true,\"fsReadBase64\":true,\"jobControl\":%s,\"fsHash\":true,\"fsScanPagination\":true,\"fsWatch\":true,\"indexScan\":true,\"grepJob\":true,\"globJob\":true,\"indexExtract\":true,\"pathNormalize\":true,\"shellBash\":true,\"pty\":%s,\"bindLink\":%s,\"overlay\":{\"supported\":%s,\"fuseOverlayfs\":%s,\"kernelMount\":%s}},\"limits\":{\"maxFrameBytes\":33554432,\"maxWriteBase64Bytes\":20971520,\"maxReadBase64Bytes\":20971520,\"maxHashBytes\":16777216,\"maxStatManyPaths\":128,\"maxStatManyPathBytes\":262144,\"maxScanEntries\":256,\"maxScanDepth\":16,\"maxScanNodes\":2048,\"maxWatches\":16,\"maxWatchEvents\":128,\"maxConcurrentJobs\":4,\"maxJobOutputBytes\":524288,\"maxIndexScanNodes\":1000000,\"maxIndexScanDepth\":64,\"maxIndexScanBytes\":17179869184,\"maxIndexScanMs\":600000,\"maxSearchNodes\":1000000,\"maxSearchDepth\":64,\"maxSearchMs\":300000,\"maxIndexExtractFiles\":4096,\"maxIndexExtractBytes\":1073741824,\"maxIndexExtractMs\":300000,\"indexExtractDefaultSymbolsPerFile\":200,\"maxIndexExtractSymbolsPerFile\":10000,\"maxConcurrentPtys\":16,\"maxPtyOutputChunkBytes\":65536,\"maxPtyInputBytes\":8192}}",OWC_CORE_VERSION,platform,owc_sandbox_status_name(capability),escaped,job_control,pty_available,owc_bindlink_supported()?"true":"false",overlay_caps.supported?"true":"false",overlay_caps.fuse_overlayfs?"true":"false",overlay_caps.kernel_mount?"true":"false");result=(char*)malloc(result_size+1);if(!result)(void)reply_error(rpc,id,-32000,"failed to encode core capabilities");else{(void)snprintf(result,result_size+1,"{\"version\":\"%s\",\"protocolVersion\":\"1.0\",\"platform\":\"%s\",\"sandboxCapability\":\"%s\",\"sandboxReason\":%s,\"features\":{\"fsStat\":true,\"fsStatMany\":true,\"fsWriteBase64\":true,\"fsReadBase64\":true,\"jobControl\":%s,\"fsHash\":true,\"fsScanPagination\":true,\"fsWatch\":true,\"indexScan\":true,\"grepJob\":true,\"globJob\":true,\"indexExtract\":true,\"pathNormalize\":true,\"shellBash\":true,\"pty\":%s,\"bindLink\":%s,\"overlay\":{\"supported\":%s,\"fuseOverlayfs\":%s,\"kernelMount\":%s}},\"limits\":{\"maxFrameBytes\":33554432,\"maxWriteBase64Bytes\":20971520,\"maxReadBase64Bytes\":20971520,\"maxHashBytes\":16777216,\"maxStatManyPaths\":128,\"maxStatManyPathBytes\":262144,\"maxScanEntries\":256,\"maxScanDepth\":16,\"maxScanNodes\":2048,\"maxWatches\":16,\"maxWatchEvents\":128,\"maxConcurrentJobs\":4,\"maxJobOutputBytes\":524288,\"maxIndexScanNodes\":1000000,\"maxIndexScanDepth\":64,\"maxIndexScanBytes\":17179869184,\"maxIndexScanMs\":600000,\"maxSearchNodes\":1000000,\"maxSearchDepth\":64,\"maxSearchMs\":300000,\"maxIndexExtractFiles\":4096,\"maxIndexExtractBytes\":1073741824,\"maxIndexExtractMs\":300000,\"indexExtractDefaultSymbolsPerFile\":200,\"maxIndexExtractSymbolsPerFile\":10000,\"maxConcurrentPtys\":16,\"maxPtyOutputChunkBytes\":65536,\"maxPtyInputBytes\":8192}}",OWC_CORE_VERSION,platform,owc_sandbox_status_name(capability),escaped,job_control,pty_available,owc_bindlink_supported()?"true":"false",overlay_caps.supported?"true":"false",overlay_caps.fuse_overlayfs?"true":"false",overlay_caps.kernel_mount?"true":"false");(void)reply_result(rpc,id,result);free(result);}free(escaped);}}
+        owc_sandbox_result bwrap_caps;char *escaped_bwrap;owc_bwrap_probe(&bwrap_caps);
+        escaped_bwrap=owc_json_escape_string(bwrap_caps.reason);
+        escaped=owc_json_escape_string(reason);if(!escaped||!escaped_bwrap){free(escaped);free(escaped_bwrap);(void)reply_error(rpc,id,-32000,"failed to encode sandbox capability");}else{result_size=(size_t)snprintf(NULL,0,"{\"version\":\"%s\",\"protocolVersion\":\"1.0\",\"platform\":\"%s\",\"sandboxCapability\":\"%s\",\"sandboxReason\":%s,\"features\":{\"fsStat\":true,\"fsStatMany\":true,\"fsWriteBase64\":true,\"fsReadBase64\":true,\"jobControl\":%s,\"fsHash\":true,\"fsScanPagination\":true,\"fsWatch\":true,\"indexScan\":true,\"grepJob\":true,\"globJob\":true,\"indexExtract\":true,\"pathNormalize\":true,\"shellBash\":true,\"pty\":%s,\"bindLink\":%s,\"overlay\":{\"supported\":%s,\"fuseOverlayfs\":%s,\"kernelMount\":%s},\"bwrap\":{\"available\":%s,\"reason\":%s}},\"limits\":{\"maxFrameBytes\":33554432,\"maxWriteBase64Bytes\":20971520,\"maxReadBase64Bytes\":20971520,\"maxHashBytes\":16777216,\"maxStatManyPaths\":128,\"maxStatManyPathBytes\":262144,\"maxScanEntries\":256,\"maxScanDepth\":16,\"maxScanNodes\":2048,\"maxWatches\":16,\"maxWatchEvents\":128,\"maxConcurrentJobs\":4,\"maxJobOutputBytes\":524288,\"maxIndexScanNodes\":1000000,\"maxIndexScanDepth\":64,\"maxIndexScanBytes\":17179869184,\"maxIndexScanMs\":600000,\"maxSearchNodes\":1000000,\"maxSearchDepth\":64,\"maxSearchMs\":300000,\"maxIndexExtractFiles\":4096,\"maxIndexExtractBytes\":1073741824,\"maxIndexExtractMs\":300000,\"indexExtractDefaultSymbolsPerFile\":200,\"maxIndexExtractSymbolsPerFile\":10000,\"maxConcurrentPtys\":16,\"maxPtyOutputChunkBytes\":65536,\"maxPtyInputBytes\":8192}}",OWC_CORE_VERSION,platform,owc_sandbox_status_name(capability),escaped,job_control,pty_available,owc_bindlink_supported()?"true":"false",overlay_caps.supported?"true":"false",overlay_caps.fuse_overlayfs?"true":"false",overlay_caps.kernel_mount?"true":"false",bwrap_caps.status==OWC_SANDBOX_ENFORCED?"true":"false",escaped_bwrap);result=(char*)malloc(result_size+1);if(!result)(void)reply_error(rpc,id,-32000,"failed to encode core capabilities");else{(void)snprintf(result,result_size+1,"{\"version\":\"%s\",\"protocolVersion\":\"1.0\",\"platform\":\"%s\",\"sandboxCapability\":\"%s\",\"sandboxReason\":%s,\"features\":{\"fsStat\":true,\"fsStatMany\":true,\"fsWriteBase64\":true,\"fsReadBase64\":true,\"jobControl\":%s,\"fsHash\":true,\"fsScanPagination\":true,\"fsWatch\":true,\"indexScan\":true,\"grepJob\":true,\"globJob\":true,\"indexExtract\":true,\"pathNormalize\":true,\"shellBash\":true,\"pty\":%s,\"bindLink\":%s,\"overlay\":{\"supported\":%s,\"fuseOverlayfs\":%s,\"kernelMount\":%s},\"bwrap\":{\"available\":%s,\"reason\":%s}},\"limits\":{\"maxFrameBytes\":33554432,\"maxWriteBase64Bytes\":20971520,\"maxReadBase64Bytes\":20971520,\"maxHashBytes\":16777216,\"maxStatManyPaths\":128,\"maxStatManyPathBytes\":262144,\"maxScanEntries\":256,\"maxScanDepth\":16,\"maxScanNodes\":2048,\"maxWatches\":16,\"maxWatchEvents\":128,\"maxConcurrentJobs\":4,\"maxJobOutputBytes\":524288,\"maxIndexScanNodes\":1000000,\"maxIndexScanDepth\":64,\"maxIndexScanBytes\":17179869184,\"maxIndexScanMs\":600000,\"maxSearchNodes\":1000000,\"maxSearchDepth\":64,\"maxSearchMs\":300000,\"maxIndexExtractFiles\":4096,\"maxIndexExtractBytes\":1073741824,\"maxIndexExtractMs\":300000,\"indexExtractDefaultSymbolsPerFile\":200,\"maxIndexExtractSymbolsPerFile\":10000,\"maxConcurrentPtys\":16,\"maxPtyOutputChunkBytes\":65536,\"maxPtyInputBytes\":8192}}",OWC_CORE_VERSION,platform,owc_sandbox_status_name(capability),escaped,job_control,pty_available,owc_bindlink_supported()?"true":"false",overlay_caps.supported?"true":"false",overlay_caps.fuse_overlayfs?"true":"false",overlay_caps.kernel_mount?"true":"false",bwrap_caps.status==OWC_SANDBOX_ENFORCED?"true":"false",escaped_bwrap);(void)reply_result(rpc,id,result);free(result);}free(escaped);free(escaped_bwrap);}}
     } else if(strcmp(method,"core.shutdown")==0) { if(params&&!allowed_keys(params,NULL,0))(void)reply_error(rpc,id,-32602,"core.shutdown accepts no params fields");else{(void)reply_result(rpc,id,"{\"ok\":true}"); rpc->shutting_down=1;} }
     else if(strcmp(method,"session.configure")==0) { static const char *keys[]={"sessionId","cwd","sandbox"};const char *sid=owc_json_get_string(owc_json_object_get(params,"sessionId")),*cwd=owc_json_get_string(owc_json_object_get(params,"cwd"));char err[192];int code=-32000;if(params&&!allowed_keys(params,keys,3))(void)reply_error(rpc,id,-32602,"session.configure contains unknown fields");else if(!sid||!sid[0]||!cwd||!cwd[0])(void)reply_error(rpc,id,-32602,"session.configure requires sessionId and cwd");else{err[0]='\0';if(!configure_session(sid,cwd,owc_json_object_get(params,"sandbox"),err,sizeof(err),&code))(void)reply_error(rpc,id,code,err);else(void)reply_session_capability(rpc,id,sid);} }
     else if(strcmp(method,"session.cleanup")==0) { static const char *keys[]={"sessionId"};const char *sid=owc_json_get_string(owc_json_object_get(params,"sessionId"));if(params&&!allowed_keys(params,keys,1))(void)reply_error(rpc,id,-32602,"session.cleanup contains unknown fields");else if(!sid||!sid[0])(void)reply_error(rpc,id,-32602,"session.cleanup requires sessionId");else{(void)cleanup_session(sid);(void)reply_result(rpc,id,"{\"ok\":true}");} }

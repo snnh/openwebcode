@@ -18,6 +18,7 @@
   "corePath": "../build/Debug/owc-exec.exe",
   "coreRequestTimeoutMs": 130000,
   "sandboxAllowPaths": [],
+  "sandboxProxyDenyList": [],
   "pythonEnv": "global",
   "jobObjectMemoryMB": null,
   "jobObjectMaxProcesses": null,

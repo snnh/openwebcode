@@ -33,6 +33,14 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: server/package-lock.json
+      - name: Install bubblewrap (Linux sandbox backend)
+        # bubblewrap 是 Linux 默认沙盒后端；Ubuntu 24.04 用 AppArmor 限制
+        # unprivileged user namespaces，bwrap 依赖 userns，需放开（键不存在时容忍失败）
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
       - name: Build core (Debug)
         shell: bash
         run: |

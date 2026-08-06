@@ -39,6 +39,8 @@ export interface ServerConfig {
     allowPaths?: string[];
     jobObject?: { memoryMB?: number; maxProcesses?: number };
   };
+  /** filtered 网络档 sidecar 代理拦截域名清单（去空白小写化；空表不下发，由 filtered-proxy 管理器现读）。 */
+  sandboxProxyDenyList?: string[];
   /** Optional remote model and pricing catalogs. A zero interval means manual sync only. */
   models: {
     catalogSyncUrl?: string;

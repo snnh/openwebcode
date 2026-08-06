@@ -21,3 +21,25 @@ exports[`buildWsbConfig > generates mapped folders, logon command and networking
 </Configuration>
 "
 `;
+
+exports[`buildWsbConfig > network deny disables the virtual switch (default stays Enable) 1`] = `
+"<Configuration>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>D:\\dev\\demo</HostFolder>
+      <SandboxFolder>C:\\owc-workspace</SandboxFolder>
+      <ReadOnly>false</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>D:\\dev\\owc</HostFolder>
+      <SandboxFolder>C:\\owc</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+  <LogonCommand>
+    <Command>cmd /c "C:\\owc\\owc-exec.exe --connect 192.168.1.10:54321"</Command>
+  </LogonCommand>
+  <Networking>Disable</Networking>
+</Configuration>
+"
+`;

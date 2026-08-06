@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
-import type { ManagedWorkspaceCapability, ModelProfile, PermissionMode, SandboxMode } from "../lib/contracts";
+import type { ManagedWorkspaceCapability, ModelProfile, PermissionMode, SandboxMode, SandboxNetwork } from "../lib/contracts";
 import type { SessionDefaults } from "../lib/prefs";
 import { useI18n } from "../i18n";
 import { ModelCapabilityBadges } from "./ModelCapabilityBadges";
@@ -14,6 +14,7 @@ export interface NewSessionValues {
   agentMode?: "plan" | "code" | "goal";
   permissionMode?: PermissionMode;
   sandboxMode?: SandboxMode;
+  network?: SandboxNetwork;
   setupScript?: string;
   workspaceMode?: "managed";
   bindLinks?: { virtPath: string; backingPath: string; readOnly?: boolean }[];
@@ -23,12 +24,9 @@ const SANDBOX_MODE_LABELS: Record<SandboxMode, [string, string]> = {
   appcontainer: ["应用容器（AppContainer）", "AppContainer"],
   wsb: ["Windows Sandbox（不可信代码）", "Windows Sandbox (untrusted code)"],
   jobobject: ["兼容模式（Job Object，默认）", "Compatibility (Job Object, default)"],
+  landlock: ["强制模式（Landlock，默认）", "Enforced (Landlock, default)"],
+  bubblewrap: ["隔离模式（bubblewrap）", "Isolated (bubblewrap)"],
   off: ["关闭沙盒", "Sandbox off"],
-};
-
-/** 非 Windows 平台默认档由 Landlock 强制，jobobject 枚举值不变、仅换文案。 */
-const SANDBOX_MODE_LABELS_LINUX: Partial<Record<SandboxMode, [string, string]>> = {
-  jobobject: ["强制模式（Landlock，默认）", "Enforced (Landlock, default)"],
 };
 
 export function NewSessionDialog({ open, providers, models, defaults, busy = false, onClose, onCreate, onOpenSettings }: {
@@ -50,6 +48,7 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
   const [model, setModel] = useState("");
   const [permissionMode, setPermissionMode] = useState<PermissionMode>("ask");
   const [sandboxMode, setSandboxMode] = useState<SandboxMode>("jobobject");
+  const [network, setNetwork] = useState<SandboxNetwork>("allow");
   const [setupScript, setSetupScript] = useState("");
   const [workspaceMode, setWorkspaceMode] = useState<"direct" | "managed">("direct");
   const [agentMode, setAgentMode] = useState<"plan" | "code" | "goal">("code");
@@ -107,10 +106,16 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
   const bindLinkAvailable = bindLinkCap?.available ?? false;
   // 平台来源统一为 server 上报的 capabilities.platform；未拿到前保持 Windows 行为（现状）
   const isWindows = sandboxCaps?.platform === undefined || sandboxCaps.platform === "win32";
-  const sandboxModeOptions = (Object.keys(SANDBOX_MODE_LABELS) as SandboxMode[])
-    .filter((mode) => isWindows || (mode !== "appcontainer" && mode !== "wsb"));
-  const sandboxModeLabel = (mode: SandboxMode): [string, string] =>
-    (!isWindows && SANDBOX_MODE_LABELS_LINUX[mode]) || SANDBOX_MODE_LABELS[mode];
+  // POSIX 真值选项：landlock（默认档）/ bubblewrap / off；Windows 维持 appcontainer/jobobject/wsb/off
+  const sandboxModeOptions: SandboxMode[] = isWindows
+    ? ["appcontainer", "wsb", "jobobject", "off"]
+    : ["landlock", "bubblewrap", "off"];
+  // 内部缺省态 jobobject 在非 Windows 下按 landlock 显示（不提交即为 server 默认；显式选择才提交真值）
+  const selectedSandboxMode: SandboxMode = !isWindows && sandboxMode === "jobobject" ? "landlock" : sandboxMode;
+  // bubblewrap 不可用时禁用该选项（旧 core 不上报 features.bwrap 时 server 按 unavailable 返回）
+  const bwrapUnavailableReason = !isWindows && sandboxCaps?.bwrap?.available === false
+    ? sandboxCaps.bwrap.reason ?? t("当前环境未安装 bubblewrap", "bubblewrap is not available in this environment")
+    : undefined;
   // 只提交两个路径都填了的行；未填完整的行静默忽略
   const validBindLinks = bindLinks
     .map((link) => ({ virtPath: link.virtPath.trim(), backingPath: link.backingPath.trim(), ...(link.readOnly ? { readOnly: true as const } : {}) }))
@@ -145,8 +150,9 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
             model,
             agentMode,
             permissionMode,
-            // jobobject 是缺省，不必显式提交；setupScript 仅 wsb 有意义
+            // jobobject 是缺省，不必显式提交；setupScript 仅 wsb 有意义；network 缺省 allow 不必提交
             ...(sandboxMode !== "jobobject" ? { sandboxMode } : {}),
+            ...(network !== "allow" ? { network } : {}),
             ...(sandboxMode === "wsb" && setupScript.trim() ? { setupScript: setupScript.trim() } : {}),
             ...(workspaceMode === "managed" ? { workspaceMode } : {}),
             ...(validBindLinks.length ? { bindLinks: validBindLinks } : {}),
@@ -236,14 +242,30 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
         </label>
         <label className="settings-field">
           <span>{t("沙盒模式", "Sandbox mode")}</span>
-          <select className="input" value={sandboxMode} onChange={(event) => setSandboxMode(event.target.value as SandboxMode)}>
+          <select className="input" value={selectedSandboxMode} onChange={(event) => setSandboxMode(event.target.value as SandboxMode)}>
             {sandboxModeOptions.map((mode) => (
-              <option key={mode} value={mode} disabled={mode === "wsb" && sandboxCaps !== undefined && !sandboxCaps.wsb.available}>
-                {t(...sandboxModeLabel(mode))}
+              <option
+                key={mode}
+                value={mode}
+                disabled={(mode === "wsb" && sandboxCaps !== undefined && !sandboxCaps.wsb.available) || (mode === "bubblewrap" && bwrapUnavailableReason !== undefined)}
+                title={mode === "bubblewrap" ? bwrapUnavailableReason : undefined}
+              >
+                {t(...SANDBOX_MODE_LABELS[mode])}
               </option>
             ))}
           </select>
         </label>
+        <label className="settings-field">
+          <span>{t("网络", "Network")}</span>
+          <select className="input" value={network} onChange={(event) => setNetwork(event.target.value as SandboxNetwork)}>
+            <option value="allow">{t("允许（默认）", "Allow (default)")}</option>
+            <option value="deny">{t("拒绝", "Deny")}</option>
+            {isWindows && <option value="filtered">{t("代理过滤（仅 Windows）", "Filtered via proxy (Windows only)")}</option>}
+          </select>
+        </label>
+        {network === "filtered" && (
+          <p className="muted-empty dialog-hint">{t("经代理过滤出网（仅 Windows）；Linux 会话不支持该策略。", "Outbound traffic is filtered via a proxy (Windows only); not supported on Linux sessions.")}</p>
+        )}
         {isWindows && sandboxCaps && !sandboxCaps.wsb.available && (
           <p className="muted-empty dialog-hint">{t("Windows Sandbox 不可用：", "Windows Sandbox unavailable: ")}{sandboxCaps.wsb.reason ?? t("未启用可选功能", "optional feature is not enabled")}</p>
         )}

@@ -20,6 +20,7 @@ import { DiagnosticsService } from "./diagnostics/service.js";
 import { ScmService } from "./scm/service.js";
 import { ProviderRegistry } from "./providers/provider.js";
 import { CoreRouter } from "./sandbox/core-router.js";
+import { FilteredProxyManager } from "./sandbox/filtered-proxy.js";
 import { WsbManager } from "./sandbox/wsb.js";
 import { SessionStore } from "./sessions/session-store.js";
 import { defaultSandboxPolicy } from "./sessions/default-sandbox.js";
@@ -81,7 +82,13 @@ const wsbManager = new WsbManager({
   sessionRootFor: (sessionId) => sessions.contextRoot(sessionId),
   requestTimeoutMs: config.coreRequestTimeoutMs,
 });
-const core = new CoreRouter(sharedCore, sessions, wsbManager, config.sandbox?.jobObject, config.sandbox?.allowPaths);
+// filtered 网络档 sidecar 编排：代理设置与拦截清单现读 settings（热生效）
+const filteredProxy = new FilteredProxyManager({
+  dataDir,
+  getProxyConfig: () => settings.effective().proxy,
+  getDenyList: () => settings.effective().sandboxProxyDenyList ?? [],
+});
+const core = new CoreRouter(sharedCore, sessions, wsbManager, config.sandbox?.jobObject, config.sandbox?.allowPaths, undefined, filteredProxy);
 const providers = new ProviderRegistry();
 const events = new EventBus();
 const pricing = new PricingCatalog(path.join(dataDir, "model-pricing.json"));
@@ -176,7 +183,7 @@ const updateApplier = new UpdateApplier({
   getReleaseUrl: () => settings.effective().updateCheck.url ?? "https://api.github.com/repos/snnh/openwebcode/releases/latest",
   getCurrentVersion: getServerVersion,
 });
-settings.bind({ providers, core, agent, events, gc, fastModel, profiles: providerProfiles, models, updateChecker });
+settings.bind({ providers, core, agent, events, gc, fastModel, profiles: providerProfiles, models, updateChecker, sandboxProxy: filteredProxy });
 providerProfilesRuntime.start();
 
 // core stderr/diagnostic 双写：终端 + <dataDir>/logs/core.log（超 5MB 启动时轮转为 core.log.1，仅一代）
