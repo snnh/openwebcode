@@ -120,7 +120,10 @@ export class McpManager {
     if (!binding) throw new Error(`Unknown MCP tool: ${namespaced}`);
     // 空闲断开后按需重连（binding.config 兜底，entry 被回收也能重建）
     const entry = await this.ensure(canonicalCwd, binding.server, binding.config);
-    return entry.client!.callTool(binding.tool, input);
+    // ensure 内部有 await 让出窗口：超长握手期间空闲扫描可能已回收连接，
+    // 此时给友好错误而非裸 TypeError（调用方重试会触发 ensure 重建连接）
+    if (!entry.client) throw new Error(`MCP server ${binding.server} connection was reclaimed; retry the call`);
+    return entry.client.callTool(binding.tool, input);
   }
 
   private async sweepIdle(): Promise<void> {

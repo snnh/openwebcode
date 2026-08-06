@@ -3220,9 +3220,14 @@ export class AgentRunner {
             const entry = this.backgroundTasks!.get(taskId);
             if (!entry) throw new Error(`Task not found: ${taskId}`);
             if (entry.status !== "running") return entry;
-            // run 中止后立即返回当前状态，不再等满 timeoutMs
+            // run 中止或超时后返回当前状态，不再等满 timeoutMs
             if (signal.aborted || Date.now() >= deadline) return entry;
-            await new Promise((resolve) => setTimeout(resolve, 250));
+            // 等待期间 abort 即时唤醒（与 executeBash 的取消纪律一致），避免 250ms 死等
+            await new Promise<void>((resolve) => {
+              const onAbort = (): void => { clearTimeout(timer); resolve(); };
+              const timer = setTimeout(() => { signal.removeEventListener("abort", onAbort); resolve(); }, 250);
+              signal.addEventListener("abort", onAbort, { once: true });
+            });
             return poll();
           };
           const result = await poll();
