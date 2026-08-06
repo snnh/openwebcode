@@ -261,7 +261,8 @@ export class TotpAuthService {
     entry.failures += 1;
     if (entry.failures >= LOGIN_MAX_FAILURES) {
       entry.lockedUntil = now + LOGIN_LOCK_MS;
-      entry.failures = 0;
+      // 保留 failures 计数不清零：锁定期满后下一次失败即累计达到上限，
+      // 重新触发锁定，避免攻击者每轮锁定都换到完整的 5 次尝试。
     }
     this.loginAttempts.set(ip, entry);
   }

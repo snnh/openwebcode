@@ -4,6 +4,36 @@ import { isHttpConfig } from "./config.js";
 import { getServerVersion } from "../version.js";
 import { getUserAgent } from "../http.js";
 
+/** MCP HTTP 响应体字节上限（与 provider SSE 上限对齐）：失控/恶意的 MCP 服务器
+ * 可能持续推送无事件边界的字节，无界缓冲会拖垮内存；超限按传输错误处理。 */
+const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+
+/** 流式读取响应体并施加字节上限，超限抛错而非 OOM。模式同 web-tools.ts 的 readLimited。 */
+async function readLimitedText(response: Response, maxBytes: number): Promise<string> {
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maxBytes) {
+        await reader.cancel();
+        throw new Error(`MCP response exceeds ${maxBytes} byte limit`);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const body = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
+  return new TextDecoder().decode(body);
+}
+
 export interface McpToolSpec {
   name: string;
   description?: string;
@@ -171,7 +201,7 @@ class Client implements McpClient {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const contentType = response.headers.get("content-type") ?? "";
       if (contentType.includes("text/event-stream")) {
-        const text = await response.text();
+        const text = await readLimitedText(response, MAX_RESPONSE_BYTES);
         for (const block of text.split(/\r?\n\r?\n/)) {
           const data = block.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
           if (data === "") continue;
@@ -182,7 +212,12 @@ class Client implements McpClient {
           }
         }
       } else {
-        this.handleMessage(await response.json() as Record<string, unknown>);
+        const text = await readLimitedText(response, MAX_RESPONSE_BYTES);
+        try {
+          this.handleMessage(JSON.parse(text) as Record<string, unknown>);
+        } catch {
+          throw new Error("MCP response is not valid JSON");
+        }
       }
     } catch (error) {
       // HTTP 传输错误：该消息对应的 pending 由超时兜底；主动失败化以快速反馈

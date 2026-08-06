@@ -152,7 +152,13 @@ describe("TotpAuthService", () => {
     expect(service.loginLockedSeconds("1.2.3.4")).toBeLessThanOrEqual(60);
     currentTime += 61_000;
     expect(service.loginLockedSeconds("1.2.3.4")).toBe(0);
-    // 成功登录清零
+    // 锁定到期后 failures 计数保留不清零：下一次失败即累计达到上限重新锁定，
+    // 攻击者无法每轮锁定都换到完整的 5 次尝试
+    service.recordLoginFailure("1.2.3.4");
+    expect(service.loginLockedSeconds("1.2.3.4")).toBeGreaterThan(0);
+    // 锁定到期 + 成功登录才真正清零
+    currentTime += 61_000;
+    expect(service.loginLockedSeconds("1.2.3.4")).toBe(0);
     service.recordLoginFailure("1.2.3.4");
     service.recordLoginSuccess("1.2.3.4");
     service.recordLoginFailure("1.2.3.4");
