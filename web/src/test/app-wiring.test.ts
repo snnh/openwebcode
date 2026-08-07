@@ -30,8 +30,6 @@ function makeWiring(overrides: Partial<Parameters<typeof createAppWiring>[0]> = 
     getT: () => (chinese) => chinese,
     getSessions: () => [{ id: "s1", title: "会话甲", cwd: "D:/w", provider: "p", model: "m", createdAt: "", updatedAt: "" }],
     applyRunEvent: () => undefined,
-    applyActivityEvent: () => undefined,
-    applySubagentEvent: () => undefined,
     socketEnv: { url: "ws://test/api/events", createSocket: (url) => new FakeSocket(url), bannerDelayMs: 0, baseDelayMs: 100 },
     stream,
     ...overrides,

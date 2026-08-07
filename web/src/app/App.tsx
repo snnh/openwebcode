@@ -17,11 +17,9 @@ import { useSessionDefaults } from "./prefs-store";
 import { useTheme } from "../theme";
 import { useI18n } from "../i18n";
 import { useAgentRun } from "../hooks/use-agent-run";
-import { useLiveActivity } from "../hooks/use-live-activity";
-import { useLiveSubagents } from "../hooks/use-live-subagents";
 import { useSubagentTabs } from "../hooks/use-subagent-tabs";
 import { useTerminalTabs } from "../hooks/use-terminal-tabs";
-import type { LiveSubagentRun } from "../lib/contracts";
+import { live } from "./live-store";
 import { Workbench } from "../workbench/Workbench";
 import { layout } from "../workbench/layout";
 import { ChatView } from "../chat/ChatView";
@@ -31,8 +29,6 @@ import { EmptyState } from "../components/EmptyState";
 import { NewSessionDialog, type NewSessionValues } from "../components/NewSessionDialog";
 import { ConfirmDeleteDialog } from "../components/ConfirmDeleteDialog";
 import { Toast } from "../components/Toast";
-
-const EMPTY_SUBAGENTS: Record<string, LiveSubagentRun> = {};
 
 export function App(): ReactElement {
   const { t } = useI18n();
@@ -50,10 +46,8 @@ export function App(): ReactElement {
   const updateCheck = useUpdateCheckQuery();
   const sessionDefaults = useSessionDefaults();
   const agentRun = useAgentRun(sessionId);
-  const liveActivity = useLiveActivity();
   const subagentTabs = useSubagentTabs();
   const terminalTabs = useTerminalTabs();
-  const liveSubagents = useLiveSubagents({ dropOnToolEnd: false, onStarted: subagentTabs.openFromStarted });
 
   // WS 事件流 + 路由接线（t 经 ref 取最新，语言切换后通知文案跟随）
   const tRef = useRef(t);
@@ -65,8 +59,7 @@ export function App(): ReactElement {
     getT: () => tRef.current,
     getSessions: () => sessionsRef.current,
     applyRunEvent: agentRun.applyEvent,
-    applyActivityEvent: liveActivity.applyEvent,
-    applySubagentEvent: liveSubagents.applyEvent,
+    onSubagentStarted: subagentTabs.openFromStarted,
   });
 
   // 启动后自动选中首个会话
@@ -118,7 +111,7 @@ export function App(): ReactElement {
         if (sessionId === id) ui.selectSession(sessions.data?.find((session) => session.id !== id)?.id);
         // 同步清理按会话键控的内存状态，避免已删会话的条目残留
         sessionMeta.removeSession(id);
-        liveSubagents.removeSession(id);
+        live.removeSession(id);
         subagentTabs.removeSession(id);
         terminalTabs.removeSession(id);
         clearComposerState(id);
@@ -160,8 +153,7 @@ export function App(): ReactElement {
     void writeClipboard(text).then((ok) => ui.notify(ok ? copied : t("复制失败", "Copy failed"), ok ? "info" : "error"));
   };
   const main = sessionId ? (
-    <ChatView sessionId={sessionId} currentRun={agentRun.data} activityFor={liveActivity.activityFor}
-      liveSubagents={liveSubagents.liveSubagents[sessionId] ?? EMPTY_SUBAGENTS} onOpenNavMenu={openNavMenu} />
+    <ChatView sessionId={sessionId} currentRun={agentRun.data} onOpenNavMenu={openNavMenu} />
   ) : (
     <section className="workbench">
       <EmptyState sessions={sessions.data ?? []} providers={providers.data} onSelect={(id) => ui.selectSession(id)}
