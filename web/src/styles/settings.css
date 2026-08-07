@@ -25,6 +25,9 @@
 .extension-card details summary { cursor: pointer; color: var(--text-2); font-size: 12px; }
 .extension-json { width: 100%; resize: vertical; margin: 8px 0; border: 1px solid var(--border); border-radius: var(--radius-s); background: var(--bg); color: var(--text); padding: 9px; box-sizing: border-box; font-size: 11px; }
 .extension-config-form { display: flex; flex-direction: column; gap: 10px; margin: 8px 0; max-width: 360px; }
+.extension-config-group { display: flex; flex-direction: column; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-s); }
+.extension-config-group-title { font-size: 12px; font-weight: 600; color: var(--text-2); }
+.extension-config-group > .settings-note { margin: 0; }
 .extension-config-field { display: flex; flex-direction: column; gap: 5px; }
 .extension-config-field > label:not(.extension-switch) { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--text-2); }
 .extension-config-field .input { min-width: 0; }

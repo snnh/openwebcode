@@ -1,6 +1,7 @@
 import { fireEvent } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ExtensionRow } from "../settings/sections/ExtensionsSection";
+import { ExtensionRow, localizeConfigFields } from "../settings/sections/ExtensionsSection";
+import { parseConfigSchema } from "../settings/sections/ExtensionConfigForm";
 import { api } from "../lib/api";
 import type { ExtensionInfo } from "../lib/contracts";
 import { renderWithClient } from "./helpers/with-client";
@@ -136,6 +137,104 @@ describe("扩展类型化配置表单", () => {
     expect((textarea as HTMLTextAreaElement).value).toBe(JSON.stringify({ a: 1 }, null, 2));
   });
 
+  it("无 configSchema 且配置为空时不渲染配置编辑区", () => {
+    const extension = extensionFixture({ config: {} });
+    const view = renderWithClient(<ExtensionRow extension={extension} />);
+    expect(view.queryByText("配置 JSON")).toBeNull();
+    expect(view.queryByText("配置")).toBeNull();
+    expect(view.container.querySelector("textarea.extension-json")).toBeNull();
+  });
+
+  it("integer 字段渲染 min/max/step，保存为整数；非整数中止保存并报错", async () => {
+    const configure = vi.spyOn(api, "configureExtension").mockResolvedValue(extensionFixture({}));
+    const extension = extensionFixture({
+      configSchema: {
+        type: "object",
+        properties: { maxPages: { type: "integer", minimum: 1, maximum: 300, title: "页数", description: "每次最多转换页数" } },
+      },
+      config: { maxPages: 4 },
+    });
+    const view = renderWithClient(<ExtensionRow extension={extension} />);
+
+    const input = view.getByLabelText("页数");
+    expect(input).toHaveAttribute("type", "number");
+    expect(input).toHaveAttribute("min", "1");
+    expect(input).toHaveAttribute("max", "300");
+    expect(input).toHaveAttribute("step", "1");
+    expect(input).toHaveValue(4);
+    expect(view.getByText("每次最多转换页数")).toBeInTheDocument();
+
+    fireEvent.change(input, { target: { value: "2.5" } });
+    fireEvent.click(view.getByRole("button", { name: "保存配置" }));
+    await vi.waitFor(() => expect(view.getByText(/必须是整数/)).toBeInTheDocument());
+    expect(configure).not.toHaveBeenCalled();
+
+    fireEvent.change(input, { target: { value: "8" } });
+    fireEvent.click(view.getByRole("button", { name: "保存配置" }));
+    await vi.waitFor(() => expect(configure).toHaveBeenCalledWith("test-ext", { config: { maxPages: 8 } }));
+  });
+
+  it("嵌套 object 组与字符串字典：分组渲染，保存合并且保留未覆盖键", async () => {
+    const configure = vi.spyOn(api, "configureExtension").mockResolvedValue(extensionFixture({}));
+    const extension = extensionFixture({
+      id: "content-lens",
+      configSchema: {
+        type: "object",
+        properties: {
+          targetLang: { type: "string", title: "目标语言" },
+          translate: {
+            type: "object",
+            title: "翻译",
+            properties: {
+              mode: { type: "string", enum: ["manual", "auto", "off"], title: "触发方式" },
+              glossary: { type: "object", additionalProperties: { type: "string" }, title: "术语表" },
+            },
+          },
+        },
+      },
+      config: {
+        targetLang: "zh-CN",
+        translate: { mode: "manual", layout: "sideBySide", glossary: { 上下文: "context" } },
+        explain: { webSearch: true },
+      },
+    });
+    const view = renderWithClient(<ExtensionRow extension={extension} />);
+
+    expect(view.getByText("翻译")).toBeInTheDocument();
+    expect(view.getByLabelText("目标语言")).toHaveValue("zh-CN");
+    expect(view.getByLabelText("触发方式")).toHaveValue("manual");
+    expect(view.getByLabelText("术语表")).toHaveValue("上下文=context");
+
+    fireEvent.change(view.getByLabelText("触发方式"), { target: { value: "auto" } });
+    fireEvent.change(view.getByLabelText("术语表"), { target: { value: "上下文=context\n代理=agent" } });
+    fireEvent.click(view.getByRole("button", { name: "保存配置" }));
+    await vi.waitFor(() => expect(configure).toHaveBeenCalledWith("content-lens", {
+      config: {
+        targetLang: "zh-CN",
+        translate: { mode: "auto", layout: "sideBySide", glossary: { 上下文: "context", 代理: "agent" } },
+        explain: { webSearch: true },
+      },
+    }));
+  });
+
+  it("字典字段缺 = 的行中止保存并报错", async () => {
+    const configure = vi.spyOn(api, "configureExtension").mockResolvedValue(extensionFixture({}));
+    const extension = extensionFixture({
+      configSchema: {
+        type: "object",
+        properties: {
+          glossary: { type: "object", additionalProperties: { type: "string" }, title: "术语表" },
+        },
+      },
+      config: {},
+    });
+    const view = renderWithClient(<ExtensionRow extension={extension} />);
+    fireEvent.change(view.getByLabelText("术语表"), { target: { value: "没有等号的一行" } });
+    fireEvent.click(view.getByRole("button", { name: "保存配置" }));
+    await vi.waitFor(() => expect(view.getByText(/键=值/)).toBeInTheDocument());
+    expect(configure).not.toHaveBeenCalled();
+  });
+
   it("env-sim：新建预设表单提交结构化字段并选中新预设", async () => {
     vi.spyOn(api, "envSimPersonas")
       .mockResolvedValueOnce({
@@ -224,5 +323,43 @@ describe("扩展类型化配置表单", () => {
     await vi.waitFor(() => expect(remove).toHaveBeenCalledWith("my-preset"));
     // 删除后选择回落到「不模拟」
     await vi.waitFor(() => expect(view.getByLabelText("人格预设")).toHaveValue(""));
+  });
+});
+
+
+describe("localizeConfigFields 英文字段映射", () => {
+  it("按字段 key 覆盖 title/description，递归嵌套组", () => {
+    const fields = parseConfigSchema({
+      type: "object",
+      properties: {
+        targetLang: { type: "string", title: "目标语言", description: "输出语言" },
+        translate: {
+          type: "object",
+          title: "翻译",
+          properties: {
+            mode: { type: "string", title: "触发方式", enum: ["manual", "auto", "off"] },
+          },
+        },
+      },
+    });
+    expect(fields).not.toBeNull();
+    const localized = localizeConfigFields(fields, {
+      targetLang: { title: "Target language", description: "Output language" },
+      translate: { title: "Translation" },
+      mode: { title: "Trigger" },
+    });
+    expect(localized).not.toBeNull();
+    const [targetLang, translate] = localized!;
+    expect(targetLang).toMatchObject({ key: "targetLang", title: "Target language", description: "Output language" });
+    expect(translate).toMatchObject({ key: "translate", title: "Translation" });
+    // 组级覆盖未给 description 时保留 schema 原值（此处原本就没有）
+    expect(translate!.children).toHaveLength(1);
+    expect(translate!.children![0]).toMatchObject({ key: "mode", title: "Trigger" });
+  });
+
+  it("无覆盖表或字段为 null 时原样返回", () => {
+    expect(localizeConfigFields(null, { a: { title: "A" } })).toBeNull();
+    const fields = parseConfigSchema({ type: "object", properties: { a: { type: "string" } } });
+    expect(localizeConfigFields(fields, undefined)).toBe(fields);
   });
 });
