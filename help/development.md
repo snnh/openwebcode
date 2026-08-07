@@ -180,6 +180,8 @@ core（ctest）：`test_protocol.py` / `test_fs.py` / `test_abs_path.py` / `test
 
 v1 扩展跑在独立的 Extension Host 子进程，经 IPC 拿到注入的 `ctx`，manifest 声明权限、能力调用逐项校验。能注册 agent 工具、读会话和上下文（含只读会话 `compact/` 归档的 `context.readVaultFile`）、订阅事件、私有存储、私有 HTTP 路由、快速模型通道、提示词钩子、工具塑形等。权限与能力的完整对照表看 `server/src/extensions/types.ts`，可运行的完整示例在 `examples/extensions/demo/`。扩展是可信代码（安全级别 ≈ yolo），只装自己信得过的。
 
+manifest 可选声明 `configSchema`（JSON Schema 子集）：设置页据此把扩展配置渲染成类型化表单而不是原始 JSON 编辑，保存时 server 做松散校验（类型/枚举/未知键，只查顶层一层，`server/src/extensions/config-schema.ts`）。表单支持的属性形态（`web/src/settings/sections/ExtensionConfigForm.tsx` 的 `parseConfigSchema`）：`string`（可带 `enum` 渲染下拉）、`number`/`integer`（可带 `minimum`/`maximum`）、`boolean`、一层 `object` 嵌套组（带 `properties`）、字符串字典（`additionalProperties: { "type": "string" }`，按「键=值」行编辑）。每个属性应给 `title` 和 `description`，表单会展示为字段名与说明文字；未覆盖的既有配置键在保存时原样保留。官方扩展的英文字段文案映射在 `ExtensionsSection.tsx` 的 `OFFICIAL_FIELD_EN`。
+
 ## 架构边界（改动前必读）
 
 这几条是硬约束，不是建议：
