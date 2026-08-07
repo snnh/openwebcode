@@ -69,18 +69,7 @@
 }
 .settings-title-icon { width: 34px; height: 34px; }
 .settings-close { flex: 0 0 auto; margin-left: 12px; }
-.settings-layout { display: grid; grid-template-columns: 52px 204px minmax(0, 1fr); flex: 1; min-height: 0; }
-.settings-dialog .mobile-explorer-rail {
-  position: static;
-  z-index: auto;
-  flex: 0 0 52px;
-  width: 52px;
-  height: auto;
-  min-height: 0;
-  overflow-y: auto;
-  background: var(--panel-2);
-  animation: none;
-}
+.settings-layout { display: grid; grid-template-columns: 204px minmax(0, 1fr); flex: 1; min-height: 0; }
 .settings-back { display: none; }
 .settings-nav {
   display: flex;
@@ -310,7 +299,6 @@
 .settings-dialog-title p { display: none; }
 .settings-title-icon { width: 32px; height: 32px; }
 .settings-layout { display: flex; flex-direction: row; }
-.settings-dialog .mobile-explorer-rail { flex: 0 0 48px; width: 48px; }
 .settings-nav { flex: 1 1 auto; border-right: 0; padding: 12px 10px; gap: 12px; }
 .settings-tab { min-height: 44px; }
 .settings-tab:hover { transform: none; }
@@ -360,3 +348,35 @@
   font-size: 13px;
 }
 .totp-gate-list { margin: 0 0 8px; padding-left: 4px; list-style: none; font-size: 13px; display: flex; flex-direction: column; gap: 4px; }
+
+.prompt-builtin { border: 1px solid var(--border); border-radius: var(--radius-s); padding: 8px 10px; }
+.prompt-builtin summary { cursor: pointer; font-size: 13px; color: var(--text-2); }
+.prompt-builtin-text { margin: 8px 0 0; font-size: 11px; line-height: 1.5; color: var(--text-3); white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; }
+.extra-body-input {
+  width: 100%;
+  margin-top: 8px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  resize: vertical;
+  box-sizing: border-box;
+}
+.notification-item.unread { background: var(--accent-soft); }
+.notification-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  text-align: left;
+  color: var(--text-2);
+}
+.notification-body:hover { color: var(--text); }
+.notification-item.unread .notification-text { font-weight: 600; color: var(--text); }
+.notification-item[data-kind="error"] .notification-text { color: var(--danger); }
+.notification-text { font-size: 13px; overflow-wrap: anywhere; }
+.notification-meta { display: flex; gap: 8px; font-size: 11px; color: var(--text-3); }
+.notification-kind { color: var(--danger); }
+.notification-dismiss { margin-top: 6px; min-width: 32px; min-height: 32px; }
+.access-link-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.access-link-row code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 12px; }

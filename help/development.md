@@ -32,12 +32,13 @@ openwebcode/
 │   └── test/                # vitest：单元、HTTP 注入、真实 core 端到端
 ├── web/               # React 19 + Vite 6 前端
 │   ├── src/
-│   │   ├── App.tsx          # 顶层组件、WS 事件流分发、状态管理
-│   │   ├── components/      # Composer / MessageCard / panels / settings 等
-│   │   ├── commands/        # 命令注册表、快捷键、覆盖审计
+│   │   ├── app/             # 装配层：App 薄根组件、store（ui/session/live/prefs）、ws 事件客户端与路由、queries、commands（命令注册表/快捷键/覆盖审计）
+│   │   ├── chat/ composer/  # 会话区（MessageList/scroll-controller/stream-buffer/卡片）与输入区
+│   │   ├── workbench/ panels/ dialogs/ settings/  # 五区外壳、底部七面板、弹层、设置对话框与十七分区
+│   │   ├── components/      # 设计基元（Icon/Overlay/ConfirmDialog 等）与保留件（Markdown/Monaco 编辑器）
 │   │   ├── lib/             # api.ts REST 客户端、contracts.ts 类型契约
 │   │   ├── i18n.tsx         # 中英双语
-│   │   └── styles.css       # 全部样式（CSS 变量，亮/暗主题）
+│   │   └── styles/          # 十一份样式表（tokens/base/layout/chat-*/composer/sidebar/panels/editor/dialogs/settings）
 │   └── src/test/            # vitest + jsdom + Testing Library + axe
 ├── packaging/         # 分发布局、安装脚本、WiX 打包
 ├── scripts/bench/     # Node + Playwright 性能基准，回归 >15% 标红
@@ -169,9 +170,9 @@ core（ctest）：`test_protocol.py` / `test_fs.py` / `test_abs_path.py` / `test
 
 ### 改 UI
 
-- 状态在 `App.tsx` 顶层（偏好/布局，localStorage 持久化）；服务端数据走 `@tanstack/react-query`；WS 事件在 `App.tsx` 的 onmessage 里分发。
-- 样式全部在 `styles.css`，CSS 变量主题（亮/暗）。新组件放 `components/` 下独立文件，命名参照现有（`JobHeader.tsx`、`MessageCard.tsx`）。
-- 新命令/快捷键：命令注册到 `commands/builtin.ts`（含 `when` 上下文），默认键位加到 `commands/keybindings.ts`。`command-coverage.test.ts` 会校验每个 REST 动作都有对应命令。
+- UI 状态入 `src/app/` 下的自研 store（ui-store/session-store/live-store/prefs-store，useSyncExternalStore）；服务端数据走 `@tanstack/react-query`；WS 事件经 `app/ws.ts` + `app/event-router.ts` 集中路由。
+- 样式在 `src/styles/` 十一份样式表（tokens/base/layout/chat-list/chat-cards/composer/sidebar/panels/editor/dialogs/settings），CSS 变量主题（亮/暗）。新组件按其域放 `chat/`、`composer/`、`workbench/`、`panels/`、`dialogs/`、`settings/`，基元放 `components/`。
+- 新命令/快捷键：命令注册到 `app/commands.ts` 的 `registerBuiltinCommands`（含 `when` 上下文），默认键位加到 `DEFAULT_KEYBINDINGS`。`command-coverage.test.ts` 会校验每个 REST 动作都有对应命令。
 - Markdown/LaTeX 渲染集中在 `components/Markdown.tsx`，不要为流式/历史/思考各维护一份解析器。
 - 新增用户可见文案必须走 `useI18n()` 的 `t(中文, english)` 同时给中英文，不做运行时 DOM 文本替换。
 

@@ -61,4 +61,6 @@
 }
 @media (max-width: 768px) {
   .conversation-search-input { width: min(180px, 36vw); }
+  /* 消息区收边 */
+  .chat-track { padding: 14px 12px 24px; }
 }
