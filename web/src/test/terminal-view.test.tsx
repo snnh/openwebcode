@@ -1,19 +1,28 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { TerminalView } from "../components/TerminalView";
-import type { AuthStatus, SessionDetail } from "../lib/contracts";
+import { TerminalView } from "../terminal/TerminalView";
+import type { AuthStatus } from "../lib/contracts";
 import { api } from "../lib/api";
+import { uiStore } from "../app/ui-store";
+import { makeSession } from "./helpers/fixtures";
 import { FakeFitAddon, FakeTerminal } from "./helpers/fake-xterm";
 import { renderWithClient } from "./helpers/with-client";
 
 vi.mock("../lib/api", () => ({
-  api: { authStatus: vi.fn() },
+  api: {
+    authStatus: vi.fn(),
+    session: vi.fn(),
+  },
 }));
 
 const authStatus = vi.mocked(api.authStatus);
+const sessionQuery = vi.mocked(api.session);
 
+const xtermState = { fail: false };
 vi.mock("../components/xterm-loader", () => ({
-  loadXterm: () => Promise.resolve({ Terminal: FakeTerminal, FitAddon: FakeFitAddon }),
+  loadXterm: () => (xtermState.fail
+    ? Promise.reject(new Error("boom"))
+    : Promise.resolve({ Terminal: FakeTerminal, FitAddon: FakeFitAddon })),
 }));
 
 class StubSocket {
@@ -30,18 +39,7 @@ class StubSocket {
   frames(): unknown[] { return this.sent.map((raw) => JSON.parse(raw) as unknown); }
 }
 
-const AT = "2026-07-28T00:00:00.000Z";
-
-const session: SessionDetail = {
-  id: "s1",
-  cwd: "/workspace/project",
-  provider: "anthropic",
-  model: "claude-opus-4-8",
-  title: "终端测试",
-  createdAt: AT,
-  updatedAt: AT,
-  messages: [],
-};
+const session = makeSession({ id: "s1", cwd: "/workspace/project", title: "终端测试" });
 
 function gate(partial: Partial<AuthStatus>): AuthStatus {
   return { totpEnabled: true, authenticated: true, terminalAvailable: true, gateReasons: [], ...partial };
@@ -55,12 +53,17 @@ async function connectedPty(): Promise<{ socket: StubSocket; term: FakeTerminal 
   return { socket, term };
 }
 
-describe("TerminalView（真 PTY，提交⑦）", () => {
+describe("TerminalView（真 PTY）", () => {
   beforeEach(() => {
     authStatus.mockReset();
+    sessionQuery.mockReset();
+    sessionQuery.mockResolvedValue(session);
     FakeTerminal.instances.length = 0;
     StubSocket.instances.length = 0;
+    xtermState.fail = false;
     vi.stubGlobal("WebSocket", StubSocket);
+    // ui-store 全局单例：用例间复位提示与设置深链状态
+    uiStore.set({ notice: undefined, notifications: [], settingsOpen: false, settingsTab: undefined });
   });
 
   afterEach(() => {
@@ -69,12 +72,12 @@ describe("TerminalView（真 PTY，提交⑦）", () => {
 
   it("生命周期：open → out 写入 xterm → in/resize 上行 → 卸载发送 close 并关 WS", async () => {
     authStatus.mockResolvedValue(gate({}));
-    const view = renderWithClient(<TerminalView session={session} />);
+    const view = renderWithClient(<TerminalView sessionId="s1" />);
 
-    // 徽章如实标注宿主机终端语义
+    // cwd 与宿主机语义徽章
     expect(await screen.findByText(/宿主机终端 · 以应用身份运行 · 不经沙盒/)).toBeInTheDocument();
+    expect(await screen.findByText("/workspace/project")).toBeInTheDocument();
 
-    await waitFor(() => expect(StubSocket.instances).toHaveLength(1));
     const { socket, term } = await connectedPty();
     expect(socket.url).toContain("/api/sessions/s1/terminal");
     expect(socket.frames()).toEqual([{ type: "open", cols: 80, rows: 24 }]);
@@ -100,17 +103,17 @@ describe("TerminalView（真 PTY，提交⑦）", () => {
     expect(term.disposed).toBe(true);
   });
 
-  it("门槛不满足：渲染两条门槛状态与设置深链，不建 WS 不渲染 xterm", async () => {
+  it("门槛不满足：渲染两条门槛状态与设置深链（ui.openSettings(remote)），不建 WS 不渲染 xterm", async () => {
     authStatus.mockResolvedValue(gate({ totpEnabled: false, terminalAvailable: false, gateReasons: ["totp_disabled", "host_not_loopback_or_lan"] }));
-    const onOpenSettings = vi.fn();
-    renderWithClient(<TerminalView session={session} onOpenSettings={onOpenSettings} />);
+    renderWithClient(<TerminalView sessionId="s1" />);
 
     expect(await screen.findByText(/终端功能暂不可用/)).toBeInTheDocument();
     expect(screen.getByText(/TOTP 已开启/).textContent).toContain("❌");
     expect(screen.getByText(/监听地址为回环或局域网/).textContent).toContain("❌");
 
     fireEvent.click(screen.getByRole("button", { name: /远程访问/ }));
-    expect(onOpenSettings).toHaveBeenCalledTimes(1);
+    expect(uiStore.get().settingsOpen).toBe(true);
+    expect(uiStore.get().settingsTab?.tab).toBe("remote");
 
     expect(StubSocket.instances).toHaveLength(0);
     expect(FakeTerminal.instances).toHaveLength(0);
@@ -118,7 +121,7 @@ describe("TerminalView（真 PTY，提交⑦）", () => {
 
   it("exit 帧：显示进程已退出提示（含退出码）", async () => {
     authStatus.mockResolvedValue(gate({}));
-    renderWithClient(<TerminalView session={session} />);
+    renderWithClient(<TerminalView sessionId="s1" />);
     const { socket } = await connectedPty();
 
     act(() => socket.emit({ type: "exit", code: 3 }));
@@ -127,7 +130,7 @@ describe("TerminalView（真 PTY，提交⑦）", () => {
 
   it("连接断开（非主动关闭）显示重连提示；重连发起新 PTY", async () => {
     authStatus.mockResolvedValue(gate({}));
-    renderWithClient(<TerminalView session={session} />);
+    renderWithClient(<TerminalView sessionId="s1" />);
     const { socket } = await connectedPty();
 
     act(() => socket.onclose?.());
@@ -135,5 +138,23 @@ describe("TerminalView（真 PTY，提交⑦）", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "重新连接" }));
     await waitFor(() => expect(StubSocket.instances).toHaveLength(2));
+  });
+
+  it("error 帧：错误态以 role=alert 展示，可重连", async () => {
+    authStatus.mockResolvedValue(gate({}));
+    renderWithClient(<TerminalView sessionId="s1" />);
+    const { socket } = await connectedPty();
+    act(() => socket.emit({ type: "error", message: "PTY 创建失败" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("PTY 创建失败");
+  });
+
+  it("xterm 加载失败：错误态 + ui.notify 错误提示，不建 WS", async () => {
+    xtermState.fail = true;
+    authStatus.mockResolvedValue(gate({}));
+    renderWithClient(<TerminalView sessionId="s1" />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("终端组件加载失败");
+    await waitFor(() => expect(uiStore.get().notice).toEqual({ kind: "error", text: "终端组件加载失败" }));
+    expect(StubSocket.instances).toHaveLength(0);
   });
 });

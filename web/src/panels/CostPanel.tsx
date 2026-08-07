@@ -1,9 +1,9 @@
 import { useState, type ReactElement } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { api } from "../../lib/api";
-import type { CostReport, ReportMetrics } from "../../lib/contracts";
-import { formatCurrency, formatTokens } from "../../lib/format";
-import { useI18n } from "../../i18n";
+import { api } from "../lib/api";
+import type { CostReport, ReportMetrics } from "../lib/contracts";
+import { formatCurrency, formatTokens } from "../lib/format";
+import { useI18n } from "../i18n";
 
 type RangeKey = "7d" | "30d" | "all";
 

@@ -1,7 +1,6 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { EvalPanel } from "../components/panels/EvalPanel";
-import { BottomPanel } from "../components/BottomPanel";
+import { EvalPanel } from "../panels/EvalPanel";
 import { I18nProvider } from "../i18n";
 import { api } from "../lib/api";
 import { renderWithClient } from "./helpers/with-client";
@@ -40,9 +39,9 @@ function wrapper(children: React.ReactNode) {
   return renderWithClient(<I18nProvider>{children}</I18nProvider>);
 }
 
-describe("EvalPanel（0.5.0 Phase 3）", () => {
+describe("EvalPanel", () => {
   it("选择任务、运行并展示 token/工具报告", async () => {
-    wrapper(<EvalPanel onNotice={vi.fn()} />);
+    wrapper(<EvalPanel />);
     expect(await screen.findByText("创建文件")).toBeDefined();
     const runButton = screen.getByRole("button", { name: /运行所选任务|Run selected/ });
     await waitFor(() => expect(runButton).not.toBeDisabled());
@@ -53,15 +52,6 @@ describe("EvalPanel（0.5.0 Phase 3）", () => {
     await waitFor(() => expect(api.evalRun).toHaveBeenCalledWith(["create-file"]));
     expect((await screen.findAllByText(/4 tokens/)).length).toBeGreaterThan(0);
     expect(screen.getByText(/write_file/)).toBeDefined();
-  });
-
-  it("只有扩展启用时注册评测标签", () => {
-    const props = { running: false, onNotice: vi.fn(), open: false, onOpenChange: vi.fn() };
-    const disabled = wrapper(<BottomPanel {...props} evalEnabled={false} />);
-    expect(screen.queryByRole("button", { name: /^评测$|^Eval$/ })).toBeNull();
-    disabled.unmount();
-    wrapper(<BottomPanel {...props} evalEnabled />);
-    expect(screen.getByRole("button", { name: /^评测$|^Eval$/ })).toBeDefined();
   });
 
   it("选择历史基线后生成并显示可归档回归对比", async () => {
@@ -88,7 +78,7 @@ describe("EvalPanel（0.5.0 Phase 3）", () => {
         baselineToolCalls: ["write_file"], candidateToolCalls: ["write_file"],
       }],
     });
-    wrapper(<EvalPanel onNotice={vi.fn()} />);
+    wrapper(<EvalPanel />);
     await screen.findByText("创建文件");
     fireEvent.click(screen.getByRole("button", { name: /运行所选任务|Run selected/ }));
     const baseline = await screen.findByLabelText(/对比基线|Comparison baseline/);

@@ -1,10 +1,17 @@
+/**
+ * 侧栏源代码管理视图：分支状态、staged/unstaged/untracked 分组与行内 stage/unstage/discard、
+ * 只读 diff 预览（可一键在统一 diff 视图打开，hunk 级接受/拒绝）、提交辅助（下发 agent 走权限链）、
+ * 历史折叠区、worktree 创建/清理/合回（冲突列表展示）。
+ * 通知经 ui.notify；写操作成功后主动 invalidate scm 查询，不等 scm.updated 事件。
+ */
 import { useEffect, useState, type ReactElement, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../../lib/api";
 import type { ScmDiff, ScmStatusEntry } from "../../lib/contracts";
-import type { DiffSpec } from "../editor/DiffPane";
-import { Icon } from "../Icon";
-import { CodeBlock } from "../Markdown";
+import { ui } from "../../app/ui-store";
+import { auxViews } from "../aux-views";
+import { Icon } from "../../components/Icon";
+import { CodeBlock } from "../../components/Markdown";
 import { useI18n } from "../../i18n";
 import { EXT_LANGS } from "../../lib/file-langs";
 
@@ -49,13 +56,13 @@ function DiffView({ diff }: { diff: ScmDiff }): ReactElement {
 function StatusGroup({ title, entries, total, onOpen, actions, confirmingPath, confirmLabel, onConfirmDiscard, onCancelDiscard }: {
   title: string;
   entries: ScmStatusEntry[];
-  total?: number;
+  total?: number | undefined;
   onOpen(entry: ScmStatusEntry): void;
   /** 行内操作按钮（hover 显示），按分组注入 stage/unstage/discard */
   actions?(entry: ScmStatusEntry): ReactNode;
-  /** 正在等待二次确认 discard 的行路径（确认模式与 worktree 清理一致） */
-  confirmingPath?: string;
-  confirmLabel?: string;
+  /** 正在等待二次确认 discard 的行路径 */
+  confirmingPath?: string | undefined;
+  confirmLabel?: string | undefined;
   onConfirmDiscard?(entry: ScmStatusEntry): void;
   onCancelDiscard?(): void;
 }): ReactElement | null {
@@ -90,21 +97,16 @@ function StatusGroup({ title, entries, total, onOpen, actions, confirmingPath, c
   );
 }
 
-export function ScmPanel({ sessionId, onNotice, onOpenDiff }: {
-  sessionId?: string;
-  onNotice?(message: string, kind?: "info" | "error"): void;
-  /** 0.5.0 Phase 1b：文件 diff 一键在统一 diff 视图中打开（hunk 级接受/拒绝） */
-  onOpenDiff?(spec: DiffSpec): void;
-}): ReactElement {
+export function ScmView({ sessionId }: { sessionId?: string | undefined }): ReactElement {
   const { t } = useI18n();
   const queryClient = useQueryClient();
-  const [selected, setSelected] = useState<{ path: string; staged: boolean; untracked: boolean }>();
+  const [selected, setSelected] = useState<{ path: string; staged: boolean; untracked: boolean } | undefined>();
   const [commitMessage, setCommitMessage] = useState("");
   const [newBranch, setNewBranch] = useState("");
-  const [confirming, setConfirming] = useState<string>();
-  const [confirmDiscard, setConfirmDiscard] = useState<{ path: string; untracked: boolean }>();
+  const [confirming, setConfirming] = useState<string | undefined>();
+  const [confirmDiscard, setConfirmDiscard] = useState<{ path: string; untracked: boolean } | undefined>();
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [mergeConflicts, setMergeConflicts] = useState<{ name: string; conflicts: string[] }>();
+  const [mergeConflicts, setMergeConflicts] = useState<{ name: string; conflicts: string[] } | undefined>();
 
   useEffect(() => {
     setSelected(undefined);
@@ -150,24 +152,23 @@ export function ScmPanel({ sessionId, onNotice, onOpenDiff }: {
   });
 
   const refresh = (): void => {
-    queryClient.invalidateQueries({ queryKey: ["scm-status", sessionId] });
-    queryClient.invalidateQueries({ queryKey: ["scm-worktrees", sessionId] });
-    queryClient.invalidateQueries({ queryKey: ["scm-diff", sessionId] });
+    void queryClient.invalidateQueries({ queryKey: ["scm-status", sessionId] });
+    void queryClient.invalidateQueries({ queryKey: ["scm-worktrees", sessionId] });
+    void queryClient.invalidateQueries({ queryKey: ["scm-diff", sessionId] });
   };
 
-  const mutationError = (fallback: string) => (error: unknown) =>
-    onNotice?.(error instanceof Error ? error.message : fallback, "error");
+  const notifyError = (fallback: string) => (error: unknown) =>
+    ui.notify(error instanceof Error ? error.message : fallback, "error");
 
-  // 行内写操作（阶段 2）：成功后在本地主动 invalidate 三个 scm query，不等 scm.updated 事件
   const stage = useMutation({
     mutationFn: (files: string[]) => api.scmStage(sessionId!, files),
     onSuccess: () => refresh(),
-    onError: mutationError(t("暂存失败", "Failed to stage")),
+    onError: notifyError(t("暂存失败", "Failed to stage")),
   });
   const unstage = useMutation({
     mutationFn: (files: string[]) => api.scmUnstage(sessionId!, files),
     onSuccess: () => refresh(),
-    onError: mutationError(t("取消暂存失败", "Failed to unstage")),
+    onError: notifyError(t("取消暂存失败", "Failed to unstage")),
   });
   const discard = useMutation({
     mutationFn: (input: { files: string[]; force: boolean }) => api.scmDiscard(sessionId!, input.files, input.force),
@@ -177,7 +178,7 @@ export function ScmPanel({ sessionId, onNotice, onOpenDiff }: {
     },
     onError: (error) => {
       setConfirmDiscard(undefined);
-      mutationError(t("放弃更改失败", "Failed to discard changes"))(error);
+      notifyError(t("放弃更改失败", "Failed to discard changes"))(error);
     },
   });
 
@@ -193,19 +194,19 @@ export function ScmPanel({ sessionId, onNotice, onOpenDiff }: {
     ),
     onSuccess: () => {
       setCommitMessage("");
-      onNotice?.(t("已下发提交请求，agent 执行前会请求你确认。", "Commit request dispatched. The agent will ask for your confirmation before committing."));
+      ui.notify(t("已下发提交请求，agent 执行前会请求你确认。", "Commit request dispatched. The agent will ask for your confirmation before committing."));
     },
-    onError: (error) => onNotice?.(error instanceof Error ? error.message : t("下发提交请求失败", "Failed to dispatch commit request"), "error"),
+    onError: (error) => ui.notify(error instanceof Error ? error.message : t("下发提交请求失败", "Failed to dispatch commit request"), "error"),
   });
 
   const createWorktree = useMutation({
     mutationFn: (branch: string) => api.scmCreateWorktree(sessionId!, { branch }),
     onSuccess: () => {
       setNewBranch("");
-      queryClient.invalidateQueries({ queryKey: ["scm-worktrees", sessionId] });
-      onNotice?.(t("worktree 已创建。", "Worktree created."));
+      void queryClient.invalidateQueries({ queryKey: ["scm-worktrees", sessionId] });
+      ui.notify(t("worktree 已创建。", "Worktree created."));
     },
-    onError: (error) => onNotice?.(error instanceof Error ? error.message : t("创建 worktree 失败", "Failed to create worktree"), "error"),
+    onError: (error) => ui.notify(error instanceof Error ? error.message : t("创建 worktree 失败", "Failed to create worktree"), "error"),
   });
 
   const removeWorktree = useMutation({
@@ -213,13 +214,13 @@ export function ScmPanel({ sessionId, onNotice, onOpenDiff }: {
     mutationFn: (name: string) => api.scmDeleteWorktree(sessionId!, name, { force: true }),
     onSuccess: () => {
       setConfirming(undefined);
-      queryClient.invalidateQueries({ queryKey: ["scm-worktrees", sessionId] });
-      queryClient.invalidateQueries({ queryKey: ["scm-status", sessionId] });
-      onNotice?.(t("worktree 已清理。", "Worktree removed."));
+      void queryClient.invalidateQueries({ queryKey: ["scm-worktrees", sessionId] });
+      void queryClient.invalidateQueries({ queryKey: ["scm-status", sessionId] });
+      ui.notify(t("worktree 已清理。", "Worktree removed."));
     },
     onError: (error) => {
       setConfirming(undefined);
-      onNotice?.(error instanceof Error ? error.message : t("清理 worktree 失败", "Failed to remove worktree"), "error");
+      ui.notify(error instanceof Error ? error.message : t("清理 worktree 失败", "Failed to remove worktree"), "error");
     },
   });
 
@@ -229,15 +230,15 @@ export function ScmPanel({ sessionId, onNotice, onOpenDiff }: {
     onSuccess: (result, name) => {
       if (result.merged) {
         setMergeConflicts(undefined);
-        queryClient.invalidateQueries({ queryKey: ["scm-worktrees", sessionId] });
-        queryClient.invalidateQueries({ queryKey: ["scm-status", sessionId] });
-        onNotice?.(t(`已将 ${name} 合回 ${result.branch}。`, `Merged ${name} back into ${result.branch}.`));
+        void queryClient.invalidateQueries({ queryKey: ["scm-worktrees", sessionId] });
+        void queryClient.invalidateQueries({ queryKey: ["scm-status", sessionId] });
+        ui.notify(t(`已将 ${name} 合回 ${result.branch}。`, `Merged ${name} back into ${result.branch}.`));
       } else {
         setMergeConflicts({ name, conflicts: result.conflicts });
-        onNotice?.(t(`合回 ${name} 存在 ${result.conflicts.length} 个冲突，请手动解决。`, `Merging ${name} produced ${result.conflicts.length} conflict(s); resolve them manually.`), "error");
+        ui.notify(t(`合回 ${name} 存在 ${result.conflicts.length} 个冲突，请手动解决。`, `Merging ${name} produced ${result.conflicts.length} conflict(s); resolve them manually.`), "error");
       }
     },
-    onError: (error) => onNotice?.(error instanceof Error ? error.message : t("合回 worktree 失败", "Failed to merge worktree"), "error"),
+    onError: (error) => ui.notify(error instanceof Error ? error.message : t("合回 worktree 失败", "Failed to merge worktree"), "error"),
   });
 
   if (!sessionId) {
@@ -305,7 +306,6 @@ export function ScmPanel({ sessionId, onNotice, onOpenDiff }: {
     <div className="files-panel-wrap">
       <div className="inspector-body problems-panel">
         <div className="panel-head">
-          <h2>{t("源代码管理", "Source Control")}</h2>
           <button className="btn small" onClick={refresh} aria-label={t("刷新", "Refresh")}>
             <Icon name="history" size={12} />
             {t("刷新", "Refresh")}
@@ -314,7 +314,7 @@ export function ScmPanel({ sessionId, onNotice, onOpenDiff }: {
         {status.isPending ? (
           <p className="muted-empty panel-empty">{t("加载中…", "Loading…")}</p>
         ) : status.isError ? (
-          <p className="muted-empty panel-empty">
+          <p className="panel-error" role="alert">
             {t("无法读取 git 状态（该会话目录可能不是 git 仓库）", "Could not read git status (the session directory may not be a git repository)")}
             {status.error instanceof ApiError ? `：${status.error.message}` : ""}
           </p>
@@ -425,7 +425,7 @@ export function ScmPanel({ sessionId, onNotice, onOpenDiff }: {
         <section className="scm-worktrees">
           <h3 className="problems-file">{t("Worktrees", "Worktrees")}</h3>
           {worktrees.isError ? (
-            <p className="muted-empty preview-note">
+            <p className="panel-error" role="alert">
               {t("无法读取 worktree 列表", "Could not load worktrees")}
               {worktrees.error instanceof ApiError ? `：${worktrees.error.message}` : ""}
             </p>
@@ -512,10 +512,10 @@ export function ScmPanel({ sessionId, onNotice, onOpenDiff }: {
               {selected.path}
               {selected.untracked ? t("（未跟踪）", " (untracked)") : selected.staged ? t("（已暂存）", " (staged)") : ""}
             </span>
-            {!selected.untracked && onOpenDiff && (
+            {!selected.untracked && (
               <button
                 className="btn small"
-                onClick={() => onOpenDiff({ source: "scm", path: selected.path, staged: selected.staged })}
+                onClick={() => auxViews.openDiff({ source: "scm", path: selected.path, staged: selected.staged })}
                 aria-label={t("在 diff 视图中打开（支持 hunk 接受/拒绝）", "Open in diff view (hunk accept/reject)")}
               >
                 {t("在 diff 视图中打开", "Open in diff view")}
@@ -525,7 +525,7 @@ export function ScmPanel({ sessionId, onNotice, onOpenDiff }: {
           </header>
           {selected.untracked ? (
             untrackedFile.isError ? (
-              <p className="muted-empty preview-note">
+              <p className="panel-error" role="alert">
                 {untrackedFile.error instanceof ApiError ? untrackedFile.error.message : t("无法读取该文件。", "Could not read this file.")}
               </p>
             ) : untrackedFile.data ? (
@@ -534,7 +534,7 @@ export function ScmPanel({ sessionId, onNotice, onOpenDiff }: {
               <p className="muted-empty preview-note">{t("加载中…", "Loading…")}</p>
             )
           ) : diff.isError ? (
-            <p className="muted-empty preview-note">
+            <p className="panel-error" role="alert">
               {diff.error instanceof ApiError ? diff.error.message : t("无法读取 diff。", "Could not load the diff.")}
             </p>
           ) : diff.data ? (

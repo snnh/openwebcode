@@ -1,34 +1,32 @@
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "../../lib/api";
-import type { DiffSpec } from "../editor/DiffPane";
-import { Icon } from "../Icon";
-import { CodeBlock } from "../Markdown";
-import { useI18n } from "../../i18n";
-import { useConfirmDialog } from "../ConfirmDialog";
+import { api } from "../lib/api";
+import { Icon } from "../components/Icon";
+import { CodeBlock } from "../components/Markdown";
+import { useConfirmDialog } from "../components/ConfirmDialog";
+import { qk } from "../app/queries";
+import { ui } from "../app/ui-store";
+import { auxViews } from "../workbench/aux-views";
+import { useI18n } from "../i18n";
 
 /** 会话树节点展示上限（超出时只保留最新 N 个，滚动查看；当前叶节点打开时滚动可见） */
 const TIMELINE_TREE_LIMIT = 50;
 
-export function TimelinePanel({ sessionId, running, onNotice, onOpenDiff, onForkSession }: {
-  sessionId?: string;
+/** 时间线面板：会话树（检出/分叉）+ 检查点（新建/回滚/删除/diff 视图）。数据自取，提示走 ui.notify，diff 走 auxViews。 */
+export function TimelinePanel({ sessionId, running }: {
+  sessionId?: string | undefined;
   running: boolean;
-  onNotice(message: string, kind?: "info" | "error"): void;
-  /** 0.5.0 Phase 1b：检查点对比一键在统一 diff 视图中打开（hunk 级"恢复到此 hunk"） */
-  onOpenDiff?(spec: DiffSpec): void;
-  /** 分叉成功后切换到新会话（App 注入；不传时仅刷新会话列表） */
-  onForkSession?: ((newSessionId: string) => void) | undefined;
 }): ReactElement {
   const { t, locale } = useI18n();
   const confirm = useConfirmDialog();
   const queryClient = useQueryClient();
   const [selectedCheckpoint, setSelectedCheckpoint] = useState<string>();
   const checkpoints = useQuery({
-    queryKey: ["checkpoints", sessionId],
+    queryKey: qk.checkpoints(sessionId ?? ""),
     queryFn: () => api.checkpoints(sessionId!),
     enabled: Boolean(sessionId),
   });
-  const timeline = useQuery({ queryKey: ["timeline", sessionId], queryFn: () => api.timeline(sessionId!), enabled: Boolean(sessionId) });
+  const timeline = useQuery({ queryKey: qk.timeline(sessionId ?? ""), queryFn: () => api.timeline(sessionId!), enabled: Boolean(sessionId) });
   const capability = useQuery({
     queryKey: ["snapshot-capability", sessionId],
     queryFn: () => api.snapshotCapability(sessionId!),
@@ -51,30 +49,30 @@ export function TimelinePanel({ sessionId, running, onNotice, onOpenDiff, onFork
   if (!sessionId) return <div className="inspector-body"><p className="muted-empty panel-empty">{t("选择会话以查看检查点。", "Select a session to view checkpoints.")}</p></div>;
 
   const refresh = (): void => {
-    void queryClient.invalidateQueries({ queryKey: ["checkpoints", sessionId] });
-    void queryClient.invalidateQueries({ queryKey: ["session", sessionId] });
+    void queryClient.invalidateQueries({ queryKey: qk.checkpoints(sessionId) });
+    void queryClient.invalidateQueries({ queryKey: qk.session(sessionId) });
   };
 
   // 检出到任意树节点并从那里继续（运行中 409，由按钮禁用拦截；服务端兜底错误进 toast）
   const checkout = (messageId: string): void => {
     api.checkoutSession(sessionId, messageId)
       .then(() => {
-        void queryClient.invalidateQueries({ queryKey: ["timeline", sessionId] });
-        void queryClient.invalidateQueries({ queryKey: ["session", sessionId] });
-        onNotice(t("已检出到该节点", "Checked out to this node"));
+        void queryClient.invalidateQueries({ queryKey: qk.timeline(sessionId) });
+        void queryClient.invalidateQueries({ queryKey: qk.session(sessionId) });
+        ui.notify(t("已检出到该节点", "Checked out to this node"));
       })
-      .catch((error: unknown) => onNotice(error instanceof Error ? error.message : t("检出失败", "Checkout failed"), "error"));
+      .catch((error: unknown) => ui.notify(error instanceof Error ? error.message : t("检出失败", "Checkout failed"), "error"));
   };
 
   // 从任意树节点分叉为新会话（运行中允许），成功后切换过去
   const fork = (messageId: string): void => {
     api.forkSession(sessionId, { messageId })
       .then(({ sessionId: newSessionId }) => {
-        void queryClient.invalidateQueries({ queryKey: ["sessions"] });
-        onNotice(t("已分叉到新会话", "Forked into a new session"));
-        onForkSession?.(newSessionId);
+        void queryClient.invalidateQueries({ queryKey: qk.sessions });
+        ui.notify(t("已分叉到新会话", "Forked into a new session"));
+        ui.selectSession(newSessionId);
       })
-      .catch((error: unknown) => onNotice(error instanceof Error ? error.message : t("分叉失败", "Fork failed"), "error"));
+      .catch((error: unknown) => ui.notify(error instanceof Error ? error.message : t("分叉失败", "Fork failed"), "error"));
   };
 
   return (
@@ -87,8 +85,8 @@ export function TimelinePanel({ sessionId, running, onNotice, onOpenDiff, onFork
           title={running ? t("运行中无法创建检查点", "Cannot create a checkpoint while running") : t("以当前状态创建检查点", "Create a checkpoint from the current state")}
           onClick={() => {
             api.createCheckpoint(sessionId)
-              .then(() => { refresh(); onNotice(t("已创建检查点", "Checkpoint created")); })
-              .catch((error: unknown) => onNotice(error instanceof Error ? error.message : t("创建检查点失败", "Could not create checkpoint"), "error"));
+              .then(() => { refresh(); ui.notify(t("已创建检查点", "Checkpoint created")); })
+              .catch((error: unknown) => ui.notify(error instanceof Error ? error.message : t("创建检查点失败", "Could not create checkpoint"), "error"));
           }}
         >
           <Icon name="plus" size={12} /> {t("新建", "New")}
@@ -162,8 +160,8 @@ export function TimelinePanel({ sessionId, running, onNotice, onOpenDiff, onFork
                 confirmLabel: t("回滚", "Roll back"),
                 onConfirm: () => {
                   api.restoreCheckpoint(sessionId, checkpoint.id)
-                    .then(() => { refresh(); onNotice(t("已完整恢复检查点", "Checkpoint fully restored")); })
-                    .catch((error: unknown) => onNotice(error instanceof Error ? error.message : t("回滚失败", "Rollback failed"), "error"));
+                    .then(() => { refresh(); ui.notify(t("已完整恢复检查点", "Checkpoint fully restored")); })
+                    .catch((error: unknown) => ui.notify(error instanceof Error ? error.message : t("回滚失败", "Rollback failed"), "error"));
                 },
               })}
             >
@@ -178,8 +176,8 @@ export function TimelinePanel({ sessionId, running, onNotice, onOpenDiff, onFork
                 confirmLabel: t("恢复", "Restore"),
                 onConfirm: () => {
                   api.restoreCheckpoint(sessionId, checkpoint.id, true)
-                    .then(() => { refresh(); onNotice(t("已仅恢复文件", "Files restored")); })
-                    .catch((error: unknown) => onNotice(error instanceof Error ? error.message : t("回滚失败", "Rollback failed"), "error"));
+                    .then(() => { refresh(); ui.notify(t("已仅恢复文件", "Files restored")); })
+                    .catch((error: unknown) => ui.notify(error instanceof Error ? error.message : t("回滚失败", "Rollback failed"), "error"));
                 },
               })}
             >
@@ -198,9 +196,9 @@ export function TimelinePanel({ sessionId, running, onNotice, onOpenDiff, onFork
                     .then(() => {
                       setSelectedCheckpoint((value) => (value === checkpoint.id ? undefined : value));
                       refresh();
-                      onNotice(t("已删除检查点", "Checkpoint deleted"));
+                      ui.notify(t("已删除检查点", "Checkpoint deleted"));
                     })
-                    .catch((error: unknown) => onNotice(error instanceof Error ? error.message : t("删除检查点失败", "Could not delete checkpoint"), "error"));
+                    .catch((error: unknown) => ui.notify(error instanceof Error ? error.message : t("删除检查点失败", "Could not delete checkpoint"), "error"));
                 },
               })}
             >
@@ -209,15 +207,13 @@ export function TimelinePanel({ sessionId, running, onNotice, onOpenDiff, onFork
           </div>
           {selectedCheckpoint === checkpoint.id && (
             <>
-              {onOpenDiff && (
-                <button
-                  className="btn small"
-                  onClick={() => onOpenDiff({ source: "checkpoint", checkpointId: checkpoint.id, label: checkpoint.label })}
-                  aria-label={t("在 diff 视图中打开（支持 hunk 级恢复）", "Open in diff view (hunk-level restore)")}
-                >
-                  {t("在 diff 视图中打开", "Open in diff view")}
-                </button>
-              )}
+              <button
+                className="btn small"
+                onClick={() => auxViews.openDiff({ source: "checkpoint", checkpointId: checkpoint.id, label: checkpoint.label })}
+                aria-label={t("在 diff 视图中打开（支持 hunk 级恢复）", "Open in diff view (hunk-level restore)")}
+              >
+                {t("在 diff 视图中打开", "Open in diff view")}
+              </button>
               {diff.data ? <CodeBlock lang="diff" code={diff.data.diff || t("（无差异）", "(No differences)")} /> : <p className="muted-empty panel-empty">{t("加载 diff…", "Loading diff…")}</p>}
             </>
           )}

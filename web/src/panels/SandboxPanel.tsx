@@ -1,8 +1,9 @@
 import type { ReactElement } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { api } from "../../lib/api";
-import type { SandboxCapability, SandboxMode, SessionDetail } from "../../lib/contracts";
-import { useI18n } from "../../i18n";
+import { api } from "../lib/api";
+import type { SandboxCapability, SandboxMode } from "../lib/contracts";
+import { useSessionQuery } from "../app/queries";
+import { useI18n } from "../i18n";
 
 const SANDBOX_MODE_LABELS: Record<SandboxMode, [string, string]> = {
   appcontainer: ["应用容器（AppContainer）", "AppContainer"],
@@ -25,8 +26,11 @@ const CAPABILITY_PILL_CLASS: Record<SandboxCapability, string> = {
   advisory: "danger",
 };
 
-export function SandboxPanel({ session }: { session?: SessionDetail }): ReactElement {
+/** 沙盒面板：会话沙盒策略 + 平台能力 + 最近一次 configureSession 上报的执行级别。会话详情自取（qk.session）。 */
+export function SandboxPanel({ sessionId }: { sessionId?: string | undefined }): ReactElement {
   const { t } = useI18n();
+  const sessionQuery = useSessionQuery(sessionId);
+  const session = sessionQuery.data;
   const sandboxCaps = useQuery({
     queryKey: ["sandbox-capabilities"],
     queryFn: api.sandboxCapabilities,
@@ -34,12 +38,12 @@ export function SandboxPanel({ session }: { session?: SessionDetail }): ReactEle
   });
   // 执行级别：最近一次 configureSession 时 core 上报的 capability/reason；无记录显示 —
   const sandboxStatus = useQuery({
-    queryKey: ["sandbox-status", session?.id],
-    queryFn: () => api.sessionSandboxStatus(session!.id),
+    queryKey: ["sandbox-status", sessionId],
+    queryFn: () => api.sessionSandboxStatus(sessionId!),
     staleTime: 30_000,
     enabled: Boolean(session?.sandbox),
   });
-  if (!session) return <div className="inspector-body"><p className="muted-empty panel-empty">{t("选择会话以查看沙盒策略。", "Select a session to view its sandbox policy.")}</p></div>;
+  if (!sessionId || !session) return <div className="inspector-body"><p className="muted-empty panel-empty">{t("选择会话以查看沙盒策略。", "Select a session to view its sandbox policy.")}</p></div>;
   if (!session.sandbox) return <div className="inspector-body"><p className="muted-empty panel-empty">{t("未配置沙盒策略。", "No sandbox policy is configured.")}</p></div>;
   const { sandbox } = session;
   const enabled = (session.sandboxMode ?? "jobobject") !== "off" && sandbox.enabled;

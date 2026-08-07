@@ -185,7 +185,7 @@ export function EditorPane({ sessionId, path, line, column, readOnly = false, da
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key !== "Escape") return;
-      if (hostRef.current?.contains(event.target as Node)) return;
+      if (event.target instanceof Node && hostRef.current?.contains(event.target)) return;
       event.stopPropagation();
       requestClose();
     };

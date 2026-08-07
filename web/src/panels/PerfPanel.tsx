@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { api } from "../../lib/api";
-import type { RunPerfRecord } from "../../lib/contracts";
-import { getFpsStats, startFrameSampler, stopFrameSampler, type FpsStats } from "../../lib/perf-sampler";
-import { useI18n } from "../../i18n";
-import { formatBytes, formatDuration } from "../../lib/format";
-import { Icon } from "../Icon";
+import { api } from "../lib/api";
+import type { RunPerfRecord } from "../lib/contracts";
+import { getFpsStats, startFrameSampler, stopFrameSampler, type FpsStats } from "../lib/perf-sampler";
+import { formatBytes, formatDuration } from "../lib/format";
+import { Icon } from "../components/Icon";
+import { useI18n } from "../i18n";
 
 const MONITORING_STORAGE_KEY = "owc-perf-monitoring";
 
@@ -49,7 +49,8 @@ function StageBar({ record }: { record: RunPerfRecord }): ReactElement {
   );
 }
 
-export function PerfPanel({ sessionId }: { sessionId?: string }): ReactElement {
+/** 性能面板：渲染帧率（perf-sampler）+ 事件吞吐 + Turn 阶段耗时 + Provider 并发；监控开关持久化 localStorage。 */
+export function PerfPanel({ sessionId }: { sessionId?: string | undefined }): ReactElement {
   const { t } = useI18n();
   const [fps, setFps] = useState<FpsStats>({ fps50: 0, fps95: 0, droppedFrames: 0, sampleCount: 0 });
   const [monitoring, setMonitoring] = useState(readMonitoringPreference);
