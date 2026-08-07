@@ -68,7 +68,7 @@ export const CodeView = memo(function CodeView({ code, lang, targetLine, targetC
 
   return (
     <div className="code-view" data-lang={lang}>
-      {/* shiki class 让暗色主题的 --shiki-dark 变量规则生效（见 styles.css 双主题段） */}
+      {/* shiki class 让暗色主题的 --shiki-dark 变量规则生效（见 styles/editor.css 双主题段） */}
       <pre className="shiki">{rows}</pre>
       {truncated && <p className="muted-empty preview-note">{t(`内容过长，仅显示前 ${MAX_LINES} 行。`, `Content is too long; showing the first ${MAX_LINES} lines.`)}</p>}
     </div>

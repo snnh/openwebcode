@@ -88,3 +88,9 @@
   font-size: 12px;
 }
 .login-switch:hover:not(:disabled) { background: var(--panel-2); }
+
+.bindlink-editor { display: flex; flex-direction: column; gap: 6px; font-size: 13px; font-weight: 500; color: var(--text-2); }
+.bindlink-editor-header { display: flex; justify-content: space-between; align-items: center; }
+.bindlink-row { display: flex; align-items: center; gap: 6px; }
+.bindlink-row input:not([type="checkbox"]) { flex: 1; min-width: 0; }
+.session-dialog label.bindlink-readonly { display: flex; flex-direction: row; align-items: center; gap: 4px; white-space: nowrap; font-weight: 400; }

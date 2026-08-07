@@ -187,3 +187,19 @@
   /* 浮层移动端近全屏 */
   .wb-overlay { width: calc(100vw - 16px); max-height: 84vh; }
 }
+
+[data-theme="dark"] .shiki,
+[data-theme="dark"] .shiki span {
+  color: var(--shiki-dark) !important;
+  background-color: transparent !important;
+  font-style: var(--shiki-dark-font-style) !important;
+  font-weight: var(--shiki-dark-font-weight) !important;
+  text-decoration: var(--shiki-dark-text-decoration) !important;
+}
+.code-view-line.code-view-target { background: var(--accent-soft); }
+.code-view-no {
+  flex: none; width: 44px; padding-right: 10px;
+  text-align: right; user-select: none;
+  color: var(--text-3);
+}
+.code-view-text { flex: 1; padding-right: 12px; }

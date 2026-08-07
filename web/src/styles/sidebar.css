@@ -118,12 +118,10 @@
 .sessions-view footer { gap: 4px; }
 .sessions-view footer .icon-btn:first-child { margin-right: auto; }
 
-/* ================= 面板公共（文件/SCM/问题） ================= */
-.inspector-body { flex: 1; overflow: auto; padding: 14px 18px; position: relative; }
+/* ================= 文件面板 ================= */
 /* 文件面板外层：非滚动容器，预览浮层相对它定位，不随文件树滚动 */
 .files-panel-wrap { position: relative; overflow: hidden; height: 100%; }
-.panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
-.panel-head h2 { margin: 0; font-size: 13px; font-weight: 600; }
+/* 面板公共壳规则（.inspector-body/.panel-head）定义在 panels.css，侧栏四视图与底部面板共用 */
 .tree-note { margin: 2px 0; }
 
 /* 文件树 */
