@@ -1,14 +1,12 @@
 /**
- * 命令面板（Ctrl/Cmd+Shift+P，0.4.0 Phase 5a）：
- * 列出注册表中 when 满足的命令，模糊过滤（中英标题 + 命令 id），
+ * 命令面板（Ctrl/Cmd+Shift+P）：列出注册表中 when 满足的命令，模糊过滤（中英标题 + 命令 id），
  * 右侧如实展示键位。Enter 执行，Esc 关闭。
  */
 import { useEffect, useMemo, useState, type ReactElement } from "react";
-import { listCommands, runCommand, type Command, type WhenContext } from "../commands/registry";
-import { DEFAULT_KEYBINDINGS, formatCombo, isMacPlatform } from "../commands/keybindings";
+import { listCommands, runCommand, DEFAULT_KEYBINDINGS, formatCombo, isMacPlatform, type Command, type WhenContext } from "../app/commands";
 import { filterAndRank } from "../lib/fuzzy";
 import { useI18n } from "../i18n";
-import { Overlay } from "./Overlay";
+import { Overlay } from "../components/Overlay";
 
 export function CommandPalette({ open, context, onClose }: {
   open: boolean;

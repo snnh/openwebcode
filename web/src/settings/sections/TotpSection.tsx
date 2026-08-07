@@ -5,7 +5,7 @@ import { api, ApiError } from "../../lib/api";
 import type { TotpSetupResponse } from "../../lib/contracts";
 import { writeClipboard } from "../../lib/clipboard";
 import { useI18n } from "../../i18n";
-import { AUTH_STATUS_QUERY_KEY } from "../AuthGate";
+import { AUTH_STATUS_QUERY_KEY } from "../../components/AuthGate";
 
 type WizardStage = "idle" | "scan" | "recovery" | "disable";
 

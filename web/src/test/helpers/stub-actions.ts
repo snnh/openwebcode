@@ -1,5 +1,5 @@
 import { vi } from "vitest";
-import type { CommandActions } from "../../commands/builtin";
+import type { CommandActions } from "../../app/commands";
 
 /** CommandActions 全量 vi.fn() 桩，支持单项 override（如 findInConversation 走真实 window 事件桥接）。 */
 export function stubActions(overrides: Partial<CommandActions> = {}): CommandActions {

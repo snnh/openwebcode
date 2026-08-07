@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ModelCatalogSyncSection, ModelSelectionSection, RemoteAccessSection, ServerSettingsFields, ShortcutsSection, SystemStorageSection } from "../components/SettingsDialog";
-import { registerBuiltinCommands } from "../commands/builtin";
-import { resetCommands } from "../commands/registry";
-import { DEFAULT_KEYBINDINGS } from "../commands/keybindings";
+import { ModelCatalogSyncSection, ModelSelectionSection } from "../settings/sections/ModelSelectionSection";
+import { RemoteAccessSection } from "../settings/sections/RemoteAccessSection";
+import { ServerSettingsFields } from "../settings/sections/ServerSettingsFields";
+import { ShortcutsSection } from "../settings/sections/ShortcutsSection";
+import { SystemStorageSection } from "../settings/sections/SystemStorageSection";
+import { registerBuiltinCommands, resetCommands, DEFAULT_KEYBINDINGS } from "../app/commands";
 import { api } from "../lib/api";
 import type { SettingsView } from "../lib/contracts";
 import { stubActions } from "./helpers/stub-actions";

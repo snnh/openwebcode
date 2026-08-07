@@ -1,13 +1,12 @@
 /**
- * Quick Open（Ctrl/Cmd+P，0.4.0 Phase 5a）：模糊匹配工作区文件，
- * 选中后在只读代码视图浮层打开（§6.4，Esc 关闭即回到对话）。
+ * Quick Open（Ctrl/Cmd+P）：模糊匹配工作区文件，选中后在只读代码视图浮层打开（Esc 关闭即回到对话）。
  * 数据源与 Composer 的 @ 补全一致：索引缓存优先，409/501 回退 complete-path。
  */
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import { api, ApiError } from "../lib/api";
 import { filterAndRank } from "../lib/fuzzy";
 import { useI18n } from "../i18n";
-import { Overlay } from "./Overlay";
+import { Overlay } from "../components/Overlay";
 
 /** 文件查询：索引缓存优先，409/501 回退 complete-path（与 @ 补全同一降级路径） */
 export async function queryWorkspaceFiles(sessionId: string, q: string, limit = 50): Promise<{ paths: string[]; indexStatus?: string }> {
@@ -27,7 +26,7 @@ export function QuickOpen({ open, sessionId, onOpenFile, onOpenInEditor, onClose
   open: boolean;
   sessionId?: string;
   onOpenFile(path: string): void;
-  /** 0.5.0 Phase 1a：Ctrl/Cmd+Enter 在编辑器分栏打开；未提供时无此入口 */
+  /** Ctrl/Cmd+Enter 在编辑器分栏打开；未提供时无此入口 */
   onOpenInEditor?(path: string): void;
   onClose(): void;
 }): ReactElement | null {
