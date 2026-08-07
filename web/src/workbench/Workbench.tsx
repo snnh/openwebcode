@@ -14,7 +14,8 @@ import { MOBILE_BREAKPOINT, useMediaQuery } from "../hooks/use-media-query";
 import { useI18n } from "../i18n";
 import { layout, layoutStore, type SidebarView } from "./layout";
 import { ActivityBar, MobileNavMenu, type RailActions } from "./Rail";
-import { SessionsView } from "./SessionsView";
+import { SidebarViews } from "./SidebarViews";
+import { BottomPanel } from "./BottomPanel";
 import { StatusBar } from "./StatusBar";
 
 export interface WorkbenchProps {
@@ -84,19 +85,8 @@ export function Workbench({ sessions, agentState, main }: WorkbenchProps): React
     onOpenSettings: () => ui.openSettings(),
   };
 
-  const sidebarContent = layoutState.sidebarView === "sessions" ? (
-    <SessionsView
-      sessions={sessions}
-      currentId={currentId}
-      agentStates={agentStates}
-      onSelect={selectSession}
-      onCreate={() => ui.setNewSessionOpen(true)}
-    />
-  ) : (
-    // 文件/SCM/问题视图 Phase 2 接入
-    <aside className="sessions-view" aria-label={t("面板", "Panel")}>
-      <p className="muted-empty rail-empty">{t("该视图将在后续阶段提供", "This view will be available in a later phase")}</p>
-    </aside>
+  const sidebarContent = (
+    <SidebarViews sessions={sessions} currentId={currentId} agentStates={agentStates} onSelectSession={selectSession} />
   );
 
   const currentSession = sessions?.find((session) => session.id === currentId);
@@ -126,6 +116,7 @@ export function Workbench({ sessions, agentState, main }: WorkbenchProps): React
       <div className="wb-zone wb-main" data-wb-zone="main" tabIndex={-1} role="main" aria-label={t("对话", "Conversation")}>
         {main}
       </div>
+      <BottomPanel sessionId={currentId} agentState={agentState} mobile={isMobile} />
       <div className="wb-status">
         <StatusBar sessionId={currentId} session={currentSession} agentState={agentState} mobile={isMobile} />
       </div>
