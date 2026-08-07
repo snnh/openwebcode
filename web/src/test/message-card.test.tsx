@@ -1,170 +1,153 @@
-import { fireEvent, render, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { MessageCard } from "../components/MessageCard";
-import { api } from "../lib/api";
-import type { ChatMessage, SubagentTranscript } from "../lib/contracts";
-import { makeSubagentRun } from "./helpers/fixtures";
+import { fireEvent, render, type RenderResult } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import type { ReactElement } from "react";
+import { MemoMessageCard, MessageCard } from "../chat/MessageCard";
+import { ChatActionsContext, type ChatActions } from "../chat/types";
+import type { ChatMessage, MessageContent } from "../lib/contracts";
 import { renderWithClient } from "./helpers/with-client";
 
-function message(role: ChatMessage["role"], texts: string[]): ChatMessage {
+function makeChatActions(overrides: Partial<ChatActions> = {}): ChatActions {
   return {
-    id: "message-1",
-    role,
-    createdAt: "2026-07-20T00:00:00.000Z",
-    content: texts.map((text) => ({ type: "text", text })),
+    sessionId: "s1",
+    running: false,
+    onNotice: vi.fn(),
+    onOpenDiff: vi.fn(),
+    onSendToAgent: vi.fn(),
+    onEditMessage: vi.fn(),
+    onRegenerate: vi.fn(),
+    onFork: vi.fn(),
+    ...overrides,
   };
 }
 
-/** 渲染携带子代理转录的工具消息，并展开工具行露出转录查看器 */
-function renderToolMessageWithTranscript(content: ChatMessage["content"]): HTMLElement {
-  const toolMessage: ChatMessage = {
-    id: "m-tool",
-    role: "assistant",
-    createdAt: "2026-07-20T00:00:00.000Z",
-    content,
-  };
-  const { container } = renderWithClient(<MessageCard message={toolMessage} sessionId="s-1" />);
-  // 工具结果默认折叠为单行：先展开工具行，转录查看器在展开区内
-  fireEvent.click(container.querySelector(".tool-row-header")!);
-  return container;
+function renderWithActions(node: ReactElement, actions: ChatActions = makeChatActions()): RenderResult & { actions: ChatActions } {
+  const result = renderWithClient(<ChatActionsContext.Provider value={actions}>{node}</ChatActionsContext.Provider>);
+  return { ...result, actions };
 }
 
-/** 打开转录折叠（触发懒加载） */
-function openTranscript(container: HTMLElement): HTMLDetailsElement {
-  const details = container.querySelector("details.subagent-transcript")!;
-  (details as HTMLDetailsElement).open = true;
-  fireEvent(details, new Event("toggle"));
-  return details as HTMLDetailsElement;
+function message(role: ChatMessage["role"], content: MessageContent[], id = "m1"): ChatMessage {
+  return { id, role, createdAt: "2026-07-20T00:00:00.000Z", content };
+}
+
+function textMessage(role: ChatMessage["role"], texts: string[]): ChatMessage {
+  return message(role, texts.map((text) => ({ type: "text", text })));
 }
 
 describe("MessageCard", () => {
-  afterEach(() => vi.restoreAllMocks());
+  it("renders a user message as a right-aligned bubble with role class", () => {
+    const { container } = renderWithActions(<MessageCard message={textMessage("user", ["帮我修个 bug"])} turn={1} toolResults={{}} />);
+    const article = container.querySelector("article.message.user");
+    expect(article).not.toBeNull();
+    expect(article).toHaveAttribute("data-message-id", "m1");
+    expect(article).toHaveClass("turn-odd");
+    expect(container.querySelector(".markdown")).toHaveTextContent("帮我修个 bug");
+  });
 
-  it("renders persisted assistant stream fragments as one markdown block", () => {
-    const { container } = render(<MessageCard message={message("assistant", ["探索", "代码", "库", "，", "我都可以", "帮忙。"])} />);
-
+  it("coalesces persisted assistant stream fragments into one markdown block", () => {
+    const { container } = renderWithActions(
+      <MessageCard message={textMessage("assistant", ["探索", "代码", "库", "，", "我都可以", "帮忙。"])} turn={1} toolResults={{}} />,
+    );
     expect(container.querySelectorAll(".markdown")).toHaveLength(1);
     expect(container.querySelector(".markdown")).toHaveTextContent("探索代码库，我都可以帮忙。");
+    expect(container.querySelector(".message-author")).toHaveTextContent("OpenWebCode");
   });
 
-  it("keeps separate user text blocks separate", () => {
-    const { container } = render(<MessageCard message={message("user", ["引用文件内容", "用户问题"])} />);
-
-    expect(container.querySelectorAll(".markdown")).toHaveLength(2);
-  });
-
-  it("adds a turn banding class when turn is provided, omits it otherwise", () => {
-    const { container } = render(<MessageCard message={message("assistant", ["回答"])} turn={1} />);
-    expect(container.querySelector("article.message")).toHaveClass("turn-odd");
-
-    const { container: noTurn } = render(<MessageCard message={message("assistant", ["回答"])} />);
-    expect(noTurn.querySelector("article.message")!.className).not.toMatch(/turn-(even|odd)/);
-  });
-
-  it("shows markdown-capable thinking in a collapsed, separate block", async () => {
-    const thinkingMessage: ChatMessage = {
-      ...message("assistant", ["最终答案"]),
-      content: [
-        { type: "thinking", text: "先计算 $x^2$" },
-        { type: "text", text: "最终答案" },
-      ],
-    };
-    const { container, getByText } = render(<MessageCard message={thinkingMessage} />);
-    const details = container.querySelector("details.thinking");
-
-    expect(details).toBeInTheDocument();
-    expect(details).not.toHaveAttribute("open");
-    expect(getByText("思考过程")).toBeInTheDocument();
-    // Markdown 懒加载，等待 KaTeX 渲染完成
-    await waitFor(() => expect(details?.querySelector(".katex")).toBeInTheDocument());
-  });
-
-  it("renders subagent transcript viewer for spawn tool results and loads on expand", async () => {
-    const transcript: SubagentTranscript = {
-      id: "task-1",
-      prompt: "调查 a.ts",
-      startedAt: "2026-07-20T00:00:00.000Z",
-      turns: 2,
-      toolsUsed: ["read_file"],
-      conclusion: "子代理结论",
-      messages: [
-        { id: "sm-1", role: "user", createdAt: "2026-07-20T00:00:00.000Z", content: [{ type: "text", text: "调查 a.ts" }] },
-        { id: "sm-2", role: "assistant", createdAt: "2026-07-20T00:00:01.000Z", content: [{ type: "tool_call", id: "sc-1", name: "read_file", input: { path: "a.ts" } }] },
-        { id: "sm-3", role: "tool", createdAt: "2026-07-20T00:00:02.000Z", content: [{ type: "tool_result", toolCallId: "sc-1", content: "文件内容" }] },
-      ],
-    };
-    const spy = vi.spyOn(api, "subagentTranscript").mockResolvedValue(transcript);
-    const container = renderToolMessageWithTranscript([
-      { type: "tool_call", id: "call-1", name: "spawn_task", input: { prompt: "调查 a.ts" } },
-      { type: "tool_result", toolCallId: "call-1", content: "子代理结论", isError: false, subagentTaskIds: ["task-1"] },
-    ]);
-
-    const details = container.querySelector("details.subagent-transcript");
-    expect(details).toBeInTheDocument();
-    expect(spy).not.toHaveBeenCalled();
-    openTranscript(container);
-    await waitFor(() => expect(spy).toHaveBeenCalledWith("s-1", "task-1"));
-    await waitFor(() => expect(details?.querySelector(".subagent-transcript-prompt")).toHaveTextContent("调查 a.ts"));
-    expect(details?.querySelector(".subagent-transcript-meta")).toHaveTextContent("2 轮");
-
-    // 转录消息记录：角色行 + 工具调用/结果紧凑展示
-    await waitFor(() => expect(details?.querySelector(".subagent-transcript-messages")).toBeInTheDocument());
-    const rows = details!.querySelectorAll(".subagent-transcript-message");
-    expect(rows).toHaveLength(3);
-    expect(rows[0]!.querySelector(".subagent-transcript-role")).toHaveTextContent("任务");
-    expect(rows[1]!.querySelector(".subagent-transcript-tool")).toHaveTextContent("read_file · a.ts");
-    expect(rows[2]!.querySelector(".subagent-transcript-result")).toBeInTheDocument();
-  });
-
-  it("folds long transcripts to the last 20 messages", async () => {
-    const transcript: SubagentTranscript = {
-      id: "task-long",
-      prompt: "长任务",
-      startedAt: "2026-07-20T00:00:00.000Z",
-      turns: 13,
-      toolsUsed: [],
-      conclusion: "结论",
-      messages: Array.from({ length: 25 }, (_, i) => ({
-        id: `lm-${i}`,
-        role: (i % 2 === 0 ? "assistant" : "tool") as ChatMessage["role"],
-        createdAt: "2026-07-20T00:00:00.000Z",
-        content: [{ type: "tool_result" as const, toolCallId: `c-${i}`, content: `结果 ${i}` }],
-      })),
-    };
-    vi.spyOn(api, "subagentTranscript").mockResolvedValue(transcript);
-    const container = renderToolMessageWithTranscript([
-      { type: "tool_result", toolCallId: "call-1", content: "结论", isError: false, subagentTaskIds: ["task-long"] },
-    ]);
-    const details = openTranscript(container);
-    await waitFor(() => expect(details.querySelector(".subagent-transcript-messages")).toBeInTheDocument());
-    expect(details.querySelectorAll(".subagent-transcript-message")).toHaveLength(20);
-    expect(details.querySelector(".subagent-transcript-messages > .subagent-transcript-status")).toHaveTextContent("仅显示最近 20 条");
-
-    // 「展开全部」toggle：显示全部 25 条，再「收起」回到 20 条
-    fireEvent.click(details.querySelector<HTMLButtonElement>(".subagent-transcript-fold-toggle")!);
-    expect(details.querySelectorAll(".subagent-transcript-message")).toHaveLength(25);
-    expect(details.querySelector(".subagent-transcript-messages > .subagent-transcript-status")).not.toHaveTextContent("仅显示最近 20 条");
-    fireEvent.click(details.querySelector<HTMLButtonElement>(".subagent-transcript-fold-toggle")!);
-    expect(details.querySelectorAll(".subagent-transcript-message")).toHaveLength(20);
-  });
-
-  it("renders spawn tool calls as dedicated cards with live status from props", () => {
-    const spawnMessage: ChatMessage = {
-      id: "m-spawn",
-      role: "assistant",
-      createdAt: "2026-07-20T00:00:00.000Z",
-      content: [{ type: "tool_call", id: "call-9", name: "spawn_task", input: { prompt: "调查 b.ts" } }],
-    };
-    const { container } = render(
-      <MessageCard
-        message={spawnMessage}
-        sessionId="s-1"
-        liveSubagents={[makeSubagentRun({ taskId: "t-9", toolCallId: "call-9", prompt: "调查 b.ts" })]}
-      />,
+  it("renders a tool message result as a compact result row", () => {
+    const { container } = renderWithActions(
+      <MessageCard message={message("tool", [{ type: "tool_result", toolCallId: "c1", content: "done" }])} turn={1} toolResults={{ c1: false }} />,
     );
+    expect(container.querySelector(".tool-row")).not.toBeNull();
+    expect(container.querySelector(".tool-row-name")).toHaveTextContent("执行结果");
+  });
 
-    // 专用卡片取代通用 ToolCallCard：无参数 <details>（实时状态展示由 subagent-run-card 测试覆盖）
-    expect(container.querySelector(".subagent-run")).toBeInTheDocument();
-    expect(container.querySelector(".tool-detail")).not.toBeInTheDocument();
+  it("renders thinking blocks collapsed as a details element", () => {
+    const { container } = renderWithActions(
+      <MessageCard message={message("assistant", [{ type: "thinking", text: "先想想" }, { type: "text", text: "结论" }])} turn={0} toolResults={{}} />,
+    );
+    const thinking = container.querySelector("details.thinking");
+    expect(thinking).not.toBeNull();
+    expect(thinking).not.toHaveAttribute("open");
+    expect(thinking!.querySelector("summary")).toHaveTextContent("思考过程");
+    expect(container.querySelector("article")).toHaveClass("turn-even");
+  });
+
+  it("pairs tool call status icons from toolResults", () => {
+    const call = message("assistant", [{ type: "tool_call", id: "c1", name: "bash", input: { command: "ls" } }]);
+    const done = renderWithActions(<MessageCard message={call} turn={1} toolResults={{ c1: false }} />);
+    expect(done.container.querySelector(".tool-row-status.done")).not.toBeNull();
+    done.unmount();
+
+    const failed = renderWithActions(<MessageCard message={call} turn={1} toolResults={{ c1: true }} />);
+    expect(failed.container.querySelector(".tool-row-status.error")).not.toBeNull();
+    expect(failed.container.querySelector(".tool-row")).toHaveClass("error");
+    failed.unmount();
+
+    // 无配对结果且会话运行中 → running（脉动圆点）
+    const running = renderWithActions(
+      <MessageCard message={call} turn={1} toolResults={{}} />,
+      makeChatActions({ running: true }),
+    );
+    expect(running.container.querySelector(".tool-row-status.running .tool-row-dot")).not.toBeNull();
+  });
+
+  it("shows user message actions; running disables edit/regenerate but not fork", () => {
+    const userMessage = textMessage("user", ["问题"]);
+    const idle = renderWithActions(<MessageCard message={userMessage} turn={1} toolResults={{}} />);
+    expect(idle.getByText("编辑重发")).toBeEnabled();
+    expect(idle.getByText("重新生成")).toBeEnabled();
+    expect(idle.getByText("分叉")).toBeEnabled();
+    fireEvent.click(idle.getByText("编辑重发"));
+    expect(idle.actions.onEditMessage).toHaveBeenCalledWith(userMessage);
+    fireEvent.click(idle.getByText("分叉"));
+    expect(idle.actions.onFork).toHaveBeenCalledWith(userMessage);
+    idle.unmount();
+
+    const busy = renderWithActions(
+      <MessageCard message={textMessage("user", ["问题"])} turn={1} toolResults={{}} />,
+      makeChatActions({ running: true }),
+    );
+    expect(busy.getByText("编辑重发")).toBeDisabled();
+    expect(busy.getByText("重新生成")).toBeDisabled();
+    expect(busy.getByText("分叉")).toBeEnabled();
+  });
+
+  it("shows 发给 agent only when shellCmd 由列表配对得出，并携带原始命令与输出", () => {
+    const shell = message("tool", [{ type: "tool_result", toolCallId: "shell-ab12cd34", content: "file.txt" }]);
+    const { getByText, actions, unmount } = renderWithActions(<MessageCard message={shell} turn={1} toolResults={{}} shellCmd="ls" />);
+    fireEvent.click(getByText("发给 agent"));
+    expect(actions.onSendToAgent).toHaveBeenCalledWith("ls", "file.txt");
+    unmount();
+
+    // 无配对命令（前一条不是 user `!cmd` 消息）不渲染按钮
+    const { queryByText } = renderWithActions(<MessageCard message={shell} turn={1} toolResults={{}} />);
+    expect(queryByText("发给 agent")).toBeNull();
+  });
+
+  it("renders image attachments as data-url images", () => {
+    const { container } = renderWithActions(
+      <MessageCard message={message("user", [{ type: "image", mediaType: "image/png", data: "QUJD" }])} turn={1} toolResults={{}} />,
+    );
+    const image = container.querySelector("img.message-image");
+    expect(image).not.toBeNull();
+    expect(image).toHaveAttribute("src", "data:image/png;base64,QUJD");
+  });
+
+  it("MemoMessageCard skips rerender when a rebuilt message object is equal", () => {
+    const first = textMessage("assistant", ["回答"]);
+    const actions = makeChatActions();
+    const { container, rerender, queryByText } = render(
+      <ChatActionsContext.Provider value={actions}>
+        <MemoMessageCard message={first} turn={1} toolResults={{}} />
+      </ChatActionsContext.Provider>,
+    );
+    expect(container.querySelector(".markdown")).toHaveTextContent("回答");
+    // 事件重放重建的等值消息对象（引用不同、内容相同）不应改变渲染输出
+    rerender(
+      <ChatActionsContext.Provider value={actions}>
+        <MemoMessageCard message={textMessage("assistant", ["回答"])} turn={1} toolResults={{}} />
+      </ChatActionsContext.Provider>,
+    );
+    expect(container.querySelector(".markdown")).toHaveTextContent("回答");
+    expect(queryByText("分叉")).toBeNull();
   });
 });

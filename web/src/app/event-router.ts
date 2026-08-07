@@ -1,7 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import type {
-  AgentErrorPayload, AgentRun, AppEvent, BackgroundTaskInfo, ContextUsage, ContextWatermark,
+  AgentErrorPayload, AppEvent, BackgroundTaskInfo, ContextUsage, ContextWatermark,
   ModelFallbackPayload, Session, TodoItem,
 } from "../lib/contracts";
 import { agentErrorToastText } from "../lib/agent-error";

@@ -1,86 +1,122 @@
-import { beforeEach, describe, expect, it } from "vitest";
-import { renderHook, act } from "@testing-library/react";
-import {
-  loadBottomOpen,
-  loadSidebarView,
-  loadSidebarVisible,
-  loadSidebarWidth,
-  useWorkbenchLayout,
-} from "../workbench/useWorkbenchLayout";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { LAYOUT_STORAGE_KEYS, layout, layoutStore, RAIL_MAX_WIDTH, RAIL_MIN_WIDTH, PANEL_MAX_HEIGHT, PANEL_MIN_HEIGHT } from "../workbench/layout";
 
-beforeEach(() => window.localStorage.clear());
+const DEFAULTS = {
+  sidebarView: "sessions",
+  sidebarVisible: true,
+  sidebarWidth: 250,
+  bottomOpen: false,
+  bottomTab: "context",
+  bottomHeight: 260,
+  mobileNavOpen: false,
+  mobileSidebarOpen: false,
+} as const;
 
-describe("布局持久化读取", () => {
-  it("默认值：会话视图、侧栏展开 250、底部面板收起", () => {
-    expect(loadSidebarView()).toBe("sessions");
-    expect(loadSidebarVisible()).toBe(true);
-    expect(loadSidebarWidth()).toBe(250);
-    expect(loadBottomOpen()).toBe(false);
-  });
-
-  it("读取已存值并钳制非法值", () => {
-    window.localStorage.setItem("owc-wb-view", "scm");
-    window.localStorage.setItem("owc-rail-collapsed", "1");
-    window.localStorage.setItem("owc-rail-width", "9999");
-    window.localStorage.setItem("owc-panel-open", "1");
-    expect(loadSidebarView()).toBe("scm");
-    expect(loadSidebarVisible()).toBe(false);
-    expect(loadSidebarWidth()).toBe(380); // clampRailWidth 上限
-    expect(loadBottomOpen()).toBe(true);
-  });
-
-  it("未知视图名回退 sessions", () => {
-    window.localStorage.setItem("owc-wb-view", "bogus");
-    expect(loadSidebarView()).toBe("sessions");
-  });
+beforeEach(() => {
+  window.localStorage.clear();
+  layoutStore.set({ ...DEFAULTS });
 });
 
-describe("useWorkbenchLayout", () => {
-  it("showView 切换视图并展开；重复点同一视图折叠侧栏", () => {
-    const { result } = renderHook(() => useWorkbenchLayout());
-    act(() => result.current.showView("files"));
-    expect(result.current.sidebarView).toBe("files");
-    expect(result.current.sidebarVisible).toBe(true);
-    act(() => result.current.showView("files"));
-    expect(result.current.sidebarVisible).toBe(false);
-    expect(window.localStorage.getItem("owc-wb-view")).toBe("files");
-    expect(window.localStorage.getItem("owc-rail-collapsed")).toBe("1");
+describe("workbench/layout", () => {
+  it("localStorage 键名沿用旧布局偏好键", () => {
+    expect([...LAYOUT_STORAGE_KEYS]).toEqual([
+      "owc-rail-width",
+      "owc-rail-collapsed",
+      "owc-wb-view",
+      "owc-panel-open",
+      "owc-panel-tab",
+      "owc-panel-height",
+    ]);
   });
 
-  it("selectView 只切换视图，不展开已折叠的桌面侧栏", () => {
-    window.localStorage.setItem("owc-rail-collapsed", "1");
-    const { result } = renderHook(() => useWorkbenchLayout());
-    expect(result.current.sidebarVisible).toBe(false);
-
-    act(() => result.current.selectView("files"));
-
-    expect(result.current.sidebarView).toBe("files");
-    expect(result.current.sidebarVisible).toBe(false);
+  it("showView：点同一视图折叠/展开侧栏（VSCode 行为），切换视图则展开", () => {
+    layout.showView("files");
+    expect(layoutStore.get().sidebarView).toBe("files");
+    expect(layoutStore.get().sidebarVisible).toBe(true);
     expect(window.localStorage.getItem("owc-wb-view")).toBe("files");
+    // 同一视图再点 → 折叠
+    layout.showView("files");
+    expect(layoutStore.get().sidebarVisible).toBe(false);
     expect(window.localStorage.getItem("owc-rail-collapsed")).toBe("1");
+    // 再点 → 展开
+    layout.showView("files");
+    expect(layoutStore.get().sidebarVisible).toBe(true);
+    expect(window.localStorage.getItem("owc-rail-collapsed")).toBe("0");
+    // 折叠状态下切到别的视图 → 展开
+    layout.showView("files");
+    layout.showView("scm");
+    expect(layoutStore.get().sidebarView).toBe("scm");
+    expect(layoutStore.get().sidebarVisible).toBe(true);
   });
 
-  it("toggleSidebar / toggleBottomPanel 写入 localStorage", () => {
-    const { result } = renderHook(() => useWorkbenchLayout());
-    act(() => result.current.toggleSidebar());
-    expect(result.current.sidebarVisible).toBe(false);
-    act(() => result.current.toggleBottomPanel());
-    expect(result.current.bottomOpen).toBe(true);
+  it("selectView：仅切换视图，不改变侧栏可见性", () => {
+    layoutStore.set({ sidebarVisible: false });
+    layout.selectView("problems");
+    expect(layoutStore.get().sidebarView).toBe("problems");
+    expect(layoutStore.get().sidebarVisible).toBe(false);
+    expect(window.localStorage.getItem("owc-wb-view")).toBe("problems");
+  });
+
+  it("toggleSidebar / setSidebarVisible 持久化折叠态", () => {
+    layout.toggleSidebar();
+    expect(layoutStore.get().sidebarVisible).toBe(false);
+    expect(window.localStorage.getItem("owc-rail-collapsed")).toBe("1");
+    layout.setSidebarVisible(true);
+    expect(layoutStore.get().sidebarVisible).toBe(true);
+    expect(window.localStorage.getItem("owc-rail-collapsed")).toBe("0");
+  });
+
+  it("setSidebarWidth 夹取范围并持久化", () => {
+    layout.setSidebarWidth(100);
+    expect(layoutStore.get().sidebarWidth).toBe(RAIL_MIN_WIDTH);
+    layout.setSidebarWidth(9999);
+    expect(layoutStore.get().sidebarWidth).toBe(RAIL_MAX_WIDTH);
+    expect(window.localStorage.getItem("owc-rail-width")).toBe(String(RAIL_MAX_WIDTH));
+    layout.setSidebarWidth(300);
+    expect(window.localStorage.getItem("owc-rail-width")).toBe("300");
+  });
+
+  it("setBottomOpen 支持值与函数更新；toggleBottomPanel 翻转", () => {
+    layout.setBottomOpen(true);
+    expect(layoutStore.get().bottomOpen).toBe(true);
     expect(window.localStorage.getItem("owc-panel-open")).toBe("1");
+    layout.setBottomOpen((previous) => !previous);
+    expect(layoutStore.get().bottomOpen).toBe(false);
+    expect(window.localStorage.getItem("owc-panel-open")).toBe("0");
+    layout.toggleBottomPanel();
+    expect(layoutStore.get().bottomOpen).toBe(true);
   });
 
-  it("setSidebarWidth 钳制并持久化", () => {
-    const { result } = renderHook(() => useWorkbenchLayout());
-    act(() => result.current.setSidebarWidth(10));
-    expect(result.current.sidebarWidth).toBe(200);
-    expect(window.localStorage.getItem("owc-rail-width")).toBe("200");
+  it("setBottomTab / setBottomHeight 持久化（高度夹取范围）", () => {
+    layout.setBottomTab("timeline");
+    expect(layoutStore.get().bottomTab).toBe("timeline");
+    expect(window.localStorage.getItem("owc-panel-tab")).toBe("timeline");
+    layout.setBottomHeight(10);
+    expect(layoutStore.get().bottomHeight).toBe(PANEL_MIN_HEIGHT);
+    layout.setBottomHeight(99999);
+    expect(layoutStore.get().bottomHeight).toBe(PANEL_MAX_HEIGHT);
+    expect(window.localStorage.getItem("owc-panel-height")).toBe(String(PANEL_MAX_HEIGHT));
   });
 
-  it("从既有存储恢复（沿用 0.3.x 键名）", () => {
-    window.localStorage.setItem("owc-rail-width", "300");
+  it("移动端抽屉/导航开合不持久化", () => {
+    layout.setMobileNavOpen(true);
+    layout.setMobileSidebarOpen(true);
+    expect(layoutStore.get().mobileNavOpen).toBe(true);
+    expect(layoutStore.get().mobileSidebarOpen).toBe(true);
+    expect(window.localStorage.length).toBe(0);
+  });
+
+  it("模块加载时从 localStorage 读取既有偏好（旧键名兼容）", async () => {
+    window.localStorage.setItem("owc-wb-view", "scm");
+    window.localStorage.setItem("owc-rail-collapsed", "1");
+    window.localStorage.setItem("owc-rail-width", "320");
     window.localStorage.setItem("owc-panel-open", "1");
-    const { result } = renderHook(() => useWorkbenchLayout());
-    expect(result.current.sidebarWidth).toBe(300);
-    expect(result.current.bottomOpen).toBe(true);
+    vi.resetModules();
+    const fresh = await import("../workbench/layout");
+    const state = fresh.layoutStore.get();
+    expect(state.sidebarView).toBe("scm");
+    expect(state.sidebarVisible).toBe(false);
+    expect(state.sidebarWidth).toBe(320);
+    expect(state.bottomOpen).toBe(true);
   });
 });
