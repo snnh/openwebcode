@@ -1,7 +1,7 @@
 import { fireEvent, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../i18n";
-import { PerfPanel } from "../components/panels/PerfPanel";
+import { PerfPanel } from "../panels/PerfPanel";
 import { startFrameSampler, stopFrameSampler } from "../lib/perf-sampler";
 import { api } from "../lib/api";
 import { renderWithClient } from "./helpers/with-client";
@@ -47,7 +47,7 @@ function renderPanel(sessionId?: string) {
   );
 }
 
-describe("PerfPanel（0.5.0 Phase 2d）", () => {
+describe("PerfPanel", () => {
   beforeEach(() => {
     window.localStorage.clear();
     vi.clearAllMocks();
@@ -57,6 +57,13 @@ describe("PerfPanel（0.5.0 Phase 2d）", () => {
     renderPanel("s1");
     expect(screen.getByText("FPS p50")).toBeDefined();
     expect(screen.getByText("60")).toBeDefined();
+  });
+
+  it("展示 Turn 阶段耗时记录与 Provider 并发", async () => {
+    renderPanel("s1");
+    expect(await screen.findByText(/3 turns · 4.1s/)).toBeDefined();
+    expect(await screen.findByText(/files: 0\/2 (活跃|active)/)).toBeDefined();
+    expect(await screen.findByText("1234")).toBeDefined();
   });
 
   it("无会话时显示提示", () => {

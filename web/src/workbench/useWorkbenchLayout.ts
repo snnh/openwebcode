@@ -4,7 +4,7 @@
  * 0.3.x 的 owc-rail-* / owc-panel-* 键，避免迁移），新增 owc-wb-view 记录活动视图。
  */
 import { useCallback, useEffect, useState } from "react";
-import { clampRailWidth } from "../components/SessionRail";
+const clampRailWidth = (value: number): number => Math.min(380, Math.max(200, value));
 
 export type SidebarView = "sessions" | "files" | "scm" | "problems";
 

@@ -1,9 +1,10 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { ContextPanel } from "../components/panels/ContextPanel";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ContextPanel } from "../panels/ContextPanel";
 import { api } from "../lib/api";
-import type { ContextWindowInfo } from "../lib/context-window";
-import type { ContextView, ContextUsage, ModelProfile, SessionDetail } from "../lib/contracts";
+import type { ContextView, ModelProfile, SessionDetail } from "../lib/contracts";
+import type { ContextWatermark } from "../lib/contracts";
+import { sessionMeta, sessionStore } from "../app/session-store";
 import { renderWithClient } from "./helpers/with-client";
 
 const session: SessionDetail = {
@@ -36,15 +37,31 @@ function contextView(selection: { pins: string[]; excludes: string[] }): Context
   };
 }
 
-function renderPanel(windowUsage?: ContextWindowInfo, latestUsage?: ContextUsage): void {
-  renderWithClient(
-    <ContextPanel sessionId={session.id} session={session} running={false} {...(windowUsage ? { windowUsage } : {})} {...(latestUsage ? { latestUsage } : {})} onNotice={() => undefined} />,
-  );
+function renderPanel(): void {
+  renderWithClient(<ContextPanel sessionId={session.id} running={false} />);
 }
 
-describe("ContextPanel 选择性上下文", () => {
-  afterEach(() => vi.restoreAllMocks());
+/** 实时水位（旧实现由 App 经 props 下发；新实现自取 session-store） */
+function setWatermark(info: { estimatedTokens: number; contextWindow: number; workingBudget: number; utilization: number; segments: ContextWatermark["segments"]; pinnedTokens: number; warning?: ContextWatermark["warning"] }): void {
+  sessionMeta.setWatermark(session.id, {
+    ...info,
+    maxOutput: info.contextWindow - info.workingBudget,
+    buildMs: 1,
+    incremental: true,
+  });
+}
 
+beforeEach(() => {
+  sessionStore.set({ watermarks: {}, usages: {} });
+  vi.spyOn(api, "session").mockResolvedValue(session);
+});
+
+afterEach(() => {
+  sessionStore.set({ watermarks: {}, usages: {} });
+  vi.restoreAllMocks();
+});
+
+describe("ContextPanel 选择性上下文", () => {
   it("展示按段归因、pin/排除清单，并支持添加与移除", async () => {
     vi.spyOn(api, "context").mockResolvedValue(contextView({ pins: ["m-1"], excludes: ["**/*.log"] }));
     const update = vi.spyOn(api, "updateContextSelection").mockResolvedValue({ pins: ["m-1", "src/a.ts"], excludes: ["**/*.log"] });
@@ -80,9 +97,7 @@ describe("ContextPanel 选择性上下文", () => {
 });
 
 describe("ContextPanel 上下文窗口", () => {
-  afterEach(() => vi.restoreAllMocks());
-
-  const windowUsage: ContextWindowInfo = {
+  const windowUsage = {
     estimatedTokens: 45_000,
     contextWindow: 128_000,
     workingBudget: 120_000,
@@ -93,8 +108,9 @@ describe("ContextPanel 上下文窗口", () => {
 
   it("展示占用 meter、分段堆叠图例与 pin 占用", async () => {
     vi.spyOn(api, "context").mockResolvedValue(contextView({ pins: [], excludes: [] }));
+    setWatermark(windowUsage);
 
-    renderPanel(windowUsage);
+    renderPanel();
 
     expect(await screen.findByText("上下文窗口")).toBeInTheDocument();
     const meter = screen.getByRole("meter", { name: "上下文窗口占用" });
@@ -111,18 +127,20 @@ describe("ContextPanel 上下文窗口", () => {
     expect(document.querySelector(".segment-bar .seg-toolResults")).not.toBeNull();
   });
 
-  it("compact_recommended 与 force_compact 显示对应提示", async () => {
+  it("compact_recommended 显示建议压缩提示，meter 为 warn", async () => {
     vi.spyOn(api, "context").mockResolvedValue(contextView({ pins: [], excludes: [] }));
+    setWatermark({ ...windowUsage, utilization: 0.72, warning: "compact_recommended" });
 
-    renderPanel({ ...windowUsage, utilization: 0.72, warning: "compact_recommended" });
+    renderPanel();
     expect(await screen.findByText("上下文接近上限，建议压缩")).toBeInTheDocument();
     expect(screen.getByRole("meter", { name: "上下文窗口占用" }).className).toContain("level-warn");
   });
 
   it("force_compact 提示本轮已自动压缩，meter 为 danger", async () => {
     vi.spyOn(api, "context").mockResolvedValue(contextView({ pins: [], excludes: [] }));
+    setWatermark({ ...windowUsage, utilization: 0.9, warning: "force_compact" });
 
-    renderPanel({ ...windowUsage, utilization: 0.9, warning: "force_compact" });
+    renderPanel();
     const hint = await screen.findByText("已达强制压缩水位，本轮已自动压缩");
     expect(hint.className).toContain("danger");
     expect(screen.getByRole("meter", { name: "上下文窗口占用" }).className).toContain("level-danger");
@@ -145,9 +163,7 @@ describe("ContextPanel 上下文窗口", () => {
 });
 
 describe("ContextPanel 缓存命中", () => {
-  afterEach(() => vi.restoreAllMocks());
-
-  const windowUsage: ContextWindowInfo = {
+  const windowUsage = {
     estimatedTokens: 45_000,
     contextWindow: 128_000,
     workingBudget: 120_000,
@@ -164,9 +180,11 @@ describe("ContextPanel 缓存命中", () => {
   it("展示本轮与累计缓存命中行", async () => {
     // 累计 74k / (26k + 74k) = 74%
     vi.spyOn(api, "context").mockResolvedValue(contextViewWithUsage({ inputTokens: 26_000, outputTokens: 100, cacheRead: 74_000, cacheWrite: 8_000 }));
-
+    setWatermark(windowUsage);
     // 本轮 98k / (21k + 98k) ≈ 82%
-    renderPanel(windowUsage, { inputTokens: 21_000, outputTokens: 500, cacheRead: 98_000, cacheWrite: 12_000 });
+    sessionMeta.setUsage(session.id, { inputTokens: 21_000, outputTokens: 500, cacheRead: 98_000, cacheWrite: 12_000 });
+
+    renderPanel();
 
     const row = await screen.findByTestId("ctx-cache");
     expect(row.textContent).toContain("本轮 82%");
@@ -177,8 +195,10 @@ describe("ContextPanel 缓存命中", () => {
 
   it("本轮与累计读写全为 0 时不渲染缓存行", async () => {
     vi.spyOn(api, "context").mockResolvedValue(contextViewWithUsage({ inputTokens: 10, outputTokens: 5, cacheRead: 0, cacheWrite: 0 }));
+    setWatermark(windowUsage);
+    sessionMeta.setUsage(session.id, { inputTokens: 10, outputTokens: 5, cacheRead: 0, cacheWrite: 0 });
 
-    renderPanel(windowUsage, { inputTokens: 10, outputTokens: 5, cacheRead: 0, cacheWrite: 0 });
+    renderPanel();
 
     await screen.findByText("上下文窗口");
     expect(screen.queryByTestId("ctx-cache")).toBeNull();
@@ -186,11 +206,19 @@ describe("ContextPanel 缓存命中", () => {
 
   it("无本轮事件但累计有缓存活动时只显示累计行", async () => {
     vi.spyOn(api, "context").mockResolvedValue(contextViewWithUsage({ inputTokens: 26_000, outputTokens: 100, cacheRead: 74_000, cacheWrite: 8_000 }));
+    setWatermark(windowUsage);
 
-    renderPanel(windowUsage);
+    renderPanel();
 
     const row = await screen.findByTestId("ctx-cache");
     expect(row.textContent).not.toContain("本轮");
     expect(row.textContent).toContain("累计 74%");
+  });
+});
+
+describe("ContextPanel 空态", () => {
+  it("sessionId 为 undefined 时显示引导空态", () => {
+    renderWithClient(<ContextPanel running={false} />);
+    expect(screen.getByText("选择会话以查看上下文。")).toBeInTheDocument();
   });
 });

@@ -1,19 +1,21 @@
+/**
+ * 终端标签内容：每会话一个真 PTY。
+ * 激活标签时建立 WS（/api/sessions/:id/terminal），上行 open/in/resize/close 帧，
+ * 下行 opened/out/exit/error 帧（data 一律 base64）；xterm.js 懒加载为独立 chunk。
+ * 与 Composer 的 `!` 命令通道（走 agent 权限链与沙盒）语义区分：本终端在宿主机以应用身份运行，不经沙盒。
+ * props 瘦身为 sessionId：cwd 经共享的会话详情查询取，通知走 ui.notify，设置深链 ui.openSettings("remote")。
+ */
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { ITheme, Terminal as XtermTerminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import { api } from "../lib/api";
-import type { AuthStatus, SessionDetail } from "../lib/contracts";
+import type { AuthStatus } from "../lib/contracts";
 import { useI18n } from "../i18n";
-import { AUTH_STATUS_QUERY_KEY } from "./AuthGate";
-import { loadXterm } from "./xterm-loader";
-
-/**
- * 终端标签内容（提交⑦）：每会话一个真 PTY。
- * 激活标签时建立 WS（/api/sessions/:id/terminal），上行 open/in/resize/close 帧，
- * 下行 opened/out/exit/error 帧（data 一律 base64）；xterm.js 懒加载为独立 chunk。
- * 与 Composer 的 `!` 命令通道（走 agent 权限链与沙盒）语义区分：本终端在宿主机以应用身份运行，不经沙盒。
- */
+import { useSessionQuery } from "../app/queries";
+import { ui } from "../app/ui-store";
+import { AUTH_STATUS_QUERY_KEY } from "../components/AuthGate";
+import { loadXterm } from "../components/xterm-loader";
 
 /** 上行帧（与 server 逐字一致） */
 type TerminalClientFrame =
@@ -62,10 +64,7 @@ function xtermThemeFromCssVars(): ITheme {
 }
 
 /** 门槛不满足时的状态块：两条门槛 ✅/❌ + 设置远程访问区深链；不渲染 xterm */
-function TerminalGate({ status, onOpenSettings }: {
-  status: AuthStatus;
-  onOpenSettings?(): void;
-}): ReactElement {
+function TerminalGate({ status }: { status: AuthStatus }): ReactElement {
   const { t } = useI18n();
   const totpOk = status.totpEnabled;
   const hostOk = !status.gateReasons.includes("host_not_loopback_or_lan");
@@ -76,7 +75,7 @@ function TerminalGate({ status, onOpenSettings }: {
         <li>{totpOk ? "✅" : "❌"} {t("TOTP 已开启", "TOTP enabled")}</li>
         <li>{hostOk ? "✅" : "❌"} {t("监听地址为回环或局域网", "Listen address is loopback or LAN")}</li>
       </ul>
-      <button type="button" onClick={onOpenSettings}>
+      <button type="button" onClick={() => ui.openSettings("remote")}>
         {t("前往「设置 → 远程访问」", "Open Settings → Remote Access")}
       </button>
     </div>
@@ -84,10 +83,7 @@ function TerminalGate({ status, onOpenSettings }: {
 }
 
 /** 单个 PTY 终端：xterm 实例 + WS 生命周期；generation 自增即整体重建（重连 = 新 PTY） */
-function PtyTerminal({ sessionId, onNotice }: {
-  sessionId: string;
-  onNotice?(message: string, kind?: "info" | "error"): void;
-}): ReactElement {
+function PtyTerminal({ sessionId }: { sessionId: string }): ReactElement {
   const { t } = useI18n();
   const hostRef = useRef<HTMLDivElement>(null);
   const [generation, setGeneration] = useState(0);
@@ -116,7 +112,7 @@ function PtyTerminal({ sessionId, onNotice }: {
         if (!disposed) {
           setPhase("error");
           setDetail(t("终端组件加载失败。", "Could not load the terminal component."));
-          onNotice?.(t("终端组件加载失败", "Could not load the terminal component"), "error");
+          ui.notify(t("终端组件加载失败", "Could not load the terminal component"), "error");
         }
         return;
       }
@@ -234,28 +230,26 @@ function PtyTerminal({ sessionId, onNotice }: {
   );
 }
 
-export function TerminalView({ session, onNotice, onOpenSettings }: {
-  session: SessionDetail;
-  onNotice?(message: string, kind?: "info" | "error"): void;
-  /** 深链到设置远程访问区（门槛不满足时的引导入口） */
-  onOpenSettings?(): void;
-}): ReactElement {
+export function TerminalView({ sessionId }: { sessionId: string }): ReactElement {
   const { t } = useI18n();
+  // cwd 展示用共享的会话详情缓存（ChatView 已挂载同一查询，不额外发请求）
+  const detail = useSessionQuery(sessionId);
   // 与 AuthGate 同 key 共享缓存；retry:false 与全局一致
   const status = useQuery({ queryKey: AUTH_STATUS_QUERY_KEY, queryFn: api.authStatus, retry: false, staleTime: 5 * 60_000 });
+  const cwd = detail.data?.cwd;
 
   return (
     <div className="terminal-view">
-      <div className="terminal-cwd mono" title={session.cwd}>{session.cwd}</div>
+      {cwd && <div className="terminal-cwd mono" title={cwd}>{cwd}</div>}
       <div className="terminal-badge" role="note">{t("宿主机终端 · 以应用身份运行 · 不经沙盒", "Host terminal · runs as the app · not sandboxed")}</div>
       {status.isPending ? (
         <p className="terminal-note">{t("正在检查终端可用性…", "Checking terminal availability…")}</p>
       ) : status.isError ? (
         <p className="terminal-note" role="alert">{t("无法获取终端门槛状态。", "Could not load the terminal gate status.")}</p>
       ) : !status.data.terminalAvailable ? (
-        <TerminalGate status={status.data} onOpenSettings={onOpenSettings} />
+        <TerminalGate status={status.data} />
       ) : (
-        <PtyTerminal sessionId={session.id} onNotice={onNotice} />
+        <PtyTerminal sessionId={sessionId} />
       )}
     </div>
   );

@@ -17,11 +17,16 @@ import { sessionMeta, sessionStore } from "../app/session-store";
 import { deriveActivityInfo, useLiveActivityEntry, useLiveSubagentRuns, type LiveActivityInfo } from "../app/live-store";
 import { auxViews } from "../workbench/aux-views";
 import { ui } from "../app/ui-store";
+import { deriveSubagentRunsFromMessages, mergeSubagentRuns } from "../lib/subagent-runs";
+import type { UseSubagentTabsResult } from "../hooks/use-subagent-tabs";
+import type { UseTerminalTabsResult } from "../hooks/use-terminal-tabs";
 import { useStreamBlocks } from "./stream-buffer";
 import { useOlderMessages, loadOlderMessages } from "./pagination-store";
 import { clearComposerState, getAttachments, getDraft, setDraftValue } from "../composer/drafts";
 import { ChatActionsContext, type ChatActions, type EditingMessage } from "./types";
 import { MessageList } from "./MessageList";
+import { SubagentTabStrip, SubagentTabView } from "./SubagentTabs";
+import { TerminalView } from "../terminal/TerminalView";
 import { InteractionCard } from "./cards/InteractionCard";
 import { PlanApprovalCard } from "./cards/PlanApprovalCard";
 import { SteeringQueue } from "./cards/SteeringQueue";
@@ -35,11 +40,14 @@ export interface ChatViewProps {
   sessionId: string;
   /** useAgentRun 的 REST/WS 合并 run 快照（App 装配层实例化） */
   currentRun?: AgentRun | undefined;
+  /** 主区子代理/终端标签状态（App 装配层实例化，按会话隔离） */
+  subagentTabs: UseSubagentTabsResult;
+  terminalTabs: UseTerminalTabsResult;
   /** 移动端：打开左上角导航菜单 */
   onOpenNavMenu?(): void;
 }
 
-export function ChatView({ sessionId, currentRun, onOpenNavMenu }: ChatViewProps): ReactElement {
+export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, onOpenNavMenu }: ChatViewProps): ReactElement {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const detail = useSessionQuery(sessionId);
@@ -80,6 +88,25 @@ export function ChatView({ sessionId, currentRun, onOpenNavMenu }: ChatViewProps
     if (!oldestId) return;
     void loadOlderMessages(sessionId, oldestId);
   }, [current, older, sessionId]);
+
+  // 子代理标签数据源：实时运行优先，消息推导的历史运行补齐（刷新后无实时事件时标签状态仍可用）
+  const derivedSubagentRuns = useMemo(() => deriveSubagentRunsFromMessages(displaySession?.messages ?? []), [displaySession]);
+  const subagentRuns = useMemo(() => mergeSubagentRuns(liveSubagents, derivedSubagentRuns), [liveSubagents, derivedSubagentRuns]);
+  // 主区标签（按会话隔离）：selectedSubagentTab 缺省表示「主对话」（或终端选中时的终端）
+  const currentSubagentTabs = subagentTabs.tabsBySession[sessionId] ?? [];
+  const selectedSubagentTab = subagentTabs.selectedBySession[sessionId];
+  const terminalOpen = terminalTabs.openBySession[sessionId] === true;
+  const terminalSelected = terminalOpen && terminalTabs.selectedBySession[sessionId] === true;
+  // 选中互斥：选主对话/子代理标签时取消终端选中，反之亦然
+  const onSelectTab = useCallback((toolCallId?: string): void => {
+    subagentTabs.selectTab(sessionId, toolCallId);
+    terminalTabs.setTerminalSelected(sessionId, false);
+  }, [sessionId, subagentTabs, terminalTabs]);
+  const onSelectTerminal = useCallback((): void => {
+    subagentTabs.selectTab(sessionId, undefined);
+    terminalTabs.setTerminalSelected(sessionId, true);
+  }, [sessionId, subagentTabs, terminalTabs]);
+  const chatVisible = selectedSubagentTab === undefined && !terminalSelected;
 
   // 服务端待决列表 + WS 即时权限卡，按 requestId 去重合并
   const mergedPermissions = useMemo(() => {
@@ -315,6 +342,16 @@ export function ChatView({ sessionId, currentRun, onOpenNavMenu }: ChatViewProps
         onCreateCheckpoint={() => manualSnapshot.mutate(current.id)}
         {...(onOpenNavMenu ? { onOpenNavMenu } : {})}
       />
+      <SubagentTabStrip
+        tabs={currentSubagentTabs}
+        runs={subagentRuns}
+        selected={selectedSubagentTab}
+        {...(terminalOpen ? { terminal: { selected: terminalSelected } } : {})}
+        onSelect={onSelectTab}
+        onClose={(toolCallId) => subagentTabs.closeTab(sessionId, toolCallId)}
+        onSelectTerminal={onSelectTerminal}
+        onCloseTerminal={() => terminalTabs.closeTerminal(sessionId)}
+      />
       {todos.data && todos.data.length > 0 && (
         <details className="todo-panel" open>
           <summary>{t("任务清单", "Task list")} · {todos.data.filter((item) => item.status === "done").length}/{todos.data.length}</summary>
@@ -327,26 +364,40 @@ export function ChatView({ sessionId, currentRun, onOpenNavMenu }: ChatViewProps
         </details>
       )}
       <ChatActionsContext.Provider value={chatActions}>
-        <MessageList
-          session={displaySession ?? current}
-          {...(contextView.data?.ledger.cleared ? { cleared: contextView.data.ledger.cleared } : {})}
-          hasMoreMessages={hasMoreMessages}
-          loadingMore={older.loading}
-          onLoadMore={onLoadMore}
-          streamBlocks={streamBlocks}
-          {...(runError ? { runError } : {})}
-          permissions={mergedPermissions}
-          {...(liveActivity ? { liveActivity } : {})}
-          liveSubagents={liveSubagents}
-          running={running}
-          {...(lastUserMessageText && !running ? { onRetryRun: retryRun } : {})}
-          retryPending={send.isPending}
-          onPermissionDone={(requestId) => {
-            sessionMeta.removePermission(requestId);
-            void queryClient.invalidateQueries({ queryKey: qk.permissions(current.id) });
-          }}
-        />
+        {/* 主对话/终端/子代理标签内容互换：MessageList 与终端保持挂载（hidden 隐藏），滚动与 PTY 状态不丢 */}
+        <div className="main-tab-panel" role="tabpanel" aria-label={t("主对话", "Main")} hidden={!chatVisible}>
+          <MessageList
+            session={displaySession ?? current}
+            {...(contextView.data?.ledger.cleared ? { cleared: contextView.data.ledger.cleared } : {})}
+            hasMoreMessages={hasMoreMessages}
+            loadingMore={older.loading}
+            onLoadMore={onLoadMore}
+            streamBlocks={streamBlocks}
+            {...(runError ? { runError } : {})}
+            permissions={mergedPermissions}
+            {...(liveActivity ? { liveActivity } : {})}
+            liveSubagents={liveSubagents}
+            running={running}
+            visible={chatVisible}
+            {...(lastUserMessageText && !running ? { onRetryRun: retryRun } : {})}
+            retryPending={send.isPending}
+            onPermissionDone={(requestId) => {
+              sessionMeta.removePermission(requestId);
+              void queryClient.invalidateQueries({ queryKey: qk.permissions(current.id) });
+            }}
+          />
+        </div>
       </ChatActionsContext.Provider>
+      {terminalOpen && (
+        <div className="main-tab-panel" role="tabpanel" aria-label={t("终端", "Terminal")} hidden={!terminalSelected}>
+          <TerminalView sessionId={current.id} />
+        </div>
+      )}
+      {selectedSubagentTab !== undefined && (
+        <div className="main-tab-panel" role="tabpanel" aria-label={t("子代理", "Subagent")}>
+          <SubagentTabView sessionId={current.id} toolCallId={selectedSubagentTab} runs={subagentRuns} />
+        </div>
+      )}
       {queue.data?.some((item) => item.status === "queued") && (
         <SteeringQueue
           items={queue.data}

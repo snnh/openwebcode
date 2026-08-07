@@ -1,11 +1,13 @@
 import { useMemo, useState, type ReactElement } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { api } from "../../lib/api";
-import type { AgentInfo, LiveSubagentRun } from "../../lib/contracts";
-import { snippet } from "../../lib/subagent-runs";
-import { SubagentRunStats, SubagentStatusChip } from "../../chat/SubagentRunCard";
-import { SubagentTranscriptDetails } from "../../chat/SubagentRunCard";
-import { useI18n } from "../../i18n";
+import { api } from "../lib/api";
+import type { AgentInfo, LiveSubagentRun } from "../lib/contracts";
+import { deriveSubagentRunsFromMessages, mergeSubagentRuns, snippet } from "../lib/subagent-runs";
+import { SubagentRunStats, SubagentStatusChip, SubagentTranscriptDetails } from "../chat/SubagentRunCard";
+import { useLiveSubagentRuns } from "../app/live-store";
+import { useSessionQuery } from "../app/queries";
+import { tabActions } from "../workbench/tab-actions";
+import { useI18n } from "../i18n";
 
 export interface SubagentRunGroup {
   toolCallId: string;
@@ -127,24 +129,26 @@ function SubagentLauncher({ sessionId }: { sessionId: string }): ReactElement {
   );
 }
 
-/** 子代理面板：顶部手动启动器 + 当前会话全部 spawn_task / spawn_swarm 运行的监视视图（实时 + 历史合并，最新在前） */
-export function SubagentsPanel({ sessionId, runs, onOpenInTab }: {
-  sessionId?: string;
-  /** 当前会话合并后的子代理运行（taskId → run），App 下发 */
-  runs: Record<string, LiveSubagentRun>;
-  /** 「在标签中打开」：按 toolCallId 在主区开标签并聚焦 */
-  onOpenInTab?: ((toolCallId: string) => void) | undefined;
-}): ReactElement {
+const EMPTY_MESSAGE = (
+  "还没有子代理运行记录——agent 运行中可通过 spawn_task / spawn_swarm 派生子代理并行处理任务。"
+);
+
+/** 子代理面板：顶部手动启动器 + 当前会话全部 spawn_task / spawn_swarm 运行的监视视图。
+ *  运行列表自取：实时运行（live-store，终态保留）+ 从已加载会话消息推导的历史运行合并，实时条目优先，最新在前。
+ *  「在标签中打开」经 tabActions.openSubagentTab（App 装配层注册；未注册时不渲染按钮）。 */
+export function SubagentsPanel({ sessionId }: { sessionId?: string | undefined }): ReactElement {
   const { t } = useI18n();
+  const liveRuns = useLiveSubagentRuns(sessionId);
+  const session = useSessionQuery(sessionId);
+  const derivedRuns = useMemo(() => deriveSubagentRunsFromMessages(session.data?.messages ?? []), [session.data]);
+  const runs = useMemo(() => mergeSubagentRuns(liveRuns, derivedRuns), [liveRuns, derivedRuns]);
   const groups = useMemo(() => groupSubagentRuns(runs), [runs]);
+  const onOpenInTab = tabActions.openSubagentTab;
 
   if (!sessionId) {
     return (
       <p className="muted-empty panel-empty subagents-panel-empty">
-        {t(
-          "还没有子代理运行记录——agent 运行中可通过 spawn_task / spawn_swarm 派生子代理并行处理任务。",
-          "No subagent runs yet — the agent can spawn subagents via spawn_task / spawn_swarm while running.",
-        )}
+        {t(EMPTY_MESSAGE, "No subagent runs yet — the agent can spawn subagents via spawn_task / spawn_swarm while running.")}
       </p>
     );
   }
@@ -155,10 +159,7 @@ export function SubagentsPanel({ sessionId, runs, onOpenInTab }: {
       <SubagentLauncher sessionId={sessionId} />
       {groups.length === 0 && (
         <p className="muted-empty panel-empty subagents-panel-empty">
-          {t(
-            "还没有子代理运行记录——agent 运行中可通过 spawn_task / spawn_swarm 派生子代理并行处理任务。",
-            "No subagent runs yet — the agent can spawn subagents via spawn_task / spawn_swarm while running.",
-          )}
+          {t(EMPTY_MESSAGE, "No subagent runs yet — the agent can spawn subagents via spawn_task / spawn_swarm while running.")}
         </p>
       )}
       {groups.map((group) => {

@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { NewSessionDialog } from "../components/NewSessionDialog";
 import { NotificationsSection } from "../components/settings/NotificationsSection";
 import { SettingsDialog } from "../components/SettingsDialog";
-import { ScmPanel } from "../components/panels/ScmPanel";
+import { ScmView } from "../workbench/sidebar/ScmView";
 import { api } from "../lib/api";
 import type { PricingDocument, PromptOverrideView, ScmStatus, SettingsView } from "../lib/contracts";
 import type { AppNotification } from "../lib/notifications";
@@ -127,7 +127,7 @@ describe("ScmPanel 有内容态无障碍", () => {
     vi.spyOn(api, "scmStatus").mockResolvedValue(status);
     vi.spyOn(api, "scmWorktrees").mockResolvedValue([]);
 
-    const { container } = renderWithClient(<ScmPanel sessionId="s1" onNotice={vi.fn()} />);
+    const { container } = renderWithClient(<ScmView sessionId="s1" />);
     // 等待三组变更渲染完成
     await screen.findByText("已暂存的更改");
     await screen.findByText("notes.txt");

@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useI18n } from "../../i18n";
-import { api } from "../../lib/api";
-import type { EvalRunComparison, EvalRunReport } from "../../lib/contracts";
-import { formatDuration } from "../../lib/format";
-import { Icon } from "../Icon";
+import { useI18n } from "../i18n";
+import { api } from "../lib/api";
+import type { EvalRunComparison, EvalRunReport } from "../lib/contracts";
+import { formatDuration } from "../lib/format";
+import { Icon } from "../components/Icon";
+import { ui } from "../app/ui-store";
 
 function downloadJson(value: unknown, filename: string): void {
   const blob = new Blob([`${JSON.stringify(value, null, 2)}\n`], { type: "application/json" });
@@ -20,7 +21,8 @@ export function downloadEvalReport(report: EvalRunReport): void {
   downloadJson(report, `${report.runId}.json`);
 }
 
-export function EvalPanel({ onNotice }: { onNotice(message: string, kind?: "info" | "error"): void }): ReactElement {
+/** 评测面板（owc-eval 扩展启用时出现在底部面板）：任务集回放、报告、基线对比与归档。提示走 ui.notify。 */
+export function EvalPanel(): ReactElement {
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -52,9 +54,9 @@ export function EvalPanel({ onNotice }: { onNotice(message: string, kind?: "info
         await queryClient.invalidateQueries({ queryKey: ["eval", "comparisons"] });
       } else setComparison(undefined);
       await queryClient.invalidateQueries({ queryKey: ["eval", "runs"] });
-      onNotice(t("评测运行完成。", "Evaluation run completed."));
+      ui.notify(t("评测运行完成。", "Evaluation run completed."));
     } catch (error) {
-      onNotice(error instanceof Error ? error.message : String(error), "error");
+      ui.notify(error instanceof Error ? error.message : String(error), "error");
     } finally {
       setRunning(false);
     }
@@ -66,7 +68,7 @@ export function EvalPanel({ onNotice }: { onNotice(message: string, kind?: "info
       setComparison(await api.evalCompare(baselineRunId, report.runId));
       await queryClient.invalidateQueries({ queryKey: ["eval", "comparisons"] });
     } catch (error) {
-      onNotice(error instanceof Error ? error.message : String(error), "error");
+      ui.notify(error instanceof Error ? error.message : String(error), "error");
     }
   };
 
@@ -75,7 +77,7 @@ export function EvalPanel({ onNotice }: { onNotice(message: string, kind?: "info
       setReport(await api.evalRunReport(runId));
       setComparison(undefined);
     } catch (error) {
-      onNotice(error instanceof Error ? error.message : String(error), "error");
+      ui.notify(error instanceof Error ? error.message : String(error), "error");
     }
   };
 
@@ -86,7 +88,7 @@ export function EvalPanel({ onNotice }: { onNotice(message: string, kind?: "info
       setReport(archived.candidate);
       setBaselineRunId(archived.baselineRunId);
     } catch (error) {
-      onNotice(error instanceof Error ? error.message : String(error), "error");
+      ui.notify(error instanceof Error ? error.message : String(error), "error");
     }
   };
 
@@ -97,7 +99,7 @@ export function EvalPanel({ onNotice }: { onNotice(message: string, kind?: "info
           <h2>{t("评测", "Evaluation")}</h2>
           <p className="muted-empty panel-empty">{t("在隔离工作区中用固定 mock provider 回放任务。", "Replay tasks with fixed mock providers in isolated workspaces.")}</p>
         </div>
-        <button className="primary-button" disabled={running || selected.size === 0} onClick={() => void run()}>
+        <button className="btn primary" disabled={running || selected.size === 0} onClick={() => void run()}>
           {running ? t("运行中…", "Running…") : t("运行所选任务", "Run selected")}
         </button>
       </div>
