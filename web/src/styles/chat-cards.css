@@ -38,6 +38,8 @@
   padding: 9px 14px;
 }
 @media (max-width: 768px) { .message.user .markdown { max-width: 90%; } }
+/* 紧凑密度：表格降档 */
+@media (max-width: 768px) { .markdown th, .markdown td { padding: 3px 6px; } }
 .message-image { max-width: 320px; max-height: 240px; border-radius: var(--radius-s); border: 1px solid var(--border); display: block; margin: 4px 0; }
 
 /* shell 结果卡「发给 agent」：正常流内间距（旧实现用负边距与消息卡重叠） */

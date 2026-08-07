@@ -336,6 +336,8 @@
   /* 弹层窄屏收边：min-width 不再顶出视口（弹层锚定触发按钮，形态接近底栏弹层） */
   .composer-popup { max-width: calc(100vw - 32px); }
   .composer-menu .popover-menu { max-width: calc(100vw - 24px); }
+  /* 窄屏隐藏配置计数徽章（功能入口保留，视觉降噪） */
+  .composer-menu-badge { display: none; }
 }
 
 @media (max-width: 480px) {
@@ -352,4 +354,9 @@
   .composer-attach.icon-btn { width: 44px; height: 44px; }
   .composer-send { width: 44px; height: 44px; }
   .composer-menu-btn { min-height: 40px; }
+}
+
+.composer-model-cycle {
+  color: var(--accent);
+  animation: model-cycle-in 0.15s ease-out;
 }

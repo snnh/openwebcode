@@ -1,7 +1,7 @@
 import type { ReactElement } from "react";
 import type { Session } from "../lib/contracts";
 import { useI18n } from "../i18n";
-import { MobileNavTrigger } from "../workbench/MobileNavMenu";
+import { MobileNavTrigger } from "../workbench/Rail";
 
 export function EmptyState({ sessions, providers, onSelect, onCreate, onOpenSettings, onExample, onOpenNavMenu }: {
   sessions: Session[];

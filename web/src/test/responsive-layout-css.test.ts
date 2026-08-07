@@ -2,44 +2,67 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const css = readFileSync(resolve(process.cwd(), "src/styles.css"), "utf8");
-const narrowStart = css.indexOf("@media (max-width: 1024px)");
-const narrowEnd = css.indexOf("@media (max-width: 480px)", narrowStart);
-const narrowCss = css.slice(narrowStart, narrowEnd);
+/** 新样式体系（src/styles/ 十一个文件）合并文本；媒体块按断点抽取 */
+const FILES = [
+  "tokens.css", "base.css", "layout.css", "chat-list.css", "chat-cards.css",
+  "composer.css", "sidebar.css", "panels.css", "editor.css", "dialogs.css", "settings.css",
+];
+const css = FILES.map((file) => readFileSync(resolve(process.cwd(), `src/styles/${file}`), "utf8")).join("\n");
+
+function mediaBlock(width: number): string {
+  const out: string[] = [];
+  const marker = `@media (max-width: ${width}px) {`;
+  let index = 0;
+  for (;;) {
+    const start = css.indexOf(marker, index);
+    if (start < 0) break;
+    let depth = 0;
+    for (let k = start; k < css.length; k++) {
+      if (css[k] === "{") depth++;
+      else if (css[k] === "}") {
+        depth--;
+        if (depth === 0) {
+          out.push(css.slice(start, k + 1));
+          index = k + 1;
+          break;
+        }
+      }
+    }
+  }
+  return out.join("\n");
+}
+
+const narrowCss = mediaBlock(1024);
+const compactCss = mediaBlock(768);
+const tinyCss = mediaBlock(480);
 
 describe("窄窗口布局 CSS 回归", () => {
   it("窄屏不渲染桌面活动栏：导航走左上角左侧滑出菜单", () => {
-    expect(narrowStart).toBeGreaterThanOrEqual(0);
     expect(narrowCss).toMatch(/\.wb-activity\s*\{\s*display:\s*none;/s);
     // 滑出菜单样式在媒体块外（组件仅移动端渲染）：左侧固定竖向列表，条目 ≥44px 点击目标
     expect(css).toMatch(/\.mobile-nav\s*\{[^}]*position:\s*fixed;[^}]*left:\s*0;/s);
     expect(css).toMatch(/\.mobile-nav-backdrop\s*\{[^}]*position:\s*fixed;/s);
     expect(css).toMatch(/\.mobile-nav-item\s*\{[^}]*min-height:\s*44px;/s);
-    // 触发钮是窄屏唯一导航入口，点击目标同样需 ≥44px
-    expect(css).toMatch(/\.mobile-nav-trigger\s*\{[^}]*min-height:\s*44px;/s);
-    expect(css).toMatch(/\.mobile-nav-trigger\s*\{[^}]*min-width:\s*44px;/s);
-    // 触发钮只能显示不能隐藏：禁止出现 display: none（曾因此按钮被级联隐藏，裸 logo 不可见/不可点）
-    expect(css).not.toMatch(/\.mobile-nav-trigger\s*\{[^}]*display:\s*none/);
+    // 触发钮是窄屏唯一导航入口，点击目标同样需 ≥44px；桌面基态隐藏、窄屏强制显示
+    expect(css).toMatch(/\.mobile-nav-trigger\s*\{\s*display:\s*none;/s);
+    expect(narrowCss).toMatch(/\.mobile-nav-trigger\s*\{[^}]*display:\s*inline-flex;/s);
+    expect(narrowCss).toMatch(/\.mobile-nav-trigger\s*\{[^}]*min-height:\s*44px;/s);
+    expect(narrowCss).toMatch(/\.mobile-nav-trigger\s*\{[^}]*min-width:\s*44px;/s);
     // 触发钮为无边框纯图标（顶栏纯文本语言），不挂胶囊外框
-    expect(css).toMatch(/\.mobile-nav-trigger\s*\{[^}]*border:\s*none;/s);
-    // 面板模式：图标栏固定贴左，侧栏右移 52px 让位（图标栏 + 右侧整屏面板）
-    expect(css).toMatch(/\.mobile-explorer-rail\s*\{[^}]*position:\s*fixed;[^}]*left:\s*0;/s);
-    expect(narrowCss).toMatch(/\.wb-sidebar\s*\{[^}]*left:\s*52px;/s);
+    expect(narrowCss).toMatch(/\.mobile-nav-trigger\s*\{[^}]*border:\s*none;/s);
+    // 侧栏抽屉：固定覆盖 + 遮罩
+    expect(narrowCss).toMatch(/\.wb-sidebar\s*\{[^}]*position:\s*fixed;/s);
+    expect(narrowCss).toMatch(/\.wb-sidebar-backdrop\s*\{[^}]*position:\s*fixed;/s);
   });
 
-  it("设置三栏结构（应用导航轨 | 设置项 | 详情），移动端整页 + 钻取", () => {
-    // 桌面三栏栅格；设置页内的导航轨随文档流（不再 fixed）
-    expect(css).toMatch(/\.settings-layout\s*\{\s*display:\s*grid;\s*grid-template-columns:\s*52px 204px/s);
-    expect(css).toMatch(/\.settings-dialog \.mobile-explorer-rail\s*\{[^}]*position:\s*static;/s);
-    // 移动端：整页（非浮窗，与桌面一致），列表/详情互斥钻取，返回钮可见
+  it("设置两栏结构（设置项 | 详情），移动端整页 + 钻取", () => {
+    // 桌面两栏栅格（应用导航轨已裁剪）
+    expect(css).toMatch(/\.settings-layout\s*\{\s*display:\s*grid;\s*grid-template-columns:\s*204px/s);
+    // 移动端：整页（非浮窗），列表/详情互斥钻取，返回钮可见
     expect(css).toMatch(/\.settings-dialog\s*\{[^}]*width:\s*100vw;[^}]*border-radius:\s*0;/s);
     expect(narrowCss).toMatch(/\.settings-layout\.detail-open \.settings-nav\s*\{\s*display:\s*none;/s);
     expect(narrowCss).toMatch(/\.settings-layout\.detail-open \.settings-content\s*\{[^}]*display:\s*flex;/s);
     expect(narrowCss).toMatch(/\.settings-back\s*\{\s*display:\s*inline-flex;/s);
-    // 抽屉/图标栏不带投影，且与菜单共用同一滑入动画
-    expect(narrowCss).not.toMatch(/\.wb-sidebar\s*\{[^}]*box-shadow/);
-    expect(css).not.toMatch(/\.mobile-explorer-rail\s*\{[^}]*box-shadow/);
-    expect(narrowCss).toMatch(/\.wb-sidebar\s*\{\s*animation:\s*mobile-nav-in/s);
   });
 
   it("窄屏编辑器/diff 为覆盖主区的全屏临时视图", () => {
@@ -61,43 +84,39 @@ describe("窄窗口布局 CSS 回归", () => {
   it("主区、底部面板和状态栏共享同一纵向视口", () => {
     expect(narrowCss).toMatch(/\.console-shell\.wb-shell\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;/s);
     expect(narrowCss).toMatch(/\.wb-main\s*\{[^}]*flex:\s*1 1 0;[^}]*min-height:\s*0;/s);
-    expect(narrowCss).toMatch(/\.wb-bottom, \.wb-status\s*\{[^}]*flex:\s*0 0 auto;/s);
+    expect(narrowCss).toMatch(/\.wb-status\s*\{[^}]*flex:\s*0 0 auto;/s);
     expect(narrowCss).toMatch(/\.workbench\s*\{[^}]*height:\s*100%;/s);
     expect(narrowCss).not.toContain("calc(100dvh - 53px)");
   });
 
-  it("会话配置收进输入卡片底栏，窄窗口允许换行且芯片行折行不横滚", () => {
+  it("会话配置收进输入卡片底栏，窄窗口允许换行且菜单徽章降噪", () => {
     expect(css).toMatch(/\.composer-toolbar\s*\{[^}]*flex-wrap:\s*nowrap;/s);
     expect(css).toMatch(/\.composer-toolbar-spacer\s*\{\s*flex:\s*1 1 auto;/s);
     expect(css).toMatch(/\.composer-menu-right \.popover-menu\s*\{[^}]*right:\s*0;/s);
-    expect(narrowCss).toMatch(/\.composer\s*\{[^}]*position:\s*sticky;/s);
     expect(narrowCss).toMatch(/\.composer-menu-badge\s*\{\s*display:\s*none;/s);
     // 控制条同排放下：菜单按钮降档、模型名收缩省略、spacer 吸剩余宽度
-    expect(narrowCss).toMatch(/\.composer-toolbar-spacer\s*\{[^}]*flex:\s*1 1 0;[^}]*min-width:\s*0;/s);
+    expect(narrowCss).toMatch(/\.composer-toolbar-spacer\s*\{\s*flex:\s*1 1 0;[^}]*min-width:\s*0;/s);
     expect(narrowCss).toMatch(/\.model-menu-btn-label\s*\{[^}]*max-width:\s*34vw;/s);
-    const tinyCss = css.slice(css.indexOf("@media (max-width: 480px)"));
-    expect(tinyCss).toMatch(/\.composer-toolbar\s*\{\s*flex-wrap:\s*wrap;/s);
-    // 芯片行折行而非横滚（移动端禁横向滚动纪律）
-    expect(tinyCss).toMatch(/\.composer-chips\s*\{[^}]*flex-wrap:\s*wrap;/s);
-    expect(tinyCss).not.toMatch(/\.composer-chips\s*\{[^}]*overflow-x:\s*auto/s);
+    expect(tinyCss).toMatch(/\.composer-toolbar\s*\{[^}]*flex-wrap:\s*wrap;/s);
+    // 附件/引用条折行而非横滚（移动端禁横向滚动纪律）
+    expect(css).toMatch(/\.mention-strip\s*\{[^}]*flex-wrap:\s*wrap;/s);
+    expect(css).toMatch(/\.attachment-strip\s*\{[^}]*flex-wrap:\s*wrap;/s);
+    expect(css).not.toMatch(/\.mention-strip\s*\{[^}]*overflow-x:\s*auto/s);
+    expect(css).not.toMatch(/\.attachment-strip\s*\{[^}]*overflow-x:\s*auto/s);
   });
 
-  it("≤768px 密度优化：芯片行压扁、信息条折行 + 单位缩写 tok、表格降档、消息区收边", () => {
-    const compactStart = css.indexOf("@media (max-width: 768px)", narrowStart);
-    expect(compactStart).toBeGreaterThanOrEqual(0);
-    const compactCss = css.slice(compactStart, css.indexOf("@media (max-width: 480px)", compactStart));
-    expect(compactCss).toMatch(/\.composer-chips\s*\{[^}]*margin:\s*0 0 4px;/s);
+  it("≤768px 密度优化：信息条折行 + 单位缩写 tok、表格降档、消息区收边", () => {
     expect(compactCss).toMatch(/\.unit-full\s*\{\s*display:\s*none;/s);
     expect(compactCss).toMatch(/\.unit-narrow\s*\{\s*display:\s*inline;/s);
     expect(compactCss).toMatch(/\.markdown th, \.markdown td\s*\{[^}]*padding:\s*3px 6px;/s);
-    expect(compactCss).toMatch(/\.execution-track\s*\{[^}]*padding-left:\s*12px;/s);
+    expect(compactCss).toMatch(/\.chat-track\s*\{[^}]*padding:\s*14px 12px/s);
   });
 
   it("≤480px 控制行紧凑：菜单按钮降档、长模型名收缩省略，发送钮保持 44px 触达目标", () => {
-    const tinyCss = css.slice(css.indexOf("@media (max-width: 480px)"));
-    expect(tinyCss).toMatch(/\.composer-menu-btn\s*\{[^}]*min-height:\s*28px;/s);
+    expect(tinyCss).toMatch(/\.composer-menu-btn\s*\{[^}]*padding:\s*0 7px;/s);
     expect(tinyCss).toMatch(/\.model-menu-btn-label\s*\{[^}]*max-width:\s*108px;/s);
-    expect(tinyCss).toMatch(/\.composer-send\s*\{[^}]*width:\s*44px;/s);
+    // 触屏触控目标（hover:none 块）
+    expect(css).toMatch(/@media \(hover: none\)[\s\S]*?\.composer-send\s*\{[^}]*width:\s*44px;/);
   });
 
   it("输入框默认无纵向滚动条轨道（溢出后由 JS 放开）", () => {

@@ -1,15 +1,13 @@
 /**
  * 活动栏（桌面左侧窄图标栏）与移动端导航：
  * 上部为侧栏视图切换（会话/文件/SCM/问题），下部为帮助/通知/设置入口。
- * 终端入口 Phase 2 接入，本阶段省略。
- * Rail.tsx 为新组件（导出 ActivityBar），不覆盖旧 workbench/ActivityBar.tsx。
  */
 import { useEffect, useRef, type ReactElement } from "react";
 import { Icon, type IconName } from "../components/Icon";
 import { useI18n } from "../i18n";
 import type { SidebarView } from "./layout";
 
-/** 侧栏视图元信息（桌面活动栏与移动端导航共用；旧 workbench/view-meta.ts 的等价物） */
+/** 侧栏视图元信息（桌面活动栏与移动端导航共用） */
 export const VIEW_META: Record<SidebarView, { zh: string; en: string; icon: IconName }> = {
   sessions: { zh: "会话", en: "Sessions", icon: "history" },
   files: { zh: "文件", en: "Files", icon: "folder" },

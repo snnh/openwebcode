@@ -5,10 +5,10 @@
  */
 import { useEffect, useState } from "react";
 
-/** 窄窗口断点：与 styles.css 保持一致；桌面三栏在此宽度以下会产生明显挤压。 */
+/** 窄窗口断点：与 styles/layout.css 保持一致；桌面三栏在此宽度以下会产生明显挤压。 */
 export const MOBILE_BREAKPOINT = "(max-width: 1024px)";
 
-/** 紧凑断点：与 styles.css 的 ≤768px 密度优化块一致（芯片行零计数整行隐藏等 JS 联动）。 */
+/** 紧凑断点：与 styles/composer.css 的 ≤768px 密度优化块一致（芯片行零计数整行隐藏等 JS 联动）。 */
 export const COMPACT_BREAKPOINT = "(max-width: 768px)";
 
 export function useMediaQuery(query: string): boolean {

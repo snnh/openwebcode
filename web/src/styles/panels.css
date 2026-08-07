@@ -66,7 +66,7 @@
 .inspector-body h2 { margin: 0 0 12px; font-size: 13px; font-weight: 600; }
 .inspector-body h2:not(:first-child) { margin-top: 20px; }
 .panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
-.panel-head h2 { margin: 0; }
+.panel-head h2 { margin: 0; font-size: 13px; font-weight: 600; }
 
 .inspector-body dl {
   display: grid;
