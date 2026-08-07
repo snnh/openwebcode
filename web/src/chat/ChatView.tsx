@@ -289,7 +289,7 @@ export function ChatView({ sessionId, currentRun, onOpenNavMenu }: ChatViewProps
     onEditMessage: startEditMessage,
     onRegenerate: regenerateMessage,
     onFork: forkMessage,
-  }), [sessionId, running, contentLens, notify, t, sendShellToAgent, startEditMessage, regenerateMessage, forkMessage]);
+  }), [sessionId, running, contentLens, notify, sendShellToAgent, startEditMessage, regenerateMessage, forkMessage]);
 
   if (!current) {
     // 会话详情首次加载中：渲染对话骨架，避免欢迎页闪烁
