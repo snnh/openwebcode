@@ -3,8 +3,8 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
 import type { AgentInfo, LiveSubagentRun } from "../../lib/contracts";
 import { snippet } from "../../lib/subagent-runs";
-import { SubagentRunStats, SubagentStatusChip } from "../SubagentRunCard";
-import { SubagentTranscriptDetails } from "../MessageCard";
+import { SubagentRunStats, SubagentStatusChip } from "../../chat/SubagentRunCard";
+import { SubagentTranscriptDetails } from "../../chat/SubagentRunCard";
 import { useI18n } from "../../i18n";
 
 export interface SubagentRunGroup {
