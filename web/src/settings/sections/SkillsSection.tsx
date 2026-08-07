@@ -17,6 +17,7 @@ export function SkillsSection(): ReactElement {
       {skills.data.skills.length === 0 ? (
         <p className="muted-empty panel-empty">{t("还没有全局技能。", "No global skills installed.")}</p>
       ) : (
+        <div className="catalog-table-wrap">
         <table className="pricing-table catalog-table">
           <thead>
             <tr><th>{t("名称", "Name")}</th><th>{t("描述", "Description")}</th><th>{t("路径", "Path")}</th></tr>
@@ -31,6 +32,7 @@ export function SkillsSection(): ReactElement {
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </>
   );
