@@ -233,6 +233,7 @@ export function PricingSection({ onDirtyChange }: { onDirtyChange?(dirty: boolea
         </>
       ) : (
         <>
+          <div className="catalog-table-wrap">
           <table className="pricing-table">
             <thead>
               <tr><th>{t("模型", "Model")}</th><th>{t("服务商", "Provider")}</th><th>{t("币种", "Currency")}</th><th>{t("输入", "Input")}</th><th>{t("输出", "Output")}</th><th>{t("缓存读", "Cache read")}</th><th>{t("缓存写", "Cache write")}</th><th></th></tr>
@@ -252,6 +253,7 @@ export function PricingSection({ onDirtyChange }: { onDirtyChange?(dirty: boolea
               ))}
             </tbody>
           </table>
+          </div>
           {error && <p className="settings-error">{error}</p>}
         </>
       )}

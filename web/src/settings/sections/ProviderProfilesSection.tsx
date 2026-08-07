@@ -171,6 +171,7 @@ export function ModelProvidersSection(): ReactElement {
       <h4>{t("模型服务商", "Model providers")}</h4>
       <p className="settings-note">{t("可保存多个服务商配置。启用后自动注册并拉取该服务商模型；模型选择器统一显示为 模型ID【服务商】。", "Save multiple provider profiles. Enabled profiles are registered and their models are fetched; the model picker shows Model ID (Provider).")}</p>
       {profiles.data.modelProviders.length > 0 && (
+        <div className="catalog-table-wrap">
         <table className="pricing-table catalog-table">
           <thead><tr><th>{t("名称", "Name")}</th><th>{t("接口类型", "Interface")}</th><th>{t("状态", "Status")}</th><th>API Key</th><th></th></tr></thead>
           <tbody>{profiles.data.modelProviders.map((profile) => (
@@ -182,6 +183,7 @@ export function ModelProvidersSection(): ReactElement {
             </tr>
           ))}</tbody>
         </table>
+        </div>
       )}
       <div className="catalog-edit-form">
         <h4>{modelForm.originalId ? t("编辑模型服务商", "Edit model provider") : t("添加模型服务商", "Add model provider")}</h4>
@@ -283,9 +285,11 @@ export function WebProvidersSection(): ReactElement {
         ))}
       </div>
       {profiles.data.webProviders.length > 0 && (
+        <div className="catalog-table-wrap">
         <table className="pricing-table catalog-table"><thead><tr><th>{t("名称", "Name")}</th><th>{t("类型", "Type")}</th><th>{t("能力", "Capabilities")}</th><th>API Key</th><th></th></tr></thead>
           <tbody>{profiles.data.webProviders.map((profile) => <tr key={profile.id}><td className="mono">{profile.id}</td><td>{profile.provider}</td><td>{profile.capabilities.join(" + ")}</td><td>{profile.maskedApiKey ?? "—"}</td><td><button className="btn small" disabled={busy} onClick={() => editWeb(profile)}>{t("编辑", "Edit")}</button>{" "}<button className="btn small" disabled={busy} onClick={() => confirm.ask({ title: t("删除联网服务商", "Delete web provider"), body: t(`删除联网服务商「${profile.id}」？`, `Delete web provider “${profile.id}”?`), confirmLabel: t("删除", "Delete"), onConfirm: () => run(api.deleteWebProvider(profile.id)) })}>{t("删除", "Delete")}</button></td></tr>)}</tbody>
         </table>
+        </div>
       )}
       <div className="catalog-edit-form">
         <h4>{webForm.originalId ? t("编辑联网服务商", "Edit web provider") : t("添加联网服务商", "Add web provider")}</h4>

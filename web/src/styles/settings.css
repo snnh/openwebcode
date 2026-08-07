@@ -202,7 +202,7 @@
   font-size: 12px;
 }
 .settings-note { margin: 0 0 8px; font-size: 12px; color: var(--text-3); }
-.settings-row { display: flex; gap: 14px; }
+.settings-row { display: flex; flex-wrap: wrap; gap: 14px; }
 .theme-option { display: flex; flex-direction: row; align-items: center; gap: 6px; font-size: 13px; font-weight: 400; cursor: pointer; }
 .session-dialog label.theme-option { flex-direction: row; }
 .dialog-hint { margin: 0; }
@@ -312,7 +312,7 @@
 .settings-section-icon { width: 32px; height: 32px; }
 .settings-panel { padding: 16px 14px 14px; overflow-x: hidden; }
 .settings-panel .catalog-table-wrap { overflow-x: auto; }
-.settings-panel .catalog-table { min-width: 620px; }
+.settings-panel .catalog-table-wrap .pricing-table { min-width: 620px; }
 .settings-panel input, .settings-panel select, .settings-panel textarea { max-width: 100%; }
 .settings-inline-form { flex-wrap: wrap; }
 .settings-actions { padding: 10px 14px calc(10px + env(safe-area-inset-bottom)); }
@@ -350,7 +350,7 @@
 .totp-gate-list { margin: 0 0 8px; padding-left: 4px; list-style: none; font-size: 13px; display: flex; flex-direction: column; gap: 4px; }
 
 .prompt-builtin { border: 1px solid var(--border); border-radius: var(--radius-s); padding: 8px 10px; }
-.prompt-builtin summary { cursor: pointer; font-size: 13px; color: var(--text-2); }
+.prompt-builtin summary { cursor: pointer; font-size: 13px; color: var(--text-2); overflow-wrap: anywhere; }
 .prompt-builtin-text { margin: 8px 0 0; font-size: 11px; line-height: 1.5; color: var(--text-3); white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; }
 .extra-body-input {
   width: 100%;
