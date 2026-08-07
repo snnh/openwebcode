@@ -6,7 +6,7 @@ import type {
 } from "../lib/contracts";
 import type { ContextWindowInfo } from "../lib/context-window";
 import type { StreamBlock } from "./stream-buffer";
-import type { LiveActivityInfo } from "../hooks/use-live-activity";
+import type { LiveActivityInfo } from "../app/live-store";
 import type { DiffSpec } from "../components/editor/DiffPane";
 import type { PendingPermission } from "../app/session-store";
 

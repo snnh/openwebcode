@@ -24,8 +24,6 @@ export interface UiState {
   settingsTab?: { tab: SettingsTab; at: number };
   paletteOpen: boolean;
   quickOpen: boolean;
-  /** 只读代码视图浮层的文件路径 */
-  codeOverlayPath?: string;
   /** 删除会话确认框目标 */
   deleteTarget?: string;
   notice?: Notice;
@@ -44,7 +42,7 @@ export const uiStore = createStore<UiState>(INITIAL_UI_STATE);
 
 /** 任意浮层/对话框处于打开状态（供命令 when 条件 "!dialogOpen" 等使用） */
 export function anyDialogOpen(state: UiState): boolean {
-  return state.newSessionOpen || state.settingsOpen || state.paletteOpen || state.quickOpen || state.codeOverlayPath !== undefined;
+  return state.newSessionOpen || state.settingsOpen || state.paletteOpen || state.quickOpen;
 }
 
 export const ui = {
@@ -65,9 +63,6 @@ export const ui = {
   },
   setQuickOpen(open: boolean): void {
     uiStore.set({ quickOpen: open });
-  },
-  setCodeOverlay(path: string | undefined): void {
-    uiStore.set({ codeOverlayPath: path });
   },
   setDeleteTarget(sessionId: string | undefined): void {
     uiStore.set({ deleteTarget: sessionId });

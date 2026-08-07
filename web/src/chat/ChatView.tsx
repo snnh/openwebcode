@@ -14,6 +14,8 @@ import { INACTIVE_STATES, isBusyState } from "../lib/agent-state";
 import { useStore } from "../app/store";
 import { qk, useContextViewQuery, useInteractionsQuery, useModelsQuery, usePendingPermissionsQuery, useQueueQuery, useSessionQuery, useTodosQuery, useExtensionsQuery } from "../app/queries";
 import { sessionMeta, sessionStore } from "../app/session-store";
+import { deriveActivityInfo, useLiveActivityEntry, useLiveSubagentRuns, type LiveActivityInfo } from "../app/live-store";
+import { auxViews } from "../workbench/aux-views";
 import { ui } from "../app/ui-store";
 import { useStreamBlocks } from "./stream-buffer";
 import { useOlderMessages, loadOlderMessages } from "./pagination-store";
@@ -28,22 +30,16 @@ import { SessionHeader } from "../workbench/SessionHeader";
 import { SessionSkeleton } from "../components/SessionSkeleton";
 import { Icon } from "../components/Icon";
 import { useI18n } from "../i18n";
-import type { LiveActivityInfo } from "../hooks/use-live-activity";
-import type { LiveSubagentRun } from "../lib/contracts";
 
 export interface ChatViewProps {
   sessionId: string;
   /** useAgentRun 的 REST/WS 合并 run 快照（App 装配层实例化） */
   currentRun?: AgentRun | undefined;
-  /** useLiveActivity 的读取端（App 装配层实例化） */
-  activityFor(sessionId: string): LiveActivityInfo | undefined;
-  /** 当前会话的实时子代理运行（useLiveSubagents，终态保留） */
-  liveSubagents: Record<string, LiveSubagentRun>;
   /** 移动端：打开左上角导航菜单 */
   onOpenNavMenu?(): void;
 }
 
-export function ChatView({ sessionId, currentRun, activityFor, liveSubagents, onOpenNavMenu }: ChatViewProps): ReactElement {
+export function ChatView({ sessionId, currentRun, onOpenNavMenu }: ChatViewProps): ReactElement {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const detail = useSessionQuery(sessionId);
@@ -63,6 +59,8 @@ export function ChatView({ sessionId, currentRun, activityFor, liveSubagents, on
   const runError = useStore(sessionStore, (state) => state.runFailures[sessionId]);
   const localPermissions = useStore(sessionStore, (state) => state.pendingPermissions);
   const streamBlocks = useStreamBlocks(sessionId);
+  const liveSubagents = useLiveSubagentRuns(sessionId);
+  const activityEntry = useLiveActivityEntry(sessionId);
 
   const currentState = currentRun?.state ?? agentState;
   const running = streamBlocks.length > 0 || isBusyState(currentState);
@@ -92,7 +90,7 @@ export function ChatView({ sessionId, currentRun, activityFor, liveSubagents, on
 
   // 对话区底部实时活动条：WS 工具事件优先，状态/起始时间回退到 run 快照（刷新页面后首个事件前可用）
   const liveActivity = useMemo<LiveActivityInfo | undefined>(() => {
-    const info = activityFor(sessionId);
+    const info = deriveActivityInfo(activityEntry);
     const state = info?.state ?? currentState;
     if (!state || INACTIVE_STATES.has(state)) return undefined;
     const since = info?.since ?? (currentRun?.since ? Date.parse(currentRun.since) : undefined);
@@ -102,7 +100,7 @@ export function ChatView({ sessionId, currentRun, activityFor, liveSubagents, on
       ...(info?.currentTool ? { currentTool: info.currentTool } : {}),
       toolCount: info?.toolCount ?? 0,
     };
-  }, [activityFor, sessionId, currentState, currentRun?.since]);
+  }, [activityEntry, currentState, currentRun?.since]);
 
   const model = useMemo(() => models.data?.find((item) => item.id === current?.model && item.provider === current?.provider), [models.data, current?.model, current?.provider]);
   // 上下文窗口占用：WS 实时水位优先，否则由 REST stats + 模型档案播种（刷新后首个 watermark 前可用）
@@ -285,8 +283,8 @@ export function ChatView({ sessionId, currentRun, activityFor, liveSubagents, on
     running,
     ...(contentLens ? { contentLens } : {}),
     onNotice: (text, kind = "info") => notify(text, kind),
-    // 统一 diff 视图（DiffPane）Phase 2 接入；本阶段给出明确提示而非静默失败
-    onOpenDiff: () => notify(t("统一 diff 视图将在后续阶段提供", "The unified diff view will be available in a later phase")),
+    // 统一 diff 视图（编辑器分栏互斥，由 aux-views 管理）
+    onOpenDiff: (spec) => auxViews.openDiff(spec),
     onSendToAgent: sendShellToAgent,
     onEditMessage: startEditMessage,
     onRegenerate: regenerateMessage,

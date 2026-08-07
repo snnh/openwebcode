@@ -4,12 +4,13 @@
  */
 import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import type { QueryClient } from "@tanstack/react-query";
-import type { AppEvent, Session } from "../lib/contracts";
+import type { AppEvent, Session, SubagentStartedEvent } from "../lib/contracts";
 import { getDesktopNotify } from "./prefs-store";
 import { maybeDesktopNotify } from "../lib/desktop-notify";
 import { createEventRouter, type EventRouter } from "./event-router";
 import { createEventSocket, type EventSocketEnv } from "./ws";
 import { ui, uiStore } from "./ui-store";
+import { live } from "./live-store";
 import { streamBuffer, type StreamBuffer } from "../chat/stream-buffer";
 import { clearOlderMessages } from "../chat/pagination-store";
 
@@ -20,8 +21,8 @@ export interface AppWiringOptions {
   /** 会话列表快照（完成/桌面通知的标题来源） */
   getSessions(): Session[] | undefined;
   applyRunEvent(event: AppEvent): void;
-  applyActivityEvent(event: AppEvent): void;
-  applySubagentEvent(event: AppEvent): void;
+  /** subagent.started 到达时回调（主区标签自动创建；useSubagentTabs.openFromStarted） */
+  onSubagentStarted?(sessionId: string, payload: SubagentStartedEvent): void;
   onReconnecting?(reconnecting: boolean): void;
   /** 测试注入：假 WebSocket / 退避参数 */
   socketEnv?: EventSocketEnv;
@@ -54,8 +55,9 @@ export function createAppWiring(options: AppWiringOptions): AppWiring {
       });
     },
     applyRunEvent: options.applyRunEvent,
-    applyActivityEvent: options.applyActivityEvent,
-    applySubagentEvent: options.applySubagentEvent,
+    // 实时数据（子代理运行/活动条）直接写 live-store，组件经 useStore 选择器读取
+    applyActivityEvent: (event) => live.applyActivityEvent(event),
+    applySubagentEvent: (event) => live.applySubagentEvent(event, options.onSubagentStarted),
     stream,
     // resync 命中当前会话：分页缓存可能已过期，清空重建
     onResyncCurrent: (sessionId) => clearOlderMessages(sessionId),
@@ -92,8 +94,7 @@ export function useAppWiring(options: Omit<AppWiringOptions, "onReconnecting" | 
       getT: () => optionsRef.current.getT(),
       getSessions: () => optionsRef.current.getSessions(),
       applyRunEvent: (event) => optionsRef.current.applyRunEvent(event),
-      applyActivityEvent: (event) => optionsRef.current.applyActivityEvent(event),
-      applySubagentEvent: (event) => optionsRef.current.applySubagentEvent(event),
+      ...(optionsRef.current.onSubagentStarted ? { onSubagentStarted: (sessionId, payload) => optionsRef.current.onSubagentStarted!(sessionId, payload) } : {}),
       ...(optionsRef.current.desktopNotifyEnabled ? { desktopNotifyEnabled: () => optionsRef.current.desktopNotifyEnabled!() } : {}),
       onReconnecting: setReconnecting,
     });
