@@ -1,10 +1,10 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { SubagentsPanel } from "../components/panels/SubagentsPanel";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SubagentsPanel } from "../panels/SubagentsPanel";
 import { api, ApiError } from "../lib/api";
+import { liveStore } from "../app/live-store";
+import { makeSession } from "./helpers/fixtures";
 import { renderWithClient } from "./helpers/with-client";
-
-const renderPanel = renderWithClient;
 
 const AGENTS = {
   agents: [
@@ -14,14 +14,19 @@ const AGENTS = {
   ],
 };
 
+beforeEach(() => {
+  vi.spyOn(api, "session").mockResolvedValue(makeSession({ id: "s-1" }));
+});
+
 afterEach(() => {
+  liveStore.set({ subagents: {} });
   vi.restoreAllMocks();
 });
 
 describe("SubagentsPanel 手动启动器", () => {
   it("渲染输入框、代理类型选择与启动按钮，代理列表来自 api.agents()（内置在前）", async () => {
     const agentsSpy = vi.spyOn(api, "agents").mockResolvedValue(AGENTS);
-    renderPanel(<SubagentsPanel sessionId="s-1" runs={{}} />);
+    renderWithClient(<SubagentsPanel sessionId="s-1" />);
 
     expect(screen.getByLabelText("子代理任务描述")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "启动" })).toBeDisabled();
@@ -37,7 +42,7 @@ describe("SubagentsPanel 手动启动器", () => {
   it("提交调用 startSubagent 并在成功后清空输入（按钮点击与 Enter 提交）", async () => {
     vi.spyOn(api, "agents").mockResolvedValue(AGENTS);
     const startSpy = vi.spyOn(api, "startSubagent").mockResolvedValue({ taskId: "task-1", toolCallId: "manual-task-1" });
-    renderPanel(<SubagentsPanel sessionId="s-1" runs={{}} />);
+    renderWithClient(<SubagentsPanel sessionId="s-1" />);
 
     const input = screen.getByLabelText("子代理任务描述");
     const select = await screen.findByLabelText("子代理类型");
@@ -58,7 +63,7 @@ describe("SubagentsPanel 手动启动器", () => {
   it("429/400 失败时展示错误行，输入保留", async () => {
     vi.spyOn(api, "agents").mockResolvedValue(AGENTS);
     vi.spyOn(api, "startSubagent").mockRejectedValue(new ApiError(429, "子代理并发已满"));
-    renderPanel(<SubagentsPanel sessionId="s-1" runs={{}} />);
+    renderWithClient(<SubagentsPanel sessionId="s-1" />);
 
     const input = screen.getByLabelText("子代理任务描述");
     fireEvent.change(input, { target: { value: "批量重构" } });
@@ -71,7 +76,7 @@ describe("SubagentsPanel 手动启动器", () => {
 
   it("api.agents() 失败时回退到内置两项（启动器仍可用）", async () => {
     vi.spyOn(api, "agents").mockRejectedValue(new Error("not found"));
-    renderPanel(<SubagentsPanel sessionId="s-1" runs={{}} />);
+    renderWithClient(<SubagentsPanel sessionId="s-1" />);
 
     const select = screen.getByLabelText("子代理类型");
     await waitFor(() => expect(select.querySelectorAll("option")).toHaveLength(2));
@@ -80,7 +85,7 @@ describe("SubagentsPanel 手动启动器", () => {
   });
 
   it("无会话时不渲染启动器", () => {
-    renderPanel(<SubagentsPanel runs={{}} />);
+    renderWithClient(<SubagentsPanel />);
 
     expect(screen.queryByLabelText("子代理任务描述")).toBeNull();
   });

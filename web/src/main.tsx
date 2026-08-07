@@ -10,6 +10,9 @@ import "./styles/layout.css";
 import "./styles/chat-list.css";
 import "./styles/chat-cards.css";
 import "./styles/composer.css";
+import "./styles/sidebar.css";
+import "./styles/panels.css";
+import "./styles/editor.css";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } },

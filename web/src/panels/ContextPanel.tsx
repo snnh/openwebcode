@@ -1,16 +1,20 @@
 import { useEffect, useState, type ReactElement } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "../../lib/api";
-import type { ContextTokenUsage, ContextUsage, ContextView, SessionDetail } from "../../lib/contracts";
-import { cacheHitRate } from "../../lib/cache-stats";
-import { deriveWindowInfo, windowLevel, type ContextWindowInfo } from "../../lib/context-window";
-import { formatCurrency, formatTokens, formatTokensShort, microToDecimal } from "../../lib/format";
-import { useI18n } from "../../i18n";
+import { useQueryClient } from "@tanstack/react-query";
+import { api } from "../lib/api";
+import type { ChatMessage, ContextTokenUsage, ContextUsage, ContextView } from "../lib/contracts";
+import { cacheHitRate } from "../lib/cache-stats";
+import { deriveWindowInfo, windowLevel, type ContextWindowInfo } from "../lib/context-window";
+import { formatCurrency, formatTokens, formatTokensShort, microToDecimal } from "../lib/format";
+import { useStore } from "../app/store";
+import { sessionStore } from "../app/session-store";
+import { qk, useContextViewQuery, useModelsQuery, useSessionQuery } from "../app/queries";
+import { ui } from "../app/ui-store";
+import { useI18n } from "../i18n";
 
 const STATE_LABELS: Record<string, [string, string]> = { full: ["保留", "Retained"], evicted: ["已逐出", "Evicted"], restored: ["已恢复", "Restored"] };
 
-function messageSummary(session: SessionDetail | undefined, messageId: string, t: (zh: string, en: string) => string): string {
-  const message = session?.messages.find((item) => item.id === messageId);
+function messageSummary(messages: ChatMessage[] | undefined, messageId: string, t: (zh: string, en: string) => string): string {
+  const message = messages?.find((item) => item.id === messageId);
   if (!message) return messageId;
   for (const block of message.content) {
     if (block.type === "tool_call" && block.name) return t(`工具 ${block.name}`, `Tool ${block.name}`);
@@ -26,11 +30,10 @@ function messageSummary(session: SessionDetail | undefined, messageId: string, t
   return messageId;
 }
 
-function PolicySection({ sessionId, running, onNotice }: { sessionId: string; running: boolean; onNotice(message: string, kind?: "info" | "error"): void }): ReactElement {
+/** 管理与压缩：手动压缩入口 + 自动驱逐策略表单（数据由父级 context 查询注入，不再各自重复查询） */
+function PolicySection({ sessionId, running, policy }: { sessionId: string; running: boolean; policy: ContextView["ledger"]["policy"] }): ReactElement {
   const { t } = useI18n();
   const queryClient = useQueryClient();
-  const context = useQuery({ queryKey: ["context", sessionId], queryFn: () => api.context(sessionId) });
-  const policy = context.data?.ledger.policy;
   const [form, setForm] = useState({ enabled: true, strategy: "lag" as "lag" | "interval" | "off", evictionMode: "placeholder" as "placeholder" | "process", lag: "2", interval: "5", minRetainTokens: "256", readKeepLines: "50", pinExemptRounds: "5", restoreBudget: "20000" });
   const [busy, setBusy] = useState(false);
   useEffect(() => {
@@ -39,7 +42,7 @@ function PolicySection({ sessionId, running, onNotice }: { sessionId: string; ru
   }, [policy]);
   const save = (): void => {
     const values = [form.lag, form.interval, form.minRetainTokens, form.readKeepLines, form.pinExemptRounds, form.restoreBudget];
-    if (values.some((value) => !/^\d+$/.test(value))) { onNotice(t("上下文策略数值必须为非负整数", "Context policy values must be non-negative integers"), "error"); return; }
+    if (values.some((value) => !/^\d+$/.test(value))) { ui.notify(t("上下文策略数值必须为非负整数", "Context policy values must be non-negative integers"), "error"); return; }
     setBusy(true);
     api.updateContextPolicy(sessionId, {
       enabled: form.enabled,
@@ -52,20 +55,25 @@ function PolicySection({ sessionId, running, onNotice }: { sessionId: string; ru
       pinExemptRounds: Number(form.pinExemptRounds),
       restoreBudget: Number(form.restoreBudget),
     }).then(() => {
-      void queryClient.invalidateQueries({ queryKey: ["context", sessionId] });
-      onNotice(t("上下文策略已更新", "Context policy updated"));
-    }).catch((error: unknown) => onNotice(error instanceof Error ? error.message : t("策略更新失败", "Policy update failed"), "error")).finally(() => setBusy(false));
+      void queryClient.invalidateQueries({ queryKey: qk.context(sessionId) });
+      ui.notify(t("上下文策略已更新", "Context policy updated"));
+    }).catch((error: unknown) => ui.notify(error instanceof Error ? error.message : t("策略更新失败", "Policy update failed"), "error")).finally(() => setBusy(false));
+  };
+  const compact = (mode: "toolcalls" | "overview"): void => {
+    setBusy(true);
+    api.compactContext(sessionId, mode).then((result) => {
+      void queryClient.invalidateQueries({ queryKey: qk.context(sessionId) });
+      ui.notify(result.changed
+        ? (mode === "toolcalls" ? t("工具调用已压缩", "Tool calls compacted") : t("已生成上下文概览", "Context overview generated"))
+        : result.reason ?? t("无需压缩", "No compaction needed"));
+    }).catch((error: unknown) => ui.notify(error instanceof Error ? error.message : t("压缩失败", "Compaction failed"), "error")).finally(() => setBusy(false));
   };
   return (
     <>
       <h2>{t("管理与压缩", "Management and compaction")}</h2>
       <div className="context-actions">
-        <button className="btn small" disabled={running || busy} onClick={() => {
-          setBusy(true); api.compactContext(sessionId, "toolcalls").then((result) => { void queryClient.invalidateQueries({ queryKey: ["context", sessionId] }); onNotice(result.changed ? t("工具调用已压缩", "Tool calls compacted") : result.reason ?? t("无需压缩", "No compaction needed")); }).catch((error: unknown) => onNotice(error instanceof Error ? error.message : t("压缩失败", "Compaction failed"), "error")).finally(() => setBusy(false));
-        }}>{t("压缩工具调用", "Compact tool calls")}</button>
-        <button className="btn small" disabled={running || busy} onClick={() => {
-          setBusy(true); api.compactContext(sessionId, "overview").then((result) => { void queryClient.invalidateQueries({ queryKey: ["context", sessionId] }); onNotice(result.changed ? t("已生成上下文概览", "Context overview generated") : result.reason ?? t("无需压缩", "No compaction needed")); }).catch((error: unknown) => onNotice(error instanceof Error ? error.message : t("压缩失败", "Compaction failed"), "error")).finally(() => setBusy(false));
-        }}>{t("概览压缩", "Overview compaction")}</button>
+        <button className="btn small" disabled={running || busy} onClick={() => compact("toolcalls")}>{t("压缩工具调用", "Compact tool calls")}</button>
+        <button className="btn small" disabled={running || busy} onClick={() => compact("overview")}>{t("概览压缩", "Overview compaction")}</button>
       </div>
       <div className="context-policy-form">
         <label><input type="checkbox" checked={form.enabled} disabled={running || busy} onChange={(event) => setForm((value) => ({ ...value, enabled: event.target.checked }))} /> {t("启用自动驱逐", "Enable automatic eviction")}</label>
@@ -118,8 +126,8 @@ function SegmentStats({ stats }: { stats: NonNullable<ContextView["stats"]> }): 
 /** 上下文窗口占用（§水位）：占用 meter + 缓存命中行 + 分段堆叠条 + 压缩水位提示。 */
 function WindowSection({ info, latestUsage, cumulativeUsage }: {
   info: ContextWindowInfo;
-  /** 最近一轮 token 用量（WS context.usage）；本轮缓存命中来源。 */
-  latestUsage?: ContextUsage;
+  /** 最近一轮 token 用量（session-store usages，WS context.usage 写入）；本轮缓存命中来源。 */
+  latestUsage?: ContextUsage | undefined;
   /** 会话累计用量（ledger.usage）；累计缓存命中来源。 */
   cumulativeUsage: ContextTokenUsage;
 }): ReactElement {
@@ -222,11 +230,9 @@ function FragmentRow({ label, value }: { label: string; value: number }): ReactE
 }
 
 /** 选择性上下文（§4.4）：pin 不被驱逐；排除路径不进上下文。排除不是安全边界。 */
-function SelectionSection({ sessionId, running, onNotice }: { sessionId: string; running: boolean; onNotice(message: string, kind?: "info" | "error"): void }): ReactElement {
+function SelectionSection({ sessionId, running, selection }: { sessionId: string; running: boolean; selection: { pins: string[]; excludes: string[] } }): ReactElement {
   const { t } = useI18n();
   const queryClient = useQueryClient();
-  const context = useQuery({ queryKey: ["context", sessionId], queryFn: () => api.context(sessionId) });
-  const selection = context.data?.selection ?? { pins: [], excludes: [] };
   const [pinInput, setPinInput] = useState("");
   const [excludeInput, setExcludeInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -234,11 +240,11 @@ function SelectionSection({ sessionId, running, onNotice }: { sessionId: string;
     setBusy(true);
     api.updateContextSelection(sessionId, { pins, excludes })
       .then(() => {
-        void queryClient.invalidateQueries({ queryKey: ["context", sessionId] });
-        void queryClient.invalidateQueries({ queryKey: ["session", sessionId] });
-        onNotice(t("选择性上下文已更新", "Context selection updated"));
+        void queryClient.invalidateQueries({ queryKey: qk.context(sessionId) });
+        void queryClient.invalidateQueries({ queryKey: qk.session(sessionId) });
+        ui.notify(t("选择性上下文已更新", "Context selection updated"));
       })
-      .catch((error: unknown) => onNotice(error instanceof Error ? error.message : t("更新失败", "Update failed"), "error"))
+      .catch((error: unknown) => ui.notify(error instanceof Error ? error.message : t("更新失败", "Update failed"), "error"))
       .finally(() => setBusy(false));
   };
   const addPin = (): void => {
@@ -302,15 +308,14 @@ function SelectionSection({ sessionId, running, onNotice }: { sessionId: string;
   );
 }
 
-function BudgetSection({ sessionId, running, onNotice }: {
+function BudgetSection({ sessionId, running, context }: {
   sessionId: string;
   running: boolean;
-  onNotice(message: string, kind?: "info" | "error"): void;
+  context: ContextView;
 }): ReactElement {
   const { t } = useI18n();
   const queryClient = useQueryClient();
-  const context = useQuery({ queryKey: ["context", sessionId], queryFn: () => api.context(sessionId) });
-  const policy = context.data?.ledger.policy;
+  const policy = context.ledger.policy;
   const [tokenLimit, setTokenLimit] = useState("");
   const [costLimit, setCostLimit] = useState("");
   const [costCurrency, setCostCurrency] = useState<"CNY" | "USD">("CNY");
@@ -320,18 +325,18 @@ function BudgetSection({ sessionId, running, onNotice }: {
   useEffect(() => {
     setTokenLimit(policy?.maxSessionTokens?.toString() ?? "");
     setCostLimit(policy?.maxSessionCost ? microToDecimal(policy.maxSessionCost.microUnits) : "");
-    setCostCurrency(policy?.maxSessionCost?.currency ?? context.data?.preferences.currency ?? "CNY");
-  }, [context.data]);
+    setCostCurrency(policy?.maxSessionCost?.currency ?? context.preferences.currency ?? "CNY");
+  }, [context, policy]);
 
   const save = (): void => {
     const tokens = tokenLimit.trim();
     const cost = costLimit.trim();
     if (tokens && (!/^\d+$/.test(tokens) || Number(tokens) < 1)) {
-      onNotice(t("Token 上限必须为正整数", "Token limit must be a positive integer"), "error");
+      ui.notify(t("Token 上限必须为正整数", "Token limit must be a positive integer"), "error");
       return;
     }
     if (cost && (!/^\d+(\.\d+)?$/.test(cost) || Number(cost) <= 0)) {
-      onNotice(t("成本上限必须为正数", "Cost limit must be a positive number"), "error");
+      ui.notify(t("成本上限必须为正数", "Cost limit must be a positive number"), "error");
       return;
     }
     setSaving(true);
@@ -340,10 +345,10 @@ function BudgetSection({ sessionId, running, onNotice }: {
       maxSessionCost: cost ? { amount: cost, currency: costCurrency } : null,
     })
       .then(() => {
-        void queryClient.invalidateQueries({ queryKey: ["context", sessionId] });
-        onNotice(t("预算已更新", "Budget updated"));
+        void queryClient.invalidateQueries({ queryKey: qk.context(sessionId) });
+        ui.notify(t("预算已更新", "Budget updated"));
       })
-      .catch((error: unknown) => onNotice(error instanceof Error ? error.message : t("预算更新失败", "Budget update failed"), "error"))
+      .catch((error: unknown) => ui.notify(error instanceof Error ? error.message : t("预算更新失败", "Budget update failed"), "error"))
       .finally(() => setSaving(false));
   };
 
@@ -400,38 +405,35 @@ function BudgetSection({ sessionId, running, onNotice }: {
   );
 }
 
-export function ContextPanel({ sessionId, session, running, windowUsage, latestUsage, onNotice }: {
-  sessionId?: string;
-  session?: SessionDetail;
+/** 上下文面板：窗口水位/用量/成本/条目管理与策略表单。数据自取（qk.context + session-store 水位/用量），提示走 ui.notify。 */
+export function ContextPanel({ sessionId, running }: {
+  sessionId?: string | undefined;
   running: boolean;
-  /** 上下文窗口占用（WS 实时水位，由 App 经 BottomPanel 下发）；缺省由 REST stats + 模型档案播种。 */
-  windowUsage?: ContextWindowInfo;
-  /** 最近一轮 token 用量（WS context.usage，由 App 经 BottomPanel 下发）；驱动本轮缓存命中行。 */
-  latestUsage?: ContextUsage;
-  onNotice(message: string, kind?: "info" | "error"): void;
 }): ReactElement {
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const [artifact, setArtifact] = useState<{ id: string; content: string }>();
-  const context = useQuery({
-    queryKey: ["context", sessionId],
-    queryFn: () => api.context(sessionId!),
-    enabled: Boolean(sessionId),
-  });
-  const models = useQuery({ queryKey: ["models"], queryFn: api.models });
+  const context = useContextViewQuery(sessionId);
+  const session = useSessionQuery(sessionId);
+  const models = useModelsQuery();
+  // WS 实时水位/本轮用量（事件路由写 session-store）；缺省时由 REST stats + 模型档案播种
+  const watermark = useStore(sessionStore, (state) => (sessionId ? state.watermarks[sessionId] : undefined));
+  const latestUsage = useStore(sessionStore, (state) => (sessionId ? state.usages[sessionId] : undefined));
 
   if (!sessionId) return <div className="inspector-body"><p className="muted-empty panel-empty">{t("选择会话以查看上下文。", "Select a session to view context.")}</p></div>;
   if (context.isPending) return <div className="inspector-body"><p className="muted-empty panel-empty">{t("加载中…", "Loading…")}</p></div>;
   if (context.isError || !context.data) return <div className="inspector-body"><p className="muted-empty panel-empty">{t("暂无用量数据。", "No usage data available.")}</p></div>;
 
+  const detail = session.data;
+  const summarize = (messageId: string): string => messageSummary(detail?.messages, messageId, t);
   const { usage, cost, entries } = context.data.ledger;
-  const model = models.data?.find((item) => item.id === session?.model && item.provider === session?.provider);
+  const model = models.data?.find((item) => item.id === detail?.model && item.provider === detail?.provider);
   // 实时水位优先；缺省时由 REST stats + 模型档案播种（窗口未知则只展示 tokens，不显示百分比）
-  const windowInfo = windowUsage ?? deriveWindowInfo(undefined, context.data.stats, model);
+  const windowInfo = deriveWindowInfo(watermark, context.data.stats, model);
 
   return (
     <div className="inspector-body">
-      {windowInfo && <WindowSection info={windowInfo} {...(latestUsage ? { latestUsage } : {})} cumulativeUsage={usage} />}
+      {windowInfo && <WindowSection info={windowInfo} latestUsage={latestUsage} cumulativeUsage={usage} />}
       <h2>{t("上下文用量", "Context usage")}</h2>
       <dl>
         <dt>{t("输入 tokens", "Input tokens")}</dt>
@@ -451,7 +453,7 @@ export function ContextPanel({ sessionId, session, running, windowUsage, latestU
           <dt>{t("消息级断点数", "Message breakpoints")}</dt>
           <dd>{context.data.ledger.cacheBreakpoints!.length}</dd>
           {context.data.ledger.cacheBreakpoints!.map((id) => (
-            <dd key={id} className="mono kv-text" title={id}>{messageSummary(session, id, t)}</dd>
+            <dd key={id} className="mono kv-text" title={id}>{summarize(id)}</dd>
           ))}
         </dl>
       )}
@@ -469,9 +471,9 @@ export function ContextPanel({ sessionId, session, running, windowUsage, latestU
         )}
       </dl>
       {context.data.stats && <SegmentStats stats={context.data.stats} />}
-      <SelectionSection sessionId={sessionId} running={running} onNotice={onNotice} />
-      <BudgetSection sessionId={sessionId} running={running} onNotice={onNotice} />
-      <PolicySection sessionId={sessionId} running={running} onNotice={onNotice} />
+      <SelectionSection sessionId={sessionId} running={running} selection={context.data.selection ?? { pins: [], excludes: [] }} />
+      <BudgetSection sessionId={sessionId} running={running} context={context.data} />
+      <PolicySection sessionId={sessionId} running={running} policy={context.data.ledger.policy} />
       {context.data.ledger.compacted && (
         <>
           <h2>{t("压缩", "Compaction")}</h2>
@@ -492,11 +494,11 @@ export function ContextPanel({ sessionId, session, running, windowUsage, latestU
         </>
       )}
       <h2>{t("上下文条目", "Context entries")}</h2>
-      {entries.length === 0 && !session?.messages.some((message) => message.role === "tool") && <p className="muted-empty panel-empty">{t("暂无条目。", "No entries.")}</p>}
+      {entries.length === 0 && !detail?.messages.some((message) => message.role === "tool") && <p className="muted-empty panel-empty">{t("暂无条目。", "No entries.")}</p>}
       {entries.map((entry) => (
         <div className="context-entry" key={`${entry.messageId}-${entry.artifactId}`}>
           <span className={`entry-state entry-${entry.state}`}>{STATE_LABELS[entry.state] ? t(...STATE_LABELS[entry.state]!) : entry.state}</span>
-          <span className="entry-summary" title={entry.messageId}>{messageSummary(session, entry.messageId, t)}</span>
+          <span className="entry-summary" title={entry.messageId}>{summarize(entry.messageId)}</span>
           {entry.state === "evicted" && (
             <button
               className="btn small"
@@ -505,11 +507,11 @@ export function ContextPanel({ sessionId, session, running, windowUsage, latestU
               onClick={() => {
                 api.restoreContext(sessionId, entry.messageId)
                   .then(() => {
-                    void queryClient.invalidateQueries({ queryKey: ["context", sessionId] });
-                    void queryClient.invalidateQueries({ queryKey: ["session", sessionId] });
-                    onNotice(t("已恢复上下文条目", "Context entry restored"));
+                    void queryClient.invalidateQueries({ queryKey: qk.context(sessionId) });
+                    void queryClient.invalidateQueries({ queryKey: qk.session(sessionId) });
+                    ui.notify(t("已恢复上下文条目", "Context entry restored"));
                   })
-                  .catch((error: unknown) => onNotice(error instanceof Error ? error.message : t("恢复失败", "Restore failed"), "error"));
+                  .catch((error: unknown) => ui.notify(error instanceof Error ? error.message : t("恢复失败", "Restore failed"), "error"));
               }}
             >
               {t("恢复", "Restore")}
@@ -519,30 +521,30 @@ export function ContextPanel({ sessionId, session, running, windowUsage, latestU
             <button className="btn small" disabled={running} onClick={() => {
               const pinned = (entry.pinnedUntilRound ?? 0) > (context.data.ledger.round ?? 0);
               api.mutateContextEntry(sessionId, entry.messageId, pinned ? "unpin" : "pin")
-                .then(() => { void queryClient.invalidateQueries({ queryKey: ["context", sessionId] }); onNotice(pinned ? t("已取消固定", "Entry unpinned") : t("已固定条目", "Entry pinned")); })
-                .catch((error: unknown) => onNotice(error instanceof Error ? error.message : t("操作失败", "Operation failed"), "error"));
+                .then(() => { void queryClient.invalidateQueries({ queryKey: qk.context(sessionId) }); ui.notify(pinned ? t("已取消固定", "Entry unpinned") : t("已固定条目", "Entry pinned")); })
+                .catch((error: unknown) => ui.notify(error instanceof Error ? error.message : t("操作失败", "Operation failed"), "error"));
             }}>{(entry.pinnedUntilRound ?? 0) > (context.data.ledger.round ?? 0) ? t("取消固定", "Unpin") : t("固定", "Pin")}</button>
             <button className="btn small" disabled={running} onClick={() => {
               api.mutateContextEntry(sessionId, entry.messageId, "evict")
-                .then(() => { void queryClient.invalidateQueries({ queryKey: ["context", sessionId] }); onNotice(t("已再次逐出条目", "Entry evicted again")); })
-                .catch((error: unknown) => onNotice(error instanceof Error ? error.message : t("逐出失败", "Eviction failed"), "error"));
+                .then(() => { void queryClient.invalidateQueries({ queryKey: qk.context(sessionId) }); ui.notify(t("已再次逐出条目", "Entry evicted again")); })
+                .catch((error: unknown) => ui.notify(error instanceof Error ? error.message : t("逐出失败", "Eviction failed"), "error"));
             }}>{t("逐出", "Evict")}</button>
           </>}
           <button className="btn small" onClick={() => {
             api.contextArtifact(sessionId, entry.artifactId)
               .then((value) => setArtifact({ id: entry.artifactId, content: value.content }))
-              .catch((error: unknown) => onNotice(error instanceof Error ? error.message : t("原文读取失败", "Could not read original content"), "error"));
+              .catch((error: unknown) => ui.notify(error instanceof Error ? error.message : t("原文读取失败", "Could not read original content"), "error"));
           }}>{t("原文", "Original")}</button>
         </div>
       ))}
-      {session?.messages.filter((message) => message.role === "tool" && !entries.some((entry) => entry.messageId === message.id)).map((message) => (
+      {detail?.messages.filter((message) => message.role === "tool" && !entries.some((entry) => entry.messageId === message.id)).map((message) => (
         <div className="context-entry" key={message.id}>
           <span className="entry-state">{t("保留", "Retained")}</span>
-          <span className="entry-summary" title={message.id}>{messageSummary(session, message.id, t)}</span>
+          <span className="entry-summary" title={message.id}>{summarize(message.id)}</span>
           <button className="btn small" disabled={running} onClick={() => {
             api.mutateContextEntry(sessionId, message.id, "evict")
-              .then(() => { void queryClient.invalidateQueries({ queryKey: ["context", sessionId] }); onNotice(t("已手动逐出条目", "Entry manually evicted")); })
-              .catch((error: unknown) => onNotice(error instanceof Error ? error.message : t("逐出失败", "Eviction failed"), "error"));
+              .then(() => { void queryClient.invalidateQueries({ queryKey: qk.context(sessionId) }); ui.notify(t("已手动逐出条目", "Entry manually evicted")); })
+              .catch((error: unknown) => ui.notify(error instanceof Error ? error.message : t("逐出失败", "Eviction failed"), "error"));
           }}>{t("逐出", "Evict")}</button>
         </div>
       ))}

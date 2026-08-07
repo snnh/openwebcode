@@ -2,10 +2,11 @@
  * 新根组件（webui-rewrite 装配层）：主题、查询、WS 接线（wiring）、会话 CRUD、全局对话框与提示。
  * 会话区细节在 chat/ChatView.tsx；外壳在 workbench/Workbench.tsx。
  */
-import { useEffect, useMemo, useRef, type ReactElement } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, type ReactElement } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
-import { qk, useModelsQuery, useProvidersQuery, useServerSettingsQuery, useSessionsQuery, useUpdateCheckQuery } from "./queries";
+import type { SessionDetail } from "../lib/contracts";
+import { qk, useModelsQuery, useProvidersQuery, useServerSettingsQuery, useSessionQuery, useSessionsQuery, useUpdateCheckQuery } from "./queries";
 import { useStore } from "./store";
 import { ui, uiStore } from "./ui-store";
 import { sessionMeta, sessionStore } from "./session-store";
@@ -13,15 +14,18 @@ import { useAppWiring } from "./wiring";
 import { isBusyState } from "../lib/agent-state";
 import { pruneDrafts } from "../lib/drafts";
 import { writeClipboard } from "../lib/clipboard";
+import { deriveSubagentRunsFromMessages, mergeSubagentRuns } from "../lib/subagent-runs";
 import { useSessionDefaults } from "./prefs-store";
 import { useTheme } from "../theme";
 import { useI18n } from "../i18n";
 import { useAgentRun } from "../hooks/use-agent-run";
 import { useSubagentTabs } from "../hooks/use-subagent-tabs";
 import { useTerminalTabs } from "../hooks/use-terminal-tabs";
-import { live } from "./live-store";
+import { live, liveStore } from "./live-store";
 import { Workbench } from "../workbench/Workbench";
 import { layout } from "../workbench/layout";
+import { auxViews, auxViewsStore, diffActions, editorActions, useAuxViews } from "../workbench/aux-views";
+import { tabActions } from "../workbench/tab-actions";
 import { ChatView } from "../chat/ChatView";
 import { streamBuffer } from "../chat/stream-buffer";
 import { clearComposerState } from "../composer/drafts";
@@ -30,9 +34,14 @@ import { NewSessionDialog, type NewSessionValues } from "../components/NewSessio
 import { ConfirmDeleteDialog } from "../components/ConfirmDeleteDialog";
 import { Toast } from "../components/Toast";
 
+// 辅助视图各自独立 chunk，仅打开时加载，不占入口体积
+const CodeOverlay = lazy(() => import("../components/CodeOverlay").then((m) => ({ default: m.CodeOverlay })));
+const EditorPane = lazy(() => import("../components/editor/EditorPane").then((m) => ({ default: m.EditorPane })));
+const DiffPane = lazy(() => import("../components/editor/DiffPane").then((m) => ({ default: m.DiffPane })));
+
 export function App(): ReactElement {
   const { t } = useI18n();
-  useTheme();
+  const { theme } = useTheme();
   const queryClient = useQueryClient();
   const sessionId = useStore(uiStore, (state) => state.sessionId);
   const notice = useStore(uiStore, (state) => state.notice);
@@ -48,6 +57,97 @@ export function App(): ReactElement {
   const agentRun = useAgentRun(sessionId);
   const subagentTabs = useSubagentTabs();
   const terminalTabs = useTerminalTabs();
+  // 编辑器/diff 的 plan 只读门禁需要当前会话 agentMode（与 ChatView 共享同一查询缓存，不额外发请求）
+  const currentDetail = useSessionQuery(sessionId);
+  // 主区辅助视图（编辑器分栏 / diff / 代码浮层，三者互斥）
+  const aux = useAuxViews();
+  // EditorPane/DiffPane 的 actionsRef 形状为 { current }：包一层指向 aux-views 的动作面单例
+  const editorActionsRef = useMemo(() => ({ current: editorActions }), []);
+  const diffActionsRef = useMemo(() => ({ current: diffActions }), []);
+
+  // 新会话永远回到纯对话：切换会话即关闭全部辅助视图（布局回归约束）
+  useEffect(() => {
+    auxViews.closeAll();
+  }, [sessionId]);
+
+  // 标签动作桥：深层组件（子代理面板「在标签中打开」、活动栏终端入口）经 tabActions 触达本装配层
+  useEffect(() => {
+    tabActions.openSubagentTab = (toolCallId) => {
+      const id = uiStore.get().sessionId;
+      if (!id) return;
+      // 从合并运行记录取标签字段（实时优先 + 消息推导补齐历史），创建并聚焦；关闭标记由 openTab 清除
+      const detail = queryClient.getQueryData<SessionDetail>(qk.session(id));
+      const runs = mergeSubagentRuns(liveStore.get().subagents[id] ?? {}, deriveSubagentRunsFromMessages(detail?.messages ?? []));
+      const run = Object.values(runs).find((entry) => entry.toolCallId === toolCallId);
+      if (!run) return;
+      subagentTabs.openTab(id, {
+        toolCallId,
+        prompt: run.prompt,
+        ...(run.agent ? { agent: run.agent } : {}),
+        ...(run.swarm ? { swarmTotal: run.swarm.total } : {}),
+      });
+      terminalTabs.setTerminalSelected(id, false);
+    };
+    tabActions.openTerminal = () => {
+      const id = uiStore.get().sessionId;
+      if (!id) return;
+      terminalTabs.openTerminal(id);
+      subagentTabs.selectTab(id, undefined);
+    };
+    return () => {
+      tabActions.openSubagentTab = undefined;
+      tabActions.openTerminal = undefined;
+    };
+  }, [queryClient, subagentTabs, terminalTabs]);
+
+  // 编辑器/diff 键盘动作（命令体系 Phase 3 再统管）：mod+s 保存、mod+\ 焦点切换、Esc 关闭。
+  // Esc/保存兜底：EditorPane/DiffPane 挂载后自行在 capture 阶段处理 Esc（含未保存确认）并 stopPropagation，
+  // 本监听只在面板尚未挂上自己的监听（如懒加载途中）时生效。
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      const mod = event.ctrlKey || event.metaKey;
+      if (mod && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "s") {
+        if (!auxViewsStore.get().editor) return;
+        event.preventDefault();
+        editorActions.save?.();
+        return;
+      }
+      if (mod && !event.shiftKey && !event.altKey && event.key === "\\") {
+        const state = auxViewsStore.get();
+        if (!state.editor && !state.diff) return;
+        event.preventDefault();
+        const inPane = document.activeElement instanceof HTMLElement && Boolean(document.activeElement.closest(".editor-pane"));
+        if (inPane) document.getElementById("composer-input")?.focus();
+        else (editorActions.focus ?? diffActions.focus)?.();
+        return;
+      }
+      if (event.key === "Escape") {
+        const state = auxViewsStore.get();
+        if (state.editor) {
+          auxViews.closeEditor();
+          document.getElementById("composer-input")?.focus();
+        } else if (state.diff) {
+          auxViews.closeDiff();
+          document.getElementById("composer-input")?.focus();
+        }
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  // diff/编辑器关闭后焦点回 Composer（对话为主约束）
+  const focusComposer = useCallback((): void => {
+    document.getElementById("composer-input")?.focus();
+  }, []);
+  const closeEditor = useCallback((): void => {
+    auxViews.closeEditor();
+    focusComposer();
+  }, [focusComposer]);
+  const closeDiff = useCallback((): void => {
+    auxViews.closeDiff();
+    focusComposer();
+  }, [focusComposer]);
 
   // WS 事件流 + 路由接线（t 经 ref 取最新，语言切换后通知文案跟随）
   const tRef = useRef(t);
@@ -122,29 +222,6 @@ export function App(): ReactElement {
       .catch(fail("删除会话失败", "Could not delete session"));
   };
 
-  // 会话显示属性（重命名/置顶，Phase 2 会话列表操作接入）：PATCH 后刷新列表与当前详情
-  const patchSession = useMutation({
-    mutationFn: (input: { id: string; body: { title?: string; pinned?: boolean } }) => api.patchSession(input.id, input.body),
-    onSuccess: (_updated, input) => {
-      void queryClient.invalidateQueries({ queryKey: qk.sessions });
-      if (input.id === sessionId) void queryClient.invalidateQueries({ queryKey: qk.session(input.id) });
-    },
-    onError: fail("更新会话失败", "Could not update session"),
-  });
-  void patchSession; // Phase 2 会话项操作接入后使用
-
-  const importSession = (file: File): void => {
-    file.text()
-      .then((text) => api.importSession(text))
-      .then((session) => {
-        ui.notify(t(`已导入会话「${session.title}」`, `Imported session “${session.title}”`));
-        ui.selectSession(session.id);
-        void queryClient.invalidateQueries({ queryKey: qk.sessions });
-      })
-      .catch(fail("导入失败", "Import failed"));
-  };
-  void importSession; // Phase 2 会话列表导入入口接入后使用
-
   const currentState = agentRun.data?.state ?? (sessionId ? agentStates[sessionId] : undefined);
   const runningIds = useMemo(() => new Set(Object.entries(agentStates).filter(([, state]) => isBusyState(state)).map(([id]) => id)), [agentStates]);
   const openNavMenu = (): void => layout.setMobileNavOpen(true);
@@ -153,7 +230,37 @@ export function App(): ReactElement {
     void writeClipboard(text).then((ok) => ui.notify(ok ? copied : t("复制失败", "Copy failed"), ok ? "info" : "error"));
   };
   const main = sessionId ? (
-    <ChatView sessionId={sessionId} currentRun={agentRun.data} onOpenNavMenu={openNavMenu} />
+    <div className="wb-main-split">
+      <ChatView sessionId={sessionId} currentRun={agentRun.data} subagentTabs={subagentTabs} terminalTabs={terminalTabs} onOpenNavMenu={openNavMenu} />
+      {aux.editor && (
+        <Suspense fallback={null}>
+          <EditorPane
+            sessionId={sessionId}
+            path={aux.editor.path}
+            {...(aux.editor.line !== undefined ? { line: aux.editor.line } : {})}
+            {...(aux.editor.column !== undefined ? { column: aux.editor.column } : {})}
+            readOnly={currentDetail.data?.agentMode === "plan"}
+            dark={theme === "dark"}
+            actionsRef={editorActionsRef}
+            onClose={closeEditor}
+            onNotice={ui.notify}
+          />
+        </Suspense>
+      )}
+      {aux.diff && (
+        <Suspense fallback={null}>
+          <DiffPane
+            sessionId={sessionId}
+            spec={aux.diff}
+            readOnly={currentDetail.data?.agentMode === "plan"}
+            dark={theme === "dark"}
+            actionsRef={diffActionsRef}
+            onClose={closeDiff}
+            onNotice={ui.notify}
+          />
+        </Suspense>
+      )}
+    </div>
   ) : (
     <section className="workbench">
       <EmptyState sessions={sessions.data ?? []} providers={providers.data} onSelect={(id) => ui.selectSession(id)}
@@ -183,6 +290,17 @@ export function App(): ReactElement {
         onConfirm={confirmDelete}
       />
       {notice && <Toast notice={notice} onDismiss={() => ui.setNotice(undefined)} />}
+      {/* 只读代码浮层（Quick Open 打开；与编辑器/diff 互斥由 aux-views 保证） */}
+      {aux.codeOverlay && sessionId && (
+        <Suspense fallback={null}>
+          <CodeOverlay
+            sessionId={sessionId}
+            path={aux.codeOverlay}
+            onEdit={(path) => auxViews.openEditor(path)}
+            onClose={() => auxViews.closeCodeOverlay()}
+          />
+        </Suspense>
+      )}
       {/* 事件流断线重连提示：仅展示不阻塞交互，恢复后自动消失 */}
       {reconnecting && <div className="connection-banner" role="status">{t("连接中断，正在重连…", "Connection lost, reconnecting…")}</div>}
     </>
