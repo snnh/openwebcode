@@ -1,50 +1,38 @@
+/**
+ * 设置对话框（Phase 3 重写）：零 props 外壳，开合/深链页签读 uiStore，
+ * 偏好（主题/强调色/发送键/桌面通知/会话默认）经各 store hook 自取，
+ * 十七个分区在 sections/ 内自取数。移动端钻取 + 未保存改动确认保留。
+ * 左侧应用导航轨（navRail）刻意裁剪：导航经活动栏/移动菜单触达。
+ */
 import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import { api } from "../lib/api";
-import type { ModelProfile, SettingsTab } from "../lib/contracts";
-import { Icon, type IconName } from "./Icon";
-import type { SendKey, SessionDefaults } from "../lib/prefs";
-import type { ThemePreference, AccentPreference } from "../theme";
-import { useI18n } from "../i18n";
-import { SETTING_GROUP_TAB, SETTINGS_FIELD_EN } from "./settings/shared";
+import type { SettingsTab } from "../lib/contracts";
+import { useStore } from "../app/store";
+import { ui, uiStore } from "../app/ui-store";
+import { useSessionQuery } from "../app/queries";
+import { Icon, type IconName } from "../components/Icon";
+import { useConfirmDialog } from "../components/ConfirmDialog";
 import { MOBILE_BREAKPOINT, useMediaQuery } from "../hooks/use-media-query";
-import { MobileNavRail } from "../workbench/MobileNavMenu";
-import type { SidebarView } from "../workbench/useWorkbenchLayout";
-import { AppearanceSection } from "./settings/AppearanceSection";
-import { GeneralSection } from "./settings/GeneralSection";
-import { DefaultsSection } from "./settings/DefaultsSection";
-import { ShortcutsSection } from "./settings/ShortcutsSection";
-import { RemoteAccessSection } from "./settings/RemoteAccessSection";
-import { ModelProvidersSection, WebProvidersSection } from "./settings/ProviderProfilesSection";
-import { ModelSelectionSection, ModelCatalogSyncSection } from "./settings/ModelSelectionSection";
-import { ModelCatalogSection } from "./settings/ModelCatalogSection";
-import { SkillsSection } from "./settings/SkillsSection";
-import { ExtensionsSection } from "./settings/ExtensionsSection";
-import { PricingSection } from "./settings/PricingSection";
-import { ServerSettingsFields } from "./settings/ServerSettingsFields";
-import { PromptSection } from "./settings/PromptSection";
-import { ServerInfoSection } from "./settings/ServerInfoSection";
-import { SystemStorageSection } from "./settings/SystemStorageSection";
-import { NotificationsSection } from "./settings/NotificationsSection";
-import { useConfirmDialog } from "./ConfirmDialog";
-import type { AppNotification } from "../lib/notifications";
+import { useI18n } from "../i18n";
+import { SETTING_GROUP_TAB, SETTINGS_FIELD_EN } from "./sections/shared";
+import { AppearanceSection } from "./sections/AppearanceSection";
+import { GeneralSection } from "./sections/GeneralSection";
+import { DefaultsSection } from "./sections/DefaultsSection";
+import { ShortcutsSection } from "./sections/ShortcutsSection";
+import { RemoteAccessSection } from "./sections/RemoteAccessSection";
+import { ModelProvidersSection, WebProvidersSection } from "./sections/ProviderProfilesSection";
+import { ModelSelectionSection, ModelCatalogSyncSection } from "./sections/ModelSelectionSection";
+import { ModelCatalogSection } from "./sections/ModelCatalogSection";
+import { SkillsSection } from "./sections/SkillsSection";
+import { ExtensionsSection } from "./sections/ExtensionsSection";
+import { PricingSection } from "./sections/PricingSection";
+import { ServerSettingsFields } from "./sections/ServerSettingsFields";
+import { PromptSection } from "./sections/PromptSection";
+import { ServerInfoSection } from "./sections/ServerInfoSection";
+import { SystemStorageSection } from "./sections/SystemStorageSection";
+import { NotificationsSection } from "./sections/NotificationsSection";
 
 export type { SettingsTab } from "../lib/contracts";
-
-// 既有外部引用（测试与 App）从本模块导入这些分区组件，拆分后保持再导出
-export {
-  PricingSection,
-  ModelProvidersSection,
-  WebProvidersSection,
-  ServerSettingsFields,
-  ModelSelectionSection,
-  ModelCatalogSyncSection,
-  SystemStorageSection,
-  ModelCatalogSection,
-  ShortcutsSection,
-  RemoteAccessSection,
-  ServerInfoSection,
-};
-export { ExtensionRow } from "./settings/ExtensionsSection";
 
 interface SettingsTabMeta {
   id: SettingsTab;
@@ -102,48 +90,14 @@ const SETTINGS_GROUPS: Array<{ id: string; zh: string; en: string; tabs: Setting
 
 const TAB_META = SETTINGS_GROUPS.flatMap((group) => group.tabs);
 
-export function SettingsDialog({ open, initialTab, initialTabAt, preference, setPreference, accent, setAccent, sendKey, setSendKey, desktopNotify, setDesktopNotify, defaults, setDefaults, providers, models, sessionCwd, notifications, onActivateNotification, onDismissNotification, onClearAllNotifications, onMarkAllRead, navRail, onResetLayout, onClose }: {
-  open: boolean;
-  /** 深链入口：打开时定位到指定页签；不传则保持上次使用的页签 */
-  initialTab?: SettingsTab;
-  /** 深链触发序号：同一页签重复深链时随每次调用变化，强制重新定位 */
-  initialTabAt?: number;
-  preference: ThemePreference;
-  setPreference(value: ThemePreference): void;
-  accent: AccentPreference;
-  setAccent(value: AccentPreference): void;
-  sendKey: SendKey;
-  setSendKey(value: SendKey): void;
-  desktopNotify: boolean;
-  setDesktopNotify(value: boolean): void;
-  defaults: SessionDefaults;
-  setDefaults(value: SessionDefaults): void;
-  providers: string[];
-  models: ModelProfile[];
-  /** 当前会话工作目录：提示词页签的「当前项目」作用域指向它 */
-  sessionCwd?: string;
-  /** 通知页签数据与回调（通知中心已并入设置；进入页签即全部已读） */
-  notifications: AppNotification[];
-  onActivateNotification(item: AppNotification): void;
-  onDismissNotification(id: string): void;
-  onClearAllNotifications(): void;
-  onMarkAllRead(): void;
-  /** 左侧应用导航轨（与移动端导航图标栏一致）：切视图/帮助/通知/终端；缺省不渲染 */
-  navRail?: {
-    activeView: SidebarView;
-    problemsBadge?: number;
-    notificationsBadge?: number;
-    terminalDisabled?: boolean;
-    terminalActive?: boolean;
-    onShowView(view: SidebarView): void;
-    onShowHelp(): void;
-    onShowNotifications(): void;
-    onOpenTerminal(): void;
-  };
-  onResetLayout(): void;
-  onClose(): void;
-}): ReactElement | null {
+export function SettingsDialog(): ReactElement | null {
   const { t } = useI18n();
+  const open = useStore(uiStore, (state) => state.settingsOpen);
+  const deepLink = useStore(uiStore, (state) => state.settingsTab);
+  const sessionId = useStore(uiStore, (state) => state.sessionId);
+  // 提示词页签的「当前项目」作用域指向当前会话工作目录
+  const currentSession = useSessionQuery(sessionId);
+
   const dialogRef = useRef<HTMLDialogElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const [activeTab, setActiveTab] = useState<SettingsTab>("appearance");
@@ -153,7 +107,6 @@ export function SettingsDialog({ open, initialTab, initialTabAt, preference, set
   const isMobile = useMediaQuery(MOBILE_BREAKPOINT);
   const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
   // 字段标签在打开时经 api.settings 拉取（不经 react-query，i18n 等无 Provider 的渲染也能工作）；失败按无字段匹配处理
-  // tab：按 SETTING_GROUP_TAB 归属到各页签（模型目录/模型选择/通用/模型定价/服务信息/远程访问）
   const [fieldLabels, setFieldLabels] = useState<Array<{ key: string; label: string; tab: SettingsTab }>>([]);
   // 服务设置/定价 JSON/提示词的未保存改动由各页签内的分区组件上报
   const serverDirtyRef = useRef(false);
@@ -188,15 +141,15 @@ export function SettingsDialog({ open, initialTab, initialTabAt, preference, set
     if (!open && dialog.open) dialog.close();
   }, [open]);
 
-  // 深链：带 initialTab 打开时定位到对应页签；initialTabAt 变化表示同一页签被重复深链，重新定位
+  // 深链：带 tab 打开时定位到对应页签；at 变化表示同一页签被重复深链，重新定位
   useEffect(() => {
-    if (open && initialTab) setActiveTab(initialTab);
+    if (open && deepLink) setActiveTab(deepLink.tab);
     if (open) {
       setNavQuery("");
       // 深链直达详情（移动端钻取态）；普通打开从列表开始
-      setMobileDetailOpen(Boolean(initialTab));
+      setMobileDetailOpen(Boolean(deepLink));
     }
-  }, [open, initialTab, initialTabAt]);
+  }, [open, deepLink]);
 
   if (!open) return null;
 
@@ -238,14 +191,6 @@ export function SettingsDialog({ open, initialTab, initialTabAt, preference, set
     confirmDiscard(() => dialogRef.current?.close());
   };
 
-  // 导航轨动作：先确认未保存改动，再关设置并执行（切视图/帮助/通知/终端）
-  const railAction = (run: () => void) => (): void => {
-    confirmDiscard(() => {
-      dialogRef.current?.close();
-      run();
-    });
-  };
-
   const applySelectTab = (tab: SettingsTab): void => {
     setActiveTab(tab);
     // 移动端点项钻取进详情
@@ -270,7 +215,7 @@ export function SettingsDialog({ open, initialTab, initialTabAt, preference, set
     <dialog
       ref={dialogRef}
       className="session-dialog settings-dialog"
-      onClose={onClose}
+      onClose={() => ui.closeSettings()}
       onCancel={(event) => {
         event.preventDefault();
         requestClose();
@@ -293,22 +238,6 @@ export function SettingsDialog({ open, initialTab, initialTabAt, preference, set
           </button>
         </header>
         <div className={`settings-layout${mobileDetailOpen ? " detail-open" : ""}`}>
-          {navRail && (
-            <MobileNavRail
-              activeView={navRail.activeView}
-              {...(navRail.problemsBadge !== undefined ? { problemsBadge: navRail.problemsBadge } : {})}
-              {...(navRail.notificationsBadge !== undefined ? { notificationsBadge: navRail.notificationsBadge } : {})}
-              {...(navRail.terminalDisabled !== undefined ? { terminalDisabled: navRail.terminalDisabled } : {})}
-              {...(navRail.terminalActive !== undefined ? { terminalActive: navRail.terminalActive } : {})}
-              settingsActive
-              onShowView={(view) => railAction(() => navRail.onShowView(view))()}
-              onShowHelp={railAction(navRail.onShowHelp)}
-              onShowNotifications={railAction(navRail.onShowNotifications)}
-              onOpenTerminal={railAction(navRail.onOpenTerminal)}
-              onOpenSettings={() => undefined}
-              onClose={() => undefined}
-            />
-          )}
           <nav className="settings-nav" aria-label={t("设置分类", "Settings categories")}>
             <span className="settings-search-wrap">
               <Icon name="search" size={13} />
@@ -372,19 +301,19 @@ export function SettingsDialog({ open, initialTab, initialTabAt, preference, set
             <div ref={contentRef} className="settings-panel" key={activeTab} aria-labelledby="settings-section-title">
           {activeTab === "appearance" && (
             <section>
-              <AppearanceSection preference={preference} setPreference={setPreference} accent={accent} setAccent={setAccent} />
+              <AppearanceSection />
             </section>
           )}
           {activeTab === "general" && (
             <section>
-              <GeneralSection sendKey={sendKey} setSendKey={setSendKey} desktopNotify={desktopNotify} setDesktopNotify={setDesktopNotify} onResetLayout={onResetLayout} onDirtyChange={reportDirty} />
+              <GeneralSection onDirtyChange={reportDirty} />
             </section>
           )}
           {activeTab === "defaults" && (
             <section>
               <h3>{t("会话默认", "Session defaults")}</h3>
               <p className="settings-note">{t("新建会话时预填的取值，可在对话框中再改。", "These values prefill the new-session dialog and can still be changed there.")}</p>
-              <DefaultsSection defaults={defaults} setDefaults={setDefaults} providers={providers} models={models} />
+              <DefaultsSection />
             </section>
           )}
           {activeTab === "shortcuts" && (
@@ -449,25 +378,19 @@ export function SettingsDialog({ open, initialTab, initialTabAt, preference, set
           {activeTab === "prompt" && (
             <section>
               <h3>{t("提示词", "System prompt")}</h3>
-              <PromptSection sessionCwd={sessionCwd} onDirtyChange={reportDirty} />
+              <PromptSection {...(currentSession.data?.cwd ? { sessionCwd: currentSession.data.cwd } : {})} onDirtyChange={reportDirty} />
             </section>
           )}
           {activeTab === "notifications" && (
             <section>
               <h3>{t("通知中心", "Notifications")}</h3>
-              <NotificationsSection
-                notifications={notifications}
-                onActivate={onActivateNotification}
-                onDismiss={onDismissNotification}
-                onClearAll={onClearAllNotifications}
-                onMarkAllRead={onMarkAllRead}
-              />
+              <NotificationsSection />
             </section>
           )}
           {activeTab === "info" && (
             <section>
               <h3>{t("服务信息", "Server information")}</h3>
-              <ServerInfoSection providers={providers} models={models} />
+              <ServerInfoSection />
               <h3>{t("系统与存储", "System and storage")}</h3>
               <SystemStorageSection onDirtyChange={reportDirty} />
             </section>

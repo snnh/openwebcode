@@ -4,7 +4,7 @@ import { api } from "../../lib/api";
 import type { PricingDocument } from "../../lib/contracts";
 import { formatCurrency } from "../../lib/format";
 import { useI18n } from "../../i18n";
-import { useConfirmDialog } from "../ConfirmDialog";
+import { useConfirmDialog } from "../../components/ConfirmDialog";
 
 interface PricingForm {
   provider: string;

@@ -148,4 +148,15 @@ export const layout = {
   setMobileSidebarOpen(open: boolean): void {
     layoutStore.set({ mobileSidebarOpen: open });
   },
+  /** 清除布局类 localStorage 键并重载（设置「通用」页签入口） */
+  resetLayout(): void {
+    for (const key of LAYOUT_STORAGE_KEYS) {
+      try {
+        window.localStorage.removeItem(key);
+      } catch {
+        // 忽略
+      }
+    }
+    window.location.reload();
+  },
 };

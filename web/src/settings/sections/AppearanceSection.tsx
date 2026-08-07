@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactElement } from "react";
-import type { ThemePreference, AccentPreference } from "../../theme";
+import { useTheme, type AccentPreference, type ThemePreference } from "../../theme";
 import { isValidHexColor } from "../../lib/accent-color";
 import { useI18n, type Language } from "../../i18n";
 
@@ -19,12 +19,8 @@ const ACCENT_OPTIONS: Array<{ value: AccentPreference; zh: string; en: string; s
   { value: "green", zh: "绿", en: "Green", swatch: "#2f9e44" },
 ];
 
-export function AppearanceSection({ preference, setPreference, accent, setAccent }: {
-  preference: ThemePreference;
-  setPreference(value: ThemePreference): void;
-  accent: AccentPreference;
-  setAccent(value: AccentPreference): void;
-}): ReactElement {
+export function AppearanceSection(): ReactElement {
+  const { preference, setPreference, accent, setAccent } = useTheme();
   const { language, setLanguage, t } = useI18n();
   const customHex = accent.startsWith("custom:") ? accent.slice("custom:".length) : undefined;
   const colorInputRef = useRef<HTMLInputElement>(null);

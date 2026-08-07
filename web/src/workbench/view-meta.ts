@@ -1,5 +1,5 @@
 import type { IconName } from "../components/Icon";
-import type { SidebarView } from "./useWorkbenchLayout";
+import type { SidebarView } from "./layout";
 
 /** 侧栏视图元信息（桌面活动栏与移动端导航菜单共用） */
 export const VIEW_META: Record<SidebarView, { zh: string; en: string; icon: IconName }> = {

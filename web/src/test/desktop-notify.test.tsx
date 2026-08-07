@@ -9,7 +9,8 @@ import {
   requestDesktopNotifyPermission,
   saveDesktopNotifyEnabled,
 } from "../lib/desktop-notify";
-import { GeneralSection } from "../components/settings/GeneralSection";
+import { GeneralSection } from "../settings/sections/GeneralSection";
+import { setDesktopNotify, getDesktopNotify } from "../app/prefs-store";
 import { renderWithClient } from "./helpers/with-client";
 
 /** 可控的 Notification 假实现：静态 permission/requestPermission + 实例记录 */
@@ -115,17 +116,10 @@ describe("maybeDesktopNotify 失焦门控", () => {
 });
 
 describe("通用设置：桌面通知开关", () => {
-  function renderSection(overrides: { desktopNotify?: boolean; setDesktopNotify?: (value: boolean) => void } = {}) {
+  function renderSection(overrides: { desktopNotify?: boolean } = {}) {
     vi.spyOn(api, "settings").mockResolvedValue({ groups: [] } as unknown as SettingsView);
-    return renderWithClient(
-      <GeneralSection
-        sendKey="enter"
-        setSendKey={() => undefined}
-        desktopNotify={overrides.desktopNotify ?? false}
-        setDesktopNotify={overrides.setDesktopNotify ?? (() => undefined)}
-        onResetLayout={() => undefined}
-      />,
-    );
+    setDesktopNotify(overrides.desktopNotify ?? false);
+    return renderWithClient(<GeneralSection />);
   }
 
   it("浏览器已拒绝：设置项如实展示拒绝状态", async () => {
@@ -141,20 +135,18 @@ describe("通用设置：桌面通知开关", () => {
       FakeNotification.permission = "granted";
       return "granted" as NotificationPermission;
     });
-    const setDesktopNotify = vi.fn();
-    const view = renderSection({ setDesktopNotify });
+    const view = renderSection();
     fireEvent.click(view.getByRole("checkbox", { name: /页面在后台时弹出系统通知/ }));
     expect(FakeNotification.requestPermission).toHaveBeenCalledTimes(1);
-    await vi.waitFor(() => expect(setDesktopNotify).toHaveBeenCalledWith(true));
+    await vi.waitFor(() => expect(getDesktopNotify()).toBe(true));
   });
 
   it("开启被拒：开关保持关闭", async () => {
     stubNotification("default");
     FakeNotification.requestPermission = vi.fn(async () => "denied" as NotificationPermission);
-    const setDesktopNotify = vi.fn();
-    const view = renderSection({ setDesktopNotify });
+    const view = renderSection();
     fireEvent.click(view.getByRole("checkbox", { name: /页面在后台时弹出系统通知/ }));
     await vi.waitFor(() => expect(FakeNotification.requestPermission).toHaveBeenCalled());
-    expect(setDesktopNotify).not.toHaveBeenCalledWith(true);
+    expect(getDesktopNotify()).toBe(false);
   });
 });

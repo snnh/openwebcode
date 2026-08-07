@@ -2,7 +2,8 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
 import { I18nProvider, useI18n } from "../i18n";
 import { EmptyState } from "../components/EmptyState";
-import { SettingsDialog } from "../components/SettingsDialog";
+import { SettingsDialog } from "../settings/SettingsDialog";
+import { ui } from "../app/ui-store";
 import { renderWithClient } from "./helpers/with-client";
 
 function Fixture() {
@@ -44,30 +45,10 @@ describe("interface localization", () => {
 
   it("switches languages from the settings UI and persists the choice", () => {
     window.localStorage.setItem("owc-language", "zh-CN");
+    ui.openSettings();
     renderWithClient(
       <I18nProvider>
-        <SettingsDialog
-          open
-          preference="system"
-          setPreference={() => undefined}
-          accent="teal"
-          setAccent={() => undefined}
-          sendKey="enter"
-          setSendKey={() => undefined}
-          desktopNotify={false}
-          setDesktopNotify={() => undefined}
-          defaults={{}}
-          setDefaults={() => undefined}
-          providers={[]}
-          models={[]}
-          notifications={[]}
-          onActivateNotification={() => undefined}
-          onDismissNotification={() => undefined}
-          onClearAllNotifications={() => undefined}
-          onMarkAllRead={() => undefined}
-          onResetLayout={() => undefined}
-          onClose={() => undefined}
-        />
+        <SettingsDialog />
       </I18nProvider>,
     );
 

@@ -13,6 +13,8 @@ import "./styles/composer.css";
 import "./styles/sidebar.css";
 import "./styles/panels.css";
 import "./styles/editor.css";
+import "./styles/dialogs.css";
+import "./styles/settings.css";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } },

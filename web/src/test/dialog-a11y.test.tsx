@@ -2,8 +2,9 @@ import * as axeCore from "axe-core";
 import { render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NewSessionDialog } from "../components/NewSessionDialog";
-import { NotificationsSection } from "../components/settings/NotificationsSection";
-import { SettingsDialog } from "../components/SettingsDialog";
+import { NotificationsSection } from "../settings/sections/NotificationsSection";
+import { SettingsDialog } from "../settings/SettingsDialog";
+import { ui, uiStore } from "../app/ui-store";
 import { ScmView } from "../workbench/sidebar/ScmView";
 import { api } from "../lib/api";
 import type { PricingDocument, PromptOverrideView, ScmStatus, SettingsView } from "../lib/contracts";
@@ -21,6 +22,7 @@ async function expectNoViolations(container: HTMLElement): Promise<void> {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  uiStore.set({ settingsOpen: false, notifications: [] });
 });
 
 describe("SettingsDialog 打开态无障碍", () => {
@@ -45,29 +47,9 @@ describe("SettingsDialog 打开态无障碍", () => {
     vi.spyOn(api, "modelPricing").mockResolvedValue(pricingCatalog);
     vi.spyOn(api, "promptOverride").mockResolvedValue(promptView);
 
+    ui.openSettings();
     const { container } = renderWithClient(
-      <SettingsDialog
-        open
-        preference="system"
-        setPreference={() => undefined}
-        accent="teal"
-        setAccent={() => undefined}
-        sendKey="enter"
-        setSendKey={() => undefined}
-        desktopNotify={false}
-        setDesktopNotify={() => undefined}
-        defaults={{}}
-        setDefaults={() => undefined}
-        providers={[]}
-        models={[]}
-        notifications={[]}
-        onActivateNotification={() => undefined}
-        onDismissNotification={() => undefined}
-        onClearAllNotifications={() => undefined}
-        onMarkAllRead={() => undefined}
-        onResetLayout={() => undefined}
-        onClose={() => undefined}
-      />,
+      <SettingsDialog />,
     );
     // 等待打开态的数据拉取落定
     await screen.findByRole("button", { name: "关闭" });
@@ -100,9 +82,8 @@ describe("NotificationsSection 打开态无障碍", () => {
       { id: "n1", kind: "info", text: "后台任务已结束", at: Date.UTC(2026, 6, 25, 10, 30), read: false },
       { id: "n2", kind: "error", text: "诊断更新：2 项失败", at: Date.UTC(2026, 6, 25, 11, 0), read: true },
     ];
-    const { container } = render(
-      <NotificationsSection notifications={notifications} onActivate={vi.fn()} onDismiss={vi.fn()} onClearAll={vi.fn()} onMarkAllRead={vi.fn()} />,
-    );
+    uiStore.set({ notifications });
+    const { container } = render(<NotificationsSection />);
     await screen.findByRole("region", { name: "通知中心" });
     await expectNoViolations(container);
   });

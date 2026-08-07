@@ -1,6 +1,6 @@
 import { fireEvent } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ExtensionRow } from "../components/SettingsDialog";
+import { ExtensionRow } from "../settings/sections/ExtensionsSection";
 import { api } from "../lib/api";
 import type { ExtensionInfo } from "../lib/contracts";
 import { renderWithClient } from "./helpers/with-client";

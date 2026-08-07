@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { evaluateWhen, getCommand, listCommands, registerCommand, resetCommands, runCommand } from "../commands/registry";
+import { evaluateWhen, getCommand, listCommands, registerCommand, resetCommands, runCommand } from "../app/commands";
 
 afterEach(() => resetCommands());
 

@@ -1,6 +1,6 @@
 import { fireEvent, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { TotpSection } from "../components/settings/TotpSection";
+import { TotpSection } from "../settings/sections/TotpSection";
 import { api, ApiError } from "../lib/api";
 import type { AuthStatus } from "../lib/contracts";
 import { renderWithClient } from "./helpers/with-client";

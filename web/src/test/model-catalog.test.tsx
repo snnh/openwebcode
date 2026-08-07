@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ModelCatalogSection } from "../components/SettingsDialog";
+import { ModelCatalogSection } from "../settings/sections/ModelCatalogSection";
 import { api } from "../lib/api";
 import type { ModelProfile } from "../lib/contracts";
 import { renderWithClient } from "./helpers/with-client";

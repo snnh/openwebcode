@@ -1,6 +1,7 @@
 import type { ReactElement } from "react";
-import type { ModelProfile, PermissionMode } from "../../lib/contracts";
-import type { SessionDefaults } from "../../lib/prefs";
+import { useModelsQuery, useProvidersQuery } from "../../app/queries";
+import type { PermissionMode } from "../../lib/contracts";
+import { useSessionDefaults, setSessionDefaults } from "../../app/prefs-store";
 import { useI18n } from "../../i18n";
 
 const PERMISSION_OPTIONS: Array<{ value: PermissionMode | ""; zh: string; en: string }> = [
@@ -11,13 +12,12 @@ const PERMISSION_OPTIONS: Array<{ value: PermissionMode | ""; zh: string; en: st
   { value: "yolo", zh: "YOLO", en: "YOLO" },
 ];
 
-export function DefaultsSection({ defaults, setDefaults, providers, models }: {
-  defaults: SessionDefaults;
-  setDefaults(value: SessionDefaults): void;
-  providers: string[];
-  models: ModelProfile[];
-}): ReactElement {
+export function DefaultsSection(): ReactElement {
   const { t } = useI18n();
+  const defaults = useSessionDefaults();
+  const setDefaults = setSessionDefaults;
+  const providers = useProvidersQuery().data ?? [];
+  const models = useModelsQuery().data ?? [];
   const availableModels = models.filter((item) => providers.includes(item.provider));
   const selected = defaults.provider && defaults.model ? JSON.stringify([defaults.provider, defaults.model]) : "";
   return (

@@ -21,14 +21,19 @@ import { useI18n } from "../i18n";
 import { useAgentRun } from "../hooks/use-agent-run";
 import { useSubagentTabs } from "../hooks/use-subagent-tabs";
 import { useTerminalTabs } from "../hooks/use-terminal-tabs";
+import { MOBILE_BREAKPOINT, useMediaQuery } from "../hooks/use-media-query";
 import { live, liveStore } from "./live-store";
 import { Workbench } from "../workbench/Workbench";
-import { layout } from "../workbench/layout";
+import { layout, layoutStore, type SidebarView } from "../workbench/layout";
 import { auxViews, auxViewsStore, diffActions, editorActions, useAuxViews } from "../workbench/aux-views";
 import { tabActions } from "../workbench/tab-actions";
 import { ChatView } from "../chat/ChatView";
+import { CONVERSATION_SEARCH_EVENT } from "../chat/types";
 import { streamBuffer } from "../chat/stream-buffer";
-import { clearComposerState } from "../composer/drafts";
+import { clearComposerState, useDraft } from "../composer/drafts";
+import { chatBridge } from "./chat-bridge";
+import { registerBuiltinCommands, useGlobalKeybindings, buildWhenContext, cycleZone, type CommandActions } from "./commands";
+import { CommandPalette } from "../dialogs/CommandPalette";
 import { EmptyState } from "../components/EmptyState";
 import { NewSessionDialog, type NewSessionValues } from "../components/NewSessionDialog";
 import { ConfirmDeleteDialog } from "../components/ConfirmDeleteDialog";
@@ -38,16 +43,20 @@ import { Toast } from "../components/Toast";
 const CodeOverlay = lazy(() => import("../components/CodeOverlay").then((m) => ({ default: m.CodeOverlay })));
 const EditorPane = lazy(() => import("../components/editor/EditorPane").then((m) => ({ default: m.EditorPane })));
 const DiffPane = lazy(() => import("../components/editor/DiffPane").then((m) => ({ default: m.DiffPane })));
+const QuickOpen = lazy(() => import("../dialogs/QuickOpen").then((m) => ({ default: m.QuickOpen })));
+const SettingsDialog = lazy(() => import("../settings/SettingsDialog").then((m) => ({ default: m.SettingsDialog })));
 
 export function App(): ReactElement {
   const { t } = useI18n();
-  const { theme } = useTheme();
+  const { theme, toggleTheme } = useTheme();
   const queryClient = useQueryClient();
   const sessionId = useStore(uiStore, (state) => state.sessionId);
   const notice = useStore(uiStore, (state) => state.notice);
   const newSessionOpen = useStore(uiStore, (state) => state.newSessionOpen);
   const deleteTarget = useStore(uiStore, (state) => state.deleteTarget);
   const agentStates = useStore(sessionStore, (state) => state.agentStates);
+  const paletteOpen = useStore(uiStore, (state) => state.paletteOpen);
+  const quickOpenOpen = useStore(uiStore, (state) => state.quickOpen);
   const sessions = useSessionsQuery();
   const models = useModelsQuery();
   const providers = useProvidersQuery();
@@ -64,6 +73,95 @@ export function App(): ReactElement {
   // EditorPane/DiffPane 的 actionsRef 形状为 { current }：包一层指向 aux-views 的动作面单例
   const editorActionsRef = useMemo(() => ({ current: editorActions }), []);
   const diffActionsRef = useMemo(() => ({ current: diffActions }), []);
+
+  // ===== 命令体系（Phase 3）：when 上下文 + 动作面 + 全局键位 =====
+  const draft = useDraft(sessionId)[0];
+  const isMobile = useMediaQuery(MOBILE_BREAKPOINT);
+  const importInput = useRef<HTMLInputElement>(null);
+
+  const whenContext = useMemo(() => buildWhenContext({
+    draftNonEmpty: Boolean(draft.trim()),
+    multipleSessions: (sessions.data?.length ?? 0) > 1,
+  }), [draft, sessions.data]);
+
+  const stepSession = useCallback((delta: number): void => {
+    const list = sessions.data ?? [];
+    if (list.length < 2) return;
+    const current = uiStore.get().sessionId;
+    const index = list.findIndex((session) => session.id === current);
+    const next = list[(Math.max(index, 0) + delta + list.length) % list.length];
+    if (next) ui.selectSession(next.id);
+  }, [sessions.data]);
+
+  const showWorkbenchView = useCallback((view: SidebarView): void => {
+    const state = layoutStore.get();
+    if (!isMobile) {
+      layout.showView(view);
+      return;
+    }
+    if (state.mobileSidebarOpen && state.sidebarView === view) {
+      layout.setMobileSidebarOpen(false);
+      return;
+    }
+    layout.selectView(view);
+    layout.setMobileSidebarOpen(true);
+  }, [isMobile]);
+
+  const importSessionFile = useCallback((file: File): void => {
+    file.text()
+      .then((text) => api.importSession(text))
+      .then((session) => {
+        ui.notify(t(`已导入会话「${session.title}」`, `Imported session “${session.title}”`));
+        ui.selectSession(session.id);
+        void queryClient.invalidateQueries({ queryKey: qk.sessions });
+      })
+      .catch((error: unknown) => ui.notify(error instanceof Error ? error.message : t("导入失败", "Import failed"), "error"));
+  }, [queryClient, t]);
+
+  // 命令动作面存 ref：注册表只挂一次，handler 每次取最新动作（闭包不捕获过期状态）
+  const actionsRef = useRef<CommandActions>(null as unknown as CommandActions);
+  actionsRef.current = {
+    showCommands: () => ui.setPaletteOpen(true),
+    quickOpen: () => ui.setQuickOpen(true),
+    toggleSidebar: () => {
+      if (isMobile) layout.setMobileSidebarOpen(!layoutStore.get().mobileSidebarOpen);
+      else layout.toggleSidebar();
+    },
+    toggleBottomPanel: () => layout.toggleBottomPanel(),
+    showView: showWorkbenchView,
+    openSettings: () => ui.openSettings(),
+    newSession: () => ui.setNewSessionOpen(true),
+    importSession: () => importInput.current?.click(),
+    deleteCurrentSession: () => {
+      const id = uiStore.get().sessionId;
+      if (id) ui.setDeleteTarget(id);
+    },
+    sendDraft: () => chatBridge.submitDraft?.(),
+    abortRun: () => {
+      const id = uiStore.get().sessionId;
+      if (!id) return;
+      api.abort(id).catch((error: unknown) => ui.notify(error instanceof Error ? error.message : t("无法中断", "Could not stop the job"), "error"));
+    },
+    toggleTheme,
+    focusComposer: () => document.getElementById("composer-input")?.focus(),
+    nextSession: () => stepSession(1),
+    previousSession: () => stepSession(-1),
+    showKeyboardShortcuts: () => ui.openSettings("shortcuts"),
+    cycleZone,
+    showNotifications: () => ui.openSettings("notifications"),
+    saveEditorFile: () => editorActions.save?.(),
+    toggleEditorSplit: () => {
+      const inEditor = document.activeElement instanceof HTMLElement && Boolean(document.activeElement.closest(".editor-pane"));
+      if (inEditor) document.getElementById("composer-input")?.focus();
+      else editorActions.focus?.();
+    },
+    // 统一 diff 视图：接受/拒绝当前（首个待处理）hunk，写回走权限链
+    diffAcceptHunk: () => diffActions.accept?.(),
+    diffRejectHunk: () => diffActions.reject?.(),
+    findInConversation: () => window.dispatchEvent(new CustomEvent(CONVERSATION_SEARCH_EVENT)),
+  };
+  useEffect(() => registerBuiltinCommands(() => actionsRef.current), []);
+  useGlobalKeybindings(whenContext);
 
   // 新会话永远回到纯对话：切换会话即关闭全部辅助视图（布局回归约束）
   useEffect(() => {
@@ -281,6 +379,34 @@ export function App(): ReactElement {
         onClose={() => ui.setNewSessionOpen(false)}
         onCreate={(values) => create.mutate(values)}
         onOpenSettings={(tab) => { ui.setNewSessionOpen(false); ui.openSettings(tab); }}
+      />
+      <CommandPalette open={paletteOpen} context={whenContext} onClose={() => ui.setPaletteOpen(false)} />
+      {quickOpenOpen && sessionId && (
+        <Suspense fallback={null}>
+          <QuickOpen
+            open={quickOpenOpen}
+            sessionId={sessionId}
+            onOpenFile={(path) => auxViews.openCodeOverlay(path)}
+            onOpenInEditor={(path) => auxViews.openEditor(path)}
+            onClose={() => ui.setQuickOpen(false)}
+          />
+        </Suspense>
+      )}
+      <Suspense fallback={null}>
+        <SettingsDialog />
+      </Suspense>
+      <input
+        ref={importInput}
+        type="file"
+        accept=".jsonl,application/x-ndjson"
+        hidden
+        aria-hidden
+        tabIndex={-1}
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          if (file) importSessionFile(file);
+          event.target.value = "";
+        }}
       />
       <ConfirmDeleteDialog
         open={deleteTarget !== undefined}

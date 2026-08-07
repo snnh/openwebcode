@@ -17,6 +17,7 @@ import { sessionMeta, sessionStore } from "../app/session-store";
 import { deriveActivityInfo, useLiveActivityEntry, useLiveSubagentRuns, type LiveActivityInfo } from "../app/live-store";
 import { auxViews } from "../workbench/aux-views";
 import { ui } from "../app/ui-store";
+import { chatBridge } from "../app/chat-bridge";
 import { deriveSubagentRunsFromMessages, mergeSubagentRuns } from "../lib/subagent-runs";
 import type { UseSubagentTabsResult } from "../hooks/use-subagent-tabs";
 import type { UseTerminalTabsResult } from "../hooks/use-terminal-tabs";
@@ -225,6 +226,12 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
     }
     send.mutate({ sessionId, text, behavior: behavior ?? (running ? "steer" : "start") });
   }, [sessionId, editingMessage, cancelEdit, queryClient, notify, t, send, running]);
+
+  // 命令体系（Ctrl+Enter/命令面板「发送消息」）经桥路由到 submitDraft
+  useEffect(() => {
+    chatBridge.submitDraft = submitDraft;
+    return () => { chatBridge.submitDraft = undefined; };
+  }, [submitDraft]);
 
   // 错误卡「重试」：重发本会话最近一条用户消息（跳过 `!` 前缀的 shell 快捷消息）
   const lastUserMessageText = useMemo(() => {

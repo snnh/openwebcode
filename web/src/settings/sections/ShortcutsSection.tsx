@@ -1,6 +1,6 @@
 import type { ReactElement } from "react";
 import { useI18n } from "../../i18n";
-import { ShortcutsTable } from "../ShortcutsTable";
+import { ShortcutsTable } from "../../dialogs/ShortcutsTable";
 
 /**
  * 快捷键分区（0.4.0 Phase 5b）：与速查浮层共用 ShortcutsTable（键位注册表单一来源）。

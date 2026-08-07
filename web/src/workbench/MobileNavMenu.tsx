@@ -7,7 +7,7 @@
 import { useEffect, useRef, type ReactElement } from "react";
 import { Icon } from "../components/Icon";
 import { useI18n } from "../i18n";
-import type { SidebarView } from "./useWorkbenchLayout";
+import type { SidebarView } from "./layout";
 import { VIEW_META } from "./view-meta";
 
 /** 菜单与图标栏共用的入口参数 */

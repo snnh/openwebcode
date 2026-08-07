@@ -1,10 +1,9 @@
 /**
- * 键盘快捷方式表格：设置「快捷键」页签（ShortcutsSection）的唯一实现（原速查浮层已并入设置），
- * 键位与命令标题源自 commands/keybindings 注册表。0.4.0 不支持自定义键位，仅展示。
+ * 键盘快捷方式表格：设置「快捷键」页签的唯一实现，键位与命令标题源自 app/commands 注册表。
+ * 不支持自定义键位，仅展示。
  */
 import { useMemo, type ReactElement } from "react";
-import { DEFAULT_KEYBINDINGS, formatCombo, isMacPlatform } from "../commands/keybindings";
-import { getCommand } from "../commands/registry";
+import { DEFAULT_KEYBINDINGS, formatCombo, getCommand, isMacPlatform } from "../app/commands";
 import { useI18n } from "../i18n";
 
 export function ShortcutsTable(): ReactElement {

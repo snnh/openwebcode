@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { CommandPalette } from "../components/CommandPalette";
-import { registerCommand, resetCommands } from "../commands/registry";
+import { CommandPalette } from "../dialogs/CommandPalette";
+import { registerCommand, resetCommands } from "../app/commands";
 
 afterEach(() => resetCommands());
 

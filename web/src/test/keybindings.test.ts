@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { registerCommand, resetCommands } from "../commands/registry";
-import { comboFromEvent, DEFAULT_KEYBINDINGS, dispatchKeybinding, formatCombo, type Keybinding } from "../commands/keybindings";
+import { registerCommand, resetCommands } from "../app/commands";
+import { comboFromEvent, DEFAULT_KEYBINDINGS, dispatchKeybinding, formatCombo, type Keybinding } from "../app/commands";
 
 afterEach(() => resetCommands());
 

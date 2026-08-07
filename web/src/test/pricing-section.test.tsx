@@ -1,6 +1,6 @@
 import { fireEvent, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PricingSection } from "../components/SettingsDialog";
+import { PricingSection } from "../settings/sections/PricingSection";
 import { api } from "../lib/api";
 import type { PricingDocument } from "../lib/contracts";
 import { renderWithClient } from "./helpers/with-client";

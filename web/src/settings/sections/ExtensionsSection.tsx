@@ -4,7 +4,7 @@ import { api } from "../../lib/api";
 import type { ExtensionInfo } from "../../lib/contracts";
 import { useI18n } from "../../i18n";
 import { ExtensionConfigForm, parseConfigSchema } from "./ExtensionConfigForm";
-import { useConfirmDialog } from "../ConfirmDialog";
+import { useConfirmDialog } from "../../components/ConfirmDialog";
 
 const OFFICIAL_EXTENSION_EN: Record<string, { name: string; description: string }> = {
   "context-manager": { name: "Context Manager", description: "Rolling eviction, context compaction, writeback, and ledger views." },

@@ -4,8 +4,8 @@ import { api } from "../../lib/api";
 import type { ModelInterfaceType, ModelProviderProfileView, ProviderProfilesView, WebCapability, WebProviderProfileView, WebProviderType } from "../../lib/contracts";
 import { useI18n } from "../../i18n";
 import { ProxySection } from "./ProxySection";
-import { useConfirmDialog } from "../ConfirmDialog";
-import { Icon } from "../Icon";
+import { useConfirmDialog } from "../../components/ConfirmDialog";
+import { Icon } from "../../components/Icon";
 
 interface ModelProviderForm {
   originalId?: string;
