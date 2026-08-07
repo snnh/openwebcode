@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../lib/api";
 import type { ExtensionInfo } from "../../lib/contracts";
 import { useI18n } from "../../i18n";
-import { ExtensionConfigForm, parseConfigSchema } from "./ExtensionConfigForm";
+import { ExtensionConfigForm, parseConfigSchema, type ExtensionConfigField } from "./ExtensionConfigForm";
 import { useConfirmDialog } from "../../components/ConfirmDialog";
 
 const OFFICIAL_EXTENSION_EN: Record<string, { name: string; description: string }> = {
@@ -14,6 +14,55 @@ const OFFICIAL_EXTENSION_EN: Record<string, { name: string; description: string 
   "env-sim": { name: "Environment Simulation", description: "Mimic another coding agent's system-prompt style and default tool shapes via a selectable preset." },
 };
 
+/** 官方扩展配置字段的英文文案（schema 内嵌中文 title/description，英文界面按字段路径覆盖） */
+const OFFICIAL_FIELD_EN: Record<string, Record<string, { title: string; description?: string }>> = {
+  "attention-optimizer": {
+    mode: { title: "Anchor mode", description: "bottomOnly appends a reference anchor after the last message; full also injects a stable-constraint anchor at the top — more effective but uses more context." },
+    anchorBudget: { title: "Anchor budget (chars)", description: "Character cap for copied anchor content; lower-scored entries are dropped beyond it. Clamped to 256–12000." },
+  },
+  "compact-vault": {
+    keepTail: { title: "Tail messages kept", description: "Most recent messages excluded from compaction and archiving." },
+    chunkSize: { title: "Messages per archive chunk", description: "Smaller chunks give a finer index but more archive files." },
+    recallMaxTokens: { title: "Recall output cap (tokens)", description: "Maximum tokens returned by a single recall_memory call." },
+  },
+  "content-lens": {
+    targetLang: { title: "Target language", description: "Output language for translation and explanations, e.g. zh-CN, en, ja." },
+    translate: { title: "Translation", description: "How message translation is triggered, plus the glossary." },
+    mode: { title: "Trigger", description: "manual: translate via the button; auto: translate assistant messages automatically; off: hide the translate entry." },
+    glossary: { title: "Glossary", description: "Fixed translations, one per line as \"source=target\"." },
+  },
+  "pdf-to-image": {
+    maxPages: { title: "Max pages", description: "Maximum PDF pages converted per attachment, also bounded by the attachment slot limit." },
+    dpi: { title: "Render DPI", description: "Page rendering resolution; higher is sharper but larger. Capped at 300." },
+    maxDimension: { title: "Longest edge (px)", description: "Pixel cap for the longest output edge; larger pages are scaled down. Capped at 2048." },
+  },
+  "env-sim": {
+    persona: { title: "Preset", description: "The coding-agent preset to mimic; empty means no simulation." },
+  },
+};
+
+/** 英文界面下按字段 key 覆盖 schema 自带的中文 title/description（递归嵌套组） */
+export function localizeConfigFields(
+  fields: ExtensionConfigField[] | null,
+  overrides: Record<string, { title: string; description?: string }> | undefined,
+): ExtensionConfigField[] | null {
+  if (!fields || !overrides) return fields;
+  return fields.map((field) => localizeField(field, overrides));
+}
+
+function localizeField(
+  field: ExtensionConfigField,
+  overrides: Record<string, { title: string; description?: string }>,
+): ExtensionConfigField {
+  const override = overrides[field.key];
+  return {
+    ...field,
+    ...(override ? { title: override.title } : {}),
+    ...(override?.description ? { description: override.description } : {}),
+    ...(field.children ? { children: field.children.map((child) => localizeField(child, overrides)) } : {}),
+  };
+}
+
 export function ExtensionRow({ extension }: { extension: ExtensionInfo }): ReactElement {
   const { t, language } = useI18n();
   const queryClient = useQueryClient();
@@ -22,7 +71,8 @@ export function ExtensionRow({ extension }: { extension: ExtensionInfo }): React
   const [error, setError] = useState<string>();
   const displayName = language === "en" ? (OFFICIAL_EXTENSION_EN[extension.id]?.name ?? extension.name) : extension.name;
   const displayDescription = language === "en" ? (OFFICIAL_EXTENSION_EN[extension.id]?.description ?? extension.description) : extension.description;
-  const configFields = parseConfigSchema(extension.configSchema);
+  const parsedFields = parseConfigSchema(extension.configSchema);
+  const configFields = language === "en" ? localizeConfigFields(parsedFields, OFFICIAL_FIELD_EN[extension.id]) : parsedFields;
   const confirm = useConfirmDialog();
 
   useEffect(() => setJson(JSON.stringify(extension.config, null, 2)), [extension.config]);
@@ -70,7 +120,7 @@ export function ExtensionRow({ extension }: { extension: ExtensionInfo }): React
           <summary>{t("配置", "Configuration")}</summary>
           <ExtensionConfigForm extension={extension} fields={configFields} busy={busy} onSave={(config) => update({ config })} />
         </details>
-      ) : (
+      ) : Object.keys(extension.config).length > 0 && (
         <details>
           <summary>{t("配置 JSON", "Configuration JSON")}</summary>
           <textarea className="extension-json mono" rows={7} value={json} disabled={busy} onChange={(event) => setJson(event.target.value)} spellCheck={false} />

@@ -22,6 +22,27 @@ export const OFFICIAL_EXTENSIONS: ExtensionManifest[] = [
     permissions: ["context:read", "context:mutate", "ui:panel"],
     official: true,
     defaultEnabled: false,
+    configSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        mode: {
+          type: "string",
+          enum: ["bottomOnly", "full"],
+          title: "锚区模式",
+          description: "bottomOnly 只在消息末尾追加引用锚区；full 额外在开头注入稳定约束锚区，效果更好但占用更多上下文。",
+          default: "bottomOnly",
+        },
+        anchorBudget: {
+          type: "integer",
+          minimum: 256,
+          maximum: 12000,
+          title: "锚区预算（字符）",
+          description: "锚区可复制内容的字符上限；超出按评分截断。消费端会钳制在 256–12000。",
+          default: 3000,
+        },
+      },
+    },
   },
   {
     id: "content-lens",
@@ -32,6 +53,39 @@ export const OFFICIAL_EXTENSIONS: ExtensionManifest[] = [
     permissions: ["sessions:read", "ui:panel", "ui:messageAttachment", "network:fetch"],
     official: true,
     defaultEnabled: false,
+    // 顶层之外的存量键（translate.layout、explain.*）目前无消费端，schema 不递归校验，
+    // additionalProperties 保持宽容以免旧配置保存被拒。
+    configSchema: {
+      type: "object",
+      properties: {
+        targetLang: {
+          type: "string",
+          title: "目标语言",
+          description: "翻译与解析的输出语言，如 zh-CN、en、ja。",
+          default: "zh-CN",
+        },
+        translate: {
+          type: "object",
+          title: "翻译",
+          description: "消息翻译的触发方式与术语表。",
+          properties: {
+            mode: {
+              type: "string",
+              enum: ["manual", "auto", "off"],
+              title: "触发方式",
+              description: "manual 点击「译」按钮翻译；auto 助手消息自动翻译；off 关闭翻译入口。",
+              default: "manual",
+            },
+            glossary: {
+              type: "object",
+              additionalProperties: { type: "string" },
+              title: "术语表",
+              description: "固定译法，每行一条「原词=译词」。",
+            },
+          },
+        },
+      },
+    },
   },
   {
     id: "pdf-to-image",
@@ -44,6 +98,35 @@ export const OFFICIAL_EXTENSIONS: ExtensionManifest[] = [
     permissions: ["ui:messageAttachment"],
     official: true,
     defaultEnabled: true,
+    configSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        maxPages: {
+          type: "integer",
+          minimum: 1,
+          title: "最大转换页数",
+          description: "每次最多转换的 PDF 页数，另受单次附件数量上限约束。",
+          default: 4,
+        },
+        dpi: {
+          type: "integer",
+          minimum: 72,
+          maximum: 300,
+          title: "渲染 DPI",
+          description: "页面渲染分辨率；越高越清晰，图片也越大。上限 300。",
+          default: 150,
+        },
+        maxDimension: {
+          type: "integer",
+          minimum: 512,
+          maximum: 2048,
+          title: "最长边（像素）",
+          description: "输出图片最长边像素上限，超出按比例缩小。上限 2048。",
+          default: 2048,
+        },
+      },
+    },
   },
   {
     id: "owc-eval",
@@ -75,7 +158,7 @@ export const OFFICIAL_EXTENSIONS: ExtensionManifest[] = [
       type: "object",
       additionalProperties: false,
       properties: {
-        persona: { type: "string", title: "预设", default: "" },
+        persona: { type: "string", title: "预设", description: "选择要模拟的编码 Agent 预设；留空表示不模拟。", default: "" },
       },
     },
   },
@@ -94,9 +177,9 @@ export const OFFICIAL_EXTENSIONS: ExtensionManifest[] = [
       type: "object",
       additionalProperties: false,
       properties: {
-        keepTail: { type: "integer", minimum: 0, title: "保留尾部消息数", default: 10 },
-        chunkSize: { type: "integer", minimum: 1, maximum: 200, title: "归档分块消息数", default: 25 },
-        recallMaxTokens: { type: "integer", minimum: 128, maximum: 4096, title: "召回输出上限（tokens）", default: 1500 },
+        keepTail: { type: "integer", minimum: 0, title: "保留尾部消息数", description: "压缩时保留的最近消息条数，不参与归档。", default: 10 },
+        chunkSize: { type: "integer", minimum: 1, maximum: 200, title: "归档分块消息数", description: "每个归档分块包含的消息条数；分块越小索引越细，归档文件越多。", default: 25 },
+        recallMaxTokens: { type: "integer", minimum: 128, maximum: 4096, title: "召回输出上限（tokens）", description: "recall_memory 单次召回细节的最大 token 数。", default: 1500 },
       },
     },
   },
