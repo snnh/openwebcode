@@ -47,12 +47,6 @@ export function createEventSocket(options: EventSocketOptions, env: EventSocketE
   const baseDelayMs = env.baseDelayMs ?? 500;
   const maxDelayMs = env.maxDelayMs ?? 10_000;
   const createSocket = env.createSocket ?? ((url: string) => new WebSocket(url) as WebSocketLike);
-  const url = env.url ?? ((): string => {
-    const after = 0;
-    const query = new URLSearchParams({ after: String(after) });
-    return `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/events?${query}`;
-  });
-
   let retry = 0;
   let socket: WebSocketLike | undefined;
   let timer: number | undefined;

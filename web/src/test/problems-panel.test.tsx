@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ProblemsPanel } from "../components/panels/ProblemsPanel";
-import { ActivityBar } from "../workbench/ActivityBar";
+import { ActivityBar } from "../workbench/Rail";
 import { api, ApiError } from "../lib/api";
 import type { DiagnosticSet } from "../lib/contracts";
 import { renderWithClient } from "./helpers/with-client";
@@ -97,7 +97,7 @@ describe("Problems 角标（0.4.0 Phase 5a：角标迁至活动栏）", () => {
         onToggleSidebar={() => undefined}
         onShowHelp={() => undefined}
         onShowNotifications={() => undefined}
-        onOpenTerminal={() => undefined}
+       
         onOpenSettings={() => undefined}
       />,
     );
@@ -111,12 +111,12 @@ describe("Problems 角标（0.4.0 Phase 5a：角标迁至活动栏）", () => {
 
   it("角标为 0 或问题视图已激活时不显示", () => {
     const first = render(
-      <ActivityBar activeView="sessions" sidebarVisible problemsBadge={0} onShowView={() => undefined} onToggleSidebar={() => undefined} onShowHelp={() => undefined} onShowNotifications={() => undefined} onOpenTerminal={() => undefined} onOpenSettings={() => undefined} />,
+      <ActivityBar activeView="sessions" sidebarVisible problemsBadge={0} onShowView={() => undefined} onToggleSidebar={() => undefined} onShowHelp={() => undefined} onShowNotifications={() => undefined} onOpenSettings={() => undefined} />,
     );
     expect(screen.queryByLabelText(/个新问题/)).not.toBeInTheDocument();
     first.unmount();
     render(
-      <ActivityBar activeView="problems" sidebarVisible problemsBadge={2} onShowView={() => undefined} onToggleSidebar={() => undefined} onShowHelp={() => undefined} onShowNotifications={() => undefined} onOpenTerminal={() => undefined} onOpenSettings={() => undefined} />,
+      <ActivityBar activeView="problems" sidebarVisible problemsBadge={2} onShowView={() => undefined} onToggleSidebar={() => undefined} onShowHelp={() => undefined} onShowNotifications={() => undefined} onOpenSettings={() => undefined} />,
     );
     expect(screen.queryByLabelText(/个新问题/)).not.toBeInTheDocument();
   });

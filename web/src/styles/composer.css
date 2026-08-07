@@ -1,0 +1,355 @@
+/* Composer 输入区：从旧 styles.css 的 .composer 系列抽取（视觉保持），
+   仅保留新 Composer 用到的规则（状态芯片行 .composer-chips/.chip-* 归会话区，不在此）。
+   弹层基类 .composer-popup 已在 base.css，此处只放 skill/mention 语义钩子与弹层菜单。 */
+
+.composer {
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  padding: var(--space-2) 22px var(--space-3);
+}
+/* 输入区大圆角卡片：textarea 融入其中，底栏一行排布 */
+.composer-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  background: var(--panel);
+  padding: 8px 14px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.composer-card:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-soft) 65%, transparent);
+}
+.composer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+  min-width: 0;
+  margin-top: 2px;
+}
+.composer-toolbar-spacer { flex: 1 1 auto; }
+/* 权限按钮文字用琥珀色，提示当前确认级别 */
+.composer-permission .composer-menu-btn { color: var(--amber); }
+.composer-send {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.composer-send:hover:not(:disabled) { background: var(--accent-hover); }
+.composer-send:disabled { background: var(--border-strong); color: var(--panel); opacity: 1; }
+/* 右侧菜单的弹层右对齐，避免溢出视口右缘 */
+.composer-menu-right { display: inline-flex; }
+.composer-menu-right .popover-menu { left: auto; right: 0; }
+/* 运行中：accent 圆点脉动（与工具行/subagent 脉动圆点同款语言） */
+.composer-running-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
+.queue-caret { width: 26px; height: 32px; }
+.model-menu-btn-thinking { color: var(--accent); font-size: var(--text-xs); }
+
+/* ================= Composer 配置弹层（权限/模式/模型） ================= */
+.composer-menu { position: relative; display: inline-flex; }
+.composer-menu-btn {
+  min-height: 32px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: var(--panel);
+  color: var(--text-2);
+  font-size: var(--text-s);
+  white-space: nowrap;
+}
+.composer-menu-btn:hover,
+.composer-menu-btn.open { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.composer-menu-btn.active { color: var(--accent); }
+/* .composer-menu-badge 仅作窄屏隐藏的功能钩子，视觉样式由 .pill 提供 */
+.model-menu-btn-label {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.popover-overlay { position: fixed; inset: 0; z-index: var(--z-popover); }
+.popover-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: var(--z-menu);
+  min-width: 240px;
+  max-width: min(360px, 90vw);
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow-lg);
+}
+/* 锚定态：JS 测量触发按钮位置后改 fixed，left/top 由内联样式给出；
+   specificity 与 .composer-menu-right .popover-menu 持平且位置更靠后，覆盖其 right:0 */
+.popover-menu.popover-menu-anchored { position: fixed; right: auto; bottom: auto; }
+/* 未测量首帧不闪旧位置（测量在打开当帧的 effect 内同步完成，正常不可见） */
+.popover-menu:not(.popover-menu-anchored) { visibility: hidden; }
+/* 模型弹层：上滚动（分组列表）+ 下固定（能力/思考/更多） */
+.popover-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.popover-fixed { flex: 0 0 auto; border-top: 1px solid var(--border); margin-top: 4px; padding-top: 2px; }
+.popover-fixed > .popover-section:first-child { margin-top: 0; padding-top: 0; border-top: none; }
+.popover-fixed > .popover-section:first-child:last-child { padding-bottom: 0; }
+.popover-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border: none;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--text);
+  font-size: var(--text-m);
+  text-align: left;
+  cursor: pointer;
+}
+.popover-item:hover { background: var(--accent-soft); }
+.popover-item.selected { background: var(--accent-soft); }
+.popover-item.disabled { cursor: default; color: var(--text-3); }
+.popover-item-check { flex: 0 0 16px; display: inline-flex; justify-content: center; color: var(--accent); padding-top: 1px; }
+.popover-item-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.popover-item-label { font-weight: 500; display: inline-flex; align-items: center; gap: 6px; }
+.popover-item-desc { font-size: var(--text-xs); color: var(--text-3); white-space: normal; }
+.popover-section + .popover-section { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border); }
+.popover-section-label { font-size: var(--text-xs); color: var(--text-3); display: block; margin: 2px 8px 6px; }
+.popover-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border-radius: var(--radius-s);
+}
+.popover-toggle.selected { background: var(--accent-soft); }
+.popover-toggle-icon { color: var(--text-2); display: inline-flex; }
+.popover-toggle .popover-item-text { flex: 1; }
+.toggle-switch { position: relative; display: inline-flex; flex: 0 0 auto; }
+.toggle-switch input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+.toggle-switch input:disabled { cursor: default; }
+.toggle-switch input:focus-visible + .toggle-knob { box-shadow: 0 0 0 2px var(--accent); }
+.toggle-switch .toggle-knob {
+  position: relative;
+  pointer-events: none;
+  width: 30px;
+  height: 17px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  transition: background 0.15s ease;
+}
+.toggle-switch .toggle-knob::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--text-3);
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+.toggle-switch.on .toggle-knob { background: var(--accent); border-color: var(--accent); }
+.toggle-switch.on .toggle-knob::after { transform: translateX(13px); background: var(--on-accent); }
+/* 供应商分组（模型弹层） */
+.popover-group + .popover-group { margin-top: 2px; }
+.popover-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--text-2);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  cursor: pointer;
+}
+.popover-group-header:hover { background: var(--accent-soft); }
+.popover-group-chevron { display: inline-flex; transition: transform 0.15s ease; }
+.popover-group-chevron.collapsed { transform: rotate(-90deg); }
+.popover-group-name { flex: 1; text-align: left; }
+.popover-group-count { color: var(--text-3); font-weight: 400; }
+/* 思考开关行与程度滑块（模型弹层底部固定区） */
+.popover-thinking-row { display: flex; align-items: center; justify-content: space-between; padding: 0 8px; }
+.popover-thinking-row .popover-section-label { margin: 2px 0 4px; }
+.thinking-slider { padding: 0 8px 6px; }
+.thinking-slider.disabled { opacity: 0.5; }
+.thinking-slider-row { display: flex; align-items: center; gap: 8px; }
+.thinking-slider-end { flex: 0 0 auto; font-size: var(--text-2xs); color: var(--text-3); }
+.thinking-cells { flex: 1; min-width: 0; display: flex; gap: 3px; align-items: center; }
+.thinking-cell {
+  flex: 1 1 0;
+  height: 10px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--panel-2);
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.thinking-cell:hover:not(:disabled) { border-color: var(--accent); }
+.thinking-cell.filled { background: var(--accent); border-color: var(--accent); }
+.thinking-cell:disabled { cursor: default; }
+.thinking-slider-current { flex: 0 0 auto; min-width: 34px; text-align: right; font-size: var(--text-xs); color: var(--text-3); }
+.thinking-slider-current.active { color: var(--accent); font-weight: 600; }
+.popover-footer { padding: 2px 4px; }
+.popover-more {
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-size: var(--text-s);
+  padding: 6px 8px;
+  cursor: pointer;
+}
+.popover-more:hover { text-decoration: underline; }
+.popover-capabilities { padding: 2px 8px 6px; }
+.steering-hint { color: var(--amber); font-weight: 600; }
+.composer-toolbar .steering-hint { font-size: var(--text-xs); white-space: nowrap; }
+
+/* ================= 输入框 / 提示 / 编辑横幅 ================= */
+.composer-input { display: flex; gap: 10px; align-items: flex-end; position: relative; }
+.composer-hint { margin-top: 6px; color: var(--text-3); font-size: var(--text-xs); display: flex; align-items: baseline; gap: 8px; }
+.composer-hint-text { flex: 1; min-width: 0; }
+.composer-hint-dismiss {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 4px;
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  border-radius: 4px;
+}
+.composer-hint-dismiss:hover { color: var(--text); background: var(--panel-2); }
+.composer-editing-banner { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius-s); background: var(--panel-2); color: var(--text-2); font-size: var(--text-s); }
+.composer-editing-text { flex: 1; }
+.composer-conversion { margin-top: 6px; color: var(--accent); font-size: var(--text-s); }
+.composer textarea {
+  flex: 1;
+  resize: none;
+  border: none;
+  background: transparent;
+  padding: 6px 2px 2px;
+  line-height: 1.5;
+  max-height: 200px;
+  font-size: 14px;
+  /* 默认无纵向滚动条轨道；JS 自动增高检测到真实溢出（达 max-height）后改回 auto */
+  overflow-y: hidden;
+}
+.composer textarea:focus { outline: none; }
+
+/* ================= 附件缩略图与 @ 引用 chips ================= */
+.attachment-strip { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.attachment { position: relative; display: inline-flex; }
+.attachment img { width: 56px; height: 56px; object-fit: cover; border-radius: var(--radius-s); border: 1px solid var(--border); }
+.attachment-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+}
+.attachment-remove:hover { color: var(--danger); border-color: var(--danger-border); }
+.mention-strip { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+.mention-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px 3px 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  font-size: var(--text-s);
+  color: var(--text-2);
+}
+.mention-chip-path { font-family: var(--font-mono); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mention-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  padding: 0;
+}
+.mention-remove:hover { color: var(--danger); }
+
+/* ================= / 技能与 @ 文件引用建议弹层（基类 .composer-popup 在 base.css） ================= */
+.skill-popup .skill-name { font-family: var(--font-mono); font-weight: 600; flex-shrink: 0; }
+.skill-popup .skill-desc { color: var(--text-3); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skill-popup .skill-source { color: var(--text-3); font-size: var(--text-xs); flex-shrink: 0; }
+.skill-popup .skill-empty, .mention-popup .mention-empty { padding: 10px 12px; font-size: var(--text-s); color: var(--text-3); }
+.mention-popup .mention-path { font-family: var(--font-mono); color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 索引状态提示行（滞后/构建中/不可用回退），不可选 */
+.mention-popup .mention-status { padding: 6px 9px; font-size: var(--text-xs); color: var(--text-3); border-bottom: 1px solid var(--border); }
+/* 符号条目：kind 徽标 + 位置（文件:行号） */
+.mention-popup .mention-kind { flex-shrink: 0; font-size: var(--text-2xs); font-family: var(--font-mono); color: var(--accent); border: 1px solid var(--border); border-radius: var(--radius-s); padding: 1px 5px; }
+.mention-popup .mention-loc { flex-shrink: 0; font-size: var(--text-xs); font-family: var(--font-mono); color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ================= 移动端 ================= */
+@media (max-width: 1024px) {
+  /* Composer 控制条同排放下：菜单按钮降档、模型名收缩省略、spacer 吸剩余宽度（不强制折行） */
+  .composer-toolbar { gap: 4px; }
+  .composer-menu-btn { min-height: 30px; padding: 0 8px; gap: 4px; font-size: var(--text-s); }
+  .composer-toolbar-spacer { flex: 1 1 0; min-width: 0; }
+  .composer-send { margin-left: 0; }
+  .model-menu-btn-label { max-width: 34vw; }
+  /* iOS：输入框字号 <16px 聚焦会自动放大页面 */
+  .composer textarea { font-size: 16px; }
+  /* 凹屏安全区：输入卡片避开 Home 指示条与左右圆角 */
+  .composer {
+    padding-left: calc(12px + env(safe-area-inset-left));
+    padding-right: calc(12px + env(safe-area-inset-right));
+    padding-bottom: calc(var(--space-3) + env(safe-area-inset-bottom));
+  }
+  /* 弹层窄屏收边：min-width 不再顶出视口（弹层锚定触发按钮，形态接近底栏弹层） */
+  .composer-popup { max-width: calc(100vw - 32px); }
+  .composer-menu .popover-menu { max-width: calc(100vw - 24px); }
+}
+
+@media (max-width: 480px) {
+  .composer { padding: 6px calc(8px + env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) calc(8px + env(safe-area-inset-left)); }
+  .composer-card { padding: 6px 10px 8px; }
+  .composer-toolbar { flex-wrap: wrap; gap: 4px; }
+  /* 控制行紧凑化：菜单按钮降一档，长模型名收缩省略（不顶爆布局、不折行溢出） */
+  .composer-menu-btn { padding: 0 7px; gap: 4px; font-size: var(--text-xs); }
+  .model-menu-btn-label { max-width: 108px; gap: 3px; }
+}
+
+/* 触屏：附件/发送/菜单按钮保持 ≥40px 触控目标（置于 480px 紧凑规则之后，小屏触屏不被压回） */
+@media (hover: none) {
+  .composer-attach.icon-btn { width: 44px; height: 44px; }
+  .composer-send { width: 44px; height: 44px; }
+  .composer-menu-btn { min-height: 40px; }
+}

@@ -1,6 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { MemoMessageCard } from "../components/MessageCard";
+import { MemoMessageCard } from "../chat/MessageCard";
+import { ChatActionsContext, type ChatActions } from "../chat/types";
 import { clearHighlightCache, highlightCode } from "../highlight";
 import type { ChatMessage } from "../lib/contracts";
 
@@ -39,19 +40,37 @@ describe("Markdown 渲染缓存", () => {
     markdownSpy.renders = 0;
   });
 
+  const stubActions: ChatActions = {
+    sessionId: "s1",
+    running: false,
+    onNotice: () => undefined,
+    onOpenDiff: () => undefined,
+    onSendToAgent: () => undefined,
+    onEditMessage: () => undefined,
+    onRegenerate: () => undefined,
+    onFork: () => undefined,
+  };
+  // memo 比较按引用：配对表须共享常量（与 MessageList 的 useMemo 语义一致）
+  const EMPTY_RESULTS: Record<string, boolean> = {};
+  const card = (text: string) => (
+    <ChatActionsContext.Provider value={stubActions}>
+      <MemoMessageCard message={message("m1", text)} turn={1} toolResults={EMPTY_RESULTS} />
+    </ChatActionsContext.Provider>
+  );
+
   it("相同 messageId + content 的消息对象重建时不重复渲染 Markdown", async () => {
-    const view = render(<MemoMessageCard message={message("m1", "你好")} sessionId="s1" />);
+    const view = render(card("你好"));
     // Markdown 已 mock 为同步渲染，直接计数
     await waitFor(() => expect(screen.getByText("你好")).toBeInTheDocument());
     const afterFirst = markdownSpy.renders;
     expect(afterFirst).toBeGreaterThan(0);
 
     // 事件重放/会话刷新会重建消息对象：id 与内容相同，引用不同
-    view.rerender(<MemoMessageCard message={message("m1", "你好")} sessionId="s1" />);
+    view.rerender(card("你好"));
     expect(markdownSpy.renders).toBe(afterFirst);
 
     // 内容变化则重新渲染
-    view.rerender(<MemoMessageCard message={message("m1", "你好，世界")} sessionId="s1" />);
+    view.rerender(card("你好，世界"));
     await waitFor(() => expect(markdownSpy.renders).toBeGreaterThan(afterFirst));
   });
 });

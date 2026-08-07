@@ -33,7 +33,7 @@ function setup(currentSessionId = "s1") {
     queryClient,
     getCurrentSessionId: () => currentSessionId,
     getSessions: () => sessions,
-    t: (chinese: string, english: string) => chinese,
+    t: (chinese: string, _english: string) => chinese,
     notify: vi.fn(),
     pushEventNotification: vi.fn(),
     desktopNotify: vi.fn(),

@@ -98,6 +98,6 @@ export const ui = {
     uiStore.set((previous) => ({ notifications: removeNotification(previous.notifications, id) }));
   },
   clearNotifications(): void {
-    uiStore.set((previous) => ({ notifications: clearNotifications() }));
+    uiStore.set({ notifications: clearNotifications() });
   },
 };

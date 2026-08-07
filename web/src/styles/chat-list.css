@@ -1,0 +1,64 @@
+/* 聊天滚动区容器样式（消息卡/搜索条/分隔线等卡片级样式在 chat-cards.css；骨架在 layout.css）。
+   容器语义类：.chat-track-wrap/.chat-track/.chat-top-sentinel/.chat-loading-row。 */
+
+.chat-track-wrap { position: relative; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); flex: 1; }
+.chat-track {
+  overflow-y: auto;
+  padding: 26px var(--gutter) 72px;
+  position: relative;
+}
+/* 长列表渲染性能：屏外消息卡跳过布局/绘制（DOM 常驻，会话内搜索 querySelectorAll 可达） */
+.chat-track > article {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 240px;
+}
+/* 顶部哨兵：入视即触发加载更早消息（1px 即可，rootMargin 提前量由 IO 配置） */
+.chat-top-sentinel { height: 1px; }
+/* 向上分页加载中的细条指示 */
+.chat-loading-row {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0;
+  color: var(--text-3);
+  font-size: 12px;
+}
+/* 无 IntersectionObserver 环境的兜底按钮 */
+.load-more-bar { display: flex; justify-content: center; padding: 8px 0; }
+.load-more-btn {
+  background: var(--panel); color: var(--text-2); border: 1px solid var(--border);
+  border-radius: var(--radius-s); padding: 4px 14px; font-size: 12px; cursor: pointer;
+  transition: background 0.15s;
+}
+.load-more-btn:hover:not(:disabled) { background: var(--panel-2); }
+.load-more-btn:disabled { opacity: 0.6; cursor: default; }
+
+/* 回到底部浮钮：脱离跟随时显示，固定于滚动容器右下 */
+.scroll-bottom {
+  position: absolute;
+  right: 26px;
+  bottom: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  background: var(--panel);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  color: var(--text-2);
+  font-size: 12px;
+}
+.scroll-bottom:hover { color: var(--accent); border-color: var(--accent); }
+
+/* 空态 */
+.track-empty { text-align: center; margin-top: 40px; }
+
+@media (max-width: 1024px) {
+  .scroll-bottom { right: 16px; bottom: 14px; padding: 9px; }
+  .scroll-bottom-label { display: none; }
+  .chat-track { padding: 20px 16px 32px; }
+}
+@media (max-width: 768px) {
+  .conversation-search-input { width: min(180px, 36vw); }
+}
