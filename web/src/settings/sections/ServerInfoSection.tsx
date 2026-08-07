@@ -1,14 +1,14 @@
 import { useEffect, useState, type ReactElement } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
-import type { ModelProfile, UpdateApplyState } from "../../lib/contracts";
+import { useModelsQuery, useProvidersQuery } from "../../app/queries";
+import type { UpdateApplyState } from "../../lib/contracts";
 import { useI18n } from "../../i18n";
 
-export function ServerInfoSection({ providers, models }: {
-  providers: string[];
-  models: ModelProfile[];
-}): ReactElement {
+export function ServerInfoSection(): ReactElement {
   const { t } = useI18n();
+  const providers = useProvidersQuery().data ?? [];
+  const models = useModelsQuery().data ?? [];
   const health = useQuery({ queryKey: ["health"], queryFn: api.health, refetchInterval: 15_000 });
   const version = useQuery({ queryKey: ["version"], queryFn: api.version, staleTime: 60_000 });
   const updateCheck = useQuery({ queryKey: ["update-check"], queryFn: api.updateCheck, staleTime: 60_000 });

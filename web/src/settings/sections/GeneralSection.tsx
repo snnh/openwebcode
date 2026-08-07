@@ -1,18 +1,16 @@
 import { useState, type ReactElement } from "react";
-import type { SendKey } from "../../lib/prefs";
 import { desktopNotifyPermission, requestDesktopNotifyPermission, type DesktopNotifyPermission } from "../../lib/desktop-notify";
+import { useSendKey, setSendKey, useDesktopNotify, setDesktopNotify } from "../../app/prefs-store";
+import { layout } from "../../workbench/layout";
 import { useI18n } from "../../i18n";
 import { ServerSettingsFields } from "./ServerSettingsFields";
 
-export function GeneralSection({ sendKey, setSendKey, desktopNotify, setDesktopNotify, onResetLayout, onDirtyChange }: {
-  sendKey: SendKey;
-  setSendKey(value: SendKey): void;
-  desktopNotify: boolean;
-  setDesktopNotify(value: boolean): void;
-  onResetLayout(): void;
+export function GeneralSection({ onDirtyChange }: {
   onDirtyChange?(dirty: boolean): void;
 }): ReactElement {
   const { t } = useI18n();
+  const sendKey = useSendKey();
+  const desktopNotify = useDesktopNotify();
   // 浏览器通知权限：渲染时读一次，请求后刷新；denied 时如实展示「浏览器已拒绝」
   const [notifyPermission, setNotifyPermission] = useState<DesktopNotifyPermission>(() => desktopNotifyPermission());
   const onToggleDesktopNotify = (checked: boolean): void => {
@@ -53,7 +51,7 @@ export function GeneralSection({ sendKey, setSendKey, desktopNotify, setDesktopN
       )}
       <h3>{t("布局", "Layout")}</h3>
       <p className="settings-note">{t("会话栏宽度/折叠、底部面板高度与开合保存在本机。", "The session rail width and collapsed state, plus bottom-panel height and visibility, are saved locally.")}</p>
-      <button className="btn small" onClick={onResetLayout}>{t("重置布局为默认", "Reset layout")}</button>
+      <button className="btn small" onClick={() => layout.resetLayout()}>{t("重置布局为默认", "Reset layout")}</button>
       <h3>{t("语言与货币", "Language and currency")}</h3>
       <ServerSettingsFields
         showGroup={(groupId) => groupId === "general"}

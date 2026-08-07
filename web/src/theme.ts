@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect } from "react";
+import { createStore, useStore } from "./app/store";
 import { deriveAccentVars } from "./lib/accent-color";
 
 export type Theme = "light" | "dark";
@@ -44,6 +45,20 @@ function readAccent(): AccentPreference {
 
 const systemPrefersDark = (): boolean => window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
 
+/**
+ * 主题/强调色偏好 store 化：多个组件可同时 useTheme（App 与设置「外观」页签共用同一来源）。
+ * 系统深浅色变化经模块级监听写入 store。
+ */
+const themeStore = createStore<{ preference: ThemePreference; systemDark: boolean; accent: AccentPreference }>({
+  preference: readPreference(),
+  systemDark: systemPrefersDark(),
+  accent: readAccent(),
+});
+
+if (typeof window !== "undefined" && window.matchMedia?.("(prefers-color-scheme: dark)")?.addEventListener) {
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", (event) => themeStore.set({ systemDark: event.matches }));
+}
+
 export function useTheme(): {
   theme: Theme;
   preference: ThemePreference;
@@ -52,20 +67,8 @@ export function useTheme(): {
   accent: AccentPreference;
   setAccent(value: AccentPreference): void;
 } {
-  const [preference, setPreferenceState] = useState<ThemePreference>(readPreference);
-  const [systemDark, setSystemDark] = useState(systemPrefersDark);
-  const [accent, setAccentState] = useState<AccentPreference>(readAccent);
-
-  // preference 为 system 时跟随系统切换
-  useEffect(() => {
-    const media = window.matchMedia?.("(prefers-color-scheme: dark)");
-    if (!media?.addEventListener) return;
-    const onChange = (event: MediaQueryListEvent): void => setSystemDark(event.matches);
-    media.addEventListener("change", onChange);
-    return () => media.removeEventListener("change", onChange);
-  }, []);
-
-  const theme: Theme = preference === "system" ? (systemDark ? "dark" : "light") : preference;
+  const state = useStore(themeStore, (current) => current);
+  const theme: Theme = state.preference === "system" ? (state.systemDark ? "dark" : "light") : state.preference;
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -74,8 +77,8 @@ export function useTheme(): {
   // 预设走 data-accent + CSS 规则；自定义任意 RGB 由内联变量注入（按亮/暗主题重新派生）
   useEffect(() => {
     const root = document.documentElement;
-    if (accent.startsWith("custom:")) {
-      const vars = deriveAccentVars(accent.slice("custom:".length), theme);
+    if (state.accent.startsWith("custom:")) {
+      const vars = deriveAccentVars(state.accent.slice("custom:".length), theme);
       if (vars) {
         root.dataset.accent = "custom";
         root.style.setProperty("--accent", vars.accent);
@@ -89,12 +92,12 @@ export function useTheme(): {
       }
       return;
     }
-    root.dataset.accent = accent;
+    root.dataset.accent = state.accent;
     for (const key of ACCENT_VAR_KEYS) root.style.removeProperty(key);
-  }, [accent, theme]);
+  }, [state.accent, theme]);
 
   const setPreference = useCallback((value: ThemePreference): void => {
-    setPreferenceState(value);
+    themeStore.set({ preference: value });
     try {
       window.localStorage.setItem(STORAGE_KEY, value);
     } catch {
@@ -103,7 +106,7 @@ export function useTheme(): {
   }, []);
 
   const setAccent = useCallback((value: AccentPreference): void => {
-    setAccentState(value);
+    themeStore.set({ accent: value });
     try {
       window.localStorage.setItem(STORAGE_KEY_ACCENT, value);
     } catch {
@@ -113,5 +116,5 @@ export function useTheme(): {
 
   const toggleTheme = useCallback(() => setPreference(theme === "dark" ? "light" : "dark"), [theme, setPreference]);
 
-  return { theme, preference, setPreference, toggleTheme, accent, setAccent };
+  return { theme, preference: state.preference, setPreference, toggleTheme, accent: state.accent, setAccent };
 }

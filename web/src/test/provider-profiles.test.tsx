@@ -1,6 +1,6 @@
 import { fireEvent, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ModelProvidersSection, WebProvidersSection } from "../components/SettingsDialog";
+import { ModelProvidersSection, WebProvidersSection } from "../settings/sections/ProviderProfilesSection";
 import { api } from "../lib/api";
 import type { ProviderProfilesView } from "../lib/contracts";
 import { renderWithClient } from "./helpers/with-client";

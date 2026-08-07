@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { api } from "../lib/api";
-import { getCommand, registerCommand, resetCommands } from "../commands/registry";
-import { registerBuiltinCommands } from "../commands/builtin";
-import { REST_ACTION_COMMANDS } from "../commands/audit";
+import { getCommand, registerCommand, resetCommands } from "../app/commands";
+import { registerBuiltinCommands } from "../app/commands";
+import { REST_ACTION_COMMANDS } from "../app/commands";
 import { stubActions } from "./helpers/stub-actions";
 
 afterEach(() => resetCommands());

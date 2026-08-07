@@ -2,10 +2,10 @@ import { useEffect, useRef, useState, type ReactElement } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../lib/api";
 import type { ModelProfile } from "../../lib/contracts";
-import { ModelCapabilityBadges } from "../ModelCapabilityBadges";
-import { Icon } from "../Icon";
+import { ModelCapabilityBadges } from "../../components/ModelCapabilityBadges";
+import { Icon } from "../../components/Icon";
 import { useI18n } from "../../i18n";
-import { useConfirmDialog } from "../ConfirmDialog";
+import { useConfirmDialog } from "../../components/ConfirmDialog";
 
 const THINKING_LABEL: Record<string, [string, string]> = { adaptive: ["自适应", "Adaptive"], enabled: ["开启", "Enabled"], disabled: ["关闭", "Disabled"] };
 const THINKING_OPTIONS = ["adaptive", "enabled", "disabled"] as const;

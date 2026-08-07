@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { queryWorkspaceFiles } from "../components/QuickOpen";
+import { queryWorkspaceFiles } from "../dialogs/QuickOpen";
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });

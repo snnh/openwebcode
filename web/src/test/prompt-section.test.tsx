@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PromptSection } from "../components/settings/PromptSection";
+import { PromptSection } from "../settings/sections/PromptSection";
 import { api } from "../lib/api";
 import type { PromptOverrideView, Session } from "../lib/contracts";
 import { renderWithClient } from "./helpers/with-client";

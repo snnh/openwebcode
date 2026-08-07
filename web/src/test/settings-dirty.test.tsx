@@ -1,6 +1,7 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SettingsDialog } from "../components/SettingsDialog";
+import { SettingsDialog } from "../settings/SettingsDialog";
+import { ui } from "../app/ui-store";
 import { I18nProvider } from "../i18n";
 import { api } from "../lib/api";
 import type { PricingDocument, PromptOverrideView, SettingsView } from "../lib/contracts";
@@ -35,6 +36,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   window.localStorage.clear();
+  ui.closeSettings();
 });
 
 function stubApis(): void {
@@ -49,29 +51,9 @@ function stubApis(): void {
 
 function renderDialog(withI18n = false): void {
   stubApis();
+  ui.openSettings();
   const dialog = (
-    <SettingsDialog
-      open
-      preference="system"
-      setPreference={() => undefined}
-      accent="teal"
-      setAccent={() => undefined}
-      sendKey="enter"
-      setSendKey={() => undefined}
-      desktopNotify={false}
-      setDesktopNotify={() => undefined}
-      defaults={{}}
-      setDefaults={() => undefined}
-      providers={[]}
-      models={[]}
-      notifications={[]}
-      onActivateNotification={() => undefined}
-      onDismissNotification={() => undefined}
-      onClearAllNotifications={() => undefined}
-      onMarkAllRead={() => undefined}
-      onResetLayout={() => undefined}
-      onClose={() => undefined}
-    />
+    <SettingsDialog />
   );
   renderWithClient(withI18n ? <I18nProvider>{dialog}</I18nProvider> : dialog);
 }

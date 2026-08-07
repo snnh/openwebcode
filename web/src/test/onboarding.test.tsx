@@ -2,7 +2,9 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EmptyState } from "../components/EmptyState";
 import { NewSessionDialog } from "../components/NewSessionDialog";
-import { ModelProvidersSection, SettingsDialog, type SettingsTab } from "../components/SettingsDialog";
+import { ModelProvidersSection } from "../settings/sections/ProviderProfilesSection";
+import { SettingsDialog, type SettingsTab } from "../settings/SettingsDialog";
+import { ui } from "../app/ui-store";
 import { api } from "../lib/api";
 import type { ProviderProfilesView, SettingsView } from "../lib/contracts";
 import { renderWithClient } from "./helpers/with-client";
@@ -37,30 +39,9 @@ function renderSettings(initialTab?: SettingsTab): ReturnType<typeof render> {
   // 模型目录页签会同时挂载 ModelProvidersSection / ModelCatalogSyncSection / ModelCatalogSection
   vi.spyOn(api, "models").mockResolvedValue([]);
   vi.spyOn(api, "modelSyncStatus").mockResolvedValue({ count: 0 });
+  ui.openSettings(initialTab);
   return renderWithClient(
-    <SettingsDialog
-      open
-      {...(initialTab !== undefined ? { initialTab } : {})}
-      preference="system"
-      setPreference={() => undefined}
-      accent="teal"
-      setAccent={() => undefined}
-      sendKey="enter"
-      setSendKey={() => undefined}
-      desktopNotify={false}
-      setDesktopNotify={() => undefined}
-      defaults={{}}
-      setDefaults={() => undefined}
-      providers={[]}
-      models={[]}
-      notifications={[]}
-      onActivateNotification={() => undefined}
-      onDismissNotification={() => undefined}
-      onClearAllNotifications={() => undefined}
-      onMarkAllRead={() => undefined}
-      onResetLayout={() => undefined}
-      onClose={() => undefined}
-    />,
+    <SettingsDialog />,
   );
 }
 
