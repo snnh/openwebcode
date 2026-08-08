@@ -10,15 +10,32 @@
   <p>English | <a href="./README.md">简体中文</a></p>
 </div>
 
+**README_en.md translated by kimi-k3**
+
 OpenWebCode is an AI coding workbench that runs in your browser, with a bilingual Chinese/English interface, natively supporting Windows (x86-64) and Linux (x86-64 / arm64 / loongarch64). Install it locally, open your browser, and let the agent read code, edit files, and run commands and tests for you.
 
 ```text
 Browser (React) ── HTTP/WebSocket ──► Node service (agent loop, tools) ── JSON-RPC ──► C executor (commands, files, sandbox)
 ```
 
+## System requirements
+
+1. Server:
+   1. OS: Windows 10+ (Windows 7 untested) or Linux
+      - Linux version: glibc ≥ 2.28; kernel ≥ 5.13 (Landlock baseline; ≥ 6.7 adds network denial), and installing bubblewrap enables full namespace isolation. Developed and verified on Debian 13 / Ubuntu 24.04
+      - A HarmonyOS port is in development
+   2. Architectures: x86-64 / arm64 / loongarch64 (the Loongson package ships no bundled Node.js and needs system Node.js ≥ 24)
+   3. CPU: dual-core 2.0 GHz
+   4. Memory: ≥ 512 MiB free
+   5. Disk: ≥ 500 MiB free
+
+2. Client:
+   Any device that can run Chrome / Edge ≥ 111 or Firefox ≥ 113 (including phones and tablets)
+
 ## Features
 
 - The basics of AI coding.
+- Resource usage friendly to low-spec devices: see [Performance and footprint](#performance-and-footprint).
 - Comparatively complete sandbox support: Job Object / AppContainer / WSB on Windows, bubblewrap / Landlock on Linux.
 - Git and filesystem-level snapshots: ZFS / Btrfs / overlayfs / VHDX / qcow2 backends.
 - Better context management.
@@ -80,6 +97,18 @@ owc run "Add a unit test for main.ts" --cwd . --json --yolo
 - `--json` emits one NDJSON event per line for scripts; `--yolo` auto-approves permission requests (for CI).
 - `--session <id>` continues an existing session; `--tools` / `--exclude-tools` / `--read-only` restrict the tool surface.
 - Exit codes: `0` done, `1` agent error, `2` permission denied.
+
+## Performance and footprint
+
+Measured on a dev machine (Windows x86-64, v1.5.0, 5000-message benchmark dataset; harness and acceptance gates live in [`scripts/bench/`](./scripts/bench/)):
+
+| Component | Memory | CPU (single-core equivalent, 95th percentile of time) | Key numbers |
+| --- | --- | --- | --- |
+| server (Node service) | ~86 MiB idle; ~100 MiB steady-state with a 5000-message session loaded | 0.8% | Large-session cold load 27.5ms, history paging p50 0.53ms; incremental context build p50 0.43ms (26× faster than full builds); event dispatch 5780 events/s; symbol-index queries over 100k files p50 ~30–40ms |
+| core (C executor) | ~9 MiB idle; ~25 MiB peak under heavy scans, released afterwards | under 0.5% | 3.4MB file read in 8ms; full-repo index scan (hundreds of thousands of files) completes in 25s with bounded memory |
+| browser | ~89 MiB heap with a 5000-message session fully loaded | - | Long-list scrolling p50 59.9 fps; input echo p50 27ms; 0.1% memory growth across repeated scroll cycles (no leak) |
+
+Production reference (v1.5.0, Debian 13 x86-64, measured on a systemd-managed always-on instance): server 135 MiB + extension host 52 MiB + core 2.6 MiB, CPU below 0.5% 95% of the time.
 
 ## Documentation
 

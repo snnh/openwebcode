@@ -15,10 +15,24 @@ OpenWebCode 是一个跑在浏览器里的 AI 编码工作台，界面中英双�
 ```
 浏览器 (React)  ──HTTP/WebSocket──►  Node 服务层 (Agent 循环、工具调度)  ──JSON-RPC──►  C 执行器 (命令/文件/沙盒/快照)
 ```
+## 配置要求：
+
+1. 服务端：
+  1. 系统：Windows10+ (win7暂未测试) 和 Linux
+     - Linux 版本：glibc ≥ 2.28 ；内核 ≥ 5.13（Landlock 起步，≥ 6.7 支持禁网），安装 bubblewrap 可获得完整 namespace 隔离。开发与实测环境为 Debian 13 / Ubuntu 24.04
+     - 鸿蒙版本正在开发
+  2. 架构：x86-64 / arm64 / loongarch64（龙芯包不内置 Node.js，需系统 Node.js ≥ 24）
+  3. CPU：双核2.0ghz
+  4. 内存：≥ 512 MiB 空闲
+  5. 硬盘：≥ 500 MiB 可用
+
+2. 客户端：
+  可运行 Chrome / Edge ≥ 111 或 Firefox ≥ 113 浏览器的设备（含手机和平板）
 
 ## 主要功能
 
 - 基础的 AI coding 功能。
+- 对低性能设备友好的资源占用：详见[性能与资源占用](#性能与资源占用)
 - 相对完善的沙盒支持：Windows Job Object/AppContainer/WSB，Linux bubblewrap/Landlock。
 - git 和文件系统级快照：ZFS / Btrfs / overlayfs / VHDX / qcow2 多种后端。
 - 更好的上下文管理。
@@ -80,6 +94,18 @@ owc run "给 main.ts 加个单元测试" --cwd . --json --yolo
 - `--json` 输出 NDJSON 事件流，方便脚本解析；`--yolo` 自动批准权限请求（CI 场景）。
 - `--session <id>` 接着已有会话继续；`--tools` / `--exclude-tools` / `--read-only` 可以限制工具范围。
 - 退出码：`0` 完成，`1` agent 出错，`2` 权限被拒绝。
+
+## 性能与资源占用
+
+开发机实测（Windows x86-64 1.5.0版本，5000 条消息基准数据集；基准脚本与验收门禁在 [`scripts/bench/`](./scripts/bench/)）：
+
+| 组件 | 内存占用 | CPU（折合为单核的95%时间占用） | 关键指标 |
+|---|---|---|---|
+| server（Node 服务层） | 空闲约 86 MiB；载入 5000 消息大会话后稳态约 100 MiB | 0.8% | 大会话冷载 27.5ms、历史分页 p50 0.53ms；上下文增量构建 p50 0.43ms（较全量构建 26× 加速）；事件分发 5780 events/s；10 万文件符号索引查询 p50 约 30–40ms |
+| core（C 执行器） | 空闲约 9 MiB；重负载扫描峰值约 25 MiB，结束即回落 | 低于0.5% | 3.4MB 文件读取 8ms；全仓索引扫描（数十万文件）25s 内完成且内存可控 |
+| 浏览器端 | 5000 消息会话满载堆约 89 MiB | - | 长列表滚动 p50 59.9 fps；输入回显 p50 27ms；持续滚动内存增长 0.1%（无泄漏） |
+
+生产环境参考（v1.5.0，Debian 13 x86-64，systemd 常驻实测）：server 135 MiB + 扩展宿主 52 MiB + core 2.6 MiB，CPU 95%时间占用低于0.5%。
 
 ## 文档
 
