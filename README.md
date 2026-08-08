@@ -18,15 +18,15 @@ OpenWebCode 是一个跑在浏览器里的 AI 编码工作台，界面中英双�
 ## 配置要求：
 
 1. 服务端：
-  1. 系统：Windows10+ (win7暂未测试) 和 Linux
+  - 系统：Windows10+ (win7暂未测试) 和 Linux
      - Linux 版本：glibc ≥ 2.28 ；内核 ≥ 5.13（Landlock 起步，≥ 6.7 支持禁网），安装 bubblewrap 可获得完整 namespace 隔离。开发与实测环境为 Debian 13 / Ubuntu 24.04
      - 鸿蒙版本正在开发
-  2. 架构：x86-64 / arm64 / loongarch64（龙芯包不内置 Node.js，需系统 Node.js ≥ 24）
-  3. CPU：双核2.0ghz
-  4. 内存：≥ 512 MiB 空闲
-  5. 硬盘：≥ 500 MiB 可用
+  - 架构：x86-64 / arm64 / loongarch64（龙芯包不内置 Node.js，需系统 Node.js ≥ 24）
+  - CPU：双核2.0ghz
+  - 内存：≥ 512 MiB 空闲
+  - 硬盘：≥ 500 MiB 可用
 
-2. 客户端：
+3. 客户端：
   可运行 Chrome / Edge ≥ 111 或 Firefox ≥ 113 浏览器的设备（含手机和平板）
 
 ## 主要功能
