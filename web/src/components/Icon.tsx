@@ -245,12 +245,30 @@ const PATHS = {
 
 export type IconName = keyof typeof PATHS;
 
+/**
+ * 图标 sprite：全应用挂载一次（App 根），各 Icon 实例以 <use> 引用符号。
+ * 长会话里同一图标出现数千次，内联 path 会让每个实例都建 SVGPathElement/
+ * SVGAnimatedLength 等原生对象；<use> 实例只保留轻量影子引用，实测显著降内存。
+ */
+export function IconSprite(): ReactElement {
+  return (
+    <svg aria-hidden style={{ position: "absolute", width: 0, height: 0, overflow: "hidden" }}>
+      <defs>
+        {(Object.entries(PATHS) as Array<[IconName, ReactNode]>).map(([name, content]) => (
+          <symbol key={name} id={`owc-i-${name}`} viewBox="0 0 24 24">
+            {content}
+          </symbol>
+        ))}
+      </defs>
+    </svg>
+  );
+}
+
 export function Icon({ name, size = 14 }: { name: IconName; size?: number }): ReactElement {
   return (
     <svg
       width={size}
       height={size}
-      viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
       strokeWidth="1.8"
@@ -258,7 +276,7 @@ export function Icon({ name, size = 14 }: { name: IconName; size?: number }): Re
       strokeLinejoin="round"
       aria-hidden
     >
-      {PATHS[name]}
+      <use href={`#owc-i-${name}`} />
     </svg>
   );
 }
