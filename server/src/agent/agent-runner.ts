@@ -657,7 +657,7 @@ export class AgentRunner {
   private readonly messageQueue: MessageQueue;
   private readonly interactions: InteractionCoordinator;
   /** ask_user 挂起等待：interactionId → waiter；respondInteraction 解析，run abort 经 signal 监听器解析为 cancelled。 */
-  private readonly interactionWaiters = new Map<string, { resolve: (answer: unknown) => void; signal: AbortSignal; abort: () => void }>();
+  private readonly interactionWaiters = new Map<string, { sessionId: string; resolve: (answer: unknown) => void; signal: AbortSignal; abort: () => void }>();
   private readonly repeatedCalls = new Map<string, { signature: string; count: number }>();
   private readonly mcpWarningSignatures = new Map<string, string>();
   /** 可编辑提示词覆盖：按 cwd 缓存一次，避免每轮 IO；首次构建时读取。 */
@@ -1617,6 +1617,9 @@ export class AgentRunner {
     // 手动子代理独立于主 run：无论主循环是否在跑都一并取消；其挂起的权限请求同样解除
     for (const sub of this.manualSubagentControllers.get(sessionId) ?? []) sub.abort();
     this.permissions.cancelSession(sessionId);
+    // ask_user 挂起等待：与权限挂起同样主动解除，避免 signal 事件注册竞态导致永久挂起
+    // （controller.abort() 触发 signal abort 事件，但 listener 可能在事件之后才注册而漏掉）。
+    this.cancelInteractionWaiters(sessionId);
     // 前台 `!cmd`（runShell）不进 running Map，其 controller 同样要响应停止
     const shell = this.shells.get(sessionId);
     shell?.abort();
@@ -2194,9 +2197,27 @@ export class AgentRunner {
         this.interactionWaiters.delete(interactionId);
         resolve({ cancelled: true });
       };
-      this.interactionWaiters.set(interactionId, { resolve: (answer) => resolve({ cancelled: false, answer }), signal, abort });
+      this.interactionWaiters.set(interactionId, { sessionId, resolve: (answer) => resolve({ cancelled: false, answer }), signal, abort });
       signal.addEventListener("abort", abort, { once: true });
+      // 注册后复检：abort 可能在上面 signal.aborted 检查与本注册之间触发，
+      // AbortSignal 事件已错过且不会再发，不复检则 waiter 永久挂起。
+      // abort() 路径另由 cancelInteractionWaiters 主动解除兜底。
+      if (signal.aborted) abort();
     });
+  }
+
+  /**
+   * 主动解除会话所有挂起的 ask_user 交互等待，解析为 { cancelled: true }。
+   * abort() 调用，与 permissions.cancelSession 同义：不依赖 signal 事件
+   * （事件注册竞态下 listener 可能漏掉已发事件导致永久挂起）。
+   */
+  private cancelInteractionWaiters(sessionId: string): void {
+    for (const [id, waiter] of this.interactionWaiters) {
+      if (waiter.sessionId !== sessionId) continue;
+      this.interactionWaiters.delete(id);
+      waiter.signal.removeEventListener("abort", waiter.abort);
+      waiter.abort();
+    }
   }
 
   /**
