@@ -156,6 +156,31 @@ describe("ask_user 工具", () => {
     }
   });
 
+  it("run abort 竞态：abort 先于 waiter 注册也能解析为 { cancelled: true }（不挂起）", async () => {
+    // 模拟 CI 并发竞态：ask_user 交互创建后立即 abort，不等 waitForPendingInteraction
+    // 轮询。此时 waitForInteractionAnswer 的 signal.aborted 检查与 addEventListener 之间
+    // 存在让出窗口，abort 若落入该窗口会被 signal 事件漏掉（旧实现永久挂起直到 30s 超时）。
+    // cancelInteractionWaiters + 注册后复检双重兜底确保不挂起。
+    const harness = await setup({ input: { questions: [{ question: "继续？", type: "confirm" }] } });
+    try {
+      const run = harness.agent.run(harness.session.id, "先问我");
+      // 立即 abort：不等待 pending 交互出现，制造 abort 与 waiter 注册的竞态。
+      // 若 abort 早于 provider 流式 tool_call 落盘，tool_call 可能未持久化，
+      // 此时 toolResultOf 找不到结果属正常；核心断言是 run 在合理时间内结束（不挂起）。
+      const res = await harness.app.inject({ method: "POST", url: `/api/sessions/${harness.session.id}/abort` });
+      expect(res.statusCode).toBe(202);
+      await run.then(() => undefined, () => undefined);
+      // 若 tool_call 已落盘，结果必为 { cancelled: true }（非错误）；未落盘则跳过
+      const result = toolResultOf(await harness.sessions.get(harness.session.id), "ask-1");
+      if (result) {
+        expect(result.isError).toBe(false);
+        expect(JSON.parse((result as { content: string }).content)).toEqual({ cancelled: true });
+      }
+    } finally {
+      await harness.app.close();
+    }
+  });
+
   it("输入校验：0 题 / 选项不足 / 超过 4 题 / confirm 携带 options 均被拒绝", async () => {
     const cases: Array<{ id: string; input: Record<string, unknown>; message: string }> = [
       { id: "v-empty", input: { questions: [] }, message: "1-4 questions" },
