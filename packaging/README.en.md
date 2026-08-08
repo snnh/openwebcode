@@ -18,7 +18,7 @@ Pushing a `v*` tag (or dispatching the `release` workflow manually with a tag in
 | `SHA256SUMS.txt` | All | SHA-256 checksums for the four archives |
 | `bench-results-*.json` | All | Benchmark results, used as the regression baseline for the next release |
 
-`<version>` is the tag without its leading `v` (`v1.4.0` → `1.4.0`). For a prerelease tag (e.g. `v1.4.0-beta.1`) the artifact names carry the full version, and the GitHub Release is automatically marked as a pre-release.
+`<version>` is the tag without its leading `v` (`v1.5.0` → `1.5.0`). For a prerelease tag (e.g. `v1.5.0-beta.1`) the artifact names carry the full version, and the GitHub Release is automatically marked as a pre-release.
 
 ## Package layout
 
@@ -43,7 +43,7 @@ The bundled Node version is pinned by `env.NODE_DIST_VERSION` in release.yml (cu
 ## Version numbers
 
 - `server/package.json`'s `version` holds the full version (`web/package.json` follows in lockstep).
-- `core/CMakeLists.txt`'s `project(VERSION)` holds only the numeric base version (`1.4.0-beta.1` stores `1.4.0`). It generates `version.h` via `configure_file` and is reported by `core.ping` — the single version source on the core side.
+- `core/CMakeLists.txt`'s `project(VERSION)` holds only the numeric base version (`1.5.0-beta.1` stores `1.5.0`). It generates `version.h` via `configure_file` and is reported by `core.ping` — the single version source on the core side.
 - Both platform jobs of release.yml verify consistency in their first step: the tag without `v` must equal the server and web `version`, and its numeric base must equal the CMake `project(VERSION)`; any mismatch fails immediately. The check runs for both tag pushes and manual dispatches.
 - When invoking CPack: `-DCPACK_PACKAGE_VERSION=<numeric base>` (MSI ProductVersion only accepts numbers) and `-DCPACK_FULL_VERSION=<full version>` (used only for artifact file names). For a stable release the two values are identical.
 
@@ -63,7 +63,7 @@ All commands below run from the repository root.
 
 ```powershell
 $ErrorActionPreference = "Stop"
-$Version = "1.4.0"          # full version; prerelease e.g. 1.4.0-beta.1
+$Version = "1.5.0"          # full version; prerelease e.g. 1.5.0-beta.1
 $BaseVersion = ($Version -split "-")[0]
 $NodeVersion = "24.18.0"    # keep in sync with NODE_DIST_VERSION in release.yml
 
@@ -149,7 +149,7 @@ The MSI lands in the repository root. `verify-wix-options.ps1` reads the MSI dat
 
 ### Installation and the options page
 
-- Double-click to install; the default location is `C:\Program Files\openwebcode` (administrator rights required). The UpgradeCode is fixed, so upgrades install over the old version. Exception: a beta and its stable release share the same numeric ProductVersion (e.g. `1.4.0`), so installing beta↔stable directly may report "another version is already installed" — uninstall first. This is a known WiX limitation.
+- Double-click to install; the default location is `C:\Program Files\openwebcode` (administrator rights required). The UpgradeCode is fixed, so upgrades install over the old version. Exception: a beta and its stable release share the same numeric ProductVersion (e.g. `1.5.0`), so installing beta↔stable directly may report "another version is already installed" — uninstall first. This is a known WiX limitation.
 - A Start menu **OpenWebCode** shortcut (pointing at `bin\owc.cmd`) is always created.
 - After the install-directory page comes the **Shell integration** page with two checkboxes, both selected by default: create a desktop shortcut, and add `<install-dir>\bin` to the `PATH` of **the user running the installer**. The choices are written to the registry (`HKCU\Software\OpenWebCode\Installer`) and retained across repairs and major upgrades. With PATH unchecked you can still run `bin\owc.cmd` from the install directory.
 - The exit page has a "Launch OpenWebCode" checkbox, selected by default, which runs `bin\owc-launch.cmd`: it starts the server in a minimized window and opens `http://localhost:<port>` in the default browser after 3 seconds.
@@ -174,7 +174,7 @@ Same test gate and production-only pruning as Windows; the differences are a sin
 
 ```sh
 set -euo pipefail
-VERSION=1.4.0              # full version; prerelease e.g. 1.4.0-beta.1
+VERSION=1.5.0              # full version; prerelease e.g. 1.5.0-beta.1
 BASE_VERSION=${VERSION%%-*}
 NODE_VERSION=24.18.0
 
@@ -289,7 +289,7 @@ A `curl | bash` script (POSIX sh) that installs or upgrades in one command:
 curl -fsSL https://raw.githubusercontent.com/snnh/openwebcode/main/packaging/install-online.sh | bash
 # Pin a version and prefix, skip interaction:
 curl -fsSL https://raw.githubusercontent.com/snnh/openwebcode/main/packaging/install-online.sh \
-  | bash -s -- --version 1.4.0 --prefix /opt/openwebcode --yes
+  | bash -s -- --version 1.5.0 --prefix /opt/openwebcode --yes
 ```
 
 Flow: check dependencies (curl or wget, tar, sha256sum or shasum — no jq) → download `openwebcode-<version>-linux-<arch>.tar.gz` and `SHA256SUMS.txt` into a `mktemp -d` working directory → verify with `sha256sum --check` on the target line only (falls back to `shasum -a 256`), aborting on mismatch → extract → pick one of two modes based on whether `<prefix>/lib/openwebcode/server/dist/index.js` already exists. The working directory is cleaned up on exit.
@@ -352,8 +352,8 @@ Server modules load at process start, so `build\stage\bin\owc.cmd` must be resta
 Push the reviewed commits first, confirm `CHANGELOG.md` has the matching section and all four version numbers agree, then:
 
 ```sh
-git tag -a v1.4.0 -m "OpenWebCode v1.4.0"
-git push origin v1.4.0
+git tag -a v1.5.0 -m "OpenWebCode v1.5.0"
+git push origin v1.5.0
 ```
 
-You can also run `release` manually in Actions with `v1.4.0` as the tag. After the release, verify the file names and `SHA256SUMS.txt` on the Release page, MSI install/uninstall, tarball installation, and `/api/health`.
+You can also run `release` manually in Actions with `v1.5.0` as the tag. After the release, verify the file names and `SHA256SUMS.txt` on the Release page, MSI install/uninstall, tarball installation, and `/api/health`.
