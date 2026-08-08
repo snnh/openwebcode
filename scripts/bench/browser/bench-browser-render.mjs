@@ -93,19 +93,20 @@ const response = await page.goto(`${serverBase}/`, { waitUntil: "networkidle" })
 if (!response?.ok()) throw new Error(`Web 页面加载失败：HTTP ${response?.status() ?? "unknown"}`);
 await page.locator(".session-link").first().click();
 await page.locator("#composer-input").waitFor({ state: "visible" });
-await page.locator(".execution-track").waitFor({ state: "visible" });
+await page.locator(".chat-track").waitFor({ state: "visible" });
 
+// 新 UI 的分页由顶部哨兵经 IntersectionObserver 自动触发（IO 环境不再渲染「加载更早」按钮）：
+// 反复滚到顶部逼哨兵入视，直到哨兵消失（hasMore 耗尽）。必须在采样前载完——
+// 否则滚动测量本身触发分页挂载，会把「历史加载的正当驻留」误算成「滚动泄漏」。
 let pageLoads = 0;
-while (await page.locator(".load-more-btn").count()) {
-  const button = page.locator(".load-more-btn").first();
-  if (await button.isDisabled()) {
-    await page.waitForTimeout(50);
-    continue;
-  }
-  await button.click();
+while ((await page.locator(".chat-top-sentinel").count()) > 0) {
+  await page.evaluate(() => {
+    const track = document.querySelector(".chat-track");
+    if (track) track.scrollTop = 0;
+  });
+  await page.waitForTimeout(150);
   pageLoads++;
-  if (pageLoads > 60) throw new Error("历史分页超过 60 次，疑似未收敛");
-  await page.waitForTimeout(20);
+  if (pageLoads > 80) throw new Error("历史分页超过 80 次，疑似未收敛");
 }
 console.log(`真实 Web 已就绪：历史分页加载 ${pageLoads} 次`);
 
@@ -113,9 +114,9 @@ console.log(`真实 Web 已就绪：历史分页加载 ${pageLoads} 次`);
 console.log("测量滚动帧率…");
 const fpsSamples = await page.evaluate(async (opts) => {
   const { scrollRounds } = opts;
-  const container = document.querySelector(".execution-track");
-  if (!(container instanceof HTMLElement)) throw new Error("找不到 execution-track");
-  if (container.scrollHeight <= container.clientHeight) throw new Error("execution-track 没有可滚动内容");
+  const container = document.querySelector(".chat-track");
+  if (!(container instanceof HTMLElement)) throw new Error("找不到 chat-track");
+  if (container.scrollHeight <= container.clientHeight) throw new Error("chat-track 没有可滚动内容");
   const intervals = [];
   let lastTs = 0;
   let rafCount = 0;
@@ -173,8 +174,8 @@ console.log("测量内存增长…");
 const memBefore = await measureSettledHeap();
 // 加速滚动模拟长时间使用
 await page.evaluate(async (rounds) => {
-  const container = document.querySelector(".execution-track");
-  if (!(container instanceof HTMLElement)) throw new Error("找不到 execution-track");
+  const container = document.querySelector(".chat-track");
+  if (!(container instanceof HTMLElement)) throw new Error("找不到 chat-track");
   const scrollHeight = container.scrollHeight || document.body.scrollHeight;
   for (let i = 0; i < rounds; i++) {
     const target = i % 2 === 0 ? scrollHeight : 0;
