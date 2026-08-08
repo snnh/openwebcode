@@ -37,6 +37,7 @@ import { CommandPalette } from "../dialogs/CommandPalette";
 import { EmptyState } from "../components/EmptyState";
 import { NewSessionDialog, type NewSessionValues } from "../components/NewSessionDialog";
 import { ConfirmDeleteDialog } from "../components/ConfirmDeleteDialog";
+import { IconSprite } from "../components/Icon";
 import { Toast } from "../components/Toast";
 
 // 辅助视图各自独立 chunk，仅打开时加载，不占入口体积
@@ -369,6 +370,7 @@ export function App(): ReactElement {
 
   return (
     <>
+      <IconSprite />
       <Workbench sessions={sessions.data} agentState={currentState} main={main} />
       <NewSessionDialog
         open={newSessionOpen}
