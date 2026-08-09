@@ -1070,11 +1070,11 @@ export class AgentRunner {
         }
         // 增量构建的 token 估算与 estimateMessageTokens 同规则；等价性由 server 测试断言。
         const estimatedTokens = view.stats.totalTokens;
-        const workingBudget = Math.max(1, profile.contextWindow - profile.maxOutput);
+        const workingBudget = Math.max(1, profile.contextWindow);
         const utilization = estimatedTokens / workingBudget;
         // pin 占用如实上报：超预算时给明确警告，不悄悄驱逐 pin 的消息。
         const pinWarning = view.stats.pinnedTokens >= workingBudget ? "pins_over_budget" : undefined;
-        this.events.publish({ source: "agent", type: "context.watermark", sessionId, payload: { estimatedTokens, contextWindow: profile.contextWindow, maxOutput: profile.maxOutput, workingBudget, utilization, warning: utilization >= 0.85 ? "force_compact" : utilization >= 0.7 ? "compact_recommended" : undefined, segments: view.stats.segments, pinnedTokens: view.stats.pinnedTokens, buildMs: view.stats.buildMs, incremental: view.stats.incremental, ...(pinWarning ? { pinWarning } : {}) } });
+        this.events.publish({ source: "agent", type: "context.watermark", sessionId, payload: { estimatedTokens, contextWindow: profile.contextWindow, workingBudget, utilization, warning: utilization >= 0.85 ? "force_compact" : utilization >= 0.7 ? "compact_recommended" : undefined, segments: view.stats.segments, pinnedTokens: view.stats.pinnedTokens, buildMs: view.stats.buildMs, incremental: view.stats.incremental, ...(pinWarning ? { pinWarning } : {}) } });
         // 85% 水位强制概览压缩：压缩成功后重建视图（消耗一个 turn 防止死循环）
         if (utilization >= 0.85 && this.compactor && !forceCompacted) {
           forceCompacted = true;

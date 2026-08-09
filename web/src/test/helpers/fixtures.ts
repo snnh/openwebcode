@@ -23,7 +23,6 @@ export function makeModelProfile(overrides: Partial<ModelProfile> = {}): ModelPr
     provider: "anthropic",
     displayName: "Claude Opus 4.8",
     contextWindow: 128_000,
-    maxOutput: 8_000,
     capabilities: { thinking: ["adaptive", "disabled"], effort: ["low", "high"], modalities: ["text"], imageOutput: false, tools: true },
     ...overrides,
   };

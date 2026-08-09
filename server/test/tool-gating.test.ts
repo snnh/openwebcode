@@ -16,7 +16,6 @@ const noToolsProfile: ModelProfile = {
   id: "no-tools-model",
   provider: "test",
   contextWindow: 32_000,
-  maxOutput: 4_000,
   capabilities: {
     modalities: ["text"],
     imageOutput: false,

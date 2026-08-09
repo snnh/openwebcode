@@ -229,7 +229,7 @@ describe("85% watermark forced compaction", () => {
     events.on("event", (event: AppEvent) => published.push(event));
     const core = { on() { return core; }, async configureSession() { return { sandboxCapability: "advisory" }; } } as unknown as CoreClient;
     const compactor = new Compactor(sessions, makeFakeFastModel("概览：\n- 早段已压缩\n", []), {}, 2);
-    const tinyWindow = () => ({ contextWindow: 100, maxOutput: 10, capabilities: { thinking: ["disabled"], effort: [] } }) as never;
+    const tinyWindow = () => ({ contextWindow: 100, capabilities: { thinking: ["disabled"], effort: [] } }) as never;
     const runner = new AgentRunner(sessions, providers, core, events, pricing, undefined, "zh-CN", 50, tinyWindow, undefined, undefined, undefined, compactor);
     const session = await sessions.create({ cwd: root, provider: "anthropic", model: "tiny" });
     await sessions.appendMessage(session.id, "user", [{ type: "text", text: "很早的消息，".repeat(30) }]);

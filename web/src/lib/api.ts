@@ -183,7 +183,7 @@ export const api = {
   modelSyncStatus: () => request<CatalogSyncStatus>("/api/models/sync-status"),
   refreshModels: () => request<{ added: number; total: number; errors: string[] }>("/api/models/refresh", { method: "POST" }),
   syncModels: () => request<SyncResult>("/api/models/sync", { method: "POST" }),
-  saveModel: (id: string, body: { provider?: string; originalProvider?: string; displayName?: string; contextWindow?: number; maxOutput?: number; capabilities?: ModelProfile["capabilities"] }) =>
+  saveModel: (id: string, body: { provider?: string; originalProvider?: string; displayName?: string; contextWindow?: number; capabilities?: ModelProfile["capabilities"] }) =>
     request<ModelProfile>(`/api/models/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteModel: (id: string, provider?: string) => request<void>(`/api/models/${encodeURIComponent(id)}${provider ? `?provider=${encodeURIComponent(provider)}` : ""}`, { method: "DELETE" }),
   modelPricing: () => request<PricingDocument>("/api/model-pricing"),

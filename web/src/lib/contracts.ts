@@ -411,7 +411,6 @@ export interface ContextBuildStats {
 export interface ContextWatermark {
   estimatedTokens: number;
   contextWindow: number;
-  maxOutput: number;
   workingBudget: number;
   utilization: number;
   warning?: "force_compact" | "compact_recommended";
@@ -512,7 +511,6 @@ export interface ModelProfile {
   displayName?: string;
   source?: "builtin" | "api" | "synced" | "manual";
   contextWindow: number;
-  maxOutput: number;
   capabilities: ModelCapabilities;
   pricing?: { currency: string; input: string; output: string; cacheRead: string; cacheWrite: string };
 }

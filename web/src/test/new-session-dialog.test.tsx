@@ -68,7 +68,7 @@ describe("NewSessionDialog 工作区模式", () => {
 });
 
 describe("NewSessionDialog Bind Link", () => {
-  const model = { id: "m", provider: "test-stub", contextWindow: 1000, maxOutput: 100, capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true } } as ModelProfile;
+  const model = { id: "m", provider: "test-stub", contextWindow: 1000, capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true } } as ModelProfile;
 
   it("添加绑定并随创建提交 bindLinks（未填完整的行被忽略）", async () => {
     stubFetch({ available: true }, { available: true });
@@ -144,7 +144,7 @@ describe("NewSessionDialog provider 引导", () => {
 
   it("已选服务商从列表移除时切换到新的可用模型记录", async () => {
     stubFetch({ available: true });
-    const anthropic = { id: "claude", provider: "anthropic", contextWindow: 1000, maxOutput: 100, capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true } } as ModelProfile;
+    const anthropic = { id: "claude", provider: "anthropic", contextWindow: 1000, capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true } } as ModelProfile;
     const openai = { ...anthropic, id: "gpt", provider: "openai" };
     const client = makeTestClient();
     const { rerender } = renderWithClient(
@@ -169,7 +169,6 @@ describe("NewSessionDialog provider 引导", () => {
         displayName: "Multimodal",
         provider: "test-stub",
         contextWindow: 128_000,
-        maxOutput: 16_384,
         capabilities: { thinking: [], effort: [], modalities: ["text", "image", "video"], imageOutput: true, tools: true },
       },
       {
@@ -177,7 +176,6 @@ describe("NewSessionDialog provider 引导", () => {
         displayName: "Text only",
         provider: "test-stub",
         contextWindow: 128_000,
-        maxOutput: 16_384,
         capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true },
       },
     ];
@@ -195,7 +193,7 @@ describe("NewSessionDialog provider 引导", () => {
 });
 
 describe("NewSessionDialog 工具限制", () => {
-  const model = { id: "m", provider: "test-stub", contextWindow: 1000, maxOutput: 100, capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true } } as ModelProfile;
+  const model = { id: "m", provider: "test-stub", contextWindow: 1000, capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true } } as ModelProfile;
 
   it("填写白名单/黑名单后随创建提交 toolsAllow/toolsDeny（逗号分隔、逐项 trim、空项丢弃）", async () => {
     stubFetch({ available: true });
@@ -224,7 +222,7 @@ describe("NewSessionDialog 工具限制", () => {
 });
 
 describe("NewSessionDialog 备选模型", () => {
-  const primary = { id: "m1", provider: "test-stub", contextWindow: 1000, maxOutput: 100, capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true } } as ModelProfile;
+  const primary = { id: "m1", provider: "test-stub", contextWindow: 1000, capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true } } as ModelProfile;
   const backup = { ...primary, id: "m2" };
 
   it("添加备选行（默认取第一个非主模型，选项不含主模型）并随创建提交 fallbackModels", async () => {
@@ -274,7 +272,7 @@ describe("NewSessionDialog 备选模型", () => {
 });
 
 describe("NewSessionDialog 平台适配", () => {
-  const model = { id: "m", provider: "test-stub", contextWindow: 1000, maxOutput: 100, capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true } } as ModelProfile;
+  const model = { id: "m", provider: "test-stub", contextWindow: 1000, capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true } } as ModelProfile;
 
   function sandboxSelect(): HTMLElement {
     const label = screen.getByText("沙盒模式");
@@ -310,7 +308,7 @@ describe("NewSessionDialog 平台适配", () => {
 });
 
 describe("NewSessionDialog 网络策略", () => {
-  const model = { id: "m", provider: "test-stub", contextWindow: 1000, maxOutput: 100, capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true } } as ModelProfile;
+  const model = { id: "m", provider: "test-stub", contextWindow: 1000, capabilities: { thinking: [], effort: [], modalities: ["text"], imageOutput: false, tools: true } } as ModelProfile;
 
   function networkSelect(): HTMLElement {
     const label = screen.getByText("网络");
