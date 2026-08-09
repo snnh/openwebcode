@@ -55,7 +55,7 @@ async function attach(view: ReturnType<typeof render>, files: File[], expectedCo
 }
 
 async function send(view: ReturnType<typeof render>, text = "看图"): Promise<void> {
-  fireEvent.change(view.getByPlaceholderText("输入消息…"), { target: { value: text } });
+  fireEvent.change(view.getByPlaceholderText("有问题，随便问"), { target: { value: text } });
   fireEvent.click(view.getByRole("button", { name: "发送" }));
 }
 

@@ -404,16 +404,17 @@ export function App(): ReactElement {
   return (
     <>
       <IconSprite />
-      <Workbench sessions={sessions.data} agentState={currentState} main={main} />
-      {/* 模式切换入口：仅聊天模式启用时显示 */}
-      {chatModeEnabled && (
-        <button className="btn small mode-toggle" onClick={() => {
-          ui.setMode("chat");
-          router.navigate("/");
-        }}>
-          {t("聊天", "Chat")}
-        </button>
-      )}
+      <Workbench
+        sessions={sessions.data}
+        agentState={currentState}
+        onShowChat={chatModeEnabled
+          ? () => {
+              ui.setMode("chat");
+              router.navigate("/");
+            }
+          : undefined}
+        main={main}
+      />
       <NewSessionDialog
         open={newSessionOpen}
         providers={providers.data ?? []}

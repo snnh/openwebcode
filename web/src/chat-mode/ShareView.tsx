@@ -3,8 +3,8 @@
 // verify 按 IP 连续 5 次失败锁 60 秒，锁定期间 429（error 文本含剩余秒数）。
 import { useCallback, useEffect, useState, type ReactElement } from "react";
 import { useI18n } from "../i18n";
-import { Markdown } from "../components/Markdown";
-import type { ChatMessage, MessageContent } from "./types";
+import { ChatBlocks } from "./ChatBlocks";
+import type { ChatMessage } from "./types";
 
 export function ShareView({ shareId }: { shareId: string; slug: string }): ReactElement {
   const { t } = useI18n();
@@ -126,7 +126,13 @@ export function ShareView({ shareId }: { shareId: string; slug: string }): React
       <div className="share-messages">
         {messages.map((msg) => (
           <div key={msg.id} className={`chat-message ${msg.role}`}>
-            {msg.content.map((block, index) => renderBlock(block, index, shareId, shareToken))}
+            <div className="chat-bubble">
+              <ChatBlocks
+                content={msg.content}
+                resolveImageRef={(ref) =>
+                  `/api/share/${shareId}/images/${ref}${shareToken ? `?token=${encodeURIComponent(shareToken)}` : ""}`}
+              />
+            </div>
           </div>
         ))}
       </div>
@@ -135,36 +141,4 @@ export function ShareView({ shareId }: { shareId: string; slug: string }): React
       </footer>
     </div>
   );
-}
-
-function renderBlock(block: MessageContent, index: number, shareId: string, token?: string): ReactElement | null {
-  if (block.type === "text") {
-    return <Markdown key={index}>{block.text ?? ""}</Markdown>;
-  }
-  if (block.type === "image") {
-    // 内联块用 data: URI；ref 块经分享面 images 路由取字节（带口令分享需透传 token）
-    const src = block.data
-      ? `data:${block.mediaType ?? "image/png"};base64,${block.data}`
-      : block.ref
-        ? `/api/share/${shareId}/images/${block.ref}${token ? `?token=${encodeURIComponent(token)}` : ""}`
-        : undefined;
-    if (!src) return null;
-    return <img key={index} src={src} alt="" className="chat-block-image" />;
-  }
-  if (block.type === "tool_call") {
-    return (
-      <div key={index} className="chat-tool-result">
-        <span className="pill">{block.name ?? "tool"}</span>
-      </div>
-    );
-  }
-  if (block.type === "tool_result") {
-    const content = typeof block.content === "string" ? block.content : JSON.stringify(block.content);
-    return (
-      <div key={index} className="chat-tool-result">
-        <pre>{content}</pre>
-      </div>
-    );
-  }
-  return null;
 }
