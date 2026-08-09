@@ -28,7 +28,6 @@ describe("default session provider", () => {
         provider: "anthropic",
         source: "manual",
         contextWindow: metadata.contextWindow,
-        maxOutput: metadata.maxOutput,
         capabilities: metadata.capabilities,
       });
       setup.providers.register(makeStubProvider("anthropic"));
@@ -101,7 +100,6 @@ describe("settings defaultModel for new sessions", () => {
           provider: "anthropic",
           source: "manual",
           contextWindow: metadata.contextWindow,
-          maxOutput: metadata.maxOutput,
           capabilities: metadata.capabilities,
         });
       }
@@ -127,7 +125,6 @@ describe("settings defaultModel for new sessions", () => {
           provider: "anthropic",
           source: "manual",
           contextWindow: metadata.contextWindow,
-          maxOutput: metadata.maxOutput,
           capabilities: metadata.capabilities,
         });
         setup.providers.register(makeStubProvider("anthropic"));
@@ -149,7 +146,6 @@ describe("settings defaultModel for new sessions", () => {
         provider: "anthropic",
         source: "manual",
         contextWindow: metadata.contextWindow,
-        maxOutput: metadata.maxOutput,
         capabilities: metadata.capabilities,
       });
       setup.providers.register(makeStubProvider("anthropic"));

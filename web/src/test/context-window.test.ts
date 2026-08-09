@@ -6,7 +6,6 @@ const model: ModelProfile = {
   id: "test-model",
   provider: "test",
   contextWindow: 128_000,
-  maxOutput: 8_000,
   capabilities: { thinking: ["disabled"], effort: ["low"], modalities: ["text"], imageOutput: false, tools: true },
 };
 
@@ -21,7 +20,6 @@ const stats: ContextBuildStats = {
 const watermark: ContextWatermark = {
   estimatedTokens: 45_000,
   contextWindow: 128_000,
-  maxOutput: 8_000,
   workingBudget: 120_000,
   utilization: 0.375,
   segments: stats.segments,
@@ -38,12 +36,12 @@ describe("deriveWindowInfo", () => {
     expect(info?.utilization).toBeCloseTo(0.375);
   });
 
-  it("无水位时由 REST stats + 模型档案播种（workingBudget = 窗口 − 最大输出）", () => {
+  it("无水位时由 REST stats + 模型档案播种（workingBudget = 上下文窗口）", () => {
     const info = deriveWindowInfo(undefined, stats, model);
     expect(info?.estimatedTokens).toBe(48_000);
     expect(info?.contextWindow).toBe(128_000);
-    expect(info?.workingBudget).toBe(120_000);
-    expect(info?.utilization).toBeCloseTo(0.4);
+    expect(info?.workingBudget).toBe(128_000);
+    expect(info?.utilization).toBeCloseTo(0.375);
     expect(info?.pinnedTokens).toBe(500);
   });
 

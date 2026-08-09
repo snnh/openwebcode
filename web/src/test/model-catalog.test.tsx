@@ -11,7 +11,6 @@ const multimodalModel: ModelProfile = {
   displayName: "Multimodal model",
   source: "manual",
   contextWindow: 128_000,
-  maxOutput: 16_384,
   capabilities: {
     thinking: ["adaptive"],
     effort: ["medium"],

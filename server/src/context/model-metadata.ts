@@ -2,7 +2,6 @@ import type { ModelCapabilities } from "./model-profile.js";
 
 export interface ModelMetadata {
   contextWindow: number;
-  maxOutput: number;
   capabilities: ModelCapabilities;
 }
 
@@ -23,26 +22,25 @@ const caps = (overrides: Partial<ModelCapabilities> = {}): ModelCapabilities => 
 const EXACT: Record<string, ModelMetadata> = {};
 
 const PREFIXES: Array<[string, ModelMetadata]> = [
-  ["claude", { contextWindow: 256_000, maxOutput: 16_000, capabilities: caps({ reasoningContent: false }) }],
-  ["gpt-4.1", { contextWindow: 1_000_000, maxOutput: 32_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false }) }],
-  ["gpt-4o", { contextWindow: 128_000, maxOutput: 16_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false }) }],
-  ["gpt-4", { contextWindow: 128_000, maxOutput: 8_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false }) }],
-  ["gpt-5", { contextWindow: 400_000, maxOutput: 128_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false, effort: ["low", "medium", "high"] }) }],
-  ["o1", { contextWindow: 200_000, maxOutput: 100_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false, effort: ["low", "medium", "high"] }) }],
-  ["o3", { contextWindow: 200_000, maxOutput: 100_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false, effort: ["low", "medium", "high"] }) }],
-  ["o4", { contextWindow: 200_000, maxOutput: 100_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false, effort: ["low", "medium", "high"] }) }],
+  ["claude", { contextWindow: 256_000, capabilities: caps({ reasoningContent: false }) }],
+  ["gpt-4.1", { contextWindow: 1_000_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false }) }],
+  ["gpt-4o", { contextWindow: 128_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false }) }],
+  ["gpt-4", { contextWindow: 128_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false }) }],
+  ["gpt-5", { contextWindow: 400_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false, effort: ["low", "medium", "high"] }) }],
+  ["o1", { contextWindow: 200_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false, effort: ["low", "medium", "high"] }) }],
+  ["o3", { contextWindow: 200_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false, effort: ["low", "medium", "high"] }) }],
+  ["o4", { contextWindow: 200_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false, effort: ["low", "medium", "high"] }) }],
   // deepseek 官方文档（api-docs.deepseek.com）：deepseek-chat / deepseek-reasoner 上下文均为 128K，
   // 旧值 1M 与实际不符，会把 85% 压缩水位推过真实窗口
-  ["deepseek-reasoner", { contextWindow: 128_000, maxOutput: 8_000, capabilities: caps({ thinking: ["enabled", "disabled"] }) }],
-  ["deepseek", { contextWindow: 128_000, maxOutput: 8_000, capabilities: caps() }],
-  ["qwen", { contextWindow: 128_000, maxOutput: 8_000, capabilities: caps({ modalities: ["text", "image"] }) }],
+  ["deepseek-reasoner", { contextWindow: 128_000, capabilities: caps({ thinking: ["enabled", "disabled"] }) }],
+  ["deepseek", { contextWindow: 128_000, capabilities: caps() }],
+  ["qwen", { contextWindow: 128_000, capabilities: caps({ modalities: ["text", "image"] }) }],
 ];
 
 export const FALLBACK_METADATA: ModelMetadata = {
   // 未知模型的保守兜底：128K 是当前主流中端窗口；旧值 256K 过于乐观，
   // 会让小窗口模型在真实上限前不触发压缩（宁早压缩不丢上下文）
   contextWindow: 128_000,
-  maxOutput: 16_000,
   capabilities: caps(),
 };
 

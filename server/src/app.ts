@@ -1168,10 +1168,9 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
         && value.effort.every((item) => EFFORT_LEVELS.includes(item as EffortLevel));
       if (!inRange) return reply.code(400).send({ error: "capabilities values out of range (modalities: text/image/video; thinking: adaptive/enabled/disabled; effort: low/medium/high/xhigh/max/ultra)" });
     }
-    for (const key of ["contextWindow", "maxOutput"] as const) {
-      if (body[key] !== undefined && (!Number.isSafeInteger(body[key]) || (body[key] as number) < 1)) {
-        return reply.code(400).send({ error: `${key} must be a positive integer` });
-      }
+    // maxOutput 已废弃：请求体携带该键时静默忽略（不 400、不透传）。
+    if (body.contextWindow !== undefined && (!Number.isSafeInteger(body.contextWindow) || body.contextWindow < 1)) {
+      return reply.code(400).send({ error: "contextWindow must be a positive integer" });
     }
     // 已知模型沿用现有档案为底，未知模型经元数据库成档（保守默认）
     const originalProvider = typeof body.originalProvider === "string" ? body.originalProvider : undefined;
@@ -1193,7 +1192,6 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       provider: "manual",
       source: "api",
       contextWindow: metadata.contextWindow,
-      maxOutput: metadata.maxOutput,
       capabilities: metadata.capabilities,
     };
     const displayName = body.displayName ?? base.displayName;
@@ -1203,7 +1201,6 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       source: "manual",
       ...(displayName ? { displayName } : {}),
       contextWindow: body.contextWindow ?? base.contextWindow,
-      maxOutput: body.maxOutput ?? base.maxOutput,
       capabilities: body.capabilities ?? base.capabilities,
     };
     if (known?.source === "manual" && known.provider !== model.provider) await models.removeManual(id, known.provider);

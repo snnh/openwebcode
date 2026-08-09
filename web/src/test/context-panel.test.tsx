@@ -45,7 +45,6 @@ function renderPanel(): void {
 function setWatermark(info: { estimatedTokens: number; contextWindow: number; workingBudget: number; utilization: number; segments: ContextWatermark["segments"]; pinnedTokens: number; warning?: ContextWatermark["warning"] }): void {
   sessionMeta.setWatermark(session.id, {
     ...info,
-    maxOutput: info.contextWindow - info.workingBudget,
     buildMs: 1,
     incremental: true,
   });
@@ -149,13 +148,13 @@ describe("ContextPanel 上下文窗口", () => {
   it("无实时水位时由 REST stats + 模型档案播种", async () => {
     vi.spyOn(api, "context").mockResolvedValue(contextView({ pins: [], excludes: [] }));
     const models: ModelProfile[] = [
-      { id: "test-model", provider: "test", contextWindow: 128_000, maxOutput: 8_000, capabilities: { thinking: ["disabled"], effort: ["low"], modalities: ["text"], imageOutput: false, tools: true } },
+      { id: "test-model", provider: "test", contextWindow: 128_000, capabilities: { thinking: ["disabled"], effort: ["low"], modalities: ["text"], imageOutput: false, tools: true } },
     ];
     vi.spyOn(api, "models").mockResolvedValue(models);
 
     renderPanel();
 
-    // stats.totalTokens = 1200，workingBudget = 128000 - 8000 = 120000 → 1%
+    // stats.totalTokens = 1200，workingBudget = contextWindow = 128000 → 约 1%
     expect(await screen.findByText("上下文窗口")).toBeInTheDocument();
     const meter = await screen.findByRole("meter", { name: "上下文窗口占用" });
     expect(meter).toHaveAttribute("aria-valuenow", "1");

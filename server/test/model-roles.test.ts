@@ -81,7 +81,6 @@ describe("filterReasoningByCapabilities", () => {
       id: "m",
       provider: "p",
       contextWindow: 128_000,
-      maxOutput: 8_192,
       capabilities: { modalities: ["text"], imageOutput: false, thinking, effort, tools: true },
     };
   }

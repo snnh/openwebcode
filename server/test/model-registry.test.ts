@@ -30,7 +30,6 @@ describe("model metadata lookup", () => {
     // 未知模型走保守兜底（128K，而非乐观的 256K）
     expect(FALLBACK_METADATA.contextWindow).toBe(128_000);
     // 思维链回传默认：gpt/claude 关闭，其余（含未知模型）开启
-    expect(lookupModelMetadata("gpt-4o-2024-11-20").maxOutput).toBe(16_000);
     expect(lookupModelMetadata("gpt-4o-2024-11-20").capabilities.modalities).toContain("image");
     expect(lookupModelMetadata("gpt-4o-2024-11-20").capabilities.imageOutput).toBe(false);
     expect(lookupModelMetadata("some-random-model")).toEqual(FALLBACK_METADATA);
@@ -123,7 +122,7 @@ describe("ModelRegistry", () => {
       fetchImpl: fetchStub([{ match: "https://openai.test/models", body: { data: [{ id: "gpt-4o" }] } }]),
     });
     await registry.upsertManual({
-      id: "gpt-4o", provider: "openai", source: "manual", contextWindow: 999, maxOutput: 99,
+      id: "gpt-4o", provider: "openai", source: "manual", contextWindow: 999,
       capabilities: { modalities: ["text"], imageOutput: false, thinking: [], effort: [], tools: true },
     });
     const report = await registry.refresh({ providers: [{ provider: "openai", interfaceType: "openai-chat-completions", baseURL: "https://openai.test" }] });
@@ -210,7 +209,7 @@ describe("ModelRegistry", () => {
     });
     await first.refresh({ providers: [{ provider: "openai", interfaceType: "openai-chat-completions", baseURL: "https://openai.test" }] });
     await first.upsertManual({
-      id: "my-model", provider: "manual", source: "manual", contextWindow: 1000, maxOutput: 100,
+      id: "my-model", provider: "manual", source: "manual", contextWindow: 1000,
       capabilities: { modalities: ["text"], imageOutput: true, thinking: [], effort: [], tools: false },
     });
 
@@ -250,6 +249,9 @@ describe("ModelRegistry", () => {
     expect(registry.list().find((model) => model.id === "legacy-image-model")?.capabilities.imageOutput).toBe(false);
     expect(registry.get("legacy-api-model").capabilities.imageOutput).toBe(false);
     expect(registry.list().find((model) => model.id === "legacy-api-model")?.capabilities.imageOutput).toBe(false);
+    // 旧目录文件里已废弃的 maxOutput 字段被静默丢弃，不再进入目录模型
+    expect(registry.get("legacy-image-model")).not.toHaveProperty("maxOutput");
+    expect(registry.get("legacy-api-model")).not.toHaveProperty("maxOutput");
   });
 
   it("syncs a separate remote catalog snapshot while keeping same-id providers independent", async () => {
@@ -261,7 +263,6 @@ describe("ModelRegistry", () => {
       provider: "manual",
       source: "manual",
       contextWindow: 9_999,
-      maxOutput: 999,
       capabilities: { modalities: ["text"], imageOutput: false, thinking: [], effort: [], tools: true },
     });
     const remoteDocument = {
@@ -272,7 +273,6 @@ describe("ModelRegistry", () => {
           id: "remote-overridden",
           provider: "remote-provider",
           contextWindow: 65_536,
-          maxOutput: 4_096,
           capabilities: { modalities: ["text", "image", "video"], thinking: ["enabled"], effort: ["high"], tools: false },
         },
         {
@@ -280,7 +280,6 @@ describe("ModelRegistry", () => {
           provider: "remote-provider",
           displayName: "Remote Image + Video Input",
           contextWindow: 65_536,
-          maxOutput: 4_096,
           capabilities: { modalities: ["text", "image", "video"], thinking: ["enabled"], effort: ["high"], tools: false },
         },
       ],
@@ -326,7 +325,7 @@ describe("ModelRegistry", () => {
         body: {
           version: 1,
           updatedAt: "2026-07-21T00:00:00.000Z",
-          models: [{ id: "synced-before-failure", provider: "remote", contextWindow: 10_000, maxOutput: 1_000, capabilities: { modalities: ["text"] } }],
+          models: [{ id: "synced-before-failure", provider: "remote", contextWindow: 10_000, capabilities: { modalities: ["text"] } }],
         },
       }]),
     });
@@ -381,7 +380,7 @@ describe("ModelRegistry", () => {
       body: {
         version: 1,
         updatedAt: "not-an-iso-time",
-        models: [{ id: "replacement", provider: "remote", contextWindow: 10_000, maxOutput: 1_000 }],
+        models: [{ id: "replacement", provider: "remote", contextWindow: 10_000 }],
       },
     }]));
   });
@@ -473,7 +472,6 @@ describe("models API", () => {
               id: "status-model",
               provider: "remote",
               contextWindow: 8_192,
-              maxOutput: 1_024,
               capabilities: { modalities: ["text"] },
             }],
           },
@@ -530,12 +528,13 @@ describe("models API", () => {
       expect((await app.inject({ method: "PUT", url: "/api/models/my-custom", payload: { capabilities: { modalities: ["text"], imageOutput: "yes", thinking: [], effort: [], tools: true } } })).statusCode).toBe(400);
       expect((await app.inject({ method: "PUT", url: "/api/models/my-custom", payload: { capabilities: { modalities: ["text"], thinking: [], effort: [], tools: true } } })).statusCode).toBe(400);
       // 合法 capabilities 持久化（含 thinking/effort 覆盖）；未知的
-      // videoOutput 不能泄漏为 API 合同的一部分。
+      // videoOutput 与已废弃的 maxOutput 都不能泄漏为 API 合同的一部分（静默忽略，不 400）。
       const caps = { modalities: ["text", "image", "video"], imageOutput: true, thinking: ["adaptive", "disabled"], effort: ["low", "high"], tools: false };
       const updated = await app.inject({ method: "PUT", url: "/api/models/my-custom", payload: { capabilities: { ...caps, videoOutput: true }, maxOutput: 8_000 } });
       expect(updated.statusCode).toBe(200);
-      expect(updated.json()).toMatchObject({ id: "my-custom", source: "manual", maxOutput: 8_000, capabilities: caps });
+      expect(updated.json()).toMatchObject({ id: "my-custom", source: "manual", capabilities: caps });
       expect(updated.json()).not.toHaveProperty("capabilities.videoOutput");
+      expect(updated.json()).not.toHaveProperty("maxOutput");
       expect((await app.inject({ method: "DELETE", url: "/api/models/nonexistent" })).statusCode).toBe(409);
       expect((await app.inject({ method: "DELETE", url: "/api/models/my-custom" })).statusCode).toBe(204);
       const after = (await app.inject({ method: "GET", url: "/api/models" })).json<CatalogModel[]>();
@@ -602,7 +601,6 @@ describe("model sync API", () => {
         id: "remote-image-video",
         provider: "remote",
         contextWindow: 64_000,
-        maxOutput: 4_000,
         capabilities: { modalities: ["text", "image", "video"], imageOutput: true, thinking: [], effort: [], tools: true },
       }],
     };

@@ -2,7 +2,7 @@ import type { ContextBuildStats, ContextSegmentBreakdown, ContextWatermark, Mode
 
 /**
  * 归一化的上下文窗口占用视图：优先取 WS 实时水位（context.watermark），
- * 否则由 REST stats（ContextBuildStats）+ 模型档案（contextWindow/maxOutput）播种，
+ * 否则由 REST stats（ContextBuildStats）+ 模型档案（contextWindow）播种，
  * 使重新加载后首个 watermark 事件到达前 meter 也可用。
  */
 export interface ContextWindowInfo {
@@ -33,7 +33,7 @@ export function deriveWindowInfo(
   }
   if (!stats) return undefined;
   const contextWindow = model?.contextWindow;
-  const workingBudget = contextWindow ? Math.max(1, contextWindow - (model?.maxOutput ?? 0)) : undefined;
+  const workingBudget = contextWindow;
   return {
     estimatedTokens: stats.totalTokens,
     ...(contextWindow ? { contextWindow } : {}),

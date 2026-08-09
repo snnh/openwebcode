@@ -113,8 +113,10 @@ function filterKnownValues<T extends string>(value: unknown, fallback: readonly 
 function normalizeCatalogModel(model: CatalogModel, source: ModelSource): CatalogModel {
   const fallback = lookupModelMetadata(model.id).capabilities;
   const raw = model.capabilities as Partial<ModelCapabilities> | undefined;
+  // 旧持久化目录可能带已废弃的 maxOutput 字段：读取时静默丢弃，保存时不再回写。
+  const { maxOutput: _legacyMaxOutput, ...withoutLegacy } = model as CatalogModel & { maxOutput?: unknown };
   return {
-    ...model,
+    ...withoutLegacy,
     source,
     capabilities: {
       modalities: filterKnownValues(raw?.modalities, fallback.modalities, MODEL_MODALITIES),
@@ -197,7 +199,6 @@ function normalizeSyncedModel(value: unknown): CatalogModel {
     provider,
     ...(typeof value.displayName === "string" && value.displayName.trim() !== "" ? { displayName: value.displayName } : {}),
     contextWindow: optionalPositiveInteger(value.contextWindow, "model.contextWindow", metadata.contextWindow),
-    maxOutput: optionalPositiveInteger(value.maxOutput, "model.maxOutput", metadata.maxOutput),
     capabilities: normalizeSyncedCapabilities(value.capabilities, metadata.capabilities),
     source: "synced",
   };
@@ -454,7 +455,6 @@ export class ModelRegistry {
       provider,
       ...(displayName && displayName !== id ? { displayName } : {}),
       contextWindow: metadata.contextWindow,
-      maxOutput: metadata.maxOutput,
       capabilities: metadata.capabilities,
       source: "api",
     };
