@@ -55,7 +55,6 @@ async function fixture(env: NodeJS.ProcessEnv = {}) {
     provider: "主服务",
     source: "manual",
     contextWindow: 128_000,
-    maxOutput: 8_192,
     capabilities: { modalities: ["text"], imageOutput: false, thinking: ["disabled"], effort: ["low", "high"], tools: true },
   });
   const fastModel = new FastModelClient(providers);

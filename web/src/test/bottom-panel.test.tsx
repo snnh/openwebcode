@@ -111,7 +111,6 @@ describe("BottomPanel 状态项", () => {
     sessionMeta.setWatermark(session.id, {
       estimatedTokens: 45_000,
       contextWindow: 128_000,
-      maxOutput: 8_000,
       workingBudget: 120_000,
       utilization: 0.375,
       segments: { system: 0, compactionSummary: 0, toolResults: 0, messages: 45_000, repoMap: 0, other: 0 },
