@@ -70,6 +70,7 @@ export const SETTINGS_FIELD_EN: Record<string, { label: string; description?: st
   roleModelBalanced: { label: "Balanced tier model", description: "Model for the balanced sub-agent role: the default quality/cost trade-off; falls back to the session default when unset" },
   roleModelCheap: { label: "Cheap tier model", description: "Model for the cheap sub-agent role: bulk, low-stakes fan-out work; falls back to the balanced tier when unset" },
   defaultLanguage: { label: "Default model language" },
+  chatModeEnabled: { label: "Enable Chat mode", description: "Off by default; when enabled, the UI shows a Chat / Workbench mode toggle for the ChatGPT-style chat mode" },
   defaultCurrency: { label: "Default currency" },
   defaultEffort: { label: "Default thinking effort", description: "Thinking effort applied to new sessions; none means follow the model default; silently skipped when the model does not support the selected level" },
   defaultSnapshotMode: { label: "Default snapshot mode", description: "Checkpoint creation for new sessions: auto = before each user message; manual = only on demand" },

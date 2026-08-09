@@ -94,7 +94,8 @@ function hashRecoveryCode(code: string): string {
   return createHash("sha256").update(normalizeRecoveryCode(code), "utf8").digest("hex");
 }
 
-function timingSafeHashEqual(expected: string, actual: string): boolean {
+/** 十六进制摘要的常数时间比较（恢复码与分享 token 校验共用） */
+export function timingSafeHashEqual(expected: string, actual: string): boolean {
   const left = Buffer.from(expected, "utf8");
   const right = Buffer.from(actual, "utf8");
   return left.length === right.length && timingSafeEqual(left, right);
@@ -106,7 +107,9 @@ function timingSafeHashEqual(expected: string, actual: string): boolean {
  * 0.0.0.0 / :: 通配监听对公网可达，一律视为不满足。
  */
 export function isLoopbackOrLAN(host: string): boolean {
-  const normalized = host.trim().toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
+  let normalized = host.trim().toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
+  // IPv4-mapped IPv6：双栈监听（::）下 IPv4 客户端以 ::ffff:a.b.c.d 出现，剥离前缀走 IPv4 判定
+  if (normalized.startsWith("::ffff:")) normalized = normalized.slice("::ffff:".length);
   if (normalized === "localhost" || normalized === "::1") return true;
   if (normalized === "0.0.0.0" || normalized === "::") return false;
   const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(normalized);
