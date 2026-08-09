@@ -26,8 +26,6 @@ export function ChatSettings({ sessionId, onClose, onSaved }: {
   const [chatConfig, setChatConfig] = useState<ChatConfig | null>(null);
   const [saving, setSaving] = useState(false);
   // 文本字段受控草稿：失焦/确认才 PATCH，避免逐键打爆接口
-  const [providerDraft, setProviderDraft] = useState("");
-  const [modelDraft, setModelDraft] = useState("");
   const [temperatureDraft, setTemperatureDraft] = useState("");
 
   useEffect(() => {
@@ -37,8 +35,6 @@ export function ChatSettings({ sessionId, onClose, onSaved }: {
 
   function applyMeta(next: ChatSessionMeta): void {
     setMeta(next);
-    setProviderDraft(next.provider);
-    setModelDraft(next.model);
     setTemperatureDraft(next.temperature === undefined ? "" : String(next.temperature));
   }
 
@@ -112,10 +108,8 @@ export function ChatSettings({ sessionId, onClose, onSaved }: {
   }
 
   /** 文本草稿失焦保存：值未变化时不发请求。 */
-  function commitDraft(field: "provider" | "model" | "temperature"): void {
+  function commitDraft(field: "temperature"): void {
     if (!meta) return;
-    if (field === "provider" && providerDraft !== meta.provider) void save({ provider: providerDraft });
-    if (field === "model" && modelDraft !== meta.model) void save({ model: modelDraft });
     if (field === "temperature") {
       const current = meta.temperature === undefined ? "" : String(meta.temperature);
       if (temperatureDraft === current) return;
@@ -151,10 +145,10 @@ export function ChatSettings({ sessionId, onClose, onSaved }: {
   const imageGenCandidates = models.flatMap((entry) =>
     entry.models.filter((m) => m.imageOutput).map((m) => ({ provider: entry.provider, model: m.id })));
 
+  // 当前 provider 对应的模型候选条目（模型分区的级联下拉复用）
+  const currentProviderEntry = models.find((entry) => entry.provider === meta.provider);
   // 主模型自带对应能力时工具冗余：仅前端隐藏开关（server 不过滤 enabledTools）
-  const mainModel = models
-    .find((entry) => entry.provider === meta.provider)
-    ?.models.find((m) => m.id === meta.model);
+  const mainModel = currentProviderEntry?.models.find((m) => m.id === meta.model);
   const hiddenTools = new Set<string>();
   if (mainModel?.modalities.includes("image")) hiddenTools.add("vision");
   if (mainModel?.imageOutput === true) hiddenTools.add("image_gen");
@@ -193,21 +187,41 @@ export function ChatSettings({ sessionId, onClose, onSaved }: {
         <h4>{t("模型", "Model")}</h4>
         <div className="chat-settings-row">
           <label>{t("服务商", "Provider")}</label>
-          <input
+          <select
             className="input"
-            value={providerDraft}
-            onChange={(event) => setProviderDraft(event.target.value)}
-            onBlur={() => commitDraft("provider")}
-          />
+            value={meta.provider}
+            onChange={(event) => {
+              const provider = event.target.value;
+              // 切换 provider 时把 model 重置为「新 provider」的第一个候选，
+              // 避免旧 model 悬挂在已切走的 provider 上；一次 PATCH 同时提交两者
+              const first = models.find((entry) => entry.provider === provider)?.models[0]?.id ?? "";
+              void save({ provider, ...(first ? { model: first } : {}) });
+            }}
+          >
+            {/* 当前 provider 不在候选（已禁用/自定义）时补占位 option，防值丢失 */}
+            {!models.some((entry) => entry.provider === meta.provider) && (
+              <option value={meta.provider}>{meta.provider}</option>
+            )}
+            {models.map((entry) => (
+              <option key={entry.provider} value={entry.provider}>{entry.provider}</option>
+            ))}
+          </select>
         </div>
         <div className="chat-settings-row">
           <label>{t("模型", "Model")}</label>
-          <input
+          <select
             className="input"
-            value={modelDraft}
-            onChange={(event) => setModelDraft(event.target.value)}
-            onBlur={() => commitDraft("model")}
-          />
+            value={meta.model}
+            onChange={(event) => void save({ model: event.target.value })}
+          >
+            {/* 当前 model 不在当前 provider 候选中时补占位 option，防值丢失 */}
+            {currentProviderEntry && !currentProviderEntry.models.some((m) => m.id === meta.model) && (
+              <option value={meta.model}>{meta.model}</option>
+            )}
+            {currentProviderEntry?.models.map((m) => (
+              <option key={m.id} value={m.id}>{m.id}</option>
+            ))}
+          </select>
         </div>
       </div>
 
