@@ -1008,7 +1008,8 @@ function enforceImageBudget(view: ChatMessage[]): void {
     for (let b = content.length - 1; b >= 0; b -= 1) {
       const block = content[b]!;
       if (block.type !== "image") continue;
-      const size = Math.ceil(block.data.length * 3 / 4);
+      // ref 形态（chat 落盘图）无内联 data：按 0 字节计入预算（保留最新若干张，由调用方内联）
+      const size = Math.ceil((block.data?.length ?? 0) * 3 / 4);
       if (count < MAX_IMAGES && bytes + size <= MAX_IMAGE_BYTES) {
         count += 1;
         bytes += size;

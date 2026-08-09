@@ -28,6 +28,10 @@ export interface UiState {
   deleteTarget?: string;
   notice?: Notice;
   notifications: AppNotification[];
+  /** 界面模式：chat 为纯聊天模式，workbench 为完整工作台（默认） */
+  mode: "chat" | "workbench";
+  /** 聊天模式开关（由服务端设置 chatModeEnabled 同步，见 app/chat-mode-sync.ts） */
+  chatModeEnabled: boolean;
 }
 
 const INITIAL_UI_STATE: UiState = {
@@ -36,6 +40,8 @@ const INITIAL_UI_STATE: UiState = {
   paletteOpen: false,
   quickOpen: false,
   notifications: [],
+  mode: "workbench",
+  chatModeEnabled: false,
 };
 
 export const uiStore = createStore<UiState>(INITIAL_UI_STATE);
@@ -69,6 +75,12 @@ export const ui = {
   },
   setNotice(notice: Notice | undefined): void {
     uiStore.set({ notice });
+  },
+  setMode(mode: "chat" | "workbench"): void {
+    uiStore.set({ mode });
+  },
+  setChatModeEnabled(enabled: boolean): void {
+    uiStore.set({ chatModeEnabled: enabled });
   },
   /** 失败类提示用 error（红色、role=alert），成功/进度类用 info；同时汇入通知中心 */
   notify(text: string, kind: NotificationKind = "info"): void {

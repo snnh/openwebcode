@@ -281,6 +281,8 @@ const FIELDS: FieldSpec[] = [
   { key: "defaultSnapshotMode", group: "general", label: "默认快照方式", type: "select", env: "OWC_DEFAULT_SNAPSHOT_MODE", defaultValue: "auto", restartRequired: false, options: ["auto", "manual"], description: "新建会话的检查点创建方式：auto = 每轮用户消息前自动创建；manual = 仅手动创建" },
   { key: "snapshotBackend", group: "general", label: "快照后端", type: "select", env: "OWC_SNAPSHOT_BACKEND", defaultValue: "auto", restartRequired: false, options: ["auto", ...SNAPSHOT_BACKENDS], description: "新建会话的快照后端偏好；auto = 按探测链自动选择（btrfs/zfs/overlayfs → git-shadow）；指定后端在当前工作区不可用时回落自动并告警" },
   { key: "agentMaxTurns", group: "general", label: "单条消息最大轮次", type: "number", env: "OWC_AGENT_MAX_TURNS", defaultValue: 50, restartRequired: false, fromEnv: envNumber, validate: requireAgentMaxTurns, description: "每条用户消息允许的最大 agent 轮次，达到后当前任务以失败收尾；长任务可调大（1–1000）" },
+  // Chat 模式开关（热生效）：web 侧据此显示 chat/workbench 切换，默认关闭
+  { key: "chatModeEnabled", group: "general", label: "启用 Chat 模式", type: "boolean", env: "OWC_CHAT_MODE_ENABLED", defaultValue: false, restartRequired: false, fromEnv: envBoolean, description: "默认关闭；开启后界面显示 Chat / Workbench 模式切换，可使用 ChatGPT 风格对话模式" },
   // 离线模式（热生效）：只关 server 自身的遥测/更新/同步类出站（更新检查、远程目录/定价后台同步、
   // 汇率在线刷新）；provider API、web_search/web_fetch、MCP 与扩展联网等用户/agent 主动网络行为不受影响
   { key: "offlineMode", group: "general", label: "离线模式", type: "boolean", env: "OWC_OFFLINE", defaultValue: false, restartRequired: false, fromEnv: envBoolean, description: "关闭 server 自身的启动期/周期性出站：更新检查、远程模型目录/定价后台同步、汇率在线刷新；不影响模型 API、联网搜索/抓取、MCP 与扩展联网" },

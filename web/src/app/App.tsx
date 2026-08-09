@@ -9,6 +9,8 @@ import type { SessionDetail } from "../lib/contracts";
 import { qk, useModelsQuery, useProvidersQuery, useServerSettingsQuery, useSessionQuery, useSessionsQuery, useUpdateCheckQuery } from "./queries";
 import { useStore } from "./store";
 import { ui, uiStore } from "./ui-store";
+import { router, useRoute } from "./router";
+import { readChatModeEnabled } from "./chat-mode-sync";
 import { sessionMeta, sessionStore } from "./session-store";
 import { useAppWiring } from "./wiring";
 import { isBusyState } from "../lib/agent-state";
@@ -28,6 +30,7 @@ import { layout, layoutStore, type SidebarView } from "../workbench/layout";
 import { auxViews, auxViewsStore, diffActions, editorActions, useAuxViews } from "../workbench/aux-views";
 import { tabActions } from "../workbench/tab-actions";
 import { ChatView } from "../chat/ChatView";
+import { ChatModeView } from "../chat-mode/ChatModeView";
 import { CONVERSATION_SEARCH_EVENT } from "../chat/types";
 import { streamBuffer } from "../chat/stream-buffer";
 import { clearComposerState, useDraft } from "../composer/drafts";
@@ -58,6 +61,8 @@ export function App(): ReactElement {
   const agentStates = useStore(sessionStore, (state) => state.agentStates);
   const paletteOpen = useStore(uiStore, (state) => state.paletteOpen);
   const quickOpenOpen = useStore(uiStore, (state) => state.quickOpen);
+  const mode = useStore(uiStore, (state) => state.mode);
+  const chatModeEnabled = useStore(uiStore, (state) => state.chatModeEnabled);
   const sessions = useSessionsQuery();
   const models = useModelsQuery();
   const providers = useProvidersQuery();
@@ -270,6 +275,24 @@ export function App(): ReactElement {
     if (sessions.data) pruneDrafts(new Set(sessions.data.map((session) => session.id)));
   }, [sessions.data]);
 
+  // 路由 ↔ 模式同步：浏览器前进/后退经 popstate 更新路由，此处把路由落到 mode
+  // （mode → 路由方向由切换按钮处 navigate 负责）；chat 路由未启用时保持 workbench
+  const route = useRoute();
+  useEffect(() => {
+    if (route.name === "chat") {
+      ui.setMode(chatModeEnabled ? "chat" : "workbench");
+    } else if (route.name === "workbench") {
+      ui.setMode("workbench");
+    }
+  }, [route, chatModeEnabled]);
+
+  // 服务端设置到达后同步 chat 模式开关（未加载/无该字段时不动本地状态，避免闪烁）；
+  // 设置页保存后 queryClient.setQueryData(["settings"]) 会让本 effect 重跑，热生效无需刷新
+  useEffect(() => {
+    const enabled = readChatModeEnabled(serverSettings.data);
+    if (enabled !== undefined) ui.setChatModeEnabled(enabled);
+  }, [serverSettings.data]);
+
   // 新版本提示：更新检查启用且发现更新版本时通知中心提示一次（按版本去重，点击跳转 设置 → 服务信息）
   const notifiedUpdateVersionsRef = useRef(new Set<string>());
   useEffect(() => {
@@ -368,10 +391,29 @@ export function App(): ReactElement {
     </section>
   );
 
+  // 聊天模式（Phase 5）：整页替换工作台外壳
+  if (mode === "chat" && chatModeEnabled) {
+    return (
+      <>
+        <IconSprite />
+        <ChatModeView />
+      </>
+    );
+  }
+
   return (
     <>
       <IconSprite />
       <Workbench sessions={sessions.data} agentState={currentState} main={main} />
+      {/* 模式切换入口：仅聊天模式启用时显示 */}
+      {chatModeEnabled && (
+        <button className="btn small mode-toggle" onClick={() => {
+          ui.setMode("chat");
+          router.navigate("/");
+        }}>
+          {t("聊天", "Chat")}
+        </button>
+      )}
       <NewSessionDialog
         open={newSessionOpen}
         providers={providers.data ?? []}

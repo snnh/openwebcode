@@ -310,13 +310,23 @@ function customReaderEndpoint(template: string, requested: URL): URL {
 }
 
 function normalizeResults(value: unknown, limit: number): SearchResult[] {
-  const root = value as { web?: { results?: unknown[] }; results?: unknown[]; data?: unknown[] };
-  const items = root?.web?.results ?? root?.results ?? root?.data ?? [];
+  const root = value as {
+    web?: { results?: unknown[] };
+    results?: unknown[];
+    data?: unknown[] | { webPages?: { value?: unknown[] } };
+  };
+  const dataField = root?.data;
+  const items = root?.web?.results
+    ?? root?.results
+    ?? (Array.isArray(dataField) ? dataField : (dataField as { webPages?: { value?: unknown[] } })?.webPages?.value)
+    ?? [];
   if (!Array.isArray(items)) return [];
   return items.slice(0, limit).flatMap((item) => {
     if (!item || typeof item !== "object") return [];
     const entry = item as Record<string, unknown>;
-    const title = typeof entry.title === "string" ? entry.title : "";
+    const title = typeof entry.title === "string" ? entry.title
+      : typeof entry.name === "string" ? entry.name
+        : "";
     const url = typeof entry.url === "string" ? entry.url : "";
     const snippet = typeof entry.description === "string" ? entry.description
       : typeof entry.snippet === "string" ? entry.snippet
@@ -434,6 +444,116 @@ class TavilyExtractProvider implements WebFetchProvider {
   }
 }
 
+class BingSearchProvider implements SearchProvider {
+  constructor(readonly name: string, private readonly apiKey: string, private readonly fetchImpl: typeof fetch) {}
+
+  async search(query: string, limit: number, options: { signal?: AbortSignal } = {}): Promise<SearchResult[]> {
+    const url = new URL("https://api.bing.microsoft.com/v7.0/search");
+    url.searchParams.set("q", query);
+    url.searchParams.set("count", String(limit));
+    url.searchParams.set("textDecorations", "false");
+    const signal = signalWithTimeout(options.signal);
+    const trustedOrigin = url.origin;
+    let current = url;
+    for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
+      const response = await this.fetchImpl(current, {
+        redirect: "manual",
+        headers: { "Ocp-Apim-Subscription-Key": this.apiKey, Accept: "application/json", "User-Agent": getUserAgent() },
+        signal,
+      });
+      if (response.status >= 300 && response.status < 400) {
+        const location = response.headers.get("location");
+        if (!location) throw new Error(`Bing redirect ${response.status} has no Location header`);
+        if (redirects === MAX_REDIRECTS) throw new Error("Bing redirected too many times");
+        const next = new URL(location, current);
+        if ((next.protocol !== "http:" && next.protocol !== "https:") || next.origin !== trustedOrigin) {
+          throw new Error("Bing redirect leaves the configured origin");
+        }
+        current = next;
+        continue;
+      }
+      if (!response.ok) throw new Error(`Bing returned HTTP ${response.status}`);
+      const body = await readLimitedJson(response) as { webPages?: { value?: unknown[] } };
+      const items = body?.webPages?.value ?? [];
+      return (Array.isArray(items) ? items : []).slice(0, limit).flatMap((item) => {
+        if (!item || typeof item !== "object") return [];
+        const entry = item as Record<string, unknown>;
+        const title = typeof entry.name === "string" ? entry.name : "";
+        const url2 = typeof entry.url === "string" ? entry.url : "";
+        const snippet = typeof entry.snippet === "string" ? entry.snippet : "";
+        return title && url2 ? [{ title, url: url2, snippet }] : [];
+      });
+    }
+    throw new Error("Bing redirected too many times");
+  }
+}
+
+class ExaSearchProvider implements SearchProvider {
+  constructor(readonly name: string, private readonly apiKey: string, private readonly fetchImpl: typeof fetch) {}
+
+  async search(query: string, limit: number, options: { signal?: AbortSignal } = {}): Promise<SearchResult[]> {
+    const response = await this.fetchImpl("https://api.exa.ai/search", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        "Content-Type": "application/json",
+        "User-Agent": getUserAgent(),
+      },
+      body: JSON.stringify({ query, numResults: limit, type: "neural" }),
+      signal: signalWithTimeout(options.signal),
+    });
+    if (!response.ok) throw new Error(`Exa returned HTTP ${response.status}`);
+    return normalizeResults(await readLimitedJson(response), limit);
+  }
+}
+
+class LinkUpSearchProvider implements SearchProvider {
+  constructor(readonly name: string, private readonly apiKey: string, private readonly fetchImpl: typeof fetch, private readonly depth: string) {}
+
+  async search(query: string, limit: number, options: { signal?: AbortSignal } = {}): Promise<SearchResult[]> {
+    const response = await this.fetchImpl("https://api.linkup.so/v1/search", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        "Content-Type": "application/json",
+        "User-Agent": getUserAgent(),
+      },
+      body: JSON.stringify({ q: query, depth: this.depth, outputType: "searchResults", maxResults: limit }),
+      signal: signalWithTimeout(options.signal),
+    });
+    if (!response.ok) throw new Error(`LinkUp returned HTTP ${response.status}`);
+    return normalizeResults(await readLimitedJson(response), limit);
+  }
+}
+
+class FirecrawlFetchProvider implements WebFetchProvider {
+  constructor(readonly name: string, private readonly apiKey: string, private readonly fetchImpl: typeof fetch) {}
+
+  async fetchUrl(value: string, options: { signal?: AbortSignal } = {}): Promise<WebFetchResult> {
+    const requested = assertSafeWebUrl(value);
+    const response = await this.fetchImpl("https://api.firecrawl.dev/v1/scrape", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        "Content-Type": "application/json",
+        "User-Agent": getUserAgent(),
+      },
+      body: JSON.stringify({ url: requested.href, formats: ["markdown"] }),
+      signal: signalWithTimeout(options.signal),
+    });
+    if (!response.ok) throw new Error(`Firecrawl returned HTTP ${response.status}`);
+    const body = await readLimitedJson(response) as { data?: { markdown?: string; content?: string } };
+    const text = body?.data?.markdown ?? body?.data?.content ?? "";
+    if (!text) throw new Error("Firecrawl returned no content");
+    return {
+      url: requested.href,
+      finalUrl: requested.href,
+      contentType: "text/markdown; charset=utf-8",
+      text,
+    };
+  }
+}
+
 /** Build a search implementation from a named profile. The profile's declared
  * capability is the public contract; provider kind only selects wire format. */
 export function createProfileSearchProvider(
@@ -446,6 +566,22 @@ export function createProfileSearchProvider(
     return apiKey ? new HttpSearchProvider(profile.id, "https://api.search.brave.com/res/v1/web/search", apiKey, fetchImpl, "brave") : undefined;
   }
   if (profile.provider === "tavily") return apiKey ? new TavilySearchProvider(profile.id, apiKey, fetchImpl) : undefined;
+  if (profile.provider === "bing") return apiKey ? new BingSearchProvider(profile.id, apiKey, fetchImpl) : undefined;
+  if (profile.provider === "exa") return apiKey ? new ExaSearchProvider(profile.id, apiKey, fetchImpl) : undefined;
+  if (profile.provider === "linkup") return apiKey ? new LinkUpSearchProvider(profile.id, apiKey, fetchImpl, profile.searchDepth ?? "standard") : undefined;
+  if (profile.provider === "bocha") {
+    return apiKey ? new HttpSearchProvider(profile.id, "https://api.bochaai.com/v1/web-search", apiKey, fetchImpl) : undefined;
+  }
+  if (profile.provider === "searxng") {
+    const baseURL = profile.searchBaseURL?.trim();
+    if (!baseURL) return undefined;
+    try {
+      const parsed = new URL(baseURL);
+      return parsed.protocol === "http:" || parsed.protocol === "https:"
+        ? new HttpSearchProvider(profile.id, `${parsed.href.replace(/\/$/, "")}/search`, apiKey, fetchImpl)
+        : undefined;
+    } catch { return undefined; }
+  }
   if (profile.provider === "jina") {
     return new HttpSearchProvider(profile.id, profile.searchBaseURL ?? "https://s.jina.ai/", apiKey, fetchImpl);
   }
@@ -470,6 +606,9 @@ export function createProfileWebFetchProvider(
   }
   if (profile.provider === "tavily") {
     return apiKey ? new TavilyExtractProvider(profile.id, apiKey, fetchImpl) : undefined;
+  }
+  if (profile.provider === "firecrawl") {
+    return apiKey ? new FirecrawlFetchProvider(profile.id, apiKey, fetchImpl) : undefined;
   }
   if (profile.provider !== "custom") return undefined;
   const template = profile.fetchBaseURL?.trim();

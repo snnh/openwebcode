@@ -1,4 +1,4 @@
-import type { ChatMessage, ThinkingContent } from "../sessions/types.js";
+import type { ChatMessage, ImageContent, ThinkingContent } from "../sessions/types.js";
 import { getUserAgent } from "../http.js";
 import { classifyHttpError, normalizeProviderError, parseRetryAfter, ProviderError, truncateErrorDetail } from "./provider-error.js";
 import type { Provider, ProviderEvent, StreamChatRequest } from "./provider.js";
@@ -65,6 +65,9 @@ export class OpenAICompatibleProvider implements Provider {
         stream_options: { include_usage: true },
         // 未显式配置则不发送 max_tokens：不限制输出长度
         ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}),
+        // 请求级采样参数（chat 模式助手预设下发）；undefined 时不发，由端点默认决定
+        ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
+        ...(request.topP !== undefined ? { top_p: request.topP } : {}),
         ...(this.options.reasoningEffort !== false && request.effort ? { reasoning_effort: request.effort } : {}),
         messages: toOpenAIMessages(request.system, request.messages, this.name, reasoningContent),
         ...(request.tools.length > 0
@@ -244,7 +247,8 @@ function toOpenAIMessages(system: string, messages: ChatMessage[], providerName?
   const result: Array<Record<string, unknown>> = [{ role: "system", content: system }];
   for (const message of messages) {
     if (message.role === "user") {
-      const images = message.content.filter((block) => block.type === "image");
+      const images = message.content.filter((block): block is ImageContent & { data: string } =>
+        block.type === "image" && typeof block.data === "string");
       const text = message.content
         .filter((block) => block.type === "text")
         .map((block) => block.text)

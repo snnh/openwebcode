@@ -1,4 +1,4 @@
-import type { ChatMessage, ThinkingContent } from "../sessions/types.js";
+import type { ChatMessage, ImageContent, ThinkingContent } from "../sessions/types.js";
 import { getUserAgent } from "../http.js";
 import { readSseData, DEFAULT_STREAM_IDLE_TIMEOUT_MS } from "./openai-compatible-provider.js";
 import { classifyHttpError, normalizeProviderError, parseRetryAfter, ProviderError, truncateErrorDetail } from "./provider-error.js";
@@ -83,6 +83,10 @@ export class OpenAIResponsesProvider implements Provider {
           instructions,
           input: toResponsesInput(request.messages, this.name, reasoningSummary),
           ...(maxTokens !== undefined ? { max_output_tokens: maxTokens } : {}),
+          // 请求级采样参数：Responses 的推理档（请求携带 effort）拒绝 temperature/top_p，
+          // 此时不下发，避免 400；非推理请求按请求级配置透传
+          ...(request.effort === undefined && request.temperature !== undefined ? { temperature: request.temperature } : {}),
+          ...(request.effort === undefined && request.topP !== undefined ? { top_p: request.topP } : {}),
           ...(Object.keys(reasoning).length > 0 ? { reasoning } : {}),
           ...(request.tools.length > 0 || request.serverWebSearch === true
             ? {
@@ -285,7 +289,8 @@ function toResponsesInput(messages: ChatMessage[], providerName: string, replayR
   const emitted = new Set<string>();
   for (const message of messages) {
     if (message.role === "user") {
-      const images = message.content.filter((block) => block.type === "image");
+      const images = message.content.filter((block): block is ImageContent & { data: string } =>
+        block.type === "image" && typeof block.data === "string");
       const text = message.content
         .filter((block) => block.type === "text")
         .map((block) => block.text)

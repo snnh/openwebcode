@@ -48,6 +48,7 @@ import { CompactVaultService } from "./extensions/compact-vault.js";
 import { RemoteSyncScheduler } from "./remote-sync-scheduler.js";
 import { CronScheduler } from "./cron-scheduler.js";
 import { EvalEvaluator } from "./eval/evaluator.js";
+import { ChatAssistantStore, ChatConfigService, ChatPythonEnv, ChatRunner, ChatSessionStore } from "./chat/index.js";
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const resolveFromServer = (value: string) => (path.isAbsolute(value) ? value : path.resolve(moduleDirectory, "..", value));
@@ -262,6 +263,32 @@ gcTimer.unref();
 // TOTP 全局登录认证（提交⑥）：启动时加载凭据；文件缺失视为关闭，门禁不生效
 const totp = new TotpAuthService(path.join(dataDir, "totp.json"));
 await totp.load();
+// 聊天模式（Chat）：独立会话存储（<dataDir>/chat-sessions/）、全局配置（chat.json）、
+// 助手预设（chat-assistants.json）与执行引擎；搜索/抓取复用 provider profiles 选定的 web 能力
+const chatConfigService = new ChatConfigService(path.join(dataDir, "chat.json"));
+// Python 环境预装库：chat.json 的 pythonLibraries 优先，缺省回落内置默认；
+// 惰性求值——ensure() 首次建环境时才读取配置（热修改下一轮生效）
+const DEFAULT_CHAT_PYTHON_LIBRARIES = ["numpy", "pandas", "matplotlib", "sympy", "scipy", "Pillow"];
+const chatPythonEnv = ChatPythonEnv.forDataDir(
+  dataDir,
+  () => chatConfigService.get().then((c) => c.pythonLibraries ?? DEFAULT_CHAT_PYTHON_LIBRARIES),
+);
+const chatSessions = new ChatSessionStore(dataDir);
+const chatAssistantStore = new ChatAssistantStore(path.join(dataDir, "chat-assistants.json"));
+await chatAssistantStore.init();
+const chatRunner = new ChatRunner(
+  chatSessions, providers, chatPythonEnv,
+  search, webFetch,
+  // media 工具（image_gen/vision）适配器现读：chat.json + provider profiles 热生效
+  chatConfigService, providerProfiles,
+  chatAssistantStore, events,
+  // 最大轮次共享基础模式 agentMaxTurns 设置（现读，热生效）
+  () => settings.effective().agentMaxTurns,
+  // Windows 上 chat python 经 CoreRouter job.* 在 Job Object 内运行
+  core,
+);
+// chat 侧搜索/抓取服务商跟随 provider profiles 热更新（注入即同步一次当前值）
+providerProfilesRuntime.setChatRunner(chatRunner);
 // 非回环监听：OWC_ACCESS_TOKEN 未显式设置时自动生成并持久化（<dataDir>/access-token，
 // 0600），「设置页改监听地址即可用」；token 与 origins 仍可被环境变量覆盖。
 // loopback + 显式 env token 保持既有行为（不读令牌文件、不校验长度）。
@@ -302,6 +329,14 @@ const app = await buildServer({
   updateApplier,
   dataDir,
   cron,
+  // 聊天模式（Chat）：/api/chat/* 与 /api/share/* 路由依赖
+  chatSessions,
+  chatConfig: chatConfigService,
+  chatRunner,
+  chatAssistants: chatAssistantStore,
+  chatPythonEnv,
+  // chat 会话删除后释放 "chat-python-<id>" 的 core 侧配置（与 core 同实例）
+  coreRouter: core,
   // TOTP 全局登录认证（提交⑥）：凭据 <dataDir>/totp.json（0600），票据仅内存
   totp,
   listenHost: config.host,
