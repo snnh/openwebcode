@@ -35,6 +35,7 @@ Browser (React) ── HTTP/WebSocket ──► Node service (agent loop, tools)
 ## Features
 
 - The basics of AI coding.
+- More than code: a brand-new ChatGPT-style chat mode, still lightweight.
 - Resource usage friendly to low-spec devices: see [Performance and footprint](#performance-and-footprint).
 - Comparatively complete sandbox support: Job Object / AppContainer / WSB on Windows, bubblewrap / Landlock on Linux.
 - Git and filesystem-level snapshots: ZFS / Btrfs / overlayfs / VHDX / qcow2 backends.
