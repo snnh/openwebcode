@@ -149,6 +149,7 @@ OpenWebCode is an open-source project maintained by one person. If it helps your
 1. Thanks to deepseek, kimi-k3, and qwen for assisting development.
 2. Thanks to community friends for inspiration.
 3. Thanks to [pi-agent](https://github.com/earendil-works/pi); the default system prompt is adapted from its baseline (MIT, by Mario Zechner).
+4. Thanks to [Shyliuli](https://github.com/Shyliuli) for helping test the Loongson (loongarch64) build.
 
 ## License
 

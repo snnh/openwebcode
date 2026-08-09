@@ -147,6 +147,7 @@ OpenWebCode 是个人维护的开源项目。如果它对你有帮助，欢迎�
 1. 感谢 deepseek、kimi-k3、qwen，本项目由上述模型辅助开发
 2. 感谢一些群友提供的灵感
 3. 感谢 [pi-agent](https://github.com/earendil-works/pi)，本项目默认系统提示词以其为基线（MIT，作者 Mario Zechner）
+4. 感谢 [Shyliuli](https://github.com/Shyliuli) 协助进行龙芯（loongarch64）版本测试
 
 ## License
 
