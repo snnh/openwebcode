@@ -932,7 +932,8 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   app.post("/api/update-check/refresh", async (_request, reply) => {
     const checker = dependencies.updateChecker;
     if (!checker) return reply.code(501).send({ error: "Update checker is not configured" });
-    const snapshot = await checker.refresh();
+    // 手动「立即检查」不受 updateCheckEnabled（周期开关）限制
+    const snapshot = await checker.refresh(true);
     return { snapshot: snapshot ?? null };
   });
   app.get("/api/update/apply", async (_request, reply) => {
