@@ -2,6 +2,23 @@
 
 本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前版本的用户可感知变化。日期以 Git 标签发布日期为准。
 
+## [1.6.0] - 2026-08-09
+
+### 新增功能
+
+- **Chat 模式**：ChatGPT 风格的纯对话模式，与编码工作台并存（默认关闭，设置 → 通用中开启）。可折叠会话栏 + 居中消息流 + 底部输入框；独立会话存储，支持会话树（分支 / fork / 回溯 / 重新生成）；助手预设把系统提示词、模型覆盖、生成参数（temperature/topP/maxTokens/推理档）、预置消息与工具清单打包成可一键切换的角色；只读分享——生成短链公开页，可设访问密码，随时撤销。
+- **Chat 工具扩展**（默认全关，逐个开启）：time / calculate、web_search / web_fetch、image_gen / vision、python / read_file / write_file / show 共 10 个工具按 4 类分组。Python 在独立沙盒执行：uv 管理的环境预装 numpy/pandas/matplotlib/sympy/scipy/Pillow（不可额外装包），Linux 用 bubblewrap 全隔离（禁网），Windows 经 Job Object 进程树约束（无网络/文件系统隔离，界面如实标注）；matplotlib 图直接内联回对话。
+- **媒体能力**：image_gen 走 OpenAI 兼容图像接口（可选画面比例），vision 可分析对话中的图片、会话文件或网页图片（可选推理档）；两者使用的能力模型在 chat 设置中按模型能力声明挑选，主模型本身能看图/出图时对应工具开关自动隐藏。输入框支持粘贴/选择图片上传（小图内嵌、大图落盘引用）。
+- **搜索/抓取服务商扩充**：新增 Bing、SearXNG、Exa、LinkUp、Bocha、Firecrawl，chat 与编码工作台共用同一套配置，改动热生效。
+
+### 界面与体验
+
+- Chat 模式局域网内免令牌直接对话（`chat.json` 的 `lanUnauthenticated: false` 可关闭）；改配置、进工作台始终需要令牌。
+
+### 破坏性变更
+
+- 模型目录移除 `maxOutput` 字段：上下文可用预算不再预留输出缓冲（水位百分比本身已留余量）。旧目录文件中的该字段读取时静默忽略、保存时自动剔除；需要限制输出长度时，用服务商的**自定义请求体**（如 `{"max_tokens": 8192}`）下发。
+
 ## [1.5.0] - 2026-08-08
 
 ### 新增功能
