@@ -507,6 +507,24 @@ describe("UpdateChecker", () => {
     checker.close();
   });
 
+  it("manual refresh (force) fetches even when periodic check is disabled", async () => {
+    const root = await tempRoot("owc-update-");
+    setServerVersion("0.5.2");
+    let calls = 0;
+    const checker = new UpdateChecker({
+      cachePath: path.join(root, "update-check.json"),
+      defaultUrl: "https://api.github.com/repos/snnh/openwebcode/releases/latest",
+      fetchImpl: async () => { calls += 1; return githubResponse("v0.6.0"); },
+    });
+    checker.configure({ enabled: false, intervalHours: 24 });
+    await checker.initialize();
+    const snapshot = await checker.refresh(true);
+    expect(calls).toBe(1);
+    expect(snapshot?.latestVersion).toBe("0.6.0");
+    expect(snapshot?.isNewer).toBe(true);
+    checker.close();
+  });
+
   it("reports a newer release and caches it", async () => {
     const root = await tempRoot("owc-update-");
     setServerVersion("0.5.2");

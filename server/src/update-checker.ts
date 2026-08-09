@@ -116,9 +116,13 @@ export class UpdateChecker {
     return this.snapshot ? { ...this.snapshot } : undefined;
   }
 
-  /** Trigger an immediate refresh regardless of throttle; no-op if disabled. */
-  refresh(): Promise<UpdateCheckSnapshot | undefined> {
-    if (!this.enabled) return Promise.resolve(this.current());
+  /**
+   * Trigger an immediate refresh regardless of throttle.
+   * Periodic/timer calls keep the disabled gate; manual checks (设置页「立即检查」）
+   * pass force=true to bypass it——enabled 只管辖周期任务，不应让手动检查看起来没反应。
+   */
+  refresh(force = false): Promise<UpdateCheckSnapshot | undefined> {
+    if (!this.enabled && !force) return Promise.resolve(this.current());
     if (this.refreshPromise) return this.refreshPromise;
     this.refreshPromise = this.refreshOnce().finally(() => {
       this.refreshPromise = undefined;
