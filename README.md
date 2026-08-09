@@ -32,7 +32,7 @@ OpenWebCode 是一个跑在浏览器里的 AI 编码工作台，界面中英双�
 ## 主要功能
 
 - 基础的 AI coding 功能。
-- 不止于code，还能chat，全新chat模式，仍旧轻量.
+- 不止于code，还能chat，全新chat模式，仍旧轻量。注：暂未开发完成
 - 对低性能设备友好的资源占用：详见[性能与资源占用](#性能与资源占用)
 - 相对完善的沙盒支持：Windows Job Object/AppContainer/WSB，Linux bubblewrap/Landlock。
 - git 和文件系统级快照：ZFS / Btrfs / overlayfs / VHDX / qcow2 多种后端。
