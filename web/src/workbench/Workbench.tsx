@@ -23,10 +23,12 @@ export interface WorkbenchProps {
   sessions?: Session[] | undefined;
   /** 当前会话 agent 运行态（App 由 useAgentRun/sessionStore 推导） */
   agentState?: string | undefined;
+  /** 切到聊天模式（仅聊天模式启用时传入；活动栏底部入口） */
+  onShowChat?: (() => void) | undefined;
   main: ReactNode;
 }
 
-export function Workbench({ sessions, agentState, main }: WorkbenchProps): ReactElement {
+export function Workbench({ sessions, agentState, onShowChat, main }: WorkbenchProps): ReactElement {
   const { t } = useI18n();
   const isMobile = useMediaQuery(MOBILE_BREAKPOINT);
   const layoutState = useStore(layoutStore, (state) => state);
@@ -83,6 +85,7 @@ export function Workbench({ sessions, agentState, main }: WorkbenchProps): React
     onShowHelp: () => ui.openSettings("shortcuts"),
     onShowNotifications: () => ui.openSettings("notifications"),
     onOpenSettings: () => ui.openSettings(),
+    onShowChat,
   };
 
   const sidebarContent = (

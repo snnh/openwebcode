@@ -1,21 +1,31 @@
-// 消息列表：REST 拉历史 + SSE 增量（delta/done/error/stopped/python_status/connected）。
+// 消息列表：REST 拉历史 + SSE 增量（delta/done/error/stopped/python_status/tool_call/connected）。
 // 流式渲染复用 chat/stream-buffer（rAF 合批），滚动跟随复用 chat/scroll-controller（上翻不拽回）。
+// reloadToken 由父组件在发送成功后递增——自己刚发的 user 消息立刻可见，不等 done 才刷新。
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import { useI18n } from "../i18n";
+import { Icon } from "../components/Icon";
 import { Markdown } from "../components/Markdown";
 import { ui } from "../app/ui-store";
 import { chatMode } from "../app/chat-mode-store";
 import { streamBuffer, useStreamBlocks } from "../chat/stream-buffer";
 import { createScrollFollower, type ScrollFollower } from "../chat/scroll-controller";
-import type { ChatMessage, ChatSessionDetail, ChatStreamEvent, MessageContent } from "./types";
+import { ChatBlocks } from "./ChatBlocks";
+import type { ChatMessage, ChatSessionDetail, ChatStreamEvent } from "./types";
 
-export function ChatMessageList({ sessionId }: { sessionId: string }): ReactElement {
+export function ChatMessageList({ sessionId, reloadToken }: {
+  sessionId: string;
+  /** 递增触发历史重拉（发送成功后父组件 bump，让自己的消息立即可见）。 */
+  reloadToken?: number;
+}): ReactElement {
   const { t } = useI18n();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string>();
   const [maxTurns, setMaxTurns] = useState(false);
   const [disconnected, setDisconnected] = useState(false);
+  /** 工具循环进行中：最近一个 tool_call 的名字（delta/done 时清空）。 */
+  const [toolActivity, setToolActivity] = useState<string>();
+  const [copiedId, setCopiedId] = useState<string>();
   const scrollRef = useRef<HTMLDivElement>(null);
   const followerRef = useRef<ScrollFollower | undefined>(undefined);
   const streamingBlocks = useStreamBlocks(sessionId);
@@ -38,13 +48,14 @@ export function ChatMessageList({ sessionId }: { sessionId: string }): ReactElem
   useEffect(() => {
     setError(undefined);
     setMaxTurns(false);
+    setToolActivity(undefined);
     streamBuffer.clear(sessionId);
     void loadMessages();
     // 切换会话后回到贴底跟随态
     follower().scrollToBottom();
-    // sessionId 切换时重拉
+    // sessionId / reloadToken 变化时重拉
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId]);
+  }, [sessionId, reloadToken]);
 
   async function loadMessages(): Promise<void> {
     try {
@@ -73,6 +84,11 @@ export function ChatMessageList({ sessionId }: { sessionId: string }): ReactElem
           setDisconnected(false);
         } else if (data.type === "delta") {
           streamBuffer.queueDelta(sessionId, data.text ?? "");
+          setToolActivity(undefined);
+          setRunning(true);
+          chatMode.setRunning(sessionId, true);
+        } else if (data.type === "tool_call") {
+          setToolActivity(data.name ?? "tool");
           setRunning(true);
           chatMode.setRunning(sessionId, true);
         } else if (data.type === "python_status") {
@@ -81,11 +97,13 @@ export function ChatMessageList({ sessionId }: { sessionId: string }): ReactElem
           // 用户停止：已累积的部分文本由 server 落盘，刷新历史即可拿到，不加错误样式
           streamBuffer.finish();
           streamBuffer.clear(sessionId);
+          setToolActivity(undefined);
           setRunning(false);
           chatMode.setRunning(sessionId, false);
           void loadMessages();
         } else if (data.type === "done") {
           streamBuffer.clear(sessionId);
+          setToolActivity(undefined);
           setRunning(false);
           chatMode.setRunning(sessionId, false);
           setMaxTurns(data.stopReason === "max_turns");
@@ -93,6 +111,7 @@ export function ChatMessageList({ sessionId }: { sessionId: string }): ReactElem
         } else if (data.type === "error") {
           setError(data.error ?? t("未知错误", "Unknown error"));
           streamBuffer.clear(sessionId);
+          setToolActivity(undefined);
           setRunning(false);
           chatMode.setRunning(sessionId, false);
         }
@@ -142,6 +161,19 @@ export function ChatMessageList({ sessionId }: { sessionId: string }): ReactElem
     }
   }
 
+  function handleCopy(message: ChatMessage): void {
+    const text = message.content
+      .filter((block) => block.type === "text")
+      .map((block) => block.text ?? "")
+      .join("\n");
+    void navigator.clipboard.writeText(text).then(() => {
+      setCopiedId(message.id);
+      window.setTimeout(() => setCopiedId((current) => (current === message.id ? undefined : current)), 1500);
+    });
+  }
+
+  const isEmpty = messages.length === 0 && !streamingText && !running && !error;
+
   return (
     <div className="chat-messages" ref={scrollRef}>
       <div className="chat-messages-inner">
@@ -150,41 +182,64 @@ export function ChatMessageList({ sessionId }: { sessionId: string }): ReactElem
         )}
         {messages.map((msg) => (
           <div key={msg.id} className={`chat-message ${msg.role}`}>
-            {msg.content.map((block, index) => renderBlock(block, index, sessionId))}
+            <div className="chat-bubble">
+              <ChatBlocks
+                content={msg.content}
+                resolveImageRef={(ref) => `/api/chat/sessions/${sessionId}/images/${ref}`}
+              />
+            </div>
             {msg.role === "assistant" && (
               <div className="actions">
                 <button
-                  className="btn small"
-                  onClick={() => {
-                    const text = msg.content
-                      .filter((block) => block.type === "text")
-                      .map((block) => block.text ?? "")
-                      .join("\n");
-                    void navigator.clipboard.writeText(text);
-                  }}
+                  className="icon-btn"
+                  aria-label={copiedId === msg.id ? t("已复制", "Copied") : t("复制", "Copy")}
+                  title={copiedId === msg.id ? t("已复制", "Copied") : t("复制", "Copy")}
+                  onClick={() => handleCopy(msg)}
                 >
-                  {t("复制", "Copy")}
+                  <Icon name={copiedId === msg.id ? "check" : "copy"} />
                 </button>
-                <button className="btn small" onClick={() => void handleRetry(msg.id)}>
-                  {t("重新生成", "Regenerate")}
+                <button
+                  className="icon-btn"
+                  aria-label={t("重新生成", "Regenerate")}
+                  title={t("重新生成", "Regenerate")}
+                  onClick={() => void handleRetry(msg.id)}
+                >
+                  <Icon name="undo" />
                 </button>
               </div>
             )}
           </div>
         ))}
-        {streamingText && (
+        {streamingText !== "" && (
           <div className="chat-message assistant">
-            <Markdown>{streamingText}</Markdown>
-            <span className="chat-streaming" />
+            <div className="chat-bubble">
+              <MarkdownLazy text={streamingText} />
+            </div>
+          </div>
+        )}
+        {running && streamingText === "" && (
+          <div className="chat-message assistant">
+            <div className="chat-bubble">
+              {toolActivity ? (
+                <span className="chat-tool-activity">
+                  <Icon name="wrench" size={12} />
+                  {toolActivity}
+                </span>
+              ) : (
+                <span className="chat-thinking" aria-label={t("正在思考…", "Thinking…")}>
+                  <i /><i /><i />
+                </span>
+              )}
+            </div>
           </div>
         )}
         {maxTurns && (
           <p className="chat-muted-hint">{t("达到最大轮次", "Max turns reached")}</p>
         )}
         {error && <div className="panel-error" role="alert">{error}</div>}
-        {messages.length === 0 && !streamingText && !running && !error && (
-          <div className="chat-empty">
-            <p>{t("发送消息开始对话", "Send a message to start chatting")}</p>
+        {isEmpty && (
+          <div className="chat-greeting">
+            <h1>{t("有什么可以帮忙的？", "What can I help with?")}</h1>
           </div>
         )}
       </div>
@@ -192,34 +247,12 @@ export function ChatMessageList({ sessionId }: { sessionId: string }): ReactElem
   );
 }
 
-function renderBlock(block: MessageContent, index: number, sessionId: string): ReactElement | null {
-  if (block.type === "text") {
-    return <Markdown key={index}>{block.text ?? ""}</Markdown>;
-  }
-  if (block.type === "image") {
-    // 内联块用 data: URI；ref 块经 images 路由取字节（uploads/|generated/）
-    const src = block.data
-      ? `data:${block.mediaType ?? "image/png"};base64,${block.data}`
-      : block.ref
-        ? `/api/chat/sessions/${sessionId}/images/${block.ref}`
-        : undefined;
-    if (!src) return null;
-    return <img key={index} src={src} alt="" className="chat-block-image" />;
-  }
-  if (block.type === "tool_call") {
-    return (
-      <div key={index} className="chat-tool-result">
-        <span className="pill">{block.name ?? "tool"}</span>
-      </div>
-    );
-  }
-  if (block.type === "tool_result") {
-    const content = typeof block.content === "string" ? block.content : JSON.stringify(block.content);
-    return (
-      <div key={index} className="chat-tool-result">
-        <pre>{content}</pre>
-      </div>
-    );
-  }
-  return null;
+/** 流式文本渲染：与历史消息同走 Markdown；包一层仅为语义清晰。 */
+function MarkdownLazy({ text }: { text: string }): ReactElement {
+  return (
+    <>
+      <Markdown>{text}</Markdown>
+      <span className="chat-streaming" />
+    </>
+  );
 }

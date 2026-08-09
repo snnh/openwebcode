@@ -27,6 +27,8 @@ export interface RailActions {
   onShowHelp(): void;
   onShowNotifications(): void;
   onOpenSettings(): void;
+  /** 切到聊天模式（仅聊天模式启用时由 Workbench 注入；活动栏底部入口） */
+  onShowChat?(): void;
 }
 
 export interface ActivityBarProps extends RailActions {
@@ -36,7 +38,7 @@ export interface ActivityBarProps extends RailActions {
   onToggleSidebar(): void;
 }
 
-export function ActivityBar({ activeView, sidebarVisible, problemsBadge = 0, notificationsBadge = 0, onShowView, onToggleSidebar, onShowHelp, onShowNotifications, onOpenSettings }: ActivityBarProps): ReactElement {
+export function ActivityBar({ activeView, sidebarVisible, problemsBadge = 0, notificationsBadge = 0, onShowView, onToggleSidebar, onShowHelp, onShowNotifications, onOpenSettings, onShowChat }: ActivityBarProps): ReactElement {
   const { t } = useI18n();
   return (
     <div className="activity-bar">
@@ -70,6 +72,16 @@ export function ActivityBar({ activeView, sidebarVisible, problemsBadge = 0, not
         <Icon name={sidebarVisible ? "chevrons-left" : "chevrons-right"} size={20} />
       </button>
       <div className="activity-bar-bottom">
+        {onShowChat && (
+          <button
+            className="activity-btn"
+            aria-label={t("聊天", "Chat")}
+            title={t("聊天", "Chat")}
+            onClick={onShowChat}
+          >
+            <Icon name="message" size={20} />
+          </button>
+        )}
         <button
           className="activity-btn"
           aria-label={t("帮助与快捷键", "Help & keyboard shortcuts")}
@@ -117,7 +129,7 @@ export function MobileNavTrigger({ onOpen }: { onOpen(): void }): ReactElement {
  * 移动端导航菜单（≤1024px）：左上角触发、左侧滑出的竖向列表。
  * 替代窄屏上的桌面活动栏；Esc/遮罩关闭，Tab 焦点在菜单内循环。
  */
-export function MobileNavMenu({ open, onClose, activeView, problemsBadge = 0, notificationsBadge = 0, onShowView, onShowHelp, onShowNotifications, onOpenSettings }: RailActions & { open: boolean; onClose(): void }): ReactElement | null {
+export function MobileNavMenu({ open, onClose, activeView, problemsBadge = 0, notificationsBadge = 0, onShowView, onShowHelp, onShowNotifications, onOpenSettings, onShowChat }: RailActions & { open: boolean; onClose(): void }): ReactElement | null {
   const { t } = useI18n();
   const navRef = useRef<HTMLElement>(null);
 
@@ -189,6 +201,12 @@ export function MobileNavMenu({ open, onClose, activeView, problemsBadge = 0, no
           })}
         </div>
         <div className="mobile-nav-group mobile-nav-group-bottom">
+          {onShowChat && (
+            <button type="button" className="mobile-nav-item" onClick={action(onShowChat)}>
+              <Icon name="message" size={18} />
+              {t("聊天", "Chat")}
+            </button>
+          )}
           <button type="button" className="mobile-nav-item" onClick={action(onShowHelp)}>
             <Icon name="help" size={18} />
             {t("帮助与快捷键", "Help & shortcuts")}

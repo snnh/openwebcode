@@ -1,6 +1,6 @@
 // 输入区：自适应高度 textarea，Enter 发送 / Shift+Enter 换行；停止按钮仅运行中显示。
 // 图片附件：≤2MB 直接 base64 内嵌进消息 content；>2MB 且 ≤10MB 发送前先 POST uploads 拿 ref 再发引用块；>10MB 拒绝。单消息 ≤3 张。
-import { useEffect, useRef, useState, type ReactElement, type KeyboardEvent, type ClipboardEvent } from "react";
+import { useEffect, useRef, useState, type ReactElement, type KeyboardEvent, type ClipboardEvent, type MutableRefObject } from "react";
 import { useI18n } from "../i18n";
 import { useStore } from "../app/store";
 import { ui } from "../app/ui-store";
@@ -35,14 +35,39 @@ function readAsDataUrl(file: File): Promise<string> {
   });
 }
 
-export function ChatComposer({ sessionId, onSent }: { sessionId: string; onSent?: () => void }): ReactElement {
+/** 供父组件注入建议文本等（ChatGPT 空态建议行）：写入草稿并聚焦输入框。 */
+export interface ChatComposerApi {
+  insert(text: string): void;
+}
+
+export function ChatComposer({ sessionId, ensureSession, onSent, apiRef }: {
+  /** 可空：空态首页发送前经 ensureSession 先建会话（ChatGPT 首页直发风格）。 */
+  sessionId?: string;
+  ensureSession?: () => Promise<string | undefined>;
+  onSent?: () => void;
+  apiRef?: MutableRefObject<ChatComposerApi | undefined>;
+}): ReactElement {
   const { t } = useI18n();
   const [draft, setDraft] = useState("");
   const [images, setImages] = useState<PendingImage[]>([]);
   const [sending, setSending] = useState(false);
-  const running = useStore(chatModeStore, (s) => s.running[sessionId] ?? false);
+  const running = useStore(chatModeStore, (s) => (sessionId ? (s.running[sessionId] ?? false) : false));
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // 建议行注入：设草稿 + 聚焦（注册/卸载时清理）
+  useEffect(() => {
+    if (!apiRef) return undefined;
+    apiRef.current = {
+      insert: (text) => {
+        setDraft(text);
+        textareaRef.current?.focus();
+      },
+    };
+    return () => {
+      apiRef.current = undefined;
+    };
+  }, [apiRef]);
 
   // 自适应高度（上限 200px）
   useEffect(() => {
@@ -116,11 +141,11 @@ export function ChatComposer({ sessionId, onSent }: { sessionId: string; onSent?
   }
 
   /** >2MB 附件发送前上传换取 ref；失败返回 undefined。 */
-  async function uploadImage(image: PendingImage): Promise<string | undefined> {
+  async function uploadImage(sid: string, image: PendingImage): Promise<string | undefined> {
     if (!image.file) return undefined;
     try {
       const dataUrl = await readAsDataUrl(image.file);
-      const res = await fetch(`/api/chat/sessions/${sessionId}/uploads`, {
+      const res = await fetch(`/api/chat/sessions/${sid}/uploads`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
@@ -147,6 +172,15 @@ export function ChatComposer({ sessionId, onSent }: { sessionId: string; onSent?
 
     setSending(true);
     try {
+      // 无会话（首页空态）先建会话；建失败（如未配置模型）保留草稿
+      let sid = sessionId;
+      if (!sid) {
+        sid = await ensureSession?.();
+        if (!sid) {
+          setSending(false);
+          return;
+        }
+      }
       // 纯文本保持旧 {text} 形态；带图走 content 块数组
       let body: Record<string, unknown> = { text };
       if (images.length > 0) {
@@ -155,7 +189,7 @@ export function ChatComposer({ sessionId, onSent }: { sessionId: string; onSent?
           if (image.data) {
             content.push({ type: "image", mediaType: image.mediaType, data: image.data });
           } else {
-            const ref = await uploadImage(image);
+            const ref = await uploadImage(sid, image);
             if (!ref) {
               setSending(false);
               return; // 保留草稿与附件，用户可重试
@@ -165,7 +199,7 @@ export function ChatComposer({ sessionId, onSent }: { sessionId: string; onSent?
         }
         body = { content };
       }
-      const res = await fetch(`/api/chat/sessions/${sessionId}/messages`, {
+      const res = await fetch(`/api/chat/sessions/${sid}/messages`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
@@ -188,6 +222,7 @@ export function ChatComposer({ sessionId, onSent }: { sessionId: string; onSent?
   }
 
   async function handleStop(): Promise<void> {
+    if (!sessionId) return;
     await fetch(`/api/chat/sessions/${sessionId}/stop`, { method: "POST", credentials: "include" });
   }
 
@@ -208,24 +243,24 @@ export function ChatComposer({ sessionId, onSent }: { sessionId: string; onSent?
 
   return (
     <div className="chat-composer-area">
-      {images.length > 0 && (
-        <div className="chat-attachment-strip">
-          {images.map((image) => (
-            <div key={image.id} className="chat-attachment">
-              <img src={image.previewUrl} alt="" />
-              <button
-                type="button"
-                className="chat-attachment-remove"
-                aria-label={t("移除图片", "Remove image")}
-                onClick={() => removeImage(image.id)}
-              >
-                <Icon name="x" size={10} />
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-      <div className="chat-composer-inner">
+      <div className="chat-composer-box">
+        {images.length > 0 && (
+          <div className="chat-attachment-strip">
+            {images.map((image) => (
+              <div key={image.id} className="chat-attachment">
+                <img src={image.previewUrl} alt="" />
+                <button
+                  type="button"
+                  className="chat-attachment-remove"
+                  aria-label={t("移除图片", "Remove image")}
+                  onClick={() => removeImage(image.id)}
+                >
+                  <Icon name="x" size={10} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <input
           ref={fileInputRef}
           type="file"
@@ -239,14 +274,6 @@ export function ChatComposer({ sessionId, onSent }: { sessionId: string; onSent?
             if (files.length > 0) void addImages(files);
           }}
         />
-        <button
-          type="button"
-          className="icon-btn"
-          aria-label={t("添加图片", "Add images")}
-          onClick={() => fileInputRef.current?.click()}
-        >
-          <Icon name="paperclip" />
-        </button>
         <textarea
           ref={textareaRef}
           className="chat-composer-input"
@@ -254,24 +281,47 @@ export function ChatComposer({ sessionId, onSent }: { sessionId: string; onSent?
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
-          placeholder={t("输入消息…", "Type a message…")}
+          placeholder={t("有问题，随便问", "Ask anything")}
           rows={1}
         />
-        <div className="chat-composer-actions">
-          {running && (
-            <button className="btn small" onClick={() => void handleStop()}>
-              {t("停止", "Stop")}
+        <div className="chat-composer-toolbar">
+          <button
+            type="button"
+            className="icon-btn"
+            aria-label={t("添加图片", "Add images")}
+            title={t("添加图片", "Add images")}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <Icon name="paperclip" />
+          </button>
+          <span className="spacer" />
+          {running ? (
+            <button
+              type="button"
+              className="chat-round-btn stop"
+              aria-label={t("停止", "Stop")}
+              title={t("停止", "Stop")}
+              onClick={() => void handleStop()}
+            >
+              <Icon name="square" size={12} />
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="chat-round-btn send"
+              aria-label={sending ? t("发送中…", "Sending…") : t("发送", "Send")}
+              title={sending ? t("发送中…", "Sending…") : t("发送", "Send")}
+              onClick={() => void handleSend()}
+              disabled={!draft.trim() || sending}
+            >
+              <Icon name="arrow-up" size={16} />
             </button>
           )}
-          <button
-            className="btn primary"
-            onClick={() => void handleSend()}
-            disabled={!draft.trim() || sending}
-          >
-            {sending ? t("发送中…", "Sending…") : t("发送", "Send")}
-          </button>
         </div>
       </div>
+      <p className="chat-composer-hint">
+        {t("内容由 AI 生成，请注意甄别", "AI-generated content; please verify")}
+      </p>
     </div>
   );
 }

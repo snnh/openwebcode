@@ -673,11 +673,3 @@
   height: 100vh;
   color: var(--text-3);
 }
-
-/* 工作台右下角的模式切换入口（仅聊天模式启用时渲染） */
-.mode-toggle {
-  position: fixed;
-  right: 16px;
-  bottom: 16px;
-  z-index: var(--z-overlay);
-}

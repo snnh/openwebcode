@@ -1,15 +1,14 @@
 // 聊天模式主视图：ChatGPT 风格 [侧边栏会话列表 | 头部 + 消息流 + 输入区]。
 // 数据直接走 /api/chat/* REST + SSE（lib/api.ts 的 chat 封装就绪前先用 fetch）。
-import { useEffect, useState, type ReactElement } from "react";
+import { useEffect, useRef, useState, type ReactElement } from "react";
 import { useI18n } from "../i18n";
-import { Icon } from "../components/Icon";
+import { Icon, type IconName } from "../components/Icon";
 import { Overlay } from "../components/Overlay";
-import { useStore } from "../app/store";
-import { ui, uiStore } from "../app/ui-store";
-import { router, useRoute } from "../app/router";
+import { ui } from "../app/ui-store";
+import { router } from "../app/router";
 import { ChatSessionList } from "./ChatSessionList";
 import { ChatMessageList } from "./ChatMessageList";
-import { ChatComposer } from "./ChatComposer";
+import { ChatComposer, type ChatComposerApi } from "./ChatComposer";
 import { ChatSettings } from "./ChatSettings";
 import { PythonStatusBadge } from "./PythonStatusBadge";
 import type { ChatModelEntry, ChatSessionMeta } from "./types";
@@ -22,6 +21,12 @@ export function ChatModeView(): ReactElement {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [loading, setLoading] = useState(true);
+  /** 发送成功后递增，驱动 ChatMessageList 重拉历史（自己的消息立即可见）。 */
+  const [messagesVersion, setMessagesVersion] = useState(0);
+  /** 首页空态（居中问候 + 居中输入框）：无会话或新建会话尚未发消息时为 true。 */
+  const [fresh, setFresh] = useState(false);
+  /** ChatComposer 建议行注入接口。 */
+  const composerApi = useRef<ChatComposerApi | undefined>(undefined);
 
   // 无可用 provider（未配置任何模型）时禁用新建会话
   const canCreate = models.some((entry) => entry.models.length > 0);
@@ -55,7 +60,8 @@ export function ChatModeView(): ReactElement {
     setLoading(false);
   }
 
-  async function createSession(): Promise<void> {
+  /** 新建会话并选中；成功返回会话 id（首页直发时由 ChatComposer ensureSession 调用）。 */
+  async function createSession(): Promise<string | undefined> {
     // provider/model 取全局 chat 配置默认，缺省取可用模型列表首项；无可用 provider 时不创建
     try {
       const configRes = await fetch("/api/chat/config", { credentials: "include" });
@@ -64,7 +70,7 @@ export function ChatModeView(): ReactElement {
       const model = config.defaultModel ?? models.find((entry) => entry.models.length > 0)?.models[0]?.id;
       if (!provider || !model) {
         ui.notify(t("尚未配置可用模型，请先在设置中配置服务商", "No model available; configure a provider in Settings first"), "error");
-        return;
+        return undefined;
       }
 
       const res = await fetch("/api/chat/sessions", {
@@ -77,17 +83,34 @@ export function ChatModeView(): ReactElement {
         const session = (await res.json()) as ChatSessionMeta;
         setSessions((previous) => [session, ...previous]);
         setActiveSessionId(session.id);
-      } else {
-        ui.notify(t("创建对话失败", "Failed to create chat"), "error");
+        setFresh(true);
+        return session.id;
       }
+      ui.notify(t("创建对话失败", "Failed to create chat"), "error");
     } catch {
       ui.notify(t("创建对话失败", "Failed to create chat"), "error");
     }
+    return undefined;
   }
 
   async function handleDeleted(id: string): Promise<void> {
-    if (activeSessionId === id) setActiveSessionId(undefined);
+    if (activeSessionId === id) {
+      setActiveSessionId(undefined);
+      setFresh(false);
+    }
     await loadSessions();
+  }
+
+  function handleSelect(id: string): void {
+    setFresh(false);
+    setActiveSessionId(id);
+  }
+
+  /** 首页空态发送成功后切回常规布局并刷新。 */
+  function handleSent(): void {
+    setFresh(false);
+    setMessagesVersion((version) => version + 1);
+    void loadSessions();
   }
 
   if (loading) {
@@ -97,42 +120,76 @@ export function ChatModeView(): ReactElement {
   const activeTitle = sessions.find((s) => s.id === activeSessionId)?.title;
 
   return (
-    <div className="chat-mode-shell">
-      <div className={`chat-sidebar${sidebarCollapsed ? " collapsed" : ""}`}>
+    <div className={`chat-mode-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
+      <div className="chat-sidebar">
         <div className="chat-sidebar-header">
           <button
-            className="btn small primary"
+            className="chat-sidebar-row"
             disabled={!canCreate}
             title={canCreate ? undefined : t("尚未配置可用模型，请先在设置中配置服务商", "No model available; configure a provider in Settings first")}
             onClick={() => void createSession()}
           >
-            <Icon name="plus" /> {t("新建对话", "New Chat")}
+            <Icon name="edit" /> {t("新对话", "New chat")}
           </button>
           <button
             className="icon-btn"
             aria-label={t("收起侧边栏", "Collapse sidebar")}
             onClick={() => setSidebarCollapsed(true)}
           >
-            <Icon name="x" />
+            <Icon name="chevrons-left" />
           </button>
         </div>
         <ChatSessionList
           sessions={sessions}
           activeId={activeSessionId}
-          onSelect={setActiveSessionId}
+          onSelect={handleSelect}
           onRefresh={() => void loadSessions()}
           onDeleted={(id) => void handleDeleted(id)}
         />
+        <div className="chat-sidebar-footer">
+          <button
+            className="chat-sidebar-row"
+            onClick={() => {
+              ui.setMode("workbench");
+              router.navigate("/workbench");
+            }}
+          >
+            <Icon name="terminal" /> {t("工作台", "Workbench")}
+          </button>
+        </div>
       </div>
       <div className="chat-main">
         <div className="chat-main-header">
-          <button
-            className="icon-btn"
-            aria-label={t("切换侧边栏", "Toggle sidebar")}
-            onClick={() => setSidebarCollapsed((collapsed) => !collapsed)}
-          >
-            <Icon name="panel-left" />
-          </button>
+          {sidebarCollapsed && (
+            <>
+              <button
+                className="icon-btn"
+                aria-label={t("展开侧边栏", "Expand sidebar")}
+                onClick={() => setSidebarCollapsed(false)}
+              >
+                <Icon name="panel-left" />
+              </button>
+              <button
+                className="icon-btn"
+                aria-label={t("新对话", "New chat")}
+                disabled={!canCreate}
+                onClick={() => void createSession()}
+              >
+                <Icon name="edit" />
+              </button>
+              <button
+                className="icon-btn"
+                aria-label={t("工作台", "Workbench")}
+                title={t("工作台", "Workbench")}
+                onClick={() => {
+                  ui.setMode("workbench");
+                  router.navigate("/workbench");
+                }}
+              >
+                <Icon name="terminal" />
+              </button>
+            </>
+          )}
           <span className="title">{activeTitle ?? t("新对话", "New Chat")}</span>
           {activeSessionId && <PythonStatusBadge sessionId={activeSessionId} />}
           {activeSessionId && (
@@ -144,19 +201,34 @@ export function ChatModeView(): ReactElement {
               <Icon name="settings" />
             </button>
           )}
-          <ModeToggle />
         </div>
-        {activeSessionId ? (
+        {activeSessionId && !fresh ? (
           <>
-            <ChatMessageList sessionId={activeSessionId} />
-            <ChatComposer sessionId={activeSessionId} onSent={() => void loadSessions()} />
+            <ChatMessageList sessionId={activeSessionId} reloadToken={messagesVersion} />
+            <ChatComposer sessionId={activeSessionId} onSent={handleSent} />
           </>
         ) : (
-          <div className="chat-empty">
-            <p>{t("开始新对话", "Start a new conversation")}</p>
-            <button className="btn primary" disabled={!canCreate} onClick={() => void createSession()}>
-              {t("新建对话", "New Chat")}
-            </button>
+          <div className="chat-home">
+            <h1 className="chat-home-greeting">{t("有什么可以帮忙的？", "What can I help with?")}</h1>
+            <ChatComposer
+              sessionId={activeSessionId}
+              ensureSession={createSession}
+              onSent={handleSent}
+              apiRef={composerApi}
+            />
+            <div className="chat-suggestions">
+              {SUGGESTIONS.map((suggestion) => (
+                <button
+                  key={suggestion.icon}
+                  type="button"
+                  className="chat-suggestion"
+                  onClick={() => composerApi.current?.insert(t(suggestion.zh, suggestion.en))}
+                >
+                  <Icon name={suggestion.icon} size={16} />
+                  {t(suggestion.labelZh, suggestion.labelEn)}
+                </button>
+              ))}
+            </div>
             {!canCreate && (
               <p className="chat-muted-hint">
                 {t("尚未配置可用模型，请先在设置中配置服务商", "No model available; configure a provider in Settings first")}
@@ -182,22 +254,9 @@ export function ChatModeView(): ReactElement {
   );
 }
 
-/** chat / workbench 模式切换：写 ui store 并同步路由。 */
-function ModeToggle(): ReactElement {
-  const { t } = useI18n();
-  const mode = useStore(uiStore, (s) => s.mode);
-  useRoute(); // 订阅路由变化，保证 navigate 后按钮文案即时刷新
-
-  return (
-    <button
-      className="btn small"
-      onClick={() => {
-        const next = mode === "chat" ? "workbench" : "chat";
-        ui.setMode(next);
-        router.navigate(next === "chat" ? "/" : "/workbench");
-      }}
-    >
-      {mode === "chat" ? t("工作台", "Workbench") : t("聊天", "Chat")}
-    </button>
-  );
-}
+/** 首页空态建议行（ChatGPT 风格）：点击注入引导文本并聚焦输入框。 */
+const SUGGESTIONS: Array<{ icon: IconName; labelZh: string; labelEn: string; zh: string; en: string }> = [
+  { icon: "image", labelZh: "生成图片", labelEn: "Generate an image", zh: "帮我生成一张图片：", en: "Generate an image of " },
+  { icon: "edit", labelZh: "撰写或编辑", labelEn: "Write or edit", zh: "帮我写", en: "Help me write " },
+  { icon: "search", labelZh: "搜索网页", labelEn: "Search the web", zh: "搜索一下：", en: "Search the web for " },
+];

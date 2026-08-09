@@ -13,6 +13,40 @@ interface RenameTarget {
   title: string;
 }
 
+interface SessionGroup {
+  label: string;
+  items: ChatSessionMeta[];
+}
+
+/** 按 updatedAt 分组（今天/昨天/过去 7 天/更早），ChatGPT 侧栏风格；组内保持 updatedAt 倒序。 */
+function groupSessionsByDate(
+  sessions: ChatSessionMeta[],
+  t: (chinese: string, english: string) => string,
+): SessionGroup[] {
+  const sorted = [...sessions].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const dayMs = 24 * 60 * 60 * 1000;
+  const groups: SessionGroup[] = [];
+  for (const session of sorted) {
+    const ts = new Date(session.updatedAt).getTime();
+    const label = Number.isNaN(ts) || ts >= startOfToday
+      ? t("今天", "Today")
+      : ts >= startOfToday - dayMs
+        ? t("昨天", "Yesterday")
+        : ts >= startOfToday - 7 * dayMs
+          ? t("过去 7 天", "Previous 7 days")
+          : t("更早", "Older");
+    let group = groups.find((candidate) => candidate.label === label);
+    if (!group) {
+      group = { label, items: [] };
+      groups.push(group);
+    }
+    group.items.push(session);
+  }
+  return groups;
+}
+
 export function ChatSessionList(props: {
   sessions: ChatSessionMeta[];
   activeId?: string;
@@ -172,25 +206,32 @@ export function ChatSessionList(props: {
     action();
   }
 
+  const groups = groupSessionsByDate(props.sessions, t);
+
   return (
     <div className="chat-sidebar-list">
-      {props.sessions.map((session) => (
-        <div
-          key={session.id}
-          className={`chat-session-item${session.id === props.activeId ? " active" : ""}`}
-          onClick={() => props.onSelect(session.id)}
-        >
-          <span className="title">{session.title}</span>
-          <button
-            className="icon-btn"
-            aria-label={t("更多操作", "More actions")}
-            onClick={(event) => {
-              event.stopPropagation();
-              setMenuSession(session);
-            }}
-          >
-            <Icon name="chevron-down" />
-          </button>
+      {groups.map((group) => (
+        <div key={group.label}>
+          <div className="chat-session-group">{group.label}</div>
+          {group.items.map((session) => (
+            <div
+              key={session.id}
+              className={`chat-session-item${session.id === props.activeId ? " active" : ""}`}
+              onClick={() => props.onSelect(session.id)}
+            >
+              <span className="title">{session.title}</span>
+              <button
+                className="icon-btn chat-session-menu"
+                aria-label={t("更多操作", "More actions")}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setMenuSession(session);
+                }}
+              >
+                <Icon name="more" />
+              </button>
+            </div>
+          ))}
         </div>
       ))}
       {props.sessions.length === 0 && (
