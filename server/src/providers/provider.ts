@@ -14,6 +14,10 @@ export interface StreamChatRequest {
   effort?: EffortLevel;
   /** Per-request output ceiling used by internal fast-model calls. */
   maxTokens?: number;
+  /** 采样温度（请求级，chat 模式助手预设/会话配置下发）；undefined 时由端点默认决定。 */
+  temperature?: number;
+  /** nucleus 采样 top_p（请求级）；与 temperature 同通道下发。 */
+  topP?: number;
   /** 稳定系统前缀：同会话连续 turn 应逐字节一致，供 prompt cache 命中。 */
   system: string;
   /** 动态系统尾部（逐 turn 变化的通知等），独立成块以免污染稳定前缀的缓存。 */

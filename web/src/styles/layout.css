@@ -662,3 +662,22 @@
     scroll-behavior: auto !important;
   }
 }
+
+/* 聊天模式占位页（Phase 4，Phase 5 由 ChatModeView 替换） */
+.chat-mode-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  height: 100vh;
+  color: var(--text-3);
+}
+
+/* 工作台右下角的模式切换入口（仅聊天模式启用时渲染） */
+.mode-toggle {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: var(--z-overlay);
+}

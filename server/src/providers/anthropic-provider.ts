@@ -53,6 +53,9 @@ export class AnthropicProvider implements Provider {
           ...(anthropicThinking(request, maxTokens) ? { thinking: anthropicThinking(request, maxTokens)! } : {}),
           // ultra 超出 Anthropic 枚举（SDK 只声明到 max）：封顶 max 透传，其余原样
           ...(request.effort ? { output_config: { effort: request.effort === "ultra" ? "max" as const : request.effort } } : {}),
+          // 请求级采样参数（chat 模式助手预设下发）；undefined 时不发，由端点默认决定
+          ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
+          ...(request.topP !== undefined ? { top_p: request.topP } : {}),
           system: toAnthropicSystem(request, caching),
           messages: toAnthropicMessages(request.messages, messageBreakpoints(request, caching)),
           ...(request.tools.length > 0 ? { tools: toAnthropicTools(request.tools, caching) } : {}),
@@ -176,18 +179,21 @@ function toAnthropicMessages(messages: ChatMessage[], breakpoints: ReadonlySet<s
     } else if (message.role === "user") {
       result = {
         role: "user",
-        content: message.content
-          .filter((block) => block.type === "text" || block.type === "image")
-          .map((block): Anthropic.ContentBlockParam => block.type === "text"
-            ? { type: "text" as const, text: block.text }
-            : {
-                type: "image" as const,
-                source: {
-                  type: "base64" as const,
-                  media_type: block.mediaType as "image/png" | "image/jpeg" | "image/gif" | "image/webp",
-                  data: block.data,
-                },
-              }),
+        content: message.content.flatMap((block): Anthropic.ContentBlockParam[] => {
+          if (block.type === "text") return [{ type: "text" as const, text: block.text }];
+          // ref 形态（chat 落盘图）由调用方内联为 data 后才进 provider；缺 data 的块跳过
+          if (block.type === "image" && block.data) {
+            return [{
+              type: "image" as const,
+              source: {
+                type: "base64" as const,
+                media_type: block.mediaType as "image/png" | "image/jpeg" | "image/gif" | "image/webp",
+                data: block.data,
+              },
+            }];
+          }
+          return [];
+        }),
       };
     } else {
       const content: Anthropic.ContentBlockParam[] = [];

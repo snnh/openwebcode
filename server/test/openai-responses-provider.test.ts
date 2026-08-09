@@ -306,6 +306,19 @@ describe("OpenAIResponsesProvider request mapping", () => {
     ]);
   });
 
+  it("请求级 temperature/topP 透传为 temperature/top_p；携带 effort（推理档）时不下发", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    await drain(makeProvider(sseFetch(bodies, COMPLETED)).streamChat(request({ temperature: 0.7, topP: 0.9 })));
+    expect(bodies[0]?.temperature).toBe(0.7);
+    expect(bodies[0]?.top_p).toBe(0.9);
+
+    // 推理档端点拒绝 sampling 参数：provider 不下发，避免 400
+    const reasoningBodies: Array<Record<string, unknown>> = [];
+    await drain(makeProvider(sseFetch(reasoningBodies, COMPLETED)).streamChat(request({ temperature: 0.7, topP: 0.9, effort: "low" })));
+    expect(reasoningBodies[0]?.temperature).toBeUndefined();
+    expect(reasoningBodies[0]?.top_p).toBeUndefined();
+  });
+
   it("思维链回传开启时同源 thinking 块以 reasoning item 明文回传（每个 function_call 前各一条），关闭或异源不回传", async () => {
     const bodies: Array<Record<string, unknown>> = [];
     const payload = COMPLETED;
@@ -585,6 +598,19 @@ describe("provider custom request body (extraBody)", () => {
     const limited: Array<Record<string, unknown>> = [];
     await drain(new OpenAICompatibleProvider({ baseURL: "https://example.invalid/v1", maxTokens: 4096, fetch: reasoningSseFetch(limited) }).streamChat(reasoningRequest()));
     expect(limited[0]).toMatchObject({ max_tokens: 4096 });
+  });
+
+  it("请求级 temperature/topP 映射为 temperature/top_p（覆盖 extraBody 同名字段）", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    await drain(new OpenAICompatibleProvider({ baseURL: "https://example.invalid/v1", fetch: reasoningSseFetch(bodies) })
+      .streamChat(reasoningRequest({ temperature: 0.7, topP: 0.9 })));
+    expect(bodies[0]).toMatchObject({ temperature: 0.7, top_p: 0.9 });
+
+    // 未下发时不发这两个字段，由端点默认决定
+    const plain: Array<Record<string, unknown>> = [];
+    await drain(new OpenAICompatibleProvider({ baseURL: "https://example.invalid/v1", fetch: reasoningSseFetch(plain) }).streamChat(reasoningRequest()));
+    expect(plain[0]).not.toHaveProperty("temperature");
+    expect(plain[0]).not.toHaveProperty("top_p");
   });
 
   it("anthropic merges extraBody and lets extraBody.max_tokens override the default", async () => {

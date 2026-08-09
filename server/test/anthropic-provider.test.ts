@@ -229,4 +229,17 @@ describe("Anthropic prompt cache 断点", () => {
     const legacyUsage = legacy.find((event) => event.type === "usage") as unknown as { cacheRead: number; cacheWrite: number };
     expect(legacyUsage).toMatchObject({ cacheRead: 0, cacheWrite: 0 });
   });
+
+  it("请求级 temperature/topP 映射为 temperature/top_p；未下发时不携带", async () => {
+    const provider = new AnthropicProvider({ apiKey: "test" });
+    const bodies: Array<Record<string, unknown>> = [];
+    injectMockStream(provider, bodies);
+    await collect(provider.streamChat(request({ temperature: 0.7, topP: 0.9 })));
+    expect(bodies[0]).toMatchObject({ temperature: 0.7, top_p: 0.9 });
+
+    injectMockStream(provider, bodies);
+    await collect(provider.streamChat(request()));
+    expect(bodies[1]).not.toHaveProperty("temperature");
+    expect(bodies[1]).not.toHaveProperty("top_p");
+  });
 });

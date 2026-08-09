@@ -1,4 +1,5 @@
 import type { AgentRunner } from "./agent/agent-runner.js";
+import type { ChatRunner } from "./chat/chat-runner.js";
 import type { ModelRegistry, ModelProviderCredentials, RefreshReport } from "./context/model-registry.js";
 import type { EventBus } from "./events/event-bus.js";
 import { AnthropicProvider } from "./providers/anthropic-provider.js";
@@ -12,6 +13,8 @@ import { createProfileSearchProvider, createProfileWebFetchProvider } from "./we
 export class ProviderProfilesRuntime {
   private managedProviders = new Set<string>();
   private unsubscribe: (() => void) | undefined;
+  /** chat 执行引擎（可选）：注入后搜索/抓取服务商变更同步热更新到 chat 工具上下文 */
+  private chatRunner: ChatRunner | undefined;
 
   constructor(
     private readonly profiles: ProviderProfilesService,
@@ -20,6 +23,12 @@ export class ProviderProfilesRuntime {
     private readonly models: ModelRegistry | undefined,
     private readonly events: EventBus,
   ) {}
+
+  /** 装配顺序上 ChatRunner 晚于本对象创建，故以 setter 注入；注入即同步一次当前 web 服务商。 */
+  setChatRunner(chatRunner: ChatRunner): void {
+    this.chatRunner = chatRunner;
+    this.syncChatWebProviders();
+  }
 
   start(): void {
     this.apply();
@@ -100,7 +109,16 @@ export class ProviderProfilesRuntime {
     const selected = this.profiles.selectedWebProfiles();
     this.agent.setSearchProvider(createProfileSearchProvider(selected.search));
     this.agent.setWebFetchProvider(createProfileWebFetchProvider(selected.fetch));
+    this.syncChatWebProviders();
     this.events.publish({ source: "server", type: "provider_profiles.updated", payload: this.profiles.view() });
+  }
+
+  /** chat 侧搜索/抓取服务商热更新：与基础模式 agent 同一份 selectedWebProfiles。 */
+  private syncChatWebProviders(): void {
+    if (!this.chatRunner) return;
+    const selected = this.profiles.selectedWebProfiles();
+    this.chatRunner.setSearchProvider(createProfileSearchProvider(selected.search));
+    this.chatRunner.setWebFetchProvider(createProfileWebFetchProvider(selected.fetch));
   }
 }
 

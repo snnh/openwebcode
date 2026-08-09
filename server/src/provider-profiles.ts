@@ -6,7 +6,7 @@ import { ensureDirWithMode } from "./fs-utils.js";
 
 export type ModelInterfaceType = "anthropic-messages" | "openai-chat-completions" | "openai-responses";
 export type WebCapability = "search" | "fetch";
-export type WebProviderType = "jina" | "brave" | "tavily" | "custom";
+export type WebProviderType = "jina" | "brave" | "tavily" | "custom" | "bing" | "searxng" | "exa" | "linkup" | "bocha" | "firecrawl";
 
 export interface ModelProviderProfile {
   id: string;
@@ -27,6 +27,8 @@ export interface WebProviderProfile {
   apiKey?: string;
   searchBaseURL?: string;
   fetchBaseURL?: string;
+  searchDepth?: "basic" | "advanced";
+  resultCount?: number;
 }
 
 interface ProviderProfilesDocument {
@@ -101,9 +103,9 @@ function uniqueCapabilities(value: unknown): WebCapability[] {
 }
 
 function capabilitiesFor(provider: WebProviderType, requested?: unknown): WebCapability[] {
-  if (provider === "jina" || provider === "tavily") return ["search", "fetch"];
-  if (provider === "brave") return ["search"];
-  return uniqueCapabilities(requested);
+  if (provider === "jina" || provider === "tavily" || provider === "firecrawl") return ["search", "fetch"];
+  if (provider === "brave" || provider === "bing" || provider === "exa" || provider === "linkup" || provider === "bocha" || provider === "searxng") return ["search"];
+  return uniqueCapabilities(requested);  // custom
 }
 
 /** 自定义请求体禁止覆盖的字段：这些由 server 按协议语义强制构造。 */
@@ -160,17 +162,26 @@ function normalizeWeb(value: unknown): WebProviderProfile {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new ProviderProfilesValidationError("联网服务商配置必须是对象");
   const raw = value as Record<string, unknown>;
   const id = requireId(raw.id);
-  if (raw.provider !== "jina" && raw.provider !== "brave" && raw.provider !== "tavily" && raw.provider !== "custom") {
-    throw new ProviderProfilesValidationError("联网服务类型必须是 jina / brave / tavily / custom");
+  const VALID_PROVIDERS: readonly string[] = ["jina", "brave", "tavily", "custom", "bing", "searxng", "exa", "linkup", "bocha", "firecrawl"];
+  if (typeof raw.provider !== "string" || !VALID_PROVIDERS.includes(raw.provider)) {
+    throw new ProviderProfilesValidationError(`联网服务类型必须是 ${VALID_PROVIDERS.join(" / ")}`);
   }
-  const capabilities = capabilitiesFor(raw.provider, raw.capabilities);
+  const provider = raw.provider as WebProviderType;
+  const capabilities = capabilitiesFor(provider, raw.capabilities);
   const apiKey = optionalSecret(raw.apiKey);
   const searchBaseURL = optionalHttpUrl(raw.searchBaseURL, "Search Base URL");
   const fetchBaseURL = optionalHttpUrl(raw.fetchBaseURL, "Fetch Base URL");
-  if ((raw.provider === "brave" || raw.provider === "tavily") && !apiKey) {
-    throw new ProviderProfilesValidationError(`${raw.provider} 必须配置 API Key`);
+  const searchDepth = raw.searchDepth === "advanced" ? "advanced" as const : raw.searchDepth === "basic" ? "basic" as const : undefined;
+  const resultCount = raw.resultCount !== undefined ? (Number.isSafeInteger(raw.resultCount) && (raw.resultCount as number) > 0 ? raw.resultCount as number : undefined) : undefined;
+  // API Key 要求：brave/tavily/exa/linkup/bocha/firecrawl 必须配置；bing 可选（用 Ocp-Apim-Subscription-Key）；searxng 可无认证
+  const requiresKey = provider === "brave" || provider === "tavily" || provider === "exa" || provider === "linkup" || provider === "bocha" || provider === "firecrawl";
+  if (requiresKey && !apiKey) {
+    throw new ProviderProfilesValidationError(`${provider} 必须配置 API Key`);
   }
-  if (raw.provider === "custom") {
+  if (provider === "searxng" && !searchBaseURL) {
+    throw new ProviderProfilesValidationError("SearXNG 必须配置实例地址（Search Base URL）");
+  }
+  if (provider === "custom") {
     if (capabilities.includes("search") && !searchBaseURL) throw new ProviderProfilesValidationError("自定义 search 能力必须配置 Search Base URL");
     if (capabilities.includes("fetch") && (!fetchBaseURL || !fetchBaseURL.includes("{url}"))) {
       throw new ProviderProfilesValidationError("自定义 fetch 能力必须配置包含 {url} 的 Fetch Base URL");
@@ -178,11 +189,13 @@ function normalizeWeb(value: unknown): WebProviderProfile {
   }
   return {
     id,
-    provider: raw.provider,
+    provider,
     capabilities,
     ...(apiKey ? { apiKey } : {}),
     ...(searchBaseURL ? { searchBaseURL } : {}),
     ...(fetchBaseURL ? { fetchBaseURL } : {}),
+    ...(searchDepth ? { searchDepth } : {}),
+    ...(resultCount ? { resultCount } : {}),
   };
 }
 

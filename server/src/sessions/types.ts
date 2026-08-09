@@ -32,11 +32,17 @@ export interface ToolResultContent {
   subagentTasks?: Array<{ taskId: string; index: number; status: "done" | "failed"; error?: string }>;
 }
 
-/** 用户消息中的图片块（base64 内联，mediaType 限 image/png|jpeg|webp|gif）。 */
+/**
+ * 图片块（mediaType 限 image/png|jpeg|webp|gif）。两种形态至少其一：
+ * - data：base64 内联（chat 模式 ≤2MB 直接存 messages.jsonl）
+ * - ref：sessionDir 相对落盘路径（chat 模式 >2MB 图与生成图；仅 uploads/ 或 generated/ 前缀），
+ *   进 provider 前由调用方内联为 data。
+ */
 export interface ImageContent {
   type: "image";
   mediaType: string;
-  data: string;
+  data?: string;
+  ref?: string;
 }
 
 export type MessageContent = TextContent | ThinkingContent | ToolCallContent | ToolResultContent | ImageContent;
