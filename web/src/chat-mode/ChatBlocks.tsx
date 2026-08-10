@@ -1,7 +1,7 @@
 // 消息内容块渲染：text / image / tool_call / tool_result。
 // ChatMessageList 与 ShareView 共用（图片 ref 经 resolveImageRef 回调区分会话内与分享面路由）。
 // tool_call 与配对的 tool_result 合并为一个可折叠块（默认折叠，ChatGPT「分析步骤」风格）。
-import { useState, type ReactElement } from "react";
+import { memo, useMemo, useState, type ReactElement } from "react";
 import { useI18n } from "../i18n";
 import { Markdown } from "../components/Markdown";
 import { Icon } from "../components/Icon";
@@ -21,12 +21,14 @@ export function ChatBlocks({ content, resolveImageRef }: {
     }
     if (block.type === "image") {
       // 内联块用 data: URI；ref 块经调用方路由取字节
-      const src = block.data
-        ? `data:${block.mediaType ?? "image/png"};base64,${block.data}`
-        : block.ref
-          ? resolveImageRef(block.ref)
-          : undefined;
-      if (src) items.push(<img key={index} src={src} alt="" className="chat-block-image" />);
+      items.push(
+        <ChatImage
+          key={index}
+          data={block.data}
+          mediaType={block.mediaType}
+          refSrc={block.ref ? resolveImageRef(block.ref) : undefined}
+        />,
+      );
       continue;
     }
     if (block.type === "tool_call") {
@@ -57,6 +59,23 @@ export function ChatBlocks({ content, resolveImageRef }: {
   }
   return <>{items}</>;
 }
+
+/**
+ * 图片块（memo）：内嵌 base64 图（≤2MB）的 data: URI 拼接按块缓存，
+ * 流式期间父列表重渲染时不再每帧×每图重建整条 URI。
+ */
+const ChatImage = memo(function ChatImage({ data, mediaType, refSrc }: {
+  data?: string;
+  mediaType?: string;
+  refSrc?: string;
+}): ReactElement | null {
+  const src = useMemo(
+    () => (data ? `data:${mediaType ?? "image/png"};base64,${data}` : refSrc),
+    [data, mediaType, refSrc],
+  );
+  if (!src) return null;
+  return <img src={src} alt="" className="chat-block-image" />;
+});
 
 function ToolBlock({ name, input, result, isError }: {
   name: string;

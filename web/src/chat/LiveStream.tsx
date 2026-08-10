@@ -1,10 +1,22 @@
-import type { ReactElement, ReactNode } from "react";
+import { memo, useMemo, type ReactElement, type ReactNode } from "react";
 import { summarizeToolInput } from "../lib/tool-format";
 import { Markdown } from "../components/Markdown";
 import { useI18n } from "../i18n";
 import { ThinkingBlock } from "./MessageCard";
 import { ToolCallGroupRow, ToolCallListGroup, type ToolGroupCall } from "./ToolCallGroups";
 import type { LiveStreamProps, StreamBlock } from "./types";
+
+/** 流式文本块（memo）：stream-buffer 提交时未触碰的块保持引用稳定，只有末尾活跃块重 join/重渲染 */
+const LiveTextBlock = memo(function LiveTextBlock({ block }: { block: StreamBlock }): ReactElement {
+  const text = useMemo(() => block.parts.join(""), [block]);
+  return <Markdown>{text}</Markdown>;
+});
+
+/** 流式思考块（memo）：同上，块引用不变则跳过 join */
+const LiveThinkingBlock = memo(function LiveThinkingBlock({ block }: { block: StreamBlock }): ReactElement {
+  const text = useMemo(() => block.parts.join(""), [block]);
+  return <ThinkingBlock text={text} streaming />;
+});
 
 /** 流式工具调用块 → 组内行：参数增量原文在行内展开区展示；增量构成合法 JSON 时给出参数摘要 */
 function streamGroupCall(block: StreamBlock, t: (chinese: string, english: string) => string): ToolGroupCall {
@@ -40,10 +52,10 @@ export function LiveStream({ blocks, turn }: LiveStreamProps): ReactElement | nu
         ? <ToolCallListGroup key={calls[0]!.id} calls={calls} defaultOpen />
         : <ToolCallGroupRow key={calls[0]!.id} call={calls[0]!} />);
     } else if (block.kind === "thinking") {
-      items.push(<ThinkingBlock key={block.id} text={block.parts.join("")} streaming />);
+      items.push(<LiveThinkingBlock key={block.id} block={block} />);
       index += 1;
     } else {
-      items.push(<Markdown key={block.id}>{block.parts.join("")}</Markdown>);
+      items.push(<LiveTextBlock key={block.id} block={block} />);
       index += 1;
     }
   }
