@@ -1,4 +1,4 @@
-import type { ChatMessage, ImageContent, ThinkingContent } from "../sessions/types.js";
+import type { ChatMessage, ImageContent, ThinkingContent, ToolCallContent } from "../sessions/types.js";
 import { getUserAgent } from "../http.js";
 import { classifyHttpError, normalizeProviderError, parseRetryAfter, ProviderError, truncateErrorDetail } from "./provider-error.js";
 import type { Provider, ProviderEvent, StreamChatRequest } from "./provider.js";
@@ -244,7 +244,19 @@ function idleTimeoutError(idleTimeoutMs: number): ProviderError {
 }
 
 function toOpenAIMessages(system: string, messages: ChatMessage[], providerName?: string, reasoningContent = true): Array<Record<string, unknown>> {
+  // 配对修复（与 openai-responses-provider 同款）：tool_call 与 tool 消息必须一一对应，
+  // 否则端点 400（"tool_call_id is not found" / "must be followed by tool messages"）。
+  // 孤儿来源：!shell 直写 shell-* tool_result（无 assistant tool_call）、中断/崩溃时
+  // 结果未落盘、压缩边界裁掉 assistant 留结果。先收集 tool_result 映射，tool_call 发出后
+  // 立即内联对应 tool 消息（缺失补占位），tool 角色消息不再单独输出（游离结果丢弃）。
+  const outputs = new Map<string, string>();
+  for (const message of messages) {
+    for (const block of message.content) {
+      if (block.type === "tool_result" && !outputs.has(block.toolCallId)) outputs.set(block.toolCallId, block.content);
+    }
+  }
   const result: Array<Record<string, unknown>> = [{ role: "system", content: system }];
+  const emitted = new Set<string>();
   for (const message of messages) {
     if (message.role === "user") {
       const images = message.content.filter((block): block is ImageContent & { data: string } =>
@@ -264,13 +276,15 @@ function toOpenAIMessages(system: string, messages: ChatMessage[], providerName?
             ],
       });
     } else if (message.role === "assistant") {
+      // 同一 id 在多条 assistant 消息重复出现时只发一次（重复 tool_calls 会被端点拒绝）
       const toolCalls = message.content
-        .filter((block) => block.type === "tool_call")
+        .filter((block): block is ToolCallContent => block.type === "tool_call" && !emitted.has(block.id))
         .map((block) => ({
           id: block.id,
           type: "function",
           function: { name: block.name, arguments: JSON.stringify(block.input) },
         }));
+      for (const call of toolCalls) emitted.add(call.id);
       // 思维链保留回传：只回带同源 provider 的 thinking 块（Anthropic 走自己的签名回放，
       // 异 provider 的 thinking 对当前端点无意义），含 tool_calls 的消息同样回带。
       const reasoning = reasoningContent && providerName
@@ -288,13 +302,16 @@ function toOpenAIMessages(system: string, messages: ChatMessage[], providerName?
         ...(reasoning ? { reasoning_content: reasoning } : {}),
         ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
       });
-    } else {
-      for (const block of message.content) {
-        if (block.type === "tool_result") {
-          result.push({ role: "tool", tool_call_id: block.toolCallId, content: block.content });
-        }
+      // 每个 tool_call 立即跟对应 tool 消息；结果缺失（中断未落盘）补占位，保证配对
+      for (const call of toolCalls) {
+        result.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: outputs.get(call.id) ?? "The run was interrupted before this tool finished; no result was produced.",
+        });
       }
     }
+    // tool 角色消息的 tool_result 已内联到对应 assistant 之后，游离者丢弃（见上文）
   }
   return result;
 }

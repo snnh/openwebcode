@@ -120,6 +120,17 @@ describe("ScmService（0.4.0 Phase 4a，真实 git 集成）", () => {
     expect(log.stdout).toContain("add c");
   });
 
+  it("git_commit 提交信息文件落在工作区 .git/ 内（沙盒挂载面内可读），不污染 git status", async () => {
+    const { repo, session, scm } = await setup();
+    await writeFile(path.join(repo, "m.txt"), "m\n");
+    const result = await scm.commit(session.id, repo, { message: "msg file in git dir", stageAll: true });
+    expect(result.commit).toMatch(/^[0-9a-f]{40}$/);
+    // 文件真实写在 <cwd>/.git/ 下（沙盒只挂载 cwd，git 能读到即证明路径在挂载面内）
+    expect(await readFile(path.join(repo, ".git", `owc-commit-${session.id}.txt`), "utf8")).toBe("msg file in git dir");
+    // .git 内部文件不进 status
+    expect(result.status.totals).toEqual({ staged: 0, unstaged: 0, untracked: 0 });
+  });
+
   it("git_commit 参数白名单：危险 flag / 绝对路径 / .. 一律拒绝", async () => {
     const { repo, session, scm } = await setup();
     await writeFile(path.join(repo, "d.txt"), "d\n");

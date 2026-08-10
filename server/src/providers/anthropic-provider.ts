@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { ChatMessage } from "../sessions/types.js";
+import type { ChatMessage, ToolResultContent } from "../sessions/types.js";
 import { getUserAgent } from "../http.js";
 import { normalizeProviderError } from "./provider-error.js";
 import type { Provider, ProviderEvent, ProviderTool, StreamChatRequest } from "./provider.js";
@@ -162,22 +162,65 @@ function toAnthropicTools(tools: ProviderTool[], caching: boolean): Anthropic.To
 }
 
 function toAnthropicMessages(messages: ChatMessage[], breakpoints: ReadonlySet<string>): Anthropic.MessageParam[] {
-  return messages.map((message): Anthropic.MessageParam => {
-    let result: Anthropic.MessageParam;
-    if (message.role === "tool") {
-      result = {
-        role: "user",
-        content: message.content
-          .filter((block) => block.type === "tool_result")
-          .map((block) => ({
-            type: "tool_result" as const,
-            tool_use_id: block.toolCallId,
-            content: block.content,
-            is_error: block.isError,
-          })),
+  // 配对修复（与 openai-responses-provider 同款）：tool_use 与 tool_result 必须一一对应，
+  // 否则端点 400（"unexpected tool_use_id" / "tool_use ids were found without tool_result"）。
+  // 孤儿来源：!shell 直写 shell-* tool_result（无 assistant tool_use）、中断/崩溃时结果未落盘、
+  // 压缩边界裁掉 assistant 留结果。游离 tool_result 丢弃；缺失结果在随后 user 消息补占位。
+  const outputs = new Map<string, { content: string; isError?: boolean }>();
+  const knownCallIds = new Set<string>();
+  for (const message of messages) {
+    for (const block of message.content) {
+      if (block.type === "tool_result" && !outputs.has(block.toolCallId)) {
+        outputs.set(block.toolCallId, { content: block.content, ...(block.isError ? { isError: true } : {}) });
+      } else if (block.type === "tool_call") {
+        knownCallIds.add(block.id);
+      }
+    }
+  }
+  const placeholderResults = (ids: readonly string[]): Anthropic.ContentBlockParam[] =>
+    ids.map((id) => {
+      const output = outputs.get(id);
+      return {
+        type: "tool_result" as const,
+        tool_use_id: id,
+        content: output?.content ?? "The run was interrupted before this tool finished; no result was produced.",
+        ...(output?.isError ? { is_error: true } : {}),
       };
+    });
+  const result: Anthropic.MessageParam[] = [];
+  const emittedCallIds = new Set<string>();
+  let pendingCallIds: string[] = [];
+  const pushMessage = (message: ChatMessage, mapped: Anthropic.MessageParam): void => {
+    if (breakpoints.has(message.id) && Array.isArray(mapped.content) && mapped.content.length > 0) {
+      const last = mapped.content.length - 1;
+      mapped.content[last] = { ...mapped.content[last], cache_control: { type: "ephemeral" } } as typeof mapped.content[number];
+    }
+    result.push(mapped);
+  };
+  for (const message of messages) {
+    // 上一条 assistant 的 tool_use 结果未随 tool 消息到达（中断未落盘）：先补占位 user 消息
+    if (message.role !== "tool" && pendingCallIds.length > 0) {
+      result.push({ role: "user", content: placeholderResults(pendingCallIds) });
+      pendingCallIds = [];
+    }
+    if (message.role === "tool") {
+      const content: Anthropic.ContentBlockParam[] = message.content
+        .filter((block): block is ToolResultContent => block.type === "tool_result" && knownCallIds.has(block.toolCallId) && emittedCallIds.has(block.toolCallId))
+        .map((block) => ({
+          type: "tool_result" as const,
+          tool_use_id: block.toolCallId,
+          content: block.content,
+          ...(block.isError ? { is_error: true } : {}),
+        }));
+      // 该批次缺失结果的 tool_use 补占位（同一 assistant 批次的 tool 消息可能多条）
+      const covered = new Set(content.map((block) => (block as { tool_use_id: string }).tool_use_id));
+      content.push(...placeholderResults(pendingCallIds.filter((id) => !covered.has(id))));
+      pendingCallIds = [];
+      // 全孤儿（无已知 tool_use）时跳过整条，避免空 content user 消息触发 400
+      if (content.length === 0) continue;
+      pushMessage(message, { role: "user", content });
     } else if (message.role === "user") {
-      result = {
+      pushMessage(message, {
         role: "user",
         content: message.content.flatMap((block): Anthropic.ContentBlockParam[] => {
           if (block.type === "text") return [{ type: "text" as const, text: block.text }];
@@ -194,12 +237,15 @@ function toAnthropicMessages(messages: ChatMessage[], breakpoints: ReadonlySet<s
           }
           return [];
         }),
-      };
+      });
     } else {
       const content: Anthropic.ContentBlockParam[] = [];
       for (const block of message.content) {
         if (block.type === "text") content.push({ type: "text", text: block.text });
-        else if (block.type === "tool_call") {
+        // 同一 id 在多条 assistant 消息重复出现时只发一次（重复 tool_use id 会被端点拒绝）
+        else if (block.type === "tool_call" && !emittedCallIds.has(block.id)) {
+          emittedCallIds.add(block.id);
+          pendingCallIds.push(block.id);
           content.push({ type: "tool_use", id: block.id, name: block.name, input: block.input });
         } else if (block.type === "thinking" && block.provider === "anthropic" && block.redacted) {
           // redacted_thinking 原样回传（见 streamChat 的持久化）
@@ -213,14 +259,12 @@ function toAnthropicMessages(messages: ChatMessage[], breakpoints: ReadonlySet<s
         // Anthropic 拒绝空 content（400），补占位文本
         content.push({ type: "text", text: "[context trimmed]" });
       }
-      result = { role: "assistant", content };
+      pushMessage(message, { role: "assistant", content });
     }
-    if (breakpoints.has(message.id) && Array.isArray(result.content) && result.content.length > 0) {
-      const last = result.content.length - 1;
-      result.content[last] = { ...result.content[last], cache_control: { type: "ephemeral" } } as typeof result.content[number];
-    }
-    return result;
-  });
+  }
+  // 历史以悬空 tool_use 结尾（中断后无后续消息）：补占位结果，保证末条为 user
+  if (pendingCallIds.length > 0) result.push({ role: "user", content: placeholderResults(pendingCallIds) });
+  return result;
 }
 
 function toAnthropicTool(tool: ProviderTool): Anthropic.Tool {

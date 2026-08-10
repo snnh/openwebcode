@@ -3607,7 +3607,10 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       const clearCommand = request.body.content.match(/^\/clear\s*$/i);
       if (clearCommand) {
         if (agent.isRunning(request.params.id)) return reply.code(409).send({ error: "会话运行中，请先等待完成或中断后再清空上下文" });
-        const uptoIndex = session.messages.length;
+        // uptoIndex 必须与 buildView 的输入同空间：活动路径长度，而非全量消息数。
+        // 分支/retry 产生的离路径消息会令全量长度大于活动路径长度，越界的 uptoIndex
+        // 会把整个视图清空（模型看不到任何用户消息）。
+        const uptoIndex = activePathMessages(session.messages, session.activeLeafId).length;
         const ledger = await new ContextManager(sessions.contextRoot(request.params.id)).markCleared(uptoIndex);
         const at = ledger.cleared!.at;
         events.publish({ source: "agent", type: "context.cleared", sessionId: request.params.id, payload: { uptoIndex, at } });

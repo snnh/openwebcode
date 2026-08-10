@@ -868,3 +868,56 @@ describe("Responses response.failed/error 按 failure code 区分可重试", () 
     expect((await expectProviderError(noCode.streamChat(errorRequest()))).retryable).toBe(false);
   });
 });
+describe("OpenAICompatibleProvider 工具配对修复", () => {
+  it("悬空 tool_call（中断未落盘结果）补占位 tool 消息，游离 tool_result 丢弃", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const provider = new OpenAICompatibleProvider({ baseURL: "https://example.invalid/v1", fetch: reasoningSseFetch(bodies) });
+    const messages: StreamChatRequest["messages"] = [
+      { id: "u1", role: "user", content: [{ type: "text", text: "继续" }], createdAt: "2026-01-01T00:00:00.000Z" },
+      {
+        id: "a1", role: "assistant", createdAt: "2026-01-01T00:00:01.000Z",
+        content: [{ type: "tool_call", id: "call_dangling", name: "bash", input: { cmd: "sleep 600" } }],
+      },
+      // !shell 直写的 tool_result：无对应 assistant tool_call（shell-* id），原样发送会 400 tool_call_id is not found
+      { id: "t1", role: "tool", content: [{ type: "tool_result", toolCallId: "shell-abc12345", content: "orphan", isError: false }], createdAt: "2026-01-01T00:00:02.000Z" },
+    ];
+    await drain(provider.streamChat(reasoningRequest({ messages })));
+
+    expect(bodies[0]?.messages).toEqual([
+      { role: "system", content: "system" },
+      { role: "user", content: "继续" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "call_dangling", type: "function", function: { name: "bash", arguments: "{\"cmd\":\"sleep 600\"}" } }],
+      },
+      { role: "tool", tool_call_id: "call_dangling", content: expect.stringContaining("interrupted") },
+    ]);
+  });
+
+  it("tool_result 内联到对应 assistant tool_calls 之后，重复 call id 只发一次", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const provider = new OpenAICompatibleProvider({ baseURL: "https://example.invalid/v1", fetch: reasoningSseFetch(bodies) });
+    const toolCall = { type: "tool_call" as const, id: "call_1", name: "read_file", input: { path: "a" } };
+    const messages: StreamChatRequest["messages"] = [
+      { id: "u1", role: "user", content: [{ type: "text", text: "查" }], createdAt: "2026-01-01T00:00:00.000Z" },
+      { id: "a1", role: "assistant", content: [{ type: "text", text: "我查一下" }, toolCall], createdAt: "2026-01-01T00:00:01.000Z" },
+      { id: "t1", role: "tool", content: [{ type: "tool_result", toolCallId: "call_1", content: "A", isError: false }], createdAt: "2026-01-01T00:00:02.000Z" },
+      // 压缩/分支残留：同一 call id 在另一条 assistant 消息重复出现
+      { id: "a2", role: "assistant", content: [toolCall], createdAt: "2026-01-01T00:00:03.000Z" },
+    ];
+    await drain(provider.streamChat(reasoningRequest({ messages })));
+
+    expect(bodies[0]?.messages).toEqual([
+      { role: "system", content: "system" },
+      { role: "user", content: "查" },
+      {
+        role: "assistant",
+        content: "我查一下",
+        tool_calls: [{ id: "call_1", type: "function", function: { name: "read_file", arguments: "{\"path\":\"a\"}" } }],
+      },
+      { role: "tool", tool_call_id: "call_1", content: "A" },
+      { role: "assistant", content: null },
+    ]);
+  });
+});
