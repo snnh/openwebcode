@@ -55,6 +55,27 @@ describe("ModelProvidersSection", () => {
     })));
   });
 
+  it("applies a vendor preset, leaving only the API key to fill", async () => {
+    vi.spyOn(api, "providerProfiles").mockResolvedValue({ modelProviders: [], webProviders: [], activeWeb: {} });
+    const create = vi.spyOn(api, "createModelProvider").mockResolvedValue(profiles);
+    const view = renderProfiles();
+
+    fireEvent.change(await view.findByLabelText("供应商预设"), { target: { value: "DeepSeek" } });
+    expect(view.getByPlaceholderText("服务商名称")).toHaveValue("DeepSeek");
+    expect(view.getByPlaceholderText("API Key")).toHaveValue("");
+
+    fireEvent.change(view.getByPlaceholderText("API Key"), { target: { value: "sk-deepseek" } });
+    fireEvent.click(view.getByRole("button", { name: "保存服务商" }));
+
+    await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      id: "DeepSeek",
+      enabled: true,
+      interfaceType: "openai-responses",
+      baseURL: "https://api.deepseek.com/v1",
+      apiKey: "sk-deepseek",
+    })));
+  });
+
   it("sends parsed extraBody JSON and blocks invalid JSON", async () => {
     vi.spyOn(api, "providerProfiles").mockResolvedValue({ modelProviders: [], webProviders: [], activeWeb: {} });
     const create = vi.spyOn(api, "createModelProvider").mockResolvedValue(profiles);

@@ -221,3 +221,44 @@ describe("ContextPanel 空态", () => {
     expect(screen.getByText("选择会话以查看上下文。")).toBeInTheDocument();
   });
 });
+
+describe("ContextPanel 手动压缩反馈", () => {
+  it("压缩进行中按钮显示“压缩中…”并禁用，完成后恢复", async () => {
+    vi.spyOn(api, "context").mockResolvedValue(contextView({ pins: [], excludes: [] }));
+    let resolveCompact!: (v: { changed: boolean; mode: string; reason?: string }) => void;
+    vi.spyOn(api, "compactContext").mockReturnValue(new Promise((r) => { resolveCompact = r; }));
+
+    renderPanel();
+
+    const toolcallsBtn = await screen.findByRole("button", { name: "压缩工具调用" });
+    fireEvent.click(toolcallsBtn);
+
+    expect(await screen.findByRole("button", { name: "压缩中…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "概览压缩" })).toBeDisabled();
+
+    resolveCompact({ changed: true, mode: "toolcalls" });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "压缩工具调用" })).toBeEnabled();
+    });
+    expect(screen.getByRole("button", { name: "概览压缩" })).toBeEnabled();
+  });
+
+  it("概览压缩进行中同样显示“压缩中…”", async () => {
+    vi.spyOn(api, "context").mockResolvedValue(contextView({ pins: [], excludes: [] }));
+    let resolveCompact!: (v: { changed: boolean; mode: string; reason?: string }) => void;
+    vi.spyOn(api, "compactContext").mockReturnValue(new Promise((r) => { resolveCompact = r; }));
+
+    renderPanel();
+
+    const overviewBtn = await screen.findByRole("button", { name: "概览压缩" });
+    fireEvent.click(overviewBtn);
+
+    expect(await screen.findByRole("button", { name: "压缩中…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "压缩工具调用" })).toBeDisabled();
+
+    resolveCompact({ changed: false, mode: "overview", reason: "无区段可压缩" });
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "概览压缩" })).toBeEnabled();
+    });
+  });
+});
