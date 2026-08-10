@@ -124,7 +124,7 @@ ChatGPT 风格的纯对话模式，与编码工作台并存，适合问答、写
 
 侧栏 **+** 新建会话，对话框里的选项：
 
-- **工作目录**：agent 的 cwd，文件读写/命令执行都在此目录下（受沙盒约束）
+- **工作目录**：agent 的 cwd，文件读写/命令执行都在此目录下（受沙盒约束）。可手输绝对路径，也可点输入框旁的「浏览…」按钮在弹层中导航选择——面包屑可跳回任意层级，列表里目录可进入、文件灰显仅作定位参考、符号链接标记但不跟随。浏览范围受**目录浏览根**限制（见「配置文件位置」），默认为用户家目录，可在 `server-settings.json` 的 `browseRoots` 或环境变量 `OWC_BROWSE_ROOTS` 中配置；手动输入路径仅校验是否存在，不受浏览根约束
 - **模型**：从所有已启用服务商的模型列表中选择，格式为 `模型ID【服务商】`
 - **沙盒模式**：
   - Windows：`Job Object`（默认，兼容模式）/ `AppContainer`（更强隔离，兼容性较差）/ `WSB`（Windows Sandbox，跑不可信代码用，一会话一 VM，关闭即销毁）/ `关闭`
@@ -361,6 +361,30 @@ CLI 等价写法：`owc run "..." --tools read_file,glob,grep`（= `toolsAllow`�
 | `<业务数据目录>/extensions/` | Extension Host 配置与第三方 `owc-ext-*` 扩展 |
 | `<安装目录>/config/defaults.json` | 随发布更新的默认配置；数据目录只存用户覆盖，启动时自动组合 |
 | `<cwd>/.owc/agents/`、`.owc/commands/`、`.owc/skills/`、`.owc/hooks.json`、`.owc/mcp.json`、`.owc/memory.md`、`.owc/system-prompt.md`、`.owc/system-prompt-append.md`、`.owc/system-prompt-identity.md`、`.owc/system-prompt-subagent.md` | 项目级（同名逐面覆盖全局） |
+
+### 目录浏览根（可信根）
+
+新建会话对话框的目录浏览器只能遍历**浏览根**范围内的路径，防止通过浏览器界面窥探根目录之外的文件系统。浏览根通过 `server-settings.json` 配置，**热生效**（保存后立即应用，无需重启）：
+
+```json
+{
+  "browseRoots": [
+    "/home/me/projects",
+    "/home/me/repos"
+  ]
+}
+```
+
+等价环境变量 `OWC_BROWSE_ROOTS`（路径分隔符：Linux `:`、Windows `;`）：
+
+```sh
+OWC_BROWSE_ROOTS=/home/me/projects:/home/me/repos
+```
+
+- 留空（默认）→ 浏览根为用户家目录（`os.homedir()`）
+- 每行一个绝对路径（`server-settings.json`）或分隔符分隔（环境变量），最多 16 个
+- 浏览器内的路径请求经服务端 `path.resolve` + 前缀匹配严格校验，越界返回 403
+- 手动在输入框中粘贴路径**不受**浏览根约束，仅校验路径是否存在
 
 ## 版本号与更新检查
 

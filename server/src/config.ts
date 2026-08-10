@@ -43,6 +43,9 @@ export interface ServerConfig {
   };
   /** filtered 网络档 sidecar 代理拦截域名清单（去空白小写化；空表不下发，由 filtered-proxy 管理器现读）。 */
   sandboxProxyDenyList?: string[];
+  /** 目录浏览根（settings browseRoots / OWC_BROWSE_ROOTS，热生效）：新建会话对话框目录浏览器的可遍历根；
+   *  空数组不进 ServerConfig，由 app.ts /api/browse 路由回退到 os.homedir()。 */
+  browseRoots?: string[];
   /** Optional remote model and pricing catalogs. A zero interval means manual sync only. */
   models: {
     catalogSyncUrl?: string;

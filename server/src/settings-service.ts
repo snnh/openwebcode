@@ -290,6 +290,8 @@ const FIELDS: FieldSpec[] = [
   { key: "corePath", group: "executor", label: "执行器路径", type: "text", env: "OWC_CORE_PATH", defaultValue: "../build/Debug/owc-exec.exe", runtimeDefault: () => defaultCorePath(), restartRequired: true, validate: requireNonEmpty },
   { key: "coreRequestTimeoutMs", group: "executor", label: "执行器请求超时 (ms)", type: "number", env: "OWC_CORE_REQUEST_TIMEOUT_MS", defaultValue: 130_000, restartRequired: false, fromEnv: envNumber },
   { key: "sandboxAllowPaths", group: "executor", label: "沙盒额外允许目录", type: "pathList", env: "OWC_SANDBOX_ALLOW_PATHS", defaultValue: [], restartRequired: true, fromEnv: envPathList, validate: requirePathList, description: "每行一个目录，最多 16 个；执行时与会话工作目录合并并去重" },
+  // 目录浏览根（热生效）：新建会话对话框的目录浏览器可遍历范围；留空默认家目录
+  { key: "browseRoots", group: "executor", label: "目录浏览根", type: "pathList", env: "OWC_BROWSE_ROOTS", defaultValue: [], restartRequired: false, fromEnv: envPathList, validate: requirePathList, description: "新建会话时目录浏览器可遍历的根目录列表，每行一个绝对路径；留空则默认为用户家目录" },
   // filtered 网络档（Windows AppContainer）的 sidecar 代理拦截清单：热生效，sidecar 按 mtime 自重读
   { key: "sandboxProxyDenyList", group: "executor", label: "沙盒代理拦截域名", type: "pathList", env: "OWC_SANDBOX_PROXY_DENY_LIST", defaultValue: [], restartRequired: false, fromEnv: envDomainList, validate: requireDomainList, description: "filtered 网络档生效：每行一个域名（如 example.com，含其子域名），最多 64 个；命中的请求被沙盒代理拒绝（403），保存后对活跃会话热生效" },
   { key: "pythonEnv", group: "executor", label: "Python 环境", type: "select", env: "OWC_PYTHON_ENV", defaultValue: "global", restartRequired: false, options: PYTHON_ENV_OPTIONS, description: "全局默认：bash 工具的 python 运行环境。global = 本机已有环境；uv-workspace = 在项目工作区 .owc/venv 创建 uv 虚拟环境；uv-config = 在数据目录 venvs/ 创建 uv 虚拟环境。会话可在顶栏单独覆盖" },
@@ -469,6 +471,7 @@ export class SettingsService {
     const jobObjectMemoryMB = value("jobObjectMemoryMB");
     const jobObjectMaxProcesses = value("jobObjectMaxProcesses");
     const sandboxAllowPaths = value("sandboxAllowPaths") as string[];
+    const browseRoots = value("browseRoots") as string[];
     const sandboxProxyDenyList = (value("sandboxProxyDenyList") as string[]).map((entry) => entry.trim().toLowerCase()).filter(Boolean);
     const catalogSyncUrl = value("catalogSyncUrl");
     const pricingSyncUrl = value("pricingSyncUrl");
@@ -559,6 +562,8 @@ export class SettingsService {
         : {}),
       // filtered 网络档 sidecar 拦截清单（filtered-proxy 管理器现读；空表不进 ServerConfig）
       ...(sandboxProxyDenyList.length > 0 ? { sandboxProxyDenyList } : {}),
+      // 目录浏览根（app.ts /api/browse 路由消费；空 = 默认家目录，不进 ServerConfig）
+      ...(browseRoots.length > 0 ? { browseRoots } : {}),
       ...(fastModelSelection
         ? {
             fastModel: {

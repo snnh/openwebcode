@@ -5,6 +5,7 @@ import type { ManagedWorkspaceCapability, ModelProfile, PermissionMode, SandboxM
 import type { SessionDefaults } from "../lib/prefs";
 import { useI18n } from "../i18n";
 import { ModelCapabilityBadges } from "./ModelCapabilityBadges";
+import { DirectoryBrowser } from "./DirectoryBrowser";
 
 export interface NewSessionValues {
   cwd: string;
@@ -48,6 +49,7 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
   const { t } = useI18n();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [cwd, setCwd] = useState("");
+  const [browserOpen, setBrowserOpen] = useState(false);
   const [title, setTitle] = useState("");
   const [provider, setProvider] = useState("");
   const [model, setModel] = useState("");
@@ -87,6 +89,7 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
     if (!dialog) return;
     if (open && !dialog.open) dialog.showModal();
     if (!open && dialog.open) dialog.close();
+    if (!open) setBrowserOpen(false);
   }, [open]);
 
   // 沙盒能力走 React Query（与 JobHeader 共用 ["sandbox-capabilities"] 缓存）；失败按不可用处理
@@ -199,15 +202,27 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
         )}
         <label className="settings-field">
           <span>{workspaceMode === "managed" ? t("源目录（将复制进托管工作区）", "Source directory (copied into managed workspace)") : t("工作目录", "Working directory")}</span>
-          <input
-            className="input"
-            value={cwd}
-            onChange={(event) => setCwd(event.target.value)}
-            placeholder={t("绝对路径，如 D:\\projects\\demo 或 /home/me/demo", "Absolute path, such as D:\\projects\\demo or /home/me/demo")}
-            required
-            autoFocus
-          />
+          <div className="cwd-input-row">
+            <input
+              className="input"
+              value={cwd}
+              onChange={(event) => setCwd(event.target.value)}
+              placeholder={t("绝对路径，如 D:\\projects\\demo 或 /home/me/demo", "Absolute path, such as D:\\projects\\demo or /home/me/demo")}
+              required
+              autoFocus
+            />
+            <button type="button" className="btn cwd-browse-btn" onClick={() => setBrowserOpen(true)}>
+              {t("浏览…", "Browse…")}
+            </button>
+          </div>
         </label>
+        {browserOpen && (
+          <DirectoryBrowser
+            initialPath={cwd || undefined}
+            onSelect={(p) => { setCwd(p); setBrowserOpen(false); }}
+            onClose={() => setBrowserOpen(false)}
+          />
+        )}
         <label className="settings-field">
           <span>{t("标题（可选）", "Title (optional)")}</span>
           <input

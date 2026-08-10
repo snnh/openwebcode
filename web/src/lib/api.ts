@@ -123,6 +123,11 @@ export const api = {
       body: JSON.stringify({ name: file.name, data }),
     });
   },
+  browseRoots: () => request<{ roots: string[] }>("/api/browse/roots"),
+  browseDirectory: (dirPath: string) =>
+    request<{ path: string; parent: string | null; entries: { name: string; isDir: boolean; isSymlink: boolean }[] }>(
+      `/api/browse?path=${encodeURIComponent(dirPath)}`,
+    ),
   completePath: (id: string, q: string) =>
     request<CompletePathResponse>(`/api/sessions/${id}/complete-path?q=${encodeURIComponent(q)}`),
   // @ 补全优先走索引缓存（§5.2）；索引未建/未启用时 409/501，由调用方回退 completePath
