@@ -23,6 +23,8 @@ import {
   isSymbolKind,
   languageForPath,
   MAX_EXTRACT_FILE_BYTES,
+  toIndexedFileEntry,
+  toIndexedSymbolRecord,
   workspaceHash,
   type IndexMeta,
   type LoadedIndex,
@@ -328,17 +330,38 @@ export class IndexManager {
     }
   }
 
-  /** 轮询 job 输出直到终态，收集 stdout 的 JSONL 行（去空白行）与末行 summary；非 completed 或 core 输出环溢出（truncated）抛错。 */
+  /**
+   * 轮询 job 输出直到终态；stdout 的 JSONL 行按块增量切出（去空白行）经 onLine 即抛，
+   * 不攒全量 Buffer/完整字符串/行数组（大 manifest 下三者同驻是峰值内存来源）。
+   * 非 completed 或 core 输出环溢出（truncated）抛错；summary 取自末条非空行。
+   */
   private async collectJobJsonLines(
     sessionId: string,
     jobId: string,
     signal: AbortSignal,
     jobKind: string,
-  ): Promise<{ lines: string[]; summary: Record<string, unknown> | undefined }> {
+    onLine: (line: string) => void,
+  ): Promise<{ summary: Record<string, unknown> | undefined }> {
     let seq = 0;
-    // job.output 的 chunk.data 是 base64（docs/protocol.md §job.output）：按块解码后按字节
-    // 拼接，终态一次性 UTF-8 解码，避免多字节字符跨 4 KiB 块被截成 U+FFFD。
-    const stdout: Buffer[] = [];
+    // job.output 的 chunk.data 是 base64（docs/protocol.md §job.output）：按块解码挂到行尾
+    // 缓冲上，切出完整行才 UTF-8 解码——换行符是单字节，多字节字符不会跨行被截成 U+FFFD。
+    let tail = Buffer.alloc(0);
+    let lastLine: string | undefined;
+    const emitChunk = (incoming: Buffer): void => {
+      const data = tail.length ? Buffer.concat([tail, incoming]) : incoming;
+      let lineStart = 0;
+      for (let index = 0; index < data.length; index += 1) {
+        if (data[index] !== 0x0a) continue;
+        const line = data.subarray(lineStart, index).toString("utf8").trim();
+        if (line) {
+          lastLine = line;
+          onLine(line);
+        }
+        lineStart = index + 1;
+      }
+      // 拷贝残余半行，避免 subarray 长期挂住整块 data
+      tail = Buffer.from(data.subarray(lineStart));
+    };
     for (;;) {
       if (signal.aborted) throw new Error("cancelled");
       const status = await this.core.jobStatus({ sessionId, jobId });
@@ -348,7 +371,7 @@ export class IndexManager {
         // core 输出 ring 溢出意味着中间有行丢失：静默损坏不如显式失败（runScan 走 error/stale，可整体重建）
         if (output.truncated) throw new Error(`${jobKind} job output truncated by core ring buffer`);
         for (const chunk of output.chunks) {
-          if (chunk.stream === "stdout") stdout.push(Buffer.from(chunk.data, "base64"));
+          if (chunk.stream === "stdout") emitChunk(Buffer.from(chunk.data, "base64"));
         }
         if (output.nextSeq === seq || output.chunks.length === 0) break;
         seq = output.nextSeq;
@@ -358,12 +381,15 @@ export class IndexManager {
         if (status.state !== "completed") {
           throw new Error(`${jobKind} job ${status.state}${status.error ? `: ${status.error}` : ""}`);
         }
-        const lines: string[] = [];
-        for (const line of Buffer.concat(stdout).toString("utf8").split("\n")) {
-          const trimmed = line.trim();
-          if (trimmed) lines.push(trimmed);
+        // 终态冲刷残余半行（无终止换行的末行）
+        if (tail.length) {
+          const line = tail.toString("utf8").trim();
+          if (line) {
+            lastLine = line;
+            onLine(line);
+          }
         }
-        return { lines, summary: trailingJobSummary(lines) };
+        return { summary: lastLine ? trailingJobSummary(lastLine) : undefined };
       }
       await new Promise((resolve) => setTimeout(resolve, this.pollMs));
     }
@@ -377,14 +403,13 @@ export class IndexManager {
   ): Promise<{ entries: IndexScanEntry[]; summary: IndexScanSummary | undefined }> {
     const entries: IndexScanEntry[] = [];
     let summary: IndexScanSummary | undefined;
-    const { lines } = await this.collectJobJsonLines(sessionId, jobId, signal, "index.scan");
-    for (const line of lines) {
+    await this.collectJobJsonLines(sessionId, jobId, signal, "index.scan", (line) => {
       const record = JSON.parse(line) as IndexScanEntry & { summary?: IndexScanSummary };
       if (record.summary) summary = record.summary;
       else if (typeof record.path === "string") {
         entries.push({ path: record.path, size: record.size, modifiedMs: record.modifiedMs, ...(record.sha256 ? { sha256: record.sha256 } : {}) });
       }
-    }
+    });
     return { entries, summary };
   }
 
@@ -417,12 +442,11 @@ export class IndexManager {
         path: ".",
         files: extractable.map((entry) => entry.path),
       });
-      const { lines, summary: extractSummary } = await this.collectJobJsonLines(sessionId, extractJobId, signal, "index.extract");
-      for (const line of lines) {
+      const { summary: extractSummary } = await this.collectJobJsonLines(sessionId, extractJobId, signal, "index.extract", (line) => {
         const record = JSON.parse(line) as Partial<IndexExtractEntry> & { summary?: IndexExtractSummary };
-        if (record.summary || typeof record.path !== "string" || !Array.isArray(record.symbols)) continue;
+        if (record.summary || typeof record.path !== "string" || !Array.isArray(record.symbols)) return;
         extracted.set(record.path, record.symbols.map(toSymbolRecord));
-      }
+      });
       // core 整条跳过的文件（读失败/非 UTF-8/策略拒绝）按 0 符号处理：清掉旧符号但不丢文件清单。
       // 截断（truncated）时未收到输出行更可能是"没来得及处理"而非"跳过"：保留上一轮旧符号，不静默清空。
       const extractTruncated = extractSummary?.truncated === true;
@@ -437,11 +461,11 @@ export class IndexManager {
       }
     }
 
-    // 应用 manifest 全量态
-    const nextFiles = new Map<string, IndexScanEntry>(entries.map((entry) => [entry.path, entry]));
+    // 应用 manifest 全量态（内存条目预存小写路径/基名供搜索，不落盘）
+    const nextFiles = new Map(entries.map((entry) => [entry.path, toIndexedFileEntry(entry)]));
     for (const filePath of diff.deleted) loaded.symbols.delete(filePath);
     for (const [filePath, symbols] of extracted) {
-      if (symbols.length > 0) loaded.symbols.set(filePath, symbols);
+      if (symbols.length > 0) loaded.symbols.set(filePath, symbols.map(toIndexedSymbolRecord));
       else loaded.symbols.delete(filePath);
     }
     loaded.files = nextFiles;
@@ -579,21 +603,22 @@ export class IndexManager {
     return ws.loaded;
   }
 
-  /** code_search 供数：符号名模糊匹配 + kind 过滤 + limit。 */
+  /** code_search 供数：符号名模糊匹配 + kind 过滤 + limit（固定容量 top-K，不全量收集再排序）。 */
   async searchSymbols(cwd: string, query: string, options: { kind?: string; limit?: number } = {}): Promise<SymbolSearchHit[]> {
     const loaded = await this.requireIndex(cwd);
     const limit = Math.min(SEARCH_LIMIT_MAX, Math.max(1, Math.floor(options.limit ?? SEARCH_LIMIT_DEFAULT)));
-    const hits: Array<{ score: number; hit: SymbolSearchHit }> = [];
+    const queryLower = query.toLowerCase();
+    const compare = (a: SymbolCandidate, b: SymbolCandidate): number => b.score - a.score || a.name.localeCompare(b.name) || a.path.localeCompare(b.path);
+    const hits: SymbolCandidate[] = [];
     for (const [filePath, symbols] of loaded.symbols) {
       for (const symbol of symbols) {
         if (options.kind && symbol.kind !== options.kind) continue;
-        const score = fuzzyScore(symbol.name, query);
+        const score = fuzzyScoreLower(symbol.nameLower, queryLower);
         if (score <= 0) continue;
-        hits.push({ score, hit: { name: symbol.name, kind: symbol.kind, path: filePath, startLine: symbol.startLine, endLine: symbol.endLine, signature: symbol.signature } });
+        pushTopK(hits, limit, { score, name: symbol.name, kind: symbol.kind, path: filePath, startLine: symbol.startLine, endLine: symbol.endLine, signature: symbol.signature }, compare);
       }
     }
-    hits.sort((a, b) => b.score - a.score || a.hit.name.localeCompare(b.hit.name) || a.hit.path.localeCompare(b.hit.path));
-    return hits.slice(0, limit).map((entry) => entry.hit);
+    return hits.map(({ score: _score, ...hit }) => hit);
   }
 
   /** 编辑器面包屑供数（0.5.0 Phase 1a）：按文件精确取符号（路径分隔符与前导 ./ 归一后比较），按行号排序。 */
@@ -609,19 +634,20 @@ export class IndexManager {
     return [];
   }
 
-  /** @ 文件补全供数：索引文件清单按路径模糊匹配（评分与 searchSymbols 同族）。 */
+  /** @ 文件补全供数：索引文件清单按路径模糊匹配（固定容量 top-K，评分与 searchSymbols 同族）。 */
   async searchFiles(cwd: string, query: string, options: { limit?: number } = {}): Promise<FileSearchHit[]> {
     const loaded = await this.requireIndex(cwd);
     const limit = Math.min(SEARCH_LIMIT_MAX, Math.max(1, Math.floor(options.limit ?? SEARCH_LIMIT_DEFAULT)));
-    const hits: Array<{ score: number; hit: FileSearchHit }> = [];
+    const queryLower = query.toLowerCase();
+    const compare = (a: FileCandidate, b: FileCandidate): number => b.score - a.score || a.path.localeCompare(b.path);
+    const hits: FileCandidate[] = [];
     for (const [filePath, entry] of loaded.files) {
       // 全路径与基名各评一次取高分：用户常只记文件名
-      const score = Math.max(fuzzyScore(filePath, query), fuzzyScore(basenameOf(filePath), query));
+      const score = Math.max(fuzzyScoreLower(entry.pathLower, queryLower), fuzzyScoreLower(entry.baseLower, queryLower));
       if (score <= 0) continue;
-      hits.push({ score, hit: { path: filePath, modifiedMs: entry.modifiedMs } });
+      pushTopK(hits, limit, { score, path: filePath, modifiedMs: entry.modifiedMs }, compare);
     }
-    hits.sort((a, b) => b.score - a.score || a.hit.path.localeCompare(b.hit.path));
-    return hits.slice(0, limit).map((entry) => entry.hit);
+    return hits.map(({ score: _score, ...hit }) => hit);
   }
 
   /** repo map 供数：索引可用时返回带符号的文件清单；不可用返回 undefined（调用方降级静态树）。 */
@@ -649,11 +675,9 @@ export class IndexManager {
 }
 
 /** JSONL 末行若是 {"summary":{...}} 则取出（index.scan/index.extract 约定的终止行）；解析失败按无 summary。 */
-function trailingJobSummary(lines: string[]): Record<string, unknown> | undefined {
-  const last = lines.at(-1);
-  if (!last) return undefined;
+function trailingJobSummary(line: string): Record<string, unknown> | undefined {
   try {
-    const record = JSON.parse(last) as { summary?: unknown };
+    const record = JSON.parse(line) as { summary?: unknown };
     return record.summary && typeof record.summary === "object" ? record.summary as Record<string, unknown> : undefined;
   } catch {
     return undefined;
@@ -671,10 +695,31 @@ function toSymbolRecord(symbol: IndexExtractSymbol): SymbolRecord {
   };
 }
 
-/** 索引清单路径统一为相对路径；分隔符兼容 / 与 \。 */
-function basenameOf(filePath: string): string {
-  const normalized = filePath.replace(/\\/g, "/");
-  return normalized.slice(normalized.lastIndexOf("/") + 1);
+/** top-K 候选项：分数 + 命中字段平铺，选中才分配（拒绝的候选零分配）。 */
+interface SymbolCandidate extends SymbolSearchHit {
+  score: number;
+}
+
+interface FileCandidate extends FileSearchHit {
+  score: number;
+}
+
+/**
+ * 固定容量 top-K 有序插入：候选劣于当前第 K 名直接拒绝（无分配），
+ * 否则二分插入保持最优在前；与旧"全量收集 + 稳定排序 + slice" 结果一致
+ * （comparator 相等时迭代顺序靠前者优先）。
+ */
+function pushTopK<T>(hits: T[], limit: number, candidate: T, compare: (a: T, b: T) => number): void {
+  if (hits.length === limit && compare(candidate, hits[limit - 1]!) >= 0) return;
+  let lo = 0;
+  let hi = hits.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (compare(candidate, hits[mid]!) < 0) hi = mid;
+    else lo = mid + 1;
+  }
+  hits.splice(lo, 0, candidate);
+  if (hits.length > limit) hits.length = limit;
 }
 
 /** 按文件查符号的路径归一：统一分隔符、去前导 ./（索引键与编辑器相对路径对齐）。 */
@@ -687,8 +732,11 @@ function normalizeLookupPath(filePath: string): string {
  * 简单可解释，够 code_search 排序用。
  */
 export function fuzzyScore(name: string, query: string): number {
-  const n = name.toLowerCase();
-  const q = query.toLowerCase();
+  return fuzzyScoreLower(name.toLowerCase(), query.toLowerCase());
+}
+
+/** 小写已预算的评分内环：搜索热路径不重复 toLowerCase 分配（小写串预存在索引条目上）。 */
+function fuzzyScoreLower(n: string, q: string): number {
   if (!q) return 0;
   if (n === q) return 100;
   if (n.startsWith(q)) return 75;

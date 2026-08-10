@@ -1,15 +1,31 @@
 import { randomUUID } from "node:crypto";
-import { appendFile, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
 import { chmodPrivate, ensureDirWithMode, isMissing } from "../fs-utils.js";
 import { monotonicTimestamp } from "../monotonic-clock.js";
 import { activePathMessages } from "../sessions/session-tree.js";
+import { deriveTitleFromMessages, serializeByKey, titleFromContent } from "../sessions/store-utils.js";
 import type { ChatMessage, MessageContent } from "../sessions/types.js";
 import type { ChatSessionMeta, ChatShare } from "./chat-types.js";
 
 /** 新会话默认标题（首条用户文本消息到达后自动派生替换）。 */
 const DEFAULT_TITLE = "New chat";
+
+/** readMessages 整表缓存条数上限（与 SessionStore/message-reader 同一 LRU 纪律）。 */
+const MAX_CACHED_MESSAGE_LISTS = 32;
+
+/**
+ * 单会话消息整表缓存：size+mtime+ctime 指纹校验（同 SessionStore.messagesCache），
+ * 命中时免去整份 messages.jsonl 的 read+全量 JSON.parse（chat 消息可内嵌大 base64 图）。
+ * appendMessage 追加穿透（尺寸吻合才增量，否则失效），会话删除一律失效。
+ */
+interface MessagesCacheEntry {
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+  messages: ChatMessage[];
+}
 
 /**
  * 聊天会话存储：<dataDir>/chat-sessions/<uuid>/{meta.json, messages.jsonl}。
@@ -18,6 +34,9 @@ const DEFAULT_TITLE = "New chat";
  * activePathMessages，branch/fork/checkout/retry 与 agent 会话同款。
  */
 export class ChatSessionStore {
+  /** 按会话 id 的 LRU 消息整表缓存；chat-runner 每条用户消息不再整份重解析。 */
+  private readonly messagesCache = new Map<string, MessagesCacheEntry>();
+
   /** appendMessage 的每会话串行化链：并发追加大消息时底层多次 write 可能交织坏行。 */
   private readonly appendChains = new Map<string, Promise<void>>();
 
@@ -100,6 +119,7 @@ export class ChatSessionStore {
   }
 
   async delete(id: string): Promise<void> {
+    this.messagesCache.delete(id);
     await rm(this.sessionPath(id), { recursive: true, force: true });
   }
 
@@ -109,15 +129,7 @@ export class ChatSessionStore {
     content: MessageContent[],
     lineage?: { parentId?: string; runId?: string; turnId?: string },
   ): Promise<ChatMessage> {
-    // 每会话串行化：大消息并发追加时 appendFile 的多次 write 可能交织坏行（JSONL 破坏）
-    const run = (this.appendChains.get(id) ?? Promise.resolve()).then(() => this.appendMessageSerialized(id, role, content, lineage));
-    const tail = run.then(() => undefined, () => undefined);
-    this.appendChains.set(id, tail);
-    // 链尾结算后自清，避免 Map 随会话数泄漏
-    void tail.then(() => {
-      if (this.appendChains.get(id) === tail) this.appendChains.delete(id);
-    });
-    return run;
+    return serializeByKey(this.appendChains, id, () => this.appendMessageSerialized(id, role, content, lineage));
   }
 
   private async appendMessageSerialized(
@@ -139,14 +151,16 @@ export class ChatSessionStore {
       ...(lineage?.runId ? { runId: lineage.runId } : {}),
       ...(lineage?.turnId ? { turnId: lineage.turnId } : {}),
     };
-    await appendFile(this.messagesPath(id), `${JSON.stringify(message)}\n`, "utf8");
+    const appendedLine = `${JSON.stringify(message)}\n`;
+    await appendFile(this.messagesPath(id), appendedLine, "utf8");
+    await this.noteAppendedMessage(id, message, Buffer.byteLength(appendedLine, "utf8"));
     meta.updatedAt = now;
     meta.activeLeafId = message.id;
     if (!meta.rootId) meta.rootId = message.id;
     // 首条用户文本消息派生标题（前 80 字符，与 session-store 一致）
     if (meta.title === DEFAULT_TITLE && role === "user") {
-      const firstText = content.find((block) => block.type === "text");
-      if (firstText?.type === "text") meta.title = firstText.text.slice(0, 80);
+      const derived = titleFromContent(content);
+      if (derived !== undefined) meta.title = derived;
     }
     await this.writeMeta(meta);
     return message;
@@ -240,21 +254,32 @@ export class ChatSessionStore {
   /** 派生标题：首条非空用户文本消息的前 80 字符；无消息时回退默认标题。 */
   private async deriveTitle(id: string): Promise<string> {
     const messages = await this.readMessages(id);
-    for (const message of messages) {
-      if (message.role !== "user") continue;
-      const text = message.content.find((block) => block.type === "text");
-      if (text?.type === "text" && text.text.trim()) return text.text.slice(0, 80);
-    }
-    return DEFAULT_TITLE;
+    return deriveTitleFromMessages(messages, DEFAULT_TITLE);
   }
 
   private async readMessages(id: string): Promise<ChatMessage[]> {
+    const filePath = this.messagesPath(id);
+    let info: Awaited<ReturnType<typeof stat>>;
+    try {
+      info = await stat(filePath);
+    } catch (error) {
+      if (!isMissing(error)) throw error;
+      this.messagesCache.delete(id);
+      return [];
+    }
+    const cached = this.messagesCache.get(id);
+    if (cached && cached.size === info.size && cached.mtimeMs === info.mtimeMs && cached.ctimeMs === info.ctimeMs) {
+      this.touchMessagesCache(id, cached);
+      // 浅拷贝返回：调用方不得改动缓存数组本身（消息对象语义上只读）
+      return cached.messages.slice();
+    }
     let raw: string;
     try {
-      raw = await readFile(this.messagesPath(id), "utf8");
+      raw = await readFile(filePath, "utf8");
     } catch (error) {
-      if (isMissing(error)) return [];
-      throw error;
+      if (!isMissing(error)) throw error;
+      this.messagesCache.delete(id);
+      return [];
     }
     const messages: ChatMessage[] = [];
     for (const line of raw.split("\n")) {
@@ -268,7 +293,38 @@ export class ChatSessionStore {
         // 损坏行跳过（append-only 下正常只可能损坏尾行）
       }
     }
-    return messages;
+    this.touchMessagesCache(id, { size: info.size, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs, messages });
+    return messages.slice();
+  }
+
+  /** LRU 接触：移到最新位并逐出超限旧条目（与 SessionStore 同一纪律）。 */
+  private touchMessagesCache(id: string, entry: MessagesCacheEntry): void {
+    this.messagesCache.delete(id);
+    this.messagesCache.set(id, entry);
+    while (this.messagesCache.size > MAX_CACHED_MESSAGE_LISTS) this.messagesCache.delete(this.messagesCache.keys().next().value!);
+  }
+
+  /**
+   * appendMessage 后的缓存穿透：仅当文件尺寸恰好增长本次追加字节数时才增量
+   * push（任何并发/外部写入导致的尺寸不符都降级为整表失效，下次读取重建）。
+   */
+  private async noteAppendedMessage(id: string, message: ChatMessage, appendedBytes: number): Promise<void> {
+    const cached = this.messagesCache.get(id);
+    if (!cached) return;
+    try {
+      const info = await stat(this.messagesPath(id));
+      if (info.size !== cached.size + appendedBytes) {
+        this.messagesCache.delete(id);
+        return;
+      }
+      cached.messages.push(message);
+      cached.size = info.size;
+      cached.mtimeMs = info.mtimeMs;
+      cached.ctimeMs = info.ctimeMs;
+      this.touchMessagesCache(id, cached);
+    } catch {
+      this.messagesCache.delete(id);
+    }
   }
 
   /** 会话目录（聊天工具的文件读写根与 python 工作目录）。 */

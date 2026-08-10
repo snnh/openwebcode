@@ -153,7 +153,8 @@ describe("Compactor", () => {
     await store.initialize();
     const id = await sessionWithMessages(store, 15);
     const context = new ContextManager(store.contextRoot(id));
-    const ledger = await context.load();
+    // load() 返回缓存规范副本（只读约定）：突变前先克隆再 save
+    const ledger = structuredClone(await context.load());
     ledger.entries.push({ messageId: "m", kind: "tool_result", artifactId: "a", state: "restored", createdRound: 0, pinnedUntilRound: 99 });
     await context.save(ledger);
 

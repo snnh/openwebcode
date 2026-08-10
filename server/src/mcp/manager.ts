@@ -1,6 +1,7 @@
 import type { ProviderTool } from "../providers/provider.js";
 import path from "node:path";
-import { loadMcpConfig, type McpServerConfig } from "./config.js";
+import { stat } from "node:fs/promises";
+import { loadMcpConfig, type McpConfigResult, type McpServerConfig } from "./config.js";
 import { connectMcpServer, type McpClient, type McpToolCallResult, type McpToolSpec } from "./client.js";
 
 interface ServerEntry {
@@ -35,6 +36,9 @@ export interface McpToolBinding {
 export class McpManager {
   private readonly entriesByCwd = new Map<string, Map<string, ServerEntry>>();
   private readonly bindingsByCwd = new Map<string, Map<string, Binding>>();
+  /** 配置解析缓存（canonicalCwd → 两个配置文件的 mtimeMs+size 指纹 + 解析结果）：
+   * toolsFor 每轮调用，指纹未变不重读盘；配置无专用写入方，靠指纹检测外部修改。 */
+  private readonly configCache = new Map<string, { files: Array<{ mtimeMs: number; size: number } | null>; result: McpConfigResult }>();
   private readonly sweeper: NodeJS.Timeout;
 
   constructor(private readonly dataDir: string, private readonly options: { idleMs?: number; timeoutMs?: number; sweepMs?: number } = {}) {
@@ -44,7 +48,7 @@ export class McpManager {
 
   async toolsFor(cwd: string): Promise<McpToolBinding> {
     const canonicalCwd = path.resolve(cwd);
-    const { servers, skipped } = await loadMcpConfig(this.dataDir, canonicalCwd);
+    const { servers, skipped } = await this.loadConfigCached(canonicalCwd);
     const warnings: string[] = skipped.map((name) => `MCP server「${name}」配置非法，已跳过`);
     // 本 cwd 配置中已移除的 server：断开并清理
     const workspaceEntries = this.entriesByCwd.get(canonicalCwd);
@@ -75,6 +79,33 @@ export class McpManager {
       }
     }
     return { tools, warnings };
+  }
+
+  /** 单个配置文件指纹；不存在/不可读记 null（与 loadMcpConfig 的「缺失即无配置」语义一致）。 */
+  private static async fingerprint(filePath: string): Promise<{ mtimeMs: number; size: number } | null> {
+    try {
+      const stats = await stat(filePath);
+      return { mtimeMs: stats.mtimeMs, size: stats.size };
+    } catch {
+      return null;
+    }
+  }
+
+  /** 带指纹缓存的 loadMcpConfig：全局 <dataDir>/mcp.json 与项目 <cwd>/.owc/mcp.json 都未变时复用上次解析结果。 */
+  private async loadConfigCached(canonicalCwd: string): Promise<McpConfigResult> {
+    const files = [path.join(this.dataDir, "mcp.json"), path.join(canonicalCwd, ".owc", "mcp.json")];
+    const fingerprints = await Promise.all(files.map((file) => McpManager.fingerprint(file)));
+    const cached = this.configCache.get(canonicalCwd);
+    if (cached && cached.files.length === fingerprints.length && cached.files.every((fp, index) => {
+      const next = fingerprints[index];
+      if (!fp || !next) return fp === (next ?? null);
+      return fp.mtimeMs === next.mtimeMs && fp.size === next.size;
+    })) {
+      return cached.result;
+    }
+    const result = await loadMcpConfig(this.dataDir, canonicalCwd);
+    this.configCache.set(canonicalCwd, { files: fingerprints, result });
+    return result;
   }
 
   private async ensure(cwd: string, name: string, config: McpServerConfig): Promise<ServerEntry> {

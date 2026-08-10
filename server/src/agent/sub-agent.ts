@@ -207,7 +207,11 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
       for (const event of result.events) {
         if (event.type === "text_delta") {
           text += event.text;
-          assistantContent.push({ type: "text", text: event.text });
+          // 与主循环一致：相邻 text_delta 属于同一段正文，合并进末尾 text block，
+          // 避免转录落盘时一条 assistant 消息携带数千个碎片 block。
+          const previous = assistantContent.at(-1);
+          if (previous?.type === "text") previous.text = `${previous.text ?? ""}${event.text}`;
+          else assistantContent.push({ type: "text", text: event.text });
         } else if (event.type === "tool_call") {
           assistantContent.push({ type: "tool_call", id: event.id, name: event.name, input: event.input });
         } else if (event.type === "usage") {

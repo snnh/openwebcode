@@ -155,16 +155,17 @@ export class EventBus extends EventEmitter {
     return event;
   }
 
-  replay(after: number, sessionId?: string): ReplayResult {
+  /** replay 与 replaySerialized 共用的历史筛选：返回匹配的历史条目（含预序列化串）。 */
+  private replayEntries(after: number, sessionId?: string): { entries: HistoryEntry[]; requiresResync: boolean; latestSeq: number } {
     // 先冲刷挂起的合批 delta，保证 replay 看到完整的已定序历史。
     this.flushDeltas();
     if (sessionId) {
-      const history = this.history.filter((entry) => entry.event.sessionId === sessionId).map((entry) => entry.event);
-      const oldest = history[0]?.sessionSeq ?? (this.sessionSequences.get(sessionId) ?? 0) + 1;
+      const history = this.history.filter((entry) => entry.event.sessionId === sessionId);
+      const oldest = history[0]?.event.sessionSeq ?? (this.sessionSequences.get(sessionId) ?? 0) + 1;
       const latestSeq = this.sessionSequences.get(sessionId) ?? 0;
       const requiresResync = after > 0 && after < oldest - 1;
       return {
-        events: requiresResync ? [] : history.filter((event) => (event.sessionSeq ?? 0) > after),
+        entries: requiresResync ? [] : history.filter((entry) => (entry.event.sessionSeq ?? 0) > after),
         requiresResync,
         latestSeq,
       };
@@ -175,12 +176,22 @@ export class EventBus extends EventEmitter {
     const oldest = this.history[0]?.event.seq ?? this.sequence + 1;
     const latestRetained = this.history.at(-1)?.event.seq ?? 0;
     const requiresResync = (after > 0 && after < oldest - 1) || (after < this.sequence && latestRetained !== this.sequence);
-    const events = requiresResync
-      ? []
-      : this.history.filter((entry) =>
-          entry.event.seq > after && (!sessionId || !entry.event.sessionId || entry.event.sessionId === sessionId))
-        .map((entry) => entry.event);
-    return { events, requiresResync, latestSeq: this.sequence };
+    const entries = requiresResync ? [] : this.history.filter((entry) => entry.event.seq > after);
+    return { entries, requiresResync, latestSeq: this.sequence };
+  }
+
+  replay(after: number, sessionId?: string): ReplayResult {
+    const { entries, requiresResync, latestSeq } = this.replayEntries(after, sessionId);
+    return { events: entries.map((entry) => entry.event), requiresResync, latestSeq };
+  }
+
+  /**
+   * 与 replay 相同的筛选与 resync 判定，但直接透出发布时算好的预序列化串：
+   * WS 回放路径逐条 send 时免去重复 JSON.stringify。返回形状与 replay 一一对应。
+   */
+  replaySerialized(after: number, sessionId?: string): { serialized: string[]; requiresResync: boolean; latestSeq: number } {
+    const { entries, requiresResync, latestSeq } = this.replayEntries(after, sessionId);
+    return { serialized: entries.map((entry) => entry.serialized), requiresResync, latestSeq };
   }
 
   latestSeq(): number {

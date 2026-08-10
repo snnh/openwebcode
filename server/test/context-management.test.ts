@@ -285,8 +285,9 @@ describe("ContextManager cost ledger", () => {
       { id: "tool-1", role: "tool" as const, content: [{ type: "tool_result" as const, toolCallId: "x", content: "result", isError: false }], createdAt: "2026-01-01T00:00:01Z" },
       { id: "user-2", role: "user" as const, content: [{ type: "text" as const, text: "two" }], createdAt: "2026-01-01T00:00:02Z" },
     ];
-    const ledger = await manager.load();
-    ledger.entries.push({ messageId: "tool-1", kind: "tool_result", artifactId: "artifact-00000000-0000-0000-0000-000000000000", state: "evicted", createdRound: 0, pinnedUntilRound: 0 });
+    // load() 返回缓存规范副本（只读约定）：构造带驱逐条目的账本须拷贝后改，不原地改
+    const base = await manager.load();
+    const ledger = { ...base, entries: [...base.entries, { messageId: "tool-1", kind: "tool_result" as const, artifactId: "artifact-00000000-0000-0000-0000-000000000000", state: "evicted" as const, createdRound: 0, pinnedUntilRound: 0 }] };
     const selected = selectCacheBreakpoints(messages, ledger);
     expect(selected).toEqual(["tool-1", "user-1"]);
     expect((await manager.recordCacheBreakpoints(selected)).cacheBreakpoints).toEqual(selected);

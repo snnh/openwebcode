@@ -194,13 +194,40 @@ interface ViewBuildCache {
 
 /** ledger.json 内存缓存：size+mtimeMs+ctimeMs 指纹校验（同 session-store 消息缓存纪律），
  *  命中时免去 readFile+全量 JSON.parse；save 后重 stat 保持一致。ledgerKey 随缓存预算，
- *  只有落盘变更才重算。 */
+ *  只有落盘变更才重算。缓存持有规范副本——读取路径返回同一引用（只读约定），
+ *  突变路径经 loadMutable 显式克隆或 beginTurn 的轮级句柄。 */
 interface LedgerCacheEntry {
   ledger: ContextLedger;
   size: number;
   mtimeMs: number;
   ctimeMs: number;
   ledgerKey: string;
+}
+
+/** 轮级句柄的待落盘变更：fast path 跳过已即时应用的，rebase path 全部重放。 */
+interface PendingLedgerMutation {
+  /** 应用到给定账本；返回 true 表示产生变更（仅驱逐可能空跑返回 false），void 视为已变更。 */
+  apply: (ledger: ContextLedger) => boolean | void | Promise<boolean | void>;
+  /** 已在工作副本即时应用：rebase 需重放，fast path 跳过。 */
+  appliedToWorking: boolean;
+}
+
+/**
+ * 轮级共享账本句柄（beginTurn 取得）：一轮内 budgetStatus/buildView/recordCacheBreakpoints/
+ * recordUsage/advanceRound/evict 共用同一工作副本，commitTurn 统一落盘（有变更才写），
+ * 把热路径的每轮多次全量克隆/落盘收敛为克隆 1 次 + 落盘至多 1 次。
+ * 字段仅供 ContextManager 内部读写，调用方只需持有与透传。
+ */
+export interface TurnLedger {
+  /** 本轮工作副本（含未落盘变更）；只读使用，切勿原地改。 */
+  working: ContextLedger;
+  /** beginTurn 时的缓存主本条目：commit 时若仍相同则工作副本即最新（fast path），否则重放变更。 */
+  source: LedgerCacheEntry | undefined;
+  pending: PendingLedgerMutation[];
+  /** 确定产生变更（usage/轮次/断点）——驱逐可能空跑，不计入。 */
+  mustSave: boolean;
+  /** buildView 缓存键：轮内 key 相关字段（压缩/清空/模式/驱逐条目）不变，驱逐在 commit 才应用。 */
+  ledgerKey: string | undefined;
 }
 
 const MAX_CACHED_LEDGERS = 32;
@@ -429,13 +456,15 @@ export class ContextManager {
 
   constructor(private readonly sessionRoot: string) {}
 
+  /** 读取账本。命中缓存时返回规范副本本身——调用方必须只读；突变请走各变更方法。 */
   async load(): Promise<ContextLedger> {
     return (await this.loadLedger()).ledger;
   }
 
   /**
    * 读取 ledger + 预算好的 buildView 缓存键。磁盘事实只在指纹（size/mtime/ctime）
-   * 变化时重读；缓存主本不外出——调用方拿到 structuredClone，save 仍是唯一提交点。
+   * 变化时重读；命中返回缓存持有的规范副本本身（只读约定，不再逐次克隆），
+   * save 仍是唯一提交点。
    */
   private async loadLedger(): Promise<{ ledger: ContextLedger; ledgerKey: string }> {
     const target = path.join(this.sessionRoot, "ledger.json");
@@ -450,7 +479,7 @@ export class ContextManager {
         : info !== undefined && info.size === cached.size && info.mtimeMs === cached.mtimeMs && info.ctimeMs === cached.ctimeMs;
       if (hit) {
         ContextManager.touchLedgerCache(this.sessionRoot, cached);
-        return { ledger: structuredClone(cached.ledger), ledgerKey: cached.ledgerKey };
+        return { ledger: cached.ledger, ledgerKey: cached.ledgerKey };
       }
     }
     let value: Partial<ContextLedger> = {};
@@ -465,17 +494,25 @@ export class ContextManager {
     const ledger = normalizeLedger(value);
     const entry: LedgerCacheEntry = { ledger, ...fingerprint, ledgerKey: computeLedgerKey(ledger) };
     ContextManager.touchLedgerCache(this.sessionRoot, entry);
-    return { ledger: structuredClone(ledger), ledgerKey: entry.ledgerKey };
+    return { ledger, ledgerKey: entry.ledgerKey };
+  }
+
+  /** 突变路径专用：规范副本的深克隆，改完经 save 提交（自载自存的既有纪律）。 */
+  private async loadMutable(): Promise<ContextLedger> {
+    return structuredClone((await this.loadLedger()).ledger);
   }
 
   async save(ledger: ContextLedger): Promise<void> {
     await mkdir(this.sessionRoot, { recursive: true });
     const target = path.join(this.sessionRoot, "ledger.json");
-    await writeUtf8Atomically(target, `${JSON.stringify(ledger, null, 2)}\n`);
-    // 落盘即提交点：重 stat 更新缓存主本（克隆隔离，调用方后续改动不影响缓存）。
+    // 紧凑序列化：ledger.json 只被机器读取（面板经 REST 拿结构化数据）；
+    // 读取侧 JSON.parse 天然兼容存量美化格式。
+    await writeUtf8Atomically(target, `${JSON.stringify(ledger)}\n`);
+    // 落盘即提交点：重 stat 更新缓存主本。调用方让渡 ledger 所有权——主本直接持有
+    // 该对象（省一次全量克隆），落盘后再原地改它会污染缓存（全部调用方均 save 后即只读）。
     const info = await stat(target);
     ContextManager.touchLedgerCache(this.sessionRoot, {
-      ledger: structuredClone(ledger),
+      ledger,
       size: info.size,
       mtimeMs: info.mtimeMs,
       ctimeMs: info.ctimeMs,
@@ -499,9 +536,17 @@ export class ContextManager {
     }
   }
 
-  async buildView(messages: ChatMessage[], options?: BuildViewOptions): Promise<ContextView> {
+  async buildView(messages: ChatMessage[], options?: BuildViewOptions, turn?: TurnLedger): Promise<ContextView> {
     const startedAt = performance.now();
-    const { ledger, ledgerKey } = await this.loadLedger();
+    let ledger: ContextLedger;
+    let ledgerKey: string;
+    if (turn) {
+      // 轮级句柄：复用 beginTurn 的工作副本，不再逐方法重读；轮内 key 相关字段不变。
+      ledger = turn.working;
+      ledgerKey = turn.ledgerKey ??= computeLedgerKey(ledger);
+    } else {
+      ({ ledger, ledgerKey } = await this.loadLedger());
+    }
     const selection: ContextSelection = { pins: options?.selection?.pins ?? [], excludes: options?.selection?.excludes ?? [] };
     const pinnedIds = new Set(selection.pins);
     const compacted = ledger.compacted;
@@ -622,12 +667,12 @@ export class ContextManager {
     };
   }
 
-  async budgetStatus(): Promise<{
+  async budgetStatus(turn?: TurnLedger): Promise<{
     token: { limit?: number; used: number; paused: boolean };
     cost: { limit?: { currency: Currency; microUnits: string }; usedMicroUnits: string; paused: boolean; reason?: "cost_exhausted" | "cost_unavailable" };
     paused: boolean;
   }> {
-    const ledger = await this.load();
+    const ledger = turn ? turn.working : await this.load();
     const tokenUsed = ledger.usage.inputTokens + ledger.usage.outputTokens;
     const tokenLimit = ledger.policy.maxSessionTokens;
     const tokenPaused = tokenLimit !== undefined && tokenUsed >= tokenLimit;
@@ -651,7 +696,7 @@ export class ContextManager {
 
   async updateBudget(update: BudgetUpdate): Promise<ContextLedger> {
     return this.serial(async () => {
-      const ledger = await this.load();
+      const ledger = await this.loadMutable();
       if ("maxSessionTokens" in update) {
         const value = update.maxSessionTokens;
         if (value !== undefined && (!Number.isSafeInteger(value) || value < 1)) {
@@ -676,7 +721,7 @@ export class ContextManager {
 
   async updatePolicy(update: ContextPolicyUpdate): Promise<ContextLedger> {
     return this.serial(async () => {
-      const ledger = await this.load();
+      const ledger = await this.loadMutable();
       if (update.enabled !== undefined) {
         if (typeof update.enabled !== "boolean") throw new Error("enabled must be a boolean");
         ledger.policy.enabled = update.enabled;
@@ -715,25 +760,19 @@ export class ContextManager {
   async recordUsage(
     usage: { inputTokens: number; outputTokens: number; cacheRead: number; cacheWrite: number },
     cost?: RecordedCost,
+    turn?: TurnLedger,
   ): Promise<ContextLedger> {
+    if (turn) {
+      // 轮级句柄：即时应用到工作副本（事件载荷需要本轮最新成本），commitTurn 统一落盘；
+      // 增量语义天然可交换，rebase 重放不丢并发的子代理/REST 记账。
+      applyUsage(turn.working, usage, cost);
+      turn.pending.push({ apply: (ledger) => { applyUsage(ledger, usage, cost); }, appliedToWorking: true });
+      turn.mustSave = true;
+      return turn.working;
+    }
     return this.serial(async () => {
-      const ledger = await this.load();
-      ledger.usage.inputTokens += usage.inputTokens;
-      ledger.usage.outputTokens += usage.outputTokens;
-      ledger.usage.cacheRead += usage.cacheRead;
-      ledger.usage.cacheWrite += usage.cacheWrite;
-      if (cost) {
-        const billedTokens = usage.inputTokens + usage.outputTokens + usage.cacheRead + usage.cacheWrite;
-        if (!cost.priced) {
-          ledger.cost.unpricedTokens += billedTokens;
-        } else {
-          if (!cost.usdMicroUnits) ledger.cost.unavailableUsdTokens += billedTokens;
-          if (!cost.cnyMicroUnits) ledger.cost.unavailableCnyTokens += billedTokens;
-        }
-        if (cost.usdMicroUnits) ledger.cost.usdMicroUnits = addIntegers(ledger.cost.usdMicroUnits, cost.usdMicroUnits);
-        if (cost.cnyMicroUnits) ledger.cost.cnyMicroUnits = addIntegers(ledger.cost.cnyMicroUnits, cost.cnyMicroUnits);
-        if (cost.exchangeRate) ledger.cost.lastExchangeRate = { ...cost.exchangeRate };
-      }
+      const ledger = await this.loadMutable();
+      applyUsage(ledger, usage, cost);
       await this.save(ledger);
       return ledger;
     });
@@ -741,7 +780,7 @@ export class ContextManager {
 
   async updateLedger(update: (ledger: ContextLedger) => void): Promise<ContextLedger> {
     return this.serial(async () => {
-      const ledger = await this.load();
+      const ledger = await this.loadMutable();
       update(ledger);
       await this.save(ledger);
       return ledger;
@@ -763,9 +802,21 @@ export class ContextManager {
     });
   }
 
-  async recordCacheBreakpoints(messageIds: string[]): Promise<ContextLedger> {
+  async recordCacheBreakpoints(messageIds: string[], turn?: TurnLedger): Promise<ContextLedger> {
+    if (turn) {
+      const next = [...new Set(messageIds)].slice(-3);
+      const current = turn.working.cacheBreakpoints;
+      // 内容未变时既不改副本也不落盘（热路径每轮都调用，多数轮断点不变）。
+      if (next.length === current.length && next.every((id, index) => id === current[index])) {
+        return turn.working;
+      }
+      turn.working.cacheBreakpoints = next;
+      turn.pending.push({ apply: (ledger) => { ledger.cacheBreakpoints = next; }, appliedToWorking: true });
+      turn.mustSave = true;
+      return turn.working;
+    }
     return this.serial(async () => {
-      const ledger = await this.load();
+      const ledger = await this.loadMutable();
       const next = [...new Set(messageIds)].slice(-3);
       // 内容未变时跳过落盘（热路径每轮都调用，多数轮断点不变）。
       if (next.length === ledger.cacheBreakpoints.length && next.every((id, index) => id === ledger.cacheBreakpoints[index])) {
@@ -777,85 +828,153 @@ export class ContextManager {
     });
   }
 
-  async advanceRound(): Promise<ContextLedger> {
+  async advanceRound(turn?: TurnLedger): Promise<ContextLedger> {
+    if (turn) {
+      turn.working.round += 1;
+      turn.pending.push({ apply: (ledger) => { ledger.round += 1; }, appliedToWorking: true });
+      turn.mustSave = true;
+      return turn.working;
+    }
     return this.serial(async () => {
-      const ledger = await this.load();
+      const ledger = await this.loadMutable();
       ledger.round += 1;
       await this.save(ledger);
       return ledger;
     });
   }
 
-  async evict(messages: ChatMessage[], pinnedIds?: ReadonlySet<string>): Promise<ContextLedger> {
+  /**
+   * 轮级共享句柄：一轮一次深克隆（替代过去每方法一次），本轮各方法经句柄读写工作副本，
+   * commitTurn 统一落盘。与并发的外部变更（REST pin/恢复、子代理记账）安全共存：
+   * commit 检测到落盘事实已前进时把本轮变更重放到最新账本。
+   */
+  async beginTurn(): Promise<TurnLedger> {
     return this.serial(async () => {
-      const ledger = await this.load();
-      const toolMessages = messages.filter((message) => message.role === "tool");
-      if (!ledger.policy.enabled || ledger.policy.strategy === "off") return ledger;
-      // lag 按轮计（一轮 = 一批连续 tool 消息，即一次 assistant tool_call 批次的全部结果）；
-      // 当轮（尾部批次）始终保护，保证任何结果至少在紧随其后的模型调用中完整出现一次。
-      const retained = retainedToolIds(messages, ledger.policy.lag);
-      const eligible = ledger.policy.strategy === "lag"
-        ? toolMessages.filter((message) => !retained.has(message.id))
-        : ledger.policy.strategy === "interval" && ledger.round % Math.max(1, ledger.policy.interval) === 0
-          ? toolMessages.filter((message) => !retained.has(message.id))
-          : [];
-      const toolNames = toolNameByCallId(messages);
-      // Ledger entries grow with the session. Index them once so eviction stays
-      // linear in the newly eligible tool messages instead of O(T×E).
-      const entriesByMessage = new Map(ledger.entries.map((entry) => [entry.messageId, entry]));
-      // artifacts 目录 mkdir 每轮最多一次（原来每条被驱逐消息一次 recursive mkdir）。
-      let artifactsDirReady = false;
-      let mutated = false;
-      for (const message of eligible) {
-        // pin 的消息不被驱逐；pin 占用超预算时由构建统计如实上报，不在这里悄悄绕过。
-        if (pinnedIds?.has(message.id)) continue;
-        const existing = entriesByMessage.get(message.id);
-        if (existing) {
-          if (existing.pinnedUntilRound >= ledger.round) continue;
-          if (existing.state !== "evicted" || existing.restoredAt !== undefined) {
-            existing.state = "evicted";
-            delete existing.restoredAt;
-            mutated = true;
-          }
-          continue;
-        }
-        const result = message.content.find((block) => block.type === "tool_result");
-        if (!result || result.type !== "tool_result") continue;
-        const toolName = toolNames.get(result.toolCallId);
-        // 豁免下限：小结果驱逐收益微乎其微，反而搅动缓存前缀；read ≤10 行是完整的文件结构认知
-        if (estimateTokens(result.content) < ledger.policy.minRetainTokens) continue;
-        if (toolName === "read_file" && result.content.split("\n").length <= READ_ALWAYS_RETAIN_LINES) continue;
-        const artifactId = `artifact-${randomUUID()}`;
-        if (!artifactsDirReady) {
-          await mkdir(path.join(this.sessionRoot, "artifacts"), { recursive: true });
-          artifactsDirReady = true;
-        }
-        await writeFile(path.join(this.sessionRoot, "artifacts", `${artifactId}.txt`), result.content, "utf8");
-        const entry: LedgerEntry = {
-          messageId: message.id,
-          kind: "tool_result",
-          artifactId,
-          state: "evicted",
-          createdRound: ledger.round,
-          pinnedUntilRound: 0,
-          ...(toolName ? { toolName } : {}),
-          sizeBytes: Buffer.byteLength(result.content, "utf8"),
-          ...(result.isError ? { isError: true } : {}),
-          ...(toolName === "read_file" ? { excerpt: buildReadExcerpt(result.content, ledger.policy.readKeepLines, artifactId) } : {}),
-        };
-        ledger.entries.push(entry);
-        entriesByMessage.set(entry.messageId, entry);
-        mutated = true;
+      const { ledger } = await this.loadLedger();
+      return {
+        working: structuredClone(ledger),
+        source: ContextManager.ledgerCaches.get(this.sessionRoot),
+        pending: [],
+        mustSave: false,
+        ledgerKey: undefined,
+      };
+    });
+  }
+
+  /**
+   * 句柄落盘：fast path（期间无外部落盘，缓存主本条目引用不变）直接在工作副本上补应用
+   * 驱逐类变更；否则把本轮全部变更重放到最新账本（增量类可交换，驱逐按最新条目判定），
+   * 两侧变更都不丢。有变更才落盘——recordCacheBreakpoints 多数轮跳过、evict 空跑跳过的
+   * 既有优化均保留。幂等：pending 为空直接返回（finally 兜底重复提交安全）。
+   */
+  async commitTurn(turn: TurnLedger): Promise<ContextLedger> {
+    if (turn.pending.length === 0) return turn.working;
+    return this.serial(async () => {
+      let base: ContextLedger;
+      let pending = turn.pending;
+      const cached = ContextManager.ledgerCaches.get(this.sessionRoot);
+      if (cached !== undefined && cached === turn.source) {
+        base = turn.working;
+        pending = pending.filter((mutation) => !mutation.appliedToWorking);
+      } else {
+        base = structuredClone((await this.loadLedger()).ledger);
       }
+      let mutated = turn.mustSave;
+      for (const mutation of pending) {
+        if ((await mutation.apply(base)) === true) mutated = true;
+      }
+      if (mutated) await this.save(base);
+      turn.working = base;
+      turn.pending = [];
+      turn.mustSave = false;
+      turn.source = ContextManager.ledgerCaches.get(this.sessionRoot);
+      turn.ledgerKey = undefined;
+      return base;
+    });
+  }
+
+  async evict(messages: ChatMessage[], pinnedIds?: ReadonlySet<string>, turn?: TurnLedger): Promise<ContextLedger> {
+    if (turn) {
+      // 轮级句柄：驱逐延迟到 commitTurn 在最终账本（含并发外部变更）上判定执行；
+      // 空跑不落盘的优化保留（按 applyEviction 返回值决定是否写盘）。
+      // 返回值是工作副本（尚未应用驱逐），最终条目以 commitTurn 返回为准。
+      turn.pending.push({ apply: (ledger) => this.applyEviction(ledger, messages, pinnedIds), appliedToWorking: false });
+      return turn.working;
+    }
+    return this.serial(async () => {
+      const ledger = await this.loadMutable();
       // 无新增/状态变化时跳过落盘（lag 窗口内多数轮 eligible 为空或已全部驱逐）。
-      if (mutated) await this.save(ledger);
+      if (await this.applyEviction(ledger, messages, pinnedIds)) await this.save(ledger);
       return ledger;
     });
   }
 
+  /** 驱逐判定与执行：就地改 ledger 并写 artifact 文件；返回是否产生账本变更。 */
+  private async applyEviction(ledger: ContextLedger, messages: ChatMessage[], pinnedIds?: ReadonlySet<string>): Promise<boolean> {
+    const toolMessages = messages.filter((message) => message.role === "tool");
+    if (!ledger.policy.enabled || ledger.policy.strategy === "off") return false;
+    // lag 按轮计（一轮 = 一批连续 tool 消息，即一次 assistant tool_call 批次的全部结果）；
+    // 当轮（尾部批次）始终保护，保证任何结果至少在紧随其后的模型调用中完整出现一次。
+    const retained = retainedToolIds(messages, ledger.policy.lag);
+    const eligible = ledger.policy.strategy === "lag"
+      ? toolMessages.filter((message) => !retained.has(message.id))
+      : ledger.policy.strategy === "interval" && ledger.round % Math.max(1, ledger.policy.interval) === 0
+        ? toolMessages.filter((message) => !retained.has(message.id))
+        : [];
+    const toolNames = toolNameByCallId(messages);
+    // Ledger entries grow with the session. Index them once so eviction stays
+    // linear in the newly eligible tool messages instead of O(T×E).
+    const entriesByMessage = new Map(ledger.entries.map((entry) => [entry.messageId, entry]));
+    // artifacts 目录 mkdir 每轮最多一次（原来每条被驱逐消息一次 recursive mkdir）。
+    let artifactsDirReady = false;
+    let mutated = false;
+    for (const message of eligible) {
+      // pin 的消息不被驱逐；pin 占用超预算时由构建统计如实上报，不在这里悄悄绕过。
+      if (pinnedIds?.has(message.id)) continue;
+      const existing = entriesByMessage.get(message.id);
+      if (existing) {
+        if (existing.pinnedUntilRound >= ledger.round) continue;
+        if (existing.state !== "evicted" || existing.restoredAt !== undefined) {
+          existing.state = "evicted";
+          delete existing.restoredAt;
+          mutated = true;
+        }
+        continue;
+      }
+      const result = message.content.find((block) => block.type === "tool_result");
+      if (!result || result.type !== "tool_result") continue;
+      const toolName = toolNames.get(result.toolCallId);
+      // 豁免下限：小结果驱逐收益微乎其微，反而搅动缓存前缀；read ≤10 行是完整的文件结构认知
+      if (estimateTokens(result.content) < ledger.policy.minRetainTokens) continue;
+      if (toolName === "read_file" && result.content.split("\n").length <= READ_ALWAYS_RETAIN_LINES) continue;
+      const artifactId = `artifact-${randomUUID()}`;
+      if (!artifactsDirReady) {
+        await mkdir(path.join(this.sessionRoot, "artifacts"), { recursive: true });
+        artifactsDirReady = true;
+      }
+      await writeFile(path.join(this.sessionRoot, "artifacts", `${artifactId}.txt`), result.content, "utf8");
+      const entry: LedgerEntry = {
+        messageId: message.id,
+        kind: "tool_result",
+        artifactId,
+        state: "evicted",
+        createdRound: ledger.round,
+        pinnedUntilRound: 0,
+        ...(toolName ? { toolName } : {}),
+        sizeBytes: Buffer.byteLength(result.content, "utf8"),
+        ...(result.isError ? { isError: true } : {}),
+        ...(toolName === "read_file" ? { excerpt: buildReadExcerpt(result.content, ledger.policy.readKeepLines, artifactId) } : {}),
+      };
+      ledger.entries.push(entry);
+      entriesByMessage.set(entry.messageId, entry);
+      mutated = true;
+    }
+    return mutated;
+  }
+
   async evictMessage(messages: ChatMessage[], messageId: string): Promise<ContextLedger> {
     return this.serial(async () => {
-      const ledger = await this.load();
+      const ledger = await this.loadMutable();
       const message = messages.find((item) => item.id === messageId && item.role === "tool");
       if (!message) throw new Error("Tool result message not found");
       const existing = ledger.entries.find((entry) => entry.messageId === messageId);
@@ -890,7 +1009,7 @@ export class ContextManager {
 
   async setPinned(messageId: string, pinned: boolean): Promise<ContextLedger> {
     return this.serial(async () => {
-      const ledger = await this.load();
+      const ledger = await this.loadMutable();
       const entry = ledger.entries.find((candidate) => candidate.messageId === messageId);
       if (!entry) throw new Error("Context entry not found");
       entry.pinnedUntilRound = pinned ? Number.MAX_SAFE_INTEGER : 0;
@@ -927,7 +1046,7 @@ export class ContextManager {
 
   async restore(messageId: string): Promise<ContextLedger> {
     return this.serial(async () => {
-      const ledger = await this.load();
+      const ledger = await this.loadMutable();
       const entry = ledger.entries.find((candidate) => candidate.messageId === messageId);
       if (!entry) throw new Error("No evicted tool result for message");
       entry.state = "restored";
@@ -1084,4 +1203,28 @@ function integerString(value: unknown): string {
 function addIntegers(left: string, right: string): string {
   if (!/^\d+$/.test(right)) throw new Error("Cost must be a non-negative integer string");
   return (BigInt(left) + BigInt(right)).toString();
+}
+
+/** usage/成本累加（recordUsage 自载路径与轮级句柄重放共用；纯增量语义，天然可交换）。 */
+function applyUsage(
+  ledger: ContextLedger,
+  usage: { inputTokens: number; outputTokens: number; cacheRead: number; cacheWrite: number },
+  cost?: RecordedCost,
+): void {
+  ledger.usage.inputTokens += usage.inputTokens;
+  ledger.usage.outputTokens += usage.outputTokens;
+  ledger.usage.cacheRead += usage.cacheRead;
+  ledger.usage.cacheWrite += usage.cacheWrite;
+  if (cost) {
+    const billedTokens = usage.inputTokens + usage.outputTokens + usage.cacheRead + usage.cacheWrite;
+    if (!cost.priced) {
+      ledger.cost.unpricedTokens += billedTokens;
+    } else {
+      if (!cost.usdMicroUnits) ledger.cost.unavailableUsdTokens += billedTokens;
+      if (!cost.cnyMicroUnits) ledger.cost.unavailableCnyTokens += billedTokens;
+    }
+    if (cost.usdMicroUnits) ledger.cost.usdMicroUnits = addIntegers(ledger.cost.usdMicroUnits, cost.usdMicroUnits);
+    if (cost.cnyMicroUnits) ledger.cost.cnyMicroUnits = addIntegers(ledger.cost.cnyMicroUnits, cost.cnyMicroUnits);
+    if (cost.exchangeRate) ledger.cost.lastExchangeRate = { ...cost.exchangeRate };
+  }
 }

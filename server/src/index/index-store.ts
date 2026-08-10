@@ -46,6 +46,37 @@ export interface SymbolRecord {
   signature: string;
 }
 
+/**
+ * 内存中的文件条目：预存小写路径/基名供模糊搜索复用（100k 文件量级下预存
+ * 优于每次搜索临时 toLowerCase 分配）。序列化时剔除（compact 投影回 IndexScanEntry），
+ * 不落盘、不改落盘格式。
+ */
+export interface IndexedFileEntry extends IndexScanEntry {
+  pathLower: string;
+  baseLower: string;
+}
+
+/** 内存中的符号记录：预存小写名供模糊搜索复用（同上，不落盘）。 */
+export interface IndexedSymbolRecord extends SymbolRecord {
+  nameLower: string;
+}
+
+/** 清单条目 → 内存条目（补小写索引字段）。 */
+export function toIndexedFileEntry(entry: IndexScanEntry): IndexedFileEntry {
+  const pathLower = entry.path.toLowerCase();
+  return { ...entry, pathLower, baseLower: basenameLowerOf(pathLower) };
+}
+
+/** 符号记录 → 内存记录（补小写名）。 */
+export function toIndexedSymbolRecord(record: SymbolRecord): IndexedSymbolRecord {
+  return { ...record, nameLower: record.name.toLowerCase() };
+}
+
+/** 小写基名：入参已是小写路径，分隔符兼容 / 与 \（与 index-manager 原 basenameOf 同族）。 */
+function basenameLowerOf(pathLower: string): string {
+  return pathLower.slice(Math.max(pathLower.lastIndexOf("/"), pathLower.lastIndexOf("\\")) + 1);
+}
+
 /** 参与提取的源文件大小上限（字节）：与 core index.extract 单文件上限一致。 */
 export const MAX_EXTRACT_FILE_BYTES = 1_048_576;
 
@@ -106,8 +137,8 @@ export class IndexCorruptError extends Error {
 type SymbolsLine = { path: string; symbols: SymbolRecord[] } | { path: string; deleted: true };
 
 export interface LoadedIndex {
-  files: Map<string, IndexScanEntry>;
-  symbols: Map<string, SymbolRecord[]>;
+  files: Map<string, IndexedFileEntry>;
+  symbols: Map<string, IndexedSymbolRecord[]>;
   meta: IndexMeta | undefined;
   /** files.jsonl / symbols.jsonl 当前行数（压实判定用）。 */
   fileLines: number;
@@ -174,25 +205,38 @@ export class IndexStore {
     if (meta.version !== INDEX_FORMAT_VERSION) {
       throw new IndexCorruptError(`index format version ${String(meta.version)} != ${INDEX_FORMAT_VERSION}`);
     }
-    const files = new Map<string, IndexScanEntry>();
-    const symbols = new Map<string, SymbolRecord[]>();
+    const files = new Map<string, IndexedFileEntry>();
+    const symbols = new Map<string, IndexedSymbolRecord[]>();
     const fileLines = await this.replay(this.filesPath, (line) => {
       const record = JSON.parse(line) as { type?: string; path?: unknown; deleted?: unknown; size?: unknown; modifiedMs?: unknown; sha256?: unknown };
       if (record.type === "batch" || typeof record.path !== "string") return;
       if (record.deleted === true) files.delete(record.path);
       else if (typeof record.size === "number" && typeof record.modifiedMs === "number") {
-        files.set(record.path, { path: record.path, size: record.size, modifiedMs: record.modifiedMs, ...(typeof record.sha256 === "string" ? { sha256: record.sha256 } : {}) });
+        // 热路径内联构造（不走 spread）：小写路径/基名预算在此一次完成，供搜索复用
+        const pathLower = record.path.toLowerCase();
+        files.set(record.path, {
+          path: record.path,
+          size: record.size,
+          modifiedMs: record.modifiedMs,
+          ...(typeof record.sha256 === "string" ? { sha256: record.sha256 } : {}),
+          pathLower,
+          baseLower: basenameLowerOf(pathLower),
+        });
       }
     });
     const symbolLines = await this.replay(this.symbolsPath, (line) => {
       const record = JSON.parse(line) as SymbolsLine & { type?: string };
       if (record.type === "batch") return;
       if ("deleted" in record && record.deleted) symbols.delete(record.path);
-      else if ("symbols" in record && Array.isArray(record.symbols)) symbols.set(record.path, record.symbols);
+      else if ("symbols" in record && Array.isArray(record.symbols)) symbols.set(record.path, record.symbols.map(toIndexedSymbolRecord));
     });
     return { files, symbols, meta, fileLines, symbolLines };
   }
 
+  /**
+   * 整读 + split + 逐行 parse 即弃：readline 流式逐行在 10 万+ 行量级比 split 慢 2-3 倍
+   * （实测回归），行数组是局部临时引用、replay 返回后即可 GC，不构成长驻占用。
+   */
   private async replay(filePath: string, apply: (line: string) => void): Promise<number> {
     let text: string;
     try {
@@ -244,12 +288,13 @@ export class IndexStore {
   }
 
   /** 压实：把当前内存态重写为全量快照（单批次），替换 append 历史。 */
-  async compact(files: ReadonlyMap<string, IndexScanEntry>, symbols: ReadonlyMap<string, SymbolRecord[]>): Promise<void> {
+  async compact(files: ReadonlyMap<string, IndexedFileEntry>, symbols: ReadonlyMap<string, IndexedSymbolRecord[]>): Promise<void> {
     await fs.mkdir(this.dir, { recursive: true });
+    // 内存条目带小写索引字段（pathLower/baseLower/nameLower），落盘前投影回原始形状，落盘格式不变
     const filesText = [JSON.stringify({ type: "batch", batch: 0, at: Date.now(), compacted: true }),
-      ...[...files.values()].map((entry) => JSON.stringify(entry))].join("\n") + "\n";
+      ...[...files.values()].map((entry) => JSON.stringify({ path: entry.path, size: entry.size, modifiedMs: entry.modifiedMs, ...(entry.sha256 ? { sha256: entry.sha256 } : {}) }))].join("\n") + "\n";
     const symbolsText = [JSON.stringify({ type: "batch", batch: 0, at: Date.now(), compacted: true }),
-      ...[...symbols.entries()].map(([filePath, list]) => JSON.stringify({ path: filePath, symbols: list }))].join("\n") + "\n";
+      ...[...symbols.entries()].map(([filePath, list]) => JSON.stringify({ path: filePath, symbols: list.map((record) => ({ name: record.name, kind: record.kind, startLine: record.startLine, endLine: record.endLine, signature: record.signature })) }))].join("\n") + "\n";
     // 先写临时文件再 rename，避免压实中途崩溃留下半截 jsonl
     const tmpFiles = `${this.filesPath}.tmp`;
     const tmpSymbols = `${this.symbolsPath}.tmp`;
