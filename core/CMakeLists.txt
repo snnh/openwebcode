@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(openwebcode_core VERSION 1.6.3 LANGUAGES C)
+project(openwebcode_core VERSION 1.6.4 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)

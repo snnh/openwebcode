@@ -30,6 +30,29 @@ const emptyModelProvider = (): ModelProviderForm => ({
   clearApiKey: false,
 });
 
+interface ModelProviderPreset {
+  name: string;
+  interfaceType: ModelInterfaceType;
+  baseURL: string;
+  codingPlan?: boolean;
+}
+
+/** 知名模型服务商预设：选择后自动填充接口类型与 Base URL，用户只需填 API Key。 */
+const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
+  { name: "阿里云百炼（通义千问）", interfaceType: "openai-chat-completions", baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1" },
+  { name: "Anthropic", interfaceType: "anthropic-messages", baseURL: "https://api.anthropic.com" },
+  { name: "百度千帆", interfaceType: "openai-chat-completions", baseURL: "https://qianfan.baidubce.com/v2" },
+  { name: "DeepSeek", interfaceType: "openai-responses", baseURL: "https://api.deepseek.com/v1" },
+  { name: "GLM Coding Plan", interfaceType: "openai-chat-completions", baseURL: "https://open.bigmodel.cn/api/coding/paas/v4", codingPlan: true },
+  { name: "Kimi Coding Plan", interfaceType: "openai-chat-completions", baseURL: "https://api.kimi.com/coding/v1", codingPlan: true },
+  { name: "Moonshot (Kimi)", interfaceType: "openai-chat-completions", baseURL: "https://api.moonshot.cn/v1" },
+  { name: "Ollama（本地）", interfaceType: "openai-chat-completions", baseURL: "http://localhost:11434/v1" },
+  { name: "OpenAI", interfaceType: "openai-responses", baseURL: "https://api.openai.com/v1" },
+  { name: "OpenRouter", interfaceType: "openai-chat-completions", baseURL: "https://openrouter.ai/api/v1" },
+  { name: "腾讯云", interfaceType: "openai-chat-completions", baseURL: "https://tokenhub.tencentmaas.com/v1" },
+  { name: "智谱 GLM", interfaceType: "openai-chat-completions", baseURL: "https://open.bigmodel.cn/api/paas/v4" },
+];
+
 interface WebProviderForm {
   originalId?: string;
   id: string;
@@ -91,6 +114,7 @@ export function ModelProvidersSection(): ReactElement {
   const profiles = useQuery(providerProfilesQuery);
   const { busy, error, setError, run } = useProfileOps();
   const [modelForm, setModelForm] = useState<ModelProviderForm>(emptyModelProvider);
+  const [presetChoice, setPresetChoice] = useState("");
   type ConnectionTest = { status: "idle" } | { status: "pending" } | { status: "ok"; latencyMs: number; note?: string } | { status: "fail"; error: string };
   const [connectionTest, setConnectionTest] = useState<ConnectionTest>({ status: "idle" });
   const confirm = useConfirmDialog();
@@ -192,6 +216,26 @@ export function ModelProvidersSection(): ReactElement {
       <div className="catalog-edit-form">
         <h4>{modelForm.originalId ? t("编辑模型服务商", "Edit model provider") : t("添加模型服务商", "Add model provider")}</h4>
         <div className="catalog-form">
+          {!modelForm.originalId && (
+            <select className="input" value={presetChoice} aria-label={t("供应商预设", "Provider preset")} onChange={(event) => {
+              const preset = MODEL_PROVIDER_PRESETS.find((item) => item.name === event.target.value);
+              setPresetChoice("");
+              if (!preset) return;
+              updateModelForm({
+                id: preset.name,
+                interfaceType: preset.interfaceType,
+                baseURL: preset.baseURL,
+                apiKey: "",
+                clearApiKey: false,
+                promptCaching: preset.interfaceType === "anthropic-messages",
+              });
+            }}>
+              <option value="">{t("从预设选择…", "Pick a preset…")}</option>
+              {MODEL_PROVIDER_PRESETS.map((preset) => (
+                <option key={preset.name} value={preset.name}>{preset.name}{preset.codingPlan ? `（${t("编程套餐", "Coding Plan")}）` : ""}</option>
+              ))}
+            </select>
+          )}
           <input className="input" value={modelForm.id} disabled={Boolean(modelForm.originalId)} placeholder={t("服务商名称", "Provider name")} onChange={(event) => updateModelForm({ id: event.target.value })} />
           <select className="input" value={modelForm.interfaceType} onChange={(event) => updateModelForm({ interfaceType: event.target.value as ModelInterfaceType })}>
             <option value="openai-chat-completions">OpenAI Chat Completions</option>
