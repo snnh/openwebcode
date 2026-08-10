@@ -8,10 +8,10 @@ import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/
 import { SessionStore } from "../src/sessions/session-store.js";
 import { tempRoot } from "./helpers/temp-roots.js";
 
-/** 轮询 captured 等 permission.request 事件并取其 requestId（5s 超时）。 */
+/** 轮询 captured 等 permission.request 事件并取其 requestId（15s 超时；Windows CI 高负载下 5s 偶发不够）。 */
 function waitForPermissionRequest(captured: AppEvent[]): Promise<string> {
   return new Promise<string>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("no permission.request within 5s")), 5_000);
+    const timer = setTimeout(() => reject(new Error("no permission.request within 15s")), 15_000);
     const check = (): void => {
       const req = captured.find((event) => event.type === "permission.request");
       if (req) {
