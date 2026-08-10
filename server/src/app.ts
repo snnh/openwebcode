@@ -4,7 +4,8 @@ import websocket from "@fastify/websocket";
 import { existsSync } from "node:fs";
 import type { ServerResponse } from "node:http";
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 import type { AgentRunner } from "./agent/agent-runner.js";
 import { SteeringError, SubAgentLaunchError, WorkspaceWriteDeniedError } from "./agent/agent-runner.js";
@@ -1078,6 +1079,50 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       try { return await profiles.selectWeb(request.params.capability, request.body?.id ?? null); } catch (error) { return profileFailure(reply, error); }
     });
   }
+
+  // ── 目录浏览（新建会话对话框） ──────────────────────────────────────────
+  // browseRoots：可配置浏览根（OWC_BROWSE_ROOTS / server-settings.json），空则回退家目录
+  const browseRoots: string[] = (() => {
+    const fromSettings = dependencies.settings?.effective().browseRoots;
+    return fromSettings?.length ? fromSettings.map((r: string) => path.resolve(r)) : [path.resolve(homedir())];
+  })();
+
+  app.get("/api/browse/roots", async () => ({ roots: browseRoots }));
+
+  app.get<{ Querystring: { path?: string } }>("/api/browse", async (request, reply) => {
+    const raw = request.query.path;
+    if (!raw) return reply.code(400).send({ error: "missing 'path' query parameter" });
+    const target = path.resolve(raw);
+
+    // 安全校验：target 必须是某个 browseRoot 自身或其子路径
+    const isWithinRoot = (p: string, root: string): boolean => p === root || p.startsWith(root + path.sep);
+    const root = browseRoots.find((r) => isWithinRoot(target, r));
+    if (!root) return reply.code(403).send({ error: "path is outside of browse roots" });
+
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = await readdir(target, { withFileTypes: true });
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ENOTDIR") return reply.code(404).send({ error: "path not found" });
+      if (code === "EACCES") return reply.code(403).send({ error: "permission denied" });
+      return reply.code(500).send({ error: "failed to read directory" });
+    }
+
+    // parent：上一级路径（仅在仍在某 browseRoot 内时返回，否则 null 防越界上溯）
+    const parentDir = path.dirname(target);
+    const parent = browseRoots.some((r) => isWithinRoot(parentDir, r)) && parentDir !== target ? parentDir : null;
+
+    // 列表项：目录在前、文件在后；跳过隐藏文件（. 开头）减少噪声
+    const items = entries
+      .filter((d) => !d.name.startsWith("."))
+      .map((d) => ({ name: d.name, isDir: d.isDirectory(), isSymlink: d.isSymbolicLink() }))
+      .sort((a, b) => (a.isDir === b.isDir ? a.name.localeCompare(b.name) : a.isDir ? -1 : 1));
+
+    return { path: target, parent, entries: items };
+  });
+  // ── 目录浏览结束 ────────────────────────────────────────────────────────
+
   app.get("/api/extensions", async (_request, reply) => {
     if (!dependencies.extensions) return reply.code(501).send({ error: "Extension Host is not configured" });
     const list = dependencies.extensions.list();
