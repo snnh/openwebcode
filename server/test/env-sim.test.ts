@@ -600,11 +600,13 @@ describe("env-sim command prompt shaping", () => {
 
   it("/init expands to the persona init prompt; user override wins over persona", async () => {
     const cc = BUILTIN_PERSONAS.find((item) => item.id === "claude-code")!;
-    const { app, session, requests, manager, dataDir } = await setupWithApp({ enableEnvSim: true, persona: "claude-code" });
+    const { app, agent, session, requests, manager, dataDir } = await setupWithApp({ enableEnvSim: true, persona: "claude-code" });
     try {
       const first = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "/init" } });
       expect(first.statusCode, first.body).toBe(202);
       await vi.waitFor(() => expect(requests.length).toBeGreaterThan(0), { timeout: 5_000 });
+      // provider 收到请求 ≠ run 收尾完成；不等 isRunning 落空就发第二次 /init 会撞 409（Windows CI 高负载抖动）
+      await vi.waitFor(() => expect(agent.isRunning(session.id)).toBe(false), { timeout: 15_000 });
       const seen = (): string[] => requests.map((request) => {
         const last = request.messages.at(-1);
         const text = last?.content.find((block) => block.type === "text");
