@@ -46,6 +46,7 @@ function stubApis(): void {
   vi.spyOn(api, "updateCheck").mockRejectedValue(new Error("not enabled"));
   vi.spyOn(api, "refreshUpdateCheck").mockRejectedValue(new Error("not enabled"));
   vi.spyOn(api, "modelPricing").mockResolvedValue(pricingCatalog);
+  vi.spyOn(api, "models").mockResolvedValue([]);
   vi.spyOn(api, "promptOverride").mockResolvedValue(promptView);
 }
 
