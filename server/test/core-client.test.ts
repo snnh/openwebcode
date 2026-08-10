@@ -1,7 +1,7 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import os, { tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
@@ -440,14 +440,7 @@ describe("CoreGateway 接线（AgentRunner core.ready）", () => {
 });
 
 // ---- core-log 组（合并） ----
-const coreLogRoots: string[] = [];
-afterEach(async () => Promise.all(coreLogRoots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
-
-async function coreLogRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-corelog-"));
-  coreLogRoots.push(root);
-  return root;
-}
+const coreLogRoot = (): Promise<string> => tempRoot("owc-corelog-");
 
 describe("CoreLogArchive", () => {
   it("initialize 创建目录，append 追加写入 core.log", async () => {

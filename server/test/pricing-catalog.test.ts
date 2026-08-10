@@ -1,7 +1,6 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import os from "node:os";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { ContextManager } from "../src/context/context-manager.js";
 import type { ModelPricing } from "../src/context/model-profile.js";
 import { CoreClient } from "../src/core-client.js";
@@ -252,9 +251,6 @@ describe("cost accounting", () => {
 });
 
 // ---- exchange-rate 组（合并） ----
-const fxRoots: string[] = [];
-afterEach(async () => Promise.all(fxRoots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
-
 function remoteSnapshot(): ExchangeRateSnapshot {
   return {
     base: "USD",
@@ -277,8 +273,7 @@ function countingProvider(counter: { fetches: number }): ExchangeRateProvider {
 
 describe("ExchangeRateService 离线模式", () => {
   it("离线时跳过在线拉取（启动首拉与手动 refresh），回落固定汇率", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-fx-"));
-    fxRoots.push(root);
+    const root = await tempRoot("owc-fx-");
     const counter = { fetches: 0 };
     const service = new ExchangeRateService({
       cachePath: path.join(root, "exchange-rate.json"),
@@ -295,8 +290,7 @@ describe("ExchangeRateService 离线模式", () => {
   });
 
   it("离线且无缓存/固定汇率时保持无汇率，不发请求", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-fx-"));
-    fxRoots.push(root);
+    const root = await tempRoot("owc-fx-");
     const counter = { fetches: 0 };
     const service = new ExchangeRateService({
       cachePath: path.join(root, "exchange-rate.json"),
@@ -310,8 +304,7 @@ describe("ExchangeRateService 离线模式", () => {
   });
 
   it("离线解除后恢复在线拉取（isOffline 现读热生效）", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-fx-"));
-    fxRoots.push(root);
+    const root = await tempRoot("owc-fx-");
     const counter = { fetches: 0 };
     let offline = true;
     const service = new ExchangeRateService({

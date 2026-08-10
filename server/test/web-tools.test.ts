@@ -1,7 +1,5 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import type { CoreClientLike } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
@@ -9,9 +7,7 @@ import { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { assertSafeWebUrl, createProfileSearchProvider, createProfileWebFetchProvider, htmlToText, webFetch, type SearchProvider, type WebFetchProvider } from "../src/web-tools.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
+import { tempRoot } from "./helpers/temp-roots.js";
 
 const textResponse = (body: string, init: ResponseInit = {}) => new Response(body, {
   status: 200,
@@ -208,7 +204,7 @@ describe("web fetch providers", () => {
 
 describe("AgentRunner web tools", () => {
   async function exposedRequest(search?: SearchProvider, webFetchProvider?: WebFetchProvider, webSearchMode: "local" | "model-api" = "local"): Promise<StreamChatRequest | undefined> {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-web-tools-")); roots.push(root);
+    const root = await tempRoot("owc-web-tools-");
     const sessions = new SessionStore(path.join(root, "sessions")); await sessions.initialize();
     const session = await sessions.create({ cwd: root, provider: "fake", model: "model" });
     await sessions.updatePermissions(session.id, "yolo", []);

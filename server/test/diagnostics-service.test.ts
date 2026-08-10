@@ -1,5 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
@@ -11,15 +10,10 @@ import { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { makeJobReplayCore } from "./helpers/fake-job-core.js";
-
-const roots: string[] = [];
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-});
+import { tempRoot } from "./helpers/temp-roots.js";
 
 async function setup(output: string, exitCode = 0) {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-diag-"));
-  roots.push(root);
+  const root = await tempRoot("owc-diag-");
   const sessions = new SessionStore(path.join(root, "sessions"));
   await sessions.initialize();
   const session = await sessions.create({ cwd: root, provider: "fake", model: "fake-model" });
@@ -125,11 +119,9 @@ describe("DiagnosticsService（0.4.0 Phase 3a）", () => {
 });
 
 // ---- diagnostics-api 组（合并） ----
-const apiRoots: string[] = [];
 const apiApps: Array<{ close(): Promise<unknown> }> = [];
 afterEach(async () => {
   await Promise.all(apiApps.splice(0).map((app) => app.close()));
-  await Promise.all(apiRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
 const PYTEST_OUTPUT = [
@@ -140,8 +132,7 @@ const PYTEST_OUTPUT = [
 
 async function apiSetup(options: { withDiagnostics?: boolean; output?: string; exitCode?: number } = {}) {
   const { withDiagnostics = true, output = PYTEST_OUTPUT, exitCode = 1 } = options;
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-diag-api-"));
-  apiRoots.push(root);
+  const root = await tempRoot("owc-diag-api-");
   const sessions = new SessionStore(path.join(root, "sessions"));
   await sessions.initialize();
   const session = await sessions.create({ cwd: root, provider: "fake", model: "fake-model" });

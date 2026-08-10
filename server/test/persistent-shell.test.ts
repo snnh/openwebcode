@@ -1,6 +1,4 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
 import { spawnSync } from "node:child_process";
@@ -32,24 +30,11 @@ import { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { makeStubProvider } from "./helpers/stub-provider.js";
 import { makeFakeCore } from "./helpers/fake-core.js";
-import { tempRoot } from "./helpers/temp-roots.js";
+import { tempRoot, tempRootRetry } from "./helpers/temp-roots.js";
 
-const roots: string[] = [];
 const clients: CoreClient[] = [];
 afterEach(async () => {
   await Promise.all(clients.splice(0).map((client) => client.stop().catch(() => undefined)));
-  // Windows 竞态：pty 进程树（pwsh/conhost）退出滞后于 closePty，残留句柄会让 rm 撞 EBUSY，重试几次
-  await Promise.all(roots.splice(0).map(async (root) => {
-    for (let attempt = 0; attempt < 10; attempt++) {
-      try {
-        await rm(root, { recursive: true, force: true });
-        return;
-      } catch (error) {
-        if (attempt === 9) throw error;
-        await new Promise((resolve) => setTimeout(resolve, 300));
-      }
-    }
-  }));
 });
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -470,8 +455,8 @@ describe("PersistentShellManager（fake core）", () => {
 
 describe.skipIf(!hasCore)("PersistentShellManager（真 core）", () => {
   async function setup(backend: ShellBackend = "cmd", sandboxMode?: "jobobject") {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-pshell-"));
-    roots.push(root);
+    // pty 进程树退出滞后于 closePty，清理需重试（rmWithRetry 变体）
+    const root = await tempRootRetry("owc-pshell-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const session = await sessions.create({ cwd: root, provider: "test", model: "test", title: "pshell" });

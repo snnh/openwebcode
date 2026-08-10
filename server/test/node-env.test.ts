@@ -1,9 +1,10 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { effectiveNodeEnv, NodeEnvManagers, nodeBinDir, nodeEnvActivationCommand, wrapCommandWithNodeEnv } from "../src/node-env.js";
 import { wrapCommandWithNote } from "../src/python-env.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
 describe("node-env helpers", () => {
   it("resolves the effective node env with session > global default > host", () => {
@@ -132,7 +133,7 @@ describe("NodeEnvManagers", () => {
     expect(notInstalled.ok).toBe(false);
     expect(notInstalled.note).toContain("nvm is not installed");
 
-    const dir = mkdtempSync(path.join(os.tmpdir(), "owc-nvm-"));
+    const dir = await tempRoot("owc-nvm-");
     const script = path.join(dir, "nvm.sh");
     writeFileSync(script, "# nvm shim\n");
     const installed = new NodeEnvManagers(undefined, script);
