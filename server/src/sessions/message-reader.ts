@@ -64,21 +64,65 @@ export async function readMessagesBefore<T>(filePath: string, beforeId: string, 
   }
 }
 
-export async function checkRecovery(filePath: string): Promise<{ recovery?: { state: "recovered" | "needs_repair"; message: string } }> {
+/**
+ * list() 的恢复检测：只 stat + 读文件尾部窗口取末条非空记录试解析，
+ * 不建全量字节索引（索引留给真正的分页路径 readMessagesTail/readMessagesBefore）。
+ * 末条记录比窗口还长（内嵌大 base64 块）时窗口指数扩大，最坏读全文件——
+ * 语义与逐行全扫完全一致，只是常见路径 O(尾窗口)。
+ */
+export async function checkRecoveryTail(filePath: string): Promise<{ recovery?: { state: "recovered" | "needs_repair"; message: string } }> {
+  let handle: Awaited<ReturnType<typeof open>>;
   try {
-    const index = await getIndex(filePath);
-    const last = index.lines.at(-1);
-    if (!last) return {};
-    const [line] = await readLines(filePath, [last]);
+    handle = await open(filePath, "r");
+  } catch (error) {
+    if (!isEnoent(error)) throw error;
+    return { recovery: { state: "needs_repair", message: "messages.jsonl is missing" } };
+  }
+  try {
+    const info = await handle.stat();
+    const last = await readLastRecord(handle, info.size);
+    if (last === undefined) return {};
     try {
-      JSON.parse(line!);
+      JSON.parse(last);
       return {};
     } catch {
       return { recovery: { state: "recovered", message: "Ignored a corrupt trailing messages.jsonl record" } };
     }
-  } catch (error) {
-    if (!isEnoent(error)) throw error;
-    return { recovery: { state: "needs_repair", message: "messages.jsonl is missing" } };
+  } finally {
+    await handle.close();
+  }
+}
+
+const TAIL_WINDOW_BYTES = 256 * 1024;
+
+/** 读文件末条非空记录（不含换行符）；文件无记录返回 undefined。窗口不足时指数扩大至全文件。 */
+async function readLastRecord(handle: Awaited<ReturnType<typeof open>>, size: number): Promise<string | undefined> {
+  let window = Math.min(size, TAIL_WINDOW_BYTES);
+  for (;;) {
+    if (window === 0) return undefined;
+    const buffer = Buffer.allocUnsafe(window);
+    let read = 0;
+    while (read < window) {
+      const result = await handle.read(buffer, read, window - read, size - window + read);
+      if (result.bytesRead === 0) throw new Error("messages.jsonl changed while checking its tail");
+      read += result.bytesRead;
+    }
+    // 从窗口尾向前找末条非空记录：记录以 \n 分隔（末尾记录可无终止 \n）
+    let end = buffer.length;
+    while (end > 0) {
+      const newline = buffer.lastIndexOf(0x0a, end - 1);
+      const start = newline < 0 ? 0 : newline + 1;
+      const text = buffer.subarray(start, end).toString("utf8");
+      if (text.trim()) {
+        // 记录起点不在窗口内（窗口未覆盖其开头的 \n）说明记录比窗口长：扩大窗口重读
+        if (newline < 0 && window < size) break;
+        return text;
+      }
+      if (newline < 0) break;
+      end = newline;
+    }
+    if (window === size) return undefined;
+    window = Math.min(size, window * 4);
   }
 }
 

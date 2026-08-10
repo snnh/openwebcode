@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 /** 一次模型调用的用量/成本事件（追加写入 usage-events.jsonl，一行一条）。 */
@@ -107,6 +107,8 @@ function isRecord(value: unknown): value is UsageEventRecord {
 export class UsageLog {
   private readonly filePath: string;
   private queue: Promise<void> = Promise.resolve();
+  /** report 聚合结果缓存（按 from/to 区间键控）：文件 mtimeMs+size 指纹未变时复用，generatedAt 仍每次现取。 */
+  private readonly reportCache = new Map<string, { mtimeMs: number; size: number; body: Omit<CostReport, "generatedAt"> }>();
 
   constructor(dataDir: string) {
     this.filePath = path.join(dataDir, "usage-events.jsonl");
@@ -114,6 +116,8 @@ export class UsageLog {
 
   async record(event: UsageEventRecord): Promise<void> {
     const line = `${JSON.stringify(event)}\n`;
+    // 主动失效聚合缓存（双保险：指纹也会随 append 变化）
+    this.reportCache.clear();
     // catch 兜底：一次写入失败（磁盘满/权限）不能让后续所有记录静默丢失
     this.queue = this.queue.catch(() => {}).then(async () => {
       await mkdir(path.dirname(this.filePath), { recursive: true });
@@ -125,6 +129,7 @@ export class UsageLog {
   /** 测试与将来压缩/重写用。 */
   async replaceAll(events: UsageEventRecord[]): Promise<void> {
     const text = events.map((event) => JSON.stringify(event)).join("\n") + (events.length ? "\n" : "");
+    this.reportCache.clear();
     this.queue = this.queue.catch(() => {}).then(async () => {
       await mkdir(path.dirname(this.filePath), { recursive: true });
       await writeFile(this.filePath, text, "utf8");
@@ -154,8 +159,26 @@ export class UsageLog {
     return events;
   }
 
+  /** 文件指纹；缺失/不可读返回 null（此时不写聚合缓存，行为同 readAll 的空结果路径）。 */
+  private async fingerprint(): Promise<{ mtimeMs: number; size: number } | null> {
+    try {
+      const stats = await stat(this.filePath);
+      return { mtimeMs: stats.mtimeMs, size: stats.size };
+    } catch {
+      return null;
+    }
+  }
+
   /** from/to 为本地日期 YYYY-MM-DD（闭区间），缺省不限。 */
   async report(range: { from?: string; to?: string } = {}): Promise<CostReport> {
+    // 先等队列排空（同 readAll），再取指纹：文件只增不轮转，mtimeMs+size 未变即内容未变
+    await this.queue.catch(() => {});
+    const fingerprint = await this.fingerprint();
+    const cacheKey = `${range.from ?? ""}${range.to ?? ""}`;
+    const cached = this.reportCache.get(cacheKey);
+    if (fingerprint && cached && cached.mtimeMs === fingerprint.mtimeMs && cached.size === fingerprint.size) {
+      return { generatedAt: new Date().toISOString(), ...cached.body };
+    }
     const events = await this.readAll();
     const totals = mutableMetrics();
     const byDay = new Map<string, MutableMetrics>();
@@ -196,8 +219,7 @@ export class UsageLog {
       return rows.sort((a, b) => (b.inputTokens + b.outputTokens) - (a.inputTokens + a.outputTokens));
     };
 
-    return {
-      generatedAt: new Date().toISOString(),
+    const body: Omit<CostReport, "generatedAt"> = {
       ...(range.from ? { from: range.from } : {}),
       ...(range.to ? { to: range.to } : {}),
       totals: freeze(totals),
@@ -212,5 +234,7 @@ export class UsageLog {
         }))
         .sort((a, b) => (b.inputTokens + b.outputTokens) - (a.inputTokens + a.outputTokens)),
     };
+    if (fingerprint) this.reportCache.set(cacheKey, { mtimeMs: fingerprint.mtimeMs, size: fingerprint.size, body });
+    return { generatedAt: new Date().toISOString(), ...body };
   }
 }
