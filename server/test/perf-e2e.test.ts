@@ -5,8 +5,6 @@
  * 本文件触发一次真实 run（含工具调用），证明 perf 三阶段耗时被真实采集并通过
  * REST 暴露，同时覆盖 messages 分页 REST 端点（session-pagination.test.ts 只测 store 层）。
  */
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentRunner, type RunPerfRecord } from "../src/agent/agent-runner.js";
@@ -16,17 +14,15 @@ import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
-const roots: string[] = [];
 const apps: Array<{ close(): Promise<unknown> }> = [];
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
 async function setupWithToolRun() {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-perf-e2e-"));
-  roots.push(root);
+  const root = await tempRoot("owc-perf-e2e-");
   const sessions = new SessionStore(path.join(root, "sessions"));
   await sessions.initialize();
   const session = await sessions.create({ cwd: root, provider: "files", model: "claude-opus-4-8" });
@@ -108,8 +104,7 @@ describe("Phase 2 端到端：perf 采样与 REST（真实 run）", () => {
 
 describe("Phase 2 端到端：messages 分页 REST", () => {
   it("GET /api/sessions/:id/messages?before=&limit= 尾读分页与全量一致、hasMore 正确", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-msg-page-"));
-    roots.push(root);
+    const root = await tempRoot("owc-msg-page-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const session = await sessions.create({ cwd: root, provider: "p", model: "m" });
@@ -163,8 +158,7 @@ describe("Phase 2 端到端：messages 分页 REST", () => {
   });
 
   it("GET /api/sessions/:id/messages 缺少 before 返回 400", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-msg-page-"));
-    roots.push(root);
+    const root = await tempRoot("owc-msg-page-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const session = await sessions.create({ cwd: root, provider: "p", model: "m" });

@@ -1,7 +1,6 @@
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
-import os from "node:os";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import type { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
@@ -11,9 +10,7 @@ import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
-
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
+import { tempRoot } from "./helpers/temp-roots.js";
 
 // RFC 6238 附录 B 的 SHA1 测试密钥（ASCII "12345678901234567890"）与 8 位向量
 const RFC_SECRET = base32Encode(Buffer.from("12345678901234567890", "ascii"));
@@ -77,8 +74,7 @@ async function makeEnabledService(root: string, now: () => number): Promise<{ se
 
 describe("TotpAuthService", () => {
   it("setup→confirm 落盘 0600，恢复码一次性用完即删", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-totp-"));
-    roots.push(root);
+    const root = await tempRoot("owc-totp-");
     const currentTime = 1_700_000_000_000;
     const now = () => currentTime;
     const { service, secret, recoveryCodes } = await makeEnabledService(root, now);
@@ -108,8 +104,7 @@ describe("TotpAuthService", () => {
   });
 
   it("confirm 码错误不落盘；disable 后文件删除且票据吊销", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-totp-"));
-    roots.push(root);
+    const root = await tempRoot("owc-totp-");
     const now = () => 1_700_000_000_000;
     const service = new TotpAuthService(path.join(root, "totp.json"), { now });
     await service.load();
@@ -126,8 +121,7 @@ describe("TotpAuthService", () => {
   });
 
   it("票据滑动续期与每 IP 5 次失败锁 60s", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-totp-"));
-    roots.push(root);
+    const root = await tempRoot("owc-totp-");
     let currentTime = 1_700_000_000_000;
     const now = () => currentTime;
     const { service } = await makeEnabledService(root, now);
@@ -186,8 +180,7 @@ async function buildTestApp(root: string, options: { totp?: TotpAuthService; acc
 
 describe("TOTP 门禁与登录 REST", () => {
   it("默认关闭：门禁完全不生效，status 如实上报", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-totp-"));
-    roots.push(root);
+    const root = await tempRoot("owc-totp-");
     const app = await buildTestApp(root);
     try {
       const status = await app.inject({ method: "GET", url: "/api/auth/status" });
@@ -204,8 +197,7 @@ describe("TOTP 门禁与登录 REST", () => {
   });
 
   it("启用后：无凭据 401、bearer 旁路、cookie 通过、静态与 health/auth 豁免", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-totp-"));
-    roots.push(root);
+    const root = await tempRoot("owc-totp-");
     const now = () => Date.now();
     const { service, secret } = await makeEnabledService(root, now);
     const accessToken = "a".repeat(32);
@@ -236,8 +228,7 @@ describe("TOTP 门禁与登录 REST", () => {
   });
 
   it("启用后禁止匿名重 setup/confirm/disable（防顶替）", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-totp-"));
-    roots.push(root);
+    const root = await tempRoot("owc-totp-");
     const now = () => Date.now();
     const { service } = await makeEnabledService(root, now);
     const app = await buildTestApp(root, { totp: service });
@@ -251,8 +242,7 @@ describe("TOTP 门禁与登录 REST", () => {
   });
 
   it("setup→confirm→login→disable 全流程 + 恢复码一次性 + 每 IP 限流锁定", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-totp-"));
-    roots.push(root);
+    const root = await tempRoot("owc-totp-");
     const now = () => Date.now();
     const service = new TotpAuthService(path.join(root, "totp.json"), { now });
     await service.load();
@@ -296,8 +286,7 @@ describe("TOTP 门禁与登录 REST", () => {
   });
 
   it("status 的终端门槛：非回环/局域网监听地址给出 gateReasons", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-totp-"));
-    roots.push(root);
+    const root = await tempRoot("owc-totp-");
     const now = () => Date.now();
     const { service } = await makeEnabledService(root, now);
     const lan = await buildTestApp(root, { totp: service, listenHost: "192.168.1.20" });

@@ -1,5 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { JobOutputResult, JobStartRequest, JobStatus } from "../src/core-client.js";
@@ -7,6 +6,7 @@ import type { SandboxPolicy } from "../src/sessions/types.js";
 import { ChatPythonEnv } from "../src/chat/chat-python-env.js";
 import { buildBwrapArgs, buildSandboxEnv, buildWrapper, executePython, type ChatPythonCoreBridge } from "../src/chat/chat-python-runner.js";
 import { chatTools, type ChatToolContext } from "../src/chat/chat-tools.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
 interface SpawnCall {
   cmd: string;
@@ -44,13 +44,7 @@ vi.mock("node:child_process", async () => {
   };
 });
 
-const roots: string[] = [];
-
-async function makeRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(tmpdir(), "owc-chat-py-"));
-  roots.push(root);
-  return root;
-}
+const makeRoot = (): Promise<string> => tempRoot("owc-chat-py-");
 
 /** 造一个"解释器存在"的假 venv（python --version 由 spawn mock 放行）。 */
 async function makeUsableEnv(root: string): Promise<ChatPythonEnv> {
@@ -73,12 +67,8 @@ beforeEach(() => {
   };
 });
 
-afterEach(async () => {
+afterEach(() => {
   vi.restoreAllMocks();
-  while (roots.length > 0) {
-    const root = roots.pop()!;
-    await rm(root, { recursive: true, force: true, maxRetries: 3 }).catch(() => {});
-  }
 });
 
 describe("buildWrapper", () => {

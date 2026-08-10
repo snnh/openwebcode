@@ -44,7 +44,7 @@ const echoProvider = makeStubProvider("test-stub", async function* () {
 });
 
 /** 等待 agent 跑完并把首条用户消息落盘 */
-async function waitForUserMessage(sessions: SessionStore, id: string, timeoutMs = 5_000): Promise<void> {
+async function waitForUserMessage(sessions: SessionStore, id: string, timeoutMs = 15_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const detail = await sessions.get(id);

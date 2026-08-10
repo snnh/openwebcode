@@ -1,8 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +12,7 @@ import type { ProxyConfig } from "../src/proxy.js";
 import { SettingsService, SettingsValidationError } from "../src/settings-service.js";
 import type { SandboxPolicy, SessionMeta } from "../src/sessions/types.js";
 import { makeFakeCore } from "./helpers/fake-core.js";
+import { tempRootRetry } from "./helpers/temp-roots.js";
 
 /**
  * filtered 网络档 sidecar 编排测试：
@@ -22,25 +22,18 @@ import { makeFakeCore } from "./helpers/fake-core.js";
  * - 设置项 sandboxProxyDenyList 校验与热生效钩子。
  */
 
-const roots: string[] = [];
 const children: ChildProcess[] = [];
 const sockets: net.Socket[] = [];
 const servers: http.Server[] = [];
 
-function makeTempRoot(): string {
-  const root = mkdtempSync(path.join(os.tmpdir(), "owc-filtered-proxy-"));
-  roots.push(root);
-  return root;
-}
+// sidecar 子进程可能锁住临时目录：走 rmWithRetry 变体（afterEach 先杀进程再清理）
+const makeTempRoot = (): Promise<string> => tempRootRetry("owc-filtered-proxy-");
 
 afterEach(async () => {
   for (const child of children.splice(0)) child.kill("SIGTERM");
   for (const socket of sockets.splice(0)) socket.destroy();
   for (const server of servers.splice(0)) {
     await new Promise<void>((resolve) => server.close(() => resolve()));
-  }
-  for (const root of roots.splice(0)) {
-    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -117,7 +110,7 @@ function stagedPaths(root: string): { nodeExe: string; script: string } {
 
 describe("FilteredProxyManager 编排", () => {
   it("ensureProxy 起 job（network=allow）、写 deny 文件并解析端口", async () => {
-    const root = makeTempRoot();
+    const root = await makeTempRoot();
     const { client, calls } = makeJobFakeCore({ port: 43210 });
     const manager = makeManager(root);
     const handle = await manager.ensureProxy(client, "s1", "D:\\work");
@@ -142,7 +135,7 @@ describe("FilteredProxyManager 编排", () => {
   });
 
   it("ensureProxy 幂等：sidecar 存活时不重起", async () => {
-    const root = makeTempRoot();
+    const root = await makeTempRoot();
     const { client, calls } = makeJobFakeCore();
     const manager = makeManager(root);
     const first = await manager.ensureProxy(client, "s1", "D:\\work");
@@ -152,7 +145,7 @@ describe("FilteredProxyManager 编排", () => {
   });
 
   it("sidecar 意外结束后下一次 ensureProxy 重起", async () => {
-    const root = makeTempRoot();
+    const root = await makeTempRoot();
     const { client, calls, jobs } = makeJobFakeCore({ port: 50000 });
     const manager = makeManager(root);
     const first = await manager.ensureProxy(client, "s1", "D:\\work");
@@ -165,7 +158,7 @@ describe("FilteredProxyManager 编排", () => {
   });
 
   it("端口输出超时：cancel job 并报错", async () => {
-    const root = makeTempRoot();
+    const root = await makeTempRoot();
     const { client, calls } = makeJobFakeCore({ silent: true });
     const manager = makeManager(root, { portTimeoutMs: 300, pollMs: 10 });
     await expect(manager.ensureProxy(client, "s1", "D:\\work")).rejects.toThrow(/超时/);
@@ -173,7 +166,7 @@ describe("FilteredProxyManager 编排", () => {
   });
 
   it("job 进入终态（failed）：直接报错", async () => {
-    const root = makeTempRoot();
+    const root = await makeTempRoot();
     const { client, jobs, calls } = makeJobFakeCore({ silent: true });
     const manager = makeManager(root, { portTimeoutMs: 5_000, pollMs: 10 });
     const promise = manager.ensureProxy(client, "s1", "D:\\work");
@@ -185,7 +178,7 @@ describe("FilteredProxyManager 编排", () => {
   });
 
   it("releaseProxy 取消 job 并删除 deny 文件", async () => {
-    const root = makeTempRoot();
+    const root = await makeTempRoot();
     const { client, calls } = makeJobFakeCore();
     const manager = makeManager(root);
     await manager.ensureProxy(client, "s1", "D:\\work");
@@ -199,7 +192,7 @@ describe("FilteredProxyManager 编排", () => {
   });
 
   it("refreshDenyFiles 重写活跃会话的 deny 文件", async () => {
-    const root = makeTempRoot();
+    const root = await makeTempRoot();
     const { client } = makeJobFakeCore();
     let list = ["one.example"];
     const manager = makeManager(root, { getDenyList: () => list });
@@ -214,7 +207,7 @@ describe("FilteredProxyManager 编排", () => {
   });
 
   it("POSIX 命令行以 X=... 形式内嵌 env", async () => {
-    const root = makeTempRoot();
+    const root = await makeTempRoot();
     const { client, calls } = makeJobFakeCore();
     const manager = makeManager(root, { platform: "linux" });
     const handle = await manager.ensureProxy(client, "s1", "/work");
@@ -236,8 +229,8 @@ describe("FilteredProxyManager 上游折算", () => {
     { name: "custom → 仅 http", config: { mode: "custom", httpProxy: "http://10.0.0.4:7890" }, expected: "http://10.0.0.4:7890/" },
   ];
   for (const item of cases) {
-    it(item.name, () => {
-      const manager = makeManager(makeTempRoot(), {
+    it(item.name, async () => {
+      const manager = makeManager(await makeTempRoot(), {
         getProxyConfig: () => item.config,
         env: item.env ?? {},
       });
@@ -245,9 +238,9 @@ describe("FilteredProxyManager 上游折算", () => {
     });
   }
 
-  it("回环上游保留原值并警告平台边界一次", () => {
+  it("回环上游保留原值并警告平台边界一次", async () => {
     const warnings: string[] = [];
-    const manager = makeManager(makeTempRoot(), {
+    const manager = makeManager(await makeTempRoot(), {
       getProxyConfig: () => ({ mode: "custom", httpProxy: "http://user:pass@127.0.0.1:7890" }),
       log: (line) => warnings.push(line),
     });
@@ -256,9 +249,9 @@ describe("FilteredProxyManager 上游折算", () => {
     expect(warnings.filter((line) => line.includes("LoopbackExempt"))).toHaveLength(1);
   });
 
-  it("localhost 上游同样保留原值并警告", () => {
+  it("localhost 上游同样保留原值并警告", async () => {
     const warnings: string[] = [];
-    const manager = makeManager(makeTempRoot(), {
+    const manager = makeManager(await makeTempRoot(), {
       getProxyConfig: () => ({ mode: "env" }),
       env: { HTTPS_PROXY: "http://localhost:7890" },
       log: (line) => warnings.push(line),
@@ -268,7 +261,7 @@ describe("FilteredProxyManager 上游折算", () => {
   });
 
   it("上游注入 cmd（Windows set 形式）", async () => {
-    const root = makeTempRoot();
+    const root = await makeTempRoot();
     const { client, calls } = makeJobFakeCore();
     const manager = makeManager(root, {
       getProxyConfig: () => ({ mode: "custom", httpProxy: "http://10.0.0.9:7890" }),
@@ -295,21 +288,21 @@ function makeMeta(id: string, network: SandboxPolicy["network"]): SessionMeta {
 }
 
 describe("CoreRouter filtered 两阶段下发", () => {
-  function makeRouter(meta: SessionMeta) {
+  async function makeRouter(meta: SessionMeta) {
     const { client, calls, jobs } = makeJobFakeCore({ port: 45678 });
     const sessions = { get: async (id: string) => (id === meta.id ? meta : undefined) };
     const wsb = {
       acquire: vi.fn(), peek: vi.fn(() => undefined), release: vi.fn(async () => undefined), releaseAll: vi.fn(async () => undefined),
       onClientCreated: undefined as undefined | ((sessionId: string, client: CoreClientLike) => void),
     };
-    const root = makeTempRoot();
+    const root = await makeTempRoot();
     const manager = makeManager(root);
     const router = new CoreRouter(client, sessions, wsb as never, undefined, undefined, "win32", manager);
     return { router, client, calls, jobs, manager, root };
   }
 
   it("configure 补发 proxyAddr + readOnlyPaths", async () => {
-    const { router, calls, root } = makeRouter(makeMeta("s1", "filtered"));
+    const { router, calls, root } = await makeRouter(makeMeta("s1", "filtered"));
     await router.run({ sessionId: "s1", execId: "e1", cmd: "echo hi", cwd: "D:\\work" });
     expect(calls.configureSession).toHaveLength(2);
     const [base, enriched] = calls.configureSession;
@@ -321,14 +314,14 @@ describe("CoreRouter filtered 两阶段下发", () => {
   });
 
   it("release 回收 sidecar", async () => {
-    const { router, calls } = makeRouter(makeMeta("s1", "filtered"));
+    const { router, calls } = await makeRouter(makeMeta("s1", "filtered"));
     await router.run({ sessionId: "s1", execId: "e1", cmd: "echo hi", cwd: "D:\\work" });
     await router.release("s1");
     expect(calls.cancelJob).toContain("filtered-proxy-s1");
   });
 
   it("非 filtered 会话不触发 sidecar", async () => {
-    const { router, calls } = makeRouter(makeMeta("s1", "allow"));
+    const { router, calls } = await makeRouter(makeMeta("s1", "allow"));
     await router.run({ sessionId: "s1", execId: "e1", cmd: "echo hi", cwd: "D:\\work" });
     expect(calls.startJob).toHaveLength(0);
     expect(calls.configureSession).toHaveLength(1);
@@ -429,7 +422,7 @@ function plainGet(proxyPort: number, url: string): Promise<{ status: number; bod
 
 describe("sandbox-proxy.mjs 实测", () => {
   it("CONNECT 隧道到本地目标往返成功", async () => {
-    const root = makeTempRoot();
+    const root = await makeTempRoot();
     const denyPath = path.join(root, "test.deny");
     writeFileSync(denyPath, "# empty\n", "utf8");
     const targetPort = await listenTarget((req, res) => res.end(`hello:${req.url ?? ""}`));
@@ -440,7 +433,7 @@ describe("sandbox-proxy.mjs 实测", () => {
   });
 
   it("明文 HTTP 转发", async () => {
-    const root = makeTempRoot();
+    const root = await makeTempRoot();
     const denyPath = path.join(root, "test.deny");
     writeFileSync(denyPath, "", "utf8");
     const targetPort = await listenTarget((req, res) => res.end(`plain:${req.url ?? ""}`));
@@ -451,7 +444,7 @@ describe("sandbox-proxy.mjs 实测", () => {
   });
 
   it("deny 命中 → 403 并记日志；后缀匹配子域名", async () => {
-    const root = makeTempRoot();
+    const root = await makeTempRoot();
     const denyPath = path.join(root, "test.deny");
     writeFileSync(denyPath, "# comment\n\nexample.com\n", "utf8");
     const proxy = await startScriptProxy({ OWC_PROXY_DENY_FILE: denyPath });
@@ -466,7 +459,7 @@ describe("sandbox-proxy.mjs 实测", () => {
   });
 
   it("deny 文件修改后热生效", async () => {
-    const root = makeTempRoot();
+    const root = await makeTempRoot();
     const denyPath = path.join(root, "test.deny");
     writeFileSync(denyPath, "# empty\n", "utf8");
     const proxy = await startScriptProxy({ OWC_PROXY_DENY_FILE: denyPath });
@@ -481,7 +474,7 @@ describe("sandbox-proxy.mjs 实测", () => {
   });
 
   it("目标不可达 → 502", async () => {
-    const root = makeTempRoot();
+    const root = await makeTempRoot();
     const denyPath = path.join(root, "test.deny");
     writeFileSync(denyPath, "", "utf8");
     const proxy = await startScriptProxy({ OWC_PROXY_DENY_FILE: denyPath });
@@ -493,7 +486,7 @@ describe("sandbox-proxy.mjs 实测", () => {
   });
 
   it("上游接力：CONNECT 经上游（含 Proxy-Authorization），明文也走上游", async () => {
-    const root = makeTempRoot();
+    const root = await makeTempRoot();
     const denyPath = path.join(root, "test.deny");
     writeFileSync(denyPath, "", "utf8");
     const targetPort = await listenTarget((req, res) => res.end(`via-target:${req.url ?? ""}`));
@@ -552,13 +545,13 @@ describe("设置项 sandboxProxyDenyList", () => {
   }
 
   it("合法清单：去空白小写化合成进 config", async () => {
-    const service = await loadSettings(makeTempRoot());
+    const service = await loadSettings(await makeTempRoot());
     await service.update({ sandboxProxyDenyList: ["Example.COM ", " sub.a.org"] });
     expect(service.effective().sandboxProxyDenyList).toEqual(["example.com", "sub.a.org"]);
   });
 
   it("非法条目被拒绝", async () => {
-    const service = await loadSettings(makeTempRoot());
+    const service = await loadSettings(await makeTempRoot());
     await expect(service.update({ sandboxProxyDenyList: ["bad domain!"] })).rejects.toThrow(SettingsValidationError);
     await expect(service.update({ sandboxProxyDenyList: [""] })).rejects.toThrow(SettingsValidationError);
     await expect(service.update({ sandboxProxyDenyList: ["ok.example", "also bad.."] })).rejects.toThrow(SettingsValidationError);
@@ -566,13 +559,13 @@ describe("设置项 sandboxProxyDenyList", () => {
   });
 
   it("env 来源：逗号分隔且界面不可改", async () => {
-    const service = await loadSettings(makeTempRoot(), { OWC_SANDBOX_PROXY_DENY_LIST: "A.example, b.example" });
+    const service = await loadSettings(await makeTempRoot(), { OWC_SANDBOX_PROXY_DENY_LIST: "A.example, b.example" });
     expect(service.effective().sandboxProxyDenyList).toEqual(["a.example", "b.example"]);
     await expect(service.update({ sandboxProxyDenyList: ["c.example"] })).rejects.toThrow(/环境变量/);
   });
 
   it("保存触发 refreshDenyFiles 热生效钩子", async () => {
-    const service = await loadSettings(makeTempRoot());
+    const service = await loadSettings(await makeTempRoot());
     const refreshDenyFiles = vi.fn(async () => undefined);
     service.bind({
       providers: {} as never,
@@ -589,7 +582,7 @@ describe("设置项 sandboxProxyDenyList", () => {
   });
 
   it("默认空清单不进 ServerConfig", async () => {
-    const service = await loadSettings(makeTempRoot());
+    const service = await loadSettings(await makeTempRoot());
     expect(service.effective().sandboxProxyDenyList).toBeUndefined();
   });
 });

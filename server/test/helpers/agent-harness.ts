@@ -77,12 +77,12 @@ export function makeAbortPendingProvider(name = "test-stub"): { provider: Provid
   return { provider, entered };
 }
 
-/** 等到会话出现 pending 交互并返回之 */
+/** 等到会话出现 pending 交互并返回之。15s：Windows CI/本地全量并行高负载下 5s 会抖动超时。 */
 export async function waitForPendingInteraction(agent: AgentRunner, sessionId: string) {
   await vi.waitFor(async () => {
     const list = await agent.listInteractions(sessionId);
     expect(list.some((item) => item.status === "pending")).toBe(true);
-  }, { timeout: 5000 });
+  }, { timeout: 15000 });
   return (await agent.listInteractions(sessionId)).find((item) => item.status === "pending")!;
 }
 

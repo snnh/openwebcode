@@ -55,7 +55,7 @@ describe("/init composer command", () => {
       expect(response.statusCode, response.body).toBe(202);
       await waitForUserMessage(sessions, session.id);
       // provider 调用在用户消息落盘之后，轮询等待首轮请求到达
-      await vi.waitFor(() => expect(seen.length).toBeGreaterThan(0), { timeout: 5_000 });
+      await vi.waitFor(() => expect(seen.length).toBeGreaterThan(0), { timeout: 15_000 });
       const detail = await sessions.get(session.id);
       const userMsg = detail?.messages.find((m) => m.role === "user");
       const text = userMsg?.content.find((block) => block.type === "text");
@@ -101,7 +101,7 @@ describe("/init composer command", () => {
       const session = await sessions.create({ cwd: root, provider: "test-stub", model: "deterministic-tool-loop", title: "Init override" });
       const response = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "/init" } });
       expect(response.statusCode, response.body).toBe(202);
-      await vi.waitFor(() => expect(seen.length).toBeGreaterThan(0), { timeout: 5_000 });
+      await vi.waitFor(() => expect(seen.length).toBeGreaterThan(0), { timeout: 15_000 });
       expect(seen).toContain("自定义 init 探查提示词");
     } finally {
       await app.close();

@@ -1,5 +1,4 @@
-import { readFile, mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import installDefaultsDocument from "../src/config/defaults.json" with { type: "json" };
@@ -17,18 +16,16 @@ import { SessionStore } from "../src/sessions/session-store.js";
 import { CODE_DEFAULTS, encodeFastModelSelection, SettingsService, type SettingsFieldView, type SettingsView } from "../src/settings-service.js";
 import { MAX_SYNC_INTERVAL_MINUTES } from "../src/remote-sync-scheduler.js";
 import type { UpdateChecker } from "../src/update-checker.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
-const roots: string[] = [];
 const apps: Array<{ close(): Promise<unknown> }> = [];
 
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
 async function fixture(env: NodeJS.ProcessEnv = {}) {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-settings-"));
-  roots.push(root);
+  const root = await tempRoot("owc-settings-");
   const sessions = new SessionStore(path.join(root, "sessions"));
   await sessions.initialize();
   const pricing = new PricingCatalog(path.join(root, "model-pricing.json"));
@@ -247,8 +244,7 @@ describe("server settings API", () => {
   });
 
   it("exposes env-provided jobObject limits in the effective config and omits them by default", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-jobobject-"));
-    roots.push(root);
+    const root = await tempRoot("owc-jobobject-");
     const configured = await SettingsService.load({
       env: { OWC_JOB_MEMORY_MB: "2048", OWC_JOB_MAX_PROCESSES: "32" },
       filePath: path.join(root, "server-settings.json"),
@@ -473,9 +469,6 @@ describe("model selection settings (modelSelection group)", () => {
 });
 
 // ---- defaults-sync 组（合并） ----
-const defaultsRoots: string[] = [];
-afterEach(async () => Promise.all(defaultsRoots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
-
 function defaultsField(view: SettingsView, key: string): SettingsFieldView {
   for (const group of view.groups) {
     const found = group.fields.find((item) => item.key === key);
@@ -498,8 +491,7 @@ describe("install-dir defaults sync guard", () => {
 
 describe("settings auto-combine (install default + user override)", () => {
   it("serves install defaults when nothing is overridden", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-defaults-"));
-    defaultsRoots.push(root);
+    const root = await tempRoot("owc-defaults-");
     const settings = await SettingsService.load({ env: {}, filePath: path.join(root, "server-settings.json") });
     const view = settings.view();
     const port = defaultsField(view, "port");
@@ -509,8 +501,7 @@ describe("settings auto-combine (install default + user override)", () => {
   });
 
   it("keeps the user override and exposes the differing install default", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-defaults-"));
-    defaultsRoots.push(root);
+    const root = await tempRoot("owc-defaults-");
     const settings = await SettingsService.load({ env: {}, filePath: path.join(root, "server-settings.json") });
     await settings.update({ port: 9999 });
     const view = settings.view();
@@ -534,8 +525,7 @@ describe("defaultCorePath 平台感知", () => {
   });
 
   it("SettingsService 无覆盖时 effective/view 出当前平台默认", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-corepath-"));
-    roots.push(root);
+    const root = await tempRoot("owc-corepath-");
     const settings = await SettingsService.load({ env: {}, filePath: path.join(root, "server-settings.json") });
     expect(settings.effective().corePath).toBe(defaultCorePath());
     const view = settings.view();
@@ -544,8 +534,7 @@ describe("defaultCorePath 平台感知", () => {
   });
 
   it("SettingsService 文件覆盖优先于平台默认", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-corepath-"));
-    roots.push(root);
+    const root = await tempRoot("owc-corepath-");
     const settings = await SettingsService.load({ env: {}, filePath: path.join(root, "server-settings.json") });
     await settings.update({ corePath: "/opt/owc/owc-exec" });
     expect(settings.effective().corePath).toBe("/opt/owc/owc-exec");

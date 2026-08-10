@@ -1,8 +1,8 @@
-import { mkdtemp, rename, rm, stat } from "node:fs/promises";
-import os from "node:os";
+import { rename, stat } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { replaceFileWithRetry, writeUtf8Atomically } from "../src/atomic-file.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
 function sharingViolation(code: "EPERM" | "EACCES" | "EBUSY" = "EPERM"): NodeJS.ErrnoException {
   return Object.assign(new Error("file is temporarily in use"), { code });
@@ -44,14 +44,7 @@ describe("replaceFileWithRetry", () => {
 });
 
 describe("writeUtf8Atomically mode", () => {
-  const roots: string[] = [];
-  afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
-
-  async function makeRoot(): Promise<string> {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-atomic-"));
-    roots.push(root);
-    return root;
-  }
+  const makeRoot = (): Promise<string> => tempRoot("owc-atomic-");
 
   it("POSIX 平台写后 chmod 目标文件", async () => {
     const root = await makeRoot();

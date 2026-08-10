@@ -1,20 +1,13 @@
-import { mkdtemp, rm, stat } from "node:fs/promises";
-import os from "node:os";
+import { stat } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { ensureDirWithMode } from "../src/fs-utils.js";
 import { ProviderProfilesService } from "../src/provider-profiles.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { SettingsService } from "../src/settings-service.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
-const roots: string[] = [];
-afterEach(async () => Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))));
-
-async function makeRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-perms-"));
-  roots.push(root);
-  return root;
-}
+const makeRoot = (): Promise<string> => tempRoot("owc-perms-");
 
 const modeOf = async (target: string): Promise<number> => (await stat(target)).mode & 0o777;
 

@@ -1,7 +1,5 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { Dispatcher } from "undici";
 import {
   applyProxyConfig,
@@ -12,12 +10,7 @@ import {
   type ProxyDispatcherControl,
 } from "../src/proxy.js";
 import { SettingsService, type SettingsView } from "../src/settings-service.js";
-
-const roots: string[] = [];
-
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-});
+import { tempRoot } from "./helpers/temp-roots.js";
 
 /** 注入式 fake dispatcher 控制面：记录安装顺序并捕获 custom 模式的路由回调，不动真实全局状态。 */
 function fakeControl() {
@@ -148,8 +141,7 @@ describe("applyProxyConfig（fake dispatcher 控制面）", () => {
 });
 
 async function loadSettings(env: NodeJS.ProcessEnv = {}): Promise<SettingsService> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-proxy-settings-"));
-  roots.push(root);
+  const root = await tempRoot("owc-proxy-settings-");
   return SettingsService.load({ env, filePath: path.join(root, "server-settings.json") });
 }
 

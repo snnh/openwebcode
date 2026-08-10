@@ -1,5 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
@@ -19,15 +18,10 @@ import {
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { initGitRepo, realGit, unusedCore } from "./helpers/git.js";
-
-const roots: string[] = [];
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-});
+import { tempRoot } from "./helpers/temp-roots.js";
 
 async function setup() {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-scm-"));
-  roots.push(root);
+  const root = await tempRoot("owc-scm-");
   const repo = await initGitRepo(root);
   const sessions = new SessionStore(path.join(root, "sessions"));
   await sessions.initialize();
@@ -267,8 +261,7 @@ describe("stage / unstage / discard / log（阶段 2a/2f）", () => {
   const isRepo = { match: (args: string[]) => args[0] === "rev-parse", stdout: "true\n" };
 
   async function setupWithExec(exec: (args: string[], cwd: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>) {
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-scm-fake-"));
-    roots.push(root);
+    const root = await tempRoot("owc-scm-fake-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const session = await sessions.create({ cwd: root, provider: "fake", model: "fake-model" });
@@ -399,17 +392,14 @@ describe("git_commit 权限链（0.4.0 Phase 4a）", () => {
 });
 
 // ---- scm-api 组（合并） ----
-const apiRoots: string[] = [];
 const apiApps: Array<{ close(): Promise<unknown> }> = [];
 afterEach(async () => {
   await Promise.all(apiApps.splice(0).map((app) => app.close()));
-  await Promise.all(apiRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
 async function setupApi(options: { withScm?: boolean } = {}) {
   const { withScm = true } = options;
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-scm-api-"));
-  apiRoots.push(root);
+  const root = await tempRoot("owc-scm-api-");
   const repo = await initGitRepo(root);
   const sessions = new SessionStore(path.join(root, "sessions"));
   await sessions.initialize();
