@@ -243,3 +243,76 @@ describe("Anthropic prompt cache 断点", () => {
     expect(bodies[1]).not.toHaveProperty("top_p");
   });
 });
+describe("AnthropicProvider 工具配对修复", () => {
+  it("悬空 tool_use 补占位 tool_result，游离 tool_result 丢弃", async () => {
+    const provider = new AnthropicProvider({ apiKey: "test" });
+    const bodies: Array<Record<string, unknown>> = [];
+    injectMockStream(provider, bodies);
+    const messages: ChatMessage[] = [
+      { id: "u1", role: "user", content: [{ type: "text", text: "继续" }], createdAt: "2026-01-01T00:00:00.000Z" },
+      {
+        id: "a1", role: "assistant", createdAt: "2026-01-01T00:00:01.000Z",
+        content: [{ type: "tool_call", id: "call_dangling", name: "bash", input: { cmd: "sleep 600" } }],
+      },
+      // !shell 直写的 tool_result：无对应 assistant tool_use（shell-* id），原样发送会 400 unexpected tool_use_id
+      { id: "t1", role: "tool", content: [{ type: "tool_result", toolCallId: "shell-abc12345", content: "orphan", isError: false }], createdAt: "2026-01-01T00:00:02.000Z" },
+    ];
+    await collect(provider.streamChat(request({ messages })));
+
+    expect(bodies[0]?.messages).toEqual([
+      { role: "user", content: [{ type: "text", text: "继续" }] },
+      { role: "assistant", content: [{ type: "tool_use", id: "call_dangling", name: "bash", input: { cmd: "sleep 600" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "call_dangling", content: expect.stringContaining("interrupted") }] },
+    ]);
+  });
+
+  it("tool_result 随 tool 消息到达时保留；历史以悬空 tool_use 结尾时补占位收尾", async () => {
+    const provider = new AnthropicProvider({ apiKey: "test" });
+    const bodies: Array<Record<string, unknown>> = [];
+    injectMockStream(provider, bodies);
+    const messages: ChatMessage[] = [
+      { id: "u1", role: "user", content: [{ type: "text", text: "查" }], createdAt: "2026-01-01T00:00:00.000Z" },
+      {
+        id: "a1", role: "assistant", createdAt: "2026-01-01T00:00:01.000Z",
+        content: [
+          { type: "text", text: "我查一下" },
+          { type: "tool_call", id: "call_1", name: "read_file", input: { path: "a" } },
+          { type: "tool_call", id: "call_2", name: "bash", input: { cmd: "ls" } },
+        ],
+      },
+      {
+        id: "t1", role: "tool", createdAt: "2026-01-01T00:00:02.000Z",
+        content: [
+          { type: "tool_result", toolCallId: "call_1", content: "A", isError: false },
+          { type: "tool_result", toolCallId: "call_2", content: "B", isError: true },
+        ],
+      },
+      { id: "u2", role: "user", content: [{ type: "text", text: "继续" }], createdAt: "2026-01-01T00:00:03.000Z" },
+      // 中断：结果未落盘，历史以悬空 tool_use 结尾
+      { id: "a2", role: "assistant", createdAt: "2026-01-01T00:00:04.000Z", content: [{ type: "tool_call", id: "call_3", name: "bash", input: { cmd: "pwd" } }] },
+    ];
+    await collect(provider.streamChat(request({ messages })));
+
+    expect(bodies[0]?.messages).toEqual([
+      { role: "user", content: [{ type: "text", text: "查" }] },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "我查一下" },
+          { type: "tool_use", id: "call_1", name: "read_file", input: { path: "a" } },
+          { type: "tool_use", id: "call_2", name: "bash", input: { cmd: "ls" } },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "call_1", content: "A" },
+          { type: "tool_result", tool_use_id: "call_2", content: "B", is_error: true },
+        ],
+      },
+      { role: "user", content: [{ type: "text", text: "继续" }] },
+      { role: "assistant", content: [{ type: "tool_use", id: "call_3", name: "bash", input: { cmd: "pwd" } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "call_3", content: expect.stringContaining("interrupted") }] },
+    ]);
+  });
+});

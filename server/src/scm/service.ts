@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
+import { errorMessage } from "../error-utils.js";
 import { isMissing } from "../fs-utils.js";
 import type { CoreClientLike } from "../core-client.js";
 import type { EventBus } from "../events/event-bus.js";
@@ -328,19 +329,25 @@ export class ScmService {
       const add = await this.git(sessionId, cwd, ["add", "--", ...files], context);
       if (add.exitCode !== 0) throw new Error(`git add failed: ${add.stderr.trim() || `exit ${add.exitCode}`}`);
     }
-    // 提交信息走 -F 文件：跨 cmd.exe/sh 安全，不注入命令行
-    const messageDir = path.join(this.sessions.contextRoot(sessionId), "scm");
-    await mkdir(messageDir, { recursive: true });
-    const messageFile = path.join(messageDir, `commit-${randomUUID()}.txt`);
-    await writeFile(messageFile, message, "utf8");
+    // 提交信息走 -F 文件：跨 cmd.exe/sh 安全，不注入命令行。
+    // 文件必须落在工作区 .git/ 内：沙盒（bwrap/Job Object/WSB）只挂载会话 cwd，
+    // dataDir 下的文件沙盒内不可读（曾致 fatal: could not read log file）。
+    // 每会话固定文件名反复覆写：藏在 .git 内不进 git status、无累积；同会话不会并发提交。
+    // 生产路径经 core.writeFile（CoreRouter 为 WSB 翻译路径）；exec 注入（测试/直连）走宿主 fs。
+    const messageRel = `.git/owc-commit-${sessionId}.txt`;
     try {
-      const committed = await this.git(sessionId, cwd, ["commit", "-F", messageFile], context);
-      if (committed.exitCode !== 0) {
-        const detail = (committed.stderr || committed.stdout).trim();
-        throw new Error(`git commit failed: ${detail || `exit ${committed.exitCode}`}`);
+      if (this.options.exec) {
+        await writeFile(path.join(cwd, messageRel), message, "utf8");
+      } else {
+        await this.core.writeFile({ sessionId, path: path.join(cwd, messageRel), content: message });
       }
-    } finally {
-      await rm(messageFile, { force: true });
+    } catch (error) {
+      throw new Error(`git_commit: 无法在工作区 .git/ 写入提交信息文件（worktree 或非常规仓库布局不支持）：${errorMessage(error)}`);
+    }
+    const committed = await this.git(sessionId, cwd, ["commit", "-F", messageRel], context);
+    if (committed.exitCode !== 0) {
+      const detail = (committed.stderr || committed.stdout).trim();
+      throw new Error(`git commit failed: ${detail || `exit ${committed.exitCode}`}`);
     }
     const head = await this.git(sessionId, cwd, ["rev-parse", "HEAD"], context);
     const commit = head.exitCode === 0 ? head.stdout.trim() : "";
