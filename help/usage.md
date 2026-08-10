@@ -130,6 +130,7 @@ ChatGPT 风格的纯对话模式，与编码工作台并存，适合问答、写
   - Windows：`Job Object`（默认，兼容模式）/ `AppContainer`（更强隔离，兼容性较差）/ `WSB`（Windows Sandbox，跑不可信代码用，一会话一 VM，关闭即销毁）/ `关闭`
   - Linux：`bubblewrap`（默认，mount/net namespace 隔离；无 bwrap 环境自动回落 Landlock）/ `Landlock`（强制后端）/ `关闭`
   - `关闭` 是完全不沙盒，不推荐
+  - Linux 沙盒内使用 git/gh：宿主的 `~/.gitconfig`、`~/.git-credentials`、`~/.config/git`、`~/.config/gh`、`~/.ssh`（仅实际存在的项）会以只读方式挂入沙盒，`git push` / `gh` 可直接使用宿主凭据；这些路径只读且对文件工具不可见（仅沙盒内进程可读）
 - **网络**：`允许（默认）` / `拒绝` / `代理过滤（仅 Windows）`。filtered 档让沙盒内进程经 sidecar 代理出网，默认全放行；拦截域名在 **设置 → 服务信息** 的「沙盒代理拦截域名」维护（每行一个域名、含其子域，最多 64 个，保存后对活跃会话热生效；对应环境变量 `OWC_SANDBOX_PROXY_DENY_LIST`）
 - **初始化脚本**（仅 WSB）：沙盒启动后、agent 启动前执行的命令
 - **工作区模式**：
