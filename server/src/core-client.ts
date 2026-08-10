@@ -205,10 +205,6 @@ export interface PtyOpenRequest { session: string; cwd: string; cols: number; ro
 export interface PtyOpenResult { ptyId: number; sandboxCapability?: string; sandboxReason?: string }
 export interface PtyInputRequest { ptyId: number; data: string }
 export interface PtyResizeRequest { ptyId: number; cols: number; rows: number }
-/** pty.output 通知载荷（data 为 base64，seq 在单 pty 内从 0 递增） */
-export interface PtyOutputEvent { ptyId: number; seq: number; data: string }
-/** pty.exit 通知载荷：子进程退出时恰好一次，记录保留到显式 pty.close */
-export interface PtyExitEvent { ptyId: number; exitCode?: number }
 /**
  * overlay.*：Linux overlayfs 快照原语（信任边界同 pty.*，core 本身非沙盒进程）。
  * stateRoot 为 core 侧根界：upper/work/merged/dest/sourceUpper 必须严格位于其下
