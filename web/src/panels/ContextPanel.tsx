@@ -36,6 +36,7 @@ function PolicySection({ sessionId, running, policy }: { sessionId: string; runn
   const queryClient = useQueryClient();
   const [form, setForm] = useState({ enabled: true, strategy: "lag" as "lag" | "interval" | "off", evictionMode: "placeholder" as "placeholder" | "process", lag: "2", interval: "5", minRetainTokens: "256", readKeepLines: "50", pinExemptRounds: "5", restoreBudget: "20000" });
   const [busy, setBusy] = useState(false);
+  const [compacting, setCompacting] = useState<"toolcalls" | "overview" | null>(null);
   useEffect(() => {
     if (!policy) return;
     setForm({ enabled: policy.enabled, strategy: policy.strategy, evictionMode: policy.evictionMode, lag: String(policy.lag), interval: String(policy.interval), minRetainTokens: String(policy.minRetainTokens), readKeepLines: String(policy.readKeepLines), pinExemptRounds: String(policy.pinExemptRounds), restoreBudget: String(policy.restoreBudget) });
@@ -61,19 +62,20 @@ function PolicySection({ sessionId, running, policy }: { sessionId: string; runn
   };
   const compact = (mode: "toolcalls" | "overview"): void => {
     setBusy(true);
+    setCompacting(mode);
     api.compactContext(sessionId, mode).then((result) => {
       void queryClient.invalidateQueries({ queryKey: qk.context(sessionId) });
       ui.notify(result.changed
         ? (mode === "toolcalls" ? t("工具调用已压缩", "Tool calls compacted") : t("已生成上下文概览", "Context overview generated"))
         : result.reason ?? t("无需压缩", "No compaction needed"));
-    }).catch((error: unknown) => ui.notify(error instanceof Error ? error.message : t("压缩失败", "Compaction failed"), "error")).finally(() => setBusy(false));
+    }).catch((error: unknown) => ui.notify(error instanceof Error ? error.message : t("压缩失败", "Compaction failed"), "error")).finally(() => { setBusy(false); setCompacting(null); });
   };
   return (
     <>
       <h2>{t("管理与压缩", "Management and compaction")}</h2>
       <div className="context-actions">
-        <button className="btn small" disabled={running || busy} onClick={() => compact("toolcalls")}>{t("压缩工具调用", "Compact tool calls")}</button>
-        <button className="btn small" disabled={running || busy} onClick={() => compact("overview")}>{t("概览压缩", "Overview compaction")}</button>
+        <button className="btn small" disabled={running || busy || compacting !== null} onClick={() => compact("toolcalls")}>{compacting === "toolcalls" ? t("压缩中…", "Compacting…") : t("压缩工具调用", "Compact tool calls")}</button>
+        <button className="btn small" disabled={running || busy || compacting !== null} onClick={() => compact("overview")}>{compacting === "overview" ? t("压缩中…", "Compacting…") : t("概览压缩", "Overview compaction")}</button>
       </div>
       <div className="context-policy-form">
         <label><input type="checkbox" checked={form.enabled} disabled={running || busy} onChange={(event) => setForm((value) => ({ ...value, enabled: event.target.checked }))} /> {t("启用自动驱逐", "Enable automatic eviction")}</label>
