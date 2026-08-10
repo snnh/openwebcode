@@ -100,7 +100,7 @@ describe("ChatSessionStore", () => {
 
   it("retries from a user message (backtracks activeLeaf)", async () => {
     const meta = await store.create({ provider: "a", model: "m" });
-    const msg1 = await store.appendMessage(meta.id, "user", [{ type: "text", text: "First" }]);
+    await store.appendMessage(meta.id, "user", [{ type: "text", text: "First" }]);
     await store.appendMessage(meta.id, "assistant", [{ type: "text", text: "Response" }]);
     const msg3 = await store.appendMessage(meta.id, "user", [{ type: "text", text: "Second" }]);
 

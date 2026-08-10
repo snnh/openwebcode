@@ -189,7 +189,7 @@ describe("ChatRunner", () => {
 
   it("并发第二跑在首个 await 前同步抛 already running，首跑完成后可再跑", async () => {
     const gate = deferred();
-    const gated: Handler = (request) => (async function* () {
+    const gated: Handler = (_request) => (async function* () {
       yield { type: "text_delta", text: "流式中" };
       await gate.promise;
       yield { type: "done", stopReason: "end_turn" as const };
