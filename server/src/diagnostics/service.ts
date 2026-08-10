@@ -93,6 +93,11 @@ export class DiagnosticsService {
     private readonly events: EventBus,
   ) {}
 
+  /** 会话删除时清理该会话的失败签名记录（Map 按会话数增长，挂在会话删除清理链上）。 */
+  discardSession(sessionId: string): void {
+    this.signatures.delete(sessionId);
+  }
+
   async run(sessionId: string, cwd: string, options: TestRunOptions = {}): Promise<TestRunResult> {
     const override = options.command?.trim();
     const detected = override ? { command: override, source: "agent override" } : await detectTestCommand(cwd);
@@ -199,7 +204,8 @@ export class DiagnosticsService {
   private async persist(record: DiagnosticRun): Promise<void> {
     const directory = this.diagnosticsDir(record.sessionId);
     await mkdir(directory, { recursive: true });
-    const serialized = `${JSON.stringify(record, null, 2)}\n`;
+    // 紧凑序列化：诊断记录只被机器读取；读取侧 JSON.parse 兼容存量美化格式。
+    const serialized = `${JSON.stringify(record)}\n`;
     await Promise.all([
       writeUtf8Atomically(path.join(directory, `${record.runId}.json`), serialized),
       writeUtf8Atomically(this.latestPath(record.sessionId), serialized),

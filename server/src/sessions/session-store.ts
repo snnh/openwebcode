@@ -7,7 +7,8 @@ import { monotonicTimestamp } from "../monotonic-clock.js";
 import { parseSessionImport, serializeSession } from "./session-transfer.js";
 import { activePathMessages } from "./session-tree.js";
 import { defaultSandboxPolicy } from "./default-sandbox.js";
-import { readMessagesTail, readMessagesBefore, checkRecovery, DEFAULT_PAGE_SIZE } from "./message-reader.js";
+import { readMessagesTail, readMessagesBefore, checkRecoveryTail, DEFAULT_PAGE_SIZE } from "./message-reader.js";
+import { deriveTitleFromMessages, serializeByKey, titleFromContent } from "./store-utils.js";
 import type { BindLinkSpec, ChatMessage, FallbackModelEntry, ManagedWorkspaceMeta, MessageContent, MessageRole, MessagesPage, SandboxMode, SandboxNetwork, SessionDetail, SessionMeta } from "./types.js";
 
 /** readMessages 整表缓存条数上限（与 message-reader 的索引缓存同一 LRU 纪律）。 */
@@ -60,6 +61,13 @@ export class SessionStore {
   /** appendMessage 的每会话串行化链：并发追加大消息时底层多次 write 可能交织坏行。 */
   private readonly appendChains = new Map<string, Promise<void>>();
 
+  /**
+   * 已知的会话 cwd 引用计数集（path.resolve 后）：isKnownSessionCwd 专用，
+   * 避免每次 prompt-override 写入都全量 list()。create/import 递增、delete 递减，
+   * 首次访问时由磁盘重建；重建失败按无缓存处理。
+   */
+  private knownCwds: Map<string, number> | undefined;
+
   constructor(private readonly root: string) {}
 
   async initialize(): Promise<void> {
@@ -104,6 +112,7 @@ export class SessionStore {
     await writeFile(this.messagesPath(meta.id), "", { encoding: "utf8", flag: "wx", mode: 0o600 });
     await chmodPrivate(this.messagesPath(meta.id), 0o600);
     this.messagesCache.delete(meta.id);
+    this.noteSessionCwd(resolvedCwd);
     return meta;
   }
 
@@ -115,7 +124,8 @@ export class SessionStore {
         try {
           const meta = await this.readMeta(entry.name);
           // 0.5.0 Phase 2: only check tail corruption for list() — full scan deferred to get()
-          const { recovery } = await checkRecovery(this.messagesPath(entry.name));
+          // 尾行检查只读文件尾部窗口，不为列表建全量字节索引（分页路径才需要索引）
+          const { recovery } = await checkRecoveryTail(this.messagesPath(entry.name));
           return { ...meta, ...(recovery ? { recovery } : {}) };
         } catch {
           return undefined;
@@ -137,6 +147,67 @@ export class SessionStore {
     }
     const { messages, recovery } = await this.readMessages(id);
     return { ...meta, ...(recovery ? { recovery } : {}), messages };
+  }
+
+  /** 只读 meta.json（不触碰 messages.jsonl）：热路径上仅取配置字段的调用点用。 */
+  async getMeta(id: string): Promise<SessionMeta | undefined> {
+    try {
+      return await this.readMeta(id);
+    } catch (error) {
+      if (isMissing(error)) return undefined;
+      throw error;
+    }
+  }
+
+  /** cwd 是否为某个现存会话的工作目录（内存引用计数集，避免每次校验全量 list()）。 */
+  async hasSessionCwd(cwd: string): Promise<boolean> {
+    this.knownCwds ??= await this.scanSessionCwds();
+    return (this.knownCwds.get(path.resolve(cwd)) ?? 0) > 0;
+  }
+
+  /** 从磁盘重建 cwd 集（readdir + 逐会话 meta；不触碰 messages.jsonl）。坏会话目录跳过。 */
+  private async scanSessionCwds(): Promise<Map<string, number>> {
+    const counts = new Map<string, number>();
+    let entries;
+    try {
+      entries = await readdir(this.root, { withFileTypes: true });
+    } catch (error) {
+      if (isMissing(error)) return counts;
+      throw error;
+    }
+    await Promise.all(
+      entries.filter((entry) => entry.isDirectory()).map(async (entry) => {
+        try {
+          const meta = await this.readMeta(entry.name);
+          const key = path.resolve(meta.cwd);
+          counts.set(key, (counts.get(key) ?? 0) + 1);
+        } catch {
+          // 坏会话目录跳过（与 list() 同款纪律）
+        }
+      }),
+    );
+    return counts;
+  }
+
+  /** create/import 成功后登记 cwd（缓存未建时跳过，首次 hasSessionCwd 会全量重建）。 */
+  private noteSessionCwd(cwd: string): void {
+    if (!this.knownCwds) return;
+    const key = path.resolve(cwd);
+    this.knownCwds.set(key, (this.knownCwds.get(key) ?? 0) + 1);
+  }
+
+  /** delete 前摘除 cwd；meta 已不可读时整体失效，下次访问重建。 */
+  private async forgetSessionCwd(id: string): Promise<void> {
+    if (!this.knownCwds) return;
+    try {
+      const meta = await this.readMeta(id);
+      const key = path.resolve(meta.cwd);
+      const count = (this.knownCwds.get(key) ?? 1) - 1;
+      if (count > 0) this.knownCwds.set(key, count);
+      else this.knownCwds.delete(key);
+    } catch {
+      this.knownCwds = undefined;
+    }
   }
 
   /**
@@ -184,15 +255,7 @@ export class SessionStore {
     content: MessageContent[],
     lineage?: Pick<ChatMessage, "parentId" | "runId" | "turnId">,
   ): Promise<ChatMessage> {
-    // 每会话串行化：大消息并发追加时 appendFile 的多次 write 可能交织坏行（JSONL 破坏）
-    const run = (this.appendChains.get(sessionId) ?? Promise.resolve()).then(() => this.appendMessageSerialized(sessionId, role, content, lineage));
-    const tail = run.then(() => undefined, () => undefined);
-    this.appendChains.set(sessionId, tail);
-    // 链尾结算后自清，避免 Map 随会话数泄漏
-    void tail.then(() => {
-      if (this.appendChains.get(sessionId) === tail) this.appendChains.delete(sessionId);
-    });
-    return run;
+    return serializeByKey(this.appendChains, sessionId, () => this.appendMessageSerialized(sessionId, role, content, lineage));
   }
 
   private async appendMessageSerialized(
@@ -223,9 +286,9 @@ export class SessionStore {
     meta.activeLeafId = message.id;
     let titleDerived = false;
     if (meta.title === "New session" && role === "user") {
-      const firstText = content.find((block) => block.type === "text");
-      if (firstText?.type === "text") {
-        meta.title = firstText.text.slice(0, 80);
+      const derived = titleFromContent(content);
+      if (derived !== undefined) {
+        meta.title = derived;
         titleDerived = true;
       }
     }
@@ -308,12 +371,7 @@ export class SessionStore {
   /** 派生标题：首条非空用户文本消息的前 80 字符；无消息时回退 "New session"（与 appendMessage 的自动命名一致）。 */
   private async deriveTitle(id: string): Promise<string> {
     const { messages } = await this.readMessages(id);
-    for (const message of messages) {
-      if (message.role !== "user") continue;
-      const text = message.content.find((block) => block.type === "text");
-      if (text?.type === "text" && text.text.trim()) return text.text.slice(0, 80);
-    }
-    return "New session";
+    return deriveTitleFromMessages(messages, "New session");
   }
 
   async truncateMessages(id: string, count: number): Promise<void> {
@@ -415,6 +473,7 @@ export class SessionStore {
 
   async delete(id: string): Promise<boolean> {
     this.messagesCache.delete(id);
+    await this.forgetSessionCwd(id);
     try {
       await rm(this.sessionPath(id), { recursive: true, force: false });
       return true;
@@ -457,6 +516,7 @@ export class SessionStore {
     );
     await chmodPrivate(this.messagesPath(id), 0o600);
     this.messagesCache.delete(id);
+    this.noteSessionCwd(meta.cwd);
     return meta;
   }
 
@@ -615,6 +675,7 @@ export class SessionStore {
 
   private async writeMeta(meta: SessionMeta): Promise<void> {
     const target = this.metaPath(meta.id);
-    await writeUtf8Atomically(target, `${JSON.stringify(meta, null, 2)}\n`, { mode: 0o600 });
+    // 紧凑序列化：meta.json 只被机器读取；读取侧 JSON.parse 兼容存量美化格式。
+    await writeUtf8Atomically(target, `${JSON.stringify(meta)}\n`, { mode: 0o600 });
   }
 }
