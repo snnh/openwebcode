@@ -242,6 +242,7 @@
 .pricing-add-form { margin-bottom: 14px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel-2); }
 .pricing-add-form h4 { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
 .pricing-add-form .catalog-form { margin-top: 8px; }
+.pricing-row-actions { display: flex; gap: 0.25rem; }
 .settings-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
 .server-info { display: grid; grid-template-columns: 84px 1fr; gap: 7px 12px; margin: 0; font-size: 13px; }
 .server-info dt { color: var(--text-3); }
