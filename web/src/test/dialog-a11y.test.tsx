@@ -45,6 +45,7 @@ describe("SettingsDialog 打开态无障碍", () => {
     vi.spyOn(api, "updateCheck").mockRejectedValue(new Error("not enabled"));
     vi.spyOn(api, "refreshUpdateCheck").mockRejectedValue(new Error("not enabled"));
     vi.spyOn(api, "modelPricing").mockResolvedValue(pricingCatalog);
+    vi.spyOn(api, "models").mockResolvedValue([]);
     vi.spyOn(api, "promptOverride").mockResolvedValue(promptView);
 
     ui.openSettings();
