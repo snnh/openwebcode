@@ -6,6 +6,8 @@ import { useStore } from "../app/store";
 import { ui } from "../app/ui-store";
 import { chatModeStore } from "../app/chat-mode-store";
 import { Icon } from "../components/Icon";
+import { clipboardFiles, dataUrlBase64, readFileAsDataUrl } from "../lib/file-data-url";
+import { useAutosizeTextarea } from "../hooks/use-autosize-textarea";
 import type { MessageContent } from "./types";
 
 /** 与 server 对齐：内嵌上限 2MB（CHAT_INLINE_IMAGE_MAX_BYTES），上传上限 10MB（CHAT_IMAGE_MAX_BYTES），单消息 ≤3 张。 */
@@ -25,15 +27,6 @@ interface PendingImage {
 }
 
 let nextImageId = 0;
-
-function readAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-}
 
 /** 供父组件注入建议文本等（ChatGPT 空态建议行）：写入草稿并聚焦输入框。 */
 export interface ChatComposerApi {
@@ -70,12 +63,7 @@ export function ChatComposer({ sessionId, ensureSession, onSent, apiRef }: {
   }, [apiRef]);
 
   // 自适应高度（上限 200px）
-  useEffect(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
-  }, [draft]);
+  useAutosizeTextarea(textareaRef, draft, 200);
 
   // 卸载时释放所有 objectURL（经 ref 取最新列表，避免在 setState updater 里做副作用）
   const imagesRef = useRef<PendingImage[]>([]);
@@ -111,11 +99,11 @@ export function ChatComposer({ sessionId, ensureSession, onSent, apiRef }: {
       }
       count += 1;
       if (file.size <= INLINE_MAX_BYTES) {
-        const dataUrl = await readAsDataUrl(file);
+        const dataUrl = await readFileAsDataUrl(file);
         const image: PendingImage = {
           id: `img-${nextImageId++}`,
           mediaType: file.type,
-          data: dataUrl.slice(dataUrl.indexOf(",") + 1),
+          data: dataUrlBase64(dataUrl),
           previewUrl: dataUrl,
           objectUrl: false,
         };
@@ -144,13 +132,13 @@ export function ChatComposer({ sessionId, ensureSession, onSent, apiRef }: {
   async function uploadImage(sid: string, image: PendingImage): Promise<string | undefined> {
     if (!image.file) return undefined;
     try {
-      const dataUrl = await readAsDataUrl(image.file);
+      const dataUrl = await readFileAsDataUrl(image.file);
       const res = await fetch(`/api/chat/sessions/${sid}/uploads`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          data: dataUrl.slice(dataUrl.indexOf(",") + 1),
+          data: dataUrlBase64(dataUrl),
           mediaType: image.mediaType,
           filename: image.file.name,
         }),
@@ -227,6 +215,8 @@ export function ChatComposer({ sessionId, ensureSession, onSent, apiRef }: {
   }
 
   function handleKeyDown(event: KeyboardEvent): void {
+    // 输入法组词中的 Enter 不触发发送（与 workbench Composer 一致）
+    if (event.nativeEvent.isComposing) return;
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       void handleSend();
@@ -234,7 +224,7 @@ export function ChatComposer({ sessionId, ensureSession, onSent, apiRef }: {
   }
 
   function handlePaste(event: ClipboardEvent): void {
-    const files = Array.from(event.clipboardData?.files ?? []).filter((file) => file.type.startsWith("image/"));
+    const files = clipboardFiles(event).filter((file) => file.type.startsWith("image/"));
     if (files.length > 0) {
       // 图片由附件通道接管；文本部分不 preventDefault，照常进 textarea
       void addImages(files);

@@ -1,6 +1,6 @@
 import type { ChatMessage, ImageContent, ThinkingContent, ToolCallContent } from "../sessions/types.js";
-import { getUserAgent } from "../http.js";
-import { classifyHttpError, normalizeProviderError, parseRetryAfter, ProviderError, truncateErrorDetail } from "./provider-error.js";
+import { normalizeProviderError, ProviderError } from "./provider-error.js";
+import { collectToolOutputs, parseArguments, providerRequestHeaders, requireResponseBody } from "./shared.js";
 import type { Provider, ProviderEvent, StreamChatRequest } from "./provider.js";
 
 export interface OpenAICompatibleProviderOptions {
@@ -53,11 +53,7 @@ export class OpenAICompatibleProvider implements Provider {
     try {
       response = await this.fetch(`${this.options.baseURL.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "user-agent": getUserAgent(),
-        ...(this.options.apiKey ? { authorization: `Bearer ${this.options.apiKey}` } : {}),
-      },
+      headers: providerRequestHeaders(this.options.apiKey),
       body: JSON.stringify({
         ...this.options.extraBody,
         model: request.model,
@@ -88,21 +84,13 @@ export class OpenAICompatibleProvider implements Provider {
     } catch (error) {
       throw normalizeProviderError(error);
     }
-    if (!response.ok || !response.body) {
-      // 错误体可能很大且会随错误消息广播进 WS 事件流：截断后再进消息
-      const detail = truncateErrorDetail(await response.text());
-      throw classifyHttpError(
-        response.status,
-        `OpenAI-compatible provider returned ${response.status}: ${detail}`,
-        parseRetryAfter(response.headers.get("retry-after")),
-      );
-    }
+    const body = await requireResponseBody(response, "OpenAI-compatible provider");
 
     const tools = new Map<number, ToolAccumulator>();
     let stopReason: string | null = null;
     let streamStarted = false;
     try {
-      for await (const data of readSseData(response.body, { idleTimeoutMs: this.options.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS })) {
+      for await (const data of readSseData(body, { idleTimeoutMs: this.options.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS })) {
         streamStarted = true;
         if (data === "[DONE]") break;
         const chunk = JSON.parse(data) as OpenAIChunk;
@@ -249,12 +237,7 @@ function toOpenAIMessages(system: string, messages: ChatMessage[], providerName?
   // 孤儿来源：!shell 直写 shell-* tool_result（无 assistant tool_call）、中断/崩溃时
   // 结果未落盘、压缩边界裁掉 assistant 留结果。先收集 tool_result 映射，tool_call 发出后
   // 立即内联对应 tool 消息（缺失补占位），tool 角色消息不再单独输出（游离结果丢弃）。
-  const outputs = new Map<string, string>();
-  for (const message of messages) {
-    for (const block of message.content) {
-      if (block.type === "tool_result" && !outputs.has(block.toolCallId)) outputs.set(block.toolCallId, block.content);
-    }
-  }
+  const outputs = collectToolOutputs(messages);
   const result: Array<Record<string, unknown>> = [{ role: "system", content: system }];
   const emitted = new Set<string>();
   for (const message of messages) {
@@ -314,27 +297,6 @@ function toOpenAIMessages(system: string, messages: ChatMessage[], providerName?
     // tool 角色消息的 tool_result 已内联到对应 assistant 之后，游离者丢弃（见上文）
   }
   return result;
-}
-
-function parseArguments(value: string): Record<string, unknown> {
-  // 参数 JSON 解析失败多为流被 max_tokens 截断：确定性错误，重试不会自愈，归不可重试
-  // （否则 collectProviderTurn 会按 stream_interrupted 白重试）
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(value || "{}");
-  } catch (error) {
-    throw new ProviderError(
-      "invalid_request",
-      `Tool call arguments are not valid JSON (the stream may have been truncated): ${error instanceof Error ? error.message : String(error)}`,
-      false,
-      undefined,
-      { cause: error },
-    );
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new ProviderError("invalid_request", "Tool arguments must be an object", false);
-  }
-  return parsed as Record<string, unknown>;
 }
 
 function mapStopReason(reason: string | null): "end_turn" | "tool_use" | "max_tokens" | "refusal" | "error" {
