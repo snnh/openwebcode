@@ -3,6 +3,7 @@ import { appendFile, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
 import { chmodPrivate, ensureDirWithMode, isMissing } from "../fs-utils.js";
+import { monotonicTimestamp } from "../monotonic-clock.js";
 import { activePathMessages } from "../sessions/session-tree.js";
 import type { ChatMessage, MessageContent } from "../sessions/types.js";
 import type { ChatSessionMeta, ChatShare } from "./chat-types.js";
@@ -68,7 +69,7 @@ export class ChatSessionStore {
     sandboxEnabled?: boolean;
     temperature?: number;
   }): Promise<ChatSessionMeta> {
-    const now = new Date().toISOString();
+    const now = monotonicTimestamp();
     const meta: ChatSessionMeta = {
       id: randomUUID(),
       title: init.title ?? DEFAULT_TITLE,

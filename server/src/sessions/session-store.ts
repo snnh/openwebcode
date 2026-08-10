@@ -3,6 +3,7 @@ import { mkdir, readFile, readdir, rm, stat, writeFile, appendFile } from "node:
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
 import { chmodPrivate, ensureDirWithMode, isMissing } from "../fs-utils.js";
+import { monotonicTimestamp } from "../monotonic-clock.js";
 import { parseSessionImport, serializeSession } from "./session-transfer.js";
 import { activePathMessages } from "./session-tree.js";
 import { defaultSandboxPolicy } from "./default-sandbox.js";
@@ -67,7 +68,7 @@ export class SessionStore {
   }
 
   async create(input: CreateSessionInput): Promise<SessionMeta> {
-    const now = new Date().toISOString();
+    const now = monotonicTimestamp();
     const resolvedCwd = path.resolve(input.cwd);
     const meta: SessionMeta = {
       id: input.id ?? randomUUID(),
