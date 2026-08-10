@@ -1,10 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { CoreClientLike, CoreEvent } from "../core-client.js";
 import { CoreGateway } from "../core-gateway.js";
 import type { EventBus } from "../events/event-bus.js";
-import { ContextManager, selectCacheBreakpoints } from "../context/context-manager.js";
+import { ContextManager, selectCacheBreakpoints, type TurnLedger } from "../context/context-manager.js";
 import type { Compactor } from "../context/compactor.js";
 import { boundToolResult } from "../context/tool-result-budget.js";
 import { errorMessage } from "../error-utils.js";
@@ -61,7 +60,7 @@ import { parseSkillCommand, type SkillRegistry } from "../skills.js";
 import type { AgentRegistry } from "../agents.js";
 import { renderCommand, type CommandRegistry } from "../commands.js";
 import type { McpManager } from "../mcp/manager.js";
-import { appendMemory, readGlobalMemory, readProjectMemory } from "../memory.js";
+import { appendMemory } from "../memory.js";
 import type { UsageLog } from "../usage-log.js";
 import type { SearchProvider, WebFetchProvider } from "../web-tools.js";
 import type { BackgroundTaskRegistry } from "./background-tasks.js";
@@ -76,8 +75,11 @@ import { RunStore, type AgentRunSnapshot, type AgentRunState } from "./run-store
 import { PersistentShellManager, PersistentShellUnavailableError } from "./persistent-shell.js";
 import { coreExecShell, resolveShell, type ResolvedShell } from "./shell-detect.js";
 import { wrapCommandWithSessionEnv } from "./session-env.js";
-import { MessageQueue, type QueueItem } from "./message-queue.js";
-import { InteractionCoordinator, type InteractionKind, type InteractionRequest } from "./interaction-coordinator.js";
+import type { QueueItem } from "./message-queue.js";
+import type { InteractionKind, InteractionRequest } from "./interaction-coordinator.js";
+import { RunControl } from "./run-control.js";
+import { MemorySectionBuilder } from "./memory-section.js";
+export { SteeringError } from "./run-control.js";
 import { ModelRoleResolver, MODEL_ROLES, filterReasoningByCapabilities, isModelRole, type ModelRole } from "../model-roles.js";
 
 interface ExecutionContext {
@@ -442,8 +444,6 @@ function builtInTools(options: {
   ];
 }
 
-const MAX_STEERING_ITEMS = 16;
-const MAX_STEERING_LENGTH = 8_000;
 /** Scheduling metadata is product-side only; Provider schemas remain unchanged. */
 export type ToolExecutionClass = "read_only" | "workspace_write" | "process" | "external";
 const TOOL_EXECUTION_CLASS: Readonly<Record<string, ToolExecutionClass>> = {
@@ -515,8 +515,6 @@ function normalizeAskUserAnswer(spec: AskUserQuestionSpec, answer: unknown): unk
   }
   return labels;
 }
-/** 系统提示中单个记忆/约定小节的字符上限 */
-const MEMORY_SECTION_LIMIT = 8_000;
 
 /** exit_plan_mode 交互回答 → 决定：approve（按原文执行）/ edit（按用户改后文本执行）/ reject（附意见保持 plan 模式）。 */
 type PlanApprovalDecision = { kind: "approve" } | { kind: "edit"; plan: string } | { kind: "reject"; feedback: string };
@@ -565,10 +563,6 @@ function goalModeSection(): string {
   ].join("\n");
 }
 
-/** goal 模式：自动续跑次数上限与续跑消息前缀（消息落盘即持久化，重启后计数自然恢复）。 */
-const GOAL_MAX_CONTINUATIONS = 10;
-const GOAL_CONTINUATION_PREFIX = "[goal-continuation]";
-
 function communicationSection(defaultLanguage: string): string {
   return [
     "\n\n## Communication",
@@ -582,13 +576,6 @@ const SAFETY_BOUNDARY_SECTION = [
   "- Stay within the workspace; do not access files outside it. Do not perform destructive or irreversible actions without the user's explicit approval.",
   "- Do not rewrite Git history, commit, push, send external messages, or otherwise change external systems without the user's explicit approval.",
 ].join("\n");
-
-export class SteeringError extends Error {
-  constructor(message: string, readonly code: "not_running" | "too_long" | "full") {
-    super(message);
-    this.name = "SteeringError";
-  }
-}
 
 /** 编辑器保存被权限链拒绝（plan 只读门禁/用户拒绝）；REST 层映射为 403。 */
 export class WorkspaceWriteDeniedError extends Error {
@@ -654,10 +641,8 @@ export class AgentRunner {
   private readonly shells = new Map<string, AbortController>();
   /** 编辑器保存（REST 写）挂起态：与 run/shell 互斥，abort 时一并取消 */
   private readonly workspaceWrites = new Map<string, AbortController>();
-  private readonly messageQueue: MessageQueue;
-  private readonly interactions: InteractionCoordinator;
-  /** ask_user 挂起等待：interactionId → waiter；respondInteraction 解析，run abort 经 signal 监听器解析为 cancelled。 */
-  private readonly interactionWaiters = new Map<string, { sessionId: string; resolve: (answer: unknown) => void; signal: AbortSignal; abort: () => void }>();
+  /** steering/消息队列/交互管理外观（实现见 run-control.ts）；公共方法在本类做一行委托，接口不变。 */
+  private readonly runControl: RunControl;
   private readonly repeatedCalls = new Map<string, { signature: string; count: number }>();
   private readonly mcpWarningSignatures = new Map<string, string>();
   /** 可编辑提示词覆盖：按 cwd 缓存一次，避免每轮 IO；首次构建时读取。 */
@@ -677,6 +662,8 @@ export class AgentRunner {
   private diagnostics?: DiagnosticsService;
   /** 0.5.0 Phase 2d：per-session 性能环形缓冲（最近 20 次 run）。 */
   private readonly perfRecords = new Map<string, RunPerfRecord[]>();
+  /** 长期记忆/项目约定注入段构建（含指纹缓存；实现见 memory-section.ts）。 */
+  private readonly memorySections: MemorySectionBuilder;
 
   /** Phase 2：注入符号索引管理器；同时让 repo map 在索引可用时带符号摘要（不可用降级静态树）。 */
   setIndexManager(indexManager: IndexManager): void {
@@ -797,9 +784,16 @@ export class AgentRunner {
     webFetchProvider?: WebFetchProvider,
   ) {
     this.coreGateway = new CoreGateway(core);
+    this.memorySections = new MemorySectionBuilder(dataDir);
     this.persistentShells = new PersistentShellManager(core, this.pythonEnvManager, () => this.getPythonEnvDefault(), this.nodeEnvManager, () => this.getNodeEnvDefault(), dataDir);
-    this.messageQueue = new MessageQueue((sessionId) => this.sessions.contextRoot(sessionId));
-    this.interactions = new InteractionCoordinator((sessionId) => this.sessions.contextRoot(sessionId));
+    this.runControl = new RunControl({
+      sessions: this.sessions,
+      events: this.events,
+      running: this.running,
+      settling: this.settling,
+      run: (sessionId, text, options) => this.run(sessionId, text, options),
+      notify: (payload) => this.runNotificationHook("Notification", payload),
+    });
     this.permissions = new PermissionCoordinator(events);
     this.repoMap = new RepoMapGenerator(core);
     this.searchProvider = search;
@@ -879,6 +873,8 @@ export class AgentRunner {
     let perfToolExecMs = 0;
     let perfTurnCount = 0;
     let perfActive = false;
+    // 本轮的轮级共享账本句柄（声明在 try 外层，finally 兜底提交可访问）
+    let activeTurn: { context: ContextManager; ledger: TurnLedger } | undefined;
     try {
       const configuredSession = await this.sessions.get(sessionId);
       if (!configuredSession) throw new Error("Session not found");
@@ -924,7 +920,7 @@ export class AgentRunner {
       // 一旦路由返回 202，用户输入优先于所有可失败的集成步骤（快照、Hook、Core、Provider）。
       const triggerMessage = await appendUserMessage(effectiveText);
       if (followUpQueueItemId) {
-        const applied = await this.messageQueue.apply(sessionId, followUpQueueItemId, triggerMessage.id);
+        const applied = await this.runControl.applyFollowUp(sessionId, followUpQueueItemId, triggerMessage.id);
         if (!applied) throw new Error("Follow-up queue item disappeared while applying it");
         followUpQueueItemId = undefined;
         this.events.publish({ source: "agent", type: "queue.applied", sessionId, payload: applied });
@@ -995,17 +991,22 @@ export class AgentRunner {
         const effectiveProvider = modelOverride?.provider ?? session.provider;
         const effectiveModel = modelOverride?.model ?? session.model;
         const context = new ContextManager(this.sessions.contextRoot(sessionId));
-        const budget = await context.budgetStatus();
+        // 轮级共享句柄：一轮 load 一次（克隆 1 次），本轮 budgetStatus/buildView/记账/驱逐共用，
+        // 出口处 commitTurn 统一落盘（有变更才写）——替代过去每轮 ~6 次全量克隆 + 2 次落盘。
+        const turnLedger = await context.beginTurn();
+        activeTurn = { context, ledger: turnLedger };
+        const budget = await context.budgetStatus(turnLedger);
         if (budget.paused) {
           await this.state(sessionId, "budget_paused");
           this.events.publish({ source: "agent", type: "agent.budget_paused", sessionId, payload: budget });
+          activeTurn = undefined;
           return;
         }
         // 选择性上下文（§4.4）：pin 不被驱逐、排除不进组装；配置持久化在会话 meta。
         const contextSelection = { pins: session.contextPins ?? [], excludes: session.contextExcludes ?? [] };
         const ctxBuildStart = performance.now();
         // 消息树：上下文只组装活动路径（根→活动叶子），checkout/retry 出的旧分支不进 provider 历史。
-        const view = await context.buildView(activePathMessages(session.messages, session.activeLeafId), { selection: contextSelection });
+        const view = await context.buildView(activePathMessages(session.messages, session.activeLeafId), { selection: contextSelection }, turnLedger);
         perfContextBuildMs += performance.now() - ctxBuildStart;
         if (this.extensions) {
           const transformed = await this.extensions.transformContext({
@@ -1033,7 +1034,7 @@ export class AgentRunner {
           view.messages = beforeSend.messages;
         }
         const cacheBreakpoints = selectCacheBreakpoints(view.messages, view.ledger);
-        await context.recordCacheBreakpoints(cacheBreakpoints);
+        await context.recordCacheBreakpoints(cacheBreakpoints, turnLedger);
         // 断点策略写入 run 诊断：事件流可查，ledger.cacheBreakpoints 持久化供 Context 面板展示；
         // providerCaching 为 null 表示该 Provider 无显式断点（如 OpenAI 兼容的自动缓存）。
         this.events.publish({
@@ -1092,6 +1093,9 @@ export class AgentRunner {
             const compacted = await this.compactor.compact(sessionId, "overview", { forced: true, ...(overviewPrompt ? { promptOverrides: { overview: overviewPrompt } } : {}) });
             if (compacted.changed) {
               this.events.publish({ source: "agent", type: "context.compacted", sessionId, payload: { mode: compacted.mode, uptoIndex: compacted.uptoIndex ?? 0, forced: true } });
+              // 压缩自身已落盘；commitTurn 检测到外部落盘会把本轮断点变更重放到最新账本
+              await context.commitTurn(turnLedger);
+              activeTurn = undefined;
               continue;
             }
           } catch (error) {
@@ -1208,7 +1212,7 @@ export class AgentRunner {
           : "";
 
         // 长期记忆注入（§2.3/§7.5）：CLAUDE.md/AGENTS.md + 项目/全局 memory.md，每轮现读
-        const memorySection = await this.buildMemorySection(session.cwd);
+        const memorySection = await this.memorySections.build(session.cwd);
 
         // 可编辑提示词覆盖：按 cwd 缓存一次（首次读取文件，后续复用）
         let promptOverride = this.promptOverrideCache.get(session.cwd);
@@ -1347,6 +1351,8 @@ export class AgentRunner {
                   message: error.message,
                 },
               });
+              await context.commitTurn(turnLedger);
+              activeTurn = undefined;
               continue;
             }
           }
@@ -1400,7 +1406,7 @@ export class AgentRunner {
             stopReason = event.stopReason;
           }
         }
-        if (lastUsage) await this.recordUsageEvent(sessionId, context, effectiveProvider, effectiveModel, lastUsage);
+        if (lastUsage) await this.recordUsageEvent(sessionId, context, effectiveProvider, effectiveModel, lastUsage, { turn: turnLedger });
         if (assistantContent.length > 0) {
           await this.sessions.appendMessage(sessionId, "assistant", assistantContent, this.messageLineage(sessionId));
         }
@@ -1409,7 +1415,9 @@ export class AgentRunner {
         // A persisted tool_call must always receive one matching tool_result; otherwise the next
         // request has an invalid conversation shape and can fail before a user-visible reply.
         if (toolCalls.length === 0 && stopReason !== "tool_use") {
-          if (await this.applySteering(sessionId)) {
+          if (await this.runControl.applySteering(sessionId)) {
+            await context.commitTurn(turnLedger);
+            activeTurn = undefined;
             await this.state(sessionId, "thinking");
             continue;
           }
@@ -1425,6 +1433,8 @@ export class AgentRunner {
             this.settling.delete(sessionId);
           }
           scheduleFollowUp = true;
+          await context.commitTurn(turnLedger);
+          activeTurn = undefined;
           return;
         }
         if (toolCalls.length === 0) throw new Error("Provider stopped for tool use without a tool call");
@@ -1501,20 +1511,35 @@ export class AgentRunner {
         perfToolExecMs += performance.now() - toolExecStart;
         perfTurnCount++;
         await this.state(sessionId, "advancing_turn");
-        await context.advanceRound();
+        await context.advanceRound(turnLedger);
         const afterTools = await this.sessions.get(sessionId);
         if (afterTools && (!this.extensions || this.extensions.isEnabled("context-manager"))) {
-          // evict 的返回值就是落盘后的 ledger（serial 队列保证期间无其他写入），不必再 load 一次。
+          // evict 经句柄延迟到 commitTurn 统一判定/落盘（期间的外部落盘会触发重放，两侧变更都不丢）；
           // 与 buildView 一致只按活动路径记账，避免旧分支消息污染 ledger。
-          const evictedLedger = await context.evict(activePathMessages(afterTools.messages, afterTools.activeLeafId), new Set(afterTools.contextPins ?? []));
-          this.events.publish({ source: "agent", type: "context.evicted", sessionId, payload: evictedLedger.entries });
+          await context.evict(activePathMessages(afterTools.messages, afterTools.activeLeafId), new Set(afterTools.contextPins ?? []), turnLedger);
+          const evictedLedger = await context.commitTurn(turnLedger);
+          activeTurn = undefined;
+          // 事件瘦身：面板只按事件类型刷新后经 REST 拉全量，payload 只带统计摘要——
+          // 不再把含 read_file excerpt 的全量 entries 写进事件历史并扇出到所有 WS 客户端。
+          let evictedCount = 0;
+          let restoredCount = 0;
+          let pinnedCount = 0;
+          for (const entry of evictedLedger.entries) {
+            if (entry.state === "evicted") evictedCount += 1;
+            else if (entry.state === "restored") restoredCount += 1;
+            if (entry.pinnedUntilRound > evictedLedger.round) pinnedCount += 1;
+          }
+          this.events.publish({ source: "agent", type: "context.evicted", sessionId, payload: { round: evictedLedger.round, total: evictedLedger.entries.length, evicted: evictedCount, restored: restoredCount, pinned: pinnedCount } });
+        } else {
+          await context.commitTurn(turnLedger);
+          activeTurn = undefined;
         }
-        await this.applySteering(sessionId);
+        await this.runControl.applySteering(sessionId);
         this.state(sessionId, "thinking");
       }
       throw new Error(`Agent exceeded ${maxTurns} turns`);
     } catch (error) {
-      if (followUpQueueItemId) await this.messageQueue.requeue(sessionId, followUpQueueItemId);
+      if (followUpQueueItemId) await this.runControl.requeueFollowUp(sessionId, followUpQueueItemId);
       if (controller.signal.aborted) {
         // 中断可能留下已落盘 tool_call 但结果未落盘（executeTool 因 abort 抛出，
         // 跳过循环内正常落盘）；不补齐则下一次请求被 provider 以非法历史形状拒绝。
@@ -1541,12 +1566,15 @@ export class AgentRunner {
       await this.finishRun(sessionId, "failed", { code: "run_failed", message, retryable: providerError?.retryable ?? false });
       throw error;
     } finally {
+      // 轮级账本兜底提交：正常出口已在循环内提交并清空 activeTurn；异常/中断路径在此把
+      // 已记账的 usage/断点落盘（对齐原 recordUsage 即落盘的持久化语义），失败不掩盖原始结果。
+      if (activeTurn) await activeTurn.context.commitTurn(activeTurn.ledger).catch(() => undefined);
       // goal 模式自动续跑：仅 run 正常结束（scheduleFollowUp 为 true 即未走 catch 的
       // abort/failed 路径）才按末条 assistant 消息的自评标记决定是否续跑。必须排在
       // running.delete 之前——enqueueFollowUp 要求会话仍处于 running 状态。
       if (scheduleFollowUp && !controller.signal.aborted) {
         try {
-          await this.maybeScheduleGoalContinuation(sessionId);
+          await this.runControl.maybeScheduleGoalContinuation(sessionId);
         } catch { /* 续跑调度失败不掩盖 run 结果；队列事件已由 enqueueFollowUp 发布 */ }
       }
       this.settling.delete(sessionId);
@@ -1581,7 +1609,7 @@ export class AgentRunner {
         this.perfRecords.set(sessionId, ring);
       }
       if (this.runs.has(sessionId)) await this.finishRun(sessionId, "completed");
-      if (scheduleFollowUp && !controller.signal.aborted) void this.startFollowUp(sessionId).catch(() => { /* follow-up failures are logged via queue.run_failed */ });
+      if (scheduleFollowUp && !controller.signal.aborted) void this.runControl.startFollowUp(sessionId).catch(() => { /* follow-up failures are logged via queue.run_failed */ });
     }
   }
 
@@ -1598,7 +1626,7 @@ export class AgentRunner {
     if (!response) return undefined;
     try {
       if (response.persist) {
-        const session = await this.sessions.get(sessionId);
+        const session = await this.sessions.getMeta(sessionId);
         if (!session) throw new Error("Session not found");
         const rule = permissionRule(response.tool, response.input);
         const rules = [...(session.permissionRules ?? []).filter((item) => item.tool !== rule.tool || item.argumentPrefix !== rule.argumentPrefix), rule];
@@ -1619,7 +1647,7 @@ export class AgentRunner {
     this.permissions.cancelSession(sessionId);
     // ask_user 挂起等待：与权限挂起同样主动解除，避免 signal 事件注册竞态导致永久挂起
     // （controller.abort() 触发 signal abort 事件，但 listener 可能在事件之后才注册而漏掉）。
-    this.cancelInteractionWaiters(sessionId);
+    this.runControl.cancelInteractionWaiters(sessionId);
     // 前台 `!cmd`（runShell）不进 running Map，其 controller 同样要响应停止
     const shell = this.shells.get(sessionId);
     shell?.abort();
@@ -1647,7 +1675,7 @@ export class AgentRunner {
       throw new Error(`Unknown model role: ${requestedRole} (expected one of ${MODEL_ROLES.join("/")})`);
     }
     // 会话级 toolsAllow/toolsDeny 由子代理自动继承（filterSubAgentTools 内套 toolAllowedBySession）
-    const session = await this.sessions.get(sessionId);
+    const session = await this.sessions.getMeta(sessionId);
     const toolsAllow = session?.toolsAllow;
     const toolsDeny = session?.toolsDeny;
     /** 角色档解析为 provider+model 覆盖；会话默认由调用方 ?? 回落，这里留空。 */
@@ -1704,7 +1732,7 @@ export class AgentRunner {
    * toolCallId 固定为 `manual-<taskId>`；事件负载与 spawn_task 相同，started 额外带 manual: true。
    */
   async launchManualSubagent(sessionId: string, input: { prompt: string; agent?: string }): Promise<{ taskId: string; toolCallId: string }> {
-    const session = await this.sessions.get(sessionId);
+    const session = await this.sessions.getMeta(sessionId);
     if (!session) throw new SubAgentLaunchError("Session not found", "invalid_agent");
     const agentName = input.agent?.trim() ?? "";
     let resolved: ResolvedSubAgent;
@@ -1759,7 +1787,7 @@ export class AgentRunner {
   ): Promise<void> {
     const { taskId, toolCallId, prompt, signal } = context;
     try {
-      const session = await this.sessions.get(sessionId);
+      const session = await this.sessions.getMeta(sessionId);
       if (!session) throw new Error("Session not found");
       // 与 runShell 同款幂等沙盒配置：手动子代理可能在主循环之外首次触达 core
       await this.core.configureSession({
@@ -1820,7 +1848,7 @@ export class AgentRunner {
       const message = errorMessage(error);
       this.events.publish({ source: "agent", type: "subagent.finished", sessionId, payload: { toolCallId, taskId, status: "failed", error: message } });
       // SubagentStop 尽力触发：会话已不可读时跳过（此时子代理多半未真正启动）
-      const session = await this.sessions.get(sessionId).catch(() => undefined);
+      const session = await this.sessions.getMeta(sessionId).catch(() => undefined);
       if (session) await this.runSubagentHook("SubagentStop", sessionId, session.cwd, { taskId, agent: resolved.name, kind: resolved.kind, status: "failed", error: message });
     }
   }
@@ -1861,7 +1889,7 @@ export class AgentRunner {
       return this.executeBash(sessionId, cmd, `subagent-${randomUUID().slice(0, 8)}`, signal, { quiet: true, sessionEnv: true });
     }
     if (name === "repo_map") {
-      const session = await this.sessions.get(sessionId);
+      const session = await this.sessions.getMeta(sessionId);
       if (!session) throw new Error("Session not found");
       if (input.budget !== undefined && (!Number.isInteger(Number(input.budget)) || Number(input.budget) < 64)) {
         throw new Error("repo_map budget must be an integer >= 64");
@@ -1876,7 +1904,7 @@ export class AgentRunner {
       return { content: bounded.content, isError: false };
     }
     if (name === "code_search") {
-      const session = await this.sessions.get(sessionId);
+      const session = await this.sessions.getMeta(sessionId);
       if (!session) throw new Error("Session not found");
       if (!this.indexManager) throw new IndexUnavailableError("Symbol index is not enabled on this server. Fall back to grep/glob for navigation.");
       const query = typeof input.query === "string" ? input.query.trim() : "";
@@ -1891,7 +1919,7 @@ export class AgentRunner {
       return { content: bounded.content, isError: false };
     }
     if (name === "test_runner") {
-      const session = await this.sessions.get(sessionId);
+      const session = await this.sessions.getMeta(sessionId);
       if (!session) throw new Error("Session not found");
       if (!this.diagnostics) throw new Error("Diagnostics service is not enabled on this server.");
       const command = typeof input.command === "string" && input.command.trim() ? input.command.trim() : undefined;
@@ -1941,7 +1969,7 @@ export class AgentRunner {
       // 实现或 features 缺 grepJob/globJob 时在 CoreClient/CoreRouter 内回退同步 RPC。
       // 两种路径返回形状一致，对模型透明。
       if (this.core.searchJob) {
-        const session = await this.sessions.get(sessionId);
+        const session = await this.sessions.getMeta(sessionId);
         if (!session) throw new Error("Session not found");
         const base = { sessionId, cwd: session.cwd, path, pattern, ...(signal ? { signal } : {}) };
         value = name === "glob"
@@ -1972,7 +2000,7 @@ export class AgentRunner {
     this.shells.set(sessionId, controller);
     const toolCallId = `shell-${randomUUID().slice(0, 8)}`;
     try {
-      const session = await this.sessions.get(sessionId);
+      const session = await this.sessions.getMeta(sessionId);
       if (!session) throw new Error("Session not found");
       // 先落盘 shell 请求；Core 配置/权限失败也必须让用户看得到原始命令和对应错误。
       // 保留 ! 前缀作为 shell 标记，便于前端「发给 agent」按钮识别配对。
@@ -2077,7 +2105,7 @@ export class AgentRunner {
     const controller = new AbortController();
     this.workspaceWrites.set(sessionId, controller);
     try {
-      const session = await this.sessions.get(sessionId);
+      const session = await this.sessions.getMeta(sessionId);
       if (!session) throw new Error("Session not found");
       // 沙盒配置幂等（与 runShell 同款）
       await this.core.configureSession({
@@ -2097,27 +2125,11 @@ export class AgentRunner {
   }
 
   async enqueueSteering(sessionId: string, content: string, requestId?: string): Promise<{ id: string; position: number; reused: boolean }> {
-    if (!this.running.has(sessionId)) throw new SteeringError("Session agent is not running", "not_running");
-    if (this.settling.has(sessionId)) throw new SteeringError("Session is settling; retry after it becomes idle", "not_running");
-    if (content.length > MAX_STEERING_LENGTH) throw new SteeringError(`Steering message exceeds ${MAX_STEERING_LENGTH} characters`, "too_long");
-    const queuedItems = await this.messageQueue.list(sessionId, "steer");
-    if (queuedItems.filter((item) => item.status === "queued").length >= MAX_STEERING_ITEMS) throw new SteeringError("Steering queue is full", "full");
-    const queued = await this.messageQueue.enqueue(sessionId, "steer", content, requestId);
-    const payload = { ...queued.item, position: queued.position, reused: queued.reused };
-    this.events.publish({ source: "agent", type: "queue.queued", sessionId, payload });
-    this.events.publish({ source: "agent", type: "steering.queued", sessionId, payload });
-    return { id: queued.item.id, position: queued.position, reused: queued.reused };
+    return this.runControl.enqueueSteering(sessionId, content, requestId);
   }
 
   async enqueueFollowUp(sessionId: string, content: string, requestId?: string): Promise<{ id: string; position: number; reused: boolean }> {
-    if (!this.running.has(sessionId)) throw new SteeringError("Session agent is not running", "not_running");
-    if (content.length > MAX_STEERING_LENGTH) throw new SteeringError(`Follow-up message exceeds ${MAX_STEERING_LENGTH} characters`, "too_long");
-    const queuedItems = await this.messageQueue.list(sessionId, "follow_up");
-    if (queuedItems.filter((item) => item.status === "queued").length >= MAX_STEERING_ITEMS) throw new SteeringError("Follow-up queue is full", "full");
-    const queued = await this.messageQueue.enqueue(sessionId, "follow_up", content, requestId);
-    const payload = { ...queued.item, position: queued.position, reused: queued.reused };
-    this.events.publish({ source: "agent", type: "queue.queued", sessionId, payload });
-    return { id: queued.item.id, position: queued.position, reused: queued.reused };
+    return this.runControl.enqueueFollowUp(sessionId, content, requestId);
   }
 
   /**
@@ -2126,98 +2138,26 @@ export class AgentRunner {
    * 队列项标记 source:"cron" 随 queue.json 持久化。
    */
   async fireCronFollowUp(sessionId: string, content: string): Promise<{ id: string; position: number }> {
-    if (content.length > MAX_STEERING_LENGTH) throw new SteeringError(`Cron prompt exceeds ${MAX_STEERING_LENGTH} characters`, "too_long");
-    const queuedItems = await this.messageQueue.list(sessionId, "follow_up");
-    if (queuedItems.filter((item) => item.status === "queued").length >= MAX_STEERING_ITEMS) throw new SteeringError("Follow-up queue is full", "full");
-    const queued = await this.messageQueue.enqueue(sessionId, "follow_up", content, undefined, "cron");
-    const payload = { ...queued.item, position: queued.position, reused: queued.reused };
-    this.events.publish({ source: "agent", type: "queue.queued", sessionId, payload });
-    // 运行中/settling 由 run 收尾的 startFollowUp 兜底；全空闲时这里立即启动
-    if (!this.running.has(sessionId) && !this.settling.has(sessionId)) {
-      void this.startFollowUp(sessionId).catch(() => { /* follow-up 失败经 queue.run_failed 事件记录 */ });
-    }
-    return { id: queued.item.id, position: queued.position };
+    return this.runControl.fireCronFollowUp(sessionId, content);
   }
 
   async listSteering(sessionId: string): Promise<QueueItem[]> {
-    return (await this.messageQueue.list(sessionId, "steer")).filter((item) => item.status === "queued");
+    return this.runControl.listSteering(sessionId);
   }
-  async listQueue(sessionId: string): Promise<QueueItem[]> { return this.messageQueue.list(sessionId); }
+  async listQueue(sessionId: string): Promise<QueueItem[]> { return this.runControl.listQueue(sessionId); }
   async updateQueue(sessionId: string, id: string, change: { content?: string; kind?: "steer" | "follow_up" }): Promise<QueueItem | undefined> {
-    const item = await this.messageQueue.update(sessionId, id, change);
-    if (item) this.events.publish({ source: "agent", type: "queue.updated", sessionId, payload: item });
-    return item;
+    return this.runControl.updateQueue(sessionId, id, change);
   }
   async removeQueue(sessionId: string, id: string): Promise<boolean> {
-    const item = await this.messageQueue.cancel(sessionId, id);
-    if (!item) return false;
-    this.events.publish({ source: "agent", type: "queue.cancelled", sessionId, payload: { id: item.id, kind: item.kind } });
-    return true;
+    return this.runControl.removeQueue(sessionId, id);
   }
 
-  async listInteractions(sessionId: string): Promise<InteractionRequest[]> { return this.interactions.list(sessionId); }
+  async listInteractions(sessionId: string): Promise<InteractionRequest[]> { return this.runControl.listInteractions(sessionId); }
   async createInteraction(sessionId: string, input: { runId: string; toolCallId?: string; kind: InteractionKind; title: string; prompt: string; options?: Array<{ id: string; label: string; description?: string }> }): Promise<InteractionRequest> {
-    const item = await this.interactions.create(sessionId, input);
-    this.events.publish({ source: "agent", type: "interaction.requested", sessionId, runId: item.runId, payload: item });
-    // Notification 钩子：交互待答（仅通知不阻断）
-    const session = await this.sessions.get(sessionId);
-    if (session) {
-      await this.runNotificationHook("Notification", { sessionId, cwd: session.cwd, notification: { kind: "interaction", summary: input.title } });
-    }
-    return item;
+    return this.runControl.createInteraction(sessionId, input);
   }
   async respondInteraction(sessionId: string, id: string, answer: unknown): Promise<InteractionRequest | undefined> {
-    const item = await this.interactions.answer(sessionId, id, answer);
-    if (item) {
-      this.events.publish({ source: "agent", type: "interaction.answered", sessionId, payload: item });
-      // ask_user 工具挂起等待：回答到达即恢复工具执行（镜像权限 respond 语义）
-      const waiter = this.interactionWaiters.get(id);
-      if (waiter) {
-        this.interactionWaiters.delete(id);
-        waiter.signal.removeEventListener("abort", waiter.abort);
-        waiter.resolve(item.answer);
-      }
-    }
-    return item;
-  }
-
-  /**
-   * 等待 ask_user 交互被回答；run abort 或交互已取消时解析为 { cancelled: true }，
-   * 工具结果按 { cancelled: true } 返回（非错误），agent 可自行决定继续或收尾。
-   */
-  private async waitForInteractionAnswer(sessionId: string, interactionId: string, signal: AbortSignal): Promise<{ cancelled: true } | { cancelled: false; answer: unknown }> {
-    if (signal.aborted) return { cancelled: true };
-    // 竞态防护：REST respond 可能先于 waiter 注册完成（事件发布与注册之间存在微任务窗口）
-    const existing = (await this.interactions.list(sessionId)).find((item) => item.id === interactionId);
-    if (existing && existing.status !== "pending") {
-      return existing.status === "cancelled" ? { cancelled: true } : { cancelled: false, answer: existing.answer };
-    }
-    return new Promise((resolve) => {
-      const abort = () => {
-        this.interactionWaiters.delete(interactionId);
-        resolve({ cancelled: true });
-      };
-      this.interactionWaiters.set(interactionId, { sessionId, resolve: (answer) => resolve({ cancelled: false, answer }), signal, abort });
-      signal.addEventListener("abort", abort, { once: true });
-      // 注册后复检：abort 可能在上面 signal.aborted 检查与本注册之间触发，
-      // AbortSignal 事件已错过且不会再发，不复检则 waiter 永久挂起。
-      // abort() 路径另由 cancelInteractionWaiters 主动解除兜底。
-      if (signal.aborted) abort();
-    });
-  }
-
-  /**
-   * 主动解除会话所有挂起的 ask_user 交互等待，解析为 { cancelled: true }。
-   * abort() 调用，与 permissions.cancelSession 同义：不依赖 signal 事件
-   * （事件注册竞态下 listener 可能漏掉已发事件导致永久挂起）。
-   */
-  private cancelInteractionWaiters(sessionId: string): void {
-    for (const [id, waiter] of this.interactionWaiters) {
-      if (waiter.sessionId !== sessionId) continue;
-      this.interactionWaiters.delete(id);
-      waiter.signal.removeEventListener("abort", waiter.abort);
-      waiter.abort();
-    }
+    return this.runControl.respondInteraction(sessionId, id, answer);
   }
 
   /**
@@ -2227,7 +2167,7 @@ export class AgentRunner {
    * 事件，web 端沿用既有刷新链路更新会话配置。
    */
   private async switchToBuildMode(sessionId: string): Promise<void> {
-    const session = await this.sessions.get(sessionId);
+    const session = await this.sessions.getMeta(sessionId);
     if (!session || session.agentMode !== "plan") return;
     const updated = await this.sessions.updateConfig(sessionId, {
       provider: session.provider,
@@ -2249,93 +2189,11 @@ export class AgentRunner {
   }
 
   async removeSteering(sessionId: string, id: string): Promise<boolean> {
-    const item = await this.messageQueue.cancel(sessionId, id);
-    if (!item) return false;
-    this.events.publish({ source: "agent", type: "queue.cancelled", sessionId, payload: { id: item.id, kind: item.kind } });
-    this.events.publish({ source: "agent", type: "steering.removed", sessionId, payload: { id: item.id } });
-    return true;
-  }
-
-  private async applySteering(sessionId: string): Promise<boolean> {
-    const item = await this.messageQueue.take(sessionId, "steer");
-    if (!item) return false;
-    try {
-      const message = await this.sessions.appendMessage(sessionId, "user", [{ type: "text", text: item.content }]);
-      const applied = await this.messageQueue.apply(sessionId, item.id, message.id);
-      if (!applied) throw new Error("Steering queue item disappeared while applying it");
-      this.events.publish({ source: "agent", type: "queue.applied", sessionId, payload: applied });
-      this.events.publish({ source: "agent", type: "steering.applied", sessionId, payload: applied });
-      return true;
-    } catch (error) {
-      await this.messageQueue.requeue(sessionId, item.id);
-      this.events.publish({ source: "agent", type: "queue.apply_failed", sessionId, payload: { id: item.id, kind: item.kind, message: errorMessage(error) } });
-      return false;
-    }
-  }
-
-  /**
-   * goal 模式自动续跑：run 正常结束且末条 assistant 消息含独占行 GOAL_INCOMPLETE 时，
-   * 经 follow_up 队列自动追加一轮（队列机制负责 startFollowUp）。续跑上限 10 次，
-   * 计数自最近一条普通用户消息之后、以 [goal-continuation] 前缀的 user 消息数；
-   * 消息落盘即持久化，重启后计数自然恢复。GOAL_COMPLETE 或无标记不续跑。
-   */
-  private async maybeScheduleGoalContinuation(sessionId: string): Promise<void> {
-    const session = await this.sessions.get(sessionId);
-    if (!session || session.agentMode !== "goal") return;
-    // 队列中已有（用户手动排队的）follow_up 时不追加，避免插队
-    if ((await this.messageQueue.list(sessionId, "follow_up")).some((item) => item.status === "queued")) return;
-    const messages = activePathMessages(session.messages, session.activeLeafId);
-    let lastAssistantText = "";
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const message = messages[i];
-      if (message?.role !== "assistant") continue;
-      lastAssistantText = message.content
-        .filter((block) => block.type === "text")
-        .map((block) => (block.type === "text" ? block.text : ""))
-        .join("\n");
-      break;
-    }
-    // 独占行 GOAL_INCOMPLETE（容忍前后空白，允许行尾冒号 + 一句理由）
-    const incomplete = /^[ \t]*GOAL_INCOMPLETE[ \t]*(?::[ \t]*(.+?))?[ \t\r]*$/m.exec(lastAssistantText);
-    if (!incomplete) return;
-    let continuations = 0;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const message = messages[i];
-      if (message?.role !== "user") continue;
-      const textBlock = message.content.find((block) => block.type === "text");
-      const text = textBlock?.type === "text" ? textBlock.text : "";
-      // 遇到最近的普通用户消息即停止：更早的续跑属于上一个目标
-      if (!text.startsWith(GOAL_CONTINUATION_PREFIX)) break;
-      continuations++;
-    }
-    if (continuations >= GOAL_MAX_CONTINUATIONS) {
-      this.events.publish({ source: "agent", type: "goal.stopped", sessionId, payload: { reason: "max_continuations", count: GOAL_MAX_CONTINUATIONS } });
-      return;
-    }
-    const reason = incomplete[1]?.trim() || "无说明";
-    await this.enqueueFollowUp(sessionId, `${GOAL_CONTINUATION_PREFIX} 目标自评未完成（${reason}）。请继续完成剩余工作。`);
-  }
-
-  private async startFollowUp(sessionId: string): Promise<void> {
-    if (this.running.has(sessionId)) return;
-    // Avoid creating queue.json for the overwhelmingly common no-follow-up path.
-    // This also keeps a just-finished session from racing its caller's cleanup.
-    if (!(await this.messageQueue.list(sessionId, "follow_up")).some((item) => item.status === "queued")) return;
-    const item = await this.messageQueue.take(sessionId, "follow_up");
-    if (!item) return;
-    this.events.publish({ source: "agent", type: "queue.consuming", sessionId, payload: item });
-    void this.run(sessionId, item.content, { queueItemId: item.id }).catch((error: unknown) => {
-      this.events.publish({
-        source: "agent",
-        type: "queue.run_failed",
-        sessionId,
-        payload: { id: item.id, kind: item.kind, message: errorMessage(error) },
-      });
-    });
+    return this.runControl.removeSteering(sessionId, id);
   }
 
   private async authorizeTool(sessionId: string, tool: string, input: Record<string, unknown>, signal: AbortSignal): Promise<{ allowed: boolean; reason?: string }> {
-    const session = await this.sessions.get(sessionId);
+    const session = await this.sessions.getMeta(sessionId);
     if (!session) return { allowed: false, reason: "Session not found" };
     // 工具形态别名按原内置工具的权限类处理（不降级为 external）
     tool = this.resolveBuiltinToolName(sessionId, tool);
@@ -2459,33 +2317,6 @@ export class AgentRunner {
   }
 
   /**
-   * 长期记忆/项目约定注入（§2.3/§7.5）：host fs 直读 CLAUDE.md、AGENTS.md、
-   * 项目 .owc/memory.md 与全局 <dataDir>/memory.md；每节独立标题、上限 8000 字符，
-   * 读失败一律按不存在处理，绝不 throw 阻断 agent 循环。
-   */
-  private async buildMemorySection(cwd: string): Promise<string> {
-    const sections: string[] = [];
-    const add = (title: string, body: string): void => {
-      const trimmed = body.trim();
-      if (trimmed === "") return;
-      const text = trimmed.length > MEMORY_SECTION_LIMIT ? `${trimmed.slice(0, MEMORY_SECTION_LIMIT)}…(truncated)` : trimmed;
-      sections.push(`## ${title}\n${text}`);
-    };
-    for (const name of ["CLAUDE.md", "AGENTS.md"]) {
-      let body = "";
-      try {
-        body = await readFile(path.join(cwd, name), "utf8");
-      } catch {
-        // 不存在或不可读：跳过该节
-      }
-      add(name, body);
-    }
-    add("Project memory (.owc/memory.md)", await readProjectMemory(cwd));
-    if (this.dataDir) add("Global memory", await readGlobalMemory(this.dataDir));
-    return sections.length === 0 ? "" : `\n\n${sections.join("\n\n")}`;
-  }
-
-  /**
    * mcp__ / ext__ 共用的外部工具执行路径：tool.start/end 事件、tool_running 状态、
    * boundToolResult 截断包装完全一致；差异仅在底层调用（MCP 连接 vs Extension Host IPC）。
    */
@@ -2499,7 +2330,7 @@ export class AgentRunner {
     this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, ...boundToolEventInput(input) } });
     this.state(sessionId, "tool_running");
     try {
-      const session = await this.sessions.get(sessionId);
+      const session = await this.sessions.getMeta(sessionId);
       if (!session) throw new Error("Session not found");
       const result = await call(session.cwd);
       const isError = result.isError === true;
@@ -2575,7 +2406,7 @@ export class AgentRunner {
       this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, ...boundToolEventInput(input) } });
       this.state(sessionId, "tool_running");
       try {
-        const session = await this.sessions.get(sessionId);
+        const session = await this.sessions.getMeta(sessionId);
         if (!session) throw new Error("Session not found");
         const skillName = String(input.name ?? "");
         const skill = this.skills ? await this.skills.find(session.cwd, skillName) : undefined;
@@ -2597,7 +2428,7 @@ export class AgentRunner {
       // SubagentStop 钩子在 catch 也需引用（cwd/agent 类型），与 taskId 同步声明
       let hookContext: { cwd: string; agent?: string | undefined; kind?: string | undefined } | undefined;
       try {
-        const session = await this.sessions.get(sessionId);
+        const session = await this.sessions.getMeta(sessionId);
         if (!session) throw new Error("Session not found");
         const prompt = String(input.prompt ?? "");
         if (!prompt) throw new Error("spawn_task requires a non-empty prompt");
@@ -2703,7 +2534,7 @@ export class AgentRunner {
       const subagentTaskIds: string[] = [];
       const subagentTasks: SwarmTaskStatus[] = [];
       try {
-        const session = await this.sessions.get(sessionId);
+        const session = await this.sessions.getMeta(sessionId);
         if (!session) throw new Error("Session not found");
         const template = String(input.prompt_template ?? "");
         if (!template.includes("{{item}}")) throw new Error("spawn_swarm requires prompt_template to contain the {{item}} placeholder");
@@ -2903,7 +2734,7 @@ export class AgentRunner {
       this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, ...boundToolEventInput(input) } });
       this.state(sessionId, "tool_running");
       try {
-        const session = await this.sessions.get(sessionId);
+        const session = await this.sessions.getMeta(sessionId);
         if (!session) throw new Error("Session not found");
         const fact = String(input.fact ?? "").trim();
         if (!fact) throw new Error("remember requires a non-empty fact");
@@ -2976,7 +2807,7 @@ export class AgentRunner {
               : {}),
           });
           this.state(sessionId, "waiting_permission");
-          const outcome = await this.waitForInteractionAnswer(sessionId, interaction.id, signal);
+          const outcome = await this.runControl.waitForInteractionAnswer(sessionId, interaction.id, signal);
           this.state(sessionId, "tool_running");
           if (outcome.cancelled) {
             this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: { cancelled: true } } });
@@ -3009,7 +2840,7 @@ export class AgentRunner {
           prompt: plan,
         });
         this.state(sessionId, "waiting_permission");
-        const outcome = await this.waitForInteractionAnswer(sessionId, interaction.id, signal);
+        const outcome = await this.runControl.waitForInteractionAnswer(sessionId, interaction.id, signal);
         this.state(sessionId, "tool_running");
         if (outcome.cancelled) {
           this.events.publish({ source: "agent", type: "tool.end", sessionId, payload: { toolCallId, result: { cancelled: true } } });
@@ -3035,7 +2866,7 @@ export class AgentRunner {
     }
     if (name === "read_artifact") {
       try {
-        const session = await this.sessions.get(sessionId);
+        const session = await this.sessions.getMeta(sessionId);
         if (!session) throw new Error("Session not found");
         const manager = new ContextManager(this.sessions.contextRoot(sessionId));
         const content = await manager.readArtifact(
@@ -3052,7 +2883,7 @@ export class AgentRunner {
       this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, ...boundToolEventInput(input) } });
       this.state(sessionId, "tool_running");
       try {
-        const session = await this.sessions.get(sessionId);
+        const session = await this.sessions.getMeta(sessionId);
         if (!session) throw new Error("Session not found");
         if (input.budget !== undefined && (!Number.isInteger(Number(input.budget)) || Number(input.budget) < 64)) {
           throw new Error("repo_map budget must be an integer >= 64");
@@ -3078,7 +2909,7 @@ export class AgentRunner {
       this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, ...boundToolEventInput(input) } });
       this.state(sessionId, "tool_running");
       try {
-        const session = await this.sessions.get(sessionId);
+        const session = await this.sessions.getMeta(sessionId);
         if (!session) throw new Error("Session not found");
         if (!this.diagnostics) throw new Error("Diagnostics service is not enabled on this server.");
         const command = typeof input.command === "string" && input.command.trim() ? input.command.trim() : undefined;
@@ -3108,7 +2939,7 @@ export class AgentRunner {
       this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, ...boundToolEventInput(input) } });
       this.state(sessionId, "tool_running");
       try {
-        const session = await this.sessions.get(sessionId);
+        const session = await this.sessions.getMeta(sessionId);
         if (!session) throw new Error("Session not found");
         if (!this.scm) throw new Error("SCM service is not enabled on this server.");
         const context = { shellBackend: session.shellBackend ?? "default", signal };
@@ -3186,7 +3017,7 @@ export class AgentRunner {
       this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, ...boundToolEventInput(input) } });
       this.state(sessionId, "tool_running");
       try {
-        const session = await this.sessions.get(sessionId);
+        const session = await this.sessions.getMeta(sessionId);
         if (!session) throw new Error("Session not found");
         if (!this.indexManager) throw new IndexUnavailableError("Symbol index is not enabled on this server.");
         const query = typeof input.query === "string" ? input.query.trim() : "";
@@ -3214,7 +3045,7 @@ export class AgentRunner {
       this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, ...boundToolEventInput(input) } });
       this.state(sessionId, "tool_running");
       try {
-        const session = await this.sessions.get(sessionId);
+        const session = await this.sessions.getMeta(sessionId);
         if (!session) throw new Error("Session not found");
         const raw = await this.callCoreFileTool(sessionId, name, input, signal);
         const bounded = await boundToolResult(this.sessions.contextRoot(sessionId), name, raw);
@@ -3293,7 +3124,7 @@ export class AgentRunner {
       this.state(sessionId, "tool_running");
       try {
         if (!this.backgroundTasks) throw new Error("后台任务未启用");
-        const session = await this.sessions.get(sessionId);
+        const session = await this.sessions.getMeta(sessionId);
         if (!session) throw new Error("Session not found");
         if (session.sandboxMode === "wsb") throw new Error("WSB 沙盒模式不支持后台 bash");
         if (session.workspace?.mode === "managed") throw new Error("托管工作区不支持后台 bash");
@@ -3344,7 +3175,7 @@ export class AgentRunner {
       this.state(sessionId, "tool_running");
     }
     try {
-      const session = await this.sessions.get(sessionId);
+      const session = await this.sessions.getMeta(sessionId);
       if (!session) throw new Error("Session not found");
       // 提交⑩：默认走持久 shell（同一会话 cwd/env 跨调用保持）；pty 不可用（旧 core）时回退一次性 exec 路径
       const persistent = await this.tryPersistentBash(session, cmd, toolCallId, signal, quiet);
@@ -3447,6 +3278,16 @@ export class AgentRunner {
   }
 
   /**
+   * 会话删除时清理按会话/cwd 键控的无界小 Map（perf 环形缓冲、MCP 告警签名、提示词覆盖缓存）。
+   * cwd 级缓存误清只导致下次 run 重建一次，不影响正确性。
+   */
+  discardSession(sessionId: string, cwd?: string): void {
+    this.perfRecords.delete(sessionId);
+    this.mcpWarningSignatures.delete(sessionId);
+    if (cwd) this.promptOverrideCache.delete(cwd);
+  }
+
+  /**
    * nodeEnv=project/fnm/nvm 时把会话 bash 包装进对应 node 环境（PATH 前置或版本管理器激活前缀）；
    * global（本机环境）原样返回。管理器缺失/当前 shell 不支持时回退本机环境并在输出中说明。
    */
@@ -3482,7 +3323,7 @@ export class AgentRunner {
     providerName: string,
     model: string,
     event: Extract<ProviderEvent, { type: "usage" }>,
-    options: { persist?: boolean } = {},
+    options: { persist?: boolean; turn?: TurnLedger } = {},
   ): Promise<void> {
     const usageCost = calculateUsageCost(event, this.pricing.get(providerName, model), this.exchangeRates?.current());
     const recordedCost = {
@@ -3500,9 +3341,10 @@ export class AgentRunner {
       } : {}),
     };
     // persist=false：仅实时转发 WS（逐 chunk 的 usage 中间帧），ledger/usageLog 不重复记账；
-    // sessionCost 取当前已记账累计，本轮最后一条（persist）才落账
+    // sessionCost 取当前已记账累计，本轮最后一条（persist）才落账。
+    // 主循环经轮级句柄记账（commitTurn 统一落盘）；子代理不传句柄，保持自载自存即时落盘。
     const persist = options.persist !== false;
-    const ledger = persist ? await context.recordUsage(event, recordedCost) : await context.load();
+    const ledger = persist ? await context.recordUsage(event, recordedCost, options.turn) : await context.load();
     if (persist) {
       // 全局用量日志（成本报表数据源）：失败只记 stderr，不阻断会话
       void this.usageLog?.record({
