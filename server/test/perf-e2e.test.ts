@@ -1,7 +1,7 @@
 /**
  * 0.5.0 Phase 2 端到端验证：perf 采样、provider 并发统计、messages 分页 REST。
  *
- * perf-api.test.ts 只验证空态与接口结构（注释明确“直接调用内部方法不现实”），
+ * misc-api.test.ts 只验证空态与接口结构（注释明确“直接调用内部方法不现实”），
  * 本文件触发一次真实 run（含工具调用），证明 perf 三阶段耗时被真实采集并通过
  * REST 暴露，同时覆盖 messages 分页 REST 端点（session-pagination.test.ts 只测 store 层）。
  */

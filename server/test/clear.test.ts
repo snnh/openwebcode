@@ -8,6 +8,7 @@ import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
+import { activePathMessages } from "../src/sessions/session-tree.js";
 import type { ChatMessage } from "../src/sessions/types.js";
 import { tempRoot } from "./helpers/temp-roots.js";
 
@@ -120,5 +121,30 @@ describe("/clear composer command", () => {
     vi.spyOn(agent, "isRunning").mockReturnValue(true);
     const running = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "/clear" } });
     expect(running.statusCode).toBe(409);
+  });
+
+  it("uptoIndex 用活动路径长度：存在离路径分支消息时 /clear 后新消息仍进视图", async () => {
+    const { root, sessions, app } = await clearApp();
+    const session = await sessions.create({ cwd: root, title: "Clear with branches" });
+    const m1 = await sessions.appendMessage(session.id, "user", [{ type: "text", text: "q1" }]);
+    await sessions.appendMessage(session.id, "assistant", [{ type: "text", text: "a1" }]);
+    // 制造分支：checkout 回 m1 再追加，旧 a1 成为离路径消息（全量 3 条，活动路径 2 条）
+    await sessions.setActiveLeaf(session.id, m1.id);
+    await sessions.appendMessage(session.id, "assistant", [{ type: "text", text: "a1-retry" }]);
+    const before = (await sessions.get(session.id))!;
+    expect(before.messages).toHaveLength(3);
+    expect(activePathMessages(before.messages, before.activeLeafId)).toHaveLength(2);
+
+    const response = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "/clear" } });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ cleared: true, uptoIndex: 2 });
+
+    // 回归断言：/clear 后追加的新消息必须出现在视图中
+    // （修复前 uptoIndex=3 > 活动路径长度，会把之后所有消息一并清出视图，模型看不到任何用户消息）
+    await sessions.appendMessage(session.id, "user", [{ type: "text", text: "q2" }]);
+    const after = (await sessions.get(session.id))!;
+    const path = activePathMessages(after.messages, after.activeLeafId);
+    const view = await new ContextManager(sessions.contextRoot(session.id)).buildView(path);
+    expect(view.messages.map((message) => message.content[0])).toEqual([{ type: "text", text: "q2" }]);
   });
 });

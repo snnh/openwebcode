@@ -1,4 +1,7 @@
 import { EventEmitter } from "node:events";
+import { existsSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type {
   CoreClientLike,
   CoreInfo,
@@ -66,6 +69,26 @@ export function toSandboxPath(hostPath: string, workspace: string): string {
   if (lower === rootLower) return WSB_WORKSPACE_MOUNT;
   if (lower.startsWith(`${rootLower}\\`)) return WSB_WORKSPACE_MOUNT + target.slice(root.length);
   return hostPath;
+}
+
+/**
+ * Git/GitHub 凭据只读放行（POSIX）：bwrap/Landlock 沙盒只挂载会话工作区，宿主 $HOME
+ * 不可见，沙盒内 git push / gh 因取不到凭据而挂起交互提示（表现为命令卡死）。
+ * 把标准凭据路径并入 readOnlyPaths：沙盒内进程只读可见；fs.* 工具的路径策略不含
+ * readOnlyPaths，工具层读不到凭据内容。Windows Job Object 无文件系统隔离（凭据本就可读），
+ * 不追加。core 侧 readOnlyPaths 上限 16：用户配置优先，凭据按序补到满为止（尽力而为）。
+ */
+export function gitCredentialReadOnlyPaths(existing: string[] | undefined, platform: NodeJS.Platform = process.platform, home: string = os.homedir()): string[] {
+  const merged = [...(existing ?? [])];
+  if (platform === "win32" || !home) return merged;
+  const candidates = [".gitconfig", ".git-credentials", ".config/git", ".config/gh", ".ssh"]
+    .map((rel) => path.join(home, rel))
+    .filter((candidate) => existsSync(candidate));
+  for (const candidate of candidates) {
+    if (merged.length >= 16) break;
+    if (!merged.includes(candidate)) merged.push(candidate);
+  }
+  return merged;
 }
 
 /** wsb 会话的请求路径翻译；其余会话原样返回。host 绝对路径或带点分量的路径
@@ -161,13 +184,15 @@ export class CoreRouter extends EventEmitter {
       ...(jobObject?.memoryMB !== undefined ? { jobMemoryMB: jobObject.memoryMB } : {}),
       ...(jobObject?.maxProcesses !== undefined ? { jobMaxProcesses: jobObject.maxProcesses } : {}),
     };
-    if (mode === "appcontainer") return { ...sandbox, ...limits, mode: "appcontainer" };
+    const credentials = gitCredentialReadOnlyPaths(sandbox.readOnlyPaths, platform);
+    const withCredentials = credentials.length > 0 ? { readOnlyPaths: credentials } : {};
+    if (mode === "appcontainer") return { ...sandbox, ...withCredentials, ...limits, mode: "appcontainer" };
     // bubblewrap 显式下发（POSIX 专用；Windows 上的取值由 REST 校验拦截，这里不防御）
-    if (mode === "bubblewrap") return { ...sandbox, ...limits, mode: "bubblewrap" };
+    if (mode === "bubblewrap") return { ...sandbox, ...withCredentials, ...limits, mode: "bubblewrap" };
     // landlock 与 POSIX 缺省都不下发 mode：core 缺省后端即 bubblewrap（无 bwrap 自动回落 Landlock）
     // 显式选择（含持久化里已存的 jobobject）原样下发；只有缺省决策按平台分流
-    if (mode === "jobobject" || platform === "win32") return { ...sandbox, ...limits, mode: "jobobject" };
-    return { ...sandbox, ...limits };
+    if (mode === "jobobject" || platform === "win32") return { ...sandbox, ...withCredentials, ...limits, mode: "jobobject" };
+    return { ...sandbox, ...withCredentials, ...limits };
   }
 
   private async metaFor(sessionId: string): Promise<SessionMeta | undefined> {
