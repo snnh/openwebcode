@@ -62,6 +62,16 @@ export function useDraft(sessionId: string | undefined): [string, (value: string
   return [draft, set];
 }
 
+/**
+ * 只关心「草稿非空」布尔的订阅（如命令体系 when 上下文）：
+ * 选择器返回布尔，内容变化但非空判定不变时 useSyncExternalStore 不触发重渲染，
+ * 避免每次击键带着订阅整棵树重渲染。
+ */
+export function useDraftNonEmpty(sessionId: string | undefined): boolean {
+  useComposerSession(sessionId);
+  return useStore(composerStore, (state) => Boolean(sessionId && state[sessionId]?.draft.trim()));
+}
+
 export function getAttachments(sessionId: string): PendingImage[] {
   return ensureEntry(sessionId).attachments;
 }

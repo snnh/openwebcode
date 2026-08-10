@@ -1,10 +1,10 @@
-import { StrictMode, type ReactElement } from "react";
+import { StrictMode, lazy, Suspense, type ReactElement } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { App } from "./app/App";
 import { useRoute } from "./app/router";
-import { ShareView } from "./chat-mode/ShareView";
 import { AuthGate } from "./components/AuthGate";
+import { LoadingFallback } from "./components/LoadingFallback";
 import { I18nProvider } from "./i18n";
 import "./styles/tokens.css";
 import "./styles/base.css";
@@ -23,11 +23,20 @@ const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } },
 });
 
+// share 路由独立 chunk：只读分享页不占主入口体积
+const ShareView = lazy(() => import("./chat-mode/ShareView").then((m) => ({ default: m.ShareView })));
+
 function Root(): ReactElement {
   const route = useRoute();
   if (route.name === "share") {
     // share 路由公开访问，绕过 AuthGate；ShareView 用 useI18n 故同样需要 I18nProvider
-    return <I18nProvider><ShareView shareId={route.shareId} slug={route.slug} /></I18nProvider>;
+    return (
+      <I18nProvider>
+        <Suspense fallback={<LoadingFallback />}>
+          <ShareView shareId={route.shareId} slug={route.slug} />
+        </Suspense>
+      </I18nProvider>
+    );
   }
   return (
     <I18nProvider><AuthGate><App /></AuthGate></I18nProvider>
