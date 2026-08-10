@@ -583,13 +583,6 @@ export interface DiagnosticSet {
   failures: DiagnosticFailure[];
 }
 
-/** WS 事件 diagnostics.updated 的 payload：携带 runId 与汇总，客户端收到后重新拉取 latest */
-export interface DiagnosticsUpdatedEvent {
-  sessionId: string;
-  runId?: string;
-  summary?: { failed?: number };
-}
-
 // ---- SCM（Phase 4）：GET /api/sessions/:id/git/* 的契约（与 server/src/scm/types.ts 对齐） ----
 
 /** 单条变更条目（porcelain v1 解析结果）：path + XY 状态码（如 "M "、" M"、"A "、"??"），rename 带 originalPath */
@@ -635,13 +628,6 @@ export interface ScmWorktree {
   branch: string;
   createdAt: string;
   exists: boolean;
-}
-
-/** WS 事件 scm.updated 的 payload（reason 如 worktree.create，附带 detail 字段）；收到后刷新该会话的 SCM 状态 */
-export interface ScmUpdatedEvent {
-  sessionId: string;
-  reason: string;
-  [key: string]: unknown;
 }
 
 /** GET /api/sessions/:id/git/log 的单条提交（relTime 为服务端格式化的相对时间） */

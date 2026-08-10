@@ -19,10 +19,6 @@ export function useSendKey(): SendKey {
   return useStore(sendKeyStore, (state) => state.value);
 }
 
-export function getSendKey(): SendKey {
-  return sendKeyStore.get().value;
-}
-
 export function setSendKey(value: SendKey): void {
   saveSendKey(value);
   sendKeyStore.set({ value });
@@ -30,10 +26,6 @@ export function setSendKey(value: SendKey): void {
 
 export function useSessionDefaults(): SessionDefaults {
   return useStore(sessionDefaultsStore, (state) => state.value);
-}
-
-export function getSessionDefaults(): SessionDefaults {
-  return sessionDefaultsStore.get().value;
 }
 
 export function setSessionDefaults(value: SessionDefaults): void {

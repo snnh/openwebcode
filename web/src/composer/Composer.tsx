@@ -5,6 +5,8 @@ import { extractAttachmentPaths } from "../lib/attachments";
 import type { PdfRenderOptions } from "../lib/pdf-to-images";
 import { nextRecentModel, recordRecentModel } from "../lib/recent-models";
 import { deriveInputHistory } from "../lib/input-history";
+import { clipboardFiles, dataUrlBase64, readFileAsDataUrl } from "../lib/file-data-url";
+import { useAutosizeTextarea } from "../hooks/use-autosize-textarea";
 import { Icon } from "../components/Icon";
 import { useI18n } from "../i18n";
 import { useExtensionsQuery, useModelsQuery, useProvidersQuery, useSkillsQuery } from "../app/queries";
@@ -60,15 +62,11 @@ function pdfRenderOptions(config: Record<string, unknown>, room: number): PdfRen
 }
 
 function readImage(file: File): Promise<PendingImage> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const previewUrl = String(reader.result);
-      resolve({ mediaType: file.type, data: previewUrl.slice(previewUrl.indexOf(",") + 1), previewUrl });
-    };
-    reader.onerror = () => reject(reader.error ?? new Error("Unable to read image"));
-    reader.readAsDataURL(file);
-  });
+  return readFileAsDataUrl(file).then((previewUrl) => ({
+    mediaType: file.type,
+    data: dataUrlBase64(previewUrl),
+    previewUrl,
+  }));
 }
 
 /** 服务端内置斜杠命令（消息路由匹配），与技能一起参与 / 补全 */
@@ -216,14 +214,7 @@ export function Composer({ session, running, onSend, onConfig, editingMessage, o
   }, [setDraft]);
 
   // 随内容自动增高，上限由 CSS max-height 控制；达到 max-height 出现真实溢出后才放开滚动
-  useEffect(() => {
-    const element = textareaRef.current;
-    if (element) {
-      element.style.height = "auto";
-      element.style.height = `${element.scrollHeight}px`;
-      element.style.overflowY = element.scrollHeight > element.clientHeight ? "auto" : "hidden";
-    }
-  }, [draft]);
+  useAutosizeTextarea(textareaRef, draft);
 
   // 输入 /前缀 时呼出技能补全；Esc 暂时关闭，内容变化后重新打开
   const command = draft.match(/^\/([\w-]*)$/);
@@ -580,7 +571,7 @@ export function Composer({ session, running, onSend, onConfig, editingMessage, o
   };
 
   const onPaste = (event: ReactClipboardEvent): void => {
-    const files = [...(event.clipboardData?.files ?? [])];
+    const files = clipboardFiles(event);
     if (!files.some((file) => isImage(file) || isPdf(file))) return;
     event.preventDefault();
     addFiles(files);

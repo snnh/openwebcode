@@ -136,11 +136,6 @@ interface TotpFileState {
   recoveryHashes: string[];
 }
 
-export interface TotpAuthStatusInput {
-  /** 当前监听地址（终端门槛判定用） */
-  listenHost: string;
-}
-
 export class TotpAuthService {
   private state: TotpFileState | undefined;
   /** setup 生成的暂存 secret，confirm 校验通过前不落 enabled */

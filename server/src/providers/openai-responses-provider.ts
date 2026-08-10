@@ -1,7 +1,7 @@
 import type { ChatMessage, ImageContent, ThinkingContent } from "../sessions/types.js";
-import { getUserAgent } from "../http.js";
 import { readSseData, DEFAULT_STREAM_IDLE_TIMEOUT_MS } from "./openai-compatible-provider.js";
-import { classifyHttpError, normalizeProviderError, parseRetryAfter, ProviderError, truncateErrorDetail } from "./provider-error.js";
+import { normalizeProviderError, ProviderError } from "./provider-error.js";
+import { collectToolOutputs, parseArguments, providerRequestHeaders, requireResponseBody } from "./shared.js";
 import type { Provider, ProviderEvent, StreamChatRequest } from "./provider.js";
 
 export interface OpenAIResponsesProviderOptions {
@@ -71,11 +71,7 @@ export class OpenAIResponsesProvider implements Provider {
     try {
       response = await this.fetch(`${this.options.baseURL.replace(/\/$/, "")}/responses`, {
         method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "user-agent": getUserAgent(),
-          ...(this.options.apiKey ? { authorization: `Bearer ${this.options.apiKey}` } : {}),
-        },
+        headers: providerRequestHeaders(this.options.apiKey),
         body: JSON.stringify({
           ...this.options.extraBody,
           model: request.model,
@@ -109,15 +105,7 @@ export class OpenAIResponsesProvider implements Provider {
     } catch (error) {
       throw normalizeProviderError(error);
     }
-    if (!response.ok || !response.body) {
-      // 错误体可能很大且会随错误消息广播进 WS 事件流：截断后再进消息
-      const detail = truncateErrorDetail(await response.text());
-      throw classifyHttpError(
-        response.status,
-        `OpenAI Responses provider returned ${response.status}: ${detail}`,
-        parseRetryAfter(response.headers.get("retry-after")),
-      );
-    }
+    const body = await requireResponseBody(response, "OpenAI Responses provider");
 
     // 以 item_id 聚合 function_call；output_item.added 给 call_id/name，arguments 逐片累积，
     // response.completed 的 output items 作为权威终值兜底（覆盖不流式 arguments 的端点）。
@@ -127,7 +115,7 @@ export class OpenAIResponsesProvider implements Provider {
     let incompleteReason: string | null = null;
     let streamStarted = false;
     try {
-      for await (const data of readSseData(response.body, { idleTimeoutMs: this.options.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS })) {
+      for await (const data of readSseData(body, { idleTimeoutMs: this.options.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS })) {
         streamStarted = true;
         if (data === "[DONE]") break;
         const event = JSON.parse(data) as ResponsesStreamEvent;
@@ -280,11 +268,7 @@ function rememberCall(
 let replaySuppressedLogged = false;
 
 function toResponsesInput(messages: ChatMessage[], providerName: string, replayReasoning: boolean): Array<Record<string, unknown>> {
-  const outputs = new Map<string, string>();  for (const message of messages) {
-    for (const block of message.content) {
-      if (block.type === "tool_result" && !outputs.has(block.toolCallId)) outputs.set(block.toolCallId, block.content);
-    }
-  }
+  const outputs = collectToolOutputs(messages);
   const result: Array<Record<string, unknown>> = [];
   const emitted = new Set<string>();
   for (const message of messages) {
@@ -348,27 +332,6 @@ function toResponsesInput(messages: ChatMessage[], providerName: string, replayR
     // tool 角色消息的 tool_result 已内联到对应 function_call 之后，游离者丢弃（见上文）
   }
   return result;
-}
-
-function parseArguments(value: string): Record<string, unknown> {
-  // 参数 JSON 解析失败多为流被 max_output_tokens 截断：确定性错误，重试不会自愈，归不可重试
-  // （否则 collectProviderTurn 会按 stream_interrupted 白重试）
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(value || "{}");
-  } catch (error) {
-    throw new ProviderError(
-      "invalid_request",
-      `Tool call arguments are not valid JSON (the stream may have been truncated): ${error instanceof Error ? error.message : String(error)}`,
-      false,
-      undefined,
-      { cause: error },
-    );
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new ProviderError("invalid_request", "Tool arguments must be an object", false);
-  }
-  return parsed as Record<string, unknown>;
 }
 
 /** 流内失败事件按 code 区分可重试：服务端错误/过载/限流走重试，其余（如 invalid_request）为确定性失败。 */

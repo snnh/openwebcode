@@ -23,9 +23,3 @@ export function toolResultOf(message?: ChatMessage): string {
     .map((block) => block.content ?? "")
     .join("\n");
 }
-
-/** 工具消息的 tool_result 是否标记为错误（shell 非零退出/执行失败） */
-export function toolResultIsError(message?: ChatMessage): boolean {
-  if (!message || message.role !== "tool") return false;
-  return message.content.some((block) => block.type === "tool_result" && block.isError === true);
-}
