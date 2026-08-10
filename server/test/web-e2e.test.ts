@@ -1,6 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import os from "node:os";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
@@ -12,6 +11,7 @@ import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { waitForEvent } from "./helpers/wait-event.js";
+import { tempRootRetry } from "./helpers/temp-roots.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const corePath = process.env.OWC_CORE_PATH ?? path.resolve(
@@ -19,14 +19,12 @@ const corePath = process.env.OWC_CORE_PATH ?? path.resolve(
   process.platform === "win32" ? "../../build/Debug/owc-exec.exe" : "../../build/owc-exec",
 );
 const coreAvailable = existsSync(corePath);
-const roots: string[] = [];
 const clients: CoreClient[] = [];
 const apps: Array<{ close(): Promise<unknown> }> = [];
 
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close().catch(() => undefined)));
   await Promise.all(clients.splice(0).map((client) => client.stop().catch(() => undefined)));
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
 interface Harness {
@@ -38,8 +36,7 @@ interface Harness {
 }
 
 async function setup(provider: Provider): Promise<Harness> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "owc-web-e2e-"));
-  roots.push(root);
+  const root = await tempRootRetry("owc-web-e2e-");
   const sessions = new SessionStore(path.join(root, ".sessions"));
   await sessions.initialize();
   const pricing = new PricingCatalog(path.join(root, "pricing.json"));
@@ -249,8 +246,7 @@ describe("WebSocket event replay and resync", () => {
   it("replays buffered events to a reconnecting client and signals resync when evicted", async () => {
     const { WebSocket } = await import("ws");
     const stubCore = { on() { return stubCore; } } as unknown as CoreClient;
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-ws-"));
-    roots.push(root);
+    const root = await tempRootRetry("owc-ws-");
     const sessions = new SessionStore(path.join(root, ".sessions"));
     await sessions.initialize();
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));
@@ -296,8 +292,7 @@ describe("WebSocket session isolation", () => {
   it("带 sessionId 的客户端仅收本会话与全局事件；无订阅客户端收全量", async () => {
     const { WebSocket } = await import("ws");
     const stubCore = { on() { return stubCore; } } as unknown as CoreClient;
-    const root = await mkdtemp(path.join(os.tmpdir(), "owc-ws-"));
-    roots.push(root);
+    const root = await tempRootRetry("owc-ws-");
     const sessions = new SessionStore(path.join(root, ".sessions"));
     await sessions.initialize();
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));

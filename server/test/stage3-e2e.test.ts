@@ -1,6 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import os from "node:os";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
@@ -12,26 +11,24 @@ import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { ProviderRegistry, type Provider } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { waitForEvent } from "./helpers/wait-event.js";
+import { tempRootRetry } from "./helpers/temp-roots.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const corePath = process.env.OWC_CORE_PATH ?? path.resolve(
   here,
   process.platform === "win32" ? "../../build/Debug/owc-exec.exe" : "../../build/owc-exec",
 );
-const roots: string[] = [];
 const clients: CoreClient[] = [];
 
 afterEach(async () => {
   await Promise.all(clients.splice(0).map((client) => client.stop()));
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
 describe("stage 3 vertical acceptance", () => {
   it.skipIf(!existsSync(corePath))(
     "runs a real-Core coding task through permission, cost, checkpoint, and rollback APIs",
     async () => {
-      const root = await mkdtemp(path.join(os.tmpdir(), "owc-stage3-e2e-"));
-      roots.push(root);
+      const root = await tempRootRetry("owc-stage3-e2e-");
       const sessions = new SessionStore(path.join(root, ".sessions"));
       await sessions.initialize();
       const pricing = new PricingCatalog(path.join(root, "pricing.json"));

@@ -1,21 +1,16 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { describe, it, expect, beforeEach } from "vitest";
 import path from "node:path";
 import { ChatAssistantStore } from "../src/chat/chat-assistant-store.js";
 import { ChatSessionStore } from "../src/chat/chat-session-store.js";
+import { tempRoot } from "./helpers/temp-roots.js";
 
 describe("ChatSessionStore", () => {
   let dir: string;
   let store: ChatSessionStore;
 
   beforeEach(async () => {
-    dir = await mkdtemp(path.join(tmpdir(), "chat-test-"));
+    dir = await tempRoot("chat-test-");
     store = new ChatSessionStore(dir);
-  });
-
-  afterEach(async () => {
-    await rm(dir, { recursive: true, force: true });
   });
 
   it("creates and retrieves a session", async () => {
@@ -131,13 +126,9 @@ describe("ChatAssistantStore", () => {
   let store: ChatAssistantStore;
 
   beforeEach(async () => {
-    dir = await mkdtemp(path.join(tmpdir(), "chat-asst-"));
+    dir = await tempRoot("chat-asst-");
     store = new ChatAssistantStore(path.join(dir, "assistants.json"));
     await store.init();
-  });
-
-  afterEach(async () => {
-    await rm(dir, { recursive: true, force: true });
   });
 
   it("creates default assistants on first init", async () => {
