@@ -1,13 +1,13 @@
 // 消息列表：REST 拉历史 + SSE 增量（delta/done/error/stopped/python_status/tool_call/connected）。
 // 流式渲染复用 chat/stream-buffer（rAF 合批），滚动跟随复用 chat/scroll-controller（上翻不拽回）。
 // reloadToken 由父组件在发送成功后递增——自己刚发的 user 消息立刻可见，不等 done 才刷新。
-import { useEffect, useRef, useState, type ReactElement } from "react";
+import { memo, useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import { useI18n } from "../i18n";
 import { Icon } from "../components/Icon";
 import { Markdown } from "../components/Markdown";
 import { ui } from "../app/ui-store";
 import { chatMode } from "../app/chat-mode-store";
-import { streamBuffer, useStreamBlocks } from "../chat/stream-buffer";
+import { streamBuffer, useStreamBlocks, type StreamBlock } from "../chat/stream-buffer";
 import { createScrollFollower, type ScrollFollower } from "../chat/scroll-controller";
 import { ChatBlocks } from "./ChatBlocks";
 import type { ChatMessage, ChatSessionDetail, ChatStreamEvent } from "./types";
@@ -29,7 +29,18 @@ export function ChatMessageList({ sessionId, reloadToken }: {
   const scrollRef = useRef<HTMLDivElement>(null);
   const followerRef = useRef<ScrollFollower | undefined>(undefined);
   const streamingBlocks = useStreamBlocks(sessionId);
-  const streamingText = streamingBlocks.map((block) => block.parts.join("")).join("");
+  // 块引用级 join 缓存：stream-buffer 提交时未触碰的块保持引用稳定，直接复用上次 join 结果，
+  // 流式期间每帧只重 join 末尾活跃块，不再 O(全长) 复制
+  const joinCacheRef = useRef(new WeakMap<StreamBlock, string>());
+  const streamingText = streamingBlocks.map((block) => {
+    const cached = joinCacheRef.current.get(block);
+    if (cached !== undefined) return cached;
+    const joined = block.parts.join("");
+    joinCacheRef.current.set(block, joined);
+    return joined;
+  }).join("");
+  // 图片 ref 路由回调按会话稳定（避免击穿消息项 memo）
+  const resolveImageRef = useCallback((ref: string): string => `/api/chat/sessions/${sessionId}/images/${ref}`, [sessionId]);
 
   function follower(): ScrollFollower {
     followerRef.current ??= createScrollFollower();
@@ -134,9 +145,9 @@ export function ChatMessageList({ sessionId, reloadToken }: {
   // 内容变化时仅跟随态吸底；用户上翻后不打断
   useEffect(() => {
     follower().notifyContentChanged();
-  });
+  }, [messages.length, streamingText]);
 
-  async function handleRetry(messageId: string): Promise<void> {
+  const handleRetry = useCallback(async (messageId: string): Promise<void> => {
     try {
       const res = await fetch(`/api/chat/sessions/${sessionId}/messages/${messageId}/retry`, {
         method: "POST",
@@ -159,9 +170,9 @@ export function ChatMessageList({ sessionId, reloadToken }: {
     } catch {
       ui.notify(t("重新生成失败", "Regenerate failed"), "error");
     }
-  }
+  }, [sessionId, t]);
 
-  function handleCopy(message: ChatMessage): void {
+  const handleCopy = useCallback((message: ChatMessage): void => {
     const text = message.content
       .filter((block) => block.type === "text")
       .map((block) => block.text ?? "")
@@ -170,7 +181,7 @@ export function ChatMessageList({ sessionId, reloadToken }: {
       setCopiedId(message.id);
       window.setTimeout(() => setCopiedId((current) => (current === message.id ? undefined : current)), 1500);
     });
-  }
+  }, []);
 
   const isEmpty = messages.length === 0 && !streamingText && !running && !error;
 
@@ -181,34 +192,14 @@ export function ChatMessageList({ sessionId, reloadToken }: {
           <p className="chat-muted-hint">{t("连接中断，正在重连…", "Connection lost, reconnecting…")}</p>
         )}
         {messages.map((msg) => (
-          <div key={msg.id} className={`chat-message ${msg.role}`}>
-            <div className="chat-bubble">
-              <ChatBlocks
-                content={msg.content}
-                resolveImageRef={(ref) => `/api/chat/sessions/${sessionId}/images/${ref}`}
-              />
-            </div>
-            {msg.role === "assistant" && (
-              <div className="actions">
-                <button
-                  className="icon-btn"
-                  aria-label={copiedId === msg.id ? t("已复制", "Copied") : t("复制", "Copy")}
-                  title={copiedId === msg.id ? t("已复制", "Copied") : t("复制", "Copy")}
-                  onClick={() => handleCopy(msg)}
-                >
-                  <Icon name={copiedId === msg.id ? "check" : "copy"} />
-                </button>
-                <button
-                  className="icon-btn"
-                  aria-label={t("重新生成", "Regenerate")}
-                  title={t("重新生成", "Regenerate")}
-                  onClick={() => void handleRetry(msg.id)}
-                >
-                  <Icon name="undo" />
-                </button>
-              </div>
-            )}
-          </div>
+          <ChatMessageItem
+            key={msg.id}
+            message={msg}
+            copied={copiedId === msg.id}
+            resolveImageRef={resolveImageRef}
+            onCopy={handleCopy}
+            onRetry={handleRetry}
+          />
         ))}
         {streamingText !== "" && (
           <div className="chat-message assistant">
@@ -256,3 +247,45 @@ function MarkdownLazy({ text }: { text: string }): ReactElement {
     </>
   );
 }
+
+/**
+ * 历史消息项（memo）：消息对象引用稳定即跳过渲染。
+ * 流式期间 streamingBlocks 每个 rAF 提交换引用会带着列表重渲染，
+ * 无 memo 时全部历史消息（含内嵌 base64 图片）每帧重建。
+ */
+const ChatMessageItem = memo(function ChatMessageItem({ message, copied, resolveImageRef, onCopy, onRetry }: {
+  message: ChatMessage;
+  copied: boolean;
+  resolveImageRef(ref: string): string;
+  onCopy(message: ChatMessage): void;
+  onRetry(messageId: string): void;
+}): ReactElement {
+  const { t } = useI18n();
+  return (
+    <div className={`chat-message ${message.role}`}>
+      <div className="chat-bubble">
+        <ChatBlocks content={message.content} resolveImageRef={resolveImageRef} />
+      </div>
+      {message.role === "assistant" && (
+        <div className="actions">
+          <button
+            className="icon-btn"
+            aria-label={copied ? t("已复制", "Copied") : t("复制", "Copy")}
+            title={copied ? t("已复制", "Copied") : t("复制", "Copy")}
+            onClick={() => onCopy(message)}
+          >
+            <Icon name={copied ? "check" : "copy"} />
+          </button>
+          <button
+            className="icon-btn"
+            aria-label={t("重新生成", "Regenerate")}
+            title={t("重新生成", "Regenerate")}
+            onClick={() => void onRetry(message.id)}
+          >
+            <Icon name="undo" />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+});

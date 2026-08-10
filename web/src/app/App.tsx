@@ -25,15 +25,14 @@ import { useSubagentTabs } from "../hooks/use-subagent-tabs";
 import { useTerminalTabs } from "../hooks/use-terminal-tabs";
 import { MOBILE_BREAKPOINT, useMediaQuery } from "../hooks/use-media-query";
 import { live, liveStore } from "./live-store";
-import { Workbench } from "../workbench/Workbench";
 import { layout, layoutStore, type SidebarView } from "../workbench/layout";
 import { auxViews, auxViewsStore, diffActions, editorActions, useAuxViews } from "../workbench/aux-views";
 import { tabActions } from "../workbench/tab-actions";
 import { ChatView } from "../chat/ChatView";
-import { ChatModeView } from "../chat-mode/ChatModeView";
 import { CONVERSATION_SEARCH_EVENT } from "../chat/types";
 import { streamBuffer } from "../chat/stream-buffer";
-import { clearComposerState, useDraft } from "../composer/drafts";
+import { clearOlderMessages } from "../chat/pagination-store";
+import { clearComposerState, useDraftNonEmpty } from "../composer/drafts";
 import { chatBridge } from "./chat-bridge";
 import { registerBuiltinCommands, useGlobalKeybindings, buildWhenContext, cycleZone, type CommandActions } from "./commands";
 import { CommandPalette } from "../dialogs/CommandPalette";
@@ -41,6 +40,7 @@ import { EmptyState } from "../components/EmptyState";
 import { NewSessionDialog, type NewSessionValues } from "../components/NewSessionDialog";
 import { ConfirmDeleteDialog } from "../components/ConfirmDeleteDialog";
 import { IconSprite } from "../components/Icon";
+import { LoadingFallback } from "../components/LoadingFallback";
 import { Toast } from "../components/Toast";
 
 // 辅助视图各自独立 chunk，仅打开时加载，不占入口体积
@@ -49,6 +49,9 @@ const EditorPane = lazy(() => import("../components/editor/EditorPane").then((m)
 const DiffPane = lazy(() => import("../components/editor/DiffPane").then((m) => ({ default: m.DiffPane })));
 const QuickOpen = lazy(() => import("../dialogs/QuickOpen").then((m) => ({ default: m.QuickOpen })));
 const SettingsDialog = lazy(() => import("../settings/SettingsDialog").then((m) => ({ default: m.SettingsDialog })));
+// 两种模式的外壳各自独立 chunk：chat 模式不背工作台（侧栏/面板/终端），工作台不背 chat 模式
+const ChatModeView = lazy(() => import("../chat-mode/ChatModeView").then((m) => ({ default: m.ChatModeView })));
+const Workbench = lazy(() => import("../workbench/Workbench").then((m) => ({ default: m.Workbench })));
 
 export function App(): ReactElement {
   const { t } = useI18n();
@@ -81,14 +84,15 @@ export function App(): ReactElement {
   const diffActionsRef = useMemo(() => ({ current: diffActions }), []);
 
   // ===== 命令体系（Phase 3）：when 上下文 + 动作面 + 全局键位 =====
-  const draft = useDraft(sessionId)[0];
+  // 只需「非空」布尔：逐键订阅完整草稿会让 App 整树随每次击键重渲染
+  const draftNonEmpty = useDraftNonEmpty(sessionId);
   const isMobile = useMediaQuery(MOBILE_BREAKPOINT);
   const importInput = useRef<HTMLInputElement>(null);
 
   const whenContext = useMemo(() => buildWhenContext({
-    draftNonEmpty: Boolean(draft.trim()),
+    draftNonEmpty,
     multipleSessions: (sessions.data?.length ?? 0) > 1,
-  }), [draft, sessions.data]);
+  }), [draftNonEmpty, sessions.data]);
 
   const stepSession = useCallback((delta: number): void => {
     const list = sessions.data ?? [];
@@ -338,6 +342,7 @@ export function App(): ReactElement {
         terminalTabs.removeSession(id);
         clearComposerState(id);
         streamBuffer.discard(id);
+        clearOlderMessages(id);
         routerRef.current?.forgetSession(id);
         void queryClient.invalidateQueries({ queryKey: qk.sessions });
       })
@@ -396,7 +401,9 @@ export function App(): ReactElement {
     return (
       <>
         <IconSprite />
-        <ChatModeView />
+        <Suspense fallback={<LoadingFallback />}>
+          <ChatModeView />
+        </Suspense>
       </>
     );
   }
@@ -404,17 +411,19 @@ export function App(): ReactElement {
   return (
     <>
       <IconSprite />
-      <Workbench
-        sessions={sessions.data}
-        agentState={currentState}
-        onShowChat={chatModeEnabled
-          ? () => {
-              ui.setMode("chat");
-              router.navigate("/");
-            }
-          : undefined}
-        main={main}
-      />
+      <Suspense fallback={<LoadingFallback />}>
+        <Workbench
+          sessions={sessions.data}
+          agentState={currentState}
+          onShowChat={chatModeEnabled
+            ? () => {
+                ui.setMode("chat");
+                router.navigate("/");
+              }
+            : undefined}
+          main={main}
+        />
+      </Suspense>
       <NewSessionDialog
         open={newSessionOpen}
         providers={providers.data ?? []}
