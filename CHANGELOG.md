@@ -2,6 +2,17 @@
 
 本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前版本的用户可感知变化。日期以 Git 标签发布日期为准。
 
+## [1.6.6] - 2026-08-11
+
+### 界面与体验
+
+- **env-sim 环境模拟预设更新**：`kimi-code` 按官方开源仓库（kimi-cli）重写——身份行与官方一致，语言跟随、提示词与工具使用、编码准则、上下文管理等小节全面对齐，`/init` 提示词取自官方 init 命令模板；`zcode` 按逆向分析修正——身份行、安全边界与 Harness 规则、记忆 / 动态行为 / 上下文管理 / 会话引导小节重写，工具面补齐 TodoWrite / Agent / Task / Skill / WebSearch / WebFetch / AskUserQuestion / TaskOutput / TaskStop / CronCreate 等；`codex` 补充 Plan tool 与 Presenting your work 小节，`apply_patch` 改用 Codex 参数形态，移除 list_files / search 别名并隐藏 glob / grep（对齐真实 Codex 无独立文件搜索工具、搜索走 shell），新增 request_user_input。
+
+### 修复
+
+- env-sim `zcode` 预设的 `Task` 工具实际不可见：同一内置工具（spawn_task）注册 `Agent` 与 `Task` 两个别名时，第二个别名在工具清单构建中被静默丢弃，模型调用 `Task` 报未知工具；别名引擎改为支持同源多别名（首个别名原位重命名、其余克隆追加），两个名称均可正常下发与执行。
+- env-sim 预设三处工具描述与实现不符：`kimi-code` 的 TodoList 声称可省略参数读取当前清单（内置实现缺参会报错，描述已修正并补必填）；Agent 描述引用不存在的子代理类型 `coder`（显式选择会报 Unknown sub-agent，改为 explore / general）；Read 声称支持负数行偏移从文件末尾读取（底层不支持，描述已移除该承诺）。
+
 ## [1.6.5] - 2026-08-11
 
 ### 性能与内存
