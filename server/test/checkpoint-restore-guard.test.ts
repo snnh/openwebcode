@@ -8,7 +8,7 @@ import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import type { Checkpoint, SnapshotBackend } from "../src/snapshots/backend.js";
-import { tempRoot } from "./helpers/temp-roots.js";
+import { tempRootRetry as tempRoot } from "./helpers/temp-roots.js"; // 结尾 POST /messages 触发异步 run，清理时可能仍在写会话文件（Windows ENOTEMPTY），用重试版
 
 /**
  * 快照回退互斥：restore（含 truncateMessages/replaceLedger）全程拒绝新消息起跑，
