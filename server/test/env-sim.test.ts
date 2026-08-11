@@ -145,7 +145,7 @@ describe("env-sim prompt.beforeBuild", () => {
     try {
       await persona.agent.run(persona.session.id, "你好");
       const system = persona.requests[0]!.system;
-      expect(system).toContain("You are ZCode, a terminal-native AI pair programmer.");
+      expect(system).toContain("You are an interactive ZCode agent that helps users with software engineering tasks.");
       expect(system).not.toContain("FILE BASE BODY");
       expect(system).toContain("## Safety boundary");
     } finally {
