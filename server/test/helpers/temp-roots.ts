@@ -24,7 +24,10 @@ const roots: Array<{ path: string; retry: boolean }> = [];
 // 清理（如 app.close()）先跑，临时目录清理最后跑。
 afterEach(async () =>
   Promise.all(roots.splice(0).map((root) =>
-    root.retry ? rmWithRetry(root.path) : rm(root.path, { recursive: true, force: true }))),
+    // 普通路径也带短重试：测试结尾触发的异步 run（如无 provider 立即失败的那种）
+    // 在清理时可能仍在写会话文件，直接 rm 会撞 ENOTEMPTY（Linux 同有此竞态）；
+    // retry 标记的重试窗口留给 agent/hook 子进程锁目录的长尾场景。
+    root.retry ? rmWithRetry(root.path) : rmWithRetry(root.path, 6, 200))),
 );
 
 /**
