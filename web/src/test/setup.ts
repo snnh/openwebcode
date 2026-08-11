@@ -14,3 +14,6 @@ afterEach(() => {
 //（此前各测试文件各自 beforeEach 打桩，此处幂等统一；直接赋值，不受 vi.restoreAllMocks 影响）
 HTMLDialogElement.prototype.showModal = function showModal(this: HTMLDialogElement) { this.open = true; };
 HTMLDialogElement.prototype.close = function close(this: HTMLDialogElement) { this.open = false; };
+
+// jsdom 不实现 scrollIntoView（@/skill 弹层键盘导航滚动会调用）：幂等空实现
+Element.prototype.scrollIntoView = function scrollIntoView() { /* noop */ };
