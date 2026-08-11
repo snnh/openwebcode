@@ -101,15 +101,15 @@ owc run "Add a unit test for main.ts" --cwd . --json --yolo
 
 ## Performance and footprint
 
-Measured on a dev machine (Windows x86-64, v1.5.0, 5000-message benchmark dataset; harness and acceptance gates live in [`scripts/bench/`](./scripts/bench/)):
+Measured on a dev machine (Windows x86-64, v1.6.5, 5000-message benchmark dataset; harness and acceptance gates live in [`scripts/bench/`](./scripts/bench/)):
 
 | Component | Memory | CPU (single-core equivalent, 95th percentile of time) | Key numbers |
 | --- | --- | --- | --- |
-| server (Node service) | ~86 MiB idle; ~100 MiB steady-state with a 5000-message session loaded | 0.8% | Large-session cold load 27.5ms, history paging p50 0.53ms; incremental context build p50 0.43ms (26× faster than full builds); event dispatch 5780 events/s; symbol-index queries over 100k files p50 ~30–40ms |
+| server (Node service) | ~86 MiB idle; ~100 MiB steady-state with a 5000-message session loaded | 0.8% | Large-session cold load 23ms, history paging p50 0.49ms; incremental context build p50 0.33ms (33× faster than full builds); agent-loop heap churn 0.9 MiB per turn; event dispatch 5300+ events/s; symbol-index queries over 100k files p50 ~16–21ms |
 | core (C executor) | ~9 MiB idle; ~25 MiB peak under heavy scans, released afterwards | under 0.5% | 3.4MB file read in 8ms; full-repo index scan (hundreds of thousands of files) completes in 25s with bounded memory |
-| browser | ~89 MiB heap with a 5000-message session fully loaded | - | Long-list scrolling p50 59.9 fps; input echo p50 27ms; 0.1% memory growth across repeated scroll cycles (no leak) |
+| browser | ~92 MiB heap with a 5000-message session fully loaded | - | Long-list scrolling p50 59.9 fps; input echo p50 27ms; 0.1% memory growth across repeated scroll cycles (no leak); chat/workbench/share views are lazy-loaded bundles, first-load script 475 KB |
 
-Production reference (v1.5.0, Debian 13 x86-64, measured on a systemd-managed always-on instance): server 135 MiB + extension host 52 MiB + core 2.6 MiB, CPU below 0.5% 95% of the time.
+Production reference (v1.6.5, Debian 13 x86-64, measured on a systemd-managed always-on instance): server 114 MiB + extension host 50 MiB + core 1.9 MiB (server down ~15% from 135 MiB on v1.5.0), CPU below 0.5% 95% of the time.
 
 ## Documentation
 
