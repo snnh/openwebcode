@@ -1,16 +1,18 @@
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
-import { EventBus } from "../src/events/event-bus.js";
+import type { CoreClient } from "../src/core-client.js";
+import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { ContextManager } from "../src/context/context-manager.js";
 import { CompactVaultService, chunkMessages, loadVaultIndex, parseSectionList, renderChunk } from "../src/extensions/compact-vault.js";
 import { parseVaultIndexJson, recallMemory, reinjectVaultIndex, type VaultHostApi } from "../src/extensions/compact-vault-host.js";
 import { ExtensionManager } from "../src/extensions/extension-manager.js";
 import type { ExtensionPermission } from "../src/extensions/types.js";
 import { FastModelClient } from "../src/fast-model.js";
-import { ProviderRegistry } from "../src/providers/provider.js";
+import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import type { ChatMessage } from "../src/sessions/types.js";
 import { makeStubProvider } from "./helpers/stub-provider.js";
@@ -327,6 +329,8 @@ export function activate(api) {
         vaultService,
       });
       try {
+        const published: AppEvent[] = [];
+        events.on("event", (event: AppEvent) => published.push(event));
         const response = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/compact`, payload: { mode: "overview" } });
         expect(response.statusCode).toBe(200);
         const body = response.json() as { changed: boolean; mode: string; uptoIndex?: number };
@@ -334,6 +338,8 @@ export function activate(api) {
         expect(body.mode).toBe("vault");
         // 扩展配置 keepTail=2 生效：24 条消息 → uptoIndex 22
         expect(body.uptoIndex).toBe(22);
+        // 手动压缩开始即发布 compacting 事件（UI 即时反馈）
+        expect(published.some((event) => event.type === "context.compacting" && (event.payload as { mode?: string }).mode === "vault")).toBe(true);
 
         // host → server context.readVaultFile 往返：读到归档索引
         const toolResult = await manager.invokeTool("ext__sample__vread", { sessionId: session.id, path: "index.json" }, session.id);
@@ -394,6 +400,109 @@ export function activate(api) {
       } finally {
         await app.close();
       }
+    } finally {
+      await manager.close();
+    }
+  }, 25_000);
+
+  it("serves the /compact slash command via the vault service even without a compactor", async () => {
+    const root = await tempRoot("owc-vaultslash-");
+    const events = new EventBus();
+    const published: AppEvent[] = [];
+    events.on("event", (event: AppEvent) => published.push(event));
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const session = await sessions.create({ cwd: root, provider: "test-stub", model: "m1" });
+    for (let index = 0; index < 12; index += 1) {
+      await sessions.appendMessage(session.id, "user", [{ type: "text", text: `需求 ${index}` }]);
+    }
+    const { client } = vaultFastModel();
+    const vaultService = new CompactVaultService(sessions, client);
+    const manager = new ExtensionManager(path.join(root, "data"), events, { sessions, vaultService });
+    await manager.initialize();
+    try {
+      await manager.configure("compact-vault", { enabled: true, config: { keepTail: 2 } });
+      const providers = new ProviderRegistry();
+      providers.register(makeStubProvider("test-stub"));
+      const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+      await pricing.initialize();
+      // 无 compactor：斜杠命令应由 vault 兜底（与 POST /compact 同口径）
+      const app = await buildServer({
+        core: { request: async () => ({}), configureSession: async () => undefined } as never,
+        sessions,
+        agent: { isRunning: () => false } as never,
+        events,
+        providers,
+        pricing,
+        extensions: manager,
+        vaultService,
+      });
+      try {
+        const response = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "/compact" } });
+        expect(response.statusCode).toBe(200);
+        expect(response.json<{ compacted: boolean }>().compacted).toBe(true);
+        const ledger = await new ContextManager(sessions.contextRoot(session.id)).load();
+        expect(ledger.compacted?.mode).toBe("vault");
+        expect(published.some((event) => event.type === "context.compacting")).toBe(true);
+        expect(published.some((event) => event.type === "context.compacted" && (event.payload as { mode?: string }).mode === "vault")).toBe(true);
+      } finally {
+        await app.close();
+      }
+    } finally {
+      await manager.close();
+    }
+  }, 25_000);
+
+  it("routes the 85% force compaction through the vault service when the extension is enabled", async () => {
+    const root = await tempRoot("owc-vaultforce-");
+    const events = new EventBus();
+    const published: AppEvent[] = [];
+    events.on("event", (event: AppEvent) => published.push(event));
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const requests: StreamChatRequest[] = [];
+    const providers = new ProviderRegistry();
+    const provider: Provider = {
+      name: "test-stub",
+      async *streamChat(request) {
+        requests.push(request);
+        yield { type: "done", stopReason: "end_turn" };
+      },
+    };
+    providers.register(provider);
+    const core = { on() { return core; }, async configureSession() { return { sandboxCapability: "advisory" }; } } as unknown as CoreClient;
+    const { client } = vaultFastModel();
+    const vaultService = new CompactVaultService(sessions, client);
+    const manager = new ExtensionManager(path.join(root, "data"), events, { sessions, vaultService });
+    await manager.initialize();
+    try {
+      await manager.configure("compact-vault", { enabled: true, config: { keepTail: 1 } });
+      const tinyWindow = () => ({ contextWindow: 100, capabilities: { thinking: ["disabled"], effort: [] } }) as never;
+      // compactor 缺失（第 13 参 undefined）：强制压缩由 vault 单独兜底
+      const runner = new AgentRunner(sessions, providers, core, events, pricing, undefined, "zh-CN", 50, tinyWindow, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, manager);
+      runner.setVaultService(vaultService);
+      const session = await sessions.create({ cwd: root, provider: "test-stub", model: "tiny" });
+      await sessions.appendMessage(session.id, "user", [{ type: "text", text: "很早的消息，".repeat(30) }]);
+      await sessions.appendMessage(session.id, "assistant", [{ type: "text", text: "很早的回复，".repeat(30) }]);
+
+      await runner.run(session.id, "新的问题，".repeat(30));
+
+      const compacting = published.filter((event) => event.type === "context.compacting");
+      expect(compacting).toHaveLength(1);
+      expect(compacting[0]?.payload).toMatchObject({ forced: true, mode: "vault" });
+      const compacted = published.filter((event) => event.type === "context.compacted");
+      expect(compacted).toHaveLength(1);
+      expect(compacted[0]?.payload).toMatchObject({ forced: true, mode: "vault" });
+      // 归档落盘 + 账本标记 vault
+      const compactDir = path.join(sessions.contextRoot(session.id), "compact");
+      const segments = await readdir(path.join(compactDir, "segments"));
+      expect(segments.length).toBeGreaterThan(0);
+      const ledger = await new ContextManager(sessions.contextRoot(session.id)).load();
+      expect(ledger.compacted?.mode).toBe("vault");
+      // provider 收到的重建视图首条是目录索引（而非原始消息）
+      expect(requests.at(-1)?.messages[0]?.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("recall_memory") });
     } finally {
       await manager.close();
     }

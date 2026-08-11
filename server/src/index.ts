@@ -146,9 +146,11 @@ const backgroundTasks = new BackgroundTaskRegistry(
 const agent = new AgentRunner(sessions, providers, core, events, pricing, exchangeRates, config.defaultLanguage, 50, (model, provider) => models.get(model, provider), usageLog, skills, mcp, compactor, dataDir, agents, commands, search, undefined, backgroundTasks, hooks, extensions, webFetch);
 agent.setPythonEnvDefault(() => settings.effective().pythonEnv);
 agent.setNodeEnvDefault(() => settings.effective().nodeEnv);
+core.setNodeEnvDefault(() => settings.effective().nodeEnv);
 agent.setMaxTurns(() => settings.effective().agentMaxTurns);
 agent.setWebSearchMode(() => settings.effective().webSearchMode ?? "local");
 agent.setFastModel(fastModel);
+agent.setVaultService(vaultService);
 agent.setModelRoleResolver(modelRoles);
 // 符号索引（0.4.0 Phase 2）：数据目录 index/ 下，按 workspace-hash 分桶；不进会话历史、不导出
 const indexManager = new IndexManager(core, path.join(dataDir, "index"), events);
@@ -316,6 +318,7 @@ const app = await buildServer({
   usageLog,
   skills,
   compactor,
+  vaultService,
   backgroundTasks,
   extensions,
   contentLens,

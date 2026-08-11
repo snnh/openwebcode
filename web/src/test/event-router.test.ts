@@ -152,6 +152,16 @@ describe("createEventRouter", () => {
     await vi.waitFor(() => expect(stream.clear).toHaveBeenCalledWith("s1"));
   });
 
+  it("context.compacting/compacted（当前会话）弹 toast；其他会话不弹", () => {
+    const { deps, router } = setup("s1");
+    router.route(makeEvent({ type: "context.compacting", sessionId: "s2", payload: { forced: false, mode: "overview" } }));
+    expect(deps.notify).not.toHaveBeenCalled();
+    router.route(makeEvent({ type: "context.compacting", sessionId: "s1", payload: { forced: true, mode: "vault" } }));
+    expect(deps.notify).toHaveBeenCalledWith("正在压缩上下文（85% 水位强制 · 档案库）…");
+    router.route(makeEvent({ type: "context.compacted", sessionId: "s1", payload: { forced: false, mode: "vault" } }));
+    expect(deps.notify).toHaveBeenCalledWith("已压缩上下文（档案库）");
+  });
+
   it("桌面通知：权限/交互/run 终态跨会话转发给装配层", () => {
     const { deps, router } = setup("s1");
     router.route(makeEvent({ type: "run.completed", sessionId: "s2", payload: {} }));

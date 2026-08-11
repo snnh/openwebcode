@@ -52,7 +52,8 @@ import type {
 } from "../core-client.js";
 import type { SessionStore } from "../sessions/session-store.js";
 import { defaultSandboxPolicy } from "../sessions/default-sandbox.js";
-import type { JobObjectLimits, SandboxPolicy, SessionMeta } from "../sessions/types.js";
+import type { JobObjectLimits, NodeEnv, SandboxPolicy, SessionMeta } from "../sessions/types.js";
+import { effectiveNodeEnv, nodeToolchainReadOnlyPaths, type NodeToolchainMountDeps } from "../node-env.js";
 import type { FilteredProxyManager } from "./filtered-proxy.js";
 import { WSB_WORKSPACE_MOUNT, type WsbManager } from "./wsb.js";
 
@@ -91,6 +92,22 @@ export function gitCredentialReadOnlyPaths(existing: string[] | undefined, platf
   return merged;
 }
 
+/**
+ * 与 nodeEnv 选择绑定的 Node 工具链只读放行（POSIX）：沙盒只挂载会话工作区与系统树，
+ * 用户的 node/npm 若是 nvm/fnm 安装（或 nodeEnv 选择 fnm/nvm），沙盒内 PATH 继承了但目录
+ * 不可见（表现为 npm: command not found）。按生效 nodeEnv 把对应工具链目录并入
+ * readOnlyPaths（global 解析宿主 PATH 上生效的工具链根），目录语义见
+ * node-env.nodeToolchainReadOnlyPaths。core 侧 readOnlyPaths 上限 16：用户配置与凭据之后补齐。
+ */
+export function nodeEnvReadOnlyPaths(existing: string[] | undefined, mode: NodeEnv, platform: NodeJS.Platform = process.platform, deps: NodeToolchainMountDeps = {}): string[] {
+  const merged = [...(existing ?? [])];
+  for (const dir of nodeToolchainReadOnlyPaths(mode, { ...deps, platform })) {
+    if (merged.length >= 16) break;
+    if (!merged.includes(dir)) merged.push(dir);
+  }
+  return merged;
+}
+
 /** wsb 会话的请求路径翻译；其余会话原样返回。host 绝对路径或带点分量的路径
  * 先经宿主机 core 的 path.normalize 归一化（路径处理归一在 core C 层完成），
  * 再做 host→guest 挂载映射；normalize 失败回退原始字符串。 */
@@ -110,6 +127,21 @@ export class CoreRouter extends EventEmitter {
   private readonly allowPaths: string[] | undefined;
   /** 缺省沙盒模式的平台判定（policyFor 分流）；测试可注入固定平台。 */
   private readonly platform: NodeJS.Platform;
+  /** 全局默认 nodeEnv（settings 热生效现读）：与 nodeEnv 绑定的工具链挂载按生效值计算。 */
+  private nodeEnvDefault?: () => NodeEnv | undefined;
+
+  /** 注入全局默认 nodeEnv 解析器（与 AgentRunner.setNodeEnvDefault 同源）。 */
+  setNodeEnvDefault(getter: () => NodeEnv | undefined): void {
+    this.nodeEnvDefault = getter;
+  }
+
+  /** 按生效 nodeEnv 并入工具链只读挂载（会话值 > 全局默认 > global）；wsb/off 由 policyFor 关沙盒，挂载表被 core 忽略。 */
+  private withNodeToolchainMounts(meta: SessionMeta | undefined, sandbox: SandboxPolicy): SandboxPolicy {
+    const mode = effectiveNodeEnv(meta?.nodeEnv, this.nodeEnvDefault?.());
+    if (mode === "project") return sandbox;
+    const merged = nodeEnvReadOnlyPaths(sandbox.readOnlyPaths, mode, this.platform);
+    return merged.length > (sandbox.readOnlyPaths?.length ?? 0) ? { ...sandbox, readOnlyPaths: merged } : sandbox;
+  }
   /**
    * Core keeps session policy in process memory. Remember the desired host-side
    * request and which concrete client currently has it, so a restarted shared
@@ -224,7 +256,8 @@ export class CoreRouter extends EventEmitter {
     // immediately, so do not leak a transient "Core is not running" failure.
     await client.start();
     const cwd = meta?.sandboxMode === "wsb" && meta.cwd ? toSandboxPath(request.cwd, meta.cwd) : request.cwd;
-    await this.configureWithFiltered(client, request.sessionId, cwd, CoreRouter.policyFor(meta, request.sandbox, this.jobObject, this.allowPaths, this.platform));
+    const routed = CoreRouter.policyFor(meta, request.sandbox, this.jobObject, this.allowPaths, this.platform);
+    await this.configureWithFiltered(client, request.sessionId, cwd, this.withNodeToolchainMounts(meta, routed));
     this.configuredClients.set(request.sessionId, client);
   }
 
@@ -244,7 +277,9 @@ export class CoreRouter extends EventEmitter {
     }
     await client.configureSession({ sessionId, cwd, sandbox });
     const { proxyAddr, readOnlyPaths } = await this.filteredProxy.ensureProxy(client, sessionId, cwd);
-    return client.configureSession({ sessionId, cwd, sandbox: { ...sandbox, proxyAddr, readOnlyPaths } });
+    // sidecar 目录必须可读（前置保证），与已并入的凭据/工具链挂载合并而非替换（core 上限 16）
+    const mergedReadOnly = [...readOnlyPaths, ...(sandbox.readOnlyPaths ?? []).filter((entry) => !readOnlyPaths.includes(entry))].slice(0, 16);
+    return client.configureSession({ sessionId, cwd, sandbox: { ...sandbox, proxyAddr, readOnlyPaths: mergedReadOnly } });
   }
 
   private async ensureConfigured(
@@ -328,7 +363,8 @@ export class CoreRouter extends EventEmitter {
   async configureSession(request: { sessionId: string; cwd: string; sandbox: SandboxPolicy }): Promise<{ sandboxCapability: string; sandboxReason?: string }> {
     const { client, meta } = await this.clientFor(request.sessionId);
     const cwd = meta?.sandboxMode === "wsb" && meta.cwd ? toSandboxPath(request.cwd, meta.cwd) : request.cwd;
-    const result = await this.configureWithFiltered(client, request.sessionId, cwd, CoreRouter.policyFor(meta, request.sandbox, this.jobObject, this.allowPaths, this.platform));
+    const routed = CoreRouter.policyFor(meta, request.sandbox, this.jobObject, this.allowPaths, this.platform);
+    const result = await this.configureWithFiltered(client, request.sessionId, cwd, this.withNodeToolchainMounts(meta, routed));
     this.desiredConfigs.set(request.sessionId, request);
     this.configuredClients.set(request.sessionId, client);
     this.sandboxStatus.set(request.sessionId, { capability: result.sandboxCapability, ...(result.sandboxReason !== undefined ? { reason: result.sandboxReason } : {}), at: Date.now() });

@@ -196,6 +196,10 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
       if (queued?.queued) notify(input.behavior === "follow_up"
         ? t(`已加入完成后续跑队列（第 ${queued.position} 项）`, `Added to follow-up queue (position ${queued.position})`)
         : t(`已加入 Steering 队列（第 ${queued.position} 项）`, `Added to Steering queue (position ${queued.position})`));
+      // /compact 无可压缩区段：changed 时由 context.compacted 事件提示，这里兜底原因提示
+      if (/^\/compact(?:\s|$)/i.test(input.text.trim()) && (result as { compacted?: boolean }).compacted === false) {
+        notify((result as { result?: { reason?: string } }).result?.reason ?? t("无需压缩", "No compaction needed"));
+      }
       void queryClient.invalidateQueries({ queryKey: qk.session(input.sessionId) });
     },
     onError: (error) => notify(error instanceof Error ? error.message : t("发送失败", "Send failed"), "error"),
@@ -203,6 +207,8 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
 
   // Composer 发送与编辑重发共用的提交逻辑
   const submitDraft = useCallback((behavior?: "start" | "steer" | "follow_up"): void => {
+    // 请求进行中（如 /compact 同步压缩可能耗时）防重复提交：避免二次压缩或 run 与压缩抢写账本
+    if (send.isPending) return;
     const text = getDraft(sessionId).trim();
     if (!text) return;
     // 编辑重发：走 retry（检出到父节点 + 附带编辑后的 user 消息重跑），不走普通消息 POST

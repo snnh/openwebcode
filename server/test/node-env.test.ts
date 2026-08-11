@@ -2,9 +2,55 @@ import { writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { effectiveNodeEnv, NodeEnvManagers, nodeBinDir, nodeEnvActivationCommand, wrapCommandWithNodeEnv } from "../src/node-env.js";
+import { effectiveNodeEnv, NodeEnvManagers, nodeBinDir, nodeEnvActivationCommand, nodeToolchainReadOnlyPaths, wrapCommandWithNodeEnv } from "../src/node-env.js";
 import { wrapCommandWithNote } from "../src/python-env.js";
 import { tempRoot } from "./helpers/temp-roots.js";
+
+describe("nodeToolchainReadOnlyPaths（与 nodeEnv 绑定的工具链挂载）", () => {
+  const exists = (...paths: string[]) => (target: string) => paths.includes(target);
+  const identity = (target: string) => target;
+
+  it("global：解析 PATH 上生效的 node/npm 工具链根，系统树排除、去重", () => {
+    const deps = {
+      platform: "linux" as const,
+      pathEnv: "/home/u/.nvm/versions/node/v22.11.0/bin:/usr/bin:/opt/custom/bin",
+      exists: exists("/home/u/.nvm/versions/node/v22.11.0/bin/node", "/usr/bin/node", "/opt/custom/bin/npm"),
+      realpath: identity,
+    };
+    expect(nodeToolchainReadOnlyPaths("global", deps)).toEqual(["/home/u/.nvm/versions/node/v22.11.0", "/opt/custom"]);
+  });
+
+  it("global：仅系统 node 或空 PATH 时不挂载", () => {
+    expect(nodeToolchainReadOnlyPaths("global", { platform: "linux", pathEnv: "/usr/bin:/bin", exists: exists("/usr/bin/node", "/bin/node"), realpath: identity })).toEqual([]);
+    expect(nodeToolchainReadOnlyPaths("global", { platform: "linux", pathEnv: "", exists: () => false })).toEqual([]);
+  });
+
+  it("global：bin 目录为软链时按 realpath 后的真实根挂载", () => {
+    const deps = {
+      platform: "linux" as const,
+      pathEnv: "/home/u/bin",
+      exists: exists("/home/u/bin/node"),
+      realpath: (target: string) => (target === "/home/u/bin" ? "/home/u/.volta/bin" : target),
+    };
+    expect(nodeToolchainReadOnlyPaths("global", deps)).toEqual(["/home/u/.volta"]);
+  });
+
+  it("nvm：nvm.sh 存在才挂载 $NVM_DIR", () => {
+    expect(nodeToolchainReadOnlyPaths("nvm", { platform: "linux", nvmDir: "/home/u/.nvm", exists: exists("/home/u/.nvm/nvm.sh") })).toEqual(["/home/u/.nvm"]);
+    expect(nodeToolchainReadOnlyPaths("nvm", { platform: "linux", nvmDir: "/home/u/.nvm", exists: () => false })).toEqual([]);
+  });
+
+  it("fnm：候选目录按存在性过滤并去重", () => {
+    const deps = { platform: "linux" as const, home: "/home/u", fnmDir: "/opt/fnm", exists: exists("/opt/fnm", "/home/u/.local/share/fnm") };
+    expect(nodeToolchainReadOnlyPaths("fnm", deps)).toEqual(["/opt/fnm", "/home/u/.local/share/fnm"]);
+  });
+
+  it("project 与 win32 不挂载", () => {
+    expect(nodeToolchainReadOnlyPaths("project", { platform: "linux", exists: () => true })).toEqual([]);
+    expect(nodeToolchainReadOnlyPaths("nvm", { platform: "win32", exists: () => true })).toEqual([]);
+    expect(nodeToolchainReadOnlyPaths("global", { platform: "win32", pathEnv: "C:\\nvm", exists: () => true })).toEqual([]);
+  });
+});
 
 describe("node-env helpers", () => {
   it("resolves the effective node env with session > global default > host", () => {

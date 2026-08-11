@@ -4,7 +4,7 @@ import type { CoreClientLike, CoreEvent } from "../core-client.js";
 import { CoreGateway } from "../core-gateway.js";
 import type { EventBus } from "../events/event-bus.js";
 import { ContextManager, selectCacheBreakpoints, type TurnLedger } from "../context/context-manager.js";
-import type { Compactor } from "../context/compactor.js";
+import type { Compactor, CompactResult } from "../context/compactor.js";
 import { boundToolResult } from "../context/tool-result-budget.js";
 import { errorMessage } from "../error-utils.js";
 import { RepoMapGenerator, DEFAULT_REPO_MAP_BUDGET } from "../context/repo-map.js";
@@ -67,6 +67,7 @@ import type { SearchProvider, WebFetchProvider } from "../web-tools.js";
 import type { BackgroundTaskRegistry } from "./background-tasks.js";
 import type { HookEvent, HookPayload, HookRunner } from "../hooks.js";
 import type { ExtensionManager } from "../extensions/extension-manager.js";
+import type { CompactVaultService } from "../extensions/compact-vault.js";
 import type { PromptHookResult } from "../extensions/types.js";
 import { decodeProcessOutputChunks } from "./output-decoder.js";
 import { buildSystemPrompt } from "./prompts/prompt-builder.js";
@@ -698,6 +699,13 @@ export class AgentRunner {
     this.fastModel = fastModel;
   }
 
+  private vaultService?: CompactVaultService;
+
+  /** 注入档案库压缩服务：compact-vault 扩展启用时，85% 水位强制压缩走归档路径（与手动 /compact 同口径）。 */
+  setVaultService(vaultService: CompactVaultService): void {
+    this.vaultService = vaultService;
+  }
+
   private modelRoles?: ModelRoleResolver;
 
   /** 注入子代理角色档解析器：spawn_task/spawn_swarm 的 role 参数与提示词角色映射段（未注入时 role 输入仅校验不生效）。 */
@@ -1077,21 +1085,34 @@ export class AgentRunner {
         // pin 占用如实上报：超预算时给明确警告，不悄悄驱逐 pin 的消息。
         const pinWarning = view.stats.pinnedTokens >= workingBudget ? "pins_over_budget" : undefined;
         this.events.publish({ source: "agent", type: "context.watermark", sessionId, payload: { estimatedTokens, contextWindow: profile.contextWindow, workingBudget, utilization, warning: utilization >= 0.85 ? "force_compact" : utilization >= 0.7 ? "compact_recommended" : undefined, segments: view.stats.segments, pinnedTokens: view.stats.pinnedTokens, buildMs: view.stats.buildMs, incremental: view.stats.incremental, ...(pinWarning ? { pinWarning } : {}) } });
-        // 85% 水位强制概览压缩：压缩成功后重建视图（消耗一个 turn 防止死循环）
-        if (utilization >= 0.85 && this.compactor && !forceCompacted) {
+        // 85% 水位强制压缩：压缩成功后重建视图（消耗一个 turn 防止死循环）。
+        // compact-vault 扩展启用时走档案库压缩（与手动 /compact 同口径）；compactor 缺失时 vault 单独兜底。
+        const vaultForce = this.vaultService !== undefined && this.extensions?.isEnabled("compact-vault") === true;
+        if (utilization >= 0.85 && (this.compactor || vaultForce) && !forceCompacted) {
           forceCompacted = true;
+          // 开始事件：压缩可能耗时（vault 多次快速模型调用），先给 UI 即时反馈
+          this.events.publish({ source: "agent", type: "context.compacting", sessionId, payload: { forced: true, mode: vaultForce ? "vault" : "overview" } });
           try {
-            // 压缩提示词优先级：用户覆盖 > env-sim persona > 内置；用户覆盖与主提示词覆盖共用 promptOverrideCache
-            let override = this.promptOverrideCache.get(session.cwd);
-            if (!override && this.dataDir) {
-              override = await loadPromptOverride(this.dataDir, session.cwd);
-              this.promptOverrideCache.set(session.cwd, override);
+            let compacted: CompactResult;
+            if (vaultForce) {
+              const config = this.extensions?.list().find((item) => item.id === "compact-vault")?.config ?? {};
+              compacted = await this.vaultService!.compact(sessionId, {
+                ...(Number.isSafeInteger(config.keepTail) ? { keepTail: config.keepTail as number } : {}),
+                ...(Number.isSafeInteger(config.chunkSize) ? { chunkSize: config.chunkSize as number } : {}),
+              });
+            } else {
+              // 压缩提示词优先级：用户覆盖 > env-sim persona > 内置；用户覆盖与主提示词覆盖共用 promptOverrideCache
+              let override = this.promptOverrideCache.get(session.cwd);
+              if (!override && this.dataDir) {
+                override = await loadPromptOverride(this.dataDir, session.cwd);
+                this.promptOverrideCache.set(session.cwd, override);
+              }
+              const persona = this.extensions
+                ? await this.extensions.activeEnvSimPersonaPreset(resolveSessionPersona(session))
+                : null;
+              const overviewPrompt = override?.compactOverviewOverride ?? persona?.compactOverviewPrompt;
+              compacted = await this.compactor!.compact(sessionId, "overview", { forced: true, ...(overviewPrompt ? { promptOverrides: { overview: overviewPrompt } } : {}) });
             }
-            const persona = this.extensions
-              ? await this.extensions.activeEnvSimPersonaPreset(resolveSessionPersona(session))
-              : null;
-            const overviewPrompt = override?.compactOverviewOverride ?? persona?.compactOverviewPrompt;
-            const compacted = await this.compactor.compact(sessionId, "overview", { forced: true, ...(overviewPrompt ? { promptOverrides: { overview: overviewPrompt } } : {}) });
             if (compacted.changed) {
               this.events.publish({ source: "agent", type: "context.compacted", sessionId, payload: { mode: compacted.mode, uptoIndex: compacted.uptoIndex ?? 0, forced: true } });
               // 压缩自身已落盘；commitTurn 检测到外部落盘会把本轮断点变更重放到最新账本
