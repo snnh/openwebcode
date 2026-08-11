@@ -38,6 +38,7 @@ import {
   CRON_LIST_TOOL,
   EXIT_PLAN_MODE_TOOL,
   FILE_TOOLS,
+  applyToolShaping,
   filterBuiltInTools,
   READ_ARTIFACT_TOOL,
   REPO_MAP_TOOL,
@@ -1161,22 +1162,14 @@ export class AgentRunner {
         const shaping = toolsEnabled && this.extensions
           ? await this.extensions.activeToolShaping(builtIns.map((tool) => tool.name), resolveSessionPersona(session))
           : undefined;
-        const aliasMap = new Map<string, string>();
-        const aliasArgMaps = new Map<string, Record<string, string>>();
-        let shapedBuiltIns = builtIns;
-        if (shaping) {
-          shapedBuiltIns = builtIns.filter((tool) => !shaping.hideBuiltIns.has(tool.name));
-          for (const [as, spec] of shaping.aliases) {
-            const index = shapedBuiltIns.findIndex((tool) => tool.name === spec.from);
-            if (index < 0) continue;
-            const source = shapedBuiltIns[index]!;
-            shapedBuiltIns[index] = { name: as, description: spec.description ?? source.description, inputSchema: spec.inputSchema ?? source.inputSchema };
-            aliasMap.set(as, spec.from);
-            if (spec.argMap && Object.keys(spec.argMap).length > 0) aliasArgMaps.set(as, spec.argMap);
-          }
-        }
-        this.toolAliases.set(sessionId, aliasMap);
-        this.toolAliasArgMaps.set(sessionId, aliasArgMaps);
+        // 工具拟态应用（hideBuiltIns 过滤 + 别名重命名/克隆，含同源多别名）抽到
+        // tool-schemas.applyToolShaping：纯函数、可单测，主循环只消费结果。
+        const shapingApplication = shaping
+          ? applyToolShaping(builtIns, shaping)
+          : { tools: builtIns, aliasMap: new Map<string, string>(), aliasArgMaps: new Map<string, Record<string, string>>() };
+        const shapedBuiltIns = shapingApplication.tools;
+        this.toolAliases.set(sessionId, shapingApplication.aliasMap);
+        this.toolAliasArgMaps.set(sessionId, shapingApplication.aliasArgMaps);
 
         const tools = toolsEnabled
           ? [
