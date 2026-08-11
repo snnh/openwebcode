@@ -34,6 +34,9 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
   const runCompact = async (sessionId: string, mode: "toolcalls" | "overview") => {
     // compact-vault 官方扩展启用时，压缩走档案库路径（归档完整上下文 + 目录索引 + 按需召回）；
     // mode 参数不适用（vault 固定归档整理语义），提示词覆盖同样不适用（vault 自带整理提示词）
+    const vaultActive = dependencies.vaultService !== undefined && dependencies.extensions?.isEnabled("compact-vault") === true;
+    // 开始事件：压缩可能耗时（vault 多次快速模型调用），无论最终 changed 与否都先给 UI 即时反馈
+    events.publish({ source: "agent", type: "context.compacting", sessionId, payload: { forced: false, mode: vaultActive ? "vault" : mode } });
     if (dependencies.vaultService && dependencies.extensions?.isEnabled("compact-vault")) {
       const config = dependencies.extensions.list().find((item) => item.id === "compact-vault")?.config ?? {};
       const vaultResult = await dependencies.vaultService.compact(sessionId, {
@@ -196,7 +199,9 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
       }
       const compactCommand = request.body.content.match(/^\/compact(?:\s+(tools?|toolcalls))?\s*$/i);
       if (compactCommand) {
-        if (!dependencies.compactor) return reply.code(503).send({ error: "压缩器未启用" });
+        // 与 POST /compact 同口径：compact-vault 启用时不依赖 Compactor
+        const slashVaultEnabled = dependencies.vaultService !== undefined && dependencies.extensions?.isEnabled("compact-vault") === true;
+        if (!dependencies.compactor && !slashVaultEnabled) return reply.code(503).send({ error: "压缩器未启用" });
         if (agent.isRunning(request.params.id)) return reply.code(409).send({ error: "会话运行中，请先等待完成或中断后再压缩" });
         try {
           const result = await runCompact(request.params.id, compactCommand[1] ? "toolcalls" : "overview");

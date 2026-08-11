@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { ShellFlavor } from "./agent/shell-detect.js";
@@ -8,6 +8,67 @@ import type { NodeEnv } from "./sessions/types.js";
 /** 会话值优先，全局默认其次，最终回退本机环境。 */
 export function effectiveNodeEnv(sessionValue: NodeEnv | undefined, globalDefault: NodeEnv | undefined): NodeEnv {
   return sessionValue ?? globalDefault ?? "global";
+}
+
+/** 沙盒系统树（bwrap ro-bind / Landlock read-exec 已放行）：落在这些前缀下的工具链无需额外挂载。 */
+const SYSTEM_TOOLCHAIN_PREFIXES = ["/usr", "/bin", "/lib", "/lib64", "/etc", "/sys"];
+
+export interface NodeToolchainMountDeps {
+  platform?: NodeJS.Platform;
+  home?: string;
+  /** 宿主 PATH（缺省 process.env.PATH）。 */
+  pathEnv?: string;
+  /** 缺省 $NVM_DIR ?? ~/.nvm。 */
+  nvmDir?: string;
+  /** 缺省 $FNM_DIR 优先于内置候选。 */
+  fnmDir?: string;
+  exists?: (target: string) => boolean;
+  realpath?: (target: string) => string;
+}
+
+/**
+ * 与 nodeEnv 选择绑定的工具链只读挂载目录（POSIX；bwrap/Landlock 经 readOnlyPaths 放行，
+ * fs.* 工具的路径策略不含 readOnlyPaths，工具层读不到内容。Windows 无文件系统隔离，不追加）：
+ * - global：解析宿主 PATH 上实际生效的 node/npm 所在 bin 目录（realpath 跟随软链），
+ *   挂载其工具链根（<root>/bin → <root>，npm 软链到 lib/node_modules 仍可解析）；
+ *   落在系统树内的跳过（已放行）。用户的"全局" node 实为 nvm/fnm 安装时由此获得可见性；
+ * - nvm：$NVM_DIR（nvm.sh + versions 全量只读，激活前缀 source nvm.sh 才能工作）；
+ * - fnm：$FNM_DIR 或内置候选（~/.local/share/fnm 含 fnm 二进制与版本、~/.fnm）；
+ * - project：空（node_modules/.bin 在工作区内，随 writeRoots 可见）。
+ */
+export function nodeToolchainReadOnlyPaths(mode: NodeEnv, deps: NodeToolchainMountDeps = {}): string[] {
+  const platform = deps.platform ?? process.platform;
+  if (platform === "win32") return [];
+  const home = deps.home ?? os.homedir();
+  const exists = deps.exists ?? existsSync;
+  const realpath = deps.realpath ?? ((target: string) => realpathSync(target));
+  if (mode === "project") return [];
+  if (mode === "nvm") {
+    const nvmDir = deps.nvmDir ?? process.env.NVM_DIR ?? path.join(home, ".nvm");
+    return exists(path.join(nvmDir, "nvm.sh")) ? [nvmDir] : [];
+  }
+  if (mode === "fnm") {
+    const candidates = [deps.fnmDir ?? process.env.FNM_DIR, path.join(home, ".local", "share", "fnm"), path.join(home, ".fnm")]
+      .filter((dir): dir is string => typeof dir === "string" && dir !== "");
+    const result: string[] = [];
+    for (const candidate of candidates) {
+      if (!result.includes(candidate) && exists(candidate)) result.push(candidate);
+    }
+    return result;
+  }
+  // global：PATH 上首个含 node 或 npm 的 bin 目录即 shell 实际生效的工具链
+  const pathEnv = deps.pathEnv ?? process.env.PATH ?? "";
+  const roots: string[] = [];
+  for (const dir of pathEnv.split(":").filter(Boolean)) {
+    if (!exists(path.join(dir, "node")) && !exists(path.join(dir, "npm"))) continue;
+    let binDir = dir;
+    try { binDir = realpath(dir); } catch { /* 目录不可解析时按原样尽力挂载 */ }
+    const root = path.basename(binDir) === "bin" ? path.dirname(binDir) : binDir;
+    // /bin 等目录的"根"会算成 /：挂载 / 等于全盘只读，必须排除（系统树本已放行）
+    if (root === "/" || SYSTEM_TOOLCHAIN_PREFIXES.some((prefix) => root === prefix || root.startsWith(`${prefix}/`))) continue;
+    if (!roots.includes(root)) roots.push(root);
+  }
+  return roots;
 }
 
 /** project 模式的 bin 目录：项目工作区 node_modules/.bin；其余模式无目录前置。 */

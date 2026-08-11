@@ -102,7 +102,7 @@ export const api = {
   patchSession: (id: string, body: { title?: string; pinned?: boolean }) =>
     request<Session>(`/api/sessions/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) }),
   sendMessage: (id: string, content: string, images?: Array<{ mediaType: string; data: string }>, attachments?: MessageAttachment[], behavior: "start" | "steer" | "follow_up" = "start") =>
-    request<{ accepted: boolean; queued?: boolean; position?: number; compacted?: boolean; behavior?: string; reused?: boolean }>(`/api/sessions/${id}/messages`, { method: "POST", body: JSON.stringify({ content, behavior, ...(images?.length ? { images } : {}), ...(attachments?.length ? { attachments } : {}) }) }),
+    request<{ accepted: boolean; queued?: boolean; position?: number; compacted?: boolean; result?: { changed: boolean; mode: string; reason?: string }; behavior?: string; reused?: boolean }>(`/api/sessions/${id}/messages`, { method: "POST", body: JSON.stringify({ content, behavior, ...(images?.length ? { images } : {}), ...(attachments?.length ? { attachments } : {}) }) }),
   interactions: (id: string) => request<import("./contracts").InteractionRequest[]>(`/api/sessions/${id}/interactions`),
   timeline: (id: string) => request<import("./contracts").SessionTimeline>(`/api/sessions/${id}/timeline`),
   // 会话树：检出到任意节点（409=运行中）；分叉为新会话（运行中允许）；重试=检出到父节点并可附带编辑后的用户消息重启（202）

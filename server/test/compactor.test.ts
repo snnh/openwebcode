@@ -241,6 +241,11 @@ describe("85% watermark forced compaction", () => {
     const compactedEvents = published.filter((event) => event.type === "context.compacted");
     expect(compactedEvents).toHaveLength(1);
     expect(compactedEvents[0]?.payload).toMatchObject({ forced: true });
+    // 开始事件先于完成事件：UI 据此给出「正在压缩」即时反馈
+    const compactingEvents = published.filter((event) => event.type === "context.compacting");
+    expect(compactingEvents).toHaveLength(1);
+    expect(compactingEvents[0]?.payload).toMatchObject({ forced: true, mode: "overview" });
+    expect(published.findIndex((event) => event.type === "context.compacting")).toBeLessThan(published.findIndex((event) => event.type === "context.compacted"));
     // provider 收到的视图首条是压缩摘要而非原始消息
     expect(requests.at(-1)?.messages[0]?.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("Earlier context compacted") });
   });
@@ -255,6 +260,8 @@ describe("compact HTTP routes", () => {
     await pricing.initialize();
     const providers = new ProviderRegistry();
     const events = new EventBus();
+    const published: AppEvent[] = [];
+    events.on("event", (event: AppEvent) => published.push(event));
     const core = { on() { return core; } } as unknown as CoreClient;
     const agent = new AgentRunner(sessions, providers, core, events, pricing);
     const compactor = new Compactor(sessions, EMPTY_FAST_MODEL, {}, 3);
@@ -283,6 +290,12 @@ describe("compact HTTP routes", () => {
       const overview = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "/compact" } });
       expect(overview.statusCode).toBe(400);
       expect(overview.json<{ error: string }>().error).toContain("快速模型未配置");
+
+      // 三个手动触发（REST + 两次斜杠）都在压缩开始时发布 compacting 事件（失败那次同样有开始反馈）
+      const compactingEvents = published.filter((event) => event.type === "context.compacting");
+      expect(compactingEvents).toHaveLength(3);
+      expect(compactingEvents[0]?.payload).toMatchObject({ forced: false, mode: "toolcalls" });
+      expect(compactingEvents[2]?.payload).toMatchObject({ forced: false, mode: "overview" });
     } finally {
       await app.close();
     }
