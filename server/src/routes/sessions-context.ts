@@ -173,6 +173,8 @@ export function registerSessionContextRoutes(app: FastifyInstance, ctx: RouteCon
       updated = await sessions.updateSandboxNetwork(request.params.id, sandboxNetwork);
       configuredSessions.delete(session.id);
     }
+    // nodeEnv 变化会改变与选择绑定的沙盒工具链挂载（readOnlyPaths）：下次工具调用需重新 configure
+    if (nodeEnv !== session.nodeEnv) configuredSessions.delete(session.id);
     events.publish({ source: "session", type: "session.config_updated", sessionId: session.id, payload: updated });
     return updated;
   });
