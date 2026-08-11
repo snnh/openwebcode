@@ -1,4 +1,5 @@
 import type { ProviderTool } from "../providers/provider.js";
+import type { ActiveToolShaping } from "../extensions/extension-manager.js";
 import type { PythonEnv } from "../sessions/types.js";
 import type { ResolvedShell } from "./shell-detect.js";
 
@@ -311,4 +312,44 @@ export function toolAllowedBySession(name: string, allow?: string[], deny?: stri
 export function filterBuiltInTools(tools: ProviderTool[], allow?: string[], deny?: string[]): ProviderTool[] {
   if ((allow === undefined || allow.length === 0) && (deny === undefined || deny.length === 0)) return tools;
   return tools.filter((tool) => toolAllowedBySession(tool.name, allow, deny));
+}
+
+/** applyToolShaping 结果：拟态后的内置工具清单 + 别名派发映射（as → from / 参数归一表）。 */
+export interface ToolShapingApplication {
+  tools: ProviderTool[];
+  aliasMap: Map<string, string>;
+  aliasArgMaps: Map<string, Record<string, string>>;
+}
+
+/**
+ * 把工具拟态（env-sim persona / 扩展 toolShaping）应用到内置工具清单：先按 hideBuiltIns
+ * 过滤，再按 aliases 重命名。同一 from 可注册多个别名（如 zcode 的 Agent/Task 同源于
+ * spawn_task）：首个别名原位重命名保持工具顺序，其余从原始内置工具克隆后追加——
+ * 一律原位替换会让后续别名找不到 from 而被静默丢弃。
+ */
+export function applyToolShaping(builtIns: ProviderTool[], shaping: ActiveToolShaping): ToolShapingApplication {
+  const aliasMap = new Map<string, string>();
+  const aliasArgMaps = new Map<string, Record<string, string>>();
+  const tools = builtIns.filter((tool) => !shaping.hideBuiltIns.has(tool.name));
+  const renamedFrom = new Set<string>();
+  for (const [as, spec] of shaping.aliases) {
+    const aliasOf = (source: ProviderTool): ProviderTool => ({
+      name: as,
+      description: spec.description ?? source.description,
+      inputSchema: spec.inputSchema ?? source.inputSchema,
+    });
+    if (renamedFrom.has(spec.from)) {
+      const source = builtIns.find((tool) => tool.name === spec.from);
+      if (!source) continue;
+      tools.push(aliasOf(source));
+    } else {
+      const index = tools.findIndex((tool) => tool.name === spec.from);
+      if (index < 0) continue;
+      tools[index] = aliasOf(tools[index]!);
+      renamedFrom.add(spec.from);
+    }
+    aliasMap.set(as, spec.from);
+    if (spec.argMap && Object.keys(spec.argMap).length > 0) aliasArgMaps.set(as, spec.argMap);
+  }
+  return { tools, aliasMap, aliasArgMaps };
 }
