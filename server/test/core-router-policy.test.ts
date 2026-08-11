@@ -120,7 +120,6 @@ describe("nodeEnvReadOnlyPaths（与 nodeEnv 绑定的工具链只读放行）",
       await routerDefault.configureSession({ sessionId: "s1", cwd: "/work", sandbox: policy });
       expect(captured[0]?.readOnlyPaths ?? []).not.toContain(nvmDir);
       routerDefault.setNodeEnvDefault(() => "nvm");
-      await routerDefault.release("s1");
       await routerDefault.configureSession({ sessionId: "s1", cwd: "/work", sandbox: policy });
       expect(captured[1]?.readOnlyPaths).toContain(nvmDir);
     } finally {
