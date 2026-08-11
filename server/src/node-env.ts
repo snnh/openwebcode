@@ -42,13 +42,15 @@ export function nodeToolchainReadOnlyPaths(mode: NodeEnv, deps: NodeToolchainMou
   const home = deps.home ?? os.homedir();
   const exists = deps.exists ?? existsSync;
   const realpath = deps.realpath ?? ((target: string) => realpathSync(target));
+  // 本函数只服务 POSIX 沙盒（win32 已早退）：PATH 与目录拼接一律按 POSIX 语义（path.posix），
+  // 与平台无关、可注入确定性测试；os.homedir()/env 提供的目录在 POSIX 宿主上本来就是 POSIX 路径。
   if (mode === "project") return [];
   if (mode === "nvm") {
-    const nvmDir = deps.nvmDir ?? process.env.NVM_DIR ?? path.join(home, ".nvm");
-    return exists(path.join(nvmDir, "nvm.sh")) ? [nvmDir] : [];
+    const nvmDir = deps.nvmDir ?? process.env.NVM_DIR ?? path.posix.join(home, ".nvm");
+    return exists(path.posix.join(nvmDir, "nvm.sh")) ? [nvmDir] : [];
   }
   if (mode === "fnm") {
-    const candidates = [deps.fnmDir ?? process.env.FNM_DIR, path.join(home, ".local", "share", "fnm"), path.join(home, ".fnm")]
+    const candidates = [deps.fnmDir ?? process.env.FNM_DIR, path.posix.join(home, ".local", "share", "fnm"), path.posix.join(home, ".fnm")]
       .filter((dir): dir is string => typeof dir === "string" && dir !== "");
     const result: string[] = [];
     for (const candidate of candidates) {
@@ -60,10 +62,10 @@ export function nodeToolchainReadOnlyPaths(mode: NodeEnv, deps: NodeToolchainMou
   const pathEnv = deps.pathEnv ?? process.env.PATH ?? "";
   const roots: string[] = [];
   for (const dir of pathEnv.split(":").filter(Boolean)) {
-    if (!exists(path.join(dir, "node")) && !exists(path.join(dir, "npm"))) continue;
+    if (!exists(path.posix.join(dir, "node")) && !exists(path.posix.join(dir, "npm"))) continue;
     let binDir = dir;
     try { binDir = realpath(dir); } catch { /* 目录不可解析时按原样尽力挂载 */ }
-    const root = path.basename(binDir) === "bin" ? path.dirname(binDir) : binDir;
+    const root = path.posix.basename(binDir) === "bin" ? path.posix.dirname(binDir) : binDir;
     // /bin 等目录的"根"会算成 /：挂载 / 等于全盘只读，必须排除（系统树本已放行）
     if (root === "/" || SYSTEM_TOOLCHAIN_PREFIXES.some((prefix) => root === prefix || root.startsWith(`${prefix}/`))) continue;
     if (!roots.includes(root)) roots.push(root);
