@@ -14,7 +14,8 @@ import { INACTIVE_STATES, isBusyState } from "../lib/agent-state";
 import { useStore } from "../app/store";
 import { qk, useContextViewQuery, useInteractionsQuery, useModelsQuery, usePendingPermissionsQuery, useQueueQuery, useSessionQuery, useTodosQuery, useExtensionsQuery } from "../app/queries";
 import { sessionMeta, sessionStore } from "../app/session-store";
-import { deriveActivityInfo, useLiveActivityEntry, useLiveSubagentRuns, type LiveActivityInfo } from "../app/live-store";
+import { deriveActivityInfo, live, useLiveActivityEntry, useLiveCompactions, useLiveSubagentRuns, type LiveActivityInfo } from "../app/live-store";
+import { deriveRestoredCompactions, mergeCompactionMarkers } from "../lib/compaction";
 import { auxViews } from "../workbench/aux-views";
 import { ui } from "../app/ui-store";
 import { chatBridge } from "../app/chat-bridge";
@@ -70,6 +71,12 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
   const streamBlocks = useStreamBlocks(sessionId);
   const liveSubagents = useLiveSubagentRuns(sessionId);
   const activityEntry = useLiveActivityEntry(sessionId);
+  const liveCompactions = useLiveCompactions(sessionId);
+  // 压缩检查点标记：实时事件（运行中/沉降/失败）+ 账本还原（多次历史，带摘要可展开）合并
+  const compactionMarkers = useMemo(
+    () => mergeCompactionMarkers(liveCompactions, deriveRestoredCompactions(contextView.data)),
+    [liveCompactions, contextView.data],
+  );
 
   const currentState = currentRun?.state ?? agentState;
   const running = streamBlocks.length > 0 || isBusyState(currentState);
@@ -196,13 +203,20 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
       if (queued?.queued) notify(input.behavior === "follow_up"
         ? t(`已加入完成后续跑队列（第 ${queued.position} 项）`, `Added to follow-up queue (position ${queued.position})`)
         : t(`已加入 Steering 队列（第 ${queued.position} 项）`, `Added to Steering queue (position ${queued.position})`));
-      // /compact 无可压缩区段：changed 时由 context.compacted 事件提示，这里兜底原因提示
-      if (/^\/compact(?:\s|$)/i.test(input.text.trim()) && (result as { compacted?: boolean }).compacted === false) {
-        notify((result as { result?: { reason?: string } }).result?.reason ?? t("无需压缩", "No compaction needed"));
+      // /compact 沉降兜底：changed 时运行中占位已由 context.compacted 事件原位沉降；
+      // 空跑（compacted:false）或无声失败时清掉占位，消息流不留残痕
+      if (/^\/compact(?:\s|$)/i.test(input.text.trim())) {
+        live.clearRunningCompaction(input.sessionId);
+        if ((result as { compacted?: boolean }).compacted === false) {
+          notify((result as { result?: { reason?: string } }).result?.reason ?? t("无需压缩", "No compaction needed"));
+        }
       }
       void queryClient.invalidateQueries({ queryKey: qk.session(input.sessionId) });
     },
-    onError: (error) => notify(error instanceof Error ? error.message : t("发送失败", "Send failed"), "error"),
+    onError: (error, input) => {
+      if (/^\/compact(?:\s|$)/i.test(input.text.trim())) live.clearRunningCompaction(input.sessionId);
+      notify(error instanceof Error ? error.message : t("发送失败", "Send failed"), "error");
+    },
   });
 
   // Composer 发送与编辑重发共用的提交逻辑
@@ -382,6 +396,7 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
           <MessageList
             session={displaySession ?? current}
             {...(contextView.data?.ledger.cleared ? { cleared: contextView.data.ledger.cleared } : {})}
+            compactions={compactionMarkers}
             hasMoreMessages={hasMoreMessages}
             loadingMore={older.loading}
             onLoadMore={onLoadMore}

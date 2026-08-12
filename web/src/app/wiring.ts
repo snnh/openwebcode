@@ -58,6 +58,7 @@ export function createAppWiring(options: AppWiringOptions): AppWiring {
     // 实时数据（子代理运行/活动条）直接写 live-store，组件经 useStore 选择器读取
     applyActivityEvent: (event) => live.applyActivityEvent(event),
     applySubagentEvent: (event) => live.applySubagentEvent(event, options.onSubagentStarted),
+    applyCompactionEvent: (event) => live.applyCompactionEvent(event),
     stream,
     // resync 命中当前会话：分页缓存可能已过期，清空重建
     onResyncCurrent: (sessionId) => clearOlderMessages(sessionId),
