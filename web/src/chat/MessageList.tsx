@@ -66,7 +66,7 @@ export function MessageList({
   retryPending,
   onPermissionDone,
 }: MessageListProps): ReactElement {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const trackRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
   const followerRef = useRef<ScrollFollower | null>(null);
@@ -246,8 +246,16 @@ export function MessageList({
   }, [searchOpen, query, matches, currentMatch]);
 
   // ===== 渲染 =====
+  // clear 分隔线与压缩检查点行同视觉族：图标 + 文案，清空时间经 title 悬浮可见
   const divider = (
-    <div className="context-cleared-divider" role="separator">{t("上下文已清空（历史保留）", "Context cleared (history retained)")}</div>
+    <div
+      className="context-cleared-divider"
+      role="separator"
+      {...(cleared ? { title: new Date(cleared.at).toLocaleString(locale) } : {})}
+    >
+      <Icon name="compress" size={11} />
+      {t("上下文已清空（历史保留）", "Context cleared (history retained)")}
+    </div>
   );
 
   const renderMessage = (index: number, showDivider: boolean): ReactNode => {
