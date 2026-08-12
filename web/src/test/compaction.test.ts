@@ -41,11 +41,13 @@ describe("deriveRestoredCompactions", () => {
     expect(markers[1]).toMatchObject({ uptoIndex: 8, mode: "toolcalls", instructions: ["用中文"] });
   });
 
-  it("旧账本（仅 compacted 单条）回退单条还原", () => {
+  it("旧账本回退与空态：仅 compacted 单条回退还原；无账本数据返回空", () => {
     const record = { uptoIndex: 5, mode: "vault" as const, summary: "档案库", instructions: [], createdAt: "2026-08-01T00:00:00.000Z" };
     const markers = deriveRestoredCompactions(contextView({ compacted: record }));
     expect(markers).toHaveLength(1);
     expect(markers[0]).toMatchObject({ uptoIndex: 5, mode: "vault" });
+    expect(deriveRestoredCompactions(undefined)).toEqual([]);
+    expect(deriveRestoredCompactions(contextView({}))).toEqual([]);
   });
 
   it("clear 边界覆盖的过期记录不还原", () => {
@@ -58,10 +60,6 @@ describe("deriveRestoredCompactions", () => {
     expect(markers[0]!.summary).toBe("新");
   });
 
-  it("无账本数据返回空", () => {
-    expect(deriveRestoredCompactions(undefined)).toEqual([]);
-    expect(deriveRestoredCompactions(contextView({}))).toEqual([]);
-  });
 });
 
 describe("mergeCompactionMarkers", () => {

@@ -5,6 +5,7 @@ import { api } from "../lib/api";
 import type { ContextView, ModelProfile, SessionDetail } from "../lib/contracts";
 import type { ContextWatermark } from "../lib/contracts";
 import { sessionMeta, sessionStore } from "../app/session-store";
+import { cleanup } from "@testing-library/react";
 import { renderWithClient } from "./helpers/with-client";
 
 const session: SessionDetail = {
@@ -274,9 +275,8 @@ describe("ContextPanel 驱逐读数", () => {
     const row = await screen.findByTestId("ctx-evicted");
     expect(row.textContent).toContain("已驱逐 12,400 tokens（8 条工具结果）");
     expect(row.getAttribute("title")).toContain("read_artifact");
-  });
-
-  it("无驱逐条目时不渲染", async () => {
+    // 缺省（无驱逐条目/旧 server）不渲染
+    cleanup();
     vi.spyOn(api, "context").mockResolvedValue(contextView({ pins: [], excludes: [] }));
     renderPanel();
     await screen.findByText(/上下文窗口|Context window/);
