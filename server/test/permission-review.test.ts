@@ -109,7 +109,7 @@ describe("review 权限模式审核门（shell 通道）", () => {
   it("fast 未配置：直接转人工，rationale 说明原因", async () => {
     const harness = await setup({ fastModel: makeFakeFastModel(undefined, { configured: false }) });
     try {
-      const res = await harness.app.inject({ method: "POST", url: `/api/sessions/${harness.session.id}/shell`, payload: { cmd: "ls" } });
+      const res = await harness.app.inject({ method: "POST", url: `/api/sessions/${harness.session.id}/shell`, payload: { cmd: "npm test" } });
       expect(res.statusCode).toBe(202);
       const requestId = await vi.waitFor(() => {
         const req = harness.observed.find((e) => e.type === "permission.request");
@@ -132,7 +132,7 @@ describe("review 权限模式审核门（shell 通道）", () => {
   it("审核返回垃圾文本：按 HIGH 转人工", async () => {
     const harness = await setup({ fastModel: makeFakeFastModel("我觉得这个操作还行") });
     try {
-      const res = await harness.app.inject({ method: "POST", url: `/api/sessions/${harness.session.id}/shell`, payload: { cmd: "ls" } });
+      const res = await harness.app.inject({ method: "POST", url: `/api/sessions/${harness.session.id}/shell`, payload: { cmd: "npm test" } });
       expect(res.statusCode).toBe(202);
       const requestId = await vi.waitFor(() => {
         const req = harness.observed.find((e) => e.type === "permission.request");
@@ -168,7 +168,7 @@ describe("review 权限模式审核门（shell 通道）", () => {
     };
     const harness = await setup({ provider: mainProvider, reviewModel: "main" });
     try {
-      const res = await harness.app.inject({ method: "POST", url: `/api/sessions/${harness.session.id}/shell`, payload: { cmd: "ls" } });
+      const res = await harness.app.inject({ method: "POST", url: `/api/sessions/${harness.session.id}/shell`, payload: { cmd: "npm test" } });
       expect(res.statusCode).toBe(202);
       await vi.waitFor(() => expect(harness.core.runCalls.length).toBe(1));
       const reviewed = harness.observed.find((e) => e.type === "permission.reviewed");

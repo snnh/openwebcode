@@ -29,7 +29,7 @@ const bashProvider = makeStubProvider("test-stub", async function* (request) {
     yield { type: "done", stopReason: "end_turn" };
     return;
   }
-  yield { type: "tool_call", id: "call-1", name: "bash", input: { cmd: "echo hi" } };
+  yield { type: "tool_call", id: "call-1", name: "bash", input: { cmd: "npm test" } };
   yield { type: "done", stopReason: "tool_use" };
 });
 
