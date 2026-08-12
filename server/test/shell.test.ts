@@ -190,6 +190,9 @@ describe("POST /api/sessions/:id/shell - 权限挂起（ask 模式）", () => {
       await vi.waitFor(() => expect(harness.core.runCalls.length).toBe(1));
       harness.core.release({ exitCode: 0, durationMs: 1, truncated: false });
       await waitForToolMessage(harness.sessions, harness.session.id);
+      // isShellPending 归零（finally 清 shells 晚于 appendMessage 可被观察到；Windows 慢 runner 下
+      // 不等待就发第二次请求会命中 409 "shell 命令挂起中" 竞态）
+      await vi.waitFor(() => expect(harness.agent.isShellPending(harness.session.id)).toBe(false), { timeout: 5_000 });
       // 规则应已持久化（tool="bash"，argumentPrefix="npm test"）
       const detail = await harness.sessions.get(harness.session.id);
       expect(detail?.permissionRules).toContainEqual({ tool: "bash", argumentPrefix: "npm test" });
