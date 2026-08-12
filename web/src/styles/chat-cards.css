@@ -74,6 +74,10 @@
 
 /* 上下文清空分隔线（ledger.cleared 位置） */
 .context-cleared-divider {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   position: relative;
   max-width: min(100%, var(--content-max));
   margin: 2px 0 22px;
