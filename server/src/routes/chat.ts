@@ -489,7 +489,32 @@ export function registerChatRoutes(app: FastifyInstance, ctx: RouteContext): voi
     return reply.code(202).send(started);
   });
 
-  /** 创建分享链接：8 位十六进制 id + 标题 slug；可带访问口令（SHA-256 摘要落盘）。 */
+  /**
+   * edit：编辑指定 user 消息并重发。回溯到其父消息（活动叶子），把编辑后的文本作为
+   * 新分支的 user 消息追加，随后按 POST messages 同逻辑起跑（202 + runId）；旧分支保留在 JSONL。
+   * 与 retry 的差别：retry 复用原 user 消息文本，edit 由调用方给出新文本（仅允许纯文本编辑）。
+   */
+  app.post<{ Params: { id: string; messageId: string }; Body: { text?: string } }>("/api/chat/sessions/:id/messages/:messageId/edit", async (request, reply) => {
+    if (!chatSessions || !chatRunner) return reply.code(503).send(chatUnavailable());
+    const sessionId = request.params.id;
+    if (!(await chatSessions.get(sessionId))) return reply.code(404).send({ error: "Session not found" });
+    const messages = await chatSessions.getMessages(sessionId);
+    const target = messages.find((message) => message.id === request.params.messageId);
+    if (!target) return reply.code(404).send({ error: "Message not found" });
+    if (target.role !== "user") return reply.code(400).send({ error: "Can only edit a user message" });
+    const text = request.body?.text;
+    if (typeof text !== "string" || !text.trim()) return reply.code(400).send({ error: "text is required" });
+    if (chatRunner.isRunning(sessionId)) return reply.code(409).send({ error: "Session is already running" });
+    // 回溯到目标消息的父消息（store.retry 的同一原语），编辑内容作为新分支的 user 消息追加
+    await chatSessions.retry(sessionId, target.id);
+    await chatSessions.appendMessage(sessionId, "user", [{ type: "text", text }]);
+    // appendMessage 更新了 activeLeafId：重新读取 meta（与 POST messages 同一纪律）
+    const freshMeta = await chatSessions.get(sessionId);
+    if (!freshMeta) return reply.code(404).send({ error: "Session not found" });
+    const started = await startChatRun(chatRunner, { sessionId, userMessage: text, meta: freshMeta, log: request.log });
+    if (started === "conflict") return reply.code(409).send({ error: "Session is already running" });
+    return reply.code(202).send(started);
+  });
   app.post<{ Params: { id: string }; Body: { password?: string } }>("/api/chat/sessions/:id/share", async (request, reply) => {
     if (!chatSessions) return reply.code(503).send(chatUnavailable());
     const meta = await chatSessions.get(request.params.id);
