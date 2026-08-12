@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildRenderItems, isProcess, turnOf } from "../chat/message-groups";
+import { buildRenderItems, collectProducedFiles, insertCompactionMarkers, insertProducedFiles, isProcess, turnOf } from "../chat/message-groups";
 import type { ChatMessage, MessageContent } from "../lib/contracts";
 
 function msg(id: string, role: ChatMessage["role"], content: MessageContent[]): ChatMessage {
@@ -87,5 +87,68 @@ describe("buildRenderItems", () => {
 
   it("空消息列表返回空数组", () => {
     expect(buildRenderItems([], { foldProcess: true })).toEqual([]);
+  });
+});
+
+describe("insertProducedFiles / collectProducedFiles", () => {
+  const writeCall = (path: string, id = "w1"): MessageContent => ({ type: "tool_call", id, name: "write_file", input: { path, content: "x" } });
+  const editCall = (path: string, id = "e1"): MessageContent => ({ type: "tool_call", id, name: "edit_file", input: { path, oldText: "a", newText: "b" } });
+
+  it("collectProducedFiles：write/edit 按 path 去重保持出现序，其他工具忽略", () => {
+    const files = collectProducedFiles([
+      writeCall("src/a.ts", "1"),
+      editCall("src/b.ts", "2"),
+      writeCall("src/a.ts", "3"), // 同 path 去重（保留先出现的 write）
+      { type: "tool_call", id: "4", name: "read_file", input: { path: "src/c.ts" } },
+      { type: "tool_call", id: "5", name: "bash", input: { command: "ls" } },
+    ]);
+    expect(files).toEqual([
+      { path: "src/a.ts", action: "write" },
+      { path: "src/b.ts", action: "edit" },
+    ]);
+  });
+
+  it("轮末插入：行落在本轮最后条目之后、下一轮 user 消息之前；折叠段后", () => {
+    const conversation = [
+      msg("u1", "user", [{ type: "text", text: "开始" }]),
+      msg("a1", "assistant", [writeCall("src/a.ts")]),
+      msg("t1", "tool", [{ type: "tool_result", toolCallId: "w1", content: "ok" }]),
+      msg("a2", "assistant", [{ type: "text", text: "完成" }]),
+      msg("u2", "user", [{ type: "text", text: "继续" }]),
+      msg("a3", "assistant", [editCall("src/b.ts")]),
+    ];
+    const items = insertProducedFiles(buildRenderItems(conversation, { foldProcess: true }), conversation);
+    expect(items.map((item) => item.kind)).toEqual(["message", "fold", "message", "files", "message", "fold", "files"]);
+    const first = items[3]!;
+    const second = items[6]!;
+    expect(first).toMatchObject({ turn: 1, files: [{ path: "src/a.ts", action: "write" }] });
+    expect(second).toMatchObject({ turn: 2, files: [{ path: "src/b.ts", action: "edit" }] });
+  });
+
+  it("跨消息同轮去重；无产出轮与 turn 0 不插入", () => {
+    const conversation = [
+      msg("a0", "assistant", [{ type: "text", text: "开场白" }]), // turn 0
+      msg("u1", "user", [{ type: "text", text: "改" }]),
+      msg("a1", "assistant", [writeCall("src/a.ts", "1")]),
+      msg("a2", "assistant", [editCall("src/a.ts", "2")]), // 同 path 跨消息去重
+      msg("u2", "user", [{ type: "text", text: "问" }]),
+      msg("a3", "assistant", [{ type: "text", text: "答" }]), // 无产出
+    ];
+    const items = insertProducedFiles(buildRenderItems(conversation, { foldProcess: false }), conversation);
+    const filesItems = items.filter((item) => item.kind === "files");
+    expect(filesItems).toHaveLength(1);
+    expect(filesItems[0]).toMatchObject({ turn: 1, files: [{ path: "src/a.ts", action: "write" }] });
+  });
+
+  it("与压缩检查点共存：检查点行不打断轮归属（在其后仍正确出 files 行）", () => {
+    const conversation = [
+      msg("u1", "user", [{ type: "text", text: "开始" }]),
+      msg("a1", "assistant", [writeCall("src/a.ts")]),
+    ];
+    const marker = { id: "c1", uptoIndex: 1, mode: "overview", forced: false, createdAt: "2026-08-01T00:00:00.000Z", status: "settled" } as const;
+    const base = buildRenderItems(conversation, { foldProcess: true });
+    const withMarkers = insertCompactionMarkers(base, [{ position: 1, marker }], conversation.length);
+    const items = insertProducedFiles(withMarkers, conversation);
+    expect(items.map((item) => item.kind)).toEqual(["message", "compaction", "fold", "files"]);
   });
 });

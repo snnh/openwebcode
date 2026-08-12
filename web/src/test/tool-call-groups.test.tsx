@@ -117,3 +117,27 @@ describe("ToolCallListGroup（聚合组形态）", () => {
     expect(withError.container.querySelector(".tool-group.error")).not.toBeNull();
   });
 });
+
+describe("文件提及链接（onOpenFile）", () => {
+  it("diffSpec 存在且提供 onOpenFile 时渲染文件链接，点击打开编辑器", () => {
+    const onOpenFile = vi.fn();
+    const { container, actions } = renderRow(
+      <ToolCallGroupRow call={call({ name: "edit_file", diffSpec: { source: "agent-edit", path: "src/b.ts", oldText: "a", newText: "b" } })} />,
+      makeChatActions({ onOpenFile }),
+    );
+    fireEvent.click(container.querySelector(".tool-row-header")!);
+    const link = container.querySelector(".tool-file-link")!;
+    expect(link.textContent).toContain("src/b.ts");
+    fireEvent.click(link);
+    expect(onOpenFile).toHaveBeenCalledWith("src/b.ts");
+    expect(actions.onOpenDiff).not.toHaveBeenCalled();
+  });
+
+  it("未提供 onOpenFile 时不渲染文件链接（降级）", () => {
+    const { container } = renderRow(
+      <ToolCallGroupRow call={call({ name: "write_file", diffSpec: { source: "agent-write", path: "src/a.ts", content: "x" } })} />,
+    );
+    fireEvent.click(container.querySelector(".tool-row-header")!);
+    expect(container.querySelector(".tool-file-link")).toBeNull();
+  });
+});
