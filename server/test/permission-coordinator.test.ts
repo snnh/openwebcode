@@ -8,6 +8,10 @@ describe("PermissionCoordinator", () => {
     expect(coordinator.needsApproval("ask", [], "read_file", { path: "a" })).toBe(false);
     expect(coordinator.needsApproval("ask", [], "todo_write", { items: [] })).toBe(false);
     expect(coordinator.needsApproval("ask", [], "bash", { cmd: "npm test" })).toBe(true);
+    expect(coordinator.needsApproval("ask", [], "bash", { cmd: "cd x && echo hi && ls" })).toBe(false);
+    expect(coordinator.needsApproval("ask", [], "bash", { cmd: "ls 2>/dev/null | head; find . -name '*.ts' | head" })).toBe(false);
+    expect(coordinator.needsApproval("acceptEdits", [], "bash", { cmd: "head x && rm -rf /" })).toBe(true);
+    expect(coordinator.needsApproval("review", [], "bash", { cmd: "git status" })).toBe(false);
     expect(coordinator.needsApproval("acceptEdits", [], "edit_file", { path: "a" })).toBe(false);
     expect(coordinator.needsApproval("yolo", [], "bash", { cmd: "rm x" })).toBe(false);
     expect(coordinator.needsApproval("ask", [permissionRule("bash", { cmd: "npm test" })], "bash", { cmd: "npm test -- --run" })).toBe(false);
