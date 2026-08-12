@@ -1114,7 +1114,7 @@ export class AgentRunner {
               compacted = await this.compactor!.compact(sessionId, "overview", { forced: true, ...(overviewPrompt ? { promptOverrides: { overview: overviewPrompt } } : {}) });
             }
             if (compacted.changed) {
-              this.events.publish({ source: "agent", type: "context.compacted", sessionId, payload: { mode: compacted.mode, uptoIndex: compacted.uptoIndex ?? 0, forced: true } });
+              this.events.publish({ source: "agent", type: "context.compacted", sessionId, payload: { mode: compacted.mode, uptoIndex: compacted.uptoIndex ?? 0, forced: true, ...(compacted.createdAt ? { createdAt: compacted.createdAt } : {}) } });
               // 压缩自身已落盘；commitTurn 检测到外部落盘会把本轮断点变更重放到最新账本
               await context.commitTurn(turnLedger);
               activeTurn = undefined;

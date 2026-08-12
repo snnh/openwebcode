@@ -6,7 +6,7 @@ import type { PricingCatalog } from "../cost/pricing-catalog.js";
 import type { FastModelClient } from "../fast-model.js";
 import type { HookRunner } from "../hooks.js";
 import { appendMemory, parseSedimentSections } from "../memory.js";
-import { ContextManager } from "../context/context-manager.js";
+import { ContextManager, estimateFragmentTokens, recordCompaction } from "../context/context-manager.js";
 import { extractInstructions, mergeInstructions, type CompactResult } from "../context/compactor.js";
 import { activePathMessages } from "../sessions/session-tree.js";
 import type { ChatMessage, MessageContent } from "../sessions/types.js";
@@ -256,8 +256,17 @@ export class CompactVaultService {
       chunkFiles: [...(previous?.chunkFiles ?? []), ...chunkFiles],
     };
     await writeFile(path.join(compactDir, "index.json"), `${JSON.stringify(vaultIndex, null, 2)}\n`, "utf8");
+    const record = {
+      uptoIndex,
+      mode: "vault" as const,
+      summary: indexText,
+      instructions: mergedInstructions,
+      createdAt: new Date().toISOString(),
+      // 与 Compactor 同口径：被替换消息段的 token 估算，供 UI 检查点行展示
+      replacedTokens: span.reduce((total, message) => total + estimateFragmentTokens(message), 0),
+    };
     await context.updateLedger((current) => {
-      current.compacted = { uptoIndex, mode: "vault", summary: indexText, instructions: mergedInstructions, createdAt: new Date().toISOString() };
+      recordCompaction(current, record);
     });
     // 长期记忆沉淀（与 Compactor 同纪律）：目录索引的「未决事项」等小节落进项目 memory.md
     try {
@@ -269,7 +278,7 @@ export class CompactVaultService {
     if (this.deps.hooks) {
       await this.deps.hooks.run("PostCompact", { sessionId, cwd: session.cwd, compact: { strategy: "overview", forced: false, changed: true, finalMode: "vault", uptoIndex } });
     }
-    return { changed: true, mode: "vault", uptoIndex, summary: indexText };
+    return { changed: true, mode: "vault", uptoIndex, summary: indexText, createdAt: record.createdAt };
   }
 
   /** 读取 compact/ 内文件（扩展 API context.readVaultFile 的服务端实现）。 */

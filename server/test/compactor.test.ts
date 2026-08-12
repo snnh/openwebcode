@@ -301,3 +301,72 @@ describe("compact HTTP routes", () => {
     }
   });
 });
+
+describe("compactionHistory", () => {
+  it("每次压缩追加历史并烧入 replacedTokens，compacted 与历史末条一致且带回 createdAt", async () => {
+    const root = await tempRoot("owc-compact-hist-");
+    const store = new SessionStore(path.join(root, "sessions"));
+    await store.initialize();
+    const id = await sessionWithMessages(store, 6);
+    const compactor = new Compactor(store, makeFakeFastModel("目标：\n- 摘要"), {}, 2);
+
+    const first = await compactor.compact(id, "overview");
+    expect(first.createdAt).toEqual(expect.any(String));
+    await store.appendMessage(id, "user", [{ type: "text", text: "补充 1" }]);
+    await store.appendMessage(id, "assistant", [{ type: "text", text: "补充 2" }]);
+    const second = await compactor.compact(id, "overview");
+
+    const ledger = await new ContextManager(store.contextRoot(id)).load();
+    expect(ledger.compactionHistory).toHaveLength(2);
+    expect(ledger.compacted).toEqual(ledger.compactionHistory![1]);
+    expect(ledger.compactionHistory![0]!.uptoIndex).toBeLessThan(ledger.compactionHistory![1]!.uptoIndex);
+    for (const record of ledger.compactionHistory!) {
+      expect(record.replacedTokens).toEqual(expect.any(Number));
+      expect(record.replacedTokens).toBeGreaterThan(0);
+    }
+    expect(second.createdAt).toBe(ledger.compacted!.createdAt);
+  });
+
+  it("历史封顶 20 条，超出丢最旧", async () => {
+    const root = await tempRoot("owc-compact-cap-");
+    const store = new SessionStore(path.join(root, "sessions"));
+    await store.initialize();
+    const id = await sessionWithMessages(store, 2);
+    const compactor = new Compactor(store, makeFakeFastModel("目标：\n- 摘要"), {}, 1);
+    const firstUptos: number[] = [];
+    for (let round = 0; round < 21; round += 1) {
+      const result = await compactor.compact(id, "overview");
+      expect(result.changed).toBe(true);
+      firstUptos.push(result.uptoIndex!);
+      await store.appendMessage(id, "user", [{ type: "text", text: `轮 ${round}` }]);
+    }
+    const ledger = await new ContextManager(store.contextRoot(id)).load();
+    expect(ledger.compactionHistory).toHaveLength(20);
+    // 最旧一条（uptoIndex=firstUptos[0]）被丢弃，现存最早为第二次压缩
+    expect(ledger.compactionHistory![0]!.uptoIndex).toBe(firstUptos[1]);
+    expect(ledger.compacted!.uptoIndex).toBe(firstUptos[20]);
+  });
+
+  it("旧账本无历史字段无损读取；replaceLedger 清洗非法条目并封顶", async () => {
+    const root = await tempRoot("owc-compact-norm-");
+    const manager = new ContextManager(path.join(root, "ctx"));
+    const legacy = await manager.load();
+    expect(legacy.compactionHistory).toBeUndefined();
+
+    const valid = { uptoIndex: 1, mode: "overview", summary: "s", instructions: ["a", 1], createdAt: new Date().toISOString() };
+    const entries = [
+      ...Array.from({ length: 21 }, (_, index) => ({ ...valid, uptoIndex: index + 1 })),
+      { uptoIndex: -1, mode: "overview", summary: "bad", instructions: [], createdAt: "x" },
+      "not-a-record",
+    ];
+    const ledger = await manager.replaceLedger({ round: 1, compactionHistory: entries });
+    expect(ledger.compactionHistory).toHaveLength(20);
+    expect(ledger.compactionHistory![0]!.uptoIndex).toBe(2);
+    expect(ledger.compactionHistory!.every((record) => record.instructions.every((item) => typeof item === "string"))).toBe(true);
+
+    // 落盘后再加载同样干净（normalizeLedger 路径）
+    const reloaded = await manager.load();
+    expect(reloaded.compactionHistory).toHaveLength(20);
+    expect(reloaded.compactionHistory![19]!.instructions).toEqual(["a"]);
+  });
+});

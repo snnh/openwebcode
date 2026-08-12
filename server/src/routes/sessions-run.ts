@@ -44,7 +44,7 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
         ...(Number.isSafeInteger(config.chunkSize) ? { chunkSize: config.chunkSize as number } : {}),
       });
       if (vaultResult.changed) {
-        events.publish({ source: "agent", type: "context.compacted", sessionId, payload: { mode: vaultResult.mode, uptoIndex: vaultResult.uptoIndex ?? 0, forced: false } });
+        events.publish({ source: "agent", type: "context.compacted", sessionId, payload: { mode: vaultResult.mode, uptoIndex: vaultResult.uptoIndex ?? 0, forced: false, ...(vaultResult.createdAt ? { createdAt: vaultResult.createdAt } : {}) } });
       }
       return vaultResult;
     }
@@ -67,7 +67,7 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
     }
     const result = await dependencies.compactor!.compact(sessionId, mode, promptOverrides ? { promptOverrides } : undefined);
     if (result.changed) {
-      events.publish({ source: "agent", type: "context.compacted", sessionId, payload: { mode: result.mode, uptoIndex: result.uptoIndex ?? 0, forced: false } });
+      events.publish({ source: "agent", type: "context.compacted", sessionId, payload: { mode: result.mode, uptoIndex: result.uptoIndex ?? 0, forced: false, ...(result.createdAt ? { createdAt: result.createdAt } : {}) } });
     }
     return result;
   };
