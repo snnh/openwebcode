@@ -353,7 +353,12 @@ export class ExtensionManager {
     const tool = match?.[2] ?? "";
     if (!match || !this.extensionTools.get(extensionId)?.has(tool)) throw new Error(`Unknown extension tool: ${namespaced}`);
     if (!this.isEnabled(extensionId)) throw new Error(`Extension ${extensionId} is disabled`);
-    const result = await this.request("tool.invoke", { extensionId, tool, input, ...(typeof sessionId === "string" && sessionId ? { sessionId } : {}) }, 5000);
+    const declared = this.extensionTools.get(extensionId)?.get(tool)?.timeoutMs;
+    const timeoutMs =
+      typeof declared === "number" && Number.isFinite(declared)
+        ? Math.min(Math.max(declared, 1000), 120_000)
+        : 5000;
+    const result = await this.request("tool.invoke", { extensionId, tool, input, ...(typeof sessionId === "string" && sessionId ? { sessionId } : {}) }, timeoutMs);
     if (!result || typeof result !== "object" || typeof (result as { content?: unknown }).content !== "string") {
       throw new Error(`Extension tool ${namespaced} returned an invalid result`);
     }
@@ -372,6 +377,7 @@ export class ExtensionManager {
           name: spec.name,
           description: spec.description,
           inputSchema: spec.inputSchema && typeof spec.inputSchema === "object" ? spec.inputSchema : { type: "object", properties: {} },
+          ...(typeof spec.timeoutMs === "number" && Number.isFinite(spec.timeoutMs) ? { timeoutMs: spec.timeoutMs } : {}),
         });
       }
       if (registered.size > 0) this.extensionTools.set(extensionId, registered);
