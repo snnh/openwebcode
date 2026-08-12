@@ -363,3 +363,26 @@ describe("localizeConfigFields 英文字段映射", () => {
     expect(localizeConfigFields(fields, undefined)).toBe(fields);
   });
 });
+
+describe("parseConfigSchema x-model-picker", () => {
+  it("解析模型选择器标记（vision-tools 配置由扩展 json 生成）", () => {
+    const fields = parseConfigSchema({
+      type: "object",
+      properties: {
+        model: { type: "string", title: "视觉模型", description: "用于描述图片的模型", "x-model-picker": true },
+        prompt: { type: "string", title: "描述提示词", default: "" },
+        maxTokens: { type: "integer", minimum: 128, title: "输出上限（tokens）", description: "留空不限制" },
+      },
+      required: ["model"],
+    });
+    expect(fields).not.toBeNull();
+    const model = fields!.find((field) => field.key === "model");
+    expect(model).toMatchObject({ key: "model", modelPicker: true, title: "视觉模型" });
+    expect(fields!.find((field) => field.key === "prompt")?.modelPicker).toBeUndefined();
+  });
+
+  it("无标记的 schema 不产生 modelPicker 字段", () => {
+    const fields = parseConfigSchema({ type: "object", properties: { a: { type: "string" } } });
+    expect(fields![0]?.modelPicker).toBeUndefined();
+  });
+});

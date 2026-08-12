@@ -42,7 +42,7 @@ function toolResultMessage(id: string, callId: string, content: string): ChatMes
 }
 
 /** 快速模型 stub：Pass 1 按块输出目录条目，Pass 2 输出目录索引；可注入指令段。 */
-function vaultFastModel(extraIndexSections = ""): { client: FastModelClient; calls: string[] } {
+function vaultFastModel(extraIndexSections = ""): { client: FastModelClient; calls: string[]; providers: ProviderRegistry } {
   const calls: string[] = [];
   const providers = new ProviderRegistry();
   providers.register(makeStubProvider("test-stub", async function* (request) {
@@ -58,7 +58,7 @@ function vaultFastModel(extraIndexSections = ""): { client: FastModelClient; cal
     yield { type: "usage", inputTokens: 10, outputTokens: 10, cacheRead: 0, cacheWrite: 0 };
     yield { type: "done", stopReason: "end_turn" };
   }));
-  return { client: new FastModelClient(providers, { provider: "test-stub", model: "fast-m" }), calls };
+  return { client: new FastModelClient(providers, { provider: "test-stub", model: "fast-m" }), calls, providers };
 }
 
 async function makeSession(messages: ChatMessage[]): Promise<{ sessions: SessionStore; sessionId: string }> {
@@ -72,10 +72,14 @@ async function makeSession(messages: ChatMessage[]): Promise<{ sessions: Session
   return { sessions, sessionId: session.id };
 }
 
-async function compactSession(messages: ChatMessage[], options: { chunkSize?: number; keepTail?: number; fastModel?: FastModelClient } = {}) {
+async function compactSession(messages: ChatMessage[], options: {
+  chunkSize?: number; keepTail?: number; fastModel?: FastModelClient; providers?: ProviderRegistry;
+  getConfig?: () => Record<string, unknown>;
+} = {}) {
   const { sessions, sessionId } = await makeSession(messages);
-  const { client } = options.fastModel ? { client: options.fastModel } : vaultFastModel();
-  const service = new CompactVaultService(sessions, client);
+  const fast = options.fastModel ? { client: options.fastModel, providers: options.providers } : vaultFastModel();
+  if (!fast.providers) throw new Error("providers is required when a custom fast model is supplied");
+  const service = new CompactVaultService(sessions, fast.client, fast.providers, { ...(options.getConfig ? { getConfig: options.getConfig } : {}) });
   const result = await service.compact(sessionId, { ...(options.chunkSize ? { chunkSize: options.chunkSize } : {}), ...(options.keepTail !== undefined ? { keepTail: options.keepTail } : {}) });
   return { sessions, sessionId, service, result };
 }
@@ -170,23 +174,23 @@ describe("CompactVaultService.compact", () => {
   it("requires a configured fast model", async () => {
     const messages = Array.from({ length: 12 }, (_, index) => textMessage(`m${index}`, "user", `x${index}`));
     const { sessions, sessionId } = await makeSession(messages);
-    const service = new CompactVaultService(sessions, new FastModelClient(new ProviderRegistry()));
+    const service = new CompactVaultService(sessions, new FastModelClient(new ProviderRegistry()), new ProviderRegistry());
     await expect(service.compact(sessionId)).rejects.toThrow(/快速模型未配置/);
   });
 
   it("accumulates user instructions across compactions", async () => {
-    const { client: firstClient } = vaultFastModel("\n用户明确指令：\n- 不要删除文档");
+    const { client: firstClient, providers: firstProviders } = vaultFastModel("\n用户明确指令：\n- 不要删除文档");
     const messages = Array.from({ length: 12 }, (_, index) => textMessage(`m${index}`, "user", `x${index}`));
     const { sessions, sessionId } = await makeSession(messages);
-    const service = new CompactVaultService(sessions, firstClient);
+    const service = new CompactVaultService(sessions, firstClient, firstProviders);
     await service.compact(sessionId);
     let ledger = await new ContextManager(sessions.contextRoot(sessionId)).load();
     expect(ledger.compacted?.instructions).toEqual(["不要删除文档"]);
 
     // 追加消息后再压缩：旧指令跨段保留
-    const { client: secondClient } = vaultFastModel("\n用户明确指令：\n- 保持接口不变");
+    const { client: secondClient, providers: secondProviders } = vaultFastModel("\n用户明确指令：\n- 保持接口不变");
     for (let index = 0; index < 4; index += 1) await sessions.appendMessage(sessionId, "user", [{ type: "text", text: `more ${index}` }]);
-    const secondService = new CompactVaultService(sessions, secondClient);
+    const secondService = new CompactVaultService(sessions, secondClient, secondProviders);
     await secondService.compact(sessionId);
     ledger = await new ContextManager(sessions.contextRoot(sessionId)).load();
     expect(ledger.compacted?.instructions).toEqual(["不要删除文档", "保持接口不变"]);
@@ -305,8 +309,8 @@ export function activate(api) {
       await sessions.appendMessage(session.id, "user", [{ type: "text", text: `需求 ${index}` }]);
       await sessions.appendMessage(session.id, "assistant", [{ type: "text", text: `回答 ${index}` }]);
     }
-    const { client } = vaultFastModel();
-    const vaultService = new CompactVaultService(sessions, client);
+    const { client, providers: fastProviders } = vaultFastModel();
+    const vaultService = new CompactVaultService(sessions, client, fastProviders);
     const manager = new ExtensionManager(path.join(root, "data"), events, { sessions, vaultService });
     await manager.initialize();
     try {
@@ -364,8 +368,8 @@ export function activate(api) {
       await sessions.appendMessage(session.id, "user", [{ type: "text", text: `需求 ${index}` }]);
       await sessions.appendMessage(session.id, "assistant", [{ type: "text", text: `回答 ${index}` }]);
     }
-    const { client } = vaultFastModel();
-    const vaultService = new CompactVaultService(sessions, client);
+    const { client, providers: fastProviders } = vaultFastModel();
+    const vaultService = new CompactVaultService(sessions, client, fastProviders);
     const manager = new ExtensionManager(path.join(root, "data"), events, { sessions, vaultService });
     await manager.initialize();
     try {
@@ -416,8 +420,8 @@ export function activate(api) {
     for (let index = 0; index < 12; index += 1) {
       await sessions.appendMessage(session.id, "user", [{ type: "text", text: `需求 ${index}` }]);
     }
-    const { client } = vaultFastModel();
-    const vaultService = new CompactVaultService(sessions, client);
+    const { client, providers: fastProviders } = vaultFastModel();
+    const vaultService = new CompactVaultService(sessions, client, fastProviders);
     const manager = new ExtensionManager(path.join(root, "data"), events, { sessions, vaultService });
     await manager.initialize();
     try {
@@ -473,8 +477,8 @@ export function activate(api) {
     };
     providers.register(provider);
     const core = { on() { return core; }, async configureSession() { return { sandboxCapability: "advisory" }; } } as unknown as CoreClient;
-    const { client } = vaultFastModel();
-    const vaultService = new CompactVaultService(sessions, client);
+    const { client, providers: fastProviders } = vaultFastModel();
+    const vaultService = new CompactVaultService(sessions, client, fastProviders);
     const manager = new ExtensionManager(path.join(root, "data"), events, { sessions, vaultService });
     await manager.initialize();
     try {
@@ -507,4 +511,85 @@ export function activate(api) {
       await manager.close();
     }
   }, 25_000);
+});
+
+describe("compact-vault thinking-model fallback and maxTokens", () => {
+  it("思考模型优先适配：正文只走 thinking 通道时整理仍成功（直连兜底收集）", async () => {
+    const providers = new ProviderRegistry();
+    providers.register(makeStubProvider("test-stub", async function* (request) {
+      const last = request.messages.at(-1);
+      const prompt = last?.content.find((block) => block.type === "text")?.text ?? "";
+      if (prompt.includes("对话转录")) {
+        yield { type: "thinking_delta", text: "KEY: goals\nTITLE: 目标\nDESC: 用户要求实现 X\n---\nKEY: impl\nTITLE: 实现方案\nDESC: 采用方案 Y" };
+      } else {
+        yield { type: "thinking_delta", text: "[归档索引] 早前共 10 条消息已归档至会话 compact/ 目录。需要细节时调用 recall_memory(keys=[...]) 按 key 召回完整内容。\n- 目标 (key=goals)：用户要求实现 X" };
+      }
+      yield { type: "done", stopReason: "end_turn" };
+    }));
+    const client = new FastModelClient(providers, { provider: "test-stub", model: "fast-m" });
+    const messages = Array.from({ length: 12 }, (_, index) => textMessage(`m${index}`, "user", `x${index}`));
+    const { sessions, sessionId, result } = await compactSession(messages, { fastModel: client, providers });
+    expect(result.changed).toBe(true);
+    expect(result.mode).toBe("vault");
+    expect(result.summary).toContain("key=goals");
+    const ledger = await new ContextManager(sessions.contextRoot(sessionId)).load();
+    expect(ledger.compacted?.summary).toContain("key=goals");
+  });
+
+  it("有上限时优先走 FastModelClient，空返回自动直连兜底", async () => {
+    const calls: StreamChatRequest[] = [];
+    const providers = new ProviderRegistry();
+    providers.register(makeStubProvider("test-stub", async function* (request) {
+      calls.push(request);
+      const last = request.messages.at(-1);
+      const prompt = last?.content.find((block) => block.type === "text")?.text ?? "";
+      // 第一次调用（FastModelClient）：只发 thinking → complete 抛「快速模型返回为空」；
+      // 第二次（completeVault 直连兜底）：thinking 通道给正文
+      if (calls.length === 1) {
+        yield { type: "thinking_delta", text: "思考中…" };
+        yield { type: "done", stopReason: "end_turn" };
+        return;
+      }
+      if (prompt.includes("对话转录")) {
+        yield { type: "thinking_delta", text: "KEY: goals\nTITLE: 目标\nDESC: 用户要求实现 X\n---\nKEY: impl\nTITLE: 实现方案\nDESC: 采用方案 Y" };
+      } else {
+        yield { type: "thinking_delta", text: "[归档索引] 早前共 10 条消息已归档至会话 compact/ 目录。需要细节时调用 recall_memory(keys=[...]) 按 key 召回完整内容。\n- 目标 (key=goals)：用户要求实现 X" };
+      }
+      yield { type: "done", stopReason: "end_turn" };
+    }));
+    const client = new FastModelClient(providers, { provider: "test-stub", model: "fast-m" });
+    const messages = Array.from({ length: 12 }, (_, index) => textMessage(`m${index}`, "user", `x${index}`));
+    const { result } = await compactSession(messages, {
+      fastModel: client,
+      providers,
+      // 扩展配置：用户手动设置输出上限（默认不限制）
+      getConfig: () => ({ maxTokens: 4096 }),
+    });
+    expect(result.changed).toBe(true);
+    // 直连兜底请求带配置的 maxTokens（FastModelClient 调用也带）
+    expect(calls.length).toBeGreaterThan(1);
+    expect(calls.at(-1)?.maxTokens).toBe(4096);
+  });
+
+  it("maxTokens 缺省不限制：直连请求不携带输出上限", async () => {
+    const calls: StreamChatRequest[] = [];
+    const providers = new ProviderRegistry();
+    providers.register(makeStubProvider("test-stub", async function* (request) {
+      calls.push(request);
+      const last = request.messages.at(-1);
+      const prompt = last?.content.find((block) => block.type === "text")?.text ?? "";
+      if (prompt.includes("对话转录")) {
+        yield { type: "text_delta", text: "KEY: goals\nTITLE: 目标\nDESC: 用户要求实现 X\n---\nKEY: impl\nTITLE: 实现方案\nDESC: 采用方案 Y" };
+      } else {
+        yield { type: "text_delta", text: "[归档索引] 早前共 10 条消息已归档至会话 compact/ 目录。需要细节时调用 recall_memory(keys=[...]) 按 key 召回完整内容。\n- 目标 (key=goals)：用户要求实现 X" };
+      }
+      yield { type: "done", stopReason: "end_turn" };
+    }));
+    const client = new FastModelClient(providers, { provider: "test-stub", model: "fast-m" });
+    const messages = Array.from({ length: 12 }, (_, index) => textMessage(`m${index}`, "user", `x${index}`));
+    const { result } = await compactSession(messages, { fastModel: client, providers });
+    expect(result.changed).toBe(true);
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.every((call) => call.maxTokens === undefined)).toBe(true);
+  });
 });
