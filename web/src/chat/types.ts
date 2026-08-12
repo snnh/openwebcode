@@ -128,8 +128,8 @@ export interface SearchBarProps {
 export interface MessageListProps {
   /** 显示用会话（已合并分页加载的更早消息） */
   session: SessionDetail;
-  /** 上下文清空分隔线位置（ledger.cleared） */
-  cleared?: { uptoIndex: number; at: string };
+  /** 上下文清空分隔线位置（ledger.cleared；uptoMessageId 为 /clear 时刻最后一条活动路径消息 id） */
+  cleared?: { uptoIndex: number; at: string; uptoMessageId?: string };
   /** 压缩检查点标记（实时事件 + 账本还原的合并结果；缺省不渲染检查点行） */
   compactions?: CompactionMarker[];
   hasMoreMessages: boolean;

@@ -84,8 +84,16 @@ export interface CompactionRecord {
 export const MAX_COMPACTION_HISTORY = 20;
 
 export interface ClearRecord {
+  /** 活动路径空间边界：messages[0..uptoIndex) 被清空（与 compactor/agent 视图同口径）。 */
   uptoIndex: number;
   at: string;
+  /**
+   * 全量/活动路径双空间的定位锚点：/clear 时刻最后一条活动路径消息的 id。
+   * buildView 与前端分隔线在自己持有的数组里按 id 定位（findIndex + 1），
+   * 有分支/retry 离路径消息时不再因「活动路径长度 ≠ 全量下标」错位。
+   * 旧 ledger（无此字段）回退 uptoIndex 语义。
+   */
+  uptoMessageId?: string;
 }
 
 export interface ContextLedger {
@@ -562,7 +570,10 @@ export class ContextManager {
     const pinnedIds = new Set(selection.pins);
     const compacted = ledger.compacted;
     const compactedIndex = compacted ? Math.min(compacted.uptoIndex, messages.length) : 0;
-    const clearedIndex = ledger.cleared ? Math.min(ledger.cleared.uptoIndex, messages.length) : 0;
+    // 清空边界优先按消息 id 锚定：buildView 的输入数组既可能是活动路径（agent 主循环）
+    // 也可能是全量 JSONL（REST context 视图），id 定位自动适配两个空间；边界消息不在
+    // 数组中（罕见：消息被外部截断）或旧 ledger 无 id 时回退 uptoIndex 下标语义。
+    const clearedIndex = ledger.cleared ? clearIndexIn(messages, ledger.cleared) : 0;
     // 压缩和清空都裁剪消息前缀；较新的边界获胜。clear 覆盖压缩时不得重新注入旧摘要。
     const uptoIndex = Math.max(compactedIndex, clearedIndex);
 
@@ -800,10 +811,10 @@ export class ContextManager {
     });
   }
 
-  async markCleared(uptoIndex: number): Promise<ContextLedger> {
+  async markCleared(uptoIndex: number, uptoMessageId?: string): Promise<ContextLedger> {
     if (!Number.isSafeInteger(uptoIndex) || uptoIndex < 0) throw new Error("Clear index must be a non-negative integer");
     return this.updateLedger((ledger) => {
-      ledger.cleared = { uptoIndex, at: new Date().toISOString() };
+      ledger.cleared = { uptoIndex, at: new Date().toISOString(), ...(uptoMessageId ? { uptoMessageId } : {}) };
     });
   }
 
@@ -1143,6 +1154,19 @@ export function recordCompaction(ledger: ContextLedger, record: CompactionRecord
   ledger.compactionHistory = history.slice(-MAX_COMPACTION_HISTORY);
 }
 
+/**
+ * /clear 边界在给定消息数组中的下标：优先按 uptoMessageId 定位（id 之后第一条消息的下标，
+ * 即 messages[0..result) 被清空），自动适配活动路径/全量两个空间；边界消息不在数组或旧
+ * ledger 无 id 时回退 uptoIndex 下标语义（钳制到数组长度）。
+ */
+function clearIndexIn(messages: ChatMessage[], cleared: ClearRecord): number {
+  if (cleared.uptoMessageId) {
+    const index = messages.findIndex((message) => message.id === cleared.uptoMessageId);
+    if (index >= 0) return index + 1;
+  }
+  return Math.min(cleared.uptoIndex, messages.length);
+}
+
 /** 注入视图的压缩文本：用户明确指令累积置顶（§7.4 overview 契约）。 */
 function renderCompaction(record: CompactionRecord): string {
   if (record.instructions.length === 0) return record.summary;
@@ -1210,7 +1234,11 @@ function normalizeLedger(value: Partial<ContextLedger>): ContextLedger {
       ? { compactionHistory: value.compactionHistory.filter(isCompaction).map(normalizeCompaction).slice(-MAX_COMPACTION_HISTORY) }
       : {}),
     ...(value.cleared && Number.isSafeInteger(value.cleared.uptoIndex) && value.cleared.uptoIndex >= 0 && typeof value.cleared.at === "string" && Number.isFinite(Date.parse(value.cleared.at))
-      ? { cleared: { uptoIndex: value.cleared.uptoIndex, at: value.cleared.at } }
+      ? { cleared: {
+          uptoIndex: value.cleared.uptoIndex,
+          at: value.cleared.at,
+          ...(typeof value.cleared.uptoMessageId === "string" && value.cleared.uptoMessageId ? { uptoMessageId: value.cleared.uptoMessageId } : {}),
+        } }
       : {}),
   };
 }

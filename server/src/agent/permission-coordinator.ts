@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { EventBus } from "../events/event-bus.js";
 import type { PermissionMode, PermissionRule } from "../sessions/types.js";
+import { isReadOnlyCommand } from "./readonly-command.js";
 
 export type PermissionDecision = "allow" | "allow_always" | "deny";
 
@@ -22,6 +23,11 @@ export class PermissionCoordinator {
     // 只读工具 + remember 自动放行：remember 是 agent 写自身长期记忆（低风险），
     // 写入路径固定为 <cwd>/.owc/memory.md 或 <dataDir>/memory.md，不接受任意路径
     if (["read_file", "glob", "grep", "read_artifact", "load_skill", "spawn_task", "spawn_swarm", "todo_write", "remember", "task_output", "repo_map", "code_search", "git_status", "git_diff", "ask_user", "exit_plan_mode", "swarm_board_post", "swarm_board_read", "cron_create", "cron_list", "cron_delete"].includes(tool)) return false;
+    // 只读探查命令自动放行：`cd x && echo ... && head ...` 等纯只读链（词法级判定，
+    // 含 &&/|/; 分段逐段白名单，无重定向/命令替换/写命令）不需要人工批准。
+    // 判定保守：任何无法证明只读的形态都转人工；放行不改变沙盒/路径策略，
+    // PreToolUse 钩子仍在放行后触发（exit 2 可拦截）。
+    if (tool === "bash" && typeof input.cmd === "string" && isReadOnlyCommand(input.cmd)) return false;
     // git_commit 默认不开放给 agent 自动执行：yolo 也不隐含提交授权（plan §4.3），
     // 只有用户对 git_commit 显式 allow_always（按会话授权）后才跳过确认。
     if (tool === "git_commit") return !rules.some((rule) => matchesRule(rule, tool, input));

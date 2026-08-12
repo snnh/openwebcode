@@ -470,7 +470,7 @@ export interface ContextView {
     compactionHistory?: Array<{ uptoIndex: number; mode: "toolcalls" | "overview" | "truncated" | "vault"; summary: string; instructions: string[]; createdAt: string; replacedTokens?: number }>;
     /** 最近记录的 prompt cache 消息级断点（消息 id）；诊断用。 */
     cacheBreakpoints?: string[];
-    cleared?: { uptoIndex: number; at: string };
+    cleared?: { uptoIndex: number; at: string; uptoMessageId?: string };
   };
   preferences: { language: string; currency: "USD" | "CNY"; currencyLabel: string };
 }

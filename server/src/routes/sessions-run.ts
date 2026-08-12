@@ -188,14 +188,19 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
       const clearCommand = request.body.content.match(/^\/clear\s*$/i);
       if (clearCommand) {
         if (agent.isRunning(request.params.id)) return reply.code(409).send({ error: "会话运行中，请先等待完成或中断后再清空上下文" });
-        // uptoIndex 必须与 buildView 的输入同空间：活动路径长度，而非全量消息数。
-        // 分支/retry 产生的离路径消息会令全量长度大于活动路径长度，越界的 uptoIndex
-        // 会把整个视图清空（模型看不到任何用户消息）。
-        const uptoIndex = activePathMessages(session.messages, session.activeLeafId).length;
-        const ledger = await new ContextManager(sessions.contextRoot(request.params.id)).markCleared(uptoIndex);
+        // 边界双空间记录：
+        // - uptoIndex 用活动路径长度（与 agent 视图/compactor 同口径：清空全部活动路径消息，
+        //   分支/retry 的离路径消息不参与计数，clear 后新追加的消息不受越界边界影响）；
+        // - uptoMessageId 为最后一条活动路径消息 id，供 buildView 与前端分隔线在自己持有的
+        //   数组（活动路径或全量 JSONL）里精确定位——仅靠活动路径长度换算全量下标会因
+        //   离路径消息穿插而错位（分隔线提早插入、REST 视图残留尾部消息）。
+        const activePath = activePathMessages(session.messages, session.activeLeafId);
+        const uptoIndex = activePath.length;
+        const uptoMessageId = activePath.at(-1)?.id;
+        const ledger = await new ContextManager(sessions.contextRoot(request.params.id)).markCleared(uptoIndex, uptoMessageId);
         const at = ledger.cleared!.at;
-        events.publish({ source: "agent", type: "context.cleared", sessionId: request.params.id, payload: { uptoIndex, at } });
-        return reply.code(200).send({ accepted: true, cleared: true, uptoIndex, at });
+        events.publish({ source: "agent", type: "context.cleared", sessionId: request.params.id, payload: { uptoIndex, at, ...(uptoMessageId ? { uptoMessageId } : {}) } });
+        return reply.code(200).send({ accepted: true, cleared: true, uptoIndex, at, ...(uptoMessageId ? { uptoMessageId } : {}) });
       }
       const compactCommand = request.body.content.match(/^\/compact(?:\s+(tools?|toolcalls))?\s*$/i);
       if (compactCommand) {
