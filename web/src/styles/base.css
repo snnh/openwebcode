@@ -29,10 +29,22 @@ button:disabled { cursor: not-allowed; opacity: 0.55; }
 }
 .input:focus { border-color: var(--accent); outline: none; }
 
-* { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+/*
+ * 悬停显现滚动条：拇指静止透明，容器 :hover/:focus-within 时显现（拇指自身 hover 更深一档）。
+ * 宽度恒定（8px / thin），显隐不引起回流。
+ * 双路径互斥：scrollbar-width/scrollbar-color 的非 auto 值会让 Chromium/Safari 丢弃全部
+ * ::-webkit-scrollbar* 规则，故 Firefox 标准属性置于 @supports not selector(::-webkit-scrollbar)，
+ * WebKit 走伪元素；两条路径都读 --scrollbar-thumb/--scrollbar-thumb-hover 这对 token（tokens.css）。
+ */
+@supports not selector(::-webkit-scrollbar) {
+  * { scrollbar-width: thin; scrollbar-color: transparent transparent; }
+  *:hover, *:focus-within { scrollbar-color: var(--scrollbar-thumb) transparent; }
+}
 ::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 4px; }
+::-webkit-scrollbar-thumb { background: transparent; border-radius: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
+*:hover::-webkit-scrollbar-thumb, *:focus-within::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); }
+::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
 
 /* ================= 按钮 ================= */
 .btn {

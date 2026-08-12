@@ -3,17 +3,19 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
-    <meta name="theme-color" content="#F2F2F2" />
+    <meta name="theme-color" content="#f1f4f5" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="apple-touch-icon" href="/icon.png" />
     <title>OpenWebCode</title>
     <script>
       // Apply theme and language before first paint to avoid visual or a11y mismatches.
+      // theme-color follows the resolved theme (values mirror the --bg token, light/dark).
       try {
         var t = localStorage.getItem("owc-theme");
         if (t !== "light" && t !== "dark") t = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
         document.documentElement.dataset.theme = t;
+        document.querySelector('meta[name="theme-color"]').content = t === "dark" ? "#0e1318" : "#f1f4f5";
         var l = localStorage.getItem("owc-language");
         if (l !== "zh-CN" && l !== "en") l = navigator.language.toLowerCase().startsWith("zh") ? "zh-CN" : "en";
         document.documentElement.lang = l;
