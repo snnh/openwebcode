@@ -40,6 +40,7 @@ function setup(currentSessionId = "s1") {
     applyRunEvent: vi.fn(),
     applyActivityEvent: vi.fn(),
     applySubagentEvent: vi.fn(),
+    applyCompactionEvent: vi.fn(),
     stream,
     onResyncCurrent: vi.fn(),
   };
@@ -152,14 +153,19 @@ describe("createEventRouter", () => {
     await vi.waitFor(() => expect(stream.clear).toHaveBeenCalledWith("s1"));
   });
 
-  it("context.compacting/compacted（当前会话）弹 toast；其他会话不弹", () => {
+  it("context.compacting/compacted（当前会话）弹 toast 并写入检查点标记；其他会话不写", () => {
     const { deps, router } = setup("s1");
     router.route(makeEvent({ type: "context.compacting", sessionId: "s2", payload: { forced: false, mode: "overview" } }));
     expect(deps.notify).not.toHaveBeenCalled();
+    expect(deps.applyCompactionEvent).not.toHaveBeenCalled();
     router.route(makeEvent({ type: "context.compacting", sessionId: "s1", payload: { forced: true, mode: "vault" } }));
     expect(deps.notify).toHaveBeenCalledWith("正在压缩上下文（85% 水位强制 · 档案库）…");
+    expect(deps.applyCompactionEvent).toHaveBeenCalledWith(expect.objectContaining({ type: "context.compacting", sessionId: "s1" }));
     router.route(makeEvent({ type: "context.compacted", sessionId: "s1", payload: { forced: false, mode: "vault" } }));
     expect(deps.notify).toHaveBeenCalledWith("已压缩上下文（档案库）");
+    expect(deps.applyCompactionEvent).toHaveBeenCalledWith(expect.objectContaining({ type: "context.compacted", sessionId: "s1" }));
+    router.route(makeEvent({ type: "context.compact_failed", sessionId: "s1", payload: { message: "快速模型超时" } }));
+    expect(deps.applyCompactionEvent).toHaveBeenCalledWith(expect.objectContaining({ type: "context.compact_failed", sessionId: "s1" }));
   });
 
   it("桌面通知：权限/交互/run 终态跨会话转发给装配层", () => {

@@ -1,6 +1,7 @@
 import type {
   AppEvent, LiveSubagentRun, SubagentFinishedEvent, SubagentProgressEvent, SubagentStartedEvent,
 } from "../lib/contracts";
+import type { CompactionMarker, CompactionMode } from "../lib/compaction";
 import { capLiveSubagentRuns, LIVE_SUBAGENT_CAP } from "../lib/subagent-runs";
 import { INACTIVE_STATES } from "../lib/agent-state";
 import { createStore, useStore } from "./store";
@@ -9,8 +10,9 @@ import { createStore, useStore } from "./store";
  * 实时运行数据（WS 事件驱动，框架无关）：
  * - 子代理运行（sessionId → taskId → run，终态保留，每会话封顶）
  * - 实时活动（agent.state + 未结束工具）
+ * - 压缩检查点标记（context.compacting/compacted/compact_failed：运行中→原位沉降/失败）
  * 旧 use-live-subagents/use-live-activity 两个 hook 的 store 化移植：
- * 事件路由直接写入，任何组件（消息卡/标签条/子代理面板/活动条）经 useStore 选择器读取。
+ * 事件路由直接写入，任何组件（消息卡/标签条/子代理面板/活动条/检查点行）经 useStore 选择器读取。
  */
 
 export interface LiveActivityEntry {
@@ -32,10 +34,17 @@ export interface LiveActivityInfo {
 interface LiveState {
   subagents: Record<string, Record<string, LiveSubagentRun>>;
   activities: Record<string, LiveActivityEntry>;
+  /** 压缩检查点标记（sessionId → 标记数组，时间升序；运行中占位至多一个，沉降至多保留 CAP 条） */
+  compactions: Record<string, CompactionMarker[]>;
 }
 
-const INITIAL_STATE: LiveState = { subagents: {}, activities: {} };
+const INITIAL_STATE: LiveState = { subagents: {}, activities: {}, compactions: {} };
 const EMPTY_ACTIVITY: LiveActivityEntry = { outstanding: [] };
+
+/** 每会话已沉降压缩标记上限（运行中占位不计）：超出丢最旧 */
+const LIVE_COMPACTION_CAP = 10;
+/** 运行中占位 id：同一会话同时至多一次压缩（server 对运行中/并发 409），沉降时原位替换同 id 保持 React key 稳定 */
+const LIVE_COMPACTION_ID = "compaction:live";
 
 export const liveStore = createStore<LiveState>(INITIAL_STATE);
 
@@ -157,11 +166,89 @@ export const live = {
     }
   },
 
+  /** context.compacting/compacted/compact_failed 维护压缩检查点标记（运行中→原位沉降/失败） */
+  applyCompactionEvent(event: AppEvent): void {
+    const sessionId = event.sessionId;
+    if (!sessionId) return;
+    if (event.type === "context.compacting") {
+      const payload = event.payload as { mode?: string; forced?: boolean };
+      const marker: CompactionMarker = {
+        id: LIVE_COMPACTION_ID,
+        uptoIndex: -1,
+        mode: (payload.mode as CompactionMode | undefined) ?? "overview",
+        forced: payload.forced === true,
+        createdAt: new Date().toISOString(),
+        status: "running",
+      };
+      liveStore.set((previous) => ({
+        compactions: {
+          ...previous.compactions,
+          [sessionId]: [...(previous.compactions[sessionId] ?? []).filter((item) => item.status !== "running"), marker],
+        },
+      }));
+      return;
+    }
+    if (event.type === "context.compacted") {
+      const payload = event.payload as { mode?: string; uptoIndex?: number; forced?: boolean; createdAt?: string };
+      const createdAt = typeof payload.createdAt === "string" ? payload.createdAt : new Date().toISOString();
+      liveStore.set((previous) => {
+        const list = previous.compactions[sessionId] ?? [];
+        const running = list.find((item) => item.status === "running");
+        // 沉降：id 与账本记录一致（`compaction:<createdAt>`），ContextView 刷新后由还原版（带摘要）取代
+        const settled: CompactionMarker = {
+          id: `compaction:${createdAt}`,
+          uptoIndex: Number.isSafeInteger(payload.uptoIndex) ? payload.uptoIndex! : -1,
+          mode: (payload.mode as CompactionMode | undefined) ?? running?.mode ?? "overview",
+          forced: payload.forced === true || running?.forced === true,
+          createdAt,
+          status: "settled",
+        };
+        const rest = list.filter((item) => item.status !== "running" && item.id !== settled.id);
+        return { compactions: { ...previous.compactions, [sessionId]: [...rest, settled].slice(-LIVE_COMPACTION_CAP) } };
+      });
+      return;
+    }
+    if (event.type === "context.compact_failed") {
+      const payload = event.payload as { message?: string };
+      liveStore.set((previous) => {
+        const list = previous.compactions[sessionId] ?? [];
+        const running = list.find((item) => item.status === "running");
+        if (!running) return {};
+        const failed: CompactionMarker = {
+          ...running,
+          id: `compaction:failed:${new Date().toISOString()}`,
+          status: "failed",
+          ...(typeof payload.message === "string" ? { error: payload.message } : {}),
+        };
+        return { compactions: { ...previous.compactions, [sessionId]: [...list.filter((item) => item !== running), failed] } };
+      });
+    }
+  },
+
+  /** /compact 的 POST 沉降（无 compacted 事件的空跑/拒绝兜底）：清除运行中占位，不留残痕 */
+  clearRunningCompaction(sessionId: string): void {
+    liveStore.set((previous) => {
+      const list = previous.compactions[sessionId];
+      if (!list?.some((item) => item.status === "running")) return {};
+      return { compactions: { ...previous.compactions, [sessionId]: list.filter((item) => item.status !== "running") } };
+    });
+  },
+
+  /** 失败检查点行的关闭按钮 */
+  dismissCompaction(sessionId: string, id: string): void {
+    liveStore.set((previous) => {
+      const list = previous.compactions[sessionId];
+      if (!list?.some((item) => item.id === id)) return {};
+      return { compactions: { ...previous.compactions, [sessionId]: list.filter((item) => item.id !== id) } };
+    });
+  },
+
   /** 会话删除：清理实时数据 */
   removeSession(sessionId: string): void {
     liveStore.set((previous) => ({
       subagents: removeKey(previous.subagents, sessionId),
       activities: removeKey(previous.activities, sessionId),
+      compactions: removeKey(previous.compactions, sessionId),
     }));
   },
 };
@@ -188,4 +275,11 @@ export function useLiveSubagentRuns(sessionId: string | undefined): Record<strin
 /** React 绑定：某会话的实时活动条目（用 deriveActivityInfo 派生展示信息） */
 export function useLiveActivityEntry(sessionId: string | undefined): LiveActivityEntry | undefined {
   return useStore(liveStore, (state) => (sessionId ? state.activities[sessionId] : undefined));
+}
+
+const EMPTY_COMPACTIONS: CompactionMarker[] = [];
+
+/** React 绑定：某会话的压缩检查点实时标记（引用稳定，无更新不抖动） */
+export function useLiveCompactions(sessionId: string | undefined): CompactionMarker[] {
+  return useStore(liveStore, (state) => (sessionId ? state.compactions[sessionId] : undefined) ?? EMPTY_COMPACTIONS);
 }

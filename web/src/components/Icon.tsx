@@ -77,6 +77,14 @@ const PATHS = {
   "chevron-right": <path d="m9 18 6-6-6-6" />,
   "chevron-down": <path d="m6 9 6 6 6-6" />,
   "chevron-up": <path d="m18 15-6-6-6 6" />,
+  compress: (
+    <>
+      <path d="M8 3v5H3" />
+      <path d="M8 8 3 3" />
+      <path d="M16 21v-5h5" />
+      <path d="m16 16 5 5" />
+    </>
+  ),
   "panel-left": (
     <>
       <rect width="18" height="18" x="3" y="3" rx="2" />

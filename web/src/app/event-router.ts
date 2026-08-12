@@ -5,6 +5,7 @@ import type {
   ModelFallbackPayload, Session, TodoItem,
 } from "../lib/contracts";
 import { agentErrorToastText } from "../lib/agent-error";
+import { compactionModeText } from "../lib/compaction";
 import { isBusyState } from "../lib/agent-state";
 import type { NotificationKind, NotificationTarget } from "../lib/notifications";
 import { qk } from "./queries";
@@ -24,6 +25,8 @@ export interface EventRouterDeps {
   applyRunEvent(event: AppEvent): void;
   applyActivityEvent(event: AppEvent): void;
   applySubagentEvent(event: AppEvent): void;
+  /** 压缩检查点标记写入（live-store.applyCompactionEvent 的装配注入） */
+  applyCompactionEvent(event: AppEvent): void;
   stream: StreamBuffer;
   /** resync 命中当前会话时的附加清理（分页缓存等，由聊天视图装配注入） */
   onResyncCurrent?(sessionId: string): void;
@@ -194,19 +197,22 @@ export function createEventRouter(deps: EventRouterDeps): EventRouter {
     if (event.type === "context.cleared" && event.sessionId && event.sessionId === currentId) {
       deps.notify(t("上下文已清空（历史保留）", "Context cleared (history retained)"));
     }
-    // 上下文压缩开始（手动/85% 强制）：压缩可能耗时（vault 多次快速模型调用），先给即时反馈
+    // 上下文压缩开始（手动/85% 强制）：压缩可能耗时（vault 多次快速模型调用），先给即时反馈；
+    // 同时写入 live-store：消息流尾部出现运行中检查点行
     if (event.type === "context.compacting" && event.sessionId === currentId) {
+      deps.applyCompactionEvent(event);
       const payload = event.payload as { mode?: string; forced?: boolean };
-      const modeLabel = payload.mode === "vault" ? t("档案库", "vault") : payload.mode === "toolcalls" ? t("工具调用", "tool calls") : t("概览", "overview");
-      deps.notify(t(`正在压缩上下文（${payload.forced ? "85% 水位强制 · " : ""}${modeLabel}）…`, `Compacting context (${payload.forced ? "forced at 85% · " : ""}${modeLabel})…`));
+      deps.notify(t(`正在压缩上下文（${payload.forced ? "85% 水位强制 · " : ""}${t(...compactionModeText(payload.mode ?? "overview"))}）…`, `Compacting context (${payload.forced ? "forced at 85% · " : ""}${t(...compactionModeText(payload.mode ?? "overview"))})…`));
     }
-    // 上下文压缩（手动/85% 强制）：刷新上下文面板并提示
+    // 上下文压缩（手动/85% 强制）：运行中检查点行原位沉降为常驻行；刷新上下文面板并提示
     if (event.type === "context.compacted" && event.sessionId === currentId) {
+      deps.applyCompactionEvent(event);
       const payload = event.payload as { mode?: string; forced?: boolean };
-      const modeLabel = payload.mode === "overview" ? t("概览", "overview") : payload.mode === "toolcalls" ? t("工具调用", "tool calls") : payload.mode === "vault" ? t("档案库", "vault") : t("规则截断", "rule-based truncation");
+      const modeLabel = payload.mode === "truncated" ? t(...compactionModeText("truncated")) : t(...compactionModeText(payload.mode ?? "overview"));
       deps.notify(t(`已压缩上下文（${payload.forced ? "85% 水位强制 · " : ""}${modeLabel}）`, `Context compacted (${payload.forced ? "forced at 85% · " : ""}${modeLabel})`));
     }
     if (event.type === "context.compact_failed" && event.sessionId === currentId) {
+      deps.applyCompactionEvent(event);
       deps.notify(t(`上下文压缩失败：${(event.payload as { message?: string }).message ?? "未知错误"}`, `Context compaction failed: ${(event.payload as { message?: string }).message ?? "unknown error"}`), "error");
     }
     // 会话显示属性变更（重命名/置顶，可能来自其他客户端）：任何会话都刷新列表；详情仅当前会话
