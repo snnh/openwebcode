@@ -51,6 +51,8 @@ describe("/compact 发送反馈", () => {
     })) as HTMLTextAreaElement;
 
     fireEvent.change(textarea, { target: { value: "/compact" } });
+    // 输入 "/" 前缀会打开命令补全弹层：第一次 Enter 选中补全项（填入 "/compact "），第二次才真正发送
+    fireEvent.keyDown(textarea, { key: "Enter" });
     fireEvent.keyDown(textarea, { key: "Enter" });
     await waitFor(() => expect(posts).toBe(1));
 
@@ -87,6 +89,8 @@ describe("/compact 发送反馈", () => {
     })) as HTMLTextAreaElement;
 
     fireEvent.change(textarea, { target: { value: "/compact" } });
+    // 同上：第一次 Enter 选中补全项，第二次发送
+    fireEvent.keyDown(textarea, { key: "Enter" });
     fireEvent.keyDown(textarea, { key: "Enter" });
     // 等待请求完成（草稿被清空即 onSuccess 已执行）
     await waitFor(() => expect(textarea.value).toBe(""));
