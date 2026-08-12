@@ -173,19 +173,15 @@ describe("applyCacheSavings 缓存节省后处理", () => {
     expect(sessionRow.cacheSavings).toEqual({ usdMicroUnits: "18" });
   });
 
-  it("cacheRead 为 0 的桶不产生节省也不标记 incomplete", async () => {
-    const report = await makeReport([eventAt(new Date(2026, 6, 10, 9), { cacheRead: 0 })]);
-    const enriched = applyCacheSavings(report, () => undefined);
-    expect(enriched.days[0]!.providers[0]!.cacheSavings).toBeUndefined();
-    expect(enriched.days[0]!.providers[0]!.cacheSavingsIncomplete).toBeUndefined();
-    expect(enriched.totals.cacheSavingsIncomplete).toBeUndefined();
-  });
+  it("边界：cacheRead 为 0 不产出也不标记 incomplete；缓存价高于输入价的错配定价按 0 clamp", async () => {
+    const zero = applyCacheSavings(await makeReport([eventAt(new Date(2026, 6, 10, 9), { cacheRead: 0 })]), () => undefined);
+    expect(zero.days[0]!.providers[0]!.cacheSavings).toBeUndefined();
+    expect(zero.days[0]!.providers[0]!.cacheSavingsIncomplete).toBeUndefined();
+    expect(zero.totals.cacheSavingsIncomplete).toBeUndefined();
 
-  it("缓存价高于输入价的错配定价：节省按 0  clamp，不为负", async () => {
-    const report = await makeReport([eventAt(new Date(2026, 6, 10, 9))]);
     const weird = { currency: "USD" as const, input: 1_000_000n, output: 8_000_000n, cacheRead: 5_000_000n, cacheWrite: 5_000_000n };
-    const enriched = applyCacheSavings(report, () => weird);
-    expect(enriched.days[0]!.providers[0]!.cacheSavings).toEqual({ usdMicroUnits: "0" });
+    const clamped = applyCacheSavings(await makeReport([eventAt(new Date(2026, 6, 10, 9))]), () => weird);
+    expect(clamped.days[0]!.providers[0]!.cacheSavings).toEqual({ usdMicroUnits: "0" });
   });
 
   it("CNY 定价无汇率服务时产出 CNY 节省", async () => {

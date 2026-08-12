@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactElement } from "react";
 import type { SessionDetail } from "../lib/contracts";
@@ -188,7 +188,7 @@ describe("缓存与成本 pill", () => {
     };
   }
 
-  it("缓存 pill 标注口径（累计）与 data-tone；title 走统一明细", async () => {
+  it("缓存 pill：口径标注 + title 统一明细 + data-tone 分档（good/bad）", async () => {
     // 命中率 74k/(26k+74k)=74% → good 档
     vi.spyOn(api, "context").mockResolvedValue(contextViewWith({ inputTokens: 26_000, outputTokens: 100, cacheRead: 74_000, cacheWrite: 8_000 }) as never);
     renderHeader();
@@ -198,14 +198,13 @@ describe("缓存与成本 pill", () => {
     expect(pill.getAttribute("data-tone")).toBe("good");
     expect(pill.getAttribute("title")).toContain("累计缓存命中 74.0%");
     expect(pill.getAttribute("title")).toContain("低价计费");
-  });
-
-  it("低命中率标 danger 档", async () => {
+    // 低命中率标 danger 档
+    cleanup();
     vi.spyOn(api, "context").mockResolvedValue(contextViewWith({ inputTokens: 90_000, outputTokens: 100, cacheRead: 10_000, cacheWrite: 0 }) as never);
     renderHeader();
-    const pill = await screen.findByTestId("cache-usage");
-    expect(pill.textContent).toContain("缓存 10%");
-    expect(pill.getAttribute("data-tone")).toBe("bad");
+    const low = await screen.findByTestId("cache-usage");
+    expect(low.textContent).toContain("缓存 10%");
+    expect(low.getAttribute("data-tone")).toBe("bad");
   });
 
   it("成本 pill：未定价 tokens 标 * 并在 title 注明", async () => {

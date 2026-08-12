@@ -59,10 +59,16 @@ function setup(messageList: ChatMessage[] = TWO_MESSAGES) {
 }
 
 describe("用户消息编辑重发", () => {
-  it("编辑按钮就地展开 textarea，保存并发送走 edit 路由", async () => {
+  it("就地展开 textarea，保存并发送走 edit 路由；Esc 取消不提交", async () => {
     const { fetchMock } = setup();
     const editButton = await screen.findByRole("button", { name: "编辑重发" });
+    // Esc 取消：不提交、编辑态关闭
     fireEvent.click(editButton);
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "编辑消息" }), { key: "Escape" });
+    expect(screen.queryByRole("textbox", { name: "编辑消息" })).toBeNull();
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/edit"))).toBe(false);
+    // 正常编辑重发
+    fireEvent.click(screen.getByRole("button", { name: "编辑重发" }));
     const textarea = screen.getByRole("textbox", { name: "编辑消息" });
     expect((textarea as HTMLTextAreaElement).value).toBe("原始问题");
     fireEvent.change(textarea, { target: { value: "编辑后的问题" } });
@@ -72,16 +78,7 @@ describe("用户消息编辑重发", () => {
       expect(editCall).toBeTruthy();
       expect(JSON.parse(String(editCall![1]!.body))).toEqual({ text: "编辑后的问题" });
     });
-    // 编辑态关闭
     expect(screen.queryByRole("textbox", { name: "编辑消息" })).toBeNull();
-  });
-
-  it("Esc 取消不提交；带图片的用户消息不开放编辑", async () => {
-    const { fetchMock } = setup();
-    fireEvent.click(await screen.findByRole("button", { name: "编辑重发" }));
-    fireEvent.keyDown(screen.getByRole("textbox", { name: "编辑消息" }), { key: "Escape" });
-    expect(screen.queryByRole("textbox", { name: "编辑消息" })).toBeNull();
-    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/edit"))).toBe(false);
   });
 
   it("带图片的用户消息不显示编辑按钮", async () => {

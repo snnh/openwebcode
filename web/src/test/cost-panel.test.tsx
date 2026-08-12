@@ -1,4 +1,4 @@
-import { fireEvent, screen } from "@testing-library/react";
+import { cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CostPanel } from "../panels/CostPanel";
 import { api } from "../lib/api";
@@ -73,7 +73,7 @@ describe("CostPanel", () => {
 });
 
 describe("CostPanel 缓存节省卡", () => {
-  it("totals 带 cacheSavings 时渲染节省卡（偏好币种）", async () => {
+  it("totals 带 cacheSavings 渲染节省卡（偏好币种）；incomplete 标 * 并在 title 注明", async () => {
     vi.spyOn(api, "costReport").mockResolvedValue(report({
       totals: {
         runs: 2, inputTokens: 1_000, outputTokens: 200, cacheRead: 500, cacheWrite: 100,
@@ -85,9 +85,8 @@ describe("CostPanel 缓存节省卡", () => {
     const card = await screen.findByTestId("cache-savings-card");
     expect(card).toHaveTextContent("≈¥2.4");
     expect(card.textContent).not.toContain("*");
-  });
-
-  it("节省估算不完整时标 * 并在 title 注明", async () => {
+    // 不完整估算：标 * + title 注明
+    cleanup();
     vi.spyOn(api, "costReport").mockResolvedValue(report({
       totals: {
         runs: 2, inputTokens: 1_000, outputTokens: 200, cacheRead: 500, cacheWrite: 100,
@@ -97,9 +96,9 @@ describe("CostPanel 缓存节省卡", () => {
       },
     }));
     renderWithClient(<CostPanel />);
-    const card = await screen.findByTestId("cache-savings-card");
-    expect(card.textContent).toContain("*");
-    expect(card.querySelector("b")!.getAttribute("title")).toContain("不完整");
+    const incompleteCard = await screen.findByTestId("cache-savings-card");
+    expect(incompleteCard.textContent).toContain("*");
+    expect(incompleteCard.querySelector("b")!.getAttribute("title")).toContain("不完整");
   });
 
   it("无缓存活动时命中/节省卡整卡消失", async () => {

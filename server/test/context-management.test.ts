@@ -491,6 +491,13 @@ describe("stats.evicted 驱逐聚合", () => {
     await manager.restore("t-1");
     const restored = await manager.buildView(messages);
     expect(restored.stats.evicted).toBeUndefined();
+
+    // 无驱逐条目的会话：stats.evicted 缺省
+    const empty = new ContextManager(await tempRoot("owc-context-"));
+    const plain = await empty.buildView([
+      { id: "u-1", role: "user", createdAt: new Date().toISOString(), content: [{ type: "text", text: "你好" }] } as ChatMessage,
+    ]);
+    expect(plain.stats.evicted).toBeUndefined();
   });
 
   it("旧账本条目缺 evictedTokens 时按 sizeBytes/4 回退；重新驱逐时补烧", async () => {
@@ -515,15 +522,5 @@ describe("stats.evicted 驱逐聚合", () => {
     const view = await manager.buildView(messages);
     expect(view.stats.evicted?.count).toBe(1);
     expect(view.stats.evicted!.tokens).toBeGreaterThanOrEqual(Math.ceil(sizeBytes / 4));
-  });
-
-  it("无驱逐条目时 stats.evicted 缺省", async () => {
-    const root = await tempRoot("owc-context-");
-    const manager = new ContextManager(root);
-    const messages = [
-      { id: "u-1", role: "user", createdAt: new Date().toISOString(), content: [{ type: "text", text: "你好" }] } as ChatMessage,
-    ];
-    const view = await manager.buildView(messages);
-    expect(view.stats.evicted).toBeUndefined();
   });
 });

@@ -12,7 +12,7 @@ afterEach(() => {
 });
 
 describe("theme-color 跟随主题", () => {
-  it("挂载时写入 meta（缺失则创建），内容取当前 body 背景", () => {
+  it("挂载写入 meta（缺失则创建），主题切换后内容跟随更新", () => {
     document.body.style.backgroundColor = "rgb(241, 244, 245)";
     const { result } = renderHook(() => useTheme());
     expect(result.current.theme).toBe("light");
@@ -20,15 +20,8 @@ describe("theme-color 跟随主题", () => {
     expect(meta).not.toBeNull();
     expect(meta!.getAttribute("content")).toBe("rgb(241, 244, 245)");
     expect(document.documentElement.dataset.theme).toBe("light");
-  });
-
-  it("切换到暗色后 meta 内容跟随更新", () => {
-    document.body.style.backgroundColor = "rgb(241, 244, 245)";
-    const { result } = renderHook(() => useTheme());
-    act(() => result.current.setPreference("dark"));
     // 真实浏览器中 token 随 data-theme 换色；jsdom 无样式表，模拟解析后的暗色背景
     document.body.style.backgroundColor = "rgb(14, 19, 24)";
-    act(() => result.current.setPreference("light"));
     act(() => result.current.setPreference("dark"));
     expect(document.documentElement.dataset.theme).toBe("dark");
     expect(document.querySelector('meta[name="theme-color"]')!.getAttribute("content")).toBe("rgb(14, 19, 24)");
