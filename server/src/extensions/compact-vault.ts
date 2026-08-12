@@ -1,5 +1,6 @@
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import type { ExchangeRateService } from "../cost/exchange-rate.js";
 import { calculateUsageCost } from "../cost/cost-calculator.js";
 import type { PricingCatalog } from "../cost/pricing-catalog.js";
@@ -8,6 +9,7 @@ import type { HookRunner } from "../hooks.js";
 import { appendMemory, parseSedimentSections } from "../memory.js";
 import { ContextManager, estimateFragmentTokens, recordCompaction } from "../context/context-manager.js";
 import { extractInstructions, mergeInstructions, type CompactResult } from "../context/compactor.js";
+import type { ProviderRegistry } from "../providers/provider.js";
 import { activePathMessages } from "../sessions/session-tree.js";
 import type { ChatMessage, MessageContent } from "../sessions/types.js";
 import type { SessionStore } from "../sessions/session-store.js";
@@ -178,10 +180,15 @@ export class CompactVaultService {
   constructor(
     private readonly sessions: SessionStore,
     private readonly fastModel: FastModelClient,
-    private readonly deps: { usageLog?: UsageLog; pricing?: PricingCatalog; exchangeRates?: ExchangeRateService; hooks?: HookRunner } = {},
+    private readonly providers: ProviderRegistry,
+    private readonly deps: {
+      usageLog?: UsageLog; pricing?: PricingCatalog; exchangeRates?: ExchangeRateService; hooks?: HookRunner;
+      /** 延迟读取 compact-vault 扩展配置（装配早于 ExtensionManager 时闭包后取）。 */
+      getConfig?: () => Record<string, unknown>;
+    } = {},
   ) {}
 
-  async compact(sessionId: string, options: { keepTail?: number; chunkSize?: number } = {}): Promise<CompactResult> {
+  async compact(sessionId: string, options: { keepTail?: number; chunkSize?: number; maxTokens?: number } = {}): Promise<CompactResult> {
     const session = await this.sessions.get(sessionId);
     if (!session) throw new Error("Session not found");
     const context = new ContextManager(this.sessions.contextRoot(sessionId));
@@ -219,12 +226,9 @@ export class CompactVaultService {
     // Pass 1：逐块提取目录条目（跨块与跨次去重 key）
     const sections: VaultSection[] = [];
     const knownKeys = new Set(previous?.sections.map((section) => section.key) ?? []);
+    const maxTokens = this.resolveMaxTokens(options.maxTokens);
     for (const [index, chunk] of chunks.entries()) {
-      const completion = await this.fastModel.complete({
-        system: VAULT_ORGANIZE_SYSTEM,
-        prompt: buildOrganizePrompt(chunk, chunkFiles[index]!, sections, index + 1, chunks.length),
-        maxTokens: 2048,
-      });
+      const completion = await this.completeVault(VAULT_ORGANIZE_SYSTEM, buildOrganizePrompt(chunk, chunkFiles[index]!, sections, index + 1, chunks.length), maxTokens);
       this.recordFastModelUsage(sessionId, completion.usage);
       for (const parsed of parseSectionList(completion.text)) {
         if (knownKeys.has(parsed.key)) continue;
@@ -239,11 +243,7 @@ export class CompactVaultService {
     }
     // Pass 2：合并去重/删除过时 + 生成目录式索引（主模型摘要）；用户明确指令跨段累积置顶
     const instructions = !ledger.cleared || compactedUpto > clearedUpto ? (ledger.compacted?.instructions ?? []) : [];
-    const merge = await this.fastModel.complete({
-      system: VAULT_INDEX_SYSTEM,
-      prompt: buildIndexPrompt(span.length, sections, previous?.sections ?? [], instructions),
-      maxTokens: 2048,
-    });
+    const merge = await this.completeVault(VAULT_INDEX_SYSTEM, buildIndexPrompt(span.length, sections, previous?.sections ?? [], instructions), maxTokens);
     this.recordFastModelUsage(sessionId, merge.usage);
     const indexText = merge.text.trim();
     const mergedInstructions = mergeInstructions(instructions, extractInstructions(indexText));
@@ -279,6 +279,62 @@ export class CompactVaultService {
       await this.deps.hooks.run("PostCompact", { sessionId, cwd: session.cwd, compact: { strategy: "overview", forced: false, changed: true, finalMode: "vault", uptoIndex } });
     }
     return { changed: true, mode: "vault", uptoIndex, summary: indexText, createdAt: record.createdAt };
+  }
+
+  /**
+   * 整理补全（思考模型优先适配）：优先走 FastModelClient 现有链路（重试/thinking 配置齐全）；
+   * 思考型快速模型的正文可能全部落在 thinking 通道（或思考耗尽输出上限），FastModelClient 抛
+   * 「快速模型返回为空」时，用 providers 直连（与 chat 发送消息同一条 streamChat 通路）收集
+   * text_delta 优先、thinking_delta/thinking_end 兜底，不再报错。
+   */
+  private async completeVault(system: string, prompt: string, maxTokens: number | undefined): Promise<{ text: string; usage: { inputTokens: number; outputTokens: number } }> {
+    // 有上限时优先走 FastModelClient 现有链路（重试/thinking 配置齐全）；
+    // 思考型快速模型正文可能全部落在思考通道（或思考耗尽上限），FastModelClient 抛
+    // 「快速模型返回为空」时与无上限场景一起走直连兜底。
+    if (maxTokens !== undefined) {
+      try {
+        return await this.fastModel.complete({ system, prompt, maxTokens });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!message.includes("快速模型返回为空")) throw error;
+      }
+    }
+    // 直连（同一 provider.streamChat 发送链路）：text_delta 优先、thinking_delta/thinking_end 兜底
+    const provider = this.providers.get(this.fastModel.provider ?? "");
+    if (!provider) throw new Error(`快速模型服务商不可用：${this.fastModel.provider}`);
+    let text = "";
+    let thinking = "";
+    for await (const event of provider.streamChat({
+      model: this.fastModel.model ?? "",
+      system,
+      messages: [{
+        id: randomUUID(),
+        role: "user",
+        content: [{ type: "text", text: prompt }],
+        createdAt: new Date().toISOString(),
+      }],
+      tools: [],
+      ...(maxTokens !== undefined ? { maxTokens } : {}),
+      signal: AbortSignal.timeout(120_000),
+    })) {
+      if (event.type === "text_delta") text += event.text;
+      else if (event.type === "thinking_delta") thinking += event.text;
+      else if (event.type === "thinking_end" && thinking === "") thinking = event.text;
+      else if (event.type === "done" && (event.stopReason === "refusal" || event.stopReason === "error")) {
+        throw new Error(`模型停止原因：${event.stopReason}`);
+      }
+    }
+    const finalText = text.trim() !== "" ? text : thinking.trim();
+    if (finalText === "") throw new Error("快速模型返回为空");
+    return { text: finalText, usage: { inputTokens: 0, outputTokens: 0 } };
+  }
+
+  /** 整理输出上限：显式 options 优先，否则读扩展配置（缺省不限制——端点默认）。 */
+  private resolveMaxTokens(option: number | undefined): number | undefined {
+    if (option !== undefined && Number.isSafeInteger(option) && option > 0) return option;
+    const configured = this.deps.getConfig?.()?.maxTokens;
+    if (typeof configured === "number" && Number.isSafeInteger(configured) && configured > 0) return configured;
+    return undefined;
   }
 
   /** 读取 compact/ 内文件（扩展 API context.readVaultFile 的服务端实现）。 */

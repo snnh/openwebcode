@@ -123,8 +123,12 @@ const modelRoles = new ModelRoleResolver(settings, providers);
 const hooks = new HookRunner(path.join(dataDir, "hooks.json"), events);
 const compactor = new Compactor(sessions, fastModel, { usageLog, pricing, exchangeRates, hooks });
 // 档案库压缩（compact-vault 官方扩展的 server 侧服务）：归档完整上下文 + 目录索引 + 按需召回
-const vaultService = new CompactVaultService(sessions, fastModel, { usageLog, pricing, exchangeRates, hooks });
-const extensions = new ExtensionManager(dataDir, events, { sessions, fastModel, vaultService });
+const vaultService: CompactVaultService = new CompactVaultService(sessions, fastModel, providers, {
+  usageLog, pricing, exchangeRates, hooks,
+  // 扩展配置延迟读取（ExtensionManager 在其后创建）：maxTokens 等由用户在扩展设置里配置
+  getConfig: () => extensions.list().find((item) => item.id === "compact-vault")?.config ?? {},
+});
+const extensions: ExtensionManager = new ExtensionManager(dataDir, events, { sessions, fastModel, vaultService, providers });
 await extensions.initialize();
 const contentLens = new ContentLensService(sessions, fastModel);
 // Production evaluations share the normal Core boundary, so workspace access

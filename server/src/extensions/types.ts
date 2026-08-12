@@ -145,7 +145,9 @@ export type ExtensionApiMethod =
   | "storage.write"
   | "storage.delete"
   | "storage.list"
-  | "model.complete";
+  | "model.complete"
+  | "model.vision"
+  | "models.getCapabilities";
 
 /** host→server：扩展调用 server 能力。与 HostResponse 以 api+extensionId 字段区分。 */
 export interface ApiRequest {

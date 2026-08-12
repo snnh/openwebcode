@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { OFFICIAL_EXTENSIONS, optimizeAttention } from "./official.js";
 import { RECALL_MEMORY_SPEC, recallMemory, reinjectVaultIndex, type VaultHostApi } from "./compact-vault-host.js";
+import { bridgeVisionImages, type VisionToolsHostApi } from "./vision-tools-host.js";
 import { isExtensionEventAllowed, type ApiRequest, type ApiResponse, type ContextHookPayload, type ContextHookResult, type EventMessage, type ExtensionApiMethod, type ExtensionHook, type ExtensionManifest, type ExtensionPermission, type ExtensionState, type ExtensionToolResult, type ExtensionToolSpec, type HostRequest, type HostResponse, type PromptHookPayload, type PromptHookResult, type ToolHookPayload, type ToolHookResult } from "./types.js";
 
 type Handler = (payload: unknown, config: Record<string, unknown>) => unknown | Promise<unknown>;
@@ -52,6 +53,33 @@ tools.set("compact-vault", new Map([
   ["recall_memory", { spec: RECALL_MEMORY_SPEC, handler: (input, config, sessionId) => recallMemory(vaultApi, input, config, sessionId) }],
 ]));
 register("compact-vault", "context.beforeBuild", (payload) => reinjectVaultIndex(vaultApi, payload as ContextHookPayload));
+
+/** vision-tools（视觉工具）：纯文本主模型时把图片交给视觉模型描述并替换注入（缓存 + 失败占位）。 */
+const visionApi: VisionToolsHostApi = {
+  getSession: (sessionId) =>
+    callApi("vision-tools", "sessions.get", { id: sessionId }) as Promise<{ provider?: string; model?: string }>,
+  getCapabilities: (model) =>
+    callApi("vision-tools", "models.getCapabilities", { model }) as Promise<{ vision: boolean }>,
+  modelVision: (input) =>
+    callApi(
+      "vision-tools",
+      "model.vision",
+      {
+        provider: input.provider,
+        model: input.model,
+        prompt: input.prompt,
+        thinking: input.thinking,
+        images: input.images,
+        ...(typeof input.maxTokens === "number" ? { maxTokens: input.maxTokens } : {}),
+      },
+      60_000,
+    ) as Promise<{ text: string }>,
+  storageRead: (relativePath) =>
+    callApi("vision-tools", "storage.read", { path: relativePath }) as Promise<{ content: string | null }>,
+  storageWrite: (relativePath, content) =>
+    callApi("vision-tools", "storage.write", { path: relativePath, content }) as Promise<{ bytes: number }>,
+};
+register("vision-tools", "context.beforeBuild", (payload, config) => bridgeVisionImages(visionApi, payload as ContextHookPayload, config));
 
 function requirePermission(manifest: ExtensionManifest, permission: ExtensionPermission): void {
   if (!manifest.permissions.includes(permission)) throw new Error(`Extension ${manifest.id} lacks permission: ${permission}`);
@@ -177,6 +205,21 @@ async function loadThirdParty(manifests: Array<ExtensionManifest & { directory?:
             // 模型调用远超默认 5s api 超时；调用方工具若需完整等待，应在 spec.timeoutMs 显式调大
             return callApi(manifest.id, "model.complete", { prompt: input?.prompt, ...(typeof input?.maxTokens === "number" ? { maxTokens: input.maxTokens } : {}) }, 60_000);
           },
+          /** 视觉通道（权限 model:fast）：图片交给指定 provider/model 生成描述（server 侧复用 streamChat 发送链路）。 */
+          vision: (input: { provider: string; model: string; prompt: string; thinking?: boolean; maxTokens?: number; images: Array<{ mediaType: string; data: string }> }): Promise<unknown> => {
+            requirePermission(manifest, "model:fast");
+            return callApi(manifest.id, "model.vision", {
+              provider: input?.provider,
+              model: input?.model,
+              prompt: input?.prompt,
+              thinking: input?.thinking !== false,
+              images: input?.images,
+              ...(typeof input?.maxTokens === "number" ? { maxTokens: input.maxTokens } : {}),
+            }, 60_000);
+          },
+          /** 模型能力查询（vision 判定等，公开信息无敏感数据）。 */
+          getCapabilities: (model: string): Promise<unknown> =>
+            callApi(manifest.id, "models.getCapabilities", { model }),
         },
         /** 注册 manifest.routes 已声明的私有 HTTP 路由（权限 http:route）；handler 返回 {status?, body?}。 */
         registerRoute(method: unknown, routePath: unknown, handler: RouteHandler): void {
@@ -243,13 +286,15 @@ async function runHook(hook: ExtensionHook, original: unknown): Promise<unknown>
   }
   let current = original;
   const ordered = ["context-manager", "attention-optimizer", "content-lens", "pdf-to-image", ...handlers.keys()].filter((id, index, all) => all.indexOf(id) === index);
+  // context 变换钩子可能含模型调用（视觉工具逐图描述等），超时放宽到 120s；其余保持 5s
+  const hookTimeout = hook === "context.beforeBuild" || hook === "message.beforeSend" ? 120_000 : 5000;
   for (const id of ordered) {
     const state = states.get(id);
     if (!state?.enabled) continue;
     for (const handler of handlers.get(id)?.get(hook) ?? []) {
       let result: unknown;
       try {
-        result = await withTimeout(Promise.resolve(handler(current, state.config)));
+        result = await withTimeout(Promise.resolve(handler(current, state.config)), hookTimeout);
       } catch (error) {
         process.stderr.write(`[extension-host] ${id} ${hook}: ${error instanceof Error ? error.message : String(error)}\n`);
         continue;

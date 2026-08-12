@@ -5,7 +5,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AppEvent, EventBus } from "../events/event-bus.js";
 import type { FastModelClient } from "../fast-model.js";
-import type { ProviderTool } from "../providers/provider.js";
+import { getModelProfile } from "../context/model-profile.js";
+import type { ProviderRegistry, ProviderTool } from "../providers/provider.js";
 import type { ChatMessage, SessionDetail, SessionMeta } from "../sessions/types.js";
 import type { SessionStore } from "../sessions/session-store.js";
 import { ContextManager } from "../context/context-manager.js";
@@ -53,6 +54,8 @@ const API_PERMISSIONS: Record<ExtensionApiMethod, ExtensionPermission | null> = 
   "storage.delete": null,
   "storage.list": null,
   "model.complete": "model:fast",
+  "model.vision": "model:fast",
+  "models.getCapabilities": null,
 };
 
 /** sessions:read 只暴露元信息白名单字段；不落出沙盒路径/setupScript 等内部配置。 */
@@ -93,7 +96,7 @@ export class ExtensionManager {
   /** 已发出的工具形态警告（去重，避免每轮重复刷事件）。 */
   private readonly shapingWarningsIssued = new Set<string>();
 
-  constructor(private readonly dataDir: string, private readonly events?: EventBus, private readonly deps: { sessions?: SessionStore; fastModel?: FastModelClient; storageQuota?: { file: number; total: number }; vaultService?: CompactVaultService } = {}) {
+  constructor(private readonly dataDir: string, private readonly events?: EventBus, private readonly deps: { sessions?: SessionStore; fastModel?: FastModelClient; storageQuota?: { file: number; total: number }; vaultService?: CompactVaultService; providers?: ProviderRegistry } = {}) {
     this.root = path.join(dataDir, "extensions");
     this.configPath = path.join(this.root, "extensions.json");
   }
@@ -386,7 +389,9 @@ export class ExtensionManager {
 
   private async hook(hook: ExtensionHook, payload: unknown): Promise<unknown> {
     try {
-      return await this.request("hook", { hook, payload });
+      // context 变换钩子可能含模型调用（视觉描述、翻译等），超时放宽到 120s；其余保持 5.5s
+      const timeoutMs = hook === "context.beforeBuild" || hook === "message.beforeSend" ? 120_000 : undefined;
+      return await this.request("hook", { hook, payload }, timeoutMs);
     } catch (error) {
       this.events?.publish({ source: "server", type: "extension.hook_failed", payload: { hook, message: error instanceof Error ? error.message : String(error) } });
       return payload;
@@ -471,6 +476,19 @@ export class ExtensionManager {
       }
       case "model.complete": {
         return this.modelComplete(params);
+      }
+      case "model.vision": {
+        return this.modelVision(params);
+      }
+      case "models.getCapabilities": {
+        const model = typeof params.model === "string" && params.model ? params.model : "";
+        if (!model) throw new Error("models.getCapabilities requires a model string");
+        const capabilities = getModelProfile(model).capabilities;
+        return {
+          vision: capabilities.modalities.includes("image"),
+          modalities: [...capabilities.modalities],
+          thinking: [...capabilities.thinking],
+        };
       }
     }
   }
@@ -572,6 +590,75 @@ export class ExtensionManager {
       maxTokens = Math.min(value, MODEL_MAX_TOKENS_LIMIT);
     }
     return fastModel.complete({ system: "You are a helper invoked by an openwebcode extension. Answer concisely.", prompt, maxTokens });
+  }
+
+  /**
+   * model.vision：把图片交给指定 provider/model 生成描述（复用 chat 发送消息同一条
+   * provider.streamChat 通路）。text_delta 优先、thinking_delta/thinking_end 兜底——
+   * 思考型模型的正文可能全部落在思考通道。thinking 缺省开启。
+   */
+  private async modelVision(params: Record<string, unknown>): Promise<unknown> {
+    const providers = this.deps.providers;
+    if (!providers) throw new Error("Provider registry is not configured");
+    const providerName = typeof params.provider === "string" && params.provider ? params.provider : "";
+    const model = typeof params.model === "string" && params.model ? params.model : "";
+    if (!providerName || !model) throw new Error("model.vision requires provider and model");
+    const provider = providers.get(providerName);
+    if (!provider) throw new Error(`Vision provider is unavailable: ${providerName}`);
+    const images = params.images;
+    if (!Array.isArray(images) || images.length < 1 || images.length > 4) {
+      throw new Error("model.vision requires 1-4 images");
+    }
+    const imageBlocks: Array<{ type: "image"; mediaType: string; data: string }> = [];
+    for (const image of images) {
+      if (!image || typeof image !== "object") throw new Error("model.vision image must be an object");
+      const record = image as { mediaType?: unknown; data?: unknown };
+      const mediaType = record.mediaType;
+      if (typeof mediaType !== "string" || !["image/png", "image/jpeg", "image/webp", "image/gif"].includes(mediaType)) {
+        throw new Error("model.vision image mediaType must be png/jpeg/webp/gif");
+      }
+      const data = record.data;
+      if (typeof data !== "string" || data.length === 0 || data.length > 7_000_000 || !isCanonicalBase64(data)) {
+        throw new Error("model.vision image data must be canonical base64 no larger than 7M chars");
+      }
+      imageBlocks.push({ type: "image", mediaType, data });
+    }
+    const prompt = typeof params.prompt === "string" ? params.prompt : "";
+    if (!prompt) throw new Error("model.vision requires a non-empty prompt string");
+    if (Buffer.byteLength(prompt, "utf8") > MODEL_PROMPT_LIMIT) throw new Error(`model.vision prompt exceeds ${MODEL_PROMPT_LIMIT} bytes`);
+    let maxTokens: number | undefined;
+    if (params.maxTokens !== undefined) {
+      const value = Number(params.maxTokens);
+      if (!Number.isSafeInteger(value) || value < 1) throw new Error("model.vision maxTokens must be a positive integer");
+      maxTokens = Math.min(value, MODEL_MAX_TOKENS_LIMIT);
+    }
+    const thinking = params.thinking !== false;
+    let text = "";
+    let thinkingText = "";
+    for await (const event of provider.streamChat({
+      model,
+      system: "You are a vision assistant invoked by an openwebcode extension. Describe the image accurately.",
+      messages: [{
+        id: randomUUID(),
+        role: "user",
+        content: [...imageBlocks, { type: "text", text: prompt }],
+        createdAt: new Date().toISOString(),
+      }],
+      tools: [],
+      thinking: thinking ? "enabled" : "disabled",
+      ...(maxTokens !== undefined ? { maxTokens } : {}),
+      signal: AbortSignal.timeout(60_000),
+    })) {
+      if (event.type === "text_delta") text += event.text;
+      else if (event.type === "thinking_delta") thinkingText += event.text;
+      else if (event.type === "thinking_end" && thinkingText === "") thinkingText = event.text;
+      else if (event.type === "done" && (event.stopReason === "refusal" || event.stopReason === "error")) {
+        throw new Error(`模型停止原因：${event.stopReason}`);
+      }
+    }
+    const finalText = text.trim() !== "" ? text : thinkingText.trim();
+    if (finalText === "") throw new Error("视觉模型返回为空");
+    return { text: finalText };
   }
 
   /**
@@ -762,6 +849,11 @@ export class ExtensionManager {
 
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+/** 规范 base64 校验（model.vision 图片数据；与消息上传同口径）。 */
+function isCanonicalBase64(value: string): boolean {
+  return value.length % 4 === 0 && /^[A-Za-z0-9+/]*={0,2}$/.test(value);
 }
 
 async function readManifest(directory: string): Promise<ExtensionManifest> {

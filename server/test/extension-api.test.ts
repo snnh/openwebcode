@@ -43,12 +43,50 @@ async function installFixture(manager: ExtensionManager, root: string, options: 
   await manager.install(source);
 }
 
-async function setupManager(options: { permissions: ExtensionPermission[]; entry?: string }) {
+/** 视觉通道 fixture：api.model.vision 图片描述 + api.model.getCapabilities 能力查询。 */
+const VISION_ENTRY = `
+export function activate(api) {
+  api.registerTool({ name: "describe", description: "Describe an image", inputSchema: { type: "object", properties: {} } }, async () => {
+    const result = await api.model.vision({
+      provider: "vision-stub", model: "vision-m", prompt: "describe this", thinking: true,
+      images: [{ mediaType: "image/png", data: "aGVsbG8=" }],
+    });
+    return "result:" + JSON.stringify(result);
+  });
+  api.registerTool({ name: "describe_capped", description: "Describe with maxTokens", inputSchema: { type: "object", properties: {} } }, async () => {
+    const result = await api.model.vision({
+      provider: "vision-stub", model: "vision-m", prompt: "describe this", thinking: false, maxTokens: 512,
+      images: [{ mediaType: "image/png", data: "aGVsbG8=" }],
+    });
+    return "result:" + JSON.stringify(result);
+  });
+  api.registerTool({ name: "describe_bad", description: "Bad image payload", inputSchema: { type: "object", properties: {} } }, async () => {
+    const result = await api.model.vision({
+      provider: "vision-stub", model: "vision-m", prompt: "describe this",
+      images: [{ mediaType: "image/png", data: "not-base64!!" }],
+    });
+    return "result:" + JSON.stringify(result);
+  });
+  api.registerTool({ name: "describe_unknown", description: "Unknown provider", inputSchema: { type: "object", properties: {} } }, async () => {
+    const result = await api.model.vision({
+      provider: "ghost", model: "vision-m", prompt: "describe this",
+      images: [{ mediaType: "image/png", data: "aGVsbG8=" }],
+    });
+    return "result:" + JSON.stringify(result);
+  });
+  api.registerTool({ name: "capabilities", description: "Model capabilities", inputSchema: { type: "object", properties: {} } }, async () => {
+    const caps = await api.model.getCapabilities("gpt-4o");
+    return "caps:" + JSON.stringify(caps);
+  });
+}
+`;
+
+async function setupManager(options: { permissions: ExtensionPermission[]; entry?: string; providers?: ProviderRegistry }) {
   const root = await tempRoot("owc-extapi-");
   const events = new EventBus();
   const sessions = new SessionStore(path.join(root, "sessions"));
   await sessions.initialize();
-  const manager = new ExtensionManager(path.join(root, "data"), events, { sessions });
+  const manager = new ExtensionManager(path.join(root, "data"), events, { sessions, ...(options.providers ? { providers: options.providers } : {}) });
   await manager.initialize();
   await installFixture(manager, root, options);
   return { root, events, sessions, manager };
@@ -431,4 +469,73 @@ describe("官方扩展 configSchema", () => {
       checkProperties(properties as Record<string, unknown>, manifest.id);
     }
   });
+});
+
+describe("model.vision and models.getCapabilities extension API", () => {
+  it("图片经 provider streamChat 发送链路生成描述（text 优先），支持思考兜底与 maxTokens", async () => {
+    const providers = new ProviderRegistry();
+    const requests: Array<{ model?: string; maxTokens?: number; thinking?: string }> = [];
+    providers.register(makeStubProvider("vision-stub", async function* (request) {
+      requests.push({ model: request.model, maxTokens: request.maxTokens, thinking: request.thinking });
+      yield { type: "thinking_delta", text: "先思考" };
+      yield { type: "text_delta", text: "这是一张截图" };
+      yield { type: "done", stopReason: "end_turn" };
+    }));
+    const { manager } = await setupManager({ permissions: ["tools:register", "model:fast"], entry: VISION_ENTRY, providers });
+    try {
+      await manager.configure("sample", { enabled: true });
+      const result = await manager.invokeTool("ext__sample__describe", {});
+      expect(result.content).toBe("result:{\"text\":\"这是一张截图\"}");
+      expect(requests[0]).toMatchObject({ model: "vision-m", thinking: "enabled" });
+      expect(requests[0]?.maxTokens).toBeUndefined();
+
+      const capped = await manager.invokeTool("ext__sample__describe_capped", {});
+      expect(capped.content).toBe("result:{\"text\":\"这是一张截图\"}");
+      expect(requests[1]).toMatchObject({ model: "vision-m", thinking: "disabled", maxTokens: 512 });
+    } finally {
+      await manager.close();
+    }
+  }, 20_000);
+
+  it("思考通道兜底：只发 thinking_delta 时返回思考文本", async () => {
+    const providers = new ProviderRegistry();
+    providers.register(makeStubProvider("vision-stub", async function* () {
+      yield { type: "thinking_delta", text: "图片里有一个错误提示框" };
+      yield { type: "done", stopReason: "end_turn" };
+    }));
+    const { manager } = await setupManager({ permissions: ["tools:register", "model:fast"], entry: VISION_ENTRY, providers });
+    try {
+      await manager.configure("sample", { enabled: true });
+      const result = await manager.invokeTool("ext__sample__describe", {});
+      expect(result.content).toBe("result:{\"text\":\"图片里有一个错误提示框\"}");
+    } finally {
+      await manager.close();
+    }
+  }, 20_000);
+
+  it("参数校验：非法 base64 拒绝；provider 未注册报错", async () => {
+    const providers = new ProviderRegistry();
+    providers.register(makeStubProvider("vision-stub"));
+    const { manager } = await setupManager({ permissions: ["tools:register", "model:fast"], entry: VISION_ENTRY, providers });
+    try {
+      await manager.configure("sample", { enabled: true });
+      await expect(manager.invokeTool("ext__sample__describe_bad", {})).rejects.toThrow(/base64/);
+      await expect(manager.invokeTool("ext__sample__describe_unknown", {})).rejects.toThrow(/unavailable/);
+    } finally {
+      await manager.close();
+    }
+  }, 20_000);
+
+  it("models.getCapabilities 返回模型能力（vision 判定）", async () => {
+    const { manager } = await setupManager({ permissions: ["tools:register", "model:fast"], entry: VISION_ENTRY });
+    try {
+      await manager.configure("sample", { enabled: true });
+      const result = await manager.invokeTool("ext__sample__capabilities", {});
+      expect(result.content).toContain("caps:");
+      expect(result.content).toContain("\"vision\":true");
+      expect(result.content).toContain("image");
+    } finally {
+      await manager.close();
+    }
+  }, 20_000);
 });
