@@ -9,7 +9,7 @@ import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
-import { applyCacheSavings, UsageLog, type UsageEventRecord } from "../src/usage-log.js";
+import { applyCacheSavings, MAX_CACHED_REPORTS, UsageLog, type UsageEventRecord } from "../src/usage-log.js";
 import { tempRoot } from "./helpers/temp-roots.js";
 
 /** 用本地时间构造，保证报表的本地日期分桶与测试环境时区无关。 */
@@ -190,5 +190,28 @@ describe("applyCacheSavings 缓存节省后处理", () => {
     const enriched = applyCacheSavings(report, () => cnyPricing);
     // 10 × (14 − 7) = 70 micro CNY
     expect(enriched.days[0]!.providers[0]!.cacheSavings).toEqual({ cnyMicroUnits: "70" });
+  });
+});
+
+describe("报表聚合缓存 LRU 上限", () => {
+  type CacheHolder = { reportCache: Map<string, unknown> };
+  const cacheOf = (log: UsageLog): Map<string, unknown> => (log as unknown as CacheHolder).reportCache;
+
+  it("相异区间超过上限淘汰最旧；命中刷新热度", async () => {
+    const log = new UsageLog(await tempRoot("owc-usage-"));
+    await log.record(eventAt(new Date(2026, 6, 10, 9)));
+    // 9 个相异区间（上限 8）：最早的 "2026-07-012026-07-01" 被淘汰
+    for (let day = 1; day <= 9; day += 1) {
+      const key = `2026-07-${String(day).padStart(2, "0")}`;
+      await log.report({ from: key, to: key });
+    }
+    expect(cacheOf(log).size).toBe(MAX_CACHED_REPORTS);
+    expect(cacheOf(log).has("2026-07-012026-07-01")).toBe(false);
+    // 命中刷新热度：再访问现存最旧的 "02"，再新增一个区间，"02" 不被淘汰、"03" 淘汰
+    await log.report({ from: "2026-07-02", to: "2026-07-02" });
+    await log.report({ from: "2026-07-10", to: "2026-07-10" });
+    expect(cacheOf(log).size).toBe(MAX_CACHED_REPORTS);
+    expect(cacheOf(log).has("2026-07-022026-07-02")).toBe(true);
+    expect(cacheOf(log).has("2026-07-032026-07-03")).toBe(false);
   });
 });

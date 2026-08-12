@@ -20,7 +20,16 @@ import "./styles/dialogs.css";
 import "./styles/settings.css";
 
 const queryClient = new QueryClient({
-  defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } },
+  defaultOptions: {
+    queries: {
+      retry: 1,
+      refetchOnWindowFocus: false,
+      // 未订阅缓存的驻留收紧到 2 分钟（默认 5）：会话详情（消息数组）与上下文视图
+      // （账本+压缩历史）是大 payload，切走后尽快释放；staleTime 为 0，重挂载本就会
+      // refetch，行为语义不变
+      gcTime: 2 * 60_000,
+    },
+  },
 });
 
 // share 路由独立 chunk：只读分享页不占主入口体积

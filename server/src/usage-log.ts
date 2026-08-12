@@ -113,10 +113,13 @@ function isRecord(value: unknown): value is UsageEventRecord {
  * 全局用量日志：dataDir/usage-events.jsonl 追加写，读取时现场聚合。
  * 每行约 200B，1 万次调用约 2MB，v0.1 不做轮转。
  */
+/** 报表聚合缓存的 LRU 上限：from/to 是自由查询参数，不封顶会随相异区间组合无限增长（每份含全量按日/按会话行）。 */
+export const MAX_CACHED_REPORTS = 8;
+
 export class UsageLog {
   private readonly filePath: string;
   private queue: Promise<void> = Promise.resolve();
-  /** report 聚合结果缓存（按 from/to 区间键控）：文件 mtimeMs+size 指纹未变时复用，generatedAt 仍每次现取。 */
+  /** report 聚合结果缓存（按 from/to 区间键控，LRU 封顶 MAX_CACHED_REPORTS）：文件 mtimeMs+size 指纹未变时复用，generatedAt 仍每次现取。 */
   private readonly reportCache = new Map<string, { mtimeMs: number; size: number; body: Omit<CostReport, "generatedAt"> }>();
 
   constructor(dataDir: string) {
@@ -186,6 +189,9 @@ export class UsageLog {
     const cacheKey = `${range.from ?? ""}${range.to ?? ""}`;
     const cached = this.reportCache.get(cacheKey);
     if (fingerprint && cached && cached.mtimeMs === fingerprint.mtimeMs && cached.size === fingerprint.size) {
+      // LRU 命中刷新热度：delete+set 移到最新，淘汰时不误杀热区间
+      this.reportCache.delete(cacheKey);
+      this.reportCache.set(cacheKey, cached);
       return { generatedAt: new Date().toISOString(), ...cached.body };
     }
     const events = await this.readAll();
@@ -243,7 +249,12 @@ export class UsageLog {
         }))
         .sort((a, b) => (b.inputTokens + b.outputTokens) - (a.inputTokens + a.outputTokens)),
     };
-    if (fingerprint) this.reportCache.set(cacheKey, { mtimeMs: fingerprint.mtimeMs, size: fingerprint.size, body });
+    if (fingerprint) {
+      this.reportCache.set(cacheKey, { mtimeMs: fingerprint.mtimeMs, size: fingerprint.size, body });
+      while (this.reportCache.size > MAX_CACHED_REPORTS) {
+        this.reportCache.delete(this.reportCache.keys().next().value!);
+      }
+    }
     return { generatedAt: new Date().toISOString(), ...body };
   }
 }
