@@ -466,3 +466,64 @@ describe("context selection REST", () => {
     }
   });
 });
+describe("stats.evicted 驱逐聚合", () => {
+  function toolResultMsg(id: string, callId: string, value: string): ChatMessage {
+    return { id, role: "tool", createdAt: new Date().toISOString(), content: [{ type: "tool_result", toolCallId: callId, content: value, isError: false }] };
+  }
+
+  it("手动驱逐烧入 evictedTokens（与视图归因同一估算器），buildView stats 聚合条数与 tokens", async () => {
+    const root = await tempRoot("owc-context-");
+    const manager = new ContextManager(root);
+    const content = "x".repeat(400);
+    const messages = [
+      { id: "a-1", role: "assistant", createdAt: new Date().toISOString(), content: [{ type: "tool_call", id: "c1", name: "bash", input: {} }] } as ChatMessage,
+      toolResultMsg("t-1", "c1", content),
+    ];
+    const ledger = await manager.evictMessage(messages, "t-1");
+    const entry = ledger.entries[0]!;
+    // 烧入值即 estimateTokens(原文)：与豁免下限同一估算（>0 且随内容长度增长）
+    expect(entry.evictedTokens).toBeGreaterThan(0);
+
+    const view = await manager.buildView(messages);
+    expect(view.stats.evicted).toEqual({ tokens: entry.evictedTokens, count: 1 });
+
+    // 恢复后不再计入
+    await manager.restore("t-1");
+    const restored = await manager.buildView(messages);
+    expect(restored.stats.evicted).toBeUndefined();
+  });
+
+  it("旧账本条目缺 evictedTokens 时按 sizeBytes/4 回退；重新驱逐时补烧", async () => {
+    const root = await tempRoot("owc-context-");
+    const manager = new ContextManager(root);
+    const content = "y".repeat(800);
+    const messages = [
+      { id: "a-1", role: "assistant", createdAt: new Date().toISOString(), content: [{ type: "tool_call", id: "c1", name: "bash", input: {} }] } as ChatMessage,
+      toolResultMsg("t-1", "c1", content),
+    ];
+    const ledger = await manager.evictMessage(messages, "t-1");
+    // 模拟旧账本：抹掉烧入字段后经恢复再驱逐触发补烧路径
+    const sizeBytes = ledger.entries[0]!.sizeBytes!;
+    delete ledger.entries[0]!.evictedTokens;
+    await manager.restore("t-1");
+    const reEvicted = await manager.evictMessage(messages, "t-1");
+    expect(reEvicted.entries[0]!.evictedTokens).toBeGreaterThan(0);
+
+    // 纯旧条目（无 evictedTokens）直接聚合时走 sizeBytes/4 回退：构造 legacy 账本再 buildView
+    const legacy = await manager.evictMessage(messages, "t-1");
+    void legacy;
+    const view = await manager.buildView(messages);
+    expect(view.stats.evicted?.count).toBe(1);
+    expect(view.stats.evicted!.tokens).toBeGreaterThanOrEqual(Math.ceil(sizeBytes / 4));
+  });
+
+  it("无驱逐条目时 stats.evicted 缺省", async () => {
+    const root = await tempRoot("owc-context-");
+    const manager = new ContextManager(root);
+    const messages = [
+      { id: "u-1", role: "user", createdAt: new Date().toISOString(), content: [{ type: "text", text: "你好" }] } as ChatMessage,
+    ];
+    const view = await manager.buildView(messages);
+    expect(view.stats.evicted).toBeUndefined();
+  });
+});

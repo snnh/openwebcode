@@ -6,6 +6,7 @@ import type { CoreClientLike } from "../core-client.js";
 import type { EventBus } from "../events/event-bus.js";
 import type { ProviderRegistry } from "../providers/provider.js";
 import type { PricingCatalog, SyncResult } from "../cost/pricing-catalog.js";
+import type { ExchangeRateService } from "../cost/exchange-rate.js";
 import type { Currency, EffortLevel, ModelModality, ModelPricing, ModelProfile, ThinkingMode } from "../context/model-profile.js";
 import type { CatalogModel, ModelRegistry } from "../context/model-registry.js";
 import type { SettingsService } from "../settings-service.js";
@@ -347,6 +348,8 @@ export interface RouteContext {
   events: EventBus;
   providers: ProviderRegistry;
   pricing: PricingCatalog;
+  /** 汇率服务（成本报表缓存节省换算）；缺省时仅同币种直接估算 */
+  exchangeRates: ExchangeRateService | undefined;
   platform: NodeJS.Platform;
   defaultCurrency: Currency;
   defaultLanguage: string;
