@@ -64,3 +64,60 @@
   /* 消息区收边 */
   .chat-track { padding: 14px 12px 24px; }
 }
+
+/* 上下文压缩检查点行（/compact 与 85% 强制压缩的消息流投影；与 context-cleared-divider 同族） */
+.compaction-row {
+  max-width: min(100%, var(--content-max));
+  margin: 2px 0 22px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.compaction-head {
+  min-height: 28px;
+  padding: 0 4px;
+  gap: 6px;
+  color: var(--text-3);
+  font-size: 12px;
+  width: 100%;
+  background: none;
+  border: none;
+  font-family: inherit;
+  text-align: left;
+}
+.compaction-head:hover { color: var(--accent); }
+.compaction-head[aria-disabled="true"] { cursor: default; }
+.compaction-head[aria-disabled="true"]:hover { color: var(--text-3); }
+.compaction-title { color: var(--text-2); flex: none; }
+.compaction-badge { font-size: 10px; padding: 0 6px; }
+.compaction-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.compaction-chevron { margin-left: auto; flex: none; display: inline-flex; }
+/* 静止只留图标与标题，箭头在 hover/键盘聚焦时显现（与工具卡同交互） */
+.compaction-chevron { opacity: 0; }
+.compaction-head:hover .compaction-chevron,
+.compaction-head:focus-visible .compaction-chevron,
+.compaction-settled.open .compaction-chevron { opacity: 1; }
+.compaction-detail {
+  margin: 4px 0 0 22px;
+  padding: 8px 12px;
+  border-left: 2px solid var(--accent);
+  background: var(--accent-soft);
+  border-radius: 0 var(--radius-s) var(--radius-s) 0;
+  color: var(--text-2);
+}
+.compaction-detail-label { margin: 0 0 4px; font-size: 11px; color: var(--text-3); }
+.compaction-instructions ul { margin: 0 0 8px; padding-left: 18px; }
+.compaction-time { margin: 8px 0 0; font-size: 11px; color: var(--text-3); }
+.compaction-running {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 4px;
+  min-height: 28px;
+}
+.compaction-failed {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.compaction-error-text { flex: 1; min-width: 0; }
+.compaction-dismiss { flex: none; }

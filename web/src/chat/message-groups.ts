@@ -1,4 +1,5 @@
 import type { ChatMessage } from "../lib/contracts";
+import type { CompactionMarker } from "../lib/compaction";
 
 /**
  * 消息分组纯函数（移植旧 ExecutionTrack 的轮次/过程段逻辑）：
@@ -6,6 +7,8 @@ import type { ChatMessage } from "../lib/contracts";
  * - isProcess：tool 角色消息，或无正文 text 块的 assistant 消息（纯 thinking / 纯 tool_call）。
  * - buildRenderItems：会话空闲时连续过程消息段整体折叠为一个折叠组；
  *   clear 分隔线落在折叠段首时由调用方外置渲染（见 showDivider 注释）。
+ * - insertCompactionMarkers：把压缩检查点行按消息下标插入渲染序列；
+ *   插入位落入折叠段时外置到折叠组之前（与段首分隔线同规则，不折进折叠区）。
  */
 
 export type RenderItem =
@@ -27,6 +30,10 @@ export type RenderItem =
       end: number;
       toolCalls: number;
       failed: boolean;
+    }
+  | {
+      kind: "compaction";
+      marker: CompactionMarker;
     };
 
 export function turnOf(messages: ChatMessage[]): number[] {
@@ -74,4 +81,36 @@ export function buildRenderItems(
     index = end;
   }
   return items;
+}
+
+/**
+ * 压缩检查点插入：marks 为（消息下标 insertion point, marker）对。
+ * 语义：检查点行渲染在下标 position 的消息之前（即被压缩段 messages[0..position) 之后）；
+ * position === messageCount 时追加在末尾（运行中占位与压缩到尾的标记）。
+ * 插入位落入折叠段 [start, end) 时外置到折叠组之前——与段首分隔线同规则，不折进折叠区。
+ */
+export function insertCompactionMarkers(
+  items: RenderItem[],
+  marks: Array<{ position: number; marker: CompactionMarker }>,
+  messageCount: number,
+): RenderItem[] {
+  if (marks.length === 0) return items;
+  const sorted = [...marks].sort((left, right) => left.position - right.position);
+  const result: RenderItem[] = [];
+  let markIndex = 0;
+  // 放出所有 position <= limit 的标记（按 position 升序，同位保持传入次序）
+  const flushThrough = (limit: number): void => {
+    while (markIndex < sorted.length && sorted[markIndex]!.position <= limit) {
+      result.push({ kind: "compaction", marker: sorted[markIndex]!.marker });
+      markIndex += 1;
+    }
+  };
+  for (const item of items) {
+    // 消息 i：position <= i 的检查点落在它之前；折叠段 [start, end)：段内（含段首）的一律外置到段前
+    if (item.kind === "message") flushThrough(item.index);
+    else if (item.kind === "fold") flushThrough(item.end - 1);
+    result.push(item);
+  }
+  flushThrough(messageCount);
+  return result;
 }

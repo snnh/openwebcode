@@ -463,7 +463,9 @@ export interface ContextView {
       maxSessionTokens?: number;
       maxSessionCost?: { currency: "USD" | "CNY"; microUnits: string };
     };
-    compacted?: { uptoIndex: number; mode: "toolcalls" | "overview" | "truncated" | "vault"; summary: string; instructions: string[]; createdAt: string };
+    compacted?: { uptoIndex: number; mode: "toolcalls" | "overview" | "truncated" | "vault"; summary: string; instructions: string[]; createdAt: string; replacedTokens?: number };
+    /** 历次压缩记录（含最新一次，与 compacted 末条同义）：供消息流还原多个压缩检查点；旧 server 缺省。 */
+    compactionHistory?: Array<{ uptoIndex: number; mode: "toolcalls" | "overview" | "truncated" | "vault"; summary: string; instructions: string[]; createdAt: string; replacedTokens?: number }>;
     /** 最近记录的 prompt cache 消息级断点（消息 id）；诊断用。 */
     cacheBreakpoints?: string[];
     cleared?: { uptoIndex: number; at: string };

@@ -5,6 +5,7 @@ import type { ChatMessage, ContextTokenUsage, ContextUsage, ContextView } from "
 import { cacheHitRate } from "../lib/cache-stats";
 import { deriveWindowInfo, windowLevel, type ContextWindowInfo } from "../lib/context-window";
 import { formatCurrency, formatTokens, formatTokensShort, microToDecimal } from "../lib/format";
+import { compactionModeNameText } from "../lib/compaction";
 import { useStore } from "../app/store";
 import { sessionStore } from "../app/session-store";
 import { qk, useContextViewQuery, useModelsQuery, useSessionQuery } from "../app/queries";
@@ -481,7 +482,13 @@ export function ContextPanel({ sessionId, running }: {
           <h2>{t("压缩", "Compaction")}</h2>
           <dl>
             <dt>{t("模式", "Mode")}</dt>
-            <dd>{{ toolcalls: t("工具调用压缩", "Tool-call compaction"), overview: t("概览压缩", "Overview compaction"), truncated: t("规则截断", "Rule-based truncation"), vault: t("档案库压缩", "Vault compaction") }[context.data.ledger.compacted.mode]}</dd>
+            <dd>{t(...compactionModeNameText(context.data.ledger.compacted.mode))}</dd>
+            {context.data.ledger.compacted.replacedTokens !== undefined && (
+              <>
+                <dt>{t("被替换段估算", "Replaced estimate")}</dt>
+                <dd>{t(`约 ${formatTokensShort(context.data.ledger.compacted.replacedTokens)} tokens`, `~${formatTokensShort(context.data.ledger.compacted.replacedTokens)} tokens`)}</dd>
+              </>
+            )}
             <dt>{t("范围", "Range")}</dt>
             <dd>{t(`前 ${context.data.ledger.compacted.uptoIndex} 条消息`, `First ${context.data.ledger.compacted.uptoIndex} messages`)}</dd>
             <dt>{t("时间", "Time")}</dt>

@@ -6,6 +6,7 @@ import type {
 } from "../lib/contracts";
 import type { ContextWindowInfo } from "../lib/context-window";
 import type { StreamBlock } from "./stream-buffer";
+import type { CompactionMarker } from "../lib/compaction";
 import type { LiveActivityInfo } from "../app/live-store";
 import type { DiffSpec } from "../components/editor/DiffPane";
 import type { PendingPermission } from "../app/session-store";
@@ -127,6 +128,8 @@ export interface MessageListProps {
   session: SessionDetail;
   /** 上下文清空分隔线位置（ledger.cleared） */
   cleared?: { uptoIndex: number; at: string };
+  /** 压缩检查点标记（实时事件 + 账本还原的合并结果；缺省不渲染检查点行） */
+  compactions?: CompactionMarker[];
   hasMoreMessages: boolean;
   loadingMore: boolean;
   onLoadMore(): void;
