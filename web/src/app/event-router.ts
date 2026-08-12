@@ -290,6 +290,10 @@ export function createEventRouter(deps: EventRouterDeps): EventRouter {
       deps.notify(t(`后台任务 ${task.taskId} 已结束（exit ${task.exitCode ?? "?"}）`, `Background task ${task.taskId} finished (exit ${task.exitCode ?? "?"})`));
       queryClient.invalidateQueries({ queryKey: ["tasks", currentId] });
     }
+    // 任务启动即时刷新徽标（不打扰用户，仅 invalidate；配合轮询收敛——空闲会话不再 5s 盲轮询）
+    if (event.type === "task.started") {
+      queryClient.invalidateQueries({ queryKey: ["tasks", event.sessionId ?? currentId] });
+    }
     const refreshDetail = ["agent.state", "tool.end", "agent.error", "session.config_updated", "subagent.finished"].includes(event.type);
     const refreshContext = ["context.usage", "context.budget_updated", "context.restored", "context.evicted", "context.compacted", "context.cleared"].includes(event.type);
     const refreshCheckpoints = ["checkpoint.created", "checkpoint.restored", "checkpoint.deleted", "checkpoint.failed"].includes(event.type);

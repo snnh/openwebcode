@@ -150,6 +150,7 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
       costLabel: formatCurrency(currency === "CNY" ? ledger.cost.cnyMicroUnits : ledger.cost.usdMicroUnits, currency),
       tokenBudget: ledger.policy?.maxSessionTokens,
       paused: currentState === "budget_paused",
+      unpricedTokens: ledger.cost.unpricedTokens,
     };
   }, [contextView.data, currentState]);
 

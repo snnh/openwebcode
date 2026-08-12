@@ -1,5 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import type { ContextView } from "../lib/contracts";
 
 /**
  * 全部 queryKey/queryFn 的集中定义：键名与旧 App 保持一致（缓存语义不变），
@@ -56,8 +57,19 @@ export function useInteractionsQuery(id: string | undefined) {
   return useQuery({ queryKey: qk.interactions(id ?? ""), queryFn: () => api.interactions(id!), enabled: Boolean(id) });
 }
 
-export function useContextViewQuery(id: string | undefined) {
-  return useQuery({ queryKey: qk.context(id ?? ""), queryFn: () => api.context(id!), enabled: Boolean(id) });
+/**
+ * 会话上下文视图。select 窄化订阅（如 lib/context-metrics 的 selectContextMetrics）：
+ * 常驻组件（顶栏/底栏/状态栏）只跟随切片变化重渲，select 结果参与 structural sharing。
+ */
+export function useContextViewQuery(id: string | undefined): UseQueryResult<ContextView>;
+export function useContextViewQuery<T>(id: string | undefined, select: (view: ContextView) => T): UseQueryResult<T>;
+export function useContextViewQuery<T>(id: string | undefined, select?: (view: ContextView) => T) {
+  return useQuery({
+    queryKey: qk.context(id ?? ""),
+    queryFn: () => api.context(id!),
+    enabled: Boolean(id),
+    ...(select ? { select } : {}),
+  });
 }
 
 export function useSkillsQuery(id: string | undefined) {
