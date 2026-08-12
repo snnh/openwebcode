@@ -121,3 +121,45 @@
 }
 .compaction-error-text { flex: 1; min-width: 0; }
 .compaction-dismiss { flex: none; }
+
+/* ================= 本轮产出文件行（write_file/edit_file 汇总，轮末渲染） ================= */
+.produced-files-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin: 4px 0 10px;
+  padding-left: 2px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.produced-files-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+}
+.produced-file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text-2);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+button.produced-file-chip { cursor: pointer; }
+button.produced-file-chip:hover, button.produced-file-chip:focus-visible {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+.produced-file-action { flex: none; font-size: 10px; }
+.produced-file-write { color: var(--ok); }
+.produced-file-edit { color: var(--amber); }
+

@@ -339,6 +339,8 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
     onNotice: (text, kind = "info") => notify(text, kind),
     // 统一 diff 视图（编辑器分栏互斥，由 aux-views 管理）
     onOpenDiff: (spec) => auxViews.openDiff(spec),
+    // 产出文件行/工具卡文件路径 → 编辑器分栏打开
+    onOpenFile: (path) => auxViews.openEditor(path),
     onSendToAgent: sendShellToAgent,
     onEditMessage: startEditMessage,
     onRegenerate: regenerateMessage,

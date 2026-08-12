@@ -12,8 +12,9 @@ import { LiveActivityBar } from "./cards/LiveActivityBar";
 import { ConversationSearchBar, findMatches, highlightArticle, unwrapSearchMarks } from "./search";
 import { CONVERSATION_SEARCH_EVENT, type MessageListProps } from "./types";
 import { createScrollFollower, type ScrollFollower } from "./scroll-controller";
-import { buildRenderItems, insertCompactionMarkers, turnOf } from "./message-groups";
+import { buildRenderItems, insertCompactionMarkers, insertProducedFiles, turnOf } from "./message-groups";
 import { CompactionRow } from "./cards/CompactionRow";
+import { ProducedFilesRow } from "./cards/ProducedFilesRow";
 
 /** 全会话工具结果配对表：toolCallId → isError（工具调用行的状态图标数据源） */
 function buildToolResultStatus(messages: ChatMessage[]): Record<string, boolean> {
@@ -158,14 +159,14 @@ export function MessageList({
   const items = useMemo(
     () => {
       const base = buildRenderItems(messages, { foldProcess: !running, ...(clearedLocal !== undefined ? { clearedLocal } : {}) });
-      if (!compactions || compactions.length === 0) return base;
+      if (!compactions || compactions.length === 0) return insertProducedFiles(base, messages);
       // 检查点定位与 clear 分隔线同口径：账本 uptoIndex 是全量历史绝对下标，减去页偏移换算窗口内下标；
       // 运行中占位（uptoIndex<0）与超出已加载窗口的标记钳制到边界（最早加载消息之前 / 尾部）
       const marks = compactions.map((marker) => ({
         position: marker.uptoIndex < 0 ? messages.length : Math.min(Math.max(marker.uptoIndex - pageOffset, 0), messages.length),
         marker,
       }));
-      return insertCompactionMarkers(base, marks, messages.length);
+      return insertProducedFiles(insertCompactionMarkers(base, marks, messages.length), messages);
     },
     [messages, running, clearedLocal, compactions, pageOffset],
   );
@@ -295,6 +296,7 @@ export function MessageList({
         {items.map((item) => {
           if (item.kind === "message") return renderMessage(item.index, item.showDivider);
           if (item.kind === "compaction") return <CompactionRow key={item.marker.id} marker={item.marker} />;
+          if (item.kind === "files") return <ProducedFilesRow key={`files-${item.turn}`} files={item.files} />;
           // 连续过程消息段 → 单个默认折叠组；clear 分隔线落在段首时外置到折叠组之前，避免折进折叠区不可见
           const startId = messages[item.start]!.id;
           const children: ReactNode[] = [];

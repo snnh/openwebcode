@@ -527,3 +527,27 @@ article.message.conv-search-active { outline: 2px solid color-mix(in srgb, var(-
   .code-copy-btn { opacity: 1; }
 }
 .code-copy-btn:hover { background: var(--panel-2); color: var(--accent); }
+
+/* 工具卡展开区的文件操作行：diff 按钮 + 文件路径内联链接 */
+.tool-file-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.tool-file-actions .tool-diff-open { margin-bottom: 0; }
+.tool-file-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-2);
+  font-size: 11px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.tool-file-link:hover, .tool-file-link:focus-visible { color: var(--text); }

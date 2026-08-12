@@ -31,6 +31,8 @@ export interface ChatActions {
   onNotice(text: string, kind?: "info" | "error"): void;
   /** write_file/edit_file 工具卡的文件变化在统一 diff 视图打开 */
   onOpenDiff(spec: DiffSpec): void;
+  /** 产出文件行/工具卡的文件路径在编辑器打开（工作台装配提供；未提供时降级为静态展示） */
+  onOpenFile?(path: string): void;
   /** shell 快捷命令结果卡的「发给 agent」 */
   onSendToAgent(cmd: string, output: string): void;
   /** 会话树操作：编辑重发 / 重新生成 / 分叉（仅 user 消息卡片） */
