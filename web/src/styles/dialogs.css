@@ -197,3 +197,16 @@
   font-family: var(--mono-font, monospace);
 }
 .dir-browser__actions { display: flex; gap: 8px; flex-shrink: 0; }
+
+/* 风险确认复选框（yolo 等高危确认）：勾选后确认按钮才可点 */
+.confirm-ack {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--text-2);
+  cursor: pointer;
+  user-select: none;
+}
+.confirm-ack input { accent-color: var(--accent); }

@@ -1,9 +1,9 @@
 // 通用确认对话框：替代原生 window.confirm（移动端/iframe 体验差，且样式不可控）。
 // 原生 <dialog> 自带焦点陷阱与 Esc onCancel；初始焦点在「取消」（安全默认），背板点击放弃。
-import { useEffect, useRef, useState, type ReactElement } from "react";
+import { useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { useI18n } from "../i18n";
 
-export function ConfirmDialog({ open, title, body, warning, confirmLabel, danger = true, confirmDisabled = false, confirmDisabledReason, onCancel, onConfirm }: {
+export function ConfirmDialog({ open, title, body, warning, confirmLabel, danger = true, confirmDisabled = false, confirmDisabledReason, children, onCancel, onConfirm }: {
   open: boolean;
   /** 对话框标题与 aria-label（调用方完成 i18n） */
   title: string;
@@ -18,6 +18,8 @@ export function ConfirmDialog({ open, title, body, warning, confirmLabel, danger
   confirmDisabled?: boolean;
   /** 禁用原因（确认按钮 title 提示） */
   confirmDisabledReason?: string;
+  /** 可选补充内容（如风险确认复选框），渲染在警示与按钮行之间 */
+  children?: ReactNode;
   onCancel(): void;
   onConfirm(): void;
 }): ReactElement | null {
@@ -47,6 +49,7 @@ export function ConfirmDialog({ open, title, body, warning, confirmLabel, danger
       <h2>{title}</h2>
       <p>{body}</p>
       {warning && <p className="confirm-warning">{warning}</p>}
+      {children}
       <div className="dialog-actions">
         <button type="button" className="btn" autoFocus onClick={onCancel}>{t("取消", "Cancel")}</button>
         <button
