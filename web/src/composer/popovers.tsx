@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import type { ModelCapabilities, ModelProfile, PermissionMode } from "../lib/contracts";
 import { Icon } from "../components/Icon";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { ModelCapabilityBadges } from "../components/ModelCapabilityBadges";
 import { useI18n } from "../i18n";
 
@@ -95,7 +96,7 @@ const PERMISSION_OPTIONS: Array<{ value: PermissionMode; label: [string, string]
   { value: "yolo", label: ["完全自主", "Full autonomy"], description: ["完全自主运行，智能体自己做决定，不再询问", "Runs fully autonomously; the agent decides on its own and never asks"] },
 ];
 
-/** 权限模式弹层（运行中禁用，由调用方控制）。 */
+/** 权限模式弹层（运行中禁用，由调用方控制）。切到完全自主（yolo）需先过风险确认对话框。 */
 export function PermissionModeMenu({ value, disabled, onChange }: {
   value: PermissionMode;
   disabled: boolean;
@@ -103,6 +104,9 @@ export function PermissionModeMenu({ value, disabled, onChange }: {
 }): ReactElement {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
+  // yolo 风险确认：勾选「我已了解风险」后确认才可点；取消/Esc/背板不提交
+  const [confirmingYolo, setConfirmingYolo] = useState(false);
+  const [yoloAck, setYoloAck] = useState(false);
   const current = PERMISSION_OPTIONS.find((option) => option.value === value) ?? PERMISSION_OPTIONS[0]!;
   return (
     <div className="composer-menu">
@@ -125,10 +129,37 @@ export function PermissionModeMenu({ value, disabled, onChange }: {
             selected={option.value === value}
             label={t(...option.label)}
             description={t(...option.description)}
-            onSelect={() => { onChange(option.value); setOpen(false); }}
+            onSelect={() => {
+              setOpen(false);
+              if (option.value === "yolo" && value !== "yolo") {
+                setYoloAck(false);
+                setConfirmingYolo(true);
+                return;
+              }
+              onChange(option.value);
+            }}
           />
         ))}
       </Popover>
+      <ConfirmDialog
+        open={confirmingYolo}
+        title={t("切换到完全自主？", "Switch to full autonomy?")}
+        body={t("完全自主（yolo）将自动放行全部工具操作，智能体不再逐次征求你的确认。", "Full autonomy (yolo) auto-approves every tool action; the agent will no longer ask for your confirmation.")}
+        warning={t("沙盒仍然生效：yolo 只跳过确认，不解除或扩大沙盒隔离；请只在可信任务中开启。", "The sandbox stays in effect: yolo only skips confirmations and does not lift or widen isolation. Enable it only for tasks you trust.")}
+        confirmLabel={t("切换到完全自主", "Switch to full autonomy")}
+        confirmDisabled={!yoloAck}
+        confirmDisabledReason={yoloAck ? undefined : t("请先勾选「我已了解风险」", "Check the acknowledgement first")}
+        onCancel={() => setConfirmingYolo(false)}
+        onConfirm={() => {
+          setConfirmingYolo(false);
+          onChange("yolo");
+        }}
+      >
+        <label className="confirm-ack">
+          <input type="checkbox" checked={yoloAck} onChange={(event) => setYoloAck(event.target.checked)} />
+          {t("我已了解风险", "I understand the risk")}
+        </label>
+      </ConfirmDialog>
     </div>
   );
 }

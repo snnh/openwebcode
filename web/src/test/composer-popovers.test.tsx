@@ -24,7 +24,7 @@ function renderModelMenu(overrides: Partial<Parameters<typeof ModelMenu>[0]> = {
 }
 
 describe("PermissionModeMenu", () => {
-  it("打开后列出四档，当前值高亮，选择触发 onChange 并关闭", () => {
+  it("打开后列出四档，当前值高亮，选择非 yolo 档触发 onChange 并关闭", () => {
     const onChange = vi.fn();
     render(<PermissionModeMenu value="ask" disabled={false} onChange={onChange} />);
     fireEvent.click(screen.getByRole("button", { name: "权限模式" }));
@@ -32,9 +32,47 @@ describe("PermissionModeMenu", () => {
     expect(options).toHaveLength(4);
     expect(screen.getByRole("menuitemradio", { name: /逐次确认/ })).toHaveAttribute("aria-checked", "true");
     expect(screen.getByRole("menuitemradio", { name: /完全自主/ })).toHaveAttribute("aria-checked", "false");
-    fireEvent.click(screen.getByRole("menuitemradio", { name: /完全自主/ }));
-    expect(onChange).toHaveBeenCalledWith("yolo");
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /接受编辑/ }));
+    expect(onChange).toHaveBeenCalledWith("acceptEdits");
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  it("选择 yolo 先弹风险确认：勾选后才可确认，确认才切换", () => {
+    const onChange = vi.fn();
+    render(<PermissionModeMenu value="ask" disabled={false} onChange={onChange} />);
+    fireEvent.click(screen.getByRole("button", { name: "权限模式" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /完全自主/ }));
+    // 弹层关闭、对话框打开，未勾选前确认禁用且不触发 onChange
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    const dialog = screen.getByRole("dialog", { name: "切换到完全自主？" });
+    expect(dialog).toBeInTheDocument();
+    const confirm = screen.getByRole("button", { name: "切换到完全自主" });
+    expect(confirm).toBeDisabled();
+    expect(onChange).not.toHaveBeenCalled();
+    fireEvent.click(confirm);
+    expect(onChange).not.toHaveBeenCalled();
+    // 勾选「我已了解风险」后确认可用
+    fireEvent.click(screen.getByRole("checkbox", { name: /我已了解风险/ }));
+    expect(confirm).toBeEnabled();
+    fireEvent.click(confirm);
+    expect(onChange).toHaveBeenCalledWith("yolo");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("yolo 确认框取消：不切换；已是 yolo 时重选不再弹确认", () => {
+    const onChange = vi.fn();
+    const { rerender } = render(<PermissionModeMenu value="ask" disabled={false} onChange={onChange} />);
+    fireEvent.click(screen.getByRole("button", { name: "权限模式" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /完全自主/ }));
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    // 已是 yolo：再次选择当前值直接走原路径（仍是 yolo，不重复弹确认）
+    rerender(<PermissionModeMenu value="yolo" disabled={false} onChange={onChange} />);
+    fireEvent.click(screen.getByRole("button", { name: "权限模式" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /完全自主/ }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(onChange).toHaveBeenCalledWith("yolo");
   });
 
   it("Esc 关闭弹层，不改变取值", () => {
