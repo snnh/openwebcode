@@ -7,6 +7,7 @@ import { useMemo, type ReactElement } from "react";
 import type { Session } from "../lib/contracts";
 import { deriveWindowInfo } from "../lib/context-window";
 import { INACTIVE_STATES, stateLabel } from "../lib/agent-state";
+import { buildCostSummary, selectContextStatusMetrics } from "../lib/context-metrics";
 import { formatCurrency, formatTokensShort } from "../lib/format";
 import { useStore } from "../app/store";
 import { sessionStore } from "../app/session-store";
@@ -23,19 +24,14 @@ export interface StatusBarProps {
 
 export function StatusBar({ sessionId, session, agentState, mobile = false }: StatusBarProps): ReactElement {
   const { t } = useI18n();
-  const contextView = useContextViewQuery(sessionId);
+  const contextView = useContextViewQuery(sessionId, selectContextStatusMetrics);
   const models = useModelsQuery();
   const watermark = useStore(sessionStore, (state) => (sessionId ? state.watermarks[sessionId] : undefined));
 
-  const costSummary = useMemo(() => {
-    const ledger = contextView.data?.ledger;
-    if (!ledger || !contextView.data) return undefined;
-    const currency = contextView.data.preferences.currency;
-    return {
-      tokens: ledger.usage.inputTokens + ledger.usage.outputTokens,
-      costLabel: formatCurrency(currency === "CNY" ? ledger.cost.cnyMicroUnits : ledger.cost.usdMicroUnits, currency),
-    };
-  }, [contextView.data]);
+  const costSummary = useMemo(
+    () => contextView.data ? buildCostSummary(contextView.data, formatCurrency) : undefined,
+    [contextView.data],
+  );
 
   const model = useMemo(
     () => models.data?.find((item) => item.id === session?.model && item.provider === session?.provider),
@@ -58,7 +54,7 @@ export function StatusBar({ sessionId, session, agentState, mobile = false }: St
       )}
       {!mobile && costSummary && (
         <span className="status-optional" title={t("本会话 tokens 与成本", "Tokens and cost for this session")}>
-          {formatTokensShort(costSummary.tokens)} tok · {costSummary.costLabel}
+          {formatTokensShort(costSummary.tokens)} tok · {costSummary.costLabel}{costSummary.unpricedTokens > 0 ? " *" : ""}
         </span>
       )}
       {!mobile && windowPercent !== undefined && (

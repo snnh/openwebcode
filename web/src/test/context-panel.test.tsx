@@ -187,8 +187,10 @@ describe("ContextPanel 缓存命中", () => {
 
     const row = await screen.findByTestId("ctx-cache");
     expect(row.textContent).toContain("本轮 82%");
-    expect(row.querySelector(".pill")!.getAttribute("title")).toContain("本轮缓存读取 98k");
+    expect(row.querySelector(".pill")!.getAttribute("title")).toContain("本轮缓存命中 82.4%：读取 98k");
     expect(row.querySelector(".pill")!.getAttribute("title")).toContain("写入 12k");
+    // 累计 pill 带命中率分档 data-tone（74% → good 不标色）
+    expect(row.querySelectorAll(".pill")[1]!.getAttribute("data-tone")).toBe("good");
     expect(row.textContent).toContain("累计 74%");
   });
 
@@ -260,5 +262,24 @@ describe("ContextPanel 手动压缩反馈", () => {
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "概览压缩" })).toBeEnabled();
     });
+  });
+});
+
+describe("ContextPanel 驱逐读数", () => {
+  it("stats.evicted 存在时渲染已驱逐行（含条数与召回说明），缺省时不渲染", async () => {
+    const view = contextView({ pins: [], excludes: [] });
+    view.stats = { ...view.stats!, evicted: { tokens: 12_400, count: 8 } };
+    vi.spyOn(api, "context").mockResolvedValue(view);
+    renderPanel();
+    const row = await screen.findByTestId("ctx-evicted");
+    expect(row.textContent).toContain("已驱逐 12,400 tokens（8 条工具结果）");
+    expect(row.getAttribute("title")).toContain("read_artifact");
+  });
+
+  it("无驱逐条目时不渲染", async () => {
+    vi.spyOn(api, "context").mockResolvedValue(contextView({ pins: [], excludes: [] }));
+    renderPanel();
+    await screen.findByText(/上下文窗口|Context window/);
+    expect(screen.queryByTestId("ctx-evicted")).toBeNull();
   });
 });

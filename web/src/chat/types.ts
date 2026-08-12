@@ -158,6 +158,8 @@ export interface SessionHeaderProps {
     costLabel: string;
     tokenBudget?: number | null;
     paused: boolean;
+    /** 未定价 tokens（>0 时成本不完整，顶栏标 * 并在 title 注明）；缺省视为 0 */
+    unpricedTokens?: number;
   };
   windowUsage?: ContextWindowInfo;
   latestUsage?: ContextUsage;

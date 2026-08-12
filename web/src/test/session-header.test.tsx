@@ -174,3 +174,45 @@ describe("后台任务弹层", () => {
     expect(document.activeElement).toBe(trigger);
   });
 });
+
+describe("缓存与成本 pill", () => {
+  function contextViewWith(usage: { inputTokens: number; outputTokens: number; cacheRead: number; cacheWrite: number }, unpricedTokens = 0) {
+    return {
+      preferences: { language: "zh-CN", currency: "CNY", currencyLabel: "￥" },
+      ledger: {
+        usage,
+        cost: { usdMicroUnits: "1000000", cnyMicroUnits: "7200000", unpricedTokens },
+        policy: {},
+        entries: [],
+      },
+    };
+  }
+
+  it("缓存 pill 标注口径（累计）与 data-tone；title 走统一明细", async () => {
+    // 命中率 74k/(26k+74k)=74% → good 档
+    vi.spyOn(api, "context").mockResolvedValue(contextViewWith({ inputTokens: 26_000, outputTokens: 100, cacheRead: 74_000, cacheWrite: 8_000 }) as never);
+    renderHeader();
+    const pill = await screen.findByTestId("cache-usage");
+    expect(pill.textContent).toContain("缓存 74%");
+    expect(pill.textContent).toContain("累计");
+    expect(pill.getAttribute("data-tone")).toBe("good");
+    expect(pill.getAttribute("title")).toContain("累计缓存命中 74.0%");
+    expect(pill.getAttribute("title")).toContain("低价计费");
+  });
+
+  it("低命中率标 danger 档", async () => {
+    vi.spyOn(api, "context").mockResolvedValue(contextViewWith({ inputTokens: 90_000, outputTokens: 100, cacheRead: 10_000, cacheWrite: 0 }) as never);
+    renderHeader();
+    const pill = await screen.findByTestId("cache-usage");
+    expect(pill.textContent).toContain("缓存 10%");
+    expect(pill.getAttribute("data-tone")).toBe("bad");
+  });
+
+  it("成本 pill：未定价 tokens 标 * 并在 title 注明", async () => {
+    vi.spyOn(api, "context").mockResolvedValue(contextViewWith({ inputTokens: 100, outputTokens: 50, cacheRead: 0, cacheWrite: 0 }, 3_000) as never);
+    renderHeader({ costSummary: { tokens: 150, costLabel: "¥0.01", paused: false, unpricedTokens: 3_000 } });
+    const pill = document.querySelector(".cost-summary")!;
+    expect(pill.textContent).toContain("¥0.01 *");
+    expect(pill.getAttribute("title")).toContain("未定价");
+  });
+});

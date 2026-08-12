@@ -271,6 +271,9 @@
 .window-usage[data-level="danger"] { color: var(--danger); }
 /* 缓存命中率：与 window-usage 同款但更弱一档，避免抢占窗口占用的视觉优先级 */
 .cache-usage { opacity: 0.85; }
+/* 命中率分档（lib/cache-stats CACHE_TONE_THRESHOLDS）：good 不标注，warn/bad 借窗口水位色 */
+.cache-usage[data-tone="warn"] { color: var(--amber); opacity: 1; }
+.cache-usage[data-tone="bad"] { color: var(--danger); opacity: 1; }
 /* 顶栏纯文本信息项：可点任务入口与运行状态 */
 .job-info-btn {
   display: inline-flex;

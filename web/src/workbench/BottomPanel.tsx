@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useMemo, useState, type MouseEvent as ReactM
 import { Icon, type IconName } from "../components/Icon";
 import { INACTIVE_STATES, stateLabel } from "../lib/agent-state";
 import { deriveWindowInfo } from "../lib/context-window";
+import { buildCostSummary, selectContextStatusMetrics } from "../lib/context-metrics";
 import { formatCurrency, formatTokensShort } from "../lib/format";
 import { useStore } from "../app/store";
 import { sessionStore } from "../app/session-store";
@@ -35,21 +36,16 @@ const TAB_META: Record<BottomTab, { zh: string; en: string; icon: IconName }> = 
 function PanelStatus({ sessionId, agentState, mobile }: { sessionId: string; agentState?: string | undefined; mobile: boolean }): ReactElement {
   const { t } = useI18n();
   const sessions = useSessionsQuery();
-  const contextView = useContextViewQuery(sessionId);
+  const contextView = useContextViewQuery(sessionId, selectContextStatusMetrics);
   const models = useModelsQuery();
   const watermark = useStore(sessionStore, (state) => state.watermarks[sessionId]);
   const liveStatus = agentState && !INACTIVE_STATES.has(agentState) ? agentState : "idle";
 
   const session = sessions.data?.find((item) => item.id === sessionId);
-  const costSummary = useMemo(() => {
-    const ledger = contextView.data?.ledger;
-    if (!ledger || !contextView.data) return undefined;
-    const currency = contextView.data.preferences.currency;
-    return {
-      tokens: ledger.usage.inputTokens + ledger.usage.outputTokens,
-      costLabel: formatCurrency(currency === "CNY" ? ledger.cost.cnyMicroUnits : ledger.cost.usdMicroUnits, currency),
-    };
-  }, [contextView.data]);
+  const costSummary = useMemo(
+    () => contextView.data ? buildCostSummary(contextView.data, formatCurrency) : undefined,
+    [contextView.data],
+  );
   const model = useMemo(
     () => models.data?.find((item) => item.id === session?.model && item.provider === session?.provider),
     [models.data, session?.model, session?.provider],
@@ -64,7 +60,7 @@ function PanelStatus({ sessionId, agentState, mobile }: { sessionId: string; age
       </span>
       {!mobile && costSummary && (
         <span className="status-optional" title={t("本会话 tokens 与成本", "Tokens and cost for this session")}>
-          {formatTokensShort(costSummary.tokens)} tok · {costSummary.costLabel}
+          {formatTokensShort(costSummary.tokens)} tok · {costSummary.costLabel}{costSummary.unpricedTokens > 0 ? " *" : ""}
         </span>
       )}
       {!mobile && windowPercent !== undefined && (
