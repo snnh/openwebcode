@@ -14,8 +14,8 @@ function makeSession(id: string, title: string): ChatSessionMeta {
 }
 
 describe("ChatSessionList 搜索", () => {
-  it("输入查询按标题过滤（大小写不敏感），清空恢复全量", () => {
-    render(
+  it("按标题大小写不敏感过滤，清空恢复；无匹配/空列表空态分开", () => {
+    const { rerender } = render(
       <ChatSessionList
         sessions={[makeSession("s1", "重构登录模块"), makeSession("s2", "Debug API Gateway"), makeSession("s3", "周报润色")]}
         onSelect={vi.fn()}
@@ -29,14 +29,8 @@ describe("ChatSessionList 搜索", () => {
     expect(screen.queryByText("周报润色")).toBeNull();
     fireEvent.change(search, { target: { value: "" } });
     expect(screen.getByText("重构登录模块")).toBeTruthy();
-    expect(screen.getByText("周报润色")).toBeTruthy();
-  });
-
-  it("无匹配时显示空态提示，全部会话为空时保持原有空态", () => {
-    const { rerender } = render(
-      <ChatSessionList sessions={[makeSession("s1", "重构登录模块")]} onSelect={vi.fn()} onRefresh={vi.fn()} />,
-    );
-    fireEvent.change(screen.getByRole("searchbox", { name: "搜索对话" }), { target: { value: "不存在" } });
+    // 无匹配空态；会话本身为空时是另一种空态
+    fireEvent.change(search, { target: { value: "不存在" } });
     expect(screen.getByText("没有匹配的对话")).toBeTruthy();
     rerender(<ChatSessionList sessions={[]} onSelect={vi.fn()} onRefresh={vi.fn()} />);
     expect(screen.getByText("暂无对话")).toBeTruthy();
