@@ -72,21 +72,28 @@
 .content-lens-result { margin: 10px 0 0; border-left: 2px solid var(--accent); background: var(--accent-soft); padding: 8px 12px; color: var(--text-2); }
 .content-lens-result summary { cursor: pointer; font-size: 12px; color: var(--accent); }
 
-/* 上下文清空分隔线（ledger.cleared 位置） */
+/* 上下文清空分隔线（ledger.cleared 位置）：图标 + 文案 + 两侧横线的经典分隔形态 */
 .context-cleared-divider {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: 8px;
   position: relative;
   max-width: min(100%, var(--content-max));
-  margin: 2px 0 22px;
+  margin: 6px 0 22px;
   color: var(--text-3);
   font-size: 12px;
   text-align: center;
-  border-top: 1px dashed var(--border);
-  padding-top: 7px;
 }
+/* 两侧横线用实线 + border-strong：原虚线 border-top 在浅底上几乎不可见 */
+.context-cleared-divider::before,
+.context-cleared-divider::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--border-strong);
+  opacity: 0.55;
+}
+.context-cleared-divider svg { flex: none; }
 
 /* 执行过程折叠段（ProcessFold）：连续过程消息（thinking/工具调用/工具结果）收进默认折叠的 details */
 .turn-process {
