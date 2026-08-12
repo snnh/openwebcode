@@ -1,5 +1,8 @@
 import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { calculateUsageCost } from "./cost/cost-calculator.js";
+import type { ExchangeRateSnapshot } from "./cost/exchange-rate.js";
+import type { ModelPricing } from "./context/model-profile.js";
 
 /** 一次模型调用的用量/成本事件（追加写入 usage-events.jsonl，一行一条）。 */
 export interface UsageEventRecord {
@@ -25,6 +28,12 @@ export interface ReportMetrics {
   usdMicroUnits: string;
   cnyMicroUnits: string;
   unpricedTokens: number;
+}
+
+/** 缓存节省估算（反事实：同量 cacheRead 按全价输入计费 − 按缓存读价计费的差额）；按可得币种给值。 */
+export interface CacheSavingsInfo {
+  usdMicroUnits?: string;
+  cnyMicroUnits?: string;
 }
 
 export type ProviderBreakdown = ReportMetrics & { provider: string; model: string };
@@ -237,4 +246,83 @@ export class UsageLog {
     if (fingerprint) this.reportCache.set(cacheKey, { mtimeMs: fingerprint.mtimeMs, size: fingerprint.size, body });
     return { generatedAt: new Date().toISOString(), ...body };
   }
+}
+
+/**
+ * 缓存节省后处理（成本报表路由调用，纯函数便于单测）：
+ * 对每个 provider·model 桶，把 cacheRead 同量 tokens 分别按全价输入与缓存读价过 calculateUsageCost，
+ * 差额即"缓存命中省下的钱"（下限 0，容忍定价目录里缓存价高于输入价的错配条目）。
+ * 估算在报表缓存之外计算——定价目录/汇率编辑即时生效；totals 跨天桶汇总（每个事件恰好计入一次）。
+ * 有 cacheRead 但无定价或无法换算的桶：不产出节省值并把 incomplete 标记冒泡到分组与 totals。
+ */
+export function applyCacheSavings(
+  report: CostReport,
+  lookup: (provider: string, model: string) => ModelPricing | undefined,
+  rate?: ExchangeRateSnapshot,
+): CostReport {
+  const bucketSavings = (row: ProviderBreakdown): { savings?: CacheSavingsInfo; incomplete: boolean } => {
+    if (row.cacheRead <= 0) return { incomplete: false };
+    const pricing = lookup(row.provider, row.model);
+    if (!pricing) return { incomplete: true };
+    const atFull = calculateUsageCost(
+      { inputTokens: row.cacheRead, outputTokens: 0, cacheRead: 0, cacheWrite: 0 },
+      pricing,
+      rate,
+    );
+    const atCache = calculateUsageCost(
+      { inputTokens: 0, outputTokens: 0, cacheRead: row.cacheRead, cacheWrite: 0 },
+      pricing,
+      rate,
+    );
+    const savings: CacheSavingsInfo = {};
+    if (atFull.usd && atCache.usd) {
+      const diff = BigInt(atFull.usd.microUnits) - BigInt(atCache.usd.microUnits);
+      savings.usdMicroUnits = (diff > 0n ? diff : 0n).toString();
+    }
+    if (atFull.cny && atCache.cny) {
+      const diff = BigInt(atFull.cny.microUnits) - BigInt(atCache.cny.microUnits);
+      savings.cnyMicroUnits = (diff > 0n ? diff : 0n).toString();
+    }
+    if (savings.usdMicroUnits === undefined && savings.cnyMicroUnits === undefined) return { incomplete: true };
+    return { savings, incomplete: false };
+  };
+
+  const enrichRows = (rows: ProviderBreakdown[]): { rows: ProviderBreakdown[]; usd: bigint; cny: bigint; incomplete: boolean } => {
+    let usd = 0n;
+    let cny = 0n;
+    let incomplete = false;
+    const enriched = rows.map((row) => {
+      const { savings, incomplete: rowIncomplete } = bucketSavings(row);
+      if (rowIncomplete) incomplete = true;
+      if (savings?.usdMicroUnits !== undefined) usd += BigInt(savings.usdMicroUnits);
+      if (savings?.cnyMicroUnits !== undefined) cny += BigInt(savings.cnyMicroUnits);
+      return {
+        ...row,
+        ...(savings ? { cacheSavings: savings } : {}),
+        ...(rowIncomplete ? { cacheSavingsIncomplete: true as const } : {}),
+      };
+    });
+    return { rows: enriched, usd, cny, incomplete };
+  };
+
+  let totalUsd = 0n;
+  let totalCny = 0n;
+  let totalIncomplete = false;
+  const days = report.days.map((day) => {
+    const { rows, usd, cny, incomplete } = enrichRows(day.providers);
+    totalUsd += usd;
+    totalCny += cny;
+    if (incomplete) totalIncomplete = true;
+    return { ...day, providers: rows };
+  });
+  const sessions = report.sessions.map((session) => ({ ...session, providers: enrichRows(session.providers).rows }));
+
+  const totals: ReportMetrics = {
+    ...report.totals,
+    ...(report.totals.cacheRead > 0 && !totalIncomplete || totalUsd > 0n || totalCny > 0n
+      ? { cacheSavings: { usdMicroUnits: totalUsd.toString(), cnyMicroUnits: totalCny.toString() } }
+      : {}),
+    ...(totalIncomplete ? { cacheSavingsIncomplete: true as const } : {}),
+  };
+  return { ...report, totals, days, sessions };
 }

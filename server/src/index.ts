@@ -141,6 +141,8 @@ const backgroundTasks = new BackgroundTaskRegistry(
     await client.configureSession({ sessionId, cwd, sandbox });
   },
   (info) => events.publish({ source: "agent", type: "task.finished", sessionId: info.sessionId, payload: info }),
+  undefined,
+  (info) => events.publish({ source: "agent", type: "task.started", sessionId: info.sessionId, payload: info }),
 );
 // Hooks 已在上方（compactor 之前）创建，此处直接注入 agent
 const agent = new AgentRunner(sessions, providers, core, events, pricing, exchangeRates, config.defaultLanguage, 50, (model, provider) => models.get(model, provider), usageLog, skills, mcp, compactor, dataDir, agents, commands, search, undefined, backgroundTasks, hooks, extensions, webFetch);
@@ -309,6 +311,7 @@ const app = await buildServer({
   events,
   providers,
   pricing,
+  exchangeRates,
   managed,
   webDist: path.resolve(moduleDirectory, "../../web/dist"),
   defaultCurrency: config.defaultCurrency,

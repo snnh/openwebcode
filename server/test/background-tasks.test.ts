@@ -618,3 +618,29 @@ describe("BackgroundTaskRegistry — 启动失败与超时", () => {
     await registry.stop("task-long");
   });
 });
+
+describe("onStarted 回调", () => {
+  it("run 下发后触发 onStarted（info 为 running 态），启动失败不触发", async () => {
+    const root = await tempRoot("owc-bg-");
+    const started: string[] = [];
+    const registry = new BackgroundTaskRegistry(
+      () => makeControllableCore().client,
+      async () => undefined,
+      undefined,
+      60_000,
+      (info) => started.push(info.taskId),
+    );
+    await registry.start({ sessionId: "s1", taskId: "task-ok", cmd: "echo hi", cwd: root });
+    expect(started).toEqual(["task-ok"]);
+
+    const failing = new BackgroundTaskRegistry(
+      () => makeControllableCore().client,
+      async () => { throw new Error("sandbox configure failed"); },
+      undefined,
+      60_000,
+      (info) => started.push(info.taskId),
+    );
+    await expect(failing.start({ sessionId: "s1", taskId: "task-bad", cmd: "echo hi", cwd: root })).rejects.toThrow("sandbox configure failed");
+    expect(started).toEqual(["task-ok"]);
+  });
+});
