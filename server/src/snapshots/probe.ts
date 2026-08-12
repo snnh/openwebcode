@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import type { SnapshotBackend } from "./backend.js";
 import { BtrfsBackend } from "./btrfs.js";
-import { GitShadowSnapshots } from "./git-shadow.js";
+import { GitShadowSnapshots, type GitShadowOptions } from "./git-shadow.js";
 import { OverlayfsBackend, probeOverlayfsSupport, type OverlayfsCore } from "./overlayfs.js";
 import { RefsBackend, refsScriptPath } from "./refs.js";
 import { ZfsBackend } from "./zfs.js";
@@ -37,7 +37,7 @@ export function createExecFileRunner(): CommandRunner {
 export async function probeSnapshotBackend(
   sessionRoot: string,
   workspace: string,
-  deps: { runner?: CommandRunner; platform?: NodeJS.Platform; core?: OverlayfsCore },
+  deps: { runner?: CommandRunner; platform?: NodeJS.Platform; core?: OverlayfsCore; gitShadow?: GitShadowOptions },
 ): Promise<SnapshotBackend> {
   const runner = deps.runner ?? createExecFileRunner();
   const platform = deps.platform ?? process.platform;
@@ -54,7 +54,7 @@ export async function probeSnapshotBackend(
       if (refs) return refs;
     }
   } catch { /* 继续回落 */ }
-  return new GitShadowSnapshots(sessionRoot, workspace);
+  return new GitShadowSnapshots(sessionRoot, workspace, deps.gitShadow);
 }
 
 /**
@@ -66,7 +66,7 @@ export async function probeSnapshotBackendByName(
   name: string,
   sessionRoot: string,
   workspace: string,
-  deps: { runner?: CommandRunner; platform?: NodeJS.Platform; core?: OverlayfsCore },
+  deps: { runner?: CommandRunner; platform?: NodeJS.Platform; core?: OverlayfsCore; gitShadow?: GitShadowOptions },
 ): Promise<SnapshotBackend | undefined> {
   const runner = deps.runner ?? createExecFileRunner();
   const platform = deps.platform ?? process.platform;
@@ -76,7 +76,7 @@ export async function probeSnapshotBackendByName(
       case "zfs": return platform === "linux" ? await probeZfs(sessionRoot, workspace, runner) : undefined;
       case "overlayfs": return platform === "linux" ? await probeOverlayfs(sessionRoot, workspace, deps.core) : undefined;
       case "refs": return platform === "win32" ? await probeRefs(sessionRoot, workspace, runner) : undefined;
-      case "git-shadow": return new GitShadowSnapshots(sessionRoot, workspace);
+      case "git-shadow": return new GitShadowSnapshots(sessionRoot, workspace, deps.gitShadow);
       default: return undefined;
     }
   } catch {
