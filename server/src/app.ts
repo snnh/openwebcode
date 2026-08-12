@@ -14,6 +14,7 @@ import { TotpAuthService, TOTP_TICKET_TTL_MS, isLoopbackOrLAN } from "./auth-tot
 import { getModelProfile, listModelProfiles, type Currency, type ModelProfile } from "./context/model-profile.js";
 import type { CatalogModel, ModelRegistry } from "./context/model-registry.js";
 import type { PricingCatalog } from "./cost/pricing-catalog.js";
+import type { ExchangeRateService } from "./cost/exchange-rate.js";
 import type { AppEvent, EventBus } from "./events/event-bus.js";
 import { DEFAULT_WS_BACKPRESSURE_LIMITS, isSlowClient, type WsBackpressureLimits } from "./events/ws-backpressure.js";
 import type { ProviderRegistry } from "./providers/provider.js";
@@ -64,6 +65,8 @@ export interface ServerDependencies {
   events: EventBus;
   providers: ProviderRegistry;
   pricing: PricingCatalog;
+  /** 汇率服务（成本报表缓存节省换算）；缺省时仅同币种直接估算 */
+  exchangeRates?: ExchangeRateService;
   defaultCurrency?: Currency;
   defaultLanguage?: string;
   settings?: SettingsService;
@@ -144,7 +147,7 @@ export function sanitizeRequestUrl(value: string): string {
 }
 
 export async function buildServer(dependencies: ServerDependencies): Promise<FastifyInstance> {
-  const { core, sessions, agent, events, providers, pricing } = dependencies;
+  const { core, sessions, agent, events, providers, pricing, exchangeRates } = dependencies;
   const platform = dependencies.platform ?? process.platform;
   // 首条用户消息派生标题（"New session" → 派生）与 PATCH 重命名走同一 session.updated 事件，通知所有客户端刷新列表
   sessions.onDerivedTitle = (meta) => {
@@ -513,7 +516,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   const profileOf = (model: string, provider?: string): ModelProfile => dependencies.models?.get(model, provider) ?? getModelProfile(model);
   const ctx: RouteContext = {
     dependencies,
-    core, sessions, agent, events, providers, pricing,
+    core, sessions, agent, events, providers, pricing, exchangeRates,
     platform, defaultCurrency, defaultLanguage, getPreferences,
     auth,
     isAuthorized, bearerAuthorized,

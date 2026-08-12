@@ -60,6 +60,8 @@ export interface LedgerEntry {
   /** 驱逐时记录的工具名与结果字节数，供占位符给出可操作的语义摘要（旧账本缺省，占位符相应降级）。 */
   toolName?: string;
   sizeBytes?: number;
+  /** 驱逐时烧入的原文 token 估算（与视图归因同一估算器）；旧账本缺省，统计回退 sizeBytes/4。 */
+  evictedTokens?: number;
   /** 结果是否为错误（exit ≠ 0 / isError），供超级节省的轮次摘要行标注。 */
   isError?: boolean;
   /** read_file 专属：头 readKeepLines 行 + 尾 readKeepLines 行的摘录（驱逐时烧入，写入后不可变）。
@@ -141,6 +143,8 @@ export interface ContextBuildStats {
   buildMs: number;
   /** true 表示复用了上一 turn 的不可变前缀构建结果。 */
   incremental: boolean;
+  /** 当前处于驱逐态的工具结果聚合：原文估算 tokens 与条数（restored/full 不计入）；无驱逐条目时缺省。 */
+  evicted?: { tokens: number; count: number };
 }
 
 export interface ContextView {
@@ -639,12 +643,14 @@ export class ContextManager {
       master = rebuilt.map((fragment) => fragment.message);
       sourceIds = messages.map((message) => message.id);
     }
+    const evicted = aggregateEvicted(ledger.entries);
     const stats: ContextBuildStats = {
       totalTokens: Math.max(1, total),
       segments: segments!,
       pinnedTokens,
       buildMs: performance.now() - startedAt,
       incremental,
+      ...(evicted ? { evicted } : {}),
     };
     ContextManager.touchViewCache(this.sessionRoot, {
       sourceIds: sourceIds!, ledgerKey, selectionKey, header, fragments,
@@ -944,6 +950,11 @@ export class ContextManager {
         if (existing.state !== "evicted" || existing.restoredAt !== undefined) {
           existing.state = "evicted";
           delete existing.restoredAt;
+          // 旧账本条目可能缺 evictedTokens（恢复后重新驱逐）：按当前内容补烧
+          if (existing.evictedTokens === undefined) {
+            const current = message.content.find((block) => block.type === "tool_result");
+            if (current?.type === "tool_result") existing.evictedTokens = estimateTokens(current.content);
+          }
           mutated = true;
         }
         continue;
@@ -951,8 +962,9 @@ export class ContextManager {
       const result = message.content.find((block) => block.type === "tool_result");
       if (!result || result.type !== "tool_result") continue;
       const toolName = toolNames.get(result.toolCallId);
+      const resultTokens = estimateTokens(result.content);
       // 豁免下限：小结果驱逐收益微乎其微，反而搅动缓存前缀；read ≤10 行是完整的文件结构认知
-      if (estimateTokens(result.content) < ledger.policy.minRetainTokens) continue;
+      if (resultTokens < ledger.policy.minRetainTokens) continue;
       if (toolName === "read_file" && result.content.split("\n").length <= READ_ALWAYS_RETAIN_LINES) continue;
       const artifactId = `artifact-${randomUUID()}`;
       if (!artifactsDirReady) {
@@ -969,6 +981,7 @@ export class ContextManager {
         pinnedUntilRound: 0,
         ...(toolName ? { toolName } : {}),
         sizeBytes: Buffer.byteLength(result.content, "utf8"),
+        evictedTokens: resultTokens,
         ...(result.isError ? { isError: true } : {}),
         ...(toolName === "read_file" ? { excerpt: buildReadExcerpt(result.content, ledger.policy.readKeepLines, artifactId) } : {}),
       };
@@ -989,6 +1002,11 @@ export class ContextManager {
         existing.state = "evicted";
         existing.pinnedUntilRound = 0;
         delete existing.restoredAt;
+        // 重新驱逐已恢复条目：旧账本可能缺 evictedTokens，按当前内容补烧
+        if (existing.evictedTokens === undefined) {
+          const current = message.content.find((block) => block.type === "tool_result");
+          if (current?.type === "tool_result") existing.evictedTokens = estimateTokens(current.content);
+        }
       } else {
         const result = message.content.find((block) => block.type === "tool_result");
         if (!result || result.type !== "tool_result") throw new Error("Message has no tool result");
@@ -1005,6 +1023,7 @@ export class ContextManager {
           pinnedUntilRound: 0,
           ...(toolName ? { toolName } : {}),
           sizeBytes: Buffer.byteLength(result.content, "utf8"),
+          evictedTokens: estimateTokens(result.content),
           ...(result.isError ? { isError: true } : {}),
           ...(toolName === "read_file" ? { excerpt: buildReadExcerpt(result.content, ledger.policy.readKeepLines, artifactId) } : {}),
         });
@@ -1217,6 +1236,19 @@ export function selectCacheBreakpoints(messages: ChatMessage[], ledger: ContextL
 
 function safeTokenCount(value: unknown): number {
   return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : 0;
+}
+
+/** 驱逐态条目聚合：tokens 优先取驱逐时烧入的估算，旧条目回退 sizeBytes/4，皆无只计条数。 */
+function aggregateEvicted(entries: LedgerEntry[]): { tokens: number; count: number } | undefined {
+  let tokens = 0;
+  let count = 0;
+  for (const entry of entries) {
+    if (entry.state !== "evicted") continue;
+    count += 1;
+    if (entry.evictedTokens !== undefined) tokens += entry.evictedTokens;
+    else if (entry.sizeBytes !== undefined) tokens += Math.ceil(entry.sizeBytes / 4);
+  }
+  return count > 0 ? { tokens, count } : undefined;
 }
 
 function integerString(value: unknown): string {

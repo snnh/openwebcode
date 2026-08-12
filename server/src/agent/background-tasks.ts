@@ -48,6 +48,8 @@ export class BackgroundTaskRegistry {
     private readonly onFinished?: (info: BackgroundTaskInfo) => void,
     /** 完成态 entry 的驻留 TTL（测试可注入小值）；到期驱逐，防输出缓冲无限期占内存 */
     private readonly finishedTtlMs = 60 * 60_000,
+    /** 任务成功发起（core 连接与沙盒配置完成、run 已下发）后回调；供 WS 即时通知，替代前端盲轮询 */
+    private readonly onStarted?: (info: BackgroundTaskInfo) => void,
   ) {}
 
   async start(opts: {
@@ -115,6 +117,7 @@ export class BackgroundTaskRegistry {
         this.finish(entry, "failed", undefined, error.message);
       });
 
+    this.onStarted?.(info);
     return info;
   }
 

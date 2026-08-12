@@ -10,6 +10,7 @@ import { loadPromptOverride, loadScopedPromptOverride, writeGlobalPromptOverride
 import { INIT_COMMAND_PROMPT } from "../agent/prompts/init-prompt.js";
 import { PI_BASE_SYSTEM_PROMPT, PI_PROMPT_VERSION } from "../agent/prompts/pi-base.js";
 import { COMPACT_OVERVIEW_SYSTEM, COMPACT_TOOLCALLS_SYSTEM } from "../context/compactor.js";
+import { applyCacheSavings } from "../usage-log.js";
 import type { RouteContext } from "./route-context.js";
 
 export function registerMiscRoutes(app: FastifyInstance, ctx: RouteContext): void {
@@ -190,11 +191,17 @@ export function registerMiscRoutes(app: FastifyInstance, ctx: RouteContext): voi
       ...(from !== undefined ? { from } : {}),
       ...(to !== undefined ? { to } : {}),
     });
+    // 缓存节省估算在报表缓存之外后处理：定价目录/汇率编辑即时生效
+    const enriched = applyCacheSavings(
+      report,
+      (provider, model) => ctx.pricing.get(provider, model),
+      ctx.exchangeRates?.current(),
+    );
     // 会话可能已删除：title 查不到时缺省，前端回退为短 id
     const titles = new Map((await sessions.list()).map((item) => [item.id, item.title]));
     return {
-      ...report,
-      sessions: report.sessions.map((row) => ({ ...row, title: titles.get(row.sessionId) })),
+      ...enriched,
+      sessions: enriched.sessions.map((row) => ({ ...row, title: titles.get(row.sessionId) })),
       preferences: { currency: getPreferences().currency },
     };
   });

@@ -9,7 +9,7 @@ import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
-import { UsageLog, type UsageEventRecord } from "../src/usage-log.js";
+import { applyCacheSavings, UsageLog, type UsageEventRecord } from "../src/usage-log.js";
 import { tempRoot } from "./helpers/temp-roots.js";
 
 /** 用本地时间构造，保证报表的本地日期分桶与测试环境时区无关。 */
@@ -136,5 +136,63 @@ describe("usage log cost report", () => {
     } finally {
       await app.close();
     }
+  });
+});
+
+describe("applyCacheSavings 缓存节省后处理", () => {
+  // 定价目录单位为「micro/百万 tokens」：input $2/1M、cacheRead $0.2/1M
+  const usdPricing = { currency: "USD" as const, input: 2_000_000n, output: 8_000_000n, cacheRead: 200_000n, cacheWrite: 1_000_000n };
+
+  async function makeReport(events: UsageEventRecord[]) {
+    const log = new UsageLog(await tempRoot("owc-usage-"));
+    for (const event of events) await log.record(event);
+    return log.report();
+  }
+
+  it("有定价的行与 totals 产出双币种节省；无定价标记 incomplete 且不计入", async () => {
+    const report = await makeReport([
+      eventAt(new Date(2026, 6, 10, 9)),                                    // openai/gpt-x cacheRead 10
+      eventAt(new Date(2026, 6, 10, 10), { provider: "ghost", model: "no-price" }),
+    ]);
+    const lookup = (provider: string, model: string) =>
+      provider === "openai" && model === "gpt-x" ? usdPricing : undefined;
+    const enriched = applyCacheSavings(report, lookup);
+
+    const row = enriched.days[0]!.providers.find((item) => item.provider === "openai")!;
+    // 10 tokens × (2 − 0.2) $/1M = 18 micro USD；无汇率 → 仅 USD 可得
+    expect(row.cacheSavings).toEqual({ usdMicroUnits: "18" });
+    expect(row.cacheSavingsIncomplete).toBeUndefined();
+    const ghost = enriched.days[0]!.providers.find((item) => item.provider === "ghost")!;
+    expect(ghost.cacheSavings).toBeUndefined();
+    expect(ghost.cacheSavingsIncomplete).toBe(true);
+    // totals 汇总（双币种键都在，CNY 为 0——无汇率时 CNY 不可得，差值按可得币种填）
+    expect(enriched.totals.cacheSavings?.usdMicroUnits).toBe("18");
+    expect(enriched.totals.cacheSavingsIncomplete).toBe(true);
+    // 会话分桶同样带行级节省
+    const sessionRow = enriched.sessions[0]!.providers.find((item) => item.provider === "openai")!;
+    expect(sessionRow.cacheSavings).toEqual({ usdMicroUnits: "18" });
+  });
+
+  it("cacheRead 为 0 的桶不产生节省也不标记 incomplete", async () => {
+    const report = await makeReport([eventAt(new Date(2026, 6, 10, 9), { cacheRead: 0 })]);
+    const enriched = applyCacheSavings(report, () => undefined);
+    expect(enriched.days[0]!.providers[0]!.cacheSavings).toBeUndefined();
+    expect(enriched.days[0]!.providers[0]!.cacheSavingsIncomplete).toBeUndefined();
+    expect(enriched.totals.cacheSavingsIncomplete).toBeUndefined();
+  });
+
+  it("缓存价高于输入价的错配定价：节省按 0  clamp，不为负", async () => {
+    const report = await makeReport([eventAt(new Date(2026, 6, 10, 9))]);
+    const weird = { currency: "USD" as const, input: 1_000_000n, output: 8_000_000n, cacheRead: 5_000_000n, cacheWrite: 5_000_000n };
+    const enriched = applyCacheSavings(report, () => weird);
+    expect(enriched.days[0]!.providers[0]!.cacheSavings).toEqual({ usdMicroUnits: "0" });
+  });
+
+  it("CNY 定价无汇率服务时产出 CNY 节省", async () => {
+    const report = await makeReport([eventAt(new Date(2026, 6, 10, 9))]);
+    const cnyPricing = { currency: "CNY" as const, input: 14_000_000n, output: 56_000_000n, cacheRead: 7_000_000n, cacheWrite: 35_000_000n };
+    const enriched = applyCacheSavings(report, () => cnyPricing);
+    // 10 × (14 − 7) = 70 micro CNY
+    expect(enriched.days[0]!.providers[0]!.cacheSavings).toEqual({ cnyMicroUnits: "70" });
   });
 });
