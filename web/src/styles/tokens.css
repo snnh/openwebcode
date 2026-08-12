@@ -67,6 +67,11 @@
   --text-s: 12px;
   --text-m: 13px;
   --text-l: 15px;
+
+  /* 滚动条拇指间接层（base.css 悬停显现滚动条的两条渲染路径共用）：
+     引用随主题切换的色板 token，亮/暗主题无需分别覆写 */
+  --scrollbar-thumb: var(--border-strong);
+  --scrollbar-thumb-hover: var(--text-3);
 }
 
 [data-theme="dark"] {

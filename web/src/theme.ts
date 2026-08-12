@@ -72,6 +72,16 @@ export function useTheme(): {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
+    // theme-color 跟随主题：内容取解析后的 body 背景（token 仍是唯一色值来源），
+    // 持有一个自有 meta 节点（index.html 引导脚本已写入初值，这里接管后续切换）
+    const meta = document.querySelector('meta[name="theme-color"]') ?? (() => {
+      const created = document.createElement("meta");
+      created.name = "theme-color";
+      document.head.append(created);
+      return created;
+    })();
+    const background = getComputedStyle(document.body).backgroundColor;
+    if (background) meta.setAttribute("content", background);
   }, [theme]);
 
   // 预设走 data-accent + CSS 规则；自定义任意 RGB 由内联变量注入（按亮/暗主题重新派生）
