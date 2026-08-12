@@ -9,7 +9,9 @@ import type { BackgroundTaskInfo, SandboxMode, ShellBackend, NodeEnv, PythonEnv,
 import { api } from "../lib/api";
 import { formatElapsed, formatTokens, formatTokensShort } from "../lib/format";
 import { isBusyState, STATE_LABELS } from "../lib/agent-state";
-import { cacheHitRate } from "../lib/cache-stats";
+import { cacheHitRate, cacheTone, formatCacheTitle } from "../lib/cache-stats";
+import { selectContextMetrics } from "../lib/context-metrics";
+import { tasksPollInterval } from "../lib/task-poll";
 import { windowLevel } from "../lib/context-window";
 import { useContextViewQuery } from "../app/queries";
 import { Icon } from "../components/Icon";
@@ -80,10 +82,10 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
   const budgetRatio = costSummary?.tokenBudget ? Math.min(1, costSummary.tokens / costSummary.tokenBudget) : undefined;
   const windowState = windowLevel(windowUsage?.utilization);
   const windowPct = windowUsage?.utilization !== undefined ? Math.round((windowUsage?.utilization ?? 0) * 100) : undefined;
-  // 会话累计用量（ledger.usage，与上下文面板共缓存键）：
+  // 会话累计用量（ledger.usage 切片订阅——账本其余变化不重渲顶栏）：
   // 顶栏缓存命中率用累计口径，查询未返回前回退到最近一轮（latestUsage）
-  const contextQuery = useContextViewQuery(session.id);
-  const cumulativeUsage = contextQuery.data?.ledger.usage;
+  const contextQuery = useContextViewQuery(session.id, selectContextMetrics);
+  const cumulativeUsage = contextQuery.data?.usage;
   const cacheSource = cumulativeUsage ?? latestUsage;
   const cache = cacheSource ? cacheHitRate(cacheSource) : undefined;
   const [tasksOpen, setTasksOpen] = useState(false);
@@ -100,7 +102,11 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
   const tasks = useQuery({
     queryKey: ["tasks", session.id],
     queryFn: () => api.tasks(session.id),
-    refetchInterval: 5_000,
+    // 轮询收敛：即时性走 task.started/finished 事件 invalidate；活跃 5s、空闲 30s 兜底
+    refetchInterval: (query) => {
+      const data = query.state.data as BackgroundTaskInfo[] | undefined;
+      return tasksPollInterval(Boolean(data?.some((task) => task.status === "running")), tasksOpen);
+    },
   });
   const sandboxCapabilities = useQuery({
     queryKey: ["sandbox-capabilities"],
@@ -253,14 +259,17 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
         {costSummary && (
           <span
             className={`cost-summary${costSummary.paused ? " paused" : ""}`}
-            title={costSummary.tokenBudget
+            title={(costSummary.tokenBudget
               ? t(`Token 预算 ${formatTokensShort(costSummary.tokenBudget)}，已用 ${formatTokensShort(costSummary.tokens)}`, `Token budget ${formatTokensShort(costSummary.tokenBudget)}; ${formatTokensShort(costSummary.tokens)} used`)
-              : t("本会话 tokens 与成本", "Tokens and cost for this session")}
+              : t("本会话 tokens 与成本", "Tokens and cost for this session"))
+              + ((costSummary.unpricedTokens ?? 0) > 0
+                ? t(`；另有 ${formatTokensShort(costSummary.unpricedTokens!)} tokens 未定价，成本不完整`, `; ${formatTokensShort(costSummary.unpricedTokens!)} additional tokens unpriced, cost is incomplete`)
+                : "")}
           >
             <span className="cost-summary-text">
               {formatTokensShort(costSummary.tokens)}
               <span className="unit-full"> tokens</span><span className="unit-narrow"> tok</span>
-              <i className="dot-sep" aria-hidden />{costSummary.costLabel}
+              <i className="dot-sep" aria-hidden />{costSummary.costLabel}{(costSummary.unpricedTokens ?? 0) > 0 ? " *" : ""}
             </span>
             {budgetRatio !== undefined && (
               <i className="budget-bar" aria-hidden><i style={{ width: `${Math.round(budgetRatio * 100)}%` }} /></i>
@@ -287,17 +296,13 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
           <span
             className="window-usage cache-usage"
             data-testid="cache-usage"
-            title={cumulativeUsage
-              ? t(
-                  `累计缓存读取 ${formatTokensShort(cache.cacheRead)} · 写入 ${formatTokensShort(cache.cacheWrite)}`,
-                  `Session cache read ${formatTokensShort(cache.cacheRead)} · write ${formatTokensShort(cache.cacheWrite)}`,
-                )
-              : t(
-                  `本轮缓存读取 ${formatTokensShort(cache.cacheRead)} · 写入 ${formatTokensShort(cache.cacheWrite)}`,
-                  `Last-call cache read ${formatTokensShort(cache.cacheRead)} · write ${formatTokensShort(cache.cacheWrite)}`,
-                )}
+            data-tone={cacheTone(cache)}
+            title={formatCacheTitle(cache, { cumulative: cumulativeUsage !== undefined }, t, formatTokensShort)}
           >
-            <span className="window-usage-text">{t("缓存", "cache")} {Math.round(cache.rate * 100)}%</span>
+            <span className="window-usage-text">
+              {t("缓存", "cache")} {Math.round(cache.rate * 100)}%
+              <span className="unit-full"> · {cumulativeUsage !== undefined ? t("累计", "sess") : t("本轮", "last")}</span>
+            </span>
           </span>
         )}
         {runningTasks.length > 0 && (

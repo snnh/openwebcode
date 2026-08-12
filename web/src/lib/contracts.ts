@@ -407,6 +407,8 @@ export interface ContextBuildStats {
   pinnedTokens: number;
   buildMs: number;
   incremental: boolean;
+  /** 当前驱逐态工具结果聚合（原文估算 tokens + 条数）；无驱逐条目时缺省（旧 server 不返回）。 */
+  evicted?: { tokens: number; count: number };
 }
 
 /** WS 事件 context.watermark 的 payload：每轮 agent 结束后上报的实时上下文窗口水位。 */
@@ -739,6 +741,10 @@ export interface ReportMetrics {
   usdMicroUnits: string;
   cnyMicroUnits: string;
   unpricedTokens: number;
+  /** 缓存节省估算（定价目录价差反事实；按可得币种给值）；无缓存读取时缺省。 */
+  cacheSavings?: { usdMicroUnits?: string; cnyMicroUnits?: string };
+  /** 有缓存读取但定价缺失/无法换算：节省估算不完整（UI 标 *）。 */
+  cacheSavingsIncomplete?: boolean;
 }
 
 export type ProviderBreakdown = ReportMetrics & { provider: string; model: string };

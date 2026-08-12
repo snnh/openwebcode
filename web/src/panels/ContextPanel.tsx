@@ -6,6 +6,7 @@ import { cacheHitRate } from "../lib/cache-stats";
 import { deriveWindowInfo, windowLevel, type ContextWindowInfo } from "../lib/context-window";
 import { formatCurrency, formatTokens, formatTokensShort, microToDecimal } from "../lib/format";
 import { compactionModeNameText } from "../lib/compaction";
+import { cacheTone, formatCacheTitle } from "../lib/cache-stats";
 import { useStore } from "../app/store";
 import { sessionStore } from "../app/session-store";
 import { qk, useContextViewQuery, useModelsQuery, useSessionQuery } from "../app/queries";
@@ -127,12 +128,14 @@ function SegmentStats({ stats }: { stats: NonNullable<ContextView["stats"]> }): 
 }
 
 /** 上下文窗口占用（§水位）：占用 meter + 缓存命中行 + 分段堆叠条 + 压缩水位提示。 */
-function WindowSection({ info, latestUsage, cumulativeUsage }: {
+function WindowSection({ info, latestUsage, cumulativeUsage, evicted }: {
   info: ContextWindowInfo;
   /** 最近一轮 token 用量（session-store usages，WS context.usage 写入）；本轮缓存命中来源。 */
   latestUsage?: ContextUsage | undefined;
   /** 会话累计用量（ledger.usage）；累计缓存命中来源。 */
   cumulativeUsage: ContextTokenUsage;
+  /** 驱逐态工具结果聚合（stats.evicted）；无驱逐条目时缺省不渲染 */
+  evicted?: { tokens: number; count: number } | undefined;
 }): ReactElement {
   const { t } = useI18n();
   const level = windowLevel(info.utilization);
@@ -183,7 +186,7 @@ function WindowSection({ info, latestUsage, cumulativeUsage }: {
           {latestCache && latestCache.rate !== null && (latestCache.cacheRead > 0 || latestCache.cacheWrite > 0) && (
             <span
               className="pill small"
-              title={t(`本轮缓存读取 ${formatTokensShort(latestCache.cacheRead)} · 写入 ${formatTokensShort(latestCache.cacheWrite)}`, `Last-call cache read ${formatTokensShort(latestCache.cacheRead)} · write ${formatTokensShort(latestCache.cacheWrite)}`)}
+              title={formatCacheTitle(latestCache, { cumulative: false }, t, formatTokensShort)}
             >
               {t("本轮", "Last call")} {Math.round(latestCache.rate * 100)}%
             </span>
@@ -191,7 +194,8 @@ function WindowSection({ info, latestUsage, cumulativeUsage }: {
           {cumulativeCache.rate !== null && (cumulativeCache.cacheRead > 0 || cumulativeCache.cacheWrite > 0) && (
             <span
               className="pill small accent"
-              title={t(`累计缓存读取 ${formatTokens(cumulativeCache.cacheRead)} · 写入 ${formatTokens(cumulativeCache.cacheWrite)}`, `Session cache read ${formatTokens(cumulativeCache.cacheRead)} · write ${formatTokens(cumulativeCache.cacheWrite)}`)}
+              data-tone={cacheTone(cumulativeCache)}
+              title={formatCacheTitle(cumulativeCache, { cumulative: true }, t, formatTokens)}
             >
               {t("累计", "Session")} {Math.round(cumulativeCache.rate * 100)}%
             </span>
@@ -212,6 +216,15 @@ function WindowSection({ info, latestUsage, cumulativeUsage }: {
             {info.pinnedTokens > 0 && <li>{t("pin 占用", "Pinned")} {formatTokens(info.pinnedTokens)}</li>}
           </ul>
         </>
+      )}
+      {evicted && (
+        <p
+          className="ctx-evicted-row"
+          data-testid="ctx-evicted"
+          title={t("被驱逐的工具结果原文已移出视图、存为 artifact；agent 可用 read_artifact 按需召回", "Evicted tool results were moved out of the view into artifacts; the agent can recall them on demand with read_artifact")}
+        >
+          {t(`已驱逐 ${formatTokens(evicted.tokens)} tokens（${evicted.count} 条工具结果）`, `${formatTokens(evicted.tokens)} tokens evicted (${evicted.count} tool results)`)}
+        </p>
       )}
       {info.warning === "compact_recommended" && (
         <p className="panel-note">{t("上下文接近上限，建议压缩", "Context is nearing its limit; compaction is recommended.")}</p>
@@ -436,7 +449,7 @@ export function ContextPanel({ sessionId, running }: {
 
   return (
     <div className="inspector-body">
-      {windowInfo && <WindowSection info={windowInfo} latestUsage={latestUsage} cumulativeUsage={usage} />}
+      {windowInfo && <WindowSection info={windowInfo} latestUsage={latestUsage} cumulativeUsage={usage} evicted={context.data.stats?.evicted} />}
       <h2>{t("上下文用量", "Context usage")}</h2>
       <dl>
         <dt>{t("输入 tokens", "Input tokens")}</dt>

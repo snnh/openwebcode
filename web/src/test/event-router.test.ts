@@ -174,3 +174,13 @@ describe("createEventRouter", () => {
     expect(deps.desktopNotify).toHaveBeenCalledWith({ sessionId: "s2", title: "任务完成", body: "会话二" });
   });
 });
+
+describe("task.started", () => {
+  it("失效对应会话的任务查询（徽标即时刷新，不发通知）", () => {
+    const { queryClient, deps, router } = setup("s1");
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    router.route(makeEvent({ type: "task.started", sessionId: "s1", payload: { taskId: "t1", status: "running" } }));
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["tasks", "s1"] });
+    expect(deps.notify).not.toHaveBeenCalled();
+  });
+});
