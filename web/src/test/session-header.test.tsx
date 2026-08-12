@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactElement } from "react";
 import type { SessionDetail } from "../lib/contracts";
+import { api } from "../lib/api";
 import type { ContextWindowInfo } from "../lib/context-window";
 import { SessionHeader } from "../workbench/SessionHeader";
 
@@ -107,5 +108,69 @@ describe("SessionHeader", () => {
     renderHeader({ onConfig });
     fireEvent.change(screen.getByLabelText("沙盒模式"), { target: { value: "appcontainer" } });
     expect(onConfig).toHaveBeenCalledWith({ sandboxMode: "appcontainer" });
+  });
+});
+
+describe("后台任务弹层", () => {
+  function makeTask(overrides: Partial<import("../lib/contracts").BackgroundTaskInfo>): import("../lib/contracts").BackgroundTaskInfo {
+    return {
+      taskId: "t1",
+      status: "running",
+      cmd: "npm test",
+      startedAt: "2026-08-01T00:00:00.000Z",
+      ...overrides,
+    } as import("../lib/contracts").BackgroundTaskInfo;
+  }
+
+  it("运行中在前（startedAt 升序）、已结束后随（finishedAt 降序）且带耗时", async () => {
+    vi.spyOn(api, "tasks").mockResolvedValue([
+      makeTask({ taskId: "settled-new", status: "done", startedAt: "2026-08-01T00:00:00.000Z", finishedAt: "2026-08-01T00:05:00.000Z" }),
+      makeTask({ taskId: "run-late", startedAt: "2026-08-01T00:02:00.000Z" }),
+      makeTask({ taskId: "settled-old", status: "failed", startedAt: "2026-08-01T00:00:00.000Z", finishedAt: "2026-08-01T00:01:00.000Z", exitCode: 1 }),
+      makeTask({ taskId: "run-early", startedAt: "2026-08-01T00:01:00.000Z" }),
+    ]);
+    renderHeader();
+    const trigger = await screen.findByRole("button", { name: /^任务 \d+$/ });
+    fireEvent.click(trigger);
+    const ids = Array.from(document.querySelectorAll(".task-dropdown .task-id")).map((el) => el.textContent);
+    expect(ids).toEqual(["run-early", "run-late", "settled-new", "settled-old"]);
+    expect(document.querySelectorAll(".task-dropdown .task-elapsed")).toHaveLength(4);
+    // 已结束任务弱化（CSS 类标识），exit code 保留
+    expect(document.querySelectorAll(".task-item:not(.task-running)")).toHaveLength(2);
+  });
+
+  it("运行中耗时每秒走动（interval 在弹层打开且有活任务时运行）", async () => {
+    vi.spyOn(api, "tasks").mockResolvedValue([
+      makeTask({ taskId: "t-run", startedAt: new Date(Date.now() - 3000).toISOString() }),
+    ]);
+    renderHeader();
+    const trigger = await screen.findByRole("button", { name: /^任务 \d+$/ });
+    // 计时 interval 在弹层打开时创建：须先于点击启用假时钟，否则 interval 属真实时钟无法推进
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(trigger);
+      const before = document.querySelector(".task-elapsed")!.textContent;
+      expect(before).toMatch(/^\d+s$/);
+      await act(async () => { vi.advanceTimersByTime(2100); });
+      const after = document.querySelector(".task-elapsed")!.textContent;
+      expect(Number.parseInt(before!, 10) + 2).toBe(Number.parseInt(after!, 10));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("Esc 与外部按下关闭弹层并还焦触发按钮", async () => {
+    vi.spyOn(api, "tasks").mockResolvedValue([makeTask({ taskId: "t-run" })]);
+    renderHeader();
+    const trigger = await screen.findByRole("button", { name: /^任务 \d+$/ });
+    fireEvent.click(trigger);
+    expect(document.querySelector(".task-dropdown")).not.toBeNull();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(document.querySelector(".task-dropdown")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    fireEvent.click(trigger);
+    fireEvent.pointerDown(document.body);
+    expect(document.querySelector(".task-dropdown")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
   });
 });

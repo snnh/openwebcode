@@ -3,11 +3,11 @@
  * 缓存命中、后台任务下拉、沙盒/Shell/虚拟环境/快照模式切换、手动快照、导出、中断。
  * props 契约固定于 chat/types.ts 的 SessionHeaderProps。
  */
-import { useEffect, useLayoutEffect, useRef, useState, type ReactElement, type SelectHTMLAttributes } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type SelectHTMLAttributes } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { BackgroundTaskInfo, SandboxMode, ShellBackend, NodeEnv, PythonEnv, SnapshotMode } from "../lib/contracts";
 import { api } from "../lib/api";
-import { formatTokens, formatTokensShort } from "../lib/format";
+import { formatElapsed, formatTokens, formatTokensShort } from "../lib/format";
 import { isBusyState, STATE_LABELS } from "../lib/agent-state";
 import { cacheHitRate } from "../lib/cache-stats";
 import { windowLevel } from "../lib/context-window";
@@ -115,8 +115,53 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
     staleTime: 60_000,
     retry: false,
   });
-  const runningTasks = tasks.data?.filter((task) => task.status === "running") ?? [];
-  const allTasks = tasks.data ?? [];
+  // 弹层排序：运行中在前（startedAt 升序），已结束后随（finishedAt 降序，弱化显示）
+  const sortedTasks = useMemo(() => {
+    const all = tasks.data ?? [];
+    const live = all.filter((task) => task.status === "running").sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+    const settled = all.filter((task) => task.status !== "running")
+      .sort((a, b) => (b.finishedAt ?? b.startedAt).localeCompare(a.finishedAt ?? a.startedAt));
+    return [...live, ...settled];
+  }, [tasks.data]);
+  const runningTasks = useMemo(() => sortedTasks.filter((task) => task.status === "running"), [sortedTasks]);
+  // 运行中耗时每秒走动：弹层打开且有活任务时才起一个 interval，关闭/无活任务即停
+  const [nowTick, setNowTick] = useState(0);
+  useEffect(() => {
+    if (!tasksOpen || runningTasks.length === 0) return undefined;
+    setNowTick(Date.now());
+    const timer = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [tasksOpen, runningTasks.length]);
+  // Esc/外部按下关闭弹层并还焦触发按钮；最后一个任务消失时先关弹层（焦点不随卸载丢失）
+  const tasksTriggerRef = useRef<HTMLButtonElement>(null);
+  const tasksDropdownRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!tasksOpen) return undefined;
+    const close = (refocus: boolean): void => {
+      setTasksOpen(false);
+      if (refocus) tasksTriggerRef.current?.focus();
+    };
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") close(true);
+    };
+    const onPointer = (event: PointerEvent): void => {
+      const target = event.target as Node;
+      if (tasksDropdownRef.current?.contains(target) || tasksTriggerRef.current?.contains(target)) return;
+      close(true);
+    };
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("pointerdown", onPointer);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("pointerdown", onPointer);
+    };
+  }, [tasksOpen]);
+  useEffect(() => {
+    if (tasksOpen && tasks.data !== undefined && sortedTasks.length === 0) {
+      setTasksOpen(false);
+      tasksTriggerRef.current?.focus();
+    }
+  }, [tasksOpen, tasks.data, sortedTasks.length]);
   // 平台来源统一为 server 上报的 capabilities.platform；未拿到前保持 Windows 行为（现状）
   const isWindows = sandboxCapabilities.data?.platform === undefined || sandboxCapabilities.data.platform === "win32";
   const currentSandboxMode = session.sandboxMode ?? "jobobject";
@@ -258,7 +303,9 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
         {runningTasks.length > 0 && (
           <button
             type="button"
+            ref={tasksTriggerRef}
             className={`job-info-btn${tasksOpen ? " open" : ""}`}
+            aria-expanded={tasksOpen}
             onClick={() => setTasksOpen((value) => !value)}
             title={t(`${runningTasks.length} 个后台任务运行中`, `${runningTasks.length} background tasks running`)}
           >
@@ -412,15 +459,20 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
           <button className="btn danger-outline" onClick={onAbort}>{t("中断", "Stop")}</button>
         )}
       </div>}
-      {tasksOpen && allTasks.length > 0 && (
-        <div className="task-dropdown">
-          {allTasks.map((task) => (
+      {tasksOpen && sortedTasks.length > 0 && (
+        <div className="task-dropdown" ref={tasksDropdownRef}>
+          {sortedTasks.map((task) => {
+            const elapsedMs = task.status === "running"
+              ? (nowTick || Date.now()) - Date.parse(task.startedAt)
+              : Date.parse(task.finishedAt ?? task.startedAt) - Date.parse(task.startedAt);
+            return (
             <div key={task.taskId} className={`task-item task-${task.status}`}>
               <div className="task-item-header" role="button" tabIndex={0} aria-expanded={expandedTask === task.taskId} onClick={() => openTask(task.taskId)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openTask(task.taskId); } }}>
                 <span className={`task-status-dot task-${task.status}`} />
                 <span className="task-id mono">{task.taskId}</span>
                 <span className="task-status-label">{STATUS_LABELS[task.status] ? t(...STATUS_LABELS[task.status]!) : task.status}</span>
                 {task.exitCode !== undefined && <span className="task-exit-code mono">exit {task.exitCode}</span>}
+                <span className="task-elapsed mono" title={task.status === "running" ? t("已运行时长", "Elapsed") : t("总耗时", "Duration")}>{formatElapsed(elapsedMs)}</span>
                 <span className="task-cmd" title={task.cmd}>{task.cmd}</span>
               </div>
               {expandedTask === task.taskId && (
@@ -430,7 +482,8 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
                 </pre>
               )}
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
       {confirm.dialogElement}
