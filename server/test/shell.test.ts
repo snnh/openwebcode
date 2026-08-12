@@ -100,7 +100,7 @@ describe("POST /api/sessions/:id/shell - 权限挂起（ask 模式）", () => {
       const res = await harness.app.inject({
         method: "POST",
         url: `/api/sessions/${harness.session.id}/shell`,
-        payload: { cmd: "ls -la" },
+        payload: { cmd: "npm test" },
       });
       expect(res.statusCode).toBe(202);
       // 等待 permission.request 事件
@@ -119,7 +119,7 @@ describe("POST /api/sessions/:id/shell - 权限挂起（ask 模式）", () => {
       expect(allow.statusCode).toBe(200);
       // 现在 core.run 被驱动
       await vi.waitFor(() => expect(harness.core.runCalls.length).toBe(1));
-      expect(harness.core.runCalls[0]).toMatchObject({ cmd: "ls -la" });
+      expect(harness.core.runCalls[0]).toMatchObject({ cmd: "npm test" });
       harness.core.release({ exitCode: 0, durationMs: 1, truncated: false });
       await waitForToolMessage(harness.sessions, harness.session.id);
       const detail = await harness.sessions.get(harness.session.id);
@@ -278,7 +278,7 @@ describe("POST /api/sessions/:id/shell - 路由校验", () => {
       await harness.app.inject({
         method: "POST",
         url: `/api/sessions/${harness.session.id}/shell`,
-        payload: { cmd: "ls" },
+        payload: { cmd: "npm test" },
       });
       await vi.waitFor(() => {
         if (!events.some((e) => e.type === "permission.request")) throw new Error("no permission.request");
