@@ -30,6 +30,7 @@ import {
   type LoadedIndex,
   type SymbolRecord,
 } from "./index-store.js";
+import { collectJobJsonLines } from "../rpc/job-collect.js";
 
 export type IndexStatus = "missing" | "building" | "fresh" | "stale";
 
@@ -330,71 +331,6 @@ export class IndexManager {
     }
   }
 
-  /**
-   * 轮询 job 输出直到终态；stdout 的 JSONL 行按块增量切出（去空白行）经 onLine 即抛，
-   * 不攒全量 Buffer/完整字符串/行数组（大 manifest 下三者同驻是峰值内存来源）。
-   * 非 completed 或 core 输出环溢出（truncated）抛错；summary 取自末条非空行。
-   */
-  private async collectJobJsonLines(
-    sessionId: string,
-    jobId: string,
-    signal: AbortSignal,
-    jobKind: string,
-    onLine: (line: string) => void,
-  ): Promise<{ summary: Record<string, unknown> | undefined }> {
-    let seq = 0;
-    // job.output 的 chunk.data 是 base64（docs/protocol.md §job.output）：按块解码挂到行尾
-    // 缓冲上，切出完整行才 UTF-8 解码——换行符是单字节，多字节字符不会跨行被截成 U+FFFD。
-    let tail = Buffer.alloc(0);
-    let lastLine: string | undefined;
-    const emitChunk = (incoming: Buffer): void => {
-      const data = tail.length ? Buffer.concat([tail, incoming]) : incoming;
-      let lineStart = 0;
-      for (let index = 0; index < data.length; index += 1) {
-        if (data[index] !== 0x0a) continue;
-        const line = data.subarray(lineStart, index).toString("utf8").trim();
-        if (line) {
-          lastLine = line;
-          onLine(line);
-        }
-        lineStart = index + 1;
-      }
-      // 拷贝残余半行，避免 subarray 长期挂住整块 data
-      tail = Buffer.from(data.subarray(lineStart));
-    };
-    for (;;) {
-      if (signal.aborted) throw new Error("cancelled");
-      const status = await this.core.jobStatus({ sessionId, jobId });
-      // 每轮（含终态）循环读取直到 nextSeq 不再前进：单次 limit:128（core 上限）可能读不完残留输出
-      let output = await this.core.jobOutput({ sessionId, jobId, afterSeq: seq, limit: 128 });
-      for (;;) {
-        // core 输出 ring 溢出意味着中间有行丢失：静默损坏不如显式失败（runScan 走 error/stale，可整体重建）
-        if (output.truncated) throw new Error(`${jobKind} job output truncated by core ring buffer`);
-        for (const chunk of output.chunks) {
-          if (chunk.stream === "stdout") emitChunk(Buffer.from(chunk.data, "base64"));
-        }
-        if (output.nextSeq === seq || output.chunks.length === 0) break;
-        seq = output.nextSeq;
-        output = await this.core.jobOutput({ sessionId, jobId, afterSeq: seq, limit: 128 });
-      }
-      if (status.state !== "running") {
-        if (status.state !== "completed") {
-          throw new Error(`${jobKind} job ${status.state}${status.error ? `: ${status.error}` : ""}`);
-        }
-        // 终态冲刷残余半行（无终止换行的末行）
-        if (tail.length) {
-          const line = tail.toString("utf8").trim();
-          if (line) {
-            lastLine = line;
-            onLine(line);
-          }
-        }
-        return { summary: lastLine ? trailingJobSummary(lastLine) : undefined };
-      }
-      await new Promise((resolve) => setTimeout(resolve, this.pollMs));
-    }
-  }
-
   /** 解析 index.scan 的 JSONL 流为 manifest + summary。 */
   private async collectManifest(
     sessionId: string,
@@ -403,13 +339,13 @@ export class IndexManager {
   ): Promise<{ entries: IndexScanEntry[]; summary: IndexScanSummary | undefined }> {
     const entries: IndexScanEntry[] = [];
     let summary: IndexScanSummary | undefined;
-    await this.collectJobJsonLines(sessionId, jobId, signal, "index.scan", (line) => {
+    await collectJobJsonLines(this.core, sessionId, jobId, signal, "index.scan", (line) => {
       const record = JSON.parse(line) as IndexScanEntry & { summary?: IndexScanSummary };
       if (record.summary) summary = record.summary;
       else if (typeof record.path === "string") {
         entries.push({ path: record.path, size: record.size, modifiedMs: record.modifiedMs, ...(record.sha256 ? { sha256: record.sha256 } : {}) });
       }
-    });
+    }, this.pollMs);
     return { entries, summary };
   }
 
@@ -442,11 +378,11 @@ export class IndexManager {
         path: ".",
         files: extractable.map((entry) => entry.path),
       });
-      const { summary: extractSummary } = await this.collectJobJsonLines(sessionId, extractJobId, signal, "index.extract", (line) => {
+      const { summary: extractSummary } = await collectJobJsonLines(this.core, sessionId, extractJobId, signal, "index.extract", (line) => {
         const record = JSON.parse(line) as Partial<IndexExtractEntry> & { summary?: IndexExtractSummary };
         if (record.summary || typeof record.path !== "string" || !Array.isArray(record.symbols)) return;
         extracted.set(record.path, record.symbols.map(toSymbolRecord));
-      });
+      }, this.pollMs);
       // core 整条跳过的文件（读失败/非 UTF-8/策略拒绝）按 0 符号处理：清掉旧符号但不丢文件清单。
       // 截断（truncated）时未收到输出行更可能是"没来得及处理"而非"跳过"：保留上一轮旧符号，不静默清空。
       const extractTruncated = extractSummary?.truncated === true;
@@ -671,16 +607,6 @@ export class IndexManager {
     }
     result.sort((a, b) => b.modifiedMs - a.modifiedMs || a.path.localeCompare(b.path));
     return result;
-  }
-}
-
-/** JSONL 末行若是 {"summary":{...}} 则取出（index.scan/index.extract 约定的终止行）；解析失败按无 summary。 */
-function trailingJobSummary(line: string): Record<string, unknown> | undefined {
-  try {
-    const record = JSON.parse(line) as { summary?: unknown };
-    return record.summary && typeof record.summary === "object" ? record.summary as Record<string, unknown> : undefined;
-  } catch {
-    return undefined;
   }
 }
 

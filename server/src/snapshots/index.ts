@@ -4,7 +4,7 @@ import type { SessionStore } from "../sessions/session-store.js";
 import type { SessionMeta } from "../sessions/types.js";
 import type { SnapshotBackend } from "./backend.js";
 import { BtrfsBackend } from "./btrfs.js";
-import { GitShadowSnapshots } from "./git-shadow.js";
+import { GitShadowSnapshots, type GitShadowOptions } from "./git-shadow.js";
 import { ManagedDiskBackend, managedWorkspacePaths } from "./managed-disk.js";
 import { OverlayfsBackend } from "./overlayfs.js";
 import { createExecFileRunner, probeSnapshotBackend, type CommandRunner } from "./probe.js";
@@ -35,11 +35,12 @@ export async function getSnapshotBackend(sessions: SessionStore, session: Sessio
     runner: createExecFileRunner(),
     ...(deps.core ? { core: deps.core } : {}),
     ...(deps.platform ? { platform: deps.platform } : {}),
+    gitShadow: gitShadowOptions(session, deps.core),
   });
   // overlayfs 的正确语义要求创建期挂接（cwd=merged 托管视图）；存量直接会话懒探测到
   // overlayfs 时无法安全切换 cwd，回落 git-shadow 保持检查点语义正确
   if (probed.name === "overlayfs" && session.workspace?.backend !== "overlayfs") {
-    probed = new GitShadowSnapshots(sessionRoot, session.cwd);
+    probed = new GitShadowSnapshots(sessionRoot, session.cwd, gitShadowOptions(session, deps.core));
   }
   try {
     await sessions.updateSnapshotBackend(session.id, probed instanceof ZfsBackend ? `zfs:${probed.dataset}` : probed.name);
@@ -53,7 +54,7 @@ function constructByName(stored: string, session: SessionMeta, sessionRoot: stri
   const argument = separator === -1 ? "" : stored.slice(separator + 1);
   const workspace = session.cwd;
   switch (name) {
-    case "git-shadow": return new GitShadowSnapshots(sessionRoot, workspace);
+    case "git-shadow": return new GitShadowSnapshots(sessionRoot, workspace, gitShadowOptions(session, core));
     case "btrfs": return new BtrfsBackend(workspace, runner);
     case "zfs": return argument ? new ZfsBackend(sessionRoot, workspace, argument, runner) : undefined;
     case "refs": return new RefsBackend(sessionRoot, workspace, runner);
@@ -73,4 +74,14 @@ function constructByName(stored: string, session: SessionMeta, sessionRoot: stri
     }
     default: return undefined;
   }
+}
+
+/** git-shadow 的会话上下文：扫描走 core 有界原语需要 sessionId + core；denyPaths/contextExcludes 对齐快照与访问策略。 */
+function gitShadowOptions(session: SessionMeta, core: CoreClientLike | undefined): GitShadowOptions {
+  return {
+    sessionId: session.id,
+    ...(core ? { core } : {}),
+    ...(session.sandbox?.denyPaths?.length ? { denyPaths: session.sandbox.denyPaths } : {}),
+    ...(session.contextExcludes?.length ? { contextExcludes: session.contextExcludes } : {}),
+  };
 }
