@@ -363,6 +363,10 @@
   cursor: pointer;
 }
 .task-item-header:hover { color: var(--accent); }
+/* 已结束任务弱化显示，hover/键盘聚焦恢复（运行中任务始终全量强调） */
+.task-item:not(.task-running) { opacity: 0.62; }
+.task-item:not(.task-running):hover, .task-item:not(.task-running):focus-within { opacity: 1; }
+.task-elapsed { flex: none; color: var(--text-3); font-size: 11px; }
 .task-status-dot {
   width: 8px;
   height: 8px;
