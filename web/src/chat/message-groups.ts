@@ -1,4 +1,4 @@
-import type { ChatMessage } from "../lib/contracts";
+import type { ChatMessage, MessageContent } from "../lib/contracts";
 import type { CompactionMarker } from "../lib/compaction";
 
 /**
@@ -9,6 +9,7 @@ import type { CompactionMarker } from "../lib/compaction";
  *   clear 分隔线落在折叠段首时由调用方外置渲染（见 showDivider 注释）。
  * - insertCompactionMarkers：把压缩检查点行按消息下标插入渲染序列；
  *   插入位落入折叠段时外置到折叠组之前（与段首分隔线同规则，不折进折叠区）。
+ * - insertProducedFiles：把「本轮产出文件」行插入每轮末尾（轮内含折叠段时置于折叠组之后）。
  */
 
 export type RenderItem =
@@ -34,7 +35,19 @@ export type RenderItem =
   | {
       kind: "compaction";
       marker: CompactionMarker;
+    }
+  | {
+      kind: "files";
+      /** 所属轮次编号（user 消息开启一轮），仅作渲染 key 与语义标识 */
+      turn: number;
+      files: ProducedFile[];
     };
+
+/** 本轮产出文件：write_file/edit_file 工具调用按 path 去重（先出现者优先） */
+export interface ProducedFile {
+  path: string;
+  action: "write" | "edit";
+}
 
 export function turnOf(messages: ChatMessage[]): number[] {
   const values: number[] = [];
@@ -112,5 +125,70 @@ export function insertCompactionMarkers(
     result.push(item);
   }
   flushThrough(messageCount);
+  return result;
+}
+
+/** 从消息内容块收集产出文件：write_file/edit_file 的 input.path，按 path 去重保持出现序。 */
+export function collectProducedFiles(content: MessageContent[]): ProducedFile[] {
+  const files: ProducedFile[] = [];
+  const seen = new Set<string>();
+  for (const block of content) {
+    if (block.type !== "tool_call") continue;
+    const path = typeof block.input?.path === "string" ? block.input.path : "";
+    if (!path || seen.has(path)) continue;
+    if (block.name === "write_file") {
+      seen.add(path);
+      files.push({ path, action: "write" });
+    } else if (block.name === "edit_file") {
+      seen.add(path);
+      files.push({ path, action: "edit" });
+    }
+  }
+  return files;
+}
+
+/**
+ * 「本轮产出文件」行插入：每轮末尾（下一轮 user 消息之前，或列表末尾）插入一行，
+ * 汇总该轮全部 write_file/edit_file 产出（跨消息按 path 去重，先出现者优先）。
+ * 轮内末尾是折叠段时置于折叠组之后（行属本轮产出概览，不折进折叠区）。
+ * 无产出的轮不插入；turn 0（首条 user 之前）不归属任何轮。
+ */
+export function insertProducedFiles(items: RenderItem[], messages: ChatMessage[]): RenderItem[] {
+  const turns = turnOf(messages);
+  const filesByTurn = new Map<number, ProducedFile[]>();
+  const seenByTurn = new Map<number, Set<string>>();
+  for (let i = 0; i < messages.length; i += 1) {
+    const turn = turns[i]!;
+    if (turn === 0) continue;
+    for (const file of collectProducedFiles(messages[i]!.content)) {
+      const seen = seenByTurn.get(turn) ?? new Set<string>();
+      if (seen.has(file.path)) continue;
+      seen.add(file.path);
+      seenByTurn.set(turn, seen);
+      filesByTurn.set(turn, [...(filesByTurn.get(turn) ?? []), file]);
+    }
+  }
+  if (filesByTurn.size === 0) return items;
+
+  const turnOfItem = (item: RenderItem): number | undefined => {
+    if (item.kind === "message") return turns[item.index];
+    if (item.kind === "fold") return turns[item.end - 1];
+    return undefined; // compaction：不改变当前轮归属
+  };
+  const result: RenderItem[] = [];
+  let currentTurn = 0;
+  const flushTurn = (): void => {
+    const files = filesByTurn.get(currentTurn);
+    if (files && files.length > 0) result.push({ kind: "files", turn: currentTurn, files });
+  };
+  for (const item of items) {
+    const turn = turnOfItem(item);
+    if (turn !== undefined && turn !== currentTurn) {
+      flushTurn();
+      currentTurn = turn;
+    }
+    result.push(item);
+  }
+  flushTurn();
   return result;
 }

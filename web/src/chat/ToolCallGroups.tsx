@@ -87,12 +87,16 @@ export function ToolStatusIcon({ status }: { status: ToolCallStatus | undefined 
 /** 组内单行（状态图标 + 工具名 + 参数摘要 + 展开查看参数/结果）；也用于流式孤立单调用卡。 */
 export function ToolCallGroupRow({ call }: { call: ToolGroupCall }): ReactElement {
   const { t } = useI18n();
-  const { onOpenDiff } = useChatActions();
+  const { onOpenDiff, onOpenFile } = useChatActions();
   const [open, setOpen] = useState(false);
   const status = call.status;
   const toggle = (): void => setOpen((value) => !value);
   const hasParams = Boolean(call.argsText && call.argsText !== "{}");
   const summary = call.summary ?? call.result?.summary ?? undefined;
+  // 文件提及链接仅对携带路径的 diff 形态（agent 写入/编辑）可用；checkpoint 形态无 path
+  const diffPath = call.diffSpec && (call.diffSpec.source === "agent-write" || call.diffSpec.source === "agent-edit" || call.diffSpec.source === "scm")
+    ? call.diffSpec.path
+    : undefined;
   return (
     <section className={`tool-row tool-group-row${open ? " open" : ""}${status === "error" ? " error" : ""}`}>
       <div
@@ -116,13 +120,26 @@ export function ToolCallGroupRow({ call }: { call: ToolGroupCall }): ReactElemen
       {open && (
         <div className="tool-row-body">
           {call.diffSpec && (
-            <button
-              className="btn small tool-diff-open"
-              onClick={() => onOpenDiff(call.diffSpec!)}
-              aria-label={t("在 diff 视图中打开该文件变化", "Open this file change in the diff view")}
-            >
-              {t("在 diff 中打开", "Open in diff")}
-            </button>
+            <div className="tool-file-actions">
+              <button
+                className="btn small tool-diff-open"
+                onClick={() => onOpenDiff(call.diffSpec!)}
+                aria-label={t("在 diff 视图中打开该文件变化", "Open this file change in the diff view")}
+              >
+                {t("在 diff 中打开", "Open in diff")}
+              </button>
+              {onOpenFile && diffPath && (
+                <button
+                  type="button"
+                  className="tool-file-link mono"
+                  title={t(`在编辑器中打开 ${diffPath}`, `Open ${diffPath} in the editor`)}
+                  onClick={() => onOpenFile(diffPath)}
+                >
+                  <Icon name="file" size={11} />
+                  {diffPath}
+                </button>
+              )}
+            </div>
           )}
           {call.argsStreaming
             ? hasParams && <pre className="mono tool-stream-args">{call.argsText}</pre>
