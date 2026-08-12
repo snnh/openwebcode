@@ -124,20 +124,27 @@ describe("/clear composer command", () => {
   });
 
   it("uptoIndex 用活动路径长度：存在离路径分支消息时 /clear 后新消息仍进视图", async () => {
-    const { root, sessions, app } = await clearApp();
+    const { root, sessions, app, observed } = await clearApp();
     const session = await sessions.create({ cwd: root, title: "Clear with branches" });
     const m1 = await sessions.appendMessage(session.id, "user", [{ type: "text", text: "q1" }]);
     await sessions.appendMessage(session.id, "assistant", [{ type: "text", text: "a1" }]);
     // 制造分支：checkout 回 m1 再追加，旧 a1 成为离路径消息（全量 3 条，活动路径 2 条）
     await sessions.setActiveLeaf(session.id, m1.id);
-    await sessions.appendMessage(session.id, "assistant", [{ type: "text", text: "a1-retry" }]);
+    const retry = await sessions.appendMessage(session.id, "assistant", [{ type: "text", text: "a1-retry" }]);
     const before = (await sessions.get(session.id))!;
     expect(before.messages).toHaveLength(3);
     expect(activePathMessages(before.messages, before.activeLeafId)).toHaveLength(2);
 
     const response = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "/clear" } });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ cleared: true, uptoIndex: 2 });
+    // uptoIndex 仍为活动路径长度（agent 视图/compactor 同口径）；uptoMessageId 锚定最后一条活动路径消息
+    expect(response.json()).toMatchObject({ cleared: true, uptoIndex: 2, uptoMessageId: retry.id });
+    expect(observed.find((event) => event.type === "context.cleared")?.payload).toMatchObject({ uptoIndex: 2, uptoMessageId: retry.id });
+
+    // REST context 视图（buildView 输入为全量 JSONL，含离路径消息）也必须全清：
+    // 仅靠活动路径长度换算全量下标会残留尾部消息（分隔线提早插入的根因）
+    const restView = await new ContextManager(sessions.contextRoot(session.id)).buildView(before.messages);
+    expect(restView.messages).toEqual([]);
 
     // 回归断言：/clear 后追加的新消息必须出现在视图中
     // （修复前 uptoIndex=3 > 活动路径长度，会把之后所有消息一并清出视图，模型看不到任何用户消息）
@@ -146,5 +153,8 @@ describe("/clear composer command", () => {
     const path = activePathMessages(after.messages, after.activeLeafId);
     const view = await new ContextManager(sessions.contextRoot(session.id)).buildView(path);
     expect(view.messages.map((message) => message.content[0])).toEqual([{ type: "text", text: "q2" }]);
+    // 全量空间的 REST 视图同样只含新消息：分隔线对应边界 = 最后一条活动路径消息之后
+    const restAfter = await new ContextManager(sessions.contextRoot(session.id)).buildView(after.messages);
+    expect(restAfter.messages.map((message) => message.content[0])).toEqual([{ type: "text", text: "q2" }]);
   });
 });

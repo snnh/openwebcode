@@ -152,10 +152,21 @@ export function MessageList({
 
   // ===== 分组与配对表 =====
   const turns = useMemo(() => turnOf(messages), [messages]);
-  // clear 分隔线定位：ledger 记的 uptoIndex 是全量历史绝对下标，session.messages 是分页尾部窗口，
-  // 需减去页偏移换算成窗口内下标；clear 点在未加载的早期历史里（< 0）时不渲染，加载更早消息后自然就位
+  // clear 分隔线定位：
+  // - 优先按 uptoMessageId 锚定（/clear 时刻最后一条活动路径消息）：在窗口内 findIndex+1 即
+  //   分隔线位置（其后的消息属于「清空之后」），与分页偏移无关、不受分支/retry 离路径消息
+  //   穿插影响；边界消息在未加载的早期历史里（-1）时不渲染，加载更早消息后自然就位。
+  // - 旧 ledger（无 uptoMessageId）回退绝对下标换算：uptoIndex 是全量历史绝对下标，
+  //   session.messages 是分页尾部窗口，需减去页偏移换算成窗口内下标。
   const pageOffset = Math.max(0, (session.messageCount ?? messages.length) - messages.length);
-  const clearedLocal = cleared ? cleared.uptoIndex - pageOffset : undefined;
+  const clearedLocal = cleared
+    ? cleared.uptoMessageId
+      ? (() => {
+          const index = messages.findIndex((message) => message.id === cleared.uptoMessageId!);
+          return index < 0 ? -1 : index + 1;
+        })()
+      : cleared.uptoIndex - pageOffset
+    : undefined;
   const items = useMemo(
     () => {
       const base = buildRenderItems(messages, { foldProcess: !running, ...(clearedLocal !== undefined ? { clearedLocal } : {}) });

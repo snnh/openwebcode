@@ -204,9 +204,14 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
       if (queued?.queued) notify(input.behavior === "follow_up"
         ? t(`已加入完成后续跑队列（第 ${queued.position} 项）`, `Added to follow-up queue (position ${queued.position})`)
         : t(`已加入 Steering 队列（第 ${queued.position} 项）`, `Added to Steering queue (position ${queued.position})`));
+      // /clear 分隔线由 context 视图（ledger.cleared）驱动：响应成功即刷新该查询，
+      // WS context.cleared 事件延迟/丢失时分隔线也可靠出现（不依赖事件时序）
+      if (/^\/clear\s*$/i.test(input.text.trim())) {
+        void queryClient.invalidateQueries({ queryKey: ["context", input.sessionId] });
+      }
       // /compact 沉降兜底：changed 时运行中占位已由 context.compacted 事件原位沉降；
       // 空跑（compacted:false）或无声失败时清掉占位，消息流不留残痕
-      if (/^\/compact(?:\s|$)/i.test(input.text.trim())) {
+      if (/^\/compact(?:\\s|$)/i.test(input.text.trim())) {
         live.clearRunningCompaction(input.sessionId);
         if ((result as { compacted?: boolean }).compacted === false) {
           notify((result as { result?: { reason?: string } }).result?.reason ?? t("无需压缩", "No compaction needed"));

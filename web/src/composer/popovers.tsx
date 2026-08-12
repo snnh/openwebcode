@@ -90,7 +90,7 @@ function MenuOption({ selected, label, description, onSelect }: {
 }
 
 const PERMISSION_OPTIONS: Array<{ value: PermissionMode; label: [string, string]; description: [string, string] }> = [
-  { value: "ask", label: ["逐次确认", "Confirm each"], description: ["每个工具操作都需要你手动确认", "Every tool action requires your manual confirmation"] },
+  { value: "ask", label: ["逐次确认", "Confirm each"], description: ["每个工具操作都需要你手动确认；只读探查命令（head/ls/find 等）自动放行", "Every tool action requires your manual confirmation; read-only inspection commands (head/ls/find etc.) are auto-approved"] },
   { value: "acceptEdits", label: ["接受编辑", "Accept edits"], description: ["自动批准文件写入与编辑，其他工具操作仍会询问", "File writes and edits are auto-approved; other tool actions still ask"] },
   { value: "review", label: ["模型审核", "Model review"], description: ["低风险操作由快速模型自动通过，高风险仍会询问你", "Low-risk actions are auto-approved by a fast model; high-risk ones still ask you"] },
   { value: "yolo", label: ["完全自主", "Full autonomy"], description: ["完全自主运行，智能体自己做决定，不再询问", "Runs fully autonomously; the agent decides on its own and never asks"] },

@@ -227,6 +227,47 @@ describe("MessageList", () => {
     expect(divider.getAttribute("title")).toBe(new Date("2026-08-01T00:00:00.000Z").toLocaleString("zh-CN"));
   });
 
+  it("clear 分隔线按 uptoMessageId 锚定：停在边界消息之后，新消息追加不贴底", () => {
+    const props = makeProps({ cleared: { uptoIndex: 3, uptoMessageId: "t1", at: "2026-08-01T00:00:00.000Z" } });
+    const session = (messageCount: number, messages: ChatMessage[]): void => {
+      props.session = makeSession({ id: "s1", messageCount, messages });
+    };
+    const three = [
+      msg("u1", "user", [text("问")]),
+      msg("a1", "assistant", [text("答")]),
+      msg("t1", "tool", [{ type: "tool_result", content: "ok" }]),
+    ];
+    session(3, three);
+    const { container, rerender } = render(<MessageList {...props} />);
+    const divider = container.querySelector(".context-cleared-divider")!;
+    expect(divider).not.toBeNull();
+    // 边界消息 t1 是最后一条：分隔线在其后（列表末尾，无后续兄弟）
+    expect(divider.nextElementSibling).toBeNull();
+    expect(container.querySelector(".turn-process [data-message-id=\"t1\"]")).not.toBeNull();
+    // clear 后追加新消息：分隔线停留在 t1 之后、新消息之前——不随新消息贴底
+    session(4, [...three, msg("u2", "user", [text("新问题")])]);
+    rerender(<MessageList {...props} />);
+    const dividerAfter = container.querySelector(".context-cleared-divider")!;
+    expect(dividerAfter).not.toBeNull();
+    expect(dividerAfter.previousElementSibling).toHaveClass("turn-process");
+    expect(dividerAfter.nextElementSibling).toHaveAttribute("data-message-id", "u2");
+  });
+
+  it("clear 分隔线边界消息未加载时不渲染（翻页加载更早消息后自然就位）", () => {
+    // uptoMessageId 指向的消息在分页窗口之外：findIndex=-1 → 暂不渲染
+    const props = makeProps({ cleared: { uptoIndex: 5, uptoMessageId: "u0", at: "2026-08-01T00:00:00.000Z" } });
+    props.session = makeSession({
+      id: "s1",
+      messageCount: 6,
+      messages: [
+        msg("u1", "user", [text("问")]),
+        msg("a1", "assistant", [text("答")]),
+      ],
+    });
+    const { container } = render(<MessageList {...props} />);
+    expect(container.querySelector(".context-cleared-divider")).toBeNull();
+  });
+
   it("压缩检查点行按插入位渲染（折叠段外置、尾部追加）", () => {
     const props = makeProps({
       compactions: [
