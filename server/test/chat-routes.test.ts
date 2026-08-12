@@ -316,6 +316,46 @@ describe("POST /api/chat/sessions/:id/messages/:messageId/retry", () => {
   });
 });
 
+describe("POST /api/chat/sessions/:id/messages/:messageId/edit", () => {
+  it("非 user 消息 400；空文本 400；消息不存在 404", async () => {
+    const { app, chatSessions } = await setup();
+    const id = await createSession(app);
+    const userMsg = await chatSessions.appendMessage(id, "user", [{ type: "text", text: "原始问题" }]);
+    const assistantMsg = await chatSessions.appendMessage(id, "assistant", [{ type: "text", text: "回答" }]);
+
+    const badRole = await app.inject({ method: "POST", url: `/api/chat/sessions/${id}/messages/${assistantMsg.id}/edit`, payload: { text: "改" } });
+    expect(badRole.statusCode).toBe(400);
+    const empty = await app.inject({ method: "POST", url: `/api/chat/sessions/${id}/messages/${userMsg.id}/edit`, payload: { text: "  " } });
+    expect(empty.statusCode).toBe(400);
+    const missing = await app.inject({ method: "POST", url: `/api/chat/sessions/${id}/messages/does-not-exist/edit`, payload: { text: "改" } });
+    expect(missing.statusCode).toBe(404);
+  });
+
+  it("编辑重发 202：回溯到父消息长出新分支，runner 拿到新文本与最新 meta；旧分支保留", async () => {
+    const { app, chatSessions, runnerCalls } = await setup();
+    const id = await createSession(app);
+    const rootUser = await chatSessions.appendMessage(id, "user", [{ type: "text", text: "第一问" }]);
+    const rootAssistant = await chatSessions.appendMessage(id, "assistant", [{ type: "text", text: "第一答" }]);
+    const userMsg = await chatSessions.appendMessage(id, "user", [{ type: "text", text: "原始问题" }]);
+    await chatSessions.appendMessage(id, "assistant", [{ type: "text", text: "旧回答" }]);
+
+    const ok = await app.inject({ method: "POST", url: `/api/chat/sessions/${id}/messages/${userMsg.id}/edit`, payload: { text: "编辑后的问题" } });
+    expect(ok.statusCode, ok.body).toBe(202);
+    expect(runnerCalls).toHaveLength(1);
+    expect(runnerCalls[0]!.userMessage).toBe("编辑后的问题");
+
+    // 新 user 消息以 rootAssistant 为父（回溯点），旧 userMsg 分支消息保留在 JSONL
+    const messages = await chatSessions.getMessages(id);
+    const edited = messages.find((message) => message.role === "user" && message.content.some((block) => block.type === "text" && block.text === "编辑后的问题"))!;
+    expect(edited.parentId).toBe(rootAssistant.id);
+    expect(messages.some((message) => message.id === userMsg.id)).toBe(true);
+    const meta = await chatSessions.get(id);
+    expect(meta?.activeLeafId).toBe(edited.id);
+    expect(runnerCalls[0]!.meta.activeLeafId).toBe(edited.id);
+    expect(rootUser.id).not.toBe(edited.id);
+  });
+});
+
 describe("checkout 校验", () => {
   it("messageId 不存在时路由 404", async () => {
     const { app } = await setup();
