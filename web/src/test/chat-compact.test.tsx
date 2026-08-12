@@ -2,6 +2,7 @@ import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
 import { setSendKey } from "../app/prefs-store";
+import { ui } from "../app/ui-store";
 import { installAppFetchMock } from "./helpers/app-fetch-mock";
 import { makeSession } from "./helpers/fixtures";
 import { setupStubWebSocket } from "./helpers/stub-websocket";
@@ -25,6 +26,9 @@ setupStubWebSocket();
 beforeEach(() => {
   window.localStorage.clear();
   setSendKey("enter");
+  // toast/通知中心在模块级 uiStore，用例间需清理避免串扰
+  ui.setNotice(undefined);
+  ui.clearNotifications();
 });
 
 describe("/compact 发送反馈", () => {
