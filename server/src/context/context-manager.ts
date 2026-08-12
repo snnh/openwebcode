@@ -74,7 +74,12 @@ export interface CompactionRecord {
   summary: string;
   instructions: string[];
   createdAt: string;
+  /** 被替换消息段的 token 估算（压缩时烧入，写入后不可变；旧记录缺省，UI 相应降级不显示）。 */
+  replacedTokens?: number;
 }
+
+/** 压缩历史上限：超出丢弃最旧（compacted 始终保持最新一次，历史仅供 UI 回放多次压缩）。 */
+export const MAX_COMPACTION_HISTORY = 20;
 
 export interface ClearRecord {
   uptoIndex: number;
@@ -95,6 +100,8 @@ export interface ContextLedger {
   cost: CostLedger;
   cacheBreakpoints: string[];
   compacted?: CompactionRecord;
+  /** 历次压缩记录（含最新一次，与 compacted 同义重复末尾）：供 UI 在消息流中还原多个压缩检查点。 */
+  compactionHistory?: CompactionRecord[];
   cleared?: ClearRecord;
 }
 
@@ -326,7 +333,7 @@ function buildFragment(message: ChatMessage, byMessage: Map<string, LedgerEntry>
 }
 
 /** 与 estimateMessageTokens 逐块规则一致的单消息估算（调用方对总和再取 max(1, …)）。 */
-function estimateFragmentTokens(message: ChatMessage): number {
+export function estimateFragmentTokens(message: ChatMessage): number {
   let total = 4;
   for (const block of message.content) {
     if (block.type === "image") total += IMAGE_TOKEN_ESTIMATE;
@@ -1101,7 +1108,20 @@ function isCompaction(value: unknown): value is CompactionRecord {
     typeof record.mode === "string" && ["toolcalls", "overview", "truncated", "vault"].includes(record.mode) &&
     typeof record.summary === "string" &&
     Array.isArray(record.instructions) &&
-    typeof record.createdAt === "string";
+    typeof record.createdAt === "string" &&
+    (record.replacedTokens === undefined || (Number.isSafeInteger(record.replacedTokens) && record.replacedTokens >= 0));
+}
+
+/** 历史条目统一清洗：过滤非法记录、instructions 只留字符串。 */
+function normalizeCompaction(value: CompactionRecord): CompactionRecord {
+  return { ...value, instructions: value.instructions.filter((item): item is string => typeof item === "string") };
+}
+
+/** 压缩写入统一入口（Compactor 与 compact-vault 扩展共用）：更新 compacted 并追加历史（超封顶丢最旧）。 */
+export function recordCompaction(ledger: ContextLedger, record: CompactionRecord): void {
+  ledger.compacted = record;
+  const history = [...(ledger.compactionHistory ?? []), record];
+  ledger.compactionHistory = history.slice(-MAX_COMPACTION_HISTORY);
 }
 
 /** 注入视图的压缩文本：用户明确指令累积置顶（§7.4 overview 契约）。 */
@@ -1165,7 +1185,10 @@ function normalizeLedger(value: Partial<ContextLedger>): ContextLedger {
       ? value.cacheBreakpoints.filter((item): item is string => typeof item === "string").slice(-3)
       : [],
     ...(isCompaction(value.compacted)
-      ? { compacted: { ...value.compacted, instructions: value.compacted.instructions.filter((item): item is string => typeof item === "string") } }
+      ? { compacted: normalizeCompaction(value.compacted) }
+      : {}),
+    ...(Array.isArray(value.compactionHistory)
+      ? { compactionHistory: value.compactionHistory.filter(isCompaction).map(normalizeCompaction).slice(-MAX_COMPACTION_HISTORY) }
       : {}),
     ...(value.cleared && Number.isSafeInteger(value.cleared.uptoIndex) && value.cleared.uptoIndex >= 0 && typeof value.cleared.at === "string" && Number.isFinite(Date.parse(value.cleared.at))
       ? { cleared: { uptoIndex: value.cleared.uptoIndex, at: value.cleared.at } }

@@ -9,13 +9,15 @@ import { activePathMessages } from "../sessions/session-tree.js";
 import type { ChatMessage, MessageContent } from "../sessions/types.js";
 import type { SessionStore } from "../sessions/session-store.js";
 import type { UsageLog } from "../usage-log.js";
-import { ContextManager, type CompactionRecord } from "./context-manager.js";
+import { ContextManager, estimateFragmentTokens, recordCompaction, type CompactionRecord } from "./context-manager.js";
 
 export interface CompactResult {
   changed: boolean;
   mode: CompactionRecord["mode"];
   uptoIndex?: number;
   summary?: string;
+  /** 账本记录的创建时间（changed 时存在）：事件载荷与 UI 检查点行 key 复用同一值。 */
+  createdAt?: string;
   reason?: string;
 }
 
@@ -170,12 +172,21 @@ export class Compactor {
       finalMode = mode === "overview" ? "truncated" : "toolcalls";
     }
 
+    const record: CompactionRecord = {
+      uptoIndex,
+      mode: finalMode,
+      summary,
+      instructions,
+      createdAt: new Date().toISOString(),
+      // 被替换消息段的 token 估算（与视图归因同一估算器），供 UI 检查点行展示
+      replacedTokens: span.reduce((total, message) => total + estimateFragmentTokens(message), 0),
+    };
     await context.updateLedger((current) => {
       // 85% 强制时 pin 失效（安全优先，§7.3-W）
       if (forced) {
         for (const entry of current.entries) entry.pinnedUntilRound = 0;
       }
-      current.compacted = { uptoIndex, mode: finalMode, summary, instructions, createdAt: new Date().toISOString() };
+      recordCompaction(current, record);
     });
     // 长期记忆沉淀（§7.5）：overview 摘要的「关键发现/未决事项」落进项目 memory.md。
     // 单点落在此：85% 强制压缩（agent-runner）、REST 与 /compact 命令（app.ts runCompact）
@@ -194,7 +205,7 @@ export class Compactor {
     if (this.deps.hooks) {
       await this.deps.hooks.run("PostCompact", { sessionId, cwd: session.cwd, compact: { strategy: mode, forced, changed: true, finalMode, uptoIndex } });
     }
-    return { changed: true, mode: finalMode, uptoIndex, summary };
+    return { changed: true, mode: finalMode, uptoIndex, summary, createdAt: record.createdAt };
   }
 
   /** Fast-model usage is attributed to the selected real provider/model. */
