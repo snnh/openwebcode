@@ -36,6 +36,9 @@ vi.mock("../chat/cards/RunErrorCard", () => ({
 vi.mock("../chat/cards/LiveActivityBar", () => ({
   LiveActivityBar: (): ReactElement => <div data-testid="live-activity" />,
 }));
+vi.mock("../chat/cards/CompactionRow", () => ({
+  CompactionRow: ({ marker }: { marker: { id: string } }): ReactElement => <div data-compaction-id={marker.id} />,
+}));
 vi.mock("../chat/search", async () => {
   const actual = await vi.importActual<typeof import("../chat/search")>("../chat/search");
   return {
@@ -219,5 +222,32 @@ describe("MessageList", () => {
     // 分隔线在折叠组之外（下一个兄弟即折叠组），不被折进折叠区
     expect(divider.nextElementSibling).toHaveClass("turn-process");
     expect(container.querySelector(".turn-process .context-cleared-divider")).toBeNull();
+    // 同族升级：分隔线带图标，清空时间经 title 悬浮可见
+    expect(divider.querySelector("svg")).not.toBeNull();
+    expect(divider.getAttribute("title")).toBe(new Date("2026-08-01T00:00:00.000Z").toLocaleString("zh-CN"));
+  });
+
+  it("压缩检查点行按插入位渲染（折叠段外置、尾部追加）", () => {
+    const props = makeProps({
+      compactions: [
+        { id: "c1", uptoIndex: 2, mode: "overview", forced: false, createdAt: "2026-08-01T00:00:00.000Z", status: "settled" },
+        { id: "c2", uptoIndex: -1, mode: "overview", forced: true, createdAt: "2026-08-01T01:00:00.000Z", status: "running" },
+      ],
+    });
+    props.session = makeSession({
+      id: "s1",
+      messageCount: 3,
+      messages: [
+        msg("u1", "user", [text("问")]),
+        msg("a1", "assistant", [{ type: "thinking", text: "想" }]),
+        msg("t1", "tool", [{ type: "tool_result", content: "ok" }]),
+      ],
+    });
+    const { container } = render(<MessageList {...props} />);
+    const rows = Array.from(container.querySelectorAll("[data-compaction-id]"));
+    expect(rows.map((row) => row.getAttribute("data-compaction-id"))).toEqual(["c1", "c2"]);
+    // c1 插入位 2 落入折叠段 [1,3) → 外置到折叠组之前；c2 运行中占位在尾部
+    expect(rows[0]!.nextElementSibling).toHaveClass("turn-process");
+    expect(container.querySelector(".turn-process [data-compaction-id]")).toBeNull();
   });
 });
