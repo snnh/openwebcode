@@ -63,6 +63,8 @@ export function ChatSessionList(props: {
   const [sharePassword, setSharePassword] = useState("");
   const [shareResult, setShareResult] = useState<ChatShare>();
   const [shareBusy, setShareBusy] = useState(false);
+  // 会话搜索：按标题大小写不敏感过滤；有查询时保持日期分组，仅隐藏不匹配的会话
+  const [query, setQuery] = useState("");
 
   function notifyError(text: string): void {
     ui.notify(text, "error");
@@ -206,10 +208,24 @@ export function ChatSessionList(props: {
     action();
   }
 
-  const groups = groupSessionsByDate(props.sessions, t);
+  const needle = query.trim().toLowerCase();
+  const visibleSessions = needle
+    ? props.sessions.filter((session) => session.title.toLowerCase().includes(needle))
+    : props.sessions;
+  const groups = groupSessionsByDate(visibleSessions, t);
 
   return (
     <div className="chat-sidebar-list">
+      <div className="chat-sidebar-search">
+        <Icon name="search" size={12} />
+        <input
+          type="search"
+          value={query}
+          aria-label={t("搜索对话", "Search chats")}
+          placeholder={t("搜索对话", "Search chats")}
+          onChange={(event) => setQuery(event.target.value)}
+        />
+      </div>
       {groups.map((group) => (
         <div key={group.label}>
           <div className="chat-session-group">{group.label}</div>
@@ -236,6 +252,9 @@ export function ChatSessionList(props: {
       ))}
       {props.sessions.length === 0 && (
         <p className="muted-empty">{t("暂无对话", "No conversations yet")}</p>
+      )}
+      {props.sessions.length > 0 && visibleSessions.length === 0 && (
+        <p className="muted-empty">{t("没有匹配的对话", "No matching chats")}</p>
       )}
       {confirm.dialogElement}
 
