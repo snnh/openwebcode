@@ -80,3 +80,4 @@ core/tests/__pycache__/
 /server/coverage/
 /web/coverage/
 AppData/
+.owc/
