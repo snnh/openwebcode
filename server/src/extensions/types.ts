@@ -175,6 +175,8 @@ export interface ExtensionToolSpec {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  /** 工具执行超时（毫秒，默认 5000，上限 120000）；涉及模型调用等长耗时操作需显式调大。 */
+  timeoutMs?: number;
 }
 
 /** 扩展工具执行结果（tool.invoke 的 HostResponse.result）。 */

@@ -40,7 +40,13 @@ const vaultApi: VaultHostApi = {
   readVaultFile: (sessionId, relative) =>
     callApi("compact-vault", "context.readVaultFile", { sessionId, path: relative }) as Promise<{ content: string | null }>,
   modelComplete: (input) =>
-    callApi("compact-vault", "model.complete", { prompt: input.prompt, ...(typeof input.maxTokens === "number" ? { maxTokens: input.maxTokens } : {}) }) as Promise<{ text: string }>,
+    callApi(
+      "compact-vault",
+      "model.complete",
+      { prompt: input.prompt, ...(typeof input.maxTokens === "number" ? { maxTokens: input.maxTokens } : {}) },
+      // 快模型提炼耗时远超默认 5s；须低于 recall_memory 工具超时（60s），超时后回退原文拼接
+      55_000,
+    ) as Promise<{ text: string }>,
 };
 tools.set("compact-vault", new Map([
   ["recall_memory", { spec: RECALL_MEMORY_SPEC, handler: (input, config, sessionId) => recallMemory(vaultApi, input, config, sessionId) }],
@@ -51,15 +57,15 @@ function requirePermission(manifest: ExtensionManifest, permission: ExtensionPer
   if (!manifest.permissions.includes(permission)) throw new Error(`Extension ${manifest.id} lacks permission: ${permission}`);
 }
 
-/** host→server 能力调用；server 侧按 id 回 ApiResponse。 */
-function callApi(extensionId: string, api: ExtensionApiMethod, params?: Record<string, unknown>): Promise<unknown> {
+/** host→server 能力调用；server 侧按 id 回 ApiResponse。长耗时 api（如 model.complete）须传更大 timeoutMs。 */
+function callApi(extensionId: string, api: ExtensionApiMethod, params?: Record<string, unknown>, timeoutMs = 5000): Promise<unknown> {
   if (!process.send) return Promise.reject(new Error("Extension Host IPC is unavailable"));
   const id = randomUUID();
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       apiPending.delete(id);
       reject(new Error(`server api ${api} timeout`));
-    }, 5000);
+    }, timeoutMs);
     apiPending.set(id, { resolve, reject, timer });
     process.send!({ id, api, extensionId, ...(params ? { params } : {}) } satisfies ApiRequest);
   });
@@ -168,7 +174,8 @@ async function loadThirdParty(manifests: Array<ExtensionManifest & { directory?:
         model: {
           complete: (input: { prompt: string; maxTokens?: number }): Promise<unknown> => {
             requirePermission(manifest, "model:fast");
-            return callApi(manifest.id, "model.complete", { prompt: input?.prompt, ...(typeof input?.maxTokens === "number" ? { maxTokens: input.maxTokens } : {}) });
+            // 模型调用远超默认 5s api 超时；调用方工具若需完整等待，应在 spec.timeoutMs 显式调大
+            return callApi(manifest.id, "model.complete", { prompt: input?.prompt, ...(typeof input?.maxTokens === "number" ? { maxTokens: input.maxTokens } : {}) }, 60_000);
           },
         },
         /** 注册 manifest.routes 已声明的私有 HTTP 路由（权限 http:route）；handler 返回 {status?, body?}。 */

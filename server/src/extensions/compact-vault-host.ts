@@ -26,6 +26,8 @@ export const RECALL_MEMORY_SPEC = {
     },
     required: ["keys"],
   },
+  // 召回会走快速模型提炼，默认 5s 的扩展工具超时不够，须显式调大
+  timeoutMs: 60_000,
 };
 
 /** 目录条目（host 侧轻量视图，与 server 侧 VaultSection 同构）。 */
