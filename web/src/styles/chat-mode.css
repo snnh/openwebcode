@@ -691,3 +691,62 @@
   color: var(--text-3);
   font-size: var(--text-s);
 }
+
+/* 会话列表搜索框（侧栏顶部） */
+.chat-sidebar-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 8px 8px;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text-3);
+}
+.chat-sidebar-search:focus-within { border-color: var(--border-strong); color: var(--text-2); }
+.chat-sidebar-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+}
+.chat-sidebar-search input::placeholder { color: var(--text-3); }
+
+/* 消息区包装：为「回到底部」浮钮提供定位上下文（浮钮复用工作台 .scroll-bottom） */
+.chat-messages-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.chat-messages-wrap .chat-messages { flex: 1; min-height: 0; }
+
+/* 用户消息编辑重发：就地编辑气泡 */
+.chat-edit-bubble { width: 100%; }
+.chat-edit-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  padding: 8px 10px;
+}
+.chat-edit-textarea:focus { border-color: var(--accent); outline: none; }
+.chat-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* 空态建议「换一批」按钮弱化 */
+.chat-suggestion-more { color: var(--text-3); }
+.chat-suggestion-more:hover { color: var(--text); }

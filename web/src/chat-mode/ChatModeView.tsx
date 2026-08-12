@@ -27,6 +27,9 @@ export function ChatModeView(): ReactElement {
   const [fresh, setFresh] = useState(false);
   /** ChatComposer 建议行注入接口。 */
   const composerApi = useRef<ChatComposerApi | undefined>(undefined);
+  // 空态建议按 SUGGESTION_PAGE 步长轮转（换一批）
+  const [suggestionOffset, setSuggestionOffset] = useState(0);
+  const visibleSuggestions = SUGGESTIONS.slice(suggestionOffset, suggestionOffset + SUGGESTION_PAGE);
 
   // 无可用 provider（未配置任何模型）时禁用新建会话
   const canCreate = models.some((entry) => entry.models.length > 0);
@@ -217,7 +220,7 @@ export function ChatModeView(): ReactElement {
               apiRef={composerApi}
             />
             <div className="chat-suggestions">
-              {SUGGESTIONS.map((suggestion) => (
+              {visibleSuggestions.map((suggestion) => (
                 <button
                   key={suggestion.icon}
                   type="button"
@@ -228,6 +231,17 @@ export function ChatModeView(): ReactElement {
                   {t(suggestion.labelZh, suggestion.labelEn)}
                 </button>
               ))}
+              {SUGGESTIONS.length > SUGGESTION_PAGE && (
+                <button
+                  type="button"
+                  className="chat-suggestion chat-suggestion-more"
+                  aria-label={t("换一批建议", "More suggestions")}
+                  onClick={() => setSuggestionOffset((value) => (value + SUGGESTION_PAGE) % SUGGESTIONS.length)}
+                >
+                  <Icon name="undo" size={16} />
+                  {t("换一批", "More")}
+                </button>
+              )}
             </div>
             {!canCreate && (
               <p className="chat-muted-hint">
@@ -259,4 +273,10 @@ const SUGGESTIONS: Array<{ icon: IconName; labelZh: string; labelEn: string; zh:
   { icon: "image", labelZh: "生成图片", labelEn: "Generate an image", zh: "帮我生成一张图片：", en: "Generate an image of " },
   { icon: "edit", labelZh: "撰写或编辑", labelEn: "Write or edit", zh: "帮我写", en: "Help me write " },
   { icon: "search", labelZh: "搜索网页", labelEn: "Search the web", zh: "搜索一下：", en: "Search the web for " },
+  { icon: "terminal", labelZh: "写点代码", labelEn: "Write some code", zh: "帮我写一段代码：", en: "Write some code for me: " },
+  { icon: "file", labelZh: "总结要点", labelEn: "Summarize", zh: "帮我总结以下内容：", en: "Summarize the following: " },
+  { icon: "clock", labelZh: "制定计划", labelEn: "Make a plan", zh: "帮我制定一个计划：", en: "Make a plan for " },
 ];
+
+/** 每屏展示的建议条数；「换一批」按该步长轮转（确定性循环，不随机） */
+const SUGGESTION_PAGE = 3;
