@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactElement } from "react";
+import { useEffect, useMemo, useState, type ReactElement } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../lib/api";
 import type { ExtensionInfo } from "../../lib/contracts";
@@ -15,6 +15,8 @@ export interface ExtensionConfigField {
   maximum?: number;
   /** type === "object"：一层嵌套属性组（如 content-lens 的 translate.*） */
   children?: ExtensionConfigField[];
+  /** schema 自定义关键字 `x-model-picker: true`：渲染模型选择下拉（已启用服务商中支持图片输入的模型）。 */
+  modelPicker?: boolean;
 }
 
 /**
@@ -68,6 +70,8 @@ function parseField(key: string, prop: Record<string, unknown>): ExtensionConfig
   if (!field) return null;
   if (typeof prop.title === "string" && prop.title) field.title = prop.title;
   if (typeof prop.description === "string" && prop.description) field.description = prop.description;
+  // 自定义关键字：模型选择器（选项由已启用服务商 × 模型目录动态提供，无法写死在 schema）
+  if (prop["x-model-picker"] === true) field.modelPicker = true;
   return field;
 }
 
@@ -151,11 +155,32 @@ export function ExtensionConfigForm({ extension, fields, busy, onSave }: {
   const [values, setValues] = useState<FormValues>(() => initialValues(fields, extension.config));
   const [error, setError] = useState<string>();
   const isEnvSim = extension.id === "env-sim";
+  const hasModelPicker = fields.some((field) => field.modelPicker === true);
   const personas = useQuery({
     queryKey: ["env-sim-personas"],
     queryFn: api.envSimPersonas,
     enabled: isEnvSim,
   });
+  // 模型选择器（x-model-picker）：已启用服务商 × 模型目录中支持图片输入的模型；值编码 `provider/model`
+  const modelCatalog = useQuery({
+    queryKey: ["models"],
+    queryFn: api.models,
+    enabled: hasModelPicker,
+  });
+  const modelProviders = useQuery({
+    queryKey: ["providers"],
+    queryFn: api.providers,
+    enabled: hasModelPicker,
+  });
+  const visionModelOptions = useMemo(() => {
+    if (!hasModelPicker) return [];
+    const enabled = new Set(modelProviders.data ?? []);
+    return (modelCatalog.data ?? [])
+      .filter((model) => enabled.has(model.provider))
+      .filter((model) => model.capabilities.modalities.includes("image"))
+      .map((model) => ({ value: `${model.provider}/${model.id}`, label: `${model.id}【${model.provider}】` }))
+      .sort((left, right) => left.label.localeCompare(right.label));
+  }, [hasModelPicker, modelCatalog.data, modelProviders.data]);
 
   useEffect(() => setValues(initialValues(fields, extension.config)), [extension.config, extension.configSchema]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -223,8 +248,25 @@ export function ExtensionConfigForm({ extension, fields, busy, onSave }: {
         </div>
       );
     }
-    if (isEnvSim && id === "persona") {
-      const list = personas.data?.personas ?? [];
+    if (field.modelPicker) {
+      const current = typeof values[id] === "string" ? values[id] as string : "";
+      return (
+        <div key={id} className="extension-config-field">
+          <label>
+            {label}
+            <select className="input" value={current} disabled={busy} onChange={(event) => setValue(id, event.target.value)}>
+              <option value="">{t("（未选择）", "(Not selected)")}</option>
+              {visionModelOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </label>
+          {description}
+          {visionModelOptions.length === 0 && (
+            <p className="settings-note">{t("没有可用的视觉模型：请先在「模型服务商」中启用支持图片输入的模型。", "No vision-capable models available: enable a model provider with image input first.")}</p>
+          )}
+        </div>
+      );
+    }
+    if (isEnvSim && id === "persona") {      const list = personas.data?.personas ?? [];
       const builtin = list.filter((persona) => persona.builtin);
       const custom = list.filter((persona) => !persona.builtin);
       const selected = typeof values[id] === "string" ? values[id] as string : "";

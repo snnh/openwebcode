@@ -85,8 +85,8 @@ function clipToBudget(text: string, budget: number): string {
 }
 
 function clampRecallMaxTokens(config: Record<string, unknown>): number {
-  const raw = Number(config.recallMaxTokens ?? 1500);
-  return Number.isFinite(raw) ? Math.min(4096, Math.max(128, Math.floor(raw))) : 1500;
+  const raw = Number(config.recallMaxTokens ?? 4096);
+  return Number.isFinite(raw) ? Math.min(4096, Math.max(128, Math.floor(raw))) : 4096;
 }
 
 /**
