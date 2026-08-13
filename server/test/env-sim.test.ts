@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, afterEach } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
 import type { CoreClientLike } from "../src/core-client.js";
@@ -10,6 +10,8 @@ import { ExtensionManager } from "../src/extensions/extension-manager.js";
 import { BUILTIN_PERSONAS, listPersonas, resolvePersona } from "../src/extensions/env-sim/index.js";
 import { deleteUserPreset, loadUserPresets, personasDir, saveUserPreset } from "../src/extensions/env-sim/preset-store.js";
 import { Compactor } from "../src/context/compactor.js";
+import { getOfficialUserAgent, getUserAgent, setSimulatedUserAgent } from "../src/user-agent.js";
+import { getServerVersion } from "../src/version.js";
 import { makeFakeFastModel } from "./helpers/fake-fast-model.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
@@ -680,4 +682,100 @@ describe("env-sim command prompt shaping", () => {
       await manager.close();
     }
   }, 20_000);
+});
+
+describe("env-sim outbound UA simulation", () => {
+  const official = (): string => `owc/openwebcode${getServerVersion()}`;
+
+  afterEach(() => {
+    setSimulatedUserAgent(null);
+  });
+
+  it("applies the persona UA only when the manual toggle is on", async () => {
+    const harness = await setup();
+    try {
+      // 开关默认关闭：仅启用扩展 + 选预设不生效
+      await harness.manager.configure("env-sim", { enabled: true, config: { persona: "claude-code" } });
+      expect(getUserAgent()).toBe(official());
+      // 手动开启开关：自动填充所选预设的拟态 UA
+      await harness.manager.configure("env-sim", { config: { simulateUserAgent: true } });
+      expect(getUserAgent()).toBe("claude-code/2.4.6");
+      // 更新链路始终使用官方 UA，不受模拟影响
+      expect(getOfficialUserAgent()).toBe(official());
+      // 关闭开关恢复默认
+      await harness.manager.configure("env-sim", { config: { simulateUserAgent: false } });
+      expect(getUserAgent()).toBe(official());
+      // 清空 persona 恢复默认
+      await harness.manager.configure("env-sim", { config: { simulateUserAgent: true, persona: "" } });
+      expect(getUserAgent()).toBe(official());
+    } finally {
+      await harness.manager.close();
+    }
+  }, 30_000);
+
+  it("disabling the extension restores the default UA", async () => {
+    const harness = await setup();
+    try {
+      await harness.manager.configure("env-sim", { enabled: true, config: { persona: "codex", simulateUserAgent: true } });
+      expect(getUserAgent()).toBe("codex/0.5.0");
+      await harness.manager.configure("env-sim", { enabled: false });
+      expect(getUserAgent()).toBe(official());
+    } finally {
+      await harness.manager.close();
+    }
+  }, 30_000);
+
+  it("uses the userAgent field of a user preset when the toggle is on", async () => {
+    // 用户预设解析需读预设目录（异步 I/O），configure 返回后留一拍等待落地
+    const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 50));
+    const harness = await setup({
+      presetFiles: [
+        {
+          filename: "mine.json",
+          content: JSON.stringify({
+            id: "mine",
+            name: "Mine",
+            identity: "You are Mine.",
+            basePrompt: "mine base",
+            userAgent: "mine-cli/3.2.1",
+          }),
+        },
+        {
+          filename: "plain.json",
+          content: JSON.stringify({
+            id: "plain",
+            name: "Plain",
+            identity: "You are Plain.",
+            basePrompt: "plain base",
+          }),
+        },
+      ],
+    });
+    try {
+      // 用户预设带 userAgent 且开关开启 → 生效（parsePreset 透传）
+      await harness.manager.configure("env-sim", { enabled: true, config: { persona: "mine", simulateUserAgent: true } });
+      await flush();
+      expect(getUserAgent()).toBe("mine-cli/3.2.1");
+      // 用户预设未带 userAgent 时，开关开启也不覆盖
+      await harness.manager.configure("env-sim", { config: { persona: "plain" } });
+      await flush();
+      expect(getUserAgent()).toBe(official());
+    } finally {
+      await harness.manager.close();
+    }
+  }, 30_000);
+
+  it("ignores session-level persona overrides for the global UA", async () => {
+    const harness = await setup();
+    try {
+      await harness.manager.configure("env-sim", { enabled: true, config: { persona: "claude-code", simulateUserAgent: true } });
+      expect(getUserAgent()).toBe("claude-code/2.4.6");
+      // 会话级覆盖（SessionMeta.persona 回退通道）只作用于提示词与工具形态，
+      // 不参与全局出站 UA——出站请求无会话上下文，避免并发会话串扰
+      await harness.sessions.updateConfig(harness.session.id, { persona: "codex" });
+      expect(getUserAgent()).toBe("claude-code/2.4.6");
+    } finally {
+      await harness.manager.close();
+    }
+  }, 30_000);
 });

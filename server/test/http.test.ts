@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { fetchJson, getUserAgent, withUserAgent } from "../src/http.js";
-import { buildUserAgent, setServerVersion } from "../src/version.js";
+import { fetchJson, withUserAgent } from "../src/http.js";
+import { buildUserAgent, getUserAgent, setSimulatedUserAgent } from "../src/user-agent.js";
+import { setServerVersion } from "../src/version.js";
 
 afterEach(() => {
-  // 恢复到一个稳定的已知版本，避免测试间相互污染
+  // 恢复到一个稳定的已知状态，避免测试间相互污染
   setServerVersion("0.0.0");
+  setSimulatedUserAgent(null);
 });
 
 describe("http user-agent", () => {
@@ -35,6 +37,24 @@ describe("http user-agent", () => {
       const result = await fetchJson("https://example.test/data");
       expect(result).toEqual({ ok: true });
       expect((seen as Record<string, string>)["User-Agent"]).toBe("owc/openwebcode2.0.0");
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it("fetchJson injects the simulated UA when env-sim simulation is active", async () => {
+    setServerVersion("2.0.0");
+    setSimulatedUserAgent("kimi-code/1.0.0");
+    let seen: HeadersInit | undefined;
+    const fetchImpl = async (_url: string, init?: RequestInit): Promise<Response> => {
+      seen = init?.headers;
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    const original = globalThis.fetch;
+    globalThis.fetch = fetchImpl as typeof fetch;
+    try {
+      await fetchJson("https://example.test/data");
+      expect((seen as Record<string, string>)["User-Agent"]).toBe("kimi-code/1.0.0");
     } finally {
       globalThis.fetch = original;
     }

@@ -11,7 +11,7 @@
  * （仅按状态码分类，响应体直接取消，天然不受响应大小影响）。
  * 状态码分类与 providers/provider-error.ts 的语义对齐。
  */
-import { getUserAgent } from "./http.js";
+import { getUserAgent } from "./user-agent.js";
 import type { ModelProviderProfile } from "./provider-profiles.js";
 
 export const PROVIDER_TEST_TIMEOUT_MS = 5000;
