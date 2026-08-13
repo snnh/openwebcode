@@ -187,23 +187,30 @@ export const OFFICIAL_EXTENSIONS: ExtensionManifest[] = [
   {
     id: "vision-tools",
     name: "视觉工具",
-    version: "0.1.0",
-    description: "主模型不支持视觉时，自动把会话图片交给配置的视觉模型生成描述，以文本形式注入上下文；支持视觉的主模型不受影响。",
+    version: "0.2.0",
+    description: "主模型不支持视觉时，把图片交给配置的视觉模型处理：describe 模式自动生成描述注入上下文；toolCall 模式以 [图片 #N] 占位符注入并注册 describe_image 工具，主模型按需提问。支持视觉的主模型不受影响。",
     apiVersion: "1",
-    // 图片描述在 server 侧执行（model.vision 复用 provider streamChat 发送链路）；替换注入在
-    // Extension Host 侧（context.beforeBuild 钩子，storage 缓存描述结果）。
-    permissions: ["context:read", "context:mutate", "model:fast"],
+    // 图片描述在 server 侧执行（model.vision 复用 provider streamChat 发送链路；context.readImageFile
+    // 经 core 沙盒读取工作区图片）；替换注入与 describe_image 工具在 Extension Host 侧执行。
+    permissions: ["context:read", "context:mutate", "model:fast", "tools:register"],
     official: true,
     defaultEnabled: false,
     configSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
-        model: { type: "string", title: "视觉模型", description: "用于描述图片的模型（下拉列出已启用服务商中支持图片输入的模型）。", "x-model-picker": true },
-        prompt: { type: "string", title: "描述提示词", description: "发给视觉模型的描述指令，可自定义语言与重点；留空使用默认提示词。", default: "" },
+        model: { type: "string", title: "视觉模型", description: "用于处理图片的模型（下拉列出已启用服务商中支持图片输入的模型）。", "x-model-picker": true },
+        mode: {
+          type: "string",
+          enum: ["describe", "toolCall"],
+          title: "工作模式",
+          description: "describe 把图片自动交给视觉模型生成描述并注入上下文；toolCall 用 [图片 #N] 占位符替换图片，主模型通过 describe_image 工具按需提问（省主模型 token，图片内容按需获取）。",
+          default: "describe",
+        },
+        prompt: { type: "string", title: "描述提示词", description: "发给视觉模型的描述指令，可自定义语言与重点；留空使用默认提示词（仅 describe 模式）。", default: "" },
         thinking: { type: "boolean", title: "思考", description: "视觉模型思考模式（默认开启，描述更准确）。", default: true },
         maxTokens: { type: "integer", minimum: 128, title: "输出上限（tokens）", description: "单张图片描述的最大输出 token 数；留空不限制（端点默认）。" },
-        cacheDescriptions: { type: "boolean", title: "缓存图片描述", description: "同一图片只描述一次，之后复用缓存（按图片内容哈希）。", default: true },
+        cacheDescriptions: { type: "boolean", title: "缓存图片描述", description: "同一图片只描述一次，之后复用缓存（describe 按图片内容哈希，toolCall 按图片+提问哈希）。", default: true },
       },
       required: ["model"],
     },
@@ -222,7 +229,7 @@ export const OFFICIAL_DEFAULT_CONFIG: Record<string, Record<string, unknown>> = 
   "owc-eval": {},
   "env-sim": { persona: "" },
   "compact-vault": { keepTail: 10, chunkSize: 25, recallMaxTokens: 4096 },
-  "vision-tools": { model: "", prompt: "", thinking: true, cacheDescriptions: true },
+  "vision-tools": { model: "", prompt: "", thinking: true, cacheDescriptions: true, mode: "describe" },
 };
 
 function textOf(message: ChatMessage): string {

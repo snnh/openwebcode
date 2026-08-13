@@ -128,7 +128,7 @@ const vaultService: CompactVaultService = new CompactVaultService(sessions, fast
   // 扩展配置延迟读取（ExtensionManager 在其后创建）：maxTokens 等由用户在扩展设置里配置
   getConfig: () => extensions.list().find((item) => item.id === "compact-vault")?.config ?? {},
 });
-const extensions: ExtensionManager = new ExtensionManager(dataDir, events, { sessions, fastModel, vaultService, providers });
+const extensions: ExtensionManager = new ExtensionManager(dataDir, events, { sessions, fastModel, vaultService, providers, core });
 await extensions.initialize();
 const contentLens = new ContentLensService(sessions, fastModel);
 // Production evaluations share the normal Core boundary, so workspace access

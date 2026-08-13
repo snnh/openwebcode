@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { OFFICIAL_EXTENSIONS, optimizeAttention } from "./official.js";
 import { RECALL_MEMORY_SPEC, recallMemory, reinjectVaultIndex, type VaultHostApi } from "./compact-vault-host.js";
-import { bridgeVisionImages, type VisionToolsHostApi } from "./vision-tools-host.js";
+import { DESCRIBE_IMAGE_SPEC, bridgeVisionImages, describeImage, type VisionToolsHostApi } from "./vision-tools-host.js";
 import { isExtensionEventAllowed, type ApiRequest, type ApiResponse, type ContextHookPayload, type ContextHookResult, type EventMessage, type ExtensionApiMethod, type ExtensionHook, type ExtensionManifest, type ExtensionPermission, type ExtensionState, type ExtensionToolResult, type ExtensionToolSpec, type HostRequest, type HostResponse, type PromptHookPayload, type PromptHookResult, type ToolHookPayload, type ToolHookResult } from "./types.js";
 
 type Handler = (payload: unknown, config: Record<string, unknown>) => unknown | Promise<unknown>;
@@ -74,12 +74,17 @@ const visionApi: VisionToolsHostApi = {
       },
       60_000,
     ) as Promise<{ text: string }>,
+  readImageFile: (sessionId, path) =>
+    callApi("vision-tools", "context.readImageFile", { sessionId, path }) as Promise<{ mediaType: string; data: string }>,
   storageRead: (relativePath) =>
     callApi("vision-tools", "storage.read", { path: relativePath }) as Promise<{ content: string | null }>,
   storageWrite: (relativePath, content) =>
     callApi("vision-tools", "storage.write", { path: relativePath, content }) as Promise<{ bytes: number }>,
 };
 register("vision-tools", "context.beforeBuild", (payload, config) => bridgeVisionImages(visionApi, payload as ContextHookPayload, config));
+tools.set("vision-tools", new Map([
+  ["describe_image", { spec: DESCRIBE_IMAGE_SPEC, handler: (input, config, sessionId) => describeImage(visionApi, input, config, sessionId) }],
+]));
 
 function requirePermission(manifest: ExtensionManifest, permission: ExtensionPermission): void {
   if (!manifest.permissions.includes(permission)) throw new Error(`Extension ${manifest.id} lacks permission: ${permission}`);
@@ -102,6 +107,8 @@ function callApi(extensionId: string, api: ExtensionApiMethod, params?: Record<s
 function serializedTools(): Record<string, ExtensionToolSpec[]> {
   const result: Record<string, ExtensionToolSpec[]> = {};
   for (const [extensionId, registered] of tools) {
+    // describe_image 只在 toolCall 模式生效（describe 模式无占位符，工具必然报错，不暴露给主模型）
+    if (extensionId === "vision-tools" && states.get(extensionId)?.config?.mode !== "toolCall") continue;
     result[extensionId] = [...registered.values()].map((entry) => entry.spec);
   }
   return result;

@@ -322,6 +322,8 @@ export interface InteractionRequest {
   id: string; sessionId: string; runId: string; toolCallId?: string;
   kind: "confirm" | "single_select" | "multi_select" | "text" | "plan_approval";
   title: string; prompt: string; options?: Array<{ id: string; label: string; description?: string }>;
+  /** 选择题附加「其他」选项：渲染「其他」+ 自定义文本输入框，回答以 other:<文本> 表示。 */
+  allowOther?: boolean;
   status: "pending" | "answered" | "cancelled"; createdAt: string; answer?: unknown; answeredAt?: string;
 }
 

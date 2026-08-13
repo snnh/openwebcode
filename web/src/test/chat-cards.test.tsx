@@ -125,6 +125,56 @@ describe("InteractionCard", () => {
     fireEvent.click(getByText("取消"));
     expect(onRespond).toHaveBeenCalledWith(false);
   });
+
+  it("allowOther：single_select 渲染「其他」选项，选中并输入后提交 other:<文本>", () => {
+    const onRespond = vi.fn();
+    const { getByText, getByLabelText } = render(
+      <InteractionCard
+        item={interaction({ kind: "single_select", allowOther: true, options: [{ id: "a", label: "方案 A" }] })}
+        onRespond={onRespond}
+      />,
+    );
+    // 未选中「其他」时输入框禁用
+    expect(getByLabelText("其他回答")).toBeDisabled();
+    fireEvent.click(getByLabelText("其他"));
+    fireEvent.change(getByLabelText("其他回答"), { target: { value: "自定义方案" } });
+    fireEvent.click(getByText("提交回答"));
+    expect(onRespond).toHaveBeenCalledWith("other:自定义方案");
+  });
+
+  it("allowOther：选中「其他」但未输入时不可提交；取消选中后输入框恢复禁用", () => {
+    const onRespond = vi.fn();
+    const { getByText, getByLabelText } = render(
+      <InteractionCard
+        item={interaction({ kind: "multi_select", allowOther: true, options: [{ id: "a", label: "方案 A" }] })}
+        onRespond={onRespond}
+      />,
+    );
+    fireEvent.click(getByLabelText("其他"));
+    expect(getByText("提交回答")).toBeDisabled();
+    // 另有常规选项被选即可提交（空 other 项由服务端忽略）
+    fireEvent.click(getByLabelText(/方案 A/));
+    expect(getByText("提交回答")).toBeEnabled();
+    // 取消「其他」后输入框禁用，提交仅含常规选项
+    fireEvent.click(getByLabelText("其他"));
+    expect(getByLabelText("其他回答")).toBeDisabled();
+    fireEvent.click(getByText("提交回答"));
+    expect(onRespond).toHaveBeenCalledWith(["a"]);
+  });
+
+  it("未设置 allowOther 的选择题不渲染「其他」选项", () => {
+    const onRespond = vi.fn();
+    const { queryByText, getByLabelText } = render(
+      <InteractionCard
+        item={interaction({ kind: "single_select", options: [{ id: "a", label: "方案 A" }] })}
+        onRespond={onRespond}
+      />,
+    );
+    expect(queryByText("其他")).toBeNull();
+    fireEvent.click(getByLabelText(/方案 A/));
+    fireEvent.click(getByText("提交回答"));
+    expect(onRespond).toHaveBeenCalledWith("a");
+  });
 });
 
 describe("PlanApprovalCard", () => {
