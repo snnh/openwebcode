@@ -7,7 +7,7 @@ import { ProviderProfilesService } from "../src/provider-profiles.js";
 import { ConcurrencyLimitedProvider, DEFAULT_MAX_CONCURRENT } from "../src/providers/concurrency-limiter.js";
 import { AnthropicProvider } from "../src/providers/anthropic-provider.js";
 import { OpenAICompatibleProvider, MAX_SSE_EVENT_BYTES, readSseData } from "../src/providers/openai-compatible-provider.js";
-import { OpenAIResponsesProvider, setReplayDiagnosticWriter } from "../src/providers/openai-responses-provider.js";
+import { OpenAIResponsesProvider, setReplayDiagnosticWriter, getReplayDiagnosticWriter } from "../src/providers/openai-responses-provider.js";
 import { ProviderError } from "../src/providers/provider-error.js";
 import { ProviderRegistry, type ProviderEvent, type StreamChatRequest } from "../src/providers/provider.js";
 import { injectMockStream } from "./helpers/anthropic-mock.js";
@@ -387,8 +387,12 @@ describe("OpenAIResponsesProvider request mapping", () => {
     // 留痕输出经 setReplayDiagnosticWriter 注入收集器（不依赖 process.stderr 可替换性）；
     // 限频按「消息 id:tool_call id」键控，本用例与同文件其他缺素材用例（call_dangling）不同键
     const lines: string[] = [];
-    setReplayDiagnosticWriter((line) => lines.push(line));
+    const collector = (line: string): void => { lines.push(line); };
+    setReplayDiagnosticWriter(collector);
     try {
+      // 前置断言：注入后 provider 读取的 writer 必须是本收集器
+      // （若模块状态与测试隔离，此处即暴露——writer 是模块内唯一诊断出口）
+      expect(getReplayDiagnosticWriter()).toBe(collector);
       const bodies: Array<Record<string, unknown>> = [];
       const payload = COMPLETED;
       const messages: StreamChatRequest["messages"] = [
