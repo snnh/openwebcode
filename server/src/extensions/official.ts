@@ -159,6 +159,12 @@ export const OFFICIAL_EXTENSIONS: ExtensionManifest[] = [
       additionalProperties: false,
       properties: {
         persona: { type: "string", title: "预设", description: "选择要模拟的编码 Agent 预设；留空表示不模拟。", default: "" },
+        simulateUserAgent: {
+          type: "boolean",
+          title: "模拟出站 User-Agent",
+          description: "手动开启后，出站 HTTP 请求的 User-Agent 自动使用所选预设的拟态值（仅跟随全局预设；更新检查始终使用官方 UA；关闭或未选预设时使用默认 owc/openwebcode{version}）。",
+          default: false,
+        },
       },
     },
   },

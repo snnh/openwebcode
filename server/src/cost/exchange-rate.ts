@@ -2,7 +2,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
 import { isMissing } from "../fs-utils.js";
-import { getUserAgent } from "../http.js";
+import { getUserAgent } from "../user-agent.js";
 
 export const RATE_SCALE = 1_000_000n;
 

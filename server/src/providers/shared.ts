@@ -1,5 +1,5 @@
 import type { ChatMessage } from "../sessions/types.js";
-import { getUserAgent } from "../http.js";
+import { getUserAgent } from "../user-agent.js";
 import { classifyHttpError, parseRetryAfter, ProviderError, truncateErrorDetail } from "./provider-error.js";
 
 /** OpenAI 系 provider 共用的请求头：JSON + UA + 可选 Bearer。 */

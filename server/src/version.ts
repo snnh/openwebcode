@@ -47,10 +47,3 @@ export function setServerVersion(version: string): void {
 /** The GitHub repository hosting releases, used by update checks. */
 export const GITHUB_REPO = "snnh/openwebcode";
 
-/**
- * Build the User-Agent header value for outbound HTTP requests.
- * Format: `owc/openwebcode{version}` (e.g. `owc/openwebcode0.5.2`).
- */
-export function buildUserAgent(version: string): string {
-  return `owc/openwebcode${version}`;
-}
