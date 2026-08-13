@@ -58,16 +58,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # 逗号分隔单行输出：build-push-action 的 tags 输入按逗号/换行拆分
           TAGS="${{ env.IMAGE }}:v${{ env.VERSION }}"
           case "${{ env.VERSION }}" in
             *-*) echo "预发布版本，仅打 v${{ env.VERSION }} 标签" ;;
-            *) TAGS="${TAGS}\n${{ env.IMAGE }}:latest" ;;
+            *) TAGS="${TAGS},${{ env.IMAGE }}:latest" ;;
           esac
-          {
-            echo "tags<<OWC_EOF"
-            printf '%b' "$TAGS"
-            echo "OWC_EOF"
-          } >> "$GITHUB_OUTPUT"
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
