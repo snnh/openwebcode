@@ -12,7 +12,7 @@ import { EvalEvaluator } from "../src/eval/evaluator.js";
 import { EVAL_TASKS } from "../src/eval/tasks.js";
 import { usage } from "../src/eval/mock-provider.js";
 import type { EvalTask } from "../src/eval/types.js";
-import { makeEvalCore } from "../src/eval/eval-core.js";
+import { makeEvalCore } from "./helpers/eval-core.js";
 import { makeFakeCore } from "./helpers/fake-core.js";
 import { tempRoot } from "./helpers/temp-roots.js";
 
