@@ -1032,6 +1032,7 @@ export class AgentRunner {
               round: view.ledger.round,
               entries: view.ledger.entries.map((entry) => ({ messageId: entry.messageId, state: entry.state, pinnedUntilRound: entry.pinnedUntilRound })),
               ...(view.ledger.compacted ? { compacted: { summary: view.ledger.compacted.summary, instructions: view.ledger.compacted.instructions, mode: view.ledger.compacted.mode } } : {}),
+              ...(view.ledger.cleared ? { cleared: { at: view.ledger.cleared.at } } : {}),
             },
           });
           view.messages = transformed.messages;
@@ -1044,6 +1045,7 @@ export class AgentRunner {
               round: view.ledger.round,
               entries: view.ledger.entries.map((entry) => ({ messageId: entry.messageId, state: entry.state, pinnedUntilRound: entry.pinnedUntilRound })),
               ...(view.ledger.compacted ? { compacted: { summary: view.ledger.compacted.summary, instructions: view.ledger.compacted.instructions, mode: view.ledger.compacted.mode } } : {}),
+              ...(view.ledger.cleared ? { cleared: { at: view.ledger.cleared.at } } : {}),
             },
           });
           view.messages = beforeSend.messages;

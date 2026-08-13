@@ -8,7 +8,8 @@ import type { ContextHookPayload, ContextHookResult } from "./types.js";
  * - describe（默认）：context.beforeBuild 钩子把会话图片逐张交给配置的视觉模型生成描述，
  *   以文本块替换 image 块注入上下文（server 侧 model.vision 复用 provider streamChat 链路）。
  * - toolCall：图片以 [图片 #N] 占位符进入上下文（N 为会话内稳定编号，按首次出现顺序分配，
- *   持久化于扩展 storage，跨轮/host 重启不变）；主模型按需调用 describe_image 工具
+ *   持久化于扩展 storage，跨轮/host 重启不变；/clear 清空上下文时旧图编号失效、编号表清空，
+ *   之后重新从 #1 分配）；主模型按需调用 describe_image 工具
  *   （传 image 编号或工作区 path + request），视觉模型针对 request 回复。
  *   回复按「图片内容+request」哈希缓存到扩展私有 storage。
  *
@@ -79,10 +80,14 @@ function imageKeyOf(data: string): string {
  * host 重启后同一会话同一图片编号不变。表仅内存驻留——工具对失效编号返回明确错误，
  * 主模型可改用 path 重试。
  * 内存上限：每会话最多 8 张（旧图淘汰），会话表最多 64 个（最旧淘汰）。
+ * /clear 清空上下文时随编号表一并清空（见 bridgeToolCallPlaceholders 的 clear 处理）。
  */
 const toolCallImages = new Map<string, Map<number, { mediaType: string; data: string }>>();
 const MAX_IMAGES_PER_SESSION = 8;
 const MAX_SESSIONS = 64;
+
+/** 各会话已消费的 /clear 边界（ISO 时间）：检出 ledger.cleared.at 变化时清空该会话编号表。 */
+const lastClearAt = new Map<string, string>();
 
 function rememberToolCallImage(sessionId: string, number: number, image: { mediaType: string; data: string }): void {
   let table = toolCallImages.get(sessionId);
@@ -284,14 +289,27 @@ export async function bridgeVisionImages(
 /**
  * toolCall 模式：图片块替换为 [图片 #N] 占位符。N 为会话内稳定编号：
  * 编号表持久化于 storage（vision/ids/<sessionId>.json，键为图片 sha1），
- * 首次出现分配下一个编号并写回，同图跨轮同号。
+ * 首次出现分配下一个编号并写回，同图跨轮同号、host 重启不变。
+ *
+ * /clear 清空上下文时旧图编号失效并清空编号表：clear 边界之前的消息（含占位符）
+ * 不再进上下文，旧编号既无意义也无引用——hook 检出 ledger.cleared 时（边界变化即视为
+ * 新一次 clear）清空该会话的编号表与内存图表，之后重新从 #1 分配。
  */
 async function bridgeToolCallPlaceholders(
   api: VisionToolsHostApi,
   payload: ContextHookPayload,
   imageSpots: Array<{ messageIndex: number; blockIndex: number; mediaType: string; data: string }>,
 ): Promise<ContextHookResult> {
-  // 读编号表（缺省/损坏按空表处理，重新分配）
+  // /clear 清空上下文：编号表与内存图表随会话上下文一并清空（旧图占位符不再出现，编号失去引用）
+  if (payload.ledger.cleared) {
+    if (lastClearAt.get(payload.sessionId) !== payload.ledger.cleared.at) {
+      lastClearAt.set(payload.sessionId, payload.ledger.cleared.at);
+      toolCallImages.delete(payload.sessionId);
+      void api.storageWrite(idsPath(payload.sessionId), "{}").catch(() => undefined);
+    }
+  }
+
+  // 读编号表（缺省/损坏/刚被 clear 清空按空表处理，重新分配）
   let ids: Record<string, number> = {};
   try {
     const stored = await api.storageRead(idsPath(payload.sessionId));
