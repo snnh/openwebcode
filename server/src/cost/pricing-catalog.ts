@@ -2,7 +2,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
 import { isMissing } from "../fs-utils.js";
-import { getUserAgent } from "../http.js";
+import { getUserAgent } from "../user-agent.js";
 import defaultCatalog from "./default-model-pricing.json" with { type: "json" };
 import type { Currency, ModelPricing } from "../context/model-profile.js";
 

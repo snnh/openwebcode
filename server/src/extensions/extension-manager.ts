@@ -13,6 +13,7 @@ import type { SessionStore } from "../sessions/session-store.js";
 import { ContextManager } from "../context/context-manager.js";
 import { EXTENSION_API_VERSION, isExtensionEventAllowed, type ApiRequest, type ApiResponse, type ContextHookPayload, type EventMessage, type ExtensionApiMethod, type ExtensionHook, type ExtensionInfo, type ExtensionManifest, type ExtensionPermission, type ExtensionRoute, type ExtensionState, type ExtensionToolResult, type ExtensionToolSpec, type HostRequest, type HostResponse, type PromptHookPayload, type PromptHookResult, type ToolHookPayload, type ToolShapingAlias, type ToolShapingSpec } from "./types.js";
 import { OFFICIAL_DEFAULT_CONFIG, OFFICIAL_EXTENSIONS } from "./official.js";
+import { setSimulatedUserAgent } from "../user-agent.js";
 import { BUILTIN_PERSONAS, getPersona, listPersonas, resolvePersona, personasDir, saveUserPreset, deleteUserPreset, type PersonaDetail, type PersonaPreset, type PersonaSummary } from "./env-sim/index.js";
 import type { CompactVaultService } from "./compact-vault.js";
 
@@ -99,6 +100,8 @@ export class ExtensionManager {
   private busListenerAttached = false;
   /** 已发出的工具形态警告（去重，避免每轮重复刷事件）。 */
   private readonly shapingWarningsIssued = new Set<string>();
+  /** UA 模拟刷新序号：连续 configure 时只让最后一次异步解析落地。 */
+  private userAgentSimulationSeq = 0;
 
   constructor(private readonly dataDir: string, private readonly events?: EventBus, private readonly deps: { sessions?: SessionStore; fastModel?: FastModelClient; storageQuota?: { file: number; total: number }; vaultService?: CompactVaultService; providers?: ProviderRegistry; core?: CoreClientLike } = {}) {
     this.root = path.join(dataDir, "extensions");
@@ -109,6 +112,7 @@ export class ExtensionManager {
     await mkdir(this.root, { recursive: true });
     this.manifests = [...OFFICIAL_EXTENSIONS, ...(await this.discoverThirdParty())];
     this.states = await this.loadStates();
+    this.applyUserAgentSimulation();
     await this.startHost();
   }
 
@@ -168,6 +172,7 @@ export class ExtensionManager {
       config: update.config ? { ...previous.config, ...update.config } : previous.config,
     };
     await this.saveStates();
+    this.applyUserAgentSimulation();
     const reloaded = await this.request("reload", { states: this.states }) as { tools?: Record<string, ExtensionToolSpec[]> };
     this.replaceTools(reloaded.tools);
     this.events?.publish({ source: "server", type: "extension.updated", payload: { id, ...this.states[id] } });
@@ -210,6 +215,29 @@ export class ExtensionManager {
 
   async beforeTool(payload: ToolHookPayload): Promise<ToolHookPayload & { blocked?: boolean; reason?: string }> {
     return this.hook("tool.beforeExecute", payload) as Promise<ToolHookPayload & { blocked?: boolean; reason?: string }>;
+  }
+
+  /**
+   * env-sim 出站 UA 模拟：直接调用 user-agent 模块的覆盖接口（自动填充拟态 UA）。
+   * 仅由扩展的全局配置驱动——`config.simulateUserAgent` 手动开关 + 全局
+   * `config.persona` 预设的 userAgent 字段，二者同时满足才生效；否则清除覆盖
+   * 恢复官方默认。会话级 persona 覆盖不参与：出站请求没有会话上下文，全局
+   * 覆盖会在并发会话间串扰。更新检查链路固定官方 UA，不受模拟影响。
+   * 用序列号防止连续 configure 的异步解析乱序落地。
+   */
+  private applyUserAgentSimulation(): void {
+    const envSim = this.manifests.find((item) => item.id === "env-sim");
+    const seq = ++this.userAgentSimulationSeq;
+    const clear = (): void => {
+      if (seq === this.userAgentSimulationSeq) setSimulatedUserAgent(null);
+    };
+    if (!envSim || !this.stateFor(envSim).enabled) return clear();
+    const config = this.stateFor(envSim).config;
+    if (config.simulateUserAgent !== true) return clear();
+    void resolvePersona(this.dataDir, config, (message) => this.warnShaping(message)).then((persona) => {
+      if (seq !== this.userAgentSimulationSeq) return; // 已被更新的配置覆盖
+      setSimulatedUserAgent(persona?.userAgent ?? null);
+    });
   }
 
   /**

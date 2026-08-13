@@ -2,7 +2,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "./atomic-file.js";
 import { isMissing } from "./fs-utils.js";
-import { getUserAgent } from "./http.js";
+import { getOfficialUserAgent } from "./user-agent.js";
 import { getServerVersion } from "./version.js";
 
 export interface UpdateCheckSnapshot {
@@ -143,7 +143,7 @@ export class UpdateChecker {
       const response = await fetchImpl(this.url, {
         headers: {
           Accept: "application/vnd.github+json",
-          "User-Agent": getUserAgent(),
+          "User-Agent": getOfficialUserAgent(),
         },
         signal: controller.signal,
       });

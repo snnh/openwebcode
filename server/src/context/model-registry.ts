@@ -1,7 +1,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
-import { getUserAgent } from "../http.js";
+import { getUserAgent } from "../user-agent.js";
 import { FALLBACK_METADATA, lookupModelMetadata, type ModelMetadata } from "./model-metadata.js";
 import {
   getModelProfile,

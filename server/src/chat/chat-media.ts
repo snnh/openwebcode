@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { getUserAgent } from "../http.js";
+import { getUserAgent } from "../user-agent.js";
 import type { Provider, ProviderRegistry } from "../providers/provider.js";
 import type { ProviderProfilesService } from "../provider-profiles.js";
 import type { ChatMessage } from "../sessions/types.js";

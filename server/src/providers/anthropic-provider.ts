@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { ChatMessage, ToolResultContent } from "../sessions/types.js";
-import { getUserAgent } from "../http.js";
+import { getUserAgent } from "../user-agent.js";
 import { normalizeProviderError } from "./provider-error.js";
 import type { Provider, ProviderEvent, ProviderTool, StreamChatRequest } from "./provider.js";
 
@@ -33,7 +33,8 @@ export class AnthropicProvider implements Provider {
       // SDK 内建重试（默认 2 次）关闭：重试统一收口 collectProviderTurn/retry.ts，
       // 避免与外层重试嵌套放大（2×3 次）
       maxRetries: 0,
-      defaultHeaders: { "User-Agent": getUserAgent() },
+      // UA 不在此固化：出站 UA 由 user-agent 模块动态解析（env-sim 模拟开关可能
+      // 在 provider 存活期间变更），故在每次 streamChat 的请求级 headers 中注入。
     });
   }
 
@@ -61,7 +62,8 @@ export class AnthropicProvider implements Provider {
           ...(request.tools.length > 0 ? { tools: toAnthropicTools(request.tools, caching) } : {}),
           ...(caching ? { cache_control: { type: "ephemeral" as const } } : {}),
         },
-        { signal: request.signal },
+        // 请求级 UA：每次请求取当前生效值（默认官方 UA，env-sim 模拟开启时为拟态值）
+        { signal: request.signal, headers: { "User-Agent": getUserAgent() } },
       );
 
       const toolBlockIds = new Map<number, string>();

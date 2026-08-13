@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { getUserAgent } from "./http.js";
+import { getOfficialUserAgent } from "./user-agent.js";
 import { compareSemver, stripVersionPrefix } from "./update-checker.js";
 
 /** 在线更新的状态机状态。restarting 表示服务即将退出（由安装程序或 systemd 接管）。 */
@@ -265,7 +265,7 @@ export class UpdateApplier {
     const response = await this.fetchImpl(this.options.getReleaseUrl(), {
       headers: {
         Accept: "application/vnd.github+json",
-        "User-Agent": getUserAgent(),
+        "User-Agent": getOfficialUserAgent(),
       },
       signal: AbortSignal.timeout(RELEASE_JSON_TIMEOUT_MS),
     });
@@ -287,7 +287,7 @@ export class UpdateApplier {
 
   private async fetchText(url: string): Promise<string> {
     const response = await this.fetchImpl(url, {
-      headers: { "User-Agent": getUserAgent() },
+      headers: { "User-Agent": getOfficialUserAgent() },
       signal: AbortSignal.timeout(RELEASE_JSON_TIMEOUT_MS),
     });
     if (!response.ok) throw new Error(`下载失败：HTTP ${response.status}`);
@@ -296,7 +296,7 @@ export class UpdateApplier {
 
   /** 流式下载到 <target>.part 完成后 rename；按 content-length 更新进度，超限中止。 */
   private async download(url: string, targetPath: string): Promise<void> {
-    const response = await this.fetchImpl(url, { headers: { "User-Agent": getUserAgent() } });
+    const response = await this.fetchImpl(url, { headers: { "User-Agent": getOfficialUserAgent() } });
     if (!response.ok) throw new Error(`下载失败：HTTP ${response.status}`);
     if (!response.body) throw new Error("下载失败：响应无内容");
     const lengthHeader = response.headers.get("content-length");

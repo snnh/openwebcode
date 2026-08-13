@@ -1,7 +1,7 @@
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import type { WebProviderProfile } from "./provider-profiles.js";
-import { getUserAgent } from "./http.js";
+import { getUserAgent } from "./user-agent.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_BYTES = 2 * 1024 * 1024;

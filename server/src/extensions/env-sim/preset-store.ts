@@ -54,6 +54,7 @@ export function parsePreset(raw: unknown, fallbackId: string): PersonaPreset | u
   const initPrompt = optionalPrompt(record.initPrompt);
   const compactOverviewPrompt = optionalPrompt(record.compactOverviewPrompt);
   const compactToolcallsPrompt = optionalPrompt(record.compactToolcallsPrompt);
+  const userAgent = optionalPrompt(record.userAgent);
   return {
     id,
     name: record.name,
@@ -65,6 +66,7 @@ export function parsePreset(raw: unknown, fallbackId: string): PersonaPreset | u
     ...(initPrompt ? { initPrompt } : {}),
     ...(compactOverviewPrompt ? { compactOverviewPrompt } : {}),
     ...(compactToolcallsPrompt ? { compactToolcallsPrompt } : {}),
+    ...(userAgent ? { userAgent } : {}),
   };
 }
 

@@ -23,6 +23,10 @@ export interface PersonaPreset {
   compactOverviewPrompt?: string;
   /** /compact tools 压缩系统提示词拟态；优先级同 initPrompt。 */
   compactToolcallsPrompt?: string;
+  /** 出站 User-Agent 拟态值（如 "claude-code/2.4.6"）；仅当扩展配置
+   * `simulateUserAgent` 手动开启且作为全局 persona 选中时，才覆盖所有出站
+   * HTTP 请求的 UA（更新检查链路始终使用官方 UA，不参与模拟）。 */
+  userAgent?: string;
 }
 
 export interface PersonaSummary {
