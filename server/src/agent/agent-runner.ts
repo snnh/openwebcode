@@ -503,7 +503,7 @@ function parseAskUserQuestions(input: Record<string, unknown>): AskUserQuestionS
   });
 }
 
-/** 交互原始回答 → 工具结果：confirm 布尔；select 为选中项 label 数组（web 提交 opt-<index> id，REST 直提 label 亦可）；text 字符串。 */
+/** 交互原始回答 → 工具结果：confirm 布尔；select 为选中项 label 数组（web 提交 opt-<index> id 或 other:<自定义文本>，REST 直提 label 亦可）；text 字符串。 */
 function normalizeAskUserAnswer(spec: AskUserQuestionSpec, answer: unknown): unknown {
   if (spec.type === "confirm") return answer === true;
   if (spec.type === "text") return typeof answer === "string" ? answer : "";
@@ -511,6 +511,12 @@ function normalizeAskUserAnswer(spec: AskUserQuestionSpec, answer: unknown): unk
   const labels: string[] = [];
   for (const id of ids) {
     if (typeof id !== "string") continue;
+    // 「其他」选项回答：other:<自定义文本> → 剥离前缀返回纯文本；空文本丢弃
+    if (id.startsWith("other:")) {
+      const custom = id.slice("other:".length);
+      if (custom) labels.push(custom);
+      continue;
+    }
     const match = /^opt-(\d+)$/.exec(id);
     const option = match ? spec.options?.[Number(match[1])] : undefined;
     labels.push(option ? option.label : id);
@@ -2819,6 +2825,8 @@ export class AgentRunner {
             ...(spec.options
               ? { options: spec.options.map((option, index) => ({ id: `opt-${index}`, label: option.label, ...(option.description === undefined ? {} : { description: option.description }) })) }
               : {}),
+            // 选择题自动附加「其他」选项：UI 渲染「其他」+ 自定义文本输入框，回答以 other:<文本> 表示
+            ...(spec.type === "single_select" || spec.type === "multi_select" ? { allowOther: true } : {}),
           });
           this.state(sessionId, "waiting_permission");
           const outcome = await this.runControl.waitForInteractionAnswer(sessionId, interaction.id, signal);

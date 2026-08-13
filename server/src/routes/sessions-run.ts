@@ -18,6 +18,19 @@ import {
   type MessageBody, type PdfUploadBody,
 } from "./route-context.js";
 import type { RouteContext } from "./route-context.js";
+import type { ExtensionManager } from "../extensions/extension-manager.js";
+
+/**
+ * 视觉工具官方扩展是否就绪：已启用且配置了视觉模型（`provider/model` 非空）。
+ * 就绪时主模型不支持视觉也可以上传图片——扩展的 context.beforeBuild 钩子
+ * 会把图片交给视觉模型生成文字描述，再以文本块注入主模型上下文。
+ */
+function isVisionBridgeActive(extensions: ExtensionManager | undefined): boolean {
+  if (!extensions || !extensions.isEnabled("vision-tools")) return false;
+  const info = extensions.list().find((item) => item.id === "vision-tools");
+  const model = typeof info?.config.model === "string" ? info.config.model.trim() : "";
+  return model !== "";
+}
 
 export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext): void {
   const { dependencies } = ctx;
@@ -166,7 +179,10 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
         }
         if (images.length > 0) {
           const profile = dependencies.models?.get(session.model) ?? getModelProfile(session.model);
-          if (!profile.capabilities.modalities.includes("image")) {
+          // 视觉工具扩展启用且已配置视觉模型时，主模型不支持视觉也放行：
+          // context.beforeBuild 钩子会把图片替换为视觉模型的文字描述再注入主模型。
+          const visionBridgeActive = isVisionBridgeActive(dependencies.extensions);
+          if (!profile.capabilities.modalities.includes("image") && !visionBridgeActive) {
             return reply.code(400).send({ error: `模型 ${session.model} 不支持图片输入` });
           }
           if (agent.isRunning(request.params.id)) {
@@ -427,12 +443,12 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
     if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
     return agent.listInteractions(request.params.id);
   });
-  app.post<{ Params: { id: string }; Body: { runId?: string; toolCallId?: string; kind?: string; title?: string; prompt?: string; options?: Array<{ id?: string; label?: string; description?: string }> } }>("/api/sessions/:id/interactions", async (request, reply) => {
+  app.post<{ Params: { id: string }; Body: { runId?: string; toolCallId?: string; kind?: string; title?: string; prompt?: string; options?: Array<{ id?: string; label?: string; description?: string }>; allowOther?: boolean } }>("/api/sessions/:id/interactions", async (request, reply) => {
     if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
     const body = request.body;
-    if (!body || typeof body.runId !== "string" || typeof body.title !== "string" || typeof body.prompt !== "string" || !["confirm", "single_select", "multi_select", "text"].includes(body.kind ?? "") || (body.toolCallId !== undefined && typeof body.toolCallId !== "string") || (body.options !== undefined && (!Array.isArray(body.options) || body.options.some((option) => !option || typeof option.id !== "string" || typeof option.label !== "string" || (option.description !== undefined && typeof option.description !== "string"))))) return reply.code(400).send({ error: "runId, kind, title, prompt, and valid optional options are required" });
+    if (!body || typeof body.runId !== "string" || typeof body.title !== "string" || typeof body.prompt !== "string" || !["confirm", "single_select", "multi_select", "text"].includes(body.kind ?? "") || (body.toolCallId !== undefined && typeof body.toolCallId !== "string") || (body.allowOther !== undefined && typeof body.allowOther !== "boolean") || (body.options !== undefined && (!Array.isArray(body.options) || body.options.some((option) => !option || typeof option.id !== "string" || typeof option.label !== "string" || (option.description !== undefined && typeof option.description !== "string"))))) return reply.code(400).send({ error: "runId, kind, title, prompt, and valid optional options are required" });
     if (["single_select", "multi_select"].includes(body.kind!) && (!body.options || body.options.length === 0)) return reply.code(400).send({ error: "select interactions require options" });
-    const item = await agent.createInteraction(request.params.id, { runId: body.runId, ...(body.toolCallId ? { toolCallId: body.toolCallId } : {}), kind: body.kind as "confirm" | "single_select" | "multi_select" | "text", title: body.title, prompt: body.prompt, ...(body.options ? { options: body.options as Array<{ id: string; label: string; description?: string }> } : {}) });
+    const item = await agent.createInteraction(request.params.id, { runId: body.runId, ...(body.toolCallId ? { toolCallId: body.toolCallId } : {}), kind: body.kind as "confirm" | "single_select" | "multi_select" | "text", title: body.title, prompt: body.prompt, ...(body.options ? { options: body.options as Array<{ id: string; label: string; description?: string }> } : {}), ...(body.allowOther === true ? { allowOther: true } : {}) });
     return reply.code(201).send(item);
   });
   app.post<{ Params: { id: string; requestId: string }; Body: { answer: unknown } }>("/api/sessions/:id/interactions/:requestId/respond", async (request, reply) => {

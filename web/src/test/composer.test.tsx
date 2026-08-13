@@ -7,7 +7,7 @@ import { qk } from "../app/queries";
 import { setSendKey } from "../app/prefs-store";
 import { ui } from "../app/ui-store";
 import { api } from "../lib/api";
-import type { ModelProfile } from "../lib/contracts";
+import type { ExtensionInfo, ModelProfile } from "../lib/contracts";
 import type { ComposerProps } from "../chat/types";
 import { makeModelProfile, makeSession } from "./helpers/fixtures";
 import { makeTestClient } from "./helpers/with-client";
@@ -154,6 +154,17 @@ describe("Composer 附件", () => {
     fireEvent.change(fileInput(container), { target: { files: [png("nope.png")] } });
     await waitFor(() => expect(notifySpy).toHaveBeenCalledWith("当前模型不支持图片输入", "error"));
     expect(screen.queryByLabelText(/移除附件/)).not.toBeInTheDocument();
+  });
+
+  it("vision-tools 扩展启用并配置视觉模型时，纯文本主模型允许添加图片", async () => {
+    stubApi([makeModelProfile({ capabilities: TEXT_CAPS })]);
+    vi.spyOn(api, "extensions").mockResolvedValue([{ id: "vision-tools", enabled: true, config: { model: "vision-stub/vl" } } as unknown as ExtensionInfo]);
+    const notifySpy = vi.spyOn(ui, "notify");
+    const { container, client } = renderComposer();
+    await waitModelsLoaded(client);
+    fireEvent.change(fileInput(container), { target: { files: [png("bridge.png")] } });
+    expect(await screen.findByLabelText("移除附件 1")).toBeInTheDocument();
+    expect(notifySpy).not.toHaveBeenCalled();
   });
 });
 

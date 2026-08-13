@@ -10,6 +10,7 @@ import { EventBus } from "../src/events/event-bus.js";
 import { AnthropicProvider } from "../src/providers/anthropic-provider.js";
 import { OpenAICompatibleProvider } from "../src/providers/openai-compatible-provider.js";
 import { ProviderRegistry, type StreamChatRequest } from "../src/providers/provider.js";
+import { ExtensionManager } from "../src/extensions/extension-manager.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import type { ChatMessage } from "../src/sessions/types.js";
 import { makeStubProvider } from "./helpers/stub-provider.js";
@@ -145,6 +146,56 @@ describe("messages route with images", () => {
       }
       expect(agent.isRunning(capable.id)).toBe(false);
     } finally {
+      await app.close();
+    }
+  });
+
+  it("vision-tools 扩展启用时纯文本主模型允许带图消息", { timeout: 30_000 }, async () => {
+    const root = await tempRoot("owc-mm-vision-");
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const providers = new ProviderRegistry();
+    providers.register(makeStubProvider("text-stub", async function* () {
+      yield { type: "done", stopReason: "end_turn" };
+    }));
+    const events = new EventBus();
+    const core = { on() { return core; }, async configureSession() { return { sandboxCapability: "advisory" }; } } as unknown as CoreClient;
+    const agent = new AgentRunner(sessions, providers, core, events, pricing);
+    const extensions = new ExtensionManager(path.join(root, "data"), events, { sessions, providers });
+    await extensions.initialize();
+    await extensions.configure("vision-tools", { enabled: true, config: { model: "text-stub/qwen-vl-plus" } });
+    const app = await buildServer({ core, sessions, agent, events, providers, pricing, extensions });
+    try {
+      // 主模型纯文本，但视觉工具扩展已启用并配置视觉模型：带图消息放行
+      const textOnly = await sessions.create({ cwd: root, provider: "text-stub", title: "纯文本模型" });
+      const accepted = await app.inject({ method: "POST", url: `/api/sessions/${textOnly.id}/messages`, payload: { content: "看图", images: [{ mediaType: "image/png", data: PNG }] } });
+      expect(accepted.statusCode).toBe(202);
+      let stored;
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        stored = await sessions.get(textOnly.id);
+        if (stored?.messages.length) break;
+      }
+      expect(stored?.messages[0]?.content[0]).toMatchObject({ type: "image", mediaType: "image/png", data: PNG });
+
+      // 扩展未启用时仍拒绝
+      const plain = await buildServer({ core, sessions, agent, events, providers, pricing });
+      try {
+        const noBridge = await sessions.create({ cwd: root, provider: "text-stub", title: "纯文本模型 2" });
+        const rejected = await plain.inject({ method: "POST", url: `/api/sessions/${noBridge.id}/messages`, payload: { content: "看图", images: [{ mediaType: "image/png", data: PNG }] } });
+        expect(rejected.statusCode).toBe(400);
+      } finally {
+        await plain.close();
+      }
+
+      for (let attempt = 0; attempt < 60 && agent.isRunning(textOnly.id); attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      expect(agent.isRunning(textOnly.id)).toBe(false);
+    } finally {
+      await extensions.close();
       await app.close();
     }
   });

@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AppEvent, EventBus } from "../events/event-bus.js";
 import type { FastModelClient } from "../fast-model.js";
+import type { CoreClientLike } from "../core-client.js";
 import { getModelProfile } from "../context/model-profile.js";
 import type { ProviderRegistry, ProviderTool } from "../providers/provider.js";
 import type { ChatMessage, SessionDetail, SessionMeta } from "../sessions/types.js";
@@ -37,6 +38,8 @@ const STORAGE_TOTAL_LIMIT = 50 * 1024 * 1024;
 const MODEL_PROMPT_LIMIT = 32 * 1024;
 const MODEL_MAX_TOKENS_LIMIT = 4096;
 const MODEL_DEFAULT_MAX_TOKENS = 1024;
+/** context.readImageFile 图片 base64 上限（≈5MB 原始字节，与消息带图同口径）。 */
+const MAX_IMAGE_BASE64_CHARS = 7_000_000;
 
 interface StoredConfig { version: 1; extensions: Record<string, ExtensionState> }
 type DiscoveredManifest = ExtensionManifest & { directory?: string };
@@ -48,6 +51,7 @@ const API_PERMISSIONS: Record<ExtensionApiMethod, ExtensionPermission | null> = 
   "context.getView": "context:read",
   "context.readArtifact": "context:read",
   "context.readVaultFile": "context:read",
+  "context.readImageFile": "context:read",
   "events.subscribe": "sessions:read",
   "storage.read": null,
   "storage.write": null,
@@ -96,7 +100,7 @@ export class ExtensionManager {
   /** 已发出的工具形态警告（去重，避免每轮重复刷事件）。 */
   private readonly shapingWarningsIssued = new Set<string>();
 
-  constructor(private readonly dataDir: string, private readonly events?: EventBus, private readonly deps: { sessions?: SessionStore; fastModel?: FastModelClient; storageQuota?: { file: number; total: number }; vaultService?: CompactVaultService; providers?: ProviderRegistry } = {}) {
+  constructor(private readonly dataDir: string, private readonly events?: EventBus, private readonly deps: { sessions?: SessionStore; fastModel?: FastModelClient; storageQuota?: { file: number; total: number }; vaultService?: CompactVaultService; providers?: ProviderRegistry; core?: CoreClientLike } = {}) {
     this.root = path.join(dataDir, "extensions");
     this.configPath = path.join(this.root, "extensions.json");
   }
@@ -448,6 +452,26 @@ export class ExtensionManager {
         // 只读会话 compact/ 归档目录（路径锁定与配额由 CompactVaultService 把关）
         if (!this.deps.vaultService) throw new Error("Compact vault service is not configured");
         return { content: await this.deps.vaultService.readFile(String(params.sessionId ?? ""), String(params.path ?? "")) };
+      }
+      case "context.readImageFile": {
+        // 视觉工具 path 形态：经 core 沙盒读取工作区图片（png/jpeg/webp/gif ≤5MB 原始字节）
+        const core = this.deps.core;
+        if (!core) throw new Error("Core client is not configured");
+        const sessionId = String(params.sessionId ?? "");
+        const imagePath = String(params.path ?? "");
+        if (!sessionId || !imagePath) throw new Error("context.readImageFile requires sessionId and path");
+        const ext = imagePath.split(".").pop()?.toLowerCase() ?? "";
+        const mediaType = ext === "png" ? "image/png"
+          : ext === "jpg" || ext === "jpeg" ? "image/jpeg"
+          : ext === "webp" ? "image/webp"
+          : ext === "gif" ? "image/gif"
+          : "";
+        if (!mediaType) throw new Error("context.readImageFile path must end with .png/.jpg/.jpeg/.webp/.gif");
+        if (!core.readFileBase64) throw new Error("Core binary image read support is unavailable");
+        const result = await core.readFileBase64({ sessionId, path: imagePath });
+        if (result.truncated) throw new Error("context.readImageFile image exceeds the 5MB limit");
+        if (!result.base64 || result.base64.length > MAX_IMAGE_BASE64_CHARS) throw new Error("context.readImageFile image data is empty or too large");
+        return { mediaType, data: result.base64 };
       }
       case "events.subscribe": {
         const requested = Array.isArray(params.types) ? params.types.filter((type): type is string => typeof type === "string") : [];

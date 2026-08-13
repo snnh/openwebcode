@@ -132,10 +132,16 @@ export function Composer({ session, running, onSend, onConfig, editingMessage, o
   // 模型目录未返回时不把未知图片能力误判成不支持（仅用于 PDF 转图前的等待提示）
   const imageCapabilitiesReady = !modelsQuery.isPending;
   const currentModel = models.find((item) => item.provider === session.provider && item.id === session.model);
-  const supportsImages = currentModel?.capabilities.modalities?.includes("image") ?? false;
   const pdfToImageStatus: PdfToImageStatus = extensionsQuery.isPending ? "loading" : extensionsQuery.isError ? "unavailable" : "ready";
   const pdfToImageExtension = extensionsQuery.data?.find((extension) => extension.id === "pdf-to-image");
   const pdfToImageEnabled = pdfToImageExtension?.enabled === true;
+  // 视觉工具扩展启用且配置了视觉模型时，主模型不支持视觉也允许添加图片：
+  // 扩展会把图片描述为文字注入主模型上下文。
+  const visionToolsExtension = extensionsQuery.data?.find((extension) => extension.id === "vision-tools");
+  const visionBridgeActive = visionToolsExtension?.enabled === true
+    && typeof visionToolsExtension.config?.model === "string"
+    && visionToolsExtension.config.model.trim() !== "";
+  const supportsImages = (currentModel?.capabilities.modalities?.includes("image") ?? false) || visionBridgeActive;
   const history = useMemo(() => deriveInputHistory(session.messages), [session.messages]);
   const notify = useCallback((message: string, kind: NoticeKind = "info"): void => ui.notify(message, kind), []);
 

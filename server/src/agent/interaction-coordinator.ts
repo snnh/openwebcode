@@ -8,6 +8,8 @@ export type InteractionStatus = "pending" | "answered" | "cancelled";
 export interface InteractionRequest {
   id: string; sessionId: string; runId: string; toolCallId?: string; kind: InteractionKind;
   title: string; prompt: string; options?: Array<{ id: string; label: string; description?: string }>;
+  /** 选择题（single_select/multi_select）附加「其他」选项：UI 渲染「其他」+ 自定义文本输入框，回答以 other:<文本> 表示。 */
+  allowOther?: boolean;
   status: InteractionStatus; createdAt: string; answer?: unknown; answeredAt?: string;
 }
 interface Document { version: 1; items: InteractionRequest[]; }

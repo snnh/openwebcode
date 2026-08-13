@@ -110,7 +110,7 @@ export class RunControl {
   }
 
   async listInteractions(sessionId: string): Promise<InteractionRequest[]> { return this.interactions.list(sessionId); }
-  async createInteraction(sessionId: string, input: { runId: string; toolCallId?: string; kind: InteractionKind; title: string; prompt: string; options?: Array<{ id: string; label: string; description?: string }> }): Promise<InteractionRequest> {
+  async createInteraction(sessionId: string, input: { runId: string; toolCallId?: string; kind: InteractionKind; title: string; prompt: string; options?: Array<{ id: string; label: string; description?: string }>; allowOther?: boolean }): Promise<InteractionRequest> {
     const item = await this.interactions.create(sessionId, input);
     this.deps.events.publish({ source: "agent", type: "interaction.requested", sessionId, runId: item.runId, payload: item });
     // Notification 钩子：交互待答（仅通知不阻断）
