@@ -351,7 +351,7 @@ docker compose up -d                          # or just compose (pulls the GHCR 
 
 ### Publishing (docker.yml)
 
-- Triggered by pushing a `v*` tag (same source as release.yml) or manually via `workflow_dispatch` with a tag input; fully decoupled from release.yml — an image publishing failure does not block the GitHub Release.
+- Triggered by pushing a `v*` tag (same source as release.yml) or manually via `workflow_dispatch` (with a tag input the run builds that tag's tree; with no input it builds the current branch and takes the version from `server/package.json` — useful for rebuilding the image after a packaging fix without moving an already-published tag); fully decoupled from release.yml — an image publishing failure does not block the GitHub Release.
 - `docker/setup-buildx-action` + `docker/login-action` (`GITHUB_TOKEN`, `packages: write`) build `linux/amd64,linux/arm64` and push to `ghcr.io/snnh/openwebcode`.
 - Tags: `v<version>` (e.g. `v1.7.3`); stable versions (no `-` in the version) additionally get `latest`. Prereleases (e.g. `1.7.3-beta.1`) only get the version tag so `latest` never points at a prerelease.
 - loongarch64 is not supported (no official node image for it).

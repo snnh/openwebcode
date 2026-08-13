@@ -26,7 +26,9 @@ RUN npm ci --prefix server --ignore-scripts \
  && npm ci --prefix web --ignore-scripts
 
 # core：Release 构建（镜像构建不跑测试，测试门禁由 CI 负责）
+# 需要仓库根 LICENSE：core/CMakeLists.txt 的 CPack 段无条件 configure_file(../LICENSE)
 COPY core core
+COPY LICENSE LICENSE
 RUN cmake -S core -B /build/core -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
  && cmake --build /build/core --target owc-exec --parallel
 
