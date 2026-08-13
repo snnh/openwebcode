@@ -96,6 +96,7 @@ export function registerChatRoutes(app: FastifyInstance, ctx: RouteContext): voi
   type ChatRunOptionalEvents = {
     onStopped?: () => void;
     onPythonStatus?: (status: "preparing" | "ready" | "error", detail?: string) => void;
+    onThinkingDelta?: (text: string) => void;
   };
   /**
    * 启动一次 chat run（202 + runId 语义）。并发占用由 runner 入口同步登记兜底：
@@ -121,6 +122,7 @@ export function registerChatRoutes(app: FastifyInstance, ctx: RouteContext): voi
       signal: AbortSignal.timeout(300_000),
       ...(params.images && params.images.length > 0 ? { images: params.images } : {}),
       onDelta: (text) => chatStreamSend(sessionId, { type: "delta", runId, text }),
+      onThinkingDelta: (text) => chatStreamSend(sessionId, { type: "thinking_delta", runId, text }),
       onToolCall: (call) => chatStreamSend(sessionId, { type: "tool_call", runId, ...call }),
       onToolResult: (result) => chatStreamSend(sessionId, { type: "tool_result", runId, ...result }),
       onStopped: () => chatStreamSend(sessionId, { type: "stopped", runId }),
@@ -327,7 +329,7 @@ export function registerChatRoutes(app: FastifyInstance, ctx: RouteContext): voi
         }
       }
     }
-    if (!text.trim()) return reply.code(400).send({ error: "text is required" });
+    // 纯图片消息（content 仅 image 块）允许 text 为空：vision 场景「贴图即问」
     if (userContent.length === 0) return reply.code(400).send({ error: "message content is required" });
 
     await chatSessions.appendMessage(sessionId, "user", userContent);

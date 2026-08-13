@@ -154,4 +154,27 @@ describe("ChatComposer 图片附件", () => {
     fireEvent.click(view.getByRole("button", { name: "移除图片" }));
     expect(view.container.querySelectorAll(".chat-attachment")).toHaveLength(0);
   });
+
+  it("纯图片消息（无文字）可发送：body 只含 image 块，不发 text 字段", async () => {
+    const fetchMock = mockFetch(defaultHandler);
+    const view = render(<ChatComposer sessionId="s1" />);
+    await attach(view, [makeImage(100)], 1);
+    // 无文字时发送按钮可用（vision「贴图即问」场景）
+    expect((view.getByRole("button", { name: "发送" }) as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(view.getByRole("button", { name: "发送" }));
+
+    await waitFor(() => {
+      const body = messagesBody(fetchMock);
+      expect(body).not.toHaveProperty("text");
+      expect(body.content).toEqual([
+        { type: "image", mediaType: "image/png", data: expect.any(String) },
+      ]);
+    });
+  });
+
+  it("无文字且无图片时发送按钮禁用", () => {
+    mockFetch(defaultHandler);
+    const view = render(<ChatComposer sessionId="s1" />);
+    expect((view.getByRole("button", { name: "发送" }) as HTMLButtonElement).disabled).toBe(true);
+  });
 });

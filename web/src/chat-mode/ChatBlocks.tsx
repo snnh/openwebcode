@@ -1,10 +1,12 @@
-// 消息内容块渲染：text / image / tool_call / tool_result。
+// 消息内容块渲染：text / thinking / image / tool_call / tool_result。
 // ChatMessageList 与 ShareView 共用（图片 ref 经 resolveImageRef 回调区分会话内与分享面路由）。
 // tool_call 与配对的 tool_result 合并为一个可折叠块（默认折叠，ChatGPT「分析步骤」风格）。
+// thinking 块渲染为可折叠「思考过程」（复用工作台 ThinkingBlock，历史默认折叠）。
 import { memo, useMemo, useState, type ReactElement } from "react";
 import { useI18n } from "../i18n";
 import { Markdown } from "../components/Markdown";
 import { Icon } from "../components/Icon";
+import { ThinkingBlock } from "../chat/MessageCard";
 import type { MessageContent } from "./types";
 
 export function ChatBlocks({ content, resolveImageRef }: {
@@ -17,6 +19,11 @@ export function ChatBlocks({ content, resolveImageRef }: {
     const block = content[index]!;
     if (block.type === "text") {
       if (block.text) items.push(<Markdown key={index}>{block.text}</Markdown>);
+      continue;
+    }
+    if (block.type === "thinking") {
+      // 思考过程：默认折叠；文本为空（redacted 密文等）时折叠态无内容可看，直接跳过
+      if (block.text) items.push(<ThinkingBlock key={index} text={block.text} />);
       continue;
     }
     if (block.type === "image") {

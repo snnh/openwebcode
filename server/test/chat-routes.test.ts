@@ -104,6 +104,35 @@ describe("POST /api/chat/sessions/:id/messages 父链", () => {
     expect(runnerCalls[0]!.meta.activeLeafId).toBe(messages[0]!.id);
     expect(runnerCalls[1]!.meta.activeLeafId).toBe(messages[1]!.id);
   });
+
+  it("纯图片消息（content 仅 image 块）返回 202：runner 收到空文本与图片，标题保持默认", async () => {
+    const { app, chatSessions, runnerCalls } = await setup();
+    const id = await createSession(app);
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/chat/sessions/${id}/messages`,
+      payload: { content: [{ type: "image", mediaType: "image/png", data: "aGVsbG8=" }] },
+    });
+    expect(res.statusCode, res.body).toBe(202);
+
+    const messages = await chatSessions.getMessages(id);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]!.role).toBe("user");
+    expect(messages[0]!.content).toEqual([{ type: "image", mediaType: "image/png", data: "aGVsbG8=" }]);
+    expect(runnerCalls).toHaveLength(1);
+    expect(runnerCalls[0]!.userMessage).toBe("");
+    expect(runnerCalls[0]!.images).toEqual([{ mediaType: "image/png", data: "aGVsbG8=" }]);
+    // 无文本块不派生标题（保持默认，不落空串）
+    expect((await chatSessions.get(id))?.title).toBe("New chat");
+  });
+
+  it("空 content 数组仍 400", async () => {
+    const { app } = await setup();
+    const id = await createSession(app);
+    const res = await app.inject({ method: "POST", url: `/api/chat/sessions/${id}/messages`, payload: { content: [] } });
+    expect(res.statusCode, res.body).toBe(400);
+  });
 });
 
 describe("POST /api/chat/sessions 默认配置消费", () => {

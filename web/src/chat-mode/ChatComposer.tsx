@@ -28,9 +28,11 @@ interface PendingImage {
 
 let nextImageId = 0;
 
-/** 供父组件注入建议文本等（ChatGPT 空态建议行）：写入草稿并聚焦输入框。 */
+/** 供父组件注入建议文本等（ChatGPT 空态建议行）：insert 写入草稿并聚焦（供编辑）；
+ * send 直接发送（空态建议一键直达）。 */
 export interface ChatComposerApi {
   insert(text: string): void;
+  send(text: string): Promise<void>;
 }
 
 export function ChatComposer({ sessionId, ensureSession, onSent, apiRef }: {
@@ -48,7 +50,12 @@ export function ChatComposer({ sessionId, ensureSession, onSent, apiRef }: {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // 建议行注入：设草稿 + 聚焦（注册/卸载时清理）
+  // 建议行注入：设草稿 + 聚焦（注册/卸载时清理）；send 供空态建议一键直达（跨过草稿状态直接发送）。
+  // handleSend 经 ref 取最新版本：apiRef 注册于挂载时，直接闭包捕获会冻结当次渲染的 state
+  const handleSendRef = useRef(handleSend);
+  useEffect(() => {
+    handleSendRef.current = handleSend;
+  });
   useEffect(() => {
     if (!apiRef) return undefined;
     apiRef.current = {
@@ -56,6 +63,7 @@ export function ChatComposer({ sessionId, ensureSession, onSent, apiRef }: {
         setDraft(text);
         textareaRef.current?.focus();
       },
+      send: (text) => handleSendRef.current(text),
     };
     return () => {
       apiRef.current = undefined;
@@ -154,9 +162,11 @@ export function ChatComposer({ sessionId, ensureSession, onSent, apiRef }: {
     }
   }
 
-  async function handleSend(): Promise<void> {
-    const text = draft.trim();
-    if (!text || sending) return;
+  async function handleSend(overrideText?: string): Promise<void> {
+    // 建议直发经 overrideText 跨过草稿状态（setDraft 异步，直接读 state 会拿到旧值）
+    const text = (overrideText ?? draft).trim();
+    // 纯图片消息（无文字）也可发送：vision 场景「贴图即问」
+    if ((!text && images.length === 0) || sending) return;
 
     setSending(true);
     try {
@@ -169,10 +179,11 @@ export function ChatComposer({ sessionId, ensureSession, onSent, apiRef }: {
           return;
         }
       }
-      // 纯文本保持旧 {text} 形态；带图走 content 块数组
+      // 纯文本保持旧 {text} 形态；带图走 content 块数组（text 为空时只发图片块）
       let body: Record<string, unknown> = { text };
       if (images.length > 0) {
-        const content: MessageContent[] = [{ type: "text", text }];
+        const content: MessageContent[] = [];
+        if (text) content.push({ type: "text", text });
         for (const image of images) {
           if (image.data) {
             content.push({ type: "image", mediaType: image.mediaType, data: image.data });
@@ -302,7 +313,7 @@ export function ChatComposer({ sessionId, ensureSession, onSent, apiRef }: {
               aria-label={sending ? t("发送中…", "Sending…") : t("发送", "Send")}
               title={sending ? t("发送中…", "Sending…") : t("发送", "Send")}
               onClick={() => void handleSend()}
-              disabled={!draft.trim() || sending}
+              disabled={(!draft.trim() && images.length === 0) || sending}
             >
               <Icon name="arrow-up" size={16} />
             </button>

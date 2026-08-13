@@ -9,6 +9,7 @@ import { ui } from "../app/ui-store";
 import { chatMode } from "../app/chat-mode-store";
 import { streamBuffer, useStreamBlocks, type StreamBlock } from "../chat/stream-buffer";
 import { createScrollFollower, type ScrollFollower } from "../chat/scroll-controller";
+import { ThinkingBlock } from "../chat/MessageCard";
 import { ChatBlocks } from "./ChatBlocks";
 import type { ChatMessage, ChatSessionDetail, ChatStreamEvent } from "./types";
 
@@ -33,13 +34,16 @@ export function ChatMessageList({ sessionId, reloadToken }: {
   // 块引用级 join 缓存：stream-buffer 提交时未触碰的块保持引用稳定，直接复用上次 join 结果，
   // 流式期间每帧只重 join 末尾活跃块，不再 O(全长) 复制
   const joinCacheRef = useRef(new WeakMap<StreamBlock, string>());
-  const streamingText = streamingBlocks.map((block) => {
+  const joinBlock = (block: StreamBlock): string => {
     const cached = joinCacheRef.current.get(block);
     if (cached !== undefined) return cached;
     const joined = block.parts.join("");
     joinCacheRef.current.set(block, joined);
     return joined;
-  }).join("");
+  };
+  // 文本与思考分通道：文本走 MarkdownLazy 流式渲染，思考块渲染为流式 ThinkingBlock（对齐工作台）
+  const streamingText = streamingBlocks.filter((block) => block.kind === "text").map(joinBlock).join("");
+  const thinkingBlocks = streamingBlocks.filter((block) => block.kind === "thinking");
   // 图片 ref 路由回调按会话稳定（避免击穿消息项 memo）
   const resolveImageRef = useCallback((ref: string): string => `/api/chat/sessions/${sessionId}/images/${ref}`, [sessionId]);
 
@@ -100,6 +104,12 @@ export function ChatMessageList({ sessionId, reloadToken }: {
           setDisconnected(false);
         } else if (data.type === "delta") {
           streamBuffer.queueDelta(sessionId, data.text ?? "");
+          setToolActivity(undefined);
+          setRunning(true);
+          chatMode.setRunning(sessionId, true);
+        } else if (data.type === "thinking_delta") {
+          // 思考增量进 thinking 通道（stream-buffer 按块缓冲，thinking 与 text 分块渲染）
+          streamBuffer.queueDelta(sessionId, data.text ?? "", true);
           setToolActivity(undefined);
           setRunning(true);
           chatMode.setRunning(sessionId, true);
@@ -236,6 +246,15 @@ export function ChatMessageList({ sessionId, reloadToken }: {
             onEdit={handleEdit}
           />
         ))}
+        {thinkingBlocks.length > 0 && (
+          <div className="chat-message assistant">
+            <div className="chat-bubble">
+              {thinkingBlocks.map((block) => (
+                <ThinkingBlock key={block.id} text={joinBlock(block)} streaming />
+              ))}
+            </div>
+          </div>
+        )}
         {streamingText !== "" && (
           <div className="chat-message assistant">
             <div className="chat-bubble">
@@ -243,7 +262,7 @@ export function ChatMessageList({ sessionId, reloadToken }: {
             </div>
           </div>
         )}
-        {running && streamingText === "" && (
+        {running && streamingText === "" && thinkingBlocks.length === 0 && (
           <div className="chat-message assistant">
             <div className="chat-bubble">
               {toolActivity ? (

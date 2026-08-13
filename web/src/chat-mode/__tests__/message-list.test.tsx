@@ -120,4 +120,55 @@ describe("ChatMessageList 重新生成", () => {
     expect(img).not.toBeNull();
     expect(img!.getAttribute("src")).toBe("/api/chat/sessions/s1/images/generated/xyz.png");
   });
+
+  it("历史 assistant 消息含 thinking 块时渲染为「思考过程」折叠区", async () => {
+    stubFetch(() => ({
+      status: 200,
+      body: {
+        ...DETAIL,
+        messages: [
+          {
+            id: "a2",
+            role: "assistant",
+            content: [
+              { type: "thinking", text: "先分析再回答", provider: "deepseek" },
+              { type: "text", text: "结论" },
+            ],
+            createdAt: "2026-01-01T00:00:02Z",
+          },
+        ],
+      },
+    }));
+    const view = render(<ChatMessageList sessionId="s1" />);
+    await view.findByText("结论");
+    const thinking = view.container.querySelector("details.thinking");
+    expect(thinking).not.toBeNull();
+    expect(thinking!.querySelector("summary")?.textContent).toContain("思考过程");
+    // 默认折叠：正文不可见，展开后可读
+    expect(thinking!.textContent).not.toContain("先分析再回答");
+    fireEvent.click(thinking!.querySelector("summary")!);
+    expect(thinking!.textContent).toContain("先分析再回答");
+  });
+
+  it("thinking_delta SSE 增量进入流式「正在思考」区，done 后清空", async () => {
+    stubFetch(() => ({ status: 200, body: DETAIL }));
+    const view = render(<ChatMessageList sessionId="s1" />);
+    await view.findByText("回答");
+
+    const es = MockEventSource.instances.find((instance) => instance.url.includes("/stream"))!;
+    es.emit({ type: "connected", running: false });
+    es.emit({ type: "thinking_delta", runId: "r1", text: "正在推" });
+    es.emit({ type: "thinking_delta", runId: "r1", text: "理中" });
+
+    // 流式思考区：live 折叠态（rAF 合批提交后出现）
+    const live = await view.findByText("正在思考");
+    const details = live.closest("details");
+    expect(details?.className).toContain("live");
+
+    // done 清空流式区，历史重拉
+    es.emit({ type: "done", runId: "r1", stopReason: "end_turn" });
+    await waitFor(() => {
+      expect(view.container.querySelector("details.thinking.live")).toBeNull();
+    });
+  });
 });
