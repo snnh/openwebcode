@@ -348,7 +348,7 @@ docker compose up -d                          # 或直接 compose（默认拉 GH
 
 ### 发布（docker.yml）
 
-- 触发：推送 `v*` tag（与 release.yml 同源），或手动 `workflow_dispatch` 输入 tag；与 release.yml 完全解耦，镜像发布失败不阻断 GitHub Release。
+- 触发：推送 `v*` tag（与 release.yml 同源），或手动 `workflow_dispatch`（输入 tag 则构建该 tag 的源码树；留空则构建当前分支，版本取 `server/package.json`——tag 发布后修复打包问题时无需移动已发布 tag 即可重建镜像）；与 release.yml 完全解耦，镜像发布失败不阻断 GitHub Release。
 - `docker/setup-buildx-action` + `docker/login-action`（`GITHUB_TOKEN`，`packages: write`）构建 `linux/amd64,linux/arm64` 推送到 `ghcr.io/snnh/openwebcode`。
 - 标签：`v<版本>`（如 `v1.7.3`）；稳定版（版本号不含 `-`）额外推 `latest`。预发布（如 `1.7.3-beta.1`）只打版本标签，避免 `latest` 指向预发布。
 - 不支持 loongarch64（官方 node 镜像无此架构）。
