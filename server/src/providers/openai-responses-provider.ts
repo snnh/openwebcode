@@ -267,9 +267,10 @@ function rememberCall(
 /** 回传被关的留痕限频（每进程一次，见 toResponsesInput）。 */
 let replaySuppressedLogged = false;
 
-/** 回传开启但历史缺同源 thinking 素材的留痕限频（每进程一次，见 toResponsesInput）。
- * 思维模式端点（DeepSeek）强制每个 function_call 前带 reasoning item，缺素材必 400。 */
-let missingThinkingLogged = false;
+/** 回传开启但历史缺同源 thinking 素材的留痕限频（按「assistant 消息 id:tool_call id」键控，
+ * 每进程每键一次）：思维模式端点（DeepSeek）强制每个 function_call 前带 reasoning item，
+ * 缺素材必 400；同一条消息反复请求不刷屏，不同消息仍保留诊断留痕。 */
+const missingThinkingLogged = new Set<string>();
 
 function toResponsesInput(messages: ChatMessage[], providerName: string, replayReasoning: boolean): Array<Record<string, unknown>> {
   const outputs = collectToolOutputs(messages);
@@ -320,14 +321,17 @@ function toResponsesInput(messages: ChatMessage[], providerName: string, replayR
           // （output 打断关联链；空文本不算数）；有 thinking 素材时才可发出
           if (thinkingParts.length > 0) {
             result.push({ type: "reasoning", content: thinkingParts });
-          } else if (!missingThinkingLogged && replayReasoning) {
+          } else if (replayReasoning) {
             // 思维链回传已开启但本条 assistant 消息无同源 thinking 素材：思维模式端点
             // （如 DeepSeek）会拒绝请求（reasoning_text must be passed back）。留痕便于
             // 诊断调用方是否丢弃了 thinking_delta（如未累积落盘的 runner）。
-            missingThinkingLogged = true;
-            process.stderr.write(
-              `[openai-responses] 思维链回传已开启但 assistant 消息缺少同源 thinking 素材（tool_call ${block.name}）：思维模式端点可能拒绝请求\n`,
-            );
+            const missingKey = `${message.id ?? "?"}:${block.id}`;
+            if (!missingThinkingLogged.has(missingKey)) {
+              missingThinkingLogged.add(missingKey);
+              process.stderr.write(
+                `[openai-responses] 思维链回传已开启但 assistant 消息缺少同源 thinking 素材（tool_call ${block.name}）：思维模式端点可能拒绝请求\n`,
+              );
+            }
           }
           result.push({
             type: "function_call",

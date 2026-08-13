@@ -384,9 +384,8 @@ describe("OpenAIResponsesProvider request mapping", () => {
   });
 
   it("思维链回传开启但 assistant 消息缺同源 thinking 素材：不回传 reasoning item 且 stderr 留痕", async () => {
-    // missingThinkingLogged 为模块级单例（每进程限频一次）：重置模块图拿到干净的留痕状态
-    vi.resetModules();
-    const fresh = await import("../src/providers/openai-responses-provider.js");
+    // 留痕限频按「消息 id:tool_call id」键控：本用例的消息/调用 id 与同文件其他缺素材
+    // 用例（call_dangling）不同键，互不干扰，无需重置模块状态
     const bodies: Array<Record<string, unknown>> = [];
     const payload = COMPLETED;
     const messages: StreamChatRequest["messages"] = [
@@ -402,10 +401,7 @@ describe("OpenAIResponsesProvider request mapping", () => {
     ];
     const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     try {
-      await collect(
-        new fresh.OpenAIResponsesProvider({ baseURL: "https://example.invalid/v1", fetch: sseFetch(bodies, payload) })
-          .streamChat(request({ messages })),
-      );
+      await collect(makeProvider(sseFetch(bodies, payload)).streamChat(request({ messages })));
     } finally {
       writeSpy.mockRestore();
     }
