@@ -127,7 +127,8 @@ export interface SubAgentOptions {
   /** 每轮 provider 调用结束与每批工具执行结束后回调（仅元数据，不含文本；用于发布 subagent.progress）。 */
   onProgress?: (progress: { turns: number; toolsUsed: string[] }) => void;
   /** 思维链回传（仅 OpenAI 兼容接口生效）：由调用方按实际请求模型（modelOverride ?? model）的能力声明下发。
-   * 注：子代理当前不把 thinking 块写入对话历史，该管道暂无实际回带行为，为后续保留 thinking 预留。 */
+   * 子代理每轮把 thinking_delta/thinking_end 累积为带 provider 的 thinking 块写入对话历史，
+   * 下一轮由 provider 按能力声明回传（DeepSeek 思维模式强制要求，缺素材会 400）。 */
   reasoningContent?: boolean;
   /** 服务端联网搜索（请求级，仅 OpenAI Responses 接口生效）：model-api 模式下由调用方统一下发。 */
   serverWebSearch?: boolean;
@@ -204,6 +205,10 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
       const assistantContent: MessageContent[] = [];
       let text = "";
       let stopReason: string | undefined;
+      // 当前流式 thinking 块索引（thinking_delta 分片合并；thinking_end 收尾成块）：
+      // 与主循环一致，thinking 块带 provider 字段落盘，供 OpenAI 兼容接口的思维链回传
+      // （DeepSeek 思维模式强制每个 function_call 前带 reasoning item，缺素材会 400）。
+      let activeThinkingIndex: number | undefined;
       for (const event of result.events) {
         if (event.type === "text_delta") {
           text += event.text;
@@ -212,6 +217,25 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
           const previous = assistantContent.at(-1);
           if (previous?.type === "text") previous.text = `${previous.text ?? ""}${event.text}`;
           else assistantContent.push({ type: "text", text: event.text });
+        } else if (event.type === "thinking_delta") {
+          const activeThinking = activeThinkingIndex === undefined ? undefined : assistantContent[activeThinkingIndex];
+          if (activeThinking?.type === "thinking") {
+            activeThinking.text = `${activeThinking.text ?? ""}${event.text}`;
+          } else {
+            assistantContent.push({ type: "thinking", text: event.text, provider: options.provider.name });
+            activeThinkingIndex = assistantContent.length - 1;
+          }
+        } else if (event.type === "thinking_end") {
+          const completedThinking: MessageContent = {
+            type: "thinking",
+            text: event.text,
+            ...(event.signature ? { signature: event.signature } : {}),
+            ...(event.redacted ? { redacted: event.redacted } : {}),
+            provider: options.provider.name,
+          };
+          if (activeThinkingIndex === undefined) assistantContent.push(completedThinking);
+          else assistantContent[activeThinkingIndex] = completedThinking;
+          activeThinkingIndex = undefined;
         } else if (event.type === "tool_call") {
           assistantContent.push({ type: "tool_call", id: event.id, name: event.name, input: event.input });
         } else if (event.type === "usage") {

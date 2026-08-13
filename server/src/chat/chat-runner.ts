@@ -206,11 +206,35 @@ export class ChatRunner {
           },
         });
 
-        // 汇总本轮事件：工具调用与停止原因（文本已由 onEvent 累积进 currentTurnText）
+        // 汇总本轮事件：工具调用、thinking 块与停止原因（文本已由 onEvent 累积进 currentTurnText）。
+        // thinking 块带 provider 字段随 assistant 消息落盘：OpenAI 兼容接口的思维链回传
+        // 依赖历史中的同源 thinking 素材（DeepSeek 思维模式强制，缺素材会 400）。
         let hasToolCall = false;
         const toolCalls: { id: string; name: string; input: Record<string, unknown> }[] = [];
+        const assistantMsgContent: MessageContent[] = [];
+        let activeThinkingIndex: number | undefined;
         for (const event of collected.events) {
-          if (event.type === "tool_call") {
+          if (event.type === "thinking_delta") {
+            // 与主循环一致：相邻分片合并进当前 thinking 块，避免一条消息携带数千个碎片块
+            const activeThinking = activeThinkingIndex === undefined ? undefined : assistantMsgContent[activeThinkingIndex];
+            if (activeThinking?.type === "thinking") {
+              activeThinking.text = `${activeThinking.text ?? ""}${event.text}`;
+            } else {
+              assistantMsgContent.push({ type: "thinking", text: event.text, provider: provider.name });
+              activeThinkingIndex = assistantMsgContent.length - 1;
+            }
+          } else if (event.type === "thinking_end") {
+            const completedThinking: MessageContent = {
+              type: "thinking",
+              text: event.text,
+              ...(event.signature ? { signature: event.signature } : {}),
+              ...(event.redacted ? { redacted: event.redacted } : {}),
+              provider: provider.name,
+            };
+            if (activeThinkingIndex === undefined) assistantMsgContent.push(completedThinking);
+            else assistantMsgContent[activeThinkingIndex] = completedThinking;
+            activeThinkingIndex = undefined;
+          } else if (event.type === "tool_call") {
             hasToolCall = true;
             toolCalls.push({ id: event.id, name: event.name, input: event.input });
             onToolCall?.({ id: event.id, name: event.name });
@@ -218,8 +242,7 @@ export class ChatRunner {
           if (event.type === "done") stopReason = event.stopReason;
         }
 
-        // assistant 消息落盘并追加进内存上下文
-        const assistantMsgContent: MessageContent[] = [];
+        // assistant 消息落盘并追加进内存上下文（thinking 已在汇总循环按序累积）
         if (currentTurnText) assistantMsgContent.push({ type: "text", text: currentTurnText });
         for (const tc of toolCalls) {
           assistantMsgContent.push({ type: "tool_call", id: tc.id, name: tc.name, input: tc.input });
