@@ -344,6 +344,18 @@
   .composer { padding: 6px calc(8px + env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) calc(8px + env(safe-area-inset-left)); }
   .composer-card { padding: 6px 10px 8px; }
   .composer-toolbar { flex-wrap: wrap; gap: 4px; }
+  /* 功能三行压缩为两行（order 重排）：
+     行1 = 附件/权限模式/对话模式/模型选择器（spacer 分隔，模型靠右）；
+     行2 = 运行状态提示 + 队列菜单 + 发送（发送 margin-left:auto 右对齐）。 */
+  .composer-toolbar > .composer-attach,
+  .composer-toolbar > .composer-permission,
+  .composer-toolbar > .composer-menu,
+  .composer-toolbar > .composer-menu-right,
+  .composer-toolbar-spacer { order: 1; }
+  .steering-hint,
+  .composer-running-dot,
+  .composer-queue-menu { order: 2; }
+  .composer-send { order: 2; margin-left: auto; }
   /* 控制行紧凑化：菜单按钮降一档，长模型名收缩省略（不顶爆布局、不折行溢出） */
   .composer-menu-btn { padding: 0 7px; gap: 4px; font-size: var(--text-xs); }
   .model-menu-btn-label { max-width: 108px; gap: 3px; }
