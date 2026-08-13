@@ -1114,12 +1114,12 @@ export interface ChatModelEntry {
 
 /** Chat SSE 事件（GET /api/chat/sessions/:id/stream，data: 行 JSON；对齐 server/src/app.ts chatStreamSend） */
 export interface ChatStreamEvent {
-  type: "connected" | "delta" | "tool_call" | "tool_result" | "stopped" | "python_status" | "done" | "error";
+  type: "connected" | "delta" | "thinking_delta" | "tool_call" | "tool_result" | "stopped" | "python_status" | "done" | "error";
   /** 本次运行的 id（connected 事件没有）。 */
   runId?: string;
   /** connected：该会话是否有运行中的消息。 */
   running?: boolean;
-  /** delta / tool_result：文本增量。 */
+  /** delta / thinking_delta / tool_result：文本增量（thinking_delta 为思考过程增量）。 */
   text?: string;
   /** tool_call / tool_result：工具调用 id。 */
   id?: string;

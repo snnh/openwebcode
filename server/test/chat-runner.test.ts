@@ -331,4 +331,23 @@ describe("ChatRunner", () => {
       { type: "tool_call", id: "call-1", name: "calculate", input: { expression: "1+1" } },
     ]);
   });
+
+  it("thinking_delta 经 onThinkingDelta 实时上抛（SSE 流式通道）", async () => {
+    const thinkingTurn: Handler = () => (async function* () {
+      yield { type: "thinking_delta", text: "先想" };
+      yield { type: "thinking_delta", text: "一下" };
+      yield { type: "text_delta", text: "答" };
+      yield { type: "done", stopReason: "end_turn" as const };
+    })();
+    const { runner, store } = makeRunner({ handler: thinkingTurn });
+    await store.appendMessage("s1", "user", [{ type: "text", text: "第一句" }]);
+    const thinkingDeltas: string[] = [];
+
+    const result = await runner.runChatMessage(runParams({
+      onThinkingDelta: (text: string) => thinkingDeltas.push(text),
+    }));
+
+    expect(result.stopReason).toBe("end_turn");
+    expect(thinkingDeltas).toEqual(["先想", "一下"]);
+  });
 });

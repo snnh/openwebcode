@@ -88,6 +88,8 @@ export class ChatRunner {
     meta: ChatSessionMeta;
     signal: AbortSignal;
     onDelta: (text: string) => void;
+    /** 思考过程增量（thinking_delta）：与文本同通道实时上抛，路由层转 SSE thinking_delta。 */
+    onThinkingDelta?: (text: string) => void;
     onToolCall?: (call: { id: string; name: string }) => void;
     onToolResult?: (result: { id: string; text: string }) => void;
     /** 主动停止（stopChatMessage）时回调：与 delta/tool_call 同通道，路由层据此发 stopped 事件。 */
@@ -95,7 +97,7 @@ export class ChatRunner {
     /** Python 环境状态（preparing/ready/error）：转发自 chat-tools，路由层据此发 python_status 事件。 */
     onPythonStatus?: PythonStatusCallback;
   }): Promise<{ assistantContent: MessageContent[]; stopReason: string }> {
-    const { sessionId, userMessage, meta, signal, onDelta, onToolCall, onToolResult, onStopped, onPythonStatus } = params;
+    const { sessionId, userMessage, meta, signal, onDelta, onThinkingDelta, onToolCall, onToolResult, onStopped, onPythonStatus } = params;
 
     // 并发护栏必须在首个 await 之前同步执行：两个 await 之后才登记会让并发重复提交双双通过。
     // 路由层按 message 含 "already running" 判 409。
@@ -133,7 +135,10 @@ export class ChatRunner {
       });
     }
     const lastStored = messages.at(-1);
-    const isAlreadyStored = lastStored?.role === "user"
+    // 空文本消息（纯图片）跳过内容级去重：图片消息的落盘形态无 text 块可比对，
+    // 直接 push 保证图片进上下文（HTTP 层落盘消息与内存 messages 同源，不会重复）
+    const isAlreadyStored = userMessage !== ""
+      && lastStored?.role === "user"
       && lastStored.content.some((c) => c.type === "text" && c.text === userMessage);
     if (!isAlreadyStored) {
       messages.push({
@@ -202,6 +207,9 @@ export class ChatRunner {
             if (event.type === "text_delta") {
               currentTurnText += event.text;
               onDelta(event.text);
+            } else if (event.type === "thinking_delta") {
+              // 思考增量实时上抛（前端流式展示）；落盘由汇总循环的 thinking 块累积负责
+              onThinkingDelta?.(event.text);
             }
           },
         });
