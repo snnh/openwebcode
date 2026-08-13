@@ -282,6 +282,11 @@ export function setReplayDiagnosticWriter(writer?: (line: string) => void): void
   replayDiagnosticWriter = writer ?? ((line: string) => { process.stderr.write(line); });
 }
 
+/** 读取当前诊断留痕输出目标（测试断言用：模块内调用经此属性，与测试持有同一引用）。 */
+export function getReplayDiagnosticWriter(): (line: string) => void {
+  return replayDiagnosticWriter;
+}
+
 function toResponsesInput(messages: ChatMessage[], providerName: string, replayReasoning: boolean): Array<Record<string, unknown>> {
   const outputs = collectToolOutputs(messages);
   const result: Array<Record<string, unknown>> = [];
