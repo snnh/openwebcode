@@ -389,16 +389,18 @@ describe("OpenAIResponsesProvider request mapping", () => {
     const lines: string[] = [];
     const bodies: Array<Record<string, unknown>> = [];
     const payload = COMPLETED;
+    // 注意：限频键为 `消息id:tool_call id`，本文件首个映射用例已占用 "a1:call_1"，
+    // 此处必须使用独立 id，否则同进程内键控限频会把本用例的留痕吞掉
     const messages: StreamChatRequest["messages"] = [
       { id: "u1", role: "user", content: [{ type: "text", text: "继续" }], createdAt: "2026-01-01T00:00:00.000Z" },
       {
-        id: "a1", role: "assistant", createdAt: "2026-01-01T00:00:01.000Z",
+        id: "a_missing", role: "assistant", createdAt: "2026-01-01T00:00:01.000Z",
         content: [
           { type: "text", text: "我查一下" },
-          { type: "tool_call", id: "call_1", name: "bash", input: { cmd: "ls" } },
+          { type: "tool_call", id: "call_missing", name: "bash", input: { cmd: "ls" } },
         ],
       },
-      { id: "t1", role: "tool", content: [{ type: "tool_result", toolCallId: "call_1", content: "B", isError: false }], createdAt: "2026-01-01T00:00:02.000Z" },
+      { id: "t1", role: "tool", content: [{ type: "tool_result", toolCallId: "call_missing", content: "B", isError: false }], createdAt: "2026-01-01T00:00:02.000Z" },
     ];
     const provider = new OpenAIResponsesProvider({
       baseURL: "https://example.invalid/v1",
@@ -410,8 +412,8 @@ describe("OpenAIResponsesProvider request mapping", () => {
     expect(bodies[0]?.input).toEqual([
       { role: "user", content: "继续" },
       { role: "assistant", content: "我查一下" },
-      { type: "function_call", call_id: "call_1", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
-      { type: "function_call_output", call_id: "call_1", output: "B" },
+      { type: "function_call", call_id: "call_missing", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
+      { type: "function_call_output", call_id: "call_missing", output: "B" },
     ]);
     expect(lines.some((line) => line.includes("缺少同源 thinking 素材"))).toBe(true);
   });
