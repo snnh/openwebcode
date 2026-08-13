@@ -19,12 +19,12 @@ function imageMessage(id: string, mediaType = "image/png", data = IMAGE_DATA): C
   };
 }
 
-function payload(messages: ChatMessage[]): ContextHookPayload {
+function payload(messages: ChatMessage[], clearedAt?: string): ContextHookPayload {
   return {
     sessionId: "s1",
     cwd: "/workspace",
     messages,
-    ledger: { round: 1, entries: [] },
+    ledger: { round: 1, entries: [], ...(clearedAt ? { cleared: { at: clearedAt } } : {}) },
   };
 }
 
@@ -229,6 +229,45 @@ describe("vision-tools toolCall 模式", () => {
     });
     const result = await bridgeVisionImages(api, payload([imageMessage("u1")]), TOOLCALL_CONFIG);
     expect(result.messages![0]!.content[0]).toMatchObject({ type: "text", text: "[图片 #1]" });
+  });
+
+  it("无 clear 时同会话图片编号跨轮不变", async () => {
+    const store = new Map<string, string>();
+    const api = makeApi({
+      storageRead: async (file) => ({ content: store.get(file) ?? null }),
+      storageWrite: async (file, content) => { store.set(file, content); return { bytes: content.length }; },
+    });
+    // 第一轮：两张图分配 #1、#2
+    await bridgeVisionImages(api, payload([imageMessage("u1"), imageMessage("u2", "image/jpeg", IMAGE_DATA_2)]), TOOLCALL_CONFIG);
+    // 第二轮：新增第三张图 → 续用 #1、#2，新图取 #3（同会话内编号不变）
+    const result = await bridgeVisionImages(
+      api,
+      payload([imageMessage("u1"), imageMessage("u2", "image/jpeg", IMAGE_DATA_2), imageMessage("u3", "image/webp", Buffer.from("third").toString("base64"))]),
+      TOOLCALL_CONFIG,
+    );
+    expect(result.messages![0]!.content[0]).toMatchObject({ type: "text", text: "[图片 #1]" });
+    expect(result.messages![1]!.content[0]).toMatchObject({ type: "text", text: "[图片 #2]" });
+    expect(result.messages![2]!.content[0]).toMatchObject({ type: "text", text: "[图片 #3]" });
+  });
+
+  it("/clear 清空上下文后编号表清空、重新从 #1 分配", async () => {
+    const store = new Map<string, string>();
+    const api = makeApi({
+      storageRead: async (file) => ({ content: store.get(file) ?? null }),
+      storageWrite: async (file, content) => { store.set(file, content); return { bytes: content.length }; },
+    });
+    // clear 前：图片分配 #1
+    await bridgeVisionImages(api, payload([imageMessage("u1")]), TOOLCALL_CONFIG);
+    expect(store.get("vision/ids/s1.json")).toBeDefined();
+    // /clear 后：同一张图（含旧占位符）不再出现，编号表被清空，重新从 #1 分配
+    const result = await bridgeVisionImages(
+      api,
+      payload([imageMessage("u2", "image/jpeg", IMAGE_DATA_2)], "2026-08-13T10:00:00.000Z"),
+      TOOLCALL_CONFIG,
+    );
+    expect(result.messages![0]!.content[0]).toMatchObject({ type: "text", text: "[图片 #1]" });
+    // 编号表最终只剩 clear 后新分配的一条（旧 #1 已被清掉）
+    expect(Object.keys(JSON.parse(store.get("vision/ids/s1.json")!) as Record<string, number>).length).toBe(1);
   });
 
   it("describe_image 按编号调用视觉模型并缓存（同图同 request 复用）", async () => {

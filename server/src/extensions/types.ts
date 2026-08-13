@@ -81,6 +81,8 @@ export interface ContextHookPayload {
     round: number;
     entries: Array<{ messageId: string; state: string; pinnedUntilRound: number }>;
     compacted?: { summary: string; instructions: string[]; mode?: string };
+    /** /clear 清空边界（ISO 时间），供扩展感知「上下文已清空」并重置会话内易失状态（如图片编号表）。 */
+    cleared?: { at: string };
   };
 }
 
