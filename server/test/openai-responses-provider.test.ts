@@ -7,7 +7,7 @@ import { ProviderProfilesService } from "../src/provider-profiles.js";
 import { ConcurrencyLimitedProvider, DEFAULT_MAX_CONCURRENT } from "../src/providers/concurrency-limiter.js";
 import { AnthropicProvider } from "../src/providers/anthropic-provider.js";
 import { OpenAICompatibleProvider, MAX_SSE_EVENT_BYTES, readSseData } from "../src/providers/openai-compatible-provider.js";
-import { OpenAIResponsesProvider, setReplayDiagnosticWriter, getReplayDiagnosticWriter } from "../src/providers/openai-responses-provider.js";
+import { OpenAIResponsesProvider } from "../src/providers/openai-responses-provider.js";
 import { ProviderError } from "../src/providers/provider-error.js";
 import { ProviderRegistry, type ProviderEvent, type StreamChatRequest } from "../src/providers/provider.js";
 import { injectMockStream } from "./helpers/anthropic-mock.js";
@@ -384,40 +384,36 @@ describe("OpenAIResponsesProvider request mapping", () => {
   });
 
   it("思维链回传开启但 assistant 消息缺同源 thinking 素材：不回传 reasoning item 且诊断留痕", async () => {
-    // 留痕输出经 setReplayDiagnosticWriter 注入收集器（不依赖 process.stderr 可替换性）；
-    // 限频按「消息 id:tool_call id」键控，本用例与同文件其他缺素材用例（call_dangling）不同键
+    // 留痕输出经构造注入收集器（diagnosticWriter）：引用在创建 provider 时确定，
+    // 不依赖任何模块级全局状态或 process.stderr 可替换性；限频键与 dangling 用例不同
     const lines: string[] = [];
-    const collector = (line: string): void => { lines.push(line); };
-    setReplayDiagnosticWriter(collector);
-    try {
-      // 前置断言：注入后 provider 读取的 writer 必须是本收集器
-      // （若模块状态与测试隔离，此处即暴露——writer 是模块内唯一诊断出口）
-      expect(getReplayDiagnosticWriter()).toBe(collector);
-      const bodies: Array<Record<string, unknown>> = [];
-      const payload = COMPLETED;
-      const messages: StreamChatRequest["messages"] = [
-        { id: "u1", role: "user", content: [{ type: "text", text: "继续" }], createdAt: "2026-01-01T00:00:00.000Z" },
-        {
-          id: "a1", role: "assistant", createdAt: "2026-01-01T00:00:01.000Z",
-          content: [
-            { type: "text", text: "我查一下" },
-            { type: "tool_call", id: "call_1", name: "bash", input: { cmd: "ls" } },
-          ],
-        },
-        { id: "t1", role: "tool", content: [{ type: "tool_result", toolCallId: "call_1", content: "B", isError: false }], createdAt: "2026-01-01T00:00:02.000Z" },
-      ];
-      await collect(makeProvider(sseFetch(bodies, payload)).streamChat(request({ messages })));
-      // 无素材时 function_call 照常发出（不回传 reasoning item），留痕提示思维模式端点可能拒绝
-      expect(bodies[0]?.input).toEqual([
-        { role: "user", content: "继续" },
-        { role: "assistant", content: "我查一下" },
-        { type: "function_call", call_id: "call_1", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
-        { type: "function_call_output", call_id: "call_1", output: "B" },
-      ]);
-      expect(lines.some((line) => line.includes("缺少同源 thinking 素材"))).toBe(true);
-    } finally {
-      setReplayDiagnosticWriter();
-    }
+    const bodies: Array<Record<string, unknown>> = [];
+    const payload = COMPLETED;
+    const messages: StreamChatRequest["messages"] = [
+      { id: "u1", role: "user", content: [{ type: "text", text: "继续" }], createdAt: "2026-01-01T00:00:00.000Z" },
+      {
+        id: "a1", role: "assistant", createdAt: "2026-01-01T00:00:01.000Z",
+        content: [
+          { type: "text", text: "我查一下" },
+          { type: "tool_call", id: "call_1", name: "bash", input: { cmd: "ls" } },
+        ],
+      },
+      { id: "t1", role: "tool", content: [{ type: "tool_result", toolCallId: "call_1", content: "B", isError: false }], createdAt: "2026-01-01T00:00:02.000Z" },
+    ];
+    const provider = new OpenAIResponsesProvider({
+      baseURL: "https://example.invalid/v1",
+      fetch: sseFetch(bodies, payload),
+      diagnosticWriter: (line) => lines.push(line),
+    });
+    await collect(provider.streamChat(request({ messages })));
+    // 无素材时 function_call 照常发出（不回传 reasoning item），留痕提示思维模式端点可能拒绝
+    expect(bodies[0]?.input).toEqual([
+      { role: "user", content: "继续" },
+      { role: "assistant", content: "我查一下" },
+      { type: "function_call", call_id: "call_1", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
+      { type: "function_call_output", call_id: "call_1", output: "B" },
+    ]);
+    expect(lines.some((line) => line.includes("缺少同源 thinking 素材"))).toBe(true);
   });
 
   it("merges extraBody under core fields and omits max_output_tokens by default", async () => {

@@ -20,6 +20,8 @@ export interface OpenAIResponsesProviderOptions {
   /** SSE 流连续无 data 事件的最大毫秒数（心跳注释不计），超时判为半开连接断开并走重试；<=0 关闭。 */
   streamIdleTimeoutMs?: number;
   fetch?: typeof fetch;
+  /** 诊断留痕输出目标（测试注入用；缺省写 stderr）。构造期注入，引用关系创建时确定。 */
+  diagnosticWriter?: (line: string) => void;
 }
 
 interface FunctionCallAccumulator {
@@ -77,7 +79,7 @@ export class OpenAIResponsesProvider implements Provider {
           model: request.model,
           stream: true,
           instructions,
-          input: toResponsesInput(request.messages, this.name, reasoningSummary),
+          input: toResponsesInput(request.messages, this.name, reasoningSummary, this.options.diagnosticWriter ?? defaultDiagnosticWriter),
           ...(maxTokens !== undefined ? { max_output_tokens: maxTokens } : {}),
           // 请求级采样参数：Responses 的推理档（请求携带 effort）拒绝 temperature/top_p，
           // 此时不下发，避免 400；非推理请求按请求级配置透传
@@ -272,22 +274,12 @@ let replaySuppressedLogged = false;
  * 缺素材必 400；同一条消息反复请求不刷屏，不同消息仍保留诊断留痕。 */
 const missingThinkingLogged = new Set<string>();
 
-/** 诊断留痕输出目标（默认 stderr；测试可注入收集器，不依赖 process.stderr 的可替换性）。 */
-let replayDiagnosticWriter: (line: string) => void = (line) => {
+/** 缺省诊断留痕输出（stderr）。 */
+const defaultDiagnosticWriter = (line: string): void => {
   process.stderr.write(line);
 };
 
-/** 替换诊断留痕输出目标（测试注入用）；传 undefined 恢复默认 stderr 输出。 */
-export function setReplayDiagnosticWriter(writer?: (line: string) => void): void {
-  replayDiagnosticWriter = writer ?? ((line: string) => { process.stderr.write(line); });
-}
-
-/** 读取当前诊断留痕输出目标（测试断言用：模块内调用经此属性，与测试持有同一引用）。 */
-export function getReplayDiagnosticWriter(): (line: string) => void {
-  return replayDiagnosticWriter;
-}
-
-function toResponsesInput(messages: ChatMessage[], providerName: string, replayReasoning: boolean): Array<Record<string, unknown>> {
+function toResponsesInput(messages: ChatMessage[], providerName: string, replayReasoning: boolean, diagnosticWriter: (line: string) => void): Array<Record<string, unknown>> {
   const outputs = collectToolOutputs(messages);
   const result: Array<Record<string, unknown>> = [];
   const emitted = new Set<string>();
@@ -319,7 +311,7 @@ function toResponsesInput(messages: ChatMessage[], providerName: string, replayR
       if (!replayReasoning && !replaySuppressedLogged && message.content.some((block) => block.type === "thinking" && block.provider === providerName)) {
         // 回传被能力声明关闭但历史含同源 thinking 块：DeepSeek 思维模式会因此 400，留痕便于诊断（每进程一次）
         replaySuppressedLogged = true;
-        replayDiagnosticWriter(`[openai-responses] 思维链回传已关闭（reasoningContent=false），历史 thinking 块不会回传；思维模式端点（如 DeepSeek）可能拒绝请求\n`);
+        diagnosticWriter(`[openai-responses] 思维链回传已关闭（reasoningContent=false），历史 thinking 块不会回传；思维模式端点（如 DeepSeek）可能拒绝请求\n`);
       }
       const text = message.content
         .filter((block) => block.type === "text")
@@ -343,7 +335,7 @@ function toResponsesInput(messages: ChatMessage[], providerName: string, replayR
             const missingKey = `${message.id ?? "?"}:${block.id}`;
             if (!missingThinkingLogged.has(missingKey)) {
               missingThinkingLogged.add(missingKey);
-              replayDiagnosticWriter(
+              diagnosticWriter(
                 `[openai-responses] 思维链回传已开启但 assistant 消息缺少同源 thinking 素材（tool_call ${block.name}）：思维模式端点可能拒绝请求\n`,
               );
             }
