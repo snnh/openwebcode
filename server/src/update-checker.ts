@@ -2,6 +2,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "./atomic-file.js";
 import { isMissing } from "./fs-utils.js";
+import { readJsonLimited } from "./http-utils.js";
 import { getOfficialUserAgent } from "./user-agent.js";
 import { getServerVersion } from "./version.js";
 
@@ -52,31 +53,6 @@ export function stripVersionPrefix(tag: string): string {
 
 /** GitHub releases/latest 响应很小，但 URL 可配置——兜底 1 MiB 字节预算，防恶意/异常端点打爆内存。 */
 const MAX_RESPONSE_BYTES = 1024 * 1024;
-
-async function readJsonLimited(response: Response, maxBytes: number): Promise<unknown> {
-  if (!response.body) throw new Error("Empty response body");
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > maxBytes) {
-        await reader.cancel();
-        throw new Error(`Response exceeds ${maxBytes} byte limit`);
-      }
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  const body = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
-  return JSON.parse(new TextDecoder().decode(body)) as unknown;
-}
 
 export class UpdateChecker {
   private snapshot: UpdateCheckSnapshot | undefined;

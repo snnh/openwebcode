@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { fetchFollowingRedirects, readResponseLimited, withTimeout } from "../http-utils.js";
 import { getUserAgent } from "../user-agent.js";
 import type { Provider, ProviderRegistry } from "../providers/provider.js";
 import type { ProviderProfilesService } from "../provider-profiles.js";
@@ -44,31 +45,6 @@ export function resolveSessionPath(sessionDir: string, inputPath: string): strin
   return resolved;
 }
 
-async function readResponseLimited(response: Response, maxBytes: number): Promise<Uint8Array> {
-  if (!response.body) return new Uint8Array();
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > maxBytes) {
-        await reader.cancel();
-        throw new Error(`Response exceeds ${maxBytes} byte limit`);
-      }
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  const body = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
-  return body;
-}
-
 // ---- vision 图源抓取（http(s) URL 形态）----
 
 const IMAGE_FETCH_TIMEOUT_MS = 30_000;
@@ -84,31 +60,25 @@ export async function fetchChatImage(
 ): Promise<{ data: string; mediaType: string }> {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   const maxBytes = options.maxBytes ?? CHAT_IMAGE_MAX_BYTES;
-  const timeout = AbortSignal.timeout(IMAGE_FETCH_TIMEOUT_MS);
-  const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout;
-  let current = assertSafeWebUrl(value);
-  for (let redirects = 0; redirects <= IMAGE_FETCH_MAX_REDIRECTS; redirects += 1) {
-    const response = await fetchImpl(current, {
-      redirect: "manual",
-      signal,
-      headers: { "User-Agent": getUserAgent(), Accept: "image/*" },
-    });
-    if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get("location");
-      if (!location) throw new Error(`Redirect ${response.status} has no Location header`);
-      if (redirects === IMAGE_FETCH_MAX_REDIRECTS) throw new Error("Too many redirects");
-      current = assertSafeWebUrl(new URL(location, current).href);
-      continue;
-    }
-    if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`.trim());
-    const contentType = (response.headers.get("content-type") ?? "").split(";", 1)[0]!.trim().toLowerCase();
-    if (!contentType.startsWith("image/")) {
-      throw new Error(`URL did not return an image (content-type: ${contentType || "unknown"})`);
-    }
-    const bytes = await readResponseLimited(response, maxBytes);
-    return { data: Buffer.from(bytes).toString("base64"), mediaType: contentType };
+  const signal = withTimeout(options.signal, IMAGE_FETCH_TIMEOUT_MS);
+  const { response } = await fetchFollowingRedirects({
+    fetchImpl,
+    start: assertSafeWebUrl(value),
+    signal,
+    headers: { "User-Agent": getUserAgent(), Accept: "image/*" },
+    maxRedirects: IMAGE_FETCH_MAX_REDIRECTS,
+    // 与 webFetch 同一 SSRF 网关：重定向目标逐跳复验块表
+    validate: (url) => {
+      assertSafeWebUrl(url.href);
+    },
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`.trim());
+  const contentType = (response.headers.get("content-type") ?? "").split(";", 1)[0]!.trim().toLowerCase();
+  if (!contentType.startsWith("image/")) {
+    throw new Error(`URL did not return an image (content-type: ${contentType || "unknown"})`);
   }
-  throw new Error("Too many redirects");
+  const bytes = await readResponseLimited(response, maxBytes);
+  return { data: Buffer.from(bytes).toString("base64"), mediaType: contentType };
 }
 
 // ---- image_gen：OpenAI 兼容 images API ----
@@ -143,8 +113,7 @@ export function createOpenAIImageGenProvider(options: {
     name: options.name,
     async generate(prompt, generateOptions) {
       const size = ASPECT_RATIO_SIZE[generateOptions?.aspectRatio ?? "1:1"];
-      const timeout = AbortSignal.timeout(IMAGE_GEN_TIMEOUT_MS);
-      const signal = generateOptions?.signal ? AbortSignal.any([generateOptions.signal, timeout]) : timeout;
+      const signal = withTimeout(generateOptions?.signal, IMAGE_GEN_TIMEOUT_MS);
       const response = await fetchImpl(`${baseURL}/images/generations`, {
         method: "POST",
         headers: {
