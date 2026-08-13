@@ -18,8 +18,8 @@ import type {
   FsPathRequest,
   JobStatus,
   JobOutputResult,
-} from "../core-client.js";
-import type { SandboxPolicy } from "../sessions/types.js";
+} from "../../src/core-client.js";
+import type { SandboxPolicy } from "../../src/sessions/types.js";
 
 const CORE_INFO: CoreInfo = {
   version: "eval-stub",
