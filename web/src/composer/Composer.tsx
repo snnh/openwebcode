@@ -1007,7 +1007,7 @@ export function Composer({ session, running, onSend, onConfig, editingMessage, o
           />
         </span>
         {running && (
-          <span className="composer-menu-right">
+          <span className="composer-menu-right composer-queue-menu">
             <span className="composer-menu">
               <button
                 type="button"
