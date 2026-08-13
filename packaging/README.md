@@ -326,7 +326,7 @@ Docker 是 OpenWebCode 的第三种安装方式（Windows 安装器 / Linux tar.
 - 基础镜像 `node:24-trixie`（builder）与 `node:24-trixie-slim`（runtime），即 Debian 13（trixie，glibc 2.41）——与项目开发/实测环境一致；多架构 amd64 / arm64。
 - builder 阶段在镜像内完成三层构建：core（cmake Release，`-DBUILD_TESTING=OFF`，测试门禁由 CI 负责）、server（tsc）、web（tsc + vite + bundle 体积检查）；`npm ci --ignore-scripts` + lockfile 先行拷贝保证依赖层缓存复用。
 - runtime 阶段额外安装：bubblewrap（命名空间沙盒）、git（SCM/快照）、python3（agent 任务/Chat 回退）、bash（POSIX 首选 shell）、curl（健康检查）、tini（PID 1）、procps。
-- 以非特权用户 `owc`（uid/gid 1000）运行：`docker-entrypoint.sh` 以 root 启动时先修正 `/data` 与可选 `OWC_WORKSPACE` 顶层属主（命名卷首挂载是 root 属主，server 的 `ensureDirWithMode(0700)` 要求属主可写），再 `setpriv` 降权启动；自定义 `user:` 时由用户负责属主。
+- 以非特权用户运行：使用 node 官方镜像内置的 `node` 用户（uid/gid 1000，与多数桌面宿主用户一致，bind 挂载开箱即用）。`docker-entrypoint.sh` 以 root 启动时先修正 `/data` 与可选 `OWC_WORKSPACE` 顶层属主（命名卷首挂载是 root 属主，server 的 `ensureDirWithMode(0700)` 要求属主可写），再 `setpriv` 降权启动；自定义 `user:` 时由用户负责属主。
 - 环境变量：`OWC_CORE_PATH`、`OWC_DATA_DIR=/data`、`OWC_HOST=0.0.0.0`（非回环 → 首次启动自动生成访问令牌并打印带 token 的链接到日志）、`OWC_PORT=3210`、`OWC_BROWSE_ROOTS=/workspace`、`OWC_UPDATE_CHECK_ENABLED=false`。
 - 健康检查：`GET /api/health`（`{"status":"ok"}`，免认证），Dockerfile 与 compose 各定义一份。
 
