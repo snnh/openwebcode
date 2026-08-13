@@ -6,7 +6,7 @@
 
 ### 新增功能
 
-- **Docker 安装方式**：仓库根目录新增 `Dockerfile`、`docker-compose.yml` 与 `.dockerignore`，`docker compose up -d` 一条命令即可部署（或 `docker run` 等价启动）。发布镜像托管于 GitHub Container Registry（`ghcr.io/snnh/openwebcode`），推送 `v*` tag 时由新增的 `docker.yml` 工作流自动构建 linux/amd64、linux/arm64 多架构镜像（稳定版另打 `latest`）。镜像基于 Debian 13（`node:24-trixie`），按发行版 staging 契约组装运行树并以非特权用户运行：数据目录用命名卷持久化，非回环监听自动生成访问令牌并把带 token 的访问链接打印到容器日志；Landlock 沙盒开箱即用，bubblewrap 命名空间隔离在 compose 放开 `seccomp=unconfined` 后启用（不可用时 core 自动降级，属设计内行为）；容器内不做原地自更新，升级即拉新镜像。详细说明见 [`packaging/README.md`](./packaging/README.md) 的「Docker 镜像」一节。
+- **Docker 安装方式**：仓库根目录新增 `Dockerfile`、`docker-compose.yml` 与 `.dockerignore`，`docker compose up -d` 一条命令即可部署（或 `docker run` 等价启动）。发布镜像托管于 GitHub Container Registry（`ghcr.io/snnh/openwebcode`），推送 `v*` tag 时由新增的 `docker.yml` 工作流自动构建 linux/amd64、linux/arm64 多架构镜像（稳定版另打 `latest`；也支持手动 `workflow_dispatch` 重建——输入 tag 构建该 tag，留空则构建当前分支，便于打包问题修复后无需移动已发布 tag）。镜像基于 Debian 13（`node:24-trixie`），按发行版 staging 契约组装运行树并以非特权用户运行：数据目录用命名卷持久化，非回环监听自动生成访问令牌并把带 token 的访问链接打印到容器日志；Landlock 沙盒开箱即用，bubblewrap 命名空间隔离在 compose 放开 `seccomp=unconfined` 后启用（不可用时 core 自动降级，属设计内行为）；容器内不做原地自更新，升级即拉新镜像。详细说明见 [`packaging/README.md`](./packaging/README.md) 的「Docker 镜像」一节。
 
 ## [1.7.3] - 2026-08-13
 
