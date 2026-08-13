@@ -272,6 +272,16 @@ let replaySuppressedLogged = false;
  * 缺素材必 400；同一条消息反复请求不刷屏，不同消息仍保留诊断留痕。 */
 const missingThinkingLogged = new Set<string>();
 
+/** 诊断留痕输出目标（默认 stderr；测试可注入收集器，不依赖 process.stderr 的可替换性）。 */
+let replayDiagnosticWriter: (line: string) => void = (line) => {
+  process.stderr.write(line);
+};
+
+/** 替换诊断留痕输出目标（测试注入用）；传 undefined 恢复默认 stderr 输出。 */
+export function setReplayDiagnosticWriter(writer?: (line: string) => void): void {
+  replayDiagnosticWriter = writer ?? ((line: string) => { process.stderr.write(line); });
+}
+
 function toResponsesInput(messages: ChatMessage[], providerName: string, replayReasoning: boolean): Array<Record<string, unknown>> {
   const outputs = collectToolOutputs(messages);
   const result: Array<Record<string, unknown>> = [];
@@ -304,7 +314,7 @@ function toResponsesInput(messages: ChatMessage[], providerName: string, replayR
       if (!replayReasoning && !replaySuppressedLogged && message.content.some((block) => block.type === "thinking" && block.provider === providerName)) {
         // 回传被能力声明关闭但历史含同源 thinking 块：DeepSeek 思维模式会因此 400，留痕便于诊断（每进程一次）
         replaySuppressedLogged = true;
-        process.stderr.write(`[openai-responses] 思维链回传已关闭（reasoningContent=false），历史 thinking 块不会回传；思维模式端点（如 DeepSeek）可能拒绝请求\n`);
+        replayDiagnosticWriter(`[openai-responses] 思维链回传已关闭（reasoningContent=false），历史 thinking 块不会回传；思维模式端点（如 DeepSeek）可能拒绝请求\n`);
       }
       const text = message.content
         .filter((block) => block.type === "text")
@@ -328,7 +338,7 @@ function toResponsesInput(messages: ChatMessage[], providerName: string, replayR
             const missingKey = `${message.id ?? "?"}:${block.id}`;
             if (!missingThinkingLogged.has(missingKey)) {
               missingThinkingLogged.add(missingKey);
-              process.stderr.write(
+              replayDiagnosticWriter(
                 `[openai-responses] 思维链回传已开启但 assistant 消息缺少同源 thinking 素材（tool_call ${block.name}）：思维模式端点可能拒绝请求\n`,
               );
             }
