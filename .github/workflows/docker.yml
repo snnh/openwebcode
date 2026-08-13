@@ -1,0 +1,77 @@
+name: docker
+
+# 构建多架构 Docker 镜像并发布到 GitHub Container Registry（ghcr.io/snnh/openwebcode）。
+# 触发：推送 v* tag（与 release.yml 同源）；或手动输入 tag 构建。
+# 与 release.yml 解耦：镜像发布失败不阻断 GitHub Release（反之亦然）。
+# 镜像标签：v<版本>（如 v1.7.3）；稳定版（版本号不含预发布后缀）额外推 latest。
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要构建的版本 tag（形如 vX.Y.Z 或 vX.Y.Z-beta.1；缺省用当前分支提交）"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/snnh/openwebcode
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve tag and version
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          case "$VERSION" in
+            [0-9]*.[0-9]*.[0-9]*) : ;;
+            *)
+              echo "::error::非法版本号（应为 vX.Y.Z 或 vX.Y.Z-<后缀>）: $TAG"
+              exit 1
+              ;;
+          esac
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "本次构建 tag=$TAG 版本=$VERSION"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 1
+      - uses: docker/setup-buildx-action@v3
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Compute image tags
+        id: tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAGS="${{ env.IMAGE }}:v${{ env.VERSION }}"
+          case "${{ env.VERSION }}" in
+            *-*) echo "预发布版本，仅打 v${{ env.VERSION }} 标签" ;;
+            *) TAGS="${TAGS}\n${{ env.IMAGE }}:latest" ;;
+          esac
+          {
+            echo "tags<<OWC_EOF"
+            printf '%b' "$TAGS"
+            echo "OWC_EOF"
+          } >> "$GITHUB_OUTPUT"
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}

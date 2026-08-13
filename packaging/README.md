@@ -15,6 +15,7 @@
 | `openwebcode-<version>-linux-arm64.tar.gz` | Linux aarch64 | 同上，`ubuntu-24.04-arm` 原生构建 |
 | `openwebcode-<version>-linux-loongarch64.tar.gz` | Linux 龙芯 | 同上，x64 runner 交叉编译，不内置 Node.js |
 | `install-online.sh` | Linux | `curl \| bash` 在线安装/更新脚本，按 `uname -m` 自动选架构 |
+| Docker 镜像 | Linux x86_64 / arm64 | `ghcr.io/snnh/openwebcode`（tag 推送由 docker.yml 构建发布，见下文「Docker 镜像」） |
 | `SHA256SUMS.txt` | 全平台 | 四个发行包的 SHA-256 校验和 |
 | `bench-results-*.json` | 全平台 | 性能基准结果，供下一版做回归对比基线 |
 
@@ -303,6 +304,54 @@ curl -fsSL https://raw.githubusercontent.com/snnh/openwebcode/main/packaging/ins
 - **更新**：整体替换 `<prefix>/lib/openwebcode/` 内容为新版，保留 `<prefix>/bin/owc` 启动器和已写好的 systemd unit，数据目录不动。既有启动器 pin 了系统 Node.js（`OWC_NODE` 非包内形式）时跳过 `node/` 复制（约 100MB 冗余，同时清掉旧的冗余目录）。目标目录不可写时明确报错（可能需要 sudo）。完成后按实际 unit 位置提示重启：系统级 `systemctl restart openwebcode`（非 root 提示加 `sudo`），用户级 `systemctl --user restart openwebcode`，没有 unit 则提示手动重启 owc。
 
 下载基址可用 `OWC_INSTALL_BASE_URL` 覆盖（默认 `https://github.com/snnh/openwebcode/releases/download/v<version>`），便于镜像或 `file://` 本地测试。
+
+## Docker 镜像
+
+Docker 是 OpenWebCode 的第三种安装方式（Windows 安装器 / Linux tar.gz 之外的容器化部署），文件在仓库根目录：`Dockerfile`、`docker-entrypoint.sh`、`docker-compose.yml`、`.dockerignore`，发布流水线在 `.github/workflows/docker.yml`。
+
+### 镜像内布局
+
+与发行版 staging 契约（见「包内布局」）一致，只是 Node 运行时用基础镜像自带的（不内置 `node/`）：
+
+```
+/opt/openwebcode/
+├── bin/owc-exec                  core 可执行文件（Release 构建）
+└── server/  web/
+    ├── dist/                     server 编译产物（入口 dist/index.js）与 web 静态资源
+    ├── package.json              "type": "module" 声明（dist 为 ESM，必需）
+    ├── node_modules/             生产依赖（npm prune --omit=dev 之后）
+    └── assets/                   运行时资产（sandbox-proxy.mjs 等）
+```
+
+- 基础镜像 `node:24-trixie`（builder）与 `node:24-trixie-slim`（runtime），即 Debian 13（trixie，glibc 2.41）——与项目开发/实测环境一致；多架构 amd64 / arm64。
+- builder 阶段在镜像内完成三层构建：core（cmake Release，`-DBUILD_TESTING=OFF`，测试门禁由 CI 负责）、server（tsc）、web（tsc + vite + bundle 体积检查）；`npm ci --ignore-scripts` + lockfile 先行拷贝保证依赖层缓存复用。
+- runtime 阶段额外安装：bubblewrap（命名空间沙盒）、git（SCM/快照）、python3（agent 任务/Chat 回退）、bash（POSIX 首选 shell）、curl（健康检查）、tini（PID 1）、procps。
+- 以非特权用户 `owc`（uid/gid 1000）运行：`docker-entrypoint.sh` 以 root 启动时先修正 `/data` 与可选 `OWC_WORKSPACE` 顶层属主（命名卷首挂载是 root 属主，server 的 `ensureDirWithMode(0700)` 要求属主可写），再 `setpriv` 降权启动；自定义 `user:` 时由用户负责属主。
+- 环境变量：`OWC_CORE_PATH`、`OWC_DATA_DIR=/data`、`OWC_HOST=0.0.0.0`（非回环 → 首次启动自动生成访问令牌并打印带 token 的链接到日志）、`OWC_PORT=3210`、`OWC_BROWSE_ROOTS=/workspace`、`OWC_UPDATE_CHECK_ENABLED=false`。
+- 健康检查：`GET /api/health`（`{"status":"ok"}`，免认证），Dockerfile 与 compose 各定义一份。
+
+### 构建与运行
+
+```sh
+docker build -t openwebcode .                 # 本地构建（当前架构）
+docker run -d --name openwebcode -p 3210:3210 \
+  -v openwebcode-data:/data openwebcode       # 启动；docker logs 查访问链接
+docker compose up -d                          # 或直接 compose（默认拉 GHCR 发布镜像）
+```
+
+### 沙盒能力边界
+
+- **Landlock**：容器内默认可用（宿主机内核 ≥ 5.13），无需额外配置，这是容器内的默认沙盒档。
+- **bubblewrap**：需要宿主机允许非特权 user namespace，且容器放行 `mount` 等系统调用——compose 里取消 `security_opt: seccomp=unconfined` 注释（必要时 `cap_add: [SYS_ADMIN]`）。不可用时 core 自动降级 Landlock 并在诊断留痕，属设计内行为。
+- **快照**：overlayfs 挂载同样受 seccomp 限制，默认快照后端探测链会自动降级（git-shadow/refs）；需要 overlay 时放开 seccomp。
+- 容器内不做原地自更新（`OWC_UPDATE_CHECK_ENABLED=false`，`/opt/openwebcode` 对 `owc` 用户只读）——升级 = 拉新镜像，数据卷不动。
+
+### 发布（docker.yml）
+
+- 触发：推送 `v*` tag（与 release.yml 同源），或手动 `workflow_dispatch` 输入 tag；与 release.yml 完全解耦，镜像发布失败不阻断 GitHub Release。
+- `docker/setup-buildx-action` + `docker/login-action`（`GITHUB_TOKEN`，`packages: write`）构建 `linux/amd64,linux/arm64` 推送到 `ghcr.io/snnh/openwebcode`。
+- 标签：`v<版本>`（如 `v1.7.3`）；稳定版（版本号不含 `-`）额外推 `latest`。预发布（如 `1.7.3-beta.1`）只打版本标签，避免 `latest` 指向预发布。
+- 不支持 loongarch64（官方 node 镜像无此架构）。
 
 ## owc 启动脚本
 

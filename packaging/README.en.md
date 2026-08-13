@@ -15,6 +15,7 @@ Pushing a `v*` tag (or dispatching the `release` workflow manually with a tag in
 | `openwebcode-<version>-linux-arm64.tar.gz` | Linux aarch64 | Same, natively built on `ubuntu-24.04-arm` |
 | `openwebcode-<version>-linux-loongarch64.tar.gz` | Linux LoongArch | Same, cross-compiled on an x64 runner, no bundled Node.js |
 | `install-online.sh` | Linux | `curl \| bash` online install/update script, picks the arch from `uname -m` |
+| Docker image | Linux x86_64 / arm64 | `ghcr.io/snnh/openwebcode` (built and published by docker.yml on tag pushes; see "Docker image" below) |
 | `SHA256SUMS.txt` | All | SHA-256 checksums for the four archives |
 | `bench-results-*.json` | All | Benchmark results, used as the regression baseline for the next release |
 
@@ -306,6 +307,54 @@ The architecture is mapped from `uname -m`: `x86_64→x64`, `aarch64→arm64`, `
 - **Update**: replaces the contents of `<prefix>/lib/openwebcode/` with the new version, keeping the `<prefix>/bin/owc` launcher and any written systemd unit untouched; the data directory is never affected. When the existing launcher pins a system Node.js (`OWC_NODE` not in bundled form), the `node/` directory is not copied (about 100 MB of redundancy, and any stale copy is removed). A non-writable target fails with a clear error (sudo may be required). Afterwards the script suggests a restart based on the actual unit location: `systemctl restart openwebcode` for the system unit (`sudo` suggested when not root), `systemctl --user restart openwebcode` for the user unit, or a manual restart of the running `owc` when there is no unit.
 
 The download base URL can be overridden with `OWC_INSTALL_BASE_URL` (default `https://github.com/snnh/openwebcode/releases/download/v<version>`), useful for mirrors or `file://` local testing.
+
+## Docker image
+
+Docker is the third installation method (containerized deployment alongside the Windows installer and the Linux tar.gz). The files live at the repository root: `Dockerfile`, `docker-entrypoint.sh`, `docker-compose.yml`, `.dockerignore`, and the publishing pipeline in `.github/workflows/docker.yml`.
+
+### Image layout
+
+Same contract as the release staging tree (see "Package layout"), except the Node runtime comes from the base image (no bundled `node/`):
+
+```
+/opt/openwebcode/
+├── bin/owc-exec                  core executable (Release build)
+└── server/  web/
+    ├── dist/                     server build output (entry dist/index.js) and web static assets
+    ├── package.json              "type": "module" declaration (dist is ESM, required)
+    ├── node_modules/             production dependencies (after npm prune --omit=dev)
+    └── assets/                   runtime assets (sandbox-proxy.mjs etc.)
+```
+
+- Base images `node:24-trixie` (builder) and `node:24-trixie-slim` (runtime), i.e. Debian 13 (trixie, glibc 2.41) — matching the project's development/test environment; multi-arch amd64 / arm64.
+- The builder stage compiles all three tiers inside the image: core (cmake Release, `-DBUILD_TESTING=OFF`; the test gate is the CI's job), server (tsc), web (tsc + vite + bundle-size check); `npm ci --ignore-scripts` with lockfiles copied first keeps the dependency layers cached.
+- The runtime stage additionally installs: bubblewrap (namespace sandbox), git (SCM/snapshots), python3 (agent tasks/Chat fallback), bash (preferred POSIX shell), curl (healthcheck), tini (PID 1), procps.
+- Runs as the unprivileged user `owc` (uid/gid 1000): when started as root, `docker-entrypoint.sh` first fixes the ownership of `/data` and, optionally, the top level of `OWC_WORKSPACE` (a freshly mounted named volume is root-owned, and the server's `ensureDirWithMode(0700)` requires an owner-writable dir), then drops privileges with `setpriv`; with a custom `user:` the user is responsible for ownership.
+- Environment: `OWC_CORE_PATH`, `OWC_DATA_DIR=/data`, `OWC_HOST=0.0.0.0` (off-loopback, so the server auto-generates an access token on first start and prints the token link to the logs), `OWC_PORT=3210`, `OWC_BROWSE_ROOTS=/workspace`, `OWC_UPDATE_CHECK_ENABLED=false`.
+- Healthcheck: `GET /api/health` (`{"status":"ok"}`, unauthenticated), defined both in the Dockerfile and in compose.
+
+### Build and run
+
+```sh
+docker build -t openwebcode .                 # local build (current architecture)
+docker run -d --name openwebcode -p 3210:3210 \
+  -v openwebcode-data:/data openwebcode       # run; docker logs shows the access link
+docker compose up -d                          # or just compose (pulls the GHCR release image by default)
+```
+
+### Sandbox capabilities and limits
+
+- **Landlock**: available by default inside the container (host kernel ≥ 5.13), no extra configuration — this is the default sandbox tier in containers.
+- **bubblewrap**: requires the host to allow unprivileged user namespaces and the container to allow `mount` and friends — uncomment `security_opt: seccomp=unconfined` in compose (add `cap_add: [SYS_ADMIN]` if needed). When unavailable, the core degrades to Landlock with a diagnostic trace — by design.
+- **Snapshots**: overlayfs mounts are subject to the same seccomp limits; the default snapshot backend probe chain degrades automatically (git-shadow/refs); unblock seccomp if overlay is required.
+- No in-place self-update inside the container (`OWC_UPDATE_CHECK_ENABLED=false`, `/opt/openwebcode` is read-only for the `owc` user) — upgrading means pulling a new image; the data volume is untouched.
+
+### Publishing (docker.yml)
+
+- Triggered by pushing a `v*` tag (same source as release.yml) or manually via `workflow_dispatch` with a tag input; fully decoupled from release.yml — an image publishing failure does not block the GitHub Release.
+- `docker/setup-buildx-action` + `docker/login-action` (`GITHUB_TOKEN`, `packages: write`) build `linux/amd64,linux/arm64` and push to `ghcr.io/snnh/openwebcode`.
+- Tags: `v<version>` (e.g. `v1.7.3`); stable versions (no `-` in the version) additionally get `latest`. Prereleases (e.g. `1.7.3-beta.1`) only get the version tag so `latest` never points at a prerelease.
+- loongarch64 is not supported (no official node image for it).
 
 ## The owc launcher scripts
 

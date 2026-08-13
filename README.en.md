@@ -69,6 +69,33 @@ curl -fsSL https://raw.githubusercontent.com/snnh/openwebcode/main/packaging/ins
 
 Note: the loongarch64 package ships no bundled Node.js and requires system Node.js ≥ 24. See [`packaging/README.en.md`](./packaging/README.en.md) for every installer option and the systemd unit.
 
+### Docker (Linux / macOS, x86_64 / arm64)
+
+Release images are hosted on GitHub Container Registry (`ghcr.io/snnh/openwebcode`) with the full runtime baked in (core, Node 24, bubblewrap, git, python3); user data lives in a named volume:
+
+```sh
+# 1. Start from the repository root (pulls the GHCR release image)
+docker compose up -d
+
+# 2. Find the access link — the server auto-generates an access token on first
+#    start because it listens off-loopback; the link includes the token
+docker compose logs | grep 访问链接
+```
+
+Open the link from the logs (`http://<host-ip>:3210/?token=<token>`). Without compose, the equivalent is:
+
+```sh
+docker run -d --name openwebcode --restart unless-stopped \
+  -p 3210:3210 -v openwebcode-data:/data \
+  ghcr.io/snnh/openwebcode:latest
+docker logs openwebcode | grep 访问链接
+```
+
+- **Data**: kept in the named volume `openwebcode-data`; upgrade by `docker compose pull && docker compose up -d` — data is untouched.
+- **Workspace**: optionally bind-mount a host directory (uncomment `./workspace:/workspace:rw` and `OWC_WORKSPACE` in the compose file; the entrypoint fixes the top-level ownership).
+- **Sandbox**: Landlock by default (host kernel ≥ 5.13); for full bubblewrap namespace isolation uncomment `security_opt: seccomp=unconfined` in compose (the host must also allow unprivileged user namespaces). The core degrades gracefully when bwrap is unavailable — by design.
+- **Build from source**: `docker build -t openwebcode .`, or uncomment `build:` in the compose file. Image layout, build, and publishing details are in the "Docker image" section of [`packaging/README.en.md`](./packaging/README.en.md).
+
 ### First run
 
 1. Under **Settings → Model Catalog**, add and enable a model provider (Anthropic Messages, OpenAI Chat Completions, and OpenAI Responses interfaces are all supported), then refresh the catalog.

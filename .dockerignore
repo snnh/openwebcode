@@ -1,0 +1,34 @@
+# 构建上下文排除：只让构建所需源码进入镜像构建
+# 版本控制与本地数据
+.git
+.gitignore
+docs/
+tmp/
+.tmp/
+.agents/
+.openwebcode/
+.owc/
+.zcode/
+AppData/
+.env
+.env.*
+
+# 构建产物与发布包
+build/
+build-*/
+_CPack_Packages/
+release-assets/
+*.msi
+*.tar.gz
+*.zip
+SHA256SUMS.txt
+/devnull-*
+
+# 依赖与编译输出
+node_modules/
+**/node_modules/
+server/dist/
+web/dist/
+server/coverage/
+web/coverage/
+core/tests/__pycache__/

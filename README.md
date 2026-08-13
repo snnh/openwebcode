@@ -66,6 +66,32 @@ curl -fsSL https://raw.githubusercontent.com/snnh/openwebcode/main/packaging/ins
 
 注：龙芯包不内置 Node.js，需要系统里有 Node.js ≥ 24。完整的安装选项和 systemd 服务说明见 [`packaging/README.md`](./packaging/README.md)。
 
+### Docker（Linux / macOS，x86_64 / arm64）
+
+发布镜像托管在 GitHub Container Registry（`ghcr.io/snnh/openwebcode`），内置完整运行时（core、Node 24、bubblewrap、git、python3），数据目录用命名卷持久化：
+
+```sh
+# 1. 在仓库根目录启动（拉取 GHCR 发布镜像）
+docker compose up -d
+
+# 2. 查看访问链接 —— 非回环监听下首次启动自动生成访问令牌，链接含 token
+docker compose logs | grep 访问链接
+```
+
+浏览器打开日志里的链接（`http://<主机IP>:3210/?token=<令牌>`）。不用 compose 时等价于：
+
+```sh
+docker run -d --name openwebcode --restart unless-stopped \
+  -p 3210:3210 -v openwebcode-data:/data \
+  ghcr.io/snnh/openwebcode:latest
+docker logs openwebcode | grep 访问链接
+```
+
+- **数据**：保留在命名卷 `openwebcode-data`；升级 = `docker compose pull && docker compose up -d`，数据不动。
+- **工作区**：可选挂载宿主机目录（compose 里取消 `./workspace:/workspace:rw` 与 `OWC_WORKSPACE` 的注释，入口脚本自动修正目录属主）。
+- **沙盒**：默认 Landlock（宿主机内核 ≥ 5.13）；需要完整 bubblewrap 命名空间隔离时在 compose 放开 `security_opt: seccomp=unconfined`（宿主机还需允许非特权 user namespace）。不可用时 core 自动降级，属设计内行为。
+- **从源码构建**：`docker build -t openwebcode .`，或在 compose 里取消 `build:` 注释。镜像内布局、构建与发布说明见 [`packaging/README.md`](./packaging/README.md) 的「Docker 镜像」一节。
+
 ### 首次使用
 
 1. 在 **设置 → 模型目录** 添加并启用一个模型服务商（Anthropic Messages / OpenAI Chat Completions / OpenAI Responses 三种接口都支持），然后刷新模型目录。
