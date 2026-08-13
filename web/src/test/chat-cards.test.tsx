@@ -164,7 +164,7 @@ describe("InteractionCard", () => {
 
   it("未设置 allowOther 的选择题不渲染「其他」选项", () => {
     const onRespond = vi.fn();
-    const { queryByText, getByLabelText } = render(
+    const { getByText, queryByText, getByLabelText } = render(
       <InteractionCard
         item={interaction({ kind: "single_select", options: [{ id: "a", label: "方案 A" }] })}
         onRespond={onRespond}
