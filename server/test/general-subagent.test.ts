@@ -136,6 +136,55 @@ describe("spawn_task agent=general", () => {
     expect((started?.payload as { agent?: string }).agent).toBe("general");
   });
 
+  it("子代理的 thinking_delta/thinking_end 累积为带 provider 的 thinking 块进入后续轮次请求（思维链回传素材）", async () => {
+    const h = await setupRunner({ permissionMode: "yolo" });
+    const requests: StreamChatRequest[] = [];
+    let mainTurn = 0;
+    const provider: Provider = {
+      name: "fake",
+      async *streamChat(request) {
+        requests.push(request);
+        if (request.system.includes(GENERAL_MARKER)) {
+          const last = request.messages.at(-1);
+          if (last?.role === "user") {
+            // 第一轮：思考分片 + 工具调用（DeepSeek 思维模式场景）
+            yield { type: "thinking_delta", text: "先想" };
+            yield { type: "thinking_delta", text: "一下" };
+            yield { type: "thinking_end", text: "先想一下" };
+            yield { type: "tool_call", id: "sub-think-1", name: "read_file", input: { path: "a.txt" } };
+            yield { type: "done", stopReason: "tool_use" };
+          } else {
+            yield { type: "text_delta", text: "已读取" };
+            yield { type: "done", stopReason: "end_turn" };
+          }
+          return;
+        }
+        if (mainTurn++ === 0) {
+          yield { type: "tool_call", id: "spawn-1", name: "spawn_task", input: { prompt: "读一个文件", agent: "general" } };
+          yield { type: "done", stopReason: "tool_use" };
+        } else {
+          yield { type: "text_delta", text: "完成" };
+          yield { type: "done", stopReason: "end_turn" };
+        }
+      },
+    };
+    const providers = new ProviderRegistry();
+    providers.register(provider);
+    const runner = new AgentRunner(h.sessions, providers, h.core, h.events, h.pricing);
+
+    await runner.run(h.session.id, "派生 general 子代理");
+
+    // 子代理共两轮：第二轮请求的 assistant 消息携带带 provider 的 thinking 块（分片已合并）
+    const subRequests = requests.filter((request) => request.system.includes(GENERAL_MARKER));
+    expect(subRequests).toHaveLength(2);
+    const assistant = subRequests[1]!.messages.find((message) => message.role === "assistant");
+    expect(assistant?.content).toEqual([
+      { type: "thinking", text: "先想一下", provider: "fake" },
+      { type: "tool_call", id: "sub-think-1", name: "read_file", input: { path: "a.txt" } },
+    ]);
+    expect(h.core.readFileCalls).toHaveLength(1);
+  });
+
   it("ask 模式拒绝写文件：tool_result 为拒绝原因，子代理继续收尾", async () => {
     const h = await setupRunner({ permissionMode: "ask" });
     let mainTurn = 0;
