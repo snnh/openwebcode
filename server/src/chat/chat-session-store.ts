@@ -157,10 +157,11 @@ export class ChatSessionStore {
     meta.updatedAt = now;
     meta.activeLeafId = message.id;
     if (!meta.rootId) meta.rootId = message.id;
-    // 首条用户文本消息派生标题（前 80 字符，与 session-store 一致）
+    // 首条用户文本消息派生标题（前 80 字符，与 session-store 一致）；
+    // 空文本块（纯图片消息偶发携带）不派生，保持默认标题
     if (meta.title === DEFAULT_TITLE && role === "user") {
       const derived = titleFromContent(content);
-      if (derived !== undefined) meta.title = derived;
+      if (derived) meta.title = derived;
     }
     await this.writeMeta(meta);
     return message;

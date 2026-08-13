@@ -225,7 +225,7 @@ export function ChatModeView(): ReactElement {
                   key={suggestion.icon}
                   type="button"
                   className="chat-suggestion"
-                  onClick={() => composerApi.current?.insert(t(suggestion.zh, suggestion.en))}
+                  onClick={() => void composerApi.current?.send(t(suggestion.zh, suggestion.en))}
                 >
                   <Icon name={suggestion.icon} size={16} />
                   {t(suggestion.labelZh, suggestion.labelEn)}
