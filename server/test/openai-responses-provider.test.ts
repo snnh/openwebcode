@@ -1,5 +1,5 @@
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { AgentRunner } from "../src/agent/agent-runner.js";
 import { EventBus } from "../src/events/event-bus.js";
 import { ProviderProfilesRuntime } from "../src/provider-profiles-runtime.js";
@@ -7,7 +7,7 @@ import { ProviderProfilesService } from "../src/provider-profiles.js";
 import { ConcurrencyLimitedProvider, DEFAULT_MAX_CONCURRENT } from "../src/providers/concurrency-limiter.js";
 import { AnthropicProvider } from "../src/providers/anthropic-provider.js";
 import { OpenAICompatibleProvider, MAX_SSE_EVENT_BYTES, readSseData } from "../src/providers/openai-compatible-provider.js";
-import { OpenAIResponsesProvider } from "../src/providers/openai-responses-provider.js";
+import { OpenAIResponsesProvider, setReplayDiagnosticWriter } from "../src/providers/openai-responses-provider.js";
 import { ProviderError } from "../src/providers/provider-error.js";
 import { ProviderRegistry, type ProviderEvent, type StreamChatRequest } from "../src/providers/provider.js";
 import { injectMockStream } from "./helpers/anthropic-mock.js";
@@ -383,36 +383,36 @@ describe("OpenAIResponsesProvider request mapping", () => {
     ]);
   });
 
-  it("思维链回传开启但 assistant 消息缺同源 thinking 素材：不回传 reasoning item 且 stderr 留痕", async () => {
-    // 留痕限频按「消息 id:tool_call id」键控：本用例的消息/调用 id 与同文件其他缺素材
-    // 用例（call_dangling）不同键，互不干扰，无需重置模块状态
-    const bodies: Array<Record<string, unknown>> = [];
-    const payload = COMPLETED;
-    const messages: StreamChatRequest["messages"] = [
-      { id: "u1", role: "user", content: [{ type: "text", text: "继续" }], createdAt: "2026-01-01T00:00:00.000Z" },
-      {
-        id: "a1", role: "assistant", createdAt: "2026-01-01T00:00:01.000Z",
-        content: [
-          { type: "text", text: "我查一下" },
-          { type: "tool_call", id: "call_1", name: "bash", input: { cmd: "ls" } },
-        ],
-      },
-      { id: "t1", role: "tool", content: [{ type: "tool_result", toolCallId: "call_1", content: "B", isError: false }], createdAt: "2026-01-01T00:00:02.000Z" },
-    ];
-    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  it("思维链回传开启但 assistant 消息缺同源 thinking 素材：不回传 reasoning item 且诊断留痕", async () => {
+    // 留痕输出经 setReplayDiagnosticWriter 注入收集器（不依赖 process.stderr 可替换性）；
+    // 限频按「消息 id:tool_call id」键控，本用例与同文件其他缺素材用例（call_dangling）不同键
+    const lines: string[] = [];
+    setReplayDiagnosticWriter((line) => lines.push(line));
     try {
+      const bodies: Array<Record<string, unknown>> = [];
+      const payload = COMPLETED;
+      const messages: StreamChatRequest["messages"] = [
+        { id: "u1", role: "user", content: [{ type: "text", text: "继续" }], createdAt: "2026-01-01T00:00:00.000Z" },
+        {
+          id: "a1", role: "assistant", createdAt: "2026-01-01T00:00:01.000Z",
+          content: [
+            { type: "text", text: "我查一下" },
+            { type: "tool_call", id: "call_1", name: "bash", input: { cmd: "ls" } },
+          ],
+        },
+        { id: "t1", role: "tool", content: [{ type: "tool_result", toolCallId: "call_1", content: "B", isError: false }], createdAt: "2026-01-01T00:00:02.000Z" },
+      ];
       await collect(makeProvider(sseFetch(bodies, payload)).streamChat(request({ messages })));
-      // 无素材时 function_call 照常发出（不回传 reasoning item），留痕提示思维模式端点可能拒绝。
-      // 断言必须位于 mockRestore 之前：restore 会恢复原始实现并清空 spy 调用记录
+      // 无素材时 function_call 照常发出（不回传 reasoning item），留痕提示思维模式端点可能拒绝
       expect(bodies[0]?.input).toEqual([
         { role: "user", content: "继续" },
         { role: "assistant", content: "我查一下" },
         { type: "function_call", call_id: "call_1", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
         { type: "function_call_output", call_id: "call_1", output: "B" },
       ]);
-      expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("缺少同源 thinking 素材"));
+      expect(lines.some((line) => line.includes("缺少同源 thinking 素材"))).toBe(true);
     } finally {
-      writeSpy.mockRestore();
+      setReplayDiagnosticWriter();
     }
   });
 
