@@ -4,7 +4,7 @@
 # builder  阶段：在 node:24-trixie（Debian 13，与项目开发/实测环境一致）上
 #           编译三层产物 —— core（C，cmake Release）、server（tsc）、web（vite）。
 # runtime  阶段：node:24-trixie-slim 组装最小运行树（与发行版 staging 契约一致，
-#           见 core/CMakeLists.txt 的 CPack 注释），以非特权用户 owc 运行。
+#           见 core/CMakeLists.txt 的 CPack 注释），以非特权用户 node 运行。
 #
 # 构建：docker build -t openwebcode .
 # 发布：tag 推送后由 .github/workflows/docker.yml 构建 linux/amd64,linux/arm64
@@ -57,12 +57,10 @@ RUN apt-get update \
       bubblewrap git curl ca-certificates bash python3 tini procps \
  && rm -rf /var/lib/apt/lists/*
 
-# 非特权运行用户（uid/gid 1000，与多数桌面宿主用户一致，bind 挂载开箱即用）；
-# /workspace 为默认工作区根（OWC_BROWSE_ROOTS）
-RUN groupadd --gid 1000 owc \
- && useradd --uid 1000 --gid owc --create-home --shell /bin/bash owc \
- && mkdir -p /workspace \
- && chown owc:owc /workspace
+# 非特权运行用户：node 官方镜像内置 node 用户（uid/gid 1000，/home/node），
+# 与多数桌面宿主用户一致，bind 挂载开箱即用；/workspace 为默认工作区根（OWC_BROWSE_ROOTS）
+RUN mkdir -p /workspace \
+ && chown node:node /workspace
 
 # 运行树（staging 契约）：
 #   bin/owc-exec                       core 可执行文件
@@ -87,7 +85,7 @@ ENV OWC_CORE_PATH=/opt/openwebcode/bin/owc-exec \
     OWC_PORT=3210 \
     OWC_BROWSE_ROOTS=/workspace \
     OWC_UPDATE_CHECK_ENABLED=false \
-    HOME=/home/owc
+    HOME=/home/node
 
 VOLUME ["/data"]
 EXPOSE 3210
