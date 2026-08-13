@@ -402,17 +402,18 @@ describe("OpenAIResponsesProvider request mapping", () => {
     const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     try {
       await collect(makeProvider(sseFetch(bodies, payload)).streamChat(request({ messages })));
+      // 无素材时 function_call 照常发出（不回传 reasoning item），留痕提示思维模式端点可能拒绝。
+      // 断言必须位于 mockRestore 之前：restore 会恢复原始实现并清空 spy 调用记录
+      expect(bodies[0]?.input).toEqual([
+        { role: "user", content: "继续" },
+        { role: "assistant", content: "我查一下" },
+        { type: "function_call", call_id: "call_1", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
+        { type: "function_call_output", call_id: "call_1", output: "B" },
+      ]);
+      expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("缺少同源 thinking 素材"));
     } finally {
       writeSpy.mockRestore();
     }
-    // 无素材时 function_call 照常发出（不回传 reasoning item），留痕提示思维模式端点可能拒绝
-    expect(bodies[0]?.input).toEqual([
-      { role: "user", content: "继续" },
-      { role: "assistant", content: "我查一下" },
-      { type: "function_call", call_id: "call_1", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
-      { type: "function_call_output", call_id: "call_1", output: "B" },
-    ]);
-    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("缺少同源 thinking 素材"));
   });
 
   it("merges extraBody under core fields and omits max_output_tokens by default", async () => {
