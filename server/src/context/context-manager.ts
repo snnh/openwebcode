@@ -187,6 +187,11 @@ const DEFAULT_POLICY: ContextPolicy = {
 const READ_ALWAYS_RETAIN_LINES = 10;
 /** read 头尾摘录的总字符上限：minified 长行文件兜住，超出仍走 artifact。 */
 const READ_EXCERPT_MAX_CHARS = 8000;
+/**
+ * 永不驱逐的工具结果白名单：这些工具的结果是后续轮次的关键上下文（如图片描述），
+ * 驱逐会破坏任务连续性。自动驱逐与手动驱逐都跳过。
+ */
+export const EVICTION_EXEMPT_TOOLS: ReadonlySet<string> = new Set(["ext__vision-tools__describe_image"]);
 
 /** 视图中一条消息的构建片段：最终注入形态（驱逐占位/图像预算已应用）+ 预估算 tokens。 */
 interface ViewFragment {
@@ -955,6 +960,11 @@ export class ContextManager {
     for (const message of eligible) {
       // pin 的消息不被驱逐；pin 占用超预算时由构建统计如实上报，不在这里悄悄绕过。
       if (pinnedIds?.has(message.id)) continue;
+      const result = message.content.find((block) => block.type === "tool_result");
+      if (!result || result.type !== "tool_result") continue;
+      const toolName = toolNames.get(result.toolCallId);
+      // 白名单工具（如图片描述）结果永不驱逐——丢失会破坏后续轮次的关键上下文
+      if (toolName !== undefined && EVICTION_EXEMPT_TOOLS.has(toolName)) continue;
       const existing = entriesByMessage.get(message.id);
       if (existing) {
         if (existing.pinnedUntilRound >= ledger.round) continue;
@@ -970,9 +980,6 @@ export class ContextManager {
         }
         continue;
       }
-      const result = message.content.find((block) => block.type === "tool_result");
-      if (!result || result.type !== "tool_result") continue;
-      const toolName = toolNames.get(result.toolCallId);
       const resultTokens = estimateTokens(result.content);
       // 豁免下限：小结果驱逐收益微乎其微，反而搅动缓存前缀；read ≤10 行是完整的文件结构认知
       if (resultTokens < ledger.policy.minRetainTokens) continue;
@@ -1005,9 +1012,15 @@ export class ContextManager {
 
   async evictMessage(messages: ChatMessage[], messageId: string): Promise<ContextLedger> {
     return this.serial(async () => {
-      const ledger = await this.loadMutable();
       const message = messages.find((item) => item.id === messageId && item.role === "tool");
       if (!message) throw new Error("Tool result message not found");
+      const result = message.content.find((block) => block.type === "tool_result");
+      if (!result || result.type !== "tool_result") throw new Error("Message has no tool result");
+      const toolName = toolNameByCallId(messages).get(result.toolCallId);
+      if (toolName !== undefined && EVICTION_EXEMPT_TOOLS.has(toolName)) {
+        throw new Error(`Tool result of ${toolName} is exempt from eviction`);
+      }
+      const ledger = await this.loadMutable();
       const existing = ledger.entries.find((entry) => entry.messageId === messageId);
       if (existing) {
         existing.state = "evicted";
@@ -1019,12 +1032,9 @@ export class ContextManager {
           if (current?.type === "tool_result") existing.evictedTokens = estimateTokens(current.content);
         }
       } else {
-        const result = message.content.find((block) => block.type === "tool_result");
-        if (!result || result.type !== "tool_result") throw new Error("Message has no tool result");
         const artifactId = `artifact-${randomUUID()}`;
         await mkdir(path.join(this.sessionRoot, "artifacts"), { recursive: true });
         await writeFile(path.join(this.sessionRoot, "artifacts", `${artifactId}.txt`), result.content, "utf8");
-        const toolName = toolNameByCallId(messages).get(result.toolCallId);
         ledger.entries.push({
           messageId,
           kind: "tool_result",

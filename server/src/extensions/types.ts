@@ -140,6 +140,7 @@ export type ExtensionApiMethod =
   | "context.getView"
   | "context.readArtifact"
   | "context.readVaultFile"
+  | "context.readImageFile"
   | "events.subscribe"
   | "storage.read"
   | "storage.write"

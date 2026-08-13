@@ -81,7 +81,7 @@ describe("ask_user 工具", () => {
 
   it.each([
     {
-      name: "multi_select：工具结果返回选中项 label 数组",
+      name: "multi_select：工具结果返回选中项 label 数组，交互附 allowOther",
       input: {
         questions: [{
           question: "选择要迁移的模块",
@@ -94,28 +94,67 @@ describe("ask_user 工具", () => {
       expectedAnswer: ["core", "web"] as unknown,
       expectedTitle: "模块选择",
       expectedLabels: ["core", "server", "web"] as string[] | undefined,
+      expectedAllowOther: true as boolean | undefined,
     },
     {
-      name: "text：工具结果返回字符串答案",
+      name: "text：工具结果返回字符串答案，无 allowOther",
       input: { questions: [{ question: "目标分支名？", type: "text" }] },
       answer: "feature/export" as unknown,
       expectedAnswer: "feature/export" as unknown,
       expectedTitle: undefined as string | undefined,
       expectedLabels: undefined as string[] | undefined,
+      expectedAllowOther: undefined as boolean | undefined,
     },
-  ])("$name", async ({ input, answer, expectedAnswer, expectedTitle, expectedLabels }) => {
+  ])("$name", async ({ input, answer, expectedAnswer, expectedTitle, expectedLabels, expectedAllowOther }) => {
     const harness = await setup({ input });
     try {
       const run = harness.agent.run(harness.session.id, "先问我");
       const pending = await waitForPendingInteraction(harness.agent, harness.session.id);
       if (expectedTitle !== undefined) expect(pending.title).toBe(expectedTitle);
       if (expectedLabels !== undefined) expect(pending.options?.map((option) => option.label)).toEqual(expectedLabels);
+      expect(pending.allowOther).toBe(expectedAllowOther);
       const res = await harness.app.inject({ method: "POST", url: `/api/sessions/${harness.session.id}/interactions/${pending.id}/respond`, payload: { answer } });
       expect(res.statusCode, res.body).toBe(200);
       await run;
       const result = toolResultOf(await harness.sessions.get(harness.session.id), "ask-1");
       const parsed = JSON.parse((result as { content: string }).content) as Array<{ answer: unknown }>;
       expect(parsed[0]?.answer).toEqual(expectedAnswer);
+    } finally {
+      await harness.app.close();
+    }
+  });
+
+  it("「其他」选项：single_select 回答 other:<文本> 返回自定义文本；空文本被忽略", async () => {
+    const harness = await setup({ input: { questions: [{ question: "选择目标环境", type: "single_select", options: [{ label: "staging" }, { label: "production" }] }] } });
+    try {
+      const run = harness.agent.run(harness.session.id, "先问我");
+      const pending = await waitForPendingInteraction(harness.agent, harness.session.id);
+      expect(pending.allowOther).toBe(true);
+      const res = await harness.app.inject({ method: "POST", url: `/api/sessions/${harness.session.id}/interactions/${pending.id}/respond`, payload: { answer: "other:自定义环境" } });
+      expect(res.statusCode, res.body).toBe(200);
+      await run;
+      const result = toolResultOf(await harness.sessions.get(harness.session.id), "ask-1");
+      const parsed = JSON.parse((result as { content: string }).content) as Array<{ answer: unknown }>;
+      expect(parsed[0]?.answer).toEqual(["自定义环境"]);
+    } finally {
+      await harness.app.close();
+    }
+  });
+
+  it("「其他」选项：multi_select 混合常规选项与 other:<文本>，空 other 项被忽略", async () => {
+    const harness = await setup({
+      toolCallId: "ask-mixed",
+      input: { questions: [{ question: "选择要迁移的模块", type: "multi_select", options: [{ label: "core" }, { label: "web" }] }] },
+    });
+    try {
+      const run = harness.agent.run(harness.session.id, "先问我");
+      const pending = await waitForPendingInteraction(harness.agent, harness.session.id);
+      const res = await harness.app.inject({ method: "POST", url: `/api/sessions/${harness.session.id}/interactions/${pending.id}/respond`, payload: { answer: ["opt-0", "other:自定义模块", "other:"] } });
+      expect(res.statusCode, res.body).toBe(200);
+      await run;
+      const result = toolResultOf(await harness.sessions.get(harness.session.id), "ask-mixed");
+      const parsed = JSON.parse((result as { content: string }).content) as Array<{ answer: unknown }>;
+      expect(parsed[0]?.answer).toEqual(["core", "自定义模块"]);
     } finally {
       await harness.app.close();
     }

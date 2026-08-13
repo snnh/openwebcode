@@ -96,6 +96,42 @@ describe("context management controls", () => {
     expect(content).toContain("read_artifact");
   });
 
+  it("image description tool results are exempt from automatic eviction", async () => {
+    const root = await tempRoot("owc-context-exempt-");
+    const manager = new ContextManager(root);
+    await manager.updatePolicy({ lag: 0 });
+    const messages: ChatMessage[] = [
+      userText("look at the screenshot"),
+      toolCall("c1", "ext__vision-tools__describe_image"),
+      toolResult("c1", "图中报错：TypeError: foo is not a function".repeat(50)),
+      assistantText("ack", "看到了"),
+      toolCall("c2", "bash"),
+      toolResult("c2", "command output ".repeat(200)),
+      assistantText("ack2", "完成"),
+    ];
+    const ledger = await manager.evict(messages);
+    expect(ledger.entries.map((entry) => entry.messageId)).toEqual(["t-c2"]);
+    // 视图保持全文（不出现驱逐占位符）
+    const view = await manager.buildView(messages);
+    const describeBlock = view.messages.find((item) => item.id === "t-c1")!.content[0]!;
+    expect(describeBlock).toMatchObject({ type: "tool_result", content: expect.stringContaining("TypeError") });
+    const bashBlock = view.messages.find((item) => item.id === "t-c2")!.content[0]!;
+    expect(bashBlock).toMatchObject({ type: "tool_result", content: expect.stringContaining("tool result evicted") });
+  });
+
+  it("image description tool results are exempt from manual eviction", async () => {
+    const root = await tempRoot("owc-context-exempt-manual-");
+    const manager = new ContextManager(root);
+    const messages: ChatMessage[] = [
+      userText("look"),
+      toolCall("c1", "ext__vision-tools__describe_image"),
+      toolResult("c1", "描述内容 ".repeat(100)),
+    ];
+    await expect(manager.evictMessage(messages, "t-c1")).rejects.toThrow(/exempt from eviction/);
+    const ledger = await manager.load();
+    expect(ledger.entries).toHaveLength(0);
+  });
+
   it("default policy keeps the newest 2 rounds of tool results in full", async () => {
     const root = await tempRoot("owc-context-lag-");
     const manager = new ContextManager(root);

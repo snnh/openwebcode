@@ -148,6 +148,8 @@ export const ASK_USER_TOOL: ProviderTool = {
   description:
     "Ask the user structured questions mid-run and wait for the answers. Use when a decision or missing detail " +
     "materially changes the work. 1-4 questions, asked sequentially; select types require 2-4 options. " +
+    "single_select/multi_select questions automatically gain an extra \"其他\" (Other) option with a free-text input: " +
+    "if the user picks it, the typed text is returned as that question's answer. " +
     "Returns an array of { question, type, answer } (answer: boolean for confirm, selected option labels for select types, string for text), or { cancelled: true }.",
   inputSchema: {
     type: "object",
