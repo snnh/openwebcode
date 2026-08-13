@@ -1,9 +1,13 @@
 name: docker
 
 # 构建多架构 Docker 镜像并发布到 GitHub Container Registry（ghcr.io/snnh/openwebcode）。
-# 触发：推送 v* tag（与 release.yml 同源）；或手动输入 tag 构建。
+# 触发：
+#   - 推送 v* tag（与 release.yml 同源）：构建该 tag 的源码树，标签 v<版本>
+#     （稳定版额外推 latest）
+#   - 手动 workflow_dispatch：
+#       输入 tag（如 v1.7.3）→ 构建该 tag 的源码树；
+#       留空 → 构建当前分支，版本取 server/package.json（与 release 版本一致）
 # 与 release.yml 解耦：镜像发布失败不阻断 GitHub Release（反之亦然）。
-# 镜像标签：v<版本>（如 v1.7.3）；稳定版（版本号不含预发布后缀）额外推 latest。
 
 on:
   push:
@@ -11,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "要构建的版本 tag（形如 vX.Y.Z 或 vX.Y.Z-beta.1；缺省用当前分支提交）"
+        description: "要构建的版本 tag（形如 vX.Y.Z；留空则构建当前分支，版本取 server/package.json）"
         required: false
         type: string
 
@@ -26,12 +30,27 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
       - name: Resolve tag and version
         shell: bash
         run: |
           set -euo pipefail
-          TAG="${{ inputs.tag || github.ref_name }}"
-          VERSION="${TAG#v}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.tag }}" ]; then
+            # 手动指定 tag：切到该 tag 的源码树再构建
+            TAG="${{ inputs.tag }}"
+            VERSION="${TAG#v}"
+            git fetch --depth=1 "origin" "refs/tags/${TAG}:refs/tags/${TAG}"
+            git checkout --detach "$TAG"
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            TAG="${{ github.ref_name }}"
+            VERSION="${TAG#v}"
+          else
+            # 手动触发未指定 tag：构建当前分支，版本取 server/package.json
+            TAG="${{ github.ref_name }}"
+            VERSION="$(node -p "require('./server/package.json').version")"
+          fi
           case "$VERSION" in
             [0-9]*.[0-9]*.[0-9]*) : ;;
             *)
@@ -42,10 +61,6 @@ jobs:
           echo "TAG=$TAG" >> "$GITHUB_ENV"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "本次构建 tag=$TAG 版本=$VERSION"
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ env.TAG }}
-          fetch-depth: 1
       - uses: docker/setup-buildx-action@v3
       - name: Login to GHCR
         uses: docker/login-action@v3
