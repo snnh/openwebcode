@@ -144,7 +144,7 @@ export const OFFICIAL_EXTENSIONS: ExtensionManifest[] = [
   {
     id: "env-sim",
     name: "环境模拟",
-    version: "0.1.0",
+    version: "0.1.1",
     description: "启用后按选定预设模仿其他编码 Agent 的系统提示词风格与默认工具形态。",
     apiVersion: "1",
     // 提示词变换与工具形态都在 server 侧直接执行（预设数据与用户预设目录是 server
@@ -165,7 +165,7 @@ export const OFFICIAL_EXTENSIONS: ExtensionManifest[] = [
   {
     id: "compact-vault",
     name: "上下文档案库",
-    version: "0.1.0",
+    version: "0.1.1",
     description: "压缩时把完整上下文归档到会话 compact/ 目录，上下文只留目录式索引；主模型可按 key 经快速模型召回细节。",
     apiVersion: "1",
     // 归档与整理在 server 侧执行（CompactVaultService）；recall_memory 工具与索引回注在
@@ -187,7 +187,7 @@ export const OFFICIAL_EXTENSIONS: ExtensionManifest[] = [
   {
     id: "vision-tools",
     name: "视觉工具",
-    version: "0.2.0",
+    version: "0.2.1",
     description: "主模型不支持视觉时，把图片交给配置的视觉模型处理：describe 模式自动生成描述注入上下文；toolCall 模式以 [图片 #N] 占位符注入并注册 describe_image 工具，主模型按需提问。支持视觉的主模型不受影响。",
     apiVersion: "1",
     // 图片描述在 server 侧执行（model.vision 复用 provider streamChat 发送链路；context.readImageFile
