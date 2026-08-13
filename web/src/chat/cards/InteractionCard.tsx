@@ -20,7 +20,7 @@ export function InteractionCard({ item, onRespond }: InteractionCardProps): Reac
     onRespond(item.kind === "single_select" ? answer[0] : answer);
   };
   const disabled = (item.kind === "text" && !text.trim())
-    || (isSelect && (selected.length === 0 || (selected.includes(OTHER_ID) && !other.trim())));
+    || (isSelect && selected.filter((id) => id !== OTHER_ID || other.trim() !== "").length === 0);
   return (
     <section className="interaction-card" aria-label={item.title}>
       <strong>{item.title}</strong>
