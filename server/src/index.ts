@@ -35,7 +35,7 @@ import { ModelRoleResolver } from "./model-roles.js";
 import { Compactor } from "./context/compactor.js";
 import { StorageGC } from "./storage-gc.js";
 import { UsageLog } from "./usage-log.js";
-import { getServerVersion, readServerVersion, setServerVersion } from "./version.js";
+import { GITHUB_RELEASES_URL, getServerVersion, readServerVersion, setServerVersion } from "./version.js";
 import { UpdateChecker } from "./update-checker.js";
 import { UpdateApplier } from "./update-applier.js";
 import { applyProxyConfig } from "./proxy.js";
@@ -188,7 +188,7 @@ const gc = new StorageGC(path.join(dataDir, "sessions"), config.gcMaxBytes, () =
 // 更新检查（默认关闭）：周期性查询 GitHub Releases 最新版本，结果仅在设置页静默展示
 const updateChecker = new UpdateChecker({
   cachePath: path.join(dataDir, "update-check.json"),
-  defaultUrl: config.updateCheck.url ?? "https://api.github.com/repos/snnh/openwebcode/releases/latest",
+  defaultUrl: config.updateCheck.url ?? GITHUB_RELEASES_URL,
 });
 // 离线模式：启动期检测与定时调度一并关闭（settings 变更的热生效在 SettingsService.hotApply 同样把关）
 updateChecker.configure({ ...config.updateCheck, enabled: config.updateCheck.enabled && !config.offlineMode });
@@ -196,7 +196,7 @@ updateChecker.configure({ ...config.updateCheck, enabled: config.updateCheck.ena
 const updateApplier = new UpdateApplier({
   dataDir,
   installRoot: path.resolve(moduleDirectory, "../.."),
-  getReleaseUrl: () => settings.effective().updateCheck.url ?? "https://api.github.com/repos/snnh/openwebcode/releases/latest",
+  getReleaseUrl: () => settings.effective().updateCheck.url ?? GITHUB_RELEASES_URL,
   getCurrentVersion: getServerVersion,
 });
 settings.bind({ providers, core, agent, events, gc, fastModel, profiles: providerProfiles, models, updateChecker, sandboxProxy: filteredProxy });

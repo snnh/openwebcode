@@ -3,6 +3,7 @@ import path from "node:path";
 import type { CoreClientLike, CoreEvent } from "../core-client.js";
 import { CoreGateway } from "../core-gateway.js";
 import type { EventBus } from "../events/event-bus.js";
+import { withTimeout } from "../http-utils.js";
 import { ContextManager, selectCacheBreakpoints, type TurnLedger } from "../context/context-manager.js";
 import type { Compactor, CompactResult } from "../context/compactor.js";
 import { boundToolResult } from "../context/tool-result-budget.js";
@@ -2264,7 +2265,7 @@ export class AgentRunner {
       return { verdict: "high", rationale: "快速模型未配置，无法自动审核", model: "fast" };
     }
     const { system, prompt } = buildReviewMessages(tool, input);
-    const combined = AbortSignal.any([signal, AbortSignal.timeout(30_000)]);
+    const combined = withTimeout(signal, 30_000);
     const model = reviewModel === "fast" ? `fast:${this.fastModel?.model ?? ""}` : `${session.provider}/${session.model}`;
     try {
       let text: string;

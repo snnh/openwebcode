@@ -47,3 +47,6 @@ export function setServerVersion(version: string): void {
 /** The GitHub repository hosting releases, used by update checks. */
 export const GITHUB_REPO = "snnh/openwebcode";
 
+/** GitHub releases/latest 端点（更新检查默认目标；由 GITHUB_REPO 单一来源拼出）。 */
+export const GITHUB_RELEASES_URL = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
+
