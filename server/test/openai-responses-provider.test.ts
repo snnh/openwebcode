@@ -1,5 +1,5 @@
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AgentRunner } from "../src/agent/agent-runner.js";
 import { EventBus } from "../src/events/event-bus.js";
 import { ProviderProfilesRuntime } from "../src/provider-profiles-runtime.js";
@@ -381,6 +381,42 @@ describe("OpenAIResponsesProvider request mapping", () => {
       { type: "function_call", call_id: "call_dangling", name: "bash", arguments: "{\"cmd\":\"sleep 600\"}" },
       { type: "function_call_output", call_id: "call_dangling", output: expect.stringContaining("interrupted") },
     ]);
+  });
+
+  it("思维链回传开启但 assistant 消息缺同源 thinking 素材：不回传 reasoning item 且 stderr 留痕", async () => {
+    // missingThinkingLogged 为模块级单例（每进程限频一次）：重置模块图拿到干净的留痕状态
+    vi.resetModules();
+    const fresh = await import("../src/providers/openai-responses-provider.js");
+    const bodies: Array<Record<string, unknown>> = [];
+    const payload = COMPLETED;
+    const messages: StreamChatRequest["messages"] = [
+      { id: "u1", role: "user", content: [{ type: "text", text: "继续" }], createdAt: "2026-01-01T00:00:00.000Z" },
+      {
+        id: "a1", role: "assistant", createdAt: "2026-01-01T00:00:01.000Z",
+        content: [
+          { type: "text", text: "我查一下" },
+          { type: "tool_call", id: "call_1", name: "bash", input: { cmd: "ls" } },
+        ],
+      },
+      { id: "t1", role: "tool", content: [{ type: "tool_result", toolCallId: "call_1", content: "B", isError: false }], createdAt: "2026-01-01T00:00:02.000Z" },
+    ];
+    const writeSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      await collect(
+        new fresh.OpenAIResponsesProvider({ baseURL: "https://example.invalid/v1", fetch: sseFetch(bodies, payload) })
+          .streamChat(request({ messages })),
+      );
+    } finally {
+      writeSpy.mockRestore();
+    }
+    // 无素材时 function_call 照常发出（不回传 reasoning item），留痕提示思维模式端点可能拒绝
+    expect(bodies[0]?.input).toEqual([
+      { role: "user", content: "继续" },
+      { role: "assistant", content: "我查一下" },
+      { type: "function_call", call_id: "call_1", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
+      { type: "function_call_output", call_id: "call_1", output: "B" },
+    ]);
+    expect(writeSpy).toHaveBeenCalledWith(expect.stringContaining("缺少同源 thinking 素材"));
   });
 
   it("merges extraBody under core fields and omits max_output_tokens by default", async () => {

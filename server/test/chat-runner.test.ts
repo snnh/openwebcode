@@ -295,4 +295,40 @@ describe("ChatRunner", () => {
     expect(result.stopReason).toBe("end_turn");
     expect(statuses).toEqual([["preparing", "venv"]]);
   });
+
+  it("thinking_delta/thinking_end 累积为带 provider 的 thinking 块，随 assistant 消息落盘并回填上下文", async () => {
+    const thinkingTurn: Handler = (request) => (async function* () {
+      const last = request.messages.at(-1);
+      if (last?.role === "tool") {
+        yield { type: "text_delta", text: "完成" };
+        yield { type: "done", stopReason: "end_turn" as const };
+        return;
+      }
+      // 分片式思考流 + 工具调用（DeepSeek 思维模式场景：回传素材必须落盘）
+      yield { type: "thinking_delta", text: "先分" };
+      yield { type: "thinking_delta", text: "析" };
+      yield { type: "thinking_end", text: "先分析" };
+      yield { type: "tool_call", id: "call-1", name: "calculate", input: { expression: "1+1" } };
+      yield { type: "done", stopReason: "tool_use" as const };
+    })();
+    const { runner, store, requests } = makeRunner({ handler: thinkingTurn });
+    await store.appendMessage("s1", "user", [{ type: "text", text: "第一句" }]);
+
+    const result = await runner.runChatMessage(runParams({ meta: meta({ enabledTools: ["calculate"] }) }));
+
+    expect(result.stopReason).toBe("end_turn");
+    // 落盘 assistant 消息：thinking 分片合并为单块，带 provider 同源标记
+    const assistant = store.messages.find((message) => message.role === "assistant");
+    expect(assistant?.content).toEqual([
+      { type: "thinking", text: "先分析", provider: "stub" },
+      { type: "tool_call", id: "call-1", name: "calculate", input: { expression: "1+1" } },
+    ]);
+    // 第二轮 provider 请求的 messages 已含 thinking 块（回填进内存上下文）
+    expect(requests).toHaveLength(2);
+    const secondAssistant = requests[1]!.messages.find((message) => message.role === "assistant");
+    expect(secondAssistant?.content).toEqual([
+      { type: "thinking", text: "先分析", provider: "stub" },
+      { type: "tool_call", id: "call-1", name: "calculate", input: { expression: "1+1" } },
+    ]);
+  });
 });
