@@ -144,9 +144,11 @@ describe("ChatMessageList 重新生成", () => {
     const thinking = view.container.querySelector("details.thinking");
     expect(thinking).not.toBeNull();
     expect(thinking!.querySelector("summary")?.textContent).toContain("思考过程");
-    // 默认折叠：正文不可见，展开后可读
-    expect(thinking!.textContent).not.toContain("先分析再回答");
+    // 默认折叠：无 open 属性，点击 summary 展开（原生 details 无论开闭正文都在 textContent
+    // 中，折叠语义应断言 open 属性而非文本可见性）
+    expect(thinking!.hasAttribute("open")).toBe(false);
     fireEvent.click(thinking!.querySelector("summary")!);
+    expect(thinking!.hasAttribute("open")).toBe(true);
     expect(thinking!.textContent).toContain("先分析再回答");
   });
 
