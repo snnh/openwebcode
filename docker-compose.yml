@@ -1,0 +1,50 @@
+# OpenWebCode Docker 部署
+#
+# 快速开始（需先安装 Docker / Docker Compose）：
+#   docker compose up -d        # 拉取 GHCR 发布镜像并启动
+#   docker compose logs -f      # 查看访问链接（首次启动自动生成访问令牌，链接含 token）
+#
+# 非回环监听（OWC_HOST=0.0.0.0）时服务端强制访问令牌认证：未显式设置
+# OWC_ACCESS_TOKEN 则首次启动自动生成并持久化到 /data/access-token（0600），
+# 访问链接打印在容器日志，也可在 设置 → 远程访问 查看/扫码。
+# 升级：docker compose pull && docker compose up -d（数据卷不动）。
+
+services:
+  openwebcode:
+    image: ghcr.io/snnh/openwebcode:latest
+    # 本地从源码构建（不使用发布镜像时取消注释，需在仓库根目录执行）：
+    # build:
+    #   context: .
+    container_name: openwebcode
+    restart: unless-stopped
+    ports:
+      - "3210:3210"
+    environment:
+      OWC_HOST: "0.0.0.0"
+      OWC_PORT: "3210"
+      OWC_DATA_DIR: "/data"
+      OWC_BROWSE_ROOTS: "/workspace"
+      # 自定义访问令牌（≥32 字符）；不设置则首次启动自动生成
+      # OWC_ACCESS_TOKEN: "please-change-me-at-least-32-chars"
+      # 挂载宿主机工作区时指向容器内路径（入口脚本自动修正顶层属主）
+      # OWC_WORKSPACE: "/workspace"
+    volumes:
+      - openwebcode-data:/data
+      # - ./workspace:/workspace:rw   # 可选：挂载宿主机工作区（需同时设置 OWC_WORKSPACE）
+    # bubblewrap 完整命名空间沙盒需要放行 mount 等系统调用；不启用时 core 自动
+    # 降级 Landlock（内核 ≥ 5.13 即有），属设计内的诚实降级。宿主机还需允许
+    # 非特权 user namespace（Debian 系默认关闭时需 sysctl 放开）：
+    # security_opt:
+    #   - seccomp=unconfined
+    # overlayfs 快照等挂载能力才需要（默认快照后端自动探测降级，一般不需要）：
+    # cap_add:
+    #   - SYS_ADMIN
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3210/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  openwebcode-data:
