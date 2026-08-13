@@ -1,6 +1,7 @@
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import type { WebProviderProfile } from "./provider-profiles.js";
+import { fetchFollowingRedirects, readJsonLimited, readTextLimited, withTimeout } from "./http-utils.js";
 import { getUserAgent } from "./user-agent.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -168,31 +169,6 @@ export function htmlToText(html: string): string {
     .trim();
 }
 
-async function readLimited(response: Response, maxBytes: number): Promise<string> {
-  if (!response.body) return "";
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > maxBytes) {
-        await reader.cancel();
-        throw new Error(`Response exceeds ${maxBytes} byte limit`);
-      }
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  const body = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
-  return new TextDecoder().decode(body);
-}
-
 function supportedContentType(value: string): boolean {
   const type = value.split(";", 1)[0]!.trim().toLowerCase();
   return type.startsWith("text/") || type === "application/json" || type.endsWith("+json") || type === "application/xml" || type.endsWith("+xml");
@@ -205,45 +181,29 @@ export async function webFetch(
   const requested = assertSafeWebUrl(value);
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   const lookup = options.lookupImpl ?? defaultLookup;
-  const signal = signalWithTimeout(options.signal, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-  let current = requested;
-  for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
-    current = assertSafeWebUrl(current.href);
-    await assertPublicHostname(current, lookup);
-    const response = await fetchImpl(current, { redirect: "manual", signal, headers: { "User-Agent": getUserAgent() } });
-    if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get("location");
-      if (!location) throw new Error(`Redirect ${response.status} has no Location header`);
-      if (redirects === MAX_REDIRECTS) throw new Error("Too many redirects");
-      current = assertSafeWebUrl(new URL(location, current).href);
-      continue;
-    }
-    if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`.trim());
-    const contentType = response.headers.get("content-type") ?? "";
-    if (!supportedContentType(contentType)) throw new Error(`Unsupported content type: ${contentType || "unknown"}`);
-    const raw = await readLimited(response, options.maxBytes ?? DEFAULT_MAX_BYTES);
-    return {
-      url: requested.href,
-      finalUrl: current.href,
-      contentType,
-      text: contentType.toLowerCase().startsWith("text/html") ? htmlToText(raw) : raw,
-    };
-  }
-  throw new Error("Too many redirects");
-}
-
-function signalWithTimeout(signal: AbortSignal | undefined, timeoutMs = DEFAULT_TIMEOUT_MS): AbortSignal {
-  const timeout = AbortSignal.timeout(timeoutMs);
-  return signal ? AbortSignal.any([signal, timeout]) : timeout;
-}
-
-async function readLimitedJson(response: Response): Promise<unknown> {
-  const raw = await readLimited(response, DEFAULT_MAX_BYTES);
-  try {
-    return JSON.parse(raw) as unknown;
-  } catch {
-    throw new Error("Search provider returned invalid JSON");
-  }
+  const signal = withTimeout(options.signal, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+  // 每跳复验 SSRF 网关（含起始）：域名逐地址查私网表，重定向目标同样受检
+  const { response, finalUrl } = await fetchFollowingRedirects({
+    fetchImpl,
+    start: requested,
+    signal,
+    headers: { "User-Agent": getUserAgent() },
+    maxRedirects: MAX_REDIRECTS,
+    validate: async (url) => {
+      assertSafeWebUrl(url.href);
+      await assertPublicHostname(url, lookup);
+    },
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`.trim());
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!supportedContentType(contentType)) throw new Error(`Unsupported content type: ${contentType || "unknown"}`);
+  const raw = await readTextLimited(response, options.maxBytes ?? DEFAULT_MAX_BYTES);
+  return {
+    url: requested.href,
+    finalUrl,
+    contentType,
+    text: contentType.toLowerCase().startsWith("text/html") ? htmlToText(raw) : raw,
+  };
 }
 
 /**
@@ -261,47 +221,37 @@ class HttpReaderProvider implements WebFetchProvider {
 
   async fetchUrl(value: string, options: { signal?: AbortSignal } = {}): Promise<WebFetchResult> {
     const requested = assertSafeWebUrl(value);
-    const signal = signalWithTimeout(options.signal);
-    let current = this.endpointFor(requested);
+    const signal = withTimeout(options.signal, DEFAULT_TIMEOUT_MS);
+    const current = this.endpointFor(requested);
     if (current.protocol !== "http:" && current.protocol !== "https:") throw new Error(`${this.name} endpoint is not http/https`);
-    const trustedOrigin = current.origin;
-    for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
-      const response = await this.fetchImpl(current, {
-        // Do not let fetch follow a reader-provided redirect to an unvalidated
-        // host (which could turn an otherwise configured reader into SSRF).
-        redirect: "manual",
-        headers: {
-          Accept: "text/plain, text/markdown, text/html;q=0.9, application/json;q=0.8",
-          "User-Agent": getUserAgent(),
-          ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
-        },
-        signal,
-      });
-      if (response.status >= 300 && response.status < 400) {
-        const location = response.headers.get("location");
-        if (!location) throw new Error(`${this.name} redirect ${response.status} has no Location header`);
-        if (redirects === MAX_REDIRECTS) throw new Error(`${this.name} redirected too many times`);
-        const next = new URL(location, current);
-        if ((next.protocol !== "http:" && next.protocol !== "https:") || next.origin !== trustedOrigin) {
-          throw new Error(`${this.name} redirect leaves the configured reader origin`);
-        }
-        current = next;
-        continue;
-      }
-      if (!response.ok) throw new Error(`${this.name} returned HTTP ${response.status} ${response.statusText}`.trim());
-      const contentType = response.headers.get("content-type") ?? "text/plain";
-      if (!supportedContentType(contentType)) throw new Error(`${this.name} returned unsupported content type: ${contentType || "unknown"}`);
-      const raw = await readLimited(response, DEFAULT_MAX_BYTES);
-      return {
-        url: requested.href,
-        // A reader endpoint may follow redirects internally but cannot reliably
-        // report the target's terminal URL, so never leak its own service URL.
-        finalUrl: requested.href,
-        contentType,
-        text: contentType.toLowerCase().startsWith("text/html") ? htmlToText(raw) : raw,
-      };
-    }
-    throw new Error(`${this.name} redirected too many times`);
+    // Do not let a reader-provided redirect leave the configured reader origin:
+    // otherwise a compromised reader could 302 an authorized request elsewhere.
+    const { response } = await fetchFollowingRedirects({
+      fetchImpl: this.fetchImpl,
+      start: current,
+      signal,
+      headers: {
+        Accept: "text/plain, text/markdown, text/html;q=0.9, application/json;q=0.8",
+        "User-Agent": getUserAgent(),
+        ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
+      },
+      maxRedirects: MAX_REDIRECTS,
+      trustedOrigin: current.origin,
+      label: this.name,
+      originName: "the configured reader origin",
+    });
+    if (!response.ok) throw new Error(`${this.name} returned HTTP ${response.status} ${response.statusText}`.trim());
+    const contentType = response.headers.get("content-type") ?? "text/plain";
+    if (!supportedContentType(contentType)) throw new Error(`${this.name} returned unsupported content type: ${contentType || "unknown"}`);
+    const raw = await readTextLimited(response, DEFAULT_MAX_BYTES);
+    return {
+      url: requested.href,
+      // A reader endpoint may follow redirects internally but cannot reliably
+      // report the target's terminal URL, so never leak its own service URL.
+      finalUrl: requested.href,
+      contentType,
+      text: contentType.toLowerCase().startsWith("text/html") ? htmlToText(raw) : raw,
+    };
   }
 }
 
@@ -354,28 +304,20 @@ class HttpSearchProvider implements SearchProvider {
       if (this.authKind === "brave") headers["X-Subscription-Token"] = this.apiKey;
       else headers.Authorization = `Bearer ${this.apiKey}`;
     }
-    const signal = signalWithTimeout(options.signal);
+    const signal = withTimeout(options.signal, DEFAULT_TIMEOUT_MS);
     // 与 reader 路径同一纪律：redirect 手动处理，逐跳复验不离开配置的 search origin，
     // 否则被控/被劫持的 search 端点可用 302 把带凭据的请求引向任意主机（SSRF）。
-    const trustedOrigin = url.origin;
-    let current = url;
-    for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
-      const response = await this.fetchImpl(current, { redirect: "manual", headers, signal });
-      if (response.status >= 300 && response.status < 400) {
-        const location = response.headers.get("location");
-        if (!location) throw new Error(`Search provider redirect ${response.status} has no Location header`);
-        if (redirects === MAX_REDIRECTS) throw new Error("Search provider redirected too many times");
-        const next = new URL(location, current);
-        if ((next.protocol !== "http:" && next.protocol !== "https:") || next.origin !== trustedOrigin) {
-          throw new Error("Search provider redirect leaves the configured origin");
-        }
-        current = next;
-        continue;
-      }
-      if (!response.ok) throw new Error(`Search provider returned HTTP ${response.status}`);
-      return normalizeResults(await readLimitedJson(response), limit);
-    }
-    throw new Error("Search provider redirected too many times");
+    const { response } = await fetchFollowingRedirects({
+      fetchImpl: this.fetchImpl,
+      start: url,
+      signal,
+      headers,
+      maxRedirects: MAX_REDIRECTS,
+      trustedOrigin: url.origin,
+      label: "Search provider",
+    });
+    if (!response.ok) throw new Error(`Search provider returned HTTP ${response.status}`);
+    return normalizeResults(await readJsonLimited(response, DEFAULT_MAX_BYTES), limit);
   }
 }
 
@@ -398,10 +340,10 @@ class TavilySearchProvider implements SearchProvider {
         include_raw_content: false,
         include_images: false,
       }),
-      signal: signalWithTimeout(options.signal),
+      signal: withTimeout(options.signal, DEFAULT_TIMEOUT_MS),
     });
     if (!response.ok) throw new Error(`Tavily returned HTTP ${response.status}`);
-    return normalizeResults(await readLimitedJson(response), limit);
+    return normalizeResults(await readJsonLimited(response, DEFAULT_MAX_BYTES), limit);
   }
 }
 
@@ -423,10 +365,10 @@ class TavilyExtractProvider implements WebFetchProvider {
         include_images: false,
         format: "markdown",
       }),
-      signal: signalWithTimeout(options.signal),
+      signal: withTimeout(options.signal, DEFAULT_TIMEOUT_MS),
     });
     if (!response.ok) throw new Error(`Tavily Extract returned HTTP ${response.status}`);
-    const body = await readLimitedJson(response) as {
+    const body = await readJsonLimited(response, DEFAULT_MAX_BYTES) as {
       results?: Array<{ url?: unknown; raw_content?: unknown }>;
       failed_results?: Array<{ url?: unknown; error?: unknown }>;
     };
@@ -452,39 +394,27 @@ class BingSearchProvider implements SearchProvider {
     url.searchParams.set("q", query);
     url.searchParams.set("count", String(limit));
     url.searchParams.set("textDecorations", "false");
-    const signal = signalWithTimeout(options.signal);
-    const trustedOrigin = url.origin;
-    let current = url;
-    for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects += 1) {
-      const response = await this.fetchImpl(current, {
-        redirect: "manual",
-        headers: { "Ocp-Apim-Subscription-Key": this.apiKey, Accept: "application/json", "User-Agent": getUserAgent() },
-        signal,
-      });
-      if (response.status >= 300 && response.status < 400) {
-        const location = response.headers.get("location");
-        if (!location) throw new Error(`Bing redirect ${response.status} has no Location header`);
-        if (redirects === MAX_REDIRECTS) throw new Error("Bing redirected too many times");
-        const next = new URL(location, current);
-        if ((next.protocol !== "http:" && next.protocol !== "https:") || next.origin !== trustedOrigin) {
-          throw new Error("Bing redirect leaves the configured origin");
-        }
-        current = next;
-        continue;
-      }
-      if (!response.ok) throw new Error(`Bing returned HTTP ${response.status}`);
-      const body = await readLimitedJson(response) as { webPages?: { value?: unknown[] } };
-      const items = body?.webPages?.value ?? [];
-      return (Array.isArray(items) ? items : []).slice(0, limit).flatMap((item) => {
-        if (!item || typeof item !== "object") return [];
-        const entry = item as Record<string, unknown>;
-        const title = typeof entry.name === "string" ? entry.name : "";
-        const url2 = typeof entry.url === "string" ? entry.url : "";
-        const snippet = typeof entry.snippet === "string" ? entry.snippet : "";
-        return title && url2 ? [{ title, url: url2, snippet }] : [];
-      });
-    }
-    throw new Error("Bing redirected too many times");
+    const signal = withTimeout(options.signal, DEFAULT_TIMEOUT_MS);
+    const { response } = await fetchFollowingRedirects({
+      fetchImpl: this.fetchImpl,
+      start: url,
+      signal,
+      headers: { "Ocp-Apim-Subscription-Key": this.apiKey, Accept: "application/json", "User-Agent": getUserAgent() },
+      maxRedirects: MAX_REDIRECTS,
+      trustedOrigin: url.origin,
+      label: "Bing",
+    });
+    if (!response.ok) throw new Error(`Bing returned HTTP ${response.status}`);
+    const body = await readJsonLimited(response, DEFAULT_MAX_BYTES) as { webPages?: { value?: unknown[] } };
+    const items = body?.webPages?.value ?? [];
+    return (Array.isArray(items) ? items : []).slice(0, limit).flatMap((item) => {
+      if (!item || typeof item !== "object") return [];
+      const entry = item as Record<string, unknown>;
+      const title = typeof entry.name === "string" ? entry.name : "";
+      const url2 = typeof entry.url === "string" ? entry.url : "";
+      const snippet = typeof entry.snippet === "string" ? entry.snippet : "";
+      return title && url2 ? [{ title, url: url2, snippet }] : [];
+    });
   }
 }
 
@@ -500,10 +430,10 @@ class ExaSearchProvider implements SearchProvider {
         "User-Agent": getUserAgent(),
       },
       body: JSON.stringify({ query, numResults: limit, type: "neural" }),
-      signal: signalWithTimeout(options.signal),
+      signal: withTimeout(options.signal, DEFAULT_TIMEOUT_MS),
     });
     if (!response.ok) throw new Error(`Exa returned HTTP ${response.status}`);
-    return normalizeResults(await readLimitedJson(response), limit);
+    return normalizeResults(await readJsonLimited(response, DEFAULT_MAX_BYTES), limit);
   }
 }
 
@@ -519,10 +449,10 @@ class LinkUpSearchProvider implements SearchProvider {
         "User-Agent": getUserAgent(),
       },
       body: JSON.stringify({ q: query, depth: this.depth, outputType: "searchResults", maxResults: limit }),
-      signal: signalWithTimeout(options.signal),
+      signal: withTimeout(options.signal, DEFAULT_TIMEOUT_MS),
     });
     if (!response.ok) throw new Error(`LinkUp returned HTTP ${response.status}`);
-    return normalizeResults(await readLimitedJson(response), limit);
+    return normalizeResults(await readJsonLimited(response, DEFAULT_MAX_BYTES), limit);
   }
 }
 
@@ -539,10 +469,10 @@ class FirecrawlFetchProvider implements WebFetchProvider {
         "User-Agent": getUserAgent(),
       },
       body: JSON.stringify({ url: requested.href, formats: ["markdown"] }),
-      signal: signalWithTimeout(options.signal),
+      signal: withTimeout(options.signal, DEFAULT_TIMEOUT_MS),
     });
     if (!response.ok) throw new Error(`Firecrawl returned HTTP ${response.status}`);
-    const body = await readLimitedJson(response) as { data?: { markdown?: string; content?: string } };
+    const body = await readJsonLimited(response, DEFAULT_MAX_BYTES) as { data?: { markdown?: string; content?: string } };
     const text = body?.data?.markdown ?? body?.data?.content ?? "";
     if (!text) throw new Error("Firecrawl returned no content");
     return {

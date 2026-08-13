@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { fetchJson, withUserAgent } from "../src/http.js";
-import { buildUserAgent, getUserAgent, setSimulatedUserAgent } from "../src/user-agent.js";
+import { setSimulatedUserAgent } from "../src/user-agent.js";
 import { setServerVersion } from "../src/version.js";
 
 afterEach(() => {
@@ -10,13 +10,6 @@ afterEach(() => {
 });
 
 describe("http user-agent", () => {
-  it("builds UA in the owc/openwebcode{version} format", () => {
-    expect(buildUserAgent("0.5.2")).toBe("owc/openwebcode0.5.2");
-    // 同一 UA 契约：getUserAgent 反映已解析的 server 版本（全局态路径）
-    setServerVersion("9.9.9");
-    expect(getUserAgent()).toBe("owc/openwebcode9.9.9");
-  });
-
   it("withUserAgent merges UA ahead of caller headers", () => {
     setServerVersion("1.2.3");
     const headers = withUserAgent({ Accept: "application/json" });

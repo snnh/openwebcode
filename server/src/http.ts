@@ -9,7 +9,7 @@
  * UA header so every outbound request identifies itself.
  */
 import { getUserAgent } from "./user-agent.js";
-
+import { withTimeout } from "./http-utils.js";
 
 export interface FetchJsonOptions {
   signal?: AbortSignal;
@@ -24,7 +24,7 @@ export interface FetchJsonOptions {
  */
 export async function fetchJson(url: string, options: FetchJsonOptions = {}): Promise<unknown> {
   const signal = options.timeoutMs
-    ? mergeSignal(options.signal, options.timeoutMs)
+    ? withTimeout(options.signal, options.timeoutMs)
     : options.signal;
   const init: RequestInit = {
     headers: { "User-Agent": getUserAgent(), ...(options.headers ?? {}) },
@@ -33,11 +33,6 @@ export async function fetchJson(url: string, options: FetchJsonOptions = {}): Pr
   const response = await fetch(url, init);
   if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`.trim());
   return response.json();
-}
-
-function mergeSignal(caller: AbortSignal | undefined, timeoutMs: number): AbortSignal {
-  const timeout = AbortSignal.timeout(timeoutMs);
-  return caller ? AbortSignal.any([caller, timeout]) : timeout;
 }
 
 /**

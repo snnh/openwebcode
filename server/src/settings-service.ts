@@ -16,6 +16,7 @@ import type { UpdateChecker } from "./update-checker.js";
 import type { NodeEnv, PythonEnv } from "./sessions/types.js";
 import type { EffortLevel } from "./context/model-profile.js";
 import { applyProxyConfig, sanitizeProxyUrl, type ProxyApplyResult, type ProxyConfig, type ProxyMode } from "./proxy.js";
+import { GITHUB_RELEASES_URL } from "./version.js";
 import installDefaultsDocument from "./config/defaults.json" with { type: "json" };
 
 export class SettingsValidationError extends Error {
@@ -320,7 +321,7 @@ const FIELDS: FieldSpec[] = [
   { key: "fixedUsdCnyRate", group: "exchangeRate", label: "固定美元汇率", type: "text", env: "OWC_USD_CNY_RATE", defaultValue: null, restartRequired: true, validate: requirePositiveDecimal, description: "填写后跳过在线汇率" },
   // 更新检查（默认关闭，热生效）：周期性查询 GitHub Releases 最新版本，结果仅在设置页静默展示
   { key: "updateCheckEnabled", group: "updateCheck", label: "启用更新检查", type: "boolean", env: "OWC_UPDATE_CHECK_ENABLED", defaultValue: false, restartRequired: false, fromEnv: envBoolean, description: "默认关闭；启用后周期性查询 GitHub Releases 最新版本" },
-  { key: "updateCheckUrl", group: "updateCheck", label: "更新检查 URL", type: "text", env: "OWC_UPDATE_CHECK_URL", defaultValue: "https://api.github.com/repos/snnh/openwebcode/releases/latest", restartRequired: false, validate: requireHttpUrl, description: "GitHub Releases API 端点" },
+  { key: "updateCheckUrl", group: "updateCheck", label: "更新检查 URL", type: "text", env: "OWC_UPDATE_CHECK_URL", defaultValue: GITHUB_RELEASES_URL, restartRequired: false, validate: requireHttpUrl, description: "GitHub Releases API 端点" },
   { key: "updateCheckIntervalHours", group: "updateCheck", label: "检查间隔（小时）", type: "number", env: "OWC_UPDATE_CHECK_INTERVAL_HOURS", defaultValue: 24, restartRequired: false, fromEnv: envUpdateCheckIntervalHours, validate: requireUpdateCheckIntervalHours, description: "0 表示仅手动检查；最大 720 小时" },
   // 出站代理（热生效）：作用于模型 API、联网搜索/抓取、更新检测与在线更新等全部 Node 侧出站请求。
   // 代理 URL 可能含凭据，按 secret 处理（view 仅返回脱敏值，自定义 mask 保留 host 便于辨认）。
