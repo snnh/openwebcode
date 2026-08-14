@@ -163,7 +163,7 @@ Settings live in `<data directory>/server-settings.json`. The data directory res
 ## Uninstall
 
 - **Windows**: uninstall from Settings → Apps.
-- **Linux**: `rm -rf ~/.local/lib/openwebcode ~/.local/bin/owc`.
+- **Linux**: run the uninstaller written by the installer, `~/.local/bin/owc-uninstall` (it also cleans up the systemd unit). Manual alternative: `rm -rf ~/.local/lib/openwebcode ~/.local/bin/owc ~/.local/bin/owc-uninstall`.
 
 Note: the data directory is kept by default.
 
