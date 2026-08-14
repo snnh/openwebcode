@@ -79,7 +79,7 @@ function renderBlock(block: MessageContent): string {
 }
 
 /** 渲染待压缩区段为纯文本转录，超长时保头留尾。 */
-export function renderSpan(span: ChatMessage[], budget = 30_000): string {
+function renderSpan(span: ChatMessage[], budget = 30_000): string {
   const transcript = span
     .map((message) => `【${message.role}】\n${message.content.map(renderBlock).filter(Boolean).join("\n")}`)
     .join("\n\n");

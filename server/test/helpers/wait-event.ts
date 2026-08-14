@@ -1,6 +1,6 @@
 import type { AppEvent, EventBus } from "../../src/events/event-bus.js";
 
-export interface WaitForEventOptions {
+interface WaitForEventOptions {
   /** 只匹配指定会话的事件 */
   sessionId?: string;
   /** 额外谓词（在 type/sessionId 过滤之后判定） */

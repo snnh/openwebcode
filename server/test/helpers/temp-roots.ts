@@ -5,7 +5,7 @@ import { afterEach } from "vitest";
 
 /** rm 带重试：agent/hook 子进程（cmd.exe 被 SIGKILL 后 node 变孤儿）的 cwd 锁住临时目录，
  * Windows 上文件句柄释放滞后导致 ENOTEMPTY，需等进程退出后重试。 */
-export async function rmWithRetry(target: string, retries = 15, delayMs = 500): Promise<void> {
+async function rmWithRetry(target: string, retries = 15, delayMs = 500): Promise<void> {
   for (let i = 0; i < retries; i++) {
     try {
       await rm(target, { recursive: true, force: true });

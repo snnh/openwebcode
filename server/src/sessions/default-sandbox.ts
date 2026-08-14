@@ -2,7 +2,7 @@ import path from "node:path";
 import type { SandboxPolicy } from "./types.js";
 
 /** 默认沙盒拒绝清单：见 defaultSandboxPolicy 注释。 */
-export function defaultSandboxDenyPaths(cwd: string): string[] {
+function defaultSandboxDenyPaths(cwd: string): string[] {
   return [
     path.join(cwd, ".env"),
     path.join(cwd, ".owc", "hooks.json"),

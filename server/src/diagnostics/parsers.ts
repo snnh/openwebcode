@@ -6,7 +6,7 @@ import type { DiagnosticFailure, DiagnosticSet, DiagnosticTool } from "./types.j
  * 表示识别失败，由注册表尝试下一个，全部失败则走 fallback（保留原文尾部）。
  * 新增生态只需向 PARSERS 追加一项。
  */
-export interface TestOutputParser {
+interface TestOutputParser {
   tool: DiagnosticTool;
   match(command: string, output: string): boolean;
   parse(output: string): DiagnosticSet | undefined;
@@ -329,7 +329,7 @@ function parseDotnetText(output: string): DiagnosticSet | undefined {
 }
 
 /** 注册表顺序即优先级；新增生态解析器追加到末尾。 */
-export const PARSERS: readonly TestOutputParser[] = [
+const PARSERS: readonly TestOutputParser[] = [
   makeJestLikeParser("vitest", /\bvitest\b/),
   makeJestLikeParser("jest", /\bjest\b/),
   PYTEST_PARSER,

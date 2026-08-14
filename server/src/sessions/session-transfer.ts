@@ -11,7 +11,7 @@ export class SessionTransferError extends Error {
 const ROLES: readonly MessageRole[] = ["user", "assistant", "tool"];
 const SESSION_ID_PATTERN = /^[0-9a-f-]{36}$/;
 
-export interface SessionExportDocument {
+interface SessionExportDocument {
   kind: "meta";
   version: 1;
   exportedAt: string;
@@ -30,7 +30,7 @@ export function serializeSession(meta: SessionMeta, messages: ChatMessage[]): st
   return [JSON.stringify(head), ...messages.map((message) => JSON.stringify(message))].join("\n") + "\n";
 }
 
-export interface ParsedSessionImport {
+interface ParsedSessionImport {
   meta: Omit<SessionMeta, "id"> & { id?: string };
   messages: ChatMessage[];
 }

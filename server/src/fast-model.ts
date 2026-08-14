@@ -10,7 +10,7 @@ export interface FastModelConfig {
   effort?: EffortLevel;
 }
 
-export interface FastModelCompletion {
+interface FastModelCompletion {
   text: string;
   usage: { inputTokens: number; outputTokens: number };
 }

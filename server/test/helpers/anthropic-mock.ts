@@ -1,6 +1,6 @@
 import type { AnthropicProvider } from "../../src/providers/anthropic-provider.js";
 
-export interface MockStreamOptions {
+interface MockStreamOptions {
   /** finalMessage 的 usage；缺省 { input_tokens: 0, output_tokens: 0 }。 */
   usage?: Record<string, unknown>;
   /** finalMessage 的 content；缺省 []。 */

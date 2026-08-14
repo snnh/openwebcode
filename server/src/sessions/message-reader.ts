@@ -9,7 +9,7 @@
  */
 import { open, stat } from "node:fs/promises";
 
-export interface MessagePage<T> {
+interface MessagePage<T> {
   messages: T[];
   hasMore: boolean;
   totalLines: number;

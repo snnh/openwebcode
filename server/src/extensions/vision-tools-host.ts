@@ -32,7 +32,7 @@ export interface VisionToolsHostApi {
   storageWrite(path: string, content: string): Promise<{ bytes: number }>;
 }
 
-export const VISION_DESCRIBE_SYSTEM = "请详细描述这张图片的内容：画面主体、关键细节、文字/代码（如有）、与开发任务相关的信息。使用与提问相同的语言回答。";
+const VISION_DESCRIBE_SYSTEM = "请详细描述这张图片的内容：画面主体、关键细节、文字/代码（如有）、与开发任务相关的信息。使用与提问相同的语言回答。";
 
 /** describe 模式缓存：vision/<图片 sha1>.txt。 */
 function cachePath(hash: string): string {

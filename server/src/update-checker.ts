@@ -6,7 +6,7 @@ import { readJsonLimited } from "./http-utils.js";
 import { getOfficialUserAgent } from "./user-agent.js";
 import { getServerVersion } from "./version.js";
 
-export interface UpdateCheckSnapshot {
+interface UpdateCheckSnapshot {
   latestVersion: string;
   isNewer: boolean;
   htmlUrl: string;
@@ -22,7 +22,7 @@ interface StoredUpdateCheckSnapshot {
   checkedAt: string;
 }
 
-export interface UpdateCheckerOptions {
+interface UpdateCheckerOptions {
   cachePath: string;
   defaultUrl: string;
   timeoutMs?: number;

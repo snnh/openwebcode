@@ -13,7 +13,7 @@ export const TOOL_RESULT_BUDGETS: Record<string, number> = {
   repo_map: 16_000,
 };
 
-export interface BoundedToolResult {
+interface BoundedToolResult {
   content: string;
   artifactId?: string;
   truncated: boolean;

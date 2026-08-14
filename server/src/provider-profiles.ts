@@ -39,15 +39,15 @@ interface ProviderProfilesDocument {
   activeWeb: { search?: string; fetch?: string };
 }
 
-export interface SecretView {
+interface SecretView {
   hasApiKey: boolean;
   maskedApiKey?: string;
 }
 
-export type ModelProviderProfileView = Omit<ModelProviderProfile, "apiKey"> & SecretView;
-export type WebProviderProfileView = Omit<WebProviderProfile, "apiKey"> & SecretView;
+type ModelProviderProfileView = Omit<ModelProviderProfile, "apiKey"> & SecretView;
+type WebProviderProfileView = Omit<WebProviderProfile, "apiKey"> & SecretView;
 
-export interface ProviderProfilesView {
+interface ProviderProfilesView {
   modelProviders: ModelProviderProfileView[];
   webProviders: WebProviderProfileView[];
   activeWeb: { search?: string; fetch?: string };

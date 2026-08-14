@@ -32,9 +32,9 @@ import {
 } from "./index-store.js";
 import { collectJobJsonLines } from "../rpc/job-collect.js";
 
-export type IndexStatus = "missing" | "building" | "fresh" | "stale";
+type IndexStatus = "missing" | "building" | "fresh" | "stale";
 
-export interface IndexStatusInfo {
+interface IndexStatusInfo {
   status: IndexStatus;
   /** workspace-hash（索引目录名）。 */
   workspace: string;
@@ -49,7 +49,7 @@ export interface IndexStatusInfo {
   message?: string;
 }
 
-export interface SymbolSearchHit {
+interface SymbolSearchHit {
   name: string;
   kind: string;
   path: string;
@@ -59,7 +59,7 @@ export interface SymbolSearchHit {
 }
 
 /** 文件清单搜索命中（@ 补全/Quick Open 共用）。 */
-export interface FileSearchHit {
+interface FileSearchHit {
   path: string;
   modifiedMs: number;
 }
@@ -88,7 +88,7 @@ export class IndexBuildingError extends Error {
 }
 
 /** 扫描预算默认值：与 core maxIndexScan* 上限对齐，宁可截断也不做无界扫描。 */
-export interface IndexScanBudget {
+interface IndexScanBudget {
   maxDepth: number;
   maxNodes: number;
   maxBytes: number;
@@ -131,7 +131,7 @@ interface WorkspaceState {
   batch: number;
 }
 
-export interface IndexManagerOptions {
+interface IndexManagerOptions {
   budget?: Partial<IndexScanBudget>;
   /** job 输出轮询间隔（测试可调 0）。 */
   pollMs?: number;
@@ -651,14 +651,6 @@ function pushTopK<T>(hits: T[], limit: number, candidate: T, compare: (a: T, b: 
 /** 按文件查符号的路径归一：统一分隔符、去前导 ./（索引键与编辑器相对路径对齐）。 */
 function normalizeLookupPath(filePath: string): string {
   return filePath.replace(/\\/g, "/").replace(/^\.\//, "");
-}
-
-/**
- * 模糊匹配评分：完全相等(忽略大小写)=100，前缀=75，子串=50，子序列=25，不匹配=0。
- * 简单可解释，够 code_search 排序用。
- */
-export function fuzzyScore(name: string, query: string): number {
-  return fuzzyScoreLower(name.toLowerCase(), query.toLowerCase());
 }
 
 /** 小写已预算的评分内环：搜索热路径不重复 toLowerCase 分配（小写串预存在索引条目上）。 */

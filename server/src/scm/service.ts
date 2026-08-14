@@ -30,7 +30,7 @@ export const MAX_INLINE_DIFF_BYTES = 32 * 1024;
 /** worktree 数量上限（plan §4.5 默认 4）。 */
 export const MAX_WORKTREES = 4;
 /** 提交信息长度上限。 */
-export const MAX_COMMIT_MESSAGE_CHARS = 2_000;
+const MAX_COMMIT_MESSAGE_CHARS = 2_000;
 
 const GIT_JOB_TIMEOUT_MS = 60_000;
 const POLL_INTERVAL_MS = 50;
@@ -40,7 +40,7 @@ const SAFE_NAME = /^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,127}$/;
 /** 相对路径白名单：普通空格由 quoteArg 安全引用；拒绝控制符与 shell 元字符。 */
 const UNSAFE_PATH_CHARS = /[\r\n\t"'%&|;<>`$\\]/;
 
-export function validateRef(ref: string, what = "ref"): string {
+function validateRef(ref: string, what = "ref"): string {
   const trimmed = ref.trim();
   if (!SAFE_NAME.test(trimmed) || trimmed.includes("..") || trimmed.endsWith("/") || trimmed.endsWith(".lock")) {
     throw new Error(`Invalid ${what}: ${ref}`);
@@ -49,7 +49,7 @@ export function validateRef(ref: string, what = "ref"): string {
 }
 
 /** 允许 HEAD~2 / HEAD^ 这类相对 ref。 */
-export function validateRevSpec(spec: string): string {
+function validateRevSpec(spec: string): string {
   const trimmed = spec.trim();
   const normalized = trimmed.replace(/[~^]\d*/g, "");
   // 支持 a..b / a...b 区间：两侧各自校验
@@ -60,7 +60,7 @@ export function validateRevSpec(spec: string): string {
   return trimmed;
 }
 
-export function validateRelativePath(file: string): string {
+function validateRelativePath(file: string): string {
   const trimmed = file.trim();
   if (
     trimmed === "" ||
@@ -75,7 +75,7 @@ export function validateRelativePath(file: string): string {
   return trimmed;
 }
 
-export function validateWorktreeName(name: string): string {
+function validateWorktreeName(name: string): string {
   const trimmed = name.trim();
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(trimmed)) throw new Error(`Invalid worktree name: ${name}`);
   return trimmed;
@@ -552,7 +552,7 @@ export class NotARepoError extends Error {
 }
 
 /** discard 目标含 untracked 文件但未带 force：REST 映射 400（删除不可恢复，需双确认）。 */
-export class DiscardRequiresForceError extends Error {
+class DiscardRequiresForceError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "DiscardRequiresForceError";

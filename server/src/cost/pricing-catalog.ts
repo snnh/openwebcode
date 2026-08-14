@@ -29,7 +29,7 @@ export type SyncResult =
   | { ok: true; count: number; updatedAt: string }
   | { ok: false; error: string };
 
-export interface PricingSyncOptions {
+interface PricingSyncOptions {
   /** Injectable for tests and alternate transport implementations. */
   fetchImpl?: typeof fetch;
   /** Request deadline in milliseconds. Defaults to 15 seconds. */

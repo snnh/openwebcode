@@ -15,13 +15,13 @@ import { isMissing } from "./fs-utils.js";
 
 export const CRON_MAX_JOBS_PER_SESSION = 50;
 /** recurring 任务保留期：到期触发最后一次（stale）后自动删除。 */
-export const CRON_RECURRING_TTL_MS = 7 * 24 * 3_600_000;
+const CRON_RECURRING_TTL_MS = 7 * 24 * 3_600_000;
 /** setTimeout 上限（2^31-1 ms）；超出时截断，唤醒后重排。 */
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 /** nextCronFire 前向搜索上限（4 年，覆盖闰年组合；找不到视为不可达）。 */
 const SEARCH_DAYS = 366 * 4 + 2;
 
-export interface CronJob {
+interface CronJob {
   id: string;
   sessionId: string;
   /** 原始 5 字段表达式（已校验）。 */
@@ -34,7 +34,7 @@ export interface CronJob {
 }
 
 /** REST/工具返回形状（sessionId 由路由参数携带，不重复）。 */
-export interface CronJobView {
+interface CronJobView {
   id: string;
   cron: string;
   prompt: string;
@@ -50,9 +50,9 @@ interface CronDocument {
 }
 
 /** 触发回调：stale=true 表示保留期到期的最后一次触发。 */
-export type CronFireHandler = (sessionId: string, prompt: string, meta: { stale: boolean; jobId: string }) => Promise<void> | void;
+type CronFireHandler = (sessionId: string, prompt: string, meta: { stale: boolean; jobId: string }) => Promise<void> | void;
 
-export interface CronSchedulerOptions {
+interface CronSchedulerOptions {
   /** cron.json 绝对路径（<数据目录>/cron.json）。 */
   file: string;
   fire: CronFireHandler;
@@ -68,7 +68,7 @@ export interface CronSchedulerOptions {
 // 迷你 cron 解析
 // ---------------------------------------------------------------------------
 
-export interface CronFields {
+interface CronFields {
   /** 以下均为升序去重数值数组。 */
   minute: number[];
   hour: number[];

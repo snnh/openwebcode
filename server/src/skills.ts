@@ -2,7 +2,7 @@ import { lstat, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { parseFrontmatter } from "./frontmatter.js";
 
-export interface Skill {
+interface Skill {
   name: string;
   description: string;
   body: string;

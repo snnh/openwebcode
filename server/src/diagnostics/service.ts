@@ -17,7 +17,7 @@ import type { DiagnosticRun, DiagnosticSet } from "./types.js";
 export const MAX_FEEDBACK_FAILURES = 20;
 export const MAX_FEEDBACK_FIELD_CHARS = 500;
 /** 连续相同失败签名提示阈值 */
-export const REPEATED_SIGNATURE_HINT_THRESHOLD = 2;
+const REPEATED_SIGNATURE_HINT_THRESHOLD = 2;
 const TEST_JOB_TIMEOUT_MS = 10 * 60_000;
 const POLL_INTERVAL_MS = 50;
 
@@ -35,7 +35,7 @@ function truncate(value: string, limit: number): string {
  * 回授 agent 的有界摘要文本。完整 DiagnosticSet 只在 artifact 中；
  * 连续相同失败 ≥2 次时附提示（只是提示，不中断）。
  */
-export function buildAgentFeedback(record: DiagnosticRun): string {
+function buildAgentFeedback(record: DiagnosticRun): string {
   const { diagnostics } = record;
   const lines: string[] = [];
   if (record.parseFallback) {
@@ -65,14 +65,14 @@ export function buildAgentFeedback(record: DiagnosticRun): string {
   return lines.join("\n");
 }
 
-export interface TestRunOptions {
+interface TestRunOptions {
   command?: string;
   agentRunId?: string;
   signal?: AbortSignal;
   shellBackend?: ShellBackend;
 }
 
-export interface TestRunResult {
+interface TestRunResult {
   record: DiagnosticRun;
   /** 有界回授摘要（agent 工具结果 / REST 响应复用）。 */
   feedback: string;

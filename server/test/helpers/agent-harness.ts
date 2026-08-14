@@ -13,7 +13,7 @@ import { makeFakeCore } from "./fake-core.js";
 import { makeStubProvider } from "./stub-provider.js";
 import { tempRoot } from "./temp-roots.js";
 
-export interface AgentHarnessOptions {
+interface AgentHarnessOptions {
   /** 默认：test-stub，直接 done */
   provider?: Provider;
   /** 默认：makeFakeCore() 空实现 */

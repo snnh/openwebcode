@@ -25,7 +25,7 @@ const GOAL_CONTINUATION_PREFIX = "[goal-continuation]";
  * running/settling 为共享引用，与主循环的状态判断保持同一份真相；
  * run 回调供 startFollowUp 补一轮；notify 为非拦截 Notification 钩子。
  */
-export interface RunControlDeps {
+interface RunControlDeps {
   sessions: SessionStore;
   events: EventBus;
   running: Map<string, AbortController>;

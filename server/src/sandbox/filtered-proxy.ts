@@ -55,7 +55,7 @@ export interface FilteredProxyDeps {
   log?: (line: string) => void;
 }
 
-export interface FilteredProxyHandle {
+interface FilteredProxyHandle {
   proxyAddr: string;
   readOnlyPaths: string[];
 }
@@ -67,7 +67,7 @@ interface ActiveProxy {
 }
 
 /** 域名清单条目归一化：去空白、小写（sidecar 与设置校验共用同一语义）。 */
-export function normalizeDenyEntry(entry: string): string {
+function normalizeDenyEntry(entry: string): string {
   return entry.trim().toLowerCase();
 }
 

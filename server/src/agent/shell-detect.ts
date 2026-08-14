@@ -87,7 +87,7 @@ export function detectHostShells(platform: NodeJS.Platform, env: EnvLike, exists
 let cachedProbe: HostShellProbe | undefined;
 
 /** 进程级探测缓存：shell 安装在进程生命周期内不变。 */
-export function hostShells(): HostShellProbe {
+function hostShells(): HostShellProbe {
   cachedProbe ??= detectHostShells(process.platform, process.env, existsSync);
   return cachedProbe;
 }

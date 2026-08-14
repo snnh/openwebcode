@@ -317,7 +317,7 @@ export function filterBuiltInTools(tools: ProviderTool[], allow?: string[], deny
 }
 
 /** applyToolShaping 结果：拟态后的内置工具清单 + 别名派发映射（as → from / 参数归一表）。 */
-export interface ToolShapingApplication {
+interface ToolShapingApplication {
   tools: ProviderTool[];
   aliasMap: Map<string, string>;
   aliasArgMaps: Map<string, Record<string, string>>;

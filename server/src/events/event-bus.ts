@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 
-export interface AppEventInput {
+interface AppEventInput {
   source: "server" | "core" | "agent" | "session";
   type: string;
   sessionId?: string;
@@ -18,7 +18,7 @@ export interface AppEvent extends AppEventInput {
   createdAt: string;
 }
 
-export interface ReplayResult {
+interface ReplayResult {
   events: AppEvent[];
   requiresResync: boolean;
   latestSeq: number;
@@ -29,7 +29,7 @@ export interface ReplayResult {
  * 只作用于 payload 形如 `{ text: string }` 的纯追加 delta；
  * 状态迁移、权限、交互等非 delta 事件永不进入合批，即时发布。
  */
-export const DELTA_BATCH_WINDOW_MS = 16;
+const DELTA_BATCH_WINDOW_MS = 16;
 
 /** 允许合批的事件类型：同一 (sessionId, type, id) 键下的 text 可直接拼接。
  * message.tool_call_delta 的 payload.id 区分并行工具调用，合批键必须带 id 防串线。 */
@@ -40,7 +40,7 @@ interface PendingDelta {
   text: string;
 }
 
-export interface EventBusStats {
+interface EventBusStats {
   published: number;
   retained: number;
   retainedBytes: number;

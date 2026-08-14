@@ -8,12 +8,12 @@ import { CoreClient } from "../core-client.js";
 import { TcpTransport } from "../rpc/transport.js";
 import type { SessionMeta } from "../sessions/types.js";
 
-export interface WsbAvailability {
+interface WsbAvailability {
   available: boolean;
   reason?: string;
 }
 
-export function wsbExePath(systemRoot = process.env.SystemRoot ?? "C:\\Windows"): string {
+function wsbExePath(systemRoot = process.env.SystemRoot ?? "C:\\Windows"): string {
   return path.join(systemRoot, "System32", "WindowsSandbox.exe");
 }
 
@@ -24,7 +24,7 @@ export function detectWsb(options?: { exists?: (target: string) => boolean; syst
   return { available: false, reason: "未启用 Windows Sandbox 可选功能（需 Windows Pro/Enterprise + 功能开关）" };
 }
 
-export interface WsbConfigInput {
+interface WsbConfigInput {
   workspace: string;
   distDir: string;
   hostIp: string;
@@ -73,7 +73,7 @@ export function buildWsbConfig(input: WsbConfigInput): string {
 }
 
 /** 宿主上供 WSB 回连的第一个非 loopback IPv4 地址。 */
-export function defaultHostIp(): string | undefined {
+function defaultHostIp(): string | undefined {
   for (const list of Object.values(networkInterfaces())) {
     for (const item of list ?? []) {
       if (item.family === "IPv4" && !item.internal) return item.address;
@@ -82,7 +82,7 @@ export function defaultHostIp(): string | undefined {
   return undefined;
 }
 
-export interface WsbSessionOptions {
+interface WsbSessionOptions {
   sessionId: string;
   /** .wsb 文件写入目录（会话数据目录） */
   sessionRoot: string;
@@ -102,7 +102,7 @@ export interface WsbSessionOptions {
 }
 
 /** 一个 WSB 虚拟机会话：监听回连端口 → 写 .wsb → 拉起 WindowsSandbox → 接管回连 socket 完成握手。 */
-export class WsbSession {
+class WsbSession {
   private server: Server | undefined;
   private child: ChildProcess | undefined;
   private client: CoreClient | undefined;
@@ -195,7 +195,7 @@ export class WsbSession {
   }
 }
 
-export interface WsbManagerOptions {
+interface WsbManagerOptions {
   /** owc-exec.exe 绝对路径（dirname 作为 .wsb 里的只读分发目录） */
   corePath: string;
   sessionRootFor: (sessionId: string) => string;

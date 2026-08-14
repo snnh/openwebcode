@@ -67,7 +67,7 @@ function renderMarkdown(source: string): string {
   return html.join("\n");
 }
 
-export type ExportLanguage = "zh-CN" | "en";
+type ExportLanguage = "zh-CN" | "en";
 
 const tr = (language: ExportLanguage, chinese: string, english: string): string => language === "en" ? english : chinese;
 

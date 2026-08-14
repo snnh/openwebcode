@@ -21,7 +21,7 @@ interface Binding {
   config: McpServerConfig;
 }
 
-export interface McpToolBinding {
+interface McpToolBinding {
   tools: ProviderTool[];
   /** 连接/配置失败的降级说明（该 server 工具不注入）。 */
   warnings: string[];

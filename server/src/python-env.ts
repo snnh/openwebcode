@@ -53,7 +53,7 @@ export function wrapCommandWithNote(cmd: string, note: string): string {
   return `${prefix}${sanitizeNote(note)} && ${cmd}`;
 }
 
-export interface UvEnsureResult {
+interface UvEnsureResult {
   ok: boolean;
   note?: string;
 }

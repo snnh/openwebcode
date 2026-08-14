@@ -116,13 +116,13 @@ export const IMAGE_MESSAGE_BODY_LIMIT = 30 * 1024 * 1024;
 export const PDF_UPLOAD_BODY_LIMIT = 30 * 1024 * 1024;
 /** chat 图片面（uploads / 带图 messages）：10MB 图的 base64 信封约 14MB，20MB 留出 JSON 余量。 */
 export const CHAT_IMAGE_BODY_LIMIT = 20 * 1024 * 1024;
-export const MAX_PDF_UPLOAD_BYTES = 20 * 1024 * 1024;
-export const MAX_PDF_UPLOAD_BASE64 = Math.ceil(MAX_PDF_UPLOAD_BYTES / 3) * 4;
+const MAX_PDF_UPLOAD_BYTES = 20 * 1024 * 1024;
+const MAX_PDF_UPLOAD_BASE64 = Math.ceil(MAX_PDF_UPLOAD_BYTES / 3) * 4;
 /** Keep room for a `-<UUID>` suffix while staying below the 255-byte filename
  * component limit imposed by common Windows and POSIX filesystems. */
-export const MAX_PDF_UPLOAD_NAME_BYTES = 200;
-export const MAX_PDF_UPLOAD_NAME_CHARACTERS = 128;
-export const WINDOWS_RESERVED_BASENAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
+const MAX_PDF_UPLOAD_NAME_BYTES = 200;
+const MAX_PDF_UPLOAD_NAME_CHARACTERS = 128;
+const WINDOWS_RESERVED_BASENAME = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
 export const NO_PROVIDER_MESSAGE = "请先在设置中配置至少一个 API 密钥";
 
 export function syncUrlNotConfigured(label: string): SyncResult {
@@ -261,7 +261,7 @@ export function safePdfUploadName(value: unknown): string | undefined {
   return name;
 }
 
-export function isBase64AlphabetCode(code: number): boolean {
+function isBase64AlphabetCode(code: number): boolean {
   return (code >= 0x41 && code <= 0x5a) // A-Z
     || (code >= 0x61 && code <= 0x7a) // a-z
     || (code >= 0x30 && code <= 0x39) // 0-9
@@ -269,7 +269,7 @@ export function isBase64AlphabetCode(code: number): boolean {
     || code === 0x2f; // /
 }
 
-export function base64Digit(code: number): number {
+function base64Digit(code: number): number {
   if (code >= 0x41 && code <= 0x5a) return code - 0x41;
   if (code >= 0x61 && code <= 0x7a) return code - 0x61 + 26;
   if (code >= 0x30 && code <= 0x39) return code - 0x30 + 52;

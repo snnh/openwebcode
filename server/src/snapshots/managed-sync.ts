@@ -8,13 +8,13 @@ import { isMissing } from "../fs-utils.js";
 /** 这些目录在创建托管工作区时不会复制，因此也绝不能在同步回源时带回。 */
 export const MANAGED_WORKSPACE_COPY_EXCLUDES = new Set(["node_modules", ".owc", ".openwebcode"]);
 /** 回写比初始复制更严格：绝不把 Git 元数据或 dotenv 密钥写回源目录。 */
-export const MANAGED_WORKSPACE_SYNC_EXCLUDES = new Set([...MANAGED_WORKSPACE_COPY_EXCLUDES, ".git", ".env"]);
+const MANAGED_WORKSPACE_SYNC_EXCLUDES = new Set([...MANAGED_WORKSPACE_COPY_EXCLUDES, ".git", ".env"]);
 const BASELINE_FILE = "sync-baseline.json";
 const MANIFEST_VERSION = 1;
 /** Directory reads, lstat calls and file hashes share this bounded I/O pool. */
-export const MANAGED_WORKSPACE_SCAN_CONCURRENCY = 8;
+const MANAGED_WORKSPACE_SCAN_CONCURRENCY = 8;
 
-export type ManagedWorkspaceSyncNode =
+type ManagedWorkspaceSyncNode =
   | { kind: "file"; sha256: string; size: number; mode: number; /** Optional for v1 baseline compatibility; enables safe unchanged-file hash reuse. */ mtimeMs?: number }
   | { kind: "directory" }
   | { kind: "symlink" }
@@ -26,7 +26,7 @@ interface ManagedWorkspaceSyncTree {
   entries: Record<string, ManagedWorkspaceSyncNode>;
 }
 
-export interface ManagedWorkspaceSyncManifest extends ManagedWorkspaceSyncTree {
+interface ManagedWorkspaceSyncManifest extends ManagedWorkspaceSyncTree {
   /** Sidecar 与会话绑定，防止导入的 workspace meta 指向任意宿主目录。 */
   sessionId: string;
   origin: { path: string; dev: string; ino: string };
@@ -42,7 +42,7 @@ export interface ManagedWorkspaceSyncRoots {
   originCwd: string;
 }
 
-export type ManagedWorkspaceSyncAction = "create" | "update" | "delete" | "none" | "conflict" | "unsupported";
+type ManagedWorkspaceSyncAction = "create" | "update" | "delete" | "none" | "conflict" | "unsupported";
 
 /** 单一路径的三方比较：baseline=创建时（或上次已确认同步后）的共同版本。 */
 export interface ManagedWorkspaceSyncChange {
@@ -120,7 +120,7 @@ export interface ManagedWorkspaceSyncApplyResult {
   nextPreview: ManagedWorkspaceSyncPreview;
 }
 
-export type ManagedWorkspaceSyncErrorCode = "baseline_missing" | "baseline_invalid" | "confirmation_required" | "invalid_fingerprint" | "stale_preview" | "unsafe_path" | "scan_failed" | "apply_failed" | "sync_in_progress" | "cancelled";
+type ManagedWorkspaceSyncErrorCode = "baseline_missing" | "baseline_invalid" | "confirmation_required" | "invalid_fingerprint" | "stale_preview" | "unsafe_path" | "scan_failed" | "apply_failed" | "sync_in_progress" | "cancelled";
 
 export class ManagedWorkspaceSyncError extends Error {
   constructor(readonly code: ManagedWorkspaceSyncErrorCode, message: string) {

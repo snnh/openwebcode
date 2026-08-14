@@ -7,12 +7,12 @@ export type HookEvent =
   | "PreToolUse" | "PostToolUse" | "UserPromptSubmit" | "Stop" | "SessionStart"
   | "PreCompact" | "PostCompact" | "SessionEnd" | "Notification" | "SubagentStart" | "SubagentStop";
 
-export interface HookEntry {
+interface HookEntry {
   matcher: string;
   command: string;
 }
 
-export type HooksConfig = Partial<Record<HookEvent, HookEntry[]>>;
+type HooksConfig = Partial<Record<HookEvent, HookEntry[]>>;
 
 export interface HookPayload {
   sessionId: string;
@@ -47,7 +47,7 @@ export interface HookPayload {
   };
 }
 
-export interface HookOutcome {
+interface HookOutcome {
   blocked?: boolean;
   reason?: string;
 }
@@ -169,7 +169,7 @@ export function matchesMatcher(matcher: string, tool: string | undefined): boole
 }
 
 /** 校验并归一 hooks.json：事件名白名单、entry 需 matcher+command 字符串，坏条目丢弃 */
-export const HOOK_EVENTS: readonly HookEvent[] = [
+const HOOK_EVENTS: readonly HookEvent[] = [
   "PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop", "SessionStart",
   "PreCompact", "PostCompact", "SessionEnd", "Notification", "SubagentStart", "SubagentStop",
 ];

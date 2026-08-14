@@ -7,7 +7,7 @@ import type { JobOutputRequest, JobOutputResult, JobStartRequest, JobStatus } fr
 import type { SandboxPolicy } from "../sessions/types.js";
 import type { ChatPythonEnv } from "./chat-python-env.js";
 
-export interface PythonExecResult {
+interface PythonExecResult {
   stdout: string;
   stderr: string;
   exitCode: number;
@@ -33,7 +33,7 @@ export interface ChatPythonCoreBridge {
   cancelJob(request: { sessionId: string; jobId: string }): Promise<unknown>;
 }
 
-export interface PythonExecOptions {
+interface PythonExecOptions {
   /** meta.cwd 覆盖：已设置且为存在目录时作为子进程 cwd，否则回落 sessionDir。 */
   cwd?: string | undefined;
   /** core 桥接（CoreRouter）；Windows 上提供时经 job.* 在 Job Object 内运行。 */
@@ -153,7 +153,7 @@ export function buildSandboxEnv(home: string, mplConfigDir: string): Record<stri
 }
 
 /** 探测 bwrap 是否可用（spawn bwrap --version，失败/不存在均视为不可用）。 */
-export function probeBwrap(): Promise<boolean> {
+function probeBwrap(): Promise<boolean> {
   return new Promise((resolve) => {
     let proc;
     try {
@@ -167,7 +167,7 @@ export function probeBwrap(): Promise<boolean> {
   });
 }
 
-export interface BwrapSpec {
+interface BwrapSpec {
   venvDir: string;
   sessionDir: string;
   cwd: string;

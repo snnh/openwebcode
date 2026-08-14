@@ -231,7 +231,7 @@ export interface CoreEvent {
 }
 
 /** 外部建立的 core 连接（如 WSB 内 owc-exec --connect 回连的 TCP socket）。 */
-export interface CoreConnection {
+interface CoreConnection {
   transport: RpcTransport;
   child?: ChildProcessWithoutNullStreams;
 }

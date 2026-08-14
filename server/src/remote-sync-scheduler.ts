@@ -6,7 +6,7 @@ export const MAX_SYNC_INTERVAL_MINUTES = Math.floor(0x7fff_ffff / 60_000);
 
 type IntervalHandle = ReturnType<typeof setInterval>;
 
-export interface RemoteSyncSchedulerOptions {
+interface RemoteSyncSchedulerOptions {
   getIntervalMinutes(): number;
   sync(): Promise<void>;
   setIntervalImpl?(callback: () => void, delayMs: number): IntervalHandle;

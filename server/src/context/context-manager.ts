@@ -6,7 +6,7 @@ import { isMissing } from "../fs-utils.js";
 import type { ChatMessage } from "../sessions/types.js";
 import { estimateTokens, IMAGE_TOKEN_ESTIMATE, type Currency } from "./model-profile.js";
 
-export interface RecordedCost {
+interface RecordedCost {
   priced: boolean;
   source?: { currency: Currency; microUnits: string };
   usdMicroUnits?: string;
@@ -19,7 +19,7 @@ export interface RecordedCost {
   };
 }
 
-export interface CostLedger {
+interface CostLedger {
   usdMicroUnits: string;
   cnyMicroUnits: string;
   unpricedTokens: number;
@@ -28,10 +28,10 @@ export interface CostLedger {
   lastExchangeRate?: RecordedCost["exchangeRate"];
 }
 
-export type ToolEvictionStrategy = "lag" | "interval" | "off";
+type ToolEvictionStrategy = "lag" | "interval" | "off";
 
 /** 驱逐形态：placeholder = 默认节省（占位符替换结果正文）；process = 超级节省（整轮工具过程连同思维链出视图）。 */
-export type EvictionMode = "placeholder" | "process";
+type EvictionMode = "placeholder" | "process";
 
 export interface ContextPolicy {
   enabled: boolean;
@@ -49,7 +49,7 @@ export interface ContextPolicy {
   maxSessionCost?: { currency: Currency; microUnits: string };
 }
 
-export interface LedgerEntry {
+interface LedgerEntry {
   messageId: string;
   kind: "tool_result";
   artifactId: string;
@@ -81,9 +81,9 @@ export interface CompactionRecord {
 }
 
 /** 压缩历史上限：超出丢弃最旧（compacted 始终保持最新一次，历史仅供 UI 回放多次压缩）。 */
-export const MAX_COMPACTION_HISTORY = 20;
+const MAX_COMPACTION_HISTORY = 20;
 
-export interface ClearRecord {
+interface ClearRecord {
   /** 活动路径空间边界：messages[0..uptoIndex) 被清空（与 compactor/agent 视图同口径）。 */
   uptoIndex: number;
   at: string;
@@ -127,13 +127,13 @@ export type ContextPolicyUpdate = Partial<Pick<ContextPolicy, "enabled" | "strat
  * excludes 为路径 glob（不进入上下文组装/repo map/索引）。
  * 注意：排除不是安全边界——文件访问权限仍由路径策略与沙盒保证。
  */
-export interface ContextSelection {
+interface ContextSelection {
   pins: string[];
   excludes: string[];
 }
 
 /** 按段 token 归因：system/repoMap 段由后续阶段（provider 侧/Phase 1c）供数，此处预留。 */
-export interface ContextSegmentBreakdown {
+interface ContextSegmentBreakdown {
   system: number;
   compactionSummary: number;
   toolResults: number;
@@ -142,7 +142,7 @@ export interface ContextSegmentBreakdown {
   other: number;
 }
 
-export interface ContextBuildStats {
+interface ContextBuildStats {
   totalTokens: number;
   segments: ContextSegmentBreakdown;
   /** 被 pin 的消息在视图中占用的估算 tokens；超预算时由调用方如实提示，不悄悄驱逐。 */
@@ -155,13 +155,13 @@ export interface ContextBuildStats {
   evicted?: { tokens: number; count: number };
 }
 
-export interface ContextView {
+interface ContextView {
   messages: ChatMessage[];
   ledger: ContextLedger;
   stats: ContextBuildStats;
 }
 
-export interface BuildViewOptions {
+interface BuildViewOptions {
   selection?: ContextSelection;
   /** 强制全量重建（压缩、配置变更、会话恢复后的首次构建；等价性测试亦用）。 */
   forceFullRebuild?: boolean;
@@ -191,7 +191,7 @@ const READ_EXCERPT_MAX_CHARS = 8000;
  * 永不驱逐的工具结果白名单：这些工具的结果是后续轮次的关键上下文（如图片描述），
  * 驱逐会破坏任务连续性。自动驱逐与手动驱逐都跳过。
  */
-export const EVICTION_EXEMPT_TOOLS: ReadonlySet<string> = new Set(["ext__vision-tools__describe_image"]);
+const EVICTION_EXEMPT_TOOLS: ReadonlySet<string> = new Set(["ext__vision-tools__describe_image"]);
 
 /** 视图中一条消息的构建片段：最终注入形态（驱逐占位/图像预算已应用）+ 预估算 tokens。 */
 interface ViewFragment {

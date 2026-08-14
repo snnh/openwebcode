@@ -51,7 +51,7 @@ export async function readJsonLimited(response: Response, maxBytes: number): Pro
   }
 }
 
-export interface FollowRedirectsOptions {
+interface FollowRedirectsOptions {
   fetchImpl: typeof fetch;
   /** 起始 URL（调用方已校验合法）；重定向目标在本循环内逐跳校验。 */
   start: URL;

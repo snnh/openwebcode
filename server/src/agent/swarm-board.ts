@@ -8,15 +8,15 @@ import path from "node:path";
  * 全部读写失败静默降级（返回空/假），不拖垮子代理。
  */
 
-export interface SwarmBoardEntry {
+interface SwarmBoardEntry {
   ts: string;
   from: string;
   text: string;
 }
 
 /** read 结果上限：最多最后 50 条 / 8KB，防爆上下文。 */
-export const SWARM_BOARD_MAX_ENTRIES = 50;
-export const SWARM_BOARD_MAX_BYTES = 8 * 1024;
+const SWARM_BOARD_MAX_ENTRIES = 50;
+const SWARM_BOARD_MAX_BYTES = 8 * 1024;
 /** 汇总摘要里最后几条（digest）。 */
 const SWARM_BOARD_DIGEST_TAIL = 3;
 /** digest/成员帖子的单条文本截断长度。 */
@@ -42,7 +42,7 @@ export async function appendSwarmBoard(boardPath: string, from: string, text: st
   }
 }
 
-export interface SwarmBoardRead {
+interface SwarmBoardRead {
   entries: SwarmBoardEntry[];
   /** 当前总行数，作为下次增量读的 since。 */
   offset: number;

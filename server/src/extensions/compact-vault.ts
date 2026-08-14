@@ -16,14 +16,14 @@ import type { SessionStore } from "../sessions/session-store.js";
 import type { UsageLog } from "../usage-log.js";
 
 /** 目录条目：key 是主模型召回的记忆标识，files 指向 compact/segments/ 下的真实内容文件。 */
-export interface VaultSection {
+interface VaultSection {
   key: string;
   title: string;
   files: string[];
   desc: string;
 }
 
-export interface VaultChunkFile {
+interface VaultChunkFile {
   file: string;
   firstMessageId: string;
   lastMessageId: string;
@@ -31,7 +31,7 @@ export interface VaultChunkFile {
 }
 
 /** compact/index.json 结构：sections/chunkFiles 跨次压缩累积（key 全局唯一），uptoIndex 单调递增。 */
-export interface VaultIndex {
+interface VaultIndex {
   version: 1;
   uptoIndex: number;
   createdAt: string;
@@ -40,7 +40,7 @@ export interface VaultIndex {
 }
 
 /** 快速模型 Pass 1：把一块对话转录整理为目录条目（KEY/TITLE/FILES/DESC 四行 + --- 分隔）。 */
-export const VAULT_ORGANIZE_SYSTEM = `你是上下文档案整理器。输入是一段代码助手对话转录（分块）。请把这块转录中仍相关的内容整理为目录条目：
+const VAULT_ORGANIZE_SYSTEM = `你是上下文档案整理器。输入是一段代码助手对话转录（分块）。请把这块转录中仍相关的内容整理为目录条目：
 - 每条目四行字段，顺序固定：
   KEY: <小写英文短标识，如 goals/impl/issues，不得与已给 key 重复>
   TITLE: <简短标题>
@@ -52,7 +52,7 @@ export const VAULT_ORGANIZE_SYSTEM = `你是上下文档案整理器。输入是
 - 只输出条目，不要任何额外解释。`;
 
 /** 快速模型 Pass 2：合并/去重/删除过时条目，输出目录式索引（发给主模型的摘要）。 */
-export const VAULT_INDEX_SYSTEM = `你是上下文档案库的目录编辑。输入是本次压缩整理出的目录条目与历史归档条目。请：
+const VAULT_INDEX_SYSTEM = `你是上下文档案库的目录编辑。输入是本次压缩整理出的目录条目与历史归档条目。请：
 1. 合并语义重复的条目，删除过时条目（已被取代的决策、已完成且不再需要的步骤）。
 2. 输出最终目录索引，目录式结构，尽量短，主模型据此选择性召回：
 [归档索引] 早前共 N 条消息已归档至会话 compact/ 目录。需要细节时调用 recall_memory(keys=[...]) 按 key 召回完整内容。
@@ -157,15 +157,6 @@ export async function loadVaultIndex(compactDir: string): Promise<VaultIndex | n
   } catch {
     return null;
   }
-}
-
-/** 目录索引文本格式（host 侧 reinjectVaultIndex 的同构渲染见 compact-vault-host.renderDirectoryLite）。 */
-export function renderDirectoryIndex(sections: VaultSection[], messageCount: number): string {
-  const lines = [
-    `[归档索引] 早前共 ${messageCount} 条消息已归档至会话 compact/ 目录。需要细节时调用 recall_memory(keys=[...]) 按 key 召回完整内容。`,
-    ...sections.map((section) => `- ${section.title} (key=${section.key})：${section.desc}`),
-  ];
-  return lines.join("\n");
 }
 
 /**

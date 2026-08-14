@@ -133,7 +133,7 @@ export function wrapCommandWithNodeEnv(
   return flavor === "cmd" ? `${activation} && ${cmd}` : `${activation}; ${cmd}`;
 }
 
-export interface NodeEnvEnsureResult {
+interface NodeEnvEnsureResult {
   ok: boolean;
   note?: string;
 }

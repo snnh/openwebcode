@@ -3,7 +3,7 @@ import type { ShellBackend } from "../sessions/types.js";
 import { decodeProcessOutputChunks, type EncodedProcessOutput } from "./output-decoder.js";
 import { coreExecShell } from "./shell-detect.js";
 
-export interface BackgroundTaskInfo {
+interface BackgroundTaskInfo {
   taskId: string;
   sessionId: string;
   cmd: string;
