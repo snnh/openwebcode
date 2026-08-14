@@ -38,7 +38,7 @@ openwebcode/
 │   │   ├── components/      # 设计基元（Icon/Overlay/ConfirmDialog 等）与保留件（Markdown/Monaco 编辑器）
 │   │   ├── lib/             # api.ts REST 客户端、contracts.ts 类型契约
 │   │   ├── i18n.tsx         # 中英双语
-│   │   └── styles/          # 十一份样式表（tokens/base/layout/chat-*/composer/sidebar/panels/editor/dialogs/settings）
+│   │   └── styles/          # 十二份样式表（tokens/base/layout/chat-list/chat-cards/chat-mode/composer/sidebar/panels/editor/dialogs/settings）
 │   └── src/test/            # vitest + jsdom + Testing Library + axe
 ├── packaging/         # 分发布局、安装脚本、WiX 打包
 ├── scripts/bench/     # Node + Playwright 性能基准，回归 >15% 标红
@@ -171,7 +171,7 @@ core（ctest）：`test_protocol.py` / `test_fs.py` / `test_abs_path.py` / `test
 ### 改 UI
 
 - UI 状态入 `src/app/` 下的自研 store（ui-store/session-store/live-store/prefs-store，useSyncExternalStore）；服务端数据走 `@tanstack/react-query`；WS 事件经 `app/ws.ts` + `app/event-router.ts` 集中路由。
-- 样式在 `src/styles/` 十一份样式表（tokens/base/layout/chat-list/chat-cards/composer/sidebar/panels/editor/dialogs/settings），CSS 变量主题（亮/暗）。新组件按其域放 `chat/`、`composer/`、`workbench/`、`panels/`、`dialogs/`、`settings/`，基元放 `components/`。
+- 样式在 `src/styles/` 十二份样式表（tokens/base/layout/chat-list/chat-cards/chat-mode/composer/sidebar/panels/editor/dialogs/settings），CSS 变量主题（亮/暗）。新组件按其域放 `chat/`、`composer/`、`workbench/`、`panels/`、`dialogs/`、`settings/`，基元放 `components/`。
 - 新命令/快捷键：命令注册到 `app/commands.ts` 的 `registerBuiltinCommands`（含 `when` 上下文），默认键位加到 `DEFAULT_KEYBINDINGS`。`command-coverage.test.ts` 会校验每个 REST 动作都有对应命令。
 - Markdown/LaTeX 渲染集中在 `components/Markdown.tsx`，不要为流式/历史/思考各维护一份解析器。
 - 新增用户可见文案必须走 `useI18n()` 的 `t(中文, english)` 同时给中英文，不做运行时 DOM 文本替换。
@@ -196,7 +196,7 @@ manifest 可选声明 `configSchema`（JSON Schema 子集）：设置页据此�
 
 ## CI
 
-`.github/workflows/` 下五个工作流：
+`.github/workflows/` 下六个工作流：
 
 | 工作流 | 触发 | 干什么 |
 |---|---|---|
@@ -204,6 +204,7 @@ manifest 可选声明 `configSchema`（JSON Schema 子集）：设置页据此�
 | `server.yml` | 改 `server/**` 或 `core/**` | Ubuntu + Windows：先构建 core Debug，再 `npm ci && npm run build && npm test`（真实 owc-exec 端到端经 `OWC_CORE_PATH` 注入） |
 | `web.yml` | 改 `web/**` | Ubuntu：`npm ci && npm run build && npm test` |
 | `release.yml` | 打 `v*` tag 或手动 | 测试网关全绿后产 MSI / tar.gz 上传 Release，并跑性能基准归档 |
+| `docker.yml` | 打 `v*` tag 或手动（tag 留空则构建当前分支） | 构建 linux/amd64 + linux/arm64 多架构镜像推 `ghcr.io/snnh/openwebcode`（稳定版另打 `latest`），与 release 解耦互不阻断 |
 | `audit.yml` | 每周一定时 / 手动 | `npm audit --omit=dev --audit-level=high`，生产依赖有高危即失败 |
 
 几点容易踩的：

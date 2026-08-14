@@ -96,6 +96,7 @@ install(TARGETS owc-exec RUNTIME DESTINATION bin)
 # staging 到 ${CMAKE_BINARY_DIR}/stage/，契约如下：
 #   stage/bin/owc-exec(.exe)     core 可执行文件
 #   stage/bin/owc.cmd            Windows 启动脚本（由 packaging/owc.cmd 转 CRLF 生成）
+#   stage/bin/owc-launch.cmd     Windows 安装结束页 Launch 复选框启动器（仅 MSI，同样转 CRLF 生成）
 #   stage/server/dist/           服务端编译产物（入口 dist/index.js）
 #   stage/server/package.json    "type": "module" 声明，dist ESM 运行必需
 #   stage/server/node_modules/   生产依赖（npm prune --omit=dev 之后）

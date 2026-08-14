@@ -26,13 +26,13 @@ OpenWebCode 是一个跑在浏览器里的 AI 编码工作台，界面中英双�
   - 内存：≥ 512 MiB 空闲
   - 硬盘：≥ 500 MiB 可用
 
-3. 客户端：
+2. 客户端：
   可运行 Chrome / Edge ≥ 111 或 Firefox ≥ 113 浏览器的设备（含手机和平板）
 
 ## 主要功能
 
 - 基础的 AI coding 功能。
-- 不止于code，还能chat，全新chat模式，仍旧轻量。注：暂未开发完成
+- 不止于code，还能chat，全新chat模式，仍旧轻量。
 - 对低性能设备友好的资源占用：详见[性能与资源占用](#性能与资源占用)
 - 相对完善的沙盒支持：Windows Job Object/AppContainer/WSB，Linux bubblewrap/Landlock。
 - git 和文件系统级快照：ZFS / Btrfs / overlayfs / VHDX / qcow2 多种后端。
@@ -159,7 +159,7 @@ cd web && npm ci && npm run build && npm test                             # web�
 ## 卸载
 
 - **Windows**：「设置 → 应用」里卸载。
-- **Linux**：`rm -rf ~/.local/lib/openwebcode ~/.local/bin/owc`。
+- **Linux**：推荐运行安装时落盘的 `~/.local/bin/owc-uninstall`（会一并处理 systemd unit 残留）；或手动 `rm -rf ~/.local/lib/openwebcode ~/.local/bin/owc ~/.local/bin/owc-uninstall`。
 注：数据目录默认保留
 
 ## 赞助

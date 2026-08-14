@@ -105,8 +105,9 @@ release 基线建立后应收紧。
 - **确定性可重复**：数据集由固定 seed（`generate-dataset.mjs` 中 `SEED`）的
   PRNG 生成；事件总量、洪峰条数均为常量。
 - 数据集与结果目录（`data/`、`results/`）已 gitignore，不进版本库。
-- 慢客户端基准背压阈值压到 256KB（与
-  `server/test/event-stream-backpressure.test.ts` 同手法），避免真的打满 4MB 内核缓冲。
+- 慢客户端基准把待发消息条数上限压到 1（`wsBackpressureLimits: { maxBufferedMessages: 1 }`，
+  与 `server/test/event-stream-backpressure.test.ts` 同手法）；待发字节上限保持默认 4 MiB
+  （`server/src/events/ws-backpressure.ts` 的 `MAX_WS_BUFFERED_BYTES`），避免真的打满内核缓冲。
 
 ## 阈值语义
 
