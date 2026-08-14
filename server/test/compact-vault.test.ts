@@ -1,8 +1,10 @@
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import type { FastifyInstance } from "fastify";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
+import { Compactor } from "../src/context/compactor.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import type { CoreClient } from "../src/core-client.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
@@ -39,6 +41,11 @@ function toolResultMessage(id: string, callId: string, content: string): ChatMes
     createdAt: "2026-07-20T00:00:00.000Z",
     content: [{ type: "tool_result", toolCallId: callId, content, isError: false }],
   };
+}
+
+/** n 条纯文本 user 消息（快速压缩路径的通用输入）。 */
+function plainMessages(count: number): ChatMessage[] {
+  return Array.from({ length: count }, (_, index) => textMessage(`m${index}`, "user", `x${index}`));
 }
 
 /** 快速模型 stub：Pass 1 按块输出目录条目，Pass 2 输出目录索引；可注入指令段。 */
@@ -164,24 +171,21 @@ describe("CompactVaultService.compact", () => {
   });
 
   it("reports changed=false when there is no new span", async () => {
-    const messages = Array.from({ length: 12 }, (_, index) => textMessage(`m${index}`, "user", `x${index}`));
-    const { sessionId, service } = await compactSession(messages);
+    const { sessionId, service } = await compactSession(plainMessages(12));
     const second = await service.compact(sessionId);
     expect(second.changed).toBe(false);
     expect(second.reason).toContain("没有新的可压缩区段");
   });
 
   it("requires a configured fast model", async () => {
-    const messages = Array.from({ length: 12 }, (_, index) => textMessage(`m${index}`, "user", `x${index}`));
-    const { sessions, sessionId } = await makeSession(messages);
+    const { sessions, sessionId } = await makeSession(plainMessages(12));
     const service = new CompactVaultService(sessions, new FastModelClient(new ProviderRegistry()), new ProviderRegistry());
     await expect(service.compact(sessionId)).rejects.toThrow(/快速模型未配置/);
   });
 
   it("accumulates user instructions across compactions", async () => {
     const { client: firstClient, providers: firstProviders } = vaultFastModel("\n用户明确指令：\n- 不要删除文档");
-    const messages = Array.from({ length: 12 }, (_, index) => textMessage(`m${index}`, "user", `x${index}`));
-    const { sessions, sessionId } = await makeSession(messages);
+    const { sessions, sessionId } = await makeSession(plainMessages(12));
     const service = new CompactVaultService(sessions, firstClient, firstProviders);
     await service.compact(sessionId);
     let ledger = await new ContextManager(sessions.contextRoot(sessionId)).load();
@@ -199,8 +203,7 @@ describe("CompactVaultService.compact", () => {
 
 describe("CompactVaultService.readFile", () => {
   it("reads files inside compact/ and rejects escapes", async () => {
-    const messages = Array.from({ length: 12 }, (_, index) => textMessage(`m${index}`, "user", `x${index}`));
-    const { sessionId, service } = await compactSession(messages);
+    const { sessionId, service } = await compactSession(plainMessages(12));
     expect(await service.readFile(sessionId, "index.json")).toContain("goals");
     expect(await service.readFile(sessionId, "missing.md")).toBeNull();
     await expect(service.readFile(sessionId, "../ledger.json")).rejects.toThrow(/escapes/);
@@ -299,197 +302,151 @@ export function activate(api) {
     return id;
   }
 
-  it("routes /compact through the vault service when the extension is enabled and serves readVaultFile via the host", async () => {
+  /** 集成公共装配：会话存储 + 会话（rows 对 user/assistant 消息）+ vault 服务 + 扩展管理器 + pricing。 */
+  async function makeVaultEnv(rows = 12, withAssistant = true) {
     const root = await tempRoot("owc-vaultapp-");
     const events = new EventBus();
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
     const session = await sessions.create({ cwd: root, provider: "test-stub", model: "m1" });
-    for (let index = 0; index < 12; index += 1) {
+    for (let index = 0; index < rows; index += 1) {
       await sessions.appendMessage(session.id, "user", [{ type: "text", text: `需求 ${index}` }]);
-      await sessions.appendMessage(session.id, "assistant", [{ type: "text", text: `回答 ${index}` }]);
+      if (withAssistant) await sessions.appendMessage(session.id, "assistant", [{ type: "text", text: `回答 ${index}` }]);
     }
     const { client, providers: fastProviders } = vaultFastModel();
     const vaultService = new CompactVaultService(sessions, client, fastProviders);
     const manager = new ExtensionManager(path.join(root, "data"), events, { sessions, vaultService });
     await manager.initialize();
-    try {
-      await installFixture(manager, root, { permissions: ["context:read", "tools:register"], entry: STORAGE_ENTRY });
-      await manager.configure("compact-vault", { enabled: true, config: { keepTail: 2 } });
-      await manager.configure("sample", { enabled: true });
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    return { root, events, sessions, session, client, fastProviders, vaultService, manager, pricing };
+  }
 
+  type VaultEnv = Awaited<ReturnType<typeof makeVaultEnv>>;
+
+  interface VaultAppOptions {
+    rows?: number;
+    withAssistant?: boolean;
+    /** 设置时启用 compact-vault 扩展并注入 keepTail。 */
+    keepTail?: number;
+    /** 安装并启用 fixture 扩展。 */
+    fixture?: { permissions: ExtensionPermission[]; entry: string };
+    /** 注入默认 Compactor（扩展未启用路径）。 */
+    compactor?: boolean;
+  }
+
+  /** makeVaultEnv + buildServer 装配 + 自动关闭 app/manager。 */
+  async function withVaultApp<T>(options: VaultAppOptions, fn: (env: VaultEnv, app: FastifyInstance) => T | Promise<T>): Promise<T> {
+    const env = await makeVaultEnv(options.rows ?? 12, options.withAssistant ?? true);
+    try {
+      if (options.fixture) {
+        await installFixture(env.manager, env.root, options.fixture);
+        await env.manager.configure("sample", { enabled: true });
+      }
+      if (options.keepTail !== undefined) {
+        await env.manager.configure("compact-vault", { enabled: true, config: { keepTail: options.keepTail } });
+      }
       const providers = new ProviderRegistry();
       providers.register(makeStubProvider("test-stub"));
-      const pricing = new PricingCatalog(path.join(root, "pricing.json"));
-      await pricing.initialize();
       const app = await buildServer({
         core: { request: async () => ({}), configureSession: async () => undefined } as never,
-        sessions,
+        sessions: env.sessions,
         agent: { isRunning: () => false } as never,
-        events,
+        events: env.events,
         providers,
-        pricing,
-        extensions: manager,
-        vaultService,
+        pricing: env.pricing,
+        extensions: env.manager,
+        vaultService: env.vaultService,
+        ...(options.compactor ? { compactor: new Compactor(env.sessions, env.client) } : {}),
       });
       try {
-        const published: AppEvent[] = [];
-        events.on("event", (event: AppEvent) => published.push(event));
-        const response = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/compact`, payload: { mode: "overview" } });
-        expect(response.statusCode).toBe(200);
-        const body = response.json() as { changed: boolean; mode: string; uptoIndex?: number };
-        expect(body.changed).toBe(true);
-        expect(body.mode).toBe("vault");
-        // 扩展配置 keepTail=2 生效：24 条消息 → uptoIndex 22
-        expect(body.uptoIndex).toBe(22);
-        // 手动压缩开始即发布 compacting 事件（UI 即时反馈）
-        expect(published.some((event) => event.type === "context.compacting" && (event.payload as { mode?: string }).mode === "vault")).toBe(true);
-
-        // host → server context.readVaultFile 往返：读到归档索引
-        const toolResult = await manager.invokeTool("ext__sample__vread", { sessionId: session.id, path: "index.json" }, session.id);
-        expect(toolResult.content).toContain("goals");
-        // 路径逃逸被拒
-        await expect(manager.invokeTool("ext__sample__vread", { sessionId: session.id, path: "../ledger.json" }, session.id)).rejects.toThrow(/escapes|relative/);
+        return await fn(env, app);
       } finally {
         await app.close();
       }
     } finally {
-      await manager.close();
+      await env.manager.close();
     }
+  }
+
+  it("routes /compact through the vault service when the extension is enabled and serves readVaultFile via the host", async () => {
+    await withVaultApp({
+      fixture: { permissions: ["context:read", "tools:register"], entry: STORAGE_ENTRY },
+      keepTail: 2,
+    }, async ({ events, session, manager }, app) => {
+      const published: AppEvent[] = [];
+      events.on("event", (event: AppEvent) => published.push(event));
+      const response = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/compact`, payload: { mode: "overview" } });
+      expect(response.statusCode).toBe(200);
+      const body = response.json() as { changed: boolean; mode: string; uptoIndex?: number };
+      expect(body.changed).toBe(true);
+      expect(body.mode).toBe("vault");
+      // 扩展配置 keepTail=2 生效：24 条消息 → uptoIndex 22
+      expect(body.uptoIndex).toBe(22);
+      // 手动压缩开始即发布 compacting 事件（UI 即时反馈）
+      expect(published.some((event) => event.type === "context.compacting" && (event.payload as { mode?: string }).mode === "vault")).toBe(true);
+
+      // host → server context.readVaultFile 往返：读到归档索引
+      const toolResult = await manager.invokeTool("ext__sample__vread", { sessionId: session.id, path: "index.json" }, session.id);
+      expect(toolResult.content).toContain("goals");
+      // 路径逃逸被拒
+      await expect(manager.invokeTool("ext__sample__vread", { sessionId: session.id, path: "../ledger.json" }, session.id)).rejects.toThrow(/escapes|relative/);
+    });
   }, 25_000);
 
   it("falls back to the default compactor when the extension is disabled", async () => {
-    const root = await tempRoot("owc-vaultoff-");
-    const events = new EventBus();
-    const sessions = new SessionStore(path.join(root, "sessions"));
-    await sessions.initialize();
-    const session = await sessions.create({ cwd: root, provider: "test-stub", model: "m1" });
-    for (let index = 0; index < 12; index += 1) {
-      await sessions.appendMessage(session.id, "user", [{ type: "text", text: `需求 ${index}` }]);
-      await sessions.appendMessage(session.id, "assistant", [{ type: "text", text: `回答 ${index}` }]);
-    }
-    const { client, providers: fastProviders } = vaultFastModel();
-    const vaultService = new CompactVaultService(sessions, client, fastProviders);
-    const manager = new ExtensionManager(path.join(root, "data"), events, { sessions, vaultService });
-    await manager.initialize();
-    try {
-      const providers = new ProviderRegistry();
-      providers.register(makeStubProvider("test-stub"));
-      const pricing = new PricingCatalog(path.join(root, "pricing.json"));
-      await pricing.initialize();
-      const { Compactor } = await import("../src/context/compactor.js");
-      const compactor = new Compactor(sessions, client);
-      const app = await buildServer({
-        core: { request: async () => ({}), configureSession: async () => undefined } as never,
-        sessions,
-        agent: { isRunning: () => false } as never,
-        events,
-        providers,
-        pricing,
-        extensions: manager,
-        vaultService,
-        compactor,
-      });
-      try {
-        // 扩展未启用（默认）：/compact 走默认 Compactor（overview），不创建归档目录
-        const response = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/compact`, payload: { mode: "overview" } });
-        expect(response.statusCode).toBe(200);
-        const body = response.json() as { changed: boolean; mode: string };
-        expect(body.changed).toBe(true);
-        expect(body.mode).toBe("overview");
-        const ledger = await new ContextManager(sessions.contextRoot(session.id)).load();
-        expect(ledger.compacted?.mode).toBe("overview");
-        const compactDir = path.join(sessions.contextRoot(session.id), "compact");
-        await expect(readdir(compactDir)).rejects.toThrow();
-      } finally {
-        await app.close();
-      }
-    } finally {
-      await manager.close();
-    }
+    await withVaultApp({ compactor: true }, async ({ sessions, session }, app) => {
+      // 扩展未启用（默认）：/compact 走默认 Compactor（overview），不创建归档目录
+      const response = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/compact`, payload: { mode: "overview" } });
+      expect(response.statusCode).toBe(200);
+      const body = response.json() as { changed: boolean; mode: string };
+      expect(body.changed).toBe(true);
+      expect(body.mode).toBe("overview");
+      const ledger = await new ContextManager(sessions.contextRoot(session.id)).load();
+      expect(ledger.compacted?.mode).toBe("overview");
+      const compactDir = path.join(sessions.contextRoot(session.id), "compact");
+      await expect(readdir(compactDir)).rejects.toThrow();
+    });
   }, 25_000);
 
   it("serves the /compact slash command via the vault service even without a compactor", async () => {
-    const root = await tempRoot("owc-vaultslash-");
-    const events = new EventBus();
-    const published: AppEvent[] = [];
-    events.on("event", (event: AppEvent) => published.push(event));
-    const sessions = new SessionStore(path.join(root, "sessions"));
-    await sessions.initialize();
-    const session = await sessions.create({ cwd: root, provider: "test-stub", model: "m1" });
-    for (let index = 0; index < 12; index += 1) {
-      await sessions.appendMessage(session.id, "user", [{ type: "text", text: `需求 ${index}` }]);
-    }
-    const { client, providers: fastProviders } = vaultFastModel();
-    const vaultService = new CompactVaultService(sessions, client, fastProviders);
-    const manager = new ExtensionManager(path.join(root, "data"), events, { sessions, vaultService });
-    await manager.initialize();
-    try {
-      await manager.configure("compact-vault", { enabled: true, config: { keepTail: 2 } });
-      const providers = new ProviderRegistry();
-      providers.register(makeStubProvider("test-stub"));
-      const pricing = new PricingCatalog(path.join(root, "pricing.json"));
-      await pricing.initialize();
-      // 无 compactor：斜杠命令应由 vault 兜底（与 POST /compact 同口径）
-      const app = await buildServer({
-        core: { request: async () => ({}), configureSession: async () => undefined } as never,
-        sessions,
-        agent: { isRunning: () => false } as never,
-        events,
-        providers,
-        pricing,
-        extensions: manager,
-        vaultService,
-      });
-      try {
-        const response = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "/compact" } });
-        expect(response.statusCode).toBe(200);
-        expect(response.json<{ compacted: boolean }>().compacted).toBe(true);
-        const ledger = await new ContextManager(sessions.contextRoot(session.id)).load();
-        expect(ledger.compacted?.mode).toBe("vault");
-        expect(published.some((event) => event.type === "context.compacting")).toBe(true);
-        expect(published.some((event) => event.type === "context.compacted" && (event.payload as { mode?: string }).mode === "vault")).toBe(true);
-      } finally {
-        await app.close();
-      }
-    } finally {
-      await manager.close();
-    }
+    await withVaultApp({ rows: 12, withAssistant: false, keepTail: 2 }, async ({ events, sessions, session }, app) => {
+      const published: AppEvent[] = [];
+      events.on("event", (event: AppEvent) => published.push(event));
+      const response = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "/compact" } });
+      expect(response.statusCode).toBe(200);
+      expect(response.json<{ compacted: boolean }>().compacted).toBe(true);
+      const ledger = await new ContextManager(sessions.contextRoot(session.id)).load();
+      expect(ledger.compacted?.mode).toBe("vault");
+      expect(published.some((event) => event.type === "context.compacting")).toBe(true);
+      expect(published.some((event) => event.type === "context.compacted" && (event.payload as { mode?: string }).mode === "vault")).toBe(true);
+    });
   }, 25_000);
 
   it("routes the 85% force compaction through the vault service when the extension is enabled", async () => {
-    const root = await tempRoot("owc-vaultforce-");
-    const events = new EventBus();
+    const env = await makeVaultEnv(0);
     const published: AppEvent[] = [];
-    events.on("event", (event: AppEvent) => published.push(event));
-    const sessions = new SessionStore(path.join(root, "sessions"));
-    await sessions.initialize();
-    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
-    await pricing.initialize();
-    const requests: StreamChatRequest[] = [];
-    const providers = new ProviderRegistry();
-    const provider: Provider = {
-      name: "test-stub",
-      async *streamChat(request) {
-        requests.push(request);
-        yield { type: "done", stopReason: "end_turn" };
-      },
-    };
-    providers.register(provider);
-    const core = { on() { return core; }, async configureSession() { return { sandboxCapability: "advisory" }; } } as unknown as CoreClient;
-    const { client, providers: fastProviders } = vaultFastModel();
-    const vaultService = new CompactVaultService(sessions, client, fastProviders);
-    const manager = new ExtensionManager(path.join(root, "data"), events, { sessions, vaultService });
-    await manager.initialize();
+    env.events.on("event", (event: AppEvent) => published.push(event));
     try {
-      await manager.configure("compact-vault", { enabled: true, config: { keepTail: 1 } });
+      await env.manager.configure("compact-vault", { enabled: true, config: { keepTail: 1 } });
+      const requests: StreamChatRequest[] = [];
+      const providers = new ProviderRegistry();
+      const provider: Provider = {
+        name: "test-stub",
+        async *streamChat(request) {
+          requests.push(request);
+          yield { type: "done", stopReason: "end_turn" };
+        },
+      };
+      providers.register(provider);
+      const core = { on() { return core; }, async configureSession() { return { sandboxCapability: "advisory" }; } } as unknown as CoreClient;
       const tinyWindow = () => ({ contextWindow: 100, capabilities: { thinking: ["disabled"], effort: [] } }) as never;
       // compactor 缺失（第 13 参 undefined）：强制压缩由 vault 单独兜底
-      const runner = new AgentRunner(sessions, providers, core, events, pricing, undefined, "zh-CN", 50, tinyWindow, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, manager);
-      runner.setVaultService(vaultService);
-      const session = await sessions.create({ cwd: root, provider: "test-stub", model: "tiny" });
-      await sessions.appendMessage(session.id, "user", [{ type: "text", text: "很早的消息，".repeat(30) }]);
-      await sessions.appendMessage(session.id, "assistant", [{ type: "text", text: "很早的回复，".repeat(30) }]);
+      const runner = new AgentRunner(env.sessions, providers, core, env.events, env.pricing, undefined, "zh-CN", 50, tinyWindow, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, env.manager);
+      runner.setVaultService(env.vaultService);
+      const session = await env.sessions.create({ cwd: env.root, provider: "test-stub", model: "tiny" });
+      await env.sessions.appendMessage(session.id, "user", [{ type: "text", text: "很早的消息，".repeat(30) }]);
+      await env.sessions.appendMessage(session.id, "assistant", [{ type: "text", text: "很早的回复，".repeat(30) }]);
 
       await runner.run(session.id, "新的问题，".repeat(30));
 
@@ -500,15 +457,15 @@ export function activate(api) {
       expect(compacted).toHaveLength(1);
       expect(compacted[0]?.payload).toMatchObject({ forced: true, mode: "vault" });
       // 归档落盘 + 账本标记 vault
-      const compactDir = path.join(sessions.contextRoot(session.id), "compact");
+      const compactDir = path.join(env.sessions.contextRoot(session.id), "compact");
       const segments = await readdir(path.join(compactDir, "segments"));
       expect(segments.length).toBeGreaterThan(0);
-      const ledger = await new ContextManager(sessions.contextRoot(session.id)).load();
+      const ledger = await new ContextManager(env.sessions.contextRoot(session.id)).load();
       expect(ledger.compacted?.mode).toBe("vault");
       // provider 收到的重建视图首条是目录索引（而非原始消息）
       expect(requests.at(-1)?.messages[0]?.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("recall_memory") });
     } finally {
-      await manager.close();
+      await env.manager.close();
     }
   }, 25_000);
 });
@@ -527,8 +484,7 @@ describe("compact-vault thinking-model fallback and maxTokens", () => {
       yield { type: "done", stopReason: "end_turn" };
     }));
     const client = new FastModelClient(providers, { provider: "test-stub", model: "fast-m" });
-    const messages = Array.from({ length: 12 }, (_, index) => textMessage(`m${index}`, "user", `x${index}`));
-    const { sessions, sessionId, result } = await compactSession(messages, { fastModel: client, providers });
+    const { sessions, sessionId, result } = await compactSession(plainMessages(12), { fastModel: client, providers });
     expect(result.changed).toBe(true);
     expect(result.mode).toBe("vault");
     expect(result.summary).toContain("key=goals");
@@ -558,8 +514,7 @@ describe("compact-vault thinking-model fallback and maxTokens", () => {
       yield { type: "done", stopReason: "end_turn" };
     }));
     const client = new FastModelClient(providers, { provider: "test-stub", model: "fast-m" });
-    const messages = Array.from({ length: 12 }, (_, index) => textMessage(`m${index}`, "user", `x${index}`));
-    const { result } = await compactSession(messages, {
+    const { result } = await compactSession(plainMessages(12), {
       fastModel: client,
       providers,
       // 扩展配置：用户手动设置输出上限（默认不限制）
@@ -586,8 +541,7 @@ describe("compact-vault thinking-model fallback and maxTokens", () => {
       yield { type: "done", stopReason: "end_turn" };
     }));
     const client = new FastModelClient(providers, { provider: "test-stub", model: "fast-m" });
-    const messages = Array.from({ length: 12 }, (_, index) => textMessage(`m${index}`, "user", `x${index}`));
-    const { result } = await compactSession(messages, { fastModel: client, providers });
+    const { result } = await compactSession(plainMessages(12), { fastModel: client, providers });
     expect(result.changed).toBe(true);
     expect(calls.length).toBeGreaterThan(0);
     expect(calls.every((call) => call.maxTokens === undefined)).toBe(true);

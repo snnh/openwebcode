@@ -50,12 +50,18 @@ function fakeCore(runCalls: Array<Record<string, unknown>>): CoreClientLike {
   });
 }
 
+/** 写一份用户预设文件（自动建目录；对象自动序列化）。 */
+async function writePreset(root: string, filename: string, content: string | Record<string, unknown>): Promise<void> {
+  await mkdir(personasDir(root), { recursive: true });
+  await writeFile(path.join(personasDir(root), filename), typeof content === "string" ? content : JSON.stringify(content), "utf8");
+}
+
 interface HarnessOptions {
   enableEnvSim?: boolean;
   persona?: string;
   agentMode?: "plan" | "code";
   fileBaseOverride?: string;
-  presetFiles?: Array<{ filename: string; content: string }>;
+  presetFiles?: Array<{ filename: string; content: string | Record<string, unknown> }>;
   script?: ToolCallSpec[][];
 }
 
@@ -76,8 +82,7 @@ async function setup(options: HarnessOptions = {}) {
     await writeFile(path.join(dataDir, "system-prompt.md"), options.fileBaseOverride, "utf8");
   }
   for (const preset of options.presetFiles ?? []) {
-    await mkdir(personasDir(dataDir), { recursive: true });
-    await writeFile(path.join(personasDir(dataDir), preset.filename), preset.content, "utf8");
+    await writePreset(dataDir, preset.filename, preset.content);
   }
   const requests: StreamChatRequest[] = [];
   const providers = new ProviderRegistry();
@@ -95,6 +100,18 @@ async function setup(options: HarnessOptions = {}) {
   return { root, dataDir, sessions, session, events, requests, runCalls, manager, agent };
 }
 
+type Harness = Awaited<ReturnType<typeof setup>>;
+
+/** setup + 自动关闭 manager，消除各用例重复的 try/finally 样板。 */
+async function withHarness<T>(options: HarnessOptions, fn: (harness: Harness) => T | Promise<T>): Promise<T> {
+  const harness = await setup(options);
+  try {
+    return await fn(harness);
+  } finally {
+    await harness.manager.close();
+  }
+}
+
 function toolResults(detail: { messages: Array<{ role: string; content: Array<{ type: string }> }> } | null) {
   return (detail?.messages ?? [])
     .filter((message) => message.role === "tool")
@@ -102,10 +119,44 @@ function toolResults(detail: { messages: Array<{ role: string; content: Array<{ 
     .filter((block): block is { type: "tool_result"; toolCallId: string; content: string; isError?: boolean } => block.type === "tool_result");
 }
 
+/** setup + 装配 buildServer（REST 与 /init、/compact 命令用例共用；注入 compactor/dataDir 供命令用例）。 */
+async function setupApp(options: HarnessOptions = {}) {
+  const harness = await setup(options);
+  // buildServer 的 providers 仅用于 REST 校验；agent 实际走 harness 内部注册表（harness.requests 记录请求）
+  const providers = new ProviderRegistry();
+  providers.register(scriptProvider([], []));
+  const fastModelCalls: Array<{ system: string; prompt: string }> = [];
+  const compactor = new Compactor(harness.sessions, makeFakeFastModel("[压缩] bash", fastModelCalls), {}, 3);
+  const app = await buildServer({
+    core: fakeCore([]),
+    sessions: harness.sessions,
+    agent: harness.agent,
+    events: harness.events,
+    providers,
+    pricing: new PricingCatalog(path.join(harness.root, "pricing2.json")),
+    extensions: harness.manager,
+    compactor,
+    dataDir: harness.dataDir,
+  });
+  return { ...harness, app, fastModelCalls };
+}
+
+type AppHarness = Awaited<ReturnType<typeof setupApp>>;
+
+/** setupApp + 自动关闭 app/manager。 */
+async function withApp<T>(options: HarnessOptions, fn: (harness: AppHarness) => T | Promise<T>): Promise<T> {
+  const harness = await setupApp(options);
+  try {
+    return await fn(harness);
+  } finally {
+    await harness.app.close();
+    await harness.manager.close();
+  }
+}
+
 describe("env-sim prompt.beforeBuild", () => {
   it("applies the persona identity and base prompt while keeping the core safety boundary", async () => {
-    const { agent, session, requests, manager } = await setup({ enableEnvSim: true, persona: "claude-code" });
-    try {
+    await withHarness({ enableEnvSim: true, persona: "claude-code" }, async ({ agent, session, requests }) => {
       await agent.run(session.id, "你好");
       const system = requests[0]!.system;
       expect(system).toContain("You are Claude Code, Anthropic's agentic coding tool.");
@@ -113,50 +164,36 @@ describe("env-sim prompt.beforeBuild", () => {
       // 核心安全网不可被钩子移除
       expect(system).toContain("## Safety boundary");
       expect(system).toContain("Prompt version:");
-    } finally {
-      await manager.close();
-    }
+    });
   }, 20_000);
 
   it("restores the default prompt when persona is empty or the extension is disabled", async () => {
-    const emptyPersona = await setup({ enableEnvSim: true, persona: "" });
-    try {
-      await emptyPersona.agent.run(emptyPersona.session.id, "你好");
-      expect(emptyPersona.requests[0]!.system).toContain("You are OpenWebCode. The workspace");
-    } finally {
-      await emptyPersona.manager.close();
-    }
-    const disabled = await setup();
-    try {
-      await disabled.agent.run(disabled.session.id, "你好");
-      expect(disabled.requests[0]!.system).toContain("You are OpenWebCode. The workspace");
-    } finally {
-      await disabled.manager.close();
+    // 空 persona（启用扩展）与完全未启用扩展都应回落默认提示词
+    const cases: HarnessOptions[] = [{ enableEnvSim: true, persona: "" }, {}];
+    for (const options of cases) {
+      await withHarness(options, async ({ agent, session, requests }) => {
+        await agent.run(session.id, "你好");
+        expect(requests[0]!.system).toContain("You are OpenWebCode. The workspace");
+      });
     }
   }, 30_000);
 
   it("composes with the file-based override: persona base wins only when it sets one", async () => {
-    const fileOnly = await setup({ enableEnvSim: true, persona: "", fileBaseOverride: "FILE BASE BODY\n" });
-    try {
-      await fileOnly.agent.run(fileOnly.session.id, "你好");
-      expect(fileOnly.requests[0]!.system).toContain("FILE BASE BODY");
-    } finally {
-      await fileOnly.manager.close();
-    }
-    const persona = await setup({ enableEnvSim: true, persona: "zcode", fileBaseOverride: "FILE BASE BODY\n" });
-    try {
-      await persona.agent.run(persona.session.id, "你好");
-      const system = persona.requests[0]!.system;
+    await withHarness({ enableEnvSim: true, persona: "", fileBaseOverride: "FILE BASE BODY\n" }, async ({ agent, session, requests }) => {
+      await agent.run(session.id, "你好");
+      expect(requests[0]!.system).toContain("FILE BASE BODY");
+    });
+    await withHarness({ enableEnvSim: true, persona: "zcode", fileBaseOverride: "FILE BASE BODY\n" }, async ({ agent, session, requests }) => {
+      await agent.run(session.id, "你好");
+      const system = requests[0]!.system;
       expect(system).toContain("You are an interactive ZCode agent that helps users with software engineering tasks.");
       expect(system).not.toContain("FILE BASE BODY");
       expect(system).toContain("## Safety boundary");
-    } finally {
-      await persona.manager.close();
-    }
+    });
   }, 30_000);
+
   it("session-level persona overrides the extension-wide config", async () => {
-    const { agent, session, sessions, requests, manager } = await setup({ enableEnvSim: true, persona: "codex" });
-    try {
+    await withHarness({ enableEnvSim: true, persona: "codex" }, async ({ agent, session, sessions, requests }) => {
       await sessions.updateConfig(session.id, { provider: "fake", model: "model", persona: "claude-code" });
       await agent.run(session.id, "你好");
       const system = requests[0]!.system;
@@ -165,32 +202,26 @@ describe("env-sim prompt.beforeBuild", () => {
       // 工具形态也跟随会话级 persona（cc 形态而非 codex 形态）
       expect(names).toContain("TodoWrite");
       expect(names).not.toContain("apply_patch");
-    } finally {
-      await manager.close();
-    }
+    });
   }, 20_000);
 });
 
 describe("env-sim tool shaping", () => {
   it("renames aliased built-ins and hides OWC-specific tools in the provider request", async () => {
-    const { agent, session, requests, manager } = await setup({ enableEnvSim: true, persona: "claude-code" });
-    try {
+    await withHarness({ enableEnvSim: true, persona: "claude-code" }, async ({ agent, session, requests }) => {
       await agent.run(session.id, "你好");
       const names = (requests[0]!.tools ?? []).map((tool) => tool.name);
       for (const expected of ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "TodoWrite", "Task"]) expect(names).toContain(expected);
       for (const hidden of ["bash", "read_file", "write_file", "edit_file", "glob", "grep", "read_artifact", "spawn_swarm", "remember"]) expect(names).not.toContain(hidden);
-    } finally {
-      await manager.close();
-    }
+    });
   }, 20_000);
 
   it("executes an alias call through the built-in bash implementation", async () => {
-    const { agent, session, sessions, runCalls, manager } = await setup({
+    await withHarness({
       enableEnvSim: true,
       persona: "claude-code",
       script: [[{ id: "call-1", name: "Bash", input: { cmd: "echo hi" } }]],
-    });
-    try {
+    }, async ({ agent, session, sessions, runCalls }) => {
       await agent.run(session.id, "跑个命令");
       expect(runCalls).toHaveLength(1);
       // bash 一次性路径注入会话环境变量（最内层包装），用户命令在其后
@@ -198,70 +229,59 @@ describe("env-sim tool shaping", () => {
       expect(runCalls[0]?.cmd).toContain("echo hi");
       const results = toolResults(await sessions.get(session.id));
       expect(results[0]).toMatchObject({ toolCallId: "call-1", isError: false });
-    } finally {
-      await manager.close();
-    }
+    });
   }, 20_000);
 
   it("keeps the original permission class for aliased tools", async () => {
     const seen: AppEvent[] = [];
-    const { agent, session, events, manager } = await setup({
+    await withHarness({
       enableEnvSim: true,
       persona: "claude-code",
       script: [[{ id: "call-1", name: "Edit", input: { path: "a.txt", oldText: "a", newText: "b" } }]],
-    });
-    events.on("event", (event) => { if (event.type === "tool.scheduling") seen.push(event); });
-    try {
+    }, async ({ agent, session, events }) => {
+      events.on("event", (event) => { if (event.type === "tool.scheduling") seen.push(event); });
       await agent.run(session.id, "改个文件");
       const scheduling = seen.find((event) => (event.payload as { toolCallId?: string }).toolCallId === "call-1");
       // 别名 Edit 保留 edit_file 的 workspace_write 分级，不降级为 external
       expect(scheduling?.payload).toMatchObject({ name: "edit_file", execution: "workspace_write" });
-    } finally {
-      await manager.close();
-    }
+    });
   }, 20_000);
 
   it("blocks aliased write tools in plan mode exactly like the originals", async () => {
-    const { agent, session, sessions, manager } = await setup({
+    await withHarness({
       enableEnvSim: true,
       persona: "claude-code",
       agentMode: "plan",
       script: [[{ id: "call-1", name: "Edit", input: { path: "a.txt", oldText: "a", newText: "b" } }]],
-    });
-    try {
+    }, async ({ agent, session, sessions }) => {
       await agent.run(session.id, "改个文件");
       const results = toolResults(await sessions.get(session.id));
       expect(results[0]?.isError).toBe(true);
       expect(results[0]?.content).toContain("Plan 模式为只读");
-    } finally {
-      await manager.close();
-    }
+    });
   }, 20_000);
 
   it("rejects calls to hidden built-ins as unavailable", async () => {
-    const { agent, session, sessions, manager } = await setup({
+    await withHarness({
       enableEnvSim: true,
       persona: "claude-code",
       script: [[{ id: "call-1", name: "read_artifact", input: { artifactId: "a", offset: 0, limit: 10 } }]],
-    });
-    try {
+    }, async ({ agent, session, sessions }) => {
       await agent.run(session.id, "读 artifact");
       const results = toolResults(await sessions.get(session.id));
       expect(results[0]).toMatchObject({ toolCallId: "call-1", isError: true });
       expect(results[0]?.content).toContain("Tool is not available in this turn");
-    } finally {
-      await manager.close();
-    }
+    });
   }, 20_000);
 
   it("skips aliases with an unknown from with a warning", async () => {
     const warnings: string[] = [];
-    const harness = await setup({
+    await withHarness({
       enableEnvSim: true,
       persona: "custom-sim",
       presetFiles: [{
         filename: "custom-sim.json",
-        content: JSON.stringify({
+        content: {
           id: "custom-sim",
           name: "Custom Sim",
           identity: "You are Custom Sim.",
@@ -269,33 +289,29 @@ describe("env-sim tool shaping", () => {
           productSections: [],
           hideBuiltIns: [],
           aliases: [{ from: "no_such_tool", as: "Nope" }, { from: "bash", as: "Terminal" }],
-        }),
+        },
       }],
-    });
-    harness.events.on("event", (event) => {
-      if (event.type === "extension.warning") warnings.push((event.payload as { message: string }).message);
-    });
-    try {
-      await harness.agent.run(harness.session.id, "你好");
-      const names = (harness.requests[0]!.tools ?? []).map((tool) => tool.name);
+    }, async ({ agent, session, events, requests }) => {
+      events.on("event", (event) => {
+        if (event.type === "extension.warning") warnings.push((event.payload as { message: string }).message);
+      });
+      await agent.run(session.id, "你好");
+      const names = (requests[0]!.tools ?? []).map((tool) => tool.name);
       expect(names).toContain("Terminal");
       expect(names).not.toContain("Nope");
       expect(warnings.some((message) => message.includes("no_such_tool"))).toBe(true);
-    } finally {
-      await harness.manager.close();
-    }
+    });
   }, 20_000);
 
   it("translates persona-shaped arguments back to built-in parameters (argMap)", async () => {
-    const { agent, session, sessions, requests, runCalls, manager } = await setup({
+    await withHarness({
       enableEnvSim: true,
       persona: "claude-code",
       script: [[
         { id: "call-1", name: "Bash", input: { command: "echo hi", description: "greet" } },
         { id: "call-2", name: "Edit", input: { file_path: "a.txt", old_string: "a", new_string: "b", replace_all: true } },
       ]],
-    });
-    try {
+    }, async ({ agent, session, sessions, requests, runCalls }) => {
       await agent.run(session.id, "跑命令再改文件");
       // cc 形态 schema 出现在 provider 请求中
       const bashTool = (requests[0]!.tools ?? []).find((tool) => tool.name === "Bash");
@@ -306,14 +322,11 @@ describe("env-sim tool shaping", () => {
       const results = toolResults(await sessions.get(session.id));
       // file_path/old_string/new_string/replace_all 归一为内置 edit_file 参数后执行成功
       expect(results.find((item) => item.toolCallId === "call-2")).toMatchObject({ isError: false });
-    } finally {
-      await manager.close();
-    }
+    });
   }, 20_000);
 
   it("rejects third-party manifests carrying toolShaping", async () => {
-    const { manager, root } = await setup();
-    try {
+    await withHarness({}, async ({ manager, root }) => {
       const source = path.join(root, "malicious-src");
       await mkdir(source, { recursive: true });
       await writeFile(path.join(source, "manifest.json"), JSON.stringify({
@@ -328,17 +341,14 @@ describe("env-sim tool shaping", () => {
       }), "utf8");
       await writeFile(path.join(source, "index.js"), "export function activate() {}\n", "utf8");
       await expect(manager.install(source)).rejects.toThrow(/toolShaping/);
-    } finally {
-      await manager.close();
-    }
+    });
   }, 20_000);
 });
 
 describe("env-sim preset store", () => {
   it("lists built-ins first, then valid user presets; resolvePersona prefers built-ins", async () => {
     const root = await tempRoot();
-    await mkdir(personasDir(root), { recursive: true });
-    await writeFile(path.join(personasDir(root), "mine.json"), JSON.stringify({
+    await writePreset(root, "mine.json", {
       id: "mine",
       name: "Mine",
       identity: "You are Mine.",
@@ -346,7 +356,7 @@ describe("env-sim preset store", () => {
       productSections: ["## Extra"],
       hideBuiltIns: ["remember"],
       aliases: [{ from: "bash", as: "Shell" }],
-    }), "utf8");
+    });
     const personas = await listPersonas(root);
     expect(personas.filter((item) => item.builtin).map((item) => item.id)).toEqual(["claude-code", "kimi-code", "zcode", "codex"]);
     expect(personas.find((item) => item.id === "mine")).toMatchObject({ name: "Mine", builtin: false });
@@ -359,12 +369,11 @@ describe("env-sim preset store", () => {
 
   it("skips invalid JSON, bad shapes and built-in id collisions without crashing", async () => {
     const root = await tempRoot();
-    await mkdir(personasDir(root), { recursive: true });
-    await writeFile(path.join(personasDir(root), "broken.json"), "{ not json", "utf8");
-    await writeFile(path.join(personasDir(root), "shape.json"), JSON.stringify({ id: "shape", name: 42 }), "utf8");
-    await writeFile(path.join(personasDir(root), "claude-code.json"), JSON.stringify({
+    await writePreset(root, "broken.json", "{ not json");
+    await writePreset(root, "shape.json", { id: "shape", name: 42 });
+    await writePreset(root, "claude-code.json", {
       id: "claude-code", name: "Impostor", identity: "x", basePrompt: "y",
-    }), "utf8");
+    });
     const warnings: string[] = [];
     const presets = await loadUserPresets(root, (message) => warnings.push(message));
     expect(presets).toHaveLength(0);
@@ -376,8 +385,7 @@ describe("env-sim preset store", () => {
 
   it("keeps alias inputSchema/argMap when loading user presets", async () => {
     const root = await tempRoot();
-    await mkdir(personasDir(root), { recursive: true });
-    await writeFile(path.join(personasDir(root), "shaped.json"), JSON.stringify({
+    await writePreset(root, "shaped.json", {
       id: "shaped",
       name: "Shaped",
       identity: "You are Shaped.",
@@ -388,7 +396,7 @@ describe("env-sim preset store", () => {
         inputSchema: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
         argMap: { command: "cmd" },
       }],
-    }), "utf8");
+    });
     const preset = (await loadUserPresets(root)).find((item) => item.id === "shaped");
     expect(preset?.aliases[0]).toMatchObject({
       from: "bash",
@@ -400,8 +408,7 @@ describe("env-sim preset store", () => {
 
   it("parses the optional command-prompt fields of user presets", async () => {
     const root = await tempRoot();
-    await mkdir(personasDir(root), { recursive: true });
-    await writeFile(path.join(personasDir(root), "prompted.json"), JSON.stringify({
+    await writePreset(root, "prompted.json", {
       id: "prompted",
       name: "Prompted",
       identity: "You are Prompted.",
@@ -409,7 +416,7 @@ describe("env-sim preset store", () => {
       initPrompt: "custom init prompt",
       compactOverviewPrompt: "custom overview",
       compactToolcallsPrompt: "custom toolcalls",
-    }), "utf8");
+    });
     const preset = (await loadUserPresets(root)).find((item) => item.id === "prompted");
     expect(preset).toMatchObject({
       initPrompt: "custom init prompt",
@@ -445,26 +452,8 @@ describe("env-sim preset store", () => {
 });
 
 describe("env-sim REST contract", () => {
-  async function setupRest(presetFiles?: Array<{ filename: string; content: string }>) {
-    const harness = await setup({ presetFiles });
-    // PUT /sessions/:id/config 会按注册表校验会话 provider/model，需与 harness 同源注册
-    const providers = new ProviderRegistry();
-    providers.register(scriptProvider([], []));
-    const app = await buildServer({
-      core: fakeCore([]),
-      sessions: harness.sessions,
-      agent: harness.agent,
-      events: harness.events,
-      providers,
-      pricing: new PricingCatalog(path.join(harness.root, "pricing2.json")),
-      extensions: harness.manager,
-    });
-    return { ...harness, app };
-  }
-
   it("validates config against the manifest configSchema", async () => {
-    const { app, manager } = await setupRest();
-    try {
+    await withApp({}, async ({ app }) => {
       const wrongType = await app.inject({ method: "POST", url: "/api/extensions", payload: { id: "env-sim", config: { persona: 123 } } });
       expect(wrongType.statusCode).toBe(400);
       const unknownKey = await app.inject({ method: "POST", url: "/api/extensions", payload: { id: "env-sim", config: { nope: "x" } } });
@@ -473,15 +462,11 @@ describe("env-sim REST contract", () => {
       const valid = await app.inject({ method: "POST", url: "/api/extensions", payload: { id: "env-sim", enabled: true, config: { persona: "codex" } } });
       expect(valid.statusCode).toBe(200);
       expect((valid.json() as { config: Record<string, unknown> }).config).toMatchObject({ persona: "codex" });
-    } finally {
-      await app.close();
-      await manager.close();
-    }
+    });
   }, 20_000);
 
   it("exposes configSchema and availablePersonas on ExtensionInfo", async () => {
-    const { app, manager } = await setupRest();
-    try {
+    await withApp({}, async ({ app }) => {
       const response = await app.inject({ method: "GET", url: "/api/extensions" });
       expect(response.statusCode).toBe(200);
       const envSim = (response.json() as Array<Record<string, unknown>>).find((item) => item.id === "env-sim");
@@ -491,18 +476,16 @@ describe("env-sim REST contract", () => {
       const personas = envSim?.availablePersonas as Array<{ id: string; builtin: boolean }>;
       expect(personas.map((item) => item.id)).toEqual(["claude-code", "kimi-code", "zcode", "codex"]);
       expect(personas.every((item) => item.builtin)).toBe(true);
-    } finally {
-      await app.close();
-      await manager.close();
-    }
+    });
   }, 20_000);
 
   it("serves the personas endpoint with built-ins, user presets and the drop directory", async () => {
-    const { app, manager, dataDir } = await setupRest([{
-      filename: "shared.json",
-      content: JSON.stringify({ id: "shared", name: "Shared Preset", identity: "You are Shared.", basePrompt: "shared base" }),
-    }]);
-    try {
+    await withApp({
+      presetFiles: [{
+        filename: "shared.json",
+        content: { id: "shared", name: "Shared Preset", identity: "You are Shared.", basePrompt: "shared base" },
+      }],
+    }, async ({ app, dataDir }) => {
       const response = await app.inject({ method: "GET", url: "/api/extensions/env-sim/personas" });
       expect(response.statusCode).toBe(200);
       const body = response.json() as { personas: Array<{ id: string; builtin: boolean }>; directory: string };
@@ -510,15 +493,11 @@ describe("env-sim REST contract", () => {
       expect(body.personas.at(-1)).toMatchObject({ id: "shared", builtin: false });
       expect(path.isAbsolute(body.directory)).toBe(true);
       expect(body.directory).toBe(personasDir(dataDir));
-    } finally {
-      await app.close();
-      await manager.close();
-    }
+    });
   }, 20_000);
 
   it("serves full persona details for preview and 404s unknown ids", async () => {
-    const { app, manager } = await setupRest();
-    try {
+    await withApp({}, async ({ app }) => {
       const detail = await app.inject({ method: "GET", url: "/api/extensions/env-sim/personas/claude-code" });
       expect(detail.statusCode).toBe(200);
       const body = detail.json() as Record<string, unknown>;
@@ -532,15 +511,11 @@ describe("env-sim REST contract", () => {
       expect(read?.inputSchema).toMatchObject({ required: ["file_path"] });
       const missing = await app.inject({ method: "GET", url: "/api/extensions/env-sim/personas/nope" });
       expect(missing.statusCode).toBe(404);
-    } finally {
-      await app.close();
-      await manager.close();
-    }
+    });
   }, 20_000);
 
   it("validates and persists session-level persona via PUT config, exposing activePersona on detail", async () => {
-    const { app, manager, sessions, session } = await setupRest();
-    try {
+    await withApp({}, async ({ app, manager, sessions, session }) => {
       await manager.configure("env-sim", { enabled: true, config: { persona: "codex" } });
       const unknown = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { persona: "no-such-persona" } });
       expect(unknown.statusCode).toBe(400);
@@ -559,51 +534,23 @@ describe("env-sim REST contract", () => {
       expect(await sessions.get(session.id)).not.toHaveProperty("persona");
       const fallback = await app.inject({ method: "GET", url: `/api/sessions/${session.id}` });
       expect(fallback.json()).toMatchObject({ activePersona: { id: "codex" } });
-    } finally {
-      await app.close();
-      await manager.close();
-    }
+    });
   }, 20_000);
 });
 
 describe("env-sim command prompt shaping", () => {
-  async function setupWithApp(options: HarnessOptions = {}) {
-    const harness = await setup(options);
-    // buildServer 的 providers 仅用于 REST 校验；agent 实际走 harness 内部注册表（harness.requests 记录请求）
-    const providers = new ProviderRegistry();
-    providers.register(scriptProvider([], []));
-    const fastModelCalls: Array<{ system: string; prompt: string }> = [];
-    const compactor = new Compactor(harness.sessions, makeFakeFastModel("[压缩] bash", fastModelCalls), {}, 3);
-    const app = await buildServer({
-      core: fakeCore([]),
-      sessions: harness.sessions,
-      agent: harness.agent,
-      events: harness.events,
-      providers,
-      pricing: new PricingCatalog(path.join(harness.root, "pricing2.json")),
-      extensions: harness.manager,
-      compactor,
-      dataDir: harness.dataDir,
-    });
-    return { ...harness, app, fastModelCalls };
-  }
-
   it("alias descriptions reach the provider tool list", async () => {
-    const { agent, session, requests, manager } = await setup({ enableEnvSim: true, persona: "claude-code" });
-    try {
+    await withHarness({ enableEnvSim: true, persona: "claude-code" }, async ({ agent, session, requests }) => {
       await agent.run(session.id, "你好");
       const tools = requests[0]!.tools ?? [];
       expect(tools.find((tool) => tool.name === "Bash")?.description).toBe("Run a shell command in the workspace.");
       expect(tools.find((tool) => tool.name === "Grep")?.description).toBe("Search file contents for a pattern.");
-    } finally {
-      await manager.close();
-    }
+    });
   }, 20_000);
 
   it("/init expands to the persona init prompt; user override wins over persona", async () => {
     const cc = BUILTIN_PERSONAS.find((item) => item.id === "claude-code")!;
-    const { app, agent, session, requests, manager, dataDir } = await setupWithApp({ enableEnvSim: true, persona: "claude-code" });
-    try {
+    await withApp({ enableEnvSim: true, persona: "claude-code" }, async ({ app, agent, session, requests, dataDir }) => {
       const first = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "/init" } });
       expect(first.statusCode, first.body).toBe(202);
       await vi.waitFor(() => expect(requests.length).toBeGreaterThan(0), { timeout: 5_000 });
@@ -621,16 +568,12 @@ describe("env-sim command prompt shaping", () => {
       const second = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "/init" } });
       expect(second.statusCode, second.body).toBe(202);
       await vi.waitFor(() => expect(seen()).toContain("用户自定义 init 提示词"), { timeout: 5_000 });
-    } finally {
-      await app.close();
-      await manager.close();
-    }
+    });
   }, 20_000);
 
   it("/compact uses the persona compact prompt; user override wins over persona", async () => {
     const cc = BUILTIN_PERSONAS.find((item) => item.id === "claude-code")!;
-    const { app, session, sessions, fastModelCalls, manager, dataDir } = await setupWithApp({ enableEnvSim: true, persona: "claude-code" });
-    try {
+    await withApp({ enableEnvSim: true, persona: "claude-code" }, async ({ app, session, sessions, fastModelCalls, dataDir }) => {
       for (let index = 0; index < 5; index += 1) {
         await sessions.appendMessage(session.id, "user", [{ type: "text", text: `消息 ${index + 1}` }]);
       }
@@ -646,15 +589,11 @@ describe("env-sim command prompt shaping", () => {
       const second = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/compact`, payload: { mode: "toolcalls" } });
       expect(second.statusCode, second.body).toBe(200);
       expect(fastModelCalls.at(-1)?.system).toBe("用户自定义工具压缩指令");
-    } finally {
-      await app.close();
-      await manager.close();
-    }
+    });
   }, 20_000);
 
   it("creates, lists and deletes user personas over REST", async () => {
-    const { app, manager } = await setupWithApp();
-    try {
+    await withApp({}, async ({ app }) => {
       const created = await app.inject({
         method: "POST",
         url: "/api/extensions/env-sim/personas",
@@ -677,10 +616,7 @@ describe("env-sim command prompt shaping", () => {
       expect(removed.statusCode).toBe(200);
       const after = await app.inject({ method: "GET", url: "/api/extensions/env-sim/personas" });
       expect((after.json() as { personas: Array<{ id: string }> }).personas.map((item) => item.id)).not.toContain("mine");
-    } finally {
-      await app.close();
-      await manager.close();
-    }
+    });
   }, 20_000);
 });
 
@@ -691,91 +627,73 @@ describe("env-sim outbound UA simulation", () => {
     setSimulatedUserAgent(null);
   });
 
-  it("applies the persona UA only when the manual toggle is on", async () => {
-    const harness = await setup();
-    try {
+  it("applies the persona UA only when the manual toggle is on and restores the default on disable", async () => {
+    await withHarness({}, async ({ manager }) => {
       // 开关默认关闭：仅启用扩展 + 选预设不生效
-      await harness.manager.configure("env-sim", { enabled: true, config: { persona: "claude-code" } });
+      await manager.configure("env-sim", { enabled: true, config: { persona: "claude-code" } });
       expect(getUserAgent()).toBe(official());
       // 手动开启开关：自动填充所选预设的拟态 UA
-      await harness.manager.configure("env-sim", { config: { simulateUserAgent: true } });
+      await manager.configure("env-sim", { config: { simulateUserAgent: true } });
       expect(getUserAgent()).toBe("claude-code/2.4.6");
       // 更新链路始终使用官方 UA，不受模拟影响
       expect(getOfficialUserAgent()).toBe(official());
       // 关闭开关恢复默认
-      await harness.manager.configure("env-sim", { config: { simulateUserAgent: false } });
+      await manager.configure("env-sim", { config: { simulateUserAgent: false } });
       expect(getUserAgent()).toBe(official());
       // 清空 persona 恢复默认
-      await harness.manager.configure("env-sim", { config: { simulateUserAgent: true, persona: "" } });
+      await manager.configure("env-sim", { config: { simulateUserAgent: true, persona: "" } });
       expect(getUserAgent()).toBe(official());
-    } finally {
-      await harness.manager.close();
-    }
-  }, 30_000);
-
-  it("disabling the extension restores the default UA", async () => {
-    const harness = await setup();
-    try {
-      await harness.manager.configure("env-sim", { enabled: true, config: { persona: "codex", simulateUserAgent: true } });
+      // 换预设后重新开启：UA 跟随新预设
+      await manager.configure("env-sim", { enabled: true, config: { persona: "codex", simulateUserAgent: true } });
       expect(getUserAgent()).toBe("codex/0.5.0");
-      await harness.manager.configure("env-sim", { enabled: false });
+      // 禁用扩展恢复默认
+      await manager.configure("env-sim", { enabled: false });
       expect(getUserAgent()).toBe(official());
-    } finally {
-      await harness.manager.close();
-    }
+    });
   }, 30_000);
 
   it("uses the userAgent field of a user preset when the toggle is on", async () => {
-    // 用户预设解析需读预设目录（异步 I/O），configure 返回后留一拍等待落地
-    const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 50));
-    const harness = await setup({
+    await withHarness({
       presetFiles: [
         {
           filename: "mine.json",
-          content: JSON.stringify({
+          content: {
             id: "mine",
             name: "Mine",
             identity: "You are Mine.",
             basePrompt: "mine base",
             userAgent: "mine-cli/3.2.1",
-          }),
+          },
         },
         {
           filename: "plain.json",
-          content: JSON.stringify({
+          content: {
             id: "plain",
             name: "Plain",
             identity: "You are Plain.",
             basePrompt: "plain base",
-          }),
+          },
         },
       ],
-    });
-    try {
+    }, async ({ manager }) => {
+      // 用户预设解析需读预设目录（异步 I/O），configure 返回后轮询等待落地
       // 用户预设带 userAgent 且开关开启 → 生效（parsePreset 透传）
-      await harness.manager.configure("env-sim", { enabled: true, config: { persona: "mine", simulateUserAgent: true } });
-      await flush();
-      expect(getUserAgent()).toBe("mine-cli/3.2.1");
+      await manager.configure("env-sim", { enabled: true, config: { persona: "mine", simulateUserAgent: true } });
+      await vi.waitFor(() => expect(getUserAgent()).toBe("mine-cli/3.2.1"), { timeout: 5_000 });
       // 用户预设未带 userAgent 时，开关开启也不覆盖
-      await harness.manager.configure("env-sim", { config: { persona: "plain" } });
-      await flush();
-      expect(getUserAgent()).toBe(official());
-    } finally {
-      await harness.manager.close();
-    }
+      await manager.configure("env-sim", { config: { persona: "plain" } });
+      await vi.waitFor(() => expect(getUserAgent()).toBe(official()), { timeout: 5_000 });
+    });
   }, 30_000);
 
   it("ignores session-level persona overrides for the global UA", async () => {
-    const harness = await setup();
-    try {
-      await harness.manager.configure("env-sim", { enabled: true, config: { persona: "claude-code", simulateUserAgent: true } });
+    await withHarness({}, async ({ manager, sessions, session }) => {
+      await manager.configure("env-sim", { enabled: true, config: { persona: "claude-code", simulateUserAgent: true } });
       expect(getUserAgent()).toBe("claude-code/2.4.6");
       // 会话级覆盖（SessionMeta.persona 回退通道）只作用于提示词与工具形态，
       // 不参与全局出站 UA——出站请求无会话上下文，避免并发会话串扰
-      await harness.sessions.updateConfig(harness.session.id, { persona: "codex" });
+      await sessions.updateConfig(session.id, { persona: "codex" });
       expect(getUserAgent()).toBe("claude-code/2.4.6");
-    } finally {
-      await harness.manager.close();
-    }
+    });
   }, 30_000);
 });

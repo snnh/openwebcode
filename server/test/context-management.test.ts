@@ -29,8 +29,7 @@ function assertPairing(messages: ChatMessage[]): void {
 
 describe("context management controls", () => {
   it("updates policy and supports manual evict, restore, pin and unpin", async () => {
-    const root = await tempRoot("owc-context-");
-    const manager = new ContextManager(root);
+    const manager = new ContextManager(await tempRoot("owc-context-"));
     const policy = await manager.updatePolicy({ strategy: "interval", lag: 2, interval: 3, pinExemptRounds: 7, restoreBudget: 9000 });
     expect(policy.policy).toMatchObject({ strategy: "interval", lag: 2, interval: 3, pinExemptRounds: 7, restoreBudget: 9000 });
     const messages: ChatMessage[] = [{ id: "tool-1", role: "tool", createdAt: new Date().toISOString(), content: [{ type: "tool_result", toolCallId: "c1", content: "complete result", isError: false }] }];
@@ -61,8 +60,7 @@ describe("context management controls", () => {
   }
 
   it("does not evict the trailing tool batch the model has not seen yet (current-turn protection)", async () => {
-    const root = await tempRoot("owc-context-tail-");
-    const manager = new ContextManager(root);
+    const manager = new ContextManager(await tempRoot("owc-context-tail-"));
     await manager.updatePolicy({ lag: 0 });
     const messages: ChatMessage[] = [
       userText("run two commands"),
@@ -84,8 +82,7 @@ describe("context management controls", () => {
   });
 
   it("eviction placeholder carries tool name, size and read_artifact guidance", async () => {
-    const root = await tempRoot("owc-context-placeholder-");
-    const manager = new ContextManager(root);
+    const manager = new ContextManager(await tempRoot("owc-context-placeholder-"));
     await manager.updatePolicy({ lag: 0 });
     const messages: ChatMessage[] = [userText("hi"), toolCall("c1", "bash"), toolResult("c1", "full body ".repeat(200)), userText("done")];
     const ledger = await manager.evict(messages);
@@ -97,8 +94,7 @@ describe("context management controls", () => {
   });
 
   it("image description tool results are exempt from automatic eviction", async () => {
-    const root = await tempRoot("owc-context-exempt-");
-    const manager = new ContextManager(root);
+    const manager = new ContextManager(await tempRoot("owc-context-exempt-"));
     await manager.updatePolicy({ lag: 0 });
     const messages: ChatMessage[] = [
       userText("look at the screenshot"),
@@ -120,8 +116,7 @@ describe("context management controls", () => {
   });
 
   it("image description tool results are exempt from manual eviction", async () => {
-    const root = await tempRoot("owc-context-exempt-manual-");
-    const manager = new ContextManager(root);
+    const manager = new ContextManager(await tempRoot("owc-context-exempt-manual-"));
     const messages: ChatMessage[] = [
       userText("look"),
       toolCall("c1", "ext__vision-tools__describe_image"),
@@ -133,8 +128,7 @@ describe("context management controls", () => {
   });
 
   it("default policy keeps the newest 2 rounds of tool results in full", async () => {
-    const root = await tempRoot("owc-context-lag-");
-    const manager = new ContextManager(root);
+    const manager = new ContextManager(await tempRoot("owc-context-lag-"));
     const messages: ChatMessage[] = [userText("start")];
     for (let index = 1; index <= 5; index += 1) {
       messages.push(toolResult(`d${index}`, `out ${index} ${"z".repeat(2000)}`), assistantText(`d${index}`, `ack ${index}`));
@@ -145,8 +139,7 @@ describe("context management controls", () => {
 
 
   it("default policy counts the trailing unseen tool batch toward the lag window", async () => {
-    const root = await tempRoot("owc-context-lag-tail-");
-    const manager = new ContextManager(root);
+    const manager = new ContextManager(await tempRoot("owc-context-lag-tail-"));
     // 默认 lag=2，路径以 tool 批次结尾：保留当轮 + 最近 1 个已完成轮（共 2 轮），
     // 更早的轮次驱逐——与「当轮保护 + lag 窗口」语义一致
     const messages: ChatMessage[] = [userText("start")];
@@ -159,8 +152,7 @@ describe("context management controls", () => {
   });
 
   it("exempts small results and short read_file results; large read_file degrades to head+tail excerpt", async () => {
-    const root = await tempRoot("owc-context-floors-");
-    const manager = new ContextManager(root);
+    const manager = new ContextManager(await tempRoot("owc-context-floors-"));
     await manager.updatePolicy({ lag: 0 });
     const readContent = Array.from({ length: 120 }, (_, index) => `line ${index + 1} ${"w".repeat(40)}`).join("\n");
     const messages: ChatMessage[] = [
@@ -189,8 +181,7 @@ describe("context management controls", () => {
   });
 
   it("process mode removes the whole tool round (pairs + thinking) with an immutable summary; restore brings the pair back", async () => {
-    const root = await tempRoot("owc-context-process-");
-    const manager = new ContextManager(root);
+    const manager = new ContextManager(await tempRoot("owc-context-process-"));
     await manager.updatePolicy({ lag: 0, evictionMode: "process" });
     const messages: ChatMessage[] = [
       userText("debug it"),
@@ -259,8 +250,7 @@ describe("ContextManager cost ledger", () => {
   });
 
   it("pauses a hard currency budget when prior usage cannot be priced", async () => {
-    const root = await tempRoot("owc-budget-");
-    const manager = new ContextManager(root);
+    const manager = new ContextManager(await tempRoot("owc-budget-"));
     await manager.recordUsage({ inputTokens: 10, outputTokens: 0, cacheRead: 0, cacheWrite: 0 }, { priced: false });
     await manager.setBudget(undefined, { currency: "USD", microUnits: "1000000" });
 
@@ -283,8 +273,7 @@ describe("ContextManager cost ledger", () => {
   });
 
   it("serializes round and usage writes for one session", async () => {
-    const root = await tempRoot("owc-round-usage-");
-    const manager = new ContextManager(root);
+    const manager = new ContextManager(await tempRoot("owc-round-usage-"));
     await Promise.all([
       manager.advanceRound(),
       manager.recordUsage(
@@ -314,8 +303,7 @@ describe("ContextManager cost ledger", () => {
   });
 
   it("selects and persists stable cache breakpoints", async () => {
-    const root = await tempRoot("owc-cache-breakpoints-");
-    const manager = new ContextManager(root);
+    const manager = new ContextManager(await tempRoot("owc-cache-breakpoints-"));
     const messages = [
       { id: "user-1", role: "user" as const, content: [{ type: "text" as const, text: "one" }], createdAt: "2026-01-01T00:00:00Z" },
       { id: "tool-1", role: "tool" as const, content: [{ type: "tool_result" as const, toolCallId: "x", content: "result", isError: false }], createdAt: "2026-01-01T00:00:01Z" },
@@ -344,8 +332,7 @@ function incToolResult(value: string): ChatMessage {
 
 describe("incremental context build", () => {
   it("produces byte-identical views for incremental and forced full rebuilds across turns, eviction, and compaction", async () => {
-    const root = await tempRoot("owc-incremental-");
-    const manager = new ContextManager(root);
+    const manager = new ContextManager(await tempRoot("owc-incremental-"));
     const messages: ChatMessage[] = [
       incText("请修复这个 bug"),
       incMessage("assistant", [{ type: "tool_call", id: "c1", name: "read_file", input: { path: "src/a.ts" } }]),
@@ -396,8 +383,7 @@ describe("incremental context build", () => {
   });
 
   it("attributes tokens by segment", async () => {
-    const root = await tempRoot("owc-segments-");
-    const manager = new ContextManager(root);
+    const manager = new ContextManager(await tempRoot("owc-segments-"));
     const messages = [incText("hello"), incToolResult("z".repeat(400)), incMessage("assistant", [{ type: "text", text: "done" }])];
     const view = await manager.buildView(messages);
     expect(view.stats.segments.toolResults).toBeGreaterThan(0);
@@ -407,8 +393,7 @@ describe("incremental context build", () => {
   });
 
   it("pinned messages are never evicted and keep full content in the view", async () => {
-    const root = await tempRoot("owc-pin-");
-    const manager = new ContextManager(root);
+    const manager = new ContextManager(await tempRoot("owc-pin-"));
     await manager.updatePolicy({ lag: 0 });
     const pinnedBody = `pinned-full-content ${"p".repeat(2000)}`;
     const pinned = incToolResult(pinnedBody);
@@ -440,8 +425,7 @@ describe("incremental context build", () => {
   });
 
   it("does not pollute the cached view when callers replace returned messages/content arrays", async () => {
-    const root = await tempRoot("owc-view-isolation-");
-    const manager = new ContextManager(root);
+    const manager = new ContextManager(await tempRoot("owc-view-isolation-"));
     const messages = [incText("hello"), incToolResult("world")];
     const first = await manager.buildView(messages);
     // 调用方（扩展 transform / agent-runner）整体替换返回数组、消息或内容数组，
@@ -508,8 +492,7 @@ describe("stats.evicted 驱逐聚合", () => {
   }
 
   it("手动驱逐烧入 evictedTokens（与视图归因同一估算器），buildView stats 聚合条数与 tokens", async () => {
-    const root = await tempRoot("owc-context-");
-    const manager = new ContextManager(root);
+    const manager = new ContextManager(await tempRoot("owc-context-"));
     const content = "x".repeat(400);
     const messages = [
       { id: "a-1", role: "assistant", createdAt: new Date().toISOString(), content: [{ type: "tool_call", id: "c1", name: "bash", input: {} }] } as ChatMessage,
@@ -537,8 +520,7 @@ describe("stats.evicted 驱逐聚合", () => {
   });
 
   it("旧账本条目缺 evictedTokens 时按 sizeBytes/4 回退；重新驱逐时补烧", async () => {
-    const root = await tempRoot("owc-context-");
-    const manager = new ContextManager(root);
+    const manager = new ContextManager(await tempRoot("owc-context-"));
     const content = "y".repeat(800);
     const messages = [
       { id: "a-1", role: "assistant", createdAt: new Date().toISOString(), content: [{ type: "tool_call", id: "c1", name: "bash", input: {} }] } as ChatMessage,
@@ -552,9 +534,9 @@ describe("stats.evicted 驱逐聚合", () => {
     const reEvicted = await manager.evictMessage(messages, "t-1");
     expect(reEvicted.entries[0]!.evictedTokens).toBeGreaterThan(0);
 
-    // 纯旧条目（无 evictedTokens）直接聚合时走 sizeBytes/4 回退：构造 legacy 账本再 buildView
-    const legacy = await manager.evictMessage(messages, "t-1");
-    void legacy;
+    // 纯旧条目（无 evictedTokens）直接聚合时走 sizeBytes/4 回退：
+    // evictMessage 返回的正是缓存主本，抹掉烧入字段即模拟 legacy 账本再 buildView
+    delete reEvicted.entries[0]!.evictedTokens;
     const view = await manager.buildView(messages);
     expect(view.stats.evicted?.count).toBe(1);
     expect(view.stats.evicted!.tokens).toBeGreaterThanOrEqual(Math.ceil(sizeBytes / 4));

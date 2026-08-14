@@ -3,7 +3,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { RepoMapGenerator } from "../src/context/repo-map.js";
-import type { CoreClientLike, IndexScanEntry } from "../src/core-client.js";
+import type { CoreClientLike, FsScanRequest, IndexScanEntry } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { IndexManager, IndexUnavailableError, type RepoMapSymbolFile } from "../src/index/index-manager.js";
@@ -48,6 +48,8 @@ interface FakeScanCoreOptions {
   watchMode: "fail" | "active";
   /** true 时 jobStatus 永远 running（取消路径测试用）。 */
   neverFinish?: boolean;
+  /** repo map 树扫描（fs.scan）回放的虚拟工作区文件清单，缺省空树。 */
+  treeFiles?: string[];
 }
 
 /** fake core：index.scan / index.extract job 分别回放预置 manifest 与符号 JSONL；statFiles 由内存表供数。 */
@@ -67,6 +69,8 @@ function createFakeScanCore(options: FakeScanCoreOptions) {
     /** true 时 jobOutput 报 truncated（core 输出 ring 溢出）。 */
     outputTruncated: false,
   };
+  // 树扫描（fs.scan）委托 makeFakeScanCore：目录条目推导 + 分页，供 repo map 组复用同一 job 协议 fake。
+  const treeCore = makeFakeScanCore(options.treeFiles ?? []);
   const core = {
     on() { return core; },
     setRequestTimeoutMs() {},
@@ -119,7 +123,7 @@ function createFakeScanCore(options: FakeScanCoreOptions) {
       return { entries };
     },
     async statFile() { return { type: "directory" as const, size: 0, modifiedMs: 1 }; },
-    async scanFiles() { return { entries: [], truncated: false }; },
+    async scanFiles(request: FsScanRequest) { return treeCore.scanFiles(request); },
     async watchFiles() {
       if (options.watchMode === "fail") throw new Error("fs.watch unavailable");
       return { watchId: 7 };
@@ -137,6 +141,29 @@ function createManager(core: CoreClientLike, indexRoot: string, events: EventBus
   const manager = new IndexManager(core, indexRoot, events, { pollMs: 1, watchPollMs: options.watchPollMs ?? 5, refreshDebounceMs: 5, autoRefresh: options.autoRefresh ?? false });
   managers.push(manager);
   return manager;
+}
+
+/** IndexManager 用例标配：临时根 + EventBus + fake core + 受管 manager。
+ * 缺省 manifest/符号表按用例克隆，用例内可原地改（模拟后续扫描），不污染共享全局。 */
+async function setupIndex(options: {
+  manifest?: IndexScanEntry[];
+  symbols?: Record<string, SymbolRecord[]>;
+  stats?: Map<string, { size: number; modifiedMs: number }>;
+  watchMode?: "fail" | "active";
+  neverFinish?: boolean;
+} = {}) {
+  const root = await tempRoot("owc-index-");
+  const events = new EventBus();
+  const manifest = structuredClone(options.manifest ?? BASE_MANIFEST);
+  const symbols = structuredClone(options.symbols ?? BASE_SYMBOLS);
+  const { core, state } = createFakeScanCore({
+    manifest,
+    symbols,
+    watchMode: options.watchMode ?? "fail",
+    ...(options.neverFinish === undefined ? {} : { neverFinish: options.neverFinish }),
+    ...(options.stats === undefined ? {} : { stats: options.stats }),
+  });
+  return { root, events, core, state, manager: createManager(core, path.join(root, "index"), events), manifest, symbols };
 }
 
 async function waitFor(condition: () => boolean | Promise<boolean>, timeoutMs = 3_000): Promise<void> {
@@ -166,12 +193,9 @@ const BASE_SYMBOLS: Record<string, SymbolRecord[]> = {
 
 describe("IndexManager", () => {
   it("rebuild 建立索引：manifest 入库、符号可搜、状态 fresh、事件齐全", async () => {
-    const root = await tempRoot("owc-index-");
-    const events = new EventBus();
+    const { root, events, manager } = await setupIndex();
     const seen: AppEvent[] = [];
     events.on("event", (event: AppEvent) => { if (event.type === "index.status") seen.push(event); });
-    const { core } = createFakeScanCore({ manifest: BASE_MANIFEST, symbols: BASE_SYMBOLS, watchMode: "fail" });
-    const manager = createManager(core, path.join(root, "index"), events);
 
     const { jobId } = await manager.rebuild("s1", CWD);
     expect(jobId).toMatch(/^index-/);
@@ -201,9 +225,7 @@ describe("IndexManager", () => {
   });
 
   it("增量重建只对变化文件重提符号，删除文件的符号被清除", async () => {
-    const root = await tempRoot("owc-index-");
-    const { core, state } = createFakeScanCore({ manifest: BASE_MANIFEST, symbols: BASE_SYMBOLS, watchMode: "fail" });
-    const manager = createManager(core, path.join(root, "index"), new EventBus());
+    const { state, manager, manifest, symbols } = await setupIndex();
     await manager.rebuild("s1", CWD);
     await waitFor(async () => (await manager.status("s1", CWD)).status === "fresh");
     expect(state.extractedFiles.sort()).toEqual(["src/main.py", "src/util.ts"]);
@@ -211,12 +233,12 @@ describe("IndexManager", () => {
     // 第二次扫描：util.ts hash 变化、main.py 删除、新增 added.py；README.md 不变
     const addedPy = "def added_fn():\n    pass\n";
     state.extractedFiles.length = 0;
-    BASE_SYMBOLS["src/added.py"] = [
+    symbols["src/added.py"] = [
       { name: "added_fn", kind: "function", startLine: 1, endLine: 2, signature: "def added_fn():" },
     ];
-    delete BASE_SYMBOLS["src/main.py"];
+    delete symbols["src/main.py"];
     // fake 的 manifest 是引用捕获，直接改数组
-    BASE_MANIFEST.splice(0, BASE_MANIFEST.length,
+    manifest.splice(0, manifest.length,
       { path: "src/util.ts", size: UTIL_TS.length, modifiedMs: 200, sha256: "u2" },
       { path: "src/added.py", size: addedPy.length, modifiedMs: 200, sha256: "a1" },
       { path: "README.md", size: 20, modifiedMs: 100, sha256: "r1" },
@@ -232,26 +254,20 @@ describe("IndexManager", () => {
   });
 
   it("未建索引时 searchSymbols 拒绝并指引显式重建", async () => {
-    const root = await tempRoot("owc-index-");
-    const { core } = createFakeScanCore({ manifest: [], symbols: {}, watchMode: "fail" });
-    const manager = createManager(core, path.join(root, "index"), new EventBus());
+    const { manager } = await setupIndex({ manifest: [], symbols: {} });
     await expect(manager.searchSymbols(CWD, "x")).rejects.toThrow(IndexUnavailableError);
     await expect(manager.searchSymbols(CWD, "x")).rejects.toThrow(/has not been built/);
   });
 
   it("重建进行中再次 rebuild 报 INDEX_BUILDING", async () => {
-    const root = await tempRoot("owc-index-");
-    const { core } = createFakeScanCore({ manifest: BASE_MANIFEST, symbols: BASE_SYMBOLS, watchMode: "fail", neverFinish: true });
-    const manager = createManager(core, path.join(root, "index"), new EventBus());
+    const { manager } = await setupIndex({ neverFinish: true });
     await manager.rebuild("s1", CWD);
     await expect(manager.rebuild("s1", CWD)).rejects.toThrow(/already running/);
     await manager.cancel("s1", CWD);
   });
 
   it("取消重建：保留旧状态、如实标滞后（cancelled）", async () => {
-    const root = await tempRoot("owc-index-");
-    const { core, state } = createFakeScanCore({ manifest: BASE_MANIFEST, symbols: BASE_SYMBOLS, watchMode: "fail", neverFinish: true });
-    const manager = createManager(core, path.join(root, "index"), new EventBus());
+    const { state, manager } = await setupIndex({ neverFinish: true });
     await manager.rebuild("s1", CWD);
     await waitFor(async () => (await manager.status("s1", CWD)).status === "building");
     expect(await manager.cancel("s1", CWD)).toBe(true);
@@ -263,10 +279,8 @@ describe("IndexManager", () => {
   });
 
   it("索引损坏（JSONL 解析失败）整体作废，可显式重建恢复", async () => {
-    const root = await tempRoot("owc-index-");
-    const { core } = createFakeScanCore({ manifest: BASE_MANIFEST, symbols: BASE_SYMBOLS, watchMode: "fail" });
+    const { root, core, manager: first } = await setupIndex();
     const indexRoot = path.join(root, "index");
-    const first = createManager(core, indexRoot, new EventBus());
     await first.rebuild("s1", CWD);
     await waitFor(async () => (await first.status("s1", CWD)).status === "fresh");
 
@@ -286,10 +300,8 @@ describe("IndexManager", () => {
   });
 
   it("watch 不可用时降级 turn 边界 mtime 抽样：样本变化标滞后", async () => {
-    const root = await tempRoot("owc-index-");
     const stats = new Map(BASE_MANIFEST.map((entry) => [entry.path, { size: entry.size, modifiedMs: entry.modifiedMs }]));
-    const { core } = createFakeScanCore({ manifest: BASE_MANIFEST, symbols: BASE_SYMBOLS, watchMode: "fail", stats });
-    const manager = createManager(core, path.join(root, "index"), new EventBus());
+    const { manager } = await setupIndex({ stats });
     await manager.rebuild("s1", CWD);
     await waitFor(async () => (await manager.status("s1", CWD)).status === "fresh");
 
@@ -305,9 +317,7 @@ describe("IndexManager", () => {
   });
 
   it("watch 激活时 watch 事件驱动标滞后", async () => {
-    const root = await tempRoot("owc-index-");
-    const { core, state } = createFakeScanCore({ manifest: BASE_MANIFEST, symbols: BASE_SYMBOLS, watchMode: "active" });
-    const manager = createManager(core, path.join(root, "index"), new EventBus(), { watchPollMs: 5 });
+    const { state, manager } = await setupIndex({ watchMode: "active" });
     await manager.rebuild("s1", CWD);
     await waitFor(async () => (await manager.status("s1", CWD)).status === "fresh");
     expect((await manager.status("s1", CWD)).watch).toBe("active");
@@ -318,19 +328,7 @@ describe("IndexManager", () => {
   });
 
   it("extract 截断（summary.truncated）时未输出文件保留旧符号并打 warn，不静默清空", async () => {
-    const root = await tempRoot("owc-index-");
-    // 本地 manifest/symbols：避免与其他用例共享可变的 BASE_* 全局
-    const manifest: IndexScanEntry[] = [
-      { path: "src/util.ts", size: UTIL_TS.length, modifiedMs: 100, sha256: "u1" },
-      { path: "README.md", size: 20, modifiedMs: 100, sha256: "r1" },
-    ];
-    const symbols: Record<string, SymbolRecord[]> = {
-      "src/util.ts": [
-        { name: "getTopSymbols", kind: "function", startLine: 1, endLine: 3, signature: "export function getTopSymbols(list: string[]): string {" },
-      ],
-    };
-    const { core, state } = createFakeScanCore({ manifest, symbols, watchMode: "fail" });
-    const manager = createManager(core, path.join(root, "index"), new EventBus());
+    const { state, manager, manifest, symbols } = await setupIndex();
     await manager.rebuild("s1", CWD);
     await waitFor(async () => (await manager.status("s1", CWD)).status === "fresh");
     expect(await manager.searchSymbols(CWD, "getTop")).toHaveLength(1);
@@ -367,10 +365,8 @@ describe("IndexManager", () => {
   });
 
   it("jobOutput truncated（core 输出 ring 溢出）：runScan 走 error/stale 而非静默成功", async () => {
-    const root = await tempRoot("owc-index-");
-    const { core, state } = createFakeScanCore({ manifest: BASE_MANIFEST, symbols: BASE_SYMBOLS, watchMode: "fail" });
+    const { state, manager } = await setupIndex();
     state.outputTruncated = true;
-    const manager = createManager(core, path.join(root, "index"), new EventBus());
     await manager.rebuild("s1", CWD);
     await waitFor(async () => (await manager.status("s1", CWD)).status !== "building");
     const status = await manager.status("s1", CWD);
@@ -417,13 +413,17 @@ describe("code_search 工具（agent 级）", () => {
     return { sessions, session, runner, toolsSeen };
   }
 
+  async function toolResultText(sessions: SessionStore, sessionId: string): Promise<string> {
+    const detail = await sessions.get(sessionId);
+    const toolMessage = detail?.messages.find((message) => message.role === "tool");
+    return toolMessage?.content.map((block) => (block.type === "tool_result" ? block.content : "")).join("\n") ?? "";
+  }
+
   it("索引可用：code_search 返回 文件:行 + 种类 + 签名摘要", async () => {
     const { sessions, session, runner, toolsSeen } = await setup(true);
     await runner.run(session.id, "find getTop");
     expect(toolsSeen[0]).toContain("code_search");
-    const detail = await sessions.get(session.id);
-    const toolMessage = detail?.messages.find((message) => message.role === "tool");
-    const text = toolMessage?.content.map((block) => (block.type === "tool_result" ? block.content : "")).join("\n") ?? "";
+    const text = await toolResultText(sessions, session.id);
     expect(text).toContain("src/util.ts:1");
     expect(text).toContain("function");
     expect(text).toContain("getTopSymbols");
@@ -435,7 +435,7 @@ describe("code_search 工具（agent 级）", () => {
     await runner.run(session.id, "find getTop");
     const detail = await sessions.get(session.id);
     const toolMessage = detail?.messages.find((message) => message.role === "tool");
-    const text = toolMessage?.content.map((block) => (block.type === "tool_result" ? block.content : "")).join("\n") ?? "";
+    const text = await toolResultText(sessions, session.id);
     expect(text).toContain("Fall back to grep/glob");
     const toolResult = toolMessage?.content.find((block) => block.type === "tool_result");
     expect((toolResult as { isError?: boolean } | undefined)?.isError).toBe(true);
@@ -468,9 +468,13 @@ const SAMPLE_FILES = [
 ];
 
 describe("RepoMapGenerator", () => {
-  it("生成目录树与关键文件提示，token 归因与文本一致", async () => {
+  function makeGenerator(files: string[]) {
     const state = { mtime: 1, scanCalls: 0 };
-    const generator = new RepoMapGenerator(makeFakeScanCore(SAMPLE_FILES, state));
+    return { generator: new RepoMapGenerator(makeFakeScanCore(files, state)), state };
+  }
+
+  it("生成目录树与关键文件提示，token 归因与文本一致", async () => {
+    const { generator, state } = makeGenerator(SAMPLE_FILES);
     const result = await generator.generate({ sessionId: "s1", cwd: "/repo" });
     expect(result.text).toContain("Key files: package.json, README.md, tsconfig.json");
     expect(result.text).toContain("src/");
@@ -481,8 +485,7 @@ describe("RepoMapGenerator", () => {
   });
 
   it("默认排除 node_modules/.git/dist，会话 excludes 叠加生效", async () => {
-    const state = { mtime: 1, scanCalls: 0 };
-    const generator = new RepoMapGenerator(makeFakeScanCore([...SAMPLE_FILES, "secret/private.txt"], state));
+    const { generator } = makeGenerator([...SAMPLE_FILES, "secret/private.txt"]);
     const result = await generator.generate({ sessionId: "s1", cwd: "/repo", excludes: ["secret"] });
     expect(result.text).not.toContain("node_modules");
     expect(result.text).not.toContain("bundle.js");
@@ -494,8 +497,7 @@ describe("RepoMapGenerator", () => {
 
   it("超预算时收缩深度并如实标注 truncated", async () => {
     const many = Array.from({ length: 400 }, (_, i) => `src/mod${i % 20}/sub/file${i}.ts`);
-    const state = { mtime: 1, scanCalls: 0 };
-    const generator = new RepoMapGenerator(makeFakeScanCore(many, state));
+    const { generator } = makeGenerator(many);
     const full = await generator.generate({ sessionId: "s1", cwd: "/repo", budget: 100_000 });
     const bounded = await generator.generate({ sessionId: "s1", cwd: "/repo", budget: 200 });
     expect(bounded.truncated).toBe(true);
@@ -507,8 +509,7 @@ describe("RepoMapGenerator", () => {
 
   it("极小预算硬截断仍不超预算且带标注", async () => {
     const many = Array.from({ length: 2000 }, (_, i) => `a${i % 50}/b${i % 30}/c${i % 10}/f${i}.ts`);
-    const state = { mtime: 1, scanCalls: 0 };
-    const generator = new RepoMapGenerator(makeFakeScanCore(many, state));
+    const { generator } = makeGenerator(many);
     const result = await generator.generate({ sessionId: "s1", cwd: "/repo", budget: 64 });
     expect(result.truncated).toBe(true);
     expect(result.text).toContain("[repo map truncated");
@@ -516,8 +517,7 @@ describe("RepoMapGenerator", () => {
   });
 
   it("缓存：根目录 mtime 未变且 TTL 内不重扫；mtime 变化后重扫", async () => {
-    const state = { mtime: 1, scanCalls: 0 };
-    const generator = new RepoMapGenerator(makeFakeScanCore(SAMPLE_FILES, state));
+    const { generator, state } = makeGenerator(SAMPLE_FILES);
     const first = await generator.generate({ sessionId: "s1", cwd: "/repo" });
     expect(first.cached).toBe(false);
     const scansAfterFirst = state.scanCalls;
@@ -534,8 +534,7 @@ describe("RepoMapGenerator", () => {
   });
 
   it("空工作区返回空树而不报错", async () => {
-    const state = { mtime: 1, scanCalls: 0 };
-    const generator = new RepoMapGenerator(makeFakeScanCore([], state));
+    const { generator } = makeGenerator([]);
     const result = await generator.generate({ sessionId: "s1", cwd: "/repo" });
     expect(result.truncated).toBe(false);
     expect(result.entryCount).toBe(0);
@@ -583,6 +582,13 @@ describe("repo map 提示词注入与 repo_map 工具", () => {
     return { session, sessions, requests, published, state };
   }
 
+  function findToolResult(detail: Awaited<ReturnType<SessionStore["get"]>>, callId: string) {
+    return detail?.messages
+      .filter((message) => message.role === "tool")
+      .flatMap((message) => message.content)
+      .find((block) => block.type === "tool_result" && block.toolCallId === callId);
+  }
+
   it("repo map 注入在动态侧：system 稳定前缀不含，systemSuffix 含", async () => {
     const { requests } = await setup();
     expect(requests[0]?.system).not.toContain("Repository map");
@@ -607,11 +613,7 @@ describe("repo map 提示词注入与 repo_map 工具", () => {
 
   it("repo_map 工具执行：返回预算内的树文本", async () => {
     const { sessions, session, requests } = await setup({ toolCalls: [{ name: "repo_map", id: "rm-1", input: {} }] });
-    const detail = await sessions.get(session.id);
-    const toolResult = detail?.messages
-      .filter((m) => m.role === "tool")
-      .flatMap((m) => m.content)
-      .find((c) => c.type === "tool_result" && c.toolCallId === "rm-1");
+    const toolResult = findToolResult(await sessions.get(session.id), "rm-1");
     expect(toolResult).toBeDefined();
     expect(toolResult!.isError).toBe(false);
     expect((toolResult as { content: string }).content).toContain("src/");
@@ -621,22 +623,14 @@ describe("repo map 提示词注入与 repo_map 工具", () => {
 
   it("repo_map 非法预算参数 → isError", async () => {
     const { sessions, session } = await setup({ toolCalls: [{ name: "repo_map", id: "rm-3", input: { budget: 10 } }] });
-    const detail = await sessions.get(session.id);
-    const toolResult = detail?.messages
-      .filter((m) => m.role === "tool")
-      .flatMap((m) => m.content)
-      .find((c) => c.type === "tool_result" && c.toolCallId === "rm-3");
+    const toolResult = findToolResult(await sessions.get(session.id), "rm-3");
     expect(toolResult!.isError).toBe(true);
     expect((toolResult as { content: string }).content).toContain("budget");
   });
 
   it("plan 模式下 repo_map 作为只读工具放行", async () => {
     const { sessions, session } = await setup({ agentMode: "plan", toolCalls: [{ name: "repo_map", id: "rm-4", input: {} }] });
-    const detail = await sessions.get(session.id);
-    const toolResult = detail?.messages
-      .filter((m) => m.role === "tool")
-      .flatMap((m) => m.content)
-      .find((c) => c.type === "tool_result" && c.toolCallId === "rm-4");
+    const toolResult = findToolResult(await sessions.get(session.id), "rm-4");
     expect(toolResult).toBeDefined();
     expect(toolResult!.isError).toBe(false);
     expect((toolResult as { content: string }).content).not.toContain("Plan 模式为只读");
@@ -644,11 +638,6 @@ describe("repo map 提示词注入与 repo_map 工具", () => {
 });
 
 // ---- repo-map-indexed 组（合并） ----
-const repoMapManagers: IndexManager[] = [];
-afterEach(() => {
-  for (const manager of repoMapManagers.splice(0)) manager.stop();
-});
-
 const FILES = ["package.json", "src/app.ts", "src/util.ts", "docs/guide.md"];
 
 describe("repo_map 索引形态（Phase 2 §4.1）", () => {
@@ -671,17 +660,12 @@ describe("repo_map 索引形态（Phase 2 §4.1）", () => {
     expect(result.text).toContain("docs/");
   });
 
-  it("索引不可用（undefined）：保持纯静态树降级", async () => {
+  it.each([
+    ["索引不可用（undefined）", () => Promise.resolve(undefined)],
+    ["索引查询抛错", () => Promise.reject(new Error("index broken"))],
+  ] as Array<[string, () => Promise<RepoMapSymbolFile[] | undefined>]>)("%s：保持纯静态树降级，不阻断生成", async (_label, symbolProvider) => {
     const generator = new RepoMapGenerator(makeFakeScanCore(FILES));
-    generator.setSymbolProvider(() => Promise.resolve(undefined));
-    const result = await generator.generate({ sessionId: "s1", cwd: "/repo" });
-    expect(result.text).not.toContain("Key files with symbols");
-    expect(result.text).toContain("src/");
-  });
-
-  it("索引查询抛错：同样降级静态树，不阻断生成", async () => {
-    const generator = new RepoMapGenerator(makeFakeScanCore(FILES));
-    generator.setSymbolProvider(() => Promise.reject(new Error("index broken")));
+    generator.setSymbolProvider(symbolProvider);
     const result = await generator.generate({ sessionId: "s1", cwd: "/repo" });
     expect(result.text).not.toContain("Key files with symbols");
     expect(result.text).toContain("src/");
@@ -691,33 +675,11 @@ describe("repo_map 索引形态（Phase 2 §4.1）", () => {
     const root = await tempRoot("owc-repomap-idx-");
     const utilTs = "export function helperFn(): void {\n}\n";
     const manifest: IndexScanEntry[] = [{ path: "src/util.ts", size: utilTs.length, modifiedMs: 100, sha256: "u1" }];
-    const jsonl = manifest.map((entry) => JSON.stringify(entry)).join("\n") + "\n"
-      + JSON.stringify({ summary: { entries: 1, truncated: false, reason: null, hashTruncated: false } }) + "\n";
-    const extractJsonl = JSON.stringify({
-      path: "src/util.ts",
-      symbols: [{ name: "helperFn", kind: "function", startLine: 1, endLine: 2, signature: "export function helperFn(): void {" }],
-    }) + "\n" + JSON.stringify({ summary: { files: 1, symbols: 1, truncated: false, reason: null } }) + "\n";
-    const servedJobs = new Set<string>();
-    const treeCore = makeFakeScanCore(FILES);
-    const core = {
-      ...treeCore,
-      on() { return this; },
-      async startIndexScan(request: { jobId: string }) { servedJobs.delete(request.jobId); return { jobId: request.jobId, state: "running" as const }; },
-      async startIndexExtract(request: { jobId: string }) { servedJobs.delete(request.jobId); return { jobId: request.jobId, state: "running" as const }; },
-      async jobStatus(request: { jobId: string }) { return { jobId: request.jobId, state: "completed" as const }; },
-      async jobOutput(request: { jobId: string; afterSeq: number }) {
-        if (request.afterSeq !== 0 || servedJobs.has(request.jobId)) {
-          return { chunks: [], nextSeq: request.afterSeq, truncated: false };
-        }
-        servedJobs.add(request.jobId);
-        // job.output 的 chunk.data 按真实 core 协议 base64 编码
-        const jsonlText = request.jobId.endsWith("-x") ? extractJsonl : jsonl;
-        return { chunks: [{ seq: 1, stream: "stdout" as const, data: Buffer.from(jsonlText, "utf8").toString("base64") }], nextSeq: 2, truncated: false };
-      },
-      async watchFiles() { throw new Error("fs.watch unavailable"); },
-    } as unknown as CoreClientLike;
-    const manager = new IndexManager(core, path.join(root, "index"), new EventBus(), { pollMs: 1, autoRefresh: false });
-    repoMapManagers.push(manager);
+    const symbols: Record<string, SymbolRecord[]> = {
+      "src/util.ts": [{ name: "helperFn", kind: "function", startLine: 1, endLine: 2, signature: "export function helperFn(): void {" }],
+    };
+    const { core } = createFakeScanCore({ manifest, symbols, watchMode: "fail", treeFiles: FILES });
+    const manager = createManager(core, path.join(root, "index"), new EventBus());
     const generator = new RepoMapGenerator(core);
     generator.setSymbolProvider((cwd) => manager.symbolSummary(cwd));
 
@@ -727,11 +689,7 @@ describe("repo_map 索引形态（Phase 2 §4.1）", () => {
 
     // 建索引 → 带符号
     await manager.rebuild("s1", "/repo");
-    for (let i = 0; i < 300; i += 1) {
-      if ((await manager.status("s1", "/repo")).status === "fresh") break;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    expect((await manager.status("s1", "/repo")).status).toBe("fresh");
+    await waitFor(async () => (await manager.status("s1", "/repo")).status === "fresh");
     const after = await generator.generate({ sessionId: "s1", cwd: "/repo" });
     expect(after.text).toContain("Key files with symbols (recent first):");
     expect(after.text).toContain("src/util.ts: helperFn");

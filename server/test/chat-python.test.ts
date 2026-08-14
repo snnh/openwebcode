@@ -55,6 +55,40 @@ async function makeUsableEnv(root: string): Promise<ChatPythonEnv> {
   return env;
 }
 
+/** 标准执行环境：临时 root + 可用 venv + 会话目录路径（目录由 executePython 按需自建）。 */
+async function setupEnv(): Promise<{ root: string; env: ChatPythonEnv; sessionDir: string }> {
+  const root = await makeRoot();
+  const env = await makeUsableEnv(root);
+  return { root, env, sessionDir: path.join(root, "session") };
+}
+
+/** 临时改写 process.platform 执行 fn，finally 恢复原值。 */
+async function withPlatform<T>(platform: NodeJS.Platform, fn: () => Promise<T>): Promise<T> {
+  const original = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { ...original, value: platform });
+  try {
+    return await fn();
+  } finally {
+    Object.defineProperty(process, "platform", original);
+  }
+}
+
+/** python 工具 ctx：缺省无搜索/媒体能力，extra 按需覆盖 core/sessionId/onPythonStatus 等。 */
+function makeCtx(env: ChatPythonEnv, sessionDir: string, extra: Partial<ChatToolContext> = {}): ChatToolContext {
+  return {
+    searchProvider: undefined,
+    webFetchProvider: undefined,
+    getImageGenProvider: async () => undefined,
+    getVisionProvider: async () => undefined,
+    pythonEnv: env,
+    sessionDir,
+    signal: new AbortController().signal,
+    ...extra,
+  };
+}
+
+const pythonTool = () => chatTools().find((t) => t.name === "python")!;
+
 /** 找到真正的 python 运行调用（参数里带 wrapper.py；区别于 --version / bwrap --version 探测）。 */
 function runCalls(): SpawnCall[] {
   return h.spawnCalls.filter((c) => c.args.some((a) => String(a).endsWith("wrapper.py")));
@@ -72,13 +106,16 @@ afterEach(() => {
 });
 
 describe("buildWrapper", () => {
+  let w: string;
+  beforeEach(() => {
+    w = buildWrapper("C:\\t\\s.py", "C:\\t\\img", "C:\\t\\mpl", "C:\\t\\home");
+  });
+
   it("整体黑名单 subprocess/shutil/ctypes/socket", () => {
-    const w = buildWrapper("C:\\t\\s.py", "C:\\t\\img", "C:\\t\\mpl", "C:\\t\\home");
     expect(w).toContain('frozenset({"subprocess", "shutil", "ctypes", "socket"})');
   });
 
   it("os 危险属性导入后封印（非带点名黑名单）", () => {
-    const w = buildWrapper("C:\\t\\s.py", "C:\\t\\img", "C:\\t\\mpl", "C:\\t\\home");
     expect(w).toContain("_OS_SEALED_NAMES");
     expect(w).toContain("_OS_SEALED_PREFIXES");
     expect(w).toContain('"system", "popen", "fork"');
@@ -88,20 +125,17 @@ describe("buildWrapper", () => {
   });
 
   it("patch builtins.__import__ 与 importlib.import_module", () => {
-    const w = buildWrapper("C:\\t\\s.py", "C:\\t\\img", "C:\\t\\mpl", "C:\\t\\home");
     expect(w).toContain("builtins.__import__ = _guarded_import");
     expect(w).toContain("importlib.import_module = _guarded_import_module");
   });
 
   it("用户代码在独立命名空间执行，不共享 wrapper 全局", () => {
-    const w = buildWrapper("C:\\t\\s.py", "C:\\t\\img", "C:\\t\\mpl", "C:\\t\\home");
     expect(w).toContain('_user_globals = {"__name__": "__main__"');
     expect(w).toContain("exec(compile(_source");
     expect(w).not.toContain("exec(open(");
   });
 
   it("env 白名单清洗段（第二道防线）", () => {
-    const w = buildWrapper("C:\\t\\s.py", "C:\\t\\img", "C:\\t\\mpl", "C:\\t\\home");
     expect(w).toContain("_ENV_KEEP");
     expect(w).toContain('"PATH", "SYSTEMROOT", "HOME", "LANG", "TZ", "MPLBACKEND", "MPLCONFIGDIR", "PYTHONNOUSERSITE", "TEMP", "TMP"');
     expect(w).toContain("if _key.upper() not in _ENV_KEEP");
@@ -146,6 +180,7 @@ describe("buildBwrapArgs", () => {
     const args = buildBwrapArgs({ ...base, exists: () => true });
     expect(args.slice(0, 3)).toEqual(["--unshare-all", "--die-with-parent", "--new-session"]);
     for (const dir of ["/usr", "/lib", "/lib64"]) {
+      expect(args).toContain(dir);
       const i = args.indexOf(dir);
       expect(args[i - 1]).toBe("--ro-bind");
       expect(args[i + 1]).toBe(dir);
@@ -179,10 +214,7 @@ describe("executePython", () => {
   it("spawn 使用白名单 env 与显式 cwd，不泄露 process.env", async () => {
     process.env.OWC_TEST_PROVIDER_KEY = "sk-secret";
     try {
-      const root = await makeRoot();
-      const env = await makeUsableEnv(root);
-      const sessionDir = path.join(root, "session");
-      await mkdir(sessionDir, { recursive: true });
+      const { env, sessionDir } = await setupEnv();
       const result = await executePython(env, sessionDir, "print(1)", new AbortController().signal);
       expect(runCalls()).toHaveLength(1);
       const run = runCalls()[0]!;
@@ -199,9 +231,7 @@ describe("executePython", () => {
   });
 
   it("collectImages 批次隔离：只收集本次执行产生的图片", async () => {
-    const root = await makeRoot();
-    const env = await makeUsableEnv(root);
-    const sessionDir = path.join(root, "session");
+    const { env, sessionDir } = await setupEnv();
     const imgDir = path.join(sessionDir, "tmp", "img");
     await mkdir(imgDir, { recursive: true });
     await writeFile(path.join(imgDir, "old.png"), Buffer.from("OLD"));
@@ -223,9 +253,7 @@ describe("executePython", () => {
   });
 
   it("meta.cwd 为存在目录时作为子进程 cwd，否则回落 sessionDir", async () => {
-    const root = await makeRoot();
-    const env = await makeUsableEnv(root);
-    const sessionDir = path.join(root, "session");
+    const { root, env, sessionDir } = await setupEnv();
     const other = path.join(root, "other");
     await mkdir(other, { recursive: true });
 
@@ -237,12 +265,8 @@ describe("executePython", () => {
   });
 
   it("POSIX 且 bwrap 可用时经 bwrap 启动并上报 isolated:true", async () => {
-    const original = Object.getOwnPropertyDescriptor(process, "platform")!;
-    Object.defineProperty(process, "platform", { ...original, value: "linux" });
-    try {
-      const root = await makeRoot();
-      const env = await makeUsableEnv(root);
-      const sessionDir = path.join(root, "session");
+    await withPlatform("linux", async () => {
+      const { env, sessionDir } = await setupEnv();
       const result = await executePython(env, sessionDir, "pass", new AbortController().signal);
       const run = runCalls()[0]!;
       expect(run.cmd).toBe("bwrap");
@@ -252,14 +276,10 @@ describe("executePython", () => {
       expect(run.args.at(-2)).toBe(env.pythonPath());
       expect(run.args.at(-1)).toContain("wrapper.py");
       expect(result.isolated).toBe(true);
-    } finally {
-      Object.defineProperty(process, "platform", original);
-    }
+    });
   });
 
   it("bwrap 探测失败时回落无隔离并如实上报 isolated:false", async () => {
-    const original = Object.getOwnPropertyDescriptor(process, "platform")!;
-    Object.defineProperty(process, "platform", { ...original, value: "linux" });
     h.handler = (cmd, args, child) => {
       if (cmd === "bwrap" && args[0] === "--version") {
         child.emit("error", new Error("ENOENT"));
@@ -267,25 +287,20 @@ describe("executePython", () => {
       }
       child.emit("close", 0);
     };
-    try {
-      const root = await makeRoot();
-      const env = await makeUsableEnv(root);
-      const sessionDir = path.join(root, "session");
+    await withPlatform("linux", async () => {
+      const { env, sessionDir } = await setupEnv();
       const result = await executePython(env, sessionDir, "pass", new AbortController().signal);
       const run = runCalls()[0]!;
       expect(run.cmd).toBe(env.pythonPath());
       expect(run.args).toHaveLength(1);
       expect(result.isolated).toBe(false);
-    } finally {
-      Object.defineProperty(process, "platform", original);
-    }
+    });
   });
 });
 
 describe("ChatPythonEnv", () => {
   it("解释器存在且可运行时复用 venv，不重跑 uv", async () => {
-    const root = await makeRoot();
-    const env = await makeUsableEnv(root);
+    const { env } = await setupEnv();
     await env.ensure();
     expect(h.spawnCalls).toHaveLength(1);
     expect(h.spawnCalls[0]!.cmd).toBe(env.pythonPath());
@@ -293,8 +308,7 @@ describe("ChatPythonEnv", () => {
   });
 
   it("解释器损坏时重建（uv venv + pip install）", async () => {
-    const root = await makeRoot();
-    const env = await makeUsableEnv(root);
+    const { env } = await setupEnv();
     h.handler = (cmd, args, child) => {
       child.emit("close", cmd === env.pythonPath() && args[0] === "--version" ? 1 : 0);
     };
@@ -313,26 +327,14 @@ describe("ChatPythonEnv", () => {
 });
 
 describe("python 工具 handler（onPythonStatus）", () => {
-  function makeCtx(env: ChatPythonEnv, sessionDir: string, statuses: { status: string; detail?: string }[]): ChatToolContext {
-    return {
-      searchProvider: undefined,
-      webFetchProvider: undefined,
-      getImageGenProvider: async () => undefined,
-      getVisionProvider: async () => undefined,
-      pythonEnv: env,
-      sessionDir,
-      signal: new AbortController().signal,
-      onPythonStatus: (status, detail) => statuses.push(detail === undefined ? { status } : { status, detail }),
-    };
-  }
+  const trackStatuses = (statuses: { status: string; detail?: string }[]): Partial<ChatToolContext> => ({
+    onPythonStatus: (status, detail) => statuses.push(detail === undefined ? { status } : { status, detail }),
+  });
 
   it("成功路径：preparing -> ready，输出含 isolated 标记", async () => {
-    const root = await makeRoot();
-    const env = await makeUsableEnv(root);
-    const sessionDir = path.join(root, "session");
+    const { env, sessionDir } = await setupEnv();
     const statuses: { status: string; detail?: string }[] = [];
-    const tool = chatTools().find((t) => t.name === "python")!;
-    const out = await tool.handler({ code: "print(1)" }, makeCtx(env, sessionDir, statuses));
+    const out = await pythonTool().handler({ code: "print(1)" }, makeCtx(env, sessionDir, trackStatuses(statuses)));
     expect(statuses.map((s) => s.status)).toEqual(["preparing", "ready"]);
     const text = out.find((c) => c.type === "text") as { text: string } | undefined;
     expect(text?.text).toContain("[isolated]");
@@ -347,8 +349,7 @@ describe("python 工具 handler（onPythonStatus）", () => {
     };
     const sessionDir = path.join(root, "session");
     const statuses: { status: string; detail?: string }[] = [];
-    const tool = chatTools().find((t) => t.name === "python")!;
-    await expect(tool.handler({ code: "pass" }, makeCtx(env, sessionDir, statuses))).rejects.toThrow();
+    await expect(pythonTool().handler({ code: "pass" }, makeCtx(env, sessionDir, trackStatuses(statuses)))).rejects.toThrow();
     expect(statuses.map((s) => s.status)).toEqual(["preparing", "error"]);
     expect(statuses[1]!.detail!.length).toBeLessThanOrEqual(200);
   });
@@ -411,15 +412,8 @@ function makeFakeCore(script: {
 }
 
 describe("executePython 经 core（Windows Job Object）", () => {
-  async function setup() {
-    const root = await makeRoot();
-    const env = await makeUsableEnv(root);
-    const sessionDir = path.join(root, "session");
-    return { root, env, sessionDir };
-  }
-
   it("configureSession 沙盒形状 + startJob 双引号 cmd + 轮询拼接 + capability 透传", async () => {
-    const { env, sessionDir } = await setup();
+    const { env, sessionDir } = await setupEnv();
     const fake = makeFakeCore({
       capability: "partial",
       reason: "Job Object: process-tree limits only",
@@ -472,7 +466,7 @@ describe("executePython 经 core（Windows Job Object）", () => {
   });
 
   it("输出超过 256KB 按流截断并附截断标记", async () => {
-    const { env, sessionDir } = await setup();
+    const { env, sessionDir } = await setupEnv();
     const big = "x".repeat(300 * 1024);
     const fake = makeFakeCore({
       outputs: [{ chunks: [{ seq: 0, stream: "stdout", data: big }], nextSeq: 1, truncated: true }],
@@ -488,7 +482,7 @@ describe("executePython 经 core（Windows Job Object）", () => {
   });
 
   it("timed_out 收尾：stderr 附超时说明，exitCode 缺省 1", async () => {
-    const { env, sessionDir } = await setup();
+    const { env, sessionDir } = await setupEnv();
     const fake = makeFakeCore({
       statuses: [{ jobId: "", state: "timed_out" }],
     });
@@ -503,7 +497,7 @@ describe("executePython 经 core（Windows Job Object）", () => {
   });
 
   it("abort 触发 cancelJob 并按取消收尾", async () => {
-    const { env, sessionDir } = await setup();
+    const { env, sessionDir } = await setupEnv();
     const fake = makeFakeCore({
       statuses: [{ jobId: "", state: "running" }],
     });
@@ -522,7 +516,7 @@ describe("executePython 经 core（Windows Job Object）", () => {
   });
 
   it("configureSession 抛错如实上抛，不静默回落直启", async () => {
-    const { env, sessionDir } = await setup();
+    const { env, sessionDir } = await setupEnv();
     const fake = makeFakeCore({ configureError: new Error("Core is not running") });
     await expect(executePython(env, sessionDir, "pass", new AbortController().signal, {
       platform: "win32",
@@ -534,35 +528,27 @@ describe("executePython 经 core（Windows Job Object）", () => {
 });
 
 describe("executePython 平台分流", () => {
-  it("win32 无 core 时回落直启（containment:none）", async () => {
-    const root = await makeRoot();
-    const env = await makeUsableEnv(root);
-    const sessionDir = path.join(root, "session");
-    const result = await executePython(env, sessionDir, "pass", new AbortController().signal, { platform: "win32" });
+  it("win32 回落直启（无 core 或缺 sessionId 均不走 core），containment:none", async () => {
+    const { env, sessionDir } = await setupEnv();
+    const noCore = await executePython(env, sessionDir, "pass", new AbortController().signal, { platform: "win32" });
     expect(runCalls()).toHaveLength(1);
     expect(runCalls()[0]!.cmd).toBe(env.pythonPath());
-    expect(result.isolated).toBe(false);
-    expect(result.containment).toBe("none");
-  });
+    expect(noCore.isolated).toBe(false);
+    expect(noCore.containment).toBe("none");
 
-  it("win32 有 core 但缺 sessionId 时回落直启", async () => {
-    const root = await makeRoot();
-    const env = await makeUsableEnv(root);
-    const sessionDir = path.join(root, "session");
+    // 有 core 但缺 sessionId 同样回落直启，不触达 core
     const fake = makeFakeCore({ statuses: [{ jobId: "", state: "completed", exitCode: 0 }] });
-    const result = await executePython(env, sessionDir, "pass", new AbortController().signal, {
+    const noSessionId = await executePython(env, sessionDir, "pass", new AbortController().signal, {
       platform: "win32",
       core: fake.bridge,
     });
-    expect(runCalls()).toHaveLength(1);
+    expect(runCalls()).toHaveLength(2);
     expect(fake.startRequests).toHaveLength(0);
-    expect(result.containment).toBe("none");
+    expect(noSessionId.containment).toBe("none");
   });
 
   it("linux 即使注入 core 也不走 core（bwrap 路径）", async () => {
-    const root = await makeRoot();
-    const env = await makeUsableEnv(root);
-    const sessionDir = path.join(root, "session");
+    const { env, sessionDir } = await setupEnv();
     const fake = makeFakeCore({ statuses: [{ jobId: "", state: "completed", exitCode: 0 }] });
     const result = await executePython(env, sessionDir, "pass", new AbortController().signal, {
       platform: "linux",
@@ -595,12 +581,9 @@ describe("ChatPythonEnv libraries provider", () => {
 
   it("venv 已可用时不调用 provider", async () => {
     const root = await makeRoot();
-    const venvPath = path.join(root, "venv");
-    const py = path.join(venvPath, process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
-    await mkdir(path.dirname(py), { recursive: true });
-    await writeFile(py, "fake-python");
+    const usable = await makeUsableEnv(root);
     let calls = 0;
-    const env = new ChatPythonEnv(venvPath, () => {
+    const env = new ChatPythonEnv(usable.dir, () => {
       calls++;
       return Promise.resolve(["numpy"]);
     });
@@ -611,61 +594,25 @@ describe("ChatPythonEnv libraries provider", () => {
 });
 
 describe("python 工具 handler（containment 标注）", () => {
-  it("win32 + core 时走 core 路由并标注 jobobject containment", async () => {
-    const original = Object.getOwnPropertyDescriptor(process, "platform")!;
-    Object.defineProperty(process, "platform", { ...original, value: "win32" });
-    try {
-      const root = await makeRoot();
-      const env = await makeUsableEnv(root);
-      const sessionDir = path.join(root, "session");
+  it("containment 随路由标注：core 路由 jobobject，直启 none", async () => {
+    await withPlatform("win32", async () => {
+      const { env, sessionDir } = await setupEnv();
+
+      // core 路由：jobobject + capability 透传
       const fake = makeFakeCore({ statuses: [{ jobId: "", state: "completed", exitCode: 0 }] });
-      const tool = chatTools().find((t) => t.name === "python")!;
-      const ctx: ChatToolContext = {
-        searchProvider: undefined,
-        webFetchProvider: undefined,
-        getImageGenProvider: async () => undefined,
-        getVisionProvider: async () => undefined,
-        pythonEnv: env,
-        sessionDir,
-        signal: new AbortController().signal,
-        core: fake.bridge,
-        sessionId: "s1",
-      };
-      const out = await tool.handler({ code: "pass" }, ctx);
-      const text = (out.find((c) => c.type === "text") as { text: string } | undefined)?.text ?? "";
+      const viaCore = await pythonTool().handler({ code: "pass" }, makeCtx(env, sessionDir, { core: fake.bridge, sessionId: "s1" }));
+      const coreText = (viaCore.find((c) => c.type === "text") as { text: string } | undefined)?.text ?? "";
       expect(fake.startRequests).toHaveLength(1);
       expect(fake.startRequests[0]!.sessionId).toBe("chat-python-s1");
-      expect(text).toContain("[isolated] false");
-      expect(text).toContain("[containment] jobobject (process-tree limits only; no network/FS isolation)");
-      expect(text).toContain("[sandbox] partial");
-    } finally {
-      Object.defineProperty(process, "platform", original);
-    }
-  });
+      expect(coreText).toContain("[isolated] false");
+      expect(coreText).toContain("[containment] jobobject (process-tree limits only; no network/FS isolation)");
+      expect(coreText).toContain("[sandbox] partial");
 
-  it("无 core 直启时标注 no OS isolation", async () => {
-    const original = Object.getOwnPropertyDescriptor(process, "platform")!;
-    Object.defineProperty(process, "platform", { ...original, value: "win32" });
-    try {
-      const root = await makeRoot();
-      const env = await makeUsableEnv(root);
-      const sessionDir = path.join(root, "session");
-      const tool = chatTools().find((t) => t.name === "python")!;
-      const ctx: ChatToolContext = {
-        searchProvider: undefined,
-        webFetchProvider: undefined,
-        getImageGenProvider: async () => undefined,
-        getVisionProvider: async () => undefined,
-        pythonEnv: env,
-        sessionDir,
-        signal: new AbortController().signal,
-      };
-      const out = await tool.handler({ code: "pass" }, ctx);
-      const text = (out.find((c) => c.type === "text") as { text: string } | undefined)?.text ?? "";
-      expect(text).toContain("[isolated] false");
-      expect(text).toContain("[containment] none (no OS isolation)");
-    } finally {
-      Object.defineProperty(process, "platform", original);
-    }
+      // 无 core 直启：如实标注无 OS 隔离
+      const direct = await pythonTool().handler({ code: "pass" }, makeCtx(env, sessionDir));
+      const directText = (direct.find((c) => c.type === "text") as { text: string } | undefined)?.text ?? "";
+      expect(directText).toContain("[isolated] false");
+      expect(directText).toContain("[containment] none (no OS isolation)");
+    });
   });
 });

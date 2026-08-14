@@ -4,58 +4,48 @@ import { describe, expect, it, vi } from "vitest";
 import { AgentRunner, MAX_MANUAL_SUBAGENTS } from "../src/agent/agent-runner.js";
 import { AgentRegistry } from "../src/agents.js";
 import { buildServer } from "../src/app.js";
-import type { CoreClientLike, CoreInfo, ExecRequest } from "../src/core-client.js";
+import type { CoreClientLike, ExecRequest } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
-import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
+import { ProviderRegistry, type Provider, type ProviderEvent, type StreamChatRequest } from "../src/providers/provider.js";
 import { defaultSandboxPolicy } from "../src/sessions/default-sandbox.js";
 import { SessionStore } from "../src/sessions/session-store.js";
-import { toolResultOf } from "./helpers/agent-harness.js";
+import { makeAgentHarness, toolResultOf } from "./helpers/agent-harness.js";
 import { makeFakeCore } from "./helpers/fake-core.js";
 import { tempRoot } from "./helpers/temp-roots.js";
 
-const FAKE_CORE_INFO: CoreInfo = {
-  version: "0.8.0-test", protocolVersion: "1.0", platform: "windows", sandboxCapability: "advisory",
-  features: { fsStat: true, fsStatMany: true, fsWriteBase64: true, jobControl: false, fsHash: true, fsScanPagination: true, fsWatch: true },
-  limits: { maxFrameBytes: 33_554_432, maxWriteBase64Bytes: 20_971_520, maxHashBytes: 16_777_216, maxStatManyPaths: 128, maxStatManyPathBytes: 262_144, maxScanEntries: 256, maxScanDepth: 16, maxScanNodes: 2_048, maxWatches: 16, maxWatchEvents: 128, maxConcurrentJobs: 4, maxJobOutputBytes: 524_288 },
-};
-
-interface FakeCore extends CoreClientLike {
+interface TrackedFakeCore extends CoreClientLike {
   writeFileCalls: Array<{ sessionId: string; path: string; content: string }>;
   readFileCalls: Array<{ sessionId: string; path: string }>;
   runCalls: ExecRequest[];
   configureCalls: Array<{ sessionId: string; cwd: string; sandbox: unknown }>;
 }
 
-function createFakeCore(): FakeCore {
-  const core = {
-    writeFileCalls: [] as FakeCore["writeFileCalls"],
-    readFileCalls: [] as FakeCore["readFileCalls"],
-    runCalls: [] as ExecRequest[],
-    configureCalls: [] as FakeCore["configureCalls"],
-    on() { return core; },
-    async ping() { return FAKE_CORE_INFO; },
+/** makeFakeCore + 调用记录（write/read/run/configure） */
+function createFakeCore(): TrackedFakeCore {
+  const writeFileCalls: TrackedFakeCore["writeFileCalls"] = [];
+  const readFileCalls: TrackedFakeCore["readFileCalls"] = [];
+  const runCalls: TrackedFakeCore["runCalls"] = [];
+  const configureCalls: TrackedFakeCore["configureCalls"] = [];
+  const client = makeFakeCore({
     async configureSession(request: { sessionId: string; cwd: string; sandbox: unknown }) {
-      core.configureCalls.push(request);
+      configureCalls.push(request);
       return { sandboxCapability: "advisory" as const };
     },
     async readFile(request: { sessionId: string; path: string }) {
-      core.readFileCalls.push(request);
+      readFileCalls.push(request);
       return { path: request.path, content: "文件内容", totalLines: 1, encoding: "utf-8", truncated: false };
     },
     async writeFile(request: { sessionId: string; path: string; content: string }) {
-      core.writeFileCalls.push(request);
+      writeFileCalls.push(request);
       return { ok: true as const };
     },
-    async editFile() { return { matches: 1 }; },
-    async globFiles() { return { paths: [], truncated: false }; },
-    async grepFiles() { return { matches: [], truncated: false }; },
     async run(request: ExecRequest) {
-      core.runCalls.push({ ...request });
+      runCalls.push({ ...request });
       return { exitCode: 0, durationMs: 1, truncated: false };
     },
-  };
-  return core as unknown as FakeCore;
+  } as Partial<CoreClientLike>);
+  return Object.assign(client, { writeFileCalls, readFileCalls, runCalls, configureCalls }) as TrackedFakeCore;
 }
 
 const GENERAL_MARKER = "general-purpose coding sub-agent";
@@ -65,7 +55,7 @@ function isSubRequest(request: StreamChatRequest): boolean {
   return request.system.includes(GENERAL_MARKER) || request.system.includes(EXPLORE_MARKER);
 }
 
-async function setupRunner(options?: { permissionMode?: "ask" | "yolo"; agents?: AgentRegistry }) {
+async function setupRunner(options?: { permissionMode?: "ask" | "yolo" }) {
   const root = await tempRoot("owc-general-sub-");
   const sessions = new SessionStore(path.join(root, "sessions"));
   await sessions.initialize();
@@ -78,41 +68,84 @@ async function setupRunner(options?: { permissionMode?: "ask" | "yolo"; agents?:
   const captured: AppEvent[] = [];
   events.on("event", (event: AppEvent) => captured.push(event));
   const core = createFakeCore();
-  return { root, sessions, session, pricing, events, captured, core, agents: options?.agents };
+  return { root, sessions, session, pricing, events, captured, core };
+}
+
+type RunnerFixture = Awaited<ReturnType<typeof setupRunner>>;
+
+/** 注册 provider 并构造 AgentRunner（agents 传入时走带注册表的长参构造） */
+function makeRunner(h: RunnerFixture, provider: Provider, agents?: AgentRegistry) {
+  const providers = new ProviderRegistry();
+  providers.register(provider);
+  const runner = new AgentRunner(h.sessions, providers, h.core, h.events, h.pricing,
+    undefined, "zh-CN", 50, undefined, undefined, undefined, undefined, undefined, undefined, agents);
+  return { providers, runner };
+}
+
+/** 手动启动通路装配：setupRunner + 全局 AgentRegistry + buildServer */
+async function setupApp(provider: Provider, options?: { permissionMode?: "ask" | "yolo" }) {
+  const h = await setupRunner({ permissionMode: options?.permissionMode ?? "yolo" });
+  const registry = new AgentRegistry(path.join(h.root, "agents-global"));
+  const { providers, runner } = makeRunner(h, provider, registry);
+  const app = await buildServer({ core: h.core, sessions: h.sessions, agent: runner, events: h.events, providers, pricing: h.pricing });
+  return { ...h, registry, providers, runner, app };
+}
+
+/**
+ * 构造主循环假 provider：主循环首轮发 spawn_task、次轮收尾；
+ * 子代理轮次按序委托给 onSubRequest(request, index)。
+ * subRequests 捕获每个子代理轮次的请求（messages 拷贝，避免断言看到跨轮复用的终态数组）。
+ */
+function makeSpawnProvider(
+  onSubRequest: (request: StreamChatRequest, index: number) => Array<ProviderEvent>,
+  options: { prompt?: string; agent?: string; tools?: string[] } = {},
+): { provider: Provider; subRequests: StreamChatRequest[] } {
+  const subRequests: StreamChatRequest[] = [];
+  let mainTurn = 0;
+  const provider: Provider = {
+    name: "fake",
+    async *streamChat(request) {
+      if (isSubRequest(request)) {
+        subRequests.push({ ...request, messages: [...request.messages] });
+        for (const event of onSubRequest(request, subRequests.length - 1)) yield event;
+        return;
+      }
+      if (mainTurn++ === 0) {
+        yield {
+          type: "tool_call",
+          id: "spawn-1",
+          name: "spawn_task",
+          input: {
+            prompt: options.prompt ?? "写一个文件",
+            ...(options.agent ? { agent: options.agent } : {}),
+            ...(options.tools ? { tools: options.tools } : {}),
+          },
+        };
+        yield { type: "done", stopReason: "tool_use" };
+      } else {
+        yield { type: "text_delta", text: "完成" };
+        yield { type: "done", stopReason: "end_turn" };
+      }
+    },
+  };
+  return { provider, subRequests };
 }
 
 describe("spawn_task agent=general", () => {
   it("yolo 模式下 general 子代理经权限链写文件并返回结论", async () => {
     const h = await setupRunner({ permissionMode: "yolo" });
-    const requests: StreamChatRequest[] = [];
-    let mainTurn = 0;
-    const provider: Provider = {
-      name: "fake",
-      async *streamChat(request) {
-        requests.push(request);
-        if (request.system.includes(GENERAL_MARKER)) {
-          const last = request.messages.at(-1);
-          if (last?.role === "user") {
-            yield { type: "tool_call", id: "sub-write-1", name: "write_file", input: { path: "out.txt", content: "hello" } };
-            yield { type: "done", stopReason: "tool_use" };
-          } else {
-            yield { type: "text_delta", text: "已写入 out.txt" };
-            yield { type: "done", stopReason: "end_turn" };
-          }
-          return;
-        }
-        if (mainTurn++ === 0) {
-          yield { type: "tool_call", id: "spawn-1", name: "spawn_task", input: { prompt: "写一个文件", agent: "general" } };
-          yield { type: "done", stopReason: "tool_use" };
-        } else {
-          yield { type: "text_delta", text: "完成" };
-          yield { type: "done", stopReason: "end_turn" };
-        }
-      },
-    };
-    const providers = new ProviderRegistry();
-    providers.register(provider);
-    const runner = new AgentRunner(h.sessions, providers, h.core, h.events, h.pricing);
+    const { provider, subRequests } = makeSpawnProvider((request, index) =>
+      index === 0
+        ? [
+            { type: "tool_call", id: "sub-write-1", name: "write_file", input: { path: "out.txt", content: "hello" } },
+            { type: "done", stopReason: "tool_use" },
+          ]
+        : [
+            { type: "text_delta", text: "已写入 out.txt" },
+            { type: "done", stopReason: "end_turn" },
+          ],
+      { agent: "general" });
+    const { runner } = makeRunner(h, provider);
 
     await runner.run(h.session.id, "派生 general 子代理");
 
@@ -122,8 +155,7 @@ describe("spawn_task agent=general", () => {
     const toolResult = toolResultOf(await h.sessions.get(h.session.id), "spawn-1");
     expect(toolResult).toMatchObject({ isError: false, content: "已写入 out.txt" });
     // 子代理工具表为 general 全集（含写/命令），不含编排工具
-    const subRequest = requests.find((request) => request.system.includes(GENERAL_MARKER));
-    const subTools = subRequest?.tools.map((tool) => tool.name) ?? [];
+    const subTools = subRequests[0]?.tools.map((tool) => tool.name) ?? [];
     expect(subTools).toContain("write_file");
     expect(subTools).toContain("edit_file");
     expect(subTools).toContain("bash");
@@ -138,44 +170,26 @@ describe("spawn_task agent=general", () => {
 
   it("子代理的 thinking_delta/thinking_end 累积为带 provider 的 thinking 块进入后续轮次请求（思维链回传素材）", async () => {
     const h = await setupRunner({ permissionMode: "yolo" });
-    const requests: StreamChatRequest[] = [];
-    let mainTurn = 0;
-    const provider: Provider = {
-      name: "fake",
-      async *streamChat(request) {
-        requests.push(request);
-        if (request.system.includes(GENERAL_MARKER)) {
-          const last = request.messages.at(-1);
-          if (last?.role === "user") {
+    const { provider, subRequests } = makeSpawnProvider((request, index) =>
+      index === 0
+        ? [
             // 第一轮：思考分片 + 工具调用（DeepSeek 思维模式场景）
-            yield { type: "thinking_delta", text: "先想" };
-            yield { type: "thinking_delta", text: "一下" };
-            yield { type: "thinking_end", text: "先想一下" };
-            yield { type: "tool_call", id: "sub-think-1", name: "read_file", input: { path: "a.txt" } };
-            yield { type: "done", stopReason: "tool_use" };
-          } else {
-            yield { type: "text_delta", text: "已读取" };
-            yield { type: "done", stopReason: "end_turn" };
-          }
-          return;
-        }
-        if (mainTurn++ === 0) {
-          yield { type: "tool_call", id: "spawn-1", name: "spawn_task", input: { prompt: "读一个文件", agent: "general" } };
-          yield { type: "done", stopReason: "tool_use" };
-        } else {
-          yield { type: "text_delta", text: "完成" };
-          yield { type: "done", stopReason: "end_turn" };
-        }
-      },
-    };
-    const providers = new ProviderRegistry();
-    providers.register(provider);
-    const runner = new AgentRunner(h.sessions, providers, h.core, h.events, h.pricing);
+            { type: "thinking_delta", text: "先想" },
+            { type: "thinking_delta", text: "一下" },
+            { type: "thinking_end", text: "先想一下" },
+            { type: "tool_call", id: "sub-think-1", name: "read_file", input: { path: "a.txt" } },
+            { type: "done", stopReason: "tool_use" },
+          ]
+        : [
+            { type: "text_delta", text: "已读取" },
+            { type: "done", stopReason: "end_turn" },
+          ],
+      { prompt: "读一个文件", agent: "general" });
+    const { runner } = makeRunner(h, provider);
 
     await runner.run(h.session.id, "派生 general 子代理");
 
     // 子代理共两轮：第二轮请求的 assistant 消息携带带 provider 的 thinking 块（分片已合并）
-    const subRequests = requests.filter((request) => request.system.includes(GENERAL_MARKER));
     expect(subRequests).toHaveLength(2);
     const assistant = subRequests[1]!.messages.find((message) => message.role === "assistant");
     expect(assistant?.content).toEqual([
@@ -187,34 +201,18 @@ describe("spawn_task agent=general", () => {
 
   it("ask 模式拒绝写文件：tool_result 为拒绝原因，子代理继续收尾", async () => {
     const h = await setupRunner({ permissionMode: "ask" });
-    let mainTurn = 0;
-    const subCalls: StreamChatRequest[] = [];
-    const provider: Provider = {
-      name: "fake",
-      async *streamChat(request) {
-        if (request.system.includes(GENERAL_MARKER)) {
-          subCalls.push({ ...request, messages: [...request.messages] });
-          if (subCalls.length === 1) {
-            yield { type: "tool_call", id: "sub-write-1", name: "write_file", input: { path: "out.txt", content: "hello" } };
-            yield { type: "done", stopReason: "tool_use" };
-          } else {
-            yield { type: "text_delta", text: "写入被拒绝，改为只报告结论" };
-            yield { type: "done", stopReason: "end_turn" };
-          }
-          return;
-        }
-        if (mainTurn++ === 0) {
-          yield { type: "tool_call", id: "spawn-1", name: "spawn_task", input: { prompt: "写一个文件", agent: "general" } };
-          yield { type: "done", stopReason: "tool_use" };
-        } else {
-          yield { type: "text_delta", text: "完成" };
-          yield { type: "done", stopReason: "end_turn" };
-        }
-      },
-    };
-    const providers = new ProviderRegistry();
-    providers.register(provider);
-    const runner = new AgentRunner(h.sessions, providers, h.core, h.events, h.pricing);
+    const { provider, subRequests } = makeSpawnProvider((request, index) =>
+      index === 0
+        ? [
+            { type: "tool_call", id: "sub-write-1", name: "write_file", input: { path: "out.txt", content: "hello" } },
+            { type: "done", stopReason: "tool_use" },
+          ]
+        : [
+            { type: "text_delta", text: "写入被拒绝，改为只报告结论" },
+            { type: "done", stopReason: "end_turn" },
+          ],
+      { agent: "general" });
+    const { runner } = makeRunner(h, provider);
 
     const runPromise = runner.run(h.session.id, "派生 general 子代理");
     // 等权限请求挂起后拒绝（与 REST respond 同一协调器路径）
@@ -229,7 +227,7 @@ describe("spawn_task agent=general", () => {
     await runPromise;
 
     expect(h.core.writeFileCalls).toHaveLength(0);
-    const second = subCalls[1]!;
+    const second = subRequests[1]!;
     const lastMessage = second.messages.at(-1);
     const denial = lastMessage?.content.find((block) => block.type === "tool_result");
     expect(denial).toMatchObject({ isError: true });
@@ -240,33 +238,18 @@ describe("spawn_task agent=general", () => {
 
   it("general 子代理的 bash 与主循环同一沙盒配置", async () => {
     const h = await setupRunner({ permissionMode: "yolo" });
-    let mainTurn = 0;
-    let subTurn = 0;
-    const provider: Provider = {
-      name: "fake",
-      async *streamChat(request) {
-        if (request.system.includes(GENERAL_MARKER)) {
-          if (subTurn++ === 0) {
-            yield { type: "tool_call", id: "sub-bash-1", name: "bash", input: { cmd: "echo hi" } };
-            yield { type: "done", stopReason: "tool_use" };
-          } else {
-            yield { type: "text_delta", text: "命令已执行" };
-            yield { type: "done", stopReason: "end_turn" };
-          }
-          return;
-        }
-        if (mainTurn++ === 0) {
-          yield { type: "tool_call", id: "spawn-1", name: "spawn_task", input: { prompt: "跑个命令", agent: "general" } };
-          yield { type: "done", stopReason: "tool_use" };
-        } else {
-          yield { type: "text_delta", text: "完成" };
-          yield { type: "done", stopReason: "end_turn" };
-        }
-      },
-    };
-    const providers = new ProviderRegistry();
-    providers.register(provider);
-    const runner = new AgentRunner(h.sessions, providers, h.core, h.events, h.pricing);
+    const { provider } = makeSpawnProvider((request, index) =>
+      index === 0
+        ? [
+            { type: "tool_call", id: "sub-bash-1", name: "bash", input: { cmd: "echo hi" } },
+            { type: "done", stopReason: "tool_use" },
+          ]
+        : [
+            { type: "text_delta", text: "命令已执行" },
+            { type: "done", stopReason: "end_turn" },
+          ],
+      { prompt: "跑个命令", agent: "general" });
+    const { runner } = makeRunner(h, provider);
 
     await runner.run(h.session.id, "派生 general 子代理");
 
@@ -282,79 +265,44 @@ describe("spawn_task agent=general", () => {
 
   it("默认（不带 agent）仍为只读 explore：写工具被构造性拒绝", async () => {
     const h = await setupRunner({ permissionMode: "yolo" });
-    const requests: StreamChatRequest[] = [];
-    let mainTurn = 0;
-    let subTurn = 0;
-    const provider: Provider = {
-      name: "fake",
-      async *streamChat(request) {
-        // messages 数组跨轮复用并原地追加：捕获时拷贝，断言才不会看到终态
-        requests.push({ ...request, messages: [...request.messages] });
-        if (request.system.includes(EXPLORE_MARKER)) {
-          if (subTurn++ === 0) {
-            yield { type: "tool_call", id: "sub-bad-1", name: "write_file", input: { path: "out.txt", content: "x" } };
-            yield { type: "done", stopReason: "tool_use" };
-          } else {
-            yield { type: "text_delta", text: "无法写入，只读结论" };
-            yield { type: "done", stopReason: "end_turn" };
-          }
-          return;
-        }
-        if (mainTurn++ === 0) {
-          yield { type: "tool_call", id: "spawn-1", name: "spawn_task", input: { prompt: "探索" } };
-          yield { type: "done", stopReason: "tool_use" };
-        } else {
-          yield { type: "text_delta", text: "完成" };
-          yield { type: "done", stopReason: "end_turn" };
-        }
-      },
-    };
-    const providers = new ProviderRegistry();
-    providers.register(provider);
-    const runner = new AgentRunner(h.sessions, providers, h.core, h.events, h.pricing);
+    const { provider, subRequests } = makeSpawnProvider((request, index) =>
+      index === 0
+        ? [
+            { type: "tool_call", id: "sub-bad-1", name: "write_file", input: { path: "out.txt", content: "x" } },
+            { type: "done", stopReason: "tool_use" },
+          ]
+        : [
+            { type: "text_delta", text: "无法写入，只读结论" },
+            { type: "done", stopReason: "end_turn" },
+          ],
+      { prompt: "探索" });
+    const { runner } = makeRunner(h, provider);
 
     await runner.run(h.session.id, "派生默认子代理");
 
     expect(h.core.writeFileCalls).toHaveLength(0);
-    const subRequest = requests.find((request) => request.system.includes(EXPLORE_MARKER));
-    expect(subRequest?.tools.map((tool) => tool.name).sort()).toEqual(["glob", "grep", "read_artifact", "read_file"]);
+    const subTools = subRequests[0]?.tools.map((tool) => tool.name).sort() ?? [];
+    expect(subTools).toEqual(["glob", "grep", "read_artifact", "read_file"]);
     // 第二个子代理请求里带 write_file 被拒绝的错误 tool_result
-    const subSecond = requests.filter((request) => request.system.includes(EXPLORE_MARKER))[1];
-    const denial = subSecond?.messages.at(-1)?.content.find((block) => block.type === "tool_result");
+    const denial = subRequests[1]?.messages.at(-1)?.content.find((block) => block.type === "tool_result");
     expect(denial).toMatchObject({ isError: true });
     expect((denial as { content: string }).content).toContain("not available");
   });
 
   it("tools 参数与 general 允许集求交（编排工具被过滤）", async () => {
     const h = await setupRunner({ permissionMode: "yolo" });
-    const requests: StreamChatRequest[] = [];
-    let mainTurn = 0;
-    const provider: Provider = {
-      name: "fake",
-      async *streamChat(request) {
-        requests.push(request);
-        if (isSubRequest(request)) {
-          yield { type: "text_delta", text: "结论" };
-          yield { type: "done", stopReason: "end_turn" };
-          return;
-        }
-        if (mainTurn++ === 0) {
-          yield { type: "tool_call", id: "spawn-1", name: "spawn_task", input: { prompt: "t", agent: "general", tools: ["write_file", "bash", "spawn_task"] } };
-          yield { type: "done", stopReason: "tool_use" };
-        } else {
-          yield { type: "text_delta", text: "完成" };
-          yield { type: "done", stopReason: "end_turn" };
-        }
-      },
-    };
-    const providers = new ProviderRegistry();
-    providers.register(provider);
-    const runner = new AgentRunner(h.sessions, providers, h.core, h.events, h.pricing);
+    const { provider, subRequests } = makeSpawnProvider(
+      () => [
+        { type: "text_delta", text: "结论" },
+        { type: "done", stopReason: "end_turn" },
+      ],
+      { prompt: "t", agent: "general", tools: ["write_file", "bash", "spawn_task"] });
+    const { runner } = makeRunner(h, provider);
 
     await runner.run(h.session.id, "tools 交集");
 
-    const subRequest = requests.find(isSubRequest);
-    expect(subRequest?.tools.map((tool) => tool.name).sort()).toEqual(["bash", "write_file"]);
+    const subTools = subRequests[0]?.tools.map((tool) => tool.name).sort() ?? [];
+    expect(subTools).toEqual(["bash", "write_file"]);
   });
 });
 
@@ -403,9 +351,7 @@ describe("spawn_swarm 逐项 general", () => {
         }
       },
     };
-    const providers = new ProviderRegistry();
-    providers.register(provider);
-    const runner = new AgentRunner(h.sessions, providers, h.core, h.events, h.pricing);
+    const { runner } = makeRunner(h, provider);
 
     await runner.run(h.session.id, "swarm");
 
@@ -422,17 +368,8 @@ describe("spawn_swarm 逐项 general", () => {
 });
 
 describe("POST /api/sessions/:id/subagents 手动启动", () => {
-  async function setupApp(options?: { permissionMode?: "ask" | "yolo" }) {
-    const h = await setupRunner({ permissionMode: options?.permissionMode ?? "yolo" });
-    const globalAgents = path.join(h.root, "agents-global");
-    const registry = new AgentRegistry(globalAgents);
-    const providers = new ProviderRegistry();
-    return { ...h, globalAgents, registry, providers };
-  }
-
   it("202 + 事件序列 started→finished + 转录可 GET", async () => {
-    const h = await setupApp();
-    const provider: Provider = {
+    const h = await setupApp({
       name: "fake",
       async *streamChat(request) {
         if (isSubRequest(request)) {
@@ -444,12 +381,9 @@ describe("POST /api/sessions/:id/subagents 手动启动", () => {
         yield { type: "text_delta", text: "主循环不应被触发" };
         yield { type: "done", stopReason: "end_turn" };
       },
-    };
-    h.providers.register(provider);
-    const runner = new AgentRunner(h.sessions, h.providers, h.core, h.events, h.pricing, undefined, "zh-CN", 50, undefined, undefined, undefined, undefined, undefined, undefined, h.registry);
-    const app = await buildServer({ core: h.core, sessions: h.sessions, agent: runner, events: h.events, providers: h.providers, pricing: h.pricing });
+    });
     try {
-      const res = await app.inject({ method: "POST", url: `/api/sessions/${h.session.id}/subagents`, payload: { prompt: "调查一下" } });
+      const res = await h.app.inject({ method: "POST", url: `/api/sessions/${h.session.id}/subagents`, payload: { prompt: "调查一下" } });
       expect(res.statusCode, res.body).toBe(202);
       const { taskId, toolCallId } = res.json() as { taskId: string; toolCallId: string };
       expect(toolCallId).toBe(`manual-${taskId}`);
@@ -469,38 +403,34 @@ describe("POST /api/sessions/:id/subagents 手动启动", () => {
       // 子代理 token 走既有 onUsage 记账路径
       expect(h.captured.some((event) => event.type === "context.usage" && (event.payload as { inputTokens?: number }).inputTokens === 7)).toBe(true);
 
-      const transcript = await app.inject({ method: "GET", url: `/api/sessions/${h.session.id}/subagents/${taskId}` });
+      const transcript = await h.app.inject({ method: "GET", url: `/api/sessions/${h.session.id}/subagents/${taskId}` });
       expect(transcript.statusCode).toBe(200);
       expect(transcript.json()).toMatchObject({ id: taskId, prompt: "调查一下", conclusion: "手动结论" });
     } finally {
-      await app.close();
+      await h.app.close();
     }
   });
 
-  it("无效 agent / 空 prompt / 超长 prompt → 400", async () => {
-    const h = await setupApp();
-    h.providers.register({ name: "fake", async *streamChat() { yield { type: "done", stopReason: "end_turn" }; } });
-    const runner = new AgentRunner(h.sessions, h.providers, h.core, h.events, h.pricing, undefined, "zh-CN", 50, undefined, undefined, undefined, undefined, undefined, undefined, h.registry);
-    const app = await buildServer({ core: h.core, sessions: h.sessions, agent: runner, events: h.events, providers: h.providers, pricing: h.pricing });
+  it("无效 agent / 空 prompt / 超长 prompt / 无此会话 → 400/404", async () => {
+    const h = await setupApp({ name: "fake", async *streamChat() { yield { type: "done", stopReason: "end_turn" }; } });
     try {
-      const badAgent = await app.inject({ method: "POST", url: `/api/sessions/${h.session.id}/subagents`, payload: { prompt: "x", agent: "ghost" } });
+      const badAgent = await h.app.inject({ method: "POST", url: `/api/sessions/${h.session.id}/subagents`, payload: { prompt: "x", agent: "ghost" } });
       expect(badAgent.statusCode).toBe(400);
       expect(badAgent.body).toContain("Unknown sub-agent");
-      const empty = await app.inject({ method: "POST", url: `/api/sessions/${h.session.id}/subagents`, payload: { prompt: "   " } });
+      const empty = await h.app.inject({ method: "POST", url: `/api/sessions/${h.session.id}/subagents`, payload: { prompt: "   " } });
       expect(empty.statusCode).toBe(400);
-      const tooLong = await app.inject({ method: "POST", url: `/api/sessions/${h.session.id}/subagents`, payload: { prompt: "x".repeat(4_001) } });
+      const tooLong = await h.app.inject({ method: "POST", url: `/api/sessions/${h.session.id}/subagents`, payload: { prompt: "x".repeat(4_001) } });
       expect(tooLong.statusCode).toBe(400);
-      const noSession = await app.inject({ method: "POST", url: "/api/sessions/123e4567-e89b-42d3-a456-426614174999/subagents", payload: { prompt: "x" } });
+      const noSession = await h.app.inject({ method: "POST", url: "/api/sessions/123e4567-e89b-42d3-a456-426614174999/subagents", payload: { prompt: "x" } });
       expect(noSession.statusCode).toBe(404);
     } finally {
-      await app.close();
+      await h.app.close();
     }
   });
 
   it("并发上限：第 5 个手动子代理 → 429", async () => {
-    const h = await setupApp();
     const gate: Array<() => void> = [];
-    const provider: Provider = {
+    const h = await setupApp({
       name: "fake",
       async *streamChat(request) {
         if (isSubRequest(request)) {
@@ -511,14 +441,11 @@ describe("POST /api/sessions/:id/subagents 手动启动", () => {
         }
         yield { type: "done", stopReason: "end_turn" };
       },
-    };
-    h.providers.register(provider);
-    const runner = new AgentRunner(h.sessions, h.providers, h.core, h.events, h.pricing, undefined, "zh-CN", 50, undefined, undefined, undefined, undefined, undefined, undefined, h.registry);
-    const app = await buildServer({ core: h.core, sessions: h.sessions, agent: runner, events: h.events, providers: h.providers, pricing: h.pricing });
+    });
     try {
       const launched: string[] = [];
       for (let i = 0; i < MAX_MANUAL_SUBAGENTS; i++) {
-        const res = await app.inject({ method: "POST", url: `/api/sessions/${h.session.id}/subagents`, payload: { prompt: `任务 ${i}` } });
+        const res = await h.app.inject({ method: "POST", url: `/api/sessions/${h.session.id}/subagents`, payload: { prompt: `任务 ${i}` } });
         expect(res.statusCode, res.body).toBe(202);
         launched.push((res.json() as { taskId: string }).taskId);
       }
@@ -527,7 +454,7 @@ describe("POST /api/sessions/:id/subagents 手动启动", () => {
         const startedCount = h.captured.filter((event) => event.type === "subagent.started").length;
         if (startedCount < MAX_MANUAL_SUBAGENTS) throw new Error("not all started");
       }, { timeout: 5_000 });
-      const overflow = await app.inject({ method: "POST", url: `/api/sessions/${h.session.id}/subagents`, payload: { prompt: "溢出" } });
+      const overflow = await h.app.inject({ method: "POST", url: `/api/sessions/${h.session.id}/subagents`, payload: { prompt: "溢出" } });
       expect(overflow.statusCode).toBe(429);
       // 放行全部在途子代理，等其 finished 收尾（避免 afterEach 清理竞态）
       for (const release of gate.splice(0)) release();
@@ -536,7 +463,7 @@ describe("POST /api/sessions/:id/subagents 手动启动", () => {
         if (finished < MAX_MANUAL_SUBAGENTS) throw new Error("not all finished");
       }, { timeout: 5_000 });
       // 释放后槽位空出，可再次启动
-      const again = await app.inject({ method: "POST", url: `/api/sessions/${h.session.id}/subagents`, payload: { prompt: "再来一个" } });
+      const again = await h.app.inject({ method: "POST", url: `/api/sessions/${h.session.id}/subagents`, payload: { prompt: "再来一个" } });
       expect(again.statusCode, again.body).toBe(202);
       // 新子代理的 provider 调用异步发生：等它挂到 gate 上再放行
       await vi.waitFor(() => {
@@ -550,14 +477,13 @@ describe("POST /api/sessions/:id/subagents 手动启动", () => {
       }, { timeout: 5_000 });
       expect(launched).toHaveLength(MAX_MANUAL_SUBAGENTS);
     } finally {
-      await app.close();
+      await h.app.close();
     }
   });
 
   it("ask 模式：子代理写工具发 permission.request，respond allow 后执行", async () => {
-    const h = await setupApp({ permissionMode: "ask" });
     let subTurn = 0;
-    const provider: Provider = {
+    const h = await setupApp({
       name: "fake",
       async *streamChat(request) {
         if (request.system.includes(GENERAL_MARKER)) {
@@ -572,12 +498,9 @@ describe("POST /api/sessions/:id/subagents 手动启动", () => {
         }
         yield { type: "done", stopReason: "end_turn" };
       },
-    };
-    h.providers.register(provider);
-    const runner = new AgentRunner(h.sessions, h.providers, h.core, h.events, h.pricing, undefined, "zh-CN", 50, undefined, undefined, undefined, undefined, undefined, undefined, h.registry);
-    const app = await buildServer({ core: h.core, sessions: h.sessions, agent: runner, events: h.events, providers: h.providers, pricing: h.pricing });
+    }, { permissionMode: "ask" });
     try {
-      const res = await app.inject({ method: "POST", url: `/api/sessions/${h.session.id}/subagents`, payload: { prompt: "写文件", agent: "general" } });
+      const res = await h.app.inject({ method: "POST", url: `/api/sessions/${h.session.id}/subagents`, payload: { prompt: "写文件", agent: "general" } });
       expect(res.statusCode, res.body).toBe(202);
       const { taskId } = res.json() as { taskId: string };
       const requestId = await vi.waitFor(() => {
@@ -586,7 +509,7 @@ describe("POST /api/sessions/:id/subagents 手动启动", () => {
         return (req.payload as { requestId: string }).requestId;
       }, { timeout: 5_000 });
       expect(h.core.writeFileCalls).toHaveLength(0);
-      const allow = await app.inject({
+      const allow = await h.app.inject({
         method: "POST",
         url: `/api/sessions/${h.session.id}/permissions/respond`,
         payload: { requestId, decision: "allow" },
@@ -600,24 +523,19 @@ describe("POST /api/sessions/:id/subagents 手动启动", () => {
       expect(h.core.writeFileCalls).toHaveLength(1);
       expect(h.core.writeFileCalls[0]).toMatchObject({ path: "m.txt", content: "M" });
     } finally {
-      await app.close();
+      await h.app.close();
     }
   });
 });
 
 describe("GET /api/agents", () => {
   it("内置 explore/general 在前，自定义子代理在后", async () => {
-    const h = await setupRunner();
-    const globalAgents = path.join(h.root, "agents-global");
-    await mkdir(globalAgents, { recursive: true });
-    await writeFile(path.join(globalAgents, "reviewer.md"), "---\ndescription: Reviews code\n---\nREVIEWER BODY", "utf8");
-    const registry = new AgentRegistry(globalAgents);
-    const providers = new ProviderRegistry();
-    providers.register({ name: "fake", async *streamChat() { yield { type: "done", stopReason: "end_turn" }; } });
-    const runner = new AgentRunner(h.sessions, providers, h.core, h.events, h.pricing, undefined, "zh-CN", 50, undefined, undefined, undefined, undefined, undefined, undefined, registry);
-    const app = await buildServer({ core: h.core, sessions: h.sessions, agent: runner, events: h.events, providers, pricing: h.pricing });
+    const h = await setupApp({ name: "fake", async *streamChat() { yield { type: "done", stopReason: "end_turn" }; } });
     try {
-      const res = await app.inject({ method: "GET", url: `/api/agents?cwd=${encodeURIComponent(h.root)}` });
+      // AgentRegistry 在请求时懒扫描：setupApp 之后写自定义 agent 即可被读到
+      await mkdir(path.join(h.root, "agents-global"), { recursive: true });
+      await writeFile(path.join(h.root, "agents-global", "reviewer.md"), "---\ndescription: Reviews code\n---\nREVIEWER BODY", "utf8");
+      const res = await h.app.inject({ method: "GET", url: `/api/agents?cwd=${encodeURIComponent(h.root)}` });
       expect(res.statusCode).toBe(200);
       const { agents } = res.json() as { agents: Array<{ id: string; name: string; description: string; builtin: boolean }> };
       expect(agents[0]).toMatchObject({ id: "explore", builtin: true });
@@ -625,53 +543,43 @@ describe("GET /api/agents", () => {
       const custom = agents.find((agent) => agent.id === "reviewer");
       expect(custom).toMatchObject({ name: "reviewer", description: "Reviews code", builtin: false });
 
-      const noCwd = await app.inject({ method: "GET", url: "/api/agents" });
+      const noCwd = await h.app.inject({ method: "GET", url: "/api/agents" });
       const globalOnly = (noCwd.json() as { agents: Array<{ id: string }> }).agents;
       expect(globalOnly.map((agent) => agent.id)).toEqual(["explore", "general", "reviewer"]);
     } finally {
-      await app.close();
+      await h.app.close();
     }
   });
 });
 
 describe("GET /api/sessions/:id/subagents/:taskId", () => {
   it("serves the persisted transcript and rejects invalid or missing taskIds", async () => {
-    const root = await tempRoot("owc-subagent-rest-");
-    const sessions = new SessionStore(path.join(root, "sessions"));
-    await sessions.initialize();
-    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
-    await pricing.initialize();
-    const providers = new ProviderRegistry();
-    const events = new EventBus();
-    const core = makeFakeCore();
-    const agent = new AgentRunner(sessions, providers, core, events, pricing);
-    const app = await buildServer({ core, sessions, agent, events, providers, pricing });
+    const h = await makeAgentHarness({ title: "Transcript route" });
     try {
-      const session = await sessions.create({ cwd: root, title: "Transcript route" });
       const taskId = "123e4567-e89b-42d3-a456-426614174000";
-      await mkdir(path.join(sessions.contextRoot(session.id), "subagents"), { recursive: true });
+      await mkdir(path.join(h.sessions.contextRoot(h.session.id), "subagents"), { recursive: true });
       await writeFile(
-        path.join(sessions.contextRoot(session.id), "subagents", `${taskId}.json`),
+        path.join(h.sessions.contextRoot(h.session.id), "subagents", `${taskId}.json`),
         JSON.stringify({ id: taskId, prompt: "调查", startedAt: new Date().toISOString(), turns: 1, toolsUsed: [], conclusion: "结论", messages: [] }),
         "utf8",
       );
 
-      const ok = await app.inject({ method: "GET", url: `/api/sessions/${session.id}/subagents/${taskId}` });
+      const ok = await h.app.inject({ method: "GET", url: `/api/sessions/${h.session.id}/subagents/${taskId}` });
       expect(ok.statusCode).toBe(200);
       expect(ok.json()).toMatchObject({ id: taskId, prompt: "调查", conclusion: "结论" });
 
-      const missing = await app.inject({ method: "GET", url: `/api/sessions/${session.id}/subagents/123e4567-e89b-42d3-a456-426614174001` });
+      const missing = await h.app.inject({ method: "GET", url: `/api/sessions/${h.session.id}/subagents/123e4567-e89b-42d3-a456-426614174001` });
       expect(missing.statusCode).toBe(404);
 
-      const invalid = await app.inject({ method: "GET", url: `/api/sessions/${session.id}/subagents/..%2F..%2Fledger` });
+      const invalid = await h.app.inject({ method: "GET", url: `/api/sessions/${h.session.id}/subagents/..%2F..%2Fledger` });
       expect([400, 404]).toContain(invalid.statusCode);
-      const notUuid = await app.inject({ method: "GET", url: `/api/sessions/${session.id}/subagents/not-a-uuid` });
+      const notUuid = await h.app.inject({ method: "GET", url: `/api/sessions/${h.session.id}/subagents/not-a-uuid` });
       expect(notUuid.statusCode).toBe(400);
 
-      const noSession = await app.inject({ method: "GET", url: `/api/sessions/123e4567-e89b-42d3-a456-426614174999/subagents/${taskId}` });
+      const noSession = await h.app.inject({ method: "GET", url: `/api/sessions/123e4567-e89b-42d3-a456-426614174999/subagents/${taskId}` });
       expect(noSession.statusCode).toBe(404);
     } finally {
-      await app.close();
+      await h.app.close();
     }
   });
 });

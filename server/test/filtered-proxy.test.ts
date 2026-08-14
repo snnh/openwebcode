@@ -238,27 +238,24 @@ describe("FilteredProxyManager 上游折算", () => {
     });
   }
 
-  it("回环上游保留原值并警告平台边界一次", async () => {
-    const warnings: string[] = [];
-    const manager = makeManager(await makeTempRoot(), {
-      getProxyConfig: () => ({ mode: "custom", httpProxy: "http://user:pass@127.0.0.1:7890" }),
-      log: (line) => warnings.push(line),
+  const loopbackCases: Array<{ name: string; config: ProxyConfig; env: NodeJS.ProcessEnv; expected: string }> = [
+    { name: "回环 127.0.0.1", config: { mode: "custom", httpProxy: "http://user:pass@127.0.0.1:7890" }, env: {}, expected: "http://user:pass@127.0.0.1:7890/" },
+    { name: "localhost", config: { mode: "env" }, env: { HTTPS_PROXY: "http://localhost:7890" }, expected: "http://localhost:7890/" },
+  ];
+  for (const item of loopbackCases) {
+    it(`回环上游保留原值并警告平台边界一次（${item.name}）`, async () => {
+      const warnings: string[] = [];
+      const manager = makeManager(await makeTempRoot(), {
+        getProxyConfig: () => item.config,
+        env: item.env,
+        log: (line) => warnings.push(line),
+      });
+      expect(manager.upstreamProxy()).toBe(item.expected);
+      expect(manager.upstreamProxy()).toBe(item.expected); // 重复折算：警告只发一次
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0] ?? "").toContain("LoopbackExempt");
     });
-    expect(manager.upstreamProxy()).toBe("http://user:pass@127.0.0.1:7890/");
-    expect(manager.upstreamProxy()).toBe("http://user:pass@127.0.0.1:7890/");
-    expect(warnings.filter((line) => line.includes("LoopbackExempt"))).toHaveLength(1);
-  });
-
-  it("localhost 上游同样保留原值并警告", async () => {
-    const warnings: string[] = [];
-    const manager = makeManager(await makeTempRoot(), {
-      getProxyConfig: () => ({ mode: "env" }),
-      env: { HTTPS_PROXY: "http://localhost:7890" },
-      log: (line) => warnings.push(line),
-    });
-    expect(manager.upstreamProxy()).toBe("http://localhost:7890/");
-    expect(warnings).toHaveLength(1);
-  });
+  }
 
   it("上游注入 cmd（Windows set 形式）", async () => {
     const root = await makeTempRoot();
@@ -420,11 +417,16 @@ function plainGet(proxyPort: number, url: string): Promise<{ status: number; bod
   });
 }
 
+/** 在临时目录下写一份 deny 文件（各实测用例共用的样板）。 */
+async function makeDenyFile(content = "# empty\n"): Promise<string> {
+  const denyPath = path.join(await makeTempRoot(), "test.deny");
+  writeFileSync(denyPath, content, "utf8");
+  return denyPath;
+}
+
 describe("sandbox-proxy.mjs 实测", () => {
   it("CONNECT 隧道到本地目标往返成功", async () => {
-    const root = await makeTempRoot();
-    const denyPath = path.join(root, "test.deny");
-    writeFileSync(denyPath, "# empty\n", "utf8");
+    const denyPath = await makeDenyFile();
     const targetPort = await listenTarget((req, res) => res.end(`hello:${req.url ?? ""}`));
     const proxy = await startScriptProxy({ OWC_PROXY_DENY_FILE: denyPath });
     const result = await connectTunnel(proxy.port, `127.0.0.1:${targetPort}`, "GET /tunneled?q=1 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
@@ -433,9 +435,7 @@ describe("sandbox-proxy.mjs 实测", () => {
   });
 
   it("明文 HTTP 转发", async () => {
-    const root = await makeTempRoot();
-    const denyPath = path.join(root, "test.deny");
-    writeFileSync(denyPath, "", "utf8");
+    const denyPath = await makeDenyFile("");
     const targetPort = await listenTarget((req, res) => res.end(`plain:${req.url ?? ""}`));
     const proxy = await startScriptProxy({ OWC_PROXY_DENY_FILE: denyPath });
     const result = await plainGet(proxy.port, `http://127.0.0.1:${targetPort}/a/b?x=1`);
@@ -444,9 +444,7 @@ describe("sandbox-proxy.mjs 实测", () => {
   });
 
   it("deny 命中 → 403 并记日志；后缀匹配子域名", async () => {
-    const root = await makeTempRoot();
-    const denyPath = path.join(root, "test.deny");
-    writeFileSync(denyPath, "# comment\n\nexample.com\n", "utf8");
+    const denyPath = await makeDenyFile("# comment\n\nexample.com\n");
     const proxy = await startScriptProxy({ OWC_PROXY_DENY_FILE: denyPath });
     const deniedRoot = await connectTunnel(proxy.port, "example.com:443");
     expect(deniedRoot.status).toBe(403);
@@ -459,9 +457,7 @@ describe("sandbox-proxy.mjs 实测", () => {
   });
 
   it("deny 文件修改后热生效", async () => {
-    const root = await makeTempRoot();
-    const denyPath = path.join(root, "test.deny");
-    writeFileSync(denyPath, "# empty\n", "utf8");
+    const denyPath = await makeDenyFile();
     const proxy = await startScriptProxy({ OWC_PROXY_DENY_FILE: denyPath });
     // 未拦截时：目标域名不可达 → 502（NXDOMAIN 快速失败）
     const before = await connectTunnel(proxy.port, "missing.example.com:443");
@@ -474,9 +470,7 @@ describe("sandbox-proxy.mjs 实测", () => {
   });
 
   it("目标不可达 → 502", async () => {
-    const root = await makeTempRoot();
-    const denyPath = path.join(root, "test.deny");
-    writeFileSync(denyPath, "", "utf8");
+    const denyPath = await makeDenyFile("");
     const proxy = await startScriptProxy({ OWC_PROXY_DENY_FILE: denyPath });
     // 保留一个几乎不可能监听的端口（先 listen 再 close 取得空闲端口）
     const targetPort = await listenTarget(() => undefined);
@@ -486,9 +480,7 @@ describe("sandbox-proxy.mjs 实测", () => {
   });
 
   it("上游接力：CONNECT 经上游（含 Proxy-Authorization），明文也走上游", async () => {
-    const root = await makeTempRoot();
-    const denyPath = path.join(root, "test.deny");
-    writeFileSync(denyPath, "", "utf8");
+    const denyPath = await makeDenyFile("");
     const targetPort = await listenTarget((req, res) => res.end(`via-target:${req.url ?? ""}`));
     const seen: Array<{ kind: string; url: string; auth: string | undefined; path?: string }> = [];
     const upstream = http.createServer((req, res) => {
