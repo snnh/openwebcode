@@ -2,7 +2,7 @@ import { vi } from "vitest";
 import type { ContextView, ModelProfile, SessionDetail } from "../../lib/contracts";
 import { makeContextView, makeModelProfile, makeSession } from "./fixtures";
 
-export interface AppFetchMockOptions {
+interface AppFetchMockOptions {
   session?: SessionDetail;
   models?: ModelProfile[];
   context?: ContextView;

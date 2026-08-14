@@ -11,7 +11,7 @@ const FOCUSABLE_SELECTOR = 'button:not([disabled]), a[href], input:not([disabled
  * 浮层对话框行为 hook：Esc 关闭、焦点循环、初始聚焦、焦点归还。
  * Esc 在 document capture 阶段拦截并 stopPropagation，避免触发全局快捷键（如 Esc 中断运行）。
  */
-export function useDialogFocus(
+function useDialogFocus(
   ref: RefObject<HTMLElement | null>,
   { open, initialFocus, onClose }: { open: boolean; initialFocus?: string; onClose(): void },
 ): void {

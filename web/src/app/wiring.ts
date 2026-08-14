@@ -14,7 +14,7 @@ import { live } from "./live-store";
 import { streamBuffer, type StreamBuffer } from "../chat/stream-buffer";
 import { clearOlderMessages } from "../chat/pagination-store";
 
-export interface AppWiringOptions {
+interface AppWiringOptions {
   queryClient: QueryClient;
   /** 取最新 i18n t 函数（语言切换后通知文案跟随） */
   getT(): (chinese: string, english: string) => string;
@@ -32,7 +32,7 @@ export interface AppWiringOptions {
   desktopNotifyEnabled?(): boolean;
 }
 
-export interface AppWiring {
+interface AppWiring {
   router: EventRouter;
   close(): void;
 }
@@ -75,7 +75,7 @@ export function createAppWiring(options: AppWiringOptions): AppWiring {
   return { router, close: () => socket.close() };
 }
 
-export interface UseAppWiringResult {
+interface UseAppWiringResult {
   reconnecting: boolean;
   /** 删除会话时清理路由的完成检测残留（router.forgetSession） */
   routerRef: MutableRefObject<EventRouter | undefined>;

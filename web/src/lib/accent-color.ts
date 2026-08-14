@@ -4,7 +4,7 @@
  * 纯函数，不依赖 DOM，便于单测。
  */
 
-export type AccentTheme = "light" | "dark";
+type AccentTheme = "light" | "dark";
 
 const HEX_PATTERN = /^#[0-9a-fA-F]{6}$/;
 
@@ -12,7 +12,7 @@ export function isValidHexColor(value: string): boolean {
   return HEX_PATTERN.test(value);
 }
 
-export interface Rgb {
+interface Rgb {
   r: number;
   g: number;
   b: number;
@@ -23,7 +23,7 @@ export function hexToRgb(hex: string): Rgb {
   return { r: (value >> 16) & 0xff, g: (value >> 8) & 0xff, b: value & 0xff };
 }
 
-export function rgbToHex({ r, g, b }: Rgb): string {
+function rgbToHex({ r, g, b }: Rgb): string {
   const channel = (value: number): string => Math.round(Math.min(255, Math.max(0, value))).toString(16).padStart(2, "0");
   return `#${channel(r)}${channel(g)}${channel(b)}`;
 }
@@ -65,7 +65,7 @@ function hslToRgb({ h, s, l }: { h: number; s: number; l: number }): Rgb {
 }
 
 /** HSL 明度偏移（delta ∈ [-1, 1]）：hover 态浅色主题加深、深色主题提亮 */
-export function shiftLightness(rgb: Rgb, delta: number): Rgb {
+function shiftLightness(rgb: Rgb, delta: number): Rgb {
   const hsl = rgbToHsl(rgb);
   return hslToRgb({ ...hsl, l: Math.min(1, Math.max(0, hsl.l + delta)) });
 }
@@ -79,7 +79,7 @@ export function relativeLuminance({ r, g, b }: Rgb): number {
   return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
 }
 
-export interface AccentVars {
+interface AccentVars {
   accent: string;
   accentHover: string;
   onAccent: string;

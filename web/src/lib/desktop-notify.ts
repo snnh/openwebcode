@@ -42,7 +42,7 @@ export async function requestDesktopNotifyPermission(): Promise<DesktopNotifyPer
   }
 }
 
-export interface DesktopNotifyInput {
+interface DesktopNotifyInput {
   title: string;
   body: string;
   /** 点击通知：先聚焦窗口，再执行跳转（如切换到对应会话） */

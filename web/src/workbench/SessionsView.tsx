@@ -14,7 +14,7 @@ import { useTheme } from "../theme";
 import { Icon } from "../components/Icon";
 import { useI18n } from "../i18n";
 
-export interface SessionsViewProps {
+interface SessionsViewProps {
   /** undefined 表示仍在加载 */
   sessions?: Session[] | undefined;
   currentId?: string | undefined;

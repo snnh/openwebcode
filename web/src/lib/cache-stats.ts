@@ -1,6 +1,6 @@
 import type { ContextTokenUsage } from "./contracts";
 
-export interface CacheHitStats {
+interface CacheHitStats {
   /** 命中率：cacheRead / 总输入；无数据或总输入为 0 时为 null。 */
   rate: number | null;
   cacheRead: number;
@@ -32,9 +32,9 @@ export function cacheHitRate(usage: ContextTokenUsage | null | undefined): Cache
  * 命中率展示分档阈值（启发式体验档，与计费无关）：
  * ≥ good 不标注（默认色），warn–good 之间 amber，< warn danger。
  */
-export const CACHE_TONE_THRESHOLDS = { good: 0.6, warn: 0.3 } as const;
+const CACHE_TONE_THRESHOLDS = { good: 0.6, warn: 0.3 } as const;
 
-export type CacheTone = "good" | "warn" | "bad";
+type CacheTone = "good" | "warn" | "bad";
 
 /** rate 为 null 的调用方不渲染 pill，这里只处理有数情形。 */
 export function cacheTone(stats: CacheHitStats): CacheTone {

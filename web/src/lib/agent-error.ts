@@ -5,10 +5,10 @@
  */
 import type { AgentErrorPayload } from "./contracts";
 
-export type I18nFn = (zh: string, en: string) => string;
+type I18nFn = (zh: string, en: string) => string;
 
 /** 错误卡的可操作指引：hint 文案、可选设置深链页签、是否展示重试按钮 */
-export interface AgentErrorGuidance {
+interface AgentErrorGuidance {
   hint?: string;
   settingsTab?: "models";
   retryable: boolean;

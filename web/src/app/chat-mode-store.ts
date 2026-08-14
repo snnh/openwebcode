@@ -3,9 +3,9 @@
 import { createStore } from "./store";
 
 /** Python 沙盒状态：对齐 server python_status SSE 事件（preparing/ready/error），idle 为未初始化。 */
-export type ChatPythonStatus = "idle" | "preparing" | "ready" | "error";
+type ChatPythonStatus = "idle" | "preparing" | "ready" | "error";
 
-export interface ChatModeState {
+interface ChatModeState {
   /** 按会话键控的 Python 沙盒状态；缺省视为 idle。 */
   pythonStatus: Record<string, ChatPythonStatus>;
   /** 按会话键控的消息运行态（connected/delta/done/stopped/error 事件驱动）；缺省 false。 */

@@ -15,7 +15,7 @@ export interface PendingPermission {
  * agent 状态、上下文水位/用量、运行失败、Problems 角标、即时权限卡。
  * 事件路由（event-router）写入；任意组件经 useStore 选择器读取，消灭 props 透传。
  */
-export interface SessionMetaState {
+interface SessionMetaState {
   agentStates: Record<string, string>;
   watermarks: Record<string, ContextWatermark>;
   usages: Record<string, ContextUsage>;

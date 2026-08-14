@@ -17,7 +17,7 @@ function downloadJson(value: unknown, filename: string): void {
   URL.revokeObjectURL(url);
 }
 
-export function downloadEvalReport(report: EvalRunReport): void {
+function downloadEvalReport(report: EvalRunReport): void {
   downloadJson(report, `${report.runId}.json`);
 }
 

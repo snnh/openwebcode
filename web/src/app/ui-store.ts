@@ -6,7 +6,7 @@ import {
 import type { SettingsTab } from "../lib/contracts";
 
 /** Toast 单条提示（kind 决定配色与 role；error 用 role=alert） */
-export interface Notice {
+interface Notice {
   kind: NotificationKind;
   text: string;
 }
@@ -15,7 +15,7 @@ export interface Notice {
  * 全局 UI 状态：导航/对话框/覆盖层/提示与通知中心。
  * 服务端数据一律走 react-query，不进这里；按会话键控的运行态在 session-store。
  */
-export interface UiState {
+interface UiState {
   /** 当前选中会话；undefined 表示未选择（展示欢迎页） */
   sessionId?: string;
   newSessionOpen: boolean;

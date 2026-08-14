@@ -106,7 +106,7 @@ function ContentBlock({ block, toolResults, liveSubagents }: {
 }
 
 /** 兼容旧会话：历史版本会把 assistant 的每个流式分片保存成独立 text 块。 */
-export function coalesceAssistantText(content: MessageContent[]): MessageContent[] {
+function coalesceAssistantText(content: MessageContent[]): MessageContent[] {
   const result: MessageContent[] = [];
   for (const block of content) {
     const previous = result.at(-1);

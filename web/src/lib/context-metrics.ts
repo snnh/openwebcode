@@ -5,7 +5,7 @@ import type { ContextBuildStats, ContextTokenUsage, ContextView } from "./contra
  * 深比较下切片不变即保持引用——账本其余字段（entries/selection/压缩历史等）变化
  * 不再触发这些常驻组件的重渲。
  */
-export interface ContextMetricsSlice {
+interface ContextMetricsSlice {
   usage: ContextTokenUsage;
   cost: { usdMicroUnits: string; cnyMicroUnits: string; unpricedTokens: number };
   currency: "USD" | "CNY";
@@ -22,7 +22,7 @@ export function selectContextMetrics(view: ContextView): ContextMetricsSlice {
 }
 
 /** 底栏/状态栏切片：成本用量之外还要 stats（上下文窗口占用推导用）。 */
-export interface ContextStatusSlice extends ContextMetricsSlice {
+interface ContextStatusSlice extends ContextMetricsSlice {
   stats: ContextBuildStats | undefined;
 }
 
