@@ -2,6 +2,14 @@
 
 本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前版本的用户可感知变化。日期以 Git 标签发布日期为准。
 
+## [1.7.6] - 2026-08-14
+
+### 内部重构
+
+- **代码结构整理**：Web 类型契约按域拆分（`contracts.ts` → `lib/contracts/` 16 个域文件，barrel 保持 import 面不变）；服务端上下文管理拆分出类型（`context-types.ts`）与纯函数（`context-ledger-ops.ts`），Agent 运行器工具别名/参数归一逻辑收编至 `agent/tool-alias.ts`，并收敛拆分后的导出面。均为行为不变的结构调整，无用户可感知变化。
+- **测试精简**：server/web 测试合并同构用例、收敛辅助设施与 setup、修复脆弱断言，全量通过率不变。
+- **文档整理**：AGENTS.md 合并历史版本要点并压缩至约 180 行；`help/development.md` 等文档与代码结构同步。
+
 ## [1.7.5] - 2026-08-13
 
 ### 新增功能
