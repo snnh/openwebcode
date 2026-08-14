@@ -127,23 +127,18 @@ describe("ContextPanel 上下文窗口", () => {
     expect(document.querySelector(".segment-bar .seg-toolResults")).not.toBeNull();
   });
 
-  it("compact_recommended 显示建议压缩提示，meter 为 warn", async () => {
+  it.each([
+    ["compact_recommended", 0.72, "上下文接近上限，建议压缩", "level-warn", false],
+    ["force_compact", 0.9, "已达强制压缩水位，本轮已自动压缩", "level-danger", true],
+  ] as const)("水位 %s 时提示对应文案，meter 分级 %s", async (_warning, utilization, text, meterClass, hintDanger) => {
     vi.spyOn(api, "context").mockResolvedValue(contextView({ pins: [], excludes: [] }));
-    setWatermark({ ...windowUsage, utilization: 0.72, warning: "compact_recommended" });
+    setWatermark({ ...windowUsage, utilization, warning: _warning });
 
     renderPanel();
-    expect(await screen.findByText("上下文接近上限，建议压缩")).toBeInTheDocument();
-    expect(screen.getByRole("meter", { name: "上下文窗口占用" }).className).toContain("level-warn");
-  });
-
-  it("force_compact 提示本轮已自动压缩，meter 为 danger", async () => {
-    vi.spyOn(api, "context").mockResolvedValue(contextView({ pins: [], excludes: [] }));
-    setWatermark({ ...windowUsage, utilization: 0.9, warning: "force_compact" });
-
-    renderPanel();
-    const hint = await screen.findByText("已达强制压缩水位，本轮已自动压缩");
-    expect(hint.className).toContain("danger");
-    expect(screen.getByRole("meter", { name: "上下文窗口占用" }).className).toContain("level-danger");
+    const hint = await screen.findByText(text);
+    // force_compact 的提示带 danger 强调，compact_recommended 不带
+    if (hintDanger) expect(hint.className).toContain("danger");
+    expect(screen.getByRole("meter", { name: "上下文窗口占用" }).className).toContain(meterClass);
   });
 
   it("无实时水位时由 REST stats + 模型档案播种", async () => {
@@ -226,41 +221,25 @@ describe("ContextPanel 空态", () => {
 });
 
 describe("ContextPanel 手动压缩反馈", () => {
-  it("压缩进行中按钮显示“压缩中…”并禁用，完成后恢复", async () => {
+  it.each([
+    ["压缩工具调用", "概览压缩", { changed: true, mode: "toolcalls" }],
+    ["概览压缩", "压缩工具调用", { changed: false, mode: "overview", reason: "无区段可压缩" }],
+  ] as const)("点击「%s」后按钮进入压缩中并禁用，完成后恢复", async (buttonName, otherButtonName, result) => {
     vi.spyOn(api, "context").mockResolvedValue(contextView({ pins: [], excludes: [] }));
     let resolveCompact!: (v: { changed: boolean; mode: string; reason?: string }) => void;
     vi.spyOn(api, "compactContext").mockReturnValue(new Promise((r) => { resolveCompact = r; }));
 
     renderPanel();
 
-    const toolcallsBtn = await screen.findByRole("button", { name: "压缩工具调用" });
-    fireEvent.click(toolcallsBtn);
+    fireEvent.click(await screen.findByRole("button", { name: buttonName }));
 
+    // 被点击按钮改名「压缩中…」，另一按钮保持原名且禁用
     expect(await screen.findByRole("button", { name: "压缩中…" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "概览压缩" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: otherButtonName })).toBeDisabled();
 
-    resolveCompact({ changed: true, mode: "toolcalls" });
+    resolveCompact(result);
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "压缩工具调用" })).toBeEnabled();
-    });
-    expect(screen.getByRole("button", { name: "概览压缩" })).toBeEnabled();
-  });
-
-  it("概览压缩进行中同样显示“压缩中…”", async () => {
-    vi.spyOn(api, "context").mockResolvedValue(contextView({ pins: [], excludes: [] }));
-    let resolveCompact!: (v: { changed: boolean; mode: string; reason?: string }) => void;
-    vi.spyOn(api, "compactContext").mockReturnValue(new Promise((r) => { resolveCompact = r; }));
-
-    renderPanel();
-
-    const overviewBtn = await screen.findByRole("button", { name: "概览压缩" });
-    fireEvent.click(overviewBtn);
-
-    expect(await screen.findByRole("button", { name: "压缩中…" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "压缩工具调用" })).toBeDisabled();
-
-    resolveCompact({ changed: false, mode: "overview", reason: "无区段可压缩" });
-    await waitFor(() => {
       expect(screen.getByRole("button", { name: "概览压缩" })).toBeEnabled();
     });
   });

@@ -55,6 +55,14 @@ function finished(socket: StubSocket, sessionId: string, toolCallId: string, tas
   emitEvent(socket, "subagent.finished", { toolCallId, taskId, status, turns: 2, toolsUsed: ["read_file"] }, { sessionId });
 }
 
+/** 触发 scout 子代理 started 并等其标签出现（多个用例共用的启动步骤）。 */
+async function openScoutTab(socket: StubSocket): Promise<HTMLElement> {
+  act(() => {
+    started(socket, "s1", "call-1", "task-1", { agent: "scout" });
+  });
+  return screen.findByRole("tab", { name: "scout" });
+}
+
 function stubMatchMedia(matches: boolean): void {
   window.matchMedia = ((query: string) => ({
     matches,
@@ -94,11 +102,7 @@ describe("App 主区子代理/终端标签", () => {
   it("subagent.started 自动创建标签且不抢焦点，状态随 finished 流转", async () => {
     const socket = await launchApp();
 
-    act(() => {
-      started(socket, "s1", "call-1", "task-1", { agent: "scout" });
-    });
-
-    const tab = await screen.findByRole("tab", { name: "scout" });
+    const tab = await openScoutTab(socket);
     // 不抢焦点：仍停留在「主对话」
     expect(screen.getByRole("tab", { name: "主对话" })).toHaveAttribute("aria-selected", "true");
     expect(tab).toHaveAttribute("aria-selected", "false");
@@ -143,10 +147,7 @@ describe("App 主区子代理/终端标签", () => {
   it("切换标签渲染该组运行视图，关闭标签回退对话", async () => {
     const socket = await launchApp();
 
-    act(() => {
-      started(socket, "s1", "call-1", "task-1", { agent: "scout" });
-    });
-    const tab = await screen.findByRole("tab", { name: "scout" });
+    const tab = await openScoutTab(socket);
 
     fireEvent.click(tab);
     expect(tab).toHaveAttribute("aria-selected", "true");
@@ -195,10 +196,7 @@ describe("App 主区子代理/终端标签", () => {
   it("标签按会话隔离：切换会话互不串扰", async () => {
     const socket = await launchApp();
 
-    act(() => {
-      started(socket, "s1", "call-1", "task-1", { agent: "scout" });
-    });
-    await screen.findByRole("tab", { name: "scout" });
+    await openScoutTab(socket);
 
     // 切到 s2：s1 的标签不可见
     act(() => ui.selectSession("s2"));
@@ -223,21 +221,15 @@ describe("App 主区子代理/终端标签", () => {
     stubMatchMedia(true);
     const socket = await launchApp();
 
-    act(() => {
-      started(socket, "s1", "call-1", "task-1", { agent: "scout" });
-    });
     // 窄屏不隐藏标签条：started 自动创建标签（不抢焦点）
-    await screen.findByRole("tab", { name: "scout" });
+    await openScoutTab(socket);
     expect(screen.getByRole("tablist")).toBeInTheDocument();
   });
 
   it("终端标签：tabActions.openTerminal 打开并选中，与子代理标签选中互斥，关闭回主对话", async () => {
     const socket = await launchApp();
 
-    act(() => {
-      started(socket, "s1", "call-1", "task-1", { agent: "scout" });
-    });
-    const subagentTab = await screen.findByRole("tab", { name: "scout" });
+    const subagentTab = await openScoutTab(socket);
 
     // 打开终端：终端标签出现并选中，主对话隐藏（保持挂载）
     act(() => tabActions.openTerminal?.());

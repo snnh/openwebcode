@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ExtensionRow, localizeConfigFields } from "../settings/sections/ExtensionsSection";
 import { parseConfigSchema } from "../settings/sections/ExtensionConfigForm";
 import { api } from "../lib/api";
-import type { ExtensionInfo } from "../lib/contracts";
+import type { ExtensionInfo, PersonaDetail, PersonaSummary } from "../lib/contracts";
 import { renderWithClient } from "./helpers/with-client";
 
 function extensionFixture(overrides: Partial<ExtensionInfo>): ExtensionInfo {
@@ -18,6 +18,36 @@ function extensionFixture(overrides: Partial<ExtensionInfo>): ExtensionInfo {
     builtIn: true,
     status: "running",
     config: {},
+    ...overrides,
+  };
+}
+
+/** env-sim 扩展行：persona 单字段 schema */
+function envSimExtension(): ExtensionInfo {
+  return extensionFixture({
+    id: "env-sim",
+    configSchema: {
+      type: "object",
+      properties: { persona: { type: "string", title: "人格预设" } },
+    },
+    config: {},
+  });
+}
+
+function stubPersonas(personas: PersonaSummary[]): void {
+  vi.spyOn(api, "envSimPersonas").mockResolvedValue({ personas, directory: "D:\\data\\env-sim\\personas" });
+}
+
+function personaFixture(overrides: Partial<PersonaDetail> = {}): PersonaDetail {
+  return {
+    id: "claude",
+    name: "Claude 风格",
+    builtin: true,
+    identity: "You are Claude Code, Anthropic's agentic coding tool.",
+    basePrompt: "base body",
+    productSections: [],
+    hideBuiltIns: [],
+    aliases: [],
     ...overrides,
   };
 }
@@ -59,23 +89,12 @@ describe("扩展类型化配置表单", () => {
   });
 
   it("env-sim：persona 选项来自 personas 接口，含（不模拟）与目录提示", async () => {
-    vi.spyOn(api, "envSimPersonas").mockResolvedValue({
-      personas: [
-        { id: "claude", name: "Claude 风格", builtin: true },
-        { id: "my-preset", name: "我的预设", builtin: false },
-      ],
-      directory: "D:\\data\\env-sim\\personas",
-    });
+    stubPersonas([
+      { id: "claude", name: "Claude 风格", builtin: true },
+      { id: "my-preset", name: "我的预设", builtin: false },
+    ]);
     const configure = vi.spyOn(api, "configureExtension").mockResolvedValue(extensionFixture({}));
-    const extension = extensionFixture({
-      id: "env-sim",
-      configSchema: {
-        type: "object",
-        properties: { persona: { type: "string", title: "人格预设" } },
-      },
-      config: {},
-    });
-    const view = renderWithClient(<ExtensionRow extension={extension} />);
+    const view = renderWithClient(<ExtensionRow extension={envSimExtension()} />);
 
     // 空选项 + 内置/自定义预设
     await view.findByRole("option", { name: "Claude 风格" });
@@ -90,32 +109,15 @@ describe("扩展类型化配置表单", () => {
   });
 
   it("env-sim：选中预设后展示详情预览（身份行 + 工具形态摘要）", async () => {
-    vi.spyOn(api, "envSimPersonas").mockResolvedValue({
-      personas: [{ id: "claude", name: "Claude 风格", builtin: true }],
-      directory: "D:\\data\\env-sim\\personas",
-    });
-    const personaQuery = vi.spyOn(api, "envSimPersona").mockResolvedValue({
-      id: "claude",
-      name: "Claude 风格",
-      builtin: true,
-      identity: "You are Claude Code, Anthropic's agentic coding tool.",
-      basePrompt: "base body",
-      productSections: [],
+    stubPersonas([{ id: "claude", name: "Claude 风格", builtin: true }]);
+    const personaQuery = vi.spyOn(api, "envSimPersona").mockResolvedValue(personaFixture({
       hideBuiltIns: ["remember", "spawn_swarm"],
       aliases: [
         { from: "bash", as: "Bash" },
         { from: "read_file", as: "Read" },
       ],
-    });
-    const extension = extensionFixture({
-      id: "env-sim",
-      configSchema: {
-        type: "object",
-        properties: { persona: { type: "string", title: "人格预设" } },
-      },
-      config: {},
-    });
-    const view = renderWithClient(<ExtensionRow extension={extension} />);
+    }));
+    const view = renderWithClient(<ExtensionRow extension={envSimExtension()} />);
     await view.findByRole("option", { name: "Claude 风格" });
 
     // 未选中时没有预览
@@ -248,22 +250,14 @@ describe("扩展类型化配置表单", () => {
         ],
         directory: "D:\\data\\env-sim\\personas",
       });
-    const save = vi.spyOn(api, "saveEnvSimPersona").mockResolvedValue({
+    const save = vi.spyOn(api, "saveEnvSimPersona").mockResolvedValue(personaFixture({
       id: "my-persona",
       name: "我的人格",
       builtin: false,
       identity: "You are Mine.",
       basePrompt: "mine base",
-      productSections: [],
-      hideBuiltIns: [],
-      aliases: [],
-    });
-    const extension = extensionFixture({
-      id: "env-sim",
-      configSchema: { type: "object", properties: { persona: { type: "string", title: "人格预设" } } },
-      config: {},
-    });
-    const view = renderWithClient(<ExtensionRow extension={extension} />);
+    }));
+    const view = renderWithClient(<ExtensionRow extension={envSimExtension()} />);
     await view.findByRole("option", { name: "Claude 风格" });
 
     fireEvent.click(view.getByRole("button", { name: "新建预设" }));
@@ -292,27 +286,16 @@ describe("扩展类型化配置表单", () => {
   });
 
   it("env-sim：自定义预设出现删除按钮，两段确认后调用删除接口", async () => {
-    vi.spyOn(api, "envSimPersonas").mockResolvedValue({
-      personas: [{ id: "my-preset", name: "我的预设", builtin: false }],
-      directory: "D:\\data\\env-sim\\personas",
-    });
-    vi.spyOn(api, "envSimPersona").mockResolvedValue({
+    stubPersonas([{ id: "my-preset", name: "我的预设", builtin: false }]);
+    vi.spyOn(api, "envSimPersona").mockResolvedValue(personaFixture({
       id: "my-preset",
       name: "我的预设",
       builtin: false,
       identity: "You are Mine.",
       basePrompt: "mine base",
-      productSections: [],
-      hideBuiltIns: [],
-      aliases: [],
-    });
+    }));
     const remove = vi.spyOn(api, "deleteEnvSimPersona").mockResolvedValue({ ok: true });
-    const extension = extensionFixture({
-      id: "env-sim",
-      configSchema: { type: "object", properties: { persona: { type: "string", title: "人格预设" } } },
-      config: {},
-    });
-    const view = renderWithClient(<ExtensionRow extension={extension} />);
+    const view = renderWithClient(<ExtensionRow extension={envSimExtension()} />);
     await view.findByRole("option", { name: "我的预设" });
     fireEvent.change(view.getByLabelText("人格预设"), { target: { value: "my-preset" } });
 
@@ -365,7 +348,7 @@ describe("localizeConfigFields 英文字段映射", () => {
 });
 
 describe("parseConfigSchema x-model-picker", () => {
-  it("解析模型选择器标记（vision-tools 配置由扩展 json 生成）", () => {
+  it("解析模型选择器标记（vision-tools 配置由扩展 json 生成）；无标记字段不产生 modelPicker", () => {
     const fields = parseConfigSchema({
       type: "object",
       properties: {
@@ -379,10 +362,5 @@ describe("parseConfigSchema x-model-picker", () => {
     const model = fields!.find((field) => field.key === "model");
     expect(model).toMatchObject({ key: "model", modelPicker: true, title: "视觉模型" });
     expect(fields!.find((field) => field.key === "prompt")?.modelPicker).toBeUndefined();
-  });
-
-  it("无标记的 schema 不产生 modelPicker 字段", () => {
-    const fields = parseConfigSchema({ type: "object", properties: { a: { type: "string" } } });
-    expect(fields![0]?.modelPicker).toBeUndefined();
   });
 });
