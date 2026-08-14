@@ -148,6 +148,90 @@ describe("spawn_task via AgentRunner", () => {
     expect(ledger.usage.outputTokens).toBe(30);
   });
 
+  it("honors the maxTurns argument of spawn_task over the default", async () => {
+    const root = await tempRoot("owc-spawn-task-");
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const session = await sessions.create({ cwd: root, provider: "fake", model: "test-model" });
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const events = new EventBus();
+
+    let subCalls = 0;
+    let mainTurn = 0;
+    const provider: Provider = {
+      name: "fake",
+      async *streamChat(request) {
+        if (request.system.includes("exploration sub-agent")) {
+          subCalls += 1;
+          yield { type: "tool_call", id: `sub-tool-${subCalls}`, name: "glob", input: { path: ".", pattern: "*.ts" } };
+          yield { type: "done", stopReason: "tool_use" };
+          return;
+        }
+        if (mainTurn++ === 0) {
+          yield { type: "tool_call", id: "spawn-1", name: "spawn_task", input: { prompt: "调查", maxTurns: 1 } };
+          yield { type: "done", stopReason: "tool_use" };
+        } else {
+          yield { type: "text_delta", text: "完成" };
+          yield { type: "done", stopReason: "end_turn" };
+        }
+      },
+    };
+    const providers = new ProviderRegistry();
+    providers.register(provider);
+    const runner = new AgentRunner(sessions, providers, createFakeCore({}), events, pricing);
+    // 全局默认 100 不应影响显式参数 1
+    runner.setSubAgentMaxTurns(() => 100);
+
+    await runner.run(session.id, "调查");
+
+    expect(subCalls).toBe(1);
+    const toolResult = toolResultOf(await sessions.get(session.id), "spawn-1");
+    expect(toolResult).toMatchObject({ type: "tool_result", isError: false });
+    expect(String(toolResult.content)).toContain("reached max turns (1)");
+  });
+
+  it("applies the injected global default when spawn_task omits maxTurns", async () => {
+    const root = await tempRoot("owc-spawn-task-");
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const session = await sessions.create({ cwd: root, provider: "fake", model: "test-model" });
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const events = new EventBus();
+
+    let subCalls = 0;
+    let mainTurn = 0;
+    const provider: Provider = {
+      name: "fake",
+      async *streamChat(request) {
+        if (request.system.includes("exploration sub-agent")) {
+          subCalls += 1;
+          yield { type: "tool_call", id: `sub-tool-${subCalls}`, name: "glob", input: { path: ".", pattern: "*.ts" } };
+          yield { type: "done", stopReason: "tool_use" };
+          return;
+        }
+        if (mainTurn++ === 0) {
+          yield { type: "tool_call", id: "spawn-1", name: "spawn_task", input: { prompt: "调查" } };
+          yield { type: "done", stopReason: "tool_use" };
+        } else {
+          yield { type: "text_delta", text: "完成" };
+          yield { type: "done", stopReason: "end_turn" };
+        }
+      },
+    };
+    const providers = new ProviderRegistry();
+    providers.register(provider);
+    const runner = new AgentRunner(sessions, providers, createFakeCore({}), events, pricing);
+    runner.setSubAgentMaxTurns(() => 2);
+
+    await runner.run(session.id, "调查");
+
+    expect(subCalls).toBe(2);
+    const toolResult = toolResultOf(await sessions.get(session.id), "spawn-1");
+    expect(String(toolResult.content)).toContain("reached max turns (2)");
+  });
+
   it("keeps the started subagent taskId and per-item status in the tool result when the subagent fails", async () => {
     const root = await tempRoot("owc-spawn-task-");
     const sessions = new SessionStore(path.join(root, "sessions"));
@@ -235,12 +319,12 @@ describe("runSubAgent", () => {
     ]);
   });
 
-  it("truncates a conclusion longer than 2000 characters", async () => {
+  it("truncates a conclusion longer than the hard limit (64000 characters)", async () => {
     const root = await tempRoot("owc-spawn-task-");
     const provider: Provider = {
       name: "fake",
       async *streamChat() {
-        yield { type: "text_delta", text: "长".repeat(2_500) };
+        yield { type: "text_delta", text: "长".repeat(65_000) };
         yield { type: "done", stopReason: "end_turn" };
       },
     };

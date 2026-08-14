@@ -38,7 +38,8 @@ export const GENERAL_AGENT_TOOL_NAMES = [
   "bash", "repo_map", "code_search", "test_runner", "web_fetch", "web_search",
 ] as const;
 
-export const SUB_AGENT_CONCLUSION_LIMIT = 2_000;
+/** 结论硬上限（防单条结论撑爆主上下文；正常结论远小于此值）。 */
+export const SUB_AGENT_CONCLUSION_LIMIT = 64_000;
 
 export type BuiltinSubAgentKind = "explore" | "general";
 
@@ -56,13 +57,13 @@ export const BUILTIN_SUB_AGENTS: readonly BuiltinSubAgent[] = [
     id: "explore",
     description: "只读探索子代理（read_file/glob/grep/read_artifact）",
     toolNames: SUB_AGENT_TOOL_NAMES,
-    maxTurns: 15,
+    maxTurns: 100,
   },
   {
     id: "general",
     description: "通用子代理（可读写文件、执行命令，走会话权限链与沙盒）",
     toolNames: GENERAL_AGENT_TOOL_NAMES,
-    maxTurns: 40,
+    maxTurns: 100,
   },
 ];
 

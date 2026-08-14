@@ -125,6 +125,15 @@ function boundToolEventInput(input: Record<string, unknown>): { input: Record<st
   return truncated ? { input: bounded, inputTruncated: true } : { input };
 }
 
+/** 子代理 maxTurns 参数校验：1–1000 整数；未传返回 undefined（走全局默认）。非法值显式报错。 */
+function parseMaxTurns(raw: unknown): number | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "number" || !Number.isSafeInteger(raw) || raw < 1 || raw > 1000) {
+    throw new Error(`maxTurns must be an integer between 1 and 1000 (got ${String(raw)})`);
+  }
+  return raw;
+}
+
 const GIT_STATUS_TOOL: ProviderTool = {
   name: "git_status",
   description:
@@ -229,7 +238,7 @@ const SPAWN_TASK_TOOL: ProviderTool = {
   name: "spawn_task",
   description:
     "Launch a sub-agent with an isolated context to work on a task. " +
-    "The sub-agent does not share this session's context; only its final conclusion (at most 2000 characters) is returned. " +
+    "The sub-agent does not share this session's context; only its final conclusion (at most 64000 characters) is returned. " +
     "Built-in agent types: explore (default; read-only read_file, glob, grep, read_artifact) and general (write-capable coding tools, run through the session permission chain and sandbox). " +
     "Custom sub-agents from the catalog are always read-only. Sub-agents cannot spawn further sub-agents.",
   inputSchema: {
@@ -246,6 +255,10 @@ const SPAWN_TASK_TOOL: ProviderTool = {
         type: "string",
         enum: [...MODEL_ROLES],
         description: "Optional model tier for the sub-agent (see the sub-agent model-role mapping in the system prompt). Explicit provider:/model: in a custom agent's frontmatter takes precedence over any role.",
+      },
+      maxTurns: {
+        type: "number",
+        description: "Optional per-call turn limit (1-1000) overriding the session default; the sub-agent stops after this many provider turns.",
       },
     },
     required: ["prompt"],
@@ -298,7 +311,7 @@ const SPAWN_SWARM_TOOL: ProviderTool = {
     "Use when many independent tasks of the same kind should run in parallel (e.g. reviewing several files or endpoints). " +
     "For a single task use spawn_task instead. Built-in agent types: explore (default; read-only) and general (write-capable, via the session permission chain); custom sub-agents are read-only. " +
     "Members of one swarm share a discussion board (swarm_board_post/swarm_board_read) so they can exchange findings while running. " +
-    "Only each sub-agent's final conclusion (at most 2000 characters) is returned, aggregated as numbered results with a board digest.",
+    "Only each sub-agent's final conclusion (at most 64000 characters) is returned, aggregated as numbered results with a board digest.",
   inputSchema: {
     type: "object",
     properties: {
@@ -314,19 +327,24 @@ const SPAWN_SWARM_TOOL: ProviderTool = {
                 task: { type: "string", description: "Value used to fill {{item}} for this item." },
                 agent: { type: "string", description: "Optional built-in type (explore/general) or custom sub-agent name overriding the call-level agent for this item only." },
                 role: { type: "string", enum: [...MODEL_ROLES], description: "Optional model tier overriding the call-level role for this item only." },
+                maxTurns: { type: "number", description: "Optional per-item turn limit (1-1000) overriding the call-level maxTurns for this item only." },
               },
               required: ["task"],
               additionalProperties: false,
             },
           ],
         },
-        description: "Values used to fill {{item}}. Each item launches one sub-agent; 2-16 items, and the filled-in prompts must be distinct. An item may be a plain string or an object { task, agent?, role? } to override the agent or model tier for that item.",
+        description: "Values used to fill {{item}}. Each item launches one sub-agent; 2-16 items, and the filled-in prompts must be distinct. An item may be a plain string or an object { task, agent?, role?, maxTurns? } to override the agent, model tier, or turn limit for that item.",
       },
       agent: { type: "string", description: "Built-in sub-agent type (explore or general) or a custom sub-agent name from the system prompt catalog, applied to every launch unless an item overrides it." },
       role: {
         type: "string",
         enum: [...MODEL_ROLES],
         description: "Optional model tier applied to every launch unless an item overrides it (see the sub-agent model-role mapping in the system prompt). Explicit provider:/model: in a custom agent's frontmatter takes precedence over any role.",
+      },
+      maxTurns: {
+        type: "number",
+        description: "Optional call-level turn limit (1-1000) applied to every launch unless an item overrides it.",
       },
     },
     required: ["prompt_template", "items"],
@@ -754,6 +772,15 @@ export class AgentRunner {
   /** 注入轮次上限的实时取值函数（index.ts 装配：settings.effective().agentMaxTurns）。 */
   setMaxTurns(get: () => number): void {
     this.maxTurnsLimit = get;
+  }
+
+  /** 子代理默认轮次上限取值函数（index.ts 装配：settings.effective().subAgentMaxTurns）。
+   *  spawn_task/spawn_swarm 的显式 maxTurns 参数优先于它；仅作为未指定时的全局默认。 */
+  private subAgentMaxTurnsLimit: () => number = () => 100;
+
+  /** 注入子代理默认轮次上限的实时取值函数（index.ts 装配：settings.effective().subAgentMaxTurns）。 */
+  setSubAgentMaxTurns(get: () => number): void {
+    this.subAgentMaxTurnsLimit = get;
   }
 
   constructor(
@@ -1691,7 +1718,8 @@ export class AgentRunner {
     if (builtin) {
       const requested = requestedTools ?? [...builtin.toolNames];
       return applyRole(
-        { name: builtin.id, kind: builtin.id, toolNames: this.filterSubAgentTools(sessionId, requested, builtin, toolsAllow, toolsDeny), maxTurns: builtin.maxTurns },
+        // 内置类型默认轮次跟随设置（subAgentMaxTurns 热生效）；builtin.maxTurns 仅作 runSubAgent 兜底
+        { name: builtin.id, kind: builtin.id, toolNames: this.filterSubAgentTools(sessionId, requested, builtin, toolsAllow, toolsDeny), maxTurns: this.subAgentMaxTurnsLimit() },
         requestedRole as ModelRole | undefined,
       );
     }
@@ -1811,7 +1839,8 @@ export class AgentRunner {
         agentKind: resolved.kind,
         prompt,
         toolNames: resolved.toolNames,
-        ...(resolved.maxTurns ? { maxTurns: resolved.maxTurns } : {}),
+        // 手动启动无显式参数：内置类型已带设置默认，自定义类型回落设置全局默认
+        maxTurns: resolved.maxTurns ?? this.subAgentMaxTurnsLimit(),
         shell: resolveShell(session.shellBackend ?? "default"),
         // general 类型：工具调用经会话权限链 + 主循环同一沙盒执行（见 executeSubAgentTool）
         ...(resolved.kind === "general" ? { executeTool: (call: { name: string; input: Record<string, unknown> }) => this.executeSubAgentTool(sessionId, call.name, call.input, signal) } : {}),
@@ -2438,6 +2467,7 @@ export class AgentRunner {
         const agentName = typeof input.agent === "string" ? input.agent.trim() : "";
         const requestedTools = Array.isArray(input.tools) ? input.tools.map((item) => String(item)) : undefined;
         const requestedRole = typeof input.role === "string" && input.role.trim() ? input.role.trim() : undefined;
+        const requestedMaxTurns = parseMaxTurns(input.maxTurns);
         const resolved = await this.resolveSubAgent(session.cwd, sessionId, agentName, requestedTools, requestedRole);
         hookContext = { cwd: session.cwd, agent: resolved.name, kind: resolved.kind };
         // 生效 provider：角色档/frontmatter provider: 覆盖优先，缺省会话 provider
@@ -2460,7 +2490,8 @@ export class AgentRunner {
           agentKind: resolved.kind,
           prompt,
           toolNames: resolved.toolNames,
-          ...(resolved.maxTurns ? { maxTurns: resolved.maxTurns } : {}),
+          // 显式 maxTurns 参数优先，其次设置全局默认（resolveSubAgent 已按内置/设置解析），最后 runSubAgent 兜底
+          maxTurns: requestedMaxTurns ?? resolved.maxTurns ?? this.subAgentMaxTurnsLimit(),
           shell: resolveShell(session.shellBackend ?? "default"),
           // general 类型：工具调用经会话权限链 + 主循环同一沙盒执行（见 executeSubAgentTool）
           ...(resolved.kind === "general" ? { executeTool: (call: { name: string; input: Record<string, unknown> }) => this.executeSubAgentTool(sessionId, call.name, call.input, signal) } : {}),
@@ -2541,15 +2572,15 @@ export class AgentRunner {
         if (!session) throw new Error("Session not found");
         const template = String(input.prompt_template ?? "");
         if (!template.includes("{{item}}")) throw new Error("spawn_swarm requires prompt_template to contain the {{item}} placeholder");
-        // items 兼容两种形态：纯字符串，或 { task, agent?, role? }（agent/role 覆盖本次调用的整体值）
-        interface SwarmItemSpec { task: string; agent?: string; role?: string }
+        // items 兼容两种形态：纯字符串，或 { task, agent?, role?, maxTurns? }（agent/role/maxTurns 覆盖本次调用的整体值）
+        interface SwarmItemSpec { task: string; agent?: string; role?: string; maxTurns?: number }
         const items: SwarmItemSpec[] = (Array.isArray(input.items) ? input.items : []).map((raw) => {
           if (typeof raw === "string") return { task: raw };
           if (raw && typeof raw === "object" && !Array.isArray(raw)) {
             const record = raw as Record<string, unknown>;
             const agent = typeof record.agent === "string" ? record.agent.trim() : "";
             const role = typeof record.role === "string" ? record.role.trim() : "";
-            return { task: String(record.task ?? ""), ...(agent ? { agent } : {}), ...(role ? { role } : {}) };
+            return { task: String(record.task ?? ""), ...(agent ? { agent } : {}), ...(role ? { role } : {}), ...(record.maxTurns !== undefined ? { maxTurns: parseMaxTurns(record.maxTurns) as number } : {}) };
           }
           return { task: String(raw) };
         });
@@ -2560,13 +2591,15 @@ export class AgentRunner {
         if (new Set(prompts).size !== prompts.length) throw new Error("spawn_swarm items must produce distinct filled-in prompts");
         const agentName = typeof input.agent === "string" ? input.agent.trim() : "";
         const callRole = typeof input.role === "string" && input.role.trim() ? input.role.trim() : undefined;
+        const callMaxTurns = parseMaxTurns(input.maxTurns);
         const resolvedDefault = await this.resolveSubAgent(session.cwd, sessionId, agentName, undefined, callRole);
-        // 预解析逐项 agent/role 覆盖：未知名称或非法 role 直接拒绝整次调用（与调用级 agent 一致）
+        // 预解析逐项 agent/role/maxTurns 覆盖：未知名称或非法 role 直接拒绝整次调用（与调用级 agent 一致）
         const itemResolutions = new Map<number, ResolvedSubAgent>();
         for (const [index, item] of items.entries()) {
-          if (item.agent === undefined && item.role === undefined) continue;
+          if (item.agent === undefined && item.role === undefined && item.maxTurns === undefined) continue;
           try {
-            itemResolutions.set(index, await this.resolveSubAgent(session.cwd, sessionId, item.agent ?? agentName, undefined, item.role ?? callRole));
+            const resolved = await this.resolveSubAgent(session.cwd, sessionId, item.agent ?? agentName, undefined, item.role ?? callRole);
+            itemResolutions.set(index, item.maxTurns !== undefined ? { ...resolved, maxTurns: item.maxTurns } : resolved);
           } catch (error) {
             const message = errorMessage(error);
             throw new Error(`${message} (item ${index + 1})`);
@@ -2590,6 +2623,9 @@ export class AgentRunner {
             if (!provider) throw new Error(`Provider ${providerName} is not configured`);
             const effectiveModel = effective.modelOverride ?? session.model;
             const systemExtra = await this.withSubAgentAppend(session.cwd, effective.systemExtra);
+            // maxTurns 优先级：逐项显式 > 调用级 > 设置全局默认 > runSubAgent 兜底
+            const itemMaxTurns = items[index]?.maxTurns;
+            const maxTurns = itemMaxTurns ?? callMaxTurns ?? effective.maxTurns ?? this.subAgentMaxTurnsLimit();
             const result = await runSubAgent({
               provider,
               model: session.model,
@@ -2601,7 +2637,7 @@ export class AgentRunner {
               agentKind: effective.kind,
               prompt,
               toolNames: effective.toolNames,
-              ...(effective.maxTurns ? { maxTurns: effective.maxTurns } : {}),
+              maxTurns,
               shell: resolveShell(session.shellBackend ?? "default"),
               // general 类型：工具调用经会话权限链 + 主循环同一沙盒执行（见 executeSubAgentTool）
               ...(effective.kind === "general" ? { executeTool: (call: { name: string; input: Record<string, unknown> }) => this.executeSubAgentTool(sessionId, call.name, call.input, signal) } : {}),
