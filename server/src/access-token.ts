@@ -8,9 +8,9 @@ import os from "node:os";
  * 让「设置页改监听地址即可用」在 Windows/Linux 行为一致，不再要求手工环境变量。
  */
 
-export const ACCESS_TOKEN_MIN_LENGTH = 32;
+const ACCESS_TOKEN_MIN_LENGTH = 32;
 
-export interface ResolvedAccessToken {
+interface ResolvedAccessToken {
   token: string;
   source: "env" | "generated";
 }

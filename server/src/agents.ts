@@ -3,7 +3,7 @@ import path from "node:path";
 import { parseFrontmatter } from "./frontmatter.js";
 import { isModelRole, type ModelRole } from "./model-roles.js";
 
-export interface AgentDefinition {
+interface AgentDefinition {
   name: string;
   description: string;
   tools?: string[];

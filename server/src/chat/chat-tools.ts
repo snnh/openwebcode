@@ -50,7 +50,7 @@ export interface VisionProvider {
   analyze(image: { data: string; mediaType: string }, prompt: string, options?: { reasoning?: VisionReasoning; signal?: AbortSignal }): Promise<string>;
 }
 
-export interface ChatToolDef {
+interface ChatToolDef {
   name: string;
   description: string;
   inputSchema: object;

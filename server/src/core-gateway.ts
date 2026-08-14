@@ -5,9 +5,9 @@ export const CORE_PROTOCOL_VERSION = "1.0";
 const FEATURE_NAMES = ["fsStat", "fsStatMany", "fsWriteBase64", "jobControl", "fsHash", "fsScanPagination", "fsWatch"] as const;
 const LIMIT_NAMES = ["maxFrameBytes", "maxWriteBase64Bytes", "maxHashBytes", "maxStatManyPaths", "maxStatManyPathBytes", "maxScanEntries", "maxScanDepth", "maxScanNodes", "maxWatches", "maxWatchEvents", "maxConcurrentJobs", "maxJobOutputBytes"] as const;
 
-export type CoreFeature = (typeof FEATURE_NAMES)[number];
-export type CoreLimit = (typeof LIMIT_NAMES)[number];
-export type NegotiatedCoreInfo = Omit<CoreInfo, "protocolVersion" | "features" | "limits"> & {
+type CoreFeature = (typeof FEATURE_NAMES)[number];
+type CoreLimit = (typeof LIMIT_NAMES)[number];
+type NegotiatedCoreInfo = Omit<CoreInfo, "protocolVersion" | "features" | "limits"> & {
   protocolVersion: typeof CORE_PROTOCOL_VERSION;
   features: Record<CoreFeature, boolean>;
   limits: Record<CoreLimit, number>;

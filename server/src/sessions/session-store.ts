@@ -27,7 +27,7 @@ interface MessagesCacheEntry {
   recovery?: NonNullable<SessionMeta["recovery"]>;
 }
 
-export interface CreateSessionInput {
+interface CreateSessionInput {
   cwd: string;
   provider?: string;
   model?: string;

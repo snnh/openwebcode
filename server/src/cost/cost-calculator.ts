@@ -1,20 +1,20 @@
 import type { ModelPricing, Currency } from "../context/model-profile.js";
 import type { ExchangeRateSnapshot } from "./exchange-rate.js";
 
-export interface UsageTokens {
+interface UsageTokens {
   inputTokens: number;
   outputTokens: number;
   cacheRead: number;
   cacheWrite: number;
 }
 
-export interface CostAmount {
+interface CostAmount {
   currency: Currency;
   microUnits: bigint;
   amount: string;
 }
 
-export interface UsageCost {
+interface UsageCost {
   priced: boolean;
   source?: CostAmount;
   usd?: CostAmount;
@@ -59,7 +59,7 @@ export function calculateUsageCost(
   };
 }
 
-export function formatMicroUnits(value: bigint): string {
+function formatMicroUnits(value: bigint): string {
   const negative = value < 0n;
   const absolute = negative ? -value : value;
   const whole = absolute / 1_000_000n;

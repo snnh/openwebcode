@@ -2,14 +2,14 @@ import { randomUUID } from "node:crypto";
 import type { Provider, ProviderEvent, StreamChatRequest } from "./provider.js";
 import { normalizeProviderError, type ProviderError } from "./provider-error.js";
 
-export interface RetryInfo {
+interface RetryInfo {
   attemptId: string;
   attempt: number;
   delayMs: number;
   error: ProviderError;
 }
 
-export interface ProviderRetryOptions {
+interface ProviderRetryOptions {
   maxAttempts?: number;
   baseDelayMs?: number;
   maxDelayMs?: number;

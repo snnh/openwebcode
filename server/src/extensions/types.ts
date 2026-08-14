@@ -191,7 +191,7 @@ export interface ExtensionToolResult {
 }
 
 /** 允许推送给扩展的事件类型：精确匹配（agent.state/tool.start/tool.end）或前缀（context./checkpoint./subagent.）。 */
-export const EXTENSION_EVENT_WHITELIST: readonly string[] = ["agent.state", "tool.start", "tool.end", "context.", "checkpoint.", "subagent."];
+const EXTENSION_EVENT_WHITELIST: readonly string[] = ["agent.state", "tool.start", "tool.end", "context.", "checkpoint.", "subagent."];
 
 export function isExtensionEventAllowed(type: string): boolean {
   return EXTENSION_EVENT_WHITELIST.some((entry) => (entry.endsWith(".") ? type.startsWith(entry) : type === entry));

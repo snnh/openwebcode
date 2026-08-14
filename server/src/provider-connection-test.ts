@@ -14,9 +14,9 @@
 import { getUserAgent } from "./user-agent.js";
 import type { ModelProviderProfile } from "./provider-profiles.js";
 
-export const PROVIDER_TEST_TIMEOUT_MS = 5000;
+const PROVIDER_TEST_TIMEOUT_MS = 5000;
 
-export type ProviderConnectionTestResult =
+type ProviderConnectionTestResult =
   | { ok: true; latencyMs: number; note?: string }
   | { ok: false; error: string };
 

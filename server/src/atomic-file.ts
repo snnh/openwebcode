@@ -11,7 +11,7 @@ import { chmod, rename, rm, writeFile } from "node:fs/promises";
 // Keep the retry bounded while allowing a normal request to survive that delay.
 const WINDOWS_RENAME_RETRY_DELAYS_MS = [25, 50, 100, 200, 400, 800, 1_200, 1_200, 1_500] as const;
 
-export interface AtomicReplaceOptions {
+interface AtomicReplaceOptions {
   /** Injectable solely for focused tests. */
   platform?: NodeJS.Platform;
   retryDelaysMs?: readonly number[];

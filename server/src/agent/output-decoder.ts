@@ -12,7 +12,7 @@ export interface EncodedProcessOutput {
   seq: number;
 }
 
-export interface DecodedProcessOutput {
+interface DecodedProcessOutput {
   stream: string;
   data: string;
 }

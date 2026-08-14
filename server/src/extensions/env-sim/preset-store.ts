@@ -39,7 +39,7 @@ function strings(raw: unknown): string[] {
 }
 
 /** 宽松解析单个预设文件；形状不合返回 undefined（调用方记警告并跳过，绝不抛错）。 */
-export function parsePreset(raw: unknown, fallbackId: string): PersonaPreset | undefined {
+function parsePreset(raw: unknown, fallbackId: string): PersonaPreset | undefined {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
   const record = raw as Record<string, unknown>;
   const id = typeof record.id === "string" && record.id ? record.id : fallbackId;

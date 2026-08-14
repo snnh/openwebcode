@@ -2,14 +2,14 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { parseFrontmatter } from "./frontmatter.js";
 
-export interface CommandDefinition {
+interface CommandDefinition {
   name: string;
   description?: string;
   body: string;
   source: "project" | "global";
 }
 
-export function parseCommandMarkdown(
+function parseCommandMarkdown(
   text: string,
   fallbackName: string,
   source: "project" | "global",

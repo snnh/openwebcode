@@ -18,10 +18,10 @@ import { sessionEnvActivationCommand } from "./session-env.js";
  */
 
 /** pty 尺寸：取 core 上限 512 列，尽量避免回显折行干扰 sentinel 解析。 */
-export const PERSISTENT_SHELL_COLS = 512;
-export const PERSISTENT_SHELL_ROWS = 30;
+const PERSISTENT_SHELL_COLS = 512;
+const PERSISTENT_SHELL_ROWS = 30;
 /** 单命令超时：与 jobControl 路径一致（10 分钟）；超时销毁 shell，下条命令透明重建。 */
-export const PERSISTENT_COMMAND_TIMEOUT_MS = 10 * 60_000;
+const PERSISTENT_COMMAND_TIMEOUT_MS = 10 * 60_000;
 /** 输出字符上限：与 core job output_limit（1 MiB）对齐，超出截断但仍继续扫 sentinel。 */
 export const MAX_SHELL_OUTPUT_CHARS = 1_000_000;
 /** core pty.input 单帧解码后 ≤8KB，按字符边界切块发送。 */
@@ -41,7 +41,7 @@ export class PersistentShellUnavailableError extends Error {
   }
 }
 
-export interface PersistentShellResult {
+interface PersistentShellResult {
   exitCode: number;
   output: string;
   truncated: boolean;

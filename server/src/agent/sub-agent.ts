@@ -134,7 +134,7 @@ export interface SubAgentOptions {
   serverWebSearch?: boolean;
 }
 
-export interface SubAgentResult {
+interface SubAgentResult {
   taskId: string;
   conclusion: string;
   turns: number;

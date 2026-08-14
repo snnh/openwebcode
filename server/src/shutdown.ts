@@ -7,7 +7,7 @@
 
 const EXIT_CODES: Record<string, number> = { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 };
 
-export interface GracefulShutdownOptions {
+interface GracefulShutdownOptions {
   shutdown: () => Promise<void>;
   /** 优雅 shutdown 的超时（毫秒），超时强制 exit(1)。 */
   forceExitTimeoutMs?: number;

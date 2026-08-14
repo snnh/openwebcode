@@ -11,10 +11,7 @@ import { createExecFileRunner, probeSnapshotBackend, type CommandRunner } from "
 import { RefsBackend } from "./refs.js";
 import { ZfsBackend } from "./zfs.js";
 
-export type { Checkpoint, SnapshotBackend, SnapshotCapabilityInfo } from "./backend.js";
-export { probeSnapshotBackend, type CommandRunner } from "./probe.js";
-
-export interface SnapshotBackendDeps {
+interface SnapshotBackendDeps {
   /** overlayfs 后端与探测需要（core.ping features.overlay + overlay.* 调用）。 */
   core?: CoreClientLike;
   /** 平台覆盖（测试注入用）；缺省 process.platform。 */

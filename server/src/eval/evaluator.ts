@@ -29,7 +29,7 @@ import type {
 } from "./types.js";
 
 /** Task info without the internal mock script (returned by listTasks / API). */
-export type EvalTaskInfo = Omit<EvalTask, "script">;
+type EvalTaskInfo = Omit<EvalTask, "script">;
 
 // Runtime assets are packaged beside dist/; keeping fixtures out of src/
 // avoids TypeScript builds silently omitting the task workspaces.

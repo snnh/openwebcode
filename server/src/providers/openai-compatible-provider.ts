@@ -3,7 +3,7 @@ import { normalizeProviderError, ProviderError } from "./provider-error.js";
 import { collectToolOutputs, parseArguments, providerRequestHeaders, requireResponseBody } from "./shared.js";
 import type { Provider, ProviderEvent, StreamChatRequest } from "./provider.js";
 
-export interface OpenAICompatibleProviderOptions {
+interface OpenAICompatibleProviderOptions {
   name?: string;
   apiKey?: string;
   baseURL: string;
@@ -147,7 +147,7 @@ export class OpenAICompatibleProvider implements Provider {
   }
 }
 
-export interface SseReadOptions {
+interface SseReadOptions {
   /** 连续无 data 事件的最大毫秒数（心跳注释不重置计时），超时判为半开连接；<=0 关闭。 */
   idleTimeoutMs?: number;
 }

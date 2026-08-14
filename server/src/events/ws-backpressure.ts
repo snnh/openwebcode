@@ -17,7 +17,7 @@ export const DEFAULT_WS_BACKPRESSURE_LIMITS: WsBackpressureLimits = {
 };
 
 /** 客户端发送缓冲快照：socket 内核缓冲字节数 + 已 send 未 flush 的消息条数。 */
-export interface WsSendBuffer {
+interface WsSendBuffer {
   readonly bufferedAmount: number;
   readonly pendingSends: number;
 }
