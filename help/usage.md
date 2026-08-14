@@ -4,7 +4,7 @@
 
 ## **目录**：
 1. **首次访问：**
-[启动](#启动) | [远程访问与局域网](#远程访问与局域网) | [Linux 安装器交互与自动化](#Linux安装器交互与自动化) 
+[启动](#启动) | [远程访问与局域网](#远程访问与局域网) | [Linux 安装器交互与自动化](#linux-安装器交互与自动化) 
 2. **基础操作：**
 [界面语言](#界面语言) | [工作台布局与快捷键](#工作台布局与快捷键) | [Chat 模式](#chat-模式) | [创建会话](#创建会话) | [输入框](#输入框) [对话内容渲染](#对话内容渲染) | [运行中操作](#运行中操作) | [面板与状态显示](#面板与状态显示) | [模型与成本](#模型与成本)
 3. **进阶操作：**
@@ -291,8 +291,8 @@ agent 运行期间的状态指示与干预手段：
 Web Search / Web Fetch 两个工具的数据来源在 **设置 → 联网服务** 页签配置：
 
 - **联网搜索模式**（页签顶部）：`local`（默认）= 本地 `web_search` 工具经下方联网服务商执行；`model-api` = 由模型服务商在服务端执行搜索（请求级下发，仅 **OpenAI Responses** 接口类型的服务商生效；此时本地 `web_search` 不再注入，使用其他接口类型的会话将没有搜索能力）。`web_fetch` 两种模式下都可用。对应环境变量：`OWC_WEB_SEARCH_MODE`。
-- Search 与 Fetch 使用同一套「联网服务商」配置。可以保存多个 Jina、Brave、Tavily 或 Custom 配置，每项声明 `search` / `fetch` 能力，再分别选择当前用于 Web Search 和 Web Fetch 的配置。
-- Jina 与 Tavily 同时支持 Search 与 Fetch（Tavily Fetch 使用 Extract API）；Brave 仅支持 Search；Custom 可自行声明能力。Custom Fetch URL 必须包含 `{url}` 占位符，Custom Search URL 接收 `q` 与 `count` 查询参数。
+- Search 与 Fetch 使用同一套「联网服务商」配置。支持 10 种服务商：Jina / Brave / Tavily / Bing / SearXNG / Exa / LinkUp / Bocha / Firecrawl / Custom，每种可保存多个配置，每项声明 `search` / `fetch` 能力，再分别选择当前用于 Web Search 和 Web Fetch 的配置。
+- Jina、Tavily 与 Firecrawl 同时支持 Search 与 Fetch（Tavily Fetch 使用 Extract API）；Brave、Bing、SearXNG、Exa、LinkUp、Bocha 仅支持 Search；Custom 可自行声明能力。Custom Fetch URL 必须包含 `{url}` 占位符，Custom Search URL 接收 `q` 与 `count` 查询参数。
 - 未选中具备相应能力的配置时，对应工具不会注入模型。Tavily 的 API Key 由同一个联网服务商配置同时用于 Search 与 Fetch。
 - 联网调用仍遵循会话权限模式；`ask` 下会请求确认，且内网/本地 URL 会被拒绝。
 
@@ -427,7 +427,7 @@ OWC_BROWSE_ROOTS=/home/me/projects:/home/me/repos
 
 ### Extension Host 与官方扩展
 
-设置 → **扩展** 可管理官方及第三方扩展。内置七项：
+设置 → **扩展** 可管理官方及第三方扩展。内置八项：
 
 - `context-manager`：默认启用，负责工具结果的滚动驱逐策略；停用后不会自动逐出工具结果，85% 核心水位安全网仍保留（「上下文」面板是核心 UI，不受扩展开关影响）
 - `attention-optimizer`：默认关闭，把关键约束/目标复制到上下文首尾锚区；`bottomOnly` 缓存影响较小，`full` 会增加输入 token
@@ -436,6 +436,7 @@ OWC_BROWSE_ROOTS=/home/me/projects:/home/me/repos
 - `owc-eval`：默认关闭；启用后底部面板出现「评测」，可选择固定 mock-provider 示例与 0.4 工具契约任务，在独立临时工作区回放 AgentRunner。报告包含断言、工具、token 与耗时；可把历史运行设为基线，与当前运行生成持久化的回归/改善对比并导出自包含 JSON。评测服务内置于 server，不读取原始 API Key；生产运行仍走正常 Core 权限与沙盒边界
 - `env-sim`（环境模拟）：默认关闭；启用并选择预设后，系统提示词切换为该产品风格（身份行 + 工作方式），内置工具以该产品的命名/描述呈现（如 `Read`/`Bash`/`Edit`），底层仍走原工具实现与权限链。内置 `claude-code`/`kimi-code`/`zcode`/`codex` 四档预设；把自制预设 JSON（必填 `id`/`name`/`identity`/`basePrompt`，可选 `productSections`/`hideBuiltIns`/`aliases`）放入 `<业务数据目录>/env-sim/personas/` 即可添加并与他人分享，一个文件一个预设
 - `compact-vault`（上下文档案库）：默认关闭；启用且已配置快速模型后，`/compact` 从默认概览压缩切换为档案库压缩——完整上下文归档到会话目录 `compact/segments/`（真实内容全保留），主模型上下文只注入目录式索引（不保留任何工具调用细节）；快速模型两遍整理（分块提取条目 + 合并去重/删除过时内容）后生成索引。主模型可按索引里的 `key` 调用 `recall_memory` 工具，经快速模型按需提炼召回对应归档片段；`keepTail`/`chunkSize`/`recallMaxTokens` 可在扩展设置中调整。85% 水位强制自动压缩同样走档案库路径；若档案库压缩未启用时被默认压缩覆盖了索引，目录索引会自动回注，`recall_memory` 始终可用
+- `vision-tools`（视觉工具）：默认关闭；主模型不支持视觉时，把图片交给配置的视觉模型处理——`describe` 模式自动生成图片描述并注入上下文；`toolCall` 模式以 `[图片 #N]` 占位符注入并注册 `describe_image` 工具，主模型按需向视觉模型提问（省主模型 token，图片内容按需获取）。支持视觉的主模型不受影响
 
 第三方扩展目录需包含 `manifest.json`（`apiVersion: "1"`）；入口默认为 `index.js`，可在 manifest 的 `entry` 字段另行指定。在设置页输入本地绝对路径即可安装。v1 扩展是可信代码，安装即信任其声明权限；单个钩子运行超时 5 秒会被跳过并记录日志。第三方扩展可用的 API 面与官方扩展看齐：注册工具、`sessions`/`context`/`events` 访问（`context.readVaultFile` 可只读会话 `compact/` 归档目录）、提示词与上下文钩子、私有存储（`<数据目录>/extensions-data/<id>/`，单文件 1 MiB、总量 50 MiB）、REST 路由注册（`/api/ext/<id>/*`，需 `http:route` 权限）、模型调用通道（`model:fast` 权限）、提示词与工具塑形（`prompt:shape`/`tools:shaping` 权限）、会话级扩展状态（extensionState）。完整字段与权限语义见 `help/development.md` 的扩展开发章节，可运行的示例在 `examples/extensions/demo/`。
 
