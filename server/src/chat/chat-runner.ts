@@ -38,7 +38,7 @@ interface EffectiveConfig {
 }
 
 /** Python 环境准备状态（chat-tools 经 ChatToolContext.onPythonStatus 上抛）。 */
-export type PythonStatusCallback = (status: "preparing" | "ready" | "error", detail?: string) => void;
+type PythonStatusCallback = (status: "preparing" | "ready" | "error", detail?: string) => void;
 
 /**
  * 聊天执行引擎：多轮 provider 调用 + 工具调度主循环。

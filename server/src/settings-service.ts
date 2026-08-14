@@ -124,7 +124,7 @@ export function encodeFastModelSelection(provider: string, model: string): strin
   return JSON.stringify([provider, model]);
 }
 
-export function decodeFastModelSelection(value: unknown): [provider: string, model: string] | undefined {
+function decodeFastModelSelection(value: unknown): [provider: string, model: string] | undefined {
   if (typeof value !== "string") return undefined;
   try {
     const parsed = JSON.parse(value) as unknown;

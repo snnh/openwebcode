@@ -1,6 +1,6 @@
 import type { CoreClientLike, FsScanResult, FsStatResult } from "../../src/core-client.js";
 
-export interface FakeScanState {
+interface FakeScanState {
   mtime: number;
   scanCalls: number;
 }

@@ -11,7 +11,7 @@ import type { ChatConfigService } from "./chat-config.js";
 import type { ImageGenProvider, VisionProvider } from "./chat-tools.js";
 
 /** chat 图片允许的媒体类型 → 落盘扩展名（与 ImageContent 现状口径一致）。 */
-export const CHAT_IMAGE_MEDIA_TYPES: Readonly<Record<string, string>> = {
+const CHAT_IMAGE_MEDIA_TYPES: Readonly<Record<string, string>> = {
   "image/png": "png",
   "image/jpeg": "jpg",
   "image/webp": "webp",

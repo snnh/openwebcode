@@ -2,7 +2,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
 import { getUserAgent } from "../user-agent.js";
-import { FALLBACK_METADATA, lookupModelMetadata, type ModelMetadata } from "./model-metadata.js";
+import { lookupModelMetadata, type ModelMetadata } from "./model-metadata.js";
 import {
   getModelProfile,
   listModelProfiles,
@@ -20,7 +20,7 @@ export interface CatalogModel extends ModelProfile {
   displayName?: string;
 }
 
-export interface ModelCredentials {
+interface ModelCredentials {
   providers: ModelProviderCredentials[];
 }
 
@@ -37,24 +37,24 @@ export interface RefreshReport {
   errors: string[];
 }
 
-export interface CatalogSyncOptions {
+interface CatalogSyncOptions {
   /** Override the registry fetch implementation, primarily for tests. */
   fetchImpl?: typeof fetch;
   /** Request timeout in milliseconds. Defaults to 15 seconds. */
   timeoutMs?: number;
 }
 
-export type CatalogSyncResult =
+type CatalogSyncResult =
   | { ok: true; count: number; updatedAt: string }
   | { ok: false; error: string };
 
 /** Metadata for the last successfully persisted remote catalog. */
-export interface CatalogSyncStatus {
+interface CatalogSyncStatus {
   count: number;
   updatedAt?: string;
 }
 
-export interface ModelRegistryOptions {
+interface ModelRegistryOptions {
   snapshotPath: string;
   manualPath: string;
   /** Persistent remote catalog. Defaults to a sibling `models.synced.json` file. */
@@ -498,5 +498,3 @@ const NON_CHAT_PATTERN = /whisper|tts|dall[-_]?e|embedding|moderation|babbage|da
 function isChatModelId(id: string): boolean {
   return !NON_CHAT_PATTERN.test(id);
 }
-
-export { FALLBACK_METADATA };

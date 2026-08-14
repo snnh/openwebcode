@@ -32,7 +32,7 @@ export class UpdateApplyError extends Error {
   }
 }
 
-export interface UpdateApplierOptions {
+interface UpdateApplierOptions {
   /** 业务数据目录；更新包下载到 <dataDir>/updates/<version>/ */
   dataDir: string;
   /** 安装根目录（OWC_HOME）；dist 下运行时为 path.resolve(server/dist, "../..") */

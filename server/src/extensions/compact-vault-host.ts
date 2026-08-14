@@ -31,14 +31,14 @@ export const RECALL_MEMORY_SPEC = {
 };
 
 /** 目录条目（host 侧轻量视图，与 server 侧 VaultSection 同构）。 */
-export interface VaultSectionLite {
+interface VaultSectionLite {
   key: string;
   title: string;
   files: string[];
   desc: string;
 }
 
-export interface VaultIndexLite {
+interface VaultIndexLite {
   uptoIndex: number;
   sections: VaultSectionLite[];
 }
@@ -67,8 +67,8 @@ export function parseVaultIndexJson(raw: string): VaultIndexLite | null {
   }
 }
 
-/** 目录索引文本（与 server 侧 renderDirectoryIndex 同格式，host 自包含不复用）。 */
-export function renderDirectoryLite(index: VaultIndexLite): string {
+/** 目录索引文本（与 server 侧 VAULT_INDEX_SYSTEM 约定的目录格式一致，host 自包含不复用）。 */
+function renderDirectoryLite(index: VaultIndexLite): string {
   const lines = [
     `[归档索引] 早前共 ${index.uptoIndex} 条消息已归档至会话 compact/ 目录。需要细节时调用 recall_memory(keys=[...]) 按 key 召回完整内容。`,
     ...index.sections.map((section) => `- ${section.title} (key=${section.key})：${section.desc}`),

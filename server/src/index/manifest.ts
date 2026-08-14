@@ -6,7 +6,7 @@
 
 import type { IndexScanEntry } from "../core-client.js";
 
-export interface ManifestDiff {
+interface ManifestDiff {
   added: IndexScanEntry[];
   changed: IndexScanEntry[];
   deleted: string[];

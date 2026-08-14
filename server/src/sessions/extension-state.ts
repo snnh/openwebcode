@@ -1,7 +1,7 @@
 import type { SessionMeta } from "./types.js";
 
 /** 读取会话级扩展状态里的字符串值；空串/非字符串视为未设置。 */
-export function sessionExtensionValue(meta: Pick<SessionMeta, "extensionState">, extensionId: string, key: string): string | undefined {
+function sessionExtensionValue(meta: Pick<SessionMeta, "extensionState">, extensionId: string, key: string): string | undefined {
   const value = meta.extensionState?.[extensionId]?.[key];
   return typeof value === "string" && value.trim() !== "" ? value : undefined;
 }

@@ -24,7 +24,7 @@ const DEFAULT_MAX_DEPTH = 6;
 const CACHE_TTL_MS = 30_000;
 
 /** 默认忽略约定：与 snapshots/git-shadow.ts 的排除清单同族，外加常见构建产物目录。 */
-export const REPO_MAP_DEFAULT_EXCLUDES: readonly string[] = [
+const REPO_MAP_DEFAULT_EXCLUDES: readonly string[] = [
   ".git", ".owc", ".openwebcode", "node_modules",
   "dist", "build", "build-*", "out", "coverage", "target",
   ".next", ".cache", "__pycache__", ".venv", "_CPack_Packages",
@@ -43,15 +43,15 @@ const SYMBOL_FILE_CAP = 15;
 const SYMBOL_NAMES_CAP = 8;
 
 /** Phase 2：索引符号摘要提供者；返回 undefined 表示索引不可用 → 保持静态树降级。 */
-export type RepoMapSymbolProvider = (cwd: string) => Promise<RepoMapSymbolFile[] | undefined>;
+type RepoMapSymbolProvider = (cwd: string) => Promise<RepoMapSymbolFile[] | undefined>;
 
-export interface RepoMapEntry {
+interface RepoMapEntry {
   path: string;
   type: "file" | "directory" | "other";
   size: number;
 }
 
-export interface RepoMapOptions {
+interface RepoMapOptions {
   sessionId: string;
   cwd: string;
   /** token 预算；缺省 DEFAULT_REPO_MAP_BUDGET。 */
@@ -61,7 +61,7 @@ export interface RepoMapOptions {
   maxDepth?: number;
 }
 
-export interface RepoMapResult {
+interface RepoMapResult {
   /** 渲染后的摘要文本（不含段标题；调用方自行包装为提示词段）。 */
   text: string;
   /** estimateTokens(text)，用于 Context 面板 repoMap 段归因。 */

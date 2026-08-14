@@ -110,7 +110,7 @@ function toolEventResult(bounded: Awaited<ReturnType<typeof boundToolResult>>) {
  * 逐值截断超长字符串并标记 inputTruncated。web 端这些事件只消费 toolCallId/name/verdict，
  * 展示用 input 来自持久化消息；对齐结果侧 boundToolResult 的截断先例。
  */
-export function boundToolEventInput(input: Record<string, unknown>): { input: Record<string, unknown>; inputTruncated?: true } {
+function boundToolEventInput(input: Record<string, unknown>): { input: Record<string, unknown>; inputTruncated?: true } {
   let truncated = false;
   const bounded: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(input)) {
@@ -255,7 +255,7 @@ const SPAWN_TASK_TOOL: ProviderTool = {
 /** swarm 单项数上限：低于 Kimi Code AgentSwarm 的 128，作为自托管部署的成本护栏。 */
 export const SPAWN_SWARM_MAX_ITEMS = 16;
 /** 同时运行的子代理数；超出排队，与"launch 自动排队"语义一致。 */
-export const SPAWN_SWARM_CONCURRENCY = 4;
+const SPAWN_SWARM_CONCURRENCY = 4;
 
 /** 系统提示中四档角色的一句话语义（引导主模型按任务选档）。 */
 const SUB_AGENT_ROLE_GUIDANCE: Record<ModelRole, string> = {
@@ -358,7 +358,7 @@ const TODO_WRITE_TOOL: ProviderTool = {
   },
 };
 
-export interface TodoItem {
+interface TodoItem {
   content: string;
   status: "pending" | "in_progress" | "done";
   activeForm?: string;
@@ -448,7 +448,7 @@ function builtInTools(options: {
 }
 
 /** Scheduling metadata is product-side only; Provider schemas remain unchanged. */
-export type ToolExecutionClass = "read_only" | "workspace_write" | "process" | "external";
+type ToolExecutionClass = "read_only" | "workspace_write" | "process" | "external";
 const TOOL_EXECUTION_CLASS: Readonly<Record<string, ToolExecutionClass>> = {
   read_file: "read_only", glob: "read_only", grep: "read_only", read_artifact: "read_only", load_skill: "read_only", repo_map: "read_only", code_search: "read_only",
   git_status: "read_only", git_diff: "read_only", ask_user: "read_only", exit_plan_mode: "read_only",
@@ -602,14 +602,14 @@ export class WorkspaceWriteDeniedError extends Error {
  * a normal shared lease for the rest of the agent turn.  Keeping the gate
  * transition owned by app.ts makes it atomic with file/exec/sync routes.
  */
-export interface ManagedWorkspaceRunLease {
+interface ManagedWorkspaceRunLease {
   /** `false` means another workspace operation was already using the mount. */
   automaticSnapshotAllowed: boolean;
   /** Idempotently change an exclusive automatic-checkpoint lease to shared. */
   downgradeAfterAutomaticSnapshot?: () => void;
 }
 
-export interface AgentRunOptions {
+interface AgentRunOptions {
   images?: Array<{ mediaType: string; data: string }>;
   /** 预组装的附件 text 块（app.ts 已读取+截断+包装为 `[Attachment <path>]\n<内容>`）；插入在 images 之后、正文之前 */
   attachments?: Array<{ text: string }>;

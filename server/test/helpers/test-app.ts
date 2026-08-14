@@ -12,7 +12,7 @@ import { SessionStore } from "../../src/sessions/session-store.js";
 import { SettingsService } from "../../src/settings-service.js";
 import { tempRoot } from "./temp-roots.js";
 
-export interface TestAppOptions<TPricing extends PricingCatalog = PricingCatalog> {
+interface TestAppOptions<TPricing extends PricingCatalog = PricingCatalog> {
   /** 临时目录 prefix（各文件保持自己的 prefix）。 */
   tempPrefix?: string;
   /** 覆盖默认 PricingCatalog（如 Stub 子类）；工厂接收 root。 */

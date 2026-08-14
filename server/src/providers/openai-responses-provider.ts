@@ -4,7 +4,7 @@ import { normalizeProviderError, ProviderError } from "./provider-error.js";
 import { collectToolOutputs, parseArguments, providerRequestHeaders, requireResponseBody } from "./shared.js";
 import type { Provider, ProviderEvent, StreamChatRequest } from "./provider.js";
 
-export interface OpenAIResponsesProviderOptions {
+interface OpenAIResponsesProviderOptions {
   name?: string;
   apiKey?: string;
   baseURL: string;

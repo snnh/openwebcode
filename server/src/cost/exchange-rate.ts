@@ -52,7 +52,7 @@ export class HttpExchangeRateProvider implements ExchangeRateProvider {
   }
 }
 
-export interface ExchangeRateServiceOptions {
+interface ExchangeRateServiceOptions {
   cachePath: string;
   provider?: ExchangeRateProvider;
   timeoutMs?: number;

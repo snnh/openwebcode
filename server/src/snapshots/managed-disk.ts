@@ -32,17 +32,17 @@ import {
 import { createExecFileRunner, type CommandRunner } from "./probe.js";
 
 /** 稀疏基盘大小：20GB */
-export const MANAGED_IMAGE_SIZE_BYTES = 20 * 1024 * 1024 * 1024;
+const MANAGED_IMAGE_SIZE_BYTES = 20 * 1024 * 1024 * 1024;
 /** 检查点安全上限：达到后拒绝新建，避免在挂载链上进行破坏性合并。 */
-export const MANAGED_MAX_CHAIN = 32;
+const MANAGED_MAX_CHAIN = 32;
 /** 复制进托管工作区时按目录名排除（任意深度；参考 git-shadow 的排除思路） */
 const COPY_EXCLUDES = MANAGED_WORKSPACE_COPY_EXCLUDES;
 
-export type ManagedBackendKind = "vhdx" | "qcow2";
+type ManagedBackendKind = "vhdx" | "qcow2";
 /** provision/teardown 可处理的托管后端：镜像盘两种 + Linux overlayfs（merged 视图）。 */
 export type ManagedProvisionKind = ManagedBackendKind | "overlayfs";
 
-export interface ManagedBackendCapability {
+interface ManagedBackendCapability {
   backend: ManagedBackendKind;
   available: boolean;
   requiresAdmin: true;

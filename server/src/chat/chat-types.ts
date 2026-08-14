@@ -1,5 +1,3 @@
-import type { ChatMessage } from "../sessions/types.js";
-
 /** 聊天会话元数据（<dataDir>/chat-sessions/<id>/meta.json）。 */
 export interface ChatSessionMeta {
   id: string;
@@ -69,5 +67,3 @@ export interface ChatConfig {
   /** vision 工具的图像理解模型（全局唯一粒度）；缺省时 vision 返回 not configured。 */
   visionModel?: { provider: string; model: string };
 }
-
-export type { ChatMessage };

@@ -19,7 +19,7 @@ export interface UsageEventRecord {
   cnyMicroUnits?: string;
 }
 
-export interface ReportMetrics {
+interface ReportMetrics {
   runs: number;
   inputTokens: number;
   outputTokens: number;
@@ -31,14 +31,14 @@ export interface ReportMetrics {
 }
 
 /** 缓存节省估算（反事实：同量 cacheRead 按全价输入计费 − 按缓存读价计费的差额）；按可得币种给值。 */
-export interface CacheSavingsInfo {
+interface CacheSavingsInfo {
   usdMicroUnits?: string;
   cnyMicroUnits?: string;
 }
 
-export type ProviderBreakdown = ReportMetrics & { provider: string; model: string };
+type ProviderBreakdown = ReportMetrics & { provider: string; model: string };
 
-export interface CostReport {
+interface CostReport {
   generatedAt: string;
   from?: string;
   to?: string;

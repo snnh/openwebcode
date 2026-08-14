@@ -25,7 +25,7 @@ export const OVERLAY_RESTORE_BUSY_CODE = -32005;
 /** overlay.* 的最小 core 依赖面（CoreClientLike 子集；测试注入 fake）。 */
 export type OverlayfsCore = Pick<CoreClientLike, "ping" | "overlayMount" | "overlayCheckpoint" | "overlayRestore" | "overlayUnmount">;
 
-export interface OverlayfsPaths {
+interface OverlayfsPaths {
   stateRoot: string;
   upper: string;
   work: string;

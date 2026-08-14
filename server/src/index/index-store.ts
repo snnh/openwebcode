@@ -11,7 +11,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { IndexScanEntry } from "../core-client.js";
 
-export const INDEX_FORMAT_VERSION = 1;
+const INDEX_FORMAT_VERSION = 1;
 
 /** 符号种类：与 core `index.extract` 输出的 kind 集合对齐；"variable" 是不认识 kind 的兜底桶。 */
 export type SymbolKind =

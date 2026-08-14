@@ -6,8 +6,6 @@ import type { CoreClientLike } from "../core-client.js";
 import { collectJobJsonLines } from "../rpc/job-collect.js";
 import { isCheckpoint, truncateLines, type Checkpoint, type SnapshotBackend } from "./backend.js";
 
-export type { Checkpoint } from "./backend.js";
-
 export interface GitShadowOptions {
   /** 会话 id：index.scan 的策略快照来源（denyPaths 生效的前提）。 */
   sessionId?: string;

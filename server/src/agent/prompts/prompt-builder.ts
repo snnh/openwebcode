@@ -1,12 +1,12 @@
 import type { ProviderTool } from "../../providers/provider.js";
 import { PI_BASE_SYSTEM_PROMPT, PI_PROMPT_VERSION } from "./pi-base.js";
 
-export interface PromptContextFile {
+interface PromptContextFile {
   path: string;
   content: string;
 }
 
-export interface PromptBuilderOptions {
+interface PromptBuilderOptions {
   cwd: string;
   tools: readonly ProviderTool[];
   /** Opening identity line; undefined falls back to the OpenWebCode default. */

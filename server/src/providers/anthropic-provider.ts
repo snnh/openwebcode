@@ -4,7 +4,7 @@ import { getUserAgent } from "../user-agent.js";
 import { normalizeProviderError } from "./provider-error.js";
 import type { Provider, ProviderEvent, ProviderTool, StreamChatRequest } from "./provider.js";
 
-export interface AnthropicProviderOptions {
+interface AnthropicProviderOptions {
   name?: string;
   apiKey?: string;
   baseURL?: string;

@@ -55,7 +55,7 @@ export function base32Decode(text: string): Buffer {
   return Buffer.from(out);
 }
 
-export function hotp(secret: Buffer, counter: number): string {
+function hotp(secret: Buffer, counter: number): string {
   const message = Buffer.alloc(8);
   message.writeBigUInt64BE(BigInt(counter));
   const digest = createHmac("sha1", secret).update(message).digest();
@@ -86,7 +86,7 @@ export function verifyTotp(secret: Buffer, code: string, timestampMs: number, wi
 }
 
 /** 恢复码：10 位十六进制，展示为 xxxxx-xxxxx；存储用 sha256 哈希，一次性用完即删 */
-export function normalizeRecoveryCode(code: string): string {
+function normalizeRecoveryCode(code: string): string {
   return code.trim().toLowerCase().replaceAll("-", "").replaceAll(" ", "");
 }
 

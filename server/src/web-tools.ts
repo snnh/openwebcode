@@ -126,7 +126,7 @@ export function assertSafeWebUrl(value: string): URL {
 }
 
 /** dns.lookup({all:true}) 的可注入形态：测试用 stub 避免真实 DNS。 */
-export type LookupAll = (hostname: string) => Promise<Array<{ address: string; family: number }>>;
+type LookupAll = (hostname: string) => Promise<Array<{ address: string; family: number }>>;
 
 const defaultLookup: LookupAll = (hostname) => dnsLookup(hostname, { all: true });
 
