@@ -11,7 +11,7 @@ export interface StubSocket {
 }
 
 /** 当前文件内已创建的 stub socket（vitest 按文件隔离模块态）。 */
-export const sockets: StubSocket[] = [];
+const sockets: StubSocket[] = [];
 
 let seq = 0;
 

@@ -18,7 +18,7 @@ import { SidebarViews } from "./SidebarViews";
 import { BottomPanel } from "./BottomPanel";
 import { StatusBar } from "./StatusBar";
 
-export interface WorkbenchProps {
+interface WorkbenchProps {
   /** 会话列表（undefined = 加载中） */
   sessions?: Session[] | undefined;
   /** 当前会话 agent 运行态（App 由 useAgentRun/sessionStore 推导） */

@@ -25,7 +25,7 @@ export type DiffSpec =
   | { source: "agent-write"; path: string; content: string };
 
 /** App 侧命令（接受/拒绝 hunk、聚焦）经此动作面触达；注册表不感知 React 状态 */
-export interface DiffPaneActions {
+interface DiffPaneActions {
   accept?(): void;
   reject?(): void;
   focus?(): void;

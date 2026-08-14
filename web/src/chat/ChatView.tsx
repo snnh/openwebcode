@@ -38,7 +38,7 @@ import { SessionSkeleton } from "../components/SessionSkeleton";
 import { Icon } from "../components/Icon";
 import { useI18n } from "../i18n";
 
-export interface ChatViewProps {
+interface ChatViewProps {
   sessionId: string;
   /** useAgentRun 的 REST/WS 合并 run 快照（App 装配层实例化） */
   currentRun?: AgentRun | undefined;

@@ -9,7 +9,7 @@ import { useSessionQuery } from "../app/queries";
 import { tabActions } from "../workbench/tab-actions";
 import { useI18n } from "../i18n";
 
-export interface SubagentRunGroup {
+interface SubagentRunGroup {
   toolCallId: string;
   /** swarm 组（spawn_swarm 一次调用的全部子代理）或独立 spawn_task */
   swarm: boolean;

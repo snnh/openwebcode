@@ -5,7 +5,7 @@ import { useI18n } from "../../i18n";
 // 单文件渲染行数上限：诊断跳转只读预览不需要全文，超限截断避免大文件拖慢面板
 const MAX_LINES = 2000;
 
-export interface CodeViewProps {
+interface CodeViewProps {
   code: string;
   /** shiki 语言 ID（highlight.ts 支持集之外的语言自动回退纯文本） */
   lang?: string;

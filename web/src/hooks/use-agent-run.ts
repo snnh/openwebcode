@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import type { AgentRun, AppEvent } from "../lib/contracts";
 
-export const agentRunKey = (sessionId: string) => ["run", sessionId] as const;
+const agentRunKey = (sessionId: string) => ["run", sessionId] as const;
 
 /** REST snapshot for the Run state machine. Event payloads update it eagerly;
  * stale or missed lifecycle events are corrected by the normal query fetch. */

@@ -2,7 +2,7 @@ import { useCallback, useEffect } from "react";
 import { createStore, useStore } from "./app/store";
 import { deriveAccentVars } from "./lib/accent-color";
 
-export type Theme = "light" | "dark";
+type Theme = "light" | "dark";
 export type ThemePreference = "light" | "dark" | "system";
 /** 预设强调色 + 自定义任意 RGB（custom:#rrggbb）。graphite 为默认（对应 :root 内置灰阶变量） */
 export type AccentPreset = "graphite" | "teal" | "violet" | "blue" | "orange" | "rose" | "green";

@@ -16,7 +16,7 @@ import { loadMonaco, type MonacoApi } from "./monaco-loader";
 import { useConfirmDialog } from "../ConfirmDialog";
 
 /** App 侧命令（保存/聚焦）经此动作面触达编辑器；注册表不感知 React 状态 */
-export interface EditorPaneActions {
+interface EditorPaneActions {
   save?(): void;
   focus?(): void;
 }

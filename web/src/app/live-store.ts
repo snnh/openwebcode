@@ -15,7 +15,7 @@ import { createStore, useStore } from "./store";
  * 事件路由直接写入，任何组件（消息卡/标签条/子代理面板/活动条/检查点行）经 useStore 选择器读取。
  */
 
-export interface LiveActivityEntry {
+interface LiveActivityEntry {
   state?: string;
   since?: number;
   outstanding: Array<{ id: string; name: string }>;

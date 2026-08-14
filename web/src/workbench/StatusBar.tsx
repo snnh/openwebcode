@@ -14,7 +14,7 @@ import { sessionStore } from "../app/session-store";
 import { useContextViewQuery, useModelsQuery } from "../app/queries";
 import { useI18n } from "../i18n";
 
-export interface StatusBarProps {
+interface StatusBarProps {
   sessionId?: string | undefined;
   session?: Session | undefined;
   agentState?: string | undefined;

@@ -27,7 +27,7 @@ export function fuzzyScore(query: string, candidate: string): number {
   return score;
 }
 
-export interface Ranked<T> {
+interface Ranked<T> {
   item: T;
   score: number;
 }

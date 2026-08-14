@@ -4,7 +4,7 @@ import { useSyncExternalStore } from "react";
  * 极简 History API 路由：chat / workbench / share 三条路由。
  * share 路由绕过 AuthGate（公开访问），由 main.tsx 分流渲染。
  */
-export type Route =
+type Route =
   | { name: "chat" }
   | { name: "workbench" }
   | { name: "share"; shareId: string; slug: string };

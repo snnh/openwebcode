@@ -29,7 +29,7 @@ export interface EventSocketEnv {
   maxDelayMs?: number;
 }
 
-export interface EventSocketOptions {
+interface EventSocketOptions {
   onEvent(event: AppEvent): void;
   onReconnecting?(reconnecting: boolean): void;
   /** 连接被显式关闭（组件卸载/App  teardown）时调用：用于冲刷流式缓冲 */

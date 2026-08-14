@@ -7,7 +7,7 @@ import type { ChatMessage } from "../lib/contracts";
  * 状态存于模块级 store，MessageList/ChatView 经 useOlderMessages 订阅。
  */
 
-export interface OlderMessagesState {
+interface OlderMessagesState {
   older: ChatMessage[];
   hasMore: boolean;
   loading: boolean;

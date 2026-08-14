@@ -65,14 +65,14 @@ export interface ManagedWorkspace {
 }
 
 /** 单个工作区条目的可比较状态；不向浏览器暴露绝对路径。 */
-export interface ManagedWorkspaceSyncNode {
+interface ManagedWorkspaceSyncNode {
   kind: "file" | "directory" | "symlink" | "other";
   sha256?: string;
   size?: number;
   mode?: number;
 }
 
-export type ManagedWorkspaceSyncAction = "create" | "update" | "delete" | "none" | "conflict" | "unsupported";
+type ManagedWorkspaceSyncAction = "create" | "update" | "delete" | "none" | "conflict" | "unsupported";
 
 /** 基线、源目录和镜像盘三方比较得到的一项变更。 */
 export interface ManagedWorkspaceSyncChange {
@@ -785,7 +785,7 @@ export interface CompletePathResponse {
 }
 
 /** GET /api/workspaces/files 响应（0.4.0 Phase 2 §5.2）：索引文件清单搜索 */
-export interface WorkspaceFileHit {
+interface WorkspaceFileHit {
   path: string;
   modifiedMs: number;
 }
@@ -795,7 +795,7 @@ export interface WorkspaceFilesResponse {
 }
 
 /** GET /api/workspaces/symbols 响应：索引符号模糊搜索 */
-export interface WorkspaceSymbolHit {
+interface WorkspaceSymbolHit {
   name: string;
   kind: string;
   path: string;
@@ -809,7 +809,7 @@ export interface WorkspaceSymbolsResponse {
 }
 
 /** 索引新鲜度标记（0.4.0 Phase 2）：files/symbols 响应随带 */
-export type WorkspaceIndexState = "fresh" | "stale" | "building" | "missing";
+type WorkspaceIndexState = "fresh" | "stale" | "building" | "missing";
 
 // ---- 性能采样（0.5.0 Phase 2d）：GET /api/sessions/:id/perf 的契约 ----
 
@@ -838,7 +838,7 @@ export interface ProviderConcurrencyStats {
 // ---- 评测 harness（0.5.0 Phase 3a）：GET/POST /api/eval/* 的契约 ----
 
 /** 声明式断言：回放结束后对工作区与消息做静态检查 */
-export interface EvalAssertion {
+interface EvalAssertion {
   toolUsed?: string[];
   fileExists?: string[];
   fileContains?: Record<string, string>;
@@ -857,7 +857,7 @@ export interface EvalTaskInfo {
 }
 
 /** 单条断言检查结果 */
-export interface EvalAssertionResult {
+interface EvalAssertionResult {
   name: string;
   passed: boolean;
   detail: string;
@@ -1000,7 +1000,7 @@ export interface RegenerateTokenResponse {
   note: string;
 }
 
-export interface UpdateCheckSnapshot {
+interface UpdateCheckSnapshot {
   latestVersion: string;
   isNewer: boolean;
   htmlUrl: string;

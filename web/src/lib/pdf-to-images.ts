@@ -12,7 +12,7 @@ if (!GlobalWorkerOptions.workerSrc) {
   GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 }
 
-export interface PdfImage {
+interface PdfImage {
   /** Kept structurally compatible with Composer's PendingImage. */
   mediaType: "image/png";
   /** Base64 PNG payload, without the data URL prefix. */
@@ -21,7 +21,7 @@ export interface PdfImage {
   previewUrl: string;
 }
 
-export interface PdfRenderResult {
+interface PdfRenderResult {
   images: PdfImage[];
   /** The source document's page count, including pages skipped by maxPages. */
   totalPages: number;
@@ -38,12 +38,12 @@ export interface PdfRenderOptions {
   maxDimension?: number;
 }
 
-export interface PdfRenderProgress {
+interface PdfRenderProgress {
   completed: number;
   total: number;
 }
 
-export type PdfRenderProgressCallback = (progress: PdfRenderProgress) => void;
+type PdfRenderProgressCallback = (progress: PdfRenderProgress) => void;
 
 const DEFAULT_MAX_PAGES = 10;
 const DEFAULT_DPI = 150;

@@ -77,7 +77,7 @@ export function groupCallsFromBlocks(
 }
 
 /** 状态图标：running 脉动圆点 / error 叉 / done 勾 / 无状态扳手（行头与组头共用） */
-export function ToolStatusIcon({ status }: { status: ToolCallStatus | undefined }): ReactElement {
+function ToolStatusIcon({ status }: { status: ToolCallStatus | undefined }): ReactElement {
   if (status === "running") return <span className="tool-row-dot" />;
   if (status === "error") return <Icon name="x" size={12} />;
   if (status === "done") return <Icon name="check" size={12} />;

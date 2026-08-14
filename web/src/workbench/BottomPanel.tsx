@@ -70,7 +70,7 @@ function PanelStatus({ sessionId, agentState, mobile }: { sessionId: string; age
   );
 }
 
-export interface BottomPanelProps {
+interface BottomPanelProps {
   sessionId?: string | undefined;
   agentState?: string | undefined;
   mobile: boolean;

@@ -4,7 +4,7 @@
  */
 import type { MonacoApi } from "../../components/editor/monaco-loader";
 
-export interface FakeEditor {
+interface FakeEditor {
   options: Record<string, unknown>;
   value: string;
   disposed: boolean;
@@ -26,7 +26,7 @@ export interface FakeEditor {
   __emitCursor(line: number): void;
 }
 
-export interface FakeDiffEditor {
+interface FakeDiffEditor {
   options: Record<string, unknown>;
   model?: { original: { value: string }; modified: { value: string } };
   disposed: boolean;

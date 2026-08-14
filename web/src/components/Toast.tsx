@@ -2,7 +2,7 @@ import { useEffect, type ReactElement } from "react";
 import { Icon } from "./Icon";
 import { useI18n } from "../i18n";
 
-export interface Notice {
+interface Notice {
   kind: "info" | "error";
   text: string;
 }

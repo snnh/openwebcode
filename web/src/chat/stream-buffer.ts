@@ -42,7 +42,7 @@ interface PendingBlock {
   committed: boolean;
 }
 
-export interface StreamBufferEnv {
+interface StreamBufferEnv {
   scheduleFrame?: (callback: () => void) => number;
   cancelFrame?: (handle: number) => void;
 }
