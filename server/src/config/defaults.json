@@ -15,6 +15,7 @@
   "defaultSnapshotMode": "auto",
   "snapshotBackend": "auto",
   "agentMaxTurns": 50,
+  "subAgentMaxTurns": 100,
   "chatModeEnabled": false,
   "offlineMode": false,
   "corePath": "../build/Debug/owc-exec.exe",

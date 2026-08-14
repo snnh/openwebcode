@@ -205,6 +205,12 @@ function requireAgentMaxTurns(value: SettingValue): void {
   }
 }
 
+function requireSubAgentMaxTurns(value: SettingValue): void {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > 1000) {
+    throw new SettingsValidationError("子代理最大轮次需为 1–1000 的整数");
+  }
+}
+
 function requirePathList(value: SettingValue): void {
   if (!Array.isArray(value) || value.length > 16 || value.some((entry) => typeof entry !== "string" || entry.trim() === "")) {
     throw new SettingsValidationError("允许目录必须是最多 16 项的非空路径列表");
@@ -282,6 +288,7 @@ const FIELDS: FieldSpec[] = [
   { key: "defaultSnapshotMode", group: "general", label: "默认快照方式", type: "select", env: "OWC_DEFAULT_SNAPSHOT_MODE", defaultValue: "auto", restartRequired: false, options: ["auto", "manual"], description: "新建会话的检查点创建方式：auto = 每轮用户消息前自动创建；manual = 仅手动创建" },
   { key: "snapshotBackend", group: "general", label: "快照后端", type: "select", env: "OWC_SNAPSHOT_BACKEND", defaultValue: "auto", restartRequired: false, options: ["auto", ...SNAPSHOT_BACKENDS], description: "新建会话的快照后端偏好；auto = 按探测链自动选择（btrfs/zfs/overlayfs → git-shadow）；指定后端在当前工作区不可用时回落自动并告警" },
   { key: "agentMaxTurns", group: "general", label: "单条消息最大轮次", type: "number", env: "OWC_AGENT_MAX_TURNS", defaultValue: 50, restartRequired: false, fromEnv: envNumber, validate: requireAgentMaxTurns, description: "每条用户消息允许的最大 agent 轮次，达到后当前任务以失败收尾；长任务可调大（1–1000）" },
+  { key: "subAgentMaxTurns", group: "general", label: "子代理最大轮次", type: "number", env: "OWC_SUB_AGENT_MAX_TURNS", defaultValue: 100, restartRequired: false, fromEnv: envNumber, validate: requireSubAgentMaxTurns, description: "子代理（spawn_task / spawn_swarm / 手动启动）的默认最大轮次；spawn_task / spawn_swarm 可传 maxTurns 参数按次覆盖（1–1000）" },
   // Chat 模式开关（热生效）：web 侧据此显示 chat/workbench 切换，默认关闭
   { key: "chatModeEnabled", group: "general", label: "启用 Chat 模式", type: "boolean", env: "OWC_CHAT_MODE_ENABLED", defaultValue: false, restartRequired: false, fromEnv: envBoolean, description: "默认关闭；开启后界面显示 Chat / Workbench 模式切换，可使用 ChatGPT 风格对话模式" },
   // 离线模式（热生效）：只关 server 自身的遥测/更新/同步类出站（更新检查、远程目录/定价后台同步、
@@ -498,6 +505,7 @@ export class SettingsService {
       coreRequestTimeoutMs: value("coreRequestTimeoutMs") as number,
       gcMaxBytes: value("gcMaxBytes") as number,
       agentMaxTurns: value("agentMaxTurns") as number,
+      subAgentMaxTurns: value("subAgentMaxTurns") as number,
       defaultLanguage: value("defaultLanguage") as string,
       defaultCurrency: value("defaultCurrency") as "USD" | "CNY",
       pythonEnv: value("pythonEnv") as PythonEnv,
