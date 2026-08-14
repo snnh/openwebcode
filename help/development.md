@@ -36,7 +36,7 @@ openwebcode/
 │   │   ├── chat/ composer/  # 会话区（MessageList/scroll-controller/stream-buffer/卡片）与输入区
 │   │   ├── workbench/ panels/ dialogs/ settings/  # 五区外壳、底部七面板、弹层、设置对话框与十七分区
 │   │   ├── components/      # 设计基元（Icon/Overlay/ConfirmDialog 等）与保留件（Markdown/Monaco 编辑器）
-│   │   ├── lib/             # api.ts REST 客户端、contracts.ts 类型契约
+│   │   ├── lib/             # api.ts REST 客户端、contracts/ 按域拆分的类型契约（barrel 在 contracts.ts）
 │   │   ├── i18n.tsx         # 中英双语
 │   │   └── styles/          # 十二份样式表（tokens/base/layout/chat-list/chat-cards/chat-mode/composer/sidebar/panels/editor/dialogs/settings）
 │   └── src/test/            # vitest + jsdom + Testing Library + axe
@@ -163,7 +163,7 @@ core（ctest）：`test_protocol.py` / `test_fs.py` / `test_abs_path.py` / `test
 
 ### 改上下文策略
 
-- 驱逐：`context/context-manager.ts`，按账本 policy（lag/interval/off + evictionMode + 豁免下限）算可驱逐集，纯账本运算；视图渲染在 `buildView` 返回前应用，不改缓存主本。
+- 驱逐：`context/context-manager.ts` 的 ContextManager 类按账本 policy（lag/interval/off + evictionMode + 豁免下限）算可驱逐集；纯账本运算与常量（驱逐占位/摘要/glob 排除/usage 累加等）在 `context-ledger-ops.ts`。视图渲染在 `buildView` 返回前应用，不改缓存主本。
 - 压缩：`fast-model.ts` + `context/compactor.ts` 两种策略；`extensions/compact-vault.ts` 是 compact-vault 官方扩展的 server 侧服务（归档完整上下文 + 快速模型整理 + 目录索引，host 侧 `extensions/compact-vault-host.ts` 提供 recall_memory 工具与索引回注）。
 - 新增条目状态要动一串地方：`ContextLedger` 接口、`normalizeLedger` 兼容、`buildView` 渲染、`replaceLedger` 回滚。
 - 前端始终拿全量历史，驱逐只影响发给 LLM 的视图——改策略不会破坏 UI。

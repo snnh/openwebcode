@@ -13,9 +13,9 @@ import type {
 } from "./context-types.js";
 
 /** 压缩历史上限：超出丢弃最旧（compacted 始终保持最新一次，历史仅供 UI 回放多次压缩）。 */
-export const MAX_COMPACTION_HISTORY = 20;
+const MAX_COMPACTION_HISTORY = 20;
 
-export const DEFAULT_POLICY: ContextPolicy = {
+const DEFAULT_POLICY: ContextPolicy = {
   enabled: true,
   strategy: "lag",
   evictionMode: "placeholder",
@@ -34,7 +34,7 @@ export const DEFAULT_POLICY: ContextPolicy = {
 /** read_file 结果行数不超过该值时始终保留（与 token 下限并列的独立豁免：10 行是完整的文件结构认知）。 */
 export const READ_ALWAYS_RETAIN_LINES = 10;
 /** read 头尾摘录的总字符上限：minified 长行文件兜住，超出仍走 artifact。 */
-export const READ_EXCERPT_MAX_CHARS = 8000;
+const READ_EXCERPT_MAX_CHARS = 8000;
 /**
  * 永不驱逐的工具结果白名单：这些工具的结果是后续轮次的关键上下文（如图片描述），
  * 驱逐会破坏任务连续性。自动驱逐与手动驱逐都跳过。
@@ -90,7 +90,7 @@ export function toolNameByCallId(messages: ChatMessage[]): Map<string, string> {
 }
 
 /** 驱逐占位符：给模型可操作的摘要（工具名/大小）与自助恢复路径（read_artifact）。 */
-export function evictionPlaceholder(entry: LedgerEntry): string {
+function evictionPlaceholder(entry: LedgerEntry): string {
   const tool = entry.toolName ?? "unknown tool";
   const size = entry.sizeBytes !== undefined ? `, ${entry.sizeBytes} bytes` : "";
   return `[tool result evicted (${tool}${size}); artifact:${entry.artifactId}; call read_artifact with artifactId "${entry.artifactId}", offset and limit to re-read a slice]`;
@@ -146,10 +146,10 @@ export function estimateFragmentTokens(message: ChatMessage): number {
 }
 
 /** 驱逐摘要消息 id 前缀：按轮一条，由该轮 assistant 消息 id 派生，确定且写入后不可变（缓存断点锚定用）。 */
-export const EVICTED_SUMMARY_PREFIX = "evicted:";
+const EVICTED_SUMMARY_PREFIX = "evicted:";
 
 /** 超级节省轮次摘要行：列出被逐调用（含出错标记）与 artifact 恢复指引；内容仅由账本条目派生，不可变。 */
-export function renderEvictedRoundSummary(entries: LedgerEntry[]): string {
+function renderEvictedRoundSummary(entries: LedgerEntry[]): string {
   const calls = entries.map((entry) => `${entry.toolName ?? "tool"}${entry.isError ? "(error)" : ""}`).join(", ");
   const artifacts = entries.map((entry) => entry.artifactId).join(", ");
   return `[${entries.length} tool call(s) evicted: ${calls}; artifacts: ${artifacts}; call read_artifact with an artifactId, offset and limit to re-read a slice]`;
@@ -219,10 +219,10 @@ export function applyProcessEviction(view: ChatMessage[], ledger: ContextLedger,
 }
 
 /** glob → RegExp 编译缓存：pattern 来自会话配置（≤200 条/会话），小 Map 足够；FIFO 逐出兜底防膨胀。 */
-export const globRegExpCache = new Map<string, RegExp>();
-export const MAX_CACHED_GLOB_REGEXPS = 256;
+const globRegExpCache = new Map<string, RegExp>();
+const MAX_CACHED_GLOB_REGEXPS = 256;
 
-export function globToRegExp(glob: string): RegExp {
+function globToRegExp(glob: string): RegExp {
   const cached = globRegExpCache.get(glob);
   if (cached) return cached;
   const normalized = glob.replace(/\\/g, "/");
@@ -258,7 +258,7 @@ export function isPathExcluded(target: string, excludes: readonly string[]): boo
 }
 
 
-export function normalizePolicy(value: ContextPolicy | undefined): ContextPolicy {
+function normalizePolicy(value: ContextPolicy | undefined): ContextPolicy {
   const policy: ContextPolicy = { ...DEFAULT_POLICY, ...(value ?? {}) };
   if (policy.evictionMode !== "placeholder" && policy.evictionMode !== "process") policy.evictionMode = DEFAULT_POLICY.evictionMode;
   for (const key of ["minRetainTokens", "readKeepLines"] as const) {
@@ -276,7 +276,7 @@ export function normalizePolicy(value: ContextPolicy | undefined): ContextPolicy
   return policy;
 }
 
-export function isCompaction(value: unknown): value is CompactionRecord {
+function isCompaction(value: unknown): value is CompactionRecord {
   if (!value || typeof value !== "object") return false;
   const record = value as Partial<CompactionRecord>;
   return Number.isSafeInteger(record.uptoIndex) && (record.uptoIndex ?? -1) >= 0 &&
@@ -288,7 +288,7 @@ export function isCompaction(value: unknown): value is CompactionRecord {
 }
 
 /** 历史条目统一清洗：过滤非法记录、instructions 只留字符串。 */
-export function normalizeCompaction(value: CompactionRecord): CompactionRecord {
+function normalizeCompaction(value: CompactionRecord): CompactionRecord {
   return { ...value, instructions: value.instructions.filter((item): item is string => typeof item === "string") };
 }
 
@@ -325,8 +325,8 @@ export function renderCompaction(record: CompactionRecord): string {
 }
 
 /** 图像独立预算（§7.3②）：视图中至多保留最新 MAX_IMAGES 张且不超 MAX_IMAGE_BYTES，更早的替换为占位文本。 */
-export const MAX_IMAGES = 4;
-export const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+const MAX_IMAGES = 4;
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 
 export function enforceImageBudget(view: ChatMessage[]): void {
   let count = 0;
@@ -408,7 +408,7 @@ export function selectCacheBreakpoints(messages: ChatMessage[], ledger: ContextL
   return [...new Set(selected)].slice(-3);
 }
 
-export function safeTokenCount(value: unknown): number {
+function safeTokenCount(value: unknown): number {
   return Number.isSafeInteger(value) && Number(value) >= 0 ? Number(value) : 0;
 }
 
@@ -425,11 +425,11 @@ export function aggregateEvicted(entries: LedgerEntry[]): { tokens: number; coun
   return count > 0 ? { tokens, count } : undefined;
 }
 
-export function integerString(value: unknown): string {
+function integerString(value: unknown): string {
   return typeof value === "string" && /^\d+$/.test(value) ? value : "0";
 }
 
-export function addIntegers(left: string, right: string): string {
+function addIntegers(left: string, right: string): string {
   if (!/^\d+$/.test(right)) throw new Error("Cost must be a non-negative integer string");
   return (BigInt(left) + BigInt(right)).toString();
 }

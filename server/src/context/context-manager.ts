@@ -699,4 +699,4 @@ export class ContextManager {
 // 对外 API：纯函数与类型经本文件重导出，既有 import 点不变。
 export { estimateFragmentTokens };
 export { isPathExcluded, recordCompaction, selectCacheBreakpoints } from "./context-ledger-ops.js";
-export type { ContextPolicy, ContextLedger, BudgetUpdate, ContextPolicyUpdate, TurnLedger, CompactionRecord, ContextView, ContextBuildStats, BuildViewOptions, ContextSelection } from "./context-types.js";
+export type { BudgetUpdate, ContextPolicyUpdate, TurnLedger, CompactionRecord } from "./context-types.js";
