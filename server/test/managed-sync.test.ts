@@ -29,6 +29,14 @@ async function copyInitial(roots: ManagedWorkspaceSyncRoots, relativePath: strin
   await Promise.all([put(roots.originCwd, relativePath, content), put(roots.mountPoint, relativePath, content)]);
 }
 
+/** fixture + 两侧各放一个 file.txt + 建立基线，供需要既有基线的用例复用。 */
+async function baselineFixture(): Promise<ManagedWorkspaceSyncRoots> {
+  const roots = await fixture();
+  await copyInitial(roots, "file.txt", "base");
+  await createManagedWorkspaceSyncBaseline(roots);
+  return roots;
+}
+
 describe("managed workspace sync-back", () => {
   it("stores the initial baseline outside the mounted cwd and applies only managed-only changes", async () => {
     const roots = await fixture();
@@ -82,9 +90,7 @@ describe("managed workspace sync-back", () => {
   });
 
   it("recomputes the fingerprint before apply and refuses a stale source tree", async () => {
-    const roots = await fixture();
-    await copyInitial(roots, "file.txt", "base");
-    await createManagedWorkspaceSyncBaseline(roots);
+    const roots = await baselineFixture();
     await put(roots.mountPoint, "file.txt", "managed");
     const preview = await previewManagedWorkspaceSync(roots);
     await put(roots.originCwd, "file.txt", "external after preview");
@@ -94,9 +100,7 @@ describe("managed workspace sync-back", () => {
   });
 
   it("honors a cancellation signal before scanning or writing", async () => {
-    const roots = await fixture();
-    await copyInitial(roots, "file.txt", "base");
-    await createManagedWorkspaceSyncBaseline(roots);
+    const roots = await baselineFixture();
     const controller = new AbortController();
     controller.abort();
     await expect(applyManagedWorkspaceSync(roots, { confirm: true, previewFingerprint: "0".repeat(64) }, { signal: controller.signal })).rejects.toMatchObject({ code: "cancelled" });
@@ -118,9 +122,7 @@ describe("managed workspace sync-back", () => {
   });
 
   it("binds the sidecar to the session and source root identity", async () => {
-    const roots = await fixture();
-    await copyInitial(roots, "file.txt", "base");
-    await createManagedWorkspaceSyncBaseline(roots);
+    const roots = await baselineFixture();
     const wrongSession = await previewManagedWorkspaceSync({ ...roots, sessionId: "another-session" });
     expect(wrongSession.baseline).toEqual({ available: false, reason: "invalid" });
     expect(wrongSession.fingerprint).toBeNull();
@@ -146,9 +148,7 @@ describe("managed workspace sync-back", () => {
   });
 
   it.skipIf(process.platform === "win32")("never follows a managed symlink when planning a sync", async () => {
-    const roots = await fixture();
-    await copyInitial(roots, "file.txt", "base");
-    await createManagedWorkspaceSyncBaseline(roots);
+    const roots = await baselineFixture();
     await rm(path.join(roots.mountPoint, "file.txt"));
     await symlink(path.join(roots.workspaceRoot, "outside"), path.join(roots.mountPoint, "file.txt"));
     const preview = await previewManagedWorkspaceSync(roots);
@@ -169,9 +169,7 @@ describe("managed workspace sync-back", () => {
   });
 
   it("treats a traversal-bearing sidecar as invalid instead of using it", async () => {
-    const roots = await fixture();
-    await copyInitial(roots, "file.txt", "base");
-    await createManagedWorkspaceSyncBaseline(roots);
+    const roots = await baselineFixture();
     const baselinePath = managedWorkspaceSyncBaselinePath(roots.workspaceRoot);
     const baseline = JSON.parse(await readFile(baselinePath, "utf8")) as { entries: Record<string, unknown> };
     baseline.entries = { "../outside.txt": { kind: "file", sha256: "0".repeat(64), size: 0, mode: 0o644 } };

@@ -348,49 +348,45 @@ describe("ModelRegistry", () => {
     expect(await readFile(syncedPath(root), "utf8")).toBe(beforeSnapshot);
   }
 
-  it("rejects invalid JSON without mutating the prior synced catalog", async () => {
+  // 各非法远端目录（或拉取失败）一律拒绝且不改动既有同步快照
+  it.each([
+    {
+      name: "invalid JSON",
+      fetchImpl: () => (async () => new Response("not json", { status: 200 })) as unknown as typeof fetch,
+    },
+    {
+      name: "an unsupported remote catalog version",
+      fetchImpl: () => fetchStub([{
+        match: "https://catalog.test/failing.json",
+        body: { version: 2, models: [{ id: "replacement", provider: "remote" }] },
+      }]),
+    },
+    {
+      name: "an empty remote catalog",
+      fetchImpl: () => fetchStub([{
+        match: "https://catalog.test/failing.json",
+        body: { version: 1, models: [] },
+      }]),
+    },
+    {
+      name: "a remote catalog without an ISO update time",
+      fetchImpl: () => fetchStub([{
+        match: "https://catalog.test/failing.json",
+        body: {
+          version: 1,
+          updatedAt: "not-an-iso-time",
+          models: [{ id: "replacement", provider: "remote", contextWindow: 10_000 }],
+        },
+      }]),
+    },
+    {
+      name: "a failing remote fetch",
+      fetchImpl: () => (async () => { throw new Error("network offline"); }) as unknown as typeof fetch,
+    },
+  ])("rejects $name without mutating the prior synced catalog", async ({ fetchImpl }) => {
     const root = await tempDir();
     const registry = await registryWithSyncedCatalog(root);
-    await expectFailedSyncToKeepSnapshot(registry, root, (async () => new Response("not json", { status: 200 })) as unknown as typeof fetch);
-  });
-
-  it("rejects an unsupported remote catalog version without mutating the prior synced catalog", async () => {
-    const root = await tempDir();
-    const registry = await registryWithSyncedCatalog(root);
-    await expectFailedSyncToKeepSnapshot(registry, root, fetchStub([{
-      match: "https://catalog.test/failing.json",
-      body: { version: 2, models: [{ id: "replacement", provider: "remote" }] },
-    }]));
-  });
-
-  it("rejects an empty remote catalog without mutating the prior synced catalog", async () => {
-    const root = await tempDir();
-    const registry = await registryWithSyncedCatalog(root);
-    await expectFailedSyncToKeepSnapshot(registry, root, fetchStub([{
-      match: "https://catalog.test/failing.json",
-      body: { version: 1, models: [] },
-    }]));
-  });
-
-  it("rejects a remote catalog without an ISO update time without mutating the prior synced catalog", async () => {
-    const root = await tempDir();
-    const registry = await registryWithSyncedCatalog(root);
-    await expectFailedSyncToKeepSnapshot(registry, root, fetchStub([{
-      match: "https://catalog.test/failing.json",
-      body: {
-        version: 1,
-        updatedAt: "not-an-iso-time",
-        models: [{ id: "replacement", provider: "remote", contextWindow: 10_000 }],
-      },
-    }]));
-  });
-
-  it("keeps the prior synced catalog when the remote fetch fails", async () => {
-    const root = await tempDir();
-    const registry = await registryWithSyncedCatalog(root);
-    await expectFailedSyncToKeepSnapshot(registry, root, (async () => {
-      throw new Error("network offline");
-    }) as unknown as typeof fetch);
+    await expectFailedSyncToKeepSnapshot(registry, root, fetchImpl());
   });
 });
 

@@ -122,6 +122,8 @@ async function makeApplier(overrides: {
   spawnImpl: typeof spawn;
   exitImpl: () => void;
   currentVersion?: string;
+  getuidImpl?: () => number;
+  systemUnitPath?: string;
 }): Promise<ApplierFixture> {
   const dataDir = await tempRoot("owc-update-apply-");
   const installRoot = path.join(await tempRoot("owc-update-apply-"), "owc-home");
@@ -138,6 +140,8 @@ async function makeApplier(overrides: {
     fetchImpl: overrides.fetchImpl,
     spawnImpl: overrides.spawnImpl,
     exitImpl: overrides.exitImpl,
+    ...(overrides.getuidImpl ? { getuidImpl: overrides.getuidImpl } : {}),
+    ...(overrides.systemUnitPath ? { systemUnitPath: overrides.systemUnitPath } : {}),
   });
   return { applier, dataDir, installRoot };
 }
@@ -210,20 +214,10 @@ describe("UpdateApplier", () => {
   it("linux 系统级 unit（root 安装）时用 systemctl restart 自动重启", async () => {
     const spawn = makeSpawn();
     let exitCalls = 0;
-    const dataDir = await tempRoot("owc-update-apply-");
-    const installRoot = path.join(await tempRoot("owc-update-apply-"), "owc-home");
-    await mkdir(installRoot, { recursive: true });
-    const systemUnitDir = await tempRoot("owc-update-apply-");
-    const systemUnitPath = path.join(systemUnitDir, "openwebcode.service");
+    const systemUnitPath = path.join(await tempRoot("owc-update-apply-"), "openwebcode.service");
     await writeFile(systemUnitPath, "[Unit]\n", "utf8");
-    const applier = new UpdateApplier({
-      dataDir,
-      installRoot,
+    const fixture = await makeApplier({
       platform: "linux",
-      // 与宿主架构解耦（arm64 CI runner 上 process.arch 会让资产名错配）
-      arch: "x64",
-      getReleaseUrl: () => RELEASE_URL,
-      getCurrentVersion: () => "0.5.2",
       fetchImpl: makeFetch({ platform: "linux" }),
       spawnImpl: spawn.impl,
       exitImpl: () => { exitCalls += 1; },
@@ -235,7 +229,7 @@ describe("UpdateApplier", () => {
     await mkdir(path.join(configHome, "systemd", "user"), { recursive: true });
     await writeFile(path.join(configHome, "systemd", "user", "openwebcode.service"), "[Unit]\n", "utf8");
     await withConfigHome(configHome, async () => {
-      const state = await applier.apply();
+      const state = await fixture.applier.apply();
       expect(state.status).toBe("restarting");
       expect(state.message).toContain("自动重启");
     });
@@ -283,49 +277,40 @@ describe("UpdateApplier", () => {
     }
   });
 
-  it("未映射的 linux 架构拒绝在线更新（400 语义）", async () => {
-    const spawn = makeSpawn();
-    const fixture = await makeApplier({
-      platform: "linux",
+  it.each([
+    {
+      name: "未映射的 linux 架构拒绝在线更新",
       arch: "riscv64",
-      fetchImpl: makeFetch({ platform: "linux" }),
-      spawnImpl: spawn.impl,
-      exitImpl: () => undefined,
-    });
-    const error = await fixture.applier.apply().catch((err: unknown) => err);
-    expect(error).toBeInstanceOf(UpdateApplyError);
-    expect((error as UpdateApplyError).statusCode).toBe(400);
-    expect((error as UpdateApplyError).message).toContain("riscv64");
-  });
-
-  it("非 github.com 的资产 URL 被拒绝（400 语义）", async () => {
-    const spawn = makeSpawn();
-    const fixture = await makeApplier({
-      platform: "linux",
-      fetchImpl: makeFetch({ platform: "linux", assetUrlOverride: "https://evil.example.com/payload.tar.gz" }),
-      spawnImpl: spawn.impl,
-      exitImpl: () => undefined,
-    });
-    const error = await fixture.applier.apply().catch((err: unknown) => err);
-    expect(error).toBeInstanceOf(UpdateApplyError);
-    expect((error as UpdateApplyError).statusCode).toBe(400);
-  });
-
-  it("tag 不新于当前版本：400 语义「已是最新版本」", async () => {
-    const spawn = makeSpawn();
-    const fixture = await makeApplier({
-      platform: "linux",
-      fetchImpl: makeFetch({ platform: "linux", tag: "v0.5.2" }),
-      spawnImpl: spawn.impl,
-      exitImpl: () => undefined,
+      fetchOptions: { platform: "linux" } as FakeFetchOptions,
+      messageMatch: "riscv64",
+    },
+    {
+      name: "非 github.com 的资产 URL 被拒绝",
+      fetchOptions: { platform: "linux", assetUrlOverride: "https://evil.example.com/payload.tar.gz" } as FakeFetchOptions,
+    },
+    {
+      name: "tag 不新于当前版本报「已是最新版本」",
+      fetchOptions: { platform: "linux", tag: "v0.5.2" } as FakeFetchOptions,
       currentVersion: "0.5.2",
+      messageMatch: "已是最新版本",
+      // 未开始更新流程，内存状态保持空
+      expectStateNull: true,
+    },
+  ])("$name（400 语义）", async ({ arch, fetchOptions, currentVersion, messageMatch, expectStateNull }) => {
+    const spawn = makeSpawn();
+    const fixture = await makeApplier({
+      platform: "linux",
+      fetchImpl: makeFetch(fetchOptions),
+      spawnImpl: spawn.impl,
+      exitImpl: () => undefined,
+      ...(arch ? { arch } : {}),
+      ...(currentVersion ? { currentVersion } : {}),
     });
     const error = await fixture.applier.apply().catch((err: unknown) => err);
     expect(error).toBeInstanceOf(UpdateApplyError);
     expect((error as UpdateApplyError).statusCode).toBe(400);
-    expect((error as UpdateApplyError).message).toContain("已是最新版本");
-    // 未开始更新流程，内存状态保持空
-    expect(fixture.applier.state()).toBeNull();
+    if (messageMatch) expect((error as UpdateApplyError).message).toContain(messageMatch);
+    if (expectStateNull) expect(fixture.applier.state()).toBeNull();
   });
 
   it("win32：spawn msiexec 延迟安装并调用 exitImpl，状态 restarting", async () => {
@@ -415,12 +400,18 @@ describe("/api/update/apply", () => {
   });
 
   it("GET 返回当前状态（无记录为 null）", async () => {
+    let current: UpdateApplyState | null = null;
     const applier = {
-      state: () => DONE_STATE,
+      state: () => current,
       apply: async () => DONE_STATE,
     } as unknown as UpdateApplier;
     const app = await setupApp(applier);
     try {
+      const empty = await app.inject({ method: "GET", url: "/api/update/apply" });
+      expect(empty.statusCode).toBe(200);
+      expect(empty.json<{ state: UpdateApplyState | null }>().state).toBeNull();
+
+      current = DONE_STATE;
       const response = await app.inject({ method: "GET", url: "/api/update/apply" });
       expect(response.statusCode).toBe(200);
       expect(response.json<{ state: UpdateApplyState | null }>().state?.status).toBe("done");
@@ -491,33 +482,21 @@ describe("semver helpers", () => {
 });
 
 describe("UpdateChecker", () => {
-  it("does not fetch when disabled", async () => {
-    const root = await tempRoot("owc-update-");
-    let calls = 0;
-    const checker = new UpdateChecker({
-      cachePath: path.join(root, "update-check.json"),
-      defaultUrl: "https://api.github.com/repos/snnh/openwebcode/releases/latest",
-      fetchImpl: async () => { calls += 1; return githubResponse("v9.9.9"); },
-    });
-    checker.configure({ enabled: false, intervalHours: 24 });
-    await checker.initialize();
-    const snapshot = await checker.refresh();
-    expect(calls).toBe(0);
-    expect(snapshot).toBeUndefined();
-    checker.close();
-  });
-
-  it("manual refresh (force) fetches even when periodic check is disabled", async () => {
+  it("disabled 时周期检查不请求，手动 force refresh 仍会拉取", async () => {
     const root = await tempRoot("owc-update-");
     setServerVersion("0.5.2");
     let calls = 0;
     const checker = new UpdateChecker({
       cachePath: path.join(root, "update-check.json"),
-      defaultUrl: "https://api.github.com/repos/snnh/openwebcode/releases/latest",
+      defaultUrl: RELEASE_URL,
       fetchImpl: async () => { calls += 1; return githubResponse("v0.6.0"); },
     });
     checker.configure({ enabled: false, intervalHours: 24 });
     await checker.initialize();
+    // 周期 refresh 不发起请求
+    expect(await checker.refresh()).toBeUndefined();
+    expect(calls).toBe(0);
+    // 手动 force refresh 即使周期检查禁用也会拉取
     const snapshot = await checker.refresh(true);
     expect(calls).toBe(1);
     expect(snapshot?.latestVersion).toBe("0.6.0");
@@ -532,7 +511,7 @@ describe("UpdateChecker", () => {
     const cachePath = path.join(root, "update-check.json");
     const checker = new UpdateChecker({
       cachePath,
-      defaultUrl: "https://api.github.com/repos/snnh/openwebcode/releases/latest",
+      defaultUrl: RELEASE_URL,
       fetchImpl: async () => { calls += 1; return githubResponse("v0.6.0"); },
     });
     checker.configure({ enabled: true, intervalHours: 24 });
@@ -551,7 +530,7 @@ describe("UpdateChecker", () => {
     // 缓存可被新实例读取
     const reloaded = new UpdateChecker({
       cachePath,
-      defaultUrl: "https://api.github.com/repos/snnh/openwebcode/releases/latest",
+      defaultUrl: RELEASE_URL,
       fetchImpl: async () => { calls += 1; return githubResponse("v0.6.0"); },
     });
     reloaded.configure({ enabled: false, intervalHours: 24 });
@@ -566,7 +545,7 @@ describe("UpdateChecker", () => {
     setServerVersion("0.5.2");
     const checker = new UpdateChecker({
       cachePath: path.join(root, "update-check.json"),
-      defaultUrl: "https://api.github.com/repos/snnh/openwebcode/releases/latest",
+      defaultUrl: RELEASE_URL,
       fetchImpl: async () => githubResponse("v0.5.2"),
     });
     checker.configure({ enabled: true, intervalHours: 24 });
