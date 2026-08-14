@@ -42,14 +42,19 @@ describe("managed VHDX sibling mount path", () => {
     expect(path.basename(managedVhdxMountPoint(origin, "abc-123"))).not.toContain(".");
   });
 
+  it("rejects session ids outside [A-Za-z0-9-] to block mount-point path traversal", () => {
+    const origin = path.join(os.tmpdir(), "project-parent", "work");
+    expect(() => managedVhdxMountPoint(origin, "../evil")).toThrow("Invalid managed workspace session id");
+    expect(() => managedVhdxMountPoint(origin, "a/b")).toThrow("Invalid managed workspace session id");
+  });
+
   it("provisions Windows VHDX beside the source and persists the cleanup path", async () => {
     const root = await tempRoot("owc-md-");
     const dataDir = path.join(root, "data");
     const origin = path.join(root, "projects", "work");
     await mkdir(origin, { recursive: true });
     await writeFile(path.join(origin, "README.md"), "hello");
-    const { runner, calls } = recordingRunner(() => ({ code: 0 }));
-    const manager = new ManagedWorkspaceManager({ dataDir, runner, platform: "win32" });
+    const { manager, calls } = win32Manager(dataDir);
     const result = await manager.provision({ sessionId: "session-1", originCwd: origin, backend: "vhdx" });
     const expectedMount = path.join(root, "projects", "work-openwebcode-session-1");
     expect(result.mountPoint).toBe(expectedMount);
@@ -67,8 +72,7 @@ describe("managed VHDX sibling mount path", () => {
     await mkdir(origin, { recursive: true });
     await mkdir(mountPoint);
     await writeFile(path.join(mountPoint, "owned-by-user.txt"), "keep", "utf8");
-    const { runner, calls } = recordingRunner(() => ({ code: 0 }));
-    const manager = new ManagedWorkspaceManager({ dataDir, runner, platform: "win32" });
+    const { manager, calls } = win32Manager(dataDir);
 
     await expect(manager.provision({ sessionId: "session-2", originCwd: origin, backend: "vhdx" })).rejects.toMatchObject({ code: "EEXIST" });
     expect(await readFile(path.join(mountPoint, "owned-by-user.txt"), "utf8")).toBe("keep");
@@ -90,24 +94,81 @@ function vhdxSiblingMount(root: string, sessionId = "s1"): string {
   return managedVhdxMountPoint(path.join(root, "projects", "work.with.dots"), sessionId);
 }
 
+/** win32 平台的 ManagedWorkspaceManager + 记录型 runner（code 默认 0，可注入失败码）。 */
+function win32Manager(dataDir: string, code = 0) {
+  const { runner, calls, lines } = recordingRunner(() => ({ code }));
+  const manager = new ManagedWorkspaceManager({ dataDir, runner, platform: "win32" });
+  return { manager, calls, lines };
+}
+
+interface ManagedDiskTestPaths {
+  root: string;
+  workspaceRoot: string;
+  mountPoint: string;
+  base: string;
+}
+
+/** 单会话链式后端通用工作区：root/workspaces/s1 + 初始 chain.json（可用 chain 工厂覆盖部分字段）。 */
+async function setupWorkspace(
+  kind: "qcow2" | "vhdx",
+  chain?: (paths: ManagedDiskTestPaths) => Partial<TestChainState>,
+): Promise<ManagedDiskTestPaths> {
+  const root = await tempRoot("owc-md-");
+  const workspaceRoot = path.join(root, "workspaces", "s1");
+  const mountPoint = kind === "vhdx" ? vhdxSiblingMount(root) : path.join(root, "mnt", "s1");
+  const base = path.join(workspaceRoot, `base.${kind}`);
+  const paths = { root, workspaceRoot, mountPoint, base };
+  const defaults: TestChainState = {
+    active: { file: base, parentFile: null },
+    ...(kind === "qcow2" ? { device: "/dev/nbd0" } : { mountPoint }),
+    checkpoints: [],
+  };
+  await writeChain(workspaceRoot, { ...defaults, ...chain?.(paths) });
+  return paths;
+}
+
+/** setupWorkspace + 记录型 runner + ManagedDiskBackend。 */
+async function setupBackend(kind: "qcow2" | "vhdx", chain?: (paths: ManagedDiskTestPaths) => Partial<TestChainState>) {
+  const paths = await setupWorkspace(kind, chain);
+  const { runner, calls, lines } = recordingRunner(() => ({ code: 0 }));
+  const backend = new ManagedDiskBackend({ kind, workspaceRoot: paths.workspaceRoot, mountPoint: paths.mountPoint, runner });
+  return { ...paths, calls, lines, backend };
+}
+
+/** win32 VHDX 工作区骨架（目录就绪，chain 由调用方写入），供 teardown/sweep 用例复用。 */
+async function vhdxWorkspace(id: string, code = 0) {
+  const root = await tempRoot("owc-md-");
+  const dataDir = path.join(root, "data");
+  const origin = path.join(root, "work");
+  const workspaceRoot = path.join(dataDir, "workspaces", id);
+  const mountPoint = managedVhdxMountPoint(origin, id);
+  const base = path.join(workspaceRoot, "base.vhdx");
+  await mkdir(origin, { recursive: true });
+  await mkdir(workspaceRoot, { recursive: true });
+  await mkdir(mountPoint, { recursive: true });
+  const { manager, lines } = win32Manager(dataDir, code);
+  return { origin, workspaceRoot, mountPoint, base, manager, lines };
+}
+
 describe("detectManagedWorkspace", () => {
-  it("win32：Hyper-V 模块与当前进程访问权都可用 → vhdx 可用", async () => {
-    const { runner } = tableRunner({
-      "powershell -NoProfile -Command Get-Command New-VHD": { stdout: "New-VHD\r\n", code: 0 },
-      "powershell -NoProfile -Command Get-VMHost -ErrorAction Stop | Out-Null": { code: 0 },
-    });
+  it.each([
+    {
+      name: "Hyper-V 模块与当前进程访问权都可用 → vhdx 可用",
+      responses: {
+        "powershell -NoProfile -Command Get-Command New-VHD": { stdout: "New-VHD\r\n", code: 0 },
+        "powershell -NoProfile -Command Get-VMHost -ErrorAction Stop | Out-Null": { code: 0 },
+      },
+      available: true,
+      detail: "Hyper-V",
+    },
+    { name: "模块缺失 → vhdx 不可用并说明原因", responses: {}, available: false, detail: "New-VHD" },
+  ])("win32：$name", async ({ responses, available, detail }) => {
+    const { runner } = tableRunner(responses);
     const capability = await detectManagedWorkspace("win32", runner);
     expect(capability.platform).toBe("win32");
     expect(capability.backends).toEqual([
-      { backend: "vhdx", available: true, requiresAdmin: true, detail: expect.stringContaining("Hyper-V") },
+      { backend: "vhdx", available, requiresAdmin: true, detail: expect.stringContaining(detail) },
     ]);
-  });
-
-  it("win32：模块缺失 → vhdx 不可用并说明原因", async () => {
-    const { runner } = tableRunner({});
-    const capability = await detectManagedWorkspace("win32", runner);
-    expect(capability.backends[0]).toMatchObject({ backend: "vhdx", available: false, requiresAdmin: true });
-    expect(capability.backends[0]?.detail).toContain("New-VHD");
   });
 
   it("win32：模块存在但当前 token 无 Hyper-V 访问权 → vhdx 不可用", async () => {
@@ -124,26 +185,29 @@ describe("detectManagedWorkspace", () => {
     ]);
   });
 
-  it("linux：qemu-img/qemu-nbd/免密 sudo 齐备 → qcow2 可用", async () => {
-    const { runner } = tableRunner({
-      "qemu-img --version": { stdout: "qemu-img version 8.0.0", code: 0 },
-      "qemu-nbd --version": { stdout: "qemu-nbd version 8.0.0", code: 0 },
-      "sudo -n true": { code: 0 },
-    });
+  it.each([
+    {
+      name: "qemu-img/qemu-nbd/免密 sudo 齐备 → qcow2 可用",
+      responses: {
+        "qemu-img --version": { stdout: "qemu-img version 8.0.0", code: 0 },
+        "qemu-nbd --version": { stdout: "qemu-nbd version 8.0.0", code: 0 },
+        "sudo -n true": { code: 0 },
+      },
+      available: true,
+      detail: "qemu",
+    },
+    {
+      name: "缺免密 sudo → qcow2 不可用并列出缺失项",
+      responses: { "qemu-img --version": { code: 0 }, "qemu-nbd --version": { code: 0 } },
+      available: false,
+      detail: "sudo",
+    },
+  ])("linux：$name", async ({ responses, available, detail }) => {
+    const { runner } = tableRunner(responses);
     const capability = await detectManagedWorkspace("linux", runner);
     expect(capability.backends).toEqual([
-      { backend: "qcow2", available: true, requiresAdmin: true, detail: expect.stringContaining("qemu") },
+      { backend: "qcow2", available, requiresAdmin: true, detail: expect.stringContaining(detail) },
     ]);
-  });
-
-  it("linux：缺免密 sudo → qcow2 不可用并列出缺失项", async () => {
-    const { runner } = tableRunner({
-      "qemu-img --version": { code: 0 },
-      "qemu-nbd --version": { code: 0 },
-    });
-    const capability = await detectManagedWorkspace("linux", runner);
-    expect(capability.backends[0]?.available).toBe(false);
-    expect(capability.backends[0]?.detail).toContain("sudo");
   });
 });
 
@@ -184,22 +248,16 @@ describe("managed-disk.ps1", () => {
 
 describe("ManagedDiskBackend", () => {
   it("qcow2 create：建差分叶子+换叶命令序列正确，chain.json 记录 file=旧叶子", async () => {
-    const root = await tempRoot("owc-md-");
-    const workspaceRoot = path.join(root, "workspaces", "s1");
-    const mountPoint = path.join(root, "mnt", "s1");
-    const base = path.join(workspaceRoot, "base.qcow2");
-    await writeChain(workspaceRoot, { active: { file: base, parentFile: null }, device: "/dev/nbd2", checkpoints: [] });
-    const { runner, lines } = recordingRunner(() => ({ code: 0 }));
-    const backend = new ManagedDiskBackend({ kind: "qcow2", workspaceRoot, mountPoint, runner });
+    const { workspaceRoot, mountPoint, base, lines, backend } = await setupBackend("qcow2");
 
     const checkpoint = await backend.create("first", 5);
     const leaf = path.join(workspaceRoot, `leaf-${checkpoint.id}.qcow2`);
     expect(lines()).toEqual([
       `qemu-img create -f qcow2 -b ${base} ${leaf}`,
       `sudo umount ${mountPoint}`,
-      `sudo qemu-nbd -d /dev/nbd2`,
-      `sudo qemu-nbd -c /dev/nbd2 ${leaf}`,
-      `sudo mount /dev/nbd2 ${mountPoint}`,
+      `sudo qemu-nbd -d /dev/nbd0`,
+      `sudo qemu-nbd -c /dev/nbd0 ${leaf}`,
+      `sudo mount /dev/nbd0 ${mountPoint}`,
     ]);
     const state = await readChain(workspaceRoot);
     expect(state.checkpoints).toHaveLength(1);
@@ -209,13 +267,7 @@ describe("ManagedDiskBackend", () => {
   });
 
   it("vhdx create：单个可恢复 fork-swap 脚本事务，链状态只在成功后更新", async () => {
-    const root = await tempRoot("owc-md-");
-    const workspaceRoot = path.join(root, "workspaces", "s1");
-    const mountPoint = vhdxSiblingMount(root);
-    const base = path.join(workspaceRoot, "base.vhdx");
-    await writeChain(workspaceRoot, { active: { file: base, parentFile: null }, mountPoint, checkpoints: [] });
-    const { runner, lines } = recordingRunner(() => ({ code: 0 }));
-    const backend = new ManagedDiskBackend({ kind: "vhdx", workspaceRoot, mountPoint, runner });
+    const { workspaceRoot, mountPoint, base, lines, backend } = await setupBackend("vhdx");
 
     const checkpoint = await backend.create("first", 1);
     const leaf = path.join(workspaceRoot, `leaf-${checkpoint.id}.vhdx`);
@@ -229,13 +281,7 @@ describe("ManagedDiskBackend", () => {
   });
 
   it("VHDX 创建后 chain.json 落盘失败会回滚到旧叶，保留旧状态", async () => {
-    const root = await tempRoot("owc-md-");
-    const workspaceRoot = path.join(root, "workspaces", "s1");
-    const mountPoint = vhdxSiblingMount(root);
-    const base = path.join(workspaceRoot, "base.vhdx");
-    await writeChain(workspaceRoot, { active: { file: base, parentFile: null }, mountPoint, checkpoints: [] });
-    const { runner, calls } = recordingRunner(() => ({ code: 0 }));
-    const backend = new ManagedDiskBackend({ kind: "vhdx", workspaceRoot, mountPoint, runner });
+    const { workspaceRoot, mountPoint, base, calls, backend } = await setupBackend("vhdx");
     (backend as unknown as { writeState: () => Promise<void> }).writeState = async () => { throw new Error("locked chain.json"); };
 
     await expect(backend.create("first", 1)).rejects.toThrow("locked chain.json");
@@ -248,20 +294,13 @@ describe("ManagedDiskBackend", () => {
   });
 
   it("VHDX 恢复时先持久化新 active，失败不会删除原叶", async () => {
-    const root = await tempRoot("owc-md-");
-    const workspaceRoot = path.join(root, "workspaces", "s1");
-    const mountPoint = vhdxSiblingMount(root);
-    const base = path.join(workspaceRoot, "base.vhdx");
-    const current = path.join(workspaceRoot, "leaf-current.vhdx");
     const checkpointId = "snap-2000-abcdef";
-    await writeChain(workspaceRoot, {
-      active: { file: current, parentFile: base },
-      mountPoint,
+    const { workspaceRoot, base, calls, backend } = await setupBackend("vhdx", ({ base, workspaceRoot }) => ({
+      active: { file: path.join(workspaceRoot, "leaf-current.vhdx"), parentFile: base },
       checkpoints: [{ id: checkpointId, label: "base", createdAt: new Date().toISOString(), messageCount: 0, file: base, parentFile: null }],
-    });
+    }));
+    const current = path.join(workspaceRoot, "leaf-current.vhdx");
     await writeFile(current, "current leaf", "utf8");
-    const { runner, calls } = recordingRunner(() => ({ code: 0 }));
-    const backend = new ManagedDiskBackend({ kind: "vhdx", workspaceRoot, mountPoint, runner });
     (backend as unknown as { writeState: () => Promise<void> }).writeState = async () => { throw new Error("locked chain.json"); };
 
     await expect(backend.restore(checkpointId)).rejects.toThrow("locked chain.json");
@@ -273,11 +312,7 @@ describe("ManagedDiskBackend", () => {
   });
 
   it("跨请求构造的 backend 也会串行换叶，避免双击读取同一条 chain", async () => {
-    const root = await tempRoot("owc-md-");
-    const workspaceRoot = path.join(root, "workspaces", "s1");
-    const mountPoint = path.join(root, "mnt", "s1");
-    const base = path.join(workspaceRoot, "base.qcow2");
-    await writeChain(workspaceRoot, { active: { file: base, parentFile: null }, device: "/dev/nbd0", checkpoints: [] });
+    const { workspaceRoot, mountPoint } = await setupWorkspace("qcow2");
     const calls: Array<{ cmd: string; args: string[] }> = [];
     let signalFirstCreate!: () => void;
     const firstCreateStarted = new Promise<void>((resolve) => { signalFirstCreate = resolve; });
@@ -313,13 +348,7 @@ describe("ManagedDiskBackend", () => {
   });
 
   it("qcow2 restore：从检查点盘文件拉新分支叶子，检查点文件不被覆写", async () => {
-    const root = await tempRoot("owc-md-");
-    const workspaceRoot = path.join(root, "workspaces", "s1");
-    const mountPoint = path.join(root, "mnt", "s1");
-    const base = path.join(workspaceRoot, "base.qcow2");
-    await writeChain(workspaceRoot, { active: { file: base, parentFile: null }, device: "/dev/nbd0", checkpoints: [] });
-    const { runner, calls, lines } = recordingRunner(() => ({ code: 0 }));
-    const backend = new ManagedDiskBackend({ kind: "qcow2", workspaceRoot, mountPoint, runner });
+    const { workspaceRoot, mountPoint, base, calls, lines, backend } = await setupBackend("qcow2");
     const first = await backend.create("first", 1);
     const second = await backend.create("second", 2);
 
@@ -350,19 +379,15 @@ describe("ManagedDiskBackend", () => {
   });
 
   it.each(["qcow2", "vhdx"] as const)("达到 32 个检查点时拒绝新建 %s，避免合并挂载中的祖先链", async (kind) => {
-    const root = await tempRoot("owc-md-");
-    const workspaceRoot = path.join(root, "workspaces", "s1");
-    const mountPoint = kind === "vhdx" ? vhdxSiblingMount(root) : path.join(root, "mnt", "s1");
-    const base = path.join(workspaceRoot, `base.${kind}`);
-    const segment = (n: number) => path.join(workspaceRoot, `seg-${n}.${kind}`);
-    const checkpoints: TestChainState["checkpoints"] = [];
-    for (let n = 31; n >= 1; n -= 1) {
-      checkpoints.push({ id: `snap-${2000 + n}-abcdef`, label: `cp${n}`, createdAt: new Date().toISOString(), messageCount: n, file: segment(n), parentFile: n === 1 ? base : segment(n - 1) });
-    }
-    checkpoints.push({ id: "snap-2000-abcdef", label: "cp0", createdAt: new Date().toISOString(), messageCount: 0, file: base, parentFile: null });
-    await writeChain(workspaceRoot, { active: { file: segment(32), parentFile: segment(31) }, ...(kind === "qcow2" ? { device: "/dev/nbd0" } : { mountPoint }), checkpoints });
-    const { runner, calls } = recordingRunner(() => ({ code: 0 }));
-    const backend = new ManagedDiskBackend({ kind, workspaceRoot, mountPoint, runner });
+    const { workspaceRoot, calls, backend } = await setupBackend(kind, ({ base, workspaceRoot }) => {
+      const segment = (n: number) => path.join(workspaceRoot, `seg-${n}.${kind}`);
+      const checkpoints: TestChainState["checkpoints"] = [];
+      for (let n = 31; n >= 1; n -= 1) {
+        checkpoints.push({ id: `snap-${2000 + n}-abcdef`, label: `cp${n}`, createdAt: new Date().toISOString(), messageCount: n, file: segment(n), parentFile: n === 1 ? base : segment(n - 1) });
+      }
+      checkpoints.push({ id: "snap-2000-abcdef", label: "cp0", createdAt: new Date().toISOString(), messageCount: 0, file: base, parentFile: null });
+      return { active: { file: segment(32), parentFile: segment(31) }, checkpoints };
+    });
 
     await expect(backend.create("trigger", 99)).rejects.toThrow("32 个安全上限");
     expect(calls).toEqual([]);
@@ -370,21 +395,12 @@ describe("ManagedDiskBackend", () => {
   });
 
   it("delete 抛明确错误：链式后端不支持逐段删除", async () => {
-    const root = await tempRoot("owc-md-");
-    const workspaceRoot = path.join(root, "workspaces", "s1");
-    const { runner } = recordingRunner(() => ({ code: 0 }));
-    const backend = new ManagedDiskBackend({ kind: "qcow2", workspaceRoot, mountPoint: path.join(root, "mnt", "s1"), runner });
+    const { backend } = await setupBackend("qcow2");
     await expect(backend.delete("snap-1-abcdef")).rejects.toThrow("managed-disk 链式后端不支持删除单个检查点；达到 32 个检查点安全上限");
   });
 
   it("diff 报告链中位置与载体文件信息，并如实说明无内容级 diff", async () => {
-    const root = await tempRoot("owc-md-");
-    const workspaceRoot = path.join(root, "workspaces", "s1");
-    const mountPoint = path.join(root, "mnt", "s1");
-    const base = path.join(workspaceRoot, "base.qcow2");
-    await writeChain(workspaceRoot, { active: { file: base, parentFile: null }, device: "/dev/nbd0", checkpoints: [] });
-    const { runner } = recordingRunner(() => ({ code: 0 }));
-    const backend = new ManagedDiskBackend({ kind: "qcow2", workspaceRoot, mountPoint, runner });
+    const { base, backend } = await setupBackend("qcow2");
     const checkpoint = await backend.create("marked", 3);
     const text = await backend.diff(checkpoint.id);
     expect(text).toContain("第 1 / 共 1 段");
@@ -466,22 +482,12 @@ describe("sweepOrphans 孤儿挂载清理", () => {
   });
 
   it("teardown 优先卸载 chain.json 记录的 active VHDX 叶子，而非旧 base", async () => {
-    const root = await tempRoot("owc-md-");
-    const dataDir = path.join(root, "data");
-    const id = "active-leaf";
-    const origin = path.join(root, "work");
-    const workspaceRoot = path.join(dataDir, "workspaces", id);
-    const mountPoint = managedVhdxMountPoint(origin, id);
-    const base = path.join(workspaceRoot, "base.vhdx");
+    const { origin, workspaceRoot, mountPoint, base, manager, lines } = await vhdxWorkspace("active-leaf");
     const leaf = path.join(workspaceRoot, "leaf-snap-2000-abcdef.vhdx");
-    await mkdir(origin, { recursive: true });
-    await mkdir(mountPoint, { recursive: true });
     await writeChain(workspaceRoot, { active: { file: leaf, parentFile: base }, mountPoint, checkpoints: [] });
-    const { runner, lines } = recordingRunner(() => ({ code: 0 }));
-    const manager = new ManagedWorkspaceManager({ dataDir, runner, platform: "win32" });
 
     await manager.teardown({
-      id,
+      id: "active-leaf",
       workspace: { mode: "managed", backend: "vhdx", originCwd: origin, image: base, mountPoint },
     });
 
@@ -495,18 +501,9 @@ describe("sweepOrphans 孤儿挂载清理", () => {
   });
 
   it("meta 缺失时按 chain.json 清理工作目录旁的 VHDX 挂载点", async () => {
-    const root = await tempRoot("owc-md-");
-    const dataDir = path.join(root, "data");
-    const id = "sibling-orphan";
-    const workspaceRoot = path.join(dataDir, "workspaces", id);
-    const base = path.join(workspaceRoot, "base.vhdx");
-    const mountPoint = path.join(root, `work-openwebcode-${id}`);
-    await mkdir(mountPoint, { recursive: true });
-    await mkdir(workspaceRoot, { recursive: true });
+    const { workspaceRoot, mountPoint, base, manager, lines } = await vhdxWorkspace("sibling-orphan");
     await writeFile(base, "img");
     await writeChain(workspaceRoot, { active: { file: base, parentFile: null }, mountPoint, checkpoints: [] });
-    const { runner, lines } = recordingRunner(() => ({ code: 0 }));
-    const manager = new ManagedWorkspaceManager({ dataDir, runner, platform: "win32" });
 
     await manager.sweepOrphans();
 
@@ -518,20 +515,10 @@ describe("sweepOrphans 孤儿挂载清理", () => {
   });
 
   it("teardown 卸载失败会保留工作区，供用户恢复", async () => {
-    const root = await tempRoot("owc-md-");
-    const dataDir = path.join(root, "data");
-    const id = "teardown-fails";
-    const origin = path.join(root, "work");
-    const workspaceRoot = path.join(dataDir, "workspaces", id);
-    const mountPoint = managedVhdxMountPoint(origin, id);
-    const base = path.join(workspaceRoot, "base.vhdx");
-    await mkdir(origin, { recursive: true });
-    await mkdir(mountPoint, { recursive: true });
+    const { origin, workspaceRoot, mountPoint, base, manager } = await vhdxWorkspace("teardown-fails", 1);
     await writeChain(workspaceRoot, { active: { file: base, parentFile: null }, mountPoint, checkpoints: [] });
-    const { runner } = recordingRunner(() => ({ code: 1 }));
-    const manager = new ManagedWorkspaceManager({ dataDir, runner, platform: "win32" });
 
-    await expect(manager.teardown({ id, workspace: { mode: "managed", backend: "vhdx", originCwd: origin, image: base, mountPoint } })).rejects.toThrow("未删除会话或磁盘文件");
+    await expect(manager.teardown({ id: "teardown-fails", workspace: { mode: "managed", backend: "vhdx", originCwd: origin, image: base, mountPoint } })).rejects.toThrow("未删除会话或磁盘文件");
     expect(existsSync(workspaceRoot)).toBe(true);
     expect(existsSync(mountPoint)).toBe(true);
   });
@@ -549,6 +536,14 @@ describe("StorageGC.startup", () => {
 });
 
 describe("managed workspace REST", () => {
+  /** managed REST 用例夹具：root + 已建好的源目录 origin。 */
+  async function restFixture(): Promise<{ root: string; origin: string }> {
+    const root = await tempRoot("owc-md-");
+    const origin = path.join(root, "origin-project");
+    await mkdir(origin);
+    return { root, origin };
+  }
+
   async function buildApp(root: string, managed?: ManagedWorkspaceLike, isRunning: () => boolean = () => false) {
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
@@ -561,6 +556,21 @@ describe("managed workspace REST", () => {
     providers.register(makeStubProvider("test-stub"));
     const app = await buildServer({ core, sessions, agent, events, providers, pricing, ...(managed ? { managed } : {}) });
     return { app, sessions };
+  }
+
+  /** buildApp + 保证 app.close() 的 try/finally 骨架。 */
+  async function withApp(
+    root: string,
+    managed: ManagedWorkspaceLike,
+    run: (ctx: Awaited<ReturnType<typeof buildApp>>) => Promise<void>,
+    isRunning?: () => boolean,
+  ): Promise<void> {
+    const ctx = await buildApp(root, managed, isRunning);
+    try {
+      await run(ctx);
+    } finally {
+      await ctx.app.close();
+    }
   }
 
   function fakeManaged(root: string, spies: { provision?: ManagedProvisionInput[]; teardown?: string[]; preview?: string[]; apply?: Array<{ sessionId: string; input: ManagedWorkspaceSyncApplyInput }> }): ManagedWorkspaceLike {
@@ -594,23 +604,17 @@ describe("managed workspace REST", () => {
 
   it("GET /api/managed-workspace/capability 返回后端能力", async () => {
     const root = await tempRoot("owc-md-");
-    const { app } = await buildApp(root, fakeManaged(root, {}));
-    try {
+    await withApp(root, fakeManaged(root, {}), async ({ app }) => {
       const response = await app.inject({ method: "GET", url: "/api/managed-workspace/capability" });
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual({ platform: "win32", backends: [{ backend: "vhdx", available: true, requiresAdmin: true }] });
-    } finally {
-      await app.close();
-    }
+    });
   });
 
   it("POST /api/sessions workspaceMode=managed → 201，cwd=挂载点、meta.workspace 与 snapshotBackend 正确", async () => {
-    const root = await tempRoot("owc-md-");
-    const origin = path.join(root, "origin-project");
-    await mkdir(origin);
+    const { root, origin } = await restFixture();
     const spies: { provision: ManagedProvisionInput[] } = { provision: [] };
-    const { app, sessions } = await buildApp(root, fakeManaged(root, spies));
-    try {
+    await withApp(root, fakeManaged(root, spies), async ({ app, sessions }) => {
       const response = await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: origin, provider: "test-stub", model: "deterministic-tool-loop", workspaceMode: "managed" } });
       expect(response.statusCode).toBe(201);
       const body = response.json<{ id: string; cwd: string; snapshotBackend?: string; workspace?: Record<string, unknown> }>();
@@ -631,9 +635,7 @@ describe("managed workspace REST", () => {
       const stored = await sessions.get(body.id);
       expect(stored?.workspace?.mode).toBe("managed");
       expect(stored?.snapshotBackend).toBe("vhdx-chain");
-    } finally {
-      await app.close();
-    }
+    });
   });
 
   it("自动快照遇到正在读取的托管工作区时传入 shared lease，并安全跳过", async () => {
@@ -711,9 +713,7 @@ describe("managed workspace REST", () => {
   });
 
   it("workspace sync REST：预览可在运行中读取，apply 要求 idle+confirm+fingerprint，并对同会话加锁", async () => {
-    const root = await tempRoot("owc-md-");
-    const origin = path.join(root, "origin-project");
-    await mkdir(origin);
+    const { root, origin } = await restFixture();
     const spies: { preview: string[]; apply: Array<{ sessionId: string; input: ManagedWorkspaceSyncApplyInput }> } = { preview: [], apply: [] };
     let running = false;
     const managed = fakeManaged(root, spies);
@@ -730,103 +730,90 @@ describe("managed workspace REST", () => {
       if (syncSignal?.aborted) throw new ManagedWorkspaceSyncError("cancelled", "Managed workspace sync was cancelled");
       return originalApply(session, input);
     };
-    const { app } = await buildApp(root, managed, () => running);
-    try {
-      const created = await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: origin, provider: "test-stub", model: "deterministic-tool-loop", workspaceMode: "managed" } });
-      const id = created.json<{ id: string }>().id;
+    await withApp(root, managed, async ({ app }) => {
+      try {
+        const created = await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: origin, provider: "test-stub", model: "deterministic-tool-loop", workspaceMode: "managed" } });
+        const id = created.json<{ id: string }>().id;
 
-      running = true;
-      const preview = await app.inject({ method: "GET", url: `/api/sessions/${id}/workspace/sync-preview` });
-      expect(preview.statusCode).toBe(200);
-      expect(spies.preview).toEqual([id]);
-      const whileRunning = await app.inject({ method: "POST", url: `/api/sessions/${id}/workspace/sync`, payload: { confirm: true, previewFingerprint: "a".repeat(64) } });
-      expect(whileRunning.statusCode).toBe(409);
+        running = true;
+        const preview = await app.inject({ method: "GET", url: `/api/sessions/${id}/workspace/sync-preview` });
+        expect(preview.statusCode).toBe(200);
+        expect(spies.preview).toEqual([id]);
+        const whileRunning = await app.inject({ method: "POST", url: `/api/sessions/${id}/workspace/sync`, payload: { confirm: true, previewFingerprint: "a".repeat(64) } });
+        expect(whileRunning.statusCode).toBe(409);
 
-      running = false;
-      const missingConfirm = await app.inject({ method: "POST", url: `/api/sessions/${id}/workspace/sync`, payload: { previewFingerprint: "a".repeat(64) } });
-      expect(missingConfirm.statusCode).toBe(400);
+        running = false;
+        const missingConfirm = await app.inject({ method: "POST", url: `/api/sessions/${id}/workspace/sync`, payload: { previewFingerprint: "a".repeat(64) } });
+        expect(missingConfirm.statusCode).toBe(400);
 
-      const first = app.inject({ method: "POST", url: `/api/sessions/${id}/workspace/sync`, payload: { confirm: true, previewFingerprint: "a".repeat(64) } });
-      await started;
-      const second = await app.inject({ method: "POST", url: `/api/sessions/${id}/workspace/sync`, payload: { confirm: true, previewFingerprint: "a".repeat(64) } });
-      expect(second.statusCode).toBe(409);
-      const checkpoint = await app.inject({ method: "POST", url: `/api/sessions/${id}/checkpoints`, payload: { label: "blocked by sync" } });
-      expect(checkpoint.statusCode).toBe(409);
-      const checkpoints = await app.inject({ method: "GET", url: `/api/sessions/${id}/checkpoints` });
-      expect(checkpoints.statusCode).toBe(409);
-      const diff = await app.inject({ method: "GET", url: `/api/sessions/${id}/checkpoints/snap-1-abcdef/diff` });
-      expect(diff.statusCode).toBe(409);
-      const message = await app.inject({ method: "POST", url: `/api/sessions/${id}/messages`, payload: { content: "must wait for sync" } });
-      expect(message.statusCode).toBe(409);
-      const pdf = await app.inject({ method: "POST", url: `/api/sessions/${id}/pdf-upload`, payload: {} });
-      expect(pdf.statusCode).toBe(409);
-      const shell = await app.inject({ method: "POST", url: `/api/sessions/${id}/shell`, payload: { cmd: "echo blocked" } });
-      expect(shell.statusCode).toBe(409);
-      const exec = await app.inject({ method: "POST", url: "/api/exec", payload: { sessionId: id, execId: "blocked", cmd: "echo blocked", cwd: origin } });
-      expect(exec.statusCode).toBe(409);
-      const deleting = await app.inject({ method: "DELETE", url: `/api/sessions/${id}` });
-      expect(deleting.statusCode).toBe(409);
-      const cancelled = await app.inject({ method: "POST", url: `/api/sessions/${id}/workspace/sync-cancel` });
-      expect(cancelled.statusCode).toBe(202);
-      expect(syncSignal?.aborted).toBe(true);
-      releaseApply();
-      expect((await first).statusCode).toBe(409);
-      expect(spies.apply).toEqual([]);
-    } finally {
-      releaseApply?.();
-      await app.close();
-    }
+        const first = app.inject({ method: "POST", url: `/api/sessions/${id}/workspace/sync`, payload: { confirm: true, previewFingerprint: "a".repeat(64) } });
+        await started;
+        const second = await app.inject({ method: "POST", url: `/api/sessions/${id}/workspace/sync`, payload: { confirm: true, previewFingerprint: "a".repeat(64) } });
+        expect(second.statusCode).toBe(409);
+        const checkpoint = await app.inject({ method: "POST", url: `/api/sessions/${id}/checkpoints`, payload: { label: "blocked by sync" } });
+        expect(checkpoint.statusCode).toBe(409);
+        const checkpoints = await app.inject({ method: "GET", url: `/api/sessions/${id}/checkpoints` });
+        expect(checkpoints.statusCode).toBe(409);
+        const diff = await app.inject({ method: "GET", url: `/api/sessions/${id}/checkpoints/snap-1-abcdef/diff` });
+        expect(diff.statusCode).toBe(409);
+        const message = await app.inject({ method: "POST", url: `/api/sessions/${id}/messages`, payload: { content: "must wait for sync" } });
+        expect(message.statusCode).toBe(409);
+        const pdf = await app.inject({ method: "POST", url: `/api/sessions/${id}/pdf-upload`, payload: {} });
+        expect(pdf.statusCode).toBe(409);
+        const shell = await app.inject({ method: "POST", url: `/api/sessions/${id}/shell`, payload: { cmd: "echo blocked" } });
+        expect(shell.statusCode).toBe(409);
+        const exec = await app.inject({ method: "POST", url: "/api/exec", payload: { sessionId: id, execId: "blocked", cmd: "echo blocked", cwd: origin } });
+        expect(exec.statusCode).toBe(409);
+        const deleting = await app.inject({ method: "DELETE", url: `/api/sessions/${id}` });
+        expect(deleting.statusCode).toBe(409);
+        const cancelled = await app.inject({ method: "POST", url: `/api/sessions/${id}/workspace/sync-cancel` });
+        expect(cancelled.statusCode).toBe(202);
+        expect(syncSignal?.aborted).toBe(true);
+        releaseApply();
+        expect((await first).statusCode).toBe(409);
+        expect(spies.apply).toEqual([]);
+      } finally {
+        releaseApply?.();
+      }
+    }, () => running);
   });
 
   it("能力不可用时 POST managed → 400 并报明确原因", async () => {
-    const root = await tempRoot("owc-md-");
-    const origin = path.join(root, "origin-project");
-    await mkdir(origin);
+    const { root, origin } = await restFixture();
     const unavailable: ManagedWorkspaceLike = {
       ...fakeManaged(root, {}),
       capability: async () => ({ platform: "linux", backends: [{ backend: "qcow2", available: false, requiresAdmin: true, detail: "不可用：缺少 免密 sudo（sudo -n true）" }] }),
     };
-    const { app } = await buildApp(root, unavailable);
-    try {
+    await withApp(root, unavailable, async ({ app }) => {
       const response = await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: origin, provider: "test-stub", model: "deterministic-tool-loop", workspaceMode: "managed" } });
       expect(response.statusCode).toBe(400);
       expect(response.json<{ error: string }>().error).toContain("托管工作区不可用");
       expect(response.json<{ error: string }>().error).toContain("sudo");
-    } finally {
-      await app.close();
-    }
+    });
   });
 
   it("非法 workspaceMode → 400；managed 源目录不存在 → 400", async () => {
     const root = await tempRoot("owc-md-");
-    const { app } = await buildApp(root, fakeManaged(root, {}));
-    try {
+    await withApp(root, fakeManaged(root, {}), async ({ app }) => {
       const invalid = await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: root, provider: "test-stub", model: "deterministic-tool-loop", workspaceMode: "weird" } });
       expect(invalid.statusCode).toBe(400);
       const missing = await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: path.join(root, "no-such-dir"), provider: "test-stub", model: "deterministic-tool-loop", workspaceMode: "managed" } });
       expect(missing.statusCode).toBe(400);
       expect(missing.json<{ error: string }>().error).toContain("源目录不存在");
-    } finally {
-      await app.close();
-    }
+    });
   });
 
   it("DELETE /api/sessions：managed 会话先 teardown（卸载+删目录）再删会话", async () => {
-    const root = await tempRoot("owc-md-");
-    const origin = path.join(root, "origin-project");
-    await mkdir(origin);
+    const { root, origin } = await restFixture();
     const spies: { teardown: string[] } = { teardown: [] };
-    const { app, sessions } = await buildApp(root, fakeManaged(root, spies));
-    try {
+    await withApp(root, fakeManaged(root, spies), async ({ app, sessions }) => {
       const created = await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: origin, provider: "test-stub", model: "deterministic-tool-loop", workspaceMode: "managed" } });
       const id = created.json<{ id: string }>().id;
       const deleted = await app.inject({ method: "DELETE", url: `/api/sessions/${id}` });
       expect(deleted.statusCode).toBe(204);
       expect(spies.teardown).toEqual([id]);
       expect(await sessions.get(id)).toBeUndefined();
-    } finally {
-      await app.close();
-    }
+    });
   });
 });
 

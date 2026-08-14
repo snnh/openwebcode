@@ -3,7 +3,7 @@ import path from "node:path";
 import { EventEmitter } from "node:events";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CoreClient, CoreRpcError, type CoreClientLike, type ExecResult, type PtyInputRequest, type PtyOpenRequest } from "../src/core-client.js";
 import {
   MAX_SHELL_OUTPUT_CHARS,
@@ -147,17 +147,15 @@ describe("SentinelParser（纯单测）", () => {
     expect(next.output()).toBe("next out");
   });
 
-  it("sentinel 后无换行（ConPTY 用光标定位序列接续提示符）也能命中", () => {
+  it("sentinel 在缓冲末尾（无尾换行）也能命中：光标定位序列接续 / 输出粘连", () => {
+    // ConPTY 用光标定位序列接续提示符
     const { parser } = makeParser();
-    const text = `${cmdLine}\r\nout\r\n__OWC_DONE_${rand}_0__\x1b[11;1HD:\\work>\x1b[?25h`;
-    expect(parser.feed(text)).toBe(0);
+    expect(parser.feed(`${cmdLine}\r\nout\r\n__OWC_DONE_${rand}_0__\x1b[11;1HD:\\work>\x1b[?25h`)).toBe(0);
     expect(parser.output()).toBe("out");
-  });
-
-  it("sentinel 与无换行输出粘连（printf 无尾换行）也能命中", () => {
-    const { parser } = makeParser();
-    expect(parser.feed(`${cmdLine}\r\nprintf-out__OWC_DONE_${rand}_2__`)).toBe(2);
-    expect(parser.output()).toBe("printf-out");
+    // printf 无尾换行：输出与 sentinel 粘连
+    const glued = makeParser();
+    expect(glued.parser.feed(`${cmdLine}\r\nprintf-out__OWC_DONE_${rand}_2__`)).toBe(2);
+    expect(glued.parser.output()).toBe("printf-out");
   });
 
   it("sentinelLine / venvActivationCommand 三语法族（cmd/pwsh/sh，含 Windows Git Bash）", () => {
@@ -271,18 +269,51 @@ function emitOutput(fake: FakePty, text: string): void {
 describe("PersistentShellManager（fake core）", () => {
   const newManager = (core: CoreClientLike) => new PersistentShellManager(core, new UvPythonEnvironments(), () => "global", new NodeEnvManagers(), () => "global");
 
-  // ensureShell 现在有两次 sentinel 往返：init（cd/激活）+ 用户命令。应答输入流中所有尚未应答的 rand。
+  const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+  // 各用例共用同一 fake core + manager + 会话（s1），仅输入/应答序列不同
+  let fake: FakePty;
+  let manager: PersistentShellManager;
+  let session: SessionMeta;
+  beforeEach(() => {
+    fake = makeFakePtyCore();
+    manager = newManager(fake.core);
+    session = fakeSession("s1");
+  });
+
+  // ensureShell 现在有两次 sentinel 往返：init（cd/激活）+ 用户命令。acked 记录已应答的 rand，
+  // 轮询输入流应答新出现的 rand（替代固定 sleep，慢机器上更稳）。
   const acked = new Set<string>();
+  const pendingRands = (fake: FakePty): string[] =>
+    [...decodeInputs(fake).matchAll(/__OWC_DONE_([0-9a-f]{12})_/g)].map((m) => m[1]!).filter((rand) => !acked.has(rand));
+
+  async function waitPending(fake: FakePty): Promise<void> {
+    await vi.waitFor(() => expect(pendingRands(fake).length).toBeGreaterThan(0), { timeout: 10_000, interval: 20 });
+  }
+
+  /** 等出现未应答的 sentinel rand 后全部以 exit 0 应答 */
   async function drive(fake: FakePty): Promise<void> {
-    for (const m of decodeInputs(fake).matchAll(/__OWC_DONE_([0-9a-f]{12})_/g)) {
-      if (!acked.has(m[1]!)) {
-        acked.add(m[1]!);
-        emitOutput(fake, `__OWC_DONE_${m[1]}_0__\n`);
-      }
+    await waitPending(fake);
+    for (const rand of pendingRands(fake)) {
+      acked.add(rand);
+      emitOutput(fake, `__OWC_DONE_${rand}_0__\n`);
     }
   }
 
-  /** 标准一轮驱动：run → drain → init sentinel → 等用户命令下发 → （可选）推用户输出 → 命令 sentinel → 收结果 */
+  /** 等第一个未应答 rand 出现并标记（用于自定义应答的场景） */
+  async function nextRand(fake: FakePty): Promise<string> {
+    await waitPending(fake);
+    const rand = pendingRands(fake)[0]!;
+    acked.add(rand);
+    return rand;
+  }
+
+  /** 等输入流出现 text（如用户命令已下发） */
+  async function waitForInput(fake: FakePty, text: string): Promise<void> {
+    await vi.waitFor(() => expect(decodeInputs(fake)).toContain(text), { timeout: 10_000, interval: 20 });
+  }
+
+  /** 标准一轮驱动：run → init sentinel → 等用户命令下发 → （可选）推用户输出 → 命令 sentinel → 收结果 */
   async function runDriven(
     fake: FakePty,
     manager: PersistentShellManager,
@@ -291,18 +322,14 @@ describe("PersistentShellManager（fake core）", () => {
     emitUserOutput?: () => void,
   ) {
     const run = manager.run(session, cmd, new AbortController().signal);
-    await new Promise((resolve) => setTimeout(resolve, 600)); // drain
     await drive(fake); // init 往返
-    await new Promise((resolve) => setTimeout(resolve, 50)); // 等用户命令下发
+    await waitForInput(fake, cmd); // 等用户命令下发
     emitUserOutput?.();
     await drive(fake); // 用户命令 sentinel
     return run;
   }
 
   it("open 参数：sandbox=true / 会话 cwd / 后端 shell；init sentinel + (call ) 复位 + 命令 + sentinel 作为输入下发", async () => {
-    const fake = makeFakePtyCore();
-    const manager = newManager(fake.core);
-    const session = fakeSession("s1");
     const result = await runDriven(fake, manager, session, "echo hi", () => emitOutput(fake, `D:\\work>echo hi\r\nhi\r\n`));
     expect(result.exitCode).toBe(0);
     expect(result.output).toBe("hi");
@@ -318,9 +345,6 @@ describe("PersistentShellManager（fake core）", () => {
   });
 
   it("开壳激活会话元数据环境变量（OWC_SESSION_ID/OWC_WORKSPACE 等随 init 注入一次）", async () => {
-    const fake = makeFakePtyCore();
-    const manager = newManager(fake.core);
-    const session = fakeSession("s1");
     await runDriven(fake, manager, session, "echo hi");
     const sent = decodeInputs(fake);
     expect(sent).toContain("OWC_SESSION_ID");
@@ -331,22 +355,16 @@ describe("PersistentShellManager（fake core）", () => {
   });
 
   it("同会话 bash 调用串行化：第二条输入在第一条 sentinel 结算后才下发", async () => {
-    const fake = makeFakePtyCore();
-    const manager = newManager(fake.core);
-    const session = fakeSession("s1");
     const first = manager.run(session, "cmd-one", new AbortController().signal);
-    await new Promise((resolve) => setTimeout(resolve, 600));
     await drive(fake); // init
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await waitForInput(fake, "cmd-one");
     const second = manager.run(session, "cmd-two", new AbortController().signal);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(decodeInputs(fake)).toContain("cmd-one");
+    await sleep(100); // 负向断言需要一个观察窗口
     expect(decodeInputs(fake)).not.toContain("cmd-two"); // 未交错
     emitOutput(fake, "one-out\n");
     await drive(fake); // cmd-one sentinel
     await first;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(decodeInputs(fake)).toContain("cmd-two");
+    await waitForInput(fake, "cmd-two");
     emitOutput(fake, "two-out\n");
     await drive(fake); // cmd-two sentinel
     const secondResult = await second;
@@ -355,9 +373,6 @@ describe("PersistentShellManager（fake core）", () => {
 
   // GBK 回退仅 Windows 生效（decodeChildProcessOutput 按平台门控），Linux 上无法重解码
   it.skipIf(!isWindows)("GBK（CP936）输出乱码时按原始字节重解码", async () => {
-    const fake = makeFakePtyCore();
-    const manager = newManager(fake.core);
-    const session = fakeSession("s1");
     // GBK 编码的"拒绝访问。"（cmd 中文错误的典型形态）
     const result = await runDriven(fake, manager, session, "dir", () => {
       fake.emitter.emit("output", { data: Buffer.from([0xBE, 0xDC, 0xBE, 0xF8, 0xB7, 0xC3, 0xCE, 0xCA, 0xA1, 0xA3, 0x0D, 0x0A]).toString("base64") });
@@ -367,9 +382,6 @@ describe("PersistentShellManager（fake core）", () => {
   });
 
   it("core 重启后 pty not found：销毁重建并重试同一命令", async () => {
-    const fake = makeFakePtyCore();
-    const manager = newManager(fake.core);
-    const session = fakeSession("s1");
     await runDriven(fake, manager, session, "echo one", () => emitOutput(fake, "one\n"));
     expect(fake.openCalls).toHaveLength(1);
 
@@ -378,7 +390,14 @@ describe("PersistentShellManager（fake core）", () => {
     (fake.core as unknown as { inputPty: (request: PtyInputRequest) => Promise<{ ok: true }> }).inputPty =
       async (request: PtyInputRequest) => {
         fake.inputCalls.push(request);
-        if (failures-- > 0) throw new CoreRpcError(-32003, "pty not found");
+        if (failures-- > 0) {
+          // 失败尝试的 payload 已入流（含其 sentinel rand）：rand 随该次尝试作废，直接标记，
+          // 否则 drive 会把它当成重建后新 init 的 rand 应答并提前收工（新 init rand 稍后才写入）
+          for (const m of Buffer.from(request.data, "base64").toString("utf8").matchAll(/__OWC_DONE_([0-9a-f]{12})_/g)) {
+            acked.add(m[1]!);
+          }
+          throw new CoreRpcError(-32003, "pty not found");
+        }
         return { ok: true as const };
       };
     const result = await runDriven(fake, manager, session, "echo two", () => emitOutput(fake, "two\n"));
@@ -387,34 +406,27 @@ describe("PersistentShellManager（fake core）", () => {
   });
 
   it("pty.exit 后在途命令报错；下一条命令透明重建（再次 openPty）", async () => {
-    const fake = makeFakePtyCore();
-    const manager = newManager(fake.core);
-    const session = fakeSession("s1");
     const first = manager.run(session, "exit", new AbortController().signal);
-    await new Promise((resolve) => setTimeout(resolve, 600));
     await drive(fake); // init
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(decodeInputs(fake)).toContain("exit");
+    await waitForInput(fake, "exit");
     fake.emitter.emit("exit", { exitCode: 0 });
     await expect(first).rejects.toThrow(/Persistent shell exited/);
-    const second = runDriven(fake, manager, session, "echo back", () => emitOutput(fake, "back\n"));
-    await new Promise((resolve) => setTimeout(resolve, 600));
+    // 在途命令的 sentinel rand 随 pty 死亡作废：标记掉，防止 runDriven 的 drive 把它
+    // 当成下一条命令的 init rand 应答后提前收工（新 init rand 稍后才写入）
+    for (const rand of pendingRands(fake)) acked.add(rand);
+    const result = await runDriven(fake, manager, session, "echo back", () => emitOutput(fake, "back\n"));
     expect(fake.openCalls).toHaveLength(2);
-    expect((await second).output).toBe("back");
-    expect(decodeInputs(fake)).toContain("echo back");
+    expect(result.output).toBe("back");
   });
 
   it("disposeSession 回收持久 pty（closePty + 从表中移除）", async () => {
-    const fake = makeFakePtyCore();
-    const manager = newManager(fake.core);
-    const session = fakeSession("s1");
     await runDriven(fake, manager, session, "echo hi", () => emitOutput(fake, "hi\n"));
     manager.disposeSession("s1");
     expect(fake.closeCalls).toEqual([1]);
   });
 
   it("disposeSession 一并清理串行化队列条目（session:backend → Promise 不随会话数泄漏）", async () => {
-    // 不支持 pty 的 core：run 直接 Unavailable，但 session:backend 的队列条目已写入
+    // 本地覆盖 beforeEach 的 manager：不支持 pty 的 core，run 直接 Unavailable，但 session:backend 的队列条目已写入
     const manager = newManager(makeFakeCore());
     await expect(manager.run(fakeSession("s1"), "echo hi", new AbortController().signal))
       .rejects.toBeInstanceOf(PersistentShellUnavailableError);
@@ -427,13 +439,8 @@ describe("PersistentShellManager（fake core）", () => {
   });
 
   it("init 非零（shell 进不了 cwd）抛 Unavailable 并缓存，后续直接回退不再开 pty", async () => {
-    const fake = makeFakePtyCore();
-    const manager = newManager(fake.core);
-    const session = fakeSession("s1");
     const run = manager.run(session, "echo hi", new AbortController().signal);
-    await new Promise((resolve) => setTimeout(resolve, 600));
-    const rand = /__OWC_DONE_([0-9a-f]{12})_/.exec(decodeInputs(fake))![1]!;
-    acked.add(rand);
+    const rand = await nextRand(fake);
     emitOutput(fake, `__OWC_DONE_${rand}_1__\n`); // init 失败（模拟 pwsh 落 C:\）
     await expect(run).rejects.toBeInstanceOf(PersistentShellUnavailableError);
     await expect(manager.run(session, "echo again", new AbortController().signal))
@@ -442,10 +449,8 @@ describe("PersistentShellManager（fake core）", () => {
   });
 
   it("open 失败（能力缺失 -32601）抛 PersistentShellUnavailableError 供回退", async () => {
-    const fake = makeFakePtyCore();
     fake.failOpen = new CoreRpcError(-32601, "unknown method pty.open");
-    const manager = newManager(fake.core);
-    await expect(manager.run(fakeSession("s1"), "echo hi", new AbortController().signal))
+    await expect(manager.run(session, "echo hi", new AbortController().signal))
       .rejects.toBeInstanceOf(PersistentShellUnavailableError);
     expect(manager.supported).toBe(false); // 能力级失败缓存，后续直接回退
   });
@@ -475,22 +480,17 @@ describe.skipIf(!hasCore)("PersistentShellManager（真 core）", () => {
     return { root, session, meta, client, manager, controller, run };
   }
 
-  it("cd 跨调用保持", async () => {
+  it("cd 与环境变量跨调用保持（win=cmd / posix=sh）", async () => {
     const { run, manager, session } = await setup();
     await run(isWindows ? "mkdir owcpsub" : "mkdir -p owcpsub");
     await run("cd owcpsub");
-    const result = await run(isWindows ? "cd" : "pwd");
-    expect(result.exitCode).toBe(0);
-    expect(result.output.replace(/\//g, "\\")).toContain("owcpsub");
-    manager.disposeSession(session.id);
-  }, 30_000);
-
-  it("环境变量跨调用保持（win=cmd / posix=sh）", async () => {
-    const { run, manager, session } = await setup("cmd");
+    const cwd = await run(isWindows ? "cd" : "pwd");
+    expect(cwd.exitCode).toBe(0);
+    expect(cwd.output.replace(/\//g, "\\")).toContain("owcpsub");
     await run(isWindows ? "set OWC_PS_VAR=hello42" : "export OWC_PS_VAR=hello42");
-    const result = await run(isWindows ? "echo %OWC_PS_VAR%" : "echo $OWC_PS_VAR");
-    expect(result.exitCode).toBe(0);
-    expect(result.output).toContain("hello42");
+    const env = await run(isWindows ? "echo %OWC_PS_VAR%" : "echo $OWC_PS_VAR");
+    expect(env.exitCode).toBe(0);
+    expect(env.output).toContain("hello42");
     manager.disposeSession(session.id);
   }, 30_000);
 
@@ -587,14 +587,19 @@ describe.skipIf(!hasCore)("PersistentShellManager（真 core）", () => {
 // ---------- AgentRunner 集成：pty 缺失回退 + run_in_background 不受影响 ----------
 
 describe("bash 工具集成（fake core 无 pty → 回退一次性 exec）", () => {
-  it("持久 shell 不可用时 runShell 仍走 core.run（回退不报错）", async () => {
-    const root = await tempRoot("owc-pshell-fb-");
+  async function setupSession(providerName: string) {
+    const root = await tempRoot("owc-pshell-it-");
     const sessions = new SessionStore(path.join(root, "sessions"));
     await sessions.initialize();
-    const session = await sessions.create({ cwd: root, provider: "stub", model: "m", title: "fallback" });
+    const session = await sessions.create({ cwd: root, provider: providerName, model: "m", title: "it" });
     await sessions.updatePermissions(session.id, "yolo", []);
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));
     await pricing.initialize();
+    return { sessions, session, pricing };
+  }
+
+  it("持久 shell 不可用时 runShell 仍走 core.run（回退不报错）", async () => {
+    const { sessions, session, pricing } = await setupSession("stub");
     const providers = new ProviderRegistry();
     providers.register(makeStubProvider("stub"));
     const runCalls: string[] = [];
@@ -612,13 +617,7 @@ describe("bash 工具集成（fake core 无 pty → 回退一次性 exec）", ()
   }, 15_000);
 
   it("run_in_background 不受影响：仍走 backgroundTasks.start，不触持久 shell", async () => {
-    const root = await tempRoot("owc-pshell-bg-");
-    const sessions = new SessionStore(path.join(root, "sessions"));
-    await sessions.initialize();
-    const session = await sessions.create({ cwd: root, provider: "fake", model: "m", title: "bg" });
-    await sessions.updatePermissions(session.id, "yolo", []);
-    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
-    await pricing.initialize();
+    const { sessions, session, pricing } = await setupSession("fake");
     const queue: Array<Array<Record<string, unknown>>> = [
       [{ type: "tool_call", id: "bg-1", name: "bash", input: { cmd: "npm run build", run_in_background: true } }, { type: "done", stopReason: "tool_use" }],
       [{ type: "text_delta", text: "ok" }, { type: "done", stopReason: "end_turn" }],
