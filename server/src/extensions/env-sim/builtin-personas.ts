@@ -36,7 +36,7 @@ export const BUILTIN_PERSONAS: PersonaPreset[] = [
     name: "Claude Code",
     // UA 拟态值：模仿目标产品 CLI 的身份标识；为拟态常量，不保证与真实产品
     // 逐字节一致（该产品 UA 格式未公开）。
-    userAgent: "claude-code/2.4.6",
+    userAgent: "claude-code/2.1.232",
     identity: "You are Claude Code, Anthropic's agentic coding tool.",
     basePrompt: [
       "You work inside the user's terminal as an agentic coding assistant. You read code, edit files, and run commands to get tasks done end to end.",
@@ -204,7 +204,7 @@ Rules: be brief; keep file paths, command names and error strings verbatim; neve
   {
     id: "kimi-code",
     name: "Kimi Code",
-    userAgent: "kimi-code/1.0.0",
+    userAgent: "kimi-code/0.36.0",
     identity: "You are Kimi Code CLI, an interactive general AI agent running on a user's computer.",
     basePrompt: [
       "Your primary goal is to help users with software engineering tasks by taking action — use the tools available to you to make real changes on the user's system. You should also answer questions when asked. Always adhere strictly to the following system instructions and the user's requirements.",
@@ -470,7 +470,7 @@ Popular sections usually written in \`AGENTS.md\`:
   {
     id: "zcode",
     name: "ZCode",
-    userAgent: "zcode/0.1.0",
+    userAgent: "zcode/3.7.7",
     identity: "You are an interactive ZCode agent that helps users with software engineering tasks.",
     basePrompt: [
       "IMPORTANT: Assist with authorized security testing, defensive security, CTF challenges, and educational contexts. Refuse requests for destructive techniques, DoS attacks, mass targeting, supply chain compromise, or detection evasion for malicious purposes. Dual-use security tools (C2 frameworks, credential testing, exploit development) require clear authorization context: pentesting engagements, CTF competitions, security research, or defensive use cases.",
@@ -762,7 +762,7 @@ Keep it small: short bullets only; file paths, commands and error text verbatim;
   {
     id: "codex",
     name: "Codex",
-    userAgent: "codex/0.5.0",
+    userAgent: "codex/0.147.0",
     identity: "You are Codex, an AI coding agent running in the Codex CLI on a user's computer.",
     basePrompt: [
       "## General",

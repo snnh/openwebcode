@@ -634,7 +634,7 @@ describe("env-sim outbound UA simulation", () => {
       expect(getUserAgent()).toBe(official());
       // 手动开启开关：自动填充所选预设的拟态 UA
       await manager.configure("env-sim", { config: { simulateUserAgent: true } });
-      expect(getUserAgent()).toBe("claude-code/2.4.6");
+      expect(getUserAgent()).toBe("claude-code/2.1.232");
       // 更新链路始终使用官方 UA，不受模拟影响
       expect(getOfficialUserAgent()).toBe(official());
       // 关闭开关恢复默认
@@ -645,7 +645,7 @@ describe("env-sim outbound UA simulation", () => {
       expect(getUserAgent()).toBe(official());
       // 换预设后重新开启：UA 跟随新预设
       await manager.configure("env-sim", { enabled: true, config: { persona: "codex", simulateUserAgent: true } });
-      expect(getUserAgent()).toBe("codex/0.5.0");
+      expect(getUserAgent()).toBe("codex/0.147.0");
       // 禁用扩展恢复默认
       await manager.configure("env-sim", { enabled: false });
       expect(getUserAgent()).toBe(official());
@@ -689,11 +689,11 @@ describe("env-sim outbound UA simulation", () => {
   it("ignores session-level persona overrides for the global UA", async () => {
     await withHarness({}, async ({ manager, sessions, session }) => {
       await manager.configure("env-sim", { enabled: true, config: { persona: "claude-code", simulateUserAgent: true } });
-      expect(getUserAgent()).toBe("claude-code/2.4.6");
+      expect(getUserAgent()).toBe("claude-code/2.1.232");
       // 会话级覆盖（SessionMeta.persona 回退通道）只作用于提示词与工具形态，
       // 不参与全局出站 UA——出站请求无会话上下文，避免并发会话串扰
       await sessions.updateConfig(session.id, { persona: "codex" });
-      expect(getUserAgent()).toBe("claude-code/2.4.6");
+      expect(getUserAgent()).toBe("claude-code/2.1.232");
     });
   }, 30_000);
 });
