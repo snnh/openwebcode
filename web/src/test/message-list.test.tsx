@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { ReactElement } from "react";
-import type { ChatMessage, MessageContent } from "../lib/contracts";
+import type { ChatMessage, MessageContent, SessionDetail } from "../lib/contracts";
 import type { MessageCardProps, MessageListProps, ProcessFoldProps, SearchBarProps } from "../chat/types";
 import type { SearchMatch } from "../chat/search";
 import { CONVERSATION_SEARCH_EVENT } from "../chat/types";
@@ -105,6 +105,19 @@ function makeProps(overrides: Partial<MessageListProps> = {}): MessageListProps 
   };
 }
 
+/** 折叠段会话：提问 + thinking + tool_result（a1/t1 折叠为一过程段） */
+function foldSession(): SessionDetail {
+  return makeSession({
+    id: "s1",
+    messageCount: 3,
+    messages: [
+      msg("u1", "user", [text("问")]),
+      msg("a1", "assistant", [{ type: "thinking", text: "想" }]),
+      msg("t1", "tool", [{ type: "tool_result", content: "ok" }]),
+    ],
+  });
+}
+
 /** jsdom 无布局：为滚动容器桩上度量字段 */
 function stubMetrics(track: Element, metrics: { scrollHeight: number; clientHeight: number }): void {
   for (const [key, value] of Object.entries(metrics)) {
@@ -206,15 +219,7 @@ describe("MessageList", () => {
 
   it("clear 分隔线落在折叠段首时外置到折叠组之前", () => {
     const props = makeProps({ cleared: { uptoIndex: 1, at: "2026-08-01T00:00:00.000Z" } });
-    props.session = makeSession({
-      id: "s1",
-      messageCount: 3,
-      messages: [
-        msg("u1", "user", [text("问")]),
-        msg("a1", "assistant", [{ type: "thinking", text: "想" }]),
-        msg("t1", "tool", [{ type: "tool_result", content: "ok" }]),
-      ],
-    });
+    props.session = foldSession();
     // 页偏移 0 → clearedLocal=1，恰为 fold 段首
     const { container } = render(<MessageList {...props} />);
     const divider = container.querySelector(".context-cleared-divider")!;
@@ -275,15 +280,7 @@ describe("MessageList", () => {
         { id: "c2", uptoIndex: -1, mode: "overview", forced: true, createdAt: "2026-08-01T01:00:00.000Z", status: "running" },
       ],
     });
-    props.session = makeSession({
-      id: "s1",
-      messageCount: 3,
-      messages: [
-        msg("u1", "user", [text("问")]),
-        msg("a1", "assistant", [{ type: "thinking", text: "想" }]),
-        msg("t1", "tool", [{ type: "tool_result", content: "ok" }]),
-      ],
-    });
+    props.session = foldSession();
     const { container } = render(<MessageList {...props} />);
     const rows = Array.from(container.querySelectorAll("[data-compaction-id]"));
     expect(rows.map((row) => row.getAttribute("data-compaction-id"))).toEqual(["c1", "c2"]);

@@ -92,15 +92,17 @@ describe("PermissionCard", () => {
 });
 
 describe("InteractionCard", () => {
-  it("single_select：选中后提交选项 id", () => {
+  it("single_select：选中后提交选项 id；未设 allowOther 不渲染「其他」", () => {
     const onRespond = vi.fn();
-    const { getByText, getByLabelText } = render(
+    const { getByText, getByLabelText, queryByText } = render(
       <InteractionCard
         item={interaction({ kind: "single_select", options: [{ id: "a", label: "方案 A" }, { id: "b", label: "方案 B", description: "推荐" }] })}
         onRespond={onRespond}
       />,
     );
     expect(getByText("提交回答")).toBeDisabled();
+    // allowOther 未设置：不渲染「其他」入口
+    expect(queryByText("其他")).toBeNull();
     fireEvent.click(getByLabelText(/方案 B/));
     fireEvent.click(getByText("提交回答"));
     expect(onRespond).toHaveBeenCalledWith("b");
@@ -160,20 +162,6 @@ describe("InteractionCard", () => {
     expect(getByLabelText("其他回答")).toBeDisabled();
     fireEvent.click(getByText("提交回答"));
     expect(onRespond).toHaveBeenCalledWith(["a"]);
-  });
-
-  it("未设置 allowOther 的选择题不渲染「其他」选项", () => {
-    const onRespond = vi.fn();
-    const { getByText, queryByText, getByLabelText } = render(
-      <InteractionCard
-        item={interaction({ kind: "single_select", options: [{ id: "a", label: "方案 A" }] })}
-        onRespond={onRespond}
-      />,
-    );
-    expect(queryByText("其他")).toBeNull();
-    fireEvent.click(getByLabelText(/方案 A/));
-    fireEvent.click(getByText("提交回答"));
-    expect(onRespond).toHaveBeenCalledWith("a");
   });
 });
 
