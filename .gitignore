@@ -67,6 +67,9 @@ devopenwebcodesandbox-write-probe.txt
 .tmp-pty-repro/
 core/tests/__pycache__/
 
+# Local tooling
+.node-tool/
+
 # Local environment files; keep templates tracked
 .env
 .env.*
