@@ -1,12 +1,12 @@
 import { useSyncExternalStore } from "react";
 
-export type StoreUpdater<T> = Partial<T> | ((previous: T) => Partial<T>);
+type StoreUpdater<T> = Partial<T> | ((previous: T) => Partial<T>);
 
 /**
  * 轻量可观察 store（无第三方依赖）：UI 状态的单一来源。
  * 状态不可变更新（set 浅合并），订阅者按选择器取切片。
  */
-export interface Store<T> {
+interface Store<T> {
   get(): T;
   set(updater: StoreUpdater<T>): void;
   subscribe(listener: () => void): () => void;

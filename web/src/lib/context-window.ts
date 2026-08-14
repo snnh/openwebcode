@@ -44,7 +44,7 @@ export function deriveWindowInfo(
   };
 }
 
-export type WindowLevel = "normal" | "warn" | "danger";
+type WindowLevel = "normal" | "warn" | "danger";
 
 /** 与服务端水位阈值一致：>=0.7 建议压缩（黄），>=0.85 强制压缩（红）。 */
 export function windowLevel(utilization: number | undefined): WindowLevel {

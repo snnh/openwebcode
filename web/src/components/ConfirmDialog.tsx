@@ -66,7 +66,7 @@ export function ConfirmDialog({ open, title, body, warning, confirmLabel, danger
   );
 }
 
-export interface ConfirmRequest {
+interface ConfirmRequest {
   title: string;
   body: string;
   warning?: string;

@@ -10,7 +10,7 @@ export function severityOf(failure: DiagnosticFailure): DiagnosticSeverity {
   return "error";
 }
 
-export interface DiagnosticFileGroup {
+interface DiagnosticFileGroup {
   /** 相对路径；空串表示无法定位到文件的失败项 */
   file: string;
   items: DiagnosticFailure[];

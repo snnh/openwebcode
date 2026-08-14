@@ -5,7 +5,7 @@
 import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 
-export interface XtermApi {
+interface XtermApi {
   Terminal: typeof Terminal;
   FitAddon: typeof FitAddon;
 }

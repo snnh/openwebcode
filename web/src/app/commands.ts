@@ -126,7 +126,7 @@ function isEditableTarget(target: EventTarget | null): boolean {
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
 }
 
-export interface DispatchResult {
+interface DispatchResult {
   command: string;
   handled: boolean;
 }
@@ -236,7 +236,7 @@ export function buildWhenContext(extra: { draftNonEmpty: boolean; multipleSessio
 // ===== 内建命令 =====
 
 /** 命令 id 常量：keybindings、审计测试与 UI 共用 */
-export const COMMAND_IDS = {
+const COMMAND_IDS = {
   showCommands: "workbench.action.showCommands",
   quickOpen: "workbench.action.quickOpen",
   toggleSidebar: "workbench.action.toggleSidebarVisibility",

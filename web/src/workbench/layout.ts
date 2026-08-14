@@ -8,20 +8,20 @@ import { createStore } from "../app/store";
 
 export type SidebarView = "sessions" | "files" | "scm" | "problems";
 
-export const SIDEBAR_VIEWS: readonly SidebarView[] = ["sessions", "files", "scm", "problems"];
+const SIDEBAR_VIEWS: readonly SidebarView[] = ["sessions", "files", "scm", "problems"];
 
 /** 底部面板页签（Phase 2 接入 BottomPanel 时消费；此处仅负责持久化语义） */
 export type BottomTab = "context" | "timeline" | "cost" | "subagents" | "sandbox" | "perf" | "eval";
 
-export const BOTTOM_TABS: readonly BottomTab[] = ["context", "timeline", "cost", "subagents", "sandbox", "perf", "eval"];
+const BOTTOM_TABS: readonly BottomTab[] = ["context", "timeline", "cost", "subagents", "sandbox", "perf", "eval"];
 
 export const RAIL_MIN_WIDTH = 200;
 export const RAIL_MAX_WIDTH = 380;
 export const PANEL_MIN_HEIGHT = 140;
 export const PANEL_MAX_HEIGHT = 600;
 
-export const clampRailWidth = (value: number): number => Math.min(RAIL_MAX_WIDTH, Math.max(RAIL_MIN_WIDTH, value));
-export const clampPanelHeight = (value: number): number => Math.min(PANEL_MAX_HEIGHT, Math.max(PANEL_MIN_HEIGHT, value));
+const clampRailWidth = (value: number): number => Math.min(RAIL_MAX_WIDTH, Math.max(RAIL_MIN_WIDTH, value));
+const clampPanelHeight = (value: number): number => Math.min(PANEL_MAX_HEIGHT, Math.max(PANEL_MIN_HEIGHT, value));
 
 const VIEW_KEY = "owc-wb-view";
 const WIDTH_KEY = "owc-rail-width";

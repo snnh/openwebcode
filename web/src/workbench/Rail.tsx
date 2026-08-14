@@ -8,7 +8,7 @@ import { useI18n } from "../i18n";
 import type { SidebarView } from "./layout";
 
 /** 侧栏视图元信息（桌面活动栏与移动端导航共用） */
-export const VIEW_META: Record<SidebarView, { zh: string; en: string; icon: IconName }> = {
+const VIEW_META: Record<SidebarView, { zh: string; en: string; icon: IconName }> = {
   sessions: { zh: "会话", en: "Sessions", icon: "history" },
   files: { zh: "文件", en: "Files", icon: "folder" },
   scm: { zh: "源代码管理", en: "Source Control", icon: "git" },
@@ -31,7 +31,7 @@ export interface RailActions {
   onShowChat?(): void;
 }
 
-export interface ActivityBarProps extends RailActions {
+interface ActivityBarProps extends RailActions {
   /** 活动视图高亮需同时满足侧栏展开 */
   sidebarVisible: boolean;
   /** 展开/收起侧边栏（按钮在活动栏中段，悬浮/聚焦才显示） */

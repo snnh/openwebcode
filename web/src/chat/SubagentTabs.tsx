@@ -13,10 +13,10 @@ import { groupSubagentRuns, SubagentRunRow } from "../panels/SubagentsPanel";
 import { Icon } from "../components/Icon";
 import { useI18n } from "../i18n";
 
-export type SubagentTabStatus = "running" | "done" | "failed";
+type SubagentTabStatus = "running" | "done" | "failed";
 
 /** 标签状态指示：组内有运行中 → running；否则有失败 → failed；全完成 → done；无运行记录 → undefined */
-export function subagentTabStatus(runs: Record<string, LiveSubagentRun>, toolCallId: string): SubagentTabStatus | undefined {
+function subagentTabStatus(runs: Record<string, LiveSubagentRun>, toolCallId: string): SubagentTabStatus | undefined {
   let seen = false;
   let running = false;
   let failed = false;

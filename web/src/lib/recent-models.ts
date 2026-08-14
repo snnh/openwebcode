@@ -6,7 +6,7 @@
 const STORAGE_KEY = "owc-recent-models";
 const MAX_RECENT = 5;
 
-export interface RecentModel {
+interface RecentModel {
   provider: string;
   model: string;
 }
@@ -17,7 +17,7 @@ function isRecentModel(value: unknown): value is RecentModel {
     && typeof (value as RecentModel).model === "string";
 }
 
-export function readRecentModels(): RecentModel[] {
+function readRecentModels(): RecentModel[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];

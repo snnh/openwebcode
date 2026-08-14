@@ -1,7 +1,7 @@
 import type { MessageContent } from "./contracts";
 
 /** 历史消息内容的分组项：single 原位渲染；tool-group 为相邻工具调用合并组（≥2 个调用）。 */
-export type ContentGroup =
+type ContentGroup =
   | { kind: "single"; block: MessageContent }
   | { kind: "tool-group"; blocks: MessageContent[] };
 

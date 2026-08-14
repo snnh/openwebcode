@@ -10,7 +10,7 @@ import { ProblemsView } from "./sidebar/ProblemsView";
 
 /** 侧栏视图容器：按 layoutStore.sidebarView 切换 sessions/files/scm/problems，
  *  含非会话视图的标题栏与四视图共用的右缘宽度拖拽柄（layout.setSidebarWidth）。 */
-export interface SidebarViewsProps {
+interface SidebarViewsProps {
   sessions?: Session[] | undefined;
   currentId?: string | undefined;
   agentStates: Record<string, string>;
