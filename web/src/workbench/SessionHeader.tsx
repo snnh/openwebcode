@@ -334,7 +334,7 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
             >
               <option value="">{t(`跟随扩展配置（${session.activePersona.name}）`, `Follow extension config (${session.activePersona.name})`)}</option>
               {(personas.data?.personas ?? []).map((persona) => (
-                <option key={persona.id} value={persona.id}>{persona.name}</option>
+                <option key={persona.id} value={persona.id}>{persona.overridden === true ? t(`${persona.name}（已自定义）`, `${persona.name} (customized)`) : persona.name}</option>
               ))}
             </FitSelect>
           </label>

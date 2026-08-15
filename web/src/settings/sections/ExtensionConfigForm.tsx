@@ -271,6 +271,8 @@ export function ExtensionConfigForm({ extension, fields, busy, onSave }: {
       const custom = list.filter((persona) => !persona.builtin);
       const selected = typeof values[id] === "string" ? values[id] as string : "";
       const selectedIsCustom = Boolean(selected) && custom.some((persona) => persona.id === selected);
+      // 内置 id 且存在用户覆盖：显示「还原内置」（删除覆盖文件即还原）
+      const selectedOverridden = Boolean(selected) && builtin.some((persona) => persona.id === selected && persona.overridden === true);
       return (
         <div key={id} className="extension-config-field">
           <label>
@@ -279,7 +281,7 @@ export function ExtensionConfigForm({ extension, fields, busy, onSave }: {
               <option value="">{t("（不模拟）", "(No simulation)")}</option>
               {builtin.length > 0 && (
                 <optgroup label={t("内置", "Built-in")}>
-                  {builtin.map((persona) => <option key={persona.id} value={persona.id}>{persona.name}</option>)}
+                  {builtin.map((persona) => <option key={persona.id} value={persona.id}>{persona.overridden === true ? t(`${persona.name}（已自定义）`, `${persona.name} (customized)`) : persona.name}</option>)}
                 </optgroup>
               )}
               {custom.length > 0 && (
@@ -292,11 +294,12 @@ export function ExtensionConfigForm({ extension, fields, busy, onSave }: {
           {description}
           {selected && <PersonaPreview id={selected} />}
           {selectedIsCustom && <DeletePersonaButton id={selected} onDeleted={() => setValue(id, "")} />}
+          {selectedOverridden && <DeletePersonaButton id={selected} overridden onDeleted={() => undefined} />}
           <PersonaCreator onCreated={(personaId) => setValue(id, personaId)} />
           {personas.data && (
             <p className="settings-note">{t(
-              `自定义预设从 ${personas.data.directory} 加载，可将共享的预设 .json 文件放入该目录。`,
-              `User presets are loaded from ${personas.data.directory} — drop shared preset .json files there.`,
+              `自定义预设从 ${personas.data.directory} 加载，可将共享的预设 .json 文件放入该目录；id 与内置预设相同时即自定义该内置（只覆盖填写的字段，其余继承内置）。`,
+              `User presets are loaded from ${personas.data.directory} — drop shared preset .json files there; using a built-in id customizes that built-in (only the fields you provide take effect, the rest are inherited).`,
             )}</p>
           )}
         </div>
@@ -406,8 +409,8 @@ function PersonaPreview({ id }: { id: string }): ReactElement | null {
   );
 }
 
-/** env-sim 自定义预设删除按钮（两段确认）；删除成功后失效预设清单并回调。 */
-function DeletePersonaButton({ id, onDeleted }: { id: string; onDeleted(): void }): ReactElement {
+/** env-sim 自定义预设删除按钮（两段确认）；overridden 时为「还原内置」（删除覆盖文件）。删除成功后失效预设清单并回调。 */
+function DeletePersonaButton({ id, overridden = false, onDeleted }: { id: string; overridden?: boolean; onDeleted(): void }): ReactElement {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const [confirming, setConfirming] = useState(false);
@@ -435,9 +438,12 @@ function DeletePersonaButton({ id, onDeleted }: { id: string; onDeleted(): void 
       <button
         className={confirming ? "btn small danger" : "btn small"}
         disabled={busy}
+        title={overridden ? t("删除覆盖文件，恢复官方内置内容", "Remove the override file and restore the official built-in") : undefined}
         onClick={() => (confirming ? void remove() : setConfirming(true))}
       >
-        {busy ? t("删除中…", "Deleting…") : confirming ? t("再次点击确认删除", "Click again to confirm") : t("删除此自定义预设", "Delete this preset")}
+        {busy ? t("处理中…", "Working…") : confirming
+          ? (overridden ? t("再次点击确认还原", "Click again to confirm restore") : t("再次点击确认删除", "Click again to confirm"))
+          : (overridden ? t("还原内置预设", "Restore built-in preset") : t("删除此自定义预设", "Delete this preset"))}
       </button>
       {confirming && !busy && (
         <button className="btn small" onClick={() => setConfirming(false)}>{t("取消", "Cancel")}</button>
@@ -538,6 +544,7 @@ function PersonaCreator({ onCreated }: { onCreated(id: string): void }): ReactEl
         <span>{t("预设 id（小写字母/数字/-/_）", "Preset id (lowercase letters/digits/-/_)")}</span>
         <input className="input" type="text" value={draft.id} spellCheck={false} onChange={setDraftField("id")} placeholder="my-persona" />
       </label>
+      <p className="settings-note">{t("id 与内置预设相同时即自定义该内置（只覆盖填写的字段，其余继承内置）。", "Using a built-in id customizes that built-in preset: only the fields you provide take effect, the rest are inherited.")}</p>
       <label className="settings-field">
         <span>{t("显示名称", "Display name")}</span>
         <input className="input" type="text" value={draft.name} onChange={setDraftField("name")} />

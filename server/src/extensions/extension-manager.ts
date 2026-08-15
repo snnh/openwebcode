@@ -115,7 +115,7 @@ export class ExtensionManager {
     await mkdir(this.root, { recursive: true });
     this.manifests = [...OFFICIAL_EXTENSIONS, ...(await this.discoverThirdParty())];
     this.states = await this.loadStates();
-    this.applyUserAgentSimulation();
+    await this.applyUserAgentSimulation();
     await this.startHost();
   }
 
@@ -175,7 +175,7 @@ export class ExtensionManager {
       config: update.config ? { ...previous.config, ...update.config } : previous.config,
     };
     await this.saveStates();
-    this.applyUserAgentSimulation();
+    await this.applyUserAgentSimulation();
     const reloaded = await this.request("reload", { states: this.states }) as { tools?: Record<string, ExtensionToolSpec[]> };
     this.replaceTools(reloaded.tools);
     this.events?.publish({ source: "server", type: "extension.updated", payload: { id, ...this.states[id] } });
@@ -228,19 +228,26 @@ export class ExtensionManager {
    * 覆盖会在并发会话间串扰。更新检查链路固定官方 UA，不受模拟影响。
    * 用序列号防止连续 configure 的异步解析乱序落地。
    */
-  private applyUserAgentSimulation(): void {
+  private async applyUserAgentSimulation(): Promise<void> {
     const envSim = this.manifests.find((item) => item.id === "env-sim");
     const seq = ++this.userAgentSimulationSeq;
     const clear = (): void => {
       if (seq === this.userAgentSimulationSeq) setSimulatedUserAgent(null);
     };
-    if (!envSim || !this.stateFor(envSim).enabled) return clear();
+    if (!envSim || !this.stateFor(envSim).enabled) {
+      clear();
+      return;
+    }
     const config = this.stateFor(envSim).config;
-    if (config.simulateUserAgent !== true) return clear();
-    void resolvePersona(this.dataDir, config, (message) => this.warnShaping(message)).then((persona) => {
-      if (seq !== this.userAgentSimulationSeq) return; // 已被更新的配置覆盖
-      setSimulatedUserAgent(persona?.userAgent ?? null);
-    });
+    if (config.simulateUserAgent !== true) {
+      clear();
+      return;
+    }
+    // 用户优先解析（覆盖文件需读目录）——异步等待完成再返回，保证 configure/initialize
+    // 返回时 UA 已就位（测试与热更新依赖该顺序）。
+    const persona = await resolvePersona(this.dataDir, config, (message) => this.warnShaping(message));
+    if (seq !== this.userAgentSimulationSeq) return; // 已被更新的配置覆盖
+    setSimulatedUserAgent(persona?.userAgent ?? null);
   }
 
   /**
@@ -357,13 +364,14 @@ export class ExtensionManager {
     return resolvePersona(this.dataDir, this.stateFor(envSim).config, (message) => this.warnShaping(message), sessionPersona);
   }
 
-  /** 新建/覆盖用户 env-sim 预设（内置 id 冲突与形状不合法抛错，REST 映射 400）。 */
+  /** 新建/覆盖用户 env-sim 预设（形状不合法抛错，REST 映射 400）；与内置同 id 即「自定义内置」：写入覆盖文件，解析侧字段级合并。 */
   async createEnvSimPersona(raw: unknown): Promise<PersonaDetail> {
     const preset = await saveUserPreset(this.dataDir, raw);
-    return { ...preset, builtin: false };
+    const builtin = BUILTIN_PERSONA_IDS.has(preset.id);
+    return { ...preset, builtin, ...(builtin ? { overridden: true } : {}) };
   }
 
-  /** 删除用户 env-sim 预设；内置 id 抛错，未命中返回 false（REST 映射 404）。 */
+  /** 删除用户 env-sim 预设；内置 id 时删除覆盖文件（还原内置），无覆盖文件返回 false（REST 映射 404）。 */
   async deleteEnvSimPersona(id: string): Promise<boolean> {
     return deleteUserPreset(this.dataDir, id);
   }
