@@ -171,6 +171,28 @@ describe("env-sim prompt.beforeBuild", () => {
     });
   }, 20_000);
 
+  it("lets a user file override a built-in persona end to end (identity + inherited tool shapes)", async () => {
+    // 用户目录同 id 覆盖内置：identity/basePrompt 用覆盖版，工具形态（Bash 别名）字段级继承内置
+    await withHarness({
+      enableEnvSim: true,
+      persona: "claude-code",
+      presetFiles: [{
+        filename: "claude-code.json",
+        content: { id: "claude-code", name: "Claude Code (Custom)", identity: "You are MY Claude Code.", basePrompt: "my custom base" },
+      }],
+    }, async ({ agent, session, requests }) => {
+      await agent.run(session.id, "你好");
+      const system = requests[0]!.system;
+      expect(system).toContain("You are MY Claude Code.");
+      expect(system).toContain("my custom base");
+      expect(system).not.toContain("Anthropic's agentic coding tool");
+      // 覆盖文件未提供 aliases：内置的 Bash/Edit 别名保留
+      const names = (requests[0]!.tools ?? []).map((tool) => tool.name);
+      expect(names).toContain("Bash");
+      expect(names).toContain("Edit");
+    });
+  }, 20_000);
+
   it("restores the default prompt when persona is empty or the extension is disabled", async () => {
     // 空 persona（启用扩展）与完全未启用扩展都应回落默认提示词
     const cases: HarnessOptions[] = [{ enableEnvSim: true, persona: "" }, {}];
@@ -474,20 +496,27 @@ describe("env-sim preset store", () => {
     expect(await resolvePersona(root, { persona: "missing" })).toBeNull();
   });
 
-  it("skips invalid JSON, bad shapes and built-in id collisions without crashing", async () => {
+  it("skips invalid JSON and bad shapes; keeps built-in override files without crashing", async () => {
     const root = await tempRoot();
     await writePreset(root, "broken.json", "{ not json");
     await writePreset(root, "shape.json", { id: "shape", name: 42 });
+    // 与内置同 id 的合法文件 = 内置覆盖（不再跳过）：identity/basePrompt 覆盖，其余字段合并继承
     await writePreset(root, "claude-code.json", {
       id: "claude-code", name: "Impostor", identity: "x", basePrompt: "y",
     });
     const warnings: string[] = [];
     const presets = await loadUserPresets(root, (message) => warnings.push(message));
-    expect(presets).toHaveLength(0);
-    expect(warnings).toHaveLength(3);
-    // 内置预设不受用户目录干扰
-    expect((await resolvePersona(root, { persona: "claude-code" }))?.name).toBe("Claude Code");
-    expect((await listPersonas(root)).filter((item) => item.id === "claude-code")).toHaveLength(1);
+    expect(presets).toHaveLength(1);
+    expect(presets[0]?.name).toBe("Impostor");
+    expect(warnings).toHaveLength(2);
+    // 用户覆盖优先：resolvePersona 返回覆盖版；内置工具形态字段（aliases 等）继承内置
+    const resolved = await resolvePersona(root, { persona: "claude-code" });
+    expect(resolved?.name).toBe("Impostor");
+    expect(resolved?.aliases.some((alias) => alias.as === "Bash")).toBe(true);
+    // 清单：内置项合并为单项并标记 overridden
+    const list = (await listPersonas(root)).filter((item) => item.id === "claude-code");
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({ builtin: true, overridden: true });
   });
 
   it("keeps alias inputSchema/argMap when loading user presets", async () => {
@@ -547,11 +576,19 @@ describe("env-sim preset store", () => {
     await saveUserPreset(root, { id: "mine", name: "Mine v2", identity: "You are Mine.", basePrompt: "v2 base" });
     expect((await loadUserPresets(root)).find((item) => item.id === "mine")?.name).toBe("Mine v2");
 
-    await expect(saveUserPreset(root, { id: "claude-code", name: "Impostor", identity: "x", basePrompt: "y" })).rejects.toThrow(/built-in/);
+    // 内置 id 保存 = 自定义内置：写入覆盖文件，解析侧生效
+    const override = await saveUserPreset(root, { id: "claude-code", name: "Impostor", identity: "x", basePrompt: "y" });
+    expect(override.id).toBe("claude-code");
+    expect((await resolvePersona(root, { persona: "claude-code" }))?.name).toBe("Impostor");
+    expect((await listPersonas(root)).find((item) => item.id === "claude-code")).toMatchObject({ builtin: true, overridden: true });
     await expect(saveUserPreset(root, { id: "Bad Id", name: "Bad", identity: "x", basePrompt: "y" })).rejects.toThrow(/invalid preset id/);
     await expect(saveUserPreset(root, { id: "no-name", identity: "x", basePrompt: "y" })).rejects.toThrow(/invalid preset shape/);
 
-    await expect(deleteUserPreset(root, "claude-code")).rejects.toThrow(/built-in/);
+    // 内置 id 删除 = 还原内置（删覆盖文件）；无覆盖文件返回 false
+    expect(await deleteUserPreset(root, "claude-code")).toBe(true);
+    expect((await resolvePersona(root, { persona: "claude-code" }))?.name).toBe("Claude Code");
+    expect((await listPersonas(root)).find((item) => item.id === "claude-code")?.overridden).toBeUndefined();
+    expect(await deleteUserPreset(root, "claude-code")).toBe(false);
     expect(await deleteUserPreset(root, "missing")).toBe(false);
     expect(await deleteUserPreset(root, "mine")).toBe(true);
     expect((await listPersonas(root)).some((item) => item.id === "mine")).toBe(false);
@@ -712,11 +749,18 @@ describe("env-sim command prompt shaping", () => {
       const list = await app.inject({ method: "GET", url: "/api/extensions/env-sim/personas" });
       expect((list.json() as { personas: Array<{ id: string }> }).personas.map((item) => item.id)).toContain("mine");
 
-      const invalid = await app.inject({ method: "POST", url: "/api/extensions/env-sim/personas", payload: { id: "claude-code", name: "X", identity: "x", basePrompt: "y" } });
-      expect(invalid.statusCode).toBe(400);
+      // 内置 id 保存 = 自定义内置（201，overridden 标记）；删除覆盖 = 还原内置
+      const override = await app.inject({ method: "POST", url: "/api/extensions/env-sim/personas", payload: { id: "claude-code", name: "Impostor", identity: "x", basePrompt: "y" } });
+      expect(override.statusCode).toBe(201);
+      expect(override.json()).toMatchObject({ id: "claude-code", builtin: true, overridden: true });
+      const overriddenList = await app.inject({ method: "GET", url: "/api/extensions/env-sim/personas" });
+      expect((overriddenList.json() as { personas: Array<{ id: string; overridden?: boolean }> }).personas.find((item) => item.id === "claude-code")).toMatchObject({ overridden: true });
 
       const removeBuiltin = await app.inject({ method: "DELETE", url: "/api/extensions/env-sim/personas/claude-code" });
-      expect(removeBuiltin.statusCode).toBe(400);
+      expect(removeBuiltin.statusCode).toBe(200);
+      // 覆盖已删：再删内置 = 未命中 404（还原后内置本体不可删）
+      const removeBuiltinAgain = await app.inject({ method: "DELETE", url: "/api/extensions/env-sim/personas/claude-code" });
+      expect(removeBuiltinAgain.statusCode).toBe(404);
       const removeMissing = await app.inject({ method: "DELETE", url: "/api/extensions/env-sim/personas/nope" });
       expect(removeMissing.statusCode).toBe(404);
       const removed = await app.inject({ method: "DELETE", url: "/api/extensions/env-sim/personas/mine" });

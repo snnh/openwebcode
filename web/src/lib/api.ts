@@ -1,4 +1,4 @@
-import type { AgentListResponse, AgentRun, BackgroundTaskInfo, CatalogSyncStatus, Checkpoint, CompletePathResponse, ContextView, CostReport, CronJobInfo, ExtensionInfo, FileEntry, ManagedWorkspaceCapability, ManagedWorkspaceSyncPreview, ManagedWorkspaceSyncResult, MessageAttachment, MessagesPage, ModelProfile, PendingPermission, PersonaDetail, PricingDocument, ProviderConcurrencyStats, ProviderConnectionTestResult, ProviderProfilesView, SandboxCapabilities, SandboxMode, SandboxNetwork, Session, SessionDetail, SessionSandboxStatus, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo, StartSubagentResponse, SubagentTranscript, SyncResult, TodoItem, WebCapability } from "./contracts";
+import type { AgentListResponse, AgentRun, BackgroundTaskInfo, CatalogSyncStatus, Checkpoint, CompletePathResponse, ContextView, CostReport, CronJobInfo, ExtensionInfo, FileEntry, ManagedWorkspaceCapability, ManagedWorkspaceSyncPreview, ManagedWorkspaceSyncResult, MessageAttachment, MessagesPage, ModelProfile, PendingPermission, PersonaDetail, PersonaSummary, PricingDocument, ProviderConcurrencyStats, ProviderConnectionTestResult, ProviderProfilesView, SandboxCapabilities, SandboxMode, SandboxNetwork, Session, SessionDetail, SessionSandboxStatus, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo, StartSubagentResponse, SubagentTranscript, SyncResult, TodoItem, WebCapability } from "./contracts";
 
 export class ApiError extends Error {
   constructor(readonly status: number, message: string) {
@@ -281,7 +281,7 @@ export const api = {
   configureExtension: (id: string, body: { enabled?: boolean; config?: Record<string, unknown> }) =>
     request<ExtensionInfo>("/api/extensions", { method: "POST", body: JSON.stringify({ id, ...body }) }),
   installExtension: (path: string) => request<ExtensionInfo>("/api/extensions", { method: "POST", body: JSON.stringify({ action: "install", path }) }),
-  envSimPersonas: () => request<{ personas: Array<{ id: string; name: string; builtin: boolean }>; directory: string }>("/api/extensions/env-sim/personas"),
+  envSimPersonas: () => request<{ personas: PersonaSummary[]; directory: string }>("/api/extensions/env-sim/personas"),
   envSimPersona: (id: string) => request<PersonaDetail>(`/api/extensions/env-sim/personas/${encodeURIComponent(id)}`),
   saveEnvSimPersona: (body: import("./contracts").PersonaPresetInput) =>
     request<PersonaDetail>("/api/extensions/env-sim/personas", { method: "POST", body: JSON.stringify(body) }),
