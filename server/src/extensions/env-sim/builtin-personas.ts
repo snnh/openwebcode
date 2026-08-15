@@ -5,6 +5,13 @@ import type { PersonaPreset } from "./types.js";
  * 不复制任何产品的实际专有系统提示词。hideBuiltIns 只隐藏破坏拟态的 OWC 专属工具，
  * 核心安全/写权限链相关工具（bash、文件写、git、test_runner）始终保留。
  *
+ * 例外：dsh-minimal 复刻 DeepSeek Harness 极简模式（来源：npm 包
+ * @deepseek-ai/dsh@0.1.0-rc.6 的 config/agent-presets/minimal/agent.cordis.yml，
+ * MIT License, Copyright (c) 2026 DeepSeek）——persona 提示词原文完整复制，
+ * 工具形态按极简模式调整（仅 bash 与 str_replace_editor 双工具）：两个工具的
+ * 描述与参数形态复刻 DSH 原文（str_replace_editor 仅暴露 OWC core 可执行的
+ * str_replace 参数形态），web 搜索工具与扩展工具照常保留。
+ *
  * 别名的 inputSchema 拟态目标产品的参数形态（如 cc 的 file_path、codex 的 command），
  * argMap 把模型侧参数名归一回内置工具参数名，执行/权限链不受影响。schema 只保留
  * 本运行时可执行的参数（未映射的额外参数不会出现在 schema 中），因此嵌套结构与
@@ -950,6 +957,87 @@ Be concise, structured, and focused on helping the next LLM seamlessly continue 
           required: ["questions"],
           additionalProperties: false,
         },
+      },
+    ],
+  },
+  {
+    // DeepSeek Harness 极简模式（@deepseek-ai/dsh@0.1.0-rc.6 的
+    // config/agent-presets/minimal/agent.cordis.yml，MIT License,
+    // Copyright (c) 2026 DeepSeek）：persona 提示词原文完整复制（固定提示词），
+    // 工具形态按极简模式——bash 与 str_replace_editor 双工具的描述与参数形态
+    // 复刻 DSH 原文（str_replace_editor 仅暴露可执行的 str_replace 形态）。
+    // web 搜索、待办、子代理、技能工具按需保留；git/后台/定时等其余内置工具
+    // 统一隐藏，由模型经 bash 处理。
+    id: "dsh-minimal",
+    name: "DSH Minimal",
+    userAgent: "dsh/0.1.0-rc.6",
+    identity: "You are a helpful software engineer assistant.",
+    basePrompt: "You are a helpful software engineer assistant.",
+    // DSH 极简模式无 plan-mode / 压缩 / /init 命令，productSections 与命令提示词用内置默认。
+    productSections: [],
+    // 首轮只注入 bash 与 str_replace_editor 双工具——严格极简形态（名称用模型侧
+    // 别名后名）；第二轮起注入 web 搜索、待办、子代理、技能等其余保留工具
+    //（read_artifact 联动同样从第二轮生效）。
+    firstTurnOnlyTools: ["bash", "str_replace_editor"],
+    // read_artifact 的注入跟随会话自动驱逐开关：驱逐开启（策略 enabled 且非 off）时由
+    // agent-runner 组装层强制放行（驱逐占位符必须可读），关闭时不注入（保持极简形态）。
+    hideBuiltIns: [
+      "read_file", "write_file", "glob", "grep", "read_artifact", "repo_map", "code_search",
+      "test_runner", "git_status", "git_diff", "git_commit", "git_worktree_create",
+      "git_worktree_remove", "git_worktree_merge", "remember", "task_output", "task_stop",
+      "cron_create", "cron_list", "cron_delete",
+    ],
+    aliases: [
+      {
+        from: "bash",
+        as: "bash",
+        // DeepSeek Harness 极简模式持久 bash 的完整描述原文（@deepseek-ai/dsh@0.1.0-rc.6
+        // config/agent-presets/minimal/agent.cordis.yml，MIT License, Copyright (c) 2026 DeepSeek）
+        description: "Run commands in a bash shell\n" +
+          "* When invoking this tool, the contents of the \"command\" parameter does NOT need to be XML-escaped.\n" +
+          "* You don't have access to the internet via this tool.\n" +
+          "* You do have access to a mirror of common linux and python packages via apt and pip.\n" +
+          "* State is persistent across command calls and discussions with the user.\n" +
+          "* To inspect a particular line range of a file, e.g. lines 10-25, try 'sed -n 10,25p /path/to/the/file'.\n" +
+          "* Please avoid commands that may produce a very large amount of output.\n" +
+          "* Please run long lived commands in the background, e.g. 'sleep 10 &' or start a server in the background.",
+        // DSH 极简模式的参数形态：仅 command（无 run_in_background，长任务经 shell 放后台）；
+        // 执行层超时仍由 OWC core 控制（DSH 固定 300000ms 无法经 alias 复刻）。
+        inputSchema: {
+          type: "object",
+          properties: { command: { type: "string" } },
+          required: ["command"],
+          additionalProperties: false,
+        },
+        argMap: { command: "cmd" },
+      },
+      {
+        from: "edit_file",
+        as: "str_replace_editor",
+        // DeepSeek Harness 极简模式 str_replace_editor 的完整描述原文（来源同上）；
+        // 参数形态受 OWC core 白名单约束（fs.edit 仅接受 path/oldText/newText/
+        // replaceAll），只暴露可执行的 str_replace 形态——view/create/insert 命令
+        // 与 file_text/insert_line/view_range 参数在 OWC core 无对应实现。
+        description: "Custom editing tool for viewing, creating and editing files\n" +
+          "* State is persistent across command calls and discussions with the user\n" +
+          "* If `path` is a file, `view` displays the result of applying `cat -n`. If `path` is a directory, `view` lists non-hidden files and directories up to 2 levels deep\n" +
+          "* The `create` command cannot be used if the specified `path` already exists as a file\n" +
+          "* If a `command` generates a long output, it will be truncated and marked with `<output truncated>`\n" +
+          "Notes for using the `str_replace` command:\n" +
+          "* The `old_str` parameter should match EXACTLY one or more consecutive lines from the original file. Be mindful of whitespaces!\n" +
+          "* If the `old_str` parameter is not unique in the file, the replacement will not be performed. Make sure to include enough context in `old_str` to make it unique\n" +
+          "* The `new_str` parameter should contain the edited lines that should replace the `old_str`",
+        inputSchema: {
+          type: "object",
+          properties: {
+            path: { type: "string", description: "The path of the file to edit." },
+            old_str: { type: "string", description: "The old string to be replaced." },
+            new_str: { type: "string", description: "The new string to replace the old one." },
+          },
+          required: ["path", "old_str", "new_str"],
+          additionalProperties: false,
+        },
+        argMap: { old_str: "oldText", new_str: "newText" },
       },
     ],
   },
