@@ -1,0 +1,9 @@
+{
+  "id": "dsh-minimal",
+  "name": "dsh-minimal",
+  "identity": "You are a helpful software engineer assistant.",
+  "basePrompt": "You are a helpful software engineer assistant.The personal pronoun is US/we.",
+  "productSections": [],
+  "hideBuiltIns": [],
+  "aliases": []
+}
