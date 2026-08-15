@@ -9,6 +9,7 @@ import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { ExtensionManager } from "../src/extensions/extension-manager.js";
 import { BUILTIN_PERSONAS, listPersonas, resolvePersona } from "../src/extensions/env-sim/index.js";
 import { deleteUserPreset, loadUserPresets, personasDir, saveUserPreset } from "../src/extensions/env-sim/preset-store.js";
+import { ContextManager } from "../src/context/context-manager.js";
 import { Compactor } from "../src/context/compactor.js";
 import { getOfficialUserAgent, getUserAgent, setSimulatedUserAgent } from "../src/user-agent.js";
 import { getServerVersion } from "../src/version.js";
@@ -212,7 +213,8 @@ describe("env-sim tool shaping", () => {
       await agent.run(session.id, "你好");
       const names = (requests[0]!.tools ?? []).map((tool) => tool.name);
       for (const expected of ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "TodoWrite", "Task"]) expect(names).toContain(expected);
-      for (const hidden of ["bash", "read_file", "write_file", "edit_file", "glob", "grep", "read_artifact", "spawn_swarm", "remember"]) expect(names).not.toContain(hidden);
+      // read_artifact 的可见性由驱逐联动决定（默认驱逐开启时强制放行），不在此断言
+      for (const hidden of ["bash", "read_file", "write_file", "edit_file", "glob", "grep", "spawn_swarm", "remember"]) expect(names).not.toContain(hidden);
     });
   }, 20_000);
 
@@ -265,12 +267,53 @@ describe("env-sim tool shaping", () => {
     await withHarness({
       enableEnvSim: true,
       persona: "claude-code",
-      script: [[{ id: "call-1", name: "read_artifact", input: { artifactId: "a", offset: 0, limit: 10 } }]],
+      script: [[{ id: "call-1", name: "spawn_swarm", input: { mode: "demo" } }]],
     }, async ({ agent, session, sessions }) => {
-      await agent.run(session.id, "读 artifact");
+      await agent.run(session.id, "发起协同");
       const results = toolResults(await sessions.get(session.id));
       expect(results[0]).toMatchObject({ toolCallId: "call-1", isError: true });
       expect(results[0]?.content).toContain("Tool is not available in this turn");
+    });
+  }, 20_000);
+
+  it("dsh-minimal injects only bash and str_replace_editor on the first turn", async () => {
+    await withHarness({ enableEnvSim: true, persona: "dsh-minimal" }, async ({ agent, session, requests }) => {
+      await agent.run(session.id, "你好");
+      const names = (requests[0]!.tools ?? []).map((tool) => tool.name);
+      // 首轮严格双工具形态：bash + str_replace_editor；保留工具（todo_write）与
+      // read_artifact 均不注入
+      expect(names).toContain("bash");
+      expect(names).toContain("str_replace_editor");
+      expect(names).not.toContain("read_artifact");
+      expect(names).not.toContain("todo_write");
+      expect(names).not.toContain("read_file");
+    });
+  }, 20_000);
+
+  it("dsh-minimal injects retained tools and read_artifact from the second turn (eviction on by default)", async () => {
+    await withHarness({ enableEnvSim: true, persona: "dsh-minimal" }, async ({ agent, session, requests }) => {
+      await agent.run(session.id, "第一轮");
+      await agent.run(session.id, "第二轮");
+      const names = (requests[1]!.tools ?? []).map((tool) => tool.name);
+      // 次轮恢复完整保留形态：read_artifact 由驱逐联动强制放行（默认策略 enabled），
+      // 保留工具（todo_write 等）注入
+      expect(names).toContain("bash");
+      expect(names).toContain("str_replace_editor");
+      expect(names).toContain("read_artifact");
+      expect(names).toContain("todo_write");
+      // 仍保持隐藏的工具
+      expect(names).not.toContain("read_file");
+      expect(names).not.toContain("git_commit");
+    });
+  }, 20_000);
+
+  it("dsh-minimal keeps read_artifact hidden when auto-eviction is disabled", async () => {
+    await withHarness({ enableEnvSim: true, persona: "dsh-minimal" }, async ({ agent, session, sessions, requests }) => {
+      await new ContextManager(sessions.contextRoot(session.id)).updatePolicy({ enabled: false });
+      await agent.run(session.id, "第一轮");
+      await agent.run(session.id, "第二轮");
+      const names = (requests[1]!.tools ?? []).map((tool) => tool.name);
+      expect(names).not.toContain("read_artifact");
     });
   }, 20_000);
 
@@ -358,7 +401,7 @@ describe("env-sim preset store", () => {
       aliases: [{ from: "bash", as: "Shell" }],
     });
     const personas = await listPersonas(root);
-    expect(personas.filter((item) => item.builtin).map((item) => item.id)).toEqual(["claude-code", "kimi-code", "zcode", "codex"]);
+    expect(personas.filter((item) => item.builtin).map((item) => item.id)).toEqual(["claude-code", "kimi-code", "zcode", "codex", "dsh-minimal"]);
     expect(personas.find((item) => item.id === "mine")).toMatchObject({ name: "Mine", builtin: false });
     expect((await resolvePersona(root, { persona: "claude-code" }))?.name).toBe("Claude Code");
     expect((await resolvePersona(root, { persona: "mine" }))?.identity).toBe("You are Mine.");
@@ -474,7 +517,7 @@ describe("env-sim REST contract", () => {
       expect(envSim).toMatchObject({ official: true, defaultEnabled: false, enabled: false });
       expect(envSim?.configSchema).toMatchObject({ type: "object", additionalProperties: false });
       const personas = envSim?.availablePersonas as Array<{ id: string; builtin: boolean }>;
-      expect(personas.map((item) => item.id)).toEqual(["claude-code", "kimi-code", "zcode", "codex"]);
+      expect(personas.map((item) => item.id)).toEqual(["claude-code", "kimi-code", "zcode", "codex", "dsh-minimal"]);
       expect(personas.every((item) => item.builtin)).toBe(true);
     });
   }, 20_000);
@@ -489,7 +532,7 @@ describe("env-sim REST contract", () => {
       const response = await app.inject({ method: "GET", url: "/api/extensions/env-sim/personas" });
       expect(response.statusCode).toBe(200);
       const body = response.json() as { personas: Array<{ id: string; builtin: boolean }>; directory: string };
-      expect(body.personas.map((item) => item.id)).toEqual(["claude-code", "kimi-code", "zcode", "codex", "shared"]);
+      expect(body.personas.map((item) => item.id)).toEqual(["claude-code", "kimi-code", "zcode", "codex", "dsh-minimal", "shared"]);
       expect(body.personas.at(-1)).toMatchObject({ id: "shared", builtin: false });
       expect(path.isAbsolute(body.directory)).toBe(true);
       expect(body.directory).toBe(personasDir(dataDir));

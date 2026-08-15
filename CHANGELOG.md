@@ -2,6 +2,12 @@
 
 本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前版本的用户可感知变化。日期以 Git 标签发布日期为准。
 
+## [1.7.8] - 2026-08-15
+
+### 官方扩展
+
+- **环境模拟 0.1.3**：新增 DSH（DeepSeek Harness）极简模式预设——persona 提示词与 bash、str_replace_editor 双工具的描述、参数形态复刻自 MIT 开源包 `@deepseek-ai/dsh@0.1.0-rc.6`（`config/agent-presets/minimal/agent.cordis.yml`，Copyright (c) 2026 DeepSeek；str_replace_editor 仅暴露 OWC 可执行的 str_replace 参数形态）；首轮仅注入双工具，第二轮起注入保留工具（read_artifact 在自动驱逐开启时由组装层强制放行）；隐藏 OWC 专属文件、git、后台与定时工具（git 操作由模型经 bash 自行处理），保留 web 搜索、待办、子代理与技能工具。
+
 ## [1.7.7] - 2026-08-14
 
 ### 新增功能
