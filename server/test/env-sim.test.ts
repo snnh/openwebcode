@@ -44,10 +44,11 @@ function scriptProvider(requests: StreamChatRequest[], script: ToolCallSpec[][])
   };
 }
 
-function fakeCore(runCalls: Array<Record<string, unknown>>): CoreClientLike {
+function fakeCore(runCalls: Array<Record<string, unknown>>, editCalls: Array<Record<string, unknown>> = []): CoreClientLike {
   return makeFakeCore({
     async readFile() { return { content: "file content", totalLines: 1, encoding: "utf-8" as const, truncated: false }; },
     async run(request) { runCalls.push({ ...request }); return { exitCode: 0, durationMs: 0, truncated: false }; },
+    async editFile(request) { editCalls.push({ ...request }); return { matches: 1 }; },
   });
 }
 
@@ -89,7 +90,8 @@ async function setup(options: HarnessOptions = {}) {
   const providers = new ProviderRegistry();
   providers.register(scriptProvider(requests, options.script ?? []));
   const runCalls: Array<Record<string, unknown>> = [];
-  const core = fakeCore(runCalls);
+  const editCalls: Array<Record<string, unknown>> = [];
+  const core = fakeCore(runCalls, editCalls);
   const manager = new ExtensionManager(dataDir, events, { sessions });
   await manager.initialize();
   if (options.enableEnvSim) await manager.configure("env-sim", { enabled: true, config: { persona: options.persona ?? "" } });
@@ -98,7 +100,7 @@ async function setup(options: HarnessOptions = {}) {
     undefined, "zh-CN", 50, undefined, undefined, undefined, undefined, undefined,
     dataDir, undefined, undefined, undefined, undefined, undefined, undefined, manager,
   );
-  return { root, dataDir, sessions, session, events, requests, runCalls, manager, agent };
+  return { root, dataDir, sessions, session, events, requests, runCalls, editCalls, manager, agent };
 }
 
 type Harness = Awaited<ReturnType<typeof setup>>;
@@ -314,6 +316,19 @@ describe("env-sim tool shaping", () => {
       await agent.run(session.id, "第二轮");
       const names = (requests[1]!.tools ?? []).map((tool) => tool.name);
       expect(names).not.toContain("read_artifact");
+    });
+  }, 20_000);
+  it("dsh-minimal str_replace_editor calls succeed after alias argument translation", async () => {
+    await withHarness({
+      enableEnvSim: true,
+      persona: "dsh-minimal",
+      script: [[{ id: "edit-1", name: "str_replace_editor", input: { path: "a.txt", old_str: "old", new_str: "new" } }]],
+    }, async ({ agent, session, sessions, editCalls }) => {
+      await agent.run(session.id, "改一下文件");
+      // argMap 翻译：old_str → oldText、new_str → newText，OWC edit_file 正常执行
+      expect(editCalls[0]).toMatchObject({ path: "a.txt", oldText: "old", newText: "new" });
+      const results = toolResults(await sessions.get(session.id));
+      expect(results[0]).toMatchObject({ toolCallId: "edit-1", isError: false });
     });
   }, 20_000);
 
