@@ -37,9 +37,12 @@ export interface PersonaSummary {
   id: string;
   name: string;
   builtin: boolean;
+  /** 内置预设存在用户覆盖文件（同 id 用户预设生效中）；仅 builtin 时可能出现。 */
+  overridden?: boolean;
 }
 
-/** 详情端点返回的完整预设（含来源标记）。 */
+/** 详情端点返回的完整预设（含来源标记；overridden = 内置 id 存在用户覆盖，返回合并形态）。 */
 export interface PersonaDetail extends PersonaPreset {
   builtin: boolean;
+  overridden?: boolean;
 }

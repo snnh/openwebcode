@@ -71,12 +71,15 @@ function parsePreset(raw: unknown, fallbackId: string): PersonaPreset | undefine
   };
 }
 
-/** 读取用户预设目录；无效文件/内置 id 冲突一律跳过并记警告。目录不存在时懒创建。 */
+/**
+ * 读取用户预设目录；无效文件一律跳过并记警告，重复 id（用户文件之间）跳过。
+ * 与内置同 id 的文件是「内置覆盖」——保留并返回（解析侧用户优先），不再跳过。
+ * 目录不存在时懒创建。
+ */
 export async function loadUserPresets(dataDir: string, warn: PresetWarn = () => undefined): Promise<PersonaPreset[]> {
   const directory = personasDir(dataDir);
   await mkdir(directory, { recursive: true }).catch(() => undefined);
   const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
-  const builtinIds = new Set(BUILTIN_PERSONAS.map((preset) => preset.id));
   const presets: PersonaPreset[] = [];
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
@@ -88,8 +91,8 @@ export async function loadUserPresets(dataDir: string, warn: PresetWarn = () => 
         warn(`env-sim: preset file ${entry.name} has an invalid shape; skipped`);
         continue;
       }
-      if (builtinIds.has(preset.id) || presets.some((item) => item.id === preset.id)) {
-        warn(`env-sim: preset id "${preset.id}" collides with ${builtinIds.has(preset.id) ? "a built-in" : "another user"} preset; skipped`);
+      if (presets.some((item) => item.id === preset.id)) {
+        warn(`env-sim: preset id "${preset.id}" collides with another user preset; skipped`);
         continue;
       }
       presets.push(preset);
@@ -102,23 +105,25 @@ export async function loadUserPresets(dataDir: string, warn: PresetWarn = () => 
 
 /**
  * 保存用户预设：<dataDir>/env-sim/personas/<id>.json 原子写（0600，覆盖同 id 旧文件）。
- * 形状经 parsePreset 宽松校验；内置 id 冲突与非法 id 一律抛错（REST 层映射 400/409）。
+ * 形状经 parsePreset 宽松校验；与内置同 id 时写入覆盖文件（解析侧用户优先，
+ * 字段级继承内置未提供部分）——即「自定义内置预设」；非法 id 一律抛错（REST 层映射 400）。
  */
 export async function saveUserPreset(dataDir: string, raw: unknown): Promise<PersonaPreset> {
   const preset = parsePreset(raw, "");
   if (!preset) throw new Error("invalid preset shape: id/name/identity/basePrompt are required, and every alias needs from/as");
   if (!PRESET_ID_PATTERN.test(preset.id)) throw new Error(`invalid preset id "${preset.id}": lowercase letters, digits, '-' and '_' only, starting with a letter or digit`);
-  if (BUILTIN_PERSONAS.some((item) => item.id === preset.id)) throw new Error(`preset id "${preset.id}" collides with a built-in persona`);
   const directory = personasDir(dataDir);
   await mkdir(directory, { recursive: true });
   await writeUtf8Atomically(path.join(directory, `${preset.id}.json`), `${JSON.stringify(preset, null, 2)}\n`, { mode: 0o600 });
   return preset;
 }
 
-/** 删除用户预设（仅用户目录；内置 id 拒绝）。未命中返回 false。 */
+/**
+ * 删除用户预设：仅删用户目录文件。内置 id 时删除覆盖文件（还原内置），无覆盖文件返回 false；
+ * 未命中返回 false。非法 id 抛错。
+ */
 export async function deleteUserPreset(dataDir: string, id: string): Promise<boolean> {
   if (!PRESET_ID_PATTERN.test(id)) throw new Error(`invalid preset id "${id}"`);
-  if (BUILTIN_PERSONAS.some((item) => item.id === id)) throw new Error(`preset id "${id}" is built-in and cannot be deleted`);
   try {
     await unlink(path.join(personasDir(dataDir), `${id}.json`));
     return true;

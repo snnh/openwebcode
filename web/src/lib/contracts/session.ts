@@ -65,11 +65,12 @@ export interface SessionDetail extends Session {
   activePersona?: PersonaSummary | null;
 }
 
-/** env-sim 人格预设摘要（清单/生效标识）。 */
+/** env-sim 人格预设摘要（清单/生效标识；overridden = 内置预设存在用户覆盖，当前生效的是合并版）。 */
 export interface PersonaSummary {
   id: string;
   name: string;
   builtin: boolean;
+  overridden?: boolean;
 }
 
 /** env-sim 人格预设完整详情（选前预览）。 */

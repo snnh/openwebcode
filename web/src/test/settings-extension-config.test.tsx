@@ -92,8 +92,7 @@ describe("扩展类型化配置表单", () => {
     stubPersonas([
       { id: "claude", name: "Claude 风格", builtin: true },
       { id: "my-preset", name: "我的预设", builtin: false },
-    ]);
-    const configure = vi.spyOn(api, "configureExtension").mockResolvedValue(extensionFixture({}));
+    ]);    const configure = vi.spyOn(api, "configureExtension").mockResolvedValue(extensionFixture({}));
     const view = renderWithClient(<ExtensionRow extension={envSimExtension()} />);
 
     // 空选项 + 内置/自定义预设
@@ -106,6 +105,36 @@ describe("扩展类型化配置表单", () => {
     fireEvent.change(view.getByLabelText("人格预设"), { target: { value: "my-preset" } });
     fireEvent.click(view.getByRole("button", { name: "保存配置" }));
     await vi.waitFor(() => expect(configure).toHaveBeenCalledWith("env-sim", { config: { persona: "my-preset" } }));
+  });
+
+  it("env-sim：内置预设被覆盖时标记「已自定义」，提供「还原内置」按钮", async () => {
+    stubPersonas([
+      { id: "claude", name: "Claude 风格", builtin: true, overridden: true },
+      { id: "my-preset", name: "我的预设", builtin: false },
+    ]);
+    vi.spyOn(api, "envSimPersona").mockResolvedValue(personaFixture({ identity: "You are MY Claude." }));
+    const remove = vi.spyOn(api, "deleteEnvSimPersona").mockResolvedValue({ ok: true });
+    const view = renderWithClient(<ExtensionRow extension={envSimExtension()} />);
+    // 内置被覆盖：选项名带「已自定义」标记
+    await view.findByRole("option", { name: "Claude 风格（已自定义）" });
+    // 未选中时不显示还原按钮
+    expect(view.queryByRole("button", { name: "还原内置预设" })).toBeNull();
+    fireEvent.change(view.getByLabelText("人格预设"), { target: { value: "claude" } });
+    await vi.waitFor(() => expect(view.getByRole("button", { name: "还原内置预设" })).toBeInTheDocument());
+    // 两段确认后调用删除端点（删除覆盖文件即还原）
+    fireEvent.click(view.getByRole("button", { name: "还原内置预设" }));
+    fireEvent.click(view.getByRole("button", { name: "再次点击确认还原" }));
+    await vi.waitFor(() => expect(remove).toHaveBeenCalledWith("claude"));
+    // 纯自定义预设不受影响：删除语义仍是「删除此自定义预设」
+    fireEvent.change(view.getByLabelText("人格预设"), { target: { value: "my-preset" } });
+    await vi.waitFor(() => expect(view.getByRole("button", { name: "删除此自定义预设" })).toBeInTheDocument());
+  });
+
+  it("env-sim：新建预设表单提示内置 id 覆盖语义", async () => {
+    stubPersonas([{ id: "claude", name: "Claude 风格", builtin: true }]);
+    const view = renderWithClient(<ExtensionRow extension={envSimExtension()} />);
+    fireEvent.click(view.getByRole("button", { name: "新建预设" }));
+    expect(view.getByText(/id 与内置预设相同时即自定义该内置/)).toBeInTheDocument();
   });
 
   it("env-sim：选中预设后展示详情预览（身份行 + 工具形态摘要）", async () => {
