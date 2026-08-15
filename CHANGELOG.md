@@ -4,6 +4,10 @@
 
 ## [1.7.8] - 2026-08-15
 
+### 新增功能
+
+- **上下文默认驱逐策略调整**：默认保留最近轮数 2→10、回写预算 20,000→64,000——默认保留更多工具结果全文，驱逐后恢复被逐出内容的预算更宽裕（会话级策略可在上下文面板调整；已有自定义策略的会话不受影响）。
+
 ### 官方扩展
 
 - **环境模拟 0.1.3**：新增 DSH（DeepSeek Harness）极简模式预设——persona 提示词与 bash、str_replace_editor 双工具的描述、参数形态复刻自 MIT 开源包 `@deepseek-ai/dsh@0.1.0-rc.6`（`config/agent-presets/minimal/agent.cordis.yml`，Copyright (c) 2026 DeepSeek；str_replace_editor 仅暴露 OWC 可执行的 str_replace 参数形态）；首轮仅注入双工具，第二轮起注入保留工具（read_artifact 在自动驱逐开启时由组装层强制放行）；隐藏 OWC 专属文件、git、后台与定时工具（git 操作由模型经 bash 自行处理），保留 web 搜索、待办、子代理与技能工具。
