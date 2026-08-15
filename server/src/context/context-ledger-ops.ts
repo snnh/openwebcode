@@ -7,6 +7,7 @@ import type {
   CompactionRecord,
   ContextLedger,
   ContextPolicy,
+  ContextSegmentBreakdown,
   LedgerEntry,
   RecordedCost,
   ViewFragment,
@@ -31,15 +32,7 @@ const DEFAULT_POLICY: ContextPolicy = {
   restoreBudget: 64_000,
 };
 
-/** read_file 结果行数不超过该值时始终保留（与 token 下限并列的独立豁免：10 行是完整的文件结构认知）。 */
-export const READ_ALWAYS_RETAIN_LINES = 10;
-/** read 头尾摘录的总字符上限：minified 长行文件兜住，超出仍走 artifact。 */
-const READ_EXCERPT_MAX_CHARS = 8000;
-/**
- * 永不驱逐的工具结果白名单：这些工具的结果是后续轮次的关键上下文（如图片描述），
- * 驱逐会破坏任务连续性。自动驱逐与手动驱逐都跳过。
- */
-export const EVICTION_EXEMPT_TOOLS: ReadonlySet<string> = new Set(["ext__vision-tools__describe_image"]);
+/** read 头尾摘录与驱逐豁免等驱逐侧常量/函数已迁至 extensions/context-saver（扩展能力）；本文件只保留核心视图组装所需的部分。 */
 
 /** buildView 缓存键的 ledger 部分：压缩/清空/驱逐条目（与历史实现逐字节一致）。 */
 export function computeLedgerKey(ledger: ContextLedger): string {
@@ -52,43 +45,6 @@ export function computeLedgerKey(ledger: ContextLedger): string {
   });
 }
 
-/**
- * 按轮计算保留集：一轮 = 一批连续的 tool 消息（对应一次 assistant tool_call 批次的全部结果）。
- * 保留最近 max(lag, 1) 轮——活动路径以 tool 批次结尾时该批是当轮（模型尚未看到），始终保护；
- * 路径以非 tool 消息结尾时严格保留最近 lag 轮。
- */
-export function retainedToolIds(messages: ChatMessage[], lag: number): ReadonlySet<string> {
-  const retained = new Set<string>();
-  const endsWithToolBatch = messages.length > 0 && messages[messages.length - 1]!.role === "tool";
-  const keepRounds = Math.max(lag, endsWithToolBatch ? 1 : 0);
-  let rounds = 0;
-  let index = messages.length - 1;
-  while (index >= 0 && rounds < keepRounds) {
-    if (messages[index]!.role !== "tool") {
-      index -= 1;
-      continue;
-    }
-    rounds += 1;
-    while (index >= 0 && messages[index]!.role === "tool") {
-      retained.add(messages[index]!.id);
-      index -= 1;
-    }
-  }
-  return retained;
-}
-
-/** toolCallId → 工具名（来自 assistant 消息的 tool_call 块），供驱逐条目记录语义摘要。 */
-export function toolNameByCallId(messages: ChatMessage[]): Map<string, string> {
-  const names = new Map<string, string>();
-  for (const message of messages) {
-    if (message.role !== "assistant") continue;
-    for (const block of message.content) {
-      if (block.type === "tool_call") names.set(block.id, block.name);
-    }
-  }
-  return names;
-}
-
 /** 驱逐占位符：给模型可操作的摘要（工具名/大小）与自助恢复路径（read_artifact）。 */
 function evictionPlaceholder(entry: LedgerEntry): string {
   const tool = entry.toolName ?? "unknown tool";
@@ -96,22 +52,7 @@ function evictionPlaceholder(entry: LedgerEntry): string {
   return `[tool result evicted (${tool}${size}); artifact:${entry.artifactId}; call read_artifact with artifactId "${entry.artifactId}", offset and limit to re-read a slice]`;
 }
 
-/** read_file 被逐时的头尾摘录：头/尾各 keepLines 行 + 中间省略注记；总字符超上限时砍头部保尾部。 */
-export function buildReadExcerpt(content: string, keepLines: number, artifactId: string): string {
-  const lines = content.split("\n");
-  if (lines.length <= keepLines * 2 + 1) return content;
-  const head = lines.slice(0, keepLines);
-  const tail = lines.slice(-keepLines);
-  const omission = `[... ${lines.length - keepLines * 2} lines elided; artifact:${artifactId}; call read_artifact with artifactId "${artifactId}", offset and limit to re-read a slice ...]`;
-  let excerpt = [...head, omission, ...tail].join("\n");
-  if (excerpt.length > READ_EXCERPT_MAX_CHARS) {
-    const budget = Math.max(0, READ_EXCERPT_MAX_CHARS - (omission.length + tail.join("\n").length + 64));
-    excerpt = `${head.join("\n").slice(0, budget)}\n[... head truncated ...]\n${omission}\n${tail.join("\n")}`;
-  }
-  return excerpt;
-}
-
-/** 构建单条消息片段：深克隆 + 驱逐占位替换（pin 的消息跳过替换）。 */
+/** 构建单条消息片段：深克隆 + 驱逐占位替换（pin 的消息跳过替换）。tokens/segments 在估算阶段回填。 */
 export function buildFragment(message: ChatMessage, byMessage: Map<string, LedgerEntry>, pinnedIds: ReadonlySet<string>): ViewFragment {
   const entry = byMessage.get(message.id);
   const pinned = pinnedIds.has(message.id);
@@ -128,21 +69,60 @@ export function buildFragment(message: ChatMessage, byMessage: Map<string, Ledge
       }),
     },
     tokens: 0,
-    segment: message.role === "tool" ? "toolResults" : "messages",
+    segments: emptySegments(),
     pinned,
   };
 }
 
-/** 与 estimateMessageTokens 逐块规则一致的单消息估算（调用方对总和再取 max(1, …)）。 */
-export function estimateFragmentTokens(message: ChatMessage): number {
+/** 空段归因桶；五分类键见 ContextSegmentBreakdown。 */
+export function emptySegments(): ContextSegmentBreakdown {
+  return { system: 0, input: 0, toolCalls: 0, output: 0, other: 0 };
+}
+
+/** 把 source 的各桶累加进 target（增量构建的段汇总用）。 */
+export function addSegments(target: ContextSegmentBreakdown, source: ContextSegmentBreakdown): void {
+  target.system += source.system;
+  target.input += source.input;
+  target.toolCalls += source.toolCalls;
+  target.output += source.output;
+  target.other += source.other;
+}
+
+/**
+ * 与 estimateMessageTokens 逐块规则一致的单消息估算 + 按块段归因（调用方对总和再取 max(1, …)）。
+ * 归因：user → input；assistant 的 text → output、tool_call → toolCalls、thinking/其他块 → other；
+ * tool → toolCalls；每条消息的 4 tokens 结构开销计入角色默认桶（user→input / tool→toolCalls / assistant→output）。
+ * 压缩摘要头（id 以 compaction: 开头的 user 角色合成消息）由调用方整体归入 other。
+ */
+export function measureFragment(message: ChatMessage): { tokens: number; segments: ContextSegmentBreakdown } {
+  const segments = emptySegments();
+  const roleBucket = message.role === "user" ? "input" : message.role === "tool" ? "toolCalls" : "output";
   let total = 4;
+  segments[roleBucket] += 4;
   for (const block of message.content) {
-    if (block.type === "image") total += IMAGE_TOKEN_ESTIMATE;
-    else if (block.type === "tool_call") total += estimateTokens(JSON.stringify(block.input)) + 8;
-    else if (block.type === "tool_result") total += estimateTokens(block.content);
-    else if (block.type === "text" || block.type === "thinking") total += estimateTokens(block.text);
+    if (block.type === "image") {
+      total += IMAGE_TOKEN_ESTIMATE;
+      segments[roleBucket] += IMAGE_TOKEN_ESTIMATE;
+    } else if (block.type === "tool_call") {
+      const tokens = estimateTokens(JSON.stringify(block.input)) + 8;
+      total += tokens;
+      segments[message.role === "assistant" ? "toolCalls" : roleBucket] += tokens;
+    } else if (block.type === "tool_result") {
+      const tokens = estimateTokens(block.content);
+      total += tokens;
+      segments[message.role === "tool" ? "toolCalls" : roleBucket] += tokens;
+    } else if (block.type === "text" || block.type === "thinking") {
+      const tokens = estimateTokens(block.text);
+      total += tokens;
+      segments[block.type === "thinking" ? "other" : roleBucket] += tokens;
+    }
   }
-  return total;
+  return { tokens: total, segments };
+}
+
+/** 仅取 token 总数的兼容包装（压缩 replacedTokens 等只关心总量的调用方）。 */
+export function estimateFragmentTokens(message: ChatMessage): number {
+  return measureFragment(message).tokens;
 }
 
 /** 驱逐摘要消息 id 前缀：按轮一条，由该轮 assistant 消息 id 派生，确定且写入后不可变（缓存断点锚定用）。 */

@@ -550,7 +550,7 @@ describe("repo map 提示词注入与 repo_map 工具", () => {
     await sessions.updateConfig(session.id, { provider: "fake", model: "model", ...(options?.agentMode ? { agentMode: options.agentMode } : {}) });
     // ask 权限模式：repo_map 应像其他只读工具一样自动放行（不挂起审批）
     await sessions.updatePermissions(session.id, "ask", []);
-    if (options?.repoMapEnabled === false) await sessions.updateRepoMapSettings(session.id, { enabled: false });
+    if (options?.repoMapEnabled !== undefined) await sessions.updateRepoMapSettings(session.id, { enabled: options.repoMapEnabled });
 
     const pricing = new PricingCatalog(path.join(root, "pricing.json"));
     await pricing.initialize();
@@ -590,11 +590,17 @@ describe("repo map 提示词注入与 repo_map 工具", () => {
   }
 
   it("repo map 注入在动态侧：system 稳定前缀不含，systemSuffix 含", async () => {
-    const { requests } = await setup();
+    const { requests } = await setup({ repoMapEnabled: true });
     expect(requests[0]?.system).not.toContain("Repository map");
     expect(requests[0]?.systemSuffix).toContain("## Repository map");
     expect(requests[0]?.systemSuffix).toContain("src/");
     expect(requests[0]?.systemSuffix).not.toContain("node_modules");
+  });
+
+  it("默认不注入：未显式开启时 systemSuffix 不含 Repository map", async () => {
+    const { requests, state } = await setup();
+    expect(requests[0]?.systemSuffix ?? "").not.toContain("Repository map");
+    expect(state.scanCalls).toBe(0);
   });
 
   it("会话关闭后不再注入也不扫描", async () => {
@@ -603,12 +609,12 @@ describe("repo map 提示词注入与 repo_map 工具", () => {
     expect(state.scanCalls).toBe(0);
   });
 
-  it("repo map tokens 归因到 watermark 事件的 repoMap 段", async () => {
-    const { published } = await setup();
+  it("repo map tokens 归因到 watermark 事件的 system 段", async () => {
+    const { published } = await setup({ repoMapEnabled: true });
     const watermark = published.find((event) => event.type === "context.watermark");
     expect(watermark).toBeDefined();
-    const segments = (watermark!.payload as { segments: { repoMap: number } }).segments;
-    expect(segments.repoMap).toBeGreaterThan(0);
+    const segments = (watermark!.payload as { segments: { system: number } }).segments;
+    expect(segments.system).toBeGreaterThan(0);
   });
 
   it("repo_map 工具执行：返回预算内的树文本", async () => {

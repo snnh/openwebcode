@@ -22,6 +22,7 @@ import { ShortcutsSection } from "./sections/ShortcutsSection";
 import { RemoteAccessSection } from "./sections/RemoteAccessSection";
 import { ModelProvidersSection, WebProvidersSection } from "./sections/ProviderProfilesSection";
 import { ModelSelectionSection, ModelCatalogSyncSection } from "./sections/ModelSelectionSection";
+import { ContextSection } from "./sections/ContextSection";
 import { ModelCatalogSection } from "./sections/ModelCatalogSection";
 import { SkillsSection } from "./sections/SkillsSection";
 import { ExtensionsSection } from "./sections/ExtensionsSection";
@@ -62,6 +63,7 @@ const SETTINGS_GROUPS: Array<{ id: string; zh: string; en: string; tabs: Setting
     tabs: [
       { id: "models", zh: "模型目录", en: "Models", descriptionZh: "模型服务商、目录同步与可用模型能力", descriptionEn: "Model providers, catalog sync, and model capabilities", icon: "layers" },
       { id: "modelSelection", zh: "模型选择", en: "Model selection", descriptionZh: "会话默认、子代理角色与快速模型", descriptionEn: "Session default, sub-agent roles, and fast model", icon: "list" },
+      { id: "context", zh: "上下文", en: "Context", descriptionZh: "自动压缩水位与 agent 运行参数", descriptionEn: "Auto-compaction threshold and agent runtime limits", icon: "compress" },
       { id: "web", zh: "联网服务", en: "Web services", descriptionZh: "联网搜索与抓取服务商配置", descriptionEn: "Web search and fetch provider profiles", icon: "search" },
       { id: "pricing", zh: "模型定价", en: "Pricing", descriptionZh: "管理 token 价格、计费币种与汇率", descriptionEn: "Manage token prices, billing currencies, and exchange rates", icon: "chart" },
       { id: "prompt", zh: "提示词", en: "Prompt", descriptionZh: "覆盖系统提示词基线与追加自定义指令", descriptionEn: "Override the system prompt baseline and append custom instructions", icon: "wrench" },
@@ -314,6 +316,10 @@ export function SettingsDialog(): ReactElement | null {
               <h3>{t("会话默认", "Session defaults")}</h3>
               <p className="settings-note">{t("新建会话时预填的取值，可在对话框中再改。", "These values prefill the new-session dialog and can still be changed there.")}</p>
               <DefaultsSection />
+              <ServerSettingsFields
+                showGroup={(groupId) => groupId === "defaults"}
+                onDirtyChange={reportDirty}
+              />
             </section>
           )}
           {activeTab === "shortcuts" && (
@@ -340,6 +346,12 @@ export function SettingsDialog(): ReactElement | null {
             <section>
               <h3>{t("模型选择", "Model selection")}</h3>
               <ModelSelectionSection onDirtyChange={reportDirty} />
+            </section>
+          )}
+          {activeTab === "context" && (
+            <section>
+              <h3>{t("上下文", "Context")}</h3>
+              <ContextSection onDirtyChange={reportDirty} />
             </section>
           )}
           {activeTab === "web" && (

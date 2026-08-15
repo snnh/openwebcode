@@ -21,7 +21,7 @@ function makeSession(overrides: Partial<SessionDetail> = {}): SessionDetail {
   };
 }
 
-const SEGMENTS = { system: 0, compactionSummary: 0, toolResults: 0, messages: 0, repoMap: 0, other: 0 };
+const SEGMENTS = { system: 0, input: 0, toolCalls: 0, output: 0, other: 0 };
 
 function renderHeader(props: Partial<Parameters<typeof SessionHeader>[0]> = {}): ReturnType<typeof render> {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });

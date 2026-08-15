@@ -10,6 +10,7 @@ import { ExtensionManager } from "../src/extensions/extension-manager.js";
 import { BUILTIN_PERSONAS, listPersonas, resolvePersona } from "../src/extensions/env-sim/index.js";
 import { deleteUserPreset, loadUserPresets, personasDir, saveUserPreset } from "../src/extensions/env-sim/preset-store.js";
 import { ContextManager } from "../src/context/context-manager.js";
+import { updateEvictionPolicy } from "../src/extensions/context-saver/index.js";
 import { Compactor } from "../src/context/compactor.js";
 import { getOfficialUserAgent, getUserAgent, setSimulatedUserAgent } from "../src/user-agent.js";
 import { getServerVersion } from "../src/version.js";
@@ -289,6 +290,44 @@ describe("env-sim tool shaping", () => {
       expect(names).not.toContain("read_artifact");
       expect(names).not.toContain("todo_write");
       expect(names).not.toContain("read_file");
+      // 首轮极简提示词：只保留 persona 基础提示词（identity + basePrompt）与工具表渲染；
+      // 项目上下文、安全边界、尾注（版本/日期/工作目录）一律跳过
+      const system = requests[0]!.system;
+      expect(system).toContain("You are a helpful software engineer assistant.");
+      expect(system).toContain("Available tools:");
+      expect(system).not.toContain("## Safety boundary");
+      expect(system).not.toContain("Prompt version:");
+      expect(system).not.toContain("Current working directory:");
+      expect(system).not.toContain("<project_context>");
+      // repo map 内容段跟随 repo_map 工具隐藏：systemSuffix 不注入 Repository map
+      expect(requests[0]!.systemSuffix ?? "").not.toContain("Repository map");
+    });
+  }, 20_000);
+
+  it("dsh-minimal keeps the dual-tool shape across tool-loop turns within the first user message", async () => {
+    await withHarness({
+      enableEnvSim: true,
+      persona: "dsh-minimal",
+      script: [
+        [{ id: "bash-1", name: "bash", input: { command: "echo hi" } }],
+        [],
+      ],
+    }, async ({ agent, session, requests }) => {
+      await agent.run(session.id, "用 bash 看看");
+      // 两次模型调用（工具循环两轮）都在第一条用户消息内：工具列表保持双工具形态
+      expect(requests.length).toBe(2);
+      for (const request of requests) {
+        const names = (request.tools ?? []).map((tool) => tool.name);
+        expect(names).toContain("bash");
+        expect(names).toContain("str_replace_editor");
+        expect(names).not.toContain("todo_write");
+        expect(names).not.toContain("read_artifact");
+        // 同一用户消息内的工具循环同样保持极简提示词（首轮形态不提前结束）
+        expect(request.system).toContain("Available tools:");
+        expect(request.system).not.toContain("## Safety boundary");
+        expect(request.system).not.toContain("Prompt version:");
+        expect(request.systemSuffix ?? "").not.toContain("Repository map");
+      }
     });
   }, 20_000);
 
@@ -297,21 +336,31 @@ describe("env-sim tool shaping", () => {
       await agent.run(session.id, "第一轮");
       await agent.run(session.id, "第二轮");
       const names = (requests[1]!.tools ?? []).map((tool) => tool.name);
-      // 次轮恢复完整保留形态：read_artifact 由驱逐联动强制放行（默认策略 enabled），
-      // 保留工具（todo_write 等）注入
+      // 次轮恢复保留形态：read_artifact 由驱逐联动强制放行（默认策略 enabled），
+      // 仅注入 web 工具与子代理（spawn_task）；待办/提问/技能等已隐藏
       expect(names).toContain("bash");
       expect(names).toContain("str_replace_editor");
       expect(names).toContain("read_artifact");
-      expect(names).toContain("todo_write");
+      expect(names).toContain("spawn_task");
       // 仍保持隐藏的工具
       expect(names).not.toContain("read_file");
       expect(names).not.toContain("git_commit");
+      expect(names).not.toContain("todo_write");
+      expect(names).not.toContain("ask_user");
+      expect(names).not.toContain("load_skill");
+      // 第二轮恢复完整提示词：安全边界、项目上下文、尾注重新注入（首轮极简形态结束）
+      const system = requests[1]!.system;
+      expect(system).toContain("## Safety boundary");
+      expect(system).toContain("Prompt version:");
+      expect(system).toContain("Current working directory:");
+      // repo_map 仍被 hideBuiltIns 永久隐藏：内容段持续不注入
+      expect(requests[1]!.systemSuffix ?? "").not.toContain("Repository map");
     });
   }, 20_000);
 
   it("dsh-minimal keeps read_artifact hidden when auto-eviction is disabled", async () => {
     await withHarness({ enableEnvSim: true, persona: "dsh-minimal" }, async ({ agent, session, sessions, requests }) => {
-      await new ContextManager(sessions.contextRoot(session.id)).updatePolicy({ enabled: false });
+      await updateEvictionPolicy(new ContextManager(sessions.contextRoot(session.id)), { enabled: false });
       await agent.run(session.id, "第一轮");
       await agent.run(session.id, "第二轮");
       const names = (requests[1]!.tools ?? []).map((tool) => tool.name);

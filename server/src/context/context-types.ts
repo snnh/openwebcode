@@ -114,7 +114,7 @@ export interface BudgetUpdate {
   maxSessionCost?: { currency: Currency; microUnits: string } | undefined;
 }
 
-export type ContextPolicyUpdate = Partial<Pick<ContextPolicy, "enabled" | "strategy" | "evictionMode" | "lag" | "interval" | "minRetainTokens" | "readKeepLines" | "pinExemptRounds" | "restoreBudget">>;
+/** 驱逐策略字段的更新 DTO 已迁至 extensions/context-saver（扩展能力）；ledger 本体结构留在核心。 */
 
 /**
  * 选择性上下文（§4.4）：pins 为消息 id 或文件路径（pin 的消息不被驱逐）；
@@ -126,13 +126,19 @@ export interface ContextSelection {
   excludes: string[];
 }
 
-/** 按段 token 归因：system/repoMap 段由后续阶段（provider 侧/Phase 1c）供数，此处预留。 */
+/**
+ * 按段 token 归因（五分类，按内容块归属）：
+ * - system：系统提示词侧（repoMap 段注入 systemSuffix，token 由 agent-runner 归因到此桶）
+ * - input：用户输入（user 角色消息的 text/image 块）
+ * - toolCalls：工具调用（assistant 的 tool_call 块 + tool 角色的 tool_result 块）
+ * - output：模型正式输出（assistant 的 text 块）
+ * - other：其它（thinking 块、压缩摘要头与未归类块）
+ */
 export interface ContextSegmentBreakdown {
   system: number;
-  compactionSummary: number;
-  toolResults: number;
-  messages: number;
-  repoMap: number;
+  input: number;
+  toolCalls: number;
+  output: number;
   other: number;
 }
 
@@ -161,11 +167,11 @@ export interface BuildViewOptions {
   forceFullRebuild?: boolean;
 }
 
-/** 视图中一条消息的构建片段：最终注入形态（驱逐占位/图像预算已应用）+ 预估算 tokens。 */
+/** 视图中一条消息的构建片段：最终注入形态（驱逐占位/图像预算已应用）+ 预估算 tokens + 按块段归因。 */
 export interface ViewFragment {
   message: ChatMessage;
   tokens: number;
-  segment: keyof ContextSegmentBreakdown;
+  segments: ContextSegmentBreakdown;
   pinned: boolean;
 }
 

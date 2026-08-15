@@ -378,7 +378,7 @@ describe("official extensions", () => {
     await manager.initialize();
     try {
       expect(manager.list().map((item) => [item.id, item.enabled])).toEqual([
-        ["context-manager", true],
+        ["context-saver", true],
         ["attention-optimizer", false],
         ["content-lens", false],
         ["pdf-to-image", true],
@@ -404,14 +404,41 @@ describe("official extensions", () => {
       expect((await manager.install(source)).id).toBe("sample");
       expect((await manager.configure("sample", { enabled: true })).status).toBe("error");
       await manager.uninstall("sample");
-      expect(manager.list().find((item) => item.id === "context-manager")?.status).toBe("running");
+      expect(manager.list().find((item) => item.id === "context-saver")?.status).toBe("running");
 
-      await writeFile(path.join(source, "manifest.json"), JSON.stringify({ id: "context-manager", name: "Collision", version: "1.0.0", description: "test", apiVersion: "1", permissions: [] }), "utf8");
+      await writeFile(path.join(source, "manifest.json"), JSON.stringify({ id: "context-saver", name: "Collision", version: "1.0.0", description: "test", apiVersion: "1", permissions: [] }), "utf8");
       await expect(manager.install(source)).rejects.toThrow("Extension ID already exists");
     } finally {
       await manager.close();
     }
   }, 15_000);
+
+  it("migrates legacy context-manager state to context-saver on initialize (idempotent)", async () => {
+    const root = await tempRoot("owc-ext-migrate-");
+    await mkdir(path.join(root, "extensions"), { recursive: true });
+    await writeFile(
+      path.join(root, "extensions", "extensions.json"),
+      `${JSON.stringify({ version: 1, extensions: { "context-manager": { enabled: false, config: {} } } })}\n`,
+      "utf8",
+    );
+    const manager = new ExtensionManager(root);
+    await manager.initialize();
+    try {
+      // 旧键 context-manager 的 enabled/config 被 context-saver 继承（默认是 true，false 证明迁移生效）
+      expect(manager.isEnabled("context-saver")).toBe(false);
+      expect(manager.list().find((item) => item.id === "context-saver")?.enabled).toBe(false);
+    } finally {
+      await manager.close();
+    }
+    // 幂等：同一数据目录再次 initialize 不丢状态
+    const second = new ExtensionManager(root);
+    await second.initialize();
+    try {
+      expect(second.isEnabled("context-saver")).toBe(false);
+    } finally {
+      await second.close();
+    }
+  }, 20_000);
 
   it("keeps content-lens output outside message history and reuses its translation cache", async () => {
     const root = await tempRoot("owc-lens-");
@@ -444,8 +471,8 @@ describe("官方扩展 configSchema", () => {
   });
 
   it("带表单的官方扩展均声明 configSchema（设置页不再回退 JSON 编辑）", () => {
-    // context-manager 按会话在「上下文」面板配置；owc-eval 无可配置项——二者例外
-    const exempt = new Set(["context-manager", "owc-eval"]);
+    // context-saver 按会话在「上下文」面板配置；owc-eval 无可配置项——二者例外
+    const exempt = new Set(["context-saver", "owc-eval"]);
     for (const manifest of OFFICIAL_EXTENSIONS) {
       if (exempt.has(manifest.id)) continue;
       expect(manifest.configSchema, `${manifest.id} 缺少 configSchema`).toBeDefined();

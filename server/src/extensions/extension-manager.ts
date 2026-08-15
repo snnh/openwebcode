@@ -45,6 +45,9 @@ const MAX_IMAGE_BASE64_CHARS = 7_000_000;
 interface StoredConfig { version: 1; extensions: Record<string, ExtensionState> }
 type DiscoveredManifest = ExtensionManifest & { directory?: string };
 
+/** 官方扩展 id 改名迁移表（新 id → 旧 id）：loadStates 时新键缺失则读旧键。 */
+const EXTENSION_ID_MIGRATIONS: Record<string, string> = { "context-saver": "context-manager" };
+
 /** 扩展 API 所需的权限映射；null = 无需权限（私有能力，如扩展私有存储）。events.subscribe 挂 sessions:read。 */
 const API_PERMISSIONS: Record<ExtensionApiMethod, ExtensionPermission | null> = {
   "sessions.list": "sessions:read",
@@ -774,7 +777,9 @@ export class ExtensionManager {
     try { stored = JSON.parse(await readFile(this.configPath, "utf8")) as StoredConfig; } catch { /* first run */ }
     const result: Record<string, ExtensionState> = {};
     for (const manifest of this.manifests) {
-      const value = stored.extensions?.[manifest.id];
+      // 改名迁移（context-manager → context-saver，1.7.x）：新键缺失时读旧键的 enabled/config；
+      // 幂等——下次 saveStates 只写新键，旧键自然消失。
+      const value = stored.extensions?.[manifest.id] ?? stored.extensions?.[EXTENSION_ID_MIGRATIONS[manifest.id] ?? ""];
       result[manifest.id] = {
         enabled: typeof value?.enabled === "boolean" ? value.enabled : manifest.defaultEnabled === true,
         config: { ...(OFFICIAL_DEFAULT_CONFIG[manifest.id] ?? {}), ...(value?.config ?? {}) },

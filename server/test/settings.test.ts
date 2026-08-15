@@ -82,9 +82,9 @@ describe("server settings API", () => {
     const response = await setup.app.inject({ method: "GET", url: "/api/settings" });
     expect(response.statusCode).toBe(200);
     const view = response.json<SettingsView>();
-    expect(view.groups.map((group) => group.id)).toEqual(["models", "modelSelection", "general", "executor", "service", "network", "proxy", "webSearch", "exchangeRate", "updateCheck"]);
+    expect(view.groups.map((group) => group.id)).toEqual(["models", "modelSelection", "general", "defaults", "context", "executor", "service", "network", "proxy", "webSearch", "exchangeRate", "updateCheck"]);
     const fields = view.groups.flatMap((group) => group.fields);
-    expect(fields).toHaveLength(43);
+    expect(fields).toHaveLength(44);
     for (const item of fields) {
       expect(item.source).toBe("default");
       expect(item.editable).toBe(true);
@@ -224,6 +224,9 @@ describe("server settings API", () => {
       { fastModelThinking: "sometimes" },
       { fastModelEffort: "extreme" },
       { coreRequestTimeoutMs: -5 },
+      { compactionThresholdPercent: 49 },
+      { compactionThresholdPercent: 96 },
+      { compactionThresholdPercent: 85.5 },
       { exchangeRateUrl: "ftp://example.com" },
       { catalogSyncUrl: "ftp://example.com" },
       { syncIntervalMinutes: -1 },
@@ -350,6 +353,70 @@ describe("server settings API", () => {
     expect(envLocked.settings.effective().offlineMode).toBe(true);
     const rejected = await envLocked.app.inject({ method: "PUT", url: "/api/settings", payload: { overrides: { offlineMode: false } } });
     expect(rejected.statusCode).toBe(400);
+  });
+
+  it("设置分组重排：general 收窄为语言/货币/模式，defaults 与 context 拆出，offlineMode 归入 webSearch", async () => {
+    const setup = await fixture();
+    const view = (await setup.app.inject({ method: "GET", url: "/api/settings" })).json<SettingsView>();
+    const groups = new Map(view.groups.map((group) => [group.id, group]));
+    expect(groups.get("general")?.label).toBe("通用");
+    expect(groups.get("general")?.fields.map((item) => item.key)).toEqual(["defaultLanguage", "defaultCurrency", "chatModeEnabled"]);
+    expect(groups.get("defaults")?.label).toBe("会话默认");
+    expect(groups.get("defaults")?.fields.map((item) => item.key)).toEqual(["defaultEffort", "defaultSnapshotMode", "snapshotBackend"]);
+    expect(groups.get("context")?.label).toBe("上下文与运行");
+    expect(groups.get("context")?.fields.map((item) => item.key)).toEqual(["compactionThresholdPercent", "agentMaxTurns", "subAgentMaxTurns"]);
+    expect(groups.get("webSearch")?.label).toBe("联网");
+    expect(groups.get("webSearch")?.fields.map((item) => item.key)).toEqual(["offlineMode", "webSearchMode"]);
+  });
+
+  it("compactionThresholdPercent 默认 85，50/85/95 合法且热生效", async () => {
+    const setup = await fixture();
+    const view = (await setup.app.inject({ method: "GET", url: "/api/settings" })).json<SettingsView>();
+    expect(field(view, "compactionThresholdPercent")).toMatchObject({
+      type: "number", value: 85, source: "default", restartRequired: false, editable: true,
+    });
+    expect(setup.settings.effective().compactionThresholdPercent).toBe(85);
+
+    for (const value of [50, 85, 95]) {
+      const response = await setup.app.inject({
+        method: "PUT",
+        url: "/api/settings",
+        payload: { overrides: { compactionThresholdPercent: value } },
+      });
+      expect(response.statusCode).toBe(200);
+      // 热生效：effective() 现读
+      expect(setup.settings.effective().compactionThresholdPercent).toBe(value);
+    }
+    expect(field((await setup.app.inject({ method: "GET", url: "/api/settings" })).json<SettingsView>(), "compactionThresholdPercent"))
+      .toMatchObject({ value: 95, source: "file" });
+  });
+
+  it("env OWC_COMPACTION_THRESHOLD_PERCENT 越界 fail-fast，合法值锁定界面写入", async () => {
+    // 越界 env 在 loadConfig 直接抛错（与 boundedInteger 约定一致），服务不启动
+    await expect(fixture({ OWC_COMPACTION_THRESHOLD_PERCENT: "40" })).rejects.toThrow(/>= 50/);
+
+    const locked = await fixture({ OWC_COMPACTION_THRESHOLD_PERCENT: "70" });
+    const lockedView = (await locked.app.inject({ method: "GET", url: "/api/settings" })).json<SettingsView>();
+    expect(field(lockedView, "compactionThresholdPercent")).toMatchObject({ value: 70, source: "env", editable: false });
+    expect(locked.settings.effective().compactionThresholdPercent).toBe(70);
+    const rejected = await locked.app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: { overrides: { compactionThresholdPercent: 80 } },
+    });
+    expect(rejected.statusCode).toBe(400);
+  });
+
+  it("loads OWC_COMPACTION_THRESHOLD_PERCENT into ServerConfig（50–95 合法；越界/非法 fail-fast，与 boundedInteger 约定一致）", () => {
+    expect(loadConfig({}).compactionThresholdPercent).toBe(85);
+    expect(loadConfig({ OWC_COMPACTION_THRESHOLD_PERCENT: "50" }).compactionThresholdPercent).toBe(50);
+    expect(loadConfig({ OWC_COMPACTION_THRESHOLD_PERCENT: "70" }).compactionThresholdPercent).toBe(70);
+    expect(loadConfig({ OWC_COMPACTION_THRESHOLD_PERCENT: "95" }).compactionThresholdPercent).toBe(95);
+    // 越界与非法值一律抛错（与 agentMaxTurns 等数值环境变量的 boundedInteger 约定一致）
+    expect(() => loadConfig({ OWC_COMPACTION_THRESHOLD_PERCENT: "40" })).toThrow(/>= 50/);
+    expect(() => loadConfig({ OWC_COMPACTION_THRESHOLD_PERCENT: "96" })).toThrow(/95/);
+    expect(() => loadConfig({ OWC_COMPACTION_THRESHOLD_PERCENT: "85.5" })).toThrow(/positive integer/);
+    expect(() => loadConfig({ OWC_COMPACTION_THRESHOLD_PERCENT: "abc" })).toThrow(/positive integer/);
   });
 
   it("loads OWC_OFFLINE into ServerConfig", () => {

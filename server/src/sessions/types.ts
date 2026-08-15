@@ -168,7 +168,7 @@ export interface SessionMeta {
   contextPins?: string[];
   /** 上下文排除路径 glob（不进上下文组装/repo map/索引；不是安全边界）。 */
   contextExcludes?: string[];
-  /** repo map 自动注入开关；undefined = 开（§4.1 默认开，会话可关）。 */
+  /** repo map 自动注入开关；undefined = 关，显式开启（=== true）才注入。 */
   repoMapEnabled?: boolean;
   /** repo map token 预算；undefined = 2048（DEFAULT_REPO_MAP_BUDGET）。 */
   repoMapBudget?: number;
