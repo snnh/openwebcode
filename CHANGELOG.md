@@ -2,9 +2,11 @@
 
 本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前版本的用户可感知变化。日期以 Git 标签发布日期为准。
 
-## [Unreleased]
+## [1.8.0] - 2026-08-15
 
 ### 官方扩展
+
+- **内置预设支持自定义覆盖与还原**：env-sim 预设解析改为用户目录优先——在 `<业务数据目录>/env-sim/personas/` 放入与内置同 id（`claude-code`/`kimi-code`/`zcode`/`codex`/`dsh-minimal`）的预设 JSON 即覆盖该内置，只覆盖填写的字段、工具形态/命令拟态等其余部分自动继承内置；UI 中覆盖项显示「已自定义」标记，可一键「还原内置预设」。自制预设的分享机制不变。
 
 - **context-manager 改名 context-saver（0.3.0）**：官方扩展「上下文管理器」更名为「上下文节省」（Context Saver），职责更聚焦。持久化状态自动迁移：extensions.json 旧键配置原样继承，会话 extensionState 写路径归一，无需手动处理。
 - **驱逐/条目/选择性上下文归入扩展且可开关**：滚动驱逐（自动/手动）、上下文条目管理（恢复/固定/再逐出/查看原文）与选择性上下文（pin/排除路径）整体迁入 context-saver（服务端实现位于 `server/src/extensions/context-saver/`），随扩展启停。停用后：agent 循环不再自动驱逐、read_artifact 驱逐联动不生效、pin/排除不参与上下文组装，上下文面板中驱逐策略/选择性上下文/上下文条目三段隐藏，相关 REST 端点返回 409。
