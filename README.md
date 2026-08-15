@@ -38,7 +38,8 @@ OpenWebCode 是一个跑在浏览器里的 AI 编码工作台，界面中英双�
 - git 和文件系统级快照：ZFS / Btrfs / overlayfs / VHDX / qcow2 多种后端。
 - 更好的上下文管理：自动压缩水位可调（设置「上下文」页签，50–95，默认 85%）与 `/compact` 手动压缩；滚动驱逐、上下文条目管理与选择性上下文（pin/排除）由官方 context-saver（上下文节省）扩展提供，可整体关停；上下文面板按系统提示词/输入/工具调用/输出/其它五分类可视化 token 归因。
 - 多模型适配：多服务商并存、会话中热切换，四档角色按任务路由，主模型报错沿备选链自动切换。
-- 环境模拟（env-sim）：系统提示词与工具形态可切换为知名 AI 编码产品的风格（Claude Code / Kimi / ZCode / Codex / DSH 五档预设），底层仍走原工具实现与权限链。已对 DeepSeek V4 Pro 0813 专项适配——使用该模型时建议开启 DSH 极简模拟（`dsh-minimal`）：首条消息以 bash + 文件编辑双工具的极简形态运行（系统提示词同步精简），第二条消息起恢复完整工具面，体验更佳。
+- 环境模拟（env-sim）：系统提示词与工具形态可切换为知名 AI 编码产品的风格（Claude Code / Kimi / ZCode / Codex / DSH 五档预设），底层仍走原工具实现与权限链。
+- 已对 DeepSeek V4 Pro 0813 专项适配——使用该模型时建议开启 DSH 极简模拟（`dsh-minimal`），同时应用仓库 assets/dsh-minimal.json 自定义预设覆盖默认设置
 - 子代理和 agent swarm：隔离上下文并行派发，进度和转录实时可见。
 - 较多的扩展支持：Skills、斜杠命令、Hooks、自定义子代理、MCP 和 Extension Host 第三方扩展。
 - 自由的会话管理：消息随意改、分叉随时开。
