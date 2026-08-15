@@ -20,12 +20,14 @@ export function formatSettingValue(value: SettingValue | null | undefined): stri
 export const SETTINGS_GROUP_EN: Record<string, string> = {
   modelSelection: "Model Selection",
   models: "Model Catalog & Sync",
-  general: "Language and currency",
+  general: "General",
+  defaults: "Session Defaults",
+  context: "Context & Runtime",
   executor: "Executor",
   service: "Storage",
   network: "Listen address and port",
   proxy: "Outbound proxy",
-  webSearch: "Web search",
+  webSearch: "Network",
   exchangeRate: "Exchange rate",
   updateCheck: "Update check",
 };
@@ -34,14 +36,18 @@ export const SETTINGS_GROUP_EN: Record<string, string> = {
 export const NETWORK_SETTINGS_GROUP = "network";
 
 /**
- * 服务端设置分组 → 设置页签归属。分组 id 由服务端保持稳定（见 server/src/settings-service.ts），
- * web 端决定每个分组渲染在哪个页签：模型选择 → 模型选择，模型目录与同步 → 模型目录，语言与货币 → 通用，
- * 汇率 → 模型定价，执行器/存储/更新检查 → 服务信息，监听与端口 → 远程访问，出站代理/联网搜索 → 联网服务。
+ * 服务端设置分组 → 设置页签归属。分组 id 由服务端给出（见 server/src/settings-service.ts），
+ * web 端决定每个分组渲染在哪个页签：模型选择 → 模型选择，模型目录与同步 → 模型目录，
+ * 通用（语言/货币/模式开关）→ 通用，会话默认 → 会话默认，上下文与运行 → 上下文，
+ * 汇率 → 模型定价，执行器/存储/更新检查 → 服务信息，监听与端口 → 远程访问，
+ * 出站代理/联网（搜索模式、离线模式）→ 联网服务。
  */
 export const SETTING_GROUP_TAB: Record<string, SettingsTab> = {
   modelSelection: "modelSelection",
   models: "models",
   general: "general",
+  defaults: "defaults",
+  context: "context",
   executor: "info",
   service: "info",
   network: "remote",
@@ -73,6 +79,7 @@ export const SETTINGS_FIELD_EN: Record<string, { label: string; description?: st
   agentMaxTurns: { label: "Max turns per message", description: "Maximum agent turns allowed per user message; the task ends with a failure once reached. Increase for long tasks (1-1000)" },
   subAgentMaxTurns: { label: "Max sub-agent turns", description: "Default turn limit for sub-agents (spawn_task / spawn_swarm / manual launch); spawn_task / spawn_swarm accept a maxTurns argument to override per call (1-1000)" },
   chatModeEnabled: { label: "Enable Chat mode", description: "Off by default; when enabled, the UI shows a Chat / Workbench mode toggle for the ChatGPT-style chat mode" },
+  compactionThresholdPercent: { label: "Auto-compaction threshold (%)", description: "The context is compacted automatically when usage reaches this percentage (50-95); the recommendation threshold is 15 points lower. Core safety net, independent of the context-saver extension" },
   defaultCurrency: { label: "Default currency" },
   defaultEffort: { label: "Default thinking effort", description: "Thinking effort applied to new sessions; none means follow the model default; silently skipped when the model does not support the selected level" },
   defaultSnapshotMode: { label: "Default snapshot mode", description: "Checkpoint creation for new sessions: auto = before each user message; manual = only on demand" },

@@ -1,109 +1,29 @@
 import { useEffect, useState, type ReactElement } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
-import type { ChatMessage, ContextTokenUsage, ContextUsage, ContextView } from "../lib/contracts";
+import type { ContextTokenUsage, ContextUsage, ContextView } from "../lib/contracts";
 import { cacheHitRate } from "../lib/cache-stats";
-import { deriveWindowInfo, windowLevel, type ContextWindowInfo } from "../lib/context-window";
+import { deriveWindowInfo, windowLevel, compactionThresholdPercent, type ContextWindowInfo } from "../lib/context-window";
 import { formatCurrency, formatTokens, formatTokensShort, microToDecimal } from "../lib/format";
 import { compactionModeNameText } from "../lib/compaction";
 import { cacheTone, formatCacheTitle } from "../lib/cache-stats";
 import { useStore } from "../app/store";
 import { sessionStore } from "../app/session-store";
-import { qk, useContextViewQuery, useModelsQuery, useSessionQuery } from "../app/queries";
+import { qk, useContextViewQuery, useExtensionsQuery, useModelsQuery, useServerSettingsQuery, useSessionQuery } from "../app/queries";
 import { ui } from "../app/ui-store";
 import { useI18n } from "../i18n";
-
-const STATE_LABELS: Record<string, [string, string]> = { full: ["保留", "Retained"], evicted: ["已逐出", "Evicted"], restored: ["已恢复", "Restored"] };
-
-function messageSummary(messages: ChatMessage[] | undefined, messageId: string, t: (zh: string, en: string) => string): string {
-  const message = messages?.find((item) => item.id === messageId);
-  if (!message) return messageId;
-  for (const block of message.content) {
-    if (block.type === "tool_call" && block.name) return t(`工具 ${block.name}`, `Tool ${block.name}`);
-    if (block.type === "tool_result" && block.content?.trim()) {
-      const text = block.content.trim().replace(/\s+/g, " ");
-      return text.length > 42 ? `${text.slice(0, 42)}…` : text;
-    }
-    if (block.type === "text" && block.text?.trim()) {
-      const text = block.text.trim().replace(/\s+/g, " ");
-      return text.length > 42 ? `${text.slice(0, 42)}…` : text;
-    }
-  }
-  return messageId;
-}
-
-/** 管理与压缩：手动压缩入口 + 自动驱逐策略表单（数据由父级 context 查询注入，不再各自重复查询） */
-function PolicySection({ sessionId, running, policy }: { sessionId: string; running: boolean; policy: ContextView["ledger"]["policy"] }): ReactElement {
-  const { t } = useI18n();
-  const queryClient = useQueryClient();
-  const [form, setForm] = useState({ enabled: true, strategy: "lag" as "lag" | "interval" | "off", evictionMode: "placeholder" as "placeholder" | "process", lag: "10", interval: "5", minRetainTokens: "256", readKeepLines: "50", pinExemptRounds: "5", restoreBudget: "64000" });
-  const [busy, setBusy] = useState(false);
-  const [compacting, setCompacting] = useState<"toolcalls" | "overview" | null>(null);
-  useEffect(() => {
-    if (!policy) return;
-    setForm({ enabled: policy.enabled, strategy: policy.strategy, evictionMode: policy.evictionMode, lag: String(policy.lag), interval: String(policy.interval), minRetainTokens: String(policy.minRetainTokens), readKeepLines: String(policy.readKeepLines), pinExemptRounds: String(policy.pinExemptRounds), restoreBudget: String(policy.restoreBudget) });
-  }, [policy]);
-  const save = (): void => {
-    const values = [form.lag, form.interval, form.minRetainTokens, form.readKeepLines, form.pinExemptRounds, form.restoreBudget];
-    if (values.some((value) => !/^\d+$/.test(value))) { ui.notify(t("上下文策略数值必须为非负整数", "Context policy values must be non-negative integers"), "error"); return; }
-    setBusy(true);
-    api.updateContextPolicy(sessionId, {
-      enabled: form.enabled,
-      strategy: form.strategy,
-      evictionMode: form.evictionMode,
-      lag: Number(form.lag),
-      interval: Number(form.interval),
-      minRetainTokens: Number(form.minRetainTokens),
-      readKeepLines: Number(form.readKeepLines),
-      pinExemptRounds: Number(form.pinExemptRounds),
-      restoreBudget: Number(form.restoreBudget),
-    }).then(() => {
-      void queryClient.invalidateQueries({ queryKey: qk.context(sessionId) });
-      ui.notify(t("上下文策略已更新", "Context policy updated"));
-    }).catch((error: unknown) => ui.notify(error instanceof Error ? error.message : t("策略更新失败", "Policy update failed"), "error")).finally(() => setBusy(false));
-  };
-  const compact = (mode: "toolcalls" | "overview"): void => {
-    setBusy(true);
-    setCompacting(mode);
-    api.compactContext(sessionId, mode).then((result) => {
-      void queryClient.invalidateQueries({ queryKey: qk.context(sessionId) });
-      ui.notify(result.changed
-        ? (mode === "toolcalls" ? t("工具调用已压缩", "Tool calls compacted") : t("已生成上下文概览", "Context overview generated"))
-        : result.reason ?? t("无需压缩", "No compaction needed"));
-    }).catch((error: unknown) => ui.notify(error instanceof Error ? error.message : t("压缩失败", "Compaction failed"), "error")).finally(() => { setBusy(false); setCompacting(null); });
-  };
-  return (
-    <>
-      <h2>{t("管理与压缩", "Management and compaction")}</h2>
-      <div className="context-actions">
-        <button className="btn small" disabled={running || busy || compacting !== null} onClick={() => compact("toolcalls")}>{compacting === "toolcalls" ? t("压缩中…", "Compacting…") : t("压缩工具调用", "Compact tool calls")}</button>
-        <button className="btn small" disabled={running || busy || compacting !== null} onClick={() => compact("overview")}>{compacting === "overview" ? t("压缩中…", "Compacting…") : t("概览压缩", "Overview compaction")}</button>
-      </div>
-      <div className="context-policy-form">
-        <label><input type="checkbox" checked={form.enabled} disabled={running || busy} onChange={(event) => setForm((value) => ({ ...value, enabled: event.target.checked }))} /> {t("启用自动驱逐", "Enable automatic eviction")}</label>
-        <label>{t("策略", "Strategy")}<select className="input" value={form.strategy} disabled={running || busy} onChange={(event) => setForm((value) => ({ ...value, strategy: event.target.value as typeof value.strategy }))}><option value="lag">{t("滚动 lag", "Rolling lag")}</option><option value="interval">{t("定期 interval", "Periodic interval")}</option><option value="off">{t("仅手动", "Manual only")}</option></select></label>
-        <label>{t("驱逐模式", "Eviction mode")}<select className="input" value={form.evictionMode} disabled={running || busy} onChange={(event) => setForm((value) => ({ ...value, evictionMode: event.target.value as typeof value.evictionMode }))}><option value="placeholder">{t("默认节省（占位符）", "Default saver (placeholder)")}</option><option value="process">{t("超级节省（整轮过程驱逐）", "Super saver (whole-round eviction)")}</option></select></label>
-        <label>{t("保留最近轮数", "Recent rounds to retain")}<input className="input" value={form.lag} disabled={running || busy} inputMode="numeric" onChange={(event) => setForm((value) => ({ ...value, lag: event.target.value }))} /></label>
-        <label>{t("结果保留下限 tokens", "Min result tokens to retain")}<input className="input" value={form.minRetainTokens} disabled={running || busy} inputMode="numeric" onChange={(event) => setForm((value) => ({ ...value, minRetainTokens: event.target.value }))} /></label>
-        <label>{t("read 头尾保留行数", "Read head/tail lines to keep")}<input className="input" value={form.readKeepLines} disabled={running || busy} inputMode="numeric" onChange={(event) => setForm((value) => ({ ...value, readKeepLines: event.target.value }))} /></label>
-        <label>{t("批量间隔", "Batch interval")}<input className="input" value={form.interval} disabled={running || busy} inputMode="numeric" onChange={(event) => setForm((value) => ({ ...value, interval: event.target.value }))} /></label>
-        <label>{t("回写保护轮数", "Restore protection rounds")}<input className="input" value={form.pinExemptRounds} disabled={running || busy} inputMode="numeric" onChange={(event) => setForm((value) => ({ ...value, pinExemptRounds: event.target.value }))} /></label>
-        <label>{t("回写预算 tokens", "Restore budget (tokens)")}<input className="input" value={form.restoreBudget} disabled={running || busy} inputMode="numeric" onChange={(event) => setForm((value) => ({ ...value, restoreBudget: event.target.value }))} /></label>
-        <button className="btn small" disabled={running || busy} onClick={save}>{busy ? t("处理中…", "Working…") : t("保存策略", "Save policy")}</button>
-      </div>
-    </>
-  );
-}
+import { messageSummary } from "./context-entry-summary";
+import { ContextSaverSections } from "./ContextSaverSections";
 
 /** 按段 token 归因（§4.4）：展示本次上下文构建各段占用与构建耗时。 */
 function SegmentStats({ stats }: { stats: NonNullable<ContextView["stats"]> }): ReactElement {
   const { t } = useI18n();
   const rows: Array<[string, string, number]> = [
-    [t("压缩摘要", "Compaction summary"), "compactionSummary", stats.segments.compactionSummary],
-    [t("工具结果", "Tool results"), "toolResults", stats.segments.toolResults],
-    [t("对话消息", "Messages"), "messages", stats.segments.messages],
-    [t("Repo map", "Repo map"), "repoMap", stats.segments.repoMap],
-    [t("系统/cache 稳定段", "System / cache-stable"), "system", stats.segments.system],
+    [t("系统提示词", "System prompt"), "system", stats.segments.system],
+    [t("输入", "Input"), "input", stats.segments.input],
+    [t("工具调用", "Tool calls"), "toolCalls", stats.segments.toolCalls],
+    [t("正式输出", "Output"), "output", stats.segments.output],
+    [t("其它", "Other"), "other", stats.segments.other],
   ];
   return (
     <>
@@ -128,7 +48,7 @@ function SegmentStats({ stats }: { stats: NonNullable<ContextView["stats"]> }): 
 }
 
 /** 上下文窗口占用（§水位）：占用 meter + 缓存命中行 + 分段堆叠条 + 压缩水位提示。 */
-function WindowSection({ info, latestUsage, cumulativeUsage, evicted }: {
+function WindowSection({ info, latestUsage, cumulativeUsage, evicted, thresholdPercent = 85 }: {
   info: ContextWindowInfo;
   /** 最近一轮 token 用量（session-store usages，WS context.usage 写入）；本轮缓存命中来源。 */
   latestUsage?: ContextUsage | undefined;
@@ -136,9 +56,11 @@ function WindowSection({ info, latestUsage, cumulativeUsage, evicted }: {
   cumulativeUsage: ContextTokenUsage;
   /** 驱逐态工具结果聚合（stats.evicted）；无驱逐条目时缺省不渲染 */
   evicted?: { tokens: number; count: number } | undefined;
+  /** 自动压缩水位（%，设置页可调）；meter 配色阈值随动 */
+  thresholdPercent?: number;
 }): ReactElement {
   const { t } = useI18n();
-  const level = windowLevel(info.utilization);
+  const level = windowLevel(info.utilization, thresholdPercent);
   const pct = info.utilization !== undefined ? Math.round(info.utilization * 100) : undefined;
   const latestCache = latestUsage ? cacheHitRate(latestUsage) : undefined;
   const cumulativeCache = cacheHitRate(cumulativeUsage);
@@ -147,12 +69,11 @@ function WindowSection({ info, latestUsage, cumulativeUsage, evicted }: {
     (latestCache !== undefined && (latestCache.cacheRead > 0 || latestCache.cacheWrite > 0)) ||
     cumulativeCache.cacheRead > 0 || cumulativeCache.cacheWrite > 0;
   const rows: Array<[string, string, number]> = [
-    ["messages", t("对话消息", "Messages"), info.segments.messages],
-    ["toolResults", t("工具结果", "Tool results"), info.segments.toolResults],
-    ["repoMap", t("Repo map", "Repo map"), info.segments.repoMap],
-    ["compactionSummary", t("压缩摘要", "Compaction summary"), info.segments.compactionSummary],
-    ["system", t("系统/cache 稳定段", "System / cache-stable"), info.segments.system],
-    ["other", t("其他", "Other"), info.segments.other],
+    ["system", t("系统提示词", "System prompt"), info.segments.system],
+    ["input", t("输入", "Input"), info.segments.input],
+    ["toolCalls", t("工具调用", "Tool calls"), info.segments.toolCalls],
+    ["output", t("正式输出", "Output"), info.segments.output],
+    ["other", t("其它", "Other"), info.segments.other],
   ];
   const segmentTotal = rows.reduce((sum, [, , value]) => sum + value, 0);
   const visibleRows = rows.filter(([, , value]) => value > 0);
@@ -241,85 +162,6 @@ function FragmentRow({ label, value }: { label: string; value: number }): ReactE
     <>
       <dt>{label}</dt>
       <dd>{formatTokens(value)}</dd>
-    </>
-  );
-}
-
-/** 选择性上下文（§4.4）：pin 不被驱逐；排除路径不进上下文。排除不是安全边界。 */
-function SelectionSection({ sessionId, running, selection }: { sessionId: string; running: boolean; selection: { pins: string[]; excludes: string[] } }): ReactElement {
-  const { t } = useI18n();
-  const queryClient = useQueryClient();
-  const [pinInput, setPinInput] = useState("");
-  const [excludeInput, setExcludeInput] = useState("");
-  const [busy, setBusy] = useState(false);
-  const save = (pins: string[], excludes: string[]): void => {
-    setBusy(true);
-    api.updateContextSelection(sessionId, { pins, excludes })
-      .then(() => {
-        void queryClient.invalidateQueries({ queryKey: qk.context(sessionId) });
-        void queryClient.invalidateQueries({ queryKey: qk.session(sessionId) });
-        ui.notify(t("选择性上下文已更新", "Context selection updated"));
-      })
-      .catch((error: unknown) => ui.notify(error instanceof Error ? error.message : t("更新失败", "Update failed"), "error"))
-      .finally(() => setBusy(false));
-  };
-  const addPin = (): void => {
-    const value = pinInput.trim();
-    if (!value) return;
-    if (selection.pins.includes(value)) { setPinInput(""); return; }
-    save([...selection.pins, value], selection.excludes);
-    setPinInput("");
-  };
-  const addExclude = (): void => {
-    const value = excludeInput.trim();
-    if (!value) return;
-    if (selection.excludes.includes(value)) { setExcludeInput(""); return; }
-    save(selection.pins, [...selection.excludes, value]);
-    setExcludeInput("");
-  };
-  const disabled = running || busy;
-  return (
-    <>
-      <h2>{t("选择性上下文（pin / 排除）", "Selective context (pin / exclude)")}</h2>
-      <p className="panel-note">
-        {t("pin 的消息或文件不被自动驱逐；排除的路径不进入上下文组装、repo map 与索引。注意：排除不是安全边界——文件访问权限仍由路径策略与沙盒保证。", "Pinned messages or files are never auto-evicted; excluded paths stay out of the context, repo map, and index. Note: exclusion is not a security boundary — file access is still governed by path policy and the sandbox.")}
-      </p>
-      <h3>{t("已 pin", "Pinned")}</h3>
-      {selection.pins.length === 0 && <p className="muted-empty panel-empty">{t("暂无 pin。", "No pins.")}</p>}
-      {selection.pins.map((pin) => (
-        <div className="context-entry" key={pin}>
-          <span className="entry-summary mono" title={pin}>{pin}</span>
-          <button className="btn small" disabled={disabled} onClick={() => save(selection.pins.filter((item) => item !== pin), selection.excludes)}>{t("移除", "Remove")}</button>
-        </div>
-      ))}
-      <div className="context-actions">
-        <input
-          value={pinInput}
-          disabled={disabled}
-          placeholder={t("消息 id 或文件路径", "Message id or file path")}
-          onChange={(event) => setPinInput(event.target.value)}
-          aria-label={t("新增 pin", "Add pin")}
-        />
-        <button className="btn small" disabled={disabled || !pinInput.trim()} onClick={addPin}>{t("添加 pin", "Add pin")}</button>
-      </div>
-      <h3>{t("排除路径", "Excluded paths")}</h3>
-      {selection.excludes.length === 0 && <p className="muted-empty panel-empty">{t("暂无排除。", "No exclusions.")}</p>}
-      {selection.excludes.map((exclude) => (
-        <div className="context-entry" key={exclude}>
-          <span className="entry-summary mono" title={exclude}>{exclude}</span>
-          <button className="btn small" disabled={disabled} onClick={() => save(selection.pins, selection.excludes.filter((item) => item !== exclude))}>{t("移除", "Remove")}</button>
-        </div>
-      ))}
-      <div className="context-actions">
-        <input
-          value={excludeInput}
-          disabled={disabled}
-          placeholder={t("路径 glob，如 **/*.log", "Path glob, for example **/*.log")}
-          onChange={(event) => setExcludeInput(event.target.value)}
-          aria-label={t("新增排除路径", "Add excluded path")}
-        />
-        <button className="btn small" disabled={disabled || !excludeInput.trim()} onClick={addExclude}>{t("添加排除", "Add exclusion")}</button>
-      </div>
     </>
   );
 }
@@ -421,17 +263,70 @@ function BudgetSection({ sessionId, running, context }: {
   );
 }
 
-/** 上下文面板：窗口水位/用量/成本/条目管理与策略表单。数据自取（qk.context + session-store 水位/用量），提示走 ui.notify。 */
+/** 压缩（核心功能，不随 context-saver 扩展开关）：手动压缩入口 + 最近一次压缩信息。 */
+function CompactionSection({ sessionId, running, context }: {
+  sessionId: string;
+  running: boolean;
+  context: ContextView;
+}): ReactElement {
+  const { t, locale } = useI18n();
+  const queryClient = useQueryClient();
+  const [compacting, setCompacting] = useState<"toolcalls" | "overview" | null>(null);
+  const compacted = context.ledger.compacted;
+  const compact = (mode: "toolcalls" | "overview"): void => {
+    setCompacting(mode);
+    api.compactContext(sessionId, mode).then((result) => {
+      void queryClient.invalidateQueries({ queryKey: qk.context(sessionId) });
+      ui.notify(result.changed
+        ? (mode === "toolcalls" ? t("工具调用已压缩", "Tool calls compacted") : t("已生成上下文概览", "Context overview generated"))
+        : result.reason ?? t("无需压缩", "No compaction needed"));
+    }).catch((error: unknown) => ui.notify(error instanceof Error ? error.message : t("压缩失败", "Compaction failed"), "error")).finally(() => setCompacting(null));
+  };
+  return (
+    <>
+      <h2>{t("压缩", "Compaction")}</h2>
+      <div className="context-actions">
+        <button className="btn small" disabled={running || compacting !== null} onClick={() => compact("toolcalls")}>{compacting === "toolcalls" ? t("压缩中…", "Compacting…") : t("压缩工具调用", "Compact tool calls")}</button>
+        <button className="btn small" disabled={running || compacting !== null} onClick={() => compact("overview")}>{compacting === "overview" ? t("压缩中…", "Compacting…") : t("概览压缩", "Overview compaction")}</button>
+      </div>
+      {compacted && (
+        <dl>
+          <dt>{t("模式", "Mode")}</dt>
+          <dd>{t(...compactionModeNameText(compacted.mode))}</dd>
+          {compacted.replacedTokens !== undefined && (
+            <>
+              <dt>{t("被替换段估算", "Replaced estimate")}</dt>
+              <dd>{t(`约 ${formatTokensShort(compacted.replacedTokens)} tokens`, `~${formatTokensShort(compacted.replacedTokens)} tokens`)}</dd>
+            </>
+          )}
+          <dt>{t("范围", "Range")}</dt>
+          <dd>{t(`前 ${compacted.uptoIndex} 条消息`, `First ${compacted.uptoIndex} messages`)}</dd>
+          <dt>{t("时间", "Time")}</dt>
+          <dd>{new Date(compacted.createdAt).toLocaleString(locale)}</dd>
+          {compacted.instructions.length > 0 && (
+            <>
+              <dt>{t("用户明确指令（累积）", "Explicit user instructions (cumulative)")}</dt>
+              <dd className="kv-text">{compacted.instructions.map((item) => `· ${item}`).join("\n")}</dd>
+            </>
+          )}
+        </dl>
+      )}
+    </>
+  );
+}
+
+/** 上下文面板：窗口水位/用量/成本/压缩/预算；驱逐策略、选择性上下文与条目管理是
+ *  context-saver 扩展能力，仅扩展启用时渲染（ContextSaverSections）。 */
 export function ContextPanel({ sessionId, running }: {
   sessionId?: string | undefined;
   running: boolean;
 }): ReactElement {
-  const { t, locale } = useI18n();
-  const queryClient = useQueryClient();
-  const [artifact, setArtifact] = useState<{ id: string; content: string }>();
+  const { t } = useI18n();
   const context = useContextViewQuery(sessionId);
   const session = useSessionQuery(sessionId);
   const models = useModelsQuery();
+  const extensions = useExtensionsQuery();
+  const serverSettings = useServerSettingsQuery();
   // WS 实时水位/本轮用量（事件路由写 session-store）；缺省时由 REST stats + 模型档案播种
   const watermark = useStore(sessionStore, (state) => (sessionId ? state.watermarks[sessionId] : undefined));
   const latestUsage = useStore(sessionStore, (state) => (sessionId ? state.usages[sessionId] : undefined));
@@ -442,14 +337,16 @@ export function ContextPanel({ sessionId, running }: {
 
   const detail = session.data;
   const summarize = (messageId: string): string => messageSummary(detail?.messages, messageId, t);
-  const { usage, cost, entries } = context.data.ledger;
+  const { usage, cost } = context.data.ledger;
   const model = models.data?.find((item) => item.id === detail?.model && item.provider === detail?.provider);
   // 实时水位优先；缺省时由 REST stats + 模型档案播种（窗口未知则只展示 tokens，不显示百分比）
   const windowInfo = deriveWindowInfo(watermark, context.data.stats, model);
+  // 扩展清单未加载完成时按默认开启处理（defaultEnabled: true），加载后以实际开关为准
+  const saverEnabled = !extensions.data || extensions.data.some((extension) => extension.id === "context-saver" && extension.enabled);
 
   return (
     <div className="inspector-body">
-      {windowInfo && <WindowSection info={windowInfo} latestUsage={latestUsage} cumulativeUsage={usage} evicted={context.data.stats?.evicted} />}
+      {windowInfo && <WindowSection info={windowInfo} latestUsage={latestUsage} cumulativeUsage={usage} evicted={context.data.stats?.evicted} thresholdPercent={compactionThresholdPercent(serverSettings.data)} />}
       <h2>{t("上下文用量", "Context usage")}</h2>
       <dl>
         <dt>{t("输入 tokens", "Input tokens")}</dt>
@@ -487,96 +384,9 @@ export function ContextPanel({ sessionId, running }: {
         )}
       </dl>
       {context.data.stats && <SegmentStats stats={context.data.stats} />}
-      <SelectionSection sessionId={sessionId} running={running} selection={context.data.selection ?? { pins: [], excludes: [] }} />
+      <CompactionSection sessionId={sessionId} running={running} context={context.data} />
       <BudgetSection sessionId={sessionId} running={running} context={context.data} />
-      <PolicySection sessionId={sessionId} running={running} policy={context.data.ledger.policy} />
-      {context.data.ledger.compacted && (
-        <>
-          <h2>{t("压缩", "Compaction")}</h2>
-          <dl>
-            <dt>{t("模式", "Mode")}</dt>
-            <dd>{t(...compactionModeNameText(context.data.ledger.compacted.mode))}</dd>
-            {context.data.ledger.compacted.replacedTokens !== undefined && (
-              <>
-                <dt>{t("被替换段估算", "Replaced estimate")}</dt>
-                <dd>{t(`约 ${formatTokensShort(context.data.ledger.compacted.replacedTokens)} tokens`, `~${formatTokensShort(context.data.ledger.compacted.replacedTokens)} tokens`)}</dd>
-              </>
-            )}
-            <dt>{t("范围", "Range")}</dt>
-            <dd>{t(`前 ${context.data.ledger.compacted.uptoIndex} 条消息`, `First ${context.data.ledger.compacted.uptoIndex} messages`)}</dd>
-            <dt>{t("时间", "Time")}</dt>
-            <dd>{new Date(context.data.ledger.compacted.createdAt).toLocaleString(locale)}</dd>
-            {context.data.ledger.compacted.instructions.length > 0 && (
-              <>
-                <dt>{t("用户明确指令（累积）", "Explicit user instructions (cumulative)")}</dt>
-                <dd className="kv-text">{context.data.ledger.compacted.instructions.map((item) => `· ${item}`).join("\n")}</dd>
-              </>
-            )}
-          </dl>
-        </>
-      )}
-      <h2>{t("上下文条目", "Context entries")}</h2>
-      {entries.length === 0 && !detail?.messages.some((message) => message.role === "tool") && <p className="muted-empty panel-empty">{t("暂无条目。", "No entries.")}</p>}
-      {entries.map((entry) => (
-        <div className="context-entry" key={`${entry.messageId}-${entry.artifactId}`}>
-          <span className={`entry-state entry-${entry.state}`}>{STATE_LABELS[entry.state] ? t(...STATE_LABELS[entry.state]!) : entry.state}</span>
-          <span className="entry-summary" title={entry.messageId}>{summarize(entry.messageId)}</span>
-          {entry.state === "evicted" && (
-            <button
-              className="btn small"
-              disabled={running}
-              title={running ? t("运行中不可恢复", "Cannot restore while running") : t("恢复该条目到上下文", "Restore this entry to context")}
-              onClick={() => {
-                api.restoreContext(sessionId, entry.messageId)
-                  .then(() => {
-                    void queryClient.invalidateQueries({ queryKey: qk.context(sessionId) });
-                    void queryClient.invalidateQueries({ queryKey: qk.session(sessionId) });
-                    ui.notify(t("已恢复上下文条目", "Context entry restored"));
-                  })
-                  .catch((error: unknown) => ui.notify(error instanceof Error ? error.message : t("恢复失败", "Restore failed"), "error"));
-              }}
-            >
-              {t("恢复", "Restore")}
-            </button>
-          )}
-          {entry.state === "restored" && <>
-            <button className="btn small" disabled={running} onClick={() => {
-              const pinned = (entry.pinnedUntilRound ?? 0) > (context.data.ledger.round ?? 0);
-              api.mutateContextEntry(sessionId, entry.messageId, pinned ? "unpin" : "pin")
-                .then(() => { void queryClient.invalidateQueries({ queryKey: qk.context(sessionId) }); ui.notify(pinned ? t("已取消固定", "Entry unpinned") : t("已固定条目", "Entry pinned")); })
-                .catch((error: unknown) => ui.notify(error instanceof Error ? error.message : t("操作失败", "Operation failed"), "error"));
-            }}>{(entry.pinnedUntilRound ?? 0) > (context.data.ledger.round ?? 0) ? t("取消固定", "Unpin") : t("固定", "Pin")}</button>
-            <button className="btn small" disabled={running} onClick={() => {
-              api.mutateContextEntry(sessionId, entry.messageId, "evict")
-                .then(() => { void queryClient.invalidateQueries({ queryKey: qk.context(sessionId) }); ui.notify(t("已再次逐出条目", "Entry evicted again")); })
-                .catch((error: unknown) => ui.notify(error instanceof Error ? error.message : t("逐出失败", "Eviction failed"), "error"));
-            }}>{t("逐出", "Evict")}</button>
-          </>}
-          <button className="btn small" onClick={() => {
-            api.contextArtifact(sessionId, entry.artifactId)
-              .then((value) => setArtifact({ id: entry.artifactId, content: value.content }))
-              .catch((error: unknown) => ui.notify(error instanceof Error ? error.message : t("原文读取失败", "Could not read original content"), "error"));
-          }}>{t("原文", "Original")}</button>
-        </div>
-      ))}
-      {detail?.messages.filter((message) => message.role === "tool" && !entries.some((entry) => entry.messageId === message.id)).map((message) => (
-        <div className="context-entry" key={message.id}>
-          <span className="entry-state">{t("保留", "Retained")}</span>
-          <span className="entry-summary" title={message.id}>{summarize(message.id)}</span>
-          <button className="btn small" disabled={running} onClick={() => {
-            api.mutateContextEntry(sessionId, message.id, "evict")
-              .then(() => { void queryClient.invalidateQueries({ queryKey: qk.context(sessionId) }); ui.notify(t("已手动逐出条目", "Entry manually evicted")); })
-              .catch((error: unknown) => ui.notify(error instanceof Error ? error.message : t("逐出失败", "Eviction failed"), "error"));
-          }}>{t("逐出", "Evict")}</button>
-        </div>
-      ))}
-      {artifact && (
-        <details className="context-artifact" open>
-          <summary>{t("Artifact 原文", "Artifact source")} · {artifact.id}</summary>
-          <pre className="mono">{artifact.content}</pre>
-          <button className="btn small" onClick={() => setArtifact(undefined)}>{t("关闭原文", "Close original")}</button>
-        </details>
-      )}
+      {saverEnabled && <ContextSaverSections sessionId={sessionId} running={running} context={context.data} messages={detail?.messages} />}
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { ContextManager } from "../context/context-manager.js";
+import { evictMessage, restoreContextEntry, setContextEntryPinned } from "../extensions/context-saver/index.js";
 import { errorMessage } from "../error-utils.js";
 import type { RouteContext } from "./route-context.js";
 
@@ -223,6 +224,8 @@ export function registerSessionInspectRoutes(app: FastifyInstance, ctx: RouteCon
   });
   app.post<{ Params: { id: string }; Body: { messageId: string } }>("/api/sessions/:id/context/restore", async (request, reply) => {
     if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
+    // 条目恢复是 context-saver 扩展能力：宿主存在且扩展被禁用时拒绝
+    if (dependencies.extensions && !dependencies.extensions.isEnabled("context-saver")) return reply.code(409).send({ error: "context-saver extension is disabled" });
     if (agent.isRunning(request.params.id)) {
       return reply.code(409).send({ error: "Session is running; restore context when it is idle" });
     }
@@ -231,7 +234,7 @@ export function registerSessionInspectRoutes(app: FastifyInstance, ctx: RouteCon
     }
     const manager = new ContextManager(sessions.contextRoot(request.params.id));
     try {
-      const ledger = await manager.restore(request.body.messageId);
+      const ledger = await restoreContextEntry(manager, sessions.contextRoot(request.params.id), request.body.messageId);
       events.publish({ source: "session", type: "context.restored", sessionId: request.params.id, payload: { messageId: request.body.messageId } });
       return ledger;
     } catch (error) {
@@ -241,16 +244,18 @@ export function registerSessionInspectRoutes(app: FastifyInstance, ctx: RouteCon
   app.post<{ Params: { id: string; messageId: string }; Body: { action?: string } }>("/api/sessions/:id/context/entries/:messageId", async (request, reply) => {
     const session = await sessions.get(request.params.id);
     if (!session) return reply.code(404).send({ error: "Session not found" });
+    // 条目操作（逐出/固定）是 context-saver 扩展能力：宿主存在且扩展被禁用时拒绝
+    if (dependencies.extensions && !dependencies.extensions.isEnabled("context-saver")) return reply.code(409).send({ error: "context-saver extension is disabled" });
     if (agent.isRunning(request.params.id)) return reply.code(409).send({ error: "Session is running; mutate context when it is idle" });
     const manager = new ContextManager(sessions.contextRoot(request.params.id));
     try {
       const action = request.body?.action;
       const ledger = action === "evict"
-        ? await manager.evictMessage(session.messages, request.params.messageId)
+        ? await evictMessage(manager, sessions.contextRoot(request.params.id), session.messages, request.params.messageId)
         : action === "pin"
-          ? await manager.setPinned(request.params.messageId, true)
+          ? await setContextEntryPinned(manager, request.params.messageId, true)
           : action === "unpin"
-            ? await manager.setPinned(request.params.messageId, false)
+            ? await setContextEntryPinned(manager, request.params.messageId, false)
             : undefined;
       if (!ledger) return reply.code(400).send({ error: "action must be evict, pin, or unpin" });
       events.publish({ source: "session", type: "context.entry_updated", sessionId: request.params.id, payload: { messageId: request.params.messageId, action } });
@@ -261,6 +266,9 @@ export function registerSessionInspectRoutes(app: FastifyInstance, ctx: RouteCon
   });
   app.get<{ Params: { id: string; artifactId: string }; Querystring: { offset?: string; limit?: string } }>("/api/sessions/:id/context/artifacts/:artifactId", async (request, reply) => {
     if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
+    // artifact 原文查看是面板条目区的能力（context-saver 扩展）：扩展禁用时拒绝；
+    // agent 的 read_artifact 工具不经此路由，不受影响。
+    if (dependencies.extensions && !dependencies.extensions.isEnabled("context-saver")) return reply.code(409).send({ error: "context-saver extension is disabled" });
     const offset = Number(request.query.offset ?? 0);
     const limit = Number(request.query.limit ?? 64_000);
     try {

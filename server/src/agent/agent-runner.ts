@@ -5,6 +5,7 @@ import { CoreGateway } from "../core-gateway.js";
 import type { EventBus } from "../events/event-bus.js";
 import { withTimeout } from "../http-utils.js";
 import { ContextManager, selectCacheBreakpoints, type TurnLedger } from "../context/context-manager.js";
+import { evictContext } from "../extensions/context-saver/index.js";
 import type { Compactor, CompactResult } from "../context/compactor.js";
 import { boundToolResult } from "../context/tool-result-budget.js";
 import { errorMessage } from "../error-utils.js";
@@ -783,6 +784,14 @@ export class AgentRunner {
     this.subAgentMaxTurnsLimit = get;
   }
 
+  /** 自动压缩水位（百分比）取值函数：默认 85，setCompactionThreshold 注入后走设置热生效值。 */
+  private compactionThresholdPercent: () => number = () => 85;
+
+  /** 注入自动压缩水位的实时取值函数（index.ts 装配：settings.effective().compactionThresholdPercent）。 */
+  setCompactionThreshold(get: () => number): void {
+    this.compactionThresholdPercent = get;
+  }
+
   constructor(
     private readonly sessions: SessionStore,
     private readonly providers: ProviderRegistry,
@@ -1028,10 +1037,19 @@ export class AgentRunner {
           return;
         }
         // 选择性上下文（§4.4）：pin 不被驱逐、排除不进组装；配置持久化在会话 meta。
-        const contextSelection = { pins: session.contextPins ?? [], excludes: session.contextExcludes ?? [] };
+        // 选择性上下文是 context-saver 扩展能力：扩展关闭时 pins/excludes 不生效（传空）。
+        const saverOn = !this.extensions || this.extensions.isEnabled("context-saver");
+        const contextSelection = saverOn
+          ? { pins: session.contextPins ?? [], excludes: session.contextExcludes ?? [] }
+          : { pins: [] as string[], excludes: [] as string[] };
         const ctxBuildStart = performance.now();
         // 消息树：上下文只组装活动路径（根→活动叶子），checkout/retry 出的旧分支不进 provider 历史。
         const view = await context.buildView(activePathMessages(session.messages, session.activeLeafId), { selection: contextSelection }, turnLedger);
+        // 首轮判定的用户消息计数在 hook 变换（transformContext/beforeSend）之前采样：
+        // 扩展注入/改写的 user 消息不影响首轮形态判定；/clear 与压缩的视图裁剪仍生效
+        //（clear 后重新计为首回合）。压缩摘要头（id 以 compaction: 开头的 user 角色占位
+        // 消息）不计入——否则首回合工具循环内触发压缩会让形态在同一回合中途翻转。
+        const visibleUserTurns = view.messages.filter((message) => message.role === "user" && !message.id.startsWith("compaction:")).length;
         perfContextBuildMs += performance.now() - ctxBuildStart;
         if (this.extensions) {
           const transformed = await this.extensions.transformContext({
@@ -1078,35 +1096,48 @@ export class AgentRunner {
         // 索引新鲜度（Phase 2 §4.1）：turn 边界检查。watch 激活时零成本；
         // watch 不可用时 mtime 抽样标滞后。失败/缺失都不阻断运行。
         if (this.indexManager) void this.indexManager.noteTurnBoundary(sessionId, session.cwd).catch(() => undefined);
-        // repo map 预算段（§4.1 Phase 1）：默认开、会话可关；生成失败降级为空段，不阻断运行。
+        // repo map 预算段（§4.1 Phase 1）：默认不注入：显式开启（repoMapEnabled === true）才注入；
+        // 生成失败降级为空段，不阻断运行。
         // 注入位置在稳定 system 前缀之后的动态侧（systemSuffix），避免其逐 turn 变化污染
-        // cache 断点；token 归因到 segments.repoMap，Context 面板按段可见。
+        // cache 断点；token 归因到 segments.system（系统提示词桶），Context 面板按段可见。
+        // repo map 内容段与 repo_map 工具联动：预设 hideBuiltIns 隐藏 repo_map 工具时，
+        // 内容段也不注入（否则模型仍能看到仓库结构，违背工具隐藏意图）。预设仅在显式开启
+        // 注入后惰性解析（repo map 默认关，避免每轮空解析/读用户预设目录）；解析失败按
+        // 未隐藏处理，不阻断。
         let repoMapSection = "";
-        if (session.repoMapEnabled !== false) {
-          try {
-            const map = await this.repoMap.generate({
-              sessionId,
-              cwd: session.cwd,
-              budget: session.repoMapBudget ?? DEFAULT_REPO_MAP_BUDGET,
-              excludes: contextSelection.excludes,
-            });
-            view.stats.segments.repoMap = map.tokens;
-            repoMapSection = `## Repository map (workspace structure; budget-bounded; key files carry symbol summaries when the index is available)\n${map.text}`;
-          } catch (error) {
-            this.events.publish({ source: "agent", type: "context.repo_map_failed", sessionId, payload: { message: errorMessage(error) } });
+        if (session.repoMapEnabled === true) {
+          const repoMapToolHidden = this.extensions
+            ? (await this.extensions.activeEnvSimPersonaPreset(resolveSessionPersona(session)).catch(() => null))?.hideBuiltIns.includes("repo_map") ?? false
+            : false;
+          if (!repoMapToolHidden) {
+            try {
+              const map = await this.repoMap.generate({
+                sessionId,
+                cwd: session.cwd,
+                budget: session.repoMapBudget ?? DEFAULT_REPO_MAP_BUDGET,
+                excludes: contextSelection.excludes,
+              });
+              view.stats.segments.system += map.tokens;
+              repoMapSection = `## Repository map (workspace structure; budget-bounded; key files carry symbol summaries when the index is available)\n${map.text}`;
+            } catch (error) {
+              this.events.publish({ source: "agent", type: "context.repo_map_failed", sessionId, payload: { message: errorMessage(error) } });
+            }
           }
         }
         // 增量构建的 token 估算与 estimateMessageTokens 同规则；等价性由 server 测试断言。
         const estimatedTokens = view.stats.totalTokens;
         const workingBudget = Math.max(1, profile.contextWindow);
         const utilization = estimatedTokens / workingBudget;
+        // 自动压缩水位（设置页可调，热生效）：强制 = threshold%，建议 = threshold−15%
+        const compactionThreshold = this.compactionThresholdPercent() / 100;
+        const compactionRecommend = (this.compactionThresholdPercent() - 15) / 100;
         // pin 占用如实上报：超预算时给明确警告，不悄悄驱逐 pin 的消息。
         const pinWarning = view.stats.pinnedTokens >= workingBudget ? "pins_over_budget" : undefined;
-        this.events.publish({ source: "agent", type: "context.watermark", sessionId, payload: { estimatedTokens, contextWindow: profile.contextWindow, workingBudget, utilization, warning: utilization >= 0.85 ? "force_compact" : utilization >= 0.7 ? "compact_recommended" : undefined, segments: view.stats.segments, pinnedTokens: view.stats.pinnedTokens, buildMs: view.stats.buildMs, incremental: view.stats.incremental, ...(pinWarning ? { pinWarning } : {}) } });
-        // 85% 水位强制压缩：压缩成功后重建视图（消耗一个 turn 防止死循环）。
+        this.events.publish({ source: "agent", type: "context.watermark", sessionId, payload: { estimatedTokens, contextWindow: profile.contextWindow, workingBudget, utilization, warning: utilization >= compactionThreshold ? "force_compact" : utilization >= compactionRecommend ? "compact_recommended" : undefined, segments: view.stats.segments, pinnedTokens: view.stats.pinnedTokens, buildMs: view.stats.buildMs, incremental: view.stats.incremental, ...(pinWarning ? { pinWarning } : {}) } });
+        // 水位强制压缩（核心安全网，不随 context-saver 扩展开关）：压缩成功后重建视图（消耗一个 turn 防止死循环）。
         // compact-vault 扩展启用时走档案库压缩（与手动 /compact 同口径）；compactor 缺失时 vault 单独兜底。
         const vaultForce = this.vaultService !== undefined && this.extensions?.isEnabled("compact-vault") === true;
-        if (utilization >= 0.85 && (this.compactor || vaultForce) && !forceCompacted) {
+        if (utilization >= compactionThreshold && (this.compactor || vaultForce) && !forceCompacted) {
           forceCompacted = true;
           // 开始事件：压缩可能耗时（vault 多次快速模型调用），先给 UI 即时反馈
           this.events.publish({ source: "agent", type: "context.compacting", sessionId, payload: { forced: true, mode: vaultForce ? "vault" : "overview" } });
@@ -1207,10 +1238,12 @@ export class AgentRunner {
           ? applyToolShaping(builtIns, shaping)
           : { tools: builtIns, aliasMap: new Map<string, string>(), aliasArgMaps: new Map<string, Record<string, string>>() };
         let shapedBuiltIns = shapingApplication.tools;
-        // 首轮形态：预设可声明 firstTurnOnlyTools——首轮（会话尚无模型回复）只注入
-        // 声明的内置工具，第二轮起恢复完整保留形态。仅首轮解析一次预设（读用户预设
-        // 目录），后续轮次零成本。
-        const isFirstTurn = !view.messages.some((message) => message.role === "assistant");
+        // 首轮形态：预设可声明 firstTurnOnlyTools——用户消息数 <= 1（第一条用户消息
+        // 之后、用户发出第二条消息之前）只注入声明的内置工具；模型在同一回合内的
+        // 多轮工具调用循环保持该形态，用户发出第二条消息后才恢复完整保留形态。
+        // 计数用 hook 变换前采样的 visibleUserTurns（压缩摘要头与扩展注入均不计入）。
+        // 仅首轮解析一次预设（读用户预设目录），后续轮次零成本。
+        const isFirstTurn = visibleUserTurns <= 1;
         let firstTurnOnly: string[] | undefined;
         if (isFirstTurn && this.extensions) {
           const persona = await this.extensions.activeEnvSimPersonaPreset(resolveSessionPersona(session)).catch(() => null);
@@ -1220,12 +1253,17 @@ export class AgentRunner {
           const allow = new Set(firstTurnOnly);
           shapedBuiltIns = shapedBuiltIns.filter((tool) => allow.has(tool.name));
         }
+        // 首轮极简提示词：firstTurnOnlyTools 生效时（首轮形态），系统提示词只保留 persona
+        // 基础提示词与工具表渲染——项目上下文、安全边界、技能段、自定义指令、尾注、后台
+        // 通知等段落一律跳过，用户发出第二条消息后恢复完整形态。
+        const minimalPromptTurn = isFirstTurn && firstTurnOnly !== undefined;
         // 自动驱逐联动：驱逐把被逐出的消息替换为 artifact 占位符（占位符指引模型用
         // read_artifact 恢复），若预设形态隐藏了 read_artifact 而会话驱逐策略开启
         //（enabled 且非 off），强制放行 read_artifact——否则占位符成为死胡同。
         // 会话 toolsDeny 显式禁止时仍尊重拒绝；ledger 缺失/损坏视为驱逐关闭；
-        // 首轮双工具形态（firstTurnOnlyTools）期间不联动，从第二轮生效。
-        if ((!firstTurnOnly || !isFirstTurn) && !shapedBuiltIns.some((tool) => tool.name === "read_artifact") && !(session.toolsDeny ?? []).includes("read_artifact")) {
+        // 首轮双工具形态（firstTurnOnlyTools）期间不联动，用户发第二条消息后生效。
+        // 驱逐是 context-saver 扩展能力：扩展关闭（saverOn=false）时不联动。
+        if (saverOn && (!firstTurnOnly || !isFirstTurn) && !shapedBuiltIns.some((tool) => tool.name === "read_artifact") && !(session.toolsDeny ?? []).includes("read_artifact")) {
           let evictionOn = false;
           try {
             const ledger = await new ContextManager(this.sessions.contextRoot(sessionId)).load();
@@ -1282,7 +1320,9 @@ export class AgentRunner {
 
         // 后台任务完成提示（读后即清）
         // 后台任务是工具能力的一部分；不支持工具的模型既不注入也不消费待发送通知。
-        const bgNotices = toolsEnabled ? (this.backgroundTasks?.drainNotices(sessionId) ?? []) : [];
+        // 首轮极简提示词（minimalPromptTurn）不消费也不注入后台通知：通知保留到下一轮，
+        // 避免首轮形态泄漏后台信息。
+        const bgNotices = toolsEnabled && !minimalPromptTurn ? (this.backgroundTasks?.drainNotices(sessionId) ?? []) : [];
         const bgNoticeSection = bgNotices.length > 0 ? `\n\n${bgNotices.join("\n")}` : "";
 
         const baseProductSections = [
@@ -1318,11 +1358,17 @@ export class AgentRunner {
           tools,
           ...(effectiveIdentity ? { identity: effectiveIdentity } : {}),
           productSections: [...(promptTransform.prependSections ?? []), ...(promptTransform.productSections ?? baseProductSections)],
-          finalConstraints: [SAFETY_BOUNDARY_SECTION],
-          skillsSection: `${skillSection}${agentSection}${roleSection}`,
-          projectContext: memorySection ? [{ path: "workspace instructions and memory", content: memorySection }] : [],
+          // 首轮极简提示词：跳过安全边界段（finalConstraints），第二轮起恢复
+          finalConstraints: minimalPromptTurn ? [] : [SAFETY_BOUNDARY_SECTION],
+          // 首轮极简提示词：跳过技能/代理/角色段（skillsSection），第二轮起恢复
+          skillsSection: minimalPromptTurn ? "" : `${skillSection}${agentSection}${roleSection}`,
+          // 首轮极简提示词：跳过项目上下文段（project_instructions），第二轮起恢复
+          projectContext: minimalPromptTurn ? [] : (memorySection ? [{ path: "workspace instructions and memory", content: memorySection }] : []),
           ...(effectiveBaseOverride ? { basePromptOverride: effectiveBaseOverride } : {}),
-          ...(promptOverride?.customAppend ? { customAppend: promptOverride.customAppend } : {}),
+          // 首轮极简提示词：跳过用户自定义指令（customAppend），第二轮起恢复
+          ...(promptOverride?.customAppend && !minimalPromptTurn ? { customAppend: promptOverride.customAppend } : {}),
+          // 首轮极简提示词：跳过尾注（Prompt version / Current date / Current working directory）
+          ...(minimalPromptTurn ? { suppressTrailer: true } : {}),
         });
         await this.state(sessionId, "streaming");
         const providerCallStart = performance.now();
@@ -1572,10 +1618,11 @@ export class AgentRunner {
         await this.state(sessionId, "advancing_turn");
         await context.advanceRound(turnLedger);
         const afterTools = await this.sessions.get(sessionId);
-        if (afterTools && (!this.extensions || this.extensions.isEnabled("context-manager"))) {
+        if (afterTools && saverOn) {
           // evict 经句柄延迟到 commitTurn 统一判定/落盘（期间的外部落盘会触发重放，两侧变更都不丢）；
           // 与 buildView 一致只按活动路径记账，避免旧分支消息污染 ledger。
-          await context.evict(activePathMessages(afterTools.messages, afterTools.activeLeafId), new Set(afterTools.contextPins ?? []), turnLedger);
+          // 驱逐是 context-saver 扩展能力（extensions/context-saver），扩展关闭时跳过。
+          await evictContext(context, this.sessions.contextRoot(sessionId), activePathMessages(afterTools.messages, afterTools.activeLeafId), new Set(afterTools.contextPins ?? []), turnLedger);
           const evictedLedger = await context.commitTurn(turnLedger);
           activeTurn = undefined;
           // 事件瘦身：面板只按事件类型刷新后经 REST 拉全量，payload 只带统计摘要——
@@ -1958,7 +2005,8 @@ export class AgentRunner {
         sessionId,
         cwd: session.cwd,
         budget: input.budget === undefined ? (session.repoMapBudget ?? DEFAULT_REPO_MAP_BUDGET) : Number(input.budget),
-        excludes: session.contextExcludes ?? [],
+        // 排除路径是 context-saver 扩展的选择性上下文能力：扩展关闭时不生效
+        excludes: !this.extensions || this.extensions.isEnabled("context-saver") ? session.contextExcludes ?? [] : [],
       });
       const bounded = await boundToolResult(contextRoot, name, map.text);
       return { content: bounded.content, isError: false };
@@ -2962,7 +3010,8 @@ export class AgentRunner {
           sessionId,
           cwd: session.cwd,
           budget: input.budget === undefined ? (session.repoMapBudget ?? DEFAULT_REPO_MAP_BUDGET) : Number(input.budget),
-          excludes: session.contextExcludes ?? [],
+          // 排除路径是 context-saver 扩展的选择性上下文能力：扩展关闭时不生效
+          excludes: !this.extensions || this.extensions.isEnabled("context-saver") ? session.contextExcludes ?? [] : [],
         });
         // 大预算结果经 boundToolResult artifact 化，超预算部分可从 artifact 续读
         const bounded = await boundToolResult(this.sessions.contextRoot(sessionId), name, map.text);

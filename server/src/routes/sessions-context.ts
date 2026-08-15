@@ -3,7 +3,7 @@ import { ContextManager, type BudgetUpdate } from "../context/context-manager.js
 import type { Currency } from "../context/model-profile.js";
 import { parseDecimalToScaled } from "../cost/exchange-rate.js";
 import type { IndexManager } from "../index/index-manager.js";
-import type { ContextPolicyUpdate } from "../context/context-manager.js";
+import { updateEvictionPolicy, type ContextPolicyUpdate } from "../extensions/context-saver/index.js";
 import { IndexBuildingError, IndexUnavailableError } from "../index/index-manager.js";
 import { errorMessage } from "../error-utils.js";
 import {
@@ -192,7 +192,11 @@ export function registerSessionContextRoutes(app: FastifyInstance, ctx: RouteCon
     const session = await sessions.get(request.params.id);
     if (!session) return reply.code(404).send({ error: "Session not found" });
     const manager = new ContextManager(sessions.contextRoot(request.params.id));
-    const selection = { pins: session.contextPins ?? [], excludes: session.contextExcludes ?? [] };
+    // 选择性上下文是 context-saver 扩展能力：扩展关闭时与 agent 循环一致传空（面板数据 = 实际注入）
+    const saverOn = !dependencies.extensions || dependencies.extensions.isEnabled("context-saver");
+    const selection = saverOn
+      ? { pins: session.contextPins ?? [], excludes: session.contextExcludes ?? [] }
+      : { pins: [] as string[], excludes: [] as string[] };
     const view = await manager.buildView(session.messages, { selection });
     const prefs = getPreferences();
     return { ...view, selection, preferences: { language: prefs.language, currency: prefs.currency, currencyLabel: prefs.currency === "CNY" ? "RMB" : "USD" } };
@@ -233,10 +237,12 @@ export function registerSessionContextRoutes(app: FastifyInstance, ctx: RouteCon
   });
   app.put<{ Params: { id: string }; Body: ContextPolicyUpdate }>("/api/sessions/:id/context/policy", async (request, reply) => {
     if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
+    // 驱逐策略是 context-saver 扩展能力：宿主存在且扩展被禁用时拒绝（宿主缺省按默认开启处理，与 agent 循环一致）
+    if (dependencies.extensions && !dependencies.extensions.isEnabled("context-saver")) return reply.code(409).send({ error: "context-saver extension is disabled" });
     if (agent.isRunning(request.params.id)) return reply.code(409).send({ error: "Session is running; update context policy when it is idle" });
     try {
       const manager = new ContextManager(sessions.contextRoot(request.params.id));
-      const ledger = await manager.updatePolicy(request.body ?? {});
+      const ledger = await updateEvictionPolicy(manager, request.body ?? {});
       events.publish({ source: "session", type: "context.policy_updated", sessionId: request.params.id, payload: ledger.policy });
       return ledger;
     } catch (error) {
@@ -245,6 +251,8 @@ export function registerSessionContextRoutes(app: FastifyInstance, ctx: RouteCon
   });
   app.put<{ Params: { id: string }; Body: { pins?: string[]; excludes?: string[] } }>("/api/sessions/:id/context/selection", async (request, reply) => {
     if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
+    // 选择性上下文（pin/排除）是 context-saver 扩展能力：扩展禁用时拒绝
+    if (dependencies.extensions && !dependencies.extensions.isEnabled("context-saver")) return reply.code(409).send({ error: "context-saver extension is disabled" });
     if (agent.isRunning(request.params.id)) return reply.code(409).send({ error: "Session is running; update context selection when it is idle" });
     try {
       const meta = await sessions.updateContextSelection(request.params.id, { pins: request.body?.pins, excludes: request.body?.excludes });
@@ -269,7 +277,7 @@ export function registerSessionContextRoutes(app: FastifyInstance, ctx: RouteCon
         enabled: request.body?.enabled,
         budget: request.body?.budget ?? undefined,
       });
-      const settings = { enabled: meta.repoMapEnabled !== false, budget: meta.repoMapBudget ?? 2048 };
+      const settings = { enabled: meta.repoMapEnabled === true, budget: meta.repoMapBudget ?? 2048 };
       events.publish({ source: "session", type: "context.repo_map_updated", sessionId: request.params.id, payload: settings });
       return settings;
     } catch (error) {

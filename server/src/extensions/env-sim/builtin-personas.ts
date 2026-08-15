@@ -10,7 +10,7 @@ import type { PersonaPreset } from "./types.js";
  * MIT License, Copyright (c) 2026 DeepSeek）——persona 提示词原文完整复制，
  * 工具形态按极简模式调整（仅 bash 与 str_replace_editor 双工具）：两个工具的
  * 描述与参数形态复刻 DSH 原文（str_replace_editor 仅暴露 OWC core 可执行的
- * str_replace 参数形态），web 搜索工具与扩展工具照常保留。
+ * str_replace 参数形态），web 搜索、子代理工具与扩展工具照常保留。
  *
  * 别名的 inputSchema 拟态目标产品的参数形态（如 cc 的 file_path、codex 的 command），
  * argMap 把模型侧参数名归一回内置工具参数名，执行/权限链不受影响。schema 只保留
@@ -966,8 +966,8 @@ Be concise, structured, and focused on helping the next LLM seamlessly continue 
     // Copyright (c) 2026 DeepSeek）：persona 提示词原文完整复制（固定提示词），
     // 工具形态按极简模式——bash 与 str_replace_editor 双工具的描述与参数形态
     // 复刻 DSH 原文（str_replace_editor 仅暴露可执行的 str_replace 形态）。
-    // web 搜索、待办、子代理、技能工具按需保留；git/后台/定时等其余内置工具
-    // 统一隐藏，由模型经 bash 处理。
+    // 第二轮仅保留 web 搜索与子代理工具；git/后台/定时/待办/提问/技能等其余
+    // 内置工具统一隐藏，由模型经 bash 处理。
     id: "dsh-minimal",
     name: "DSH Minimal",
     userAgent: "dsh/0.1.0-rc.6",
@@ -976,8 +976,8 @@ Be concise, structured, and focused on helping the next LLM seamlessly continue 
     // DSH 极简模式无 plan-mode / 压缩 / /init 命令，productSections 与命令提示词用内置默认。
     productSections: [],
     // 首轮只注入 bash 与 str_replace_editor 双工具——严格极简形态（名称用模型侧
-    // 别名后名）；第二轮起注入 web 搜索、待办、子代理、技能等其余保留工具
-    //（read_artifact 联动同样从第二轮生效）。
+    // 别名后名）；第二轮起仅注入 web 搜索与子代理工具（read_artifact 联动同样
+    // 从第二轮生效）。
     firstTurnOnlyTools: ["bash", "str_replace_editor"],
     // read_artifact 的注入跟随会话自动驱逐开关：驱逐开启（策略 enabled 且非 off）时由
     // agent-runner 组装层强制放行（驱逐占位符必须可读），关闭时不注入（保持极简形态）。
@@ -985,7 +985,7 @@ Be concise, structured, and focused on helping the next LLM seamlessly continue 
       "read_file", "write_file", "glob", "grep", "read_artifact", "repo_map", "code_search",
       "test_runner", "git_status", "git_diff", "git_commit", "git_worktree_create",
       "git_worktree_remove", "git_worktree_merge", "remember", "task_output", "task_stop",
-      "cron_create", "cron_list", "cron_delete",
+      "cron_create", "cron_list", "cron_delete", "ask_user", "load_skill", "todo_write",
     ],
     aliases: [
       {

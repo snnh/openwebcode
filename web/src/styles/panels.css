@@ -104,11 +104,10 @@
 .ctx-cache-row { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: -4px 0 10px; font: 12px var(--font-mono); color: var(--text-2); }
 .segment-bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--border); margin: 0 0 8px; }
 .segment-bar i { display: block; height: 100%; }
-.seg-messages { background: var(--accent); }
-.seg-toolResults { background: var(--amber); }
-.seg-repoMap { background: var(--ok); }
-.seg-compactionSummary { background: var(--accent-hover); }
 .seg-system { background: var(--text-3); }
+.seg-input { background: var(--accent); }
+.seg-toolCalls { background: var(--amber); }
+.seg-output { background: var(--ok); }
 .seg-other { background: var(--border-strong); }
 .segment-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0 0 10px; padding: 0; list-style: none; font-size: 11px; color: var(--text-2); }
 .seg-dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; }

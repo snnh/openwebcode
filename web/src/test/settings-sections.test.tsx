@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ModelCatalogSyncSection, ModelSelectionSection } from "../settings/sections/ModelSelectionSection";
+import { ContextSection } from "../settings/sections/ContextSection";
+import { GeneralSection } from "../settings/sections/GeneralSection";
 import { RemoteAccessSection } from "../settings/sections/RemoteAccessSection";
 import { ServerSettingsFields } from "../settings/sections/ServerSettingsFields";
 import { ShortcutsSection } from "../settings/sections/ShortcutsSection";
@@ -143,10 +145,33 @@ describe("设置分组迁移（服务设置页签移除后）", () => {
       },
       {
         id: "general",
-        label: "语言与货币",
+        label: "通用",
         fields: [
           { key: "defaultCurrency", label: "默认货币", type: "select", options: [{ value: "USD", label: "USD" }, { value: "CNY", label: "CNY" }], value: "CNY", hasValue: true, source: "default", editable: true, restartRequired: false, nullable: false },
+          { key: "chatModeEnabled", label: "启用 Chat 模式", type: "boolean", value: false, hasValue: true, source: "default", editable: true, restartRequired: false, nullable: false },
+        ],
+      },
+      {
+        id: "defaults",
+        label: "会话默认",
+        fields: [
+          { key: "defaultEffort", label: "默认思考力度", type: "select", options: [{ value: "none", label: "none" }, { value: "low", label: "low" }], value: "none", hasValue: true, source: "default", editable: true, restartRequired: false, nullable: false },
+        ],
+      },
+      {
+        id: "context",
+        label: "上下文与运行",
+        fields: [
+          { key: "compactionThresholdPercent", label: "自动压缩水位（%）", type: "number", value: 85, hasValue: true, source: "default", editable: true, restartRequired: false, nullable: false },
+          { key: "agentMaxTurns", label: "单条消息最大轮次", type: "number", value: 50, hasValue: true, source: "default", editable: true, restartRequired: false, nullable: false },
+        ],
+      },
+      {
+        id: "webSearch",
+        label: "联网",
+        fields: [
           { key: "offlineMode", label: "离线模式", type: "boolean", value: false, hasValue: true, source: "default", editable: true, restartRequired: false, nullable: false },
+          { key: "webSearchMode", label: "联网搜索模式", type: "select", options: [{ value: "local", label: "local" }], value: "local", hasValue: true, source: "default", editable: true, restartRequired: false, nullable: false },
         ],
       },
       {
@@ -220,22 +245,98 @@ describe("设置分组迁移（服务设置页签移除后）", () => {
     expect(view.queryByLabelText("数据目录")).toBeNull();
   });
 
-  it("语言与货币分组渲染在通用页签字段组件", async () => {
+  it("通用分组渲染在通用页签字段组件（重排后仅语言/货币/模式）", async () => {
     vi.spyOn(api, "settings").mockResolvedValue(mixed);
     const view = renderWithClient(<ServerSettingsFields showGroup={(groupId) => groupId === "general"} />);
     expect(await view.findByLabelText("默认货币")).toBeInTheDocument();
-    expect(view.getByRole("heading", { name: "语言与货币", level: 4 })).toBeInTheDocument();
+    expect(view.getByRole("heading", { name: "通用", level: 4 })).toBeInTheDocument();
+    expect(view.getByText("启用 Chat 模式")).toBeInTheDocument();
     expect(view.queryByLabelText("数据目录")).toBeNull();
+    // 重排后离线模式/自动压缩水位不再随通用分组渲染
+    expect(view.queryByText("离线模式")).toBeNull();
+    expect(view.queryByLabelText("自动压缩水位（%）")).toBeNull();
   });
 
-  it("离线模式开关随通用分组渲染，镜像布尔字段写法", async () => {
+  it("会话默认分组渲染在会话默认页签字段组件", async () => {
     vi.spyOn(api, "settings").mockResolvedValue(mixed);
-    const view = renderWithClient(<ServerSettingsFields showGroup={(groupId) => groupId === "general"} />);
+    const view = renderWithClient(<ServerSettingsFields showGroup={(groupId) => groupId === "defaults"} />);
+    expect(await view.findByLabelText("默认思考力度")).toBeInTheDocument();
+    expect(view.getByRole("heading", { name: "会话默认", level: 4 })).toBeInTheDocument();
+    expect(view.queryByLabelText("默认货币")).toBeNull();
+    expect(view.queryByLabelText("自动压缩水位（%）")).toBeNull();
+  });
+
+  it("上下文分组渲染在上下文页签字段组件", async () => {
+    vi.spyOn(api, "settings").mockResolvedValue(mixed);
+    const view = renderWithClient(<ServerSettingsFields showGroup={(groupId) => groupId === "context"} />);
+    expect(await view.findByLabelText("自动压缩水位（%）")).toBeInTheDocument();
+    expect(view.getByLabelText("单条消息最大轮次")).toBeInTheDocument();
+    expect(view.getByRole("heading", { name: "上下文与运行", level: 4 })).toBeInTheDocument();
+    expect(view.queryByLabelText("默认货币")).toBeNull();
+  });
+
+  it("离线模式开关随联网分组渲染，镜像布尔字段写法", async () => {
+    vi.spyOn(api, "settings").mockResolvedValue(mixed);
+    const view = renderWithClient(<ServerSettingsFields showGroup={(groupId) => groupId === "webSearch"} />);
     expect(await view.findByText("离线模式")).toBeInTheDocument();
+    expect(view.getByRole("heading", { name: "联网", level: 4 })).toBeInTheDocument();
+    expect(view.getByLabelText("联网搜索模式")).toBeInTheDocument();
     // 布尔字段渲染为 checkbox（无 aria-label，文案在字段头部），默认关
     const toggle = view.getByRole("checkbox");
     expect(toggle).not.toBeChecked();
     expect(toggle).toBeEnabled();
     expect(view.getByText("关闭")).toBeInTheDocument();
+  });
+});
+
+describe("设置页重排：通用与上下文页签（Phase 4）", () => {
+  const rearranged: SettingsView = {
+    groups: [
+      {
+        id: "general",
+        label: "通用",
+        fields: [
+          { key: "defaultLanguage", label: "默认语言", type: "select", options: [{ value: "zh-CN", label: "zh-CN" }], value: "zh-CN", hasValue: true, source: "default", editable: true, restartRequired: false, nullable: false },
+          { key: "defaultCurrency", label: "默认货币", type: "select", options: [{ value: "USD", label: "USD" }, { value: "CNY", label: "CNY" }], value: "CNY", hasValue: true, source: "default", editable: true, restartRequired: false, nullable: false },
+        ],
+      },
+      {
+        id: "context",
+        label: "上下文与运行",
+        fields: [
+          { key: "compactionThresholdPercent", label: "自动压缩水位（%）", type: "number", value: 85, hasValue: true, source: "default", editable: true, restartRequired: false, nullable: false },
+          { key: "agentMaxTurns", label: "单条消息最大轮次", type: "number", value: 50, hasValue: true, source: "default", editable: true, restartRequired: false, nullable: false },
+        ],
+      },
+      {
+        id: "webSearch",
+        label: "联网",
+        fields: [
+          { key: "offlineMode", label: "离线模式", type: "boolean", value: false, hasValue: true, source: "default", editable: true, restartRequired: false, nullable: false },
+        ],
+      },
+    ],
+  };
+
+  it("通用页签 h3 改为「语言、货币与模式」，且不再渲染离线模式/会话默认字段", async () => {
+    vi.spyOn(api, "settings").mockResolvedValue(rearranged);
+    const view = renderWithClient(<GeneralSection />);
+    expect(await view.findByLabelText("默认货币")).toBeInTheDocument();
+    expect(view.getByRole("heading", { name: "语言、货币与模式", level: 3 })).toBeInTheDocument();
+    expect(view.getByLabelText("默认语言")).toBeInTheDocument();
+    expect(view.queryByText("离线模式")).toBeNull();
+    expect(view.queryByLabelText("自动压缩水位（%）")).toBeNull();
+  });
+
+  it("上下文页签渲染自动压缩水位字段与说明", async () => {
+    vi.spyOn(api, "settings").mockResolvedValue(rearranged);
+    const view = renderWithClient(<ContextSection />);
+    expect(await view.findByLabelText("自动压缩水位（%）")).toBeInTheDocument();
+    expect(view.getByLabelText("单条消息最大轮次")).toBeInTheDocument();
+    expect(view.getByRole("heading", { name: "上下文与运行", level: 4 })).toBeInTheDocument();
+    expect(view.getByText(/上下文占用达到水位时自动压缩/)).toBeInTheDocument();
+    // 其他分组不渲染
+    expect(view.queryByLabelText("默认货币")).toBeNull();
+    expect(view.queryByText("离线模式")).toBeNull();
   });
 });

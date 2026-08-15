@@ -99,15 +99,18 @@ interface RuntimeDependencies {
 const GROUPS = [
   { id: "models", label: "模型接入" },
   { id: "modelSelection", label: "模型选择" },
-  { id: "general", label: "语言与货币" },
+  { id: "general", label: "通用" },
+  // 会话默认与上下文/运行在 1.7.x 设置页重排中自 general 拆出；分组 id 仅决定 Web 端渲染归属
+  { id: "defaults", label: "会话默认" },
+  { id: "context", label: "上下文与运行" },
   { id: "executor", label: "执行器" },
   { id: "service", label: "存储" },
   // 监听地址/端口单独分组：Web 端在"远程访问"页签渲染；分组 id 保持稳定，渲染位置由 Web 端决定
   { id: "network", label: "监听与端口" },
   // 出站代理：Web 端在"联网服务"页签由专门组件渲染（secret 字段按 mask 脱敏）
   { id: "proxy", label: "出站代理" },
-  // 联网搜索模式：Web 端在"联网服务"页签渲染
-  { id: "webSearch", label: "联网搜索" },
+  // 联网组：Web 端在「联网服务」页签渲染（联网搜索模式 + 离线模式总开关）
+  { id: "webSearch", label: "联网" },
   { id: "exchangeRate", label: "汇率" },
   { id: "updateCheck", label: "更新检查" },
 ];
@@ -211,6 +214,12 @@ function requireSubAgentMaxTurns(value: SettingValue): void {
   }
 }
 
+function requireCompactionThresholdPercent(value: SettingValue): void {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 50 || value > 95) {
+    throw new SettingsValidationError("自动压缩水位需为 50–95 的整数百分比");
+  }
+}
+
 function requirePathList(value: SettingValue): void {
   if (!Array.isArray(value) || value.length > 16 || value.some((entry) => typeof entry !== "string" || entry.trim() === "")) {
     throw new SettingsValidationError("允许目录必须是最多 16 项的非空路径列表");
@@ -227,6 +236,11 @@ function requireDomainList(value: SettingValue): void {
 function envNumber(raw: string): SettingValue | undefined {
   const parsed = Number(raw);
   return Number.isSafeInteger(parsed) && parsed >= 1 ? parsed : undefined;
+}
+
+function envCompactionThresholdPercent(raw: string): SettingValue | undefined {
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && parsed >= 50 && parsed <= 95 ? parsed : undefined;
 }
 
 function envSyncIntervalMinutes(raw: string): SettingValue | undefined {
@@ -284,16 +298,20 @@ const FIELDS: FieldSpec[] = [
   // 通用（热生效）
   { key: "defaultLanguage", group: "general", label: "默认语言", type: "select", env: "OWC_DEFAULT_LANGUAGE", defaultValue: "zh-CN", restartRequired: false, options: LANGUAGE_OPTIONS },
   { key: "defaultCurrency", group: "general", label: "默认货币", type: "select", env: "OWC_DEFAULT_CURRENCY", defaultValue: "CNY", restartRequired: false, options: ["USD", "CNY"], fromEnv: envCurrency },
-  { key: "defaultEffort", group: "general", label: "默认思考力度", type: "select", env: "OWC_DEFAULT_EFFORT", defaultValue: "none", restartRequired: false, options: EFFORT_OPTIONS, description: "新建会话的思考力度；none 表示不设置（跟随模型默认），模型声明不支持所选力度时静默跳过" },
-  { key: "defaultSnapshotMode", group: "general", label: "默认快照方式", type: "select", env: "OWC_DEFAULT_SNAPSHOT_MODE", defaultValue: "auto", restartRequired: false, options: ["auto", "manual"], description: "新建会话的检查点创建方式：auto = 每轮用户消息前自动创建；manual = 仅手动创建" },
-  { key: "snapshotBackend", group: "general", label: "快照后端", type: "select", env: "OWC_SNAPSHOT_BACKEND", defaultValue: "auto", restartRequired: false, options: ["auto", ...SNAPSHOT_BACKENDS], description: "新建会话的快照后端偏好；auto = 按探测链自动选择（btrfs/zfs/overlayfs → git-shadow）；指定后端在当前工作区不可用时回落自动并告警" },
-  { key: "agentMaxTurns", group: "general", label: "单条消息最大轮次", type: "number", env: "OWC_AGENT_MAX_TURNS", defaultValue: 50, restartRequired: false, fromEnv: envNumber, validate: requireAgentMaxTurns, description: "每条用户消息允许的最大 agent 轮次，达到后当前任务以失败收尾；长任务可调大（1–1000）" },
-  { key: "subAgentMaxTurns", group: "general", label: "子代理最大轮次", type: "number", env: "OWC_SUB_AGENT_MAX_TURNS", defaultValue: 100, restartRequired: false, fromEnv: envNumber, validate: requireSubAgentMaxTurns, description: "子代理（spawn_task / spawn_swarm / 手动启动）的默认最大轮次；spawn_task / spawn_swarm 可传 maxTurns 参数按次覆盖（1–1000）" },
   // Chat 模式开关（热生效）：web 侧据此显示 chat/workbench 切换，默认关闭
   { key: "chatModeEnabled", group: "general", label: "启用 Chat 模式", type: "boolean", env: "OWC_CHAT_MODE_ENABLED", defaultValue: false, restartRequired: false, fromEnv: envBoolean, description: "默认关闭；开启后界面显示 Chat / Workbench 模式切换，可使用 ChatGPT 风格对话模式" },
   // 离线模式（热生效）：只关 server 自身的遥测/更新/同步类出站（更新检查、远程目录/定价后台同步、
-  // 汇率在线刷新）；provider API、web_search/web_fetch、MCP 与扩展联网等用户/agent 主动网络行为不受影响
-  { key: "offlineMode", group: "general", label: "离线模式", type: "boolean", env: "OWC_OFFLINE", defaultValue: false, restartRequired: false, fromEnv: envBoolean, description: "关闭 server 自身的启动期/周期性出站：更新检查、远程模型目录/定价后台同步、汇率在线刷新；不影响模型 API、联网搜索/抓取、MCP 与扩展联网" },
+  // 汇率在线刷新）；provider API、web_search/web_fetch、MCP 与扩展联网等用户/agent 主动网络行为不受影响。
+  // 归联网组：Web 端在「联网服务」页签渲染。
+  { key: "offlineMode", group: "webSearch", label: "离线模式", type: "boolean", env: "OWC_OFFLINE", defaultValue: false, restartRequired: false, fromEnv: envBoolean, description: "关闭 server 自身的启动期/周期性出站：更新检查、远程模型目录/定价后台同步、汇率在线刷新；不影响模型 API、联网搜索/抓取、MCP 与扩展联网" },
+  // 会话默认（新建会话预填；热生效）
+  { key: "defaultEffort", group: "defaults", label: "默认思考力度", type: "select", env: "OWC_DEFAULT_EFFORT", defaultValue: "none", restartRequired: false, options: EFFORT_OPTIONS, description: "新建会话的思考力度；none 表示不设置（跟随模型默认），模型声明不支持所选力度时静默跳过" },
+  { key: "defaultSnapshotMode", group: "defaults", label: "默认快照方式", type: "select", env: "OWC_DEFAULT_SNAPSHOT_MODE", defaultValue: "auto", restartRequired: false, options: ["auto", "manual"], description: "新建会话的检查点创建方式：auto = 每轮用户消息前自动创建；manual = 仅手动创建" },
+  { key: "snapshotBackend", group: "defaults", label: "快照后端", type: "select", env: "OWC_SNAPSHOT_BACKEND", defaultValue: "auto", restartRequired: false, options: ["auto", ...SNAPSHOT_BACKENDS], description: "新建会话的快照后端偏好；auto = 按探测链自动选择（btrfs/zfs/overlayfs → git-shadow）；指定后端在当前工作区不可用时回落自动并告警" },
+  // 上下文与运行（热生效）
+  { key: "compactionThresholdPercent", group: "context", label: "自动压缩水位（%）", type: "number", env: "OWC_COMPACTION_THRESHOLD_PERCENT", defaultValue: 85, restartRequired: false, fromEnv: envCompactionThresholdPercent, validate: requireCompactionThresholdPercent, description: "上下文占用达到该水位时自动压缩（50–95）；建议压缩水位为该值减 15 个百分点。核心安全网，不随 context-saver 扩展开关" },
+  { key: "agentMaxTurns", group: "context", label: "单条消息最大轮次", type: "number", env: "OWC_AGENT_MAX_TURNS", defaultValue: 50, restartRequired: false, fromEnv: envNumber, validate: requireAgentMaxTurns, description: "每条用户消息允许的最大 agent 轮次，达到后当前任务以失败收尾；长任务可调大（1–1000）" },
+  { key: "subAgentMaxTurns", group: "context", label: "子代理最大轮次", type: "number", env: "OWC_SUB_AGENT_MAX_TURNS", defaultValue: 100, restartRequired: false, fromEnv: envNumber, validate: requireSubAgentMaxTurns, description: "子代理（spawn_task / spawn_swarm / 手动启动）的默认最大轮次；spawn_task / spawn_swarm 可传 maxTurns 参数按次覆盖（1–1000）" },
   // 执行器
   { key: "corePath", group: "executor", label: "执行器路径", type: "text", env: "OWC_CORE_PATH", defaultValue: "../build/Debug/owc-exec.exe", runtimeDefault: () => defaultCorePath(), restartRequired: true, validate: requireNonEmpty },
   { key: "coreRequestTimeoutMs", group: "executor", label: "执行器请求超时 (ms)", type: "number", env: "OWC_CORE_REQUEST_TIMEOUT_MS", defaultValue: 130_000, restartRequired: false, fromEnv: envNumber },
@@ -506,6 +524,7 @@ export class SettingsService {
       gcMaxBytes: value("gcMaxBytes") as number,
       agentMaxTurns: value("agentMaxTurns") as number,
       subAgentMaxTurns: value("subAgentMaxTurns") as number,
+      compactionThresholdPercent: value("compactionThresholdPercent") as number,
       defaultLanguage: value("defaultLanguage") as string,
       defaultCurrency: value("defaultCurrency") as "USD" | "CNY",
       pythonEnv: value("pythonEnv") as PythonEnv,

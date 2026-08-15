@@ -111,10 +111,10 @@ describe("设置搜索", () => {
     expect(visibleTabs()).toEqual(["外观", "通用", "会话默认", "快捷键"]);
   });
 
-  it("匹配 AI 与服务分组名时五个页签全部保留", () => {
+  it("匹配 AI 与服务分组名时六个页签全部保留", () => {
     renderDialog();
     fireEvent.change(screen.getByRole("textbox", { name: "搜索设置" }), { target: { value: "AI 与服务" } });
-    expect(visibleTabs()).toEqual(["模型目录", "模型选择", "联网服务", "模型定价", "提示词"]);
+    expect(visibleTabs()).toEqual(["模型目录", "模型选择", "上下文", "联网服务", "模型定价", "提示词"]);
   });
 
   it("无匹配时展示空态；Esc 清空恢复全部页签", () => {
@@ -124,7 +124,7 @@ describe("设置搜索", () => {
     expect(visibleTabs()).toEqual([]);
     expect(screen.getByText("无匹配")).toBeInTheDocument();
     fireEvent.keyDown(search, { key: "Escape" });
-    expect(visibleTabs().length).toBe(14);
+    expect(visibleTabs().length).toBe(15);
   });
 
   it("导航中不再包含服务设置页签", () => {

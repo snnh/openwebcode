@@ -5,6 +5,8 @@ import { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
 import { ContextManager, isPathExcluded, selectCacheBreakpoints } from "../src/context/context-manager.js";
 import { estimateMessageTokens } from "../src/context/model-profile.js";
+import { evictContext, evictMessage, restoreContextEntry, setContextEntryPinned, updateEvictionPolicy } from "../src/extensions/context-saver/index.js";
+import { ExtensionManager } from "../src/extensions/extension-manager.js";
 import type { CoreClient } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
@@ -29,18 +31,19 @@ function assertPairing(messages: ChatMessage[]): void {
 
 describe("context management controls", () => {
   it("updates policy and supports manual evict, restore, pin and unpin", async () => {
-    const manager = new ContextManager(await tempRoot("owc-context-"));
-    const policy = await manager.updatePolicy({ strategy: "interval", lag: 2, interval: 3, pinExemptRounds: 7, restoreBudget: 9000 });
+    const root = await tempRoot("owc-context-");
+    const manager = new ContextManager(root);
+    const policy = await updateEvictionPolicy(manager, { strategy: "interval", lag: 2, interval: 3, pinExemptRounds: 7, restoreBudget: 9000 });
     expect(policy.policy).toMatchObject({ strategy: "interval", lag: 2, interval: 3, pinExemptRounds: 7, restoreBudget: 9000 });
     const messages: ChatMessage[] = [{ id: "tool-1", role: "tool", createdAt: new Date().toISOString(), content: [{ type: "tool_result", toolCallId: "c1", content: "complete result", isError: false }] }];
-    let ledger = await manager.evictMessage(messages, "tool-1");
+    let ledger = await evictMessage(manager, root, messages, "tool-1");
     expect(ledger.entries[0]).toMatchObject({ messageId: "tool-1", state: "evicted" });
     expect(await manager.readArtifact(ledger.entries[0]!.artifactId, 0, 100)).toBe("complete result");
-    ledger = await manager.restore("tool-1");
+    ledger = await restoreContextEntry(manager, root, "tool-1");
     expect(ledger.entries[0]?.state).toBe("restored");
-    ledger = await manager.setPinned("tool-1", true);
+    ledger = await setContextEntryPinned(manager, "tool-1", true);
     expect(ledger.entries[0]?.pinnedUntilRound).toBe(Number.MAX_SAFE_INTEGER);
-    ledger = await manager.setPinned("tool-1", false);
+    ledger = await setContextEntryPinned(manager, "tool-1", false);
     expect(ledger.entries[0]?.pinnedUntilRound).toBe(0);
   });
 
@@ -60,8 +63,9 @@ describe("context management controls", () => {
   }
 
   it("does not evict the trailing tool batch the model has not seen yet (current-turn protection)", async () => {
-    const manager = new ContextManager(await tempRoot("owc-context-tail-"));
-    await manager.updatePolicy({ lag: 0 });
+    const root = await tempRoot("owc-context-tail-");
+    const manager = new ContextManager(root);
+    await updateEvictionPolicy(manager, { lag: 0 });
     const messages: ChatMessage[] = [
       userText("run two commands"),
       // 真实循环里同批 tool_call 在同一条 assistant 消息里，结果连续跟在其后
@@ -73,19 +77,20 @@ describe("context management controls", () => {
       toolResult("c2", "second output ".repeat(100)),
     ];
     // 末尾连续 tool 消息 = 刚执行完、模型尚未看到的批次：lag 0 也不驱逐
-    let ledger = await manager.evict(messages);
+    let ledger = await evictContext(manager, root, messages);
     expect(ledger.entries).toHaveLength(0);
     // 模型响应并产生新结果后，上一批不再处于尾部，可被驱逐
     messages.push(assistantText("ack", "继续"), toolResult("c3", "third output ".repeat(100)));
-    ledger = await manager.evict(messages);
+    ledger = await evictContext(manager, root, messages);
     expect(ledger.entries.map((entry) => entry.messageId).sort()).toEqual(["t-c1", "t-c2"]);
   });
 
   it("eviction placeholder carries tool name, size and read_artifact guidance", async () => {
-    const manager = new ContextManager(await tempRoot("owc-context-placeholder-"));
-    await manager.updatePolicy({ lag: 0 });
+    const root = await tempRoot("owc-context-placeholder-");
+    const manager = new ContextManager(root);
+    await updateEvictionPolicy(manager, { lag: 0 });
     const messages: ChatMessage[] = [userText("hi"), toolCall("c1", "bash"), toolResult("c1", "full body ".repeat(200)), userText("done")];
-    const ledger = await manager.evict(messages);
+    const ledger = await evictContext(manager, root, messages);
     expect(ledger.entries[0]).toMatchObject({ toolName: "bash", sizeBytes: 2000 });
     const view = await manager.buildView(messages);
     const content = JSON.stringify(view.messages.find((item) => item.id === "t-c1")!.content);
@@ -94,8 +99,9 @@ describe("context management controls", () => {
   });
 
   it("image description tool results are exempt from automatic eviction", async () => {
-    const manager = new ContextManager(await tempRoot("owc-context-exempt-"));
-    await manager.updatePolicy({ lag: 0 });
+    const root = await tempRoot("owc-context-exempt-");
+    const manager = new ContextManager(root);
+    await updateEvictionPolicy(manager, { lag: 0 });
     const messages: ChatMessage[] = [
       userText("look at the screenshot"),
       toolCall("c1", "ext__vision-tools__describe_image"),
@@ -105,7 +111,7 @@ describe("context management controls", () => {
       toolResult("c2", "command output ".repeat(200)),
       assistantText("ack2", "完成"),
     ];
-    const ledger = await manager.evict(messages);
+    const ledger = await evictContext(manager, root, messages);
     expect(ledger.entries.map((entry) => entry.messageId)).toEqual(["t-c2"]);
     // 视图保持全文（不出现驱逐占位符）
     const view = await manager.buildView(messages);
@@ -116,30 +122,33 @@ describe("context management controls", () => {
   });
 
   it("image description tool results are exempt from manual eviction", async () => {
-    const manager = new ContextManager(await tempRoot("owc-context-exempt-manual-"));
+    const root = await tempRoot("owc-context-exempt-manual-");
+    const manager = new ContextManager(root);
     const messages: ChatMessage[] = [
       userText("look"),
       toolCall("c1", "ext__vision-tools__describe_image"),
       toolResult("c1", "描述内容 ".repeat(100)),
     ];
-    await expect(manager.evictMessage(messages, "t-c1")).rejects.toThrow(/exempt from eviction/);
+    await expect(evictMessage(manager, root, messages, "t-c1")).rejects.toThrow(/exempt from eviction/);
     const ledger = await manager.load();
     expect(ledger.entries).toHaveLength(0);
   });
 
   it("default policy keeps the newest 10 rounds of tool results in full", async () => {
-    const manager = new ContextManager(await tempRoot("owc-context-lag-"));
+    const root = await tempRoot("owc-context-lag-");
+    const manager = new ContextManager(root);
     const messages: ChatMessage[] = [userText("start")];
     for (let index = 1; index <= 12; index += 1) {
       messages.push(toolResult(`d${index}`, `out ${index} ${"z".repeat(2000)}`), assistantText(`d${index}`, `ack ${index}`));
     }
-    const ledger = await manager.evict(messages);
+    const ledger = await evictContext(manager, root, messages);
     expect(ledger.entries.map((entry) => entry.messageId)).toEqual(["t-d1", "t-d2"]);
   });
 
 
   it("default policy counts the trailing unseen tool batch toward the lag window", async () => {
-    const manager = new ContextManager(await tempRoot("owc-context-lag-tail-"));
+    const root = await tempRoot("owc-context-lag-tail-");
+    const manager = new ContextManager(root);
     // 默认 lag=10，路径以 tool 批次结尾：保留当轮 + 最近 9 个已完成轮（共 10 轮），
     // 更早的轮次驱逐——与「当轮保护 + lag 窗口」语义一致
     const messages: ChatMessage[] = [userText("start")];
@@ -147,13 +156,14 @@ describe("context management controls", () => {
       messages.push(toolResult(`d${index}`, `out ${index} ${"z".repeat(2000)}`), assistantText(`d${index}`, `ack ${index}`));
     }
     messages.push(toolResult("d11", `out 11 ${"z".repeat(2000)}`));
-    const ledger = await manager.evict(messages);
+    const ledger = await evictContext(manager, root, messages);
     expect(ledger.entries.map((entry) => entry.messageId)).toEqual(["t-d1"]);
   });
 
   it("exempts small results and short read_file results; large read_file degrades to head+tail excerpt", async () => {
-    const manager = new ContextManager(await tempRoot("owc-context-floors-"));
-    await manager.updatePolicy({ lag: 0 });
+    const root = await tempRoot("owc-context-floors-");
+    const manager = new ContextManager(root);
+    await updateEvictionPolicy(manager, { lag: 0 });
     const readContent = Array.from({ length: 120 }, (_, index) => `line ${index + 1} ${"w".repeat(40)}`).join("\n");
     const messages: ChatMessage[] = [
       userText("go"),
@@ -165,7 +175,7 @@ describe("context management controls", () => {
       toolResult("c3", readContent), // 120 行：驱逐，头尾摘录
       userText("done"),
     ];
-    const ledger = await manager.evict(messages);
+    const ledger = await evictContext(manager, root, messages);
     expect(ledger.entries).toHaveLength(1);
     expect(ledger.entries[0]).toMatchObject({ messageId: "t-c3", toolName: "read_file" });
     expect(ledger.entries[0]!.excerpt).toBeDefined();
@@ -181,8 +191,9 @@ describe("context management controls", () => {
   });
 
   it("process mode removes the whole tool round (pairs + thinking) with an immutable summary; restore brings the pair back", async () => {
-    const manager = new ContextManager(await tempRoot("owc-context-process-"));
-    await manager.updatePolicy({ lag: 0, evictionMode: "process" });
+    const root = await tempRoot("owc-context-process-");
+    const manager = new ContextManager(root);
+    await updateEvictionPolicy(manager, { lag: 0, evictionMode: "process" });
     const messages: ChatMessage[] = [
       userText("debug it"),
       { id: "a-round", role: "assistant", createdAt: stamp(), content: [
@@ -194,7 +205,7 @@ describe("context management controls", () => {
       toolResult("c2", `grep output ${"y".repeat(2000)}`),
       assistantText("final", "修好了"),
     ];
-    const ledger = await manager.evict(messages);
+    const ledger = await evictContext(manager, root, messages);
     expect(ledger.entries).toHaveLength(2);
     let view = await manager.buildView(messages);
     // tool 消息整条出视图；assistant 的 tool_call/thinking 一并移除（消息变空丢弃）
@@ -213,7 +224,7 @@ describe("context management controls", () => {
     // 缓存断点：被逐 tool 消息已出视图，锚到驱逐摘要消息
     expect(selectCacheBreakpoints(view.messages, view.ledger)[0]).toBe("evicted:a-round");
     // restore：双侧配对复活（tool_call input 与结果全文都回到视图）
-    await manager.restore("t-c1");
+    await restoreContextEntry(manager, root, "t-c1");
     view = await manager.buildView(messages);
     const revived = view.messages.find((item) => item.id === "a-round");
     expect(revived).toBeDefined();
@@ -332,7 +343,8 @@ function incToolResult(value: string): ChatMessage {
 
 describe("incremental context build", () => {
   it("produces byte-identical views for incremental and forced full rebuilds across turns, eviction, and compaction", async () => {
-    const manager = new ContextManager(await tempRoot("owc-incremental-"));
+    const root = await tempRoot("owc-incremental-");
+    const manager = new ContextManager(root);
     const messages: ChatMessage[] = [
       incText("请修复这个 bug"),
       incMessage("assistant", [{ type: "tool_call", id: "c1", name: "read_file", input: { path: "src/a.ts" } }]),
@@ -355,8 +367,8 @@ describe("incremental context build", () => {
 
     // 驱逐改变 ledger：缓存键失效自动全量；随后的增量仍与全量一致
     // （lag: 0 显式关闭 lag 窗口：默认 lag=10 下两条工具结果都在保留窗口内，不会被驱逐）
-    await manager.updatePolicy({ lag: 0 });
-    await manager.evict(messages);
+    await updateEvictionPolicy(manager, { lag: 0 });
+    await evictContext(manager, root, messages);
     const afterEvict = await manager.buildView(messages);
     expect(afterEvict.stats.incremental).toBe(false);
     expect(afterEvict.messages.some((item) => item.content.some((block) => block.type === "tool_result" && block.content.includes("evicted")))).toBe(true);
@@ -373,7 +385,7 @@ describe("incremental context build", () => {
     const compacted = await manager.buildView(messages);
     expect(compacted.stats.incremental).toBe(false);
     expect(compacted.messages[0]?.id.startsWith("compaction:")).toBe(true);
-    expect(compacted.stats.segments.compactionSummary).toBeGreaterThan(0);
+    expect(compacted.stats.segments.other).toBeGreaterThan(0);
     messages.push(incText("压缩后的新消息"));
     const compactedIncremental = await manager.buildView(messages);
     expect(compactedIncremental.stats.incremental).toBe(true);
@@ -386,25 +398,27 @@ describe("incremental context build", () => {
     const manager = new ContextManager(await tempRoot("owc-segments-"));
     const messages = [incText("hello"), incToolResult("z".repeat(400)), incMessage("assistant", [{ type: "text", text: "done" }])];
     const view = await manager.buildView(messages);
-    expect(view.stats.segments.toolResults).toBeGreaterThan(0);
-    expect(view.stats.segments.messages).toBeGreaterThan(0);
+    expect(view.stats.segments.toolCalls).toBeGreaterThan(0);
+    expect(view.stats.segments.input).toBeGreaterThan(0);
+    expect(view.stats.segments.output).toBeGreaterThan(0);
     const sum = Object.values(view.stats.segments).reduce((total, value) => total + value, 0);
     expect(Math.max(1, sum)).toBe(view.stats.totalTokens);
   });
 
   it("pinned messages are never evicted and keep full content in the view", async () => {
-    const manager = new ContextManager(await tempRoot("owc-pin-"));
-    await manager.updatePolicy({ lag: 0 });
+    const root = await tempRoot("owc-pin-");
+    const manager = new ContextManager(root);
+    await updateEvictionPolicy(manager, { lag: 0 });
     const pinnedBody = `pinned-full-content ${"p".repeat(2000)}`;
     const pinned = incToolResult(pinnedBody);
     const other = incToolResult(`other-content ${"o".repeat(2000)}`);
     const messages = [incText("start"), pinned, other, incText("next")];
     // evict 显式传 pin 集：pin 的消息不产生驱逐条目
-    const ledger = await manager.evict(messages, new Set([pinned.id]));
+    const ledger = await evictContext(manager, root, messages, new Set([pinned.id]));
     expect(ledger.entries.some((entry) => entry.messageId === pinned.id)).toBe(false);
     expect(ledger.entries.some((entry) => entry.messageId === other.id)).toBe(true);
     // 即使 ledger 里已有驱逐条目，selection pin 也在视图中保留全文
-    await manager.evictMessage(messages, pinned.id);
+    await evictMessage(manager, root, messages, pinned.id);
     const view = await manager.buildView(messages, { selection: { pins: [pinned.id], excludes: [] } });
     const pinnedView = view.messages.find((item) => item.id === pinned.id)!;
     expect(pinnedView.content[0]).toMatchObject({ content: pinnedBody });
@@ -492,13 +506,14 @@ describe("stats.evicted 驱逐聚合", () => {
   }
 
   it("手动驱逐烧入 evictedTokens（与视图归因同一估算器），buildView stats 聚合条数与 tokens", async () => {
-    const manager = new ContextManager(await tempRoot("owc-context-"));
+    const root = await tempRoot("owc-context-");
+    const manager = new ContextManager(root);
     const content = "x".repeat(400);
     const messages = [
       { id: "a-1", role: "assistant", createdAt: new Date().toISOString(), content: [{ type: "tool_call", id: "c1", name: "bash", input: {} }] } as ChatMessage,
       toolResultMsg("t-1", "c1", content),
     ];
-    const ledger = await manager.evictMessage(messages, "t-1");
+    const ledger = await evictMessage(manager, root, messages, "t-1");
     const entry = ledger.entries[0]!;
     // 烧入值即 estimateTokens(原文)：与豁免下限同一估算（>0 且随内容长度增长）
     expect(entry.evictedTokens).toBeGreaterThan(0);
@@ -507,7 +522,7 @@ describe("stats.evicted 驱逐聚合", () => {
     expect(view.stats.evicted).toEqual({ tokens: entry.evictedTokens, count: 1 });
 
     // 恢复后不再计入
-    await manager.restore("t-1");
+    await restoreContextEntry(manager, root, "t-1");
     const restored = await manager.buildView(messages);
     expect(restored.stats.evicted).toBeUndefined();
 
@@ -520,18 +535,19 @@ describe("stats.evicted 驱逐聚合", () => {
   });
 
   it("旧账本条目缺 evictedTokens 时按 sizeBytes/4 回退；重新驱逐时补烧", async () => {
-    const manager = new ContextManager(await tempRoot("owc-context-"));
+    const root = await tempRoot("owc-context-");
+    const manager = new ContextManager(root);
     const content = "y".repeat(800);
     const messages = [
       { id: "a-1", role: "assistant", createdAt: new Date().toISOString(), content: [{ type: "tool_call", id: "c1", name: "bash", input: {} }] } as ChatMessage,
       toolResultMsg("t-1", "c1", content),
     ];
-    const ledger = await manager.evictMessage(messages, "t-1");
+    const ledger = await evictMessage(manager, root, messages, "t-1");
     // 模拟旧账本：抹掉烧入字段后经恢复再驱逐触发补烧路径
     const sizeBytes = ledger.entries[0]!.sizeBytes!;
     delete ledger.entries[0]!.evictedTokens;
-    await manager.restore("t-1");
-    const reEvicted = await manager.evictMessage(messages, "t-1");
+    await restoreContextEntry(manager, root, "t-1");
+    const reEvicted = await evictMessage(manager, root, messages, "t-1");
     expect(reEvicted.entries[0]!.evictedTokens).toBeGreaterThan(0);
 
     // 纯旧条目（无 evictedTokens）直接聚合时走 sizeBytes/4 回退：
@@ -540,5 +556,48 @@ describe("stats.evicted 驱逐聚合", () => {
     const view = await manager.buildView(messages);
     expect(view.stats.evicted?.count).toBe(1);
     expect(view.stats.evicted!.tokens).toBeGreaterThanOrEqual(Math.ceil(sizeBytes / 4));
+  });
+});
+
+// ---- context-saver 扩展 REST 门控 ----
+describe("context-saver REST gating", () => {
+  it("扩展被禁用时五个 saver 端点一律 409；宿主缺省 extensions 时不门控", async () => {
+    const root = await tempRoot("owc-saver-gating-");
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const provider: Provider = { name: "anthropic", async *streamChat() { yield { type: "done", stopReason: "end_turn" }; } };
+    const providers = new ProviderRegistry();
+    providers.register(provider);
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const events = new EventBus();
+    const extensions = new ExtensionManager(path.join(root, "data"), events, { sessions });
+    await extensions.initialize();
+    await extensions.configure("context-saver", { enabled: false });
+    expect(extensions.isEnabled("context-saver")).toBe(false);
+    const agent = { isRunning: () => false } as unknown as AgentRunner;
+    const app = await buildServer({ core: {} as CoreClient, sessions, agent, events, providers, pricing, extensions });
+    try {
+      const session = await sessions.create({ cwd: root, provider: "anthropic", model: "test" });
+      const cases = [
+        { method: "PUT", url: `/api/sessions/${session.id}/context/policy`, payload: { lag: 2 } },
+        { method: "PUT", url: `/api/sessions/${session.id}/context/selection`, payload: { pins: ["m-1"], excludes: [] } },
+        { method: "POST", url: `/api/sessions/${session.id}/context/restore`, payload: { messageId: "m-1" } },
+        { method: "POST", url: `/api/sessions/${session.id}/context/entries/m-1`, payload: { action: "pin" } },
+        { method: "GET", url: `/api/sessions/${session.id}/context/artifacts/artifact-1` },
+      ] as const;
+      for (const gated of cases) {
+        const response = await app.inject(gated);
+        expect(response.statusCode, `${gated.method} ${gated.url}`).toBe(409);
+        expect(response.json().error).toContain("context-saver extension is disabled");
+      }
+      // 扩展重新开启后门控解除（policy 更新恢复可用）
+      await extensions.configure("context-saver", { enabled: true });
+      const policy = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/context/policy`, payload: { lag: 2 } });
+      expect(policy.statusCode).toBe(200);
+    } finally {
+      await app.close();
+      await extensions.close();
+    }
   });
 });

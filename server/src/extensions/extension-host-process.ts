@@ -292,7 +292,7 @@ async function runHook(hook: ExtensionHook, original: unknown): Promise<unknown>
     return result;
   }
   let current = original;
-  const ordered = ["context-manager", "attention-optimizer", "content-lens", "pdf-to-image", ...handlers.keys()].filter((id, index, all) => all.indexOf(id) === index);
+  const ordered = ["context-saver", "attention-optimizer", "content-lens", "pdf-to-image", ...handlers.keys()].filter((id, index, all) => all.indexOf(id) === index);
   // context 变换钩子可能含模型调用（视觉工具逐图描述等），超时放宽到 120s；其余保持 5s
   const hookTimeout = hook === "context.beforeBuild" || hook === "message.beforeSend" ? 120_000 : 5000;
   for (const id of ordered) {

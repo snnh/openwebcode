@@ -1,9 +1,13 @@
 export interface ContextSegmentBreakdown {
+  /** 系统提示词侧（含 repoMap 段归因）。 */
   system: number;
-  compactionSummary: number;
-  toolResults: number;
-  messages: number;
-  repoMap: number;
+  /** 用户输入（user 角色消息）。 */
+  input: number;
+  /** 工具调用（tool_call 块 + tool 角色的 tool_result 块）。 */
+  toolCalls: number;
+  /** 模型正式输出（assistant 的 text 块）。 */
+  output: number;
+  /** 其它（thinking 块、压缩摘要头与未归类）。 */
   other: number;
 }
 

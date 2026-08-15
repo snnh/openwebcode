@@ -113,7 +113,7 @@ describe("BottomPanel 状态项", () => {
       contextWindow: 128_000,
       workingBudget: 120_000,
       utilization: 0.375,
-      segments: { system: 0, compactionSummary: 0, toolResults: 0, messages: 45_000, repoMap: 0, other: 0 },
+      segments: { system: 0, input: 45_000, toolCalls: 0, output: 0, other: 0 },
       pinnedTokens: 0,
       buildMs: 1,
       incremental: true,

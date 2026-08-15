@@ -16,6 +16,7 @@
   "snapshotBackend": "auto",
   "agentMaxTurns": 50,
   "subAgentMaxTurns": 100,
+  "compactionThresholdPercent": 85,
   "chatModeEnabled": false,
   "offlineMode": false,
   "corePath": "../build/Debug/owc-exec.exe",

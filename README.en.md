@@ -39,8 +39,9 @@ Browser (React) ── HTTP/WebSocket ──► Node service (agent loop, tools)
 - Resource usage friendly to low-spec devices: see [Performance and footprint](#performance-and-footprint).
 - Comparatively complete sandbox support: Job Object / AppContainer / WSB on Windows, bubblewrap / Landlock on Linux.
 - Git and filesystem-level snapshots: ZFS / Btrfs / overlayfs / VHDX / qcow2 backends.
-- Better context management.
+- Better context management: a tunable auto-compaction threshold (Settings → Context tab, 50–95, default 85%) and manual `/compact`; rolling eviction, context-entry management, and selective context (pin/exclude) are provided by the official context-saver extension and can be switched off wholesale; the context panel visualizes token attribution in five buckets (system prompt / input / tool calls / output / other).
 - Multi-model support: multiple providers coexist with hot switching, four model roles routed per task, and automatic fallback along a per-session chain when the primary model errors.
+- Environment simulation (env-sim): switch the system prompt and tool surface to the style of well-known AI coding products (Claude Code / Kimi / ZCode / Codex / DSH presets) while keeping the original tool implementations and permission chain underneath. Specifically tuned for DeepSeek V4 Pro 0813 — with that model we recommend enabling DSH minimal simulation (`dsh-minimal`): the first user message runs with a minimal two-tool surface (bash + file editing) and a trimmed system prompt, and the full toolset returns from the second message on.
 - Sub-agents and agent swarms: isolated-context parallel dispatch with live progress and transcripts.
 - A good range of extension points: skills, slash commands, hooks, custom sub-agents, MCP, and third-party Extension Host packages.
 - Free-form session management: edit any message, fork anytime.

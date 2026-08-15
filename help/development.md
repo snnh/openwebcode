@@ -22,7 +22,7 @@ openwebcode/
 │   │   ├── core-client.ts   # C 子进程管理 + RPC 客户端（崩溃自动重启）
 │   │   ├── agent/           # agent 循环、工具调度、权限、子代理、后台任务
 │   │   ├── providers/       # anthropic / openai-compatible / openai-responses
-│   │   ├── context/         # 上下文账本、buildView、驱逐、压缩
+│   │   ├── context/         # 上下文账本、buildView、预算、压缩（驱逐在 extensions/context-saver/）
 │   │   ├── sessions/        # 多会话管理、JSONL 持久化、会话树
 │   │   ├── snapshots/       # 快照后端探测链、托管工作区
 │   │   ├── sandbox/         # core-router 策略映射、WSB、filtered 代理
@@ -34,7 +34,7 @@ openwebcode/
 │   ├── src/
 │   │   ├── app/             # 装配层：App 薄根组件、store（ui/session/live/prefs）、ws 事件客户端与路由、queries、commands（命令注册表/快捷键/覆盖审计）
 │   │   ├── chat/ composer/  # 会话区（MessageList/scroll-controller/stream-buffer/卡片）与输入区
-│   │   ├── workbench/ panels/ dialogs/ settings/  # 五区外壳、底部七面板、弹层、设置对话框与十七分区
+│   │   ├── workbench/ panels/ dialogs/ settings/  # 五区外壳、底部七面板、弹层、设置对话框与十八分区
 │   │   ├── components/      # 设计基元（Icon/Overlay/ConfirmDialog 等）与保留件（Markdown/Monaco 编辑器）
 │   │   ├── lib/             # api.ts REST 客户端、contracts/ 按域拆分的类型契约（barrel 在 contracts.ts）
 │   │   ├── i18n.tsx         # 中英双语
@@ -163,7 +163,8 @@ core（ctest）：`test_protocol.py` / `test_fs.py` / `test_abs_path.py` / `test
 
 ### 改上下文策略
 
-- 驱逐：`context/context-manager.ts` 的 ContextManager 类按账本 policy（lag/interval/off + evictionMode + 豁免下限）算可驱逐集；纯账本运算与常量（驱逐占位/摘要/glob 排除/usage 累加等）在 `context-ledger-ops.ts`。视图渲染在 `buildView` 返回前应用，不改缓存主本。
+- 驱逐：服务端实现在 `extensions/context-saver/`（context-saver 官方扩展）——evict 决策（按账本 policy：lag/interval/off + evictionMode + 豁免下限算可驱逐集）、条目操作（逐出/恢复/pin）与策略校验都在这里，全部经 ContextManager 的 `transactLedger` 事务入口操作账本；扩展停用时 agent 循环不自动驱逐、相关 REST 端点返回 409。核心 `context/context-manager.ts` 保留账本存储、buildView 视图组装、预算上限与压缩；驱逐占位/摘录的渲染（buildFragment/applyProcessEviction）留在核心——buildView 需要渲染既有 evicted 条目。纯账本运算与常量（驱逐占位/摘要/glob 排除/usage 累加等）在 `context-ledger-ops.ts`。视图渲染在 `buildView` 返回前应用，不改缓存主本。
+- repo map：`context/repo-map.ts` 生成，agent-runner 装配注入。默认不注入——会话显式开启（`repoMapEnabled`，`PUT /api/sessions/:id/context/repo-map`，budget 64–100000、默认 2048）才把仓库结构段拼进 systemSuffix；env-sim 预设 `hideBuiltIns` 隐藏 `repo_map` 工具时内容段也不注入；token 归因到 system（系统提示词）桶。会话关闭时不注入也不扫描。
 - 压缩：`fast-model.ts` + `context/compactor.ts` 两种策略；`extensions/compact-vault.ts` 是 compact-vault 官方扩展的 server 侧服务（归档完整上下文 + 快速模型整理 + 目录索引，host 侧 `extensions/compact-vault-host.ts` 提供 recall_memory 工具与索引回注）。
 - 新增条目状态要动一串地方：`ContextLedger` 接口、`normalizeLedger` 兼容、`buildView` 渲染、`replaceLedger` 回滚。
 - 前端始终拿全量历史，驱逐只影响发给 LLM 的视图——改策略不会破坏 UI。
@@ -189,7 +190,7 @@ manifest 可选声明 `configSchema`（JSON Schema 子集）：设置页据此�
 - **C↔Node 契约是 JSON-RPC 2.0 over stdio**，`Content-Length: N\r\n\r\n{json}` 分帧。WebUI、扩展和第三方代码不得直连 core 的 stdio/TCP/C ABI，一切经 `core-client.ts`。
 - **改 core RPC 要六方同步**：`core/src/rpc.c` 参数白名单 → C 实现 → `server/src/core-client.ts` 类型/方法 → `docs/protocol.md` → 协议 fixture → CTest/Vitest。未知字段必须拒绝；`core.ping` 上报协议版本、capabilities 和 limits。
 - **C 只是执行器**。不实现 HTTP/LLM 客户端，不碰 API Key、提示词、任意 URL。LLM、网络、凭据、策略全部留在 Node。
-- **机制在核心，策略在扩展**。核心安全网（85% 上下文水位、当前轮保护、账本一致性、沙盒路径校验）不可绕过；Skills/Commands/Hooks/子代理/MCP/扩展只加策略。
+- **机制在核心，策略在扩展**。核心安全网（上下文强制压缩水位——默认 85%，可在设置调整 `compactionThresholdPercent`（50–95，热生效，env `OWC_COMPACTION_THRESHOLD_PERCENT`）、当前轮保护、账本一致性、沙盒路径校验）不可绕过；Skills/Commands/Hooks/子代理/MCP/扩展只加策略。
 - **权限与沙盒正交**。yolo 只跳过确认，不解除沙盒；`--no-sandbox` 才完全解除（不推荐）。Hooks 由 server 直接 spawn，安全级别等同 yolo，只能加载可信配置。
 - **路径策略优先级固定**：`denyPaths > writeRoots > readRoots`。文件原语必须保持 root-bound + no-follow/reparse 防护。
 - **无 TUI**。WebUI 是唯一交互界面，`owc run` CLI 只做非交互自动化（`--json` 出 NDJSON）。禁止引入 ncurses / bubbletea / ratatui / blessed 之类。

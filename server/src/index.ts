@@ -155,6 +155,7 @@ agent.setNodeEnvDefault(() => settings.effective().nodeEnv);
 core.setNodeEnvDefault(() => settings.effective().nodeEnv);
 agent.setMaxTurns(() => settings.effective().agentMaxTurns);
 agent.setSubAgentMaxTurns(() => settings.effective().subAgentMaxTurns);
+agent.setCompactionThreshold(() => settings.effective().compactionThresholdPercent);
 agent.setWebSearchMode(() => settings.effective().webSearchMode ?? "local");
 agent.setFastModel(fastModel);
 agent.setVaultService(vaultService);

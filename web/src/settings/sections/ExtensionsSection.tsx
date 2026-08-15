@@ -7,7 +7,7 @@ import { ExtensionConfigForm, parseConfigSchema, type ExtensionConfigField } fro
 import { useConfirmDialog } from "../../components/ConfirmDialog";
 
 const OFFICIAL_EXTENSION_EN: Record<string, { name: string; description: string }> = {
-  "context-manager": { name: "Context Manager", description: "Rolling eviction, context compaction, writeback, and ledger views." },
+  "context-saver": { name: "Context Saver", description: "Rolling eviction, context entry management, and selective context (pin/exclude)." },
   "attention-optimizer": { name: "Attention Optimizer", description: "Copies critical constraints and the current task into a context anchor to reduce lost-in-the-middle effects." },
   "content-lens": { name: "Content Lens", description: "Translates messages and explains selected text without adding content to the model context." },
   "pdf-to-image": { name: "PDF to Image", description: "Converts PDF pages into image attachments for models that support image input." },
@@ -114,8 +114,8 @@ export function ExtensionRow({ extension }: { extension: ExtensionInfo }): React
         <span className={`pill small${extension.status === "running" ? " ok" : extension.status === "error" ? " danger" : ""}`}>{extension.status === "running" ? t("运行中", "Running") : extension.status === "disabled" ? t("已停用", "Disabled") : t("异常", "Error")}</span>
         {extension.permissions.map((permission) => <span key={permission} className="pill small">{permission}</span>)}
       </div>
-      {extension.id === "context-manager" && <p className="settings-note">{t("驱逐、回写和压缩策略按会话配置，请在底部“上下文”面板中调整。", "Eviction, writeback, and compaction policies are configured per session in the Context panel.")}</p>}
-      {extension.id !== "context-manager" && (configFields ? (
+      {extension.id === "context-saver" && <p className="settings-note">{t("驱逐策略与选择性上下文按会话配置，请在底部“上下文”面板中调整。", "Eviction policy and selective context are configured per session in the Context panel.")}</p>}
+      {extension.id !== "context-saver" && (configFields ? (
         <details>
           <summary>{t("配置", "Configuration")}</summary>
           <ExtensionConfigForm extension={extension} fields={configFields} busy={busy} onSave={(config) => update({ config })} />
