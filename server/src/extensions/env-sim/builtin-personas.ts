@@ -972,7 +972,9 @@ Be concise, structured, and focused on helping the next LLM seamlessly continue 
     name: "DSH Minimal",
     userAgent: "dsh/0.1.0-rc.6",
     identity: "You are a helpful software engineer assistant.",
-    basePrompt: "You are a helpful software engineer assistant.",
+    // basePrompt 在 DSH 原文基础上追加人称约定（The personal pronoun is us/we.），
+    // 其余 persona 提示词仍为 DSH 原文完整复制。
+    basePrompt: "You are a helpful software engineer assistant.The personal pronoun is us/we.",
     // DSH 极简模式无 plan-mode / 压缩 / /init 命令，productSections 与命令提示词用内置默认。
     productSections: [],
     // 首轮只注入 bash 与 str_replace_editor 双工具——严格极简形态（名称用模型侧
