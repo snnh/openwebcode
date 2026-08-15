@@ -52,10 +52,10 @@ export function GeneralSection({ onDirtyChange }: {
       <h3>{t("布局", "Layout")}</h3>
       <p className="settings-note">{t("会话栏宽度/折叠、底部面板高度与开合保存在本机。", "The session rail width and collapsed state, plus bottom-panel height and visibility, are saved locally.")}</p>
       <button className="btn small" onClick={() => layout.resetLayout()}>{t("重置布局为默认", "Reset layout")}</button>
-      <h3>{t("语言与货币", "Language and currency")}</h3>
+      <h3>{t("语言、货币与模式", "Language, currency, and mode")}</h3>
       <ServerSettingsFields
         showGroup={(groupId) => groupId === "general"}
-        note={["模型回复的默认语言与计费币种（界面语言在「外观」页签切换，两者相互独立）。", "Default language for model replies and the billing currency (the interface language is switched in the Appearance tab; the two are independent)."]}
+        note={["模型回复的默认语言、计费币种与 Chat 模式开关（界面语言在「外观」页签切换，两者相互独立）。", "Default language for model replies, the billing currency, and the Chat mode toggle (the interface language is switched in the Appearance tab; the two are independent)."]}
         onDirtyChange={onDirtyChange}
       />
     </>

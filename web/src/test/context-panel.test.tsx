@@ -2,7 +2,7 @@ import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ContextPanel } from "../panels/ContextPanel";
 import { api } from "../lib/api";
-import type { ContextView, ModelProfile, SessionDetail } from "../lib/contracts";
+import type { ContextView, ExtensionInfo, ModelProfile, SessionDetail } from "../lib/contracts";
 import type { ContextWatermark } from "../lib/contracts";
 import { sessionMeta, sessionStore } from "../app/session-store";
 import { cleanup } from "@testing-library/react";
@@ -24,7 +24,7 @@ function contextView(selection: { pins: string[]; excludes: string[] }): Context
     selection,
     stats: {
       totalTokens: 1200,
-      segments: { system: 0, compactionSummary: 100, toolResults: 700, messages: 400, repoMap: 0, other: 0 },
+      segments: { system: 0, input: 400, toolCalls: 700, output: 0, other: 100 },
       pinnedTokens: 50,
       buildMs: 1.5,
       incremental: true,
@@ -51,9 +51,16 @@ function setWatermark(info: { estimatedTokens: number; contextWindow: number; wo
   });
 }
 
+/** context-saver 扩展信息（面板仅当清单中 enabled: true 时渲染 saver 段落） */
+function saverExtension(enabled: boolean): ExtensionInfo {
+  return { id: "context-saver", enabled } as ExtensionInfo;
+}
+
 beforeEach(() => {
   sessionStore.set({ watermarks: {}, usages: {} });
   vi.spyOn(api, "session").mockResolvedValue(session);
+  // 默认按扩展开启注入，覆盖 saver 段落渲染路径；关闭场景在用例内自行覆盖
+  vi.spyOn(api, "extensions").mockResolvedValue([saverExtension(true)]);
 });
 
 afterEach(() => {
@@ -70,7 +77,7 @@ describe("ContextPanel 选择性上下文", () => {
 
     // 按段 token 归因与构建诊断
     expect(await screen.findByText("按段 token 归因")).toBeInTheDocument();
-    expect(screen.getByText("工具结果")).toBeInTheDocument();
+    expect(screen.getByText("工具调用")).toBeInTheDocument();
     expect(screen.getByText(/增量复用/)).toBeInTheDocument();
     // 排除不是安全边界的提示
     expect(screen.getByText(/排除不是安全边界/)).toBeInTheDocument();
@@ -102,7 +109,7 @@ describe("ContextPanel 上下文窗口", () => {
     contextWindow: 128_000,
     workingBudget: 120_000,
     utilization: 0.375,
-    segments: { system: 1_000, compactionSummary: 2_000, toolResults: 18_000, messages: 22_000, repoMap: 1_500, other: 500 },
+    segments: { system: 2_500, input: 22_000, toolCalls: 18_000, output: 0, other: 2_500 },
     pinnedTokens: 800,
   };
 
@@ -117,14 +124,14 @@ describe("ContextPanel 上下文窗口", () => {
     expect(meter).toHaveAttribute("aria-valuenow", "38");
     // 分段图例（避免与“按段 token 归因”的同名行混淆，限定在 legend 列表内）
     const legend = document.querySelector(".segment-legend")!;
-    expect(legend.textContent).toContain("对话消息 22,000");
-    expect(legend.textContent).toContain("工具结果 18,000");
-    expect(legend.textContent).toContain("Repo map 1,500");
-    expect(legend.textContent).toContain("压缩摘要 2,000");
+    expect(legend.textContent).toContain("输入 22,000");
+    expect(legend.textContent).toContain("工具调用 18,000");
+    expect(legend.textContent).toContain("系统提示词 2,500");
+    expect(legend.textContent).toContain("其它 2,500");
     expect(legend.textContent).toContain("pin 占用 800");
     // 堆叠条分段使用各自的调色板类
-    expect(document.querySelector(".segment-bar .seg-messages")).not.toBeNull();
-    expect(document.querySelector(".segment-bar .seg-toolResults")).not.toBeNull();
+    expect(document.querySelector(".segment-bar .seg-input")).not.toBeNull();
+    expect(document.querySelector(".segment-bar .seg-toolCalls")).not.toBeNull();
   });
 
   it.each([
@@ -163,7 +170,7 @@ describe("ContextPanel 缓存命中", () => {
     contextWindow: 128_000,
     workingBudget: 120_000,
     utilization: 0.375,
-    segments: { system: 0, compactionSummary: 0, toolResults: 0, messages: 45_000, repoMap: 0, other: 0 },
+    segments: { system: 0, input: 45_000, toolCalls: 0, output: 0, other: 0 },
     pinnedTokens: 0,
   };
 
@@ -217,6 +224,36 @@ describe("ContextPanel 空态", () => {
   it("sessionId 为 undefined 时显示引导空态", () => {
     renderWithClient(<ContextPanel running={false} />);
     expect(screen.getByText("选择会话以查看上下文。")).toBeInTheDocument();
+  });
+});
+
+describe("ContextPanel context-saver 扩展门控", () => {
+  it("扩展开启时渲染驱逐策略、选择性上下文与上下文条目，压缩区同在", async () => {
+    vi.spyOn(api, "context").mockResolvedValue(contextView({ pins: [], excludes: [] }));
+
+    renderPanel();
+
+    expect(await screen.findByText("驱逐策略")).toBeInTheDocument();
+    expect(screen.getByText(/选择性上下文/)).toBeInTheDocument();
+    expect(screen.getByText("上下文条目")).toBeInTheDocument();
+    // 手动压缩是核心能力，不随扩展开关
+    expect(screen.getByText("压缩")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "压缩工具调用" })).toBeInTheDocument();
+  });
+
+  it("扩展关闭时不渲染 saver 段落，但压缩区保留", async () => {
+    vi.spyOn(api, "extensions").mockResolvedValue([saverExtension(false)]);
+    vi.spyOn(api, "context").mockResolvedValue(contextView({ pins: [], excludes: [] }));
+
+    renderPanel();
+
+    // 等核心段落就绪后再断言 saver 段落缺省
+    expect(await screen.findByText("压缩")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "压缩工具调用" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "概览压缩" })).toBeInTheDocument();
+    expect(screen.queryByText("驱逐策略")).toBeNull();
+    expect(screen.queryByText(/选择性上下文/)).toBeNull();
+    expect(screen.queryByText("上下文条目")).toBeNull();
   });
 });
 

@@ -338,6 +338,12 @@ export class SessionStore {
   async updateExtensionState(id: string, patch: Record<string, Record<string, unknown> | null>): Promise<SessionMeta> {
     const meta = await this.readMeta(id);
     const next: Record<string, Record<string, unknown>> = { ...(meta.extensionState ?? {}) };
+    // 扩展 id 改名迁移（context-manager → context-saver）：写入时把旧键归一到新键。
+    // 读路径不迁移——旧 id 无会话级状态消费端，残留键惰性随下次写入清理。
+    if (next["context-manager"] !== undefined) {
+      next["context-saver"] ??= next["context-manager"];
+      delete next["context-manager"];
+    }
     for (const [extensionId, value] of Object.entries(patch)) {
       if (value === null) delete next[extensionId];
       else next[extensionId] = value;
@@ -441,11 +447,11 @@ export class SessionStore {
     return meta;
   }
 
-  /** repo map 自动注入开关与 token 预算（§4.1）；缺省值不落盘（开 / 2048）。 */
+  /** repo map 自动注入开关与 token 预算（§4.1）；缺省值不落盘（关 / 2048）。 */
   async updateRepoMapSettings(id: string, settings: { enabled?: boolean | undefined; budget?: number | undefined }): Promise<SessionMeta> {
     const meta = await this.readMeta(id);
-    if (settings.enabled === undefined || settings.enabled === true) delete meta.repoMapEnabled;
-    else meta.repoMapEnabled = false;
+    if (settings.enabled === undefined || settings.enabled === false) delete meta.repoMapEnabled;
+    else meta.repoMapEnabled = true;
     if (settings.budget === undefined) delete meta.repoMapBudget;
     else {
       if (!Number.isSafeInteger(settings.budget) || settings.budget < 64 || settings.budget > 100_000) {

@@ -249,6 +249,63 @@ describe("85% watermark forced compaction", () => {
     // provider 收到的视图首条是压缩摘要而非原始消息
     expect(requests.at(-1)?.messages[0]?.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("Earlier context compacted") });
   });
+
+  it("setCompactionThreshold 下调水位后提前触发强制压缩（默认 85 不触发）", async () => {
+    const root = await tempRoot("owc-compact-threshold-");
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const providers = new ProviderRegistry();
+    const provider: Provider = {
+      name: "anthropic",
+      async *streamChat() {
+        yield { type: "done", stopReason: "end_turn" };
+      },
+    };
+    providers.register(provider);
+    const events = new EventBus();
+    const published: AppEvent[] = [];
+    events.on("event", (event: AppEvent) => published.push(event));
+    const core = { on() { return core; }, async configureSession() { return { sandboxCapability: "advisory" }; } } as unknown as CoreClient;
+
+    // 第一轮：超大窗口 + 不注入阈值（默认 85），用与第二轮完全一致的消息量出确定的 token 估算值
+    const probeRunner = new AgentRunner(sessions, providers, core, events, pricing, undefined, "zh-CN", 50,
+      () => ({ contextWindow: 1_000_000, capabilities: { thinking: ["disabled"], effort: [] } }) as never);
+    const probe = await sessions.create({ cwd: root, provider: "anthropic", model: "tiny" });
+    await sessions.appendMessage(probe.id, "user", [{ type: "text", text: "很早的消息，".repeat(30) }]);
+    await sessions.appendMessage(probe.id, "assistant", [{ type: "text", text: "很早的回复，".repeat(30) }]);
+    await probeRunner.run(probe.id, "探针消息".repeat(20));
+    const probeWatermark = published.find((event) => event.type === "context.watermark");
+    const estimated = (probeWatermark?.payload as { estimatedTokens: number }).estimatedTokens;
+    expect(estimated).toBeGreaterThan(0);
+
+    // 第二轮：同样的消息规模，窗口定到 utilization ≈ 0.70（高于 60、低于默认 85）
+    const contextWindow = Math.ceil(estimated / 0.7);
+    const runner = new AgentRunner(sessions, providers, core, events, pricing, undefined, "zh-CN", 50,
+      () => ({ contextWindow, capabilities: { thinking: ["disabled"], effort: [] } }) as never,
+      undefined, undefined, undefined,
+      new Compactor(sessions, makeFakeFastModel("概览：\n- 早段已压缩\n", []), {}, 2));
+    runner.setCompactionThreshold(() => 60);
+    const session = await sessions.create({ cwd: root, provider: "anthropic", model: "tiny" });
+    await sessions.appendMessage(session.id, "user", [{ type: "text", text: "很早的消息，".repeat(30) }]);
+    await sessions.appendMessage(session.id, "assistant", [{ type: "text", text: "很早的回复，".repeat(30) }]);
+
+    await runner.run(session.id, "探针消息".repeat(20));
+
+    // 取压缩前的水位（最后一条 watermark 是压缩重建后的，占用已回落）
+    const compactingIndex = published.findIndex((event) => event.type === "context.compacting");
+    expect(compactingIndex).toBeGreaterThan(-1);
+    const watermark = published.slice(0, compactingIndex).filter((event) => event.type === "context.watermark").at(-1);
+    const watermarkPayload = watermark?.payload as { utilization: number; warning?: string };
+    // 落在 [0.60, 0.85)：默认 85 水位不会压缩，自定义 60 水位强制压缩
+    expect(watermarkPayload.utilization).toBeGreaterThanOrEqual(0.6);
+    expect(watermarkPayload.utilization).toBeLessThan(0.85);
+    expect(watermarkPayload.warning).toBe("force_compact");
+    const compacted = published.filter((event) => event.type === "context.compacted");
+    expect(compacted.length).toBeGreaterThan(0);
+    expect(compacted.at(-1)?.payload).toMatchObject({ forced: true });
+  });
 });
 
 describe("compact HTTP routes", () => {

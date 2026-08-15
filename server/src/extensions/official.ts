@@ -4,10 +4,10 @@ import type { ContextHookPayload, ContextHookResult, ExtensionManifest } from ".
 
 export const OFFICIAL_EXTENSIONS: ExtensionManifest[] = [
   {
-    id: "context-manager",
-    name: "上下文管理器",
-    version: "0.2.3",
-    description: "滚动驱逐、上下文压缩、回写与账本视图。",
+    id: "context-saver",
+    name: "上下文节省",
+    version: "0.3.0",
+    description: "滚动驱逐、上下文条目管理与选择性上下文（pin/排除）。",
     apiVersion: "1",
     permissions: ["context:read", "context:mutate", "ui:panel"],
     official: true,
@@ -224,7 +224,7 @@ export const OFFICIAL_EXTENSIONS: ExtensionManifest[] = [
 ];
 
 export const OFFICIAL_DEFAULT_CONFIG: Record<string, Record<string, unknown>> = {
-  "context-manager": {},
+  "context-saver": {},
   "attention-optimizer": { mode: "bottomOnly", anchorBudget: 3000 },
   "content-lens": {
     targetLang: "zh-CN",

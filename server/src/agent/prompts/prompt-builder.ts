@@ -23,6 +23,8 @@ interface PromptBuilderOptions {
   skillsSection?: string;
   notices?: string;
   date?: Date;
+  /** 跳过尾注（Prompt version / Current date / Current working directory）；首轮极简形态用。 */
+  suppressTrailer?: boolean;
 }
 
 function isoDate(date: Date): string {
@@ -76,6 +78,8 @@ export function buildSystemPrompt(options: PromptBuilderOptions): string {
       "</custom_instructions>",
     ].join("\n\n"));
   }
-  sections.push(`Prompt version: ${PI_PROMPT_VERSION}`, `Current date: ${isoDate(options.date ?? new Date())}`, `Current working directory: ${options.cwd.replaceAll("\\", "/")}`);
+  if (!options.suppressTrailer) {
+    sections.push(`Prompt version: ${PI_PROMPT_VERSION}`, `Current date: ${isoDate(options.date ?? new Date())}`, `Current working directory: ${options.cwd.replaceAll("\\", "/")}`);
+  }
   return sections.join("\n\n");
 }

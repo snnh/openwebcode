@@ -1,4 +1,4 @@
-import type { ContextBuildStats, ContextSegmentBreakdown, ContextWatermark, ModelProfile } from "./contracts";
+import type { ContextBuildStats, ContextSegmentBreakdown, ContextWatermark, ModelProfile, SettingsView } from "./contracts";
 
 /**
  * 归一化的上下文窗口占用视图：优先取 WS 实时水位（context.watermark），
@@ -46,10 +46,17 @@ export function deriveWindowInfo(
 
 type WindowLevel = "normal" | "warn" | "danger";
 
-/** 与服务端水位阈值一致：>=0.7 建议压缩（黄），>=0.85 强制压缩（红）。 */
-export function windowLevel(utilization: number | undefined): WindowLevel {
+/** 从服务设置视图读取自动压缩水位（%）；未设置/越界回落默认 85。 */
+export function compactionThresholdPercent(settings: SettingsView | undefined): number {
+  const field = settings?.groups.flatMap((group) => group.fields).find((item) => item.key === "compactionThresholdPercent");
+  return typeof field?.value === "number" && field.value >= 50 && field.value <= 95 ? field.value : 85;
+}
+
+/** 与服务端水位口径一致：>= threshold% 强制压缩（红），>= threshold−15% 建议压缩（黄）。 */
+export function windowLevel(utilization: number | undefined, thresholdPercent = 85): WindowLevel {
   if (utilization === undefined) return "normal";
-  if (utilization >= 0.85) return "danger";
-  if (utilization >= 0.7) return "warn";
+  const threshold = thresholdPercent / 100;
+  if (utilization >= threshold) return "danger";
+  if (utilization >= threshold - 0.15) return "warn";
   return "normal";
 }

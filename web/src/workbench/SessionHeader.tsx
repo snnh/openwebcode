@@ -12,8 +12,8 @@ import { isBusyState, STATE_LABELS } from "../lib/agent-state";
 import { cacheHitRate, cacheTone, formatCacheTitle } from "../lib/cache-stats";
 import { selectContextMetrics } from "../lib/context-metrics";
 import { tasksPollInterval } from "../lib/task-poll";
-import { windowLevel } from "../lib/context-window";
-import { useContextViewQuery } from "../app/queries";
+import { compactionThresholdPercent, windowLevel } from "../lib/context-window";
+import { useContextViewQuery, useServerSettingsQuery } from "../app/queries";
 import { Icon } from "../components/Icon";
 import { useConfirmDialog } from "../components/ConfirmDialog";
 import { useI18n } from "../i18n";
@@ -80,7 +80,8 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
   const isMobile = useMediaQuery(MOBILE_BREAKPOINT);
   const busy = isBusyState(agentState) || running;
   const budgetRatio = costSummary?.tokenBudget ? Math.min(1, costSummary.tokens / costSummary.tokenBudget) : undefined;
-  const windowState = windowLevel(windowUsage?.utilization);
+  const thresholdPercent = compactionThresholdPercent(useServerSettingsQuery().data);
+  const windowState = windowLevel(windowUsage?.utilization, thresholdPercent);
   const windowPct = windowUsage?.utilization !== undefined ? Math.round((windowUsage?.utilization ?? 0) * 100) : undefined;
   // 会话累计用量（ledger.usage 切片订阅——账本其余变化不重渲顶栏）：
   // 顶栏缓存命中率用累计口径，查询未返回前回退到最近一轮（latestUsage）

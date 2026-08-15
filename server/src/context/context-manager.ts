@@ -1,18 +1,17 @@
 /**
- * 上下文管理器：账本持久化、驱逐、压缩、视图构建与增量缓存。
+ * 上下文核心：账本持久化、视图构建与增量缓存、预算与压缩记录。
  * 类型定义在 ./context-types.ts，纯函数/常量在 ./context-ledger-ops.ts（本文件重导出对外 API）。
+ * 驱逐与条目管理（context-saver 扩展能力）在 ../extensions/context-saver/，经 transactLedger 事务入口操作账本。
  */
-import { randomUUID } from "node:crypto";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
 import { isMissing } from "../fs-utils.js";
 import type { ChatMessage } from "../sessions/types.js";
-import { estimateTokens, type Currency } from "./model-profile.js";
+import { type Currency } from "./model-profile.js";
 import type {
   BudgetUpdate,
   ContextLedger,
-  ContextPolicyUpdate,
   ContextSelection,
   ContextSegmentBreakdown,
   ContextBuildStats,
@@ -22,16 +21,10 @@ import type {
   ViewBuildCache,
   LedgerCacheEntry,
   TurnLedger,
-  LedgerEntry,
   RecordedCost,
 } from "./context-types.js";
 import {
-  READ_ALWAYS_RETAIN_LINES,
-  EVICTION_EXEMPT_TOOLS,
   computeLedgerKey,
-  retainedToolIds,
-  toolNameByCallId,
-  buildReadExcerpt,
   buildFragment,
   applyProcessEviction,
   normalizeLedger,
@@ -41,6 +34,9 @@ import {
   renderCompaction,
   enforceImageBudget,
   estimateFragmentTokens,
+  measureFragment,
+  emptySegments,
+  addSegments,
 } from "./context-ledger-ops.js";
 
 const MAX_CACHED_LEDGERS = 32;
@@ -189,11 +185,13 @@ export class ContextManager {
         for (const message of appended) {
           const fragment = buildFragment(message, byMessage, pinnedIds);
           // 追加消息不含图片（否则已回退全量），可立即完成该片段的 token 估算。
-          fragment.tokens = estimateFragmentTokens(fragment.message);
+          const measured = measureFragment(fragment.message);
+          fragment.tokens = measured.tokens;
+          fragment.segments = measured.segments;
           fragments.push(fragment);
           sourceIds.push(message.id);
           total += fragment.tokens;
-          segments[fragment.segment] += fragment.tokens;
+          addSegments(segments, fragment.segments);
           if (fragment.pinned) pinnedTokens += fragment.tokens;
           // buildFragment 产出已是私有深克隆，直接入主克隆数组，不再二次克隆。
           master.push(fragment.message);
@@ -212,7 +210,7 @@ export class ContextManager {
             createdAt: compacted.createdAt,
             content: [{ type: "text", text: `[Earlier context compacted (${compacted.mode})]\n${renderCompaction(compacted)}` }],
           },
-          segment: "compactionSummary",
+          segments: emptySegments(),
           pinned: false,
           tokens: 0,
         };
@@ -222,11 +220,16 @@ export class ContextManager {
       const rebuilt = header ? [header, ...fragments] : fragments;
       // token 估算与统计累加同一趟完成；片段消息已是 buildFragment 的私有克隆，
       // 图像预算也已应用，直接作为主克隆，省掉过去整视图的一次额外逐块克隆。
-      segments = { system: 0, compactionSummary: 0, toolResults: 0, messages: 0, repoMap: 0, other: 0 };
+      segments = emptySegments();
       for (const fragment of rebuilt) {
-        fragment.tokens = estimateFragmentTokens(fragment.message);
+        const measured = measureFragment(fragment.message);
+        fragment.tokens = measured.tokens;
+        // 压缩摘要头（compaction: 前缀的合成 user 消息）整体归入 other，不计为用户输入
+        fragment.segments = fragment.message.id.startsWith("compaction:")
+          ? { ...emptySegments(), other: measured.tokens }
+          : measured.segments;
         total += fragment.tokens;
-        segments[fragment.segment] += fragment.tokens;
+        addSegments(segments, fragment.segments);
         if (fragment.pinned) pinnedTokens += fragment.tokens;
       }
       master = rebuilt.map((fragment) => fragment.message);
@@ -253,14 +256,14 @@ export class ContextManager {
     // 按最终视图重算 token 归因，保证 85% 水位依据的是真实注入量。
     const processed = applyProcessEviction(view, ledger, pinnedIds);
     if (processed === view) return { messages: view, ledger, stats };
-    const processedSegments: ContextSegmentBreakdown = { system: 0, compactionSummary: 0, toolResults: 0, messages: 0, repoMap: 0, other: 0 };
+    const processedSegments: ContextSegmentBreakdown = emptySegments();
     let processedTotal = 0;
     let processedPinned = 0;
     for (const message of processed) {
-      const tokens = estimateFragmentTokens(message);
-      processedTotal += tokens;
-      processedSegments[message.role === "tool" ? "toolResults" : message.id.startsWith("compaction:") ? "compactionSummary" : "messages"] += tokens;
-      if (pinnedIds.has(message.id)) processedPinned += tokens;
+      const measured = measureFragment(message);
+      processedTotal += measured.tokens;
+      addSegments(processedSegments, message.id.startsWith("compaction:") ? { ...emptySegments(), other: measured.tokens } : measured.segments);
+      if (pinnedIds.has(message.id)) processedPinned += measured.tokens;
     }
     return {
       messages: processed,
@@ -321,33 +324,6 @@ export class ContextManager {
     });
   }
 
-  async updatePolicy(update: ContextPolicyUpdate): Promise<ContextLedger> {
-    return this.serial(async () => {
-      const ledger = await this.loadMutable();
-      if (update.enabled !== undefined) {
-        if (typeof update.enabled !== "boolean") throw new Error("enabled must be a boolean");
-        ledger.policy.enabled = update.enabled;
-      }
-      if (update.strategy !== undefined) {
-        if (!["lag", "interval", "off"].includes(update.strategy)) throw new Error("strategy must be lag, interval, or off");
-        ledger.policy.strategy = update.strategy;
-      }
-      if (update.evictionMode !== undefined) {
-        if (!["placeholder", "process"].includes(update.evictionMode)) throw new Error("evictionMode must be placeholder or process");
-        ledger.policy.evictionMode = update.evictionMode;
-      }
-      for (const key of ["lag", "interval", "minRetainTokens", "readKeepLines", "pinExemptRounds", "restoreBudget"] as const) {
-        const value = update[key];
-        if (value === undefined) continue;
-        const minimum = key === "interval" || key === "restoreBudget" ? 1 : 0;
-        if (!Number.isSafeInteger(value) || value < minimum) throw new Error(`${key} must be an integer >= ${minimum}`);
-        ledger.policy[key] = value;
-      }
-      await this.save(ledger);
-      return ledger;
-    });
-  }
-
   async setBudget(
     maxSessionTokens: number | undefined,
     maxSessionCost: { currency: Currency; microUnits: string } | undefined,
@@ -385,6 +361,19 @@ export class ContextManager {
       const ledger = await this.loadMutable();
       update(ledger);
       await this.save(ledger);
+      return ledger;
+    });
+  }
+
+  /**
+   * 账本序列化事务（context-saver 扩展的驱逐/条目操作入口）：回调可异步（artifact 落盘/统计），
+   * 返回 false 表示无变更、跳过落盘；其余返回值（含 void）视为有变更。
+   */
+  async transactLedger(operation: (ledger: ContextLedger) => Promise<boolean | void>): Promise<ContextLedger> {
+    return this.serial(async () => {
+      const ledger = await this.loadMutable();
+      const mutated = await operation(ledger);
+      if (mutated !== false) await this.save(ledger);
       return ledger;
     });
   }
@@ -495,149 +484,6 @@ export class ContextManager {
     });
   }
 
-  async evict(messages: ChatMessage[], pinnedIds?: ReadonlySet<string>, turn?: TurnLedger): Promise<ContextLedger> {
-    if (turn) {
-      // 轮级句柄：驱逐延迟到 commitTurn 在最终账本（含并发外部变更）上判定执行；
-      // 空跑不落盘的优化保留（按 applyEviction 返回值决定是否写盘）。
-      // 返回值是工作副本（尚未应用驱逐），最终条目以 commitTurn 返回为准。
-      turn.pending.push({ apply: (ledger) => this.applyEviction(ledger, messages, pinnedIds), appliedToWorking: false });
-      return turn.working;
-    }
-    return this.serial(async () => {
-      const ledger = await this.loadMutable();
-      // 无新增/状态变化时跳过落盘（lag 窗口内多数轮 eligible 为空或已全部驱逐）。
-      if (await this.applyEviction(ledger, messages, pinnedIds)) await this.save(ledger);
-      return ledger;
-    });
-  }
-
-  /** 驱逐判定与执行：就地改 ledger 并写 artifact 文件；返回是否产生账本变更。 */
-  private async applyEviction(ledger: ContextLedger, messages: ChatMessage[], pinnedIds?: ReadonlySet<string>): Promise<boolean> {
-    const toolMessages = messages.filter((message) => message.role === "tool");
-    if (!ledger.policy.enabled || ledger.policy.strategy === "off") return false;
-    // lag 按轮计（一轮 = 一批连续 tool 消息，即一次 assistant tool_call 批次的全部结果）；
-    // 当轮（尾部批次）始终保护，保证任何结果至少在紧随其后的模型调用中完整出现一次。
-    const retained = retainedToolIds(messages, ledger.policy.lag);
-    const eligible = ledger.policy.strategy === "lag"
-      ? toolMessages.filter((message) => !retained.has(message.id))
-      : ledger.policy.strategy === "interval" && ledger.round % Math.max(1, ledger.policy.interval) === 0
-        ? toolMessages.filter((message) => !retained.has(message.id))
-        : [];
-    const toolNames = toolNameByCallId(messages);
-    // Ledger entries grow with the session. Index them once so eviction stays
-    // linear in the newly eligible tool messages instead of O(T×E).
-    const entriesByMessage = new Map(ledger.entries.map((entry) => [entry.messageId, entry]));
-    // artifacts 目录 mkdir 每轮最多一次（原来每条被驱逐消息一次 recursive mkdir）。
-    let artifactsDirReady = false;
-    let mutated = false;
-    for (const message of eligible) {
-      // pin 的消息不被驱逐；pin 占用超预算时由构建统计如实上报，不在这里悄悄绕过。
-      if (pinnedIds?.has(message.id)) continue;
-      const result = message.content.find((block) => block.type === "tool_result");
-      if (!result || result.type !== "tool_result") continue;
-      const toolName = toolNames.get(result.toolCallId);
-      // 白名单工具（如图片描述）结果永不驱逐——丢失会破坏后续轮次的关键上下文
-      if (toolName !== undefined && EVICTION_EXEMPT_TOOLS.has(toolName)) continue;
-      const existing = entriesByMessage.get(message.id);
-      if (existing) {
-        if (existing.pinnedUntilRound >= ledger.round) continue;
-        if (existing.state !== "evicted" || existing.restoredAt !== undefined) {
-          existing.state = "evicted";
-          delete existing.restoredAt;
-          // 旧账本条目可能缺 evictedTokens（恢复后重新驱逐）：按当前内容补烧
-          if (existing.evictedTokens === undefined) {
-            const current = message.content.find((block) => block.type === "tool_result");
-            if (current?.type === "tool_result") existing.evictedTokens = estimateTokens(current.content);
-          }
-          mutated = true;
-        }
-        continue;
-      }
-      const resultTokens = estimateTokens(result.content);
-      // 豁免下限：小结果驱逐收益微乎其微，反而搅动缓存前缀；read ≤10 行是完整的文件结构认知
-      if (resultTokens < ledger.policy.minRetainTokens) continue;
-      if (toolName === "read_file" && result.content.split("\n").length <= READ_ALWAYS_RETAIN_LINES) continue;
-      const artifactId = `artifact-${randomUUID()}`;
-      if (!artifactsDirReady) {
-        await mkdir(path.join(this.sessionRoot, "artifacts"), { recursive: true });
-        artifactsDirReady = true;
-      }
-      await writeFile(path.join(this.sessionRoot, "artifacts", `${artifactId}.txt`), result.content, "utf8");
-      const entry: LedgerEntry = {
-        messageId: message.id,
-        kind: "tool_result",
-        artifactId,
-        state: "evicted",
-        createdRound: ledger.round,
-        pinnedUntilRound: 0,
-        ...(toolName ? { toolName } : {}),
-        sizeBytes: Buffer.byteLength(result.content, "utf8"),
-        evictedTokens: resultTokens,
-        ...(result.isError ? { isError: true } : {}),
-        ...(toolName === "read_file" ? { excerpt: buildReadExcerpt(result.content, ledger.policy.readKeepLines, artifactId) } : {}),
-      };
-      ledger.entries.push(entry);
-      entriesByMessage.set(entry.messageId, entry);
-      mutated = true;
-    }
-    return mutated;
-  }
-
-  async evictMessage(messages: ChatMessage[], messageId: string): Promise<ContextLedger> {
-    return this.serial(async () => {
-      const message = messages.find((item) => item.id === messageId && item.role === "tool");
-      if (!message) throw new Error("Tool result message not found");
-      const result = message.content.find((block) => block.type === "tool_result");
-      if (!result || result.type !== "tool_result") throw new Error("Message has no tool result");
-      const toolName = toolNameByCallId(messages).get(result.toolCallId);
-      if (toolName !== undefined && EVICTION_EXEMPT_TOOLS.has(toolName)) {
-        throw new Error(`Tool result of ${toolName} is exempt from eviction`);
-      }
-      const ledger = await this.loadMutable();
-      const existing = ledger.entries.find((entry) => entry.messageId === messageId);
-      if (existing) {
-        existing.state = "evicted";
-        existing.pinnedUntilRound = 0;
-        delete existing.restoredAt;
-        // 重新驱逐已恢复条目：旧账本可能缺 evictedTokens，按当前内容补烧
-        if (existing.evictedTokens === undefined) {
-          const current = message.content.find((block) => block.type === "tool_result");
-          if (current?.type === "tool_result") existing.evictedTokens = estimateTokens(current.content);
-        }
-      } else {
-        const artifactId = `artifact-${randomUUID()}`;
-        await mkdir(path.join(this.sessionRoot, "artifacts"), { recursive: true });
-        await writeFile(path.join(this.sessionRoot, "artifacts", `${artifactId}.txt`), result.content, "utf8");
-        ledger.entries.push({
-          messageId,
-          kind: "tool_result",
-          artifactId,
-          state: "evicted",
-          createdRound: ledger.round,
-          pinnedUntilRound: 0,
-          ...(toolName ? { toolName } : {}),
-          sizeBytes: Buffer.byteLength(result.content, "utf8"),
-          evictedTokens: estimateTokens(result.content),
-          ...(result.isError ? { isError: true } : {}),
-          ...(toolName === "read_file" ? { excerpt: buildReadExcerpt(result.content, ledger.policy.readKeepLines, artifactId) } : {}),
-        });
-      }
-      await this.save(ledger);
-      return ledger;
-    });
-  }
-
-  async setPinned(messageId: string, pinned: boolean): Promise<ContextLedger> {
-    return this.serial(async () => {
-      const ledger = await this.loadMutable();
-      const entry = ledger.entries.find((candidate) => candidate.messageId === messageId);
-      if (!entry) throw new Error("Context entry not found");
-      entry.pinnedUntilRound = pinned ? Number.MAX_SAFE_INTEGER : 0;
-      await this.save(ledger);
-      return ledger;
-    });
-  }
-
   async readArtifact(artifactId: string, offset: number, limit: number): Promise<string> {
     if (!/^artifact-[0-9a-f-]{36}$/.test(artifactId)) throw new Error("Invalid artifact ID");
     if (!Number.isSafeInteger(offset) || offset < 0) throw new Error("offset must be a non-negative integer");
@@ -663,40 +509,9 @@ export class ContextManager {
     });
     return result;
   }
-
-  async restore(messageId: string): Promise<ContextLedger> {
-    return this.serial(async () => {
-      const ledger = await this.loadMutable();
-      const entry = ledger.entries.find((candidate) => candidate.messageId === messageId);
-      if (!entry) throw new Error("No evicted tool result for message");
-      entry.state = "restored";
-      entry.restoredAt = new Date().toISOString();
-      entry.pinnedUntilRound = ledger.round + ledger.policy.pinExemptRounds;
-      // restoreBudget 约束的是受保护的回写总量：超额时从最早回写项开始提前解除 pin，
-      // 内容仍保留到下一次正常驱逐，避免一次点击造成 UI 抖动。
-      const restored = ledger.entries
-        .filter((candidate) => candidate.state === "restored" && candidate.pinnedUntilRound > ledger.round)
-        .sort((left, right) => (left.restoredAt ?? "").localeCompare(right.restoredAt ?? ""));
-      const sizes = new Map<string, number>();
-      let estimatedTokens = 0;
-      for (const candidate of restored) {
-        const bytes = await stat(path.join(this.sessionRoot, "artifacts", `${candidate.artifactId}.txt`)).then((value) => value.size).catch(() => 0);
-        const tokens = Math.ceil(bytes / 4);
-        sizes.set(candidate.messageId, tokens);
-        estimatedTokens += tokens;
-      }
-      for (const candidate of restored) {
-        if (estimatedTokens <= ledger.policy.restoreBudget) break;
-        candidate.pinnedUntilRound = 0;
-        estimatedTokens -= sizes.get(candidate.messageId) ?? 0;
-      }
-      await this.save(ledger);
-      return ledger;
-    });
-  }
 }
 
 // 对外 API：纯函数与类型经本文件重导出，既有 import 点不变。
 export { estimateFragmentTokens };
 export { isPathExcluded, recordCompaction, selectCacheBreakpoints } from "./context-ledger-ops.js";
-export type { BudgetUpdate, ContextPolicyUpdate, TurnLedger, CompactionRecord } from "./context-types.js";
+export type { BudgetUpdate, TurnLedger, CompactionRecord } from "./context-types.js";

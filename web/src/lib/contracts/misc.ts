@@ -119,7 +119,7 @@ export interface SettingsView {
 }
 
 /** 设置对话框页签（定义在 contracts 供 lib 层引用；SettingsDialog 再导出） */
-export type SettingsTab = "appearance" | "general" | "defaults" | "shortcuts" | "remote" | "models" | "modelSelection" | "web" | "skills" | "extensions" | "pricing" | "prompt" | "info" | "notifications";
+export type SettingsTab = "appearance" | "general" | "defaults" | "shortcuts" | "remote" | "models" | "modelSelection" | "context" | "web" | "skills" | "extensions" | "pricing" | "prompt" | "info" | "notifications";
 
 export interface SkillInfo {
   name: string;
