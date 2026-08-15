@@ -1014,14 +1014,13 @@ Be concise, structured, and focused on helping the next LLM seamlessly continue 
       {
         from: "edit_file",
         as: "str_replace_editor",
-        // DeepSeek Harness 极简模式 str_replace_editor 的完整描述原文（来源同上）；
-        // 参数形态受 OWC core 白名单约束（fs.edit 仅接受 path/oldText/newText/
-        // replaceAll），只暴露可执行的 str_replace 形态——view/create/insert 命令
-        // 与 file_text/insert_line/view_range 参数在 OWC core 无对应实现。
+        // DeepSeek Harness 极简模式 str_replace_editor 的描述（来源同上）。原文含
+        // view/create/insert 命令说明，但 OWC core 的 fs.edit 白名单仅实现 str_replace
+        // 形态——命令级句子会让模型传入 command 等未映射键，经别名透传后被 core
+        // 拒绝（-32602），表现为工具无法调用；故裁剪为可执行的 str_replace 形态，
+        // 保留 old_str 唯一性等关键操作指导。
         description: "Custom editing tool for viewing, creating and editing files\n" +
           "* State is persistent across command calls and discussions with the user\n" +
-          "* If `path` is a file, `view` displays the result of applying `cat -n`. If `path` is a directory, `view` lists non-hidden files and directories up to 2 levels deep\n" +
-          "* The `create` command cannot be used if the specified `path` already exists as a file\n" +
           "* If a `command` generates a long output, it will be truncated and marked with `<output truncated>`\n" +
           "Notes for using the `str_replace` command:\n" +
           "* The `old_str` parameter should match EXACTLY one or more consecutive lines from the original file. Be mindful of whitespaces!\n" +
