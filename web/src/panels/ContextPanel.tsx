@@ -36,7 +36,7 @@ function messageSummary(messages: ChatMessage[] | undefined, messageId: string, 
 function PolicySection({ sessionId, running, policy }: { sessionId: string; running: boolean; policy: ContextView["ledger"]["policy"] }): ReactElement {
   const { t } = useI18n();
   const queryClient = useQueryClient();
-  const [form, setForm] = useState({ enabled: true, strategy: "lag" as "lag" | "interval" | "off", evictionMode: "placeholder" as "placeholder" | "process", lag: "2", interval: "5", minRetainTokens: "256", readKeepLines: "50", pinExemptRounds: "5", restoreBudget: "20000" });
+  const [form, setForm] = useState({ enabled: true, strategy: "lag" as "lag" | "interval" | "off", evictionMode: "placeholder" as "placeholder" | "process", lag: "10", interval: "5", minRetainTokens: "256", readKeepLines: "50", pinExemptRounds: "5", restoreBudget: "64000" });
   const [busy, setBusy] = useState(false);
   const [compacting, setCompacting] = useState<"toolcalls" | "overview" | null>(null);
   useEffect(() => {

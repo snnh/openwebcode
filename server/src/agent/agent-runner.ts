@@ -1206,7 +1206,35 @@ export class AgentRunner {
         const shapingApplication = shaping
           ? applyToolShaping(builtIns, shaping)
           : { tools: builtIns, aliasMap: new Map<string, string>(), aliasArgMaps: new Map<string, Record<string, string>>() };
-        const shapedBuiltIns = shapingApplication.tools;
+        let shapedBuiltIns = shapingApplication.tools;
+        // 首轮形态：预设可声明 firstTurnOnlyTools——首轮（会话尚无模型回复）只注入
+        // 声明的内置工具，第二轮起恢复完整保留形态。仅首轮解析一次预设（读用户预设
+        // 目录），后续轮次零成本。
+        const isFirstTurn = !view.messages.some((message) => message.role === "assistant");
+        let firstTurnOnly: string[] | undefined;
+        if (isFirstTurn && this.extensions) {
+          const persona = await this.extensions.activeEnvSimPersonaPreset(resolveSessionPersona(session)).catch(() => null);
+          firstTurnOnly = persona?.firstTurnOnlyTools;
+        }
+        if (firstTurnOnly && isFirstTurn) {
+          const allow = new Set(firstTurnOnly);
+          shapedBuiltIns = shapedBuiltIns.filter((tool) => allow.has(tool.name));
+        }
+        // 自动驱逐联动：驱逐把被逐出的消息替换为 artifact 占位符（占位符指引模型用
+        // read_artifact 恢复），若预设形态隐藏了 read_artifact 而会话驱逐策略开启
+        //（enabled 且非 off），强制放行 read_artifact——否则占位符成为死胡同。
+        // 会话 toolsDeny 显式禁止时仍尊重拒绝；ledger 缺失/损坏视为驱逐关闭；
+        // 首轮双工具形态（firstTurnOnlyTools）期间不联动，从第二轮生效。
+        if ((!firstTurnOnly || !isFirstTurn) && !shapedBuiltIns.some((tool) => tool.name === "read_artifact") && !(session.toolsDeny ?? []).includes("read_artifact")) {
+          let evictionOn = false;
+          try {
+            const ledger = await new ContextManager(this.sessions.contextRoot(sessionId)).load();
+            evictionOn = ledger.policy.enabled && ledger.policy.strategy !== "off";
+          } catch {
+            // 忽略：ledger 不可读时按驱逐关闭处理
+          }
+          if (evictionOn) shapedBuiltIns = [...shapedBuiltIns, READ_ARTIFACT_TOOL];
+        }
         this.toolAliases.setShaping(sessionId, shapingApplication.aliasMap, shapingApplication.aliasArgMaps);
 
         const tools = toolsEnabled

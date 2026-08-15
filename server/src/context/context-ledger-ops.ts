@@ -19,16 +19,16 @@ const DEFAULT_POLICY: ContextPolicy = {
   enabled: true,
   strategy: "lag",
   evictionMode: "placeholder",
-  // lag=2：保留最近 2 个 tool 轮的全文。活动路径以 tool 批次结尾时尾部批次是当轮
-  //（模型尚未看到，始终保护）并计入这 2 轮——即当轮 + 最近 1 个已完成轮；
-  // 路径以非 tool 消息结尾时则为最近 2 个已完成轮。更早的按 evictionMode 逐出为
+  // lag=10：保留最近 10 个 tool 轮的全文。活动路径以 tool 批次结尾时尾部批次是当轮
+  //（模型尚未看到，始终保护）并计入这 10 轮——即当轮 + 最近 9 个已完成轮；
+  // 路径以非 tool 消息结尾时则为最近 10 个已完成轮。更早的按 evictionMode 逐出为
   // artifact（占位符含 read_artifact 指引）。
-  lag: 2,
+  lag: 10,
   interval: 5,
   minRetainTokens: 256,
   readKeepLines: 50,
   pinExemptRounds: 5,
-  restoreBudget: 20_000,
+  restoreBudget: 64_000,
 };
 
 /** read_file 结果行数不超过该值时始终保留（与 token 下限并列的独立豁免：10 行是完整的文件结构认知）。 */

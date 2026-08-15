@@ -17,6 +17,10 @@ export interface PersonaPreset {
   productSections: string[];
   hideBuiltIns: string[];
   aliases: PersonaAlias[];
+  /** 首轮（会话首个模型调用）只注入这些内置工具（模型侧别名后名），其余内置保持
+   * 隐藏；不设置则无首轮限制。第二轮起恢复正常形态（hideBuiltIns + read_artifact
+   * 驱逐联动）。 */
+  firstTurnOnlyTools?: string[];
   /** /init 命令展开提示词拟态（如 cc 产物为 CLAUDE.md）；优先级：用户覆盖 > 本字段 > 内置。 */
   initPrompt?: string;
   /** /compact（overview）压缩系统提示词拟态；优先级同 initPrompt。 */

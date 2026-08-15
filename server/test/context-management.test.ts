@@ -127,28 +127,28 @@ describe("context management controls", () => {
     expect(ledger.entries).toHaveLength(0);
   });
 
-  it("default policy keeps the newest 2 rounds of tool results in full", async () => {
+  it("default policy keeps the newest 10 rounds of tool results in full", async () => {
     const manager = new ContextManager(await tempRoot("owc-context-lag-"));
     const messages: ChatMessage[] = [userText("start")];
-    for (let index = 1; index <= 5; index += 1) {
+    for (let index = 1; index <= 12; index += 1) {
       messages.push(toolResult(`d${index}`, `out ${index} ${"z".repeat(2000)}`), assistantText(`d${index}`, `ack ${index}`));
     }
     const ledger = await manager.evict(messages);
-    expect(ledger.entries.map((entry) => entry.messageId)).toEqual(["t-d1", "t-d2", "t-d3"]);
+    expect(ledger.entries.map((entry) => entry.messageId)).toEqual(["t-d1", "t-d2"]);
   });
 
 
   it("default policy counts the trailing unseen tool batch toward the lag window", async () => {
     const manager = new ContextManager(await tempRoot("owc-context-lag-tail-"));
-    // 默认 lag=2，路径以 tool 批次结尾：保留当轮 + 最近 1 个已完成轮（共 2 轮），
+    // 默认 lag=10，路径以 tool 批次结尾：保留当轮 + 最近 9 个已完成轮（共 10 轮），
     // 更早的轮次驱逐——与「当轮保护 + lag 窗口」语义一致
     const messages: ChatMessage[] = [userText("start")];
-    for (let index = 1; index <= 3; index += 1) {
+    for (let index = 1; index <= 10; index += 1) {
       messages.push(toolResult(`d${index}`, `out ${index} ${"z".repeat(2000)}`), assistantText(`d${index}`, `ack ${index}`));
     }
-    messages.push(toolResult("d4", `out 4 ${"z".repeat(2000)}`));
+    messages.push(toolResult("d11", `out 11 ${"z".repeat(2000)}`));
     const ledger = await manager.evict(messages);
-    expect(ledger.entries.map((entry) => entry.messageId)).toEqual(["t-d1", "t-d2"]);
+    expect(ledger.entries.map((entry) => entry.messageId)).toEqual(["t-d1"]);
   });
 
   it("exempts small results and short read_file results; large read_file degrades to head+tail excerpt", async () => {
@@ -354,7 +354,7 @@ describe("incremental context build", () => {
     expect(incremental.stats.totalTokens).toBe(estimateMessageTokens(forced.messages));
 
     // 驱逐改变 ledger：缓存键失效自动全量；随后的增量仍与全量一致
-    // （lag: 0 显式关闭 lag 窗口：默认 lag=3 下两条工具结果都在保留窗口内，不会被驱逐）
+    // （lag: 0 显式关闭 lag 窗口：默认 lag=10 下两条工具结果都在保留窗口内，不会被驱逐）
     await manager.updatePolicy({ lag: 0 });
     await manager.evict(messages);
     const afterEvict = await manager.buildView(messages);

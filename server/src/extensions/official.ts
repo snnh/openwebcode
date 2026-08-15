@@ -144,7 +144,7 @@ export const OFFICIAL_EXTENSIONS: ExtensionManifest[] = [
   {
     id: "env-sim",
     name: "环境模拟",
-    version: "0.1.2",
+    version: "0.1.3",
     description: "启用后按选定预设模仿其他编码 Agent 的系统提示词风格与默认工具形态。",
     apiVersion: "1",
     // 提示词变换与工具形态都在 server 侧直接执行（预设数据与用户预设目录是 server

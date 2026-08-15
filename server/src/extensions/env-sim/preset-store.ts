@@ -63,6 +63,7 @@ function parsePreset(raw: unknown, fallbackId: string): PersonaPreset | undefine
     productSections: strings(record.productSections),
     hideBuiltIns: strings(record.hideBuiltIns),
     aliases: aliases.filter((alias): alias is PersonaAlias => Boolean(alias)),
+    ...(Array.isArray(record.firstTurnOnlyTools) ? { firstTurnOnlyTools: strings(record.firstTurnOnlyTools) } : {}),
     ...(initPrompt ? { initPrompt } : {}),
     ...(compactOverviewPrompt ? { compactOverviewPrompt } : {}),
     ...(compactToolcallsPrompt ? { compactToolcallsPrompt } : {}),
