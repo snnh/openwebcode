@@ -1,4 +1,5 @@
 import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { calculateUsageCost } from "./cost/cost-calculator.js";
 import type { ExchangeRateSnapshot } from "./cost/exchange-rate.js";
@@ -116,13 +117,39 @@ function isRecord(value: unknown): value is UsageEventRecord {
 /** 报表聚合缓存的 LRU 上限：from/to 是自由查询参数，不封顶会随相异区间组合无限增长（每份含全量按日/按会话行）。 */
 export const MAX_CACHED_REPORTS = 8;
 
+/** usage-events 清理模式（设置「服务信息」页签热生效；off 为默认，保持历史行为不清理）。 */
+export type UsageLogCleanupMode =
+  | "off"
+  | "deleted-after-days"
+  | "all-after-days"
+  | "deleted-immediate-live-timeout"
+  | "deleted-immediate-only";
+
+export const USAGE_LOG_CLEANUP_MODES: UsageLogCleanupMode[] = [
+  "off",
+  "deleted-after-days",
+  "all-after-days",
+  "deleted-immediate-live-timeout",
+  "deleted-immediate-only",
+];
+
+export interface UsageLogCleanupOptions {
+  mode: UsageLogCleanupMode;
+  /** 保留天数（deleted-after-days / all-after-days / live-timeout 的未删除分支使用；immediate 分支忽略）。 */
+  retentionDays: number;
+  /** 会话是否仍存在（workbench 会话目录存在性）；缺省按 <dataDir>/sessions/<id> 判断。 */
+  sessionExists?: (sessionId: string) => boolean;
+}
+
 export class UsageLog {
   private readonly filePath: string;
+  private readonly dataDir: string;
   private queue: Promise<void> = Promise.resolve();
   /** report 聚合结果缓存（按 from/to 区间键控，LRU 封顶 MAX_CACHED_REPORTS）：文件 mtimeMs+size 指纹未变时复用，generatedAt 仍每次现取。 */
   private readonly reportCache = new Map<string, { mtimeMs: number; size: number; body: Omit<CostReport, "generatedAt"> }>();
 
   constructor(dataDir: string) {
+    this.dataDir = dataDir;
     this.filePath = path.join(dataDir, "usage-events.jsonl");
   }
 
@@ -147,6 +174,52 @@ export class UsageLog {
       await writeFile(this.filePath, text, "utf8");
     });
     return this.queue;
+  }
+
+  /**
+   * 按设置策略清理 usage-events.jsonl，返回删除的事件条数（mode 为 off 返回 0）。
+   * 策略语义：
+   * - `deleted-after-days`：已删除会话的事件保留超过 retentionDays 天 → 清理；未删除会话全部保留。
+   * - `all-after-days`：所有事件超过 retentionDays 天 → 清理，不分会话是否删除。
+   * - `deleted-immediate-live-timeout`：已删除会话的事件立即清理；未删除会话超过 retentionDays 天 → 清理。
+   * - `deleted-immediate-only`：已删除会话的事件立即清理；未删除会话全部保留。
+   * 会话存在性按 `sessionExists` 判断（缺省 `<dataDir>/sessions/<id>` 目录存在），只作用于删除分支。
+   */
+  async prune(options: UsageLogCleanupOptions): Promise<number> {
+    if (options.mode === "off") return 0;
+    const sessionExists = options.sessionExists ?? ((sessionId: string) =>
+      existsSync(path.join(this.dataDir, "sessions", sessionId)));
+    const events = await this.readAll();
+    const cutoff = Date.now() - options.retentionDays * 86_400_000;
+    // 每个会话只判定一次存在性（报表里同会话可能成百上千条）
+    const existsCache = new Map<string, boolean>();
+    const isDeleted = (sessionId: string): boolean => {
+      let cached = existsCache.get(sessionId);
+      if (cached === undefined) {
+        cached = !sessionExists(sessionId);
+        existsCache.set(sessionId, cached);
+      }
+      return cached;
+    };
+    const kept = events.filter((event) => {
+      const deleted = isDeleted(event.sessionId);
+      const tooOld = Date.parse(event.at) < cutoff;
+      switch (options.mode) {
+        case "deleted-after-days":
+          return !(deleted && tooOld);
+        case "all-after-days":
+          return !tooOld;
+        case "deleted-immediate-live-timeout":
+          return !deleted && !tooOld;
+        case "deleted-immediate-only":
+          return !deleted;
+        default:
+          return true;
+      }
+    });
+    if (kept.length === events.length) return 0;
+    await this.replaceAll(kept);
+    return events.length - kept.length;
   }
 
   async readAll(): Promise<UsageEventRecord[]> {

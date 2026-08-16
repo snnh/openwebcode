@@ -1,4 +1,4 @@
-import { appendFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -213,5 +213,74 @@ describe("报表聚合缓存 LRU 上限", () => {
     expect(cacheOf(log).size).toBe(MAX_CACHED_REPORTS);
     expect(cacheOf(log).has("2026-07-022026-07-02")).toBe(true);
     expect(cacheOf(log).has("2026-07-032026-07-03")).toBe(false);
+  });
+});
+
+describe("usage log cleanup (prune)", () => {
+  /** 造一批事件：两会话 × 新旧两天；live 会话目录真实存在，deleted 会话目录不存在。 */
+  async function fixture() {
+    const root = await tempRoot("owc-usage-prune-");
+    const log = new UsageLog(root);
+    // 会话目录：s1 存在（未删除），s2 不存在（已删除）
+    await mkdir(path.join(root, "sessions", "s1"), { recursive: true });
+    const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
+    await log.record(eventAt(new Date(), { sessionId: "s1" }));
+    await log.record(eventAt(new Date(daysAgo(30)), { sessionId: "s1" }));
+    await log.record(eventAt(new Date(), { sessionId: "s2" }));
+    await log.record(eventAt(new Date(daysAgo(30)), { sessionId: "s2" }));
+    return { root, log };
+  }
+
+  it("off 模式不清理任何事件", async () => {
+    const { log } = await fixture();
+    const removed = await log.prune({ mode: "off", retentionDays: 7 });
+    expect(removed).toBe(0);
+    expect(await log.readAll()).toHaveLength(4);
+  });
+
+  it("deleted-after-days：仅清理已删除会话超过保留天数的旧事件", async () => {
+    const { log } = await fixture();
+    const removed = await log.prune({ mode: "deleted-after-days", retentionDays: 7 });
+    expect(removed).toBe(1); // s2 的 30 天前事件
+    const kept = await log.readAll();
+    // 保留：s1 今天、s1 30 天前（未删除会话不按时间清）、s2 今天（已删除但未超时）
+    expect(kept.map((event) => event.sessionId).sort()).toEqual(["s1", "s1", "s2"]);
+    expect(kept.find((event) => event.sessionId === "s2")!.at.slice(0, 10))
+      .toBe(new Date().toISOString().slice(0, 10));
+  });
+
+  it("all-after-days：所有会话超过保留天数的事件都清理", async () => {
+    const { log } = await fixture();
+    const removed = await log.prune({ mode: "all-after-days", retentionDays: 7 });
+    expect(removed).toBe(2); // s1、s2 各一条 30 天前
+    const kept = await log.readAll();
+    expect(kept).toHaveLength(2);
+    for (const event of kept) expect(event.sessionId).toBeDefined();
+  });
+
+  it("deleted-immediate-live-timeout：已删除会话立即清理，未删除超时清理", async () => {
+    const { log } = await fixture();
+    const removed = await log.prune({ mode: "deleted-immediate-live-timeout", retentionDays: 7 });
+    expect(removed).toBe(3); // s2 两条立即全清 + s1 的 30 天前超时清理
+    // 精确断言：只保留 s1 今天
+    const kept = await log.readAll();
+    expect(kept).toHaveLength(1);
+    expect(kept[0]!.sessionId).toBe("s1");
+  });
+
+  it("deleted-immediate-only：已删除会话立即清理，未删除全部保留", async () => {
+    const { log } = await fixture();
+    const removed = await log.prune({ mode: "deleted-immediate-only", retentionDays: 7 });
+    expect(removed).toBe(2); // s2 两条全部清理
+    const kept = await log.readAll();
+    expect(kept.map((event) => event.sessionId)).toEqual(["s1", "s1"]);
+  });
+
+  it("自定义 sessionExists 判定可注入（默认按 <dataDir>/sessions/<id> 目录）", async () => {
+    const { log, root } = await fixture();
+    // 删除 s1 目录后默认判定变为"已删除"
+    await rm(path.join(root, "sessions", "s1"), { recursive: true, force: true });
+    const removed = await log.prune({ mode: "deleted-immediate-only", retentionDays: 7 });
+    expect(removed).toBe(4); // 两会话现在都视为已删除
   });
 });
