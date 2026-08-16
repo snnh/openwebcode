@@ -18,7 +18,10 @@ import type { TotpAuthService } from "../auth-totp.js";
 import type { ServerDependencies } from "../app.js";
 
 export interface CreateSessionBody {
+  /** cwd 必填；kind === "local"（本机会话）时忽略——由 server 解析为 HOME。 */
   cwd: string;
+  /** 会话类型；缺省常规。"local" = 本机会话：cwd=HOME、sandboxMode 强制 off，不经沙盒。 */
+  kind?: "local";
   provider?: string;
   model?: string;
   title?: string;

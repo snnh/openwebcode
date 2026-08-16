@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, rm, stat, writeFile, appendFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
 import { chmodPrivate, ensureDirWithMode, isMissing } from "../fs-utils.js";
@@ -29,6 +30,8 @@ interface MessagesCacheEntry {
 
 interface CreateSessionInput {
   cwd: string;
+  /** 会话类型（语义见 SessionMeta.kind）；仅 "local" 由路由层在解析 cwd=HOME 后传入。 */
+  kind?: "local";
   provider?: string;
   model?: string;
   title?: string;
@@ -78,15 +81,22 @@ export class SessionStore {
   async create(input: CreateSessionInput): Promise<SessionMeta> {
     const now = monotonicTimestamp();
     const resolvedCwd = path.resolve(input.cwd);
+    // 本机会话：core 路径根放宽到文件系统根（mode=off 本无沙盒，此处放开的是 fs 工具
+    // 的 RPC 路径检查）——硬边界由 server 侧审批门承担（agent-runner authorizeTool），
+    // 保留 .env/.owc 配置三项 deny 防宿主执行入口被覆写。
+    const basePolicy = input.kind === "local"
+      ? { ...defaultSandboxPolicy(resolvedCwd), readRoots: [path.parse(resolvedCwd).root], writeRoots: [path.parse(resolvedCwd).root] }
+      : defaultSandboxPolicy(resolvedCwd);
     const meta: SessionMeta = {
       id: input.id ?? randomUUID(),
       cwd: resolvedCwd,
+      ...(input.kind ? { kind: input.kind } : {}),
       // API callers resolve a configured provider/model before creating a session.
       // Keep direct store use neutral rather than choosing an implicit provider.
       provider: input.provider ?? "",
       model: input.model ?? "",
       sandbox: {
-        ...defaultSandboxPolicy(resolvedCwd),
+        ...basePolicy,
         ...(input.network ? { network: input.network } : {}),
         ...(input.bindLinks?.length ? { bindLinks: input.bindLinks } : {}),
       },
@@ -499,9 +509,16 @@ export class SessionStore {
     return serializeSession(meta as SessionMeta, messages);
   }
 
-  /** 导入 JSONL：原 id 未被占用则沿用（迁移恢复），否则分配新 id。 */
-  async importJsonl(text: string): Promise<SessionMeta> {
+  /** 导入 JSONL：原 id 未被占用则沿用（迁移恢复），否则分配新 id。 */  async importJsonl(text: string): Promise<SessionMeta> {
     const parsed = parseSessionImport(text);
+    // 本机会话导入归一化：kind 来自外部文件，必须重建 local 基线——
+    // cwd 指向当前机器 HOME、沙盒强制 off、根放宽到文件系统根且 denyPaths 重建，
+    // 防止导入文件携带「非 off 模式 + 全盘根」或旧机器 HOME 路径的组合。
+    const isLocalImport = parsed.meta.kind === "local";
+    const importedCwd = isLocalImport ? os.homedir() : parsed.meta.cwd;
+    const basePolicy = isLocalImport
+      ? { ...defaultSandboxPolicy(importedCwd), readRoots: [path.parse(importedCwd).root], writeRoots: [path.parse(importedCwd).root] }
+      : undefined;
     let id = parsed.meta.id ?? randomUUID();
     try {
       await mkdir(this.sessionPath(id), { recursive: false });
@@ -515,7 +532,17 @@ export class SessionStore {
     }
     await chmodPrivate(this.sessionPath(id), 0o700);
     const { id: _ignored, ...restMeta } = parsed.meta;
-    const meta: SessionMeta = { ...restMeta, id };
+    const meta: SessionMeta = { ...restMeta, id, ...(isLocalImport ? { cwd: importedCwd, sandboxMode: "off" as const } : {}) };
+    if (isLocalImport) {
+      // 本机会话导入重建策略基线：根放宽到文件系统根、denyPaths 重建为当前 HOME 三项；
+      // 剥离导入文件中可能携带的托管工作区/快照后端预设
+      meta.sandbox = {
+        ...basePolicy!,
+        ...(parsed.meta.sandbox?.network ? { network: parsed.meta.sandbox.network } : {}),
+      };
+      delete meta.workspace;
+      delete meta.snapshotBackend;
+    }
     await this.writeMeta(meta);
     await writeFile(
       this.messagesPath(id),

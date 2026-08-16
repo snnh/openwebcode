@@ -128,6 +128,9 @@ export interface FallbackModelEntry {
 export interface SessionMeta {
   id: string;
   cwd: string;
+  /** 会话类型；undefined = 常规工作区会话。"local" = 本机会话：cwd=HOME、sandboxMode=off（命令直跑宿主机），
+   * 文件工具 HOME 外路径走人工审批门（agent-runner authorizeTool），不做快照。 */
+  kind?: "local";
   provider: string;
   model: string;
   /** 备选模型链（最多 3 个，校验时剔除与主模型重复或彼此重复项）；仅主循环 run 生效，子代理不继承（子代理走角色模型链）。 */

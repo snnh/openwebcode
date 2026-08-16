@@ -100,7 +100,10 @@ export class PermissionCoordinator {
 
 export function permissionRule(tool: string, input: Record<string, unknown>): PermissionRule {
   if (tool === "bash" && typeof input.cmd === "string") return { tool, argumentPrefix: input.cmd };
-  if (["write_file", "edit_file"].includes(tool) && typeof input.path === "string") return { tool, argumentPrefix: input.path };
+  // 文件类工具（含只读三件套）：规则按归一化路径/目录前缀落——本机会话的 HOME 外路径门
+  // 依赖 read_file/glob/grep 也生成路径规则（旧行为整工具放行过宽）；glob/grep 缺省
+  // path 时回落会话根，不落规则。
+  if (["read_file", "write_file", "edit_file", "glob", "grep"].includes(tool) && typeof input.path === "string" && input.path) return { tool, argumentPrefix: input.path };
   if (tool === "web_fetch" && typeof input.url === "string") {
     try {
       const url = new URL(input.url);
@@ -139,3 +142,5 @@ function matchesRule(rule: PermissionRule, tool: string, input: Record<string, u
   if (tool === "bash") return matchesBashRule(rule.argumentPrefix, value);
   return value === rule.argumentPrefix || value.startsWith(`${rule.argumentPrefix}/`);
 }
+
+export { matchesRule };

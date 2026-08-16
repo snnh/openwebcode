@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import os from "node:os";
 import path from "node:path";
 import type { CoreClientLike, CoreEvent } from "../core-client.js";
 import { CoreGateway } from "../core-gateway.js";
@@ -20,7 +21,7 @@ import type { PricingCatalog } from "../cost/pricing-catalog.js";
 import type { Provider, ProviderRegistry, ProviderTool, ProviderEvent } from "../providers/provider.js";
 import { ProviderError } from "../providers/provider-error.js";
 import { collectProviderTurn } from "../providers/retry.js";
-import { PermissionCoordinator, permissionRule, type PermissionDecision } from "./permission-coordinator.js";
+import { PermissionCoordinator, permissionRule, matchesRule, type PermissionDecision } from "./permission-coordinator.js";
 import { buildReviewMessages, completeWithProvider, parseVerdict, type ReviewOutcome } from "./permission-review.js";
 import type { FastModelClient } from "../fast-model.js";
 import {
@@ -52,6 +53,10 @@ import {
 import type { CronScheduler } from "../cron-scheduler.js";
 import { getSnapshotBackend } from "../snapshots/index.js";
 import { ToolAliasResolver } from "./tool-alias.js";
+
+/** 本机会话（kind=local）路径门覆盖的文件工具：HOME 外路径需人工允许或命中 allow 规则。
+ * 直接由 FILE_TOOLS 派生，新增文件工具自动纳入。 */
+const LOCAL_PATH_GATED_TOOLS = new Set(FILE_TOOLS.map((tool) => tool.name));
 import { digestSwarmBoard, swarmBoardPath } from "./swarm-board.js";
 import type { MessageContent, NodeEnv, PythonEnv, SessionMeta } from "../sessions/types.js";
 import { effectivePythonEnv, UvPythonEnvironments, uvVenvDir, wrapCommandWithNote, wrapCommandWithVenv } from "../python-env.js";
@@ -255,7 +260,7 @@ const SPAWN_TASK_TOOL: ProviderTool = {
       role: {
         type: "string",
         enum: [...MODEL_ROLES],
-        description: "Optional model tier for the sub-agent (see the sub-agent model-role mapping in the system prompt). Explicit provider:/model: in a custom agent's frontmatter takes precedence over any role.",
+        description: "Optional model tier for the sub-agent (see the sub-agent model-role mapping in the system prompt; defaults to balanced when omitted). Explicit provider:/model: in a custom agent's frontmatter takes precedence over any role.",
       },
       maxTurns: {
         type: "number",
@@ -341,7 +346,7 @@ const SPAWN_SWARM_TOOL: ProviderTool = {
       role: {
         type: "string",
         enum: [...MODEL_ROLES],
-        description: "Optional model tier applied to every launch unless an item overrides it (see the sub-agent model-role mapping in the system prompt). Explicit provider:/model: in a custom agent's frontmatter takes precedence over any role.",
+        description: "Optional model tier applied to every launch unless an item overrides it (see the sub-agent model-role mapping in the system prompt; defaults to balanced when omitted). Explicit provider:/model: in a custom agent's frontmatter takes precedence over any role.",
       },
       maxTurns: {
         type: "number",
@@ -929,7 +934,9 @@ export class AgentRunner {
         throw error;
       }
 
-      const automaticSnapshotRequested = (configuredSession.snapshotMode ?? "auto") === "auto";
+      const automaticSnapshotRequested = (configuredSession.snapshotMode ?? "auto") === "auto"
+        // 本机会话（kind=local）不做快照：不探测后端、不建 git-shadow，避免在 HOME 上留元数据
+        && configuredSession.kind !== "local";
       // 每个后台任务都有独立 core/子进程，可能正以托管工作区为 cwd。换 VHDX/qcow2
       // 叶子会短暂卸载该目录，因此不能在它运行时自动快照；本轮对话继续，不阻塞用户。
       const backgroundTaskRunning = this.backgroundTasks?.hasRunningForSession(sessionId) ?? false;
@@ -1305,7 +1312,7 @@ export class AgentRunner {
                 ? "not configured, falls back to the session model"
                 : "not configured, falls back to balanced";
             return `- ${role}: ${SUB_AGENT_ROLE_GUIDANCE[role]} (current: ${current})`;
-          }).join("\n")}\nAn explicit provider:/model: in a custom sub-agent's frontmatter overrides any role; without a role, sub-agents run on the session model.`
+          }).join("\n")}\nAn explicit provider:/model: in a custom sub-agent's frontmatter overrides any role; without a role, sub-agents default to the balanced tier (falling back to the session model when balanced is not configured).`
           : "";
 
         // 长期记忆注入（§2.3/§7.5）：CLAUDE.md/AGENTS.md + 项目/全局 memory.md，每轮现读
@@ -1783,10 +1790,12 @@ export class AgentRunner {
     const session = await this.sessions.getMeta(sessionId);
     const toolsAllow = session?.toolsAllow;
     const toolsDeny = session?.toolsDeny;
-    /** 角色档解析为 provider+model 覆盖；会话默认由调用方 ?? 回落，这里留空。 */
+    /** 角色档解析为 provider+model 覆盖；未配置时留空，由调用方 ?? 回落会话模型。
+     *  未显式指定 role 时默认 balanced 档（resolveWithFallback 未配置返回 undefined，自然回落会话模型）。 */
     const applyRole = (base: ResolvedSubAgent, role: ModelRole | undefined): ResolvedSubAgent => {
-      if (!role || !this.modelRoles) return base;
-      const selection = this.modelRoles.resolveWithFallback(role, undefined);
+      const effectiveRole = role ?? "balanced";
+      if (!this.modelRoles) return base;
+      const selection = this.modelRoles.resolveWithFallback(effectiveRole, undefined);
       return selection ? { ...base, providerOverride: selection.provider, modelOverride: selection.model } : base;
     };
     const builtin = agentName ? getBuiltinSubAgent(agentName) : undefined;
@@ -2314,6 +2323,36 @@ export class AgentRunner {
     }
     const mode = session.permissionMode ?? "ask";
     const rules = session.permissionRules ?? [];
+    // 本机会话（kind=local）文件工具路径门：cwd=HOME、core 路径根放宽到文件系统根，
+    // HOME 之外的 read/write/edit/glob/grep 必须先命中 allow 规则或经人工审批——
+    // 与权限模式无关（read_file 在 needsApproval 白名单中本免批，HOME 外读同样要人批）。
+    // 门通过后直接放行，不再走下方 needsApproval（避免 write/edit 在 ask 模式重复确认）；
+    // HOME 内路径不拦截，维持原权限链语义。
+    if (session.kind === "local" && LOCAL_PATH_GATED_TOOLS.has(tool)) {
+      let rawPath = typeof input.path === "string" && input.path ? input.path : ".";
+      try {
+        if (this.core.normalizePath) {
+          const normalized = await this.core.normalizePath({
+            sessionId,
+            path: rawPath,
+            purpose: tool === "write_file" || tool === "edit_file" ? "write" : "read",
+          });
+          rawPath = normalized.path;
+        }
+      } catch { /* 回退原始路径 */ }
+      const abs = path.resolve(session.cwd, rawPath);
+      const home = os.homedir();
+      const insideHome = abs === home || abs.startsWith(`${home}${path.sep}`);
+      if (!insideHome && !rules.some((rule) => matchesRule(rule, tool, { path: abs }))) {
+        this.state(sessionId, "waiting_permission");
+        // Notification 钩子：权限待批（与下方 needsApproval 审批路径同一挂点）
+        await this.runNotificationHook("Notification", { sessionId, cwd: session.cwd, tool, input: { ...input, path: abs }, notification: { kind: "permission", summary: summarizeToolInput(tool, { ...input, path: abs }) } });
+        const result = await this.permissions.request(sessionId, tool, { ...input, path: abs }, signal);
+        this.state(sessionId, "tool_running");
+        if (!result.allowed) return { allowed: false, reason: result.reason ?? `访问 HOME 外路径未获允许：${abs}` };
+        return { allowed: true };
+      }
+    }
     // 权限规则键与确认卡片统一使用 core path.normalize 归一化后的 canonical
     // path（路径处理归一在 core C 层）：src/a.ts、./src/a.ts 与根内绝对路径
     // 命中同一条 allow-always 规则。normalize 不可用/失败时回退原始字符串。

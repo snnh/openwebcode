@@ -210,6 +210,20 @@
   white-space: nowrap;
   max-width: min(560px, 40vw);
 }
+/* 本机会话徽标（kind=local）：命令直跑宿主机，HOME 外路径需允许 */
+.local-badge {
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  color: var(--accent-strong, var(--accent));
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  vertical-align: 1px;
+  white-space: nowrap;
+}
 .job-actions {
   flex: 1 1 680px;
   min-width: 0;
