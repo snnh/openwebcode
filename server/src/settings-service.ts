@@ -10,6 +10,8 @@ import type { EventBus } from "./events/event-bus.js";
 import type { ProviderRegistry } from "./providers/provider.js";
 import type { StorageGC } from "./storage-gc.js";
 import type { FastModelClient } from "./fast-model.js";
+import type { UsageLogCleanupMode } from "./usage-log.js";
+import { USAGE_LOG_CLEANUP_MODES } from "./usage-log.js";
 import type { ProviderProfilesService } from "./provider-profiles.js";
 import type { ModelRegistry } from "./context/model-registry.js";
 import type { UpdateChecker } from "./update-checker.js";
@@ -94,6 +96,8 @@ interface RuntimeDependencies {
   applyProxy?: (config: ProxyConfig) => ProxyApplyResult;
   /** filtered 网络档 sidecar 编排；sandboxProxyDenyList 变更时重写活跃会话的 deny 文件 */
   sandboxProxy?: { refreshDenyFiles(): Promise<void> };
+  /** usage-events 清理；usageLogCleanupMode/usageLogRetentionDays 变更时热触发一次 */
+  usageLog?: { prune(options: { mode: UsageLogCleanupMode; retentionDays: number }): Promise<number> };
 }
 
 const GROUPS = [
@@ -179,6 +183,18 @@ function requireSyncIntervalMinutes(value: SettingValue): void {
 function requireUpdateCheckIntervalHours(value: SettingValue): void {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > 24 * 30) {
     throw new SettingsValidationError("必须是 0–720 的整数小时");
+  }
+}
+
+function requireUsageLogCleanupMode(value: SettingValue): void {
+  if (typeof value !== "string" || !USAGE_LOG_CLEANUP_MODES.includes(value as UsageLogCleanupMode)) {
+    throw new SettingsValidationError("必须是 off / deleted-after-days / all-after-days / deleted-immediate-live-timeout / deleted-immediate-only");
+  }
+}
+
+function requireUsageLogRetentionDays(value: SettingValue): void {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > 3650) {
+    throw new SettingsValidationError("保留天数必须是 1–3650 的整数");
   }
 }
 
@@ -280,6 +296,10 @@ function envProxyMode(raw: string): SettingValue | undefined {
   return raw === "off" || raw === "env" || raw === "custom" ? raw : undefined;
 }
 
+function envUsageLogCleanupMode(raw: string): SettingValue | undefined {
+  return USAGE_LOG_CLEANUP_MODES.includes(raw as UsageLogCleanupMode) ? raw : undefined;
+}
+
 const FIELDS: FieldSpec[] = [
   // 模型目录同步；模型服务商连接由 provider-profiles.json 独立管理。
   { key: "catalogSyncUrl", group: "models", label: "远程模型目录 URL", type: "text", env: "OWC_MODELS_CATALOG_SYNC_URL", defaultValue: null, restartRequired: false, validate: requireHttpUrl, description: "留空则不从远程链接同步模型目录" },
@@ -326,6 +346,9 @@ const FIELDS: FieldSpec[] = [
   { key: "jobObjectMemoryMB", group: "executor", label: "Job 内存上限 (MB)", type: "number", env: "OWC_JOB_MEMORY_MB", defaultValue: null, restartRequired: true, fromEnv: envNumber, validate: requireJobMemoryMB, description: "进程树提交内存上限，缺省 4096；仅 Windows（Job Object）生效" },
   { key: "jobObjectMaxProcesses", group: "executor", label: "Job 进程数上限", type: "number", env: "OWC_JOB_MAX_PROCESSES", defaultValue: null, restartRequired: true, fromEnv: envNumber, validate: requireJobMaxProcesses, description: "进程树活跃进程上限，缺省 64；仅 Windows（Job Object）生效" },
   { key: "gcMaxBytes", group: "service", label: "存储上限 (字节)", type: "number", env: "OWC_GC_MAX_BYTES", defaultValue: 2_147_483_648, restartRequired: false, fromEnv: envNumber, description: "会话 artifacts 全局 LRU 上限，超出后从最旧开始清理" },
+  // usage-events 清理（热生效）：模式 + 保留天数；off = 不清理（默认，保持历史行为）
+  { key: "usageLogCleanupMode", group: "service", label: "用量日志清理模式", type: "select", env: "OWC_USAGE_LOG_CLEANUP_MODE", defaultValue: "off", restartRequired: false, options: USAGE_LOG_CLEANUP_MODES, fromEnv: envUsageLogCleanupMode, validate: requireUsageLogCleanupMode, description: "off = 不清理；deleted-after-days = 仅已删除会话的事件保留超过指定天数后清理（未删除保留）；all-after-days = 所有事件超过指定天数后清理，不分会话；deleted-immediate-live-timeout = 已删除会话的事件立即清理，未删除超过指定天数后清理；deleted-immediate-only = 已删除会话的事件立即清理，未删除不清理" },
+  { key: "usageLogRetentionDays", group: "service", label: "用量日志保留天数", type: "number", env: "OWC_USAGE_LOG_RETENTION_DAYS", defaultValue: 365, restartRequired: false, fromEnv: envNumber, validate: requireUsageLogRetentionDays, description: "配合清理模式使用的保留天数（1–3650）；仅 after-days / live-timeout 分支生效" },
   // 监听（重启生效）；Web 端归入"远程访问"页签
   { key: "host", group: "network", label: "监听地址", type: "text", env: "OWC_HOST", defaultValue: "127.0.0.1", restartRequired: true, validate: requireNonEmpty },
   { key: "port", group: "network", label: "监听端口", type: "number", env: "OWC_PORT", defaultValue: 3210, restartRequired: true, fromEnv: envNumber, validate: requirePort },
@@ -522,6 +545,8 @@ export class SettingsService {
       dataDir: value("dataDir") as string,
       coreRequestTimeoutMs: value("coreRequestTimeoutMs") as number,
       gcMaxBytes: value("gcMaxBytes") as number,
+      usageLogCleanupMode: value("usageLogCleanupMode") as UsageLogCleanupMode,
+      usageLogRetentionDays: value("usageLogRetentionDays") as number,
       agentMaxTurns: value("agentMaxTurns") as number,
       subAgentMaxTurns: value("subAgentMaxTurns") as number,
       compactionThresholdPercent: value("compactionThresholdPercent") as number,
@@ -700,6 +725,14 @@ export class SettingsService {
       const gc = this.deps.gc;
       gc.setMaxBytes(this.effective().gcMaxBytes);
       void gc.collect().catch((error: unknown) => process.stderr.write(`[settings] 存储 GC 失败：${error instanceof Error ? error.message : String(error)}\n`));
+    }
+    // usage-events 清理热生效：模式或保留天数变更时立即按新策略清理一次（失败仅记日志）
+    if ((changed.includes("usageLogCleanupMode") || changed.includes("usageLogRetentionDays")) && this.deps.usageLog) {
+      const effective = this.effective();
+      void this.deps.usageLog.prune({
+        mode: effective.usageLogCleanupMode,
+        retentionDays: effective.usageLogRetentionDays,
+      }).catch((error: unknown) => process.stderr.write(`[settings] 用量日志清理失败：${error instanceof Error ? error.message : String(error)}\n`));
     }
     // 更新检查热应用；离线模式下整体关闭（含手动 refresh——更新检查属纯遥测，无用户刚需入口）
     if ((changed.some((key) => key.startsWith("updateCheck")) || changed.includes("offlineMode")) && this.deps.updateChecker) {
