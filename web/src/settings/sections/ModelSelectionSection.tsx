@@ -7,7 +7,7 @@ export function ModelSelectionSection({ onDirtyChange }: { onDirtyChange?(dirty:
   return (
     <ServerSettingsFields
       showGroup={(groupId) => MODEL_SELECTION_GROUPS.has(groupId)}
-      note={["会话默认模型、子代理角色与快速模型设置。密钥仅脱敏显示；保存的密钥以明文存放在本机数据目录。", "Session default, sub-agent role, and fast model settings. Secrets are masked here but stored as plain text in the local data directory."]}
+      note={["会话默认模型、子代理角色与快速模型设置；子代理未指定角色时默认走平衡档。密钥仅脱敏显示；保存的密钥以明文存放在本机数据目录。", "Session default, sub-agent role, and fast model settings; sub-agents default to the balanced tier when no role is given. Secrets are masked here but stored as plain text in the local data directory."]}
       onDirtyChange={onDirtyChange}
     />
   );

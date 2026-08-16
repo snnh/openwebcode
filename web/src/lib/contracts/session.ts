@@ -6,6 +6,8 @@ import type { SnapshotMode } from "./snapshot";
 export interface Session {
   id: string;
   cwd: string;
+  /** 本机会话标记：cwd=HOME、sandboxMode=off（命令直跑宿主机），HOME 外文件路径走人工审批门。 */
+  kind?: "local";
   provider: string;
   model: string;
   thinking?: "adaptive" | "enabled" | "disabled";

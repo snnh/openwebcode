@@ -268,7 +268,7 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
         <div className="job-title">
           <h1>{session.title}</h1>
           {/* 桌面端 cwd 在标题下（compact 由 CSS 隐藏）；移动端 cwd 在下方 job-header-sub 行 */}
-          {!isMobile && <p className="job-cwd mono" title={session.cwd}>{session.cwd}</p>}
+          {!isMobile && <p className="job-cwd mono" title={session.cwd}>{session.cwd}{session.kind === "local" && <span className="local-badge">{t("本机", "LOCAL")}</span>}</p>}
         </div>
         <div className="job-info">
         {costSummary && (
@@ -358,12 +358,14 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
       </div>
       {isMobile && (
         <div className="job-header-sub">
-          <p className="job-cwd mono" title={session.cwd}>{session.cwd}</p>
+          <p className="job-cwd mono" title={session.cwd}>{session.cwd}{session.kind === "local" && <span className="local-badge">{t("本机", "LOCAL")}</span>}</p>
           {stateItem}
           {toggleButton}
         </div>
       )}
       {!headerCollapsed && <div className="job-actions">
+        {/* 本机会话固定 off 沙盒：不提供切换（服务端也拒绝变更） */}
+        {session.kind !== "local" && (
         <label className={`mode-switch sandbox-mode-switch ${(session.sandboxMode ?? "jobobject") === "off" ? "advisory" : "enforced"}`} title={t("切换当前会话的命令执行沙盒", "Change the command sandbox for this session")}>
           <Icon name="box" size={11} />
           <span>{t("沙盒", "Sandbox")}</span>
@@ -385,6 +387,7 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
             ))}
           </FitSelect>
         </label>
+        )}
         <label className="mode-switch shell-backend-switch" title={t("选择当前会话命令使用的解释器", "Choose the command shell for this session")}>
           <Icon name="terminal" size={11} />
           <span>Shell</span>

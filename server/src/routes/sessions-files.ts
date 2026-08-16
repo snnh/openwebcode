@@ -117,6 +117,7 @@ export function registerSessionFileRoutes(app: FastifyInstance, ctx: RouteContex
   });
   app.get<{ Params: { id: string; checkpointId: string } }>("/api/sessions/:id/checkpoints/:checkpointId/diff", async (request, reply) => {
     const session = await sessions.get(request.params.id); if (!session) return reply.code(404).send({ error: "Session not found" });
+    if (session.kind === "local") return reply.code(400).send({ error: "本机会话不支持快照" });
     const releaseWorkspace = acquireManagedWorkspaceUse(session);
     if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
     try {
@@ -129,11 +130,13 @@ export function registerSessionFileRoutes(app: FastifyInstance, ctx: RouteContex
 
   app.get<{ Params: { id: string } }>("/api/sessions/:id/snapshot-capability", async (request, reply) => {
     const session = await sessions.get(request.params.id); if (!session) return reply.code(404).send({ error: "Session not found" });
+    if (session.kind === "local") return reply.code(400).send({ error: "本机会话不支持快照" });
     return (await resolveSnapshotBackend(session)).capability();
   });
 
   app.get<{ Params: { id: string } }>("/api/sessions/:id/checkpoints", async (request, reply) => {
     const session = await sessions.get(request.params.id); if (!session) return reply.code(404).send({ error: "Session not found" });
+    if (session.kind === "local") return reply.code(400).send({ error: "本机会话不支持快照" });
     const releaseWorkspace = acquireManagedWorkspaceUse(session);
     if (!releaseWorkspace) return reply.code(409).send({ error: "Managed workspace checkpoint or sync is in progress" });
     try {
@@ -144,6 +147,7 @@ export function registerSessionFileRoutes(app: FastifyInstance, ctx: RouteContex
   });
   app.post<{ Params: { id: string }; Body: { label?: string } }>("/api/sessions/:id/checkpoints", async (request, reply) => {
     const session = await sessions.get(request.params.id); if (!session) return reply.code(404).send({ error: "Session not found" });
+    if (session.kind === "local") return reply.code(400).send({ error: "本机会话不支持快照" });
     if (agent.isRunning(session.id)) return reply.code(409).send({ error: "Session is running" });
     if (managedSyncingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace sync is in progress" });
     if (isShellPending(session.id)) return reply.code(409).send({ error: "A shell command is still using this session" });
@@ -162,6 +166,7 @@ export function registerSessionFileRoutes(app: FastifyInstance, ctx: RouteContex
   });
   app.post<{ Params: { id: string; checkpointId: string }; Body: { confirm?: boolean; filesOnly?: boolean } }>("/api/sessions/:id/checkpoints/:checkpointId/restore", async (request, reply) => {
     const session = await sessions.get(request.params.id); if (!session) return reply.code(404).send({ error: "Session not found" });
+    if (session.kind === "local") return reply.code(400).send({ error: "本机会话不支持快照" });
     if (agent.isRunning(session.id)) return reply.code(409).send({ error: "Session is running" });
     if (managedSyncingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace sync is in progress" });
     if (isShellPending(session.id)) return reply.code(409).send({ error: "A shell command is still using this session" });
@@ -192,6 +197,7 @@ export function registerSessionFileRoutes(app: FastifyInstance, ctx: RouteContex
   });
   app.delete<{ Params: { id: string; checkpointId: string } }>("/api/sessions/:id/checkpoints/:checkpointId", async (request, reply) => {
     const session = await sessions.get(request.params.id); if (!session) return reply.code(404).send({ error: "Session not found" });
+    if (session.kind === "local") return reply.code(400).send({ error: "本机会话不支持快照" });
     if (agent.isRunning(session.id)) return reply.code(409).send({ error: "Session is running" });
     if (managedSyncingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace sync is in progress" });
     if (isShellPending(session.id)) return reply.code(409).send({ error: "A shell command is still using this session" });

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { activePathMessages } from "../sessions/session-tree.js";
@@ -54,7 +55,8 @@ export function registerSessionCoreRoutes(app: FastifyInstance, ctx: RouteContex
       : await sessions.updateConfig(session.id, { provider, model, ...patch, ...(session.toolsAllow ? { toolsAllow: session.toolsAllow } : {}), ...(session.toolsDeny ? { toolsDeny: session.toolsDeny } : {}), ...(session.fallbackModels ? { fallbackModels: session.fallbackModels } : {}) });
     // 快照后端偏好：非 auto 且非托管会话（托管后端由建盘流程预设）时单项探测，
     // 可用则预设跳过探测链；不可用回落自动探测并如实告警，不阻断创建。
-    if (config.snapshotBackend && !updated.workspace) {
+    // 本机会话（kind=local）不做快照，跳过预设。
+    if (config.snapshotBackend && !updated.workspace && session.kind !== "local") {
       const probed = await probeSnapshotBackendByName(config.snapshotBackend, sessions.contextRoot(session.id), session.cwd, { runner: createExecFileRunner(), platform, core }).catch(() => undefined);
       if (probed) {
         updated = await sessions.updateSnapshotBackend(session.id, config.snapshotBackend);
@@ -168,9 +170,18 @@ export function registerSessionCoreRoutes(app: FastifyInstance, ctx: RouteContex
     }
   };
   app.post<{ Body: CreateSessionBody }>("/api/sessions", async (request, reply) => {
-    if (!request.body || typeof request.body.cwd !== "string" || !request.body.cwd) {
+    // 本机会话（kind=local）：cwd 缺省解析为 HOME、沙盒强制 off；与托管工作区互斥
+    const isLocal = request.body?.kind === "local";
+    if (request.body?.kind !== undefined && request.body.kind !== "local") {
+      return reply.code(400).send({ error: 'kind must be "local"' });
+    }
+    if (!request.body || (!isLocal && (typeof request.body.cwd !== "string" || !request.body.cwd))) {
       return reply.code(400).send({ error: "cwd must be a non-empty string" });
     }
+    if (isLocal && request.body.workspaceMode === "managed") {
+      return reply.code(400).send({ error: "本机会话不支持托管工作区" });
+    }
+    const cwd = isLocal ? os.homedir() : request.body.cwd;
     // body 未显式指定 provider/model 时，settings 的 defaultModel 优先于"第一个 profile / 目录首模型"
     const implicitSelection = request.body.provider === undefined && request.body.model === undefined
       ? resolveDefaultSelection(dependencies.settings, providers, dependencies.models)
@@ -216,9 +227,15 @@ export function registerSessionCoreRoutes(app: FastifyInstance, ctx: RouteContex
       return reply.code(400).send({ error: 'workspaceMode must be "managed"' });
     }
     if (request.body.workspaceMode === "managed") return createManagedSession(request.body, provider, model, reply);
-    // Linux 直接模式：core 支持 overlay 时自动升级为 overlayfs 托管会话（见上注释）
-    if (platform === "linux" && await tryCreateOverlayfsSession(request.body, provider, model, reply)) return;
-    const session = await applySessionDefaults(await sessions.create({ ...request.body, provider, model }), provider, model);
+    // Linux 直接模式：core 支持 overlay 时自动升级为 overlayfs 托管会话（见上注释）；本机会话跳过（HOME 不应被挂 overlay 视图）
+    if (platform === "linux" && !isLocal && await tryCreateOverlayfsSession(request.body, provider, model, reply)) return;
+    const session = await applySessionDefaults(await sessions.create({
+      ...request.body,
+      provider,
+      model,
+      cwd,
+      ...(isLocal ? { kind: "local" as const, sandboxMode: "off" as const } : {}),
+    }), provider, model);
     events.publish({ source: "session", type: "session.created", sessionId: session.id, payload: session });
     // SessionStart 钩子：仅通知不阻断
     if (dependencies.hooks) await dependencies.hooks.run("SessionStart", { sessionId: session.id, cwd: session.cwd });

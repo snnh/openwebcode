@@ -309,7 +309,7 @@ const FIELDS: FieldSpec[] = [
   // 值统一为 [provider, model] 编码串，全部热生效；快速档直接复用既有 fastModel 键。
   { key: "defaultModel", group: "modelSelection", label: "会话默认模型", type: "select", env: "OWC_DEFAULT_MODEL", defaultValue: null, restartRequired: false, description: "新建会话的默认服务商与模型；留空回落第一个已启用服务商的首个目录模型；模型来自已启用服务商的统一模型目录" },
   { key: "roleModelPremium", group: "modelSelection", label: "极致档模型", type: "select", env: "OWC_ROLE_MODEL_PREMIUM", defaultValue: null, restartRequired: false, description: "子代理 premium（极致）角色使用的模型：高难度推理/深度评审；未配置时回落平衡档" },
-  { key: "roleModelBalanced", group: "modelSelection", label: "平衡档模型", type: "select", env: "OWC_ROLE_MODEL_BALANCED", defaultValue: null, restartRequired: false, description: "子代理 balanced（平衡）角色使用的模型：质量与成本的默认折中；未配置时回落会话默认" },
+  { key: "roleModelBalanced", group: "modelSelection", label: "平衡档模型", type: "select", env: "OWC_ROLE_MODEL_BALANCED", defaultValue: null, restartRequired: false, description: "子代理 balanced（平衡）角色使用的模型：未指定角色时子代理默认走此档；未配置时回落会话默认" },
   // 内部低延迟任务复用已启用模型服务商，不维护第二套端点或密钥。
   { key: "fastModel", group: "modelSelection", label: "快速模型", type: "select", env: "OWC_FAST_MODEL", defaultValue: null, restartRequired: false, description: "用于上下文压缩和内容透镜，同时作为子代理 fast（快速）角色；模型来自已启用服务商的统一模型目录" },
   { key: "fastModelThinking", group: "modelSelection", label: "思考", type: "select", env: "OWC_FAST_MODEL_THINKING", defaultValue: "disabled", restartRequired: false, options: THINKING_OPTIONS },

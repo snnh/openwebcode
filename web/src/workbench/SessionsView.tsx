@@ -10,6 +10,7 @@ import { api } from "../lib/api";
 import { isBusyState } from "../lib/agent-state";
 import { qk } from "../app/queries";
 import { ui } from "../app/ui-store";
+import { useSessionDefaults } from "../app/prefs-store";
 import { useTheme } from "../theme";
 import { Icon } from "../components/Icon";
 import { useI18n } from "../i18n";
@@ -27,6 +28,7 @@ export function SessionsView({ sessions, currentId, agentStates, onSelect }: Ses
   const { language, t } = useI18n();
   const { theme, toggleTheme } = useTheme();
   const queryClient = useQueryClient();
+  const defaults = useSessionDefaults();
   const [filter, setFilter] = useState("");
   const [renamingId, setRenamingId] = useState<string | undefined>();
   const [renameDraft, setRenameDraft] = useState("");
@@ -39,6 +41,25 @@ export function SessionsView({ sessions, currentId, agentStates, onSelect }: Ses
     !keyword || `${session.title} ${session.provider} ${session.model}`.toLowerCase().includes(keyword));
   // 置顶优先，组内保持服务端 updatedAt 降序（稳定排序）
   const ordered = filtered && [...filtered].sort((a, b) => Number(b.pinned ?? false) - Number(a.pinned ?? false));
+
+  // 一键本机会话：cwd=HOME、sandboxMode=off（命令直跑宿主机、env 跟随 server），
+  // HOME 外的文件工具路径由服务端审批门拦下，需用户允许。provider/model 用会话默认。
+  const createLocalSession = (): void => {
+    if (!defaults.provider || !defaults.model) {
+      ui.notify(t("请先在设置中配置默认模型（或使用新建会话对话框）", "Configure a default model in settings first (or use the new-session dialog)"), "error");
+      ui.setNewSessionOpen(true);
+      return;
+    }
+    api.createSession({ kind: "local", provider: defaults.provider, model: defaults.model })
+      .then((session) => {
+        ui.notify(t("已创建本机会话", "Local session created"));
+        ui.selectSession(session.id);
+        void queryClient.invalidateQueries({ queryKey: qk.sessions });
+      })
+      .catch((error: unknown) => {
+        ui.notify(error instanceof Error ? error.message : t("创建会话失败", "Could not create session"), "error");
+      });
+  };
 
   // 重命名/置顶：PATCH 后刷新会话列表（与当前详情，若是当前会话）
   const patchSession = (id: string, body: { title?: string; pinned?: boolean }): void => {
@@ -98,6 +119,7 @@ export function SessionsView({ sessions, currentId, agentStates, onSelect }: Ses
         />
         <button className="icon-btn" onClick={() => fileInput.current?.click()} aria-label={t("导入会话", "Import session")} title={t("导入会话（JSONL）", "Import session (JSONL)")}><Icon name="upload" size={15} /></button>
         <button className="icon-btn" onClick={() => ui.setNewSessionOpen(true)} aria-label={t("新建会话", "New session")} title={t("新建会话", "New session")}><Icon name="plus" size={16} /></button>
+        <button className="icon-btn" onClick={createLocalSession} aria-label={t("新建本机会话", "New local session")} title={t("本机会话：在 HOME 下直跑宿主机，HOME 外路径需允许", "Local session: runs on the host under HOME; paths outside HOME require approval")}><Icon name="terminal" size={15} /></button>
       </header>
       <span className="rail-search-wrap">
         <Icon name="search" size={13} />
