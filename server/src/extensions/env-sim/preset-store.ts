@@ -1,7 +1,6 @@
 import { mkdir, readdir, readFile, unlink } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "../../atomic-file.js";
-import { BUILTIN_PERSONAS } from "./builtin-personas.js";
 import type { PersonaAlias, PersonaPreset } from "./types.js";
 
 /** 预设 id 只接受文件名安全字符（一个文件一个预设，id 即文件名）。 */
