@@ -57,7 +57,7 @@ export function SandboxPanel({ sessionId }: { sessionId?: string | undefined }):
       <h2>{t("沙盒策略", "Sandbox policy")}</h2>
       <dl>
         <dt>{t("模式", "Mode")}</dt>
-        <dd>{t(...SANDBOX_MODE_LABELS[displayMode])}</dd>
+        <dd>{t(...SANDBOX_MODE_LABELS[displayMode])}{session.kind === "local" && <span className="muted-empty"> · {t("本机会话：命令直接在本机执行，HOME 外文件路径需逐个允许", "local session: commands run directly on the host; file paths outside HOME require per-path approval")}</span>}</dd>
         <dt>{t("状态", "Status")}</dt>
         <dd>{enabled ? t("已启用", "Enabled") : t("已关闭", "Off")}</dd>
         <dt>{t("执行级别", "Enforcement")}</dt>

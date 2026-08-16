@@ -73,7 +73,7 @@ export const SETTINGS_FIELD_EN: Record<string, { label: string; description?: st
   fastModelEffort: { label: "Effort" },
   defaultModel: { label: "Session default model", description: "Default provider and model for new sessions; leave empty to fall back to the first catalog model of the first enabled provider" },
   roleModelPremium: { label: "Premium tier model", description: "Model for the premium sub-agent role: hard reasoning and deep review; falls back to the balanced tier when unset" },
-  roleModelBalanced: { label: "Balanced tier model", description: "Model for the balanced sub-agent role: the default quality/cost trade-off; falls back to the session default when unset" },
+  roleModelBalanced: { label: "Balanced tier model", description: "Model for the balanced sub-agent role: the default quality/cost trade-off; sub-agents default to this tier when no role is given, falling back to the session default when unset" },
   roleModelCheap: { label: "Cheap tier model", description: "Model for the cheap sub-agent role: bulk, low-stakes fan-out work; falls back to the balanced tier when unset" },
   defaultLanguage: { label: "Default model language" },
   agentMaxTurns: { label: "Max turns per message", description: "Maximum agent turns allowed per user message; the task ends with a failure once reached. Increase for long tasks (1-1000)" },

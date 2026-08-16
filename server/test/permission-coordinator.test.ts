@@ -37,6 +37,19 @@ describe("PermissionCoordinator", () => {
     expect(coordinator.needsApproval("ask", [{ tool: "web_search" }], "web_search", { query: "other" })).toBe(false);
   });
 
+  it("generates path-scoped rules for read_file/glob/grep (本机会话 HOME 外路径门)", () => {
+    // 旧行为 read_file 落整工具放行（{ tool }）；现在按归一化路径落目录前缀规则
+    const readRule = permissionRule("read_file", { path: "/etc/hosts" });
+    expect(readRule).toEqual({ tool: "read_file", argumentPrefix: "/etc/hosts" });
+    const globRule = permissionRule("glob", { path: "/usr/share", pattern: "**/*.md" });
+    expect(globRule).toEqual({ tool: "glob", argumentPrefix: "/usr/share" });
+    const grepRule = permissionRule("grep", { path: "/var/log" });
+    expect(grepRule).toEqual({ tool: "grep", argumentPrefix: "/var/log" });
+    // 缺省/空 path（会话根）不落路径规则，回落整工具
+    expect(permissionRule("read_file", {})).toEqual({ tool: "read_file" });
+    expect(permissionRule("glob", { path: "" })).toEqual({ tool: "glob" });
+  });
+
   it("resolves allow_always and aborts pending requests", async () => {
     const events = new EventBus(); const observed: AppEvent[] = [];
     events.on("event", (event: AppEvent) => observed.push(event));

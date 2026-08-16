@@ -250,6 +250,34 @@ describe("spawn_task role dispatch", () => {
   });
 });
 
+describe("spawn_task default role (balanced)", () => {
+  it("routes an unroled sub-agent to the balanced tier when configured", async () => {
+    const fixture = await setupRoleSpawn({
+      env: { OWC_ROLE_MODEL_BALANCED: encodeFastModelSelection("fm-provider", "bal-model") },
+      spawnTool: "spawn_task",
+      spawnInput: { prompt: "评审" },
+    });
+    await fixture.runner.run(fixture.sessionId, "派单");
+    const balancedRequests = fixture.requests.get("fm-provider") ?? [];
+    expect(balancedRequests).toHaveLength(1);
+    expect(balancedRequests[0]?.model).toBe("bal-model");
+    expect(balancedRequests[0]?.system).toContain("exploration sub-agent");
+    expect((fixture.requests.get("main") ?? []).every((request) => !request.system.includes("exploration sub-agent"))).toBe(true);
+  });
+
+  it("falls back to the session model when balanced is not configured", async () => {
+    const fixture = await setupRoleSpawn({
+      spawnTool: "spawn_task",
+      spawnInput: { prompt: "评审" },
+    });
+    await fixture.runner.run(fixture.sessionId, "派单");
+    const mainSub = (fixture.requests.get("main") ?? []).find((request) => request.system.includes("exploration sub-agent"));
+    expect(mainSub?.model).toBe("main-model");
+    expect(fixture.requests.has("fm-provider")).toBe(false);
+    expect(fixture.requests.has("role-provider")).toBe(false);
+  });
+});
+
 describe("frontmatter provider/model/role precedence", () => {
   it("prefers explicit frontmatter provider:/model: over any role", async () => {
     const fixture = await setupRoleSpawn({

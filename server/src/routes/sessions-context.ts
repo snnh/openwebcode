@@ -138,6 +138,11 @@ export function registerSessionContextRoutes(app: FastifyInstance, ctx: RouteCon
     }
     const touchesSandbox = Boolean(request.body && ("sandboxMode" in request.body || "setupScript" in request.body));
     if (touchesSandbox) {
+      // 本机会话（kind=local）固定 off：切换沙盒模式或注入 setupScript 会破坏
+      // "直跑宿主机 + HOME 外路径审批门" 的语义，直接拒绝
+      if (session.kind === "local") {
+        return reply.code(400).send({ error: "本机会话固定为 off 沙盒模式（命令直接在本机执行），不能切换沙盒" });
+      }
       const sandboxModeError = validateSandboxMode(request.body?.sandboxMode);
       if (sandboxModeError) return reply.code(400).send({ error: sandboxModeError });
       if (request.body?.setupScript !== undefined && typeof request.body.setupScript !== "string") {
