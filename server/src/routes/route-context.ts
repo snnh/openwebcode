@@ -82,6 +82,8 @@ export interface SessionConfigBody {
   toolsDeny?: string[] | null;
   /** 会话级备选模型链补丁；null 或空数组清除，缺省保持不变（语义同 toolsAllow）。 */
   fallbackModels?: FallbackModelEntry[] | null;
+  /** 有 shell 命令在途（!cmd 执行中/等审批）时，强制应用会回收持久 shell 的变更并中断该命令。 */
+  force?: boolean;
 }
 
 export interface BudgetBody {

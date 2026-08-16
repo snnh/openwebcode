@@ -29,35 +29,20 @@ export interface NodeToolchainMountDeps {
 /**
  * 与 nodeEnv 选择绑定的工具链只读挂载目录（POSIX；bwrap/Landlock 经 readOnlyPaths 放行，
  * fs.* 工具的路径策略不含 readOnlyPaths，工具层读不到内容。Windows 无文件系统隔离，不追加）：
- * - global：解析宿主 PATH 上实际生效的 node/npm 所在 bin 目录（realpath 跟随软链），
- *   挂载其工具链根（<root>/bin → <root>，npm 软链到 lib/node_modules 仍可解析）；
- *   落在系统树内的跳过（已放行）。用户的"全局" node 实为 nvm/fnm 安装时由此获得可见性；
- * - nvm：$NVM_DIR（nvm.sh + versions 全量只读，激活前缀 source nvm.sh 才能工作）；
- * - fnm：$FNM_DIR 或内置候选（~/.local/share/fnm 含 fnm 二进制与版本、~/.fnm）；
- * - project：空（node_modules/.bin 在工作区内，随 writeRoots 可见）。
+ * 仅服务 global（本机环境，保持既有行为）：解析宿主 PATH 上实际生效的 node/npm 所在 bin
+ * 目录（realpath 跟随软链），挂载其工具链根（<root>/bin → <root>，npm 软链到
+ * lib/node_modules 仍可解析）；落在系统树内的跳过（已放行）。用户的"全局" node 实为
+ * nvm/fnm 安装时由此获得可见性。
+ * fnm/nvm 走读写层（见 nodeToolchainWritePaths）；project 为空（node_modules/.bin 在工作区内）。
  */
 export function nodeToolchainReadOnlyPaths(mode: NodeEnv, deps: NodeToolchainMountDeps = {}): string[] {
   const platform = deps.platform ?? process.platform;
   if (platform === "win32") return [];
-  const home = deps.home ?? os.homedir();
   const exists = deps.exists ?? existsSync;
   const realpath = deps.realpath ?? ((target: string) => realpathSync(target));
   // 本函数只服务 POSIX 沙盒（win32 已早退）：PATH 与目录拼接一律按 POSIX 语义（path.posix），
   // 与平台无关、可注入确定性测试；os.homedir()/env 提供的目录在 POSIX 宿主上本来就是 POSIX 路径。
-  if (mode === "project") return [];
-  if (mode === "nvm") {
-    const nvmDir = deps.nvmDir ?? process.env.NVM_DIR ?? path.posix.join(home, ".nvm");
-    return exists(path.posix.join(nvmDir, "nvm.sh")) ? [nvmDir] : [];
-  }
-  if (mode === "fnm") {
-    const candidates = [deps.fnmDir ?? process.env.FNM_DIR, path.posix.join(home, ".local", "share", "fnm"), path.posix.join(home, ".fnm")]
-      .filter((dir): dir is string => typeof dir === "string" && dir !== "");
-    const result: string[] = [];
-    for (const candidate of candidates) {
-      if (!result.includes(candidate) && exists(candidate)) result.push(candidate);
-    }
-    return result;
-  }
+  if (mode !== "global") return [];
   // global：PATH 上首个含 node 或 npm 的 bin 目录即 shell 实际生效的工具链
   const pathEnv = deps.pathEnv ?? process.env.PATH ?? "";
   const roots: string[] = [];
@@ -71,6 +56,36 @@ export function nodeToolchainReadOnlyPaths(mode: NodeEnv, deps: NodeToolchainMou
     if (!roots.includes(root)) roots.push(root);
   }
   return roots;
+}
+
+/**
+ * 显式选择的非本机 node 环境的工具链读写挂载目录（POSIX；bwrap rw-bind / Landlock 完整
+ * 访问集，经 allowPaths 下发。Windows 无文件系统隔离，不追加）：
+ * 读写与安装权限严格限定在版本管理器自身目录——npm i -g / fnm install / nvm install
+ * 都落在该目录内；系统树只读、HOME 不挂载，整机全局安装在沙盒内不可能。
+ * - nvm：$NVM_DIR（nvm.sh + versions 全量读写，激活前缀 source nvm.sh 才能工作）；
+ * - fnm：$FNM_DIR 或内置候选（~/.local/share/fnm 含 fnm 二进制与版本、~/.fnm）；
+ * - global/project：空（global 走只读层；project 的 node_modules/.bin 在工作区内）。
+ */
+export function nodeToolchainWritePaths(mode: NodeEnv, deps: NodeToolchainMountDeps = {}): string[] {
+  const platform = deps.platform ?? process.platform;
+  if (platform === "win32") return [];
+  const home = deps.home ?? os.homedir();
+  const exists = deps.exists ?? existsSync;
+  if (mode === "nvm") {
+    const nvmDir = deps.nvmDir ?? process.env.NVM_DIR ?? path.posix.join(home, ".nvm");
+    return exists(path.posix.join(nvmDir, "nvm.sh")) ? [nvmDir] : [];
+  }
+  if (mode === "fnm") {
+    const candidates = [deps.fnmDir ?? process.env.FNM_DIR, path.posix.join(home, ".local", "share", "fnm"), path.posix.join(home, ".fnm")]
+      .filter((dir): dir is string => typeof dir === "string" && dir !== "");
+    const result: string[] = [];
+    for (const candidate of candidates) {
+      if (!result.includes(candidate) && exists(candidate)) result.push(candidate);
+    }
+    return result;
+  }
+  return [];
 }
 
 /** project 模式的 bin 目录：项目工作区 node_modules/.bin；其余模式无目录前置。 */

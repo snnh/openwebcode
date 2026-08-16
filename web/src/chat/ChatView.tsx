@@ -335,6 +335,8 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
       void queryClient.invalidateQueries({ queryKey: qk.sessions });
     })
     .catch((error: unknown) => {
+      // 在途 shell 命令冲突（409 SHELL_PENDING）：不提示，原样上抛，由调用方确认后以 force 重发
+      if (error instanceof Error && (error as { code?: string }).code === "SHELL_PENDING") throw error;
       notify(error instanceof Error ? error.message : t("模式切换失败", "Mode change failed"), "error");
     }), [sessionId, queryClient, notify, t]);
 

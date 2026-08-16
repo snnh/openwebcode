@@ -2,7 +2,7 @@ import { writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { effectiveNodeEnv, NodeEnvManagers, nodeBinDir, nodeEnvActivationCommand, nodeToolchainReadOnlyPaths, wrapCommandWithNodeEnv } from "../src/node-env.js";
+import { effectiveNodeEnv, NodeEnvManagers, nodeBinDir, nodeEnvActivationCommand, nodeToolchainReadOnlyPaths, nodeToolchainWritePaths, wrapCommandWithNodeEnv } from "../src/node-env.js";
 import { wrapCommandWithNote } from "../src/python-env.js";
 import { tempRoot } from "./helpers/temp-roots.js";
 
@@ -35,20 +35,43 @@ describe("nodeToolchainReadOnlyPaths（与 nodeEnv 绑定的工具链挂载）",
     expect(nodeToolchainReadOnlyPaths("global", deps)).toEqual(["/home/u/.volta"]);
   });
 
-  it("nvm：nvm.sh 存在才挂载 $NVM_DIR", () => {
-    expect(nodeToolchainReadOnlyPaths("nvm", { platform: "linux", nvmDir: "/home/u/.nvm", exists: exists("/home/u/.nvm/nvm.sh") })).toEqual(["/home/u/.nvm"]);
+  it("nvm/fnm 走读写层（nodeToolchainWritePaths），只读层不追加", () => {
+    expect(nodeToolchainReadOnlyPaths("nvm", { platform: "linux", nvmDir: "/home/u/.nvm", exists: exists("/home/u/.nvm/nvm.sh") })).toEqual([]);
     expect(nodeToolchainReadOnlyPaths("nvm", { platform: "linux", nvmDir: "/home/u/.nvm", exists: () => false })).toEqual([]);
-  });
-
-  it("fnm：候选目录按存在性过滤并去重", () => {
     const deps = { platform: "linux" as const, home: "/home/u", fnmDir: "/opt/fnm", exists: exists("/opt/fnm", "/home/u/.local/share/fnm") };
-    expect(nodeToolchainReadOnlyPaths("fnm", deps)).toEqual(["/opt/fnm", "/home/u/.local/share/fnm"]);
+    expect(nodeToolchainReadOnlyPaths("fnm", deps)).toEqual([]);
   });
 
   it("project 与 win32 不挂载", () => {
     expect(nodeToolchainReadOnlyPaths("project", { platform: "linux", exists: () => true })).toEqual([]);
     expect(nodeToolchainReadOnlyPaths("nvm", { platform: "win32", exists: () => true })).toEqual([]);
     expect(nodeToolchainReadOnlyPaths("global", { platform: "win32", pathEnv: "C:\\nvm", exists: () => true })).toEqual([]);
+  });
+});
+
+describe("nodeToolchainWritePaths（显式非本机 node 环境的工具链读写挂载）", () => {
+  const exists = (...paths: string[]) => (target: string) => paths.includes(target);
+
+  it("nvm：nvm.sh 存在才挂载 $NVM_DIR", () => {
+    expect(nodeToolchainWritePaths("nvm", { platform: "linux", nvmDir: "/home/u/.nvm", exists: exists("/home/u/.nvm/nvm.sh") })).toEqual(["/home/u/.nvm"]);
+    expect(nodeToolchainWritePaths("nvm", { platform: "linux", nvmDir: "/home/u/.nvm", exists: () => false })).toEqual([]);
+  });
+
+  it("fnm：$FNM_DIR 与内置候选按存在性过滤并去重", () => {
+    const deps = { platform: "linux" as const, home: "/home/u", fnmDir: "/opt/fnm", exists: exists("/opt/fnm", "/home/u/.local/share/fnm") };
+    expect(nodeToolchainWritePaths("fnm", deps)).toEqual(["/opt/fnm", "/home/u/.local/share/fnm"]);
+    // fnmDir 与内置候选重复（~/.fnm）时只出现一次
+    const dup = { platform: "linux" as const, home: "/home/u", fnmDir: "/home/u/.fnm", exists: exists("/home/u/.fnm") };
+    expect(nodeToolchainWritePaths("fnm", dup)).toEqual(["/home/u/.fnm"]);
+    // 全部不存在 → 空
+    expect(nodeToolchainWritePaths("fnm", { platform: "linux", home: "/home/u", fnmDir: "/opt/fnm", exists: () => false })).toEqual([]);
+  });
+
+  it("global/project 不追加；win32 一律不追加", () => {
+    expect(nodeToolchainWritePaths("global", { platform: "linux", exists: () => true })).toEqual([]);
+    expect(nodeToolchainWritePaths("project", { platform: "linux", exists: () => true })).toEqual([]);
+    expect(nodeToolchainWritePaths("nvm", { platform: "win32", nvmDir: "C:\\nvm", exists: () => true })).toEqual([]);
+    expect(nodeToolchainWritePaths("fnm", { platform: "win32", home: "C:\\Users\\u", fnmDir: "C:\\fnm", exists: () => true })).toEqual([]);
   });
 });
 

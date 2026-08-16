@@ -427,6 +427,15 @@ static int configure_policy(session_config *session,const owc_json *sandbox,char
  * the one exception: the previous links were already removed (a rebuilt
  * virtPath cannot be created while the old link exists), so the stale slot is
  * dropped instead of describing links that no longer exist. */
+static int string_array_equal(char *const *left,size_t left_count,char *const *right,size_t right_count){size_t i;if(left_count!=right_count)return 0;for(i=0;i<left_count;i++)if(strcmp(left[i],right[i]))return 0;return 1;}
+static int bind_link_equal(const session_config *a,const session_config *b){size_t i;if(a->bind_count!=b->bind_count)return 0;for(i=0;i<a->bind_count;i++)if(strcmp(a->bind_virt[i],b->bind_virt[i])||strcmp(a->bind_backing[i],b->bind_backing[i])||a->bind_read_only[i]!=b->bind_read_only[i])return 0;return 1;}
+/* No-op reconfigure detection: the agent loop and file routes re-configure
+ * routinely (every run start, idle file browsing), and replacing the slot
+ * unconditionally would kill the session's ptys (human terminal included),
+ * watches and bind links each time.  An equal policy keeps them all; a
+ * changed policy takes the teardown path below, preserving the invariant
+ * that no process keeps running under a stale sandbox policy. */
+static int session_policy_equal(const session_config *a,const session_config *b){return policy_path_equal(a->cwd,b->cwd)&&a->sandbox_enabled==b->sandbox_enabled&&a->allow_network==b->allow_network&&a->network_filtered==b->network_filtered&&a->sandbox_mode==b->sandbox_mode&&a->job_memory_mb==b->job_memory_mb&&a->job_max_processes==b->job_max_processes&&!strcmp(a->proxy_addr,b->proxy_addr)&&string_array_equal(a->allow_paths,a->allow_count,b->allow_paths,b->allow_count)&&string_array_equal(a->deny_paths,a->deny_count,b->deny_paths,b->deny_count)&&string_array_equal(a->read_roots,a->read_root_count,b->read_roots,b->read_root_count)&&string_array_equal(a->write_roots,a->write_root_count,b->write_roots,b->write_root_count)&&string_array_equal(a->read_only_paths,a->read_only_count,b->read_only_paths,b->read_only_count)&&bind_link_equal(a,b);}
 static int configure_session(const char *id,const char *cwd,const owc_json *sandbox,char *err,size_t err_size,int *code){
     session_config candidate;size_t i;
     memset(&candidate,0,sizeof(candidate));
@@ -437,6 +446,9 @@ static int configure_session(const char *id,const char *cwd,const owc_json *sand
     if(candidate.bind_count&&!owc_bindlink_supported()){(void)snprintf(err,err_size,"bind_link_unavailable: the Bind Link API (bindlink.dll / bindfltapi.dll) is not present on this system");*code=-32000;clear_session_config(&candidate);return 0;}
     for(i=0;i<session_count;i++)if(!strcmp(sessions[i].session_id,id))break;
     if(i==session_count&&session_count>=sizeof(sessions)/sizeof(sessions[0])){clear_session_config(&candidate);(void)snprintf(err,err_size,"failed to configure session");*code=-32000;return 0;}
+    /* Equal policy: keep the existing slot untouched (ptys/watches/bind links
+     * survive; the capability reply is derived from the slot either way). */
+    if(i<session_count&&session_policy_equal(&sessions[i],&candidate)){clear_session_config(&candidate);return 1;}
     if(i<session_count){remove_session_watches(id);remove_session_ptys(id);remove_session_bind_links(&sessions[i]);sessions[i].bind_count=0;}
     if(candidate.bind_count){size_t created=0;for(;created<candidate.bind_count;created++){char link_err[160];if(!owc_bindlink_create(candidate.bind_virt[created],candidate.bind_backing[created],candidate.bind_read_only[created],link_err,sizeof(link_err))){while(created)owc_bindlink_remove(candidate.bind_virt[--created]);(void)snprintf(err,err_size,"bind_link_unavailable: %s",link_err);*code=-32000;clear_session_config(&candidate);if(i<session_count){size_t last=session_count-1;clear_session_config(&sessions[i]);if(i!=last)sessions[i]=sessions[last];memset(&sessions[last],0,sizeof(sessions[last]));session_count--;}return 0;}}}
 #ifdef _WIN32

@@ -205,13 +205,27 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
     }
   };
 
+  const confirm = useConfirmDialog();
+
   const updateMode = (body: Record<string, unknown>): void => {
     setConfigPending(true);
     // 契约上 onConfig 返回 void；装配层实际返回 Promise，这里兼容两者
-    void Promise.resolve(onConfig(body) as unknown).finally(() => setConfigPending(false));
+    void Promise.resolve(onConfig(body) as unknown)
+      .catch((error: unknown) => {
+        // 配置触发持久 shell 回收且有 !cmd 在途（409 SHELL_PENDING）：确认后以 force 重发。
+        // 其余错误已由 onConfig 通知，吞掉不再重复提示（不能再抛，否则 void 后成未处理 rejection）
+        if (body.force !== true && error instanceof Error && (error as { code?: string }).code === "SHELL_PENDING") {
+          confirm.ask({
+            title: t("中断 shell 命令", "Interrupt shell command"),
+            body: t("当前会话有 shell 命令正在执行或等待审批。应用此更改将中断该命令。确定继续吗？", "A shell command is running or awaiting approval in this session. Applying this change will interrupt it. Continue?"),
+            confirmLabel: t("中断并应用", "Interrupt and apply"),
+            danger: true,
+            onConfirm: () => updateMode({ ...body, force: true }),
+          });
+        }
+      })
+      .finally(() => setConfigPending(false));
   };
-
-  const confirm = useConfirmDialog();
 
   const changeSandbox = (mode: SandboxMode): void => {
     const apply = (): void => updateMode({ sandboxMode: mode, ...(mode === "wsb" && session.setupScript ? { setupScript: session.setupScript } : {}) });
