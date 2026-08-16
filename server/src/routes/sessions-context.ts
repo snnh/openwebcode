@@ -175,6 +175,13 @@ export function registerSessionContextRoutes(app: FastifyInstance, ctx: RouteCon
     }
     // nodeEnv 变化会改变与选择绑定的沙盒工具链挂载（readOnlyPaths）：下次工具调用需重新 configure
     if (nodeEnv !== session.nodeEnv) configuredSessions.delete(session.id);
+    // 沙盒策略或 python/node 运行环境变更：回收该会话的持久 shell——pty 在旧沙盒策略下打开、
+    // 环境激活命令（venv/版本管理器 PATH 前置）只在建壳时注入一次；不回收则切换对默认 bash
+    // 路径（持久 shell）不生效。下条 bash 透明重建，按新策略开壳并激活新环境（uv venv 懒创建
+    // 也在此时触发）。测试注入的简版 agent 可能未实现该方法。
+    if (touchesSandbox || sandboxNetwork !== undefined || pythonEnv !== session.pythonEnv || nodeEnv !== session.nodeEnv) {
+      await agent.disposePersistentShells?.(session.id).catch(() => undefined);
+    }
     events.publish({ source: "session", type: "session.config_updated", sessionId: session.id, payload: updated });
     return updated;
   });

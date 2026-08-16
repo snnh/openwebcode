@@ -28,6 +28,7 @@ describe("session model config", () => {
     let root: string;
     let sessions: SessionStore;
     let app: Awaited<ReturnType<typeof buildServer>>;
+    let disposedShells: string[];
 
     beforeEach(async () => {
       root = await tempRoot("owc-session-config-");
@@ -38,7 +39,11 @@ describe("session model config", () => {
       providers.register(provider);
       const pricing = new PricingCatalog(path.join(root, "pricing.json"));
       await pricing.initialize();
-      const agent = { isRunning: () => false } as AgentRunner;
+      disposedShells = [];
+      const agent = {
+        isRunning: () => false,
+        disposePersistentShells: async (sessionId: string) => { disposedShells.push(sessionId); },
+      } as unknown as AgentRunner;
       app = await buildServer({ core: {} as CoreClient, sessions, agent, events: new EventBus(), providers, pricing });
     });
 
@@ -115,6 +120,32 @@ describe("session model config", () => {
       expect(timeline.statusCode).toBe(200);
       expect(timeline.json().activeLeafId).toBe(second.id);
       expect(timeline.json().entries).toEqual(expect.arrayContaining([expect.objectContaining({ id: second.id, parentId: first.id, runId: "run-test", turnId: "run-test:0" })]));
+    });
+
+    it("recycles persistent shells when sandbox mode, network, or python/node env changes", async () => {
+      const session = await sessions.create({ cwd: root, provider: "anthropic", model: "deepseek-chat" });
+      // 无关配置变更（快照模式）不回收持久 shell
+      const unrelated = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { snapshotMode: "manual" } });
+      expect(unrelated.statusCode).toBe(200);
+      expect(disposedShells).toEqual([]);
+      // 沙盒模式切换：持久 shell 的 pty 在旧策略下打开，必须回收重建才生效
+      const sandbox = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { sandboxMode: "off" } });
+      expect(sandbox.statusCode).toBe(200);
+      expect(disposedShells).toEqual([session.id]);
+      // 网络策略切换同样改变沙盒策略，回收
+      const network = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { network: "deny" } });
+      expect(network.statusCode).toBe(200);
+      expect(disposedShells).toEqual([session.id, session.id]);
+      // pythonEnv / nodeEnv 变更：环境激活命令只在建壳时注入一次，回收后下条 bash 透明重建
+      const python = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { pythonEnv: "uv-workspace" } });
+      expect(python.statusCode).toBe(200);
+      const node = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { nodeEnv: "fnm" } });
+      expect(node.statusCode).toBe(200);
+      expect(disposedShells).toEqual([session.id, session.id, session.id, session.id]);
+      // 同值重复提交（无实际变化）不回收
+      const sameEnv = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { pythonEnv: "uv-workspace", nodeEnv: "fnm" } });
+      expect(sameEnv.statusCode).toBe(200);
+      expect(disposedShells).toHaveLength(4);
     });
 
     it("accepts review permission mode, persists reviewModel, rejects invalid values", async () => {

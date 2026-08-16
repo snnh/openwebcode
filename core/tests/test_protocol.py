@@ -241,6 +241,18 @@ def main():
         response, _ = collect_until_response(proc, 21)
         assert response["result"]["sandboxCapability"] in {"advisory", "partial", "enforced"}
 
+        # pty.open 的 sandbox=true 语义是"按会话策略沙盒化"：策略 enabled=false（沙盒关闭）
+        # 时必须如实回落未沙盒化，与 exec.run/job.start 的关闭语义一致（不得强行沙盒化）。
+        request(proc, 60, "pty.open", {"session": "s1", "cwd": os.getcwd(), "cols": 80, "rows": 24, "sandbox": True})
+        response, _ = collect_until_response(proc, 60)
+        assert "result" in response, response
+        pty_id = response["result"]["ptyId"]
+        assert response["result"]["sandboxCapability"] == "advisory", response
+        assert response["result"]["sandboxReason"] == "sandbox disabled by session policy", response
+        request(proc, 61, "pty.close", {"ptyId": pty_id})
+        response, _ = collect_until_response(proc, 61)
+        assert response.get("result", {}).get("ok") is True, response
+
         # Conditional text writes reject a stale editor revision instead of
         # silently overwriting a file changed since it was read.
         request(proc, 212, "fs.write", {"sessionId": "s1", "path": text_name, "content": "one"})
