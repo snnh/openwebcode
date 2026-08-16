@@ -1577,7 +1577,9 @@ static int handle_pty_open(owc_rpc *rpc,const owc_json *id,const owc_json *p){
     options.shell=shell;
     options.cwd=cwd;options.session_id=session;
     options.cols=(int)cols;options.rows=(int)rows;
-    options.sandbox=sandbox_requested;
+    /* sandbox=1 的语义是"按会话策略沙盒化"：策略 enabled=false（sandboxMode=off）
+     * 时必须回落到未沙盒化，否则 pty 通道会绕过 exec.run/job.start 都遵守的关闭语义。 */
+    options.sandbox=sandbox_requested&&enabled;
     options.allow_network=network;options.sandbox_mode=mode;
     options.allow_paths=allow_paths;options.allow_path_count=allow_count;
     options.read_roots=read_roots;options.read_root_count=read_root_count;
