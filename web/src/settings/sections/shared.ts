@@ -91,6 +91,8 @@ export const SETTINGS_FIELD_EN: Record<string, { label: string; description?: st
   jobObjectMemoryMB: { label: "Job memory limit (MB)", description: "Process-tree commit-memory limit; defaults to 4096; only applied on Windows (Job Object)" },
   jobObjectMaxProcesses: { label: "Job process limit", description: "Process-tree active-process limit; defaults to 64; only applied on Windows (Job Object)" },
   gcMaxBytes: { label: "Storage limit (bytes)", description: "Global LRU limit for session artifacts; oldest data is removed first" },
+  usageLogCleanupMode: { label: "Usage log cleanup mode", description: "off = disabled; deleted-after-days = remove events of deleted sessions older than the retention days (live sessions kept); all-after-days = remove all events older than the retention days; deleted-immediate-live-timeout = remove deleted-session events immediately and live-session events after the retention days; deleted-immediate-only = remove deleted-session events immediately, keep live sessions" },
+  usageLogRetentionDays: { label: "Usage log retention (days)", description: "Retention days used by the cleanup modes (1-3650); applies to the after-days / live-timeout branches" },
   host: { label: "Listen address" },
   port: { label: "Listen port" },
   dataDir: { label: "Data directory" },

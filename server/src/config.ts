@@ -4,6 +4,7 @@ import type { FastModelConfig } from "./fast-model.js";
 import type { EffortLevel } from "./context/model-profile.js";
 import type { NodeEnv, PythonEnv } from "./sessions/types.js";
 import type { ProxyConfig, ProxyMode } from "./proxy.js";
+import type { UsageLogCleanupMode } from "./usage-log.js";
 
 /** 可显式 pin 的快照后端名单（settings snapshotBackend 的非 auto 选项）；与探测链支持的后端保持一致。 */
 export const SNAPSHOT_BACKENDS = ["git-shadow", "btrfs", "zfs", "overlayfs", "refs"] as const;
@@ -23,6 +24,10 @@ export interface ServerConfig {
   dataDir: string;
   coreRequestTimeoutMs: number;
   gcMaxBytes: number;
+  /** usage-events.jsonl 清理模式（设置「服务信息」热生效）；off = 不清理。 */
+  usageLogCleanupMode: UsageLogCleanupMode;
+  /** usage-events 保留天数（配合清理模式；immediate 分支忽略）。 */
+  usageLogRetentionDays: number;
   defaultLanguage: string;
   defaultCurrency: "USD" | "CNY";
   /** 单条用户消息允许的最大 agent 轮次，达到后以失败收尾；设置页可调（热生效）。 */
@@ -138,6 +143,12 @@ function proxyMode(value: string | undefined): ProxyMode {
   throw new Error(`Expected off, env, or custom, received ${value}`);
 }
 
+function usageLogCleanupMode(value: string | undefined): UsageLogCleanupMode {
+  const modes: UsageLogCleanupMode[] = ["off", "deleted-after-days", "all-after-days", "deleted-immediate-live-timeout", "deleted-immediate-only"];
+  if (value === undefined || (modes as string[]).includes(value)) return (value ?? "off") as UsageLogCleanupMode;
+  throw new Error(`Expected one of ${modes.join(", ")}, received ${value}`);
+}
+
 function boundedNonNegativeInteger(value: string | undefined, fallback: number, maximum: number): number {
   if (value === undefined) return fallback;
   const parsed = Number(value);
@@ -224,6 +235,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     dataDir: env.OWC_DATA_DIR ?? "../.openwebcode",
     coreRequestTimeoutMs: positiveInteger(env.OWC_CORE_REQUEST_TIMEOUT_MS, 130_000),
     gcMaxBytes: positiveInteger(env.OWC_GC_MAX_BYTES, 2_147_483_648),
+    usageLogCleanupMode: usageLogCleanupMode(env.OWC_USAGE_LOG_CLEANUP_MODE),
+    usageLogRetentionDays: positiveInteger(env.OWC_USAGE_LOG_RETENTION_DAYS, 365),
     agentMaxTurns: boundedInteger(env.OWC_AGENT_MAX_TURNS, 1000) ?? 50,
     subAgentMaxTurns: boundedInteger(env.OWC_SUB_AGENT_MAX_TURNS, 1000) ?? 100,
     compactionThresholdPercent: (() => { const parsed = boundedInteger(env.OWC_COMPACTION_THRESHOLD_PERCENT, 95); if (parsed !== undefined && parsed < 50) throw new Error(`Expected an integer >= 50, received ${env.OWC_COMPACTION_THRESHOLD_PERCENT}`); return parsed ?? 85; })(),

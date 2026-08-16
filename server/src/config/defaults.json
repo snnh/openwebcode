@@ -29,6 +29,8 @@
   "jobObjectMemoryMB": null,
   "jobObjectMaxProcesses": null,
   "gcMaxBytes": 2147483648,
+  "usageLogCleanupMode": "off",
+  "usageLogRetentionDays": 365,
   "host": "127.0.0.1",
   "port": 3210,
   "dataDir": "../.openwebcode",

@@ -201,7 +201,7 @@ const updateApplier = new UpdateApplier({
   getReleaseUrl: () => settings.effective().updateCheck.url ?? GITHUB_RELEASES_URL,
   getCurrentVersion: getServerVersion,
 });
-settings.bind({ providers, core, agent, events, gc, fastModel, profiles: providerProfiles, models, updateChecker, sandboxProxy: filteredProxy });
+settings.bind({ providers, core, agent, events, gc, fastModel, profiles: providerProfiles, models, updateChecker, sandboxProxy: filteredProxy, usageLog });
 providerProfilesRuntime.start();
 
 // core stderr/diagnostic 双写：终端 + <dataDir>/logs/core.log（超 5MB 启动时轮转为 core.log.1，仅一代）
@@ -270,6 +270,17 @@ const gcTimer = setInterval(() => {
   void gc.collect().catch((error: unknown) => process.stderr.write(`[gc] collect failed: ${error instanceof Error ? error.message : String(error)}\n`));
 }, 3_600_000);
 gcTimer.unref();
+// usage-events 清理：启动时一次 + 每小时按设置策略清理（off 模式 no-op，失败仅记日志）
+const pruneUsageLog = (): void => {
+  const effective = settings.effective();
+  void usageLog.prune({
+    mode: effective.usageLogCleanupMode,
+    retentionDays: effective.usageLogRetentionDays,
+  }).catch((error: unknown) => process.stderr.write(`[usage-log] 清理失败：${error instanceof Error ? error.message : String(error)}\n`));
+};
+pruneUsageLog();
+const usageLogTimer = setInterval(pruneUsageLog, 3_600_000);
+usageLogTimer.unref();
 // TOTP 全局登录认证（提交⑥）：启动时加载凭据；文件缺失视为关闭，门禁不生效
 const totp = new TotpAuthService(path.join(dataDir, "totp.json"));
 await totp.load();
