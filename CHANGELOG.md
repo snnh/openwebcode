@@ -2,6 +2,16 @@
 
 本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前版本的用户可感知变化。日期以 Git 标签发布日期为准。
 
+## [1.8.1] - 2026-08-16
+
+### 新增功能
+
+- **用量日志清理可配置**：`usage-events.jsonl`（成本报表数据源）支持按策略定期清理——设置 → 服务信息新增「用量日志清理模式」（默认 off 不清理，保持历史行为）与「用量日志保留天数」（1–3650，默认 365，对应环境变量 `OWC_USAGE_LOG_CLEANUP_MODE` / `OWC_USAGE_LOG_RETENTION_DAYS`）。四种模式：`deleted-after-days`（仅已删除会话的事件保留超过指定天数后清理，未删除会话全部保留）/ `all-after-days`（所有事件超过指定天数后清理，不分会话）/ `deleted-immediate-live-timeout`（已删除会话的事件立即清理，未删除超过指定天数后清理）/ `deleted-immediate-only`（已删除会话的事件立即清理，未删除不清理）。会话是否删除按 `<数据目录>/sessions/<id>` 目录存在性判定；清理在启动时 + 每小时执行一次（与存储 GC 同节奏），保存设置立即生效一次。
+
+### 官方扩展
+
+- **环境模拟 0.1.5**：DSH 极简模式预设的 basePrompt 在原文基础上追加人称约定（The personal pronoun is us/we.），其余 persona 提示词与工具形态保持 DSH 原文复刻不变。
+
 ## [1.8.0] - 2026-08-15
 
 ### 官方扩展
