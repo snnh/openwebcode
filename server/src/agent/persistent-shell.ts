@@ -287,11 +287,17 @@ export class PersistentShellManager {
     return queued;
   }
 
-  /** 会话删除时回收该会话的全部持久 shell。 */
+  /** 会话删除/配置变更时回收该会话的全部持久 shell。 */
   disposeSession(sessionId: string): void {
     const prefix = `${sessionId}:`;
     for (const [key, shell] of [...this.shells]) {
-      if (key.startsWith(prefix)) this.destroy(shell);
+      if (!key.startsWith(prefix)) continue;
+      // 在途命令立即报错结算：destroy 摘除 pty 事件后 exit 不会再送达，不结算则调用方
+      // 挂到命令超时（10 分钟）。checkpoint 恢复/删除路由有三件套守卫不会遇到在途；
+      // 配置路由的 force 强制切换是主要触发路径。
+      const active = shell.active;
+      if (active) this.settle(shell, () => active.reject(new Error("Persistent shell disposed: session config changed")));
+      this.destroy(shell);
     }
     // 串行化队列条目一并清理（条目永不删除会随会话数泄漏；在途命令的链上 Promise 已由
     // destroy 的 exit/abort 路径结算，删除条目不影响其收尾）

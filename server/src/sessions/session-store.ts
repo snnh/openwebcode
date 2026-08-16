@@ -402,11 +402,13 @@ export class SessionStore {
     return meta;
   }
 
-  /** 更新沙盒模式；jobobject/空 setupScript 视为缺省（从 meta 删除） */
+  /** 更新沙盒模式；jobobject/空 setupScript 视为缺省（从 meta 删除）。sandboxMode 未提供时保留现值（setupScript-only 补丁不误清模式）。 */
   async updateSandboxMode(id: string, sandboxMode: SandboxMode | undefined, setupScript: string | undefined): Promise<SessionMeta> {
     const meta = await this.readMeta(id);
-    if (!sandboxMode || sandboxMode === "jobobject") delete meta.sandboxMode;
-    else meta.sandboxMode = sandboxMode;
+    if (sandboxMode !== undefined) {
+      if (sandboxMode === "jobobject") delete meta.sandboxMode;
+      else meta.sandboxMode = sandboxMode;
+    }
     if (!setupScript?.trim()) delete meta.setupScript;
     else meta.setupScript = setupScript;
     meta.updatedAt = new Date().toISOString();

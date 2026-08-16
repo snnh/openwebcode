@@ -1,7 +1,7 @@
 import type { AgentListResponse, AgentRun, BackgroundTaskInfo, CatalogSyncStatus, Checkpoint, CompletePathResponse, ContextView, CostReport, CronJobInfo, ExtensionInfo, FileEntry, ManagedWorkspaceCapability, ManagedWorkspaceSyncPreview, ManagedWorkspaceSyncResult, MessageAttachment, MessagesPage, ModelProfile, PendingPermission, PersonaDetail, PersonaSummary, PricingDocument, ProviderConcurrencyStats, ProviderConnectionTestResult, ProviderProfilesView, SandboxCapabilities, SandboxMode, SandboxNetwork, Session, SessionDetail, SessionSandboxStatus, SettingsView, SettingValue, SkillInfo, SnapshotCapabilityInfo, StartSubagentResponse, SubagentTranscript, SyncResult, TodoItem, WebCapability } from "./contracts";
 
 export class ApiError extends Error {
-  constructor(readonly status: number, message: string) {
+  constructor(readonly status: number, message: string, readonly code?: string) {
     super(message);
   }
 }
@@ -24,11 +24,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers,
   });
   if (!response.ok) {
-    const body = await response.json().catch(() => ({ error: response.statusText })) as { error?: string };
+    const body = await response.json().catch(() => ({ error: response.statusText })) as { error?: string; code?: string };
     if (response.status === 401 && !path.startsWith("/api/auth/")) {
       for (const listener of unauthorizedListeners) listener();
     }
-    throw new ApiError(response.status, body.error ?? response.statusText);
+    throw new ApiError(response.status, body.error ?? response.statusText, body.code);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;

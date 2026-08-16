@@ -52,8 +52,9 @@ import type {
 } from "../core-client.js";
 import type { SessionStore } from "../sessions/session-store.js";
 import { defaultSandboxPolicy } from "../sessions/default-sandbox.js";
-import type { JobObjectLimits, NodeEnv, SandboxPolicy, SessionMeta } from "../sessions/types.js";
-import { effectiveNodeEnv, nodeToolchainReadOnlyPaths, type NodeToolchainMountDeps } from "../node-env.js";
+import type { JobObjectLimits, NodeEnv, PythonEnv, SandboxPolicy, SessionMeta } from "../sessions/types.js";
+import { effectiveNodeEnv, nodeToolchainReadOnlyPaths, nodeToolchainWritePaths, type NodeToolchainMountDeps } from "../node-env.js";
+import { effectivePythonEnv, pythonEnvWritePaths } from "../python-env.js";
 import type { FilteredProxyManager } from "./filtered-proxy.js";
 import { WSB_WORKSPACE_MOUNT, type WsbManager } from "./wsb.js";
 
@@ -94,7 +95,7 @@ export function gitCredentialReadOnlyPaths(existing: string[] | undefined, platf
 
 /**
  * 与 nodeEnv 选择绑定的 Node 工具链只读放行（POSIX）：沙盒只挂载会话工作区与系统树，
- * 用户的 node/npm 若是 nvm/fnm 安装（或 nodeEnv 选择 fnm/nvm），沙盒内 PATH 继承了但目录
+ * 用户的 node/npm 若是 nvm/fnm 安装而 nodeEnv=global，沙盒内 PATH 继承了但目录
  * 不可见（表现为 npm: command not found）。按生效 nodeEnv 把对应工具链目录并入
  * readOnlyPaths（global 解析宿主 PATH 上生效的工具链根），目录语义见
  * node-env.nodeToolchainReadOnlyPaths。core 侧 readOnlyPaths 上限 16：用户配置与凭据之后补齐。
@@ -102,6 +103,23 @@ export function gitCredentialReadOnlyPaths(existing: string[] | undefined, platf
 export function nodeEnvReadOnlyPaths(existing: string[] | undefined, mode: NodeEnv, platform: NodeJS.Platform = process.platform, deps: NodeToolchainMountDeps = {}): string[] {
   const merged = [...(existing ?? [])];
   for (const dir of nodeToolchainReadOnlyPaths(mode, { ...deps, platform })) {
+    if (merged.length >= 16) break;
+    if (!merged.includes(dir)) merged.push(dir);
+  }
+  return merged;
+}
+
+/**
+ * 非本机环境的工具链读写放行（POSIX；bwrap rw-bind / Landlock 完整访问集，经 allowPaths
+ * 下发）：显式选择 fnm/nvm（nodeEnv）或 uv-config（pythonEnv）时，把版本管理器目录 / venv
+ * 目录并入读写层，读写与安装权限严格限定在环境自身目录（npm i -g、pip install 落在目录内；
+ * 系统树只读、HOME 不挂载，整机全局安装不可能）。global/project/uv-workspace 不追加
+ * （global node 走只读层；project 与 uv-workspace 在工作区内随 writeRoots 可写）。
+ * core 侧 allowPaths 上限 16：用户配置优先，工具链目录按序补到满（尽力而为）。
+ */
+export function toolchainWritePaths(existing: string[] | undefined, dirs: readonly string[]): string[] {
+  const merged = [...(existing ?? [])];
+  for (const dir of dirs) {
     if (merged.length >= 16) break;
     if (!merged.includes(dir)) merged.push(dir);
   }
@@ -129,18 +147,39 @@ export class CoreRouter extends EventEmitter {
   private readonly platform: NodeJS.Platform;
   /** 全局默认 nodeEnv（settings 热生效现读）：与 nodeEnv 绑定的工具链挂载按生效值计算。 */
   private nodeEnvDefault?: () => NodeEnv | undefined;
+  /** 全局默认 pythonEnv（同上）；数据目录用于 uv-config 的 venv 挂载目录计算。 */
+  private pythonEnvDefault?: () => PythonEnv | undefined;
+  private dataDir: string | undefined;
 
   /** 注入全局默认 nodeEnv 解析器（与 AgentRunner.setNodeEnvDefault 同源）。 */
   setNodeEnvDefault(getter: () => NodeEnv | undefined): void {
     this.nodeEnvDefault = getter;
   }
 
-  /** 按生效 nodeEnv 并入工具链只读挂载（会话值 > 全局默认 > global）；wsb/off 由 policyFor 关沙盒，挂载表被 core 忽略。 */
-  private withNodeToolchainMounts(meta: SessionMeta | undefined, sandbox: SandboxPolicy): SandboxPolicy {
-    const mode = effectiveNodeEnv(meta?.nodeEnv, this.nodeEnvDefault?.());
-    if (mode === "project") return sandbox;
-    const merged = nodeEnvReadOnlyPaths(sandbox.readOnlyPaths, mode, this.platform);
-    return merged.length > (sandbox.readOnlyPaths?.length ?? 0) ? { ...sandbox, readOnlyPaths: merged } : sandbox;
+  /** 注入全局默认 pythonEnv 解析器与数据目录（与 AgentRunner.setPythonEnvDefault 同源）。 */
+  setPythonEnvDefault(getter: () => PythonEnv | undefined, dataDir?: string): void {
+    this.pythonEnvDefault = getter;
+    this.dataDir = dataDir;
+  }
+
+  /**
+   * 按生效 nodeEnv/pythonEnv 并入工具链挂载（会话值 > 全局默认 > global）：
+   * global node → readOnlyPaths（只读层，保持现状）；fnm/nvm 与 uv-config venv →
+   * allowPaths（读写层，严格限定环境自身目录）。wsb/off 由 policyFor 关沙盒，挂载表被 core 忽略。
+   */
+  private withToolchainMounts(meta: SessionMeta | undefined, sandbox: SandboxPolicy): SandboxPolicy {
+    const nodeMode = effectiveNodeEnv(meta?.nodeEnv, this.nodeEnvDefault?.());
+    const pythonMode = effectivePythonEnv(meta?.pythonEnv, this.pythonEnvDefault?.());
+    let next = sandbox;
+    const readOnly = nodeEnvReadOnlyPaths(next.readOnlyPaths, nodeMode, this.platform);
+    if (readOnly.length > (next.readOnlyPaths?.length ?? 0)) next = { ...next, readOnlyPaths: readOnly };
+    const writeDirs = [
+      ...nodeToolchainWritePaths(nodeMode, { platform: this.platform }),
+      ...pythonEnvWritePaths(pythonMode, meta?.cwd, this.dataDir, this.platform),
+    ];
+    const writable = toolchainWritePaths(next.allowPaths, writeDirs);
+    if (writable.length > (next.allowPaths?.length ?? 0)) next = { ...next, allowPaths: writable };
+    return next;
   }
   /**
    * Core keeps session policy in process memory. Remember the desired host-side
@@ -257,7 +296,9 @@ export class CoreRouter extends EventEmitter {
     await client.start();
     const cwd = meta?.sandboxMode === "wsb" && meta.cwd ? toSandboxPath(request.cwd, meta.cwd) : request.cwd;
     const routed = CoreRouter.policyFor(meta, request.sandbox, this.jobObject, this.allowPaths, this.platform);
-    await this.configureWithFiltered(client, request.sessionId, cwd, this.withNodeToolchainMounts(meta, routed));
+    const result = await this.configureWithFiltered(client, request.sessionId, cwd, this.withToolchainMounts(meta, routed));
+    // 重放配置（core 重启后）同样刷新执行级别透出，避免 /sandbox-status 陈旧
+    this.sandboxStatus.set(request.sessionId, { capability: result.sandboxCapability, ...(result.sandboxReason !== undefined ? { reason: result.sandboxReason } : {}), at: Date.now() });
     this.configuredClients.set(request.sessionId, client);
   }
 
@@ -364,7 +405,7 @@ export class CoreRouter extends EventEmitter {
     const { client, meta } = await this.clientFor(request.sessionId);
     const cwd = meta?.sandboxMode === "wsb" && meta.cwd ? toSandboxPath(request.cwd, meta.cwd) : request.cwd;
     const routed = CoreRouter.policyFor(meta, request.sandbox, this.jobObject, this.allowPaths, this.platform);
-    const result = await this.configureWithFiltered(client, request.sessionId, cwd, this.withNodeToolchainMounts(meta, routed));
+    const result = await this.configureWithFiltered(client, request.sessionId, cwd, this.withToolchainMounts(meta, routed));
     this.desiredConfigs.set(request.sessionId, request);
     this.configuredClients.set(request.sessionId, client);
     this.sandboxStatus.set(request.sessionId, { capability: result.sandboxCapability, ...(result.sandboxReason !== undefined ? { reason: result.sandboxReason } : {}), at: Date.now() });

@@ -9,11 +9,12 @@ import type { ShellFlavor } from "./shell-detect.js";
  */
 
 /** 会话元数据环境变量清单（顺序固定，便于测试与文档对齐）。 */
-function sessionEnvVars(meta: Pick<SessionMeta, "id" | "cwd" | "sandboxMode" | "agentMode">): Array<[string, string]> {
+function sessionEnvVars(meta: Pick<SessionMeta, "id" | "cwd" | "sandboxMode" | "agentMode">, platform: NodeJS.Platform = process.platform): Array<[string, string]> {
   return [
     ["OWC_SESSION_ID", meta.id],
     ["OWC_WORKSPACE", meta.cwd],
-    ["OWC_SANDBOX_MODE", meta.sandboxMode ?? "jobobject"],
+    // 缺省按平台分流：win32 缺省 jobobject，POSIX 缺省 landlock 档（与 UI/policyFor 的缺省语义一致）
+    ["OWC_SANDBOX_MODE", meta.sandboxMode ?? (platform === "win32" ? "jobobject" : "landlock")],
     ["OWC_AGENT_MODE", meta.agentMode ?? "code"],
   ];
 }
@@ -28,7 +29,7 @@ export function sessionEnvActivationCommand(
   flavor: ShellFlavor,
   platform: NodeJS.Platform = process.platform,
 ): string {
-  const vars = sessionEnvVars(meta);
+  const vars = sessionEnvVars(meta, platform);
   if (flavor === "pwsh") {
     return vars.map(([key, value]) => `$env:${key} = '${value.replace(/'/g, "''")}'`).join("; ");
   }

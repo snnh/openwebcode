@@ -153,6 +153,7 @@ const agent = new AgentRunner(sessions, providers, core, events, pricing, exchan
 agent.setPythonEnvDefault(() => settings.effective().pythonEnv);
 agent.setNodeEnvDefault(() => settings.effective().nodeEnv);
 core.setNodeEnvDefault(() => settings.effective().nodeEnv);
+core.setPythonEnvDefault(() => settings.effective().pythonEnv, dataDir);
 agent.setMaxTurns(() => settings.effective().agentMaxTurns);
 agent.setSubAgentMaxTurns(() => settings.effective().subAgentMaxTurns);
 agent.setCompactionThreshold(() => settings.effective().compactionThresholdPercent);

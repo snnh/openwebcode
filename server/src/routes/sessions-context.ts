@@ -156,6 +156,16 @@ export function registerSessionContextRoutes(app: FastifyInstance, ctx: RouteCon
     if (effectiveNetwork === "filtered" && effectiveSandboxMode === "wsb") {
       return reply.code(400).send({ error: "network filtered 不支持 wsb 沙盒模式" });
     }
+    // 沙盒策略或 python/node 运行环境变更需要回收持久 shell（pty 在旧沙盒策略下打开、
+    // 环境激活命令只在建壳时注入一次）。遇在途 shell 命令（!cmd 执行中/等审批）默认 409，
+    // 由前端二次确认后带 force:true 重发；强制路径回收时让在途命令立即报错结算。
+    const recycleShells = touchesSandbox || sandboxNetwork !== undefined || pythonEnv !== session.pythonEnv || nodeEnv !== session.nodeEnv;
+    if (request.body?.force !== undefined && typeof request.body.force !== "boolean") {
+      return reply.code(400).send({ error: "force must be a boolean" });
+    }
+    if (recycleShells && request.body?.force !== true && agent.isShellPending?.(request.params.id)) {
+      return reply.code(409).send({ code: "SHELL_PENDING", error: "A shell command is pending or running in this session; resend with force: true to interrupt it and apply the change" });
+    }
     if ((touchesSandbox || sandboxNetwork !== undefined) && session.sandboxMode === "wsb") {
       // WSB 的启动脚本/模式/网络只在虚拟机启动时生效，切换前先释放旧实例。
       await core.release?.(session.id);
@@ -175,11 +185,10 @@ export function registerSessionContextRoutes(app: FastifyInstance, ctx: RouteCon
     }
     // nodeEnv 变化会改变与选择绑定的沙盒工具链挂载（readOnlyPaths）：下次工具调用需重新 configure
     if (nodeEnv !== session.nodeEnv) configuredSessions.delete(session.id);
-    // 沙盒策略或 python/node 运行环境变更：回收该会话的持久 shell——pty 在旧沙盒策略下打开、
-    // 环境激活命令（venv/版本管理器 PATH 前置）只在建壳时注入一次；不回收则切换对默认 bash
-    // 路径（持久 shell）不生效。下条 bash 透明重建，按新策略开壳并激活新环境（uv venv 懒创建
-    // 也在此时触发）。测试注入的简版 agent 可能未实现该方法。
-    if (touchesSandbox || sandboxNetwork !== undefined || pythonEnv !== session.pythonEnv || nodeEnv !== session.nodeEnv) {
+    // 沙盒策略或 python/node 运行环境变更：回收该会话的持久 shell（下条 bash 透明重建，
+    // 按新策略开壳并激活新环境，uv venv 懒创建也在此时触发）。在途命令已被上方守卫拦截，
+    // force 路径由 disposeSession 立即报错结算。测试注入的简版 agent 可能未实现该方法。
+    if (recycleShells) {
       await agent.disposePersistentShells?.(session.id).catch(() => undefined);
     }
     events.publish({ source: "session", type: "session.config_updated", sessionId: session.id, payload: updated });

@@ -10,9 +10,9 @@ function meta(overrides: Partial<SessionMeta> = {}): Pick<SessionMeta, "id" | "c
 }
 
 describe("sessionEnvActivationCommand（三语法族）", () => {
-  it("sh（POSIX）：单条 export 多赋值，缺省 sandboxMode=jobobject / agentMode=code", () => {
+  it("sh（POSIX）：单条 export 多赋值，缺省 sandboxMode=landlock / agentMode=code", () => {
     expect(sessionEnvActivationCommand(meta(), "sh", "linux")).toBe(
-      "export OWC_SESSION_ID='s1' OWC_WORKSPACE='/repo' OWC_SANDBOX_MODE='jobobject' OWC_AGENT_MODE='code'",
+      "export OWC_SESSION_ID='s1' OWC_WORKSPACE='/repo' OWC_SANDBOX_MODE='landlock' OWC_AGENT_MODE='code'",
     );
   });
 
@@ -34,6 +34,15 @@ describe("sessionEnvActivationCommand（三语法族）", () => {
     );
   });
 
+  it("缺省 sandboxMode 按平台分流：win32=jobobject、linux/darwin=landlock；显式值与平台无关", () => {
+    expect(sessionEnvActivationCommand(meta(), "sh", "win32")).toContain("OWC_SANDBOX_MODE='jobobject'");
+    expect(sessionEnvActivationCommand(meta(), "sh", "linux")).toContain("OWC_SANDBOX_MODE='landlock'");
+    expect(sessionEnvActivationCommand(meta(), "sh", "darwin")).toContain("OWC_SANDBOX_MODE='landlock'");
+    for (const platform of ["win32", "linux", "darwin"] as const) {
+      expect(sessionEnvActivationCommand(meta({ sandboxMode: "off" }), "sh", platform)).toContain("OWC_SANDBOX_MODE='off'");
+    }
+  });
+
   it("显式 sandboxMode/agentMode 覆盖缺省值", () => {
     expect(sessionEnvActivationCommand(meta({ sandboxMode: "appcontainer", agentMode: "plan" }), "sh", "linux")).toBe(
       "export OWC_SESSION_ID='s1' OWC_WORKSPACE='/repo' OWC_SANDBOX_MODE='appcontainer' OWC_AGENT_MODE='plan'",
@@ -52,7 +61,7 @@ describe("sessionEnvActivationCommand（三语法族）", () => {
 describe("wrapCommandWithSessionEnv（一次性 exec 最内层包装）", () => {
   it("sh/pwsh 用 `; ` 串联，cmd 用 ` && ` 串联", () => {
     expect(wrapCommandWithSessionEnv("echo hi", meta(), "sh", "linux")).toBe(
-      "export OWC_SESSION_ID='s1' OWC_WORKSPACE='/repo' OWC_SANDBOX_MODE='jobobject' OWC_AGENT_MODE='code'; echo hi",
+      "export OWC_SESSION_ID='s1' OWC_WORKSPACE='/repo' OWC_SANDBOX_MODE='landlock' OWC_AGENT_MODE='code'; echo hi",
     );
     expect(wrapCommandWithSessionEnv("echo hi", meta(), "pwsh", "win32")).toContain("; echo hi");
     expect(wrapCommandWithSessionEnv("echo hi", meta({ cwd: "C:\\repo" }), "cmd", "win32")).toBe(

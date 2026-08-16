@@ -29,6 +29,7 @@ describe("session model config", () => {
     let sessions: SessionStore;
     let app: Awaited<ReturnType<typeof buildServer>>;
     let disposedShells: string[];
+    let shellPending: boolean;
 
     beforeEach(async () => {
       root = await tempRoot("owc-session-config-");
@@ -40,8 +41,10 @@ describe("session model config", () => {
       const pricing = new PricingCatalog(path.join(root, "pricing.json"));
       await pricing.initialize();
       disposedShells = [];
+      shellPending = false;
       const agent = {
         isRunning: () => false,
+        isShellPending: () => shellPending,
         disposePersistentShells: async (sessionId: string) => { disposedShells.push(sessionId); },
       } as unknown as AgentRunner;
       app = await buildServer({ core: {} as CoreClient, sessions, agent, events: new EventBus(), providers, pricing });
@@ -146,6 +149,35 @@ describe("session model config", () => {
       const sameEnv = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { pythonEnv: "uv-workspace", nodeEnv: "fnm" } });
       expect(sameEnv.statusCode).toBe(200);
       expect(disposedShells).toHaveLength(4);
+    });
+
+    it("在途 shell 命令时沙盒变更默认 409（SHELL_PENDING），force: true 放行并回收", async () => {
+      const session = await sessions.create({ cwd: root, provider: "anthropic", model: "deepseek-chat" });
+      shellPending = true;
+      // 409：不落盘、不回收，由前端二次确认后带 force 重发
+      const pending = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { sandboxMode: "off" } });
+      expect(pending.statusCode).toBe(409);
+      expect(pending.json().code).toBe("SHELL_PENDING");
+      expect(disposedShells).toEqual([]);
+      expect(await sessions.get(session.id)).not.toHaveProperty("sandboxMode");
+      // force: true 放行：写入新沙盒模式并回收持久 shell
+      const forced = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { sandboxMode: "off", force: true } });
+      expect(forced.statusCode).toBe(200);
+      expect(disposedShells).toEqual([session.id]);
+      expect(await sessions.get(session.id)).toMatchObject({ sandboxMode: "off" });
+    });
+
+    it("force 非 boolean 一律 400；无关配置变更不受在途 shell 门控", async () => {
+      const session = await sessions.create({ cwd: root, provider: "anthropic", model: "deepseek-chat" });
+      const badForce = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { sandboxMode: "off", force: "yes" } });
+      expect(badForce.statusCode).toBe(400);
+      expect(badForce.json().error).toBe("force must be a boolean");
+      expect(await sessions.get(session.id)).not.toHaveProperty("sandboxMode");
+      // 快照模式不触及沙盒/环境：即使有在途 shell 也直接放行、不回收
+      shellPending = true;
+      const unrelated = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { snapshotMode: "manual" } });
+      expect(unrelated.statusCode).toBe(200);
+      expect(disposedShells).toEqual([]);
     });
 
     it("accepts review permission mode, persists reviewModel, rejects invalid values", async () => {
