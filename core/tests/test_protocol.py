@@ -253,6 +253,36 @@ def main():
         response, _ = collect_until_response(proc, 61)
         assert response.get("result", {}).get("ok") is True, response
 
+        # session.configure 新旧策略逐字段比对：策略完全相等的重配保留槽位，
+        # 不得 kill 该会话的 pty（否则 agent 例行重配会反复砸掉存活终端）。
+        request(proc, 62, "pty.open", {"session": "s1", "cwd": os.getcwd(), "cols": 80, "rows": 24, "sandbox": False})
+        response, _ = collect_until_response(proc, 62)
+        assert "result" in response, response
+        pty_id = response["result"]["ptyId"]
+        request(proc, 63, "session.configure", {"sessionId": "s1", "cwd": os.getcwd(), "sandbox": {"enabled": False, "allowPaths": [os.getcwd()], "denyPaths": [], "network": "allow"}})
+        response, _ = collect_until_response(proc, 63)
+        assert "result" in response, response
+        request(proc, 64, "pty.input", {"ptyId": pty_id, "data": base64.b64encode(b"echo owc-pty-alive\n").decode("ascii")})
+        response, _ = collect_until_response(proc, 64)
+        assert response.get("result", {}).get("ok") is True, response
+
+        # 策略有变化（network allow→deny）则必须走清理路径：旧策略下运行的
+        # pty 不得在新策略下继续存活；pty.exit 是异步通知，到达时机不定，不断言。
+        request(proc, 65, "session.configure", {"sessionId": "s1", "cwd": os.getcwd(), "sandbox": {"enabled": False, "allowPaths": [os.getcwd()], "denyPaths": [], "network": "deny"}})
+        response, _ = collect_until_response(proc, 65)
+        assert "result" in response, response
+        request(proc, 66, "pty.input", {"ptyId": pty_id, "data": base64.b64encode(b"echo owc-pty-dead\n").decode("ascii")})
+        response, _ = collect_until_response(proc, 66)
+        assert "pty not found" in response.get("error", {}).get("message", ""), response
+        # 兜底关闭：pty 已被重配移除时会返回 pty not found 错误，忽略结果。
+        request(proc, 67, "pty.close", {"ptyId": pty_id})
+        collect_until_response(proc, 67)
+
+        # 恢复 s1 原策略：后续既有用例在 s1 上跑 exec/fs，network deny 会破坏它们。
+        request(proc, 68, "session.configure", {"sessionId": "s1", "cwd": os.getcwd(), "sandbox": {"enabled": False, "allowPaths": [os.getcwd()], "denyPaths": [], "network": "allow"}})
+        response, _ = collect_until_response(proc, 68)
+        assert "result" in response, response
+
         # Conditional text writes reject a stale editor revision instead of
         # silently overwriting a file changed since it was read.
         request(proc, 212, "fs.write", {"sessionId": "s1", "path": text_name, "content": "one"})

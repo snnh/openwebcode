@@ -21,6 +21,19 @@ export function uvVenvDir(mode: PythonEnv, cwd: string, dataDir: string | undefi
 }
 
 /**
+ * 非本机 python 环境的读写挂载目录（POSIX 沙盒经 allowPaths 下发；bwrap rw-bind /
+ * Landlock 完整访问集。Windows 无文件系统隔离，不追加）：仅 uv-config 的 venv 目录——
+ * 它在数据目录下，沙盒只挂载工作区与系统树，不挂载则激活静默失效；读写权限限定在
+ * venv 自身（pip install 落在 venv 内；系统 site-packages 只读，全局安装不可能）。
+ * uv-workspace 的 venv 在工作区内（随 writeRoots 可写可见），global 无挂载。
+ */
+export function pythonEnvWritePaths(mode: PythonEnv, cwd: string | undefined, dataDir: string | undefined, platform: NodeJS.Platform = process.platform): string[] {
+  if (platform === "win32" || !cwd || mode !== "uv-config") return [];
+  const venv = uvVenvDir(mode, cwd, dataDir);
+  return venv ? [venv] : [];
+}
+
+/**
  * bash 命令包装：venv 的 Scripts/bin 前置 PATH。不走 activate 脚本——
  * cmd/pwsh/sh 三种语法族一致且避开 pwsh 执行策略问题。
  */
@@ -51,6 +64,11 @@ export function wrapCommandWithNote(cmd: string, note: string): string {
   // 叠加多个环境回退说明（如 nodeEnv + pythonEnv 同时不可用）时合并进同一条 echo，避免 echo && echo 串联
   if (cmd.startsWith(prefix)) return `${prefix}${sanitizeNote(note)}; ${cmd.slice(prefix.length)}`;
   return `${prefix}${sanitizeNote(note)} && ${cmd}`;
+}
+
+/** venv 内 python 可执行文件路径（存在性探测共用）。 */
+function pythonExePath(venvDir: string): string {
+  return path.join(venvDir, process.platform === "win32" ? "Scripts" : "bin", process.platform === "win32" ? "python.exe" : "python");
 }
 
 interface UvEnsureResult {
@@ -102,7 +120,9 @@ export class UvPythonEnvironments {
   private readonly readyDirs = new Set<string>();
 
   async ensure(venvDir: string): Promise<UvEnsureResult> {
-    if (this.readyDirs.has(venvDir)) return { ok: true };
+    // 成功缓存命中也复查 python 可执行文件仍在（用户可能手动删了 venv；每次建壳仅多一次 stat）
+    if (this.readyDirs.has(venvDir) && existsSync(pythonExePath(venvDir))) return { ok: true };
+    this.readyDirs.delete(venvDir);
     let pending = this.pending.get(venvDir);
     if (!pending) {
       pending = this.doEnsure(venvDir);
@@ -120,11 +140,9 @@ export class UvPythonEnvironments {
   private async doEnsure(venvDir: string): Promise<UvEnsureResult> {
     const version = await runHost("uv", ["--version"], 15_000);
     if (version.code !== 0) return { ok: false, note: "uv is not available on PATH, using the host python environment" };
-    const scriptsDir = process.platform === "win32" ? "Scripts" : "bin";
-    const pythonExe = process.platform === "win32" ? "python.exe" : "python";
-    if (existsSync(path.join(venvDir, scriptsDir, pythonExe))) return { ok: true };
+    if (existsSync(pythonExePath(venvDir))) return { ok: true };
     const created = await runHost("uv", ["venv", venvDir], 120_000);
-    if (created.code !== 0 || !existsSync(path.join(venvDir, scriptsDir, pythonExe))) {
+    if (created.code !== 0 || !existsSync(pythonExePath(venvDir))) {
       return { ok: false, note: `uv venv failed${created.stderr ? ` (${created.stderr.slice(0, 200)})` : ""}, using the host python environment` };
     }
     return { ok: true };

@@ -1,7 +1,8 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { CoreRouter, gitCredentialReadOnlyPaths, nodeEnvReadOnlyPaths } from "../src/sandbox/core-router.js";
+import { uvVenvDir } from "../src/python-env.js";
+import { CoreRouter, gitCredentialReadOnlyPaths, nodeEnvReadOnlyPaths, toolchainWritePaths } from "../src/sandbox/core-router.js";
 import type { SandboxPolicy, SessionMeta } from "../src/sessions/types.js";
 import { tempRoot } from "./helpers/temp-roots.js";
 
@@ -71,60 +72,120 @@ describe("CoreRouter.policyFor 平台分支", () => {
 describe("nodeEnvReadOnlyPaths（与 nodeEnv 绑定的工具链只读放行）", () => {
   const nvmDeps = { nvmDir: "/home/u/.nvm", exists: (target: string) => target === "/home/u/.nvm/nvm.sh" };
 
-  it("按模式并入并去重；project 不追加", () => {
-    expect(nodeEnvReadOnlyPaths(["/work/ro"], "nvm", "linux", nvmDeps)).toEqual(["/work/ro", "/home/u/.nvm"]);
+  it("fnm/nvm 走读写层不再进只读层；project 不追加；既有配置原样保留", () => {
+    expect(nodeEnvReadOnlyPaths(["/work/ro"], "nvm", "linux", nvmDeps)).toEqual(["/work/ro"]);
     expect(nodeEnvReadOnlyPaths(["/home/u/.nvm"], "nvm", "linux", nvmDeps)).toEqual(["/home/u/.nvm"]);
+    expect(nodeEnvReadOnlyPaths(undefined, "nvm", "linux", nvmDeps)).toEqual([]);
+    expect(nodeEnvReadOnlyPaths(undefined, "fnm", "linux", { home: "/home/u", exists: () => true })).toEqual([]);
     expect(nodeEnvReadOnlyPaths(undefined, "project", "linux")).toEqual([]);
   });
 
-  it("core readOnlyPaths 上限 16：用户配置与凭据之后补齐截断", () => {
+  it("core readOnlyPaths 上限 16：用户配置与凭据之后补齐截断（global 解析宿主 PATH 工具链根）", () => {
+    const globalDeps = {
+      pathEnv: "/opt/node/bin:/usr/bin",
+      exists: (target: string) => target === "/opt/node/bin/node" || target === "/usr/bin/node",
+      realpath: (target: string) => target,
+    };
     const existing = Array.from({ length: 15 }, (_, index) => `/ro/${index}`);
-    const merged = nodeEnvReadOnlyPaths(existing, "nvm", "linux", nvmDeps);
+    const merged = nodeEnvReadOnlyPaths(existing, "global", "linux", globalDeps);
     expect(merged).toHaveLength(16);
-    expect(merged.at(-1)).toBe("/home/u/.nvm");
+    expect(merged.at(-1)).toBe("/opt/node");
   });
 
-  it("configureSession 按生效 nodeEnv 并入挂载：会话值优先，缺省跟随全局默认解析器", async () => {
-    const home = await tempRoot("owc-node-mount-");
-    const nvmDir = path.join(home, ".nvm");
-    await mkdir(nvmDir, { recursive: true });
-    await writeFile(path.join(nvmDir, "nvm.sh"), "# nvm\n");
-    vi.stubEnv("NVM_DIR", nvmDir);
+  const baseMeta = {
+    id: "s1",
+    cwd: "/work",
+    provider: "",
+    model: "",
+    title: "t",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    sandbox: policy,
+  };
+
+  function makeCaptureClient() {
     const captured: SandboxPolicy[] = [];
     const client = {
       on() { return client; },
       start: async () => {},
       configureSession: async (request: { sandbox: SandboxPolicy }) => { captured.push(request.sandbox); return { sandboxCapability: "enforced" as const }; },
     };
-    const baseMeta = {
-      id: "s1",
-      cwd: "/work",
-      provider: "",
-      model: "",
-      title: "t",
-      createdAt: "2026-01-01T00:00:00.000Z",
-      updatedAt: "2026-01-01T00:00:00.000Z",
-      sandbox: policy,
-    };
-    try {
-      // 会话显式 nvm：无需全局默认解析器
-      const sessionMeta: SessionMeta = { ...baseMeta, nodeEnv: "nvm" };
-      const router = new CoreRouter(client as never, { get: async () => sessionMeta } as never, {} as never, undefined, undefined, "linux");
-      await router.configureSession({ sessionId: "s1", cwd: "/work", sandbox: policy });
-      expect(captured[0]?.readOnlyPaths).toContain(nvmDir);
+    return { captured, client };
+  }
 
-      // 会话缺省（undefined）：跟随全局默认解析器；默认 global 时不追加
+  function makeRouter(client: unknown, sessionMeta: SessionMeta) {
+    return new CoreRouter(client as never, { get: async () => sessionMeta } as never, {} as never, undefined, undefined, "linux");
+  }
+
+  it("configureSession 按生效 nodeEnv 并入挂载：nvm 进读写层，会话值优先，缺省跟随全局默认解析器", async () => {
+    const home = await tempRoot("owc-node-mount-");
+    const nvmDir = path.join(home, ".nvm");
+    await mkdir(nvmDir, { recursive: true });
+    await writeFile(path.join(nvmDir, "nvm.sh"), "# nvm\n");
+    vi.stubEnv("NVM_DIR", nvmDir);
+    const { captured, client } = makeCaptureClient();
+    try {
+      // 会话显式 nvm：版本管理器目录进 allowPaths（读写层），不进 readOnlyPaths
+      const sessionMeta: SessionMeta = { ...baseMeta, nodeEnv: "nvm" };
+      const router = makeRouter(client, sessionMeta);
+      await router.configureSession({ sessionId: "s1", cwd: "/work", sandbox: policy });
+      expect(captured[0]?.allowPaths).toContain(nvmDir);
+      expect(captured[0]?.readOnlyPaths ?? []).not.toContain(nvmDir);
+
+      // 会话缺省（undefined）：跟随全局默认解析器；默认 global 时读写层不追加
       captured.length = 0;
       const defaultMeta: SessionMeta = { ...baseMeta };
-      const routerDefault = new CoreRouter(client as never, { get: async () => defaultMeta } as never, {} as never, undefined, undefined, "linux");
+      const routerDefault = makeRouter(client, defaultMeta);
       await routerDefault.configureSession({ sessionId: "s1", cwd: "/work", sandbox: policy });
+      expect(captured[0]?.allowPaths ?? []).not.toContain(nvmDir);
       expect(captured[0]?.readOnlyPaths ?? []).not.toContain(nvmDir);
       routerDefault.setNodeEnvDefault(() => "nvm");
       await routerDefault.configureSession({ sessionId: "s1", cwd: "/work", sandbox: policy });
-      expect(captured[1]?.readOnlyPaths).toContain(nvmDir);
+      expect(captured[1]?.allowPaths).toContain(nvmDir);
+      expect(captured[1]?.readOnlyPaths ?? []).not.toContain(nvmDir);
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+
+  it("configureSession：fnm 会话的 $FNM_DIR 进 allowPaths（读写层）", async () => {
+    const fnmDir = await tempRoot("owc-fnm-mount-");
+    vi.stubEnv("FNM_DIR", fnmDir);
+    const { captured, client } = makeCaptureClient();
+    try {
+      const sessionMeta: SessionMeta = { ...baseMeta, nodeEnv: "fnm" };
+      const router = makeRouter(client, sessionMeta);
+      await router.configureSession({ sessionId: "s1", cwd: "/work", sandbox: policy });
+      expect(captured[0]?.allowPaths).toContain(fnmDir);
+      expect(captured[0]?.readOnlyPaths ?? []).not.toContain(fnmDir);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("setPythonEnvDefault：uv-config 默认的 venv 目录（数据目录下）进 allowPaths", async () => {
+    const dataDir = await tempRoot("owc-uv-mount-");
+    const { captured, client } = makeCaptureClient();
+    // 会话缺省（无 pythonEnv）：跟随全局默认解析器；uv-config 的 venv 在数据目录下，必须挂载读写层
+    const defaultMeta: SessionMeta = { ...baseMeta };
+    const router = makeRouter(client, defaultMeta);
+    router.setPythonEnvDefault(() => "uv-config", dataDir);
+    await router.configureSession({ sessionId: "s1", cwd: "/work", sandbox: policy });
+    const venv = uvVenvDir("uv-config", "/work", dataDir);
+    expect(venv).toBeDefined();
+    expect(captured[0]?.allowPaths).toContain(venv);
+  });
+});
+
+describe("toolchainWritePaths（读写层合并）", () => {
+  it("保留既有顺序、去重、core allowPaths 上限 16 截断", () => {
+    expect(toolchainWritePaths(["/a", "/b"], ["/c", "/a"])).toEqual(["/a", "/b", "/c"]);
+    expect(toolchainWritePaths(undefined, ["/x", "/x", "/y"])).toEqual(["/x", "/y"]);
+    expect(toolchainWritePaths(["/a"], [])).toEqual(["/a"]);
+    const existing = Array.from({ length: 15 }, (_, index) => `/w/${index}`);
+    const merged = toolchainWritePaths(existing, ["/new/1", "/new/2"]);
+    expect(merged).toHaveLength(16);
+    expect(merged.at(-1)).toBe("/new/1");
   });
 });
 

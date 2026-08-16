@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactElement } from "react";
 import type { SessionDetail } from "../lib/contracts";
@@ -108,6 +108,21 @@ describe("SessionHeader", () => {
     renderHeader({ onConfig });
     fireEvent.change(screen.getByLabelText("沙盒模式"), { target: { value: "appcontainer" } });
     expect(onConfig).toHaveBeenCalledWith({ sandboxMode: "appcontainer" });
+  });
+
+  it("在途 shell 命令冲突（SHELL_PENDING）：确认后以 force:true 重发", async () => {
+    const shellPending = Object.assign(new Error("有 shell 命令在途"), { code: "SHELL_PENDING" });
+    const onConfig = vi.fn()
+      .mockRejectedValueOnce(shellPending)
+      .mockResolvedValue(undefined);
+    renderHeader({ onConfig });
+    fireEvent.change(screen.getByLabelText("快照模式"), { target: { value: "manual" } });
+    expect(onConfig).toHaveBeenCalledWith({ snapshotMode: "manual" });
+    const dialog = await screen.findByRole("dialog", { name: "中断 shell 命令" });
+    expect(dialog).toHaveTextContent("当前会话有 shell 命令正在执行或等待审批");
+    fireEvent.click(within(dialog).getByRole("button", { name: "中断并应用" }));
+    await waitFor(() => expect(onConfig).toHaveBeenCalledTimes(2));
+    expect(onConfig).toHaveBeenLastCalledWith({ snapshotMode: "manual", force: true });
   });
 });
 

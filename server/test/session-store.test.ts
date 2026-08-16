@@ -48,6 +48,30 @@ describe("SessionStore.appendMessage 并发串行化", () => {
   });
 });
 
+describe("SessionStore.updateSandboxMode", () => {
+  it("sandboxMode undefined 保留现值；显式值写入；jobobject 删除；空 setupScript 删除", async () => {
+    const root = await tempRoot("owc-sandbox-mode-");
+    const store = new SessionStore(path.join(root, "sessions"));
+    await store.initialize();
+    const session = await store.create({ cwd: root, provider: "p", model: "m" });
+
+    await store.updateSandboxMode(session.id, "bubblewrap", undefined);
+    // sandboxMode 缺省（undefined）：保留现值；setupScript 照常写入
+    const preserved = await store.updateSandboxMode(session.id, undefined, "echo hi");
+    expect(preserved.sandboxMode).toBe("bubblewrap");
+    expect(preserved.setupScript).toBe("echo hi");
+    // 显式值写入；setupScript 缺省/空 → 从元数据删除
+    const off = await store.updateSandboxMode(session.id, "off", undefined);
+    expect(off.sandboxMode).toBe("off");
+    expect(off).not.toHaveProperty("setupScript");
+    // 显式 jobobject（平台缺省档）归一化为删除属性
+    const cleared = await store.updateSandboxMode(session.id, "jobobject", undefined);
+    expect(cleared).not.toHaveProperty("sandboxMode");
+    // 落盘一致
+    expect(await store.get(session.id)).not.toHaveProperty("sandboxMode");
+  });
+});
+
 // ---- session-pagination 组（合并） ----
 async function storeAt(root: string): Promise<SessionStore> {
   const store = new SessionStore(path.join(root, "sessions"));
