@@ -64,10 +64,22 @@ export function getModelProfile(model: string): ModelProfile {
 
 export function estimateTokens(value: string): number {
   // ASCII 约 4 字符/token；非 ASCII（CJK 等）实际约 1~1.5 字符/token，
-  // 统一按 4 字符/token 会把中文会话低估 3-4 倍（85% 强制压缩不触发 → context-length 400）
+  // 统一按 4 字符/token 会把中文会话低估 3-4 倍（85% 强制压缩不触发 → context-length 400）。
+  // 索引扫描替代 for...of 迭代器（大文本块上的主要开销）；浮点加的顺序与原实现逐码点
+  // 完全一致，折算结果逐位相同（一次性统计再折算会因累加舍入差异在 Math.ceil 边界偏移）。
+  // surrogate pair 按码点计一次（for...of 语义）：高位代理后紧随低位代理时跳过低位代理。
   let units = 0;
-  for (const char of value) {
-    units += char.charCodeAt(0) > 0x7f ? 1 / 1.5 : 1 / 4;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code > 0x7f) {
+      units += 1 / 1.5;
+      if (code >= 0xd800 && code <= 0xdbff && index + 1 < value.length) {
+        const low = value.charCodeAt(index + 1);
+        if (low >= 0xdc00 && low <= 0xdfff) index += 1;
+      }
+    } else {
+      units += 1 / 4;
+    }
   }
   return Math.max(1, Math.ceil(units));
 }

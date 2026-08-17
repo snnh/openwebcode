@@ -175,12 +175,16 @@ export class ContextManager {
       if (!appended.some((message) => message.content.some((block) => block.type === "image"))) {
         ContextManager.touchViewCache(this.sessionRoot, cached);
         header = cached.header;
-        fragments = [...cached.fragments];
-        sourceIds = [...cached.sourceIds];
+        // 无追加（纯缓存命中）时共享缓存数组，只读复用不展开；有追加才拷贝以便 push，
+        // 避免每轮纯命中都 O(n) 三次展开。segments 除外——调用方会原地累加
+        // stats.segments（agent-runner 的 repo map 段），必须拷贝隔离缓存主本。
+        const hasAppended = appended.length > 0;
+        fragments = hasAppended ? [...cached.fragments] : cached.fragments;
+        sourceIds = hasAppended ? [...cached.sourceIds] : cached.sourceIds;
         total = cached.totalTokens;
         pinnedTokens = cached.pinnedTokens;
         segments = { ...cached.segments };
-        master = [...cached.view];
+        master = hasAppended ? [...cached.view] : cached.view;
         const byMessage = new Map(ledger.entries.map((entry) => [entry.messageId, entry]));
         for (const message of appended) {
           const fragment = buildFragment(message, byMessage, pinnedIds);
