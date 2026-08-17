@@ -1059,16 +1059,19 @@ export class AgentRunner {
         const visibleUserTurns = view.messages.filter((message) => message.role === "user" && !message.id.startsWith("compaction:")).length;
         perfContextBuildMs += performance.now() - ctxBuildStart;
         if (this.extensions) {
+          // transformContext 与 beforeSend 共用同一份 ledger 摘要：entries 的 O(n) 映射与
+          // compacted/cleared 条件展开只构造一次，避免每轮两遍全量 entries 拷贝。
+          const ledgerSummary = {
+            round: view.ledger.round,
+            entries: view.ledger.entries.map((entry) => ({ messageId: entry.messageId, state: entry.state, pinnedUntilRound: entry.pinnedUntilRound })),
+            ...(view.ledger.compacted ? { compacted: { summary: view.ledger.compacted.summary, instructions: view.ledger.compacted.instructions, mode: view.ledger.compacted.mode } } : {}),
+            ...(view.ledger.cleared ? { cleared: { at: view.ledger.cleared.at } } : {}),
+          };
           const transformed = await this.extensions.transformContext({
             sessionId,
             cwd: session.cwd,
             messages: view.messages,
-            ledger: {
-              round: view.ledger.round,
-              entries: view.ledger.entries.map((entry) => ({ messageId: entry.messageId, state: entry.state, pinnedUntilRound: entry.pinnedUntilRound })),
-              ...(view.ledger.compacted ? { compacted: { summary: view.ledger.compacted.summary, instructions: view.ledger.compacted.instructions, mode: view.ledger.compacted.mode } } : {}),
-              ...(view.ledger.cleared ? { cleared: { at: view.ledger.cleared.at } } : {}),
-            },
+            ledger: ledgerSummary,
           });
           view.messages = transformed.messages;
           if (transformed.metadata) this.events.publish({ source: "agent", type: "extension.context_transformed", sessionId, payload: transformed.metadata });
@@ -1076,12 +1079,7 @@ export class AgentRunner {
             sessionId,
             cwd: session.cwd,
             messages: view.messages,
-            ledger: {
-              round: view.ledger.round,
-              entries: view.ledger.entries.map((entry) => ({ messageId: entry.messageId, state: entry.state, pinnedUntilRound: entry.pinnedUntilRound })),
-              ...(view.ledger.compacted ? { compacted: { summary: view.ledger.compacted.summary, instructions: view.ledger.compacted.instructions, mode: view.ledger.compacted.mode } } : {}),
-              ...(view.ledger.cleared ? { cleared: { at: view.ledger.cleared.at } } : {}),
-            },
+            ledger: ledgerSummary,
           });
           view.messages = beforeSend.messages;
         }
@@ -1271,13 +1269,9 @@ export class AgentRunner {
         // 首轮双工具形态（firstTurnOnlyTools）期间不联动，用户发第二条消息后生效。
         // 驱逐是 context-saver 扩展能力：扩展关闭（saverOn=false）时不联动。
         if (saverOn && (!firstTurnOnly || !isFirstTurn) && !shapedBuiltIns.some((tool) => tool.name === "read_artifact") && !(session.toolsDeny ?? []).includes("read_artifact")) {
-          let evictionOn = false;
-          try {
-            const ledger = await new ContextManager(this.sessions.contextRoot(sessionId)).load();
-            evictionOn = ledger.policy.enabled && ledger.policy.strategy !== "off";
-          } catch {
-            // 忽略：ledger 不可读时按驱逐关闭处理
-          }
+          // 驱逐策略直读本轮 beginTurn 的轮级句柄（同一磁盘账本的 working 副本），
+          // 免去每轮二次 new ContextManager().load() 全量加载 ledger 只为读 policy。
+          const evictionOn = turnLedger.working.policy.enabled && turnLedger.working.policy.strategy !== "off";
           if (evictionOn) shapedBuiltIns = [...shapedBuiltIns, READ_ARTIFACT_TOOL];
         }
         this.toolAliases.setShaping(sessionId, shapingApplication.aliasMap, shapingApplication.aliasArgMaps);
@@ -3641,6 +3635,12 @@ export class AgentRunner {
       this.events.publish({ source: "agent", type: "agent.state", sessionId, payload: { state: requested } });
       return Promise.resolve();
     }
+    // 状态未变则跳过落盘与事件：run.state 同步赋值后 writeRun 已 await 落盘，
+    // 相同状态必然已持久化；重复事件对消费方（web 端状态徽章/live-store、REST run 快照、
+    // 扩展白名单推送）只会重复触发同值写入与 invalidate，还让每轮多工具循环
+    // （tool_running 反复触发）多出 2×tmp+rename 原子写。turnIndex 变更由 setTurnIndex
+    // 单独落盘，且跨轮状态序列相邻必不同，事件不会丢 turnIndex 信息。
+    if (run.state === state) return Promise.resolve();
     run.state = state;
     run.since = new Date().toISOString();
     const write = this.writeRun(sessionId, run, true);
