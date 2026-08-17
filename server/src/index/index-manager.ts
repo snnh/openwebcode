@@ -26,6 +26,7 @@ import {
   toIndexedFileEntry,
   toIndexedSymbolRecord,
   workspaceHash,
+  type IndexedFileEntry,
   type IndexMeta,
   type LoadedIndex,
   type SymbolRecord,
@@ -217,7 +218,7 @@ export class IndexManager {
       status: "missing",
       workspace: workspaceHash(ws.cwd),
       files: ws.loaded?.files.size ?? 0,
-      symbols: ws.loaded ? [...ws.loaded.symbols.values()].reduce((sum, list) => sum + list.length, 0) : 0,
+      symbols: ws.loaded?.symbolCount ?? 0,
       watch: ws.watchMode,
       ...(meta?.lastScan ? { lastScanAt: meta.lastScan.at, scanTruncated: meta.lastScan.truncated } : {}),
     };
@@ -254,7 +255,7 @@ export class IndexManager {
         if (!hasMeta && !hasData) {
           // 从未建过索引（正常空态）。corrupt 标志保持粘性：reset 之后
           // 查询仍如实报告"损坏已作废"，直到一次成功重建翻转它。
-          ws.loaded = { files: new Map(), symbols: new Map(), meta: undefined, fileLines: 0, symbolLines: 0 };
+          ws.loaded = { files: new Map(), symbols: new Map(), meta: undefined, fileLines: 0, symbolLines: 0, symbolCount: 0 };
           return;
         }
         ws.loaded = undefined;
@@ -360,7 +361,7 @@ export class IndexManager {
     signal: AbortSignal,
   ): Promise<void> {
     await this.ensureLoaded(ws);
-    const loaded: LoadedIndex = ws.loaded ?? { files: new Map(), symbols: new Map(), meta: undefined, fileLines: 0, symbolLines: 0 };
+    const loaded: LoadedIndex = ws.loaded ?? { files: new Map(), symbols: new Map(), meta: undefined, fileLines: 0, symbolLines: 0, symbolCount: 0 };
     ws.loaded = loaded;
     const diff = diffManifest(loaded.files, entries);
 
@@ -398,11 +399,23 @@ export class IndexManager {
     }
 
     // 应用 manifest 全量态（内存条目预存小写路径/基名供搜索，不落盘）
-    const nextFiles = new Map(entries.map((entry) => [entry.path, toIndexedFileEntry(entry)]));
-    for (const filePath of diff.deleted) loaded.symbols.delete(filePath);
+    // 循环 set 构造：避免 entries.map 产生 10 万对中间数组
+    const nextFiles = new Map<string, IndexedFileEntry>();
+    for (const entry of entries) nextFiles.set(entry.path, toIndexedFileEntry(entry));
+    // symbolCount 与 symbols 同点增量维护（覆盖写按差值、删除按旧值扣减）
+    for (const filePath of diff.deleted) {
+      loaded.symbolCount -= loaded.symbols.get(filePath)?.length ?? 0;
+      loaded.symbols.delete(filePath);
+    }
     for (const [filePath, symbols] of extracted) {
-      if (symbols.length > 0) loaded.symbols.set(filePath, symbols.map(toIndexedSymbolRecord));
-      else loaded.symbols.delete(filePath);
+      if (symbols.length > 0) {
+        const list = symbols.map(toIndexedSymbolRecord);
+        loaded.symbolCount += list.length - (loaded.symbols.get(filePath)?.length ?? 0);
+        loaded.symbols.set(filePath, list);
+      } else {
+        loaded.symbolCount -= loaded.symbols.get(filePath)?.length ?? 0;
+        loaded.symbols.delete(filePath);
+      }
     }
     loaded.files = nextFiles;
 
@@ -438,7 +451,7 @@ export class IndexManager {
         durationMs,
       },
       files: loaded.files.size,
-      symbols: [...loaded.symbols.values()].reduce((sum, list) => sum + list.length, 0),
+      symbols: loaded.symbolCount,
     };
     await ws.store.writeMeta(meta);
     loaded.meta = meta;
@@ -503,10 +516,19 @@ export class IndexManager {
     if (!ws.loaded?.meta || ws.stale) return;
     if (ws.watchMode === "none") await this.ensureWatch(ws, sessionId);
     if (ws.watchMode !== "fallback") return;
-    const paths = [...ws.loaded.files.keys()];
-    if (paths.length === 0) return;
-    const step = Math.max(1, Math.floor(paths.length / this.mtimeSampleSize));
-    const sample = paths.filter((_, index) => index % step === 0).slice(0, this.mtimeSampleSize);
+    const total = ws.loaded.files.size;
+    if (total === 0 || this.mtimeSampleSize <= 0) return;
+    const step = Math.max(1, Math.floor(total / this.mtimeSampleSize));
+    // 手动迭代 keys() 按步长取样，取满即停：不为 32 个样本物化 10 万 key 的数组
+    const sample: string[] = [];
+    let index = 0;
+    for (const filePath of ws.loaded.files.keys()) {
+      if (index % step === 0) {
+        sample.push(filePath);
+        if (sample.length === this.mtimeSampleSize) break;
+      }
+      index += 1;
+    }
     try {
       const result = await this.core.statFiles({ sessionId, paths: sample });
       const byPath = new Map(result.entries.map((entry) => [entry.path, entry]));
@@ -562,7 +584,9 @@ export class IndexManager {
     const loaded = await this.requireIndex(cwd);
     const wanted = normalizeLookupPath(filePath);
     for (const [path, symbols] of loaded.symbols) {
-      if (normalizeLookupPath(path) !== wanted) continue;
+      // 常见键是规范路径（/ 分隔、无 ./ 前缀），归一化即自身：省去每键两次正则，仅在需要时归一化
+      const normalized = path.indexOf("\\") >= 0 || path.startsWith("./") ? normalizeLookupPath(path) : path;
+      if (normalized !== wanted) continue;
       return [...symbols]
         .sort((a, b) => a.startLine - b.startLine || a.name.localeCompare(b.name))
         .map((symbol) => ({ name: symbol.name, kind: symbol.kind, path, startLine: symbol.startLine, endLine: symbol.endLine, signature: symbol.signature }));
@@ -578,8 +602,9 @@ export class IndexManager {
     const compare = (a: FileCandidate, b: FileCandidate): number => b.score - a.score || a.path.localeCompare(b.path);
     const hits: FileCandidate[] = [];
     for (const [filePath, entry] of loaded.files) {
-      // 全路径与基名各评一次取高分：用户常只记文件名
-      const score = Math.max(fuzzyScoreLower(entry.pathLower, queryLower), fuzzyScoreLower(entry.baseLower, queryLower));
+      // 全路径与基名各评一次取高分：用户常只记文件名；满分（100）已是评分上限，跳过基名重复评分
+      const pathScore = fuzzyScoreLower(entry.pathLower, queryLower);
+      const score = pathScore === 100 ? pathScore : Math.max(pathScore, fuzzyScoreLower(entry.baseLower, queryLower));
       if (score <= 0) continue;
       pushTopK(hits, limit, { score, path: filePath, modifiedMs: entry.modifiedMs }, compare);
     }
@@ -659,10 +684,24 @@ function fuzzyScoreLower(n: string, q: string): number {
   if (n === q) return 100;
   if (n.startsWith(q)) return 75;
   if (n.includes(q)) return 50;
+  const nLen = n.length;
+  const qLen = q.length;
+  if (qLen > nLen) return 0; // q 更长时子序列匹配必失败（走到这里已排除全等/前缀/包含）
+  // 索引循环 + charCodeAt 替代 for...of（迭代器慢）。逐分等价说明：原 for...of 按码点
+  // 迭代，代理对合成 2 码元字符串、永不等于 q[i]（单码元），这里整对跳过；
+  // 落单代理在原实现中按单码元产出，这里同样逐码元参与比较。
   let i = 0;
-  for (const ch of n) {
-    if (ch === q[i]) i += 1;
-    if (i === q.length) return 25;
+  for (let j = 0; j < nLen; j += 1) {
+    const code = n.charCodeAt(j);
+    if (code >= 0xd800 && code <= 0xdbff && j + 1 < nLen) {
+      const next = n.charCodeAt(j + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        j += 1;
+        continue;
+      }
+    }
+    if (code === q.charCodeAt(i)) i += 1;
+    if (i === qLen) return 25;
   }
   return 0;
 }
