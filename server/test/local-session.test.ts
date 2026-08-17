@@ -294,7 +294,9 @@ describe("local session path gate (authorizeTool)", () => {
 
     await runner.run(session.id, "go");
     expect(captured.filter((event) => event.type === "permission.request")).toHaveLength(0);
-    expect(readCalls).toEqual([`${home}/notes.txt`]);
+    // 分隔符无关比较：Windows 下 home 是反斜杠、canonicalize 写回的 readCalls 是正斜杠
+    const strip = (p: string): string => p.replace(/\\/g, "/");
+    expect(readCalls.map(strip)).toEqual([strip(`${home}/notes.txt`)]);
     // HOME 内路径不落任何 allow 规则（无新增；初始为空数组或 undefined）
     const rules = (await sessions.get(session.id))?.permissionRules;
     expect(rules === undefined || rules.length === 0).toBe(true);
