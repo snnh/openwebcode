@@ -2346,8 +2346,13 @@ export class AgentRunner {
       // 归一化绝对路径就地写回 input：调用点的 effectiveInput 与本对象同引用，executeTool 直接消费，
       // 不写回则 HOME 内的相对路径（如 notes.txt）会以相对形态到达 core，与归一化语义不一致
       input.path = abs;
-      const home = os.homedir();
-      const insideHome = abs === home || abs.startsWith(`${home}${path.sep}`);
+      // HOME 判定按分隔符归一比较：abs 来自 core normalizePath 的 canonical 形态（正斜杠），
+      // 而 os.homedir()/session.cwd 在 Windows 是反斜杠——直接 startsWith(home + path.sep)
+      // 在 Windows 上永假，会把 HOME 内路径误判为 HOME 外触发审批。统一转 / 后比较（POSIX 恒等）。
+      const slash = (p: string): string => p.replace(/\\/g, "/").replace(/\/+$/, "");
+      const absC = slash(abs);
+      const homeC = slash(os.homedir());
+      const insideHome = absC === homeC || absC.startsWith(`${homeC}/`);
       if (!insideHome && !rules.some((rule) => matchesRule(rule, tool, { path: abs }))) {
         this.state(sessionId, "waiting_permission");
         // Notification 钩子：权限待批（与下方 needsApproval 审批路径同一挂点）
