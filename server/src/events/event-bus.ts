@@ -40,6 +40,20 @@ interface PendingDelta {
   text: string;
 }
 
+/**
+ * delta 合批占位的共享 sentinel：被合批的 delta 在 flush 时才定序，
+ * 全仓没有调用方消费 delta 发布的返回值，因此返回模块级冻结对象，
+ * 避免长流下每个 token delta 都构造一次新对象（字段为固定占位值）。
+ */
+const PENDING_DELTA_EVENT: AppEvent = Object.freeze({
+  source: "agent",
+  type: "message.delta",
+  payload: null,
+  eventId: "pending",
+  seq: 0,
+  createdAt: "",
+});
+
 interface EventBusStats {
   published: number;
   retained: number;
@@ -90,9 +104,8 @@ export class EventBus extends EventEmitter {
 
   /**
    * 把 delta 并入 (sessionId, type) 键对应的缓冲，并在窗口到期时合并发布。
-   * 返回值为占位事件（seq 指向最后一条已定序事件），实际事件在 flush 时才定序；
-   * 当前没有调用方消费 delta 发布的返回值，因此占位事件直接引用原 payload，
-   * 不再复制累计文本（避免长流下每个 delta 都构造一次携带完整缓冲的新对象）。
+   * 实际事件在 flush 时才定序；当前没有调用方消费 delta 发布的返回值，
+   * 因此返回共享的冻结 sentinel，不再逐条构造占位对象。
    */
   private bufferDelta(input: AppEventInput): AppEvent {
     const key = `${input.sessionId ?? ""}${input.type} ${(input.payload as { id?: string }).id ?? ""}`;
@@ -105,12 +118,7 @@ export class EventBus extends EventEmitter {
       // 不让合批定时器阻止进程退出（测试与 CLI 短生命周期场景）。
       this.deltaFlushTimer.unref?.();
     }
-    return {
-      ...input,
-      eventId: "pending",
-      seq: this.sequence,
-      createdAt: new Date().toISOString(),
-    };
+    return PENDING_DELTA_EVENT;
   }
 
   /** 立即合并发布所有挂起的 delta（每个 (sessionId, type) 键一条事件）。 */
@@ -146,9 +154,19 @@ export class EventBus extends EventEmitter {
     if (bytes <= this.historyByteLimit) {
       this.history.push({ event, bytes, serialized });
       this.historyBytes += bytes;
-      while (this.history.length > this.historyLimit || this.historyBytes > this.historyByteLimit) {
-        const removed = this.history.shift();
-        if (removed) this.historyBytes -= removed.bytes;
+      if (this.history.length > this.historyLimit || this.historyBytes > this.historyByteLimit) {
+        // 批量逐出（迟滞）：超限后一次 splice 回到超限上限的 90%，
+        // 摊销稳态下每条事件一次 O(n) shift 的整体搬移；FIFO 顺序与字节记账不变。
+        const targetLength = this.history.length > this.historyLimit ? Math.floor(this.historyLimit * 0.9) : this.history.length;
+        const targetBytes = this.historyBytes > this.historyByteLimit ? Math.floor(this.historyByteLimit * 0.9) : this.historyBytes;
+        let remove = 0;
+        let freed = 0;
+        while (remove < this.history.length && (this.history.length - remove > targetLength || this.historyBytes - freed > targetBytes)) {
+          freed += this.history[remove]!.bytes;
+          remove++;
+        }
+        this.history.splice(0, remove);
+        this.historyBytes -= freed;
       }
     } else this.oversizedNotRetained++;
     this.emit("event", event, serialized);
