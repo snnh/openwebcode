@@ -39,8 +39,9 @@ describe("PermissionCoordinator", () => {
 
   it("generates path-scoped rules for read_file/glob/grep (本机会话 HOME 外路径门)", () => {
     // 旧行为 read_file 落整工具放行（{ tool }）；现在按归一化路径落目录前缀规则
+    // （read/write/edit 落 dirname，「总是允许 /etc/hosts」放行同目录 /etc/hostname）
     const readRule = permissionRule("read_file", { path: "/etc/hosts" });
-    expect(readRule).toEqual({ tool: "read_file", argumentPrefix: "/etc/hosts" });
+    expect(readRule).toEqual({ tool: "read_file", argumentPrefix: "/etc" });
     const globRule = permissionRule("glob", { path: "/usr/share", pattern: "**/*.md" });
     expect(globRule).toEqual({ tool: "glob", argumentPrefix: "/usr/share" });
     const grepRule = permissionRule("grep", { path: "/var/log" });
