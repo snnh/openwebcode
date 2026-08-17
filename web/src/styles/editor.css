@@ -180,12 +180,16 @@
 .terminal-pty-status { flex: none; display: flex; align-items: center; gap: 10px; padding: 6px 16px; font-size: 12px; color: var(--text-3); border-top: 1px solid var(--border); }
 .terminal-pty-status.error { color: var(--danger); }
 
-/* 窄屏（≤1024px）：编辑器/diff 分栏成为覆盖主区的全屏临时视图，关闭即回对话 */
-@media (max-width: 1024px) {
+/* 移动端（≤768px）：编辑器/diff 分栏成为覆盖主区的全屏临时视图，关闭即回对话 */
+@media (max-width: 768px) {
   .wb-main > .wb-main-split { flex: 1 1 0; min-height: 0; height: 100%; position: relative; }
   .editor-pane { position: absolute; inset: 0; max-width: none; z-index: var(--z-overlay); border-left: 0; }
-  /* 浮层移动端近全屏 */
-  .wb-overlay { width: calc(100vw - 16px); max-height: 84vh; }
+  /* 浮层移动端近全屏；底部留出 Home 指示条安全区 */
+  .wb-overlay {
+    width: calc(100vw - 16px);
+    max-height: 84vh;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
 }
 
 [data-theme="dark"] .shiki,

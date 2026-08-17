@@ -2,10 +2,11 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-/** 新样式体系（src/styles/ 十一个文件）合并文本；媒体块按断点抽取 */
+/** 新样式体系（src/styles/ 十二个文件）合并文本；媒体块按断点抽取 */
 const FILES = [
   "tokens.css", "base.css", "layout.css", "chat-list.css", "chat-cards.css",
   "composer.css", "sidebar.css", "panels.css", "editor.css", "dialogs.css", "settings.css",
+  "chat-mode.css",
 ];
 const css = FILES.map((file) => readFileSync(resolve(process.cwd(), `src/styles/${file}`), "utf8")).join("\n");
 
@@ -32,8 +33,8 @@ function mediaBlock(width: number): string {
   return out.join("\n");
 }
 
-const narrowCss = mediaBlock(1024);
-const compactCss = mediaBlock(768);
+/** 手机断点（移动布局 + 密度优化）；平板（>768px）直接用桌面布局 */
+const narrowCss = mediaBlock(768);
 const tinyCss = mediaBlock(480);
 
 describe("窄窗口布局 CSS 回归", () => {
@@ -55,10 +56,10 @@ describe("窄窗口布局 CSS 回归", () => {
     expect(narrowCss).toMatch(/\.wb-sidebar-backdrop\s*\{[^}]*position:\s*fixed;/s);
   });
 
-  it("设置两栏结构（设置项 | 详情），移动端整页 + 钻取", () => {
+  it("设置两栏结构（设置项 | 详情），手机整页 + 钻取", () => {
     // 桌面两栏栅格（应用导航轨已裁剪）
     expect(css).toMatch(/\.settings-layout\s*\{\s*display:\s*grid;\s*grid-template-columns:\s*204px/s);
-    // 移动端：整页（非浮窗），列表/详情互斥钻取，返回钮可见
+    // 手机：整页（非浮窗），列表/详情互斥钻取，返回钮可见
     expect(css).toMatch(/\.settings-dialog\s*\{[^}]*width:\s*100vw;[^}]*border-radius:\s*0;/s);
     expect(narrowCss).toMatch(/\.settings-layout\.detail-open \.settings-nav\s*\{\s*display:\s*none;/s);
     expect(narrowCss).toMatch(/\.settings-layout\.detail-open \.settings-content\s*\{[^}]*display:\s*flex;/s);
@@ -105,11 +106,11 @@ describe("窄窗口布局 CSS 回归", () => {
     expect(css).not.toMatch(/\.attachment-strip\s*\{[^}]*overflow-x:\s*auto/s);
   });
 
-  it("≤768px 密度优化：信息条折行 + 单位缩写 tok、表格降档、消息区收边", () => {
-    expect(compactCss).toMatch(/\.unit-full\s*\{\s*display:\s*none;/s);
-    expect(compactCss).toMatch(/\.unit-narrow\s*\{\s*display:\s*inline;/s);
-    expect(compactCss).toMatch(/\.markdown th, \.markdown td\s*\{[^}]*padding:\s*3px 6px;/s);
-    expect(compactCss).toMatch(/\.chat-track\s*\{[^}]*padding:\s*14px 12px/s);
+  it("手机密度优化：信息条折行 + 单位缩写 tok、表格降档、消息区收边", () => {
+    expect(narrowCss).toMatch(/\.unit-full\s*\{\s*display:\s*none;/s);
+    expect(narrowCss).toMatch(/\.unit-narrow\s*\{\s*display:\s*inline;/s);
+    expect(narrowCss).toMatch(/\.markdown th, \.markdown td\s*\{[^}]*padding:\s*3px 6px;/s);
+    expect(narrowCss).toMatch(/\.chat-track\s*\{[^}]*padding:\s*14px 12px/s);
   });
 
   it("≤480px 控制行紧凑：菜单按钮降档、长模型名收缩省略，发送钮保持 44px 触达目标", () => {
@@ -121,5 +122,40 @@ describe("窄窗口布局 CSS 回归", () => {
 
   it("输入框默认无纵向滚动条轨道（溢出后由 JS 放开）", () => {
     expect(css).toMatch(/\.composer textarea\s*\{[^}]*overflow-y:\s*hidden;/s);
+  });
+
+  it("对话框移动端：输入防 iOS 聚焦放大、按钮行允许换行、浮层底部安全区", () => {
+    // iOS Safari 聚焦 <16px 输入框会自动放大页面：命令面板/QuickOpen 与原生 dialog 输入框手机端 16px
+    expect(narrowCss).toMatch(/\.wb-overlay-input\s*\{[^}]*font-size:\s*16px;/s);
+    expect(narrowCss).toMatch(/\.session-dialog \.input, \.session-dialog select\s*\{[^}]*font-size:\s*16px;/s);
+    // 新建会话的绑定/备选模型行与确认按钮行窄屏换行
+    expect(narrowCss).toMatch(/\.dialog-actions\s*\{[^}]*flex-wrap:\s*wrap;/s);
+    expect(narrowCss).toMatch(/\.bindlink-row\s*\{[^}]*flex-wrap:\s*wrap;/s);
+    // 通用浮层（命令面板/QuickOpen/CodeOverlay/chat 弹层）底部避开 Home 指示条
+    expect(narrowCss).toMatch(/\.wb-overlay\s*\{[^}]*padding-bottom:\s*env\(safe-area-inset-bottom\);/s);
+  });
+
+  it("chat 模式手机端：侧栏变覆盖式抽屉 + 输入 16px + 100dvh", () => {
+    // 单列：侧栏脱离网格成为 fixed 抽屉，折叠态同断点覆盖桌面 0 1fr 规则
+    expect(narrowCss).toMatch(/\.chat-mode-shell,\s*\.chat-mode-shell\.sidebar-collapsed\s*\{\s*grid-template-columns:\s*1fr;/s);
+    expect(narrowCss).toMatch(/\.chat-mode-shell \.chat-sidebar\s*\{[^}]*position:\s*fixed;/s);
+    expect(narrowCss).toMatch(/\.chat-mode-shell\.sidebar-collapsed \.chat-sidebar\s*\{\s*display:\s*none;/s);
+    expect(narrowCss).toMatch(/\.chat-sidebar-backdrop\s*\{[^}]*position:\s*fixed;/s);
+    // 对话弹层窄屏不设最小宽度（防 320px 视口横向溢出）
+    expect(narrowCss).toMatch(/\.chat-dialog\s*\{[^}]*min-width:\s*0;/s);
+    // iOS 输入聚焦防自动放大
+    expect(narrowCss).toMatch(/\.chat-composer-input\s*\{[^}]*font-size:\s*16px;/s);
+    // 移动端纵向视口统一 100dvh（iOS 地址栏不遮挡）
+    expect(css).toMatch(/\.chat-mode-shell\s*\{[^}]*height:\s*100vh;[^}]*height:\s*100dvh;/s);
+    // 触屏：会话菜单常显（hover-only 在触屏不可见）
+    expect(css).toMatch(/@media \(hover: none\)[\s\S]*?\.chat-session-item \.chat-session-menu\s*\{[^}]*opacity:\s*1;/);
+    expect(css).toMatch(/@media \(hover: none\)[\s\S]*?\.chat-message \.actions\s*\{[^}]*opacity:\s*1;/);
+  });
+
+  it("AskUser/Plan/权限悬浮卡窄屏允许换行收边", () => {
+    expect(css).toMatch(/\.permission-actions\s*\{[^}]*flex-wrap:\s*wrap;/s);
+    expect(css).toMatch(/\.interaction-card > \.interaction-actions\s*\{[^}]*flex-wrap:\s*wrap;/s);
+    expect(css).toMatch(/\.interaction-card \.interaction-other\s*\{[^}]*flex-wrap:\s*wrap;/s);
+    expect(tinyCss).toMatch(/\.interaction-card\s*\{[^}]*margin:\s*8px 12px;/s);
   });
 });

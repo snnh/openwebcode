@@ -4,6 +4,7 @@
   display: grid;
   grid-template-columns: 260px 1fr;
   height: 100vh;
+  height: 100dvh;
   overflow: hidden;
   transition: grid-template-columns 200ms ease;
 }
@@ -649,6 +650,7 @@
 /* ── Share 公开页（只读） ── */
 .share-full {
   height: 100vh;
+  height: 100dvh;
 }
 
 .share-gate {
@@ -656,6 +658,7 @@
   align-items: center;
   justify-content: center;
   height: 100vh;
+  height: 100dvh;
 }
 
 .share-gate-card {
@@ -750,3 +753,62 @@
 /* 空态建议「换一批」按钮弱化 */
 .chat-suggestion-more { color: var(--text-3); }
 .chat-suggestion-more:hover { color: var(--text); }
+
+/* ── 移动端（≤768px，手机；平板 ≥768px 保持桌面双栏） ── */
+@media (max-width: 768px) {
+  /* 单列：侧栏脱离网格成为左侧固定抽屉，主区占满全宽 */
+  .chat-mode-shell,
+  .chat-mode-shell.sidebar-collapsed { grid-template-columns: 1fr; }
+  .chat-mode-shell .chat-sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: var(--z-drawer);
+    width: min(300px, 84vw);
+    padding-bottom: env(safe-area-inset-bottom);
+    animation: chat-sidebar-in 0.18s ease;
+    box-shadow: var(--shadow-lg);
+    /* 打开时 JS 聚焦抽屉容器（焦点管理），不显示焦点框 */
+    outline: none;
+  }
+  .chat-mode-shell.sidebar-collapsed .chat-sidebar { display: none; }
+  .chat-sidebar-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-backdrop);
+    background: var(--backdrop);
+  }
+  @keyframes chat-sidebar-in { from { transform: translateX(-100%); } }
+  /* 顶栏紧凑：标题 + 状态徽标 + 设置钮单行 */
+  .chat-main-header { min-height: 44px; padding: 6px 12px; }
+  .chat-main-header .title { font-size: 14px; }
+  /* 消息流收边 */
+  .chat-messages-inner { padding: 16px 12px 12px; gap: 20px; }
+  .chat-composer-area {
+    padding: 6px calc(12px + env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) calc(12px + env(safe-area-inset-left));
+  }
+  /* iOS 输入聚焦防自动放大（<16px 会触发） */
+  .chat-composer-input { font-size: 16px; }
+  /* 触控目标：顶栏/工具栏按钮与发送键放大到 40px */
+  .chat-main-header .icon-btn { width: 40px; height: 40px; }
+  .chat-composer-toolbar .icon-btn { width: 40px; height: 40px; }
+  .chat-round-btn { width: 40px; height: 40px; }
+  .chat-session-item { min-height: 44px; }
+  /* 对话弹层（重命名/分享/菜单）：窄屏不设最小宽度，防横向溢出 */
+  .chat-dialog { min-width: 0; }
+  .chat-dialog-actions { flex-wrap: wrap; }
+  /* 首页空态收边 */
+  .chat-home { padding: 16px 12px; gap: 16px; }
+  .chat-home-greeting { font-size: 22px; }
+}
+
+/* 触屏（hover 不可用）：会话菜单与消息操作按钮常显，触控目标顶满 44px */
+@media (hover: none) {
+  .chat-session-item .chat-session-menu { opacity: 1; width: 36px; height: 36px; }
+  .chat-message .actions { opacity: 1; }
+  .chat-main-header .icon-btn { width: 44px; height: 44px; }
+  .chat-composer-toolbar .icon-btn { width: 44px; height: 44px; }
+  .chat-round-btn { width: 44px; height: 44px; }
+  .chat-message .actions .icon-btn { width: 36px; height: 36px; }
+}

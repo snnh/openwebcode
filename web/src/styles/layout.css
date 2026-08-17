@@ -63,7 +63,7 @@
 .wb-activity:hover .activity-collapse-btn,
 .activity-collapse-btn:focus-visible { opacity: 1; }
 
-/* ================= 移动端导航菜单（≤1024px） ================= */
+/* ================= 移动端导航菜单（手机 ≤768px；平板 ≥768px 用桌面活动栏） ================= */
 .mobile-nav-backdrop { position: fixed; inset: 0; z-index: var(--z-nav); background: var(--backdrop); }
 .mobile-nav {
   position: fixed;
@@ -582,8 +582,8 @@
 .confirm-dialog p { margin: 6px 0; font-size: 13px; }
 .confirm-warning { color: var(--danger); font-size: 13px; }
 
-/* ================= 移动端（≤1024px） ================= */
-@media (max-width: 1024px) {
+/* ================= 移动端（≤768px，手机；平板 ≥768px 直接用桌面布局） ================= */
+@media (max-width: 768px) {
   .console-shell.wb-shell {
     display: flex;
     flex-direction: column;
@@ -627,8 +627,8 @@
   .wb-main { flex: 1 1 0; min-height: 0; }
   .wb-status { flex: 0 0 auto; }
   .workbench { height: 100%; min-height: 0; display: flex; flex-direction: column; }
-  .job-header { padding: 6px 14px 4px; row-gap: 0; }
-  .job-header h1 { font-size: 15px; }
+  .job-header { padding: 4px 12px; row-gap: 0; }
+  .job-header h1 { font-size: 14px; }
   /* 行1 不折行：信息项整体不收缩不换行，标题让位截断并紧挨触发图标；信息项间隔收紧 */
   .job-header-info { gap: 0; flex-wrap: nowrap; align-items: center; }
   /* 触发钮 44px 触达盒内图标居中：左右负边距把图标拉到内容左缘、标题紧贴图标 */
@@ -654,18 +654,19 @@
   .mode-switch { min-height: 24px; padding: 1px 5px 1px 6px; gap: 3px; font-size: 10px; }
   /* 只隐藏文字标签（沙盒/Shell 等），不能误伤 FitSelect 的 span 外壳 */
   .mode-switch > span:not(.fit-select) { display: none; }
+  /* 顶栏展开/收起钮触控放大（桌面 22px 偏小） */
+  .job-header-toggle { width: 32px; height: 32px; }
   /* 凹屏安全区：底部状态条避开 Home 指示条 */
   .status-bar { padding-bottom: calc(3px + env(safe-area-inset-bottom)); }
   .toast { right: 12px; bottom: 12px; left: 12px; max-width: none; }
-}
-
-/* ================= ≤768px 密度优化 ================= */
-@media (max-width: 768px) {
-  /* 会话信息条：纯文本折行显示，单位缩写 tok，不截断不横滚 */
-  .job-header { padding: 4px 12px; row-gap: 0; }
-  .job-header h1 { font-size: 14px; }
+  /* 密度优化：会话信息条纯文本折行显示，单位缩写 tok，不截断不横滚 */
   .unit-full { display: none; }
   .unit-narrow { display: inline; }
+  /* 对话框移动端：iOS 输入聚焦防自动放大（<16px 会触发）、按钮行允许换行 */
+  .session-dialog .input, .session-dialog select { font-size: 16px; }
+  .dialog-actions { flex-wrap: wrap; }
+  .bindlink-row { flex-wrap: wrap; }
+  .bindlink-row input:not([type="checkbox"]) { flex: 1 1 130px; }
 }
 
 @media (max-width: 480px) {

@@ -126,7 +126,7 @@ export function MobileNavTrigger({ onOpen }: { onOpen(): void }): ReactElement {
 }
 
 /**
- * 移动端导航菜单（≤1024px）：左上角触发、左侧滑出的竖向列表。
+ * 移动端导航菜单（手机 ≤768px）：左上角触发、左侧滑出的竖向列表。
  * 替代窄屏上的桌面活动栏；Esc/遮罩关闭，Tab 焦点在菜单内循环。
  */
 export function MobileNavMenu({ open, onClose, activeView, problemsBadge = 0, notificationsBadge = 0, onShowView, onShowHelp, onShowNotifications, onOpenSettings, onShowChat }: RailActions & { open: boolean; onClose(): void }): ReactElement | null {

@@ -317,8 +317,8 @@
 .mention-popup .mention-kind { flex-shrink: 0; font-size: var(--text-2xs); font-family: var(--font-mono); color: var(--accent); border: 1px solid var(--border); border-radius: var(--radius-s); padding: 1px 5px; }
 .mention-popup .mention-loc { flex-shrink: 0; font-size: var(--text-xs); font-family: var(--font-mono); color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* ================= 移动端 ================= */
-@media (max-width: 1024px) {
+/* ================= 移动端（≤768px） ================= */
+@media (max-width: 768px) {
   /* Composer 控制条同排放下：菜单按钮降档、模型名收缩省略、spacer 吸剩余宽度（不强制折行） */
   .composer-toolbar { gap: 4px; }
   .composer-menu-btn { min-height: 30px; padding: 0 8px; gap: 4px; font-size: var(--text-s); }

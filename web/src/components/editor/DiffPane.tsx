@@ -6,7 +6,7 @@
  *   （server 端 write_file 同一权限链与 plan 只读门禁）；接受 = 保留改动，仅标记。
  *   SCM 已暂存改动在索引中，内容写回无法触及，按只读处理并如实提示；
  *   agent write_file 没有改动前内容，只读展示写入结果；检查点后端只给摘要时按摘要模式展示。
- * - 窄屏（≤1024px）不降级：同一完整视图由 CSS 分流为覆盖主区的全屏临时视图。
+ * - 窄屏（手机 ≤768px）不降级：同一完整视图由 CSS 分流为覆盖主区的全屏临时视图。
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { useQuery } from "@tanstack/react-query";

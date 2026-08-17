@@ -13,7 +13,7 @@ export function EmptyState({ sessions, providers, onSelect, onCreate, onOpenSett
   onOpenSettings?(tab: "models"): void;
   /** 示例任务 chip 点击：把文案交给调用方（复制到剪贴板），由用户粘贴进新会话输入框 */
   onExample?(text: string): void;
-  /** 移动端导航菜单触发（≤1024px 渲染在卡片左上角；桌面端不渲染入口） */
+  /** 移动端导航菜单触发（手机 ≤768px 渲染在卡片左上角；桌面端不渲染入口） */
   onOpenNavMenu?(): void;
 }): ReactElement {
   const { t } = useI18n();
