@@ -8,6 +8,11 @@ import type { ChatMessage } from "./types.js";
  */
 export function activePathMessages(messages: ChatMessage[], leafId: string | undefined): ChatMessage[] {
   if (!leafId) return messages;
+  // 线性快路径：现实会话绝大多数是无分叉线性链，messages 本身就是根→leaf 的
+  // 活动路径。验证通过则免建全量 id→message 的 Map（agent 主循环每轮调用两次，
+  // 长会话每轮都要建两个全量 Map）。slice 保持原契约：成功路径返回新数组
+  //（全部调用方只读，且旧实现在此路径本就返回新建的 path 数组）。
+  if (isLinearChain(messages, leafId)) return messages.slice();
   const byId = new Map<string, ChatMessage>();
   for (const message of messages) byId.set(message.id, message);
   const leaf = byId.get(leafId);
@@ -21,4 +26,19 @@ export function activePathMessages(messages: ChatMessage[], leafId: string | und
     cursor = cursor.parentId ? byId.get(cursor.parentId) : undefined;
   }
   return path.reverse();
+}
+
+/**
+ * 验证 messages 恰好是根→leaf 的线性活动路径：末条即 leaf，且其余各条的
+ * parentId 依次指向前一条的 id。首条的 parentId 不影响结果（链已覆盖全部
+ * 消息时，Map 路径在首条之后同样查不到父节点而停止）。任一条件不满足立即
+ * 回退 Map 路径（分叉、checkout 到中间节点、乱序、悬挂 parentId 等）。
+ */
+function isLinearChain(messages: ChatMessage[], leafId: string): boolean {
+  const last = messages.at(-1);
+  if (!last || last.id !== leafId) return false;
+  for (let index = 1; index < messages.length; index += 1) {
+    if (messages[index]!.parentId !== messages[index - 1]!.id) return false;
+  }
+  return true;
 }
