@@ -313,7 +313,7 @@
 .panel-status > span { display: inline-flex; align-items: center; gap: 5px; min-width: 0; white-space: nowrap; }
 .panel-loading { padding: 18px; text-align: center; color: var(--text-3); font-size: 13px; }
 
-@media (max-width: 1024px) {
+@media (max-width: 768px) {
   .eval-panel { grid-template-columns: 1fr; }
   .eval-panel > .panel-head { grid-column: 1; }
   .bottom-panel { flex: 0 0 auto; }

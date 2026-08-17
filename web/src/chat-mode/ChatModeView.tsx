@@ -6,6 +6,7 @@ import { Icon, type IconName } from "../components/Icon";
 import { Overlay } from "../components/Overlay";
 import { ui } from "../app/ui-store";
 import { router } from "../app/router";
+import { MOBILE_BREAKPOINT, useMediaQuery } from "../hooks/use-media-query";
 import { ChatSessionList } from "./ChatSessionList";
 import { ChatMessageList } from "./ChatMessageList";
 import { ChatComposer, type ChatComposerApi } from "./ChatComposer";
@@ -15,10 +16,16 @@ import type { ChatModelEntry, ChatSessionMeta } from "./types";
 
 export function ChatModeView(): ReactElement {
   const { t } = useI18n();
+  // 手机（≤768px）侧栏是覆盖式抽屉：初始收起、选中会话后自动收起；平板/桌面为常驻双栏
+  const isNarrow = useMediaQuery(MOBILE_BREAKPOINT);
   const [sessions, setSessions] = useState<ChatSessionMeta[]>([]);
   const [models, setModels] = useState<ChatModelEntry[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string>();
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() =>
+    typeof window !== "undefined" && typeof window.matchMedia === "function"
+      ? window.matchMedia(MOBILE_BREAKPOINT).matches
+      : false,
+  );
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   /** 发送成功后递增，驱动 ChatMessageList 重拉历史（自己的消息立即可见）。 */
@@ -27,9 +34,54 @@ export function ChatModeView(): ReactElement {
   const [fresh, setFresh] = useState(false);
   /** ChatComposer 建议行注入接口。 */
   const composerApi = useRef<ChatComposerApi | undefined>(undefined);
+  /** 手机抽屉元素（焦点管理用）。 */
+  const sidebarRef = useRef<HTMLDivElement>(null);
   // 空态建议按 SUGGESTION_PAGE 步长轮转（换一批）
   const [suggestionOffset, setSuggestionOffset] = useState(0);
   const visibleSuggestions = SUGGESTIONS.slice(suggestionOffset, suggestionOffset + SUGGESTION_PAGE);
+
+  // 进入窄视口自动收起侧栏（桌面缩窗到手机宽度时抽屉不抢占主区）
+  useEffect(() => {
+    if (isNarrow) setSidebarCollapsed(true);
+  }, [isNarrow]);
+  // 手机抽屉：打开时焦点进抽屉、Esc 关闭、Tab 焦点在抽屉内循环、关闭后焦点归还。
+  // 与 Rail.tsx MobileNavMenu 同款交互，统一移动端抽屉的 a11y 行为。
+  useEffect(() => {
+    if (!isNarrow || sidebarCollapsed) return undefined;
+    const drawer = sidebarRef.current;
+    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    drawer?.focus();
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        setSidebarCollapsed(true);
+        return;
+      }
+      if (event.key === "Tab" && drawer) {
+        const focusables = drawer.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), a[href], input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        );
+        if (focusables.length === 0) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        const active = document.activeElement;
+        if (event.shiftKey) {
+          if (active === first || !drawer.contains(active)) {
+            event.preventDefault();
+            last.focus();
+          }
+        } else if (active === last || !drawer.contains(active)) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => {
+      document.removeEventListener("keydown", onKey, true);
+      previouslyFocused?.focus();
+    };
+  }, [isNarrow, sidebarCollapsed]);
 
   // 无可用 provider（未配置任何模型）时禁用新建会话
   const canCreate = models.some((entry) => entry.models.length > 0);
@@ -107,6 +159,8 @@ export function ChatModeView(): ReactElement {
   function handleSelect(id: string): void {
     setFresh(false);
     setActiveSessionId(id);
+    // 手机抽屉：选中会话后自动收起（桌面双栏行为不变）
+    if (isNarrow) setSidebarCollapsed(true);
   }
 
   /** 首页空态发送成功后切回常规布局并刷新。 */
@@ -124,7 +178,7 @@ export function ChatModeView(): ReactElement {
 
   return (
     <div className={`chat-mode-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
-      <div className="chat-sidebar">
+      <div className="chat-sidebar" ref={sidebarRef} tabIndex={-1} aria-label={t("对话列表", "Chat list")}>
         <div className="chat-sidebar-header">
           <button
             className="chat-sidebar-row"
@@ -161,6 +215,10 @@ export function ChatModeView(): ReactElement {
           </button>
         </div>
       </div>
+      {/* 手机抽屉遮罩：点击关闭（z-index 低于抽屉一档，仅 ≤768px 由 CSS 显示） */}
+      {isNarrow && !sidebarCollapsed && (
+        <div className="chat-sidebar-backdrop" aria-hidden onClick={() => setSidebarCollapsed(true)} />
+      )}
       <div className="chat-main">
         <div className="chat-main-header">
           {sidebarCollapsed && (

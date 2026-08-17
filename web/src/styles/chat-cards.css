@@ -349,20 +349,27 @@
   background: var(--panel);
   font-size: 13px;
 }
-.permission-actions { display: flex; gap: 8px; }
+.permission-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 
 .interaction-card { margin: 8px 22px; padding: 12px; border: 1px solid var(--accent); border-radius: var(--radius); background: var(--panel); max-width: min(100%, var(--content-max)); }
 .interaction-card p { margin: 6px 0; color: var(--text-2); }
 .interaction-card label { display: block; margin: 6px 0; }
-/* 「其他」行：选项 + 紧跟的输入框同行布局 */
-.interaction-card .interaction-other { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+/* 「其他」行：选项 + 紧跟的输入框同行布局（窄屏允许换行，输入框保底宽度） */
+.interaction-card .interaction-other { display: flex; align-items: center; gap: 8px; margin: 6px 0; flex-wrap: wrap; }
 .interaction-card .interaction-other label { margin: 0; white-space: nowrap; }
-.interaction-card .interaction-other-input { flex: 1; min-width: 0; padding: 5px 8px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); color: var(--text); }
+.interaction-card .interaction-other-input { flex: 1 1 140px; min-width: 0; padding: 5px 8px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); color: var(--text); }
 .interaction-card textarea { width: 100%; min-height: 72px; margin: 6px 0; }
 /* 仅按钮行 flex：不能用 .interaction-card > div，PlanApprovalCard 里 Markdown 渲染的
    div.markdown 也是直接子元素，误中会把每个 Markdown 块挤成竖排窄列 */
-.interaction-card > .interaction-actions { display: flex; gap: 8px; }
+.interaction-card > .interaction-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .plan-approval-card .markdown { max-height: 320px; overflow-y: auto; margin: 6px 0; }
+/* 窄屏：交互卡收边；触屏：卡内按钮保证 36px 触控高度 */
+@media (max-width: 480px) {
+  .interaction-card { margin: 8px 12px; }
+}
+@media (hover: none) {
+  .permission-actions .btn, .interaction-actions .btn { min-height: 36px; }
+}
 
 /* ================= 实时活动条（文档流内占位，不覆盖消息） ================= */
 .live-activity {

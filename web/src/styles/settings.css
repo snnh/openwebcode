@@ -298,7 +298,7 @@
 .model-capability-summary { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); }
 .model-capability-summary-label { font-weight: 500; }
 .session-dialog .model-capability-summary { margin-top: -7px; }
-@media (max-width: 1024px) {
+@media (max-width: 768px) {
 .settings-dialog-header { padding: 0 12px; }
 .settings-dialog-title p { display: none; }
 .settings-title-icon { width: 32px; height: 32px; }
@@ -318,13 +318,13 @@
 .settings-panel .catalog-table-wrap { overflow-x: auto; }
 .settings-panel .catalog-table-wrap .pricing-table { min-width: 620px; }
 .settings-panel input, .settings-panel select, .settings-panel textarea { max-width: 100%; }
+/* iOS 聚焦防自动放大（<16px 会触发） */
+.settings-panel input, .settings-panel select, .settings-panel textarea { font-size: 16px; }
 .settings-inline-form { flex-wrap: wrap; }
 .settings-actions { padding: 10px 14px calc(10px + env(safe-area-inset-bottom)); }
 .settings-grid { grid-template-columns: 1fr; }
 .totp-qr { align-self: center; }
 .totp-qr svg { width: min(180px, calc(100vw - 96px)); height: auto; }
-}
-@media (max-width: 768px) {
 .totp-recovery-list { grid-template-columns: 1fr; }
 }
 .notifications-actions { display: flex; justify-content: flex-end; margin-bottom: 6px; }
