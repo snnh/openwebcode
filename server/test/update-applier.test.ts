@@ -140,8 +140,11 @@ async function makeApplier(overrides: {
     fetchImpl: overrides.fetchImpl,
     spawnImpl: overrides.spawnImpl,
     exitImpl: overrides.exitImpl,
-    ...(overrides.getuidImpl ? { getuidImpl: overrides.getuidImpl } : {}),
-    ...(overrides.systemUnitPath ? { systemUnitPath: overrides.systemUnitPath } : {}),
+    // 与宿主 uid/systemd 状态解耦：缺省非 root + 指向确定不存在的 unit 路径，
+    // 避免在装了 openwebcode system unit 的 root 机器/CI 上把「无 unit → done」误判成 restarting；
+    // 系统级 unit 用例显式覆盖（真实临时 unit 文件 + getuid 0）
+    getuidImpl: overrides.getuidImpl ?? (() => 1000),
+    systemUnitPath: overrides.systemUnitPath ?? path.join(dataDir, "definitely-not-exists.service"),
   });
   return { applier, dataDir, installRoot };
 }
