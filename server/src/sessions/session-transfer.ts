@@ -102,6 +102,9 @@ export function parseSessionImport(text: string): ParsedSessionImport {
       ...(session.snapshotMode === "auto" || session.snapshotMode === "manual" ? { snapshotMode: session.snapshotMode } : {}),
       ...(session.shellBackend !== undefined ? { shellBackend: session.shellBackend } : {}),
       ...(typeof session.activeLeafId === "string" ? { activeLeafId: session.activeLeafId } : {}),
+      // kind=local（本机会话）保留，由 importJsonl 重建 local 基线（cwd=HOME、off 沙盒、放宽 fs 根）；
+      // 剥离则导入后退化为常规会话，路径门与强制执行语义丢失
+      ...(session.kind === "local" ? { kind: "local" as const } : {}),
       ...(id ? { id } : {}),
     },
     messages,

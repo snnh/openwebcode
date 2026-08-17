@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import type { EventBus } from "../events/event-bus.js";
 import type { PermissionMode, PermissionRule } from "../sessions/types.js";
 import { isReadOnlyCommand } from "./readonly-command.js";
@@ -100,10 +101,18 @@ export class PermissionCoordinator {
 
 export function permissionRule(tool: string, input: Record<string, unknown>): PermissionRule {
   if (tool === "bash" && typeof input.cmd === "string") return { tool, argumentPrefix: input.cmd };
-  // 文件类工具（含只读三件套）：规则按归一化路径/目录前缀落——本机会话的 HOME 外路径门
-  // 依赖 read_file/glob/grep 也生成路径规则（旧行为整工具放行过宽）；glob/grep 缺省
-  // path 时回落会话根，不落规则。
-  if (["read_file", "write_file", "edit_file", "glob", "grep"].includes(tool) && typeof input.path === "string" && input.path) return { tool, argumentPrefix: input.path };
+  // 文件类工具（含只读三件套）：规则按归一化路径的目录前缀落——本机会话的 HOME 外路径门
+  // 依赖 read_file/glob/grep 也生成路径规则（旧行为整工具放行过宽）。落 dirname 而非完整
+  // 路径：「总是允许 /etc/hosts」应放行同目录的 /etc/hostname（matchesRule 按目录前缀匹配），
+  // 而非仅单文件。glob/grep 的 path 本身是目录，dirname 会缩到父目录——这类按原值保留。
+  // 缺省/空 path（会话根）不落规则，回落整工具。
+  if (["read_file", "write_file", "edit_file"].includes(tool) && typeof input.path === "string" && input.path) {
+    const dir = path.posix.dirname(input.path);
+    return { tool, argumentPrefix: dir === "." || dir === "/" ? input.path : dir };
+  }
+  if (["glob", "grep"].includes(tool) && typeof input.path === "string" && input.path) {
+    return { tool, argumentPrefix: input.path };
+  }
   if (tool === "web_fetch" && typeof input.url === "string") {
     try {
       const url = new URL(input.url);

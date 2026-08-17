@@ -194,13 +194,17 @@ function waitForPermissionRequest(captured: AppEvent[]): Promise<string> {
   });
 }
 
-/** 仿 core path.normalize 的确定性 canonicalize（与 path-normalize.test.ts 同规则）。 */
+/** 仿 core path.normalize 的确定性 canonicalize（保留绝对路径根：相对输入拼接的 cwd 也以 / 开头）。 */
 function canonicalize(cwd: string, p: string): string {
   const isAbs = /^([A-Za-z]:[\\/]|[\\/])/.test(p);
   if (!isAbs && /(^|[\\/])\.\.([\\/]|$)/.test(p)) throw new Error("path cannot be normalized");
   const joined = isAbs ? p : `${cwd}/${p}`;
   const parts = joined.split(/[\\/]+/).filter((segment) => segment !== "" && segment !== ".");
-  return parts.join("/");
+  // 保留路径根：POSIX 绝对路径（/x 或拼入的绝对 cwd）补前导 /，Windows 盘符（C:）自带根不补
+  const hasPosixRoot = /^([\\/])/.test(joined);
+  const windowsDrive = /^[A-Za-z]:$/.test(parts[0] ?? "");
+  const root = hasPosixRoot && !windowsDrive ? "/" : "";
+  return root + parts.join("/");
 }
 
 function createCore(cwd: string, readCalls: string[]): CoreClientLike {
@@ -291,7 +295,9 @@ describe("local session path gate (authorizeTool)", () => {
     await runner.run(session.id, "go");
     expect(captured.filter((event) => event.type === "permission.request")).toHaveLength(0);
     expect(readCalls).toEqual([`${home}/notes.txt`]);
-    expect((await sessions.get(session.id))?.permissionRules).toBeUndefined();
+    // HOME 内路径不落任何 allow 规则（无新增；初始为空数组或 undefined）
+    const rules = (await sessions.get(session.id))?.permissionRules;
+    expect(rules === undefined || rules.length === 0).toBe(true);
   }, 15_000);
 
   it("denies outside-HOME reads when the user denies", async () => {

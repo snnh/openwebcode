@@ -24,13 +24,16 @@ function waitForPermissionRequest(captured: AppEvent[]): Promise<string> {
 }
 
 /** 仿 core path.normalize 的确定性 canonicalize：相对拼 cwd、去 ./ 与重复分隔符、
- * 绝对路径原样保留盘符；相对路径含 .. 时抛错（core 返回 -32602，调用方回退）。 */
+ * 绝对路径原样保留盘符；相对路径含 .. 时抛错（core 返回 -32602，调用方回退）。
+ * 保留绝对路径根（POSIX 补前导 /，Windows 盘符自带根不补）。 */
 function canonicalize(cwd: string, p: string): string {
   const isAbs = /^([A-Za-z]:[\\/]|[\\/])/.test(p);
   if (!isAbs && /(^|[\\/])\.\.([\\/]|$)/.test(p)) throw new Error("path cannot be normalized");
   const joined = isAbs ? p : `${cwd}/${p}`;
   const parts = joined.split(/[\\/]+/).filter((segment) => segment !== "" && segment !== ".");
-  return parts.join("/");
+  const hasPosixRoot = /^([\\/])/.test(joined);
+  const windowsDrive = /^[A-Za-z]:$/.test(parts[0] ?? "");
+  return (hasPosixRoot && !windowsDrive ? "/" : "") + parts.join("/");
 }
 
 function createCore(cwd: string, options: { normalizeThrows?: boolean } = {}): CoreClientLike {
@@ -111,11 +114,11 @@ describe("path.normalize — 权限规则键 canonical 化", () => {
     // 只挂起一次：第二个调用命中同一 canonical 规则
     const requests = captured.filter((event) => event.type === "permission.request");
     expect(requests.length).toBe(1);
-    // 确认卡片与规则键都是 canonical path（core 归一化结果）
+    // 确认卡片与规则键都是 canonical path（core 归一化结果）；write_file 规则落 dirname 目录前缀
     const canonical = canonicalize(root, "out.txt");
     expect((requests[0]!.payload as { input: { path: string } }).input.path).toBe(canonical);
     const detail = await sessions.get(session.id);
-    expect(detail?.permissionRules).toEqual([{ tool: "write_file", argumentPrefix: canonical }]);
+    expect(detail?.permissionRules).toEqual([{ tool: "write_file", argumentPrefix: path.posix.dirname(canonical) }]);
     // 两个 tool_result 均成功
     const toolResults = detail?.messages.filter((m) => m.role === "tool").flatMap((m) => m.content) ?? [];
     expect(toolResults.filter((c) => c.type === "tool_result" && c.isError).length).toBe(0);
@@ -135,6 +138,7 @@ describe("path.normalize — 权限规则键 canonical 化", () => {
     await runPromise;
 
     const detail = await sessions.get(session.id);
+    // 回退原始相对路径 "out.txt"：dirname 为 "." 时按原值保留（不放大为整目录）
     expect(detail?.permissionRules).toEqual([{ tool: "write_file", argumentPrefix: "out.txt" }]);
   }, 15_000);
 });

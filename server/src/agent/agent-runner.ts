@@ -2340,7 +2340,12 @@ export class AgentRunner {
           rawPath = normalized.path;
         }
       } catch { /* 回退原始路径 */ }
-      const abs = path.resolve(session.cwd, rawPath);
+      // normalizePath 已产出含 cwd 的绝对路径：仅对仍为相对路径的原始输入 resolve，
+      // 避免对绝对路径二次拼 cwd（/x 被拼成 ${cwd}/x）
+      const abs = path.isAbsolute(rawPath) ? rawPath : path.resolve(session.cwd, rawPath);
+      // 归一化绝对路径就地写回 input：调用点的 effectiveInput 与本对象同引用，executeTool 直接消费，
+      // 不写回则 HOME 内的相对路径（如 notes.txt）会以相对形态到达 core，与归一化语义不一致
+      input.path = abs;
       const home = os.homedir();
       const insideHome = abs === home || abs.startsWith(`${home}${path.sep}`);
       if (!insideHome && !rules.some((rule) => matchesRule(rule, tool, { path: abs }))) {
@@ -2349,7 +2354,7 @@ export class AgentRunner {
         await this.runNotificationHook("Notification", { sessionId, cwd: session.cwd, tool, input: { ...input, path: abs }, notification: { kind: "permission", summary: summarizeToolInput(tool, { ...input, path: abs }) } });
         const result = await this.permissions.request(sessionId, tool, { ...input, path: abs }, signal);
         this.state(sessionId, "tool_running");
-        if (!result.allowed) return { allowed: false, reason: result.reason ?? `访问 HOME 外路径未获允许：${abs}` };
+        if (!result.allowed) return { allowed: false, reason: `访问 HOME 外路径未获允许：${abs}${result.reason ? `（${result.reason}）` : ""}` };
         return { allowed: true };
       }
     }
