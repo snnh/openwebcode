@@ -133,6 +133,8 @@ describe("窄窗口布局 CSS 回归", () => {
     expect(narrowCss).toMatch(/\.bindlink-row\s*\{[^}]*flex-wrap:\s*wrap;/s);
     // 通用浮层（命令面板/QuickOpen/CodeOverlay/chat 弹层）底部避开 Home 指示条
     expect(narrowCss).toMatch(/\.wb-overlay\s*\{[^}]*padding-bottom:\s*env\(safe-area-inset-bottom\);/s);
+    // 备选模型行 select 按最长 option 定宽：容器允许收缩，防超长模型名在窄屏撑出横滚
+    expect(css).toMatch(/\.bindlink-row select\s*\{[^}]*min-width:\s*0;/s);
   });
 
   it("chat 模式手机端：侧栏变覆盖式抽屉 + 输入 16px + 100dvh", () => {
