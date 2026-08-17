@@ -37,6 +37,11 @@ export function isSymbolKind(kind: string): kind is SymbolKind {
   return SYMBOL_KINDS.has(kind);
 }
 
+/** kind 驻留表：内存记录复用共享常量实例，避免每个符号各占一份独立字符串。 */
+const SYMBOL_KIND_INTERN: ReadonlyMap<string, SymbolKind> = new Map(
+  [...SYMBOL_KINDS].map((kind) => [kind, kind as SymbolKind]),
+);
+
 export interface SymbolRecord {
   name: string;
   kind: SymbolKind;
@@ -68,9 +73,9 @@ export function toIndexedFileEntry(entry: IndexScanEntry): IndexedFileEntry {
   return { ...entry, pathLower, baseLower: basenameLowerOf(pathLower) };
 }
 
-/** 符号记录 → 内存记录（补小写名）。 */
+/** 符号记录 → 内存记录（补小写名；kind 归一到共享常量，10 万+ 符号下省去逐条驻留）。 */
 export function toIndexedSymbolRecord(record: SymbolRecord): IndexedSymbolRecord {
-  return { ...record, nameLower: record.name.toLowerCase() };
+  return { ...record, kind: SYMBOL_KIND_INTERN.get(record.kind) ?? record.kind, nameLower: record.name.toLowerCase() };
 }
 
 /** 小写基名：入参已是小写路径，分隔符兼容 / 与 \（与 index-manager 原 basenameOf 同族）。 */
@@ -144,6 +149,8 @@ export interface LoadedIndex {
   /** files.jsonl / symbols.jsonl 当前行数（压实判定用）。 */
   fileLines: number;
   symbolLines: number;
+  /** symbols 全表符号总数：load 时算一次，applyManifest 增量维护，statusOf 免全表扫描。 */
+  symbolCount: number;
 }
 
 export class IndexStore {
@@ -225,13 +232,22 @@ export class IndexStore {
         });
       }
     });
+    let symbolCount = 0;
     const symbolLines = await this.replay(this.symbolsPath, (line) => {
       const record = JSON.parse(line) as SymbolsLine & { type?: string };
       if (record.type === "batch") return;
-      if ("deleted" in record && record.deleted) symbols.delete(record.path);
-      else if ("symbols" in record && Array.isArray(record.symbols)) symbols.set(record.path, record.symbols.map(toIndexedSymbolRecord));
+      if ("deleted" in record && record.deleted) {
+        symbolCount -= symbols.get(record.path)?.length ?? 0;
+        symbols.delete(record.path);
+      } else if ("symbols" in record && Array.isArray(record.symbols)) {
+        const list = record.symbols.map(toIndexedSymbolRecord);
+        // files replay 在前：键复用 files Map 的同路径字符串引用，JSON.parse 的新副本不常驻
+        const key = files.get(record.path)?.path ?? record.path;
+        symbolCount += list.length - (symbols.get(key)?.length ?? 0);
+        symbols.set(key, list);
+      }
     });
-    return { files, symbols, meta, fileLines, symbolLines };
+    return { files, symbols, meta, fileLines, symbolLines, symbolCount };
   }
 
   /**
