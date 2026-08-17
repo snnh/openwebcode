@@ -210,3 +210,9 @@
   user-select: none;
 }
 .confirm-ack input { accent-color: var(--accent); }
+
+/* 移动端（≤768px）：搜索输入防 iOS 聚焦自动放大；快捷键表横滚代替换行 */
+@media (max-width: 768px) {
+  .wb-overlay-input { font-size: 16px; }
+  .shortcuts-table { display: block; overflow-x: auto; white-space: nowrap; }
+}

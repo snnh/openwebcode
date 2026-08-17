@@ -54,15 +54,12 @@
 /* 空态 */
 .track-empty { text-align: center; margin-top: 40px; }
 
-@media (max-width: 1024px) {
+/* 移动端（≤768px）：回到底部浮钮图标化 + 消息区收边（平板用桌面布局） */
+@media (max-width: 768px) {
   .scroll-bottom { right: 16px; bottom: 14px; padding: 9px; }
   .scroll-bottom-label { display: none; }
-  .chat-track { padding: 20px 16px 32px; }
-}
-@media (max-width: 768px) {
-  .conversation-search-input { width: min(180px, 36vw); }
-  /* 消息区收边 */
   .chat-track { padding: 14px 12px 24px; }
+  .conversation-search-input { width: min(180px, 36vw); }
 }
 
 /* 上下文压缩检查点行（/compact 与 85% 强制压缩的消息流投影；与 context-cleared-divider 同族） */
