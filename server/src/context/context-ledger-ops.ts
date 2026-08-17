@@ -370,21 +370,43 @@ export function normalizeLedger(value: Partial<ContextLedger>): ContextLedger {
 }
 
 export function selectCacheBreakpoints(messages: ChatMessage[], ledger: ContextLedger): string[] {
+  // 单次尾部倒扫替代多处 O(n) 分配（Set/展开/取反/过滤），只取需要的尾部信息：
+  // 最新 evicted 条目、视图内最新驱逐摘要、倒数第二条非摘要 user 消息，语义与原实现一致。
   const selected: string[] = [];
-  const ids = new Set(messages.map((message) => message.id));
-  const lastEvicted = [...ledger.entries].reverse().find((entry) => entry.state === "evicted");
-  if (lastEvicted) {
-    if (ids.has(lastEvicted.messageId)) {
-      selected.push(lastEvicted.messageId);
-    } else {
-      // 超级节省：被逐 tool 消息已出视图，锚到最新的驱逐摘要消息（同样位于稳定前缀边界）
-      const summary = [...messages].reverse().find((message) => message.id.startsWith(EVICTED_SUMMARY_PREFIX));
-      if (summary) selected.push(summary.id);
+  // 最新 evicted 条目：entries 追加序即驱逐时间序，尾部倒扫首个命中即最新
+  let lastEvictedId: string | undefined;
+  for (let index = ledger.entries.length - 1; index >= 0; index -= 1) {
+    const entry = ledger.entries[index]!;
+    if (entry.state === "evicted") {
+      lastEvictedId = entry.messageId;
+      break;
     }
   }
-  // 驱逐摘要消息是合成 user 消息，不参与"倒数第二条用户消息"断点
-  const users = messages.filter((message) => message.role === "user" && !message.id.startsWith(EVICTED_SUMMARY_PREFIX));
-  if (users.length >= 2) selected.push(users[users.length - 2]!.id);
+  if (lastEvictedId !== undefined) {
+    if (messages.some((message) => message.id === lastEvictedId)) {
+      selected.push(lastEvictedId);
+    } else {
+      // 超级节省：被逐 tool 消息已出视图，锚到最新的驱逐摘要消息（同样位于稳定前缀边界）
+      for (let index = messages.length - 1; index >= 0; index -= 1) {
+        const message = messages[index]!;
+        if (message.id.startsWith(EVICTED_SUMMARY_PREFIX)) {
+          selected.push(message.id);
+          break;
+        }
+      }
+    }
+  }
+  // 驱逐摘要消息是合成 user 消息，不参与"倒数第二条用户消息"断点：倒扫数到第 2 个即得
+  let seen = 0;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]!;
+    if (message.role !== "user" || message.id.startsWith(EVICTED_SUMMARY_PREFIX)) continue;
+    seen += 1;
+    if (seen === 2) {
+      selected.push(message.id);
+      break;
+    }
+  }
   return [...new Set(selected)].slice(-3);
 }
 
