@@ -94,4 +94,90 @@ describe("FastModelClient", () => {
     await expect(client.complete({ system: "system", prompt: "prompt", maxTokens: 256 })).rejects.toThrow("快速模型请求失败");
     expect(attempts).toBe(1);
   });
+
+  it("空 text + max_tokens：翻倍预算重试一次，第二次成功且 usage 合并", async () => {
+    const requests: StreamChatRequest[] = [];
+    const providers = new ProviderRegistry();
+    providers.register({
+      name: "shared-provider",
+      async *streamChat(request) {
+        requests.push(request);
+        if (requests.length === 1) {
+          yield { type: "thinking_delta", text: "推理占满预算" };
+          yield { type: "usage", inputTokens: 100, outputTokens: 50, cacheRead: 0, cacheWrite: 0 };
+          yield { type: "done", stopReason: "max_tokens" };
+        } else {
+          yield { type: "text_delta", text: "兜底成功" };
+          yield { type: "usage", inputTokens: 10, outputTokens: 8, cacheRead: 0, cacheWrite: 0 };
+          yield { type: "done", stopReason: "end_turn" };
+        }
+      },
+    });
+    const client = new FastModelClient(providers, { provider: "shared-provider", model: "fast-1" });
+    await expect(client.complete({ system: "system", prompt: "prompt", maxTokens: 256 }))
+      .resolves.toEqual({ text: "兜底成功", usage: { inputTokens: 110, outputTokens: 58 } });
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.maxTokens).toBe(256);
+    expect(requests[1]?.maxTokens).toBe(512);
+  });
+
+  it("重试仍空但有 thinking_delta：返回 thinking 文本", async () => {
+    const requests: StreamChatRequest[] = [];
+    const providers = new ProviderRegistry();
+    providers.register({
+      name: "shared-provider",
+      async *streamChat(request) {
+        requests.push(request);
+        yield { type: "thinking_delta", text: "思考结论" };
+        yield { type: "done", stopReason: "max_tokens" };
+      },
+    });
+    const client = new FastModelClient(providers, { provider: "shared-provider", model: "fast-1" });
+    await expect(client.complete({ system: "system", prompt: "prompt", maxTokens: 256 }))
+      .resolves.toMatchObject({ text: "思考结论" });
+    expect(requests).toHaveLength(2);
+    expect(requests[1]?.maxTokens).toBe(512);
+  });
+
+  it("空 text + end_turn 但有 thinking：不重试，直接返回 thinking", async () => {
+    let attempts = 0;
+    const providers = new ProviderRegistry();
+    providers.register({
+      name: "shared-provider",
+      async *streamChat() {
+        attempts += 1;
+        yield { type: "thinking_delta", text: "结论" };
+        yield { type: "done", stopReason: "end_turn" };
+      },
+    });
+    const client = new FastModelClient(providers, { provider: "shared-provider", model: "fast-1" });
+    await expect(client.complete({ system: "system", prompt: "prompt", maxTokens: 256 }))
+      .resolves.toMatchObject({ text: "结论" });
+    expect(attempts).toBe(1);
+  });
+
+  it("空 text 且无任何 thinking：仍抛「快速模型返回为空」", async () => {
+    const providers = new ProviderRegistry();
+    providers.register({
+      name: "shared-provider",
+      async *streamChat() {
+        yield { type: "done", stopReason: "end_turn" };
+      },
+    });
+    const client = new FastModelClient(providers, { provider: "shared-provider", model: "fast-1" });
+    await expect(client.complete({ system: "system", prompt: "prompt", maxTokens: 256 })).rejects.toThrow("快速模型返回为空");
+  });
+
+  it("refusal 仍抛模型停止原因（不做空结果兜底）", async () => {
+    const providers = new ProviderRegistry();
+    providers.register({
+      name: "shared-provider",
+      async *streamChat() {
+        yield { type: "thinking_delta", text: "被拒绝前的思考" };
+        yield { type: "done", stopReason: "refusal" };
+      },
+    });
+    const client = new FastModelClient(providers, { provider: "shared-provider", model: "fast-1" });
+    await expect(client.complete({ system: "system", prompt: "prompt", maxTokens: 256 })).rejects.toThrow("模型停止原因：refusal");
+  });
 });
