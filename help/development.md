@@ -165,7 +165,7 @@ core（ctest）：`test_protocol.py` / `test_fs.py` / `test_abs_path.py` / `test
 
 - 驱逐：服务端实现在 `extensions/context-saver/`（context-saver 官方扩展）——evict 决策（按账本 policy：lag/interval/off + evictionMode + 豁免下限算可驱逐集）、条目操作（逐出/恢复/pin）与策略校验都在这里，全部经 ContextManager 的 `transactLedger` 事务入口操作账本；扩展停用时 agent 循环不自动驱逐、相关 REST 端点返回 409。核心 `context/context-manager.ts` 保留账本存储、buildView 视图组装、预算上限与压缩；驱逐占位/摘录的渲染（buildFragment/applyProcessEviction）留在核心——buildView 需要渲染既有 evicted 条目。纯账本运算与常量（驱逐占位/摘要/glob 排除/usage 累加等）在 `context-ledger-ops.ts`。视图渲染在 `buildView` 返回前应用，不改缓存主本。
 - repo map：`context/repo-map.ts` 生成，agent-runner 装配注入。默认不注入——会话显式开启（`repoMapEnabled`，`PUT /api/sessions/:id/context/repo-map`，budget 64–100000、默认 2048）才把仓库结构段拼进 systemSuffix；env-sim 预设 `hideBuiltIns` 隐藏 `repo_map` 工具时内容段也不注入；token 归因到 system（系统提示词）桶。会话关闭时不注入也不扫描。
-- 压缩：`fast-model.ts` + `context/compactor.ts` 两种策略；`extensions/compact-vault.ts` 是 compact-vault 官方扩展的 server 侧服务（归档完整上下文 + 快速模型整理 + 目录索引，host 侧 `extensions/compact-vault-host.ts` 提供 recall_memory 工具与索引回注）。
+- 压缩：`fast-model.ts` + `context/compactor.ts` 两种策略；压缩输出经 `validateCompactionOutput` 格式校验防复述原文（不合格带原因纠偏重试一次），快速模型彻底失败时强制压缩降级 `ruleBasedToolcalls`（truncated）照常完成；压缩 maxTokens 走设置 `compactMaxTokens`（默认 65536，热生效，env `OWC_COMPACT_MAX_TOKENS`）；快速模型空返回兜底链（max_tokens 翻倍重试 → thinking 通道回退）集中在 `fast-model.ts`，所有调用方共享。`extensions/compact-vault.ts` 是 compact-vault 官方扩展的 server 侧服务（归档完整上下文 + 快速模型整理 + 目录索引，host 侧 `extensions/compact-vault-host.ts` 提供 recall_memory 工具与索引回注）。
 - 新增条目状态要动一串地方：`ContextLedger` 接口、`normalizeLedger` 兼容、`buildView` 渲染、`replaceLedger` 回滚。
 - 前端始终拿全量历史，驱逐只影响发给 LLM 的视图——改策略不会破坏 UI。
 
