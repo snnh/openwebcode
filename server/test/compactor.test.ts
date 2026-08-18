@@ -3,7 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
-import { Compactor, COMPACT_OVERVIEW_SYSTEM, COMPACT_TOOLCALLS_SYSTEM, extractInstructions } from "../src/context/compactor.js";
+import { Compactor, COMPACT_OVERVIEW_SYSTEM, COMPACT_TOOLCALLS_SYSTEM, extractInstructions, validateCompactionOutput } from "../src/context/compactor.js";
 import { ContextManager } from "../src/context/context-manager.js";
 import type { CoreClient } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
@@ -17,6 +17,36 @@ import { makeFakeFastModel } from "./helpers/fake-fast-model.js";
 import { tempRoot } from "./helpers/temp-roots.js";
 
 const EMPTY_FAST_MODEL = { configured: false, provider: undefined, model: undefined, setConfig() { /* noop */ } } as unknown as FastModelClient;
+
+/** 已配置但 complete 一律抛错的快速模型：模拟压缩时模型调用失败。 */
+function makeThrowingFastModel(): FastModelClient {
+  return {
+    configured: true,
+    provider: "fast-provider",
+    model: "fake-cheap-model",
+    setConfig() { /* noop */ },
+    async complete() {
+      throw new Error("fast model unavailable");
+    },
+  } as unknown as FastModelClient;
+}
+
+/** 已配置的序列快速模型：按数组顺序逐次返回 text，超出后用最后一项兜底（校验重试用例用）。 */
+function makeSequenceFastModel(outputs: string[], calls?: Array<{ system: string; prompt: string }>): FastModelClient {
+  let index = 0;
+  return {
+    configured: true,
+    provider: "fast-provider",
+    model: "fake-cheap-model",
+    setConfig() { /* noop */ },
+    async complete(input: { system: string; prompt: string }) {
+      calls?.push(input);
+      const text = outputs[Math.min(index, outputs.length - 1)]!;
+      index += 1;
+      return { text, usage: { inputTokens: 120, outputTokens: 30 } };
+    },
+  } as unknown as FastModelClient;
+}
 
 async function sessionWithMessages(store: SessionStore, count: number): Promise<string> {
   const session = await store.create({ cwd: os.tmpdir(), provider: "test-stub", title: "压缩样例" });
@@ -34,6 +64,30 @@ describe("extractInstructions", () => {
   });
 });
 
+describe("validateCompactionOutput", () => {
+  it("复述型输出（含转录角色标记）各模式判失败", () => {
+    expect(validateCompactionOutput("overview", "【user】\n消息 1\n【assistant】\n消息 2", 100)).toContain("复述");
+    expect(validateCompactionOutput("toolcalls", "【system】\n工具结果原文", 100)).toContain("复述");
+  });
+
+  it("合规 overview / toolcalls 输出通过；未按格式判失败", () => {
+    expect(validateCompactionOutput("overview", "目标：\n- 压缩\n行动：\n- 执行\n关键发现：\n- 摘要", 100)).toBeUndefined();
+    expect(validateCompactionOutput("toolcalls", "- [工具] bash → 完成\n- [用户] 要点", 100)).toBeUndefined();
+    // 小节不足 3 个
+    expect(validateCompactionOutput("overview", "目标：\n- 压缩\n行动：\n- 执行", 100)).toContain("格式");
+    // 占位行不足半数
+    expect(validateCompactionOutput("toolcalls", "- [工具] bash → 完成\n原文行 1\n原文行 2", 100)).toContain("格式");
+  });
+
+  it("长度兜底：转录 ≥ 4000 且摘要接近原文长度判未压缩；短转录不触发比率", () => {
+    const sections = "目标：\n- a\n行动：\n- b\n关键发现：\n- c\n";
+    // 转录 10_000 字符、摘要 8_500 字符（> 0.8 比率）→ 未压缩
+    expect(validateCompactionOutput("overview", sections + "x".repeat(8_500), 10_000)).toContain("未压缩");
+    // 相同摘要但转录短（< 4000）→ 比率不触发，格式合规即通过
+    expect(validateCompactionOutput("overview", sections + "x".repeat(500), 500)).toBeUndefined();
+  });
+});
+
 describe("Compactor", () => {
   it("does not summarize messages hidden by a newer clear boundary", async () => {
     const root = await tempRoot("owc-compact-");
@@ -42,7 +96,7 @@ describe("Compactor", () => {
     const id = await sessionWithMessages(store, 10);
     await new ContextManager(store.contextRoot(id)).markCleared(5);
     const calls: Array<{ system: string; prompt: string }> = [];
-    const compactor = new Compactor(store, makeFakeFastModel("目标：\n- 新上下文", calls), {}, 2);
+    const compactor = new Compactor(store, makeFakeFastModel("目标：\n- 新上下文\n行动：\n- 跳过清除边界前的消息\n关键发现：\n- 清除边界生效", calls), {}, 2);
     await compactor.compact(id, "overview");
     expect(calls[0]!.prompt).not.toContain("消息 1\n");
     expect(calls[0]!.prompt).toContain("消息 6");
@@ -55,7 +109,7 @@ describe("Compactor", () => {
     const id = await sessionWithMessages(store, 15);
     const calls: Array<{ system: string; prompt: string }> = [];
     const usageLog = new UsageLog(root);
-    const compactor = new Compactor(store, makeFakeFastModel("目标：\n- 测试\n用户明确指令：\n- 用中文\n", calls), { usageLog }, 10);
+    const compactor = new Compactor(store, makeFakeFastModel("目标：\n- 测试\n行动：\n- 压缩前缀\n修改文件：\n- 无\n用户明确指令：\n- 用中文\n", calls), { usageLog }, 10);
 
     const result = await compactor.compact(id, "overview");
     expect(result).toMatchObject({ changed: true, mode: "overview", uptoIndex: 5 });
@@ -98,7 +152,7 @@ describe("Compactor", () => {
     await store.appendMessage(session.id, "user", [{ type: "text", text: "分支 8" }]);
 
     const calls: Array<{ system: string; prompt: string }> = [];
-    const compactor = new Compactor(store, makeFakeFastModel("目标：\n- 分叉摘要", calls), {}, 2);
+    const compactor = new Compactor(store, makeFakeFastModel("目标：\n- 分叉摘要\n行动：\n- 按活动路径压缩\n关键发现：\n- 摘要只含活动路径", calls), {}, 2);
     const result = await compactor.compact(session.id, "overview");
 
     // 活动路径 5 条，keepTail=2 → 压缩前 3 条（若按 jsonl 全量 8 条算会错位到 uptoIndex=6）
@@ -164,13 +218,117 @@ describe("Compactor", () => {
     expect((await context.load()).entries[0]?.pinnedUntilRound).toBe(0);
   });
 
+  it("forced 压缩时快速模型抛错 → 规则降级兜底（mode=truncated），压缩照常完成并写账本", async () => {
+    const root = await tempRoot("owc-compact-degrade-");
+    const store = new SessionStore(path.join(root, "sessions"));
+    await store.initialize();
+    const id = await sessionWithMessages(store, 15);
+    const compactor = new Compactor(store, makeThrowingFastModel(), {}, 10);
+
+    const result = await compactor.compact(id, "overview", { forced: true });
+    expect(result).toMatchObject({ changed: true, mode: "truncated" });
+    expect(result.summary).toContain("[规则压缩]");
+    expect(result.uptoIndex).toBe(5);
+
+    // 规则摘要与降级 mode 写进账本（与返回结果同一条记录）
+    const ledger = await new ContextManager(store.contextRoot(id)).load();
+    expect(ledger.compacted).toMatchObject({ mode: "truncated", uptoIndex: 5, summary: result.summary });
+  });
+
+  it("非 forced 压缩时快速模型抛错 → 维持抛错（手动 /compact 让用户知情），账本无记录", async () => {
+    const root = await tempRoot("owc-compact-throw-");
+    const store = new SessionStore(path.join(root, "sessions"));
+    await store.initialize();
+    const id = await sessionWithMessages(store, 15);
+    const compactor = new Compactor(store, makeThrowingFastModel(), {}, 10);
+
+    await expect(compactor.compact(id, "overview")).rejects.toThrow("fast model unavailable");
+    await expect(compactor.compact(id, "toolcalls")).rejects.toThrow("fast model unavailable");
+    const ledger = await new ContextManager(store.contextRoot(id)).load();
+    expect(ledger.compacted).toBeUndefined();
+  });
+
+  it("首次输出复述原文 → 追加纠偏指令重试一次 → 合规摘要写账本", async () => {
+    const root = await tempRoot("owc-compact-retry-");
+    const store = new SessionStore(path.join(root, "sessions"));
+    await store.initialize();
+    const id = await sessionWithMessages(store, 15);
+    const calls: Array<{ system: string; prompt: string }> = [];
+    const verbatim = "【user】\n消息 1\n【assistant】\n消息 2";
+    const good = "目标：\n- 压缩\n行动：\n- 生成概览\n关键发现：\n- 完成";
+    const compactor = new Compactor(store, makeSequenceFastModel([verbatim, good], calls), {}, 10);
+
+    const result = await compactor.compact(id, "overview");
+    expect(result).toMatchObject({ changed: true, mode: "overview", uptoIndex: 5 });
+    // 调了两次 complete：首次复述被拦，第二次纠偏后合规
+    expect(calls).toHaveLength(2);
+    expect(calls[0]!.system).toBe(COMPACT_OVERVIEW_SYSTEM);
+    expect(calls[1]!.system).toContain("上次输出不合格");
+    expect(calls[1]!.system).toContain("复述");
+    // 账本记录合规摘要而非复述原文（uptoIndex 已前进，绝不允许原文落账）
+    const ledger = await new ContextManager(store.contextRoot(id)).load();
+    expect(ledger.compacted).toMatchObject({ mode: "overview", summary: good });
+  });
+
+  it("两次都复述 + forced → 规则降级 truncated（账本照常记录）", async () => {
+    const root = await tempRoot("owc-compact-retry-force-");
+    const store = new SessionStore(path.join(root, "sessions"));
+    await store.initialize();
+    const id = await sessionWithMessages(store, 15);
+    const calls: Array<{ system: string; prompt: string }> = [];
+    const verbatim = "【user】\n消息 1\n【assistant】\n消息 2";
+    const compactor = new Compactor(store, makeSequenceFastModel([verbatim, verbatim], calls), {}, 10);
+
+    const result = await compactor.compact(id, "overview", { forced: true });
+    expect(result).toMatchObject({ changed: true, mode: "truncated", uptoIndex: 5 });
+    expect(result.summary).toContain("[规则压缩]");
+    expect(calls).toHaveLength(2);
+    const ledger = await new ContextManager(store.contextRoot(id)).load();
+    expect(ledger.compacted).toMatchObject({ mode: "truncated", uptoIndex: 5 });
+  });
+
+  it("两次都复述 + 非 forced → 抛错（账本无记录）", async () => {
+    const root = await tempRoot("owc-compact-retry-throw-");
+    const store = new SessionStore(path.join(root, "sessions"));
+    await store.initialize();
+    const id = await sessionWithMessages(store, 15);
+    const calls: Array<{ system: string; prompt: string }> = [];
+    const verbatim = "【user】\n消息 1\n【assistant】\n消息 2";
+    const compactor = new Compactor(store, makeSequenceFastModel([verbatim, verbatim], calls), {}, 10);
+
+    await expect(compactor.compact(id, "overview")).rejects.toThrow(/未通过校验/);
+    expect(calls).toHaveLength(2);
+    const ledger = await new ContextManager(store.contextRoot(id)).load();
+    expect(ledger.compacted).toBeUndefined();
+  });
+
+  it("complete 收到注入 getter 的 maxTokens；改 getter 值后下次压缩用新值（热生效语义）", async () => {
+    const root = await tempRoot("owc-compact-maxtokens-");
+    const store = new SessionStore(path.join(root, "sessions"));
+    await store.initialize();
+    const id = await sessionWithMessages(store, 15);
+    const calls: Array<{ system: string; prompt: string; maxTokens?: number }> = [];
+    const compactor = new Compactor(store, makeFakeFastModel("目标：\n- 摘要\n行动：\n- 压缩前缀\n修改文件：\n- 无", calls), {}, 10);
+    let maxTokens = 32_000;
+    compactor.setCompactMaxTokens(() => maxTokens);
+
+    await compactor.compact(id, "overview");
+    expect(calls[0]?.maxTokens).toBe(32_000);
+
+    // 热生效：改 getter 返回值，下一次压缩立即用新上限（无需重启）
+    await store.appendMessage(id, "user", [{ type: "text", text: "再补一条" }]);
+    maxTokens = 128_000;
+    await compactor.compact(id, "overview");
+    expect(calls[1]?.maxTokens).toBe(128_000);
+  });
+
   it("promptOverrides 注入覆盖压缩系统提示词，缺省回退内置", async () => {
     const root = await tempRoot("owc-compact-");
     const store = new SessionStore(path.join(root, "sessions"));
     await store.initialize();
     const id = await sessionWithMessages(store, 15);
     const calls: Array<{ system: string; prompt: string }> = [];
-    const compactor = new Compactor(store, makeFakeFastModel("目标：\n- 测试\n", calls), {}, 10);
+    const compactor = new Compactor(store, makeFakeFastModel("目标：\n- 测试\n行动：\n- 压缩前缀\n修改文件：\n- 无\n", calls), {}, 10);
 
     // 默认：使用内置 overview 系统提示
     await compactor.compact(id, "overview");
@@ -195,7 +353,7 @@ describe("Compactor", () => {
       await store.appendMessage(session.id, index % 2 === 0 ? "user" : "assistant", [{ type: "text", text: `消息 ${index + 1}` }]);
     }
     const calls: Array<{ system: string; prompt: string }> = [];
-    const compactor = new Compactor(store, makeFakeFastModel("[压缩] bash", calls), {}, 10);
+    const compactor = new Compactor(store, makeFakeFastModel("- [工具] bash → 完成", calls), {}, 10);
 
     await compactor.compact(session.id, "toolcalls", { promptOverrides: { toolcalls: "自定义工具压缩指令" } });
     expect(calls[0]?.system).toBe("自定义工具压缩指令");
@@ -229,7 +387,7 @@ describe("85% watermark forced compaction", () => {
     const published: AppEvent[] = [];
     events.on("event", (event: AppEvent) => published.push(event));
     const core = { on() { return core; }, async configureSession() { return { sandboxCapability: "advisory" }; } } as unknown as CoreClient;
-    const compactor = new Compactor(sessions, makeFakeFastModel("概览：\n- 早段已压缩\n", []), {}, 2);
+    const compactor = new Compactor(sessions, makeFakeFastModel("目标：\n- 压缩早期对话\n行动：\n- 强制压缩\n关键发现：\n- 水位达 85%", []), {}, 2);
     const tinyWindow = () => ({ contextWindow: 100, capabilities: { thinking: ["disabled"], effort: [] } }) as never;
     const runner = new AgentRunner(sessions, providers, core, events, pricing, undefined, "zh-CN", 50, tinyWindow, undefined, undefined, undefined, compactor);
     const session = await sessions.create({ cwd: root, provider: "anthropic", model: "tiny" });
@@ -285,7 +443,7 @@ describe("85% watermark forced compaction", () => {
     const runner = new AgentRunner(sessions, providers, core, events, pricing, undefined, "zh-CN", 50,
       () => ({ contextWindow, capabilities: { thinking: ["disabled"], effort: [] } }) as never,
       undefined, undefined, undefined,
-      new Compactor(sessions, makeFakeFastModel("概览：\n- 早段已压缩\n", []), {}, 2));
+      new Compactor(sessions, makeFakeFastModel("目标：\n- 压缩早期对话\n行动：\n- 强制压缩\n关键发现：\n- 水位达 85%", []), {}, 2));
     runner.setCompactionThreshold(() => 60);
     const session = await sessions.create({ cwd: root, provider: "anthropic", model: "tiny" });
     await sessions.appendMessage(session.id, "user", [{ type: "text", text: "很早的消息，".repeat(30) }]);
@@ -365,7 +523,7 @@ describe("compactionHistory", () => {
     const store = new SessionStore(path.join(root, "sessions"));
     await store.initialize();
     const id = await sessionWithMessages(store, 6);
-    const compactor = new Compactor(store, makeFakeFastModel("目标：\n- 摘要"), {}, 2);
+    const compactor = new Compactor(store, makeFakeFastModel("目标：\n- 摘要\n行动：\n- 压缩前缀\n修改文件：\n- 无"), {}, 2);
 
     const first = await compactor.compact(id, "overview");
     expect(first.createdAt).toEqual(expect.any(String));
@@ -389,7 +547,7 @@ describe("compactionHistory", () => {
     const store = new SessionStore(path.join(root, "sessions"));
     await store.initialize();
     const id = await sessionWithMessages(store, 2);
-    const compactor = new Compactor(store, makeFakeFastModel("目标：\n- 摘要"), {}, 1);
+    const compactor = new Compactor(store, makeFakeFastModel("目标：\n- 摘要\n行动：\n- 压缩前缀\n修改文件：\n- 无"), {}, 1);
     const firstUptos: number[] = [];
     for (let round = 0; round < 21; round += 1) {
       const result = await compactor.compact(id, "overview");

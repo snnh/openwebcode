@@ -36,6 +36,8 @@ export interface ServerConfig {
   subAgentMaxTurns: number;
   /** 自动压缩水位（百分比，50–95）：上下文占用达到该水位时强制压缩；建议水位为该值减 15。核心安全网，不随扩展。 */
   compactionThresholdPercent: number;
+  /** 上下文压缩时快速模型的输出上限（tokens，1024–256000，热生效）：思考型快速模型需要较大余量，缺省 65536。 */
+  compactMaxTokens: number;
   /** bash 工具 python 运行环境的全局默认（会话可覆盖）；global = 本机环境。 */
   pythonEnv: PythonEnv;
   /** bash 工具 node 运行环境的全局默认（会话可覆盖）；global = 本机环境。 */
@@ -240,6 +242,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     agentMaxTurns: boundedInteger(env.OWC_AGENT_MAX_TURNS, 1000) ?? 50,
     subAgentMaxTurns: boundedInteger(env.OWC_SUB_AGENT_MAX_TURNS, 1000) ?? 100,
     compactionThresholdPercent: (() => { const parsed = boundedInteger(env.OWC_COMPACTION_THRESHOLD_PERCENT, 95); if (parsed !== undefined && parsed < 50) throw new Error(`Expected an integer >= 50, received ${env.OWC_COMPACTION_THRESHOLD_PERCENT}`); return parsed ?? 85; })(),
+    compactMaxTokens: (() => { const parsed = boundedInteger(env.OWC_COMPACT_MAX_TOKENS, 256_000); if (parsed !== undefined && parsed < 1024) throw new Error(`Expected an integer >= 1024, received ${env.OWC_COMPACT_MAX_TOKENS}`); return parsed ?? 65_536; })(),
     defaultLanguage: env.OWC_DEFAULT_LANGUAGE ?? "zh-CN",
     defaultCurrency: currency(env.OWC_DEFAULT_CURRENCY),
     pythonEnv: pythonEnv(env.OWC_PYTHON_ENV),

@@ -157,6 +157,7 @@ core.setPythonEnvDefault(() => settings.effective().pythonEnv, dataDir);
 agent.setMaxTurns(() => settings.effective().agentMaxTurns);
 agent.setSubAgentMaxTurns(() => settings.effective().subAgentMaxTurns);
 agent.setCompactionThreshold(() => settings.effective().compactionThresholdPercent);
+compactor.setCompactMaxTokens(() => settings.effective().compactMaxTokens);
 agent.setWebSearchMode(() => settings.effective().webSearchMode ?? "local");
 agent.setFastModel(fastModel);
 agent.setVaultService(vaultService);

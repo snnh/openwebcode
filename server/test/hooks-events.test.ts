@@ -223,7 +223,9 @@ describe("PreCompact/PostCompact 钩子触发点", () => {
       PostCompact: [{ matcher: "*", command: appendMarkerCommand(marker) }],
     });
     const calls: Array<{ system: string; prompt: string }> = [];
-    const { sessions, session, compactor } = await setupCompactor(root, fakeFastModel("目标：\n- 摘要", calls));
+    // 固定输出需同时通过 toolcalls 与 overview 两套校验（同一 stub 服务两种策略）
+    const dualValid = "- [工具] bash → 完成\n- [用户] 目标：压缩前缀\n- [助手] 行动：执行摘要\n- [用户] 关键发现：模型调用完成\n- [助手] 未决事项：无";
+    const { sessions, session, compactor } = await setupCompactor(root, fakeFastModel(dualValid, calls));
     const first = await compactor.compact(session.id, "toolcalls");
     expect(first.changed).toBe(true);
     for (let index = 0; index < 10; index += 1) {
@@ -246,7 +248,7 @@ describe("PreCompact/PostCompact 钩子触发点", () => {
       PreCompact: [{ matcher: "*", command: `node -e "process.stderr.write('no-compact');process.exit(2)"` }],
     });
     const calls: Array<{ system: string; prompt: string }> = [];
-    const { session, compactor } = await setupCompactor(root, fakeFastModel("目标：\n- 摘要", calls));
+    const { session, compactor } = await setupCompactor(root, fakeFastModel("- [工具] bash → 完成\n- [用户] 目标：压缩前缀\n- [助手] 行动：执行摘要\n- [用户] 关键发现：模型调用完成\n- [助手] 未决事项：无", calls));
     const result = await compactor.compact(session.id, "toolcalls");
     expect(result.changed).toBe(false);
     expect(result.reason).toContain("no-compact");

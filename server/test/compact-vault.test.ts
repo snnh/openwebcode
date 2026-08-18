@@ -59,8 +59,12 @@ function vaultFastModel(extraIndexSections = ""): { client: FastModelClient; cal
     if (prompt.includes("对话转录")) {
       const file = /转录文件：(\S+)/.exec(prompt)?.[1] ?? "segments/seg-001.md";
       yield { type: "text_delta", text: `KEY: goals\nTITLE: 目标\nFILES: ${file}\nDESC: 用户要求实现 X\n---\nKEY: impl\nTITLE: 实现方案\nFILES: ${file}\nDESC: 采用方案 Y` };
-    } else {
+    } else if (prompt.includes("待压缩对话共")) {
+      // Pass 2：目录式索引（发给主模型的 vault 摘要）
       yield { type: "text_delta", text: `[归档索引] 早前共 ${prompt.match(/待压缩对话共 (\d+) 条消息/)?.[1] ?? "?"} 条消息已归档至会话 compact/ 目录。需要细节时调用 recall_memory(keys=[...]) 按 key 召回完整内容。\n- 目标 (key=goals)：用户要求实现 X\n- 实现方案 (key=impl)：采用方案 Y${extraIndexSections}` };
+    } else {
+      // 默认 Compactor（扩展未启用）路径：输出含小节名的合规 overview，过压缩输出校验
+      yield { type: "text_delta", text: `目标：\n- 压缩早期对话\n行动：\n- 生成结构化概览\n修改文件：\n- 无\n关键发现：\n- 需求与回答一一对应\n未决事项：\n- 无` };
     }
     yield { type: "usage", inputTokens: 10, outputTokens: 10, cacheRead: 0, cacheWrite: 0 };
     yield { type: "done", stopReason: "end_turn" };
