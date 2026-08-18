@@ -130,7 +130,7 @@ async function setupApp(options: HarnessOptions = {}) {
   const providers = new ProviderRegistry();
   providers.register(scriptProvider([], []));
   const fastModelCalls: Array<{ system: string; prompt: string }> = [];
-  const compactor = new Compactor(harness.sessions, makeFakeFastModel("[压缩] bash", fastModelCalls), {}, 3);
+  const compactor = new Compactor(harness.sessions, makeFakeFastModel("- [工具] bash → 完成", fastModelCalls), {}, 3);
   const app = await buildServer({
     core: fakeCore([]),
     sessions: harness.sessions,

@@ -17,6 +17,7 @@
   "agentMaxTurns": 50,
   "subAgentMaxTurns": 100,
   "compactionThresholdPercent": 85,
+  "compactMaxTokens": 65536,
   "chatModeEnabled": false,
   "offlineMode": false,
   "corePath": "../build/Debug/owc-exec.exe",
