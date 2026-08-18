@@ -65,6 +65,10 @@ export const sessionMeta = {
   clearRunFailure(sessionId: string): void {
     sessionStore.set((previous) => ({ runFailures: removeKey(previous.runFailures, sessionId) }));
   },
+  /** 清除会话实时水位：账本被改动（压缩/清空/驱逐/恢复）后让显示回落到 REST stats 事实 */
+  clearWatermark(sessionId: string): void {
+    sessionStore.set((previous) => ({ watermarks: removeKey(previous.watermarks, sessionId) }));
+  },
   bumpProblemsBadge(sessionId: string, failed: number): void {
     sessionStore.set((previous) => ({ problemsBadges: applyDiagnosticsBadgeUpdate(previous.problemsBadges, sessionId, failed) }));
   },

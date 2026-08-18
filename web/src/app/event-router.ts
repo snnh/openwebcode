@@ -296,12 +296,20 @@ export function createEventRouter(deps: EventRouterDeps): EventRouter {
     }
     const refreshDetail = ["agent.state", "tool.end", "agent.error", "session.config_updated", "subagent.finished"].includes(event.type);
     const refreshContext = ["context.usage", "context.budget_updated", "context.restored", "context.evicted", "context.compacted", "context.cleared"].includes(event.type);
+    // 账本被改动（压缩/清空/驱逐/恢复）的事件：会话静止期不会再发新 context.watermark，
+    // 旧水位是改动前的数值，会让 deriveWindowInfo 忽略 REST refetch 的新 stats，
+    // 先清除水位让显示回落到 REST 事实；下一轮 agent 的 watermark 照常覆盖。
+    // context.usage / context.budget_updated 不改账本，不在清除列表。
+    const clearsWatermark = ["context.restored", "context.evicted", "context.compacted", "context.cleared"].includes(event.type);
     const refreshCheckpoints = ["checkpoint.created", "checkpoint.restored", "checkpoint.deleted", "checkpoint.failed"].includes(event.type);
     if (refreshDetail || refreshContext || refreshCheckpoints) {
       const detailRefresh = refreshDetail
         ? queryClient.invalidateQueries({ queryKey: qk.session(event.sessionId) })
         : Promise.resolve();
-      if (refreshContext) queryClient.invalidateQueries({ queryKey: ["context", event.sessionId] });
+      if (refreshContext) {
+        if (clearsWatermark) sessionMeta.clearWatermark(event.sessionId);
+        queryClient.invalidateQueries({ queryKey: ["context", event.sessionId] });
+      }
       if (refreshCheckpoints) queryClient.invalidateQueries({ queryKey: ["checkpoints", event.sessionId] });
       // 完整回滚会截断消息并替换账本：同时刷新消息列表与上下文视图，避免展示回退前的旧历史
       if (event.type === "checkpoint.restored") {

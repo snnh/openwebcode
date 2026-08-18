@@ -3,7 +3,8 @@ import { QueryClient } from "@tanstack/react-query";
 import { createEventRouter, type EventRouterDeps } from "../app/event-router";
 import { sessionMeta, sessionStore } from "../app/session-store";
 import { qk } from "../app/queries";
-import type { AppEvent, Session } from "../lib/contracts";
+import { deriveWindowInfo } from "../lib/context-window";
+import type { AppEvent, ContextBuildStats, ContextWatermark, ModelProfile, Session } from "../lib/contracts";
 import type { StreamBuffer } from "../chat/stream-buffer";
 
 vi.mock("../lib/api", () => ({
@@ -11,6 +12,32 @@ vi.mock("../lib/api", () => ({
     run: vi.fn(() => Promise.reject(new Error("no active run"))),
   },
 }));
+
+const watermarkFixture: ContextWatermark = {
+  estimatedTokens: 45_000,
+  contextWindow: 128_000,
+  workingBudget: 120_000,
+  utilization: 0.375,
+  segments: { system: 2_000, input: 24_000, toolCalls: 20_000, output: 0, other: 2_000 },
+  pinnedTokens: 500,
+  buildMs: 0.8,
+  incremental: true,
+};
+
+const statsFixture: ContextBuildStats = {
+  totalTokens: 48_000,
+  segments: { system: 2_000, input: 24_000, toolCalls: 20_000, output: 0, other: 2_000 },
+  pinnedTokens: 500,
+  buildMs: 1.2,
+  incremental: true,
+};
+
+const modelFixture: ModelProfile = {
+  id: "test-model",
+  provider: "test",
+  contextWindow: 128_000,
+  capabilities: { thinking: ["disabled"], effort: ["low"], modalities: ["text"], imageOutput: false, tools: true },
+};
 
 function makeEvent(partial: Partial<AppEvent>): AppEvent {
   return { source: "server", type: "agent.state", ...partial } as AppEvent;
@@ -166,6 +193,28 @@ describe("createEventRouter", () => {
     expect(deps.applyCompactionEvent).toHaveBeenCalledWith(expect.objectContaining({ type: "context.compacted", sessionId: "s1" }));
     router.route(makeEvent({ type: "context.compact_failed", sessionId: "s1", payload: { message: "快速模型超时" } }));
     expect(deps.applyCompactionEvent).toHaveBeenCalledWith(expect.objectContaining({ type: "context.compact_failed", sessionId: "s1" }));
+  });
+
+  it.each(["context.compacted", "context.cleared", "context.evicted", "context.restored"] as const)(
+    "%s：清除实时水位（显示回落到 REST stats）并失效 context 查询",
+    (type) => {
+      const { queryClient, router } = setup("s1");
+      const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+      sessionMeta.setWatermark("s1", watermarkFixture);
+      router.route(makeEvent({ type, sessionId: "s1", payload: { mode: "overview" } }));
+      // 旧水位是压缩/清空前的数值：必须被清掉，deriveWindowInfo 才能回落到 REST stats 分支
+      expect(sessionStore.get().watermarks.s1).toBeUndefined();
+      expect(deriveWindowInfo(sessionStore.get().watermarks.s1, statsFixture, modelFixture)?.estimatedTokens).toBe(48_000);
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["context", "s1"] });
+    },
+  );
+
+  it("context.usage / context.budget_updated：不改账本，保留实时水位（不误清）", () => {
+    const { router } = setup("s1");
+    sessionMeta.setWatermark("s1", watermarkFixture);
+    router.route(makeEvent({ type: "context.usage", sessionId: "s1", payload: { inputTokens: 1 } }));
+    router.route(makeEvent({ type: "context.budget_updated", sessionId: "s1", payload: {} }));
+    expect(sessionStore.get().watermarks.s1).toEqual(watermarkFixture);
   });
 
   it("桌面通知：权限/交互/run 终态跨会话转发给装配层", () => {
