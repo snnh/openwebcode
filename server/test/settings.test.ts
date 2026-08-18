@@ -84,7 +84,7 @@ describe("server settings API", () => {
     const view = response.json<SettingsView>();
     expect(view.groups.map((group) => group.id)).toEqual(["models", "modelSelection", "general", "defaults", "context", "executor", "service", "network", "proxy", "webSearch", "exchangeRate", "updateCheck"]);
     const fields = view.groups.flatMap((group) => group.fields);
-    expect(fields).toHaveLength(46);
+    expect(fields).toHaveLength(47);
     for (const item of fields) {
       expect(item.source).toBe("default");
       expect(item.editable).toBe(true);
@@ -364,7 +364,7 @@ describe("server settings API", () => {
     expect(groups.get("defaults")?.label).toBe("会话默认");
     expect(groups.get("defaults")?.fields.map((item) => item.key)).toEqual(["defaultEffort", "defaultSnapshotMode", "snapshotBackend"]);
     expect(groups.get("context")?.label).toBe("上下文与运行");
-    expect(groups.get("context")?.fields.map((item) => item.key)).toEqual(["compactionThresholdPercent", "agentMaxTurns", "subAgentMaxTurns"]);
+    expect(groups.get("context")?.fields.map((item) => item.key)).toEqual(["compactionThresholdPercent", "compactMaxTokens", "agentMaxTurns", "subAgentMaxTurns"]);
     expect(groups.get("webSearch")?.label).toBe("联网");
     expect(groups.get("webSearch")?.fields.map((item) => item.key)).toEqual(["offlineMode", "webSearchMode"]);
   });
@@ -417,6 +417,63 @@ describe("server settings API", () => {
     expect(() => loadConfig({ OWC_COMPACTION_THRESHOLD_PERCENT: "96" })).toThrow(/95/);
     expect(() => loadConfig({ OWC_COMPACTION_THRESHOLD_PERCENT: "85.5" })).toThrow(/positive integer/);
     expect(() => loadConfig({ OWC_COMPACTION_THRESHOLD_PERCENT: "abc" })).toThrow(/positive integer/);
+  });
+
+  it("compactMaxTokens 默认 65536，1024–256000 合法且热生效，0/负数/超界/非整数拒绝", async () => {
+    const setup = await fixture();
+    const view = (await setup.app.inject({ method: "GET", url: "/api/settings" })).json<SettingsView>();
+    expect(field(view, "compactMaxTokens")).toMatchObject({
+      type: "number", value: 65536, source: "default", restartRequired: false, editable: true,
+    });
+    expect(setup.settings.effective().compactMaxTokens).toBe(65536);
+
+    for (const value of [1024, 65536, 256000]) {
+      const response = await setup.app.inject({
+        method: "PUT",
+        url: "/api/settings",
+        payload: { overrides: { compactMaxTokens: value } },
+      });
+      expect(response.statusCode).toBe(200);
+      // 热生效：effective() 现读
+      expect(setup.settings.effective().compactMaxTokens).toBe(value);
+    }
+    for (const bad of [0, -1, 1023, 256001, 65536.5]) {
+      const response = await setup.app.inject({
+        method: "PUT",
+        url: "/api/settings",
+        payload: { overrides: { compactMaxTokens: bad } },
+      });
+      expect(response.statusCode).toBe(400);
+    }
+    // 拒绝后 effective() 保持最后一次合法值
+    expect(setup.settings.effective().compactMaxTokens).toBe(256000);
+  });
+
+  it("env OWC_COMPACT_MAX_TOKENS 越界 fail-fast，合法值锁定界面写入", async () => {
+    // 越界 env 在 loadConfig 直接抛错（与 boundedInteger 约定一致），服务不启动
+    await expect(fixture({ OWC_COMPACT_MAX_TOKENS: "1023" })).rejects.toThrow(/>= 1024/);
+
+    const locked = await fixture({ OWC_COMPACT_MAX_TOKENS: "32768" });
+    const lockedView = (await locked.app.inject({ method: "GET", url: "/api/settings" })).json<SettingsView>();
+    expect(field(lockedView, "compactMaxTokens")).toMatchObject({ value: 32768, source: "env", editable: false });
+    expect(locked.settings.effective().compactMaxTokens).toBe(32768);
+    const rejected = await locked.app.inject({
+      method: "PUT",
+      url: "/api/settings",
+      payload: { overrides: { compactMaxTokens: 65536 } },
+    });
+    expect(rejected.statusCode).toBe(400);
+  });
+
+  it("loads OWC_COMPACT_MAX_TOKENS into ServerConfig（1024–256000 合法；越界/非法 fail-fast）", () => {
+    expect(loadConfig({}).compactMaxTokens).toBe(65536);
+    expect(loadConfig({ OWC_COMPACT_MAX_TOKENS: "1024" }).compactMaxTokens).toBe(1024);
+    expect(loadConfig({ OWC_COMPACT_MAX_TOKENS: "32768" }).compactMaxTokens).toBe(32768);
+    expect(loadConfig({ OWC_COMPACT_MAX_TOKENS: "256000" }).compactMaxTokens).toBe(256000);
+    expect(() => loadConfig({ OWC_COMPACT_MAX_TOKENS: "1023" })).toThrow(/>= 1024/);
+    expect(() => loadConfig({ OWC_COMPACT_MAX_TOKENS: "256001" })).toThrow(/256000/);
+    expect(() => loadConfig({ OWC_COMPACT_MAX_TOKENS: "65536.5" })).toThrow(/positive integer/);
+    expect(() => loadConfig({ OWC_COMPACT_MAX_TOKENS: "abc" })).toThrow(/positive integer/);
   });
 
   it("loads OWC_OFFLINE into ServerConfig", () => {

@@ -3,6 +3,7 @@ import type { ExchangeRateService } from "../cost/exchange-rate.js";
 import { calculateUsageCost } from "../cost/cost-calculator.js";
 import type { PricingCatalog } from "../cost/pricing-catalog.js";
 import { appendMemory, parseSedimentSections } from "../memory.js";
+import { monotonicTimestamp } from "../monotonic-clock.js";
 import type { FastModelClient } from "../fast-model.js";
 import type { HookRunner } from "../hooks.js";
 import { activePathMessages } from "../sessions/session-tree.js";
@@ -23,8 +24,10 @@ export interface CompactResult {
 
 export const COMPACT_TOOLCALLS_SYSTEM = `你是上下文压缩器。把对话中的工具调用逐条压缩为一行语义占位符。
 格式：- [工具] 名称(关键参数) → 结果要点（退出码/关键数字/错误原因）
+示例：- [工具] read_file(src/index.ts) → 成功，导出 IndexStore 类
 规则：用户消息也各压一行（- [用户] 要点）；assistant 的结论文本各压一行（- [助手] 要点）。
-只输出这些行，不要任何额外解释。保留 artifact: 引用不变。`;
+只输出这些行，不要任何额外解释。保留 artifact: 引用不变。
+禁止逐字复述对话原文；输出必须显著短于输入。`;
 
 export const COMPACT_OVERVIEW_SYSTEM = `你是上下文压缩器。把对话中段压缩为结构化概览，严格按以下小节输出：
 目标：
@@ -33,7 +36,8 @@ export const COMPACT_OVERVIEW_SYSTEM = `你是上下文压缩器。把对话中�
 关键发现：
 未决事项：
 用户明确指令：
-每个小节用 "- " 列表逐条列出。「用户明确指令」小节：先完整保留输入中给出的已有指令（逐字），再追加新发现的指令（去重）。只输出概览本身。`;
+每个小节用 "- " 列表逐条列出，每节 1–6 条。「用户明确指令」小节：先完整保留输入中给出的已有指令（逐字），再追加新发现的指令（去重）。只输出概览本身。
+禁止逐字复述对话原文；输出必须显著短于输入。`;
 
 /** 从快速模型的 overview 输出中解析「用户明确指令」小节（- 列表行）。 */
 export function extractInstructions(text: string): string[] {
@@ -68,6 +72,37 @@ export function mergeInstructions(previous: string[], extracted: string[]): stri
   }
   // 累积置顶也要有界：只留最近 20 条
   return merged.slice(-20);
+}
+
+/**
+ * 压缩输出校验：返回失败原因（undefined 表示通过）。
+ * 模型偶尔会把待压缩对话原文原样返回（或返回思考内容），此类输出既没瘦身、
+ * 又会因 uptoIndex 前进而永久失去重新压缩的机会，写入账本前必须拦截。
+ */
+export function validateCompactionOutput(mode: "toolcalls" | "overview", summary: string, transcriptLength: number): string | undefined {
+  // 复述原文：转录由 renderSpan 用【role】标记拼接，输出若带角色标记即逐字复述
+  if (/【(user|assistant|system|tool)】/.test(summary)) {
+    return "输出复述了对话原文（含转录角色标记）";
+  }
+  if (mode === "overview") {
+    // 概览模式：6 个小节至少命中 3 个，否则未按格式
+    const sections = ["目标", "行动", "修改文件", "关键发现", "未决事项", "用户明确指令"];
+    if (sections.filter((name) => summary.includes(name)).length < 3) {
+      return "输出未按概览格式（应含目标/行动/修改文件/关键发现/未决事项/用户明确指令小节）";
+    }
+  } else {
+    // toolcalls 模式：非空行至少半数匹配占位行格式（- [工具] …）
+    const lines = summary.split("\n").filter((line) => line.trim() !== "");
+    const placeholderCount = lines.filter((line) => /^\s*[-*]\s*\[/.test(line)).length;
+    if (lines.length === 0 || placeholderCount < lines.length / 2) {
+      return "输出未按工具占位格式（每行应为 - [工具] 名称(关键参数) → 结果要点）";
+    }
+  }
+  // 长度兜底：转录足够长时摘要仍接近原文长度视为未压缩（比率放得很宽，只为拦极端情况）
+  if (transcriptLength >= 4000 && summary.length > transcriptLength * 0.8) {
+    return "输出过长（接近原文长度），未压缩成功";
+  }
+  return undefined;
 }
 
 function renderBlock(block: MessageContent): string {
@@ -118,6 +153,14 @@ export class Compactor {
     private readonly keepTail = 10,
   ) {}
 
+  /** 压缩时快速模型的输出上限（tokens）取值函数：默认 65536，setCompactMaxTokens 注入后走设置热生效值。 */
+  private compactMaxTokens: () => number = () => 65_536;
+
+  /** 注入压缩输出上限的实时取值函数（index.ts 装配：settings.effective().compactMaxTokens）。 */
+  setCompactMaxTokens(get: () => number): void {
+    this.compactMaxTokens = get;
+  }
+
   async compact(sessionId: string, mode: "toolcalls" | "overview", options: { forced?: boolean; promptOverrides?: { overview?: string; toolcalls?: string } } = {}): Promise<CompactResult> {
     const session = await this.sessions.get(sessionId);
     if (!session) throw new Error("Session not found");
@@ -154,16 +197,46 @@ export class Compactor {
       const system = mode === "overview"
         ? (options.promptOverrides?.overview ?? COMPACT_OVERVIEW_SYSTEM)
         : (options.promptOverrides?.toolcalls ?? COMPACT_TOOLCALLS_SYSTEM);
-      const completion = await this.fastModel.complete({
-        system,
-        prompt: mode === "overview" && instructions.length > 0
-          ? `已有的用户明确指令（逐字保留并置顶）：\n${instructions.map((item) => `- ${item}`).join("\n")}\n\n待压缩对话：\n${transcript}`
-          : `待压缩对话：\n${transcript}`,
-        maxTokens: 2048,
-      });
-      summary = completion.text.trim();
-      if (mode === "overview") instructions = mergeInstructions(instructions, extractInstructions(summary));
-      this.recordFastModelUsage(sessionId, completion.usage);
+      // 用户提示词尾部提醒：利用近因效应对抗复述（只输出压缩结果，不逐字复述原文）
+      const tailReminder = "\n\n再次提醒：只输出压缩结果，不要复述上面的对话原文。";
+      const userPrompt = mode === "overview" && instructions.length > 0
+        ? `已有的用户明确指令（逐字保留并置顶）：\n${instructions.map((item) => `- ${item}`).join("\n")}\n\n待压缩对话：\n${transcript}${tailReminder}`
+        : `待压缩对话：\n${transcript}${tailReminder}`;
+      try {
+        const first = await this.fastModel.complete({
+          system,
+          prompt: userPrompt,
+          maxTokens: this.compactMaxTokens(),
+        });
+        this.recordFastModelUsage(sessionId, first.usage);
+        let reason = validateCompactionOutput(mode, first.text.trim(), transcript.length);
+        let completion = first;
+        if (reason !== undefined) {
+          // 校验失败重试一次：把失败原因拼进 system 追加纠偏指令，重调一次 complete
+          const retried = await this.fastModel.complete({
+            system: `${system}\n\n上次输出不合格：${reason}。必须严格按格式压缩，禁止逐字复述对话原文。`,
+            prompt: userPrompt,
+            maxTokens: this.compactMaxTokens(),
+          });
+          this.recordFastModelUsage(sessionId, retried.usage);
+          reason = validateCompactionOutput(mode, retried.text.trim(), transcript.length);
+          completion = retried;
+        }
+        if (reason !== undefined) {
+          // 第二次仍失败：抛错由下方 catch 统一处理——forced → 规则降级兜底；
+          // 非 forced → 原样抛出（手动 /compact 让用户知情，账本不写入）
+          throw new Error(`快速模型压缩输出未通过校验（${reason}）。请重试，或使用 /compact tools（规则版）。`);
+        }
+        summary = completion.text.trim();
+        if (mode === "overview") instructions = mergeInstructions(instructions, extractInstructions(summary));
+      } catch (error) {
+        // 快速模型调用失败或输出两次未过校验：85% 强制压缩时规则降级兜底（安全网不失效，
+        // 压缩照常完成）；手动 /compact 维持抛错让用户知情。finalMode 约定与未配置快速模型的
+        // 降级分支一致，记忆沉淀按 finalMode 判断，规则摘要（无结构化小节）不会误入 memory.md。
+        if (!forced) throw error;
+        summary = ruleBasedToolcalls(span);
+        finalMode = mode === "overview" ? "truncated" : "toolcalls";
+      }
     } else {
       if (mode === "overview" && !forced) {
         throw new Error("快速模型未配置：概览压缩不可用。请在设置中配置快速模型，或使用 /compact tools（规则版）。");
@@ -177,7 +250,7 @@ export class Compactor {
       mode: finalMode,
       summary,
       instructions,
-      createdAt: new Date().toISOString(),
+      createdAt: monotonicTimestamp(),
       // 被替换消息段的 token 估算（与视图归因同一估算器），供 UI 检查点行展示
       replacedTokens: span.reduce((total, message) => total + estimateFragmentTokens(message), 0),
     };
