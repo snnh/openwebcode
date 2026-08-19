@@ -30,6 +30,8 @@ describe("session model config", () => {
     let app: Awaited<ReturnType<typeof buildServer>>;
     let disposedShells: string[];
     let shellPending: boolean;
+    let running: boolean;
+    let reconciled: string[];
 
     beforeEach(async () => {
       root = await tempRoot("owc-session-config-");
@@ -42,10 +44,13 @@ describe("session model config", () => {
       await pricing.initialize();
       disposedShells = [];
       shellPending = false;
+      running = false;
+      reconciled = [];
       const agent = {
-        isRunning: () => false,
+        isRunning: () => running,
         isShellPending: () => shellPending,
         disposePersistentShells: async (sessionId: string) => { disposedShells.push(sessionId); },
+        reconcilePermissions: async (sessionId: string) => { reconciled.push(sessionId); },
       } as unknown as AgentRunner;
       app = await buildServer({ core: {} as CoreClient, sessions, agent, events: new EventBus(), providers, pricing });
     });
@@ -198,6 +203,35 @@ describe("session model config", () => {
       const badReviewModel = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { reviewModel: "slow" } });
       expect(badReviewModel.statusCode).toBe(400);
       expect(badReviewModel.json().error).toBe('reviewModel must be "fast" or "main"');
+    });
+
+    it("运行中仅放行权限类字段：permissionMode/reviewModel 热切并结算挂起审批，其余 409", async () => {
+      const session = await sessions.create({ cwd: root, provider: "anthropic", model: "deepseek-chat" });
+      running = true;
+      // 权限档热切：200、落盘、触发挂起审批结算
+      const yolo = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { permissionMode: "yolo" } });
+      expect(yolo.statusCode).toBe(200);
+      expect(yolo.json()).toMatchObject({ permissionMode: "yolo" });
+      expect(await sessions.get(session.id)).toMatchObject({ permissionMode: "yolo" });
+      expect(reconciled).toEqual([session.id]);
+      // reviewModel 同为运行中可热切字段
+      const review = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { reviewModel: "main" } });
+      expect(review.statusCode).toBe(200);
+      expect(reconciled).toEqual([session.id, session.id]);
+      // 其余字段运行中仍 409：模型、agentMode、权限字段混合提交；409 不落盘
+      const model = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { model: "gpt-5" } });
+      expect(model.statusCode).toBe(409);
+      const agentMode = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { agentMode: "plan" } });
+      expect(agentMode.statusCode).toBe(409);
+      const mixed = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { permissionMode: "ask", agentMode: "plan" } });
+      expect(mixed.statusCode).toBe(409);
+      expect(await sessions.get(session.id)).toMatchObject({ permissionMode: "yolo", model: "deepseek-chat" });
+      expect(reconciled).toHaveLength(2);
+      // 空闲时改权限档不触发结算（无运行中挂起单）
+      running = false;
+      const idle = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { permissionMode: "ask" } });
+      expect(idle.statusCode).toBe(200);
+      expect(reconciled).toHaveLength(2);
     });
   });
 });

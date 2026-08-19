@@ -114,4 +114,40 @@ describe("PermissionCoordinator", () => {
     await third;
     expect(resolvedIds()).toContain(thirdId);
   });
+
+  it("reconcile 按新权限档结算挂起单：新档免批的自动放行，其余继续挂起", async () => {
+    const events = new EventBus(); const observed: AppEvent[] = [];
+    events.on("event", (event: AppEvent) => observed.push(event));
+    const coordinator = new PermissionCoordinator(events);
+    const controller = new AbortController();
+    const resolvedIds = (): string[] =>
+      observed.filter((e) => e.type === "permission.resolved").map((e) => (e.payload as { requestId: string }).requestId);
+
+    const bashWrite = coordinator.request("s", "bash", { cmd: "rm x" }, controller.signal);
+    const editFile = coordinator.request("s", "edit_file", { path: "a.ts" }, controller.signal);
+    const commit = coordinator.request("s", "git_commit", { message: "m" }, controller.signal);
+    const gated = coordinator.request("s", "read_file", { path: "/etc/hosts" }, controller.signal, { alwaysManual: true });
+
+    // acceptEdits：edit_file 自动放行并广播 resolved；bash 写命令与 git_commit 仍挂起
+    coordinator.reconcile("s", "acceptEdits", []);
+    expect(await editFile).toEqual({ allowed: true, persist: false });
+    expect(coordinator.listPending("s").map((p) => p.tool).sort()).toEqual(["bash", "git_commit", "read_file"]);
+
+    // yolo：bash 写命令放行；git_commit 无 allow_always 规则仍须人工；alwaysManual
+    // （本机会话 HOME 外路径门）与权限档无关，yolo 也不自动放行
+    coordinator.reconcile("s", "yolo", []);
+    expect(await bashWrite).toEqual({ allowed: true, persist: false });
+    expect(coordinator.listPending("s").map((p) => p.tool).sort()).toEqual(["git_commit", "read_file"]);
+    expect(resolvedIds()).toHaveLength(2);
+
+    // 其余会话的挂起单不受结算影响
+    const other = coordinator.request("other", "write_file", { path: "b.ts" }, controller.signal);
+    coordinator.reconcile("s", "yolo", []);
+    expect(coordinator.listPending("other")).toHaveLength(1);
+    coordinator.cancelSession("other");
+    await other;
+    coordinator.cancelSession("s");
+    await commit;
+    await gated;
+  });
 });
