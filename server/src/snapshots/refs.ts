@@ -12,6 +12,7 @@ import {
   type SnapshotCapabilityInfo,
 } from "./backend.js";
 import type { CommandRunner } from "./probe.js";
+import { diffTrees, type SnapshotDiffExcludes } from "./tree-diff.js";
 
 /** refs-clone.ps1 的资产路径（src 与 dist 下均位于 server/<src|dist>/snapshots，向上两级即 server/）。 */
 export function refsScriptPath(): string {
@@ -28,6 +29,7 @@ export class RefsBackend implements SnapshotBackend {
     sessionRoot: string,
     private readonly workspace: string,
     private readonly runner: CommandRunner,
+    private readonly excludes: SnapshotDiffExcludes = { excludePrefixes: [], excludeGlobs: [] },
   ) {
     this.snapRoot = path.join(sessionRoot, "refs-snaps");
     this.metadataPath = path.join(sessionRoot, "checkpoints.json");
@@ -58,6 +60,9 @@ export class RefsBackend implements SnapshotBackend {
 
   async diff(id: string): Promise<string> {
     validateSnapshotId(id);
+    // 完整 unified diff 统一走 git；git 缺失时降级 walkFiles 摘要
+    const unified = await diffTrees(path.join(this.snapRoot, id), this.workspace, this.excludes);
+    if (unified !== null) return unified;
     const before = await walkFiles(path.join(this.snapRoot, id));
     const after = await walkFiles(this.workspace);
     const lines: string[] = [];

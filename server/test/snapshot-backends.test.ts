@@ -1,6 +1,7 @@
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import * as treeDiffModule from "../src/snapshots/tree-diff.js";
 import { buildServer } from "../src/app.js";
 import type { AgentRunner } from "../src/agent/agent-runner.js";
 import type { CoreClient } from "../src/core-client.js";
@@ -205,15 +206,21 @@ describe("BtrfsBackend", () => {
     expect(failing.calls).toHaveLength(1);
   });
 
-  it("diff 退出码 1 视为有差异返回文本，>1 抛错", async () => {
+  it("diff 退出码 1 视为有差异返回文本，>1 抛错（git 缺失时走摘要降级）", async () => {
     const root = await tempRoot("owc-btrfs-");
     const workspace = path.join(root, "ws");
     await mkdir(workspace);
-    const differ = recordingRunner(() => ({ stdout: "Files a and b differ\n", code: 1 }));
-    const backend = new BtrfsBackend(workspace, differ.runner);
-    await expect(backend.diff("snap-1-abcdef")).resolves.toContain("Files a and b differ");
-    const broken = recordingRunner(() => ({ code: 2 }));
-    await expect(new BtrfsBackend(workspace, broken.runner).diff("snap-1-abcdef")).rejects.toThrow();
+    // diffTrees 返回 null（git 缺失）时后端降级到 btrfs 摘要（退出码 1 = 有差异）
+    const spy = vi.spyOn(treeDiffModule, "diffTrees").mockResolvedValue(null);
+    try {
+      const differ = recordingRunner(() => ({ stdout: "Files a and b differ\n", code: 1 }));
+      const backend = new BtrfsBackend(workspace, differ.runner);
+      await expect(backend.diff("snap-1-abcdef")).resolves.toContain("Files a and b differ");
+      const broken = recordingRunner(() => ({ code: 2 }));
+      await expect(new BtrfsBackend(workspace, broken.runner).diff("snap-1-abcdef")).rejects.toThrow();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
