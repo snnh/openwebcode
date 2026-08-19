@@ -271,9 +271,10 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           # GitHub runner 上 apt 偶发长时间无响应（网络/镜像），限时 + 重试一次，
-          # 避免发布流水线无限卡在安装步骤
+          # 避免发布流水线无限卡在安装步骤。注意：libc6-dev-loong64-cross 是
+          # Recommended 而非 Depends，不能用 --no-install-recommends（crt1.o 缺失）
           for attempt in 1 2; do
-            if timeout 420 sudo apt-get install -y --no-install-recommends gcc-14-loongarch64-linux-gnu; then
+            if timeout 420 sudo apt-get install -y gcc-14-loongarch64-linux-gnu; then
               exit 0
             fi
             echo "apt install attempt $attempt failed, retrying in 15s"
