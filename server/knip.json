@@ -7,5 +7,5 @@
     "test/fixtures/fake-mcp-server.mjs"
   ],
   "ignoreDependencies": ["playwright"],
-  "ignoreBinaries": ["bwrap", "pwsh", "uv"]
+  "ignoreBinaries": ["bwrap", "pwsh", "uv", "mkfifo"]
 }
