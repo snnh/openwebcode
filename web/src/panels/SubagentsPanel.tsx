@@ -11,7 +11,7 @@ import { useI18n } from "../i18n";
 
 interface SubagentRunGroup {
   toolCallId: string;
-  /** swarm 组（spawn_swarm 一次调用的全部子代理）或独立 spawn_task */
+  /** swarm 组（spawn_swarm 一次调用的全部子代理）或独立 subagent */
   swarm: boolean;
   total: number;
   runs: LiveSubagentRun[];
@@ -130,10 +130,10 @@ function SubagentLauncher({ sessionId }: { sessionId: string }): ReactElement {
 }
 
 const EMPTY_MESSAGE = (
-  "还没有子代理运行记录——agent 运行中可通过 spawn_task / spawn_swarm 派生子代理并行处理任务。"
+  "还没有子代理运行记录——agent 运行中可通过 subagent / spawn_swarm 派生子代理并行处理任务。"
 );
 
-/** 子代理面板：顶部手动启动器 + 当前会话全部 spawn_task / spawn_swarm 运行的监视视图。
+/** 子代理面板：顶部手动启动器 + 当前会话全部 subagent / spawn_swarm 运行的监视视图。
  *  运行列表自取：实时运行（live-store，终态保留）+ 从已加载会话消息推导的历史运行合并，实时条目优先，最新在前。
  *  「在标签中打开」经 tabActions.openSubagentTab（App 装配层注册；未注册时不渲染按钮）。 */
 export function SubagentsPanel({ sessionId }: { sessionId?: string | undefined }): ReactElement {
@@ -148,7 +148,7 @@ export function SubagentsPanel({ sessionId }: { sessionId?: string | undefined }
   if (!sessionId) {
     return (
       <p className="muted-empty panel-empty subagents-panel-empty">
-        {t(EMPTY_MESSAGE, "No subagent runs yet — the agent can spawn subagents via spawn_task / spawn_swarm while running.")}
+        {t(EMPTY_MESSAGE, "No subagent runs yet — the agent can spawn subagents via subagent / spawn_swarm while running.")}
       </p>
     );
   }
@@ -159,7 +159,7 @@ export function SubagentsPanel({ sessionId }: { sessionId?: string | undefined }
       <SubagentLauncher sessionId={sessionId} />
       {groups.length === 0 && (
         <p className="muted-empty panel-empty subagents-panel-empty">
-          {t(EMPTY_MESSAGE, "No subagent runs yet — the agent can spawn subagents via spawn_task / spawn_swarm while running.")}
+          {t(EMPTY_MESSAGE, "No subagent runs yet — the agent can spawn subagents via subagent / spawn_swarm while running.")}
         </p>
       )}
       {groups.map((group) => {

@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import type { ChatMessage, LiveSubagentRun } from "../lib/contracts";
+import { isSubagentToolCallName } from "../lib/subagent-runs";
 import { useI18n } from "../i18n";
 import { formatDateTime } from "../lib/format";
 import { Icon } from "../components/Icon";
@@ -28,11 +29,11 @@ function buildToolResultStatus(messages: ChatMessage[]): Record<string, boolean>
   return map;
 }
 
-/** 提取消息内 spawn_task/spawn_swarm 工具调用关联的实时子代理运行（无则 undefined，保持 memo 稳定） */
+/** 提取消息内 subagent/spawn_swarm（含历史旧名 spawn_task）工具调用关联的实时子代理运行（无则 undefined，保持 memo 稳定） */
 function liveRunsForMessage(message: ChatMessage, liveSubagents: Record<string, LiveSubagentRun>): LiveSubagentRun[] | undefined {
   const callIds = new Set(
     message.content
-      .filter((block) => block.type === "tool_call" && (block.name === "spawn_task" || block.name === "spawn_swarm"))
+      .filter((block) => block.type === "tool_call" && isSubagentToolCallName(block.name))
       .map((block) => block.id),
   );
   if (callIds.size === 0) return undefined;

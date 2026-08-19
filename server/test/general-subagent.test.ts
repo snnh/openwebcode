@@ -92,7 +92,7 @@ async function setupApp(provider: Provider, options?: { permissionMode?: "ask" |
 }
 
 /**
- * 构造主循环假 provider：主循环首轮发 spawn_task、次轮收尾；
+ * 构造主循环假 provider：主循环首轮发 subagent、次轮收尾；
  * 子代理轮次按序委托给 onSubRequest(request, index)。
  * subRequests 捕获每个子代理轮次的请求（messages 拷贝，避免断言看到跨轮复用的终态数组）。
  */
@@ -114,7 +114,7 @@ function makeSpawnProvider(
         yield {
           type: "tool_call",
           id: "spawn-1",
-          name: "spawn_task",
+          name: "subagent",
           input: {
             prompt: options.prompt ?? "写一个文件",
             ...(options.agent ? { agent: options.agent } : {}),
@@ -131,7 +131,7 @@ function makeSpawnProvider(
   return { provider, subRequests };
 }
 
-describe("spawn_task agent=general", () => {
+describe("subagent agent=general", () => {
   it("yolo 模式下 general 子代理经权限链写文件并返回结论", async () => {
     const h = await setupRunner({ permissionMode: "yolo" });
     const { provider, subRequests } = makeSpawnProvider((request, index) =>
@@ -160,7 +160,7 @@ describe("spawn_task agent=general", () => {
     expect(subTools).toContain("edit_file");
     expect(subTools).toContain("bash");
     expect(subTools).toContain("read_artifact");
-    expect(subTools).not.toContain("spawn_task");
+    expect(subTools).not.toContain("subagent");
     expect(subTools).not.toContain("spawn_swarm");
     expect(subTools).not.toContain("todo_write");
     // 事件回显 agent: general
@@ -296,7 +296,7 @@ describe("spawn_task agent=general", () => {
         { type: "text_delta", text: "结论" },
         { type: "done", stopReason: "end_turn" },
       ],
-      { prompt: "t", agent: "general", tools: ["write_file", "bash", "spawn_task"] });
+      { prompt: "t", agent: "general", tools: ["write_file", "bash", "subagent"] });
     const { runner } = makeRunner(h, provider);
 
     await runner.run(h.session.id, "tools 交集");
@@ -637,7 +637,7 @@ describe("AgentRegistry", () => {
   });
 });
 
-describe("custom spawn_task agents", () => {
+describe("custom subagent agents", () => {
   it("injects the catalog and applies body, model, tool allowlist and transcript agent", async () => {
     const root = await tempRoot("owc-agents-");
     const workspace = path.join(root, "workspace");
@@ -660,7 +660,7 @@ describe("custom spawn_task agents", () => {
           yield { type: "text_delta", text: "review complete" };
           yield { type: "done", stopReason: "end_turn" };
         } else if (mainTurns++ === 0) {
-          yield { type: "tool_call", id: "spawn-custom", name: "spawn_task", input: { prompt: "review", agent: "reviewer" } };
+          yield { type: "tool_call", id: "spawn-custom", name: "subagent", input: { prompt: "review", agent: "reviewer" } };
           yield { type: "done", stopReason: "tool_use" };
         } else {
           yield { type: "text_delta", text: "done" };

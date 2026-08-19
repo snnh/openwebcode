@@ -274,7 +274,7 @@ export function registerSessionFileRoutes(app: FastifyInstance, ctx: RouteContex
   });
 
   // 手动启动子代理（WebUI 发起）：校验与并发登记同步完成，运行 detachment，
-  // 生命周期经与 spawn_task 相同的 subagent.started/progress/finished 事件跟踪（started 带 manual: true）。
+  // 生命周期经与 subagent 相同的 subagent.started/progress/finished 事件跟踪（started 带 manual: true）。
   app.post<{ Params: { id: string }; Body: { prompt?: string; agent?: string } }>("/api/sessions/:id/subagents", async (request, reply) => {
     if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
     const body = request.body;

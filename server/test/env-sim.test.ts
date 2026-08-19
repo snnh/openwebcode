@@ -328,11 +328,11 @@ describe("env-sim tool shaping", () => {
       await agent.run(session.id, "第二轮");
       const names = (requests[1]!.tools ?? []).map((tool) => tool.name);
       // 次轮恢复保留形态：read_artifact 由驱逐联动强制放行（默认策略 enabled），
-      // 仅注入 web 工具与子代理（spawn_task）；待办/提问/技能等已隐藏
+      // 仅注入 web 工具与子代理（subagent）；待办/提问/技能等已隐藏
       expect(names).toContain("bash");
       expect(names).toContain("str_replace_editor");
       expect(names).toContain("read_artifact");
-      expect(names).toContain("spawn_task");
+      expect(names).toContain("subagent");
       // 仍保持隐藏的工具
       expect(names).not.toContain("read_file");
       expect(names).not.toContain("git_commit");

@@ -75,7 +75,7 @@ function TranscriptBlock({ block }: { block: MessageContent }): ReactElement | n
 
 const TRANSCRIPT_ROLE_LABELS: Record<string, [string, string]> = { user: ["任务", "Task"], assistant: ["子代理", "Subagent"], tool: ["工具", "Tool"] };
 
-/** spawn_task/spawn_swarm 工具结果携带的子代理转录：展开时按 taskId 拉取，只读展示 */
+/** subagent/spawn_swarm 工具结果携带的子代理转录：展开时按 taskId 拉取，只读展示 */
 export function SubagentTranscriptDetails({ sessionId, taskId, index }: { sessionId: string; taskId: string; index?: number | undefined }): ReactElement {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
@@ -155,7 +155,7 @@ function RowHeader({ open, onToggle, children }: { open: boolean; onToggle(): vo
   );
 }
 
-/** spawn_task / spawn_swarm 工具调用的紧凑折叠行：行头常驻，统计/逐项状态/转录链接展开后显示 */
+/** subagent / spawn_swarm 工具调用的紧凑折叠行：行头常驻，统计/逐项状态/转录链接展开后显示 */
 export function SubagentRunCard({ name, input, sessionId, live }: {
   name: string;
   input?: Record<string, unknown>;
@@ -217,7 +217,7 @@ export function SubagentRunCard({ name, input, sessionId, live }: {
     <section className={`subagent-run${open ? " open" : ""}`}>
       <RowHeader open={open} onToggle={toggle}>
         <span className="subagent-run-icon" aria-hidden><Icon name="layers" size={13} /></span>
-        <b className="mono">spawn_task</b>
+        <b className="mono">subagent</b>
         <span className="subagent-run-label">{t("子代理", "Subagent")}</span>
         {agent && <span className="subagent-run-agent mono">{agent}</span>}
         {prompt && <span className="subagent-run-summary mono" title={prompt}>{snippet(prompt)}</span>}

@@ -32,7 +32,7 @@ export interface ServerConfig {
   defaultCurrency: "USD" | "CNY";
   /** 单条用户消息允许的最大 agent 轮次，达到后以失败收尾；设置页可调（热生效）。 */
   agentMaxTurns: number;
-  /** 子代理（spawn_task/spawn_swarm/手动启动）默认最大轮次；调用方可显式覆盖，设置页可调（热生效）。 */
+  /** 子代理（subagent/spawn_swarm/手动启动）默认最大轮次；调用方可显式覆盖，设置页可调（热生效）。 */
   subAgentMaxTurns: number;
   /** 自动压缩水位（百分比，50–95）：上下文占用达到该水位时强制压缩；建议水位为该值减 15。核心安全网，不随扩展。 */
   compactionThresholdPercent: number;

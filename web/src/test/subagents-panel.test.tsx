@@ -130,9 +130,9 @@ function message(id: string, role: ChatMessage["role"], content: ChatMessage["co
 }
 
 describe("deriveSubagentRunsFromMessages", () => {
-  it("derives a done spawn_task run from tool_call + tool_result", () => {
+  it("derives a done subagent run from tool_call + tool_result", () => {
     const messages = [
-      message("m-1", "assistant", [{ type: "tool_call", id: "call-1", name: "spawn_task", input: { prompt: "调查 a.ts", agent: "scout" } }]),
+      message("m-1", "assistant", [{ type: "tool_call", id: "call-1", name: "subagent", input: { prompt: "调查 a.ts", agent: "scout" } }]),
       message("m-2", "tool", [{ type: "tool_result", toolCallId: "call-1", content: "结论", isError: false, subagentTaskIds: ["task-1"] }]),
     ];
 
@@ -209,9 +209,9 @@ describe("deriveSubagentRunsFromMessages", () => {
     expect(runs["t-2"]).toMatchObject({ status: "failed", error: "provider boom", swarm: { index: 2, total: 2 }, prompt: "b.ts", agent: "scout" });
   });
 
-  it("derives a failed spawn_task run from subagentTasks on an error result (failure after start)", () => {
+  it("derives a failed subagent run from subagentTasks on an error result (failure after start)", () => {
     const messages = [
-      message("m-1", "assistant", [{ type: "tool_call", id: "call-1", name: "spawn_task", input: { prompt: "调查 a.ts" } }]),
+      message("m-1", "assistant", [{ type: "tool_call", id: "call-1", name: "subagent", input: { prompt: "调查 a.ts" } }]),
       message("m-2", "tool", [{
         type: "tool_result",
         toolCallId: "call-1",

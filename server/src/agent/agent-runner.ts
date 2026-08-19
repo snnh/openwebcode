@@ -43,8 +43,11 @@ import {
   FILE_TOOLS,
   applyToolShaping,
   filterBuiltInTools,
+  isSubagentToolName,
   READ_ARTIFACT_TOOL,
   REPO_MAP_TOOL,
+  SUBAGENT_LEGACY_NAME,
+  SUBAGENT_TOOL,
   TEST_RUNNER_TOOL,
   toolAllowedBySession,
   WEB_FETCH_TOOL,
@@ -240,8 +243,8 @@ const LOAD_SKILL_TOOL: ProviderTool = {
   },
 };
 
-const SPAWN_TASK_TOOL: ProviderTool = {
-  name: "spawn_task",
+const SPAWN_SUBAGENT_TOOL: ProviderTool = {
+  name: SUBAGENT_TOOL,
   description:
     "Launch a sub-agent with an isolated context to work on a task. " +
     "The sub-agent does not share this session's context; only its final conclusion (at most 64000 characters) is returned. " +
@@ -315,7 +318,7 @@ const SPAWN_SWARM_TOOL: ProviderTool = {
     "Launch multiple sub-agents from one prompt template over different inputs, running in parallel (launches beyond the concurrency limit are queued). " +
     "The {{item}} placeholder in prompt_template is replaced with each item's task value; each item launches one independent sub-agent with an isolated context. " +
     "Use when many independent tasks of the same kind should run in parallel (e.g. reviewing several files or endpoints). " +
-    "For a single task use spawn_task instead. Built-in agent types: explore (default; read-only) and general (write-capable, via the session permission chain); custom sub-agents are read-only. " +
+    "For a single task use subagent instead. Built-in agent types: explore (default; read-only) and general (write-capable, via the session permission chain); custom sub-agents are read-only. " +
     "Members of one swarm share a discussion board (swarm_board_post/swarm_board_read) so they can exchange findings while running. " +
     "Only each sub-agent's final conclusion (at most 64000 characters) is returned, aggregated as numbered results with a board digest.",
   inputSchema: {
@@ -460,7 +463,7 @@ function builtInTools(options: {
     GIT_WORKTREE_REMOVE_TOOL,
     GIT_WORKTREE_MERGE_TOOL,
     ...(options.skillsAvailable ? [LOAD_SKILL_TOOL] : []),
-    SPAWN_TASK_TOOL,
+    SPAWN_SUBAGENT_TOOL,
     ...(options.swarmEnabled ? [SPAWN_SWARM_TOOL] : []),
     TODO_WRITE_TOOL,
     REMEMBER_TOOL,
@@ -478,7 +481,7 @@ const TOOL_EXECUTION_CLASS: Readonly<Record<string, ToolExecutionClass>> = {
   read_file: "read_only", glob: "read_only", grep: "read_only", read_artifact: "read_only", load_skill: "read_only", repo_map: "read_only", code_search: "read_only",
   git_status: "read_only", git_diff: "read_only", ask_user: "read_only", exit_plan_mode: "read_only",
   web_fetch: "external", web_search: "external", write_file: "workspace_write", edit_file: "workspace_write",
-  bash: "process", task_output: "read_only", task_stop: "process", todo_write: "workspace_write", remember: "workspace_write", spawn_task: "process", spawn_swarm: "process", test_runner: "process",
+  bash: "process", task_output: "read_only", task_stop: "process", todo_write: "workspace_write", remember: "workspace_write", subagent: "process", [SUBAGENT_LEGACY_NAME]: "process", spawn_swarm: "process", test_runner: "process",
   swarm_board_post: "read_only", swarm_board_read: "read_only",
   cron_create: "read_only", cron_list: "read_only", cron_delete: "read_only",
   git_commit: "process", git_worktree_create: "process", git_worktree_remove: "process", git_worktree_merge: "process",
@@ -744,7 +747,7 @@ export class AgentRunner {
 
   private modelRoles?: ModelRoleResolver;
 
-  /** 注入子代理角色档解析器：spawn_task/spawn_swarm 的 role 参数与提示词角色映射段（未注入时 role 输入仅校验不生效）。 */
+  /** 注入子代理角色档解析器：subagent/spawn_swarm 的 role 参数与提示词角色映射段（未注入时 role 输入仅校验不生效）。 */
   setModelRoleResolver(modelRoles: ModelRoleResolver): void {
     this.modelRoles = modelRoles;
   }
@@ -787,7 +790,7 @@ export class AgentRunner {
   }
 
   /** 子代理默认轮次上限取值函数（index.ts 装配：settings.effective().subAgentMaxTurns）。
-   *  spawn_task/spawn_swarm 的显式 maxTurns 参数优先于它；仅作为未指定时的全局默认。 */
+   *  subagent/spawn_swarm 的显式 maxTurns 参数优先于它；仅作为未指定时的全局默认。 */
   private subAgentMaxTurnsLimit: () => number = () => 100;
 
   /** 注入子代理默认轮次上限的实时取值函数（index.ts 装配：settings.effective().subAgentMaxTurns）。 */
@@ -1261,7 +1264,8 @@ export class AgentRunner {
           firstTurnOnly = persona?.firstTurnOnlyTools;
         }
         if (firstTurnOnly && isFirstTurn) {
-          const allow = new Set(firstTurnOnly);
+          // 旧用户预设 firstTurnOnlyTools 里的 spawn_task 归一为 subagent（兼容匹配）
+          const allow = new Set(firstTurnOnly.map((name) => (isSubagentToolName(name) ? SUBAGENT_TOOL : name)));
           shapedBuiltIns = shapedBuiltIns.filter((tool) => allow.has(tool.name));
         }
         // 首轮极简提示词：firstTurnOnlyTools 生效时（首轮形态），系统提示词只保留 persona
@@ -1295,16 +1299,16 @@ export class AgentRunner {
         const skillSection = availableToolNames.has("load_skill")
           ? `\n\nAvailable skills (load full text with the load_skill tool when relevant; the user can also trigger one with /name):\n${skillCatalog.map((skill) => `- ${skill.name}: ${skill.description}`).join("\n")}`
           : "";
-        const agentSection = availableToolNames.has("spawn_task") && agentCatalog.length > 0
-          ? `\n\nAvailable sub-agents (pass agent=<name> to spawn_task; built-in types explore (default, read-only) and general (write-capable, via the session permission chain) are always available; the custom agents below are read-only):\n${agentCatalog.map((agent) => {
+        const agentSection = (availableToolNames.has(SUBAGENT_TOOL) || availableToolNames.has(SUBAGENT_LEGACY_NAME)) && agentCatalog.length > 0
+          ? `\n\nAvailable sub-agents (pass agent=<name> to subagent; built-in types explore (default, read-only) and general (write-capable, via the session permission chain) are always available; the custom agents below are read-only):\n${agentCatalog.map((agent) => {
             const ignored = (agent.tools ?? []).filter((tool) => !(SUB_AGENT_TOOL_NAMES as readonly string[]).includes(tool));
             return `- ${agent.name}: ${agent.description}${ignored.length > 0 ? ` (unsupported tools ignored: ${ignored.join(", ")})` : ""}`;
           }).join("\n")}`
           : "";
         // 子代理角色档映射段：动态构建、随 settings 热更新（resolver 每轮现读 effective()）；
         // 未配置的档标注回落目标，引导主模型按任务难度选档。
-        const roleSection = availableToolNames.has("spawn_task") && this.modelRoles
-          ? `\n\nSub-agent model roles (pass role=<tier> to spawn_task/spawn_swarm to route the sub-agent to the configured model tier; choose the tier that fits the task):\n${MODEL_ROLES.map((role) => {
+        const roleSection = (availableToolNames.has(SUBAGENT_TOOL) || availableToolNames.has(SUBAGENT_LEGACY_NAME)) && this.modelRoles
+          ? `\n\nSub-agent model roles (pass role=<tier> to subagent/spawn_swarm to route the sub-agent to the configured model tier; choose the tier that fits the task):\n${MODEL_ROLES.map((role) => {
             const selection = this.modelRoles!.resolve(role);
             const current = selection
               ? `${selection.model} [${selection.provider}]`
@@ -1338,7 +1342,7 @@ export class AgentRunner {
           session.agentMode === "plan" ? planModeSection(toolsEnabled) : "",
           session.agentMode === "goal" ? goalModeSection() : "",
           availableToolNames.has("spawn_swarm")
-            ? "## Parallel exploration\nspawn_swarm is enabled for this session: when a task fans out into many independent subtasks of the same kind (e.g. reviewing several files or endpoints), prefer one spawn_swarm call over serial spawn_task calls. Members of one swarm can coordinate through a shared discussion board (swarm_board_post/swarm_board_read)."
+            ? "## Parallel exploration\nspawn_swarm is enabled for this session: when a task fans out into many independent subtasks of the same kind (e.g. reviewing several files or endpoints), prefer one spawn_swarm call over serial subagent calls. Members of one swarm can coordinate through a shared discussion board (swarm_board_post/swarm_board_read)."
             : "",
         ];
 
@@ -1555,7 +1559,9 @@ export class AgentRunner {
         for (const call of toolCalls) {
           let effectiveInput = call.input;
           let result: Extract<MessageContent, { type: "tool_result" }>;
-          if (!availableToolNames.has(call.name)) {
+          // 子代理工具新旧名等价：旧会话/旧测试脚本发出的 spawn_task 调用等价于本轮的 subagent
+          const advertisedName = isSubagentToolName(call.name) ? SUBAGENT_TOOL : call.name;
+          if (!availableToolNames.has(advertisedName)) {
             // Keep the plan-mode MCP safety boundary ahead of availability diagnostics: an
             // unadvertised MCP name is still opaque and must be described as read/write unknown.
             const externalLabel = call.name.startsWith("mcp__") ? "MCP 工具" : call.name.startsWith("ext__") ? "扩展工具" : undefined;
@@ -1844,7 +1850,7 @@ export class AgentRunner {
   /**
    * 手动启动子代理（REST POST /api/sessions/:id/subagents）：校验 + 并发登记同步完成，
    * 实际运行 detachment（调用方拿到 202 后经 subagent.* 事件跟踪）。
-   * toolCallId 固定为 `manual-<taskId>`；事件负载与 spawn_task 相同，started 额外带 manual: true。
+   * toolCallId 固定为 `manual-<taskId>`；事件负载与 subagent 相同，started 额外带 manual: true。
    */
   async launchManualSubagent(sessionId: string, input: { prompt: string; agent?: string }): Promise<{ taskId: string; toolCallId: string }> {
     const session = await this.sessions.getMeta(sessionId);
@@ -2323,7 +2329,7 @@ export class AgentRunner {
     // 工具形态别名按原内置工具的权限类处理（不降级为 external）
     tool = this.toolAliases.resolveBuiltinToolName(sessionId, tool);
     // Plan 模式门禁：只读工具放行，其余一律拦截
-    const PLAN_READONLY = new Set(["read_file", "glob", "grep", "read_artifact", "load_skill", "spawn_task", "spawn_swarm", "todo_write", "web_fetch", "web_search", "task_output", "repo_map", "code_search", "git_status", "git_diff", "ask_user", "exit_plan_mode", "cron_list"]);
+    const PLAN_READONLY = new Set(["read_file", "glob", "grep", "read_artifact", "load_skill", "subagent", "spawn_task", "spawn_swarm", "todo_write", "web_fetch", "web_search", "task_output", "repo_map", "code_search", "git_status", "git_diff", "ask_user", "exit_plan_mode", "cron_list"]);
     if (session.agentMode === "plan") {
       if (tool.startsWith("mcp__")) return { allowed: false, reason: `Plan 模式为只读：MCP 工具 ${tool} 被拦截（无法判定读写）。请输出实施计划并请用户切换到 code 模式执行。` };
       if (tool.startsWith("ext__")) return { allowed: false, reason: `Plan 模式为只读：扩展工具 ${tool} 被拦截（无法判定读写）。请输出实施计划并请用户切换到 code 模式执行。` };
@@ -2591,7 +2597,7 @@ export class AgentRunner {
         return { type: "tool_result", toolCallId, content, isError: true };
       }
     }
-    if (name === "spawn_task") {
+    if (isSubagentToolName(name)) {
       this.events.publish({ source: "agent", type: "tool.start", sessionId, payload: { toolCallId, name, ...boundToolEventInput(input) } });
       this.state(sessionId, "tool_running");
       // catch 分支需引用（子代理启动后失败补发 subagent.finished），声明在 try 之外
@@ -2602,7 +2608,7 @@ export class AgentRunner {
         const session = await this.sessions.getMeta(sessionId);
         if (!session) throw new Error("Session not found");
         const prompt = String(input.prompt ?? "");
-        if (!prompt) throw new Error("spawn_task requires a non-empty prompt");
+        if (!prompt) throw new Error("subagent requires a non-empty prompt");
         const agentName = typeof input.agent === "string" ? input.agent.trim() : "";
         const requestedTools = Array.isArray(input.tools) ? input.tools.map((item) => String(item)) : undefined;
         const requestedRole = typeof input.role === "string" && input.role.trim() ? input.role.trim() : undefined;
@@ -2723,7 +2729,7 @@ export class AgentRunner {
           }
           return { task: String(raw) };
         });
-        if (items.length < 2) throw new Error("spawn_swarm requires at least 2 items; for a single task use spawn_task");
+        if (items.length < 2) throw new Error("spawn_swarm requires at least 2 items; for a single task use subagent");
         if (items.length > SPAWN_SWARM_MAX_ITEMS) throw new Error(`spawn_swarm supports at most ${SPAWN_SWARM_MAX_ITEMS} items (got ${items.length})`);
         if (items.some((item) => !item.task.trim())) throw new Error("spawn_swarm items require a non-empty task");
         const prompts = items.map((item) => template.split("{{item}}").join(item.task));
@@ -3497,7 +3503,7 @@ export class AgentRunner {
     return wrapCommandWithVenv(cmd, venvDir, resolveShell(session.shellBackend ?? "default").flavor);
   }
 
-  // 用量记账：主循环与 spawn_task 子代理共用同一 ledger/用量日志/事件路径
+  // 用量记账：主循环与 subagent 子代理共用同一 ledger/用量日志/事件路径
   private async recordUsageEvent(
     sessionId: string,
     context: ContextManager,
