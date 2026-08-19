@@ -189,6 +189,20 @@ export const DEFAULT_KEYBINDINGS: readonly Keybinding[] = [
 ];
 
 /**
+ * 合并自定义键位覆盖到默认注册表：按 command 替换 key（保留默认的 global/when），
+ * null = 解除绑定（该命令不再参与分发）。默认注册表没有的命令不引入。
+ */
+export function mergeKeybindings(defaults: readonly Keybinding[], overrides: Record<string, string | null>): Keybinding[] {
+  const merged: Keybinding[] = [];
+  for (const binding of defaults) {
+    const override = overrides[binding.command];
+    if (override === null) continue;
+    merged.push(typeof override === "string" && override ? { ...binding, key: override } : binding);
+  }
+  return merged;
+}
+
+/**
  * 全局键盘分发 hook：window keydown → keybindings 匹配 → 命令执行。
  * 输入框聚焦时不抢键（标记 global 的应用级键位除外）；when 上下文每次按键实时求值。
  */

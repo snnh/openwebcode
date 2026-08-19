@@ -17,7 +17,7 @@ import { isBusyState } from "../lib/agent-state";
 import { pruneDrafts } from "../lib/drafts";
 import { writeClipboard } from "../lib/clipboard";
 import { deriveSubagentRunsFromMessages, mergeSubagentRuns } from "../lib/subagent-runs";
-import { useSessionDefaults } from "./prefs-store";
+import { useSessionDefaults, useKeybindingOverrides } from "./prefs-store";
 import { useTheme } from "../theme";
 import { useI18n } from "../i18n";
 import { useAgentRun } from "../hooks/use-agent-run";
@@ -34,7 +34,7 @@ import { streamBuffer } from "../chat/stream-buffer";
 import { clearOlderMessages } from "../chat/pagination-store";
 import { clearComposerState, useDraftNonEmpty } from "../composer/drafts";
 import { chatBridge } from "./chat-bridge";
-import { registerBuiltinCommands, useGlobalKeybindings, buildWhenContext, cycleZone, type CommandActions } from "./commands";
+import { registerBuiltinCommands, useGlobalKeybindings, buildWhenContext, mergeKeybindings, DEFAULT_KEYBINDINGS, cycleZone, type CommandActions } from "./commands";
 import { CommandPalette } from "../dialogs/CommandPalette";
 import { EmptyState } from "../components/EmptyState";
 import { NewSessionDialog, type NewSessionValues } from "../components/NewSessionDialog";
@@ -171,7 +171,10 @@ export function App(): ReactElement {
     findInConversation: () => window.dispatchEvent(new CustomEvent(CONVERSATION_SEARCH_EVENT)),
   };
   useEffect(() => registerBuiltinCommands(() => actionsRef.current), []);
-  useGlobalKeybindings(whenContext);
+  const keybindingOverrides = useKeybindingOverrides();
+  // 分发注册表 = 默认 + 自定义覆盖（keybindingsStore 订阅，变更即热生效）
+  const keybindings = useMemo(() => mergeKeybindings(DEFAULT_KEYBINDINGS, keybindingOverrides), [keybindingOverrides]);
+  useGlobalKeybindings(whenContext, keybindings);
 
   // 新会话永远回到纯对话：切换会话即关闭全部辅助视图（布局回归约束）
   useEffect(() => {
