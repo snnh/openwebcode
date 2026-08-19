@@ -5,6 +5,7 @@
  */
 import { useEffect, type ReactElement } from "react";
 import { Icon } from "../../components/Icon";
+import { formatTime } from "../../lib/format";
 import { ui, uiStore } from "../../app/ui-store";
 import { useStore } from "../../app/store";
 import { layout } from "../../workbench/layout";
@@ -14,7 +15,7 @@ import type { AppNotification } from "../../lib/notifications";
 
 function timeLabel(at: number, locale: "zh-CN" | "en-US"): string {
   try {
-    return new Date(at).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
+    return formatTime(at, locale);
   } catch {
     return "";
   }

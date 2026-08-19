@@ -1,0 +1,9 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "ignore": [
+    "src/lib/contracts.ts",
+    "src/lib/contracts/**",
+    "src/chat-mode/types.ts",
+    "src/lib/perf-sampler.ts"
+  ]
+}

@@ -13,7 +13,7 @@ export function onUnauthorized(listener: () => void): () => void {
   return () => { unauthorizedListeners.delete(listener); };
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init?: RequestInit, opts?: { broadcastUnauthorized?: boolean }): Promise<T> {
   const headers: Record<string, string> = { ...(init?.headers as Record<string, string> | undefined) };
   // 仅有 body 时声明 content-type，避免 Fastify 对空 body 的 POST 报校验错误
   if (init?.body && !headers["content-type"] && !headers["Content-Type"]) {
@@ -22,10 +22,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
     headers,
+    credentials: "include",
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({ error: response.statusText })) as { error?: string; code?: string };
-    if (response.status === 401 && !path.startsWith("/api/auth/")) {
+    if (response.status === 401 && !path.startsWith("/api/auth/") && opts?.broadcastUnauthorized !== false) {
       for (const listener of unauthorizedListeners) listener();
     }
     throw new ApiError(response.status, body.error ?? response.statusText, body.code);
@@ -304,4 +305,37 @@ export const api = {
   evalCompare: (baselineRunId: string, candidateRunId: string) => request<import("./contracts").EvalRunComparison>("/api/eval/compare", { method: "POST", body: JSON.stringify({ baselineRunId, candidateRunId }) }),
   evalComparisons: () => request<{ comparisons: import("./contracts").EvalComparisonSummary[] }>("/api/eval/comparisons"),
   evalComparison: (comparisonId: string) => request<import("./contracts").EvalRunComparison>(`/api/eval/comparisons/${encodeURIComponent(comparisonId)}`),
+  // chat 模式（ChatGPT 风格）：与主路径同一 request 封装（ApiError 归一化 + 401 广播）。
+  // 响应体宽松类型（unknown/void）仅作状态判定，调用方按各自契约解析。
+  chatSession: (id: string) => request<import("./contracts").ChatSessionDetail>(`/api/chat/sessions/${id}`),
+  chatSessions: () => request<import("./contracts").ChatSessionMeta[]>("/api/chat/sessions"),
+  chatCreateSession: (body: { provider: string; model: string }) =>
+    request<import("./contracts").ChatSessionMeta>("/api/chat/sessions", { method: "POST", body: JSON.stringify(body) }),
+  chatDelete: (id: string) => request<void>(`/api/chat/sessions/${id}`, { method: "DELETE" }),
+  chatPatch: (id: string, body: Record<string, unknown>) =>
+    request<import("./contracts").ChatSessionMeta>(`/api/chat/sessions/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  chatAssistants: () => request<import("./contracts").ChatAssistant[]>("/api/chat/assistants"),
+  chatModels: () => request<import("./contracts").ChatModelEntry[]>("/api/chat/models"),
+  chatConfig: () => request<import("./contracts").ChatConfig>("/api/chat/config"),
+  chatSaveConfig: (config: Record<string, unknown>) =>
+    request<import("./contracts").ChatConfig>("/api/chat/config", { method: "PUT", body: JSON.stringify(config) }),
+  chatRetry: (id: string, messageId: string) =>
+    request<{ accepted?: boolean }>(`/api/chat/sessions/${id}/messages/${messageId}/retry`, { method: "POST" }),
+  chatEdit: (id: string, messageId: string, text: string) =>
+    request<{ accepted?: boolean }>(`/api/chat/sessions/${id}/messages/${messageId}/edit`, { method: "POST", body: JSON.stringify({ text }) }),
+  chatSend: (id: string, body: Record<string, unknown>) =>
+    request<{ accepted?: boolean }>(`/api/chat/sessions/${id}/messages`, { method: "POST", body: JSON.stringify(body) }),
+  chatStop: (id: string) => request<void>(`/api/chat/sessions/${id}/stop`, { method: "POST" }),
+  chatUploadImage: (id: string, body: { data: string; mediaType: string; filename: string }) =>
+    request<{ ref: string }>(`/api/chat/sessions/${id}/uploads`, { method: "POST", body: JSON.stringify(body) }),
+  chatCreateShare: (id: string, password?: string) =>
+    request<import("./contracts").ChatShare>(`/api/chat/sessions/${id}/share`, { method: "POST", body: JSON.stringify(password ? { password } : {}) }),
+  chatRevokeShare: (id: string) => request<void>(`/api/chat/sessions/${id}/share`, { method: "DELETE" }),
+  chatBranches: (id: string) =>
+    request<{ sessionId: string }>(`/api/chat/sessions/${id}/branches`, { method: "POST" }),
+  // 公开只读分享页：401 是「需要口令/口令错误」业务流，不触发登录页兜底广播
+  shareMessages: (shareId: string, token?: string) =>
+    request<{ title: string; messages?: import("./contracts").ChatMessage[] }>(`/api/share/${shareId}/messages${token ? `?token=${encodeURIComponent(token)}` : ""}`, undefined, { broadcastUnauthorized: false }),
+  shareVerify: (shareId: string, password?: string) =>
+    request<{ verified?: boolean; token?: string }>(`/api/share/${shareId}/verify`, { method: "POST", body: JSON.stringify(password ? { password } : {}) }, { broadcastUnauthorized: false }),
 };

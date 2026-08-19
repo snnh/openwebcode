@@ -7,6 +7,7 @@ import { useConfirmDialog } from "../components/ConfirmDialog";
 import { qk } from "../app/queries";
 import { ui } from "../app/ui-store";
 import { auxViews } from "../workbench/aux-views";
+import { formatDateTime } from "../lib/format";
 import { useI18n } from "../i18n";
 
 /** 会话树节点展示上限（超出时只保留最新 N 个，滚动查看；当前叶节点打开时滚动可见） */
@@ -149,7 +150,7 @@ export function TimelinePanel({ sessionId, running }: {
           >
             {checkpoint.label}
           </button>
-          <small>{new Date(checkpoint.createdAt).toLocaleString(locale)} · {t(`${checkpoint.messageCount} 条消息`, `${checkpoint.messageCount} messages`)}</small>
+          <small>{formatDateTime(checkpoint.createdAt, locale)} · {t(`${checkpoint.messageCount} 条消息`, `${checkpoint.messageCount} messages`)}</small>
           <div className="checkpoint-actions">
             <button
               className="btn small"

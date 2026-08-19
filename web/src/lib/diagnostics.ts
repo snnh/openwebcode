@@ -1,6 +1,6 @@
 import type { DiagnosticFailure, DiagnosticSet } from "./contracts";
 
-export type DiagnosticSeverity = "error" | "warning";
+type DiagnosticSeverity = "error" | "warning";
 export type SeverityFilter = "all" | DiagnosticSeverity;
 
 /** 契约未携带严重度字段：测试失败一律归 error；明确含 warning 语义且不含失败语义的归 warning */

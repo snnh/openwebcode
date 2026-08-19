@@ -5,7 +5,7 @@ import { deriveAccentVars } from "./lib/accent-color";
 type Theme = "light" | "dark";
 export type ThemePreference = "light" | "dark" | "system";
 /** 预设强调色 + 自定义任意 RGB（custom:#rrggbb）。graphite 为默认（对应 :root 内置灰阶变量） */
-export type AccentPreset = "graphite" | "teal" | "violet" | "blue" | "orange" | "rose" | "green";
+type AccentPreset = "graphite" | "teal" | "violet" | "blue" | "orange" | "rose" | "green";
 export type AccentPreference = AccentPreset | `custom:${string}`;
 
 const STORAGE_KEY = "owc-theme";
@@ -28,7 +28,7 @@ function readPreference(): ThemePreference {
 const VALID_PRESETS: AccentPreset[] = ["graphite", "teal", "violet", "blue", "orange", "rose", "green"];
 
 /** 解析持久化的强调色：预设名或 custom:#rrggbb；非法值回落默认 */
-export function parseAccent(stored: string | null): AccentPreference {
+function parseAccent(stored: string | null): AccentPreference {
   if (stored && (VALID_PRESETS as string[]).includes(stored)) return stored as AccentPreset;
   if (stored && CUSTOM_ACCENT_PATTERN.test(stored)) return stored as AccentPreference;
   return DEFAULT_ACCENT;

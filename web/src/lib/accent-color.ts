@@ -18,7 +18,7 @@ interface Rgb {
   b: number;
 }
 
-export function hexToRgb(hex: string): Rgb {
+function hexToRgb(hex: string): Rgb {
   const value = Number.parseInt(hex.slice(1), 16);
   return { r: (value >> 16) & 0xff, g: (value >> 8) & 0xff, b: value & 0xff };
 }
@@ -71,7 +71,7 @@ function shiftLightness(rgb: Rgb, delta: number): Rgb {
 }
 
 /** WCAG 相对亮度（0 黑 ~ 1 白），用于决定强调色上的文字取黑还是白 */
-export function relativeLuminance({ r, g, b }: Rgb): number {
+function relativeLuminance({ r, g, b }: Rgb): number {
   const channel = (value: number): number => {
     const v = value / 255;
     return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;

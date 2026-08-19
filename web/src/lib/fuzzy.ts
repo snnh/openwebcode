@@ -2,7 +2,7 @@
  * 子序列模糊匹配：Quick Open 与命令面板共用的轻量评分。
  * 返回 -1 表示不匹配；分数越高匹配越好（连续命中、词首命中、短串优先）。
  */
-export function fuzzyScore(query: string, candidate: string): number {
+function fuzzyScore(query: string, candidate: string): number {
   const q = query.trim().toLowerCase();
   if (!q) return 0;
   const text = candidate.toLowerCase();

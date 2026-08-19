@@ -1,6 +1,6 @@
 // ChatComposer 图片附件：≤2MB 内嵌 base64 / >2MB 先 POST uploads 再发 ref / >10MB 拒绝 / 单消息 ≤3 张。
 import { fireEvent, render, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ChatComposer } from "../ChatComposer";
 import { ui } from "../../app/ui-store";
 
@@ -34,12 +34,6 @@ function defaultHandler(url: string): MockReply {
   if (url.includes("/messages")) return { status: 202, body: { runId: "r1" } };
   return { status: 404 };
 }
-
-beforeEach(() => {
-  // jsdom 未实现 objectURL
-  URL.createObjectURL = vi.fn(() => "blob:mock");
-  URL.revokeObjectURL = vi.fn();
-});
 
 afterEach(() => {
   vi.unstubAllGlobals();

@@ -2,7 +2,7 @@ import { useState, type ReactElement } from "react";
 import { useI18n } from "../../i18n";
 import { Icon } from "../../components/Icon";
 import { Markdown } from "../../components/Markdown";
-import { formatTokensShort } from "../../lib/format";
+import { formatTokensShort, formatDateTime } from "../../lib/format";
 import { compactionModeText, type CompactionMarker } from "../../lib/compaction";
 import { live } from "../../app/live-store";
 import { useChatActions } from "../types";
@@ -92,7 +92,7 @@ export function CompactionRow({ marker }: { marker: CompactionMarker }): ReactEl
           )}
           <p className="compaction-detail-label">{t("压缩摘要", "Compaction summary")}</p>
           <Markdown>{marker.summary!}</Markdown>
-          <p className="compaction-time">{new Date(marker.createdAt).toLocaleString(locale)}</p>
+          <p className="compaction-time">{formatDateTime(marker.createdAt, locale)}</p>
         </div>
       )}
     </div>

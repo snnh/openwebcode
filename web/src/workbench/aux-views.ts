@@ -6,7 +6,7 @@ import { createStore, useStore } from "../app/store";
  * 三者互斥（同屏最多一个辅助视图）；随需打开、切换会话即关闭，不持久化。
  */
 
-export interface AuxViewsState {
+interface AuxViewsState {
   /** 编辑器分栏（Monaco；plan 模式只读） */
   editor?: { path: string; line?: number; column?: number };
   /** 统一 diff 视图（SCM/检查点/工具改动三来源） */

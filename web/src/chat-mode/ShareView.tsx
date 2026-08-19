@@ -3,6 +3,7 @@
 // verify 按 IP 连续 5 次失败锁 60 秒，锁定期间 429（error 文本含剩余秒数）。
 import { useCallback, useEffect, useState, type ReactElement } from "react";
 import { useI18n } from "../i18n";
+import { api, ApiError } from "../lib/api";
 import { ChatBlocks } from "./ChatBlocks";
 import type { ChatMessage } from "./types";
 
@@ -19,10 +20,7 @@ export function ShareView({ shareId }: { shareId: string; slug: string }): React
 
   const loadMessages = useCallback(async (token?: string): Promise<boolean> => {
     try {
-      const qs = token ? `?token=${encodeURIComponent(token)}` : "";
-      const res = await fetch(`/api/share/${shareId}/messages${qs}`);
-      if (!res.ok) return false;
-      const data = (await res.json()) as { title: string; messages?: ChatMessage[] };
+      const data = await api.shareMessages(shareId, token);
       setTitle(data.title);
       setMessages(data.messages ?? []);
       return true;
@@ -36,35 +34,29 @@ export function ShareView({ shareId }: { shareId: string; slug: string }): React
     setLoading(true);
     setError(undefined);
     try {
-      const res = await fetch(`/api/share/${shareId}/verify`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(pw ? { password: pw } : {}),
-      });
-      if (res.ok) {
-        const data = (await res.json()) as { verified: boolean; token?: string };
-        if (await loadMessages(data.token)) {
-          setShareToken(data.token);
-          setNeedsPassword(false);
-        } else {
-          setError(t("加载失败", "Failed to load"));
-        }
-      } else if (res.status === 429) {
+      const data = await api.shareVerify(shareId, pw || undefined);
+      if (await loadMessages(data.token)) {
+        setShareToken(data.token);
+        setNeedsPassword(false);
+      } else {
+        setError(t("加载失败", "Failed to load"));
+      }
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 429) {
         // 连续失败锁定：error 文本含剩余秒数
-        const body = (await res.json().catch(() => ({}))) as { error?: string };
-        const seconds = body.error?.match(/(\d+)\s*s/)?.[1];
+        const seconds = error.message.match(/(\d+)\s*s/)?.[1];
         setNeedsPassword(true);
         setError(seconds
           ? t(`尝试次数过多，请 ${seconds} 秒后重试`, `Too many attempts, try again in ${seconds}s`)
           : t("尝试次数过多，请稍后再试", "Too many attempts, try again later"));
-      } else if (res.status === 401) {
+      } else if (error instanceof ApiError && error.status === 401) {
         setNeedsPassword(true);
         if (pw) setError(t("密码错误", "Invalid password"));
-      } else {
+      } else if (error instanceof ApiError) {
         setError(t("分享不存在或已撤销", "Share not found or revoked"));
+      } else {
+        setError(t("加载失败", "Failed to load"));
       }
-    } catch {
-      setError(t("加载失败", "Failed to load"));
     }
     setLoading(false);
   }, [shareId, loadMessages, t]);

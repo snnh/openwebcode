@@ -5,7 +5,7 @@
 import type { ChatMessage } from "./contracts";
 
 /** 用户消息的纯文本内容（拼接 text 块，去掉空消息） */
-export function userMessageText(message: ChatMessage): string {
+function userMessageText(message: ChatMessage): string {
   return message.content
     .filter((block) => block.type === "text")
     .map((block) => block.text ?? "")

@@ -7,11 +7,13 @@ import { Icon } from "../components/Icon";
 import { Markdown } from "../components/Markdown";
 import { ui } from "../app/ui-store";
 import { chatMode } from "../app/chat-mode-store";
+import { api, ApiError } from "../lib/api";
+import { writeClipboard } from "../lib/clipboard";
 import { streamBuffer, useStreamBlocks, type StreamBlock } from "../chat/stream-buffer";
 import { createScrollFollower, type ScrollFollower } from "../chat/scroll-controller";
 import { ThinkingBlock } from "../chat/MessageCard";
 import { ChatBlocks } from "./ChatBlocks";
-import type { ChatMessage, ChatSessionDetail, ChatStreamEvent } from "./types";
+import type { ChatMessage, ChatStreamEvent } from "./types";
 
 export function ChatMessageList({ sessionId, reloadToken }: {
   sessionId: string;
@@ -79,11 +81,8 @@ export function ChatMessageList({ sessionId, reloadToken }: {
 
   const loadMessages = useCallback(async (): Promise<void> => {
     try {
-      const res = await fetch(`/api/chat/sessions/${sessionId}`, { credentials: "include" });
-      if (res.ok) {
-        const data = (await res.json()) as ChatSessionDetail;
-        setMessages(data.messages ?? []);
-      }
+      const data = await api.chatSession(sessionId);
+      setMessages(data.messages ?? []);
     } catch {
       // 拉取失败保持现有列表
     }
@@ -164,54 +163,38 @@ export function ChatMessageList({ sessionId, reloadToken }: {
 
   const handleRetry = useCallback(async (messageId: string): Promise<void> => {
     try {
-      const res = await fetch(`/api/chat/sessions/${sessionId}/messages/${messageId}/retry`, {
-        method: "POST",
-        credentials: "include",
-      });
-      if (res.status === 202) {
-        // 清空本地流式缓冲，新分支内容依赖 SSE 推流渲染；done 后刷新活动路径
-        streamBuffer.clear(sessionId);
-        setError(undefined);
-        setMaxTurns(false);
-        setRunning(true);
-        chatMode.setRunning(sessionId, true);
-        return;
-      }
-      if (res.status === 409) {
+      await api.chatRetry(sessionId, messageId);
+      // 清空本地流式缓冲，新分支内容依赖 SSE 推流渲染；done 后刷新活动路径
+      streamBuffer.clear(sessionId);
+      setError(undefined);
+      setMaxTurns(false);
+      setRunning(true);
+      chatMode.setRunning(sessionId, true);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
         ui.notify(t("对话正在运行中，请稍后再试", "Chat is running; try again later"), "error");
       } else {
         ui.notify(t("重新生成失败", "Regenerate failed"), "error");
       }
-    } catch {
-      ui.notify(t("重新生成失败", "Regenerate failed"), "error");
     }
   }, [sessionId, t]);
 
   // 编辑重发：与 retry 同语义（回溯长出文本已编辑的新分支），202 后走同一接管逻辑
   const handleEdit = useCallback(async (messageId: string, text: string): Promise<void> => {
     try {
-      const res = await fetch(`/api/chat/sessions/${sessionId}/messages/${messageId}/edit`, {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      });
-      if (res.status === 202) {
-        streamBuffer.clear(sessionId);
-        setError(undefined);
-        setMaxTurns(false);
-        setRunning(true);
-        chatMode.setRunning(sessionId, true);
-        void loadMessages();
-        return;
-      }
-      if (res.status === 409) {
+      await api.chatEdit(sessionId, messageId, text);
+      streamBuffer.clear(sessionId);
+      setError(undefined);
+      setMaxTurns(false);
+      setRunning(true);
+      chatMode.setRunning(sessionId, true);
+      void loadMessages();
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
         ui.notify(t("对话正在运行中，请稍后再试", "Chat is running; try again later"), "error");
       } else {
         ui.notify(t("编辑重发失败", "Edit & resend failed"), "error");
       }
-    } catch {
-      ui.notify(t("编辑重发失败", "Edit & resend failed"), "error");
     }
   }, [sessionId, t, loadMessages]);
 
@@ -220,7 +203,8 @@ export function ChatMessageList({ sessionId, reloadToken }: {
       .filter((block) => block.type === "text")
       .map((block) => block.text ?? "")
       .join("\n");
-    void navigator.clipboard.writeText(text).then(() => {
+    void writeClipboard(text).then((ok) => {
+      if (!ok) return;
       setCopiedId(message.id);
       window.setTimeout(() => setCopiedId((current) => (current === message.id ? undefined : current)), 1500);
     });
