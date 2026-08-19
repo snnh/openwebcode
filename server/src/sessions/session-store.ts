@@ -277,7 +277,7 @@ export class SessionStore {
     const meta = await this.readMeta(sessionId);
     const existing = meta.activeLeafId ? undefined : await this.readMessages(sessionId);
     const parentId = lineage?.parentId ?? meta.activeLeafId ?? existing?.messages.at(-1)?.id;
-    const now = new Date().toISOString();
+    const now = monotonicTimestamp();
     const message: ChatMessage = {
       id: randomUUID(),
       role,
@@ -339,7 +339,7 @@ export class SessionStore {
     // 备选模型链：undefined 或空数组 = 清除（与 toolsAllow 同款语义）
     if (update.fallbackModels === undefined || update.fallbackModels.length === 0) delete meta.fallbackModels;
     else meta.fallbackModels = update.fallbackModels;
-    meta.updatedAt = new Date().toISOString();
+    meta.updatedAt = monotonicTimestamp();
     await this.writeMeta(meta);
     return meta;
   }
@@ -360,7 +360,7 @@ export class SessionStore {
     }
     if (Object.keys(next).length === 0) delete meta.extensionState;
     else meta.extensionState = next;
-    meta.updatedAt = new Date().toISOString();
+    meta.updatedAt = monotonicTimestamp();
     await this.writeMeta(meta);
     return meta;
   }
@@ -398,7 +398,7 @@ export class SessionStore {
     await writeFile(this.messagesPath(id), messages.map((message) => JSON.stringify(message)).join("\n") + (messages.length ? "\n" : ""), "utf8");
     this.messagesCache.delete(id);
     const meta = await this.readMeta(id);
-    meta.updatedAt = new Date().toISOString();
+    meta.updatedAt = monotonicTimestamp();
     await this.writeMeta(meta);
   }
 
@@ -407,7 +407,7 @@ export class SessionStore {
     if (permissionMode === undefined) delete meta.permissionMode;
     else meta.permissionMode = permissionMode;
     meta.permissionRules = permissionRules.map((rule) => ({ ...rule }));
-    meta.updatedAt = new Date().toISOString();
+    meta.updatedAt = monotonicTimestamp();
     await this.writeMeta(meta);
     return meta;
   }
@@ -421,7 +421,7 @@ export class SessionStore {
     }
     if (!setupScript?.trim()) delete meta.setupScript;
     else meta.setupScript = setupScript;
-    meta.updatedAt = new Date().toISOString();
+    meta.updatedAt = monotonicTimestamp();
     await this.writeMeta(meta);
     return meta;
   }
@@ -430,7 +430,7 @@ export class SessionStore {
   async updateSandboxNetwork(id: string, network: SandboxNetwork): Promise<SessionMeta> {
     const meta = await this.readMeta(id);
     meta.sandbox = { ...(meta.sandbox ?? defaultSandboxPolicy(meta.cwd)), network };
-    meta.updatedAt = new Date().toISOString();
+    meta.updatedAt = monotonicTimestamp();
     await this.writeMeta(meta);
     return meta;
   }
@@ -454,7 +454,7 @@ export class SessionStore {
     else meta.contextPins = pins;
     if (excludes === undefined) delete meta.contextExcludes;
     else meta.contextExcludes = excludes;
-    meta.updatedAt = new Date().toISOString();
+    meta.updatedAt = monotonicTimestamp();
     await this.writeMeta(meta);
     return meta;
   }
@@ -471,7 +471,7 @@ export class SessionStore {
       }
       meta.repoMapBudget = settings.budget;
     }
-    meta.updatedAt = new Date().toISOString();
+    meta.updatedAt = monotonicTimestamp();
     await this.writeMeta(meta);
     return meta;
   }
@@ -480,7 +480,7 @@ export class SessionStore {
   async updateSnapshotBackend(id: string, backend: string): Promise<SessionMeta> {
     const meta = await this.readMeta(id);
     meta.snapshotBackend = backend;
-    meta.updatedAt = new Date().toISOString();
+    meta.updatedAt = monotonicTimestamp();
     await this.writeMeta(meta);
     return meta;
   }
@@ -590,7 +590,7 @@ export class SessionStore {
   async setActiveLeaf(id: string, messageId: string): Promise<SessionMeta> {
     const meta = await this.readMeta(id);
     meta.activeLeafId = messageId;
-    meta.updatedAt = new Date().toISOString();
+    meta.updatedAt = monotonicTimestamp();
     await this.writeMeta(meta);
     return meta;
   }

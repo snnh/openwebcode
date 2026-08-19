@@ -133,7 +133,7 @@ export const USAGE_LOG_CLEANUP_MODES: UsageLogCleanupMode[] = [
   "deleted-immediate-only",
 ];
 
-export interface UsageLogCleanupOptions {
+interface UsageLogCleanupOptions {
   mode: UsageLogCleanupMode;
   /** 保留天数（deleted-after-days / all-after-days / live-timeout 的未删除分支使用；immediate 分支忽略）。 */
   retentionDays: number;

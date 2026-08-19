@@ -93,7 +93,7 @@ export interface EvalRunSummary {
   taskCount: number;
 }
 
-export interface EvalTaskComparison {
+interface EvalTaskComparison {
   taskId: string;
   taskName: string;
   baselineStatus?: EvalTaskResult["status"];

@@ -8,6 +8,7 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { getOfficialUserAgent } from "./user-agent.js";
+import { withTimeout } from "./http-utils.js";
 import { compareSemver, stripVersionPrefix } from "./update-checker.js";
 
 /** 在线更新的状态机状态。restarting 表示服务即将退出（由安装程序或 systemd 接管）。 */
@@ -267,7 +268,7 @@ export class UpdateApplier {
         Accept: "application/vnd.github+json",
         "User-Agent": getOfficialUserAgent(),
       },
-      signal: AbortSignal.timeout(RELEASE_JSON_TIMEOUT_MS),
+      signal: withTimeout(undefined, RELEASE_JSON_TIMEOUT_MS),
     });
     if (!response.ok) throw new Error(`获取版本信息失败：HTTP ${response.status}`);
     const body = await response.json() as { tag_name?: unknown; assets?: unknown };
@@ -288,7 +289,7 @@ export class UpdateApplier {
   private async fetchText(url: string): Promise<string> {
     const response = await this.fetchImpl(url, {
       headers: { "User-Agent": getOfficialUserAgent() },
-      signal: AbortSignal.timeout(RELEASE_JSON_TIMEOUT_MS),
+      signal: withTimeout(undefined, RELEASE_JSON_TIMEOUT_MS),
     });
     if (!response.ok) throw new Error(`下载失败：HTTP ${response.status}`);
     return response.text();

@@ -1,14 +1,14 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-export interface McpServerStdioConfig {
+interface McpServerStdioConfig {
   command: string;
   args?: string[];
   env?: Record<string, string>;
   cwd?: string;
 }
 
-export interface McpServerHttpConfig {
+interface McpServerHttpConfig {
   url: string;
   headers?: Record<string, string>;
 }
@@ -23,7 +23,7 @@ export interface McpConfigResult {
   skipped: string[];
 }
 
-function validate(name: string, value: unknown): McpServerConfig | undefined {
+function validate(value: unknown): McpServerConfig | undefined {
   if (!value || typeof value !== "object") return undefined;
   const record = value as Record<string, unknown>;
   if (typeof record.url === "string" && record.url !== "") {
@@ -50,7 +50,7 @@ async function readConfigFile(filePath: string, result: McpConfigResult): Promis
   const servers = (parsed as { mcpServers?: unknown })?.mcpServers;
   if (!servers || typeof servers !== "object") return;
   for (const [name, value] of Object.entries(servers)) {
-    const config = validate(name, value);
+    const config = validate(value);
     if (config) result.servers[name] = config;
     else result.skipped.push(name);
   }

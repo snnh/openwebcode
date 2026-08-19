@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import type { EventBus } from "../src/events/event-bus.js";
 import { ProviderRegistry, type ProviderEvent, type StreamChatRequest } from "../src/providers/provider.js";
 import type { ChatMessage, MessageContent } from "../src/sessions/types.js";
 import type { ChatAssistantStore } from "../src/chat/chat-assistant-store.js";
@@ -122,7 +121,6 @@ function makeRunner(options: {
   const assistantStore = {
     get: async (_id: string) => options.assistant,
   } as unknown as ChatAssistantStore;
-  const events = { publish: () => undefined } as unknown as EventBus;
   const chatConfig = {
     get: () => Promise.resolve(options.chatConfig ?? {}),
   } as ChatConfigService;
@@ -135,7 +133,6 @@ function makeRunner(options: {
     chatConfig,
     undefined,
     assistantStore,
-    events,
     () => options.maxTurns ?? 10,
   );
   return { runner, store, requests, registry };

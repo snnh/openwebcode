@@ -20,7 +20,7 @@ import {
 } from "./backend.js";
 
 /** overlay.restore 在 core 侧存在 running job 时的稳定冲突错误码（协议约定）。 */
-export const OVERLAY_RESTORE_BUSY_CODE = -32005;
+const OVERLAY_RESTORE_BUSY_CODE = -32005;
 
 /** overlay.* 的最小 core 依赖面（CoreClientLike 子集；测试注入 fake）。 */
 export type OverlayfsCore = Pick<CoreClientLike, "ping" | "overlayMount" | "overlayCheckpoint" | "overlayRestore" | "overlayUnmount">;

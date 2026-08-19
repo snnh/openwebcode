@@ -273,7 +273,7 @@ const SPAWN_TASK_TOOL: ProviderTool = {
 };
 
 /** swarm 单项数上限：低于 Kimi Code AgentSwarm 的 128，作为自托管部署的成本护栏。 */
-export const SPAWN_SWARM_MAX_ITEMS = 16;
+const SPAWN_SWARM_MAX_ITEMS = 16;
 /** 同时运行的子代理数；超出排队，与"launch 自动排队"语义一致。 */
 const SPAWN_SWARM_CONCURRENCY = 4;
 
@@ -620,18 +620,24 @@ export class WorkspaceWriteDeniedError extends Error {
 }
 
 /**
- * Lease supplied by the HTTP workspace gate for a managed-session run.
+ * Managed workspace run lease (gate contract).
  *
- * An automatic VHDX/qcow2 checkpoint starts with the exclusive side of the
- * gate.  Once the short leaf-switch has finished, the route downgrades it to
- * a normal shared lease for the rest of the agent turn.  Keeping the gate
- * transition owned by app.ts makes it atomic with file/exec/sync routes.
+ * Supplied by the HTTP workspace gate for a managed-session run: an automatic
+ * VHDX/qcow2 checkpoint starts with the exclusive side of the gate.  Once the
+ * short leaf-switch has finished, the route downgrades it to a normal shared
+ * lease for the rest of the agent turn.  Keeping the gate transition owned by
+ * app.ts makes it atomic with file/exec/sync routes.
+ *
+ * `release` belongs to the route layer that acquired the lease; the agent only
+ * ever sees the `Omit`ed run view used by `AgentRunOptions.managedWorkspace`.
  */
-interface ManagedWorkspaceRunLease {
+export interface ManagedWorkspaceRunLease {
   /** `false` means another workspace operation was already using the mount. */
   automaticSnapshotAllowed: boolean;
   /** Idempotently change an exclusive automatic-checkpoint lease to shared. */
   downgradeAfterAutomaticSnapshot?: () => void;
+  /** Release the lease (shared/exclusive) once the operation settles. */
+  release: () => void;
 }
 
 interface AgentRunOptions {
@@ -639,13 +645,13 @@ interface AgentRunOptions {
   /** 预组装的附件 text 块（app.ts 已读取+截断+包装为 `[Attachment <path>]\n<内容>`）；插入在 images 之后、正文之前 */
   attachments?: Array<{ text: string }>;
   /** app.ts managed-workspace shared/exclusive lease; absent for direct/test runs. */
-  managedWorkspace?: ManagedWorkspaceRunLease;
+  managedWorkspace?: Omit<ManagedWorkspaceRunLease, "release">;
   /** A durable follow-up queue entry which becomes applied when its user message is written. */
   queueItemId?: string;
 }
 
 /** 0.5.0 Phase 2d：run 级性能采样记录（脱敏：不含消息内容、文件路径、模型名）。 */
-export interface RunPerfRecord {
+interface RunPerfRecord {
   runId: string;
   sessionId: string;
   startedAt: string;

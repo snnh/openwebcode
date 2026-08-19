@@ -14,7 +14,7 @@ import type { CoreShellBackend, ShellBackend } from "../sessions/types.js";
 /** 语法族：持久 shell 的 sentinel/init/venv 语法与一次性包装都按族生成。 */
 export type ShellFlavor = "pwsh" | "cmd" | "sh";
 /** 实际选中的解释器种类（工具描述与展示用）。 */
-export type ShellKind = "pwsh" | "git-bash" | "cmd" | "bash" | "sh";
+type ShellKind = "pwsh" | "git-bash" | "cmd" | "bash" | "sh";
 
 export interface ResolvedShell {
   kind: ShellKind;
@@ -28,7 +28,7 @@ export interface ResolvedShell {
 }
 
 /** 宿主探测结果：值为绝对路径。 */
-export interface HostShellProbe {
+interface HostShellProbe {
   pwsh?: string;
   /** Windows Git Bash（已排除 WSL）。 */
   gitBash?: string;
@@ -126,7 +126,7 @@ function posixShell(backend: ShellBackend, probe: HostShellProbe, env: EnvLike):
 }
 
 /** 纯解析（可注入 probe/platform/env 供单测）。 */
-export function resolveShellFrom(
+function resolveShellFrom(
   backend: ShellBackend,
   probe: HostShellProbe,
   platform: NodeJS.Platform,

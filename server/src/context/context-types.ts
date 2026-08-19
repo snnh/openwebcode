@@ -15,7 +15,7 @@ export interface RecordedCost {
   };
 }
 
-export interface CostLedger {
+interface CostLedger {
   usdMicroUnits: string;
   cnyMicroUnits: string;
   unpricedTokens: number;
@@ -24,10 +24,10 @@ export interface CostLedger {
   lastExchangeRate?: RecordedCost["exchangeRate"];
 }
 
-export type ToolEvictionStrategy = "lag" | "interval" | "off";
+type ToolEvictionStrategy = "lag" | "interval" | "off";
 
 /** 驱逐形态：placeholder = 默认节省（占位符替换结果正文）；process = 超级节省（整轮工具过程连同思维链出视图）。 */
-export type EvictionMode = "placeholder" | "process";
+type EvictionMode = "placeholder" | "process";
 
 export interface ContextPolicy {
   enabled: boolean;
@@ -203,7 +203,7 @@ export interface LedgerCacheEntry {
 }
 
 /** 轮级句柄的待落盘变更：fast path 跳过已即时应用的，rebase path 全部重放。 */
-export interface PendingLedgerMutation {
+interface PendingLedgerMutation {
   /** 应用到给定账本；返回 true 表示产生变更（仅驱逐可能空跑返回 false），void 视为已变更。 */
   apply: (ledger: ContextLedger) => boolean | void | Promise<boolean | void>;
   /** 已在工作副本即时应用：rebase 需重放，fast path 跳过。 */

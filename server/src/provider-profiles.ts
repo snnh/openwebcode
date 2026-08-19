@@ -4,9 +4,9 @@ import path from "node:path";
 import { writeUtf8Atomically } from "./atomic-file.js";
 import { ensureDirWithMode } from "./fs-utils.js";
 
-export type ModelInterfaceType = "anthropic-messages" | "openai-chat-completions" | "openai-responses";
+type ModelInterfaceType = "anthropic-messages" | "openai-chat-completions" | "openai-responses";
 export type WebCapability = "search" | "fetch";
-export type WebProviderType = "jina" | "brave" | "tavily" | "custom" | "bing" | "searxng" | "exa" | "linkup" | "bocha" | "firecrawl";
+type WebProviderType = "jina" | "brave" | "tavily" | "custom" | "bing" | "searxng" | "exa" | "linkup" | "bocha" | "firecrawl";
 
 export interface ModelProviderProfile {
   id: string;

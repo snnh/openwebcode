@@ -60,7 +60,7 @@ export interface ChatMessage {
 
 export type PermissionMode = "ask" | "acceptEdits" | "review" | "yolo";
 /** review 权限模式的审核模型来源：fast = 快速模型；main = 会话当前 provider/model。 */
-export type ReviewModel = "fast" | "main";
+type ReviewModel = "fast" | "main";
 export interface PermissionRule { tool: string; argumentPrefix?: string }
 /** 托管工作区元数据：会话项目目录活在隔离视图（VHDX/qcow2 镜像盘挂载点 / overlayfs merged）上 */
 export interface ManagedWorkspaceMeta {
@@ -73,7 +73,7 @@ export interface ManagedWorkspaceMeta {
   mountPoint: string;
 }
 /** 下发给 core 的 sandbox.mode（wsb 不下发，由 VM 充当边界；landlock 为 POSIX 默认语义，不下发 mode） */
-export type SandboxBackendMode = "appcontainer" | "jobobject" | "landlock" | "bubblewrap" | "off";
+type SandboxBackendMode = "appcontainer" | "jobobject" | "landlock" | "bubblewrap" | "off";
 /** 用户可选的沙盒模式；undefined = jobobject（Windows 现状默认）/ landlock（POSIX 现状默认） */
 export type SandboxMode = "appcontainer" | "wsb" | "jobobject" | "landlock" | "bubblewrap" | "off";
 /** 沙盒网络策略：filtered = core 侧按规则过滤（仅 Windows；Landlock 无网络语义） */

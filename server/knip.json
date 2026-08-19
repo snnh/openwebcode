@@ -1,0 +1,11 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": ["src/cli.ts", "src/extensions/extension-host-process.ts"],
+  "ignore": [
+    "assets/eval/fixtures/**",
+    "test/fixtures/fake-mcp-env.mjs",
+    "test/fixtures/fake-mcp-server.mjs"
+  ],
+  "ignoreDependencies": ["playwright"],
+  "ignoreBinaries": ["bwrap", "pwsh", "uv"]
+}

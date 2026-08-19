@@ -41,7 +41,7 @@ export const GENERAL_AGENT_TOOL_NAMES = [
 /** 结论硬上限（防单条结论撑爆主上下文；正常结论远小于此值）。 */
 export const SUB_AGENT_CONCLUSION_LIMIT = 64_000;
 
-export type BuiltinSubAgentKind = "explore" | "general";
+type BuiltinSubAgentKind = "explore" | "general";
 
 export interface BuiltinSubAgent {
   id: BuiltinSubAgentKind;
@@ -84,7 +84,7 @@ const SUB_AGENT_TOOL_SCHEMAS: readonly ProviderTool[] = [
 ];
 
 /** 一次子代理工具调用经调用方（agent-runner）的权限链 + 沙盒执行后的结果。 */
-export interface SubAgentToolExecutor {
+interface SubAgentToolExecutor {
   (call: { name: string; input: Record<string, unknown>; toolCallId: string }): Promise<{ content: string; isError: boolean }>;
 }
 

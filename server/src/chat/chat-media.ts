@@ -172,7 +172,7 @@ export function createProviderVisionProvider(options: { name: string; model: str
         tools: [],
         thinking: reasoning === "off" ? "disabled" : "enabled",
         ...(reasoning === "off" ? {} : { effort: reasoning }),
-        signal: analyzeOptions?.signal ?? AbortSignal.timeout(IMAGE_GEN_TIMEOUT_MS),
+        signal: withTimeout(analyzeOptions?.signal, IMAGE_GEN_TIMEOUT_MS),
       });
       for await (const event of stream) {
         if (event.type === "text_delta") answer += event.text;

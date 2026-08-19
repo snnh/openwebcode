@@ -1,7 +1,7 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import path from "node:path";
 import type { FastifyReply } from "fastify";
-import type { AgentRunner } from "../agent/agent-runner.js";
+import type { AgentRunner, ManagedWorkspaceRunLease } from "../agent/agent-runner.js";
 import type { CoreClientLike } from "../core-client.js";
 import type { EventBus } from "../events/event-bus.js";
 import type { ProviderRegistry } from "../providers/provider.js";
@@ -321,10 +321,10 @@ export function pdfUploadPath(name: string): string {
 }
 
 /** Bearer/TOTP 判定所需的最小请求形状（路由文件与 app.ts 共享）。 */
-export type TokenRequestLike = { headers: Record<string, string | string[] | undefined>; query?: unknown };
+type TokenRequestLike = { headers: Record<string, string | string[] | undefined>; query?: unknown };
 
 /** /api/events WS 客户端（app.ts 的 fan-out 与 metrics 路由共享）。 */
-export interface WsClient {
+interface WsClient {
   send(data: string): void;
   close(code?: number, reason?: string): void;
   readonly readyState: number;
@@ -333,13 +333,8 @@ export interface WsClient {
   sessionId?: string;
 }
 
+/** 托管工作区会话的最小形状（app.ts 的 gate 与 RouteContext 判定共享）。 */
 export type ManagedSession = { id: string; workspace?: { mode?: string } };
-
-export type ManagedWorkspaceRunLease = {
-  release: () => void;
-  automaticSnapshotAllowed: boolean;
-  downgradeAfterAutomaticSnapshot?: () => void;
-};
 
 /**
  * buildServer 装配的共享路由上下文：跨域共享的闭包状态（托管工作区租约、

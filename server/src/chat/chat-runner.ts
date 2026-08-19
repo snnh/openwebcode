@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import type { EventBus } from "../events/event-bus.js";
 import type { ProviderRegistry, StreamChatRequest } from "../providers/provider.js";
 import type { ProviderProfilesService } from "../provider-profiles.js";
 import { collectProviderTurn } from "../providers/retry.js";
@@ -61,7 +60,6 @@ export class ChatRunner {
     /** provider profiles 凭据面（image_gen 的 apiKey/baseURL 来源）；缺省时 image_gen 恒未配置。 */
     private readonly providerProfiles: ProviderProfilesService | undefined,
     private readonly assistantStore: ChatAssistantStore,
-    private readonly events: EventBus,
     /** 最大轮次现读（共享基础模式 agentMaxTurns 设置，热生效）。 */
     private readonly maxTurns: () => number,
     /** core 桥接（CoreRouter）：Windows 上 python 工具经 job.* 在 Job Object 内运行。 */

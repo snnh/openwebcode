@@ -32,7 +32,7 @@ interface ManagedWorkspaceSyncManifest extends ManagedWorkspaceSyncTree {
   origin: { path: string; dev: string; ino: string };
 }
 
-export interface ManagedWorkspaceSyncRoots {
+interface ManagedWorkspaceSyncRoots {
   sessionId: string;
   /** 托管镜像与 manifest 所在的服务端目录，绝不位于挂载工作区内。 */
   workspaceRoot: string;
@@ -45,7 +45,7 @@ export interface ManagedWorkspaceSyncRoots {
 type ManagedWorkspaceSyncAction = "create" | "update" | "delete" | "none" | "conflict" | "unsupported";
 
 /** 单一路径的三方比较：baseline=创建时（或上次已确认同步后）的共同版本。 */
-export interface ManagedWorkspaceSyncChange {
+interface ManagedWorkspaceSyncChange {
   path: string;
   action: ManagedWorkspaceSyncAction;
   reason: "unchanged" | "origin_changed_only" | "managed_changed_only" | "already_in_sync" | "both_changed" | "legacy_no_baseline" | "non_regular_entry";
@@ -56,7 +56,7 @@ export interface ManagedWorkspaceSyncChange {
   managedChanged: boolean;
 }
 
-export interface ManagedWorkspaceSyncSummary {
+interface ManagedWorkspaceSyncSummary {
   create: number;
   update: number;
   delete: number;
@@ -68,7 +68,7 @@ export interface ManagedWorkspaceSyncSummary {
   unchanged: number;
 }
 
-export interface ManagedWorkspaceSyncBaselineStatus {
+interface ManagedWorkspaceSyncBaselineStatus {
   available: boolean;
   reason?: "missing" | "invalid";
   createdAt?: string;
@@ -76,7 +76,7 @@ export interface ManagedWorkspaceSyncBaselineStatus {
 }
 
 /** 已完成扫描的工作量，供调用方展示同步预览的覆盖范围。 */
-export interface ManagedWorkspaceScanSummary {
+interface ManagedWorkspaceScanSummary {
   files: number;
   directories: number;
   bytes: number;
@@ -105,7 +105,7 @@ export interface ManagedWorkspaceSyncOperationOptions {
   signal?: AbortSignal;
 }
 
-export interface ManagedWorkspaceSyncAppliedChange {
+interface ManagedWorkspaceSyncAppliedChange {
   path: string;
   action: "create" | "update" | "delete" | "overwrite";
 }
@@ -141,7 +141,7 @@ interface PlannedOperation {
   action: "create" | "update" | "delete" | "overwrite";
 }
 
-export function managedWorkspaceSyncBaselinePath(workspaceRoot: string): string {
+function managedWorkspaceSyncBaselinePath(workspaceRoot: string): string {
   return path.join(workspaceRoot, BASELINE_FILE);
 }
 

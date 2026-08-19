@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import type { McpServerConfig } from "./config.js";
 import { isHttpConfig } from "./config.js";
 import { getServerVersion } from "../version.js";
-import { readTextLimited } from "../http-utils.js";
+import { readTextLimited, withTimeout } from "../http-utils.js";
 import { getUserAgent } from "../user-agent.js";
 
 /** MCP HTTP 响应体字节上限（与 provider SSE 上限对齐）：失控/恶意的 MCP 服务器
@@ -168,7 +168,7 @@ class Client implements McpClient {
           ...(this.sessionId ? { "mcp-session-id": this.sessionId } : {}),
         },
         body: JSON.stringify(message),
-        signal: AbortSignal.timeout(this.timeoutMs),
+        signal: withTimeout(undefined, this.timeoutMs),
       });
       const sessionHeader = response.headers.get("mcp-session-id");
       if (sessionHeader) this.sessionId = sessionHeader;

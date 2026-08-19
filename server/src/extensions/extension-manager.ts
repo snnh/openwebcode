@@ -7,6 +7,7 @@ import type { AppEvent, EventBus } from "../events/event-bus.js";
 import type { FastModelClient } from "../fast-model.js";
 import type { CoreClientLike } from "../core-client.js";
 import { getModelProfile } from "../context/model-profile.js";
+import { withTimeout } from "../http-utils.js";
 import type { ProviderRegistry, ProviderTool } from "../providers/provider.js";
 import type { ChatMessage, SessionDetail, SessionMeta } from "../sessions/types.js";
 import type { SessionStore } from "../sessions/session-store.js";
@@ -710,7 +711,7 @@ export class ExtensionManager {
       tools: [],
       thinking: thinking ? "enabled" : "disabled",
       ...(maxTokens !== undefined ? { maxTokens } : {}),
-      signal: AbortSignal.timeout(60_000),
+      signal: withTimeout(undefined, 60_000),
     })) {
       if (event.type === "text_delta") text += event.text;
       else if (event.type === "thinking_delta") thinkingText += event.text;

@@ -78,7 +78,7 @@ interface UvEnsureResult {
 }
 
 /** host 侧命令探测（uv/fnm 等版本管理器可用性检测共用；命令完全由 server 生成，不含模型输入）。 */
-export function runHost(command: string, args: string[], timeoutMs: number): Promise<{ code: number | null; stderr: string }> {
+function runHost(command: string, args: string[], timeoutMs: number): Promise<{ code: number | null; stderr: string }> {
   return new Promise((resolve) => {
     let settled = false;
     const finish = (code: number | null, stderr: string): void => {
@@ -162,7 +162,9 @@ export class UvPythonEnvironments {
     const version = await runHostResolving("uv", ["--version"], 15_000);
     if (version.code !== 0) return { ok: false, note: "uv is not available on PATH, using the host python environment" };
     if (existsSync(pythonExePath(venvDir))) return { ok: true };
-    const created = await runHostResolving("uv", ["venv", venvDir], 120_000);
+    // --clear：venv 目录可能残留（用户手动删了 python 可执行文件等），uv 新版本
+    // 对已存在目录拒绝重建，需显式清除；目录不存在时 --clear 为 no-op。
+    const created = await runHostResolving("uv", ["venv", "--clear", venvDir], 120_000);
     if (created.code !== 0 || !existsSync(pythonExePath(venvDir))) {
       return { ok: false, note: `uv venv failed${created.stderr ? ` (${created.stderr.slice(0, 200)})` : ""}, using the host python environment` };
     }
