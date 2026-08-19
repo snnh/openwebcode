@@ -2,6 +2,18 @@
 
 本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前版本的用户可感知变化。日期以 Git 标签发布日期为准。
 
+## [1.9.0] - Unreleased
+
+### 新增功能
+
+- **自定义键位**：设置 → 快捷键支持点击录制自定义组合键（冲突检测拒绝保存、逐行恢复默认、整体重置全部）；命令面板与快捷键速查展示实际生效的键位（自定义覆盖即时生效）。键位覆盖存浏览器本地（`owc-keybindings`），不同设备互不影响。
+- **快照 diff 全面支持 hunk 级恢复**：此前仅 git-shadow 后端提供完整 unified diff，其余后端（btrfs/zfs/refs/overlayfs）只有变更摘要。现在所有后端统一经 git 产出完整 unified diff——Web diff 视图的 hunk 接受/拒绝（「恢复到此 hunk」）在全部快照后端可用；超大文件、遍历超预算或系统无 git 时如实降级为摘要。
+- **Windows 文件监听语义对齐**：目录监听由单事件轮询升级为 `ReadDirectoryChangesW`——逐路径事件、去重/折叠/overflow/limit 语义与 Linux 一致，deny 路径内的变更不再误触发索引重建。
+
+### 变更
+
+- **子代理工具重命名 `spawn_task` → `subagent`**：LLM 工具名与界面描述统一为 `subagent`（中文「子代理」）；旧会话 `toolsAllow`/`toolsDeny` 配置与历史消息中的旧名等价兼容（不改写历史）；swarm（并行集群）保持 `spawn_swarm` 与「Swarm」字样不变。
+
 ## [1.8.3] - 2026-08-18
 
 ### 新增功能
