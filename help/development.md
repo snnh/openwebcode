@@ -79,7 +79,7 @@ npm run dev       # tsx watch，源码改动热重启
 npm start         # node dist/index.js
 ```
 
-tsconfig 严格档：`strict` + `noUncheckedIndexedAccess` + `exactOptionalPropertyTypes`，改完保证 `npm run build` 绿。
+tsconfig 严格档：`strict` + `noUncheckedIndexedAccess` + `exactOptionalPropertyTypes`，改完保证 `npm run build` 绿。跨层契约（`web/src/lib/contracts/*` ↔ server 返回/入参类型）由 `npm run contracts-check` 做类型级双向断言（server.yml 强制），改动任一侧后必须过它。
 
 ### web（前端）
 
@@ -155,6 +155,7 @@ core（ctest）：`test_protocol.py` / `test_fs.py` / `test_index_scan.py` / `te
 ### 加一个快照后端
 
 1. `server/src/snapshots/` 下加实现，参照 `btrfs.ts` / `zfs.ts` / `git-shadow.ts`，实现 `backend.ts` 的 `SnapshotBackend` 接口。
+2. `diff()` 优先复用 `tree-diff.ts` 的 `diffTrees()`（有界遍历双侧树 + per-file `git diff --no-index`，输出与 git-shadow 同形、web 可直接 hunk 解析；系统无 git 时返回 null，后端如实降级为自产摘要）。
 2. 探测链在 `snapshots/probe.ts` 的 `probeSnapshotBackend()`：Linux 依次试 btrfs → zfs → overlayfs → git shadow，Windows 试 ReFS → git shadow。任何一步失败静默回落，新后端按同样方式插进链里。
 3. 需要 core 协助（新 RPC 方法）时走下面的六方同步流程。
 4. 测试用 `recordingRunner` / `tableRunner` 注入探测命令的结果，参考 `server/test/snapshot-backends.test.ts`。
