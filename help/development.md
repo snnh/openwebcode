@@ -21,6 +21,7 @@ openwebcode/
 │   │   ├── app.ts           # HTTP/WS、REST 路由、buildServer(deps) 注入面
 │   │   ├── core-client.ts   # C 子进程管理 + RPC 客户端（崩溃自动重启）
 │   │   ├── agent/           # agent 循环、工具调度、权限、子代理、后台任务
+│   │   ├── chat/            # chat 模式：runner、工具注册表、Python 执行、助手预设
 │   │   ├── providers/       # anthropic / openai-compatible / openai-responses
 │   │   ├── context/         # 上下文账本、buildView、预算、压缩（驱逐在 extensions/context-saver/）
 │   │   ├── sessions/        # 多会话管理、JSONL 持久化、会话树
@@ -28,11 +29,12 @@ openwebcode/
 │   │   ├── sandbox/         # core-router 策略映射、WSB、filtered 代理
 │   │   ├── mcp/             # MCP 客户端（stdio + Streamable HTTP）
 │   │   ├── extensions/      # Extension Host 子进程、扩展 API、官方扩展
+│   │   ├── rpc/             # frame-codec 分帧（与 core 的 LSP 风格头部对接）
 │   │   └── index/ scm/ diagnostics/ cost/ events/ eval/
 │   └── test/                # vitest：单元、HTTP 注入、真实 core 端到端
 ├── web/               # React 19 + Vite 6 前端
 │   ├── src/
-│   │   ├── app/             # 装配层：App 薄根组件、store（ui/session/live/prefs）、ws 事件客户端与路由、queries、commands（命令注册表/快捷键/覆盖审计）
+│   │   ├── app/             # 装配层：App 薄根组件、store（ui/session/live/prefs/chat-mode）、ws 事件客户端与路由、queries、commands（命令注册表/快捷键/覆盖审计）
 │   │   ├── chat/ composer/  # 会话区（MessageList/scroll-controller/stream-buffer/卡片）与输入区
 │   │   ├── workbench/ panels/ dialogs/ settings/  # 五区外壳、底部七面板、弹层、设置对话框与十八分区
 │   │   ├── components/      # 设计基元（Icon/Overlay/ConfirmDialog 等）与保留件（Markdown/Monaco 编辑器）
@@ -129,7 +131,7 @@ server（vitest，`testTimeout`/`hookTimeout` 均为 30s，Windows CI 资源紧�
 
 web（vitest + jsdom）：`@testing-library/react` + `axe-core` 做 a11y，`asyncUtilTimeout` 放宽到 3s。没有真实 WebSocket，测事件处理走 mock event dispatch。
 
-core（ctest）：`test_protocol.py` / `test_fs.py` / `test_abs_path.py` / `test_index_scan.py` / `test_index_extract.py` / `test_search_job.py` / `test_read_base64.py` / `test_pty.py` / `test_bindlink.py` / `test_overlay.py` / `test_bwrap.py` / `test_landlock_e2e.py` / `test_filtered.py` 是 Python 脚本喂 JSON-RPC 给编译出的 owc-exec 断言回包；`test_path_policy.c` / `test_sandbox.c` 是纯 C 单测。`repro_grep.py` / `stress_init.py` 是手动复现和压测脚本，不在 CTest 注册。
+core（ctest）：`test_protocol.py` / `test_fs.py` / `test_index_scan.py` / `test_pty.py` / `test_bindlink.py` / `test_bwrap.py` / `test_filtered.py` 是 Python 脚本喂 JSON-RPC 给编译出的 owc-exec 断言回包；`test_path_policy.c` / `test_sandbox.c` 是纯 C 单测。`repro_grep.py` / `stress_init.py` 是手动复现和压测脚本，不在 CTest 注册。
 
 ## 二次开发切入点
 
