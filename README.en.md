@@ -45,6 +45,7 @@ Browser (React) ── HTTP/WebSocket ──► Node service (agent loop, tools)
 - Sub-agents and agent swarms: isolated-context parallel dispatch with live progress and transcripts.
 - A good range of extension points: skills, slash commands, hooks, custom sub-agents, MCP, and third-party Extension Host packages.
 - Free-form session management: edit any message, fork anytime.
+- Local sessions: create one with a single click from the sidebar "Terminal" icon to manage local files and services directly on the host as the server user (access outside HOME requires manual approval; no snapshots).
 - Built-in symbol index (`repo_map` / `code_search`), test diagnostics (Problems panel), and an SCM panel (diffs, staging, worktree merges, generated commit messages).
 - The `owc run` CLI.
 
@@ -112,6 +113,8 @@ docker logs openwebcode | grep 访问链接
 | `/custom-command` | Expand a template from `.owc/commands/` |
 | `/compact` | Compact context (`tools` for rule-based compaction) |
 | `/clear` | Clear the current view; **history is kept** and reversible |
+| `/init` | Analyze the workspace and generate/update the root `AGENTS.md` (writes go through the permission chain) |
+| `/help` | Open Settings → Shortcuts tab |
 | `@path` | Reference a workspace file and inject its content with the message |
 | `!command` | Shell shortcut through the normal permission chain |
 
@@ -129,15 +132,15 @@ owc run "Add a unit test for main.ts" --cwd . --json --yolo
 
 ## Performance and footprint
 
-Measured on a dev machine (Windows x86-64, v1.6.5, 5000-message benchmark dataset; harness and acceptance gates live in [`scripts/bench/`](./scripts/bench/)):
+Measured on a dev machine (Windows x86-64, v1.7.6, 5000-message benchmark dataset; harness and acceptance gates live in [`scripts/bench/`](./scripts/bench/)):
 
 | Component | Memory | CPU (single-core equivalent, 95th percentile of time) | Key numbers |
 | --- | --- | --- | --- |
-| server (Node service) | ~86 MiB idle; ~100 MiB steady-state with a 5000-message session loaded | 0.8% | Large-session cold load 23ms, history paging p50 0.49ms; incremental context build p50 0.33ms (33× faster than full builds); agent-loop heap churn 0.9 MiB per turn; event dispatch 5300+ events/s; symbol-index queries over 100k files p50 ~16–21ms |
-| core (C executor) | ~9 MiB idle; ~25 MiB peak under heavy scans, released afterwards | under 0.5% | 3.4MB file read in 8ms; full-repo index scan (hundreds of thousands of files) completes in 25s with bounded memory |
-| browser | ~92 MiB heap with a 5000-message session fully loaded | - | Long-list scrolling p50 59.9 fps; input echo p50 27ms; 0.1% memory growth across repeated scroll cycles (no leak); chat/workbench/share views are lazy-loaded bundles, first-load script 475 KB |
+| server (Node service) | ~74 MiB idle; ~115 MiB steady-state with a 5000-message session loaded | under 0.5% | Large-session cold load 24ms, history paging p50 0.6ms; incremental context build p50 0.35ms (31× faster than full builds); agent-loop heap churn 0.9 MiB per turn; event dispatch 5800+ events/s; symbol-index queries over 100k files p50 ~15ms symbols / ~21ms files |
+| core (C executor) | ~9 MiB idle; ~15 MiB peak under a 100k-file heavy scan, released afterwards | under 0.5% | Full-repo index scan (100k files) completes in ~33s with bounded memory |
+| browser | ~93 MiB heap with a 5000-message session fully loaded | - | Long-list scrolling p50 59.9 fps; input echo p50 26.5ms; 0.1% memory growth across repeated scroll cycles (no leak); chat/workbench/share views are lazy-loaded bundles, first-load script 479 KB |
 
-Production reference (v1.6.5, Debian 13 x86-64, measured on a systemd-managed always-on instance): server 114 MiB + extension host 50 MiB + core 1.9 MiB (server down ~15% from 135 MiB on v1.5.0), CPU below 0.5% 95% of the time.
+Production reference (v1.7.6, Debian 13 x86-64, measured on an always-on instance): server 110 MiB + extension host 52 MiB + core 1.9 MiB (server down ~19% from 135 MiB on v1.5.0), CPU below 0.5% 95% of the time.
 
 ## Documentation
 
