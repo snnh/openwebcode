@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import atexit, base64, ctypes, hashlib, json, os, pathlib, subprocess, sys, tempfile, time
+import atexit, base64, ctypes, faulthandler, hashlib, json, os, pathlib, queue, subprocess, sys, tempfile, threading, time
 
 def windows_short_path(path):
     if os.name != "nt": return None
@@ -28,18 +28,26 @@ def directory_junction(link, target):
 def send(p, i, method, params):
     body=json.dumps({"jsonrpc":"2.0","id":i,"method":method,"params":params},ensure_ascii=False,separators=(",",":")).encode()
     p.stdin.write(f"Content-Length: {len(body)}\r\n\r\n".encode()+body);p.stdin.flush()
-    while True:
+    def read_frame():
         headers={}
         while True:
             line=p.stdout.readline(); assert line
             if line==b"\r\n": break
             k,v=line.decode().split(":",1);headers[k.lower()]=v.strip()
-        raw=p.stdout.read(int(headers["content-length"]))
-        try:
-            msg=json.loads(raw)
-        except UnicodeDecodeError:
-            raise AssertionError(f"id {i} {method}: response is not UTF-8 (content-length={headers['content-length']}, first 160 bytes={raw[:160]!r})")
-        if msg.get("id")==i or (msg.get("id") is None and msg.get("error",{}).get("code")==-32700):return msg
+        return json.loads(p.stdout.read(int(headers["content-length"])))
+    box=queue.Queue()
+    worker=threading.Thread(target=lambda: box.put(read_frame()), daemon=True)
+    worker.start()
+    try:
+        msg=box.get(timeout=5)
+    except queue.Empty:
+        raise AssertionError(f"id {i} {method}: response timed out (挂起点) — faulthandler 已 dump 栈")
+    try:
+        _=msg["jsonrpc"]
+    except (TypeError, KeyError):
+        raise AssertionError(f"id {i} {method}: malformed response {msg!r}")
+    if msg.get("id")==i or (msg.get("id") is None and msg.get("error",{}).get("code")==-32700):return msg
+    return send(p, i, method, params)
 
 MAX_BINARY = 20 * 1024 * 1024
 
@@ -76,6 +84,7 @@ def abspath_rpc(proc, request_id, method, params=None):
 
 
 def main_fs():
+    faulthandler.dump_traceback_later(10, repeat=True)  # 挂起时每 10s dump 栈到 stderr，定位挂点
     p=subprocess.Popen([sys.argv[1]],stdin=subprocess.PIPE,stdout=subprocess.PIPE)
     def cleanup_process():
         if p.poll() is None:
