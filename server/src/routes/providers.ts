@@ -69,7 +69,7 @@ export function registerProviderRoutes(app: FastifyInstance, ctx: RouteContext):
     if (!models) return syncUrlNotConfigured("Model registry");
     return models.syncCatalogFromUrl(url);
   });
-  app.post("/api/models/refresh", async (request, reply) => {
+  app.post("/api/models/refresh", async (_request, reply) => {
     const models = dependencies.models;
     if (!models) return reply.code(501).send({ error: "Model registry is not configured" });
     const config: Partial<ServerConfig> = dependencies.settings?.effective() ?? {};

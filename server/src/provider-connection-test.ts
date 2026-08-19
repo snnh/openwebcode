@@ -12,6 +12,7 @@
  * 状态码分类与 providers/provider-error.ts 的语义对齐。
  */
 import { getUserAgent } from "./user-agent.js";
+import { withTimeout } from "./http-utils.js";
 import type { ModelProviderProfile } from "./provider-profiles.js";
 
 const PROVIDER_TEST_TIMEOUT_MS = 5000;
@@ -43,7 +44,7 @@ export async function testModelProviderConnection(
     response = await fetchImpl(url, {
       headers,
       redirect: "manual",
-      signal: AbortSignal.timeout(PROVIDER_TEST_TIMEOUT_MS),
+      signal: withTimeout(undefined, PROVIDER_TEST_TIMEOUT_MS),
     });
   } catch (error) {
     if (isTimeoutError(error)) return { ok: false, error: "连接超时（5 秒无响应），请检查 Base URL 与网络" };

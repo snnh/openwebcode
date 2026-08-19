@@ -12,10 +12,10 @@ import path from "node:path";
 import type { IndexScanEntry } from "../core-client.js";
 
 // 导出给 scripts/bench/bench-index-100k.mjs（tsx 直引 server/src）构造兼容索引。
-export const INDEX_FORMAT_VERSION = 1;
+const INDEX_FORMAT_VERSION = 1;
 
 /** 符号种类：与 core `index.extract` 输出的 kind 集合对齐；"variable" 是不认识 kind 的兜底桶。 */
-export type SymbolKind =
+type SymbolKind =
   | "function"
   | "method"
   | "class"
@@ -63,7 +63,7 @@ export interface IndexedFileEntry extends IndexScanEntry {
 }
 
 /** 内存中的符号记录：预存小写名供模糊搜索复用（同上，不落盘）。 */
-export interface IndexedSymbolRecord extends SymbolRecord {
+interface IndexedSymbolRecord extends SymbolRecord {
   nameLower: string;
 }
 

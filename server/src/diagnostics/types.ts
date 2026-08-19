@@ -14,7 +14,7 @@ export interface DiagnosticFailure {
   excerpt?: string;
 }
 
-export interface DiagnosticSummary {
+interface DiagnosticSummary {
   passed: number;
   failed: number;
   skipped: number;

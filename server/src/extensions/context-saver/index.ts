@@ -17,21 +17,21 @@ import type { ContextLedger, ContextPolicy, LedgerEntry, TurnLedger } from "../.
 export type ContextPolicyUpdate = Partial<Pick<ContextPolicy, "enabled" | "strategy" | "evictionMode" | "lag" | "interval" | "minRetainTokens" | "readKeepLines" | "pinExemptRounds" | "restoreBudget">>;
 
 /** read_file 结果行数不超过该值时始终保留（与 token 下限并列的独立豁免：10 行是完整的文件结构认知）。 */
-export const READ_ALWAYS_RETAIN_LINES = 10;
+const READ_ALWAYS_RETAIN_LINES = 10;
 /** read 头尾摘录的总字符上限：minified 长行文件兜住，超出仍走 artifact。 */
 const READ_EXCERPT_MAX_CHARS = 8000;
 /**
  * 永不驱逐的工具结果白名单：这些工具的结果是后续轮次的关键上下文（如图片描述），
  * 驱逐会破坏任务连续性。自动驱逐与手动驱逐都跳过。
  */
-export const EVICTION_EXEMPT_TOOLS: ReadonlySet<string> = new Set(["ext__vision-tools__describe_image"]);
+const EVICTION_EXEMPT_TOOLS: ReadonlySet<string> = new Set(["ext__vision-tools__describe_image"]);
 
 /**
  * 按轮计算保留集：一轮 = 一批连续的 tool 消息（对应一次 assistant tool_call 批次的全部结果）。
  * 保留最近 max(lag, 1) 轮——活动路径以 tool 批次结尾时该批是当轮（模型尚未看到），始终保护；
  * 路径以非 tool 消息结尾时严格保留最近 lag 轮。
  */
-export function retainedToolIds(messages: ChatMessage[], lag: number): ReadonlySet<string> {
+function retainedToolIds(messages: ChatMessage[], lag: number): ReadonlySet<string> {
   const retained = new Set<string>();
   const endsWithToolBatch = messages.length > 0 && messages[messages.length - 1]!.role === "tool";
   const keepRounds = Math.max(lag, endsWithToolBatch ? 1 : 0);
@@ -52,7 +52,7 @@ export function retainedToolIds(messages: ChatMessage[], lag: number): ReadonlyS
 }
 
 /** toolCallId → 工具名（来自 assistant 消息的 tool_call 块），供驱逐条目记录语义摘要。 */
-export function toolNameByCallId(messages: ChatMessage[]): Map<string, string> {
+function toolNameByCallId(messages: ChatMessage[]): Map<string, string> {
   const names = new Map<string, string>();
   for (const message of messages) {
     if (message.role !== "assistant") continue;
@@ -64,7 +64,7 @@ export function toolNameByCallId(messages: ChatMessage[]): Map<string, string> {
 }
 
 /** read_file 被逐时的头尾摘录：头/尾各 keepLines 行 + 中间省略注记；总字符超上限时砍头部保尾部。 */
-export function buildReadExcerpt(content: string, keepLines: number, artifactId: string): string {
+function buildReadExcerpt(content: string, keepLines: number, artifactId: string): string {
   const lines = content.split("\n");
   if (lines.length <= keepLines * 2 + 1) return content;
   const head = lines.slice(0, keepLines);

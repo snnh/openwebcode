@@ -25,7 +25,7 @@ export class RefsBackend implements SnapshotBackend {
   private readonly metadataPath: string;
 
   constructor(
-    private readonly sessionRoot: string,
+    sessionRoot: string,
     private readonly workspace: string,
     private readonly runner: CommandRunner,
   ) {

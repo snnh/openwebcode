@@ -3,10 +3,11 @@ import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
 import { isMissing } from "../fs-utils.js";
 import { getUserAgent } from "../user-agent.js";
+import { withTimeout } from "../http-utils.js";
 import defaultCatalog from "./default-model-pricing.json" with { type: "json" };
 import type { Currency, ModelPricing } from "../context/model-profile.js";
 
-export interface PricingEntry {
+interface PricingEntry {
   provider: string;
   model: string;
   currency: Currency;
@@ -100,7 +101,7 @@ export class PricingCatalog {
     return this.serial(async () => {
       try {
         const response = await (options.fetchImpl ?? globalThis.fetch)(url, {
-          signal: AbortSignal.timeout(options.timeoutMs ?? 15_000),
+          signal: withTimeout(undefined, options.timeoutMs ?? 15_000),
           headers: { "User-Agent": getUserAgent() },
         });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);

@@ -3,9 +3,10 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
 import { isMissing } from "../fs-utils.js";
+import { serializeByKey } from "../sessions/store-utils.js";
 
-export type QueueKind = "steer" | "follow_up";
-export type QueueStatus = "queued" | "consuming" | "applied" | "cancelled";
+type QueueKind = "steer" | "follow_up";
+type QueueStatus = "queued" | "consuming" | "applied" | "cancelled";
 
 export interface QueueItem {
   id: string;
@@ -29,7 +30,7 @@ interface QueueDocument {
 /** Small mutable queue state. All mutations are serialized per session and
  * atomically replace queue.json, while chat history remains append-only. */
 export class MessageQueue {
-  private readonly writes = new Map<string, Promise<unknown>>();
+  private readonly writes = new Map<string, Promise<void>>();
 
   constructor(private readonly contextRoot: (sessionId: string) => string) {}
 
@@ -105,20 +106,13 @@ export class MessageQueue {
     });
   }
 
-  private async mutate<T>(sessionId: string, change: (items: QueueItem[]) => T): Promise<T> {
-    const previous = this.writes.get(sessionId) ?? Promise.resolve();
-    const operation = previous.catch(() => undefined).then(async () => {
+  private mutate<T>(sessionId: string, change: (items: QueueItem[]) => T): Promise<T> {
+    return serializeByKey(this.writes, sessionId, async () => {
       const items = await this.read(sessionId);
       const result = change(items);
       await writeUtf8Atomically(this.pathFor(sessionId), `${JSON.stringify({ version: 1, items } satisfies QueueDocument, null, 2)}\n`);
       return result;
     });
-    this.writes.set(sessionId, operation);
-    try {
-      return await operation;
-    } finally {
-      if (this.writes.get(sessionId) === operation) this.writes.delete(sessionId);
-    }
   }
 
   private async read(sessionId: string): Promise<QueueItem[]> {

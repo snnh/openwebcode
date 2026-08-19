@@ -28,11 +28,11 @@ export class SettingsValidationError extends Error {
   }
 }
 
-export type SettingFieldType = "text" | "secret" | "number" | "boolean" | "select" | "pathList";
-export type SettingValue = string | number | boolean | string[];
-export type SettingSource = "default" | "env" | "file";
+type SettingFieldType = "text" | "secret" | "number" | "boolean" | "select" | "pathList";
+type SettingValue = string | number | boolean | string[];
+type SettingSource = "default" | "env" | "file";
 
-export interface SettingOptionView {
+interface SettingOptionView {
   value: string;
   label: string;
 }
@@ -54,7 +54,7 @@ export interface SettingsFieldView {
   description?: string;
 }
 
-export interface SettingsGroupView {
+interface SettingsGroupView {
   id: string;
   label: string;
   fields: SettingsFieldView[];

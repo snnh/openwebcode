@@ -9,6 +9,7 @@ import type { HookRunner } from "../hooks.js";
 import { appendMemory, parseSedimentSections } from "../memory.js";
 import { ContextManager, estimateFragmentTokens, recordCompaction } from "../context/context-manager.js";
 import { extractInstructions, mergeInstructions, type CompactResult } from "../context/compactor.js";
+import { withTimeout } from "../http-utils.js";
 import type { ProviderRegistry } from "../providers/provider.js";
 import { activePathMessages } from "../sessions/session-tree.js";
 import type { ChatMessage, MessageContent } from "../sessions/types.js";
@@ -306,7 +307,7 @@ export class CompactVaultService {
       }],
       tools: [],
       ...(maxTokens !== undefined ? { maxTokens } : {}),
-      signal: AbortSignal.timeout(120_000),
+      signal: withTimeout(undefined, 120_000),
     })) {
       if (event.type === "text_delta") text += event.text;
       else if (event.type === "thinking_delta") thinking += event.text;

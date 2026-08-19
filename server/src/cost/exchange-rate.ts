@@ -2,6 +2,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
 import { isMissing } from "../fs-utils.js";
+import { withTimeout } from "../http-utils.js";
 import { getUserAgent } from "../user-agent.js";
 
 export const RATE_SCALE = 1_000_000n;
@@ -109,18 +110,12 @@ export class ExchangeRateService {
     if (this.options.isOffline?.()) return this.current();
     const now = Date.now();
     if (this.lastSuccessfulRefresh > 0 && now - this.lastSuccessfulRefresh < 24 * 60 * 60 * 1_000) return this.current();
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.options.timeoutMs ?? 5_000);
-    try {
-      const snapshot = await this.options.provider.fetch(controller.signal);
-      validateSnapshot(snapshot);
-      this.snapshot = snapshot;
-      this.lastSuccessfulRefresh = now;
-      await this.saveCache(snapshot);
-      return this.current();
-    } finally {
-      clearTimeout(timer);
-    }
+    const snapshot = await this.options.provider.fetch(withTimeout(undefined, this.options.timeoutMs ?? 5_000));
+    validateSnapshot(snapshot);
+    this.snapshot = snapshot;
+    this.lastSuccessfulRefresh = now;
+    await this.saveCache(snapshot);
+    return this.current();
   }
 
   private async loadCache(): Promise<ExchangeRateSnapshot | undefined> {

@@ -2,6 +2,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
 import { getUserAgent } from "../user-agent.js";
+import { withTimeout } from "../http-utils.js";
 import { lookupModelMetadata, type ModelMetadata } from "./model-metadata.js";
 import {
   getModelProfile,
@@ -13,7 +14,7 @@ import {
   type ThinkingMode,
 } from "./model-profile.js";
 
-export type ModelSource = "builtin" | "api" | "synced" | "manual";
+type ModelSource = "builtin" | "api" | "synced" | "manual";
 
 export interface CatalogModel extends ModelProfile {
   source: ModelSource;
@@ -437,13 +438,13 @@ export class ModelRegistry {
   }
 
   private async fetchJsonWith(url: string, headers: Record<string, string>, fetchImpl: typeof fetch, timeoutMs: number): Promise<unknown> {
-    const response = await fetchImpl(url, { headers: { "User-Agent": getUserAgent(), ...headers }, signal: AbortSignal.timeout(timeoutMs) });
+    const response = await fetchImpl(url, { headers: { "User-Agent": getUserAgent(), ...headers }, signal: withTimeout(undefined, timeoutMs) });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return response.json();
   }
 
   private async fetchRemoteCatalogJson(url: string, fetchImpl: typeof fetch, timeoutMs: number): Promise<unknown> {
-    const response = await fetchImpl(url, { headers: { "User-Agent": getUserAgent() }, signal: AbortSignal.timeout(timeoutMs) });
+    const response = await fetchImpl(url, { headers: { "User-Agent": getUserAgent() }, signal: withTimeout(undefined, timeoutMs) });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return response.json();
   }

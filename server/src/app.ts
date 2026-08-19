@@ -2,7 +2,7 @@ import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
 import { existsSync } from "node:fs";
-import type { AgentRunner } from "./agent/agent-runner.js";
+import type { AgentRunner, ManagedWorkspaceRunLease } from "./agent/agent-runner.js";
 import type { BackgroundTaskRegistry } from "./agent/background-tasks.js";
 import type { HookRunner } from "./hooks.js";
 import { CoreRpcError, type CoreClientLike } from "./core-client.js";
@@ -43,7 +43,7 @@ import type { EvalEvaluator } from "./eval/evaluator.js";
 import {
   parseCookies, safeTokenEqual, requestToken,
   isChatConversationRoute, isChatConfigRoute, isSharePublicRoute,
-  type RouteContext,
+  type RouteContext, type ManagedSession,
 } from "./routes/route-context.js";
 import { registerSystemRoutes } from "./routes/system.js";
 import { registerAuthRoutes } from "./routes/auth.js";
@@ -334,7 +334,6 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   // lease until their promise settles. This closes the check-then-await race
   // where a VHDX could be dismounted halfway through an otherwise valid request.
   const managedWorkspaceUses = new Map<string, number>();
-  type ManagedSession = { id: string; workspace?: { mode?: string } };
   const isManagedSession = (session: ManagedSession): boolean => session.workspace?.mode === "managed";
   const acquireManagedWorkspaceUse = (session: ManagedSession): (() => void) | undefined => {
     if (!isManagedSession(session)) return () => undefined;
@@ -360,11 +359,6 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
       released = true;
       set.delete(session.id);
     };
-  };
-  type ManagedWorkspaceRunLease = {
-    release: () => void;
-    automaticSnapshotAllowed: boolean;
-    downgradeAfterAutomaticSnapshot?: () => void;
   };
   /**
    * Reserve an automatic checkpoint before AgentRunner's first await.  This is
