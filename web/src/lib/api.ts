@@ -235,12 +235,12 @@ export const api = {
     request<{ removed: true; name: string }>(`/api/sessions/${encodeURIComponent(id)}/git/worktrees/${encodeURIComponent(name)}${opts.force ? "?force=true" : ""}`, { method: "DELETE" }),
   // SCM 写操作（阶段 2）：stage/unstage/discard 由面板直接调用；成功后服务端发 scm.updated，前端同步 invalidate
   scmStage: (id: string, files: string[]) =>
-    request<{ staged: string[] }>(`/api/sessions/${encodeURIComponent(id)}/git/stage`, { method: "POST", body: JSON.stringify({ files }) }),
+    request<{ ok: true }>(`/api/sessions/${encodeURIComponent(id)}/git/stage`, { method: "POST", body: JSON.stringify({ files }) }),
   scmUnstage: (id: string, files: string[]) =>
-    request<{ unstaged: string[] }>(`/api/sessions/${encodeURIComponent(id)}/git/unstage`, { method: "POST", body: JSON.stringify({ files }) }),
+    request<{ ok: true }>(`/api/sessions/${encodeURIComponent(id)}/git/unstage`, { method: "POST", body: JSON.stringify({ files }) }),
   // discard 含未跟踪文件时服务端要求 force=true（缺省 400）；tracked 放弃传 force=false
   scmDiscard: (id: string, files: string[], force = false) =>
-    request<{ discarded: string[] }>(`/api/sessions/${encodeURIComponent(id)}/git/discard`, { method: "POST", body: JSON.stringify({ files, force }) }),
+    request<{ ok: true }>(`/api/sessions/${encodeURIComponent(id)}/git/discard`, { method: "POST", body: JSON.stringify({ files, force }) }),
   scmLog: (id: string, limit = 50) =>
     request<{ commits: import("./contracts").ScmLogEntry[] }>(`/api/sessions/${encodeURIComponent(id)}/git/log?limit=${limit}`),
   scmMergeWorktree: (id: string, name: string) =>
@@ -324,7 +324,7 @@ export const api = {
   chatEdit: (id: string, messageId: string, text: string) =>
     request<{ accepted?: boolean }>(`/api/chat/sessions/${id}/messages/${messageId}/edit`, { method: "POST", body: JSON.stringify({ text }) }),
   chatSend: (id: string, body: Record<string, unknown>) =>
-    request<{ accepted?: boolean }>(`/api/chat/sessions/${id}/messages`, { method: "POST", body: JSON.stringify(body) }),
+    request<{ runId: string }>(`/api/chat/sessions/${id}/messages`, { method: "POST", body: JSON.stringify(body) }),
   chatStop: (id: string) => request<void>(`/api/chat/sessions/${id}/stop`, { method: "POST" }),
   chatUploadImage: (id: string, body: { data: string; mediaType: string; filename: string }) =>
     request<{ ref: string }>(`/api/chat/sessions/${id}/uploads`, { method: "POST", body: JSON.stringify(body) }),
@@ -335,7 +335,7 @@ export const api = {
     request<{ sessionId: string }>(`/api/chat/sessions/${id}/branches`, { method: "POST" }),
   // 公开只读分享页：401 是「需要口令/口令错误」业务流，不触发登录页兜底广播
   shareMessages: (shareId: string, token?: string) =>
-    request<{ title: string; messages?: import("./contracts").ChatMessage[] }>(`/api/share/${shareId}/messages${token ? `?token=${encodeURIComponent(token)}` : ""}`, undefined, { broadcastUnauthorized: false }),
+    request<{ title: string; slug: string; messages: import("./contracts").ChatMessage[] }>(`/api/share/${shareId}/messages${token ? `?token=${encodeURIComponent(token)}` : ""}`, undefined, { broadcastUnauthorized: false }),
   shareVerify: (shareId: string, password?: string) =>
-    request<{ verified?: boolean; token?: string }>(`/api/share/${shareId}/verify`, { method: "POST", body: JSON.stringify(password ? { password } : {}) }, { broadcastUnauthorized: false }),
+    request<{ verified: boolean; shareId: string; slug: string; token?: string }>(`/api/share/${shareId}/verify`, { method: "POST", body: JSON.stringify(password ? { password } : {}) }, { broadcastUnauthorized: false }),
 };

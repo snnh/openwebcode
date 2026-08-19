@@ -81,6 +81,9 @@ jobs:
       - name: Build
         run: npm run build
         working-directory: server
+      - name: Contracts check (web 契约 ↔ server 类型一致性)
+        run: npm run contracts-check
+        working-directory: server
       - name: Test
         run: npm test
         working-directory: server

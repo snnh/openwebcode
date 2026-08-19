@@ -2,7 +2,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import type {
   AgentErrorPayload, AppEvent, BackgroundTaskInfo, ContextUsage, ContextWatermark,
-  ModelFallbackPayload, Session, TodoItem,
+  ModelFallbackPayload, PendingPermission, Session, TodoItem,
 } from "../lib/contracts";
 import { agentErrorToastText } from "../lib/agent-error";
 import { compactionModeText } from "../lib/compaction";
@@ -269,7 +269,7 @@ export function createEventRouter(deps: EventRouterDeps): EventRouter {
       deps.stream.clear(event.sessionId);
     }
     if (event.type === "permission.request") {
-      const req = event.payload as { requestId: string; tool: string; input: Record<string, unknown> };
+      const req = event.payload as PendingPermission;
       sessionMeta.upsertPermission(req);
       queryClient.invalidateQueries({ queryKey: ["permissions", event.sessionId] });
     }

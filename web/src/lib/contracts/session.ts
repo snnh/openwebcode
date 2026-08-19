@@ -81,13 +81,28 @@ export interface PersonaDetail extends PersonaSummary {
   basePrompt: string;
   productSections: string[];
   hideBuiltIns: string[];
-  aliases: Array<{ from: string; as: string; description?: string }>;
+  aliases: PersonaAlias[];
+  /** 首轮（会话首个模型调用）只注入这些内置工具（模型侧别名后名），其余内置保持隐藏。 */
+  firstTurnOnlyTools?: string[];
   /** /init 命令展开提示词拟态（可选）。 */
   initPrompt?: string;
   /** /compact（overview）压缩系统提示词拟态（可选）。 */
   compactOverviewPrompt?: string;
   /** /compact tools 压缩系统提示词拟态（可选）。 */
   compactToolcallsPrompt?: string;
+  /** 出站 User-Agent 拟态值（仅扩展 simulateUserAgent 开启且选为全局 persona 时生效）。 */
+  userAgent?: string;
+}
+
+/** env-sim 工具形态别名（与 server PersonaAlias 对齐）。 */
+export interface PersonaAlias {
+  from: string;
+  as: string;
+  description?: string;
+  /** 模型可见的输入 schema 覆盖（拟态目标产品的参数形态）。 */
+  inputSchema?: Record<string, unknown>;
+  /** 参数名归一：模型侧参数名 -> 内置工具参数名。未列出的键原样透传。 */
+  argMap?: Record<string, string>;
 }
 
 /** 新建/编辑 env-sim 用户预设的提交体（同 id 覆盖即编辑）。 */
@@ -98,10 +113,12 @@ export interface PersonaPresetInput {
   basePrompt: string;
   productSections?: string[];
   hideBuiltIns?: string[];
-  aliases?: Array<{ from: string; as: string; description?: string }>;
+  aliases?: PersonaAlias[];
+  firstTurnOnlyTools?: string[];
   initPrompt?: string;
   compactOverviewPrompt?: string;
   compactToolcallsPrompt?: string;
+  userAgent?: string;
 }
 
 /** 0.5.0 Phase 2: paginated message page from GET /api/sessions/:id/messages */
