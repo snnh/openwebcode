@@ -31,11 +31,7 @@ jobs:
       # bubblewrap 是 Linux 默认沙盒后端；Ubuntu 24.04 用 AppArmor 限制
       # unprivileged user namespaces（kernel.apparmor_restrict_unprivileged_userns=1），
       # bwrap 依赖 userns，需放开后 e2e 才能真正跑起来（sysctl 键不存在时容忍失败）
-      - name: Install bubblewrap
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y bubblewrap
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      - uses: ./.github/actions/install-bubblewrap
       - name: Configure
         env:
           CC: ${{ matrix.compiler }}
@@ -55,11 +51,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # 同 linux job：bubblewrap + 放开 AppArmor 对 unprivileged userns 的限制
-      - name: Install bubblewrap
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y bubblewrap
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      - uses: ./.github/actions/install-bubblewrap
       - name: Configure
         env:
           CC: ${{ matrix.compiler }}
@@ -117,11 +109,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # 同 linux job：bubblewrap + 放开 AppArmor 对 unprivileged userns 的限制
-      - name: Install bubblewrap
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y bubblewrap
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      - uses: ./.github/actions/install-bubblewrap
       - name: Configure (ASan)
         env:
           CC: gcc

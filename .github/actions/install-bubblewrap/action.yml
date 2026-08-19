@@ -1,0 +1,17 @@
+# bubblewrap 是 Linux 默认沙盒后端；Ubuntu 24.04 用 AppArmor 限制
+# unprivileged user namespaces（kernel.apparmor_restrict_unprivileged_userns=1），
+# bwrap 依赖 userns，需放开后 e2e 才能真正跑起来（sysctl 键不存在时容忍失败）。
+# core.yml 的 linux/linux-arm64/asan 与 server.yml 共用（此前 4 份逐字重复）。
+
+name: Install bubblewrap
+description: Install bubblewrap and relax AppArmor userns restriction (Linux sandbox backend)
+
+runs:
+  using: composite
+  steps:
+    - name: Install bubblewrap
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y bubblewrap
+        sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true

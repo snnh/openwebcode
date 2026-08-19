@@ -1,0 +1,37 @@
+# 发布版本解析与四方一致性校验（release.yml windows/linux 两 job 共用，此前逐字重复）。
+# 校验 tag（inputs.tag 或 github.ref_name）与 server/package.json、web/package.json、
+# core/CMakeLists.txt 一致；预发布 tag（如 v1.0.0-beta.1）时 package.json 存完整版本号，
+# CMake project(VERSION) 只能存数值基版本，故 core 侧与 BASE_VERSION 比对。
+# 成功后输出 VERSION / BASE_VERSION 到 GITHUB_ENV（供后续步骤使用）。
+
+name: Resolve and verify release version
+description: Verify tag matches repo versions and export VERSION/BASE_VERSION
+
+inputs:
+  tag:
+    description: Release tag (falls back to github.ref_name)
+    required: false
+
+runs:
+  using: composite
+  steps:
+    - name: Verify tag matches repo versions
+      shell: bash
+      run: |
+        set -euo pipefail
+        TAG="${{ inputs.tag != '' && inputs.tag || github.ref_name }}"
+        VERSION="${TAG#v}"
+        BASE_VERSION="${VERSION%%-*}"
+        PKG_VERSION="$(node -p "require('./server/package.json').version")"
+        WEB_VERSION="$(node -p "require('./web/package.json').version")"
+        CORE_VERSION="$(sed -n 's/^project(openwebcode_core VERSION \([0-9][0-9.]*\).*/\1/p' core/CMakeLists.txt | head -n 1)"
+        if [ -z "$PKG_VERSION" ] || [ -z "$WEB_VERSION" ] || [ -z "$CORE_VERSION" ]; then
+          echo "::error::无法解析仓库内版本号：server/package.json='$PKG_VERSION' web/package.json='$WEB_VERSION' CMakeLists.txt='$CORE_VERSION'"
+          exit 1
+        fi
+        if [ "$VERSION" != "$PKG_VERSION" ] || [ "$VERSION" != "$WEB_VERSION" ] || [ "$BASE_VERSION" != "$CORE_VERSION" ]; then
+          echo "::error::tag 版本 ($VERSION，基版本 $BASE_VERSION) 与 server/package.json ($PKG_VERSION)、web/package.json ($WEB_VERSION)、core/CMakeLists.txt ($CORE_VERSION) 不一致，请先对齐再发版"
+          exit 1
+        fi
+        echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+        echo "BASE_VERSION=${BASE_VERSION}" >> "$GITHUB_ENV"

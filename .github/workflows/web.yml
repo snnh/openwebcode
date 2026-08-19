@@ -35,6 +35,9 @@ jobs:
       - name: Lint
         run: npm run lint
         working-directory: web
+      - name: Knip (dead code / unused dependencies)
+        run: npx knip
+        working-directory: web
       - name: Audit (non-blocking)
         continue-on-error: true
         run: npm audit --omit=dev --audit-level=high
