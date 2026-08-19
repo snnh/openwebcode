@@ -1,13 +1,18 @@
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
+import { isReadOnlyCommand } from "../src/agent/readonly-command.js";
 import { filterBuiltInTools, READ_ONLY_TOOL_NAMES, toolAllowedBySession } from "../src/agent/tool-schemas.js";
 import { buildServer } from "../src/app.js";
 import type { CoreClient, CoreClientLike, CoreInfo } from "../src/core-client.js";
+import type { ModelProfile } from "../src/context/model-profile.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
+import type { McpManager } from "../src/mcp/manager.js";
 import { ProviderRegistry, type Provider, type ProviderTool, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
+import type { SkillRegistry } from "../src/skills.js";
+import type { SearchProvider } from "../src/web-tools.js";
 import { tempRoot } from "./helpers/temp-roots.js";
 
 function fakeTool(name: string): ProviderTool {
@@ -252,5 +257,261 @@ describe("会话工具限制 REST 透传", () => {
     // 形状校验
     const invalid = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { toolsAllow: "read_file" } });
     expect(invalid.statusCode).toBe(400);
+  });
+});
+
+const noToolsProfile: ModelProfile = {
+  id: "no-tools-model",
+  provider: "test",
+  contextWindow: 32_000,
+  capabilities: {
+    modalities: ["text"],
+    imageOutput: false,
+    thinking: [],
+    effort: [],
+    tools: false,
+  },
+};
+
+describe("AgentRunner tool capability gating", () => {
+  it("does not inject tools or tool prompts for a tools=false model, and persists a rejected unexpected tool call", async () => {
+    const root = await tempRoot("owc-tool-gating-");
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const session = await sessions.create({ cwd: root, provider: "fake", model: noToolsProfile.id });
+    // Avoid an unrelated GitShadow checkpoint in this focused test.
+    await sessions.updateConfig(session.id, { provider: "fake", model: noToolsProfile.id, snapshotMode: "manual" });
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+
+    const requests: StreamChatRequest[] = [];
+    let turn = 0;
+    const provider: Provider = {
+      name: "fake",
+      async *streamChat(request) {
+        requests.push(request);
+        if (turn++ === 0) {
+          // A broken compatible provider can still emit a tool_call even though it was not offered,
+          // and can pair it with the wrong stop reason. It must not execute or corrupt history.
+          yield { type: "tool_call", id: "unexpected-bash", name: "bash", input: { cmd: "should-not-run" } };
+          yield { type: "done", stopReason: "end_turn" };
+          return;
+        }
+        yield { type: "text_delta", text: "已根据工具错误继续回复。" };
+        yield { type: "done", stopReason: "end_turn" };
+      },
+    };
+    const providers = new ProviderRegistry();
+    providers.register(provider);
+    const run = vi.fn();
+    const core = {
+      on() { return core; },
+      async configureSession() { return { sandboxCapability: "advisory" }; },
+      run,
+    } as unknown as CoreClientLike;
+    const listFor = vi.fn(async () => [{ name: "hidden", description: "must not be injected" }]);
+    const skillRegistry = {
+      listFor,
+      find: vi.fn(),
+    } as unknown as SkillRegistry;
+    const toolsFor = vi.fn(async () => ({
+      tools: [{ name: "mcp__test__echo", description: "echo", inputSchema: { type: "object", properties: {} } }],
+      warnings: [],
+    }));
+    const mcp = {
+      toolsFor,
+    } as unknown as McpManager;
+    const search: SearchProvider = { name: "configured", async search() { return []; } };
+    const runner = new AgentRunner(
+      sessions,
+      providers,
+      core,
+      new EventBus(),
+      pricing,
+      undefined,
+      "zh-CN",
+      50,
+      () => noToolsProfile,
+      undefined,
+      skillRegistry,
+      mcp,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      search,
+    );
+
+    await runner.run(session.id, "请处理这个问题");
+
+    expect(requests).toHaveLength(2);
+    for (const request of requests) {
+      expect(request.tools).toEqual([]);
+      expect(request.system).not.toContain("## Work discipline");
+      expect(request.system).not.toContain("read_file");
+      expect(request.system).not.toContain("todo_write");
+      expect(request.system).not.toContain("load_skill");
+      expect(request.system).not.toContain("spawn_task");
+      expect(request.system).not.toContain("web_search");
+    }
+    expect(run).not.toHaveBeenCalled();
+
+    const detail = await sessions.get(session.id);
+    expect(detail?.messages.map((message) => message.role)).toEqual(["user", "assistant", "tool", "assistant"]);
+    expect(detail?.messages[2]?.content).toEqual([
+      expect.objectContaining({
+        type: "tool_result",
+        toolCallId: "unexpected-bash",
+        isError: true,
+        content: "Tool calls are disabled for the selected model: bash",
+      }),
+    ]);
+  });
+
+  it("degrades an unavailable MCP service without advertising its schema or aborting the dialogue", async () => {
+    const root = await tempRoot("owc-tool-gating-");
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const session = await sessions.create({ cwd: root, provider: "fake", model: "tools-model" });
+    await sessions.updateConfig(session.id, { provider: "fake", model: "tools-model", snapshotMode: "manual" });
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const requests: StreamChatRequest[] = [];
+    const provider: Provider = {
+      name: "fake",
+      async *streamChat(request) {
+        requests.push(request);
+        yield { type: "text_delta", text: "MCP 不可用时仍可回复。" };
+        yield { type: "done", stopReason: "end_turn" };
+      },
+    };
+    const providers = new ProviderRegistry();
+    providers.register(provider);
+    const core = {
+      on() { return core; },
+      async configureSession() { return { sandboxCapability: "advisory" }; },
+    } as unknown as CoreClientLike;
+    const events = new EventBus();
+    const observed: string[] = [];
+    events.on("event", (event) => observed.push(event.type));
+    const toolsFor = vi.fn(async () => { throw new Error("MCP handshake timed out"); });
+    const mcp = { toolsFor } as unknown as McpManager;
+    const toolsProfile: ModelProfile = {
+      ...noToolsProfile,
+      id: "tools-model",
+      capabilities: { ...noToolsProfile.capabilities, tools: true },
+    };
+    const runner = new AgentRunner(
+      sessions,
+      providers,
+      core,
+      events,
+      pricing,
+      undefined,
+      "zh-CN",
+      50,
+      () => toolsProfile,
+      undefined,
+      undefined,
+      mcp,
+    );
+
+    await runner.run(session.id, "继续工作");
+
+    expect(toolsFor).toHaveBeenCalledOnce();
+    expect(requests[0]?.tools.map((tool) => tool.name)).toContain("bash");
+    expect(requests[0]?.tools.map((tool) => tool.name)).not.toContain("mcp__test__echo");
+    expect(observed).toContain("mcp.degraded");
+    expect(observed).not.toContain("agent.error");
+  });
+});
+
+// ---- readonly-command 组（合并） ----
+describe("isReadOnlyCommand", () => {
+  it("放行纯只读单命令与常见探查形态", () => {
+    expect(isReadOnlyCommand("ls")).toBe(true);
+    expect(isReadOnlyCommand("head -80 file.txt")).toBe(true);
+    expect(isReadOnlyCommand("cat package.json")).toBe(true);
+    expect(isReadOnlyCommand("grep -rn \"foo\" src/")).toBe(true);
+    expect(isReadOnlyCommand("git status")).toBe(true);
+    expect(isReadOnlyCommand("git log --oneline -5")).toBe(true);
+    expect(isReadOnlyCommand("git diff HEAD~1")).toBe(true);
+    expect(isReadOnlyCommand("git rev-parse --abbrev-ref HEAD")).toBe(true);
+    expect(isReadOnlyCommand("find . -name \"*.ts\" -not -path \"*/node_modules/*\" | head -10")).toBe(true);
+    expect(isReadOnlyCommand("echo \"a>b\"")).toBe(true); // 引号内的 > 不是重定向
+    expect(isReadOnlyCommand("echo 'a;b && c'")).toBe(true); // 引号内的分隔符不切段
+    expect(isReadOnlyCommand("cd /x && echo hi && ls")).toBe(true);
+    expect(isReadOnlyCommand("cd /x; ls; echo done")).toBe(true);
+    expect(isReadOnlyCommand("ls server/test 2>/dev/null | head")).toBe(true);
+    expect(isReadOnlyCommand("ls >/dev/null && echo ok")).toBe(true);
+    expect(isReadOnlyCommand("  ls   ")).toBe(true);
+    expect(isReadOnlyCommand("true")).toBe(true);
+  });
+
+  it("放行用户报告的典型复合探查命令", () => {
+    const cmd = "cd /share/work/openwebcode && echo \"=== release.yml ===\" && head -80 .github/workflows/release.yml && echo \"=== server test files ===\" && ls server/test 2>/dev/null | head; find server -maxdepth 3 -name \"*.test.ts\" -not -path \"*/node_modules/*\" | head -10 && echo \"=== web test files ===\" && find web/src -name \"*.test.ts*\" -not -path \"*/node_modules/*\" | head -10 && echo \"=== server vitest config ===\" && ls server/vitest.config.ts server/vitest.config.mts 2>/dev/null";
+    expect(isReadOnlyCommand(cmd)).toBe(true);
+  });
+
+  it("拒绝写重定向与非 /dev/null 目标", () => {
+    expect(isReadOnlyCommand("echo x > file")).toBe(false);
+    expect(isReadOnlyCommand("echo x >> file")).toBe(false);
+    expect(isReadOnlyCommand("echo x > /tmp/f")).toBe(false);
+    expect(isReadOnlyCommand("echo x 2> err.txt")).toBe(false);
+    expect(isReadOnlyCommand("echo x 2>&1")).toBe(false);
+    expect(isReadOnlyCommand("echo x &> file")).toBe(false);
+    expect(isReadOnlyCommand("head x 3> f")).toBe(false);
+    expect(isReadOnlyCommand("cat < file")).toBe(false);
+    expect(isReadOnlyCommand("cat << EOF")).toBe(false);
+    expect(isReadOnlyCommand("echo x >/dev/nullx")).toBe(false); // 词边界不符
+  });
+
+  it("拒绝命令替换与任意命令执行形态", () => {
+    expect(isReadOnlyCommand("echo $(rm -rf /)")).toBe(false);
+    expect(isReadOnlyCommand("echo `rm -rf /`")).toBe(false);
+    expect(isReadOnlyCommand("echo \"$(whoami)\"")).toBe(false); // 双引号内仍执行
+    expect(isReadOnlyCommand("echo '$(rm -rf /)'")).toBe(true); // 单引号内不执行
+    expect(isReadOnlyCommand("head x && rm -rf /")).toBe(false);
+    expect(isReadOnlyCommand("head x || touch y")).toBe(false);
+    expect(isReadOnlyCommand("head x & rm -rf /")).toBe(false);
+    expect(isReadOnlyCommand("env rm -rf /")).toBe(false);
+    expect(isReadOnlyCommand("command rm -rf /")).toBe(false);
+    expect(isReadOnlyCommand("awk 'BEGIN{system(\"rm -rf /\")}'")).toBe(false);
+    expect(isReadOnlyCommand("xargs rm -rf /")).toBe(false);
+    expect(isReadOnlyCommand("sudo ls")).toBe(false);
+    expect(isReadOnlyCommand("nohup ls &")).toBe(false);
+    expect(isReadOnlyCommand("npm test")).toBe(false);
+    expect(isReadOnlyCommand("node -e \"process.exit()\"")).toBe(false);
+  });
+
+  it("拒绝白名单命令的写形态", () => {
+    expect(isReadOnlyCommand("find . -exec rm {} \\;")).toBe(false);
+    expect(isReadOnlyCommand("find . -delete")).toBe(false);
+    expect(isReadOnlyCommand("sed -i s/a/b/ f")).toBe(false);
+    expect(isReadOnlyCommand("sed --in-place s/a/b/ f")).toBe(false);
+    expect(isReadOnlyCommand("sed -i.bak s/a/b/ f")).toBe(false);
+    expect(isReadOnlyCommand("sed s/a/b/ f")).toBe(true);
+    expect(isReadOnlyCommand("sort -o out f")).toBe(false);
+    expect(isReadOnlyCommand("sort f")).toBe(true);
+    expect(isReadOnlyCommand("date -s 2026-01-01")).toBe(false);
+    expect(isReadOnlyCommand("date")).toBe(true);
+  });
+
+  it("拒绝 git 写子命令与选项形态", () => {
+    expect(isReadOnlyCommand("git push")).toBe(false);
+    expect(isReadOnlyCommand("git commit -m x")).toBe(false);
+    expect(isReadOnlyCommand("git checkout main")).toBe(false);
+    expect(isReadOnlyCommand("git reset --hard")).toBe(false);
+    expect(isReadOnlyCommand("git config user.name x")).toBe(false);
+    expect(isReadOnlyCommand("git -C /x status")).toBe(false);
+    expect(isReadOnlyCommand("git")).toBe(false);
+    expect(isReadOnlyCommand("git status --porcelain")).toBe(true);
+  });
+
+  it("拒绝路径形式与环境变量赋值前缀", () => {
+    expect(isReadOnlyCommand("./script.sh")).toBe(false);
+    expect(isReadOnlyCommand("/usr/bin/ls")).toBe(false);
+    expect(isReadOnlyCommand("FOO=bar ls")).toBe(false);
+    expect(isReadOnlyCommand("ls /tmp")).toBe(true);
   });
 });
