@@ -1,6 +1,7 @@
 name: core
 
 on:
+  workflow_dispatch:
   push:
     # 打 tag 只触发 release 流（release 已含 core/server/web 全量构建与测试），排除 tag 推送避免重复 CI
     tags-ignore: ["**"]
