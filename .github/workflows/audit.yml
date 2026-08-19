@@ -22,6 +22,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # 大 blob 守卫需要全历史（浅克隆下 rev-list --all 只覆盖 HEAD）；48 MiB 仓库每周全量 clone 可接受
+          fetch-depth: 0
+      - name: Guard against large blobs in history
+        # 历史改写（2026-08-19）后 node_modules 大 blob 已清除；此守卫防止未来再次提交大文件
+        run: |
+          set -euo pipefail
+          large=$(git rev-list --objects --all | git cat-file --batch-check='%(objecttype) %(objectsize)' | awk '$1=="blob" && $2>10000000 {count++} END {print count+0}')
+          if [ "$large" -gt 0 ]; then
+            echo "::error::Found $large blob(s) larger than 10 MiB in git history. Large files must not be committed; use artifacts or external storage."
+            exit 1
+          fi
+          echo "No blobs larger than 10 MiB in history."
       - uses: actions/setup-node@v4
         with:
           node-version: 24
