@@ -18,6 +18,7 @@ import {
   type SnapshotBackend,
   type SnapshotCapabilityInfo,
 } from "./backend.js";
+import { diffTrees, type SnapshotDiffExcludes } from "./tree-diff.js";
 
 /** overlay.restore 在 core 侧存在 running job 时的稳定冲突错误码（协议约定）。 */
 const OVERLAY_RESTORE_BUSY_CODE = -32005;
@@ -157,7 +158,7 @@ export class OverlayfsBackend implements SnapshotBackend {
   private readonly paths: OverlayfsPaths;
   private method: "kernel" | "fuse" | undefined;
 
-  constructor(private readonly options: { sessionRoot: string; originCwd: string; core: OverlayfsCore }) {
+  constructor(private readonly options: { sessionRoot: string; originCwd: string; core: OverlayfsCore; excludes?: SnapshotDiffExcludes }) {
     this.paths = overlayfsPaths(options.sessionRoot);
   }
 
@@ -203,12 +204,18 @@ export class OverlayfsBackend implements SnapshotBackend {
     return readCheckpoints(this.paths.checkpointsFile);
   }
 
-  /** 无廉价 CoW diff：对比检查点 upper 副本与当前 upper 层，产出变更清单 + stat 摘要。 */
+  /** 无廉价 CoW diff：完整 unified diff 统一走 git（whiteout 视为删除标记）；
+   *  git 缺失时降级为 upper 副本对比的变更清单 + stat 摘要。 */
   async diff(id: string): Promise<string> {
     validateSnapshotId(id);
     const checkpoints = await this.list();
     const checkpoint = checkpoints.find((item) => item.id === id);
     if (!checkpoint) throw new Error("Checkpoint not found");
+    const unified = await diffTrees(path.join(this.paths.checkpointsDir, id), this.paths.upper, {
+      ...(this.options.excludes ?? { excludePrefixes: [], excludeGlobs: [] }),
+      whiteoutAsDeleted: true,
+    });
+    if (unified !== null) return unified;
     const [snapshotEntries, currentEntries] = await Promise.all([
       collectUpperEntries(path.join(this.paths.checkpointsDir, id)),
       collectUpperEntries(this.paths.upper),

@@ -9,6 +9,7 @@ import { ManagedDiskBackend, managedWorkspacePaths } from "./managed-disk.js";
 import { OverlayfsBackend } from "./overlayfs.js";
 import { createExecFileRunner, probeSnapshotBackend, type CommandRunner } from "./probe.js";
 import { RefsBackend } from "./refs.js";
+import { relativeExcludes } from "./tree-diff.js";
 import { ZfsBackend } from "./zfs.js";
 
 interface SnapshotBackendDeps {
@@ -50,11 +51,12 @@ function constructByName(stored: string, session: SessionMeta, sessionRoot: stri
   const name = separator === -1 ? stored : stored.slice(0, separator);
   const argument = separator === -1 ? "" : stored.slice(separator + 1);
   const workspace = session.cwd;
+  const excludes = relativeExcludes(workspace, session.sandbox?.denyPaths ?? [], session.contextExcludes ?? []);
   switch (name) {
     case "git-shadow": return new GitShadowSnapshots(sessionRoot, workspace, gitShadowOptions(session, core));
-    case "btrfs": return new BtrfsBackend(workspace, runner);
-    case "zfs": return argument ? new ZfsBackend(sessionRoot, workspace, argument, runner) : undefined;
-    case "refs": return new RefsBackend(sessionRoot, workspace, runner);
+    case "btrfs": return new BtrfsBackend(workspace, runner, excludes);
+    case "zfs": return argument ? new ZfsBackend(sessionRoot, workspace, argument, runner, excludes) : undefined;
+    case "refs": return new RefsBackend(sessionRoot, workspace, runner, excludes);
     // 托管工作区（vhdx-chain/qcow2-chain）：创建时预设，免探测；路径按 sessions store 布局推导
     // （sessionRoot = <dataDir>/sessions/<id>，挂载点即会话 cwd）
     case "vhdx-chain":
@@ -67,7 +69,7 @@ function constructByName(stored: string, session: SessionMeta, sessionRoot: stri
     case "overlayfs": {
       const meta = session.workspace;
       if (!core || meta?.mode !== "managed" || meta.backend !== "overlayfs") return undefined;
-      return new OverlayfsBackend({ sessionRoot, originCwd: meta.originCwd, core });
+      return new OverlayfsBackend({ sessionRoot, originCwd: meta.originCwd, core, excludes });
     }
     default: return undefined;
   }

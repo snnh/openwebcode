@@ -1,4 +1,4 @@
-import { cp, mkdir, readdir, rm } from "node:fs/promises";
+import { cp, mkdir, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import {
   newSnapshotId,
@@ -11,6 +11,7 @@ import {
   type SnapshotCapabilityInfo,
 } from "./backend.js";
 import type { CommandRunner } from "./probe.js";
+import { diffTrees, type SnapshotDiffExcludes } from "./tree-diff.js";
 
 /** ZFS 数据集快照。restore 不能用 zfs rollback（会销毁更新的快照），改为复制回写。 */
 export class ZfsBackend implements SnapshotBackend {
@@ -22,6 +23,7 @@ export class ZfsBackend implements SnapshotBackend {
     private readonly workspace: string,
     readonly dataset: string,
     private readonly runner: CommandRunner,
+    private readonly excludes: SnapshotDiffExcludes = { excludePrefixes: [], excludeGlobs: [] },
   ) {
     this.metadataPath = path.join(sessionRoot, "checkpoints.json");
   }
@@ -51,6 +53,21 @@ export class ZfsBackend implements SnapshotBackend {
 
   async diff(id: string): Promise<string> {
     validateSnapshotId(id);
+    // 完整 unified diff 统一走 git：旧树 = workspace/.zfs/snapshot/<id>（snapdir 可见时）。
+    // snapdir 不可见或 git 缺失时如实降级为 zfs diff 摘要。
+    const snapshotDir = path.join(this.workspace, ".zfs", "snapshot", id);
+    try {
+      const info = await stat(snapshotDir);
+      if (info.isDirectory()) {
+        const unified = await diffTrees(snapshotDir, this.workspace, {
+          ...this.excludes,
+          excludePrefixes: [".zfs", ...this.excludes.excludePrefixes],
+        });
+        if (unified !== null) return unified;
+      }
+    } catch {
+      // 快照目录不可访问：走摘要降级
+    }
     const result = await this.runner.run("zfs", ["diff", `${this.dataset}@${id}`]);
     if (result.code !== 0) throw new Error(`zfs diff failed (${result.code})`);
     return truncateLines(result.stdout);

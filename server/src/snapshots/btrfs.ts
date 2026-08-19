@@ -11,6 +11,7 @@ import {
   type SnapshotCapabilityInfo,
 } from "./backend.js";
 import type { CommandRunner } from "./probe.js";
+import { diffTrees, type SnapshotDiffExcludes } from "./tree-diff.js";
 
 /** Btrfs 只读子卷快照。 */
 export class BtrfsBackend implements SnapshotBackend {
@@ -18,7 +19,7 @@ export class BtrfsBackend implements SnapshotBackend {
   private readonly snapRoot: string;
   private readonly metadataPath: string;
 
-  constructor(private readonly workspace: string, private readonly runner: CommandRunner) {
+  constructor(private readonly workspace: string, private readonly runner: CommandRunner, private readonly excludes: SnapshotDiffExcludes = { excludePrefixes: [], excludeGlobs: [] }) {
     // 快照必须与工作区同卷，且不能放在工作区内部（会递归进快照）
     this.snapRoot = path.join(path.dirname(workspace), ".owc-snapshots", path.basename(workspace));
     this.metadataPath = path.join(this.snapRoot, "checkpoints.json");
@@ -49,6 +50,9 @@ export class BtrfsBackend implements SnapshotBackend {
 
   async diff(id: string): Promise<string> {
     validateSnapshotId(id);
+    // 完整 unified diff 统一走 git（per-file --no-index）；git 缺失时降级 btrfs 摘要
+    const unified = await diffTrees(path.join(this.snapRoot, id), this.workspace, this.excludes);
+    if (unified !== null) return unified;
     // diff 退出码 1 表示存在差异，不是错误
     const result = await this.runner.run("diff", ["-rq", path.join(this.snapRoot, id), this.workspace]);
     if (result.code > 1) throw new Error(`diff failed (${result.code})`);
