@@ -12,7 +12,8 @@
     "lint": "eslint .",
     "start": "node dist/index.js",
     "test": "vitest run",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "contracts-check": "tsx ../scripts/contracts-check/check.ts && tsc --noEmit -p ../scripts/contracts-check/tsconfig.json"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.111.0",

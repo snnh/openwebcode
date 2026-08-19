@@ -364,7 +364,7 @@ describe("ScmView", () => {
     vi.spyOn(api, "scmStatus").mockResolvedValue(dirtyStatus);
     vi.spyOn(api, "scmWorktrees").mockResolvedValue([]);
     vi.spyOn(api, "scmDiff").mockResolvedValue(scmDiff);
-    const stage = vi.spyOn(api, "scmStage").mockResolvedValue({ staged: ["src/dirty.ts"] });
+    const stage = vi.spyOn(api, "scmStage").mockResolvedValue({ ok: true });
     renderScmView("s1");
 
     expect(await screen.findByText("已暂存的更改")).toBeInTheDocument();
@@ -379,7 +379,7 @@ describe("ScmView", () => {
   it("放弃更改需行内二次确认，确认后调用 discard(force=false)", async () => {
     vi.spyOn(api, "scmStatus").mockResolvedValue(dirtyStatus);
     vi.spyOn(api, "scmWorktrees").mockResolvedValue([]);
-    const discard = vi.spyOn(api, "scmDiscard").mockResolvedValue({ discarded: ["src/dirty.ts"] });
+    const discard = vi.spyOn(api, "scmDiscard").mockResolvedValue({ ok: true });
     renderScmView("s1");
 
     fireEvent.click(await screen.findByRole("button", { name: "放弃 src/dirty.ts 的更改" }));
