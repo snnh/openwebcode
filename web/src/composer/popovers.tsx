@@ -96,10 +96,11 @@ const PERMISSION_OPTIONS: Array<{ value: PermissionMode; label: [string, string]
   { value: "yolo", label: ["完全自主", "Full autonomy"], description: ["完全自主运行，智能体自己做决定，不再询问", "Runs fully autonomously; the agent decides on its own and never asks"] },
 ];
 
-/** 权限模式弹层（运行中禁用，由调用方控制）。切到完全自主（yolo）需先过风险确认对话框。 */
-export function PermissionModeMenu({ value, disabled, onChange }: {
+/** 权限模式弹层（disabled 由调用方控制；运行中不禁用——服务端支持运行中热切）。
+ * 切到完全自主（yolo）需先过风险确认对话框。 */
+export function PermissionModeMenu({ value, disabled = false, onChange }: {
   value: PermissionMode;
-  disabled: boolean;
+  disabled?: boolean;
   onChange(mode: PermissionMode): void;
 }): ReactElement {
   const { t } = useI18n();

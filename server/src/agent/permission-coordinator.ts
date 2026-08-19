@@ -13,6 +13,8 @@ interface PendingPermission {
   resolve: (value: { allowed: boolean; reason?: string; persist: boolean }) => void;
   signal: AbortSignal;
   abort: () => void;
+  /** 与权限模式无关、必须人工裁决的挂起单（本机会话 HOME 外路径门）：reconcile 永不自动放行。 */
+  alwaysManual?: boolean;
 }
 
 export class PermissionCoordinator {
@@ -37,7 +39,7 @@ export class PermissionCoordinator {
     return !rules.some((rule) => matchesRule(rule, tool, input));
   }
 
-  request(sessionId: string, tool: string, input: Record<string, unknown>, signal: AbortSignal): Promise<{ allowed: boolean; reason?: string; persist: boolean }> {
+  request(sessionId: string, tool: string, input: Record<string, unknown>, signal: AbortSignal, opts?: { alwaysManual?: boolean }): Promise<{ allowed: boolean; reason?: string; persist: boolean }> {
     signal.throwIfAborted();
     const requestId = randomUUID();
     return new Promise((resolve) => {
@@ -46,10 +48,26 @@ export class PermissionCoordinator {
         this.publishResolved(sessionId, requestId);
         resolve({ allowed: false, reason: "Permission request aborted", persist: false });
       };
-      this.pending.set(requestId, { sessionId, tool, input, resolve, signal, abort });
+      this.pending.set(requestId, { sessionId, tool, input, resolve, signal, abort, ...(opts?.alwaysManual ? { alwaysManual: true } : {}) });
       signal.addEventListener("abort", abort, { once: true });
       this.events.publish({ source: "agent", type: "permission.request", sessionId, payload: { requestId, tool, input } });
     });
+  }
+
+  /**
+   * 权限模式/规则运行中热切换后结算挂起单：新档下已不再需要审批的请求自动放行
+   * （切 yolo 全放行；切 acceptEdits 放行挂起的 write/edit）。alwaysManual 条目
+   * （本机会话 HOME 外路径门）与新模式无关，永不自动放行。
+   */
+  reconcile(sessionId: string, mode: PermissionMode, rules: PermissionRule[]): void {
+    for (const [requestId, pending] of this.pending) {
+      if (pending.sessionId !== sessionId || pending.alwaysManual) continue;
+      if (this.needsApproval(mode, rules, pending.tool, pending.input)) continue;
+      this.pending.delete(requestId);
+      this.publishResolved(sessionId, requestId);
+      pending.signal.removeEventListener("abort", pending.abort);
+      pending.resolve({ allowed: true, persist: false });
+    }
   }
 
   listPending(sessionId: string): Array<{ requestId: string; tool: string; input: Record<string, unknown> }> {

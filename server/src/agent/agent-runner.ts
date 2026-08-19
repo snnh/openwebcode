@@ -2162,6 +2162,14 @@ export class AgentRunner {
     return this.running.has(sessionId);
   }
 
+  /** 权限模式运行中热切换后，按最新 mode/rules 结算该会话挂起的权限请求
+   * （新档下不再需要审批的自动放行；本机会话 HOME 外路径门不受影响）。 */
+  async reconcilePermissions(sessionId: string): Promise<void> {
+    const session = await this.sessions.getMeta(sessionId);
+    if (!session) return;
+    this.permissions.reconcile(sessionId, session.permissionMode ?? "ask", session.permissionRules ?? []);
+  }
+
   /** REST snapshot source. An unfinished snapshot after a process restart is
    * explicitly failed: this runner cannot safely resume a half-completed tool
    * turn and must never report a phantom running agent. */
@@ -2351,7 +2359,7 @@ export class AgentRunner {
         this.state(sessionId, "waiting_permission");
         // Notification 钩子：权限待批（与下方 needsApproval 审批路径同一挂点）
         await this.runNotificationHook("Notification", { sessionId, cwd: session.cwd, tool, input: { ...input, path: abs }, notification: { kind: "permission", summary: summarizeToolInput(tool, { ...input, path: abs }) } });
-        const result = await this.permissions.request(sessionId, tool, { ...input, path: abs }, signal);
+        const result = await this.permissions.request(sessionId, tool, { ...input, path: abs }, signal, { alwaysManual: true });
         this.state(sessionId, "tool_running");
         if (!result.allowed) return { allowed: false, reason: `访问 HOME 外路径未获允许：${abs}${result.reason ? `（${result.reason}）` : ""}` };
         return { allowed: true };
@@ -2373,6 +2381,12 @@ export class AgentRunner {
       const reviewed = await this.reviewToolCall(session, tool, input, signal);
       this.events.publish({ source: "agent", type: "permission.reviewed", sessionId, payload: { tool, ...boundToolEventInput(input), verdict: reviewed.verdict, rationale: reviewed.rationale, model: reviewed.model } });
       if (reviewed.verdict === "low") return { allowed: true };
+      // 审核窗口（最长 30s）内用户可能已热切权限档：按最新 mode/rules 复查，
+      // 不再需要审批则直接放行，避免挂出一张新档下本不该存在的权限卡。
+      const fresh = await this.sessions.getMeta(sessionId);
+      if (fresh && !this.permissions.needsApproval(fresh.permissionMode ?? "ask", fresh.permissionRules ?? [], tool, input)) {
+        return { allowed: true };
+      }
     }
     this.state(sessionId, "waiting_permission");
     // Notification 钩子：权限待批（仅通知不阻断，桌面通知/IM 机器人等外接提醒的挂点）

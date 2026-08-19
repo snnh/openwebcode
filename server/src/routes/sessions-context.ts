@@ -32,7 +32,16 @@ export function registerSessionContextRoutes(app: FastifyInstance, ctx: RouteCon
   app.put<{ Params: { id: string }; Body: SessionConfigBody }>("/api/sessions/:id/config", async (request, reply) => {
     const session = await sessions.get(request.params.id);
     if (!session) return reply.code(404).send({ error: "Session not found" });
-    if (agent.isRunning(request.params.id)) return reply.code(409).send({ error: "Session is running; update its config when it is idle" });
+    // 运行中只允许热切权限类字段（permissionMode/reviewMode 均由 authorizeTool 每次
+    // 工具调用实时读取，无快照）；其余配置（模型/agentMode/沙盒/环境等）仍须空闲时改。
+    const running = agent.isRunning(request.params.id);
+    if (running) {
+      const RUNTIME_CONFIG_KEYS = new Set(["permissionMode", "reviewModel"]);
+      const keys = Object.keys(request.body ?? {});
+      if (keys.some((key) => !RUNTIME_CONFIG_KEYS.has(key))) {
+        return reply.code(409).send({ error: "Session is running; update its config when it is idle" });
+      }
+    }
     const provider = request.body?.provider ?? session.provider;
     const model = request.body?.model ?? session.model;
     if (!providers.get(provider)) return reply.code(400).send({ error: `Provider ${provider} is not configured` });
@@ -177,6 +186,8 @@ export function registerSessionContextRoutes(app: FastifyInstance, ctx: RouteCon
     }
     await sessions.updateConfig(request.params.id, { provider, model, ...(thinking ? { thinking } : {}), ...(effort ? { effort } : {}), ...(agentMode ? { agentMode } : {}), ...(snapshotMode ? { snapshotMode } : {}), ...(shellBackend ? { shellBackend } : {}), ...(pythonEnv ? { pythonEnv } : {}), ...(nodeEnv ? { nodeEnv } : {}), ...(persona !== undefined ? { persona: persona.trim() } : {}), ...(swarmEnabled === true ? { swarmEnabled: true } : {}), ...(reviewModel ? { reviewModel } : {}), ...(toolsAllow?.length ? { toolsAllow } : {}), ...(toolsDeny?.length ? { toolsDeny } : {}), ...(fallbackModels?.length ? { fallbackModels } : {}) });
     let updated = await sessions.updatePermissions(request.params.id, permissionMode, session.permissionRules ?? []);
+    // 运行中热切权限档：按新档结算挂起的权限请求（新档下无需审批的自动放行）
+    if (running) await agent.reconcilePermissions?.(request.params.id);
     if (extensionState !== undefined) {
       updated = await sessions.updateExtensionState(request.params.id, extensionState);
     }

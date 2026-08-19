@@ -975,7 +975,6 @@ export function Composer({ session, running, onSend, onConfig, editingMessage, o
         <span className="composer-permission">
           <PermissionModeMenu
             value={session.permissionMode ?? "ask"}
-            disabled={running}
             onChange={(mode) => onConfig({ permissionMode: mode })}
           />
         </span>
