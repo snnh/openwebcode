@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useI18n } from "../i18n";
 import { api } from "../lib/api";
 import type { EvalRunComparison, EvalRunReport } from "../lib/contracts";
-import { formatDuration } from "../lib/format";
+import { formatDuration, formatDateTime } from "../lib/format";
 import { Icon } from "../components/Icon";
 import { ui } from "../app/ui-store";
 
@@ -135,7 +135,7 @@ export function EvalPanel(): ReactElement {
             <div className="eval-actions">
               <select aria-label={t("对比基线", "Comparison baseline")} value={baselineRunId ?? ""} onChange={(event) => { setBaselineRunId(event.target.value || undefined); setComparison(undefined); }}>
                 <option value="">{t("选择基线…", "Select baseline…")}</option>
-                {runs.data?.runs.filter((item) => item.runId !== report.runId).map((item) => <option key={item.runId} value={item.runId}>{new Date(item.startedAt).toLocaleString(locale)} · {item.summary.passed}/{item.summary.total}</option>)}
+                {runs.data?.runs.filter((item) => item.runId !== report.runId).map((item) => <option key={item.runId} value={item.runId}>{formatDateTime(item.startedAt, locale)} · {item.summary.passed}/{item.summary.total}</option>)}
               </select>
               <button disabled={!baselineRunId || baselineRunId === report.runId} onClick={() => void compareCurrent()}>{t("对比", "Compare")}</button>
               <button onClick={() => downloadEvalReport(report)}>{t("导出 JSON", "Export JSON")}</button>
@@ -195,7 +195,7 @@ export function EvalPanel(): ReactElement {
             {runs.data.runs.map((item) => (
               <div className="eval-history-row" key={item.runId}>
                 <button onClick={() => void openRun(item.runId)}>
-                  <span>{new Date(item.startedAt).toLocaleString(locale)}</span>
+                  <span>{formatDateTime(item.startedAt, locale)}</span>
                   <span>{item.summary.passed}/{item.summary.total} · {formatDuration(item.summary.durationMs)}</span>
                 </button>
                 <button className="eval-baseline" aria-pressed={baselineRunId === item.runId} onClick={() => { setBaselineRunId(item.runId); setComparison(undefined); }}>{t("设为基线", "Set baseline")}</button>
@@ -210,7 +210,7 @@ export function EvalPanel(): ReactElement {
           <div className="eval-history">
             {comparisons.data.comparisons.map((item) => (
               <button key={item.comparisonId} onClick={() => void openComparison(item.comparisonId)}>
-                <span>{new Date(item.createdAt).toLocaleString(locale)}</span>
+                <span>{formatDateTime(item.createdAt, locale)}</span>
                 <span>{item.summary.regressions} {t("项回归", "regressions")} · {item.summary.improvements} {t("项改善", "improvements")}</span>
               </button>
             ))}

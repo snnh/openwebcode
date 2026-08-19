@@ -49,7 +49,7 @@ function writeStored(key: string, value: string): void {
   }
 }
 
-export interface LayoutState {
+interface LayoutState {
   sidebarView: SidebarView;
   sidebarVisible: boolean;
   sidebarWidth: number;

@@ -4,7 +4,7 @@ import { api } from "../lib/api";
 import type { ContextTokenUsage, ContextUsage, ContextView } from "../lib/contracts";
 import { cacheHitRate } from "../lib/cache-stats";
 import { deriveWindowInfo, windowLevel, compactionThresholdPercent, type ContextWindowInfo } from "../lib/context-window";
-import { formatCurrency, formatTokens, formatTokensShort, microToDecimal } from "../lib/format";
+import { formatCurrency, formatDateTime, formatTokens, formatTokensShort, microToDecimal } from "../lib/format";
 import { compactionModeNameText } from "../lib/compaction";
 import { cacheTone, formatCacheTitle } from "../lib/cache-stats";
 import { useStore } from "../app/store";
@@ -302,7 +302,7 @@ function CompactionSection({ sessionId, running, context }: {
           <dt>{t("范围", "Range")}</dt>
           <dd>{t(`前 ${compacted.uptoIndex} 条消息`, `First ${compacted.uptoIndex} messages`)}</dd>
           <dt>{t("时间", "Time")}</dt>
-          <dd>{new Date(compacted.createdAt).toLocaleString(locale)}</dd>
+          <dd>{formatDateTime(compacted.createdAt, locale)}</dd>
           {compacted.instructions.length > 0 && (
             <>
               <dt>{t("用户明确指令（累积）", "Explicit user instructions (cumulative)")}</dt>

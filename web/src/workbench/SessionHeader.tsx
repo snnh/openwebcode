@@ -39,8 +39,8 @@ const SANDBOX_LABELS: Record<SandboxMode, [string, string]> = {
 
 /** 原生 select 按最长 option 撑宽，顶栏会留出大片空白；桌面端按选中项实测文本宽度收缩（+18px 箭头余量）。移动端由 CSS 百分比栏位铺满，清掉内联宽度 */
 let measureCanvas: HTMLCanvasElement | undefined;
-function fitSelectWidth(select: HTMLSelectElement): void {
-  if (typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia(MOBILE_BREAKPOINT).matches) {
+function fitSelectWidth(select: HTMLSelectElement, isMobile: boolean): void {
+  if (isMobile) {
     select.style.width = "";
     return;
   }
@@ -55,8 +55,9 @@ function fitSelectWidth(select: HTMLSelectElement): void {
 /** 宽度自适应选中项的 select：挂载/每次渲染后重测，onChange 时立即重测；appearance:none + 自带 chevron，规避原生箭头布局的平台差异 */
 function FitSelect({ children, ...props }: SelectHTMLAttributes<HTMLSelectElement>): ReactElement {
   const ref = useRef<HTMLSelectElement>(null);
+  const isMobile = useMediaQuery(MOBILE_BREAKPOINT);
   useLayoutEffect(() => {
-    if (ref.current) fitSelectWidth(ref.current);
+    if (ref.current) fitSelectWidth(ref.current, isMobile);
   });
   return (
     <span className="fit-select">
@@ -64,7 +65,7 @@ function FitSelect({ children, ...props }: SelectHTMLAttributes<HTMLSelectElemen
         ref={ref}
         {...props}
         onChange={(event) => {
-          fitSelectWidth(event.currentTarget);
+          fitSelectWidth(event.currentTarget, isMobile);
           props.onChange?.(event);
         }}
       >
@@ -96,7 +97,7 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
   const [headerCollapsed, setHeaderCollapsed] = useState(() => {
     const stored = localStorage.getItem("owc-header-collapsed");
     if (stored === "1" || stored === "0") return stored === "1";
-    return typeof window !== "undefined" && typeof window.matchMedia === "function" && window.matchMedia(MOBILE_BREAKPOINT).matches;
+    return isMobile;
   });
   // 任务列表路由不含 output（避免载荷过大），展开时按 taskId 拉详情缓存于此
   const [taskDetails, setTaskDetails] = useState<Record<string, BackgroundTaskInfo>>({});

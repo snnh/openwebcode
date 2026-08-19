@@ -6,6 +6,8 @@ import { Icon } from "../components/Icon";
 import { Overlay } from "../components/Overlay";
 import { useConfirmDialog } from "../components/ConfirmDialog";
 import { ui } from "../app/ui-store";
+import { api, ApiError } from "../lib/api";
+import { writeClipboard } from "../lib/clipboard";
 import type { ChatSessionMeta, ChatShare } from "./types";
 
 interface RenameTarget {
@@ -78,11 +80,7 @@ export function ChatSessionList(props: {
       onConfirm: () => {
         void (async () => {
           try {
-            const res = await fetch(`/api/chat/sessions/${id}`, { method: "DELETE", credentials: "include" });
-            if (!res.ok) {
-              notifyError(t("删除失败", "Delete failed"));
-              return;
-            }
+            await api.chatDelete(id);
             if (props.onDeleted) props.onDeleted(id);
             else props.onRefresh();
           } catch {
@@ -105,22 +103,13 @@ export function ChatSessionList(props: {
     const { id } = renameTarget;
     setRenameTarget(undefined);
     try {
-      const res = await fetch(`/api/chat/sessions/${id}`, {
-        method: "PATCH",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title }),
-      });
-      if (res.status === 401) {
+      await api.chatPatch(id, { title });
+      props.onRefresh();
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
         notifyError(t("需要访问令牌才能修改", "Access token required"));
         return;
       }
-      if (!res.ok) {
-        notifyError(t("重命名失败", "Rename failed"));
-        return;
-      }
-      props.onRefresh();
-    } catch {
       notifyError(t("重命名失败", "Rename failed"));
     }
   }
@@ -135,23 +124,13 @@ export function ChatSessionList(props: {
     if (!shareSession || shareBusy) return;
     setShareBusy(true);
     try {
-      const password = sharePassword.trim();
-      const res = await fetch(`/api/chat/sessions/${shareSession.id}/share`, {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(password ? { password } : {}),
-      });
-      if (res.status === 401) {
+      const share = await api.chatCreateShare(shareSession.id, sharePassword.trim() || undefined);
+      setShareResult(share);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
         notifyError(t("需要访问令牌才能分享", "Access token required"));
         return;
       }
-      if (!res.ok) {
-        notifyError(t("创建分享失败", "Failed to create share"));
-        return;
-      }
-      setShareResult((await res.json()) as ChatShare);
-    } catch {
       notifyError(t("创建分享失败", "Failed to create share"));
     } finally {
       setShareBusy(false);
@@ -162,14 +141,7 @@ export function ChatSessionList(props: {
     if (!shareSession || shareBusy) return;
     setShareBusy(true);
     try {
-      const res = await fetch(`/api/chat/sessions/${shareSession.id}/share`, {
-        method: "DELETE",
-        credentials: "include",
-      });
-      if (!res.ok) {
-        notifyError(t("撤销分享失败", "Failed to revoke share"));
-        return;
-      }
+      await api.chatRevokeShare(shareSession.id);
       setShareResult(undefined);
       props.onRefresh();
     } catch {
@@ -182,21 +154,14 @@ export function ChatSessionList(props: {
   async function copyShareUrl(): Promise<void> {
     if (!shareResult) return;
     const url = `${window.location.origin}/share/${shareResult.id}/${shareResult.slug}`;
-    try {
-      await navigator.clipboard.writeText(url);
-      ui.notify(t("分享链接已复制", "Share link copied"));
-    } catch {
-      notifyError(t("复制失败，请手动复制", "Copy failed; please copy manually"));
-    }
+    const ok = await writeClipboard(url);
+    if (ok) ui.notify(t("分享链接已复制", "Share link copied"));
+    else notifyError(t("复制失败，请手动复制", "Copy failed; please copy manually"));
   }
 
   async function handleBranch(id: string): Promise<void> {
     try {
-      const res = await fetch(`/api/chat/sessions/${id}/branches`, { method: "POST", credentials: "include" });
-      if (!res.ok) {
-        notifyError(t("创建分支失败", "Failed to create branch"));
-        return;
-      }
+      await api.chatBranches(id);
       props.onRefresh();
     } catch {
       notifyError(t("创建分支失败", "Failed to create branch"));

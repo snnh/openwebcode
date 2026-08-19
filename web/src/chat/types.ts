@@ -17,7 +17,7 @@ import type { PendingPermission } from "../app/session-store";
  * 共享回调经 ChatActionsContext 下发（消灭层层透传）；数据类仍走 props（保持 memo 语义明确）。
  */
 
-export type { StreamBlock, LiveActivityInfo, DiffSpec, PendingPermission };
+export type { StreamBlock, DiffSpec };
 
 /** 命令体系经 window 事件桥接打开会话内搜索（与旧 CONVERSATION_SEARCH_EVENT 同名） */
 export const CONVERSATION_SEARCH_EVENT = "owc:open-conversation-search";
