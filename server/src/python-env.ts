@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import type { ShellFlavor } from "./agent/shell-detect.js";
+import { wellKnownBinPaths } from "./host-env.js";
 import type { PythonEnv } from "./sessions/types.js";
 
 /** 会话值优先，全局默认其次，最终回退本机环境。 */
@@ -112,6 +113,26 @@ export function runHost(command: string, args: string[], timeoutMs: number): Pro
 }
 
 /**
+ * 带常见安装位置回退的宿主探测：systemd/Docker 等最小环境的 PATH 不含用户级
+ * bin（uv/fnm 常装在 ~/.local/bin），PATH 查找 spawn 失败时按序尝试绝对路径候选
+ *（host-env.ts 的 wellKnownBinPaths）。spawn 成功（code 非 null，无论退出码）即返回。
+ */
+export async function runHostResolving(
+  command: string,
+  args: string[],
+  timeoutMs: number,
+  candidates: string[] = wellKnownBinPaths(command),
+): Promise<{ code: number | null; stderr: string }> {
+  const first = await runHost(command, args, timeoutMs);
+  if (first.code !== null) return first;
+  for (const candidate of candidates) {
+    const result = await runHost(candidate, args, timeoutMs);
+    if (result.code !== null) return result;
+  }
+  return first;
+}
+
+/**
  * uv 虚拟环境的懒创建（host 侧 spawn；命令完全由 server 生成，不含模型输入，
  * 与 hooks 同级可信）。同一目录并发共享一次创建；成功缓存，失败下次重试。
  */
@@ -138,10 +159,10 @@ export class UvPythonEnvironments {
   }
 
   private async doEnsure(venvDir: string): Promise<UvEnsureResult> {
-    const version = await runHost("uv", ["--version"], 15_000);
+    const version = await runHostResolving("uv", ["--version"], 15_000);
     if (version.code !== 0) return { ok: false, note: "uv is not available on PATH, using the host python environment" };
     if (existsSync(pythonExePath(venvDir))) return { ok: true };
-    const created = await runHost("uv", ["venv", venvDir], 120_000);
+    const created = await runHostResolving("uv", ["venv", venvDir], 120_000);
     if (created.code !== 0 || !existsSync(pythonExePath(venvDir))) {
       return { ok: false, note: `uv venv failed${created.stderr ? ` (${created.stderr.slice(0, 200)})` : ""}, using the host python environment` };
     }

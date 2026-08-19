@@ -2,7 +2,7 @@ import { existsSync, realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { ShellFlavor } from "./agent/shell-detect.js";
-import { runHost } from "./python-env.js";
+import { runHostResolving } from "./python-env.js";
 import type { NodeEnv } from "./sessions/types.js";
 
 /** 会话值优先，全局默认其次，最终回退本机环境。 */
@@ -163,7 +163,7 @@ export class NodeEnvManagers {
   private readonly readyModes = new Set<string>();
 
   constructor(
-    private readonly runHostCommand: typeof runHost = runHost,
+    private readonly runHostCommand: typeof runHostResolving = runHostResolving,
     private readonly nvmScriptPath: string = path.join(os.homedir(), ".nvm", "nvm.sh"),
   ) {}
 
