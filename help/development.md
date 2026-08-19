@@ -173,7 +173,7 @@ core（ctest）：`test_protocol.py` / `test_fs.py` / `test_abs_path.py` / `test
 
 - UI 状态入 `src/app/` 下的自研 store（ui-store/session-store/live-store/prefs-store，useSyncExternalStore）；服务端数据走 `@tanstack/react-query`；WS 事件经 `app/ws.ts` + `app/event-router.ts` 集中路由。
 - 样式在 `src/styles/` 十二份样式表（tokens/base/layout/chat-list/chat-cards/chat-mode/composer/sidebar/panels/editor/dialogs/settings），CSS 变量主题（亮/暗）。新组件按其域放 `chat/`、`composer/`、`workbench/`、`panels/`、`dialogs/`、`settings/`，基元放 `components/`。
-- 新命令/快捷键：命令注册到 `app/commands.ts` 的 `registerBuiltinCommands`（含 `when` 上下文），默认键位加到 `DEFAULT_KEYBINDINGS`。`command-coverage.test.ts` 会校验每个 REST 动作都有对应命令。
+- 新命令/快捷键：命令注册到 `app/commands.ts` 的 `registerBuiltinCommands`（含 `when` 上下文），默认键位加到 `DEFAULT_KEYBINDINGS`。`commands.test.ts` 会校验每个 REST 动作都有对应命令。
 - Markdown/LaTeX 渲染集中在 `components/Markdown.tsx`，不要为流式/历史/思考各维护一份解析器。
 - 新增用户可见文案必须走 `useI18n()` 的 `t(中文, english)` 同时给中英文，不做运行时 DOM 文本替换。
 

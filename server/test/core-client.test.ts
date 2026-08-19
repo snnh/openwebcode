@@ -1,17 +1,21 @@
+import { spawn, type ChildProcess } from "node:child_process";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { CORE_PROTOCOL_VERSION, CoreGateway, CoreProtocolError, negotiate } from "../src/core-gateway.js";
 import { CoreLogArchive } from "../src/core-log.js";
-import { CoreClient, sanitizedCoreEnv, type CoreEvent, type CoreInfo, type IndexScanEntry, type IndexScanSummary } from "../src/core-client.js";
+import { CoreClient, CoreRpcError, sanitizedCoreEnv, type CoreEvent, type CoreInfo, type IndexScanEntry, type IndexScanSummary } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus } from "../src/events/event-bus.js";
+import { IndexManager } from "../src/index/index-manager.js";
 import { ProviderRegistry } from "../src/providers/provider.js";
 import { encodeFrame, FrameDecoder } from "../src/rpc/frame-codec.js";
+import { TcpTransport } from "../src/rpc/transport.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { FAKE_CORE_INFO, makeFakeCore } from "./helpers/fake-core.js";
 import { tempRoot } from "./helpers/temp-roots.js";
@@ -21,11 +25,23 @@ const corePath = process.env.OWC_CORE_PATH ?? path.resolve(
   here,
   process.platform === "win32" ? "../../build/Debug/owc-exec.exe" : "../../build/owc-exec",
 );
+const coreExists = existsSync(corePath);
+const itIfCore = coreExists ? it : it.skip;
+
 let client: CoreClient | undefined;
+let server: Server | undefined;
+let child: ChildProcess | undefined;
+let manager: IndexManager | undefined;
 
 afterEach(async () => {
-  await client?.stop();
+  manager?.stop();
+  manager = undefined;
+  await client?.stop().catch(() => undefined);
   client = undefined;
+  if (child && child.exitCode === null) child.kill();
+  child = undefined;
+  server?.close();
+  server = undefined;
 });
 
 describe("sanitizedCoreEnv", () => {
@@ -488,4 +504,139 @@ describe("CoreLogArchive", () => {
     // 不抛错即通过；给 appendFile 一个失败的机会
     await new Promise((resolve) => setTimeout(resolve, 50));
   });
+});
+
+describe.skipIf(!existsSync(corePath))("CoreClient fs.readBase64", () => {
+  async function start(): Promise<{ cwd: string }> {
+    const cwd = await tempRoot("owc-read-base64-");
+    client = new CoreClient(corePath);
+    const info = await client.start();
+    // 六方同步面：新 core 必须上报 fs.readBase64 能力与读取上限
+    expect(info.features?.fsReadBase64).toBe(true);
+    expect(info.limits?.maxReadBase64Bytes).toBe(20 * 1024 * 1024);
+    await client.configureSession({
+      sessionId: "test-session",
+      cwd,
+      sandbox: { enabled: false, readRoots: [cwd], writeRoots: [cwd], denyPaths: [], network: "allow" },
+    });
+    return { cwd };
+  }
+
+  it("roundtrips binary bytes including NUL and 0xFF", async () => {
+    const { cwd } = await start();
+    const blob = Buffer.concat([Buffer.from(Array.from({ length: 256 }, (_, i) => i)), Buffer.from([0x00, 0xff, 0xfe, 0x00])]);
+    await writeFile(path.join(cwd, "blob.bin"), blob);
+    const result = await client!.readFileBase64!({ sessionId: "test-session", path: "blob.bin" });
+    expect(result.truncated).toBe(false);
+    expect(result.size).toBe(blob.length);
+    expect(Buffer.from(result.base64, "base64")).toEqual(blob);
+  });
+
+  it("roundtrips through writeFileBase64", async () => {
+    await start();
+    const blob = Buffer.from("pretend-png-bytes\x00\x89PNG", "binary");
+    await client!.writeFileBase64!({ sessionId: "test-session", path: "image.png", data: blob.toString("base64") });
+    const result = await client!.readFileBase64!({ sessionId: "test-session", path: "image.png" });
+    expect(result.truncated).toBe(false);
+    expect(Buffer.from(result.base64, "base64")).toEqual(blob);
+  });
+
+  it("maps a missing file to the stable -32003 error", async () => {
+    await start();
+    const failure = await client!.readFileBase64!({ sessionId: "test-session", path: "missing.bin" }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(CoreRpcError);
+    expect((failure as CoreRpcError).code).toBe(-32003);
+  });
+});
+
+describe.skipIf(!existsSync(corePath))("owc-exec --connect TCP loopback", () => {
+  itIfCore("handshakes core.ping over the connect-back socket", async () => {
+    server = createServer();
+    await new Promise<void>((resolve, reject) => {
+      server!.once("error", reject);
+      server!.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("listener did not bind a port");
+    const socketPromise = new Promise<Socket>((resolve) => server!.once("connection", resolve));
+    child = spawn(corePath, ["--connect", `127.0.0.1:${address.port}`], { windowsHide: true });
+    const socket = await socketPromise;
+    // 复用 CoreClient 的外部连接注入：传输为回连 TCP socket，完成真实握手
+    client = new CoreClient(corePath, 10_000, () => Promise.resolve({ transport: new TcpTransport(socket) }));
+    const info = await client.start();
+    expect(["windows", "linux", "darwin"]).toContain(info.platform);
+    expect(info.sandboxCapability).toBeTruthy();
+    await client.stop();
+    client = undefined;
+    // core.shutdown 后进程应自行退出
+    await new Promise<void>((resolve) => {
+      if (child!.exitCode !== null) return resolve();
+      child!.once("exit", () => resolve());
+      setTimeout(resolve, 5_000);
+    });
+    expect(child.exitCode).toBe(0);
+  }, 30_000);
+
+  itIfCore("rejects invalid arguments with usage on stderr and exit code 2", async () => {
+    const result = await new Promise<{ code: number | null; stderr: string }>((resolve) => {
+      const proc = spawn(corePath, ["--bogus"], { windowsHide: true });
+      let stderr = "";
+      proc.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
+      proc.once("exit", (code) => resolve({ code, stderr }));
+    });
+    expect(result.code).toBe(2);
+    expect(result.stderr).toContain("usage:");
+  }, 15_000);
+
+  itIfCore("fails to connect with a non-zero exit code", async () => {
+    // 在空闲端口上连接应立即失败
+    server = createServer();
+    await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("listener did not bind a port");
+    server.close();
+    server = undefined;
+    const code = await new Promise<number | null>((resolve) => {
+      child = spawn(corePath, ["--connect", `127.0.0.1:${address.port}`], { windowsHide: true });
+      child.once("exit", resolve);
+    });
+    expect(code).toBe(1);
+  }, 15_000);
+});
+
+describe.skipIf(!existsSync(corePath))("IndexManager against real core (base64 job.output)", () => {
+  it("runs a real index.scan + index.extract and finds files and symbols", async () => {
+    const workspace = await tempRoot("owc-index-e2e-ws-");
+    const indexRoot = await tempRoot("owc-index-e2e-idx-");
+    mkdirSync(path.join(workspace, "src"));
+    writeFileSync(path.join(workspace, "src", "util.ts"), "export function helperFn(): number {\n  return 1;\n}\n");
+    writeFileSync(path.join(workspace, "src", "main.ts"), "export const betaValue = 2;\n");
+
+    client = new CoreClient(corePath);
+    const info = await client.start();
+    expect(info.features?.indexScan).toBe(true);
+    expect(info.features?.indexExtract).toBe(true);
+    await client.configureSession({
+      sessionId: "index-e2e",
+      cwd: workspace,
+      sandbox: { enabled: false, readRoots: [workspace], writeRoots: [workspace], denyPaths: [], network: "allow" },
+    });
+
+    manager = new IndexManager(client, indexRoot, new EventBus(), { pollMs: 20, autoRefresh: false });
+    await manager.rebuild("index-e2e", workspace);
+    let status = await manager.status("index-e2e", workspace);
+    for (let attempt = 0; status.status === "building" && attempt < 400; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      status = await manager.status("index-e2e", workspace);
+    }
+    // base64 解码回归：修复前这里会因 JSONL 解析出 base64 垃圾而 error/stale
+    expect(status.status).toBe("fresh");
+    expect(status.files).toBe(2);
+
+    const symbols = await manager.searchSymbols(workspace, "helperFn");
+    expect(symbols.some((hit) => hit.path === "src/util.ts" && hit.kind === "function")).toBe(true);
+
+    const files = await manager.searchFiles(workspace, "main");
+    expect(files.some((hit) => hit.path === "src/main.ts")).toBe(true);
+  }, 30_000);
 });

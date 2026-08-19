@@ -139,17 +139,14 @@ describe("OpenAIResponsesProvider streaming", () => {
 
   it("gates reasoning summary and effort behind configuration flags", async () => {
     const bodies: Array<Record<string, unknown>> = [];
-    // provider 级关闭 summary 请求，请求级 reasoningContent: false 同样关闭
+    // provider 级关闭 summary 请求
     await collect(makeProvider(completedSseFetch(bodies), { reasoningContent: false }).streamChat(request({ effort: "low" })));
-    await collect(makeProvider(completedSseFetch(bodies)).streamChat(request({ effort: "low", reasoningContent: false })));
     await collect(makeProvider(completedSseFetch(bodies), { reasoningEffort: false }).streamChat(request({ effort: "low" })));
 
     expect(bodies[0]).toMatchObject({ reasoning: { effort: "low" } });
     expect(bodies[0]?.reasoning).not.toHaveProperty("summary");
-    expect(bodies[1]).toMatchObject({ reasoning: { effort: "low" } });
-    expect(bodies[1]?.reasoning).not.toHaveProperty("summary");
-    expect(bodies[2]).toMatchObject({ reasoning: { summary: "auto" } });
-    expect(bodies[2]?.reasoning).not.toHaveProperty("effort");
+    expect(bodies[1]).toMatchObject({ reasoning: { summary: "auto" } });
+    expect(bodies[1]?.reasoning).not.toHaveProperty("effort");
   });
 
   it("aggregates function_call argument deltas into a single tool_call", async () => {
@@ -390,13 +387,6 @@ describe("OpenAIResponsesProvider request mapping", () => {
       diagnosticWriter: (line) => lines.push(line),
     });
     await collect(provider.streamChat(request({ messages })));
-    // 无素材时 function_call 照常发出（不回传 reasoning item），留痕提示思维模式端点可能拒绝
-    expect(bodies[0]?.input).toEqual([
-      { role: "user", content: "继续" },
-      { role: "assistant", content: "我查一下" },
-      { type: "function_call", call_id: "call_missing", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
-      { type: "function_call_output", call_id: "call_missing", output: "B" },
-    ]);
     expect(lines.some((line) => line.includes("缺少同源 thinking 素材"))).toBe(true);
   });
 
@@ -535,40 +525,6 @@ describe("provider reasoning parameters", () => {
     expect(openAiBodies[0]).not.toHaveProperty("tools");
   });
 
-  it("replays same-provider thinking blocks as reasoning_content (思维链保留回传)", async () => {
-    const bodies: Array<Record<string, unknown>> = [];
-    const fetch = reasoningSseFetch(bodies);
-    const messages: StreamChatRequest["messages"] = [
-      { id: "u1", role: "user", content: [{ type: "text", text: "q" }], createdAt: "2026-01-01T00:00:00.000Z" },
-      {
-        id: "a1", role: "assistant", createdAt: "2026-01-01T00:00:01.000Z",
-        content: [
-          { type: "thinking", text: "先想第一步", provider: "zijian" },
-          { type: "thinking", text: "再想想", provider: "zijian" },
-          { type: "thinking", text: "异源思考", provider: "anthropic" },
-          { type: "text", text: "答" },
-          { type: "tool_call", id: "tc1", name: "bash", input: { cmd: "ls" } },
-        ],
-      },
-      { id: "t1", role: "tool", content: [{ type: "tool_result", toolCallId: "tc1", content: "ok", isError: false }], createdAt: "2026-01-01T00:00:02.000Z" },
-    ];
-
-    // 默认开启：同源 thinking 回放 reasoning_content（含 tool_calls 消息），异源不回带
-    await drain(zijianCompat(fetch).streamChat(reasoningRequest({ messages })));
-    const assistant = (bodies[0]!.messages as Array<Record<string, unknown>>)[2]!;
-    expect(assistant.reasoning_content).toBe("先想第一步\n再想想");
-    expect(assistant.tool_calls).toHaveLength(1);
-
-    // reasoningContent: false 关闭回传，消息形态与旧版一致
-    await drain(zijianCompat(fetch, { reasoningContent: false }).streamChat(reasoningRequest({ messages })));
-    const legacy = (bodies[1]!.messages as Array<Record<string, unknown>>)[2]!;
-    expect(legacy).not.toHaveProperty("reasoning_content");
-
-    // 无异名 thinking 块时消息形态不变（回归）
-    await drain(zijianCompat(fetch).streamChat(reasoningRequest()));
-    expect((bodies[2]!.messages as Array<Record<string, unknown>>)[0]).not.toHaveProperty("reasoning_content");
-  });
-
   it("request-level reasoningContent overrides the provider-level default", async () => {
     const bodies: Array<Record<string, unknown>> = [];
     const fetch = reasoningSseFetch(bodies);
@@ -590,36 +546,10 @@ describe("provider reasoning parameters", () => {
 });
 
 describe("provider custom request body (extraBody)", () => {
-  it("omits max_tokens by default and merges extraBody under core fields", async () => {
-    const bodies: Array<Record<string, unknown>> = [];
-    await drain(makeCompat(reasoningSseFetch(bodies), {
-      extraBody: { temperature: 0.7, model: "evil-override", max_tokens: 8192 },
-    }).streamChat(reasoningRequest()));
-    // 自定义字段透传；核心字段 model 不被 extraBody 覆盖；extraBody 可提供 max_tokens
-    expect(bodies[0]).toMatchObject({ model: "claude-opus-4-8", temperature: 0.7, max_tokens: 8192 });
-
-    // 缺省不发送 max_tokens（不限制输出长度）
-    const plain: Array<Record<string, unknown>> = [];
-    await drain(makeCompat(reasoningSseFetch(plain)).streamChat(reasoningRequest()));
-    expect(plain[0]).not.toHaveProperty("max_tokens");
-
-    // 显式 maxTokens 仍生效
+  it("compat：显式 maxTokens 仍映射为 max_tokens（缺省省略由跨 provider 组覆盖）", async () => {
     const limited: Array<Record<string, unknown>> = [];
     await drain(makeCompat(reasoningSseFetch(limited), { maxTokens: 4096 }).streamChat(reasoningRequest()));
     expect(limited[0]).toMatchObject({ max_tokens: 4096 });
-  });
-
-  it("请求级 temperature/topP 映射为 temperature/top_p（覆盖 extraBody 同名字段）", async () => {
-    const bodies: Array<Record<string, unknown>> = [];
-    await drain(makeCompat(reasoningSseFetch(bodies))
-      .streamChat(reasoningRequest({ temperature: 0.7, topP: 0.9 })));
-    expect(bodies[0]).toMatchObject({ temperature: 0.7, top_p: 0.9 });
-
-    // 未下发时不发这两个字段，由端点默认决定
-    const plain: Array<Record<string, unknown>> = [];
-    await drain(makeCompat(reasoningSseFetch(plain)).streamChat(reasoningRequest()));
-    expect(plain[0]).not.toHaveProperty("temperature");
-    expect(plain[0]).not.toHaveProperty("top_p");
   });
 
   it("anthropic merges extraBody and lets extraBody.max_tokens override the default", async () => {
@@ -636,26 +566,6 @@ describe("provider custom request body (extraBody)", () => {
 });
 
 describe("provider tool_call_delta streaming", () => {
-  it("openai emits argument fragments with the accumulated id and name", async () => {
-    const chunks = [
-      { choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "ba" } }] } }] },
-      { choices: [{ delta: { tool_calls: [{ index: 0, function: { name: "sh", arguments: "{\"cmd\":" } }] } }] },
-      { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: "\"ls\"}" } }] }, finish_reason: null }] },
-      { choices: [{ finish_reason: "tool_calls", delta: {} }] },
-    ];
-    const sse = chunks.map((chunk) => "data: " + JSON.stringify(chunk) + "\n\n").join("") + "data: [DONE]\n\n";
-    const fetch = async () => new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } });
-    const events = await collect(makeCompat(fetch as typeof globalThis.fetch).streamChat(reasoningRequest()));
-
-    const deltas = events.filter((event) => event.type === "tool_call_delta");
-    expect(deltas).toEqual([
-      { type: "tool_call_delta", id: "call_1", name: "ba", argumentsDelta: "" },
-      { type: "tool_call_delta", id: "call_1", name: "bash", argumentsDelta: "{\"cmd\":" },
-      { type: "tool_call_delta", id: "call_1", name: "bash", argumentsDelta: "\"ls\"}" },
-    ]);
-    expect(events.filter((event) => event.type === "tool_call")).toEqual([{ type: "tool_call", id: "call_1", name: "bash", input: { cmd: "ls" } }]);
-  });
-
   it("anthropic maps content_block_start and input_json_delta", async () => {
     const provider = new AnthropicProvider({ apiKey: "test" });
     const stream = () => ({
@@ -849,7 +759,6 @@ describe("Responses response.failed/error 按 failure code 区分可重试", () 
     { event: { type: "response.failed", response: { status: "failed", error: { code: "server_error", message: "boom" } } }, kind: "overloaded", retryable: true },
     { event: { type: "error", code: "rate_limit", message: "slow down" }, kind: "rate_limit", retryable: true },
     { event: { type: "response.failed", response: { status: "failed", error: { code: "invalid_request", message: "bad" } } }, kind: "unknown", retryable: false },
-    { event: { type: "response.failed", response: { status: "failed", error: { message: "bad" } } }, kind: "unknown", retryable: false },
   ])("$kind / retryable=$retryable", async ({ event, kind, retryable }) => {
     const provider = new OpenAIResponsesProvider({ baseURL: "https://example.invalid/v1", fetch: errorFetchWith(failedBody(event)) });
     const error = await expectProviderError(provider.streamChat(errorRequest()));
@@ -858,31 +767,6 @@ describe("Responses response.failed/error 按 failure code 区分可重试", () 
   });
 });
 describe("OpenAICompatibleProvider 工具配对修复", () => {
-  it("悬空 tool_call（中断未落盘结果）补占位 tool 消息，游离 tool_result 丢弃", async () => {
-    const bodies: Array<Record<string, unknown>> = [];
-    const provider = makeCompat(reasoningSseFetch(bodies));
-    const messages: StreamChatRequest["messages"] = [
-      { id: "u1", role: "user", content: [{ type: "text", text: "继续" }], createdAt: "2026-01-01T00:00:00.000Z" },
-      {
-        id: "a1", role: "assistant", createdAt: "2026-01-01T00:00:01.000Z",
-        content: [{ type: "tool_call", id: "call_dangling", name: "bash", input: { cmd: "sleep 600" } }],
-      },
-      // !shell 直写的 tool_result：无对应 assistant tool_call（shell-* id），原样发送会 400 tool_call_id is not found
-      { id: "t1", role: "tool", content: [{ type: "tool_result", toolCallId: "shell-abc12345", content: "orphan", isError: false }], createdAt: "2026-01-01T00:00:02.000Z" },
-    ];
-    await drain(provider.streamChat(reasoningRequest({ messages })));
-
-    expect(bodies[0]?.messages).toEqual([
-      { role: "system", content: "system" },
-      { role: "user", content: "继续" },
-      {
-        role: "assistant",
-        content: null,
-        tool_calls: [{ id: "call_dangling", type: "function", function: { name: "bash", arguments: "{\"cmd\":\"sleep 600\"}" } }],
-      },
-      { role: "tool", tool_call_id: "call_dangling", content: expect.stringContaining("interrupted") },
-    ]);
-  });
 
   it("tool_result 内联到对应 assistant tool_calls 之后，重复 call id 只发一次", async () => {
     const bodies: Array<Record<string, unknown>> = [];

@@ -1,14 +1,22 @@
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
+import { AgentRegistry } from "../src/agents.js";
 import { buildServer } from "../src/app.js";
-import { PricingCatalog } from "../src/cost/pricing-catalog.js";
+import type { EffortLevel, ModelProfile, ThinkingMode } from "../src/context/model-profile.js";
 import type { CoreClient } from "../src/core-client.js";
-import { EventBus } from "../src/events/event-bus.js";
-import { ProviderRegistry, type Provider } from "../src/providers/provider.js";
+import { PricingCatalog } from "../src/cost/pricing-catalog.js";
+import { EventBus, type AppEvent } from "../src/events/event-bus.js";
+import { FastModelClient } from "../src/fast-model.js";
+import { filterReasoningByCapabilities, ModelRoleResolver } from "../src/model-roles.js";
+import { ProviderError } from "../src/providers/provider-error.js";
+import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
+import { encodeFastModelSelection, SettingsService } from "../src/settings-service.js";
 import { UsageLog } from "../src/usage-log.js";
 import { makeFakeCore } from "./helpers/fake-core.js";
+import { makeStubProvider } from "./helpers/stub-provider.js";
 import { tempRoot } from "./helpers/temp-roots.js";
 
 const USAGE = { type: "usage", inputTokens: 1, outputTokens: 1, cacheRead: 0, cacheWrite: 0 } as const;
@@ -247,5 +255,510 @@ describe("会话备选模型 REST 透传", () => {
     // 形状校验
     const invalid = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { fallbackModels: "backup/b" } });
     expect(invalid.statusCode).toBe(400);
+  });
+});
+
+describe("FastModelClient", () => {
+  it("reuses the selected provider and forwards model request parameters", async () => {
+    const requests: StreamChatRequest[] = [];
+    const provider: Provider = {
+      name: "shared-provider",
+      async *streamChat(request) {
+        requests.push(request);
+        yield { type: "thinking_delta", text: "hidden" };
+        yield { type: "text_delta", text: "快速" };
+        yield { type: "text_delta", text: "回答" };
+        yield { type: "usage", inputTokens: 12, outputTokens: 4, cacheRead: 0, cacheWrite: 0 };
+        yield { type: "done", stopReason: "end_turn" };
+      },
+    };
+    const providers = new ProviderRegistry();
+    providers.register(provider);
+    const client = new FastModelClient(providers, {
+      provider: "shared-provider",
+      model: "fast-1",
+      thinking: "enabled",
+      effort: "high",
+    });
+
+    await expect(client.complete({ system: "system", prompt: "prompt", maxTokens: 512 })).resolves.toEqual({
+      text: "快速回答",
+      usage: { inputTokens: 12, outputTokens: 4 },
+    });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      model: "fast-1",
+      thinking: "enabled",
+      effort: "high",
+      system: "system",
+      tools: [],
+      maxTokens: 512,
+      messages: [{ role: "user", content: [{ type: "text", text: "prompt" }] }],
+    });
+  });
+
+  it("forwards the caller-required maxTokens without any config cap and reports unavailable providers", async () => {
+    const requests: StreamChatRequest[] = [];
+    const providers = new ProviderRegistry();
+    providers.register({
+      name: "shared-provider",
+      async *streamChat(request) {
+        requests.push(request);
+        yield { type: "text_delta", text: "ok" };
+        yield { type: "done", stopReason: "end_turn" };
+      },
+    });
+    const client = new FastModelClient(providers, { provider: "shared-provider", model: "fast-1" });
+    // 无全局钳制：调用方给多少就透传多少
+    await client.complete({ system: "system", prompt: "prompt", maxTokens: 8_192 });
+    expect(requests[0]?.maxTokens).toBe(8_192);
+
+    client.setConfig({ provider: "disabled-provider", model: "fast-2" });
+    await expect(client.complete({ system: "system", prompt: "prompt", maxTokens: 256 })).rejects.toThrow("快速模型服务商不可用");
+  });
+
+  it("经 collectProviderTurn 重试：可重试失败第二次成功（maxAttempts=2）", async () => {
+    let attempts = 0;
+    const providers = new ProviderRegistry();
+    providers.register({
+      name: "shared-provider",
+      async *streamChat() {
+        attempts += 1;
+        if (attempts === 1) throw new ProviderError("overloaded", "瞬时限流", true);
+        yield { type: "text_delta", text: "重试成功" };
+        yield { type: "done", stopReason: "end_turn" };
+      },
+    });
+    const client = new FastModelClient(providers, { provider: "shared-provider", model: "fast-1" });
+    await expect(client.complete({ system: "system", prompt: "prompt", maxTokens: 256 }))
+      .resolves.toMatchObject({ text: "重试成功" });
+    expect(attempts).toBe(2);
+  });
+
+  it("不可重试失败不重试", async () => {
+    let attempts = 0;
+    const providers = new ProviderRegistry();
+    providers.register({
+      name: "shared-provider",
+      async *streamChat() {
+        attempts += 1;
+        throw new ProviderError("authentication", "bad key", false);
+      },
+    });
+    const client = new FastModelClient(providers, { provider: "shared-provider", model: "fast-1" });
+    await expect(client.complete({ system: "system", prompt: "prompt", maxTokens: 256 })).rejects.toThrow("快速模型请求失败");
+    expect(attempts).toBe(1);
+  });
+
+  it("空 text + max_tokens：翻倍预算重试一次，第二次成功且 usage 合并", async () => {
+    const requests: StreamChatRequest[] = [];
+    const providers = new ProviderRegistry();
+    providers.register({
+      name: "shared-provider",
+      async *streamChat(request) {
+        requests.push(request);
+        if (requests.length === 1) {
+          yield { type: "thinking_delta", text: "推理占满预算" };
+          yield { type: "usage", inputTokens: 100, outputTokens: 50, cacheRead: 0, cacheWrite: 0 };
+          yield { type: "done", stopReason: "max_tokens" };
+        } else {
+          yield { type: "text_delta", text: "兜底成功" };
+          yield { type: "usage", inputTokens: 10, outputTokens: 8, cacheRead: 0, cacheWrite: 0 };
+          yield { type: "done", stopReason: "end_turn" };
+        }
+      },
+    });
+    const client = new FastModelClient(providers, { provider: "shared-provider", model: "fast-1" });
+    await expect(client.complete({ system: "system", prompt: "prompt", maxTokens: 256 }))
+      .resolves.toEqual({ text: "兜底成功", usage: { inputTokens: 110, outputTokens: 58 } });
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.maxTokens).toBe(256);
+    expect(requests[1]?.maxTokens).toBe(512);
+  });
+
+  it("重试仍空但有 thinking_delta：返回 thinking 文本", async () => {
+    const requests: StreamChatRequest[] = [];
+    const providers = new ProviderRegistry();
+    providers.register({
+      name: "shared-provider",
+      async *streamChat(request) {
+        requests.push(request);
+        yield { type: "thinking_delta", text: "思考结论" };
+        yield { type: "done", stopReason: "max_tokens" };
+      },
+    });
+    const client = new FastModelClient(providers, { provider: "shared-provider", model: "fast-1" });
+    await expect(client.complete({ system: "system", prompt: "prompt", maxTokens: 256 }))
+      .resolves.toMatchObject({ text: "思考结论" });
+    expect(requests).toHaveLength(2);
+    expect(requests[1]?.maxTokens).toBe(512);
+  });
+
+  it("空 text + end_turn 但有 thinking：不重试，直接返回 thinking", async () => {
+    let attempts = 0;
+    const providers = new ProviderRegistry();
+    providers.register({
+      name: "shared-provider",
+      async *streamChat() {
+        attempts += 1;
+        yield { type: "thinking_delta", text: "结论" };
+        yield { type: "done", stopReason: "end_turn" };
+      },
+    });
+    const client = new FastModelClient(providers, { provider: "shared-provider", model: "fast-1" });
+    await expect(client.complete({ system: "system", prompt: "prompt", maxTokens: 256 }))
+      .resolves.toMatchObject({ text: "结论" });
+    expect(attempts).toBe(1);
+  });
+
+  it("空 text 且无任何 thinking：仍抛「快速模型返回为空」", async () => {
+    const providers = new ProviderRegistry();
+    providers.register({
+      name: "shared-provider",
+      async *streamChat() {
+        yield { type: "done", stopReason: "end_turn" };
+      },
+    });
+    const client = new FastModelClient(providers, { provider: "shared-provider", model: "fast-1" });
+    await expect(client.complete({ system: "system", prompt: "prompt", maxTokens: 256 })).rejects.toThrow("快速模型返回为空");
+  });
+
+  it("refusal 仍抛模型停止原因（不做空结果兜底）", async () => {
+    const providers = new ProviderRegistry();
+    providers.register({
+      name: "shared-provider",
+      async *streamChat() {
+        yield { type: "thinking_delta", text: "被拒绝前的思考" };
+        yield { type: "done", stopReason: "refusal" };
+      },
+    });
+    const client = new FastModelClient(providers, { provider: "shared-provider", model: "fast-1" });
+    await expect(client.complete({ system: "system", prompt: "prompt", maxTokens: 256 })).rejects.toThrow("模型停止原因：refusal");
+  });
+});
+
+async function loadResolver(env: NodeJS.ProcessEnv, providers: ProviderRegistry): Promise<ModelRoleResolver> {
+  const root = await tempRoot("owc-model-roles-");
+  const settings = await SettingsService.load({ env, filePath: path.join(root, "server-settings.json") });
+  return new ModelRoleResolver(settings, providers);
+}
+
+describe("ModelRoleResolver", () => {
+  it("resolves configured roles; the fast role reads the existing fastModel setting", async () => {
+    const providers = new ProviderRegistry();
+    providers.register(makeStubProvider("main"));
+    const resolver = await loadResolver({
+      OWC_ROLE_MODEL_PREMIUM: encodeFastModelSelection("main", "premium-m"),
+      OWC_FAST_MODEL: encodeFastModelSelection("main", "fast-m"),
+    }, providers);
+    expect(resolver.resolve("premium")).toEqual({ provider: "main", model: "premium-m" });
+    expect(resolver.resolve("fast")).toEqual({ provider: "main", model: "fast-m" });
+    expect(resolver.resolve("balanced")).toBeUndefined();
+    expect(resolver.resolve("cheap")).toBeUndefined();
+  });
+
+  it("falls back role -> balanced -> caller fallback", async () => {
+    const providers = new ProviderRegistry();
+    providers.register(makeStubProvider("main"));
+    const sessionDefault = { provider: "main", model: "session-m" };
+    const resolver = await loadResolver({
+      OWC_ROLE_MODEL_BALANCED: encodeFastModelSelection("main", "bal-m"),
+    }, providers);
+    expect(resolver.resolveWithFallback("cheap", sessionDefault)).toEqual({ provider: "main", model: "bal-m" });
+    expect(resolver.resolveWithFallback("balanced", sessionDefault)).toEqual({ provider: "main", model: "bal-m" });
+    // balanced 自身未配置时不绕圈，直接到调用方 fallback
+    const bare = await loadResolver({}, providers);
+    expect(bare.resolveWithFallback("premium", sessionDefault)).toEqual(sessionDefault);
+    expect(bare.resolveWithFallback("balanced", sessionDefault)).toEqual(sessionDefault);
+  });
+
+  it("treats a role whose provider was unregistered as unconfigured", async () => {
+    const providers = new ProviderRegistry();
+    providers.register(makeStubProvider("main"));
+    const resolver = await loadResolver({
+      OWC_ROLE_MODEL_PREMIUM: encodeFastModelSelection("main", "premium-m"),
+    }, providers);
+    expect(resolver.resolve("premium")).toBeDefined();
+    providers.unregister("main");
+    expect(resolver.resolve("premium")).toBeUndefined();
+    expect(resolver.resolveWithFallback("premium", { provider: "other", model: "m" })).toEqual({ provider: "other", model: "m" });
+  });
+
+  it("follows settings updates without rewiring (hot)", async () => {
+    const providers = new ProviderRegistry();
+    providers.register(makeStubProvider("main"));
+    const root = await tempRoot("owc-model-roles-");
+    // 未 bind 时 update 只做编码校验（目录校验需要 deps），足够驱动热更新断言
+    const settings = await SettingsService.load({ env: {}, filePath: path.join(root, "server-settings.json") });
+    const resolver = new ModelRoleResolver(settings, providers);
+    expect(resolver.resolve("cheap")).toBeUndefined();
+    await settings.update({ roleModelCheap: encodeFastModelSelection("main", "cheap-m") });
+    expect(resolver.resolve("cheap")).toEqual({ provider: "main", model: "cheap-m" });
+  });
+});
+
+describe("filterReasoningByCapabilities", () => {
+  function profileWith(thinking: ThinkingMode[], effort: EffortLevel[]): ModelProfile {
+    return {
+      id: "m",
+      provider: "p",
+      contextWindow: 128_000,
+      capabilities: { modalities: ["text"], imageOutput: false, thinking, effort, tools: true },
+    };
+  }
+
+  it("keeps whitelisted values and drops the rest when capabilities are declared", () => {
+    const profile = profileWith(["disabled"], ["low", "high"]);
+    expect(filterReasoningByCapabilities(profile, { thinking: "enabled", effort: "low" })).toEqual({ effort: "low" });
+    expect(filterReasoningByCapabilities(profile, { thinking: "disabled", effort: "ultra" })).toEqual({ thinking: "disabled" });
+    expect(filterReasoningByCapabilities(profile, {})).toEqual({});
+  });
+
+  it("passes values through when capabilities are undeclared (empty arrays)", () => {
+    const profile = profileWith([], []);
+    expect(filterReasoningByCapabilities(profile, { thinking: "enabled", effort: "max" })).toEqual({ thinking: "enabled", effort: "max" });
+  });
+});
+
+interface SpawnFixture {
+  runner: AgentRunner;
+  sessionId: string;
+  sessions: SessionStore;
+  /** provider 名 → 该 provider 收到的请求（主循环与子代理请求混在一起，按 system 区分） */
+  requests: Map<string, StreamChatRequest[]>;
+  captured: AppEvent[];
+  usageLog: UsageLog;
+}
+
+/**
+ * 角色分发 fixture：main 为主会话 provider（首轮发出 spawn 调用），
+ * fm-provider/role-provider 为角色档目标 provider（只应收子代理请求，直接回结论）。
+ */
+async function setupRoleSpawn(options: {
+  env?: NodeJS.ProcessEnv;
+  agents?: Record<string, string>;
+  spawnTool: "spawn_task" | "spawn_swarm";
+  spawnInput: Record<string, unknown>;
+}): Promise<SpawnFixture> {
+  const root = await tempRoot("owc-model-roles-");
+  const sessions = new SessionStore(path.join(root, "sessions"));
+  await sessions.initialize();
+  const session = await sessions.create({ cwd: root, provider: "main", model: "main-model" });
+  if (options.spawnTool === "spawn_swarm") {
+    // spawn_swarm 为会话级开关（默认关）：显式开启
+    await sessions.updateConfig(session.id, { provider: "main", model: "main-model", swarmEnabled: true });
+  }
+  const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+  await pricing.initialize();
+  const events = new EventBus();
+  const captured: AppEvent[] = [];
+  events.on("event", (event: AppEvent) => captured.push(event));
+  const usageLog = new UsageLog(root);
+  const requests = new Map<string, StreamChatRequest[]>();
+  const record = (name: string, request: StreamChatRequest) => {
+    requests.set(name, [...(requests.get(name) ?? []), request]);
+  };
+  let mainTurn = 0;
+  const providers = new ProviderRegistry();
+  providers.register(makeStubProvider("main", async function* (request) {
+    record("main", request);
+    if (request.system.includes("exploration sub-agent")) {
+      // 角色未配置/回落到会话默认时，子代理请求会落回 main
+      yield { type: "text_delta", text: "会话默认模型结论" };
+      yield { type: "done", stopReason: "end_turn" };
+      return;
+    }
+    if (mainTurn++ === 0) {
+      yield { type: "tool_call", id: "spawn-1", name: options.spawnTool, input: options.spawnInput };
+      yield { type: "done", stopReason: "tool_use" };
+    } else {
+      yield { type: "text_delta", text: "完成" };
+      yield { type: "done", stopReason: "end_turn" };
+    }
+  }));
+  for (const name of ["fm-provider", "role-provider"]) {
+    providers.register(makeStubProvider(name, async function* (request) {
+      record(name, request);
+      yield { type: "usage", inputTokens: 7, outputTokens: 3, cacheRead: 0, cacheWrite: 0 };
+      yield { type: "text_delta", text: `${name} 结论` };
+      yield { type: "done", stopReason: "end_turn" };
+    }));
+  }
+  const settings = await SettingsService.load({
+    env: options.env ?? {},
+    filePath: path.join(root, "server-settings.json"),
+  });
+  let registry: AgentRegistry | undefined;
+  if (options.agents) {
+    const globalDir = path.join(root, "agents");
+    await mkdir(globalDir, { recursive: true });
+    for (const [name, text] of Object.entries(options.agents)) {
+      await writeFile(path.join(globalDir, `${name}.md`), text, "utf8");
+    }
+    registry = new AgentRegistry(globalDir);
+  }
+  const runner = new AgentRunner(
+    sessions, providers, makeFakeCore(), events, pricing,
+    undefined, "zh-CN", 50, undefined, usageLog,
+    undefined, undefined, undefined, undefined, registry,
+  );
+  runner.setModelRoleResolver(new ModelRoleResolver(settings, providers));
+  return { runner, sessionId: session.id, sessions, requests, captured, usageLog };
+}
+
+describe("spawn_task role dispatch", () => {
+  it("routes the sub-agent to the role provider/model, attributes usage to it, and advertises the mapping", async () => {
+    const fixture = await setupRoleSpawn({
+      env: { OWC_ROLE_MODEL_CHEAP: encodeFastModelSelection("role-provider", "role-model") },
+      spawnTool: "spawn_task",
+      spawnInput: { prompt: "评审", role: "cheap" },
+    });
+    await fixture.runner.run(fixture.sessionId, "派单");
+
+    // 子代理请求落在角色 provider，model 为角色模型；主 provider 不见子代理请求
+    const roleRequests = fixture.requests.get("role-provider") ?? [];
+    expect(roleRequests).toHaveLength(1);
+    expect(roleRequests[0]?.model).toBe("role-model");
+    expect(roleRequests[0]?.system).toContain("exploration sub-agent");
+    expect((fixture.requests.get("main") ?? []).every((request) => !request.system.includes("exploration sub-agent"))).toBe(true);
+    expect(fixture.requests.has("fm-provider")).toBe(false);
+
+    // 记账 provider/model 归属角色档（readAll 排空写队列，无竞态）
+    const usage = await fixture.usageLog.readAll();
+    expect(usage).toHaveLength(1);
+    expect(usage[0]).toMatchObject({ provider: "role-provider", model: "role-model", inputTokens: 7, outputTokens: 3 });
+
+    // 主循环系统提示含角色映射段：cheap 指向配置，其余档标注回落
+    const mainSystem = fixture.requests.get("main")?.[0]?.system ?? "";
+    expect(mainSystem).toContain("Sub-agent model roles");
+    expect(mainSystem).toContain("cheap: lowest cost");
+    expect(mainSystem).toContain("role-model [role-provider]");
+    expect(mainSystem).toContain("not configured, falls back to balanced");
+  });
+
+  it("falls back to balanced and then the session model when the requested role is unconfigured", async () => {
+    const balanced = await setupRoleSpawn({
+      env: { OWC_ROLE_MODEL_BALANCED: encodeFastModelSelection("fm-provider", "bal-model") },
+      spawnTool: "spawn_task",
+      spawnInput: { prompt: "评审", role: "cheap" },
+    });
+    await balanced.runner.run(balanced.sessionId, "派单");
+    expect((balanced.requests.get("fm-provider") ?? [])[0]?.model).toBe("bal-model");
+
+    const sessionDefault = await setupRoleSpawn({
+      spawnTool: "spawn_task",
+      spawnInput: { prompt: "评审", role: "premium" },
+    });
+    await sessionDefault.runner.run(sessionDefault.sessionId, "派单");
+    const mainSub = (sessionDefault.requests.get("main") ?? []).find((request) => request.system.includes("exploration sub-agent"));
+    expect(mainSub?.model).toBe("main-model");
+  });
+
+  it("rejects an unknown role value before launching anything", async () => {
+    const fixture = await setupRoleSpawn({
+      spawnTool: "spawn_task",
+      spawnInput: { prompt: "评审", role: "bogus" },
+    });
+    await fixture.runner.run(fixture.sessionId, "派单");
+    const detail = await fixture.sessions.get(fixture.sessionId);
+    const toolResult = detail?.messages
+      .filter((message) => message.role === "tool")
+      .flatMap((message) => message.content)
+      .find((block) => block.type === "tool_result" && block.toolCallId === "spawn-1");
+    expect(toolResult).toMatchObject({ isError: true });
+    expect((toolResult as { content: string }).content).toContain("Unknown model role: bogus");
+    expect(fixture.requests.has("fm-provider")).toBe(false);
+    expect(fixture.requests.has("role-provider")).toBe(false);
+  });
+});
+
+describe("spawn_task default role (balanced)", () => {
+  it("routes an unroled sub-agent to the balanced tier when configured", async () => {
+    const fixture = await setupRoleSpawn({
+      env: { OWC_ROLE_MODEL_BALANCED: encodeFastModelSelection("fm-provider", "bal-model") },
+      spawnTool: "spawn_task",
+      spawnInput: { prompt: "评审" },
+    });
+    await fixture.runner.run(fixture.sessionId, "派单");
+    const balancedRequests = fixture.requests.get("fm-provider") ?? [];
+    expect(balancedRequests).toHaveLength(1);
+    expect(balancedRequests[0]?.model).toBe("bal-model");
+    expect(balancedRequests[0]?.system).toContain("exploration sub-agent");
+    expect((fixture.requests.get("main") ?? []).every((request) => !request.system.includes("exploration sub-agent"))).toBe(true);
+  });
+
+  it("falls back to the session model when balanced is not configured", async () => {
+    const fixture = await setupRoleSpawn({
+      spawnTool: "spawn_task",
+      spawnInput: { prompt: "评审" },
+    });
+    await fixture.runner.run(fixture.sessionId, "派单");
+    const mainSub = (fixture.requests.get("main") ?? []).find((request) => request.system.includes("exploration sub-agent"));
+    expect(mainSub?.model).toBe("main-model");
+    expect(fixture.requests.has("fm-provider")).toBe(false);
+    expect(fixture.requests.has("role-provider")).toBe(false);
+  });
+});
+
+describe("frontmatter provider/model/role precedence", () => {
+  it("prefers explicit frontmatter provider:/model: over any role", async () => {
+    const fixture = await setupRoleSpawn({
+      env: { OWC_ROLE_MODEL_CHEAP: encodeFastModelSelection("role-provider", "role-model") },
+      agents: { explicit: "---\ndescription: d\nprovider: fm-provider\nmodel: fm-model\n---\nEXPLICIT BODY" },
+      spawnTool: "spawn_task",
+      spawnInput: { prompt: "评审", agent: "explicit", role: "cheap" },
+    });
+    await fixture.runner.run(fixture.sessionId, "派单");
+    const fm = fixture.requests.get("fm-provider") ?? [];
+    expect(fm).toHaveLength(1);
+    expect(fm[0]?.model).toBe("fm-model");
+    expect(fm[0]?.system).toContain("EXPLICIT BODY");
+    expect(fixture.requests.has("role-provider")).toBe(false);
+  });
+
+  it("prefers frontmatter role: over the call-level role", async () => {
+    const fixture = await setupRoleSpawn({
+      env: {
+        OWC_ROLE_MODEL_PREMIUM: encodeFastModelSelection("fm-provider", "premium-model"),
+        OWC_ROLE_MODEL_CHEAP: encodeFastModelSelection("role-provider", "role-model"),
+      },
+      agents: { roled: "---\ndescription: d\nrole: premium\n---\nROLED BODY" },
+      spawnTool: "spawn_task",
+      spawnInput: { prompt: "评审", agent: "roled", role: "cheap" },
+    });
+    await fixture.runner.run(fixture.sessionId, "派单");
+    expect((fixture.requests.get("fm-provider") ?? [])[0]?.model).toBe("premium-model");
+    expect(fixture.requests.has("role-provider")).toBe(false);
+  });
+
+  it("applies the call-level role when the frontmatter sets neither provider/model nor role", async () => {
+    const fixture = await setupRoleSpawn({
+      env: { OWC_ROLE_MODEL_CHEAP: encodeFastModelSelection("role-provider", "role-model") },
+      agents: { plain: "---\ndescription: d\n---\nPLAIN BODY" },
+      spawnTool: "spawn_task",
+      spawnInput: { prompt: "评审", agent: "plain", role: "cheap" },
+    });
+    await fixture.runner.run(fixture.sessionId, "派单");
+    expect((fixture.requests.get("role-provider") ?? [])[0]?.model).toBe("role-model");
+  });
+});
+
+describe("spawn_swarm role dispatch", () => {
+  it("applies the call-level role and lets an item override it", async () => {
+    const fixture = await setupRoleSpawn({
+      env: {
+        OWC_ROLE_MODEL_BALANCED: encodeFastModelSelection("fm-provider", "bal-model"),
+        OWC_ROLE_MODEL_CHEAP: encodeFastModelSelection("role-provider", "cheap-model"),
+      },
+      spawnTool: "spawn_swarm",
+      spawnInput: {
+        prompt_template: "评审 {{item}}",
+        items: ["a.ts", { task: "b.ts", role: "cheap" }],
+        role: "balanced",
+      },
+    });
+    await fixture.runner.run(fixture.sessionId, "派单");
+    expect((fixture.requests.get("fm-provider") ?? []).map((request) => request.model)).toEqual(["bal-model"]);
+    expect((fixture.requests.get("role-provider") ?? []).map((request) => request.model)).toEqual(["cheap-model"]);
   });
 });

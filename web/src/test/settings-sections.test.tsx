@@ -1,5 +1,11 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { I18nProvider, useI18n } from "../i18n";
+import { EmptyState } from "../components/EmptyState";
+import { SettingsDialog } from "../settings/SettingsDialog";
+import { ModelCatalogSection } from "../settings/sections/ModelCatalogSection";
 import { ModelCatalogSyncSection, ModelSelectionSection } from "../settings/sections/ModelSelectionSection";
+import { ModelProvidersSection, WebProvidersSection } from "../settings/sections/ProviderProfilesSection";
 import { ContextSection } from "../settings/sections/ContextSection";
 import { GeneralSection } from "../settings/sections/GeneralSection";
 import { RemoteAccessSection } from "../settings/sections/RemoteAccessSection";
@@ -8,7 +14,8 @@ import { ShortcutsSection } from "../settings/sections/ShortcutsSection";
 import { SystemStorageSection } from "../settings/sections/SystemStorageSection";
 import { registerBuiltinCommands, resetCommands, DEFAULT_KEYBINDINGS } from "../app/commands";
 import { api } from "../lib/api";
-import type { SettingsView } from "../lib/contracts";
+import { ui } from "../app/ui-store";
+import type { ModelProfile, ProviderProfilesView, SettingsView } from "../lib/contracts";
 import { stubActions } from "./helpers/stub-actions";
 import { renderWithClient } from "./helpers/with-client";
 
@@ -25,6 +32,7 @@ function settingsWithHost(host: string): SettingsView {
   };
 }
 
+// 顶层清理合并（provider-profiles 原有的 restoreAllMocks 并入）
 afterEach(() => {
   resetCommands();
   vi.restoreAllMocks();
@@ -338,5 +346,273 @@ describe("设置页重排：通用与上下文页签（Phase 4）", () => {
     // 其他分组不渲染
     expect(view.queryByLabelText("默认货币")).toBeNull();
     expect(view.queryByText("离线模式")).toBeNull();
+  });
+});
+
+// ===== 以下 describe 合并自 model-catalog.test.tsx =====
+
+const multimodalModel: ModelProfile = {
+  id: "multimodal-model",
+  provider: "openai",
+  displayName: "Multimodal model",
+  source: "manual",
+  contextWindow: 128_000,
+  capabilities: {
+    thinking: ["adaptive"],
+    effort: ["medium"],
+    modalities: ["text", "image", "video"],
+    imageOutput: true,
+    tools: true,
+  },
+};
+
+function renderCatalog(): ReturnType<typeof renderWithClient> {
+  return renderWithClient(<ModelCatalogSection />);
+}
+
+describe("ModelCatalogSection capabilities", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // ModelCatalogSection 还会查询 provider-profiles（编辑表单的可用服务商列表），
+  // 不 mock 会打到真实 fetch，其时序依赖环境，曾导致 waitFor 偶发超时。
+  function mockProfileQueries(): void {
+    vi.spyOn(api, "models").mockResolvedValue([multimodalModel]);
+    vi.spyOn(api, "modelSyncStatus").mockResolvedValue({ count: 0 });
+    vi.spyOn(api, "providerProfiles").mockResolvedValue({ modelProviders: [], webProviders: [], activeWeb: {} });
+  }
+
+  it("shows image/video input and image output badges, then persists capabilities", async () => {
+    mockProfileQueries();
+    const save = vi.spyOn(api, "saveModel").mockResolvedValue(multimodalModel);
+    const view = renderCatalog();
+
+    expect(await view.findByText("图片输入")).toBeInTheDocument();
+    expect(view.getByText("视频输入")).toBeInTheDocument();
+    expect(view.getByText("图片输出")).toBeInTheDocument();
+
+    fireEvent.doubleClick(view.getByText("Multimodal model").closest("tr")!);
+    expect(screen.getByRole("checkbox", { name: "图片" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "视频" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "图片输出" })).toBeChecked();
+    // 思维链回传：未声明时默认开（非 gpt/claude）
+    expect(screen.getByRole("checkbox", { name: "思维链回传" })).toBeChecked();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "视频" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "图片输出" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "思维链回传" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存模型" }));
+
+    await waitFor(() => expect(save).toHaveBeenCalledWith("multimodal-model", expect.objectContaining({
+      capabilities: expect.objectContaining({
+        modalities: ["text", "image"],
+        imageOutput: false,
+        reasoningContent: false,
+      }),
+    })));
+  });
+
+  it("runs remote catalog sync and displays its result", async () => {
+    mockProfileQueries();
+    const sync = vi.spyOn(api, "syncModels").mockResolvedValue({
+      ok: true,
+      count: 2,
+      updatedAt: "2026-07-21T00:00:00.000Z",
+    });
+    const view = renderCatalog();
+
+    fireEvent.click(await view.findByRole("button", { name: "立即同步" }));
+
+    await waitFor(() => expect(sync).toHaveBeenCalledTimes(1));
+    expect(await view.findByText(/已同步 2 个远程模型/)).toBeInTheDocument();
+  });
+
+  it("shows the last successful remote catalog sync", async () => {
+    vi.spyOn(api, "models").mockResolvedValue([multimodalModel]);
+    vi.spyOn(api, "modelSyncStatus").mockResolvedValue({
+      count: 2,
+      updatedAt: "2026-07-21T00:00:00.000Z",
+    });
+    vi.spyOn(api, "providerProfiles").mockResolvedValue({ modelProviders: [], webProviders: [], activeWeb: {} });
+    const view = renderCatalog();
+
+    expect(await view.findByText(/上次同步：/)).toHaveTextContent("2 个远程模型");
+  });
+});
+
+// ===== 以下 describe 合并自 provider-profiles.test.tsx =====
+
+const profiles: ProviderProfilesView = {
+  modelProviders: [
+    { id: "主服务", enabled: true, interfaceType: "openai-chat-completions", hasApiKey: true, maskedApiKey: "sk-main…1234" },
+    { id: "备用", enabled: false, interfaceType: "anthropic-messages", promptCaching: true, hasApiKey: false },
+  ],
+  webProviders: [
+    { id: "Brave 搜索", provider: "brave", capabilities: ["search"], hasApiKey: true, maskedApiKey: "brave-…5678" },
+    { id: "Jina", provider: "jina", capabilities: ["search", "fetch"], hasApiKey: false },
+    { id: "Tavily", provider: "tavily", capabilities: ["search", "fetch"], hasApiKey: true, maskedApiKey: "tvly-…1234" },
+  ],
+  activeWeb: { search: "Brave 搜索", fetch: "Jina" },
+};
+
+describe("ModelProvidersSection", () => {
+  function renderProfiles(): ReturnType<typeof renderWithClient> {
+    return renderWithClient(<ModelProvidersSection />);
+  }
+
+  it("shows multiple model profiles with masked secrets and no web provider section", async () => {
+    vi.spyOn(api, "providerProfiles").mockResolvedValue(profiles);
+    const view = renderProfiles();
+
+    expect(await view.findByText("主服务")).toBeInTheDocument();
+    expect(view.getByText("备用")).toBeInTheDocument();
+    expect(view.getByText("sk-main…1234")).toBeInTheDocument();
+    expect(view.queryByText(/secret/i)).not.toBeInTheDocument();
+    // 联网服务商不在本分区
+    expect(view.queryByText("联网服务商")).toBeNull();
+    expect(view.queryByLabelText("联网搜索")).toBeNull();
+  });
+
+  it("creates a named model provider without combining it with a separate provider selector", async () => {
+    vi.spyOn(api, "providerProfiles").mockResolvedValue({ modelProviders: [], webProviders: [], activeWeb: {} });
+    const create = vi.spyOn(api, "createModelProvider").mockResolvedValue(profiles);
+    const view = renderProfiles();
+
+    fireEvent.change(await view.findByPlaceholderText("服务商名称"), { target: { value: "本地 Ollama" } });
+    fireEvent.change(view.getByPlaceholderText("API Key"), { target: { value: "local-key" } });
+    fireEvent.click(view.getByRole("button", { name: "保存服务商" }));
+
+    await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      id: "本地 Ollama",
+      enabled: true,
+      interfaceType: "openai-chat-completions",
+      apiKey: "local-key",
+    })));
+  });
+
+  it("applies a vendor preset, leaving only the API key to fill", async () => {
+    vi.spyOn(api, "providerProfiles").mockResolvedValue({ modelProviders: [], webProviders: [], activeWeb: {} });
+    const create = vi.spyOn(api, "createModelProvider").mockResolvedValue(profiles);
+    const view = renderProfiles();
+
+    fireEvent.change(await view.findByLabelText("供应商预设"), { target: { value: "DeepSeek" } });
+    expect(view.getByPlaceholderText("服务商名称")).toHaveValue("DeepSeek");
+    expect(view.getByPlaceholderText("API Key")).toHaveValue("");
+
+    fireEvent.change(view.getByPlaceholderText("API Key"), { target: { value: "sk-deepseek" } });
+    fireEvent.click(view.getByRole("button", { name: "保存服务商" }));
+
+    await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      id: "DeepSeek",
+      enabled: true,
+      interfaceType: "openai-responses",
+      baseURL: "https://api.deepseek.com/v1",
+      apiKey: "sk-deepseek",
+    })));
+  });
+
+  it("sends parsed extraBody JSON and blocks invalid JSON", async () => {
+    vi.spyOn(api, "providerProfiles").mockResolvedValue({ modelProviders: [], webProviders: [], activeWeb: {} });
+    const create = vi.spyOn(api, "createModelProvider").mockResolvedValue(profiles);
+    const view = renderProfiles();
+
+    fireEvent.change(await view.findByPlaceholderText("服务商名称"), { target: { value: "qwen" } });
+    fireEvent.change(view.getByPlaceholderText(/自定义请求体/), { target: { value: '{"temperature": 0.7, "max_tokens": 8192}' } });
+    fireEvent.click(view.getByRole("button", { name: "保存服务商" }));
+    await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      id: "qwen",
+      extraBody: { temperature: 0.7, max_tokens: 8192 },
+    })));
+
+    create.mockClear();
+    fireEvent.change(await view.findByPlaceholderText("服务商名称"), { target: { value: "bad" } });
+    fireEvent.change(view.getByPlaceholderText(/自定义请求体/), { target: { value: "{not json" } });
+    fireEvent.click(view.getByRole("button", { name: "保存服务商" }));
+    expect(await view.findByText("自定义请求体不是合法的 JSON 对象")).toBeInTheDocument();
+    expect(create).not.toHaveBeenCalled();
+  });
+});
+
+describe("WebProvidersSection", () => {
+  function renderProfiles(): ReturnType<typeof renderWithClient> {
+    return renderWithClient(<WebProvidersSection />);
+  }
+
+  it("shows web profiles and selects web capabilities independently", async () => {
+    vi.spyOn(api, "providerProfiles").mockResolvedValue(profiles);
+    const select = vi.spyOn(api, "selectWebProvider").mockResolvedValue({ ...profiles, activeWeb: { search: "Jina", fetch: "Jina" } });
+    const view = renderProfiles();
+
+    // 名称同时出现在表格与能力下拉选项中，用脱敏密钥确认表格行渲染
+    expect(await view.findByText("brave-…5678")).toBeInTheDocument();
+    expect(view.getByText("tvly-…1234")).toBeInTheDocument();
+    expect(view.getAllByText("Jina").length).toBeGreaterThan(0);
+    // 模型服务商不在本分区
+    expect(view.queryByText("模型服务商")).toBeNull();
+
+    fireEvent.change(view.getByLabelText("联网搜索"), { target: { value: "Jina" } });
+    await waitFor(() => expect(select).toHaveBeenCalledWith("search", "Jina"));
+  });
+});
+
+// ===== 以下 describe 合并自 i18n.test.tsx =====
+
+function Fixture() {
+  const { language, setLanguage, t } = useI18n();
+  return (
+    <div>
+      <span>{t("设置", "Settings")}</span>
+      <button onClick={() => setLanguage(language === "en" ? "zh-CN" : "en")}>switch</button>
+    </div>
+  );
+}
+
+describe("interface localization", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    HTMLElement.prototype.scrollTo = () => undefined;
+  });
+
+  it("loads a saved English preference and updates the document language", async () => {
+    window.localStorage.setItem("owc-language", "en");
+    render(<I18nProvider><Fixture /></I18nProvider>);
+
+    expect(screen.getByText("Settings")).toBeInTheDocument();
+    expect(document.documentElement.lang).toBe("en");
+
+    fireEvent.click(screen.getByRole("button", { name: "switch" }));
+    expect(screen.getByText("设置")).toBeInTheDocument();
+    expect(window.localStorage.getItem("owc-language")).toBe("zh-CN");
+  });
+
+  it("renders product UI in English", () => {
+    window.localStorage.setItem("owc-language", "en");
+    render(<I18nProvider><EmptyState sessions={[]} onSelect={() => undefined} onCreate={() => undefined} /></I18nProvider>);
+
+    expect(screen.getByRole("heading", { name: "Start a reversible coding job" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "New session" })).toBeInTheDocument();
+    expect(document.title).toBe("OpenWebCode · Coding Console");
+  });
+
+  it("switches languages from the settings UI and persists the choice", () => {
+    window.localStorage.setItem("owc-language", "zh-CN");
+    ui.openSettings();
+    renderWithClient(
+      <I18nProvider>
+        <SettingsDialog />
+      </I18nProvider>,
+    );
+
+    fireEvent.change(screen.getByLabelText("界面语言"), { target: { value: "en" } });
+    expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Interface language")).toHaveValue("en");
+    expect(screen.getByText("Preferences")).toBeInTheDocument();
+    expect(screen.getByText("AI & services")).toBeInTheDocument();
+
+    fireEvent.keyDown(screen.getByRole("button", { name: "Appearance" }), { key: "ArrowDown" });
+    expect(screen.getByRole("button", { name: "General" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("heading", { name: "General" })).toBeInTheDocument();
+    expect(window.localStorage.getItem("owc-language")).toBe("en");
   });
 });

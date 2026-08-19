@@ -1,13 +1,14 @@
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
-import type { CoreClientLike, JobStatus } from "../src/core-client.js";
+import type { CoreClient, CoreClientLike, JobStatus } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
-import { EventBus } from "../src/events/event-bus.js";
+import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import type { HookRunner } from "../src/hooks.js";
-import { ProviderRegistry, type Provider } from "../src/providers/provider.js";
+import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";
-import { makeAgentHarness, toolResultOf } from "./helpers/agent-harness.js";
+import { GitShadowSnapshots } from "../src/snapshots/git-shadow.js";
+import { makeAbortPendingProvider, makeAgentHarness, toolResultOf } from "./helpers/agent-harness.js";
 import { FAKE_CORE_INFO, makeFakeCore } from "./helpers/fake-core.js";
 import { tempRoot } from "./helpers/temp-roots.js";
 
@@ -263,5 +264,291 @@ describe("中断后 tool_result 补写", () => {
     } finally {
       await harness.app.close();
     }
+  });
+});
+
+// ---- steering 组（合并） ----
+describe("AgentRunner steering", () => {
+  it("starts one durable follow-up after the current run reaches a natural stop", async () => {
+    const root = await tempRoot("owc-follow-up-");
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const session = await sessions.create({ cwd: root, provider: "steering", model: "claude-opus-4-8" });
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    let entered!: () => void;
+    const firstEntered = new Promise<void>((resolve) => { entered = resolve; });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const requests: StreamChatRequest[] = [];
+    const provider: Provider = {
+      name: "steering",
+      async *streamChat(request) {
+        requests.push(request);
+        if (requests.length === 1) {
+          entered();
+          await gate;
+        }
+        yield { type: "done", stopReason: "end_turn" };
+      },
+    };
+    const providers = new ProviderRegistry(); providers.register(provider);
+    const core = { on() { return core; }, async configureSession() { return { sandboxCapability: "advisory" }; } } as unknown as CoreClient;
+    const runner = new AgentRunner(sessions, providers, core, new EventBus(), pricing);
+
+    const initial = runner.run(session.id, "initial task");
+    await firstEntered;
+    const followUp = await runner.enqueueFollowUp(session.id, "continue with tests", "retry-safe-id");
+    const duplicate = await runner.enqueueFollowUp(session.id, "continue with tests", "retry-safe-id");
+    expect(duplicate).toMatchObject({ id: followUp.id, reused: true });
+    release();
+    await initial;
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+    await vi.waitFor(async () => expect((await sessions.get(session.id))?.messages.some((message) =>
+      message.role === "user" && message.content.some((block) => block.type === "text" && block.text === "continue with tests"))).toBe(true));
+    await vi.waitFor(async () => {
+      expect(runner.isRunning(session.id)).toBe(false);
+      expect((await runner.getRun(session.id))?.state).toBe("completed");
+    }, { timeout: 5_000 });
+  });
+
+  it("queues messages during a provider turn and applies them at the next safe boundary", async () => {
+    const root = await tempRoot("owc-steering-");
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const session = await sessions.create({ cwd: root, provider: "steering", model: "claude-opus-4-8" });
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const events = new EventBus();
+    const published: AppEvent[] = [];
+    events.on("event", (event: AppEvent) => published.push(event));
+    let releaseFirst!: () => void;
+    const firstEntered = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let allowFirstToFinish!: () => void;
+    const gate = new Promise<void>((resolve) => { allowFirstToFinish = resolve; });
+    const requests: StreamChatRequest[] = [];
+    let turn = 0;
+    const provider: Provider = {
+      name: "steering",
+      async *streamChat(request) {
+        requests.push(request);
+        if (turn++ === 0) {
+          releaseFirst();
+          await gate;
+        }
+        yield { type: "done", stopReason: "end_turn" };
+      },
+    };
+    const providers = new ProviderRegistry();
+    providers.register(provider);
+    const core = {
+      on() { return core; },
+      async configureSession() { return { sandboxCapability: "advisory" }; },
+    } as unknown as CoreClient;
+    const runner = new AgentRunner(sessions, providers, core, events, pricing);
+
+    const running = runner.run(session.id, "initial task");
+    await firstEntered;
+    const queued = await runner.enqueueSteering(session.id, "use the safer parser");
+    expect(queued.position).toBe(1);
+    expect(await runner.listSteering(session.id)).toHaveLength(1);
+    allowFirstToFinish();
+    await running;
+
+    expect(requests).toHaveLength(2);
+    expect(requests[1]?.messages.some((message) => message.role === "user" &&
+      message.content.some((block) => block.type === "text" && block.text === "use the safer parser"))).toBe(true);
+    expect(await runner.listSteering(session.id)).toEqual([]);
+    expect(published.map((event) => event.type)).toEqual(expect.arrayContaining(["steering.queued", "steering.applied"]));
+  });
+
+  it("removes a queued message before it is applied", async () => {
+    const root = await tempRoot("owc-steering-remove-");
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const session = await sessions.create({ cwd: root, provider: "steering", model: "claude-opus-4-8" });
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    let entered!: () => void;
+    const firstEntered = new Promise<void>((resolve) => { entered = resolve; });
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => { finish = resolve; });
+    const provider: Provider = { name: "steering", async *streamChat() { entered(); await gate; yield { type: "done", stopReason: "end_turn" }; } };
+    const providers = new ProviderRegistry(); providers.register(provider);
+    const core = { on() { return core; }, async configureSession() { return { sandboxCapability: "advisory" }; } } as unknown as CoreClient;
+    const runner = new AgentRunner(sessions, providers, core, new EventBus(), pricing);
+
+    const running = runner.run(session.id, "initial task");
+    await firstEntered;
+    const queued = await runner.enqueueSteering(session.id, "remove me");
+    expect(await runner.removeSteering(session.id, queued.id)).toBe(true);
+    finish();
+    await running;
+    expect((await sessions.get(session.id))?.messages.some((message) =>
+      message.content.some((block) => block.type === "text" && block.text === "remove me"))).toBe(false);
+  });
+
+  it("preserves the unapplied steering queue when the run is aborted", async () => {
+    const root = await tempRoot("owc-steering-abort-");
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const session = await sessions.create({ cwd: root, provider: "steering", model: "claude-opus-4-8" });
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const { provider, entered: firstEntered } = makeAbortPendingProvider("steering");
+    const providers = new ProviderRegistry(); providers.register(provider);
+    const core = { on() { return core; }, async configureSession() { return { sandboxCapability: "advisory" }; } } as unknown as CoreClient;
+    const runner = new AgentRunner(sessions, providers, core, new EventBus(), pricing);
+
+    const running = runner.run(session.id, "initial task");
+    await firstEntered;
+    await runner.enqueueSteering(session.id, "saved for retry");
+    expect(runner.abort(session.id)).toBe(true);
+    await expect(running).rejects.toBeTruthy();
+    // abort 保留未应用 steering，用户可在 idle 后重新入队/编辑
+    expect((await runner.listSteering(session.id)).map((item) => item.content)).toEqual(["saved for retry"]);
+  });
+
+  it("rejects an over-long steering message with a too_long error", async () => {
+    const root = await tempRoot("owc-steering-long-");
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const session = await sessions.create({ cwd: root, provider: "steering", model: "claude-opus-4-8" });
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    let entered!: () => void;
+    const firstEntered = new Promise<void>((resolve) => { entered = resolve; });
+    let finish!: () => void;
+    const gate = new Promise<void>((resolve) => { finish = resolve; });
+    const provider: Provider = { name: "steering", async *streamChat() { entered(); await gate; yield { type: "done", stopReason: "end_turn" }; } };
+    const providers = new ProviderRegistry(); providers.register(provider);
+    const core = { on() { return core; }, async configureSession() { return { sandboxCapability: "advisory" }; } } as unknown as CoreClient;
+    const runner = new AgentRunner(sessions, providers, core, new EventBus(), pricing);
+
+    const running = runner.run(session.id, "initial task");
+    await firstEntered;
+    const oversized = "x".repeat(8_001);
+    await expect(runner.enqueueSteering(session.id, oversized)).rejects.toThrow(/exceeds/);
+    finish();
+    await running;
+  });
+});
+
+// ---- agent-file-tools 组（合并） ----
+describe("AgentRunner file tools", () => {
+  it("exposes and executes dedicated file tools through CoreClient", async () => {
+    const root = await tempRoot("owc-agent-fs-");
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const session = await sessions.create({ cwd: root, provider: "files", model: "claude-opus-4-8" });
+    await sessions.updatePermissions(session.id, "acceptEdits", []);
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const calls: Array<{ sessionId: string; path: string; oldText: string; newText: string }> = [];
+    const core = makeFakeCore({
+      async editFile(request: { sessionId: string; path: string; oldText: string; newText: string }) { calls.push(request); return { matches: 1 }; },
+    });
+    let turn = 0;
+    const requests: StreamChatRequest[] = [];
+    const provider: Provider = {
+      name: "files",
+      async *streamChat(request) {
+        requests.push(request);
+        if (turn++ === 0) {
+          yield { type: "tool_call", id: "edit-1", name: "edit_file", input: { path: "src/a.ts", oldText: "a", newText: "b" } };
+          yield { type: "done", stopReason: "tool_use" };
+        } else {
+          yield { type: "done", stopReason: "end_turn" };
+        }
+      },
+    };
+    const providers = new ProviderRegistry();
+    providers.register(provider);
+    const runner = new AgentRunner(sessions, providers, core, new EventBus(), pricing);
+
+    await runner.run(session.id, "edit it");
+
+    expect(requests[0]?.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(["read_file", "write_file", "edit_file", "glob", "grep"]));
+    expect(calls).toEqual([{ sessionId: session.id, path: "src/a.ts", oldText: "a", newText: "b" }]);
+    const detail = await sessions.get(session.id);
+    expect(await new GitShadowSnapshots(sessions.contextRoot(session.id), root).list()).toHaveLength(1);
+    expect(detail?.messages.some((message) => message.role === "tool" && message.content.some((block) => block.type === "tool_result" && block.content.includes('"matches":1')))).toBe(true);
+  });
+
+  it("write_file/edit_file 成功后广播 scm.updated（SCM 面板自动刷新，阶段 2b）", async () => {
+    const root = await tempRoot("owc-agent-scm-event-");
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const session = await sessions.create({ cwd: root, provider: "files", model: "claude-opus-4-8" });
+    await sessions.updatePermissions(session.id, "acceptEdits", []);
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const core = makeFakeCore();
+    let turn = 0;
+    const provider: Provider = {
+      name: "files",
+      async *streamChat() {
+        if (turn++ === 0) {
+          yield { type: "tool_call", id: "write-1", name: "write_file", input: { path: "src/new.ts", content: "export {};\n" } };
+          yield { type: "tool_call", id: "edit-1", name: "edit_file", input: { path: "src/a.ts", oldText: "a", newText: "b" } };
+          yield { type: "tool_call", id: "read-1", name: "read_file", input: { path: "src/a.ts" } };
+          yield { type: "done", stopReason: "tool_use" };
+        } else {
+          yield { type: "done", stopReason: "end_turn" };
+        }
+      },
+    };
+    const providers = new ProviderRegistry();
+    providers.register(provider);
+    const events = new EventBus();
+    const published: Array<{ type: string; sessionId?: string; payload: unknown }> = [];
+    events.on("event", (event: { type: string; sessionId?: string; payload: unknown }) => published.push(event));
+    const runner = new AgentRunner(sessions, providers, core, events, pricing);
+
+    await runner.run(session.id, "write then edit");
+
+    const scmEvents = published.filter((event) => event.type === "scm.updated");
+    // write_file 与 edit_file 各发一次；read_file 不发
+    expect(scmEvents).toHaveLength(2);
+    expect(scmEvents[0]).toMatchObject({ sessionId: session.id, payload: { sessionId: session.id, reason: "file.write", path: "src/new.ts" } });
+    expect(scmEvents[1]).toMatchObject({ sessionId: session.id, payload: { sessionId: session.id, reason: "file.write", path: "src/a.ts" } });
+  });
+
+  it("defaults glob/grep path to the session root when omitted", async () => {
+    const root = await tempRoot("owc-agent-glob-");
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const session = await sessions.create({ cwd: root, provider: "files", model: "claude-opus-4-8" });
+    await sessions.updatePermissions(session.id, "acceptEdits", []);
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const calls: Array<{ sessionId: string; path: string; pattern: string }> = [];
+    const core = makeFakeCore({
+      async globFiles(request: { sessionId: string; path: string; pattern: string }) { calls.push(request); return { paths: ["a.ts"], truncated: false }; },
+    });
+    let turn = 0;
+    const requests: StreamChatRequest[] = [];
+    const provider: Provider = {
+      name: "files",
+      async *streamChat(request) {
+        requests.push(request);
+        if (turn++ === 0) {
+          yield { type: "tool_call", id: "glob-1", name: "glob", input: { pattern: "**/*.ts" } };
+          yield { type: "done", stopReason: "tool_use" };
+        } else {
+          yield { type: "done", stopReason: "end_turn" };
+        }
+      },
+    };
+    const providers = new ProviderRegistry();
+    providers.register(provider);
+    const runner = new AgentRunner(sessions, providers, core, new EventBus(), pricing);
+
+    await runner.run(session.id, "list files");
+
+    // schema 不再要求 path；缺省按会话根（"."）下发 core
+    const globSchema = requests[0]?.tools.find((tool) => tool.name === "glob");
+    expect(globSchema?.inputSchema.required).toEqual(["pattern"]);
+    expect(calls).toEqual([{ sessionId: session.id, path: ".", pattern: "**/*.ts" }]);
   });
 });

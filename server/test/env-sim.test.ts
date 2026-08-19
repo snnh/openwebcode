@@ -5,7 +5,7 @@ import { AgentRunner } from "../src/agent/agent-runner.js";
 import { buildServer } from "../src/app.js";
 import type { CoreClientLike } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
-import { EventBus, type AppEvent } from "../src/events/event-bus.js";
+import { EventBus } from "../src/events/event-bus.js";
 import { ExtensionManager } from "../src/extensions/extension-manager.js";
 import { BUILTIN_PERSONAS, listPersonas, resolvePersona } from "../src/extensions/env-sim/index.js";
 import { deleteUserPreset, loadUserPresets, personasDir, saveUserPreset } from "../src/extensions/env-sim/preset-store.js";
@@ -243,37 +243,6 @@ describe("env-sim tool shaping", () => {
     });
   }, 20_000);
 
-  it("executes an alias call through the built-in bash implementation", async () => {
-    await withHarness({
-      enableEnvSim: true,
-      persona: "claude-code",
-      script: [[{ id: "call-1", name: "Bash", input: { cmd: "echo hi" } }]],
-    }, async ({ agent, session, sessions, runCalls }) => {
-      await agent.run(session.id, "跑个命令");
-      expect(runCalls).toHaveLength(1);
-      // bash 一次性路径注入会话环境变量（最内层包装），用户命令在其后
-      expect(runCalls[0]?.cmd).toContain("OWC_SESSION_ID");
-      expect(runCalls[0]?.cmd).toContain("echo hi");
-      const results = toolResults(await sessions.get(session.id));
-      expect(results[0]).toMatchObject({ toolCallId: "call-1", isError: false });
-    });
-  }, 20_000);
-
-  it("keeps the original permission class for aliased tools", async () => {
-    const seen: AppEvent[] = [];
-    await withHarness({
-      enableEnvSim: true,
-      persona: "claude-code",
-      script: [[{ id: "call-1", name: "Edit", input: { path: "a.txt", oldText: "a", newText: "b" } }]],
-    }, async ({ agent, session, events }) => {
-      events.on("event", (event) => { if (event.type === "tool.scheduling") seen.push(event); });
-      await agent.run(session.id, "改个文件");
-      const scheduling = seen.find((event) => (event.payload as { toolCallId?: string }).toolCallId === "call-1");
-      // 别名 Edit 保留 edit_file 的 workspace_write 分级，不降级为 external
-      expect(scheduling?.payload).toMatchObject({ name: "edit_file", execution: "workspace_write" });
-    });
-  }, 20_000);
-
   it("blocks aliased write tools in plan mode exactly like the originals", async () => {
     await withHarness({
       enableEnvSim: true,
@@ -387,19 +356,6 @@ describe("env-sim tool shaping", () => {
       await agent.run(session.id, "第二轮");
       const names = (requests[1]!.tools ?? []).map((tool) => tool.name);
       expect(names).not.toContain("read_artifact");
-    });
-  }, 20_000);
-  it("dsh-minimal str_replace_editor calls succeed after alias argument translation", async () => {
-    await withHarness({
-      enableEnvSim: true,
-      persona: "dsh-minimal",
-      script: [[{ id: "edit-1", name: "str_replace_editor", input: { path: "a.txt", old_str: "old", new_str: "new" } }]],
-    }, async ({ agent, session, sessions, editCalls }) => {
-      await agent.run(session.id, "改一下文件");
-      // argMap 翻译：old_str → oldText、new_str → newText，OWC edit_file 正常执行
-      expect(editCalls[0]).toMatchObject({ path: "a.txt", oldText: "old", newText: "new" });
-      const results = toolResults(await sessions.get(session.id));
-      expect(results[0]).toMatchObject({ toolCallId: "edit-1", isError: false });
     });
   }, 20_000);
 
@@ -683,14 +639,6 @@ describe("env-sim REST contract", () => {
 });
 
 describe("env-sim command prompt shaping", () => {
-  it("alias descriptions reach the provider tool list", async () => {
-    await withHarness({ enableEnvSim: true, persona: "claude-code" }, async ({ agent, session, requests }) => {
-      await agent.run(session.id, "你好");
-      const tools = requests[0]!.tools ?? [];
-      expect(tools.find((tool) => tool.name === "Bash")?.description).toBe("Run a shell command in the workspace.");
-      expect(tools.find((tool) => tool.name === "Grep")?.description).toBe("Search file contents for a pattern.");
-    });
-  }, 20_000);
 
   it("/init expands to the persona init prompt; user override wins over persona", async () => {
     const cc = BUILTIN_PERSONAS.find((item) => item.id === "claude-code")!;
@@ -780,24 +728,17 @@ describe("env-sim outbound UA simulation", () => {
 
   it("applies the persona UA only when the manual toggle is on and restores the default on disable", async () => {
     await withHarness({}, async ({ manager }) => {
-      // 开关默认关闭：仅启用扩展 + 选预设不生效
       await manager.configure("env-sim", { enabled: true, config: { persona: "claude-code" } });
       expect(getUserAgent()).toBe(official());
-      // 手动开启开关：自动填充所选预设的拟态 UA
       await manager.configure("env-sim", { config: { simulateUserAgent: true } });
       expect(getUserAgent()).toBe("claude-code/2.1.232");
-      // 更新链路始终使用官方 UA，不受模拟影响
       expect(getOfficialUserAgent()).toBe(official());
-      // 关闭开关恢复默认
       await manager.configure("env-sim", { config: { simulateUserAgent: false } });
       expect(getUserAgent()).toBe(official());
-      // 清空 persona 恢复默认
       await manager.configure("env-sim", { config: { simulateUserAgent: true, persona: "" } });
       expect(getUserAgent()).toBe(official());
-      // 换预设后重新开启：UA 跟随新预设
       await manager.configure("env-sim", { enabled: true, config: { persona: "codex", simulateUserAgent: true } });
       expect(getUserAgent()).toBe("codex/0.147.0");
-      // 禁用扩展恢复默认
       await manager.configure("env-sim", { enabled: false });
       expect(getUserAgent()).toBe(official());
     });
