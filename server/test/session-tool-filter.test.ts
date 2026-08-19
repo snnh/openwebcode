@@ -351,6 +351,7 @@ describe("AgentRunner tool capability gating", () => {
       expect(request.system).not.toContain("read_file");
       expect(request.system).not.toContain("todo_write");
       expect(request.system).not.toContain("load_skill");
+      expect(request.system).not.toContain("subagent");
       expect(request.system).not.toContain("spawn_task");
       expect(request.system).not.toContain("web_search");
     }

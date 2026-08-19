@@ -221,7 +221,7 @@ agent 运行期间的状态指示与干预手段：
 - **上下文窗口**：会话头部实时显示窗口占用 `45k/128k | 38%`（默认 ≥70% 变黄、≥85% 变红；红线跟随设置的自动压缩水位，黄线为水位 −15 个百分点；压缩/清空/驱逐/恢复后立即按新数值刷新）与缓存命中胶囊（悬停细分读取/写入/未缓存输入）；底部面板页签条同步显示 `窗口 N%`
 - **上下文用量**（底部面板「上下文」标签页）：核心面板顶部「上下文窗口」区给出大号占用表、按段（系统提示词/输入/工具调用/正式输出/其它）五分类堆叠的 token 归因条、本轮/累计缓存命中（低于 30% 标红、30–60% 标黄）与压缩水位提示、被驱逐工具结果的 tokens/条数读数（原文存 artifact，agent 可 read_artifact 召回）；下方为 token/成本/预算明细与「压缩」区（手动压缩按钮与压缩信息，始终显示）。context-saver 扩展启用时另有驱逐策略（lag/interval/off 与驱逐模式热调）、选择性上下文（pin/排除路径）与上下文条目（逐出/恢复/pin/查看 artifact 原文）三段
 - **仓库结构注入（repo map）**：默认关闭，会话需显式开启（`PUT /api/sessions/:id/context/repo-map`，`enabled` + `budget`，budget 64–100000、默认 2048 token）才把仓库结构段注入系统提示词后缀（systemSuffix），token 归因到「系统提示词」桶；会话关闭时不注入也不扫描。env-sim 预设的 `hideBuiltIns` 隐藏 `repo_map` 工具时内容段同样不注入（否则模型仍能看到仓库结构，违背工具隐藏意图）。这与 `repo_map` 工具本身独立——不开注入时 agent 仍可主动调用该工具按需获取仓库结构
-- **子代理**（底部面板「子代理」标签页）：汇总本会话全部 `spawn_task`/`spawn_swarm`——按调用分组，swarm 显示完成/失败/运行中聚合计数与逐项实时进度，可内联展开转录；消息轨道里的子代理卡片也实时刷新（swarm 逐项状态、轮次、工具数），转录展示完整内部消息流（折叠到最近 20 条）；刷新页面后从历史恢复
+- **子代理**（底部面板「子代理」标签页）：汇总本会话全部 `subagent`/`spawn_swarm`——按调用分组，swarm 显示完成/失败/运行中聚合计数与逐项实时进度，可内联展开转录；消息轨道里的子代理卡片也实时刷新（swarm 逐项状态、轮次、工具数），转录展示完整内部消息流（折叠到最近 20 条）；刷新页面后从历史恢复
 - **时间线**（底部面板「时间线」标签页）：检查点列表 → diff 查看 → 「完整回滚」或「仅文件」回滚（二次确认），新建检查点；顶部为可交互**会话树**（上限 50 个节点，非活动分支淡化），悬停任意节点可「继续」（检出到该节点，后续消息形成新分支）或「分叉」为新会话
 - **快照后端**：按平台自动探测，徽标显示当前后端与成本特征。Linux：btrfs（子卷快照，即时 CoW）→ zfs（数据集快照，即时）→ overlayfs（ext4 等通用文件系统；优先内核 overlayfs 挂载——需 root/CAP_SYS_ADMIN，否则退化 fuse-overlayfs 用户态挂载；检查点为 upper 层变更的线性复制）→ git shadow（线性拷贝兜底）；Windows：ReFS（块克隆）→ git shadow。overlayfs 会话的工作目录是 merged 视图、源目录保持只读：改动在 upper 层累积，检查点/回滚只作用于 upper；确认后才经「文件」面板的「同步回源」写回源目录（node_modules/.git/.env 等不回写），关闭或删除会话不会自动回写。回滚时若存在运行中的任务会被拒绝，需先停止当前任务
 - **消息级操作**：用户消息悬停出现「编辑重发 / 重新生成 / 分叉」——编辑重发把内容回填输入框（附件不重发），发送后从该处另起分支重跑；重新生成直接回退到该条重跑；分叉复制到该条为止的对话进新会话（会话历史是树形存储，旧分支消息始终保留）
@@ -233,7 +233,7 @@ agent 运行期间的状态指示与干预手段：
 - **模型服务商**：可保存并独立启用多个接口配置，接口类型三种——Anthropic Messages、OpenAI Chat Completions 与 OpenAI Responses（`POST /responses`，思维以 reasoning summary 流返回，历史思维链不回传）；每个服务商可自动拉取或手动添加自己的模型，同名模型互不覆盖。每个服务商可配**自定义请求体**（JSON，如 `{"temperature": 0.7, "max_tokens": 8192}`），浅合并进每次模型请求；`model`/`messages`/`stream`/`tools`/`system` 为保留字段不可覆盖
 - **会话中热切换模型**：统一列表显示为 `模型ID【服务商】`，下轮生效；账本按新窗口重算，模态不兼容的历史内容替换为占位描述
 - **快速模型**：直接从同一统一模型列表中选择，用于上下文压缩与内容透镜；接口、Base URL 和密钥复用所选服务商，可单独设置 thinking 与 effort。思考型模型的推理会消耗输出预算：正文为空时自动翻倍预算重试一次，仍为空则回退使用推理通道内容
-- **会话默认模型与四档角色**（设置 → 模型选择）：「会话默认」决定新建会话的模型（未设置时取第一个服务商的第一个模型）；「极致 / 平衡 / 快速 / 廉价」四档角色各指派一个模型——快速档即上面的快速模型。主代理派发子代理时可按任务选档（`spawn_task`/`spawn_swarm` 的 `role` 参数，或自定义子代理 frontmatter 的 `role:`/`provider:`）：难题用极致、常规执行用平衡、要速度用快速、批量轻活用廉价；未指定角色时默认走平衡档；未配置的角色回落平衡档，再回落会话当前模型；用量与成本按实际生效的服务商与模型归属
+- **会话默认模型与四档角色**（设置 → 模型选择）：「会话默认」决定新建会话的模型（未设置时取第一个服务商的第一个模型）；「极致 / 平衡 / 快速 / 廉价」四档角色各指派一个模型——快速档即上面的快速模型。主代理派发子代理时可按任务选档（`subagent`/`spawn_swarm` 的 `role` 参数，或自定义子代理 frontmatter 的 `role:`/`provider:`）：难题用极致、常规执行用平衡、要速度用快速、批量轻活用廉价；未指定角色时默认走平衡档；未配置的角色回落平衡档，再回落会话当前模型；用量与成本按实际生效的服务商与模型归属
 - **模型选择器**：输入框下方常驻，模型按供应商分组（可展开收起）；底部固定区显示当前模型能力徽章与思考控件——胶囊开关切换思考，强度用格子档滑动切换（只显示模型声明的档位；未声明思考能力的模型开关默认关、未声明档位时全部可选）
 - **思维链回传**：模型能力新增 `reasoningContent` 声明（设置 → 模型目录双击模型编辑）。开启时历史 thinking 块以 `reasoning_content` 回带给 OpenAI 兼容端点（deepseek/qwen/glm/kimi 等新模型要求）；gpt/o 系与 claude 前缀默认关闭，其余默认开启；Anthropic 接口走签名回放不受此开关影响
 - **上下文与输出**：未声明的模型默认上下文 256k（deepseek 前缀为 1M）；输出长度默认不封顶（OpenAI 兼容接口不发送 `max_tokens`，需要时经自定义请求体显式设置；Anthropic 接口 `max_tokens` 为强制字段，默认 64k 同样可被自定义请求体覆盖）
@@ -338,7 +338,7 @@ owc run "给 main.ts 加个单元测试" --cwd . --json
 
 - `toolsAllow` 非空 = 仅暴露名单内内置工具；`toolsDeny` 在结果上再剔除；两者都只作用于内置工具，未知工具名静默忽略
 - 交互类工具（`ask_user` 等）始终保留；MCP 与扩展工具由用户显式配置，不受影响
-- 子代理（`spawn_task`/`spawn_swarm`）自动继承会话的工具限制
+- 子代理（`subagent`/`spawn_swarm`）自动继承会话的工具限制
 - `PUT config` 传 `null` 或空数组清除限制；工具限制是提示面约束（模型看不到的工具即不可用），不替代沙盒与权限链
 
 CLI 等价写法：`owc run "..." --tools read_file,glob,grep`（= `toolsAllow`）、`--exclude-tools bash`（= `toolsDeny`）、`--read-only`（便捷旗标，等价于 `--tools` 只读集：read_file/glob/grep/read_artifact/repo_map/code_search/git_status/git_diff/load_skill/task_output；与 `--tools` 互斥，同给报错退出码 1）。
@@ -438,7 +438,7 @@ OWC_BROWSE_ROOTS=/home/me/projects:/home/me/repos
 - `content-lens`：默认关闭；启用且已配置快速模型后，消息旁出现「译」与「解析选中」，结果只存 `translations/`，不进入 LLM 上下文
 - `pdf-to-image`：默认启用；通过 Web 选择的 PDF 会先保存到当前工作区 `.owc/uploads/`，再将最多 4 页按 150 DPI、长边最大 2048px 转为图片附件，供支持图片输入的模型读取；停用时 Composer 仅把这个工作区相对路径引用交给主代理处理
 - `owc-eval`：默认关闭；启用后底部面板出现「评测」，可选择固定 mock-provider 示例与 0.4 工具契约任务，在独立临时工作区回放 AgentRunner。报告包含断言、工具、token 与耗时；可把历史运行设为基线，与当前运行生成持久化的回归/改善对比并导出自包含 JSON。评测服务内置于 server，不读取原始 API Key；生产运行仍走正常 Core 权限与沙盒边界
-- `env-sim`（环境模拟）：默认关闭；启用并选择预设后，系统提示词切换为该产品风格（身份行 + 工作方式），内置工具以该产品的命名/描述呈现（如 `Read`/`Bash`/`Edit`），底层仍走原工具实现与权限链。内置 `claude-code`/`kimi-code`/`zcode`/`codex`/`dsh-minimal` 五档预设。`dsh-minimal`（DSH 极简模式，1.7.8 起）复刻 DeepSeek Harness 极简模式：persona 提示词与 `bash`/`str_replace_editor` 双工具的描述和参数形态照搬 DSH 原文；首轮形态覆盖整个第一条用户消息——系统提示词为极简形态（只保留 persona 基础提示词与工具表，跳过安全边界、项目上下文、技能段、自定义指令、尾注、后台通知），同一回合内的多轮工具调用循环也保持双工具，用户发出第二条消息才恢复保留形态；第二轮起仅保留 web 搜索（`web_search`/`web_fetch`）与子代理（`spawn_task`）等少数工具，`read_artifact` 随驱逐联动注入。把自制预设 JSON（必填 `id`/`name`/`identity`/`basePrompt`，可选 `productSections`/`hideBuiltIns`/`aliases`/`firstTurnOnlyTools`）放入 `<业务数据目录>/env-sim/personas/` 即可添加并与他人分享，一个文件一个预设。**内置预设也可自定义**：`id` 与内置相同时即覆盖该内置（只覆盖填写的字段，工具形态、命令拟态等其余部分自动继承内置；UI 中显示「已自定义」标记），删除覆盖文件（UI「还原内置预设」）即恢复官方内置
+- `env-sim`（环境模拟）：默认关闭；启用并选择预设后，系统提示词切换为该产品风格（身份行 + 工作方式），内置工具以该产品的命名/描述呈现（如 `Read`/`Bash`/`Edit`），底层仍走原工具实现与权限链。内置 `claude-code`/`kimi-code`/`zcode`/`codex`/`dsh-minimal` 五档预设。`dsh-minimal`（DSH 极简模式，1.7.8 起）复刻 DeepSeek Harness 极简模式：persona 提示词与 `bash`/`str_replace_editor` 双工具的描述和参数形态照搬 DSH 原文；首轮形态覆盖整个第一条用户消息——系统提示词为极简形态（只保留 persona 基础提示词与工具表，跳过安全边界、项目上下文、技能段、自定义指令、尾注、后台通知），同一回合内的多轮工具调用循环也保持双工具，用户发出第二条消息才恢复保留形态；第二轮起仅保留 web 搜索（`web_search`/`web_fetch`）与子代理（`subagent`）等少数工具，`read_artifact` 随驱逐联动注入。把自制预设 JSON（必填 `id`/`name`/`identity`/`basePrompt`，可选 `productSections`/`hideBuiltIns`/`aliases`/`firstTurnOnlyTools`）放入 `<业务数据目录>/env-sim/personas/` 即可添加并与他人分享，一个文件一个预设。**内置预设也可自定义**：`id` 与内置相同时即覆盖该内置（只覆盖填写的字段，工具形态、命令拟态等其余部分自动继承内置；UI 中显示「已自定义」标记），删除覆盖文件（UI「还原内置预设」）即恢复官方内置
 - `compact-vault`（上下文档案库）：默认关闭；启用且已配置快速模型后，`/compact` 从默认概览压缩切换为档案库压缩——完整上下文归档到会话目录 `compact/segments/`（真实内容全保留），主模型上下文只注入目录式索引（不保留任何工具调用细节）；快速模型两遍整理（分块提取条目 + 合并去重/删除过时内容）后生成索引。主模型可按索引里的 `key` 调用 `recall_memory` 工具，经快速模型按需提炼召回对应归档片段；`keepTail`/`chunkSize`/`recallMaxTokens` 可在扩展设置中调整。水位强制自动压缩（默认 85%）同样走档案库路径；若档案库压缩未启用时被默认压缩覆盖了索引，目录索引会自动回注，`recall_memory` 始终可用
 - `vision-tools`（视觉工具）：默认关闭；主模型不支持视觉时，把图片交给配置的视觉模型处理——`describe` 模式自动生成图片描述并注入上下文；`toolCall` 模式以 `[图片 #N]` 占位符注入并注册 `describe_image` 工具，主模型按需向视觉模型提问（省主模型 token，图片内容按需获取）。支持视觉的主模型不受影响
 
@@ -446,7 +446,7 @@ OWC_BROWSE_ROOTS=/home/me/projects:/home/me/repos
 
 ### 子代理（`.owc/agents/reviewer.md`）
 
-内置两种类型：`explore`（默认，只读探索：read_file/glob/grep/read_artifact）与 `general`（通用：可读写文件、执行 bash，工具调用经与主代理相同的权限链与沙盒）。`spawn_task agent=general prompt="..."` 即可派发可写任务；自定义 markdown 子代理仍为只读。
+内置两种类型：`explore`（默认，只读探索：read_file/glob/grep/read_artifact）与 `general`（通用：可读写文件、执行 bash，工具调用经与主代理相同的权限链与沙盒）。`subagent agent=general prompt="..."` 即可派发可写任务；自定义 markdown 子代理仍为只读。
 
 ```markdown
 ---
@@ -465,7 +465,7 @@ role: premium
 
 frontmatter 模型声明（优先级从高到低）：`provider:` + `model:` 显式指定服务商与模型 > `role:` 指定四档角色（premium/balanced/fast/cheap，映射见「设置 → 模型选择」）> 派发时的 `role` 参数 > 默认平衡档（未配置时回落会话当前模型）。
 
-调用：`spawn_task agent=reviewer prompt="审查 src/auth.ts 的最近改动"`；也可不指定 agent 直接按角色派发：`spawn_task prompt="..." role="cheap"`。
+调用：`subagent agent=reviewer prompt="审查 src/auth.ts 的最近改动"`；也可不指定 agent 直接按角色派发：`subagent prompt="..." role="cheap"`。
 
 多个独立的同类只读任务可用 `spawn_swarm` 并行（模板 + 逐项替换，2–16 项，并发上限 4，超出自动排队）：
 

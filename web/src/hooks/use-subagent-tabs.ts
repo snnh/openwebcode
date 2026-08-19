@@ -2,16 +2,16 @@ import { useCallback, useRef, useState } from "react";
 import type { SubagentStartedEvent } from "../lib/contracts";
 
 /**
- * 主区子代理标签页（按会话隔离）：spawn_task / spawn_swarm 一次调用一个标签（toolCallId 键控）。
+ * 主区子代理标签页（按会话隔离）：subagent / spawn_swarm 一次调用一个标签（toolCallId 键控）。
  * 标签只存派生标签名所需的原始字段，文案在渲染时经 i18n 计算。
  */
 export interface SubagentTab {
   toolCallId: string;
-  /** spawn_task 的代理名（标签名优先取它） */
+  /** subagent 的代理名（标签名优先取它） */
   agent?: string;
-  /** spawn_task 的 prompt（无 agent 时取摘要）；swarm 为首个子任务 */
+  /** subagent 的 prompt（无 agent 时取摘要）；swarm 为首个子任务 */
   prompt: string;
-  /** swarm 组：标签展示「群 N 项」 */
+  /** swarm 组：标签展示「Swarm N 项」 */
   swarmTotal?: number;
 }
 

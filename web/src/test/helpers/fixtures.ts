@@ -41,7 +41,7 @@ export function makeContextView(overrides: Partial<ContextView> = {}): ContextVi
   } as ContextView;
 }
 
-/** LiveSubagentRun 工厂（spawn_task/subagents 系列测试共用）。 */
+/** LiveSubagentRun 工厂（subagent/subagents 系列测试共用）。 */
 export function makeSubagentRun(overrides: Partial<LiveSubagentRun>): LiveSubagentRun {
   return {
     taskId: "task-1",

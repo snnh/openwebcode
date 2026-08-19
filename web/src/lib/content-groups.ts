@@ -1,3 +1,4 @@
+import { isSubagentToolCallName } from "./subagent-runs";
 import type { MessageContent } from "./contracts";
 
 /** 历史消息内容的分组项：single 原位渲染；tool-group 为相邻工具调用合并组（≥2 个调用）。 */
@@ -7,11 +8,12 @@ type ContentGroup =
 
 /**
  * 可进组合并的块：普通 tool_call / tool_result。
- * spawn_task/spawn_swarm 保留 SubagentRunCard 专用形态，不进组且打断相邻性；
- * 其子代理结果（携带 subagentTaskIds/subagentTasks 的 tool_result）同样保留原形态、打断相邻性。
+ * subagent/spawn_swarm（含历史消息旧名 spawn_task）保留 SubagentRunCard 专用形态，
+ * 不进组且打断相邻性；其子代理结果（携带 subagentTaskIds/subagentTasks 的 tool_result）
+ * 同样保留原形态、打断相邻性。
  */
 function isGroupableToolBlock(block: MessageContent): boolean {
-  if (block.type === "tool_call") return block.name !== "spawn_task" && block.name !== "spawn_swarm";
+  if (block.type === "tool_call") return !isSubagentToolCallName(block.name);
   if (block.type === "tool_result") return !(block.subagentTaskIds?.length || block.subagentTasks?.length);
   return false;
 }

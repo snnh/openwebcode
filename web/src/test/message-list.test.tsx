@@ -478,7 +478,7 @@ describe("groupContentBlocks", () => {
     if (groups[3]?.kind === "tool-group") expect(groups[3].blocks).toHaveLength(2);
   });
 
-  it("spawn_task/spawn_swarm 调用不进组且打断相邻性", () => {
+  it("subagent/spawn_swarm 调用不进组且打断相邻性（含历史旧名 spawn_task）", () => {
     const blocks = [contentCall("c1"), contentCall("c2", "spawn_task"), contentCall("c3")];
     const groups = groupContentBlocks(blocks);
     expect(groups.map((group) => group.kind)).toEqual(["single", "single", "single"]);

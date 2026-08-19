@@ -3,6 +3,15 @@ import type { ActiveToolShaping } from "../extensions/extension-manager.js";
 import type { PythonEnv } from "../sessions/types.js";
 import type { ResolvedShell } from "./shell-detect.js";
 
+/** 子代理工具名：v1.9 由 spawn_task 重命名而来。旧名仅用于旧会话配置/旧历史兼容匹配，不再注入提示词。 */
+export const SUBAGENT_TOOL = "subagent";
+export const SUBAGENT_LEGACY_NAME = "spawn_task";
+
+/** 新旧子代理工具名等价判定（toolsAllow/toolsDeny/权限类别/别名匹配/执行器分发共用）。 */
+export function isSubagentToolName(name: string): boolean {
+  return name === SUBAGENT_TOOL || name === SUBAGENT_LEGACY_NAME;
+}
+
 /**
  * 主循环与子代理共用的内置工具 schema（单一来源，避免两处字面量漂移）。
  * 子代理（sub-agent.ts）按内置名过滤本表生成自己的工具集；执行/权限始终在 agent-runner。
@@ -305,8 +314,10 @@ export const READ_ONLY_TOOL_NAMES: readonly string[] = [
  */
 export function toolAllowedBySession(name: string, allow?: string[], deny?: string[]): boolean {
   if (INTERACTION_TOOL_NAMES.has(name)) return true;
-  if (allow !== undefined && allow.length > 0 && !allow.includes(name)) return false;
-  if (deny !== undefined && deny.includes(name)) return false;
+  // 子代理工具新旧名等价：旧会话 toolsAllow/toolsDeny 中的 spawn_task 对改名后的 subagent 依然生效
+  const canonical = isSubagentToolName(name) ? SUBAGENT_TOOL : name;
+  if (allow !== undefined && allow.length > 0 && !allow.some((item) => (isSubagentToolName(item) ? SUBAGENT_TOOL : item) === canonical)) return false;
+  if (deny !== undefined && deny.some((item) => (isSubagentToolName(item) ? SUBAGENT_TOOL : item) === canonical)) return false;
   return true;
 }
 
@@ -326,8 +337,9 @@ interface ToolShapingApplication {
 /**
  * 把工具拟态（env-sim persona / 扩展 toolShaping）应用到内置工具清单：先按 hideBuiltIns
  * 过滤，再按 aliases 重命名。同一 from 可注册多个别名（如 zcode 的 Agent/Task 同源于
- * spawn_task）：首个别名原位重命名保持工具顺序，其余从原始内置工具克隆后追加——
- * 一律原位替换会让后续别名找不到 from 而被静默丢弃。
+ * subagent）：首个别名原位重命名保持工具顺序，其余从原始内置工具克隆后追加——
+ * 一律原位替换会让后续别名找不到 from 而被静默丢弃。旧用户预设别名里的 spawn_task
+ * 归一为 subagent（兼容匹配，等价于改名后的内置工具）。
  */
 export function applyToolShaping(builtIns: ProviderTool[], shaping: ActiveToolShaping): ToolShapingApplication {
   const aliasMap = new Map<string, string>();
@@ -335,22 +347,23 @@ export function applyToolShaping(builtIns: ProviderTool[], shaping: ActiveToolSh
   const tools = builtIns.filter((tool) => !shaping.hideBuiltIns.has(tool.name));
   const renamedFrom = new Set<string>();
   for (const [as, spec] of shaping.aliases) {
+    const from = spec.from === SUBAGENT_LEGACY_NAME ? SUBAGENT_TOOL : spec.from;
     const aliasOf = (source: ProviderTool): ProviderTool => ({
       name: as,
       description: spec.description ?? source.description,
       inputSchema: spec.inputSchema ?? source.inputSchema,
     });
-    if (renamedFrom.has(spec.from)) {
-      const source = builtIns.find((tool) => tool.name === spec.from);
+    if (renamedFrom.has(from)) {
+      const source = builtIns.find((tool) => tool.name === from);
       if (!source) continue;
       tools.push(aliasOf(source));
     } else {
-      const index = tools.findIndex((tool) => tool.name === spec.from);
+      const index = tools.findIndex((tool) => tool.name === from);
       if (index < 0) continue;
       tools[index] = aliasOf(tools[index]!);
-      renamedFrom.add(spec.from);
+      renamedFrom.add(from);
     }
-    aliasMap.set(as, spec.from);
+    aliasMap.set(as, from);
     if (spec.argMap && Object.keys(spec.argMap).length > 0) aliasArgMaps.set(as, spec.argMap);
   }
   return { tools, aliasMap, aliasArgMaps };

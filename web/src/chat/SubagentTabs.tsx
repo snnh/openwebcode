@@ -88,7 +88,7 @@ export function SubagentTabStrip({ tabs, runs, selected, terminal, onSelect, onC
         const status = subagentTabStatus(runs, tab.toolCallId);
         const isActive = selected === tab.toolCallId;
         const label = tab.swarmTotal !== undefined
-          ? t(`群 ${tab.swarmTotal} 项`, `Swarm ×${tab.swarmTotal}`)
+          ? t(`Swarm ${tab.swarmTotal} 项`, `Swarm ×${tab.swarmTotal}`)
           : tab.agent ?? snippet(tab.prompt, 12);
         return (
           <div

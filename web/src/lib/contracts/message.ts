@@ -12,9 +12,9 @@ export interface MessageContent {
   data?: string;
   /** image 块引用形态（与 data 二选一）：uploads/|generated/ 相对路径，经 images 路由取字节。 */
   ref?: string;
-  /** spawn_task/spawn_swarm 工具结果携带的子代理转录 id 列表 */
+  /** subagent/spawn_swarm 工具结果携带的子代理转录 id 列表 */
   subagentTaskIds?: string[];
-  /** spawn_task/spawn_swarm 逐项终态（index 显式对应 swarm item 序号）；优先于 isError 启发式 */
+  /** subagent/spawn_swarm 逐项终态（index 显式对应 swarm item 序号）；优先于 isError 启发式 */
   subagentTasks?: Array<{ taskId: string; index: number; status: "done" | "failed"; error?: string }>;
 }
 

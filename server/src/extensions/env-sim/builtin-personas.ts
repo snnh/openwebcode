@@ -182,7 +182,7 @@ Rules: be brief; keep file paths, command names and error strings verbatim; neve
         argMap: { todos: "items" },
       },
       {
-        from: "spawn_task", as: "Task",
+        from: "subagent", as: "Task",
         description: "Launch a read-only sub-agent for open-ended exploration or multi-step research.",
         inputSchema: {
           type: "object",
@@ -379,7 +379,7 @@ Popular sections usually written in \`AGENTS.md\`:
         argMap: { todos: "items" },
       },
       {
-        from: "spawn_task", as: "Agent",
+        from: "subagent", as: "Agent",
         description: "Launch a new agent to handle complex, multi-step tasks. Each agent type has specific capabilities and tools available to it; specify `subagent_type` to select one (default: explore, the read-only research type; general is the write-capable type). The agent's final message is returned to you as the tool result; it is not shown to the user — relay what matters. A new Agent call starts fresh, so the prompt must be self-contained. When you launch multiple agents for independent work, send them in a single message with multiple tool uses so they run concurrently.",
         inputSchema: {
           type: "object",
@@ -616,7 +616,7 @@ Keep it small: short bullets only; file paths, commands and error text verbatim;
         argMap: { todos: "items" },
       },
       {
-        from: "spawn_task", as: "Agent",
+        from: "subagent", as: "Agent",
         description: "Launch a new agent to handle complex, multi-step tasks. Each agent type has specific capabilities and tools available to it; specify `subagent_type` to select one (default: general-purpose). The agent's final message is returned to you as the tool result; it is not shown to the user — relay what matters. A new Agent call starts fresh, so the prompt must be self-contained.",
         inputSchema: {
           type: "object",
@@ -630,7 +630,7 @@ Keep it small: short bullets only; file paths, commands and error text verbatim;
         argMap: { subagent_type: "agent" },
       },
       {
-        from: "spawn_task", as: "Task",
+        from: "subagent", as: "Task",
         description: "Same capabilities as Agent (shared description); both names are available. Output supports `completed` (synchronous) and async-launched (background) statuses.",
         inputSchema: {
           type: "object",
@@ -891,7 +891,7 @@ Include:
 
 Be concise, structured, and focused on helping the next LLM seamlessly continue the work.`,
     compactToolcallsPrompt: `You are a context compactor. Rewrite each tool call as a one-line placeholder "[tool] intent -> outcome". Paths, commands and exit codes verbatim; output bodies dropped.`,
-    hideBuiltIns: ["read_artifact", "repo_map", "code_search", "load_skill", "spawn_task", "spawn_swarm", "remember", "task_output", "task_stop", "glob", "grep", "git_worktree_create", "git_worktree_remove", "git_worktree_merge"],
+    hideBuiltIns: ["read_artifact", "repo_map", "code_search", "load_skill", "subagent", "spawn_swarm", "remember", "task_output", "task_stop", "glob", "grep", "git_worktree_create", "git_worktree_remove", "git_worktree_merge"],
     aliases: [
       {
         from: "bash", as: "shell",

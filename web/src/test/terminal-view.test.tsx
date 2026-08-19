@@ -293,7 +293,7 @@ describe("App 主区子代理/终端标签", () => {
     expect(failedTab.querySelector(".subagent-tab-dot")).toHaveAttribute("data-status", "failed");
   });
 
-  it("swarm 运行聚合为一个「群 N 项」标签", async () => {
+  it("swarm 运行聚合为一个「Swarm N 项」标签", async () => {
     const socket = await launchApp();
 
     act(() => {
@@ -301,7 +301,7 @@ describe("App 主区子代理/终端标签", () => {
       started(socket, "s1", "call-9", "task-9b", { swarm: { index: 2, total: 4 } });
     });
 
-    const tabs = await screen.findAllByRole("tab", { name: /群 4 项/ });
+    const tabs = await screen.findAllByRole("tab", { name: /Swarm 4 项/ });
     expect(tabs).toHaveLength(1);
   });
 
@@ -334,22 +334,22 @@ describe("App 主区子代理/终端标签", () => {
     act(() => {
       started(socket, "s1", "call-5", "task-5a", { swarm: { index: 1, total: 2 } });
     });
-    await screen.findByRole("tab", { name: /群 2 项/ });
+    await screen.findByRole("tab", { name: /Swarm 2 项/ });
 
     // 用户主动关闭标签
-    fireEvent.click(screen.getByRole("button", { name: /关闭标签 群 2 项/ }));
-    expect(screen.queryByRole("tab", { name: /群 2 项/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /关闭标签 Swarm 2 项/ }));
+    expect(screen.queryByRole("tab", { name: /Swarm 2 项/ })).toBeNull();
 
     // swarm 第二项 started（同 toolCallId）：不得重开已关闭的标签
     act(() => {
       started(socket, "s1", "call-5", "task-5b", { swarm: { index: 2, total: 2 } });
     });
     await new Promise((resolve) => setTimeout(resolve, 30));
-    expect(screen.queryByRole("tab", { name: /群 2 项/ })).toBeNull();
+    expect(screen.queryByRole("tab", { name: /Swarm 2 项/ })).toBeNull();
 
     // 手动「在标签中打开」（子代理面板经 tabActions 桥）：重建标签并聚焦（并清除关闭标记）
     act(() => tabActions.openSubagentTab?.("call-5"));
-    const tab = await screen.findByRole("tab", { name: /群 2 项/ });
+    const tab = await screen.findByRole("tab", { name: /Swarm 2 项/ });
     expect(tab).toHaveAttribute("aria-selected", "true");
     expect(document.querySelector(".subagent-tab-view")).toBeInTheDocument();
   });

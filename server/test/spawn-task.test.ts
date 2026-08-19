@@ -104,8 +104,8 @@ describe("spawn_task via AgentRunner", () => {
 
     await runner.run(session.id, "先调查再回答");
 
-    // spawn_task 出现在主循环 TOOLS；子代理请求里只有四件只读工具（不可再 spawn_task）
-    expect(requests[0]?.tools.map((tool) => tool.name)).toContain("spawn_task");
+    // subagent 出现在主循环 TOOLS；子代理请求里只有四件只读工具（不可再 subagent）
+    expect(requests[0]?.tools.map((tool) => tool.name)).toContain("subagent");
     const subRequest = requests.find((request) => request.system.includes("exploration sub-agent"));
     expect(subRequest?.tools.map((tool) => tool.name).sort()).toEqual(["glob", "grep", "read_artifact", "read_file"]);
 

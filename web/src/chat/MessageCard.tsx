@@ -6,6 +6,7 @@ import { formatToolContent } from "../lib/tool-format";
 import { formatDateTime, formatTime } from "../lib/format";
 import { toolResultOf } from "../lib/shell-messages";
 import type { LiveSubagentRun, MessageContent } from "../lib/contracts";
+import { isSubagentToolCallName } from "../lib/subagent-runs";
 import { Icon } from "../components/Icon";
 import { Markdown } from "../components/Markdown";
 import { useI18n } from "../i18n";
@@ -89,8 +90,8 @@ function ContentBlock({ block, toolResults, liveSubagents }: {
     case "thinking":
       return <ThinkingBlock text={block.text ?? ""} />;
     case "tool_call": {
-      // spawn_task/spawn_swarm 用专用卡片：运行中展示实时进度，历史卡片展示静态摘要
-      if ((block.name === "spawn_task" || block.name === "spawn_swarm") && block.id) {
+      // subagent/spawn_swarm（含历史旧名 spawn_task）用专用卡片：运行中展示实时进度，历史卡片展示静态摘要
+      if (isSubagentToolCallName(block.name) && block.id) {
         const live = liveSubagents?.filter((run) => run.toolCallId === block.id);
         return <SubagentRunCard name={block.name} input={block.input} sessionId={sessionId} {...(live ? { live } : {})} />;
       }

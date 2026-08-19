@@ -23,13 +23,13 @@ import { appendSwarmBoard, readSwarmBoard } from "./swarm-board.js";
 import { resolveShell, type ResolvedShell } from "./shell-detect.js";
 
 /**
- * 子代理允许使用的只读工具全集（构造上只读；spawn_task 不在其中，子代理不可再派生）。
+ * 子代理允许使用的只读工具全集（构造上只读；subagent 不在其中，子代理不可再派生）。
  */
 export const SUB_AGENT_TOOL_NAMES = ["read_file", "glob", "grep", "read_artifact"] as const;
 
 /**
  * general 内置子代理的工具全集：文件读写/编辑 + glob/grep + bash + repo_map/code_search
- * + test_runner + web_fetch/web_search（可用时）。编排类（spawn_task/spawn_swarm）与
+ * + test_runner + web_fetch/web_search（可用时）。编排类（subagent/spawn_swarm）与
  * 会话控制类工具刻意排除——子代理不可再派生，也不能触碰父会话状态。
  * 键名一律为真实内置名（工具形态别名由 agent-runner 归一后再传入）。
  */

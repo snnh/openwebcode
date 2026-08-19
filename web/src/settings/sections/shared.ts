@@ -77,7 +77,7 @@ export const SETTINGS_FIELD_EN: Record<string, { label: string; description?: st
   roleModelCheap: { label: "Cheap tier model", description: "Model for the cheap sub-agent role: bulk, low-stakes fan-out work; falls back to the balanced tier when unset" },
   defaultLanguage: { label: "Default model language" },
   agentMaxTurns: { label: "Max turns per message", description: "Maximum agent turns allowed per user message; the task ends with a failure once reached. Increase for long tasks (1-1000)" },
-  subAgentMaxTurns: { label: "Max sub-agent turns", description: "Default turn limit for sub-agents (spawn_task / spawn_swarm / manual launch); spawn_task / spawn_swarm accept a maxTurns argument to override per call (1-1000)" },
+  subAgentMaxTurns: { label: "Max sub-agent turns", description: "Default turn limit for sub-agents (subagent / spawn_swarm / manual launch); subagent / spawn_swarm accept a maxTurns argument to override per call (1-1000)" },
   chatModeEnabled: { label: "Enable Chat mode", description: "Off by default; when enabled, the UI shows a Chat / Workbench mode toggle for the ChatGPT-style chat mode" },
   compactionThresholdPercent: { label: "Auto-compaction threshold (%)", description: "The context is compacted automatically when usage reaches this percentage (50-95); the recommendation threshold is 15 points lower. Core safety net, independent of the context-saver extension" },
   defaultCurrency: { label: "Default currency" },

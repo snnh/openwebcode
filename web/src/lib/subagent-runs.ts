@@ -3,6 +3,11 @@ import type { ChatMessage, LiveSubagentRun } from "./contracts";
 /** 每个会话保留的子代理运行条目上限（超出时丢弃最旧的） */
 export const LIVE_SUBAGENT_CAP = 100;
 
+/** 子代理工具调用判定（type guard）：新名 subagent + 旧名 spawn_task（历史消息兼容）+ spawn_swarm。 */
+export function isSubagentToolCallName(name: string | undefined): name is "subagent" | "spawn_task" | "spawn_swarm" {
+  return name === "subagent" || name === "spawn_task" || name === "spawn_swarm";
+}
+
 /** spawn_swarm items 的两种形态：纯字符串或 { task, agent? }（与 server 端解析一致） */
 export function swarmItems(input?: Record<string, unknown>): Array<{ task: string; agent?: string }> {
   if (!Array.isArray(input?.items)) return [];
@@ -31,7 +36,7 @@ export function capLiveSubagentRuns(runs: Record<string, LiveSubagentRun>, cap: 
 
 /**
  * 从已加载的会话消息推导历史子代理运行（页面刷新后无实时事件时填充子代理面板）：
- * spawn_task/spawn_swarm 的 tool_call 提供 prompt/agent，配对的 tool_result 提供 taskId 与终态。
+ * subagent/spawn_swarm 的 tool_call 提供 prompt/agent，配对的 tool_result 提供 taskId 与终态。
  * 优先读 tool_result.subagentTasks（逐项 status/index，显式对应 swarm item 序号）；
  * 旧消息无该字段时回退到 subagentTaskIds 位置对齐 + 整体 isError 启发式。
  * 推导条目不包含实时轮次/工具明细（turns/toolsUsed 置空）。
@@ -41,7 +46,7 @@ export function deriveSubagentRunsFromMessages(messages: ChatMessage[]): Record<
   const runs: Record<string, LiveSubagentRun> = {};
   for (const message of messages) {
     for (const block of message.content) {
-      if (block.type === "tool_call" && block.id && (block.name === "spawn_task" || block.name === "spawn_swarm")) {
+      if (block.type === "tool_call" && block.id && isSubagentToolCallName(block.name)) {
         calls.set(block.id, { name: block.name, ...(block.input ? { input: block.input } : {}) });
         continue;
       }
