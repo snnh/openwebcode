@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import type { ChatMessage, LiveSubagentRun } from "../lib/contracts";
 import { useI18n } from "../i18n";
+import { formatDateTime } from "../lib/format";
 import { Icon } from "../components/Icon";
 import { MemoMessageCard } from "./MessageCard";
 import { shellCommandOf } from "../lib/shell-messages";
@@ -263,7 +264,7 @@ export function MessageList({
     <div
       className="context-cleared-divider"
       role="separator"
-      {...(cleared ? { title: new Date(cleared.at).toLocaleString(locale) } : {})}
+      {...(cleared ? { title: formatDateTime(cleared.at, locale) } : {})}
     >
       <Icon name="compress" size={11} />
       {t("上下文已清空（历史保留）", "Context cleared (history retained)")}

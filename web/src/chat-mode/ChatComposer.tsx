@@ -5,6 +5,7 @@ import { useI18n } from "../i18n";
 import { useStore } from "../app/store";
 import { ui } from "../app/ui-store";
 import { chatModeStore } from "../app/chat-mode-store";
+import { api, ApiError } from "../lib/api";
 import { Icon } from "../components/Icon";
 import { clipboardFiles, dataUrlBase64, readFileAsDataUrl } from "../lib/file-data-url";
 import { useAutosizeTextarea } from "../hooks/use-autosize-textarea";
@@ -21,9 +22,8 @@ interface PendingImage {
   /** ≤2MB 内嵌 base64；>2MB 时保留 File，发送前才上传换取 ref。 */
   data?: string;
   file?: File;
+  /** data URL 预览（内嵌与上传路径统一读取，无 objectURL 生命周期）。 */
   previewUrl: string;
-  /** previewUrl 为 objectURL 时需在用后 revoke。 */
-  objectUrl: boolean;
 }
 
 let nextImageId = 0;
@@ -73,23 +73,8 @@ export function ChatComposer({ sessionId, ensureSession, onSent, apiRef }: {
   // 自适应高度（上限 200px）
   useAutosizeTextarea(textareaRef, draft, 200);
 
-  // 卸载时释放所有 objectURL（经 ref 取最新列表，避免在 setState updater 里做副作用）
-  const imagesRef = useRef<PendingImage[]>([]);
-  useEffect(() => {
-    imagesRef.current = images;
-  }, [images]);
-  useEffect(() => {
-    return () => {
-      for (const image of imagesRef.current) if (image.objectUrl) URL.revokeObjectURL(image.previewUrl);
-    };
-  }, []);
-
   function removeImage(id: string): void {
-    setImages((current) => {
-      const target = current.find((image) => image.id === id);
-      if (target?.objectUrl) URL.revokeObjectURL(target.previewUrl);
-      return current.filter((image) => image.id !== id);
-    });
+    setImages((current) => current.filter((image) => image.id !== id));
   }
 
   async function addImages(files: Iterable<File>): Promise<void> {
@@ -113,25 +98,18 @@ export function ChatComposer({ sessionId, ensureSession, onSent, apiRef }: {
           mediaType: file.type,
           data: dataUrlBase64(dataUrl),
           previewUrl: dataUrl,
-          objectUrl: false,
         };
         setImages((current) => (current.length >= MAX_IMAGES ? current : [...current, image]));
       } else {
-        // >2MB：保留 File，发送前才上传换取 ref（避免用户放弃发送时留下孤儿文件）
+        // >2MB：保留 File，发送前才上传换取 ref（避免用户放弃发送时留下孤儿文件）；预览与内嵌路径一致用 data URL
+        const dataUrl = await readFileAsDataUrl(file);
         const image: PendingImage = {
           id: `img-${nextImageId++}`,
           mediaType: file.type,
           file,
-          previewUrl: URL.createObjectURL(file),
-          objectUrl: true,
+          previewUrl: dataUrl,
         };
-        setImages((current) => {
-          if (current.length >= MAX_IMAGES) {
-            URL.revokeObjectURL(image.previewUrl);
-            return current;
-          }
-          return [...current, image];
-        });
+        setImages((current) => (current.length >= MAX_IMAGES ? current : [...current, image]));
       }
     }
   }
@@ -141,21 +119,12 @@ export function ChatComposer({ sessionId, ensureSession, onSent, apiRef }: {
     if (!image.file) return undefined;
     try {
       const dataUrl = await readFileAsDataUrl(image.file);
-      const res = await fetch(`/api/chat/sessions/${sid}/uploads`, {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          data: dataUrlBase64(dataUrl),
-          mediaType: image.mediaType,
-          filename: image.file.name,
-        }),
+      const { ref } = await api.chatUploadImage(sid, {
+        data: dataUrlBase64(dataUrl),
+        mediaType: image.mediaType,
+        filename: image.file.name,
       });
-      if (!res.ok) {
-        ui.notify(t("图片上传失败", "Image upload failed"), "error");
-        return undefined;
-      }
-      return ((await res.json()) as { ref: string }).ref;
+      return ref;
     } catch {
       ui.notify(t("图片上传失败", "Image upload failed"), "error");
       return undefined;
@@ -198,31 +167,22 @@ export function ChatComposer({ sessionId, ensureSession, onSent, apiRef }: {
         }
         body = { content };
       }
-      const res = await fetch(`/api/chat/sessions/${sid}/messages`, {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (res.ok) {
-        setDraft("");
-        for (const image of images) if (image.objectUrl) URL.revokeObjectURL(image.previewUrl);
-        setImages([]);
-        onSent?.();
-      } else if (images.length > 0) {
-        // 带图消息失败时给出服务端原因（400 校验 / 413 超限等）
-        const errorBody = (await res.json().catch(() => ({}))) as { error?: string };
-        ui.notify(errorBody.error ?? t("发送失败", "Send failed"), "error");
+      await api.chatSend(sid, body);
+      setDraft("");
+      setImages([]);
+      onSent?.();
+    } catch (error) {
+      // 带图消息失败时给出服务端原因（400 校验 / 413 超限等）；纯文本失败保留草稿静默
+      if (error instanceof ApiError && images.length > 0) {
+        ui.notify(error.message || t("发送失败", "Send failed"), "error");
       }
-    } catch {
-      // 发送失败保留草稿，用户可重试
     }
     setSending(false);
   }
 
   async function handleStop(): Promise<void> {
     if (!sessionId) return;
-    await fetch(`/api/chat/sessions/${sessionId}/stop`, { method: "POST", credentials: "include" });
+    await api.chatStop(sessionId).catch(() => undefined);
   }
 
   function handleKeyDown(event: KeyboardEvent): void {

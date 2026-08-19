@@ -3,6 +3,7 @@ import { api } from "../lib/api";
 import { writeClipboard } from "../lib/clipboard";
 import { groupContentBlocks } from "../lib/content-groups";
 import { formatToolContent } from "../lib/tool-format";
+import { formatDateTime, formatTime } from "../lib/format";
 import { toolResultOf } from "../lib/shell-messages";
 import type { LiveSubagentRun, MessageContent } from "../lib/contracts";
 import { Icon } from "../components/Icon";
@@ -165,7 +166,7 @@ export function MessageCard({ message, turn, toolResults, liveSubagents, shellCm
   const meta = (
     <div className="message-meta">
       {message.role !== "user" && <span className="message-author">{ROLE_LABELS[message.role] ? t(...ROLE_LABELS[message.role]!) : message.role}</span>}
-      <time dateTime={message.createdAt} title={createdAt.toLocaleString(locale)}>{createdAt.toLocaleTimeString(locale)}</time>
+      <time dateTime={message.createdAt} title={formatDateTime(createdAt, locale)}>{formatTime(createdAt, locale)}</time>
       {text && (
         <button
           className="copy-btn"

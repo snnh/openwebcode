@@ -7,7 +7,7 @@
  *   写回由调用方走 server 写端点（write_file 权限链），本模块不触网。
  */
 
-export interface DiffHunk {
+interface DiffHunk {
   /** 1-based 旧侧起始行（旧侧 0 行时为插入点前行） */
   oldStart: number;
   oldLines: number;

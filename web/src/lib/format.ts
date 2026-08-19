@@ -52,3 +52,13 @@ export function formatBytes(bytes: number): string {
   if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
   return `${bytes} B`;
 }
+
+/** 日期时间：locale 完整格式（快照/同步时间等面板统一精度）。 */
+export function formatDateTime(value: string | number | Date, locale = activeLocale()): string {
+  return new Date(value).toLocaleString(locale);
+}
+
+/** 时间：14:30 小时/分钟（消息卡片与通知统一精度）。 */
+export function formatTime(value: string | number | Date, locale = activeLocale()): string {
+  return new Date(value).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
+}

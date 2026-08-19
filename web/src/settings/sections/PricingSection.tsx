@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type ReactElement } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../../lib/api";
 import type { ModelProfile, PricingDocument } from "../../lib/contracts";
-import { formatCurrency, microToDecimal } from "../../lib/format";
+import { formatCurrency, formatDateTime, microToDecimal } from "../../lib/format";
 import { useI18n } from "../../i18n";
 import { useConfirmDialog } from "../../components/ConfirmDialog";
 
@@ -244,7 +244,7 @@ export function PricingSection({ onDirtyChange }: { onDirtyChange?(dirty: boolea
           setError(result.error || t("远程定价同步失败", "Remote pricing sync failed"));
           return;
         }
-        const updatedAt = new Date(result.updatedAt).toLocaleString(locale);
+        const updatedAt = formatDateTime(result.updatedAt, locale);
         setNotice(t(`已同步 ${result.count} 条远程定价 · ${updatedAt}`, `Synced ${result.count} remote pricing entries · ${updatedAt}`));
         void queryClient.invalidateQueries({ queryKey: ["model-pricing"] });
         void queryClient.invalidateQueries({ queryKey: ["models"] });
@@ -260,7 +260,7 @@ export function PricingSection({ onDirtyChange }: { onDirtyChange?(dirty: boolea
   return (
     <>
       <div className="pricing-head">
-        <span className="settings-note">{t(`${document.entries.length} 条定价 · 每百万 tokens 单价 · 更新于 ${new Date(document.updatedAt).toLocaleString(locale)}`, `${document.entries.length} entries · price per million tokens · updated ${new Date(document.updatedAt).toLocaleString(locale)}`)}</span>
+        <span className="settings-note">{t(`${document.entries.length} 条定价 · 每百万 tokens 单价 · 更新于 ${formatDateTime(document.updatedAt, locale)}`, `${document.entries.length} entries · price per million tokens · updated ${formatDateTime(document.updatedAt, locale)}`)}</span>
         {!editing && !adding && editingEntry === null && <button className="btn small" disabled={saving} onClick={syncRemote}>{saving ? t("同步中…", "Syncing…") : t("立即同步", "Sync now")}</button>}
         {!editing && !adding && editingEntry === null && <button className="btn small" onClick={() => { setForm(emptyPricingForm()); setError(undefined); setAdding(true); }}>{t("添加条目", "Add entry")}</button>}
         {!editing && !adding && editingEntry === null && <button className="btn small" onClick={startEdit}>{t("编辑 JSON", "Edit JSON")}</button>}

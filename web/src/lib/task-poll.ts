@@ -3,8 +3,8 @@
  * 即时性由 WS 事件保证（task.started / task.finished invalidate 任务查询），
  * 轮询只作事件缺口（断连重连间隙）的兜底——空闲会话不再 5s 盲轮询。
  */
-export const TASKS_POLL_ACTIVE_MS = 5_000;
-export const TASKS_POLL_IDLE_MS = 30_000;
+const TASKS_POLL_ACTIVE_MS = 5_000;
+const TASKS_POLL_IDLE_MS = 30_000;
 
 export function tasksPollInterval(hasRunning: boolean, open: boolean): number {
   return hasRunning || open ? TASKS_POLL_ACTIVE_MS : TASKS_POLL_IDLE_MS;

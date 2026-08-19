@@ -5,6 +5,7 @@ import type { ModelProfile } from "../../lib/contracts";
 import { ModelCapabilityBadges } from "../../components/ModelCapabilityBadges";
 import { Icon } from "../../components/Icon";
 import { useI18n } from "../../i18n";
+import { formatDateTime } from "../../lib/format";
 import { useConfirmDialog } from "../../components/ConfirmDialog";
 
 const THINKING_LABEL: Record<string, [string, string]> = { adaptive: ["自适应", "Adaptive"], enabled: ["开启", "Enabled"], disabled: ["关闭", "Disabled"] };
@@ -77,7 +78,7 @@ export function ModelCatalogSection(): ReactElement {
           return;
         }
         invalidate();
-        const updatedAt = new Date(result.updatedAt).toLocaleString(locale);
+        const updatedAt = formatDateTime(result.updatedAt, locale);
         setNotice(t(`已同步 ${result.count} 个远程模型 · ${updatedAt}`, `Synced ${result.count} remote models · ${updatedAt}`));
       })
       .catch((syncError: unknown) => setError(syncError instanceof Error ? syncError.message : t("远程模型目录同步失败", "Remote model catalog sync failed")))
@@ -208,8 +209,8 @@ export function ModelCatalogSection(): ReactElement {
     <>
       <p className="settings-note">{t("从已配置凭据的 provider 拉取模型列表；未知模型按内置元数据库保守成档。手动条目永不被刷新覆盖。双击行可编辑模型能力（API/内置模型保存后成为手动覆盖）。", "Fetch models from providers with configured credentials. Unknown models receive conservative built-in metadata; refresh never overwrites manual entries. Double-click a row to edit capabilities.")}</p>
       {syncStatus.data?.updatedAt && <p className="settings-note">{t(
-        `上次同步：${new Date(syncStatus.data.updatedAt).toLocaleString(locale)} · ${syncStatus.data.count} 个远程模型`,
-        `Last synced: ${new Date(syncStatus.data.updatedAt).toLocaleString(locale)} · ${syncStatus.data.count} remote models`,
+        `上次同步：${formatDateTime(syncStatus.data.updatedAt, locale)} · ${syncStatus.data.count} 个远程模型`,
+        `Last synced: ${formatDateTime(syncStatus.data.updatedAt, locale)} · ${syncStatus.data.count} remote models`,
       )}</p>}
       <div className="dialog-actions catalog-actions">
         <button className="btn small" disabled={busy} onClick={syncRemote}>{busy ? t("同步中…", "Syncing…") : t("立即同步", "Sync now")}</button>

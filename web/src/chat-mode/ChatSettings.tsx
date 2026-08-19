@@ -4,6 +4,7 @@
 import { useEffect, useState, type ReactElement } from "react";
 import { useI18n } from "../i18n";
 import { ui } from "../app/ui-store";
+import { api, ApiError } from "../lib/api";
 import type { ChatAssistant, ChatConfig, ChatModelEntry, ChatSessionMeta } from "./types";
 
 interface ToolCategory {
@@ -39,43 +40,32 @@ export function ChatSettings({ sessionId, onClose, onSaved }: {
   }
 
   async function loadData(): Promise<void> {
-    try {
-      const [sessionRes, assistantsRes, modelsRes, configRes] = await Promise.all([
-        fetch(`/api/chat/sessions/${sessionId}`, { credentials: "include" }),
-        fetch("/api/chat/assistants", { credentials: "include" }),
-        fetch("/api/chat/models", { credentials: "include" }),
-        fetch("/api/chat/config", { credentials: "include" }),
-      ]);
-      if (sessionRes.ok) applyMeta((await sessionRes.json()) as ChatSessionMeta);
-      if (assistantsRes.ok) setAssistants((await assistantsRes.json()) as ChatAssistant[]);
-      if (modelsRes.ok) setModels((await modelsRes.json()) as ChatModelEntry[]);
-      if (configRes.ok) setChatConfig((await configRes.json()) as ChatConfig);
-    } catch {
-      // 加载失败保持现状
-    }
+    // 各端点独立容错：某个拉取失败不影响其他
+    await Promise.all([
+      api.chatSession(sessionId).then(applyMeta).catch(() => undefined),
+      api.chatAssistants().then(setAssistants).catch(() => undefined),
+      api.chatModels().then(setModels).catch(() => undefined),
+      api.chatConfig().then(setChatConfig).catch(() => undefined),
+    ]);
   }
 
   async function save(patch: Partial<ChatSessionMeta>): Promise<void> {
     setSaving(true);
     try {
-      const res = await fetch(`/api/chat/sessions/${sessionId}`, {
-        method: "PATCH",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(patch),
-      });
-      if (res.ok) {
-        applyMeta((await res.json()) as ChatSessionMeta);
-        onSaved?.();
-      } else if (res.status === 401) {
-        ui.notify(t("需要访问令牌才能保存设置", "Access token required to save settings"), "error");
+      const next = await api.chatPatch(sessionId, patch);
+      applyMeta(next);
+      onSaved?.();
+    } catch (error) {
+      if (error instanceof ApiError) {
+        if (error.status === 401) {
+          ui.notify(t("需要访问令牌才能保存设置", "Access token required to save settings"), "error");
+        } else {
+          ui.notify(t("保存失败，请检查输入", "Save failed; please check your input"), "error");
+        }
         await loadData();
       } else {
-        ui.notify(t("保存失败，请检查输入", "Save failed; please check your input"), "error");
-        await loadData();
+        ui.notify(t("保存失败", "Save failed"), "error");
       }
-    } catch {
-      ui.notify(t("保存失败", "Save failed"), "error");
     }
     setSaving(false);
   }
@@ -88,21 +78,18 @@ export function ChatSettings({ sessionId, onClose, onSaved }: {
     if (value) next[field] = value;
     else delete next[field];
     try {
-      const res = await fetch("/api/chat/config", {
-        method: "PUT",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(next),
-      });
-      if (res.ok) {
-        setChatConfig((await res.json()) as ChatConfig);
-      } else if (res.status === 401) {
-        ui.notify(t("需要访问令牌才能保存设置", "Access token required to save settings"), "error");
+      const updated = await api.chatSaveConfig(next);
+      setChatConfig(updated);
+    } catch (error) {
+      if (error instanceof ApiError) {
+        if (error.status === 401) {
+          ui.notify(t("需要访问令牌才能保存设置", "Access token required to save settings"), "error");
+        } else {
+          ui.notify(t("保存失败，请检查输入", "Save failed; please check your input"), "error");
+        }
       } else {
-        ui.notify(t("保存失败，请检查输入", "Save failed; please check your input"), "error");
+        ui.notify(t("保存失败", "Save failed"), "error");
       }
-    } catch {
-      ui.notify(t("保存失败", "Save failed"), "error");
     }
     setSaving(false);
   }
