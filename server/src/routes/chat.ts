@@ -8,6 +8,7 @@ import { timingSafeHashEqual } from "../auth-totp.js";
 import type { MessageContent, TextContent } from "../sessions/types.js";
 import type { ChatAssistant, ChatConfig, ChatImageInput, ChatRunner, ChatSessionMeta, ChatShare } from "../chat/index.js";
 import { CHAT_IMAGE_MAX_BYTES, CHAT_INLINE_IMAGE_MAX_BYTES, extForMediaType, mediaTypeForFile, resolveSessionPath } from "../chat/index.js";
+import { withTimeout } from "../http-utils.js";
 import { CHAT_IMAGE_BODY_LIMIT } from "./route-context.js";
 import type { RouteContext } from "./route-context.js";
 
@@ -119,7 +120,7 @@ export function registerChatRoutes(app: FastifyInstance, ctx: RouteContext): voi
       sessionId,
       userMessage: params.userMessage,
       meta: params.meta,
-      signal: AbortSignal.timeout(300_000),
+      signal: withTimeout(undefined, 300_000),
       ...(params.images && params.images.length > 0 ? { images: params.images } : {}),
       onDelta: (text) => chatStreamSend(sessionId, { type: "delta", runId, text }),
       onThinkingDelta: (text) => chatStreamSend(sessionId, { type: "thinking_delta", runId, text }),

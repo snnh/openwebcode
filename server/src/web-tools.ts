@@ -8,14 +8,14 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_BYTES = 2 * 1024 * 1024;
 const MAX_REDIRECTS = 10;
 
-export interface WebFetchResult {
+interface WebFetchResult {
   url: string;
   finalUrl: string;
   contentType: string;
   text: string;
 }
 
-export interface SearchResult {
+interface SearchResult {
   title: string;
   url: string;
   snippet: string;

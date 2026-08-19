@@ -309,7 +309,7 @@ const chatRunner = new ChatRunner(
   search, webFetch,
   // media 工具（image_gen/vision）适配器现读：chat.json + provider profiles 热生效
   chatConfigService, providerProfiles,
-  chatAssistantStore, events,
+  chatAssistantStore,
   // 最大轮次共享基础模式 agentMaxTurns 设置（现读，热生效）
   () => settings.effective().agentMaxTurns,
   // Windows 上 chat python 经 CoreRouter job.* 在 Job Object 内运行

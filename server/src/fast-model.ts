@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { EffortLevel, ThinkingMode } from "./context/model-profile.js";
 import type { ProviderRegistry } from "./providers/provider.js";
 import { collectProviderTurn } from "./providers/retry.js";
+import { withTimeout } from "./http-utils.js";
 
 export interface FastModelConfig {
   provider: string;
@@ -98,7 +99,7 @@ export class FastModelClient {
         }],
         tools: [],
         maxTokens: input.maxTokens,
-        signal: AbortSignal.timeout(60_000),
+        signal: withTimeout(undefined, 60_000),
       }, { maxAttempts: 2 });
       for (const event of turn.events) {
         if (event.type === "text_delta") text += event.text;

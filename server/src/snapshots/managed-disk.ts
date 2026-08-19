@@ -40,7 +40,7 @@ const COPY_EXCLUDES = MANAGED_WORKSPACE_COPY_EXCLUDES;
 
 type ManagedBackendKind = "vhdx" | "qcow2";
 /** provision/teardown 可处理的托管后端：镜像盘两种 + Linux overlayfs（merged 视图）。 */
-export type ManagedProvisionKind = ManagedBackendKind | "overlayfs";
+type ManagedProvisionKind = ManagedBackendKind | "overlayfs";
 
 interface ManagedBackendCapability {
   backend: ManagedBackendKind;
@@ -49,7 +49,7 @@ interface ManagedBackendCapability {
   detail?: string;
 }
 
-export interface ManagedWorkspaceCapability {
+interface ManagedWorkspaceCapability {
   platform: string;
   backends: ManagedBackendCapability[];
 }

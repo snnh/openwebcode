@@ -21,7 +21,7 @@ let simulatedUserAgent: string | null = null;
  * Build the official User-Agent header value.
  * Format: `owc/openwebcode{version}` (e.g. `owc/openwebcode0.5.2`).
  */
-export function buildUserAgent(version: string): string {
+function buildUserAgent(version: string): string {
   return `owc/openwebcode${version}`;
 }
 

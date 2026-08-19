@@ -207,16 +207,12 @@ export function parseStatusPorcelainZ(text: string): Omit<GitStatusResult, "isRe
  * （仓库 .git 之外的服务端数据目录），会话结束不自动删除，用户经 REST 决定清理。
  */
 export class ScmService {
-  private readonly runGit: GitExec;
-
   constructor(
     private readonly core: CoreClientLike,
     private readonly sessions: SessionStore,
     private readonly events: EventBus,
     private readonly options: { worktreeRoot: string; exec?: GitExec } ,
-  ) {
-    this.runGit = options.exec ?? ((args, cwd) => this.runGitViaCore(args, cwd, { sessionId: "", shellBackend: "default" }));
-  }
+  ) {}
 
   private publish(sessionId: string, reason: string, detail: Record<string, unknown> = {}): void {
     this.events.publish({ source: "agent", type: "scm.updated", sessionId, payload: { sessionId, reason, ...detail } });

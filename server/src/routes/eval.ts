@@ -7,7 +7,7 @@ export function registerEvalRoutes(app: FastifyInstance, ctx: RouteContext): voi
 
 
   // ---- 评测 harness（0.5.0 Phase 3a）----
-  app.get("/api/eval/tasks", async (request, reply) => {
+  app.get("/api/eval/tasks", async (_request, reply) => {
     if (!dependencies.extensions?.isEnabled("owc-eval")) return reply.code(503).send({ error: "owc-eval extension is disabled" });
     if (!dependencies.evalEvaluator) return reply.code(503).send({ error: "eval service is unavailable" });
     return { tasks: dependencies.evalEvaluator.listTasks() };
@@ -30,7 +30,7 @@ export function registerEvalRoutes(app: FastifyInstance, ctx: RouteContext): voi
     if (!report) return reply.code(404).send({ error: "Run not found" });
     return report;
   });
-  app.get("/api/eval/runs", async (request, reply) => {
+  app.get("/api/eval/runs", async (_request, reply) => {
     if (!dependencies.extensions?.isEnabled("owc-eval")) return reply.code(503).send({ error: "owc-eval extension is disabled" });
     if (!dependencies.evalEvaluator) return reply.code(503).send({ error: "eval service is unavailable" });
     return { runs: await dependencies.evalEvaluator.listRuns() };
@@ -45,7 +45,7 @@ export function registerEvalRoutes(app: FastifyInstance, ctx: RouteContext): voi
     if (!comparison) return reply.code(404).send({ error: "Evaluation run not found" });
     return comparison;
   });
-  app.get("/api/eval/comparisons", async (request, reply) => {
+  app.get("/api/eval/comparisons", async (_request, reply) => {
     if (!dependencies.extensions?.isEnabled("owc-eval")) return reply.code(503).send({ error: "owc-eval extension is disabled" });
     if (!dependencies.evalEvaluator) return reply.code(503).send({ error: "eval service is unavailable" });
     return { comparisons: await dependencies.evalEvaluator.listComparisons() };

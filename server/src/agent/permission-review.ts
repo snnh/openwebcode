@@ -7,7 +7,7 @@ import type { Provider } from "../providers/provider.js";
  * 首行必须是 LOW 或 HIGH，任何偏差都按 HIGH 转人工，绝不放大权限。
  */
 
-export type ReviewVerdict = "low" | "high";
+type ReviewVerdict = "low" | "high";
 
 export interface ReviewOutcome {
   verdict: ReviewVerdict;

@@ -48,7 +48,7 @@ export class EvalEvaluator {
   private readonly comparisonsDir: string;
   private running = false;
 
-  constructor(private readonly dataDir: string, private readonly core: CoreClientLike) {
+  constructor(dataDir: string, private readonly core: CoreClientLike) {
     this.runsDir = path.join(dataDir, "eval", "runs");
     this.comparisonsDir = path.join(dataDir, "eval", "comparisons");
   }
