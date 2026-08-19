@@ -35,12 +35,14 @@ export interface SnapshotDiffExcludes {
   excludeGlobs: string[];
 }
 
-/** 把绝对 denyPaths 与 contextExcludes 相对化到工作区根；不在工作区内的 deny 条目直接跳过。 */
+/** 把绝对 denyPaths 与 contextExcludes 相对化到工作区根；不在工作区内的 deny 条目直接跳过。
+ *  denyPaths 可能带 Windows 反斜杠（会话配置），先归一为正斜杠再相对化，跨平台行为一致。 */
 export function relativeExcludes(workspace: string, denyPaths: string[], contextExcludes: string[]): SnapshotDiffExcludes {
   const excludePrefixes: string[] = [];
   const excludeGlobs: string[] = [];
+  const norm = (p: string) => p.split("\\").join("/");
   for (const deny of denyPaths) {
-    const rel = path.relative(workspace, deny);
+    const rel = path.relative(norm(workspace), norm(deny));
     if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) continue;
     const normalized = rel.split(path.sep).join("/");
     (normalized.includes("*") || normalized.includes("?") ? excludeGlobs : excludePrefixes).push(normalized);
@@ -180,7 +182,10 @@ export async function diffTrees(oldRoot: string, newRoot: string, options: DiffT
     const newEntry = after.get(rel);
     if (oldEntry && !newEntry) changes.push({ rel, kind: "deleted", oldSize: oldEntry.size, newSize: 0 });
     else if (!oldEntry && newEntry) changes.push({ rel, kind: "added", oldSize: 0, newSize: newEntry.size });
-    else if (oldEntry && newEntry && (oldEntry.size !== newEntry.size || oldEntry.mtimeMs !== newEntry.mtimeMs)) {
+    else if (oldEntry && newEntry && (oldEntry.size !== newEntry.size || Math.abs(oldEntry.mtimeMs - newEntry.mtimeMs) > 1)) {
+      // mtime 容差 1ms：cp/utimes 这类按毫秒整数回写的复制会在 ext4/APFS 等纳秒
+      // 精度文件系统上留下亚毫秒 mtime 差，内容一致却误报 modified。内容差异总是
+      // 伴随 size 变化或 >1ms 的 mtime 变化；git code 0 的兜底分支仍保留。
       changes.push({ rel, kind: "modified", oldSize: oldEntry.size, newSize: newEntry.size });
     }
   }

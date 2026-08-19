@@ -12,7 +12,7 @@ import path from "node:path";
 import type { IndexScanEntry } from "../core-client.js";
 
 // 导出给 scripts/bench/bench-index-100k.mjs（tsx 直引 server/src）构造兼容索引。
-const INDEX_FORMAT_VERSION = 1;
+export const INDEX_FORMAT_VERSION = 1;
 
 /** 符号种类：与 core `index.extract` 输出的 kind 集合对齐；"variable" 是不认识 kind 的兜底桶。 */
 type SymbolKind =
