@@ -190,29 +190,31 @@ export async function diffTrees(oldRoot: string, newRoot: string, options: DiffT
     }
   }
 
-  const statLines = changes.map((change) => {
-    const marker = change.kind === "added" ? "A" : change.kind === "deleted" ? "D" : "M";
-    const size = change.kind === "added" ? change.newSize : change.kind === "deleted" ? change.oldSize : `${change.oldSize} → ${change.newSize}`;
-    return `${marker} ${change.rel} (${size} B)`;
-  });
+  // modified 候选经 git 确认：mtime 抖动（cp/utimes 精度截断、复制工具改写）可能产生
+  // 内容一致的假变更，git code 0 时整条剔除（stat 行与 fragment 同源）。确认只对
+  // 前 changedCap 个候选生成 fragment，其余仅保留 stat 行；大文件无法低成本确认，保留 stat 行。
+  const confirmed: Change[] = [];
+  const fragments: string[] = [];
   const truncatedNodes = budget.nodes <= 0;
   const truncatedFiles = changes.length > changedCap;
-  const textChanges = truncatedFiles ? changes.slice(0, changedCap) : changes;
-
-  // 双侧文件经 git 出 unified diff；新增/删除手工合成（跨平台，不依赖 /dev/null 或 NUL）
-  const fragments: string[] = [];
-  for (const change of textChanges) {
+  for (let idx = 0; idx < changes.length; idx++) {
+    const change = changes[idx]!;
     const oldPath = path.join(oldRoot, change.rel);
     const newPath = path.join(newRoot, change.rel);
-    let fragment: string;
+    const inCap = !truncatedFiles || idx < changedCap;
     if (change.kind === "modified") {
-      if (change.oldSize > maxFileBytes || change.newSize > maxFileBytes) continue; // 文件过大：仅 stat 行
+      if (change.oldSize > maxFileBytes || change.newSize > maxFileBytes) {
+        confirmed.push(change); // 文件过大：仅 stat 行
+        continue;
+      }
       const git = await runGitDiff(oldPath, newPath);
       if (git === null) return null; // git 缺失：整体降级
-      if (git.code === 1) fragment = normalizeGitFragments(change.rel, git.stdout.trimEnd());
-      else if (git.code === 0) continue; // 理论不出现（size/mtime 已判定变更）
-      else continue; // git 异常：该文件降级 stat 行
+      if (git.code === 0) continue; // 内容一致：假变更，整体剔除
+      confirmed.push(change);
+      if (inCap && git.code === 1) fragments.push(normalizeGitFragments(change.rel, git.stdout.trimEnd()));
     } else {
+      confirmed.push(change);
+      if (!inCap) continue;
       const side = change.kind === "added" ? newPath : oldPath;
       let info;
       try {
@@ -222,10 +224,16 @@ export async function diffTrees(oldRoot: string, newRoot: string, options: DiffT
       }
       if (info.size > maxFileBytes) continue; // 文件过大：仅 stat 行
       const content = await readFile(side, "utf8");
-      fragment = synthesizeSideDiff(change, content).trimEnd();
+      const fragment = synthesizeSideDiff(change, content).trimEnd();
+      if (fragment) fragments.push(fragment);
     }
-    if (fragment) fragments.push(fragment);
   }
+
+  const statLines = confirmed.map((change) => {
+    const marker = change.kind === "added" ? "A" : change.kind === "deleted" ? "D" : "M";
+    const size = change.kind === "added" ? change.newSize : change.kind === "deleted" ? change.oldSize : `${change.oldSize} → ${change.newSize}`;
+    return `${marker} ${change.rel} (${size} B)`;
+  });
 
   const parts: string[] = [];
   if (statLines.length > 0) {
