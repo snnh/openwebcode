@@ -3,7 +3,8 @@
  * 右侧如实展示键位。Enter 执行，Esc 关闭。
  */
 import { useEffect, useMemo, useState, type ReactElement } from "react";
-import { listCommands, runCommand, DEFAULT_KEYBINDINGS, formatCombo, isMacPlatform, type Command, type WhenContext } from "../app/commands";
+import { listCommands, runCommand, DEFAULT_KEYBINDINGS, mergeKeybindings, formatCombo, isMacPlatform, type Command, type WhenContext } from "../app/commands";
+import { useKeybindingOverrides } from "../app/prefs-store";
 import { filterAndRank } from "../lib/fuzzy";
 import { useI18n } from "../i18n";
 import { Overlay } from "../components/Overlay";
@@ -17,14 +18,16 @@ export function CommandPalette({ open, context, onClose }: {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const isMac = useMemo(isMacPlatform, []);
+  const keybindingOverrides = useKeybindingOverrides();
 
   const keyLabels = useMemo(() => {
+    // 与分发一致的合并注册表：展示实际生效的键位
     const map = new Map<string, string>();
-    for (const binding of DEFAULT_KEYBINDINGS) {
+    for (const binding of mergeKeybindings(DEFAULT_KEYBINDINGS, keybindingOverrides)) {
       if (!map.has(binding.command)) map.set(binding.command, formatCombo(binding.key, isMac));
     }
     return map;
-  }, [isMac]);
+  }, [isMac, keybindingOverrides]);
 
   // 打开时重置查询与选中项（聚焦由 Overlay 的 initialFocus 承担）
   useEffect(() => {

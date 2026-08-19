@@ -47,3 +47,27 @@ export function loadSessionDefaults(): SessionDefaults {
 export function saveSessionDefaults(value: SessionDefaults): void {
   write(DEFAULTS_KEY, JSON.stringify(value));
 }
+
+/** 自定义键位覆盖：command → combo（如 "mod+b"）；null = 解除绑定（该命令不再分发）。 */
+export type KeybindingOverrides = Record<string, string | null>;
+
+const KEYBINDINGS_KEY = "owc-keybindings";
+
+export function loadKeybindingOverrides(): KeybindingOverrides {
+  try {
+    const parsed = JSON.parse(read(KEYBINDINGS_KEY) ?? "{}") as unknown;
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+    const out: KeybindingOverrides = {};
+    for (const [command, value] of Object.entries(parsed)) {
+      if (typeof value === "string" && value) out[command] = value;
+      else if (value === null) out[command] = null;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function saveKeybindingOverrides(value: KeybindingOverrides): void {
+  write(KEYBINDINGS_KEY, JSON.stringify(value));
+}

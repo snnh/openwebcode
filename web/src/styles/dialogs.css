@@ -44,6 +44,12 @@
   font: 11px var(--font-mono);
   background: var(--bg);
 }
+.shortcuts-table kbd.recording { border-color: var(--accent, #3b82f6); color: var(--accent, #3b82f6); animation: shortcut-recording 1.2s ease-in-out infinite; }
+@keyframes shortcut-recording { 50% { opacity: 0.45; } }
+.shortcuts-table button.shortcut-combo { padding: 0; border: 0; background: none; cursor: pointer; }
+.shortcuts-table tr.recording td { background: var(--bg-hover, rgba(128, 128, 128, 0.08)); }
+.shortcuts-table .shortcut-reset { font-size: 12px; }
+.shortcuts-footer { margin: 10px 14px; display: flex; justify-content: flex-end; }
 .login-page {
   position: fixed;
   inset: 0;

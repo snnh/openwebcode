@@ -11,6 +11,7 @@ import {
   getCommand,
   isSessionRunning,
   listCommands,
+  mergeKeybindings,
   registerBuiltinCommands,
   registerCommand,
   resetCommands,
@@ -18,6 +19,7 @@ import {
   runCommand,
   type Keybinding,
 } from "../app/commands";
+import { loadKeybindingOverrides, saveKeybindingOverrides } from "../lib/prefs";
 import { CommandPalette } from "../dialogs/CommandPalette";
 import { chatBridge } from "../app/chat-bridge";
 import { sessionMeta } from "../app/session-store";
@@ -390,5 +392,61 @@ describe("Esc 中断键位（session.abort）", () => {
     const textarea = document.createElement("textarea");
     expect(dispatchKeybinding(keyEvent({ key: "Escape", target: textarea }), DEFAULT_KEYBINDINGS, runningContext)).toBeUndefined();
     expect(abort).not.toHaveBeenCalled();
+  });
+});
+
+describe("mergeKeybindings（自定义键位合并）", () => {
+  const defaults: Keybinding[] = [
+    { command: "a.cmd", key: "mod+a", global: true },
+    { command: "b.cmd", key: "mod+b", when: "sessionActive" },
+    { command: "c.cmd", key: "f6", global: true },
+  ];
+
+  it("覆盖项替换 key 且保留默认 global/when", () => {
+    const merged = mergeKeybindings(defaults, { "a.cmd": "mod+alt+a" });
+    expect(merged).toEqual([
+      { command: "a.cmd", key: "mod+alt+a", global: true },
+      { command: "b.cmd", key: "mod+b", when: "sessionActive" },
+      { command: "c.cmd", key: "f6", global: true },
+    ]);
+  });
+
+  it("null 解除绑定：该命令从注册表移除", () => {
+    const merged = mergeKeybindings(defaults, { "b.cmd": null });
+    expect(merged.map((binding) => binding.command)).toEqual(["a.cmd", "c.cmd"]);
+  });
+
+  it("未知命令与空串覆盖不引入新条目", () => {
+    const merged = mergeKeybindings(defaults, { "ghost.cmd": "mod+g", "c.cmd": "" });
+    expect(merged.map((binding) => binding.command)).toEqual(["a.cmd", "b.cmd", "c.cmd"]);
+  });
+
+  it("空覆盖返回默认注册表", () => {
+    expect(mergeKeybindings(defaults, {})).toEqual(defaults);
+  });
+
+  it("合并后的注册表可直接分发（覆盖生效）", () => {
+    const handler = vi.fn();
+    registerCommand({ id: "a.cmd", title: { zh: "甲", en: "A" }, handler });
+    const merged = mergeKeybindings(defaults, { "a.cmd": "mod+alt+a" });
+    expect(dispatchKeybinding(keyEvent({ key: "a", ctrlKey: true, altKey: true }), merged, {})?.command).toBe("a.cmd");
+    expect(handler).toHaveBeenCalledTimes(1);
+    // 原键位不再触发
+    expect(dispatchKeybinding(keyEvent({ key: "a", ctrlKey: true }), merged, {})).toBeUndefined();
+  });
+});
+
+describe("keybindings 偏好持久化（localStorage roundtrip）", () => {
+  it("load/save 往返与脏数据容错", () => {
+    window.localStorage.removeItem("owc-keybindings");
+    expect(loadKeybindingOverrides()).toEqual({});
+    saveKeybindingOverrides({ "a.cmd": "mod+alt+a", "b.cmd": null });
+    expect(loadKeybindingOverrides()).toEqual({ "a.cmd": "mod+alt+a", "b.cmd": null });
+    // 脏数据：非法类型丢弃、null 保留、空串丢弃
+    window.localStorage.setItem("owc-keybindings", JSON.stringify({ ok: "mod+o", bad: 42, empty: "", nil: null }));
+    expect(loadKeybindingOverrides()).toEqual({ ok: "mod+o", nil: null });
+    window.localStorage.setItem("owc-keybindings", "not json");
+    expect(loadKeybindingOverrides()).toEqual({});
+    window.localStorage.removeItem("owc-keybindings");
   });
 });
