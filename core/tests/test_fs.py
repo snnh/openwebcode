@@ -34,7 +34,11 @@ def send(p, i, method, params):
             line=p.stdout.readline(); assert line
             if line==b"\r\n": break
             k,v=line.decode().split(":",1);headers[k.lower()]=v.strip()
-        msg=json.loads(p.stdout.read(int(headers["content-length"])))
+        raw=p.stdout.read(int(headers["content-length"]))
+        try:
+            msg=json.loads(raw)
+        except UnicodeDecodeError:
+            raise AssertionError(f"id {i} {method}: response is not UTF-8 (content-length={headers['content-length']}, first 160 bytes={raw[:160]!r})")
         if msg.get("id")==i or (msg.get("id") is None and msg.get("error",{}).get("code")==-32700):return msg
 
 MAX_BINARY = 20 * 1024 * 1024
