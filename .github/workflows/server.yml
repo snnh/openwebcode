@@ -39,10 +39,7 @@ jobs:
         # bubblewrap 是 Linux 默认沙盒后端；Ubuntu 24.04 用 AppArmor 限制
         # unprivileged user namespaces，bwrap 依赖 userns，需放开（键不存在时容忍失败）
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y bubblewrap
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+        uses: ./.github/actions/install-bubblewrap
       - name: Build core (Debug)
         shell: bash
         run: |
@@ -59,6 +56,9 @@ jobs:
         working-directory: server
       - name: Lint
         run: npm run lint
+        working-directory: server
+      - name: Knip (dead code / unused dependencies)
+        run: npx knip
         working-directory: server
       - name: Audit (non-blocking)
         continue-on-error: true

@@ -36,27 +36,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Verify tag matches repo versions
-        # tag 推送与 workflow_dispatch（inputs.tag）都执行校验；发布必须四方一致，尽早失败
-        shell: bash
-        run: |
-          set -euo pipefail
-          TAG="${{ inputs.tag || github.ref_name }}"
-          VERSION="${TAG#v}"
-          # 预发布 tag（如 v1.0.0-beta.1）：package.json 存完整版本号，CMake
-          # project(VERSION) 只能存数值基版本，故 core 侧与 BASE_VERSION 比对
-          BASE_VERSION="${VERSION%%-*}"
-          PKG_VERSION="$(node -p "require('./server/package.json').version")"
-          WEB_VERSION="$(node -p "require('./web/package.json').version")"
-          CORE_VERSION="$(sed -n 's/^project(openwebcode_core VERSION \([0-9][0-9.]*\).*/\1/p' core/CMakeLists.txt | head -n 1)"
-          if [ -z "$PKG_VERSION" ] || [ -z "$WEB_VERSION" ] || [ -z "$CORE_VERSION" ]; then
-            echo "::error::无法解析仓库内版本号：server/package.json='$PKG_VERSION' web/package.json='$WEB_VERSION' CMakeLists.txt='$CORE_VERSION'"
-            exit 1
-          fi
-          if [ "$VERSION" != "$PKG_VERSION" ] || [ "$VERSION" != "$WEB_VERSION" ] || [ "$BASE_VERSION" != "$CORE_VERSION" ]; then
-            echo "::error::tag 版本 ($VERSION，基版本 $BASE_VERSION) 与 server/package.json ($PKG_VERSION)、web/package.json ($WEB_VERSION)、core/CMakeLists.txt ($CORE_VERSION) 不一致，请先对齐再发版"
-            exit 1
-          fi
+      - uses: ./.github/actions/resolve-release-version
+        with:
+          tag: ${{ inputs.tag }}
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -64,14 +46,6 @@ jobs:
           cache-dependency-path: |
             server/package-lock.json
             web/package-lock.json
-      - name: Resolve version from tag
-        shell: bash
-        run: |
-          set -euo pipefail
-          TAG="${{ inputs.tag || github.ref_name }}"
-          VERSION="${TAG#v}"
-          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
-          echo "BASE_VERSION=${VERSION%%-*}" >> "$GITHUB_ENV"
       - name: Build server
         shell: bash
         run: |
@@ -238,27 +212,9 @@ jobs:
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
-      - name: Verify tag matches repo versions
-        # tag 推送与 workflow_dispatch（inputs.tag）都执行校验；发布必须四方一致，尽早失败
-        shell: bash
-        run: |
-          set -euo pipefail
-          TAG="${{ inputs.tag || github.ref_name }}"
-          VERSION="${TAG#v}"
-          # 预发布 tag（如 v1.0.0-beta.1）：package.json 存完整版本号，CMake
-          # project(VERSION) 只能存数值基版本，故 core 侧与 BASE_VERSION 比对
-          BASE_VERSION="${VERSION%%-*}"
-          PKG_VERSION="$(node -p "require('./server/package.json').version")"
-          WEB_VERSION="$(node -p "require('./web/package.json').version")"
-          CORE_VERSION="$(sed -n 's/^project(openwebcode_core VERSION \([0-9][0-9.]*\).*/\1/p' core/CMakeLists.txt | head -n 1)"
-          if [ -z "$PKG_VERSION" ] || [ -z "$WEB_VERSION" ] || [ -z "$CORE_VERSION" ]; then
-            echo "::error::无法解析仓库内版本号：server/package.json='$PKG_VERSION' web/package.json='$WEB_VERSION' CMakeLists.txt='$CORE_VERSION'"
-            exit 1
-          fi
-          if [ "$VERSION" != "$PKG_VERSION" ] || [ "$VERSION" != "$WEB_VERSION" ] || [ "$BASE_VERSION" != "$CORE_VERSION" ]; then
-            echo "::error::tag 版本 ($VERSION，基版本 $BASE_VERSION) 与 server/package.json ($PKG_VERSION)、web/package.json ($WEB_VERSION)、core/CMakeLists.txt ($CORE_VERSION) 不一致，请先对齐再发版"
-            exit 1
-          fi
+      - uses: ./.github/actions/resolve-release-version
+        with:
+          tag: ${{ inputs.tag }}
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -266,14 +222,6 @@ jobs:
           cache-dependency-path: |
             server/package-lock.json
             web/package-lock.json
-      - name: Resolve version from tag
-        shell: bash
-        run: |
-          set -euo pipefail
-          TAG="${{ inputs.tag || github.ref_name }}"
-          VERSION="${TAG#v}"
-          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
-          echo "BASE_VERSION=${VERSION%%-*}" >> "$GITHUB_ENV"
       - name: Build server
         run: |
           set -euo pipefail
