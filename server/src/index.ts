@@ -15,6 +15,7 @@ import { EventBus } from "./events/event-bus.js";
 import { ensureDirWithMode } from "./fs-utils.js";
 import { installGracefulShutdown } from "./shutdown.js";
 import { HookRunner } from "./hooks.js";
+import { ensureHomeEnv } from "./host-env.js";
 import { IndexManager } from "./index/index-manager.js";
 import { DiagnosticsService } from "./diagnostics/service.js";
 import { ScmService } from "./scm/service.js";
@@ -52,6 +53,10 @@ import { ChatAssistantStore, ChatConfigService, ChatPythonEnv, ChatRunner, ChatS
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const resolveFromServer = (value: string) => (path.isAbsolute(value) ? value : path.resolve(moduleDirectory, "..", value));
+
+// Linux 基准环境是 systemd/Docker 等最小环境：可能不带 HOME。按 passwd 记录补齐，
+// 保证沙盒 shell（~/.bashrc 依赖 $HOME）、git 凭据查找、uv/fnm 探测拿到一致 home。
+ensureHomeEnv();
 
 // settings 文件固定放在 env/默认数据目录下；dataDir 的文件覆盖重启后对业务数据生效，
 // 但不改变 settings 文件自身的位置（否则重启后会丢失配置入口）。
