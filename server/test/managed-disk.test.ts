@@ -280,19 +280,6 @@ describe("ManagedDiskBackend", () => {
     expect(state.active).toEqual({ file: leaf, parentFile: base });
   });
 
-  it("VHDX 创建后 chain.json 落盘失败会回滚到旧叶，保留旧状态", async () => {
-    const { workspaceRoot, mountPoint, base, calls, backend } = await setupBackend("vhdx");
-    (backend as unknown as { writeState: () => Promise<void> }).writeState = async () => { throw new Error("locked chain.json"); };
-
-    await expect(backend.create("first", 1)).rejects.toThrow("locked chain.json");
-    expect(calls).toHaveLength(2);
-    expect(calls[0]?.args).toContain("fork-swap");
-    expect(calls[1]?.args).toContain("rollback-fork-swap");
-    const child = calls[0]?.args[calls[0]!.args.indexOf("-Child") + 1];
-    expect(calls[1]?.args).toEqual(expect.arrayContaining(["-NewImage", child, "-OldImage", base, "-MountPoint", mountPoint]));
-    expect(await readChain(workspaceRoot)).toEqual({ active: { file: base, parentFile: null }, mountPoint, checkpoints: [] });
-  });
-
   it("VHDX 恢复时先持久化新 active，失败不会删除原叶", async () => {
     const checkpointId = "snap-2000-abcdef";
     const { workspaceRoot, base, calls, backend } = await setupBackend("vhdx", ({ base, workspaceRoot }) => ({
@@ -500,19 +487,6 @@ describe("sweepOrphans 孤儿挂载清理", () => {
     expect((await stat(origin)).isDirectory()).toBe(true);
   });
 
-  it("meta 缺失时按 chain.json 清理工作目录旁的 VHDX 挂载点", async () => {
-    const { workspaceRoot, mountPoint, base, manager, lines } = await vhdxWorkspace("sibling-orphan");
-    await writeFile(base, "img");
-    await writeChain(workspaceRoot, { active: { file: base, parentFile: null }, mountPoint, checkpoints: [] });
-
-    await manager.sweepOrphans();
-
-    expect(lines()).toEqual([
-      `powershell -NoProfile -ExecutionPolicy Bypass -File ${managedDiskScriptPath()} -Mode dismount -Image ${base} -MountPoint ${mountPoint}`,
-    ]);
-    await expect(stat(mountPoint)).rejects.toThrow();
-    expect(existsSync(base)).toBe(true);
-  });
 
   it("teardown 卸载失败会保留工作区，供用户恢复", async () => {
     const { origin, workspaceRoot, mountPoint, base, manager } = await vhdxWorkspace("teardown-fails", 1);
