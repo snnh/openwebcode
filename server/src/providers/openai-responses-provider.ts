@@ -1,4 +1,4 @@
-import type { ChatMessage, ImageContent, ThinkingContent } from "../sessions/types.js";
+import type { ChatMessage, ImageContent, ThinkingContent, ToolCallContent } from "../sessions/types.js";
 import { readSseData, DEFAULT_STREAM_IDLE_TIMEOUT_MS } from "./openai-compatible-provider.js";
 import { normalizeProviderError, ProviderError } from "./provider-error.js";
 import { collectToolOutputs, parseArguments, providerRequestHeaders, requireResponseBody } from "./shared.js";
@@ -37,8 +37,9 @@ interface FunctionCallAccumulator {
  * （function_call / function_call_output）；思维以 reasoning summary / reasoning text 流返回；
  * usage 挂在 response.completed 事件上（input_tokens_details.cached_tokens → cacheRead）。
  * 思维链回传遵循模型能力声明（request.reasoningContent）：开启时历史同源 thinking 块以
- * reasoning item 明文回传，置于每个 function_call 前（DeepSeek 思维模式强制，多调用轮
- * 缺一即 400；OpenAI 官方端点声明关闭，不受影响）。
+ * reasoning item 明文回传，置于 assistant 文本消息之前（canonical 官方输出序；DeepSeek
+ * 只在工具续轮请求强制校验该顺序）。同源 thinking 素材缺失的 tool_call（导入历史/旧协议
+ * 遗留）补一条诚实标注的占位 reasoning item（官方只校验存在与位置，不校验内容真实性）。
  *
  * prompt caching：Responses 只有自动前缀缓存，无显式断点机制——cacheBreakpoints 在此
  * 为 no-op（如实忽略，不伪造断点），cached_tokens 如实上报。
@@ -252,13 +253,14 @@ function rememberCall(
 /**
  * ChatMessage 历史 → Responses input items。
  * 思维链回传（replayReasoning，遵循模型目录「思维链回传」能力声明，与 openai-compatible
- * 的 reasoning_content 回带同一语义）：同源 thinking 块转为 reasoning item。DeepSeek
- * 思维模式的强制规则（真机探针验证）：每个 function_call 必须紧跟一条带完整
- * reasoning_text 的 reasoning item——function_call_output 会打断关联链，只在开头放
- * 一条在多调用轮必 400（The reasoning_text in the thinking mode must be passed back
- * to the API）；空文本不算数；纯文本 assistant 消息与下一 user 轮不强制。OpenAI 官方
- * 端点的模型元数据均声明关闭回传（走服务端 reasoning item / encrypted_content 机制），
- * 不受影响。
+ * 的 reasoning_content 回带同一语义）：同源 thinking 块转为 reasoning item，置于
+ * assistant 文本消息之前（canonical 官方输出序）。DeepSeek 只在工具续轮请求（以工具
+ * 结果结尾）强制校验 reasoning 回传与顺序——assistant「有文本 + 有工具调用」时文本在
+ * 前必 400（The reasoning_text in the thinking mode must be passed back to the API）。
+ * 同源 thinking 素材缺失的 tool_call（导入历史/旧协议遗留）补一条诚实标注的占位
+ * reasoning item：官方只校验存在与位置，不校验内容真实性（与 function_call_output 的
+ * interrupted 占位同思路）。OpenAI 官方端点声明关闭回传（服务端 reasoning item /
+ * encrypted_content 机制），不受影响。
  *
  * 配对修复：历史可能残留无对应 function_call_output 的 function_call（中断/崩溃时结果
  * 未落盘），Responses API 对此直接 400（"No tool output found for tool call"）；故先
@@ -270,9 +272,13 @@ function rememberCall(
 let replaySuppressedLogged = false;
 
 /** 回传开启但历史缺同源 thinking 素材的留痕限频（按「assistant 消息 id:tool_call id」键控，
- * 每进程每键一次）：思维模式端点（DeepSeek）强制每个 function_call 前带 reasoning item，
- * 缺素材必 400；同一条消息反复请求不刷屏，不同消息仍保留诊断留痕。 */
+ * 每进程每键一次）：此类 tool_call 会补一条占位 reasoning item（见 toResponsesInput），
+ * 留痕便于诊断导入历史/旧协议遗留；同一条消息反复请求不刷屏，不同消息仍保留诊断留痕。 */
 const missingThinkingLogged = new Set<string>();
+
+/** 缺同源 thinking 素材时的占位 reasoning_text（导入历史/旧协议遗留的 tool_call 补位用）。
+ * 官方只校验 reasoning 项存在且位于 assistant 文本之前，不校验内容真实性。 */
+export const PLACEHOLDER_REASONING_TEXT = "No reasoning content was recorded for this tool call.";
 
 /** 缺省诊断留痕输出（stderr）。 */
 const defaultDiagnosticWriter = (line: string): void => {
@@ -317,41 +323,46 @@ function toResponsesInput(messages: ChatMessage[], providerName: string, replayR
         .filter((block) => block.type === "text")
         .map((block) => block.text)
         .join("");
-      if (text) result.push({ role: "assistant", content: text });
-      for (const block of message.content) {
-        if (block.type === "tool_call") {
-          // 同一 call_id 在多条 assistant 消息重复出现时只 inline 一次：
-          // 重复的 function_call/_output 对会被 Responses API 拒绝。
-          if (emitted.has(block.id)) continue;
-          emitted.add(block.id);
-          // DeepSeek 思维模式强制：每个 function_call 前紧跟一条完整 reasoning item
-          // （output 打断关联链；空文本不算数）；有 thinking 素材时才可发出
-          if (thinkingParts.length > 0) {
-            result.push({ type: "reasoning", content: thinkingParts });
-          } else if (replayReasoning) {
-            // 思维链回传已开启但本条 assistant 消息无同源 thinking 素材：思维模式端点
-            // （如 DeepSeek）会拒绝请求（reasoning_text must be passed back）。留痕便于
-            // 诊断调用方是否丢弃了 thinking_delta（如未累积落盘的 runner）。
-            const missingKey = `${message.id ?? "?"}:${block.id}`;
-            if (!missingThinkingLogged.has(missingKey)) {
-              missingThinkingLogged.add(missingKey);
-              diagnosticWriter(
-                `[openai-responses] 思维链回传已开启但 assistant 消息缺少同源 thinking 素材（tool_call ${block.name}）：思维模式端点可能拒绝请求\n`,
-              );
-            }
+      // 同一 call_id 在多条 assistant 消息重复出现时只 inline 一次：
+      // 重复的 function_call/_output 对会被 Responses API 拒绝。
+      const toolCalls = message.content.filter((block): block is ToolCallContent => block.type === "tool_call" && !emitted.has(block.id));
+      for (const call of toolCalls) emitted.add(call.id);
+
+      // canonical 官方输出序：reasoning 必须位于 assistant 文本消息之前。DeepSeek 只在
+      // 工具续轮请求（以工具结果结尾）强制校验该顺序——assistant「有文本 + 有工具调用」
+      // 时文本在前必 400。因此 reasoning 先于 text 排放（单条，覆盖本条消息全部 tool_call）。
+      if (thinkingParts.length > 0) {
+        result.push({ type: "reasoning", content: thinkingParts });
+      } else if (replayReasoning && toolCalls.length > 0) {
+        // 缺素材兜底：导入历史/旧协议遗留的 tool_call 无同源 thinking 块，仍必须带一条
+        // 占位 reasoning item（官方只校验存在与位置，不校验内容真实性，与 function_call_output
+        // 的 interrupted 占位同思路）；诚实标注来源避免污染真实思维链。
+        result.push({ type: "reasoning", content: [{ type: "reasoning_text", text: PLACEHOLDER_REASONING_TEXT }] });
+        for (const call of toolCalls) {
+          const missingKey = `${message.id ?? "?"}:${call.id}`;
+          if (!missingThinkingLogged.has(missingKey)) {
+            missingThinkingLogged.add(missingKey);
+            diagnosticWriter(
+              `[openai-responses] 思维链回传已开启但 assistant 消息缺少同源 thinking 素材（tool_call ${call.name}）：已补占位 reasoning item\n`,
+            );
           }
-          result.push({
-            type: "function_call",
-            call_id: block.id,
-            name: block.name,
-            arguments: JSON.stringify(block.input),
-          });
-          result.push({
-            type: "function_call_output",
-            call_id: block.id,
-            output: outputs.get(block.id) ?? "The run was interrupted before this tool finished; no result was produced.",
-          });
         }
+      }
+
+      if (text) result.push({ role: "assistant", content: text });
+
+      for (const call of toolCalls) {
+        result.push({
+          type: "function_call",
+          call_id: call.id,
+          name: call.name,
+          arguments: JSON.stringify(call.input),
+        });
+        result.push({
+          type: "function_call_output",
+          call_id: call.id,
+          output: outputs.get(call.id) ?? "The run was interrupted before this tool finished; no result was produced.",
+        });
       }
     }
     // tool 角色消息的 tool_result 已内联到对应 function_call 之后，游离者丢弃（见上文）
