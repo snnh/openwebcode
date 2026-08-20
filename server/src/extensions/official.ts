@@ -142,6 +142,17 @@ export const OFFICIAL_EXTENSIONS: ExtensionManifest[] = [
     defaultEnabled: false,
   },
   {
+    id: "session-format-upgrade",
+    name: "会话格式升级",
+    version: "0.1.0",
+    description: "离线升级旧会话为最新消息格式（OpenAI Responses 思维链回放字段：thinking signature / tool_call itemId）。手动触发、触发即锁（升级期间会话不可使用）、升级前备份可回滚；未来其他格式升级经同一框架注册步骤，主应用零改动。",
+    apiVersion: "1",
+    // 服务端内建模块（不经 Extension Host IPC）；升级经 SessionStore.transformMessages 执行
+    permissions: ["sessions:read"],
+    official: true,
+    defaultEnabled: false,
+  },
+  {
     id: "env-sim",
     name: "环境模拟",
     version: "0.1.5",
@@ -233,6 +244,7 @@ export const OFFICIAL_DEFAULT_CONFIG: Record<string, Record<string, unknown>> = 
   },
   "pdf-to-image": { maxPages: 4, dpi: 150, maxDimension: 2048 },
   "owc-eval": {},
+  "session-format-upgrade": {},
   "env-sim": { persona: "" },
   "compact-vault": { keepTail: 10, chunkSize: 25, recallMaxTokens: 4096 },
   "vision-tools": { model: "", prompt: "", thinking: true, cacheDescriptions: true, mode: "describe" },

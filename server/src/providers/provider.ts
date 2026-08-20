@@ -44,7 +44,7 @@ export type ProviderEvent =
   /** 工具调用参数流式分片：id 在首个分片就绪后稳定；name 仅在已知时携带；
    * argumentsDelta 是参数 JSON 文本的增量片段（拼接后才是完整 JSON）。 */
   | { type: "tool_call_delta"; id: string; name?: string; argumentsDelta: string }
-  | { type: "tool_call"; id: string; name: string; input: Record<string, unknown> }
+  | { type: "tool_call"; id: string; name: string; input: Record<string, unknown>; /** OpenAI Responses function_call item 的原始 id（fc_xxx），随块持久化供回放原样回传。 */ itemId?: string }
   /** 服务端工具活动（如 Responses API 的 web_search_call）：工具由模型服务端执行，
    * 无需本地调度；仅用于实时活动展示，不落盘、不参与 stopReason 判定。 */
   | { type: "server_tool"; tool: string; phase: "start" | "update" | "end" }

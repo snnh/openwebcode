@@ -216,7 +216,7 @@ export class ChatRunner {
         // thinking 块带 provider 字段随 assistant 消息落盘：OpenAI 兼容接口的思维链回传
         // 依赖历史中的同源 thinking 素材（DeepSeek 思维模式强制，缺素材会 400）。
         let hasToolCall = false;
-        const toolCalls: { id: string; name: string; input: Record<string, unknown> }[] = [];
+        const toolCalls: { id: string; name: string; input: Record<string, unknown>; itemId?: string }[] = [];
         const assistantMsgContent: MessageContent[] = [];
         let activeThinkingIndex: number | undefined;
         for (const event of collected.events) {
@@ -242,7 +242,7 @@ export class ChatRunner {
             activeThinkingIndex = undefined;
           } else if (event.type === "tool_call") {
             hasToolCall = true;
-            toolCalls.push({ id: event.id, name: event.name, input: event.input });
+            toolCalls.push({ id: event.id, name: event.name, input: event.input, ...(event.itemId ? { itemId: event.itemId } : {}) });
             onToolCall?.({ id: event.id, name: event.name });
           }
           if (event.type === "done") stopReason = event.stopReason;
@@ -251,7 +251,13 @@ export class ChatRunner {
         // assistant 消息落盘并追加进内存上下文（thinking 已在汇总循环按序累积）
         if (currentTurnText) assistantMsgContent.push({ type: "text", text: currentTurnText });
         for (const tc of toolCalls) {
-          assistantMsgContent.push({ type: "tool_call", id: tc.id, name: tc.name, input: tc.input });
+          assistantMsgContent.push({
+            type: "tool_call",
+            id: tc.id,
+            ...(tc.itemId ? { itemId: tc.itemId } : {}),
+            name: tc.name,
+            input: tc.input,
+          });
         }
         if (assistantMsgContent.length > 0) {
           const assistantMsg = await this.sessions.appendMessage(sessionId, "assistant", assistantMsgContent, {

@@ -12,6 +12,7 @@ import type { ManagedProvisionResult } from "../snapshots/managed-disk.js";
 import { ManagedWorkspaceSyncError, type ManagedWorkspaceSyncApplyInput } from "../snapshots/managed-sync.js";
 import { ContextManager } from "../context/context-manager.js";
 import { resolveSessionPersona } from "../sessions/extension-state.js";
+import { isSessionUpgrading } from "../extensions/session-format-upgrade.js";
 import { errorMessage } from "../error-utils.js";
 import type { EffortLevel } from "../context/model-profile.js";
 import type { SnapshotMode, SessionMeta, TextContent } from "../sessions/types.js";
@@ -369,6 +370,8 @@ export function registerSessionCoreRoutes(app: FastifyInstance, ctx: RouteContex
     if (agent.isRunning(session.id)) return reply.code(409).send({ error: "Session is running; wait for it to become idle before retrying" });
     if (managedSyncingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace sync is in progress" });
     if (managedCheckpointingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace checkpoint is in progress" });
+    // 会话格式升级中（session-format-upgrade 扩展触发）：锁定期内重发同样拒绝
+    if (isSessionUpgrading(session.id)) return reply.code(409).send({ error: "Session format upgrade is in progress" });
     if (isShellPending(session.id)) return reply.code(409).send({ error: "shell 命令挂起中，请先回应权限请求或等待其完成" });
     // retry 仅携带文本：原消息的图片/附件块不随 retry 重放（editedContent 同理为纯文本）
     const text = editedContent?.trim()

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, rm, stat, writeFile, appendFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile, appendFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { writeUtf8Atomically } from "../atomic-file.js";
@@ -400,6 +400,35 @@ export class SessionStore {
     const meta = await this.readMeta(id);
     meta.updatedAt = monotonicTimestamp();
     await this.writeMeta(meta);
+  }
+
+  /**
+   * 会话消息通用变换原语（机制在核心，策略在扩展）：读权威消息 → 应用 transform →
+   * changed > 0 时先备份原文件（回滚 = 用备份换回 messages.jsonl）再原子写回并失效缓存。
+   * 存储层不感知具体变换内容——具体升级步骤（如 OpenAI Responses 思维链回放字段）由
+   * 官方扩展 session-format-upgrade 注册，未来其他格式升级只需在扩展域新增步骤。
+   * 调用方负责并发防护：变换期间应锁定会话（扩展的升级锁 + 路由层禁止运行中触发）。
+   */
+  async transformMessages(
+    id: string,
+    transform: (messages: readonly ChatMessage[]) => { messages: ChatMessage[]; changed: number },
+  ): Promise<{ changed: number; backup?: string }> {
+    const detail = await this.get(id);
+    if (!detail) throw new Error("Session not found");
+    const result = transform(detail.messages);
+    if (result.changed === 0) return { changed: 0 };
+    const backup = `messages.jsonl.upgrade-${Date.now()}`;
+    await copyFile(this.messagesPath(id), path.join(this.sessionPath(id), backup));
+    await writeUtf8Atomically(
+      this.messagesPath(id),
+      result.messages.map((message) => JSON.stringify(message)).join("\n") + "\n",
+      { mode: 0o600 },
+    );
+    this.messagesCache.delete(id);
+    const meta = await this.readMeta(id);
+    meta.updatedAt = monotonicTimestamp();
+    await this.writeMeta(meta);
+    return { changed: result.changed, backup };
   }
 
   async updatePermissions(id: string, permissionMode: SessionMeta["permissionMode"], permissionRules: NonNullable<SessionMeta["permissionRules"]>): Promise<SessionMeta> {

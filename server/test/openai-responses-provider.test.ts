@@ -137,6 +137,50 @@ describe("OpenAIResponsesProvider streaming", () => {
     expect(bodies[0]).toMatchObject({ reasoning: { effort: "high", summary: "auto" } });
   });
 
+  it("captures reasoning item id/structure and function_call item id for replay (thinking_end signature / tool_call itemId)", async () => {
+    const reasoningItem = {
+      type: "reasoning",
+      id: "rs_ab12",
+      status: "completed",
+      content: [{ type: "reasoning_text", text: "先分析再行动", annotations: [] }],
+    };
+    const payload = sse([
+      { type: "response.created", response: { id: "resp_1" } },
+      { type: "response.output_item.added", output_index: 0, item: { type: "reasoning", id: "rs_ab12" } },
+      { type: "response.reasoning_text.delta", item_id: "rs_ab12", output_index: 0, delta: "先分析" },
+      { type: "response.reasoning_text.delta", item_id: "rs_ab12", output_index: 0, delta: "再行动" },
+      {
+        type: "response.output_item.added", output_index: 1,
+        item: { id: "fc_111", type: "function_call", call_id: "call_1", name: "bash" },
+      },
+      { type: "response.function_call_arguments.delta", item_id: "fc_111", output_index: 1, delta: "{\"cmd\":\"ls\"}" },
+      { type: "response.output_item.done", output_index: 0, item: reasoningItem },
+      {
+        type: "response.output_item.done", output_index: 1,
+        item: { id: "fc_111", type: "function_call", call_id: "call_1", name: "bash", arguments: "{\"cmd\":\"ls\"}", status: "completed" },
+      },
+      {
+        type: "response.completed",
+        response: {
+          status: "completed",
+          output: [reasoningItem, { id: "fc_111", type: "function_call", call_id: "call_1", name: "bash", arguments: "{\"cmd\":\"ls\"}" }],
+          usage: { input_tokens: 10, input_tokens_details: { cached_tokens: 2 }, output_tokens: 5, output_tokens_details: { reasoning_tokens: 3 } },
+        },
+      },
+    ]);
+    const bodies: Array<Record<string, unknown>> = [];
+    const events = await collect(makeProvider(sseFetch(bodies, payload)).streamChat(request()));
+
+    // reasoning 收尾：thinking_end 携带完整累积文本与完整原始 item（signature，含 rs_ id）
+    const thinkingEnds = events.filter((event) => event.type === "thinking_end") as Array<{ text: string; signature?: string }>;
+    expect(thinkingEnds).toHaveLength(1);
+    expect(thinkingEnds[0]?.text).toBe("先分析再行动");
+    expect(JSON.parse(thinkingEnds[0]?.signature ?? "{}")).toEqual(reasoningItem);
+    // function_call：tool_call 事件透传原始 fc item id（回放时原样回传）
+    const toolCalls = events.filter((event) => event.type === "tool_call") as Array<{ id: string; itemId?: string; name: string }>;
+    expect(toolCalls).toEqual([{ id: "call_1", itemId: "fc_111", name: "bash", input: { cmd: "ls" } }]);
+  });
+
   it("gates reasoning summary and effort behind configuration flags", async () => {
     const bodies: Array<Record<string, unknown>> = [];
     // provider 级关闭 summary 请求
@@ -282,9 +326,9 @@ describe("OpenAIResponsesProvider request mapping", () => {
           { type: "input_text", text: "看图" },
         ],
       },
-      { type: "reasoning", content: [{ type: "reasoning_text", text: PLACEHOLDER_REASONING_TEXT }] },
+      { type: "reasoning", id: expect.stringMatching(/^rs_/), content: [{ type: "reasoning_text", text: PLACEHOLDER_REASONING_TEXT }] },
       { role: "assistant", content: "我查一下" },
-      { type: "function_call", call_id: "call_1", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
+      { type: "function_call", id: "fc_call_1", call_id: "call_1", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
       { type: "function_call_output", call_id: "call_1", output: "ok" },
     ]);
   });
@@ -320,15 +364,15 @@ describe("OpenAIResponsesProvider request mapping", () => {
       { id: "t2", role: "tool", content: [{ type: "tool_result", toolCallId: "call_2", content: "B", isError: false }], createdAt: "2026-01-01T00:00:03.000Z" },
     ];
     // 开启（缺省 reasoningContent=true）：canonical 顺序——reasoning 先于 assistant 文本，
-    // 单条 reasoning 覆盖本条消息全部 function_call；异源 thinking 过滤
+    // 覆盖本条消息全部 function_call；异源 thinking 过滤；重建 reasoning/function_call 均派生 id
     await collect(makeProvider(completedSseFetch(bodies)).streamChat(request({ messages })));
     expect(bodies[0]?.input).toEqual([
       { role: "user", content: "继续" },
-      { type: "reasoning", content: [{ type: "reasoning_text", text: "先分析" }] },
+      { type: "reasoning", id: expect.stringMatching(/^rs_/), content: [{ type: "reasoning_text", text: "先分析" }] },
       { role: "assistant", content: "我查一下" },
-      { type: "function_call", call_id: "call_1", name: "read_file", arguments: "{\"path\":\"a\"}" },
+      { type: "function_call", id: "fc_call_1", call_id: "call_1", name: "read_file", arguments: "{\"path\":\"a\"}" },
       { type: "function_call_output", call_id: "call_1", output: "A" },
-      { type: "function_call", call_id: "call_2", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
+      { type: "function_call", id: "fc_call_2", call_id: "call_2", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
       { type: "function_call_output", call_id: "call_2", output: "B" },
     ]);
     // 请求级关闭：不回传（与 openai-compatible 的 reasoningContent=false 同语义）
@@ -336,10 +380,49 @@ describe("OpenAIResponsesProvider request mapping", () => {
     expect(bodies[1]?.input).toEqual([
       { role: "user", content: "继续" },
       { role: "assistant", content: "我查一下" },
-      { type: "function_call", call_id: "call_1", name: "read_file", arguments: "{\"path\":\"a\"}" },
+      { type: "function_call", id: "fc_call_1", call_id: "call_1", name: "read_file", arguments: "{\"path\":\"a\"}" },
       { type: "function_call_output", call_id: "call_1", output: "A" },
-      { type: "function_call", call_id: "call_2", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
+      { type: "function_call", id: "fc_call_2", call_id: "call_2", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
       { type: "function_call_output", call_id: "call_2", output: "B" },
+    ]);
+  });
+
+  it("思维链回传开启时持久化的 signature/itemId 原样还原（完整 reasoning item 与 fc id）", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const messages: StreamChatRequest["messages"] = [
+      { id: "u1", role: "user", content: [{ type: "text", text: "继续" }], createdAt: "2026-01-01T00:00:00.000Z" },
+      {
+        id: "a1", role: "assistant", createdAt: "2026-01-01T00:00:01.000Z",
+        content: [
+          {
+            type: "thinking", text: "先分析", provider: "openai-responses",
+            // 流式端 output_item.done 持久化的完整 reasoning item（含 rs_ id / annotations）
+            signature: JSON.stringify({
+              type: "reasoning",
+              id: "rs_abc123",
+              status: "completed",
+              content: [{ type: "reasoning_text", text: "先分析", annotations: [] }],
+            }),
+          },
+          { type: "text", text: "我查一下" },
+          { type: "tool_call", id: "call_1", itemId: "fc_xyz789", name: "bash", input: { cmd: "ls" } },
+        ],
+      },
+      { id: "t1", role: "tool", content: [{ type: "tool_result", toolCallId: "call_1", content: "A", isError: false }], createdAt: "2026-01-01T00:00:02.000Z" },
+    ];
+    await collect(makeProvider(completedSseFetch(bodies)).streamChat(request({ messages })));
+    // 原样还原：reasoning item 保留原始 rs_ id 与 content 结构；function_call 保留原始 fc_ id
+    expect(bodies[0]?.input).toEqual([
+      { role: "user", content: "继续" },
+      {
+        type: "reasoning",
+        id: "rs_abc123",
+        status: "completed",
+        content: [{ type: "reasoning_text", text: "先分析", annotations: [] }],
+      },
+      { role: "assistant", content: "我查一下" },
+      { type: "function_call", id: "fc_xyz789", call_id: "call_1", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
+      { type: "function_call_output", call_id: "call_1", output: "A" },
     ]);
   });
 
@@ -358,8 +441,8 @@ describe("OpenAIResponsesProvider request mapping", () => {
 
     expect(bodies[0]?.input).toEqual([
       { role: "user", content: "继续" },
-      { type: "reasoning", content: [{ type: "reasoning_text", text: PLACEHOLDER_REASONING_TEXT }] },
-      { type: "function_call", call_id: "call_dangling", name: "bash", arguments: "{\"cmd\":\"sleep 600\"}" },
+      { type: "reasoning", id: expect.stringMatching(/^rs_/), content: [{ type: "reasoning_text", text: PLACEHOLDER_REASONING_TEXT }] },
+      { type: "function_call", id: "fc_call_dangling", call_id: "call_dangling", name: "bash", arguments: "{\"cmd\":\"sleep 600\"}" },
       { type: "function_call_output", call_id: "call_dangling", output: expect.stringContaining("interrupted") },
     ]);
   });
@@ -391,9 +474,9 @@ describe("OpenAIResponsesProvider request mapping", () => {
     // 缺素材 tool_call 补占位 reasoning（置于 assistant 文本之前），且诊断留痕
     expect(bodies[0]?.input).toEqual([
       { role: "user", content: "继续" },
-      { type: "reasoning", content: [{ type: "reasoning_text", text: PLACEHOLDER_REASONING_TEXT }] },
+      { type: "reasoning", id: expect.stringMatching(/^rs_/), content: [{ type: "reasoning_text", text: PLACEHOLDER_REASONING_TEXT }] },
       { role: "assistant", content: "我查一下" },
-      { type: "function_call", call_id: "call_missing", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
+      { type: "function_call", id: "fc_call_missing", call_id: "call_missing", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
       { type: "function_call_output", call_id: "call_missing", output: "B" },
     ]);
     expect(lines.some((line) => line.includes("缺少同源 thinking 素材"))).toBe(true);

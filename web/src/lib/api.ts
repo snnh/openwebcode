@@ -289,6 +289,12 @@ export const api = {
   deleteEnvSimPersona: (id: string) =>
     request<{ ok: boolean }>(`/api/extensions/env-sim/personas/${encodeURIComponent(id)}`, { method: "DELETE" }),
   uninstallExtension: (id: string) => request<void>(`/api/extensions/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  // 会话格式升级（官方扩展 session-format-upgrade；未启用时 503）
+  formatUpgrades: () => request<{ steps: Array<{ id: string; scope: string; description: string }> }>("/api/sessions/format-upgrades"),
+  upgradeSessionFormat: (id: string, stepId?: string) =>
+    request<{ steps: string[]; changed: number; backups: string[] }>(`/api/sessions/${encodeURIComponent(id)}/format-upgrade`, { method: "POST", body: JSON.stringify(stepId ? { stepId } : {}) }),
+  upgradeAllSessionFormats: (stepId?: string) =>
+    request<{ upgraded: number; total: number; skipped: string[]; failed: string[]; backups: string[] }>("/api/sessions/format-upgrade-all", { method: "POST", body: JSON.stringify(stepId ? { stepId } : {}) }),
   translateMessage: (sessionId: string, messageId: string, targetLanguage: string, glossary?: Record<string, string>) =>
     request<{ text: string; cached: boolean }>(`/api/sessions/${sessionId}/content-lens/translate`, { method: "POST", body: JSON.stringify({ messageId, targetLanguage, ...(glossary ? { glossary } : {}) }) }),
   explainSelection: (sessionId: string, text: string, targetLanguage = "zh-CN") =>

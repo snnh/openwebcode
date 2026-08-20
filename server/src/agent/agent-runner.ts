@@ -1512,7 +1512,13 @@ export class AgentRunner {
           } else if (event.type === "server_tool") {
             // 服务端工具活动：仅经 onEvent 实时展示，不落盘、不影响 stopReason
           } else if (event.type === "tool_call") {
-            assistantContent.push({ type: "tool_call", id: event.id, name: event.name, input: event.input });
+            assistantContent.push({
+              type: "tool_call",
+              id: event.id,
+              ...(event.itemId ? { itemId: event.itemId } : {}),
+              name: event.name,
+              input: event.input,
+            });
           } else if (event.type === "usage") {
             // usage 可能逐 chunk 多次到达（stream_options.include_usage）：每条都实时转发 WS
             // （UI 实时成本不变），但 ledger/usageLog 只记本轮最后一条，避免逐 chunk 重复累加

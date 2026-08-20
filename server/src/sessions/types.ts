@@ -8,6 +8,9 @@ export interface TextContent {
 export interface ThinkingContent {
   type: "thinking";
   text: string;
+  /** 服务端原始块载荷（JSON 字符串）：OpenAI Responses 为完整 reasoning item（含 id，回放
+   * 时原样还原，思维模式端点校验 reasoning↔function_call 配对）；Anthropic 为 redacted_thinking
+   * 的密文载荷（此时 text 为空）：原样持久化并回传，缺块会 400。 */
   signature?: string;
   /** Anthropic redacted_thinking 块的密文载荷（此时 text 为空）：原样持久化并回传，缺块会 400。 */
   redacted?: string;
@@ -19,6 +22,9 @@ export interface ToolCallContent {
   id: string;
   name: string;
   input: Record<string, unknown>;
+  /** OpenAI Responses function_call item 的原始 id（fc_xxx）：随块持久化，回放时原样回传，
+   * 思维模式端点校验 reasoning↔function_call 配对时需要。旧数据缺失时回放端派生 fc_ id。 */
+  itemId?: string;
 }
 
 export interface ToolResultContent {
