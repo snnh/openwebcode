@@ -84,3 +84,4 @@ core/tests/__pycache__/
 /web/coverage/
 AppData/
 .owc/
+.workbuddy/

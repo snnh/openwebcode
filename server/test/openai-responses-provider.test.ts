@@ -7,7 +7,7 @@ import { ProviderProfilesService } from "../src/provider-profiles.js";
 import { ConcurrencyLimitedProvider, DEFAULT_MAX_CONCURRENT } from "../src/providers/concurrency-limiter.js";
 import { AnthropicProvider } from "../src/providers/anthropic-provider.js";
 import { OpenAICompatibleProvider, MAX_SSE_EVENT_BYTES, readSseData } from "../src/providers/openai-compatible-provider.js";
-import { OpenAIResponsesProvider } from "../src/providers/openai-responses-provider.js";
+import { OpenAIResponsesProvider, PLACEHOLDER_REASONING_TEXT } from "../src/providers/openai-responses-provider.js";
 import { ProviderError } from "../src/providers/provider-error.js";
 import { ProviderRegistry, type ProviderEvent, type StreamChatRequest } from "../src/providers/provider.js";
 import { injectMockStream } from "./helpers/anthropic-mock.js";
@@ -282,6 +282,7 @@ describe("OpenAIResponsesProvider request mapping", () => {
           { type: "input_text", text: "看图" },
         ],
       },
+      { type: "reasoning", content: [{ type: "reasoning_text", text: PLACEHOLDER_REASONING_TEXT }] },
       { role: "assistant", content: "我查一下" },
       { type: "function_call", call_id: "call_1", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
       { type: "function_call_output", call_id: "call_1", output: "ok" },
@@ -301,7 +302,7 @@ describe("OpenAIResponsesProvider request mapping", () => {
     expect(reasoningBodies[0]?.top_p).toBeUndefined();
   });
 
-  it("思维链回传开启时同源 thinking 块以 reasoning item 明文回传（每个 function_call 前各一条），关闭或异源不回传", async () => {
+  it("思维链回传开启时同源 thinking 块以 reasoning item 置于文本之前，关闭或异源不回传", async () => {
     const bodies: Array<Record<string, unknown>> = [];
     const messages: StreamChatRequest["messages"] = [
       { id: "u1", role: "user", content: [{ type: "text", text: "继续" }], createdAt: "2026-01-01T00:00:00.000Z" },
@@ -318,16 +319,15 @@ describe("OpenAIResponsesProvider request mapping", () => {
       { id: "t1", role: "tool", content: [{ type: "tool_result", toolCallId: "call_1", content: "A", isError: false }], createdAt: "2026-01-01T00:00:02.000Z" },
       { id: "t2", role: "tool", content: [{ type: "tool_result", toolCallId: "call_2", content: "B", isError: false }], createdAt: "2026-01-01T00:00:03.000Z" },
     ];
-    // 开启（缺省 reasoningContent=true）：DeepSeek 规则——每个 function_call 前各放一条完整
-    // reasoning item（output 打断关联链，多调用轮只在开头放一条必 400）；异源过滤
+    // 开启（缺省 reasoningContent=true）：canonical 顺序——reasoning 先于 assistant 文本，
+    // 单条 reasoning 覆盖本条消息全部 function_call；异源 thinking 过滤
     await collect(makeProvider(completedSseFetch(bodies)).streamChat(request({ messages })));
     expect(bodies[0]?.input).toEqual([
       { role: "user", content: "继续" },
-      { role: "assistant", content: "我查一下" },
       { type: "reasoning", content: [{ type: "reasoning_text", text: "先分析" }] },
+      { role: "assistant", content: "我查一下" },
       { type: "function_call", call_id: "call_1", name: "read_file", arguments: "{\"path\":\"a\"}" },
       { type: "function_call_output", call_id: "call_1", output: "A" },
-      { type: "reasoning", content: [{ type: "reasoning_text", text: "先分析" }] },
       { type: "function_call", call_id: "call_2", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
       { type: "function_call_output", call_id: "call_2", output: "B" },
     ]);
@@ -358,12 +358,13 @@ describe("OpenAIResponsesProvider request mapping", () => {
 
     expect(bodies[0]?.input).toEqual([
       { role: "user", content: "继续" },
+      { type: "reasoning", content: [{ type: "reasoning_text", text: PLACEHOLDER_REASONING_TEXT }] },
       { type: "function_call", call_id: "call_dangling", name: "bash", arguments: "{\"cmd\":\"sleep 600\"}" },
       { type: "function_call_output", call_id: "call_dangling", output: expect.stringContaining("interrupted") },
     ]);
   });
 
-  it("思维链回传开启但 assistant 消息缺同源 thinking 素材：不回传 reasoning item 且诊断留痕", async () => {
+  it("思维链回传开启但 assistant 消息缺同源 thinking 素材：补占位 reasoning item 且诊断留痕", async () => {
     // 留痕输出经构造注入收集器（diagnosticWriter）：引用在创建 provider 时确定，
     // 不依赖任何模块级全局状态或 process.stderr 可替换性；限频键与 dangling 用例不同
     const lines: string[] = [];
@@ -387,6 +388,14 @@ describe("OpenAIResponsesProvider request mapping", () => {
       diagnosticWriter: (line) => lines.push(line),
     });
     await collect(provider.streamChat(request({ messages })));
+    // 缺素材 tool_call 补占位 reasoning（置于 assistant 文本之前），且诊断留痕
+    expect(bodies[0]?.input).toEqual([
+      { role: "user", content: "继续" },
+      { type: "reasoning", content: [{ type: "reasoning_text", text: PLACEHOLDER_REASONING_TEXT }] },
+      { role: "assistant", content: "我查一下" },
+      { type: "function_call", call_id: "call_missing", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
+      { type: "function_call_output", call_id: "call_missing", output: "B" },
+    ]);
     expect(lines.some((line) => line.includes("缺少同源 thinking 素材"))).toBe(true);
   });
 
