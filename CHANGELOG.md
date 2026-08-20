@@ -2,6 +2,12 @@
 
 本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前版本的用户可感知变化。日期以 Git 标签发布日期为准。
 
+## [1.9.1] - 2026-08-20
+
+### 修复
+
+- **OpenAI Responses 思维链回传顺序与缺素材兜底**：修正 `toResponsesInput` 把 reasoning item 排在 assistant 文本消息之后导致的 DeepSeek 工具续轮 400（`reasoning_text` 未回传）；无同源 thinking 素材的历史/导入 tool_call 补诚实占位 reasoning item，避免裸 `function_call` 被端点拒绝。
+
 ## [1.9.0] - 2026-08-19
 
 ### 新增功能
