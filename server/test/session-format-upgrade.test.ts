@@ -73,8 +73,13 @@ describe("upgradeResponsesReplayFields（旧会话 → 新格式，幂等）", (
 });
 
 describe("session-format-upgrade 扩展框架", () => {
-  const root = tempRoot();
-  const store = new SessionStore(path.join(root, "sessions"));
+  // tempRoot 返回 Promise 且目录随 afterEach 清理：每个用例独立建 root/store
+  const newStore = async (): Promise<{ root: string; store: SessionStore }> => {
+    const root = await tempRoot("owc-fmt-");
+    const store = new SessionStore(path.join(root, "sessions"));
+    await store.initialize();
+    return { root, store };
+  };
 
   it("内置 responses-replay-fields 步骤已注册，新步骤可注册", () => {
     expect(listFormatUpgrades().some((s) => s.id === "responses-replay-fields")).toBe(true);
@@ -83,7 +88,7 @@ describe("session-format-upgrade 扩展框架", () => {
   });
 
   it("单会话升级：备份生成、锁释放、重复触发幂等、并发拒绝、运行中跳过", async () => {
-    await store.initialize();
+    const { store } = await newStore();
     const meta = await store.create({ cwd: "/tmp", title: "legacy" });
     await store.appendMessage(meta.id, "assistant", legacyAssistant("a1").content, { runId: "r1" });
 
@@ -113,6 +118,7 @@ describe("session-format-upgrade 扩展框架", () => {
   });
 
   it("transformMessages 落盘：备份存在、原子写回、缓存失效", async () => {
+    const { root, store } = await newStore();
     const meta = await store.create({ cwd: "/tmp", title: "legacy2" });
     await store.appendMessage(meta.id, "assistant", legacyAssistant("a2").content, { runId: "r1" });
     const result = await store.transformMessages(meta.id, upgradeResponsesReplayFields);

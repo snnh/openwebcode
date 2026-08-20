@@ -383,6 +383,7 @@ describe("official extensions", () => {
         ["content-lens", false],
         ["pdf-to-image", true],
         ["owc-eval", false],
+        ["session-format-upgrade", false],
         ["env-sim", false],
         ["compact-vault", false],
         ["vision-tools", false],
@@ -471,8 +472,8 @@ describe("官方扩展 configSchema", () => {
   });
 
   it("带表单的官方扩展均声明 configSchema（设置页不再回退 JSON 编辑）", () => {
-    // context-saver 按会话在「上下文」面板配置；owc-eval 无可配置项——二者例外
-    const exempt = new Set(["context-saver", "owc-eval"]);
+    // context-saver 按会话在「上下文」面板配置；owc-eval / session-format-upgrade 无可配置项（后者仅手动触发升级）——三者例外
+    const exempt = new Set(["context-saver", "owc-eval", "session-format-upgrade"]);
     for (const manifest of OFFICIAL_EXTENSIONS) {
       if (exempt.has(manifest.id)) continue;
       expect(manifest.configSchema, `${manifest.id} 缺少 configSchema`).toBeDefined();
