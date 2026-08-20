@@ -450,8 +450,12 @@ describe("sandbox-proxy.mjs 实测", () => {
     expect(deniedRoot.status).toBe(403);
     const deniedSub = await connectTunnel(proxy.port, "a.example.com:443");
     expect(deniedSub.status).toBe(403);
-    expect(proxy.stderr()).toContain("[deny] example.com");
-    expect(proxy.stderr()).toContain("[deny] a.example.com");
+    // stderr 是管道异步交付：403 到达时 deny 日志可能尚未送达测试进程（arm64 上曾现竞态）。
+    // 与「热生效」用例同款 waitFor 轮询，避免按顺序断言瞬时时序。
+    await vi.waitFor(() => {
+      expect(proxy.stderr()).toContain("[deny] example.com");
+      expect(proxy.stderr()).toContain("[deny] a.example.com");
+    }, { timeout: 5_000, interval: 50 });
     const deniedPlain = await plainGet(proxy.port, "http://www.example.com/");
     expect(deniedPlain.status).toBe(403);
   });
