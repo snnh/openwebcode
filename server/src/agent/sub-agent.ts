@@ -238,7 +238,13 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
           else assistantContent[activeThinkingIndex] = completedThinking;
           activeThinkingIndex = undefined;
         } else if (event.type === "tool_call") {
-          assistantContent.push({ type: "tool_call", id: event.id, name: event.name, input: event.input });
+          assistantContent.push({
+            type: "tool_call",
+            id: event.id,
+            ...(event.itemId ? { itemId: event.itemId } : {}),
+            name: event.name,
+            input: event.input,
+          });
         } else if (event.type === "usage") {
           await options.onUsage?.(event);
         } else if (event.type === "done") {

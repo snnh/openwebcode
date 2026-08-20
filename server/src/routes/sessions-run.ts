@@ -10,6 +10,7 @@ import { defaultSandboxPolicy } from "../sessions/default-sandbox.js";
 import { boundToolResult } from "../context/tool-result-budget.js";
 import { resolveSessionPersona } from "../sessions/extension-state.js";
 import { loadPromptOverride } from "../agent/prompts/prompt-overrides.js";
+import { isSessionUpgrading } from "../extensions/session-format-upgrade.js";
 import { isLoopbackOrLAN } from "../auth-totp.js";
 import { errorMessage } from "../error-utils.js";
 import {
@@ -168,6 +169,8 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
       if (!session) return reply.code(404).send({ error: "Session not found" });
       if (managedSyncingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace sync is in progress" });
       if (managedCheckpointingSessions.has(session.id)) return reply.code(409).send({ error: "Managed workspace checkpoint is in progress" });
+      // 会话格式升级中（session-format-upgrade 扩展触发）：锁定期内对话不可使用
+      if (isSessionUpgrading(session.id)) return reply.code(409).send({ error: "Session format upgrade is in progress" });
       // shell 快捷前缀挂起中（权限审批/执行）：避免消息落盘与 shell 落盘竞态，要求先 respond
       if (isShellPending(request.params.id)) {
         return reply.code(409).send({ error: "shell 命令挂起中，请先回应权限请求或等待其完成" });

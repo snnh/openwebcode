@@ -1,0 +1,132 @@
+import path from "node:path";
+import { readFile, stat } from "node:fs/promises";
+import { describe, expect, it } from "vitest";
+import { SessionStore } from "../src/sessions/session-store.js";
+import type { ChatMessage } from "../src/sessions/types.js";
+import { upgradeResponsesReplayFields } from "../src/providers/responses-replay.js";
+import { OpenAIResponsesProvider } from "../src/providers/openai-responses-provider.js";
+import type { ProviderEvent, StreamChatRequest } from "../src/providers/provider.js";
+import {
+  isSessionUpgrading, listFormatUpgrades, registerFormatUpgrade,
+  upgradeAllSessions, upgradeSessionFormat,
+} from "../src/extensions/session-format-upgrade.js";
+import { tempRoot } from "./helpers/temp-roots.js";
+
+const sse = (events: Array<Record<string, unknown>>): string => events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join("");
+const completedFetch = (bodies: Array<Record<string, unknown>>) =>
+  (async (_input: string | URL | Request, init?: RequestInit) => {
+    bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+    return new Response(sse([{ type: "response.completed", response: { status: "completed", output: [] } }]), { status: 200, headers: { "content-type": "text/event-stream" } });
+  }) as unknown as typeof globalThis.fetch;
+
+const request = (messages: StreamChatRequest["messages"]): StreamChatRequest =>
+  ({ model: "deepseek-v4-pro", system: "system", messages, tools: [], signal: new AbortController().signal });
+
+async function drain(iterable: AsyncIterable<ProviderEvent>): Promise<void> { for await (const _ of iterable) { /* drain */ } }
+
+/** 旧格式 assistant 消息（thinking 无 signature、tool_call 无 itemId）。 */
+function legacyAssistant(id: string): ChatMessage {
+  return {
+    id, role: "assistant", createdAt: "2026-01-01T00:00:00.000Z",
+    content: [
+      { type: "thinking", text: "旧思维链", provider: "openai-responses" },
+      { type: "text", text: "正文" },
+      { type: "tool_call", id: "call_old1", name: "bash", input: { cmd: "ls" } },
+    ],
+  };
+}
+
+describe("upgradeResponsesReplayFields（旧会话 → 新格式，幂等）", () => {
+  it("旧 thinking/tool_call 块补 signature/itemId，Anthropic 块不碰", () => {
+    const messages: ChatMessage[] = [
+      legacyAssistant("a1"),
+      { ...legacyAssistant("a2"), content: [{ type: "thinking", text: "Anthropic 思维", provider: "anthropic" }] },
+    ];
+    const { messages: upgraded, changed } = upgradeResponsesReplayFields(messages);
+    expect(changed).toBe(2); // a1 的 thinking + tool_call；a2 的 Anthropic 块不碰
+    const first = upgraded[0]!;
+    const signature = JSON.parse((first.content[0] as { signature: string }).signature) as Record<string, unknown>;
+    expect(signature).toMatchObject({ type: "reasoning", content: [{ type: "reasoning_text", text: "旧思维链" }] });
+    expect(String(signature.id)).toMatch(/^rs_/);
+    expect((first.content[2] as { itemId?: string }).itemId).toBe("fc_call_old1");
+    expect((upgraded[1]!.content[0] as { signature?: string }).signature).toBeUndefined();
+    // 幂等：二次执行无变更
+    const second = upgradeResponsesReplayFields(upgraded);
+    expect(second.changed).toBe(0);
+  });
+
+  it("升级固化字段与回放端派生路径产出完全一致（请求体不变）", async () => {
+    const messages: StreamChatRequest["messages"] = [
+      { id: "u1", role: "user", content: [{ type: "text", text: "继续" }], createdAt: "2026-01-01T00:00:00.000Z" },
+      legacyAssistant("a1"),
+      { id: "t1", role: "tool", content: [{ type: "tool_result", toolCallId: "call_old1", content: "A", isError: false }], createdAt: "2026-01-01T00:00:02.000Z" },
+    ];
+    // 未升级 → 回放重建+派生
+    const legacyBodies: Array<Record<string, unknown>> = [];
+    await drain(new OpenAIResponsesProvider({ baseURL: "https://example.invalid/v1", fetch: completedFetch(legacyBodies) }).streamChat(request(messages)));
+    // 升级后 → 回放原样还原
+    const upgradedBodies: Array<Record<string, unknown>> = [];
+    const upgraded = upgradeResponsesReplayFields(messages).messages as StreamChatRequest["messages"];
+    await drain(new OpenAIResponsesProvider({ baseURL: "https://example.invalid/v1", fetch: completedFetch(upgradedBodies) }).streamChat(request(upgraded)));
+    expect(upgradedBodies[0]?.input).toEqual(legacyBodies[0]?.input);
+  });
+});
+
+describe("session-format-upgrade 扩展框架", () => {
+  const root = tempRoot();
+  const store = new SessionStore(path.join(root, "sessions"));
+
+  it("内置 responses-replay-fields 步骤已注册，新步骤可注册", () => {
+    expect(listFormatUpgrades().some((s) => s.id === "responses-replay-fields")).toBe(true);
+    registerFormatUpgrade({ id: "future-step", scope: "messages", description: "future", run: async () => ({ changed: 0 }) });
+    expect(listFormatUpgrades().some((s) => s.id === "future-step")).toBe(true);
+  });
+
+  it("单会话升级：备份生成、锁释放、重复触发幂等、并发拒绝、运行中跳过", async () => {
+    await store.initialize();
+    const meta = await store.create({ cwd: "/tmp", title: "legacy" });
+    await store.appendMessage(meta.id, "assistant", legacyAssistant("a1").content, { runId: "r1" });
+
+    const result = await upgradeSessionFormat(store, meta.id, "responses-replay-fields");
+    expect(result.changed).toBe(2);
+    expect(result.backups).toHaveLength(1);
+    expect(isSessionUpgrading(meta.id)).toBe(false);
+
+    // 幂等：二次执行无变更、不写盘
+    const again = await upgradeSessionFormat(store, meta.id, "responses-replay-fields");
+    expect(again.changed).toBe(0);
+    expect(again.backups).toHaveLength(0);
+
+    // 并发触发拒绝（慢步骤保证第一个调用挂起期间锁仍持有）
+    registerFormatUpgrade({
+      id: "slow-step", scope: "messages", description: "slow",
+      run: async () => { await new Promise((resolve) => setTimeout(resolve, 60)); return { changed: 0 }; },
+    });
+    const running = upgradeSessionFormat(store, meta.id, "slow-step");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await expect(upgradeSessionFormat(store, meta.id, "slow-step")).rejects.toThrow(/already in progress/);
+    await running;
+
+    // 全部升级：运行中的会话跳过
+    const all = await upgradeAllSessions(store, (id) => id === meta.id);
+    expect(all.skipped).toContain(meta.id);
+  });
+
+  it("transformMessages 落盘：备份存在、原子写回、缓存失效", async () => {
+    const meta = await store.create({ cwd: "/tmp", title: "legacy2" });
+    await store.appendMessage(meta.id, "assistant", legacyAssistant("a2").content, { runId: "r1" });
+    const result = await store.transformMessages(meta.id, upgradeResponsesReplayFields);
+    expect(result.changed).toBe(2);
+    expect(result.backup).toBeTruthy();
+
+    const sessionDir = path.join(root, "sessions", meta.id);
+    await expect(stat(path.join(sessionDir, result.backup!))).resolves.toBeTruthy();
+    const raw = await readFile(path.join(sessionDir, "messages.jsonl"), "utf8");
+    const parsed = JSON.parse(raw.split("\n").filter(Boolean)[0]!) as ChatMessage;
+    expect(typeof (parsed.content[0] as { signature?: string }).signature).toBe("string");
+    expect((parsed.content[2] as { itemId?: string }).itemId).toBe("fc_call_old1");
+    // 缓存失效后重新读取为新格式
+    const detail = await store.get(meta.id);
+    expect(typeof (detail!.messages[0]!.content[0] as { signature?: string }).signature).toBe("string");
+  });
+});

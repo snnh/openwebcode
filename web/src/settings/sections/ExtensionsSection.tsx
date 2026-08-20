@@ -12,6 +12,7 @@ const OFFICIAL_EXTENSION_EN: Record<string, { name: string; description: string 
   "content-lens": { name: "Content Lens", description: "Translates messages and explains selected text without adding content to the model context." },
   "pdf-to-image": { name: "PDF to Image", description: "Converts PDF pages into image attachments for models that support image input." },
   "env-sim": { name: "Environment Simulation", description: "Mimic another coding agent's system-prompt style and default tool shapes via a selectable preset." },
+  "session-format-upgrade": { name: "Session Format Upgrade", description: "Offline upgrade of legacy sessions to the latest message format (OpenAI Responses thinking replay fields). Manual trigger, session locked while upgrading, backup before write." },
 };
 
 /** 官方扩展配置字段的英文文案（schema 内嵌中文 title/description，英文界面按字段路径覆盖） */
@@ -69,6 +70,7 @@ export function ExtensionRow({ extension }: { extension: ExtensionInfo }): React
   const [json, setJson] = useState(() => JSON.stringify(extension.config, null, 2));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const [upgradeResult, setUpgradeResult] = useState<{ upgraded: number; total: number; skipped: string[]; failed: string[]; backups: string[] }>();
   const displayName = language === "en" ? (OFFICIAL_EXTENSION_EN[extension.id]?.name ?? extension.name) : extension.name;
   const displayDescription = language === "en" ? (OFFICIAL_EXTENSION_EN[extension.id]?.description ?? extension.description) : extension.description;
   const parsedFields = parseConfigSchema(extension.configSchema);
@@ -115,6 +117,37 @@ export function ExtensionRow({ extension }: { extension: ExtensionInfo }): React
         {extension.permissions.map((permission) => <span key={permission} className="pill small">{permission}</span>)}
       </div>
       {extension.id === "context-saver" && <p className="settings-note">{t("驱逐策略与选择性上下文按会话配置，请在底部“上下文”面板中调整。", "Eviction policy and selective context are configured per session in the Context panel.")}</p>}
+      {extension.id === "session-format-upgrade" && (
+        <div className="settings-note">
+          <p>{t("旧会话（缺少 OpenAI Responses 思维链回放字段）在 DeepSeek 思维模式下续跑会 400。升级为最新格式：仅补缺失字段、原有内容不变；升级前自动备份可回滚；升级期间对应会话锁定不可使用；运行中的会话自动跳过。", "Legacy sessions (missing OpenAI Responses thinking-replay fields) fail with 400 on DeepSeek thinking mode. Upgrade to the latest format: only missing fields are added, existing content is untouched; backed up before writing (rollback-able); the session is locked while upgrading; running sessions are skipped.")}</p>
+          <div className="settings-inline-form">
+            <button className="btn small" disabled={busy || !extension.enabled} onClick={() => {
+              confirm.ask({
+                title: t("升级全部旧会话", "Upgrade all legacy sessions"),
+                body: t("将升级所有旧格式会话（仅补充缺失的回放字段，不改变消息内容），每个会话升级前自动备份，可回滚。确认执行？", "All legacy-format sessions will be upgraded (only missing replay fields are added; message content is unchanged). Each session is backed up first and can be rolled back. Continue?"),
+                confirmLabel: t("升级", "Upgrade"),
+                onConfirm: () => {
+                  setBusy(true); setError(undefined); setUpgradeResult(undefined);
+                  api.upgradeAllSessionFormats()
+                    .then((result) => setUpgradeResult(result))
+                    .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : t("升级失败", "Upgrade failed")))
+                    .finally(() => setBusy(false));
+                },
+              });
+            }}>{busy ? t("升级中…", "Upgrading…") : t("升级全部旧会话", "Upgrade all legacy sessions")}</button>
+          </div>
+          {upgradeResult && (
+            <p>
+              {upgradeResult.upgraded > 0
+                ? t(`已升级 ${upgradeResult.upgraded} 个会话（累计变更 ${upgradeResult.total} 块）。`, `Upgraded ${upgradeResult.upgraded} session(s), ${upgradeResult.total} block(s) changed.`)
+                : t("无需升级：所有会话已是最新格式。", "Nothing to upgrade: all sessions are already up to date.")}
+              {upgradeResult.skipped.length > 0 && t(` 跳过 ${upgradeResult.skipped.length} 个（运行中/锁定）。`, ` Skipped ${upgradeResult.skipped.length} (running/locked).`)}
+              {upgradeResult.failed.length > 0 && t(` 失败 ${upgradeResult.failed.length} 个。`, ` ${upgradeResult.failed.length} failed.`)}
+              {upgradeResult.backups.length > 0 && t(" 备份文件：", " Backups: ") + upgradeResult.backups.join(", ")}
+            </p>
+          )}
+        </div>
+      )}
       {extension.id !== "context-saver" && (configFields ? (
         <details>
           <summary>{t("配置", "Configuration")}</summary>

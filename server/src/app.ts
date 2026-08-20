@@ -57,6 +57,7 @@ import { registerSessionInspectRoutes } from "./routes/sessions-inspect.js";
 import { registerSessionFileRoutes } from "./routes/sessions-files.js";
 import { registerSessionRunRoutes } from "./routes/sessions-run.js";
 import { registerEvalRoutes } from "./routes/eval.js";
+import { registerSessionFormatUpgradeRoutes } from "./routes/session-format-upgrade.js";
 
 export interface ServerDependencies {
   core: CoreClientLike;
@@ -591,6 +592,7 @@ export async function buildServer(dependencies: ServerDependencies): Promise<Fas
   });
 
   registerEvalRoutes(app, ctx);
+  registerSessionFormatUpgradeRoutes(app, ctx);
 
 
   // SPA 兜底：非 /api 的 GET HTML 导航（含 /share/:shareId/:slug 前端路由）回退到 index.html；
