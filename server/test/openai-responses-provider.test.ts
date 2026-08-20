@@ -177,8 +177,8 @@ describe("OpenAIResponsesProvider streaming", () => {
     expect(thinkingEnds[0]?.text).toBe("先分析再行动");
     expect(JSON.parse(thinkingEnds[0]?.signature ?? "{}")).toEqual(reasoningItem);
     // function_call：tool_call 事件透传原始 fc item id（回放时原样回传）
-    const toolCalls = events.filter((event) => event.type === "tool_call") as Array<{ id: string; itemId?: string; name: string }>;
-    expect(toolCalls).toEqual([{ id: "call_1", itemId: "fc_111", name: "bash", input: { cmd: "ls" } }]);
+    const toolCalls = events.filter((event) => event.type === "tool_call") as Array<{ type: string; id: string; itemId?: string; name: string }>;
+    expect(toolCalls).toEqual([{ type: "tool_call", id: "call_1", itemId: "fc_111", name: "bash", input: { cmd: "ls" } }]);
   });
 
   it("gates reasoning summary and effort behind configuration flags", async () => {
@@ -212,7 +212,7 @@ describe("OpenAIResponsesProvider streaming", () => {
       { type: "tool_call_delta", id: "call_1", name: "bash", argumentsDelta: "\"ls\"}" },
     ]);
     expect(events.filter((event) => event.type === "tool_call")).toEqual([
-      { type: "tool_call", id: "call_1", name: "bash", input: { cmd: "ls" } },
+      { type: "tool_call", id: "call_1", itemId: "fc_1", name: "bash", input: { cmd: "ls" } },
     ]);
     expect(events.at(-1)).toEqual({ type: "done", stopReason: "tool_use" });
   });
@@ -229,7 +229,7 @@ describe("OpenAIResponsesProvider streaming", () => {
     ]);
     const events = await collect(makeProvider(sseFetch([], payload)).streamChat(request()));
     expect(events.filter((event) => event.type === "tool_call")).toEqual([
-      { type: "tool_call", id: "call_9", name: "read_file", input: { path: "a.ts" } },
+      { type: "tool_call", id: "call_9", itemId: "fc_9", name: "read_file", input: { path: "a.ts" } },
     ]);
     expect(events.at(-1)).toEqual({ type: "done", stopReason: "tool_use" });
   });
