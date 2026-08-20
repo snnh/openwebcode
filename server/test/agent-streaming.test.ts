@@ -289,6 +289,109 @@ describe("thinking persistence", () => {
     ]);
   });
 
+  it("text_end 以权威文本替换 delta 累积块并固化 v1 textSignature 落盘", async () => {
+    const root = await tempRoot("owc-text-end-");
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const session = await sessions.create({ cwd: root, provider: "openai-responses", model: "gpt-test" });
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const provider: Provider = {
+      name: "openai-responses",
+      async *streamChat() {
+        yield { type: "text_delta", text: "你好" };
+        // output_item.done 权威文本兜底 + v1 textSignature（{v:1,id,phase?}）
+        yield { type: "text_end", text: "你好世界", signature: JSON.stringify({ v: 1, id: "msg_1", phase: "final_answer" }) };
+        yield { type: "done", stopReason: "end_turn" };
+      },
+    };
+    const providers = new ProviderRegistry();
+    providers.register(provider);
+    const runner = new AgentRunner(sessions, providers, thinkingCore, new EventBus(), pricing);
+
+    await runner.run(session.id, "请回答");
+
+    const detail = await sessions.get(session.id);
+    const assistant = detail?.messages.find((message) => message.role === "assistant");
+    expect(assistant?.content).toEqual([
+      { type: "text", text: "你好世界", textSignature: JSON.stringify({ v: 1, id: "msg_1", phase: "final_answer" }) },
+    ]);
+  });
+
+  it("text_delta 分片 + text_end 合并为单个 text 块（不产生碎片块）", async () => {
+    const root = await tempRoot("owc-text-merge-");
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const session = await sessions.create({ cwd: root, provider: "openai-responses", model: "gpt-test" });
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const provider: Provider = {
+      name: "openai-responses",
+      async *streamChat() {
+        yield { type: "text_delta", text: "foo " };
+        yield { type: "text_delta", text: "bar" };
+        yield { type: "text_end", text: "foo bar", signature: JSON.stringify({ v: 1, id: "msg_2" }) };
+        yield { type: "done", stopReason: "end_turn" };
+      },
+    };
+    const providers = new ProviderRegistry();
+    providers.register(provider);
+    const runner = new AgentRunner(sessions, providers, thinkingCore, new EventBus(), pricing);
+
+    await runner.run(session.id, "请回答");
+
+    const detail = await sessions.get(session.id);
+    const assistant = detail?.messages.find((message) => message.role === "assistant");
+    const textBlocks = assistant?.content.filter((block) => block.type === "text") ?? [];
+    expect(textBlocks).toHaveLength(1);
+    expect(textBlocks[0]).toEqual({
+      type: "text",
+      text: "foo bar",
+      textSignature: JSON.stringify({ v: 1, id: "msg_2" }),
+    });
+  });
+
+  it("B3：同一 reasoning item 的第二次 thinking_end 以 enriched signature 替换早期块而非追加", async () => {
+    const root = await tempRoot("owc-thinking-b3-");
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const session = await sessions.create({ cwd: root, provider: "openai-responses", model: "gpt-test" });
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const signature = (encrypted: boolean): string => JSON.stringify({
+      type: "reasoning",
+      id: "rs_abc123",
+      content: [{ type: "reasoning_text", text: "思考" }],
+      ...(encrypted ? { encrypted_content: "加密回填" } : {}),
+    });
+    const provider: Provider = {
+      name: "openai-responses",
+      async *streamChat() {
+        // 首次收尾（无 encrypted_content）与 B3 回填（enriched signature，同 rs_ id）
+        yield { type: "thinking_end", text: "初版", signature: signature(false) };
+        yield { type: "thinking_end", text: "回填版", signature: signature(true) };
+        yield { type: "done", stopReason: "end_turn" };
+      },
+    };
+    const providers = new ProviderRegistry();
+    providers.register(provider);
+    const runner = new AgentRunner(sessions, providers, thinkingCore, new EventBus(), pricing);
+
+    await runner.run(session.id, "请回答");
+
+    const detail = await sessions.get(session.id);
+    const assistant = detail?.messages.find((message) => message.role === "assistant");
+    const thinkingBlocks = assistant?.content.filter((block) => block.type === "thinking") ?? [];
+    // 第二次 thinking_end 原位替换：仍只有一个 thinking 块，内容/签名为回填版
+    expect(thinkingBlocks).toHaveLength(1);
+    expect(thinkingBlocks[0]).toEqual({
+      type: "thinking",
+      text: "回填版",
+      signature: signature(true),
+      provider: "openai-responses",
+    });
+  });
+
   it("skips automatic checkpoints in manual snapshot mode", async () => {
     const { sessions, session, runner } = await makeRunner({
       text: "完成",

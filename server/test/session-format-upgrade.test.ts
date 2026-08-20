@@ -2,13 +2,13 @@ import path from "node:path";
 import { readFile, stat } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { SessionStore } from "../src/sessions/session-store.js";
-import type { ChatMessage } from "../src/sessions/types.js";
-import { upgradeResponsesReplayFields } from "../src/providers/responses-replay.js";
+import type { ChatMessage, TextContent } from "../src/sessions/types.js";
+import { deriveMessageItemId, upgradeResponsesReplayFields } from "../src/providers/responses-replay.js";
 import { OpenAIResponsesProvider } from "../src/providers/openai-responses-provider.js";
 import type { ProviderEvent, StreamChatRequest } from "../src/providers/provider.js";
 import {
   isSessionUpgrading, listFormatUpgrades, registerFormatUpgrade,
-  upgradeAllSessions, upgradeSessionFormat,
+  upgradeAllSessions, upgradeResponsesTextSignatures, upgradeSessionFormat,
 } from "../src/extensions/session-format-upgrade.js";
 import { tempRoot } from "./helpers/temp-roots.js";
 
@@ -61,14 +61,64 @@ describe("upgradeResponsesReplayFields（旧会话 → 新格式，幂等）", (
       legacyAssistant("a1"),
       { id: "t1", role: "tool", content: [{ type: "tool_result", toolCallId: "call_old1", content: "A", isError: false }], createdAt: "2026-01-01T00:00:02.000Z" },
     ];
-    // 未升级 → 回放重建+派生
+    // 未升级 → 回放回落 thinking 块文本
     const legacyBodies: Array<Record<string, unknown>> = [];
     await drain(new OpenAIResponsesProvider({ baseURL: "https://example.invalid/v1", fetch: completedFetch(legacyBodies) }).streamChat(request(messages)));
-    // 升级后 → 回放原样还原
+    // 升级后 → 回放从固化的 signature 提取同样文本，请求体保持一致
     const upgradedBodies: Array<Record<string, unknown>> = [];
     const upgraded = upgradeResponsesReplayFields(messages).messages as StreamChatRequest["messages"];
     await drain(new OpenAIResponsesProvider({ baseURL: "https://example.invalid/v1", fetch: completedFetch(upgradedBodies) }).streamChat(request(upgraded)));
     expect(upgradedBodies[0]?.input).toEqual(legacyBodies[0]?.input);
+  });
+});
+
+describe("upgradeResponsesTextSignatures（旧会话文本块 → v1 textSignature，幂等）", () => {
+  it("为 legacy 文本块固化确定性 v1 textSignature（msg_<24 hex>），非文本块不碰", () => {
+    const messages: ChatMessage[] = [
+      legacyAssistant("a1"), // content: [thinking, text "正文", tool_call]
+      {
+        id: "a2", role: "assistant", createdAt: "2026-01-01T00:00:00.000Z",
+        content: [
+          { type: "thinking", text: "思考", provider: "openai-responses" },
+          { type: "text", text: "第一段" },
+          { type: "tool_call", id: "call_2", name: "bash", input: { cmd: "pwd" } },
+          { type: "text", text: "第二段" },
+        ],
+      },
+    ];
+    const { messages: upgraded, changed } = upgradeResponsesTextSignatures(messages);
+    expect(changed).toBe(3); // a1 的 "正文" + a2 的两段文本
+    const first = upgraded[0]!;
+    const sig1 = JSON.parse((first.content[1] as TextContent).textSignature!) as { v: number; id: string };
+    expect(sig1).toEqual({ v: 1, id: deriveMessageItemId("a1:0") });
+    expect(sig1.id).toMatch(/^msg_[0-9a-f]{24}$/);
+    // thinking / tool_call 块不碰
+    expect((first.content[0] as { signature?: string }).signature).toBeUndefined();
+    expect((first.content[2] as { itemId?: string }).itemId).toBeUndefined();
+    // ordinal 只数文本块：a2 第二段文本派生自 "a2:1"
+    const second = upgraded[1]!;
+    const sig2a = JSON.parse((second.content[1] as TextContent).textSignature!) as { id: string };
+    const sig2b = JSON.parse((second.content[3] as TextContent).textSignature!) as { id: string };
+    expect(sig2a.id).toBe(deriveMessageItemId("a2:0"));
+    expect(sig2b.id).toBe(deriveMessageItemId("a2:1"));
+  });
+
+  it("空文本块（text.trim() === \"\"）不补签名", () => {
+    const messages: ChatMessage[] = [{
+      id: "a1", role: "assistant", createdAt: "2026-01-01T00:00:00.000Z",
+      content: [{ type: "text", text: "   " }],
+    }];
+    const { messages: upgraded, changed } = upgradeResponsesTextSignatures(messages);
+    expect(changed).toBe(0);
+    expect((upgraded[0]!.content[0] as TextContent).textSignature).toBeUndefined();
+  });
+
+  it("幂等：二次执行 changed === 0", () => {
+    const messages: ChatMessage[] = [legacyAssistant("a1")];
+    const first = upgradeResponsesTextSignatures(messages);
+    expect(first.changed).toBe(1);
+    const second = upgradeResponsesTextSignatures(first.messages);
+    expect(second.changed).toBe(0);
   });
 });
 
@@ -81,8 +131,9 @@ describe("session-format-upgrade 扩展框架", () => {
     return { root, store };
   };
 
-  it("内置 responses-replay-fields 步骤已注册，新步骤可注册", () => {
+  it("内置 responses-replay-fields / responses-text-signature 步骤已注册，新步骤可注册", () => {
     expect(listFormatUpgrades().some((s) => s.id === "responses-replay-fields")).toBe(true);
+    expect(listFormatUpgrades().some((s) => s.id === "responses-text-signature")).toBe(true);
     registerFormatUpgrade({ id: "future-step", scope: "messages", description: "future", run: async () => ({ changed: 0 }) });
     expect(listFormatUpgrades().some((s) => s.id === "future-step")).toBe(true);
   });

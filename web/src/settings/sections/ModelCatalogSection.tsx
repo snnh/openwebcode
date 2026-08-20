@@ -10,7 +10,7 @@ import { useConfirmDialog } from "../../components/ConfirmDialog";
 
 const THINKING_LABEL: Record<string, [string, string]> = { adaptive: ["自适应", "Adaptive"], enabled: ["开启", "Enabled"], disabled: ["关闭", "Disabled"] };
 const THINKING_OPTIONS = ["adaptive", "enabled", "disabled"] as const;
-const EFFORT_OPTIONS = ["low", "medium", "high", "xhigh", "max", "ultra"] as const;
+const EFFORT_OPTIONS = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
 const MODALITY_OPTIONS = ["text", "image", "video"] as const;
 const MODALITY_LABEL: Record<string, [string, string]> = { text: ["文本", "Text"], image: ["图片", "Image"], video: ["视频", "Video"] };
 
@@ -25,6 +25,7 @@ interface ModelEditForm {
   imageOutput: boolean;
   tools: boolean;
   reasoningContent: boolean;
+  responsesEncryptedReplay: boolean;
 }
 
 export function ModelCatalogSection(): ReactElement {
@@ -146,6 +147,8 @@ export function ModelCatalogSection(): ReactElement {
       tools: model.capabilities.tools,
       // 未声明时按 server 默认（非 gpt/claude 回传开）
       reasoningContent: model.capabilities.reasoningContent ?? true,
+      // 未声明时按 server 默认（gpt/o 系加密回放开，其余关）
+      responsesEncryptedReplay: model.capabilities.responsesEncryptedReplay ?? false,
     });
   };
 
@@ -179,6 +182,7 @@ export function ModelCatalogSection(): ReactElement {
         imageOutput: editing.imageOutput,
         tools: editing.tools,
         reasoningContent: editing.reasoningContent,
+        responsesEncryptedReplay: editing.responsesEncryptedReplay,
       },
     })
       .then(() => {
@@ -315,6 +319,18 @@ export function ModelCatalogSection(): ReactElement {
                 onChange={(event) => setEditing((prev) => prev && { ...prev, reasoningContent: event.target.checked })}
               />
               {t("回传 reasoning_content", "Replay reasoning_content")}
+            </label>
+          </div>
+          <div className="capability-row">
+            <span className="capability-title">{t("加密思维链回放（官方 OpenAI Responses）", "Encrypted reasoning replay (official OpenAI Responses)")}</span>
+            <label>
+              <input
+                type="checkbox"
+                aria-label={t("加密思维链回放（官方 OpenAI Responses）", "Encrypted reasoning replay (official OpenAI Responses)")}
+                checked={editing.responsesEncryptedReplay}
+                onChange={(event) => setEditing((prev) => prev && { ...prev, responsesEncryptedReplay: event.target.checked })}
+              />
+              {t("include encrypted_content 回放", "Replay encrypted_content")}
             </label>
           </div>
           <div className="dialog-actions">

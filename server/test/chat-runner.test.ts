@@ -347,4 +347,22 @@ describe("ChatRunner", () => {
     expect(result.stopReason).toBe("end_turn");
     expect(thinkingDeltas).toEqual(["先想", "一下"]);
   });
+
+  it("text_end 以权威文本 + v1 textSignature 固化文本块，不与 currentTurnText 重复追加", async () => {
+    const textTurn: Handler = () => (async function* () {
+      yield { type: "text_delta", text: "部分" };
+      yield { type: "text_end", text: "完成", signature: JSON.stringify({ v: 1, id: "msg_c1", phase: "final_answer" }) };
+      yield { type: "done", stopReason: "end_turn" as const };
+    })();
+    const { runner, store } = makeRunner({ handler: textTurn });
+    await store.appendMessage("s1", "user", [{ type: "text", text: "第一句" }]);
+
+    const result = await runner.runChatMessage(runParams());
+
+    expect(result.stopReason).toBe("end_turn");
+    const assistant = store.messages.find((message) => message.role === "assistant");
+    expect(assistant?.content).toEqual([
+      { type: "text", text: "完成", textSignature: JSON.stringify({ v: 1, id: "msg_c1", phase: "final_answer" }) },
+    ]);
+  });
 });

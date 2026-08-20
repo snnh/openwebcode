@@ -8,8 +8,10 @@ import { ConcurrencyLimitedProvider, DEFAULT_MAX_CONCURRENT } from "../src/provi
 import { AnthropicProvider } from "../src/providers/anthropic-provider.js";
 import { OpenAICompatibleProvider, MAX_SSE_EVENT_BYTES, readSseData } from "../src/providers/openai-compatible-provider.js";
 import { OpenAIResponsesProvider, PLACEHOLDER_REASONING_TEXT } from "../src/providers/openai-responses-provider.js";
+import { deriveMessageItemId } from "../src/providers/responses-replay.js";
 import { ProviderError } from "../src/providers/provider-error.js";
 import { ProviderRegistry, type ProviderEvent, type StreamChatRequest } from "../src/providers/provider.js";
+import type { TextContent } from "../src/sessions/types.js";
 import { injectMockStream } from "./helpers/anthropic-mock.js";
 import { tempRoot } from "./helpers/temp-roots.js";
 
@@ -284,14 +286,115 @@ describe("OpenAIResponsesProvider streaming", () => {
     expect((interrupted as ProviderError).kind).toBe("stream_interrupted");
   });
 
-  it("rejects invalid cached token usage", async () => {
+  it("usage: cache_write 上报，cached+cacheWrite 超过 input 时钳到 0（不抛错）", async () => {
     const payload = sse([
       {
         type: "response.completed",
-        response: { status: "completed", output: [], usage: { input_tokens: 10, output_tokens: 5, input_tokens_details: { cached_tokens: 99 } } },
+        response: {
+          status: "completed",
+          output: [],
+          usage: {
+            input_tokens: 10,
+            output_tokens: 5,
+            input_tokens_details: { cached_tokens: 6, cache_write_tokens: 8 },
+          },
+        },
       },
     ]);
-    await expect(collect(makeProvider(sseFetch([], payload)).streamChat(request()))).rejects.toThrow(/invalid cached token usage/);
+    const events = await collect(makeProvider(sseFetch([], payload)).streamChat(request()));
+    expect(events.find((event) => event.type === "usage")).toEqual({
+      type: "usage", inputTokens: 0, outputTokens: 5, cacheRead: 6, cacheWrite: 8,
+    });
+
+    // 负数/非整数 cache_write 仍是确定性错误（沿用 cached_tokens 的校验口径）
+    const badWrite = sse([
+      {
+        type: "response.completed",
+        response: {
+          status: "completed", output: [],
+          usage: { input_tokens: 10, output_tokens: 5, input_tokens_details: { cache_write_tokens: -1 } },
+        },
+      },
+    ]);
+    await expect(collect(makeProvider(sseFetch([], badWrite)).streamChat(request()))).rejects.toThrow(/invalid cache write token usage/);
+  });
+
+  it("refusal.delta 既置 sawRefusal 又按 message 文本槽发 text_delta", async () => {
+    const payload = sse([
+      { type: "response.refusal.delta", item_id: "msg_1", output_index: 0, delta: "不能" },
+      { type: "response.refusal.delta", item_id: "msg_1", output_index: 0, delta: "说" },
+      { type: "response.completed", response: { status: "completed", output: [] } },
+    ]);
+    const events = await collect(makeProvider(sseFetch([], payload)).streamChat(request()));
+    expect(events.filter((event) => event.type === "text_delta")).toEqual([
+      { type: "text_delta", text: "不能" },
+      { type: "text_delta", text: "说" },
+    ]);
+    expect(events.at(-1)).toEqual({ type: "done", stopReason: "refusal" });
+  });
+
+  it("reasoning_summary_part.done 追加 \"\\n\\n\" 为 thinking_delta，content parts 以 \\n\\n 拼接为权威文本", async () => {
+    const payload = sse([
+      { type: "response.reasoning_summary_text.delta", item_id: "rs_1", output_index: 0, delta: "想" },
+      { type: "response.reasoning_summary_part.done", item_id: "rs_1", output_index: 0 },
+      { type: "response.reasoning_summary_text.delta", item_id: "rs_1", output_index: 0, delta: "再想" },
+      {
+        type: "response.output_item.done", output_index: 0,
+        item: { type: "reasoning", id: "rs_1", content: [{ type: "reasoning_text", text: "想" }, { type: "reasoning_text", text: "再想" }] },
+      },
+      { type: "response.completed", response: { status: "completed", output: [], usage: { input_tokens: 10, output_tokens: 5 } } },
+    ]);
+    const events = await collect(makeProvider(sseFetch([], payload)).streamChat(request()));
+    expect(events.filter((event) => event.type === "thinking_delta")).toEqual([
+      { type: "thinking_delta", text: "想" },
+      { type: "thinking_delta", text: "\n\n" },
+      { type: "thinking_delta", text: "再想" },
+    ]);
+    const thinkingEnd = events.find((event) => event.type === "thinking_end") as { text: string; signature?: string } | undefined;
+    expect(thinkingEnd?.text).toBe("想\n\n再想");
+  });
+
+  it("message output_item.done 以权威文本兜底并发出 text_end（v1 textSignature）", async () => {
+    const payload = sse([
+      { type: "response.output_item.added", output_index: 0, item: { id: "msg_1", type: "message" } },
+      { type: "response.output_text.delta", item_id: "msg_1", output_index: 0, delta: "你好" },
+      // 端点把剩余文本仅在 output_item.done 给出（未逐片流式）
+      {
+        type: "response.output_item.done", output_index: 0,
+        item: { id: "msg_1", phase: "final_answer", type: "message", status: "completed", content: [{ type: "output_text", text: "你好世界", annotations: [] }] },
+      },
+      { type: "response.completed", response: { status: "completed", output: [], usage: { input_tokens: 10, output_tokens: 5 } } },
+    ]);
+    const events = await collect(makeProvider(sseFetch([], payload)).streamChat(request()));
+    // 权威文本比累积更长且前缀一致 → 只补发后缀 delta
+    expect(events.filter((event) => event.type === "text_delta")).toEqual([
+      { type: "text_delta", text: "你好" },
+      { type: "text_delta", text: "世界" },
+    ]);
+    const textEnd = events.find((event) => event.type === "text_end") as { text: string; signature?: string } | undefined;
+    expect(textEnd).toEqual({ type: "text_end", text: "你好世界", signature: JSON.stringify({ v: 1, id: "msg_1", phase: "final_answer" }) });
+  });
+
+  it("B3：completed output 携带 encrypted_content 而持久化签名缺失时补发第二次 thinking_end（合并密文）", async () => {
+    const reasoningItem = { type: "reasoning", id: "rs_b3", status: "completed", content: [{ type: "reasoning_text", text: "思考", annotations: [] }] };
+    const encryptedReasoningItem = { ...reasoningItem, encrypted_content: "base64-encrypted" };
+    const payload = sse([
+      { type: "response.output_item.added", output_index: 0, item: { type: "reasoning", id: "rs_b3" } },
+      { type: "response.reasoning_text.delta", item_id: "rs_b3", output_index: 0, delta: "思考" },
+      { type: "response.output_item.done", output_index: 0, item: reasoningItem },
+      {
+        type: "response.completed",
+        response: { status: "completed", output: [encryptedReasoningItem], usage: { input_tokens: 10, output_tokens: 5 } },
+      },
+    ]);
+    const events = await collect(makeProvider(sseFetch([], payload)).streamChat(request()));
+    const thinkingEnds = events.filter((event) => event.type === "thinking_end") as Array<{ text: string; signature?: string }>;
+    expect(thinkingEnds).toHaveLength(2);
+    expect(thinkingEnds[0]?.text).toBe("思考");
+    expect(JSON.parse(thinkingEnds[0]?.signature ?? "{}")).toEqual(reasoningItem);
+    // 第二次：encrypted_content 合并进持久化签名（B3 回填，store:false 多轮回放依赖）
+    expect(thinkingEnds[1]?.text).toBe("思考");
+    expect(JSON.parse(thinkingEnds[1]?.signature ?? "{}")).toEqual(encryptedReasoningItem);
   });
 });
 
@@ -322,13 +425,14 @@ describe("OpenAIResponsesProvider request mapping", () => {
       {
         role: "user",
         content: [
-          { type: "input_image", image_url: "data:image/png;base64,aGk=" },
+          // dsh 口径：用户内容恒为 parts 数组且按原始块序（text 在前，image 在后）
           { type: "input_text", text: "看图" },
+          { type: "input_image", detail: "auto", image_url: "data:image/png;base64,aGk=" },
         ],
       },
-      { type: "reasoning", id: expect.stringMatching(/^rs_/), content: [{ type: "reasoning_text", text: PLACEHOLDER_REASONING_TEXT }] },
       { role: "assistant", content: "我查一下" },
-      { type: "function_call", id: "fc_call_1", call_id: "call_1", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
+      { type: "reasoning", content: [{ type: "reasoning_text", text: PLACEHOLDER_REASONING_TEXT }] },
+      { type: "function_call", call_id: "call_1", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
       { type: "function_call_output", call_id: "call_1", output: "ok" },
     ]);
   });
@@ -346,7 +450,7 @@ describe("OpenAIResponsesProvider request mapping", () => {
     expect(reasoningBodies[0]?.top_p).toBeUndefined();
   });
 
-  it("思维链回传开启时同源 thinking 块以 reasoning item 置于文本之前，关闭或异源不回传", async () => {
+  it("思维链回传开启时同源 thinking 块在每个 function_call 前各放一条 reasoning item，关闭或异源不回传", async () => {
     const bodies: Array<Record<string, unknown>> = [];
     const messages: StreamChatRequest["messages"] = [
       { id: "u1", role: "user", content: [{ type: "text", text: "继续" }], createdAt: "2026-01-01T00:00:00.000Z" },
@@ -363,31 +467,33 @@ describe("OpenAIResponsesProvider request mapping", () => {
       { id: "t1", role: "tool", content: [{ type: "tool_result", toolCallId: "call_1", content: "A", isError: false }], createdAt: "2026-01-01T00:00:02.000Z" },
       { id: "t2", role: "tool", content: [{ type: "tool_result", toolCallId: "call_2", content: "B", isError: false }], createdAt: "2026-01-01T00:00:03.000Z" },
     ];
-    // 开启（缺省 reasoningContent=true）：canonical 顺序——reasoning 先于 assistant 文本，
-    // 覆盖本条消息全部 function_call；异源 thinking 过滤；重建 reasoning/function_call 均派生 id
+    // 开启（缺省 reasoningContent=true）：DeepSeek 规则——assistant 文本后每个 function_call
+    // 前各放一条完整 reasoning item（output 打断关联链，多调用轮只在开头放一条必 400）；
+    // 异源 thinking 过滤；reasoning/function_call 均不带 item id
     await collect(makeProvider(completedSseFetch(bodies)).streamChat(request({ messages })));
     expect(bodies[0]?.input).toEqual([
-      { role: "user", content: "继续" },
-      { type: "reasoning", id: expect.stringMatching(/^rs_/), content: [{ type: "reasoning_text", text: "先分析" }] },
+      { role: "user", content: [{ type: "input_text", text: "继续" }] },
       { role: "assistant", content: "我查一下" },
-      { type: "function_call", id: "fc_call_1", call_id: "call_1", name: "read_file", arguments: "{\"path\":\"a\"}" },
+      { type: "reasoning", content: [{ type: "reasoning_text", text: "先分析" }] },
+      { type: "function_call", call_id: "call_1", name: "read_file", arguments: "{\"path\":\"a\"}" },
       { type: "function_call_output", call_id: "call_1", output: "A" },
-      { type: "function_call", id: "fc_call_2", call_id: "call_2", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
+      { type: "reasoning", content: [{ type: "reasoning_text", text: "先分析" }] },
+      { type: "function_call", call_id: "call_2", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
       { type: "function_call_output", call_id: "call_2", output: "B" },
     ]);
     // 请求级关闭：不回传（与 openai-compatible 的 reasoningContent=false 同语义）
     await collect(makeProvider(completedSseFetch(bodies)).streamChat(request({ messages, reasoningContent: false })));
     expect(bodies[1]?.input).toEqual([
-      { role: "user", content: "继续" },
+      { role: "user", content: [{ type: "input_text", text: "继续" }] },
       { role: "assistant", content: "我查一下" },
-      { type: "function_call", id: "fc_call_1", call_id: "call_1", name: "read_file", arguments: "{\"path\":\"a\"}" },
+      { type: "function_call", call_id: "call_1", name: "read_file", arguments: "{\"path\":\"a\"}" },
       { type: "function_call_output", call_id: "call_1", output: "A" },
-      { type: "function_call", id: "fc_call_2", call_id: "call_2", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
+      { type: "function_call", call_id: "call_2", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
       { type: "function_call_output", call_id: "call_2", output: "B" },
     ]);
   });
 
-  it("思维链回传开启时持久化的 signature/itemId 原样还原（完整 reasoning item 与 fc id）", async () => {
+  it("思维链回传开启时持久化 signature 只取 reasoning_text 内容，itemId 不派发（DeepSeek Harness 同口径）", async () => {
     const bodies: Array<Record<string, unknown>> = [];
     const messages: StreamChatRequest["messages"] = [
       { id: "u1", role: "user", content: [{ type: "text", text: "继续" }], createdAt: "2026-01-01T00:00:00.000Z" },
@@ -411,17 +517,13 @@ describe("OpenAIResponsesProvider request mapping", () => {
       { id: "t1", role: "tool", content: [{ type: "tool_result", toolCallId: "call_1", content: "A", isError: false }], createdAt: "2026-01-01T00:00:02.000Z" },
     ];
     await collect(makeProvider(completedSseFetch(bodies)).streamChat(request({ messages })));
-    // 原样还原：reasoning item 保留原始 rs_ id 与 content 结构；function_call 保留原始 fc_ id
+    // signature 提供权威 reasoning_text，但回放时剥掉 id/status/annotations（DeepSeek 输入只
+    // 支持 plain-text content）；function_call 只带 call_id，不派发持久化的 itemId
     expect(bodies[0]?.input).toEqual([
-      { role: "user", content: "继续" },
-      {
-        type: "reasoning",
-        id: "rs_abc123",
-        status: "completed",
-        content: [{ type: "reasoning_text", text: "先分析", annotations: [] }],
-      },
+      { role: "user", content: [{ type: "input_text", text: "继续" }] },
       { role: "assistant", content: "我查一下" },
-      { type: "function_call", id: "fc_xyz789", call_id: "call_1", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
+      { type: "reasoning", content: [{ type: "reasoning_text", text: "先分析" }] },
+      { type: "function_call", call_id: "call_1", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
       { type: "function_call_output", call_id: "call_1", output: "A" },
     ]);
   });
@@ -440,9 +542,9 @@ describe("OpenAIResponsesProvider request mapping", () => {
     await collect(makeProvider(completedSseFetch(bodies)).streamChat(request({ messages })));
 
     expect(bodies[0]?.input).toEqual([
-      { role: "user", content: "继续" },
-      { type: "reasoning", id: expect.stringMatching(/^rs_/), content: [{ type: "reasoning_text", text: PLACEHOLDER_REASONING_TEXT }] },
-      { type: "function_call", id: "fc_call_dangling", call_id: "call_dangling", name: "bash", arguments: "{\"cmd\":\"sleep 600\"}" },
+      { role: "user", content: [{ type: "input_text", text: "继续" }] },
+      { type: "reasoning", content: [{ type: "reasoning_text", text: PLACEHOLDER_REASONING_TEXT }] },
+      { type: "function_call", call_id: "call_dangling", name: "bash", arguments: "{\"cmd\":\"sleep 600\"}" },
       { type: "function_call_output", call_id: "call_dangling", output: expect.stringContaining("interrupted") },
     ]);
   });
@@ -471,12 +573,12 @@ describe("OpenAIResponsesProvider request mapping", () => {
       diagnosticWriter: (line) => lines.push(line),
     });
     await collect(provider.streamChat(request({ messages })));
-    // 缺素材 tool_call 补占位 reasoning（置于 assistant 文本之前），且诊断留痕
+    // 缺素材 tool_call 补占位 reasoning（置于 function_call 之前），且诊断留痕
     expect(bodies[0]?.input).toEqual([
-      { role: "user", content: "继续" },
-      { type: "reasoning", id: expect.stringMatching(/^rs_/), content: [{ type: "reasoning_text", text: PLACEHOLDER_REASONING_TEXT }] },
+      { role: "user", content: [{ type: "input_text", text: "继续" }] },
       { role: "assistant", content: "我查一下" },
-      { type: "function_call", id: "fc_call_missing", call_id: "call_missing", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
+      { type: "reasoning", content: [{ type: "reasoning_text", text: PLACEHOLDER_REASONING_TEXT }] },
+      { type: "function_call", call_id: "call_missing", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
       { type: "function_call_output", call_id: "call_missing", output: "B" },
     ]);
     expect(lines.some((line) => line.includes("缺少同源 thinking 素材"))).toBe(true);
@@ -527,6 +629,135 @@ describe("OpenAIResponsesProvider request mapping", () => {
     expect(bodies[1]?.tools).toEqual([
       { type: "function", name: "bash", description: "run", parameters: { type: "object" } },
       { type: "web_search" },
+    ]);
+  });
+
+  it("store:false 缺省随请求下发（dsh 无状态口径），options.store 可覆盖", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    await drain(makeProvider(completedSseFetch(bodies)).streamChat(request()));
+    expect(bodies[0]?.store).toBe(false);
+    await drain(makeProvider(completedSseFetch(bodies), { store: true }).streamChat(request()));
+    expect(bodies[1]?.store).toBe(true);
+  });
+
+  it("max_output_tokens 低于 16 时钳到 16（dsh OPENAI_RESPONSES_MIN_OUTPUT_TOKENS）", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    await drain(makeProvider(completedSseFetch(bodies), { maxTokens: 8 }).streamChat(request()));
+    expect(bodies[0]?.max_output_tokens).toBe(16);
+    await drain(makeProvider(completedSseFetch(bodies), { maxTokens: 4096 }).streamChat(request()));
+    expect(bodies[1]?.max_output_tokens).toBe(4096);
+  });
+
+  it("include:[\"reasoning.encrypted_content\"] 仅当 responsesEncryptedReplay 且 (reasoningContent||effort)", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    // 非加密：即使 effort 也不带 include
+    await drain(makeProvider(completedSseFetch(bodies)).streamChat(request({ effort: "high" })));
+    expect(bodies[0]).not.toHaveProperty("include");
+    // 加密 + effort：带 include
+    await drain(makeProvider(completedSseFetch(bodies)).streamChat(request({ responsesEncryptedReplay: true, effort: "high" })));
+    expect(bodies[1]?.include).toEqual(["reasoning.encrypted_content"]);
+    // 加密 + reasoningContent 开启（request 级）：带 include
+    await drain(makeProvider(completedSseFetch(bodies)).streamChat(request({ responsesEncryptedReplay: true, reasoningContent: true })));
+    expect(bodies[2]?.include).toEqual(["reasoning.encrypted_content"]);
+    // 加密但 reasoningContent 关闭且无 effort：不带 include
+    await drain(makeProvider(completedSseFetch(bodies)).streamChat(request({ responsesEncryptedReplay: true, reasoningContent: false })));
+    expect(bodies[3]).not.toHaveProperty("include");
+  });
+
+  it("user 消息恒为 parts 数组（input_text/input_image，原始块序，image 带 detail:auto）", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const messages: StreamChatRequest["messages"] = [
+      {
+        id: "u1", role: "user",
+        content: [
+          { type: "text", text: "先" },
+          { type: "image", mediaType: "image/jpeg", data: "eA==" },
+          { type: "text", text: "后" },
+        ],
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+    ];
+    await drain(makeProvider(completedSseFetch(bodies)).streamChat(request({ messages })));
+    expect(bodies[0]?.input).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "input_text", text: "先" },
+          { type: "input_image", detail: "auto", image_url: "data:image/jpeg;base64,eA==" },
+          { type: "input_text", text: "后" },
+        ],
+      },
+    ]);
+  });
+
+  it("加密回放模式：reasoning 原样回放（rs id）、message item id/phase 取自 textSignature、function_call 保留 fc id、无占位；非加密口径不变", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const reasoningItem = {
+      type: "reasoning",
+      id: "rs_enc1",
+      status: "completed",
+      content: [{ type: "reasoning_text", text: "加密思维", annotations: [] }],
+    };
+    const messages: StreamChatRequest["messages"] = [
+      { id: "u1", role: "user", content: [{ type: "text", text: "继续" }], createdAt: "2026-01-01T00:00:00.000Z" },
+      {
+        id: "a1", role: "assistant", createdAt: "2026-01-01T00:00:01.000Z",
+        content: [
+          { type: "thinking", text: "加密思维", provider: "openai-responses", signature: JSON.stringify(reasoningItem) },
+          // 无签名的同源 thinking：加密模式跳过（不补占位）
+          { type: "thinking", text: "无签名思维", provider: "openai-responses" },
+          { type: "text", text: "我查一下", textSignature: JSON.stringify({ v: 1, id: "msg_enc1", phase: "commentary" }) } as TextContent,
+          // 无 textSignature 的文本块：派生兜底 id（msg_ + sha1("a1:1")）
+          { type: "text", text: "再补充" } as TextContent,
+          { type: "tool_call", id: "call_1", itemId: "fc_enc1", name: "bash", input: { cmd: "ls" } },
+          // 非 fc_ 开头的 itemId（旧协议遗留 ctc_* 等）：加密回放不派发 id（避免配对校验）
+          { type: "tool_call", id: "call_2", itemId: "ctc_2", name: "read_file", input: { path: "a" } },
+        ],
+      },
+      { id: "t1", role: "tool", content: [{ type: "tool_result", toolCallId: "call_1", content: "A", isError: false }], createdAt: "2026-01-01T00:00:02.000Z" },
+      { id: "t2", role: "tool", content: [{ type: "tool_result", toolCallId: "call_2", content: "B", isError: false }], createdAt: "2026-01-01T00:00:03.000Z" },
+    ];
+    await collect(makeProvider(completedSseFetch(bodies)).streamChat(request({ messages, responsesEncryptedReplay: true })));
+    expect(bodies[0]?.input).toEqual([
+      { role: "user", content: [{ type: "input_text", text: "继续" }] },
+      // 带签名的同源 thinking：完整 reasoning item 原样回放（含 rs id / annotations）
+      reasoningItem,
+      // 无签名 thinking：skip
+      // 文本块：完整 message item，id/phase 取自 textSignature
+      {
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: "我查一下", annotations: [] }],
+        status: "completed",
+        id: "msg_enc1",
+        phase: "commentary",
+      },
+      // 无 textSignature 的文本块：派生稳定 msg_ id
+      {
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: "再补充", annotations: [] }],
+        status: "completed",
+        id: deriveMessageItemId("a1:1"),
+      },
+      // function_call 保留 fc_ item id，随后内联 output
+      { type: "function_call", call_id: "call_1", id: "fc_enc1", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
+      { type: "function_call_output", call_id: "call_1", output: "A" },
+      // 非 fc_ itemId 不派发 id（仍内联 output）
+      { type: "function_call", call_id: "call_2", name: "read_file", arguments: "{\"path\":\"a\"}" },
+      { type: "function_call_output", call_id: "call_2", output: "B" },
+    ]);
+    // 同一消息关闭加密回放：DeepSeek 口径不变（纯文本剥离 + 占位/素材合并 + 不派发 item id）
+    await collect(makeProvider(completedSseFetch(bodies)).streamChat(request({ messages, responsesEncryptedReplay: false })));
+    expect(bodies[1]?.input).toEqual([
+      { role: "user", content: [{ type: "input_text", text: "继续" }] },
+      { role: "assistant", content: "我查一下再补充" },
+      { type: "reasoning", content: [{ type: "reasoning_text", text: "加密思维" }, { type: "reasoning_text", text: "无签名思维" }] },
+      { type: "function_call", call_id: "call_1", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
+      { type: "function_call_output", call_id: "call_1", output: "A" },
+      { type: "reasoning", content: [{ type: "reasoning_text", text: "加密思维" }, { type: "reasoning_text", text: "无签名思维" }] },
+      { type: "function_call", call_id: "call_2", name: "read_file", arguments: "{\"path\":\"a\"}" },
+      { type: "function_call_output", call_id: "call_2", output: "B" },
     ]);
   });
 });

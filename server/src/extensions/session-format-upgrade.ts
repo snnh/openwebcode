@@ -6,8 +6,8 @@
  * - 触发即锁：升级期间对应会话不可使用（消息/重发入口 409），完成或失败后释放锁；
  * - 离线执行：路由层要求会话非运行中（agent.isRunning 为 false）才允许触发；
  * - 可回滚：升级前备份 messages.jsonl（backup 文件名返回给调用方），幂等可重复触发；
- * - 通用接口：升级步骤经 registerFormatUpgrade 注册（内置 responses-replay-fields 步骤
- *   处理 OpenAI Responses 思维链回放字段），未来其他部分（压缩格式/ledger/快照等）升级
+ * - 通用接口：升级步骤经 registerFormatUpgrade 注册（内置 responses-replay-fields / responses-text-signature
+ *   步骤处理 OpenAI Responses 思维链回放字段与文本块 v1 textSignature），未来其他部分（压缩格式/ledger/快照等）升级
  *   时在扩展域新增步骤即可，主应用零改动——存储层只提供通用 transformMessages 原语，
  *   不感知任何具体升级逻辑，降低对主应用的破坏性。
  *
@@ -15,7 +15,8 @@
  * （内置步骤的纯函数）；核心不得反向依赖本模块。
  */
 import type { SessionStore } from "../sessions/session-store.js";
-import { upgradeResponsesReplayFields } from "../providers/responses-replay.js";
+import type { ChatMessage } from "../sessions/types.js";
+import { deriveMessageItemId, upgradeResponsesReplayFields } from "../providers/responses-replay.js";
 
 /** 升级中的会话锁：触发即加锁，升级完成/失败后释放；锁定期内对应对话不可使用。 */
 const upgradingSessions = new Set<string>();
@@ -69,6 +70,43 @@ registerFormatUpgrade({
   description: "OpenAI Responses 思维链回放字段：thinking 块补 signature、tool_call 补 itemId（旧会话续跑 DeepSeek 思维模式 400 的修复前置）。",
   run: async (store, id) => {
     const result = await store.transformMessages(id, upgradeResponsesReplayFields);
+    return { changed: result.changed, ...(result.backup ? { backup: result.backup } : {}) };
+  },
+});
+
+/** 旧会话 assistant 文本块 → v1 textSignature（幂等）：为每个文本非空且尚无 textSignature
+ * 的文本块固化 v1 message item 签名 {"v":1,"id":msg_...}（id 派生自 message id + 文本块
+ * 序数，与回放端无签名时的派生兜底完全一致）。非文本块与已升级块不碰；重复执行 changed === 0。
+ * 官方 OpenAI 加密思维链回放依赖 textSignature 还原 message item id/phase（phase 缺失时仅 id）。 */
+export function upgradeResponsesTextSignatures(messages: readonly ChatMessage[]): { messages: ChatMessage[]; changed: number } {
+  let changed = 0;
+  const upgraded = messages.map((message) => {
+    if (message.role !== "assistant") return message;
+    let textOrdinal = 0;
+    const content = message.content.map((block) => {
+      if (block.type !== "text") return block;
+      const ordinal = textOrdinal;
+      textOrdinal += 1;
+      if (block.text.trim() === "" || block.textSignature !== undefined) return block;
+      changed += 1;
+      return {
+        ...block,
+        textSignature: JSON.stringify({ v: 1, id: deriveMessageItemId(`${message.id}:${ordinal}`) }),
+      };
+    });
+    return content === message.content ? message : { ...message, content };
+  });
+  return { messages: upgraded, changed };
+}
+
+/** 内置步骤：OpenAI Responses 文本块 v1 textSignature（为旧会话文本块固化 v1 message id
+ * 签名，官方 OpenAI 加密思维链回放的 message item id/phase 来源）。幂等；非文本块不碰。 */
+registerFormatUpgrade({
+  id: "responses-text-signature",
+  scope: "messages",
+  description: "OpenAI Responses 文本块 textSignature：为旧会话文本块固化 v1 message id 签名（官方 OpenAI 加密思维链回放的 message item id/phase 来源）。",
+  run: async (store, id) => {
+    const result = await store.transformMessages(id, upgradeResponsesTextSignatures);
     return { changed: result.changed, ...(result.backup ? { backup: result.backup } : {}) };
   },
 });

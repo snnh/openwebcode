@@ -4,7 +4,7 @@ import { lookupModelMetadata } from "./model-metadata.js";
 export type Currency = "USD" | "CNY";
 export type ModelModality = "text" | "image" | "video";
 export type ThinkingMode = "adaptive" | "enabled" | "disabled";
-export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+export type EffortLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 
 /** Prices are integer micro-units of the source currency per million tokens. */
 export interface ModelPricing {
@@ -25,6 +25,9 @@ export interface ModelCapabilities {
   /** 思维链回传：历史 thinking 块以 reasoning_content 回带（仅 OpenAI 兼容接口生效；
    * Anthropic 走签名回放，不受此开关影响）。缺省按模型族：gpt/claude 关闭，其余开启。 */
   reasoningContent?: boolean;
+  /** 官方 OpenAI Responses 加密思维链回放（include:["reasoning.encrypted_content"] +
+   * rs_/fc_ id 原样回放）；缺省按模型族 gpt/o 系 true、其余 false；可在模型目录 UI 手动配置。 */
+  responsesEncryptedReplay?: boolean;
 }
 
 export interface ModelProfile {

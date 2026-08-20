@@ -27,6 +27,9 @@ export interface StreamChatRequest {
   /** 思维链回传（请求级，仅 OpenAI 兼容接口生效）：按模型能力声明由 agent 循环下发；
    * undefined 时回落 provider 级配置（默认开）。 */
   reasoningContent?: boolean;
+  /** 加密思维链回放（仅 OpenAI Responses 接口生效）：按模型能力声明由 agent 循环下发，
+   * true 时 provider 走 dsh same-model 口径（include 参数 + rs_/fc_ id 与 encrypted_content 原样回放）。 */
+  responsesEncryptedReplay?: boolean;
   /** 服务端联网搜索（请求级，仅 OpenAI Responses 接口生效）：true 时 Provider 在 tools 中
    * 附加 `{"type":"web_search"}`，由模型服务端执行搜索并回传 server_tool 活动事件。 */
   serverWebSearch?: boolean;
@@ -39,6 +42,9 @@ export interface StreamChatRequest {
 
 export type ProviderEvent =
   | { type: "text_delta"; text: string }
+  /** Responses message item 的 v1 textSignature：{v:1,id,phase?}，落盘供回放 message item
+   * id/phase；与 thinking_end 同语义的文本收尾事件（output_item.done 权威文本兜底后发出）。 */
+  | { type: "text_end"; text: string; signature?: string }
   | { type: "thinking_delta"; text: string }
   | { type: "thinking_end"; text: string; signature?: string; /** Anthropic redacted_thinking 的密文载荷（此时 text 为空）。 */ redacted?: string }
   /** 工具调用参数流式分片：id 在首个分片就绪后稳定；name 仅在已知时携带；

@@ -11,7 +11,7 @@ export interface Session {
   provider: string;
   model: string;
   thinking?: "adaptive" | "enabled" | "disabled";
-  effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+  effort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
   agentMode?: "plan" | "code" | "goal";
   permissionMode?: PermissionMode;
   sandboxMode?: SandboxMode;

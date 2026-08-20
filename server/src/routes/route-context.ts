@@ -96,7 +96,7 @@ export interface BudgetBody {
 
 export const MODEL_MODALITIES: readonly ModelModality[] = ["text", "image", "video"];
 export const THINKING_MODES: readonly ThinkingMode[] = ["adaptive", "enabled", "disabled"];
-export const EFFORT_LEVELS: readonly EffortLevel[] = ["low", "medium", "high", "xhigh", "max", "ultra"];
+export const EFFORT_LEVELS: readonly EffortLevel[] = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 /** files/raw 预览的扩展名 -> MIME 白名单（其余 415）。 */
 export const RAW_PREVIEW_MIME: Record<string, string> = {
   png: "image/png",

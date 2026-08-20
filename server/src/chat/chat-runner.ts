@@ -219,8 +219,32 @@ export class ChatRunner {
         const toolCalls: { id: string; name: string; input: Record<string, unknown>; itemId?: string }[] = [];
         const assistantMsgContent: MessageContent[] = [];
         let activeThinkingIndex: number | undefined;
+        let activeTextIndex: number | undefined;
+        let textPersisted = false;
         for (const event of collected.events) {
-          if (event.type === "thinking_delta") {
+          if (event.type === "text_delta") {
+            // 与主循环一致：相邻分片合并进当前 text 块（流式正文已由 onEvent 实时上抛，
+            // 此处仅保证落盘块完整；text_end 收尾时替换并固化 textSignature）。
+            const activeText = activeTextIndex === undefined ? undefined : assistantMsgContent[activeTextIndex];
+            if (activeText?.type === "text") activeText.text = `${activeText.text ?? ""}${event.text}`;
+            else {
+              assistantMsgContent.push({ type: "text", text: event.text });
+              activeTextIndex = assistantMsgContent.length - 1;
+            }
+            textPersisted = true;
+          } else if (event.type === "text_end") {
+            // Responses message item 收尾：以权威文本替换 delta 累积块并固化 v1 textSignature
+            // （{v:1,id,phase?}），回放时还原 message item id/phase。
+            const completedText: MessageContent = {
+              type: "text",
+              text: event.text,
+              ...(event.signature ? { textSignature: event.signature } : {}),
+            };
+            if (activeTextIndex === undefined) assistantMsgContent.push(completedText);
+            else assistantMsgContent[activeTextIndex] = completedText;
+            activeTextIndex = undefined;
+            textPersisted = true;
+          } else if (event.type === "thinking_delta") {
             // 与主循环一致：相邻分片合并进当前 thinking 块，避免一条消息携带数千个碎片块
             const activeThinking = activeThinkingIndex === undefined ? undefined : assistantMsgContent[activeThinkingIndex];
             if (activeThinking?.type === "thinking") {
@@ -237,8 +261,15 @@ export class ChatRunner {
               ...(event.redacted ? { redacted: event.redacted } : {}),
               provider: provider.name,
             };
-            if (activeThinkingIndex === undefined) assistantMsgContent.push(completedThinking);
-            else assistantMsgContent[activeThinkingIndex] = completedThinking;
+            if (activeThinkingIndex !== undefined) {
+              // 活动槽位（thinking_delta 累积中）：原位替换
+              assistantMsgContent[activeThinkingIndex] = completedThinking;
+            } else if (event.signature !== undefined && replaceThinkingBlockById(assistantMsgContent, event.signature, completedThinking)) {
+              // B3（Azure encrypted_content 回填）：同一 reasoning item 的第二次 thinking_end
+              // 以 enriched signature 原位替换早期块，避免追加出重复块。
+            } else {
+              assistantMsgContent.push(completedThinking);
+            }
             activeThinkingIndex = undefined;
           } else if (event.type === "tool_call") {
             hasToolCall = true;
@@ -248,8 +279,9 @@ export class ChatRunner {
           if (event.type === "done") stopReason = event.stopReason;
         }
 
-        // assistant 消息落盘并追加进内存上下文（thinking 已在汇总循环按序累积）
-        if (currentTurnText) assistantMsgContent.push({ type: "text", text: currentTurnText });
+        // assistant 消息落盘并追加进内存上下文（thinking 已在汇总循环按序累积；
+        // 文本块已由 text_delta/text_end 循环累积落盘时不再重复追加）
+        if (currentTurnText && !textPersisted) assistantMsgContent.push({ type: "text", text: currentTurnText });
         for (const tc of toolCalls) {
           assistantMsgContent.push({
             type: "tool_call",
@@ -410,4 +442,33 @@ export class ChatRunner {
 /** AbortError 判定：DOMException（signal.reason）与 Error 子类统一按 name 识别。 */
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
+}
+
+/** B3 合并：无活动 thinking 槽位时，按 reasoning item 的 id 匹配既有 thinking 块原位替换
+ * （第二次 thinking_end 以 enriched signature 覆盖早期块，避免追加出重复块）。签名非 JSON、
+ * 无字符串 id 或未匹配到同源块时返回 false，由调用方按现状追加（Anthropic redacted 密文等
+ * 不受影响）。与 agent-runner 主循环同口径。 */
+function replaceThinkingBlockById(blocks: MessageContent[], signature: string, completed: MessageContent): boolean {
+  let targetId: unknown;
+  try {
+    targetId = (JSON.parse(signature) as { id?: unknown }).id;
+  } catch {
+    return false;
+  }
+  if (typeof targetId !== "string") return false;
+  for (let index = 0; index < blocks.length; index++) {
+    const block = blocks[index];
+    if (block?.type !== "thinking" || block.signature === undefined) continue;
+    let blockId: unknown;
+    try {
+      blockId = (JSON.parse(block.signature) as { id?: unknown }).id;
+    } catch {
+      continue;
+    }
+    if (blockId === targetId) {
+      blocks[index] = completed;
+      return true;
+    }
+  }
+  return false;
 }

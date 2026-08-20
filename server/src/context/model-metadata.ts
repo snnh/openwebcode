@@ -14,6 +14,8 @@ const caps = (overrides: Partial<ModelCapabilities> = {}): ModelCapabilities => 
   // 思维链回传缺省开启（deepseek/qwen/glm/kimi 等新模型要求）；
   // gpt/o 系与 claude 前缀条目显式关闭（OpenAI 不识别该字段，Claude 走 Anthropic 签名回放）。
   reasoningContent: true,
+  // 官方 OpenAI Responses 加密思维链回放：缺省关闭，仅 gpt/o 系前缀条目显式开启。
+  responsesEncryptedReplay: false,
   ...overrides,
 });
 
@@ -23,13 +25,13 @@ const EXACT: Record<string, ModelMetadata> = {};
 
 const PREFIXES: Array<[string, ModelMetadata]> = [
   ["claude", { contextWindow: 256_000, capabilities: caps({ reasoningContent: false }) }],
-  ["gpt-4.1", { contextWindow: 1_000_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false }) }],
-  ["gpt-4o", { contextWindow: 128_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false }) }],
-  ["gpt-4", { contextWindow: 128_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false }) }],
-  ["gpt-5", { contextWindow: 400_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false, effort: ["low", "medium", "high"] }) }],
-  ["o1", { contextWindow: 200_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false, effort: ["low", "medium", "high"] }) }],
-  ["o3", { contextWindow: 200_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false, effort: ["low", "medium", "high"] }) }],
-  ["o4", { contextWindow: 200_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false, effort: ["low", "medium", "high"] }) }],
+  ["gpt-4.1", { contextWindow: 1_000_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false, responsesEncryptedReplay: true }) }],
+  ["gpt-4o", { contextWindow: 128_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false, responsesEncryptedReplay: true }) }],
+  ["gpt-4", { contextWindow: 128_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false, responsesEncryptedReplay: true }) }],
+  ["gpt-5", { contextWindow: 400_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false, responsesEncryptedReplay: true, effort: ["low", "medium", "high"] }) }],
+  ["o1", { contextWindow: 200_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false, responsesEncryptedReplay: true, effort: ["low", "medium", "high"] }) }],
+  ["o3", { contextWindow: 200_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false, responsesEncryptedReplay: true, effort: ["low", "medium", "high"] }) }],
+  ["o4", { contextWindow: 200_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false, responsesEncryptedReplay: true, effort: ["low", "medium", "high"] }) }],
   // deepseek 官方文档（api-docs.deepseek.com）：deepseek-chat / deepseek-reasoner 上下文均为 128K，
   // 旧值 1M 与实际不符，会把 85% 压缩水位推过真实窗口
   ["deepseek-reasoner", { contextWindow: 128_000, capabilities: caps({ thinking: ["enabled", "disabled"] }) }],
