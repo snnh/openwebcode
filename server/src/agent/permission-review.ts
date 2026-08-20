@@ -70,6 +70,7 @@ export async function completeWithProvider(
     signal: options.signal,
   })) {
     if (event.type === "text_delta") text += event.text;
+    else if (event.type === "text_end" && text === "") text = event.text;
     else if (event.type === "done" && (event.stopReason === "refusal" || event.stopReason === "error")) {
       throw new Error(`模型停止原因：${event.stopReason}`);
     }

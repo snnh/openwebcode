@@ -96,12 +96,13 @@ export function registerProviderRoutes(app: FastifyInstance, ctx: RouteContext):
       const valid = Boolean(value) && typeof value === "object"
         && Array.isArray(value.modalities) && Array.isArray(value.thinking) && Array.isArray(value.effort)
         && typeof value.imageOutput === "boolean" && typeof value.tools === "boolean"
-        && (value.reasoningContent === undefined || typeof value.reasoningContent === "boolean");
-      if (!valid) return reply.code(400).send({ error: "capabilities must include modalities/thinking/effort arrays plus imageOutput and tools booleans (reasoningContent optional boolean)" });
+        && (value.reasoningContent === undefined || typeof value.reasoningContent === "boolean")
+        && (value.responsesEncryptedReplay === undefined || typeof value.responsesEncryptedReplay === "boolean");
+      if (!valid) return reply.code(400).send({ error: "capabilities must include modalities/thinking/effort arrays plus imageOutput and tools booleans (reasoningContent / responsesEncryptedReplay optional boolean)" });
       const inRange = value.modalities.every((item) => MODEL_MODALITIES.includes(item as ModelModality))
         && value.thinking.every((item) => THINKING_MODES.includes(item as ThinkingMode))
         && value.effort.every((item) => EFFORT_LEVELS.includes(item as EffortLevel));
-      if (!inRange) return reply.code(400).send({ error: "capabilities values out of range (modalities: text/image/video; thinking: adaptive/enabled/disabled; effort: low/medium/high/xhigh/max/ultra)" });
+      if (!inRange) return reply.code(400).send({ error: "capabilities values out of range (modalities: text/image/video; thinking: adaptive/enabled/disabled; effort: minimal/low/medium/high/xhigh/max/ultra)" });
     }
     // maxOutput 已废弃：请求体携带该键时静默忽略（不 400、不透传）。
     if (body.contextWindow !== undefined && (!Number.isSafeInteger(body.contextWindow) || body.contextWindow < 1)) {

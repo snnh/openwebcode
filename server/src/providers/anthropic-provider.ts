@@ -52,8 +52,9 @@ export class AnthropicProvider implements Provider {
           model: request.model,
           max_tokens: maxTokens,
           ...(anthropicThinking(request, maxTokens) ? { thinking: anthropicThinking(request, maxTokens)! } : {}),
-          // ultra 超出 Anthropic 枚举（SDK 只声明到 max）：封顶 max 透传，其余原样
-          ...(request.effort ? { output_config: { effort: request.effort === "ultra" ? "max" as const : request.effort } } : {}),
+          // ultra 超出 Anthropic 枚举（SDK 只声明到 max）：封顶 max 透传；
+          // minimal 尚未纳入 Anthropic 枚举：封底 low 透传，其余原样
+          ...(request.effort ? { output_config: { effort: request.effort === "ultra" ? "max" as const : request.effort === "minimal" ? "low" as const : request.effort } } : {}),
           // 请求级采样参数（chat 模式助手预设下发）；undefined 时不发，由端点默认决定
           ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
           ...(request.topP !== undefined ? { top_p: request.topP } : {}),

@@ -1,16 +1,22 @@
-import type { ChatMessage, ImageContent, ThinkingContent, ToolCallContent } from "../sessions/types.js";
+import type { ChatMessage, ImageContent, TextContent, ToolCallContent } from "../sessions/types.js";
 import { readSseData, DEFAULT_STREAM_IDLE_TIMEOUT_MS } from "./openai-compatible-provider.js";
 import { normalizeProviderError, ProviderError } from "./provider-error.js";
-import { parseReasoningSignature, deriveReasoningId, deriveFcId } from "./responses-replay.js";
+import { parseReasoningSignature, encodeTextSignatureV1, parseTextSignature, deriveMessageItemId } from "./responses-replay.js";
 import { collectToolOutputs, parseArguments, providerRequestHeaders, requireResponseBody } from "./shared.js";
 import type { Provider, ProviderEvent, StreamChatRequest } from "./provider.js";
+
+/** OpenAI Responses 拒绝低于 16 的 max_output_tokens（dsh 同口径）。 */
+const OPENAI_RESPONSES_MIN_OUTPUT_TOKENS = 16;
 
 interface OpenAIResponsesProviderOptions {
   name?: string;
   apiKey?: string;
   baseURL: string;
-  /** 显式设置才发送 max_output_tokens；缺省不限制输出长度（端点自行决定）。 */
+  /** 显式设置才发送 max_output_tokens；缺省不限制输出长度（端点自行决定）。低于 16 会被抬升到 16。 */
   maxTokens?: number;
+  /** store 开关（缺省 false，按 dsh 口径 store:false 服务端无状态、状态由本地回放维护）；
+   * 端点不接受该字段时可由档案显式配置覆盖。 */
+  store?: boolean;
   /** 自定义请求体：浅合并进 responses 请求体，核心字段（model/input/stream/tools 等）优先。 */
   extraBody?: Record<string, unknown>;
   reasoningEffort?: boolean;
@@ -27,16 +33,16 @@ interface OpenAIResponsesProviderOptions {
 
 interface FunctionCallAccumulator {
   callId: string;
-  /** function_call item 的原始 id（fc_xxx）：随 tool_call 事件透传落盘，回放时原样回传
-   * （思维模式端点校验 reasoning↔function_call 配对时需要）。 */
+  /** function_call item 的原始 id（fc_xxx）：随 tool_call 事件透传落盘供诊断/升级固化；
+   * 回放时按 DeepSeek Harness 同口径不派发 item id（避免触发配对校验）。 */
   itemId?: string;
   name: string;
   arguments: string;
 }
 
 /** 流内 reasoning item 累积：output_item.added/delta 分片累积，output_item.done 收尾成
- * 完整 item（含 id），经 thinking_end 事件随 signature 持久化，回放时原样还原（DeepSeek
- * 思维模式强制完整回传 reasoning_text，缺 id/结构会 400）。 */
+ * 完整 item，经 thinking_end 事件随 signature 持久化；回放时从 signature 提取纯文本
+ * reasoning_text 分片（DeepSeek 输入只支持 plain-text content）。 */
 interface ReasoningAccumulator {
   id?: string;
   text: string;
@@ -46,14 +52,26 @@ interface ReasoningAccumulator {
  * OpenAI Responses API（POST {baseURL}/responses，stream: true）。
  *
  * 与 chat/completions 的差异：tools 为扁平 function 结构；消息历史映射为 input items
- * （function_call / function_call_output）；思维以 reasoning summary / reasoning text 流返回；
- * usage 挂在 response.completed 事件上（input_tokens_details.cached_tokens → cacheRead）。
- * 思维链回传遵循模型能力声明（request.reasoningContent）：开启时历史同源 thinking 块逐块
- * 还原为 reasoning item 置于 assistant 文本消息之前（canonical 官方输出序；DeepSeek 只在
- * 工具续轮请求强制校验该顺序与配对）——优先原样回放流式端持久化的完整原始 item（signature
- * 含 rs_ id，见 output_item.done 的 thinking_end 收尾），旧数据/导入历史重建并派生 id；
- * function_call 同带原始 fc_ item id（ToolCallContent.itemId）。同源 thinking 素材缺失的
- * tool_call（导入历史/旧协议遗留）补一条诚实标注的占位 reasoning item（官方只校验存在与
+ * （function_call / function_call_output / message）；思维以 reasoning summary / reasoning text
+ * 流返回；usage 挂在 response.completed 事件上（input_tokens_details.cached_tokens →
+ * cacheRead，cache_write_tokens → cacheWrite）。
+ *
+ * 无状态：请求体固定带 store:false（dsh 口径，服务端不存状态，多轮上下文完全由本地
+ * 回放维护）；max_output_tokens 显式设置时不低于 16（dsh OPENAI_RESPONSES_MIN_OUTPUT_TOKENS）。
+ *
+ * 加密回放模式（request.responsesEncryptedReplay，官方 OpenAI same-model 口径）：请求体带
+ * include:["reasoning.encrypted_content"]（仅当请求了 reasoning summary 或 effort），历史
+ * 同源 thinking 块的完整 reasoning item（含 rs_ id/encrypted_content）原样回放、文本块按
+ * textSignature 还原 message item（msg_ id/phase）、function_call 保留 fc_ item id，不做
+ * DeepSeek 那套纯文本剥离与占位兜底。
+ *
+ * 思维链回传（request.reasoningContent，非加密/DeepSeek 口径）：开启时历史同源 thinking
+ * 块合并为纯文本 reasoning_text 分片，在工具续轮请求中逐 function_call 重复回放（DeepSeek
+ * 思维模式强制：每个 function_call 前紧跟完整 reasoning item，多调用轮只在开头放一条
+ * 必 400；纯文本轮不强制）。流式端持久化的原始 item signature 只取内容，不原样回放
+ * id/status/summary/encrypted_content；function_call 不派发 item id（call_id 已足够，
+ * 派生/复制的 id 反而会触发端点配对校验）。同源 thinking 素材缺失的 tool_call
+ * （导入历史/旧协议遗留）补一条诚实标注的占位 reasoning item（官方只校验存在与
  * 位置，不校验内容真实性）。
  *
  * prompt caching：Responses 只有自动前缀缓存，无显式断点机制——cacheBreakpoints 在此
@@ -63,6 +81,12 @@ interface ReasoningAccumulator {
  * 端点支持，其他类型内置工具忽略）；web_search_call 状态事件映射为 server_tool 活动
  * （实时展示用，不落盘）。历史不回放 web_search_call 项——端点无状态，搜索结果由
  * 模型在当轮重新获取，assistant 文本已含其结论。
+ *
+ * 流式收尾：message output_item.done 以权威文本兜底 delta 后发 text_end（signature 为 v1
+ * textSignature，落盘供回放 message item id/phase）；reasoning output_item.done 发 thinking_end
+ * （signature 为完整原始 item）；response.completed/incomplete 的 output 携带 encrypted_content
+ * 而持久化签名缺失时，补发第二次 thinking_end 合并密文（B3 回填，Azure 等端点只在该终态给
+ * 密文）；Azure 漏发 output_item.done content 时由 completed output 兜底收尾。
  */
 export class OpenAIResponsesProvider implements Provider {
   readonly name: string;
@@ -78,6 +102,9 @@ export class OpenAIResponsesProvider implements Provider {
   async *streamChat(request: StreamChatRequest): AsyncIterable<ProviderEvent> {
     let response: Response;
     const maxTokens = request.maxTokens ?? this.maxTokens;
+    // 加密回放模式（官方 OpenAI same-model 口径）：请求 reasoning.encrypted_content，历史
+    // reasoning/message/function_call item 按原始结构原样回放（含 rs_/fc_ id）
+    const encrypted = request.responsesEncryptedReplay === true;
     // 思维摘要流开关：请求级（模型能力声明）优先，回落 provider 级配置（默认开）
     const reasoningSummary = request.reasoningContent ?? (this.options.reasoningContent !== false);
     const reasoning: Record<string, unknown> = {};
@@ -94,9 +121,15 @@ export class OpenAIResponsesProvider implements Provider {
           ...this.options.extraBody,
           model: request.model,
           stream: true,
+          // dsh 口径：store:false 服务端无状态，多轮上下文由本地回放维护
+          store: this.options.store ?? false,
           instructions,
-          input: toResponsesInput(request.messages, this.name, reasoningSummary, this.options.diagnosticWriter ?? defaultDiagnosticWriter),
-          ...(maxTokens !== undefined ? { max_output_tokens: maxTokens } : {}),
+          input: toResponsesInput(request.messages, this.name, reasoningSummary, this.options.diagnosticWriter ?? defaultDiagnosticWriter, encrypted),
+          // dsh 口径：max_output_tokens 显式设置时不低于 16（OpenAI 拒绝更小值）
+          ...(maxTokens !== undefined ? { max_output_tokens: Math.max(maxTokens, OPENAI_RESPONSES_MIN_OUTPUT_TOKENS) } : {}),
+          // 加密回放模式请求 reasoning.encrypted_content：include 与 reasoning 开关/effort 绑定
+          // （dsh 条件：include 紧随 reasoning effort/summary 下发）
+          ...(encrypted && (reasoningSummary || request.effort !== undefined) ? { include: ["reasoning.encrypted_content"] } : {}),
           // 请求级采样参数：Responses 的推理档（请求携带 effort）拒绝 temperature/top_p，
           // 此时不下发，避免 400；非推理请求按请求级配置透传
           ...(request.effort === undefined && request.temperature !== undefined ? { temperature: request.temperature } : {}),
@@ -131,6 +164,12 @@ export class OpenAIResponsesProvider implements Provider {
     // reasoning item 按 output_index 聚合：added 开槽、delta 累积、done 收尾 emit thinking_end
     // （携带完整 item 的 signature，供 agent 持久化后原样回放——思维模式端点强制回传）。
     const reasoningAccums = new Map<number, ReasoningAccumulator>();
+    // message 文本按 output_index 聚合：delta 累积进槽位，done 以权威 item 文本兜底后发 text_end
+    // （signature 为 v1 textSignature，落盘供回放 message item id/phase）。
+    const textAccums = new Map<number, { text: string }>();
+    // 已收尾 reasoning item（id → 文本/signature）：B3 回填用——completed output 携带
+    // encrypted_content 而持久化签名缺失时，合并密文补发第二次 thinking_end。
+    const reasoningFinished = new Map<string, { text: string; signature: string }>();
     let sawRefusal = false;
     let finalStatus: string | null = null;
     let incompleteReason: string | null = null;
@@ -142,7 +181,15 @@ export class OpenAIResponsesProvider implements Provider {
         const event = JSON.parse(data) as ResponsesStreamEvent;
         switch (event.type) {
           case "response.output_text.delta":
-            if (event.delta) yield { type: "text_delta", text: event.delta };
+            if (event.delta) {
+              if (event.output_index !== undefined) {
+                // 开槽或续写文本槽位（output_item.added 未到/缺失时兜底）
+                const acc = textAccums.get(event.output_index) ?? { text: "" };
+                acc.text += event.delta;
+                textAccums.set(event.output_index, acc);
+              }
+              yield { type: "text_delta", text: event.delta };
+            }
             break;
           // reasoning summary（官方）与 reasoning text（gpt-oss 等）都归一为 thinking_delta；
           // 同步累积进 reasoning 槽位，output_item.done 收尾时作为 thinking_end 的完整文本
@@ -158,7 +205,28 @@ export class OpenAIResponsesProvider implements Provider {
             }
             break;
           }
+          // summary part 完结：追加空行分隔（与 reasoning_text 分片拼成独立摘要段落）
+          case "response.reasoning_summary_part.done": {
+            if (event.output_index !== undefined) {
+              const acc = reasoningAccums.get(event.output_index) ?? { text: "" };
+              acc.text += "\n\n";
+              reasoningAccums.set(event.output_index, acc);
+            }
+            yield { type: "thinking_delta", text: "\n\n" };
+            break;
+          }
           case "response.refusal.delta":
+            sawRefusal = true;
+            // refusal 与 output_text 同属 message 文本槽位：累积并在收尾时计入权威文本
+            if (event.delta) {
+              if (event.output_index !== undefined) {
+                const acc = textAccums.get(event.output_index) ?? { text: "" };
+                acc.text += event.delta;
+                textAccums.set(event.output_index, acc);
+              }
+              yield { type: "text_delta", text: event.delta };
+            }
+            break;
           case "response.refusal.done":
             sawRefusal = true;
             break;
@@ -185,6 +253,9 @@ export class OpenAIResponsesProvider implements Provider {
             } else if (event.item?.type === "reasoning" && event.output_index !== undefined) {
               // 开槽：后续 reasoning_text.delta 累积进该槽位，done 时收尾 emit thinking_end
               reasoningAccums.set(event.output_index, { text: "", ...(event.item.id ? { id: event.item.id } : {}) });
+            } else if (event.item?.type === "message" && event.output_index !== undefined) {
+              // 开槽：后续 output_text/refusal delta 累积进该槽位，done 时发 text_end
+              textAccums.set(event.output_index, { text: "" });
             }
             break;
           case "response.function_call_arguments.delta": {
@@ -213,13 +284,34 @@ export class OpenAIResponsesProvider implements Provider {
               // 原样还原（思维模式端点强制 reasoning_text 完整回传，缺 id/结构会 400）。
               const acc = reasoningAccums.get(event.output_index);
               reasoningAccums.delete(event.output_index);
-              const parts = event.item.content?.filter((part: { type?: string; text?: string }) => part?.type === "reasoning_text");
-              const itemText = (parts?.map((part: { text?: string }) => part.text ?? "").join("") ?? "")
-                || (event.item.summary?.map((s: { text?: string }) => s.text ?? "").join("") ?? "");
+              const summaryText = (event.item.summary ?? []).map((s) => s.text ?? "").join("\n\n");
+              const contentText = (event.item.content ?? [])
+                .filter((part) => part?.type === "reasoning_text")
+                .map((part) => part.text ?? "")
+                .join("\n\n");
+              const text = summaryText || contentText || acc?.text || "";
+              const signature = JSON.stringify(event.item);
+              if (event.item.id) reasoningFinished.set(event.item.id, { text, signature });
+              yield { type: "thinking_end", text, signature };
+            } else if (event.item?.type === "message" && event.output_index !== undefined) {
+              // 文本收尾：以 output_item.done 的权威 item 文本兜底 delta（覆盖不流式/截断 delta
+              // 的端点），随后发 text_end（signature 为 v1 textSignature，落盘供回放 message item）
+              const acc = textAccums.get(event.output_index);
+              textAccums.delete(event.output_index);
+              const accumulated = acc?.text ?? "";
+              const authoritative = (event.item.content ?? [])
+                .filter((part) => part?.type === "output_text" || part?.type === "refusal")
+                .map((part) => (part?.type === "refusal" ? part.refusal ?? "" : part.text ?? ""))
+                .join("");
+              if (authoritative.length > accumulated.length && authoritative.startsWith(accumulated)) {
+                yield { type: "text_delta", text: authoritative.slice(accumulated.length) };
+              } else if (authoritative !== accumulated) {
+                yield { type: "text_delta", text: authoritative };
+              }
               yield {
-                type: "thinking_end",
-                text: itemText || acc?.text || "",
-                signature: JSON.stringify(event.item),
+                type: "text_end",
+                text: authoritative || accumulated,
+                ...(event.item.id ? { signature: encodeTextSignatureV1(event.item.id, event.item.phase) } : {}),
               };
             }
             break;
@@ -233,19 +325,35 @@ export class OpenAIResponsesProvider implements Provider {
                 const acc = rememberCall(calls, item.id, item);
                 if (item.arguments !== undefined) acc.arguments = item.arguments;
               } else if (item.type === "reasoning" && item.id !== undefined) {
-                // 兜底：个别端点（如 Azure）在 output_item.done 不带完整 content，仅
-                // response.completed 的 output 里携带——此时该槽位尚未收尾，补 emit
-                // thinking_end（signature 用权威完整 item）。
-                for (const [index, acc] of reasoningAccums) {
-                  if (acc.id === item.id) {
-                    const parts = item.content?.filter((part: { type?: string; text?: string }) => part?.type === "reasoning_text");
-                    const itemText = parts?.map((part: { text?: string }) => part.text ?? "").join("") ?? "";
-                    reasoningAccums.delete(index);
-                    yield {
-                      type: "thinking_end",
-                      text: itemText || acc.text || "",
-                      signature: JSON.stringify(item),
-                    };
+                const finished = reasoningFinished.get(item.id);
+                if (finished) {
+                  // B3 回填：completed output 携带 encrypted_content 而持久化签名缺失时，合并
+                  // 密文补发第二次 thinking_end（store:false 多轮回放依赖该密文原样回传）
+                  if (item.encrypted_content) {
+                    const stored = JSON.parse(finished.signature) as Record<string, unknown>;
+                    if (!stored.encrypted_content) {
+                      yield {
+                        type: "thinking_end",
+                        text: finished.text,
+                        signature: JSON.stringify({ ...stored, encrypted_content: item.encrypted_content }),
+                      };
+                    }
+                  }
+                } else {
+                  // 兜底：个别端点（如 Azure）在 output_item.done 不带完整 content，仅
+                  // response.completed 的 output 里携带——此时该槽位尚未收尾，补 emit
+                  // thinking_end（signature 用权威完整 item）。
+                  for (const [index, acc] of reasoningAccums) {
+                    if (acc.id === item.id) {
+                      const parts = item.content?.filter((part) => part?.type === "reasoning_text");
+                      const itemText = parts?.map((part) => part.text ?? "").join("\n\n") ?? "";
+                      reasoningAccums.delete(index);
+                      yield {
+                        type: "thinking_end",
+                        text: itemText || acc.text || "",
+                        signature: JSON.stringify(item),
+                      };
+                    }
                   }
                 }
               }
@@ -253,15 +361,20 @@ export class OpenAIResponsesProvider implements Provider {
             const usage = resp?.usage;
             if (usage) {
               const cachedTokens = usage.input_tokens_details?.cached_tokens ?? 0;
-              if (!Number.isSafeInteger(cachedTokens) || cachedTokens < 0 || cachedTokens > usage.input_tokens) {
+              const cacheWriteTokens = usage.input_tokens_details?.cache_write_tokens ?? 0;
+              if (!Number.isSafeInteger(cachedTokens) || cachedTokens < 0) {
                 throw new Error("OpenAI Responses provider returned invalid cached token usage");
+              }
+              if (!Number.isSafeInteger(cacheWriteTokens) || cacheWriteTokens < 0) {
+                throw new Error("OpenAI Responses provider returned invalid cache write token usage");
               }
               yield {
                 type: "usage",
-                inputTokens: usage.input_tokens - cachedTokens,
+                // OpenAI 把 cached/cache-write 计入 input_tokens，减去后可能为负（异常上报），钳到 0
+                inputTokens: Math.max(0, usage.input_tokens - cachedTokens - cacheWriteTokens),
                 outputTokens: usage.output_tokens,
                 cacheRead: cachedTokens,
-                cacheWrite: 0,
+                cacheWrite: cacheWriteTokens,
               };
             }
             break;
@@ -313,13 +426,25 @@ function rememberCall(
 
 /**
  * ChatMessage 历史 → Responses input items。
- * 思维链回传（replayReasoning，遵循模型目录「思维链回传」能力声明，与 openai-compatible
- * 的 reasoning_content 回带同一语义）：同源 thinking 块转为 reasoning item，置于
- * assistant 文本消息之前（canonical 官方输出序）。DeepSeek 只在工具续轮请求（以工具
- * 结果结尾）强制校验 reasoning 回传与顺序——assistant「有文本 + 有工具调用」时文本在
- * 前必 400（The reasoning_text in the thinking mode must be passed back to the API）。
+ *
+ * 加密回放模式（encrypted，official OpenAI / dsh same-model 口径）：assistant 消息按原始
+ * 块序逐块回放——同源 thinking 块带有效 signature 时把存储的完整 reasoning item（含 rs_
+ * id/encrypted_content/summary/content）原样回传；文本块还原完整 message item（msg_ id 取
+ * 自 textSignature，缺省派生稳定 id）；tool_call 保留 fc_ item id 并内联 function_call_output。
+ * 该模式不做纯文本剥离、不补占位 reasoning（服务端 reasoning↔function_call 的 id 配对由
+ * 原样回放维持）。用户消息恒为 parts 数组（input_text/input_image，原始块序）。
+ *
+ * 思维链回传（replayReasoning，非加密 / DeepSeek 口径，遵循模型目录「思维链回传」能力
+ * 声明，与 openai-compatible 的 reasoning_content 回带同一语义）：同源 thinking 块合并为
+ * 完整的 reasoning_text content parts。DeepSeek 思维模式的强制规则（真机探针验证，与
+ * DeepSeek Harness 的 Responses API 适配同口径）：每个 function_call 前必须紧跟一条带
+ * 完整 reasoning_text 的 reasoning item——function_call_output 会打断关联链，只在 assistant
+ * 消息前放一条在多调用轮必 400（The reasoning_text in the thinking mode must be passed back
+ * to the API）；空文本不算数；纯文本 assistant 消息与下一 user 轮不强制。
+ * 因此回放时只下发 DeepSeek 输入支持的 plain-text content（不带 item id/status/summary/
+ * encrypted_content），避免派生 id 触发端点的 reasoning↔function_call 配对校验。
  * 同源 thinking 素材缺失的 tool_call（导入历史/旧协议遗留）补一条诚实标注的占位
- * reasoning item：官方只校验存在与位置，不校验内容真实性（与 function_call_output 的
+ * reasoning item（官方只校验存在与位置，不校验内容真实性，与 function_call_output 的
  * interrupted 占位同思路）。OpenAI 官方端点声明关闭回传（服务端 reasoning item /
  * encrypted_content 机制），不受影响。
  *
@@ -338,7 +463,7 @@ let replaySuppressedLogged = false;
 const missingThinkingLogged = new Set<string>();
 
 /** 缺同源 thinking 素材时的占位 reasoning_text（导入历史/旧协议遗留的 tool_call 补位用）。
- * 官方只校验 reasoning 项存在且位于 assistant 文本之前，不校验内容真实性。 */
+ * 官方只校验 reasoning 项存在且位于 function_call 之前，不校验内容真实性。 */
 export const PLACEHOLDER_REASONING_TEXT = "No reasoning content was recorded for this tool call.";
 
 /** 缺省诊断留痕输出（stderr）。 */
@@ -346,48 +471,111 @@ const defaultDiagnosticWriter = (line: string): void => {
   process.stderr.write(line);
 };
 
-function toResponsesInput(messages: ChatMessage[], providerName: string, replayReasoning: boolean, diagnosticWriter: (line: string) => void): Array<Record<string, unknown>> {
+/** 工具调用被中断（无 tool_result 落盘）时的 function_call_output 占位输出。 */
+const INTERRUPTED_TOOL_OUTPUT = "The run was interrupted before this tool finished; no result was produced.";
+
+/** 替换孤立代理码点（lone surrogate）为 U+FFFD：高/低代理不配对会破坏 JSON 序列化
+ * （dsh sanitizeSurrogates 同义，本实现按任务口径用替换而非删除）。合法 emoji 的配对
+ * 代理不受影响。 */
+function sanitizeSurrogates(text: string): string {
+  return text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "\uFFFD");
+}
+
+/** 从持久化的 reasoning item signature 提取纯文本 reasoning_text 分片；无签名或内容为空
+ * 时回落到 thinking 块自身文本（旧数据/导入历史）。signature 只取内容，不原样回放
+ * id/status/summary/encrypted_content（DeepSeek 输入仅支持 plain-text content）。 */
+function reasoningTextParts(signature: string | undefined, fallbackText: string): Array<{ type: "reasoning_text"; text: string }> {
+  const original = parseReasoningSignature(signature);
+  const content = original?.content;
+  if (Array.isArray(content)) {
+    const parts = content
+      .filter((part): part is { type?: string; text?: string } => typeof part === "object" && part !== null && part.type === "reasoning_text")
+      .filter((part) => typeof part.text === "string" && part.text.trim() !== "")
+      .map((part) => ({ type: "reasoning_text" as const, text: part.text as string }));
+    if (parts.length > 0) return parts;
+  }
+  return fallbackText.trim() === "" ? [] : [{ type: "reasoning_text" as const, text: fallbackText }];
+}
+
+/** 持久化文本块上可能带有的 textSignature（v1 {v:1,id,phase?}）；sessions/types.ts 的
+ * TextContent 尚未声明该字段（后置任务），此处放宽类型只读取，不修改消息结构。 */
+type StoredTextBlock = TextContent & { textSignature?: string };
+
+function toResponsesInput(
+  messages: ChatMessage[],
+  providerName: string,
+  replayReasoning: boolean,
+  diagnosticWriter: (line: string) => void,
+  encrypted: boolean,
+): Array<Record<string, unknown>> {
   const outputs = collectToolOutputs(messages);
   const result: Array<Record<string, unknown>> = [];
   const emitted = new Set<string>();
   for (const message of messages) {
     if (message.role === "user") {
-      const images = message.content.filter((block): block is ImageContent & { data: string } =>
-        block.type === "image" && typeof block.data === "string");
-      const text = message.content
-        .filter((block) => block.type === "text")
-        .map((block) => block.text)
-        .join("");
-      // 无图时维持纯字符串 content（Responses 接受字符串简写）；有图时走 parts 数组
-      result.push({
-        role: "user",
-        content: images.length === 0
-          ? text
-          : [
-              ...images.map((block) => ({ type: "input_image", image_url: `data:${block.mediaType};base64,${block.data}` })),
-              { type: "input_text", text },
-            ],
-      });
-    } else if (message.role === "assistant") {
-      // 思维链回传素材：同源 thinking 块逐块还原为 reasoning item——优先原样回放持久化的
-      // 完整原始 item（signature 含 id，思维模式端点校验 reasoning↔function_call 配对）；
-      // 无 signature 的旧数据/导入历史重建（派生 id）；均置于 assistant 文本之前。
-      const reasoningItems: Array<Record<string, unknown>> = [];
-      if (replayReasoning) {
-        const thinkingBlocks = message.content.filter(
-          (block): block is ThinkingContent => block.type === "thinking" && block.provider === providerName,
+      // dsh 口径：用户内容恒为 parts 数组，按原始块序（text → input_text；image → input_image）
+      const content = message.content
+        .filter((block): block is TextContent | (ImageContent & { data: string }) =>
+          block.type === "text" || (block.type === "image" && typeof block.data === "string"))
+        .map((block) =>
+          block.type === "text"
+            ? { type: "input_text", text: sanitizeSurrogates(block.text) }
+            : { type: "input_image", detail: "auto", image_url: `data:${block.mediaType};base64,${block.data}` },
         );
-        for (const block of thinkingBlocks) {
-          const original = parseReasoningSignature(block.signature);
-          if (original) {
-            reasoningItems.push(original);
-          } else if (block.text.trim() !== "") {
-            reasoningItems.push({
-              type: "reasoning",
-              id: deriveReasoningId(`${message.id ?? "?"}:${block.text}`),
-              content: [{ type: "reasoning_text", text: block.text }],
+      if (content.length === 0) continue;
+      result.push({ role: "user", content });
+    } else if (message.role === "assistant") {
+      if (encrypted) {
+        // 加密回放模式（official OpenAI，dsh same-model 口径）：按原始块序回放——
+        // - 同源 thinking 块：带有效 signature 时把存储的完整 reasoning item（含 rs_ id /
+        //   encrypted_content / summary / content）原样回传；无签名直接跳过（不补占位）；
+        // - 文本块：完整 message item（msg_ id 取自 textSignature，缺省派生稳定 id）；
+        // - tool_call 块：function_call 保留 fc_ item id（itemId 以 fc_ 开头时），随后内联
+        //   function_call_output（结果缺失补 interrupted 占位）。
+        let textBlockIndex = 0;
+        for (const block of message.content) {
+          if (block.type === "thinking") {
+            if (block.provider !== providerName) continue;
+            const original = parseReasoningSignature(block.signature);
+            if (original) result.push(original);
+            // 无签名 → skip（加密回放不做占位，服务端不需要存在性校验）
+          } else if (block.type === "text") {
+            const textBlock = block as StoredTextBlock;
+            const parsedSignature = parseTextSignature(textBlock.textSignature);
+            result.push({
+              type: "message",
+              role: "assistant",
+              content: [{ type: "output_text", text: sanitizeSurrogates(textBlock.text), annotations: [] }],
+              status: "completed",
+              id: parsedSignature?.id ?? deriveMessageItemId(`${message.id}:${textBlockIndex}`),
+              ...(parsedSignature?.phase ? { phase: parsedSignature.phase } : {}),
+            });
+            textBlockIndex += 1;
+          } else if (block.type === "tool_call" && !emitted.has(block.id)) {
+            emitted.add(block.id);
+            result.push({
+              type: "function_call",
+              call_id: block.id,
+              name: block.name,
+              arguments: JSON.stringify(block.input),
+              // 仅原样回传以 fc_ 开头的官方 item id（其他派生/复制 id 反而触发配对校验）
+              ...(block.itemId && block.itemId.startsWith("fc_") ? { id: block.itemId } : {}),
+            });
+            result.push({
+              type: "function_call_output",
+              call_id: block.id,
+              output: sanitizeSurrogates(outputs.get(block.id) ?? INTERRUPTED_TOOL_OUTPUT),
             });
           }
+        }
+      } else {
+      // 思维链回传素材：同源 thinking 块合并为完整 reasoning_text parts（优先取持久化
+      // signature 的原始内容，旧数据回落块文本；空素材由占位 reasoning 兜底）。
+      const reasoningParts: Array<{ type: "reasoning_text"; text: string }> = [];
+      if (replayReasoning) {
+        for (const block of message.content) {
+          if (block.type !== "thinking" || block.provider !== providerName) continue;
+          reasoningParts.push(...reasoningTextParts(block.signature, block.text));
         }
       } else if (!replaySuppressedLogged && message.content.some((block) => block.type === "thinking" && block.provider === providerName)) {
         // 回传被能力声明关闭但历史含同源 thinking 块：DeepSeek 思维模式会因此 400，留痕便于诊断（每进程一次）
@@ -396,44 +584,40 @@ function toResponsesInput(messages: ChatMessage[], providerName: string, replayR
       }
       const text = message.content
         .filter((block) => block.type === "text")
-        .map((block) => block.text)
+        .map((block) => sanitizeSurrogates(block.text))
         .join("");
       // 同一 call_id 在多条 assistant 消息重复出现时只 inline 一次：
       // 重复的 function_call/_output 对会被 Responses API 拒绝。
       const toolCalls = message.content.filter((block): block is ToolCallContent => block.type === "tool_call" && !emitted.has(block.id));
       for (const call of toolCalls) emitted.add(call.id);
 
-      // canonical 官方输出序：reasoning 必须位于 assistant 文本消息之前。DeepSeek 只在
-      // 工具续轮请求（以工具结果结尾）强制校验该顺序——assistant「有文本 + 有工具调用」
-      // 时文本在前必 400。因此 reasoning 先于 text 排放（按块序逐条，覆盖本条消息全部 tool_call）。
-      if (reasoningItems.length === 0 && replayReasoning && toolCalls.length > 0) {
-        // 缺素材兜底：导入历史/旧协议遗留的 tool_call 无同源 thinking 块，仍必须带一条
-        // 占位 reasoning item（官方只校验存在与位置，不校验内容真实性，与 function_call_output
-        // 的 interrupted 占位同思路）；诚实标注来源避免污染真实思维链。
-        reasoningItems.push({
-          type: "reasoning",
-          id: deriveReasoningId(`${message.id ?? "?"}:${toolCalls.map((call) => call.id).join(",")}`),
-          content: [{ type: "reasoning_text", text: PLACEHOLDER_REASONING_TEXT }],
-        });
-        for (const call of toolCalls) {
-          const missingKey = `${message.id ?? "?"}:${call.id}`;
-          if (!missingThinkingLogged.has(missingKey)) {
-            missingThinkingLogged.add(missingKey);
-            diagnosticWriter(
-              `[openai-responses] 思维链回传已开启但 assistant 消息缺少同源 thinking 素材（tool_call ${call.name}）：已补占位 reasoning item\n`,
-            );
-          }
-        }
-      }
-      result.push(...reasoningItems);
-
+      // DeepSeek 思维模式规则：assistant 文本先排放，随后每个 function_call 前紧跟一条
+      // 完整 reasoning item（多调用轮逐调用重复；function_call_output 会打断关联链）。
+      // 纯文本 assistant 消息（无 tool_call）不回传 reasoning，端点不强制。
       if (text) result.push({ role: "assistant", content: text });
 
       for (const call of toolCalls) {
+        if (replayReasoning) {
+          if (reasoningParts.length > 0) {
+            result.push({ type: "reasoning", content: reasoningParts });
+          } else {
+            // 缺素材兜底：导入历史/旧协议遗留的 tool_call 无同源 thinking 块，仍必须带一条
+            // 占位 reasoning item（官方只校验存在与位置，不校验内容真实性，与 function_call_output
+            // 的 interrupted 占位同思路）；诚实标注来源避免污染真实思维链。
+            result.push({ type: "reasoning", content: [{ type: "reasoning_text", text: PLACEHOLDER_REASONING_TEXT }] });
+            const missingKey = `${message.id ?? "?"}:${call.id}`;
+            if (!missingThinkingLogged.has(missingKey)) {
+              missingThinkingLogged.add(missingKey);
+              diagnosticWriter(
+                `[openai-responses] 思维链回传已开启但 assistant 消息缺少同源 thinking 素材（tool_call ${call.name}）：已补占位 reasoning item\n`,
+              );
+            }
+          }
+        }
+        // function_call 只带 call_id（DeepSeek Harness 同口径：不派发 item id，避免触发
+        // 服务端 reasoning↔function_call 的 id 配对校验；call_id 与 output 配对已足够）
         result.push({
           type: "function_call",
-          // 原始 fc item id 优先；旧数据缺失时派生（fc_ 前缀，满足端点格式校验）
-          ...(call.itemId ? { id: call.itemId } : { id: deriveFcId(call.id) }),
           call_id: call.id,
           name: call.name,
           arguments: JSON.stringify(call.input),
@@ -441,8 +625,9 @@ function toResponsesInput(messages: ChatMessage[], providerName: string, replayR
         result.push({
           type: "function_call_output",
           call_id: call.id,
-          output: outputs.get(call.id) ?? "The run was interrupted before this tool finished; no result was produced.",
+          output: sanitizeSurrogates(outputs.get(call.id) ?? INTERRUPTED_TOOL_OUTPUT),
         });
+      }
       }
     }
     // tool 角色消息的 tool_result 已内联到对应 function_call 之后，游离者丢弃（见上文）
@@ -478,21 +663,25 @@ interface ResponsesStreamEvent {
   item_id?: string;
   arguments?: string;
   message?: string;
-  /** 输出槽位索引：reasoning/function_call 的 output_item 事件按 output_index 聚合（OpenAI
-   * 官方 SSE 事件携带；DeepSeek 兼容端点同）。 */
+  /** 输出槽位索引：reasoning/function_call/message 的 output_item 事件按 output_index 聚合
+   * （OpenAI 官方 SSE 事件携带；DeepSeek 兼容端点同）。 */
   output_index?: number;
   /** error 事件的失败码（response.failed 的码在 response.error.code 上）。 */
   code?: string;
   item?: {
     id?: string;
+    phase?: string;
     type?: string;
     call_id?: string;
     name?: string;
     arguments?: string;
-    /** reasoning item 的明文思维链分片（output_item.done 携带完整结构）。 */
-    content?: Array<{ type?: string; text?: string }>;
+    /** reasoning item 的明文思维链分片（output_item.done 携带完整结构）；message item 的
+     * 文本分片可能为 output_text（text）或 refusal（refusal）。 */
+    content?: Array<{ type?: string; text?: string; refusal?: string }>;
     /** reasoning item 的摘要分片（summary 模式）。 */
     summary?: Array<{ type?: string; text?: string }>;
+    /** reasoning item 的密文思维链（请求 include:["reasoning.encrypted_content"] 时返回）。 */
+    encrypted_content?: unknown;
   };
   response?: {
     status?: string;
@@ -505,12 +694,14 @@ interface ResponsesStreamEvent {
       name?: string;
       arguments?: string;
       /** reasoning item 的明文思维链分片（completed 权威终值）。 */
-      content?: Array<{ type?: string; text?: string }>;
+      content?: Array<{ type?: string; text?: string; refusal?: string }>;
+      /** reasoning item 的密文思维链（Azure 等端点只在 completed output 提供）。 */
+      encrypted_content?: unknown;
     }>;
     usage?: {
       input_tokens: number;
       output_tokens: number;
-      input_tokens_details?: { cached_tokens?: number };
+      input_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number };
     } | null;
   };
 }

@@ -22,8 +22,10 @@ const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 // 与 server/src/app.ts 上传路由对齐：避免超大 PDF 在浏览器端 base64 后才被拒。
 const MAX_PDF_UPLOAD_BYTES = 20 * 1024 * 1024;
 const MAX_ATTACHMENTS = 4;
-/** 全部 effort 档位（未声明模型的滑块全集；max/ultra 不翻译）。标签表见 popovers。 */
-const EFFORT_ALL = ["low", "medium", "high", "xhigh", "max", "ultra"];
+/** 全部 effort 档位（含 minimal；max/ultra 不翻译）。标签表见 popovers。 */
+const EFFORT_ALL = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+/** 默认 effort 档位（模型目录未声明 effort 子集时的滑块全集：原六档，不含 minimal）。 */
+const EFFORT_DEFAULT_ALL = ["low", "medium", "high", "xhigh", "max", "ultra"];
 
 type PdfToImageStatus = "loading" | "ready" | "unavailable";
 type NoticeKind = "info" | "error";
@@ -603,12 +605,12 @@ export function Composer({ session, running, onSend, onConfig, editingMessage, o
   const selectedModel = selectableModels.find((item) => item.provider === session.provider && item.id === session.model) ?? currentModel;
   const supportedThinking = selectedModel?.capabilities.thinking ?? [];
   const declaredEfforts = selectedModel?.capabilities.effort ?? [];
-  // 未声明（两数组均空）= 全部可选：滑块给全部六档，服务端同样放行合法枚举。
+  // 未声明（两数组均空）= 默认六档（不含 minimal）；minimal 仅当模型目录显式声明后出现。
   const thinkingUndeclared = supportedThinking.length === 0 && declaredEfforts.length === 0;
   // 已声明档位按强度规范序重排（声明顺序可能乱序，滑块必须 默认→低→…→ultra 递增）
   const effortLevels = declaredEfforts.length > 0
     ? EFFORT_ALL.filter((tier) => (declaredEfforts as readonly string[]).includes(tier))
-    : EFFORT_ALL;
+    : EFFORT_DEFAULT_ALL;
   const hasActiveThinkingMode = supportedThinking.some((mode) => mode !== "disabled");
   const thinkingControlSupported = thinkingUndeclared || hasActiveThinkingMode || declaredEfforts.length > 0;
   const currentEffort = session.effort && effortLevels.includes(session.effort) ? session.effort : undefined;

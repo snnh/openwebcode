@@ -131,6 +131,9 @@ export interface SubAgentOptions {
    * 子代理每轮把 thinking_delta/thinking_end 累积为带 provider 的 thinking 块写入对话历史，
    * 下一轮由 provider 按能力声明回传（DeepSeek 思维模式强制要求，缺素材会 400）。 */
   reasoningContent?: boolean;
+  /** 加密思维链回放（仅 OpenAI Responses 接口生效）：由调用方按实际请求模型（modelOverride ?? model）
+   * 的能力声明下发；true 时 provider 走 dsh same-model 口径（include 参数 + rs_/fc_ id 与 encrypted_content 原样回放）。 */
+  responsesEncryptedReplay?: boolean;
   /** 服务端联网搜索（请求级，仅 OpenAI Responses 接口生效）：model-api 模式下由调用方统一下发。 */
   serverWebSearch?: boolean;
 }
@@ -140,6 +143,35 @@ interface SubAgentResult {
   conclusion: string;
   turns: number;
   toolsUsed: string[];
+}
+
+/** B3 合并：无活动 thinking 槽位时，按 reasoning item 的 id 匹配既有 thinking 块原位替换
+ * （第二次 thinking_end 以 enriched signature 覆盖早期块，避免追加出重复块）。签名非 JSON、
+ * 无字符串 id 或未匹配到同源块时返回 false，由调用方按现状追加（Anthropic redacted 密文等
+ * 不受影响）。与 agent-runner 的 replaceThinkingBlockById 语义一致。 */
+function replaceThinkingBlockById(blocks: MessageContent[], signature: string, completed: MessageContent): boolean {
+  let targetId: unknown;
+  try {
+    targetId = (JSON.parse(signature) as { id?: unknown }).id;
+  } catch {
+    return false;
+  }
+  if (typeof targetId !== "string") return false;
+  for (let index = 0; index < blocks.length; index++) {
+    const block = blocks[index];
+    if (block?.type !== "thinking" || block.signature === undefined) continue;
+    let blockId: unknown;
+    try {
+      blockId = (JSON.parse(block.signature) as { id?: unknown }).id;
+    } catch {
+      continue;
+    }
+    if (blockId === targetId) {
+      blocks[index] = completed;
+      return true;
+    }
+  }
+  return false;
 }
 
 function systemPrompt(kind: BuiltinSubAgentKind, cwd: string, systemExtra: string | undefined): string {
@@ -200,24 +232,44 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
         tools,
         signal: options.signal,
         ...(options.reasoningContent !== undefined ? { reasoningContent: options.reasoningContent } : {}),
+        ...(options.responsesEncryptedReplay !== undefined ? { responsesEncryptedReplay: options.responsesEncryptedReplay } : {}),
         ...(options.serverWebSearch !== undefined ? { serverWebSearch: options.serverWebSearch } : {}),
       });
       turns += 1;
       const assistantContent: MessageContent[] = [];
       let text = "";
       let stopReason: string | undefined;
-      // 当前流式 thinking 块索引（thinking_delta 分片合并；thinking_end 收尾成块）：
+      // 当前流式 thinking/text 块索引（thinking_delta/text_delta 分片合并；thinking_end/text_end 收尾成块）：
       // 与主循环一致，thinking 块带 provider 字段落盘，供 OpenAI 兼容接口的思维链回传
-      // （DeepSeek 思维模式强制每个 function_call 前带 reasoning item，缺素材会 400）。
+      // （DeepSeek 思维模式强制每个 function_call 前带 reasoning item，缺素材会 400）；
+      // text 块按 Responses 惯例以 text_end 的权威文本收尾并固化 v1 textSignature。
       let activeThinkingIndex: number | undefined;
+      let activeTextIndex: number | undefined;
       for (const event of result.events) {
         if (event.type === "text_delta") {
           text += event.text;
-          // 与主循环一致：相邻 text_delta 属于同一段正文，合并进末尾 text block，
+          // 与主循环一致：相邻 text_delta 属于同一段正文，合并进当前 text 块，
           // 避免转录落盘时一条 assistant 消息携带数千个碎片 block。
-          const previous = assistantContent.at(-1);
-          if (previous?.type === "text") previous.text = `${previous.text ?? ""}${event.text}`;
-          else assistantContent.push({ type: "text", text: event.text });
+          const activeText = activeTextIndex === undefined ? undefined : assistantContent[activeTextIndex];
+          if (activeText?.type === "text") activeText.text = `${activeText.text ?? ""}${event.text}`;
+          else {
+            assistantContent.push({ type: "text", text: event.text });
+            activeTextIndex = assistantContent.length - 1;
+          }
+        } else if (event.type === "text_end") {
+          // Responses message item 收尾：以权威文本替换 delta 累积块并固化 v1 textSignature
+          // （{v:1,id,phase?}），回放时还原 message item id/phase。
+          const completedText: MessageContent = {
+            type: "text",
+            text: event.text,
+            ...(event.signature ? { textSignature: event.signature } : {}),
+          };
+          if (activeTextIndex === undefined) assistantContent.push(completedText);
+          else assistantContent[activeTextIndex] = completedText;
+          activeTextIndex = undefined;
+          // 局部 text 摘要同步权威文本：仅 text_end（无 delta）的轮次 text 仍为空，
+          // 需以此兜底，保证 lastText/结论不丢（delta 累积时语义等价）。
+          if (text === "") text = event.text;
         } else if (event.type === "thinking_delta") {
           const activeThinking = activeThinkingIndex === undefined ? undefined : assistantContent[activeThinkingIndex];
           if (activeThinking?.type === "thinking") {
@@ -234,8 +286,15 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
             ...(event.redacted ? { redacted: event.redacted } : {}),
             provider: options.provider.name,
           };
-          if (activeThinkingIndex === undefined) assistantContent.push(completedThinking);
-          else assistantContent[activeThinkingIndex] = completedThinking;
+          if (activeThinkingIndex !== undefined) {
+            // 活动槽位（thinking_delta 累积中）：原位替换
+            assistantContent[activeThinkingIndex] = completedThinking;
+          } else if (event.signature !== undefined && replaceThinkingBlockById(assistantContent, event.signature, completedThinking)) {
+            // B3（Azure encrypted_content 回填）：同一 reasoning item 的第二次 thinking_end
+            // 以 enriched signature 原位替换早期块，避免追加出重复块。
+          } else {
+            assistantContent.push(completedThinking);
+          }
           activeThinkingIndex = undefined;
         } else if (event.type === "tool_call") {
           assistantContent.push({

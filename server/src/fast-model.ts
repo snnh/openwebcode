@@ -105,6 +105,7 @@ export class FastModelClient {
         if (event.type === "text_delta") text += event.text;
         else if (event.type === "thinking_delta") thinking += event.text;
         else if (event.type === "thinking_end" && thinking === "") thinking = event.text;
+        else if (event.type === "text_end" && text === "") text = event.text;
         else if (event.type === "usage") {
           inputTokens += event.inputTokens;
           outputTokens += event.outputTokens;

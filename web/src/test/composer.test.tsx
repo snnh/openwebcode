@@ -351,6 +351,33 @@ describe("ModelMenu", () => {
     expect(screen.getByText("当前模型不在可用清单中")).toBeInTheDocument();
     expect(screen.getByText(/claude-opus-4-8【anthropic】/)).toBeInTheDocument();
   });
+
+  it("未声明 effort 的模型：滑块默认六档（不含 minimal）", async () => {
+    // renderComposer 默认模型 IMAGE_CAPS 的 effort 为空 → 走 EFFORT_DEFAULT_ALL 回退
+    const { container, client } = renderComposer();
+    await waitModelsLoaded(client);
+    fireEvent.click(screen.getByRole("button", { name: "模型与思考程度" }));
+    const cells = container.querySelectorAll(".thinking-cell");
+    // [默认, 低, 中, 高, 极高, max, ultra] = 7 个格子（6 档 effort + 左端点默认）
+    expect(cells).toHaveLength(7);
+    const labels = Array.from(cells).map((el) => el.getAttribute("aria-label"));
+    expect(labels).toEqual(["默认", "低", "中", "高", "极高", "max", "ultra"]);
+    expect(screen.queryByRole("button", { name: "最低" })).not.toBeInTheDocument();
+  });
+
+  it("模型声明 effort [low, minimal]：滑块按强度顺序只显示 minimal/low 两档", async () => {
+    stubApi([makeModelProfile({ capabilities: { thinking: [], effort: ["low", "minimal"], modalities: ["text"], imageOutput: false, tools: true } })]);
+    const { container, client } = renderComposer();
+    await waitModelsLoaded(client);
+    fireEvent.click(screen.getByRole("button", { name: "模型与思考程度" }));
+    const cells = container.querySelectorAll(".thinking-cell");
+    // 声明顺序 low→minimal 被打乱，滑块必须按规范序 [minimal, low]（左端点默认在前）
+    expect(cells).toHaveLength(3);
+    const labels = Array.from(cells).map((el) => el.getAttribute("aria-label"));
+    expect(labels).toEqual(["默认", "最低", "低"]);
+    expect(screen.queryByRole("button", { name: "中" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "ultra" })).not.toBeInTheDocument();
+  });
 });
 
 /**

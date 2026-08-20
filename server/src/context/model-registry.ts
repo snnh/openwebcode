@@ -74,7 +74,7 @@ interface SnapshotFile {
 const ANTHROPIC_MODELS_URL = "https://api.anthropic.com";
 const MODEL_MODALITIES: readonly ModelModality[] = ["text", "image", "video"];
 const THINKING_MODES: readonly ThinkingMode[] = ["adaptive", "enabled", "disabled"];
-const EFFORT_LEVELS: readonly EffortLevel[] = ["low", "medium", "high", "xhigh", "max", "ultra"];
+const EFFORT_LEVELS: readonly EffortLevel[] = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 const ISO_8601_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
 
 function modelKey(provider: string, id: string): string {
@@ -126,6 +126,7 @@ function normalizeCatalogModel(model: CatalogModel, source: ModelSource): Catalo
       effort: filterKnownValues(raw?.effort, fallback.effort, EFFORT_LEVELS),
       tools: typeof raw?.tools === "boolean" ? raw.tools : fallback.tools,
       ...materializeReasoningContent(raw?.reasoningContent, fallback.reasoningContent),
+      ...materializeResponsesEncryptedReplay(raw?.responsesEncryptedReplay, fallback.responsesEncryptedReplay),
     },
   };
 }
@@ -134,6 +135,12 @@ function normalizeCatalogModel(model: CatalogModel, source: ModelSource): Catalo
 function materializeReasoningContent(value: unknown, fallback: boolean | undefined): { reasoningContent?: boolean } {
   const merged = typeof value === "boolean" ? value : fallback;
   return typeof merged === "boolean" ? { reasoningContent: merged } : {};
+}
+
+/** 声明优先、缺省回落元数据默认；两者皆非布尔时省略该键（exactOptionalPropertyTypes）。 */
+function materializeResponsesEncryptedReplay(value: unknown, fallback: boolean | undefined): { responsesEncryptedReplay?: boolean } {
+  const merged = typeof value === "boolean" ? value : fallback;
+  return typeof merged === "boolean" ? { responsesEncryptedReplay: merged } : {};
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -176,6 +183,9 @@ function normalizeSyncedCapabilities(value: unknown, fallback: ModelCapabilities
   if (value.reasoningContent !== undefined && typeof value.reasoningContent !== "boolean") {
     throw new Error("Invalid catalog capabilities.reasoningContent");
   }
+  if (value.responsesEncryptedReplay !== undefined && typeof value.responsesEncryptedReplay !== "boolean") {
+    throw new Error("Invalid catalog capabilities.responsesEncryptedReplay");
+  }
   return {
     modalities: strictKnownValues(value.modalities, "modalities", fallback.modalities, MODEL_MODALITIES),
     // Legacy and partial remote catalogs deliberately default to the metadata fallback (currently false).
@@ -184,6 +194,7 @@ function normalizeSyncedCapabilities(value: unknown, fallback: ModelCapabilities
     effort: strictKnownValues(value.effort, "effort", fallback.effort, EFFORT_LEVELS),
     tools: typeof value.tools === "boolean" ? value.tools : fallback.tools,
     ...materializeReasoningContent(value.reasoningContent, fallback.reasoningContent),
+    ...materializeResponsesEncryptedReplay(value.responsesEncryptedReplay, fallback.responsesEncryptedReplay),
   };
 }
 

@@ -398,6 +398,9 @@ describe("ModelCatalogSection capabilities", () => {
     expect(screen.getByRole("checkbox", { name: "图片输出" })).toBeChecked();
     // 思维链回传：未声明时默认开（非 gpt/claude）
     expect(screen.getByRole("checkbox", { name: "思维链回传" })).toBeChecked();
+    // effort 档位全集含 minimal（力度组以原始值渲染），声明项默认勾选
+    expect(screen.getByRole("checkbox", { name: "minimal" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "medium" })).toBeChecked();
 
     fireEvent.click(screen.getByRole("checkbox", { name: "视频" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "图片输出" }));
@@ -410,6 +413,24 @@ describe("ModelCatalogSection capabilities", () => {
         imageOutput: false,
         reasoningContent: false,
       }),
+    })));
+  });
+
+  it("round-trips the responsesEncryptedReplay capability checkbox", async () => {
+    mockProfileQueries();
+    const save = vi.spyOn(api, "saveModel").mockResolvedValue(multimodalModel);
+    const view = renderCatalog();
+
+    fireEvent.doubleClick(await view.findByText("Multimodal model").then((el) => el.closest("tr")!));
+    // 未声明时默认关（server 缺省 gpt/o 系开、其余关）
+    const replay = screen.getByRole("checkbox", { name: "加密思维链回放（官方 OpenAI Responses）" });
+    expect(replay).not.toBeChecked();
+
+    fireEvent.click(replay);
+    fireEvent.click(screen.getByRole("button", { name: "保存模型" }));
+
+    await waitFor(() => expect(save).toHaveBeenCalledWith("multimodal-model", expect.objectContaining({
+      capabilities: expect.objectContaining({ responsesEncryptedReplay: true }),
     })));
   });
 

@@ -199,6 +199,69 @@ describe("subagent agent=general", () => {
     expect(h.core.readFileCalls).toHaveLength(1);
   });
 
+  it("子代理 text_end（无 text_delta）落盘带 textSignature 的 text 块并进入后续轮次请求", async () => {
+    const h = await setupRunner({ permissionMode: "yolo" });
+    const { provider, subRequests } = makeSpawnProvider((request, index) =>
+      index === 0
+        ? [
+            // 第一轮：仅 text_end（无 text_delta）——权威文本 + v1 textSignature
+            { type: "text_end", text: "第一轮结论", signature: JSON.stringify({ v: 1, id: "msg_text_1", phase: "final" }) },
+            { type: "tool_call", id: "sub-text-1", name: "read_file", input: { path: "a.txt" } },
+            { type: "done", stopReason: "tool_use" },
+          ]
+        : [
+            // 第二轮：同样只有 text_end，作为最终结论
+            { type: "text_end", text: "最终结论文本" },
+            { type: "done", stopReason: "end_turn" },
+          ],
+      { prompt: "读一个文件", agent: "general" });
+    const { runner } = makeRunner(h, provider);
+
+    await runner.run(h.session.id, "派生 general 子代理");
+
+    // 第二轮请求的 assistant 消息携带带 textSignature 的 text 块（由 text_end 固化）
+    expect(subRequests).toHaveLength(2);
+    const assistant = subRequests[1]!.messages.find((message) => message.role === "assistant");
+    expect(assistant?.content).toContainEqual({
+      type: "text",
+      text: "第一轮结论",
+      textSignature: JSON.stringify({ v: 1, id: "msg_text_1", phase: "final" }),
+    });
+    // 结论取自仅 text_end 轮次的权威文本（lastText 兜底，无 delta 也不丢）
+    const toolResult = toolResultOf(await h.sessions.get(h.session.id), "spawn-1");
+    expect(toolResult).toMatchObject({ isError: false, content: "最终结论文本" });
+  });
+
+  it("子代理同 id 的第二次 thinking_end 原位替换早期 thinking 块（B3 合并）", async () => {
+    const h = await setupRunner({ permissionMode: "yolo" });
+    const { provider, subRequests } = makeSpawnProvider((request, index) =>
+      index === 0
+        ? [
+            // 同一轮内：先发首块 thinking_end，再发同 id 的 enriched thinking_end（B3 场景）
+            { type: "thinking_end", text: "第一段思考", signature: JSON.stringify({ v: 1, id: "reasoning_9" }) },
+            { type: "thinking_end", text: "第二段思考", signature: JSON.stringify({ v: 1, id: "reasoning_9", phase: "final" }) },
+            { type: "tool_call", id: "sub-think-2", name: "read_file", input: { path: "b.txt" } },
+            { type: "done", stopReason: "tool_use" },
+          ]
+        : [
+            // 第二轮：普通收尾
+            { type: "text_end", text: "读完了" },
+            { type: "done", stopReason: "end_turn" },
+          ],
+      { prompt: "读一个文件", agent: "general" });
+    const { runner } = makeRunner(h, provider);
+
+    await runner.run(h.session.id, "派生 general 子代理");
+
+    // 第二轮请求的 assistant 消息只保留一个 thinking 块（被 enriched signature 原位替换而非追加）
+    expect(subRequests).toHaveLength(2);
+    const assistant = subRequests[1]!.messages.find((message) => message.role === "assistant");
+    const thinking = assistant?.content?.filter((block) => block.type === "thinking") ?? [];
+    expect(thinking).toEqual([
+      { type: "thinking", text: "第二段思考", signature: JSON.stringify({ v: 1, id: "reasoning_9", phase: "final" }), provider: "fake" },
+    ]);
+  });
+
   it("ask 模式拒绝写文件：tool_result 为拒绝原因，子代理继续收尾", async () => {
     const h = await setupRunner({ permissionMode: "ask" });
     const { provider, subRequests } = makeSpawnProvider((request, index) =>

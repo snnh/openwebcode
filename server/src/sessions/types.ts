@@ -3,6 +3,8 @@ export type MessageRole = "user" | "assistant" | "tool";
 export interface TextContent {
   type: "text";
   text: string;
+  /** OpenAI Responses message item 的 v1 签名（{v:1,id,phase?}），随 text_end 落盘，回放时还原 message item id/phase。 */
+  textSignature?: string;
 }
 
 export interface ThinkingContent {
@@ -142,7 +144,7 @@ export interface SessionMeta {
   /** 备选模型链（最多 3 个，校验时剔除与主模型重复或彼此重复项）；仅主循环 run 生效，子代理不继承（子代理走角色模型链）。 */
   fallbackModels?: FallbackModelEntry[];
   thinking?: "adaptive" | "enabled" | "disabled";
-  effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+  effort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
   agentMode?: "plan" | "code" | "goal";
   permissionMode?: PermissionMode;
   /** review 模式的审核模型来源；undefined = fast。 */

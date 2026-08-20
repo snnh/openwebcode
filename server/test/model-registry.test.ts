@@ -42,6 +42,14 @@ describe("model metadata lookup", () => {
     expect(lookupModelMetadata("z-ai/glm-5.2").capabilities.reasoningContent).toBe(true);
     expect(lookupModelMetadata("qwen3-max").capabilities.reasoningContent).toBe(true);
     expect(lookupModelMetadata("some-random-model").capabilities.reasoningContent).toBe(true);
+    // 官方 OpenAI Responses 加密思维链回放：gpt/o 系开启，其余（含未知模型）关闭
+    expect(lookupModelMetadata("gpt-5").capabilities.responsesEncryptedReplay).toBe(true);
+    expect(lookupModelMetadata("gpt-4o-2024-11-20").capabilities.responsesEncryptedReplay).toBe(true);
+    expect(lookupModelMetadata("o4-mini").capabilities.responsesEncryptedReplay).toBe(true);
+    expect(lookupModelMetadata("deepseek-chat").capabilities.responsesEncryptedReplay).toBe(false);
+    expect(lookupModelMetadata("qwen3-max").capabilities.responsesEncryptedReplay).toBe(false);
+    expect(lookupModelMetadata("claude-opus-4-8").capabilities.responsesEncryptedReplay).toBe(false);
+    expect(lookupModelMetadata("some-random-model").capabilities.responsesEncryptedReplay).toBe(false);
   });
 });
 
@@ -307,6 +315,7 @@ describe("ModelRegistry", () => {
       effort: ["high"],
       tools: false,
       reasoningContent: true,
+      responsesEncryptedReplay: false,
     });
 
     const snapshot = JSON.parse(await readFile(syncedPath(root), "utf8"));
@@ -315,6 +324,62 @@ describe("ModelRegistry", () => {
     const restored = await ModelRegistry.load({ ...paths(root), fetchImpl: fetchStub([]) });
     expect(restored.list().find((model) => model.id === "remote-image-video")?.source).toBe("synced");
     expect(restored.syncStatus()).toEqual({ count: 2, updatedAt: remoteDocument.updatedAt });
+  });
+
+  it("normalizes responsesEncryptedReplay and minimal effort from synced catalogs, rejecting non-booleans", async () => {
+    const root = await tempDir();
+    const registry = await ModelRegistry.load({ ...paths(root), fetchImpl: fetchStub([]) });
+    const ok = await registry.syncCatalogFromUrl("https://catalog.test/replay.json", {
+      fetchImpl: fetchStub([{
+        match: "https://catalog.test/replay.json",
+        body: {
+          version: 1,
+          updatedAt: "2026-07-21T00:00:00.000Z",
+          models: [
+            {
+              id: "replay-on",
+              provider: "remote",
+              contextWindow: 10_000,
+              capabilities: { modalities: ["text"], effort: ["minimal"], responsesEncryptedReplay: true },
+            },
+            {
+              id: "replay-off",
+              provider: "remote",
+              contextWindow: 10_000,
+              capabilities: { modalities: ["text"], responsesEncryptedReplay: false },
+            },
+          ],
+        },
+      }]),
+    });
+    expect(ok.ok).toBe(true);
+    const on = registry.list().find((model) => model.id === "replay-on");
+    expect(on?.capabilities.responsesEncryptedReplay).toBe(true);
+    expect(on?.capabilities.effort).toEqual(["minimal"]);
+    const off = registry.list().find((model) => model.id === "replay-off");
+    expect(off?.capabilities.responsesEncryptedReplay).toBe(false);
+
+    // 非布尔 responsesEncryptedReplay 声明整体拒绝，且不改动既有 synced 目录
+    const before = registry.list();
+    const bad = await registry.syncCatalogFromUrl("https://catalog.test/replay-bad.json", {
+      fetchImpl: fetchStub([{
+        match: "https://catalog.test/replay-bad.json",
+        body: {
+          version: 1,
+          updatedAt: "2026-07-21T00:00:00.000Z",
+          models: [
+            {
+              id: "replay-bad",
+              provider: "remote",
+              contextWindow: 10_000,
+              capabilities: { modalities: ["text"], responsesEncryptedReplay: "yes" },
+            },
+          ],
+        },
+      }]),
+    });
+    expect(bad).toEqual({ ok: false, error: "Invalid catalog capabilities.responsesEncryptedReplay" });
+    expect(registry.list()).toEqual(before);
   });
 
   async function registryWithSyncedCatalog(root: string): Promise<ModelRegistry> {
@@ -426,6 +491,34 @@ describe("AgentRunner model hot switching", () => {
     expect(requests[0]).not.toHaveProperty("thinking");
     expect(requests[1]).toMatchObject({ model: "claude-opus-4-8", thinking: "adaptive", effort: "xhigh" });
   });
+
+  it("sends responsesEncryptedReplay only when the effective model declares the capability", async () => {
+    const root = await tempRoot("owc-replay-wire-");
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const session = await sessions.create({ cwd: root, provider: "openai", model: "gpt-5" });
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const requests: StreamChatRequest[] = [];
+    const provider: Provider = {
+      name: "openai",
+      async *streamChat(request) {
+        requests.push(request);
+        yield { type: "done", stopReason: "end_turn" };
+      },
+    };
+    const providers = new ProviderRegistry(); providers.register(provider);
+    const core = { on() { return core; }, async configureSession() { return { sandboxCapability: "advisory" }; } } as unknown as CoreClient;
+    const runner = new AgentRunner(sessions, providers, core, new EventBus(), pricing);
+
+    await runner.run(session.id, "first");
+    expect(requests[0]).toMatchObject({ model: "gpt-5", responsesEncryptedReplay: true });
+
+    await sessions.updateConfig(session.id, { provider: "openai", model: "deepseek-chat" });
+    await runner.run(session.id, "second");
+    expect(requests[1]).toMatchObject({ model: "deepseek-chat" });
+    expect(requests[1]).not.toHaveProperty("responsesEncryptedReplay");
+  });
 });
 
 describe("models API", () => {
@@ -531,6 +624,15 @@ describe("models API", () => {
       expect(updated.json()).toMatchObject({ id: "my-custom", source: "manual", capabilities: caps });
       expect(updated.json()).not.toHaveProperty("capabilities.videoOutput");
       expect(updated.json()).not.toHaveProperty("maxOutput");
+      // minimal effort 与 responsesEncryptedReplay 是合法声明并原样持久化
+      const replayCaps = { modalities: ["text"], imageOutput: false, thinking: [], effort: ["minimal"], tools: true, responsesEncryptedReplay: true };
+      const replay = await app.inject({ method: "PUT", url: "/api/models/replay-model", payload: { provider: "openai", capabilities: replayCaps } });
+      expect(replay.statusCode).toBe(200);
+      expect(replay.json()).toMatchObject({ id: "replay-model", capabilities: expect.objectContaining({ effort: ["minimal"], responsesEncryptedReplay: true }) });
+      // 非布尔 responsesEncryptedReplay 拒绝（400），错误信息提及该字段
+      const replayBad = await app.inject({ method: "PUT", url: "/api/models/replay-model", payload: { provider: "openai", capabilities: { ...replayCaps, responsesEncryptedReplay: "yes" } } });
+      expect(replayBad.statusCode).toBe(400);
+      expect(replayBad.json().error).toContain("responsesEncryptedReplay");
       expect((await app.inject({ method: "DELETE", url: "/api/models/nonexistent" })).statusCode).toBe(409);
       expect((await app.inject({ method: "DELETE", url: "/api/models/my-custom" })).statusCode).toBe(204);
       const after = (await app.inject({ method: "GET", url: "/api/models" })).json<CatalogModel[]>();

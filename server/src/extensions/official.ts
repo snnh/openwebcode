@@ -145,7 +145,7 @@ export const OFFICIAL_EXTENSIONS: ExtensionManifest[] = [
     id: "session-format-upgrade",
     name: "会话格式升级",
     version: "0.1.0",
-    description: "离线升级旧会话为最新消息格式（OpenAI Responses 思维链回放字段：thinking signature / tool_call itemId）。手动触发、触发即锁（升级期间会话不可使用）、升级前备份可回滚；未来其他格式升级经同一框架注册步骤，主应用零改动。",
+    description: "离线升级旧会话为最新消息格式（OpenAI Responses 思维链回放字段：thinking signature / tool_call itemId / 文本块 textSignature v1 message id）。手动触发、触发即锁（升级期间会话不可使用）、升级前备份可回滚；未来其他格式升级经同一框架注册步骤，主应用零改动。",
     apiVersion: "1",
     // 服务端内建模块（不经 Extension Host IPC）；升级经 SessionStore.transformMessages 执行
     permissions: ["sessions:read"],

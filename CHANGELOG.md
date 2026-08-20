@@ -2,6 +2,23 @@
 
 本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前版本的用户可感知变化。日期以 Git 标签发布日期为准。
 
+## [1.9.3] - 2026-08-20
+
+### 新增功能
+
+- **模型能力「加密思维链回放」（responsesEncryptedReplay）**：官方 OpenAI Responses 的无状态多轮回放——请求侧按需发送 `include:["reasoning.encrypted_content"]`，历史 reasoning item 原样回放（`rs_` id / `encrypted_content` / summary），assistant 文本以完整 message item 回放（`textSignature` 还原 id/phase），`function_call` 条件性携带原生 `fc_` id；Azure 在 `output_item.done` 缺失密文时由终态响应回填。gpt/o 系模型默认开启、其余模型族默认关闭，模型目录 UI 可手动配置（与思维链回传开关同款交互）。
+- **思考强度新增 minimal 档**：仅作为能力/配置声明与 UI 选项（模型目录可手动勾选、会话可手动选择），不写入任何模型族默认；选中后按原样透传 `reasoning_effort` / `reasoning.effort`（Anthropic 端点因枚举不含 minimal，回落 low 透传）。
+- **会话格式升级新增「responses-text-signature」步骤**：为旧会话文本块固化 v1 message id 签名（官方 OpenAI Responses message item 回放的前置字段）；与既有思维链回放字段步骤一样幂等、升级前自动备份。
+
+### 优化
+
+- **OpenAI Responses provider 按 DeepSeek Harness（dsh）同口径全面对齐**：`store:false` 服务端无状态；`max_output_tokens` 显式设置时下限 16；user 消息统一 parts 数组并保持原始块序（`input_image` 带 `detail:"auto"`）；refusal 文本以正文增量转发；reasoning summary 分段以空行拼接；message `output_item.done` 以权威文本兜底并新增 `text_end` 收尾事件（文本块持久化 v1 textSignature）；usage 上报 `cache_write_tokens` 且输入 token 按 `max(0, input − cached − cacheWrite)` 钳制（不再因 cached>input 抛错）。DeepSeek 纯文本回放路径（每条 function_call 前紧邻 reasoning、无 item id、缺素材占位）保持不变。
+
+### 修复
+
+- 官方 OpenAI Responses 加密思维链多轮回放缺 `encrypted_content` / message id 的结构性问题（此前仅 DeepSeek 纯文本路径完整可用）。
+- 端点只发 `output_item.done` 不发 `output_text.delta` 时正文丢失的问题（现以权威文本补齐增量并收尾）。
+
 ## [1.9.2] - 2026-08-20
 
 ### 新增功能

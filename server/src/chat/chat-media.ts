@@ -176,6 +176,7 @@ export function createProviderVisionProvider(options: { name: string; model: str
       });
       for await (const event of stream) {
         if (event.type === "text_delta") answer += event.text;
+        else if (event.type === "text_end" && answer === "") answer = event.text;
       }
       return answer;
     },

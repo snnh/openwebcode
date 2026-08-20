@@ -247,9 +247,10 @@ export function AgentModeMenu({ agentMode, swarmEnabled, disabled, onConfig }: {
   );
 }
 
-/** 思考档标签：关/默认/自适应 + 六档 effort（max/ultra 不翻译）。徽标与滑块共用。 */
+/** 思考档标签：关/默认/自适应 + 七档 effort（max/ultra 不翻译）。徽标与滑块共用。 */
 export const THINKING_LABEL: Record<string, [string, string]> = { adaptive: ["自适应", "Adaptive"], enabled: ["默认", "Default"], disabled: ["关", "Off"] };
 export const EFFORT_LABEL: Record<string, [string, string]> = {
+  minimal: ["最低", "Minimal"],
   low: ["低", "Low"],
   medium: ["中", "Medium"],
   high: ["高", "High"],
@@ -264,7 +265,7 @@ export function ModelMenu({ current, selectableModels, selectionUnavailable, eff
   selectableModels: ModelProfile[];
   /** 当前会话模型不在可用清单中（provider 未配置等）：顶部固定展示一条选中态 */
   selectionUnavailable: boolean;
-  /** 有效 effort 档位（模型已声明子集；未声明时全部六档）。滑块档位 = [默认, ...effortLevels] */
+  /** 有效 effort 档位（模型已声明子集；未声明时默认六档，不含 minimal，需模型目录显式声明）。滑块档位 = [默认, ...effortLevels] */
   effortLevels: string[];
   thinkingOn: boolean;
   currentEffort?: string | undefined;

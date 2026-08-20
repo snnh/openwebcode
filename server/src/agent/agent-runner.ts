@@ -143,6 +143,35 @@ function parseMaxTurns(raw: unknown): number | undefined {
   return raw;
 }
 
+/** B3 合并：无活动 thinking 槽位时，按 reasoning item 的 id 匹配既有 thinking 块原位替换
+ * （第二次 thinking_end 以 enriched signature 覆盖早期块，避免追加出重复块）。签名非 JSON、
+ * 无字符串 id 或未匹配到同源块时返回 false，由调用方按现状追加（Anthropic redacted 密文等
+ * 不受影响）。 */
+function replaceThinkingBlockById(blocks: MessageContent[], signature: string, completed: MessageContent): boolean {
+  let targetId: unknown;
+  try {
+    targetId = (JSON.parse(signature) as { id?: unknown }).id;
+  } catch {
+    return false;
+  }
+  if (typeof targetId !== "string") return false;
+  for (let index = 0; index < blocks.length; index++) {
+    const block = blocks[index];
+    if (block?.type !== "thinking" || block.signature === undefined) continue;
+    let blockId: unknown;
+    try {
+      blockId = (JSON.parse(block.signature) as { id?: unknown }).id;
+    } catch {
+      continue;
+    }
+    if (blockId === targetId) {
+      blocks[index] = completed;
+      return true;
+    }
+  }
+  return false;
+}
+
 const GIT_STATUS_TOOL: ProviderTool = {
   name: "git_status",
   description:
@@ -1398,6 +1427,8 @@ export class AgentRunner {
               ...(reasoning.effort ? { effort: reasoning.effort } : {}),
               // 思维链回传按模型能力声明下发（未声明 = 默认开；gpt/claude 前缀元数据已声明关）
               reasoningContent: profile.capabilities.reasoningContent !== false,
+              // 官方 OpenAI Responses 加密思维链回放按模型能力声明下发（仅 gpt/o 系元数据开启）
+              ...(profile.capabilities.responsesEncryptedReplay ? { responsesEncryptedReplay: true } : {}),
               // 联网搜索模式：model-api 时下发请求级标记（仅 OpenAI Responses 接口消费，其他 provider 忽略）
               serverWebSearch: this.getWebSearchMode() === "model-api",
               system,
@@ -1478,6 +1509,7 @@ export class AgentRunner {
         perfProviderCallMs += performance.now() - providerCallStart;
         const assistantContent: MessageContent[] = [];
         let activeThinkingIndex: number | undefined;
+        let activeTextIndex: number | undefined;
         let stopReason: string | undefined;
         let lastUsage: Extract<ProviderEvent, { type: "usage" }> | undefined;
         for (const event of turn.events) {
@@ -1485,9 +1517,23 @@ export class AgentRunner {
             // Provider 文本以 token/chunk 形式流入。相邻分片属于同一段正文，
             // 落盘前合并，避免前端把每个分片当成独立块而逐词换行。
             // （前端的流式显示由 collectProviderTurn 的 onEvent 实时发布，此处只落盘。）
-            const previous = assistantContent.at(-1);
-            if (previous?.type === "text") previous.text = `${previous.text ?? ""}${event.text}`;
-            else assistantContent.push({ type: "text", text: event.text });
+            const activeText = activeTextIndex === undefined ? undefined : assistantContent[activeTextIndex];
+            if (activeText?.type === "text") activeText.text = `${activeText.text ?? ""}${event.text}`;
+            else {
+              assistantContent.push({ type: "text", text: event.text });
+              activeTextIndex = assistantContent.length - 1;
+            }
+          } else if (event.type === "text_end") {
+            // Responses message item 收尾：以权威文本替换 delta 累积块，并固化 v1 textSignature
+            // （{v:1,id,phase?}），回放时还原 message item id/phase。
+            const completedText: MessageContent = {
+              type: "text",
+              text: event.text,
+              ...(event.signature ? { textSignature: event.signature } : {}),
+            };
+            if (activeTextIndex === undefined) assistantContent.push(completedText);
+            else assistantContent[activeTextIndex] = completedText;
+            activeTextIndex = undefined;
           } else if (event.type === "thinking_delta") {
             const activeThinking = activeThinkingIndex === undefined ? undefined : assistantContent[activeThinkingIndex];
             if (activeThinking?.type === "thinking") {
@@ -1504,8 +1550,15 @@ export class AgentRunner {
               ...(event.redacted ? { redacted: event.redacted } : {}),
               provider: provider.name,
             };
-            if (activeThinkingIndex === undefined) assistantContent.push(completedThinking);
-            else assistantContent[activeThinkingIndex] = completedThinking;
+            if (activeThinkingIndex !== undefined) {
+              // 活动槽位（thinking_delta 累积中）：原位替换
+              assistantContent[activeThinkingIndex] = completedThinking;
+            } else if (event.signature !== undefined && replaceThinkingBlockById(assistantContent, event.signature, completedThinking)) {
+              // B3（Azure encrypted_content 回填）：同一 reasoning item 的第二次 thinking_end
+              // 以 enriched signature 原位替换早期块，避免追加出重复块。
+            } else {
+              assistantContent.push(completedThinking);
+            }
             activeThinkingIndex = undefined;
           } else if (event.type === "tool_call_delta") {
             // 流式分片仅用于实时显示，无落盘内容（完整 tool_call 事件随后到达）
@@ -1928,6 +1981,9 @@ export class AgentRunner {
         provider: context.provider,
         model: session.model,
         reasoningContent: this.getProfile(resolved.modelOverride ?? session.model, context.providerName).capabilities.reasoningContent !== false,
+        ...(this.getProfile(resolved.modelOverride ?? session.model, context.providerName).capabilities.responsesEncryptedReplay
+          ? { responsesEncryptedReplay: true }
+          : {}),
         serverWebSearch: this.getWebSearchMode() === "model-api",
         ...(resolved.modelOverride ? { modelOverride: resolved.modelOverride } : {}),
         ...(systemExtra ? { systemExtra } : {}),
@@ -2634,6 +2690,9 @@ export class AgentRunner {
           provider,
           model: session.model,
           reasoningContent: this.getProfile(effectiveModel, providerName).capabilities.reasoningContent !== false,
+          ...(this.getProfile(effectiveModel, providerName).capabilities.responsesEncryptedReplay
+            ? { responsesEncryptedReplay: true }
+            : {}),
           serverWebSearch: this.getWebSearchMode() === "model-api",
           ...(resolved.modelOverride ? { modelOverride: resolved.modelOverride } : {}),
           ...(systemExtra ? { systemExtra } : {}),
@@ -2781,6 +2840,9 @@ export class AgentRunner {
               provider,
               model: session.model,
               reasoningContent: this.getProfile(effectiveModel, providerName).capabilities.reasoningContent !== false,
+              ...(this.getProfile(effectiveModel, providerName).capabilities.responsesEncryptedReplay
+                ? { responsesEncryptedReplay: true }
+                : {}),
               serverWebSearch: this.getWebSearchMode() === "model-api",
               ...(effective.modelOverride ? { modelOverride: effective.modelOverride } : {}),
               ...(systemExtra ? { systemExtra } : {}),
