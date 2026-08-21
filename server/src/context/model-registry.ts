@@ -289,7 +289,16 @@ export class ModelRegistry {
       return this.manualModels.get(key) ?? this.syncedModels.get(key) ?? this.apiModels.get(key) ??
         listModelProfiles().find((item) => item.id === id && item.provider === provider) ?? getModelProfile(id);
     }
-    return this.list().find((item) => item.id === id) ?? getModelProfile(id);
+    // 同 id 多 provider 条目时按声明优先级取（用户手动声明 > 远程同步 > 自动拉取 > 内置），
+    // 避免 api 自动条目的保守兜底能力盖过用户在模型目录的显式声明（如 vision 支持）。
+    // list() 的展示层不变：不同 provider 的同 id 条目仍全部列出。
+    const byPriority: Array<ReadonlyMap<string, CatalogModel>> = [this.manualModels, this.syncedModels, this.apiModels];
+    for (const layer of byPriority) {
+      for (const model of layer.values()) {
+        if (model.id === id) return model;
+      }
+    }
+    return listModelProfiles().find((item) => item.id === id) ?? getModelProfile(id);
   }
 
   isManual(id: string, provider?: string): boolean {

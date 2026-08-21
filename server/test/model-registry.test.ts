@@ -230,6 +230,30 @@ describe("ModelRegistry", () => {
     expect(await restored.removeManual("my-model")).toBe(false);
   });
 
+  it("prefers manual declaration over api entries when the same id exists under multiple providers", async () => {
+    const root = await tempDir();
+    const registry = await ModelRegistry.load({
+      ...paths(root),
+      fetchImpl: fetchStub([{ match: "https://gateway.test/models", body: { data: [{ id: "vision-model" }] } }]),
+    });
+    await registry.refresh({ providers: [{ provider: "gateway", interfaceType: "openai-chat-completions", baseURL: "https://gateway.test" }] });
+    // api 自动拉取条目：能力为内置兜底（无 image）
+    expect(registry.get("vision-model").capabilities.modalities).not.toContain("image");
+    // 用户在同 id 的另一 provider 下声明 vision 支持
+    await registry.upsertManual({
+      id: "vision-model", provider: "official", source: "manual", contextWindow: 128_000,
+      capabilities: { modalities: ["text", "image"], imageOutput: false, thinking: [], effort: [], tools: true },
+    });
+    // 无 provider 查询：用户声明（manual）优先于 api 自动条目，不被内置兜底能力盖过
+    const profile = registry.get("vision-model");
+    expect(profile.provider).toBe("official");
+    expect(profile.capabilities.modalities).toContain("image");
+    // 带 provider 查询仍精确命中对应条目
+    expect(registry.get("vision-model", "gateway").capabilities.modalities).not.toContain("image");
+    // list() 展示层不变：不同 provider 的同 id 条目并存
+    expect(registry.list().filter((model) => model.id === "vision-model")).toHaveLength(2);
+  });
+
   it("normalizes legacy saved capabilities with imageOutput disabled", async () => {
     const root = await tempDir();
     const registryPaths = paths(root);
