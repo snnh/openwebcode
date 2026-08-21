@@ -43,9 +43,9 @@ describe("model metadata lookup", () => {
     expect(lookupModelMetadata("qwen3-max").capabilities.reasoningContent).toBe(true);
     expect(lookupModelMetadata("some-random-model").capabilities.reasoningContent).toBe(true);
     // 官方 OpenAI Responses 加密思维链回放：gpt/o 系开启，其余（含未知模型）关闭
-    expect(lookupModelMetadata("gpt-5").capabilities.responsesEncryptedReplay).toBe(true);
-    expect(lookupModelMetadata("gpt-4o-2024-11-20").capabilities.responsesEncryptedReplay).toBe(true);
-    expect(lookupModelMetadata("o4-mini").capabilities.responsesEncryptedReplay).toBe(true);
+    expect(lookupModelMetadata("gpt-5").capabilities.responsesEncryptedReplay).toBe(false);
+    expect(lookupModelMetadata("gpt-4o-2024-11-20").capabilities.responsesEncryptedReplay).toBe(false);
+    expect(lookupModelMetadata("o4-mini").capabilities.responsesEncryptedReplay).toBe(false);
     expect(lookupModelMetadata("deepseek-chat").capabilities.responsesEncryptedReplay).toBe(false);
     expect(lookupModelMetadata("qwen3-max").capabilities.responsesEncryptedReplay).toBe(false);
     expect(lookupModelMetadata("claude-opus-4-8").capabilities.responsesEncryptedReplay).toBe(false);
@@ -512,7 +512,9 @@ describe("AgentRunner model hot switching", () => {
     const runner = new AgentRunner(sessions, providers, core, new EventBus(), pricing);
 
     await runner.run(session.id, "first");
-    expect(requests[0]).toMatchObject({ model: "gpt-5", responsesEncryptedReplay: true });
+    // 加密思维链回放默认关闭（用户明确要求「加密默认关闭」）：gpt-5 不再自动下发
+    expect(requests[0]).toMatchObject({ model: "gpt-5" });
+    expect(requests[0]).not.toHaveProperty("responsesEncryptedReplay");
 
     await sessions.updateConfig(session.id, { provider: "openai", model: "deepseek-chat" });
     await runner.run(session.id, "second");

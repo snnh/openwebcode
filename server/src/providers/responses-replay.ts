@@ -30,6 +30,21 @@ export function parseReasoningSignature(signature: string | undefined): Record<s
   return undefined;
 }
 
+/** 解析 web_search_call 块持久化的服务端原始 item JSON：回放时按文档「Pass back as-is」
+ * 原样回传（服务端自动恢复搜索结果）。非法载荷返回 undefined（调用方跳过该块）。 */
+export function parseWebSearchCallSignature(signature: string | undefined): Record<string, unknown> | undefined {
+  if (!signature) return undefined;
+  try {
+    const parsed = JSON.parse(signature) as Record<string, unknown>;
+    if (parsed && typeof parsed === "object" && parsed.type === "web_search_call" && typeof parsed.id === "string") {
+      return parsed;
+    }
+  } catch {
+    // 非 JSON：跳过
+  }
+  return undefined;
+}
+
 /** 为格式升级固化的 reasoning item 派生稳定 id（rs_ + 内容短哈希）：旧数据无原始 id 时
  * 的兜底，保持升级产物稳定（官方 id 形如 rs_<24 hex>）。 */
 function deriveReasoningId(seed: string): string {

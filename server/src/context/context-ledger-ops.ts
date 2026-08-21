@@ -115,6 +115,11 @@ export function measureFragment(message: ChatMessage): { tokens: number; segment
       const tokens = estimateTokens(block.text);
       total += tokens;
       segments[block.type === "thinking" ? "other" : roleBucket] += tokens;
+    } else if (block.type === "web_search_call") {
+      // 仅回放元数据（服务端原始 item），按签名长度估算计入
+      const tokens = estimateTokens(block.signature);
+      total += tokens;
+      segments[roleBucket] += tokens;
     }
   }
   return { tokens: total, segments };

@@ -68,6 +68,7 @@ function renderBlock(block: MessageContent): string {
   if (block.type === "thinking") return `[思考] ${block.text}`;
   if (block.type === "tool_call") return `[调用工具 ${block.name}] ${JSON.stringify(block.input)}`;
   if (block.type === "tool_result") return `[工具结果${block.isError ? "（错误）" : ""}] ${block.content}`;
+  if (block.type === "web_search_call") return "[联网搜索]";
   return "";
 }
 

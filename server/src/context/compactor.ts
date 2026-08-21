@@ -110,6 +110,7 @@ function renderBlock(block: MessageContent): string {
   if (block.type === "thinking") return `[思考] ${block.text.slice(0, 200)}`;
   if (block.type === "tool_call") return `[调用工具 ${block.name}] ${JSON.stringify(block.input).slice(0, 300)}`;
   if (block.type === "tool_result") return `[工具结果${block.isError ? "（错误）" : ""}] ${block.content.slice(0, 800)}`;
+  if (block.type === "web_search_call") return "[联网搜索]";
   return "";
 }
 

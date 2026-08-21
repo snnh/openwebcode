@@ -88,6 +88,8 @@ function renderBlock(block: MessageContent, language: ExportLanguage): string {
       if (!isBase64) return "";
       return `<img class="msg-image" src="data:${escapeHtml(block.mediaType)};base64,${block.data}" alt="${tr(language, "图片", "Image")}">`;
     }
+    case "web_search_call":
+      return `<div class="tool-call"><span class="tool-name">${tr(language, "联网搜索", "Web search")}</span></div>`;
   }
 }
 

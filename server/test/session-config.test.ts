@@ -60,7 +60,7 @@ describe("session model config", () => {
     });
 
     it("validates and persists idle model thinking and effort updates", async () => {
-      const session = await sessions.create({ cwd: root, provider: "anthropic", model: "deepseek-chat" });
+      const session = await sessions.create({ cwd: root, provider: "anthropic", model: "some-random-model" });
       // 未声明（capabilities 空数组）= 全部可选：合法枚举放行，含 ultra 档；非法枚举仍 400
       const undeclared = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { effort: "high" } });
       expect(undeclared.statusCode).toBe(200);
@@ -73,6 +73,9 @@ describe("session model config", () => {
       // 已声明白名单维持 400：gpt-5 只声明 low/medium/high
       const declaredInvalid = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { model: "gpt-5", effort: "xhigh" } });
       expect(declaredInvalid.statusCode).toBe(400);
+      // deepseek 声明了 low/medium/high/xhigh/max：白名单外的 minimal 拒绝（官方文档映射表）
+      const deepseekInvalid = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { model: "deepseek-chat", effort: "minimal" } });
+      expect(deepseekInvalid.statusCode).toBe(400);
       // 切到已声明且不含继承值的模型时原子清除（gpt-5 不含 ultra），而不是要求用户先单独关闭再切模型
       const switched = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { model: "gpt-5" } });
       expect(switched.statusCode).toBe(200);

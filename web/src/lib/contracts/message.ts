@@ -1,5 +1,5 @@
 export interface MessageContent {
-  type: "text" | "thinking" | "tool_call" | "tool_result" | "image";
+  type: "text" | "thinking" | "tool_call" | "tool_result" | "image" | "web_search_call";
   text?: string;
   provider?: string;
   id?: string;
@@ -16,6 +16,10 @@ export interface MessageContent {
   subagentTaskIds?: string[];
   /** subagent/spawn_swarm 逐项终态（index 显式对应 swarm item 序号）；优先于 isError 启发式 */
   subagentTasks?: Array<{ taskId: string; index: number; status: "done" | "failed"; error?: string }>;
+  /** web_search_call 块：服务端原始 item JSON（id/status/action），仅展示用 */
+  signature?: string;
+  /** web_search_call 块：状态（in_progress/completed/failed） */
+  status?: string;
 }
 
 export interface ChatMessage {

@@ -61,7 +61,7 @@ import { ToolAliasResolver } from "./tool-alias.js";
  * 直接由 FILE_TOOLS 派生，新增文件工具自动纳入。 */
 const LOCAL_PATH_GATED_TOOLS = new Set(FILE_TOOLS.map((tool) => tool.name));
 import { digestSwarmBoard, swarmBoardPath } from "./swarm-board.js";
-import type { MessageContent, NodeEnv, PythonEnv, SessionMeta } from "../sessions/types.js";
+import type { MessageContent, NodeEnv, PythonEnv, SessionMeta, WebSearchCallContent } from "../sessions/types.js";
 import { effectivePythonEnv, UvPythonEnvironments, uvVenvDir, wrapCommandWithNote, wrapCommandWithVenv } from "../python-env.js";
 import { effectiveNodeEnv, NodeEnvManagers, wrapCommandWithNodeEnv } from "../node-env.js";
 import { activePathMessages } from "../sessions/session-tree.js";
@@ -1572,6 +1572,18 @@ export class AgentRunner {
               name: event.name,
               input: event.input,
             });
+          } else if (event.type === "web_search_call") {
+            // 服务端联网搜索完整 item：按流式到达顺序落盘为消息块（与 thinking 同构，
+            // 回放时按文档原样回传，服务端自动恢复搜索结果）
+            if (typeof event.item?.id === "string") {
+              const block: WebSearchCallContent = {
+                type: "web_search_call",
+                signature: JSON.stringify(event.item),
+                id: event.item.id,
+                ...(typeof event.item.status === "string" ? { status: event.item.status } : {}),
+              };
+              assistantContent.push(block);
+            }
           } else if (event.type === "usage") {
             // usage 可能逐 chunk 多次到达（stream_options.include_usage）：每条都实时转发 WS
             // （UI 实时成本不变），但 ledger/usageLog 只记本轮最后一条，避免逐 chunk 重复累加

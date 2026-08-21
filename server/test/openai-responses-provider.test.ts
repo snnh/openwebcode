@@ -430,8 +430,12 @@ describe("OpenAIResponsesProvider request mapping", () => {
           { type: "input_image", detail: "auto", image_url: "data:image/png;base64,aGk=" },
         ],
       },
-      { role: "assistant", content: "我查一下" },
-      { type: "reasoning", content: [{ type: "reasoning_text", text: PLACEHOLDER_REASONING_TEXT }] },
+      // 规范序：缺同源 thinking 素材的轮不回传 reasoning（真机验证无需占位）
+      {
+        type: "message", role: "assistant",
+        content: [{ type: "output_text", text: "我查一下", annotations: [] }],
+        status: "completed", id: deriveMessageItemId("a1:0"),
+      },
       { type: "function_call", call_id: "call_1", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
       { type: "function_call_output", call_id: "call_1", output: "ok" },
     ]);
@@ -450,7 +454,7 @@ describe("OpenAIResponsesProvider request mapping", () => {
     expect(reasoningBodies[0]?.top_p).toBeUndefined();
   });
 
-  it("思维链回传开启时同源 thinking 块在每个 function_call 前各放一条 reasoning item，关闭或异源不回传", async () => {
+  it("思维链回传开启时按规范序回放：reasoning 置于 message item 之前（合并同源 thinking），多 tool_call 轮不重复；关闭或异源不回传", async () => {
     const bodies: Array<Record<string, unknown>> = [];
     const messages: StreamChatRequest["messages"] = [
       { id: "u1", role: "user", content: [{ type: "text", text: "继续" }], createdAt: "2026-01-01T00:00:00.000Z" },
@@ -467,17 +471,20 @@ describe("OpenAIResponsesProvider request mapping", () => {
       { id: "t1", role: "tool", content: [{ type: "tool_result", toolCallId: "call_1", content: "A", isError: false }], createdAt: "2026-01-01T00:00:02.000Z" },
       { id: "t2", role: "tool", content: [{ type: "tool_result", toolCallId: "call_2", content: "B", isError: false }], createdAt: "2026-01-01T00:00:03.000Z" },
     ];
-    // 开启（缺省 reasoningContent=true）：DeepSeek 规则——assistant 文本后每个 function_call
-    // 前各放一条完整 reasoning item（output 打断关联链，多调用轮只在开头放一条必 400）；
-    // 异源 thinking 过滤；reasoning/function_call 均不带 item id
+    // 开启（缺省 reasoningContent=true）：DeepSeek 规范序——reasoning 合并后置于 message item
+    // 之前（"merged into the adjacent assistant message"），多 tool_call 轮不重复（真机验证）；
+    // 异源 thinking 过滤；reasoning/function_call 均不带 item id；message item id 缺省派生
     await collect(makeProvider(completedSseFetch(bodies)).streamChat(request({ messages })));
     expect(bodies[0]?.input).toEqual([
       { role: "user", content: [{ type: "input_text", text: "继续" }] },
-      { role: "assistant", content: "我查一下" },
       { type: "reasoning", content: [{ type: "reasoning_text", text: "先分析" }] },
+      {
+        type: "message", role: "assistant",
+        content: [{ type: "output_text", text: "我查一下", annotations: [] }],
+        status: "completed", id: deriveMessageItemId("a1:0"),
+      },
       { type: "function_call", call_id: "call_1", name: "read_file", arguments: "{\"path\":\"a\"}" },
       { type: "function_call_output", call_id: "call_1", output: "A" },
-      { type: "reasoning", content: [{ type: "reasoning_text", text: "先分析" }] },
       { type: "function_call", call_id: "call_2", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
       { type: "function_call_output", call_id: "call_2", output: "B" },
     ]);
@@ -485,7 +492,11 @@ describe("OpenAIResponsesProvider request mapping", () => {
     await collect(makeProvider(completedSseFetch(bodies)).streamChat(request({ messages, reasoningContent: false })));
     expect(bodies[1]?.input).toEqual([
       { role: "user", content: [{ type: "input_text", text: "继续" }] },
-      { role: "assistant", content: "我查一下" },
+      {
+        type: "message", role: "assistant",
+        content: [{ type: "output_text", text: "我查一下", annotations: [] }],
+        status: "completed", id: deriveMessageItemId("a1:0"),
+      },
       { type: "function_call", call_id: "call_1", name: "read_file", arguments: "{\"path\":\"a\"}" },
       { type: "function_call_output", call_id: "call_1", output: "A" },
       { type: "function_call", call_id: "call_2", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
@@ -518,11 +529,16 @@ describe("OpenAIResponsesProvider request mapping", () => {
     ];
     await collect(makeProvider(completedSseFetch(bodies)).streamChat(request({ messages })));
     // signature 提供权威 reasoning_text，但回放时剥掉 id/status/annotations（DeepSeek 输入只
-    // 支持 plain-text content）；function_call 只带 call_id，不派发持久化的 itemId
+    // 支持 plain-text content）；规范序 reasoning 在 message item 之前；function_call 只带 call_id，
+    // 不派发持久化的 itemId
     expect(bodies[0]?.input).toEqual([
       { role: "user", content: [{ type: "input_text", text: "继续" }] },
-      { role: "assistant", content: "我查一下" },
       { type: "reasoning", content: [{ type: "reasoning_text", text: "先分析" }] },
+      {
+        type: "message", role: "assistant",
+        content: [{ type: "output_text", text: "我查一下", annotations: [] }],
+        status: "completed", id: deriveMessageItemId("a1:0"),
+      },
       { type: "function_call", call_id: "call_1", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
       { type: "function_call_output", call_id: "call_1", output: "A" },
     ]);
@@ -541,47 +557,68 @@ describe("OpenAIResponsesProvider request mapping", () => {
     ];
     await collect(makeProvider(completedSseFetch(bodies)).streamChat(request({ messages })));
 
+    // 缺同源 thinking 素材的轮不回传 reasoning（真机验证规范序下无占位即通过）；悬空调用补 interrupted 占位输出
     expect(bodies[0]?.input).toEqual([
       { role: "user", content: [{ type: "input_text", text: "继续" }] },
-      { type: "reasoning", content: [{ type: "reasoning_text", text: PLACEHOLDER_REASONING_TEXT }] },
       { type: "function_call", call_id: "call_dangling", name: "bash", arguments: "{\"cmd\":\"sleep 600\"}" },
       { type: "function_call_output", call_id: "call_dangling", output: expect.stringContaining("interrupted") },
     ]);
   });
 
-  it("思维链回传开启但 assistant 消息缺同源 thinking 素材：补占位 reasoning item 且诊断留痕", async () => {
+  it("输入最后一条为 assistant 消息且缺同源 thinking 素材：补尾部占位 reasoning item 且诊断留痕（DeepSeek 尾部校验）", async () => {
     // 留痕输出经构造注入收集器（diagnosticWriter）：引用在创建 provider 时确定，
     // 不依赖任何模块级全局状态或 process.stderr 可替换性；限频键与 dangling 用例不同
     const lines: string[] = [];
     const bodies: Array<Record<string, unknown>> = [];
-    // 注意：限频键为 `消息id:tool_call id`，本文件首个映射用例已占用 "a1:call_1"，
-    // 此处必须使用独立 id，否则同进程内键控限频会把本用例的留痕吞掉
     const messages: StreamChatRequest["messages"] = [
       { id: "u1", role: "user", content: [{ type: "text", text: "继续" }], createdAt: "2026-01-01T00:00:00.000Z" },
       {
-        id: "a_missing", role: "assistant", createdAt: "2026-01-01T00:00:01.000Z",
+        id: "a_tail", role: "assistant", createdAt: "2026-01-01T00:00:01.000Z",
         content: [
           { type: "text", text: "我查一下" },
-          { type: "tool_call", id: "call_missing", name: "bash", input: { cmd: "ls" } },
+          { type: "tool_call", id: "call_tail", name: "bash", input: { cmd: "ls" } },
         ],
       },
-      { id: "t1", role: "tool", content: [{ type: "tool_result", toolCallId: "call_missing", content: "B", isError: false }], createdAt: "2026-01-01T00:00:02.000Z" },
+      { id: "t1", role: "tool", content: [{ type: "tool_result", toolCallId: "call_tail", content: "B", isError: false }], createdAt: "2026-01-01T00:00:02.000Z" },
     ];
+    // 控制：最后一条是 tool 消息（t1）时，缺素材轮不回传 reasoning
     const provider = new OpenAIResponsesProvider({
       baseURL: "https://example.invalid/v1",
       fetch: completedSseFetch(bodies),
       diagnosticWriter: (line) => lines.push(line),
     });
     await collect(provider.streamChat(request({ messages })));
-    // 缺素材 tool_call 补占位 reasoning（置于 function_call 之前），且诊断留痕
     expect(bodies[0]?.input).toEqual([
       { role: "user", content: [{ type: "input_text", text: "继续" }] },
-      { role: "assistant", content: "我查一下" },
-      { type: "reasoning", content: [{ type: "reasoning_text", text: PLACEHOLDER_REASONING_TEXT }] },
-      { type: "function_call", call_id: "call_missing", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
-      { type: "function_call_output", call_id: "call_missing", output: "B" },
+      {
+        type: "message", role: "assistant",
+        content: [{ type: "output_text", text: "我查一下", annotations: [] }],
+        status: "completed", id: deriveMessageItemId("a_tail:0"),
+      },
+      { type: "function_call", call_id: "call_tail", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
+      { type: "function_call_output", call_id: "call_tail", output: "B" },
     ]);
-    expect(lines.some((line) => line.includes("缺少同源 thinking 素材"))).toBe(true);
+    expect(lines).toEqual([]);
+
+    // 触发：最后一条是 assistant 且无 thinking 素材 → 补占位 reasoning（置于 message item 前）
+    const tailMessages: StreamChatRequest["messages"] = [
+      { id: "u1", role: "user", content: [{ type: "text", text: "继续" }], createdAt: "2026-01-01T00:00:00.000Z" },
+      {
+        id: "a_tail2", role: "assistant", createdAt: "2026-01-01T00:00:01.000Z",
+        content: [{ type: "text", text: "结论：完成" }],
+      },
+    ];
+    await collect(provider.streamChat(request({ messages: tailMessages })));
+    expect(bodies[1]?.input).toEqual([
+      { role: "user", content: [{ type: "input_text", text: "继续" }] },
+      { type: "reasoning", content: [{ type: "reasoning_text", text: PLACEHOLDER_REASONING_TEXT }] },
+      {
+        type: "message", role: "assistant",
+        content: [{ type: "output_text", text: "结论：完成", annotations: [] }],
+        status: "completed", id: deriveMessageItemId("a_tail2:0"),
+      },
+    ]);
+    expect(lines.some((line) => line.includes("缺同源 thinking 素材"))).toBe(true);
   });
 
   it("merges extraBody under core fields and omits max_output_tokens by default", async () => {
@@ -604,6 +641,12 @@ describe("OpenAIResponsesProvider request mapping", () => {
       { type: "response.web_search_call.completed", item_id: "ws_1" },
       { type: "response.output_text.delta", item_id: "msg_1", delta: "找到了" },
       {
+        type: "response.output_item.done",
+        item_id: "ws_1",
+        output_index: 1,
+        item: { id: "ws_1", type: "web_search_call", status: "completed", action: { type: "search", queries: ["北京天气"] } },
+      },
+      {
         type: "response.completed",
         response: { status: "completed", output: [{ id: "ws_1", type: "web_search_call" }], usage: { input_tokens: 10, output_tokens: 5 } },
       },
@@ -616,6 +659,13 @@ describe("OpenAIResponsesProvider request mapping", () => {
       { type: "server_tool", tool: "web_search", phase: "start" },
       { type: "server_tool", tool: "web_search", phase: "update" },
       { type: "server_tool", tool: "web_search", phase: "end" },
+    ]);
+    // 完整 web_search_call item 落盘事件（output_item.done 权威值，completed 兜底去重）
+    expect(events.filter((event) => event.type === "web_search_call")).toEqual([
+      {
+        type: "web_search_call",
+        item: { id: "ws_1", type: "web_search_call", status: "completed", action: { type: "search", queries: ["北京天气"] } },
+      },
     ]);
     // web_search_call 输出项不产出 tool_call、不影响 stopReason
     expect(events.some((event) => event.type === "tool_call")).toBe(false);
@@ -630,6 +680,74 @@ describe("OpenAIResponsesProvider request mapping", () => {
       { type: "function", name: "bash", description: "run", parameters: { type: "object" } },
       { type: "web_search" },
     ]);
+  });
+
+  it("web_search_call 块回放：非加密与加密路径均原样回传（Pass back as-is，服务端恢复搜索结果）", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const wsItem = { type: "web_search_call", id: "call_00_ws1", status: "completed", action: { type: "search", queries: ["北京天气"] } };
+    const messages: StreamChatRequest["messages"] = [
+      { id: "u1", role: "user", content: [{ type: "text", text: "今天北京天气如何" }], createdAt: "2026-01-01T00:00:00.000Z" },
+      {
+        id: "a1", role: "assistant", createdAt: "2026-01-01T00:00:01.000Z",
+        content: [
+          { type: "thinking", text: "先搜索", provider: "openai-responses" },
+          // 交错：web_search_call 块按流式到达顺序夹在 thinking 之后、text 之前
+          { type: "web_search_call", signature: JSON.stringify(wsItem), id: wsItem.id, status: wsItem.status },
+          { type: "text", text: "今天北京多云转阴。" },
+        ],
+      },
+    ];
+    await collect(makeProvider(completedSseFetch(bodies)).streamChat(request({ messages })));
+    expect(bodies[0]?.input).toEqual([
+      { role: "user", content: [{ type: "input_text", text: "今天北京天气如何" }] },
+      { type: "reasoning", content: [{ type: "reasoning_text", text: "先搜索" }] },
+      wsItem,
+      {
+        type: "message", role: "assistant",
+        content: [{ type: "output_text", text: "今天北京多云转阴。", annotations: [] }],
+        status: "completed", id: deriveMessageItemId("a1:0"),
+      },
+    ]);
+    // 加密路径同样原样回传
+    await collect(makeProvider(completedSseFetch(bodies)).streamChat(request({ messages, responsesEncryptedReplay: true })));
+    expect(bodies[1]?.input).toEqual([
+      { role: "user", content: [{ type: "input_text", text: "今天北京天气如何" }] },
+      wsItem,
+      {
+        type: "message", role: "assistant",
+        content: [{ type: "output_text", text: "今天北京多云转阴。", annotations: [] }],
+        status: "completed", id: deriveMessageItemId("a1:0"),
+      },
+    ]);
+    // 非法签名跳过（后随 user 消息，非尾部，不触发占位）
+    const badMessages: StreamChatRequest["messages"] = [
+      { id: "u1", role: "user", content: [{ type: "text", text: "hi" }], createdAt: "2026-01-01T00:00:00.000Z" },
+      {
+        id: "a1", role: "assistant", createdAt: "2026-01-01T00:00:01.000Z",
+        content: [{ type: "web_search_call", signature: "not-json", id: "x" }],
+      },
+      { id: "u2", role: "user", content: [{ type: "text", text: "再问" }], createdAt: "2026-01-01T00:00:02.000Z" },
+    ];
+    await collect(makeProvider(completedSseFetch(bodies)).streamChat(request({ messages: badMessages })));
+    expect(bodies[2]?.input).toEqual([
+      { role: "user", content: [{ type: "input_text", text: "hi" }] },
+      { role: "user", content: [{ type: "input_text", text: "再问" }] },
+    ]);
+  });
+
+  it("thinking=disabled 且模型为 deepseek：reasoning.effort 映射为 none（官方文档：none 禁用思考模式）；其他模型不下发", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    await drain(makeProvider(completedSseFetch(bodies)).streamChat(request({ model: "deepseek-v4-pro", thinking: "disabled" })));
+    expect(bodies[0]?.reasoning).toMatchObject({ effort: "none" });
+    // 用户显式 effort 优先于 thinking 默认（disabled 仍显式关闭）
+    await drain(makeProvider(completedSseFetch(bodies)).streamChat(request({ model: "deepseek-v4-pro", thinking: "disabled", effort: "max" })));
+    expect(bodies[1]?.reasoning).toMatchObject({ effort: "none" });
+    // 非 deepseek 模型不下发 effort:none（官方 OpenAI 无该取值）；summary 仍在
+    await drain(makeProvider(completedSseFetch(bodies)).streamChat(request({ model: "gpt-5", thinking: "disabled" })));
+    expect(bodies[2]?.reasoning).toEqual({ summary: "auto" });
+    // enabled/adaptive 不覆盖
+    await drain(makeProvider(completedSseFetch(bodies)).streamChat(request({ model: "deepseek-v4-pro", thinking: "enabled", effort: "high" })));
+    expect(bodies[3]?.reasoning).toMatchObject({ effort: "high" });
   });
 
   it("store:false 缺省随请求下发（dsh 无状态口径），options.store 可覆盖", async () => {
@@ -747,15 +865,20 @@ describe("OpenAIResponsesProvider request mapping", () => {
       { type: "function_call", call_id: "call_2", name: "read_file", arguments: "{\"path\":\"a\"}" },
       { type: "function_call_output", call_id: "call_2", output: "B" },
     ]);
-    // 同一消息关闭加密回放：DeepSeek 口径不变（纯文本剥离 + 占位/素材合并 + 不派发 item id）
+    // 同一消息关闭加密回放：DeepSeek 口径（纯文本剥离 + 规范序：逐 thinking 块一条 reasoning
+    // 置于 message item 之前；文本合并为一条 message item；不派发 item id）
     await collect(makeProvider(completedSseFetch(bodies)).streamChat(request({ messages, responsesEncryptedReplay: false })));
     expect(bodies[1]?.input).toEqual([
       { role: "user", content: [{ type: "input_text", text: "继续" }] },
-      { role: "assistant", content: "我查一下再补充" },
-      { type: "reasoning", content: [{ type: "reasoning_text", text: "加密思维" }, { type: "reasoning_text", text: "无签名思维" }] },
+      { type: "reasoning", content: [{ type: "reasoning_text", text: "加密思维" }] },
+      { type: "reasoning", content: [{ type: "reasoning_text", text: "无签名思维" }] },
+      {
+        type: "message", role: "assistant",
+        content: [{ type: "output_text", text: "我查一下再补充", annotations: [] }],
+        status: "completed", id: "msg_enc1", phase: "commentary",
+      },
       { type: "function_call", call_id: "call_1", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
       { type: "function_call_output", call_id: "call_1", output: "A" },
-      { type: "reasoning", content: [{ type: "reasoning_text", text: "加密思维" }, { type: "reasoning_text", text: "无签名思维" }] },
       { type: "function_call", call_id: "call_2", name: "read_file", arguments: "{\"path\":\"a\"}" },
       { type: "function_call_output", call_id: "call_2", output: "B" },
     ]);
