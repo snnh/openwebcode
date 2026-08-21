@@ -2,6 +2,20 @@
 
 本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前版本的用户可感知变化。日期以 Git 标签发布日期为准。
 
+## [1.9.4] - 2026-08-21
+
+### 修复
+
+- **DeepSeek Responses 思维链回放 400 根治**（`reasoning_text must be passed back`）：官方规则要求带 `tools` 的请求中历史 `reasoning_text` 必须完整回传，且 reasoning item 须置于其归属的 assistant 消息**之前**（plain-text content 合并进相邻 assistant 消息）。此前「文本先行、reasoning 逐 function_call 前置」的布局全部错位，端点立即 400。现按规范序回放：逐 thinking 块合并 reasoning_text → 完整 message item（`textSignature` 还原 id/phase）→ 逐 function_call + output；多工具调用轮不再逐调用重复 reasoning；缺同源 thinking 素材的轮不再补占位（真机验证均不需要）；仅当输入最后一条是 assistant 消息且无任何 thinking 素材时补诚实占位（该场景端点直接 400）。
+
+### 新增功能
+
+- **服务端联网搜索回放（web_search_call）**：模型服务端执行搜索（`web_search` 工具）的完整 item（id/status/action）随 assistant 消息持久化，回放时按官方文档「Pass back as-is」原样回传，服务端自动恢复搜索结果；UI 以「联网搜索」标签展示。此前搜索过程仅实时展示、不落盘，多轮续跑时搜索结果上下文丢失。
+
+### 优化
+
+- **模型元数据**：`responsesEncryptedReplay`（加密思维链回放）默认关闭——此前 gpt/o 系内置条目默认开启，现改为默认 false（官方 OpenAI 模型如需加密回放可在模型目录 UI 手动开启）；DeepSeek 模型补充 `thinking:["enabled","disabled"]` 与 `effort:["low","medium","high","xhigh","max"]` 能力声明（与官方文档一致）。
+- **思考开关生效**：DeepSeek 模型 `thinking=disabled` 现映射为 `reasoning.effort:"none"`（官方文档：none 禁用思考模式）；Chat Completions 路径同步补 `thinking:{"type":...}` 映射。此前该开关对 Responses 路径完全无效。
 ## [1.9.3] - 2026-08-20
 
 ### 新增功能
