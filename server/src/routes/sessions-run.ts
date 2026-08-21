@@ -181,7 +181,9 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
           return reply.code(400).send({ error: `images 需为至多 ${MAX_IMAGES_PER_MESSAGE} 张 png/jpeg/webp/gif（base64），每张不超过 5MB` });
         }
         if (images.length > 0) {
-          const profile = dependencies.models?.get(session.model) ?? getModelProfile(session.model);
+          // 带 provider 精确命中目录条目：同 id 多 provider 时取会话所用 provider 的声明
+          // （用户手动声明的能力优先于 api 自动拉取的保守兜底，如 vision 支持）。
+          const profile = dependencies.models?.get(session.model, session.provider) ?? getModelProfile(session.model);
           // 视觉工具扩展启用且已配置视觉模型时，主模型不支持视觉也放行：
           // context.beforeBuild 钩子会把图片替换为视觉模型的文字描述再注入主模型。
           const visionBridgeActive = isVisionBridgeActive(dependencies.extensions);

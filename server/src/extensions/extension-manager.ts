@@ -7,6 +7,7 @@ import type { AppEvent, EventBus } from "../events/event-bus.js";
 import type { FastModelClient } from "../fast-model.js";
 import type { CoreClientLike } from "../core-client.js";
 import { getModelProfile } from "../context/model-profile.js";
+import type { ModelRegistry } from "../context/model-registry.js";
 import { withTimeout } from "../http-utils.js";
 import type { ProviderRegistry, ProviderTool } from "../providers/provider.js";
 import type { ChatMessage, SessionDetail, SessionMeta } from "../sessions/types.js";
@@ -107,7 +108,7 @@ export class ExtensionManager {
   /** UA 模拟刷新序号：连续 configure 时只让最后一次异步解析落地。 */
   private userAgentSimulationSeq = 0;
 
-  constructor(private readonly dataDir: string, private readonly events?: EventBus, private readonly deps: { sessions?: SessionStore; fastModel?: FastModelClient; storageQuota?: { file: number; total: number }; vaultService?: CompactVaultService; providers?: ProviderRegistry; core?: CoreClientLike } = {}) {
+  constructor(private readonly dataDir: string, private readonly events?: EventBus, private readonly deps: { sessions?: SessionStore; fastModel?: FastModelClient; storageQuota?: { file: number; total: number }; vaultService?: CompactVaultService; providers?: ProviderRegistry; core?: CoreClientLike; models?: ModelRegistry } = {}) {
     this.root = path.join(dataDir, "extensions");
     this.configPath = path.join(this.root, "extensions.json");
   }
@@ -547,7 +548,9 @@ export class ExtensionManager {
       case "models.getCapabilities": {
         const model = typeof params.model === "string" && params.model ? params.model : "";
         if (!model) throw new Error("models.getCapabilities requires a model string");
-        const capabilities = getModelProfile(model).capabilities;
+        // 经 registry 解析（同 id 多 provider 时用户手动声明优先），未命中回落静态元数据；
+        // 避免内置兜底能力盖过用户在模型目录的显式声明（如 vision 支持）。
+        const capabilities = (this.deps.models?.get(model) ?? getModelProfile(model)).capabilities;
         return {
           vision: capabilities.modalities.includes("image"),
           modalities: [...capabilities.modalities],
