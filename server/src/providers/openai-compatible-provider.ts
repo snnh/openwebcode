@@ -65,6 +65,11 @@ export class OpenAICompatibleProvider implements Provider {
         ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
         ...(request.topP !== undefined ? { top_p: request.topP } : {}),
         ...(this.options.reasoningEffort !== false && request.effort ? { reasoning_effort: request.effort } : {}),
+        // DeepSeek 官方文档：Chat Completions 的 thinking 开关 = thinking:{"type":"enabled/disabled"}
+        // （extra_body 通道）；仅 DeepSeek 模型生效，其他兼容端点可能拒绝未知参数。
+        ...(request.thinking !== undefined && request.thinking !== "adaptive" && request.model.toLowerCase().startsWith("deepseek")
+          ? { thinking: { type: request.thinking } }
+          : {}),
         messages: toOpenAIMessages(request.system, request.messages, this.name, reasoningContent),
         ...(request.tools.length > 0
           ? {

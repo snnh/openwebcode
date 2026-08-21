@@ -566,6 +566,7 @@ export function registerChatRoutes(app: FastifyInstance, ctx: RouteContext): voi
         else if (block.type === "image") lines.push(`> [image: ${block.mediaType}]\n`);
         else if (block.type === "tool_call") lines.push(`> Tool: ${block.name}\n`);
         else if (block.type === "tool_result") lines.push(`> Result: ${block.content}\n`);
+        else if (block.type === "web_search_call") lines.push(`> [web search]\n`);
       }
     }
     return reply

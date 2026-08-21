@@ -54,6 +54,10 @@ export type ProviderEvent =
   /** 服务端工具活动（如 Responses API 的 web_search_call）：工具由模型服务端执行，
    * 无需本地调度；仅用于实时活动展示，不落盘、不参与 stopReason 判定。 */
   | { type: "server_tool"; tool: string; phase: "start" | "update" | "end" }
+  /** 服务端联网搜索的完整 web_search_call item（id/status/action，OpenAI Responses
+   * output_item.done / completed output 权威值）：随 assistant 消息按块序落盘，回放时
+   * 按文档「Pass back as-is；服务端自动恢复搜索结果」原样回传。 */
+  | { type: "web_search_call"; item: Record<string, unknown> }
   | {
       type: "usage";
       inputTokens: number;

@@ -98,6 +98,8 @@ export function estimateMessageTokens(messages: ChatMessage[]): number {
       else if (block.type === "tool_call") total += estimateTokens(JSON.stringify(block.input)) + 8;
       else if (block.type === "tool_result") total += estimateTokens(block.content);
       else if (block.type === "text" || block.type === "thinking") total += estimateTokens(block.text);
+      // web_search_call：仅回放元数据（服务端原始 item），按小定额计入水位
+      else if (block.type === "web_search_call") total += estimateTokens(block.signature);
     }
     total += 4;
   }

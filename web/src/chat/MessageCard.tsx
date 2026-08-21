@@ -102,6 +102,17 @@ function ContentBlock({ block, toolResults, liveSubagents }: {
       return <ToolResultCard block={block} sessionId={sessionId} />;
     case "image":
       return <img className="message-image" src={`data:${block.mediaType ?? "image/png"};base64,${block.data ?? ""}`} alt={t("用户上传的图片", "User-uploaded image")} />;
+    case "web_search_call":
+      // 服务端联网搜索（模型服务端执行）：小标签展示状态
+      return (
+        <div className="tool-row">
+          <span className="tool-row-head">
+            <Icon name="search" size={12} />
+            <span className="tool-row-title">{t("联网搜索", "Web search")}</span>
+            {block.status && <span className="tool-row-status">{block.status}</span>}
+          </span>
+        </div>
+      );
     default:
       return null;
   }

@@ -11,10 +11,11 @@ const caps = (overrides: Partial<ModelCapabilities> = {}): ModelCapabilities => 
   thinking: [],
   effort: [],
   tools: true,
-  // 思维链回传缺省开启（deepseek/qwen/glm/kimi 等新模型要求）；
-  // gpt/o 系与 claude 前缀条目显式关闭（OpenAI 不识别该字段，Claude 走 Anthropic 签名回放）。
+  // 思维链回传缺省开启（deepseek/qwen/glm/kimi 等国内模型默认打开，官方文档要求带 tools
+  // 请求必须完整回传 reasoning_content）；gpt/o 系与 claude 前缀条目显式关闭
+  // （OpenAI 官方走加密回放，Claude 走 Anthropic 签名回放）。
   reasoningContent: true,
-  // 官方 OpenAI Responses 加密思维链回放：缺省关闭，仅 gpt/o 系前缀条目显式开启。
+  // 官方 OpenAI Responses 加密思维链回放：缺省关闭（UI 模型目录可手动开启）。
   responsesEncryptedReplay: false,
   ...overrides,
 });
@@ -25,17 +26,22 @@ const EXACT: Record<string, ModelMetadata> = {};
 
 const PREFIXES: Array<[string, ModelMetadata]> = [
   ["claude", { contextWindow: 256_000, capabilities: caps({ reasoningContent: false }) }],
-  ["gpt-4.1", { contextWindow: 1_000_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false, responsesEncryptedReplay: true }) }],
-  ["gpt-4o", { contextWindow: 128_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false, responsesEncryptedReplay: true }) }],
-  ["gpt-4", { contextWindow: 128_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false, responsesEncryptedReplay: true }) }],
-  ["gpt-5", { contextWindow: 400_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false, responsesEncryptedReplay: true, effort: ["low", "medium", "high"] }) }],
-  ["o1", { contextWindow: 200_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false, responsesEncryptedReplay: true, effort: ["low", "medium", "high"] }) }],
-  ["o3", { contextWindow: 200_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false, responsesEncryptedReplay: true, effort: ["low", "medium", "high"] }) }],
-  ["o4", { contextWindow: 200_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false, responsesEncryptedReplay: true, effort: ["low", "medium", "high"] }) }],
+  // gpt/o 系：官方 OpenAI 走加密回放（responsesEncryptedReplay）需在模型目录手动开启，
+  // 默认关闭（用户明确要求「加密默认关闭」）；reasoningContent 关闭（官方 OpenAI 用
+  // encrypted_content 机制，纯文本 reasoning_content 回带不适用）。
+  ["gpt-4.1", { contextWindow: 1_000_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false }) }],
+  ["gpt-4o", { contextWindow: 128_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false }) }],
+  ["gpt-4", { contextWindow: 128_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false }) }],
+  ["gpt-5", { contextWindow: 400_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false, effort: ["low", "medium", "high"] }) }],
+  ["o1", { contextWindow: 200_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false, effort: ["low", "medium", "high"] }) }],
+  ["o3", { contextWindow: 200_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false, effort: ["low", "medium", "high"] }) }],
+  ["o4", { contextWindow: 200_000, capabilities: caps({ modalities: ["text", "image"], reasoningContent: false, effort: ["low", "medium", "high"] }) }],
   // deepseek 官方文档（api-docs.deepseek.com）：deepseek-chat / deepseek-reasoner 上下文均为 128K，
   // 旧值 1M 与实际不符，会把 85% 压缩水位推过真实窗口
   ["deepseek-reasoner", { contextWindow: 128_000, capabilities: caps({ thinking: ["enabled", "disabled"] }) }],
-  ["deepseek", { contextWindow: 128_000, capabilities: caps() }],
+  // DeepSeek Responses API 支持 thinking 开关（reasoning.effort:"none" 禁用）与 effort
+  // low/medium/high/xhigh/max（映射：low→low，medium/high/xhigh→high，max→max）
+  ["deepseek", { contextWindow: 128_000, capabilities: caps({ thinking: ["enabled", "disabled"], effort: ["low", "medium", "high", "xhigh", "max"] }) }],
   ["qwen", { contextWindow: 128_000, capabilities: caps({ modalities: ["text", "image"] }) }],
 ];
 

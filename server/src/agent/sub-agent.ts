@@ -6,7 +6,7 @@ import { ContextManager } from "../context/context-manager.js";
 import { boundToolResult } from "../context/tool-result-budget.js";
 import type { Provider, ProviderEvent, ProviderTool } from "../providers/provider.js";
 import { collectProviderTurn } from "../providers/retry.js";
-import type { ChatMessage, MessageContent, MessageRole } from "../sessions/types.js";
+import type { ChatMessage, MessageContent, MessageRole, WebSearchCallContent } from "../sessions/types.js";
 import {
   bashTool,
   CODE_SEARCH_TOOL,
@@ -304,6 +304,17 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
             name: event.name,
             input: event.input,
           });
+        } else if (event.type === "web_search_call") {
+          // 服务端联网搜索完整 item：按流式到达顺序落盘为消息块（回放时原样回传）
+          if (typeof event.item?.id === "string") {
+            const block: WebSearchCallContent = {
+              type: "web_search_call",
+              signature: JSON.stringify(event.item),
+              id: event.item.id,
+              ...(typeof event.item.status === "string" ? { status: event.item.status } : {}),
+            };
+            assistantContent.push(block);
+          }
         } else if (event.type === "usage") {
           await options.onUsage?.(event);
         } else if (event.type === "done") {

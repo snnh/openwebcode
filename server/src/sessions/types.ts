@@ -53,7 +53,17 @@ export interface ImageContent {
   ref?: string;
 }
 
-export type MessageContent = TextContent | ThinkingContent | ToolCallContent | ToolResultContent | ImageContent;
+export interface WebSearchCallContent {
+  type: "web_search_call";
+  /** 服务端原始 item JSON（id/status/action）：回放时按文档「Pass back as-is」原样回传，
+   * 服务端自动恢复搜索结果。 */
+  signature: string;
+  /** 冗余展示字段（与 signature 内一致，免 UI 解析）。 */
+  id: string;
+  status?: string;
+}
+
+export type MessageContent = TextContent | ThinkingContent | ToolCallContent | ToolResultContent | ImageContent | WebSearchCallContent;
 
 export interface ChatMessage {
   id: string;

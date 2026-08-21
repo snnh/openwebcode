@@ -4,7 +4,7 @@ import type { ProviderRegistry, StreamChatRequest } from "../providers/provider.
 import type { ProviderProfilesService } from "../provider-profiles.js";
 import { collectProviderTurn } from "../providers/retry.js";
 import { activePathMessages } from "../sessions/session-tree.js";
-import type { ChatMessage, MessageContent } from "../sessions/types.js";
+import type { ChatMessage, MessageContent, WebSearchCallContent } from "../sessions/types.js";
 import type { SearchProvider, WebFetchProvider } from "../web-tools.js";
 import type { ChatAssistantStore } from "./chat-assistant-store.js";
 import type { ChatConfigService } from "./chat-config.js";
@@ -275,6 +275,17 @@ export class ChatRunner {
             hasToolCall = true;
             toolCalls.push({ id: event.id, name: event.name, input: event.input, ...(event.itemId ? { itemId: event.itemId } : {}) });
             onToolCall?.({ id: event.id, name: event.name });
+          } else if (event.type === "web_search_call") {
+            // 服务端联网搜索完整 item：按流式到达顺序落盘为消息块（回放时原样回传）
+            if (typeof event.item?.id === "string") {
+              const block: WebSearchCallContent = {
+                type: "web_search_call",
+                signature: JSON.stringify(event.item),
+                id: event.item.id,
+                ...(typeof event.item.status === "string" ? { status: event.item.status } : {}),
+              };
+              assistantMsgContent.push(block);
+            }
           }
           if (event.type === "done") stopReason = event.stopReason;
         }

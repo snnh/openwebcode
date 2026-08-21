@@ -62,6 +62,16 @@ export function ChatBlocks({ content, resolveImageRef }: {
       if (!paired) {
         items.push(<ToolBlock key={index} name="tool" result={block.content} isError={block.isError} />);
       }
+      continue;
+    }
+    if (block.type === "web_search_call") {
+      // 服务端联网搜索：小标签展示状态
+      items.push(
+        <span key={index} className="chat-web-search-tag">
+          {block.status ? `联网搜索 · ${block.status}` : "联网搜索"}
+        </span>,
+      );
+      continue;
     }
   }
   return <>{items}</>;
