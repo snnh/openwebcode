@@ -284,7 +284,7 @@ export function ModelCatalogSection(): ReactElement {
               className="input"
               value={editing.provider}
               onChange={(event) => setEditing((prev) => prev && { ...prev, provider: event.target.value })}
-              aria-label="provider"
+              aria-label={t("服务商", "Provider")}
             >
               {!enabledProviders.includes(editing.provider) && <option value={editing.provider}>{editing.provider}</option>}
               {enabledProviders.map((provider) => <option key={provider} value={provider}>{provider}</option>)}
@@ -382,7 +382,7 @@ export function ModelCatalogSection(): ReactElement {
             className="input"
             value={form.provider}
             onChange={(event) => setForm((prev) => ({ ...prev, provider: event.target.value }))}
-            aria-label="provider"
+            aria-label={t("服务商", "Provider")}
           >
             <option value="">{t("选择服务商", "Select provider")}</option>
             {enabledProviders.map((provider) => <option key={provider} value={provider}>{provider}</option>)}

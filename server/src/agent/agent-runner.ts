@@ -62,6 +62,7 @@ import { ToolAliasResolver } from "./tool-alias.js";
 const LOCAL_PATH_GATED_TOOLS = new Set(FILE_TOOLS.map((tool) => tool.name));
 import { digestSwarmBoard, swarmBoardPath } from "./swarm-board.js";
 import type { MessageContent, NodeEnv, PythonEnv, SessionMeta, WebSearchCallContent } from "../sessions/types.js";
+import { replaceThinkingBlockById } from "../providers/thinking-merge.js";
 import { effectivePythonEnv, UvPythonEnvironments, uvVenvDir, wrapCommandWithNote, wrapCommandWithVenv } from "../python-env.js";
 import { effectiveNodeEnv, NodeEnvManagers, wrapCommandWithNodeEnv } from "../node-env.js";
 import { activePathMessages } from "../sessions/session-tree.js";
@@ -93,7 +94,7 @@ import type { InteractionKind, InteractionRequest } from "./interaction-coordina
 import { RunControl } from "./run-control.js";
 import { MemorySectionBuilder } from "./memory-section.js";
 export { SteeringError } from "./run-control.js";
-import { ModelRoleResolver, MODEL_ROLES, filterReasoningByCapabilities, isModelRole, type ModelRole } from "../model-roles.js";
+import { ModelRoleResolver, MODEL_ROLES, isModelRole, type ModelRole } from "../model-roles.js";
 
 interface ExecutionContext {
   sessionId: string;
@@ -141,35 +142,6 @@ function parseMaxTurns(raw: unknown): number | undefined {
     throw new Error(`maxTurns must be an integer between 1 and 1000 (got ${String(raw)})`);
   }
   return raw;
-}
-
-/** B3 合并：无活动 thinking 槽位时，按 reasoning item 的 id 匹配既有 thinking 块原位替换
- * （第二次 thinking_end 以 enriched signature 覆盖早期块，避免追加出重复块）。签名非 JSON、
- * 无字符串 id 或未匹配到同源块时返回 false，由调用方按现状追加（Anthropic redacted 密文等
- * 不受影响）。 */
-function replaceThinkingBlockById(blocks: MessageContent[], signature: string, completed: MessageContent): boolean {
-  let targetId: unknown;
-  try {
-    targetId = (JSON.parse(signature) as { id?: unknown }).id;
-  } catch {
-    return false;
-  }
-  if (typeof targetId !== "string") return false;
-  for (let index = 0; index < blocks.length; index++) {
-    const block = blocks[index];
-    if (block?.type !== "thinking" || block.signature === undefined) continue;
-    let blockId: unknown;
-    try {
-      blockId = (JSON.parse(block.signature) as { id?: unknown }).id;
-    } catch {
-      continue;
-    }
-    if (blockId === targetId) {
-      blocks[index] = completed;
-      return true;
-    }
-  }
-  return false;
 }
 
 const GIT_STATUS_TOOL: ProviderTool = {
@@ -1412,11 +1384,12 @@ export class AgentRunner {
         });
         await this.state(sessionId, "streaming");
         const providerCallStart = performance.now();
-        // thinking/effort 按生效模型能力白名单过滤（fallback 模型能力可能与主模型不同；未声明 = 放行）
-        const reasoning = filterReasoningByCapabilities(profile, {
+        // thinking/effort 用户优先、不设限透传（1.9.5 起不做模型级白名单过滤；
+        // 全局枚举合法性校验在路由层已完成；fallback 模型能力差异不影响此处）
+        const reasoning = {
           ...(session.thinking ? { thinking: session.thinking } : {}),
           ...(session.effort ? { effort: session.effort } : {}),
-        });
+        };
         let turn: { attemptId: string; events: ProviderEvent[] };
         try {
           turn = await collectProviderTurn(

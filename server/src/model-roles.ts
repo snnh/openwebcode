@@ -1,5 +1,4 @@
 import type { ModelSelection } from "./config.js";
-import type { EffortLevel, ModelProfile, ThinkingMode } from "./context/model-profile.js";
 import type { ProviderRegistry } from "./providers/provider.js";
 import type { SettingsService } from "./settings-service.js";
 
@@ -43,14 +42,3 @@ export class ModelRoleResolver {
   }
 }
 
-/**
- * thinking/effort 值传递（用户优先，不设限）：模型目录声明仅用于 UI 能力展示与默认参数
- * （metadata 内置默认、用户可在目录覆盖）；用户显式设置的具体值原样透传，不做模型级
- * 白名单过滤（「推理参数的具体值不设限」）。仅做全局枚举合法性校验（路由层已完成）。
- */
-export function filterReasoningByCapabilities(
-  _profile: ModelProfile,
-  requested: { thinking?: ThinkingMode; effort?: EffortLevel },
-): { thinking?: ThinkingMode; effort?: EffortLevel } {
-  return { ...(requested.thinking ? { thinking: requested.thinking } : {}), ...(requested.effort ? { effort: requested.effort } : {}) };
-}
