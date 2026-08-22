@@ -17,7 +17,7 @@ export interface ContextBuildStats {
   pinnedTokens: number;
   buildMs: number;
   incremental: boolean;
-  /** 当前驱逐态工具结果聚合（原文估算 tokens + 条数）；无驱逐条目时缺省（旧 server 不返回）。 */
+  /** 当前驱逐态工具结果聚合（原文估算 tokens + 条数）；无驱逐条目时默认（旧 server 不返回）。 */
   evicted?: { tokens: number; count: number };
 }
 
@@ -76,7 +76,7 @@ export interface ContextView {
       maxSessionCost?: { currency: "USD" | "CNY"; microUnits: string };
     };
     compacted?: { uptoIndex: number; mode: "toolcalls" | "overview" | "truncated" | "vault"; summary: string; instructions: string[]; createdAt: string; replacedTokens?: number };
-    /** 历次压缩记录（含最新一次，与 compacted 末条同义）：供消息流还原多个压缩检查点；旧 server 缺省。 */
+    /** 历次压缩记录（含最新一次，与 compacted 末条同义）：供消息流还原多个压缩检查点；旧 server 默认。 */
     compactionHistory?: Array<{ uptoIndex: number; mode: "toolcalls" | "overview" | "truncated" | "vault"; summary: string; instructions: string[]; createdAt: string; replacedTokens?: number }>;
     /** 最近记录的 prompt cache 消息级断点（消息 id）；诊断用。 */
     cacheBreakpoints?: string[];

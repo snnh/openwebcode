@@ -197,7 +197,7 @@ export const api = {
   saveModelPricing: (document: PricingDocument) =>
     request<PricingDocument>("/api/model-pricing", { method: "PUT", body: JSON.stringify(document) }),
   listFiles: (id: string, path = ".") => request<{ entries: FileEntry[]; truncated: boolean }>(`/api/sessions/${id}/files?path=${encodeURIComponent(path)}`),
-  // 可选 offset/limit 按行分页（阶段 2 加载更多）；缺省时服务端按默认上限截断
+  // 可选 offset/limit 按行分页（阶段 2 加载更多）；默认时服务端按默认上限截断
   readFile: (id: string, path: string, opts: { offset?: number; limit?: number } = {}) => {
     const params = new URLSearchParams({ path });
     if (opts.offset !== undefined) params.set("offset", String(opts.offset));
@@ -238,7 +238,7 @@ export const api = {
     request<{ ok: true }>(`/api/sessions/${encodeURIComponent(id)}/git/stage`, { method: "POST", body: JSON.stringify({ files }) }),
   scmUnstage: (id: string, files: string[]) =>
     request<{ ok: true }>(`/api/sessions/${encodeURIComponent(id)}/git/unstage`, { method: "POST", body: JSON.stringify({ files }) }),
-  // discard 含未跟踪文件时服务端要求 force=true（缺省 400）；tracked 放弃传 force=false
+  // discard 含未跟踪文件时服务端要求 force=true（默认 400）；tracked 放弃传 force=false
   scmDiscard: (id: string, files: string[], force = false) =>
     request<{ ok: true }>(`/api/sessions/${encodeURIComponent(id)}/git/discard`, { method: "POST", body: JSON.stringify({ files, force }) }),
   scmLog: (id: string, limit = 50) =>

@@ -137,7 +137,7 @@ export interface ReportMetrics {
   usdMicroUnits: string;
   cnyMicroUnits: string;
   unpricedTokens: number;
-  /** 缓存节省估算（定价目录价差反事实；按可得币种给值）；无缓存读取时缺省。 */
+  /** 缓存节省估算（定价目录价差反事实；按可得币种给值）；无缓存读取时默认。 */
   cacheSavings?: { usdMicroUnits?: string; cnyMicroUnits?: string };
   /** 有缓存读取但定价缺失/无法换算：节省估算不完整（UI 标 *）。 */
   cacheSavingsIncomplete?: boolean;

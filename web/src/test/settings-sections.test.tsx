@@ -422,7 +422,7 @@ describe("ModelCatalogSection capabilities", () => {
     const view = renderCatalog();
 
     fireEvent.doubleClick(await view.findByText("Multimodal model").then((el) => el.closest("tr")!));
-    // 未声明时默认关（server 缺省 gpt/o 系开、其余关）
+    // 未声明时默认关（server 默认 gpt/o 系开、其余关）
     const replay = screen.getByRole("checkbox", { name: "加密思维链回放（官方 OpenAI Responses）" });
     expect(replay).not.toBeChecked();
 

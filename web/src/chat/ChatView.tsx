@@ -100,7 +100,7 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
   // 子代理标签数据源：实时运行优先，消息推导的历史运行补齐（刷新后无实时事件时标签状态仍可用）
   const derivedSubagentRuns = useMemo(() => deriveSubagentRunsFromMessages(displaySession?.messages ?? []), [displaySession]);
   const subagentRuns = useMemo(() => mergeSubagentRuns(liveSubagents, derivedSubagentRuns), [liveSubagents, derivedSubagentRuns]);
-  // 主区标签（按会话隔离）：selectedSubagentTab 缺省表示「主对话」（或终端选中时的终端）
+  // 主区标签（按会话隔离）：selectedSubagentTab 默认表示「主对话」（或终端选中时的终端）
   const currentSubagentTabs = subagentTabs.tabsBySession[sessionId] ?? [];
   const selectedSubagentTab = subagentTabs.selectedBySession[sessionId];
   const terminalOpen = terminalTabs.openBySession[sessionId] === true;

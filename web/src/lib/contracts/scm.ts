@@ -7,7 +7,7 @@ export interface ScmStatusEntry {
   originalPath?: string;
 }
 
-/** GET /api/sessions/:id/git/status 的响应；非 git 仓库时 isRepo=false 且分支等字段缺省 */
+/** GET /api/sessions/:id/git/status 的响应；非 git 仓库时 isRepo=false 且分支等字段默认 */
 export interface ScmStatus {
   isRepo: boolean;
   branch?: string;

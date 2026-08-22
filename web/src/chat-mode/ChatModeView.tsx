@@ -110,7 +110,7 @@ export function ChatModeView(): ReactElement {
 
   /** 新建会话并选中；成功返回会话 id（首页直发时由 ChatComposer ensureSession 调用）。 */
   async function createSession(): Promise<string | undefined> {
-    // provider/model 取全局 chat 配置默认，缺省取可用模型列表首项；无可用 provider 时不创建
+    // provider/model 取全局 chat 配置默认，默认取可用模型列表首项；无可用 provider 时不创建
     try {
       const config = await api.chatConfig().catch(() => ({} as { defaultProvider?: string; defaultModel?: string }));
       const provider = config.defaultProvider ?? models.find((entry) => entry.models.length > 0)?.provider;

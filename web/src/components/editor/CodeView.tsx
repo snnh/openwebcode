@@ -38,7 +38,7 @@ export const CodeView = memo(function CodeView({ code, lang, targetLine, targetC
     return () => { alive = false; };
   }, [lines, lang]);
 
-  // 跳转到目标行；jsdom 等环境没有 scrollIntoView，缺省时静默跳过
+  // 跳转到目标行；jsdom 等环境没有 scrollIntoView，默认时静默跳过
   useEffect(() => {
     if (target !== undefined) targetRef.current?.scrollIntoView?.({ block: "center" });
   }, [target, highlighted]);

@@ -57,7 +57,7 @@ export function createEventRouter(deps: EventRouterDeps): EventRouter {
     deps.applyActivityEvent(event);
 
     if (event.type === "resync.required") {
-      // 事件流为全局订阅：按事件所属会话刷新，缺省回退当前会话。
+      // 事件流为全局订阅：按事件所属会话刷新，默认回退当前会话。
       const targetId = event.sessionId ?? currentId;
       if (targetId === currentId) {
         // 本地即时权限卡清掉，由服务端待决列表（invalidate 后重取）重建

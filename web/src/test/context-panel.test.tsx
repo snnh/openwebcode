@@ -247,7 +247,7 @@ describe("ContextPanel context-saver 扩展门控", () => {
 
     renderPanel();
 
-    // 等核心段落就绪后再断言 saver 段落缺省
+    // 等核心段落就绪后再断言 saver 段落默认
     expect(await screen.findByText("压缩")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "压缩工具调用" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "概览压缩" })).toBeInTheDocument();
@@ -283,7 +283,7 @@ describe("ContextPanel 手动压缩反馈", () => {
 });
 
 describe("ContextPanel 驱逐读数", () => {
-  it("stats.evicted 存在时渲染已驱逐行（含条数与召回说明），缺省时不渲染", async () => {
+  it("stats.evicted 存在时渲染已驱逐行（含条数与召回说明），默认时不渲染", async () => {
     const view = contextView({ pins: [], excludes: [] });
     view.stats = { ...view.stats!, evicted: { tokens: 12_400, count: 8 } };
     vi.spyOn(api, "context").mockResolvedValue(view);
@@ -291,7 +291,7 @@ describe("ContextPanel 驱逐读数", () => {
     const row = await screen.findByTestId("ctx-evicted");
     expect(row.textContent).toContain("已驱逐 12,400 tokens（8 条工具结果）");
     expect(row.getAttribute("title")).toContain("read_artifact");
-    // 缺省（无驱逐条目/旧 server）不渲染
+    // 默认（无驱逐条目/旧 server）不渲染
     cleanup();
     vi.spyOn(api, "context").mockResolvedValue(contextView({ pins: [], excludes: [] }));
     renderPanel();
@@ -365,7 +365,7 @@ describe("windowLevel", () => {
     expect(windowLevel(1.1)).toBe("danger");
   });
 
-  it("缺省阈值参数与旧硬编码 0.85/0.7 行为一致", () => {
+  it("默认阈值参数与旧硬编码 0.85/0.7 行为一致", () => {
     for (const utilization of [0.54, 0.7, 0.8499, 0.85, 1]) {
       expect(windowLevel(utilization)).toBe(windowLevel(utilization, 85));
     }

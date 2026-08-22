@@ -65,7 +65,7 @@ export function Overlay({ open, label, className, initialFocus, onClose, childre
   label: string;
   /** 附加在 .wb-overlay 上的修饰类（如 "command-palette"） */
   className?: string;
-  /** 打开时优先聚焦的元素选择器（相对对话框）；缺省聚焦对话框本身 */
+  /** 打开时优先聚焦的元素选择器（相对对话框）；默认聚焦对话框本身 */
   initialFocus?: string;
   onClose(): void;
   children: ReactNode;

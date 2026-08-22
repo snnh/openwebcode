@@ -34,7 +34,7 @@ const SAMPLE = [
 const CURRENT_A = ["line1", "line2 changed", "line3", "line4", "line5 added", "x", "y", "z", "w", "line10", "line12"].join("\n");
 
 describe("parseUnifiedDiff", () => {
-  it("解析多文件与 hunk 头（含尾部上下文说明、缺省行数）", () => {
+  it("解析多文件与 hunk 头（含尾部上下文说明、默认行数）", () => {
     const files = parseUnifiedDiff(SAMPLE);
     expect(files).toHaveLength(2);
     const [a, added] = files;

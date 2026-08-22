@@ -3,7 +3,7 @@ import type { ContextView } from "./contracts";
 /**
  * 上下文压缩检查点（/compact 与 85% 水位强制压缩）的消息流投影：
  * - 实时标记由 WS 事件（context.compacting/compacted/compact_failed）驱动，经 live-store 进入消息流尾部；
- * - 历史还原从 ContextView 的账本记录（compactionHistory，缺省回退 compacted 单条）推导；
+ * - 历史还原从 ContextView 的账本记录（compactionHistory，默认回退 compacted 单条）推导；
  * 全部为纯客户端投影——模型-facing 的压缩框架消息不进聊天流，账本/消息文件不因此改变。
  */
 
@@ -19,7 +19,7 @@ export interface CompactionMarker {
   forced: boolean;
   createdAt: string;
   status: "running" | "settled" | "failed";
-  /** 被替换消息段的 token 估算（账本写入时烧入；旧记录缺省则不显示）。 */
+  /** 被替换消息段的 token 估算（账本写入时烧入；旧记录默认则不显示）。 */
   replacedTokens?: number;
   /** 失败原因（status=failed 时存在）。 */
   error?: string;
@@ -52,7 +52,7 @@ type LedgerCompaction = NonNullable<ContextView["ledger"]["compacted"]>;
 
 /**
  * 从上下文账本还原检查点标记：
- * - 优先 compactionHistory（多次压缩逐条还原），缺省回退 compacted 单条（旧账本/未升级 server）；
+ * - 优先 compactionHistory（多次压缩逐条还原），默认回退 compacted 单条（旧账本/未升级 server）；
  * - /clear 边界覆盖（cleared.uptoIndex ≥ record.uptoIndex）的过期记录不渲染——与 buildView 不再注入其摘要同口径；
  * - 记录自带 summary/instructions，可直接展开。
  */

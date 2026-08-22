@@ -14,7 +14,7 @@ const REMOTE_ACCESS_QUERY_KEY = ["remote-access"] as const;
 /**
  * 远程访问分区：监听地址/端口编辑（network 分组）、访问令牌状态与一键访问链接
  * （复制/扫码/再生成），非回环监听时持续展示风险提示。
- * 令牌由服务端自动生成并持久化（OWC_ACCESS_TOKEN 可显式覆盖）；origins 缺省
+ * 令牌由服务端自动生成并持久化（OWC_ACCESS_TOKEN 可显式覆盖）；origins 默认
  * 同源自动放行，显式 OWC_ALLOWED_ORIGINS 时维持严格列表。
  */
 export function RemoteAccessSection({ onDirtyChange }: { onDirtyChange?(dirty: boolean): void }): ReactElement {
