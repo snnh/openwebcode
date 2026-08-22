@@ -202,6 +202,7 @@ function renderModelMenu(overrides: Partial<Parameters<typeof ModelMenu>[0]> = {
     selectableModels: [makeModelProfile()],
     selectionUnavailable: false,
     effortLevels: ["low", "high"],
+    showEffortSlider: true,
     thinkingOn: false,
     defaultOnValue: "mode:enabled",
     thinkingControlSupported: true,
@@ -352,16 +353,16 @@ describe("ModelMenu", () => {
     expect(screen.getByText(/claude-opus-4-8【anthropic】/)).toBeInTheDocument();
   });
 
-  it("未声明 effort 的模型：滑块默认六档（不含 minimal）", async () => {
-    // renderComposer 默认模型 IMAGE_CAPS 的 effort 为空 → 走 EFFORT_DEFAULT_ALL 回退
+  it("未声明 effort 的模型：滑块默认五档（不含 minimal/ultra）", async () => {
+    // renderComposer 默认模型 IMAGE_CAPS 的 effort 为空 → 走 EFFORT_DEFAULT_ALL 回退（无 ultra）
     const { container, client } = renderComposer();
     await waitModelsLoaded(client);
     fireEvent.click(screen.getByRole("button", { name: "模型与思考程度" }));
     const cells = container.querySelectorAll(".thinking-cell");
-    // [默认, 低, 中, 高, 极高, max, ultra] = 7 个格子（6 档 effort + 左端点默认）
-    expect(cells).toHaveLength(7);
+    // [默认, 低, 中, 高, 极高, max] = 6 个格子（5 档 effort + 左端点默认）
+    expect(cells).toHaveLength(6);
     const labels = Array.from(cells).map((el) => el.getAttribute("aria-label"));
-    expect(labels).toEqual(["默认", "低", "中", "高", "极高", "max", "ultra"]);
+    expect(labels).toEqual(["默认", "低", "中", "高", "极高", "max"]);
     expect(screen.queryByRole("button", { name: "最低" })).not.toBeInTheDocument();
   });
 

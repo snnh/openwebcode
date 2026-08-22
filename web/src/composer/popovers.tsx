@@ -260,13 +260,15 @@ export const EFFORT_LABEL: Record<string, [string, string]> = {
 };
 
 /** 模型 + 思考程度合并弹层：模型按供应商分组（可折叠），底部固定区为能力徽章 + 思考开关/程度滑块 + 「更多模型…」。 */
-export function ModelMenu({ current, selectableModels, selectionUnavailable, effortLevels, thinkingOn, currentEffort, defaultOnValue, thinkingBadge, thinkingControlSupported, disabled, onSelectModel, onSelectThinking, onOpenModelSettings, capabilities }: {
+export function ModelMenu({ current, selectableModels, selectionUnavailable, effortLevels, showEffortSlider, thinkingOn, currentEffort, defaultOnValue, thinkingBadge, thinkingControlSupported, disabled, onSelectModel, onSelectThinking, onOpenModelSettings, capabilities }: {
   current: { provider: string; model: string };
   selectableModels: ModelProfile[];
   /** 当前会话模型不在可用清单中（provider 未配置等）：顶部固定展示一条选中态 */
   selectionUnavailable: boolean;
-  /** 有效 effort 档位（模型已声明子集；未声明时默认六档，不含 minimal，需模型目录显式声明）。滑块档位 = [默认, ...effortLevels] */
+  /** 有效 effort 档位（模型已声明子集；未声明且对思考毫无声明时默认五档，不含 minimal/ultra）。滑块档位 = [默认, ...effortLevels] */
   effortLevels: string[];
+  /** 是否显示思考强度滑块：已声明 effort，或对思考毫无声明（兜底默认档）。仅声明思考开关不显示。 */
+  showEffortSlider: boolean;
   thinkingOn: boolean;
   currentEffort?: string | undefined;
   /** 滑块左端点（默认）与开关 on 的无 effort 取值（mode:enabled 或 mode:adaptive） */
@@ -381,6 +383,7 @@ export function ModelMenu({ current, selectableModels, selectionUnavailable, eff
                 <span className="toggle-knob" aria-hidden />
               </span>
             </div>
+            {showEffortSlider && (
             <div className={`thinking-slider${sliderDisabled ? " disabled" : ""}`} role="group" aria-label={t("思考程度", "Thinking effort")}>
               <div className="thinking-slider-row">
                 <span className="thinking-slider-end">{t("更快", "Faster")}</span>
@@ -402,6 +405,7 @@ export function ModelMenu({ current, selectableModels, selectionUnavailable, eff
                 <span className={`thinking-slider-current${thinkingOn ? " active" : ""}`}>{currentLevelText}</span>
               </div>
             </div>
+            )}
           </div>
           <div className="popover-section popover-footer">
             <button type="button" className="popover-more" onClick={() => { onOpenModelSettings(); setOpen(false); }}>
