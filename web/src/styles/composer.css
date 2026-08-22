@@ -319,13 +319,31 @@
 
 /* ================= 移动端（≤768px） ================= */
 @media (max-width: 768px) {
-  /* Composer 控制条同排放下：菜单按钮降档、模型名收缩省略、spacer 吸剩余宽度（不强制折行） */
-  .composer-toolbar { gap: 4px; }
-  .composer-menu-btn { min-height: 30px; padding: 0 8px; gap: 4px; font-size: var(--text-s); }
-  .composer-toolbar-spacer { flex: 1 1 0; min-width: 0; }
-  .composer-send { margin-left: 0; }
-  .model-menu-btn-label { max-width: 34vw; }
-  /* iOS：输入框字号 <16px 聚焦会自动放大页面 */
+  /* Composer 控制条同排靠左：附件/权限模式/对话模式/模型选择器一行（spacer 收起不吸宽）；
+     运行状态提示 + 队列菜单 + 发送为第二行（发送 margin-left:auto 靠右）。 */
+  .composer-toolbar { flex-wrap: wrap; gap: 4px; }
+  .composer-toolbar > .composer-attach,
+  .composer-toolbar > .composer-permission,
+  .composer-toolbar > .composer-menu:not(.composer-queue-menu),
+  .composer-toolbar > .composer-menu-right:not(.composer-queue-menu) { order: 1; }
+  .composer-toolbar-spacer { display: none; }
+  .steering-hint,
+  .composer-running-dot,
+  .composer-toolbar > .composer-queue-menu { order: 2; }
+  .composer-send { order: 2; margin-left: auto; }
+  /* 折叠钮：输入框右下小箭头（向下=折叠、向上=展开），与 textarea 底部对齐不挤压内容 */
+  .composer-fold {
+    flex: none;
+    width: 32px;
+    height: 32px;
+    margin-bottom: 1px;
+    color: var(--text-3);
+  }
+  .composer-fold:hover { color: var(--text); }
+  .composer-fold:active { transform: translateY(1px); }
+  /* 控制行紧凑化：菜单按钮降档、模型名收缩省略（不顶爆布局、不折行溢出） */
+  .composer-menu-btn { min-height: 30px; padding: 0 6px; gap: 4px; font-size: var(--text-xs); }
+  .model-menu-btn-label { max-width: 30vw; gap: 3px; }
   .composer textarea { font-size: 16px; }
   /* 凹屏安全区：输入卡片避开 Home 指示条与左右圆角 */
   .composer {
@@ -343,22 +361,9 @@
 @media (max-width: 480px) {
   .composer { padding: 6px calc(8px + env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) calc(8px + env(safe-area-inset-left)); }
   .composer-card { padding: 6px 10px 8px; }
-  .composer-toolbar { flex-wrap: wrap; gap: 4px; }
-  /* 功能三行压缩为两行（order 重排）：
-     行1 = 附件/权限模式/对话模式/模型选择器（spacer 分隔，模型靠右）；
-     行2 = 运行状态提示 + 队列菜单 + 发送（发送 margin-left:auto 右对齐）。 */
-  .composer-toolbar > .composer-attach,
-  .composer-toolbar > .composer-permission,
-  .composer-toolbar > .composer-menu,
-  .composer-toolbar > .composer-menu-right,
-  .composer-toolbar-spacer { order: 1; }
-  .steering-hint,
-  .composer-running-dot,
-  .composer-queue-menu { order: 2; }
-  .composer-send { order: 2; margin-left: auto; }
-  /* 控制行紧凑化：菜单按钮降一档，长模型名收缩省略（不顶爆布局、不折行溢出） */
-  .composer-menu-btn { padding: 0 7px; gap: 4px; font-size: var(--text-xs); }
-  .model-menu-btn-label { max-width: 108px; gap: 3px; }
+  /* 超窄屏再压一档：模型名收得更短，避免与三按钮挤爆同行 */
+  .composer-menu-btn { padding: 0 5px; }
+  .model-menu-btn-label { max-width: 96px; }
 }
 
 /* 触屏：附件/发送/菜单按钮保持 ≥40px 触控目标（置于 480px 紧凑规则之后，小屏触屏不被压回） */

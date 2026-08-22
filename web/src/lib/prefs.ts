@@ -28,7 +28,8 @@ function write(key: string, value: string): void {
 }
 
 export function loadSendKey(): SendKey {
-  return read(SEND_KEY) === "ctrl-enter" ? "ctrl-enter" : "enter";
+  // 默认「Ctrl+Enter 发送」：回车用于换行（用户明确要求）；仅显式存储过 "enter" 才用 Enter 发送。
+  return read(SEND_KEY) === "enter" ? "enter" : "ctrl-enter";
 }
 
 export function saveSendKey(value: SendKey): void {

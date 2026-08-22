@@ -7,6 +7,7 @@ import { nextRecentModel, recordRecentModel } from "../lib/recent-models";
 import { deriveInputHistory } from "../lib/input-history";
 import { clipboardFiles, dataUrlBase64, readFileAsDataUrl } from "../lib/file-data-url";
 import { useAutosizeTextarea } from "../hooks/use-autosize-textarea";
+import { MOBILE_BREAKPOINT, useMediaQuery } from "../hooks/use-media-query";
 import { Icon } from "../components/Icon";
 import { useI18n } from "../i18n";
 import { useExtensionsQuery, useModelsQuery, useProvidersQuery, useSkillsQuery } from "../app/queries";
@@ -94,15 +95,19 @@ function mentionInsertPath(item: MentionItem): string {
 async function loadMentionItems(sessionId: string, q: string): Promise<{ items: MentionItem[]; indexStatus: MentionIndexStatus }> {
   try {
     const filesRes = await api.workspaceFiles(sessionId, q);
-    const items: MentionItem[] = filesRes.files.map((file) => ({ type: "file", path: file.path }));
+    let symbolItems: MentionItem[] = [];
     try {
       const symbolsRes = await api.workspaceSymbols(sessionId, q);
-      for (const symbol of symbolsRes.symbols) {
-        items.push({ type: "symbol", name: symbol.name, kind: symbol.kind, path: symbol.path, line: symbol.startLine });
-      }
+      symbolItems = symbolsRes.symbols.map((symbol) => ({ type: "symbol", name: symbol.name, kind: symbol.kind, path: symbol.path, line: symbol.startLine }));
     } catch {
       // 符号索引不可用/查询失败：只降级掉符号条目
     }
+    // 槽位分配：符号优先完整保留，文件让出剩余槽位（files+symbols 合计不超过弹层上限 20）
+    const room = Math.max(0, 20 - symbolItems.length);
+    const items: MentionItem[] = [
+      ...filesRes.files.slice(0, room).map((file): MentionItem => ({ type: "file", path: file.path })),
+      ...symbolItems,
+    ];
     return { items, indexStatus: filesRes.indexStatus };
   } catch (error) {
     if (error instanceof ApiError && (error.status === 409 || error.status === 501)) {
@@ -168,6 +173,10 @@ export function Composer({ session, running, onSend, onConfig, editingMessage, o
   const [pdfProgress, setPdfProgress] = useState<PdfProgress | null>(null);
   const [queuedBehavior, setQueuedBehavior] = useState<"steer" | "follow_up">("steer");
   const [queueMenuOpen, setQueueMenuOpen] = useState(false);
+  // 移动端输入栏折叠：默认完整；点输入框右侧箭头折叠为只剩输入框（隐藏提示/工具栏），点输入框（聚焦）恢复。
+  // 仅移动端生效，桌面端不受影响（isMobile 恒 false 时折叠不启用）。
+  const isMobile = useMediaQuery(MOBILE_BREAKPOINT);
+  const [folded, setFolded] = useState(false);
   // 输入历史回查：null = 未在回查；进入回查时把当前草稿暂存，回查到底（最新之后）恢复
   const [historyIndex, setHistoryIndex] = useState<number | null>(null);
   const historyStashRef = useRef("");
@@ -476,7 +485,7 @@ export function Composer({ session, running, onSend, onConfig, editingMessage, o
       if (!isPdf(file)) return true;
       if (file.size > MAX_PDF_UPLOAD_BYTES) {
         if (!pdfSizeNoticeShown) {
-          notify(t("PDF 超过 20MB 限制，未开始上传", "The PDF exceeds the 20 MB limit and was not uploaded."), "error");
+          notify(t(`PDF 超过 ${MAX_PDF_UPLOAD_BYTES / 1024 / 1024}MB 限制，未开始上传`, `The PDF exceeds the ${MAX_PDF_UPLOAD_BYTES / 1024 / 1024} MB limit and was not uploaded.`), "error");
           pdfSizeNoticeShown = true;
         }
         return false;
@@ -533,7 +542,7 @@ export function Composer({ session, running, onSend, onConfig, editingMessage, o
             continue;
           }
           if (file.size > MAX_IMAGE_BYTES) {
-            notifyTask(task, t(`图片「${file.name || "剪贴板图片"}」超过 5MB 限制`, `Image “${file.name || "clipboard image"}” exceeds the 5 MB limit`), "error");
+            notifyTask(task, t(`图片「${file.name || "剪贴板图片"}」超过 ${MAX_IMAGE_BYTES / 1024 / 1024}MB 限制`, `Image “${file.name || "clipboard image"}” exceeds the ${MAX_IMAGE_BYTES / 1024 / 1024} MB limit`), "error");
             continue;
           }
           try {
@@ -688,6 +697,20 @@ export function Composer({ session, running, onSend, onConfig, editingMessage, o
     return true;
   };
 
+  // 发送按钮（展开态 toolbar 内 / 移动端折叠态输入行内共用一份，避免语义分裂）
+  const sendButton = (
+    <button
+      type="button"
+      className="composer-send"
+      disabled={!draft.trim() || processingPdf}
+      aria-label={editingMessage ? t("重发", "Resend") : draft.trimStart().startsWith("!") ? t("运行", "Run") : running ? queuedBehavior === "follow_up" ? t("完成后续跑", "Run after") : t("加入队列", "Queue") : t("发送", "Send")}
+      title={processingPdf ? t("正在处理 PDF…", "Processing PDF…") : undefined}
+      onClick={submit}
+    >
+      <Icon name="arrow-up" size={15} />
+    </button>
+  );
+
   return (
     <footer className="composer" onDrop={onDrop} onDragOver={(event) => event.preventDefault()}>
       <div className="composer-card">
@@ -809,6 +832,7 @@ export function Composer({ session, running, onSend, onConfig, editingMessage, o
           onSelect={(event) => syncMention(event.currentTarget)}
           onClick={(event) => syncMention(event.currentTarget)}
           onKeyUp={(event) => syncMention(event.currentTarget)}
+          enterKeyHint={!isMobile && sendKey === "enter" ? "send" : undefined}
           onPaste={onPaste}
           onKeyDown={(event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
             if (mentionOpen) {
@@ -920,11 +944,13 @@ export function Composer({ session, running, onSend, onConfig, editingMessage, o
               if (cycleModel()) event.preventDefault();
               return;
             }
-            // 输入法组合中的 Enter 不触发发送；发送键可在设置中切换
+            // 输入法组合中的 Enter 不触发发送；发送键可在设置中切换。
+            // 回车默认换行：桌面仅「Ctrl+Enter 发送」模式用 Ctrl/Cmd+Enter 发送；
+            // 移动端键盘没有 Ctrl 键，回车一律换行，发送靠发送按钮（含折叠态）。
             if (event.nativeEvent.isComposing || event.key !== "Enter") return;
-            const shouldSend = sendKey === "enter"
+            const shouldSend = !isMobile && (sendKey === "enter"
               ? !event.shiftKey && !event.ctrlKey && !event.metaKey
-              : event.ctrlKey || event.metaKey;
+              : event.ctrlKey || event.metaKey);
             if (shouldSend) {
               event.preventDefault();
               // PDF 处理中忽略提交（按钮同时禁用）
@@ -933,8 +959,24 @@ export function Composer({ session, running, onSend, onConfig, editingMessage, o
           }}
           placeholder={running
             ? t("向正在执行的作业补充指令…", "Add instructions to the running job…")
-            : sendKey === "enter" ? t("描述要完成的编码任务…（Enter 发送，Shift+Enter 换行，@ 引用文件）", "Describe a coding task… (Enter to send, Shift+Enter for a new line, @ to reference files)") : t("描述要完成的编码任务…（Ctrl+Enter 发送，@ 引用文件）", "Describe a coding task… (Ctrl+Enter to send, @ to reference files)")}
+            : !isMobile && sendKey === "enter"
+              ? t("描述要完成的编码任务…（Enter 发送，Shift+Enter 换行，@ 引用文件）", "Describe a coding task… (Enter to send, Shift+Enter for a new line, @ to reference files)")
+              : !isMobile
+                ? t("描述要完成的编码任务…（Ctrl+Enter 发送，Enter 换行，@ 引用文件）", "Describe a coding task… (Ctrl+Enter to send, Enter for a new line, @ to reference files)")
+                : t("描述要完成的编码任务…（回车换行，点发送按钮发送，@ 引用文件）", "Describe a coding task… (Enter for a new line, tap send to submit, @ to reference files)")}
         />
+        {isMobile && (
+          <button
+            type="button"
+            className="icon-btn composer-fold"
+            aria-label={folded ? t("展开输入栏", "Expand composer") : t("折叠输入栏", "Collapse composer")}
+            title={folded ? t("展开输入栏", "Expand composer") : t("折叠输入栏", "Collapse composer")}
+            onClick={() => setFolded((value) => !value)}
+          >
+            <Icon name={folded ? "chevron-up" : "chevron-down"} size={14} />
+          </button>
+        )}
+        {isMobile && folded && sendButton}
       </div>
       <MentionStrip paths={mentionedPaths} onRemove={removeMention} />
       {processingPdf && (
@@ -944,6 +986,7 @@ export function Composer({ session, running, onSend, onConfig, editingMessage, o
             : t(`正在保存 PDF${pdfProgress?.fileName ? `「${pdfProgress.fileName}」` : ""}到工作区…`, `Saving PDF${pdfProgress?.fileName ? ` “${pdfProgress.fileName}”` : ""} to the workspace…`)}
         </div>
       )}
+      {(!isMobile || !folded) && (<>
       {pdfHintDismissed !== pdfHintSignature && (pdfToImageStatus !== "ready" ? (
         <div className="composer-hint">
           <span className="composer-hint-text">{t(
@@ -954,7 +997,7 @@ export function Composer({ session, running, onSend, onConfig, editingMessage, o
         </div>
       ) : pdfToImageEnabled ? (
         supportsImages && <div className="composer-hint">
-          <span className="composer-hint-text">{t("支持添加、粘贴或拖拽图片/PDF（≤4 张图片，每张 ≤5MB）；PDF 会转为图片；输入 @ 引用工作区文件", "Add, paste, or drop images/PDFs (up to 4 images, 5 MB each); PDFs are converted to images; type @ to reference workspace files")}</span>
+          <span className="composer-hint-text">{t(`支持添加、粘贴或拖拽图片/PDF（≤${MAX_ATTACHMENTS} 张图片，每张 ≤${MAX_IMAGE_BYTES / 1024 / 1024}MB）；PDF 会转为图片；输入 @ 引用工作区文件`, `Add, paste, or drop images/PDFs (up to ${MAX_ATTACHMENTS} images, ${MAX_IMAGE_BYTES / 1024 / 1024} MB each); PDFs are converted to images; type @ to reference workspace files`)}</span>
           <button type="button" className="composer-hint-dismiss" aria-label={t("关闭提示", "Dismiss hint")} onClick={dismissPdfHint}><Icon name="x" size={12} /></button>
         </div>
       ) : (
@@ -1049,16 +1092,9 @@ export function Composer({ session, running, onSend, onConfig, editingMessage, o
             </span>
           </span>
         )}
-        <button
-          className="composer-send"
-          disabled={!draft.trim() || processingPdf}
-          aria-label={editingMessage ? t("重发", "Resend") : draft.trimStart().startsWith("!") ? t("运行", "Run") : running ? queuedBehavior === "follow_up" ? t("完成后续跑", "Run after") : t("加入队列", "Queue") : t("发送", "Send")}
-          title={processingPdf ? t("正在处理 PDF…", "Processing PDF…") : undefined}
-          onClick={submit}
-        >
-          <Icon name="arrow-up" size={15} />
-        </button>
+        {sendButton}
       </div>
+      </>)}
       </div>
     </footer>
   );

@@ -92,15 +92,16 @@ describe("窄窗口布局 CSS 回归", () => {
     expect(narrowCss).not.toContain("calc(100dvh - 53px)");
   });
 
-  it("会话配置收进输入卡片底栏，窄窗口允许换行且菜单徽章降噪", () => {
+  it("会话配置收进输入卡片底栏，窄窗口控制条同排靠左且菜单徽章降噪", () => {
     expect(css).toMatch(/\.composer-toolbar\s*\{[^}]*flex-wrap:\s*nowrap;/s);
     expect(css).toMatch(/\.composer-toolbar-spacer\s*\{\s*flex:\s*1 1 auto;/s);
     expect(css).toMatch(/\.composer-menu-right \.popover-menu\s*\{[^}]*right:\s*0;/s);
     expect(narrowCss).toMatch(/\.composer-menu-badge\s*\{\s*display:\s*none;/s);
-    // 控制条同排放下：菜单按钮降档、模型名收缩省略、spacer 吸剩余宽度
-    expect(narrowCss).toMatch(/\.composer-toolbar-spacer\s*\{\s*flex:\s*1 1 0;[^}]*min-width:\s*0;/s);
-    expect(narrowCss).toMatch(/\.model-menu-btn-label\s*\{[^}]*max-width:\s*34vw;/s);
-    expect(tinyCss).toMatch(/\.composer-toolbar\s*\{[^}]*flex-wrap:\s*wrap;/s);
+    // 窄窗口（≤768px）控制条同排靠左：附件/权限/模式/模型选择器一行，spacer 收起不吸宽；
+    // 运行提示/队列/发送为第二行；wrap 允许放不下时折行
+    expect(narrowCss).toMatch(/\.composer-toolbar-spacer\s*\{\s*display:\s*none;/s);
+    expect(narrowCss).toMatch(/\.composer-toolbar\s*\{[^}]*flex-wrap:\s*wrap;/s);
+    expect(narrowCss).toMatch(/\.model-menu-btn-label\s*\{[^}]*max-width:\s*30vw;/s);
     // 附件/引用条折行而非横滚（移动端禁横向滚动纪律）
     expect(css).toMatch(/\.mention-strip\s*\{[^}]*flex-wrap:\s*wrap;/s);
     expect(css).toMatch(/\.attachment-strip\s*\{[^}]*flex-wrap:\s*wrap;/s);
@@ -115,9 +116,9 @@ describe("窄窗口布局 CSS 回归", () => {
     expect(narrowCss).toMatch(/\.chat-track\s*\{[^}]*padding:\s*14px 12px/s);
   });
 
-  it("≤480px 控制行紧凑：菜单按钮降档、长模型名收缩省略，发送钮保持 44px 触达目标", () => {
-    expect(tinyCss).toMatch(/\.composer-menu-btn\s*\{[^}]*padding:\s*0 7px;/s);
-    expect(tinyCss).toMatch(/\.model-menu-btn-label\s*\{[^}]*max-width:\s*108px;/s);
+  it("≤480px 控制行紧凑：模型名收得更短，发送钮保持 44px 触达目标", () => {
+    expect(tinyCss).toMatch(/\.composer-menu-btn\s*\{[^}]*padding:\s*0 5px;/s);
+    expect(tinyCss).toMatch(/\.model-menu-btn-label\s*\{[^}]*max-width:\s*96px;/s);
     // 触屏触控目标（hover:none 块）
     expect(css).toMatch(/@media \(hover: none\)[\s\S]*?\.composer-send\s*\{[^}]*width:\s*44px;/);
   });
