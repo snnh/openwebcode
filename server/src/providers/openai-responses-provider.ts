@@ -666,6 +666,10 @@ function toResponsesInput(
           ...(parsedSignature?.phase ? { phase: parsedSignature.phase } : {}),
         });
       }
+      // 并行 function_call 全前置（fc…fc → fco…fco，单工具时两者等价）：DeepSeek 服务端
+      // 按「归并到相邻 assistant 消息」解析输入 items，逐对排列（fc,fco,fc,fco）会把同一
+      // assistant 轮的并行调用拆成多条虚拟轮，第二条起没有归属的 reasoning → 直接 400
+      // （真机验证「reasoning_text must be passed back」；全前置排列 200 通过）。
       for (const call of toolCalls) {
         // function_call 只带 call_id（DeepSeek Harness 同口径：不派发 item id，避免触发
         // 服务端 reasoning↔function_call 的 id 配对校验；call_id 与 output 配对已足够）
@@ -675,6 +679,8 @@ function toResponsesInput(
           name: call.name,
           arguments: JSON.stringify(call.input),
         });
+      }
+      for (const call of toolCalls) {
         result.push({
           type: "function_call_output",
           call_id: call.id,

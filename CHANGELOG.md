@@ -2,6 +2,16 @@
 
 本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前版本的用户可感知变化。日期以 Git 标签发布日期为准。
 
+## [1.9.6] - 2026-08-22
+
+### 修复
+
+- **DeepSeek Responses 并行工具调用回放 400 根治**（`reasoning_text must be passed back`）：同一 assistant 轮内并行多个 `function_call` 时，回放按 `fc1,fco1,fc2,fco2` 逐对排列发送，DeepSeek 服务端按「归并到相邻 assistant 消息」解析输入，会把逐对排列拆成多条**虚拟 assistant 轮**，第二条起没有归属的 reasoning item → 立即 400。现改为**并行 `function_call` 全前置**（`fc…fc → fco…fco`），服务端正确归并为一条轮次，与单条 reasoning 配对。真机验证：失败会话（clear 后多轮并行工具）原布局 400、全前置布局 200；单工具轮两种排列等价不受影响。
+
+### 优化
+
+- **官方扩展会话格式升级（session-format-upgrade）v0.1.0 → v0.1.1**：描述同步当前行为——并行工具调用回放修复在 provider 层直接生效，旧会话无需升级即可续跑；扩展仅用于为严格端点补齐回放字段（thinking signature / tool_call itemId / textSignature）。
+
 ## [1.9.5] - 2026-08-21
 
 ### 修复
