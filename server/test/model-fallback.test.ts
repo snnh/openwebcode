@@ -9,7 +9,7 @@ import type { CoreClient } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";
 import { FastModelClient } from "../src/fast-model.js";
-import { filterReasoningByCapabilities, ModelRoleResolver } from "../src/model-roles.js";
+import { ModelRoleResolver } from "../src/model-roles.js";
 import { ProviderError } from "../src/providers/provider-error.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
 import { SessionStore } from "../src/sessions/session-store.js";

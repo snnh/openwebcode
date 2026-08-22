@@ -155,8 +155,8 @@ export interface SessionFormatUpgradeAllResult {
   total: number;
   /** 跳过的会话 id（运行中/锁定中）。 */
   skipped: string[];
-  /** 升级失败的会话 id（单会话失败不中断整体）。 */
-  failed: string[];
+  /** 升级失败的会话及其原因（单会话失败不中断整体；含损坏/IO 等诊断信息）。 */
+  failed: Array<{ id: string; error: string }>;
   /** 本次产生的备份文件名列表。 */
   backups: string[];
 }
@@ -171,7 +171,7 @@ export async function upgradeAllSessions(
   let upgraded = 0;
   let total = 0;
   const skipped: string[] = [];
-  const failed: string[] = [];
+  const failed: Array<{ id: string; error: string }> = [];
   const backups: string[] = [];
   for (const meta of sessions) {
     if (isRunning(meta.id) || upgradingSessions.has(meta.id)) {
@@ -185,9 +185,9 @@ export async function upgradeAllSessions(
         upgraded += 1;
         backups.push(...result.backups);
       }
-    } catch {
-      // 单个会话升级失败不中断整体：记录并继续（消息文件损坏等场景）
-      failed.push(meta.id);
+    } catch (error) {
+      // 单个会话升级失败不中断整体：记录原因（供调用方诊断）并继续（消息文件损坏等场景）
+      failed.push({ id: meta.id, error: error instanceof Error ? error.message : String(error) });
     }
   }
   return { upgraded, total, skipped, failed, backups };
