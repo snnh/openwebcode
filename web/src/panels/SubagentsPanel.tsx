@@ -41,7 +41,7 @@ export function groupSubagentRuns(runs: Record<string, LiveSubagentRun>): Subage
 export function SubagentRunRow({ run, sessionId, onOpenInTab }: {
   run: LiveSubagentRun;
   sessionId: string;
-  /** 桌面端「在标签中打开」（按所在组的 toolCallId 开主区标签）；缺省不渲染按钮 */
+  /** 桌面端「在标签中打开」（按所在组的 toolCallId 开主区标签）；默认不渲染按钮 */
   onOpenInTab?: ((toolCallId: string) => void) | undefined;
 }): ReactElement {
   const { t } = useI18n();

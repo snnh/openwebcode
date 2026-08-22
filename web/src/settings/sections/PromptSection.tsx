@@ -29,7 +29,7 @@ const EMPTY_FACES: FaceValues = {
 export function PromptSection({ onDirtyChange, sessionCwd }: { onDirtyChange?(dirty: boolean): void; sessionCwd?: string }): ReactElement {
   const { t } = useI18n();
   const queryClient = useQueryClient();
-  // 当前项目 cwd：优先调用方传入；缺省取会话列表首项（与 App 默认选中首个会话一致）。
+  // 当前项目 cwd：优先调用方传入；默认取会话列表首项（与 App 默认选中首个会话一致）。
   // 无会话或会话无 cwd 时项目作用域禁用。
   const sessions = useQuery({ queryKey: ["sessions"], queryFn: api.sessions, enabled: sessionCwd === undefined });
   const projectCwd = sessionCwd ?? sessions.data?.[0]?.cwd;

@@ -54,7 +54,7 @@ function WindowSection({ info, latestUsage, cumulativeUsage, evicted, thresholdP
   latestUsage?: ContextUsage | undefined;
   /** 会话累计用量（ledger.usage）；累计缓存命中来源。 */
   cumulativeUsage: ContextTokenUsage;
-  /** 驱逐态工具结果聚合（stats.evicted）；无驱逐条目时缺省不渲染 */
+  /** 驱逐态工具结果聚合（stats.evicted）；无驱逐条目时默认不渲染 */
   evicted?: { tokens: number; count: number } | undefined;
   /** 自动压缩水位（%，设置页可调）；meter 配色阈值随动 */
   thresholdPercent?: number;
@@ -327,7 +327,7 @@ export function ContextPanel({ sessionId, running }: {
   const models = useModelsQuery();
   const extensions = useExtensionsQuery();
   const serverSettings = useServerSettingsQuery();
-  // WS 实时水位/本轮用量（事件路由写 session-store）；缺省时由 REST stats + 模型档案播种
+  // WS 实时水位/本轮用量（事件路由写 session-store）；默认时由 REST stats + 模型档案播种
   const watermark = useStore(sessionStore, (state) => (sessionId ? state.watermarks[sessionId] : undefined));
   const latestUsage = useStore(sessionStore, (state) => (sessionId ? state.usages[sessionId] : undefined));
 
@@ -339,7 +339,7 @@ export function ContextPanel({ sessionId, running }: {
   const summarize = (messageId: string): string => messageSummary(detail?.messages, messageId, t);
   const { usage, cost } = context.data.ledger;
   const model = models.data?.find((item) => item.id === detail?.model && item.provider === detail?.provider);
-  // 实时水位优先；缺省时由 REST stats + 模型档案播种（窗口未知则只展示 tokens，不显示百分比）
+  // 实时水位优先；默认时由 REST stats + 模型档案播种（窗口未知则只展示 tokens，不显示百分比）
   const windowInfo = deriveWindowInfo(watermark, context.data.stats, model);
   // 扩展清单未加载完成时按默认开启处理（defaultEnabled: true），加载后以实际开关为准
   const saverEnabled = !extensions.data || extensions.data.some((extension) => extension.id === "context-saver" && extension.enabled);

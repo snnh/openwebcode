@@ -121,7 +121,7 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
   const sandboxModeOptions: SandboxMode[] = isWindows
     ? ["appcontainer", "wsb", "jobobject", "off"]
     : ["landlock", "bubblewrap", "off"];
-  // 内部缺省态 jobobject 在非 Windows 下按 landlock 显示（不提交即为 server 默认；显式选择才提交真值）
+  // 内部默认态 jobobject 在非 Windows 下按 landlock 显示（不提交即为 server 默认；显式选择才提交真值）
   const selectedSandboxMode: SandboxMode = !isWindows && sandboxMode === "jobobject" ? "landlock" : sandboxMode;
   // bubblewrap 不可用时禁用该选项（旧 core 不上报 features.bwrap 时 server 按 unavailable 返回）
   const bwrapUnavailableReason = !isWindows && sandboxCaps?.bwrap?.available === false
@@ -172,7 +172,7 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
             model,
             agentMode,
             permissionMode,
-            // jobobject 是缺省，不必显式提交；setupScript 仅 wsb 有意义；network 缺省 allow 不必提交
+            // jobobject 是默认，不必显式提交；setupScript 仅 wsb 有意义；network 默认 allow 不必提交
             ...(sandboxMode !== "jobobject" ? { sandboxMode } : {}),
             ...(network !== "allow" ? { network } : {}),
             ...(sandboxMode === "wsb" && setupScript.trim() ? { setupScript: setupScript.trim() } : {}),

@@ -17,13 +17,13 @@ export interface SubagentTab {
 
 export interface UseSubagentTabsResult {
   tabsBySession: Record<string, SubagentTab[]>;
-  /** 会话当前选中标签的 toolCallId；缺省表示「对话」标签 */
+  /** 会话当前选中标签的 toolCallId；默认表示「对话」标签 */
   selectedBySession: Record<string, string>;
   /** subagent.started 自动开标签：同 toolCallId 已存在或已被用户关闭（dismissed）则跳过；不抢焦点（停留在对话） */
   openFromStarted(sessionId: string, payload: SubagentStartedEvent): void;
   /** 手动打开（子代理面板「在标签中打开」）：不存在则创建并聚焦该标签，同时清除关闭标记 */
   openTab(sessionId: string, tab: SubagentTab): void;
-  /** 选中标签；缺省（undefined）回到「对话」 */
+  /** 选中标签；默认（undefined）回到「对话」 */
   selectTab(sessionId: string, toolCallId?: string): void;
   /** 关闭标签（只影响视图，不影响运行）；关闭当前选中标签时回退「对话」 */
   closeTab(sessionId: string, toolCallId: string): void;

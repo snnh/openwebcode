@@ -130,7 +130,7 @@ export interface MessageListProps {
   session: SessionDetail;
   /** 上下文清空分隔线位置（ledger.cleared；uptoMessageId 为 /clear 时刻最后一条活动路径消息 id） */
   cleared?: { uptoIndex: number; at: string; uptoMessageId?: string };
-  /** 压缩检查点标记（实时事件 + 账本还原的合并结果；缺省不渲染检查点行） */
+  /** 压缩检查点标记（实时事件 + 账本还原的合并结果；默认不渲染检查点行） */
   compactions?: CompactionMarker[];
   hasMoreMessages: boolean;
   loadingMore: boolean;
@@ -158,7 +158,7 @@ export interface SessionHeaderProps {
     costLabel: string;
     tokenBudget?: number | null;
     paused: boolean;
-    /** 未定价 tokens（>0 时成本不完整，顶栏标 * 并在 title 注明）；缺省视为 0 */
+    /** 未定价 tokens（>0 时成本不完整，顶栏标 * 并在 title 注明）；默认视为 0 */
     unpricedTokens?: number;
   };
   windowUsage?: ContextWindowInfo;
@@ -181,7 +181,7 @@ export interface EditingMessage {
 export interface ComposerProps {
   session: SessionDetail;
   running: boolean;
-  /** 发送（behavior 缺省由 Composer 内按 running 推导：运行中 steer，否则 start） */
+  /** 发送（behavior 默认由 Composer 内按 running 推导：运行中 steer，否则 start） */
   onSend(behavior?: "start" | "steer" | "follow_up"): void;
   onConfig(body: Record<string, unknown>): void;
   editingMessage?: EditingMessage;

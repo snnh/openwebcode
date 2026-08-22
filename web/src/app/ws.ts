@@ -19,7 +19,7 @@ interface WebSocketLike {
 }
 
 export interface EventSocketEnv {
-  /** 完整 ws(s):// URL；缺省按 location 推导 /api/events */
+  /** 完整 ws(s):// URL；默认按 location 推导 /api/events */
   url?: string;
   /** WebSocket 构造注入（测试用假实现） */
   createSocket?: (url: string) => WebSocketLike;

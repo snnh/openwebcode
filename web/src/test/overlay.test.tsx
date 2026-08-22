@@ -73,7 +73,7 @@ describe("Overlay", () => {
     expect(document.activeElement).toBe(first);
   });
 
-  it("缺省初始聚焦对话框本身；initialFocus 选择器命中时聚焦指定元素", () => {
+  it("默认初始聚焦对话框本身；initialFocus 选择器命中时聚焦指定元素", () => {
     const { view, dialog } = renderOverlay();
     expect(document.activeElement).toBe(dialog);
     view.unmount();

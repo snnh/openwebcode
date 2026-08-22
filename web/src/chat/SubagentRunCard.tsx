@@ -160,7 +160,7 @@ export function SubagentRunCard({ name, input, sessionId, live }: {
   name: string;
   input?: Record<string, unknown>;
   sessionId?: string | undefined;
-  /** 该工具调用（toolCallId）关联的实时子代理运行；空/缺省表示历史卡片 */
+  /** 该工具调用（toolCallId）关联的实时子代理运行；空/默认表示历史卡片 */
   live?: LiveSubagentRun[] | undefined;
 }): ReactElement {
   const { t } = useI18n();

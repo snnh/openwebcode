@@ -6,9 +6,9 @@ import { createStore } from "./store";
 type ChatPythonStatus = "idle" | "preparing" | "ready" | "error";
 
 interface ChatModeState {
-  /** 按会话键控的 Python 沙盒状态；缺省视为 idle。 */
+  /** 按会话键控的 Python 沙盒状态；默认视为 idle。 */
   pythonStatus: Record<string, ChatPythonStatus>;
-  /** 按会话键控的消息运行态（connected/delta/done/stopped/error 事件驱动）；缺省 false。 */
+  /** 按会话键控的消息运行态（connected/delta/done/stopped/error 事件驱动）；默认 false。 */
   running: Record<string, boolean>;
 }
 
