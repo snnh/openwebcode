@@ -1425,6 +1425,10 @@ export class AgentRunner {
               model: effectiveModel,
               ...(reasoning.thinking ? { thinking: reasoning.thinking } : {}),
               ...(reasoning.effort ? { effort: reasoning.effort } : {}),
+              // 思考方式声明（模型目录 capabilities.thinkingStyle 内置默认，用户可覆盖）：
+              // provider 按此分发各端点思考参数 key（thinking:{type} / enable_thinking /
+              // effort_only / fixed / anthropic extended-adaptive）
+              ...(profile.capabilities.thinkingStyle ? { thinkingStyle: profile.capabilities.thinkingStyle } : {}),
               // 思维链回传按模型能力声明下发（未声明 = 默认开；gpt/claude 前缀元数据已声明关）
               reasoningContent: profile.capabilities.reasoningContent !== false,
               // 官方 OpenAI Responses 加密思维链回放按模型能力声明下发（仅 gpt/o 系元数据开启）
@@ -1995,6 +1999,9 @@ export class AgentRunner {
         reasoningContent: this.getProfile(resolved.modelOverride ?? session.model, context.providerName).capabilities.reasoningContent !== false,
         ...(this.getProfile(resolved.modelOverride ?? session.model, context.providerName).capabilities.responsesEncryptedReplay
           ? { responsesEncryptedReplay: true }
+          : {}),
+        ...(this.getProfile(resolved.modelOverride ?? session.model, context.providerName).capabilities.thinkingStyle
+          ? { thinkingStyle: this.getProfile(resolved.modelOverride ?? session.model, context.providerName).capabilities.thinkingStyle }
           : {}),
         serverWebSearch: this.getWebSearchMode() === "model-api",
         ...(resolved.modelOverride ? { modelOverride: resolved.modelOverride } : {}),
@@ -2705,6 +2712,9 @@ export class AgentRunner {
           ...(this.getProfile(effectiveModel, providerName).capabilities.responsesEncryptedReplay
             ? { responsesEncryptedReplay: true }
             : {}),
+          ...(this.getProfile(effectiveModel, providerName).capabilities.thinkingStyle
+            ? { thinkingStyle: this.getProfile(effectiveModel, providerName).capabilities.thinkingStyle }
+            : {}),
           serverWebSearch: this.getWebSearchMode() === "model-api",
           ...(resolved.modelOverride ? { modelOverride: resolved.modelOverride } : {}),
           ...(systemExtra ? { systemExtra } : {}),
@@ -2854,6 +2864,9 @@ export class AgentRunner {
               reasoningContent: this.getProfile(effectiveModel, providerName).capabilities.reasoningContent !== false,
               ...(this.getProfile(effectiveModel, providerName).capabilities.responsesEncryptedReplay
                 ? { responsesEncryptedReplay: true }
+                : {}),
+              ...(this.getProfile(effectiveModel, providerName).capabilities.thinkingStyle
+                ? { thinkingStyle: this.getProfile(effectiveModel, providerName).capabilities.thinkingStyle }
                 : {}),
               serverWebSearch: this.getWebSearchMode() === "model-api",
               ...(effective.modelOverride ? { modelOverride: effective.modelOverride } : {}),

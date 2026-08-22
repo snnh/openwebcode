@@ -52,9 +52,12 @@ export class AnthropicProvider implements Provider {
           model: request.model,
           max_tokens: maxTokens,
           ...(anthropicThinking(request, maxTokens) ? { thinking: anthropicThinking(request, maxTokens)! } : {}),
-          // ultra 超出 Anthropic 枚举（SDK 只声明到 max）：封顶 max 透传；
-          // minimal 尚未纳入 Anthropic 枚举：封底 low 透传，其余原样
-          ...(request.effort ? { output_config: { effort: request.effort === "ultra" ? "max" as const : request.effort === "minimal" ? "low" as const : request.effort } } : {}),
+          // 思考强度（output_config.effort）值不设限：原样透传，不做任何封顶/映射
+          // （ultra/minimal 等端点枚举外值由调用端点决定；官方枚举 low/medium/high/xhigh/max；
+          // SDK 类型仅声明到自身枚举，运行时原样发送）
+          ...(request.effort
+            ? { output_config: { effort: request.effort } as unknown as Anthropic.Messages.OutputConfig }
+            : {}),
           // 请求级采样参数（chat 模式助手预设下发）；undefined 时不发，由端点默认决定
           ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
           ...(request.topP !== undefined ? { top_p: request.topP } : {}),
@@ -125,11 +128,39 @@ export class AnthropicProvider implements Provider {
   }
 }
 
+/**
+ * Anthropic thinking 组装（Key 按声明 + 模型名推断，值不设限）：
+ * - thinkingStyle="extended"：thinking:{type:"enabled",budget_tokens}（仅 Claude 4.5 及以前
+ *   等旧模型的 extended-only 形态；预算不再硬编码上限，只受 API 硬约束 budget ≤ maxTokens-1）
+ * - thinkingStyle="adaptive"：thinking:{type:"adaptive"}（预算废弃时代，深度由 output_config.effort 控制）
+ * - 未声明（或 openai 型声明，如 thinking）：按模型名推断——
+ *   claude 4.5 及以前 → extended；claude 4.6+/国产/未知 → adaptive
+ * - thinking=disabled → 不发（Anthropic 无 disable 表达，不传即关闭思考）
+ * - 用户显式 enabled / adaptive → 按选定形态发送；未选择 → 不发（模型自动）
+ */
 function anthropicThinking(request: StreamChatRequest, maxTokens: number): Anthropic.ThinkingConfigParam | undefined {
-  if (!request.thinking || request.thinking === "disabled") return undefined;
+  if (request.thinking === "disabled") return undefined;
+  const style = request.thinkingStyle;
+  if (style === "extended") {
+    if (request.thinking !== "enabled") return undefined;
+    return { type: "enabled", budget_tokens: Math.max(1, maxTokens - 1) };
+  }
+  if (style === "adaptive") {
+    return { type: "adaptive", display: "summarized" };
+  }
   if (request.thinking === "adaptive") return { type: "adaptive", display: "summarized" };
-  if (maxTokens < 2) throw new Error("Enabled thinking requires maxTokens of at least 2");
-  return { type: "enabled", budget_tokens: Math.min(16_000, maxTokens - 1) };
+  if (request.thinking !== "enabled") return undefined;
+  return inferAnthropicThinking(request.model, maxTokens);
+}
+
+/** 模型名推断（Anthropic 官方文档）：Claude 4.5 及以前仅支持 extended（type:"adaptive" 会 400）；
+ * 4.6+（及国产/未知端点）用 adaptive——预算（budget_tokens）已在该代弃用/拒绝。 */
+function inferAnthropicThinking(model: string, maxTokens: number): Anthropic.ThinkingConfigParam {
+  const match = /claude[-/](?:opus|sonnet|haiku|fable|mythos)[-_]?4[-_](\d+)/i.exec(model);
+  if (match && Number(match[1]) <= 5) {
+    return { type: "enabled", budget_tokens: Math.max(1, maxTokens - 1) };
+  }
+  return { type: "adaptive", display: "summarized" };
 }
 
 /** Anthropic 每请求至多 4 个断点（tools/system/messages 合计）。 */

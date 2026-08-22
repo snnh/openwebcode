@@ -497,29 +497,6 @@ describe("ModelRoleResolver", () => {
   });
 });
 
-describe("filterReasoningByCapabilities", () => {
-  function profileWith(thinking: ThinkingMode[], effort: EffortLevel[]): ModelProfile {
-    return {
-      id: "m",
-      provider: "p",
-      contextWindow: 128_000,
-      capabilities: { modalities: ["text"], imageOutput: false, thinking, effort, tools: true },
-    };
-  }
-
-  it("keeps whitelisted values and drops the rest when capabilities are declared", () => {
-    const profile = profileWith(["disabled"], ["low", "high"]);
-    expect(filterReasoningByCapabilities(profile, { thinking: "enabled", effort: "low" })).toEqual({ effort: "low" });
-    expect(filterReasoningByCapabilities(profile, { thinking: "disabled", effort: "ultra" })).toEqual({ thinking: "disabled" });
-    expect(filterReasoningByCapabilities(profile, {})).toEqual({});
-  });
-
-  it("passes values through when capabilities are undeclared (empty arrays)", () => {
-    const profile = profileWith([], []);
-    expect(filterReasoningByCapabilities(profile, { thinking: "enabled", effort: "max" })).toEqual({ thinking: "enabled", effort: "max" });
-  });
-});
-
 interface SpawnFixture {
   runner: AgentRunner;
   sessionId: string;

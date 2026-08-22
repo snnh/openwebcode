@@ -13,6 +13,17 @@ const THINKING_OPTIONS = ["adaptive", "enabled", "disabled"] as const;
 const EFFORT_OPTIONS = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
 const MODALITY_OPTIONS = ["text", "image", "video"] as const;
 const MODALITY_LABEL: Record<string, [string, string]> = { text: ["文本", "Text"], image: ["图片", "Image"], video: ["视频", "Video"] };
+/** 思考方式声明（模型目录可编辑；未声明时 openai 兼容路径只发 effort、anthropic 按模型名推断）。 */
+const THINKING_STYLE_OPTIONS = ["", "thinking", "enable_thinking", "effort_only", "fixed", "extended", "adaptive"] as const;
+const THINKING_STYLE_LABEL: Record<string, [string, string]> = {
+  thinking: ["thinking:{type} 参数", "thinking:{type} param"],
+  enable_thinking: ["enable_thinking 参数", "enable_thinking param"],
+  effort_only: ["仅力度（无开关）", "effort only"],
+  fixed: ["固定思考（不可关）", "always-on thinking"],
+  extended: ["Anthropic extended（budget）", "Anthropic extended (budget)"],
+  adaptive: ["Anthropic adaptive", "Anthropic adaptive"],
+};
+const UNSPECIFIED_LABEL: [string, string] = ["默认", "Default"];
 
 interface ModelEditForm {
   id: string;
@@ -24,6 +35,7 @@ interface ModelEditForm {
   modalities: string[];
   imageOutput: boolean;
   tools: boolean;
+  thinkingStyle: string;
   reasoningContent: boolean;
   responsesEncryptedReplay: boolean;
 }
@@ -149,6 +161,7 @@ export function ModelCatalogSection(): ReactElement {
       reasoningContent: model.capabilities.reasoningContent ?? true,
       // 未声明时按 server 默认（gpt/o 系加密回放开，其余关）
       responsesEncryptedReplay: model.capabilities.responsesEncryptedReplay ?? false,
+      thinkingStyle: model.capabilities.thinkingStyle ?? "",
     });
   };
 
@@ -183,6 +196,8 @@ export function ModelCatalogSection(): ReactElement {
         tools: editing.tools,
         reasoningContent: editing.reasoningContent,
         responsesEncryptedReplay: editing.responsesEncryptedReplay,
+        // 空串 = 用户主动清除声明（服务端不回落到内置默认）
+        ...(editing.thinkingStyle ? { thinkingStyle: editing.thinkingStyle as ModelProfile["capabilities"]["thinkingStyle"] } : { thinkingStyle: "" }),
       },
     })
       .then(() => {
@@ -284,6 +299,21 @@ export function ModelCatalogSection(): ReactElement {
             />
           </div>
           {renderCapGroup(t("思考", "Thinking"), THINKING_OPTIONS, editing.thinking, "thinking", THINKING_LABEL)}
+          <div className="capability-row">
+            <span className="capability-title">{t("思考方式（后端参数）", "Thinking style (backend param)")}</span>
+            <select
+              className="input"
+              value={editing.thinkingStyle}
+              aria-label={t("思考方式", "Thinking style")}
+              onChange={(event) => setEditing((prev) => prev && { ...prev, thinkingStyle: event.target.value })}
+            >
+              {THINKING_STYLE_OPTIONS.map((option) => (
+                <option key={option} value={option}>
+                  {option === "" ? t(...UNSPECIFIED_LABEL) : t(...THINKING_STYLE_LABEL[option]!)}
+                </option>
+              ))}
+            </select>
+          </div>
           {renderCapGroup(t("力度", "Effort"), EFFORT_OPTIONS, editing.effort, "effort")}
           {renderCapGroup(t("输入", "Input"), MODALITY_OPTIONS, editing.modalities, "modalities", MODALITY_LABEL)}
           <div className="capability-row">

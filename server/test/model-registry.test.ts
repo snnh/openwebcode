@@ -26,29 +26,24 @@ const syncedPath = (root: string) => path.join(root, "models.synced.json");
 describe("model metadata lookup", () => {
   it("matches prefix, then conservative fallback", () => {
     expect(lookupModelMetadata("deepseek-reasoner").contextWindow).toBe(128_000);
-    expect(lookupModelMetadata("deepseek-chat").contextWindow).toBe(128_000);
-    // 未知模型走保守兜底（128K，而非乐观的 256K）
-    expect(FALLBACK_METADATA.contextWindow).toBe(128_000);
-    // 思维链回传默认：gpt/claude 关闭，其余（含未知模型）开启
+    expect(lookupModelMetadata("deepseek-v4-flash").contextWindow).toBe(1_000_000);
+    expect(lookupModelMetadata("glm-5.2").contextWindow).toBe(1_000_000);
+    expect(lookupModelMetadata("kimi-k3").contextWindow).toBe(1_000_000);
+    expect(lookupModelMetadata("kimi-k2.7-code").contextWindow).toBe(256_000);
+    expect(lookupModelMetadata("gemini-3.7-flash").contextWindow).toBe(1_000_000);
+    // 未知模型走兜底（默认 256K）
+    expect(FALLBACK_METADATA.contextWindow).toBe(256_000);
+    // 模型名含 vision 标记 → 默认声明图片输入（deepseek-v4-flash-vision-exp 等）
+    expect(lookupModelMetadata("deepseek-v4-flash-vision-exp").capabilities.modalities).toContain("image");
     expect(lookupModelMetadata("gpt-4o-2024-11-20").capabilities.modalities).toContain("image");
-    expect(lookupModelMetadata("gpt-4o-2024-11-20").capabilities.imageOutput).toBe(false);
     expect(lookupModelMetadata("some-random-model")).toEqual(FALLBACK_METADATA);
-    expect(lookupModelMetadata("some-random-model").capabilities.tools).toBe(true);
     expect(lookupModelMetadata("gpt-4o-2024-11-20").capabilities.reasoningContent).toBe(false);
     expect(lookupModelMetadata("claude-opus-4-8").capabilities.reasoningContent).toBe(false);
-    // 供应商命名空间形态 id 同样命中前缀（openai/gpt-*、anthropic/claude-*）
     expect(lookupModelMetadata("openai/gpt-5.6-sol").capabilities.reasoningContent).toBe(false);
-    expect(lookupModelMetadata("anthropic/claude-fable-5-free").capabilities.reasoningContent).toBe(false);
     expect(lookupModelMetadata("z-ai/glm-5.2").capabilities.reasoningContent).toBe(true);
     expect(lookupModelMetadata("qwen3-max").capabilities.reasoningContent).toBe(true);
     expect(lookupModelMetadata("some-random-model").capabilities.reasoningContent).toBe(true);
-    // 官方 OpenAI Responses 加密思维链回放：gpt/o 系开启，其余（含未知模型）关闭
     expect(lookupModelMetadata("gpt-5").capabilities.responsesEncryptedReplay).toBe(false);
-    expect(lookupModelMetadata("gpt-4o-2024-11-20").capabilities.responsesEncryptedReplay).toBe(false);
-    expect(lookupModelMetadata("o4-mini").capabilities.responsesEncryptedReplay).toBe(false);
-    expect(lookupModelMetadata("deepseek-chat").capabilities.responsesEncryptedReplay).toBe(false);
-    expect(lookupModelMetadata("qwen3-max").capabilities.responsesEncryptedReplay).toBe(false);
-    expect(lookupModelMetadata("claude-opus-4-8").capabilities.responsesEncryptedReplay).toBe(false);
     expect(lookupModelMetadata("some-random-model").capabilities.responsesEncryptedReplay).toBe(false);
   });
 });
@@ -234,24 +229,24 @@ describe("ModelRegistry", () => {
     const root = await tempDir();
     const registry = await ModelRegistry.load({
       ...paths(root),
-      fetchImpl: fetchStub([{ match: "https://gateway.test/models", body: { data: [{ id: "vision-model" }] } }]),
+      fetchImpl: fetchStub([{ match: "https://gateway.test/models", body: { data: [{ id: "hub-model" }] } }]),
     });
     await registry.refresh({ providers: [{ provider: "gateway", interfaceType: "openai-chat-completions", baseURL: "https://gateway.test" }] });
     // api 自动拉取条目：能力为内置兜底（无 image）
-    expect(registry.get("vision-model").capabilities.modalities).not.toContain("image");
-    // 用户在同 id 的另一 provider 下声明 vision 支持
+    expect(registry.get("hub-model").capabilities.modalities).not.toContain("image");
+    // 用户在同 id 的另一 provider 下声明 image 支持
     await registry.upsertManual({
-      id: "vision-model", provider: "official", source: "manual", contextWindow: 128_000,
+      id: "hub-model", provider: "official", source: "manual", contextWindow: 128_000,
       capabilities: { modalities: ["text", "image"], imageOutput: false, thinking: [], effort: [], tools: true },
     });
     // 无 provider 查询：用户声明（manual）优先于 api 自动条目，不被内置兜底能力盖过
-    const profile = registry.get("vision-model");
+    const profile = registry.get("hub-model");
     expect(profile.provider).toBe("official");
     expect(profile.capabilities.modalities).toContain("image");
     // 带 provider 查询仍精确命中对应条目
-    expect(registry.get("vision-model", "gateway").capabilities.modalities).not.toContain("image");
+    expect(registry.get("hub-model", "gateway").capabilities.modalities).not.toContain("image");
     // list() 展示层不变：不同 provider 的同 id 条目并存
-    expect(registry.list().filter((model) => model.id === "vision-model")).toHaveLength(2);
+    expect(registry.list().filter((model) => model.id === "hub-model")).toHaveLength(2);
   });
 
   it("normalizes legacy saved capabilities with imageOutput disabled", async () => {

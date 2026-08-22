@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { ProviderRegistry, StreamChatRequest } from "../providers/provider.js";
+import type { ModelProfile } from "../context/model-profile.js";
 import type { ProviderProfilesService } from "../provider-profiles.js";
 import { collectProviderTurn } from "../providers/retry.js";
 import { activePathMessages } from "../sessions/session-tree.js";
@@ -64,6 +65,8 @@ export class ChatRunner {
     private readonly maxTurns: () => number,
     /** core 桥接（CoreRouter）：Windows 上 python 工具经 job.* 在 Job Object 内运行。 */
     private readonly coreRouter?: ChatPythonCoreBridge,
+    /** 模型能力查询（thinkingStyle/reasoningContent 按模型目录声明下发，与 agent 主循环同口径）。 */
+    private readonly getProfile?: (model: string, provider?: string) => ModelProfile,
   ) {
     this.searchProvider = searchProvider;
     this.webFetchProvider = webFetchProvider;
@@ -192,6 +195,14 @@ export class ChatRunner {
           tools,
           thinking: effective.thinking,
           ...(effective.effort !== undefined ? { effort: effective.effort } : {}),
+          // 思考方式与思维链回传按模型目录声明下发（与 agent 主循环同口径；未声明回落 provider 默认）
+          ...(this.getProfile ? (() => {
+            const profile = this.getProfile(effective.model, effective.provider);
+            return {
+              ...(profile.capabilities.thinkingStyle ? { thinkingStyle: profile.capabilities.thinkingStyle } : {}),
+              reasoningContent: profile.capabilities.reasoningContent !== false,
+            };
+          })() : {}),
           ...(effective.maxTokens !== undefined ? { maxTokens: effective.maxTokens } : {}),
           ...(effective.temperature !== undefined ? { temperature: effective.temperature } : {}),
           ...(effective.topP !== undefined ? { topP: effective.topP } : {}),
