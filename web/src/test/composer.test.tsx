@@ -87,6 +87,17 @@ describe("Composer 渲染与发送", () => {
     expect(textarea.placeholder).toContain("Ctrl+Enter 发送");
   });
 
+  it("sendKey=ctrl-enter 时：回车换行不发送，Ctrl+Enter 才发送（选项真实生效）", () => {
+    setSendKey("ctrl-enter");
+    const { props, textarea } = renderComposer();
+    fireEvent.change(textarea, { target: { value: "修 bug" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(props.onSend).not.toHaveBeenCalled();
+    fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: true });
+    expect(props.onSend).toHaveBeenCalledTimes(1);
+    expect(props.onSend).toHaveBeenCalledWith("start");
+  });
+
   it("输入后 Enter 触发 onSend('start')", () => {
     const { props, textarea } = renderComposer();
     fireEvent.change(textarea, { target: { value: "修个 bug" } });
