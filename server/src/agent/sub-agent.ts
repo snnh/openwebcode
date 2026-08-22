@@ -6,6 +6,7 @@ import { ContextManager } from "../context/context-manager.js";
 import { boundToolResult } from "../context/tool-result-budget.js";
 import type { Provider, ProviderEvent, ProviderTool } from "../providers/provider.js";
 import { collectProviderTurn } from "../providers/retry.js";
+import type { ThinkingStyle } from "../context/model-profile.js";
 import type { ChatMessage, MessageContent, MessageRole, WebSearchCallContent } from "../sessions/types.js";
 import {
   bashTool,
@@ -131,6 +132,9 @@ export interface SubAgentOptions {
    * 子代理每轮把 thinking_delta/thinking_end 累积为带 provider 的 thinking 块写入对话历史，
    * 下一轮由 provider 按能力声明回传（DeepSeek 思维模式强制要求，缺素材会 400）。 */
   reasoningContent?: boolean;
+  /** 思考方式声明（模型目录 capabilities.thinkingStyle）：provider 按此分发各端点思考参数
+   * key（thinking:{type} / enable_thinking / effort_only / fixed / anthropic extended-adaptive）。 */
+  thinkingStyle?: ThinkingStyle;
   /** 加密思维链回放（仅 OpenAI Responses 接口生效）：由调用方按实际请求模型（modelOverride ?? model）
    * 的能力声明下发；true 时 provider 走 dsh same-model 口径（include 参数 + rs_/fc_ id 与 encrypted_content 原样回放）。 */
   responsesEncryptedReplay?: boolean;
@@ -232,6 +236,7 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
         tools,
         signal: options.signal,
         ...(options.reasoningContent !== undefined ? { reasoningContent: options.reasoningContent } : {}),
+        ...(options.thinkingStyle ? { thinkingStyle: options.thinkingStyle } : {}),
         ...(options.responsesEncryptedReplay !== undefined ? { responsesEncryptedReplay: options.responsesEncryptedReplay } : {}),
         ...(options.serverWebSearch !== undefined ? { serverWebSearch: options.serverWebSearch } : {}),
       });

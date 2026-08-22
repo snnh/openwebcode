@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
-import type { EffortLevel, ModelModality, ThinkingMode } from "../context/model-profile.js";
+import type { EffortLevel, ModelModality, ThinkingMode, ThinkingStyle } from "../context/model-profile.js";
 import { lookupModelMetadata } from "../context/model-metadata.js";
 import { PricingValidationError, type PricingDocument } from "../cost/pricing-catalog.js";
 import { ProviderProfilesValidationError, normalizeModel, type WebCapability } from "../provider-profiles.js";
@@ -7,7 +7,7 @@ import { testModelProviderConnection } from "../provider-connection-test.js";
 import type { ServerConfig } from "../config.js";
 import { errorMessage } from "../error-utils.js";
 import type { CatalogModel } from "../context/model-registry.js";
-import { EFFORT_LEVELS, MODEL_MODALITIES, THINKING_MODES, serializePricing, syncUrlNotConfigured } from "./route-context.js";
+import { EFFORT_LEVELS, MODEL_MODALITIES, THINKING_MODES, THINKING_STYLES, serializePricing, syncUrlNotConfigured } from "./route-context.js";
 import type { RouteContext } from "./route-context.js";
 
 export function registerProviderRoutes(app: FastifyInstance, ctx: RouteContext): void {
@@ -97,12 +97,14 @@ export function registerProviderRoutes(app: FastifyInstance, ctx: RouteContext):
         && Array.isArray(value.modalities) && Array.isArray(value.thinking) && Array.isArray(value.effort)
         && typeof value.imageOutput === "boolean" && typeof value.tools === "boolean"
         && (value.reasoningContent === undefined || typeof value.reasoningContent === "boolean")
-        && (value.responsesEncryptedReplay === undefined || typeof value.responsesEncryptedReplay === "boolean");
-      if (!valid) return reply.code(400).send({ error: "capabilities must include modalities/thinking/effort arrays plus imageOutput and tools booleans (reasoningContent / responsesEncryptedReplay optional boolean)" });
+        && (value.responsesEncryptedReplay === undefined || typeof value.responsesEncryptedReplay === "boolean")
+        && (value.thinkingStyle === undefined || typeof value.thinkingStyle === "string");
+      if (!valid) return reply.code(400).send({ error: "capabilities must include modalities/thinking/effort arrays plus imageOutput and tools booleans (reasoningContent / responsesEncryptedReplay optional boolean; thinkingStyle optional string)" });
       const inRange = value.modalities.every((item) => MODEL_MODALITIES.includes(item as ModelModality))
         && value.thinking.every((item) => THINKING_MODES.includes(item as ThinkingMode))
-        && value.effort.every((item) => EFFORT_LEVELS.includes(item as EffortLevel));
-      if (!inRange) return reply.code(400).send({ error: "capabilities values out of range (modalities: text/image/video; thinking: adaptive/enabled/disabled; effort: minimal/low/medium/high/xhigh/max/ultra)" });
+        && value.effort.every((item) => EFFORT_LEVELS.includes(item as EffortLevel))
+        && (value.thinkingStyle === undefined || THINKING_STYLES.includes(value.thinkingStyle as ThinkingStyle));
+      if (!inRange) return reply.code(400).send({ error: "capabilities values out of range (modalities: text/image/video; thinking: adaptive/enabled/disabled; effort: minimal/low/medium/high/xhigh/max/ultra; thinkingStyle: thinking/enable_thinking/effort_only/fixed/extended/adaptive)" });
     }
     // maxOutput 已废弃：请求体携带该键时静默忽略（不 400、不透传）。
     if (body.contextWindow !== undefined && (!Number.isSafeInteger(body.contextWindow) || body.contextWindow < 1)) {

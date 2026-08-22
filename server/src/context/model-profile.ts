@@ -5,6 +5,15 @@ export type Currency = "USD" | "CNY";
 export type ModelModality = "text" | "image" | "video";
 export type ThinkingMode = "adaptive" | "enabled" | "disabled";
 export type EffortLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+/** 思考方式声明（模型目录可编辑；内置按已知模型族设默认）：
+ * - thinking：发 thinking:{type:enabled/disabled} 开关（deepseek/glm/kimi-k2.6）
+ * - enable_thinking：发顶层 enable_thinking:true/false（qwen）
+ * - effort_only：只发 reasoning_effort，无开关表达（kimi-k3、gpt/o 系）
+ * - fixed：思考恒开不可关，用户显式选择时仍尝试发送（kimi-for-coding、glm-5.3）
+ * - extended：Anthropic thinking:{type:"enabled",budget_tokens}（claude 4.5 及以前）
+ * - adaptive：Anthropic thinking:{type:"adaptive"}，effort 控制深度（claude 4.6+、国产 anthropic）
+ * 未声明：openai 兼容路径只发 effort（不建思考开关）；anthropic 路径按模型名推断。 */
+export type ThinkingStyle = "thinking" | "enable_thinking" | "effort_only" | "fixed" | "extended" | "adaptive";
 
 /** Prices are integer micro-units of the source currency per million tokens. */
 export interface ModelPricing {
@@ -28,6 +37,9 @@ export interface ModelCapabilities {
   /** 官方 OpenAI Responses 加密思维链回放（include:["reasoning.encrypted_content"] +
    * rs_/fc_ id 原样回放）；缺省按模型族 gpt/o 系 true、其余 false；可在模型目录 UI 手动配置。 */
   responsesEncryptedReplay?: boolean;
+  /** 思考方式（见 ThinkingStyle 注释）；未声明时 openai 兼容路径只发 effort、
+   * anthropic 路径按模型名推断（claude 4.6+ / 国产 = adaptive，claude 4.5 及以前 = extended）。 */
+  thinkingStyle?: ThinkingStyle;
 }
 
 export interface ModelProfile {

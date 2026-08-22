@@ -736,19 +736,22 @@ describe("OpenAIResponsesProvider request mapping", () => {
     ]);
   });
 
-  it("thinking=disabled 且模型为 deepseek：reasoning.effort 映射为 none（官方文档：none 禁用思考模式）；其他模型不下发", async () => {
+  it("thinking=disabled 且声明为 thinking 型：reasoning.effort 映射为 none（官方文档：none 禁用思考模式）；effort_only/未声明不下发", async () => {
     const bodies: Array<Record<string, unknown>> = [];
-    await drain(makeProvider(completedSseFetch(bodies)).streamChat(request({ model: "deepseek-v4-pro", thinking: "disabled" })));
+    await drain(makeProvider(completedSseFetch(bodies)).streamChat(request({ model: "deepseek-v4-pro", thinking: "disabled", thinkingStyle: "thinking" })));
     expect(bodies[0]?.reasoning).toMatchObject({ effort: "none" });
     // 用户显式 effort 优先于 thinking 默认（disabled 仍显式关闭）
-    await drain(makeProvider(completedSseFetch(bodies)).streamChat(request({ model: "deepseek-v4-pro", thinking: "disabled", effort: "max" })));
+    await drain(makeProvider(completedSseFetch(bodies)).streamChat(request({ model: "deepseek-v4-pro", thinking: "disabled", effort: "max", thinkingStyle: "thinking" })));
     expect(bodies[1]?.reasoning).toMatchObject({ effort: "none" });
-    // 非 deepseek 模型不下发 effort:none（官方 OpenAI 无该取值）；summary 仍在
-    await drain(makeProvider(completedSseFetch(bodies)).streamChat(request({ model: "gpt-5", thinking: "disabled" })));
+    // effort_only 型（官方 OpenAI gpt 系）不下发 effort:none（官方无该取值）；summary 仍在
+    await drain(makeProvider(completedSseFetch(bodies)).streamChat(request({ model: "gpt-5", thinking: "disabled", thinkingStyle: "effort_only" })));
     expect(bodies[2]?.reasoning).toEqual({ summary: "auto" });
+    // 未声明 thinkingStyle 也不下发（只发 effort/summary）
+    await drain(makeProvider(completedSseFetch(bodies)).streamChat(request({ model: "deepseek-v4-pro", thinking: "disabled" })));
+    expect(bodies[3]?.reasoning).toEqual({ summary: "auto" });
     // enabled/adaptive 不覆盖
-    await drain(makeProvider(completedSseFetch(bodies)).streamChat(request({ model: "deepseek-v4-pro", thinking: "enabled", effort: "high" })));
-    expect(bodies[3]?.reasoning).toMatchObject({ effort: "high" });
+    await drain(makeProvider(completedSseFetch(bodies)).streamChat(request({ model: "deepseek-v4-pro", thinking: "enabled", effort: "high", thinkingStyle: "thinking" })));
+    expect(bodies[4]?.reasoning).toMatchObject({ effort: "high" });
   });
 
   it("store:false 缺省随请求下发（dsh 无状态口径），options.store 可覆盖", async () => {
@@ -939,17 +942,27 @@ describe("provider reasoning parameters", () => {
     expect(bodies[0]).toMatchObject({ thinking: { type: "adaptive" }, output_config: { effort: "xhigh" } });
     expect(bodies[1]).not.toHaveProperty("thinking");
     expect(bodies[1]).not.toHaveProperty("output_config");
-    expect(bodies[2]).toMatchObject({ thinking: { type: "enabled", budget_tokens: 16000 } });
-    const limited = new AnthropicProvider({ apiKey: "test", maxTokens: 8000 });
-    injectMockStream(limited, bodies);
-    await drain(limited.streamChat(reasoningRequest({ thinking: "enabled" })));
-    expect(bodies[4]).toMatchObject({ max_tokens: 8000, thinking: { type: "enabled", budget_tokens: 7999 } });
+    // 未声明 thinkingStyle：按模型名推断（claude-opus-4-8 为 4.6+ → adaptive；预算已在该代弃用）
+    expect(bodies[2]).toMatchObject({ thinking: { type: "adaptive" } });
+    // cache 用例：消息级断点（体 3）
     expect(bodies[3]).toMatchObject({
       messages: [
         { content: [{ text: "cached", cache_control: { type: "ephemeral" } }] },
         { content: [{ text: "tail" }] },
       ],
     });
+    // 声明 extended（claude 4.5 及以前形态）：enabled + budget（budget = maxTokens-1，不再硬编码 16000）
+    await drain(provider.streamChat(reasoningRequest({ thinking: "enabled", thinkingStyle: "extended" })));
+    expect(bodies[4]).toMatchObject({ thinking: { type: "enabled", budget_tokens: 63_999 } });
+    await drain(provider.streamChat(reasoningRequest({ model: "claude-opus-4-5", thinking: "enabled" })));
+    expect(bodies[5]).toMatchObject({ thinking: { type: "enabled", budget_tokens: 63_999 } });
+    const limited = new AnthropicProvider({ apiKey: "test", maxTokens: 8000 });
+    injectMockStream(limited, bodies);
+    await drain(limited.streamChat(reasoningRequest({ thinking: "enabled", thinkingStyle: "extended" })));
+    expect(bodies[6]).toMatchObject({ max_tokens: 8000, thinking: { type: "enabled", budget_tokens: 7999 } });
+    // 国产/未知模型 anthropic 路径默认 adaptive（预算废弃时代）
+    await drain(provider.streamChat(reasoningRequest({ model: "deepseek-v4-pro", thinking: "enabled" })));
+    expect(bodies[7]).toMatchObject({ thinking: { type: "adaptive" } });
   });
 
   it("sends OpenAI reasoning_effort only when enabled", async () => {

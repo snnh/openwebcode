@@ -1,4 +1,4 @@
-import type { EffortLevel, ThinkingMode } from "../context/model-profile.js";
+import type { EffortLevel, ThinkingMode, ThinkingStyle } from "../context/model-profile.js";
 import type { ChatMessage } from "../sessions/types.js";
 import { ConcurrencyLimitedProvider, type ProviderConcurrencyStats } from "./concurrency-limiter.js";
 
@@ -12,6 +12,9 @@ export interface StreamChatRequest {
   model: string;
   thinking?: ThinkingMode;
   effort?: EffortLevel;
+  /** 思考方式声明（模型目录 capabilities.thinkingStyle 下发；未声明时 openai 兼容路径
+   * 只发 effort、anthropic 路径按模型名推断）。provider 按此分发各端点思考参数 key。 */
+  thinkingStyle?: ThinkingStyle;
   /** Per-request output ceiling used by internal fast-model calls. */
   maxTokens?: number;
   /** 采样温度（请求级，chat 模式助手预设/会话配置下发）；undefined 时由端点默认决定。 */

@@ -7,6 +7,7 @@ import { TotpAuthService } from "./auth-totp.js";
 import { buildAccessUrls, listLanAddresses, regenerateAccessToken, resolveAccessToken } from "./access-token.js";
 import { isLoopbackHost, loadConfig } from "./config.js";
 import { ModelRegistry } from "./context/model-registry.js";
+import { getModelProfile } from "./context/model-profile.js";
 import { CoreClient } from "./core-client.js";
 import { CoreLogArchive } from "./core-log.js";
 import { ExchangeRateService, HttpExchangeRateProvider } from "./cost/exchange-rate.js";
@@ -314,6 +315,8 @@ const chatRunner = new ChatRunner(
   () => settings.effective().agentMaxTurns,
   // Windows 上 chat python 经 CoreRouter job.* 在 Job Object 内运行
   core,
+  // 模型能力查询（thinkingStyle/reasoningContent 按目录声明下发，与 agent 主循环同口径）
+  (model: string, provider?: string) => models.get(model, provider) ?? getModelProfile(model),
 );
 // chat 侧搜索/抓取服务商跟随 provider profiles 热更新（注入即同步一次当前值）
 providerProfilesRuntime.setChatRunner(chatRunner);

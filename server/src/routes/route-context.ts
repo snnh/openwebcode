@@ -7,7 +7,7 @@ import type { EventBus } from "../events/event-bus.js";
 import type { ProviderRegistry } from "../providers/provider.js";
 import type { PricingCatalog, SyncResult } from "../cost/pricing-catalog.js";
 import type { ExchangeRateService } from "../cost/exchange-rate.js";
-import type { Currency, EffortLevel, ModelModality, ModelPricing, ModelProfile, ThinkingMode } from "../context/model-profile.js";
+import type { Currency, EffortLevel, ModelModality, ModelPricing, ModelProfile, ThinkingMode, ThinkingStyle } from "../context/model-profile.js";
 import type { CatalogModel, ModelRegistry } from "../context/model-registry.js";
 import type { SettingsService } from "../settings-service.js";
 import { ManagedWorkspaceSyncError } from "../snapshots/managed-sync.js";
@@ -97,6 +97,7 @@ export interface BudgetBody {
 export const MODEL_MODALITIES: readonly ModelModality[] = ["text", "image", "video"];
 export const THINKING_MODES: readonly ThinkingMode[] = ["adaptive", "enabled", "disabled"];
 export const EFFORT_LEVELS: readonly EffortLevel[] = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+export const THINKING_STYLES: readonly ThinkingStyle[] = ["thinking", "enable_thinking", "effort_only", "fixed", "extended", "adaptive"];
 /** files/raw 预览的扩展名 -> MIME 白名单（其余 415）。 */
 export const RAW_PREVIEW_MIME: Record<string, string> = {
   png: "image/png",

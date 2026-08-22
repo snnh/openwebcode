@@ -44,20 +44,13 @@ export class ModelRoleResolver {
 }
 
 /**
- * thinking/effort 能力白名单过滤（与 app.ts 会话配置校验同一规则，此处为共用出口）：
- * 能力数组为空 = 未声明，放行原值；数组非空 = 已声明，仅保留白名单内的值，其余丢弃。
+ * thinking/effort 值传递（用户优先，不设限）：模型目录声明仅用于 UI 能力展示与默认参数
+ * （metadata 内置默认、用户可在目录覆盖）；用户显式设置的具体值原样透传，不做模型级
+ * 白名单过滤（「推理参数的具体值不设限」）。仅做全局枚举合法性校验（路由层已完成）。
  */
 export function filterReasoningByCapabilities(
-  profile: ModelProfile,
+  _profile: ModelProfile,
   requested: { thinking?: ThinkingMode; effort?: EffortLevel },
 ): { thinking?: ThinkingMode; effort?: EffortLevel } {
-  const thinking = requested.thinking !== undefined &&
-    (profile.capabilities.thinking.length === 0 || profile.capabilities.thinking.includes(requested.thinking))
-    ? requested.thinking
-    : undefined;
-  const effort = requested.effort !== undefined &&
-    (profile.capabilities.effort.length === 0 || profile.capabilities.effort.includes(requested.effort))
-    ? requested.effort
-    : undefined;
-  return { ...(thinking ? { thinking } : {}), ...(effort ? { effort } : {}) };
+  return { ...(requested.thinking ? { thinking: requested.thinking } : {}), ...(requested.effort ? { effort: requested.effort } : {}) };
 }

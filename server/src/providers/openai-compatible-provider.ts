@@ -1,4 +1,5 @@
 import type { ChatMessage, ImageContent, ThinkingContent, ToolCallContent } from "../sessions/types.js";
+import type { ThinkingMode, ThinkingStyle } from "../context/model-profile.js";
 import { normalizeProviderError, ProviderError } from "./provider-error.js";
 import { collectToolOutputs, parseArguments, providerRequestHeaders, requireResponseBody } from "./shared.js";
 import type { Provider, ProviderEvent, StreamChatRequest } from "./provider.js";
@@ -24,6 +25,24 @@ interface ToolAccumulator {
   id: string;
   name: string;
   arguments: string;
+}
+
+/** 思考开关参数（OpenAI 兼容 /chat/completions 的 key 分发）：按模型目录声明的思考方式
+ * （thinkingStyle）决定发哪种 key；值（enabled/disabled）原样不设限。adaptive 为 Anthropic
+ * 特有模式（各家 OpenAI 兼容端点无此值），此处不发送。 */
+function thinkingSwitchParam(style: ThinkingStyle | undefined, thinking: ThinkingMode | undefined): Record<string, unknown> {
+  if (thinking === undefined || thinking === "adaptive") return {};
+  switch (style) {
+    case "thinking":
+    case "fixed":
+      // fixed（如 kimi-for-coding / glm-5.3）：官方不推荐传参，但用户显式选择仍尝试发送
+      return { thinking: { type: thinking } };
+    case "enable_thinking":
+      return { enable_thinking: thinking === "enabled" };
+    default:
+      // effort_only / extended / adaptive / 未声明：无开关表达，不发（effort 已随 reasoning_effort 发送）
+      return {};
+  }
 }
 
 /** SSE 流 idle 默认上限：5 分钟无 data 事件判半开。思考型模型在端点缓冲思考时可能长时间静默，
@@ -65,11 +84,12 @@ export class OpenAICompatibleProvider implements Provider {
         ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
         ...(request.topP !== undefined ? { top_p: request.topP } : {}),
         ...(this.options.reasoningEffort !== false && request.effort ? { reasoning_effort: request.effort } : {}),
-        // DeepSeek 官方文档：Chat Completions 的 thinking 开关 = thinking:{"type":"enabled/disabled"}
-        // （extra_body 通道）；仅 DeepSeek 模型生效，其他兼容端点可能拒绝未知参数。
-        ...(request.thinking !== undefined && request.thinking !== "adaptive" && request.model.toLowerCase().startsWith("deepseek")
-          ? { thinking: { type: request.thinking } }
-          : {}),
+        // 思考开关按模型目录声明（thinkingStyle）分发 key；值不设限（用户选什么传什么）：
+        // - thinking/fixed：thinking:{type:enabled/disabled}（fixed 用户显式选择时仍尝试发送）
+        // - enable_thinking：顶层 enable_thinking:bool（qwen）
+        // - effort_only/extended/adaptive/未声明：不发开关（由模型自动；effort 有值已随 reasoning_effort 发）
+        // 声明为本地：端点差异见 model-metadata.ts 各模型族默认。
+        ...thinkingSwitchParam(request.thinkingStyle, request.thinking),
         messages: toOpenAIMessages(request.system, request.messages, this.name, reasoningContent),
         ...(request.tools.length > 0
           ? {

@@ -110,10 +110,10 @@ export class OpenAIResponsesProvider implements Provider {
     const reasoningSummary = request.reasoningContent ?? (this.options.reasoningContent !== false);
     const reasoning: Record<string, unknown> = {};
     if (this.options.reasoningEffort !== false && request.effort) reasoning.effort = request.effort;
-    // DeepSeek 文档（Responses API Format）：thinking 开关 = reasoning.effort "none"（禁用思考模式）。
-    // 仅 DeepSeek 模型生效（官方 OpenAI 的 effort 无 "none" 取值，误发会 400）；模型元数据
-    // deepseek 前缀已声明 thinking:["enabled","disabled"]，经 filterReasoningByCapabilities 白名单透传。
-    if (request.thinking === "disabled" && request.model.toLowerCase().startsWith("deepseek")) {
+    // 思考关闭按声明分发：thinking 型（deepseek 等）→ reasoning.effort:"none"（Responses 无
+    // thinking 开关语法，none 禁用思考模式）；fixed 用户显式选择仍尝试发送；其余无表达不发。
+    // 值不设限：effort 值原样（含映射前值），key 由模型目录声明决定。
+    if (request.thinking === "disabled" && (request.thinkingStyle === "thinking" || request.thinkingStyle === "fixed")) {
       reasoning.effort = "none";
     }
     if (reasoningSummary) reasoning.summary = "auto";

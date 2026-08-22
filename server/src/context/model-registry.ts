@@ -12,6 +12,7 @@ import {
   type ModelModality,
   type ModelProfile,
   type ThinkingMode,
+  type ThinkingStyle,
 } from "./model-profile.js";
 
 type ModelSource = "builtin" | "api" | "synced" | "manual";
@@ -75,6 +76,7 @@ const ANTHROPIC_MODELS_URL = "https://api.anthropic.com";
 const MODEL_MODALITIES: readonly ModelModality[] = ["text", "image", "video"];
 const THINKING_MODES: readonly ThinkingMode[] = ["adaptive", "enabled", "disabled"];
 const EFFORT_LEVELS: readonly EffortLevel[] = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
+const THINKING_STYLES: readonly ThinkingStyle[] = ["thinking", "enable_thinking", "effort_only", "fixed", "extended", "adaptive"];
 const ISO_8601_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
 
 function modelKey(provider: string, id: string): string {
@@ -127,8 +129,18 @@ function normalizeCatalogModel(model: CatalogModel, source: ModelSource): Catalo
       tools: typeof raw?.tools === "boolean" ? raw.tools : fallback.tools,
       ...materializeReasoningContent(raw?.reasoningContent, fallback.reasoningContent),
       ...materializeResponsesEncryptedReplay(raw?.responsesEncryptedReplay, fallback.responsesEncryptedReplay),
+      ...materializeThinkingStyle(raw?.thinkingStyle, fallback.thinkingStyle),
     },
   };
+}
+
+/** 声明优先、缺省回落元数据默认；显式空串 = 用户主动清除声明（不回落内置默认）；非法值忽略。 */
+function materializeThinkingStyle(value: unknown, fallback: ThinkingStyle | undefined): { thinkingStyle?: ThinkingStyle } {
+  if (value === "" || value === null) return {};
+  const merged = typeof value === "string" && (THINKING_STYLES as readonly string[]).includes(value)
+    ? value as ThinkingStyle
+    : fallback;
+  return merged ? { thinkingStyle: merged } : {};
 }
 
 /** 声明优先、缺省回落元数据默认；两者皆非布尔时省略该键（exactOptionalPropertyTypes）。 */
@@ -186,6 +198,9 @@ function normalizeSyncedCapabilities(value: unknown, fallback: ModelCapabilities
   if (value.responsesEncryptedReplay !== undefined && typeof value.responsesEncryptedReplay !== "boolean") {
     throw new Error("Invalid catalog capabilities.responsesEncryptedReplay");
   }
+  if (value.thinkingStyle !== undefined && (typeof value.thinkingStyle !== "string" || !(THINKING_STYLES as readonly string[]).includes(value.thinkingStyle))) {
+    throw new Error("Invalid catalog capabilities.thinkingStyle");
+  }
   return {
     modalities: strictKnownValues(value.modalities, "modalities", fallback.modalities, MODEL_MODALITIES),
     // Legacy and partial remote catalogs deliberately default to the metadata fallback (currently false).
@@ -195,6 +210,7 @@ function normalizeSyncedCapabilities(value: unknown, fallback: ModelCapabilities
     tools: typeof value.tools === "boolean" ? value.tools : fallback.tools,
     ...materializeReasoningContent(value.reasoningContent, fallback.reasoningContent),
     ...materializeResponsesEncryptedReplay(value.responsesEncryptedReplay, fallback.responsesEncryptedReplay),
+    ...materializeThinkingStyle(value.thinkingStyle, fallback.thinkingStyle),
   };
 }
 
