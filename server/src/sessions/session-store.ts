@@ -413,22 +413,25 @@ export class SessionStore {
     id: string,
     transform: (messages: readonly ChatMessage[]) => { messages: ChatMessage[]; changed: number },
   ): Promise<{ changed: number; backup?: string }> {
-    const detail = await this.get(id);
-    if (!detail) throw new Error("Session not found");
-    const result = transform(detail.messages);
-    if (result.changed === 0) return { changed: 0 };
-    const backup = `messages.jsonl.upgrade-${Date.now()}`;
-    await copyFile(this.messagesPath(id), path.join(this.sessionPath(id), backup));
-    await writeUtf8Atomically(
-      this.messagesPath(id),
-      result.messages.map((message) => JSON.stringify(message)).join("\n") + "\n",
-      { mode: 0o600 },
-    );
-    this.messagesCache.delete(id);
-    const meta = await this.readMeta(id);
-    meta.updatedAt = monotonicTimestamp();
-    await this.writeMeta(meta);
-    return { changed: result.changed, backup };
+    // 与追加消息走同一 per-session 串行链：升级期间即使会话启动了写，也排队而非覆盖丢消息
+    return serializeByKey(this.appendChains, id, async () => {
+      const detail = await this.get(id);
+      if (!detail) throw new Error("Session not found");
+      const result = transform(detail.messages);
+      if (result.changed === 0) return { changed: 0 };
+      const backup = `messages.jsonl.upgrade-${Date.now()}`;
+      await copyFile(this.messagesPath(id), path.join(this.sessionPath(id), backup));
+      await writeUtf8Atomically(
+        this.messagesPath(id),
+        result.messages.map((message) => JSON.stringify(message)).join("\n") + "\n",
+        { mode: 0o600 },
+      );
+      this.messagesCache.delete(id);
+      const meta = await this.readMeta(id);
+      meta.updatedAt = monotonicTimestamp();
+      await this.writeMeta(meta);
+      return { changed: result.changed, backup };
+    });
   }
 
   async updatePermissions(id: string, permissionMode: SessionMeta["permissionMode"], permissionRules: NonNullable<SessionMeta["permissionRules"]>): Promise<SessionMeta> {

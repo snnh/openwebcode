@@ -181,6 +181,7 @@ export class OpenAIResponsesProvider implements Provider {
     // output_item.done 缺失时由终态权威输出补发 web_search_call 事件（与 B3 同思路）。
     const webSearchFinished = new Map<string, Record<string, unknown>>();
     let sawRefusal = false;
+    let sawText = false;
     let finalStatus: string | null = null;
     let incompleteReason: string | null = null;
     let streamStarted = false;
@@ -192,6 +193,7 @@ export class OpenAIResponsesProvider implements Provider {
         switch (event.type) {
           case "response.output_text.delta":
             if (event.delta) {
+              sawText = true;
               if (event.output_index !== undefined) {
                 // 开槽或续写文本槽位（output_item.added 未到/缺失时兜底）
                 const acc = textAccums.get(event.output_index) ?? { text: "" };
@@ -252,7 +254,7 @@ export class OpenAIResponsesProvider implements Provider {
             break;
           case "response.output_item.added":
             if (event.item?.type === "function_call") {
-              const acc = rememberCall(calls, event.item_id, event.item);
+              const acc = rememberCall(calls, event.item_id, event.item, event.output_index);
               if (event.item.arguments) acc.arguments = event.item.arguments;
               yield {
                 type: "tool_call_delta",
@@ -269,7 +271,7 @@ export class OpenAIResponsesProvider implements Provider {
             }
             break;
           case "response.function_call_arguments.delta": {
-            const acc = rememberCall(calls, event.item_id);
+            const acc = rememberCall(calls, event.item_id, undefined, event.output_index);
             acc.arguments += event.delta ?? "";
             yield {
               type: "tool_call_delta",
@@ -280,14 +282,14 @@ export class OpenAIResponsesProvider implements Provider {
             break;
           }
           case "response.function_call_arguments.done": {
-            const acc = rememberCall(calls, event.item_id);
+            const acc = rememberCall(calls, event.item_id, undefined, event.output_index);
             if (event.arguments !== undefined) acc.arguments = event.arguments;
             break;
           }
           case "response.output_item.done":
             // output_item.done 的 item 携带完整 name/arguments，作为权威值覆盖流式累积
             if (event.item?.type === "function_call") {
-              const acc = rememberCall(calls, event.item_id, event.item);
+              const acc = rememberCall(calls, event.item_id, event.item, event.output_index);
               if (event.item.arguments !== undefined) acc.arguments = event.item.arguments;
             } else if (event.item?.type === "web_search_call") {
               // 服务端联网搜索收尾：完整 item（id/status/action）落盘为消息块，回放时
@@ -427,7 +429,7 @@ export class OpenAIResponsesProvider implements Provider {
         input: parseArguments(call.arguments),
       };
     }
-    yield { type: "done", stopReason: mapStopReason(finalStatus, incompleteReason, sawRefusal, calls.size > 0) };
+    yield { type: "done", stopReason: mapStopReason(finalStatus, incompleteReason, sawRefusal, calls.size > 0, sawText) };
   }
 }
 
@@ -435,8 +437,12 @@ function rememberCall(
   calls: Map<string, FunctionCallAccumulator>,
   itemId: string | undefined,
   item?: { id?: string; call_id?: string; name?: string; arguments?: string },
+  /** 稳定兜底键：端点未携带 item_id/item.id 时按输出槽位索引聚合
+   * （比 `unknown-${calls.size}` 稳定——size 随增而变会把同一调用的
+   * 多次 delta 拆成多条 tool_call）。 */
+  outputIndex?: number,
 ): FunctionCallAccumulator {
-  const key = itemId ?? item?.id ?? `unknown-${calls.size}`;
+  const key = itemId ?? item?.id ?? (outputIndex !== undefined ? `idx-${outputIndex}` : `unknown-${calls.size}`);
   let acc = calls.get(key);
   if (!acc) {
     acc = { callId: item?.call_id ?? key, name: item?.name ?? "", arguments: "" };
@@ -706,13 +712,16 @@ function mapStopReason(
   incompleteReason: string | null,
   sawRefusal: boolean,
   hasToolCalls: boolean,
+  sawText: boolean,
 ): "end_turn" | "tool_use" | "max_tokens" | "refusal" | "error" {
   if (status === "incomplete" && incompleteReason === "max_output_tokens") return "max_tokens";
   if (status === "failed") return "error";
   if (sawRefusal) return "refusal";
   if (hasToolCalls) return "tool_use";
   if (status === "completed") return "end_turn";
-  // 流结束但没有 completed/incomplete 终态：按异常处理
+  // 流结束但没有 completed/incomplete 终态：兼容端点（只发 [DONE] 不发终态）已有
+  // 产出时按正常结束处理，避免误判 error 触发重试/报错
+  if (sawText) return "end_turn";
   return "error";
 }
 
