@@ -6,11 +6,17 @@
 
 ### 修复
 
-- **DeepSeek Responses 并行工具调用回放 400 根治**（`reasoning_text must be passed back`）：同一 assistant 轮内并行多个 `function_call` 时，回放按 `fc1,fco1,fc2,fco2` 逐对排列发送，DeepSeek 服务端按「归并到相邻 assistant 消息」解析输入，会把逐对排列拆成多条**虚拟 assistant 轮**，第二条起没有归属的 reasoning item → 立即 400。现改为**并行 `function_call` 全前置**（`fc…fc → fco…fco`），服务端正确归并为一条轮次，与单条 reasoning 配对。真机验证：失败会话（clear 后多轮并行工具）原布局 400、全前置布局 200；单工具轮两种排列等价不受影响。
+- **DeepSeek Responses 并行工具调用回放 400 问题解决**（`reasoning_text must be passed back`）：同一 assistant 轮内并行多个 `function_call` 时，回放按 `fc1,fco1,fc2,fco2` 逐对排列发送，DeepSeek 服务端按「归并到相邻 assistant 消息」解析输入，会把逐对排列拆成多条**虚拟 assistant 轮**，第二条起没有归属的 reasoning item → 立即 400。现改为**并行 `function_call` 全前置**（`fc…fc → fco…fco`），服务端正确归并为一条轮次，与单条 reasoning 配对。真机验证：失败会话（clear 后多轮并行工具）原布局 400、全前置布局 200；单工具轮两种排列等价不受影响。
+- **思考强度滑块按模型声明显示，未声明不默认声明 ultra**：模型未声明 `effort` 子集时滑块兜底档位由「低/中/高/极高/max/ultra」六档改为「低/中/高/极高/max」五档（`ultra` 仅当模型目录显式声明后出现，如 glm-5 系）；仅声明思考开关而未声明强度（如 deepseek-reasoner）的模型不再显示强度滑块——所有模型按「声明什么显示什么」呈现，不再用默认集冒充声明。
+
+### 新增功能
+
+- **模型能力体系引入思考方式（thinkingStyle）与视觉/窗口元数据**：新增 `thinkingStyle` 能力声明（thinking / enable_thinking / effort_only / fixed / extended / adaptive），按模型族设内置默认（deepseek/glm/kimi-k2.6=thinking、qwen=enable_thinking、kimi-k3/gpt/o 系=effort_only、kimi-for-coding/glm-5.3=fixed、claude 4.5 及以前=extended、4.6+/国产=adaptive），agent 主循环/子代理/chat 模式按此分发各端点思考参数 key；模型名含 vision/`-vl-` 等标记默认声明图片输入能力（用户目录显式声明仍优先）；更新内置元数据（deepseek 1M、glm-5.x 1M 含 `[1m]` 后缀与 ultra 档、kimi-k3 1M、gemini 1M 多模态等）。推理参数（thinking/effort）改为**用户优先、不设限透传**，仅做全局枚举校验，不再按模型能力白名单过滤。
 
 ### 优化
 
 - **官方扩展会话格式升级（session-format-upgrade）v0.1.0 → v0.1.1**：描述同步当前行为——并行工具调用回放修复在 provider 层直接生效，旧会话无需升级即可续跑；扩展仅用于为严格端点补齐回放字段（thinking signature / tool_call itemId / textSignature）。
+- **文案「缺省」统一为「默认」**：web 端界面文案与代码注释中的「缺省」全部改为「默认」，统一术语。
 
 ## [1.9.5] - 2026-08-21
 
@@ -24,7 +30,7 @@
 
 ### 修复
 
-- **DeepSeek Responses 思维链回放 400 根治**（`reasoning_text must be passed back`）：官方规则要求带 `tools` 的请求中历史 `reasoning_text` 必须完整回传，且 reasoning item 须置于其归属的 assistant 消息**之前**（plain-text content 合并进相邻 assistant 消息）。此前「文本先行、reasoning 逐 function_call 前置」的布局全部错位，端点立即 400。现按规范序回放：逐 thinking 块合并 reasoning_text → 完整 message item（`textSignature` 还原 id/phase）→ 逐 function_call + output；多工具调用轮不再逐调用重复 reasoning；缺同源 thinking 素材的轮不再补占位（真机验证均不需要）；仅当输入最后一条是 assistant 消息且无任何 thinking 素材时补诚实占位（该场景端点直接 400）。
+- **DeepSeek Responses 思维链回放 400 问题解决**（`reasoning_text must be passed back`）：官方规则要求带 `tools` 的请求中历史 `reasoning_text` 必须完整回传，且 reasoning item 须置于其归属的 assistant 消息**之前**（plain-text content 合并进相邻 assistant 消息）。此前「文本先行、reasoning 逐 function_call 前置」的布局全部错位，端点立即 400。现按规范序回放：逐 thinking 块合并 reasoning_text → 完整 message item（`textSignature` 还原 id/phase）→ 逐 function_call + output；多工具调用轮不再逐调用重复 reasoning；缺同源 thinking 素材的轮不再补占位（真机验证均不需要）；仅当输入最后一条是 assistant 消息且无任何 thinking 素材时补诚实占位（该场景端点直接 400）。
 
 ### 新增功能
 
@@ -59,7 +65,7 @@
 
 ### 修复
 
-- **OpenAI Responses 思维链回传结构性加固**（DeepSeek 思维模式工具续轮 400 根治）：此前 `reasoning` item 与 `function_call` 回放时丢失原始 item id（`rs_*`/`fc_*`），端点校验 reasoning↔function_call 配对时判定思维链未完整回传。现在流式端捕获 reasoning item 完整原始结构（含 id）随 thinking 块持久化、`function_call` 原始 `fc_` id 随 tool_call 块持久化，回放时原样还原；旧会话/导入历史在回放端自动走派生 id 兼容路径（与升级固化产出一致），缺素材 tool_call 保留占位 reasoning 兜底。
+- **OpenAI Responses 思维链回传结构性加固**（DeepSeek 思维模式工具续轮 400 问题）：此前 `reasoning` item 与 `function_call` 回放时丢失原始 item id（`rs_*`/`fc_*`），端点校验 reasoning↔function_call 配对时判定思维链未完整回传。现在流式端捕获 reasoning item 完整原始结构（含 id）随 thinking 块持久化、`function_call` 原始 `fc_` id 随 tool_call 块持久化，回放时原样还原；旧会话/导入历史在回放端自动走派生 id 兼容路径（与升级固化产出一致），缺素材 tool_call 保留占位 reasoning 兜底。
 
 ## [1.9.1] - 2026-08-20
 
