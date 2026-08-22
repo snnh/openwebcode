@@ -10,7 +10,7 @@
   <p>简体中文 | <a href="./README.en.md">English</a></p>
 </div>
 
-OpenWebCode 是一个跑在浏览器里的 AI 编码工作台，界面中英双语，原生支持 Windows (x86-64) 和 Linux (x86-64 / arm64 / loongarch64)。本地装好后用浏览器打开，就能让 agent 帮你读代码、改文件、跑命令和测试。
+OpenWebCode 是一个跑在浏览器里的 AI 编码工作台，界面中英双语，原生支持 Windows (x86-64) 和 Linux (x86-64 / arm64 / loongarch64)。装好后用浏览器打开，就能让 agent 帮你读写代码、修改文件、操作终端。
 
 ```
 浏览器 (React)  ──HTTP/WebSocket──►  Node 服务层 (Agent 循环、工具调度)  ──JSON-RPC──►  C 执行器 (命令/文件/沙盒/快照)
@@ -36,11 +36,11 @@ OpenWebCode 是一个跑在浏览器里的 AI 编码工作台，界面中英双�
 - 对低性能设备友好的资源占用：详见[性能与资源占用](#性能与资源占用)
 - 相对完善的沙盒支持：Windows Job Object/AppContainer/WSB，Linux bubblewrap/Landlock。
 - git 和文件系统级快照：ZFS / Btrfs / overlayfs / VHDX / qcow2 多种后端。
-- 更好的上下文管理：自动压缩水位（设置「上下文」页签，50–95，默认 85%）与压缩输出上限（默认 64k tokens，思考型模型需要更大余量）均可调；`/compact` 手动压缩带输出校验防复述、失败自动降级；滚动驱逐、上下文条目管理与选择性上下文（pin/排除）由官方 context-saver（上下文节省）扩展提供，可整体关停；上下文面板按系统提示词/输入/工具调用/输出/其它五分类可视化 token 归因。
-- 多模型适配：多服务商并存、会话中热切换，四档角色按任务路由，主模型报错沿备选链自动切换。
-- 环境模拟（env-sim）：系统提示词与工具形态可切换为知名 AI 编码产品的风格（Claude Code / Kimi / ZCode / Codex / DSH 五档预设），底层仍走原工具实现与权限链。
-- 已对 DeepSeek V4 Pro 0813 专项适配——使用该模型时建议开启 DSH 极简模拟（`dsh-minimal`），同时应用仓库 assets/dsh-minimal.json 自定义预设覆盖默认设置
-- 子代理和 agent swarm：隔离上下文并行派发，进度和转录实时可见。
+- 更好的上下文管理：官方 context-saver扩展和更多开放接口供调用。
+- 多模型适配：支持chat/response/anthropic 三大主流api。
+- 环境模拟（env-sim）：系统提示词与工具形态可切换为知名 AI 编码产品的风格（Claude Code / Kimi / ZCode / Codex / DSH 五档预设），让更多模型充分发挥能力。
+- 已对 DeepSeek V4 Pro 0813 专项适配——使用该模型时建议开启 DSH 极简模拟（`dsh-minimal）。
+- 子代理和 agent swarm：普通子代理和可以互相沟通的子代理集群。
 - 较多的扩展支持：Skills、斜杠命令、Hooks、自定义子代理、MCP 和 Extension Host 第三方扩展。
 - 自由的会话管理：消息随意改、分叉随时开。
 - 本机会话：侧栏「终端」图标一键创建，以 server 身份直接在宿主机管理本机文件/服务（HOME 外访问需人工批准，不做快照）。
@@ -157,7 +157,10 @@ cd web && npm ci && npm run build && npm test                             # web�
 
 ## 数据与配置
 
-设置保存在 `<数据目录>/server-settings.json`。数据目录按这个顺序确定：先看有没有显式设置 `OWC_DATA_DIR`；没有就用启动器注入的平台默认值（Windows 是 `%USERPROFILE%\openwebcode`，Linux 是 `~/.local/share/openwebcode`）；只有绕过启动器直接跑 `node server/dist/index.js` 时，才会落到 `server` 旁边的 `.openwebcode`。密钥、会话数据和全局扩展点都在数据目录里，POSIX 下权限一律 0600/0700。项目级的覆盖配置放在项目根目录的 `.owc/` 下。
+设置保存在 `<数据目录>/server-settings.json`。
+数据目录顺序：
+显式设置 `OWC_DATA_DIR`>平台默认值（Windows 是 `%USERPROFILE%\openwebcode`，Linux 是 `~/.local/share/openwebcode`）
+密钥、会话数据和全局扩展点都在数据目录里，POSIX 下权限一律 0600/0700。项目级的覆盖配置放在项目根目录的 `.owc/` 下。
 
 ## 卸载
 
