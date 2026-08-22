@@ -473,7 +473,8 @@ describe("OpenAIResponsesProvider request mapping", () => {
     ];
     // 开启（缺省 reasoningContent=true）：DeepSeek 规范序——reasoning 合并后置于 message item
     // 之前（"merged into the adjacent assistant message"），多 tool_call 轮不重复（真机验证）；
-    // 异源 thinking 过滤；reasoning/function_call 均不带 item id；message item id 缺省派生
+    // 异源 thinking 过滤；reasoning/function_call 均不带 item id；message item id 缺省派生；
+    // 并行 function_call 全前置（fc…fc → fco…fco，DeepSeek 归并校验要求，真机验证）
     await collect(makeProvider(completedSseFetch(bodies)).streamChat(request({ messages })));
     expect(bodies[0]?.input).toEqual([
       { role: "user", content: [{ type: "input_text", text: "继续" }] },
@@ -484,8 +485,8 @@ describe("OpenAIResponsesProvider request mapping", () => {
         status: "completed", id: deriveMessageItemId("a1:0"),
       },
       { type: "function_call", call_id: "call_1", name: "read_file", arguments: "{\"path\":\"a\"}" },
-      { type: "function_call_output", call_id: "call_1", output: "A" },
       { type: "function_call", call_id: "call_2", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
+      { type: "function_call_output", call_id: "call_1", output: "A" },
       { type: "function_call_output", call_id: "call_2", output: "B" },
     ]);
     // 请求级关闭：不回传（与 openai-compatible 的 reasoningContent=false 同语义）
@@ -498,8 +499,8 @@ describe("OpenAIResponsesProvider request mapping", () => {
         status: "completed", id: deriveMessageItemId("a1:0"),
       },
       { type: "function_call", call_id: "call_1", name: "read_file", arguments: "{\"path\":\"a\"}" },
-      { type: "function_call_output", call_id: "call_1", output: "A" },
       { type: "function_call", call_id: "call_2", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
+      { type: "function_call_output", call_id: "call_1", output: "A" },
       { type: "function_call_output", call_id: "call_2", output: "B" },
     ]);
   });
@@ -866,7 +867,9 @@ describe("OpenAIResponsesProvider request mapping", () => {
       { type: "function_call_output", call_id: "call_2", output: "B" },
     ]);
     // 同一消息关闭加密回放：DeepSeek 口径（纯文本剥离 + 规范序：逐 thinking 块一条 reasoning
-    // 置于 message item 之前；文本合并为一条 message item；不派发 item id）
+    // 置于 message item 之前；文本合并为一条 message item；不派发 item id；并行 function_call
+    // 全前置 fc…fc → fco…fco——逐对排列会被 DeepSeek 归并逻辑拆成多条虚拟 assistant 轮，
+    // 第二条起无 reasoning 归属而 400（真机验证））
     await collect(makeProvider(completedSseFetch(bodies)).streamChat(request({ messages, responsesEncryptedReplay: false })));
     expect(bodies[1]?.input).toEqual([
       { role: "user", content: [{ type: "input_text", text: "继续" }] },
@@ -878,8 +881,8 @@ describe("OpenAIResponsesProvider request mapping", () => {
         status: "completed", id: "msg_enc1", phase: "commentary",
       },
       { type: "function_call", call_id: "call_1", name: "bash", arguments: "{\"cmd\":\"ls\"}" },
-      { type: "function_call_output", call_id: "call_1", output: "A" },
       { type: "function_call", call_id: "call_2", name: "read_file", arguments: "{\"path\":\"a\"}" },
+      { type: "function_call_output", call_id: "call_1", output: "A" },
       { type: "function_call_output", call_id: "call_2", output: "B" },
     ]);
   });
