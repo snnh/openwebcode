@@ -19,12 +19,16 @@ interface ProviderRetryOptions {
   onEvent?: (event: ProviderEvent) => void;
 }
 
+/** 可恢复 provider 错误的默认最大尝试次数（含首次）：测试与文档引用同一出处，避免改默认值后
+ * 断言不同步。 */
+export const DEFAULT_PROVIDER_MAX_ATTEMPTS = 3;
+
 export async function collectProviderTurn(
   provider: Provider,
   request: StreamChatRequest,
   options: ProviderRetryOptions = {},
 ): Promise<{ attemptId: string; events: ProviderEvent[] }> {
-  const maxAttempts = options.maxAttempts ?? 3;
+  const maxAttempts = options.maxAttempts ?? DEFAULT_PROVIDER_MAX_ATTEMPTS;
   const baseDelayMs = options.baseDelayMs ?? 500;
   const maxDelayMs = options.maxDelayMs ?? 30_000;
 

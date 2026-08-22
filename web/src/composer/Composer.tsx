@@ -630,8 +630,18 @@ export function Composer({ session, running, onSend, onConfig, editingMessage, o
     (session.thinking && session.thinking !== "disabled" && (supportedThinking.length === 0 || supportedThinking.includes(session.thinking)))
     || currentEffort,
   );
-  // 滑块左端点（默认）与开关 on 的无 effort 取值：优先 enabled，只声明 adaptive 时用 adaptive
-  const defaultOnValue = supportedThinking.includes("adaptive") && !supportedThinking.includes("enabled") ? "mode:adaptive" : "mode:enabled";
+  // effort_only 型（官方 OpenAI gpt/o 系、kimi-k3 等）：无 thinking 字段语义，开关只有
+  // 「关闭 / 启用」二元表达——启用即下发声明档位中位值的默认 effort（不带 thinking 字段，
+  // 服务端只按 effort 分发，避免 thinking:"enabled" 与服务端语义相左）
+  const effortOnly = selectedModel?.capabilities.thinkingStyle === "effort_only";
+  const defaultEffortTier = effortLevels[Math.floor(effortLevels.length / 2)] ?? "medium";
+  // 滑块左端点（默认）与开关 on 的无 effort 取值：优先 enabled，只声明 adaptive 时用 adaptive；
+  // effort_only 型改为默认档 effort
+  const defaultOnValue = effortOnly
+    ? `effort:${defaultEffortTier}`
+    : supportedThinking.includes("adaptive") && !supportedThinking.includes("enabled")
+      ? "mode:adaptive"
+      : "mode:enabled";
   const thinkingBadge: [string, string] = !thinkingOn
     ? THINKING_LABEL.disabled!
     : currentEffort
@@ -655,17 +665,25 @@ export function Composer({ session, running, onSend, onConfig, editingMessage, o
       return;
     }
     if (choice.startsWith("mode:")) {
+      if (effortOnly) {
+        // effort_only：启用思考 = 下发默认档 effort（无 thinking 字段），关闭走 default 分支
+        onConfig({ thinking: null, effort: defaultEffortTier });
+        return;
+      }
       onConfig({ thinking: choice.slice("mode:".length), effort: null });
       return;
     }
     const effort = choice.slice("effort:".length);
-    const activeThinking = session.thinking !== "disabled" && session.thinking && supportedThinking.includes(session.thinking)
-      ? session.thinking
-      : supportedThinking.includes("enabled")
-        ? "enabled"
-        : supportedThinking.includes("adaptive")
-          ? "adaptive"
-          : null;
+    // effort_only 型选择具体档位同样不带 thinking 字段（服务端只按 effort 分发）
+    const activeThinking = effortOnly
+      ? null
+      : session.thinking !== "disabled" && session.thinking && supportedThinking.includes(session.thinking)
+        ? session.thinking
+        : supportedThinking.includes("enabled")
+          ? "enabled"
+          : supportedThinking.includes("adaptive")
+            ? "adaptive"
+            : null;
     onConfig({ thinking: activeThinking, effort });
   };
 

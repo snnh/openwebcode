@@ -12,6 +12,7 @@ import { FastModelClient } from "../src/fast-model.js";
 import { ModelRoleResolver } from "../src/model-roles.js";
 import { ProviderError } from "../src/providers/provider-error.js";
 import { ProviderRegistry, type Provider, type StreamChatRequest } from "../src/providers/provider.js";
+import { DEFAULT_PROVIDER_MAX_ATTEMPTS } from "../src/providers/retry.js";
 import { SessionStore } from "../src/sessions/session-store.js";
 import { encodeFastModelSelection, SettingsService } from "../src/settings-service.js";
 import { UsageLog } from "../src/usage-log.js";
@@ -91,8 +92,8 @@ describe("AgentRunner 会话级模型 fallback", () => {
 
     await makeRunner(harness).run(harness.sessionId, "跑个命令再回答");
 
-    // 主模型：首轮 1 次 + 次轮 3 次重试耗尽；备选模型只尝试一次
-    expect(mainCalls).toBe(4);
+    // 主模型：首轮 1 次 + 次轮默认重试次数耗尽；备选模型只尝试一次
+    expect(mainCalls).toBe(1 + DEFAULT_PROVIDER_MAX_ATTEMPTS);
     expect(backupCalls).toBe(1);
     expect(observed).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -169,9 +170,9 @@ describe("AgentRunner 会话级模型 fallback", () => {
 
     await expect(makeRunner(harness).run(harness.sessionId, "链穷尽后报错")).rejects.toThrow("rate limited");
 
-    // 每个候选恰好一次 turn 的重试集（3 次 attempt），不二次尝试
-    expect(mainCalls).toBe(3);
-    expect(backupCalls).toBe(3);
+    // 每个候选恰好一次 turn 的重试集（默认重试次数次 attempt），不二次尝试
+    expect(mainCalls).toBe(DEFAULT_PROVIDER_MAX_ATTEMPTS);
+    expect(backupCalls).toBe(DEFAULT_PROVIDER_MAX_ATTEMPTS);
     const switches = observed.filter((event) => event.type === "agent.model_fallback");
     expect(switches).toHaveLength(1);
     expect(switches[0]).toMatchObject({ payload: { from: { provider: "main", model: "m1" }, to: { provider: "backup", model: "m2" } } });

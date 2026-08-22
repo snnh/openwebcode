@@ -296,7 +296,10 @@ export function ModelMenu({ current, selectableModels, selectionUnavailable, eff
   }, [selectableModels]);
 
   const stops = [THINKING_LABEL.enabled!, ...effortLevels.map((tier) => EFFORT_LABEL[tier] ?? [tier, tier])] as Array<[string, string]>;
-  const sliderIndex = thinkingOn && currentEffort ? effortLevels.indexOf(currentEffort) + 1 : 0;
+  // 防御：effort 未命中当前声明档位（indexOf → -1）时不落入「默认」高亮（与徽标 effort 不一致），
+  // 滑块端点 0 只在 thinkingOn=false 或未选 effort 时生效
+  const currentIndex = currentEffort ? effortLevels.indexOf(currentEffort) : -1;
+  const sliderIndex = thinkingOn && currentIndex >= 0 ? currentIndex + 1 : 0;
   const sliderDisabled = !thinkingControlSupported || !thinkingOn;
   const currentLevelText = !thinkingOn ? t(...THINKING_LABEL.disabled!) : t(...stops[sliderIndex]!);
 

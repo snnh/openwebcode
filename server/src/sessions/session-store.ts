@@ -421,6 +421,7 @@ export class SessionStore {
       if (result.changed === 0) return { changed: 0 };
       const backup = `messages.jsonl.upgrade-${Date.now()}`;
       await copyFile(this.messagesPath(id), path.join(this.sessionPath(id), backup));
+      await this.pruneUpgradeBackups(id);
       await writeUtf8Atomically(
         this.messagesPath(id),
         result.messages.map((message) => JSON.stringify(message)).join("\n") + "\n",
@@ -432,6 +433,20 @@ export class SessionStore {
       await this.writeMeta(meta);
       return { changed: result.changed, backup };
     });
+  }
+
+  /** 升级备份清理：保留最近 3 份 `messages.jsonl.upgrade-*`（回滚只需最近一份，多余备份
+   * 只占据磁盘；删除失败不阻断升级——备份非权威数据，下次升级会再清理）。 */
+  private async pruneUpgradeBackups(id: string): Promise<void> {
+    try {
+      const dir = this.sessionPath(id);
+      const names = (await readdir(dir)).filter((name) => name.startsWith("messages.jsonl.upgrade-")).sort();
+      for (const name of names.slice(0, Math.max(0, names.length - 3))) {
+        await rm(path.join(dir, name), { force: true });
+      }
+    } catch {
+      // 清理失败不影响升级主流程
+    }
   }
 
   async updatePermissions(id: string, permissionMode: SessionMeta["permissionMode"], permissionRules: NonNullable<SessionMeta["permissionRules"]>): Promise<SessionMeta> {

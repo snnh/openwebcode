@@ -45,10 +45,17 @@ export function parseWebSearchCallSignature(signature: string | undefined): Reco
   return undefined;
 }
 
+/** 为回放/升级固化 item 派生稳定 id（前缀 + 内容短哈希）：旧数据无原始 id 时的兜底，
+ * 保持产物稳定（官方 id 形如 rs_/msg_<24 hex>，≤64 字符）。seed 含消息 id 与块位置，
+ * 同一消息重复升级/回放产出相同 id。 */
+function deriveItemId(prefix: "rs_" | "msg_", seed: string): string {
+  return `${prefix}${createHash("sha1").update(seed).digest("hex").slice(0, 24)}`;
+}
+
 /** 为格式升级固化的 reasoning item 派生稳定 id（rs_ + 内容短哈希）：旧数据无原始 id 时
  * 的兜底，保持升级产物稳定（官方 id 形如 rs_<24 hex>）。 */
 function deriveReasoningId(seed: string): string {
-  return `rs_${createHash("sha1").update(seed).digest("hex").slice(0, 24)}`;
+  return deriveItemId("rs_", seed);
 }
 
 /** 文本块回放签名 v1 编码（dsh 口径）：{v:1,id,phase?}。Responses message output_item.done
@@ -83,15 +90,16 @@ export function parseTextSignature(signature: string | undefined): { id: string;
 /** 为回放 message item 派生稳定 id（msg_ + 内容短哈希）：无 textSignature 时的兜底，
  * 保持回放产物稳定（官方 id 形如 msg_<24 hex>，≤64 字符，与 deriveReasoningId 同风格）。 */
 export function deriveMessageItemId(seed: string): string {
-  return `msg_${createHash("sha1").update(seed).digest("hex").slice(0, 24)}`;
+  return deriveItemId("msg_", seed);
 }
 
 /** 为格式升级固化的 function_call 派生 item id（fc_ 前缀 + 清洗后的 call_id）：旧数据
  * 无持久化原始 fc id 时的兜底（要求 fc_ 前缀，OpenAI 官方 64 字符上限）。 */
 function deriveFcId(callId: string): string {
   const sanitized = callId.replace(/[^a-zA-Z0-9_-]/g, "_");
-  const normalized = sanitized.length > 61 ? sanitized.slice(0, 61) : sanitized;
-  return `fc_${normalized.replace(/_+$/, "")}`;
+  // 先去尾部下划线再截断，避免全符号/尾下划线的 call_id 产出空尾 fc_（无效 id）
+  const trimmed = sanitized.replace(/_+$/, "").slice(0, 61);
+  return `fc_${trimmed === "" ? "0" : trimmed}`;
 }
 
 /**

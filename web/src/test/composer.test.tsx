@@ -364,8 +364,17 @@ describe("ModelMenu", () => {
     expect(screen.getByText(/claude-opus-4-8【anthropic】/)).toBeInTheDocument();
   });
 
-  it("未声明 effort 的模型：滑块默认五档（不含 minimal/ultra）", async () => {
-    // renderComposer 默认模型 IMAGE_CAPS 的 effort 为空 → 走 EFFORT_DEFAULT_ALL 回退（无 ultra）
+  it("W5：effort_only 模型开关 on 下发默认档 effort（不带 thinking 字段）", async () => {
+    stubApi([makeModelProfile({ capabilities: { thinking: [], effort: ["low", "medium", "high"], modalities: ["text"], imageOutput: false, tools: true, thinkingStyle: "effort_only" } })]);
+    const { props, client } = renderComposer();
+    await waitModelsLoaded(client);
+    fireEvent.click(screen.getByRole("button", { name: "模型与思考程度" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "思考" }));
+    // 中位档 = medium（声明 [low, medium, high] 的中位）；thinking 字段不出现（与服务端 effort_only 语义一致）
+    expect(props.onConfig).toHaveBeenCalledWith({ thinking: null, effort: "medium" });
+  });
+
+  it("未声明 effort 的模型：滑块默认五档（不含 minimal/ultra）", async () => {    // renderComposer 默认模型 IMAGE_CAPS 的 effort 为空 → 走 EFFORT_DEFAULT_ALL 回退（无 ultra）
     const { container, client } = renderComposer();
     await waitModelsLoaded(client);
     fireEvent.click(screen.getByRole("button", { name: "模型与思考程度" }));
@@ -373,6 +382,7 @@ describe("ModelMenu", () => {
     // [默认, 低, 中, 高, 极高, max] = 6 个格子（5 档 effort + 左端点默认）
     expect(cells).toHaveLength(6);
     const labels = Array.from(cells).map((el) => el.getAttribute("aria-label"));
+    // W6：aria-label 断言依赖测试环境默认 zh-CN locale（i18n 缺省中文）；若切 en 环境需同步调整
     expect(labels).toEqual(["默认", "低", "中", "高", "极高", "max"]);
     expect(screen.queryByRole("button", { name: "最低" })).not.toBeInTheDocument();
   });
@@ -386,6 +396,7 @@ describe("ModelMenu", () => {
     // 声明顺序 low→minimal 被打乱，滑块必须按规范序 [minimal, low]（左端点默认在前）
     expect(cells).toHaveLength(3);
     const labels = Array.from(cells).map((el) => el.getAttribute("aria-label"));
+    // W6：同上，依赖 zh-CN locale
     expect(labels).toEqual(["默认", "最低", "低"]);
     expect(screen.queryByRole("button", { name: "中" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "ultra" })).not.toBeInTheDocument();

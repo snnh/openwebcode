@@ -1,5 +1,5 @@
 import path from "node:path";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { SessionStore } from "../src/sessions/session-store.js";
 import type { ChatMessage, TextContent } from "../src/sessions/types.js";
@@ -185,5 +185,28 @@ describe("session-format-upgrade 扩展框架", () => {
     // 缓存失效后重新读取为新格式
     const detail = await store.get(meta.id);
     expect(typeof (detail!.messages[0]!.content[0] as { signature?: string }).signature).toBe("string");
+  });
+
+  it("升级备份清理：仅保留最近 3 份 messages.jsonl.upgrade-*", async () => {
+    const { root, store } = await newStore();
+    const meta = await store.create({ cwd: "/tmp", title: "backup-prune" });
+    await store.appendMessage(meta.id, "assistant", legacyAssistant("a3").content, { runId: "r1" });
+    const sessionDir = path.join(root, "sessions", meta.id);
+    // 预置 3 份更早的旧备份（模拟历史升级），本次再触发一次升级 → 共 4 份，最旧 1 份被清
+    for (const ts of [1000, 2000, 3000]) {
+      await writeFile(path.join(sessionDir, `messages.jsonl.upgrade-${ts}`), "old");
+    }
+    const touch = async (): Promise<number> => {
+      const result = await store.transformMessages(meta.id, (messages) => ({ messages: [...messages], changed: 1 }));
+      return result.changed;
+    };
+    await expect(touch()).resolves.toBe(1);
+    const backups = (await readdir(sessionDir)).filter((name) => name.startsWith("messages.jsonl.upgrade-")).sort();
+    expect(backups).toHaveLength(3);
+    // 最旧预置份被删，最近 3 份（2 旧 + 1 新）保留
+    expect(backups).not.toContain("messages.jsonl.upgrade-1000");
+    expect(backups).toContain("messages.jsonl.upgrade-2000");
+    expect(backups).toContain("messages.jsonl.upgrade-3000");
+    expect(backups.some((name) => name !== "messages.jsonl.upgrade-2000" && name !== "messages.jsonl.upgrade-3000")).toBe(true);
   });
 });
