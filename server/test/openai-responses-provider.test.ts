@@ -7,7 +7,7 @@ import { ProviderProfilesService } from "../src/provider-profiles.js";
 import { ConcurrencyLimitedProvider, DEFAULT_MAX_CONCURRENT } from "../src/providers/concurrency-limiter.js";
 import { AnthropicProvider } from "../src/providers/anthropic-provider.js";
 import { OpenAICompatibleProvider, MAX_SSE_EVENT_BYTES, readSseData } from "../src/providers/openai-compatible-provider.js";
-import { OpenAIResponsesProvider, PLACEHOLDER_REASONING_TEXT } from "../src/providers/openai-responses-provider.js";
+import { OpenAIResponsesProvider, OPENAI_RESPONSES_MIN_OUTPUT_TOKENS, PLACEHOLDER_REASONING_TEXT } from "../src/providers/openai-responses-provider.js";
 import { deriveMessageItemId } from "../src/providers/responses-replay.js";
 import { ProviderError } from "../src/providers/provider-error.js";
 import { ProviderRegistry, type ProviderEvent, type StreamChatRequest } from "../src/providers/provider.js";
@@ -370,6 +370,28 @@ describe("OpenAIResponsesProvider streaming", () => {
     expect(events.filter((event) => event.type === "text_delta")).toEqual([
       { type: "text_delta", text: "你好" },
       { type: "text_delta", text: "世界" },
+    ]);
+    const textEnd = events.find((event) => event.type === "text_end") as { text: string; signature?: string } | undefined;
+    expect(textEnd).toEqual({ type: "text_end", text: "你好世界", signature: JSON.stringify({ v: 1, id: "msg_1", phase: "final_answer" }) });
+  });
+
+  it("B7：accumulated 超出权威（端点重复下发 delta）时不重发完整文本，text_end 以权威为准", async () => {
+    const payload = sse([
+      { type: "response.output_item.added", output_index: 0, item: { id: "msg_1", type: "message" } },
+      { type: "response.output_text.delta", item_id: "msg_1", output_index: 0, delta: "你好世界" },
+      // 端点重复下发同一段 delta（累积出现重复）
+      { type: "response.output_text.delta", item_id: "msg_1", output_index: 0, delta: "你好世界" },
+      {
+        type: "response.output_item.done", output_index: 0,
+        item: { id: "msg_1", phase: "final_answer", type: "message", status: "completed", content: [{ type: "output_text", text: "你好世界", annotations: [] }] },
+      },
+      { type: "response.completed", response: { status: "completed", output: [], usage: { input_tokens: 10, output_tokens: 5 } } },
+    ]);
+    const events = await collect(makeProvider(sseFetch([], payload)).streamChat(request()));
+    // 重复 delta 不再被完整重发（旧行为会多出一次完整 "你好世界"）
+    expect(events.filter((event) => event.type === "text_delta")).toEqual([
+      { type: "text_delta", text: "你好世界" },
+      { type: "text_delta", text: "你好世界" },
     ]);
     const textEnd = events.find((event) => event.type === "text_end") as { text: string; signature?: string } | undefined;
     expect(textEnd).toEqual({ type: "text_end", text: "你好世界", signature: JSON.stringify({ v: 1, id: "msg_1", phase: "final_answer" }) });
@@ -765,7 +787,7 @@ describe("OpenAIResponsesProvider request mapping", () => {
   it("max_output_tokens 低于 16 时钳到 16（dsh OPENAI_RESPONSES_MIN_OUTPUT_TOKENS）", async () => {
     const bodies: Array<Record<string, unknown>> = [];
     await drain(makeProvider(completedSseFetch(bodies), { maxTokens: 8 }).streamChat(request()));
-    expect(bodies[0]?.max_output_tokens).toBe(16);
+    expect(bodies[0]?.max_output_tokens).toBe(OPENAI_RESPONSES_MIN_OUTPUT_TOKENS);
     await drain(makeProvider(completedSseFetch(bodies), { maxTokens: 4096 }).streamChat(request()));
     expect(bodies[1]?.max_output_tokens).toBe(4096);
   });
@@ -1220,6 +1242,8 @@ describe("Responses response.failed/error 按 failure code 区分可重试", () 
   it.each([
     { event: { type: "response.failed", response: { status: "failed", error: { code: "server_error", message: "boom" } } }, kind: "overloaded", retryable: true },
     { event: { type: "error", code: "rate_limit", message: "slow down" }, kind: "rate_limit", retryable: true },
+    { event: { type: "error", code: "rate_limit_exceeded", message: "slow down" }, kind: "rate_limit", retryable: true },
+    { event: { type: "response.failed", response: { status: "failed", error: { code: "overloaded", message: "busy" } } }, kind: "overloaded", retryable: true },
     { event: { type: "response.failed", response: { status: "failed", error: { code: "invalid_request", message: "bad" } } }, kind: "unknown", retryable: false },
   ])("$kind / retryable=$retryable", async ({ event, kind, retryable }) => {
     const provider = new OpenAIResponsesProvider({ baseURL: "https://example.invalid/v1", fetch: errorFetchWith(failedBody(event)) });

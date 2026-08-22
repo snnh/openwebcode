@@ -56,7 +56,7 @@ beforeEach(() => {
   // PerfPanel 数据 mock：实现必须在每个测试前重新装载——vi.restoreAllMocks() 会清掉
   // vi.mock 工厂里预设的 mockResolvedValue，导致其后测试中 sessionPerf 无实现、records 为空
   // （单跑通过、全量顺序跑失败的典型写死测试）。放在 beforeEach 保证每测试独立。
-  api.sessionPerf.mockResolvedValue({
+  vi.mocked(api.sessionPerf).mockResolvedValue({
     records: [
       {
         runId: "run-1",
@@ -68,11 +68,11 @@ beforeEach(() => {
       },
     ],
   });
-  api.serverMetrics.mockResolvedValue({
+  vi.mocked(api.serverMetrics).mockResolvedValue({
     events: { published: 1234, retained: 100, retainedBytes: 524288, oversizedNotRetained: 0 },
     websocket: { clients: 2, slowClientDisconnects: 0, failedClientSends: 0 },
   });
-  api.providerStats.mockResolvedValue({ files: { active: 0, queued: 0, maxConcurrent: 2 } });
+  vi.mocked(api.providerStats).mockResolvedValue({ files: { active: 0, queued: 0, maxConcurrent: 2 } });
 });
 
 afterEach(() => {

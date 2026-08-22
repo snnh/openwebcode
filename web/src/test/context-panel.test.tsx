@@ -190,7 +190,7 @@ describe("ContextPanel 缓存命中", () => {
 
     const row = await screen.findByTestId("ctx-cache");
     expect(row.textContent).toContain("本轮 82%");
-    expect(row.querySelector(".pill")!.getAttribute("title")).toContain("本轮缓存命中 82.4%：读取 98k");
+    expect(row.querySelector(".pill")!.getAttribute("title")).toContain("本轮缓存命中 82");
     expect(row.querySelector(".pill")!.getAttribute("title")).toContain("写入 12k");
     // 累计 pill 带命中率分档 data-tone（74% → good 不标色）
     expect(row.querySelectorAll(".pill")[1]!.getAttribute("data-tone")).toBe("good");

@@ -6,7 +6,7 @@ import { collectToolOutputs, parseArguments, providerRequestHeaders, requireResp
 import type { Provider, ProviderEvent, StreamChatRequest } from "./provider.js";
 
 /** OpenAI Responses 拒绝低于 16 的 max_output_tokens（dsh 同口径）。 */
-const OPENAI_RESPONSES_MIN_OUTPUT_TOKENS = 16;
+export const OPENAI_RESPONSES_MIN_OUTPUT_TOKENS = 16;
 
 interface OpenAIResponsesProviderOptions {
   name?: string;
@@ -322,10 +322,14 @@ export class OpenAIResponsesProvider implements Provider {
                 .filter((part) => part?.type === "output_text" || part?.type === "refusal")
                 .map((part) => (part?.type === "refusal" ? part.refusal ?? "" : part.text ?? ""))
                 .join("");
-              if (authoritative.length > accumulated.length && authoritative.startsWith(accumulated)) {
-                yield { type: "text_delta", text: authoritative.slice(accumulated.length) };
-              } else if (authoritative !== accumulated) {
-                yield { type: "text_delta", text: authoritative };
+              if (authoritative.startsWith(accumulated)) {
+                // 权威比累积更长且前缀一致 → 只补发后缀 delta（常见：剩余文本仅在 done 给出）
+                if (authoritative.length > accumulated.length) {
+                  yield { type: "text_delta", text: authoritative.slice(accumulated.length) };
+                }
+              } else if (authoritative !== accumulated && !(accumulated.startsWith(authoritative) && accumulated.length > authoritative.length)) {
+                // 累积与权威完全不同（端点重发/替换内容）：不重发完整文本（会造成流式重复），
+                // 由 text_end 兜底权威值；累积为权威前缀（被截断）时同样不重发，text_end 以权威为准
               }
               yield {
                 type: "text_end",
@@ -483,10 +487,10 @@ function rememberCall(
  * 游离 tool_result（对应调用在压缩边界外/旧分支）不产出 function_call，直接丢弃，
  * 否则同样报 "No tool call found for function call output"。
  */
-/** 回传被关的留痕限频（每进程一次，见 toResponsesInput）。 */
-let replaySuppressedLogged = false;
+/** 回传被关的留痕限频（按 provider 名键控，避免多 provider 实例/多会话共享一次标记造成漏报）。 */
+const replaySuppressedLogged = new Set<string>();
 
-/** 回传开启但历史缺同源 thinking 素材的留痕限频（按「assistant 消息 id:tool_call id」键控，
+/** 回传开启但历史缺同源 thinking 素材的留痕限频（按「provider:assistant 消息 id:tool_call id」键控，
  * 每进程每键一次）：此类 tool_call 会补一条占位 reasoning item（见 toResponsesInput），
  * 留痕便于诊断导入历史/旧协议遗留；同一条消息反复请求不刷屏，不同消息仍保留诊断留痕。 */
 const missingThinkingLogged = new Set<string>();
@@ -617,9 +621,9 @@ function toResponsesInput(
       const thinkingBlocks = message.content.filter(
         (block): block is ThinkingContent => block.type === "thinking" && block.provider === providerName,
       );
-      if (!replayReasoning && !replaySuppressedLogged && thinkingBlocks.length > 0) {
-        // 回传被能力声明关闭但历史含同源 thinking 块：DeepSeek 思维模式会因此 400，留痕便于诊断（每进程一次）
-        replaySuppressedLogged = true;
+      if (!replayReasoning && !replaySuppressedLogged.has(providerName) && thinkingBlocks.length > 0) {
+        // 回传被能力声明关闭但历史含同源 thinking 块：DeepSeek 思维模式会因此 400，留痕便于诊断（每 provider 一次）
+        replaySuppressedLogged.add(providerName);
         diagnosticWriter(`[openai-responses] 思维链回传已关闭（reasoningContent=false），历史 thinking 块不会回传；思维模式端点（如 DeepSeek）可能拒绝请求\n`);
       }
       // 规范序前置项：reasoning（逐 thinking 块）与 web_search_call（原样）按消息块原始
@@ -643,7 +647,7 @@ function toResponsesInput(
         // 尾部保护：输入最后一条是 assistant 且历史上无任何 thinking 素材（旧协议/导入历史）时，
         // DeepSeek 仍强制要求 reasoning item（真机验证 400）；诚实的占位是唯一出路。
         result.push({ type: "reasoning", content: [{ type: "reasoning_text", text: PLACEHOLDER_REASONING_TEXT }] });
-        const missingKey = `${message.id ?? "?"}:tail`;
+        const missingKey = `${providerName}:${message.id ?? "?"}:tail`;
         if (!missingThinkingLogged.has(missingKey)) {
           missingThinkingLogged.add(missingKey);
           diagnosticWriter(
@@ -700,10 +704,13 @@ function toResponsesInput(
   return result;
 }
 
-/** 流内失败事件按 code 区分可重试：服务端错误/过载/限流走重试，其余（如 invalid_request）为确定性失败。 */
+/** 流内失败事件按 code 区分可重试：服务端错误/过载/限流走重试，其余（如 invalid_request）为确定性失败。
+ * 前缀匹配兼容端点变体码（rate_limit_exceeded 等），避免高频限流码被判不可重试。 */
 function responsesStreamFailure(prefix: string, code: string | undefined, message: string | undefined): ProviderError {
-  const retryable = code === "server_error" || code === "overloaded" || code === "rate_limit";
-  const kind = code === "rate_limit" ? "rate_limit" : retryable ? "overloaded" : "unknown";
+  const normalized = code?.toLowerCase() ?? "";
+  const rateLimited = normalized.startsWith("rate_limit");
+  const retryable = rateLimited || normalized.startsWith("server_error") || normalized.startsWith("overloaded");
+  const kind = rateLimited ? "rate_limit" : retryable ? "overloaded" : "unknown";
   return new ProviderError(kind, `${prefix}: ${message ?? "unknown error"}`, retryable);
 }
 
