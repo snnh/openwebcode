@@ -1749,8 +1749,8 @@ export class AgentRunner {
       this.repeatedCalls.delete(sessionId);
       this.toolAliases.discard(sessionId);
       // abort 与正常结束都保留未消费队列；queue.json 是用户可恢复状态。
-      this.todos.delete(sessionId);
-      this.events.publish({ source: "agent", type: "todos.updated", sessionId, payload: { items: [] } });
+      // 任务清单不随 run 结束清除：保留到下一次 run 的 setTodos 整组替换（或会话删除），
+      // 供用户查看历史任务；停止发送内容后前端 chip 不消失。
       // 0.5.0 Phase 2d：发布 run.perf 事件并存入环形缓冲
       if (perfActive) {
         const runId = this.runs.get(sessionId)?.id ?? "unknown";

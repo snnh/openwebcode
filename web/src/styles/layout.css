@@ -420,21 +420,60 @@
 }
 
 /* ================= 任务清单（todos） ================= */
-.todo-panel {
-  margin: 14px var(--gutter) 0;
-  padding: 10px 14px;
+/* 标签栏右端折叠 chip（SubagentTabs 渲染）：默认折叠只显示标题，展开为右对齐下拉浮层；
+   层级 --z-panel(20)，低于抽屉(36)/toast(40)/菜单(41)，高于内容 */
+.subagent-tabs-row {
+  display: flex;
+  align-items: center;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.subagent-tabs-row .subagent-tabs { flex: 1 1 auto; min-width: 0; background: none; border-bottom: none; }
+.todo-chip {
+  position: relative;
+  flex: none;
+  margin-left: auto;
+  padding: 3px 8px 4px 0;
+}
+.todo-chip summary {
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 10px;
+  font-size: 12px;
+  color: var(--text-2);
+  border-radius: var(--radius-s);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.todo-chip summary::-webkit-details-marker { display: none; }
+.todo-chip summary:hover { background: var(--panel-2); color: var(--text); }
+.todo-chip[open] summary { color: var(--accent); }
+.todo-chip ul {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: var(--z-panel);
+  width: min(300px, calc(100vw - 24px));
+  max-height: 45vh;
+  overflow-y: auto;
+  margin: 0;
+  padding: 8px 10px;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+  background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--panel);
-  color: var(--text-2);
+  box-shadow: var(--shadow-lg);
   font-size: 13px;
+  color: var(--text-2);
 }
-.todo-panel summary { cursor: pointer; color: var(--text); font-weight: 600; }
-.todo-panel ul { margin: 9px 0 2px; padding: 0; list-style: none; display: grid; gap: 6px; max-height: 30vh; overflow-y: auto; }
-.todo-panel li { display: flex; gap: 8px; align-items: baseline; }
-.todo-panel li > span:first-child { display: inline-flex; align-self: center; }
-.todo-panel li[data-status="done"] { color: var(--text-3); text-decoration: line-through; }
-.todo-panel li[data-status="in_progress"] span { color: var(--accent); }
+.todo-chip li { display: flex; gap: 8px; align-items: baseline; }
+.todo-chip li > span:first-child { display: inline-flex; align-self: center; }
+.todo-chip li[data-status="done"] { color: var(--text-3); text-decoration: line-through; }
+.todo-chip li[data-status="in_progress"] span { color: var(--accent); }
 
 /* ================= 底部状态条 ================= */
 .status-bar {
@@ -640,8 +679,9 @@
   .job-header-info .job-info > *:not(:last-child)::after { margin-left: 3px; }
   .cost-summary, .window-usage { font-size: 11px; gap: 5px; }
   .budget-bar { width: 28px; flex: none; }
-  /* 行2（移动端恒有）：cwd + 状态 + 展开钮；cwd 顶格与触发图标同轴 */
-  .job-header-sub { display: flex; align-items: center; gap: 8px; }
+  /* 行2（移动端恒有）：cwd + 状态 + 展开钮；cwd 顶格与触发图标同轴；
+     margin-top 负值把行2 上拉，只调行2 不碰行1（行1 44px 触达盒原样） */
+  .job-header-sub { display: flex; align-items: center; gap: 8px; margin-top: -10px; }
   .job-header-sub .job-cwd { flex: 1 1 auto; min-width: 0; max-width: none; margin: 0; font-size: 11px; }
   .job-header.compact .job-header-sub .job-cwd { display: block; }
   /* 行2（默认收起）展开后：下拉等宽百分比栏位（flex 均分），select 铺满栏位；单行不横滚 */
