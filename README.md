@@ -94,8 +94,10 @@ docker logs openwebcode | grep 访问链接
 
 - **数据**：默认存储在`openwebcode-data`。
 - **升级**：`docker compose pull && docker compose up -d`。
-- **工作区**：可选挂载宿主机目录（compose 里取消 `./workspace:/workspace:rw` 与 `OWC_WORKSPACE` ）。
-- **沙盒**：默认 Landlock（宿主机内核 ≥ 5.13）；需要完整 bubblewrap 命名空间隔离时在 compose 放开 `security_opt: seccomp=unconfined`（宿主机还需允许非特权 user namespace）。不可用时 core 自动降级。
+- **工作区**：可选挂载宿主机目录。
+- **沙盒**：
+  - 默认 Landlock（需宿主机内核 ≥ 5.13）；
+  - bubblewrap 命名空间，（需在 compose 放开 `security_opt: seccomp=unconfined`，同时宿主机允许非特权 user namespace）。不可用时 core 自动降级。
 - **从源码构建**：`docker build -t openwebcode .`，或在 compose 里取消 `build:` 注释。镜像内布局、构建与发布说明见 [`packaging/README.md`](./packaging/README.md) 的「Docker 镜像」一节。
 
 ### 首次使用
