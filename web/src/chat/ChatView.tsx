@@ -384,22 +384,12 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
         runs={subagentRuns}
         selected={selectedSubagentTab}
         {...(terminalOpen ? { terminal: { selected: terminalSelected } } : {})}
+        {...(todos.data && todos.data.length > 0 ? { todoItems: todos.data } : {})}
         onSelect={onSelectTab}
         onClose={(toolCallId) => subagentTabs.closeTab(sessionId, toolCallId)}
         onSelectTerminal={onSelectTerminal}
         onCloseTerminal={() => terminalTabs.closeTerminal(sessionId)}
       />
-      {todos.data && todos.data.length > 0 && (
-        <details className="todo-panel" open>
-          <summary>{t("任务清单", "Task list")} · {todos.data.filter((item) => item.status === "done").length}/{todos.data.length}</summary>
-          <ul>{todos.data.map((item, index) => (
-            <li key={`${item.content}-${index}`} data-status={item.status}>
-              <span>{item.status === "done" ? <Icon name="check" size={12} /> : item.status === "in_progress" ? <Icon name="circle-filled" size={10} /> : <Icon name="circle" size={12} />}</span>
-              {item.status === "in_progress" && item.activeForm ? item.activeForm : item.content}
-            </li>
-          ))}</ul>
-        </details>
-      )}
       <ChatActionsContext.Provider value={chatActions}>
         {/* 主对话/终端/子代理标签内容互换：MessageList 与终端保持挂载（hidden 隐藏），滚动与 PTY 状态不丢 */}
         <div className="main-tab-panel" role="tabpanel" aria-label={t("主对话", "Main")} hidden={!chatVisible}>

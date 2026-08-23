@@ -6,7 +6,7 @@
  *   SubagentRunRow（运行中显示实时轮次/工具，终态展开 SubagentTranscriptDetails 转录折叠）。
  */
 import { useMemo, type ReactElement } from "react";
-import type { LiveSubagentRun } from "../lib/contracts";
+import type { LiveSubagentRun, TodoItem } from "../lib/contracts";
 import { snippet } from "../lib/subagent-runs";
 import type { SubagentTab } from "../hooks/use-subagent-tabs";
 import { groupSubagentRuns, SubagentRunRow } from "../panels/SubagentsPanel";
@@ -36,7 +36,7 @@ function subagentTabStatus(runs: Record<string, LiveSubagentRun>, toolCallId: st
  * 主区标签条：「主对话」+ 终端 + 子代理标签。
  * 运行中且未选中的标签用琥珀色吸引注意；关闭标签只影响视图，不影响子代理运行。
  */
-export function SubagentTabStrip({ tabs, runs, selected, terminal, onSelect, onClose, onSelectTerminal, onCloseTerminal }: {
+export function SubagentTabStrip({ tabs, runs, selected, terminal, todoItems, onSelect, onClose, onSelectTerminal, onCloseTerminal }: {
   /** 当前会话的子代理标签（toolCallId 键控，按创建顺序） */
   tabs: SubagentTab[];
   /** 当前会话合并后的子代理运行（状态指示用） */
@@ -45,14 +45,18 @@ export function SubagentTabStrip({ tabs, runs, selected, terminal, onSelect, onC
   selected: string | undefined;
   /** 终端标签：存在则渲染在「主对话」之后；selected 表示当前选中终端 */
   terminal?: { selected: boolean };
+  /** 任务清单（标签栏右端折叠 chip；空/无则不渲染） */
+  todoItems?: TodoItem[];
   onSelect(toolCallId?: string): void;
   onClose(toolCallId: string): void;
   onSelectTerminal?(): void;
   onCloseTerminal?(): void;
 }): ReactElement {
   const { t } = useI18n();
+  const todoDone = todoItems?.filter((item) => item.status === "done").length ?? 0;
   return (
-    <div className="subagent-tabs" role="tablist" aria-label={t("主区标签", "Main tabs")}>
+    <div className="subagent-tabs-row">
+      <div className="subagent-tabs" role="tablist" aria-label={t("主区标签", "Main tabs")}>
       <button
         type="button"
         role="tab"
@@ -119,6 +123,22 @@ export function SubagentTabStrip({ tabs, runs, selected, terminal, onSelect, onC
           </div>
         );
       })}
+      </div>
+      {todoItems && todoItems.length > 0 && (
+        <details className="todo-chip">
+          <summary>
+            {t("任务清单", "Task list")} · {todoDone}/{todoItems.length}
+          </summary>
+          <ul>
+            {todoItems.map((item, index) => (
+              <li key={`${item.content}-${index}`} data-status={item.status}>
+                <span>{item.status === "done" ? <Icon name="check" size={12} /> : item.status === "in_progress" ? <Icon name="circle-filled" size={10} /> : <Icon name="circle" size={12} />}</span>
+                {item.status === "in_progress" && item.activeForm ? item.activeForm : item.content}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
     </div>
   );
 }
