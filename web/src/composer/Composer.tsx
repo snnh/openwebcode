@@ -16,7 +16,7 @@ import { useSendKey } from "../app/prefs-store";
 import type { ComposerProps } from "../chat/types";
 import { useAttachments, useDraft, type PendingImage } from "./drafts";
 import { AttachmentStrip, MentionStrip } from "./chips";
-import { AgentModeMenu, EFFORT_LABEL, ModelMenu, PermissionModeMenu, Popover, THINKING_LABEL } from "./popovers";
+import { AgentModeMenu, EFFORT_LABEL, ModelMenu, PermissionModeMenu, THINKING_LABEL } from "./popovers";
 
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -172,7 +172,6 @@ export function Composer({ session, running, onSend, onConfig, editingMessage, o
   const [pdfJobs, setPdfJobs] = useState(0);
   const [pdfProgress, setPdfProgress] = useState<PdfProgress | null>(null);
   const [queuedBehavior, setQueuedBehavior] = useState<"steer" | "follow_up">("steer");
-  const [queueMenuOpen, setQueueMenuOpen] = useState(false);
   // 移动端输入栏折叠：默认完整；点输入框右侧箭头折叠为只剩输入框（隐藏提示/工具栏），点输入框（聚焦）恢复。
   // 仅移动端生效，桌面端不受影响（isMobile 恒 false 时折叠不启用）。
   const isMobile = useMediaQuery(MOBILE_BREAKPOINT);
@@ -1050,9 +1049,6 @@ export function Composer({ session, running, onSend, onConfig, editingMessage, o
           disabled={running}
           onConfig={onConfig}
         />
-        <span className="composer-toolbar-spacer" />
-        {running && <span className="steering-hint">{t("运行中 · 发送将进入 Steering 队列", "Running · new messages enter the Steering queue")}</span>}
-        {running && <span className="composer-running-dot" aria-hidden />}
         <span className="composer-menu-right">
           <ModelMenu
             current={{ provider: session.provider, model: session.model }}
@@ -1072,42 +1068,27 @@ export function Composer({ session, running, onSend, onConfig, editingMessage, o
             onOpenModelSettings={() => ui.openSettings("models")}
           />
         </span>
+        {/* 弹性间隙：桌面宽屏把运行队列/发送推到右端；窄屏折叠（display:none），发送 margin-left:auto 靠右 */}
+        <span className="composer-toolbar-spacer" />
+        {/* 运行中行为选择（steer/follow_up）：分段单选，直接点选无需弹层 */}
         {running && (
-          <span className="composer-menu-right composer-queue-menu">
-            <span className="composer-menu">
+          <span className="composer-menu-right composer-queue-menu" role="radiogroup" aria-label={t("运行中消息行为", "Message behavior while running")}>
+            {([
+              { value: "steer" as const, short: ["补充", "Steer"] as [string, string], title: t("本轮补充：立即插入正在运行的回合", "Steer: insert into the running turn right away") },
+              { value: "follow_up" as const, short: ["续跑", "Follow"] as [string, string], title: t("完成后续跑：当前运行结束后再执行", "Follow-up: run after the current run finishes") },
+            ]).map((option) => (
               <button
+                key={option.value}
                 type="button"
-                className="icon-btn queue-caret"
-                aria-haspopup="menu"
-                aria-expanded={queueMenuOpen}
-                aria-label={t("运行中消息行为", "Message behavior while running")}
-                title={queuedBehavior === "steer" ? t("本轮补充：立即插入正在运行的回合", "Steer: insert into the running turn right away") : t("完成后续跑：当前运行结束后再执行", "Follow-up: run after the current run finishes")}
-                onClick={() => setQueueMenuOpen((value) => !value)}
+                role="radio"
+                aria-checked={queuedBehavior === option.value}
+                className={`queue-option${queuedBehavior === option.value ? " selected" : ""}`}
+                title={option.title}
+                onClick={() => setQueuedBehavior(option.value)}
               >
-                <Icon name="chevron-up" size={12} />
+                {t(...option.short)}
               </button>
-              <Popover open={queueMenuOpen} onClose={() => setQueueMenuOpen(false)}>
-                {([
-                  { value: "steer" as const, label: ["本轮补充", "Steer current run"] as [string, string], description: ["立即插入正在运行的回合", "Insert into the running turn right away"] as [string, string] },
-                  { value: "follow_up" as const, label: ["完成后续跑", "Run after completion"] as [string, string], description: ["当前运行结束后自动执行", "Runs automatically once the current run finishes"] as [string, string] },
-                ]).map((option) => (
-                  <button
-                    key={option.value}
-                    type="button"
-                    role="menuitemradio"
-                    aria-checked={queuedBehavior === option.value}
-                    className={`popover-item${queuedBehavior === option.value ? " selected" : ""}`}
-                    onClick={() => { setQueuedBehavior(option.value); setQueueMenuOpen(false); }}
-                  >
-                    <span className="popover-item-check" aria-hidden>{queuedBehavior === option.value ? <Icon name="check" size={13} /> : null}</span>
-                    <span className="popover-item-text">
-                      <span className="popover-item-label">{t(...option.label)}</span>
-                      <span className="popover-item-desc">{t(...option.description)}</span>
-                    </span>
-                  </button>
-                ))}
-              </Popover>
-            </span>
+            ))}
           </span>
         )}
         {sendButton}

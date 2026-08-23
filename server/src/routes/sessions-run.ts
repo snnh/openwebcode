@@ -221,6 +221,8 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
         const ledger = await new ContextManager(sessions.contextRoot(request.params.id)).markCleared(uptoIndex, uptoMessageId);
         const at = ledger.cleared!.at;
         events.publish({ source: "agent", type: "context.cleared", sessionId: request.params.id, payload: { uptoIndex, at, ...(uptoMessageId ? { uptoMessageId } : {}) } });
+        // 任务清单（todo_write 的内存态）与上下文同生命周期：clear 后旧任务对模型与 UI 均已失效，同步清空
+        agent.clearTodos(request.params.id);
         return reply.code(200).send({ accepted: true, cleared: true, uptoIndex, at, ...(uptoMessageId ? { uptoMessageId } : {}) });
       }
       const compactCommand = request.body.content.match(/^\/compact(?:\s+(tools?|toolcalls))?\s*$/i);

@@ -1783,6 +1783,12 @@ export class AgentRunner {
     return [...(this.todos.get(sessionId) ?? [])];
   }
 
+  /** /clear 清空上下文时同步清空任务清单（内存态 todo_write 状态），并通知前端。 */
+  clearTodos(sessionId: string): void {
+    this.todos.delete(sessionId);
+    this.events.publish({ source: "agent", type: "todos.updated", sessionId, payload: { items: [] } });
+  }
+
   listPendingPermissions(sessionId: string): Array<{ requestId: string; tool: string; input: Record<string, unknown> }> {
     return this.permissions.listPending(sessionId);
   }
