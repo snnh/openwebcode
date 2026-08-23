@@ -32,7 +32,7 @@ OpenWebCode 是一个跑在浏览器里的 AI 编码工作台，界面中英双�
 ## 主要功能
 
 - 基础的 AI coding 功能。
-- 不止于code，还能chat，全新chat模式，仍旧轻量。
+- chat模式：保持轻量，随时对话(正在开发中)。
 - 对低性能设备友好的资源占用：详见[性能与资源占用](#性能与资源占用)
 - 相对完善的沙盒支持：Windows Job Object/AppContainer/WSB，Linux bubblewrap/Landlock。
 - git 和文件系统级快照：ZFS / Btrfs / overlayfs / VHDX / qcow2 多种后端。
@@ -42,10 +42,10 @@ OpenWebCode 是一个跑在浏览器里的 AI 编码工作台，界面中英双�
 - 已对 DeepSeek V4 Pro 0813 专项适配——使用该模型时建议开启 DSH 极简模拟（`dsh-minimal）。
 - 子代理和 agent swarm：普通子代理和可以互相沟通的子代理集群。
 - 较多的扩展支持：Skills、斜杠命令、Hooks、自定义子代理、MCP 和 Extension Host 第三方扩展。
-- 自由的会话管理：消息随意改、分叉随时开。
-- 本机会话：侧栏「终端」图标一键创建，以 server 身份直接在宿主机管理本机文件/服务（HOME 外访问需人工批准，不做快照）。
+- 自由的会话管理：消息随意改写、分叉随时创建。
+- 本机会话：侧栏「终端」图标一键创建，以 server 身份直接在宿主机管理本机文件/服务（HOME 外访问需人工批准）。
 - 内置符号索引（`repo_map` / `code_search`）、测试诊断（Problems 面板）、SCM 面板（diff、stage、worktree 合回、生成提交信息）。
-- 任务清单：标签栏右端折叠 chip，随时查看 agent 当前任务与进度（完成项自动划线），对话结束仍保留，下一轮任务开始时自动刷新。
+- 任务清单：标签栏右端折叠 chip，随时查看 agent 当前任务与进度。
 - `owc run` cli 支持。
 
 具体详见 [使用帮助](./help/usage.md) 和 [常见问题](./help/faq.md)。
@@ -72,7 +72,7 @@ curl -fsSL https://raw.githubusercontent.com/snnh/openwebcode/main/packaging/ins
 
 ### Docker（Linux / macOS，x86_64 / arm64）
 
-发布镜像托管在 GitHub Container Registry（`ghcr.io/snnh/openwebcode`），内置完整运行时（core、Node 24、bubblewrap、git、python3），数据目录用命名卷持久化：
+发布镜像托管在 GitHub Container Registry（`ghcr.io/snnh/openwebcode`），内置完整运行时（core、Node 24、bubblewrap、git、python3），数据目录可持久化：
 
 ```sh
 # 1. 在仓库根目录启动（拉取 GHCR 发布镜像）
@@ -82,7 +82,8 @@ docker compose up -d
 docker compose logs | grep 访问链接
 ```
 
-浏览器打开日志里的链接（`http://<主机IP>:3210/?token=<令牌>`）。不用 compose 时等价于：
+浏览器打开日志里的链接（`http://<主机IP>:3210/?token=<令牌>`）。
+不用 compose 时，可使用下列命令：
 
 ```sh
 docker run -d --name openwebcode --restart unless-stopped \
@@ -91,9 +92,10 @@ docker run -d --name openwebcode --restart unless-stopped \
 docker logs openwebcode | grep 访问链接
 ```
 
-- **数据**：保留在命名卷 `openwebcode-data`；升级 = `docker compose pull && docker compose up -d`，数据不动。
-- **工作区**：可选挂载宿主机目录（compose 里取消 `./workspace:/workspace:rw` 与 `OWC_WORKSPACE` 的注释，入口脚本自动修正目录属主）。
-- **沙盒**：默认 Landlock（宿主机内核 ≥ 5.13）；需要完整 bubblewrap 命名空间隔离时在 compose 放开 `security_opt: seccomp=unconfined`（宿主机还需允许非特权 user namespace）。不可用时 core 自动降级，属设计内行为。
+- **数据**：默认存储在`openwebcode-data`。
+- **升级**：`docker compose pull && docker compose up -d`。
+- **工作区**：可选挂载宿主机目录（compose 里取消 `./workspace:/workspace:rw` 与 `OWC_WORKSPACE` ）。
+- **沙盒**：默认 Landlock（宿主机内核 ≥ 5.13）；需要完整 bubblewrap 命名空间隔离时在 compose 放开 `security_opt: seccomp=unconfined`（宿主机还需允许非特权 user namespace）。不可用时 core 自动降级。
 - **从源码构建**：`docker build -t openwebcode .`，或在 compose 里取消 `build:` 注释。镜像内布局、构建与发布说明见 [`packaging/README.md`](./packaging/README.md) 的「Docker 镜像」一节。
 
 ### 首次使用
@@ -128,7 +130,7 @@ owc run "给 main.ts 加个单元测试" --cwd . --json --yolo
 
 ## 性能与资源占用
 
-开发机实测（Windows x86-64 1.7.6版本，5000 条消息基准数据集；基准脚本与验收门禁在 [`scripts/bench/`](./scripts/bench/)）：
+开发机实测（Windows x86-64 1.7.6版本，5000 条消息基准数据集；基准脚本与验收标准在 [`scripts/bench/`](./scripts/bench/)）：
 
 | 组件 | 内存占用 | CPU（折合为单核的95%时间占用） | 关键指标 |
 |---|---|---|---|
