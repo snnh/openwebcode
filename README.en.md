@@ -47,6 +47,7 @@ Browser (React) ── HTTP/WebSocket ──► Node service (agent loop, tools)
 - Free-form session management: edit any message, fork anytime.
 - Local sessions: create one with a single click from the sidebar "Terminal" icon to manage local files and services directly on the host as the server user (access outside HOME requires manual approval; no snapshots).
 - Built-in symbol index (`repo_map` / `code_search`), test diagnostics (Problems panel), and an SCM panel (diffs, staging, worktree merges, generated commit messages).
+- Task list: a collapsible chip on the right side of the main tab bar shows the agent's current tasks and progress (completed items struck through). It persists after a run finishes and refreshes when the next run updates the list.
 - The `owc run` CLI.
 
 See the [user guide](./help/usage.md) and [FAQ](./help/faq.md) (both in Chinese) for details.
