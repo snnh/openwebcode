@@ -121,7 +121,6 @@ export function PermissionModeMenu({ value, disabled = false, onChange }: {
         onClick={() => setOpen((v) => !v)}
       >
         {t(...current.label)}
-        <Icon name="chevron-up" size={11} />
       </button>
       <Popover open={open} onClose={() => setOpen(false)}>
         {PERMISSION_OPTIONS.map((option) => (
@@ -218,7 +217,6 @@ export function AgentModeMenu({ agentMode, swarmEnabled, disabled, onConfig }: {
       >
         {t("模式", "Mode")}
         {activeBadges ? <span className="pill small accent composer-menu-badge">{activeBadges}</span> : null}
-        <Icon name="chevron-up" size={11} />
       </button>
       <Popover open={open} onClose={() => setOpen(false)}>
         <ModeToggle
@@ -315,10 +313,15 @@ export function ModelMenu({ current, selectableModels, selectionUnavailable, eff
         onClick={() => setOpen((v) => !v)}
       >
         <span className="model-menu-btn-label">
-          {current.model || t("未选择模型", "No model")}
+          {/* 只显模型名（provider 前缀在底部状态栏有完整展示）；思考程度徽标始终完整显示，
+              空间不足时被收缩省略的是模型名（model-menu-btn-name） */}
+          <span className="model-menu-btn-name">
+            {(current.model || t("未选择模型", "No model")).includes("/")
+              ? (current.model || "").split("/").pop()
+              : current.model || t("未选择模型", "No model")}
+          </span>
           {thinkingBadge ? <span className="model-menu-btn-thinking"> · {t(...thinkingBadge)}</span> : null}
         </span>
-        <Icon name="chevron-up" size={11} />
       </button>
       <Popover open={open} onClose={() => setOpen(false)}>
         <div className="popover-scroll">

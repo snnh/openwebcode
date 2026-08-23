@@ -749,4 +749,25 @@ describe("/clear composer command", () => {
     const restAfter = await new ContextManager(sessions.contextRoot(session.id)).buildView(after.messages);
     expect(restAfter.messages.map((message) => message.content[0])).toEqual([{ type: "text", text: "q2" }]);
   });
+
+  it("/clear 同步清空任务清单（todos）", async () => {
+    const { root, sessions, agent, app, observed } = await clearApp();
+    const session = await sessions.create({ cwd: root, title: "Clear todos" });
+    // 注入既有任务清单（todo_write 写入的内存态），模拟运行中已生成本轮作业
+    (agent as unknown as { todos: Map<string, Array<{ content: string; status: string }>> })
+      .todos.set(session.id, [
+        { content: "task one", status: "done" },
+        { content: "task two", status: "in_progress" },
+      ]);
+    expect(agent.listTodos(session.id)).toHaveLength(2);
+
+    const response = await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "/clear" } });
+    expect(response.statusCode).toBe(200);
+    // 内存态清空：REST 与后续 todo_write 从空开始
+    expect(agent.listTodos(session.id)).toEqual([]);
+    // 前端经 todos.updated 事件收到空清单（UI 任务清单 chip 消失）
+    const updated = observed.find((event) => event.type === "todos.updated");
+    expect(updated?.payload).toEqual({ items: [] });
+    expect(updated?.sessionId).toBe(session.id);
+  });
 });

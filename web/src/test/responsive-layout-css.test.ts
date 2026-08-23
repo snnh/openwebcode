@@ -97,11 +97,16 @@ describe("窄窗口布局 CSS 回归", () => {
     expect(css).toMatch(/\.composer-toolbar-spacer\s*\{\s*flex:\s*1 1 auto;/s);
     expect(css).toMatch(/\.composer-menu-right \.popover-menu\s*\{[^}]*right:\s*0;/s);
     expect(narrowCss).toMatch(/\.composer-menu-badge\s*\{\s*display:\s*none;/s);
-    // 窄窗口（≤768px）控制条同排靠左：附件/权限/模式/模型选择器一行，spacer 收起不吸宽；
-    // 运行提示/队列/发送为第二行；wrap 允许放不下时折行
+    // 窄窗口（≤768px）控制条单行：附件/权限/模式/模型选择器（+运行中队列菜单）整体靠左，
+    // 发送按钮同行右端；spacer 收起不吸宽；运行状态行（文本/圆点）已移除，状态统一在会话头
     expect(narrowCss).toMatch(/\.composer-toolbar-spacer\s*\{\s*display:\s*none;/s);
-    expect(narrowCss).toMatch(/\.composer-toolbar\s*\{[^}]*flex-wrap:\s*wrap;/s);
+    expect(narrowCss).toMatch(/\.composer-toolbar\s*\{[^}]*flex-wrap:\s*nowrap;/s);
+    expect(narrowCss).toMatch(/\.composer-send\s*\{\s*margin-left:\s*auto;/s);
     expect(narrowCss).toMatch(/\.model-menu-btn-label\s*\{[^}]*max-width:\s*30vw;/s);
+    // 运行队列行为选择为分段单选（补充/续跑），窄屏紧凑化且不收缩
+    expect(css).toMatch(/\.queue-option\.selected\s*\{[^}]*color:\s*var\(--accent\);/s);
+    expect(narrowCss).toMatch(/\.composer-toolbar\s*>\s*\.composer-queue-menu\s*\{\s*flex:\s*0 0 auto;\s*\}/s);
+    expect(narrowCss).toMatch(/\.queue-option\s*\{[^}]*min-height:\s*30px;/s);
     // 附件/引用条折行而非横滚（移动端禁横向滚动纪律）
     expect(css).toMatch(/\.mention-strip\s*\{[^}]*flex-wrap:\s*wrap;/s);
     expect(css).toMatch(/\.attachment-strip\s*\{[^}]*flex-wrap:\s*wrap;/s);

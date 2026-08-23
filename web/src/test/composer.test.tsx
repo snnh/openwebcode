@@ -123,9 +123,9 @@ describe("Composer 渲染与发送", () => {
     expect(props.onSend).not.toHaveBeenCalled();
   });
 
-  it("运行中显示 Steering 提示，发送行为推导为 steer", () => {
+  it("运行中不再显示状态文本（统一由会话头状态指示），发送行为推导为 steer", () => {
     const { props, textarea } = renderComposer({ running: true });
-    expect(screen.getByText("运行中 · 发送将进入 Steering 队列")).toBeInTheDocument();
+    expect(screen.queryByText(/运行中 · 发送将进入 Steering 队列/)).not.toBeInTheDocument();
     expect(textarea.placeholder).toContain("向正在执行的作业补充指令");
     fireEvent.change(textarea, { target: { value: "补充指令" } });
     fireEvent.keyDown(textarea, { key: "Enter" });

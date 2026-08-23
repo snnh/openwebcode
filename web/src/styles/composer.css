@@ -49,10 +49,31 @@
 /* 右侧菜单的弹层右对齐，避免溢出视口右缘 */
 .composer-menu-right { display: inline-flex; }
 .composer-menu-right .popover-menu { left: auto; right: 0; }
-/* 运行中：accent 圆点脉动（与工具行/subagent 脉动圆点同款语言） */
-.composer-running-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse 1.6s ease-in-out infinite; }
-.queue-caret { width: 26px; height: 32px; }
-.model-menu-btn-thinking { color: var(--accent); font-size: var(--text-xs); }
+/* 运行中行为选择（steer/follow_up）：分段单选控件，与模型选择器同排，直接点选 */
+.composer-queue-menu { display: inline-flex; align-items: center; }
+.queue-option {
+  min-height: 32px;
+  padding: 0 8px;
+  font-size: var(--text-xs);
+  color: var(--text-3);
+  white-space: nowrap;
+}
+/* 分段容器视觉：左圆角右平、右圆角左平，中缝 1px 分隔 */
+.queue-option:first-child { border: 1px solid var(--border); border-right: none; border-radius: var(--radius-s) 0 0 var(--radius-s); }
+.queue-option:last-child { border: 1px solid var(--border); border-left: none; border-radius: 0 var(--radius-s) var(--radius-s) 0; }
+.queue-option.selected { color: var(--accent); background: var(--accent-soft); }
+.queue-option:hover:not(.selected) { color: var(--text); background: var(--panel-2); }
+/* 工具条空间不足时只允许模型选择器收缩（模型名带省略号，让它先让位）：
+   收缩链逐层放行（右锚 span → .composer-menu → 按钮 → 文字 label），任一环缺
+   min-width:0 都会让外层先缩、内容不缩而溢出盒子，盖住右侧队列/发送按钮。
+   注意 min-width:0 不能提升为 .composer-menu/.composer-menu-right 的全局规则——
+   那会让所有菜单盒子都可被压到小于内容，nowrap 文字溢出造成按钮相互重叠
+   （权限/模式按钮文字不收缩，保持刚性由容器溢出兜底）。 */
+.composer-toolbar > .composer-menu-right { min-width: 0; }
+.composer-toolbar > .composer-menu-right .composer-menu,
+.composer-toolbar > .composer-menu-right .composer-menu-btn { min-width: 0; }
+.model-menu-btn-label { min-width: 0; }
+.composer-toolbar > .composer-menu-right .composer-menu-btn svg { flex-shrink: 0; }
 
 /* ================= Composer 配置弹层（权限/模式/模型） ================= */
 .composer-menu { position: relative; display: inline-flex; }
@@ -73,6 +94,7 @@
 .composer-menu-btn.open { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
 .composer-menu-btn.active { color: var(--accent); }
 /* .composer-menu-badge 仅作窄屏隐藏的功能钩子，视觉样式由 .pill 提供 */
+/* 模型按钮文字：模型名可收缩省略，思考程度徽标始终完整显示 */
 .model-menu-btn-label {
   max-width: 220px;
   overflow: hidden;
@@ -81,6 +103,8 @@
   align-items: center;
   gap: 6px;
 }
+.model-menu-btn-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-menu-btn-thinking { color: var(--accent); font-size: var(--text-xs); flex-shrink: 0; white-space: nowrap; }
 .popover-overlay { position: fixed; inset: 0; z-index: var(--z-popover); }
 .popover-menu {
   position: absolute;
@@ -223,8 +247,6 @@
 }
 .popover-more:hover { text-decoration: underline; }
 .popover-capabilities { padding: 2px 8px 6px; }
-.steering-hint { color: var(--amber); font-weight: 600; }
-.composer-toolbar .steering-hint { font-size: var(--text-xs); white-space: nowrap; }
 
 /* ================= 输入框 / 提示 / 编辑横幅 ================= */
 .composer-input { display: flex; gap: 10px; align-items: flex-end; position: relative; }
@@ -319,18 +341,20 @@
 
 /* ================= 移动端（≤768px） ================= */
 @media (max-width: 768px) {
-  /* Composer 控制条同排靠左：附件/权限模式/对话模式/模型选择器一行（spacer 收起不吸宽）；
-     运行状态提示 + 队列菜单 + 发送为第二行（发送 margin-left:auto 靠右）。 */
-  .composer-toolbar { flex-wrap: wrap; gap: 4px; }
-  .composer-toolbar > .composer-attach,
-  .composer-toolbar > .composer-permission,
-  .composer-toolbar > .composer-menu:not(.composer-queue-menu),
-  .composer-toolbar > .composer-menu-right:not(.composer-queue-menu) { order: 1; }
+  /* Composer 控制条单行：附件/权限模式/对话模式/模型选择器（运行中加队列菜单）整体靠左，
+     发送按钮同行右端；spacer 收起不吸宽；空间不足时仅模型名收缩省略（收缩链见上方基础规则），
+     权限/模式按钮保持刚性，保证一行放下且互不重叠。 */
+  .composer-toolbar { flex-wrap: nowrap; gap: 4px; }
   .composer-toolbar-spacer { display: none; }
-  .steering-hint,
-  .composer-running-dot,
-  .composer-toolbar > .composer-queue-menu { order: 2; }
-  .composer-send { order: 2; margin-left: auto; }
+  .composer-toolbar > .composer-permission,
+  .composer-toolbar > .composer-menu:not(.composer-queue-menu) { flex: 0 0 auto; }
+  /* 模型选择器是唯一可收缩项；队列分段控件保持原大小 */
+  .composer-toolbar > .composer-menu-right { flex: 0 1 auto; }
+  .composer-toolbar > .composer-queue-menu { flex: 0 0 auto; }
+  /* 分段控件窄屏紧凑化：两段文字短（补充/续跑），保持触达可点 */
+  .queue-option { min-height: 30px; padding: 0 6px; }
+  .composer-send { margin-left: auto; }
+  /* 思考程度徽标窄屏仍完整显示（flex-shrink:0 由基础规则保证）；收缩压力全由模型名承担 */
   /* 折叠钮：输入框右下小箭头（向下=折叠、向上=展开），与 textarea 底部对齐不挤压内容 */
   .composer-fold {
     flex: none;
