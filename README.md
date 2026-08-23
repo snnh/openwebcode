@@ -45,6 +45,7 @@ OpenWebCode 是一个跑在浏览器里的 AI 编码工作台，界面中英双�
 - 自由的会话管理：消息随意改、分叉随时开。
 - 本机会话：侧栏「终端」图标一键创建，以 server 身份直接在宿主机管理本机文件/服务（HOME 外访问需人工批准，不做快照）。
 - 内置符号索引（`repo_map` / `code_search`）、测试诊断（Problems 面板）、SCM 面板（diff、stage、worktree 合回、生成提交信息）。
+- 任务清单：标签栏右端折叠 chip，随时查看 agent 当前任务与进度（完成项自动划线），对话结束仍保留，下一轮任务开始时自动刷新。
 - `owc run` cli 支持。
 
 具体详见 [使用帮助](./help/usage.md) 和 [常见问题](./help/faq.md)。
