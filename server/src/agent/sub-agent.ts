@@ -152,15 +152,15 @@ interface SubAgentResult {
 
 function systemPrompt(kind: BuiltinSubAgentKind, cwd: string, systemExtra: string | undefined): string {
   const base = kind === "general"
-    ? `You are a general-purpose coding sub-agent spawned by OpenWebCode. The workspace is ${cwd}. ` +
-      "You run in an isolated context and cannot see the parent conversation. " +
-      "Complete the assigned task end-to-end: you may read and modify files and run commands with the tools provided. " +
-      "Write operations and commands go through the session's permission chain and sandbox; if a call is denied, adjust rather than retrying the identical call. " +
-      "When finished, reply with one concise conclusion in the user's language (default 中文) summarizing what you changed and how you verified it. " +
+    ? `You are a general-purpose coding sub-agent of OpenWebCode (workspace: ${cwd}). ` +
+      "You run in an isolated context without access to the parent conversation. " +
+      "Complete the assigned task end-to-end with the tools provided: inspect relevant code before editing, then run commands as needed. " +
+      "Write and command calls go through the session's permission chain and sandbox; if denied, adjust rather than retrying the identical call. " +
+      "When done, reply with one concise conclusion in the user's language (default 中文): what changed and how it was verified. " +
       "Do not ask questions; make reasonable assumptions."
-    : `You are a read-only exploration sub-agent spawned by OpenWebCode. The workspace is ${cwd}. ` +
-      "You run in an isolated context and cannot see the parent conversation. " +
-      "You may only use the read-only tools provided; you cannot modify files or run commands. " +
+    : `You are a read-only exploration sub-agent of OpenWebCode (workspace: ${cwd}). ` +
+      "You run in an isolated context without access to the parent conversation. " +
+      "Use only the read-only tools provided; do not modify files or run commands. " +
       "Investigate the task, then reply with one concise conclusion in the user's language (default 中文). " +
       "Do not ask questions; make reasonable assumptions.";
   return `${base}${systemExtra ? `\n\n${systemExtra}` : ""}`;

@@ -41,13 +41,12 @@ export function bashTool(backgroundTasksEnabled: boolean, shell: ResolvedShell, 
   const envGuidance = pythonEnv === "global"
     ? "Python and Node.js run from the host environment. "
     : "Python runs in an isolated uv-managed virtual environment that is created on demand (its directory is prepended to PATH); install packages with 'uv pip install'. Node.js still uses the host environment. ";
-  // 文件工具的 shell 对照例句按语法族给出（findstr 仅 cmd 有）
-  const fileToolExamples = shell.flavor === "cmd" ? "(dir, type, findstr, cat, echo-redirects)" : "(ls, cat, echo-redirects)";
   return {
     name: "bash",
     description: "Execute a shell command in the session workspace. Call this when command-line execution is required (build, test, package managers, git, running programs). " +
-      "For reading, writing, editing, listing or searching files, prefer the dedicated file tools (read_file/write_file/edit_file/glob/grep) over shell equivalents " +
-      fileToolExamples + ": they are sandbox-native, return structured results, and do not depend on shell quirks. " +
+      "For reading, writing, editing, listing or searching files, prefer the dedicated file tools (read_file/write_file/edit_file/glob/grep) over shell equivalents: " +
+      "they return structured results and do not depend on shell quirks. " +
+      "Some commands may be unavailable when the session sandbox is enabled; prefer paths inside the workspace. " +
       "A non-zero exit code is a normal signal, not a tool failure: read the stderr/stdout in the result and adjust the command instead of retrying it unchanged. " +
       "The shell is persistent: the working directory and environment variables set by one call carry over to later calls in the same session. " + shellGuidance + envGuidance +
       (backgroundTasksEnabled
@@ -98,11 +97,11 @@ const OPTIONAL_PATH_SCHEMA = {
 } as const;
 
 export const FILE_TOOLS: ProviderTool[] = [
-  { name: "read_file", description: "Read UTF-8 lines from a workspace file. offset is the 1-based start line (default 1) and limit the max line count; long or binary content is truncated into an artifact reference you can page with read_artifact.", inputSchema: { type: "object", properties: { path: PATH_SCHEMA, offset: { type: "integer" }, limit: { type: "integer" } }, required: ["path"], additionalProperties: false } },
+  { name: "read_file", description: "Read UTF-8 lines from a workspace file. offset is the 1-based line to start at (default 1) and limit the number of lines; long or binary content is truncated into an artifact reference readable with read_artifact.", inputSchema: { type: "object", properties: { path: PATH_SCHEMA, offset: { type: "integer" }, limit: { type: "integer" } }, required: ["path"], additionalProperties: false } },
   { name: "write_file", description: "Atomically write a UTF-8 workspace file.", inputSchema: { type: "object", properties: { path: PATH_SCHEMA, content: { type: "string" }, createDirs: { type: "boolean" } }, required: ["path", "content"], additionalProperties: false } },
-  { name: "edit_file", description: "Replace exact text in a UTF-8 workspace file. oldText must match the file content byte-for-byte (including indentation and line endings) and occur exactly once unless replaceAll is true; include enough surrounding context to make it unique.", inputSchema: { type: "object", properties: { path: PATH_SCHEMA, oldText: { type: "string" }, newText: { type: "string" }, replaceAll: { type: "boolean" } }, required: ["path", "oldText", "newText"], additionalProperties: false } },
-  { name: "glob", description: "List workspace files matching a wildcard pattern (* within one level, ** spans levels, e.g. \"**/*.ts\" or \"src/*.json\"). Returns matching paths, newest first; use it instead of shell dir/ls to explore the workspace.", inputSchema: { type: "object", properties: { path: OPTIONAL_PATH_SCHEMA, pattern: { type: "string", description: "Wildcard pattern, e.g. \"**/*.py\" or \"*\" (top level only)." } }, required: ["pattern"], additionalProperties: false } },
-  { name: "grep", description: "Recursively search UTF-8 workspace files for literal text (not regex). Returns matching lines with file:line locations; use code_search for symbol-level queries.", inputSchema: { type: "object", properties: { path: OPTIONAL_PATH_SCHEMA, pattern: { type: "string", description: "Literal text to search for." } }, required: ["pattern"], additionalProperties: false } },
+  { name: "edit_file", description: "Replace exact text in a UTF-8 workspace file. oldText must match byte-for-byte (including indentation and line endings) and occur exactly once unless replaceAll=true; include enough context to make it unique.", inputSchema: { type: "object", properties: { path: PATH_SCHEMA, oldText: { type: "string" }, newText: { type: "string" }, replaceAll: { type: "boolean" } }, required: ["path", "oldText", "newText"], additionalProperties: false } },
+  { name: "glob", description: "List workspace files matching a wildcard pattern (* within one level, ** spans levels, e.g. \"**/*.ts\" or \"src/*.json\"). Returns matching paths, newest first.", inputSchema: { type: "object", properties: { path: OPTIONAL_PATH_SCHEMA, pattern: { type: "string", description: "Wildcard pattern, e.g. \"**/*.py\" or \"*\" (top level only)." } }, required: ["pattern"], additionalProperties: false } },
+  { name: "grep", description: "Recursively search UTF-8 workspace files for literal text (not regex). Returns matching lines with file:line locations; for symbol-level queries use code_search.", inputSchema: { type: "object", properties: { path: OPTIONAL_PATH_SCHEMA, pattern: { type: "string", description: "Literal text to search for." } }, required: ["pattern"], additionalProperties: false } },
 ];
 
 export const REPO_MAP_TOOL: ProviderTool = {
@@ -139,10 +138,9 @@ export const CODE_SEARCH_TOOL: ProviderTool = {
 export const TEST_RUNNER_TOOL: ProviderTool = {
   name: "test_runner",
   description:
-    "Run the project test suite and return a bounded failure summary. The test command is auto-detected " +
-    "(package.json/npm test or vitest, pyproject.toml/pytest, go.mod/go test, *.sln/dotnet test); pass command to override. " +
-    "Vitest/jest/pytest/go/dotnet output is parsed into structured diagnostics; at most 20 failures are returned inline, " +
-    "full diagnostics are persisted to a session diagnostics artifact referenced in the result.",
+    "Run the project test suite and return a bounded failure summary. The test command is auto-detected; " +
+    "pass command to override. Output is parsed into structured diagnostics: at most 20 failures are returned inline, " +
+    "and full diagnostics are persisted to a session diagnostics artifact referenced in the result.",
   inputSchema: {
     type: "object",
     properties: {
@@ -159,7 +157,7 @@ export const ASK_USER_TOOL: ProviderTool = {
     "materially changes the work. 1-4 questions, asked sequentially; select types require 2-4 options. " +
     "single_select/multi_select questions automatically gain an extra \"其他\" (Other) option with a free-text input: " +
     "if the user picks it, the typed text is returned as that question's answer. " +
-    "Returns an array of { question, type, answer } (answer: boolean for confirm, selected option labels for select types, string for text), or { cancelled: true }.",
+    "The tool result carries each question and the user's answer.",
   inputSchema: {
     type: "object",
     properties: {

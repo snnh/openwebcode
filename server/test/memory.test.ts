@@ -238,9 +238,9 @@ describe("system prompt memory injection", () => {
     expect(system).toContain("- For exploration, use read_file, glob, and grep instead of bash when they suffice.");
     expect(system).toContain("- Group independent read-only calls in one tool turn.");
     expect(system).toContain("- For multi-step work, use todo_write; after an error, adjust rather than retrying the identical call.");
-    expect(system).toContain("- Before handoff, run focused tests or other relevant verification and report the result.");
-    expect(system).toContain("## Communication\n- Respond in the user's language; use zh-CN when the user has not indicated one.");
-    expect(system).toContain("- Keep updates brief and useful. Make final replies outcome-oriented; avoid filler, placeholders, and unnecessary explanation.");
+    expect(system).toContain("- Before finishing, run focused verification (tests or equivalent) and report the result.");
+    expect(system).toContain("## Communication\n- Reply in the user's language (default zh-CN); keep Chinese terminology consistent in Chinese replies.");
+    expect(system).toContain("- Be brief and outcome-oriented; skip filler, placeholders, and unnecessary explanation.");
     expect(system).toContain("## Safety boundary\n- Stay within the workspace; do not access files outside it. Do not perform destructive or irreversible actions without the user's explicit approval.");
     expect(system).toContain("- Do not rewrite Git history, commit, push, send external messages, or otherwise change external systems without the user's explicit approval.");
     expect(system).not.toContain("## CLAUDE.md");
