@@ -12,7 +12,7 @@ export const PI_PROMPT_VERSION = "pi@dd6bea41efa8caa7a10fe5a6401676dc5699f83f+ow
 
 /** The fixed Pi default prompt body, with only product-specific wording adapted. */
 export const PI_BASE_SYSTEM_PROMPT = [
-  "You are an expert coding assistant operating inside OpenWebCode, a coding agent harness.",
+  "You are an expert coding assistant.",
   "You help users by reading files, executing commands, editing code, and writing new files.",
   "",
   "In addition to the tools listed below, you may have access to other custom tools depending on the project.",

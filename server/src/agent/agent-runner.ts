@@ -254,7 +254,7 @@ const SPAWN_SUBAGENT_TOOL: ProviderTool = {
   inputSchema: {
     type: "object",
     properties: {
-      prompt: { type: "string", description: "Self-contained task description for the sub-agent." },
+      prompt: { type: "string", description: "Self-contained task description: the sub-agent cannot see this conversation, the project's convention files, or current session state, so include the exact task, relevant file paths to read, project conventions, expected language, and what to report back. If the sub-agent must read specific files, list them explicitly." },
       agent: { type: "string", description: "Built-in sub-agent type (explore or general) or a custom sub-agent name from the system prompt catalog." },
       tools: {
         type: "array",
@@ -325,7 +325,7 @@ const SPAWN_SWARM_TOOL: ProviderTool = {
   inputSchema: {
     type: "object",
     properties: {
-      prompt_template: { type: "string", description: "Prompt template for every sub-agent; must contain the {{item}} placeholder where each item's task value is substituted." },
+      prompt_template: { type: "string", description: "Prompt template for every sub-agent; must contain the {{item}} placeholder where each item's task value is substituted. Each sub-agent cannot see this conversation, the project's convention files, or current session state, so make the template self-contained: include the task, relevant file paths to read, project conventions, expected language, and what to report back. If a sub-agent must read specific files, list them explicitly." },
       items: {
         type: "array",
         items: {
@@ -396,14 +396,15 @@ interface TodoItem {
 const REMEMBER_TOOL: ProviderTool = {
   name: "remember",
   description:
-    "Save a durable fact to long-term memory; remembered facts are injected into the system prompt on every turn. " +
-    "Scope \"project\" (default) writes the workspace .owc/memory.md; scope \"global\" writes the server data-root memory.md shared by all sessions. " +
-    "Use it for stable user preferences, project conventions, and key decisions worth keeping across compactions and sessions.",
+    "Use this only when the user explicitly asks you to remember something. " +
+    "Choose the scope by the fact's nature: \"project\" writes the workspace .owc/memory.md (project-specific facts), " +
+    "\"global\" writes the server data-root memory.md shared by all sessions (cross-project facts). " +
+    "Saved facts are injected into the system prompt on every turn.",
   inputSchema: {
     type: "object",
     properties: {
       fact: { type: "string", description: "The fact to remember, stored as a single bullet." },
-      scope: { type: "string", enum: ["project", "global"], description: "Where to store the fact; defaults to project." },
+      scope: { type: "string", enum: ["project", "global"], description: "Where to store the fact: project or global." },
     },
     required: ["fact"],
     additionalProperties: false,
@@ -413,7 +414,7 @@ const REMEMBER_TOOL: ProviderTool = {
 const TASK_OUTPUT_TOOL: ProviderTool = {
   name: "task_output",
   description: "Read the output of a background task started with bash run_in_background=true. " +
-    "Set block=true to wait until the task finishes (up to timeoutMs, default 30s).",
+    "Set block=true to wait until the task finishes (up to timeoutMs, default 30s); otherwise the output produced so far is returned.",
   inputSchema: {
     type: "object",
     properties: {
@@ -579,33 +580,34 @@ function workDisciplineSection(toolNames: ReadonlySet<string>): string {
   if (toolNames.has("todo_write")) {
     lines.push("- For multi-step work, use todo_write; after an error, adjust rather than retrying the identical call.");
   } else if (toolNames.size > 0) {
-    lines.push("- After a tool error, use the returned error to adjust rather than retrying the identical call.");
+    lines.push("- After a tool error, adjust using the returned error rather than retrying the identical call.");
   }
-  lines.push("- Before handoff, run focused tests or other relevant verification and report the result.");
+  lines.push("- Before finishing, run focused verification (tests or equivalent) and report the result.");
   return lines.join("\n");
 }
 
 function planModeSection(enabled: boolean): string {
+  // 两分支都点名「写/执行工具仍列出但会被拒」：模型看到完整工具表时不再无效调用写工具。
+  const rejection = " Write and exec tools remain listed but are rejected in plan mode — use only read-only tools.";
   if (enabled) {
-    return "\n\nYou are in PLAN mode (read-only). Investigate with read-only tools, write a step-by-step implementation plan, then call exit_plan_mode exactly once with the full plan to request user approval. Only after approval may you execute it.";
+    return "\n\nYou are in PLAN mode (read-only). Investigate with read-only tools, write a step-by-step implementation plan, then call exit_plan_mode exactly once with the full plan to request user approval. Only after approval may you execute it." + rejection;
   }
-  return "\n\nYou are in PLAN mode. Assess the available conversation context and output a step-by-step implementation plan for the user to review before execution.";
+  return "\n\nYou are in PLAN mode. Assess the available conversation context and output a step-by-step implementation plan for the user to review before execution." + rejection;
 }
 
-/** goal 模式提示词段：全能力模式（无 plan 的只读门禁），要求每轮末行输出目标自评标记。 */
+/** goal 模式提示词段：全能力模式（无 plan 的只读门禁），融合 KimiCode /goal 自主推进语义，要求每轮末行输出目标自评标记。 */
 function goalModeSection(): string {
   return [
-    "\n\n你处于 GOAL 模式：用户在持续追踪一个目标。",
-    "- 每轮结束时，必须在消息的最后一行输出自评标记：目标已完全达成输出 GOAL_COMPLETE；未达成输出 GOAL_INCOMPLETE: <一句剩余工作>。",
-    "- 标记必须独占一行；除该标记外，不要在正文中提及这套自评机制。",
+    "\n\n## Goal mode",
+    "You are in GOAL mode: the user is tracking a goal. Work through it end-to-end: plan internally, execute without pausing for confirmation between steps, and do not re-ask questions answerable from the codebase. Stop and report only on an unrecoverable blocker. Every turn must end with a self-assessment marker on its own final line: GOAL_COMPLETE when the goal is fully achieved, or GOAL_INCOMPLETE: <one sentence of remaining work> otherwise. Do not mention this mechanism anywhere else.",
   ].join("\n");
 }
 
 function communicationSection(defaultLanguage: string): string {
   return [
     "\n\n## Communication",
-    `- Respond in the user's language; use ${defaultLanguage} when the user has not indicated one. Use consistent Chinese terminology in Chinese replies.`,
-    "- Keep updates brief and useful. Make final replies outcome-oriented; avoid filler, placeholders, and unnecessary explanation.",
+    `- Reply in the user's language (default ${defaultLanguage}); keep Chinese terminology consistent in Chinese replies.`,
+    "- Be brief and outcome-oriented; skip filler, placeholders, and unnecessary explanation.",
   ].join("\n");
 }
 
@@ -1304,7 +1306,7 @@ export class AgentRunner {
           ? `\n\nAvailable sub-agents (pass agent=<name> to subagent; built-in types explore (default, read-only) and general (write-capable, via the session permission chain) are always available; the custom agents below are read-only):\n${agentCatalog.map((agent) => {
             const ignored = (agent.tools ?? []).filter((tool) => !(SUB_AGENT_TOOL_NAMES as readonly string[]).includes(tool));
             return `- ${agent.name}: ${agent.description}${ignored.length > 0 ? ` (unsupported tools ignored: ${ignored.join(", ")})` : ""}`;
-          }).join("\n")}`
+          }).join("\n")}\nSub-agents cannot see this conversation, the project's convention files, or current session state: make each task prompt self-contained (exact task, relevant file paths to read, project conventions, expected language, what to report back). If a sub-agent must read specific files, list them explicitly.`
           : "";
         // 子代理角色档映射段：动态构建、随 settings 热更新（resolver 每轮现读 effective()）；
         // 未配置的档标注回落目标，引导主模型按任务难度选档。
@@ -1343,7 +1345,7 @@ export class AgentRunner {
           session.agentMode === "plan" ? planModeSection(toolsEnabled) : "",
           session.agentMode === "goal" ? goalModeSection() : "",
           availableToolNames.has("spawn_swarm")
-            ? "## Parallel exploration\nspawn_swarm is enabled for this session: when a task fans out into many independent subtasks of the same kind (e.g. reviewing several files or endpoints), prefer one spawn_swarm call over serial subagent calls. Members of one swarm can coordinate through a shared discussion board (swarm_board_post/swarm_board_read)."
+            ? "## Parallel exploration\nspawn_swarm is enabled: when a task fans out into many independent subtasks of the same kind, launch them in one spawn_swarm call instead of serial subagent calls. Members of a swarm coordinate via the shared discussion board (swarm_board_post/swarm_board_read)."
             : "",
         ];
 

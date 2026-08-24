@@ -31,9 +31,16 @@ function isoDate(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
+/** 工具目录每条摘要的上限：只给一句话意图，完整规则与参数以 provider tools 定义为准。 */
+const TOOL_SNIPPET_MAX_CHARS = 80;
+
 function toolSnippet(tool: ProviderTool): string {
   const firstSentence = tool.description.match(/^([\s\S]*?[.!?])(?:\s|$)/)?.[1] ?? tool.description;
-  return firstSentence.replace(/\s+/g, " ").trim();
+  const normalized = firstSentence.replace(/\s+/g, " ").trim();
+  if (normalized.length <= TOOL_SNIPPET_MAX_CHARS) return normalized;
+  const cut = normalized.slice(0, TOOL_SNIPPET_MAX_CHARS);
+  const lastSpace = cut.lastIndexOf(" ");
+  return (lastSpace > TOOL_SNIPPET_MAX_CHARS / 2 ? cut.slice(0, lastSpace) : cut) + "…";
 }
 
 function escapeAttribute(value: string): string {
@@ -51,7 +58,7 @@ export function buildSystemPrompt(options: PromptBuilderOptions): string {
   const sections = [
     options.identity?.trim() || `You are OpenWebCode. The workspace is ${options.cwd}.`,
     options.basePromptOverride?.trim() || PI_BASE_SYSTEM_PROMPT,
-    `Available tools:\n\n${toolsList}`,
+    `Available tools: one-line summary; full rules and parameters are in the tool definitions.\n\n${toolsList}`,
   ];
   for (const section of options.productSections ?? []) {
     if (section.trim()) sections.push(section.trim());
