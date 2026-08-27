@@ -57,72 +57,72 @@ export function SubagentTabStrip({ tabs, runs, selected, terminal, todoItems, on
   return (
     <div className="subagent-tabs-row">
       <div className="subagent-tabs" role="tablist" aria-label={t("主区标签", "Main tabs")}>
-      <button
-        type="button"
-        role="tab"
-        aria-selected={selected === undefined && terminal?.selected !== true}
-        className="subagent-tab-main"
-        onClick={() => onSelect(undefined)}
-      >
-        {t("主对话", "Main")}
-      </button>
-      {terminal && (
-        <div className="subagent-tab">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={terminal.selected}
-            className="subagent-tab-main"
-            onClick={() => onSelectTerminal?.()}
-          >
-            <Icon name="terminal" size={12} />
-            <span className="subagent-tab-label">{t("终端", "Terminal")}</span>
-          </button>
-          <button
-            type="button"
-            className="subagent-tab-close"
-            aria-label={t("关闭标签 终端", "Close tab Terminal")}
-            onClick={() => onCloseTerminal?.()}
-          >
-            <Icon name="x" size={11} />
-          </button>
-        </div>
-      )}
-      {tabs.map((tab) => {
-        const status = subagentTabStatus(runs, tab.toolCallId);
-        const isActive = selected === tab.toolCallId;
-        const label = tab.swarmTotal !== undefined
-          ? t(`Swarm ${tab.swarmTotal} 项`, `Swarm ×${tab.swarmTotal}`)
-          : tab.agent ?? snippet(tab.prompt, 12);
-        return (
-          <div
-            key={tab.toolCallId}
-            className={`subagent-tab${status === "running" && !isActive ? " attention" : ""}`}
-            {...(status ? { "data-status": status } : {})}
-          >
+        <button
+          type="button"
+          role="tab"
+          aria-selected={selected === undefined && terminal?.selected !== true}
+          className="subagent-tab-main"
+          onClick={() => onSelect(undefined)}
+        >
+          {t("主对话", "Main")}
+        </button>
+        {terminal && (
+          <div className="subagent-tab">
             <button
               type="button"
               role="tab"
-              aria-selected={isActive}
+              aria-selected={terminal.selected}
               className="subagent-tab-main"
-              title={tab.prompt || label}
-              onClick={() => onSelect(tab.toolCallId)}
+              onClick={() => onSelectTerminal?.()}
             >
-              {status === "running" && <span className="subagent-run-pulse subagent-tab-spinner" aria-hidden />}
-              {status && status !== "running" && <span className="subagent-tab-dot" data-status={status} aria-hidden />}
-              <span className="subagent-tab-label">{label}</span>
+              <Icon name="terminal" size={12} />
+              <span className="subagent-tab-label">{t("终端", "Terminal")}</span>
             </button>
             <button
               type="button"
               className="subagent-tab-close"
-              aria-label={t(`关闭标签 ${label}`, `Close tab ${label}`)}
-              onClick={() => onClose(tab.toolCallId)}
+              aria-label={t("关闭标签 终端", "Close tab Terminal")}
+              onClick={() => onCloseTerminal?.()}
             >
               <Icon name="x" size={11} />
             </button>
           </div>
-        );
-      })}
+        )}
+        {tabs.map((tab) => {
+          const status = subagentTabStatus(runs, tab.toolCallId);
+          const isActive = selected === tab.toolCallId;
+          const label = tab.swarmTotal !== undefined
+            ? t(`Swarm ${tab.swarmTotal} 项`, `Swarm ×${tab.swarmTotal}`)
+            : tab.agent ?? snippet(tab.prompt, 12);
+          return (
+            <div
+              key={tab.toolCallId}
+              className={`subagent-tab${status === "running" && !isActive ? " attention" : ""}`}
+              {...(status ? { "data-status": status } : {})}
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={isActive}
+                className="subagent-tab-main"
+                title={tab.prompt || label}
+                onClick={() => onSelect(tab.toolCallId)}
+              >
+                {status === "running" && <span className="subagent-run-pulse subagent-tab-spinner" aria-hidden />}
+                {status && status !== "running" && <span className="subagent-tab-dot" data-status={status} aria-hidden />}
+                <span className="subagent-tab-label">{label}</span>
+              </button>
+              <button
+                type="button"
+                className="subagent-tab-close"
+                aria-label={t(`关闭标签 ${label}`, `Close tab ${label}`)}
+                onClick={() => onClose(tab.toolCallId)}
+              >
+                <Icon name="x" size={11} />
+              </button>
+            </div>
+          );
+        })}
       </div>
       {todoItems && todoItems.length > 0 && (
         <details className="todo-chip">

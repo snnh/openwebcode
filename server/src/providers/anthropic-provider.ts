@@ -131,7 +131,7 @@ export class AnthropicProvider implements Provider {
 /**
  * Anthropic thinking 组装（Key 按声明 + 模型名推断，值不设限）：
  * - thinkingStyle="extended"：thinking:{type:"enabled",budget_tokens}（仅 Claude 4.5 及以前
- *   等旧模型的 extended-only 形态；预算不再硬编码上限，只受 API 硬约束 budget ≤ maxTokens-1）
+ *   等旧模型的 extended-only 形态；预算不硬编码，由 maxTokens 推导——见 extendedThinkingBudget）
  * - thinkingStyle="adaptive"：thinking:{type:"adaptive"}（预算废弃时代，深度由 output_config.effort 控制）
  * - 未声明（或 openai 型声明，如 thinking）：按模型名推断——
  *   claude 4.5 及以前 → extended；claude 4.6+/国产/未知 → adaptive
@@ -143,7 +143,7 @@ function anthropicThinking(request: StreamChatRequest, maxTokens: number): Anthr
   const style = request.thinkingStyle;
   if (style === "extended") {
     if (request.thinking !== "enabled") return undefined;
-    return { type: "enabled", budget_tokens: Math.max(1, maxTokens - 1) };
+    return { type: "enabled", budget_tokens: extendedThinkingBudget(maxTokens) };
   }
   if (style === "adaptive") {
     return { type: "adaptive", display: "summarized" };
@@ -176,9 +176,22 @@ function parseClaudeVersion(model: string): { major: number; minor: number } | u
 function inferAnthropicThinking(model: string, maxTokens: number): Anthropic.ThinkingConfigParam {
   const version = parseClaudeVersion(model);
   if (version && (version.major <= 3 || (version.major === 4 && version.minor <= 5))) {
-    return { type: "enabled", budget_tokens: Math.max(1, maxTokens - 1) };
+    return { type: "enabled", budget_tokens: extendedThinkingBudget(maxTokens) };
   }
   return { type: "adaptive", display: "summarized" };
+}
+
+/** Anthropic extended thinking 的硬约束：budget_tokens ≥ 1024 且 < max_tokens。 */
+const MIN_THINKING_BUDGET = 1024;
+
+/** extended 预算：预算与正文共享 max_tokens，取满 maxTokens-1 会让思考吃掉全部额度、
+ * 正文无处可写（表现为"只有思考没有回答"），故留 1/8（至少 1024）给正文；
+ * maxTokens 过小时退到 1024 下限，仍装不下则按 maxTokens-1 发出（由 API 明确拒绝而非静默截断）。 */
+function extendedThinkingBudget(maxTokens: number): number {
+  const headroom = Math.max(MIN_THINKING_BUDGET, Math.floor(maxTokens / 8));
+  const budget = maxTokens - headroom;
+  if (budget >= MIN_THINKING_BUDGET) return budget;
+  return Math.min(MIN_THINKING_BUDGET, Math.max(1, maxTokens - 1));
 }
 
 /** Anthropic 每请求至多 4 个断点（tools/system/messages 合计）。 */

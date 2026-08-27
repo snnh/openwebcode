@@ -76,10 +76,11 @@ function isMillionContextModel(id: string): boolean {
   return /\[1m\]/i.test(id);
 }
 
-/** 模型名含 vision 标记（deepseek-v4-flash-vision-exp、qwen-vl、*vision* 等）→ 默认声明图片
+/** 模型名含 vision 标记（deepseek-v4-flash-vision-exp、qwen-vl-max、qwen2.5-vl 等）→ 默认声明图片
  * 输入能力；用户模型目录显式声明仍优先（manual 层覆盖）。 */
 function withVisionIfNamed(metadata: ModelMetadata, id: string): ModelMetadata {
-  if (!/vision|[-_]vl[-_]|(?<![a-z0-9-])vl$/i.test(id)) return metadata;
+  // vl 需为独立词段：前接 -/_，后接 -/_ 或结尾（原 (?<![a-z0-9-])vl$ 因前面必然是 - 而永不命中 qwen-vl）
+  if (!/vision|[-_]vl([-_]|$)/i.test(id)) return metadata;
   if (metadata.capabilities.modalities.includes("image")) return metadata;
   return {
     ...metadata,

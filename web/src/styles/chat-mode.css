@@ -349,6 +349,20 @@
   50% { opacity: 0.4; }
 }
 
+/* 服务端联网搜索小标签（web_search_call 块） */
+.chat-web-search-tag {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-s);
+  background: var(--panel-2);
+  color: var(--text-3);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
 /* ── 思考中三点指示 ── */
 .chat-thinking {
   display: inline-flex;

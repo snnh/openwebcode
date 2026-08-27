@@ -19,10 +19,15 @@ import { AttachmentStrip, MentionStrip } from "./chips";
 import { AgentModeMenu, EFFORT_LABEL, ModelMenu, PermissionModeMenu, THINKING_LABEL } from "./popovers";
 
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
-const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const BYTES_PER_MB = 1024 * 1024;
+const MAX_IMAGE_BYTES = 5 * BYTES_PER_MB;
 // 与 server/src/app.ts 上传路由对齐：避免超大 PDF 在浏览器端 base64 后才被拒。
-const MAX_PDF_UPLOAD_BYTES = 20 * 1024 * 1024;
+const MAX_PDF_UPLOAD_BYTES = 20 * BYTES_PER_MB;
 const MAX_ATTACHMENTS = 4;
+/** @ 提及候选的展示上限（服务端可能返回更多，超出部分不进下拉）。 */
+const MENTION_MAX_ITEMS = 20;
+/** 字节上限转 MB 文案数值。 */
+const toMB = (bytes: number): number => bytes / BYTES_PER_MB;
 /** 全部 effort 档位（含 minimal；max/ultra 不翻译）。标签表见 popovers。 */
 const EFFORT_ALL = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 /** 默认 effort 档位（模型目录未声明 effort 子集时的滑块兜底集：不含 minimal/ultra；ultra 仅当模型目录显式声明后出现）。 */
@@ -288,7 +293,7 @@ export function Composer({ session, running, onSend, onConfig, editingMessage, o
     let cancelled = false;
     const timer = setTimeout(() => {
       loadMentionItems(session.id, mentionPartial)
-        .then((res) => { if (!cancelled) { setMentionItems(res.items.slice(0, 20)); setMentionIndexStatus(res.indexStatus); setMentionFailed(false); } })
+        .then((res) => { if (!cancelled) { setMentionItems(res.items.slice(0, MENTION_MAX_ITEMS)); setMentionIndexStatus(res.indexStatus); setMentionFailed(false); } })
         .catch(() => { if (!cancelled) { setMentionItems([]); setMentionIndexStatus(null); setMentionFailed(true); } });
     }, 200);
     return () => { cancelled = true; clearTimeout(timer); };
@@ -484,7 +489,7 @@ export function Composer({ session, running, onSend, onConfig, editingMessage, o
       if (!isPdf(file)) return true;
       if (file.size > MAX_PDF_UPLOAD_BYTES) {
         if (!pdfSizeNoticeShown) {
-          notify(t(`PDF 超过 ${MAX_PDF_UPLOAD_BYTES / 1024 / 1024}MB 限制，未开始上传`, `The PDF exceeds the ${MAX_PDF_UPLOAD_BYTES / 1024 / 1024} MB limit and was not uploaded.`), "error");
+          notify(t(`PDF 超过 ${toMB(MAX_PDF_UPLOAD_BYTES)}MB 限制，未开始上传`, `The PDF exceeds the ${toMB(MAX_PDF_UPLOAD_BYTES)} MB limit and was not uploaded.`), "error");
           pdfSizeNoticeShown = true;
         }
         return false;
@@ -541,7 +546,7 @@ export function Composer({ session, running, onSend, onConfig, editingMessage, o
             continue;
           }
           if (file.size > MAX_IMAGE_BYTES) {
-            notifyTask(task, t(`图片「${file.name || "剪贴板图片"}」超过 ${MAX_IMAGE_BYTES / 1024 / 1024}MB 限制`, `Image “${file.name || "clipboard image"}” exceeds the ${MAX_IMAGE_BYTES / 1024 / 1024} MB limit`), "error");
+            notifyTask(task, t(`图片「${file.name || "剪贴板图片"}」超过 ${toMB(MAX_IMAGE_BYTES)}MB 限制`, `Image “${file.name || "clipboard image"}” exceeds the ${toMB(MAX_IMAGE_BYTES)} MB limit`), "error");
             continue;
           }
           try {
@@ -1014,7 +1019,7 @@ export function Composer({ session, running, onSend, onConfig, editingMessage, o
         </div>
       ) : pdfToImageEnabled ? (
         supportsImages && <div className="composer-hint">
-          <span className="composer-hint-text">{t(`支持添加、粘贴或拖拽图片/PDF（≤${MAX_ATTACHMENTS} 张图片，每张 ≤${MAX_IMAGE_BYTES / 1024 / 1024}MB）；PDF 会转为图片；输入 @ 引用工作区文件`, `Add, paste, or drop images/PDFs (up to ${MAX_ATTACHMENTS} images, ${MAX_IMAGE_BYTES / 1024 / 1024} MB each); PDFs are converted to images; type @ to reference workspace files`)}</span>
+          <span className="composer-hint-text">{t(`支持添加、粘贴或拖拽图片/PDF（≤${MAX_ATTACHMENTS} 张图片，每张 ≤${toMB(MAX_IMAGE_BYTES)}MB）；PDF 会转为图片；输入 @ 引用工作区文件`, `Add, paste, or drop images/PDFs (up to ${MAX_ATTACHMENTS} images, ${toMB(MAX_IMAGE_BYTES)} MB each); PDFs are converted to images; type @ to reference workspace files`)}</span>
           <button type="button" className="composer-hint-dismiss" aria-label={t("关闭提示", "Dismiss hint")} onClick={dismissPdfHint}><Icon name="x" size={12} /></button>
         </div>
       ) : (

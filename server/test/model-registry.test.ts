@@ -40,6 +40,10 @@ describe("model metadata lookup", () => {
     expect(FALLBACK_METADATA.contextWindow).toBeLessThanOrEqual(4_000_000);
     // 模型名含 vision 标记 → 默认声明图片输入（deepseek-v4-flash-vision-exp 等）
     expect(lookupModelMetadata("deepseek-v4-flash-vision-exp").capabilities.modalities).toContain("image");
+    // -vl 后缀形态（qwen-vl / qwen2.5-vl）同样识别；vl 不是独立词段时不误判
+    expect(lookupModelMetadata("qwen-vl-max").capabilities.modalities).toContain("image");
+    expect(lookupModelMetadata("qwen2.5-vl").capabilities.modalities).toContain("image");
+    expect(lookupModelMetadata("some-model-vlm").capabilities.modalities).not.toContain("image");
     expect(lookupModelMetadata("gpt-4o-2024-11-20").capabilities.modalities).toContain("image");
     expect(lookupModelMetadata("some-random-model")).toEqual(FALLBACK_METADATA);
     expect(lookupModelMetadata("gpt-4o-2024-11-20").capabilities.reasoningContent).toBe(false);

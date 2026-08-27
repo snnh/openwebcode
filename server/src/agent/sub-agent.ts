@@ -289,6 +289,7 @@ export async function runSubAgent(options: SubAgentOptions): Promise<SubAgentRes
               signature: JSON.stringify(event.item),
               id: event.item.id,
               ...(typeof event.item.status === "string" ? { status: event.item.status } : {}),
+              provider: options.provider.name,
             };
             assistantContent.push(block);
           }

@@ -1560,6 +1560,7 @@ export class AgentRunner {
                 signature: JSON.stringify(event.item),
                 id: event.item.id,
                 ...(typeof event.item.status === "string" ? { status: event.item.status } : {}),
+                provider: provider.name,
               };
               assistantContent.push(block);
             }
@@ -1974,15 +1975,17 @@ export class AgentRunner {
       });
       const subUsageContext = new ContextManager(this.sessions.contextRoot(sessionId));
       const systemExtra = await this.withSubAgentAppend(session.cwd, resolved.systemExtra);
+      // 能力档案解析一次复用（同一 model+provider 多次 getProfile 会重复走目录分层查找）
+      const subCapabilities = this.getProfile(resolved.modelOverride ?? session.model, context.providerName).capabilities;
       const result = await runSubAgent({
         provider: context.provider,
         model: session.model,
-        reasoningContent: this.getProfile(resolved.modelOverride ?? session.model, context.providerName).capabilities.reasoningContent !== false,
-        ...(this.getProfile(resolved.modelOverride ?? session.model, context.providerName).capabilities.responsesEncryptedReplay
+        reasoningContent: subCapabilities.reasoningContent !== false,
+        ...(subCapabilities.responsesEncryptedReplay
           ? { responsesEncryptedReplay: true }
           : {}),
-        ...(this.getProfile(resolved.modelOverride ?? session.model, context.providerName).capabilities.thinkingStyle
-          ? { thinkingStyle: this.getProfile(resolved.modelOverride ?? session.model, context.providerName).capabilities.thinkingStyle }
+        ...(subCapabilities.thinkingStyle
+          ? { thinkingStyle: subCapabilities.thinkingStyle }
           : {}),
         serverWebSearch: this.getWebSearchMode() === "model-api",
         ...(resolved.modelOverride ? { modelOverride: resolved.modelOverride } : {}),
@@ -2686,15 +2689,17 @@ export class AgentRunner {
         // 子代理 token 经 onUsage 复用主循环记账路径，计入会话成本
         const subUsageContext = new ContextManager(this.sessions.contextRoot(sessionId));
         const systemExtra = await this.withSubAgentAppend(session.cwd, resolved.systemExtra);
+        // 能力档案解析一次复用（同一 model+provider 多次 getProfile 会重复走目录分层查找）
+        const subCapabilities = this.getProfile(effectiveModel, providerName).capabilities;
         const result = await runSubAgent({
           provider,
           model: session.model,
-          reasoningContent: this.getProfile(effectiveModel, providerName).capabilities.reasoningContent !== false,
-          ...(this.getProfile(effectiveModel, providerName).capabilities.responsesEncryptedReplay
+          reasoningContent: subCapabilities.reasoningContent !== false,
+          ...(subCapabilities.responsesEncryptedReplay
             ? { responsesEncryptedReplay: true }
             : {}),
-          ...(this.getProfile(effectiveModel, providerName).capabilities.thinkingStyle
-            ? { thinkingStyle: this.getProfile(effectiveModel, providerName).capabilities.thinkingStyle }
+          ...(subCapabilities.thinkingStyle
+            ? { thinkingStyle: subCapabilities.thinkingStyle }
             : {}),
           serverWebSearch: this.getWebSearchMode() === "model-api",
           ...(resolved.modelOverride ? { modelOverride: resolved.modelOverride } : {}),
@@ -2839,15 +2844,17 @@ export class AgentRunner {
             // maxTurns 优先级：逐项显式 > 调用级 > 设置全局默认 > runSubAgent 兜底
             const itemMaxTurns = items[index]?.maxTurns;
             const maxTurns = itemMaxTurns ?? callMaxTurns ?? effective.maxTurns ?? this.subAgentMaxTurnsLimit();
+            // 能力档案解析一次复用（同一 model+provider 多次 getProfile 会重复走目录分层查找）
+            const subCapabilities = this.getProfile(effectiveModel, providerName).capabilities;
             const result = await runSubAgent({
               provider,
               model: session.model,
-              reasoningContent: this.getProfile(effectiveModel, providerName).capabilities.reasoningContent !== false,
-              ...(this.getProfile(effectiveModel, providerName).capabilities.responsesEncryptedReplay
+              reasoningContent: subCapabilities.reasoningContent !== false,
+              ...(subCapabilities.responsesEncryptedReplay
                 ? { responsesEncryptedReplay: true }
                 : {}),
-              ...(this.getProfile(effectiveModel, providerName).capabilities.thinkingStyle
-                ? { thinkingStyle: this.getProfile(effectiveModel, providerName).capabilities.thinkingStyle }
+              ...(subCapabilities.thinkingStyle
+                ? { thinkingStyle: subCapabilities.thinkingStyle }
                 : {}),
               serverWebSearch: this.getWebSearchMode() === "model-api",
               ...(effective.modelOverride ? { modelOverride: effective.modelOverride } : {}),
@@ -3539,12 +3546,13 @@ export class AgentRunner {
   }
 
   /**
-   * 会话删除时清理按会话/cwd 键控的无界小 Map（perf 环形缓冲、MCP 告警签名、提示词覆盖缓存）。
+   * 会话删除时清理按会话/cwd 键控的无界小 Map（perf 环形缓冲、MCP 告警签名、任务清单、提示词覆盖缓存）。
    * cwd 级缓存误清只导致下次 run 重建一次，不影响正确性。
    */
   discardSession(sessionId: string, cwd?: string): void {
     this.perfRecords.delete(sessionId);
     this.mcpWarningSignatures.delete(sessionId);
+    this.todos.delete(sessionId);
     if (cwd) this.promptOverrideCache.delete(cwd);
   }
 

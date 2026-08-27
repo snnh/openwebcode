@@ -973,15 +973,16 @@ describe("provider reasoning parameters", () => {
         { content: [{ text: "tail" }] },
       ],
     });
-    // 声明 extended（claude 4.5 及以前形态）：enabled + budget（budget = maxTokens-1，不再硬编码 16000）
+    // 声明 extended（claude 4.5 及以前形态）：enabled + budget（budget = maxTokens 减 1/8 正文余量，至少留 1024）
     await drain(provider.streamChat(reasoningRequest({ thinking: "enabled", thinkingStyle: "extended" })));
-    expect(bodies[4]).toMatchObject({ thinking: { type: "enabled", budget_tokens: 63_999 } });
+    expect(bodies[4]).toMatchObject({ thinking: { type: "enabled", budget_tokens: 56_000 } });
     await drain(provider.streamChat(reasoningRequest({ model: "claude-opus-4-5", thinking: "enabled" })));
-    expect(bodies[5]).toMatchObject({ thinking: { type: "enabled", budget_tokens: 63_999 } });
+    expect(bodies[5]).toMatchObject({ thinking: { type: "enabled", budget_tokens: 56_000 } });
     const limited = new AnthropicProvider({ apiKey: "test", maxTokens: 8000 });
     injectMockStream(limited, bodies);
     await drain(limited.streamChat(reasoningRequest({ thinking: "enabled", thinkingStyle: "extended" })));
-    expect(bodies[6]).toMatchObject({ max_tokens: 8000, thinking: { type: "enabled", budget_tokens: 7999 } });
+    // 8000/8 = 1000 < 1024 下限，正文余量按 1024 计
+    expect(bodies[6]).toMatchObject({ max_tokens: 8000, thinking: { type: "enabled", budget_tokens: 6976 } });
     // 国产/未知模型 anthropic 路径默认 adaptive（预算废弃时代）
     await drain(provider.streamChat(reasoningRequest({ model: "deepseek-v4-pro", thinking: "enabled" })));
     expect(bodies[7]).toMatchObject({ thinking: { type: "adaptive" } });
