@@ -425,10 +425,6 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
     },
   );
 
-  app.get<{ Params: { id: string } }>("/api/sessions/:id/steering", async (request, reply) => {
-    if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
-    return agent.listSteering(request.params.id);
-  });
   app.get<{ Params: { id: string } }>("/api/sessions/:id/queue", async (request, reply) => {
     if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
     return agent.listQueue(request.params.id);
@@ -464,11 +460,6 @@ export function registerSessionRunRoutes(app: FastifyInstance, ctx: RouteContext
     const interaction = await agent.respondInteraction(request.params.id, request.params.requestId, request.body.answer);
     if (!interaction) return reply.code(404).send({ error: "Pending interaction not found" });
     return interaction;
-  });
-  app.delete<{ Params: { id: string; steeringId: string } }>("/api/sessions/:id/steering/:steeringId", async (request, reply) => {
-    if (!(await sessions.get(request.params.id))) return reply.code(404).send({ error: "Session not found" });
-    if (!(await agent.removeSteering(request.params.id, request.params.steeringId))) return reply.code(404).send({ error: "Steering item not found" });
-    return reply.code(204).send();
   });
 
   // cron 定时任务（提交⑫）：调度/持久化在 CronScheduler，触发经 follow-up 队列注入

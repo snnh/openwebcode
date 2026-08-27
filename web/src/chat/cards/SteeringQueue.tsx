@@ -10,7 +10,7 @@ export function SteeringQueue({ items, onRemove }: SteeringQueueProps): ReactEle
       <b>{t("运行队列", "Run queue")}</b>
       {(["steer", "follow_up"] as const).map((kind) => (
         <section key={kind}>
-          <small>{kind === "steer" ? t("下一轮纠偏", "Next-turn steering") : t("完成后续跑", "After completion")}</small>
+          <small>{kind === "steer" ? t("下一轮纠偏", "Next-turn steering") : t("完成后续跑", "Run after")}</small>
           {items.filter((item) => item.kind === kind && item.status === "queued").map((item, index) => (
             <div key={item.id} className="steering-queue-item">
               <span className="steering-queue-item-index">{index + 1}</span>

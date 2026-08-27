@@ -2,6 +2,17 @@
 
 本文记录 OpenWebCode 从首次公开版本 `v0.1.0` 到当前版本的用户可感知变化。日期以 Git 标签发布日期为准。
 
+## [1.9.10] - 2026-08-27
+
+### 修复
+
+- **`fs.scan` 空页堆溢出（远程可达）**：目录为空或 `cursor` 正好等于条目总数时，分页应答跳过条目循环，收尾后缀被写到仅 13 字节的头部缓冲之外（越界写约 20 字节）。改为先按实际长度扩容再写入，并补 Python 协议回归用例。
+- **core 增量 JSON 构建统一**：`fs.stat_many`/`fs.scan`/`fs.watch_poll`/`fs.grep`/`fs.list`/`job.output` 六处「先量长度 → realloc → 写入」的手写模式收敛为 `json_appendf` 辅助函数，并统一处理 `vsnprintf` 负返回值（负长度不再被转成 `size_t`）；分配失败时缓冲区保持有效由调用方释放。
+- **入队反馈可靠性**：发送成功且进入队列时主动失效队列查询——Steering 队列卡片不再只依赖 WS `queue.queued` 事件，事件延迟或丢失时同样可靠出现。
+- **移除多余入队 toast**：队列卡片就在输入栏上方且已标注「下一轮纠偏 / 完成后续跑」与序号，不再重复弹提示。
+- **下线遗留 `/steering` 接口**：`GET /api/sessions/:id/steering` 与 `DELETE /api/sessions/:id/steering/:steeringId` 已被 `/queue` 系列取代，连同前端未被调用的 helper 与测试 mock 一并删除。
+- **「完成后续跑」英文文案统一**为 `Run after`（此前发送按钮与队列卡片不一致）。
+
 ## [1.9.9] - 2026-08-24
 
 ### 优化

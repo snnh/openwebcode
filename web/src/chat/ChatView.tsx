@@ -199,7 +199,11 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
     },
     onSuccess: (result, input) => {
       clearComposerState(input.sessionId);
-      // 入队不再弹 toast：SteeringQueue 卡片就在输入栏上方，已按 kind 标注「下一轮纠偏 / 完成后续跑」并给出序号
+      // 入队不再弹 toast：SteeringQueue 卡片就在输入栏上方，已按 kind 标注「下一轮纠偏 / 完成后续跑」并给出序号。
+      // 卡片可见性因此不能只依赖 WS queue.queued 事件——响应成功即失效队列查询，事件延迟/丢失时卡片也可靠出现
+      if ((result as { queued?: boolean } | undefined)?.queued) {
+        void queryClient.invalidateQueries({ queryKey: qk.queue(input.sessionId) });
+      }
       // /clear 分隔线由 context 视图（ledger.cleared）驱动：响应成功即刷新该查询，
       // WS context.cleared 事件延迟/丢失时分隔线也可靠出现（不依赖事件时序）
       if (/^\/clear\s*$/i.test(input.text.trim())) {

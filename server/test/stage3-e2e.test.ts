@@ -305,7 +305,7 @@ describe.skipIf(!coreAvailable)("stage 4 web E2E", () => {
     await firstEntered;
     const queued = (await app.inject({ method: "POST", url: `/api/sessions/${session.id}/messages`, payload: { content: "补充指令" } })).json<{ accepted: boolean; queued: boolean; position: number }>();
     expect(queued).toMatchObject({ accepted: true, queued: true, position: 1 });
-    const list = (await app.inject({ method: "GET", url: `/api/sessions/${session.id}/steering` })).json<Array<{ content: string }>>();
+    const list = (await app.inject({ method: "GET", url: `/api/sessions/${session.id}/queue` })).json<Array<{ content: string }>>();
     expect(list.map((item) => item.content)).toEqual(["补充指令"]);
     finish();
     await running;
