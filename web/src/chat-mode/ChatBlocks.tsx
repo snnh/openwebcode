@@ -14,6 +14,7 @@ export function ChatBlocks({ content, resolveImageRef }: {
   /** image 块 ref 形态的字节路由（会话 images 路由或分享 images 路由，后者需透传 token）。 */
   resolveImageRef(ref: string): string;
 }): ReactElement {
+  const { t } = useI18n();
   const items: ReactElement[] = [];
   for (let index = 0; index < content.length; index += 1) {
     const block = content[index]!;
@@ -68,7 +69,7 @@ export function ChatBlocks({ content, resolveImageRef }: {
       // 服务端联网搜索：小标签展示状态
       items.push(
         <span key={index} className="chat-web-search-tag">
-          {block.status ? `联网搜索 · ${block.status}` : "联网搜索"}
+          {block.status ? `${t("联网搜索", "Web search")} · ${block.status}` : t("联网搜索", "Web search")}
         </span>,
       );
       continue;

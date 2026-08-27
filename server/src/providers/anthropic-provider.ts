@@ -153,11 +153,29 @@ function anthropicThinking(request: StreamChatRequest, maxTokens: number): Anthr
   return inferAnthropicThinking(request.model, maxTokens);
 }
 
+/** 版本号解析：兼容两代命名——新代 family 在前（claude-sonnet-4-5-20250929），
+ * 旧代版本在前（claude-3-7-sonnet-20250219、claude-3-opus-20240229）。次版本限 1-2 位且
+ * 后面不能再跟数字，避免把 8 位日期后缀（claude-sonnet-4-20250514）误读成次版本；
+ * 缺次版本按 0 处理。 */
+function parseClaudeVersion(model: string): { major: number; minor: number } | undefined {
+  const family = "(?:opus|sonnet|haiku|fable|mythos)";
+  const version = "(\\d{1,2})(?:[-_.](\\d{1,2})(?!\\d))?";
+  const patterns = [
+    new RegExp(`claude[-_./]?${family}[-_.]?${version}`, "i"),
+    new RegExp(`claude[-_./]${version}[-_.]?${family}`, "i"),
+  ];
+  for (const pattern of patterns) {
+    const match = pattern.exec(model);
+    if (match) return { major: Number(match[1]), minor: match[2] ? Number(match[2]) : 0 };
+  }
+  return undefined;
+}
+
 /** 模型名推断（Anthropic 官方文档）：Claude 4.5 及以前仅支持 extended（type:"adaptive" 会 400）；
  * 4.6+（及国产/未知端点）用 adaptive——预算（budget_tokens）已在该代弃用/拒绝。 */
 function inferAnthropicThinking(model: string, maxTokens: number): Anthropic.ThinkingConfigParam {
-  const match = /claude[-/](?:opus|sonnet|haiku|fable|mythos)[-_]?4[-_](\d+)/i.exec(model);
-  if (match && Number(match[1]) <= 5) {
+  const version = parseClaudeVersion(model);
+  if (version && (version.major <= 3 || (version.major === 4 && version.minor <= 5))) {
     return { type: "enabled", budget_tokens: Math.max(1, maxTokens - 1) };
   }
   return { type: "adaptive", display: "summarized" };

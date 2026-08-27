@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AgentRunner } from "../src/agent/agent-runner.js";
 import { AgentRegistry } from "../src/agents.js";
 import { buildServer } from "../src/app.js";
-import type { EffortLevel, ModelProfile, ThinkingMode } from "../src/context/model-profile.js";
 import type { CoreClient } from "../src/core-client.js";
 import { PricingCatalog } from "../src/cost/pricing-catalog.js";
 import { EventBus, type AppEvent } from "../src/events/event-bus.js";

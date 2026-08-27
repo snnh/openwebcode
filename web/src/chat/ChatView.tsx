@@ -35,7 +35,6 @@ import { SteeringQueue } from "./cards/SteeringQueue";
 import { Composer } from "../composer/Composer";
 import { SessionHeader } from "../workbench/SessionHeader";
 import { SessionSkeleton } from "../components/SessionSkeleton";
-import { Icon } from "../components/Icon";
 import { useI18n } from "../i18n";
 
 interface ChatViewProps {
