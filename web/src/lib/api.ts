@@ -245,8 +245,6 @@ export const api = {
     request<{ commits: import("./contracts").ScmLogEntry[] }>(`/api/sessions/${encodeURIComponent(id)}/git/log?limit=${limit}`),
   scmMergeWorktree: (id: string, name: string) =>
     request<import("./contracts").ScmWorktreeMergeResult>(`/api/sessions/${encodeURIComponent(id)}/git/worktrees/${encodeURIComponent(name)}/merge`, { method: "POST", body: JSON.stringify({}) }),
-  steering: (id: string) => request<Array<{ id: string; content: string; createdAt: string }>>(`/api/sessions/${id}/steering`),
-  removeSteering: (id: string, itemId: string) => request<void>(`/api/sessions/${id}/steering/${itemId}`, { method: "DELETE" }),
   importSession: async (jsonl: string): Promise<Session> => {
     const response = await fetch("/api/sessions/import", {
       method: "POST",

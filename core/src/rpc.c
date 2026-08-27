@@ -742,7 +742,14 @@ static int handle_fs_scan(owc_rpc *rpc,const owc_json *id,const owc_json *p){
     end=cursor>scan.count?cursor:scan.count-cursor<limit?scan.count:cursor+limit;
     result=(char*)malloc(13);if(!result){scan_free(&scan);return reply_error(rpc,id,-32000,"out of memory");}strcpy(result,"{\"entries\":[");
     for(i=cursor;i<end;i++){char *escaped=owc_json_escape_string(scan.items[i].path),*grown;size_t used,add;if(!escaped){free(result);scan_free(&scan);return reply_error(rpc,id,-32000,"out of memory");}used=strlen(result);add=(size_t)snprintf(NULL,0,"%s{\"path\":%s,\"type\":\"%s\",\"size\":%llu}",i==cursor?"":",",escaped,type_name(scan.items[i].type),scan.items[i].size);grown=(char*)realloc(result,used+add+64);if(!grown){free(escaped);free(result);scan_free(&scan);return reply_error(rpc,id,-32000,"out of memory");}result=grown;snprintf(result+used,add+1,"%s{\"path\":%s,\"type\":\"%s\",\"size\":%llu}",i==cursor?"":",",escaped,type_name(scan.items[i].type),scan.items[i].size);free(escaped);}
-    i=strlen(result);if(end<scan.count)snprintf(result+i,64,"],\"nextCursor\":%zu,\"truncated\":%s}",end,(scan.budget_truncated||scan.depth_truncated||scan.list_truncated)?"true":"false");else snprintf(result+i,48,"],\"truncated\":%s}",(scan.budget_truncated||scan.depth_truncated||scan.list_truncated)?"true":"false");
+    /* Grow before writing the closing suffix. An empty page (empty directory,
+     * or a cursor at the end of the collection) skips the entry loop, so the
+     * buffer is still the 13-byte header allocation and writing the suffix in
+     * place would run past it. */
+    {const char *truncated=(scan.budget_truncated||scan.depth_truncated||scan.list_truncated)?"true":"false";size_t used=strlen(result),suffix;char *grown;
+     suffix=(size_t)(end<scan.count?snprintf(NULL,0,"],\"nextCursor\":%zu,\"truncated\":%s}",end,truncated):snprintf(NULL,0,"],\"truncated\":%s}",truncated));
+     grown=(char*)realloc(result,used+suffix+1);if(!grown){free(result);scan_free(&scan);return reply_error(rpc,id,-32000,"out of memory");}result=grown;
+     if(end<scan.count)snprintf(result+used,suffix+1,"],\"nextCursor\":%zu,\"truncated\":%s}",end,truncated);else snprintf(result+used,suffix+1,"],\"truncated\":%s}",truncated);}
     scan_free(&scan);i=reply_result(rpc,id,result);free(result);return (int)i;
 }
 

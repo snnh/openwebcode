@@ -12,7 +12,7 @@ interface AppFetchMockOptions {
 
 /**
  * App 级测试标准 fetch mock：sessions 列表/详情、context、models、providers、
- * sandbox/capabilities、steering、permissions。其余路径 404 { error: "not mocked" }。
+ * sandbox/capabilities、permissions。其余路径 404 { error: "not mocked" }。
  */
 export function installAppFetchMock(options: AppFetchMockOptions = {}): void {
   const session = options.session ?? makeSession();
@@ -28,7 +28,6 @@ export function installAppFetchMock(options: AppFetchMockOptions = {}): void {
     if (url.endsWith("/api/models")) return json(models);
     if (url.endsWith("/api/providers")) return json([session.provider]);
     if (url.endsWith("/api/sandbox/capabilities")) return json({ platform: "win32", appcontainer: true, jobobject: true, off: true, wsb: { available: false, reason: "测试环境" }, bindLink: { available: false, reason: "测试环境" } });
-    if (url.includes(`/api/sessions/${session.id}/steering`)) return json([]);
     if (url.includes(`/api/sessions/${session.id}/permissions`)) return json([]);
     if (url.match(new RegExp(`/api/sessions/${session.id}(\\?.*)?$`))) return json(session);
     return json({ error: "not mocked" }, 404);

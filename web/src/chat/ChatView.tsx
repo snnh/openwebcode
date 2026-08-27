@@ -199,10 +199,7 @@ export function ChatView({ sessionId, currentRun, subagentTabs, terminalTabs, on
     },
     onSuccess: (result, input) => {
       clearComposerState(input.sessionId);
-      const queued = result as { queued?: boolean; position?: number } | undefined;
-      if (queued?.queued) notify(input.behavior === "follow_up"
-        ? t(`已加入完成后续跑队列（第 ${queued.position} 项）`, `Added to follow-up queue (position ${queued.position})`)
-        : t(`已加入 Steering 队列（第 ${queued.position} 项）`, `Added to Steering queue (position ${queued.position})`));
+      // 入队不再弹 toast：SteeringQueue 卡片就在输入栏上方，已按 kind 标注「下一轮纠偏 / 完成后续跑」并给出序号
       // /clear 分隔线由 context 视图（ledger.cleared）驱动：响应成功即刷新该查询，
       // WS context.cleared 事件延迟/丢失时分隔线也可靠出现（不依赖事件时序）
       if (/^\/clear\s*$/i.test(input.text.trim())) {

@@ -178,6 +178,11 @@ def main_fs():
         assert [entry["path"] for entry in shallow_scan["entries"]]==["a.txt","nested"] and shallow_scan["truncated"] is True,shallow_scan
         assert fs(159,"fs.scan",{"path":"scan-root","limit":257})["error"]["code"]==-32602
         assert fs(160,"fs.scan",{"path":"scan-root","unexpected":True})["error"]["code"]==-32602
+        # Empty page (cursor at the end of the collection, or an empty
+        # directory): the closing suffix must be appended after growing the
+        # buffer, otherwise the header-only allocation overflows.
+        empty_page=fs(199,"fs.scan",{"path":"scan-root","cursor":3,"maxDepth":8})["result"]
+        assert empty_page=={"entries":[],"truncated":False},empty_page
         assert fs(161,"fs.write",{"path":"watch-root/.keep","content":"keep","createDirs":True})["result"]["ok"]
         watch=fs(162,"fs.watch",{"path":"watch-root"})["result"]["watchId"]
         assert isinstance(watch,int) and watch>0
