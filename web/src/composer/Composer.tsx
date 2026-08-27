@@ -719,13 +719,29 @@ export function Composer({ session, running, onSend, onConfig, editingMessage, o
     return true;
   };
 
+  /** 发送按钮语义：编辑重发 > `!` 直接运行 > 运行中入队/续跑 > 普通发送。 */
+  const sendLabel = (): string => {
+    if (editingMessage) return t("重发", "Resend");
+    if (draft.trimStart().startsWith("!")) return t("运行", "Run");
+    if (!running) return t("发送", "Send");
+    return queuedBehavior === "follow_up" ? t("完成后续跑", "Run after") : t("加入队列", "Queue");
+  };
+
+  /** 输入框占位文案：运行中提示补充指令；空闲时按平台与发送键说明快捷键。 */
+  const placeholderText = (): string => {
+    if (running) return t("向正在执行的作业补充指令…", "Add instructions to the running job…");
+    if (isMobile) return t("描述要完成的编码任务…（回车换行，点发送按钮发送，@ 引用文件）", "Describe a coding task… (Enter for a new line, tap send to submit, @ to reference files)");
+    if (sendKey === "enter") return t("描述要完成的编码任务…（Enter 发送，Shift+Enter 换行，@ 引用文件）", "Describe a coding task… (Enter to send, Shift+Enter for a new line, @ to reference files)");
+    return t("描述要完成的编码任务…（Ctrl+Enter 发送，Enter 换行，@ 引用文件）", "Describe a coding task… (Ctrl+Enter to send, Enter for a new line, @ to reference files)");
+  };
+
   // 发送按钮（展开态 toolbar 内 / 移动端折叠态输入行内共用一份，避免语义分裂）
   const sendButton = (
     <button
       type="button"
       className="composer-send"
       disabled={!draft.trim() || processingPdf}
-      aria-label={editingMessage ? t("重发", "Resend") : draft.trimStart().startsWith("!") ? t("运行", "Run") : running ? queuedBehavior === "follow_up" ? t("完成后续跑", "Run after") : t("加入队列", "Queue") : t("发送", "Send")}
+      aria-label={sendLabel()}
       title={processingPdf ? t("正在处理 PDF…", "Processing PDF…") : undefined}
       onClick={submit}
     >
@@ -979,13 +995,7 @@ export function Composer({ session, running, onSend, onConfig, editingMessage, o
               if (!processingPdf) submit();
             }
           }}
-          placeholder={running
-            ? t("向正在执行的作业补充指令…", "Add instructions to the running job…")
-            : !isMobile && sendKey === "enter"
-              ? t("描述要完成的编码任务…（Enter 发送，Shift+Enter 换行，@ 引用文件）", "Describe a coding task… (Enter to send, Shift+Enter for a new line, @ to reference files)")
-              : !isMobile
-                ? t("描述要完成的编码任务…（Ctrl+Enter 发送，Enter 换行，@ 引用文件）", "Describe a coding task… (Ctrl+Enter to send, Enter for a new line, @ to reference files)")
-                : t("描述要完成的编码任务…（回车换行，点发送按钮发送，@ 引用文件）", "Describe a coding task… (Enter for a new line, tap send to submit, @ to reference files)")}
+          placeholder={placeholderText()}
         />
         {isMobile && (
           <button
