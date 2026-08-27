@@ -70,7 +70,7 @@ export function ExtensionRow({ extension }: { extension: ExtensionInfo }): React
   const [json, setJson] = useState(() => JSON.stringify(extension.config, null, 2));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
-  const [upgradeResult, setUpgradeResult] = useState<{ upgraded: number; total: number; skipped: string[]; failed: string[]; backups: string[] }>();
+  const [upgradeResult, setUpgradeResult] = useState<{ upgraded: number; total: number; skipped: string[]; failed: Array<{ id: string; error: string }>; backups: string[] }>();
   const displayName = language === "en" ? (OFFICIAL_EXTENSION_EN[extension.id]?.name ?? extension.name) : extension.name;
   const displayDescription = language === "en" ? (OFFICIAL_EXTENSION_EN[extension.id]?.description ?? extension.description) : extension.description;
   const parsedFields = parseConfigSchema(extension.configSchema);
@@ -145,6 +145,12 @@ export function ExtensionRow({ extension }: { extension: ExtensionInfo }): React
               {upgradeResult.failed.length > 0 && t(` 失败 ${upgradeResult.failed.length} 个。`, ` ${upgradeResult.failed.length} failed.`)}
               {upgradeResult.backups.length > 0 && t(" 备份文件：", " Backups: ") + upgradeResult.backups.join(", ")}
             </p>
+          )}
+          {upgradeResult && upgradeResult.failed.length > 0 && (
+            // 失败原因逐条展示：只给计数无法定位是哪个会话、为何失败（损坏/占用/IO）
+            <ul className="settings-note">
+              {upgradeResult.failed.map((item) => <li key={item.id}>{`${item.id}: ${item.error}`}</li>)}
+            </ul>
           )}
         </div>
       )}

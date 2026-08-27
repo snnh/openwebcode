@@ -13,6 +13,7 @@ import type { ExtensionInfo, ModelProfile } from "../lib/contracts";
 import type { ComposerProps } from "../chat/types";
 import { installAppFetchMock } from "./helpers/app-fetch-mock";
 import { makeModelProfile, makeSession } from "./helpers/fixtures";
+import { stubMatchMedia } from "./helpers/match-media";
 import { makeTestClient } from "./helpers/with-client";
 import { setupStubWebSocket } from "./helpers/stub-websocket";
 import { renderWithClient } from "./helpers/with-client";
@@ -33,6 +34,8 @@ beforeEach(() => {
   clearComposerState("s1");
   setSendKey("enter");
   stubApi();
+  // 桌面态起步：移动端用例内自行改判定（stub 直接赋值，不随 restoreAllMocks 复原）
+  stubMatchMedia(false);
   // toast/通知中心在模块级 uiStore，用例间需清理避免串扰
   ui.setNotice(undefined);
   ui.clearNotifications();
@@ -132,6 +135,58 @@ describe("Composer 渲染与发送", () => {
     expect(props.onSend).toHaveBeenCalledWith("steer");
     fireEvent.click(screen.getByRole("button", { name: "加入队列" }));
     expect(props.onSend).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("Composer 队列分段单选", () => {
+  it("运行中默认「补充」，切到「续跑」后发送 follow_up", () => {
+    const { props, textarea } = renderComposer({ running: true });
+    expect(screen.getByRole("radiogroup", { name: "运行中消息行为" })).toBeInTheDocument();
+    const steer = screen.getByRole("radio", { name: "补充" });
+    const follow = screen.getByRole("radio", { name: "续跑" });
+    expect(steer).toHaveAttribute("aria-checked", "true");
+    fireEvent.click(follow);
+    expect(follow).toHaveAttribute("aria-checked", "true");
+    expect(steer).toHaveAttribute("aria-checked", "false");
+    // 选中「续跑」后发送按钮语义同步，回车发送下发 follow_up
+    expect(screen.getByRole("button", { name: "完成后续跑" })).toBeInTheDocument();
+    fireEvent.change(textarea, { target: { value: "跑完再做" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(props.onSend).toHaveBeenCalledWith("follow_up");
+  });
+
+  it("未运行时不渲染队列分段", () => {
+    renderComposer();
+    expect(screen.queryByRole("radiogroup", { name: "运行中消息行为" })).not.toBeInTheDocument();
+  });
+});
+
+describe("Composer 移动端形态", () => {
+  it("窄屏回车只换行，发送靠发送按钮", () => {
+    stubMatchMedia(true);
+    const { props, textarea } = renderComposer();
+    expect(textarea.placeholder).toContain("回车换行");
+    fireEvent.change(textarea, { target: { value: "手机上输入" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(props.onSend).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    expect(props.onSend).toHaveBeenCalledWith("start");
+  });
+
+  it("折叠后隐藏工具栏但保留发送按钮，展开恢复", () => {
+    stubMatchMedia(true);
+    const { container, textarea } = renderComposer();
+    fireEvent.change(textarea, { target: { value: "折叠也能发" } });
+    fireEvent.click(screen.getByRole("button", { name: "折叠输入栏" }));
+    expect(container.querySelector(".composer-toolbar")).toBeNull();
+    expect(screen.getByRole("button", { name: "发送" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "展开输入栏" }));
+    expect(container.querySelector(".composer-toolbar")).not.toBeNull();
+  });
+
+  it("桌面端不渲染折叠按钮", () => {
+    renderComposer();
+    expect(screen.queryByRole("button", { name: /折叠输入栏|展开输入栏/ })).not.toBeInTheDocument();
   });
 });
 

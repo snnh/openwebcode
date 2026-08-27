@@ -103,14 +103,14 @@ function ContentBlock({ block, toolResults, liveSubagents }: {
     case "image":
       return <img className="message-image" src={`data:${block.mediaType ?? "image/png"};base64,${block.data ?? ""}`} alt={t("用户上传的图片", "User-uploaded image")} />;
     case "web_search_call":
-      // 服务端联网搜索（模型服务端执行）：小标签展示状态
+      // 服务端联网搜索（模型服务端执行）：不可展开，复用 tool-row 单行外观（tool-row-static 无指针态）
       return (
         <div className="tool-row">
-          <span className="tool-row-head">
-            <Icon name="search" size={12} />
-            <span className="tool-row-title">{t("联网搜索", "Web search")}</span>
-            {block.status && <span className="tool-row-status">{block.status}</span>}
-          </span>
+          <div className="tool-row-static">
+            <span className="tool-row-status" aria-hidden><Icon name="search" size={12} /></span>
+            <b className="tool-row-name">{t("联网搜索", "Web search")}</b>
+            {block.status && <span className="tool-row-summary">{block.status}</span>}
+          </div>
         </div>
       );
     default:

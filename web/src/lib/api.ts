@@ -294,7 +294,7 @@ export const api = {
   upgradeSessionFormat: (id: string, stepId?: string) =>
     request<{ steps: string[]; changed: number; backups: string[] }>(`/api/sessions/${encodeURIComponent(id)}/format-upgrade`, { method: "POST", body: JSON.stringify(stepId ? { stepId } : {}) }),
   upgradeAllSessionFormats: (stepId?: string) =>
-    request<{ upgraded: number; total: number; skipped: string[]; failed: string[]; backups: string[] }>("/api/sessions/format-upgrade-all", { method: "POST", body: JSON.stringify(stepId ? { stepId } : {}) }),
+    request<{ upgraded: number; total: number; skipped: string[]; failed: Array<{ id: string; error: string }>; backups: string[] }>("/api/sessions/format-upgrade-all", { method: "POST", body: JSON.stringify(stepId ? { stepId } : {}) }),
   translateMessage: (sessionId: string, messageId: string, targetLanguage: string, glossary?: Record<string, string>) =>
     request<{ text: string; cached: boolean }>(`/api/sessions/${sessionId}/content-lens/translate`, { method: "POST", body: JSON.stringify({ messageId, targetLanguage, ...(glossary ? { glossary } : {}) }) }),
   explainSelection: (sessionId: string, text: string, targetLanguage = "zh-CN") =>

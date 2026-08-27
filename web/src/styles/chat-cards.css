@@ -196,6 +196,16 @@
   animation: pulse 1.6s ease-in-out infinite;
 }
 .tool-row-name { flex: 0 0 auto; }
+/* 不可展开的单行（如服务端联网搜索）：与 .collapse-row 同排布，但无指针/hover 交互暗示 */
+.tool-row-static {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  min-height: 40px;
+  font-size: 13px;
+  min-width: 0;
+}
 .tool-row.error .tool-row-name { color: var(--danger); }
 .tool-row-summary {
   flex: 1 1 auto;

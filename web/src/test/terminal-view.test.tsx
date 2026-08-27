@@ -11,6 +11,7 @@ import { api } from "../lib/api";
 import { installAppFetchMock } from "./helpers/app-fetch-mock";
 import { makeContextView, makeSession } from "./helpers/fixtures";
 import { FakeFitAddon, FakeTerminal } from "./helpers/fake-xterm";
+import { stubMatchMedia } from "./helpers/match-media";
 import { emitEvent, lastSocket, setupStubWebSocket, type StubSocket } from "./helpers/stub-websocket";
 import { renderWithClient } from "./helpers/with-client";
 
@@ -218,19 +219,6 @@ async function openScoutTab(socket: StubSocket): Promise<HTMLElement> {
     started(socket, "s1", "call-1", "task-1", { agent: "scout" });
   });
   return screen.findByRole("tab", { name: "scout" });
-}
-
-function stubMatchMedia(matches: boolean): void {
-  window.matchMedia = ((query: string) => ({
-    matches,
-    media: query,
-    onchange: null,
-    addListener() { /* no-op */ },
-    removeListener() { /* no-op */ },
-    addEventListener() { /* no-op */ },
-    removeEventListener() { /* no-op */ },
-    dispatchEvent() { return false; },
-  })) as unknown as typeof window.matchMedia;
 }
 
 setupStubWebSocket();

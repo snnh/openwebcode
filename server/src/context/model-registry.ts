@@ -255,6 +255,8 @@ export class ModelRegistry {
   private syncedModels = new Map<string, CatalogModel>();
   private syncedUpdatedAt: string | undefined;
   private manualModels = new Map<string, CatalogModel>();
+  /** get(id)（无 provider）的解析缓存：目录层变更时经 invalidateResolved() 清空。 */
+  private resolvedById = new Map<string, ModelProfile>();
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
   private readonly syncedSnapshotPath: string;
@@ -305,9 +307,21 @@ export class ModelRegistry {
       return this.manualModels.get(key) ?? this.syncedModels.get(key) ?? this.apiModels.get(key) ??
         listModelProfiles().find((item) => item.id === id && item.provider === provider) ?? getModelProfile(id);
     }
-    // 同 id 多 provider 条目时按声明优先级取（用户手动声明 > 远程同步 > 自动拉取 > 内置），
-    // 避免 api 自动条目的保守兜底能力盖过用户在模型目录的显式声明（如 vision 支持）。
-    // list() 的展示层不变：不同 provider 的同 id 条目仍全部列出。
+    // 无 provider 的解析需跨层遍历（同 id 多 provider），结果按 id 缓存——目录任一层变更时
+    // invalidateResolved() 清空，语义与直接遍历一致。
+    const cached = this.resolvedById.get(id);
+    if (cached) return cached;
+    const resolved = this.resolveById(id);
+    this.resolvedById.set(id, resolved);
+    return resolved;
+  }
+
+  /**
+   * 同 id 多 provider 条目时按声明优先级取（用户手动声明 > 远程同步 > 自动拉取 > 内置），
+   * 避免 api 自动条目的保守兜底能力盖过用户在模型目录的显式声明（如 vision 支持）。
+   * list() 的展示层不变：不同 provider 的同 id 条目仍全部列出。
+   */
+  private resolveById(id: string): ModelProfile {
     const byPriority: Array<ReadonlyMap<string, CatalogModel>> = [this.manualModels, this.syncedModels, this.apiModels];
     for (const layer of byPriority) {
       for (const model of layer.values()) {
@@ -315,6 +329,11 @@ export class ModelRegistry {
       }
     }
     return listModelProfiles().find((item) => item.id === id) ?? getModelProfile(id);
+  }
+
+  /** 目录层（manual/synced/api）发生任何增删改后必须调用，否则 get(id) 会返回陈旧档案。 */
+  private invalidateResolved(): void {
+    this.resolvedById.clear();
   }
 
   isManual(id: string, provider?: string): boolean {
@@ -359,6 +378,7 @@ export class ModelRegistry {
       await this.persist(this.syncedSnapshotPath, next, document.updatedAt);
       this.syncedModels = next;
       this.syncedUpdatedAt = document.updatedAt;
+      this.invalidateResolved();
       // A notification listener must not turn an already committed snapshot into a reported failure.
       try {
         this.options.onUpdated?.();
@@ -381,6 +401,7 @@ export class ModelRegistry {
     for (const [key, model] of this.apiModels) {
       if (!activeProviders.has(model.provider)) {
         this.apiModels.delete(key);
+        this.invalidateResolved();
         changed = true;
       }
     }
@@ -417,6 +438,7 @@ export class ModelRegistry {
   async upsertManual(model: CatalogModel): Promise<void> {
     await this.enqueue(async () => {
       this.manualModels.set(modelKey(model.provider, model.id), normalizeCatalogModel(model, "manual"));
+      this.invalidateResolved();
       await this.persist(this.options.manualPath, this.manualModels);
     });
     this.options.onUpdated?.();
@@ -431,7 +453,10 @@ export class ModelRegistry {
           if (model.id === id) { this.manualModels.delete(key); removed = true; }
         }
       }
-      if (removed) await this.persist(this.options.manualPath, this.manualModels);
+      if (removed) {
+        this.invalidateResolved();
+        await this.persist(this.options.manualPath, this.manualModels);
+      }
     });
     if (removed) this.options.onUpdated?.();
     return removed;
@@ -462,6 +487,7 @@ export class ModelRegistry {
       this.apiModels.set(key, normalizeCatalogModel(model, "api"));
     }
     const current = [...this.apiModels.values()].filter((model) => model.provider === provider);
+    this.invalidateResolved();
     return { added, changed: JSON.stringify(previous) !== JSON.stringify(current) };
   }
 

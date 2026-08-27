@@ -72,7 +72,6 @@
 .composer-toolbar > .composer-menu-right { min-width: 0; }
 .composer-toolbar > .composer-menu-right .composer-menu,
 .composer-toolbar > .composer-menu-right .composer-menu-btn { min-width: 0; }
-.model-menu-btn-label { min-width: 0; }
 .composer-toolbar > .composer-menu-right .composer-menu-btn svg { flex-shrink: 0; }
 
 /* ================= Composer 配置弹层（权限/模式/模型） ================= */
@@ -97,6 +96,7 @@
 /* 模型按钮文字：模型名可收缩省略，思考程度徽标始终完整显示 */
 .model-menu-btn-label {
   max-width: 220px;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   display: inline-flex;

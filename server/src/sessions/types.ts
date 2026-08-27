@@ -61,6 +61,9 @@ export interface WebSearchCallContent {
   /** 冗余展示字段（与 signature 内一致，免 UI 解析）。 */
   id: string;
   status?: string;
+  /** 产出该 item 的 provider 名：回放归属校验用（与 thinking 块同口径——切换 provider 后
+   * 不把上游端点的原始 item 回传给另一家）。旧历史缺该字段时按同源处理。 */
+  provider?: string;
 }
 
 export type MessageContent = TextContent | ThinkingContent | ToolCallContent | ToolResultContent | ImageContent | WebSearchCallContent;

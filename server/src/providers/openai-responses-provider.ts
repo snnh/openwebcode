@@ -182,13 +182,19 @@ export class OpenAIResponsesProvider implements Provider {
     const webSearchFinished = new Map<string, Record<string, unknown>>();
     let sawRefusal = false;
     let sawText = false;
+    // 是否收到显式流结束哨兵（[DONE]）：用于区分「端点不发终态但正常收尾」与
+    // 「连接被截断/代理中断」——后者必须保持 error 以走 collectProviderTurn 重试。
+    let sawStreamEnd = false;
     let finalStatus: string | null = null;
     let incompleteReason: string | null = null;
     let streamStarted = false;
     try {
       for await (const data of readSseData(body, { idleTimeoutMs: this.options.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS })) {
         streamStarted = true;
-        if (data === "[DONE]") break;
+        if (data === "[DONE]") {
+          sawStreamEnd = true;
+          break;
+        }
         const event = JSON.parse(data) as ResponsesStreamEvent;
         switch (event.type) {
           case "response.output_text.delta":
@@ -433,7 +439,7 @@ export class OpenAIResponsesProvider implements Provider {
         input: parseArguments(call.arguments),
       };
     }
-    yield { type: "done", stopReason: mapStopReason(finalStatus, incompleteReason, sawRefusal, calls.size > 0, sawText) };
+    yield { type: "done", stopReason: mapStopReason(finalStatus, incompleteReason, sawRefusal, calls.size > 0, sawText, sawStreamEnd) };
   }
 }
 
@@ -492,8 +498,18 @@ const replaySuppressedLogged = new Set<string>();
 
 /** 回传开启但历史缺同源 thinking 素材的留痕限频（按「provider:assistant 消息 id:tool_call id」键控，
  * 每进程每键一次）：此类 tool_call 会补一条占位 reasoning item（见 toResponsesInput），
- * 留痕便于诊断导入历史/旧协议遗留；同一条消息反复请求不刷屏，不同消息仍保留诊断留痕。 */
+ * 留痕便于诊断导入历史/旧协议遗留；同一条消息反复请求不刷屏，不同消息仍保留诊断留痕。
+ * 键按消息 id 派生（长会话/多会话下无上界），故设容量上限——超限清空重新计数，
+ * 只影响留痕频率，不影响回放行为。 */
 const missingThinkingLogged = new Set<string>();
+const MISSING_THINKING_LOG_KEYS_MAX = 1000;
+
+function noteMissingThinking(key: string): boolean {
+  if (missingThinkingLogged.has(key)) return false;
+  if (missingThinkingLogged.size >= MISSING_THINKING_LOG_KEYS_MAX) missingThinkingLogged.clear();
+  missingThinkingLogged.add(key);
+  return true;
+}
 
 /** 尾部 assistant 消息缺同源 thinking 素材时的占位 reasoning_text（旧协议/导入历史且位于
  * 输入末尾时触发）。DeepSeek 对「输入最后一条是 assistant 且无 reasoning item」直接 400，
@@ -535,6 +551,13 @@ function reasoningTextParts(signature: string | undefined, fallbackText: string)
  * TextContent 尚未声明该字段（后置任务），此处放宽类型只读取，不修改消息结构。 */
 type StoredTextBlock = TextContent & { textSignature?: string };
 
+/** web_search_call 块的回放归属：块上记录的 provider 与当前 provider 一致才回传原始 item
+ * （换 provider 后把上游端点的 ws_ item 传给另一家会被拒）。旧历史无 provider 字段时
+ * 按同源处理——保持既有会话可继续，不因缺字段静默丢内容。 */
+function ownsWebSearchBlock(block: { provider?: string }, providerName: string): boolean {
+  return block.provider === undefined || block.provider === providerName;
+}
+
 function toResponsesInput(
   messages: ChatMessage[],
   providerName: string,
@@ -575,6 +598,7 @@ function toResponsesInput(
             if (original) result.push(original);
             // 无签名 → skip（加密回放不做占位，服务端不需要存在性校验）
           } else if (block.type === "web_search_call") {
+            if (!ownsWebSearchBlock(block, providerName)) continue;
             const item = parseWebSearchCallSignature(block.signature);
             if (item) result.push(item);
           } else if (block.type === "text") {
@@ -637,7 +661,7 @@ function toResponsesInput(
             preItems.push({ type: "reasoning", content: parts });
             hasReasoning = true;
           }
-        } else if (block.type === "web_search_call") {
+        } else if (block.type === "web_search_call" && ownsWebSearchBlock(block, providerName)) {
           const item = parseWebSearchCallSignature(block.signature);
           if (item) preItems.push(item);
         }
@@ -648,8 +672,7 @@ function toResponsesInput(
         // DeepSeek 仍强制要求 reasoning item（真机验证 400）；诚实的占位是唯一出路。
         result.push({ type: "reasoning", content: [{ type: "reasoning_text", text: PLACEHOLDER_REASONING_TEXT }] });
         const missingKey = `${providerName}:${message.id ?? "?"}:tail`;
-        if (!missingThinkingLogged.has(missingKey)) {
-          missingThinkingLogged.add(missingKey);
+        if (noteMissingThinking(missingKey)) {
           diagnosticWriter(
             `[openai-responses] 输入最后一条为 assistant 消息但缺同源 thinking 素材：已补占位 reasoning item（DeepSeek 尾部校验要求）\n`,
           );
@@ -720,15 +743,16 @@ function mapStopReason(
   sawRefusal: boolean,
   hasToolCalls: boolean,
   sawText: boolean,
+  sawStreamEnd: boolean,
 ): "end_turn" | "tool_use" | "max_tokens" | "refusal" | "error" {
   if (status === "incomplete" && incompleteReason === "max_output_tokens") return "max_tokens";
   if (status === "failed") return "error";
   if (sawRefusal) return "refusal";
   if (hasToolCalls) return "tool_use";
   if (status === "completed") return "end_turn";
-  // 流结束但没有 completed/incomplete 终态：兼容端点（只发 [DONE] 不发终态）已有
-  // 产出时按正常结束处理，避免误判 error 触发重试/报错
-  if (sawText) return "end_turn";
+  // 没有 completed/incomplete 终态：仅当收到显式结束哨兵（[DONE]）且已有产出时才按正常结束
+  // 处理（兼容只发 [DONE] 不发终态的端点）；无哨兵的 EOF 视作连接截断，保持 error 以走重试
+  if (sawStreamEnd && sawText) return "end_turn";
   return "error";
 }
 
