@@ -83,6 +83,29 @@ describe("AnthropicProvider 消息映射边界", () => {
     const client = (provider as unknown as { client: { maxRetries: number } }).client;
     expect(client.maxRetries).toBe(0);
   });
+
+  it("未声明 thinkingStyle 时按模型名推断：4.5 及以前 extended，4.6+/未知 adaptive", async () => {
+    // 新旧两代命名 + 8 位日期后缀不得被读成次版本（读成 20250514 会误判 adaptive → 400）
+    const cases: Array<[string, "enabled" | "adaptive"]> = [
+      ["claude-3-5-sonnet-20241022", "enabled"],
+      ["claude-3-7-sonnet-20250219", "enabled"],
+      ["claude-3-opus-20240229", "enabled"],
+      ["claude-sonnet-4-20250514", "enabled"],
+      ["claude-opus-4-1-20250805", "enabled"],
+      ["claude-sonnet-4-5-20250929", "enabled"],
+      ["claude-opus-4-6", "adaptive"],
+      ["claude-sonnet-5", "adaptive"],
+      ["deepseek-reasoner", "adaptive"],
+    ];
+    const { provider, bodies } = mockProvider();
+    for (const [model] of cases) {
+      await collect(provider.streamChat(request({ model, thinking: "enabled" })));
+    }
+    expect(bodies.map((body) => (body.thinking as { type: string }).type)).toEqual(cases.map(([, type]) => type));
+    // extended 形态必须带预算，adaptive 形态不得带（该代已弃用 budget_tokens）
+    expect(bodies[0]!.thinking).toMatchObject({ type: "enabled", budget_tokens: expect.any(Number) });
+    expect(bodies[6]!.thinking).toEqual({ type: "adaptive", display: "summarized" });
+  });
 });
 
 // ---- prompt-cache 组（合并） ----
