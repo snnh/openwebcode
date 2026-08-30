@@ -299,7 +299,7 @@ export const api = {
     request<{ text: string }>(`/api/sessions/${sessionId}/content-lens/explain`, { method: "POST", body: JSON.stringify({ text, targetLanguage }) }),
   // 0.5.0 Phase 2d：性能采样（脱敏）
   sessionPerf: (id: string) => request<{ records: import("./contracts").RunPerfRecord[] }>(`/api/sessions/${encodeURIComponent(id)}/perf`),
-  serverMetrics: () => request<{ events: { published: number; retained: number; retainedBytes: number; oversizedNotRetained: number }; websocket: { clients: number; slowClientDisconnects: number; failedClientSends: number } }>("/api/metrics"),
+  serverMetrics: () => request<import("./contracts").ServerMetrics>("/api/metrics"),
   // 0.5.0 Phase 3a：评测 harness
   evalTasks: () => request<{ tasks: import("./contracts").EvalTaskInfo[] }>("/api/eval/tasks"),
   evalRun: (taskIds?: string[]) =>

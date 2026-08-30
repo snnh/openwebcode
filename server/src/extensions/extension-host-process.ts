@@ -400,6 +400,9 @@ process.on("message", (message: HostRequest | EventMessage | ApiResponse) => {
       result = await invokeTool(request.params);
     } else if (request.method === "http.request") {
       result = await invokeRoute(request.params);
+    } else if (request.method === "stats") {
+      // 内部消息：宿主进程内存供性能面板展示；不经过任何扩展代码。
+      result = { rss: process.memoryUsage().rss };
     } else if (request.method === "shutdown") {
       result = { stopped: true };
       process.send?.({ id: request.id, result } satisfies HostResponse);

@@ -221,6 +221,19 @@ export interface VersionInfo {
   };
 }
 
+/** 内存占用统计（/api/metrics memory 字段）：来源为 null 表示不可用（旧 core / 未握手 / 无宿主）。 */
+export interface MemoryStats {
+  node: { rss: number; heapUsed: number; heapTotal: number; external: number };
+  core: { rssBytes: number } | null;
+  extensionHost: { rss: number } | null;
+}
+
+export interface ServerMetrics {
+  events: { published: number; retained: number; retainedBytes: number; oversizedNotRetained: number };
+  websocket: { clients: number; slowClientDisconnects: number; failedClientSends: number };
+  memory: MemoryStats;
+}
+
 export interface PromptOverrideView {
   builtinBase: string;
   /** 服务端始终返回；声明为可选以兼容旧的测试桩 */

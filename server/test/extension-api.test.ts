@@ -143,6 +143,19 @@ describe("extension tools:register over host IPC", () => {
   }, 20_000);
 });
 
+describe("extension host internal stats", () => {
+  it("reports host RSS via the internal stats message", async () => {
+    const { manager } = await setupManager({ permissions: [] });
+    try {
+      const memory = await manager.hostMemory();
+      expect(memory).not.toBeNull();
+      expect(memory!.rss).toBeGreaterThan(0);
+    } finally {
+      await manager.close();
+    }
+  }, 20_000);
+});
+
 describe("extension api permission enforcement", () => {
   it("marks an extension error when it calls sessions.list without sessions:read", async () => {
     const { manager } = await setupManager({

@@ -71,6 +71,11 @@ beforeEach(() => {
   vi.mocked(api.serverMetrics).mockResolvedValue({
     events: { published: 1234, retained: 100, retainedBytes: 524288, oversizedNotRetained: 0 },
     websocket: { clients: 2, slowClientDisconnects: 0, failedClientSends: 0 },
+    memory: {
+      node: { rss: 150 * 1024 * 1024, heapUsed: 80 * 1024 * 1024, heapTotal: 120 * 1024 * 1024, external: 30 * 1024 * 1024 },
+      core: { rssBytes: 40 * 1024 * 1024 },
+      extensionHost: null,
+    },
   });
   vi.mocked(api.providerStats).mockResolvedValue({ files: { active: 0, queued: 0, maxConcurrent: 2 } });
 });
@@ -368,6 +373,15 @@ describe("PerfPanel", () => {
     expect(await screen.findByText(/3 turns · \d+(\.\d+)?s/)).toBeDefined();
     expect(await screen.findByText(/files: 0\/2 (活跃|active)/)).toBeDefined();
     expect(await screen.findByText("1234")).toBeDefined();
+  });
+
+  it("展示内存占用（node/core；扩展宿主不可用时显示占位）", async () => {
+    renderPanel("s1");
+    expect(await screen.findByText(/内存占用|Memory Usage/)).toBeDefined();
+    // fixture：node rss 150 MiB、core 40 MiB；extensionHost null 显示占位
+    expect(await screen.findByText("150.00 MiB")).toBeDefined();
+    expect(await screen.findByText("40.00 MiB")).toBeDefined();
+    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
   });
 
   it("无会话时显示提示", () => {
