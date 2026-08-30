@@ -8,9 +8,10 @@ typedef void (*owc_exec_output_fn)(void *user_data, const char *stream,
                                    unsigned sequence);
 
 /* Job Object resource limit defaults.  Windows: applied only when the sandbox
-   is enabled and no AppContainer profile is active - explicit jobobject mode,
-   AppContainer creation fallback, or advisory - i.e. where the Job Object is
-   the only enforcement.  POSIX: applied via setrlimit in the child before
+   is enabled and no AppContainer profile is active, i.e. the explicit
+   jobobject compatibility mode - AppContainer creation failures fail the
+   command instead of falling back (fail-closed).  POSIX: applied via
+   setrlimit in the child before
    exec, likewise only when the sandbox is enabled; RLIMIT_AS approximates the
    committed-memory limit and RLIMIT_NPROC the process limit.  Both are best
    effort on POSIX: a failed setrlimit does not block the exec, and
@@ -43,13 +44,16 @@ typedef struct {
        cwd, normalizes the combined list, and removes duplicates. */
     const char *const *allow_paths;
     size_t allow_path_count;
-    /* Session read/write/deny roots (POSIX sandbox policy; borrowed pointers
-       valid for the call).  The POSIX backends apply them to the child
-       process: bubblewrap binds/masks them in the mount namespace, Landlock
-       grants write_roots read/write and read_roots read-only (deny_paths
-       cannot be expressed in additive Landlock rules and remains enforced at
-       the fs.* RPC layer).  Windows ignores these; its root policy stays in
-       the fs.* primitives. */
+    /* Session read/write/deny roots (borrowed pointers valid for the call).
+       The POSIX backends apply all three to the child process: bubblewrap
+       binds/masks them in the mount namespace, Landlock grants write_roots
+       read/write and read_roots read-only (deny_paths cannot be expressed in
+       additive Landlock rules and remains enforced at the fs.* RPC layer).
+       Windows ignores read_roots/write_roots (its root policy stays in the
+       fs.* primitives) but enforces deny_paths in the AppContainer sandbox:
+       the package leg of its access check is allow-only (a DENY ACE for the
+       package SID does not block), so each existing deny path is stripped
+       of the command's own package-SID ACEs after the write-root grant. */
     const char *const *read_roots;
     size_t read_root_count;
     const char *const *write_roots;

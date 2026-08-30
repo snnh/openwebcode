@@ -64,7 +64,11 @@ static pthread_once_t probe_once = PTHREAD_ONCE_INIT;
 /* The smoke run proves the whole unprivileged path bwrap needs (user
  * namespace creation, a bind mount, exec) instead of trusting a version
  * query: kernels with unprivileged userns disabled and Ubuntu 24.04's
- * AppArmor restriction both fail here with a useful stderr message. */
+ * AppArmor restriction both fail here with a useful stderr message.  It
+ * also passes --unshare-net, the network-deny switch, so a kernel that
+ * forbids unprivileged network namespaces is caught too: filesystem-only
+ * sandboxes would still work, so that failure is reported as partial
+ * rather than unavailable (see probe_run's failure classification). */
 static void probe_run(void) {
     int pipefd[2];
     pid_t pid;
@@ -102,6 +106,7 @@ static void probe_run(void) {
             if (devnull > STDERR_FILENO) (void)close(devnull);
         }
         execlp("bwrap", "bwrap", "--die-with-parent", "--unshare-user",
+               "--unshare-net",
                "--ro-bind", "/", "/", "--", "true", (char *)NULL);
         (void)dprintf(STDERR_FILENO, "exec bwrap failed: %s\n", strerror(errno));
         _exit(127);
@@ -145,6 +150,19 @@ static void probe_run(void) {
                          "bubblewrap namespace isolation available");
         return;
     }
+    /* With --unshare-net in the smoke, a kernel that forbids unprivileged
+     * network namespaces fails the run even though filesystem isolation
+     * works.  Report partial so sessions that need network denial do not
+     * look enforceable; the captured tail names the netns failure. */
+    if (captured_length && strstr(captured, "network namespace")) {
+        probe_cache.status = OWC_SANDBOX_PARTIAL;
+        probe_cache.abi = 0;
+        probe_cache.error_number = WIFEXITED(status) ? WEXITSTATUS(status) : EIO;
+        (void)snprintf(probe_cache.reason, sizeof(probe_cache.reason),
+                       "bubblewrap network namespace isolation unavailable: %.120s",
+                       captured);
+        return;
+    }
     probe_cache.status = OWC_SANDBOX_ADVISORY;
     probe_cache.abi = 0;
     probe_cache.error_number = WIFEXITED(status) ? WEXITSTATUS(status) : EIO;
@@ -170,15 +188,20 @@ int owc_bwrap_exec(const char *cwd,
                    const char *const *deny_paths, size_t deny_path_count,
                    const char *const *allow_paths, size_t allow_path_count,
                    int allow_network, char *const *command_argv) {
-    /* Worst case fits with room to spare: fixed prologue/epilogue plus
-     * 3-4 arguments per bounded (<=16) root list and the command tail. */
-    char *argv[256];
-    size_t argc = 0, i, command_count = 0;
+    /* Worst case with the 32-entry root list caps and 16 deny paths:
+     * 8 fixed prologue/epilogue entries plus 3 per read-exec path, 3-4 per
+     * bounded root, 4 per deny path, and the command tail.  That far exceeds
+     * any fixed stack array, so the argv vector is allocated dynamically
+     * (the old fixed 256 entries returned E2BIG when the RPC caps were
+     * raised); only allocation failure can stop the exec now. */
+    size_t argc = 0, i, command_count = 0, argv_count;
+    char **argv;
     while (command_argv[command_count]) command_count++;
-    if (8u + 3u * BWRAP_READ_EXEC_PATH_COUNT +
-        3u * (read_root_count + read_only_count + allow_path_count + write_root_count) +
-        4u * deny_path_count + 4u + command_count + 1u > sizeof(argv) / sizeof(argv[0]))
-        return E2BIG;
+    argv_count = 8u + 3u * BWRAP_READ_EXEC_PATH_COUNT +
+                 3u * (read_root_count + read_only_count + allow_path_count + write_root_count) +
+                 4u * deny_path_count + 4u + command_count + 1u;
+    argv = (char **)malloc(argv_count * sizeof(char *));
+    if (!argv) return ENOMEM;
     argv[argc++] = (char *)"bwrap";
     argv[argc++] = (char *)"--die-with-parent";
     argv[argc++] = (char *)"--proc"; argv[argc++] = (char *)"/proc";
@@ -219,15 +242,16 @@ int owc_bwrap_exec(const char *cwd,
     }
     /* Deny masks must mount after every write bind: the later mount shadows
      * the earlier one.  Directories get an inaccessible tmpfs, files a
-     * /dev/null bind; paths that do not exist cannot be masked and are
-     * skipped with a diagnostic (core stderr is archived by the server). */
+     * /dev/null bind.  Paths that do not exist cannot be masked and are
+     * skipped silently: the deny is vacuous for them, and the old stderr
+     * diagnostic ran after the child's dup2, so it polluted the command's
+     * stderr on every run (the default deny paths like .env usually do not
+     * exist yet).  A deny path that is a symlink masks the target, so reads
+     * stay blocked, but the link itself can be removed and recreated in a
+     * writable parent directory: the mask is not a complete deny. */
     for (i = 0; i < deny_path_count; ++i) {
         struct stat st;
-        if (lstat(deny_paths[i], &st) != 0) {
-            (void)dprintf(STDERR_FILENO, "owc-exec: bwrap deny path skipped (%s): %s\n",
-                          strerror(errno), deny_paths[i]);
-            continue;
-        }
+        if (lstat(deny_paths[i], &st) != 0) continue;
         if (S_ISDIR(st.st_mode)) {
             argv[argc++] = (char *)"--perms"; argv[argc++] = (char *)"000";
             argv[argc++] = (char *)"--tmpfs"; argv[argc++] = (char *)deny_paths[i];
@@ -243,7 +267,11 @@ int owc_bwrap_exec(const char *cwd,
     for (i = 0; i < command_count; ++i) argv[argc++] = command_argv[i];
     argv[argc] = NULL;
     (void)execvp("bwrap", argv);
-    return errno;
+    {
+        int saved = errno;
+        free(argv);
+        return saved;
+    }
 }
 
 #else /* !__linux__ */

@@ -91,14 +91,20 @@ cleanup:
     free(wide); free(full); return utf8;
 }
 
-static int add_write_root(char **roots, size_t *count, size_t capacity, const char *path) {
+/* Same growth and error reporting discipline as exec_win.c add_write_root. */
+static int add_write_root(char ***roots, size_t *count, size_t *capacity, const char *path) {
     char *normalized;
     size_t i;
-    if (*count >= capacity) return 0;
     normalized = normalize_path(path);
-    if (!normalized) return 0;
-    for (i = 0; i < *count; i++) if (_stricmp(roots[i], normalized) == 0) { free(normalized); return 1; }
-    roots[(*count)++] = normalized;
+    if (!normalized) { if (!GetLastError()) SetLastError(ERROR_INVALID_PARAMETER); return 0; }
+    for (i = 0; i < *count; i++) if (_stricmp((*roots)[i], normalized) == 0) { free(normalized); return 1; }
+    if (*count == *capacity) {
+        size_t grown_capacity = *capacity ? *capacity * 2 : 8;
+        char **grown = (char **)realloc(*roots, grown_capacity * sizeof(*grown));
+        if (!grown) { free(normalized); SetLastError(ERROR_OUTOFMEMORY); return 0; }
+        *roots = grown; *capacity = grown_capacity;
+    }
+    (*roots)[(*count)++] = normalized;
     return 1;
 }
 
@@ -215,10 +221,10 @@ int owc_pty_open(const owc_pty_options *options,
     wchar_t default_shell[MAX_PATH];
     owc_sandbox_options sandbox_options;
     char sandbox_identity[96];
-    char *write_roots[17] = {0};
-    size_t write_root_count = 0, write_root_index;
+    char **write_roots = NULL;
+    size_t write_root_count = 0, write_root_capacity = 0, write_root_index;
     COORD size;
-    int appcontainer = 0, ok = 0;
+    int ok = 0;
     HRESULT hr;
 
     memset(&startup, 0, sizeof(startup));
@@ -297,18 +303,23 @@ int owc_pty_open(const owc_pty_options *options,
         sandbox_options.private_network = options->allow_network && options->network_filtered;
         sandbox_options.read_only_paths = options->read_only_paths;
         sandbox_options.read_only_count = options->read_only_count;
-        if (options->allow_path_count > 16
-            || !add_write_root(write_roots, &write_root_count, ARRAYSIZE(write_roots), options->cwd)) goto cleanup;
+        sandbox_options.deny_paths = options->deny_paths;
+        sandbox_options.deny_count = options->deny_path_count;
+        if (!add_write_root(&write_roots, &write_root_count, &write_root_capacity, options->cwd)) goto cleanup;
         for (write_root_index = 0; write_root_index < options->allow_path_count; write_root_index++)
-            if (!add_write_root(write_roots, &write_root_count, ARRAYSIZE(write_roots), options->allow_paths[write_root_index])) goto cleanup;
+            if (!add_write_root(&write_roots, &write_root_count, &write_root_capacity, options->allow_paths[write_root_index])) goto cleanup;
         sandbox_options.write_roots = (const char *const *)write_roots;
         sandbox_options.write_root_count = write_root_count;
         sandbox_options.bind_backing = options->bind_backing;
         sandbox_options.bind_read_only = options->bind_read_only;
         sandbox_options.bind_count = options->bind_count;
         pty->sandbox = owc_sandbox_create(&sandbox_options, open_result->sandbox_reason, sizeof(open_result->sandbox_reason));
-        open_result->sandbox_status = pty->sandbox
-            ? (int)owc_sandbox_get_status(pty->sandbox) : (int)OWC_SANDBOX_ADVISORY;
+        /* Fail closed: a requested AppContainer sandbox that cannot be
+           created (profile, ACL grant, deny ACE) must not degrade into an
+           unsandboxed PTY.  The session can explicitly select the jobobject
+           compatibility mode instead. */
+        if (!pty->sandbox) { SetLastError(ERROR_INVALID_STATE); goto cleanup; }
+        open_result->sandbox_status = (int)owc_sandbox_get_status(pty->sandbox);
         if (pty->sandbox && options->network_filtered)
             (void)snprintf(open_result->sandbox_reason, sizeof(open_result->sandbox_reason),
                            options->allow_network
@@ -340,9 +351,10 @@ int owc_pty_open(const owc_pty_options *options,
     if (pty->sandbox) {
         if (!owc_sandbox_add_process_attribute(pty->sandbox, attributes,
                                                open_result->sandbox_reason, sizeof(open_result->sandbox_reason))) {
-            owc_sandbox_destroy(pty->sandbox); pty->sandbox = NULL;
-            open_result->sandbox_status = (int)OWC_SANDBOX_PARTIAL;
-        } else appcontainer = 1;
+            /* No silent downgrade, same rule as exec_win.c. */
+            SetLastError(ERROR_INVALID_STATE);
+            goto cleanup;
+        }
     }
 
     startup.StartupInfo.cb = sizeof(startup);
@@ -363,24 +375,14 @@ int owc_pty_open(const owc_pty_options *options,
         DWORD creation_error = GetLastError();
         if (!pty->sandbox) goto cleanup;
         /* AppContainer x ConPTY has known compatibility failures on some
-         * builds: degrade honestly to the Job Object compatibility mode,
-         * same fallback precedent as exec_win.c. */
-        owc_sandbox_destroy(pty->sandbox); pty->sandbox = NULL; appcontainer = 0;
-        open_result->sandbox_status = (int)OWC_SANDBOX_PARTIAL;
+         * builds.  No silent downgrade to the Job Object compatibility
+         * mode: fail the open and let the session explicitly select
+         * jobobject mode instead. */
         (void)snprintf(open_result->sandbox_reason, sizeof(open_result->sandbox_reason),
-                       "AppContainer PTY process creation failed (%lu); using Job Object compatibility mode",
+                       "AppContainer PTY process creation failed (error=%lu); refusing to run unsandboxed - set sandbox mode to \"jobobject\" for the Job Object compatibility mode",
                        (unsigned long)creation_error);
-        DeleteProcThreadAttributeList(attributes); free(attributes); attributes = NULL; attribute_size = 0;
-        (void)InitializeProcThreadAttributeList(NULL, 1, 0, &attribute_size);
-        if (!attribute_size) goto cleanup;
-        attributes = (LPPROC_THREAD_ATTRIBUTE_LIST)malloc(attribute_size);
-        if (!attributes || !InitializeProcThreadAttributeList(attributes, 1, 0, &attribute_size)) goto cleanup;
-        startup.lpAttributeList = attributes;
-        if (!UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-                                       pty->console, sizeof(pty->console), NULL, NULL)) goto cleanup;
-        if (!CreateProcessW(NULL, command, NULL, NULL, FALSE,
-                            CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT,
-                            NULL, cwd, &startup.StartupInfo, &process)) goto cleanup;
+        SetLastError(creation_error);
+        goto cleanup;
     }
     pty->process = process.hProcess;
     pty->process_thread = process.hThread;
@@ -394,10 +396,11 @@ int owc_pty_open(const owc_pty_options *options,
     pty->job = CreateJobObjectW(NULL, NULL);
     if (!pty->job) goto cleanup;
     limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-    if (options->sandbox && !appcontainer) {
-        /* Job Object is the only enforcement in these paths (explicit
-         * jobobject mode, AppContainer fallback, or no profile): apply
-         * resource limits, same rule as exec_win.c. */
+    if (options->sandbox && !pty->sandbox) {
+        /* Only the explicit jobobject compatibility mode reaches this branch
+         * now (AppContainer creation failures fail the open above), so the
+         * Job Object is the only enforcement: apply resource limits, same
+         * rule as exec_win.c. */
         limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_JOB_MEMORY | JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
         limits.JobMemoryLimit = (SIZE_T)(options->job_memory_mb ? options->job_memory_mb : OWC_JOB_DEFAULT_MEMORY_MB) * 1024 * 1024;
         limits.BasicLimitInformation.ActiveProcessLimit = (DWORD)(options->job_max_processes ? options->job_max_processes : OWC_JOB_DEFAULT_MAX_PROCESSES);
@@ -406,7 +409,7 @@ int owc_pty_open(const owc_pty_options *options,
         || !AssignProcessToJobObject(pty->job, pty->process)) {
         /* A requested sandbox that failed to obtain AppContainer enforcement
          * must not be weakened; otherwise the Job Object is lifecycle-only. */
-        if (options->sandbox && !appcontainer) goto cleanup;
+        if (options->sandbox && !pty->sandbox) goto cleanup;
         close_handle(&pty->job);
     }
     if (ResumeThread(pty->process_thread) == (DWORD)-1) goto cleanup;
@@ -445,6 +448,7 @@ cleanup:
     if (attributes) DeleteProcThreadAttributeList(attributes);
     free(attributes);
     for (write_root_index = 0; write_root_index < write_root_count; write_root_index++) free(write_roots[write_root_index]);
+    free(write_roots);
     free(cwd);
     free(command);
     free(env_block);

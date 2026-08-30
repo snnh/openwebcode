@@ -130,6 +130,15 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
         close(out_pipe[0]); close(err_pipe[0]); close(sandbox_pipe[0]); close(exec_pipe[0]);
         if (dup2(out_pipe[1], STDOUT_FILENO) < 0 || dup2(err_pipe[1], STDERR_FILENO) < 0) _exit(126);
         close(out_pipe[1]); close(err_pipe[1]);
+        /* stdin must not stay on the RPC pipe: exec.run runs in a job thread
+         * while the main loop blocks reading server->core frames, and a
+         * command that reads stdin (cat, git) would race it - either leaking
+         * cross-session input into the command or consuming a partial frame
+         * that kills the loop.  /dev/null is the POSIX counterpart of the
+         * Windows NUL stand-in. */
+        {int devnull = open("/dev/null", O_RDONLY);
+         if (devnull < 0 || dup2(devnull, STDIN_FILENO) < 0) _exit(126);
+         if (devnull > STDIN_FILENO) (void)close(devnull);}
         if (chdir(request->cwd) != 0) _exit(126);
         /* POSIX counterpart of the Windows Job Object resource limits, under
          * the same gate (only where the sandbox is the enforcement layer).
@@ -152,8 +161,11 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
         if (request->sandbox_enabled) {
             /* Backend selection: an explicit landlock mode forces Landlock;
              * every other mode (including the Windows appcontainer/jobobject
-             * values, which POSIX accepts but ignores) prefers bubblewrap
-             * and falls back to Landlock when bwrap is unusable. */
+             * values, which POSIX accepts but ignores) means bubblewrap and
+             * nothing else.  There is no automatic Landlock fallback:
+             * Landlock's additive rules cannot express denyPaths, so a
+             * silent fallback would quietly weaken the session's isolation;
+             * landlock mode is the explicit, weaker compatibility tier. */
             if (request->sandbox_mode != (int)OWC_SANDBOX_MODE_LANDLOCK) {
                 owc_sandbox_result bwrap;
                 owc_bwrap_probe(&bwrap);
@@ -200,30 +212,33 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
                     }
                     _exit(127);
                 }
-                /* Honest fallback: bwrap was preferred but unusable, so a
-                 * working Landlock still reports partial with both reasons. */
-                (void)owc_landlock_apply(request->cwd, request->allow_paths, request->allow_path_count,
-                                         request->read_roots, request->read_root_count,
-                                         request->read_only_paths, request->read_only_count,
-                                         request->write_roots, request->write_root_count,
-                                         request->allow_network, &sandbox);
-                if (sandbox.status != OWC_SANDBOX_ADVISORY) {
-                    sandbox.status = OWC_SANDBOX_PARTIAL;
-                    (void)snprintf(sandbox.reason, sizeof(sandbox.reason),
-                                   "bubblewrap unavailable: %.150s; using Landlock", bwrap.reason);
-                }
+                /* Fail-closed: report the reason through the sandbox pipe,
+                 * then refuse to run the command bare (no Landlock fallback:
+                 * it cannot express denyPaths, so it would silently weaken
+                 * the session's isolation). */
+                sandbox.status = OWC_SANDBOX_ADVISORY;
+                (void)snprintf(sandbox.reason, sizeof(sandbox.reason),
+                               "bubblewrap unavailable: %.68s; install bubblewrap or select sandbox mode landlock (weaker: denyPaths not enforced for commands)",
+                               bwrap.reason);
             } else {
                 (void)owc_landlock_apply(request->cwd, request->allow_paths, request->allow_path_count,
                                          request->read_roots, request->read_root_count,
                                          request->read_only_paths, request->read_only_count,
                                          request->write_roots, request->write_root_count,
                                          request->allow_network, &sandbox);
+                /* ADVISORY here means the explicit Landlock ruleset could
+                 * not be applied; the common fail-closed gate below refuses
+                 * to run the command bare. */
             }
         } else {
             sandbox.status = OWC_SANDBOX_ADVISORY;
             (void)snprintf(sandbox.reason, sizeof(sandbox.reason), "sandbox disabled by session policy");
         }
         if(!write_all(sandbox_pipe[1],&sandbox,sizeof(sandbox)))_exit(126);
+        /* Fail-closed gate: an enabled session whose sandbox ended up
+         * ADVISORY (bwrap unavailable in the default tier, or an explicit
+         * Landlock apply failure) must not run the command bare. */
+        if (request->sandbox_enabled && sandbox.status == OWC_SANDBOX_ADVISORY) _exit(126);
         if(request->shell_backend==(int)OWC_SHELL_PWSH) {
             execlp("pwsh", "pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", request->command, (char *)NULL);
             report_exec_failure(exec_pipe[1], errno);

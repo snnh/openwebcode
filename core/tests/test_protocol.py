@@ -325,15 +325,20 @@ def main():
         response, _ = collect_until_response(proc, 211)
         assert response.get("error", {}).get("code") == -32602, response
 
-        # allowPaths is a bounded array of non-empty strings.
+        # allowPaths is a bounded array of non-empty strings (limit 32).
         for bad_id, allow_paths in [
             (22, "not-an-array"),
             (23, [""]),
-            (24, list(map(str, range(17)))),
+            (24, list(map(str, range(33)))),
         ]:
             request(proc, bad_id, "session.configure", {"sessionId": "invalid-allow", "cwd": os.getcwd(), "sandbox": {"enabled": False, "allowPaths": allow_paths}})
             response, _ = collect_until_response(proc, bad_id)
             assert "error" in response, (allow_paths, response)
+
+        # denyPaths keeps the tighter limit of 16.
+        request(proc, 25, "session.configure", {"sessionId": "invalid-deny", "cwd": os.getcwd(), "sandbox": {"enabled": False, "denyPaths": list(map(str, range(17)))}})
+        response, _ = collect_until_response(proc, 25)
+        assert "error" in response, response
 
         # session.configure is transactional: an invalid replacement must not
         # destroy the live cwd/policy, and failed new sessions must not consume

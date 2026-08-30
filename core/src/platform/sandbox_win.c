@@ -15,13 +15,19 @@ HRESULT WINAPI DeriveAppContainerSidFromAppContainerName(PCWSTR, PSID *);
 struct owc_acl_grant {
     wchar_t *path;
     int access_kind;
+    /* OWC_ACL_DENY_PATH: DACL bytes saved before the strip so destroy can
+       write them back (minus this command's own SID) with UNPROTECTED_DACL,
+       resuming inheritance byte for byte. */
+    unsigned char *dacl;
+    DWORD dacl_size;
 };
 
 enum owc_acl_access_kind {
     OWC_ACL_NAMED_PATH = 0,
     OWC_ACL_REPARSE_POINT = 1,
     OWC_ACL_REPARSE_TARGET = 2,
-    OWC_ACL_ANCESTOR = 3
+    OWC_ACL_ANCESTOR = 3,
+    OWC_ACL_DENY_PATH = 4
 };
 
 struct owc_sandbox {
@@ -146,22 +152,99 @@ static DWORD change_root_access(const wchar_t *path, PSID sid, ACCESS_MODE mode,
     return error;
 }
 
+/* Reverse of the deny-path strip: write the saved pre-strip DACL back with
+ * the SE_DACL_PROTECTED flag cleared.  This goes through NtSetSecurityObject
+ * on purpose (the same no-propagation path as the ancestor grants): the
+ * Named-API equivalent (UNPROTECTED_DACL_SECURITY_INFORMATION) recomputes
+ * inherited ACEs from the parent, and that recomputation is not guaranteed
+ * to reproduce the object's creation-time DACL byte for byte.
+ * The saved bytes still carry this command's own package-SID ACE (the save
+ * happens after the write-root grant propagated it), so that SID is
+ * filtered out.  Best effort like every revoke: a deny path deleted in the
+ * meantime cannot be restored. */
+static DWORD restore_denied_dacl(const wchar_t *path, const unsigned char *dacl,
+                                 DWORD dacl_size, PSID sid) {
+    ACL_SIZE_INFORMATION info;
+    PACL new_acl = NULL;
+    SECURITY_DESCRIPTOR replacement;
+    HANDLE handle = INVALID_HANDLE_VALUE;
+    LONG status;
+    DWORD error, i;
+    if (!dacl || dacl_size < sizeof(ACL)) return ERROR_INVALID_DATA;
+    (void)InitOnceExecuteOnce(&acl_once, acl_mutex_init, NULL, NULL);
+    EnterCriticalSection(&acl_mutex);
+    error = ERROR_SUCCESS;
+    if (!GetAclInformation((PACL)dacl, &info, sizeof(info), AclSizeInformation)) {
+        error = GetLastError();
+        goto done;
+    }
+    new_acl = (PACL)LocalAlloc(LPTR, info.AclBytesInUse + sizeof(ACL));
+    if (!new_acl ||
+        !InitializeAcl(new_acl, info.AclBytesInUse + sizeof(ACL), ACL_REVISION)) {
+        error = new_acl ? GetLastError() : ERROR_OUTOFMEMORY;
+        goto done;
+    }
+    for (i = 0; i < ((PACL)dacl)->AceCount; ++i) {
+        ACE_HEADER *ace = NULL;
+        PSID ace_sid = NULL;
+        if (!GetAce((PACL)dacl, i, (LPVOID *)&ace) || !ace) continue;
+        if (ace->AceType == ACCESS_ALLOWED_ACE_TYPE)
+            ace_sid = (PSID)&((ACCESS_ALLOWED_ACE *)ace)->SidStart;
+        else if (ace->AceType == ACCESS_DENIED_ACE_TYPE)
+            ace_sid = (PSID)&((ACCESS_DENIED_ACE *)ace)->SidStart;
+        if (ace_sid && EqualSid(ace_sid, sid)) continue;
+        if (!AddAce(new_acl, ACL_REVISION, MAXDWORD, ace, ace->AceSize)) {
+            error = GetLastError();
+            goto done;
+        }
+    }
+    handle = CreateFileW(path, READ_CONTROL | WRITE_DAC,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                         NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    if (handle == INVALID_HANDLE_VALUE) {
+        error = GetLastError();
+        goto done;
+    }
+    if (!nt_set_security_object) {
+        error = ERROR_PROC_NOT_FOUND;
+        goto done;
+    }
+    InitializeSecurityDescriptor(&replacement, SECURITY_DESCRIPTOR_REVISION);
+    /* SE_DACL_PRESENT set, SE_DACL_PROTECTED clear: protection is lifted and
+       the DACL is written verbatim. */
+    SetSecurityDescriptorDacl(&replacement, TRUE, new_acl, FALSE);
+    status = nt_set_security_object(handle, DACL_SECURITY_INFORMATION,
+                                    &replacement);
+    error = status >= 0 ? ERROR_SUCCESS : ERROR_ACCESS_DENIED;
+done:
+    LeaveCriticalSection(&acl_mutex);
+    if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle);
+    if (new_acl) LocalFree(new_acl);
+    return error;
+}
+
 /* Cleanup revokes only the command's own SID ACE; it never rewrites the
  * surrounding DACL, so concurrent commands on the same write root cannot
  * strip one another's grant or resurrect a finished command's stale ACE. */
 static DWORD restore_grant(const struct owc_acl_grant *grant, PSID sid) {
+    if (grant->access_kind == OWC_ACL_DENY_PATH)
+        return restore_denied_dacl(grant->path, grant->dacl, grant->dacl_size,
+                                   sid);
     return change_root_access(grant->path, sid, REVOKE_ACCESS, 0,
                               NO_INHERITANCE, grant->access_kind);
 }
 
 static int remember_grant(owc_sandbox *sandbox, wchar_t *path,
-                          int access_kind) {
+                          int access_kind, unsigned char *dacl,
+                          DWORD dacl_size) {
     struct owc_acl_grant *grown = (struct owc_acl_grant *)realloc(
         sandbox->grants, (sandbox->grant_count + 1) * sizeof(*grown));
     if (!grown) return 0;
     sandbox->grants = grown;
     sandbox->grants[sandbox->grant_count].path = path;
     sandbox->grants[sandbox->grant_count].access_kind = access_kind;
+    sandbox->grants[sandbox->grant_count].dacl = dacl;
+    sandbox->grants[sandbox->grant_count].dacl_size = dacl_size;
     sandbox->grant_count++;
     return 1;
 }
@@ -181,7 +264,7 @@ static int grant_temporary(owc_sandbox *sandbox, const wchar_t *path,
     (void)memcpy(copy, path, length * sizeof(*copy));
     if (change_root_access(copy, sandbox->appcontainer_sid, GRANT_ACCESS,
                            permissions, inheritance, access_kind) != ERROR_SUCCESS ||
-        !remember_grant(sandbox, copy, access_kind)) {
+        !remember_grant(sandbox, copy, access_kind, NULL, 0)) {
         (void)change_root_access(copy, sandbox->appcontainer_sid, REVOKE_ACCESS,
                                  0, inheritance, access_kind);
         free(copy);
@@ -223,6 +306,29 @@ static int grant_ancestor_traverse(owc_sandbox *sandbox, const char *root) {
 }
 #endif
 
+/* GetVolumeNameForVolumeMountPointW only accepts a drive root, a volume
+ * GUID path, or an actual mounted folder.  Since callers reach this helper
+ * only after observing a reparse point, TRUE distinguishes a volume mount
+ * root (the Named ACL APIs land on the same tree the fs layer resolves it
+ * to) from a junction/symlink, which must be refused as a write root. */
+static int is_volume_mount_point(const wchar_t *path) {
+    wchar_t *root;
+    wchar_t volume_name[64];
+    size_t length = wcslen(path);
+    int mounted;
+    root = (wchar_t *)malloc((length + 2) * sizeof(*root));
+    if (!root) return 0;
+    (void)memcpy(root, path, (length + 1) * sizeof(*root));
+    if (length && root[length - 1] != L'\\' && root[length - 1] != L'/') {
+        root[length++] = L'\\';
+        root[length] = L'\0';
+    }
+    mounted = GetVolumeNameForVolumeMountPointW(root, volume_name,
+                                                (DWORD)ARRAYSIZE(volume_name)) != 0;
+    free(root);
+    return mounted;
+}
+
 static int grant_write_roots(owc_sandbox *sandbox,
                              const owc_sandbox_options *options,
                              char *reason, size_t reason_size) {
@@ -234,24 +340,26 @@ static int grant_write_roots(owc_sandbox *sandbox,
             set_reason(reason, reason_size, "writeRoot is not valid UTF-8");
             return 0;
         }
+        /* A junction/symlink write root is ambiguous: the fs layer refuses
+           it (canonical_root) while an ACL grant here would silently land on
+           the target tree, so the same configuration would have two
+           different meanings.  Fail closed and point at the real path; a
+           volume mount root stays allowed because both layers resolve it to
+           the same tree. */
         attributes = GetFileAttributesW(path);
         if (attributes != INVALID_FILE_ATTRIBUTES &&
             (attributes & FILE_ATTRIBUTE_REPARSE_POINT) &&
-            !grant_temporary(sandbox, path,
-                             FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-                             NO_INHERITANCE, OWC_ACL_REPARSE_POINT)) {
+            !is_volume_mount_point(path)) {
             free(path);
-            set_reason(reason, reason_size, "writeRoot mount-point ACL grant failed");
+            set_reason(reason, reason_size,
+                       "writeRoot must not be a reparse point (junction/symlink); use the real path");
             return 0;
         }
         if (!grant_temporary(sandbox, path,
                              FILE_GENERIC_READ | FILE_GENERIC_WRITE |
                                  FILE_GENERIC_EXECUTE | DELETE,
                              SUB_CONTAINERS_AND_OBJECTS_INHERIT,
-                             (attributes != INVALID_FILE_ATTRIBUTES &&
-                              (attributes & FILE_ATTRIBUTE_REPARSE_POINT))
-                                 ? OWC_ACL_REPARSE_TARGET
-                                 : OWC_ACL_NAMED_PATH)) {
+                             OWC_ACL_NAMED_PATH)) {
             free(path);
             set_reason(reason, reason_size, "writeRoot ACL grant failed");
             return 0;
@@ -274,10 +382,23 @@ static int grant_write_roots(owc_sandbox *sandbox,
 
 static void revoke_write_roots(owc_sandbox *sandbox) {
     size_t i = sandbox->grant_count;
+    /* Two passes on purpose: deny-path restores write the saved DACL back
+       verbatim, and they must run AFTER the write-root revoke - the root
+       revoke's Named-API propagation recomputes inherited ACEs on every
+       unprotected child, which would otherwise rewrite the just-restored
+       deny path again (creation-time and propagation-time inheritance are
+       not byte-identical on every machine). */
     while (i > 0) {
         --i;
+        if (sandbox->grants[i].access_kind == OWC_ACL_DENY_PATH) continue;
         (void)restore_grant(&sandbox->grants[i], sandbox->appcontainer_sid);
+    }
+    for (i = 0; i < sandbox->grant_count; ++i)
+        if (sandbox->grants[i].access_kind == OWC_ACL_DENY_PATH)
+            (void)restore_grant(&sandbox->grants[i], sandbox->appcontainer_sid);
+    for (i = 0; i < sandbox->grant_count; ++i) {
         free(sandbox->grants[i].path);
+        free(sandbox->grants[i].dacl);
     }
     free(sandbox->grants);
 }
@@ -373,6 +494,270 @@ static int grant_read_only_paths(owc_sandbox *sandbox,
     for (i = 0; i < options->read_only_count; ++i)
         (void)grant_ancestor_traverse(sandbox, options->read_only_paths[i]);
 #endif
+    return 1;
+}
+
+/* denyPaths are files or directories the sandboxed process must not touch
+ * even though an ancestor write root grants access.  A DENY ACE cannot
+ * express this for AppContainer: the package leg of the access check is
+ * allow-only, and a DENY ACE for the package SID does not sink it (verified
+ * empirically: deny + inherited allow for the same package SID still
+ * reads).  Enforcement therefore strips this command's own package-SID
+ * ACEs from each deny path after the write-root grant has propagated them;
+ * without a package-leg allow the object is unreachable.
+ *
+ * Two mechanics make this stick and stay revertible:
+ * - The write-root grant propagates the package-SID allow into the deny
+ *   path as an *inherited* ACE, and an unprotected DACL write re-inherits
+ *   it from the parent at write time - so the top deny path is written
+ *   with PROTECTED_DACL (inheritance frozen), while descendants re-inherit
+ *   cleanly from the already-stripped parent and need no protection.
+ * - The pre-strip DACL bytes are saved in the grant record; destroy writes
+ *   them back (minus this command's own SID) with UNPROTECTED_DACL, which
+ *   resumes inheritance and reproduces the pre-grant DACL.
+ *
+ * A missing path is skipped (nothing to leak yet; the next command re-runs
+ * this strip); a strip failure on an existing path fails the whole create -
+ * running with a silently open deny hole would be worse than not running. */
+
+/* Remove every ACE for sid from one object's DACL and write it back.  With
+   protect the write also freezes inheritance (PROTECTED_DACL) - required on
+   the top deny path.  When saved is non-NULL it receives a copy of the
+   pre-strip DACL for the destroy-time restore.  Returns ERROR_SUCCESS also
+   when there was nothing to strip (nothing is written, *saved stays NULL). */
+static DWORD strip_sid_from_dacl(const wchar_t *path, PSID sid, int protect,
+                                 unsigned char **saved, DWORD *saved_size) {
+    PACL old_acl = NULL, new_acl = NULL;
+    PSECURITY_DESCRIPTOR descriptor = NULL;
+    ACL_SIZE_INFORMATION info;
+    DWORD error, i;
+    int removed = 0;
+    (void)InitOnceExecuteOnce(&acl_once, acl_mutex_init, NULL, NULL);
+    EnterCriticalSection(&acl_mutex);
+    error = GetNamedSecurityInfoW((LPWSTR)path, SE_FILE_OBJECT,
+                                  DACL_SECURITY_INFORMATION, NULL, NULL,
+                                  &old_acl, NULL, &descriptor);
+    if (error != ERROR_SUCCESS) goto done;
+    if (!old_acl) {
+        /* A null DACL grants everyone full control; no strip can secure
+           that, so fail closed instead of pretending. */
+        error = ERROR_INVALID_ACCESS;
+        goto done;
+    }
+    if (!GetAclInformation(old_acl, &info, sizeof(info), AclSizeInformation)) {
+        error = GetLastError();
+        goto done;
+    }
+    new_acl = (PACL)LocalAlloc(LPTR, info.AclBytesInUse + sizeof(ACL));
+    if (!new_acl ||
+        !InitializeAcl(new_acl, info.AclBytesInUse + sizeof(ACL), ACL_REVISION)) {
+        error = new_acl ? GetLastError() : ERROR_OUTOFMEMORY;
+        goto done;
+    }
+    for (i = 0; i < old_acl->AceCount; ++i) {
+        ACE_HEADER *ace = NULL;
+        PSID ace_sid = NULL;
+        if (!GetAce(old_acl, i, (LPVOID *)&ace) || !ace) continue;
+        if (ace->AceType == ACCESS_ALLOWED_ACE_TYPE)
+            ace_sid = (PSID)&((ACCESS_ALLOWED_ACE *)ace)->SidStart;
+        else if (ace->AceType == ACCESS_DENIED_ACE_TYPE)
+            ace_sid = (PSID)&((ACCESS_DENIED_ACE *)ace)->SidStart;
+        if (ace_sid && EqualSid(ace_sid, sid)) {
+            removed = 1;
+            continue;
+        }
+        if (!AddAce(new_acl, ACL_REVISION, MAXDWORD, ace, ace->AceSize)) {
+            error = GetLastError();
+            goto done;
+        }
+    }
+    if (removed) {
+        if (saved) {
+            *saved = (unsigned char *)malloc(info.AclBytesInUse);
+            if (!*saved) {
+                error = ERROR_OUTOFMEMORY;
+                goto done;
+            }
+            (void)memcpy(*saved, old_acl, info.AclBytesInUse);
+            *saved_size = info.AclBytesInUse;
+        }
+        error = SetNamedSecurityInfoW((LPWSTR)path, SE_FILE_OBJECT,
+                                      DACL_SECURITY_INFORMATION |
+                                          (protect ? PROTECTED_DACL_SECURITY_INFORMATION : 0),
+                                      NULL, NULL, new_acl, NULL);
+    }
+done:
+    LeaveCriticalSection(&acl_mutex);
+    if (new_acl) LocalFree(new_acl);
+    if (descriptor) LocalFree(descriptor);
+    return error;
+}
+
+/* Directory deny paths need a recursive strip: the write-root grant
+   propagates the package-SID allow onto every existing descendant, and the
+   bypass-traverse privilege means stripping only the directory itself would
+   leave the children reachable.  Bounded so a hostile tree cannot wedge the
+   create.  Only the top node freezes inheritance and gets a restore record;
+   descendants re-inherit from their already-stripped parent. */
+#define OWC_DENY_STRIP_MAX_NODES 8192ul
+
+static int strip_deny_path(owc_sandbox *sandbox, const wchar_t *path,
+                           unsigned long *nodes, int top,
+                           char *reason, size_t reason_size) {
+    DWORD attributes = GetFileAttributesW(path);
+    DWORD error;
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        error = GetLastError();
+        if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)
+            return 1;
+        (void)snprintf(reason, reason_size,
+                       "denyPaths entry could not be queried (error=%lu)",
+                       (unsigned long)error);
+        return 0;
+    }
+    if (++*nodes > OWC_DENY_STRIP_MAX_NODES) {
+        set_reason(reason, reason_size,
+                   "denyPaths directory has too many entries to secure");
+        return 0;
+    }
+    if (top) {
+        unsigned char *saved = NULL;
+        DWORD saved_size = 0;
+        error = strip_sid_from_dacl(path, sandbox->appcontainer_sid, 1,
+                                    &saved, &saved_size);
+        if (error != ERROR_SUCCESS) {
+            (void)snprintf(reason, reason_size,
+                           "denyPaths strip failed (error=%lu)", (unsigned long)error);
+            return 0;
+        }
+        if (saved) {
+            size_t length = wcslen(path) + 1;
+            wchar_t *copy = (wchar_t *)malloc(length * sizeof(*copy));
+            if (copy) (void)memcpy(copy, path, length * sizeof(*copy));
+            if (!copy ||
+                !remember_grant(sandbox, copy, OWC_ACL_DENY_PATH,
+                                saved, saved_size)) {
+                /* Undo the strip so a failed create leaves no residue. */
+                (void)restore_denied_dacl(path, saved, saved_size,
+                                          sandbox->appcontainer_sid);
+                free(copy);
+                free(saved);
+                set_reason(reason, reason_size, "denyPaths strip tracking failed");
+                return 0;
+            }
+        }
+    } else {
+        error = strip_sid_from_dacl(path, sandbox->appcontainer_sid, 0,
+                                    NULL, NULL);
+        if (error != ERROR_SUCCESS) {
+            (void)snprintf(reason, reason_size,
+                           "denyPaths strip failed (error=%lu)", (unsigned long)error);
+            return 0;
+        }
+    }
+    if (!(attributes & FILE_ATTRIBUTE_DIRECTORY) ||
+        (attributes & FILE_ATTRIBUTE_REPARSE_POINT))
+        return 1;
+    {
+        wchar_t *pattern;
+        size_t length = wcslen(path);
+        WIN32_FIND_DATAW data;
+        HANDLE find;
+        int ok = 1;
+        pattern = (wchar_t *)malloc((length + 3) * sizeof(*pattern));
+        if (!pattern) {
+            set_reason(reason, reason_size, "denyPaths strip allocation failed");
+            return 0;
+        }
+        (void)memcpy(pattern, path, length * sizeof(*pattern));
+        pattern[length] = L'\\';
+        pattern[length + 1] = L'*';
+        pattern[length + 2] = L'\0';
+        find = FindFirstFileW(pattern, &data);
+        free(pattern);
+        if (find == INVALID_HANDLE_VALUE)
+            return 1;
+        do {
+            wchar_t *child;
+            size_t name_length;
+            if (!wcscmp(data.cFileName, L".") || !wcscmp(data.cFileName, L".."))
+                continue;
+            name_length = wcslen(data.cFileName);
+            child = (wchar_t *)malloc((length + 1 + name_length + 1) * sizeof(*child));
+            if (!child) {
+                set_reason(reason, reason_size, "denyPaths strip allocation failed");
+                ok = 0;
+                break;
+            }
+            (void)memcpy(child, path, length * sizeof(*child));
+            child[length] = L'\\';
+            (void)memcpy(child + length + 1, data.cFileName,
+                         (name_length + 1) * sizeof(*child));
+            ok = strip_deny_path(sandbox, child, nodes, 0, reason, reason_size);
+            free(child);
+        } while (ok && FindNextFileW(find, &data));
+        FindClose(find);
+        return ok;
+    }
+}
+
+/* Prefix a drive-letter or UNC absolute path with \\?\ so deny-path
+   stripping is not bound by MAX_PATH. */
+static wchar_t *extend_path(const wchar_t *path) {
+    static const wchar_t prefix[] = L"\\\\?\\";
+    static const wchar_t unc_prefix[] = L"\\\\?\\UNC\\";
+    size_t length = wcslen(path), extra;
+    wchar_t *out;
+    if (length >= 4 && !wcsncmp(path, prefix, 4)) {
+        out = (wchar_t *)malloc((length + 1) * sizeof(*out));
+        if (out) (void)memcpy(out, path, (length + 1) * sizeof(*out));
+        return out;
+    }
+    if (length >= 2 && path[0] == L'\\' && path[1] == L'\\') {
+        extra = ARRAYSIZE(unc_prefix) - 1;
+        out = (wchar_t *)malloc((extra + length - 2 + 1) * sizeof(*out));
+        if (!out) return NULL;
+        (void)memcpy(out, unc_prefix, extra * sizeof(*out));
+        (void)memcpy(out + extra, path + 2, (length - 2 + 1) * sizeof(*out));
+        return out;
+    }
+    extra = ARRAYSIZE(prefix) - 1;
+    out = (wchar_t *)malloc((extra + length + 1) * sizeof(*out));
+    if (!out) return NULL;
+    (void)memcpy(out, prefix, extra * sizeof(*out));
+    (void)memcpy(out + extra, path, (length + 1) * sizeof(*out));
+    return out;
+}
+
+static int strip_deny_paths(owc_sandbox *sandbox,
+                            const owc_sandbox_options *options,
+                            char *reason, size_t reason_size) {
+    size_t i;
+    unsigned long nodes = 0;
+    for (i = 0; i < options->deny_count; ++i) {
+        wchar_t *path = utf8_to_wide(options->deny_paths[i]);
+        wchar_t *extended;
+        size_t length;
+        if (!path) {
+            set_reason(reason, reason_size, "denyPaths entry is not valid UTF-8");
+            return 0;
+        }
+        length = wcslen(path);
+        while (length > 3 && (path[length - 1] == L'\\' || path[length - 1] == L'/'))
+            path[--length] = L'\0';
+        extended = extend_path(path);
+        free(path);
+        if (!extended) {
+            set_reason(reason, reason_size, "denyPaths strip allocation failed");
+            return 0;
+        }
+        if (!strip_deny_path(sandbox, extended, &nodes, 1,
+                             reason, reason_size)) {
+            free(extended);
+            return 0;
+        }
+        free(extended);
+    }
     return 1;
 }
 
@@ -624,6 +1009,7 @@ owc_sandbox *owc_sandbox_create(const owc_sandbox_options *options,
         if (!grant_write_roots(sandbox, options, reason, reason_size)) goto fail;
         if (!grant_read_only_paths(sandbox, options, reason, reason_size)) goto fail;
         if (!grant_bind_backings(sandbox, options, reason, reason_size)) goto fail;
+        if (!strip_deny_paths(sandbox, options, reason, reason_size)) goto fail;
     }
     sandbox->status = OWC_SANDBOX_ENFORCED;
     set_reason(reason, reason_size, "AppContainer prepared; enforcement begins only after process creation uses its attribute");

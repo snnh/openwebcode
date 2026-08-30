@@ -48,6 +48,7 @@ if(BUILD_TESTING)
     add_test(NAME bindlink COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_bindlink.py $<TARGET_FILE:owc-exec>)
     add_test(NAME bwrap COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_bwrap.py $<TARGET_FILE:owc-exec>)
     add_test(NAME filtered COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_filtered.py $<TARGET_FILE:owc-exec>)
+    add_test(NAME deny-ace COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_deny_ace.py $<TARGET_FILE:owc-exec>)
 
     add_executable(test-path-policy tests/test_path_policy.c src/path_policy.c)
     if(WIN32)

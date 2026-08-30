@@ -199,10 +199,12 @@ int owc_pty_open(const owc_pty_options *options,
         name = name ? name + 1 : shell;
         if (options->sandbox) {
             /* Same backend selection as exec_posix.c: landlock mode forces
-             * Landlock; everything else prefers bubblewrap and falls back
-             * to Landlock.  bwrap keeps the child's process group (forkpty
-             * made it a session leader), so group-kill tree termination is
-             * unaffected. */
+             * Landlock; everything else means bubblewrap only, with no
+             * automatic Landlock fallback (Landlock's additive rules cannot
+             * express denyPaths, so falling back would silently weaken the
+             * session's isolation).  bwrap keeps the child's process group
+             * (forkpty made it a session leader), so group-kill tree
+             * termination is unaffected. */
             if (options->sandbox_mode != (int)OWC_SANDBOX_MODE_LANDLOCK) {
                 owc_sandbox_result bwrap;
                 owc_bwrap_probe(&bwrap);
@@ -224,17 +226,12 @@ int owc_pty_open(const owc_pty_options *options,
                         options->allow_network, shell_argv);
                     _exit(127);
                 }
-                (void)owc_landlock_apply(options->cwd, options->allow_paths,
-                                         options->allow_path_count,
-                                         options->read_roots, options->read_root_count,
-                                         options->read_only_paths, options->read_only_count,
-                                         options->write_roots, options->write_root_count,
-                                         options->allow_network, &sandbox);
-                if (sandbox.status != OWC_SANDBOX_ADVISORY) {
-                    sandbox.status = OWC_SANDBOX_PARTIAL;
-                    (void)snprintf(sandbox.reason, sizeof(sandbox.reason),
-                                   "bubblewrap unavailable: %.150s; using Landlock", bwrap.reason);
-                }
+                /* Fail-closed like exec_posix.c: report the reason through
+                 * the sandbox pipe, then exit without running the shell. */
+                sandbox.status = OWC_SANDBOX_ADVISORY;
+                (void)snprintf(sandbox.reason, sizeof(sandbox.reason),
+                               "bubblewrap unavailable: %.68s; install bubblewrap or select sandbox mode landlock (weaker: denyPaths not enforced for commands)",
+                               bwrap.reason);
             } else {
                 (void)owc_landlock_apply(options->cwd, options->allow_paths,
                                          options->allow_path_count,
@@ -242,12 +239,19 @@ int owc_pty_open(const owc_pty_options *options,
                                          options->read_only_paths, options->read_only_count,
                                          options->write_roots, options->write_root_count,
                                          options->allow_network, &sandbox);
+                /* ADVISORY here means the explicit Landlock ruleset could
+                 * not be applied; the fail-closed gate below refuses to
+                 * run the shell. */
             }
         } else {
             sandbox.status = OWC_SANDBOX_ADVISORY;
             (void)snprintf(sandbox.reason, sizeof(sandbox.reason), "sandbox disabled by session policy");
         }
         (void)write_all(sandbox_pipe[1], &sandbox, sizeof(sandbox));
+        /* Fail-closed gate (same semantics as exec_posix.c): an enabled
+         * session whose sandbox ended up ADVISORY must not run the shell
+         * bare; the parent already has the reason from the pipe. */
+        if (options->sandbox && sandbox.status == OWC_SANDBOX_ADVISORY) _exit(126);
         execlp(shell, name, (char *)NULL);
         _exit(127);
     }

@@ -7,6 +7,9 @@
 #ifdef _WIN32
 #include <aclapi.h>
 
+/* Same manual declaration as sandbox_win.c: userenv.h is not in every SDK. */
+HRESULT WINAPI DeriveAppContainerSidFromAppContainerName(PCWSTR, PSID *);
+
 static int capture_dacl_mode(const wchar_t *path, int open_reparse_point,
                              unsigned char **bytes, DWORD *size,
                              int *is_protected) {
@@ -111,15 +114,15 @@ cleanup:
     return result;
 }
 
-static int test_reparse_acl_restore(void) {
+static int test_reparse_root_rejected(void) {
     wchar_t temp[MAX_PATH], root[MAX_PATH], target[MAX_PATH], link[MAX_PATH];
     char link_utf8[MAX_PATH * 3], session_id[64], reason[256];
-    unsigned char *link_before = NULL, *link_granted = NULL, *link_after = NULL;
-    unsigned char *target_before = NULL, *target_granted = NULL, *target_after = NULL;
-    DWORD lb_size = 0, lg_size = 0, la_size = 0;
-    DWORD tb_size = 0, tg_size = 0, ta_size = 0;
-    int lb_protected = 0, lg_protected = 0, la_protected = 0;
-    int tb_protected = 0, tg_protected = 0, ta_protected = 0;
+    unsigned char *link_before = NULL, *link_after = NULL;
+    unsigned char *target_before = NULL, *target_after = NULL;
+    DWORD lb_size = 0, la_size = 0;
+    DWORD tb_size = 0, ta_size = 0;
+    int lb_protected = 0, la_protected = 0;
+    int tb_protected = 0, ta_protected = 0;
     const char *roots[1];
     owc_sandbox_options options;
     owc_sandbox *sandbox = NULL;
@@ -163,42 +166,28 @@ static int test_reparse_acl_restore(void) {
         result = 23;
         goto cleanup;
     }
-    (void)snprintf(session_id, sizeof(session_id), "reparse-restore-%lu",
+    (void)snprintf(session_id, sizeof(session_id), "reparse-reject-%lu",
                    (unsigned long)GetCurrentProcessId());
     roots[0] = link_utf8;
     memset(&options, 0, sizeof(options));
     options.session_id = session_id;
     options.write_roots = roots;
     options.write_root_count = 1;
+    /* A reparse-point write root is ambiguous with the fs layer (which
+     * rejects it), so the grant must fail closed and leave both DACLs
+     * untouched. */
     sandbox = owc_sandbox_create(&options, reason, sizeof(reason));
-    if (!sandbox) {
-        (void)fprintf(stderr,
-                      "reparse ACL sandbox creation failed: %s\n", reason);
+    if (sandbox) {
+        (void)fprintf(stderr, "reparse-point write root was not rejected\n");
         result = 24;
         goto cleanup;
     }
-    if (!capture_dacl_mode(link, 1, &link_granted, &lg_size, &lg_protected)) {
-        (void)fprintf(stderr, "could not capture granted reparse-point ACL\n");
-        result = 25;
+    if (!strstr(reason, "reparse point")) {
+        (void)fprintf(stderr, "reparse rejection reason is unclear: %s\n",
+                      reason);
+        result = 24;
         goto cleanup;
     }
-    if (!capture_dacl(target, &target_granted, &tg_size, &tg_protected)) {
-        (void)fprintf(stderr, "could not capture granted reparse-target ACL\n");
-        result = 25;
-        goto cleanup;
-    }
-    if (lb_size == lg_size && memcmp(link_before, link_granted, lb_size) == 0) {
-        (void)fprintf(stderr, "reparse-point ACL did not change\n");
-        result = 25;
-        goto cleanup;
-    }
-    if (tb_size == tg_size && memcmp(target_before, target_granted, tb_size) == 0) {
-        (void)fprintf(stderr, "reparse-target ACL did not change\n");
-        result = 25;
-        goto cleanup;
-    }
-    owc_sandbox_destroy(sandbox);
-    sandbox = NULL;
     if (!capture_dacl_mode(link, 1, &link_after, &la_size, &la_protected) ||
         !capture_dacl(target, &target_after, &ta_size, &ta_protected) ||
         lb_size != la_size || lb_protected != la_protected ||
@@ -207,10 +196,178 @@ static int test_reparse_acl_restore(void) {
         memcmp(target_before, target_after, tb_size) != 0) result = 26;
 cleanup:
     owc_sandbox_destroy(sandbox);
-    free(link_before); free(link_granted); free(link_after);
-    free(target_before); free(target_granted); free(target_after);
+    free(link_before); free(link_after);
+    free(target_before); free(target_after);
     (void)RemoveDirectoryW(link);
     (void)RemoveDirectoryW(target);
+    (void)RemoveDirectoryW(root);
+    return result;
+}
+
+/* Returns 1 when the DACL of path could be read; *present tells whether any
+ * ACE (allow or deny) references sid. */
+static int dacl_has_sid_ace(const wchar_t *path, PSID sid, int *present) {
+    PACL acl = NULL;
+    PSECURITY_DESCRIPTOR descriptor = NULL;
+    DWORD error, index;
+    *present = 0;
+    error = GetNamedSecurityInfoW((LPWSTR)path, SE_FILE_OBJECT,
+                                  DACL_SECURITY_INFORMATION, NULL, NULL,
+                                  &acl, NULL, &descriptor);
+    if (error != ERROR_SUCCESS || !acl) {
+        if (descriptor) LocalFree(descriptor);
+        return 0;
+    }
+    for (index = 0; index < acl->AceCount; ++index) {
+        ACE_HEADER *header = NULL;
+        PSID ace_sid = NULL;
+        if (!GetAce(acl, index, (LPVOID *)&header) || !header) continue;
+        if (header->AceType == ACCESS_ALLOWED_ACE_TYPE)
+            ace_sid = (PSID)&((ACCESS_ALLOWED_ACE *)header)->SidStart;
+        else if (header->AceType == ACCESS_DENIED_ACE_TYPE)
+            ace_sid = (PSID)&((ACCESS_DENIED_ACE *)header)->SidStart;
+        if (ace_sid && EqualSid(sid, ace_sid)) *present = 1;
+    }
+    LocalFree(descriptor);
+    return 1;
+}
+
+static int test_deny_acl_restore(void) {
+    wchar_t temp[MAX_PATH], root[MAX_PATH], denied[MAX_PATH], allowed[MAX_PATH];
+    char root_utf8[MAX_PATH * 3], denied_utf8[MAX_PATH * 3];
+    char allowed_utf8[MAX_PATH * 3];
+    char missing_utf8[MAX_PATH * 3], session_id[64], reason[256];
+    wchar_t profile_name[96];
+    unsigned char *after = NULL;
+    DWORD after_size = 0;
+    int after_protected = 0;
+    const char *roots[1], *denies[2];
+    owc_sandbox_options options;
+    owc_sandbox *sandbox = NULL;
+    PSID sid = NULL;
+    HRESULT hr;
+    int present = 0;
+    int result = 0;
+    if (!GetTempPathW(ARRAYSIZE(temp), temp) ||
+        !GetTempFileNameW(temp, L"owd", 0, root) ||
+        !DeleteFileW(root) || !CreateDirectoryW(root, NULL)) return 40;
+    if (swprintf_s(denied, ARRAYSIZE(denied), L"%ls\\denied.txt", root) < 0 ||
+        swprintf_s(allowed, ARRAYSIZE(allowed), L"%ls\\allowed.txt", root) < 0) {
+        result = 41;
+        goto cleanup;
+    }
+    {
+        HANDLE file = CreateFileW(denied, GENERIC_WRITE, 0, NULL,
+                                  CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (file == INVALID_HANDLE_VALUE) {
+            result = 41;
+            goto cleanup;
+        }
+        CloseHandle(file);
+        file = CreateFileW(allowed, GENERIC_WRITE, 0, NULL,
+                           CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (file == INVALID_HANDLE_VALUE) {
+            result = 41;
+            goto cleanup;
+        }
+        CloseHandle(file);
+    }
+    if (!WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, root, -1,
+                             root_utf8, (int)sizeof(root_utf8), NULL, NULL) ||
+        !WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, denied, -1,
+                             denied_utf8, (int)sizeof(denied_utf8), NULL, NULL) ||
+        !WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, allowed, -1,
+                             allowed_utf8, (int)sizeof(allowed_utf8), NULL, NULL) ||
+        !WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
+                             L"missing-deny-target.txt", -1,
+                             missing_utf8, (int)sizeof(missing_utf8), NULL, NULL)) {
+        result = 42;
+        goto cleanup;
+    }
+    (void)snprintf(session_id, sizeof(session_id), "deny-acl-%lu",
+                   (unsigned long)GetCurrentProcessId());
+    roots[0] = root_utf8;
+    denies[0] = denied_utf8;
+    /* A deny path that does not exist must be skipped, not fail the grant. */
+    denies[1] = missing_utf8;
+    memset(&options, 0, sizeof(options));
+    options.session_id = session_id;
+    options.write_roots = roots;
+    options.write_root_count = 1;
+    options.deny_paths = denies;
+    options.deny_count = 2;
+    sandbox = owc_sandbox_create(&options, reason, sizeof(reason));
+    if (!sandbox) {
+        (void)fprintf(stderr, "deny ACL sandbox creation failed: %s\n", reason);
+        result = 44;
+        goto cleanup;
+    }
+    /* The sandbox profile SID is derived from the profile name. */
+    if (swprintf_s(profile_name, ARRAYSIZE(profile_name), L"OpenWebCode.%hs",
+                   session_id) < 0) {
+        result = 45;
+        goto cleanup;
+    }
+    hr = DeriveAppContainerSidFromAppContainerName(profile_name, &sid);
+    if (FAILED(hr) || !sid) {
+        result = 45;
+        goto cleanup;
+    }
+    /* The deny path must carry no ACE for the package SID at all: the
+       AppContainer package leg is allow-only, so the write-root grant's
+       propagated allow must have been stripped. */
+    if (!dacl_has_sid_ace(denied, sid, &present)) {
+        result = 46;
+        goto cleanup;
+    }
+    if (present) {
+        (void)fprintf(stderr, "denied path DACL still references the sandbox SID\n");
+        result = 47;
+        goto cleanup;
+    }
+    /* Positive control: a sibling that is not a deny path keeps the
+       propagated write-root grant (proves the strip is targeted, and that
+       the grant itself worked). */
+    if (!dacl_has_sid_ace(allowed, sid, &present)) {
+        result = 46;
+        goto cleanup;
+    }
+    if (!present) {
+        (void)fprintf(stderr, "allowed sibling lost the sandbox SID grant\n");
+        result = 47;
+        goto cleanup;
+    }
+    owc_sandbox_destroy(sandbox);
+    sandbox = NULL;
+    /* Byte-level restore of the deny path itself is not achievable: the
+       write-root grant's propagation rewrites the children's inherited ACEs
+       at grant time already (creation-time and propagation-time inheritance
+       differ on some machines), and that drift predates the strip's DACL
+       snapshot.  What the restore must guarantee instead: inheritance
+       protection is lifted again and no ACE for the command's SID remains.
+       (The write root's own byte-exact restore is covered by
+       test_acl_restore.) */
+    if (!dacl_has_sid_ace(denied, sid, &present)) {
+        result = 48;
+        goto cleanup;
+    }
+    if (present) {
+        (void)fprintf(stderr, "denied path keeps a sandbox SID ACE after destroy\n");
+        result = 49;
+        goto cleanup;
+    }
+    if (!capture_dacl(denied, &after, &after_size, &after_protected) ||
+        after_protected) {
+        (void)fprintf(stderr, "denied path DACL stayed protected after destroy\n");
+        result = 49;
+        goto cleanup;
+    }
+cleanup:
+    owc_sandbox_destroy(sandbox);
+    if (sid) FreeSid(sid);
+    free(after);
+    (void)DeleteFileW(allowed);
+    (void)DeleteFileW(denied);
     (void)RemoveDirectoryW(root);
     return result;
 }
@@ -304,11 +461,19 @@ int main(void) {
             return acl_result;
         }
         {
-            int reparse_result = test_reparse_acl_restore();
+            int reparse_result = test_reparse_root_rejected();
             if (reparse_result) {
-                (void)fprintf(stderr, "reparse ACL restore test failed: %d\n",
+                (void)fprintf(stderr, "reparse root rejection test failed: %d\n",
                               reparse_result);
                 return reparse_result;
+            }
+        }
+        {
+            int deny_result = test_deny_acl_restore();
+            if (deny_result) {
+                (void)fprintf(stderr, "deny ACL restore test failed: %d\n",
+                              deny_result);
+                return deny_result;
             }
         }
         {

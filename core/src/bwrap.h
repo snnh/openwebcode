@@ -18,11 +18,14 @@
  * owc_bwrap_exec only returns ENOSYS. */
 
 /* One-shot cached probe (InitOnce semantics): bwrap must be on PATH and a
- * real smoke run (user namespace + bind mount + exec of /bin/true) must
- * succeed.  Success reports OWC_SANDBOX_ENFORCED; any failure reports
- * OWC_SANDBOX_ADVISORY with the captured stderr tail in reason, which covers
- * disabled unprivileged user namespaces and the Ubuntu 24.04 AppArmor
- * restriction on them.  The cached result is cheap to query afterwards. */
+ * real smoke run (user namespace + bind mount + network namespace + exec of
+ * /bin/true) must succeed.  Success reports OWC_SANDBOX_ENFORCED; a run
+ * that fails because unprivileged network namespaces are forbidden reports
+ * OWC_SANDBOX_PARTIAL (filesystem isolation still works, network deny does
+ * not); every other failure reports OWC_SANDBOX_ADVISORY with the captured
+ * stderr tail in reason, which covers disabled unprivileged user namespaces
+ * and the Ubuntu 24.04 AppArmor restriction on them.  The cached result is
+ * cheap to query afterwards. */
 void owc_bwrap_probe(owc_sandbox_result *result);
 
 /* Exec command_argv under bwrap with the session policy applied.  Only
