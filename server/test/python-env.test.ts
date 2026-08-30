@@ -78,8 +78,9 @@ describe("pythonEnvWritePaths（非本机 python 环境的读写挂载）", () =
     expect(pythonEnvWritePaths("global", "/work", "/data", "linux")).toEqual([]);
   });
 
-  it("win32 不追加（无文件系统隔离）", () => {
-    expect(pythonEnvWritePaths("uv-config", "C:\\work", "D:\\data", "win32")).toEqual([]);
+  it("win32 同样返回 venv 路径（是否挂载由调用方按生效沙盒模式门禁）", () => {
+    expect(pythonEnvWritePaths("uv-config", "C:\\work", "D:\\data", "win32")).toEqual([uvVenvDir("uv-config", "C:\\work", "D:\\data")]);
+    expect(pythonEnvWritePaths("global", "C:\\work", "D:\\data", "win32")).toEqual([]);
   });
 });
 
@@ -163,10 +164,13 @@ describe("nodeToolchainReadOnlyPaths（与 nodeEnv 绑定的工具链挂载）",
     expect(nodeToolchainReadOnlyPaths("fnm", deps)).toEqual([]);
   });
 
-  it("project 与 win32 不挂载", () => {
+  it("project 不挂载；win32 仅 global 且命中用户 profile 才挂载（只读层）", () => {
     expect(nodeToolchainReadOnlyPaths("project", { platform: "linux", exists: () => true })).toEqual([]);
     expect(nodeToolchainReadOnlyPaths("nvm", { platform: "win32", exists: () => true })).toEqual([]);
-    expect(nodeToolchainReadOnlyPaths("global", { platform: "win32", pathEnv: "C:\\nvm", exists: () => true })).toEqual([]);
+    // profile 之外（非用户目录）不挂载
+    expect(nodeToolchainReadOnlyPaths("global", { platform: "win32", pathEnv: "C:\\nvm", exists: () => true, realpath: (target) => target })).toEqual([]);
+    // 用户 profile 下的工具链根挂载
+    expect(nodeToolchainReadOnlyPaths("global", { platform: "win32", home: "C:\\Users\\u", pathEnv: "C:\\Users\\u\\AppData\\Local\\fnm\\node-versions\\v20\\installation", exists: () => true, realpath: (target) => target })).toEqual(["C:\\Users\\u\\AppData\\Local\\fnm\\node-versions\\v20\\installation"]);
   });
 });
 
@@ -188,11 +192,13 @@ describe("nodeToolchainWritePaths（显式非本机 node 环境的工具链读�
     expect(nodeToolchainWritePaths("fnm", { platform: "linux", home: "/home/u", fnmDir: "/opt/fnm", exists: () => false })).toEqual([]);
   });
 
-  it("global/project 不追加；win32 一律不追加", () => {
+  it("global/project 不追加；win32 按存在性挂载 fnm/nvm", () => {
     expect(nodeToolchainWritePaths("global", { platform: "linux", exists: () => true })).toEqual([]);
     expect(nodeToolchainWritePaths("project", { platform: "linux", exists: () => true })).toEqual([]);
-    expect(nodeToolchainWritePaths("nvm", { platform: "win32", nvmDir: "C:\\nvm", exists: () => true })).toEqual([]);
-    expect(nodeToolchainWritePaths("fnm", { platform: "win32", home: "C:\\Users\\u", fnmDir: "C:\\fnm", exists: () => true })).toEqual([]);
+    // win32：nvm.exe 存在才挂载 NVM_HOME（缺省 %APPDATA%\nvm）；fnm 目录存在才挂载
+    expect(nodeToolchainWritePaths("nvm", { platform: "win32", nvmDir: "C:\\nvm", exists: (target) => target === "C:\\nvm\\nvm.exe" })).toEqual(["C:\\nvm"]);
+    expect(nodeToolchainWritePaths("nvm", { platform: "win32", nvmDir: "C:\\nvm", exists: () => false })).toEqual([]);
+    expect(nodeToolchainWritePaths("fnm", { platform: "win32", home: "C:\\Users\\u", fnmDir: "C:\\fnm", exists: (target) => target === "C:\\fnm" })).toEqual(["C:\\fnm"]);
   });
 });
 

@@ -4,6 +4,17 @@ import type { CoreClientLike, CoreInfo } from "../src/core-client.js";
 import { CoreRouter, toSandboxPath } from "../src/sandbox/core-router.js";
 import { buildWsbConfig, detectWsb } from "../src/sandbox/wsb.js";
 import type { SandboxPolicy, SessionMeta } from "../src/sessions/types.js";
+import { tempRoot } from "./helpers/temp-roots.js";
+
+/** win32 AppContainer 缺省档会并入宿主凭据（~/.gitconfig 等）与用户 profile 工具链，
+ * 用临时空 HOME + 精简 PATH 保证断言确定。返回恢复函数。 */
+async function stubCleanHome(): Promise<() => void> {
+  const home = await tempRoot("owc-wsb-clean-");
+  vi.stubEnv("USERPROFILE", home);
+  vi.stubEnv("HOME", home);
+  vi.stubEnv("PATH", "C:\\Windows\\System32");
+  return () => vi.unstubAllEnvs();
+}
 
 const info: CoreInfo = { version: "0.2.3", platform: "windows", sandboxCapability: "partial" };
 
@@ -72,7 +83,7 @@ function makeRouter(metas: Map<string, SessionMeta>, jobObject?: { memoryMB?: nu
   };
   const sessions = { get: async (id: string) => metas.get(id) };
   // CoreRouter 只用到 acquire/peek/release/releaseAll 与 onClientCreated 赋值；
-  // 用例全是 Windows 路径与 WSB 场景，固定平台为 win32（缺省模式断言 jobobject 不因 CI 平台漂移）
+  // 用例全是 Windows 路径与 WSB 场景，固定平台为 win32（缺省模式断言不因 CI 平台漂移）
   const router = new CoreRouter(shared, sessions, wsb as never, jobObject, allowPaths, "win32");
   return { router, shared, wsbClient, wsb };
 }
@@ -171,61 +182,81 @@ describe("CoreRouter", () => {
     expect(wsbClient.listFiles).toHaveBeenCalledWith({ sessionId: "s1", path: "C:\\Windows" });
   });
 
-  it("keeps non-wsb sessions on the shared client and defaults to jobobject mode", async () => {
-    const metas = new Map([["s1", makeMeta("s1")]]);
-    const { router, shared, wsb } = makeRouter(metas);
-    await router.configureSession({ sessionId: "s1", cwd: "D:\\work", sandbox: policy });
-    expect(shared.configureSession).toHaveBeenCalledWith({ sessionId: "s1", cwd: "D:\\work", sandbox: { ...policy, mode: "jobobject" } });
-    expect(wsb.acquire).not.toHaveBeenCalled();
+  it("keeps non-wsb sessions on the shared client and defaults to appcontainer（不下发 mode）", async () => {
+    const restore = await stubCleanHome();
+    try {
+      const metas = new Map([["s1", makeMeta("s1")]]);
+      const { router, shared, wsb } = makeRouter(metas);
+      await router.configureSession({ sessionId: "s1", cwd: "D:\\work", sandbox: policy });
+      expect(shared.configureSession).toHaveBeenCalledWith({ sessionId: "s1", cwd: "D:\\work", sandbox: policy });
+      expect(wsb.acquire).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
   });
 
   it("reconfigures a session before the first tool call after the shared core restarts", async () => {
-    const metas = new Map([["s1", makeMeta("s1")]]);
-    const { router, shared } = makeRouter(metas);
-    await router.configureSession({ sessionId: "s1", cwd: "D:\\work", sandbox: policy });
-    expect(shared.configureSession).toHaveBeenCalledTimes(1);
+    const restore = await stubCleanHome();
+    try {
+      const metas = new Map([["s1", makeMeta("s1")]]);
+      const { router, shared } = makeRouter(metas);
+      await router.configureSession({ sessionId: "s1", cwd: "D:\\work", sandbox: policy });
+      expect(shared.configureSession).toHaveBeenCalledTimes(1);
 
-    const eventListener = shared.on.mock.calls.find(([event]) => event === "event")?.[1] as ((event: unknown) => void) | undefined;
-    expect(eventListener).toBeTypeOf("function");
-    eventListener?.({ source: "core", type: "core.exit", payload: { message: "crashed" } });
+      const eventListener = shared.on.mock.calls.find(([event]) => event === "event")?.[1] as ((event: unknown) => void) | undefined;
+      expect(eventListener).toBeTypeOf("function");
+      eventListener?.({ source: "core", type: "core.exit", payload: { message: "crashed" } });
 
-    await router.readFile({ sessionId: "s1", path: "." });
-    expect(shared.start).toHaveBeenCalledOnce();
-    expect(shared.configureSession).toHaveBeenCalledTimes(2);
-    expect(shared.configureSession).toHaveBeenLastCalledWith({ sessionId: "s1", cwd: "D:\\work", sandbox: { ...policy, mode: "jobobject" } });
-    expect(shared.readFile).toHaveBeenCalledWith({ sessionId: "s1", path: "." });
+      await router.readFile({ sessionId: "s1", path: "." });
+      expect(shared.start).toHaveBeenCalledOnce();
+      expect(shared.configureSession).toHaveBeenCalledTimes(2);
+      expect(shared.configureSession).toHaveBeenLastCalledWith({ sessionId: "s1", cwd: "D:\\work", sandbox: policy });
+      expect(shared.readFile).toHaveBeenCalledWith({ sessionId: "s1", path: "." });
+    } finally {
+      restore();
+    }
   });
 
   it("auto-configures restored sessions even when the app-level cache predates this core", async () => {
-    const meta = makeMeta("s1");
-    meta.sandbox = policy;
-    const { router, shared } = makeRouter(new Map([["s1", meta]]));
+    const restore = await stubCleanHome();
+    try {
+      const meta = makeMeta("s1");
+      meta.sandbox = policy;
+      const { router, shared } = makeRouter(new Map([["s1", meta]]));
 
-    await router.startJob({ sessionId: "s1", jobId: "j1", kind: "exec", cmd: "dir", cwd: "D:\\work" });
+      await router.startJob({ sessionId: "s1", jobId: "j1", kind: "exec", cmd: "dir", cwd: "D:\\work" });
 
-    expect(shared.start).toHaveBeenCalledOnce();
-    expect(shared.configureSession).toHaveBeenCalledOnce();
-    expect(shared.configureSession).toHaveBeenCalledWith({ sessionId: "s1", cwd: "D:\\work", sandbox: { ...policy, mode: "jobobject" } });
-    expect(shared.startJob).toHaveBeenCalledWith({ sessionId: "s1", jobId: "j1", kind: "exec", cmd: "dir", cwd: "D:\\work" });
+      expect(shared.start).toHaveBeenCalledOnce();
+      expect(shared.configureSession).toHaveBeenCalledOnce();
+      expect(shared.configureSession).toHaveBeenCalledWith({ sessionId: "s1", cwd: "D:\\work", sandbox: policy });
+      expect(shared.startJob).toHaveBeenCalledWith({ sessionId: "s1", jobId: "j1", kind: "exec", cmd: "dir", cwd: "D:\\work" });
+    } finally {
+      restore();
+    }
   });
 
   it("adds global allow paths only to host (non-WSB) policies", async () => {
-    const allowPaths = ["D:\\cache", "D:\\shared"];
-    const host = makeRouter(new Map([["host", makeMeta("host")]]), undefined, allowPaths);
-    await host.router.configureSession({ sessionId: "host", cwd: "D:\\work", sandbox: policy });
-    expect(host.shared.configureSession).toHaveBeenCalledWith({
-      sessionId: "host",
-      cwd: "D:\\work",
-      sandbox: { ...policy, allowPaths, mode: "jobobject" },
-    });
+    const restore = await stubCleanHome();
+    try {
+      const allowPaths = ["D:\\cache", "D:\\shared"];
+      const host = makeRouter(new Map([["host", makeMeta("host")]]), undefined, allowPaths);
+      await host.router.configureSession({ sessionId: "host", cwd: "D:\\work", sandbox: policy });
+      expect(host.shared.configureSession).toHaveBeenCalledWith({
+        sessionId: "host",
+        cwd: "D:\\work",
+        sandbox: { ...policy, allowPaths },
+      });
 
-    const guest = makeRouter(new Map([["guest", makeMeta("guest", "wsb")]]), undefined, allowPaths);
-    await guest.router.configureSession({ sessionId: "guest", cwd: "D:\\work", sandbox: policy });
-    expect(guest.wsbClient.configureSession).toHaveBeenCalledWith({
-      sessionId: "guest",
-      cwd: "C:\\owc-workspace",
-      sandbox: { ...policy, enabled: false },
-    });
+      const guest = makeRouter(new Map([["guest", makeMeta("guest", "wsb")]]), undefined, allowPaths);
+      await guest.router.configureSession({ sessionId: "guest", cwd: "D:\\work", sandbox: policy });
+      expect(guest.wsbClient.configureSession).toHaveBeenCalledWith({
+        sessionId: "guest",
+        cwd: "C:\\owc-workspace",
+        sandbox: { ...policy, enabled: false },
+      });
+    } finally {
+      restore();
+    }
   });
 
   it("merges configured global jobObject limits into the jobobject policy", async () => {
@@ -245,10 +276,15 @@ describe("CoreRouter", () => {
   });
 
   it("applies global jobObject limits to appcontainer sessions as well (core enforces them in both modes)", async () => {
-    const metas = new Map([["s1", makeMeta("s1", "appcontainer")]]);
-    const { router, shared } = makeRouter(metas, { maxProcesses: 16 });
-    await router.configureSession({ sessionId: "s1", cwd: "D:\\work", sandbox: policy });
-    expect(shared.configureSession).toHaveBeenCalledWith({ sessionId: "s1", cwd: "D:\\work", sandbox: { ...policy, mode: "appcontainer", jobMaxProcesses: 16 } });
+    const restore = await stubCleanHome();
+    try {
+      const metas = new Map([["s1", makeMeta("s1", "appcontainer")]]);
+      const { router, shared } = makeRouter(metas, { maxProcesses: 16 });
+      await router.configureSession({ sessionId: "s1", cwd: "D:\\work", sandbox: policy });
+      expect(shared.configureSession).toHaveBeenCalledWith({ sessionId: "s1", cwd: "D:\\work", sandbox: { ...policy, mode: "appcontainer", jobMaxProcesses: 16 } });
+    } finally {
+      restore();
+    }
   });
 
   it("searchJob delegates to client.searchJob with sandbox path translation for wsb sessions", async () => {

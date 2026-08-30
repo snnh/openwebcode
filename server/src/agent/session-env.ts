@@ -13,8 +13,8 @@ function sessionEnvVars(meta: Pick<SessionMeta, "id" | "cwd" | "sandboxMode" | "
   return [
     ["OWC_SESSION_ID", meta.id],
     ["OWC_WORKSPACE", meta.cwd],
-    // 缺省按平台分流：win32 缺省 jobobject，POSIX 缺省 landlock 档（与 UI/policyFor 的缺省语义一致）
-    ["OWC_SANDBOX_MODE", meta.sandboxMode ?? (platform === "win32" ? "jobobject" : "landlock")],
+    // 缺省按平台分流：win32 缺省 appcontainer（policyFor 不下发 mode，core 缺省即 AppContainer）；POSIX 缺省 bubblewrap（与 UI/policyFor 的缺省语义一致）
+    ["OWC_SANDBOX_MODE", meta.sandboxMode ?? (platform === "win32" ? "appcontainer" : "bubblewrap")],
     ["OWC_AGENT_MODE", meta.agentMode ?? "code"],
   ];
 }
