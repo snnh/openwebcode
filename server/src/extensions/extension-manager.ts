@@ -866,6 +866,16 @@ export class ExtensionManager {
     }
   }
 
+  /** 宿主进程当前 RSS（字节）。无宿主/超时/失败 → null（仅性能面板展示用，不参与权限与恢复链路）。 */
+  async hostMemory(): Promise<{ rss: number } | null> {
+    if (!this.child?.connected) return null;
+    try {
+      return (await this.request("stats", undefined, 2000)) as { rss: number };
+    } catch {
+      return null;
+    }
+  }
+
   private request(method: HostRequest["method"], params?: Record<string, unknown>, timeoutMs = 5500): Promise<unknown> {
     const child = this.child;
     if (!child?.connected) return Promise.reject(new Error("Extension Host is not connected"));

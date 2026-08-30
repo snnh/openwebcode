@@ -223,6 +223,8 @@ export interface FsReadResult { content: string; totalLines: number; encoding: "
 export interface FsListResult { entries: Array<{ name: string; type: "file" | "directory" | "other"; size: number }>; truncated: boolean }
 export interface FsGlobResult { paths: string[]; truncated: boolean }
 export interface FsGrepResult { matches: Array<{ path: string; line: number; text: string }>; truncated: boolean }
+/** core.stats：当前进程 RSS（字节；0 表示平台无法上报）。 */
+export interface CoreStats { rssBytes: number }
 
 export interface CoreEvent {
   source: "core";
@@ -244,6 +246,8 @@ export interface CoreClientLike {
   start(): Promise<CoreInfo>;
   stop(): Promise<void>;
   ping(): Promise<CoreInfo>;
+  /** core.stats（可选）：旧 core 二进制无此方法时缺省，内存统计应降级为不可用。 */
+  stats?(): Promise<CoreStats>;
   run(request: ExecRequest): Promise<ExecResult>;
   configureSession(request: { sessionId: string; cwd: string; sandbox: SandboxPolicy }): Promise<{ sandboxCapability: string; sandboxReason?: string }>;
   /** 最近一次 configureSession 记录的会话执行级别（仅 CoreRouter 提供）；无记录返回 undefined。 */
@@ -379,6 +383,8 @@ export class CoreClient extends EventEmitter {
     this.info = info;
     return info;
   }
+
+  stats(): Promise<CoreStats> { return this.call<CoreStats>("core.stats", {}); }
 
   run(request: ExecRequest): Promise<ExecResult> {
     return this.call<ExecResult>("exec.run", request, (request.timeoutMs ?? 120_000) + 10_000);

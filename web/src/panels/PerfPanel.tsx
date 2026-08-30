@@ -180,6 +180,23 @@ export function PerfPanel({ sessionId }: { sessionId?: string | undefined }): Re
         )}
       </section>
 
+      {/* 内存占用（node / core / 扩展宿主；null 表示不可用） */}
+      {metrics.data && (
+        <section className="perf-section">
+          <h3>{t("内存占用", "Memory Usage")}</h3>
+          <div className="perf-grid">
+            <span className="perf-label">Node {t("RSS", "RSS")}</span>
+            <span className="perf-value">{metrics.data.memory.node ? formatBytes(metrics.data.memory.node.rss) : "—"}</span>
+            <span className="perf-label">Node {t("堆", "Heap")}</span>
+            <span className="perf-value">{metrics.data.memory.node ? formatBytes(metrics.data.memory.node.heapUsed) : "—"}</span>
+            <span className="perf-label">Core</span>
+            <span className="perf-value">{metrics.data.memory.core ? formatBytes(metrics.data.memory.core.rssBytes) : "—"}</span>
+            <span className="perf-label">{t("扩展宿主", "Extension Host")}</span>
+            <span className="perf-value">{metrics.data.memory.extensionHost ? formatBytes(metrics.data.memory.extensionHost.rss) : "—"}</span>
+          </div>
+        </section>
+      )}
+
       {/* Provider 并发诊断 */}
       {concurrency.data && Object.keys(concurrency.data).length > 0 && (
         <section className="perf-section">

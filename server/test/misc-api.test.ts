@@ -50,10 +50,72 @@ describe("WebUI static hosting", () => {
       expect(health.json()).toEqual({ status: "ok" });
       // API 响应不叠加 CSP（无渲染面）
       expect(health.headers["content-security-policy"]).toBeUndefined();
-      expect((await app.inject({ method: "GET", url: "/api/metrics" })).json()).toMatchObject({ events: events.stats(), websocket: { clients: 0, slowClientDisconnects: 0, failedClientSends: 0 } });
+      const metrics = (await app.inject({ method: "GET", url: "/api/metrics" })).json();
+      // core 桩无 stats（旧 core 兼容路径 → null）；node 恒有值；无扩展宿主 → null
+      expect(metrics).toMatchObject({ events: events.stats(), websocket: { clients: 0, slowClientDisconnects: 0, failedClientSends: 0 } });
+      expect(metrics.memory.node.rss).toBeGreaterThan(0);
+      expect(metrics.memory.core).toBeNull();
+      expect(metrics.memory.extensionHost).toBeNull();
     } finally {
       await app.close();
     }
+  });
+});
+
+describe("Metrics memory stats", () => {
+  it("core.stats 可用时透传 rssBytes，无宿主时 extensionHost 为 null", async () => {
+    const root = await tempRoot("owc-metrics-mem-");
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const core = {
+      on() { return core; },
+      async configureSession() { return {}; },
+      async ping() { return { version: "test" }; },
+      async stats() { return { rssBytes: 4 * 1024 * 1024 }; },
+    } as unknown as CoreClientLike;
+    const app = await buildServer({
+      core,
+      sessions,
+      agent: { isRunning: () => false } as AgentRunner,
+      events: new EventBus(),
+      providers: new ProviderRegistry(),
+      pricing,
+      webDist: path.join(root, "web"),
+    });
+    apps.push(app as never);
+    const metrics = (await app.inject({ method: "GET", url: "/api/metrics" })).json();
+    expect(metrics.memory.core).toEqual({ rssBytes: 4 * 1024 * 1024 });
+    expect(metrics.memory.extensionHost).toBeNull();
+    expect(metrics.memory.node.rss).toBeGreaterThan(0);
+  });
+
+  it("core.stats 抛错时降级为 null（不阻断 metrics）", async () => {
+    const root = await tempRoot("owc-metrics-mem-fail-");
+    const sessions = new SessionStore(path.join(root, "sessions"));
+    await sessions.initialize();
+    const pricing = new PricingCatalog(path.join(root, "pricing.json"));
+    await pricing.initialize();
+    const core = {
+      on() { return core; },
+      async configureSession() { return {}; },
+      async ping() { return { version: "test" }; },
+      async stats() { throw new Error("core.stats unavailable"); },
+    } as unknown as CoreClientLike;
+    const app = await buildServer({
+      core,
+      sessions,
+      agent: { isRunning: () => false } as AgentRunner,
+      events: new EventBus(),
+      providers: new ProviderRegistry(),
+      pricing,
+      webDist: path.join(root, "web"),
+    });
+    apps.push(app as never);
+    const metrics = (await app.inject({ method: "GET", url: "/api/metrics" })).json();
+    expect(metrics.memory.core).toBeNull();
+    expect(metrics.memory.node.rss).toBeGreaterThan(0);
   });
 });
 

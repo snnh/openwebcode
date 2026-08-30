@@ -1,10 +1,36 @@
 import type { FastifyInstance } from "fastify";
 import { buildAccessUrls } from "../access-token.js";
+import type { CoreClientLike } from "../core-client.js";
+import type { ExtensionManager } from "../extensions/extension-manager.js";
 import { getServerVersion, GITHUB_REPO } from "../version.js";
 import { UpdateApplyError } from "../update-applier.js";
 import { errorMessage } from "../error-utils.js";
 import { maskAccessToken } from "./route-context.js";
 import type { RouteContext } from "./route-context.js";
+import type { MemoryStats } from "./metrics-types.js";
+
+/** 内存占用统计：node 主进程 / core 进程 / 扩展宿主进程。任一来源失败降级为 null，不阻断 metrics。
+ * 仅在请求时惰性计算（前端监控开关关闭时不请求 /api/metrics，零开销）。 */
+async function buildMemoryStats(core: CoreClientLike, extensions: ExtensionManager | undefined): Promise<MemoryStats> {
+  const usage = process.memoryUsage();
+  const [coreStats, extensionHost] = await Promise.all([
+    (async (): Promise<{ rssBytes: number } | null> => {
+      if (!core.stats) return null; // 旧 core 二进制无 core.stats
+      try {
+        const stats = await core.stats();
+        return stats.rssBytes > 0 ? { rssBytes: stats.rssBytes } : null;
+      } catch {
+        return null; // 未握手/超时：内存显示不可用
+      }
+    })(),
+    extensions ? extensions.hostMemory() : Promise.resolve(null),
+  ]);
+  return {
+    node: { rss: usage.rss, heapUsed: usage.heapUsed, heapTotal: usage.heapTotal, external: usage.external },
+    core: coreStats,
+    extensionHost,
+  };
+}
 
 export function registerSystemRoutes(app: FastifyInstance, ctx: RouteContext): void {
   const { dependencies } = ctx;
@@ -40,7 +66,7 @@ export function registerSystemRoutes(app: FastifyInstance, ctx: RouteContext): v
     };
   });
 
-  app.get("/api/metrics", async () => ({ events: events.stats(), websocket: { clients: clients.size, slowClientDisconnects: wsStats.slowClientDisconnects, failedClientSends: wsStats.failedClientSends } }));
+  app.get("/api/metrics", async () => ({ events: events.stats(), websocket: { clients: clients.size, slowClientDisconnects: wsStats.slowClientDisconnects, failedClientSends: wsStats.failedClientSends }, memory: await buildMemoryStats(core, dependencies.extensions) }));
   app.get("/api/core", async () => core.ping());
   app.get("/api/version", async () => {
     const info = await core.ping();

@@ -125,7 +125,8 @@ export interface PromptHookResult {
 
 export interface HostRequest {
   id: string;
-  method: "initialize" | "reload" | "hook" | "tool.invoke" | "http.request" | "shutdown";
+  /** stats 为 server↔宿主框架的内部消息（不暴露给扩展代码）：宿主 RSS 供性能面板展示。 */
+  method: "initialize" | "reload" | "hook" | "tool.invoke" | "http.request" | "shutdown" | "stats";
   params?: Record<string, unknown>;
 }
 

@@ -5,6 +5,7 @@ import path from "node:path";
 import type {
   CoreClientLike,
   CoreInfo,
+  CoreStats,
   ExecRequest,
   ExecResult,
   FsEditRequest,
@@ -362,6 +363,12 @@ export class CoreRouter extends EventEmitter {
 
   ping(): Promise<CoreInfo> {
     return this.shared.ping();
+  }
+
+  /** core.stats（可选）：旧 core 二进制无此方法时缺省，内存统计降级为不可用。 */
+  async stats(): Promise<CoreStats> {
+    if (!this.shared.stats) throw new Error("Core memory stats support is unavailable");
+    return this.shared.stats();
   }
 
   /**

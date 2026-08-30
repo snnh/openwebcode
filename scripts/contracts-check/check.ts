@@ -27,6 +27,12 @@ type _alias_in = Expect<PersonaAlias extends ServerPersonaAlias ? true : false>;
 // ── extension：输出方向（server 权限联合是 web 联合的子集） ──
 type _permission = Expect<ServerExtensionPermission extends ExtensionPermission ? true : false>;
 
+// ── metrics 内存统计：输出方向（server memory 结构可展示为 web 结构） ──
+// 独立类型文件（metrics-types.ts）零运行时依赖，避免把 provider 图拖进 ES2022-only 环境
+import type { MemoryStats as ServerMemoryStats } from "../../server/src/routes/metrics-types.js";
+import type { MemoryStats as WebMemoryStats } from "../../web/src/lib/contracts/misc";
+type _memory_stats = Expect<ServerMemoryStats extends WebMemoryStats ? true : false>;
+
 // ── scm 写操作返回（服务端 service.ts stage/unstage/discard 均返回 Promise<{ok:true}>） ──
 import type { ScmService } from "../../server/src/scm/service.js";
 type _scm_stage = Expect<Awaited<ReturnType<ScmService["stage"]>> extends { ok: true } ? true : false>;
