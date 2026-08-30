@@ -39,7 +39,7 @@ OpenWebCode 是一个跑在浏览器里的 AI 编码工作台，界面中英双�
 - 更好的上下文管理：官方 context-saver扩展和更多开放接口供调用。
 - 多模型适配：支持chat/response/anthropic 三大主流api。
 - 环境模拟（env-sim）：系统提示词与工具形态可切换为知名 AI 编码产品的风格（Claude Code / Kimi / ZCode / Codex / DSH 五档预设），让更多模型充分发挥能力。
-- 已对 DeepSeek V4 Pro 0813 专项适配——使用该模型时建议开启 DSH 极简模拟（`dsh-minimal）。
+- 已对 DeepSeek V4 Pro 0813 专项适配——使用该模型时建议开启 DSH 极简模拟（dsh-minimal）。
 - 子代理和 agent swarm：普通子代理和可以互相沟通的子代理集群。
 - 较多的扩展支持：Skills、斜杠命令、Hooks、自定义子代理、MCP 和 Extension Host 第三方扩展。
 - 自由的会话管理：消息随意改写、分叉随时创建。
@@ -102,7 +102,7 @@ docker logs openwebcode | grep 访问链接
 
 ### 首次使用
 
-1. 在 **设置 → 模型目录** 添加并启用一个模型服务商（Anthropic Messages / OpenAI Chat Completions / OpenAI Responses 三种接口都支持），然后刷新模型目录。
+1. 在 **设置 → 模型目录** 添加并启用一个模型服务商（Anthropic Messages / OpenAI Chat Completions / OpenAI Responses），然后刷新模型目录。
 2. 点侧栏的 **+** 新建会话，选工作目录、服务商/模型和沙盒模式。
 3. 在输入框里描述任务，回车发送。
 
@@ -165,12 +165,12 @@ cd web && npm ci && npm run build && npm test                             # web�
 设置保存在 `<数据目录>/server-settings.json`。
 数据目录顺序：
 显式设置 `OWC_DATA_DIR`>平台默认值（Windows 是 `%USERPROFILE%\openwebcode`，Linux 是 `~/.local/share/openwebcode`）
-密钥、会话数据和全局扩展点都在数据目录里，POSIX 下权限一律 0600/0700。项目级的覆盖配置放在项目根目录的 `.owc/` 下。
+密钥、会话数据和全局扩展点都在数据目录里。项目级的覆盖配置放在项目根目录的 `.owc/` 下。
 
 ## 卸载
 
 - **Windows**：「设置 → 应用」里卸载。
-- **Linux**：推荐运行安装时落盘的 `~/.local/bin/owc-uninstall`（会一并处理 systemd unit 残留）；或手动 `rm -rf ~/.local/lib/openwebcode ~/.local/bin/owc ~/.local/bin/owc-uninstall`。
+- **Linux**：推荐运行安装目录的的 `~/.local/bin/owc-uninstall`（会一并处理 systemd unit 残留）；或手动 `rm -rf ~/.local/lib/openwebcode ~/.local/bin/owc ~/.local/bin/owc-uninstall`。
 注：数据目录默认保留
 
 ## 赞助
