@@ -384,7 +384,9 @@ export class CoreClient extends EventEmitter {
     return info;
   }
 
-  stats(): Promise<CoreStats> { return this.call<CoreStats>("core.stats", {}); }
+  // 内存统计是轮询型轻量查询：显式 5s 超时，避免 core 未启动/僵死时把
+  // /api/metrics 拖在 130s 默认超时（调用方按降级处理，不阻断 metrics）。
+  stats(): Promise<CoreStats> { return this.call<CoreStats>("core.stats", {}, 5_000); }
 
   run(request: ExecRequest): Promise<ExecResult> {
     return this.call<ExecResult>("exec.run", request, (request.timeoutMs ?? 120_000) + 10_000);
