@@ -46,11 +46,13 @@ export function SandboxPanel({ sessionId }: { sessionId?: string | undefined }):
   if (!sessionId || !session) return <div className="inspector-body"><p className="muted-empty panel-empty">{t("选择会话以查看沙盒策略。", "Select a session to view its sandbox policy.")}</p></div>;
   if (!session.sandbox) return <div className="inspector-body"><p className="muted-empty panel-empty">{t("未配置沙盒策略。", "No sandbox policy is configured.")}</p></div>;
   const { sandbox } = session;
-  const enabled = (session.sandboxMode ?? "jobobject") !== "off" && sandbox.enabled;
+  const enabled = (session.sandboxMode ?? "appcontainer") !== "off" && sandbox.enabled;
   const isWindows = sandboxCaps.data?.platform === undefined || sandboxCaps.data.platform === "win32";
-  const mode = session.sandboxMode ?? "jobobject";
-  // 存量 Linux 会话 meta.sandboxMode 可能是 jobobject，显示时按 landlock 处理（兼容映射）
-  const displayMode: SandboxMode = !isWindows && mode === "jobobject" ? "landlock" : mode;
+  const mode = session.sandboxMode ?? "appcontainer";
+  // 未设置（内部默认 appcontainer）在 POSIX 按 bubblewrap 显示；存量 Linux 会话 meta.sandboxMode 可能是 jobobject，显示时按 landlock 处理（兼容映射）
+  const displayMode: SandboxMode = !isWindows
+    ? mode === "jobobject" ? "landlock" : mode === "appcontainer" ? "bubblewrap" : mode
+    : mode;
   const capability = sandboxStatus.data?.sandboxCapability;
   return (
     <div className="inspector-body">

@@ -269,31 +269,52 @@ describe("NewSessionDialog 平台适配", () => {
     return within(label.closest("label")!).getByRole("combobox");
   }
 
-  it("win32：默认档显示 Job Object 文案，展示 AppContainer/WSB 选项、WSB 不可用提示与 Bind Link 区块", async () => {
+  it("win32：默认选中 AppContainer（带默认标注）且提交不携带 sandboxMode；展示 Job Object/WSB 选项、WSB 不可用提示与 Bind Link 区块", async () => {
     stubFetch({ available: true }, { available: true }, "win32");
-    renderDialog({ models: [stubModel] });
+    const onCreate = vi.fn();
+    renderDialog({ models: [stubModel], onCreate });
+    fireEvent.change(await screen.findByLabelText("工作目录"), { target: { value: "D:\\work" } });
 
     const select = await screen.findByText("沙盒模式").then(sandboxSelect);
-    await waitFor(() => expect(within(select).getByRole("option", { name: /Job Object/ })).toBeInTheDocument());
-    expect(within(select).getByRole("option", { name: /AppContainer/ })).toBeInTheDocument();
+    await waitFor(() => expect(within(select).getByRole("option", { name: /AppContainer/ })).toBeInTheDocument());
+    expect(within(select).getByRole("option", { name: /AppContainer/ })).toHaveTextContent("默认");
+    expect(select).toHaveValue("appcontainer");
+    expect(within(select).getByRole("option", { name: /Job Object/ })).toBeInTheDocument();
+    expect(within(select).getByRole("option", { name: /Job Object/ })).not.toHaveTextContent("默认");
     expect(within(select).getByRole("option", { name: /Windows Sandbox/ })).toBeInTheDocument();
     expect(await screen.findByText(/Windows Sandbox 不可用/)).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "添加绑定" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "创建" }));
+    await waitFor(() => expect(onCreate).toHaveBeenCalled());
+    expect(onCreate.mock.calls[0]?.[0]).not.toHaveProperty("sandboxMode");
   });
 
-  it("linux：沙盒选项为 landlock/bubblewrap/off 真值，默认选中 landlock；隐藏 AppContainer/WSB 选项、WSB 提示与整个 Bind Link 区块", async () => {
+  it("linux：沙盒选项为 landlock/bubblewrap/off 真值，默认选中 bubblewrap（内部默认 appcontainer 映射）；隐藏 AppContainer/WSB 选项、WSB 提示与整个 Bind Link 区块", async () => {
     stubFetch({ available: true }, { available: true }, "linux");
-    renderDialog({ models: [stubModel] });
+    const onCreate = vi.fn();
+    renderDialog({ models: [stubModel], onCreate });
+    fireEvent.change(await screen.findByLabelText("工作目录"), { target: { value: "/home/me/demo" } });
 
     const select = await screen.findByText("沙盒模式").then(sandboxSelect);
     await waitFor(() => expect(within(select).getByRole("option", { name: /Landlock/ })).toBeInTheDocument());
     expect(within(select).getByRole("option", { name: /bubblewrap/ })).toBeInTheDocument();
-    expect(select).toHaveValue("landlock");
+    expect(select).toHaveValue("bubblewrap");
     expect(within(select).queryByRole("option", { name: /AppContainer/ })).not.toBeInTheDocument();
     expect(within(select).queryByRole("option", { name: /Windows Sandbox/ })).not.toBeInTheDocument();
     expect(screen.queryByText(/Windows Sandbox 不可用/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "添加绑定" })).not.toBeInTheDocument();
     expect(screen.queryByText(/Bind Link/)).not.toBeInTheDocument();
+
+    // 默认（内部 appcontainer）提交不带 sandboxMode；显式选择 landlock 才提交真值
+    fireEvent.click(screen.getByRole("button", { name: "创建" }));
+    await waitFor(() => expect(onCreate).toHaveBeenCalled());
+    expect(onCreate.mock.calls[0]?.[0]).not.toHaveProperty("sandboxMode");
+
+    fireEvent.change(select, { target: { value: "landlock" } });
+    fireEvent.click(screen.getByRole("button", { name: "创建" }));
+    await waitFor(() => expect(onCreate).toHaveBeenCalledTimes(2));
+    expect(onCreate.mock.calls[1]?.[0]).toMatchObject({ sandboxMode: "landlock" });
   });
 });
 
