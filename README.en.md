@@ -22,7 +22,7 @@ Browser (React) ── HTTP/WebSocket ──► Node service (agent loop, tools)
 
 1. Server:
    1. OS: Windows 10+ (Windows 7 untested) or Linux
-      - Linux version: glibc ≥ 2.28; kernel ≥ 5.13 (Landlock baseline; ≥ 6.7 adds network denial), and installing bubblewrap enables full namespace isolation. Developed and verified on Debian 13 / Ubuntu 24.04
+      - Linux version: glibc ≥ 2.28; kernel ≥ 5.13 (Landlock baseline; ≥ 6.7 adds network denial). The default sandbox backend is bubblewrap (full namespace isolation): where bubblewrap is unavailable, the default backend fails with a clear error — install bubblewrap (e.g. `apt install bubblewrap`) or switch the session sandbox mode to the Landlock compatibility mode explicitly (weaker). Developed and verified on Debian 13 / Ubuntu 24.04
       - A HarmonyOS port is in development
    2. Architectures: x86-64 / arm64 / loongarch64 (the Loongson package ships no bundled Node.js and needs system Node.js ≥ 24)
    3. CPU: dual-core 2.0 GHz
@@ -96,7 +96,7 @@ docker logs openwebcode | grep 访问链接
 
 - **Data**: kept in the named volume `openwebcode-data`; upgrade by `docker compose pull && docker compose up -d` — data is untouched.
 - **Workspace**: optionally bind-mount a host directory (uncomment `./workspace:/workspace:rw` and `OWC_WORKSPACE` in the compose file; the entrypoint fixes the top-level ownership).
-- **Sandbox**: Landlock by default (host kernel ≥ 5.13); for full bubblewrap namespace isolation uncomment `security_opt: seccomp=unconfined` in compose (the host must also allow unprivileged user namespaces). The core degrades gracefully when bwrap is unavailable — by design.
+- **Sandbox**: bubblewrap by default (uncomment `security_opt: seccomp=unconfined` in compose; the host must also allow unprivileged user namespaces). When bwrap is unavailable, the default backend fails with a clear error instead of silently degrading — install bubblewrap or switch the session sandbox mode to Landlock explicitly (host kernel ≥ 5.13; weaker: denyPaths are not enforced at the command layer).
 - **Build from source**: `docker build -t openwebcode .`, or uncomment `build:` in the compose file. Image layout, build, and publishing details are in the "Docker image" section of [`packaging/README.en.md`](./packaging/README.en.md).
 
 ### First run

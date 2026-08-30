@@ -195,7 +195,7 @@ manifest 可选声明 `configSchema`（JSON Schema 子集）：设置页据此�
 - **C 只是执行器**。不实现 HTTP/LLM 客户端，不碰 API Key、提示词、任意 URL。LLM、网络、凭据、策略全部留在 Node。
 - **机制在核心，策略在扩展**。核心安全网（上下文强制压缩水位——默认 85%，可在设置调整 `compactionThresholdPercent`（50–95，热生效，env `OWC_COMPACTION_THRESHOLD_PERCENT`）、当前轮保护、账本一致性、沙盒路径校验）不可绕过；Skills/Commands/Hooks/子代理/MCP/扩展只加策略。
 - **权限与沙盒正交**。yolo 只跳过确认，不解除沙盒；`--no-sandbox` 才完全解除（不推荐）。Hooks 由 server 直接 spawn，安全级别等同 yolo，只能加载可信配置。
-- **路径策略优先级固定**：`denyPaths > writeRoots > readRoots`。文件原语必须保持 root-bound + no-follow/reparse 防护。
+- **路径策略优先级固定**：`denyPaths > writeRoots > readRoots`。文件原语必须保持 root-bound + no-follow/reparse 防护。denyPaths 对沙盒内命令同样生效（Windows 剥离 deny 路径上沙盒包身份的 ACL 项——实测 DENY ACE 对 AppContainer 包身份无效 / bwrap mount mask；显式 Landlock 档无法表达，能力报 partial）。
 - **无 TUI**。WebUI 是唯一交互界面，`owc run` CLI 只做非交互自动化（`--json` 出 NDJSON）。禁止引入 ncurses / bubbletea / ratatui / blessed 之类。
 
 ## CI

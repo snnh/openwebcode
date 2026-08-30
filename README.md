@@ -19,7 +19,7 @@ OpenWebCode 是一个跑在浏览器里的 AI 编码工作台，界面中英双�
 
 1. 服务端：
   - 系统：Windows10+ (win7暂未测试) 和 Linux
-     - Linux 版本：glibc ≥ 2.28 ；内核 ≥ 5.13（Landlock 起步，≥ 6.7 支持禁网），安装 bubblewrap 可获得完整 namespace 隔离。开发与实测环境为 Debian 13 / Ubuntu 24.04
+     - Linux 版本：glibc ≥ 2.28 ；内核 ≥ 5.13（Landlock 起步，≥ 6.7 支持禁网）。沙盒默认档为 bubblewrap（完整 namespace 隔离）：未安装 bubblewrap 的环境默认档会明确报错，需 `apt install bubblewrap`（或等价包），或将会话沙盒模式显式切换为 Landlock 兼容档（更弱）。开发与实测环境为 Debian 13 / Ubuntu 24.04
      - 鸿蒙版本正在开发
   - 架构：x86-64 / arm64 / loongarch64（龙芯包不内置 Node.js，需系统 Node.js ≥ 24）
   - CPU：双核2.0ghz
@@ -96,8 +96,8 @@ docker logs openwebcode | grep 访问链接
 - **升级**：`docker compose pull && docker compose up -d`。
 - **工作区**：可选挂载宿主机目录。
 - **沙盒**：
-  - 默认 Landlock（需宿主机内核 ≥ 5.13）；
-  - bubblewrap 命名空间，（需在 compose 放开 `security_opt: seccomp=unconfined`，同时宿主机允许非特权 user namespace）。不可用时 core 自动降级。
+  - 默认 bubblewrap 命名空间（需在 compose 放开 `security_opt: seccomp=unconfined`，同时宿主机允许非特权 user namespace）；不可用时默认档明确报错，不再自动降级；
+  - Landlock 为显式兼容档（需宿主机内核 ≥ 5.13）：无 bubblewrap 的环境可在会话设置中显式切换（更弱：denyPaths 不经命令层强制）。
 - **从源码构建**：`docker build -t openwebcode .`，或在 compose 里取消 `build:` 注释。镜像内布局、构建与发布说明见 [`packaging/README.md`](./packaging/README.md) 的「Docker 镜像」一节。
 
 ### 首次使用
