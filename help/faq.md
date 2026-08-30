@@ -32,7 +32,7 @@
 
 ### Q: 支持哪些平台？
 
-Windows (x86-64) 和 Linux (x86-64 / arm64 / loongarch64) 原生支持。沙盒：Windows 默认 Job Object，可选 AppContainer / WSB；Linux 默认 bubblewrap，没有 bwrap 的环境自动回落 Landlock（会如实上报 partial）。macOS 暂不支持。
+Windows (x86-64) 和 Linux (x86-64 / arm64 / loongarch64) 原生支持。沙盒：Windows 默认 AppContainer（真文件隔离），可选 Job Object / WSB；Linux 默认 bubblewrap，没有 bwrap 的环境默认档明确报错，可显式切换 Landlock 兼容档（更弱，会如实上报 partial）。macOS 暂不支持。
 
 ### Q: 端口 3210 被占用怎么办？
 

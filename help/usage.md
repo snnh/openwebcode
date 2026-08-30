@@ -115,7 +115,7 @@ ChatGPT 风格的纯对话模式，与编码工作台并存，适合问答、写
   - 联网：`web_search`、`web_fetch`（服务商在 设置 → 联网服务 选择，与工作台共用）
   - 媒体：`image_gen`（可选画面比例）、`vision`（分析对话图片 / 会话文件 / 网页图片，可选推理档）。两者使用的能力模型在 chat 设置中挑选——候选按模型能力声明过滤（能看图 / 能出图）；主对话模型本身具备对应能力时，该工具开关自动隐藏，图片直进对话
   - 沙盒（需先开「沙盒」总开关）：`python`、`read_file`、`write_file`、`show`
-- **Python 沙盒**：uv 管理的独立环境预装 numpy / pandas / matplotlib / sympy / scipy / Pillow，不能额外装包；Linux 用 bubblewrap 全隔离（禁网），Windows 用 Job Object 约束进程树（无网络/文件系统隔离，工具结果如实标注）。matplotlib 保存的图直接内联回对话。
+- **Python 沙盒**：uv 管理的独立环境预装 numpy / pandas / matplotlib / sympy / scipy / Pillow，不能额外装包；Linux 用 bubblewrap 全隔离（禁网），Windows 用 AppContainer 隔离（默认档；创建失败明确报错，可显式切换 Job Object 兼容档，工具结果如实标注）。matplotlib 保存的图直接内联回对话。
 - **分享**：会话菜单 → 分享生成只读公开链接（可设访问密码），任何浏览器可打开；再次进入菜单可撤销。分享页是快照式只读，不含后续新消息。
 - **鉴权**：局域网内打开 chat 页面可直接对话（免令牌）；修改 chat 配置、切换进工作台仍需访问令牌。要关闭局域网免令牌，在数据目录 `chat.json` 里设 `"lanUnauthenticated": false`。
 - **数据位置**：chat 会话独立存于 `<数据目录>/chat-sessions/`，与工作台会话互不影响；全局配置在 `<数据目录>/chat.json`，助手预设在 `chat-assistants.json`。
@@ -127,10 +127,10 @@ ChatGPT 风格的纯对话模式，与编码工作台并存，适合问答、写
 - **工作目录**：agent 的 cwd，文件读写/命令执行都在此目录下（受沙盒约束）。可手输绝对路径，也可点输入框旁的「浏览…」按钮在弹层中导航选择——面包屑可跳回任意层级，列表里目录可进入、文件灰显仅作定位参考、符号链接标记但不跟随。浏览范围受**目录浏览根**限制（见「配置文件位置」），默认为用户家目录，可在 `server-settings.json` 的 `browseRoots` 或环境变量 `OWC_BROWSE_ROOTS` 中配置；手动输入路径仅校验是否存在，不受浏览根约束
 - **模型**：从所有已启用服务商的模型列表中选择，格式为 `模型ID【服务商】`
 - **沙盒模式**：
-  - Windows：`Job Object`（默认，兼容模式）/ `AppContainer`（更强隔离，兼容性较差）/ `WSB`（Windows Sandbox，跑不可信代码用，一会话一 VM，关闭即销毁）/ `关闭`
-  - Linux：`bubblewrap`（默认，mount/net namespace 隔离；无 bwrap 环境自动回落 Landlock）/ `Landlock`（强制后端）/ `关闭`
+  - Windows：`AppContainer`（默认，真文件隔离）/ `Job Object`（兼容模式，无文件隔离）/ `WSB`（Windows Sandbox，跑不可信代码用，一会话一 VM，关闭即销毁）/ `关闭`
+  - Linux：`bubblewrap`（默认，mount/net namespace 隔离；无 bwrap 环境默认档会明确报错，需安装 bubblewrap 或显式切换 Landlock）/ `Landlock`（显式兼容档，仅内核规则，denyPaths 不经命令层强制）/ `关闭`
   - `关闭` 是完全不沙盒，不推荐
-  - Linux 沙盒内使用 git/gh：宿主的 `~/.gitconfig`、`~/.git-credentials`、`~/.config/git`、`~/.config/gh`、`~/.ssh`（仅实际存在的项）会以只读方式挂入沙盒，`git push` / `gh` 可直接使用宿主凭据；这些路径只读且对文件工具不可见（仅沙盒内进程可读）
+  - Linux bubblewrap 与 Windows AppContainer 档内使用 git/gh：宿主的 `~/.gitconfig`、`~/.git-credentials`、`~/.config/git`、`~/.config/gh`、`~/.ssh`（仅实际存在的项）会以只读方式挂入沙盒，`git push` / `gh` 可直接使用宿主凭据；这些路径只读且对文件工具不可见（仅沙盒内进程可读）
 - **本机会话**（侧栏「终端」图标一键创建）：会话目录固定为用户家目录，沙盒固定为 `关闭`，命令直接以 server 身份在宿主机执行、环境变量跟随启动 server 的终端——适合管理本机文件/服务。文件工具（read_file/write_file/edit_file/glob/grep）访问 **HOME 之外** 的路径必须经人工允许（每次或「总是允许」按目录前缀记入会话规则，HOME 内按普通权限模式处理）；本机会话不做快照，不能切换沙盒模式，也不支持托管工作区
 - **网络**：`允许（默认）` / `拒绝` / `代理过滤（仅 Windows）`。filtered 档让沙盒内进程经 sidecar 代理出网，默认全放行；拦截域名在 **设置 → 服务信息** 的「沙盒代理拦截域名」维护（每行一个域名、含其子域，最多 64 个，保存后对活跃会话热生效；对应环境变量 `OWC_SANDBOX_PROXY_DENY_LIST`）
 - **初始化脚本**（仅 WSB）：沙盒启动后、agent 启动前执行的命令
@@ -203,9 +203,9 @@ agent 运行期间的状态指示与干预手段：
   - `拒绝` —— 可附理由回填给 LLM
 - **命令后端**：会话头部可选 `默认` 或 `PowerShell 7`。`默认` 按平台探测顺序取第一个可用项——Windows 为 `pwsh > Git Bash > cmd.exe`（Git Bash 解析为 Git for Windows 的 bash.exe 绝对路径，不会命中 WSL 的 `System32\bash.exe`），Linux 为 `bash > pwsh > $SHELL`（`/bin/sh` 兜底）。该选择同时作用于前台命令、后台任务和 agent 的 bash 工具，随会话保存。选 `pwsh` 前需先安装 PowerShell 7；缺少时会返回明确错误，不会悄悄改用其他 shell
 - **持久 shell**：agent 的 bash 工具默认复用每会话一个持久 shell（沙盒内 pty），`cd` 切换的目录、设置的环境变量跨调用保持；pty 不可用（如旧版 core）或 shell 起不来（如 AppContainer 沙盒下的 pwsh / Git Bash）时透明回退一次性执行，不报错。`run_in_background` 后台任务仍走一次性 job
-- **会话环境变量**：bash 工具的执行环境中自动注入四个会话元数据变量——`OWC_SESSION_ID`（会话 id）、`OWC_WORKSPACE`（会话工作目录）、`OWC_SANDBOX_MODE`（沙盒模式，如 `jobobject`）、`OWC_AGENT_MODE`（agent 模式，如 `code`/`plan`）。持久 shell 开壳时激活一次，一次性回退路径逐命令前置 export，脚本可依此感知会话上下文
+- **会话环境变量**：bash 工具的执行环境中自动注入四个会话元数据变量——`OWC_SESSION_ID`（会话 id）、`OWC_WORKSPACE`（会话工作目录）、`OWC_SANDBOX_MODE`（沙盒模式，如 `appcontainer`）、`OWC_AGENT_MODE`（agent 模式，如 `code`/`plan`）。持久 shell 开壳时激活一次，一次性回退路径逐命令前置 export，脚本可依此感知会话上下文
 - **Python 环境**：会话头部「虚拟环境」切换 bash 工具的 python 运行环境——`本机环境` / `uv·工作区`（在项目工作区 `.owc/venv` 创建 uv 虚拟环境）/ `uv·配置目录`（在数据目录 `venvs/` 下按工作区路径哈希隔离创建）。venv 懒创建，不走 activate 脚本而是把 `Scripts`/`bin` 前置 PATH；uv 不可用或建环境失败时回退本机环境，输出前置一行说明。全局默认在 **设置 → 服务信息**（`OWC_PYTHON_ENV`），会话值优先
-- **Node 环境**：会话头部「Node 环境」切换——`本机 global` / `工作区 project`（`node_modules/.bin` 前置 PATH）/ `fnm` / `nvm`（版本管理器激活；fnm 不支持 cmd，nvm 仅 POSIX bash/sh）。管理器不可用时同样回退本机环境并前置说明。全局默认在 **设置 → 服务信息**（`OWC_NODE_ENV`），会话值优先。Linux 沙盒下工具链目录按该选择只读挂入沙盒（`global` 解析宿主 PATH 上生效的 node/npm 工具链根，`nvm` 挂 `$NVM_DIR`，`fnm` 挂 fnm 安装目录），node 经 nvm/fnm 安装时沙盒内 `node`/`npm` 同样可用；挂载只读且对文件工具不可见，切换后下次工具调用自动重配
+- **Node 环境**：会话头部「Node 环境」切换——`本机 global` / `工作区 project`（`node_modules/.bin` 前置 PATH）/ `fnm` / `nvm`（版本管理器激活；fnm 不支持 cmd，nvm 仅 POSIX bash/sh）。管理器不可用时同样回退本机环境并前置说明。全局默认在 **设置 → 服务信息**（`OWC_NODE_ENV`），会话值优先。Linux 沙盒与 Windows AppContainer 档下工具链目录按该选择只读挂入沙盒（`global` 解析宿主 PATH 上生效的 node/npm 工具链根，`nvm` 挂 `$NVM_DIR`，`fnm` 挂 fnm 安装目录，uv 装 Python 时挂 uv 工具链目录），node 经 nvm/fnm 安装时沙盒内 `node`/`npm` 同样可用；挂载只读且对文件工具不可见，切换后下次工具调用自动重配
 - **顶栏读数**：tokens·成本（未定价部分标 `*`）、上下文窗口占用、缓存命中率（累计口径标注，低于 30% 标红、30–60% 标黄；悬停看精确百分比与读/写 tokens）
 - **后台 bash 任务**：bash 工具带 `run_in_background=true` 时立即返回 taskId，头部徽标查看运行中任务、点开看输出、随时终止；完成自动通知下一轮。弹层里运行中任务排前（先启动的在前）并逐秒跳动耗时，已结束任务按结束时间倒序排后并弱化显示（悬停恢复）；Esc 或点击外部关闭弹层并把焦点还给徽标按钮
 - **通知中心**：活动栏铃铛打开设置 → **通知** 页签，汇总 toast 与后台事件（任务完成、诊断更新、SCM 更新、后台任务结束），未读角标、进入页签即全部已读、可逐条/全部清除、点击跳转相关会话与视图；权限请求与结构化交互不进通知流，仍是一等卡片
