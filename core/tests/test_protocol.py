@@ -214,6 +214,21 @@ def main():
         response, _ = collect_until_response(proc, 2)
         assert response["error"]["code"] == -32601
 
+        # core.stats: current process RSS, no params; unknown fields rejected.
+        request(proc, "stats-1", "core.stats")
+        response, notes = collect_until_response(proc, "stats-1")
+        assert not notes
+        assert isinstance(response["result"]["rssBytes"], int)
+        assert response["result"]["rssBytes"] > 0
+
+        request(proc, "stats-bogus", "core.stats", {"bogus": 1})
+        response, _ = collect_until_response(proc, "stats-bogus")
+        assert response["error"]["code"] == -32602
+
+        request(proc, "after-stats", "core.ping")
+        response, _ = collect_until_response(proc, "after-stats")
+        assert response["result"]["version"] == version
+
         # Duplicate object keys are rejected as a parse error (-32700) instead
         # of silently keeping only the first value; the connection must stay
         # usable afterwards.  json.dumps cannot express duplicates, so the
