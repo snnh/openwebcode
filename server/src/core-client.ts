@@ -12,21 +12,62 @@ interface RpcErrorBody {
 }
 
 /**
- * Windows 下为 core（及其 pty/exec 派生的 cmd/pwsh 子进程）把 System32 前置到 PATH：
- * server 从 Git Bash/MSYS 环境启动时 PATH 里 usr\bin 先于 System32，find/sort/fc 等会被
- * 解析成 MSYS 版本（语义截然不同，如 `find /c` 变成递归遍历目录）。前置后内置伴随命令
- * 恢复 Windows 语义，其余 PATH 条目保持不变（显式调用 bash 等仍可用）。
+ * core 子进程 env 白名单（跨平台）：只传运行所需的最小变量集，剥离 ANTHROPIC_API_KEY 等
+ * 凭据变量——core 自身只读 PATH/SHELL（pty 缺省 shell），其余全为沙盒命令环境，默认
+ * network:"allow" 下被命令读到即可外传。
+ * 保留：PATH、HOME、USER、LOGNAME、SHELL、LANG、LC_*、TERM、TMPDIR、http_proxy/https_proxy/no_proxy
+ * （大小写形式都保留）、SSL_CERT_FILE、NODE_EXTRA_CA_CERTS、OWC_*（server 注入 core 的专用变量）。
+ * Windows 另保留 SystemRoot/windir、TEMP/TMP 与 LOCALAPPDATA（实测必需）：
+ * - SystemRoot/windir：System32 前置（见下）依赖系统根（缺失时按默认 C:\Windows 兜底）；
+ * - TEMP/TMP：Windows 工具（git/npm）的临时目录约定，无 TEMP 时回落不可写的 C:\Windows\Temp；
+ * - LOCALAPPDATA：AppContainer 进程创建（CreateProcess + SECURITY_CAPABILITIES，含 ConPTY 路径）
+ *   缺它即 ERROR_ENVVAR_NOT_FOUND（203），实测必需。
+ * 键名大小写不敏感匹配（Windows 环境变量大小写不敏感，存储大小写随来源），输出保留原大小写。
  */
-export function sanitizedCoreEnv(): NodeJS.ProcessEnv | undefined {
-  if (process.platform !== "win32") return undefined;
-  const env: NodeJS.ProcessEnv = { ...process.env };
-  const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
-  const systemRoot = env.SystemRoot ?? env.windir ?? "C:\\Windows";
-  const prefixes = [path.join(systemRoot, "System32"), systemRoot, path.join(systemRoot, "System32", "Wbem")];
-  const seen = new Set(prefixes.map((entry) => entry.toLowerCase()));
-  const rest = (env[pathKey] ?? "").split(";").filter((entry) => entry.length > 0 && !seen.has(entry.toLowerCase()));
-  env[pathKey] = [...prefixes, ...rest].join(";");
+export function sanitizedCoreEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined) continue;
+    if (isCoreEnvAllowed(key)) env[key] = value;
+  }
+  if (process.platform === "win32") {
+    // Windows 下为 core（及其 pty/exec 派生的 cmd/pwsh 子进程）把 System32 前置到 PATH：
+    // server 从 Git Bash/MSYS 环境启动时 PATH 里 usr\bin 先于 System32，find/sort/fc 等会被
+    // 解析成 MSYS 版本（语义截然不同，如 `find /c` 变成递归遍历目录）。前置后内置伴随命令
+    // 恢复 Windows 语义，其余 PATH 条目保持不变（显式调用 bash 等仍可用）。
+    const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") ?? "PATH";
+    const systemRoot = env.SystemRoot ?? env.windir ?? "C:\\Windows";
+    const prefixes = [path.join(systemRoot, "System32"), systemRoot, path.join(systemRoot, "System32", "Wbem")];
+    const seen = new Set(prefixes.map((entry) => entry.toLowerCase()));
+    const rest = (env[pathKey] ?? "").split(";").filter((entry) => entry.length > 0 && !seen.has(entry.toLowerCase()));
+    env[pathKey] = [...prefixes, ...rest].join(";");
+  }
   return env;
+}
+
+/** env 白名单判定：大小写不敏感匹配，输出键保留 process.env 中的原始大小写。 */
+function isCoreEnvAllowed(key: string): boolean {
+  const upper = key.toUpperCase();
+  switch (upper) {
+    case "PATH":
+    case "HOME":
+    case "USER":
+    case "LOGNAME":
+    case "SHELL":
+    case "LANG":
+    case "TERM":
+    case "TMPDIR":
+    case "SSL_CERT_FILE":
+    case "NODE_EXTRA_CA_CERTS":
+    case "SYSTEMROOT":
+    case "WINDIR":
+    case "TEMP":
+    case "TMP":
+    case "LOCALAPPDATA":
+      return true;
+  }
+  if (upper.startsWith("LC_") || upper.startsWith("OWC_")) return true;
+  return upper === "HTTP_PROXY" || upper === "HTTPS_PROXY" || upper === "NO_PROXY";
 }
 
 interface RpcResponse {
@@ -539,7 +580,7 @@ export class CoreClient extends EventEmitter {
   private spawnStdio(): CoreConnection {
     const executable = this.resolveCorePath();
     const env = sanitizedCoreEnv();
-    const child = spawn(executable, [], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true, ...(env ? { env } : {}) });
+    const child = spawn(executable, [], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true, env });
     return { transport: new StdioTransport(child), child };
   }
 

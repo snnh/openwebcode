@@ -106,8 +106,8 @@ export class SessionStore {
       ...(input.workspace ? { workspace: input.workspace } : {}),
       ...(input.snapshotBackend ? { snapshotBackend: input.snapshotBackend } : {}),
     };
-    // jobobject 为默认不落盘；setupScript 仅非空时保留
-    if (input.sandboxMode && input.sandboxMode !== "jobobject") meta.sandboxMode = input.sandboxMode;
+    // 默认档（appcontainer，两平台 core 缺省语义）不落盘；setupScript 仅非空时保留
+    if (input.sandboxMode && input.sandboxMode !== "appcontainer") meta.sandboxMode = input.sandboxMode;
     if (input.setupScript?.trim()) meta.setupScript = input.setupScript;
     if (input.agentMode === "plan" || input.agentMode === "goal") meta.agentMode = input.agentMode;
     // 工具白名单/黑名单：空数组等同未设置，不落盘
@@ -459,11 +459,11 @@ export class SessionStore {
     return meta;
   }
 
-  /** 更新沙盒模式；jobobject/空 setupScript 视为缺省（从 meta 删除）。sandboxMode 未提供时保留现值（setupScript-only 补丁不误清模式）。 */
+  /** 更新沙盒模式；appcontainer（两平台 core 缺省语义）视为缺省（从 meta 删除）；空 setupScript 同样删除。sandboxMode 未提供时保留现值（setupScript-only 补丁不误清模式）。 */
   async updateSandboxMode(id: string, sandboxMode: SandboxMode | undefined, setupScript: string | undefined): Promise<SessionMeta> {
     const meta = await this.readMeta(id);
     if (sandboxMode !== undefined) {
-      if (sandboxMode === "jobobject") delete meta.sandboxMode;
+      if (sandboxMode === "appcontainer") delete meta.sandboxMode;
       else meta.sandboxMode = sandboxMode;
     }
     if (!setupScript?.trim()) delete meta.setupScript;

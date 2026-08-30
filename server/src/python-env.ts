@@ -22,14 +22,15 @@ export function uvVenvDir(mode: PythonEnv, cwd: string, dataDir: string | undefi
 }
 
 /**
- * 非本机 python 环境的读写挂载目录（POSIX 沙盒经 allowPaths 下发；bwrap rw-bind /
- * Landlock 完整访问集。Windows 无文件系统隔离，不追加）：仅 uv-config 的 venv 目录——
- * 它在数据目录下，沙盒只挂载工作区与系统树，不挂载则激活静默失效；读写权限限定在
- * venv 自身（pip install 落在 venv 内；系统 site-packages 只读，全局安装不可能）。
+ * 非本机 python 环境的读写挂载目录（沙盒经 allowPaths 下发；bwrap rw-bind / Landlock
+ * 完整访问集。Windows 是否挂载由调用方按生效沙盒模式门禁——仅 AppContainer 档需要，
+ * 数据目录通常在用户 profile 下，不挂载则激活静默失效；Job Object 无文件隔离）：
+ * 仅 uv-config 的 venv 目录——它在数据目录下，沙盒只挂载工作区与系统树，不挂载则激活静默失效；
+ * 读写权限限定在 venv 自身（pip install 落在 venv 内；系统 site-packages 只读，全局安装不可能）。
  * uv-workspace 的 venv 在工作区内（随 writeRoots 可写可见），global 无挂载。
  */
-export function pythonEnvWritePaths(mode: PythonEnv, cwd: string | undefined, dataDir: string | undefined, platform: NodeJS.Platform = process.platform): string[] {
-  if (platform === "win32" || !cwd || mode !== "uv-config") return [];
+export function pythonEnvWritePaths(mode: PythonEnv, cwd: string | undefined, dataDir: string | undefined, _platform: NodeJS.Platform = process.platform): string[] {
+  if (!cwd || mode !== "uv-config") return [];
   const venv = uvVenvDir(mode, cwd, dataDir);
   return venv ? [venv] : [];
 }

@@ -467,8 +467,8 @@ describe.skipIf(!hasCore)("PersistentShellManager（真 core）", () => {
     const session = await sessions.create({ cwd: root, provider: "test", model: "test", title: "pshell" });
     await sessions.updateConfig(session.id, { provider: "test", model: "test", shellBackend: backend });
     const meta = (await sessions.get(session.id))!;
-    // MSYS bash 在 AppContainer 下 DLL 初始化失败（0xC0000142）；真实会话经 CoreRouter
-    // 缺省走 jobobject 兼容模式，测试显式对齐（cmd/pwsh 用例保持 AppContainer 默认）
+    // MSYS bash 在 AppContainer 下 DLL 初始化失败（0xC0000142）；缺省（不下发 mode）即
+    // AppContainer，测试对 git bash 显式 jobobject 对齐（cmd/pwsh 用例保持 AppContainer 默认）
     if (sandboxMode) meta.sandbox = { ...defaultSandboxPolicy(root), mode: sandboxMode };
     const client = new CoreClient(corePath);
     clients.push(client);

@@ -18,17 +18,18 @@ export interface NodeToolchainMountDeps {
   home?: string;
   /** 宿主 PATH（缺省 process.env.PATH）。 */
   pathEnv?: string;
-  /** 缺省 $NVM_DIR ?? ~/.nvm。 */
+  /** POSIX 缺省 $NVM_DIR ?? ~/.nvm；win32 缺省 $NVM_HOME ?? %APPDATA%\nvm。 */
   nvmDir?: string;
-  /** 缺省 $FNM_DIR 优先于内置候选。 */
+  /** 缺省 $FNM_DIR 优先于内置候选（POSIX ~/.local/share/fnm、~/.fnm；win32 %LOCALAPPDATA%\fnm）。 */
   fnmDir?: string;
   exists?: (target: string) => boolean;
   realpath?: (target: string) => string;
 }
 
 /**
- * 与 nodeEnv 选择绑定的工具链只读挂载目录（POSIX；bwrap/Landlock 经 readOnlyPaths 放行，
- * fs.* 工具的路径策略不含 readOnlyPaths，工具层读不到内容。Windows 无文件系统隔离，不追加）：
+ * 与 nodeEnv 选择绑定的工具链只读挂载目录（bwrap/Landlock 经 readOnlyPaths 放行，
+ * fs.* 工具的路径策略不含 readOnlyPaths，工具层读不到内容。Windows 是否挂载由调用方
+ * 按生效沙盒模式门禁——仅 AppContainer 档需要，Job Object 无文件隔离）：
  * 仅服务 global（本机环境，保持既有行为）：解析宿主 PATH 上实际生效的 node/npm 所在 bin
  * 目录（realpath 跟随软链），挂载其工具链根（<root>/bin → <root>，npm 软链到
  * lib/node_modules 仍可解析）；落在系统树内的跳过（已放行）。用户的"全局" node 实为
@@ -37,12 +38,31 @@ export interface NodeToolchainMountDeps {
  */
 export function nodeToolchainReadOnlyPaths(mode: NodeEnv, deps: NodeToolchainMountDeps = {}): string[] {
   const platform = deps.platform ?? process.platform;
-  if (platform === "win32") return [];
   const exists = deps.exists ?? existsSync;
   const realpath = deps.realpath ?? ((target: string) => realpathSync(target));
-  // 本函数只服务 POSIX 沙盒（win32 已早退）：PATH 与目录拼接一律按 POSIX 语义（path.posix），
-  // 与平台无关、可注入确定性测试；os.homedir()/env 提供的目录在 POSIX 宿主上本来就是 POSIX 路径。
   if (mode !== "global") return [];
+  if (platform === "win32") {
+    // win32：PATH 按 ; 分隔、node.exe/npm.cmd 判定。AppContainer 的不可见区是用户 profile——
+    // 系统级安装（Program Files 等）本就可见，无需挂载；只放行 profile 下的工具链根
+    // （fnm/nvm 管理的 node 与全局安装）。条目本身（fnm multishell 等 junction）也并入：
+    // core 侧对 reparse point 同时授权链接本体与 target 树（sandbox_win.c grant_read_only_paths）。
+    const home = (deps.home ?? os.homedir()).toLowerCase();
+    const roots: string[] = [];
+    for (const dir of (deps.pathEnv ?? process.env.PATH ?? "").split(";").filter(Boolean)) {
+      if (!exists(path.win32.join(dir, "node.exe")) && !exists(path.win32.join(dir, "npm.cmd"))) continue;
+      let binDir = dir;
+      try { binDir = realpath(dir); } catch { /* 目录不可解析时按原样尽力挂载 */ }
+      const root = path.win32.basename(binDir) === "bin" ? path.win32.dirname(binDir) : binDir;
+      const lower = root.toLowerCase();
+      // 盘根（C:\）排除：全盘只读授权会把用户 profile 一并打开
+      if (lower !== home && !lower.startsWith(`${home}\\`)) continue;
+      if (!roots.includes(root)) roots.push(root);
+      if (dir !== root && !roots.includes(dir)) roots.push(dir);
+    }
+    return roots;
+  }
+  // 本函数其余部分只服务 POSIX 沙盒：PATH 与目录拼接一律按 POSIX 语义（path.posix），
+  // 与平台无关、可注入确定性测试；os.homedir()/env 提供的目录在 POSIX 宿主上本来就是 POSIX 路径。
   // global：PATH 上首个含 node 或 npm 的 bin 目录即 shell 实际生效的工具链
   const pathEnv = deps.pathEnv ?? process.env.PATH ?? "";
   const roots: string[] = [];
@@ -59,19 +79,37 @@ export function nodeToolchainReadOnlyPaths(mode: NodeEnv, deps: NodeToolchainMou
 }
 
 /**
- * 显式选择的非本机 node 环境的工具链读写挂载目录（POSIX；bwrap rw-bind / Landlock 完整
- * 访问集，经 allowPaths 下发。Windows 无文件系统隔离，不追加）：
+ * 显式选择的非本机 node 环境的工具链读写挂载目录（bwrap rw-bind / Landlock 完整
+ * 访问集，经 allowPaths 下发。Windows 是否挂载由调用方按生效沙盒模式门禁——仅 AppContainer
+ * 档需要，用户 profile 对沙盒不可见；Job Object 无文件隔离）：
  * 读写与安装权限严格限定在版本管理器自身目录——npm i -g / fnm install / nvm install
  * 都落在该目录内；系统树只读、HOME 不挂载，整机全局安装在沙盒内不可能。
  * - nvm：$NVM_DIR（nvm.sh + versions 全量读写，激活前缀 source nvm.sh 才能工作）；
- * - fnm：$FNM_DIR 或内置候选（~/.local/share/fnm 含 fnm 二进制与版本、~/.fnm）；
+ *   win32（nvm-windows）：$NVM_HOME 或 %APPDATA%\nvm（nvm.exe + settings.txt + versions）。
+ * - fnm：$FNM_DIR 或内置候选（POSIX ~/.local/share/fnm 含 fnm 二进制与版本、~/.fnm；
+ *   win32 %LOCALAPPDATA%\fnm）；
  * - global/project：空（global 走只读层；project 的 node_modules/.bin 在工作区内）。
  */
 export function nodeToolchainWritePaths(mode: NodeEnv, deps: NodeToolchainMountDeps = {}): string[] {
   const platform = deps.platform ?? process.platform;
-  if (platform === "win32") return [];
   const home = deps.home ?? os.homedir();
   const exists = deps.exists ?? existsSync;
+  if (platform === "win32") {
+    if (mode === "fnm") {
+      const candidates = [deps.fnmDir ?? process.env.FNM_DIR, path.win32.join(home, "AppData", "Local", "fnm")]
+        .filter((dir): dir is string => typeof dir === "string" && dir !== "");
+      const result: string[] = [];
+      for (const candidate of candidates) {
+        if (!result.includes(candidate) && exists(candidate)) result.push(candidate);
+      }
+      return result;
+    }
+    if (mode === "nvm") {
+      const nvmDir = deps.nvmDir ?? process.env.NVM_HOME ?? path.win32.join(home, "AppData", "Roaming", "nvm");
+      return exists(path.win32.join(nvmDir, "nvm.exe")) ? [nvmDir] : [];
+    }
+    return [];
+  }
   if (mode === "nvm") {
     const nvmDir = deps.nvmDir ?? process.env.NVM_DIR ?? path.posix.join(home, ".nvm");
     return exists(path.posix.join(nvmDir, "nvm.sh")) ? [nvmDir] : [];

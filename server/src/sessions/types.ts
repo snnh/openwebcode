@@ -93,9 +93,9 @@ export interface ManagedWorkspaceMeta {
   image: string;
   mountPoint: string;
 }
-/** 下发给 core 的 sandbox.mode（wsb 不下发，由 VM 充当边界；landlock 为 POSIX 默认语义，不下发 mode） */
+/** 下发给 core 的 sandbox.mode（wsb 不下发，由 VM 充当边界；缺省与 landlock 不下发 mode——core 缺省即 AppContainer） */
 type SandboxBackendMode = "appcontainer" | "jobobject" | "landlock" | "bubblewrap" | "off";
-/** 用户可选的沙盒模式；undefined = jobobject（Windows 现状默认）/ landlock（POSIX 现状默认） */
+/** 用户可选的沙盒模式；undefined = appcontainer（Windows 默认档，core 缺省即 AppContainer）/ POSIX 缺省不下发 mode（core 自选默认后端） */
 export type SandboxMode = "appcontainer" | "wsb" | "jobobject" | "landlock" | "bubblewrap" | "off";
 /** 沙盒网络策略：filtered = core 侧按规则过滤（仅 Windows；Landlock 无网络语义） */
 export type SandboxNetwork = "allow" | "deny" | "filtered";
@@ -130,7 +130,7 @@ export interface SandboxPolicy {
   network: SandboxNetwork;
   /** filtered 网络档：sidecar 代理地址（host:port），由 server 编排层在 configure 时补发。 */
   proxyAddr?: string;
-  /** 通用只读授予（≤16；Windows 只读 ACL / Linux 只读规则），filtered 档用于放行 node/sidecar 脚本目录。 */
+  /** 通用只读授予（≤32；Windows 只读 ACL / Linux 只读规则），filtered 档用于放行 node/sidecar 脚本目录。 */
   readOnlyPaths?: string[];
   mode?: SandboxBackendMode;
   /** 可选 Job Object 覆盖（正整数，上限 1048576 MB / 4096 进程）；不下发时 core 用默认值 */
@@ -164,7 +164,7 @@ export interface SessionMeta {
   reviewModel?: ReviewModel;
   permissionRules?: PermissionRule[];
   sandbox?: SandboxPolicy;
-  /** 用户选择的沙盒模式；undefined = jobobject（现状默认） */
+  /** 用户选择的沙盒模式；undefined = appcontainer（Windows 默认档；POSIX 未选择时不下发 mode） */
   sandboxMode?: SandboxMode;
   /** WSB 会话初始化脚本，内联进 .wsb LogonCommand，先于 owc-exec 执行 */
   setupScript?: string;

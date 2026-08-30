@@ -74,54 +74,63 @@ export function toSandboxPath(hostPath: string, workspace: string): string {
   return hostPath;
 }
 
+/** 会话生效沙盒模式：显式选择原样；未选择时 Windows 缺省 = appcontainer（core 缺省即 AppContainer，
+ * policyFor 不下发 mode），POSIX 缺省 = undefined（core 自选默认后端）。凭据/工具链挂载按此分流。 */
+function effectiveSandboxMode(meta: SessionMeta | undefined, platform: NodeJS.Platform = process.platform): SessionMeta["sandboxMode"] | undefined {
+  return meta?.sandboxMode ?? (platform === "win32" ? "appcontainer" : undefined);
+}
+
 /**
- * Git/GitHub 凭据只读放行（POSIX）：bwrap/Landlock 沙盒只挂载会话工作区，宿主 $HOME
+ * Git/GitHub 凭据只读放行：bwrap/Landlock/AppContainer 沙盒只挂载会话工作区，宿主 $HOME
  * 不可见，沙盒内 git push / gh 因取不到凭据而挂起交互提示（表现为命令卡死）。
  * 把标准凭据路径并入 readOnlyPaths：沙盒内进程只读可见；fs.* 工具的路径策略不含
- * readOnlyPaths，工具层读不到凭据内容。Windows Job Object 无文件系统隔离（凭据本就可读），
- * 不追加。core 侧 readOnlyPaths 上限 16：用户配置优先，凭据按序补到满为止（尽力而为）。
+ * readOnlyPaths，工具层读不到凭据内容。Windows 仅 AppContainer 档（含缺省）追加——
+ * Job Object 无文件系统隔离（凭据本就可读），追加只会挤占槽位；off/wsb 由 policyFor
+ * 提前返回，与这里的判断无交集。core 侧 readOnlyPaths 上限 32：用户配置优先，凭据按序补到满为止（尽力而为）。
  */
-export function gitCredentialReadOnlyPaths(existing: string[] | undefined, platform: NodeJS.Platform = process.platform, home: string = os.homedir()): string[] {
+export function gitCredentialReadOnlyPaths(existing: string[] | undefined, platform: NodeJS.Platform = process.platform, home: string = os.homedir(), mode: SessionMeta["sandboxMode"] | undefined = undefined): string[] {
   const merged = [...(existing ?? [])];
-  if (platform === "win32" || !home) return merged;
+  if (platform === "win32" && (mode ?? "appcontainer") !== "appcontainer") return merged;
+  if (!home) return merged;
   const candidates = [".gitconfig", ".git-credentials", ".config/git", ".config/gh", ".ssh"]
     .map((rel) => path.join(home, rel))
     .filter((candidate) => existsSync(candidate));
   for (const candidate of candidates) {
-    if (merged.length >= 16) break;
+    if (merged.length >= 32) break;
     if (!merged.includes(candidate)) merged.push(candidate);
   }
   return merged;
 }
 
 /**
- * 与 nodeEnv 选择绑定的 Node 工具链只读放行（POSIX）：沙盒只挂载会话工作区与系统树，
+ * 与 nodeEnv 选择绑定的 Node 工具链只读放行：沙盒只挂载会话工作区与系统树，
  * 用户的 node/npm 若是 nvm/fnm 安装而 nodeEnv=global，沙盒内 PATH 继承了但目录
  * 不可见（表现为 npm: command not found）。按生效 nodeEnv 把对应工具链目录并入
  * readOnlyPaths（global 解析宿主 PATH 上生效的工具链根），目录语义见
- * node-env.nodeToolchainReadOnlyPaths。core 侧 readOnlyPaths 上限 16：用户配置与凭据之后补齐。
+ * node-env.nodeToolchainReadOnlyPaths（win32 是否挂载由调用方按生效模式门禁）。
+ * core 侧 readOnlyPaths 上限 32：用户配置与凭据之后补齐。
  */
 export function nodeEnvReadOnlyPaths(existing: string[] | undefined, mode: NodeEnv, platform: NodeJS.Platform = process.platform, deps: NodeToolchainMountDeps = {}): string[] {
   const merged = [...(existing ?? [])];
   for (const dir of nodeToolchainReadOnlyPaths(mode, { ...deps, platform })) {
-    if (merged.length >= 16) break;
+    if (merged.length >= 32) break;
     if (!merged.includes(dir)) merged.push(dir);
   }
   return merged;
 }
 
 /**
- * 非本机环境的工具链读写放行（POSIX；bwrap rw-bind / Landlock 完整访问集，经 allowPaths
- * 下发）：显式选择 fnm/nvm（nodeEnv）或 uv-config（pythonEnv）时，把版本管理器目录 / venv
- * 目录并入读写层，读写与安装权限严格限定在环境自身目录（npm i -g、pip install 落在目录内；
- * 系统树只读、HOME 不挂载，整机全局安装不可能）。global/project/uv-workspace 不追加
- * （global node 走只读层；project 与 uv-workspace 在工作区内随 writeRoots 可写）。
- * core 侧 allowPaths 上限 16：用户配置优先，工具链目录按序补到满（尽力而为）。
+ * 非本机环境的工具链读写放行（bwrap rw-bind / Landlock / AppContainer 完整访问集，经 allowPaths
+ * 下发；win32 是否挂载由调用方按生效模式门禁）：显式选择 fnm/nvm（nodeEnv）或 uv-config（pythonEnv）时，
+ * 把版本管理器目录 / venv 目录并入读写层，读写与安装权限严格限定在环境自身目录
+ * （npm i -g、pip install 落在目录内；系统树只读、HOME 不挂载，整机全局安装不可能）。
+ * global/project/uv-workspace 不追加（global node 走只读层；project 与 uv-workspace 在工作区内随 writeRoots 可写）。
+ * core 侧 allowPaths 上限 32：用户配置优先，工具链目录按序补到满（尽力而为）。
  */
 export function toolchainWritePaths(existing: string[] | undefined, dirs: readonly string[]): string[] {
   const merged = [...(existing ?? [])];
   for (const dir of dirs) {
-    if (merged.length >= 16) break;
+    if (merged.length >= 32) break;
     if (!merged.includes(dir)) merged.push(dir);
   }
   return merged;
@@ -167,8 +176,11 @@ export class CoreRouter extends EventEmitter {
    * 按生效 nodeEnv/pythonEnv 并入工具链挂载（会话值 > 全局默认 > global）：
    * global node → readOnlyPaths（只读层，保持现状）；fnm/nvm 与 uv-config venv →
    * allowPaths（读写层，严格限定环境自身目录）。wsb/off 由 policyFor 关沙盒，挂载表被 core 忽略。
+   * Windows 仅 AppContainer 档（含缺省）需要挂载：用户 profile 对沙盒不可见，fnm/nvm 等
+   * 装在其下；jobobject 无文件隔离、off/wsb 沙盒关闭，挂载无意义。
    */
   private withToolchainMounts(meta: SessionMeta | undefined, sandbox: SandboxPolicy): SandboxPolicy {
+    if (this.platform === "win32" && effectiveSandboxMode(meta, this.platform) !== "appcontainer") return sandbox;
     const nodeMode = effectiveNodeEnv(meta?.nodeEnv, this.nodeEnvDefault?.());
     const pythonMode = effectivePythonEnv(meta?.pythonEnv, this.pythonEnvDefault?.());
     let next = sandbox;
@@ -242,7 +254,7 @@ export class CoreRouter extends EventEmitter {
     }
   }
 
-  /** sandboxMode → 下发给 core 的策略：wsb/off 由 VM/关闭充当边界；缺省为 jobobject 兼容模式（仅 Windows；POSIX core 无 mode 语义，未显式选择时不下发，避免 UI 展示 Windows 标签）；appcontainer 需显式选择；jobObject 限制仅随启用路径下发 */
+  /** sandboxMode → 下发给 core 的策略：wsb/off 由 VM/关闭充当边界；缺省不下发 mode（core 缺省即 AppContainer：Windows 默认档；POSIX core 自选默认后端，避免 UI 展示 Windows 标签）；appcontainer/jobobject/bubblewrap 显式选择原样下发；jobObject 限制仅随启用路径下发 */
   static policyFor(meta: SessionMeta | undefined, sandbox: SandboxPolicy, jobObject?: JobObjectLimits, allowPaths?: string[], platform: NodeJS.Platform = process.platform): SandboxPolicy {
     const mode = meta?.sandboxMode;
     // wsb 会话在 VM 内的 core 上配置：宿主侧 bindLinks 路径在 guest 无效，剥离（创建 REST 已拒绝 wsb+bindLinks，此为切换模式后的防御）
@@ -256,14 +268,15 @@ export class CoreRouter extends EventEmitter {
       ...(jobObject?.memoryMB !== undefined ? { jobMemoryMB: jobObject.memoryMB } : {}),
       ...(jobObject?.maxProcesses !== undefined ? { jobMaxProcesses: jobObject.maxProcesses } : {}),
     };
-    const credentials = gitCredentialReadOnlyPaths(sandbox.readOnlyPaths, platform);
+    // 凭据放行按生效模式：POSIX 恒追加；Windows 仅 AppContainer 档（含缺省）追加，显式 jobobject 跳过
+    const credentials = gitCredentialReadOnlyPaths(sandbox.readOnlyPaths, platform, os.homedir(), effectiveSandboxMode(meta, platform));
     const withCredentials = credentials.length > 0 ? { readOnlyPaths: credentials } : {};
     if (mode === "appcontainer") return { ...sandbox, ...withCredentials, ...limits, mode: "appcontainer" };
     // bubblewrap 显式下发（POSIX 专用；Windows 上的取值由 REST 校验拦截，这里不防御）
     if (mode === "bubblewrap") return { ...sandbox, ...withCredentials, ...limits, mode: "bubblewrap" };
-    // landlock 与 POSIX 缺省都不下发 mode：core 缺省后端即 bubblewrap（无 bwrap 自动回落 Landlock）
-    // 显式选择（含持久化里已存的 jobobject）原样下发；只有缺省决策按平台分流
-    if (mode === "jobobject" || platform === "win32") return { ...sandbox, ...withCredentials, ...limits, mode: "jobobject" };
+    // landlock 与两平台缺省都不下发 mode：core 缺省即 AppContainer（Windows 默认档）/
+    // POSIX 默认后端；显式选择（含持久化里已存的 jobobject）原样下发
+    if (mode === "jobobject") return { ...sandbox, ...withCredentials, ...limits, mode: "jobobject" };
     return { ...sandbox, ...withCredentials, ...limits };
   }
 
@@ -319,8 +332,8 @@ export class CoreRouter extends EventEmitter {
     }
     await client.configureSession({ sessionId, cwd, sandbox });
     const { proxyAddr, readOnlyPaths } = await this.filteredProxy.ensureProxy(client, sessionId, cwd);
-    // sidecar 目录必须可读（前置保证），与已并入的凭据/工具链挂载合并而非替换（core 上限 16）
-    const mergedReadOnly = [...readOnlyPaths, ...(sandbox.readOnlyPaths ?? []).filter((entry) => !readOnlyPaths.includes(entry))].slice(0, 16);
+    // sidecar 目录必须可读（前置保证），与已并入的凭据/工具链挂载合并而非替换（core 上限 32）
+    const mergedReadOnly = [...readOnlyPaths, ...(sandbox.readOnlyPaths ?? []).filter((entry) => !readOnlyPaths.includes(entry))].slice(0, 32);
     return client.configureSession({ sessionId, cwd, sandbox: { ...sandbox, proxyAddr, readOnlyPaths: mergedReadOnly } });
   }
 

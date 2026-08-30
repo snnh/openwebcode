@@ -49,7 +49,7 @@ describe("SessionStore.appendMessage 并发串行化", () => {
 });
 
 describe("SessionStore.updateSandboxMode", () => {
-  it("sandboxMode undefined 保留现值；显式值写入；jobobject 删除；空 setupScript 删除", async () => {
+  it("sandboxMode undefined 保留现值；显式值写入；appcontainer（默认档）删除；空 setupScript 删除", async () => {
     const root = await tempRoot("owc-sandbox-mode-");
     const store = new SessionStore(path.join(root, "sessions"));
     await store.initialize();
@@ -64,8 +64,11 @@ describe("SessionStore.updateSandboxMode", () => {
     const off = await store.updateSandboxMode(session.id, "off", undefined);
     expect(off.sandboxMode).toBe("off");
     expect(off).not.toHaveProperty("setupScript");
-    // 显式 jobobject（平台缺省档）归一化为删除属性
-    const cleared = await store.updateSandboxMode(session.id, "jobobject", undefined);
+    // 显式 jobobject（不再是默认档）持久化
+    const jobobject = await store.updateSandboxMode(session.id, "jobobject", undefined);
+    expect(jobobject.sandboxMode).toBe("jobobject");
+    // 显式 appcontainer（平台默认档，两平台 core 缺省语义）归一化为删除属性
+    const cleared = await store.updateSandboxMode(session.id, "appcontainer", undefined);
     expect(cleared).not.toHaveProperty("sandboxMode");
     // 落盘一致
     expect(await store.get(session.id)).not.toHaveProperty("sandboxMode");

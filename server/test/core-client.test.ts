@@ -45,14 +45,82 @@ afterEach(async () => {
 });
 
 describe("sanitizedCoreEnv", () => {
-  it("Windows 前置 System32（去重），其他平台返回 undefined", () => {
-    const env = sanitizedCoreEnv();
-    if (process.platform !== "win32") {
-      expect(env).toBeUndefined();
-      return;
+  it("env 白名单：保留核心变量（含大小写 proxy），剥离 API Key 等凭据（跨平台）", () => {
+    vi.stubEnv("PATH", "/usr/bin:/bin");
+    vi.stubEnv("HOME", "/home/u");
+    vi.stubEnv("USER", "u");
+    vi.stubEnv("LOGNAME", "u");
+    vi.stubEnv("SHELL", "/bin/bash");
+    vi.stubEnv("LANG", "zh_CN.UTF-8");
+    vi.stubEnv("LC_ALL", "C.UTF-8");
+    vi.stubEnv("LC_MESSAGES", "C");
+    vi.stubEnv("TERM", "xterm-256color");
+    vi.stubEnv("TMPDIR", "/tmp");
+    vi.stubEnv("SSL_CERT_FILE", "/etc/ssl/cert.pem");
+    vi.stubEnv("NODE_EXTRA_CA_CERTS", "/tmp/ca.pem");
+    vi.stubEnv("http_proxy", "http://proxy.local:8080");
+    vi.stubEnv("HTTPS_PROXY", "http://proxy.local:8443");
+    vi.stubEnv("no_proxy", "localhost,127.0.0.1");
+    vi.stubEnv("OWC_CORE_VERSION", "9.9.9");
+    // Windows 必需的系统变量（大小写不敏感匹配，输出保留原大小写）
+    vi.stubEnv("SYSTEMROOT", "C:\\WINDOWS");
+    vi.stubEnv("windir", "C:\\WINDOWS");
+    vi.stubEnv("Temp", "C:\\Temp");
+    vi.stubEnv("TMP", "C:\\Temp");
+    vi.stubEnv("LocalAppData", "C:\\Users\\u\\AppData\\Local");
+    // 凭据与无关变量必须剥离
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-ant-test");
+    vi.stubEnv("OPENAI_API_KEY", "sk-openai-test");
+    vi.stubEnv("AWS_SECRET_ACCESS_KEY", "aws-secret");
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("GITHUB_TOKEN", "ghp_test");
+    vi.stubEnv("USERPROFILE", "C:\\Users\\u");
+    try {
+      const env = sanitizedCoreEnv();
+      expect(env.HOME).toBe("/home/u");
+      expect(env.USER).toBe("u");
+      expect(env.LOGNAME).toBe("u");
+      expect(env.SHELL).toBe("/bin/bash");
+      expect(env.LANG).toBe("zh_CN.UTF-8");
+      expect(env.LC_ALL).toBe("C.UTF-8");
+      expect(env.LC_MESSAGES).toBe("C");
+      expect(env.TERM).toBe("xterm-256color");
+      expect(env.TMPDIR).toBe("/tmp");
+      expect(env.SSL_CERT_FILE).toBe("/etc/ssl/cert.pem");
+      expect(env.NODE_EXTRA_CA_CERTS).toBe("/tmp/ca.pem");
+      expect(env.http_proxy).toBe("http://proxy.local:8080");
+      expect(env.HTTPS_PROXY).toBe("http://proxy.local:8443");
+      expect(env.no_proxy).toBe("localhost,127.0.0.1");
+      expect(env.OWC_CORE_VERSION).toBe("9.9.9");
+      // 大小写不敏感匹配，输出保留原始大小写（Windows 存储大小写随来源，键名断言按大写查找）
+      const find = (name: string) => Object.entries(env).find(([key]) => key.toUpperCase() === name)?.[1];
+      expect(find("SYSTEMROOT")).toBe("C:\\WINDOWS");
+      expect(find("WINDIR")).toBe("C:\\WINDOWS");
+      expect(find("TEMP")).toBe("C:\\Temp");
+      expect(find("TMP")).toBe("C:\\Temp");
+      expect(find("LOCALAPPDATA")).toBe("C:\\Users\\u\\AppData\\Local");
+      expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+      expect(env.OPENAI_API_KEY).toBeUndefined();
+      expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+      expect(env.NODE_ENV).toBeUndefined();
+      expect(env.GITHUB_TOKEN).toBeUndefined();
+      expect(env.USERPROFILE).toBeUndefined();
+      // PATH：非 win32 原样保留；win32 被 System32 前置（值以分号拼接）
+      if (process.platform === "win32") {
+        expect(env.PATH).toContain("System32");
+      } else {
+        expect(env.PATH).toBe("/usr/bin:/bin");
+      }
+    } finally {
+      vi.unstubAllEnvs();
     }
-    const key = Object.keys(env!).find((candidate) => candidate.toLowerCase() === "path")!;
-    const entries = env![key]!.split(";").filter((entry) => entry.length > 0);
+  });
+
+  it("Windows 前置 System32（去重）", () => {
+    if (process.platform !== "win32") return;
+    const env = sanitizedCoreEnv();
+    const key = Object.keys(env).find((candidate) => candidate.toLowerCase() === "path")!;
+    const entries = env[key]!.split(";").filter((entry) => entry.length > 0);
     const systemRoot = (process.env.SystemRoot ?? "C:\\Windows").toLowerCase();
     // 前三位固定为 System32 / 系统根 / Wbem，保证 find/sort 等解析为 Windows 版本
     expect(entries[0]!.toLowerCase()).toBe(path.join(systemRoot, "system32"));

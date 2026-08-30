@@ -299,15 +299,24 @@ describe("CoreRouter filtered 两阶段下发", () => {
   }
 
   it("configure 补发 proxyAddr + readOnlyPaths", async () => {
-    const { router, calls, root } = await makeRouter(makeMeta("s1", "filtered"));
-    await router.run({ sessionId: "s1", execId: "e1", cmd: "echo hi", cwd: "D:\\work" });
-    expect(calls.configureSession).toHaveLength(2);
-    const [base, enriched] = calls.configureSession;
-    expect(base!.sandbox.network).toBe("filtered");
-    expect(base!.sandbox.proxyAddr).toBeUndefined();
-    expect(enriched!.sandbox.proxyAddr).toBe("127.0.0.1:45678");
-    expect(enriched!.sandbox.readOnlyPaths).toEqual([path.join(root, "proxy")]);
-    expect(enriched!.sandbox.mode).toBe("appcontainer");
+    // AppContainer 档会并入宿主凭据/工具链目录，用临时空 HOME + 精简 PATH 保证 readOnlyPaths 断言确定
+    const home = await makeTempRoot();
+    vi.stubEnv("USERPROFILE", home);
+    vi.stubEnv("HOME", home);
+    vi.stubEnv("PATH", "C:\\Windows\\System32");
+    try {
+      const { router, calls, root } = await makeRouter(makeMeta("s1", "filtered"));
+      await router.run({ sessionId: "s1", execId: "e1", cmd: "echo hi", cwd: "D:\\work" });
+      expect(calls.configureSession).toHaveLength(2);
+      const [base, enriched] = calls.configureSession;
+      expect(base!.sandbox.network).toBe("filtered");
+      expect(base!.sandbox.proxyAddr).toBeUndefined();
+      expect(enriched!.sandbox.proxyAddr).toBe("127.0.0.1:45678");
+      expect(enriched!.sandbox.readOnlyPaths).toEqual([path.join(root, "proxy")]);
+      expect(enriched!.sandbox.mode).toBe("appcontainer");
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("release 回收 sidecar", async () => {
