@@ -39,14 +39,23 @@ cleanup:
     free(wide);free(full);return utf8;
 }
 
-static int add_write_root(char **roots,size_t *count,size_t capacity,const char *path) {
+/* Grows on demand (initial 8, doubling); the RPC layer caps allowPaths at
+   32 plus cwd, so growth past that means a caller bug, not a quota.  On
+   failure the Win32 last-error is set so the caller can report a specific
+   system error instead of a generic cleanup failure. */
+static int add_write_root(char ***roots,size_t *count,size_t *capacity,const char *path) {
     char *normalized;
     size_t i;
-    if(*count>=capacity)return 0;
     normalized=normalize_path(path);
-    if(!normalized)return 0;
-    for(i=0;i<*count;i++)if(_stricmp(roots[i],normalized)==0){free(normalized);return 1;}
-    roots[(*count)++]=normalized;
+    if(!normalized){if(!GetLastError())SetLastError(ERROR_INVALID_PARAMETER);return 0;}
+    for(i=0;i<*count;i++)if(_stricmp((*roots)[i],normalized)==0){free(normalized);return 1;}
+    if(*count==*capacity){
+        size_t grown_capacity=*capacity?*capacity*2:8;
+        char **grown=(char **)realloc(*roots,grown_capacity*sizeof(*grown));
+        if(!grown){free(normalized);SetLastError(ERROR_OUTOFMEMORY);return 0;}
+        *roots=grown;*capacity=grown_capacity;
+    }
+    (*roots)[(*count)++]=normalized;
     return 1;
 }
 
@@ -263,7 +272,7 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
     wchar_t *cwd=NULL,*command=NULL,*env_block=NULL; wchar_t shell_path[MAX_PATH]; char *full_command=NULL;
     owc_sandbox *sandbox=NULL; owc_sandbox_options sandbox_options={0};
     char sandbox_identity[96];
-    char *write_roots[17]={0}; size_t write_root_count=0,write_root_index;
+    char **write_roots=NULL; size_t write_root_count=0,write_root_capacity=0,write_root_index;
     ULONGLONG started=GetTickCount64(); size_t forwarded=0; unsigned sequence=0;
     DWORD wait_result,exit_code=1; int ok=0,arg_style=0;
 
@@ -306,9 +315,10 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
        so direct networking is cut. */
     sandbox_options.private_network=request->allow_network&&request->network_filtered;
     sandbox_options.read_only_paths=request->read_only_paths; sandbox_options.read_only_count=request->read_only_count;
-    if(request->allow_path_count>16||!add_write_root(write_roots,&write_root_count,ARRAYSIZE(write_roots),request->cwd))goto cleanup;
+    sandbox_options.deny_paths=request->deny_paths; sandbox_options.deny_count=request->deny_path_count;
+    if(!add_write_root(&write_roots,&write_root_count,&write_root_capacity,request->cwd))goto cleanup;
     for(write_root_index=0;write_root_index<request->allow_path_count;write_root_index++)
-        if(!add_write_root(write_roots,&write_root_count,ARRAYSIZE(write_roots),request->allow_paths[write_root_index]))goto cleanup;
+        if(!add_write_root(&write_roots,&write_root_count,&write_root_capacity,request->allow_paths[write_root_index]))goto cleanup;
     sandbox_options.write_roots=(const char *const *)write_roots; sandbox_options.write_root_count=write_root_count;
     sandbox_options.bind_backing=request->bind_backing; sandbox_options.bind_read_only=request->bind_read_only; sandbox_options.bind_count=request->bind_count;
     if(request->sandbox_enabled && request->sandbox_mode==(int)OWC_SANDBOX_MODE_JOBOBJECT) {
@@ -317,7 +327,14 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
         result->sandbox_status=(int)OWC_SANDBOX_PARTIAL;
         (void)snprintf(result->sandbox_reason,sizeof(result->sandbox_reason),"Job Object compatibility mode requested by session policy");
     } else {
-        if(request->sandbox_enabled) sandbox=owc_sandbox_create(&sandbox_options,result->sandbox_reason,sizeof(result->sandbox_reason));
+        if(request->sandbox_enabled) {
+            sandbox=owc_sandbox_create(&sandbox_options,result->sandbox_reason,sizeof(result->sandbox_reason));
+            /* Fail closed: a requested AppContainer sandbox that cannot be
+               created (profile, ACL grant, deny ACE) must not degrade into
+               an unsandboxed run.  The session can explicitly select the
+               jobobject compatibility mode instead. */
+            if(!sandbox){SetLastError(ERROR_INVALID_STATE);goto cleanup;}
+        }
         result->sandbox_status=sandbox?(int)owc_sandbox_get_status(sandbox):(int)OWC_SANDBOX_ADVISORY;
         if(sandbox&&request->network_filtered)
             (void)snprintf(result->sandbox_reason,sizeof(result->sandbox_reason),
@@ -349,21 +366,27 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
                        env_block,cwd,&startup.StartupInfo,&process)) {
         DWORD appcontainer_error=GetLastError();
         if(!sandbox) goto cleanup;
-        owc_sandbox_destroy(sandbox);sandbox=NULL;result->sandbox_status=(int)OWC_SANDBOX_PARTIAL;
-        (void)snprintf(result->sandbox_reason,sizeof(result->sandbox_reason),"AppContainer process creation failed (%lu); using Job Object compatibility mode",(unsigned long)appcontainer_error);
-        DeleteProcThreadAttributeList(attributes);free(attributes);attributes=NULL;attribute_size=0;free(command);command=utf8_to_wide(full_command);if(!command)goto cleanup;
-        (void)InitializeProcThreadAttributeList(NULL,1,0,&attribute_size);if(!attribute_size)goto cleanup;attributes=(LPPROC_THREAD_ATTRIBUTE_LIST)malloc(attribute_size);if(!attributes)goto cleanup;if(!InitializeProcThreadAttributeList(attributes,1,0,&attribute_size))goto cleanup;startup.lpAttributeList=attributes;if(!UpdateProcThreadAttribute(attributes,0,PROC_THREAD_ATTRIBUTE_HANDLE_LIST,inherited,sizeof(inherited),NULL,NULL))goto cleanup;
-        if(!CreateProcessW(NULL,command,NULL,NULL,TRUE,CREATE_NO_WINDOW|CREATE_SUSPENDED|EXTENDED_STARTUPINFO_PRESENT,NULL,cwd,&startup.StartupInfo,&process))goto cleanup;
+        /* No silent downgrade: a sandboxed command whose AppContainer
+           process cannot be created fails outright (AppContainer x ConPTY
+           and profile restrictions have known environment-dependent
+           failures); the session can explicitly select the jobobject
+           compatibility mode. */
+        (void)snprintf(result->sandbox_reason,sizeof(result->sandbox_reason),
+                       "AppContainer process creation failed (error=%lu); refusing to run unsandboxed - set sandbox mode to \"jobobject\" for the Job Object compatibility mode",
+                       (unsigned long)appcontainer_error);
+        SetLastError(appcontainer_error);
+        goto cleanup;
     }
     if(sandbox)result->sandbox_status=(int)owc_sandbox_get_status(sandbox);
     job=CreateJobObjectW(NULL,NULL); if(!job) goto cleanup;
     limits.BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
     if(request->sandbox_enabled && !sandbox) {
-        /* Job Object is the only enforcement in these paths (explicit jobobject
-           compatibility mode, AppContainer process-creation fallback, or no
-           profile): apply resource limits. With an active AppContainer profile
-           the job stays cleanup-only - previous default-mode behavior is kept
-           so large builds are not broken by the memory ceiling. */
+        /* Only the explicit jobobject compatibility mode reaches this branch
+           now (AppContainer creation failures fail the command above), so
+           the Job Object is the only enforcement: apply resource limits.
+           With an active AppContainer profile the job stays cleanup-only -
+           previous default-mode behavior is kept so large builds are not
+           broken by the memory ceiling. */
         limits.BasicLimitInformation.LimitFlags|=JOB_OBJECT_LIMIT_JOB_MEMORY|JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
         limits.JobMemoryLimit=(SIZE_T)(request->job_memory_mb?request->job_memory_mb:OWC_JOB_DEFAULT_MEMORY_MB)*1024*1024;
         limits.BasicLimitInformation.ActiveProcessLimit=(DWORD)(request->job_max_processes?request->job_max_processes:OWC_JOB_DEFAULT_MAX_PROCESSES);
@@ -413,5 +436,6 @@ cleanup:
     if(attributes) DeleteProcThreadAttributeList(attributes); free(attributes);
     owc_sandbox_destroy(sandbox);
     for(write_root_index=0;write_root_index<write_root_count;write_root_index++)free(write_roots[write_root_index]);
+    free(write_roots);
     free(cwd); free(command); free(full_command); free(env_block); return ok;
 }

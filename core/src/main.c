@@ -12,6 +12,7 @@
 #include <ws2tcpip.h>
 #pragma comment(lib, "ws2_32.lib")
 #else
+#include <fcntl.h>
 #include <netdb.h>
 #include <signal.h>
 #include <sys/socket.h>
@@ -103,10 +104,26 @@ static int socket_streams(intptr_t socket_handle, FILE **input, FILE **output) {
     *input=_fdopen(fd,"rb");
     *output=_fdopen(duplicate,"wb");
 #else
-    int duplicate=dup((int)socket_handle);
-    if (duplicate<0) { close((int)socket_handle); return 0; }
-    *input=fdopen((int)socket_handle,"r");
-    *output=fdopen(duplicate,"w");
+    int flags;
+    int duplicate;
+    /* The --connect descriptors carry the RPC stream; without CLOEXEC they
+     * would be inherited by spawned commands (and sandboxed ones at that),
+     * handing the session's RPC channel to the child. */
+    flags = fcntl((int)socket_handle, F_GETFD, 0);
+    if (flags < 0 || fcntl((int)socket_handle, F_SETFD, flags | FD_CLOEXEC) < 0) {
+        close((int)socket_handle);
+        return 0;
+    }
+    duplicate = dup((int)socket_handle);
+    if (duplicate < 0) { close((int)socket_handle); return 0; }
+    flags = fcntl(duplicate, F_GETFD, 0);
+    if (flags < 0 || fcntl(duplicate, F_SETFD, flags | FD_CLOEXEC) < 0) {
+        close(duplicate);
+        close((int)socket_handle);
+        return 0;
+    }
+    *input = fdopen((int)socket_handle, "r");
+    *output = fdopen(duplicate, "w");
 #endif
     if (!*input || !*output) {
 #ifdef _WIN32

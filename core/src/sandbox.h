@@ -14,13 +14,17 @@ typedef enum {
 } owc_sandbox_status;
 
 /* Sandbox backend requested via session.configure sandbox.mode.
-   APPCONTAINER is the default; JOBOBJECT forces the Job Object compatibility
-   path on Windows; OFF disables enforcement (same as sandbox.enabled=false).
-   LANDLOCK forces the Landlock backend on POSIX; BUBBLEWRAP prefers
-   bubblewrap with Landlock fallback.  POSIX treats OFF like disabled and
-   ignores the Windows values (APPCONTAINER/JOBOBJECT both select the default
-   backend: bubblewrap preferred, Landlock fallback); Windows rejects the
-   POSIX values with -32602 at configure time. */
+   APPCONTAINER is the default on Windows; JOBOBJECT forces the Job Object
+   compatibility path on Windows; OFF disables enforcement (same as
+   sandbox.enabled=false).  On POSIX the default backend is bubblewrap only,
+   with no silent Landlock fallback: Landlock cannot express denyPaths, so
+   falling back would quietly weaken isolation - an unusable bubblewrap
+   fails closed with guidance instead.  LANDLOCK explicitly selects the
+   Landlock compatibility backend (denyPaths unenforced for commands,
+   reported partial); BUBBLEWRAP explicitly selects the default.  POSIX
+   treats OFF like disabled and ignores the Windows values (APPCONTAINER/
+   JOBOBJECT both select the default bubblewrap backend); Windows rejects
+   the POSIX values with -32602 at configure time. */
 typedef enum {
     OWC_SANDBOX_MODE_APPCONTAINER = 0,
     OWC_SANDBOX_MODE_JOBOBJECT = 1,
@@ -56,6 +60,19 @@ typedef struct {
        read+execute rules), so this member is unused there. */
     const char *const *read_only_paths;
     size_t read_only_count;
+    /* Session deny paths (session.configure sandbox.denyPaths).  Windows
+       only: AppContainer file access is dual-principal and the package leg
+       is allow-only - a DENY ACE for the package SID does NOT sink it
+       (verified empirically: deny + allow for the same package SID still
+       reads), so enforcement strips this command's own package-SID ACEs
+       from each existing deny path after the write-root grant propagated
+       them; without a package-leg allow the object is unreachable for the
+       sandboxed process.  Missing paths are skipped; a strip failure on an
+       existing path fails the whole create (fail-closed).  POSIX enforces
+       deny paths at the fs.* RPC layer and, under bubblewrap, through
+       mount masks, so this member is unused there. */
+    const char *const *deny_paths;
+    size_t deny_count;
     /* With allow_network: also grant privateNetworkClientServer
        (S-1-15-3-3), which the filtered-mode sidecar needs to reach an
        upstream proxy on a LAN address.  Windows only. */

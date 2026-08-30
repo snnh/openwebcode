@@ -5,7 +5,9 @@ Shape/validation cases run everywhere: core.ping advertises features.bwrap
 on every platform, and the POSIX-only mode values must be rejected on
 Windows.  The end-to-end cases need Linux with a working bwrap (user
 namespaces permitted); anywhere else they are skipped, which includes
-Windows, macOS, and CI containers without unprivileged userns.
+Windows, macOS, and CI containers without unprivileged userns.  The
+fail-closed case (default tier without bwrap refuses to run commands)
+needs no host bwrap: it spawns a core whose PATH hides bwrap.
 """
 import base64
 import json
@@ -117,6 +119,10 @@ def main_bwrap():
                 print(f"SKIP: bwrap e2e needs Linux with a usable bwrap ({bwrap})", file=sys.stderr)
             else:
                 run_bwrap_e2e(proc, workspace)
+            if sys.platform.startswith("linux"):
+                # Independent of the host bwrap availability: the probe
+                # consults PATH, which this process strips to an empty dir.
+                run_fail_closed_no_bwrap(executable)
         finally:
             shutil.rmtree(workspace, ignore_errors=True)
         print("test_bwrap.py: ok")
@@ -215,6 +221,32 @@ def run_bwrap_e2e(proc, workspace):
         finally:
             shutil.rmtree(read_only, ignore_errors=True)
 
+        # A deny path that does not exist is skipped silently: the old
+        # diagnostic ran after the child's dup2 and polluted the command's
+        # stderr on every run (default deny paths like .env usually do not
+        # exist yet), and the deny is vacuous for a path nothing can reach.
+        response = configure(proc, 19, workspace, {
+            "enabled": True, "network": "allow",
+            "denyPaths": [os.path.join(workspace, "no-such-deny-path")],
+        })
+        assert "result" in response, response
+        result, output = run_exec(proc, 20, workspace, "printf deny-skip-ok")
+        assert result["exitCode"] == 0, result
+        assert "deny-skip-ok" in output, output
+        assert "bwrap deny path skipped" not in output, output
+
+        # exec.run gives the command /dev/null as stdin: an interactive
+        # reader like cat must see EOF immediately instead of racing the
+        # main loop for the RPC pipe (leaking frames across sessions or
+        # killing the loop with a partial frame).
+        result, output = run_exec(proc, 21, workspace, "cat")
+        assert result["exitCode"] == 0, result
+        assert output == "", output
+        # The RPC loop survived the cat: the next request round-trips.
+        result, output = run_exec(proc, 22, workspace, "printf after-cat-ok")
+        assert result["exitCode"] == 0, result
+        assert "after-cat-ok" in output, output
+
         # Explicit landlock mode runs the Landlock backend instead.
         response = configure(proc, 27, workspace, {"enabled": True, "network": "allow", "mode": "landlock"})
         assert "result" in response, response
@@ -226,13 +258,64 @@ def run_bwrap_e2e(proc, workspace):
         shutil.rmtree(outside, ignore_errors=True)
 
 
+def run_fail_closed_no_bwrap(executable):
+    """Default tier without a usable bwrap must fail closed: the command is
+    refused (exit 126) with an actionable reason instead of silently running
+    bare under a Landlock fallback that could not express denyPaths.  Works
+    on any Linux host regardless of whether bwrap is installed: the probe
+    consults PATH, which this process strips to an empty directory. """
+    scratch = tempfile.mkdtemp(prefix="owc-nobwrap-workspace-")
+    env = dict(os.environ)
+    env["PATH"] = scratch
+    proc = subprocess.Popen([executable], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, env=env)
+    try:
+        response = configure(proc, 1, scratch, {"enabled": True, "network": "allow"})
+        assert "result" in response, response
+        marker = os.path.join(scratch, "must-not-run.txt")
+        result, output = run_exec(proc, 2, scratch, f"printf x > '{marker}'")
+        assert result["exitCode"] == 126, result
+        assert result["sandboxCapability"] == "advisory", result
+        assert "bubblewrap unavailable" in result["sandboxReason"], result
+        assert "landlock" in result["sandboxReason"], result
+        assert not os.path.exists(marker), marker
+
+        # The fail-closed gate only applies to enabled sessions: a disabled
+        # sandbox still runs the command (and /bin/sh needs no PATH help).
+        response = configure(proc, 3, scratch, {"enabled": False})
+        assert "result" in response, response
+        result, output = run_exec(proc, 4, scratch, "printf disabled-ok")
+        assert result["exitCode"] == 0, result
+        assert "disabled-ok" in output, output
+
+        # The explicit landlock compatibility tier still runs without bwrap:
+        # it either executes under an applied Landlock ruleset, or fails
+        # closed (126) when Landlock itself is unavailable - never bare.
+        response = configure(proc, 5, scratch, {"enabled": True, "network": "allow", "mode": "landlock"})
+        assert "result" in response, response
+        result, output = run_exec(proc, 6, scratch, "printf landlock-tier-ok")
+        if result["sandboxCapability"] in ("enforced", "partial"):
+            assert result["exitCode"] == 0, result
+            assert "landlock-tier-ok" in output, output
+        else:
+            assert result["exitCode"] == 126, result
+            assert result["sandboxCapability"] == "advisory", result
+    finally:
+        try:
+            request(proc, 99, "core.shutdown")
+            proc.wait(timeout=10)
+        except Exception:
+            proc.kill()
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
 # --- Landlock backend e2e (absorbed from test_landlock_e2e.py) ---
 #
 # Everything here needs Linux with a usable Landlock ABI; anywhere else
 # (including kernels without Landlock) the suite skips from the configure
-# reply, which reports the real probe result.  The default backend is
-# bubblewrap where available, so these cases pin mode "landlock" to keep
-# exercising the fallback backend.
+# reply, which reports the real probe result.  The default tier is
+# bubblewrap only (no automatic Landlock fallback), so these cases pin
+# mode "landlock" to exercise the explicit compatibility backend.
 
 
 def configure_landlock(proc, request_id, cwd, sandbox):

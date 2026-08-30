@@ -157,10 +157,11 @@ def main():
             response = configure(proc, 2, workspace, {**sandbox, "proxyAddr": bad})
             assert_error(response, -32602, "proxyAddr")
 
-        # readOnlyPaths shape: not an array, too many entries, empty entry.
+        # readOnlyPaths shape: not an array, too many entries (limit 32),
+        # empty entry.
         response = configure(proc, 3, workspace, {**sandbox, "readOnlyPaths": "nope"})
         assert_error(response, -32602, "readOnlyPaths")
-        response = configure(proc, 4, workspace, {**sandbox, "readOnlyPaths": [workspace] * 17})
+        response = configure(proc, 4, workspace, {**sandbox, "readOnlyPaths": [workspace] * 33})
         assert_error(response, -32602, "readOnlyPaths")
         response = configure(proc, 5, workspace, {**sandbox, "readOnlyPaths": [""]})
         assert_error(response, -32602, "readOnlyPaths")

@@ -163,8 +163,10 @@ def main():
             response, _ = collect_until_response(proc, 31)
             assert response.get("result", {}).get("ok") is True, response
 
-            # Sandboxed channel: AppContainer x ConPTY may degrade to the Job
-            # Object compatibility mode; the reply must report it honestly.
+            # Sandboxed channel: the session policy above has enabled=False,
+            # so this pty runs unsandboxed and must report advisory honestly.
+            # AppContainer creation failures are fail-closed (reported as
+            # errors), never a silent Job Object fallback.
             request(proc, 32, "pty.open", {"session": "pty", "cwd": cwd, "cols": 80, "rows": 24, "sandbox": True})
             response, _ = collect_until_response(proc, 32)
             assert "result" in response, response
