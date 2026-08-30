@@ -1,5 +1,5 @@
 export type SandboxCapability = "advisory" | "partial" | "enforced";
-/** landlock/bubblewrap 为 POSIX 专用真值；存量 Linux 会话 meta 可能是 jobobject，显示时按 landlock 处理。 */
+/** appcontainer 为 Windows 默认档；landlock/bubblewrap 为 POSIX 专用真值（bubblewrap 为 POSIX 默认档语义）。存量 Linux 会话 meta 可能是 jobobject，显示时按 landlock 处理；未设置（内部默认 appcontainer）在 POSIX 显示时按 bubblewrap 处理。 */
 export type SandboxMode = "appcontainer" | "wsb" | "jobobject" | "landlock" | "bubblewrap" | "off";
 /** 沙盒网络策略：filtered = 经代理过滤出网（仅 Windows；Linux 创建/更新会被 server 400）。 */
 export type SandboxNetwork = "allow" | "deny" | "filtered";

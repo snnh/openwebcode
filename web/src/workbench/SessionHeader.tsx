@@ -172,13 +172,15 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
   }, [tasksOpen, tasks.data, sortedTasks.length]);
   // 平台来源统一为 server 上报的 capabilities.platform；未拿到前保持 Windows 行为（现状）
   const isWindows = sandboxCapabilities.data?.platform === undefined || sandboxCapabilities.data.platform === "win32";
-  const currentSandboxMode = session.sandboxMode ?? "jobobject";
-  // POSIX 真值选项：landlock（默认档）/ bubblewrap / off；Windows 维持 appcontainer/jobobject/wsb/off
+  const currentSandboxMode = session.sandboxMode ?? "appcontainer";
+  // POSIX 真值选项：landlock（兼容档）/ bubblewrap（默认档）/ off；Windows 维持 appcontainer/jobobject/wsb/off
   const sandboxModeOptions: SandboxMode[] = isWindows
     ? ["appcontainer", "wsb", "jobobject", "off"]
     : ["landlock", "bubblewrap", "off"];
-  // 存量 Linux 会话 meta.sandboxMode 可能是 jobobject，选中项按 landlock 显示（切换时提交真值）
-  const selectedSandboxMode: SandboxMode = !isWindows && currentSandboxMode === "jobobject" ? "landlock" : currentSandboxMode;
+  // 未设置（内部默认 appcontainer）在 POSIX 按 bubblewrap 显示；存量 Linux 会话 meta 可能是 jobobject，选中项按 landlock 显示（切换时提交真值）
+  const selectedSandboxMode: SandboxMode = !isWindows
+    ? currentSandboxMode === "jobobject" ? "landlock" : currentSandboxMode === "appcontainer" ? "bubblewrap" : currentSandboxMode
+    : currentSandboxMode;
   // 异常存量值（如 Linux 会话存了 wsb）兜底保留，避免下拉落空
   if (!sandboxModeOptions.includes(selectedSandboxMode)) sandboxModeOptions.push(selectedSandboxMode);
   // bubblewrap 不可用时禁用该选项（旧 core 不上报 features.bwrap 时 server 按 unavailable 返回）
@@ -367,7 +369,7 @@ export function SessionHeader({ session, agentState, costSummary, windowUsage, l
       {!headerCollapsed && <div className="job-actions">
         {/* 本机会话固定 off 沙盒：不提供切换（服务端也拒绝变更） */}
         {session.kind !== "local" && (
-        <label className={`mode-switch sandbox-mode-switch ${(session.sandboxMode ?? "jobobject") === "off" ? "advisory" : "enforced"}`} title={t("切换当前会话的命令执行沙盒", "Change the command sandbox for this session")}>
+        <label className={`mode-switch sandbox-mode-switch ${(session.sandboxMode ?? "appcontainer") === "off" ? "advisory" : "enforced"}`} title={t("切换当前会话的命令执行沙盒", "Change the command sandbox for this session")}>
           <Icon name="box" size={11} />
           <span>{t("沙盒", "Sandbox")}</span>
           <FitSelect

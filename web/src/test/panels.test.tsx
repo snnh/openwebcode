@@ -223,16 +223,22 @@ function renderSandboxPanel(detail: SessionDetail = sandboxSession): void {
 }
 
 describe("SandboxPanel 平台适配", () => {
-  it("win32：默认档模式显示 Job Object 文案", async () => {
+  it("win32：默认档（未设置）模式显示 AppContainer 文案", async () => {
     renderSandboxPanel();
-    await waitFor(() => expect(screen.getByText("兼容模式（Job Object）")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("应用容器（AppContainer）")).toBeInTheDocument());
   });
 
   it("linux：存量 jobobject 会话按 landlock 显示（兼容映射）", async () => {
     vi.mocked(api.sandboxCapabilities).mockResolvedValue({ platform: "linux", appcontainer: false, jobobject: true, off: true, wsb: { available: false, reason: "仅 Windows" }, bindLink: { available: false, reason: "仅 Windows" }, bwrap: { available: true } });
-    renderSandboxPanel();
+    renderSandboxPanel({ ...sandboxSession, sandboxMode: "jobobject" });
     await waitFor(() => expect(screen.getByText("强制模式（Landlock）")).toBeInTheDocument());
     expect(screen.queryByText(/Job Object/)).not.toBeInTheDocument();
+  });
+
+  it("linux：未设置沙盒模式按 bubblewrap 显示（内部默认 appcontainer 的 POSIX 显示映射）", async () => {
+    vi.mocked(api.sandboxCapabilities).mockResolvedValue({ platform: "linux", appcontainer: false, jobobject: true, off: true, wsb: { available: false, reason: "仅 Windows" }, bindLink: { available: false, reason: "仅 Windows" }, bwrap: { available: true } });
+    renderSandboxPanel();
+    await waitFor(() => expect(screen.getByText("隔离模式（bubblewrap）")).toBeInTheDocument());
   });
 
   it("linux：bubblewrap 会话显示隔离模式文案", async () => {

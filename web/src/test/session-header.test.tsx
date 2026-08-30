@@ -106,8 +106,20 @@ describe("SessionHeader", () => {
   it("配置切换经 onConfig 下发（沙盒模式下拉）", () => {
     const onConfig = vi.fn();
     renderHeader({ onConfig });
-    fireEvent.change(screen.getByLabelText("沙盒模式"), { target: { value: "appcontainer" } });
-    expect(onConfig).toHaveBeenCalledWith({ sandboxMode: "appcontainer" });
+    fireEvent.change(screen.getByLabelText("沙盒模式"), { target: { value: "jobobject" } });
+    expect(onConfig).toHaveBeenCalledWith({ sandboxMode: "jobobject" });
+  });
+
+  it("linux 未设置沙盒模式：默认选中 bubblewrap（内部默认 appcontainer 的 POSIX 显示映射）", async () => {
+    vi.spyOn(api, "sandboxCapabilities").mockResolvedValue({ platform: "linux", appcontainer: false, jobobject: true, off: true, wsb: { available: false, reason: "仅 Windows" }, bindLink: { available: false, reason: "仅 Windows" }, bwrap: { available: true } });
+    renderHeader();
+    await waitFor(() => expect(screen.getByLabelText("沙盒模式")).toHaveValue("bubblewrap"));
+  });
+
+  it("linux 存量 jobobject 会话按 landlock 显示（兼容映射）", async () => {
+    vi.spyOn(api, "sandboxCapabilities").mockResolvedValue({ platform: "linux", appcontainer: false, jobobject: true, off: true, wsb: { available: false, reason: "仅 Windows" }, bindLink: { available: false, reason: "仅 Windows" }, bwrap: { available: true } });
+    renderHeader({ session: makeSession({ sandboxMode: "jobobject" }) });
+    await waitFor(() => expect(screen.getByLabelText("沙盒模式")).toHaveValue("landlock"));
   });
 
   it("在途 shell 命令冲突（SHELL_PENDING）：确认后以 force:true 重发", async () => {

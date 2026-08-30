@@ -27,11 +27,11 @@ export interface NewSessionValues {
 }
 
 const SANDBOX_MODE_LABELS: Record<SandboxMode, [string, string]> = {
-  appcontainer: ["应用容器（AppContainer）", "AppContainer"],
+  appcontainer: ["应用容器（AppContainer，默认）", "AppContainer (default)"],
   wsb: ["Windows Sandbox（不可信代码）", "Windows Sandbox (untrusted code)"],
-  jobobject: ["兼容模式（Job Object，默认）", "Compatibility (Job Object, default)"],
-  landlock: ["强制模式（Landlock，默认）", "Enforced (Landlock, default)"],
-  bubblewrap: ["隔离模式（bubblewrap）", "Isolated (bubblewrap)"],
+  jobobject: ["兼容模式（Job Object）", "Compatibility (Job Object)"],
+  landlock: ["强制模式（Landlock）", "Enforced (Landlock)"],
+  bubblewrap: ["隔离模式（bubblewrap，默认）", "Isolated (bubblewrap, default)"],
   off: ["关闭沙盒", "Sandbox off"],
 };
 
@@ -54,7 +54,7 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
   const [provider, setProvider] = useState("");
   const [model, setModel] = useState("");
   const [permissionMode, setPermissionMode] = useState<PermissionMode>("ask");
-  const [sandboxMode, setSandboxMode] = useState<SandboxMode>("jobobject");
+  const [sandboxMode, setSandboxMode] = useState<SandboxMode>("appcontainer");
   const [network, setNetwork] = useState<SandboxNetwork>("allow");
   const [setupScript, setSetupScript] = useState("");
   const [workspaceMode, setWorkspaceMode] = useState<"direct" | "managed">("direct");
@@ -117,12 +117,12 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
   const bindLinkAvailable = bindLinkCap?.available ?? false;
   // 平台来源统一为 server 上报的 capabilities.platform；未拿到前保持 Windows 行为（现状）
   const isWindows = sandboxCaps?.platform === undefined || sandboxCaps.platform === "win32";
-  // POSIX 真值选项：landlock（默认档）/ bubblewrap / off；Windows 维持 appcontainer/jobobject/wsb/off
+  // POSIX 真值选项：landlock（兼容档）/ bubblewrap（默认档）/ off；Windows 维持 appcontainer/jobobject/wsb/off
   const sandboxModeOptions: SandboxMode[] = isWindows
     ? ["appcontainer", "wsb", "jobobject", "off"]
     : ["landlock", "bubblewrap", "off"];
-  // 内部默认态 jobobject 在非 Windows 下按 landlock 显示（不提交即为 server 默认；显式选择才提交真值）
-  const selectedSandboxMode: SandboxMode = !isWindows && sandboxMode === "jobobject" ? "landlock" : sandboxMode;
+  // 内部默认态 appcontainer 在非 Windows 下按 bubblewrap 显示（不提交即为 server 默认；显式选择才提交真值）
+  const selectedSandboxMode: SandboxMode = !isWindows && sandboxMode === "appcontainer" ? "bubblewrap" : sandboxMode;
   // bubblewrap 不可用时禁用该选项（旧 core 不上报 features.bwrap 时 server 按 unavailable 返回）
   const bwrapUnavailableReason = !isWindows && sandboxCaps?.bwrap?.available === false
     ? sandboxCaps.bwrap.reason ?? t("当前环境未安装 bubblewrap", "bubblewrap is not available in this environment")
@@ -172,8 +172,8 @@ export function NewSessionDialog({ open, providers, models, defaults, busy = fal
             model,
             agentMode,
             permissionMode,
-            // jobobject 是默认，不必显式提交；setupScript 仅 wsb 有意义；network 默认 allow 不必提交
-            ...(sandboxMode !== "jobobject" ? { sandboxMode } : {}),
+            // appcontainer 是默认，不必显式提交；setupScript 仅 wsb 有意义；network 默认 allow 不必提交
+            ...(sandboxMode !== "appcontainer" ? { sandboxMode } : {}),
             ...(network !== "allow" ? { network } : {}),
             ...(sandboxMode === "wsb" && setupScript.trim() ? { setupScript: setupScript.trim() } : {}),
             ...(workspaceMode === "managed" ? { workspaceMode } : {}),
