@@ -15,7 +15,7 @@
  * the fs.* RPC layer.
  *
  * Non-Linux builds provide stubs: the probe always reports unavailable and
- * owc_bwrap_exec only returns ENOSYS. */
+ * owc_bwrap_build_argv returns NULL. */
 
 /* One-shot cached probe (InitOnce semantics): bwrap must be on PATH and a
  * real smoke run (user namespace + bind mount + network namespace + exec of
@@ -28,17 +28,19 @@
  * cheap to query afterwards. */
 void owc_bwrap_probe(owc_sandbox_result *result);
 
-/* Exec command_argv under bwrap with the session policy applied.  Only
- * returns when the bwrap exec itself failed, handing back the exec errno;
- * on success the process image has been replaced and this does not return.
- * Callers run this in the forked child, after resource limits and after the
- * sandbox status pipe has been written. */
-int owc_bwrap_exec(const char *cwd,
-                   const char *const *read_roots, size_t read_root_count,
-                   const char *const *read_only_paths, size_t read_only_count,
-                   const char *const *write_roots, size_t write_root_count,
-                   const char *const *deny_paths, size_t deny_path_count,
-                   const char *const *allow_paths, size_t allow_path_count,
-                   int allow_network, char *const *command_argv);
+/* Build the bwrap argv for command_argv with the session policy applied.
+ * Must run in the parent BEFORE fork: the vector is malloc'd, and malloc
+ * is not safe in the forked child of this multithreaded process (another
+ * thread may hold the malloc arena lock at fork, deadlocking the child
+ * before it ever execs).  Returns NULL on allocation failure; the caller
+ * owns and frees the vector (the entries borrow the caller's strings).
+ * The forked child only execvp()s the result. */
+char **owc_bwrap_build_argv(const char *cwd,
+                            const char *const *read_roots, size_t read_root_count,
+                            const char *const *read_only_paths, size_t read_only_count,
+                            const char *const *write_roots, size_t write_root_count,
+                            const char *const *deny_paths, size_t deny_path_count,
+                            const char *const *allow_paths, size_t allow_path_count,
+                            int allow_network, char *const *command_argv);
 
 #endif

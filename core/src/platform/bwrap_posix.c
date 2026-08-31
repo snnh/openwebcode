@@ -181,19 +181,21 @@ void owc_bwrap_probe(owc_sandbox_result *result) {
     *result = probe_cache;
 }
 
-int owc_bwrap_exec(const char *cwd,
-                   const char *const *read_roots, size_t read_root_count,
-                   const char *const *read_only_paths, size_t read_only_count,
-                   const char *const *write_roots, size_t write_root_count,
-                   const char *const *deny_paths, size_t deny_path_count,
-                   const char *const *allow_paths, size_t allow_path_count,
-                   int allow_network, char *const *command_argv) {
+char **owc_bwrap_build_argv(const char *cwd,
+                            const char *const *read_roots, size_t read_root_count,
+                            const char *const *read_only_paths, size_t read_only_count,
+                            const char *const *write_roots, size_t write_root_count,
+                            const char *const *deny_paths, size_t deny_path_count,
+                            const char *const *allow_paths, size_t allow_path_count,
+                            int allow_network, char *const *command_argv) {
     /* Worst case with the 32-entry root list caps and 16 deny paths:
      * 8 fixed prologue/epilogue entries plus 3 per read-exec path, 3-4 per
      * bounded root, 4 per deny path, and the command tail.  That far exceeds
      * any fixed stack array, so the argv vector is allocated dynamically
      * (the old fixed 256 entries returned E2BIG when the RPC caps were
-     * raised); only allocation failure can stop the exec now. */
+     * raised); only allocation failure can stop the build now.  This runs in
+     * the parent before fork: malloc is unsafe in the forked child of this
+     * multithreaded process. */
     size_t argc = 0, i, command_count = 0, argv_count;
     char **argv;
     while (command_argv[command_count]) command_count++;
@@ -201,7 +203,7 @@ int owc_bwrap_exec(const char *cwd,
                  3u * (read_root_count + read_only_count + allow_path_count + write_root_count) +
                  4u * deny_path_count + 4u + command_count + 1u;
     argv = (char **)malloc(argv_count * sizeof(char *));
-    if (!argv) return ENOMEM;
+    if (!argv) return NULL;
     argv[argc++] = (char *)"bwrap";
     argv[argc++] = (char *)"--die-with-parent";
     argv[argc++] = (char *)"--proc"; argv[argc++] = (char *)"/proc";
@@ -266,12 +268,7 @@ int owc_bwrap_exec(const char *cwd,
     argv[argc++] = (char *)"--";
     for (i = 0; i < command_count; ++i) argv[argc++] = command_argv[i];
     argv[argc] = NULL;
-    (void)execvp("bwrap", argv);
-    {
-        int saved = errno;
-        free(argv);
-        return saved;
-    }
+    return argv;
 }
 
 #else /* !__linux__ */
@@ -285,20 +282,20 @@ void owc_bwrap_probe(owc_sandbox_result *result) {
                    "bubblewrap is only available on Linux");
 }
 
-int owc_bwrap_exec(const char *cwd,
-                   const char *const *read_roots, size_t read_root_count,
-                   const char *const *read_only_paths, size_t read_only_count,
-                   const char *const *write_roots, size_t write_root_count,
-                   const char *const *deny_paths, size_t deny_path_count,
-                   const char *const *allow_paths, size_t allow_path_count,
-                   int allow_network, char *const *command_argv) {
+char **owc_bwrap_build_argv(const char *cwd,
+                            const char *const *read_roots, size_t read_root_count,
+                            const char *const *read_only_paths, size_t read_only_count,
+                            const char *const *write_roots, size_t write_root_count,
+                            const char *const *deny_paths, size_t deny_path_count,
+                            const char *const *allow_paths, size_t allow_path_count,
+                            int allow_network, char *const *command_argv) {
     (void)cwd; (void)read_roots; (void)read_root_count;
     (void)read_only_paths; (void)read_only_count;
     (void)write_roots; (void)write_root_count;
     (void)deny_paths; (void)deny_path_count;
     (void)allow_paths; (void)allow_path_count;
     (void)allow_network; (void)command_argv;
-    return ENOSYS;
+    return NULL;
 }
 
 #endif

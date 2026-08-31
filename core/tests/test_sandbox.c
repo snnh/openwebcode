@@ -371,6 +371,140 @@ cleanup:
     (void)RemoveDirectoryW(root);
     return result;
 }
+
+/* Two concurrent commands strip the same deny path (parallel tool calls in
+ * one workspace).  The first destroy must NOT write anything back - the
+ * other command still holds the strip, and restoring + unprotecting would
+ * re-inherit its allow ACE from the write root; the last destroy restores.
+ * Regression test for the process-wide deny-strip registry. */
+static int test_deny_acl_concurrent(void) {
+    wchar_t temp[MAX_PATH], root[MAX_PATH], denied[MAX_PATH];
+    char root_utf8[MAX_PATH * 3], denied_utf8[MAX_PATH * 3];
+    char session_a[64], session_b[64], reason[256];
+    wchar_t profile_a[96], profile_b[96];
+    unsigned char *after = NULL;
+    DWORD after_size = 0;
+    int after_protected = 0;
+    const char *roots[1], *denies[1];
+    owc_sandbox_options options;
+    owc_sandbox *sandbox_a = NULL, *sandbox_b = NULL;
+    PSID sid_a = NULL, sid_b = NULL;
+    HRESULT hr;
+    int present = 0;
+    int result = 0;
+    if (!GetTempPathW(ARRAYSIZE(temp), temp) ||
+        !GetTempFileNameW(temp, L"owc", 0, root) ||
+        !DeleteFileW(root) || !CreateDirectoryW(root, NULL)) return 50;
+    if (swprintf_s(denied, ARRAYSIZE(denied), L"%ls\\denied.txt", root) < 0) {
+        result = 51;
+        goto cleanup;
+    }
+    {
+        HANDLE file = CreateFileW(denied, GENERIC_WRITE, 0, NULL,
+                                  CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (file == INVALID_HANDLE_VALUE) {
+            result = 51;
+            goto cleanup;
+        }
+        CloseHandle(file);
+    }
+    if (!WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, root, -1,
+                             root_utf8, (int)sizeof(root_utf8), NULL, NULL) ||
+        !WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, denied, -1,
+                             denied_utf8, (int)sizeof(denied_utf8), NULL, NULL)) {
+        result = 52;
+        goto cleanup;
+    }
+    (void)snprintf(session_a, sizeof(session_a), "deny-conc-a-%lu",
+                   (unsigned long)GetCurrentProcessId());
+    (void)snprintf(session_b, sizeof(session_b), "deny-conc-b-%lu",
+                   (unsigned long)GetCurrentProcessId());
+    if (swprintf_s(profile_a, ARRAYSIZE(profile_a), L"OpenWebCode.%hs", session_a) < 0 ||
+        swprintf_s(profile_b, ARRAYSIZE(profile_b), L"OpenWebCode.%hs", session_b) < 0) {
+        result = 53;
+        goto cleanup;
+    }
+    hr = DeriveAppContainerSidFromAppContainerName(profile_a, &sid_a);
+    if (FAILED(hr) || !sid_a) {
+        result = 53;
+        goto cleanup;
+    }
+    hr = DeriveAppContainerSidFromAppContainerName(profile_b, &sid_b);
+    if (FAILED(hr) || !sid_b) {
+        result = 53;
+        goto cleanup;
+    }
+    roots[0] = root_utf8;
+    denies[0] = denied_utf8;
+    memset(&options, 0, sizeof(options));
+    options.write_roots = roots;
+    options.write_root_count = 1;
+    options.deny_paths = denies;
+    options.deny_count = 1;
+    options.session_id = session_a;
+    sandbox_a = owc_sandbox_create(&options, reason, sizeof(reason));
+    if (!sandbox_a) {
+        (void)fprintf(stderr, "concurrent deny sandbox A failed: %s\n", reason);
+        result = 54;
+        goto cleanup;
+    }
+    options.session_id = session_b;
+    sandbox_b = owc_sandbox_create(&options, reason, sizeof(reason));
+    if (!sandbox_b) {
+        (void)fprintf(stderr, "concurrent deny sandbox B failed: %s\n", reason);
+        result = 54;
+        goto cleanup;
+    }
+    /* Both SIDs stripped while both commands live. */
+    if (!dacl_has_sid_ace(denied, sid_a, &present) || present ||
+        !dacl_has_sid_ace(denied, sid_b, &present) || present) {
+        (void)fprintf(stderr, "concurrent deny path still carries a package SID\n");
+        result = 55;
+        goto cleanup;
+    }
+    /* The first destroy must defer the restore: still stripped, still
+     * protected, and no SID resurrection. */
+    owc_sandbox_destroy(sandbox_a);
+    sandbox_a = NULL;
+    if (!dacl_has_sid_ace(denied, sid_a, &present) || present ||
+        !dacl_has_sid_ace(denied, sid_b, &present) || present) {
+        (void)fprintf(stderr, "first destroy resurrected a package SID ACE\n");
+        result = 56;
+        goto cleanup;
+    }
+    if (!capture_dacl(denied, &after, &after_size, &after_protected) ||
+        !after_protected) {
+        (void)fprintf(stderr, "first destroy lifted deny-path protection early\n");
+        result = 57;
+        goto cleanup;
+    }
+    free(after);
+    after = NULL;
+    /* The last destroy restores: protection lifted, no package SID left. */
+    owc_sandbox_destroy(sandbox_b);
+    sandbox_b = NULL;
+    if (!dacl_has_sid_ace(denied, sid_a, &present) || present ||
+        !dacl_has_sid_ace(denied, sid_b, &present) || present) {
+        (void)fprintf(stderr, "last destroy left a package SID ACE behind\n");
+        result = 58;
+        goto cleanup;
+    }
+    if (!capture_dacl(denied, &after, &after_size, &after_protected) ||
+        after_protected) {
+        (void)fprintf(stderr, "last destroy did not lift deny-path protection\n");
+        result = 59;
+        goto cleanup;
+    }
+cleanup:
+    owc_sandbox_destroy(sandbox_a);
+    owc_sandbox_destroy(sandbox_b);
+    if (sid_a) FreeSid(sid_a);
+    if (sid_b) FreeSid(sid_b);
+    free(after);
+    (void)DeleteFileW(denied);
+    (void)RemoveDirectoryW(root);
+    return result;
+}
 static int test_bind_acl_restore(void) {
     wchar_t temp[MAX_PATH], root[MAX_PATH], backing[MAX_PATH];
     char root_utf8[MAX_PATH * 3], backing_utf8[MAX_PATH * 3];
@@ -474,6 +608,14 @@ int main(void) {
                 (void)fprintf(stderr, "deny ACL restore test failed: %d\n",
                               deny_result);
                 return deny_result;
+            }
+        }
+        {
+            int concurrent_result = test_deny_acl_concurrent();
+            if (concurrent_result) {
+                (void)fprintf(stderr, "deny ACL concurrency test failed: %d\n",
+                              concurrent_result);
+                return concurrent_result;
             }
         }
         {

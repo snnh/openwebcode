@@ -103,7 +103,10 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
     size_t forwarded = 0;
     unsigned sequence = 0;
     owc_sandbox_result sandbox;
+    owc_sandbox_result bwrap_probe;
+    char **bwrap_argv = NULL;
     memset(&sandbox,0,sizeof(sandbox));
+    memset(&bwrap_probe,0,sizeof(bwrap_probe));
 
     if (started < 0) {
         result->system_error = (unsigned long)errno;
@@ -119,8 +122,46 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
         return 0;
     }
     if(fcntl(out_pipe[0],F_SETFD,FD_CLOEXEC)<0||fcntl(out_pipe[1],F_SETFD,FD_CLOEXEC)<0||fcntl(err_pipe[0],F_SETFD,FD_CLOEXEC)<0||fcntl(err_pipe[1],F_SETFD,FD_CLOEXEC)<0||fcntl(sandbox_pipe[0],F_SETFD,FD_CLOEXEC)<0||fcntl(sandbox_pipe[1],F_SETFD,FD_CLOEXEC)<0||fcntl(exec_pipe[0],F_SETFD,FD_CLOEXEC)<0||fcntl(exec_pipe[1],F_SETFD,FD_CLOEXEC)<0){result->system_error=(unsigned long)errno;close_fd(&out_pipe[0]);close_fd(&out_pipe[1]);close_fd(&err_pipe[0]);close_fd(&err_pipe[1]);close_fd(&sandbox_pipe[0]);close_fd(&sandbox_pipe[1]);close_fd(&exec_pipe[0]);close_fd(&exec_pipe[1]);return 0;}
+    /* The default POSIX sandbox tier execs bubblewrap in the forked child,
+     * but building its argv allocates - and malloc is unsafe in the forked
+     * child of this multithreaded process (another thread may hold the
+     * malloc arena lock at fork, deadlocking the child before it execs).
+     * Probe and build here in the parent; the child only execs the
+     * prebuilt vector. */
+    if (request->sandbox_enabled && request->sandbox_mode != (int)OWC_SANDBOX_MODE_LANDLOCK) {
+        char *shell_argv[8];
+        if (request->shell_backend == (int)OWC_SHELL_PWSH) {
+            shell_argv[0] = (char *)"pwsh";
+            shell_argv[1] = (char *)"-NoLogo";
+            shell_argv[2] = (char *)"-NoProfile";
+            shell_argv[3] = (char *)"-NonInteractive";
+            shell_argv[4] = (char *)"-Command";
+            shell_argv[5] = (char *)request->command;
+            shell_argv[6] = NULL;
+        } else if (request->shell_backend == (int)OWC_SHELL_BASH) {
+            shell_argv[0] = (char *)((request->shell_path && request->shell_path[0]) ? request->shell_path : "bash");
+            shell_argv[1] = (char *)"-c";
+            shell_argv[2] = (char *)request->command;
+            shell_argv[3] = NULL;
+        } else {
+            shell_argv[0] = (char *)"/bin/sh";
+            shell_argv[1] = (char *)"-c";
+            shell_argv[2] = (char *)request->command;
+            shell_argv[3] = NULL;
+        }
+        owc_bwrap_probe(&bwrap_probe);
+        if (bwrap_probe.status == OWC_SANDBOX_ENFORCED)
+            bwrap_argv = owc_bwrap_build_argv(request->cwd,
+                request->read_roots, request->read_root_count,
+                request->read_only_paths, request->read_only_count,
+                request->write_roots, request->write_root_count,
+                request->deny_paths, request->deny_path_count,
+                request->allow_paths, request->allow_path_count,
+                request->allow_network, shell_argv);
+    }
     child = fork();
     if (child < 0) {
+        free(bwrap_argv);
         result->system_error = (unsigned long)errno;
         close_fd(&out_pipe[0]); close_fd(&out_pipe[1]); close_fd(&err_pipe[0]); close_fd(&err_pipe[1]); close_fd(&sandbox_pipe[0]); close_fd(&sandbox_pipe[1]); close_fd(&exec_pipe[0]); close_fd(&exec_pipe[1]);
         return 0;
@@ -167,49 +208,21 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
              * silent fallback would quietly weaken the session's isolation;
              * landlock mode is the explicit, weaker compatibility tier. */
             if (request->sandbox_mode != (int)OWC_SANDBOX_MODE_LANDLOCK) {
-                owc_sandbox_result bwrap;
-                owc_bwrap_probe(&bwrap);
-                if (bwrap.status == OWC_SANDBOX_ENFORCED) {
+                if (bwrap_argv) {
                     /* bwrap keeps the child's process group (it does not
                      * setpgid), so the whole tree stays reachable by the
-                     * kill(-pgid) process-tree termination above. */
-                    char *shell_argv[8];
+                     * kill(-pgid) process-tree termination above.  The argv
+                     * was built in the parent before fork. */
                     sandbox.status = OWC_SANDBOX_ENFORCED;
                     (void)snprintf(sandbox.reason, sizeof(sandbox.reason),
                                    "bubblewrap namespace isolation");
                     if (!write_all(sandbox_pipe[1], &sandbox, sizeof(sandbox))) _exit(126);
-                    if (request->shell_backend == (int)OWC_SHELL_PWSH) {
-                        shell_argv[0] = (char *)"pwsh";
-                        shell_argv[1] = (char *)"-NoLogo";
-                        shell_argv[2] = (char *)"-NoProfile";
-                        shell_argv[3] = (char *)"-NonInteractive";
-                        shell_argv[4] = (char *)"-Command";
-                        shell_argv[5] = (char *)request->command;
-                        shell_argv[6] = NULL;
-                    } else if (request->shell_backend == (int)OWC_SHELL_BASH) {
-                        shell_argv[0] = (char *)((request->shell_path && request->shell_path[0]) ? request->shell_path : "bash");
-                        shell_argv[1] = (char *)"-c";
-                        shell_argv[2] = (char *)request->command;
-                        shell_argv[3] = NULL;
-                    } else {
-                        shell_argv[0] = (char *)"/bin/sh";
-                        shell_argv[1] = (char *)"-c";
-                        shell_argv[2] = (char *)request->command;
-                        shell_argv[3] = NULL;
-                    }
-                    {
-                        /* Only returns when the bwrap exec itself failed
-                         * (e.g. the binary raced away after the probe). */
-                        int bwrap_error = owc_bwrap_exec(request->cwd,
-                            request->read_roots, request->read_root_count,
-                            request->read_only_paths, request->read_only_count,
-                            request->write_roots, request->write_root_count,
-                            request->deny_paths, request->deny_path_count,
-                            request->allow_paths, request->allow_path_count,
-                            request->allow_network, shell_argv);
-                        report_exec_failure(exec_pipe[1], bwrap_error);
-                        (void)dprintf(STDERR_FILENO, "failed to exec bwrap: %s\n", strerror(bwrap_error));
-                    }
+                    /* Only returns when the bwrap exec itself failed
+                     * (e.g. the binary raced away after the probe). */
+                    (void)execvp("bwrap", bwrap_argv);
+                    {int saved = errno;
+                     report_exec_failure(exec_pipe[1], saved);
+                     (void)dprintf(STDERR_FILENO, "failed to exec bwrap: %s\n", strerror(saved));}
                     _exit(127);
                 }
                 /* Fail-closed: report the reason through the sandbox pipe,
@@ -217,9 +230,13 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
                  * it cannot express denyPaths, so it would silently weaken
                  * the session's isolation). */
                 sandbox.status = OWC_SANDBOX_ADVISORY;
-                (void)snprintf(sandbox.reason, sizeof(sandbox.reason),
-                               "bubblewrap unavailable: %.68s; install bubblewrap or select sandbox mode landlock (weaker: denyPaths not enforced for commands)",
-                               bwrap.reason);
+                if (bwrap_probe.status == OWC_SANDBOX_ENFORCED)
+                    (void)snprintf(sandbox.reason, sizeof(sandbox.reason),
+                                   "bubblewrap argv allocation failed");
+                else
+                    (void)snprintf(sandbox.reason, sizeof(sandbox.reason),
+                                   "bubblewrap unavailable: %.68s; install bubblewrap or select sandbox mode landlock (weaker: denyPaths not enforced for commands)",
+                                   bwrap_probe.reason);
             } else {
                 (void)owc_landlock_apply(request->cwd, request->allow_paths, request->allow_path_count,
                                          request->read_roots, request->read_root_count,
@@ -256,6 +273,8 @@ int owc_platform_exec_run(const owc_exec_request *request, owc_exec_result *resu
     }
 
     track_child(child);
+    free(bwrap_argv);
+    bwrap_argv = NULL;
     (void)setpgid(child, child);
     close_fd(&out_pipe[1]); close_fd(&err_pipe[1]); close_fd(&sandbox_pipe[1]); close_fd(&exec_pipe[1]);
     if (fcntl(out_pipe[0], F_SETFL, fcntl(out_pipe[0], F_GETFL) | O_NONBLOCK) < 0 ||
