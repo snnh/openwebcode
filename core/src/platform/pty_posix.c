@@ -158,11 +158,14 @@ int owc_pty_open(const owc_pty_options *options,
     int sandbox_pipe[2] = {-1, -1};
     pid_t child;
     owc_sandbox_result sandbox;
+    owc_sandbox_result bwrap_probe;
+    char **bwrap_argv = NULL;
     ssize_t received;
     int ok = 0;
 
     memset(&size, 0, sizeof(size));
     memset(&sandbox, 0, sizeof(sandbox));
+    memset(&bwrap_probe, 0, sizeof(bwrap_probe));
     memset(open_result, 0, sizeof(*open_result));
     *result = NULL;
     if (!options || !options->cwd || !options->session_id || !options->session_id[0]
@@ -184,8 +187,29 @@ int owc_pty_open(const owc_pty_options *options,
     if (fcntl(sandbox_pipe[1], F_SETFD, FD_CLOEXEC) < 0) { *system_error = (unsigned long)errno; goto cleanup; }
     size.ws_col = (unsigned short)options->cols;
     size.ws_row = (unsigned short)options->rows;
+    /* Same pre-fork rule as exec_posix.c: the bwrap argv is built here in
+     * the parent because malloc is unsafe in the forked child of this
+     * multithreaded process (another thread may hold the arena lock at
+     * fork).  The child only execs the prebuilt vector. */
+    if (options->sandbox && options->sandbox_mode != (int)OWC_SANDBOX_MODE_LANDLOCK) {
+        const char *shell = options->shell;
+        char *shell_argv[2];
+        if (!shell || !shell[0]) shell = getenv("SHELL");
+        if (!shell || !shell[0]) shell = "/bin/sh";
+        shell_argv[0] = (char *)shell;
+        shell_argv[1] = NULL;
+        owc_bwrap_probe(&bwrap_probe);
+        if (bwrap_probe.status == OWC_SANDBOX_ENFORCED)
+            bwrap_argv = owc_bwrap_build_argv(options->cwd,
+                options->read_roots, options->read_root_count,
+                options->read_only_paths, options->read_only_count,
+                options->write_roots, options->write_root_count,
+                options->deny_paths, options->deny_path_count,
+                options->allow_paths, options->allow_path_count,
+                options->allow_network, shell_argv);
+    }
     child = forkpty(&pty->master, NULL, NULL, &size);
-    if (child < 0) { *system_error = (unsigned long)errno; goto cleanup; }
+    if (child < 0) { free(bwrap_argv); *system_error = (unsigned long)errno; goto cleanup; }
     if (child == 0) {
         const char *shell = options->shell;
         const char *name;
@@ -206,32 +230,26 @@ int owc_pty_open(const owc_pty_options *options,
              * (forkpty made it a session leader), so group-kill tree
              * termination is unaffected. */
             if (options->sandbox_mode != (int)OWC_SANDBOX_MODE_LANDLOCK) {
-                owc_sandbox_result bwrap;
-                owc_bwrap_probe(&bwrap);
-                if (bwrap.status == OWC_SANDBOX_ENFORCED) {
-                    char *shell_argv[2];
+                if (bwrap_argv) {
                     sandbox.status = OWC_SANDBOX_ENFORCED;
                     (void)snprintf(sandbox.reason, sizeof(sandbox.reason),
                                    "bubblewrap namespace isolation");
                     (void)write_all(sandbox_pipe[1], &sandbox, sizeof(sandbox));
-                    shell_argv[0] = (char *)shell;
-                    shell_argv[1] = NULL;
-                    /* Only returns when the bwrap exec itself failed. */
-                    (void)owc_bwrap_exec(options->cwd,
-                        options->read_roots, options->read_root_count,
-                        options->read_only_paths, options->read_only_count,
-                        options->write_roots, options->write_root_count,
-                        options->deny_paths, options->deny_path_count,
-                        options->allow_paths, options->allow_path_count,
-                        options->allow_network, shell_argv);
+                    /* Only returns when the bwrap exec itself failed.  The
+                     * argv was built in the parent before fork. */
+                    (void)execvp("bwrap", bwrap_argv);
                     _exit(127);
                 }
                 /* Fail-closed like exec_posix.c: report the reason through
                  * the sandbox pipe, then exit without running the shell. */
                 sandbox.status = OWC_SANDBOX_ADVISORY;
-                (void)snprintf(sandbox.reason, sizeof(sandbox.reason),
-                               "bubblewrap unavailable: %.68s; install bubblewrap or select sandbox mode landlock (weaker: denyPaths not enforced for commands)",
-                               bwrap.reason);
+                if (bwrap_probe.status == OWC_SANDBOX_ENFORCED)
+                    (void)snprintf(sandbox.reason, sizeof(sandbox.reason),
+                                   "bubblewrap argv allocation failed");
+                else
+                    (void)snprintf(sandbox.reason, sizeof(sandbox.reason),
+                                   "bubblewrap unavailable: %.68s; install bubblewrap or select sandbox mode landlock (weaker: denyPaths not enforced for commands)",
+                                   bwrap_probe.reason);
             } else {
                 (void)owc_landlock_apply(options->cwd, options->allow_paths,
                                          options->allow_path_count,
@@ -257,6 +275,8 @@ int owc_pty_open(const owc_pty_options *options,
     }
     pty->child = child;
     track_child(child);
+    free(bwrap_argv);
+    bwrap_argv = NULL;
     (void)close(sandbox_pipe[1]); sandbox_pipe[1] = -1;
     do { received = read(sandbox_pipe[0], &sandbox, sizeof(sandbox)); } while (received < 0 && errno == EINTR);
     if (received == (ssize_t)sizeof(sandbox)) {

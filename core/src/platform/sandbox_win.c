@@ -158,12 +158,13 @@ static DWORD change_root_access(const wchar_t *path, PSID sid, ACCESS_MODE mode,
  * Named-API equivalent (UNPROTECTED_DACL_SECURITY_INFORMATION) recomputes
  * inherited ACEs from the parent, and that recomputation is not guaranteed
  * to reproduce the object's creation-time DACL byte for byte.
- * The saved bytes still carry this command's own package-SID ACE (the save
- * happens after the write-root grant propagated it), so that SID is
+ * The saved bytes still carry the package-SID ACEs of every command that
+ * stripped this path (the first save happens after that command's
+ * write-root grant propagated its SID), so every registered SID is
  * filtered out.  Best effort like every revoke: a deny path deleted in the
  * meantime cannot be restored. */
 static DWORD restore_denied_dacl(const wchar_t *path, const unsigned char *dacl,
-                                 DWORD dacl_size, PSID sid) {
+                                 DWORD dacl_size, PSID *sids, size_t sid_count) {
     ACL_SIZE_INFORMATION info;
     PACL new_acl = NULL;
     SECURITY_DESCRIPTOR replacement;
@@ -192,7 +193,12 @@ static DWORD restore_denied_dacl(const wchar_t *path, const unsigned char *dacl,
             ace_sid = (PSID)&((ACCESS_ALLOWED_ACE *)ace)->SidStart;
         else if (ace->AceType == ACCESS_DENIED_ACE_TYPE)
             ace_sid = (PSID)&((ACCESS_DENIED_ACE *)ace)->SidStart;
-        if (ace_sid && EqualSid(ace_sid, sid)) continue;
+        if (ace_sid) {
+            size_t j;
+            for (j = 0; j < sid_count; ++j)
+                if (EqualSid(ace_sid, sids[j])) break;
+            if (j < sid_count) continue;
+        }
         if (!AddAce(new_acl, ACL_REVISION, MAXDWORD, ace, ace->AceSize)) {
             error = GetLastError();
             goto done;
@@ -223,13 +229,156 @@ done:
     return error;
 }
 
-/* Cleanup revokes only the command's own SID ACE; it never rewrites the
- * surrounding DACL, so concurrent commands on the same write root cannot
- * strip one another's grant or resurrect a finished command's stale ACE. */
+static DWORD strip_sid_from_dacl(const wchar_t *path, PSID sid, int protect,
+                                 unsigned char **saved, DWORD *saved_size);
+
+/* Concurrent commands in this one core process can strip the same deny path
+ * (parallel tool calls share the workspace).  A per-command restore writing
+ * its own snapshot back verbatim would clobber the other command's strip
+ * and - once protection is lifted - re-inherit that command's allow ACE
+ * from the write root, silently reopening the hole while the other command
+ * still runs.  Deny paths are therefore tracked in a process-wide registry:
+ * the first stripper saves the pre-strip DACL, later strippers only remove
+ * their own SID, and the snapshot goes back (minus every registered SID,
+ * protection lifted) only when the last holder is destroyed.  All registry
+ * operations run under acl_mutex; CRITICAL_SECTION is recursive, so the
+ * strip/restore helpers keep taking it internally. */
+struct deny_strip_record {
+    wchar_t *path;
+    unsigned char *dacl;
+    DWORD dacl_size;
+    PSID *sids;
+    size_t sid_count;
+    size_t active;
+};
+static struct deny_strip_record *deny_strips;
+static size_t deny_strip_count;
+
+/* acl_mutex must be held. */
+static struct deny_strip_record *deny_strip_find(const wchar_t *path) {
+    size_t i;
+    for (i = 0; i < deny_strip_count; ++i)
+        if (!_wcsicmp(deny_strips[i].path, path)) return &deny_strips[i];
+    return NULL;
+}
+
+/* acl_mutex must be held. */
+static int deny_strip_add_sid(struct deny_strip_record *record, PSID sid) {
+    DWORD length = GetLengthSid(sid);
+    PSID copy = (PSID)malloc(length);
+    PSID *grown;
+    if (!copy) return 0;
+    (void)memcpy(copy, sid, length);
+    grown = (PSID *)realloc(record->sids, (record->sid_count + 1) * sizeof(*grown));
+    if (!grown) {
+        free(copy);
+        return 0;
+    }
+    record->sids = grown;
+    record->sids[record->sid_count++] = copy;
+    return 1;
+}
+
+/* acl_mutex must be held.  Registers a fresh record, taking ownership of
+ * the saved DACL bytes only on success. */
+static int deny_strip_register(const wchar_t *path, unsigned char *saved,
+                               DWORD saved_size, PSID sid) {
+    struct deny_strip_record *grown;
+    struct deny_strip_record *record;
+    size_t length = wcslen(path) + 1;
+    wchar_t *copy = (wchar_t *)malloc(length * sizeof(*copy));
+    if (!copy) return 0;
+    (void)memcpy(copy, path, length * sizeof(*copy));
+    grown = (struct deny_strip_record *)realloc(
+        deny_strips, (deny_strip_count + 1) * sizeof(*grown));
+    if (!grown) {
+        free(copy);
+        return 0;
+    }
+    deny_strips = grown;
+    record = &deny_strips[deny_strip_count];
+    memset(record, 0, sizeof(*record));
+    record->path = copy;
+    record->dacl = saved;
+    record->dacl_size = saved_size;
+    record->active = 1;
+    if (!deny_strip_add_sid(record, sid)) {
+        free(record->path);
+        return 0;
+    }
+    deny_strip_count++;
+    return 1;
+}
+
+/* acl_mutex must be held. */
+static DWORD deny_strip_acquire(const wchar_t *path, PSID sid) {
+    struct deny_strip_record *record = deny_strip_find(path);
+    DWORD error;
+    unsigned char *saved = NULL;
+    DWORD saved_size = 0;
+    if (record) {
+        /* Already stripped and protected by a live command; only this
+         * command's own propagated allow ACE needs removing. */
+        error = strip_sid_from_dacl(path, sid, 1, NULL, NULL);
+        if (error != ERROR_SUCCESS) return error;
+        if (!deny_strip_add_sid(record, sid)) return ERROR_OUTOFMEMORY;
+        record->active++;
+        return ERROR_SUCCESS;
+    }
+    error = strip_sid_from_dacl(path, sid, 1, &saved, &saved_size);
+    if (error != ERROR_SUCCESS || !saved) {
+        /* saved == NULL: nothing carried this SID (for example the deny
+         * path sits outside the write roots), so nothing was written and
+         * nothing needs restoring. */
+        free(saved);
+        return error;
+    }
+    if (!deny_strip_register(path, saved, saved_size, sid)) {
+        free(saved);
+        return ERROR_OUTOFMEMORY;
+    }
+    return ERROR_SUCCESS;
+}
+
+/* acl_mutex must be held. */
+static void deny_strip_release(const wchar_t *path) {
+    struct deny_strip_record *record = deny_strip_find(path);
+    size_t i;
+    if (!record || record->active == 0) return;
+    if (--record->active > 0) return;
+    /* Last holder: write the pre-strip DACL back minus every registered
+     * package SID and lift the inheritance protection. */
+    (void)restore_denied_dacl(record->path, record->dacl, record->dacl_size,
+                              record->sids, record->sid_count);
+    for (i = 0; i < record->sid_count; ++i) free(record->sids[i]);
+    free(record->sids);
+    free(record->path);
+    free(record->dacl);
+    i = (size_t)(record - deny_strips);
+    if (i != deny_strip_count - 1)
+        deny_strips[i] = deny_strips[deny_strip_count - 1];
+    deny_strip_count--;
+}
+
+static void release_deny_strip_grant(const wchar_t *path) {
+    (void)InitOnceExecuteOnce(&acl_once, acl_mutex_init, NULL, NULL);
+    EnterCriticalSection(&acl_mutex);
+    deny_strip_release(path);
+    LeaveCriticalSection(&acl_mutex);
+}
+
+/* Cleanup of a plain grant revokes only the command's own SID ACE; it never
+ * rewrites the surrounding DACL, so concurrent commands on the same write
+ * root cannot strip one another's grant or resurrect a finished command's
+ * ACE.  Deny paths go through the shared registry instead: the pre-strip
+ * snapshot is written back only once the last command holding a strip on
+ * that path exits, so a finishing command cannot reopen another command's
+ * denied file. */
 static DWORD restore_grant(const struct owc_acl_grant *grant, PSID sid) {
-    if (grant->access_kind == OWC_ACL_DENY_PATH)
-        return restore_denied_dacl(grant->path, grant->dacl, grant->dacl_size,
-                                   sid);
+    if (grant->access_kind == OWC_ACL_DENY_PATH) {
+        release_deny_strip_grant(grant->path);
+        return ERROR_SUCCESS;
+    }
     return change_root_access(grant->path, sid, REVOKE_ACCESS, 0,
                               NO_INHERITANCE, grant->access_kind);
 }
@@ -512,9 +661,11 @@ static int grant_read_only_paths(owc_sandbox *sandbox,
  *   it from the parent at write time - so the top deny path is written
  *   with PROTECTED_DACL (inheritance frozen), while descendants re-inherit
  *   cleanly from the already-stripped parent and need no protection.
- * - The pre-strip DACL bytes are saved in the grant record; destroy writes
- *   them back (minus this command's own SID) with UNPROTECTED_DACL, which
- *   resumes inheritance and reproduces the pre-grant DACL.
+ * - The pre-strip DACL bytes are saved in the process-wide deny-strip
+ *   registry (shared when concurrent commands strip the same path); the
+ *   last holder's destroy writes them back minus every registered SID with
+ *   UNPROTECTED_DACL, which resumes inheritance and reproduces the
+ *   pre-grant DACL.
  *
  * A missing path is skipped (nothing to leak yet; the next command re-runs
  * this strip); a strip failure on an existing path fails the whole create -
@@ -585,6 +736,13 @@ static DWORD strip_sid_from_dacl(const wchar_t *path, PSID sid, int protect,
                                       DACL_SECURITY_INFORMATION |
                                           (protect ? PROTECTED_DACL_SECURITY_INFORMATION : 0),
                                       NULL, NULL, new_acl, NULL);
+        if (error != ERROR_SUCCESS && saved) {
+            /* The caller takes ownership of the saved bytes only on
+             * success; free them here or the failure path leaks. */
+            free(*saved);
+            *saved = NULL;
+            *saved_size = 0;
+        }
     }
 done:
     LeaveCriticalSection(&acl_mutex);
@@ -597,12 +755,48 @@ done:
    propagates the package-SID allow onto every existing descendant, and the
    bypass-traverse privilege means stripping only the directory itself would
    leave the children reachable.  Bounded so a hostile tree cannot wedge the
-   create.  Only the top node freezes inheritance and gets a restore record;
-   descendants re-inherit from their already-stripped parent. */
+   create: a node cap, and a separate depth cap because every recursion
+   level holds a WIN32_FIND_DATAW (~600 bytes) plus an open find handle on
+   the stack - a single-chain tree would overflow the 1 MiB default stack
+   long before the node cap.  Only the top node goes through the deny-strip
+   registry (freeze + restore record); descendants re-inherit from their
+   already-stripped parent. */
 #define OWC_DENY_STRIP_MAX_NODES 8192ul
+#define OWC_DENY_STRIP_MAX_DEPTH 64ul
+
+/* Top-level deny path: go through the process-wide registry so concurrent
+ * commands stripping the same path share one snapshot and the restore runs
+ * only when the last holder exits. */
+static int strip_deny_top(owc_sandbox *sandbox, const wchar_t *path,
+                          char *reason, size_t reason_size) {
+    DWORD error;
+    size_t length;
+    wchar_t *copy;
+    (void)InitOnceExecuteOnce(&acl_once, acl_mutex_init, NULL, NULL);
+    EnterCriticalSection(&acl_mutex);
+    error = deny_strip_acquire(path, sandbox->appcontainer_sid);
+    LeaveCriticalSection(&acl_mutex);
+    if (error != ERROR_SUCCESS) {
+        (void)snprintf(reason, reason_size, "denyPaths strip failed (error=%lu)",
+                       (unsigned long)error);
+        return 0;
+    }
+    length = wcslen(path) + 1;
+    copy = (wchar_t *)malloc(length * sizeof(*copy));
+    if (copy) (void)memcpy(copy, path, length * sizeof(*copy));
+    if (!copy ||
+        !remember_grant(sandbox, copy, OWC_ACL_DENY_PATH, NULL, 0)) {
+        /* Undo the registration so a failed create leaves no residue. */
+        release_deny_strip_grant(path);
+        free(copy);
+        set_reason(reason, reason_size, "denyPaths strip tracking failed");
+        return 0;
+    }
+    return 1;
+}
 
 static int strip_deny_path(owc_sandbox *sandbox, const wchar_t *path,
-                           unsigned long *nodes, int top,
+                           unsigned long *nodes, unsigned long depth, int top,
                            char *reason, size_t reason_size) {
     DWORD attributes = GetFileAttributesW(path);
     DWORD error;
@@ -620,32 +814,13 @@ static int strip_deny_path(owc_sandbox *sandbox, const wchar_t *path,
                    "denyPaths directory has too many entries to secure");
         return 0;
     }
+    if (depth > OWC_DENY_STRIP_MAX_DEPTH) {
+        set_reason(reason, reason_size,
+                   "denyPaths directory is nested too deeply to secure");
+        return 0;
+    }
     if (top) {
-        unsigned char *saved = NULL;
-        DWORD saved_size = 0;
-        error = strip_sid_from_dacl(path, sandbox->appcontainer_sid, 1,
-                                    &saved, &saved_size);
-        if (error != ERROR_SUCCESS) {
-            (void)snprintf(reason, reason_size,
-                           "denyPaths strip failed (error=%lu)", (unsigned long)error);
-            return 0;
-        }
-        if (saved) {
-            size_t length = wcslen(path) + 1;
-            wchar_t *copy = (wchar_t *)malloc(length * sizeof(*copy));
-            if (copy) (void)memcpy(copy, path, length * sizeof(*copy));
-            if (!copy ||
-                !remember_grant(sandbox, copy, OWC_ACL_DENY_PATH,
-                                saved, saved_size)) {
-                /* Undo the strip so a failed create leaves no residue. */
-                (void)restore_denied_dacl(path, saved, saved_size,
-                                          sandbox->appcontainer_sid);
-                free(copy);
-                free(saved);
-                set_reason(reason, reason_size, "denyPaths strip tracking failed");
-                return 0;
-            }
-        }
+        if (!strip_deny_top(sandbox, path, reason, reason_size)) return 0;
     } else {
         error = strip_sid_from_dacl(path, sandbox->appcontainer_sid, 0,
                                     NULL, NULL);
@@ -675,8 +850,18 @@ static int strip_deny_path(owc_sandbox *sandbox, const wchar_t *path,
         pattern[length + 2] = L'\0';
         find = FindFirstFileW(pattern, &data);
         free(pattern);
-        if (find == INVALID_HANDLE_VALUE)
-            return 1;
+        if (find == INVALID_HANDLE_VALUE) {
+            /* ERROR_FILE_NOT_FOUND is an empty directory (nothing to
+             * strip); anything else means the children could not be
+             * enumerated, so the tree is only partially stripped and the
+             * create must fail closed. */
+            error = GetLastError();
+            if (error == ERROR_FILE_NOT_FOUND) return 1;
+            (void)snprintf(reason, reason_size,
+                           "denyPaths directory enumeration failed (error=%lu)",
+                           (unsigned long)error);
+            return 0;
+        }
         do {
             wchar_t *child;
             size_t name_length;
@@ -693,9 +878,22 @@ static int strip_deny_path(owc_sandbox *sandbox, const wchar_t *path,
             child[length] = L'\\';
             (void)memcpy(child + length + 1, data.cFileName,
                          (name_length + 1) * sizeof(*child));
-            ok = strip_deny_path(sandbox, child, nodes, 0, reason, reason_size);
+            ok = strip_deny_path(sandbox, child, nodes, depth + 1, 0,
+                                 reason, reason_size);
             free(child);
         } while (ok && FindNextFileW(find, &data));
+        if (ok) {
+            /* FindNextFileW also ends the loop on a real error (short read,
+               lost handle); only ERROR_NO_MORE_FILES means the directory
+               was fully enumerated. */
+            error = GetLastError();
+            if (error != ERROR_NO_MORE_FILES) {
+                (void)snprintf(reason, reason_size,
+                               "denyPaths directory enumeration failed (error=%lu)",
+                               (unsigned long)error);
+                ok = 0;
+            }
+        }
         FindClose(find);
         return ok;
     }
@@ -751,7 +949,7 @@ static int strip_deny_paths(owc_sandbox *sandbox,
             set_reason(reason, reason_size, "denyPaths strip allocation failed");
             return 0;
         }
-        if (!strip_deny_path(sandbox, extended, &nodes, 1,
+        if (!strip_deny_path(sandbox, extended, &nodes, 0, 1,
                              reason, reason_size)) {
             free(extended);
             return 0;
