@@ -215,6 +215,10 @@ jobs:
       - uses: ./.github/actions/resolve-release-version
         with:
           tag: ${{ inputs.tag }}
+      # 同 core.yml：Linux 默认沙盒后端是 bubblewrap-only（不可用即 fail-closed），
+      # 测试环境必须安装 bwrap 并放开 AppArmor 对非特权 userns 的限制
+      - uses: ./.github/actions/install-bubblewrap
+        if: ${{ matrix.arch != 'loongarch64' }}
       - uses: actions/setup-node@v4
         with:
           node-version: 24
