@@ -6,12 +6,12 @@
 
 ### 变更
 
-- **Windows 默认沙盒模式切换为 AppContainer**（真文件隔离）：Job Object 降为显式兼容档。AppContainer 进程创建失败不再静默降级为 Job Object，而是明确报错并引导显式切换 Job Object 兼容模式；AppContainer 不可用的环境（受限企业策略等）请显式选择 Job Object。
+- **Windows 默认沙盒模式切换为 AppContainer**（真文件隔离）：Job Object 降为显式兼容档。**存量 Windows 会话保持其创建时的 Job Object 档位**（首次加载时一次性迁移标记，避免旧版「显式选 jobobject 也按缺省存储」的记录被静默改判；可手动切换 AppContainer）；新建会话默认 AppContainer。AppContainer 进程创建失败不再静默降级为 Job Object，而是明确报错并引导显式切换 Job Object 兼容模式；AppContainer 不可用的环境（受限企业策略等）请显式选择 Job Object。
 - **Linux 默认沙盒模式切换为 bubblewrap-only**：bubblewrap 不可用时不再自动回落 Landlock，默认档命令将明确报错，提示安装 bubblewrap（如 `apt install bubblewrap`）或将会话沙盒模式显式切换为 Landlock 兼容档（更弱：denyPaths 不经命令层强制）。无 bwrap 的容器 / 禁止非特权 userns 的内核环境需按此调整。
 - **denyPaths 对沙盒内命令生效**：`.env`、`.owc/hooks.json`、`.owc/mcp.json` 等会话 deny 路径不再可被沙盒内命令改写——Windows 在沙盒授权时剥离 deny 路径上沙盒包身份的 ACL 项（实测 AppContainer 下 DENY ACE 对包身份无效，故采用剥离），命令结束后还原；Linux（bubblewrap）走 mount mask；显式 Landlock 档无法表达该语义，能力如实上报 partial。残余空洞如实说明：deny 路径尚不存在时无法预设防护（沙盒内命令可创建同名文件，自下一命令起被 deny 覆盖）；deny 路径为符号链接时保护落在目标上，链接本体可删除重建。
 - **Windows 写根为 junction/symlink 时沙盒授权改为拒绝**（fail-closed，与文件工具层行为对齐），请使用真实路径作为会话工作目录。
 - **沙盒路径配额上调**：会话 `allowPaths` / `readOnlyPaths` 上限由 16 条提升至 32 条（denyPaths 保持 16）。
-- **core 进程环境变量改为跨平台白名单**：仅放行 PATH / HOME / USER / LOGNAME / SHELL / LANG / LC_* / TERM / TMPDIR / 代理变量 / SSL_CERT_FILE / NODE_EXTRA_CA_CERTS / OWC_*（Windows 另有 SystemRoot / TEMP / TMP / LOCALAPPDATA），避免 API Key 等环境凭据被沙盒内命令读取外传；依赖自定义环境变量注入的工作流可能需补充白名单。
+- **core 进程环境变量改为跨平台白名单**：仅放行 PATH / HOME / USER / LOGNAME / SHELL / LANG / LC_* / TERM / TMPDIR / 代理变量 / SSL_CERT_FILE / NODE_EXTRA_CA_CERTS / OWC_*（Windows 另有 SystemRoot / TEMP / TMP / LOCALAPPDATA / USERPROFILE / HOMEDRIVE / HOMEPATH / APPDATA——后四项是 git 等工具定位 `~` 的路径变量，与凭据只读放行配套），避免 API Key 等环境凭据被沙盒内命令读取外传；依赖自定义环境变量注入的工作流可能需补充白名单。
 - **Windows AppContainer 档（含默认档）下 git 凭据与工具链可用**：宿主 `~/.gitconfig`、`.git-credentials`、`.config/git`、`.config/gh`、`.ssh` 及 fnm / nvm / uv 工具链目录并入只读/允许路径，沙盒内 `git push` / `gh` / `npm` 不再因凭据或工具链不可见而失败。
 
 ### 修复
