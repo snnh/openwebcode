@@ -265,9 +265,15 @@ describe("nodeToolchainWritePaths win32 目录（AppContainer 档工具链放行
     // 显式 FNM_DIR 优先；目录不存在不追加
     expect(nodeToolchainWritePaths("fnm", { platform: "win32", home: "C:\\Users\\u", fnmDir: "D:\\fnm", exists: (target) => target === "D:\\fnm" })).toEqual(["D:\\fnm"]);
     expect(nodeToolchainWritePaths("fnm", { platform: "win32", home: "C:\\Users\\u", exists: () => false })).toEqual([]);
-    // POSIX nvm/fnm 语义不变
-    expect(nodeToolchainWritePaths("nvm", { platform: "linux", home: "/home/u", exists: (target) => target === "/home/u/.nvm/nvm.sh" })).toEqual(["/home/u/.nvm"]);
-    expect(nodeToolchainWritePaths("fnm", { platform: "linux", home: "/home/u", exists: () => false })).toEqual([]);
+    // POSIX nvm/fnm 语义不变（屏蔽宿主 NVM_DIR/FNM_DIR：CI runner 预装 nvm 会污染默认推导）
+    vi.stubEnv("NVM_DIR", undefined as unknown as string);
+    vi.stubEnv("FNM_DIR", undefined as unknown as string);
+    try {
+      expect(nodeToolchainWritePaths("nvm", { platform: "linux", home: "/home/u", exists: (target) => target === "/home/u/.nvm/nvm.sh" })).toEqual(["/home/u/.nvm"]);
+      expect(nodeToolchainWritePaths("fnm", { platform: "linux", home: "/home/u", exists: () => false })).toEqual([]);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 
