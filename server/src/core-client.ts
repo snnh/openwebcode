@@ -17,11 +17,14 @@ interface RpcErrorBody {
  * network:"allow" 下被命令读到即可外传。
  * 保留：PATH、HOME、USER、LOGNAME、SHELL、LANG、LC_*、TERM、TMPDIR、http_proxy/https_proxy/no_proxy
  * （大小写形式都保留）、SSL_CERT_FILE、NODE_EXTRA_CA_CERTS、OWC_*（server 注入 core 的专用变量）。
- * Windows 另保留 SystemRoot/windir、TEMP/TMP 与 LOCALAPPDATA（实测必需）：
+ * Windows 另保留 SystemRoot/windir、TEMP/TMP、LOCALAPPDATA 与 USERPROFILE/HOMEDRIVE/HOMEPATH/APPDATA：
  * - SystemRoot/windir：System32 前置（见下）依赖系统根（缺失时按默认 C:\Windows 兜底）；
  * - TEMP/TMP：Windows 工具（git/npm）的临时目录约定，无 TEMP 时回落不可写的 C:\Windows\Temp；
  * - LOCALAPPDATA：AppContainer 进程创建（CreateProcess + SECURITY_CAPABILITIES，含 ConPTY 路径）
- *   缺它即 ERROR_ENVVAR_NOT_FOUND（203），实测必需。
+ *   缺它即 ERROR_ENVVAR_NOT_FOUND（203），实测必需；
+ * - USERPROFILE/HOMEDRIVE/HOMEPATH/APPDATA：Windows 上 HOME 通常未设，git 等工具按 USERPROFILE
+ *   定位 ~——缺它沙盒内 git 找不到凭据，凭据只读放行（core-router）形同虚设；
+ *   与 mcp/client.ts 的 ENV_PASSTHROUGH 保持一致。均为路径变量，不含凭据。
  * 键名大小写不敏感匹配（Windows 环境变量大小写不敏感，存储大小写随来源），输出保留原大小写。
  */
 export function sanitizedCoreEnv(): NodeJS.ProcessEnv {
@@ -64,6 +67,10 @@ function isCoreEnvAllowed(key: string): boolean {
     case "TEMP":
     case "TMP":
     case "LOCALAPPDATA":
+    case "USERPROFILE":
+    case "HOMEDRIVE":
+    case "HOMEPATH":
+    case "APPDATA":
       return true;
   }
   if (upper.startsWith("LC_") || upper.startsWith("OWC_")) return true;

@@ -106,8 +106,10 @@ export class SessionStore {
       ...(input.workspace ? { workspace: input.workspace } : {}),
       ...(input.snapshotBackend ? { snapshotBackend: input.snapshotBackend } : {}),
     };
-    // 默认档（appcontainer，两平台 core 缺省语义）不落盘；setupScript 仅非空时保留
-    if (input.sandboxMode && input.sandboxMode !== "appcontainer") meta.sandboxMode = input.sandboxMode;
+    // sandboxMode 一律显式落盘（含默认档）：字段缺失只出现在 1.10.0 之前写入的存量
+    // meta 上（旧版本对显式 jobobject 也按删字段存储），readMeta 据此做存量迁移；
+    // 新会话写真值避免「缺省即默认」的双义。setupScript 仅非空时保留
+    meta.sandboxMode = input.sandboxMode ?? (process.platform === "win32" ? "appcontainer" : "bubblewrap");
     if (input.setupScript?.trim()) meta.setupScript = input.setupScript;
     if (input.agentMode === "plan" || input.agentMode === "goal") meta.agentMode = input.agentMode;
     // 工具白名单/黑名单：空数组等同未设置，不落盘
@@ -459,13 +461,10 @@ export class SessionStore {
     return meta;
   }
 
-  /** 更新沙盒模式；appcontainer（两平台 core 缺省语义）视为缺省（从 meta 删除）；空 setupScript 同样删除。sandboxMode 未提供时保留现值（setupScript-only 补丁不误清模式）。 */
+  /** 更新沙盒模式；真值显式落盘（含 appcontainer——缺失字段只属于 1.10.0 前的存量 meta，见 readMeta 迁移）；空 setupScript 同样删除。sandboxMode 未提供时保留现值（setupScript-only 补丁不误清模式）。 */
   async updateSandboxMode(id: string, sandboxMode: SandboxMode | undefined, setupScript: string | undefined): Promise<SessionMeta> {
     const meta = await this.readMeta(id);
-    if (sandboxMode !== undefined) {
-      if (sandboxMode === "appcontainer") delete meta.sandboxMode;
-      else meta.sandboxMode = sandboxMode;
-    }
+    if (sandboxMode !== undefined) meta.sandboxMode = sandboxMode;
     if (!setupScript?.trim()) delete meta.setupScript;
     else meta.setupScript = setupScript;
     meta.updatedAt = monotonicTimestamp();
@@ -580,6 +579,10 @@ export class SessionStore {
     await chmodPrivate(this.sessionPath(id), 0o700);
     const { id: _ignored, ...restMeta } = parsed.meta;
     const meta: SessionMeta = { ...restMeta, id, ...(isLocalImport ? { cwd: importedCwd, sandboxMode: "off" as const } : {}) };
+    // 导入净化剥离了 sandboxMode 时补当前平台默认档（与 create 一致显式落盘），
+    // 避免被 readMeta 的存量迁移误判为旧版显式 jobobject
+    if (meta.sandboxMode === undefined && meta.kind !== "local")
+      meta.sandboxMode = process.platform === "win32" ? "appcontainer" : "bubblewrap";
     if (isLocalImport) {
       // 本机会话导入重建策略基线：根放宽到文件系统根、denyPaths 重建为当前 HOME 三项；
       // 剥离导入文件中可能携带的托管工作区/快照后端预设
@@ -616,7 +619,17 @@ export class SessionStore {
   }
 
   private async readMeta(id: string): Promise<SessionMeta> {
-    return JSON.parse(await readFile(this.metaPath(id), "utf8")) as SessionMeta;
+    const meta = JSON.parse(await readFile(this.metaPath(id), "utf8")) as SessionMeta;
+    // 存量迁移（1.10.0 Windows 默认档 Job Object → AppContainer）：旧版本对显式选择
+    // jobobject 的会话也按「删字段」存储，无法与默认选择区分；若把缺失解释为新默认
+    // appcontainer，会把显式选过兼容档的存量会话静默改判。保守处理：Windows 上缺字段
+    // 的存量非本机会话一次性补写 jobobject（保持其创建时的实际隔离档位），用户可显式
+    // 切换 AppContainer。1.10.0 起新会话总是显式落盘 sandboxMode，不进入此分支。
+    if (process.platform === "win32" && meta.sandboxMode === undefined && meta.kind !== "local") {
+      meta.sandboxMode = "jobobject";
+      await this.writeMeta(meta);
+    }
+    return meta;
   }
 
   /** Safe branch fallback: copy history into a separately selected workspace, never share a writable cwd. */
