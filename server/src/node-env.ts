@@ -54,8 +54,10 @@ export function nodeToolchainReadOnlyPaths(mode: NodeEnv, deps: NodeToolchainMou
       try { binDir = realpath(dir); } catch { /* 目录不可解析时按原样尽力挂载 */ }
       const root = path.win32.basename(binDir) === "bin" ? path.win32.dirname(binDir) : binDir;
       const lower = root.toLowerCase();
-      // 盘根（C:\）排除：全盘只读授权会把用户 profile 一并打开
-      if (lower !== home && !lower.startsWith(`${home}\\`)) continue;
+      // 只放行严格位于用户 profile 之下的工具链根；root === home（node.exe 直接在
+      // profile 根）时挂载整个 profile 只读会连带打开文档/凭据目录，与盘根一样排除
+      // （盘根 C:\ 挂载更是把全盘只读打开）。
+      if (!lower.startsWith(`${home}\\`)) continue;
       if (!roots.includes(root)) roots.push(root);
       if (dir !== root && !roots.includes(dir)) roots.push(dir);
     }
@@ -65,14 +67,16 @@ export function nodeToolchainReadOnlyPaths(mode: NodeEnv, deps: NodeToolchainMou
   // 与平台无关、可注入确定性测试；os.homedir()/env 提供的目录在 POSIX 宿主上本来就是 POSIX 路径。
   // global：PATH 上首个含 node 或 npm 的 bin 目录即 shell 实际生效的工具链
   const pathEnv = deps.pathEnv ?? process.env.PATH ?? "";
+  const home = deps.home ?? os.homedir();
   const roots: string[] = [];
   for (const dir of pathEnv.split(":").filter(Boolean)) {
     if (!exists(path.posix.join(dir, "node")) && !exists(path.posix.join(dir, "npm"))) continue;
     let binDir = dir;
     try { binDir = realpath(dir); } catch { /* 目录不可解析时按原样尽力挂载 */ }
     const root = path.posix.basename(binDir) === "bin" ? path.posix.dirname(binDir) : binDir;
-    // /bin 等目录的"根"会算成 /：挂载 / 等于全盘只读，必须排除（系统树本已放行）
-    if (root === "/" || SYSTEM_TOOLCHAIN_PREFIXES.some((prefix) => root === prefix || root.startsWith(`${prefix}/`))) continue;
+    // /bin 等目录的"根"会算成 /：挂载 / 等于全盘只读，必须排除（系统树本已放行）；
+    // root === home（node 直接在 ~/ 或 ~/bin）同理会把整个 HOME 只读挂进沙盒，一并排除
+    if (root === "/" || root === home || SYSTEM_TOOLCHAIN_PREFIXES.some((prefix) => root === prefix || root.startsWith(`${prefix}/`))) continue;
     if (!roots.includes(root)) roots.push(root);
   }
   return roots;

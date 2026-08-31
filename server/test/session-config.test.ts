@@ -167,7 +167,8 @@ describe("session model config", () => {
       expect(pending.statusCode).toBe(409);
       expect(pending.json().code).toBe("SHELL_PENDING");
       expect(disposedShells).toEqual([]);
-      expect(await sessions.get(session.id)).not.toHaveProperty("sandboxMode");
+      // 409 不落盘：sandboxMode 保持 create 时写入的平台默认档
+      expect((await sessions.get(session.id))?.sandboxMode).toBe(process.platform === "win32" ? "appcontainer" : "bubblewrap");
       // force: true 放行：写入新沙盒模式并回收持久 shell
       const forced = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { sandboxMode: "off", force: true } });
       expect(forced.statusCode).toBe(200);
@@ -180,7 +181,7 @@ describe("session model config", () => {
       const badForce = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { sandboxMode: "off", force: "yes" } });
       expect(badForce.statusCode).toBe(400);
       expect(badForce.json().error).toBe("force must be a boolean");
-      expect(await sessions.get(session.id)).not.toHaveProperty("sandboxMode");
+      expect((await sessions.get(session.id))?.sandboxMode).toBe(process.platform === "win32" ? "appcontainer" : "bubblewrap");
       // 快照模式不触及沙盒/环境：即使有在途 shell 也直接放行、不回收
       shellPending = true;
       const unrelated = await app.inject({ method: "PUT", url: `/api/sessions/${session.id}/config`, payload: { snapshotMode: "manual" } });

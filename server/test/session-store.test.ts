@@ -1,4 +1,4 @@
-import { appendFile, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -49,7 +49,7 @@ describe("SessionStore.appendMessage 并发串行化", () => {
 });
 
 describe("SessionStore.updateSandboxMode", () => {
-  it("sandboxMode undefined 保留现值；显式值写入；appcontainer（默认档）删除；空 setupScript 删除", async () => {
+  it("sandboxMode undefined 保留现值；显式值写入（含 appcontainer 真值）；空 setupScript 删除", async () => {
     const root = await tempRoot("owc-sandbox-mode-");
     const store = new SessionStore(path.join(root, "sessions"));
     await store.initialize();
@@ -67,11 +67,38 @@ describe("SessionStore.updateSandboxMode", () => {
     // 显式 jobobject（不再是默认档）持久化
     const jobobject = await store.updateSandboxMode(session.id, "jobobject", undefined);
     expect(jobobject.sandboxMode).toBe("jobobject");
-    // 显式 appcontainer（平台默认档，两平台 core 缺省语义）归一化为删除属性
+    // 显式 appcontainer 同样真值落盘：缺省字段只属于 1.10.0 前的存量 meta（readMeta 迁移）
     const cleared = await store.updateSandboxMode(session.id, "appcontainer", undefined);
-    expect(cleared).not.toHaveProperty("sandboxMode");
+    expect(cleared.sandboxMode).toBe("appcontainer");
     // 落盘一致
-    expect(await store.get(session.id)).not.toHaveProperty("sandboxMode");
+    expect((await store.get(session.id))?.sandboxMode).toBe("appcontainer");
+  });
+
+  it("create 显式落盘平台默认档；Windows 存量缺字段 meta 迁移为 jobobject", async () => {
+    const root = await tempRoot("owc-sandbox-migrate-");
+    const store = new SessionStore(path.join(root, "sessions"));
+    await store.initialize();
+    const session = await store.create({ cwd: root, provider: "p", model: "m" });
+    // 新会话：sandboxMode 显式落盘（win32=appcontainer，POSIX=bubblewrap）
+    expect(session.sandboxMode).toBe(process.platform === "win32" ? "appcontainer" : "bubblewrap");
+
+    // 模拟 1.10.0 前的存量 meta：手工写入缺 sandboxMode 的 meta.json
+    const legacyId = "00000000-0000-4000-8000-000000000001";
+    const legacy = path.join(root, "sessions", legacyId);
+    await mkdir(legacy, { recursive: true });
+    const legacyMeta = { id: legacyId, cwd: root, provider: "p", model: "m", title: "legacy", createdAt: "2025-01-01T00:00:00.000Z", updatedAt: "2025-01-01T00:00:00.000Z" };
+    await writeFile(path.join(legacy, "meta.json"), JSON.stringify(legacyMeta), "utf8");
+    await writeFile(path.join(legacy, "messages.jsonl"), "", "utf8");
+    const loaded = await store.get(legacyId);
+    if (process.platform === "win32") {
+      // Windows 存量：保持创建时的 Job Object 档位（一次性补写），不被静默改判 AppContainer
+      expect(loaded?.sandboxMode).toBe("jobobject");
+      const persisted = JSON.parse(await readFile(path.join(legacy, "meta.json"), "utf8")) as { sandboxMode?: string };
+      expect(persisted.sandboxMode).toBe("jobobject");
+    } else {
+      // POSIX 存量：不迁移，缺省即当前默认后端（bubblewrap）
+      expect(loaded?.sandboxMode).toBeUndefined();
+    }
   });
 });
 

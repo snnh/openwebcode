@@ -75,6 +75,9 @@ describe("sanitizedCoreEnv", () => {
     vi.stubEnv("NODE_ENV", "production");
     vi.stubEnv("GITHUB_TOKEN", "ghp_test");
     vi.stubEnv("USERPROFILE", "C:\\Users\\u");
+    vi.stubEnv("HOMEDRIVE", "C:");
+    vi.stubEnv("HomePath", "\\Users\\u");
+    vi.stubEnv("APPDATA", "C:\\Users\\u\\AppData\\Roaming");
     try {
       const env = sanitizedCoreEnv();
       expect(env.HOME).toBe("/home/u");
@@ -99,12 +102,16 @@ describe("sanitizedCoreEnv", () => {
       expect(find("TEMP")).toBe("C:\\Temp");
       expect(find("TMP")).toBe("C:\\Temp");
       expect(find("LOCALAPPDATA")).toBe("C:\\Users\\u\\AppData\\Local");
+      // Windows 上 HOME 通常未设，git 按 USERPROFILE 定位 ~；HOMEDRIVE/HOMEPATH/APPDATA 同为路径变量
+      expect(find("USERPROFILE")).toBe("C:\\Users\\u");
+      expect(find("HOMEDRIVE")).toBe("C:");
+      expect(find("HOMEPATH")).toBe("\\Users\\u");
+      expect(find("APPDATA")).toBe("C:\\Users\\u\\AppData\\Roaming");
       expect(env.ANTHROPIC_API_KEY).toBeUndefined();
       expect(env.OPENAI_API_KEY).toBeUndefined();
       expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
       expect(env.NODE_ENV).toBeUndefined();
       expect(env.GITHUB_TOKEN).toBeUndefined();
-      expect(env.USERPROFILE).toBeUndefined();
       // PATH：非 win32 原样保留；win32 被 System32 前置（值以分号拼接）
       if (process.platform === "win32") {
         expect(env.PATH).toContain("System32");

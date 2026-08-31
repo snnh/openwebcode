@@ -497,7 +497,8 @@ describe("session import sanitizes permission/sandbox metadata", () => {
     expect(meta.permissionMode).toBeUndefined();
     expect(meta.permissionRules).toBeUndefined();
     expect(meta.sandbox).toBeUndefined();
-    expect(meta.sandboxMode).toBeUndefined();
+    // sandboxMode 被剥离后由 importJsonl 补当前平台默认档（显式落盘，与 create 一致）
+    expect(meta.sandboxMode).toBe(process.platform === "win32" ? "appcontainer" : "bubblewrap");
     expect(meta.setupScript).toBeUndefined();
     expect(meta.workspace).toBeUndefined();
     // 中性字段保留
